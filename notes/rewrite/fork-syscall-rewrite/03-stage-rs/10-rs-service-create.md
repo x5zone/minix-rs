@@ -183,8 +183,11 @@ priv 设置+回读、调度（`sched_decision` 纯决策 + 内核调用）、`re
 
 ### 3.2 KernelApi 扩展（ARCH A-1）
 
-`boot.rs` 的 `KernelApi` trait 方法（生产实现 fail-closed `ENOSYS`，19 接线；mock 可配置成功
-并记录调用序）：
+`boot.rs` 的外部边界 trait 方法（生产实现 fail-closed `ENOSYS`，19 接线；mock 可配置成功
+并记录调用序）。**域归属（R9/E-2，2026-09-06：trait 已拆为五个域面，`KernelApi` 为其 supertrait
+组合，见 01 §3.5）**——本表的 9 个方法分布：`srv_fork`/`getprocnr`/`srv_execve`/`srv_kill`/
+`setuid` → `PmApi`（PM 进程生命周期面）；`vm_memctl`/`vm_set_priv` → `VmApi`；
+`sched_stop` → `SchedApi`；`reply` → `IpcApi`：
 
 | 方法 | C 面 | 语义 |
 |------|------|------|

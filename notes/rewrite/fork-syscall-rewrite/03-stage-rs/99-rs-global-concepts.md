@@ -171,6 +171,9 @@ RS 是**单线程事件循环**（AGENTS.md 执行模型），内核交互面收
 - **shell 清单**：boot 四步（`boot.rs`）、`RsServer.kernel` 持有者（`lib.rs`）、19 接线层、
   `testutil::MockKernelApi`（唯一测试 mock，E1）。
 - **测试收益**：access/ipc_mask/sched 的决策函数纯数据驱动、零 mock；只有 shell 测试需要 mock。
+- **域拆分（R9/E-2，2026-09-06）**：`KernelApi` 是五个域面（`SysApi`/`SchedApi`/`PmApi`/
+  `VmApi`/`IpcApi`）的 supertrait 组合——每个面对应一个 C 传输目标（SYSTASK/调度器端点/
+  PM/VM/RS 自身 IPC），"发给谁"在类型上可见，19 接线可按面逐个实现（见 01 §3.5）。
 
 ---
 

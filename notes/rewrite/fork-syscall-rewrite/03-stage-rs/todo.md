@@ -2493,6 +2493,35 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   rev_iter/end_update/complete_srv_update）。
 
 
+### ✅ Fix #60 — E-2/R9（P2 结构性，19 前定）：`KernelApi` 单体 trait 拆五个域面 + supertrait 组合
+- **File**：`os/servers/rs/src/boot.rs`（trait 区重写）、`testutil.rs`（mock 拆 5 个域 impl）、
+  `lib.rs`（测试模块一行 unused import 卫生修复，轮 19 遗留警告）；文档 01 §3.5（重写为
+  五域面结构）、10 §3.2（域归属注记）、99 §3.4（shell 清单补充）
+- **Before**：`KernelApi` 单体 22 方法横跨四个消息目标 + 自身 IPC——"这条调用发给谁"埋在方法名
+  里（R9，§14）；mock 被迫全量实现；19 接线只能一个 impl 块一次写完。
+- **After**：五域面——`SysApi`（内核 SYSTASK 8：get_machine/get_hz/get_ticks/privctl/getpriv/
+  setalarm/sys_kill/sys_update）、`SchedApi`（调度器 2：sched_init_proc/sched_stop）、`PmApi`
+  （PM 进程生命周期 8：getnuid/getnpid/getprocnr/srv_fork/srv_execve/srv_kill/waitpid/setuid）、
+  `VmApi`（VM 2）、`IpcApi`（RS 自身 IPC 2：receive/reply）；`KernelApi: 五面` + blanket impl，
+  全部 `&mut dyn KernelApi`/`Box<dyn KernelApi>` 调用点零改动（supertrait 方法经 vtable 可调）。
+  方案对比：a) 域 supertrait + 组合（选定）vs b) 消费点改多 trait 对象（Rust 不支持非 auto
+  trait 的 `dyn A + B`，绕回 a）vs c) RsServer 持多个 `Box<dyn XxxApi>`（同一传输对象拆多盒
+  需要自引用/内部可变性，违反单线程 `&mut` 模型）vs d) 保持单体只做文档分组（类型事实不变，
+  收益为零）。选 a 的理由：19 接线按面逐个实现传输（内核面配 SYS_* 包装、PM 面配消息构造）；
+  测试可只实现被测面（新增 `test_domain_face_implementable_in_isolation` 证明）。
+- **C 面核实（锚点）**：`getnpid`/`getnuid` → `PM_GETEPINFO`（lib/libsys/getepinfo.c:15-47）；
+  `vm_set_priv` → `_taskcall(VM_PROC_NR, VM_RS_SET_PRIV)`（lib/libsys/vm_set_priv.c:7）；
+  `sched_stop` → 调度器端点 SCHEDULING_STOP（sched_stop.c:9-28，KERNEL/NONE 短路）；
+  `sched_start` 复合（KERNEL→sys_schedctl :70-71，否则 SCHEDULING_START :87）；
+  `srv_execve` 注释误述修正——C 实现是 RS 内 ELF 装载（exec.c:21-64）+ 内核分配/拷贝 +
+  PM 终步（libexec_pm_newexec exec.c:102、PM_EXEC_RESTART exec.c:127），非"打包 argv 进消息"；
+  `setuid` 走 PM（POSIX 面）——原注释"kernel-boundary call"一并修正。
+- **Verified**：`cargo test -p minix-rs` = **262 passed**（261 + 1 新隔离测试）；
+  `cargo clippy -p minix-rs --lib` 本体零告警（依赖 minix-sys 的 4 个历史告警不在本 crate）；
+  `cargo fmt -p minix-rs -- --check` 干净；`tools/check-rs-unwired.sh` PASS（标记集不变）。
+  文档同步：01 §3.5 重写（五域面 + R9 修正理由 + S4 语义保留）、10 §3.2 表头域归属、99 §3.4
+  域拆分条目。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2506,10 +2535,19 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   19 的进程/IPC 缝上。立项=18 号文档的接线轮。OQ-1 决策：保持纯切片形态。
 
 **E-2 R9 KernelApi 拆 trait（boot.rs 单体 13 方法 → SysApi/PmApi/VmApi/SchedApi）**
-- 现有 19 个方法（含 R22a/R22b/R23 增补的 receive/waitpid/sys_update/srv_execve/
-  srv_kill/sched_stop/setuid/reply）按域归位；预支 5 方法归位（boot.rs:81-114）。
-- 拆分须一次完成：所有 impl（Unimplemented/Mock/未来生产）同步迁移。
-- 依赖：无硬依赖，但建议在 19 接线前做，避免接线后双倍迁移。
+- ✅ **已修（Fix #60，2026-09-06）**：22 方法拆为五域面 `SysApi`（内核 8）/`SchedApi`（调度器 2）/
+  `PmApi`（PM 进程生命周期 8）/`VmApi`（VM 2）/`IpcApi`（RS 自身 IPC 2），`KernelApi` 为
+  supertrait 组合（blanket impl）——调用点零改动、mock 按 5 域分块、19 接线可按面逐个实现传输。
+  对 R9 原草案的显式修正：`privctl`/`getpriv` 归 `SysApi`（C 面就是 sys_* 内核调用，单拆
+  PrivApi 无接线增量），`sched_init_proc`/`sched_stop` 独立成 `SchedApi`（C 传输目标复合：
+  KERNEL→sys_schedctl，否则 SCHEDULING_* 消息，sched_start.c:46-88/sched_stop.c:9-28）。
+  顺带修正 `srv_execve` 注释的 C 机制误述（RS 内 ELF 装载 + 内核分配/拷贝 + PM 终步，
+  exec.c:21-64/:102/:127——非"打包 argv 进消息"）。
+- ~~现有 19 个方法（含 R22a/R22b/R23 增补的 receive/waitpid/sys_update/srv_execve/
+  srv_kill/sched_stop/setuid/reply）按域归位；预支 5 方法归位（boot.rs:81-114）。~~（已完成）
+- ~~拆分须一次完成：所有 impl（Unimplemented/Mock/未来生产）同步迁移。~~（已完成：Unimplemented
+  5 块 + Mock 5 块；未来生产 impl 在 19 按面落地）
+- ~~依赖：无硬依赖，但建议在 19 接线前做，避免接线后双倍迁移。~~（已在 19 前完成）
 
 **E-3 D2/R8 SlotId 世代计数**
 - `SlotId(u16)` → `(generation: u8/u16, index: u16)` 或全局世代表；

@@ -425,7 +425,6 @@ mod signal_handler_tests {
     use super::*;
     use crate::process_table::RProcTable;
     use crate::service_slot::RFlags;
-    use crate::testutil::MockKernelApi;
     use minix_types::{Endpoint, SIGNAL_CHILD, SIGNAL_TERMINATE};
 
     /// A server with a completed boot: table + one in-use VFS service with

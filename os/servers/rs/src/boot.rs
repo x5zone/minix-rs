@@ -17,11 +17,14 @@
 //! directly. Rust keeps the same state inside [`BootInit`], making the
 //! dependencies explicit and the machine testable with a mock kernel API.
 //!
-//! # Kernel API boundary
+//! # External boundary API
 //!
-//! All kernel interactions go through [`KernelApi`]. The production impl is
-//! wired to `minix-sys` in 19-rs-external-interfaces.md (currently
-//! DEFERRED — `minix-sys` is a stub); tests use `MockKernelApi`.
+//! All external interactions go through [`KernelApi`] — the union of five
+//! domain faces ([`SysApi`] kernel calls, [`SchedApi`] scheduler face,
+//! [`PmApi`] PM process lifecycle, [`VmApi`] VM messages, [`IpcApi`] RS's own
+//! receive/reply). The production impl is wired to `minix-sys` in
+//! 19-rs-external-interfaces.md (currently DEFERRED — `minix-sys` is a stub);
+//! tests use `MockKernelApi`.
 
 use minix_types::{BootImage, Clock, Endpoint, Errno, Pid};
 
@@ -48,25 +51,24 @@ pub struct Machine {
 // full 11-opcode enum (com.h:342-353), `Privilege` is the modeled `struct priv`.
 pub use crate::privilege::{PrivCtlOp, Privilege};
 
-/// Kernel API surface consumed by the boot module.
+/// Kernel system-call face — the C `sys_*` libsys calls to `SYSTASK`.
 ///
-/// Each method corresponds to a C call site:
+/// Every method maps to one C call site:
 ///
 /// | Method | C call site |
 /// |--------|-------------|
-/// | [`KernelApi::get_machine`] | `sys_getmachine` — main.c:53 |
-/// | [`KernelApi::get_hz`] | `sys_getinfo(GET_HZ, ...)` — main.c:181 |
-/// | [`KernelApi::get_ticks`] | `getticks()` — main.c:333 (S2, alive_tm) |
-/// | [`KernelApi::privctl`] | `sys_privctl` — main.c:287/379 (boot) |
-/// | [`KernelApi::getpriv`] | `sys_getpriv` — main.c:294 |
-/// | [`KernelApi::sched_init_proc`] | `sched_init_proc` — main.c:376 |
-/// | [`KernelApi::getnuid`] | `getnuid` (PM_GETEPINFO) — manager.c:29 (04) |
-/// | [`KernelApi::getnpid`] | `getnpid` — main.c:426 |
-/// | [`KernelApi::setalarm`] | `sys_setalarm(RS_DELTA_T, 0)` — main.c:433 |
+/// | [`SysApi::get_machine`] | `sys_getmachine` — main.c:53 |
+/// | [`SysApi::get_hz`] | `sys_getinfo(GET_HZ, ...)` — main.c:181 |
+/// | [`SysApi::get_ticks`] | `getticks()` — main.c:333 (S2, alive_tm) |
+/// | [`SysApi::privctl`] | `sys_privctl` — main.c:287/379 (boot) |
+/// | [`SysApi::getpriv`] | `sys_getpriv` — main.c:294 |
+/// | [`SysApi::setalarm`] | `sys_setalarm(RS_DELTA_T, 0)` — main.c:433 |
+/// | [`SysApi::sys_kill`] | `sys_kill(rpub->endpoint, SIGKILL)` — manager.c:399 (crash_service) |
+/// | [`SysApi::sys_update`] | `srv_update(src_ep, dst_ep, flags)` — update.c:272-275 (libsys wrapper over SYS_UPDATE) |
 ///
 /// Errors are errno values (`minix-types` constants). Production wiring:
 /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
-pub trait KernelApi {
+pub trait SysApi {
     fn get_machine(&mut self) -> Result<Machine, Errno>;
     fn get_hz(&mut self) -> Result<u32, Errno>;
     fn get_ticks(&mut self) -> Result<Clock, Errno>;
@@ -77,26 +79,105 @@ pub trait KernelApi {
         priv_: Option<&Privilege>,
     ) -> Result<(), Errno>;
     fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno>;
+    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno>;
+
+    /// Signals a process by endpoint (kernel sys_kill).
+    ///
+    /// Wired 19.
+    fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno>;
+
+    /// Swaps two process identities in the kernel (SYS_UPDATE).
+    ///
+    /// Wired 19.
+    fn sys_update(
+        &mut self,
+        src: Endpoint,
+        dst: Endpoint,
+        flags: crate::service_slot::SysFlags,
+    ) -> Result<(), Errno>;
+}
+
+/// Scheduler face — scheduling a process has a *composite* transport target
+/// in C: `sched_start` issues `sys_schedctl(SCHEDCTL_FLAG_KERNEL, ...)` when
+/// the scheduler is the kernel, and a `SCHEDULING_START` message to the
+/// scheduler endpoint otherwise (`sched_start.c:46-88`); `sched_stop` sends
+/// `SCHEDULING_STOP` to the scheduler endpoint (`sched_stop.c:9-28`). In this
+/// rewrite the scheduler is the SCHED server (06-stage-sched), so the two
+/// calls form a face of their own, distinct from both [`SysApi`] and
+/// [`PmApi`]. Wired 19.
+pub trait SchedApi {
     fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
+    fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno>;
+}
+
+/// PM process-lifecycle face — the C calls that reach `_taskcall(PM_PROC_NR,
+/// ...)` (or the POSIX routines PM serves). RS creates, inspects, execs,
+/// signals, and reaps service processes through this face:
+///
+/// | Method | C call site |
+/// |--------|-------------|
+/// | [`PmApi::getnuid`] | `getnuid` → `PM_GETEPINFO` (lib/libsys/getepinfo.c:15-47) — manager.c:29 (04) |
+/// | [`PmApi::getnpid`] | `getnpid` → `PM_GETEPINFO` (lib/libsys/getepinfo.c:29-33) — main.c:426 |
+/// | [`PmApi::getprocnr`] | `getprocnr(pid, &endpoint)` → PM_GETEPINFO — manager.c:584 |
+/// | [`PmApi::srv_fork`] | `PM_SRV_FORK` (lib/libsys/srv_fork.c) — manager.c:576 |
+/// | [`PmApi::srv_execve`] | `srv_execve` — manager.c:634 (composite, see below) |
+/// | [`PmApi::srv_kill`] | `srv_kill(rp->r_pid, SIGKILL)` — manager.c:469 (cleanup_service) |
+/// | [`PmApi::waitpid`] | `waitpid(-1, &status, WNOHANG)` — request.c:1063 (do_sigchld's drain loop) |
+/// | [`PmApi::setuid`] | `setuid(0)` — manager.c:656 |
+pub trait PmApi {
     fn getnuid(&mut self, proc: Endpoint) -> Result<u32, Errno>;
     fn getnpid(&mut self, proc: Endpoint) -> Result<i32, Errno>;
-    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno>;
+
+    /// Resolves a pid to an endpoint. Wired 19.
+    fn getprocnr(&mut self, pid: Pid) -> Result<Endpoint, Errno>;
 
     /// Forks a child service process.
     ///
-    /// C: `srv_fork(uid, 0)` — manager.c:576; `PM_SRV_FORK` message via
-    /// `_taskcall(PM_PROC_NR, ...)` (lib/libsys/srv_fork.c). ARCH A-1: the
-    /// no_std server has no libc `fork`; the external behavior (child created
-    /// by PM) is preserved through the PM message face. Wired 19.
+    /// C: `srv_fork(uid, 0)` — manager.c:576. ARCH A-1: the no_std server has
+    /// no libc `fork`; the external behavior (child created by PM) is
+    /// preserved through the PM message face. Wired 19.
     fn srv_fork(&mut self, uid: u32, gid: u32) -> Result<Pid, Errno>;
 
-    /// Resolves a pid to an endpoint.
+    /// Execs a freshly forked child service process.
     ///
-    /// C: `getprocnr(pid, &endpoint)` — manager.c:584; PM_GETEPINFO.
-    /// Wired 19.
-    fn getprocnr(&mut self, pid: Pid) -> Result<Endpoint, Errno>;
+    /// C: `srv_execve(child_proc_nr_e, rp->r_exec, rp->r_exec_len,
+    /// rpub->proc_name, rp->r_argv, environ)` — manager.c:634. The C
+    /// implementation is a composite that runs *inside* RS
+    /// (`minix3/minix/servers/rs/exec.c:21-64`): the libexec loader parses
+    /// the ELF, segments are allocated and copied through kernel calls, then
+    /// PM takes over the process (`libexec_pm_newexec` — exec.c:102) and the
+    /// restart handshake closes the exec (`PM_EXEC_RESTART` — exec.c:127).
+    /// The seam models the whole operation; `args`/`argc` carry the rebuilt
+    /// argv layout (`rebuild_args`). Wired 19. ARCH: C also passes RS's own
+    /// `environ`; this rewrite models no environment inheritance (deviation
+    /// recorded in 10-rs-service-create.md §3).
+    fn srv_execve(
+        &mut self,
+        proc: Endpoint,
+        exec: &[u8],
+        progname: &crate::service_slot::Label,
+        args: &[u8],
+        argc: usize,
+    ) -> Result<(), Errno>;
 
-    /// RS memory control on a process (VM).
+    /// Asks PM to signal a service process (by pid through PM). Wired 19.
+    fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno>;
+
+    /// Non-blocking waitpid: the next exited child, if any.
+    ///
+    /// Wired 19; mock supplies canned children.
+    fn waitpid(&mut self) -> Option<Pid>;
+
+    /// Sets RS's own uid — the VFS non-blocking-fork workaround.
+    ///
+    /// C: `setuid(0)` — manager.c:656; the C comment marks it removable once
+    /// VFS is fixed. Retained verbatim (PM face, wired 19).
+    fn setuid(&mut self, uid: u32) -> Result<(), Errno>;
+}
+
+/// VM message face — the C calls that reach `_taskcall(VM_PROC_NR, ...)`.
+pub trait VmApi {
+    /// RS memory control on a process.
     ///
     /// C: `vm_memctl(ep, VM_RS_MEM_*, ...)` — manager.c:604, 612, 628, 636,
     /// 663, 680, 693. Wired 19.
@@ -110,79 +191,18 @@ pub trait KernelApi {
 
     /// Sets the VM call mask of a process.
     ///
-    /// C: `vm_set_priv(ep, &vm_call_mask[0], TRUE)` — manager.c:698. Wired 19.
+    /// C: `vm_set_priv(ep, &vm_call_mask[0], TRUE)` — manager.c:698
+    /// (lib/libsys/vm_set_priv.c:7). Wired 19.
     fn vm_set_priv(
         &mut self,
         proc: Endpoint,
         vm_call_mask: CallMask,
         allow: bool,
     ) -> Result<(), Errno>;
+}
 
-    /// Execs a freshly forked child service process.
-    ///
-    /// C: `srv_execve(child_proc_nr_e, rp->r_exec, rp->r_exec_len,
-    /// rpub->proc_name, rp->r_argv, environ)` — manager.c:634. The libsys
-    /// call packs `argv` into the message, so the wire shape is the flat
-    /// NUL-separated argument buffer plus the count (`args`/`argc` — the
-    /// `rebuild_args` layout). Wired 19. ARCH: C also passes RS's own
-    /// `environ`; this rewrite models no environment inheritance (deviation
-    /// recorded in 10-rs-service-create.md §3).
-    fn srv_execve(
-        &mut self,
-        proc: Endpoint,
-        exec: &[u8],
-        progname: &crate::service_slot::Label,
-        args: &[u8],
-        argc: usize,
-    ) -> Result<(), Errno>;
-
-    /// Asks PM to signal a service process.
-    ///
-    /// C: `srv_kill(rp->r_pid, SIGKILL)` — manager.c:469 (cleanup_service,
-    /// by pid through PM). Wired 19.
-    fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno>;
-
-    /// Signals a process by endpoint (kernel sys_kill).
-    ///
-    /// C: `sys_kill(rpub->endpoint, SIGKILL)` — manager.c:399
-    /// (crash_service). Wired 19.
-    fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno>;
-
-    /// Swaps two process identities in the kernel (SYS_UPDATE).
-    ///
-    /// C: `srv_update(src_ep, dst_ep, flags)` — update.c:272-275 (libsys
-    /// wrapper over SYS_UPDATE). Wired 19.
-    fn sys_update(
-        &mut self,
-        src: Endpoint,
-        dst: Endpoint,
-        flags: crate::service_slot::SysFlags,
-    ) -> Result<(), Errno>;
-
-    /// Non-blocking waitpid: the next exited child, if any.
-    ///
-    /// C: `waitpid(-1, &status, WNOHANG)` — request.c:1063 (do_sigchld's
-    /// drain loop). Wired 19; mock supplies canned children.
-    fn waitpid(&mut self) -> Option<Pid>;
-
-    /// Tells the scheduler a process is finished.
-    ///
-    /// C: `sched_stop(rp->r_scheduler, rpub->endpoint)` — manager.c:462.
-    /// Wired 19.
-    fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno>;
-
-    /// Sets RS's own uid — the VFS non-blocking-fork workaround.
-    ///
-    /// C: `setuid(0)` — manager.c:656; the C comment marks it removable once
-    /// VFS is fixed. Retained verbatim (kernel-boundary call, wired 19).
-    fn setuid(&mut self, uid: u32) -> Result<(), Errno>;
-
-    /// Sends a reply message to a service.
-    ///
-    /// C: `reply(who, rp, m_ptr)` — utility.c:309 (06); used by
-    /// `late_reply` (utility.c:332) and the main loop reply path.
-    fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno>;
-
+/// RS's own IPC face — the receive/reply primitives of the main loop.
+pub trait IpcApi {
     /// Blocking receive with the IPC status word.
     ///
     /// C: `sef_receive_status(ANY, &m, &ipc_status)` — main.c:826-833 via
@@ -193,7 +213,26 @@ pub trait KernelApi {
         &mut self,
         endpoint: Endpoint,
     ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno>;
+
+    /// Sends a reply message to a service.
+    ///
+    /// C: `reply(who, rp, m_ptr)` — utility.c:309 (06); used by
+    /// `late_reply` (utility.c:332) and the main loop reply path.
+    fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno>;
 }
+
+/// The external boundary of the RS server — the union of the five domain
+/// faces ([`SysApi`]/[`SchedApi`]/[`PmApi`]/[`VmApi`]/[`IpcApi`]).
+///
+/// C's libsys free functions reach four different message targets (kernel,
+/// scheduler endpoint, PM, VM) plus RS's own IPC. The single `KernelApi` name
+/// keeps every call site unchanged (`&mut dyn KernelApi` — supertrait methods
+/// are callable through the composite object) while the domain traits make
+/// the target of each call explicit and let the 19 wiring implement the faces
+/// one transport at a time. This replaces the former monolithic 22-method
+/// trait (R9, todo §14/§18.10 E-2).
+pub trait KernelApi: SysApi + SchedApi + PmApi + VmApi + IpcApi {}
+impl<T> KernelApi for T where T: SysApi + SchedApi + PmApi + VmApi + IpcApi {}
 
 /// VM RS-memory-control requests.
 ///
@@ -214,7 +253,8 @@ pub enum VmRsMemReq {
     GetPreallocMap = 4,
 }
 
-/// Fail-closed kernel API: every method returns `ENOSYS`.
+/// Fail-closed external boundary: every method of every domain face returns
+/// `ENOSYS`.
 ///
 /// Selected until the `minix-sys` wiring lands (19-rs-external-interfaces.md).
 /// RS is a root system process — a panic is a system-wide outage (the kernel
@@ -223,7 +263,7 @@ pub enum VmRsMemReq {
 /// site, not as a process crash (T2, 19-rs-external-interfaces.md).
 pub struct UnimplementedKernelApi;
 
-impl KernelApi for UnimplementedKernelApi {
+impl SysApi for UnimplementedKernelApi {
     fn get_machine(&mut self) -> Result<Machine, Errno> {
         Err(Errno::ENOSYS)
     }
@@ -244,24 +284,66 @@ impl KernelApi for UnimplementedKernelApi {
     fn getpriv(&mut self, _proc: Endpoint) -> Result<Privilege, Errno> {
         Err(Errno::ENOSYS)
     }
+    fn setalarm(&mut self, _delay_ticks: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn sys_kill(&mut self, _proc: Endpoint, _signo: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn sys_update(
+        &mut self,
+        _src: Endpoint,
+        _dst: Endpoint,
+        _flags: crate::service_slot::SysFlags,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+}
+
+impl SchedApi for UnimplementedKernelApi {
     fn sched_init_proc(&mut self, _cfg: &SchedulerConfig) -> Result<Endpoint, Errno> {
         Err(Errno::ENOSYS)
     }
+    fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+}
+
+impl PmApi for UnimplementedKernelApi {
     fn getnuid(&mut self, _proc: Endpoint) -> Result<u32, Errno> {
         Err(Errno::ENOSYS)
     }
     fn getnpid(&mut self, _proc: Endpoint) -> Result<i32, Errno> {
         Err(Errno::ENOSYS)
     }
-    fn setalarm(&mut self, _delay_ticks: u32) -> Result<(), Errno> {
+    fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
         Err(Errno::ENOSYS)
     }
     fn srv_fork(&mut self, _uid: u32, _gid: u32) -> Result<Pid, Errno> {
         Err(Errno::ENOSYS)
     }
-    fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
+    fn srv_execve(
+        &mut self,
+        _proc: Endpoint,
+        _exec: &[u8],
+        _progname: &crate::service_slot::Label,
+        _args: &[u8],
+        _argc: usize,
+    ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
+    fn srv_kill(&mut self, _pid: Pid, _signo: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn waitpid(&mut self) -> Option<Pid> {
+        None
+    }
+    fn setuid(&mut self, _uid: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+}
+
+impl VmApi for UnimplementedKernelApi {
     fn vm_memctl(
         &mut self,
         _proc: Endpoint,
@@ -279,43 +361,13 @@ impl KernelApi for UnimplementedKernelApi {
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn srv_execve(
-        &mut self,
-        _proc: Endpoint,
-        _exec: &[u8],
-        _progname: &crate::service_slot::Label,
-        _args: &[u8],
-        _argc: usize,
-    ) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
-    }
-    fn srv_kill(&mut self, _pid: Pid, _signo: i32) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
-    }
-    fn sys_kill(&mut self, _proc: Endpoint, _signo: i32) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
-    }
-    fn sys_update(
-        &mut self,
-        _src: Endpoint,
-        _dst: Endpoint,
-        _flags: crate::service_slot::SysFlags,
-    ) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
-    }
-    fn waitpid(&mut self) -> Option<Pid> {
-        None
-    }
+}
+
+impl IpcApi for UnimplementedKernelApi {
     fn receive(
         &mut self,
         _endpoint: Endpoint,
     ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno> {
-        Err(Errno::ENOSYS)
-    }
-    fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
-    }
-    fn setuid(&mut self, _uid: u32) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
     fn reply(&mut self, _target: Endpoint, _result: i32) -> Result<(), Errno> {
@@ -811,6 +863,57 @@ mod tests {
             sys.vm_set_priv(Endpoint::VM, CallMask::empty(), false),
             Err(Errno::ENOSYS)
         );
+    }
+
+    #[test]
+    fn test_domain_face_implementable_in_isolation() {
+        // E-2 payoff: a test double implements only the face it exercises —
+        // the former monolithic trait forced a full 22-method mock for every
+        // shell test. `SysOnly` speaks just the kernel-call face and is used
+        // as `&mut dyn SysApi`.
+        struct SysOnly {
+            hz: u32,
+        }
+        impl SysApi for SysOnly {
+            fn get_machine(&mut self) -> Result<Machine, Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn get_hz(&mut self) -> Result<u32, Errno> {
+                Ok(self.hz)
+            }
+            fn get_ticks(&mut self) -> Result<Clock, Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn privctl(
+                &mut self,
+                _: Endpoint,
+                _: PrivCtlOp,
+                _: Option<&Privilege>,
+            ) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn getpriv(&mut self, _: Endpoint) -> Result<Privilege, Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn setalarm(&mut self, _: u32) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn sys_kill(&mut self, _: Endpoint, _: i32) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn sys_update(
+                &mut self,
+                _: Endpoint,
+                _: Endpoint,
+                _: crate::service_slot::SysFlags,
+            ) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+        }
+        let mut mock = SysOnly { hz: 60 };
+        let face: &mut dyn SysApi = &mut mock;
+        assert_eq!(face.get_hz(), Ok(60));
+        assert_eq!(face.get_machine(), Err(Errno::ENOSYS));
     }
 
     #[test]

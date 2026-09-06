@@ -1,12 +1,14 @@
 //! Shared test doubles (E1 — todo §13).
 //!
-//! `MockKernelApi` is the single recording `KernelApi` implementation. The
+//! `MockKernelApi` is the single recording external-boundary double. It
+//! implements the five domain faces ([`SysApi`]/[`SchedApi`]/[`PmApi`]/[`VmApi`]
+//! /[`IpcApi`]) and is a `KernelApi` through the composite blanket impl. The
 //! boot shell tests use it today; the 19 wiring shell (main-loop dispatch /
 //! permission checks) will reuse it. Pure decision modules (access, ipc_mask,
 //! sched — T5) test with plain data and need no mock, so this is the *only*
-//! `KernelApi` test double in the crate.
+//! external-boundary test double in the crate.
 
-use crate::boot::{KernelApi, Machine, VmRsMemReq};
+use crate::boot::{IpcApi, Machine, PmApi, SchedApi, SysApi, VmApi, VmRsMemReq};
 use crate::privilege::{CallMask, PrivCtlOp, Privilege};
 use crate::sched::SchedulerConfig;
 use crate::service_slot::Label;
@@ -87,7 +89,7 @@ impl MockKernelApi {
     }
 }
 
-impl KernelApi for MockKernelApi {
+impl SysApi for MockKernelApi {
     fn get_machine(&mut self) -> Result<Machine, Errno> {
         self.calls.push(Call::GetMachine);
         Ok(Machine::default())
@@ -127,10 +129,41 @@ impl KernelApi for MockKernelApi {
             .map(|(_, p)| p.clone())
             .unwrap_or_else(Privilege::vacant))
     }
+    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno> {
+        self.calls.push(Call::SetAlarm(delay_ticks));
+        Ok(())
+    }
+    fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno> {
+        self.calls.push(Call::SysKill(proc, signo));
+        Ok(())
+    }
+    fn sys_update(
+        &mut self,
+        src: Endpoint,
+        dst: Endpoint,
+        _flags: crate::service_slot::SysFlags,
+    ) -> Result<(), Errno> {
+        self.calls.push(Call::SysUpdate(src, dst));
+        Ok(())
+    }
+}
+
+impl SchedApi for MockKernelApi {
     fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno> {
         self.calls.push(Call::SchedInitProc(cfg.endpoint));
         Ok(cfg.scheduler)
     }
+    fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno> {
+        self.calls.push(Call::SchedStop(scheduler, proc));
+        if self.kill_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
+    }
+}
+
+impl PmApi for MockKernelApi {
     fn getnuid(&mut self, proc: Endpoint) -> Result<u32, Errno> {
         self.calls.push(Call::GetNuid(proc));
         Ok(0) // root for boot tests
@@ -139,9 +172,11 @@ impl KernelApi for MockKernelApi {
         self.calls.push(Call::GetNpid(proc));
         Ok(self.pids.pop().unwrap_or(100))
     }
-    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno> {
-        self.calls.push(Call::SetAlarm(delay_ticks));
-        Ok(())
+    fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
+        match self.child_endpoint {
+            Some(ep) => Ok(ep),
+            None => Err(Errno::ENOSYS),
+        }
     }
     fn srv_fork(&mut self, _uid: u32, _gid: u32) -> Result<Pid, Errno> {
         match self.fork_pid {
@@ -151,12 +186,39 @@ impl KernelApi for MockKernelApi {
             None => Err(Errno::ENOSYS),
         }
     }
-    fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
-        match self.child_endpoint {
-            Some(ep) => Ok(ep),
-            None => Err(Errno::ENOSYS),
+    fn srv_execve(
+        &mut self,
+        proc: Endpoint,
+        _exec: &[u8],
+        _progname: &Label,
+        _args: &[u8],
+        _argc: usize,
+    ) -> Result<(), Errno> {
+        self.calls.push(Call::SrvExecve(proc));
+        if self.execve_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
         }
     }
+    fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno> {
+        self.calls.push(Call::SrvKill(pid, signo));
+        if self.kill_ok {
+            Ok(())
+        } else {
+            Err(Errno::ENOSYS)
+        }
+    }
+    fn waitpid(&mut self) -> Option<Pid> {
+        self.children.pop()
+    }
+    fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
+        self.calls.push(Call::SetUid(uid));
+        Ok(())
+    }
+}
+
+impl VmApi for MockKernelApi {
     fn vm_memctl(
         &mut self,
         _proc: Endpoint,
@@ -183,60 +245,12 @@ impl KernelApi for MockKernelApi {
             Err(Errno::ENOSYS)
         }
     }
-    fn srv_execve(
-        &mut self,
-        proc: Endpoint,
-        _exec: &[u8],
-        _progname: &Label,
-        _args: &[u8],
-        _argc: usize,
-    ) -> Result<(), Errno> {
-        self.calls.push(Call::SrvExecve(proc));
-        if self.execve_ok {
-            Ok(())
-        } else {
-            Err(Errno::ENOSYS)
-        }
-    }
-    fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno> {
-        self.calls.push(Call::SrvKill(pid, signo));
-        if self.kill_ok {
-            Ok(())
-        } else {
-            Err(Errno::ENOSYS)
-        }
-    }
-    fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno> {
-        self.calls.push(Call::SysKill(proc, signo));
-        Ok(())
-    }
-    fn sys_update(
-        &mut self,
-        src: Endpoint,
-        dst: Endpoint,
-        _flags: crate::service_slot::SysFlags,
-    ) -> Result<(), Errno> {
-        self.calls.push(Call::SysUpdate(src, dst));
-        Ok(())
-    }
-    fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno> {
-        self.calls.push(Call::SchedStop(scheduler, proc));
-        if self.kill_ok {
-            Ok(())
-        } else {
-            Err(Errno::ENOSYS)
-        }
-    }
-    fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
-        self.calls.push(Call::SetUid(uid));
-        Ok(())
-    }
+}
+
+impl IpcApi for MockKernelApi {
     fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno> {
         self.calls.push(Call::Reply(target, result));
         Ok(())
-    }
-    fn waitpid(&mut self) -> Option<Pid> {
-        self.children.pop()
     }
     fn receive(
         &mut self,

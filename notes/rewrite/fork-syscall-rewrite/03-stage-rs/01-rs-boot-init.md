@@ -726,44 +726,64 @@ impl BootInit<'_> {
 > `Err(ENOSYS)`）；Step 3 在计数 > 0 时显式 `Err(ENOSYS)`（C 阻塞接收 = fail-closed，main.c:401-407），
 > 不再"假装收完"。boot 测试改走私有 step 方法直接驱动各步，并新增 SYNCH_BOOT/Step 3 fail-closed 断言。
 
-### 3.5 外部 syscall 面：KernelApi trait（对应 §2.1/§2.3，外部契约归 19）
+### 3.5 外部边界：KernelApi 与五个域面（对应 §2.1/§2.3，外部契约归 19）
 
-C 的 `sys_getmachine`/`sys_getinfo`/`sys_privctl`/`sys_getpriv`/`sys_setalarm`/`getnpid`/`sched_init_proc`/`srv_fork` 等（§2 各调用点）是 libsys 自由函数。Rust 侧**本模块不直接调用 `minix-sys`**（其 stub 未实现，`os/libs/minix-sys/src/lib.rs`），而是定义窄接口：
+C 的 `sys_getmachine`/`sys_getinfo`/`sys_privctl`/`sys_getpriv`/`sys_setalarm`/`getnpid`/`sched_init_proc`/`srv_fork` 等（§2 各调用点）是 libsys 自由函数，但它们**并非发往同一处**：`sys_*` 走 SYSTASK（内核）；`sched_*` 的传输目标是复合的——调度器是 KERNEL 时走 `sys_schedctl` 内核调用，否则是发给调度器端点的 `SCHEDULING_START/STOP` 消息（sched_start.c:46-88、sched_stop.c:9-28，本重写里调度器是 SCHED 服务器）；`getnpid`/`getnuid`/`srv_fork`/`setuid` 等走 `_taskcall(PM_PROC_NR, ...)`；`vm_*` 走 VM；接收与回复是 RS 自己的 IPC 面。Rust 侧**本模块不直接调用 `minix-sys`**（其 stub 未实现，`os/libs/minix-sys/src/lib.rs`），而是把这四个传输目标加自身 IPC 建模为五个窄域面，`KernelApi` 是它们的并集（supertrait 组合，R9/E-2）：
 
 ```rust
-pub trait KernelApi {
-    fn get_machine(&mut self) -> Result<Machine, Errno>;
-    fn get_hz(&mut self) -> Result<u32, Errno>;
-    fn privctl(&mut self, proc: Endpoint, op: PrivCtlOp, priv_: Option<&Priv>) -> Result<(), Errno>;
-    fn getpriv(&mut self, proc: Endpoint) -> Result<Priv, Errno>;
-    fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
-    fn getnpid(&mut self, proc: Endpoint) -> Result<i32, Errno>;
-    fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno>;
+pub trait SysApi {
+    // 内核系统调用面（SYSTASK）：
+    // get_machine（main.c:53）/ get_hz（main.c:181）/ get_ticks（main.c:333）
+    // privctl（main.c:287/379/478/485）/ getpriv（main.c:294）/ setalarm（main.c:433）
+    // sys_kill（manager.c:399）/ sys_update（update.c:272-275）
 }
+
+pub trait SchedApi {
+    // 调度器面（复合传输目标）：sched_init_proc（main.c:376/482）/ sched_stop（manager.c:462）
+}
+
+pub trait PmApi {
+    // PM 进程生命周期面（_taskcall(PM_PROC_NR)）：
+    // getnuid/getnpid/getprocnr → PM_GETEPINFO（lib/libsys/getepinfo.c:15-47）
+    // srv_fork（PM_SRV_FORK）/ srv_execve（manager.c:634，复合体见 10 §3.2）
+    // srv_kill（manager.c:469）/ waitpid（request.c:1063）/ setuid（manager.c:656）
+}
+
+pub trait VmApi {
+    // VM 消息面：vm_memctl（manager.c:604-693）/ vm_set_priv（manager.c:698）
+}
+
+pub trait IpcApi {
+    // RS 自身 IPC 面：receive（main.c:826-833）/ reply（utility.c:309）
+}
+
+pub trait KernelApi: SysApi + SchedApi + PmApi + VmApi + IpcApi {}
+impl<T> KernelApi for T where T: SysApi + SchedApi + PmApi + VmApi + IpcApi {}
 ```
 
-> **S4 修复（2026-08-15）**：`sched_init_proc` 签名从 `(proc: Endpoint) -> Result<(), Errno>` 改为
-> `(cfg: &SchedulerConfig) -> Result<Endpoint, Errno>` —— C 的 `sched_start`（sched_start.c:37-80）
-> 需要 scheduler/priority/quantum/cpu 全部四个参数，且回写 `*newscheduler_e`（可能被转发到别的
-> 调度器）。`SchedulerConfig`（sched.rs）携带全部参数；boot Step 2 用 `SchedulerConfig::boot_defaults`
-> 构造（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/`SRV_QT=USER_QUANTUM=200`，priv.h:88,93,98 + config.h:69,74）。
-> NONE 调度器短路（sched_start.c:45-47）在纯函数 `sched::sched_decision` 内实现，不触内核
-> （T5 修复，2026-08-16）：`sched_init_proc` 的"决策 + 执行"拆分为
-> `sched_decision(cfg, is_sys_proc) -> SchedAction::{Skip, Start(&cfg)}`，shell（boot Step 2 /
-> 19 接线）执行 `Start` → `sys.sched_init_proc(cfg)` 并取得 `*newscheduler_e`。
+`&mut dyn KernelApi` 的调用点不变——supertrait 方法经组合对象的 vtable 直接可调；拆分的收益是"这条调用发给谁"在类型上可见，且 19 接线可以按面逐个实现传输（内核面配 minix-sys 的 SYS_* 包装、PM 面配 PM 消息构造……），测试也可以只实现被测的那个面（`test_domain_face_implementable_in_isolation`）。
+
+`sched_init_proc` 的签名值得单独说明：C 的 `sched_start`（sched_start.c:37-80）需要
+scheduler/priority/quantum/cpu 全部四个参数，且回写 `*newscheduler_e`（可能被转发到别的调度器），
+所以 Rust 侧收 `&SchedulerConfig`（sched.rs，携带全部参数）并返回 `Result<Endpoint, Errno>`。
+boot Step 2 用 `SchedulerConfig::boot_defaults` 构造（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/
+`SRV_QT=USER_QUANTUM=200`，priv.h:88,93,98 + config.h:69,74）；NONE 调度器短路
+（sched_start.c:45-47）在纯函数 `sched::sched_decision` 内实现，不触面（T5 定案）：
+`sched_decision(cfg, is_sys_proc) -> SchedAction::{Skip, Start(&cfg)}`，shell（boot Step 2 /
+19 接线）执行 `Start` → `sched_init_proc(cfg)` 并取回新调度器端点。
 
 理由：
-- **依赖倒置**：boot 编排逻辑与 syscall 实现解耦；`minix-sys` 落地后实现 `KernelApi`（接线归 19），测试用 `MockKernelApi`。
+- **域拆分（R9/E-2，2026-09-06）**：旧单体 trait 22 个方法把消息目标埋在方法名里。本拆分是对 R9 原草案（`PrivApi/SchedApi/PmApi/VmApi/IpcApi`）的显式修正：`privctl`/`getpriv` 的 C 面就是 `sys_*` 内核调用，单拆 `PrivApi` 会把一个传输面拆到两个 trait，对接线没有增量价值；而 sched 的传输目标确实是复合的（KERNEL→内核调用，否则→SCHED 消息），独立成面。对照 Redox：`redox_syscall` 每个 syscall 独立、用户态逻辑按 scheme 分层——域面是同一思想在 trait 上的表达。
+- **依赖倒置**：boot 编排逻辑与 syscall 实现解耦；`minix-sys` 落地后实现各域面（接线归 19），测试用 `MockKernelApi`。
 - **T5 注入边界（2026-08-16）**：`KernelApi` 只在 shell 出现——boot 四步（本模块）、
   `RsServer.kernel` 持有者（lib.rs）与 19 接线层。纯决策模块（access/ipc_mask/sched/ready/
   recovery/monitor）不 import `KernelApi`：查询结果（`getnuid`/`getpriv`）由 shell 注入，
   命令（`privctl`/`sched_init_proc`/`setalarm`）由 shell 执行（monitor 模式，todo §13）。
   测试 mock 收敛为单一共享 `testutil::MockKernelApi`（E1，todo §13）。
-- **fail-closed（T2 修复）**：trait 无默认实现（编译期强制每个 impl 全量实现）；生产占位
-  `UnimplementedKernelApi` 每个方法返回 `Err(Errno::ENOSYS)`，**不 panic**——RS 是 root system
+- **fail-closed（T2 修复）**：五个域面均无默认实现（编译期强制每个 impl 全量实现）；生产占位
+  `UnimplementedKernelApi` 每个域面的每个方法返回 `Err(Errno::ENOSYS)`，**不 panic**——RS 是 root system
   process，panic = 整机不可用（内核不重启 RS，`RSYS_F`）；返回 `Err` 让缺口在调用点可见且进程存活。
   入口 `main.rs` 对 boot 失败显式 panic（C 的 boot 错误同样 `panic`，main.c:226），不吞错误。
-- 每个方法对应 C 调用点：`get_machine`（main.c:53）、`get_hz`（main.c:181）、`privctl`（main.c:287/379/478/485）、`getpriv`（main.c:294）、`sched_init_proc`（main.c:376/482）、`getnpid`（main.c:426）、`setalarm`（main.c:433）。
 
 ### 3.6 USE_LIVEUPDATE：cargo feature（对应 §2.3.7，ARCH A-11）
 
@@ -943,6 +963,7 @@ impl RsServer {
 | `test_lookup_sys_default_fallback` / `test_lookup_dev_default_fallback` | sys/dev 未命中返回默认条目（对应 main.c:753-762,768-777） |
 | `test_placeholder_tables_valid` | `BootTables::placeholder()` 通过 `validate_tables()`（对应 main.c:200-237） |
 | `test_unimplemented_kernel_api_fails_closed` | 生产占位 `KernelApi` 全接口 fail-closed（`Err(ENOSYS)`，T2：RS 是根系统进程，panic = 系统级 outage） |
+| `test_domain_face_implementable_in_isolation` | E-2：测试 double 只实现单个域面（`SysApi`）即可经 `&mut dyn SysApi` 使用——单体 trait 时代每个 shell 测试被迫全量 22 方法 |
 | `test_init_fresh_populates_table` | Step 1 后 12 个 boot 服务占 slot 0..11 且 `IN_USE|ACTIVE`，A-4 索引命中；非 boot slot 保持空闲（对应 main.c:244-346） |
 | `test_step4_sets_pid` | Step 4 每个 boot slot 携带 `getnpid` 返回的 pid（对应 main.c:426；mock 返回 100） |
 | `test_step3_fails_closed_when_init_ready_pending` | T6：有未收 init-ready 时 Step 3 fail-closed（`Err(ENOSYS)`，对应 main.c:401-407 的阻塞 receive 语义） |
@@ -965,7 +986,7 @@ impl RsServer {
 
 ### 5.4 测试总数
 
-`cargo test -p minix-rs --lib` 实测 **208 passed / 0 failed**（2026-08-16）。全部测试可 grep 验证：`rg "fn test_" os/servers/rs/src/` = 209 处（含非测试方法 `CallMask::test_bit` 1 处，privilege.rs:205；实际测试 208）。01 范围四模块共 29 项：boot.rs 18、table.rs 3、sef.rs 1、dispatch.rs 7。
+`cargo test -p minix-rs --lib` 实测 **262 passed / 0 failed**（2026-09-06，E-2 修复轮）。全部测试可 grep 验证：`rg -c "#\[test\]"` 全 crate 合计 262。01 范围四模块共 31 项：boot.rs 19、table.rs 3、sef.rs 1、dispatch.rs 8。
 
 ## 6. 过渡
 
