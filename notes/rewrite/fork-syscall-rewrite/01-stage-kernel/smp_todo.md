@@ -751,7 +751,7 @@ publication 规则（各 per-CPU 迁移项不再各自决定）：
 | # | 项（对应 TODO） | 内容 | 交付物 | 验收 | 文档同步 |
 |---|---|---|---|---|---|
 | S-0 | ✅ **已完成（2026-09-06）**——见 §18 基线记录 | 提交 `kernel/src/lib.rs` 两个缺失 import 修复（工作区已有，§2.4）；**三架构固定基线矩阵**（GPT 外评 #11）：每架构 = hosted 测试 + **production-target 构建**（x86/arm: `*-unknown-uefi`；riscv: `riscv64gc` 目标 + OpenSBI 链路——v2 外评措辞修正，非三架构都是 UEFI）+ QEMU smoke（hello-boot），哪怕 arm/riscv 起步只有 hello-boot | 绿色基线记录（矩阵表）+ commit | ~~L0：`run_all.sh` x86_64 7/7 PASS + 三架构矩阵全 ✓~~ **L0 达成**（x86_64 7/7 + arm/riscv hello-boot；基线额外修复 arm/riscv trap_return asm 操作数语法错误，见 §18） | 本文件 §2.4 结论视需要补 doc 01 §5 |
-| S-1 | D-38④ 勘误 + Edge 表对账 | grep 核实 `kernel_call_resume` BKL（syscall.rs:2622）；以代码为准勘误 todo.md Edge Items 或 doc 16（二者取一改） | 勘误 commit | grep 证据入 commit message | todo.md Edge Items / doc 16 §4.13 |
+| S-1 | ✅ **已完成（2026-09-07）**——见 §19 勘误记录 | grep 核实 `kernel_call_resume` BKL（原记 syscall.rs:2622 已漂移）；以代码为准勘误 todo.md Edge Items **和** doc 16（两者记录均有误，详见 §19） | 勘误 commit | grep 证据入 §19 | todo.md Edge Items / §7.1 / doc 16 §4.13 |
 | S-2 | 拓扑发现回归钉（D-36 上半） | 新测试内核 `test-smp-topo`：`-smp 4` 下断言（按 GPT 外评 #10，不把 QEMU 默认拓扑当语义契约）`nr_cpus==4`、`hw_id` 互异、BSP `hw_id` ∈ 发现集；QEMU 默认拓扑期望值（x86 APIC ID {0,1,2,3}）单列标注为机器特定观察，不混入 parser 契约；三架构 | 测试内核 ×3 + run_all.sh 接入 | L1：三架构 PASS | doc 04 补拓扑消费说明；16-smp §5.1 加行 |
 | S-3a | AP bootstrap ABI + 内存序契约 | 定义 `ApBootstrap`（§3.2）+ `ap_early_entry` 签名 + §3.9 契约落为代码注释/断言约定；**toolchain spike**（10~30 行）：证明 `global_asm!` + lld + UEFI 能产出可拷贝的 `.ap_early_entry` 单段 image（ELF 中间产物 `readelf -r` 零未解析 reloc + 三阶段反汇编 + **实际链接路径 gc-sections 行为实测** + 边界符号 `ap_early_entry_start/end` 自定义 + 同一机器码不同基址拷贝执行成功 + **image 邻接硬验收（v8 #6）**：`[image_start, image_end)` 内 `.ap_early_entry` 必须紧邻 `.ap_early_entry_data`、中间不得插入其它可分配 section——记录 image_start/image_end/image_size/section ordering；拷贝单位是 [start,end) 区间而非"两个 section 各自存在"——v3 #7/#8：relocation-free ≠ PIC proof，执行才是最终证据；**v4 小点：UEFI 最终产物是 PE/COFF，`readelf` 只适用于 ELF 中间产物，最终 .efi 需 PE 感知工具（`objdump -h -r` PE 模式 / llvm-objdump）检查 base relocation 块**） | ABI 定义 + spike 报告 | spike 全绿；失败则立即换机制（.S），不写完整梯子 | 16-smp 新 §；spike 结论入 commit |
 | S-3b | x86 early entry image | §3.2：`global_asm!` `.ap_early_entry`（16→32→64 梯子）+ `.ap_early_entry_data`（mailbox 存 bootstrap PA）+ 低内存拷贝；**地址空间交接闭环**（rust_entry_va/kernel_stack_top_va 字段 + PA 收口 `ap_early_entry(bootstrap_pa: usize)` + DM 转换）；**前置**：<1MiB 低内存来源落点 + **BSP 页表根 PA <4GiB assert**（32 位模式装 CR3 约束，§3.2 闭环第 3 条） | x86_64 early entry 模块 | `readelf -r` 零 relocation（静态验收）+ 恒等映射覆盖确认 + L2 起步 | 16-smp 新 §（设计 + 与 doc 02 HigherHalf 分工声明 + 0x467 舍弃取舍）；doc 02 加交叉引用 |
@@ -1354,3 +1354,29 @@ x86_64 全部 7 测试在我修复 import 后（本 session 早前验证）已�
 
 **遗留观察（记录，不阻塞）**：`run_all.sh` 的 riscv64 分支对非 EFI 内核走 OpenSBI
 fallback 正常；aarch64 仅 6 个测试包（无 proc-init 变体）——与脚本既有清单一致。
+
+
+---
+
+## 19. S-1 完成记录（2026-09-07）——D-38④ 勘误：两个记录都错了
+
+**核实结论（以代码为准）**：resume 路径的 BKL **已覆盖**，但原两份记录各自错了一半。
+
+1. **todo.md Edge 表错在标 DEFERRED**：D-38④ 的诉求（resume 需 BKL）实际已满足——
+   VmSuspend 在 `kernel_call_finish` 释放 BKL（syscall.rs:2705，含注释"kernel_call_resume()
+   will re-acquire BKL when VM replies"）；生产 resume 路径（proc_table.rs:882 调
+   `vm::kernel_call_resume` 简单版）在调度循环锁内运行——`switch_to_user` 入口契约注释
+   （lib.rs:2921 "BKL is held on entry"）+ Stage 3 明注（:2979 "Runs under the BKL"）。
+2. **doc 16 §4.13 错在归属混淆**：原记录"✅ 已接入（syscall.rs:2622）……生产调用方
+   proc_table.rs:859"把两个同名函数混为一谈——proc_table.rs:882 实际调
+   `vm::kernel_call_resume`（简单版，无自身加锁逻辑）；带 BKL 重入的
+   `syscall::kernel_call_resume`（:2747，重入 dispatch :493 → finish :2730）**无生产
+   调用方**——这是 doc 10 §4.2 记录的 Rust 借用拆分偏差（process_misc_flags 持
+   `&mut self` 无法再传 `self` 给完整重派发版），属于 resume 语义维度，**不是 BKL 缺口**，
+   不应由 D-38④ 跟踪。
+3. **行号全面刷新**：dispatch :493/:655、finish :2705/:2730（原记 411/566/2580/2605/2622
+   均已漂移——行号锚点必须随勘误刷新，否则下次核实还会踩坑）。
+
+**修正落点**：todo.md Edge 表 D-38④ 行转 ✅、DEFERRED 汇总行划掉 ④、§7.1 D-38 行补 ④
+结论；doc 16 §4.13 三行（入口/完成行号刷新 + resume 行重写为生产/完整双版本说明）。
+D-38① 维持 DEFERRED（SMP 异常路径，smp_todo S-9）。

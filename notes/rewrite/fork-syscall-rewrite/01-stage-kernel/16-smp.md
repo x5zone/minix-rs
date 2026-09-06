@@ -1038,8 +1038,8 @@ pub fn bkl_unlock() {
 
 | 接入点 | 文件 | 说明 | 验证 |
 |--------|------|------|------|
-| 系统调用入口 | `syscall.rs:411,566` | `bkl_lock()` 在 `kernel_call_dispatch` / `dispatch_ipc_entry` | ✅ grep 确认 |
-| 系统调用完成 | `syscall.rs:2580,2605` | `bkl_unlock()` 在 `kernel_call_finish` 的所有返回路径 | ✅ grep 确认 |
+| 系统调用入口 | `syscall.rs:493,655`（2026-09-07 S-1 行号刷新，原记 411/566 已漂移） | `bkl_lock()` 在 `kernel_call_dispatch` / `dispatch_ipc_entry` | ✅ grep 确认 |
+| 系统调用完成 | `syscall.rs:2705,2730`（2026-09-07 S-1 行号刷新，原记 2580/2605 已漂移） | `bkl_unlock()` 在 `kernel_call_finish` 的所有返回路径 | ✅ grep 确认 |
 
 **待接入**（DEFERRED — C 源码有但 Rust 尚未接入）:
 
@@ -1048,7 +1048,7 @@ pub fn bkl_unlock() {
 | 异常处理入口 | arch trap entry | ❌ DEFERRED | `exception_dispatcher.rs::handle` 需加 `bkl_lock()` |
 | kmain 启动 | main.c:149 (step 8.5) | ❌ DEFERRED | `lib.rs::kmain` 需在 `switch_to_user` 前获取 BKL |
 | switch_to_user 释放 | main.c (switch_to_user) | ❌ DEFERRED | `switch_to_user` 需在调度循环前 `bkl_unlock()` |
-| 系统调用恢复 | kernel_call_resume | ✅ 已接入（syscall.rs:2622） | 重入 `kernel_call_dispatch`（BKL 在 411 重新获取）→ `kernel_call_finish`（2580/2605 释放）；生产调用方 `proc_table.rs:859`（VM resume 路径） |
+| 系统调用恢复 | kernel_call_resume | ✅ BKL 已覆盖（2026-09-07 S-1 勘误：原记录混淆两个同名函数，行号 :2622 已漂移） | **生产路径** = `proc_table.rs:882` 调 `vm::kernel_call_resume`（简单版：读 VM 结果 + 清标志 + Fault→SIGSEGV），在调度循环锁内运行（lib.rs:2921/:2979）——VmSuspend 侧 BKL 已由 `kernel_call_finish` 释放（:2705）。`syscall::kernel_call_resume`（:2747，完整重派发：重入 dispatch :493 持锁 → finish :2730 释放）**无生产调用方**，系 doc 10 §4.2 记录的 Rust 借用拆分偏差（process_misc_flags 持 `&mut self` 无法再传 `self`），属 resume 语义维度、非 BKL 缺口 |
 
 **共享数据 BKL 保护**（DEFERRED）:
 
