@@ -201,6 +201,12 @@ RS 是**单线程事件循环**（AGENTS.md 执行模型），内核交互面收
 > `test_errno_values` 断言共享类型可达 `EPERM/EINVAL/ENOSYS`。命令 crate
 > （`use minix_sys::*`）不受影响（无 crate 使用旧 `Eperm` 变体）。
 
+> **E-8 落地（2026-09-07）——错误名面（strerror 语义）**：`Errno` 增 `name()` 与
+> `Display`（115 常量全量，match 臂用常量本身）；RS 侧 `error.rs` 的
+> `init_strerror`/`lu_strerror`（error.c:48/:56）组合其上——errno→名表单一权威在
+> minix-types，RS 只持上下文描述（error.c:12-15/:20-25 的四/两条文本），miss 回退
+> C strerror 语义（error.c:44）。`ELAST≡EPROTO(96)` 同值别名以首个常量名为准。
+
 ---
 
 ## 5. 测试要点

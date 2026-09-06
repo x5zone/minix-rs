@@ -33,6 +33,7 @@ use minix_types::{Clock, Endpoint, Errno};
 pub mod access;
 pub mod boot;
 pub mod dispatch;
+pub mod error;
 pub mod exec;
 pub mod ipc_mask;
 pub mod live_update;

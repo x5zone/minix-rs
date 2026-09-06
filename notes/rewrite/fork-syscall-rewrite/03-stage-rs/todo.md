@@ -2626,6 +2626,25 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   fmt 干净；T7 PASS。测试自查修正 2 处构造错误（step1 表计数不匹配被 validate_tables
   先拦、PM proc_nr 写错被 R17 校验拦——两道既有校验恰好证明了 boot 表校验链的有效性）。
 
+### ✅ Fix #66 — E-8/R31（P2）：错误名面——`Errno::name()`/`Display` + error.rs 上下文描述表
+- **File**：`os/libs/minix-types/src/types/errno.rs`（`name()` + `Display`，115 常量
+  生成式 match）、`os/servers/rs/src/error.rs`（新建：`init_strerror`/`lu_strerror` +
+  2 测试）、`lib.rs`（模块注册）；文档 99 §4、todo.md
+- **Before**：error.c 的错误名/描述面全缺（§18.0 覆盖度工具确认 `rs_strerror`/
+  `errentry` 为"完全缺口"）；错误诊断只能打裸数值（Debug 形态 `Errno(22)`）。
+- **After**：方案对比——a) 单一 errno→名表（`Errno::name`）+ RS 薄描述层（选定，
+  即 R31 "Errno Display 承接、不单独移植查表"的落地）vs b) RS 侧复制一份 errno→名表
+  （跨 crate 双表，漂移重蹈 D4/N1）vs c) 只做 Display 不做 name（init/lu 的
+  `&'static str` 回退无法组合）。实现要点：match 臂用常量标识符本身（编译期保证与
+  常量表一致）；`ELAST≡EPROTO(96)` 同值别名由首个常量名胜出；`init_strerror`/
+  `lu_strerror` 逐条对照 error.c:12-15/:20-25 的描述文本，miss 分支回退
+  `strerror(-errnum)` 语义（error.c:44）。
+- **Verified**：`cargo test -p minix-types` = **170 passed**（+1
+  `test_errno_display_and_name`：名面/未知值降级/name-Display 一致）；RS
+  **280 passed**（+2：init/lu 表与回退、ENOSYS 双上下文文本不同断言）；clippy
+  触碰 crate 零告警（ELAST 不可达臂被 clippy 抓出后删除——生成式代码也过门）；
+  fmt 干净；T7 PASS。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2692,10 +2711,15 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - 形态：类型化步骤 token（R10 提案）或编排内 debug_assert 序列锚。
 
 **E-8 R31 诊断面**
-- `Errno` Display（T3 收口后）承接 `init_strerror`/`lu_strerror`
-  （error.c:48/:56 的错误名清单）；`srv_to_string_gen`/`srv_upd_to_string`/
+- ✅ **错误名面已修（Fix #66，2026-09-07）**：`minix_types::Errno` 落地
+  `name() -> Option<&'static str>` + `Display`（115 常量全量，match 臂用常量本身——
+  改名/删值编译期即断；`ELAST` 与 `EPROTO` 同值 96，首常量名胜出，重复臂删除）；
+  RS 侧新增 `error.rs`——`init_strerror`/`lu_strerror`（error.c:48/:56 的两张上下文
+  描述表）组合在 name 之上，未命中回退 C strerror 语义（error.c:44），error.c 从
+  覆盖度工具的"完全缺口"清单中闭合；消费面是 19 的 diagctl 诊断缝。
+- **剩余（归属不变）**：`srv_to_string_gen`/`srv_upd_to_string`/
   `print_services_status`/`print_update_status`（utility.c:142-546）归
-  IS 阶段（08-stage-is）dump 面。`exec_restart` 归 19。
+  IS 阶段（08-stage-is）dump 面；`exec_restart` 归 19。
 
 **E-9 E2 proptest**
 - ✅ **已修（Fix #64，2026-09-06）**：proptest 在本工作区不可用（无 registry 访问，Cargo.lock
