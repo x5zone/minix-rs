@@ -217,7 +217,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // 05 的 VFS_PM_FORK_REPLY（handle_vfs_reply，main.c:369-394）
         // 异步完成。失败（表满/内存不足/VM 拒绝）同步回复 errno
         //（forkexit.c:60-79 的 `return EAGAIN/ENOMEM/s`）。
-        PmCall::Fork => match crate::fork::do_fork(table, msg.m_source, transport) {
+        PmCall::Fork => match crate::fork::do_fork(table, msg.m_source, transport, kern) {
             Ok(_child_pid) => ReplyIntent::ReplyLater,
             Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
         },
@@ -231,7 +231,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     gid: pl.gid,
                 }
             };
-            match crate::fork::do_srv_fork(table, msg.m_source, params, transport) {
+            match crate::fork::do_srv_fork(table, msg.m_source, params, transport, kern) {
                 Ok(child_pid) => ReplyIntent::Reply(child_pid),
                 Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
             }
@@ -268,7 +268,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 let pl = msg.m_u.m_lc_pm_kill;
                 (pl.pid, pl.signo)
             };
-            match crate::signal::do_kill(table, caller, pid, signo, transport) {
+            match crate::signal::do_kill(table, caller, pid, signo, kern, transport) {
                 Ok(_count) => {
                     if table.procs[caller.get()].state.lifecycle.is_exiting() {
                         ReplyIntent::ReplyLater
@@ -285,7 +285,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 let pl = msg.m_u.m_rs_pm_srv_kill;
                 (pl.pid, pl.signo)
             };
-            match crate::signal::do_srv_kill(table, caller, pid, signo, transport) {
+            match crate::signal::do_srv_kill(table, caller, pid, signo, kern, transport) {
                 Ok(_count) => {
                     if table.procs[caller.get()].state.lifecycle.is_exiting() {
                         ReplyIntent::ReplyLater
@@ -324,6 +324,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
         fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {
         let mut table = ProcTable::new();

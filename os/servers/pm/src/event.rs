@@ -37,11 +37,13 @@ use crate::mproc::{EventCursor, ProcTable};
 ///   （todo.md §6 D-25 登记）。
 struct PmEventServices<'a, T: IpcTransport + ?Sized> {
     transport: &'a mut T,
+    /// 内核调用出口（sig_proc 终止路径的 sys_times 计账，D-14）。
+    kern: &'a mut dyn crate::exit::KernelGateway,
 }
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServices<'_, T> {
     fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
-        let _ = crate::signal::sig_proc(table, target, signo, false, ksig, self.transport);
+        let _ = crate::signal::sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
 }
 
@@ -269,7 +271,7 @@ impl EventRegistry {
             ProcEvent::Signal => {
                 // C: event.c:122-123 — restart_sigs(rmp)（13-signal-flow.md D5）：
                 // 清 EVENT_CALL 后重投挂起信号并按需恢复进程。
-                let mut svc = PmEventServices { transport };
+                let mut svc = PmEventServices { transport, kern };
                 crate::signal_flow::restart_sigs(table, target, &mut svc);
             }
         }
@@ -561,6 +563,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
     use super::*;
     use crate::mproc::{Lifecycle, ProcTable};

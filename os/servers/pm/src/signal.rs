@@ -51,9 +51,10 @@ pub fn do_kill(
     caller: UserSlot,
     pid: Pid,
     signo: i32,
+    kern: &mut dyn crate::exit::KernelGateway,
     transport: &mut dyn crate::ipc::IpcTransport,
 ) -> Result<usize, KillError> {
-    check_sig(table, caller, pid, signo, false, transport)
+    check_sig(table, caller, pid, signo, false, kern, transport)
 }
 
 /// Handles `PM_SRV_KILL` (`do_srv_kill`, `204-221`).
@@ -64,12 +65,13 @@ pub fn do_srv_kill(
     caller: UserSlot,
     pid: Pid,
     signo: i32,
+    kern: &mut dyn crate::exit::KernelGateway,
     transport: &mut dyn crate::ipc::IpcTransport,
 ) -> Result<usize, KillError> {
     if table.procs[caller.get()].endpoint() != Endpoint::RS {
         return Err(KillError::PermissionDenied);
     }
-    check_sig(table, caller, pid, signo, true, transport)
+    check_sig(table, caller, pid, signo, true, kern, transport)
 }
 
 /// Checks which processes to signal (`check_sig`, `568-646`).
@@ -83,6 +85,7 @@ pub fn check_sig(
     pid: Pid,
     signo: i32,
     ksig: bool,
+    kern: &mut dyn crate::exit::KernelGateway,
     transport: &mut dyn crate::ipc::IpcTransport,
 ) -> Result<usize, KillError> {
     if signo < 0 || signo >= _NSIG as i32 {
@@ -94,7 +97,7 @@ pub fn check_sig(
     // Broadcast SIGTERM: RS first (588-589)
     if pid == -1 && signo == SIGTERM
         && let Ok(rs_slot) = table.pm_isokendpt(Endpoint::RS) {
-            let _ = sig_proc(table, rs_slot, signo, true, ksig, transport);
+            let _ = sig_proc(table, rs_slot, signo, true, ksig, kern, transport);
         }
 
     let mut count = 0;
@@ -140,7 +143,7 @@ pub fn check_sig(
         if signo == 0 || proc.state.lifecycle.is_exiting() {
             continue;
         }
-        let _ = sig_proc(table, UserSlot::new(idx), signo, true, ksig, transport);
+        let _ = sig_proc(table, UserSlot::new(idx), signo, true, ksig, kern, transport);
         if pid > 0 {
             break;
         }
@@ -210,6 +213,7 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
     signo: i32,
     trace: bool,
     ksig: bool,
+    kern: &mut dyn crate::exit::KernelGateway,
     _transport: &mut T,
 ) -> Result<(), KillError> {
     let proc = &table.procs[target.get()];
@@ -262,7 +266,7 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             let _ = (target, signo);
             return Ok(());
         } else {
-            return sig_proc_exit(table, target, signo);
+            return sig_proc_exit(table, target, signo, kern);
         }
     }
     // User process: badignore / ignore / block / TRACE_STOPPED / caught / terminate
@@ -309,7 +313,7 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
     if sig_bit & crate::init::IGN_SIGSET != 0 && !badignore {
         return Ok(());
     }
-    sig_proc_exit(table, target, signo)
+    sig_proc_exit(table, target, signo, kern)
 }
 
 /// Terminates process via signal (`sig_proc_exit`, `546-563`).
@@ -317,6 +321,7 @@ fn sig_proc_exit(
     table: &mut ProcTable,
     target: UserSlot,
     signo: i32,
+    kern: &mut dyn crate::exit::KernelGateway,
 ) -> Result<(), KillError> {
     let is_core = crate::init::CORE_SIGSET & (1u64 << (signo - 1)) != 0;
     // In C: exit_proc(rmp, 0, dump_core) where dump_core = is_core
@@ -326,10 +331,7 @@ fn sig_proc_exit(
     // 命中，pre-E1 诚实 panic（C 失败语义同型）。
     let status = 0;
     let mut nop = crate::ipc::TestIpcTransport::default();
-    let mut kern = crate::exit::TrapKernelGateway::new(
-        minix_sys::syscall::DirectKernelCallTransport,
-    );
-    crate::exit::exit_proc(table, target, status as i8, is_core, &mut nop, &mut kern);
+    crate::exit::exit_proc(table, target, status as i8, is_core, &mut nop, kern);
     Ok(())
 }
 
@@ -367,6 +369,7 @@ pub fn process_ksig(
     endpoint: Endpoint,
     signo: i32,
     vctl: &mut dyn crate::timer::VTimerCtl,
+    kern: &mut dyn crate::exit::KernelGateway,
     transport: &mut dyn crate::ipc::IpcTransport,
 ) -> Result<(), KillError> {
     let slot = table
@@ -392,7 +395,7 @@ pub fn process_ksig(
         2 | 3 | 28 | 29 => 0, // INT, QUIT, WINCH, INFO → group broadcast
         _ => pid,
     };
-    check_sig(table, UserSlot::new(0), target_pid, signo, true, transport)?;
+    check_sig(table, UserSlot::new(0), target_pid, signo, true, kern, transport)?;
     // SIGSNDELAY handling (344-369) — simplified
     if signo == 42 && table.procs[slot].state.block.ipc_blocked.is_some() {
         // SIGSNDELAY == 42? Actually SIGSNDELAY is 41? Use placeholder 42
@@ -406,6 +409,21 @@ pub fn process_ksig(
 
 #[cfg(test)]
 mod tests {
+
+    /// signal.rs 测试用内核网关 mock（sys_kill/sys_clear/sys_abort 恒 OK；
+    /// proc_times 可脚本化计账值供 D-14 累加断言）。
+    struct TestKernel {
+        pub user: minix_types::Clock,
+        pub sys: minix_types::Clock,
+    }
+    impl crate::exit::KernelGateway for TestKernel {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+            Ok((self.user, self.sys))
+        }
+    }
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials};
     use minix_types::{Clock, Endpoint, UserSlot};
@@ -435,7 +453,8 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(1000, 100));
         let mut t = crate::ipc::TestIpcTransport::default();
-        let res = check_sig(&mut table, UserSlot::new(0), 42, 9, false, &mut t);
+        let mut kern_rec = TestKernel { user: 30, sys: 12 };
+        let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut kern_rec, &mut t);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 1);
     }
@@ -460,7 +479,8 @@ mod tests {
         let mut vt = RecVTimer { which: None, set: None };
         let mut t = crate::ipc::TestIpcTransport::default();
 
-        let res = process_ksig(&mut table, Endpoint::from_generation_slot(1, 5), 26, &mut vt, &mut t);
+        let mut kern_rec = TestKernel { user: 30, sys: 12 };
+        let res = process_ksig(&mut table, Endpoint::from_generation_slot(1, 5), 26, &mut vt, &mut kern_rec, &mut t);
         assert!(res.is_ok());
         assert_eq!(vt.which, Some(crate::timer::ItimerWhich::Virtual));
         assert_eq!(vt.set, Some(50));
@@ -475,7 +495,8 @@ mod tests {
         let mut vt = RecVTimer { which: None, set: None };
         let mut t = crate::ipc::TestIpcTransport::default();
 
-        let res = process_ksig(&mut table, Endpoint::from_generation_slot(1, 5), 12, &mut vt, &mut t);
+        let mut kern_rec = TestKernel { user: 30, sys: 12 };
+        let res = process_ksig(&mut table, Endpoint::from_generation_slot(1, 5), 12, &mut vt, &mut kern_rec, &mut t);
         assert!(res.is_ok());
         assert!(vt.which.is_none(), "SIGSYS must not restart a vtimer");
         assert!(vt.set.is_none());
@@ -515,7 +536,8 @@ mod tests {
         // SEGV|EMT|ABRT，不含 SIGKILL——旧近似列表把 9 计入 lethal 是与 C 的
         // 真实偏差（SIGKILL 对 PRIV_PROC 经 kill(2) 在 C 中合法）。改用真
         // lethal 的 SIGSEGV 验证 EPERM 保护。
-        let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut t); // SIGSEGV lethal, !ksig, PRIV_PROC → EPERM
+        let mut kern_rec = TestKernel { user: 30, sys: 12 };
+        let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut kern_rec, &mut t); // SIGSEGV lethal, !ksig, PRIV_PROC → EPERM
         assert_eq!(res.unwrap_err(), KillError::PermissionDenied);
     }
 
@@ -529,8 +551,9 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0)); // root
         table.procs[0].identity.procgrp = 100;
+        let mut kern = TestKernel { user: 0, sys: 0 };
         let mut t = crate::ipc::TestIpcTransport::default();
-        let res = check_sig(&mut table, UserSlot::new(0), 0, 15, false, &mut t); // pid 0 → procgrp 100
+        let res = check_sig(&mut table, UserSlot::new(0), 0, 15, false, &mut kern, &mut t); // pid 0 → procgrp 100
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 3); // two in group 100 + caller itself (kill(0) includes caller)
     }
@@ -540,7 +563,9 @@ mod tests {
         let mut table = ProcTable::new();
         let mut t = crate::ipc::TestIpcTransport::default();
         let mut novt = NopVTimer;
-        let res = process_ksig(&mut table, Endpoint::from_generation_slot(9, 9), 15, &mut novt, &mut t);
+        let mut kern_rec = TestKernel { user: 0, sys: 0 };
+        let res = process_ksig(&mut table, Endpoint::from_generation_slot(9, 9), 15, &mut novt, &mut kern_rec, &mut t);
+        let mut kern_rec = TestKernel { user: 30, sys: 12 };
         assert_eq!(res.unwrap_err(), KillError::InvalidEndpoint);
     }
 
@@ -550,7 +575,8 @@ mod tests {
         mk_proc(&mut table, 5, 42, 42, false);
         table.procs[5].resources.signals.ignored = 1u64 << (SIGCHLD - 1);
         let mut t = crate::ipc::TestIpcTransport::default();
-        let res = sig_proc(&mut table, UserSlot::new(5), SIGCHLD, false, false, &mut t);
+        let mut kr = TestKernel { user: 0, sys: 0 };
+        let res = sig_proc(&mut table, UserSlot::new(5), SIGCHLD, false, false, &mut kr, &mut t);
         assert!(res.is_ok());
         // ignored → no pending
         assert_eq!(table.procs[5].resources.signals.pending & (1u64 << (SIGCHLD - 1)), 0);

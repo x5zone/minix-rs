@@ -278,7 +278,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
 | D-13 | ~~`exit.rs:33`~~ | ~~exit 路径 `sys_kill` no-op~~ **✅ 已修复**（2026-09-06，Fix #23：`do_exit` PRIV_PROC 分支经 `KernelGateway`/`TrapKernelGateway` 真实发送 `sys_kill(endpoint, SIGKILL)`（C 忽略返回值语义保留）；minix-sys `sys_kill` wrapper 落地 = E6 sys_kill 切片闭环；真实通电仍挂 E1） | 11-signal-core.md | ~~edge E6（SYS_KILL wrapper）+ E1（trap）~~ wrapper 达成（通电挂 E1） |
-| D-14 | `exit.rs:101` | 退出进程自身 times 计账为 0——**依赖未解除**：C 经 `sys_times(proc_nr_e,…)`（`forkexit.c:306-310`）读内核态的进程 CPU 时间，需要 SYS_TIMES wrapper（对端已实现）+ trap 层；edge E6 已登记 | 10-pm-wait.md | edge E6（SYS_TIMES wrapper）+ E1（trap） |
+| D-14 | ~~`exit.rs:101`~~ | ~~退出进程自身 times 计账为 0~~ **✅ 已修复**（2026-09-07，Fix #26：`KernelGateway::proc_times`（minix-sys `sys_times` wrapper，SYS_TIMES=25）→ exit_proc step 4 累加进 child 桶；失败 panic 对齐 `forkexit.c:308-309`） | 10-pm-wait.md | ~~edge E6（SYS_TIMES wrapper）~~ wrapper 达成（真实通电挂 E1） |
 | D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-16 | `exit.rs:142` | core dump 路径名指针为 0——**依赖未解除的显式 DEFERRED**：C 传 `mp_name` 指针（m7p1，VFS 异步 safecopy PM 内存，`forkexit.c:356`），Rust (a) 无法对表内数据形成跨异步稳定指针、(b) `VfsCall::DumpCore.path` 为 i32 容不下 64 位指针——需与 05-stage-vfs 协同重设计契约（按值 [u8;16] 或 minix-types 增 path+len 成员） | 09-pm-exit.md | 契约决策 + minix-types wire 成员（edge E7） |
 | D-17 | `exit.rs:192` | `sched_stop` 假装 Ok——**依赖未解除**：C `exit_restart` 的 `sched_stop` 走 SCHED 服务的 SCHEDULING_STOP 消息（`schedule.c` 客户端，A-8），SCHED 服务器（16-stage）尚未存在，无对端可通话 | 16-scheduling.md | A-8（SCHED 客户端 + 服务器落地） |
@@ -793,3 +793,23 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`05-vfs-interaction.md` D4 端口落地状态全面刷新（06/09/13 已接线、sys_abort 落地、余 sched_start_user/sys_exec 占位）；`edge_todo.md` E6 进度注；本文件 §6 D-09 行。
 
 **未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、端口语义均已在 stage 内闭环。
+
+### ✅ Fix #26: D-14 — exit 时 sys_times 计账接真实内核通道（2026-09-07）
+
+**File(s)**：
+- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_times` wrapper，请求 `m_lsys_krn_sys_times.endpt` / 回复解码 `m_krn_lsys_sys_times` 四值；`CannedKernelCallTransport` 增整条载荷脚本 `reply_message`；+2 wire 测试）
+- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `proc_times`；`exit_proc` step 4 累加 user/system ticks 进死亡进程的 child 桶，失败 panic 对齐 `forkexit.c:308-309`；+1 累加断言测试）
+- `os/servers/pm/src/signal.rs`（信号终止链 `do_kill`/`do_srv_kill`/`check_sig`/`sig_proc`/`sig_proc_exit`/`process_ksig` 沿调用链穿 `kern`；测试 mock 换 `TestKernel` 脚本化计账）
+- `os/servers/pm/src/{event,ipc/vfs}.rs`（PmEventServices/ExecServices 增 kern 字段，适配器传递）
+- `tests/run_once_integration.rs`（注入零值 mock 网关）
+
+**Before/After**：设计选型——(a) minix-sys wrapper 返回完整 `MessKrnLsysSysTimes`（已选，C libsys 同型返回四值，后续 14-itimer 的 ClockSource 可复用 real/boot ticks）；(b) wrapper 只返回 (user, sys) 二元（丢信息，否决）；(c) PM 直调 perform_kernel_call 绕过 minix-sys（违反 E6 分层，否决）。**架构要点**：kern 沿信号终止链（do_kill/check_sig/sig_proc/sig_proc_exit）与事件链（PmEventServices/RestartServices）下穿——C 中这些函数直接调 libsys，Rust 以显式参数传递同一能力（A-3）。
+
+**Verified**：
+- `cargo test -p minix-pm`：343 → **345 lib passed**（+1 累加断言：脚本 (30,12) → 僵尸桶 utime=30/stime=12）+ **7 integration passed**（注入零值 mock 网关）
+- `cargo test -p minix-sys`：**122 passed**（+2 sys_times wire 测试）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
+
+**Docs**：`09-pm-exit.md` 计账落地段；`edge_todo.md` E6 进度注；本文件 §6 D-14 行。
+
+**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wrapper、网关方法、累加语义、测试均已闭环；D-21（rusage 的 sys_datacopy 投递）另需 SAFECOPY wrapper，保持登记。

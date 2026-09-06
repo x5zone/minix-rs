@@ -67,6 +67,8 @@ Rust 改写不是照抄 `mp_flags &= (IN_USE|VFS_CALL|...)`，而是在吸收工
 
 **内核出口落地（2026-09-06，todo.md Fix #24 / D-18）**：`sys_clear` 的两处调用点已接真实内核通道——`PmServer` 持有 `Box<dyn KernelGateway>`（`exit.rs` 的 trait，含 `sys_kill`/`sys_clear` 两方法），`run_once` 经 `self.kern.as_mut()` 下穿至 `exit_proc`（step 9，PRIV_PROC 直毁）与 `exit_restart`（step 4，用户进程回收），失败 panic 的 C 语义逐字保留（`forkexit.c:367-368/450-451`）。minix-sys 侧 `sys_clear` wrapper（`syscall.rs`，m1i1 载荷）为 edge E6 切片；pre-E1 诚实回 `-EIO` → panic 与 C 的失败语义同型。生产网关默认装配于 `PmServer::with_transport`，测试经 `with_kernel_gateway` 注入脚本化 mock（`tests/run_once_integration.rs` 的 exit 场景即经此验证）。
 
+**计账落地（2026-09-07，todo.md Fix #26 / D-14）**：step 4 的 `sys_times` 同样接真实内核通道——`KernelGateway::proc_times(endpoint)`（minix-sys `sys_times` wrapper，SYS_TIMES = 25，回复载荷 `MessKrnLsysSysTimes`），取回的 user/system ticks 累加进死亡进程自身的 `child_utime/child_stime` 桶（`forkexit.c:311-312`），父进程 wait 时经 `tell_parent` 并入（`forkexit.c:722-723`）。失败 panic 对齐 C（`forkexit.c:308-309`）。pre-E1 行为：集成测试注入零值/脚本化网关，生产 Trap 网关诚实回 `-EIO` → panic。
+
 ### 1.7 小结
 
 1. **为什么两阶段**——`sys_stop`→`vm_willexit`→`VFS_PM_EXIT`→`EXITING`→`publish_event`→`exit_restart` 的 `sched_stop`→`sys_clear`→`vm_exit`，`VFS_PM_EXIT` 为分界，`VFS` 需先取消驱动拷贝再 `proc` 消失。

@@ -306,6 +306,7 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
 /// 方法参数传入（`exec_restart` 自身持表），避免两个 `&mut ProcTable` 共存。
 struct ExecServices<'a, T: IpcTransport> {
     transport: &'a mut T,
+    kern: &'a mut dyn crate::exit::KernelGateway,
 }
 
 impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
@@ -341,7 +342,7 @@ impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
 
 impl<T: IpcTransport> crate::exec::TracerSig for ExecServices<'_, T> {
     fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32) {
-        let _ = crate::signal::check_sig(table, caller, pid, sig, false, self.transport);
+        let _ = crate::signal::check_sig(table, caller, pid, sig, false, self.kern, self.transport);
     }
 }
 
@@ -535,6 +536,7 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         // 信号/sys_exec）在 crate::exec::exec_restart 内。
         let mut svc = ExecServices {
             transport: self.transport,
+            kern: self.kern,
         };
         crate::exec::exec_restart(
             self.table,
@@ -989,6 +991,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
 
     #[test]
@@ -1034,6 +1037,7 @@ mod tests {
             fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
             fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
             fn sys_abort(&mut self, how: i32) -> Result<(), i32> { self.last_how = Some(how); Ok(()) }
+            fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((30, 12)) }
         }
 
         let mut table = ProcTable::new();

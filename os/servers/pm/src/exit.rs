@@ -37,6 +37,11 @@ pub trait KernelGateway {
     /// `_kernel_call(SYS_ABORT, &m)`，载荷 m1i1 = `how`（RB_* 位组）。
     /// 成功时机器直接停机；失败返回负 errno（C 调用方忽略）。
     fn sys_abort(&mut self, how: i32) -> Result<(), i32>;
+
+    /// C: `sys_times(proc_ep, &user, &sys, NULL, NULL)`（libsys
+    /// `sys_times.c:8-24`）——读取目标进程的 user/system CPU ticks。
+    /// 失败返回负 errno。
+    fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -76,6 +81,11 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
         } else {
             Ok(())
         }
+    }
+
+    fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+        let times = minix_sys::syscall::sys_times(&self.transport, ep.0)?;
+        Ok((times.user_time as minix_types::Clock, times.system_time as minix_types::Clock))
     }
 }
 
@@ -159,14 +169,16 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
         }
     }
 
-    // ---- 4. sys_times accounting (306-309) ----
-    // POSIX: accumulate at parent only after wait, but child saves its own times here.
-    // [DEFERRED: D-14] `sys_times` 计账——内核 uptime 面挂 edge E6
-    {
-        let _proc = &mut table.procs[proc_nr];
-        // `sys_times` would fetch user/sys ticks; here we just keep existing child_utime/stime
-        // [DEFERRED: D-14] 自身 times 增量为 0（依赖同上）
-        let _ = proc_ep;
+    // ---- 4. sys_times accounting (305-310) ----
+    // C: 取死亡进程自身的 user/system CPU ticks，累加进它的 child 桶
+    //（`rmp->mp_child_utime += user_time`），父进程 wait 时再并入
+    //（tell_parent，forkexit.c:722-723）。失败 panic——计账缺失不可恢复。
+    match kern.proc_times(proc_ep) {
+        Ok((user, sys)) => {
+            table.procs[proc_nr].resources.child_utime += user;
+            table.procs[proc_nr].resources.child_stime += sys;
+        }
+        Err(r) => panic!("exit_proc: sys_times failed: {}", r),
     }
 
     // ---- 5. PROC_STOPPED forced (326-330) ----
@@ -626,6 +638,9 @@ mod tests {
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> {
             Ok(())
         }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+            Ok((30, 12)) // 脚本化计账值（D-14 验证累加）
+        }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> {
             Ok(())
         }
@@ -665,6 +680,24 @@ mod tests {
         assert!(kern.killed.is_none(), "user exit must not go through sys_kill");
         // exit_proc 走完 zombify 后：父未 wait → Zombie（非 ToldParent）。
         assert!(matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
+    }
+
+    #[test]
+    fn test_exit_proc_accumulates_sys_times() {
+        // D-14：exit_proc 取死亡进程自身 CPU ticks 累加进它的 child 桶
+        //（forkexit.c:305-310），父进程 wait 时再并入（tell_parent 722-723）。
+        // KillRecorder 的 proc_times 脚本值 = (30, 12)。
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 5, 42);
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        // KillRecorder 的 proc_times 恒 (30, 12)（脚本化计账值）。
+
+        exit_proc(&mut table, UserSlot::new(5), 0, false, &mut transport, &mut kern);
+
+        // 父进程未 wait → Zombie 持桶；wait 时桶值并入父。
+        assert_eq!(table.procs[5].resources.child_utime, 30);
+        assert_eq!(table.procs[5].resources.child_stime, 12);
     }
 
     #[test]

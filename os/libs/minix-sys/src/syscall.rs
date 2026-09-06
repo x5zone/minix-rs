@@ -18,7 +18,7 @@
 //! unit tests drive them with a scripted transport and never need a kernel.
 
 use crate::ipc::{IpcTransport, TrapStatus};
-use minix_types::{Endpoint, Errno, Message};
+use minix_types::{Endpoint, Errno, Message, MessKrnLsysSysTimes};
 
 /// Maximum path name length that still fits inside a message.
 ///
@@ -160,6 +160,8 @@ pub struct CannedKernelCallTransport {
     pub calls: core::cell::Cell<usize>,
     /// Outgoing messages, recorded in call order (wire-shape assertions).
     pub sent: core::cell::RefCell<alloc::vec::Vec<Message>>,
+    /// Scripted full-message replies (payload + m_type), popped in order.
+    pub payloads: core::cell::RefCell<alloc::collections::VecDeque<Message>>,
 }
 
 impl CannedKernelCallTransport {
@@ -169,12 +171,20 @@ impl CannedKernelCallTransport {
             replies: alloc::vec::Vec::new(),
             calls: core::cell::Cell::new(0),
             sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+            payloads: core::cell::RefCell::new(alloc::collections::VecDeque::new()),
         }
     }
 
     /// Appends a raw reply message type to the script.
     pub fn reply(&mut self, reply_message_type: i32) {
         self.replies.push(reply_message_type);
+    }
+
+    /// Appends a full reply message to the script (payload + m_type 整体
+    /// 回写，供 SYS_TIMES 这类"回复即载荷"的内核调用断言解码)。
+    pub fn reply_message(&mut self, message: Message) {
+        self.replies.push(message.m_type);
+        self.payloads.borrow_mut().push_back(message);
     }
 }
 
@@ -183,9 +193,12 @@ impl KernelCallTransport for CannedKernelCallTransport {
         let index = self.calls.get();
         self.calls.set(index + 1);
         self.sent.borrow_mut().push(*message);
-        let reply = self.replies.get(index).cloned().unwrap_or(0);
-        message.m_type = reply;
-        reply
+        // 有整条载荷脚本则整体回写；否则仅回写 m_type。
+        match self.payloads.borrow_mut().pop_front() {
+            Some(full) => *message = full,
+            None => message.m_type = self.replies.get(index).cloned().unwrap_or(0),
+        }
+        message.m_type
     }
 }
 // ── SYS_* kernel-call wrappers（edge_todo.md E6：每类一个薄包装）──
@@ -229,6 +242,10 @@ pub const SYS_CLEAR_CALL: i32 = 2;
 /// C `callnr.h` `SYS_ABORT`）。
 pub const SYS_ABORT_CALL: i32 = 27;
 
+/// C: SYS_TIMES 是内核调用 25（`kernel/src/syscall_clock.rs:90`
+/// `dispatch_times`；C `callnr.h` `SYS_TIMES`）。
+pub const SYS_TIMES_CALL: i32 = 25;
+
 /// 请求内核中止系统（C: libsys `sys_abort`，`sys_abort.c:8-13`）。
 ///
 /// `_kernel_call(SYS_ABORT, &m)`：载荷 m1i1 = `how`（`sys/reboot.h` 的
@@ -247,6 +264,31 @@ pub fn sys_abort(
         m1.m1i1 = how;
     }
     perform_kernel_call(transport, SYS_ABORT_CALL, &mut msg, |_| {})
+}
+
+/// 读取进程 CPU 计时（C: libsys `sys_times`，`sys_times.c:8-24`）。
+///
+/// `_kernel_call(SYS_TIMES, &m)`：请求载荷 m_lsys_krn_sys_times.endpt，
+/// 回复载荷 m_krn_lsys_sys_times（user/system/real/boot 四值 + boottime）。
+/// `endpt == SELF`（-1）由内核替换为调用者自身（do_times.c:33-34）。
+pub fn sys_times(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+) -> Result<MessKrnLsysSysTimes, i32> {
+    let mut msg = Message::default();
+    msg.m_type = SYS_TIMES_CALL;
+    {
+        // SAFETY: m_lsys_krn_sys_times 是 SYS_TIMES 的文档化载荷布局
+        //（kernel/src/syscall_clock.rs dispatch_times 读 req.endpt）。
+        let req = unsafe { &mut msg.m_u.m_lsys_krn_sys_times };
+        req.endpt = endpt;
+    }
+    let r = perform_kernel_call(transport, SYS_TIMES_CALL, &mut msg, |_| {});
+    if r < 0 {
+        return Err(r);
+    }
+    // SAFETY: 内核以 m_krn_lsys_sys_times 覆写回复载荷（dispatch_times 尾部）。
+    Ok(unsafe { msg.m_u.m_krn_lsys_sys_times })
 }
 
 
@@ -346,6 +388,39 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, SYS_CLEAR_CALL);
         assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 11);
+    }
+
+    #[test]
+    fn test_sys_times_encodes_endpt_and_decodes_reply() {
+        // C: libsys sys_times.c:8-24 — 请求 m_lsys_krn_sys_times.endpt；
+        // 回复 m_krn_lsys_sys_times（user/system 等四值）。
+        use minix_types::MessKrnLsysSysTimes;
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        {
+            let krn = unsafe { &mut reply.m_u.m_krn_lsys_sys_times };
+            krn.user_time = 30;
+            krn.system_time = 12;
+        }
+        canned.reply_message(reply);
+
+        let r = sys_times(&canned, 7);
+
+        let times = r.expect("OK reply decodes");
+        assert_eq!(times.user_time, 30);
+        assert_eq!(times.system_time, 12);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_TIMES_CALL);
+        assert_eq!(unsafe { sent[0].m_u.m_lsys_krn_sys_times }.endpt, 7);
+    }
+
+    #[test]
+    fn test_sys_times_negative_errno_is_err() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-3); // ESRCH
+
+        assert_eq!(sys_times(&canned, 7).unwrap_err(), -3);
     }
 
     #[test]

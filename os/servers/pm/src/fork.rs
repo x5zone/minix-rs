@@ -4,6 +4,7 @@
 
 use minix_types::{Endpoint, UserSlot, PmError, VfsCall, OK};
 use crate::mproc::{ProcTable, Lifecycle, Privilege, SrvForkParams};
+use crate::exit::KernelGateway;
 use crate::ipc::{vm_fork, IpcTransport, tell_vfs};
 
 /// Forks a process.
@@ -23,6 +24,7 @@ pub fn do_fork<T: IpcTransport>(
     table: &mut ProcTable,
     parent_endpoint: Endpoint,
     transport: &mut T,
+    kern: &mut dyn KernelGateway,
 ) -> Result<i32, ForkCoordError> {
     // 1. Find parent process (forkexit.c:59 rmp=mp)
     let parent_slot = find_parent_slot(table, parent_endpoint)?;
@@ -95,6 +97,7 @@ pub fn do_fork<T: IpcTransport>(
             crate::signal::SIGSTOP,
             true,
             false,
+            kern,
             transport,
         );
     }
@@ -116,6 +119,7 @@ pub fn do_srv_fork<T: IpcTransport>(
     parent_endpoint: Endpoint,
     params: SrvForkParams,
     transport: &mut T,
+    kern: &mut dyn KernelGateway,
 ) -> Result<i32, ForkCoordError> {
     // 1. RS gate (forkexit.c:159-160)
     if parent_endpoint != Endpoint::RS {
@@ -188,6 +192,7 @@ pub fn do_srv_fork<T: IpcTransport>(
             crate::signal::SIGSTOP,
             true,
             false,
+            kern,
             transport,
         );
     }
@@ -387,6 +392,25 @@ impl From<ForkCoordError> for PmError {
 
 #[cfg(test)]
 mod tests {
+
+    /// fork.rs 测试用内核网关 mock（sys_times 脚本化计账值）。
+    struct TestKernelTimes {
+        pub user: minix_types::Clock,
+        pub sys: minix_types::Clock,
+    }
+    impl Default for TestKernelTimes {
+        fn default() -> Self {
+            Self { user: 30, sys: 12 }
+        }
+    }
+    impl crate::exit::KernelGateway for TestKernelTimes {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+            Ok((self.user, self.sys))
+        }
+    }
     use super::*;
 
     fn create_test_table_with_parent() -> ProcTable {
@@ -436,6 +460,7 @@ mod tests {
     fn test_do_fork_success() {
         let mut table = create_test_table_with_parent();
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         // 脚本化 VM_FORK 应答：空表 + 游标 0 → 首个空闲槽为 1；
         // 子 endpoint 代际 = 父(1) + 1（VM sys_fork 的代际递增契约）。
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
@@ -444,6 +469,7 @@ mod tests {
             &mut table,
             Endpoint::from_generation_slot(1, 0),
             &mut transport,
+            &mut kern,
         );
         assert!(result.is_ok());
 
@@ -458,11 +484,13 @@ mod tests {
     fn test_do_fork_parent_not_found() {
         let mut table = ProcTable::new();
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
 
         let result = do_fork(
             &mut table,
             Endpoint::from_generation_slot(1, 0),
             &mut transport,
+            &mut kern,
         );
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), ForkCoordError::InvalidEndpoint);
@@ -476,12 +504,14 @@ mod tests {
         table.procs[5].identity.id.pid = 100;
         table.procs[5].state.lifecycle = Lifecycle::Running;
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         let params = crate::mproc::SrvForkParams { uid: 0, gid: 0 };
         let result = do_srv_fork(
             &mut table,
             Endpoint::from_generation_slot(1, 5),
             params,
             &mut transport,
+            &mut kern,
         );
         assert_eq!(result.unwrap_err(), ForkCoordError::NotPermitted);
     }
@@ -497,9 +527,10 @@ mod tests {
         table.procs[2].resources.scheduler = Endpoint::NONE;
 
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 1000, gid: 100 };
-        let result = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport);
+        let result = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport, &mut kern);
         assert!(result.is_ok());
         let child_pid = result.unwrap();
         assert!(child_pid > 0);
@@ -523,9 +554,10 @@ mod tests {
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 42, gid: 43 };
-        let _ = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport).unwrap();
+        let _ = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport, &mut kern).unwrap();
         // VFS call should carry real uid/gid, not -1
         let vfs_msg = transport
             .sent()
@@ -567,9 +599,10 @@ mod tests {
         let mut table = ProcTable::new();
         seed_traced_parent(&mut table, 3, 7, true);
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
 
-        let child_pid = do_fork(&mut table, Endpoint::from_generation_slot(1, 3), &mut transport)
+        let child_pid = do_fork(&mut table, Endpoint::from_generation_slot(1, 3), &mut transport, &mut kern)
             .expect("fork with TO_TRACEFORK should succeed");
         let child_slot = table.find_proc(child_pid).expect("child not found").get();
 
@@ -594,9 +627,10 @@ mod tests {
         let mut table = ProcTable::new();
         seed_traced_parent(&mut table, 3, 7, false);
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
 
-        let child_pid = do_fork(&mut table, Endpoint::from_generation_slot(1, 3), &mut transport)
+        let child_pid = do_fork(&mut table, Endpoint::from_generation_slot(1, 3), &mut transport, &mut kern)
             .expect("fork without TO_TRACEFORK should succeed");
         let child_slot = table.find_proc(child_pid).expect("child not found").get();
 
@@ -631,10 +665,11 @@ mod tests {
         };
 
         let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 1000, gid: 100 };
 
-        let child_pid = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport)
+        let child_pid = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport, &mut kern)
             .expect("srv_fork with TO_TRACEFORK should succeed");
         let child_slot = table.find_proc(child_pid).expect("child not found").get();
 

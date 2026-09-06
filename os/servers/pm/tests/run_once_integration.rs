@@ -21,9 +21,29 @@ use minix_pm::ipc::{IpcStatus, TestIpcTransport};
 use minix_pm::mproc::{Lifecycle, WaitTarget};
 use minix_types::{Endpoint, Message};
 
+/// 集成测试用内核网关 mock：sys_times 返回脚本化计账值，
+/// sys_kill/sys_clear/sys_abort 恒 OK（真实通电挂 edge E1/E6）。
+struct MockKernelGateway {
+    pub user: minix_types::Clock,
+    pub sys: minix_types::Clock,
+}
+
+impl minix_pm::exit::KernelGateway for MockKernelGateway {
+    fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+    fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+    fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+        Ok((self.user, self.sys))
+    }
+}
+
 /// 构造一台带空参数表的服务器（`placeholder()` 不播种任何进程）。
 fn server() -> minix_pm::init::PmServer<TestIpcTransport> {
-    minix_pm::init::PmServer::with_transport(BootParams::placeholder(), TestIpcTransport::new())
+    minix_pm::init::PmServer::with_kernel_gateway(
+        BootParams::placeholder(),
+        TestIpcTransport::new(),
+        Box::new(MockKernelGateway { user: 0, sys: 0 }),
+    )
 }
 
 /// 在 `slot` 播种一个 Running 进程（endpoint 带代际，PID 唯一）。

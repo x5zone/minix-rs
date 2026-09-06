@@ -159,7 +159,7 @@
 
 **解锁**：04-stage-pm/todo.md D-02 / D-09 / D-13 / D-18 / D-21 / D-24 的真实通电；E5(a) PM↔VM fork 联调的信号与回收链前置。
 
-> **进度（2026-09-06）**：`sys_kill` wrapper 已落地（`syscall.rs` 的 `sys_kill` + `SYS_KILL_CALL` 常量，wire 断言测试 ×2；`CannedKernelCallTransport` 增 `sent` 逐调用消息记录供 wire 形状断言）——消费侧 04-stage-pm/todo.md D-13/Fix #23 同轮闭环；余下进度：SYS_CLEAR（轮 24）、SYS_ABORT（轮 25）已落地；待做 SYS_TIMES/SYS_GETMONPARAMS/SYS_GETIMAGE wrapper 照此模式推进。
+> **进度（2026-09-06）**：`sys_kill` wrapper 已落地（`syscall.rs` 的 `sys_kill` + `SYS_KILL_CALL` 常量，wire 断言测试 ×2；`CannedKernelCallTransport` 增 `sent` 逐调用消息记录供 wire 形状断言）——消费侧 04-stage-pm/todo.md D-13/Fix #23 同轮闭环；余下进度：SYS_CLEAR（轮 24）、SYS_ABORT（轮 25）、SYS_TIMES（轮 26，含 `CannedKernelCallTransport.reply_message` 整条载荷脚本）已落地；待做 SYS_GETMONPARAMS/SYS_GETIMAGE wrapper（kernel 对端亦缺，需双侧新建）。
 
 ---
 
