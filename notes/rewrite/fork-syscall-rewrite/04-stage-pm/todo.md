@@ -283,7 +283,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-16 | `exit.rs:142` | core dump 路径名指针为 0 | 09-pm-exit.md | core dump 语义规划 |
 | D-17 | `exit.rs:192` | `sched_stop` 假装 Ok | 16-scheduling.md | A-8 |
 | D-18 | `exit.rs:215` | `sys_clear`（内核侧进程回收）no-op | 01-stage-kernel | 内核 sys_clear |
-| D-19 | `exit.rs:219` | `vm_exit`（页表回收）no-op | 02-stage-vm/22 | VM 协同面 |
+| D-19 | ~~`exit.rs:219`~~ | ~~`vm_exit`（页表回收）no-op~~ **✅ 已修复**（2026-09-06，Fix #12：真实 `sendrec(VM, VM_EXIT)` + 失败 panic 对齐 `forkexit.c:455-457`） | 02-stage-vm/22 | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
 | D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功（C 侧 `utility.c:92` 本身只填 utime/stime） | 10-pm-wait.md | sys_datacopy + rusage 范围决策 |
 | D-22 | `signal.rs:160` | 内核调度器判定返回硬编码 false（"stub for 11, real in 16"） | 16-scheduling.md | A-8 |
@@ -571,3 +571,20 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`09-pm-exit.md` §3 占位行刷新；本文件 §6 D-15 行。
 
 **未做（DEFERRED 论证）**：VM 侧真实处理（对端记账语义）与硬件往返挂 `edge_todo.md` E5(a)/E1——PM 侧 wire 与失败语义已完备。
+
+### ✅ Fix #12: D-19 — `vm_exit` 真实化（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/dispatcher.rs`（新增 `vm_exit` 自由函数；+2 单测）
+- `os/servers/pm/src/exit.rs`（`exit_restart` 步骤 5 接真实调用；参数 `_transport` 更名 `transport`——它终于被使用了；失败 panic 与 C 同文案）
+- `os/servers/pm/src/event.rs`（3 个测试的 wire 断言按新现实刷新：终止分派现在包含一条 VM_EXIT 发送）
+
+**Before/After**：C 语义（`forkexit.c:455-457`）：`vm_exit` 失败即 panic——页表随进程终结，VM 不回收即永久泄漏。Rust wire：`_taskcall(VM, VM_EXIT)`，载荷 `VME_ENDPOINT`（m1i1，`com.h:631`）。连带修正：`_transport` 参数更名——"未使用参数"的过渡标记随真实接线自然消失。
+
+**Verified**：
+- `cargo test -p minix-pm`：336 → **338 lib passed**（+2 vm_exit 单测）+ 6 integration（3 个 event 测试断言从 is_empty 更新为含 VM_EXIT 的精确计数）
+- `grep -n "stubbed" os/servers/pm/src/exit.rs`：仅剩 D-13/D-14/D-16/D-17/D-18 家族（各有登记）
+
+**Docs**：`09-pm-exit.md` 占位行刷新；本文件 §6 D-19 行。
+
+**未做（DEFERRED 论证）**：VM 侧真实页表回收与硬件往返挂 `edge_todo.md` E5(a)/E1。

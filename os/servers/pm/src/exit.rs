@@ -188,7 +188,7 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 /// `exit_restart` branch (06). In C, `handle_vfs_reply`'s EXIT branch does
 /// `publish_event` then `return` (no tail `restart_sigs`), and `resume_event`'s
 /// `Exit` termination calls `exit_restart`.
-pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable, slot: UserSlot, _transport: &mut T) {
+pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable, slot: UserSlot, transport: &mut T) {
     let scheduler = table.procs[slot.get()].resources.scheduler;
     // 1. sched_stop (425, 16-scheduling.md) — stubbed as Ok, failure only printf
     let _ = scheduler;
@@ -217,8 +217,15 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable,
         let _ = slot;
     }
 
-    // 5. vm_exit (455-457) — VM free page tables; stubbed
-    let _ = slot;
+    // 5. vm_exit (455-457) — VM free page tables
+    // C: `if((r=vm_exit(rmp->mp_endpoint)) != OK) panic("exit_restart:
+    // vm_exit failed: %d", r);`——页表随进程终结，VM 不回收即永久泄漏。
+    {
+        let ep = table.procs[slot.get()].endpoint();
+        if let Err(r) = crate::ipc::vm_exit(transport, ep) {
+            panic!("exit_restart: vm_exit failed: {}", r);
+        }
+    }
 
     // 6. TRACE_EXIT → reply(tracer, OK) (459-464, 18-trace.md)
     {

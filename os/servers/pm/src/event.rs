@@ -698,9 +698,12 @@ mod tests {
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
 
         reg.publish_event(tgt, &mut table, &mut transport);
-        // No subscriber → immediately cleared
+        // No subscriber → immediately cleared + 终止分派（exit_restart）
         assert!(!table.procs[5].state.block.is_event_blocked());
-        assert!(transport.sent().is_empty());
+        // D-19：exit_restart 现在真实发送 VM_EXIT（无订阅者通知，故仅此一条）
+        assert_eq!(transport.sent().len(), 1);
+        assert_eq!(transport.sent()[0].0, Endpoint::VM);
+        assert_eq!(transport.sent()[0].1.m_type, minix_types::VM_EXIT as i32);
     }
 
     #[test]
@@ -738,9 +741,11 @@ mod tests {
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
 
         reg.publish_event(tgt, &mut table, &mut transport);
-        // No matching subscriber → immediately cleared
+        // No matching subscriber → immediately cleared + 终止分派（exit_restart）
         assert!(!table.procs[5].state.block.is_event_blocked());
-        assert!(transport.sent().is_empty());
+        // D-19：唯一的 wire 发送是 exit_restart 的 VM_EXIT
+        assert_eq!(transport.sent().len(), 1);
+        assert_eq!(transport.sent()[0].0, Endpoint::VM);
     }
 
     #[test]
@@ -794,8 +799,8 @@ mod tests {
         let intent2 = reg.do_proc_event_reply(&reply2, caller2, &mut table, &mut transport);
         assert_eq!(intent2, ReplyIntent::ReplyLater);
         assert!(!table.procs[5].state.block.is_event_blocked());
-        // still 2 sends total
-        assert_eq!(transport.sent().len(), 2);
+        // 两条 PROC_EVENT 通知 + 终止分派的 VM_EXIT（D-19）
+        assert_eq!(transport.sent().len(), 3);
     }
 
     #[test]
