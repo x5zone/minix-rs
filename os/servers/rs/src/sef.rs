@@ -145,7 +145,11 @@ mod tests {
         );
         assert_eq!(s.init_lu(SefInitType::Lu, &info), Err(Errno::ENOSYS));
         let m = Message::default();
-        assert_eq!(s.init_response(&m), Err(Errno::ENOSYS));
+        // init_response is the LIVE sef wrapper (12 decode landed): the
+        // underlying do_init_ready fails closed without state (ENOSYS) and
+        // the wrapper normalizes it to the C `int` shape — R3 keeps
+        // lu_response (16-gated) on the raw Err form.
+        assert_eq!(s.init_response(&m), Ok(Errno::ENOSYS.to_i32()));
         assert_eq!(s.lu_response(&m), Err(Errno::ENOSYS));
         assert_eq!(s.signal_manager(Endpoint::RS, 1), Err(Errno::ENOSYS));
         // E-6: the fresh boot through the fail-closed kernel face fails with

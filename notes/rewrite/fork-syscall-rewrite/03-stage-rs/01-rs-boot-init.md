@@ -1009,7 +1009,7 @@ impl RsServer {
 
 ### 5.4 测试总数
 
-`cargo test -p minix-rs --lib` 实测 **278 passed / 0 failed**（2026-09-07，E-10 修复轮）。全部测试可 grep 验证：`rg -c "#[test]"` 全 crate 合计 278。01 范围四模块共 36 项：boot.rs 24、table.rs 3、sef.rs 1、dispatch.rs 8。
+`cargo test -p minix-rs --lib` 实测 **293 passed / 0 failed**（2026-09-07，12 号接线轮）。全部测试可 grep 验证：`rg -c "#[test]"` 全 crate 合计 293。01 范围四模块共 39 项：boot.rs 27、table.rs 3、sef.rs 1、dispatch.rs 8。
 
 ## 6. 过渡
 

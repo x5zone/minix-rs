@@ -234,6 +234,12 @@ pub enum ReadyOutcome {
 
 ---
 
+> **接线落地（2026-09-07，Fix #70）**：union 解码以 `Message::rs_init_result()` 类型化
+> 访问器落位（minix-types，m_type 标签守卫——union 字段写入是安全位存储，读取收敛在
+> 库内）；`RsServer::do_init_ready` 为 live 处理器（request.c:462-529 全分支，恒
+> EDONTREPLY），`init_response` 为其 SEF 归一包装（EDONTREPLY→OK，R3）；
+> `catch_boot_init_ready` 实装（阻塞接收 + 三个 C panic 原文 + VM 免回复），step2
+> SYNCH_BOOT 与 step3 转真。`lu_response`（do_upd_ready shell）仍待 16 号链上下文。
 ## 5. 测试要点
 
 `ready.rs` 内 16 项测试（`cargo test -p minix-rs --lib ready` 过滤含 `dispatch::test_classify_ready`，共 17 通过）：

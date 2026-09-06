@@ -1989,7 +1989,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | EDGE（见 §18.10） |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ✅ | 已修（Fix #68，2026-09-07，derive 删除） |
-| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18/19/20/21 已补（Fix #65/#69）；22/23 gated（见 §18.10 E-10） |
+| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18-21/23 已补（Fix #65/#69/#70）；22 gated（见 §18.10 E-10） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ✅ | 形态 a 已采纳并落地（Fix #51/#52/#55/#56） |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
 | A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ✅ | 已修（Fix #63，2026-09-06） |
@@ -2709,6 +2709,34 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   ——最后一处由 CLOCK 测试当场证伪并回改）；clippy 触碰文件零告警；fmt 干净；
   T7 PASS（notify 缝带 19 契约）。文档同步：06 §5 接线表、01 §3.5、07 消费注记。
 
+### ✅ Fix #70 — 12 号 init-ready 接线（union 解码落位 + do_init_ready 处理器 + catch_boot_init_ready 实装，R34.23 闭合）
+- **File**：`os/libs/minix-types/src/ipc/message.rs`（`Message::rs_init_result()` 类型化
+  安全访问器 + 测试）、`boot.rs`（`catch_boot_init_ready` 实装：step2 SYNCH_BOOT 分支
+  与 step3 循环 + 3 测试）、`lib.rs`（`do_init_ready` 处理器 + `init_response` 活包装
+  + 4 测试）、`sef.rs`（测试期望更新）；文档 12
+- **Before**：R25/Fix #59 判定"union 臂读取需 unsafe → 解码归 19 的安全 receive 包装"，
+  init path 整体停在 fail-closed。
+- **判定修正（decode 落位）**：Rust 语义里 union 字段**写入是安全的**（位存储），只有
+  **读取**需要 unsafe——而读取可以收敛进 minix-types（该 crate 本就拥有 union 的
+  unsafe 面，FIX-08 集中化先例）。方案对比：a) minix-types 加 RS 对的类型化访问器
+  （选定——RS crate 保持零 unsafe，2 个访问器不触发 FIX-08 拒绝 per-field 时的
+  规模论证）vs b) 19 号在 rs crate 内写 unsafe 包装（违反零 unsafe 契约）vs c) 维持
+  edge-gated（解锁条件其实已在库内，无谓阻塞 12 号）。
+- **After**：`Message::rs_init_result() -> Option<i32>`（m_type 标签守卫 + SAFETY 注）；
+  `RsServer::do_init_ready`（request.c:462-529 全分支：Unexpected→EINVAL、InitFailed→
+  crash + SelfTerminate 终循环、UpdateInitDone→pending 回写 + end_update(OK, RS_REPLY)、
+  FreshInitDone→service 回复 + end_srv_init，恒 EDONTREPLY）；`init_response` 升级为
+  活包装（EDONTREPLY→OK 归一，R3；lu_response 仍 16-gated——其 shell 需要 LU 链上下文）；
+  `catch_boot_init_ready` 实装（main.c:789-830：阻塞接收 + 三个 C panic 原文 + VM 免回复
+  + INITIALIZING 清除），step2 SYNCH_BOOT 分支与 step3 循环全部转真——T6 的两处
+  fail-closed 占位自此消灭。
+- **测试基建**：union 字段写入是安全位存储——RS 测试可直接构造 RS_INIT 信封（读取
+  一律走访问器）。新增 7 测：accessor（minix-types）、step3 catch/错型 panic/失败
+  panic、fresh done、init 失败 crash + init_err、Unexpected EINVAL、EDONTREPLY 归一。
+- **Verified**：`cargo test -p minix-rs` = **293 passed**（+7）；minix-types 171 passed；
+  clippy 触碰 crate 零告警；fmt 干净；T7 PASS。测试自查修正 3 处夹具缺端点索引
+  （endpoint_slot 查找路径）与 1 处计数假设错误（placeholder 全表 uncaught=10 非 1）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2831,10 +2859,10 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `#[should_panic]` 锁定 fail-fast 契约）、R34.21（信号分发层——CHLD 实排空：
   waitpid 交出 pid → 槽位释放 + 端点索引消失 + 未知 pid 无副作用；TERM/空排空/未知信号
   已随 Fix #57）落地。
-- **剩余（gated）**：R34.20 已随 06 接线轮闭合（Fix #69）；R34.22（signal_manager
-  六分支——待 18 编排落地）、R34.23（catch_boot_init_ready 三 panic——待 12 接收
-  原语）；do_period 全流程与 rollback 心跳扫的集成面已由 Fix #41/#55/#56 的走链
-  测试与本轮 run() 集成测试覆盖。
+- **剩余（gated）**：R34.20 已随 06 接线轮闭合（Fix #69）；R34.23 已随 12 接线轮
+  闭合（Fix #70）；R34.22（signal_manager 六分支——待 18 编排落地）；do_period
+  全流程与 rollback 心跳扫的集成面已由 Fix #41/#55/#56 的走链测试与本轮 run()
+  集成测试覆盖。
 - 场景：boot 全链 mock（四步 + getnpid + setalarm 断言）、do_period 全流程
   （update_period 派发门 → 槽门 → 决策 → setalarm）、rollback→心跳重发扫
   （R27(a) 的集成面）、signal_manager 六分支（待编排落地后）、

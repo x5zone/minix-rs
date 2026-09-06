@@ -281,12 +281,12 @@ impl RsServer {
                 DispatchKind::HeartbeatNotify { source, timestamp } => {
                     self.do_heartbeat(source, timestamp)
                 }
-                // C: main.c:116-117 — the ready messages reach the SEF
-                // response callbacks; their bodies decode `m_rs_init.result`/
-                // `m_rs_update.result` (union arms — the 19 safe-receive
-                // seam) and are fail-closed until 12 lands.
+                // C: main.c:116 — RS_INIT → do_init_ready (raw result;
+                // EDONTREPLY honored — the service is unblocked by the
+                // handler's internal reply). RS_LU_PREPARE (:117) keeps its
+                // ENOSYS arm until the 16 chain context lands.
                 DispatchKind::InitReady => {
-                    let result = self.init_response(&msg).unwrap_or_else(|e| e.to_i32());
+                    let result = self.do_init_ready(&msg).unwrap_or_else(|e| e.to_i32());
                     self.reply_unless_suppressed(who_e, result);
                 }
                 DispatchKind::LuPrepareReady => {
@@ -358,6 +358,76 @@ impl RsServer {
         )?;
         state.shutting_down = crate::request::shutdown_apply(&mut state.table);
         Ok(0) // C: request.c:454 — return(OK)
+    }
+
+    /// C: `do_init_ready` — request.c:462-529 (the `RS_INIT` handler, 12).
+    /// The decoded `result` selects the branch; every path ends `EDONTREPLY`
+    /// — the service itself is unblocked by the handler's internal reply
+    /// (request.c:520-522) or killed (request.c:492).
+    fn do_init_ready(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // C: request.c:474-475 — `rp = rproc_ptr[who_p]` (registered source).
+        let Some(id) = state.table.endpoint_slot(m.m_source) else {
+            return Err(Errno::EINVAL);
+        };
+        // C: request.c:473 — `result = m_ptr->m_rs_init.result`. The typed
+        // accessor is total; classify guarantees the RS_INIT arm, so `None`
+        // is a program error shaped as EINVAL.
+        let Some(result) = m.rs_init_result() else {
+            return Err(Errno::EINVAL);
+        };
+        let updating = state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::UPDATING);
+        let decision = crate::ready::do_init_ready(
+            state.table.get(id).flags,
+            result,
+            updating,
+            state.update.num_init_ready_pending,
+            self.kernel.get_ticks().unwrap_or(0),
+        );
+        decision.mutations.apply(state.table.get_mut(id));
+        match decision.outcome {
+            // C: request.c:477-483 — not initializing → EINVAL.
+            crate::ready::ReadyOutcome::Unexpected => Err(Errno::EINVAL),
+            crate::ready::ReadyOutcome::InitFailed { .. } => {
+                // C: request.c:488-497 — crash the service (the REINCARNATE/
+                // init_err mutations already applied); RS's own crash ends
+                // the loop (C `exit(1)`, manager.c:395-397).
+                let outcome =
+                    crate::recovery::crash_service(state.table.get(id), self.kernel.as_mut())?;
+                if outcome == crate::recovery::CrashOutcome::SelfTerminate {
+                    return Err(Errno::EGENERIC);
+                }
+                Ok(minix_types::EDONTREPLY)
+            }
+            crate::ready::ReadyOutcome::UpdateInitDone { pending_remaining } => {
+                state.update.num_init_ready_pending = pending_remaining;
+                if pending_remaining == 0 {
+                    // C: request.c:511-514 — end_update(OK, RS_REPLY).
+                    let ticks = self.kernel.get_ticks().unwrap_or(0);
+                    state.update.end_update(
+                        &mut state.table,
+                        self.kernel.as_mut(),
+                        0, // OK
+                        1, // RS_REPLY
+                        ticks,
+                        &mut |_s, _ps| {},
+                        &mut |_s| Ok(()),
+                    );
+                }
+                Ok(minix_types::EDONTREPLY)
+            }
+            crate::ready::ReadyOutcome::FreshInitDone => {
+                // C: request.c:517-524 — unblock the service, then finalize.
+                let _ = self.kernel.reply(m.m_source, 0);
+                let has_prev = state.table.get(id).prev_rp.is_some();
+                crate::ready::end_srv_init(state.table.get_mut(id), has_prev);
+                Ok(minix_types::EDONTREPLY)
+            }
+        }
     }
 
     /// C: main.c:85-91 — heartbeat notification from a registered service:
@@ -603,22 +673,20 @@ impl SefCallbacks for RsServer {
         Ok(0)
     }
 
-    /// C: `sef_cb_init_response` — main.c:591-609. **EDGE（19 接线）**：决策
-    /// 面（`do_init_ready` 四参数 + pending 持有 + normalize 包装）全部就绪；
-    /// 缺的是消息载荷解码——`m_rs_init.result` 位于 union 臂，安全提取归 19 的
-    /// receive 包装（R25 同源）。落地形态：
-    /// `let result = decode.result; if result != 0 { return Err(...) };
-    /// do_init_ready(flags, 0, is_updating, pending, ticks)` + mutations +
-    /// pending 回写（UpdateInitDone）。
-    fn init_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
-        Err(Errno::ENOSYS)
+    /// C: `sef_cb_init_response` — main.c:591-607: run the init-ready
+    /// handler on the `RS_INIT` message, then normalize `EDONTREPLY` → OK
+    /// (R3: the sentinel means *success* in this callback — the reverse of
+    /// `sef_cb_lu_response`, which maps it to `EGENERIC`).
+    fn init_response(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let r = self.do_init_ready(m).unwrap_or_else(|e| e.to_i32());
+        Ok(if r == minix_types::EDONTREPLY { 0 } else { r })
     }
 
-    /// C: `sef_cb_lu_response` — main.c:614-626. **EDGE（19 接线）**：同上，
-    /// 决策面 `do_upd_ready(result, gate_ok, has_next)` 就绪（gate 由
-    /// `state.update` + RS 槽 `upd` 判定），载荷解码归 19。落地形态：
-    /// `do_upd_ready(result, gate_ok, true)` → R24 载荷 → Unexpected 时
-    /// EINVAL，EDONTREPLY → EGENERIC（main.c:622-624）。
+    /// C: `sef_cb_lu_response` — main.c:614-626. The decode half landed with
+    /// `rs_init_result`'s sibling pattern (minix-types); the shell still
+    /// needs the LU chain context (`do_upd_ready`'s gate + the
+    /// complete/rollback orchestration consumers, 16 号) — fail-closed until
+    /// that wiring lands.
     fn lu_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
         Err(Errno::ENOSYS)
     }
@@ -821,6 +889,114 @@ mod signal_handler_tests {
         mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
         let mut server = booted_with(alloc::boxed::Box::new(mock));
         let _ = server.run();
+    }
+
+    /// An RS_INIT envelope from the VFS service with the given result.
+    /// Union-field *writes* are safe (bit stores); the tagged *read* goes
+    /// through `Message::rs_init_result` (minix-types, E-12 decode).
+    fn rs_init_envelope(result: i32) -> minix_types::Message {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::VFS,
+            m_type: minix_types::RS_INIT,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_init.result = result;
+        m
+    }
+
+    #[test]
+    fn test_run_init_ready_fresh_done_clears_initializing() {
+        // 12 wiring: RS_INIT(result=OK) from an initializing service →
+        // FreshInitDone — INITIALIZING cleared, check_tm zeroed, alive_tm
+        // refreshed (request.c:514-525); EDONTREPLY suppresses the reply.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.inbox = alloc::vec![(
+            rs_init_envelope(0),
+            crate::dispatch::IpcStatus { flags: 0 },
+            0
+        )];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let ep = Endpoint::VFS;
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(ep, Some(crate::service_slot::SlotId::new(0)));
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::INITIALIZING;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = ep;
+        }
+        let _ = server.run();
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert!(!s.flags.contains(RFlags::INITIALIZING), "fresh init done");
+        assert_eq!(s.check_tm, 0);
+    }
+
+    #[test]
+    fn test_do_init_ready_failure_crashes_and_records_init_err() {
+        // 12 wiring: request.c:488-497 — a failed init crashes the service
+        // and records `r_init_err`; the reply is suppressed (EDONTREPLY).
+        let mut server = booted_with(alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(
+            60,
+        )));
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::INITIALIZING;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::VFS;
+            s.pid = Some(700);
+        }
+        let r = server.do_init_ready(&rs_init_envelope(7)).unwrap();
+        assert_eq!(r, minix_types::EDONTREPLY);
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert_eq!(s.init_err, 7, "r_init_err records the failure");
+    }
+
+    #[test]
+    fn test_do_init_ready_unexpected_is_einval() {
+        // 12 wiring: request.c:477-483 — an init-ready from a slot that was
+        // never asked to initialize → EINVAL.
+        let mut server = booted_with(alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(
+            60,
+        )));
+        let r = server.do_init_ready(&rs_init_envelope(0)).unwrap_err();
+        assert_eq!(r, Errno::EINVAL);
+    }
+
+    #[test]
+    fn test_init_response_normalizes_edontreply_to_ok() {
+        // R3: sef_cb_init_response maps EDONTREPLY → OK (the reverse of
+        // sef_cb_lu_response) — the wrapper sits on the live handler now.
+        let mut server = booted_with(alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(
+            60,
+        )));
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::INITIALIZING;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::VFS;
+        }
+        let r = server.init_response(&rs_init_envelope(0)).unwrap();
+        assert_eq!(r, 0);
     }
 
     #[test]

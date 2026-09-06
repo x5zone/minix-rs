@@ -301,6 +301,27 @@ impl Message {
     ///     &m.m_u.m_lsys_krn_sys_times
     /// });
     /// ```
+    /// The `RS_INIT` ready result — C: `m.m_rs_init.result`
+    /// (request.c:473, main.c:800).
+    ///
+    /// `None` when the message is not an `RS_INIT` (the caller dispatches on
+    /// `m_type`, so `None` is a program error there). Per-field safe
+    /// accessor for the RS pair: the RS server crate is zero-`unsafe`, so
+    /// the closure form of [`payload_ref`](Self::payload_ref) is unusable at
+    /// its call sites — the union read is contained here (FIX-08
+    /// centralization; two accessors do not hit the volume argument that
+    /// rejected per-field methods).
+    #[inline]
+    pub fn rs_init_result(&self) -> Option<i32> {
+        if self.m_type == crate::RS_INIT {
+            // SAFETY: `m_type == RS_INIT` tags the union arm in use; the
+            // arm is plain-old-data (`MessRsInit`), so the read is sound.
+            Some(unsafe { self.m_u.m_rs_init.result })
+        } else {
+            None
+        }
+    }
+
     #[inline]
     pub fn payload_ref<T, F, R>(&self, expected_m_type: i32, accessor: F) -> R
     where
@@ -3323,10 +3344,18 @@ mod tests {
         assert_eq!(size_of::<MessLcPmWait4>(), 56);
         assert_eq!(size_of::<MessPmLcWait4>(), 56);
         // 字段序固定 C 布局：请求 pid@0/options@4/addr@8；回复 status@0。
-        let req = MessLcPmWait4 { pid: -1, options: 1, addr: 0x7000, ..Default::default() };
+        let req = MessLcPmWait4 {
+            pid: -1,
+            options: 1,
+            addr: 0x7000,
+            ..Default::default()
+        };
         assert_eq!(req.pid, -1);
         assert_eq!(req.options, 1);
-        let reply = MessPmLcWait4 { status: 0o200 | 6, ..Default::default() };
+        let reply = MessPmLcWait4 {
+            status: 0o200 | 6,
+            ..Default::default()
+        };
         assert_eq!(reply.status, 0o200 | 6);
     }
 
@@ -3514,5 +3543,26 @@ mod tests {
                 report.flags
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod rs_accessor_tests {
+    use super::*;
+
+    #[test]
+    fn test_rs_init_result_accessor() {
+        // E-12 decode: the typed safe accessor reads the RS_INIT arm under
+        // the m_type tag and refuses other types.
+        let mut m = Message {
+            m_source: crate::Endpoint::VFS,
+            m_type: crate::RS_INIT,
+            m_u: Default::default(),
+        };
+        assert_eq!(m.rs_init_result(), Some(0));
+        m.m_u.m_rs_init.result = 5;
+        assert_eq!(m.rs_init_result(), Some(5));
+        m.m_type = crate::RS_LU_PREPARE; // wrong arm → None
+        assert_eq!(m.rs_init_result(), None);
     }
 }

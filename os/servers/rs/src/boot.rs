@@ -823,9 +823,9 @@ impl<'a> BootInit<'a> {
                 {
                     // C: SF_SYNCH_BOOT → catch_boot_init_ready — main.c:390-392:
                     // a blocking receive for THIS service's init-ready before
-                    // boot proceeds. The receive primitive is 12; failing
-                    // closed beats silently skipping the sync (T6).
-                    return Err(BootError::Kernel(Errno::ENOSYS));
+                    // boot proceeds (12: the receive seam is wired — the
+                    // blocking shape itself is the fail-closed behavior).
+                    self.catch_boot_init_ready(sys, priv_.endpoint)?;
                 }
                 // C: else branch — main.c:393-394: count, Step 3 catches it.
                 nr_uncaught_init_srvs += 1;
@@ -840,14 +840,62 @@ impl<'a> BootInit<'a> {
     /// C: `while(nr_uncaught_init_srvs) { catch_boot_init_ready(ANY); ... }` —
     /// main.c:401-407: a blocking receive per outstanding init-ready. The
     /// receive mechanism is 12-rs-init-run.md.
-    fn step3_catch_init_ready(&mut self, _sys: &mut dyn KernelApi) -> Result<(), BootError> {
-        if self.nr_uncaught_init_srvs > 0 {
-            // A counter-only loop would "complete" boot without the messages
-            // actually arriving — fail-open, and C blocks forever here if a
-            // service never replies (fail-closed). Until 12 lands there is no
-            // receive primitive; fail closed explicitly (T6).
-            return Err(BootError::Kernel(Errno::ENOSYS));
+    fn step3_catch_init_ready(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
+        // C: main.c:401-407 — block for each outstanding init-ready, in
+        // order. The counter is C's `nr_uncaught_init_srvs`; a service that
+        // never answers blocks the boot forever (fail-closed, and C's
+        // watchdog picks it up from the ping path later).
+        while self.nr_uncaught_init_srvs > 0 {
+            self.catch_boot_init_ready(sys, minix_types::Endpoint::ANY)?;
+            self.nr_uncaught_init_srvs -= 1;
         }
+        Ok(())
+    }
+
+    /// C: `catch_boot_init_ready` — main.c:789-830: block for one init-ready
+    /// message from `endpoint` (a specific service for the `SF_SYNCH_BOOT`
+    /// path, `ANY` for step 3), verify it, unblock the service, and mark the
+    /// slot initialized. The three failure shapes are C `panic`s verbatim
+    /// (R34.23): receive failure, wrong message type, non-OK result.
+    fn catch_boot_init_ready(
+        &mut self,
+        sys: &mut dyn KernelApi,
+        endpoint: minix_types::Endpoint,
+    ) -> Result<(), BootError> {
+        use crate::service_slot::SlotMutations;
+        use minix_types::RS_INIT;
+        let (m, _ipc_status, _ts) = sys.receive(endpoint).map_err(BootError::Kernel)?;
+        if m.m_type != RS_INIT {
+            // C: main.c:799-801.
+            panic!("unexpected reply from service: {m:?}");
+        }
+        let Some(result) = m.rs_init_result() else {
+            // The typed decode refuses non-RS_INIT messages — with the
+            // m_type check above this is unreachable; a panic keeps the C
+            // shape (wrong-arm reads are program errors).
+            panic!("unexpected reply from service: {m:?}");
+        };
+        if result != 0 {
+            // C: main.c:805-807 — a failed boot-time init is fatal for RS.
+            panic!("unable to complete init for service: {m:?}");
+        }
+        // C: main.c:810-816 — unblock the service, except VM (its reply was
+        // asynchronous; a synchronous reply could deadlock).
+        if m.m_source != minix_types::Endpoint::VM {
+            let _ = sys.reply(m.m_source, 0);
+        }
+        // C: main.c:819-822 — mark the slot no longer initializing.
+        let id = self
+            .table
+            .endpoint_slot(m.m_source)
+            .expect("init ready from a registered service");
+        SlotMutations {
+            clear: crate::service_slot::RFlags::INITIALIZING,
+            check_tm: Some(0),
+            alive_tm: Some(sys.get_ticks().unwrap_or(0)),
+            ..Default::default()
+        }
+        .apply(self.table.get_mut(id));
         Ok(())
     }
 
@@ -1012,10 +1060,9 @@ mod tests {
 
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
-        // T6: step 3 (catch init-ready) has no receive primitive until 12;
-        // the boot must fail closed (Kernel(ENOSYS) — "mechanism not wired",
-        // E-6) instead of "completing" without the messages actually
-        // arriving (main.c:401-407).
+        // 12 wiring: step 3 now blocks on the receive seam — with no canned
+        // message the seam fails closed (Kernel(ENOSYS)) instead of the boot
+        // "completing" without the messages actually arriving (main.c:401-407).
         assert_eq!(
             boot.init_fresh(&mut sys),
             Err(BootError::Kernel(Errno::ENOSYS)),
@@ -1436,6 +1483,107 @@ mod tests {
             tables.validate_tables().is_ok(),
             "placeholder must pass count check"
         );
+    }
+
+    fn vm_init_envelope(result: i32) -> (minix_types::Message, crate::dispatch::IpcStatus, Clock) {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::VM,
+            m_type: minix_types::RS_INIT,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_init.result = result; // union-field write: a safe bit store
+        (m, crate::dispatch::IpcStatus { flags: 0 }, 0)
+    }
+
+    #[test]
+    fn test_step3_catches_boot_init_ready() {
+        // 12 wiring: main.c:401-407 + 789-830 — step 3 blocks for the
+        // counted init-ready (VM), verifies it, skips the VM reply
+        // (main.c:812-815), and clears INITIALIZING (main.c:819-822).
+        // RS/VM-only tables: exactly one counted slot (VM — async RS_INIT).
+        let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(8, Endpoint::VM)];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+        ];
+        let tables = BootTables {
+            image,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        sys.inbox = alloc::vec![vm_init_envelope(0)];
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        assert_eq!(boot.nr_uncaught_init_srvs, 1, "VM counted (main.c:369-370)");
+        // The VM's init_service mark (12 — the async instance initializes
+        // before the ready message arrives).
+        let vm = boot.table.endpoint_slot(Endpoint::VM).expect("VM indexed");
+        boot.table.get_mut(vm).flags |= crate::service_slot::RFlags::INITIALIZING;
+        boot.step3_catch_init_ready(&mut sys).expect("caught");
+        assert_eq!(boot.nr_uncaught_init_srvs, 0);
+        assert!(
+            !boot
+                .table
+                .get(vm)
+                .flags
+                .contains(crate::service_slot::RFlags::INITIALIZING)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unexpected reply from service")]
+    fn test_step3_panics_on_wrong_message_type() {
+        // R34.23: main.c:799-801 — a non-RS_INIT message during the boot
+        // catch is a program error; C panics.
+        let mut sys = MockKernelApi::new(100);
+        let mut m = minix_types::Message {
+            m_source: Endpoint::VM,
+            m_type: 9999,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_init.result = 0;
+        sys.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
+        let mut boot = BootInit::new(BootTables::placeholder());
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        boot.step3_catch_init_ready(&mut sys).expect("step 3");
+    }
+
+    #[test]
+    #[should_panic(expected = "unable to complete init for service")]
+    fn test_step3_panics_on_failed_result() {
+        // R34.23: main.c:805-807 — a failed boot-time init is fatal for RS
+        // itself; C panics.
+        let mut sys = MockKernelApi::new(100);
+        sys.inbox = alloc::vec![vm_init_envelope(5)];
+        let mut boot = BootInit::new(BootTables::placeholder());
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        boot.step3_catch_init_ready(&mut sys).expect("step 3");
     }
 
     #[test]
