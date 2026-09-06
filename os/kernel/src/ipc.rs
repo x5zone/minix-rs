@@ -737,7 +737,7 @@ impl<'a> IpcEngine<'a> {
     /// filter check rides in the walk's `accept` position, exactly where
     /// C's `CANRECEIVE` sits.
     fn caller_q_find_allowed(&self, caller_idx: usize, src_endpoint: Endpoint) -> Option<usize> {
-        caller_q_find(&self.procs, caller_idx, src_endpoint, |idx| {
+        caller_q_find(self.procs, caller_idx, src_endpoint, |idx| {
             let sender_ep = self.procs[idx].p_endpoint;
             self.can_receive(caller_idx, sender_ep, self.procs[idx].p_sendmsg.m_type)
         })
@@ -1627,11 +1627,11 @@ impl<'a> IpcEngine<'a> {
             let _ = self
                 .user_copy
                 .write_senda_result(table, i, r, flags | AMF_DONE);
-            if (flags & AMF_NOTIFY) != 0 {
-                do_notify = true;
-            } else if r != OK && (flags & AMF_NOTIFY_ERR) != 0 {
-                do_notify = true;
-            }
+            // C: proc.c:1301-1305 — AMF_NOTIFY 恒通知；AMF_NOTIFY_ERR 仅
+            // 失败项通知。C 原文两分支同为 `do_notify = TRUE`（宏展开遗留），
+            // Rust 重写合并为单一布尔表达式（V12-A3）。
+            do_notify |= (flags & AMF_NOTIFY) != 0
+                || (r != OK && (flags & AMF_NOTIFY_ERR) != 0);
         }
 
         if do_notify {

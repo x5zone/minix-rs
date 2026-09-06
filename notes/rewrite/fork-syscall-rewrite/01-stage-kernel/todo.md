@@ -2339,6 +2339,13 @@ C 原文（`proc.c:1300-1318`）两分支也是同值，但 C 是宏展开遗留
 `if (flags & AMF_NOTIFY) != 0 || (r != OK && (flags & AMF_NOTIFY_ERR) != 0)`，
 附注释说明对应 C 行号。机械项，可与 V12-A5 同批实施但分开 commit。
 
+**✅ 已修复（2026-09-07，§22 Phase 1 迭代 4）**：合并为
+`do_notify |= (flags & AMF_NOTIFY) != 0 || (r != OK && (flags & AMF_NOTIFY_ERR) != 0)`
+（ipc.rs，注释含 C proc.c:1301-1305 锚点与"宏展开遗留"说明）；同轮顺带修掉 V12-A2
+引入的一处 `needless_borrow`（`&self.procs` → `self.procs`，教训：警告对账需逐条
+而非只比总数）。clippy kernel 15 → 13；测试 694 passed / 0 failed。doc 无需同步
+（无 stage 文档详述该条件，仅本文件与代码注释承载）。
+
 #### V12-A4 boot 模块内存回收表述过时，需重验“函数存在 vs 启动链接线” [P2]
 
 **问题**：本 todo 历史表格（§7 系 boot 回收行，`cut_memmap() 无等价实现 ❌缺失` /
@@ -2544,7 +2551,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ V12-A1 [P1] CpuContext 真实 `trap_style` 字段 + 返回路径选择（x86 现藏 GP_R15、arm64 丢弃、无分支）→ **落地为 `KProcess.trap_style: TrapStyle`（arch 公共枚举）+ 双端信号往返 + finish 闸门 + MINIX3 BUG 校验先行修复；694+212 测试全绿（2026-09-07）**
 - ✅ V12-B1 [P1] proc_table.rs ~20 处 panic 审计 → **17 处实测：16 内部不变量维持 panic（C assert parity）、1 补契约注释、1 分类纠偏（notify 吞错改 C-parity panic）；无用户可达 panic（2026-09-07）**
 - ✅ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源 → **caller_q_find 泛型化（accept 插入 C CANRECEIVE 位）+ el_match 归一；clippy -2（2026-09-07）**
-- ⬜ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并
+- ✅ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并 → **单一布尔表达式 + C 锚点；顺带清 A2 引入的 needless_borrow；clippy 13（2026-09-07）**
 - ⬜ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释
 - ⬜ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs:868/:977 形态修复
 - ⬜ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）
