@@ -48,5 +48,10 @@ pub mod timer;
 pub mod trace;
 pub mod wait;
 
-pub use ipc::*;
-pub use mproc::*;
+// 公共 API 面显式化（P2-4，2026-09-06）：原 `pub use ipc::*; pub use mproc::*;`
+// 把 ipc/ 与 mproc/ 两棵模块树压平到 crate 根——顶层与 mproc 下 5 对同名
+// 模块（fork/signal/wait/credentials/trace 的 logic 层与 state 层）在根上
+// 只暴露一份符号，使用者无法分辨来源。现在统一走完整模块路径
+// （`pm::ipc::*` / `pm::mproc::*` / `pm::init::*`），仅保留测试接缝的
+// 显式 re-export（内部 14 处 + 外部集成测试的既有惯例路径）。
+pub use ipc::TestIpcTransport;

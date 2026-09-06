@@ -24,7 +24,7 @@
 | P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除（**✅ 已修复** 2026-09-06，见 §10 Fix #17） |
 | P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地 |
 | P2 | P2-3 | `minix-types/src/ipc/pm.rs` 的 `PmRequest`/`PmResponse` 是零使用的死代码；PM 调用号单一真值破口 |
-| P2 | P2-4 | `lib.rs` glob re-export 压平命名空间，5 对同名双层模块（`fork`/`mproc::fork` 等）加剧混淆 |
+| P2 | P2-4 | `lib.rs` glob re-export 压平命名空间，5 对同名双层模块（`fork`/`mproc::fork` 等）加剧混淆（**✅ 已修复** 2026-09-06，见 §10 Fix #18） |
 | P2 | P2-5 | exit/wait 路径 9 处行为 stub 以散落注释存在，未按模式 60 登记为显式 DEFERRED 契约 |
 | P2 | P2-6 | 文档 00/99 仍是最小骨架，且 `.design/` 缺这两篇的 outline/outline-review/design 快照（模式 69） |
 | P2 | P2-7 | C 侧死代码 `ESCRIPT`（exec.c:31，定义后零使用）未登记进 plan.md §5.4 排除表 |
@@ -221,7 +221,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 
 **跨阶段拆分**：本体在 minix-types（共享契约层），处置归 `edge_todo.md` E7；PM 侧在本条目闭环时引用 E7 的收敛结论，不在 stage 内单独改动共享层（2026-09-06 增补）。
 
-### P2-4 `lib.rs` glob re-export + 5 对同名双层模块
+### P2-4 `lib.rs` glob re-export + 5 对同名双层模块（✅ 已修复 2026-09-06，见 §10 Fix #18）
 
 **问题**：`lib.rs:47-48` 的 `pub use ipc::*; pub use mproc::*;` 把两个模块树压平到 crate 根。而 crate 顶层与 `mproc/` 下存在 5 对同名模块：`fork`/`mproc::fork`、`signal`/`mproc::signal`、`wait`/`mproc::wait`、`credentials`/`mproc::credentials`、`trace`/`mproc::trace`。"logic 层（顶层）vs state 层（mproc/）"的分工本身是合理设计（模块头注释有说明），但 glob re-export 后，`pm::signal` 指向谁、`pm::mproc::signal` 又暴露哪些与顶层重叠的符号，对使用者是猜谜。
 
@@ -662,3 +662,16 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - clippy 的 6 条 `unexpected cfg condition value` 告警随之消除
 
 **Docs**：`20-misc-queries.md`、`plan.md` §5.4、本文件 §0/标题。
+
+### ✅ Fix #18: P2-4 — glob re-export 移除、公共 API 显式化（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/lib.rs`（`pub use ipc::*; pub use mproc::*;` → 仅 `pub use ipc::TestIpcTransport;`）
+
+**Before/After**：双 glob 把 ipc/ 与 mproc/ 两棵树压平到 crate 根，顶层与 mproc 下 5 对同名双层模块（fork/signal/wait/credentials/trace 的 logic 层与 state 层）在根上只暴露一份符号。移除后统一走完整模块路径（`pm::ipc::*` / `pm::mproc::*` / `pm::init::*`），仅保留测试接缝 `TestIpcTransport` 的显式 re-export（内部 14 处 `crate::TestIpcTransport` 的既有惯例 + 外部集成测试）。探索阶段已确认外部唯一消费者（os/tests）走模块路径，零破坏。
+
+**Verified**：
+- `cargo test -p minix-pm`：**341 lib + 6 integration passed**（含外部 tests/ 目录——crate 外视角无路径断裂）
+- `grep -rn "pub use .*\*" os/servers/pm/src/lib.rs`：零命中
+
+**Docs**：lib.rs 模块注释（压平问题与决策记录）；本文件 §0/标题。
