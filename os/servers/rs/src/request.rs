@@ -223,7 +223,7 @@ mod tests {
         // C: manager.c:1003 — RS → SIGHUP; others → SIGTERM. A4: the
         // decision is pure — the caller applies the mutations and sends the
         // signal.
-        let t = RProcTable::new();
+        let _t = RProcTable::new();
         let mut s = ServiceSlot::vacant();
         s.pub_.endpoint = Endpoint::VFS;
         let d = stop_decision(&s, RFlags::EXITING, 77);

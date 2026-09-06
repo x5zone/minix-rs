@@ -1978,11 +1978,11 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
 | R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ✅ | 已修（Fix #51/#52，2026-09-06；restart_service 编排随轮 16 LU 后收口） |
-| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | 🔶 | 载体/链操作/prepare 系列已落地（Fix #53/#54/#55）；complete_srv/end_update 深路径=轮 16 |
+| R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ✅ | 已修（Fix #53/#54/#55/#56，2026-09-06） |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
 | R26 | signal_manager 签名偏差（sef.h:270 对照） | P1 | ✅ | 已修（Fix #40，2026-09-06） |
-| R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ☐ | 16 落地期（注释修正可立即） |
+| R27 | rollback 心跳重发扫 + end_update 自毁短路 + abort 时序注释错 | P1 | ✅ | 已修（Fix #56，2026-09-06） |
 | R28 | clone_service 两分支漏标 DEFERRED | P2 | ✅ | 已修（Fix #50，2026-09-06） |
 | R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ✅ | 已修（Fix #47，2026-09-06，OQ-2=全宽） |
 | R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
@@ -2400,3 +2400,42 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - **Verified**：`cargo test -p minix-rs` = **255 passed**（+2：走链次序+相位写入+
   prepare-only 连跳、耗尽 None）；clippy/fmt 零输出；T7 PASS。文档同步：16 §3.1 表 +4 行
   （prepare/prepare_next/start_srv_update/start_update）。
+
+### ✅ Fix #56 — R23c+R27（P1-design-missing 收尾）：update/rollback/complete_srv/end_update 编排落地
+- **File**：`os/servers/rs/src/live_update.rs`（update_service/rollback_service/
+  end_srv_update/end_update_rev_iter/end_update/complete_srv_update + 3 测试）、
+  `boot.rs`（KernelApi 新增 sys_update——内核 SYS_UPDATE 面，与 PM 面 srv_fork/srv_kill
+  命名对齐）、`service_create.rs`（init_service 独立化：old_endpoint 参数化，表读取在
+  调用方）、文档 16 §3.1
+- **After**（C 锚点，全部按 A1 忠实编排函数形态）：
+  - `update_service`（update.c:262-325）：`srv_update` 内核身份交换（RS_SWAP 时）→
+    `swap_slot` → pid/endpoint 互换回写（update.c:292-299，快索引跟随）→ priv 双向回读
+    （C panic 语义保留为 expect）→ `activate_service(dst, src)`。
+  - `rollback_service`（update.c:330-366）：**RS 分支 R27(a)**——全 ACTIVE 槽
+    `r_check_tm = 0`（心跳重发扫，RS 自身行也在内）；`me != RS` 时 VM rollback；非 RS
+    分支：INIT_PENDING 新实例免交换，否则先 DISALLOW 冻结再反向 update_service
+    （SF_VM_ROLLBACK）。
+  - `end_srv_update`（update.c:932-1008）：幸存者清 update 标志位+check_tm 复位+
+    alive_tm=ticks；描述符 `rp` 改指幸存者；解链；RS_REPLY 回复/RS_CANCEL 补 NULL
+    prepare；exiting 逐实例 cleanup（DETACHED 老实例 → CLEANUP_DETACH+EDEADEPT 回复）。
+  - `end_update_rev_iter`（update.c:816-860）：反向遍历 + 位置分类
+    （curr/before_prepare/prepare_done/initializing，由 RS_INITIALIZING 相位决定）→
+    curr/initializing 的 init 失败先 rollback 再 end_srv_update；before_prepare 仅清
+    new 版本；prepare_done 用 RS_REPLY。
+  - `end_update`（update.c:865-927）：**R27(b)** RS_INIT_DONE 失败短路 → 返回
+    `CrashOutcome::SelfTerminate`（C `exit(1)`；Rust 无进程退出，交调用方终止运行循环，
+    与 fail-closed 边界一致）；prepare-only 取消；rev_iter 两遍（VM 最后）；成功路径
+    upd_clear+`end_srv_init`；late_reply(last)；RUPDATE_CLEAR；全表 pub 端点/VM 标志复位。
+  - `complete_srv_update`（update.c:657-702）：清 INIT_PENDING；RS 自更新 →
+    `init_service(SEF_INIT_LU)`+`SYS_PRIV_YIELD`（C panic 语义保留）→ rollback+
+    `end_update(ERESTART, RS_REPLY)`；其余 `run_service(SEF_INIT_LU)`，失败 → rollback+
+    `end_update(r, RS_REPLY)`。
+  - `restart_service`（manager.c:1246-1298，补入本轮）：late_reply → 脚本分支（失败
+    kill）→ clone_service(RST_SYS_PROC，无副本时) → `update_service(RS_SWAP)` →
+    `run_service(SEF_INIT_RESTART)` → DET_RESTART+restarts<MAX → CLEANUP_DETACH。
+  - abort 时序注释（R27 第三项）：recovery.rs 中"executed around"表述已按 C 的内嵌
+    时序修正（manager.c:1099-1102/:1127-1130）。
+- **Verified**：`cargo test -p minix-rs` = **258 passed**（+3：R27(a) 心跳扫含旁观者、
+  R27(b) SelfTerminate 短路且无内核调用、restart 脚本分支不进 clone）；clippy/fmt 零
+  输出；T7 PASS。文档同步：16 §3.1 表 +6 行（update/rollback/end_srv_update/
+  rev_iter/end_update/complete_srv_update）。

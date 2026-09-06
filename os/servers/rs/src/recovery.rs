@@ -611,7 +611,7 @@ pub fn cleanup_service(
     // (manager.c:476-483). A script failure is a warning, not fatal.
     if cleanup_script {
         table.get_mut(rp).flags.remove(RFlags::CLEANUP_SCRIPT);
-        let _ = run_script(&mut table.get_mut(rp));
+        let _ = run_script(table.get_mut(rp));
     }
 
     if detach {

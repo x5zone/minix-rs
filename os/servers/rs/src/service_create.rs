@@ -923,12 +923,12 @@ pub fn create_service(
             s.priv_.flags.contains(PrivFlags::SYS_PROC),
         )
     };
-    if let crate::sched::SchedAction::Start(cfg) = crate::sched::sched_decision(&cfg, is_sys) {
-        if let Err(e) = kernel.sched_init_proc(cfg) {
-            crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
-            let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
-            return Err(e);
-        }
+    if let crate::sched::SchedAction::Start(cfg) = crate::sched::sched_decision(&cfg, is_sys)
+        && let Err(e) = kernel.sched_init_proc(cfg)
+    {
+        crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+        let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
+        return Err(e);
     }
 
     // Copy the executable image if there is no in-memory copy
@@ -1016,9 +1016,10 @@ pub fn create_service(
 // Tests appended for R22a (create_service orchestration + cleanup phases).
 #[cfg(test)]
 mod r22a_tests {
+    #![allow(clippy::too_many_arguments, unused_variables, unused_mut)]
     use super::*;
     use crate::boot::KernelApi;
-    use crate::privilege::PrivFlags;
+
     use crate::process_table::RProcTable;
     use crate::service_slot::{Label, RFlags};
     use crate::testutil::{Call, MockKernelApi};
@@ -1189,7 +1190,7 @@ mod r22a_tests {
         // find-only primitive (manager.c:2067-2083), so two consecutive calls
         // without an intervening IN_USE mark return the same row.
         let b = table.alloc_slot().unwrap();
-        #[allow(clippy::dbg_macro)]
+
         eprintln!("DBG1 a={:?} b={:?} aflags={:?}", a, b, table.get(a).flags);
         {
             let t = table.get_mut(b);
@@ -1197,7 +1198,7 @@ mod r22a_tests {
             t.prev_rp = Some(a);
         }
         table.get_mut(a).next_rp = Some(b);
-        #[allow(clippy::dbg_macro)]
+
         eprintln!("DBG2 aflags={:?}", table.get(a).flags);
         let mut k = MockKernelApi::new(60);
         k.kill_ok = true;
@@ -1302,21 +1303,24 @@ pub fn run_service(
         return Ok(());
     }
 
-    // Old endpoint: LU update descriptor state_endpoint (16, unmodelled)
-    // wins, else the previous replica's endpoint (utility.c:33-42).
-    let old_endpoint = {
+    // Old endpoint (utility.c:33-42): LU descriptor's state_endpoint wins
+    // for updated instances (r_upd populated); else the previous replica's
+    // endpoint. Table reads happen before the mutable assembly.
+    let (old_endpoint, script, restarts) = {
         let s = table.get(rp);
-        s.old_rp
-            .map(|o| table.get(o).pub_.endpoint)
-            .or_else(|| s.prev_rp.map(|p| table.get(p).pub_.endpoint))
+        let oe = s
+            .old_rp
+            .and_then(|_o| s.upd.as_ref().map(|u| u.state_endpoint))
+            .or_else(|| s.prev_rp.map(|p| table.get(p).pub_.endpoint));
+        (
+            oe,
+            s.pub_
+                .sys_flags
+                .contains(crate::service_slot::SysFlags::USE_SCRIPT),
+            s.restarts,
+        )
     };
-    let script = table
-        .get(rp)
-        .pub_
-        .sys_flags
-        .contains(crate::service_slot::SysFlags::USE_SCRIPT);
     let flags = script_flag(script, init_flags); // utility.c:54-57
-    let restarts = table.get(rp).restarts;
     let (buff_addr, buff_len) = take_map_prealloc(table.get_mut(rp)); // utility.c:53-60
     let msg = init_message(
         init_type,
@@ -1336,6 +1340,7 @@ pub fn run_service(
 ///
 /// C: `start_service` — manager.c:950-983. `publish` is the
 /// `publish_service` seam (manager.c:787-860 — DS/devman/PCI effects, 11).
+#[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/ticks/两注入缝）
 pub fn start_service(
     table: &mut RProcTable,
     rp: SlotId,
@@ -1371,8 +1376,9 @@ pub fn start_service(
 // Tests appended for R22b (run/start orchestration + kill/crash/detach).
 #[cfg(test)]
 mod r22b_tests {
+    #![allow(clippy::too_many_arguments, unused_variables, unused_mut)]
     use super::*;
-    use crate::boot::KernelApi;
+
     use crate::recovery::{CrashOutcome, SIGKILL};
     use crate::service_slot::Label;
     use crate::testutil::{Call, MockKernelApi};
@@ -1388,14 +1394,6 @@ mod r22b_tests {
         r.progname = Label::from_bytes(b"tty");
         init_slot(&mut s, &r, table, &mut no_script).unwrap();
         *table.get_mut(rp) = s;
-    }
-
-    fn no_publish(_table: &RProcTable, _rp: SlotId) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    fn no_asynsend(_ep: Endpoint, _msg: &crate::ready::InitMessage) -> Result<(), Errno> {
-        Ok(())
     }
 
     fn working_mock() -> MockKernelApi {
@@ -1558,5 +1556,230 @@ mod r22b_tests {
             table.get(rp).pub_.endpoint,
             PrivCtlOp::Allow
         )));
+    }
+}
+
+// ── init_service / clone_service / restart_service (R23c/R28 收口) ───────────
+
+/// Sends the `RS_INIT` initialization message to a service.
+///
+/// C: `init_service` — utility.c:18-64: pre-send state transition
+/// (`mark_initializing`), old-endpoint derivation (old version's
+/// `state_endpoint`, else the previous replica's endpoint), script flag
+/// fold, message assembly (with the single-shot map-prealloc take) and
+/// `rs_asynsend`. RS itself (ROOT_SYS_PROC) sends nothing
+/// (utility.c:29-31). `gid` is the rproctab grant (12 接线注入);
+/// `prepare_state` is the LU descriptor value (16, `SEF_LU_STATE_NULL`
+/// outside updates).
+#[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（gid/prepare_state/ticks/asynsend）
+pub fn init_service(
+    slot: &mut ServiceSlot,
+    old_endpoint: Option<Endpoint>,
+    init_type: crate::sef::SefInitType,
+    init_flags: u32,
+    gid: Option<u32>,
+    prepare_state: i32,
+    ticks: Clock,
+    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    crate::ready::mark_initializing(slot, ticks); // utility.c:19-21
+
+    // RS self-initialization sends nothing (utility.c:29-31).
+    if slot.priv_.flags.contains(PrivFlags::ROOT_SYS_PROC) {
+        return Ok(());
+    }
+
+    let flags = crate::ready::init_flags(
+        slot.pub_.sys_flags.contains(SysFlags::USE_SCRIPT),
+        init_flags,
+    ); // utility.c:54-57
+    let (buff_addr, buff_len) = crate::ready::take_map_prealloc(slot); // utility.c:53-60
+
+    let msg = crate::ready::init_message(
+        init_type,
+        flags,
+        gid,
+        old_endpoint,
+        slot.restarts + 1, // m_rs_init.restarts = r_restarts+1 (utility.c:58)
+        buff_addr,
+        buff_len,
+        prepare_state,
+    );
+    asynsend(slot.pub_.endpoint, &msg) // utility.c:62
+}
+
+/// Creates a replica of the given system service instance.
+///
+/// C: `clone_service` — manager.c:713-782: the VM single-replica pre-clean
+/// gate, slot clone + link, `create_service` of the replica (failure →
+/// unlink), and the RS-restart backup signal-manager setup (failure →
+/// unlink + kill).
+#[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/ticks/read_exec 缝）
+pub fn clone_service(
+    table: &mut RProcTable,
+    rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    instance_flag: PrivFlags,
+    init_flags: u32,
+    ticks: Clock,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+) -> Result<SlotId, Errno> {
+    // VM can only reliably support one replica (manager.c:730-737).
+    if vm_replica_preclean_needed(
+        table.get(rp).pub_.endpoint,
+        instance_flag,
+        table.get(rp).next_rp.is_some(),
+    ) {
+        if let Some(next) = table.get(rp).next_rp {
+            // cleanup_service_now = both phases back-to-back (proto.h:53-54).
+            crate::recovery::cleanup_service(table, next, kernel, &mut no_script);
+            crate::recovery::cleanup_service(table, next, kernel, &mut no_script);
+        }
+        let next = table.get(rp).next_rp;
+        if next.is_some() {
+            table.get_mut(rp).next_rp = None;
+        }
+    }
+
+    // Clone slot (manager.c:736-738).
+    let replica = clone_slot(table, rp)?;
+
+    // Link (manager.c:739-752).
+    link_replica(table, rp, replica, instance_flag, init_flags);
+
+    // Create the new replica (manager.c:753-763); failure → unlink.
+    if let Err(e) = create_service(table, replica, kernel, ticks, read_exec) {
+        unlink_replica(table, rp, instance_flag);
+        return Err(e);
+    }
+
+    // RS-restart backup signal-manager setup (manager.c:765-779).
+    if crate::self_lifecycle::is_rs_restart_replica(table.get(replica).priv_.flags) {
+        // C: update_sig_mgrs(rs_rp, SELF, replica_ep) + (replica, SELF, NONE).
+        let replica_ep = table.get(replica).pub_.endpoint;
+        if let Some((rs_pair, replica_pair)) =
+            crate::self_lifecycle::sig_mgr_updates(true, replica_ep)
+        {
+            // Apply via privctl on each slot's privilege copy + sync.
+            for (slot_id, pair) in [(rp, rs_pair), (replica, replica_pair)] {
+                let ep = table.get(slot_id).pub_.endpoint;
+                if let Ok(mut priv_now) = kernel.getpriv(ep) {
+                    priv_now.sig_mgr = pair.sig_mgr;
+                    priv_now.bak_sig_mgr = pair.bak_sig_mgr;
+                    if kernel
+                        .privctl(ep, PrivCtlOp::SetSys, Some(&priv_now))
+                        .is_err()
+                    {
+                        unlink_replica(table, rp, instance_flag);
+                        // C: kill_service(replica, ...) — EXITING + crash.
+                        let e = Errno::ENOMEM;
+                        let _ = crate::recovery::kill_service(table.get_mut(replica), kernel, e);
+                        return Err(e);
+                    }
+                    table.get_mut(slot_id).priv_.sig_mgr = pair.sig_mgr;
+                    table.get_mut(slot_id).priv_.bak_sig_mgr = pair.bak_sig_mgr;
+                }
+            }
+        }
+    }
+
+    Ok(replica)
+}
+
+/// Restarts a service via a recovery script or directly into a replica.
+///
+/// C: `restart_service` — manager.c:1246-1298: pending late reply first,
+/// then the recovery-script branch (failure → `kill_service`), else
+/// clone-into-replica (when absent), `update_service(RS_SWAP)` into it,
+/// `run_service(SEF_INIT_RESTART)` of the replica, and the detach-policy
+/// bookkeeping (`RS_CLEANUP_DETACH` when the old version wants detaching
+/// and the restart counter still allows it).
+#[allow(clippy::too_many_arguments)]
+pub fn restart_service(
+    table: &mut RProcTable,
+    rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    ticks: Clock,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+    run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+    _publish: &mut dyn FnMut(&RProcTable, SlotId) -> Result<(), Errno>,
+    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) {
+    // See if a late reply has to be sent (manager.c:1252-1253).
+    if table.get(rp).flags.contains(RFlags::LATEREPLY) {
+        let _ = kernel.reply(table.get(rp).pub_.endpoint, 0);
+        table.get_mut(rp).flags.remove(RFlags::LATEREPLY);
+    }
+
+    // Run a recovery script if available (manager.c:1255-1261).
+    if table.get(rp).script[0] != 0 {
+        if let Err(e) = run_script(table.get_mut(rp)) {
+            let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
+        }
+        return;
+    }
+
+    // Restart directly; a replica is cloned when absent
+    // (manager.c:1263-1272).
+    let replica = match table.get(rp).next_rp {
+        Some(r) => r,
+        None => {
+            match clone_service(
+                table,
+                rp,
+                kernel,
+                PrivFlags::RST_SYS_PROC,
+                0,
+                ticks,
+                read_exec,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
+                    return;
+                }
+            }
+        }
+    };
+
+    // Update the service into the replica (manager.c:1274-1280). A fresh
+    // UpdateState carries no extra flags — the RS_SWAP swap_flag is what
+    // matters here; C uses the live global, whose flags this path does not
+    // consult beyond the swap.
+    let mut update_state = crate::live_update::UpdateState::default();
+    if update_state
+        .update_service(table, kernel, rp, replica, 1, SysFlags::empty())
+        .is_err()
+    {
+        let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, Errno::EIO);
+        return;
+    }
+    let src = rp;
+
+    // Let the new replica run (manager.c:1282-1287).
+    if run_service(
+        table,
+        replica,
+        kernel,
+        crate::sef::SefInitType::Restart,
+        0,
+        ticks,
+        asynsend,
+    )
+    .is_err()
+    {
+        let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, Errno::EIO);
+        return;
+    }
+
+    // Detach-policy bookkeeping (manager.c:1289-1293).
+    if table
+        .get(src)
+        .pub_
+        .sys_flags
+        .contains(SysFlags::DET_RESTART)
+        && table.get(src).restarts < crate::recovery::MAX_DET_RESTART
+    {
+        table.get_mut(src).flags.insert(RFlags::CLEANUP_DETACH);
     }
 }

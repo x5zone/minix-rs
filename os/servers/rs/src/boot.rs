@@ -148,6 +148,17 @@ pub trait KernelApi {
     /// (crash_service). Wired 19.
     fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno>;
 
+    /// Swaps two process identities in the kernel (SYS_UPDATE).
+    ///
+    /// C: `srv_update(src_ep, dst_ep, flags)` — update.c:272-275 (libsys
+    /// wrapper over SYS_UPDATE). Wired 19.
+    fn sys_update(
+        &mut self,
+        src: Endpoint,
+        dst: Endpoint,
+        flags: crate::service_slot::SysFlags,
+    ) -> Result<(), Errno>;
+
     /// Tells the scheduler a process is finished.
     ///
     /// C: `sched_stop(rp->r_scheduler, rpub->endpoint)` — manager.c:462.
@@ -265,6 +276,14 @@ impl KernelApi for UnimplementedKernelApi {
         Err(Errno::ENOSYS)
     }
     fn sys_kill(&mut self, _proc: Endpoint, _signo: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn sys_update(
+        &mut self,
+        _src: Endpoint,
+        _dst: Endpoint,
+        _flags: crate::service_slot::SysFlags,
+    ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
     fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {

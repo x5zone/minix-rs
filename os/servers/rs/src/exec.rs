@@ -85,6 +85,7 @@ mod tests {
     use super::*;
     use crate::service_slot::{Label, RFlags};
 
+    #[allow(dead_code)] // awaiting-wiring: RSS_COPY/19 号 read_exec 路径的测试夹具
     fn slot_with_image(image: &'static [u8]) -> ServiceSlot {
         let mut s = ServiceSlot::vacant();
         s.flags = RFlags::IN_USE;

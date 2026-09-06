@@ -28,6 +28,7 @@ pub enum Call {
     SrvExecve(Endpoint),
     SrvKill(Pid, i32),
     SysKill(Endpoint, i32),
+    SysUpdate(Endpoint, Endpoint),
     SchedStop(Endpoint, Endpoint),
     SetUid(u32),
     Reply(Endpoint, i32),
@@ -103,13 +104,13 @@ impl KernelApi for MockKernelApi {
         priv_: Option<&Privilege>,
     ) -> Result<(), Errno> {
         self.calls.push(Call::PrivCtl(proc, op));
-        if op == PrivCtlOp::SetSys {
-            if let Some(p) = priv_ {
-                // Per-endpoint echo storage: the last push per endpoint wins
-                // (matches the kernel's one-priv-structure-per-process).
-                self.set_privs.retain(|(e, _)| *e != proc);
-                self.set_privs.push((proc, p.clone()));
-            }
+        if op == PrivCtlOp::SetSys
+            && let Some(p) = priv_
+        {
+            // Per-endpoint echo storage: the last push per endpoint wins
+            // (matches the kernel's one-priv-structure-per-process).
+            self.set_privs.retain(|(e, _)| *e != proc);
+            self.set_privs.push((proc, p.clone()));
         }
         Ok(())
     }
@@ -204,6 +205,15 @@ impl KernelApi for MockKernelApi {
     }
     fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno> {
         self.calls.push(Call::SysKill(proc, signo));
+        Ok(())
+    }
+    fn sys_update(
+        &mut self,
+        src: Endpoint,
+        dst: Endpoint,
+        _flags: crate::service_slot::SysFlags,
+    ) -> Result<(), Errno> {
+        self.calls.push(Call::SysUpdate(src, dst));
         Ok(())
     }
     fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno> {

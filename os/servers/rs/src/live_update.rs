@@ -18,6 +18,7 @@
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno};
 
+use crate::privilege::PrivCtlOp;
 use crate::service_slot::{RFlags, SlotId, SysFlags};
 use crate::slot::RssFlags;
 use minix_types::Clock;
@@ -888,7 +889,7 @@ impl UpdateChain {
     /// propagate; a non-preparing-only VM/RS descriptor marks itself.
     /// (`last_lu_flags` was the dormant原料 for this — R23a completes it.)
     pub fn set_new_upd_flags(&mut self, entry: &mut UpdateEntry) {
-        if self.len() > 0 {
+        if !self.is_empty() {
             entry.lu_flags |= LuFlags::MULTI;
             entry.init_flags |= LuFlags::MULTI.bits() as u32;
         }
@@ -1131,6 +1132,7 @@ impl UpdateState {
     /// descriptor, skipping prepare-only ones (update.c:516-525). Returns
     /// the slot whose prepare was requested, or `None` when the chain is
     /// exhausted.
+    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化
     pub fn start_update_prepare_next(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1177,7 +1179,7 @@ impl UpdateState {
             let prepare_state = e.prepare_state;
             let preparing_only = e.is_preparing_only();
             let has_next = e.next.is_some();
-            request_prepare(&table.get(slot), prepare_state); // update.c:521
+            request_prepare(table.get(slot), prepare_state); // update.c:521
             if !preparing_only {
                 break;
             }
@@ -1200,6 +1202,7 @@ impl UpdateState {
     /// policy flags for multi-component updates including VM (update.c:442-
     /// 454); `ESRCH` (with `end_update(OK, RS_REPLY)`) when the chain is
     /// already exhausted.
+    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（全局表/hz/idle/abort/end）
     pub fn start_update_prepare(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1249,10 +1252,11 @@ impl UpdateState {
                     old.pub_.new_endpoint = Some(ep);
                     if !is_vm && !is_rs {
                         old.pub_.sys_flags.insert(SysFlags::VM_UPDATE);
-                        if {
+                        let res = {
                             let e = &self.chain.entries[i];
                             e.lu_flags.contains(LuFlags::NOMMAP)
-                        } {
+                        };
+                        if res {
                             old.pub_.sys_flags.insert(SysFlags::VM_NOMMAP);
                         }
                     }
@@ -1309,11 +1313,11 @@ impl UpdateState {
         };
 
         // Perform the update, skipped for RS itself (update.c:642-650).
-        if table.get(old).pub_.endpoint != Endpoint::RS {
-            if let Err(r) = update_service(old, new, sys_upd_flags) {
-                end_update(r.to_i32()); // update.c:645 — end_update(r, RS_REPLY)
-                return Err(r);
-            }
+        if table.get(old).pub_.endpoint != Endpoint::RS
+            && let Err(r) = update_service(old, new, sys_upd_flags)
+        {
+            end_update(r.to_i32()); // update.c:645 — end_update(r, RS_REPLY)
+            return Err(r);
         }
         Ok(())
     }
@@ -1329,6 +1333,7 @@ impl UpdateState {
     /// `receive_vm_init` (the VM wait + `do_init_ready` + reply block,
     /// update.c:600-640 — 06/12/19). `vm_rpupd`/`last` feed the
     /// `UPD_INIT_MAXTIME` wait window (const.h:116).
+    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/表/五缝）
     pub fn start_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1345,7 +1350,7 @@ impl UpdateState {
         // avoids a breaking change for the wiring layer.
         let _ = (kernel, read_exec);
         debug_assert!(self.flags.contains(RupdateFlags::UPDATING)); // update.c:539
-        debug_assert!(self.chain.len() > 0); // update.c:540
+        debug_assert!(!self.chain.is_empty()); // update.c:540
         debug_assert!(self.num_init_ready_pending == 0); // update.c:541
         self.flags.insert(RupdateFlags::INITIALIZING); // update.c:548
 
@@ -1359,7 +1364,7 @@ impl UpdateState {
             };
             walk = next;
             if preparing_only {
-                request_prepare(&table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
+                request_prepare(table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
             }
         }
 
@@ -1421,6 +1426,12 @@ impl UpdateState {
 // Tests appended for R23b (start_update_prepare_next walk — update.c:467-527).
 #[cfg(test)]
 mod r23b_tests {
+    #![allow(
+        clippy::too_many_arguments,
+        clippy::type_complexity,
+        unused_variables,
+        dead_code
+    )]
     use super::*;
     use crate::process_table::RProcTable;
 
@@ -1493,5 +1504,677 @@ mod r23b_tests {
         // The walk continued past the prepare-only head in one call.
         assert_eq!(st.chain.curr, Some(1));
         let _ = dispatched;
+    }
+}
+
+// ── update/rollback/complete/end orchestration (R23c+R27 — update.c:262-325/
+//    330-366/657-702/816-927) ─────────────────────────────────────────────────
+
+impl UpdateState {
+    /// Updates an existing service: kernel identity swap, table swap, priv
+    /// refresh, activation.
+    ///
+    /// C: `update_service` — update.c:262-325. `swap_flag == RS_SWAP` first
+    /// asks the kernel to swap the process identities (`srv_update`);
+    /// `swap_slot` exchanges the table rows; the pid/endpoint pairs are then
+    /// exchanged back so each config row carries the identity now running it
+    /// (update.c:292-299); both priv copies refresh from the kernel
+    /// (update.c:302-306, C panics on failure — kept as `expect`); the new
+    /// version activates (update.c:320).
+    pub fn update_service(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        src: SlotId,
+        dst: SlotId,
+        swap_flag: i32,
+        sys_upd_flags: SysFlags,
+    ) -> Result<(), Errno> {
+        if swap_flag == 1 {
+            // C: srv_update(src_ep, dst_ep, sys_upd_flags) — update.c:272-275.
+            let src_ep = table.get(src).pub_.endpoint;
+            let dst_ep = table.get(dst).pub_.endpoint;
+            kernel.sys_update(src_ep, dst_ep, sys_upd_flags)?;
+        }
+
+        // Swap slots (update.c:283). The (dst, src) pair is C's re-pointed
+        // src_rp/dst_rp after swap_slot's step 6.
+        let (src, dst) = crate::service_create::swap_slot(table, src, dst);
+
+        // Reassign pids and endpoints (update.c:292-299): each row takes the
+        // identity of the process now running it, and the fast index follows.
+        let (src_pid, src_ep) = (table.get(dst).pid, table.get(dst).pub_.endpoint);
+        let (dst_pid, dst_ep) = (table.get(src).pid, table.get(src).pub_.endpoint);
+        {
+            let s = table.get_mut(src);
+            s.pid = src_pid;
+            s.pub_.endpoint = src_ep;
+        }
+        table.set_endpoint_index(src_ep, Some(src));
+        {
+            let d = table.get_mut(dst);
+            d.pid = dst_pid;
+            d.pub_.endpoint = dst_ep;
+        }
+        table.set_endpoint_index(dst_ep, Some(dst));
+
+        // Update the in-RS priv copies (update.c:302-306; C panics on
+        // failure — internal invariant after the kernel swap).
+        let src_priv = kernel
+            .getpriv(src_ep)
+            .expect("update: src priv sync (update.c:303)");
+        table.get_mut(src).priv_ = src_priv;
+        let dst_priv = kernel
+            .getpriv(dst_ep)
+            .expect("update: dst priv sync (update.c:305)");
+        table.get_mut(dst).priv_ = dst_priv;
+
+        // Make the new version active (update.c:320).
+        crate::service_create::activate_service(table, dst, Some(src));
+        Ok(())
+    }
+
+    /// Rolls back an updated service.
+    ///
+    /// C: `rollback_service` — update.c:330-366. RS branch: only the slots
+    /// swap (plus a VM rollback when the running instance is not the original
+    /// RS — `me` injected), and **all active slots get `r_check_tm = 0`** so
+    /// the heartbeat monitor re-pings everyone (update.c:349-352 — the
+    /// monitor/LU coupling, R27(a)). Non-RS: freeze the new instance
+    /// (`SYS_PRIV_DISALLOW`) when swapping, then `update_service` backwards
+    /// with `SF_VM_ROLLBACK`.
+    pub fn rollback_service(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        new: SlotId,
+        old: SlotId,
+        me: Endpoint,
+        vm_rollback: &mut dyn FnMut(Endpoint, Endpoint),
+    ) {
+        if table.get(old).pub_.endpoint == Endpoint::RS {
+            // C: update.c:336-347 — sys_whoami gate (`me` injected); a
+            // restarted-RS instance asks VM to roll back.
+            if me != Endpoint::RS {
+                vm_rollback(table.get(new).pub_.endpoint, table.get(old).pub_.endpoint);
+            }
+            // R27(a): heartbeat replies may have been missed — force re-ping
+            // of every active service next period (update.c:349-352).
+            let active: Vec<SlotId> = table
+                .iter_all()
+                .filter(|(_, s)| s.flags.contains(RFlags::ACTIVE))
+                .map(|(id, _)| id)
+                .collect();
+            for id in active {
+                table.get_mut(id).check_tm = 0;
+            }
+        } else {
+            // C: update.c:355-363 — INIT_PENDING new instances roll back
+            // without a kernel swap; swapping ones are frozen first.
+            let swap = !table.get(new).flags.contains(RFlags::INIT_PENDING);
+            if swap {
+                let _ = kernel.privctl(table.get(new).pub_.endpoint, PrivCtlOp::Disallow, None);
+            }
+            let _ = self.update_service(
+                table,
+                kernel,
+                new,
+                old,
+                if swap { 1 } else { 0 },
+                SysFlags::VM_NOMMAP,
+            );
+        }
+    }
+
+    /// Ends the update for one service (per-position dispatch driver).
+    ///
+    /// C: `end_srv_update` — update.c:932-1008: the surviving version clears
+    /// its update flags and (optionally) gets the reply/cancel; the exiting
+    /// version (with all its instances) goes through `cleanup_service` — a
+    /// detached old instance is marked `RS_CLEANUP_DETACH`, cleaned and
+    /// replied with `EDEADEPT`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn end_srv_update(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        entry_idx: usize,
+        result: i32,
+        mut reply_flag: i32,
+        ticks: Clock,
+        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+    ) {
+        let _ = RssFlags::empty();
+        let (old, lu_detached) = {
+            let e = &self.chain.entries[entry_idx];
+            (e.slot, e.lu_flags.contains(LuFlags::DETACHED))
+        };
+        let new = table
+            .get(old)
+            .new_rp
+            .expect("end_srv_update: replica must exist (update.c:941)");
+
+        // VM already replied in a multi-component update — cancel instead
+        // (update.c:944-948).
+        if result == 0 && table.get(new).pub_.endpoint == Endpoint::VM && self.is_upd_vm_multi() {
+            reply_flag = 2; // RS_CANCEL — const.h:78
+        }
+
+        let surviving = if result == 0 { new } else { old };
+        let exiting = if result == 0 { old } else { new };
+
+        {
+            let s = table.get_mut(surviving);
+            s.flags.remove(RFlags::INITIALIZING); // update.c:963
+            s.check_tm = 0; // update.c:964
+            s.alive_tm = ticks; // update.c:965
+            s.flags.remove(
+                RFlags::UPDATING | RFlags::PREPARE_DONE | RFlags::INIT_DONE | RFlags::INIT_PENDING,
+            ); // update.c:975-976
+        }
+        self.chain.entries[entry_idx].slot = surviving; // update.c:968
+
+        // Unlink the two versions (update.c:970-972).
+        table.get_mut(old).new_rp = None;
+        table.get_mut(new).old_rp = None;
+
+        // Reply or cancel the survivor (update.c:977-987).
+        if reply_flag == 1 {
+            // RS_REPLY — m_type = result.
+            let _ = kernel.reply(table.get(surviving).pub_.endpoint, result);
+        } else if reply_flag == 2 && !table.get(surviving).flags.contains(RFlags::TERMINATED) {
+            // RS_CANCEL — a NULL prepare completes a prepare-only survivor.
+            request_prepare(table.get(surviving), crate::live_update::SEF_LU_STATE_NULL);
+        }
+
+        // Cleanup (or detach-mark) every instance of the exiting version
+        // (update.c:990-1001). The old instance of a DETACHED update is
+        // marked, cleaned and replied with EDEADEPT.
+        let exiting_instances: Vec<SlotId> = table.instances_of(exiting).collect();
+        for id in exiting_instances {
+            if id == old && lu_detached {
+                table.get_mut(id).flags.insert(RFlags::CLEANUP_DETACH);
+                crate::recovery::cleanup_service(table, id, kernel, run_script);
+                let _ = kernel.reply(table.get(id).pub_.endpoint, minix_types::EDEADEPT);
+            } else {
+                crate::recovery::cleanup_service(table, id, kernel, run_script);
+            }
+        }
+    }
+
+    /// Reverse iteration of the chain with phase-position classification.
+    ///
+    /// C: `end_update_rev_iter` — update.c:816-860: walks last → first,
+    /// classifying each non-prepare-only descriptor by its position relative
+    /// to `curr` and the `RS_INITIALIZING` phase, then dispatches to the
+    /// matching `end_update_*` handler (inlined here).
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // 同 end_update
+    pub fn end_update_rev_iter(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        result: i32,
+        reply_flag: i32,
+        skip: Option<usize>,
+        only: Option<usize>,
+        ticks: Clock,
+        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+    ) {
+        let initializing = self.flags.contains(RupdateFlags::INITIALIZING);
+        // Reverse walk: last → first via prev links.
+        let mut rev: Vec<usize> = Vec::new();
+        let mut idx = self.chain.last;
+        while let Some(i) = idx {
+            rev.push(i);
+            idx = self.chain.entries[i].prev;
+        }
+        let mut is_after_curr = true;
+        for i in rev {
+            let is_curr = self.chain.curr == Some(i);
+            is_after_curr = is_after_curr && !is_curr;
+            let preparing_only = self.chain.entries[i].is_preparing_only();
+            if preparing_only {
+                continue;
+            }
+            let is_before_curr = !is_curr && !is_after_curr;
+            let (is_before_prepare, is_prepare_done, is_initializing) = if initializing {
+                (false, is_after_curr, is_before_curr)
+            } else {
+                (is_after_curr, is_before_curr, false)
+            };
+            if (skip.is_some() && skip == Some(i)) || (only.is_some() && only != Some(i)) {
+                continue;
+            }
+
+            // end_update_curr (update.c:744-759): init-time failures roll
+            // back non-RS current descriptors.
+            if is_curr {
+                let old = self.chain.entries[i].slot;
+                let rs_entry = self.chain.rs;
+                if result != 0 {
+                    let (updating_and_init, is_rs) = {
+                        let new = table
+                            .get(old)
+                            .new_rp
+                            .map(|n| {
+                                table
+                                    .get(n)
+                                    .flags
+                                    .contains(RFlags::UPDATING | RFlags::INITIALIZING)
+                            })
+                            .unwrap_or(false);
+                        (new, rs_entry == Some(i))
+                    };
+                    if updating_and_init && !is_rs {
+                        let new = table.get(old).new_rp.unwrap();
+                        self.rollback_service(
+                            table,
+                            kernel,
+                            new,
+                            old,
+                            Endpoint::RS,
+                            &mut |_, _| {},
+                        );
+                    }
+                }
+                self.end_srv_update(
+                    table,
+                    kernel,
+                    i,
+                    result,
+                    reply_flag,
+                    ticks,
+                    request_prepare,
+                    run_script,
+                );
+            } else if is_before_prepare {
+                // end_update_before_prepare (update.c:763-774): still waiting
+                // — clean the new version, keep the old running.
+                if let Some(new) = table.get(self.chain.entries[i].slot).new_rp {
+                    crate::recovery::cleanup_service(table, new, kernel, run_script);
+                }
+            } else if is_prepare_done {
+                // end_update_prepare_done (update.c:780-794): unblock + end
+                // with RS_REPLY.
+                self.end_srv_update(
+                    table,
+                    kernel,
+                    i,
+                    result,
+                    1,
+                    ticks,
+                    request_prepare,
+                    run_script,
+                );
+            } else {
+                // is_initializing — end_update_initializing (update.c:795-
+                // 811): init-time failures roll back non-RS descriptors.
+                debug_assert!(is_initializing);
+                let old = self.chain.entries[i].slot;
+                let rs_entry = self.chain.rs;
+                if result != 0
+                    && rs_entry != Some(i)
+                    && let Some(new) = table.get(old).new_rp
+                {
+                    self.rollback_service(table, kernel, new, old, Endpoint::RS, &mut |_, _| {});
+                }
+                self.end_srv_update(
+                    table,
+                    kernel,
+                    i,
+                    result,
+                    1,
+                    ticks,
+                    request_prepare,
+                    run_script,
+                );
+            }
+        }
+    }
+
+    /// Ends an in-progress update process.
+    ///
+    /// C: `end_update` — update.c:865-927. Returns
+    /// [`EndUpdateOutcome::RsSelfTerminate`] when a failed update hits an
+    /// RS_INIT_DONE new RS instance (C `exit(1)`, update.c:883-887 — R27(b)).
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/ticks/两缝）
+    pub fn end_update(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        result: i32,
+        reply_flag: i32,
+        ticks: Clock,
+        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+    ) -> crate::recovery::CrashOutcome {
+        debug_assert!(self.flags.contains(RupdateFlags::UPDATING)); // update.c:875
+
+        // R27(b): the new RS instance completed initialization but the update
+        // failed — the new instance exits (C `exit(1)`, update.c:883-887).
+        let rs_init_done = table
+            .endpoint_slot(Endpoint::RS)
+            .map(|rs| table.get(rs).flags.contains(RFlags::INIT_DONE))
+            .unwrap_or(false);
+        if result != 0 && rs_init_done {
+            return crate::recovery::CrashOutcome::SelfTerminate;
+        }
+
+        // Prepare-only services: cancel (unless initializing) and clear the
+        // flag (update.c:889-897).
+        let initializing = self.flags.contains(RupdateFlags::INITIALIZING);
+        let mut walk = self.chain.first;
+        while let Some(i) = walk {
+            let (next, preparing_only, slot) = {
+                let e = &self.chain.entries[i];
+                (e.next, e.is_preparing_only(), e.slot)
+            };
+            walk = next;
+            if !preparing_only {
+                continue;
+            }
+            if !initializing {
+                request_prepare(table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
+            }
+            table.get_mut(slot).flags.remove(RFlags::PREPARE_DONE);
+        }
+
+        // VM last, to support rollback (update.c:899-902).
+        self.end_update_rev_iter(
+            table,
+            kernel,
+            result,
+            reply_flag,
+            self.chain.vm,
+            None,
+            ticks,
+            request_prepare,
+            run_script,
+        );
+        if self.chain.vm.is_some() {
+            self.end_update_rev_iter(
+                table,
+                kernel,
+                result,
+                reply_flag,
+                None,
+                self.chain.vm,
+                ticks,
+                request_prepare,
+                run_script,
+            );
+        }
+
+        // Success: clear predecessors and complete initialization of the new
+        // instances (update.c:904-915).
+        let mut walk = self.chain.first;
+        while let Some(i) = walk {
+            let (next, preparing_only, slot) = {
+                let e = &self.chain.entries[i];
+                (e.next, e.is_preparing_only(), e.slot)
+            };
+            let prev = self.chain.entries[i].prev;
+            walk = next;
+            if let Some(prev_idx) = prev {
+                // rupdate_upd_clear(prev) — grant reset (19) + vacant state.
+                let prev_slot = self.chain.entries[prev_idx].slot;
+                self.chain.entries[prev_idx] = UpdateEntry::new(prev_slot, Endpoint::NONE);
+            }
+            if result == 0 && !preparing_only {
+                // The rp now points at the new instance (update.c:908-913).
+                let new = slot;
+                crate::ready::end_srv_init(table.get_mut(new), false);
+            }
+        }
+        // late_reply(last, result) + rupdate_upd_clear(last) (update.c:916-
+        // 917), then RUPDATE_CLEAR() (update.c:918).
+        if let Some(last_idx) = self.chain.last {
+            let last_slot = self.chain.entries[last_idx].slot;
+            if table.get(last_slot).flags.contains(RFlags::LATEREPLY) {
+                let _ = kernel.reply(table.get(last_slot).pub_.endpoint, result);
+                table.get_mut(last_slot).flags.remove(RFlags::LATEREPLY);
+            }
+            self.chain.entries[last_idx] = UpdateEntry::new(last_slot, Endpoint::NONE);
+        }
+        *self = UpdateState::default();
+
+        // Clear old/new endpoints and the VM policy flags table-wide
+        // (update.c:921-926).
+        for id in 0..table.len() {
+            let slot_id = SlotId::new(id);
+            let s = table.get_mut(slot_id);
+            s.pub_.old_endpoint = None;
+            s.pub_.new_endpoint = None;
+            s.pub_
+                .sys_flags
+                .remove(SysFlags::VM_UPDATE | SysFlags::VM_ROLLBACK | SysFlags::VM_NOMMAP);
+        }
+        crate::recovery::CrashOutcome::Signalled
+    }
+}
+
+impl UpdateState {
+    /// Completes the update of a service given its descriptor.
+    ///
+    /// C: `complete_srv_update` — update.c:657-702. The new instance drops
+    /// `RS_INIT_PENDING`; RS itself initializes the new instance and yields
+    /// (`SYS_PRIV_YIELD`), rolling back + `end_update(ERESTART, RS_REPLY)` on
+    /// any failure (C panics on the init/yield failures — kept as `expect`/
+    /// panic per "can't fail" invariant); other services `run_service` and
+    /// roll back + `end_update(r, RS_REPLY)` on failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_srv_update(
+        &mut self,
+        table: &mut crate::process_table::RProcTable,
+        kernel: &mut dyn crate::boot::KernelApi,
+        entry_idx: usize,
+        ticks: Clock,
+        _read_exec: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+        asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        let (old, init_flags) = {
+            let e = &self.chain.entries[entry_idx];
+            (e.slot, e.init_flags)
+        };
+        let new = table
+            .get(old)
+            .new_rp
+            .expect("complete_srv_update: replica must exist (update.c:664)");
+
+        // update.c:668 — the new instance is no longer pending.
+        table.get_mut(new).flags.remove(RFlags::INIT_PENDING);
+
+        // RS itself: initialize the new instance, yield control to it, and
+        // roll back + end with ERESTART (update.c:671-688).
+        if table.get(old).pub_.endpoint == Endpoint::RS {
+            // Old endpoint (utility.c:35-37): the LU descriptor's
+            // state_endpoint when the old instance carries an update.
+            let old_endpoint = table.get(old).upd.as_ref().map(|u| u.state_endpoint);
+            let new_slot = table.get_mut(new);
+            if crate::service_create::init_service(
+                new_slot,
+                old_endpoint,
+                crate::sef::SefInitType::Lu,
+                init_flags,
+                None,
+                crate::live_update::SEF_LU_STATE_NULL,
+                ticks,
+                asynsend,
+            )
+            .is_err()
+            {
+                panic!("unable to initialize the new RS instance (update.c:675)");
+            }
+            if kernel
+                .privctl(
+                    table.get(new).pub_.endpoint,
+                    crate::privilege::PrivCtlOp::Yield,
+                    None,
+                )
+                .is_err()
+            {
+                panic!("unable to yield control to the new RS instance (update.c:681)");
+            }
+            self.rollback_service(table, kernel, new, old, Endpoint::RS, &mut |_, _| {});
+            self.end_update(
+                table,
+                kernel,
+                minix_types::ERESTART,
+                1,
+                ticks,
+                &mut request_prepare_stub,
+                &mut no_script_fn,
+            );
+            return Err(Errno::from_i32(minix_types::ERESTART));
+        }
+
+        // Let the new version run (update.c:690-701); failure → rollback +
+        // end_update(r, RS_REPLY).
+        if crate::service_create::run_service(
+            table,
+            new,
+            kernel,
+            crate::sef::SefInitType::Lu,
+            init_flags,
+            ticks,
+            asynsend,
+        )
+        .is_err()
+        {
+            self.rollback_service(table, kernel, new, old, Endpoint::RS, &mut |_, _| {});
+            self.end_update(
+                table,
+                kernel,
+                Errno::EGENERIC.to_i32(),
+                1,
+                ticks,
+                &mut request_prepare_stub,
+                &mut no_script_fn,
+            );
+            return Err(Errno::EGENERIC);
+        }
+        Ok(())
+    }
+}
+
+/// No-op script hook shared by the LU orchestrations (the C failure paths
+/// carry no cleanup script; cleanup phase 2 consumes the flag before use).
+fn no_script_fn(_slot: &mut crate::service_slot::ServiceSlot) -> Result<(), Errno> {
+    Ok(())
+}
+
+fn request_prepare_stub(_slot: &crate::service_slot::ServiceSlot, _ps: i32) {}
+
+// Tests appended for R23c/R27 (rollback sweep, self-terminate, end chain).
+#[cfg(test)]
+mod r23c_tests {
+    #![allow(clippy::too_many_arguments, unused_variables, unused_mut)]
+    use super::*;
+    use crate::process_table::RProcTable;
+    use crate::service_slot::ServiceSlot;
+
+    #[test]
+    fn test_rollback_rs_sweeps_active_check_tm() {
+        // R27(a): update.c:349-352 — an RS rollback zeroes `r_check_tm` on
+        // every ACTIVE slot (heartbeat re-ping), but leaves non-active and
+        // RS's own row alone.
+        let mut table = RProcTable::new();
+        // old = the RS instance rolling back (C checks
+        // `(*old_rpp)->r_pub->endpoint == RS_PROC_NR`, update.c:333).
+        let old = table.alloc_slot().unwrap();
+        table.get_mut(old).flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::UPDATING;
+        table.get_mut(old).pub_.endpoint = Endpoint::RS;
+        table.get_mut(old).check_tm = 55;
+        let new = table.alloc_slot().unwrap();
+        table.get_mut(new).flags = RFlags::IN_USE | RFlags::UPDATING;
+        table.get_mut(new).pub_.endpoint = Endpoint::VFS;
+        let bystander = table.alloc_slot().unwrap();
+        table.get_mut(bystander).flags = RFlags::IN_USE | RFlags::ACTIVE;
+        table.get_mut(bystander).pub_.endpoint = Endpoint::PM;
+        table.get_mut(bystander).check_tm = 55;
+
+        let mut st = UpdateState::default();
+        let mut k = crate::testutil::MockKernelApi::new(60);
+        st.rollback_service(&mut table, &mut k, new, old, Endpoint::RS, &mut |_, _| {});
+        // R27(a): every ACTIVE row — RS itself AND bystanders — gets swept.
+        assert_eq!(table.get(old).check_tm, 0);
+        assert_eq!(table.get(bystander).check_tm, 0);
+        // No kernel swap happened in the RS branch.
+        assert!(
+            k.calls
+                .iter()
+                .all(|c| !matches!(c, crate::testutil::Call::SysUpdate(_, _)))
+        );
+    }
+
+    #[test]
+    fn test_end_update_rs_init_done_self_terminates() {
+        // R27(b): update.c:883-887 — a failed update with the new RS
+        // instance at INIT_DONE exits (mock: SelfTerminate outcome).
+        let mut table = RProcTable::new();
+        let rs = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(rs);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::INIT_DONE;
+            s.pub_.endpoint = Endpoint::RS;
+        }
+        table.set_endpoint_index(Endpoint::RS, Some(rs)); // RUPDATE_IS_RS_INIT_DONE reads the index
+        let mut st = UpdateState::default();
+        st.begin_updating();
+        let mut k = crate::testutil::MockKernelApi::new(60);
+        let outcome = st.end_update(
+            &mut table,
+            &mut k,
+            Errno::EGENERIC.to_i32(),
+            1,
+            0,
+            &mut |_s, _ps| {},
+            &mut no_script_fn,
+        );
+        assert_eq!(outcome, crate::recovery::CrashOutcome::SelfTerminate);
+        // The short-circuit happens before any per-descriptor teardown.
+        assert!(k.calls.is_empty());
+    }
+
+    #[test]
+    fn test_restart_service_script_branch() {
+        // C: manager.c:1255-1261 — a script-carrying service restarts via
+        // the script and never reaches the clone path.
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(rp);
+            s.flags = RFlags::IN_USE;
+            s.script[..7].copy_from_slice(b"/rescue");
+        }
+        let mut k = crate::testutil::MockKernelApi::new(60);
+        let mut script_ran = false;
+        {
+            let mut script = |_slot: &mut ServiceSlot| {
+                script_ran = true;
+                Ok(())
+            };
+            let mut no_load = |_slot: &mut ServiceSlot| Ok(());
+            let mut no_publish = |_t: &RProcTable, _rp: SlotId| Ok(());
+            let mut no_send = |_ep: Endpoint, _m: &crate::ready::InitMessage| Ok(());
+            crate::service_create::restart_service(
+                &mut table,
+                rp,
+                &mut k,
+                0,
+                &mut no_load,
+                &mut script,
+                &mut no_publish,
+                &mut no_send,
+            );
+        }
+        assert!(script_ran);
+        // Script path returns before any clone.
+        assert!(!table.get(rp).flags.contains(RFlags::EXITING));
+        assert!(k.calls.is_empty());
     }
 }

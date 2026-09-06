@@ -676,7 +676,7 @@ mod tests {
         // without a C-change anchor.
         let mut s = RsStart::default();
         s.priority = -1;
-        assert_eq!(check_request(&s, &machine()).is_ok(), true);
+        assert!(check_request(&s, &machine()).is_ok());
     }
 
     #[test]
@@ -846,7 +846,7 @@ mod tests {
         }
         let args = build_cmd_dep(&cmd);
         // One slot reserved for the terminating NULL (manager.c:311-315).
-        assert!(args.len() <= crate::service_slot::ARGV_ELEMENTS - 1);
+        assert!(args.len() < crate::service_slot::ARGV_ELEMENTS);
     }
 
     #[test]
