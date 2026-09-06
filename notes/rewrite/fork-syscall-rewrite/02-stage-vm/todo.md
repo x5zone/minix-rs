@@ -1191,6 +1191,14 @@ Coverage Summary for vm:
 - **Verified**: `cargo test -p minix-types` → **169 passed**（+1 roundtrip）；四矩阵 **457 / 473 / 472 / 457 passed**（+1 pin 测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 25-rs-services.md（握手契约三处 + 模块清单行号）、15-ipc-dispatch.md（§5.3 RS_INIT 缺口行 ✅）
 
+### ✅ Fix #41: T14（part 1）— `exec_bootproc` 装载半 + `Gateway::sys_exec` wire 落地（栈帧 ABI → E-BOOTFRAME）
+
+- **Files**: `servers/vm/Cargo.toml`（`minix-elf` workspace 依赖——与 boot-shim 同源解析器）、`servers/vm/src/kernel_gateway.rs`（trait 增 `sys_exec(endpt, ip, stack, name_ptr, ps_str)`：SYS_EXEC=1、`MessLsysKrnSysExec` wire（kernel dispatch_exec 真实，syscall_process.rs:231）；MockGateway `last_exec` 记录；wire 测试 `test_trap_gateway_sys_exec_wire`）、`servers/vm/src/vm_server.rs`（新 `exec_bootproc`（cfg(not(test))）：Direct Map 直读 boot 映像（C 是 sys_physcopy 拷头页，Direct Map 消除拷贝）→ `minix_elf::segment_iter`（内滤 PT_LOAD）逐段建匿名 region + 逐页 `alloc_pfn`/`map_page` 实化 + 段字节拷贝/BSS 清零 → `sys_exec(endpoint, entry, 0, 0, 0)`；`init_boot_procs` 接线 + blob 释放（C main.c:513-516 对齐）+ fail-fast panic（boot 阶段无降级，对齐 C））
+- **诚实切分**：`minix_stack_params`/`minix_stack_fill`（argv/envp/ps_strings 字节级初始栈帧）是 VM↔libc↔kernel 三方共享 ABI（消费方为 minix3 crt0 与 `arch_proc_init` 的 ps_str 语义），需专项对照复刻 → **edge E-BOOTFRAME**；落地前 stack/ps_str 上报 0（boot proc 用户态启动被门控）
+- **VMC/VM_PAGEFAULT 状态**：boot 循环的 panic 链 pre-E1 不可达（transport 先于 init_boot_procs 失败）——无回归窗口
+- **Verified**: 四矩阵 **471 / 489 / 488 / 471 passed**（+1 wire 测试）；五组合 clippy `^servers/` **0 警告**；`cargo check`（cfg(not(test)) 生效）0 错误
+- **Docs**: 01-vm-init-main.md §3.5 五子步表全量刷新 + §4 状态行 + V11/T14 判定段
+
 ### ✅ Fix #35: T20（V9-P3-2）— 懒分配 roadmap 判定闭合：demand paging 已是现状，稀疏表示证据门控
 
 - **性质**：设计判定（无代码改动）。

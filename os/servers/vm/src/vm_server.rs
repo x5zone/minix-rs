@@ -546,9 +546,11 @@ impl VmServer {
     /// both are DEFERRED (ELF loading / pagetable bind / sys_exec depend on
     /// the kernel IPC core, minix-sys). Slot population happens now so the
     /// process table reflects the boot image before the main loop starts.
-    fn init_boot_procs(&self) {
+    fn init_boot_procs(&mut self) {
         let table = VmProcTable::get_global();
-        for &ip in &self.boot_procs {
+        // Own a copy: exec_bootproc needs &mut self while iterating.
+        let boot_procs = self.boot_procs;
+        for ip in &boot_procs {
             // C: main.c:502 — skip kernel tasks (negative proc_nr).
             // Rust additionally skips padding entries: `boot_procs` is copied
             // into a fixed `[BootImage; NR_BOOT_PROCS]` array, so empty slots
@@ -563,8 +565,181 @@ impl VmServer {
                 "init_boot_procs: boot proc {} has no start_addr",
                 ip.name()
             );
-            Self::init_proc(table, ip);
+            Self::init_proc(table, *ip);
+
+            // C: main.c:509 — exec_bootproc(vmp, ip) per user boot proc.
+            #[cfg(not(test))]
+            self.exec_bootproc(ip)
+                .unwrap_or_else(|e| panic!("exec_bootproc: {} failed: {e}", ip.name()));
+
+            // C: main.c:513-516 — the boot blob is consumed; free it back
+            // to the allocator (page-aligned, length rounded up).
+            #[cfg(not(test))]
+            {
+                let pages = ip.len.div_ceil(crate::region::PAGE_SIZE) as usize;
+                self.ctx.page_alloc.free_pages(
+                    crate::phys_mem::AlignedPhysBytes::new(ip.start_addr),
+                    pages,
+                );
+            }
         }
+    }
+
+    /// V11/T14: `exec_bootproc` (C: main.c:331-426) — load a boot image
+    /// process's ELF segments into its fresh address space and hand the
+    /// entry point to the kernel.
+    ///
+    /// # Scope (honest split)
+    ///
+    /// **Implemented here**: `pt_new`/`pt_bind` equivalent (`init_page_table`,
+    /// already run by `init_proc`), image read through the VM Direct Map
+    /// (`start_addr` is physical), PT_LOAD segment regions with eagerly
+    /// materialized pages carrying the segment bytes, and the `sys_exec`
+    /// notification (`Gateway::sys_exec`; kernel `dispatch_exec` is real).
+    ///
+    /// **Edge E-BOOTFRAME** (edge_todo.md): the minimal initial stack frame
+    /// (C `minix_stack_params`/`minix_stack_fill` — argv/envp/ps_strings
+    /// byte-exact ABI, consumed by minix3 libc crt0 and the kernel's
+    /// `arch_proc_init`). That frame is a VM↔libc↔kernel shared contract;
+    /// until it lands, `stack`/`ps_str` are reported as 0 and the boot
+    /// proc's user start is gated on it.
+    ///
+    /// # C reference
+    ///
+    /// ```c
+    /// static void exec_bootproc(struct vmproc *vmp, struct boot_image *ip)
+    /// {
+    ///     ...libexec_load_elf(execi) with physcopy allocators...  // segments
+    ///     minix_stack_params/fill(...)                             // frame
+    ///     sys_exec(endpoint, vsp, progname, execi->pc, ps_str)     // kernel
+    /// }
+    /// ```
+    #[cfg(not(test))]
+    fn exec_bootproc(&mut self, ip: &minix_types::BootImage) -> Result<(), &'static str> {
+        const PS: usize = crate::region::PAGE_SIZE as usize;
+        use crate::region::page_state::PfnAllocator as _;
+
+        let table = VmProcTable::get_global();
+        let slot = table
+            .vm_isokendpt(ip.endpoint)
+            .map_err(|_| "boot proc endpoint not registered")?;
+
+        // C: sys_physcopy(NONE, ip->start_addr, SELF, hdr, ...) — the image
+        // is physical memory owned by the boot handoff; the Direct Map
+        // window makes it directly readable (no copy needed, unlike C).
+        let image_len = ip.len as usize;
+        let image_va = crate::direct_map::vm_phys_to_virt(
+            crate::phys_mem::AlignedPhysBytes::new(ip.start_addr),
+        );
+        // SAFETY: [image_va, image_va+image_len) is the boot module blob the
+        // kernel handed over; VM owns it exclusively (C frees it right after
+        // exec_bootproc, main.c:514-516). The Direct Map window covers all
+        // physical memory; the handoff guarantees page alignment.
+        let image: &[u8] = unsafe {
+            core::slice::from_raw_parts(image_va.0 as *const u8, image_len)
+        };
+
+        // Parse + walk PT_LOAD segments (C: libexec_load_elf → elf_exec_hdr).
+        let entry = minix_elf::entry_point(image)
+            .map_err(|_| "boot image is not a valid ELF")?;
+        // SegmentIter yields PT_LOAD segments only (p_type filter inside).
+        let segments: alloc::vec::Vec<minix_elf::LoadSegment> =
+            minix_elf::segment_iter(image)
+                .map_err(|_| "boot image phdrs unreadable")?
+                .collect();
+
+        let frames = self
+            .ctx
+            .page_frames
+            .as_mut()
+            .ok_or("page_frames not initialized")?;
+
+        let mut proc = table
+            .get_active(slot)
+            .ok_or("boot proc slot not active")?;
+
+        for seg in segments.iter() {
+            let seg_len = seg.memsz;
+            if seg_len == 0 {
+                continue;
+            }
+            let pages = (seg_len as usize).div_ceil(PS);
+            let vaddr = minix_types::VirBytes(seg.vaddr);
+
+            // Region per segment (C: libexec_alloc_vm_prealloc → map_page_region).
+            let region = crate::region::VirRegion::with_memtype(
+                vaddr,
+                minix_types::VirBytes((pages * PS) as u64),
+                crate::region::VrFlags::ANON,
+                &crate::memtype::MEM_TYPE_ANON,
+            );
+            proc.regions_mut()
+                .insert(region)
+                .map_err(|_| "boot segment region overlap")?;
+
+            // Materialize pages eagerly and copy segment bytes through the
+            // Direct Map (C: libexec_copy_physcopy per page).
+            let pfn_alloc = &mut self.ctx.page_alloc;
+            let seg_vr = proc.regions_mut().find_mut(vaddr).unwrap();
+            for i in 0..pages {
+                let offset = minix_types::VirBytes((i * PS) as u64);
+                let pfn = pfn_alloc
+                    .alloc_pfn()
+                    .map_err(|_| "boot segment page allocation failed")?;
+                seg_vr.map_page(
+                    frames,
+                    offset,
+                    pfn,
+                    &crate::memtype::MEM_TYPE_ANON,
+                );
+
+                // Copy file bytes into the fresh physical page.
+                let dst_phys = pfn as u64 * PS as u64;
+                let dst_va = crate::direct_map::vm_phys_to_virt(
+                    crate::phys_mem::AlignedPhysBytes::new(dst_phys),
+                );
+                let file_off = i as u64 * PS as u64;
+                let copy_len = core::cmp::min(
+                    PS as u64,
+                    seg.filesz.saturating_sub(file_off),
+                ) as usize;
+                if copy_len > 0 {
+                    let src_off = (seg.offset + file_off) as usize;
+                    // SAFETY: destination is the freshly allocated page
+                    // through the Direct Map; source is the boot image
+                    // slice; both bounds-checked above.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            image.as_ptr().add(src_off),
+                            dst_va.0 as *mut u8,
+                            copy_len,
+                        );
+                    }
+                    // BSS remainder (memsz > filesz): zero-fill (allocator
+                    // zero-fills new pages in this codebase, but be explicit
+                    // for partial pages whose file part ends mid-page).
+                    let tail = PS - copy_len;
+                    if tail > 0 {
+                        unsafe {
+                            core::ptr::write_bytes(
+                                (dst_va.0 as *mut u8).add(copy_len),
+                                0,
+                                tail,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // E-BOOTFRAME: stack/ps_str reported as 0 until the initial-stack
+        // ABI lands; the kernel treats them as "no ps_strings" (matches
+        // the boot-gated state — these procs are not user-runnable yet).
+        let mut gateway = self.ctx.gateway.borrow_mut();
+        gateway
+            .sys_exec(ip.endpoint, entry, 0, 0, 0)
+            .map_err(|_| "sys_exec rejected by kernel")?;
+        Ok(())
     }
 
     /// C: init_proc() — main.c:262-283.

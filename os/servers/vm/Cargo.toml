@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
+# V11/T14: boot-proc ELF loading (exec_bootproc segment parsing);
+# the same no_std parser boot-shim uses (loader.rs).
+minix-elf = { workspace = true }
 minix-arch = { path = "../../arch" }
 bitflags = { workspace = true }
 

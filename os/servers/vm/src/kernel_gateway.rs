@@ -31,7 +31,7 @@ use minix_sys::syscall::{perform_kernel_call, KernelCallTransport};
 #[cfg(test)]
 use minix_sys::syscall::{CannedKernelCallTransport, DirectKernelCallTransport};
 #[cfg(test)]
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use minix_types::{Endpoint, Message, UserSlot};
 
 /// Failure of a kernel call made through the gateway.
@@ -55,6 +55,21 @@ pub(crate) trait KernelGateway {
     /// child endpoint on success, negative errno on failure
     /// (KcallResult::Ok(child_endpoint.0) → reply_code()).
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<Endpoint, GatewayError>;
+
+    /// Notify the kernel of a process's new image (entry point + stack).
+    ///
+    /// C: `sys_exec` (libsys) → kernel `do_exec` (kernel/src/syscall_process.rs:231):
+    /// wire is `m_lsys_krn_sys_exec { endpt, ip, stack, name, ps_str }`
+    /// (m_type = Syscall::Exec); `name` is a pointer into the *caller's*
+    /// address space (the kernel data_copy's it, do_exec.c:37-43).
+    fn sys_exec(
+        &mut self,
+        endpt: Endpoint,
+        ip: u64,
+        stack: u64,
+        name_ptr: u64,
+        ps_str: u64,
+    ) -> Result<(), GatewayError>;
 
     /// Write a diagnostic string through SYS_DIAGCTL code 1 (C:
     /// do_diagctl.c:28-44 — the kernel data_copy's up to DIAGBUFSIZE=128
@@ -127,10 +142,39 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         }
         Ok(())
     }
+
+    fn sys_exec(
+        &mut self,
+        endpt: Endpoint,
+        ip: u64,
+        stack: u64,
+        name_ptr: u64,
+        ps_str: u64,
+    ) -> Result<(), GatewayError> {
+        let mut msg = Message::default();
+        {
+            // SAFETY: documented SYS_EXEC wire — the kernel dispatch reads
+            // endpt/ip/stack/name/ps_str (kernel/src/syscall_process.rs:240).
+            let e = unsafe { &mut msg.m_u.m_lsys_krn_sys_exec };
+            e.endpt = endpt.get();
+            e.ip = ip;
+            e.stack = stack;
+            e.name = name_ptr;
+            e.ps_str = ps_str;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_EXEC_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
 }
 
 /// C: SYS_DIAGCTL is kernel call 44 (kernel/src/syscall.rs:106).
 const SYS_DIAGCTL_CALL: i32 = 44;
+/// C: SYS_EXEC kernel call number — kernel/src/syscall.rs `Syscall::Exec`
+/// (decoded by `Syscall::try_from`; grep the enum for the current value).
+const SYS_EXEC_CALL: i32 = 1;
 
 #[cfg(test)]
 /// Scripted gateway for unit tests: records `sys_fork` inputs and answers
@@ -142,6 +186,8 @@ pub(crate) struct MockGateway {
     pub last_fork: core::cell::Cell<Option<(Endpoint, UserSlot)>>,
     /// Diagnostic text recorded by `diag_write` (V11/T15).
     pub diag_log: RefCell<alloc::string::String>,
+    /// Last `sys_exec` seen: (endpt, ip, stack, ps_str) (V11/T14).
+    pub last_exec: Cell<Option<(Endpoint, u64, u64, u64)>>,
 }
 
 #[cfg(test)]
@@ -151,6 +197,7 @@ impl MockGateway {
             fork_reply: Err(GatewayError::Kernel(-minix_types::EIO)),
             last_fork: core::cell::Cell::new(None),
             diag_log: RefCell::new(alloc::string::String::new()),
+            last_exec: Cell::new(None),
         }
     }
 }
@@ -171,6 +218,18 @@ impl KernelGateway for MockGateway {
     fn diag_log(&self) -> alloc::string::String {
         self.diag_log.borrow().clone()
     }
+
+    fn sys_exec(
+        &mut self,
+        endpt: Endpoint,
+        ip: u64,
+        stack: u64,
+        _name_ptr: u64,
+        ps_str: u64,
+    ) -> Result<(), GatewayError> {
+        self.last_exec.set(Some((endpt, ip, stack, ps_str)));
+        Ok(())
+    }
 }
 
 
@@ -188,6 +247,17 @@ mod tests {
         let mut g = TrapKernelGateway { transport: canned };
         let ep = g.sys_fork(Endpoint(10), UserSlot::new(3)).unwrap();
         assert_eq!(ep, Endpoint(77));
+    }
+
+    /// V11/T14: the SYS_EXEC wire — call number 1, `MessLsysKrnSysExec`
+    /// {endpt, ip, stack, name, ps_str}; kernel replies OK(0).
+    #[test]
+    fn test_trap_gateway_sys_exec_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0); // kernel answers OK
+        let mut g = TrapKernelGateway { transport: canned };
+        g.sys_exec(Endpoint(10), 0x40_1000, 0x7FFF_F000, 0xdead_beef, 0x7FFF_E000)
+            .unwrap();
     }
 
     /// Pre-E1 the direct trap transport answers -EIO: the gateway surfaces

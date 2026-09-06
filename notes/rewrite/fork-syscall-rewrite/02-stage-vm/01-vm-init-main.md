@@ -583,11 +583,13 @@ if params.is_first_time {
 | `pt_init()`（main.c:475） | `init_vm_self_pt()` | `new_with_boot_params`（非 test） |
 | `__minix_init()`（main.c:480） | **就绪机制已落地（V10-P0-2）**：`transport.mark_initialized()`（vm_server.rs:413）；系统调用本体 DEFERRED（`minix-sys` 为 stub） | `init()` 末尾 |
 | `mem_add_total_pages`（main.c:485-495） | `VmServer::account_boot_memory()` → `global::add_total_pages` | `init()` Phase 2b |
-| boot 进程循环（main.c:498-520） | `VmServer::init_boot_procs()`（`exec_bootproc`/`free_mem` DEFERRED） | `init()` Phase 2c |
+| boot 进程循环（main.c:498-520） | `VmServer::init_boot_procs()` + `exec_bootproc`（V11/T14：装载+sys_exec 已实现；栈帧→E-BOOTFRAME）+ blob 释放 | `init()` Phase 2c |
 | CALLMAP（main.c:522-573） | `MessageDispatcher::dispatch_by_number` 编译时 match | 编译期 |
 | VM 实例标记（main.c:577-579） | `VmServer::mark_vm_instance()` → `ActiveProc::mark_vm_instance` | `init()` Phase 2d |
 
 **DEFERRED 判定**：`__minix_init` 的**系统调用本体**（内核 IPC 向量）与 `exec_bootproc`（ELF 装载 + `sys_exec`/`sys_vmctl`）依赖 `minix-sys` 的内核 IPC 原语，后者尚未实现（`os/libs/minix-sys/src/lib.rs` 标注 stub）。就绪**机制**（`transport.mark_initialized`）已随 V10-P0-2 落地（见上表），只差真实 syscall 接线。这两步的**槽位建立**不依赖内核 IPC（`init_proc` 等价物已完成），因此先落地槽位、延迟"装载与启动"，避免把进程表留给空壳。
+
+**V11/T14 更新**：`exec_bootproc` 的装载半与 `sys_exec` 半已落地（`KernelGateway` 经 minix-sys kernel-call 通道，wire 定稿 + mock/wire 双测试）；剩余 `minix_stack_*` 初始栈帧登记为 **edge E-BOOTFRAME**（三方 ABI 对照）。pre-E1 时 `sys_exec` 的 trap 桩答 -EIO，boot 循环按 C 同款 fail-fast panic（此为刻意设计：boot 阶段无降级路径）。
 
 ### 3.4 SEF 简化：rs_handshake + do_sef_init_request（对应 §2.4）
 
@@ -609,11 +611,12 @@ SEF 在 C 中解决 3 个问题，Rust 各有更简单的替代：
 
 | 子步骤 | Rust 状态 | 归属 |
 |--------|----------|------|
-| `pt_new` + `pt_bind` | DEFERRED（Paging trait 已定义，`CurrentPaging` 实现在 arch） | `08-pagetable-ops.md` |
-| ELF 头读取 + `libexec_load_elf` | DEFERRED（`minix-elf` crate 已提供解析器，装载接入待定） | `01-stage-kernel` ELF 装载 |
-| 栈建立（`minix_stack_*`） | DEFERRED | 10 期（switch-to-user） |
-| `sys_exec` + `VMCTL_BOOTINHIBIT_CLEAR` | DEFERRED（`minix-sys` stub） | `09-vm-boot-protocol.md`（内核侧已实现 `do_vmctl`） |
-| 槽位建立（`init_proc` 等价） | **已实现**：`VmServer::init_boot_procs` | 本文档 §4.4 |
+| `pt_new` + `pt_bind` | **已实现**：`init_proc` → `init_page_table()`（生产走 `CurrentPaging`，测试走 SimPaging V11/T21） | `08-pagetable-ops.md` |
+| ELF 头读取 + `libexec_load_elf` | **已实现**（V11/T14）：Direct Map 直读映像 + `minix_elf::segment_iter`/`entry_point` + 逐段匿名 region + 逐页 `alloc_pfn`/`map_page` 实化 + 段字节/BSS 写入 | `exec_bootproc`（vm_server.rs，本轮） |
+| 栈建立（`minix_stack_*`） | **edge E-BOOTFRAME**：argv/envp/ps_strings 字节级 ABI 是 VM↔libc↔kernel 三方共享契约（消费方为 minix3 crt0 与 `arch_proc_init`），需专项对照复刻；落地前 `stack`/`ps_str` 以 0 上报 | edge_todo.md |
+| `sys_exec` | **已实现**（V11/T14）：`KernelGateway::sys_exec`（wire：`MessLsysKrnSysExec{endpt,ip,stack,name,ps_str}`，m_type=Syscall::Exec=1；内核 `dispatch_exec` 真实）；pre-E1 trap 桩答 -EIO → 本函数 panic（boot 阶段 fail-fast，对齐 C 的 panic 语义） | `kernel_gateway.rs` |
+| `VMCTL_BOOTINHIBIT_CLEAR` | DEFERRED（随 RS 握手/调度使能链） | `09-vm-boot-protocol.md` |
+| 槽位建立（`init_proc` 等价） | **已实现**：`VmServer::init_boot_procs`；**V11/T14 接线**：循环内调 `exec_bootproc` 并按 C main.c:513-516 释放映像 blob | 本文档 §4.4 |
 
 **设计原则**：先把"进程表反映 boot 镜像"这一步落地（主循环运行的前提），把"装载与启动"延迟到内核 IPC 可用时。`init_boot_procs` 保留 C 的两个保护：跳过负 `proc_nr`（内核任务）、`assert(start_addr != 0)`。
 

@@ -29,7 +29,7 @@
 | T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ⬜ |
 | T12 | 2 | RS_PREPARE map_proc_dyn_data | rs.rs:250 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #40） |
 | T13 | 2 | RS_UPDATE 步骤 5-7（VM 侧）+ 步骤 4 走 Gateway | rs.rs:328 DEFERRED（通电→E2） | ⬜ |
-| T14 | 2 | exec_bootproc（minix-elf + VM 映射 + Gateway.sys_exec） | vm_server.rs:385 DEFERRED（通电→E2） | ⬜ |
+| T14 | 2 | exec_bootproc（minix-elf + VM 映射 + Gateway.sys_exec） | vm_server.rs:385 DEFERRED（通电→E2） | 🔄 装载半+sys_exec wire ✅（Fix #41）；栈帧 ABI → **E-BOOTFRAME** |
 | T15 | 2 | audit 日志转发（Gateway.diagctl） | audit.rs:16（通电→E2） | ✅ 2026-09-06（todo.md §15 Fix #32） |
 | T16 | 2 | sanity_checks feature + usedpages 等价物 | V10-P2-1 sanity 行 + G-V11-2 | ✅ 2026-09-06（todo.md §15 Fix #38；usedpages 语义由 verify_refcounts 覆盖） |
 | T17 | 2 | bitmap cache_freepages 三步路径 → **判定闭合：语义已被双层覆盖，钩子删除** | bitmap_alloc.rs:347 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #31） |
@@ -118,6 +118,22 @@
 3. VM 侧：`Gateway::sys_safecopyfrom(granter, gid, offset, buf)`（wire 已定：SYS_SAFECOPYFROM=31、`MessLsysKernSafecopy{from_to,grant_id,offset,address,bytes}`，kernel 应答 Ok(0)=成功）+ `ipc_call_rs_init` 真实体（拷贝 + 解码 → RprocTab）+ 翻转 pin 测试 + 恢复 `rs_handshake` ACL 循环为可达。
 
 **依赖**：完整 Minix3 C 源码参照（或补全本树头文件）；无 E1/E2 依赖（解码可纯单测）。
+
+---
+
+## E-BOOTFRAME boot 初始栈帧 ABI（T14 余件：minix_stack_params/fill 复刻）
+
+**背景**：`exec_bootproc` 的装载半（ELF 段映射）与 `sys_exec` 半已落地（Fix #41）。C main.c:381-408 在两者之间构造最小初始栈帧——`minix_stack_params(path, argv, envp, …)` 计算尺寸 + `minix_stack_fill(…)` 产出字节精确的 frame，再 `sys_datacopy(SELF, frame, endpoint, vsp, …)` 拷入目标地址空间，`psp = vsp + (psp - frame)` 作为 ps_strings 指针传 `sys_exec`。
+
+**为何 edge**：frame 布局是 VM↔libc↔kernel 三方共享 ABI——argv/envp 数组、字符串区、`struct ps_strings {argv, argc, envp, envc}` 的排布与对齐，消费方是 minix3 libc crt0（`_start` 如何取 argc）与内核 `arch_proc_init`（sp/ps_str 的寄存器约定）。仓内无既有物（PM 的 exec frame 由 VFS 构造传入，路径不同）。复刻前必须对照 minix3 libc 源码（crt0.S + libminixfw 的 stack.c）与本项目未来用户态约定，属跨模块契约。
+
+**解锁后 VM 侧工作（约一个迭代）**：
+1. `struct PsStrings` + `stack_params`/`stack_fill` 复刻（boot 简化路径：argv={proc_name,NULL}、envp={NULL}）；
+2. `exec_bootproc` 中建栈 region（`user_sp` 向下一页）+ frame 写入（Direct Map）+ `handle_memory_once` 实化；
+3. `sys_exec` 的 stack/ps_str 换真值；
+4. 测试：SimPaging 下断言 frame 字节布局 + `last_exec` 的 stack/ps_str。
+
+**依赖**：minix3 libc 源码参照（crt0 约定）；与 E1/E2 无序（frame 构造纯 VM 内）。
 
 ---
 
