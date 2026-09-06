@@ -370,6 +370,7 @@ mod tests {
         // C: main.c:574-579 sets `num_vm_instances = 1` together with
         // `VMF_VM_INSTANCE`; exit.c:77-79 clears both on exit. `clear()`
         // owns the decrement so flag and counter stay in sync.
+        crate::global::reset_vm_instance_count_for_test();
         let proc = get_vmproc(UserSlot::new(10));
         proc.vm_flags |= VmFlags::VM_INSTANCE;
         crate::global::inc_vm_instance();

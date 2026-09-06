@@ -1259,6 +1259,13 @@ Coverage Summary for vm:
 - **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
 - **Docs**: 15-ipc-dispatch.md §4.1/§4.5
 
+### ✅ Fix #37: T23（V11-P2-5）— CI feature 矩阵 + run_once 分支补测 + 顺序脆弱性修复
+
+- **Files**: `.github/workflows/vm-tests.yml`（新增：四 feature 组合 check/test + clippy `-D warnings`，触发路径限 vm/minix-types/minix-sys/minix-arch）、`os/servers/vm/src/vm_server.rs`（+2 测试：`test_run_once_invalid_caller_dropped`——invalid caller 分支 drop+计数无回复；`test_vmreplyforipc_rejects_suspend`——钉 reply-encode 失败不变式；两测试尾部补 `reset_boot_slots()` 清理）、`servers/vm/src/vmproc/vmproc.rs` + `servers/vm/src/global.rs`（`reset_vm_instance_count_for_test` cfg(test) 归零助手——修 P2-4 顺序脆弱性）、`os/tests/pm_vm_fork_test.rs`（文件头补复活条件注释：E1+E2 落地后按 minix-sys 消息层重写）、`tests/pm_vm_fork.rs` 同
+- **发现的既有缺陷（P2-4 家族实证）**：`test_vm_server_init_vm_instance_count` 的 `reset_boot_slots()` 在测试开头而非结尾——init 的 `mark_vm_instance` +1 从不归还，全局计数跨测试泄漏；并行/顺序变化下 `test_clear_decrements`（绝对值断言）随机翻车（实测 3/3 复现）。修法：计数测试改用归零助手自平衡（vmproc.rs），不改泄漏测试本身（其行为断言独立有效，泄漏归 V11-P1-2/V9-P1-3 的 VmContext 收敛统一解）
+- **Verified**: 四矩阵 **468 / 486 / 485 / 468 passed**（+2 invalid-caller/suspend pin；连续 3 次全量回归稳定）；四组合 clippy `^servers/` **0 警告**；`cargo clippy -p minix-vm --lib -- -D warnings` 通过
+- **Docs**: 15-ipc-dispatch.md §5.3 RS_INIT 行已随 Fix #34 闭环
+
 ### ✅ Fix #33: T10 part 1 — fdref 归零的 FdClose 入队 VfsRequestQueue（原静默丢弃/类型化局部 → 真实入队）
 
 - **Files**: `os/servers/vm/src/region/mod.rs`（`free_region_pages` 增 `vfs_queue`/`owner` 参数；drop 点构造 `VfsRequest{FdClose, callback:None}` 入队；队列满 → audit + fail-closed 丢弃（C 在 SLABALLOC 失败时 panic，本仓不 panic 于边界——V9-P0-1）；陈旧 20 行 TODO 注记删除）、`os/servers/vm/src/exit.rs`（`free_process_phys` 同构入队；`handle_vm_exit`/`handle_procctl_clear` 穿参）、`os/servers/vm/src/munmap.rs`（`handle_munmap`/`unmap_range` 穿参，4 个内部调用点 owner=active.endpoint()）、`os/servers/vm/src/brk.rs`（`handle_brk`/`shrink_heap` 穿参）、`os/servers/vm/src/ipc/dispatcher.rs`（6 处 handler 解构补 vfs_queue 并透传）、`os/servers/vm/src/vfs_queue.rs`（cfg(test) `active_fd_close()` 检视访问器）、新增 `test_free_region_pages_enqueues_fdclose`

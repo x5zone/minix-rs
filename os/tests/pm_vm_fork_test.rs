@@ -8,6 +8,11 @@
 //!
 //! Future integration tests should use mock IPC to simulate PM↔VM communication,
 //! not `use minix_vm::vmproc::VmProcTable`.
+//!
+//! REVIVAL CONDITION (02-stage-vm V11/T23 → edge_todo E5): these tests come
+//! back to life once minix-sys's user-space trap layer (edge E1) + SYS_*
+//! wrappers (edge E2) land — rewrite them against the minix-sys message
+//! layer (stable wire contracts), NOT against crate-internal types.
 
 /*
 #[cfg(test)]

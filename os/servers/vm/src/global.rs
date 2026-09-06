@@ -121,6 +121,16 @@ pub(crate) fn inc_vm_instance() {
 }
 
 /// Decrements VM instance count.
+// V11/T23: cfg(test) 归零助手——全局计数测试（跨模块）必须自平衡，
+// 不得依赖声明顺序（P2-4 顺序脆弱性家族）。
+#[cfg(test)]
+pub(crate) fn reset_vm_instance_count_for_test() {
+    // SAFETY: single-threaded test; no concurrent access.
+    unsafe {
+        *VM_INSTANCE_COUNT.get() = 0;
+    }
+}
+
 pub(crate) fn dec_vm_instance() {
     // SAFETY: Single-threaded VM; no concurrent access to VM_INSTANCE_COUNT.
     unsafe {

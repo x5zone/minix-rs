@@ -1,0 +1,51 @@
+name: vm-tests
+
+on:
+  push:
+    paths:
+      - 'os/servers/vm/**'
+      - 'os/libs/minix-types/**'
+      - 'os/libs/minix-sys/**'
+      - 'os/libs/minix-arch/**'
+      - '.github/workflows/vm-tests.yml'
+  pull_request:
+    paths:
+      - 'os/servers/vm/**'
+      - 'os/libs/minix-types/**'
+      - 'os/libs/minix-sys/**'
+      - 'os/libs/minix-arch/**'
+      - '.github/workflows/vm-tests.yml'
+
+jobs:
+  vm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build feature matrix (check)
+        working-directory: os
+        run: |
+          cargo check -p minix-vm --lib
+          cargo check -p minix-vm --lib --all-features
+          cargo check -p minix-vm --lib --no-default-features --features buddy_alloc
+          cargo check -p minix-vm --lib --no-default-features --features segment_tree_alloc
+          cargo check -p minix-vm --lib --no-default-features --features vm_acl_audit
+
+      - name: Test feature matrix
+        working-directory: os
+        run: |
+          cargo test -p minix-vm --lib
+          cargo test -p minix-vm --lib --all-features
+          cargo test -p minix-vm --lib --no-default-features --features buddy_alloc
+          cargo test -p minix-vm --lib --no-default-features --features segment_tree_alloc
+
+      - name: Clippy (default + all features, zero warnings required)
+        working-directory: os
+        run: |
+          cargo clippy -p minix-vm --lib -- -D warnings
+          cargo clippy -p minix-vm --lib --all-features -- -D warnings

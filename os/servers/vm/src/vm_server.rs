@@ -2407,6 +2407,69 @@ mod tests {
         assert_eq!(m1.m1i1, 0);
     }
 
+    /// V11/T23 (V11-P2-5): the invalid-caller drop branch (run_once
+    /// :713-723) — an unregistered endpoint's message is dropped with a
+    /// counter bump, no reply, no panic. Mirrors [ARCH: A-14].
+    #[test]
+    fn test_run_once_invalid_caller_dropped() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // VM_INFO from an endpoint that is NOT registered in the
+            // proc table → vm_isokendpt fails → drop branch.
+            let mut msg = Message::default();
+            msg.m_source = Endpoint(70);
+            msg.m_type = minix_types::VM_INFO as i32;
+            handle.queue_receive(msg, IpcStatus::default());
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+            assert_eq!(handle.sent().len(), 0, "invalid caller gets no reply");
+            assert_eq!(server.dropped_messages(), 1, "drop must be counted");
+
+            // Cleanup: init() registered the VM boot instance.
+            reset_boot_slots();
+        });
+    }
+
+    /// V11/T23 (V11-P2-5): pins the reply-encode failure invariant that
+    /// `run_once`'s Reply arm relies on (vm_server.rs:745-752) — a Reply
+    /// action carrying `VmReply::Suspend` is a dispatch-boundary logic
+    /// bug; `VmReplyForIpc::new` must refuse it (`None` → expect panic)
+    /// instead of a cryptic `unreachable!` deep in `reply_to_errno`.
+    /// Driving the full run_once arm is impossible without injecting the
+    /// bug itself, so the constructor contract is pinned directly.
+    #[test]
+    #[should_panic(expected = "DispatchAction::Reply carries VmReply::Suspend")]
+    fn test_vmreplyforipc_rejects_suspend() {
+        with_test_mock_base(|| {
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), {
+                    let t = crate::ipc::transport::TestIpcTransport::new();
+                    alloc::rc::Rc::new(core::cell::RefCell::new(
+                        alloc::boxed::Box::new(t)
+                            as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+                    ))
+                });
+            server.init();
+            // Drive the invariant directly: wrap a Suspend in the Reply arm's
+            // constructor — the wrapper must refuse it (None → expect panic).
+            let reply = VmReply::Suspend;
+            let _ = VmReplyForIpc::new(reply)
+                .expect("DispatchAction::Reply carries VmReply::Suspend;                          dispatch_on_msg should translate to DispatchAction::Suspend");
+        });
+    }
+
     /// V11/T9 step 3: an RS_INIT from RS carries the rproctab grant; the
     /// handshake fails closed until E-RSWIRE (the rproctab byte decode is
     /// pending) — no panic (the previous `.expect`), the message is dropped
@@ -2444,6 +2507,10 @@ mod tests {
             // Fail-closed: no reply to RS (NoReply), drop counted, audit fired.
             assert_eq!(handle.sent().len(), 0, "no reply to RS on failed handshake");
             assert_eq!(server.dropped_messages(), 1, "failed handshake must be counted");
+
+            // Cleanup: init() registered the VM boot instance (global
+            // counters); the sibling tests assert on those counters.
+            reset_boot_slots();
         });
     }
 
