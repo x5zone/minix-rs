@@ -1204,6 +1204,13 @@ Coverage Summary for vm:
 - **Verified**: 无代码改动；四矩阵 457/473/472/457 passed 维持。
 - **Docs**: 无需同步（行为未变，本条即判定记录）
 
+### ✅ Fix #36: T22（V11-P2-2）— MemType/PhysAllocator 方法级补测 + buddy reserve_pages 语义修正
+
+- **Files**: `os/servers/vm/src/memtype.rs`（`ev_delete` ×6 实现表驱动测试——anon/direct/shared/contig no-op、cache 清 PbCache pfn、mapped-file 重置 inited+fdref；ContiguousAnonymous 补测 4 件：resize/reference/copy→NotSupported、ev_pagefault panic 契约（should_panic）、ev_new 连续预分配、ev_new gap 回滚（GappedAlloc 双替身））、`os/servers/vm/src/phys_mem/buddy_alloc.rs`（**`reserve_pages` 语义修正**：原 base-page-only 扫描对"高阶空闲块内部页"静默失效——free 计数不降、保留页仍可被分配；重写为分裂下探式：相交块出表、半块按 buddy 惯例回表、范围内页 ORDER_INVALID+free_pages 递减；新增 reserve/available_regions 2 测试）、`os/servers/vm/src/phys_mem/allocator_tests.rs`（buddy + segment_tree 的 reserve/available 补测 4 件）
+- **发现的真实缺口**：原 buddy `reserve_pages` 只处理"页序字节为有效块基"的页——整块空闲区的内部页静默漏保留。bitmap 版（位图逐位）无此问题，故此缺陷是 buddy 后端专属
+- **Verified**: 四矩阵 **466 / 484 / 483 / 466 passed**（净增 16）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: bitmap_alloc 模板对照注释（buddy 测试头部）；本条即 T22 闭环记录
+
 ### ✅ Fix #32: T15 — audit 记录经 SYS_DIAGCTL 转发（KernelGateway::diag_write）
 
 - **Files**: `os/servers/vm/src/kernel_gateway.rs`（trait 增 `diag_write(&str)`：SYS_DIAGCTL=44、code=1（DIAGCTL_CODE_DIAG）、buf=调用方指针/len≤128（kernel/src/syscall.rs:2281-2340，DIAGBUFSIZE=128）；TrapKernelGateway 实现 + MockGateway 记录/`diag_log()` 访问器）、`os/servers/vm/src/audit.rs`（重写：`emit_to_gateway` 无条件可测核心——128 字节按字符边界分块转发；feature 构建下 `emit` = AssumeSyncCell sink 查找 + 转发；`register_gateway`/`clear_gateway` 随 VmServer 生命周期——diagnostic.rs 裸访问先例 + global.rs 单线程论证）、`os/servers/vm/src/vm_server.rs`（ctor 注册 / drop 清除，`vm_acl_audit` feature 门控）、3 个 audit 测试（转发/分块/字符边界）

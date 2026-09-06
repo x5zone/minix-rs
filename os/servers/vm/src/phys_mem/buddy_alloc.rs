@@ -121,6 +121,45 @@ impl BuddyAllocator {
         self.free_pages * 10 < self.total_pages
     }
 
+    /// Descend a removed block, pushing the halves that fall outside
+    /// `[r_start, r_end)` back onto their free lists and reserving the
+    /// pages inside.
+    fn split_and_reserve(&mut self, page: usize, order: usize, r_start: usize, r_end: usize) {
+        let block_end = page + (1usize << order);
+        if block_end <= r_start || page >= r_end {
+            return; // defensive: callers pre-filter the intersection
+        }
+        if page >= r_start && block_end <= r_end {
+            // Fully inside → reserve every page.
+            for p in page..block_end {
+                self.page_orders[p] = ORDER_INVALID;
+                self.free_pages -= 1;
+            }
+            return;
+        }
+        if order == 0 {
+            // Single page straddling the range is impossible: the range
+            // is page-aligned.
+            return;
+        }
+        let half = 1usize << (order - 1);
+        let mid = page + half;
+        if mid <= r_start {
+            // Entirely in the upper half: the lower half goes back free.
+            self.page_orders[page] = (order - 1) as u8;
+            self.push_free(order - 1, page);
+            self.split_and_reserve(mid, order - 1, r_start, r_end);
+        } else if r_end <= mid {
+            // Entirely in the lower half: the upper half goes back free.
+            self.page_orders[mid] = (order - 1) as u8;
+            self.push_free(order - 1, mid);
+            self.split_and_reserve(page, order - 1, r_start, r_end);
+        } else {
+            // The range straddles the midpoint: descend both halves.
+            self.split_and_reserve(page, order - 1, r_start, r_end);
+            self.split_and_reserve(mid, order - 1, r_start, r_end);
+        }
+    }
     pub(crate) fn largest_free(&self) -> usize {
         for order in (0..=self.max_order).rev() {
             if self.free_list_heads[order] != FREE_LIST_SENTINEL {
@@ -391,33 +430,37 @@ impl PhysAllocator for BuddyAllocator {
         self.total_pages
     }
 
+    /// Reserve `[base_page, base_page+count)` — split-down semantics
+    /// (V11/T22, V11-P2-2): every free block intersecting the range is
+    /// split down to single pages; pages inside the range leave the
+    /// free lists (`ORDER_INVALID`), pages outside stay free. Without
+    /// the split-down, a page sitting *inside* a larger free block is
+    /// unreachable by the base-page-only walk and the reservation
+    /// silently does nothing.
     fn reserve_pages(&mut self, base_page: usize, count: usize) {
-        let mut reserved = 0usize;
         let end = (base_page + count).min(self.total_pages);
-        for i in base_page..end {
-            if self.page_orders[i] != ORDER_INVALID
-                && (self.page_orders[i] & FLAG_ALLOCATED) == 0
-            {
-                let order = (self.page_orders[i] & ORDER_MASK) as usize;
-                self.remove_from_free_list(order, i);
-                let block_size = 1usize << order;
-                self.free_pages -= block_size;
-                reserved += block_size;
-                self.page_orders[i] = ORDER_INVALID;
-                let mut j = i + 1;
-                while j < i + block_size && j < end {
-                    self.page_orders[j] = ORDER_INVALID;
-                    j += 1;
+        // High→low order: cover the range with minimal splitting.
+        for order in (0..=self.max_order).rev() {
+            let block_size = 1usize << order;
+            let mut scan = self.free_list_heads[order];
+            let mut intersects: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+            while scan != FREE_LIST_SENTINEL {
+                let b = scan as usize;
+                if b < end && b + block_size > base_page {
+                    intersects.push(b);
                 }
+                scan = self.page_next[b];
+            }
+            for b in intersects {
+                assert!(
+                    self.remove_from_free_list(order, b),
+                    "buddy reserve: block {b} vanished from free list {order}"
+                );
+                self.split_and_reserve(b, order, base_page, end);
             }
         }
-        for i in base_page..end {
-            self.page_orders[i] = ORDER_INVALID;
-        }
-        if reserved > 0 {
-            self.stats.record_alloc(reserved * CLICK_SIZE);
-        }
     }
+
 
     fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
         let mut i = 0;
@@ -472,6 +515,55 @@ mod tests {
     fn total_pages_from_regions(regions: &[BootMemRegion]) -> usize {
         let (tp, _, _) = super::super::compute_memory_bounds(regions);
         tp
+    }
+
+    /// V11/T22 (V11-P2-2): `reserve_pages` on the buddy backend — mirrors
+    /// bitmap's `test_reserve_pages`: reserved pages leave the free count
+    /// and are never handed out.
+    #[test]
+    fn test_reserve_pages_buddy() {
+        let regions = make_test_regions();
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
+
+        let free_before = alloc.free_memory() / CLICK_SIZE;
+        alloc.reserve_pages(10, 5);
+        assert_eq!(alloc.free_memory() / CLICK_SIZE, free_before - 5,
+            "reserved pages must leave the free count");
+
+        // Reserved pages are never returned by a plain allocation sweep.
+        let mut reached_reserved = false;
+        for _ in 0..free_before {
+            if let Ok(addr) = alloc.alloc_mem(1, PageAllocFlags::empty()) {
+                let page = addr.page_index();
+                if (10..15).contains(&page) {
+                    reached_reserved = true;
+                }
+            }
+        }
+        assert!(!reached_reserved, "reserved pages 10..15 must never be allocated");
+    }
+
+    /// V11/T22 (V11-P2-2): `available_regions` on the buddy backend —
+    /// free regions must account for every free page after alloc/free.
+    #[test]
+    fn test_available_regions_buddy_accounts_free_pages() {
+        let regions = make_test_regions();
+        let tp = total_pages_from_regions(&regions);
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BuddyAllocator::init(metadata, tp, &regions);
+
+        let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
+        alloc.free_mem(addr, 4);
+
+        let mut total_free = 0usize;
+        alloc.available_regions(&mut |base_page, num_pages| {
+            let _ = base_page;
+            total_free += num_pages;
+        });
+        assert_eq!(total_free, alloc.free_memory() / CLICK_SIZE,
+            "available_regions must account for every free page");
     }
 
     #[test]

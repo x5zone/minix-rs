@@ -1220,6 +1220,10 @@ pub(crate) static MEM_TYPE_MAPPED_FILE: MappedFile = MappedFile::new();
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::region::VirRegion;
+    use crate::region::VrFlags;
+    use crate::region::VrParam;
+    use crate::vmproc::VmProcTable;
 
     #[test]
     fn test_anonymous_memory_name() {
@@ -1766,4 +1770,166 @@ mod tests {
         );
         assert_eq!(result, Err(MemTypeError::InvalidParam));
     }
+
+    // ── V11/T22 (V11-P2-2): ev_delete × 6 implementations ─────────────
+    //
+    // C's `memtype.h` delete callbacks: anon/direct/shared/contig have no
+    // delete hook (NULL); cache clears the cached PFN (PFN-model addition:
+    // a stale PFN must not dangle past rmcache); mapped-file resets
+    // `inited` + drops the fdref reference (`mapped_delete`).
+    #[test]
+    fn test_ev_delete_table_all_six_memtypes() {
+        // 1. AnonymousMemory — no-op delete.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        MEM_TYPE_ANON.ev_delete(&mut region);
+        assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
+
+        // 2. DirectPhysical — no-op delete.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        MEM_TYPE_DIRECT.ev_delete(&mut region);
+        assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
+
+        // 3. SharedMemory — no-op delete.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        MEM_TYPE_SHARED.ev_delete(&mut region);
+        assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
+
+        // 4. ContiguousAnonymous — no-op delete.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        MEM_TYPE_CONTIG_ANON.ev_delete(&mut region);
+        assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
+
+        // 5. CacheMemory — clears the cached PFN.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        region.param = VrParam::PbCache { pfn: 0x123 };
+        MEM_TYPE_CACHE.ev_delete(&mut region);
+        assert!(matches!(region.param, VrParam::PbCache { pfn: 0 }));
+
+        // 6. MappedFile — resets inited + drops the fdref reference.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        region.param = VrParam::File { inited: true, fdref_id: Some(5), offset: 0, clearend: 0 };
+        MEM_TYPE_MAPPED_FILE.ev_delete(&mut region);
+        assert!(matches!(
+            region.param,
+            VrParam::File { inited: false, fdref_id: None, .. }
+        ));
+    }
+
+    // ── V11/T22 (V11-P2-2): ContiguousAnonymous — the only previously
+    // untested implementation. Contract: post-creation mutation ops are
+    // NotSupported, faults panic (all pages are pre-allocated in ev_new).
+    #[test]
+    fn test_contig_resize_reference_copy_not_supported() {
+        use crate::region::PageSlot;
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+
+        // ev_resize takes an ActiveProc handle: register a scratch slot.
+        let table = VmProcTable::get_global();
+        let slot_no = 90usize;
+        unsafe { table.reset_slot(minix_types::UserSlot::new(slot_no)); }
+        let empty = table.get_empty(minix_types::UserSlot::new(slot_no)).unwrap();
+        let ep = minix_types::Endpoint::from_generation_slot(1, slot_no as i32);
+        let mut active = empty.activate(ep);
+
+        assert_eq!(
+            MEM_TYPE_CONTIG_ANON.ev_resize(&mut active, &mut region, VirBytes(0x2000)),
+            Err(MemTypeError::NotSupported)
+        );
+
+        let slot = PageSlot::reserved(VirBytes(0), Some(&MEM_TYPE_CONTIG_ANON));
+        assert_eq!(
+            MEM_TYPE_CONTIG_ANON.ev_reference(&mut make_frames_contig(), slot),
+            Err(MemTypeError::NotSupported)
+        );
+        let src = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        let mut dst = VirRegion::new(VirBytes(0x2000), VirBytes(0x1000), VrFlags::empty());
+        assert_eq!(
+            MEM_TYPE_CONTIG_ANON.ev_copy(&src, &mut dst),
+            Err(MemTypeError::NotSupported)
+        );
+
+        unsafe { table.reset_slot(minix_types::UserSlot::new(slot_no)); }
+    }
+
+    #[test]
+    #[should_panic(expected = "contiguous anonymous pagefault")]
+    fn test_contig_ev_pagefault_panics() {
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        let _ = MEM_TYPE_CONTIG_ANON.ev_pagefault(
+            minix_types::Endpoint(1),
+            &mut region,
+            &mut make_frames_contig(),
+            VirBytes(0),
+            false,
+            &VmProcTable::get_global(),
+            &mut TestAllocContig { next: 0 },
+            &mut crate::page_cache::PageCache::new(),
+        );
+    }
+
+    // ── V11/T22 (V11-P2-2): ContiguousAnonymous::ev_new — the pre-allocation
+    // contract (C anon_contig_new, mem_anon_contig.c:52-96): consecutive
+    // PFNs mapped into every slot; a gap or exhaustion rolls everything back.
+    #[test]
+    fn test_contig_ev_new_preallocates_consecutive_pfns() {
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 4));
+        let mut alloc = TestAllocContig { next: 100 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000 * 3), VrFlags::empty());
+
+        MEM_TYPE_CONTIG_ANON.ev_new(&mut region, &mut frames, &mut alloc).unwrap();
+
+        for i in 0..3u64 {
+            let slot = region.get_slot(VirBytes(0x1000 * i)).expect("slot mapped");
+            assert_eq!(slot.pfn(), Some(100 + i as u32), "page {i} must map pfn {}", 100 + i);
+        }
+    }
+
+    #[test]
+    fn test_contig_ev_new_rolls_back_on_gap() {
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 4));
+        let mut alloc = GappedAllocContig { calls: 0, freed: 0 };
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000 * 3), VrFlags::empty());
+
+        assert_eq!(
+            MEM_TYPE_CONTIG_ANON.ev_new(&mut region, &mut frames, &mut alloc),
+            Err(MemTypeError::NoMemory)
+        );
+        // Full rollback contract: the contiguity check fires after all
+        // `pages` allocations succeeded (the gap breaks the windows check,
+        // not an alloc call) → every allocated PFN must come back.
+        assert_eq!(alloc.calls, 3, "3 pages requested");
+        assert_eq!(alloc.freed, 3, "all 3 allocated PFNs must be freed on rollback");
+    }
+
+    // Minimal doubles for the contig tests (V11/T22).
+    fn make_frames_contig() -> PageFrames {
+        PageFrames::new(minix_types::PhysBytes(4096 * 4))
+    }
+
+    struct TestAllocContig { next: u32 }
+    impl crate::region::PfnAllocator for TestAllocContig {
+        fn alloc_pfn(&mut self) -> Result<u32, crate::region::PfnAllocError> {
+            let pfn = self.next;
+            self.next += 1;
+            Ok(pfn)
+        }
+        fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    /// Fails on the 2nd allocation (a PFN gap → contiguity violation).
+    struct GappedAllocContig { calls: usize, freed: usize }
+    impl crate::region::PfnAllocator for GappedAllocContig {
+        fn alloc_pfn(&mut self) -> Result<u32, crate::region::PfnAllocError> {
+            self.calls += 1;
+            if self.calls == 2 {
+                // Simulate a page taken by someone else: skip a PFN.
+                return Ok(5000 + self.calls as u32);
+            }
+            Ok(self.calls as u32)
+        }
+        fn free_pfn(&mut self, _pfn: u32) {
+            self.freed += 1;
+        }
+    }
+
 }

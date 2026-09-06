@@ -579,4 +579,83 @@ mod multi_region {
         let a = alloc.alloc_mem(4, PageAllocFlags::empty());
         assert!(a.is_ok());
     }
+
+    // ── V11/T22 (V11-P2-2): reserve_pages / available_regions 补测 ──
+    // bitmap 的两方法已有直接测试（bitmap_alloc.rs:735/:755）；此处补
+    // buddy 与 segment-tree 后端的同语义测试（ bitmap_alloc.rs:687 模板）。
+
+    #[test]
+    fn buddy_reserve_pages_excludes_reserved() {
+        let regions = make_regions(64);
+        let metadata = make_metadata();
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&regions), &regions);
+
+        let free_before = alloc.free_memory() / CLICK_SIZE;
+        alloc.reserve_pages(10, 5);
+        assert_eq!(alloc.free_memory() / CLICK_SIZE, free_before - 5);
+
+        let mut reached_reserved = false;
+        for _ in 0..free_before {
+            if let Ok(addr) = alloc.alloc_mem(1, PageAllocFlags::empty()) {
+                if (10..15).contains(&addr.page_index()) {
+                    reached_reserved = true;
+                }
+            }
+        }
+        assert!(!reached_reserved);
+    }
+
+    #[test]
+    fn buddy_available_regions_accounts_free_pages() {
+        let regions = make_regions(64);
+        let metadata = make_metadata();
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&regions), &regions);
+
+        let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
+        alloc.free_mem(addr, 4);
+
+        let free_expected = alloc.free_memory() / CLICK_SIZE;
+        let mut total_free = 0usize;
+        alloc.available_regions(&mut |_, num_pages| total_free += num_pages);
+        assert_eq!(total_free, free_expected);
+    }
+
+    #[test]
+    #[cfg(feature = "segment_tree_alloc")]
+    fn segment_tree_reserve_pages_excludes_reserved() {
+        let regions = make_regions(64);
+        let metadata = make_metadata();
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&regions), &regions);
+
+        let free_before = alloc.free_memory() / CLICK_SIZE;
+        alloc.reserve_pages(10, 5);
+        assert_eq!(alloc.free_memory() / CLICK_SIZE, free_before - 5);
+
+        let mut reached_reserved = false;
+        for _ in 0..free_before {
+            if let Ok(addr) = alloc.alloc_mem(1, PageAllocFlags::empty()) {
+                if (10..15).contains(&addr.page_index()) {
+                    reached_reserved = true;
+                }
+            }
+        }
+        assert!(!reached_reserved);
+    }
+
+    #[test]
+    #[cfg(feature = "segment_tree_alloc")]
+    fn segment_tree_available_regions_accounts_free_pages() {
+        let regions = make_regions(64);
+        let metadata = make_metadata();
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&regions), &regions);
+
+        let addr = alloc.alloc_mem(4, PageAllocFlags::empty()).unwrap();
+        alloc.free_mem(addr, 4);
+
+        let free_expected = alloc.free_memory() / CLICK_SIZE;
+        let mut total_free = 0usize;
+        alloc.available_regions(&mut |_, num_pages| total_free += num_pages);
+        assert_eq!(total_free, free_expected);
+    }
+
 }
