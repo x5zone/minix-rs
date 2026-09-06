@@ -410,9 +410,20 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn set_core_flag(&mut self, slot: UserSlot) {
-        // [ARCH A-9] core flag 落位 — 见 09-pm-exit.md（当前 Process 尚无 sigstatus 字段）。
-        let _ = slot;
-        unimplemented!("DEFERRED: set_core_flag (WCOREFLAG) — 见 09-pm-exit.md")
+        // C: main.c:357-358 — `rmp->mp_sigstatus |= WCOREFLAG`（仅 Core 回复
+        // 且 status==OK，VfsReply::Core 分支已判定）。位运算在 u8 域进行：
+        // 0o200 置信号字节的 bit7，wait4 报告时经 W_EXITCODE 组合出
+        // "core dumped"（WIFCORED 等价判定）。C 在此之前 assert EXITING
+        //（main.c:362）；Rust 侧对非 Exiting 目标 fail-fast。
+        match &mut self.table.procs[slot.get()].state.lifecycle {
+            crate::mproc::Lifecycle::Exiting { sig_status, .. } => {
+                *sig_status = (*sig_status as u8 | WCOREFLAG as u8) as i8;
+            }
+            _ => panic!(
+                "set_core_flag: process not Exiting (slot {})",
+                slot.get()
+            ),
+        }
     }
 
     fn assert_exiting(&mut self, slot: UserSlot) {
@@ -900,6 +911,37 @@ mod tests {
         // TestIpcTransport 应记录一条发往 VFS 的消息
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.last_sent_dest(), Some(Endpoint::VFS));
+    }
+
+    #[test]
+    fn test_production_set_core_flag_sets_bit7_on_exiting() {
+        // D-07：Core 回复 status==OK → WCOREFLAG 置入 sig_status 的 bit7
+        //（main.c:357-358）；非 Exiting 目标 fail-fast（main.c:362 的
+        // assert EXITING 的 Rust 等价）。
+        use crate::ipc::transport::TestIpcTransport;
+        use crate::mproc::Lifecycle;
+
+        let mut table = ProcTable::new();
+        let mut transport = TestIpcTransport::default();
+        let mut events = crate::event::EventRegistry::new();
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, 0);
+        svc.table.procs[1].state.lifecycle =
+            Lifecycle::Exiting { exit_code: 0, sig_status: 6 }; // SIGABRT
+
+        svc.set_core_flag(UserSlot::new(1));
+        match svc.table.procs[1].state.lifecycle {
+            Lifecycle::Exiting { sig_status, .. } => {
+                assert_eq!(sig_status as u8, 0o200 | 6, "bit7 set, low bits kept");
+            }
+            ref other => panic!("unexpected lifecycle {:?}", other),
+        }
+
+        // 非 Exiting → fail-fast（C 的 assert(mp_flags & EXITING) 同源）
+        svc.table.procs[2].state.lifecycle = Lifecycle::Running;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            svc.set_core_flag(UserSlot::new(2));
+        }));
+        assert!(result.is_err(), "set_core_flag on Running must panic");
     }
 
     #[test]

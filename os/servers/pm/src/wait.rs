@@ -127,7 +127,10 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             // Simulate sys_datacopy(rusage) — stubbed as success
             let _ = (rusage_addr, ss);
             // W_EXITCODE + reply(parent, pid) + WAITING clear + ZOMBIE→TOLD_PARENT + time accumulate
-            let w_status = w_exitcode(ec as i32, ss as i32);
+            // 组合按字节语义（C: W_EXITCODE(status,sig) = status<<8|sig）：
+            // i8 经 u8 转换避免符号扩展——退出码 0xFF（exit(-1)）与
+            // WCOREFLAG（bit7，D-07）都必须以无符号字节进入 wait status。
+            let w_status = w_exitcode(ec as u8 as i32, ss as u8 as i32);
             // Prepare parent's reply buffer (like C's mp_reply)
             table.procs[caller.get()].ipc.reply = Some(Message {
                 m_type: w_status,
@@ -308,5 +311,44 @@ mod tests {
 
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert!(table.procs[0].ipc.reply.is_none(), "no fabricated stop code");
+    }
+
+    #[test]
+    fn test_wait4_zombie_status_carries_wcoreflag_byte() {
+        // D-07 状态级断言：僵尸子进程的 sig_status 带 WCOREFLAG（bit7）→
+        // ZOMBIE 环后 ToldParent 原样保留位型（bit 运算全程 u8 域，i8 符号
+        // 扩展不得破坏 bit7）。wire 载荷建模（C m_pm_lc_wait4.status）缺
+        // minix-types 成员，登记为 todo.md §6 D-26（挂 E7）。
+        let mut table = ProcTable::new();
+        table.procs[0].state.lifecycle = Lifecycle::Running;
+        table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
+        table.procs[0].identity.id.pid = 50;
+        table.procs[0].state.wait.waiting = true;
+        // 僵尸子：SIGABRT(6) 终止且 core dumped（0o200|6 = 134 → i8 -122）。
+        table.procs[5].state.lifecycle = Lifecycle::Zombie {
+            exit_code: 0,
+            sig_status: (0o200u8 | 6u8) as i8,
+        };
+        table.procs[5].identity.id.pid = 100;
+        table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
+        table.procs[5].state.guardianship = Guardianship::Normal { parent: UserSlot::new(0) };
+
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+
+        assert_eq!(intent, ReplyIntent::ReplyLater); // tell_parent 已在 wire 回复父
+        match table.procs[5].state.lifecycle {
+            Lifecycle::ToldParent { exit_code, sig_status } => {
+                assert_eq!(exit_code, 0);
+                assert_eq!(sig_status as u8, 0o200 | 6, "WCOREFLAG bit must survive intact");
+            }
+            ref other => panic!("unexpected lifecycle {:?}", other),
+        }
+        assert!(!table.procs[0].state.wait.waiting, "WAITING must clear");
+        // wire：父收到 m_type = 子 pid 的回复。
+        assert!(transport
+            .sent()
+            .iter()
+            .any(|(ep, m)| *ep == Endpoint::from_generation_slot(1, 0) && m.m_type == 100));
     }
 }

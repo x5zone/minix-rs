@@ -45,6 +45,11 @@ pub enum Lifecycle {
         /// Exit status code.
         exit_code: i8,
         /// Signal status (if killed by signal).
+        ///
+        /// bit7 = `WCOREFLAG`（0o200，core dumped，`main.c:357-358` 的
+        /// `mp_sigstatus |= WCOREFLAG` 等价物，经 `set_core_flag` 置位）；
+        /// 低 7 位为终止信号号。位语义在 u8 域成立——组合 wait status 时
+        /// 经 `as u8` 取字节（wait.rs 的 ZOMBIE 环）。
         sig_status: i8,
     },
     

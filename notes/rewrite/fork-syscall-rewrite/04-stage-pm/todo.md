@@ -271,7 +271,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-04 | ~~`ipc/dispatcher.rs:159-165`~~ | ~~`send_kernel_request` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：零调用死代码删除；C 的 `do_fork` 无独立内核请求步骤，proc 复制在 VM 的 sys_fork 内） | 07-pm-fork.md | ~~内核 fork 请求面~~ 不适用（与 C 不符的原型残留） |
 | D-05 | `ipc/vfs.rs:401` | `sched_start_user` `unimplemented!()` | 16-scheduling.md | SCHED 客户端（A-8） |
 | D-06 | ~~`ipc/vfs.rs:407`~~ | ~~`exit_proc` 的 VFS 退出通知 `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #8：委托 09 的 `crate::exit::exit_proc` 二阶段退出，`main.c:381` FORK 失败路径） | 09-pm-exit.md | ~~接线 09 退出链时~~ 已达成（+1 委托测试） |
-| D-07 | `ipc/vfs.rs:413` | `set_core_flag`（WCOREFLAG）`unimplemented!()` | 09-pm-exit.md | 同上 |
+| D-07 | ~~`ipc/vfs.rs:413`~~ | ~~`set_core_flag`（WCOREFLAG）`unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #9：WCOREFLAG 置入 `Lifecycle::Exiting.sig_status` bit7，u8 域位运算；wait4 组合改无符号字节） | 09-pm-exit.md | ~~同上~~ 已达成 |
 | D-08 | `ipc/vfs.rs:469` | `exec_restart` `unimplemented!()` | 17-exec.md | exec 重启路径接线 |
 | D-09 | `ipc/vfs.rs:488` | `sys_abort` `unimplemented!()` | 01-stage-kernel | 内核 sys_abort |
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
@@ -290,6 +290,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-23 | `signal.rs:360-362` | SIGVTALRM/`check_vtimer` stub（`alarm.c:326-328`） | 14-itimer.md | 虚拟计时器 trait 落地（`timer.rs:165-167` 已定义 seam） |
 | D-24 | `mproc/fork.rs:222-228` | `getticks()` 返回 0（TODO 注释：应向 CLOCK 请求） | 14-itimer.md / 内核 sys_times | 内核 uptime 面 |
 | D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
+| D-26 | `wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷 | wait4 回复的状态码载荷建模缺失：C 写 `mp_reply.m_pm_lc_wait4.status`（`ipc.h:1774-1779` `mess_pm_lc_wait4`），minix-types 无该 union 成员，现经 `ipc.reply` 机制只承载 m_type——`w_exitcode`/`w_stopcode` 到 wire 的最后一跳待补 | 10-pm-wait.md / edge E7 | minix-types 增 `MessPmLcWait4` + `m_pm_lc_wait4` 成员（E7 wire 系统化的一部分）；两环代码注释即锚点 |
 
 不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
 
@@ -522,3 +523,20 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - 注意：该端口当前在 FORK 失败分支的可达性仍被 D-05（`sched_start_user` 非 KERNEL/NONE 时 `unimplemented!`）遮蔽——非内核调度器的调度失败要到 A-8（16-scheduling.md）落地才可能发生；本条完成的是"端口就绪"，分支可达性归 D-05
 
 **Docs**：`05-vfs-interaction.md` 两处端口状态行；本文件 §6 D-06 行。
+
+### ✅ Fix #9: D-07 — `set_core_flag`（WCOREFLAG）落地（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/vfs.rs`（生产 impl 真实实现 + 1 单测；非 Exiting 目标 fail-fast 对应 C `main.c:362` 的 assert）
+- `os/servers/pm/src/mproc/lifecycle.rs`（`Exiting.sig_status` 字段文档补 bit7 = WCOREFLAG 位语义）
+- `os/servers/pm/src/wait.rs`（ZOMBIE 环的 `w_exitcode` 组合改 `as u8 as i32` 无符号字节语义 + 1 端到端测试）
+
+**Before/After**：生产端口一行位运算（`sig_status = sig_status as u8 | WCOREFLAG as u8`），C 锚点 `main.c:357-358`。设计说明：(a) 不新增独立 sigstatus 字段——`Lifecycle::Exiting.sig_status` 已是 C `mp_sigstatus` 信号字节的 Rust 等价物，WCOREFLAG 就是它的 bit7（i8 承载 0o200 是位语义问题不是模型问题）；(b) **连带修复**：wait4 组合处 `ec as i32/ss as i32` 的符号扩展会破坏 bit7 与退出码 0xFF——改为 `as u8 as i32` 字节语义（C `W_EXITCODE(status,sig) = status<<8|sig` 全程无符号字节）。
+
+**Verified**：
+- `cargo test -p minix-pm`：331 → **334 lib passed**（+1 set_core_flag 位运算与 fail-fast、+1 僵尸→ToldParent 的 WCOREFLAG 位保留与 wire m_type）+ 6 integration
+- Core 分支可达性：`VfsReply::Core { status == OK }` → `set_core_flag`（`vfs.rs:255-262`），与 C fallthrough 到 EXIT 分支一致
+
+**Docs**：`lifecycle.rs` 字段文档；本文件 §6 D-07 行 + **新增 D-26**（wait4 回复载荷的 wire 建模缺失——`mess_pm_lc_wait4.status` 在 minix-types 无对应成员，挂 E7）。
+
+**未做（DEFERRED 论证）**：wait 状态码到 wire 的最后一跳（D-26）——共享层 minix-types 缺 union 成员，属 E7 范围，stage 内不私改共享层。
