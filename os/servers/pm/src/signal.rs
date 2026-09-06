@@ -361,6 +361,7 @@ pub fn process_ksig(
     table: &mut ProcTable,
     endpoint: Endpoint,
     signo: i32,
+    vctl: &mut dyn crate::timer::VTimerCtl,
     transport: &mut dyn crate::ipc::IpcTransport,
 ) -> Result<(), KillError> {
     let slot = table
@@ -373,12 +374,15 @@ pub fn process_ksig(
     }
     // Pretend PM is sender (312)
     let _ = proc.identity.procgrp;
-    // SIGVTALRM check_vtimer (326-328) — stubbed
-    if signo == 12 || signo == 27 {
-        // SIGVTALRM / SIGPROF
-        let _ = slot;
-    }
     let pid = proc.identity.id.pid;
+    drop(proc);
+    // SIGVTALRM/SIGPROF → 重置虚拟计时器（C: signal.c:326-328 的
+    // check_vtimer + fall-through 到单播 default 分支）。注意 SIGVTALRM
+    // = 26：旧代码误写 12（SIGSYS），该分支从未命中过——真实 bug，随
+    // 本条 D-23 修复。VTimerCtl 的生产实现 = 内核 sys_vtimer（E6）。
+    if signo == crate::timer::SIGVTALRM || signo == crate::timer::SIGPROF {
+        crate::timer::check_vtimer(table, slot, signo, vctl);
+    }
     // Broadcast vs single (320-332)
     let target_pid = match signo {
         2 | 3 | 28 | 29 => 0, // INT, QUIT, WINCH, INFO → group broadcast
@@ -400,7 +404,12 @@ pub fn process_ksig(
 mod tests {
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials};
-    use minix_types::{Endpoint, UserSlot};
+    use minix_types::{Clock, Endpoint, UserSlot};
+
+    struct NopVTimer;
+    impl crate::timer::VTimerCtl for NopVTimer {
+        fn vtimer(&mut self, _ep: Endpoint, _which: crate::timer::ItimerWhich, _set: Option<Clock>, _get: Option<&mut Clock>) -> i32 { 0 }
+    }
 
     fn mk_proc(table: &mut ProcTable, slot: usize, pid: i32, procgrp: i32, is_kernel: bool) {
         table.procs[slot].state.lifecycle = Lifecycle::Running;
@@ -425,6 +434,47 @@ mod tests {
         let res = check_sig(&mut table, UserSlot::new(0), 42, 9, false, &mut t);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 1);
+    }
+
+    /// 记录型 VTimerCtl mock：捕获 (which, set 值)。
+    struct RecVTimer { pub which: Option<crate::timer::ItimerWhich>, pub set: Option<Clock> }
+    impl crate::timer::VTimerCtl for RecVTimer {
+        fn vtimer(&mut self, _ep: Endpoint, which: crate::timer::ItimerWhich, set: Option<Clock>, _get: Option<&mut Clock>) -> i32 {
+            self.which = Some(which);
+            self.set = set;
+            0
+        }
+    }
+
+    #[test]
+    fn test_process_ksig_sigvtalrm_restarts_vtimer() {
+        // C: signal.c:326-328 + alarm.c:222-241 — ksig SIGVTALRM →
+        // check_vtimer：interval>0 时向内核重设 ITIMER_VIRTUAL。
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 100, true); // 内核进程（ksig 路径）
+        table.procs[5].resources.intervals[crate::timer::ItimerWhich::Virtual as usize] = 50;
+        let mut vt = RecVTimer { which: None, set: None };
+        let mut t = crate::ipc::TestIpcTransport::default();
+
+        let res = process_ksig(&mut table, Endpoint::from_generation_slot(1, 5), 26, &mut vt, &mut t);
+        assert!(res.is_ok());
+        assert_eq!(vt.which, Some(crate::timer::ItimerWhich::Virtual));
+        assert_eq!(vt.set, Some(50));
+    }
+
+    #[test]
+    fn test_process_ksig_sigsys_does_not_touch_vtimer() {
+        // 回归守卫：旧代码误写 `signo == 12`（SIGSYS 非 SIGVTALRM=26）——
+        // SIGSYS 不应触碰虚拟计时器。
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 100, true);
+        let mut vt = RecVTimer { which: None, set: None };
+        let mut t = crate::ipc::TestIpcTransport::default();
+
+        let res = process_ksig(&mut table, Endpoint::from_generation_slot(1, 5), 12, &mut vt, &mut t);
+        assert!(res.is_ok());
+        assert!(vt.which.is_none(), "SIGSYS must not restart a vtimer");
+        assert!(vt.set.is_none());
     }
 
     #[test]
@@ -485,7 +535,8 @@ mod tests {
     fn test_process_ksig_edeadept() {
         let mut table = ProcTable::new();
         let mut t = crate::ipc::TestIpcTransport::default();
-        let res = process_ksig(&mut table, Endpoint::from_generation_slot(9, 9), 15, &mut t);
+        let mut novt = NopVTimer;
+        let res = process_ksig(&mut table, Endpoint::from_generation_slot(9, 9), 15, &mut novt, &mut t);
         assert_eq!(res.unwrap_err(), KillError::InvalidEndpoint);
     }
 

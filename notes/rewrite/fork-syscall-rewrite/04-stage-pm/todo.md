@@ -287,7 +287,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
 | D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功（C 侧 `utility.c:92` 本身只填 utime/stime） | 10-pm-wait.md | sys_datacopy + rusage 范围决策 |
 | D-22 | ~~`signal.rs:160`~~ | ~~`is_stacktrace` 返回硬编码 false~~ **✅ 已修复**（2026-09-06，Fix #13：`is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写——原计划臆断为位掩码，实为 `sys/signal.h:279-286` 的谓词宏；连带修复旧 lethal 近似列表错含 SIGKILL/TERM/TRAP 的真实语义偏差，EPERM 保护测试改用 SIGSEGV） | ~~16-scheduling.md~~ 11-signal-core.md（语义实属信号系统，原归属登记有误） | ~~A-8~~ 无依赖，纯谓词 |
-| D-23 | `signal.rs:360-362` | SIGVTALRM/`check_vtimer` stub（`alarm.c:326-328`） | 14-itimer.md | 虚拟计时器 trait 落地（`timer.rs:165-167` 已定义 seam） |
+| D-23 | ~~`signal.rs:360-362`~~ | ~~SIGVTALRM/`check_vtimer` stub~~ **✅ 已修复**（2026-09-06，Fix #14：process_ksig 接真实 check_vtimer（VTimerCtl 显式接缝）；连带修复 `signo == 12` 应为 26 的真 bug——旧分支从未命中） | 14-itimer.md | ~~虚拟计时器 trait 落地~~ PM 侧达成（VTimerCtl 生产实现 = 内核 sys_vtimer 挂 E6） |
 | D-24 | `mproc/fork.rs:222-228` | `getticks()` 返回 0（TODO 注释：应向 CLOCK 请求） | 14-itimer.md / 内核 sys_times | 内核 uptime 面 |
 | D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
 | D-26 | `wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷 | wait4 回复的状态码载荷建模缺失：C 写 `mp_reply.m_pm_lc_wait4.status`（`ipc.h:1774-1779` `mess_pm_lc_wait4`），minix-types 无该 union 成员，现经 `ipc.reply` 机制只承载 m_type——`w_exitcode`/`w_stopcode` 到 wire 的最后一跳待补 | 10-pm-wait.md / edge E7 | minix-types 增 `MessPmLcWait4` + `m_pm_lc_wait4` 成员（E7 wire 系统化的一部分）；两环代码注释即锚点 |
@@ -603,3 +603,19 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：本文件 §6 D-22 行（含归属修正）；`signal.rs` 谓词 doc 注释带 C 锚点。
 
 **未做（DEFERRED 论证）**：无——纯函数重写，`sys_diagctl_stacktrace` 的内核调用本体归 D-09 家族（E6）。
+
+### ✅ Fix #14: D-23 — `process_ksig` 接真实 `check_vtimer`（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/signal.rs`（process_ksig 增加 `vctl: &mut dyn VTimerCtl` 显式接缝；stub 分支接真实 `check_vtimer`；**修复 `signo == 12` 应为 26 的真 bug**——SIGVTALRM=26（timer.rs:26），旧分支用 12（SIGSYS）从未命中过；+2 测试）
+- `os/servers/pm/src/signal.rs` 借用重排：pid 提取提前于可变借用调用
+
+**Before/After**：C `signal.c:326-328`：process_ksig 的 switch 对 SIGVTALRM/SIGPROF 先 `check_vtimer(proc_nr, signo)` 再 fall-through 单播。Rust 侧旧 stub 的条件表达式本身写错了信号号——修复后 26/27 正确路由到 `check_vtimer`（interval>0 时经 VTimerCtl 重设内核虚拟计时器，`alarm.c:222-241`）。设计说明：VTimerCtl 作为显式函数参数（而非内部构造）——生产装配者必须显式提供内核 sys_vtimer 适配器（E6），不存在被遗忘的静默 no-op；SIGSYS 不触碰计时器以回归测试锁定。
+
+**Verified**：
+- `cargo test -p minix-pm`：339 → **341 lib passed**（+2：SIGVTALRM 触发 Virtual 重启且 set=50 / SIGSYS 不触碰计时器）+ 6 integration
+- `grep -n "signo == 12" os/servers/pm/src/signal.rs`：零命中
+
+**Docs**：`14-itimer.md` check_vtimer 现状行；本文件 §6 D-23 行。
+
+**未做（DEFERRED 论证）**：`VTimerCtl` 生产实现（内核 `sys_vtimer`，`alarm.c:239` 未检查返回值）挂 edge E6——PM 侧逻辑与接缝完备。

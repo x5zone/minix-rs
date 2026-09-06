@@ -106,7 +106,7 @@ Rust 改写不是照抄 `system_hz * tv_sec` 乘法，而是在吸收工业级 O
 5. **为什么回绕**——`oldticks<=0→interval`（`212/263`）使“已过期但区间非零”返回区间而非 0，`newticks<=0→0`（`188-189`）使取消时区间清零。
 6. **为什么 `ALARM_ON` → `Option`**——位与队列的双重性以 `Option<MinixTimer>` 唯一真源消除，`cause_sigalrm` 的 `interval>0?set:clear` 周期分支与 `ksig==FALSE` 可忽略对偶。
 
-下一章逐行分析 C 的 `ticks_from_timeval`/`timeval_from_ticks`/`is_sane`/`do_itimer`/`getset_vtimer`/`check_vtimer`/`get/set_realtimer`/`set_alarm`/`cause_sigalrm`；第 3 章给出 Rust 的 `TicksConv`/`ItimerWhich`/`AlarmState`。
+下一章逐行分析 C 的 `ticks_from_timeval`/`timeval_from_ticks`/`is_sane`/`do_itimer`/`getset_vtimer`/`check_vtimer`/`get/set_realtimer`/`set_alarm`/`cause_sigalrm`；第 3 章给出 Rust 的 `TicksConv`/`ItimerWhich`/`AlarmState`。（2026-09-06 起由 `process_ksig` 真实调用，见 11 §1.5）
 
 ---
 
