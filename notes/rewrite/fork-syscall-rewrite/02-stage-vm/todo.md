@@ -1347,6 +1347,14 @@ Coverage Summary for vm:
 - **Verified**: 三矩阵 **471 / 488 / 471 passed**（-1 为删除的恒真 acl_clear 测试）；clippy 默认与 all-features 对 `servers/vm` 均 **0 警告**；`rg "swap_proc_slot" os/servers/vm/src` 仅剩 C 映射注释；`rg "acl_clear" os/servers/vm/src` 仅剩 VmProc::clear 的 C 映射注释；`rg "RsUpdateResult::Suspend" os/servers/vm/src` → 0
 - **Docs**: 五篇同步——`03-vmproc-table.md`（§2.6 实现归属、§3.6 D6 判定反转定案+演进记录、模块头、测试行）、`02-vmproc-struct.md`（ActiveProc 方法清单、§5.3 测试清单）、`04-acl.md`（§3.4 D4 acl_clear 折叠说明）、`10-vm-relocation.md`（§3.5 D5 全链落地+演进记录、§3.6 两行、§4.3 整节重写为表级实现、§4.5 DEFERRED 声明撤销、模块头、§1.9、测试行、结尾导览）、`25-rs-services.md`（§3.7 七步表翻转为落地状态、§4.4 流程块重写）——T12/T13 落地时遗留的文档滞后（Fix #40 预告"随下批文档刷新"）在本批一并清偿
 
+### ✅ Fix #45: T25 — 六处测试 `pt = None` 桩翻转为真实页表路径（V11-P2-1 收尾）
+
+- **Files**: `os/servers/vm/src/munmap.rs`（4 处 cfg 拆分删除 + `init_test_process` 补 `init_page_table()` + VM 槽位测试内联搭建补同）、`os/servers/vm/src/brk.rs`（2 处同 + helper 过时注释改写）、`os/servers/vm/src/mmap.rs`（`init_test_process` 同构修复——`handle_mmap` fixed 路径共用同一 `free_region_pages` 调用点）
+- **Before**: 6 处 `#[cfg(test)] let pt: Option<&mut PageTable> = None` / `#[cfg(not(test))] let pt = Some(...)` 成对拆分——测试走"无页表"假路径，与生产代码形状分叉；munmap/mmap 的测试 helper 注释声称"init_page_table() 访问 mock 物理内存导致 SIGSEGV"（Fix #39 后已失效——测试构建下它只构造 SimPaging，零物理访问）
+- **After**: 删除全部 cfg 拆分，无条件 `let pt = Some(active.page_table_mut())`；helper 补页表初始化（debug_assert 即诚实闸门——翻转首轮就暴露了 munmap/mmap/brk 共 10 个测试的进程从未初始化页表的潜在跳过，正是 V11-P2-1 预测的缺口）。翻转后单元测试与生产代码形状一致；"真实 unmap 后 query 清空 + refcount 归零"的深度断言由专项测试 `test_free_region_pages_sim_paging_unmaps`（region/mod.rs，Fix #39 落地）单点权威承载，不做六份复制
+- **Verified**: `cargo test -p minix-vm --lib` → **471 passed / 0 failed**（翻转首轮 10 FAILED → helper 修复后全绿）；clippy 两档 `servers/vm` 0 警告
+- **Docs**: 15-ipc-dispatch.md §5.3 新增"munmap/brk 测试的页表路径 ✅（V11/T25）"行（同时清偿 Fix #39 预告的"SimPaging 关联行随下批刷新"）；munmap/mmap/brk 三处 helper 注释按真实理由改写
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。

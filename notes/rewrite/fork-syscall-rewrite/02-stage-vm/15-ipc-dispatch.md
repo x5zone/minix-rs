@@ -687,6 +687,7 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 | VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（vm_server.rs:2071）：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
 | is_ipc_notify 分支 | ✅ 已闭环 | **V10-P1-1**：`test_run_once_notify_skipped_before_dispatch`（vm_server.rs:1735）——NOTIFY 状态消息经 `IpcStatus::is_notify()` 在 dispatch 前跳过 |
 | acl_check 拒绝路径单测 | ⚠️ 部分 | AclState::acl_check 有单测（acl.rs:200+），但 dispatch_on_msg 层"拒绝→ENOSYS 回复"无直接测试 |
+| munmap/brk 测试的页表路径 | ✅ 已闭环（V11/T25） | 六处测试分支的 `pt = None` 桩全部翻转为 `Some(active.page_table_mut())`（测试构建下是 SimPaging，V11/T21）；测试 helper 补 `init_page_table()`。"真实 unmap 后 query 清空 + refcount 归零"由专项测试 `test_free_region_pages_sim_paging_unmaps`（region/mod.rs）权威承载 |
 | DMA 三请求 | ⚠️ 显式排除 | dispatch_by_number `_` 兜底 NotImplemented；C 有 do_adddma 等（DMA 表 DEFERRED） |
 | VFS transid 编码端到端 | ⚠️ 缺失 | TRNS_ADD_ID 编码（VFS 侧）不在 VM 测试范围；仅单向 GET/STRIP 解码 |
 

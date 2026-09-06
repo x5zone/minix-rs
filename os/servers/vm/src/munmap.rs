@@ -213,10 +213,7 @@ pub(crate) fn unmap_range(
                 // Whole region falls inside the unmap range.
                 let freed_len = region.length;
                 {
-                    #[cfg(not(test))]
                     let pt = Some(active.page_table_mut());
-                    #[cfg(test)]
-                    let pt: Option<&mut crate::pagetable::PageTable> = None;
                     crate::region::free_region_pages(region, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(freed_len.0));
@@ -238,10 +235,7 @@ pub(crate) fn unmap_range(
                     .map_err(|_| MunmapError::InternalError)?;
 
                 {
-                    #[cfg(not(test))]
                     let pt = Some(active.page_table_mut());
-                    #[cfg(test)]
-                    let pt: Option<&mut crate::pagetable::PageTable> = None;
                     crate::region::free_region_pages(middle, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(length.0));
@@ -264,10 +258,7 @@ pub(crate) fn unmap_range(
 
                 let freed_len = head.length;
                 {
-                    #[cfg(not(test))]
                     let pt = Some(active.page_table_mut());
-                    #[cfg(test)]
-                    let pt: Option<&mut crate::pagetable::PageTable> = None;
                     crate::region::free_region_pages(head, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(freed_len.0));
@@ -282,10 +273,7 @@ pub(crate) fn unmap_range(
 
                 let freed_len = tail.length;
                 {
-                    #[cfg(not(test))]
                     let pt = Some(active.page_table_mut());
-                    #[cfg(test)]
-                    let pt: Option<&mut crate::pagetable::PageTable> = None;
                     crate::region::free_region_pages(tail, pt, frames, page_alloc, vfs_queue, owner);
                 }
                 active.sub_total(VirBytes(freed_len.0));
@@ -324,8 +312,10 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // Skip init_page_table() — munmap tests don't need page table access,
-        // and init_page_table() accesses mock physical memory causing SIGSEGV.
+        // Test builds construct a software page table (V11/T21 SimPaging) —
+        // required now that the unmap paths hand a real `PageTable` to
+        // `free_region_pages` (V11/T25 flipped the old None stubs).
+        active.init_page_table().unwrap();
         active.init_regions();
         ep
     }
@@ -643,6 +633,7 @@ mod tests {
         unsafe { table.reset_slot(vm_slot); }
         let empty = table.get_empty(vm_slot).unwrap();
         let mut active = empty.activate(Endpoint::VM);
+        active.init_page_table().unwrap();
         active.init_regions();
         drop(active);
         insert_region(Endpoint::VM, 0x1000, 0x1000);

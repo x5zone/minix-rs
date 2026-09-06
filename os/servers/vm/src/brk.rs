@@ -163,10 +163,7 @@ fn shrink_heap(
                     Ok((left, right)) => {
                         let freed_len = right.length;
                         {
-                            #[cfg(not(test))]
                             let pt = Some(active.page_table_mut());
-                            #[cfg(test)]
-                            let pt: Option<&mut crate::pagetable::PageTable> = None;
                             crate::region::free_region_pages(right, pt, frames, page_alloc, vfs_queue, owner);
                         }
                         active.sub_total(VirBytes(freed_len.0));
@@ -190,10 +187,7 @@ fn shrink_heap(
         if let Some(region) = active.regions_mut().remove(vaddr) {
             let freed_len = region.length;
             {
-                #[cfg(not(test))]
                 let pt = Some(active.page_table_mut());
-                #[cfg(test)]
-                let pt: Option<&mut crate::pagetable::PageTable> = None;
                 crate::region::free_region_pages(region, pt, frames, page_alloc, vfs_queue, owner);
             }
             active.sub_total(VirBytes(freed_len.0));
@@ -235,10 +229,9 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // In test builds, init_page_table() writes a zeroed stub page table:
-        // unit tests have no VM direct-map window nor a registered pt_alloc,
-        // so the real `<PageTable as Paging>::new()` cannot run here yet
-        // (test-injectable Paging: 02-stage-vm todo V11-P2-1).
+        // Test builds construct a software page table (V11/T21 SimPaging) —
+        // required now that the shrink path hands a real `PageTable` to
+        // `free_region_pages` (V11/T25 flipped the old None stubs).
         active.init_page_table().unwrap();
         active.init_regions();
         active.set_region_top(VirBytes(0x4000_0000));

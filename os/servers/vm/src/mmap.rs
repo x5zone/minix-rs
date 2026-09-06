@@ -624,8 +624,10 @@ mod tests {
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
-        // Skip init_page_table() — mmap tests don't need page table access,
-        // and init_page_table() accesses mock physical memory causing SIGSEGV.
+        // Test builds construct a software page table (V11/T21 SimPaging) —
+        // required now that the unmap paths hand a real `PageTable` to
+        // `free_region_pages` (V11/T25 flipped the old None stubs).
+        active.init_page_table().unwrap();
         active.init_regions();
         ep
     }
