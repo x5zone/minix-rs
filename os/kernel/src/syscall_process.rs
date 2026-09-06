@@ -806,7 +806,7 @@ fn add_ipc_filter_arm(
     // size) and element count (1..=IPCF_MAX_ELEMENTS → E2BIG).
     let length = sc.length as usize;
     let el_size = core::mem::size_of::<crate::ipc_filter::IpcFilterElement>();
-    if length % el_size != 0 {
+    if !length.is_multiple_of(el_size) {
         return KcallResult::Ok(EINVAL);
     }
     let num_elements = length / el_size;

@@ -1055,12 +1055,12 @@ impl<'a> IpcEngine<'a> {
         // C: `has_pending` (ASEND) + `try_async` — proc.c:1031-1070.
         // `try_async` failure (EAGAIN — table empty/endpoint mismatch)
         // falls through to the caller_q check, same as C.
-        if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint) {
-            if self.deliver_async(caller_idx, async_src) {
-                // C: proc.c:1047 — `IPC_STATUS_ADD_CALL(caller_ptr, SENDA)`
-                crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
-                return IpcOutcome::Delivered;
-            }
+        if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint)
+            && self.deliver_async(caller_idx, async_src)
+        {
+            // C: proc.c:1047 — `IPC_STATUS_ADD_CALL(caller_ptr, SENDA)`
+            crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
+            return IpcOutcome::Delivered;
         }
 
         // Phase 3: sync sender queue. C: proc.c:1071-1095.
@@ -1601,10 +1601,10 @@ impl<'a> IpcEngine<'a> {
                         // C: set_sys_bit(priv(dst)->s_asyn_pending,
                         // priv(caller)->s_id) — proc.c:1293-1297. The
                         // bit index is the sender's sys_id (priv_id).
-                        if let Some(dst_pid) = self.procs[di].priv_id {
-                            if let Some(dst_priv) = self.priv_table.get_mut(dst_pid) {
-                                dst_priv.signals.s_asyn_pending |= 1u64 << caller_priv_id;
-                            }
+                        if let Some(dst_pid) = self.procs[di].priv_id
+                            && let Some(dst_priv) = self.priv_table.get_mut(dst_pid)
+                        {
+                            dst_priv.signals.s_asyn_pending |= 1u64 << caller_priv_id;
                         }
                         done = false;
                         false

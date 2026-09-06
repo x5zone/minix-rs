@@ -36,7 +36,12 @@ use crate::memmap::{cut_memmap, MemMapEntry, MAXMEMMAP};
 use crate::proc::{BOOT_MODULE_PROC_NRS, KERNEL_TASKS};
 use minix_arch::arch::frame::VmBootAllocator;
 use minix_arch::DirectMapArch;
-use minix_boot::{KernelInfo, MemoryRegion};
+use minix_boot::KernelInfo;
+// MemoryRegion is consumed only by the test-only raw-slice classifier
+// (classify_regions) and its helpers — gate the import to match, so the
+// non-test build does not see an unused import (V12-B4).
+#[cfg(test)]
+use minix_boot::MemoryRegion;
 use minix_types::{
     BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS,
     PhysBytes, VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED,

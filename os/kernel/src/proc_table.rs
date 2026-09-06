@@ -287,7 +287,7 @@ impl ProcessTable {
     ///
     /// The `send_sig(VM, SIGKMEM)` is split: the wake-up half is
     /// `mini_notify_core(SYSTEM→VM)` (works); the sigset half (SIGKMEM=71
-    /// > 64) is a no-op like SIGKSIG=74/SIGSNDELAY=70 — VM discovers the
+    /// \> 64) is a no-op like SIGKSIG=74/SIGSNDELAY=70 — VM discovers the
     /// details via MEMREQ_GET, not the signal number.
     pub fn vm_enqueue_and_notify_vm(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
         let vm_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::VM_PROC_NR.0);

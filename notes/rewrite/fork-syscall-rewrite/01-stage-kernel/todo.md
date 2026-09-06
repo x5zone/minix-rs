@@ -2524,6 +2524,20 @@ C-D-2 参数结构体化维持原依赖（Round 3）不动。`push_exclusion nev
 同样核实为特性门控误报（`lib.rs:876` 定义，`lib.rs:1041` 在非 mock 路径真实调用），
 不入修复，一并记录。
 
+**✅ 已清理（2026-09-07，§22 Phase 1 迭代 8，收尾 V12 批）**：kernel **13 → 2**——
+10 处机械修复：无用导入 ×2（`vm_handoff.rs` MemoryRegion 实为 cfg(test) 专用，
+cfg 门控拆分；`syscall.rs:445` cause_signal 被全限定调用遮蔽，删除）、collapsible_if
+×3（kpriv.rs:972 / ipc.rs:1058 / ipc.rs:1604，let-chains 形态）、`is_multiple_of`
+（syscall_process.rs:809）、`new_without_default`（page_fault.rs FmtBuf 补 Default）、
+`needless_lifetimes`（page_fault.rs:165 消解）、doc 缩进（memmap.rs:80/81）、
+doc 引用转义（proc_table.rs "71 \> 64"）。剩余 2 处维持不修并已登记：
+`push_exclusion`（特性门控误报）、`too_many_arguments`（C-D-2 依赖 Round 3）。
+arch 2 → 0（V12-B2 已并）；types 1 处 VmReply 大变体为文档化的有意权衡，不修；
+platform 2 处 MADT 跨架构误报，不修。附带教训记录：并行会话在共享工作区的
+在途编译错误（minix-types rs.rs）一度阻塞验证——编辑先行、编译验证后置，
+恢复后全量回归再提交。`cargo test -p minix-kernel` → 694 passed；
+`cargo test --workspace` 全绿；QEMU run_all.sh 见 §22.1 Phase 1 边界记录。
+
 ### 21.3 本轮明确判定为非缺口项（防重查备忘，不入修）
 
 1. `announce`（`lib.rs:2123-2124`）、`prepare_shutdown`（`syscall.rs:1795-1799`）、
@@ -2596,7 +2610,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释 → **接线本已落地（lib.rs:495-510），旧表 5 行 + 2 断言全部改写；注释修正（2026-09-07）**
 - ✅ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs 两处形态修复 → **paging 修复（arch clippy 2→0）+ 真发现 IoBatchBuf 对齐 UB（12 cast）以 align(8) 包装修复 + misc:1645 union 读取补论证（2026-09-07）**
 - ✅ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）→ **实测 72 字节（union 64 + 头 8），远低于阈值，关闭并 pin 进测试（2026-09-07）**
-- ⬜ V12-B4 [P3] clippy 卫生批（kernel 16 + arch 2 + platform 2 + types 1；两误报不修已记录）
+- ✅ V12-B4 [P3] clippy 卫生批 → **kernel 13 → 2（10 处机械修复；剩余 2 处为已登记不修项）；arch 2 → 0；workspace 全绿（2026-09-07，Phase 1 收尾）**
 
 **Phase 2 — SMP 前置重构（避免 S-4/S-5 新代码二次迁移）**
 - ⬜ A1 [P1] 33 处裸 `unsafe fn` 访问器调用点 → `xxx_with(&BklSection)`；boot 期 BootPhase witness

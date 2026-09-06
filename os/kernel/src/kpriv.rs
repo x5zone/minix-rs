@@ -969,10 +969,10 @@ impl PrivTable {
         if let Some(p) = rp_slot {
             p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(id_idx);
         }
-        if target_can_reply {
-            if let Some(p) = id_slot {
-                p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(rp_idx);
-            }
+        if target_can_reply
+            && let Some(p) = id_slot
+        {
+            p.ipc.s_ipc_to = p.ipc.s_ipc_to.set_bit(rp_idx);
         }
     }
 

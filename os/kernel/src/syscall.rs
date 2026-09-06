@@ -442,8 +442,6 @@ pub fn kernel_call(
     clock_state: &mut ClockState,
     user_copy: &dyn crate::ipc::UserCopy,
 ) -> KcallResult {
-    use crate::syscall_signal::cause_signal;
-
     // C system.c:141 — save the user-space reply address.
     caller.p_delivermsg_vir = m_user;
 

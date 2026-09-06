@@ -77,8 +77,9 @@ pub enum MemMapError {
 ///   directly instead of a high-water scan, and the VM consumer asserts
 ///   `!free_regions.is_empty()` instead of `mmap_size > 0`
 ///   (`os/servers/vm/src/boot.rs:141-144`).
-/// No Rust code reads either value — maintaining them would be write-only
-/// state. Verified 2026-09-06; see todo.md D-34 and 08-system-init-boot-finish.md §4.5.
+///
+///   No Rust code reads either value — maintaining them would be write-only
+///   state. Verified 2026-09-06; see todo.md D-34 and 08-system-init-boot-finish.md §4.5.
 ///
 /// # Arguments
 ///

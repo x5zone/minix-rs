@@ -123,12 +123,17 @@ impl<const N: usize> FmtBuf<N> {
             len: 0,
         }
     }
-
     /// The formatted text written so far (empty on UTF-8 or overflow
     /// failure — `core::fmt` only feeds us valid UTF-8, so this cannot
     /// fail in practice).
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> Default for FmtBuf<N> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -162,11 +167,11 @@ pub type PageFaultMsgBuf = FmtBuf<160>;
 /// return it for `panic!("{}", msg)`. The actual panic call is left to
 /// the trap handler so it can include additional context (saved IP,
 /// registers).
-pub fn kernel_mode_pagefault_panic_msg<'a>(
-    buf: &'a mut PageFaultMsgBuf,
+pub fn kernel_mode_pagefault_panic_msg(
+    buf: &mut PageFaultMsgBuf,
     proc_endpoint: Endpoint,
     fault_addr: u64,
-) -> &'a str {
+) -> &str {
     use core::fmt::Write as _;
     // C: exception.c:91 — fixed format string, no allocation. `write!`
     // into the stack buffer uses core's formatting machinery, which
