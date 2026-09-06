@@ -274,7 +274,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-07 | `ipc/vfs.rs:413` | `set_core_flag`（WCOREFLAG）`unimplemented!()` | 09-pm-exit.md | 同上 |
 | D-08 | `ipc/vfs.rs:469` | `exec_restart` `unimplemented!()` | 17-exec.md | exec 重启路径接线 |
 | D-09 | `ipc/vfs.rs:488` | `sys_abort` `unimplemented!()` | 01-stage-kernel | 内核 sys_abort |
-| D-10 | `fork.rs:86-99/175-186` | tracer SIGSTOP 记意图不执行（`forkexit.c:133-134/232-234`） | 11-signal-core.md | `sig_proc` 可跨模块调用（11 落地） |
+| D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
 | D-11 | `event.rs:170/230` | 事件重启的 exit_restart/restart_sigs 仅清标志 | 13-signal-flow.md | restart_sigs 完整实现 |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
 | D-13 | `exit.rs:33` | exit 路径 `sys_kill` no-op | 11-signal-core.md | 内核 sys_kill |
@@ -453,3 +453,20 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`07-pm-fork.md` §4.1/§5 测试表（`test_do_fork_success` 等新名）、`08-pm-srv-fork.md` D7、`09/10/11/12` 散文、`05-vfs-interaction.md` §接线记录、`04-ipc-dispatch.md` §4.2、本文件 §1.1/§1.2 矩阵。
 
 **未做（DEFERRED 论证）**：无——本条为纯机械重命名，无外部依赖。
+
+### ✅ Fix #5: D-10 — tracer SIGSTOP 与 TO_TRACEFORK 条件继承（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/fork.rs`（新增共享决策函数 `inherit_guardianship`；`copy_mproc` 的监护写入改条件继承；`do_fork` 第 8 步 / `do_srv_fork` 第 7 步接真实 `crate::signal::sig_proc(child, SIGSTOP, trace=true, ksig=false)`；+3 测试）
+
+**Before**：两处 no-op 注释（"DEFERRED — 11-signal-core.md"）；且 `copy_mproc`/`srv_fork_from` 无条件把子进程监护重置为 `Normal`——即使接线了 `sig_proc`，`tracer().is_some()` 也恒假（探索阶段发现的**隐藏阻塞**：C 经 `*rmc=*rmp` 整体复制继承 tracer，Rust 的显式构造路径把它丢了）。
+
+**After**（设计选型）：监护继承的落点两案——(a) 提取共享 `inherit_guardianship(parent, parent_slot)` 供两条构造路径复用（已选）；(b) 在 `Guardianship`/构造函数内部隐式继承（改 `srv_fork_from` 签名或语义）。选 (a)：C 的语义点是显式的（复制后条件清除），Rust 的显式构造哲学下把决策函数放在编排层与 C 的"复制 → 条件清除"两段式同构，且不污染 `mproc` 层构造器的无副作用性。语义对照 `forkexit.c:87-96`：父 `Traced` + `TRACEFORK` → 子继承（`trace_exit=false`，对应 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`）；否则 `Normal`。`sig_proc` 的 trace 分支（`signal.c:384` → `signal.rs:210-216`）置 `sigtrace` SIGSTOP 位 + `trace.stopped`。
+
+**Verified**：
+- `cargo test -p minix-pm`：325 → **328 lib passed**（+3：TO_TRACEFORK 继承+停止 / 无 TRACEFORK 清除+运行 / srv 路径继承）+ 6 integration
+- `grep -rn "DEFERRED" os/servers/pm/src/fork.rs`：零命中
+
+**Docs**：`07-pm-fork.md` §2.7 重写（继承链论证）、D7 重写（DEFERRED → 落地记录 + 隐藏阻塞说明）、§4.1 步骤 8、§5.2 测试表 +3、§5.3 对账刷新；`08-pm-srv-fork.md` §2.7、步骤 8、§5.2/§5.3 对账；本文件 §6 D-10 行。
+
+**未做（DEFERRED 论证）**：无——`sig_proc` 的 ptrace 停止态表达（`trace.stopped` + `sigtrace`）已在 crate 内自洽；真实 `sys_trace` 停止调用挂内核面（E6 SYS_TRACE 范围，08-trace 文档域）。

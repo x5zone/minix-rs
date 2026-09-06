@@ -225,7 +225,7 @@ if (rmc->mp_tracer != NO_TRACER)          // forkexit.c:133 mproc.h:34 NO_TRACER
     sig_proc(rmc, SIGSTOP, TRUE /*trace*/, FALSE /* ksig */); // signal.c:384
 ```
 
-`NO_TRACER` 0 与 `NO_PID` 同值但语义正交（`tracer` 为槽位索引，`pid` 为命名）；`SIGSTOP` 19（`signal.h:63`）以 `trace=true` 投递，11 章详述，本章只到调用点（Rust `unimplemented!("DEFERRED: sig_proc SIGSTOP — 见 11-signal-core.md")`）。
+`NO_TRACER` 0 与 `NO_PID` 同值但语义正交（`tracer` 为槽位索引，`pid` 为命名）；`SIGSTOP`（Minix3 为 17，`signal.h:63`）以 `trace=true` 投递，11 章详述信号语义，本章关注**子进程为什么会持有 tracer**：C 经 `*rmc = *rmp` 整体复制 `mp_tracer`/`mp_trace_flags`/`mp_sigtrace`（87），再条件清除——仅当父 `trace_flags` 不含 `TO_TRACEFORK` 时子进程的 tracer 才被置 `NO_TRACER`（91-96）。Rust 侧对应 `fork.rs` 的 `inherit_guardianship`：父 `Traced` 且 `trace_options` 含 `TRACEFORK` → 子继承（`trace_exit` 不继承，对应 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`）；随后 `do_fork` 第 8 步对持有 tracer 的子进程调用真实 `crate::signal::sig_proc(child, SIGSTOP, trace=true, ksig=false)`（C 忽略返回值，`forkexit.c:135`——子进程刚建、tracer 槽位有效，失败不可达），子进程进入 ptrace 停止态（`trace.stopped`）且 `sigtrace` 记 SIGSTOP 位。`do_srv_fork` 第 7 步同构（`forkexit.c:231-234`）。
 
 ### 2.8 同步/异步边界与顺序敏感（forkexit.c:82/139）
 
@@ -283,9 +283,9 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 `VfsCall::Fork { child, parent, child_pid }`（`minix-types/src/ipc/vfs.rs:347` 的 `m7i1/m7i2/m7i3/-1/-1` 哨兵与 `com.h:547-583` 对齐）经 `tell_vfs(child_slot, Fork, transport)` 投递（`ipc/vfs.rs:182` 三段式：not-idle→`send(VFS)`→`VFS_CALL{reply_to_new_parent:false}`），`VFS_CALL` 置于子槽（`forkexit.c:130` 的 `rmc`），延续由 05 的 `handle_vfs_reply` 异步双回复（`reply(child,OK)`+`reply(parent,child_pid)` 且 `NEW_PARENT` 抑制）。
 
-### D7：tracer `SIGSTOP` 的 DEFERRED 标注
+### D7：tracer `SIGSTOP` 与 `TO_TRACEFORK` 条件继承（2026-09-06 落地）
 
-`if child_tracer.is_some() { sig_proc(child, SIGSTOP, traced=true) }`（`forkexit.c:133-134` 的 `signal.c:384`）在 `signal.rs` 落地前为 `unimplemented!("DEFERRED: sig_proc SIGSTOP — 见 11-signal-core.md")`，与 05 的 `VmFork` 占位同惯例；`NoTracer` 为主路径，`TO_TRACEFORK` 清零分支由 `TraceState::default` 覆盖（`mproc/fork.rs:91-95` 的 `if (trace_flags & TO_TRACEFORK) { .. } else { tracer=NO_TRACER }` 当前简化为恒 `default`，属 P2 与 C 差异）。
+旧实现两处与 C 不符：`do_fork` 第 8 步为 no-op 注释（"11 落地时替换"），且 `copy_mproc` 无条件把子进程监护重置为 `Normal`——`tracer().is_some()` 恒假，C 的整条 tracer 继承链在 Rust 侧不可达。2026-09-06 修复：`fork.rs` 新增共享决策函数 `inherit_guardianship`（`do_fork` 与 `do_srv_fork` 两条构造路径复用——C 是一处复制 + 一处条件，Rust 两条显式构造路径各需一次决策），语义即 `forkexit.c:87-96`：父 `Traced` + `TRACEFORK` → 继承；否则清除。第 8 步接真实 `sig_proc`（`trace=true` 走 ptrace 停止分支，`signal.c:384` → `signal.rs` 的 `trace_mask |= bit` + `trace.stopped = true`）。三个新测试覆盖继承+停止、清除+运行、srv 路径继承三情形（07 §5）。
 
 ### D8：`SUSPEND` → `ReplyLater` 与 05 的 FORK 双分支闭环（ARCH A-6）
 
@@ -306,7 +306,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 5. `procs_in_use` 手动 `++` + `copy_mproc(...)`（`fork.rs:65-71`，D5——`++` 在 `vm_fork` 成功之后，C `86` 同序，无回滚补偿）；
 6. `child_pid = get_free_pid(table)`（`fork.rs:73`，D4——在复制之后、`tell_vfs` 之前，C `119` 同序）；
 7. `tell_vfs(table, child_slot, VfsCall::Fork{child,parent,child_pid}, transport)?`（`fork.rs:80`，D6，`VFS_CALL` 置于子槽）；
-8. `if child_tracer.is_some() { sig_proc(child, SIGSTOP, traced) }`（`fork.rs:86-98`，D7，DEFERRED）→ `Ok(child_pid)`（调用方 `init.rs` 映射 `ReplyLater`）。
+8. `if child_tracer.is_some() { sig_proc(child, SIGSTOP, trace=true) }`（forkexit.c:132-135，D7 已落地——真实调用，TO_TRACEFORK 条件继承见 §2.7）→ `Ok(child_pid)`（调用方 `init.rs` 映射 `ReplyLater`）。
 
 > 注意 C 的 `do_fork` **没有**独立的"内核 fork 请求"步骤——`proc` 复制由 VM 在 `vm_fork` 内经 `sys_fork` 完成（`kernel/system/do_fork.c:69-72`）。旧占位实现中的 `send_kernel_request(KernelRequest::Fork{...})` 步骤是与 C 不符的原型残留，已随假成功接缝一并删除。
 
@@ -371,13 +371,16 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 - `test_find_parent_slot_not_found`：`find_parent_slot(EP 1,0) → Err(InvalidEndpoint)`
 - `test_do_fork_success`：`do_fork(EP 1,0) → Ok(child_pid>0)`（含 `VFS_CALL` 置于子槽断言，`05` 的 `tell_vfs` 三段式）
 - `test_do_fork_parent_not_found`：`do_fork(EP 1,0) → Err(InvalidEndpoint)`
+- `test_do_fork_tracefork_child_inherits_tracer_and_stops`：父 `Traced{TRACEFORK}` → 子继承 tracer + `trace.stopped` + `sigtrace` 记 SIGSTOP（D7，`forkexit.c:87-96/132-135`）
+- `test_do_fork_without_tracefork_child_untraced_and_running`：父 `Traced` 无 `TRACEFORK` → 子 `Normal`、未停止、`sigtrace` 清零（`forkexit.c:91-96`）
+- `test_do_srv_fork_tracefork_child_inherits_tracer_and_stops`：srv 路径同构（`forkexit.c:187-216/231-234`）
 
-共 **4** 项（`fork.rs:213`）。**与 `mproc/fork.rs` 的 15 项正交**：`fork.rs` 测跨服务编排（`transport` 参与），`mproc/fork.rs` 测表层与显式构造（无 `transport`）。
+共 **7** 项（2026-09-06 D7 落地 +3）。**与 `mproc/fork.rs` 的 15 项正交**：`fork.rs` 测跨服务编排（`transport` 参与），`mproc/fork.rs` 测表层与显式构造（无 `transport`）。
 
 ### 5.3 集成与跨文档
 
-- `ipc/calls.rs:243` `test_dispatch_fork_is_reply_later`：`PmCall::Fork → ReplyLater`（`forkexit.c:139` `SUSPEND`）
-- `init.rs:803` `test_run_once_fork_no_sync_reply`：`run_once(PM_FORK) → Handled` 且 `transport.sent().is_empty()`（`main.c:106` `SUSPEND` 不回复本消息）
+- `ipc/calls.rs` `test_dispatch_fork_success_is_reply_later` + `test_dispatch_fork_parent_unknown_is_error_reply`：单一分发表 Fork 臂的 Ok → ReplyLater / 父不存在 → errno 回复（2026-09-06 分发收敛后，04 §4.2）
+- `init.rs` `test_run_once_fork_no_sync_reply`：`run_once(PM_FORK) → Handled`，wire 序列为 `[VM_FORK, VFS_PM_FORK]` 且无 caller 回复（`main.c:106` `SUSPEND` 不回复本消息；vm_fork 真实 sendrec 后 sent 为 2 条而非空）
 - `ipc/vfs.rs:763` `test_fork_success` 系列（`handle_vfs_reply` 的 FORK 双分支，05 §5.2）：`sched_start_user` 成败 → `exit_proc` 或 `reply(parent/child)` 且 `NEW_PARENT` 抑制，`restart_sigs` 尾部
 
 完整测试清单：`rg "^\s*fn test_" os/servers/pm/src/{fork,mproc/fork}.rs`（19） + `rg "fork" os/servers/pm/src/{init,ipc/{calls,vfs}}.rs`（3）— 本章直接相关 **22** 项；`cargo test -p minix-pm --lib` 截至 2026-09-02 为 **160 passed**（含 06 的 30），本章新增 `0`（`fork.rs` 已有 4）+ `mproc/fork.rs` 15 已在基线内，`cargo test -p minix-types` **108 passed** 不变。

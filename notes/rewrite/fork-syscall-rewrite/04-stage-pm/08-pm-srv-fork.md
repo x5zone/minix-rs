@@ -173,7 +173,7 @@ tell_vfs(rmc, &m);                    // 230 VFS_CALL 置子进程（utility.c:1
 
 ### 2.7 tracer 信号（forkexit.c:232-234）
 
-与 07 `133-134` 同构（`if (mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, trace)`，`signal.c:384`，11 章详述，本章 DEFERRED）。
+与 07 `132-135` 同构（`if (mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, trace)`，`signal.c:384`）。2026-09-06 起为真实调用：`do_srv_fork` 第 7 步经 `crate::signal::sig_proc`（trace=true → ptrace 停止分支）投递，子进程的 tracer 继承由共享的 `inherit_guardianship`（07 D7）按 `TO_TRACEFORK` 条件决定——srv 路径的构造函数 `srv_fork_from` 先置 `Normal`，第 5 步之后条件继承覆盖之（对应 C `*rmc=*rmp` 复制 + 91-96 同型清除）。
 
 ### 2.8 立即双回复 vs `SUSPEND`（forkexit.c:236-239）
 
@@ -252,7 +252,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 5. `procs_in_use++` 后 `srv_fork_from(parent, child_idx, child_pid, child_ep, parent_idx, uid, gid)`（`D2/D3`，`PRIV_PROC` 保留，六字段注入）；
 6. `get_free_pid`（`D3`，`NR_PIDS` 回绕 + 双字段冲突）；
 7. `tell_vfs(SrvFork{child,parent,child_pid,reuid=uid,regid=gid})`（`D4`，`VFS_CALL` 置子进程）；
-8. `sig_proc(SIGSTOP)` DEFERRED（11）；
+8. `sig_proc(SIGSTOP)` 已落地（2026-09-06，真实调用见 §2.7）；
 9. `transport.send(child_ep, OK)` 立即唤醒子 + `Ok(pid)`（`D5`，同步返父）。
 
 ### 4.2 进程复制层（`os/servers/pm/src/mproc/fork.rs`）
@@ -296,20 +296,18 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### 5.2 `fork.rs`（`do_srv_fork` 编排）
 
-- `test_srv_fork_eperm`：`parent_ep != RS → Err(EPERM)`（`find_parent` 前即拦）
-- `test_srv_fork_success`：`RS → Ok(pid)` 且子 `PRIV_PROC` 且 `VFS_CALL` 且 `transport` 含 `VFS_PM_SRV_FORK` 且 `tracer` 分支
-- `test_srv_fork_parent_not_found`：`InvalidEndpoint`（`find_parent_slot` 失败）
-- `test_srv_fork_table_full`：`can_alloc` 满表 → `EAGAIN`
-- `test_srv_fork_vfs_call`：`VfsCall::SrvFork` 的 `reuid/regid` 真实 vs `Fork` 的 `-1`（`m7i4/m7i5`）
-- `test_srv_fork_immediate_reply`：`do_srv_fork` 后 `transport` 含 `send(child,OK)` 立即唤醒子（`VFS_CALL` 同时置于子进程）
+- `test_do_srv_fork_eperm`：`parent_ep != RS → Err(EPERM)`（`find_parent` 前即拦）
+- `test_do_srv_fork_success`：`RS → Ok(pid)` 且子 `PRIV_PROC` 且 `VFS_CALL` 且 `transport` 含 `VFS_PM_SRV_FORK`（测试名对账 2026-09-06：轮 4 统一 `do_` 前缀）
+- `test_do_srv_fork_vfs_call`：`VfsCall::SrvFork` 的 `reuid/regid` 真实 vs `Fork` 的 `-1`（`m7i4/m7i5`）
+- `test_do_srv_fork_tracefork_child_inherits_tracer_and_stops`：RS 带 `TO_TRACEFORK` → srv 子继承 tracer + ptrace 停止（D7 落地，`forkexit.c:187-216/231-234`）
 
 ### 5.3 集成与跨文档
 
-- `ipc/calls.rs:243` `test_dispatch_srv_fork_is_reply`：`PmCall::SrvFork → Reply(pid)`（`forkexit.c:239`）vs `Fork → ReplyLater`
-- `init.rs:865` `test_run_once_srv_fork_immediate_reply`：`run_once(PM_SRV_FORK)` → `Handled` 且 `send(child,OK)` + `send(parent,pid)` 双回复（`main.c:237/239`）
-- `ipc/vfs.rs:310` `test_srv_fork_is_noop_then_tail`（05 §5.2）：`VFS_PM_SRV_FORK_REPLY → {}` + `restart_sigs` 尾部（空分支后仍 `IN_USE→restart_sigs`）
+- `ipc/calls.rs` 分发臂测试（2026-09-06 单一分发表后）：`test_dispatch_fork_success_is_reply_later` / `test_dispatch_fork_parent_unknown_is_error_reply` / `test_dispatch_exit_is_no_reply`（04 §4.2）
+- `init.rs` `test_run_once_fork_no_sync_reply`：wire 序列 `[VM_FORK, VFS_PM_FORK]` + 无 caller 回复
+- `tests/run_once_integration.rs`（crate 外端到端，2026-09-06 新增）：`fork_request_runs_full_chain_and_suspends` 等 6 场景（04 §5.2）
 
-完整清单：`rg "^\s*fn test_srv" os/servers/pm/src/{fork,mproc/fork}.rs`（~8）+ `rg "srv_fork" os/servers/pm/src/{init,ipc}`（3）— 本章直接相关 **~11** 项；`cargo test -p minix-pm --lib` 截至 2026-09-03 为 **160 passed**（含 07 的 `fork.rs` 4 + `mproc/fork.rs` 15，已在基线内，07 后 `cargo test` 仍 160/108，本章新增 6 项后将至 166/108）。
+完整清单：`rg "^\s*fn test_" os/servers/pm/src/fork.rs`（2026-09-06 为 11 项）+ `rg "srv_fork" os/servers/pm/src/{init,ipc}`；`cargo test -p minix-pm --lib` 截至 2026-09-06 为 **328 passed**（D7 落地 +3 后）。
 
 ---
 

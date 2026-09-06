@@ -81,18 +81,22 @@ pub fn do_fork<T: IpcTransport>(
     tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport)
         .map_err(|_| ForkCoordError::VfsError)?;
 
-    // 8. Tracer SIGSTOP (forkexit.c:133-134, DEFERRED — 11-signal-core.md)
-    // if (mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, trace=true)
-    {
-        let tracer = table.procs[child_slot].state.guardianship.tracer();
-        if tracer.is_some() {
-            // [ARCH: 06 已落地 EventCall, 11 未落地 sig_proc]
-            // 当前仅记录意图，11 落地时替换为真实 signal::sig_proc
-            #[allow(unreachable_code)]
-            {
-                // keep as no-op for now; test以 NoTracer 为主路径
-            }
-        }
+    // 8. Tracer SIGSTOP (forkexit.c:132-135)
+    // C: if (rmc->mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, TRUE /*trace*/, FALSE);
+    // 子进程是否持有 tracer 由 copy_mproc 的 TO_TRACEFORK 条件继承决定
+    //（forkexit.c:91-96）；trace=TRUE 使 sig_proc 走 ptrace 停止分支
+    //（signal.c:384），子进程进入 stopped 态等待 tracer 恢复。
+    if table.procs[child_slot].state.guardianship.tracer().is_some() {
+        // C 忽略此处的 sig_proc 返回值（forkexit.c:135）——子进程刚建、
+        // tracer 槽位有效、SIGSTOP 合法，失败在本调用点不可达。
+        let _ = crate::signal::sig_proc(
+            table,
+            UserSlot::new(child_slot),
+            crate::signal::SIGSTOP,
+            true,
+            false,
+            transport,
+        );
     }
 
     // 9. Return SUSPEND (forkexit.c:139 return SUSPEND → dispatcher ReplyLater)
@@ -151,6 +155,11 @@ pub fn do_srv_fork<T: IpcTransport>(
         );
         table.procs[child_slot] = child;
     }
+    // srv_fork_from 构造 Normal 监护；TO_TRACEFORK 条件继承在此覆盖
+    //（forkexit.c:187-216 复制 + 91-96 同型条件清除，见 inherit_guardianship）。
+    let inherited =
+        inherit_guardianship(&table.procs[parent_slot].state.guardianship, UserSlot::new(parent_slot));
+    table.procs[child_slot].state.guardianship = inherited;
     child_pid = table.pid_generator.get_free_pid(table);
     table.procs[child_slot].identity.id.pid = child_pid;
 
@@ -165,12 +174,19 @@ pub fn do_srv_fork<T: IpcTransport>(
     tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport)
         .map_err(|_| ForkCoordError::VfsError)?;
 
-    // 7. Tracer SIGSTOP (232-234, DEFERRED)
-    {
-        let tracer = table.procs[child_slot].state.guardianship.tracer();
-        if tracer.is_some() {
-            // DEFERRED: sig_proc SIGSTOP — see 11-signal-core.md
-        }
+    // 7. Tracer SIGSTOP (forkexit.c:231-234) — 与 do_fork 步骤 8 同构；
+    // 子进程的 tracer 继承同样走 TO_TRACEFORK 条件（forkexit.c:187-216 的
+    // *rmc=*rmp 复制 + 91-96 同型清除，srv_fork_from 的 Normal 构造在此
+    // 之后被条件继承覆盖）。
+    if table.procs[child_slot].state.guardianship.tracer().is_some() {
+        let _ = crate::signal::sig_proc(
+            table,
+            UserSlot::new(child_slot),
+            crate::signal::SIGSTOP,
+            true,
+            false,
+            transport,
+        );
     }
 
     // 8. Immediate reply to child (237) + return pid (239) — not SUSPEND
@@ -214,6 +230,39 @@ const FORK_INHERIT_FLAGS: crate::mproc::RemainingFlags = crate::mproc::Remaining
 /// Copies parent's mproc fields to child.
 ///
 /// Corresponds to Minix3's `do_fork` mproc copy logic.
+/// 子进程监护继承决策（forkexit.c:87-96 的 Rust 表达，`do_fork` 与
+/// `do_srv_fork` 共享）。
+///
+/// C 经 `*rmc = *rmp` 整体复制 `mp_tracer`/`mp_trace_flags`/`mp_sigtrace`，
+/// 再按 `TO_TRACEFORK` 条件清除：仅当父进程 trace_flags **不含**
+/// `TO_TRACEFORK` 时，子进程的 tracer 才被置 NO_TRACER。Rust 侧父为
+/// `Traced` 且 `trace_options` 含 `TRACEFORK` → 子继承 `Traced`
+///（`trace_exit` 不继承——C 的 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`，
+/// 新子进程的强制退出标记必须为否）；其余情形一律 `Normal`。
+fn inherit_guardianship(
+    parent: &crate::mproc::Guardianship,
+    parent_slot: UserSlot,
+) -> crate::mproc::Guardianship {
+    match parent {
+        crate::mproc::Guardianship::Traced {
+            parent,
+            tracer,
+            trace_options,
+            ..
+        } if trace_options.contains(crate::mproc::TraceOptions::TRACEFORK) => {
+            crate::mproc::Guardianship::Traced {
+                parent: *parent,
+                tracer: *tracer,
+                trace_exit: false,
+                trace_options: *trace_options,
+            }
+        }
+        _ => crate::mproc::Guardianship::Normal {
+            parent: parent_slot,
+        },
+    }
+}
+
 fn copy_mproc(
     table: &mut ProcTable,
     parent_slot: usize,
@@ -229,6 +278,9 @@ fn copy_mproc(
     let parent_flags;
     let signal_actions;
     let signal_mask;
+    // Tracer inheritance decision (forkexit.c:87-96) — computed in the
+    // parent-borrow block to keep the child write section conflict-free.
+    let child_guardianship;
 
     {
         let parent = &table.procs[parent_slot];
@@ -246,6 +298,11 @@ fn copy_mproc(
         // Clone signal actions (corresponds to Minix3's mp_sigact copy)
         signal_actions = parent.resources.signals.actions.clone();
         signal_mask = parent.resources.signals.mask;
+        // C: *rmc=*rmp 整体复制 mp_tracer/mp_trace_flags/mp_sigtrace，随后
+        // 条件清除——仅当父进程 trace_flags 不含 TO_TRACEFORK 时，子进程的
+        // tracer 才被清空（forkexit.c:91-96）。决策由共享 helper 表达。
+        child_guardianship =
+            inherit_guardianship(&parent.state.guardianship, UserSlot::new(parent_slot));
     }
 
     // Now modify child
@@ -257,10 +314,7 @@ fn copy_mproc(
     child.identity.endpoint = child_endpoint;
     child.identity.procgrp = procgrp;
 
-    // Copy parent relationship
-    child.state.guardianship = crate::mproc::Guardianship::Normal {
-        parent: UserSlot::new(parent_slot),
-    };
+    child.state.guardianship = child_guardianship;
 
     // Copy credentials
     if let Some(creds) = credentials {
@@ -479,5 +533,111 @@ mod tests {
         let m7 = unsafe { vfs_msg.m_u.m_m7 };
         assert_eq!(m7.m7i4, 42);
         assert_eq!(m7.m7i5, 43);
+    }
+
+    // ── D-10：tracer SIGSTOP 与 TO_TRACEFORK 条件继承（forkexit.c:87-96/132-135）──
+
+    use crate::mproc::{Guardianship, TraceOptions};
+
+    /// 在 `parent` 槽位播种一个被 `tracer` 跟踪的进程。
+    fn seed_traced_parent(table: &mut ProcTable, parent: usize, tracer: usize, tracefork: bool) {
+        let mut opts = TraceOptions::empty();
+        if tracefork {
+            opts |= TraceOptions::TRACEFORK;
+        }
+        table.procs[parent].identity.endpoint = Endpoint::from_generation_slot(1, parent as i32);
+        table.procs[parent].identity.id.pid = 100 + parent as i32;
+        table.procs[parent].state.lifecycle = Lifecycle::Running;
+        table.procs[parent].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(0),
+            tracer: UserSlot::new(tracer),
+            trace_exit: false,
+            trace_options: opts,
+        };
+    }
+
+    #[test]
+    fn test_do_fork_tracefork_child_inherits_tracer_and_stops() {
+        // C: 父 Traced + TO_TRACEFORK → 子继承 tracer（91-96 条件不清除），
+        // do_fork 对子 sig_proc(SIGSTOP, trace=TRUE)（132-135）→ 子进入
+        // ptrace 停止态，sigtrace 记 SIGSTOP 位。
+        let mut table = ProcTable::new();
+        seed_traced_parent(&mut table, 3, 7, true);
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
+
+        let child_pid = do_fork(&mut table, Endpoint::from_generation_slot(1, 3), &mut transport)
+            .expect("fork with TO_TRACEFORK should succeed");
+        let child_slot = table.find_proc(child_pid).expect("child not found").get();
+
+        let child = &table.procs[child_slot];
+        assert_eq!(
+            child.state.guardianship.tracer(),
+            Some(UserSlot::new(7)),
+            "TO_TRACEFORK child must inherit the tracer"
+        );
+        assert!(child.state.trace.stopped, "child must be ptrace-stopped");
+        assert_eq!(
+            child.resources.signals.trace_mask,
+            1u64 << (crate::signal::SIGSTOP - 1),
+            "sigtrace must record the SIGSTOP delivery"
+        );
+    }
+
+    #[test]
+    fn test_do_fork_without_tracefork_child_untraced_and_running() {
+        // C: 父 Traced 但无 TO_TRACEFORK → 子 tracer 清空（91-96），
+        // 不发 SIGSTOP，子进程照常 Running。
+        let mut table = ProcTable::new();
+        seed_traced_parent(&mut table, 3, 7, false);
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
+
+        let child_pid = do_fork(&mut table, Endpoint::from_generation_slot(1, 3), &mut transport)
+            .expect("fork without TO_TRACEFORK should succeed");
+        let child_slot = table.find_proc(child_pid).expect("child not found").get();
+
+        let child = &table.procs[child_slot];
+        assert!(
+            matches!(
+                &child.state.guardianship,
+                Guardianship::Normal { parent } if *parent == UserSlot::new(3)
+            ),
+            "child tracer must be cleared without TO_TRACEFORK"
+        );
+        assert!(!child.state.trace.stopped, "child must not be stopped");
+        assert_eq!(child.resources.signals.trace_mask, 0);
+    }
+
+    #[test]
+    fn test_do_srv_fork_tracefork_child_inherits_tracer_and_stops() {
+        // C: do_srv_fork 的复制段同型（187-216 + 231-234）——srv 子进程
+        // 同样按 TO_TRACEFORK 继承并收到 trace SIGSTOP。
+        let mut table = ProcTable::new();
+        table.procs[2].identity.endpoint = Endpoint::RS;
+        table.procs[2].identity.id.pid = 2;
+        table.procs[2].state.lifecycle = Lifecycle::Running;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.scheduler = Endpoint::NONE;
+        // RS（此处即父进程）被 tracer=7 跟踪且带 TO_TRACEFORK。
+        table.procs[2].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(0),
+            tracer: UserSlot::new(7),
+            trace_exit: false,
+            trace_options: TraceOptions::TRACEFORK,
+        };
+
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
+        let params = crate::mproc::SrvForkParams { uid: 1000, gid: 100 };
+
+        let child_pid = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport)
+            .expect("srv_fork with TO_TRACEFORK should succeed");
+        let child_slot = table.find_proc(child_pid).expect("child not found").get();
+
+        let child = &table.procs[child_slot];
+        assert_eq!(child.state.guardianship.tracer(), Some(UserSlot::new(7)));
+        assert!(child.state.trace.stopped);
+        assert_eq!(child.resources.signals.trace_mask, 1u64 << (crate::signal::SIGSTOP - 1));
     }
 }
