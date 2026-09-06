@@ -37,7 +37,7 @@ use crate::ipc::transport::IpcStatus;
 use crate::pagetable::vm_self_map::init_vm_self_pt;
 use crate::direct_map::vm_phys_to_virt;
 use crate::region::PageFrames;
-use minix_types::PhysBytes;
+use minix_types::{PhysBytes, VirBytes};
 
 /// Cache-reclaim batch size for the main-loop `alloc_cycle` hook.
 ///

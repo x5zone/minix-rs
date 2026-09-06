@@ -1585,15 +1585,13 @@ mod tests {
         );
     }
 
-    // ── DEFERRED dispatcher happy-path tests ─────
+    // ── Happy-path tests (V11/T27) ─────
     //
-    // These tests pin the fail-closed validation behavior of the 4
-    // newly-added dispatch functions (procctl, remap, remap_ro, vfs_reply).
-    // Each test sets up a MessageM1 payload that simulates what the
-    // corresponding C sender would write, then checks the result matches
-    // the documented validation behavior. Real end-to-end behavior is
-    // DEFERRED — these tests only cover the "reject bad input" half of
-    // the fail-closed contract.
+    // The fail-closed validation half of procctl / remap / remap_ro /
+    // vfs_reply is pinned by the reject tests below; these four tests
+    // drive the success half: a cleared process comes out clean, a shared
+    // remap lands a SHARED region in the destination (read-only when
+    // requested), and a VFS reply retires the active queue entry.
 
     fn default_vm() -> crate::alloc_page::VmPageAllocator {
         // Tiny allocator for tests; capacity is irrelevant since we
@@ -1623,6 +1621,230 @@ mod tests {
         alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
             crate::kernel_gateway::MockGateway::new(),
         )))
+    }
+
+    /// A full VmContext for success-path tests (the reject tests inline
+    /// the same literal; this helper exists for the tests that also need
+    /// live table state).
+    fn happy_ctx() -> crate::vm_server::VmContext {
+        crate::vm_server::VmContext {
+            proc_table: default_table(),
+            gateway: test_gateway(),
+            page_alloc: default_vm(),
+            page_frames: Some(default_frames()),
+            page_cache: _default_cache(),
+            vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+            kernel_allocated: crate::boot::KernelAllocated::ZERO,
+            vm_allocated_bytes: 0,
+            pagefault_errors: 0,
+            dropped_messages: 0,
+            #[cfg(feature = "sanity_checks")]
+            sanity_ticks: 0,
+        }
+    }
+
+    /// Activate a fresh process (software page table + regions) on a
+    /// scratch slot and return its endpoint.
+    fn init_dispatcher_process(slot_no: usize) -> Endpoint {
+        let table = default_table();
+        let slot = UserSlot::new(slot_no);
+        unsafe { table.reset_slot(slot); }
+        let empty = table.get_empty(slot).unwrap();
+        let ep = Endpoint::from_generation_slot(1, slot_no as i32);
+        let mut active = empty.activate(ep);
+        active.init_page_table().unwrap();
+        active.init_regions();
+        ep
+    }
+
+    fn nop_vfs_callback(
+        _server: &mut crate::vm_server::VmServer,
+        _reply: &crate::vfs_queue::VfsReply,
+        _state: &crate::vfs_queue::VfsRequestState,
+    ) -> Result<(), crate::vfs_queue::VfsQueueError> {
+        Ok(())
+    }
+
+    #[test]
+    fn test_dispatch_procctl_clear_happy_path() {
+        // C: exit.c:130-137 — VMPPARAM_CLEAR from RS clears the target
+        // process: regions freed, usage reset, fresh page table.
+        let who = init_dispatcher_process(82);
+        {
+            let slot = default_table().vm_isokendpt(who).unwrap();
+            let mut proc = default_table().get_active(slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                minix_types::VirBytes(0x3000_0000),
+                minix_types::VirBytes(0x10_0000),
+                crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+            )).unwrap();
+        }
+
+        let req = VmProcctlIn { param: 1, who, m1: 0, len: 0, flags: 0 };
+        let reply = MessageDispatcher::dispatch_procctl(&mut happy_ctx(), Endpoint::RS, req);
+        assert_eq!(reply, VmReply::Ok, "CLEAR from RS must succeed");
+
+        // Post-state: the process is still active but its address space is
+        // gone (region count 0, region_top 0) — C free_proc + fresh pt.
+        let slot = default_table().vm_isokendpt(who).unwrap();
+        let proc = default_table().get_active(slot).unwrap();
+        assert_eq!(proc.regions().len(), 0, "regions must be cleared");
+        assert_eq!(proc.region_top(), minix_types::VirBytes(0));
+    }
+
+    #[test]
+    fn test_dispatch_remap_shares_region() {
+        // C: mmap.c:366-434 — remap a source region into the destination
+        // as a writable SHARED region whose param points back at the
+        // source; the source region's remaps counter increments.
+        let src = init_dispatcher_process(83);
+        let dst = init_dispatcher_process(84);
+        {
+            let slot = default_table().vm_isokendpt(src).unwrap();
+            let mut proc = default_table().get_active(slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                minix_types::VirBytes(0x2000_0000),
+                minix_types::VirBytes(0x10_0000),
+                crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+            )).unwrap();
+        }
+
+        // Snapshot the source region's id before dispatch — the shared
+        // param must reference exactly this region.
+        let src_slot = default_table().vm_isokendpt(src).unwrap();
+        let src_id = default_table().get_active(src_slot).unwrap()
+            .regions().iter().find(|vr| vr.vaddr.0 == 0x2000_0000).unwrap().id;
+
+        let req = VmRemapIn {
+            caller: dst,
+            destination: dst,
+            who: src,
+            vaddr: minix_types::VirBytes(0x2000_0000),
+            length: minix_types::VirBytes(0x10_0000),
+            target: minix_types::VirBytes(0), // any slot in the REMAP window
+            flags: 0,
+        };
+        let reply = MessageDispatcher::dispatch_remap(&mut happy_ctx(), req);
+        let ret_addr = match reply {
+            VmReply::Mmap(out) => out.ret_addr,
+            other => panic!("dispatch_remap must succeed, got {:?}", other),
+        };
+        assert!(
+            ret_addr.0 >= REMAP_MMAP_BASE && ret_addr.0 < REMAP_MMAP_TOP,
+            "mapped address must land in the REMAP window, got {:#x}", ret_addr.0
+        );
+
+        // The destination carries a writable SHARED region pointing back
+        // at the source; the source's remaps counter incremented.
+        let dst_slot = default_table().vm_isokendpt(dst).unwrap();
+        let dst_proc = default_table().get_active(dst_slot).unwrap();
+        let shared = dst_proc.regions().iter()
+            .find(|vr| vr.vaddr == ret_addr)
+            .expect("shared region must exist at the returned address");
+        assert!(shared.flags.contains(crate::region::VrFlags::SHARED));
+        assert!(shared.flags.contains(crate::region::VrFlags::WRITABLE));
+        match &shared.param {
+            crate::region::VrParam::Shared { ep, vaddr, id } => {
+                assert_eq!(*ep, src.0, "shared param must point at the source endpoint");
+                assert_eq!(*vaddr, minix_types::VirBytes(0x2000_0000));
+                assert_eq!(*id, src_id, "shared param must carry the source region id");
+            }
+            other => panic!("expected Shared param, got {other:?}"),
+        }
+
+        let src_proc = default_table().get_active(src_slot).unwrap();
+        let src_region = src_proc.regions().iter()
+            .find(|vr| vr.vaddr.0 == 0x2000_0000).unwrap();
+        assert_eq!(src_region.remaps, 1, "source remaps counter must increment");
+    }
+
+    #[test]
+    fn test_dispatch_remap_ro_forces_readonly() {
+        // C: mmap.c:380-385 — VM_REMAP_RO shares without write permission,
+        // regardless of the source region's flags.
+        let src = init_dispatcher_process(85);
+        let dst = init_dispatcher_process(86);
+        {
+            let slot = default_table().vm_isokendpt(src).unwrap();
+            let mut proc = default_table().get_active(slot).unwrap();
+            proc.regions_mut().insert(crate::region::VirRegion::new(
+                minix_types::VirBytes(0x2000_0000),
+                minix_types::VirBytes(0x10_0000),
+                crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+            )).unwrap();
+        }
+
+        let req = VmRemapIn {
+            caller: dst,
+            destination: dst,
+            who: src,
+            vaddr: minix_types::VirBytes(0x2000_0000),
+            length: minix_types::VirBytes(0x10_0000),
+            target: minix_types::VirBytes(0),
+            flags: 0,
+        };
+        let reply = MessageDispatcher::dispatch_remap_ro(&mut happy_ctx(), req);
+        let ret_addr = match reply {
+            VmReply::Mmap(out) => out.ret_addr,
+            other => panic!("dispatch_remap_ro must succeed, got {:?}", other),
+        };
+
+        let dst_slot = default_table().vm_isokendpt(dst).unwrap();
+        let dst_proc = default_table().get_active(dst_slot).unwrap();
+        let shared = dst_proc.regions().iter()
+            .find(|vr| vr.vaddr == ret_addr).unwrap();
+        assert!(shared.flags.contains(crate::region::VrFlags::SHARED));
+        assert!(!shared.flags.contains(crate::region::VrFlags::WRITABLE),
+            "REMAP_RO must strip the writable bit");
+    }
+
+    #[test]
+    fn test_dispatch_vfs_reply_completes_active_request() {
+        // C: vfs.c:109 do_vfs_reply — the reply retires the active queue
+        // entry; a registered callback is handed back to the main loop for
+        // post-borrow execution (VfsReplyResult two-step, doc 15 §3.2).
+        use crate::vfs_queue::{VfsRequest, VfsRequestState, VfsRequestType};
+
+        fn nop_callback(
+            _server: &mut crate::vm_server::VmServer,
+            _reply: &crate::vfs_queue::VfsReply,
+            _state: &crate::vfs_queue::VfsRequestState,
+        ) -> Result<(), crate::vfs_queue::VfsQueueError> {
+            Ok(())
+        }
+
+        let mut ctx = happy_ctx();
+        ctx.vfs_queue.request(VfsRequest {
+            request_type: VfsRequestType::FdIo,
+            req_id: 0, // assigned by request()
+            caller_endpoint: Endpoint(7),
+            fd: 3,
+            offset: 0,
+            length: 0x2000,
+            callback: Some(nop_callback),
+            state: Some(VfsRequestState::FdIo {
+                region_vaddr: minix_types::VirBytes(0x3000_0000),
+                page_offset: minix_types::VirBytes(0),
+                write: false,
+                caller_endpoint: Endpoint(7),
+            }),
+        }).unwrap();
+        let active_id = ctx.vfs_queue.active_req_id().unwrap();
+
+        let req = VmVfsReplyIn {
+            endpoint: Endpoint(7),
+            result: 0,
+            reqid: active_id as i32,
+            dev: 100,
+            ino: 7,
+            fd: 3,
+            size_pages: 16,
+        };
+        let result = MessageDispatcher::dispatch_vfs_reply(&mut ctx, req);
+        assert_eq!(result.reply, VmReply::Suspend,
+            "completed reply surfaces as SUSPEND (no reply to VFS)");
+        assert!(result.callback.is_some(), "registered callback must be returned");
+        assert!(ctx.vfs_queue.is_empty(), "active entry must be retired");
     }
 
     #[test]

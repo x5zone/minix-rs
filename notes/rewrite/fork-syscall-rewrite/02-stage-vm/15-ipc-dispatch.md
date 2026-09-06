@@ -635,6 +635,7 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 | test_dispatch_remap_rejects_zero_vaddr / zero_length / invalid_endpoints | :1731/:1752/:1771 | remap 输入校验 |
 | test_dispatch_remap_ro_rejects_invalid_endpoints | :1791 | remap_ro 校验 |
 | test_dispatch_vfs_reply_rejects_zero_reqid / no_active_request_returns_error / negative_reqid_returns_error | :1810/:1830/:1851 | vfs_reply fail-closed |
+| test_dispatch_procctl_clear_happy_path / dispatch_remap_shares_region / dispatch_remap_ro_forces_readonly / dispatch_vfs_reply_completes_active_request | dispatcher.rs（V11/T27） | **V11/T27（G-V12-3 闭环）**：四函数成功路径——CLEAR 清空地址空间+换新页表；remap 落 SHARED+WRITABLE 区且 param 回指源区域、源 remaps+1；remap_ro 剥离写位；vfs_reply 退休活动表项并交还回调 |
 | test_dispatch_forgetcache_rejects_zero_pages / unaligned_offset / valid_input_returns_ok | :1871/:1892/:1912 | forgetcache 校验 |
 | test_dispatch_setcache_rejects_zero_pages / fails_closed_without_valid_caller / rejects_unaligned_dev_offset / rejects_invalid_caller | :1934/:1956/:1981/:2002 | setcache 校验（zero dev/ino 守卫由 `page_cache::tests::test_addcache_rejects_no_device` :522 覆盖，dispatcher 层不重复） |
 | test_dispatch_mapcache_rejects_unaligned_offset / zero_pages / invalid_caller / cache_miss_returns_not_found | :2026/:2048/:2071/:2094 | mapcache 校验 + ENOENT |

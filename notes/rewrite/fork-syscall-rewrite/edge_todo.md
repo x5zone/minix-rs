@@ -42,7 +42,7 @@
 | T24 | 4 | 残留标注清理 + parity/死代码判定批次 + 新缺口登记（G-V12-1..4） | todo.md §16 | ✅ 2026-09-07（todo.md §16 Fix #43 pre + Fix #44 清理批次；五篇文档同步） |
 | T25 | 4 | pt=None → SimPaging 翻转 ×6（munmap×4/brk×2） | V11-P2-1 收尾 | ✅ 2026-09-07（todo.md §16 Fix #45；mmap helper 连带修复） |
 | T26 | 4 | MOCK_BASE_MUTEX + extend_to_static_lifetime 归零（线程本地窗口） | V11-P1-2/V9-P2-4 验收锚点 | ✅ 2026-09-07（todo.md §16 Fix #46；新登记 G-V12-5 归 E3） |
-| T27 | 4 | dispatcher 4 函数 happy-path 补测 | G-V12-3 | ⬜ |
+| T27 | 4 | dispatcher 4 函数 happy-path 补测 | G-V12-3 | ✅ 2026-09-07（todo.md §16 Fix #47；四矩阵 476/493/476/476） |
 | T28 | 5 | CacheMemory::ev_pagefault 缓存查找 + PbCache 接线 | G-V12-1 | ⬜ |
 | T29 | 5 | SIGKMEM 信号处理 seam + do_memory（通电挂 E1） | G-V12-2 + G-V11-1 | ⬜ |
 | T30 | 5 | alloc_cycle 回收后重试（C alloc.c do-while 语义） | "24-page-cache" 停泊项 | ⬜ |

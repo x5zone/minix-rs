@@ -1328,7 +1328,7 @@ Coverage Summary for vm:
 |---|---|---|---|---|
 | G-V12-1 | CacheMemory::ev_pagefault 恒 NeedNewPage——无缓存索引查找 | mem_cache.c:181 `cache_pagefault`（真实查找实现） | memtype.rs:912 恒 `NeedNewPage`；连带 `VrParam::PbCache` test-only（vir_region.rs:57）、MAPCACHE 区域 param 落 `Direct{0}` 的疑点（V10-P2-1 表遗留行） | T28 |
 | G-V12-2 | SIGKMEM 信号处理入口缺失（与 G-V11-1 sef_cb_signal_handler 同簇） | main.c:731 注册 signal handler、:736-737 `SIGKMEM → do_memory()`；do_memory 定义于 pagefaults.c:294 | VM 侧零对应物（grep `sef_cb_signal_handler|signal_handler|SEF` 仅注释命中）；信号接收依赖 E1，处理体（收缩缓存）可 stage 内 seam + mock 落地 | T29 |
-| G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | T27 |
+| G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | ✅ T27（Fix #47） |
 | G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
 | G-V12-5 | minix-vm 依赖 minix-arch 未关 default features——`mock` DirectMap（运行时窗口基址变体）服务生产路径 | —（架构语义） | `arch/Cargo.toml` default=`["mock"]`，`servers/vm/Cargo.toml` 以 `{ path = "../../arch" }` 引入（绕过 workspace 表的 `default-features = false`）；VM 的 direct map 窗口本就是**内核动态授予**的运行时基址（E3 接线），"mock" 命名与生产用途混淆。处置归 E3：依赖收口 + 命名澄清（如 `RuntimeWindowDirectMap`）| 随 E3 |
 
@@ -1362,6 +1362,18 @@ Coverage Summary for vm:
 - **Files**: `os/servers/vm/src/direct_map.rs`（删 `MOCK_BASE_MUTEX`/`with_mock_base_lock`/`with_custom_mock_base` 的锁+save/restore+catch_unwind 机制；新 `TEST_VM_BASE` 线程本地 + `test_vm_base()`/`with_test_window(pages, f)`——每调用独占一个新泄漏缓冲区；漏斗两函数 cfg 分支；6 个既有测试迁移 + 新增 `test_windows_are_per_thread_and_independent`）、`os/servers/vm/src/alloc_page.rs`（删 `ALLOC_PHYS_INIT`/`ALLOC_MOCK_BASE`/`ensure_mock_phys_init`；wrapper 改一行委托；2 个未包窗口的测试补包——旧全局机制掩盖了它们的窗口依赖）、`os/servers/vm/src/vm_server.rs`（删 `TEST_PHYS_INIT`/`TEST_MOCK_BASE`/`ensure_mock_phys_init`；`relocate` 的 cfg(test) meta_va 分支删除——漏斗本身已窗口感知，单路径化）、`os/servers/vm/src/vmproc/mod.rs`（删 `extend_to_static_lifetime` transmute 与零调用方的 `get_active_vmproc_no_pt`；`get_active_vmproc` 以 `let table: &'static VmProcTable` 类型注解让 typestate 视图经普通推断携带 `'static`——transmute 从来只是"生命周期未被命名"的补丁）
 - **Verified**: `rg "MOCK_BASE_MUTEX|extend_to_static_lifetime" os/servers/vm/src` → **0**；`rg "set_mock_vm_base|mock_vm_base" os/servers/vm/src` → **0**（VM 不再触碰 arch 全局，arch 侧保留给自身测试与 E3）；三矩阵 **472 / 489 / 472 passed**（+1 线程隔离测试）；clippy 两档 `servers/vm` **0 警告**；vmproc/mod.rs 的 E0133（unsafe fn 缺 unsafe 块，edition 2024）随 transmute 删除消失
 - **Docs**: 01-vm-init-main.md（§4.4 修复记录行更新为线程本地演进）、07-pagetable-struct.md（§5.2 mock 隔离行）、02-vmproc-struct.md（§4.4 test_utils 行）；新登记 **G-V12-5**（§16.1：minix-arch default features 泄漏进 VM 生产依赖，"mock" DirectMap 实为运行时窗口语义，处置归 E3）
+
+### ✅ Fix #47: T27 — dispatcher 四函数 happy-path 补测（G-V12-3 闭环）
+
+- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（测试区：`happy_ctx()`/`init_dispatcher_process()`/`nop_vfs_callback` 三件测试基建 + 4 个新测试；"DEFERRED dispatcher happy-path tests" 注释块替换为成功路径说明）、15-ipc-dispatch.md（§5.1 表新增 V11/T27 行）
+- **新测试与断言面**：
+  1. `test_dispatch_procctl_clear_happy_path`——RS 发 VMPPARAM_CLEAR：先建带区域的活动进程，断言 `VmReply::Ok` + 进程仍活跃但区域清零、region_top 归零（C free_proc + 新页表语义，exit.c:130-137）；
+  2. `test_dispatch_remap_shares_region`——源区域 → 目标 SHARED+WRITABLE 区域：返回地址落在 REMAP 窗口、共享 param（ep/vaddr/id）逐字段回指源区域（id 先行快照对账）、源 remaps 计数 +1（C mmap.c:366-434）；
+  3. `test_dispatch_remap_ro_forces_readonly`——同上但断言写位被剥离（C mmap.c:380-385）；
+  4. `test_dispatch_vfs_reply_completes_active_request`——带回调+状态的 VFS 回复退休活动表项：`VfsReplyResult{reply: Suspend, callback: Some}`、队列清空（doc 15 §3.2 两步回调契约）。
+- **测试自身正确性**：id 采用"先快照后对账"避免虚构访问器；`VrParam` 无 `PartialEq` 用 match 解构断言（同时校验形状）；`#[should_panic]` 风格断言均带失败消息
+- **Verified**: `cargo test -p minix-vm --lib ipc::dispatcher` → **34 passed**；三矩阵 **476 / 493 / 476 passed**（+4）；clippy `servers/vm` 0 警告；文档表新行 4 个测试名逐一 `grep` 命中（Gate E）
+- **Docs**: 15-ipc-dispatch.md §5.1 新增 V11/T27 行（含 G-V12-3 闭环标注）
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
