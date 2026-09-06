@@ -2351,6 +2351,32 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   排空无副作用、未知信号忽略）；clippy/fmt 零输出；T7 PASS。文档同步：13 §2.1c、
   06 §2.1b。
 
+### ✅ Fix #58 — 轮18（get_work receive 经 KernelApi 注入，R34.18-20 部分闭合）
+- **File**：`os/servers/rs/src/boot.rs`（KernelApi::receive 三元组缝 + 生产 ENOSYS）、
+  `testutil.rs`（mock receive ENOSYS——罐装消息由 19 mock 面提供）、`lib.rs`
+  （get_work 删除 todo!，委托 receive 缝；run() 签名 `!` → `Result<(), Errno>`）、
+  `main.rs`（`let _ = server.run()` fail-closed 注记）
+- **After**：`KernelApi::receive(endpoint) -> Result<(Message, IpcStatus, Clock), Errno>`
+  —— 第三元素即 R25 的 notify timestamp（ipc.h:1715），由 19 的安全 receive 包装提取
+  （union 读取需要 unsafe，本 crate 禁用）；生产面 ENOSYS 时 run() 以 Err 结束——不再
+  todo!（T2：进程退出可见而非自旋）。lib.rs:244 的 todo! 标记移除，T7 门剩余 1 处
+  （boot.rs:774 自升级，轮 20 edge）。
+- **Verified**：`cargo test -p minix-rs` = **261 passed**；`tools/check-rs-unwired.sh`
+  PASS（剩余 1 标记带契约）；clippy/fmt 零输出。文档同步：06 §2.1a。
+
+### ✅ Fix #58 — 轮18（get_work receive 经 KernelApi 注入，R34.18-20 部分闭合）
+- **File**：`os/servers/rs/src/boot.rs`（KernelApi::receive 三元组缝 + 生产 ENOSYS）、
+  `testutil.rs`（mock receive ENOSYS——罐装消息由 19 mock 面提供）、`lib.rs`
+  （get_work 删除 todo!，委托 receive 缝；run() 签名 `!` → `Result<(), Errno>`）、
+  `main.rs`（`let _ = server.run()` fail-closed 注记）
+- **After**：`KernelApi::receive(endpoint) -> Result<(Message, IpcStatus, Clock), Errno>`
+  —— 第三元素即 R25 的 notify timestamp（ipc.h:1715），由 19 的安全 receive 包装提取
+  （union 读取需要 unsafe，本 crate 禁用）；生产面 ENOSYS 时 run() 以 Err 结束——不再
+  todo!（T2：进程退出可见而非自旋）。lib.rs:244 的 todo! 标记移除，T7 门剩余 1 处
+  （boot.rs:774 自升级，轮 20 edge）。
+- **Verified**：`cargo test -p minix-rs` = **261 passed**；`tools/check-rs-unwired.sh`
+  PASS（剩余 1 标记带契约）；clippy/fmt 零输出。文档同步：06 §2.1a。
+
 ### ✅ Fix #53 — A2（架构建议落地）：`UpdateState` 单点持有 + per-slot `r_upd` 载体
 - **File**：`os/servers/rs/src/live_update.rs`（`UpdateState` + 相位写入口 +
   `RupdateFlags` 迁入 + `UpdateEntry` 补 4 字段）、`lib.rs`（ServerState.update 挂载 +

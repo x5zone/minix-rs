@@ -238,4 +238,10 @@ impl KernelApi for MockKernelApi {
     fn waitpid(&mut self) -> Option<Pid> {
         self.children.pop()
     }
+    fn receive(
+        &mut self,
+        _endpoint: Endpoint,
+    ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno> {
+        Err(Errno::ENOSYS)
+    }
 }

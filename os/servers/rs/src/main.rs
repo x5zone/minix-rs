@@ -41,6 +41,9 @@ fn main() {
         }
 
         // C: main loop — main.c:50-131 (skeleton; details in 06).
-        server.run();
+        // Fail-closed (T2): the unwired receive face returns ENOSYS, ending
+        // the run loop with an error instead of spinning or panicking. The
+        // 19 wiring replaces the seam and the loop becomes long-running.
+        let _ = server.run();
     }
 }

@@ -28,7 +28,7 @@
 
 extern crate alloc;
 
-use minix_types::{Endpoint, Errno};
+use minix_types::{Clock, Endpoint, Errno};
 
 pub mod access;
 pub mod boot;
@@ -219,7 +219,7 @@ impl RsServer {
     /// (`get_work`, 06) + classification ([`dispatch::classify`]) + request
     /// dispatch. The receive primitive is DEFERRED (06-rs-main-loop.md); the
     /// loop fails closed until then.
-    pub fn run(&mut self) -> ! {
+    pub fn run(&mut self) -> Result<(), Errno> {
         // T1: the main loop operates on the post-boot runtime state. Fail
         // closed (loudly) if boot never completed — an RS that has not
         // finished booting cannot manage services.
@@ -229,13 +229,8 @@ impl RsServer {
         loop {
             // C: rs_idle_period() — main.c:59 (06).
             // C: get_work() → sef_receive_status(ANY) — main.c:62, 826-833 (06).
-            let (msg, rcv_sts) = self.get_work();
-            // R25: classify takes the notify timestamp (ipc.h:1715). The
-            // value lives in the `MessageUnion` — reading it requires
-            // `unsafe`, which this crate never uses — so extraction belongs
-            // to the safe receive wrapper (06/19); `0` here is unreachable
-            // until that lands (get_work fails closed above).
-            let _kind = dispatch::classify(&rcv_sts, msg.m_source, msg.m_type, 0);
+            let (msg, rcv_sts, ts) = self.get_work()?;
+            let _kind = dispatch::classify(&rcv_sts, msg.m_source, msg.m_type, ts);
             // C: message dispatch — main.c:70-127 (mechanisms in 06/07/12-16).
             // 06 wiring: `do_period` reads `state.system_hz`/`state.table`;
             // the RS_DOWN sweep reads/writes `state.shutting_down`.
@@ -243,19 +238,11 @@ impl RsServer {
         }
     }
 
-    /// C: `get_work()` — main.c:826-833. The receive primitive is DEFERRED
-    /// (06-rs-main-loop.md); `minix-sys::receive` is a stub and fails closed
-    /// until then.
-    fn get_work(&mut self) -> (minix_types::Message, dispatch::IpcStatus) {
-        let mut msg = minix_types::Message::default();
-        // C: sef_receive_status(ANY, &msg, &ipc_status) — main.c:826-833.
-        // T4: there is no real ipc_status until receive lands — fabricating
-        // `flags: 0` here would misclassify future notify messages (notify
-        // bits set) as plain requests once the primitive exists. Fail closed
-        // loudly instead; the status word arrives with the receive
-        // implementation (06-rs-main-loop.md).
-        let _ = minix_sys::receive(minix_types::Endpoint::ANY, &mut msg);
-        todo!("get_work: receive primitive DEFERRED (06-rs-main-loop.md)")
+    /// C: `get_work()` — main.c:826-833 (06). Delegates to the
+    /// `KernelApi::receive` seam (18) — the production face is the 19 wiring;
+    /// errors propagate so the caller fails closed instead of spinning.
+    fn get_work(&mut self) -> Result<(minix_types::Message, dispatch::IpcStatus, Clock), Errno> {
+        self.kernel.receive(minix_types::Endpoint::ANY)
     }
 }
 

@@ -182,6 +182,17 @@ pub trait KernelApi {
     /// C: `reply(who, rp, m_ptr)` — utility.c:309 (06); used by
     /// `late_reply` (utility.c:332) and the main loop reply path.
     fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno>;
+
+    /// Blocking receive with the IPC status word.
+    ///
+    /// C: `sef_receive_status(ANY, &m, &ipc_status)` — main.c:826-833 via
+    /// get_work (utility.c 全局接收原语, 06). The third element is the notify
+    /// timestamp (ipc.h:1715) extracted safely — the union field cannot be
+    /// read in no_std user code (R25 note). Wired 19.
+    fn receive(
+        &mut self,
+        endpoint: Endpoint,
+    ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno>;
 }
 
 /// VM RS-memory-control requests.
@@ -294,6 +305,12 @@ impl KernelApi for UnimplementedKernelApi {
     }
     fn waitpid(&mut self) -> Option<Pid> {
         None
+    }
+    fn receive(
+        &mut self,
+        _endpoint: Endpoint,
+    ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno> {
+        Err(Errno::ENOSYS)
     }
     fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
