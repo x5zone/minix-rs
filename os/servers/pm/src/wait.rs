@@ -96,22 +96,25 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
     for &idx in &candidates {
         let proc = &table.procs[idx];
         if proc.state.guardianship.tracer() == Some(caller) && proc.state.trace.stopped {
-            // 518-534: TRACE_STOPPED → scan sigtrace for pending stop signal → W_STOPCODE
-            // For 10, we model sigtrace as a bitset in `SignalState::trace_pending` (mproc/signal.rs)
-            // Here we stub: if any trace pending, return first signal's stop code.
-            // We check `proc.resources.signals.trace_pending` (?) — for now we check `trace.stopped` and return pid with W_STOPCODE
-            // Simplified: if stopped, return pid directly (W_STOPCODE path)
-            // In real C: for (i=1; i<_NSIG; i++) if sigismember(sigtrace, i) → W_STOPCODE(i)
-            // For test we pick SIGTRAP (5) as placeholder if no specific pending
-            let status = w_stopcode(5); // placeholder
-            // In C: mp->mp_reply.m_pm_lc_wait4.status = W_STOPCODE(i); return pid
-            // For Rust, we need to set reply payload on caller; but do_wait4's return will be Reply(pid) with status in caller's reply message
-            // We store status in caller's reply buffer (like C's mp_reply)
-            table.procs[caller.get()].ipc.reply = Some(minix_types::Message {
-                m_type: status,
-                ..Default::default()
-            });
-            return ReplyIntent::Reply(table.procs[idx].identity.id.pid);
+            // C forkexit.c:519-531 — TRACE_STOPPED 子进程：扫描 mp_sigtrace
+            // 取最低位的待报告停止信号，sigdelset 消费之，回复载荷
+            // W_STOPCODE(i)、返回值 pid。sigtrace 为空时与 C 一致地落到
+            // 下一个环（ZOMBIE），不虚构停止码。
+            let trace_mask = table.procs[idx].resources.signals.trace_mask;
+            let reported = (1..crate::mproc::_NSIG as i32)
+                .find(|&i| trace_mask & (1u64 << (i - 1)) != 0);
+            if let Some(signo) = reported {
+                table.procs[idx].resources.signals.trace_mask &= !(1u64 << (signo - 1));
+                let status = w_stopcode(signo);
+                // C: mp->mp_reply.m_pm_lc_wait4.status = W_STOPCODE(i)（528）
+                // 后 reply(parent, pid)——Rust 把状态放入 caller 的回复缓冲，
+                // 主循环 reply() 复用（init.rs reply 的 ipc.reply 优先）。
+                table.procs[caller.get()].ipc.reply = Some(Message {
+                    m_type: status,
+                    ..Default::default()
+                });
+                return ReplyIntent::Reply(table.procs[idx].identity.id.pid);
+            }
         }
     }
     for &idx in &candidates {
@@ -247,5 +250,63 @@ mod tests {
         let mut state = crate::mproc::WaitState { waiting: true, target, rusage_addr: VirBytes(0) };
         assert!(state.is_waiting_for(100, 42));
         assert!(!state.is_waiting_for(100, 43));
+    }
+
+    // ── D-20：TRACE_STOPPED 环的真实 sigtrace 扫描（forkexit.c:519-531）──
+
+    /// 播种一个被 `tracer=0` 跟踪且处于 ptrace 停止态的子进程。
+    fn traced_stopped_child(table: &mut ProcTable, slot: usize, pid: i32, trace_mask: u64) {
+        table.procs[slot].state.lifecycle = Lifecycle::Running;
+        table.procs[slot].identity.id.pid = pid;
+        table.procs[slot].identity.endpoint = Endpoint::from_generation_slot(1, slot as i32);
+        table.procs[slot].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(11),
+            tracer: UserSlot::new(0),
+            trace_exit: false,
+            trace_options: crate::mproc::TraceOptions::empty(),
+        };
+        table.procs[slot].state.trace.stopped = true;
+        table.procs[slot].resources.signals.trace_mask = trace_mask;
+    }
+
+    #[test]
+    fn test_wait4_trace_stopped_reports_lowest_signal_and_consumes_bit() {
+        // C: forkexit.c:519-531 — sigtrace 扫描取最低信号位，sigdelset
+        // 消费之，回复载荷 W_STOPCODE(i)、返回 pid。
+        let mut table = ProcTable::new();
+        table.procs[0].state.lifecycle = Lifecycle::Running;
+        table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
+        // 两个待报告信号：SIGTRAP(5) 与 SIGSTOP(17)——最低位 SIGTRAP 先报。
+        let two_pending = (1u64 << (5 - 1)) | (1u64 << (17 - 1));
+        traced_stopped_child(&mut table, 5, 100, two_pending);
+
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+
+        assert_eq!(intent, ReplyIntent::Reply(100)); // 子进程 pid
+        let reply = table.procs[0].ipc.reply.expect("reply buffer must carry W_STOPCODE");
+        assert_eq!(reply.m_type, w_stopcode(5), "lowest pending signal first");
+        assert_eq!(
+            table.procs[5].resources.signals.trace_mask,
+            1u64 << (17 - 1),
+            "consumed bit must be cleared, the other retained"
+        );
+    }
+
+    #[test]
+    fn test_wait4_trace_stopped_empty_sigtrace_falls_through() {
+        // C: 519-531 的 for 未命中即落出 if——停止态但 sigtrace 为空时
+        // 不虚构停止码，继续 ZOMBIE 环/尾部（此处无僵尸 → children>0 且
+        // 无 WNOHANG → SUSPEND 等待）。
+        let mut table = ProcTable::new();
+        table.procs[0].state.lifecycle = Lifecycle::Running;
+        table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
+        traced_stopped_child(&mut table, 5, 100, 0);
+
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+
+        assert_eq!(intent, ReplyIntent::ReplyLater);
+        assert!(table.procs[0].ipc.reply.is_none(), "no fabricated stop code");
     }
 }

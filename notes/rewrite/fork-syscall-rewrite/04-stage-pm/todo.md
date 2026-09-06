@@ -284,7 +284,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-17 | `exit.rs:192` | `sched_stop` 假装 Ok | 16-scheduling.md | A-8 |
 | D-18 | `exit.rs:215` | `sys_clear`（内核侧进程回收）no-op | 01-stage-kernel | 内核 sys_clear |
 | D-19 | `exit.rs:219` | `vm_exit`（页表回收）no-op | 02-stage-vm/22 | VM 协同面 |
-| D-20 | `wait.rs:101` | trace-stop 返回码用模拟值 | 18-trace.md | ptrace 停止状态建模 |
+| D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
 | D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功（C 侧 `utility.c:92` 本身只填 utime/stime） | 10-pm-wait.md | sys_datacopy + rusage 范围决策 |
 | D-22 | `signal.rs:160` | 内核调度器判定返回硬编码 false（"stub for 11, real in 16"） | 16-scheduling.md | A-8 |
 | D-23 | `signal.rs:360-362` | SIGVTALRM/`check_vtimer` stub（`alarm.c:326-328`） | 14-itimer.md | 虚拟计时器 trait 落地（`timer.rs:165-167` 已定义 seam） |
@@ -470,3 +470,20 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`07-pm-fork.md` §2.7 重写（继承链论证）、D7 重写（DEFERRED → 落地记录 + 隐藏阻塞说明）、§4.1 步骤 8、§5.2 测试表 +3、§5.3 对账刷新；`08-pm-srv-fork.md` §2.7、步骤 8、§5.2/§5.3 对账；本文件 §6 D-10 行。
 
 **未做（DEFERRED 论证）**：无——`sig_proc` 的 ptrace 停止态表达（`trace.stopped` + `sigtrace`）已在 crate 内自洽；真实 `sys_trace` 停止调用挂内核面（E6 SYS_TRACE 范围，08-trace 文档域）。
+
+### ✅ Fix #6: D-20 — wait4 的 TRACE_STOPPED 环真实化（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/wait.rs`（TRACE_STOPPED 环重写 + 2 测试）
+
+**Before**：停止态子进程一律返回 `w_stopcode(5)`（SIGTRAP 硬编码占位），不读 `trace_mask`、不消费信号位——tracer wait 到的停止信号是虚构的。
+
+**After**：对齐 `forkexit.c:519-531` 全语义——扫描 `SignalState::trace_mask`（`mp_sigtrace` 的 Rust 表达）取最低待报告信号 → 清位（`sigdelset`）→ 回复载荷 `W_STOPCODE(i)` → 返回 pid；**sigtrace 为空时落出该环**继续 ZOMBIE 环（C 的 for 未命中即落出），不虚构停止码。设计说明：消费位是 C 语义的一部分（同一停止信号只报告一次），与 D-10 落地的 `sig_proc` trace 分支（置位）构成完整的"投递 → 缓冲 → 报告"链。
+
+**Verified**：
+- `cargo test -p minix-pm`：328 → **330 lib passed**（+2：最低位优先消费且余位保留 / 空集落环不虚构）+ 6 integration
+- `grep -n "w_stopcode(5)" os/servers/pm/src/wait.rs`：零命中
+
+**Docs**：`10-pm-wait.md` §4.1 实现描述更新（占位 → 真实语义 + 测试名）；本文件 §6 D-20 行。
+
+**未做（DEFERRED 论证）**：无——链路两端（D-10 置位端、本条消费端）均已在 crate 内闭合。
