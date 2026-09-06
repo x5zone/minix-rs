@@ -72,6 +72,7 @@ pub enum Call {
     SetUid(u32),
     Reply(Endpoint, i32),
     Notify(Endpoint),
+    Asynsend(Endpoint, i32),
 }
 
 impl Call {
@@ -99,6 +100,7 @@ impl Call {
                 | (Call::SetUid(_), Call::SetUid(_))
                 | (Call::Reply(..), Call::Reply(..))
                 | (Call::Notify(..), Call::Notify(..))
+                | (Call::Asynsend(..), Call::Asynsend(..))
         )
     }
 }
@@ -135,12 +137,23 @@ pub struct MockKernelApi {
     /// (manager.c:604-605). Per-endpoint storage because boot Step 1 pushes
     /// 12 different structures in sequence.
     pub set_privs: Vec<(Endpoint, Privilege)>,
+    /// Kernel-side privilege structures that exist *before* RS sets
+    /// anything — boot processes (RS/VM) already have one, since the kernel
+    /// builds it from its own boot-image processing (C `sys_getpriv`
+    /// succeeds for RS/VM at main.c:293-296 even though they skip
+    /// `SYS_PRIV_SET_SYS`, main.c:285-291). `getpriv` falls back to this
+    /// table when no `SetSys` entry exists; empty → `vacant` (previous
+    /// behavior, kept for non-boot endpoints).
+    pub kernel_privs: Vec<(Endpoint, Privilege)>,
     /// Canned `safecopy_from` payload: `receive`-style tests stage the
     /// request bytes here; `None` → `Err(ENOSYS)` (fail-closed default).
     pub payload: Option<Vec<u8>>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
     /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
     pub inbox: Vec<(minix_types::Message, crate::dispatch::IpcStatus, Clock)>,
+    /// Messages handed to `asynsend`, in order (I2 boot init tests decode
+    /// these to assert the RS_INIT payload — utility.c:62).
+    pub sent: Vec<(Endpoint, minix_types::Message)>,
     /// Calls that must fail with `ENOSYS` (fail-injection, R34.18/E-10):
     /// matching is by variant, payloads ignored — `Call::SetAlarm(0)` fails
     /// every `setalarm`. Plain recording methods honor this; the methods
@@ -171,9 +184,11 @@ impl MockKernelApi {
             kill_ok: false,
             children: Vec::new(),
             set_privs: Vec::new(),
+            kernel_privs: Vec::new(),
             fail_calls: Vec::new(),
             payload: None,
             inbox: Vec::new(),
+            sent: Vec::new(),
         }
     }
 }
@@ -225,13 +240,13 @@ impl SysApi for MockKernelApi {
         if self.failing(&Call::GetPriv(proc)) {
             return Err(Errno::ENOSYS);
         }
-        Ok(self
-            .set_privs
-            .iter()
-            .rev()
-            .find(|(e, _)| *e == proc)
-            .map(|(_, p)| p.clone())
-            .unwrap_or_else(Privilege::vacant))
+        if let Some((_, p)) = self.set_privs.iter().rev().find(|(e, _)| *e == proc) {
+            return Ok(p.clone());
+        }
+        if let Some((_, p)) = self.kernel_privs.iter().rev().find(|(e, _)| *e == proc) {
+            return Ok(p.clone());
+        }
+        Ok(Privilege::vacant())
     }
     fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno> {
         self.calls.push(Call::SetAlarm(delay_ticks));
@@ -397,6 +412,18 @@ impl IpcApi for MockKernelApi {
             return Err(Errno::ENOSYS);
         }
         self.calls.push(Call::Notify(endpoint));
+        Ok(())
+    }
+    fn asynsend(
+        &mut self,
+        endpoint: Endpoint,
+        message: &minix_types::Message,
+    ) -> Result<(), Errno> {
+        if self.failing(&Call::Asynsend(endpoint, message.m_type)) {
+            return Err(Errno::ENOSYS);
+        }
+        self.calls.push(Call::Asynsend(endpoint, message.m_type));
+        self.sent.push((endpoint, *message));
         Ok(())
     }
     fn safecopy_from(

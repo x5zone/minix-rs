@@ -1924,40 +1924,41 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
   （依赖依据：各 DEFERRED 注释锚点 + C 调用图；01-stage-kernel todo 的 RS 联调 DEFERRED 项
   与 6 同步收敛。）
 
-### 18.4 死代码候选清单（本轮只列不删；每条含判定依据与消除影响）
+### 18.4 死代码候选清单（首轮只列不删；2026-09-07 Fix #72 处置）
 
-**第一档：立即可删（2 项）**
-1. `RS_FI_CRASH` 双定义——query.rs:115 与 `libs/minix-types/src/ipc/rs.rs:61` 各一份（值相同，
-   各带一份重复测试 query.rs:175-178 与 minix-types:260）；dispatch.rs:24-26 已声明 minix-types
-   是 RS 消息常量唯一权威。消除影响：零（query.rs 版零生产调用）。
-2. `RProcTable::set_endpoint_mapping`（process_table.rs:225-233）——被 `set_endpoint_index`
-   （process_table.rs:168，带 R12 fail-closed 断言）完全取代，全仓唯一出现处即定义。消除
-   影响：零。
+**第一档：立即可删（2 项）——✅ 均已删（Fix #72，2026-09-07）**
+1. ~~`RS_FI_CRASH` 双定义~~ ✅ 已删 query.rs 副本。**处置时发现同型副本还有 5 个**：
+   `RS_SYSCTL_SRV_STATUS/UPD_START/UPD_RUN/UPD_STOP/UPD_STATUS`（query.rs 原 1-5 值，与
+   minix-types `sysctl` 子模块 com.h:485-489 完全重复，首轮 scan 漏报）——6 个常量一并收敛到
+   minix-types 单一权威，`classify_sysctl` 改 `use minix_types::sysctl`；重复测试
+   `test_fi_crash_constant` 删除（minix-types 同值断言已有）。消除影响：零（副本零生产调用）。
+2. ~~`RProcTable::set_endpoint_mapping`~~ ✅ 已删——被 `set_endpoint_index`（带 R12
+   fail-closed 语义）完全取代，全仓唯一出现处即定义。消除影响：零。
 
-**第二档：同一语义双实现点（1 项，OQ-3 上交）**
-3. `share_exec`（exec.rs:47）与 service_create.rs:129 的内联 `exec.clone()` 做同一件事（后者
-   注释自辩 "explicit for faithfulness"）——未来改 exec 表示时是分叉风险。留一删一。
+**第二档：同一语义双实现点（1 项，OQ-3）——✅ 判定闭合（Fix #72，2026-09-07）**
+3. `share_exec` 与内联 clone：**保留 `share_exec` 单一权威，内联点已路由过去**（service_create.rs
+   clone_slot 的 USE_COPY 分支，manager.c:1834-1835）。裁决落地时发现路由写法
+   `&table.get(src).clone()` 引入整槽深拷贝（~3.5KB/次），Fix #72 改为直接借用
+   `table.get(src)`（语义不变——`ServiceSlot::clone` 本就共享 Arc）；新增
+   `test_clone_slot_use_copy_shares_exec_image`（Arc::ptr_eq）锁定共享语义。
 
-**第三档：接线期复活（不删，建议统一标注）**
-- 零调用根因是 dispatch 全 ENOSYS（A4）：`dispatch_request`（dispatch.rs:106）、request.rs
-  五件套（`up_init_flags` :34、`check_duplicates` :55、`mark_late_reply` :83、`stop_service`
-  :113、`shutdown_apply` :132）、query.rs 全部函数、service_create 大部分纯切片。
-- 连 lib.rs 导出都没有的孤儿（cargo bin 目标会报 dead_code，建议补 `#[allow(dead_code)]` +
-  归属标注）：`should_reply_ready`（ready.rs:275）、`normalize_init_response`（ready.rs:283）、
-  `normalize_lu_response`（ready.rs:298）。
-- 为未建编排预留的原料（R23 落地时消费）：`UpdateEntry::is_preparing_only`（live_update.rs:284，
-  C 消费点 update.c:515/:552/:827/:891/:904 五处编排尚不存在）、`UpdateChain::last_lu_flags`
-  （live_update.rs:339，唯一消费者 `rupdate_set_new_upd_flags` 缺失）。
-- 18/19 号预支：self_lifecycle.rs 全部 13 个导出（唯一引用是 lib.rs:90-94 转导出）、sched.rs
-  三件套（`sched_decision` :119、`on_stop_result` :173、`set_sig_mgrs` :207）、KernelApi 5 个
-  预支方法（`getnuid`/`srv_fork`/`getprocnr`/`vm_memctl`/`vm_set_priv`，boot.rs:81/:91/:97/
-  :103/:114——R9 拆 trait 时归位）、`VmRsMemReq` 三个 LU 变体（boot.rs:134-138）、
-  `ipc_mask::update_ipc_mask`（ipc_mask.rs:212）、`exec::has_shared_exec`/`validate_image`
-  （exec.rs:57/:27，RSS_REUSE 与 19 号路径）、`lookup_by_flags`（process_table.rs:295，
-  A5-06 步喂参 `period_decision`）。
-- **机制建议**：对照 `tools/check-rs-unwired.sh` 对 panic 标记的 doc-contract 门禁，给上述
-  "预期零调用"项在模块头或 lib.rs 导出清单统一加 `// awaiting-wiring: NN-rs-xxx.md` 标注
-  ——把"有意等待"显式化，防止后续轮次误判为死代码误删，也防止接线者漏认领。
+**第三档：接线期复活——消费状态对账（Fix #72 刷新）+ awaiting-wiring 标注落地**
+- ~~零调用根因是 dispatch 全 ENOSYS（A4）~~：`request.rs` 五件套中 `stop_service`/
+  `shutdown_apply` 已被 Fix #69/#71 消费；`query.rs`/`service_create` 纯切片随 I3-I6 接线消费。
+- **首轮列名现已全部有生产消费的项**（首轮 scan 早于 Fix #53-#71，状态陈旧）：
+  `is_preparing_only`/`last_lu_flags`（live_update.rs，R23 轮消费）、`sched_decision`
+  （service_create.rs 消费）、`update_ipc_mask`（slot.rs check_request 消费）、
+  `lookup_by_flags`（lib.rs do_period 消费）——不再是死代码候选。
+- **仍 awaiting（已加 `awaiting-wiring: NN` doc 标注，防误删）**：`on_stop_result`/
+  `set_sig_mgrs`（sched.rs → 13 号 do_edit）、`should_reply_ready`/`normalize_init_response`
+  （ready.rs → 06/12 号 response shell 收敛轮裁决采用或删除）、`normalize_lu_response`
+  （ready.rs → 16 号 lu_response shell）、`validate_image`/`has_shared_exec`（exec.rs →
+  13 号 RSS_REUSE / 19 号 read_exec）、`self_lifecycle.rs` 全部导出（→ 18 号，压 edge E9）。
+- `KernelApi` 5 个预支方法已随 R9 拆面归位（`getnuid` 已被 Fix #71 的 do_down 消费）；
+  `VmRsMemReq` LU 变体定义在 minix-types（16 号接线时消费）。
+- **机制**：对照 `tools/check-rs-unwired.sh` 的 doc-contract 门禁，"预期零调用"项在定义处
+  doc 注释统一 `awaiting-wiring: NN-rs-xxx.md` 标注（Fix #72 落地 8 处）——显式化"有意等待"，
+  防止后续轮次误判为死代码误删，也防止接线者漏认领。
 
 ### 18.5 DEFERRED 判定表（3 个 panic 标记 + 21 处 DEFERRED 注释）
 
@@ -2001,7 +2002,9 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
   live_update？（推荐保持 + awaiting-wiring 标注）
 - OQ-2：TrapMask 收窄到 4 位是否有意？`MINIX_KERNINFO`（bit 6）trap 允许面要不要对齐 C？
   （R29 方向决策）
-- OQ-3：`share_exec` 与内联 clone 留一删一，留哪个？（18.4 第二档）
+- OQ-3：`share_exec` 与内联 clone 留一删一，留哪个？（18.4 第二档）→ ✅ 判定闭合（Fix #72，
+  2026-09-07）：保留 `share_exec` 单一权威，clone_slot USE_COPY 分支路由过去（直接借用，无整槽
+  拷贝）；Arc::ptr_eq 测试锁定。
 - OQ-4：`dispatch_request` ENOSYS 死表在 06 接线前删除还是保留占位？（推荐保留 + awaiting
   标注，06 时原地转真）
 
@@ -2757,6 +2760,52 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   权限→stop 流程→LATEREPLY 簿记全链；自查修正 2 处——unpublish_result 是 4-bool
   聚合决策面非效果执行体、测试夹具缺 SYS_PROC 被 request.c:104-105 权限门拦下）；
   clippy 触碰 crate 零告警；fmt 干净；T7 PASS。
+
+### ✅ Fix #72 — I1 死代码裁决（§18.4 第一档 + OQ-3 关单）+ awaiting-wiring 标注机制
+- **File**：`query.rs`（删 6 个常量副本 + `use minix_types::sysctl` + 删重复测试）、
+  `process_table.rs`（删 `set_endpoint_mapping`）、`service_create.rs`（clone_slot 借用修正
+  + 新增 ptr_eq 测试）、`sched.rs`/`ready.rs`/`exec.rs`/`self_lifecycle.rs`（8 处
+  `awaiting-wiring: NN` doc 标注）；文档 14-rs-query-requests.md（§头部清单/§3.1 表/§3.3
+  常量归属重写）+ 本 todo §18.4/§18.6
+- **Before**：§18.4 首轮列出的第一档 2 项死代码未删；OQ-3 悬而未决；第三档清单在
+  Fix #53-#71 落地后大面积过时（7 个"零调用"项已有生产消费）；已修复 20 处
+  （query.rs 的 RS_FI_CRASH + set_endpoint_mapping）。
+- **After**：(1) 常量单一权威——处置中发现首轮 scan 漏报同型副本 5 个（`RS_SYSCTL_*`），
+  6 个一并删除、`classify_sysctl` 消费 `minix_types::sysctl`；(2) 删
+  `set_endpoint_mapping`（被 `set_endpoint_index` 完全取代）；(3) OQ-3 判定闭合——
+  保留 `share_exec` 权威、clone_slot 路由改直接借用（消除裁决实现引入的整槽深拷贝）、
+  新增 `test_clone_slot_use_copy_shares_exec_image`；(4) 第三档消费状态对账刷新 +
+  8 处 `awaiting-wiring: NN-rs-xxx.md` 标注（sched×2/ready×3/exec×2/self_lifecycle×1）。
+- **Verified**：`cargo test -p minix-rs` = **294 passed**（-1 删重复测试 +1 新增 ptr_eq
+  测试，数量守恒）；`rg "RS_FI_CRASH|RS_SYSCTL_SRV" os/servers/rs/src/query.rs` = 0；
+  `rg "set_endpoint_mapping" os/servers/rs/src/` = 0；clippy 零告警；fmt 干净；T7 PASS。
+
+### ✅ Fix #73 — I2 boot Step 2 `init_service` 接线（RS 早退/VM asynsend/三时间戳 + asynsend 缝）
+- **File**：`boot.rs`（`IpcApi` 增 `asynsend` 缝 + `step2_allow_run` 三分支接
+  `service_create::init_service` + 删 boot.rs:823 陈旧 DEFERRED + 新增 2 集成测试）、
+  `ready.rs`（`InitMessage::encode_message` 线面编码）、`testutil.rs`（`Call::Asynsend`
+  + `sent` 记录 + `kernel_privs` 内核侧特权表）；minix-types `ipc/rs.rs`
+  （`RsInit::encode_message` + roundtrip 测试）；文档 01 §4.4/§5.2/§5.4、12 §3.1
+- **Before**：boot Step 2 对 RS/VM 只计数不发消息、对普通 SYS_PROC 服务不调
+  `init_service`（boot.rs:823 陈旧 DEFERRED"init_service wiring lands with 12"——12 号
+  receive 侧 Fix #70 落地后该前提已解除但 send 侧没人做）。后果：真实 VM 永远等不到
+  RS_INIT，step3 阻塞接收死等；所有槽缺 `INITIALIZING`/`alive_tm`/`check_tm` 标记
+  （utility.c:19-21），心跳基线从启动起就错。mock 测试掩盖（handover 测试用 RS-only 表）。
+- **After**：step2 三分支统一走既有 `service_create::init_service`（C main.c:362-399）——
+  RS 分支 `ROOT_SYS_PROC` 早退零发送（utility.c:29-31），VM 分支发 `RS_INIT` + 计数，
+  SYS_PROC 分支 sched/allow 后发 `RS_INIT` + SYNCH_BOOT 同步 catch 或计数。缝形态：
+  `IpcApi::asynsend`（生产 ENOSYS fail-closed + E-11 doc contract，mock 记录全消息）；
+  编码链 `InitMessage::encode_message` → `RsInit::encode_message`（哨兵：gid None →
+  `GRANT_INVALID` -1 safecopies.h:52、old None → `NONE` utility.c:39-44）。
+  **附带修正 mock 保真度**：真实内核对 RS/VM 自有启动特权副本（main.c:293-296
+  `sys_getpriv` 对 RS/VM 也成功），mock 增 `kernel_privs` 表使 step1 的 getpriv 同步
+  不再返回空结构——该缺口由本轮 RS 早退测试首跑即抓出。
+- **Verified**：`cargo test -p minix-rs` = **297 passed**（+3：
+  `test_step2_init_service_marks_and_sends` 逐字段断言发送载荷/标记/计数、
+  `test_step3_vm_init_roundtrip_clears_initializing` step2 发→inbox 脚本→step3 收全链
+  + VM 零同步 reply、`test_init_message_encode_message` 哨兵往返；minix-types
+  +1 encode roundtrip）；clippy 零告警；fmt 干净；T7 PASS（asynsend 生产 impl 走
+  Err(ENOSYS) 不触发 panic 标记门，E-11 doc contract 注释在位）。
 
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 

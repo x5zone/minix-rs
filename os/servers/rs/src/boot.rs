@@ -227,6 +227,14 @@ pub trait IpcApi {
     /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
     fn notify(&mut self, endpoint: Endpoint) -> Result<(), Errno>;
 
+    /// Asynchronous non-blocking send.
+    ///
+    /// C: `rs_asynsend(rp, &m, 1)` — utility.c 全局异步原语；RS 用它发
+    /// `RS_INIT` 初始化消息（utility.c:62，boot Step 2 与服务创建路径）。
+    /// Wired 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    fn asynsend(&mut self, endpoint: Endpoint, message: &minix_types::Message)
+    -> Result<(), Errno>;
+
     /// Copies a request payload from the caller's address space.
     ///
     /// C: `sys_datacopy(src_e, addr, SELF, dst, len)` — manager.c:141
@@ -389,6 +397,14 @@ impl IpcApi for UnimplementedKernelApi {
         Err(Errno::ENOSYS)
     }
     fn notify(&mut self, _endpoint: Endpoint) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    // E-11/E9: rs_asynsend's real transport is 19's wiring; fail-closed.
+    fn asynsend(
+        &mut self,
+        _endpoint: Endpoint,
+        _message: &minix_types::Message,
+    ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
     fn safecopy_from(
@@ -816,13 +832,41 @@ impl<'a> BootInit<'a> {
             if priv_.endpoint.is_kernel_task() {
                 continue; // C: iskerneln skip — main.c:354-356
             }
-            // RS/VM are already running — C: main.c:362-373.
+            let id = self
+                .table
+                .endpoint_slot(priv_.endpoint)
+                .expect("boot service slot missing at step 2");
+            let init_flags = self.table.get(id).priv_.init_flags;
+            let gid = self.rinit.rproctab_gid;
+            let ticks = sys.get_ticks().unwrap_or(0);
+
+            // RS/VM are already running as we speak — C: main.c:362-373.
+            // init_service marks them initializing; for RS itself it stops
+            // right there (ROOT_SYS_PROC early return — utility.c:29-31),
+            // VM additionally receives the RS_INIT message and counts.
             if priv_.endpoint == Endpoint::RS || priv_.endpoint == Endpoint::VM {
-                // C: init_service(rp, SEF_INIT_FRESH, ...) — main.c:365-367.
-                //   Mechanism: 12-rs-init-run.md (self-simulated ready).
-                //   DEFERRED: init_service wiring lands with 12.
+                // C: init_service(rp, SEF_INIT_FRESH, r_priv.s_init_flags)
+                // — main.c:365-367. A boot slot has no old incarnation
+                // (old_endpoint NONE, prepare_state SEF_LU_STATE_NULL —
+                // utility.c:34-42 via the r_old_rp/r_prev_rp NULL path).
+                // The async-send seam: the RS_INIT message leaves through
+                // IpcApi::asynsend (E-11 — the wire is 19's; the decision
+                // is live here). C: rs_asynsend(rp, &m, 0) — utility.c:62.
+                let mut asynsend = |ep: Endpoint, msg: &crate::ready::InitMessage| {
+                    sys.asynsend(ep, &msg.encode_message())
+                };
+                crate::service_create::init_service(
+                    self.table.get_mut(id),
+                    None,
+                    crate::sef::SefInitType::Fresh,
+                    init_flags,
+                    gid,
+                    crate::live_update::SEF_LU_STATE_NULL,
+                    ticks,
+                    &mut asynsend,
+                )?;
                 if priv_.endpoint != Endpoint::RS {
-                    // VM still sends an RS_INIT message — main.c:369-370.
+                    // VM will still send an RS_INIT message — main.c:369-370.
                     nr_uncaught_init_srvs += 1;
                 }
                 continue;
@@ -832,7 +876,21 @@ impl<'a> BootInit<'a> {
             sys.privctl(priv_.endpoint, PrivCtlOp::Allow, None)?;
 
             if priv_.flags.contains(PrivFlags::SYS_PROC) {
-                // C: init_service — main.c:387. Mechanism: 12.
+                // C: init_service — main.c:387: mark initializing + send the
+                // RS_INIT message (asynsend seam, utility.c:62).
+                let mut asynsend = |ep: Endpoint, msg: &crate::ready::InitMessage| {
+                    sys.asynsend(ep, &msg.encode_message())
+                };
+                crate::service_create::init_service(
+                    self.table.get_mut(id),
+                    None,
+                    crate::sef::SefInitType::Fresh,
+                    init_flags,
+                    gid,
+                    crate::live_update::SEF_LU_STATE_NULL,
+                    ticks,
+                    &mut asynsend,
+                )?;
                 if lookup_sys(tables.sys_table, priv_.endpoint)
                     .flags
                     .contains(SysFlags::SYNCH_BOOT)
@@ -1694,6 +1752,199 @@ mod tests {
             boot.step2_allow_run(&mut sys),
             Err(BootError::Kernel(Errno::ENOSYS)),
             "SF_SYNCH_BOOT sync catch is fail-closed until 12 (T6)"
+        );
+    }
+
+    #[test]
+    fn test_step2_init_service_marks_and_sends() {
+        // I2: C main.c:362-399 — every non-kernel boot service goes through
+        // init_service: slots are marked INITIALIZING with fresh
+        // alive_tm/check_tm (utility.c:19-21), RS's own entry sends nothing
+        // (ROOT_SYS_PROC early return — utility.c:29-31), VM and regular
+        // SYS_PROC services receive the RS_INIT message (utility.c:62), and
+        // VM + non-synch services are counted for step 3 (main.c:369-394).
+        static IMAGE: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+        ];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::PM,
+                label: "pm",
+                flags: crate::privilege::SRV_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::PM,
+                flags: crate::service_slot::SRVR_SF,
+            },
+        ];
+        let dev_table: &[BootImageDev] = &[];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table,
+        };
+        let mut sys = MockKernelApi::new(100);
+        sys.ticks = 500;
+        // The kernel already holds RS/VM privilege structures from its own
+        // boot processing (C main.c:293-296 getpriv succeeds for them) —
+        // seed the mock's kernel-side table.
+        sys.kernel_privs.push((
+            Endpoint::RS,
+            crate::privilege::Privilege::boot_priv(crate::privilege::RSYS_F, 2),
+        ));
+        sys.kernel_privs.push((
+            Endpoint::VM,
+            crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
+        ));
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+
+        // utility.c:19-21 — every slot is INITIALIZING with fresh timestamps
+        // (check_tm = alive_tm + 1).
+        for ep in [Endpoint::RS, Endpoint::VM, Endpoint::PM] {
+            let id = boot.table.endpoint_slot(ep).unwrap();
+            let slot = boot.table.get(id);
+            assert!(
+                slot.flags
+                    .contains(crate::service_slot::RFlags::INITIALIZING),
+                "{ep:?} must be INITIALIZING after step 2"
+            );
+            assert_eq!(slot.alive_tm, 500, "{ep:?} alive_tm = getticks()");
+            assert_eq!(slot.check_tm, 501, "{ep:?} check_tm = alive_tm + 1");
+        }
+
+        // RS sends nothing (utility.c:29-31); VM and PM receive RS_INIT.
+        assert_eq!(
+            sys.sent.len(),
+            2,
+            "exactly VM + PM get the init message: {:?}",
+            sys.sent
+                .iter()
+                .map(|(e, m)| (e.0, m.m_type))
+                .collect::<Vec<_>>()
+        );
+        for (ep, msg) in &sys.sent {
+            assert!(*ep != Endpoint::RS, "RS must not receive RS_INIT");
+            assert!(
+                *ep == Endpoint::VM || *ep == Endpoint::PM,
+                "only VM and PM get the init message"
+            );
+            assert_eq!(msg.m_type, minix_types::RS_INIT);
+            let init = minix_types::RsInit::decode_message(msg);
+            assert_eq!(init.init_type, 0, "SEF_INIT_FRESH — sef.h:93");
+            assert_eq!(init.result, 0);
+            assert_eq!(init.rproctab_gid, -1, "grant not created → GRANT_INVALID");
+            assert_eq!(init.old_endpoint, Endpoint::NONE, "boot has no old self");
+            assert_eq!(init.restarts, 1, "r_restarts 0 + 1 — utility.c:58");
+            assert_eq!(init.prepare_state, crate::live_update::SEF_LU_STATE_NULL);
+        }
+
+        // VM + non-synch SYS_PROC counted; RS itself is not (main.c:368-394).
+        assert_eq!(boot.nr_uncaught_init_srvs, 2);
+    }
+
+    #[test]
+    fn test_step3_vm_init_roundtrip_clears_initializing() {
+        // I2: the full boot init exchange at mock level — step 2 sends
+        // RS_INIT to VM, VM's ready reply is scripted in the inbox, step 3
+        // catches it, clears INITIALIZING, and never replies to VM
+        // (main.c:812-815 — VM's reply was asynchronous; a synchronous
+        // reply could deadlock).
+        static IMAGE: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(8, Endpoint::VM)];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+        ];
+        let dev_table: &[BootImageDev] = &[];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table,
+        };
+        let mut sys = MockKernelApi::new(100);
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+
+        // VM answers: RS_INIT with result 0 (main.c:401-407 catch path).
+        let mut ready = minix_types::RsInit {
+            result: 0,
+            init_type: 0,
+            rproctab_gid: -1,
+            old_endpoint: Endpoint::NONE,
+            restarts: 1,
+            flags: 0,
+            buff_addr: minix_types::VirBytes(0),
+            buff_len: 0,
+            prepare_state: 0,
+        }
+        .encode_message();
+        ready.m_source = Endpoint::VM;
+        sys.inbox
+            .push((ready, crate::dispatch::IpcStatus::default(), 501));
+
+        boot.step3_catch_init_ready(&mut sys).expect("step 3");
+
+        let vm_id = boot.table.endpoint_slot(Endpoint::VM).unwrap();
+        assert!(
+            !boot
+                .table
+                .get(vm_id)
+                .flags
+                .contains(crate::service_slot::RFlags::INITIALIZING),
+            "a caught init-ready clears INITIALIZING"
+        );
+        assert_eq!(boot.nr_uncaught_init_srvs, 0);
+        assert!(
+            !sys.calls
+                .iter()
+                .any(|c| matches!(c, Call::Reply(Endpoint::VM, _))),
+            "no synchronous reply to VM — main.c:812-815"
         );
     }
 

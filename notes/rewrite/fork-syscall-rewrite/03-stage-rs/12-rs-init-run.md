@@ -170,7 +170,7 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 
 ### 3.1 ready.rs 纯切片
 
-启动协议的 IPC 面（`rs_asynsend`/`reply`、`RS_INIT` 消息收发）归 06/19；ready.rs 拥有**纯决策**：
+启动协议的 IPC 面（`rs_asynsend`/`reply`）的**真实传输**归 19——`IpcApi::asynsend` 缝已在 crate 内就位（生产 ENOSYS fail-closed，mock 记录全消息，I2 接线轮），`RS_INIT` 的线面编解码在 minix-types（`RsInit::encode_message`/`decode_message`，ipc.h:1858-1867）；ready.rs 拥有**纯决策**：
 
 | 函数 | C 对应 | 语义 |
 |------|--------|------|
@@ -178,6 +178,7 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 | `mark_initializing(slot, ticks)` | utility.c:19-21 | 发 RS_INIT 前：置 `INITIALIZING` + `alive_tm = ticks` + `check_tm = ticks+1`（R14） |
 | `fold_init_flags(slot, init_flags)` | manager.c:953 | `s_init_flags |= init_flags`（OR 语义，R14） |
 | `init_message(...)` | utility.c:49-60 | RS_INIT 载荷装配（`InitMessage`） |
+| `InitMessage::encode_message()` | utility.c:49-61 | 线面编码：gid `None`→`GRANT_INVALID`（safecopies.h:52）、old_endpoint `None`→`NONE`（utility.c:39-44）（I2） |
 | `take_map_prealloc(slot)` | utility.c:53-60 | 取走 map_prealloc 窗口并清零槽位字段（R32.4：单次移交，copy-then-clear 不可跳过） |
 | `do_init_ready(flags, result, is_updating, pending, ticks)` | request.c:462-529 | 门 + 失败 + 分支 → `ReadyDecision { outcome, mutations }`（R13） |
 | `do_upd_ready(result, gate_ok, has_next)` | request.c:890-938 | update 就绪分支 → `UpdReadyDecision { outcome, mutations }`（R24：gate 后立即携带 `RS_PREPARE_DONE`，与 result 无关） |

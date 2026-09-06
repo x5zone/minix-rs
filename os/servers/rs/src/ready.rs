@@ -101,6 +101,30 @@ pub struct InitMessage {
     pub prepare_state: i32,
 }
 
+impl InitMessage {
+    /// Wire encode — C: `init_service` fills the `m_rs_init` arm
+    /// (utility.c:49-61).
+    ///
+    /// Sentinel mapping: `rproctab_gid: None` → `GRANT_INVALID` (-1,
+    /// safecopies.h:52 — no grant created yet, E-11/E9 wiring pending);
+    /// `old_endpoint: None` → `NONE` (utility.c:39-44 — a fresh service has
+    /// no previous incarnation).
+    pub fn encode_message(&self) -> minix_types::Message {
+        minix_types::RsInit {
+            result: self.result,
+            init_type: i32::from(self.init_type),
+            rproctab_gid: self.rproctab_gid.map_or(-1, |g| g as i32),
+            old_endpoint: self.old_endpoint.unwrap_or(Endpoint::NONE),
+            restarts: self.restarts,
+            flags: self.flags as i32,
+            buff_addr: minix_types::VirBytes(self.buff_addr),
+            buff_len: self.buff_len,
+            prepare_state: self.prepare_state,
+        }
+        .encode_message()
+    }
+}
+
 /// Assembles the `RS_INIT` request payload.
 ///
 /// C: `init_service` — utility.c:49-64. `old_endpoint` and `prepare_state`
@@ -323,6 +347,11 @@ pub fn end_srv_init(rp: &mut ServiceSlot, has_prev: bool) -> bool {
 ///
 /// C: `catch_boot_init_ready` — main.c:812-815: no reply to VM, which sent
 /// the reply asynchronously (a synchronous reply could deadlock).
+///
+/// awaiting-wiring: 12-rs-init-run.md/06-rs-main-loop.md — the landed
+/// `catch_boot_init_ready` keeps the VM exception inline; this decision
+/// primitive stays as the tested statement of the rule until the response
+/// shell converges (adopt there or delete — decide at the shell round).
 pub fn should_reply_ready(src: Endpoint) -> bool {
     src != Endpoint::VM
 }
@@ -331,6 +360,10 @@ pub fn should_reply_ready(src: Endpoint) -> bool {
 ///
 /// Non-OK result propagates; otherwise the simulated RS-to-RS init runs
 /// `do_init_ready`, and `EDONTREPLY` (its normal success) becomes `OK`.
+///
+/// awaiting-wiring: 06-rs-main-loop.md — `RsServer::init_response` landed
+/// with the equivalent normalization inline; adopt this primitive there or
+/// delete it when the response shell converges.
 pub fn normalize_init_response(result: i32, ready: Result<(), Errno>) -> i32 {
     if result != 0 {
         return result;
@@ -346,6 +379,9 @@ pub fn normalize_init_response(result: i32, ready: Result<(), Errno>) -> i32 {
 ///
 /// `do_upd_ready` normally returns `EDONTREPLY`; reaching the caller means
 /// the update did not happen → `EGENERIC` (sys/errno.h:200).
+///
+/// awaiting-wiring: 16-rs-live-update.md — consumed by `RsServer::
+/// lu_response` when the LU chain context lands at that arm.
 pub fn normalize_lu_response(ready: Result<(), Errno>) -> i32 {
     match ready {
         Ok(()) => 0,
@@ -358,6 +394,41 @@ pub fn normalize_lu_response(ready: Result<(), Errno>) -> i32 {
 mod tests {
     use super::*;
     use crate::service_slot::RFlags;
+
+    #[test]
+    fn test_init_message_encode_message() {
+        // I2: the wire encode (utility.c:49-61). Full-field roundtrip plus
+        // the two sentinel mappings: gid None → GRANT_INVALID (safecopies.h:52)
+        // and old_endpoint None → NONE (utility.c:39-44 — no old incarnation).
+        let im = InitMessage {
+            result: 0,
+            init_type: 0, // SEF_INIT_FRESH — sef.h:93
+            rproctab_gid: Some(7),
+            old_endpoint: Some(Endpoint::PM),
+            restarts: 3,
+            flags: 0,
+            buff_addr: 0x2000,
+            buff_len: 96,
+            prepare_state: crate::live_update::SEF_LU_STATE_NULL,
+        };
+        let decoded = minix_types::RsInit::decode_message(&im.encode_message());
+        assert_eq!(decoded.init_type, 0);
+        assert_eq!(decoded.rproctab_gid, 7);
+        assert_eq!(decoded.old_endpoint, Endpoint::PM);
+        assert_eq!(decoded.restarts, 3);
+        assert_eq!(decoded.buff_addr, minix_types::VirBytes(0x2000));
+        assert_eq!(decoded.buff_len, 96);
+        assert_eq!(decoded.prepare_state, crate::live_update::SEF_LU_STATE_NULL);
+
+        let fresh = InitMessage {
+            rproctab_gid: None,
+            old_endpoint: None,
+            ..im
+        };
+        let decoded = minix_types::RsInit::decode_message(&fresh.encode_message());
+        assert_eq!(decoded.rproctab_gid, -1, "None gid → GRANT_INVALID");
+        assert_eq!(decoded.old_endpoint, Endpoint::NONE, "None old → NONE");
+    }
 
     #[test]
     fn test_init_flags_script() {

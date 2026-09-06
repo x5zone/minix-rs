@@ -7,8 +7,8 @@
 //! (04), control requests (13), query requests (14) and live update (16), plus
 //! semantic payload views modeled after the vm.rs In/Out convention.
 
-use crate::{Endpoint, Gid, Pid, Uid, VirBytes};
 use super::message::Message;
+use crate::{Endpoint, Gid, Pid, Uid, VirBytes};
 
 /// Base for RS messages. C: `RS_RQ_BASE` — com.h:463.
 pub const RS_RQ_BASE: i32 = 0x700;
@@ -132,6 +132,36 @@ impl RsInit {
             buff_len: m.buff_len as usize,
             prepare_state: m.prepare_state,
         }
+    }
+
+    /// Encode as an `RS_INIT` message for sending.
+    ///
+    /// C: the sender fills the `m_rs_init` arm (utility.c:49-61,
+    /// `init_service`; the ready reply path uses the same arm). The sender
+    /// endpoint is RS by construction — RS is the only process that sends
+    /// `RS_INIT`. The union write is the exact inverse of [`Self::decode_message`].
+    pub fn encode_message(&self) -> Message {
+        let mut msg = Message::default();
+        msg.m_source = Endpoint::RS;
+        msg.m_type = RS_INIT;
+        // SAFETY: `m_rs_init` is set as the active arm of a freshly built
+        // RS_INIT message; the payload is plain-old-data and is read back
+        // only through this same arm (`decode_message`).
+        unsafe {
+            msg.m_u.m_rs_init = crate::ipc::MessRsInit {
+                result: self.result,
+                type_: self.init_type,
+                rproctab_gid: self.rproctab_gid,
+                old_endpoint: self.old_endpoint.get(),
+                restarts: self.restarts,
+                flags: self.flags,
+                buff_addr: self.buff_addr.0,
+                buff_len: self.buff_len as u64,
+                prepare_state: self.prepare_state,
+                _padding: [0; 12],
+            };
+        }
+        msg
     }
 }
 
@@ -361,6 +391,29 @@ mod tests {
         assert_eq!(init.buff_addr, VirBytes(0x3000));
         assert_eq!(init.buff_len, 64);
         assert_eq!(init.prepare_state, 0);
+    }
+
+    #[test]
+    fn test_rs_init_encode_message_roundtrip() {
+        // The encode half (utility.c:49-61 — init_service fills m_rs_init):
+        // every field must survive encode → decode, and the sender identity
+        // is RS by construction.
+        let init = RsInit {
+            result: 0,
+            init_type: 1, // SEF_INIT_FRESH (sef.h:93)
+            rproctab_gid: 42,
+            old_endpoint: Endpoint::NONE,
+            restarts: 1,
+            flags: 0,
+            buff_addr: VirBytes(0x5000),
+            buff_len: 128,
+            prepare_state: 0,
+        };
+        let msg = init.encode_message();
+        assert_eq!(msg.m_type, RS_INIT);
+        assert_eq!(msg.m_source, Endpoint::RS);
+        let decoded = RsInit::decode_message(&msg);
+        assert_eq!(decoded, init);
     }
 
     #[test]
