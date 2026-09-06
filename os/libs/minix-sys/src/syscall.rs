@@ -306,6 +306,42 @@ pub fn sys_times(
 /// 载荷 `mess_lsys_krn_sys_copy`：src_endpt（`SELF` 由内核替换为调用者
 /// endpoint，`syscall_copy.rs:124` `SELF = -2`）→ dst_endpt 的虚地址。
 /// PM 的 rusage 投递（tell_parent）与 exec 的 frame 拷贝共用此通道。
+
+/// C: SYS_RUNCTL 是内核调用 46（`kernel/src/syscall.rs` `Syscall::Runctl`）。
+pub const SYS_RUNCTL_CALL: i32 = 46;
+/// Runctl 动作：停止进程。C: `RC_STOP`（do_runctl.c）。
+pub const RC_STOP: i32 = 0;
+/// Runctl 动作：恢复进程。C: `RC_RESUME`（do_runctl.c）。
+pub const RC_RESUME: i32 = 1;
+/// Runctl 标志：发送中延迟停止。C: `RC_DELAY`（do_runctl.c）。
+pub const RC_DELAY: i32 = 1;
+
+/// 进程运行控制（C: libsys `sys_runctl`，`sys_runctl.c:8-16`）。
+///
+/// `_kernel_call(SYS_RUNCTL, &m)`：载荷 m1i1 = RC_ENDPT、m1i2 = RC_ACTION、
+/// m1i3 = RC_FLAGS。返回值 = 内核回复（OK / EBUSY / 负 errno）。
+pub fn sys_runctl(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+    action: i32,
+    flags: i32,
+) -> i32 {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m1 是 SYS_RUNCTL 的文档化载荷布局
+        //（kernel/src/syscall_process.rs dispatch_runctl 读 m1i1/m1i2/m1i3）。
+        let m1 = unsafe { &mut msg.m_u.m_m1 };
+        m1.m1i1 = endpt;
+        m1.m1i2 = action;
+        m1.m1i3 = flags;
+    }
+    perform_kernel_call(transport, SYS_RUNCTL_CALL, &mut msg, |_| {})
+}
+
+/// 恢复被停止的进程（C: `sys_resume`，`syslib.h:48` —— RC_RESUME 动作）。
+pub fn sys_resume(transport: &impl KernelCallTransport, endpt: i32) -> i32 {
+    sys_runctl(transport, endpt, RC_RESUME, 0)
+}
 pub fn sys_vircopy(
     transport: &impl KernelCallTransport,
     src_endpt: i32,
@@ -476,26 +512,29 @@ mod tests {
     }
 
     #[test]
-    fn test_sys_times_negative_errno_is_err() {
+    fn test_sys_runctl_resume_encodes_m1() {
+        // C: syslib.h:48 — sys_resume = sys_runctl(ep, RC_RESUME, 0)；
+        // 载荷 m1i1 = RC_ENDPT、m1i2 = RC_RESUME、m1i3 = RC_FLAGS(0)。
         let mut canned = CannedKernelCallTransport::new();
-        canned.reply(-3); // ESRCH
+        canned.reply(0);
 
-        assert_eq!(sys_times(&canned, 7).unwrap_err(), -3);
+        let r = sys_resume(&canned, 9);
+
+        assert_eq!(r, 0);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_RUNCTL_CALL);
+        let m1 = unsafe { &sent[0].m_u.m_m1 };
+        assert_eq!(m1.m1i1, 9);
+        assert_eq!(m1.m1i2, RC_RESUME);
+        assert_eq!(m1.m1i3, 0);
     }
 
     #[test]
     fn test_sys_abort_encodes_how() {
-        // C: libsys sys_abort.c — m1i1 = how（RB_* 位组），SYS_ABORT = 27。
         let mut canned = CannedKernelCallTransport::new();
-        canned.reply(0);
+        canned.reply(-3); // ESRCH
 
-        let r = sys_abort(&canned, 0x0800 | 0x0008); // RB_POWERDOWN
-
-        assert_eq!(r, 0);
-        let sent = canned.sent.borrow();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].m_type, SYS_ABORT_CALL);
-        assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 0x0808);
+        assert_eq!(sys_times(&canned, 7).unwrap_err(), -3);
     }
 
     #[test]

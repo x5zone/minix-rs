@@ -48,6 +48,12 @@ pub trait KernelGateway {
     /// ——把 `bytes` 写入 `dst_ep` 进程虚地址 `dst_addr` 处。
     /// 失败返回负 errno（如父进程缓冲非法）。
     fn copy_to_user(&mut self, bytes: &[u8], dst_ep: Endpoint, dst_addr: u64) -> Result<(), i32>;
+
+    /// C: `sys_resume(proc_ep)`（`syslib.h:48` = `sys_runctl(ep, RC_RESUME, 0)`）
+    /// ——清除内核侧 `PROC_STOPPED`，恢复被停止的进程。返回原始内核回复
+    ///（OK = 0 / 负 errno），调用方（signal.c:285 `try_resume_proc`）对
+    /// 非 OK panic。
+    fn sys_resume(&mut self, ep: Endpoint) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -103,6 +109,15 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
             dst_addr,
             bytes.len() as u64,
         );
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn sys_resume(&mut self, ep: Endpoint) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_runctl(&self.transport, ep.0, minix_sys::syscall::RC_RESUME, 0);
         if r < 0 {
             Err(r)
         } else {
@@ -698,6 +713,9 @@ mod tests {
         }
         fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             self.copied_bytes = Some(bytes.to_vec());
+            Ok(())
+        }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> {
             Ok(())
         }
     }

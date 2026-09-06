@@ -258,6 +258,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 options as u32,
                 VirBytes(addr),
                 transport,
+                kern,
             )
         }
         // C: do_kill（signal.c:197-204）——成功回复 0；caller 自杀且已处
@@ -324,6 +325,10 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+            Ok(())
+        }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
         fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {

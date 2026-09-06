@@ -289,7 +289,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-22 | ~~`signal.rs:160`~~ | ~~`is_stacktrace` 返回硬编码 false~~ **✅ 已修复**（2026-09-06，Fix #13：`is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写——原计划臆断为位掩码，实为 `sys/signal.h:279-286` 的谓词宏；连带修复旧 lethal 近似列表错含 SIGKILL/TERM/TRAP 的真实语义偏差，EPERM 保护测试改用 SIGSEGV） | ~~16-scheduling.md~~ 11-signal-core.md（语义实属信号系统，原归属登记有误） | ~~A-8~~ 无依赖，纯谓词 |
 | D-23 | ~~`signal.rs:360-362`~~ | ~~SIGVTALRM/`check_vtimer` stub~~ **✅ 已修复**（2026-09-06，Fix #14：process_ksig 接真实 check_vtimer（VTimerCtl 显式接缝）；连带修复 `signo == 12` 应为 26 的真 bug——旧分支从未命中） | 14-itimer.md | ~~虚拟计时器 trait 落地~~ PM 侧达成（VTimerCtl 生产实现 = 内核 sys_vtimer 挂 E6） |
 | D-24 | ~~`mproc/fork.rs:222-228`~~ | ~~`getticks()` 返回 0~~ **✅ 已修复**（2026-09-06，Fix #15：getticks 桩删除；`fork_from`/`srv_fork_from` 显式注入 `started: Clock`，`fork_child_from_parent` 经 ClockSource 计算；活路径零值收敛为带 E6 注释的显式 seam） | 14-itimer.md / 内核 sys_times | ~~内核 uptime 面~~ 结构达成（真实 uptime 挂 E6） |
-| D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
+| D-25 | ~~`event.rs` `PmEventServices::resume`~~ | ~~暂返回 OK~~ **✅ 已修复**（2026-09-07，Fix #28：`PmEventServices::resume` 经 `KernelGateway::sys_resume` → minix-sys `sys_runctl(ep, RC_RESUME, 0)` 真实恢复；kernel `dispatch_runctl` RC_RESUME 分支对端真实） | 13-signal-flow.md / edge E6 | ~~minix-sys SYS_* 面~~ 达成（真实通电挂 E1） |
 | D-26 | ~~`wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷~~ | ~~wait4 回复的状态码载荷建模缺失~~ **✅ 已修复**（2026-09-06，Fix #22：`MessPmLcWait4` + `m_pm_lc_wait4` arm 落地 minix-types；ZOMBIE/TRACE_STOPPED/tell_parent/tell_tracer 四处 wire 按"m_type=pid + 载荷=status"发出；E7 首切片） | 10-pm-wait.md / edge E7 | ~~minix-types 增成员~~ 已达成 |
 
 不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
@@ -813,3 +813,19 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`09-pm-exit.md` 计账落地段；`edge_todo.md` E6 进度注；本文件 §6 D-14 行。
 
 **未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wrapper、网关方法、累加语义、测试均已闭环；D-21（rusage 的 sys_datacopy 投递）另需 SAFECOPY wrapper，保持登记。
+
+### ✅ Fix #28: D-25 — `sys_resume` 经 SYS_RUNCTL 真实现（2026-09-07）
+
+**File(s)**：
+- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_runctl` wrapper + `SYS_RUNCTL_CALL = 46` + `RC_STOP/RC_RESUME/RC_DELAY` 常量 + `sys_resume` 便捷函数；+1 wire 测试）
+- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `sys_resume`；`TrapKernelGateway` 委托 minix-sys）
+- `os/servers/pm/src/event.rs`（`PmEventServices::resume` 从"暂返回 OK 过渡契约"改为经 `self.kern.sys_resume(ep)` 真实发送，raw 内核回复透传）
+
+**Before/After**：round 26 D-14 时发现 kernel 已有 `dispatch_runctl` 的 RC_RESUME 分支（`syscall_process.rs:42` `RC_RESUME = 1`），"内核无停止态可撤销"的过渡契约前提不再成立。修复后 `PmEventServices::resume` 经 `self.kern.sys_resume(ep)` 真实发送 `SYS_RUNCTL(ep, RC_RESUME, 0)`；pre-E1 Trap 回 `-EIO` → `try_resume_proc` panic（fail-closed，signal.c:285 同型）；测试注入 mock 恒 OK。
+
+**Verified**：
+- `cargo test -p minix-pm`：**346 lib + 7 integration passed**（D-11 的 `test_reply_signal_event_terminates_via_restart_sigs` 现走真实 `sys_resume` mock 路径）
+- `cargo test -p minix-sys`：**121 passed**（+sys_runctl wire 测试）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
+
+**Docs**：`13-signal-flow.md` D5 段（D-25 落地注）；`edge_todo.md` E6 进度；本文件 §6 D-25 行。

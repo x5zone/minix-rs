@@ -58,8 +58,11 @@ impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServic
 }
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::KernelResume for PmEventServices<'_, T> {
-    fn resume(&mut self, _ep: Endpoint) -> i32 {
-        0 // OK — 见类型文档的 E6 契约说明
+    fn resume(&mut self, ep: Endpoint) -> i32 {
+        // C: signal.c:282 — sys_resume(ep) 恢复被停止的进程。非 OK 由
+        // try_resume_proc panic（signal.c:285）。pre-E1 Trap 网关回 -EIO →
+        // panic（fail-closed，不伪造成功）；测试注入 mock 恒 OK。
+        self.kern.sys_resume(ep).err().unwrap_or(0) // OK = 0；Err 携带原始 errno
     }
 }
 
@@ -563,7 +566,11 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+            Ok(())
+        }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     }
     use super::*;
     use crate::mproc::{Lifecycle, ProcTable};

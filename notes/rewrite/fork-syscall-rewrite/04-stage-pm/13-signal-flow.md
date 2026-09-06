@@ -293,6 +293,7 @@ Rust 改写遵循“显式 `MayDelay` 枚举 + `KernelStop/Resume` trait + `Unpa
 
 - **C**：`693` 三条件 `return` + `695-698` `TRACE_EXIT → exit_proc` + `699-712` `PROC_STOPPED → check→resume`。
 - **Rust**：`enum RestartAction { Noop, Exit(i8), CheckAndResume }` + `restart_sigs(table, target, &mut dyn RestartServices) -> RestartAction`（`TRACE_EXIT` 优先于 `PROC_STOPPED`，`Noop` 对应 `693` 提前 return）。**2026-09-06 收敛**：原三个独立注入 trait 在生产装配（06 的事件终止分派）中共享同一 transport，三个 `&mut` 无法共存——合并为 supertrait `RestartServices: KernelResume + ExitHandler + SignalDeliver`，函数体内经 trait 上转（upcasting）按需取用；成员 trait 保留，`check_pending`/`stop_proc` 等其他消费者不受影响。
+- **2026-09-07 D-25 落地**：`PmEventServices::resume` 已接真实内核通道——`KernelGateway::sys_resume(ep)`（minix-sys `sys_runctl(ep, RC_RESUME, 0)`，kernel `dispatch_runctl` RC_RESUME 分支对端真实）。pre-E1 Trap 回 `-EIO`，`try_resume_proc` 的 `!= OK → panic` 契约（signal.c:285）保持 fail-closed。
 
 ### D6：`SIGSNDELAY` 兑现收敛到 `handle_sigsn_delay`
 

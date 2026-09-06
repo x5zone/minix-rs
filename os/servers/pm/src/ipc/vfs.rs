@@ -991,6 +991,10 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+            Ok(())
+        }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
 
@@ -1032,18 +1036,23 @@ mod tests {
         // 经 KernelGateway 发出，abort_flag 即最初 reboot 请求的 how 位组。
         use crate::ipc::transport::TestIpcTransport;
 
-        struct RecordingKernel { last_how: Option<i32> }
+        struct RecordingKernel { last_how: Option<i32>, copied: Option<alloc::vec::Vec<u8>> }
         impl crate::exit::KernelGateway for RecordingKernel {
             fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
             fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
             fn sys_abort(&mut self, how: i32) -> Result<(), i32> { self.last_how = Some(how); Ok(()) }
+            fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+                self.copied = Some(bytes.to_vec());
+                Ok(())
+            }
             fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((30, 12)) }
+            fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         }
 
         let mut table = ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut kern = RecordingKernel { last_how: None };
+        let mut kern = RecordingKernel { last_how: None, copied: None };
         let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0x0808);
 
         svc.sys_abort();
