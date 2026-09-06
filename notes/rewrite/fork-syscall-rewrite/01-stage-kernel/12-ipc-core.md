@@ -500,7 +500,8 @@ pub enum IpcOutcome {
 //   目标槽:  caller_q_head / caller_q_tail  — C: p_caller_q（队头）
 //   发送方槽: send_q_link                    — C: p_q_link（后继）
 pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: usize);
-pub(crate) fn caller_q_find(procs: &[KProcess], dst_idx: usize, src_endpoint: Endpoint) -> Option<usize>;
+pub(crate) fn caller_q_find(procs: &[KProcess], dst_idx: usize, src_endpoint: Endpoint,
+                            accept: impl FnMut(usize) -> bool) -> Option<usize>;
 pub(crate) fn caller_q_remove(procs: &mut [KProcess], dst_idx: usize, sender_idx: usize) -> bool;
 pub(crate) fn caller_q_remove_by_nr(procs: &mut [KProcess], dst_idx: usize, target_nr: ProcNr) -> bool;
 ```
@@ -836,8 +837,10 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
 
     // Phase 3: 同步发送者队列。C: proc.c:1054-1099
     // 遍历 caller_q 侵入链（caller_q_head → send_q_link → ...）找
-    // p_endpoint 匹配 src 的发送者；Endpoint::ANY 匹配链头。
-    if let Some(sender_idx) = caller_q_find(self.procs, caller_idx, src_endpoint) {
+    // p_endpoint 匹配 src 且通过过滤链（D-16：can_receive = CANRECEIVE
+    // 位置，Rust 版以 `caller_q_find` 的 accept 闭包注入）的发送者；
+    // Endpoint::ANY 匹配链头。被过滤者留队，扫描继续。
+    if let Some(sender_idx) = self.caller_q_find_allowed(caller_idx, src_endpoint) {
         // 先摘链（前驱链接 + 链头/链尾修正），再投递。
         caller_q_remove(self.procs, caller_idx, sender_idx);
         // 投递 sender.p_sendmsg + MF_DELIVERMSG
@@ -1093,13 +1096,19 @@ caller_q 是**索引式侵入 FIFO**：链表节点内嵌在进程槽位中，�
 /// — proc.c:1077-1105 的入队路径
 pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: usize);
 
-/// 沿链查找 p_endpoint 匹配 src 的发送者槽位索引（不移除）。
+/// 沿链查找 p_endpoint 匹配 src 且通过 `accept` 判定的发送者槽位索引（不移除）。
+/// 这是 caller 队列唯一的 walk 实现（V12-A2 收敛：生产过滤感知查找
+/// `IpcEngine::caller_q_find_allowed` 以闭包注入过滤检查，单测以 `|_| true`
+/// 复用同一 walk）。
 /// C: while (*xpp) { if (CANRECEIVE(...)) break; } — proc.c:1077-1105
-/// Endpoint::ANY 匹配链头（C: 队首即最长等待者）。
+/// `accept` 恰在 C 循环内 CANRECEIVE 的位置（C 的过滤检查藏在 CANRECEIVE
+/// 内，Rust D-16 将其拆为 `can_receive`）。Endpoint::ANY 匹配链头（C: 队首
+/// 即最长等待者）。
 pub(crate) fn caller_q_find(
     procs: &[KProcess],
     dst_idx: usize,
     src_endpoint: Endpoint,
+    accept: impl FnMut(usize) -> bool,
 ) -> Option<usize>;
 
 /// 摘链：前驱 send_q_link 改接 + 链头/链尾修正。

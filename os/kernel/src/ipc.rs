@@ -12,7 +12,8 @@
 //!
 //! - Types: `IpcCall`, `IpcOutcome`, `IpcError`, `SendFlags`,
 //!   `IpcEngine`, `DeadlockCycle`, `UserCopy`, `DeliverResult`
-//! - Sender wait queue: free functions `caller_q_push` / `caller_q_find` /
+//! - Sender wait queue: free functions `caller_q_push` / `caller_q_find`
+//!   (shared walk, `accept` predicate plugs in at C's CANRECEIVE position) /
 //!   `caller_q_remove` / `caller_q_remove_by_nr` (intrusive FIFO through
 //!   the process-table slots — no heap)
 //! - SENDA flags: `AMF_*` constants
@@ -522,19 +523,27 @@ pub(crate) fn caller_q_push(procs: &mut [KProcess], dst_idx: usize, caller_idx: 
 }
 
 /// Find the first queued sender on `dst_idx`'s queue matching
-/// `src_endpoint` (head-first scan). Returns the sender's slot index.
+/// `src_endpoint` AND satisfying `accept` (head-first scan). Returns the
+/// sender's slot index. This is the single walk implementation for the
+/// caller queue — production (`IpcEngine::caller_q_find_allowed`, which
+/// passes the filter check as `accept`) and tests share it.
 ///
 /// C: `while (*xpp) { if (CANRECEIVE(...)) break; }` — proc.c:1077-1105.
-/// `Endpoint::ANY` matches the head (C: first queue entry).
+/// `accept` plugs in at exactly the `CANRECEIVE` position of the C loop
+/// (in C the filter check lives inside `CANRECEIVE`; in Rust D-16 splits
+/// it into `can_receive`). `Endpoint::ANY` matches the head (C: first
+/// queue entry).
 pub(crate) fn caller_q_find(
     procs: &[KProcess],
     dst_idx: usize,
     src_endpoint: Endpoint,
+    mut accept: impl FnMut(usize) -> bool,
 ) -> Option<usize> {
     let mut cur = procs[dst_idx].caller_q_head;
     while let Some(nr) = cur {
         let idx = nr_to_idx(nr)?;
-        if src_endpoint == Endpoint::ANY || procs[idx].p_endpoint == src_endpoint {
+        let endpoint_match = src_endpoint == Endpoint::ANY || procs[idx].p_endpoint == src_endpoint;
+        if endpoint_match && accept(idx) {
             return Some(idx);
         }
         cur = procs[idx].send_q_link;
@@ -721,25 +730,17 @@ impl<'a> IpcEngine<'a> {
     }
 
     /// D-16: filter-aware `caller_q_find` — C proc.c:1053-1058. Walks
-    /// the caller queue; a sender whose cached message (`p_sendmsg`,
-    /// C: `m_src_p = &sender->p_sendmsg`) fails the receiver's filter
-    /// chain stays queued (retried on a later receive) and the scan
-    /// continues with the next queued sender.
+    /// the caller queue via the shared [`caller_q_find`] walk; a sender
+    /// whose cached message (`p_sendmsg`, C: `m_src_p = &sender->p_sendmsg`)
+    /// fails the receiver's filter chain stays queued (retried on a later
+    /// receive) and the scan continues with the next queued sender — the
+    /// filter check rides in the walk's `accept` position, exactly where
+    /// C's `CANRECEIVE` sits.
     fn caller_q_find_allowed(&self, caller_idx: usize, src_endpoint: Endpoint) -> Option<usize> {
-        let mut cur = self.procs[caller_idx].caller_q_head;
-        while let Some(nr) = cur {
-            let idx = crate::proc_table::nr_to_idx(nr)?;
+        caller_q_find(&self.procs, caller_idx, src_endpoint, |idx| {
             let sender_ep = self.procs[idx].p_endpoint;
-            let endpoint_match =
-                src_endpoint == Endpoint::ANY || sender_ep == src_endpoint;
-            if endpoint_match
-                && self.can_receive(caller_idx, sender_ep, self.procs[idx].p_sendmsg.m_type)
-            {
-                return Some(idx);
-            }
-            cur = self.procs[idx].send_q_link;
-        }
-        None
+            self.can_receive(caller_idx, sender_ep, self.procs[idx].p_sendmsg.m_type)
+        })
     }
 
     /// Take the sender whose message was delivered while `MF_SIG_DELAY`
@@ -1063,7 +1064,8 @@ impl<'a> IpcEngine<'a> {
         }
 
         // Phase 3: sync sender queue. C: proc.c:1071-1095.
-        // Intrusive chain walk: `caller_q_find` scans head-first via
+        // Intrusive chain walk: `caller_q_find_allowed` (the shared
+        // `caller_q_find` walk) scans head-first via
         // `send_q_link`; `caller_q_remove` unlinks (fixing predecessor +
         // head/tail). The old VecDeque split find/remove existed to work
         // around queue-owns-subobject aliasing — with links living in the
@@ -2119,9 +2121,9 @@ mod tests {
         assert_eq!(procs[0].send_q_link, Some(test_nr(1)));
         assert_eq!(procs[1].send_q_link, None);
         // ANY matches the head.
-        assert_eq!(caller_q_find(&procs, 2, Endpoint::ANY), Some(0));
+        assert_eq!(caller_q_find(&procs, 2, Endpoint::ANY, |_| true), Some(0));
         // Specific endpoint match walks the chain.
-        assert_eq!(caller_q_find(&procs, 2, Endpoint(22)), Some(1));
+        assert_eq!(caller_q_find(&procs, 2, Endpoint(22), |_| true), Some(1));
         // Remove the middle sender: head link must be fixed.
         assert!(caller_q_remove(&mut procs, 2, 1));
         assert_eq!(caller_q_len(&procs, 2), 1);

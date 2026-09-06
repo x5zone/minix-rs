@@ -2308,6 +2308,21 @@ sigreturn 合法样式端到端记录测试依赖跨空间拷贝基建（同 T-8
 测试辅助并修正 `proc.rs:940` 注释。决策时对比 C 单 walk 形态（C 只有一处循环），
 倾向方案一（单一真相源）。同步更新 doc 12 §4 与 doc 23 §4 的函数引用。
 
+**✅ 已修复（2026-09-07，§22 Phase 1 迭代 3）——两对均取方案一**：
+
+- `caller_q_find` 增第四参数 `accept: impl FnMut(usize) -> bool`（恰在 C 循环内
+  CANRECEIVE 的位置——顺带修正了原自由函数文档"忠实复刻 C walk"却省略 CANRECEIVE
+  条件的不准确表述；C 的过滤检查本就藏在 CANRECEIVE 内，Rust D-16 拆为 can_receive）。
+  生产方法 `caller_q_find_allowed` 删除手写复刻 walk、改为委托共享 walk 注入
+  `can_receive` 闭包；单测以 `|_| true` 复用同一 walk——C-faithful 断言从此测的就是
+  生产走的那条循环。`proc.rs:940` 操作集注释改为指向真实生产入口。
+- `el_match` 与 `el_match_with` 合并为单一 `el_match`（前者本就是纯委托，取实现体
+  归一），`chain_allowed` 链内调用点切换；doc 注释记录收敛历史防回退。
+- clippy 两条 `never used` 警告消除（kernel 16 → 15，新增 1 处 doc 缩进即时修正，
+  其余皆 V12-B4/C-D-2 已登记项）；测试 694 passed / 0 failed 不变。
+- 文档同步：doc 12 三处（函数清单签名 / Phase 3 伪码改 `caller_q_find_allowed`
+  并补 D-16 过滤语义 / trait 式文档块）；doc 23 既有引用在收敛后仍准确，无需改动。
+
 #### V12-A3 `senda` 通知条件两分支恒等 [P2]
 
 **问题**：`os/kernel/src/ipc.rs:1628-1631` 的结果回写段中，
@@ -2528,7 +2543,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 **Phase 1 — V12 正确性/卫生批（§21，P1→P2→P3）**
 - ✅ V12-A1 [P1] CpuContext 真实 `trap_style` 字段 + 返回路径选择（x86 现藏 GP_R15、arm64 丢弃、无分支）→ **落地为 `KProcess.trap_style: TrapStyle`（arch 公共枚举）+ 双端信号往返 + finish 闸门 + MINIX3 BUG 校验先行修复；694+212 测试全绿（2026-09-07）**
 - ✅ V12-B1 [P1] proc_table.rs ~20 处 panic 审计 → **17 处实测：16 内部不变量维持 panic（C assert parity）、1 补契约注释、1 分类纠偏（notify 吞错改 C-parity panic）；无用户可达 panic（2026-09-07）**
-- ⬜ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源
+- ✅ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源 → **caller_q_find 泛型化（accept 插入 C CANRECEIVE 位）+ el_match 归一；clippy -2（2026-09-07）**
 - ⬜ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并
 - ⬜ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释
 - ⬜ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs:868/:977 形态修复

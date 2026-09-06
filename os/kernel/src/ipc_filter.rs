@@ -170,17 +170,9 @@ pub(crate) fn el_check(el: &IpcFilterElement, source_ok: bool) -> bool {
 
 /// `IPCF_EL_MATCH(E, M)` — ipc_filter.h:40-41（= MATCH_M_TYPE && 
 /// MATCH_M_SOURCE）。`class_of` 解析消息来源端点的特权类别（ANY_* 类别
-/// 匹配需要它）。
+/// 匹配需要它）。生产链（`chain_allowed`）与单测共用这一个实现——
+/// V12-A2 收敛前曾存在"公开 `el_match` 委托内部 `el_match_with`"的双表示。
 pub(crate) fn el_match(
-    el: &IpcFilterElement,
-    m_source: minix_types::Endpoint,
-    m_type: i32,
-    class_of_source: &mut ClassResolver<'_>,
-) -> bool {
-    el_match_with(el, m_source, m_type, class_of_source)
-}
-
-fn el_match_with(
     el: &IpcFilterElement,
     m_source: minix_types::Endpoint,
     m_type: i32,
@@ -231,7 +223,7 @@ pub(crate) fn chain_allowed(
         let is_whitelist = slot.filter_type == IpcFilterType::Whitelist;
         if allow != is_whitelist {
             for el in &slot.elements[..slot.num_elements] {
-                if el_match_with(el, m_source, m_type, class_of_source) {
+                if el_match(el, m_source, m_type, class_of_source) {
                     allow = is_whitelist;
                     break;
                 }

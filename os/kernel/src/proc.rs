@@ -939,7 +939,9 @@ pub struct KProcess {
     /// through `adjust_proc_slot`, C: `rp->p_caller_q = from_rp->p_caller_q`);
     /// `send_q_link` is content (swapped with the rest of the slot).
     ///
-    /// Operations: `ipc::caller_q_push` / `caller_q_find` /
+    /// Operations: `ipc::caller_q_push` / the `caller_q_find` shared walk
+    /// (production enters via `IpcEngine::caller_q_find_allowed`, whose
+    /// filter check rides the walk's `accept` position) /
     /// `caller_q_remove` / `caller_q_remove_by_nr`.
     pub caller_q_head: Option<ProcNr>,
     /// Tail of the sender wait queue (see `caller_q_head`).
