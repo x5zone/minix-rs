@@ -17,8 +17,9 @@
 //! ```
 
 use minix_types::{
-    Clock, Endpoint, Errno, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI, RS_GETSYSINFO, RS_INIT, RS_LOOKUP,
-    RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE, RS_UP, RS_UPDATE,
+    Clock, Endpoint, Errno, MAX_NR_TASKS, NR_PROCS, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI,
+    RS_GETSYSINFO, RS_INIT, RS_LOOKUP, RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN,
+    RS_SYSCTL, RS_UNCLONE, RS_UP, RS_UPDATE,
 };
 
 // RS message types are defined in `minix-types::ipc::rs` (ARCH A-2,
@@ -48,8 +49,14 @@ impl IpcStatus {
 /// The four message classes of the RS main loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchKind {
-    /// CLOCK notification → `do_period` (07). C: main.c:80-83.
-    ClockNotify,
+    /// CLOCK notification → `do_period` (07). C: main.c:80-83. The notify
+    /// timestamp is `do_period`'s `now` (request.c:948
+    /// `clock_t now = m_ptr->m_notify.timestamp`) — same R25 pattern as the
+    /// heartbeat class.
+    ClockNotify {
+        /// Kernel-filled notify timestamp (ipc.h:1715).
+        timestamp: Clock,
+    },
     /// Heartbeat notification from a service (07). C: main.c:85-91 — the
     /// kernel timestamp carried by every notify (ipc.h:1715, `u64_t`) is
     /// what the main loop writes into `r_alive_tm`, so the classification
@@ -65,6 +72,19 @@ pub enum DispatchKind {
     LuPrepareReady,
     /// `RS_*` request → `do_*` (13/14/16). C: main.c:102-114.
     Request(i32),
+}
+
+/// The main-loop source gate — C: `rs_isokendpt` (utility.c:78-85, called
+/// at main.c:63-66).
+///
+/// C's accepted range is `-NR_TASKS <= slot < NR_PROCS`: kernel *tasks*
+/// (negative slots, CLOCK included — that is how the tick reaches
+/// `do_period`) pass; only a slot outside the whole process/task table is
+/// rejected, and then C panics (`panic("message from bogus source: %d")`,
+/// main.c:64-65) — the rewrite mirrors that (R34.20 gate).
+pub fn isokendpt(endpoint: Endpoint) -> bool {
+    let slot = endpoint.slot();
+    slot >= -(MAX_NR_TASKS as i32) && slot < NR_PROCS as i32
 }
 
 /// Classifies a received message.
@@ -84,7 +104,7 @@ pub fn classify(
 ) -> DispatchKind {
     if ipc_status.is_notify() {
         if who_p == Endpoint::CLOCK {
-            return DispatchKind::ClockNotify;
+            return DispatchKind::ClockNotify { timestamp };
         }
         return DispatchKind::HeartbeatNotify {
             source: who_p,
@@ -142,8 +162,8 @@ mod tests {
     fn test_classify_clock_notify() {
         let st = IpcStatus { flags: 4 }; // NOTIFY (ipcconst.h:10)
         assert_eq!(
-            classify(&st, Endpoint::CLOCK, 0, 0),
-            DispatchKind::ClockNotify
+            classify(&st, Endpoint::CLOCK, 0, 55),
+            DispatchKind::ClockNotify { timestamp: 55 }
         );
     }
 

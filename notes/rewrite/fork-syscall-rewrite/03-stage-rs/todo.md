@@ -1989,7 +1989,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | EDGE（见 §18.10） |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ✅ | 已修（Fix #68，2026-09-07，derive 删除） |
-| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18/19/21 已补（E-10，Fix #65）；20 随 06 接线；22/23 gated（见 §18.10 E-10） |
+| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18/19/20/21 已补（Fix #65/#69）；22/23 gated（见 §18.10 E-10） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ✅ | 形态 a 已采纳并落地（Fix #51/#52/#55/#56） |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
 | A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ✅ | 已修（Fix #63，2026-09-06） |
@@ -2680,6 +2680,35 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   反证无使用点）；clippy/fmt 零输出；T7 PASS。`PublicSlot` 的 derive 保留
   （发布面相等语义良定义、无重字段）。
 
+### ✅ Fix #69 — 06 主循环接线（notify 半环 + RS_SHUTDOWN 臂 + 回复路径，R34.20 闭合）
+- **File**：`os/servers/rs/src/dispatch.rs`（`isokendpt` + `ClockNotify{timestamp}`）、
+  `boot.rs`（`IpcApi::notify` 缝，生产 ENOSYS + doc contract）、`testutil.rs`
+  （`Call::Notify` + `inbox` 收件队列）、`lib.rs`（`run()` 真实循环 + `do_period`/
+  `do_heartbeat`/`do_request`/`do_shutdown`/`reply_unless_suppressed` + 4 个 run-loop
+  集成测试）；文档 06 §5（接线表）、01 §3.5（IpcApi 面）、07（消费注记）
+- **Before**：`run()` 是骨架（分类后丢弃）；isokendpt 门、CLOCK 心跳扫、心跳刷新、
+  请求回复路径全部未接线（06 号的最后一环）。
+- **After**：`run()` 按逐行对照——`get_work` → isokendpt 门（R34.20；**C 真实域是
+  `-NR_TASKS ≤ slot < NR_PROCS`**——初版按 `0..NR_PROCS` 实现被 CLOCK notify 测试当
+  场证伪，kernel 任务必须放行，utility.c:78-85）→ 四类分派。`do_period`：`now` =
+  CLOCK notify timestamp（request.c:948，`ClockNotify` 变体随 R25 模式携带）；
+  槽门（:968-970）+ `period_decision`（`lookup_by_flags(INITIALIZING)` 喂参，
+  Fix #45.6 的互链生效）+ mutations 一次提交 + 动作执行（Restart → restart_service
+  八参编排、crash 双动作 → CrashOutcome::SelfTerminate 即循环 Err 终止（C
+  `exit(1)`）、PingRequest → `notify` 缝，C 忽略其失败）。`do_heartbeat`：索引命中
+  即刷新 alive_tm（Fix #43 原始索引语义，无 in-use 过滤）。请求臂：`RS_SHUTDOWN`
+  是唯一免 union 解码的臂（`m_source` 即载荷）→ 权限 + sweep；其余臂经
+  `dispatch_request` ENOSYS（OQ-4 按臂转真）。回复路径：`EDONTREPLY` 抑制 +
+  fire-and-forget（utility.c:309）。
+- **测试基建**：`MockKernelApi.inbox` 收件队列（`receive` 弹出，空 → ENOSYS 结束
+  循环——T2 语义不变）；测试断言走状态面（`check_tm`/`alive_tm`/`shutting_down`/
+  panic 契约），kernel 调用面经 mock 的 `calls` 由直接驱动测试覆盖。
+- **Verified**：`cargo test -p minix-rs` = **286 passed**（+4：clock 驱动 ping、
+  heartbeat 刷新、shutdown 臂、bogus source panic）；测试自查修正 3 处
+  （mock 移交后 calls 不可断言 → 状态断言、endpoint 构造误用、isokendpt 下界
+  ——最后一处由 CLOCK 测试当场证伪并回改）；clippy 触碰文件零告警；fmt 干净；
+  T7 PASS（notify 缝带 19 契约）。文档同步：06 §5 接线表、01 §3.5、07 消费注记。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2802,10 +2831,10 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `#[should_panic]` 锁定 fail-fast 契约）、R34.21（信号分发层——CHLD 实排空：
   waitpid 交出 pid → 槽位释放 + 端点索引消失 + 未知 pid 无副作用；TERM/空排空/未知信号
   已随 Fix #57）落地。
-- **剩余（gated）**：R34.20（classify 前 isokendpt 门——属 06 主循环接线的编排步骤，R12
-  已在索引层补 total 门并留注释）、R34.22（signal_manager 六分支——待 06/18 编排落地）、
-  R34.23（catch_boot_init_ready 三 panic——待 12 接收原语）；do_period 全流程与
-  rollback 心跳扫的集成面已由 Fix #41/#55/#56 的走链测试覆盖主体。
+- **剩余（gated）**：R34.20 已随 06 接线轮闭合（Fix #69）；R34.22（signal_manager
+  六分支——待 18 编排落地）、R34.23（catch_boot_init_ready 三 panic——待 12 接收
+  原语）；do_period 全流程与 rollback 心跳扫的集成面已由 Fix #41/#55/#56 的走链
+  测试与本轮 run() 集成测试覆盖。
 - 场景：boot 全链 mock（四步 + getnpid + setalarm 断言）、do_period 全流程
   （update_period 派发门 → 槽门 → 决策 → setalarm）、rollback→心跳重发扫
   （R27(a) 的集成面）、signal_manager 六分支（待编排落地后）、

@@ -289,6 +289,13 @@ monitor.rs
 
 ---
 
+> **主循环消费（2026-09-07，06 接线轮）**：`period_decision` 的调用方已在 `RsServer::do_period`
+> 落地——CLOCK notify 的 timestamp 即 `now`（request.c:948），槽门（ACTIVE + updating 组合，
+> request.c:968-970）在编排侧，决策/载荷/动作三段按 R13 模式衔接；`Restart` →
+> `service_create::restart_service`、crash 双动作 → `recovery::crash_service`（RS 自身 →
+> SelfTerminate，循环以 Err 终止——C `exit(1)` 对照）、`PingRequest` → `IpcApi::notify` 缝
+> （request.c:1035，19 接线）。
+
 ## 5. 测试要点
 
 `cargo test -p minix-rs --lib`（208 passed，monitor 相关 12 个）：

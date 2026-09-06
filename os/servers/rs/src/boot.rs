@@ -219,6 +219,13 @@ pub trait IpcApi {
     /// C: `reply(who, rp, m_ptr)` — utility.c:309 (06); used by
     /// `late_reply` (utility.c:332) and the main loop reply path.
     fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno>;
+
+    /// Notifies a service — the do_period status ping (06/07).
+    ///
+    /// C: `ipc_notify(rpub->endpoint)` — request.c:1035; the kernel fills
+    /// the notify timestamp (ipc.h:1715). Wired
+    /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    fn notify(&mut self, endpoint: Endpoint) -> Result<(), Errno>;
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -371,6 +378,9 @@ impl IpcApi for UnimplementedKernelApi {
         Err(Errno::ENOSYS)
     }
     fn reply(&mut self, _target: Endpoint, _result: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn notify(&mut self, _endpoint: Endpoint) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }

@@ -771,7 +771,8 @@ pub trait VmApi {
 }
 
 pub trait IpcApi {
-    // RS 自身 IPC 面：receive（main.c:826-833）/ reply（utility.c:309）
+    // RS 自身 IPC 面：receive（main.c:826-833）/ reply（utility.c:309）/
+    // notify（request.c:1035，do_period 状态 ping）
 }
 
 pub trait KernelApi: SysApi + SchedApi + PmApi + VmApi + IpcApi {}

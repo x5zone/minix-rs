@@ -71,6 +71,7 @@ pub enum Call {
     SchedStop(Endpoint, Endpoint),
     SetUid(u32),
     Reply(Endpoint, i32),
+    Notify(Endpoint),
 }
 
 impl Call {
@@ -97,6 +98,7 @@ impl Call {
                 | (Call::SchedStop(..), Call::SchedStop(..))
                 | (Call::SetUid(_), Call::SetUid(_))
                 | (Call::Reply(..), Call::Reply(..))
+                | (Call::Notify(..), Call::Notify(..))
         )
     }
 }
@@ -133,6 +135,9 @@ pub struct MockKernelApi {
     /// (manager.c:604-605). Per-endpoint storage because boot Step 1 pushes
     /// 12 different structures in sequence.
     pub set_privs: Vec<(Endpoint, Privilege)>,
+    /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
+    /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
+    pub inbox: Vec<(minix_types::Message, crate::dispatch::IpcStatus, Clock)>,
     /// Calls that must fail with `ENOSYS` (fail-injection, R34.18/E-10):
     /// matching is by variant, payloads ignored — `Call::SetAlarm(0)` fails
     /// every `setalarm`. Plain recording methods honor this; the methods
@@ -164,6 +169,7 @@ impl MockKernelApi {
             children: Vec::new(),
             set_privs: Vec::new(),
             fail_calls: Vec::new(),
+            inbox: Vec::new(),
         }
     }
 }
@@ -374,6 +380,19 @@ impl IpcApi for MockKernelApi {
         &mut self,
         _endpoint: Endpoint,
     ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno> {
-        Err(Errno::ENOSYS)
+        match self.inbox.first() {
+            Some(_) => {
+                let delivered = self.inbox.remove(0);
+                Ok(delivered)
+            }
+            None => Err(Errno::ENOSYS),
+        }
+    }
+    fn notify(&mut self, endpoint: Endpoint) -> Result<(), Errno> {
+        if self.failing(&Call::Notify(endpoint)) {
+            return Err(Errno::ENOSYS);
+        }
+        self.calls.push(Call::Notify(endpoint));
+        Ok(())
     }
 }

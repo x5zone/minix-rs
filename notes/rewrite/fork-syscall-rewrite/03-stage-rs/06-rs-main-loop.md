@@ -367,6 +367,19 @@ dispatch.rs
 | `test_run_requires_completed_boot` | `run()` 在无完成 boot 时 panic（fail-fast 契约，main.c:226 对照） |
 | `test_second_fresh_init_panics` | 二次 `init(Fresh)`：boot 机器已被 T1 handover 消费 → expect panic |
 
+主循环接线（E-10 续轮，2026-09-07）：`run()` 从骨架升级为真实循环——isokendpt 门
+（`dispatch::isokendpt`，utility.c:78-85 的 `-NR_TASKS ≤ slot < NR_PROCS` 域，CLOCK 等
+内核任务放行；越界 panic，main.c:63-66/R34.20）、四类分派臂、`EDONTREPLY` 回复路径
+（main.c:124-129，reply 失败 fire-and-forget 同 utility.c:309）。
+
+| 接线臂 | 状态 | 说明 |
+|--------|------|------|
+| `ClockNotify` → `do_period` | ✅ | `now` = CLOCK notify 的 timestamp（request.c:948）；槽门（ACTIVE + updating 组合，:968-970）→ `period_decision` → mutations 一次提交 → Restart/crash/PingRequest 动作；`update_period` 中段（:952-954）仍归 16 |
+| `HeartbeatNotify` → `do_heartbeat` | ✅ | 注册服务 → `r_alive_tm` 刷新（main.c:85-91）；未注册源 no-op（C 打印警告，no_std 诊断面归 19）；endpoint 快索引 = C `rproc_ptr`（Fix #43 语义，无 in-use 过滤） |
+| `InitReady`/`LuPrepareReady` → SEF response 回调 | ✅（回调体 ENOSYS） | 载荷解码（union 臂）在回调实现内，归 19 安全 receive 包装 |
+| `RS_SHUTDOWN` → `do_shutdown` | ✅ | 唯一无载荷解码的请求臂：caller 权限（request.c:435-437）+ sweep（:448-453）；NULL 内部形态 = SIGTERM 臂（Fix #57） |
+| 其余 `RS_*` 请求 | ENOSYS | 需 union 载荷解码（13/14/16 号 + 19 seam）；OQ-4 按臂转真 |
+
 ---
 
 ## 6. 过渡：从"骨架"到"心跳"

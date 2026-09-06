@@ -28,6 +28,7 @@
 
 extern crate alloc;
 
+use dispatch::DispatchKind;
 use minix_types::{Clock, Endpoint, Errno};
 
 pub mod access;
@@ -238,10 +239,22 @@ impl RsServer {
 
     /// Runs the main loop.
     ///
-    /// C: `main()` loop — main.c:50-131. Skeleton: message receive
-    /// (`get_work`, 06) + classification ([`dispatch::classify`]) + request
-    /// dispatch. The receive primitive is DEFERRED (06-rs-main-loop.md); the
-    /// loop fails closed until then.
+    /// C: `main()` loop — main.c:50-131. Per iteration: receive
+    /// (`get_work` → [`SysApi::receive`]), the bogus-source gate
+    /// (main.c:63-66), classification ([`dispatch::classify`]), then the
+    /// four message classes:
+    ///
+    /// - CLOCK notify → [`RsServer::do_period`] (07) — no reply (main.c:84);
+    /// - heartbeat notify → [`RsServer::do_heartbeat`] — no reply (main.c:85-91);
+    /// - `RS_INIT`/`RS_LU_PREPARE` → the ready-message SEF callbacks (12) —
+    ///   the payload decode lives in the callback impl (19 safe-receive seam);
+    /// - `RS_*` request → the handler dispatch — every handler needs the
+    ///   message-payload decode (13/14/16 号, wired per-arm) or is already
+    ///   live ([`RsServer::do_shutdown`]).
+    ///
+    /// Handler results are replied to the caller unless `EDONTREPLY`
+    /// (main.c:124-129); reply failures are fire-and-forget, as in C
+    /// (utility.c:309).
     pub fn run(&mut self) -> Result<(), Errno> {
         // T1: the main loop operates on the post-boot runtime state. Fail
         // closed (loudly) if boot never completed — an RS that has not
@@ -250,15 +263,192 @@ impl RsServer {
             panic!("run() requires a completed fresh boot (init(Fresh))");
         }
         loop {
-            // C: rs_idle_period() — main.c:59 (06).
-            // C: get_work() → sef_receive_status(ANY) — main.c:62, 826-833 (06).
+            // C: get_work() → sef_receive_status(ANY) — main.c:62, 826-833.
             let (msg, rcv_sts, ts) = self.get_work()?;
-            let _kind = dispatch::classify(&rcv_sts, msg.m_source, msg.m_type, ts);
-            // C: message dispatch — main.c:70-127 (mechanisms in 06/07/12-16).
-            // 06 wiring: `do_period` reads `state.system_hz`/`state.table`;
-            // the RS_DOWN sweep reads/writes `state.shutting_down`.
-            let _ = (self.state.as_ref(), _kind);
+            let who_e = msg.m_source;
+            // C: main.c:63-66 — a message from a bogus source is a
+            // kernel-side program error; C panics and so does the rewrite
+            // (R34.20 gate).
+            assert!(
+                dispatch::isokendpt(who_e),
+                "message from bogus source: {who_e:?}"
+            );
+            match dispatch::classify(&rcv_sts, who_e, msg.m_type, ts) {
+                // C: main.c:80-84 — CLOCK → do_period, then `continue`
+                // (notifications never get a reply).
+                DispatchKind::ClockNotify { timestamp } => self.do_period(timestamp)?,
+                // C: main.c:85-91 — registered service → alive_tm refresh.
+                DispatchKind::HeartbeatNotify { source, timestamp } => {
+                    self.do_heartbeat(source, timestamp)
+                }
+                // C: main.c:116-117 — the ready messages reach the SEF
+                // response callbacks; their bodies decode `m_rs_init.result`/
+                // `m_rs_update.result` (union arms — the 19 safe-receive
+                // seam) and are fail-closed until 12 lands.
+                DispatchKind::InitReady => {
+                    let result = self.init_response(&msg).unwrap_or_else(|e| e.to_i32());
+                    self.reply_unless_suppressed(who_e, result);
+                }
+                DispatchKind::LuPrepareReady => {
+                    let result = self.lu_response(&msg).unwrap_or_else(|e| e.to_i32());
+                    self.reply_unless_suppressed(who_e, result);
+                }
+                // C: main.c:102-114 + 124-129 — handler result replied to the
+                // caller unless EDONTREPLY. [`RsServer::do_request`] owns the
+                // arm table: wire-decode-free arms run live, the rest fail
+                // closed until their 19 decode lands (OQ-4).
+                DispatchKind::Request(n) => {
+                    let result = self
+                        .do_request(who_e, n, &msg)
+                        .unwrap_or_else(|e| e.to_i32());
+                    self.reply_unless_suppressed(who_e, result);
+                }
+            }
         }
+    }
+
+    /// Replies unless the result suppresses it (C: main.c:124-129). The
+    /// reply itself is fire-and-forget — C's `reply` (utility.c:309-318)
+    /// does not propagate `ipc_send` failures to the loop.
+    fn reply_unless_suppressed(&mut self, who_e: Endpoint, result: i32) {
+        if result != minix_types::EDONTREPLY {
+            let _ = self.kernel.reply(who_e, result);
+        }
+    }
+
+    /// Dispatches one `RS_*` request (C: main.c:102-114 switch).
+    ///
+    /// Arms turn live in dependency order as their message-payload decode
+    /// lands (the union-arm reads are the 19 safe-receive seam — OQ-4):
+    /// `RS_SHUTDOWN` needs only `m_source` and is live; everything else
+    /// falls through to [`dispatch::dispatch_request`]'s fail-closed table.
+    fn do_request(
+        &mut self,
+        caller: Endpoint,
+        call_nr: i32,
+        _msg: &minix_types::Message,
+    ) -> Result<i32, Errno> {
+        match call_nr {
+            minix_types::RS_SHUTDOWN => self.do_shutdown(caller),
+            n => Ok(dispatch::dispatch_request(n).0),
+        }
+    }
+
+    /// C: `do_shutdown` — request.c:431-455: caller permission, then the
+    /// no-restart sweep (`shutting_down` + `RS_EXITING` over the table —
+    /// [`request::shutdown_apply`]). The NULL-message *internal* form
+    /// (request.c:436 `m_ptr != NULL` gate) is the SIGTERM arm of
+    /// `signal_handler` (Fix #57); the message form checks the caller here.
+    fn do_shutdown(&mut self, caller: Endpoint) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let updating = state
+            .update
+            .flags
+            .contains(live_update::RupdateFlags::UPDATING);
+        // C: request.c:435-437 — check_call_permission(source, RS_SHUTDOWN,
+        // NULL); the euid query is the T5 shell injection (04).
+        let caller_euid = self.kernel.getnuid(caller);
+        crate::access::check_call_permission(
+            caller,
+            minix_types::RS_SHUTDOWN,
+            None,
+            &state.table,
+            updating,
+            caller_euid,
+        )?;
+        state.shutting_down = crate::request::shutdown_apply(&mut state.table);
+        Ok(0) // C: request.c:454 — return(OK)
+    }
+
+    /// C: main.c:85-91 — heartbeat notification from a registered service:
+    /// `rproc_ptr[who_p] != NULL` → `r_alive_tm = m.m_notify.timestamp`. An
+    /// unregistered source is a warning in C (rs_verbose print — the no_std
+    /// diagnostics face is 19's) and a no-op here; the endpoint fast index
+    /// *is* C's `rproc_ptr` (Fix #43 raw-index semantics — no in-use
+    /// filtering on top).
+    fn do_heartbeat(&mut self, source: Endpoint, timestamp: Clock) {
+        let Some(state) = self.state.as_mut() else {
+            return; // pre-boot: unreachable (run() gates on a completed boot)
+        };
+        if let Some(id) = state.table.endpoint_slot(source) {
+            monitor::heartbeat_mutations(timestamp).apply(state.table.get_mut(id));
+        }
+    }
+
+    /// C: `do_period` — request.c:946-1040 (07): the CLOCK-tick status sweep
+    /// over the service table. Per in-use slot passing the ACTIVE/update gate
+    /// (request.c:968-970): the decision layer ([`monitor::period_decision`])
+    /// classifies backoff tick / stop timeout / ping timeout / ping request /
+    /// free pass; the mutations apply once (R13) and the action executes:
+    /// `Restart` → [`service_create::restart_service`] (request.c:977-978),
+    /// the crash actions → [`recovery::crash_service`] (request.c:989/:1029),
+    /// `PingRequest` → the notify seam (request.c:1035).
+    fn do_period(&mut self, now: Clock) -> Result<(), Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // 16 号: `RUPDATE_IS_UPDATING() && !RUPDATE_IS_INITIALIZING()` routes
+        // the tick into `update_period` first (request.c:952-954) — the LU
+        // mid-state checker; deferred with the 16 wiring.
+        let another_initializing = state.table.lookup_by_flags(RFlags::INITIALIZING).is_some(); // request.c:1018 — `lookup_slot_by_flags(RS_INITIALIZING)`
+        let hz = state.system_hz;
+        for i in 0..state.table.len() {
+            let id = crate::service_slot::SlotId::new(i);
+            // C: request.c:968-970 — only ACTIVE rows, and updating rows only
+            // in the initializing-only combination.
+            let updating = state.table.get(id).flags.contains(RFlags::UPDATING);
+            let combo = {
+                let f = state.table.get(id).flags;
+                let relevant = RFlags::INITIALIZING | RFlags::INIT_DONE | RFlags::INIT_PENDING;
+                f & relevant == RFlags::INITIALIZING
+            };
+            if !state.table.get(id).flags.contains(RFlags::ACTIVE) || (updating && !combo) {
+                continue;
+            }
+            let decision = monitor::period_decision(
+                now,
+                state.table.get(id),
+                hz,
+                another_initializing,
+                updating,
+            );
+            decision.mutations.apply(state.table.get_mut(id));
+            match decision.action {
+                PeriodAction::Nothing | PeriodAction::BackoffTick | PeriodAction::FreePass => {}
+                // C: request.c:977-978 — backoff drained → revive the service.
+                PeriodAction::Restart => {
+                    let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                    let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                    let mut noop_publish = |_: &RProcTable, _: crate::service_slot::SlotId| Ok(());
+                    let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
+                    service_create::restart_service(
+                        &mut state.table,
+                        id,
+                        self.kernel.as_mut(),
+                        now,
+                        &mut noop_exec,
+                        &mut noop_script,
+                        &mut noop_publish,
+                        &mut noop_asynsend,
+                    );
+                }
+                // C: request.c:989/:1029 — SIGTERM timeout / missed ping →
+                // simulate a crash (SIGKILL; RS itself → SelfTerminate, C
+                // `exit(1)` — the loop ends with the failure visible).
+                PeriodAction::StopTimeoutCrash | PeriodAction::PingTimeoutCrash => {
+                    let outcome =
+                        recovery::crash_service(state.table.get(id), self.kernel.as_mut())?;
+                    if outcome == recovery::CrashOutcome::SelfTerminate {
+                        return Err(Errno::EGENERIC); // C: exit(1) — manager.c:395-397
+                    }
+                }
+                // C: request.c:1035-1037 — status request; C ignores the
+                // `ipc_notify` result.
+                PeriodAction::PingRequest => {
+                    let ep = state.table.get(id).pub_.endpoint;
+                    let _ = self.kernel.notify(ep);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// C: `get_work()` — main.c:826-833 (06). Delegates to the
@@ -523,6 +713,114 @@ mod signal_handler_tests {
         // flagged (manager.c:2088-2109 free semantics).
         assert_eq!(state.table.endpoint_slot(Endpoint::VFS), None);
         assert!(!state.shutting_down);
+    }
+
+    /// A CLOCK notify envelope: NOTIFY status word, CLOCK source.
+    fn clock_envelope(ts: Clock) -> (minix_types::Message, crate::dispatch::IpcStatus, Clock) {
+        let m = minix_types::Message {
+            m_source: Endpoint::CLOCK,
+            m_type: 0,
+            m_u: Default::default(),
+        };
+        (m, crate::dispatch::IpcStatus { flags: 4 }, ts) // 4 = NOTIFY (ipcconst.h:10)
+    }
+
+    #[test]
+    fn test_run_clock_notify_drives_period_ping() {
+        // E-10/06 wiring: the CLOCK tick drives do_period — the VFS service
+        // has a due period, so the sweep pings it (request.c:1035-1037) and
+        // refreshes `r_check_tm` (R13 payload). The kernel-facing notify is
+        // asserted through the state effect: `check_tm` is written by the
+        // PingRequest branch alone.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.inbox = alloc::vec![clock_envelope(200)];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let ep = Endpoint::from_generation_slot(0, 30);
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(ep, Some(crate::service_slot::SlotId::new(0)));
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.period = 60;
+            s.check_tm = 0;
+            s.alive_tm = 0;
+        }
+        let _ = server.run();
+        let state = server.state.as_ref().unwrap();
+        assert_eq!(
+            state
+                .table
+                .get(crate::service_slot::SlotId::new(0))
+                .check_tm,
+            200,
+            "PingRequest refreshed r_check_tm to `now` (request.c:1037)"
+        );
+    }
+
+    #[test]
+    fn test_run_heartbeat_refreshes_alive_tm() {
+        // E-10/06 wiring: main.c:85-91 — a registered service's heartbeat
+        // refreshes `r_alive_tm` with the kernel timestamp.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        let m = minix_types::Message {
+            m_source: Endpoint::VFS,
+            m_type: 0,
+            m_u: Default::default(),
+        };
+        mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 4 }, 777)];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
+        }
+        let _ = server.run();
+        let state = server.state.as_ref().unwrap();
+        let id = state.table.endpoint_slot(Endpoint::VFS).expect("indexed");
+        assert_eq!(state.table.get(id).alive_tm, 777);
+    }
+
+    #[test]
+    fn test_run_shutdown_request_sweeps_and_replies() {
+        // E-10/06 wiring: RS_SHUTDOWN (payload-free arm) — caller permission
+        // (root euid via getnuid, request.c:435-437), the EXITING sweep, and
+        // `shutting_down` (request.c:448-453). The OK reply is
+        // fire-and-forget (utility.c:309), asserted via the sweep state.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        let m = minix_types::Message {
+            m_source: Endpoint::RS,
+            m_type: minix_types::RS_SHUTDOWN,
+            m_u: Default::default(),
+        };
+        mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let _ = server.run();
+        let state = server.state.as_ref().unwrap();
+        assert!(state.shutting_down);
+        assert!(
+            state
+                .table
+                .iter_in_use()
+                .all(|(_, s)| s.flags.contains(RFlags::EXITING))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "message from bogus source")]
+    fn test_run_gates_bogus_source() {
+        // E-10/R34.20: main.c:63-66 — a message from a source that does not
+        // name a live process slot is a kernel-side program error; C panics.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        let m = minix_types::Message {
+            m_source: minix_types::Endpoint::NONE, // slot 31743 — out of range
+            m_type: 0,
+            m_u: Default::default(),
+        };
+        mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let _ = server.run();
     }
 
     #[test]
