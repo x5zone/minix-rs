@@ -17,6 +17,7 @@
 //! 值即单一事实源；将来内核侧 libc 需要调用号时再上移 minix-types。
 
 use crate::event::EventRegistry;
+use minix_sys::syscall::DirectKernelCallTransport;
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
 use minix_types::{ENOSYS, Message, PmError, ProcEventMask, UserSlot, VirBytes};
@@ -239,7 +240,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
         PmCall::Exit => {
             let status = unsafe { msg.m_u.m_lc_pm_exit.status };
-            let _ = crate::exit::do_exit(table, caller, status, transport);
+            // 生产网关：pre-E1 诚实回 -EIO（被 C 忽略返回值的语义吞掉），
+            // post-E1 自动通电（todo.md §6 D-13 / edge E6+E1）。
+            let mut kern = crate::exit::TrapKernelGateway {
+                transport: DirectKernelCallTransport,
+            };
+            let _ = crate::exit::do_exit(table, caller, status, transport, &mut kern);
             ReplyIntent::NoReply
         }
         // C: do_wait4（forkexit.c:471-542）——同步回复（W_STOPCODE/WNOHANG/

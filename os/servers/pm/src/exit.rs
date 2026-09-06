@@ -17,27 +17,65 @@ fn trunc_status(status: i32) -> i8 {
     status as i8
 }
 
+/// PM 的内核调用出口（`do_exit` 的 PRIV_PROC 违规分支，2026-09-06 D-13 落地）。
+///
+/// 与 VM 侧 `kernel_gateway.rs` 的 `KernelGateway` 同型：handler 面向 trait
+/// 编程，生产实现走真实内核调用 wire（pre-E1 由 trap 桩诚实回 `-EIO`），
+/// 测试注入脚本化 mock。E6 后续的 SYS_TIMES/SYS_CLEAR 等按同模式扩展。
+pub trait KernelGateway {
+    /// C: `sys_kill(proc_ep, signr)`（libsys `sys_kill.c:8-17`）——
+    /// `_kernel_call(SYS_KILL, &m)`，载荷 `m_sigcalls.{endpt,sig}`，
+    /// 返回值 = 内核回复（OK 或负 errno）。
+    fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
+}
+
+/// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
+pub struct TrapKernelGateway<T: minix_sys::syscall::KernelCallTransport> {
+    pub transport: T,
+}
+
+impl<T: minix_sys::syscall::KernelCallTransport> TrapKernelGateway<T> {
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+}
+
+impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
+    fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_kill(&self.transport, ep.0, sig);
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Handles `PM_EXIT` (`do_exit`, `forkexit.c:245-262`).
 ///
-/// - `PRIV_PROC` (system service) → `SIGKILL` (signal 9) via `crate::signal` (deferred) + `NoReply`
+/// - `PRIV_PROC` (system service) → `sys_kill(endpoint, SIGKILL)` + `NoReply`
 /// - otherwise → `exit_proc` + `NoReply` (beyond the grave, `SUSPEND` 永不回复类)
 pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     caller: UserSlot,
     status: i32,
     transport: &mut T,
+    kern: &mut dyn KernelGateway,
 ) -> ReplyIntent {
     let proc = &table.procs[caller.get()];
     if proc.is_kernel_process() {
-        // System process tries to exit → SIGKILL (forkexit.c:253-256)
-        // [DEFERRED: D-13] `sys_kill`（11-signal-core.md）——内核 SYS_KILL wrapper（edge E6）未落地，暂 no-op
-        // but we record intent via `sig_pending` for testability
-        let _ = (proc.endpoint(), status);
-        // In real C: `sys_kill(mp->mp_endpoint, SIGKILL)` → `process_ksig` → `sig_proc`
-        // For 09, we model as immediate Exiting via exit_proc with SIGKILL status?
-        // Simpler: just treat as exit_proc with SIGKILL-pending, but spec says send SIGKILL
-        // and return SUSPEND without calling exit_proc. We keep SUSPEND (NoReply) to
-        // preserve “priv process does not use PM exit”.
+        // C: forkexit.c:250-256 — 系统进程不得经 PM 的 exit() 终止
+        //（"System processes do not use PM's exit()"）：printf 警告后
+        // `sys_kill(mp->mp_endpoint, SIGKILL)`，返回值 C 不予检查——
+        // 真正的终止由内核信号路径稍后经 process_ksig（11）回到 PM 完成。
+        // 因此这里**不**调 exit_proc：违规进程在 PM 表中保持 Running，
+        // 等待 SIGKILL 的内核信号回环。
+        #[cfg(test)]
+        eprintln!(
+            "PM: system process {} tries to exit(), sending SIGKILL",
+            proc.endpoint().get()
+        );
+        let _ = kern.sys_kill(proc.endpoint(), crate::signal::SIGKILL);
         return ReplyIntent::NoReply;
     }
     exit_proc(table, caller, trunc_status(status), false, transport);
@@ -534,6 +572,19 @@ mod tests {
         table.procs[slot].identity.procgrp = pid;
     }
 
+
+    /// D-13：记录 sys_kill 调用的网关 mock。
+    #[derive(Default)]
+    struct KillRecorder {
+        killed: Option<(Endpoint, i32)>,
+    }
+    impl KernelGateway for KillRecorder {
+        fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
+            self.killed = Some((ep, sig));
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_do_exit_priv_proc() {
         let mut table = ProcTable::new();
@@ -541,10 +592,33 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].resources.privilege = Privilege::Kernel;
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_exit(&mut table, UserSlot::new(0), 0, &mut transport);
+        let mut kern = KillRecorder::default();
+        let intent = do_exit(&mut table, UserSlot::new(0), 0, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::NoReply);
         // Priv proc should not become Exiting via exit_proc
         assert!(matches!(table.procs[0].state.lifecycle, Lifecycle::Running));
+        // D-13：违规退出经 sys_kill(endpoint, SIGKILL) 交内核信号路径处置
+        assert_eq!(kern.killed, Some((Endpoint::from_generation_slot(1, 0), crate::signal::SIGKILL)));
+    }
+
+    #[test]
+    fn test_do_exit_user_process_skips_sys_kill() {
+        // C: forkexit.c:258-260 — 非 PRIV_PROC 走 exit_proc，不碰 sys_kill
+        //（sys_kill 是 PRIV_PROC 违规分支的专属处置）。
+        let mut table = ProcTable::new();
+        table.procs[5].state.lifecycle = Lifecycle::Running;
+        table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
+        table.procs[5].identity.id.pid = 200;
+        table.procs[5].resources.privilege = Privilege::User(Credentials::new(1000, 100));
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+
+        let intent = do_exit(&mut table, UserSlot::new(5), 0, &mut transport, &mut kern);
+
+        assert_eq!(intent, ReplyIntent::NoReply);
+        assert!(kern.killed.is_none(), "user exit must not go through sys_kill");
+        // exit_proc 走完 zombify 后：父未 wait → Zombie（非 ToldParent）。
+        assert!(matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
     }
 
     #[test]

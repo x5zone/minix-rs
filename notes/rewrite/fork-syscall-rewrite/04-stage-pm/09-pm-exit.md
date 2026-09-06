@@ -94,6 +94,8 @@ return(SUSPEND);                          // 261 can't communicate from beyond t
 
 `PRIV_PROC` 系统服务禁止 `exit`（应由 `SEF` 重启），`sys_kill(SIGKILL)` 9 为 `signal.c:384` `sig_proc` 的 `SIGS_IS_LETHAL` 快捷路径，11 章详述；`!PRIV_PROC` 才 `exit_proc`，恒 `SUSPEND`（`com.h:1151 -998`，`dispatcher.rs:45` `ReplyLater` 的 `NoReply` 子类——`do_exit` 永不回复，`do_fork` 的 `SUSPEND` 由 `handle_vfs_reply` 异步回复，`do_exit` 无后续回复者）。
 
+**Rust 落地（2026-09-06，todo.md Fix #23 / D-13）**：`exit.rs` 的 `do_exit` 增加内核出口参数 `kern: &mut dyn KernelGateway`，`PRIV_PROC` 分支经 `sys_kill(endpoint, SIGKILL)` 真实发送（libsys `sys_kill.c:8-17` 的 `_kernel_call(SYS_KILL, &m)` wire，由 `minix-sys/src/syscall.rs` 的 `sys_kill` 包装 + `TrapKernelGateway` 生产实现承载，pre-E1 诚实回 `-EIO` 且 C 本就不检查返回值）。语义要点：违规的 PRIV_PROC **不走** `exit_proc`、在 PM 表中保持 `Running`——真正的终止由内核信号路径稍后经 `process_ksig`（11）回环完成；测试断言"sys_kill 已发 + 进程未 Exiting"两件事（`test_do_exit_priv_proc`）。
+
 ### 2.2 `exit_proc` 首段：`dump_core` 双抑制→`procgrp` 记忆→`ALARM_ON`→`sys_times` 记账（forkexit.c:267-310）
 
 ```c

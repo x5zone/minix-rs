@@ -277,7 +277,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
 | D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
-| D-13 | `exit.rs:33` | exit 路径 `sys_kill` no-op——**依赖未解除**：向内核发送终止信号需要 SYS_KILL 用户态包装（kernel 对端已实现 `syscall_signal.rs:148`）+ trap 层（E1），二者均未落地；edge E6 已登记 | 11-signal-core.md | edge E6（SYS_KILL wrapper）+ E1（trap） |
+| D-13 | ~~`exit.rs:33`~~ | ~~exit 路径 `sys_kill` no-op~~ **✅ 已修复**（2026-09-06，Fix #23：`do_exit` PRIV_PROC 分支经 `KernelGateway`/`TrapKernelGateway` 真实发送 `sys_kill(endpoint, SIGKILL)`（C 忽略返回值语义保留）；minix-sys `sys_kill` wrapper 落地 = E6 sys_kill 切片闭环；真实通电仍挂 E1） | 11-signal-core.md | ~~edge E6（SYS_KILL wrapper）+ E1（trap）~~ wrapper 达成（通电挂 E1） |
 | D-14 | `exit.rs:101` | 退出进程自身 times 计账为 0——**依赖未解除**：C 经 `sys_times(proc_nr_e,…)`（`forkexit.c:306-310`）读内核态的进程 CPU 时间，需要 SYS_TIMES wrapper（对端已实现）+ trap 层；edge E6 已登记 | 10-pm-wait.md | edge E6（SYS_TIMES wrapper）+ E1（trap） |
 | D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-16 | `exit.rs:142` | core dump 路径名指针为 0——**依赖未解除的显式 DEFERRED**：C 传 `mp_name` 指针（m7p1，VFS 异步 safecopy PM 内存，`forkexit.c:356`），Rust (a) 无法对表内数据形成跨异步稳定指针、(b) `VfsCall::DumpCore.path` 为 i32 容不下 64 位指针——需与 05-stage-vfs 协同重设计契约（按值 [u8;16] 或 minix-types 增 path+len 成员） | 09-pm-exit.md | 契约决策 + minix-types wire 成员（edge E7） |
@@ -736,3 +736,21 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`10-pm-wait.md` §4.1（wire 契约节 + 测试表）；`edge_todo.md` E7 进度注（首切片）；本文件 §6 D-26 行。
 
 **未做（DEFERRED 论证）**：E7 的其余 wire 族（47 调用系统化）与 D-21 的 rusage 载荷（依赖 SYS_TIMES，E6）——各自保留登记。
+
+### ✅ Fix #23: D-13 — `do_exit` 的 PRIV_PROC 违规分支真实发送 `sys_kill`（2026-09-06）
+
+**File(s)**：
+- `os/libs/minix-sys/src/syscall.rs`（**E6 首切片**：`sys_kill` wrapper + `SYS_KILL_CALL` 常量 + `CannedKernelCallTransport.sent` 逐调用消息记录 + wire 断言测试 ×2）
+- `os/servers/pm/src/exit.rs`（新增 `KernelGateway` trait + `TrapKernelGateway` 生产实现（镜像 VM 侧 `kernel_gateway.rs` 先例）；`do_exit` 增 `kern: &mut dyn KernelGateway` 参数，PRIV_PROC 分支从 no-op 改真实发送；+1 用户进程负向断言测试）
+- `os/servers/pm/src/ipc/calls.rs`（PM_EXIT 分发臂构造生产网关）
+
+**Before/After**：C `do_exit`（forkexit.c:245-262）：PRIV_PROC 调 exit(2) 是违规——printf 警告 + `sys_kill(endpoint, SIGKILL)` 后直接 SUSPEND，**不走** `exit_proc`（"System processes do not use PM's exit()"），真正的终止由内核信号回环（process_ksig，11）完成；`sys_kill` 返回值 C 不予检查。Rust 修复前该分支是 no-op（违规进程永远存活且无任何处置痕迹）。设计选型：(a) 网关 trait + 生产/测试双实现（已选，镜像 VM `KernelGateway` 先例）；(b) 直调 minix-sys 无接缝（不可测，否决）；(c) 复用 `IpcTransport`（kernel call 走向量 32 与 IPC 向量 33 是不同通道，模型错误，否决）。pre-E1 行为：trap 桩回 `-EIO`，`Result` 保留错误可观测性、`do_exit` 按 C 忽略之——不伪造任何状态。
+
+**Verified**：
+- `cargo test -p minix-pm`：342 → **343 lib passed**（`test_do_exit_priv_proc` 增 sys_kill 捕获断言 + 进程保持 Running；+1 用户进程不触 sys_kill 的负向断言）+ **7 integration**
+- `cargo test -p minix-sys`：113 → **115 passed**（+sys_kill wire 编码 / 负 errno 透传）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
+
+**Docs**：`09-pm-exit.md` §2.1 落地段新增；`edge_todo.md` E6 进度注（sys_kill 切片闭环）；本文件 §6 D-13 行。
+
+**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、语义均已在 stage 内闭环；同轮顺手修正一处过时断言（ZOMBIE vs Exiting，见本轮 diff 的 `test_do_exit_user_process_skips_sys_kill`）。

@@ -150,13 +150,16 @@ impl KernelCallTransport for DirectKernelCallTransport {
 /// Scripted kernel-call transport used by unit tests.
 ///
 /// Replies are raw message types handed out in order; the transport counts
-/// invocations so tests can assert the exact retry sequence.
+/// invocations and records every outgoing message so tests can assert both
+/// the retry sequence and the exact wire encoding (endpt/sig/... fields).
 #[derive(Debug, Default)]
 pub struct CannedKernelCallTransport {
     /// Raw reply message types, handed out in order.
     pub replies: alloc::vec::Vec<i32>,
     /// How many kernel calls happened so far.
     pub calls: core::cell::Cell<usize>,
+    /// Outgoing messages, recorded in call order (wire-shape assertions).
+    pub sent: core::cell::RefCell<alloc::vec::Vec<Message>>,
 }
 
 impl CannedKernelCallTransport {
@@ -165,6 +168,7 @@ impl CannedKernelCallTransport {
         CannedKernelCallTransport {
             replies: alloc::vec::Vec::new(),
             calls: core::cell::Cell::new(0),
+            sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
         }
     }
 
@@ -178,11 +182,46 @@ impl KernelCallTransport for CannedKernelCallTransport {
     fn kernel_call(&self, message: &mut Message) -> i32 {
         let index = self.calls.get();
         self.calls.set(index + 1);
+        self.sent.borrow_mut().push(*message);
         let reply = self.replies.get(index).cloned().unwrap_or(0);
         message.m_type = reply;
         reply
     }
 }
+// ── SYS_* kernel-call wrappers（edge_todo.md E6：每类一个薄包装）──
+//
+// 约定（对齐 VM 侧 `kernel_gateway.rs` 与 C libsys）：
+// - m_type 由 `perform_kernel_call` 写入调用号；
+// - 请求载荷按 C 的 union 成员填写；
+// - 返回值 = 内核回复 m_type（负 errno 或非负结果），**不**吞错——
+//   调用方按各自 C 原位的语义决定忽略或 panic。
+
+/// C: SYS_KILL 是内核调用 5（`kernel/src/syscall_signal.rs:138`
+/// `Syscall::Kill`；C `callnr.h` `SYS_KILL`）。
+pub const SYS_KILL_CALL: i32 = 5;
+
+/// 向内核发送"终止信号"请求（C: libsys `sys_kill`，`sys_kill.c:8-17`）。
+///
+/// `_kernel_call(SYS_KILL, &m)`：载荷 `m_sigcalls.endpt`（目标 endpoint）
+/// 与 `m_sigcalls.sig`（信号号），无回复载荷——返回值即结果（OK 或负
+/// errno）。C 的 do_exit 对返回值不予检查（`forkexit.c:256`），调用方
+/// 各按其语义处置。
+pub fn sys_kill(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+    sig: i32,
+) -> i32 {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_sigcalls 是 SYS_KILL 的文档化载荷布局
+        //（kernel/src/syscall_signal.rs:141-147 读 map/endpt/sig）。
+        let sc = unsafe { &mut msg.m_u.m_sigcalls };
+        sc.endpt = endpt;
+        sc.sig = sig;
+    }
+    perform_kernel_call(transport, SYS_KILL_CALL, &mut msg, |_| {})
+}
+
 
 /// Performs a kernel call with "not ready" retries.
 ///
@@ -227,6 +266,33 @@ pub const fn trap_failure_to_message_type(status: TrapStatus) -> i32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_sys_kill_encodes_sigcalls_wire() {
+        // C: libsys sys_kill.c:8-17 — m_sigcalls.endpt/sig，SYS_KILL = 5；
+        // 回复 OK（内核 do_kill 无回复载荷）。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+
+        let r = sys_kill(&canned, 7, 9); // endpoint 7, SIGKILL
+
+        assert_eq!(r, 0);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, SYS_KILL_CALL);
+        assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.endpt, 7);
+        assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.sig, 9);
+    }
+
+    #[test]
+    fn test_sys_kill_negative_errno_passthrough() {
+        // C: 返回值 = 内核回复（负 errno 原样透传，调用方自行处置）。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-1); // EPERM
+
+        assert_eq!(sys_kill(&canned, 7, 9), -1);
+        assert_eq!(canned.calls.get(), 1);
+    }
     use super::*;
     use super::DirectKernelCallTransport;
     use crate::ipc::{CannedTransport, CALL_SENDREC};
