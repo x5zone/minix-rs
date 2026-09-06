@@ -279,7 +279,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
 | D-13 | `exit.rs:33` | exit 路径 `sys_kill` no-op | 11-signal-core.md | 内核 sys_kill |
 | D-14 | `exit.rs:101` | 退出进程自身 times 计账为 0 | 10-pm-wait.md | 内核 sys_times |
-| D-15 | `exit.rs:116` | `vm_willexit` 假装 Ok（C: `forkexit.c:331-333` 失败即 panic） | 02-stage-vm | VM 协同面 |
+| D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-16 | `exit.rs:142` | core dump 路径名指针为 0 | 09-pm-exit.md | core dump 语义规划 |
 | D-17 | `exit.rs:192` | `sched_stop` 假装 Ok | 16-scheduling.md | A-8 |
 | D-18 | `exit.rs:215` | `sys_clear`（内核侧进程回收）no-op | 01-stage-kernel | 内核 sys_clear |
@@ -555,3 +555,19 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - `grep -n "unimplemented" os/servers/pm/src/ipc/vfs.rs`：仅剩 D-05/D-09 两处（各有独立的阻塞依赖）
 
 **Docs**：`17-exec.md` §4.4 三行签名；本文件 §6 D-08 行。
+
+### ✅ Fix #11: D-15 — `vm_willexit` 真实化（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/dispatcher.rs`（新增 `vm_willexit` 自由函数，与 `vm_fork` 同构；+2 单测）
+- `os/servers/pm/src/exit.rs`（`exit_proc` 步骤 6 从 no-op 接真实调用；失败 panic 与 C 同文案）
+
+**Before/After**：C 语义（`forkexit.c:332-334`）：`vm_willexit` 失败即 panic——VM 的内存记账依赖该预告，缺失永久失衡，不可恢复。Rust 侧 wire：`_taskcall(VM, VM_WILLEXIT)`，载荷 `VMWE_ENDPOINT`（m1i1，`com.h:644`），无回复载荷；传输失败收敛为 `-EIO`、VM 拒绝透传 errno，调用方以同文案 panic。`?Sized` 泛型保持与 `exit_proc` 的调用链兼容。
+
+**Verified**：
+- `cargo test -p minix-pm`：334 → **336 lib passed**（+2：endpoint 编码/OK 应答、VM 拒绝透传）+ 6 integration
+- `grep -n "vm_willexit" os/servers/pm/src/exit.rs` → 真实调用点
+
+**Docs**：`09-pm-exit.md` §3 占位行刷新；本文件 §6 D-15 行。
+
+**未做（DEFERRED 论证）**：VM 侧真实处理（对端记账语义）与硬件往返挂 `edge_todo.md` E5(a)/E1——PM 侧 wire 与失败语义已完备。

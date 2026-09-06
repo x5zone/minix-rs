@@ -155,6 +155,33 @@ pub fn vm_fork<T: IpcTransport>(
     Ok(Endpoint(unsafe { msg.m_u.m_m1 }.m1i3))
 }
 
+/// 发送 VM_WILLEXIT 通知到 VM 服务（同步）。
+///
+/// C: `vm_willexit`（libsys，`minix3/minix/lib/libsys/vm_willexit.c:11-21`）
+/// —— `_taskcall(VM_PROC_NR, VM_WILLEXIT, &m)`：载荷 `VMWE_ENDPOINT`
+/// （m1i1，`com.h:644`），无回复载荷。taskcall 返回值即结果——非 OK
+/// 时 C 的调用方 panic（`forkexit.c:332-334` "exit_proc: vm_willexit
+/// failed"），因为 VM 的内存记账依赖该通知，缺失将永久失衡。
+///
+/// # 错误
+///
+/// 传输失败或 VM 回复非 OK → `Err(errno 值)`；调用方（`exit.rs` 的
+/// `exit_proc` 步骤 6）以同文案 panic 对齐 C。
+pub fn vm_willexit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoint) -> Result<(), i32> {
+    let mut msg = Message::default();
+    msg.m_type = minix_types::VM_WILLEXIT as i32;
+    unsafe {
+        msg.m_u.m_m1.m1i1 = endpoint.0;
+    }
+    transport
+        .sendrec(Endpoint::VM, &mut msg)
+        .map_err(|_| minix_types::EIO)?;
+    if msg.m_type != minix_types::OK {
+        return Err(msg.m_type);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +314,31 @@ mod tests {
             ),
             ReplyIntent::Reply(ENOSYS)
         );
+    }
+
+    // ── vm_willexit（PM → VM 退出预告）──
+
+    #[test]
+    fn test_vm_willexit_encodes_endpoint_and_ok() {
+        // C: libsys vm_willexit.c:11-21 — 载荷 VMWE_ENDPOINT（m1i1，
+        // com.h:644），无回复载荷；taskcall 返回 OK。
+        let mut transport = crate::ipc::TestIpcTransport::new();
+        let got = vm_willexit(&mut transport, Endpoint::from_generation_slot(1, 7));
+        assert!(got.is_ok());
+        let (dest, sent_msg) = &transport.sent()[0];
+        assert_eq!(*dest, Endpoint::VM);
+        assert_eq!(sent_msg.m_type, minix_types::VM_WILLEXIT as i32);
+        assert_eq!(unsafe { sent_msg.m_u.m_m1 }.m1i1, Endpoint::from_generation_slot(1, 7).0);
+    }
+
+    #[test]
+    fn test_vm_willexit_refusal_is_err() {
+        let mut transport = crate::ipc::TestIpcTransport::new();
+        let mut refusal = Message::default();
+        refusal.m_type = -12; // VM 拒绝（负 errno）
+        transport.queue_sendrec_reply(refusal);
+        let got = vm_willexit(&mut transport, Endpoint::from_generation_slot(1, 7));
+        assert_eq!(got.unwrap_err(), -12);
     }
 
     // ── vm_fork（PM → VM 任务调用）──

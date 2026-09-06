@@ -248,7 +248,7 @@ Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"�
 
 ### D2：`exit_proc` 的 9 步
 
-`ExitOrchestrator::first_half` 9 步与 `forkexit.c:267-413` 同序同条件，`dump_core` 双抑制（`realuid != effuid` 与 `PRIV_PROC` 各 `FALSE`）、`procgrp` 记忆（`mp_pid == procgrp → procgrp else 0`）、`ALARM_ON → timer=None`、`sys_times → child_utime/stime +=`（`Clock` 占位）、`PROC_STOPPED` 强制→`BlockState::stopped=true`、`vm_willexit` 占位、`INIT/VFS` 特例、`VfsCall::Exit/DumpCore`+`tell_vfs`、`PRIV_PROC→sys_clear`、 `EXITING` 保留位、`zombify`、`disinherit`、`SIGHUP`。
+`ExitOrchestrator::first_half` 9 步与 `forkexit.c:267-413` 同序同条件，`dump_core` 双抑制（`realuid != effuid` 与 `PRIV_PROC` 各 `FALSE`）、`procgrp` 记忆（`mp_pid == procgrp → procgrp else 0`）、`ALARM_ON → timer=None`、`sys_times → child_utime/stime +=`（`Clock` 已落地（2026-09-06，真实 `sendrec(VM, VM_WILLEXIT)`，`ipc/dispatcher.rs` 的 `vm_willexit`；失败 panic 与 C 同文案））、`PROC_STOPPED` 强制→`BlockState::stopped=true`、`vm_willexit` 已落地（2026-09-06，真实 `sendrec(VM, VM_WILLEXIT)`，`ipc/dispatcher.rs` 的 `vm_willexit`；失败 panic 与 C 同文案）、`INIT/VFS` 特例、`VfsCall::Exit/DumpCore`+`tell_vfs`、`PRIV_PROC→sys_clear`、 `EXITING` 保留位、`zombify`、`disinherit`、`SIGHUP`。
 
 ### D3：`Lifecycle` 互斥枚举（`A-2`）
 

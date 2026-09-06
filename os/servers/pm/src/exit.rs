@@ -112,9 +112,10 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     }
 
     // ---- 6. vm_willexit (332-334) ----
-    {
-        // `vm_willexit(proc_nr_e)` tells VM this proc will exit; stubbed as Ok
-        let _ = proc_ep;
+    // C: `if((r=vm_willexit(proc_nr_e)) != OK) panic("exit_proc: vm_willexit
+    // failed: %d", r);`——VM 的内存记账依赖该通知，失败不可恢复。
+    if let Err(r) = crate::ipc::vm_willexit(transport, proc_ep) {
+        panic!("exit_proc: vm_willexit failed: {}", r);
     }
 
     // ---- 7. INIT/VFS special (336-345) ----
