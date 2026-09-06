@@ -112,8 +112,8 @@ impl TrapReturnArch for AArch64TrapReturn {
             "ldr x3,  [x2, 2*8]",
             "ldr x2,  [x2, 1*8]", // pointer's last use — user X2
             "eret",
-            frame = in("x0") frame as *const AArch64ExceptionFrame,
-            regs = in("x1") regs as *const AArch64CpuContext,
+            in("x0") frame as *const AArch64ExceptionFrame,
+            in("x1") regs as *const AArch64CpuContext,
             elr_off = const core::mem::offset_of!(AArch64ExceptionFrame, elr_el1),
             spsr_off = const core::mem::offset_of!(AArch64ExceptionFrame, spsr_el1),
             sp_off = const core::mem::offset_of!(AArch64ExceptionFrame, sp_el0),

@@ -110,8 +110,8 @@ impl TrapReturnArch for Riscv64TrapReturn {
             "ld tp,  2*8(t6)",   // x4 ← GP_TP
             "ld t6,  28*8(t6)",  // x31 ← GP_T6 — pointer's last use
             "sret",
-            frame = in("a0") frame as *const Riscv64ExceptionFrame,
-            regs = in("a1") regs as *const Riscv64CpuContext,
+            in("a0") frame as *const Riscv64ExceptionFrame,
+            in("a1") regs as *const Riscv64CpuContext,
             sepc_off = const core::mem::offset_of!(Riscv64ExceptionFrame, sepc),
             sp_off = const core::mem::offset_of!(Riscv64CpuContext, sp),
             a0_off = const core::mem::offset_of!(Riscv64CpuContext, a0),

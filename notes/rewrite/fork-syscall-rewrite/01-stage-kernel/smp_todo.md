@@ -750,7 +750,7 @@ publication 规则（各 per-CPU 迁移项不再各自决定）：
 
 | # | 项（对应 TODO） | 内容 | 交付物 | 验收 | 文档同步 |
 |---|---|---|---|---|---|
-| S-0 | QEMU 门禁复活 | 提交 `kernel/src/lib.rs` 两个缺失 import 修复（工作区已有，§2.4）；**三架构固定基线矩阵**（GPT 外评 #11）：每架构 = hosted 测试 + **production-target 构建**（x86/arm: `*-unknown-uefi`；riscv: `riscv64gc` 目标 + OpenSBI 链路——v2 外评措辞修正，非三架构都是 UEFI）+ QEMU smoke（hello-boot），哪怕 arm/riscv 起步只有 hello-boot | 绿色基线记录（矩阵表）+ commit | L0：`run_all.sh` x86_64 7/7 PASS + 三架构矩阵全 ✓ | 本文件 §2.4 结论视需要补 doc 01 §5 |
+| S-0 | ✅ **已完成（2026-09-06）**——见 §18 基线记录 | 提交 `kernel/src/lib.rs` 两个缺失 import 修复（工作区已有，§2.4）；**三架构固定基线矩阵**（GPT 外评 #11）：每架构 = hosted 测试 + **production-target 构建**（x86/arm: `*-unknown-uefi`；riscv: `riscv64gc` 目标 + OpenSBI 链路——v2 外评措辞修正，非三架构都是 UEFI）+ QEMU smoke（hello-boot），哪怕 arm/riscv 起步只有 hello-boot | 绿色基线记录（矩阵表）+ commit | ~~L0：`run_all.sh` x86_64 7/7 PASS + 三架构矩阵全 ✓~~ **L0 达成**（x86_64 7/7 + arm/riscv hello-boot；基线额外修复 arm/riscv trap_return asm 操作数语法错误，见 §18） | 本文件 §2.4 结论视需要补 doc 01 §5 |
 | S-1 | D-38④ 勘误 + Edge 表对账 | grep 核实 `kernel_call_resume` BKL（syscall.rs:2622）；以代码为准勘误 todo.md Edge Items 或 doc 16（二者取一改） | 勘误 commit | grep 证据入 commit message | todo.md Edge Items / doc 16 §4.13 |
 | S-2 | 拓扑发现回归钉（D-36 上半） | 新测试内核 `test-smp-topo`：`-smp 4` 下断言（按 GPT 外评 #10，不把 QEMU 默认拓扑当语义契约）`nr_cpus==4`、`hw_id` 互异、BSP `hw_id` ∈ 发现集；QEMU 默认拓扑期望值（x86 APIC ID {0,1,2,3}）单列标注为机器特定观察，不混入 parser 契约；三架构 | 测试内核 ×3 + run_all.sh 接入 | L1：三架构 PASS | doc 04 补拓扑消费说明；16-smp §5.1 加行 |
 | S-3a | AP bootstrap ABI + 内存序契约 | 定义 `ApBootstrap`（§3.2）+ `ap_early_entry` 签名 + §3.9 契约落为代码注释/断言约定；**toolchain spike**（10~30 行）：证明 `global_asm!` + lld + UEFI 能产出可拷贝的 `.ap_early_entry` 单段 image（ELF 中间产物 `readelf -r` 零未解析 reloc + 三阶段反汇编 + **实际链接路径 gc-sections 行为实测** + 边界符号 `ap_early_entry_start/end` 自定义 + 同一机器码不同基址拷贝执行成功 + **image 邻接硬验收（v8 #6）**：`[image_start, image_end)` 内 `.ap_early_entry` 必须紧邻 `.ap_early_entry_data`、中间不得插入其它可分配 section——记录 image_start/image_end/image_size/section ordering；拷贝单位是 [start,end) 区间而非"两个 section 各自存在"——v3 #7/#8：relocation-free ≠ PIC proof，执行才是最终证据；**v4 小点：UEFI 最终产物是 PE/COFF，`readelf` 只适用于 ELF 中间产物，最终 .efi 需 PE 感知工具（`objdump -h -r` PE 模式 / llvm-objdump）检查 base relocation 块**） | ABI 定义 + spike 报告 | spike 全绿；失败则立即换机制（.S），不写完整梯子 | 16-smp 新 §；spike 结论入 commit |
@@ -1332,3 +1332,25 @@ S-x 实施阶段的代码级 review，不再修改 SMP 总体设计。S-0 开工
    （arm `dsb ish` / riscv `fence rw,rw`），§3.9 已更名。
 
 **FROZEN — implementation starts at S-0。**
+
+---
+
+## 18. S-0 完成记录（2026-09-06）——三架构基线矩阵
+
+| 维度 | x86_64 | aarch64 | riscv64 |
+|---|---|---|---|
+| hosted 测试 | `cargo test -p minix-kernel --lib` → **691 passed**（arch 207 passed） | 同左（共享 hosted 编译） | 同左 |
+| production-target 构建 | 7/7 测试内核 `x86_64-unknown-uefi` release 全过 | `hello-boot-aarch64` 过（**修复后**） | `hello-boot-riscv64` 过（**修复后**） |
+| QEMU smoke | **7/7 PASS**（hello-boot / memmap / paging-enable / kernel-map / higher-half / protection / proc-init） | hello-boot **PASS**（UEFI/AAVMF 链） | hello-boot **PASS**（OpenSBI `-bios default` 链） |
+
+**基线额外发现并修复（第 5 个真 bug，同为"hosted CI 盲区"产物）**：
+`arm64/trap_return.rs:115-116` 与 `riscv64/trap_return.rs:113-114` 的 `TrapReturnArch`
+asm 使用**具名操作数绑定显式寄存器**（`frame = in("x0") …`）——Rust 规则禁止（E: explicit
+register arguments cannot have names），aarch64/riscv64 的 production-target 构建从未编译
+通过过。修复 = 去操作数名（模板本就使用字面寄存器 x0/x1、a0/a1，无占位符引用）。
+回归：`cargo test -p minix-arch` 207 passed、`-p minix-kernel --lib` 691 passed 无回归；
+aarch64/riscv64 QEMU smoke PASS 证明修复后 trap-return 路径（`jump_to_kmain` 下游）真实可用。
+x86_64 全部 7 测试在我修复 import 后（本 session 早前验证）已经过同一 QEMU 门。
+
+**遗留观察（记录，不阻塞）**：`run_all.sh` 的 riscv64 分支对非 EFI 内核走 OpenSBI
+fallback 正常；aarch64 仅 6 个测试包（无 proc-init 变体）——与脚本既有清单一致。

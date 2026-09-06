@@ -367,6 +367,8 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 /// C: main.c:115-147
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
+    use minix_platform::platform_desc;
+
     // Phase A: Entry
     // R-07 (2026-08-12): Validate KernelInfo invariants before any use.
     // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
@@ -2182,6 +2184,7 @@ fn bsp_finish_booting(
     // `CurrentClockArch::init_timer`.
     use minix_arch::{ClockArch, CurrentClockArch};
     use minix_platform::{platform_desc, PlatformDesc};
+    use minix_types::Endpoint;
     {
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
