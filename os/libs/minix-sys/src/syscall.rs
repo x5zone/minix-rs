@@ -222,6 +222,30 @@ pub fn sys_kill(
     perform_kernel_call(transport, SYS_KILL_CALL, &mut msg, |_| {})
 }
 
+/// C: SYS_CLEAR 是内核调用 2（`kernel/src/syscall.rs` `Syscall::Clear`；
+/// C `callnr.h` `SYS_CLEAR`）。
+pub const SYS_CLEAR_CALL: i32 = 2;
+
+/// 通知内核回收已退出的进程（C: libsys `sys_clear`，`sys_clear.c:8-14`）。
+///
+/// `_kernel_call(SYS_CLEAR, &m)`：载荷 m1i1 = 目标 endpoint，无回复载荷。
+/// C 的 exit_proc（PRIV_PROC 直毁，`forkexit.c:366-368`）与 exit_restart
+///（用户进程回收，`forkexit.c:449-451`）对失败均 panic——进程已终结而
+/// 内核侧未回收即永久泄漏，不可恢复。
+pub fn sys_clear(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+) -> i32 {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m1 是 SYS_CLEAR 的文档化载荷布局
+        //（kernel/src/syscall_process.rs:402-404 读 m1i1）。
+        let m1 = unsafe { &mut msg.m_u.m_m1 };
+        m1.m1i1 = endpt;
+    }
+    perform_kernel_call(transport, SYS_CLEAR_CALL, &mut msg, |_| {})
+}
+
 
 /// Performs a kernel call with "not ready" retries.
 ///
@@ -282,6 +306,22 @@ mod tests {
         assert_eq!(sent[0].m_type, SYS_KILL_CALL);
         assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.endpt, 7);
         assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.sig, 9);
+    }
+
+    #[test]
+    fn test_sys_clear_encodes_m1_endpoint() {
+        // C: libsys sys_clear.c:8-14 — m1i1 = 目标 endpoint，SYS_CLEAR = 2；
+        // 无回复载荷，OK 即回收完成。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+
+        let r = sys_clear(&canned, 11); // INIT
+
+        assert_eq!(r, 0);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, SYS_CLEAR_CALL);
+        assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 11);
     }
 
     #[test]

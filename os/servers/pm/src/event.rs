@@ -47,7 +47,11 @@ impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServ
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServices<'_, T> {
     fn exit_proc(&mut self, table: &mut ProcTable, target: UserSlot, status: i8) {
-        crate::exit::exit_proc(table, target, status, false, self.transport);
+        // 内核出口（step 9 sys_clear）用生产网关：TRACE_EXIT 目标为用户
+        // 进程，step 9 不触发；命中则 pre-E1 诚实 panic（C 失败语义同型）。
+        let mut kern =
+            crate::exit::TrapKernelGateway::new(minix_sys::syscall::DirectKernelCallTransport);
+        crate::exit::exit_proc(table, target, status, false, self.transport, &mut kern);
     }
 }
 
@@ -157,6 +161,7 @@ impl EventRegistry {
         target: UserSlot,
         table: &mut ProcTable,
         transport: &mut T,
+        kern: &mut dyn crate::exit::KernelGateway,
     ) {
         assert_eq!(self.nested, 0, "publish_event: nested must be 0");
         let proc = &table.procs[target.get()];
@@ -183,7 +188,7 @@ impl EventRegistry {
                     }
             }
             if let Some(slot) = to_remove {
-                self.remove_sub(slot, table, transport);
+                self.remove_sub(slot, table, transport, kern);
             }
         }
 
@@ -192,7 +197,7 @@ impl EventRegistry {
             .state
             .block
             .set_event_blocked(EventCursor(0));
-        self.resume_event(target, table, transport);
+        self.resume_event(target, table, transport, kern);
     }
 
     /// 串行推进事件（`event.c:74-123` `resume_event`）。
@@ -207,6 +212,7 @@ impl EventRegistry {
         target: UserSlot,
         table: &mut ProcTable,
         transport: &mut T,
+        kern: &mut dyn crate::exit::KernelGateway,
     ) {
         // ① 断言与事件推断
         let (event, mut cursor) = {
@@ -258,7 +264,7 @@ impl EventRegistry {
         match event {
             ProcEvent::Exit => {
                 // 09-pm-exit.md: VFS 已回复 EXIT，事件已串行投递完毕 → 二阶段收尾
-                crate::exit::exit_restart(table, target, transport);
+                crate::exit::exit_restart(table, target, transport, kern);
             }
             ProcEvent::Signal => {
                 // C: event.c:122-123 — restart_sigs(rmp)（13-signal-flow.md D5）：
@@ -280,6 +286,7 @@ impl EventRegistry {
         slot: usize,
         table: &mut ProcTable,
         transport: &mut T,
+        kern: &mut dyn crate::exit::KernelGateway,
     ) {
         assert!(slot < self.nsubs, "remove_sub: slot out of range");
 
@@ -299,7 +306,7 @@ impl EventRegistry {
                 // 该进程正等待被删订阅者 → 立即推进到下一个
                 self.nested += 1;
                 // SAFETY: idx 已验证 in_use 且 EVENT_CALL，resume_event 前置满足
-                self.resume_event(UserSlot::new(idx), table, transport);
+                self.resume_event(UserSlot::new(idx), table, transport, kern);
                 self.nested -= 1;
             } else if cur.0 > slot {
                 // 游标指向被删位置之后 → 回退 1
@@ -401,6 +408,7 @@ impl EventRegistry {
         mask: ProcEventMask,
         table: &mut ProcTable,
         transport: &mut dyn IpcTransport,
+        kern: &mut dyn crate::exit::KernelGateway,
     ) -> ReplyIntent {
         if !table.procs[caller.get()].is_kernel_process() {
             return ReplyIntent::Reply(minix_types::EPERM);
@@ -410,7 +418,7 @@ impl EventRegistry {
             if let Some(sub) = self.subs[i]
                 && sub.endpoint == table.procs[caller.get()].endpoint() {
                     if mask.is_empty() && sub.waiting == 0 {
-                        self.remove_sub(i, table, transport);
+                        self.remove_sub(i, table, transport, kern);
                     } else {
                         self.subs[i].as_mut().unwrap().mask = mask;
                     }
@@ -449,6 +457,7 @@ impl EventRegistry {
         caller: UserSlot,
         table: &mut ProcTable,
         transport: &mut dyn IpcTransport,
+        kern: &mut dyn crate::exit::KernelGateway,
     ) -> ReplyIntent {
         assert_eq!(self.nested, 0, "do_proc_event_reply: nested must be 0");
 
@@ -531,12 +540,12 @@ impl EventRegistry {
         };
 
         if should_remove {
-            self.remove_sub(cursor.0, table, transport);
+            self.remove_sub(cursor.0, table, transport, kern);
         } else {
             // cursor++ → resume
             let next = EventCursor(cursor.0 + 1);
             table.procs[slot.get()].state.block.set_event_blocked(next);
-            self.resume_event(slot, table, transport);
+            self.resume_event(slot, table, transport, kern);
         }
 
         ReplyIntent::ReplyLater
@@ -545,6 +554,13 @@ impl EventRegistry {
 
 #[cfg(test)]
 mod tests {
+
+    /// D-18 事件路径的内核网关 mock（sys_clear/sys_kill 恒 OK）。
+    struct MockKernelGateway;
+    impl crate::exit::KernelGateway for MockKernelGateway {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    }
     use super::*;
     use crate::mproc::{Lifecycle, ProcTable};
     use minix_types::{Endpoint, Message, UserSlot, OK, EPERM, ENOMEM, ENOSYS, NR_PROCS, PROC_EVENT, PROC_EVENT_REPLY};
@@ -597,7 +613,7 @@ mod tests {
 
         let mut reg = EventRegistry::new();
         let mask = ProcEventMask::EXIT | ProcEventMask::SIGNAL;
-        let intent = reg.do_proceventmask_mut(caller, mask, &mut table, &mut crate::TestIpcTransport::default());
+        let intent = reg.do_proceventmask_mut(caller, mask, &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(OK));
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.mask(0), Some(mask));
@@ -620,7 +636,7 @@ mod tests {
     fn test_proceventmask_update_existing() {
         let (mut table, mut reg, caller, _) = mk_table_with_subscriber(ProcEventMask::EXIT, 0);
         // update mask
-        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::SIGNAL, &mut table, &mut crate::TestIpcTransport::default());
+        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::SIGNAL, &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(OK));
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.mask(0), Some(ProcEventMask::SIGNAL));
@@ -629,7 +645,7 @@ mod tests {
     #[test]
     fn test_proceventmask_remove_when_idle() {
         let (mut table, mut reg, caller, _) = mk_table_with_subscriber(ProcEventMask::EXIT, 0);
-        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::empty(), &mut table, &mut crate::TestIpcTransport::default());
+        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::empty(), &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(OK));
         assert_eq!(reg.len(), 0);
     }
@@ -637,7 +653,7 @@ mod tests {
     #[test]
     fn test_proceventmask_defer_remove_when_waiting() {
         let (mut table, mut reg, caller, _) = mk_table_with_subscriber(ProcEventMask::EXIT, 1);
-        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::empty(), &mut table, &mut crate::TestIpcTransport::default());
+        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::empty(), &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(OK));
         assert_eq!(reg.len(), 1); // not removed yet
         assert_eq!(reg.mask(0), Some(ProcEventMask::empty()));
@@ -685,13 +701,14 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         let tgt = UserSlot::new(5);
         table.procs[5].state.lifecycle = Lifecycle::Running;
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         // make it EXITING to infer Exit event
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
 
-        reg.publish_event(tgt, &mut table, &mut transport);
+        reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
         // No subscriber → immediately cleared + 终止分派（exit_restart）
         assert!(!table.procs[5].state.block.is_event_blocked());
         // D-19：exit_restart 现在真实发送 VM_EXIT（无订阅者通知，故仅此一条）
@@ -705,6 +722,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         // subscriber
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.nsubs = 1;
@@ -713,7 +731,7 @@ mod tests {
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
 
-        reg.publish_event(tgt, &mut table, &mut transport);
+        reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
         assert!(table.procs[5].state.block.is_event_blocked());
         assert_eq!(table.procs[5].state.block.event_cursor(), Some(EventCursor(0)));
         assert_eq!(transport.sent().len(), 1);
@@ -727,6 +745,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         // subscriber only cares about SIGNAL, target is EXIT
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::SIGNAL, waiting: 0 });
         reg.nsubs = 1;
@@ -734,7 +753,7 @@ mod tests {
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
 
-        reg.publish_event(tgt, &mut table, &mut transport);
+        reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
         // No matching subscriber → immediately cleared + 终止分派（exit_restart）
         assert!(!table.procs[5].state.block.is_event_blocked());
         // D-19：唯一的 wire 发送是 exit_restart 的 VM_EXIT
@@ -747,6 +766,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         // two subscribers both care about EXIT
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 3), mask: ProcEventMask::EXIT, waiting: 0 });
@@ -762,7 +782,7 @@ mod tests {
             table.procs[i].resources.privilege = crate::mproc::Privilege::Kernel;
         }
 
-        reg.publish_event(tgt, &mut table, &mut transport);
+        reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.sent()[0].0, Endpoint::from_generation_slot(1, 2));
         assert_eq!(reg.waiting(0), Some(1));
@@ -774,7 +794,7 @@ mod tests {
         unsafe { reply.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get(); }
         unsafe { reply.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32; }
         let caller = UserSlot::new(2);
-        let intent = reg.do_proc_event_reply(&reply, caller, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&reply, caller, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // now should have sent to second subscriber
         assert_eq!(transport.sent().len(), 2);
@@ -790,7 +810,7 @@ mod tests {
         unsafe { reply2.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get(); }
         unsafe { reply2.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32; }
         let caller2 = UserSlot::new(3);
-        let intent2 = reg.do_proc_event_reply(&reply2, caller2, &mut table, &mut transport);
+        let intent2 = reg.do_proc_event_reply(&reply2, caller2, &mut table, &mut transport, &mut kern);
         assert_eq!(intent2, ReplyIntent::ReplyLater);
         assert!(!table.procs[5].state.block.is_event_blocked());
         // 两条 PROC_EVENT 通知 + 终止分派的 VM_EXIT（D-19）
@@ -802,6 +822,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         // subscriber is slot 2, endpoint 1:2
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.nsubs = 1;
@@ -813,7 +834,7 @@ mod tests {
         let tgt = UserSlot::new(2);
         table.procs[2].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
 
-        reg.publish_event(tgt, &mut table, &mut transport);
+        reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
         // The subscriber's own entry should have been removed before publish
         assert_eq!(reg.len(), 0);
         // No send (no subscriber left) → immediately cleared
@@ -827,6 +848,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint(10), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint(11), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.nsubs = 2;
@@ -836,7 +858,7 @@ mod tests {
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.block.set_event_blocked(EventCursor(1));
 
-        reg.remove_sub(0, &mut table, &mut transport);
+        reg.remove_sub(0, &mut table, &mut transport, &mut kern);
         assert_eq!(reg.len(), 1);
         assert_eq!(table.procs[5].state.block.event_cursor(), Some(EventCursor(0)));
     }
@@ -846,6 +868,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         // two subscribers, target waiting on first (cursor 0)
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::EXIT, waiting: 1 });
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 3), mask: ProcEventMask::EXIT, waiting: 0 });
@@ -860,7 +883,7 @@ mod tests {
             table.procs[i].identity.endpoint = Endpoint::from_generation_slot(1, i as i32);
         }
 
-        reg.remove_sub(0, &mut table, &mut transport);
+        reg.remove_sub(0, &mut table, &mut transport, &mut kern);
         // Should have resumed and sent to next subscriber (original index 1 now 0)
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.sent()[0].0, Endpoint::from_generation_slot(1, 3));
@@ -905,6 +928,7 @@ mod tests {
 
     #[test]
     fn test_reply_rejects_non_privileged_caller() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, _sub, tgt) = setup_reply_test();
         // make caller non-priv
         let caller = UserSlot::new(10);
@@ -912,7 +936,7 @@ mod tests {
         table.procs[10].identity.endpoint = Endpoint::from_generation_slot(1, 10);
         // default privilege is User (non-kernel)
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, caller, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, caller, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::Reply(ENOSYS));
         // still blocked
         assert!(table.procs[tgt.get()].state.block.is_event_blocked());
@@ -920,34 +944,38 @@ mod tests {
 
     #[test]
     fn test_reply_rejects_bad_endpoint() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, _) = setup_reply_test();
         let msg = reply_msg(Endpoint::from_generation_slot(9, 9), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
     }
 
     #[test]
     fn test_reply_rejects_not_event_blocked() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, tgt) = setup_reply_test();
         // clear block
         table.procs[tgt.get()].state.block.clear_event_blocked();
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // re-block for other tests not needed
     }
 
     #[test]
     fn test_reply_rejects_bad_cursor() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, tgt) = setup_reply_test();
         table.procs[tgt.get()].state.block.set_event_blocked(EventCursor(5)); // out of range
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
     }
 
     #[test]
     fn test_reply_rejects_wrong_subscriber() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, _sub, _) = setup_reply_test();
         // caller is not the subscriber at cursor
         let caller = UserSlot::new(3);
@@ -955,26 +983,28 @@ mod tests {
         table.procs[3].identity.endpoint = Endpoint::from_generation_slot(1, 3);
         table.procs[3].resources.privilege = crate::mproc::Privilege::Kernel;
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, caller, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, caller, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
     }
 
     #[test]
     fn test_reply_rejects_bad_flags() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, tgt) = setup_reply_test();
         // make target neither EXITING nor UNPAUSED
         table.procs[tgt.get()].state.lifecycle = Lifecycle::Running;
         table.procs[tgt.get()].state.block.unpaused = false;
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
     }
 
     #[test]
     fn test_reply_rejects_event_mismatch() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, _) = setup_reply_test();
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Signal); // inferred is Exit
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
     }
 
@@ -984,6 +1014,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         let mut transport = crate::TestIpcTransport::default();
+        let mut kern = MockKernelGateway;
         // subscriber with empty mask but waiting
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::empty(), waiting: 1 });
         reg.nsubs = 1;
@@ -1003,7 +1034,7 @@ mod tests {
         // "mask not checked" path is about leftover notifications after unsubscribe.
         // We test that do_proc_event_reply does not reject based on mask.
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // After reply, since mask empty && waiting==0 → removed
         assert_eq!(reg.len(), 0);
@@ -1011,6 +1042,7 @@ mod tests {
 
     #[test]
     fn test_reply_advances_to_next_subscriber() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, tgt) = setup_reply_test();
         // add second subscriber
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 3), mask: ProcEventMask::EXIT, waiting: 0 });
@@ -1020,7 +1052,7 @@ mod tests {
         table.procs[3].resources.privilege = crate::mproc::Privilege::Kernel;
 
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert_eq!(reg.waiting(0), Some(0));
         assert_eq!(reg.waiting(1), Some(1));
@@ -1029,17 +1061,19 @@ mod tests {
 
     #[test]
     fn test_reply_removes_when_mask_empty_and_no_waiting() {
+        let mut kern = MockKernelGateway;
         let (mut table, mut reg, mut transport, sub, _) = setup_reply_test();
         // make mask empty
         reg.subs[0].as_mut().unwrap().mask = ProcEventMask::empty();
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert_eq!(reg.len(), 0);
     }
 
     #[test]
     fn test_reply_signal_event_terminates_via_restart_sigs() {
+        let mut kern = MockKernelGateway;
         // D-11 端到端：最后一个订阅者回复 Signal 事件 → 终止分派
         //（event.c:122-123）→ restart_sigs → check_pending 重投挂起的
         // SIGKILL → sig_proc 终止路径（sig_proc_exit → exit_proc）。
@@ -1057,7 +1091,7 @@ mod tests {
         table.procs[5].resources.signals.mask = 0;
 
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Signal);
-        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // 非空 mask 的订阅者保留订阅（remove_sub 仅在 mask 空且 waiting=0
         // 时触发，event.c:130-161）；终止分派由游标越界触发而非订阅者移除。

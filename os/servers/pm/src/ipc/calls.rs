@@ -208,6 +208,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
     table: &mut ProcTable,
     events: &mut EventRegistry,
     transport: &mut T,
+    kern: &mut dyn crate::exit::KernelGateway,
     caller: UserSlot,
     msg: &Message,
 ) -> ReplyIntent {
@@ -240,12 +241,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
         PmCall::Exit => {
             let status = unsafe { msg.m_u.m_lc_pm_exit.status };
-            // 生产网关：pre-E1 诚实回 -EIO（被 C 忽略返回值的语义吞掉），
-            // post-E1 自动通电（todo.md §6 D-13 / edge E6+E1）。
-            let mut kern = crate::exit::TrapKernelGateway {
-                transport: DirectKernelCallTransport,
-            };
-            let _ = crate::exit::do_exit(table, caller, status, transport, &mut kern);
+            let _ = crate::exit::do_exit(table, caller, status, transport, kern);
             ReplyIntent::NoReply
         }
         // C: do_wait4（forkexit.c:471-542）——同步回复（W_STOPCODE/WNOHANG/
@@ -306,7 +302,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         PmCall::ProcEventMask => {
             let mask_bits = unsafe { msg.m_u.m_lsys_pm_proceventmask.mask };
             let mask = ProcEventMask::from_bits_truncate(mask_bits);
-            events.do_proceventmask_mut(caller, mask, table, transport)
+            events.do_proceventmask_mut(caller, mask, table, transport, kern)
         }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。
         _ => ReplyIntent::Reply(ENOSYS),
@@ -321,7 +317,15 @@ mod tests {
 
     /// 构造 (table, events, transport) 测试三元组，并在 `slot` 注册一个
     /// Running 进程（endpoint 带代际，供 pm_isokendpt/find 语义）。
-    fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {
+
+    /// 测试用内核网关 mock（sys_kill/sys_clear 恒 OK）。
+    #[derive(Default)]
+    struct NoopKernel;
+    impl crate::exit::KernelGateway for NoopKernel {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    }
+        fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {
         let mut table = ProcTable::new();
         table.procs[slot].identity.endpoint = ep;
         table.procs[slot].identity.id.pid = 100 + slot as i32;
@@ -354,6 +358,7 @@ mod tests {
         // 父进程已注册时 do_fork 走到 vm_fork（脚本化 OK 应答）→ ReplyLater。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut kern = NoopKernel::default();
         let mut vm_reply = Message::default();
         vm_reply.m_type = minix_types::OK;
         unsafe {
@@ -369,6 +374,7 @@ mod tests {
             &mut table,
             &mut events,
             &mut transport,
+            &mut NoopKernel,
             UserSlot::new(3),
             &msg,
         );
@@ -392,6 +398,7 @@ mod tests {
             &mut table,
             &mut events,
             &mut transport,
+            &mut NoopKernel,
             UserSlot::new(3),
             &msg,
         );
@@ -407,6 +414,7 @@ mod tests {
         // plan.md §7.3 的 NoReply 子情形）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut kern = NoopKernel::default();
         let mut msg = Message::default();
         msg.m_type = 1;
         msg.m_source = ep;
@@ -415,6 +423,7 @@ mod tests {
             &mut table,
             &mut events,
             &mut transport,
+            &mut NoopKernel,
             UserSlot::new(3),
             &msg,
         );
@@ -427,6 +436,7 @@ mod tests {
         //（DEFERRED，40 个：07~20 未落地者）。GetPid(4) 当前未接线。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut kern = NoopKernel::default();
         let mut msg = Message::default();
         msg.m_type = 4;
         msg.m_source = ep;
@@ -436,6 +446,7 @@ mod tests {
                 &mut table,
                 &mut events,
                 &mut transport,
+            &mut NoopKernel,
                 UserSlot::new(3),
                 &msg
             ),

@@ -180,6 +180,8 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     ///
     /// 文档：`notes/rewrite/fork-syscall-rewrite/04-stage-pm/06-event-subscription.md`。
     event_registry: EventRegistry,
+    /// 内核调用出口（SYS_CLEAR 等，2026-09-06 D-18 接线；pre-E1 诚实回 -EIO）。
+    kern: Box<dyn crate::exit::KernelGateway>,
     /// 启动参数。
     params: BootParams,
     /// IPC 传输（VFS_PM_INIT 同步等）。
@@ -202,7 +204,25 @@ impl PmServer<KernelIpcTransport> {
 
 impl<T: IpcTransport> PmServer<T> {
     /// 使用显式传输创建服务器（测试注入 mock）。
+    ///
+    /// 内核网关默认取生产实现（trap 通道，pre-E1 回 `-EIO`）；测试可经
+    /// [`Self::with_kernel_gateway`] 注入脚本化网关。
     pub fn with_transport(params: BootParams, transport: T) -> Self {
+        Self::with_kernel_gateway(
+            params,
+            transport,
+            Box::new(crate::exit::TrapKernelGateway::new(
+                minix_sys::syscall::DirectKernelCallTransport,
+            )),
+        )
+    }
+
+    /// 显式指定内核网关构造（测试注入脚本化网关；真实通电挂 edge E1）。
+    pub fn with_kernel_gateway(
+        params: BootParams,
+        transport: T,
+        kern: Box<dyn crate::exit::KernelGateway>,
+    ) -> Self {
         Self {
             // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
             // 保证空槽（Lifecycle::Unused）+ PID 生成器就绪。
@@ -210,6 +230,7 @@ impl<T: IpcTransport> PmServer<T> {
             event_registry: EventRegistry::new(),
             params,
             transport,
+            kern,
             initialized: false,
             // 内核中止标志初始为 0（无中止）；do_reboot 在 20-misc-queries.md 写入。
             abort_flag: 0,
@@ -358,6 +379,7 @@ impl<T: IpcTransport> PmServer<T> {
                 &mut self.table,
                 &mut self.transport,
                 &mut self.event_registry,
+                self.kern.as_mut(),
                 self.abort_flag,
             );
             if let Err(e) = handle_vfs_reply(&mut svc, &msg) {
@@ -374,6 +396,7 @@ impl<T: IpcTransport> PmServer<T> {
             &mut self.table,
             &mut self.event_registry,
             &mut self.transport,
+            self.kern.as_mut(),
             caller,
             &msg,
         );

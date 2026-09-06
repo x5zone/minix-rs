@@ -282,7 +282,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-16 | `exit.rs:142` | core dump 路径名指针为 0——**依赖未解除的显式 DEFERRED**：C 传 `mp_name` 指针（m7p1，VFS 异步 safecopy PM 内存，`forkexit.c:356`），Rust (a) 无法对表内数据形成跨异步稳定指针、(b) `VfsCall::DumpCore.path` 为 i32 容不下 64 位指针——需与 05-stage-vfs 协同重设计契约（按值 [u8;16] 或 minix-types 增 path+len 成员） | 09-pm-exit.md | 契约决策 + minix-types wire 成员（edge E7） |
 | D-17 | `exit.rs:192` | `sched_stop` 假装 Ok——**依赖未解除**：C `exit_restart` 的 `sched_stop` 走 SCHED 服务的 SCHEDULING_STOP 消息（`schedule.c` 客户端，A-8），SCHED 服务器（16-stage）尚未存在，无对端可通话 | 16-scheduling.md | A-8（SCHED 客户端 + 服务器落地） |
-| D-18 | `exit.rs:215` | `sys_clear`（内核侧进程回收）no-op——**依赖未解除**：kernel 对端已实现（`syscall_process.rs:366`），缺 SYS_CLEAR 用户态 wrapper（E6）+ trap 层（E1）；PRIV_PROC 直毁路径的端到端验证随联调 E5 | 01-stage-kernel | edge E6（SYS_CLEAR wrapper）+ E1（trap） |
+| D-18 | ~~`exit.rs:215`~~ | ~~`sys_clear`（内核侧进程回收）no-op~~ **✅ 已修复**（2026-09-07，Fix #24：`KernelGateway::sys_clear` + minix-sys wrapper（E6 切片）+ PmServer 持有网关下穿 exit_proc/exit_restart 两调用点；失败 panic 对齐 `forkexit.c:367-368/450-451`） | 01-stage-kernel | ~~edge E6 + E1~~ wrapper 达成（真实通电挂 E1） |
 | D-19 | ~~`exit.rs:219`~~ | ~~`vm_exit`（页表回收）no-op~~ **✅ 已修复**（2026-09-06，Fix #12：真实 `sendrec(VM, VM_EXIT)` + 失败 panic 对齐 `forkexit.c:455-457`） | 02-stage-vm/22 | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
 | D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功——**依赖未解除**：C 的 `sys_datacopy`（`utility.c:92-106`）从内核读子进程 CPU 时间，需要 SYS_TIMES wrapper + trap 层；且 C 侧自身仅填 ru_utime/ru_stime（`utility.c:92` TODO），Rust 跟随该范围 | 10-pm-wait.md | edge E6（SYS_TIMES/SAFECOPY）+ E1（trap）；rusage 范围跟随 C |
@@ -754,3 +754,23 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`09-pm-exit.md` §2.1 落地段新增；`edge_todo.md` E6 进度注（sys_kill 切片闭环）；本文件 §6 D-13 行。
 
 **未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、语义均已在 stage 内闭环；同轮顺手修正一处过时断言（ZOMBIE vs Exiting，见本轮 diff 的 `test_do_exit_user_process_skips_sys_kill`）。
+
+### ✅ Fix #24: D-18 — `sys_clear` 两调用点接真实内核通道（2026-09-07）
+
+**File(s)**：
+- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_clear` wrapper + `SYS_CLEAR_CALL = 2` 常量 + m1i1 载荷 wire 测试）
+- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `sys_clear`；`TrapKernelGateway` 实现委托 minix-sys；`exit_proc`/`exit_restart` 增 `kern` 参数并在 step 9 / step 4 调用，失败 panic 对齐 C）
+- `os/servers/pm/src/init.rs`（`PmServer` 持有 `Box<dyn KernelGateway>`，`with_transport` 默认装配生产网关，`with_kernel_gateway` 供测试注入；run_once 经 `self.kern.as_mut()` 下穿 VFS 臂/事件臂/分发臂）
+- `os/servers/pm/src/ipc/{calls,dispatcher}.rs`、`os/servers/pm/src/event.rs`（kern 参数沿分发链与 EventRegistry 穿线）
+- `tests/run_once_integration.rs`（exit 场景注入 mock-ok 网关）
+
+**Before/After**：设计选型——(a) PmServer 持有 `Box<dyn KernelGateway>` 并沿调用链下穿（已选）：内核出口与 IPC transport 是两类通道（向量 32/33），网关作为与 transport 对等的能力对象由服务器持有，分发臂与 handler 显式传递（A-3 显式参数风格）；(b) 全局 thread_local 网关：隐式全局违反 A-3，否决；(c) 每个 handler 内联构造 Trap 网关：无状态可行但测试无法注入脚本化应答，否决。**C 语义对照**：exit_proc step 9（`forkexit.c:366-368`，PRIV_PROC 直毁——VFS 可能阻塞在该块设备驱动上，等待即死锁）与 exit_restart step 4（`forkexit.c:449-451`，VFS 回复后回收用户进程）失败均 panic；Rust 逐字对齐 `panic!("… sys_clear failed: {}", r)`。
+
+**Verified**：
+- `cargo test -p minix-pm`：**343 lib + 7 integration passed**（exit 集成场景经 `with_kernel_gateway` 注入 mock-ok 网关验证 step 4 直毁不 panic；既有全部 exit/kill/事件测试无回归）
+- `cargo test -p minix-sys`：116 → **118 passed**（+sys_clear wire/负 errno ×1）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
+
+**Docs**：`09-pm-exit.md` §1.3 后新增"内核出口落地"段；`edge_todo.md` E6 进度注（sys_clear 切片）；本文件 §6 D-18 行。
+
+**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、两调用点语义均已在 stage 内闭环；`exit.rs` 的 D-13（sys_kill）与 D-18（sys_clear）现已共用同一网关通道。

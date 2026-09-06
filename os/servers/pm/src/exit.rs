@@ -27,6 +27,11 @@ pub trait KernelGateway {
     /// `_kernel_call(SYS_KILL, &m)`，载荷 `m_sigcalls.{endpt,sig}`，
     /// 返回值 = 内核回复（OK 或负 errno）。
     fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
+
+    /// C: `sys_clear(proc_ep)`（libsys `sys_clear.c:8-14`）——
+    /// `_kernel_call(SYS_CLEAR, &m)`，载荷 m1i1 = 目标 endpoint，无回复
+    /// 载荷；返回值 = 内核回复（OK 或负 errno）。
+    fn sys_clear(&mut self, ep: Endpoint) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -43,6 +48,15 @@ impl<T: minix_sys::syscall::KernelCallTransport> TrapKernelGateway<T> {
 impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
     fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
         let r = minix_sys::syscall::sys_kill(&self.transport, ep.0, sig);
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn sys_clear(&mut self, ep: Endpoint) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_clear(&self.transport, ep.0);
         if r < 0 {
             Err(r)
         } else {
@@ -78,7 +92,7 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
         let _ = kern.sys_kill(proc.endpoint(), crate::signal::SIGKILL);
         return ReplyIntent::NoReply;
     }
-    exit_proc(table, caller, trunc_status(status), false, transport);
+    exit_proc(table, caller, trunc_status(status), false, transport, kern);
     ReplyIntent::NoReply
 }
 
@@ -94,6 +108,7 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     status: i8,
     mut dump_core: bool,
     transport: &mut T,
+    kern: &mut dyn KernelGateway,
 ) {
     // ---- 1. dump_core double gate (285-292) ----
     {
@@ -196,8 +211,11 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 9. PRIV_PROC immediate sys_clear (361-369) ----
     // System process (driver) destroyed without waiting for VFS (deadlock avoidance)
     if table.procs[proc_nr].is_kernel_process() {
-        // [DEFERRED: D-18] `sys_clear`（内核侧进程回收，kernel 对端已实现 syscall_process.rs:366）——缺 SYS_CLEAR wrapper（edge E6）+ trap（E1），暂 no-op
-        let _ = proc_ep;
+        // C: forkexit.c:366-368 — 失败即 panic（进程已终结而内核侧未回收
+        // 即永久泄漏，不可恢复）。
+        if let Err(r) = kern.sys_clear(proc_ep) {
+            panic!("exit_proc: sys_clear failed: {}", r);
+        }
     }
 
     // ---- 10. Mark EXITING (374-375) — retain IN_USE|VFS_CALL|PRIV_PROC|TRACE_EXIT|PROC_STOPPED
@@ -232,7 +250,12 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 /// `exit_restart` branch (06). In C, `handle_vfs_reply`'s EXIT branch does
 /// `publish_event` then `return` (no tail `restart_sigs`), and `resume_event`'s
 /// `Exit` termination calls `exit_restart`.
-pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable, slot: UserSlot, transport: &mut T) {
+pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    slot: UserSlot,
+    transport: &mut T,
+    kern: &mut dyn KernelGateway,
+) {
     let scheduler = table.procs[slot.get()].resources.scheduler;
     // 1. sched_stop (425, 16-scheduling.md) — [DEFERRED: D-17] SCHED 服务器（16-stage，A-8）不存在，无对端可通话；C 对失败仅 printf，no-op 与 C 可观测行为一致
     let _ = scheduler;
@@ -256,9 +279,12 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable,
     }
 
     // 4. sys_clear for !PRIV_PROC (447-452) — user process destroyed after VFS
+    // C: forkexit.c:449-451 — 失败即 panic（同 exit_proc step 9 的不可恢复语义）。
     if !table.procs[slot.get()].is_kernel_process() {
-        // [DEFERRED: D-18] 同上：SYS_CLEAR wrapper（edge E6）+ trap（E1）
-        let _ = slot;
+        let ep = table.procs[slot.get()].endpoint();
+        if let Err(r) = kern.sys_clear(ep) {
+            panic!("exit_restart: sys_clear failed: {}", r);
+        }
     }
 
     // 5. vm_exit (455-457) — VM free page tables
@@ -583,6 +609,9 @@ mod tests {
             self.killed = Some((ep, sig));
             Ok(())
         }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -626,7 +655,8 @@ mod tests {
         let mut table = ProcTable::new();
         running_proc(&mut table, 5, 42);
         let mut transport = crate::ipc::TestIpcTransport::default();
-        exit_proc(&mut table, UserSlot::new(5), 0, false, &mut transport);
+        let mut kern = KillRecorder::default();
+        exit_proc(&mut table, UserSlot::new(5), 0, false, &mut transport, &mut kern);
         assert!(matches!(
             table.procs[5].state.lifecycle,
             Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. } | Lifecycle::Exiting { .. }
@@ -641,7 +671,8 @@ mod tests {
         running_proc(&mut table, 5, 42);
         table.procs[5].resources.privilege = Privilege::Kernel;
         let mut transport = crate::ipc::TestIpcTransport::default();
-        exit_proc(&mut table, UserSlot::new(5), 0, true, &mut transport);
+        let mut kern = KillRecorder::default();
+        exit_proc(&mut table, UserSlot::new(5), 0, true, &mut transport, &mut kern);
         // dump_core is suppressed for PRIV_PROC, so should still be Zombie not waiting for core
         // In C: dump_core && PRIV_PROC → FALSE, so !dump_core → zombify
         assert!(table.procs[5].state.lifecycle.is_zombie() || matches!(table.procs[5].state.lifecycle, Lifecycle::TraceZombie { .. }));
@@ -663,6 +694,7 @@ mod tests {
         table.procs[2].state.wait.waiting = false;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
         let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern_rec = KillRecorder::default();
         zombify(&mut table, UserSlot::new(5), &mut t);
         assert!(matches!(
             table.procs[5].state.lifecycle,
@@ -708,7 +740,8 @@ mod tests {
         table.procs[5].resources.scheduler = Endpoint::SCHED;
         table.procs_in_use.set(1);
         let mut transport = crate::ipc::TestIpcTransport::default();
-        exit_restart(&mut table, UserSlot::new(5), &mut transport);
+        let mut kern = KillRecorder::default();
+        exit_restart(&mut table, UserSlot::new(5), &mut transport, &mut kern);
         // For !PRIV_PROC, sys_clear + vm_exit would be called (stubbed), and TOLD_PARENT → cleanup
         // So slot should be released
         assert!(!table.procs[5].is_in_use());

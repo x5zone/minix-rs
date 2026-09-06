@@ -88,6 +88,7 @@ pub fn dispatch_message<T: IpcTransport>(
     table: &mut ProcTable,
     events: &mut crate::event::EventRegistry,
     transport: &mut T,
+    kern: &mut dyn crate::exit::KernelGateway,
     caller: UserSlot,
     msg: &Message,
 ) -> ReplyIntent {
@@ -95,12 +96,12 @@ pub fn dispatch_message<T: IpcTransport>(
 
     if call_nr == PROC_EVENT_REPLY {
         // C: main.c:88-89 — do_proc_event_reply()（06-event-subscription.md）。
-        events.do_proc_event_reply(msg, caller, table, transport)
+        events.do_proc_event_reply(msg, caller, table, transport, kern)
     } else if is_pm_call(call_nr) {
         // C: main.c:90-101 — call_index = call_nr - PM_BASE；越界/NULL →
         // ENOSYS。
         match PmCall::from_call_nr(call_nr) {
-            Some(call) => dispatch_pm_call(call, table, events, transport, caller, msg),
+            Some(call) => dispatch_pm_call(call, table, events, transport, kern, caller, msg),
             None => ReplyIntent::Reply(ENOSYS),
         }
     } else {
@@ -217,6 +218,14 @@ mod tests {
     use crate::mproc::Lifecycle;
     use minix_types::Message;
 
+
+    /// 测试用内核网关 mock（sys_kill/sys_clear 恒 OK）。
+    #[derive(Default)]
+    struct NoopKernel;
+    impl crate::exit::KernelGateway for NoopKernel {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    }
     fn msg_with(m_type: i32, source: Endpoint) -> Message {
         let mut m = Message::default();
         m.m_type = m_type;
@@ -266,10 +275,12 @@ mod tests {
         // → ENOSYS（main.c:102-103 兜底）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
+        let mut kern = NoopKernel::default();
         let intent = dispatch_message(
             &mut table,
             &mut events,
             &mut transport,
+            &mut kern,
             UserSlot::new(3),
             &msg_with(0x980 + 7, Endpoint::RS),
         );
@@ -283,10 +294,12 @@ mod tests {
         // → SUSPEND 前置（event.c:241-245 → ReplyLater）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, true);
+        let mut kern = NoopKernel::default();
         let intent = dispatch_message(
             &mut table,
             &mut events,
             &mut transport,
+            &mut kern,
             UserSlot::new(3),
             &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
         );
@@ -298,10 +311,12 @@ mod tests {
         // event.c:232-233 — 仅系统服务可回复；普通进程误用 → ENOSYS 回复。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
+        let mut kern = NoopKernel::default();
         let intent = dispatch_message(
             &mut table,
             &mut events,
             &mut transport,
+            &mut kern,
             UserSlot::new(3),
             &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
         );
@@ -314,11 +329,13 @@ mod tests {
         // 未接线调用（GetPid）→ ENOSYS（DEFERRED，40 个）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
+        let mut kern = NoopKernel::default();
         assert_eq!(
             dispatch_message(
                 &mut table,
                 &mut events,
                 &mut transport,
+                &mut kern,
                 UserSlot::new(3),
                 &msg_with(4, ep)
             ),
@@ -331,11 +348,13 @@ mod tests {
         // C: main.c:102-103 — 非 PM 调用 → ENOSYS。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
+        let mut kern = NoopKernel::default();
         assert_eq!(
             dispatch_message(
                 &mut table,
                 &mut events,
                 &mut transport,
+                &mut kern,
                 UserSlot::new(3),
                 &msg_with(0x100, ep)
             ),

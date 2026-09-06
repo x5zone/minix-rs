@@ -320,10 +320,16 @@ fn sig_proc_exit(
 ) -> Result<(), KillError> {
     let is_core = crate::init::CORE_SIGSET & (1u64 << (signo - 1)) != 0;
     // In C: exit_proc(rmp, 0, dump_core) where dump_core = is_core
-    // For 11 we delegate to exit::exit_proc with a nop transport (no VFS)
+    // For 11 we delegate to exit::exit_proc with a nop transport (no VFS).
+    // 内核出口（step 9 sys_clear）用生产网关：本路径目标为用户进程
+    //（PRIV_PROC 在前置分支已返回），step 9 不会触发；若未来语义变化
+    // 命中，pre-E1 诚实 panic（C 失败语义同型）。
     let status = 0;
     let mut nop = crate::ipc::TestIpcTransport::default();
-    crate::exit::exit_proc(table, target, status as i8, is_core, &mut nop);
+    let mut kern = crate::exit::TrapKernelGateway::new(
+        minix_sys::syscall::DirectKernelCallTransport,
+    );
+    crate::exit::exit_proc(table, target, status as i8, is_core, &mut nop, &mut kern);
     Ok(())
 }
 

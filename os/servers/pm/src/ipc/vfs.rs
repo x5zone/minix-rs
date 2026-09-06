@@ -352,6 +352,8 @@ pub struct PmServices<'a, T: IpcTransport> {
     table: &'a mut ProcTable,
     transport: &'a mut T,
     event_registry: &'a mut crate::event::EventRegistry,
+    /// 内核调用出口（step 9 sys_clear 等，2026-09-06 D-18 接线）。
+    kern: &'a mut dyn crate::exit::KernelGateway,
     abort_flag: i32,
 }
 
@@ -361,12 +363,14 @@ impl<'a, T: IpcTransport> PmServices<'a, T> {
         table: &'a mut ProcTable,
         transport: &'a mut T,
         event_registry: &'a mut crate::event::EventRegistry,
+        kern: &'a mut dyn crate::exit::KernelGateway,
         abort_flag: i32,
     ) -> Self {
         Self {
             table,
             transport,
             event_registry,
+            kern,
             abort_flag,
         }
     }
@@ -453,7 +457,7 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         // /*dump_core*/)`：直接走二阶段退出（09 的 exit_proc 全链：sys_stop
         // → VFS_PM_EXIT → 僵尸化 → 收养链），不重读消息、不经 do_exit 的
         // 入口门。status 截断为 i8 与 C 的 exit_status 语义一致。
-        crate::exit::exit_proc(self.table, slot, status as i8, dump_core, self.transport);
+        crate::exit::exit_proc(self.table, slot, status as i8, dump_core, self.transport, self.kern);
     }
 
     fn set_core_flag(&mut self, slot: UserSlot) {
@@ -518,8 +522,9 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         let table_ptr = self.table as *mut ProcTable;
         let transport_ptr = self.transport as *mut T;
         let registry_ptr = self.event_registry as *mut crate::event::EventRegistry;
+        let kern_ptr = self.kern as *mut dyn crate::exit::KernelGateway;
         unsafe {
-            (*registry_ptr).publish_event(slot, &mut *table_ptr, &mut *transport_ptr);
+            (*registry_ptr).publish_event(slot, &mut *table_ptr, &mut *transport_ptr, &mut *kern_ptr);
         }
     }
 
@@ -973,6 +978,14 @@ mod tests {
         assert_eq!(transport.last_sent_dest(), Some(Endpoint::VFS));
     }
 
+    /// vfs.rs 测试用内核网关 mock（恒 OK）。
+    #[derive(Default)]
+    struct NoopKernelGateway;
+    impl crate::exit::KernelGateway for NoopKernelGateway {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    }
+
     #[test]
     fn test_production_set_core_flag_sets_bit7_on_exiting() {
         // D-07：Core 回复 status==OK → WCOREFLAG 置入 sig_status 的 bit7
@@ -984,7 +997,8 @@ mod tests {
         let mut table = ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, 0);
+        let mut kern = NoopKernelGateway::default();
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
         svc.table.procs[1].state.lifecycle =
             Lifecycle::Exiting { exit_code: 0, sig_status: 6 }; // SIGABRT
 
@@ -1014,7 +1028,8 @@ mod tests {
         let mut table = ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, 0);
+        let mut kern = NoopKernelGateway::default();
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
         // 待拆除的子进程（RS fork 出的 PRIV_PROC 语义在 08；此处普通用户进程）
         svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
         svc.table.procs[1].identity.id.pid = 42;
