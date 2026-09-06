@@ -1219,6 +1219,82 @@ mod tests {
     }
 
     #[test]
+    fn test_boot_failure_propagates_from_step0() {
+        // E-10/R34.18: kernel-call failures abort the boot at the failing
+        // step with the typed cause (E-6) — C treats every boot-stage
+        // kernel failure as fatal (main.c:53/181 have no recovery path).
+        let mut sys = MockKernelApi::new(100);
+        sys.fail_calls = vec![Call::GetMachine];
+        let mut boot = BootInit::new(BootTables::placeholder());
+        assert_eq!(
+            boot.init_fresh(&mut sys),
+            Err(BootError::Kernel(Errno::ENOSYS))
+        );
+        // `get_machine` is the first boot call (main.c:53) — nothing ran
+        // after it.
+        assert_eq!(sys.calls.first(), Some(&Call::GetMachine));
+        assert!(!sys.calls.contains(&Call::GetHz));
+    }
+
+    #[test]
+    fn test_step1_lookup_failure_propagates() {
+        // E-10/R34.18: a priv-table entry missing from the image table
+        // aborts the boot with the typed lookup cause. The counts match
+        // (2 = 2, so validate_tables passes) but the *members* disagree —
+        // C has no miss branch to inherit (main.c:253-254 → panic at 731
+        // on a corrupt table).
+        let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(0, Endpoint::PM)];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[BootImageSys {
+            endpoint: Endpoint::RS,
+            flags: crate::service_slot::SRVR_SF,
+        }];
+        let tables = BootTables {
+            image,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        assert_eq!(
+            boot.step1_set_attrs(&mut sys),
+            Err(BootError::Lookup(LookupError::ImageTable))
+        );
+    }
+
+    #[test]
+    fn test_boot_failure_propagates_setalarm() {
+        // E-10/R34.18: the final boot step fails → the whole boot fails.
+        // C checks the setalarm result and panics (main.c:433-434).
+        let mut sys = MockKernelApi::new(100);
+        sys.fail_calls = vec![Call::SetAlarm(0)];
+        let mut boot = BootInit::new(BootTables::placeholder());
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        assert_eq!(
+            boot.step4_finish(&mut sys),
+            Err(BootError::Kernel(Errno::ENOSYS))
+        );
+        // The alarm was attempted with the configured hz — the failure
+        // happened at the seam, not in an earlier step.
+        assert!(sys.calls.contains(&Call::SetAlarm(100)));
+    }
+
+    #[test]
     fn test_step1_skips_privctl_for_rs_vm() {
         // Custom tables: only RS + VM are boot services.
         let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(8, Endpoint::VM)];

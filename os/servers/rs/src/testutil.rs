@@ -73,6 +73,34 @@ pub enum Call {
     Reply(Endpoint, i32),
 }
 
+impl Call {
+    /// Variant-level equality — payloads ignored (fail-injection matching).
+    ///
+    /// `Call::SetAlarm(0)` in `MockKernelApi::fail_calls` makes every
+    /// `setalarm` fail regardless of the requested delay.
+    fn same_variant(&self, other: &Call) -> bool {
+        matches!(
+            (self, other),
+            (Call::GetMachine, Call::GetMachine)
+                | (Call::GetHz, Call::GetHz)
+                | (Call::GetTicks, Call::GetTicks)
+                | (Call::PrivCtl(..), Call::PrivCtl(..))
+                | (Call::GetPriv(..), Call::GetPriv(..))
+                | (Call::SchedInitProc(..), Call::SchedInitProc(..))
+                | (Call::GetNuid(..), Call::GetNuid(..))
+                | (Call::GetNpid(..), Call::GetNpid(..))
+                | (Call::SetAlarm(_), Call::SetAlarm(_))
+                | (Call::SrvExecve(..), Call::SrvExecve(..))
+                | (Call::SrvKill(..), Call::SrvKill(..))
+                | (Call::SysKill(..), Call::SysKill(..))
+                | (Call::SysUpdate(..), Call::SysUpdate(..))
+                | (Call::SchedStop(..), Call::SchedStop(..))
+                | (Call::SetUid(_), Call::SetUid(_))
+                | (Call::Reply(..), Call::Reply(..))
+        )
+    }
+}
+
 /// Recording `KernelApi` mock with configurable canned results.
 ///
 /// Fields are `pub` (test-only module): tests set `hz`/`ticks`/`pids` before
@@ -105,6 +133,19 @@ pub struct MockKernelApi {
     /// (manager.c:604-605). Per-endpoint storage because boot Step 1 pushes
     /// 12 different structures in sequence.
     pub set_privs: Vec<(Endpoint, Privilege)>,
+    /// Calls that must fail with `ENOSYS` (fail-injection, R34.18/E-10):
+    /// matching is by variant, payloads ignored — `Call::SetAlarm(0)` fails
+    /// every `setalarm`. Plain recording methods honor this; the methods
+    /// with their own canned-result switches (`fork_pid`/`child_endpoint`/
+    /// `vm_ok`/`execve_ok`/`kill_ok`) stay on those switches.
+    pub fail_calls: Vec<Call>,
+}
+
+impl MockKernelApi {
+    /// Whether this call's variant is injected to fail.
+    fn failing(&self, c: &Call) -> bool {
+        self.fail_calls.iter().any(|f| f.same_variant(c))
+    }
 }
 
 impl MockKernelApi {
@@ -122,6 +163,7 @@ impl MockKernelApi {
             kill_ok: false,
             children: Vec::new(),
             set_privs: Vec::new(),
+            fail_calls: Vec::new(),
         }
     }
 }
@@ -129,14 +171,23 @@ impl MockKernelApi {
 impl SysApi for MockKernelApi {
     fn get_machine(&mut self) -> Result<Machine, Errno> {
         self.calls.push(Call::GetMachine);
+        if self.failing(&Call::GetMachine) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(Machine::default())
     }
     fn get_hz(&mut self) -> Result<u32, Errno> {
         self.calls.push(Call::GetHz);
+        if self.failing(&Call::GetHz) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(self.hz)
     }
     fn get_ticks(&mut self) -> Result<Clock, Errno> {
         self.calls.push(Call::GetTicks);
+        if self.failing(&Call::GetTicks) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(self.ticks)
     }
     fn privctl(
@@ -146,6 +197,9 @@ impl SysApi for MockKernelApi {
         priv_: Option<&Privilege>,
     ) -> Result<(), Errno> {
         self.calls.push(Call::PrivCtl(proc, op));
+        if self.failing(&Call::PrivCtl(proc, op)) {
+            return Err(Errno::ENOSYS);
+        }
         if op == PrivCtlOp::SetSys
             && let Some(p) = priv_
         {
@@ -158,6 +212,9 @@ impl SysApi for MockKernelApi {
     }
     fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno> {
         self.calls.push(Call::GetPriv(proc));
+        if self.failing(&Call::GetPriv(proc)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(self
             .set_privs
             .iter()
@@ -168,10 +225,16 @@ impl SysApi for MockKernelApi {
     }
     fn setalarm(&mut self, delay_ticks: u32) -> Result<(), Errno> {
         self.calls.push(Call::SetAlarm(delay_ticks));
+        if self.failing(&Call::SetAlarm(delay_ticks)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(())
     }
     fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno> {
         self.calls.push(Call::SysKill(proc, signo));
+        if self.failing(&Call::SysKill(proc, signo)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(())
     }
     fn sys_update(
@@ -181,6 +244,9 @@ impl SysApi for MockKernelApi {
         _flags: crate::service_slot::SysFlags,
     ) -> Result<(), Errno> {
         self.calls.push(Call::SysUpdate(src, dst));
+        if self.failing(&Call::SysUpdate(src, dst)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(())
     }
 }
@@ -188,6 +254,9 @@ impl SysApi for MockKernelApi {
 impl SchedApi for MockKernelApi {
     fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno> {
         self.calls.push(Call::SchedInitProc(cfg.endpoint));
+        if self.failing(&Call::SchedInitProc(cfg.endpoint)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(cfg.scheduler)
     }
     fn sched_stop(&mut self, scheduler: Endpoint, proc: Endpoint) -> Result<(), Errno> {
@@ -203,10 +272,16 @@ impl SchedApi for MockKernelApi {
 impl PmApi for MockKernelApi {
     fn getnuid(&mut self, proc: Endpoint) -> Result<u32, Errno> {
         self.calls.push(Call::GetNuid(proc));
+        if self.failing(&Call::GetNuid(proc)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(0) // root for boot tests
     }
     fn getnpid(&mut self, proc: Endpoint) -> Result<i32, Errno> {
         self.calls.push(Call::GetNpid(proc));
+        if self.failing(&Call::GetNpid(proc)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(self.pids.pop().unwrap_or(100))
     }
     fn getprocnr(&mut self, _pid: Pid) -> Result<Endpoint, Errno> {
@@ -251,6 +326,9 @@ impl PmApi for MockKernelApi {
     }
     fn setuid(&mut self, uid: u32) -> Result<(), Errno> {
         self.calls.push(Call::SetUid(uid));
+        if self.failing(&Call::SetUid(uid)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(())
     }
 }
@@ -287,6 +365,9 @@ impl VmApi for MockKernelApi {
 impl IpcApi for MockKernelApi {
     fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno> {
         self.calls.push(Call::Reply(target, result));
+        if self.failing(&Call::Reply(target, result)) {
+            return Err(Errno::ENOSYS);
+        }
         Ok(())
     }
     fn receive(

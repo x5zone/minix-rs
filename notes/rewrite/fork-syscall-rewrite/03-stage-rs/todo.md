@@ -1989,7 +1989,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | EDGE（见 §18.10） |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | EDGE（见 §18.10） |
-| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13 随各轮已补；18-23=E3（见 §18.10） |
+| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18/19/21 已补（E-10，Fix #65）；20 随 06 接线；22/23 gated（见 §18.10 E-10） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
 | A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ✅ | 已修（Fix #63，2026-09-06） |
@@ -2607,6 +2607,25 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - **Verified**：`cargo test -p minix-rs` = **272 passed**（+6）；测试自查修正 3 处测试自身
   错误（Gate E 记录）；clippy 触碰文件零告警；`cargo fmt` 收敛 3 文件格式；T7 PASS。
 
+### ✅ Fix #65 — E-10/R34.18-21（P2 测试基建）：boot 失败传播族 + 壳层 fail-fast 契约 + SIGCHLD 实排空
+- **File**：`os/servers/rs/src/testutil.rs`（`fail_calls` 注入 + `Call::same_variant`）、
+  `boot.rs`（3 传播测试）、`lib.rs`（`booted_with` 夹具参数化 + 3 壳层测试）；
+  文档 01 §5.2/§5.4、06 §5（壳层测试表）
+- **Before**：mock 只有"成功值"注入（hz/ticks/pids/ok 开关），内核调用**失败**不可注入
+  （R34.18 自认"mock 可注入但未用"）；run()/二次 init 的 panic 契约、SIGCHLD 实排空
+  （非空 waitpid → 槽位释放）零测试。**披露：01 §5.4 全局计数在 E-9 轮漏同步（停在
+  264），本轮一并修正到 278。**
+- **After**：`MockKernelApi.fail_calls: Vec<Call>`——按变体匹配（`Call::SetAlarm(0)` 失败
+  全部 setalarm；带开关的方法保持各自 canned 语义）。新增：step0 get_machine 失败 →
+  `Err(BootError::Kernel(ENOSYS))` 且后续零调用；计数一致但成员错位 → step1
+  `Err(BootError::Lookup(ImageTable))`（E-6 类型化传播的端到端验证）；step4 setalarm
+  失败 → 整 boot 失败且闹钟调用已发出。壳层：`run()` 无 boot panic、二次 `init(Fresh)`
+  panic（boot 机器已被 T1 handover 消费）、SIGCHLD 实排空（children=[700, 808] → VFS
+  槽释放 + endpoint_slot None + 未知 pid 无副作用）。
+- **Verified**：`cargo test -p minix-rs` = **278 passed**（+6）；clippy 触碰文件零告警；
+  fmt 干净；T7 PASS。测试自查修正 2 处构造错误（step1 表计数不匹配被 validate_tables
+  先拦、PM proc_nr 写错被 R17 校验拦——两道既有校验恰好证明了 boot 表校验链的有效性）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2693,6 +2712,16 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   全构建 assert（fail-fast）；真实调用点 tot 全为编译期常量且 < 64，不可达，不扩大 N7 改动。
 
 **E-10 E3 集成测试 + R34.18-23**
+- 🔄 **部分已修（Fix #65，2026-09-07）**：R34.18（boot 失败传播族——`testutil::MockKernelApi`
+  增 `fail_calls` 变体级失败注入 + step0 get_machine/step1 lookup/step4 setalarm 三条传播
+  测试；负 pid 已随 Fix #61）、R34.19（run() 无 boot panic + 二次 init(Fresh) panic——
+  `#[should_panic]` 锁定 fail-fast 契约）、R34.21（信号分发层——CHLD 实排空：
+  waitpid 交出 pid → 槽位释放 + 端点索引消失 + 未知 pid 无副作用；TERM/空排空/未知信号
+  已随 Fix #57）落地。
+- **剩余（gated）**：R34.20（classify 前 isokendpt 门——属 06 主循环接线的编排步骤，R12
+  已在索引层补 total 门并留注释）、R34.22（signal_manager 六分支——待 06/18 编排落地）、
+  R34.23（catch_boot_init_ready 三 panic——待 12 接收原语）；do_period 全流程与
+  rollback 心跳扫的集成面已由 Fix #41/#55/#56 的走链测试覆盖主体。
 - 场景：boot 全链 mock（四步 + getnpid + setalarm 断言）、do_period 全流程
   （update_period 派发门 → 槽门 → 决策 → setalarm）、rollback→心跳重发扫
   （R27(a) 的集成面）、signal_manager 六分支（待编排落地后）、

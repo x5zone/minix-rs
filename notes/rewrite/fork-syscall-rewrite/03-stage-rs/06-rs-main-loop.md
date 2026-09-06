@@ -356,6 +356,17 @@ dispatch.rs
 | `test_dispatch_result_reply_suppression` | `EDONTREPLY` 抑制回复（main.c:125） |
 | `test_rs_constants_match_c` | RS_* 常量值断言（com.h:465-482） |
 
+服务器壳层测试（lib.rs `signal_handler_tests`，E-10/R34.18-21）：
+
+| 测试 | 覆盖 |
+|------|------|
+| `test_signal_term_runs_shutdown_sweep` | SIGTERM → 全表 EXITING + `shutting_down` 置位（main.c:638-640） |
+| `test_signal_chld_drains_exited_children` | SIGCHLD 空排空：无子进程时表不动（request.c:1064-1065） |
+| `test_signal_chld_frees_exited_child_slot` | SIGCHLD 实排空：waitpid 交出 pid → `sigchld_cleanup` 释放槽位 + 端点索引消失；未知 pid 无副作用且排空继续 |
+| `test_signal_unknown_ignored` | 未知信号静默忽略（main.c:641 无 default） |
+| `test_run_requires_completed_boot` | `run()` 在无完成 boot 时 panic（fail-fast 契约，main.c:226 对照） |
+| `test_second_fresh_init_panics` | 二次 `init(Fresh)`：boot 机器已被 T1 handover 消费 → expect panic |
+
 ---
 
 ## 6. 过渡：从"骨架"到"心跳"

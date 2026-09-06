@@ -479,7 +479,13 @@ mod signal_handler_tests {
     /// pid 700, plus an exited child (pid 700's own child bookkeeping is the
     /// sigchld target).
     fn booted() -> RsServer {
-        let mut server = RsServer::new(crate::boot::BootTables::placeholder());
+        booted_with(alloc::boxed::Box::new(crate::boot::UnimplementedKernelApi))
+    }
+
+    /// Same fixture with an injectable kernel seam (E-10: the waitpid drain
+    /// and the second-init panic need a mock / a consumed boot machine).
+    fn booted_with(kernel: alloc::boxed::Box<dyn KernelApi>) -> RsServer {
+        let mut server = RsServer::with_kernel(crate::boot::BootTables::placeholder(), kernel);
         let mut table = RProcTable::new();
         let id = table.alloc_slot().unwrap();
         {
@@ -499,6 +505,71 @@ mod signal_handler_tests {
             update: crate::live_update::UpdateState::default(),
         });
         server
+    }
+
+    #[test]
+    fn test_signal_chld_frees_exited_child_slot() {
+        // E-10/R34.21: the drain with actual exited children — waitpid
+        // hands back pid 700, sigchld_cleanup frees its slot (and clears
+        // the LU bits, request.c:1063-1073); an unknown pid (808) is a
+        // no-op and the drain keeps going.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.children = alloc::vec![700, 808];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        server.signal_handler(SIGNAL_CHILD);
+        let state = server.state.as_ref().unwrap();
+        // The VFS row is gone from the endpoint index: freed, not merely
+        // flagged (manager.c:2088-2109 free semantics).
+        assert_eq!(state.table.endpoint_slot(Endpoint::VFS), None);
+        assert!(!state.shutting_down);
+    }
+
+    #[test]
+    #[should_panic(expected = "run() requires a completed fresh boot")]
+    fn test_run_requires_completed_boot() {
+        // E-10/R34.19: the main loop is unreachable without a completed
+        // boot — the panic is the fail-fast contract (C never reaches
+        // main()'s loop with a half-booted RS, main.c:226).
+        let mut server = RsServer::new(crate::boot::BootTables::placeholder());
+        let _ = server.run();
+    }
+
+    #[test]
+    #[should_panic(expected = "boot machine present")]
+    fn test_second_fresh_init_panics() {
+        // E-10/R34.19: the first successful boot consumes the boot machine
+        // (T1 handover); a second init(Fresh) has nothing to boot — the
+        // expect is the fail-fast contract.
+        static IMAGE: &[minix_types::BootImage] = &[minix_types::BootImage {
+            proc_nr: 2,
+            proc_name: *b"rs\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+            endpoint: Endpoint::RS,
+            start_addr: 0,
+            len: 0,
+        }];
+        let priv_table: &[crate::table::BootImagePriv] = &[crate::table::BootImagePriv {
+            endpoint: Endpoint::RS,
+            label: "rs",
+            flags: crate::privilege::RSYS_F,
+        }];
+        let sys_table: &[crate::table::BootImageSys] = &[crate::table::BootImageSys {
+            endpoint: Endpoint::RS,
+            flags: crate::service_slot::SRVR_SF,
+        }];
+        let tables = crate::boot::BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut server = RsServer::with_kernel(
+            tables,
+            alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(100)),
+        );
+        server
+            .init(SefInitType::Fresh)
+            .expect("RS-only boot completes (zero pending init-ready)");
+        let _ = server.init(SefInitType::Fresh);
     }
 
     #[test]

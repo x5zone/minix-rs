@@ -985,6 +985,9 @@ impl RsServer {
 | `test_init_fresh_populates_table` | Step 1 后 12 个 boot 服务占 slot 0..11 且 `IN_USE|ACTIVE`，A-4 索引命中；非 boot slot 保持空闲（对应 main.c:244-346） |
 | `test_step4_sets_pid` | Step 4 每个 boot slot 携带 `getnpid` 返回的 pid（对应 main.c:426；mock 返回 100） |
 | `test_step4_negative_pid_reports_invalid_pid` | E-6：`getnpid` 负值 → `Err(BootError::InvalidPid(-1))`，线面 `EINVAL`（对应 main.c:427-429 panic） |
+| `test_boot_failure_propagates_from_step0` | E-10/R34.18：`fail_calls` 注入 `get_machine` 失败 → `Err(BootError::Kernel(ENOSYS))` 且后续步骤零调用（C 无恢复路径，main.c:53） |
+| `test_step1_lookup_failure_propagates` | E-10/R34.18：计数一致但成员错位的表 → step1 `Err(BootError::Lookup(ImageTable))`（C 无 miss 分支，main.c:253-254→731） |
+| `test_boot_failure_propagates_setalarm` | E-10/R34.18：末步 setalarm 失败 → 整个 boot 失败，且闹钟调用已发出（C 检查返回值并 panic，main.c:433-434） |
 | `test_step3_fails_closed_when_init_ready_pending` | T6：有未收 init-ready 时 Step 3 fail-closed（`Err(BootError::Kernel(ENOSYS))`，对应 main.c:401-407 的阻塞 receive 语义） |
 | `test_step2_synch_boot_fails_closed` | T6：`SF_SYNCH_BOOT` 服务同步 catch 未接线时 fail-closed（`Err(BootError::Kernel(ENOSYS))`，对应 main.c:390-392），不得静默跳过 sync |
 | `test_rs_server_handover_after_fresh_init` | T1：fresh boot 完成后运行时状态归 server 所有（`state()` 可达 table/hz/shutting_down），machine 快照随 boot→run 交接存活；boot 机器被消费（无双重所有权） |
@@ -1005,7 +1008,7 @@ impl RsServer {
 
 ### 5.4 测试总数
 
-`cargo test -p minix-rs --lib` 实测 **264 passed / 0 failed**（2026-09-06，E-6 修复轮）。全部测试可 grep 验证：`rg -c "#\[test\]"` 全 crate 合计 264。01 范围四模块共 33 项：boot.rs 21、table.rs 3、sef.rs 1、dispatch.rs 8。
+`cargo test -p minix-rs --lib` 实测 **278 passed / 0 failed**（2026-09-07，E-10 修复轮）。全部测试可 grep 验证：`rg -c "#[test]"` 全 crate 合计 278。01 范围四模块共 36 项：boot.rs 24、table.rs 3、sef.rs 1、dispatch.rs 8。
 
 ## 6. 过渡
 
