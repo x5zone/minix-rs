@@ -2,6 +2,7 @@
 
 > 来源：2026-09-06 V11 架构审查（02-stage-vm/todo.md §14）拆分出的跨 stage 条目。
 > 2026-09-06 增补：04-stage-pm 架构审查（04-stage-pm/todo.md §9）拆分出的跨 stage 条目 E6-E7。
+> 2026-09-06 增补：03-stage-rs 的 §18.10 E-11 生产接线面登记为 E9（KernelApi 五域面真实传输，E-2 拆分后的接线形态）。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -171,3 +172,22 @@
 **建议**：随 E1 一次解决——trap 层落地后 `DirectTrapTransport`/`DirectKernelCallTransport` 换真实 trap 序列，SCHED 侧零改动（接缝已按最终形态写好）；若 E1 前需要单独验证 SCHED 通电，可在 `os/libs/minix-sys/src/syscall.rs` 复用 `perform_kernel_call` 为 SCHED 五调用加命名包装（仿 E6 模板），但当前 `transport.rs` 的打包已完整、包装层无增量价值，倾向不单独建。
 
 **解锁**：06-stage-sched/todo.md P1-3 的真实通电；E5 的 PM↔SCHED 链路（若立项）。
+
+---
+
+## E9 RS 生产接线面：KernelApi 五域面的真实传输（= 03-stage-rs/todo.md §18.10 E-11，2026-09-06）
+
+**问题**：RS 服务器的外部边界 trait 已按最终形态拆为五个域面（2026-09-06 E-2 修复：`SysApi` 内核 8 方法 / `SchedApi` 调度器 2 / `PmApi` PM 进程生命周期 8 / `VmApi` VM 2 / `IpcApi` RS 自身 IPC 2，`KernelApi` 为 supertrait 组合，见 03-stage-rs/01-rs-boot-init.md §3.5），生产实现 `UnimplementedKernelApi` 全部 `Err(ENOSYS)` fail-closed（T7 门 PASS，主循环 `run()` 以 Err 退出而非自旋）。真实传输不存在：trap 层（edge E1）、RS 所需 SYS_* 用户态包装（E2/E6 只覆盖 VM/PM 面）、PM/VM 消息构造面全缺。
+
+**证据**（对端现状，2026-09-06 核实）：内核侧——SYS_PRIVCTL（`os/kernel/src/` 对端已有，do_privctl 语义）、SYS_UPDATE（`misc.rs:1635`，12 步全实现，E2 已列）、SYS_KILL（`syscall_signal.rs:148`，E6 已列）、GETMINFO GET_MACHINE/GET_HZ（`misc.rs:1033-1050`，E8 已列）、SYS_SETALARM（`syscall_clock.rs:160`）；VM 侧——`os/servers/vm/src/rs.rs` 的 RS_PREPARE/RS_UPDATE 对端部分 DEFERRED（02-stage-vm T12/T13）；PM 侧——`srv_fork`/PM_GETEPINFO 对端属 04-stage-pm（部分在建）。
+
+**影响**：03-stage-rs 的 19 号主线（19-rs-external-interfaces.md）通电；E-1（RS 自升级，18 号接线轮）整个链条压在本条的 `PmApi::srv_fork` 上；E5(c) RS live-update 联调链的前置。
+
+**建议**：按 03-stage-rs A5 路线图分域推进，每域一个可独立验证的切片——
+1. `IpcApi`/`SysApi` 面：依赖 edge E1（trap 层）+ 在 `os/libs/minix-sys/src/syscall.rs` 复用 `perform_kernel_call` 补 RS 所需 SYS_* 命名包装（SYS_PRIVCTL/GETPRIV/UPDATE/KILL/SETALARM/GETINFO 族，仿 E2/E6 模板，各配 CannedTransport 回放测试）；
+2. `PmApi` 面：PM 消息构造（PM_SRV_FORK/PM_GETEPINFO/EXEC 面）——与 04-stage-pm 的对端工作流协同定 wire，`srv_execve` 的 C 实现是 RS 内 ELF 装载 + 内核分配/拷贝 + PM 终步（exec.c:21-64/:102/:127），装载与拷贝可先行（内核调用面），PM 终步随后；
+3. `VmApi` 面：VM_RS_MEM_*（com.h:741-745）——依赖 02-stage-vm T12/T13 的 rs.rs 对端；
+4. `SchedApi` 面：KERNEL 分支走 SYS_SCHEDCTL（E8 已列对端），SCHED 分支走 SCHEDULING_* 消息（依赖 06-stage-sched 服务器）。
+全部落定后逐条回写 03-stage-rs/todo.md §18.10 E-11 与 A5 路线图第 6 步。
+
+**解锁**：03-stage-rs 19 号主线通电；E-1 自升级；E5(c) 联调链。
