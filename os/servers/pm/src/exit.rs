@@ -136,11 +136,17 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 8. VFS tell (350-359) ----
     {
         let call = if dump_core {
-            // VFS_PM_DUMPCORE needs term sig + path; we use sig_status 0 and name as path placeholder
+            // C: forkexit.c:354-357 — `m.VFS_PM_PATH = rmp->mp_name`（m7p1）：
+            // 指向 PM 静态 mproc 表内进程名的指针，VFS 稍后经 safecopy 从
+            // PM 内存读取。Rust 无法对可移动的表数据形成跨异步的稳定裸指针，
+            // 且 minix-types 的 `VfsCall::DumpCore.path` 为 i32（容不下 64 位
+            // 指针）——wire 契约需与 05-stage-vfs 协同重新设计（按值携带
+            // [u8;16] 名字，或 minix-types 增加 path+len 成员，挂 edge E7）。
+            // [DEFERRED: D-16] 阻塞依赖：跨服务 core-name 契约决策。
             VfsCall::DumpCore {
                 endpoint: proc_ep,
                 term_sig: table.procs[proc_nr].state.lifecycle.exit_code().map(|(_, s)| s as i32).unwrap_or(0),
-                path: 0, // name pointer stub
+                path: 0, // [DEFERRED: D-16] 见上
             }
         } else {
             VfsCall::Exit { endpoint: proc_ep }

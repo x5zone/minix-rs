@@ -277,15 +277,15 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
 | D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
-| D-13 | `exit.rs:33` | exit 路径 `sys_kill` no-op | 11-signal-core.md | 内核 sys_kill |
-| D-14 | `exit.rs:101` | 退出进程自身 times 计账为 0 | 10-pm-wait.md | 内核 sys_times |
+| D-13 | `exit.rs:33` | exit 路径 `sys_kill` no-op——**依赖未解除**：向内核发送终止信号需要 SYS_KILL 用户态包装（kernel 对端已实现 `syscall_signal.rs:148`）+ trap 层（E1），二者均未落地；edge E6 已登记 | 11-signal-core.md | edge E6（SYS_KILL wrapper）+ E1（trap） |
+| D-14 | `exit.rs:101` | 退出进程自身 times 计账为 0——**依赖未解除**：C 经 `sys_times(proc_nr_e,…)`（`forkexit.c:306-310`）读内核态的进程 CPU 时间，需要 SYS_TIMES wrapper（对端已实现）+ trap 层；edge E6 已登记 | 10-pm-wait.md | edge E6（SYS_TIMES wrapper）+ E1（trap） |
 | D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
-| D-16 | `exit.rs:142` | core dump 路径名指针为 0 | 09-pm-exit.md | core dump 语义规划 |
-| D-17 | `exit.rs:192` | `sched_stop` 假装 Ok | 16-scheduling.md | A-8 |
-| D-18 | `exit.rs:215` | `sys_clear`（内核侧进程回收）no-op | 01-stage-kernel | 内核 sys_clear |
+| D-16 | `exit.rs:142` | core dump 路径名指针为 0——**依赖未解除的显式 DEFERRED**：C 传 `mp_name` 指针（m7p1，VFS 异步 safecopy PM 内存，`forkexit.c:356`），Rust (a) 无法对表内数据形成跨异步稳定指针、(b) `VfsCall::DumpCore.path` 为 i32 容不下 64 位指针——需与 05-stage-vfs 协同重设计契约（按值 [u8;16] 或 minix-types 增 path+len 成员） | 09-pm-exit.md | 契约决策 + minix-types wire 成员（edge E7） |
+| D-17 | `exit.rs:192` | `sched_stop` 假装 Ok——**依赖未解除**：C `exit_restart` 的 `sched_stop` 走 SCHED 服务的 SCHEDULING_STOP 消息（`schedule.c` 客户端，A-8），SCHED 服务器（16-stage）尚未存在，无对端可通话 | 16-scheduling.md | A-8（SCHED 客户端 + 服务器落地） |
+| D-18 | `exit.rs:215` | `sys_clear`（内核侧进程回收）no-op——**依赖未解除**：kernel 对端已实现（`syscall_process.rs:366`），缺 SYS_CLEAR 用户态 wrapper（E6）+ trap 层（E1）；PRIV_PROC 直毁路径的端到端验证随联调 E5 | 01-stage-kernel | edge E6（SYS_CLEAR wrapper）+ E1（trap） |
 | D-19 | ~~`exit.rs:219`~~ | ~~`vm_exit`（页表回收）no-op~~ **✅ 已修复**（2026-09-06，Fix #12：真实 `sendrec(VM, VM_EXIT)` + 失败 panic 对齐 `forkexit.c:455-457`） | 02-stage-vm/22 | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
-| D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功（C 侧 `utility.c:92` 本身只填 utime/stime） | 10-pm-wait.md | sys_datacopy + rusage 范围决策 |
+| D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功——**依赖未解除**：C 的 `sys_datacopy`（`utility.c:92-106`）从内核读子进程 CPU 时间，需要 SYS_TIMES wrapper + trap 层；且 C 侧自身仅填 ru_utime/ru_stime（`utility.c:92` TODO），Rust 跟随该范围 | 10-pm-wait.md | edge E6（SYS_TIMES/SAFECOPY）+ E1（trap）；rusage 范围跟随 C |
 | D-22 | ~~`signal.rs:160`~~ | ~~`is_stacktrace` 返回硬编码 false~~ **✅ 已修复**（2026-09-06，Fix #13：`is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写——原计划臆断为位掩码，实为 `sys/signal.h:279-286` 的谓词宏；连带修复旧 lethal 近似列表错含 SIGKILL/TERM/TRAP 的真实语义偏差，EPERM 保护测试改用 SIGSEGV） | ~~16-scheduling.md~~ 11-signal-core.md（语义实属信号系统，原归属登记有误） | ~~A-8~~ 无依赖，纯谓词 |
 | D-23 | ~~`signal.rs:360-362`~~ | ~~SIGVTALRM/`check_vtimer` stub~~ **✅ 已修复**（2026-09-06，Fix #14：process_ksig 接真实 check_vtimer（VTimerCtl 显式接缝）；连带修复 `signo == 12` 应为 26 的真 bug——旧分支从未命中） | 14-itimer.md | ~~虚拟计时器 trait 落地~~ PM 侧达成（VTimerCtl 生产实现 = 内核 sys_vtimer 挂 E6） |
 | D-24 | ~~`mproc/fork.rs:222-228`~~ | ~~`getticks()` 返回 0~~ **✅ 已修复**（2026-09-06，Fix #15：getticks 桩删除；`fork_from`/`srv_fork_from` 显式注入 `started: Clock`，`fork_child_from_parent` 经 ClockSource 计算；活路径零值收敛为带 E6 注释的显式 seam） | 14-itimer.md / 内核 sys_times | ~~内核 uptime 面~~ 结构达成（真实 uptime 挂 E6） |
@@ -635,3 +635,15 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`07-pm-fork.md` §D5/§4.2/§4.5 三处 started 表述；本文件 §6 D-24 行。
 
 **未做（DEFERRED 论证）**：真实内核 uptime（`sys_times`/getuptime 三值）挂 E6——PmContext 层的 ClockSource 接缝已就绪，生产实现落地即接管。
+
+### ✅ Fix #16: D-16 论证升级 + 全部余下 DEFERRED 行的自包含化（2026-09-06，纯文档轮）
+
+**File(s)**：
+- `os/servers/pm/src/exit.rs`（D-16 代码注释升级为 `[DEFERRED: D-16]` 显式契约：C 指针语义 + 两层阻塞论证）
+- 本文件 §6：D-13/D-14/D-16/D-17/D-18/D-21 五行增补"**依赖未解除**"自包含论证（todo-fix 硬约束：DEFERRED 必须写明依赖为何未解除，不许静默降级）
+
+**要点**：D-16（core name 指针）经重新核实定为**契约级缺口**而非可单独修复项——C 的 `VFS_PM_PATH = mp_name`（m7p1）是指向 PM 静态 mproc 表的指针、由 VFS 异步 safecopy 读取；Rust (a) 不能对表内数据形成跨异步稳定指针，(b) minix-types 的 `VfsCall::DumpCore.path: i32` 容不下 64 位指针。解除条件 = 与 05-stage-vfs 协同的契约决策 + E7 wire 成员。其余各行补齐对端现状（哪些 kernel 已实现/未实现）与 edge 条目引用，使每条 DEFERRED 的存在性与解除条件都可独立审计。
+
+**Verified**：`cargo test -p minix-pm`：**341 lib + 6 integration passed**（纯注释/文档轮，零代码语义变化）。
+
+**未做（DEFERRED 论证）**：即本轮登记的全部内容——每条的解除条件与 edge 归属见 §6/§9。
