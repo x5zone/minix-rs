@@ -1181,6 +1181,13 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **452 / 467 / 466 / 452 passed**（+2 gateway wire 测试）；四组合 clippy `^servers/` **0 警告**；`rg "unimplemented!|Endpoint::from_generation_slot(1" os/servers/vm/src/fork.rs` → 0
 - **Docs**: 18-vm-fork.md（模块清单 + 偏差表）；kernel_gateway.rs 模块文档（wire 约定与 E1/E2 依赖）
 
+### ✅ Fix #32: T15 — audit 记录经 SYS_DIAGCTL 转发（KernelGateway::diag_write）
+
+- **Files**: `os/servers/vm/src/kernel_gateway.rs`（trait 增 `diag_write(&str)`：SYS_DIAGCTL=44、code=1（DIAGCTL_CODE_DIAG）、buf=调用方指针/len≤128（kernel/src/syscall.rs:2281-2340，DIAGBUFSIZE=128）；TrapKernelGateway 实现 + MockGateway 记录/`diag_log()` 访问器）、`os/servers/vm/src/audit.rs`（重写：`emit_to_gateway` 无条件可测核心——128 字节按字符边界分块转发；feature 构建下 `emit` = AssumeSyncCell sink 查找 + 转发；`register_gateway`/`clear_gateway` 随 VmServer 生命周期——diagnostic.rs 裸访问先例 + global.rs 单线程论证）、`os/servers/vm/src/vm_server.rs`（ctor 注册 / drop 清除，`vm_acl_audit` feature 门控）、3 个 audit 测试（转发/分块/字符边界）
+- **判定**：原"周期 check_leak"式思路（等 syslog IPC）被替代——kernel 的 DIAGCTL 控制台通道已真实存在（dispatch_diagctl，kernel syscall.rs:2281+），gateway 直通即完成闭环；pre-E1 trap 桩答 -EIO，审计失败被吞（审计丢失非致命，C fdref.c 同款论证）
+- **Verified**: 四矩阵 **455 / 470 / 469 / 455 passed**（+3 audit 测试）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 15-ipc-dispatch.md §4 表 #7（audit_log! 三态 → SYS_DIAGCTL 路由）；audit.rs 模块文档重写
+
 ### ✅ Fix #30: T18 — 分配失败计数接入 InfoStats 可观测面（[ARCH: A-16]），check_leak"周期接线"判定关闭
 
 - **Files**: `os/servers/vm/src/alloc_stats.rs`（`allocation_failures()` 访问器；V10-P2-1 的 DEFERRED 注记替换为 T18 判定注释——不设周期循环：C 无对应物且 active_pages 已由 `self_page_count()` 进入 VM_INFO Usage）、`os/servers/vm/src/alloc_page.rs`（`alloc_failures()` 访问器）、`os/servers/vm/src/query.rs`（`StatsInfo.alloc_failures` + handle_info 填充 + 可观测性测试）、`libs/minix-types/src/ipc/vm.rs`（`VmReply::InfoStats.alloc_failures: u32`，[ARCH: A-16]，wire 布局不变）、`os/servers/vm/src/ipc/dispatcher.rs`（透传）

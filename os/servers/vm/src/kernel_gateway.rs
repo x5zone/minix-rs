@@ -30,6 +30,8 @@
 use minix_sys::syscall::{perform_kernel_call, KernelCallTransport};
 #[cfg(test)]
 use minix_sys::syscall::{CannedKernelCallTransport, DirectKernelCallTransport};
+#[cfg(test)]
+use core::cell::RefCell;
 use minix_types::{Endpoint, Message, UserSlot};
 
 /// Failure of a kernel call made through the gateway.
@@ -53,6 +55,20 @@ pub(crate) trait KernelGateway {
     /// child endpoint on success, negative errno on failure
     /// (KcallResult::Ok(child_endpoint.0) → reply_code()).
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<Endpoint, GatewayError>;
+
+    /// Write a diagnostic string through SYS_DIAGCTL code 1 (C:
+    /// do_diagctl.c:28-44 — the kernel data_copy's up to DIAGBUFSIZE=128
+    /// bytes from the caller's buffer and kputc's them to the console;
+    /// kernel/src/syscall.rs:2281+, m_type = Syscall::Diagctl = 44).
+    /// Callers chunk longer text at 128 bytes (audit.rs).
+    fn diag_write(&mut self, text: &str) -> Result<(), GatewayError>;
+
+    /// Test/diagnostic accessor: concatenated diag text (default empty;
+    /// `MockGateway` returns what `diag_write` recorded).
+    #[cfg(test)]
+    fn diag_log(&self) -> alloc::string::String {
+        alloc::string::String::new()
+    }
 }
 
 /// Production gateway: kernel calls through the minix-sys kernel-call
@@ -93,7 +109,28 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         // result slot (m_type), assigned by the kernel to the child slot.
         Ok(Endpoint(reply))
     }
+
+    fn diag_write(&mut self, text: &str) -> Result<(), GatewayError> {
+        // m_type is written by perform_kernel_call (the call number).
+        let mut msg = Message::default();
+        {
+            // SAFETY: documented SYS_DIAGCTL wire — the kernel dispatch
+            // reads code/len/buf (kernel/src/syscall.rs:2285-2292).
+            let d = unsafe { &mut msg.m_u.m_lsys_krn_sys_diagctl };
+            d.code = 1; // DIAGCTL_CODE_DIAG
+            d.buf = text.as_ptr() as u64;
+            d.len = text.len() as u64;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_DIAGCTL_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
 }
+
+/// C: SYS_DIAGCTL is kernel call 44 (kernel/src/syscall.rs:106).
+const SYS_DIAGCTL_CALL: i32 = 44;
 
 #[cfg(test)]
 /// Scripted gateway for unit tests: records `sys_fork` inputs and answers
@@ -103,12 +140,18 @@ pub(crate) struct MockGateway {
     pub fork_reply: Result<Endpoint, GatewayError>,
     /// Last (parent, child_slot) seen, for call-shape assertions.
     pub last_fork: core::cell::Cell<Option<(Endpoint, UserSlot)>>,
+    /// Diagnostic text recorded by `diag_write` (V11/T15).
+    pub diag_log: RefCell<alloc::string::String>,
 }
 
 #[cfg(test)]
 impl MockGateway {
     pub(crate) fn new() -> Self {
-        Self { fork_reply: Err(GatewayError::Kernel(-minix_types::EIO)), last_fork: core::cell::Cell::new(None) }
+        Self {
+            fork_reply: Err(GatewayError::Kernel(-minix_types::EIO)),
+            last_fork: core::cell::Cell::new(None),
+            diag_log: RefCell::new(alloc::string::String::new()),
+        }
     }
 }
 
@@ -117,6 +160,16 @@ impl KernelGateway for MockGateway {
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<Endpoint, GatewayError> {
         self.last_fork.set(Some((parent, child_slot)));
         self.fork_reply
+    }
+
+    fn diag_write(&mut self, text: &str) -> Result<(), GatewayError> {
+        self.diag_log.borrow_mut().push_str(text);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn diag_log(&self) -> alloc::string::String {
+        self.diag_log.borrow().clone()
     }
 }
 

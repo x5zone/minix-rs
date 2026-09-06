@@ -421,7 +421,7 @@ if let Some(proc) = table.get_active(caller_slot) {
 | 4 | `IPC_FLG_MSG_FROM_KERNEL` 运行时校验 + 告警 | `rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16；`IpcStatus::default()` 下恒 false（不再是恒 true 桩） | 生产路径未达（KernelIpcTransport unimplemented） |
 | 5 | `do_procctl(&msg, transid)` 直接调 | `handle_vfs_transid` 显式校验 clean_type/transid 后调 `dispatch_procctl` | 防御增强 |
 | 6 | VFS 回复内联回调 | 回调延迟到主循环借用边界执行 | borrow checker 驱动，语义等价 |
-| 7 | `vm_calls[c].vmc_name` 告警字符串 | `audit_log!` 宏（lib.rs:40-54）：test → `std::eprintln!`；`vm_acl_audit` feature → `audit::emit`（no_std sink，格式化后丢弃，audit.rs）；release 无 feature → 编译消除 | 等 syslog IPC（V10-P0-1 接线点已明确） |
+| 7 | `vm_calls[c].vmc_name` 告警字符串 | `audit_log!` 宏（lib.rs:40-54）：test → `std::eprintln!`；`vm_acl_audit` feature → `audit::emit` → **`SYS_DIAGCTL`(code 1) 经 KernelGateway 转发**（V11/T15：128 字节分块、注册/清除随 VmServer 生命周期，audit.rs）；release 无 feature → 编译消除 | E1 前 trap 桩答 -EIO，审计失败被吞（审计丢失非致命，C fdref.c 同款论证） |
 | 8 | `msg.m_type = result` 单一编码 | `reply_to_errno` + `encode_reply_data` 分离（errno 与载荷） | 类型化编码，载荷字段显式 |
 | 9 | receive 失败 / 未知 endpoint → `panic`（main.c:122-123/:131-132） | 丢弃消息 + `dropped_messages` 饱和计数 + 审计（不 panic，主循环继续） | **A-14 架构演进**（V9-P0-1，2026-08-16 修复） |
 

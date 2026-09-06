@@ -95,13 +95,20 @@ impl VmContext {
         kernel_allocated: KernelAllocated,
         vm_allocated_bytes: u64,
     ) -> Self {
+        let gateway: alloc::rc::Rc<
+            core::cell::RefCell<alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>,
+        > = alloc::rc::Rc::new(core::cell::RefCell::new(
+            alloc::boxed::Box::new(crate::kernel_gateway::TrapKernelGateway {
+                transport: minix_sys::syscall::DirectKernelCallTransport,
+            }),
+        ));
+        // V11/T15: audit records route through this gateway (SYS_DIAGCTL).
+        #[cfg(all(not(test), feature = "vm_acl_audit"))]
+        crate::audit::register_gateway(gateway.clone());
+
         Self {
             proc_table: VmProcTable::get_global(),
-            gateway: alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(crate::kernel_gateway::TrapKernelGateway {
-                    transport: minix_sys::syscall::DirectKernelCallTransport,
-                }),
-            )),
+            gateway,
             page_alloc,
             page_frames: None,
             page_cache: PageCache::new(),
@@ -1102,6 +1109,11 @@ impl VmServer {
 
 impl Drop for VmServer {
     fn drop(&mut self) {
+        // V11/T15: the audit gateway sink follows the server lifetime
+        // (same test-isolation contract as unregister_page_alloc below).
+        #[cfg(all(not(test), feature = "vm_acl_audit"))]
+        crate::audit::clear_gateway();
+
         // Clear the global page-allocator pointer so a subsequent VmServer
         // (e.g. the next unit test) can register its own allocator without
         // tripping the overwrite guard in register_page_alloc().

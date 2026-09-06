@@ -1,10 +1,11 @@
 # 跨 Stage Edge TODO（fork-syscall-rewrite）
 
 > 来源：2026-09-06 V11 架构审查（02-stage-vm/todo.md §14）拆分出的跨 stage 条目。
+> 2026-09-06 增补：04-stage-pm 架构审查（04-stage-pm/todo.md §9）拆分出的跨 stage 条目 E6-E7。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
-> 执行约定：一次一条；每条完成后在本文件标注状态与日期；涉及 02-stage-vm 的条目同步回写其 todo.md 对应 V11 条目。
+> 执行约定：一次一条；每条完成后在本文件标注状态与日期；涉及对应 stage 的条目同步回写其 todo.md（02-stage-vm 对应 V11 条目、04-stage-pm 对应 P/D 条目）。
 
 ---
 
@@ -28,7 +29,7 @@
 | T12 | 2 | RS_PREPARE map_proc_dyn_data | rs.rs:250 DEFERRED | ⬜ |
 | T13 | 2 | RS_UPDATE 步骤 5-7（VM 侧）+ 步骤 4 走 Gateway | rs.rs:328 DEFERRED（通电→E2） | ⬜ |
 | T14 | 2 | exec_bootproc（minix-elf + VM 映射 + Gateway.sys_exec） | vm_server.rs:385 DEFERRED（通电→E2） | ⬜ |
-| T15 | 2 | audit 日志转发（Gateway.diagctl） | audit.rs:16（通电→E2） | ⬜ |
+| T15 | 2 | audit 日志转发（Gateway.diagctl） | audit.rs:16（通电→E2） | ✅ 2026-09-06（todo.md §15 Fix #32） |
 | T16 | 2 | sanity_checks feature + usedpages 等价物 | V10-P2-1 sanity 行 + G-V11-2 | ⬜ |
 | T17 | 2 | bitmap cache_freepages 三步路径 → **判定闭合：语义已被双层覆盖，钩子删除** | bitmap_alloc.rs:347 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #31） |
 | T18 | 2 | alloc 失败计数接入 InfoStats（周期循环判定不采纳） | alloc_stats.rs:46 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #30） |
@@ -94,3 +95,33 @@
 **问题**：VM 与其他服务器的协作当前零端到端覆盖——`os/tests/pm_vm_fork{,_test}.rs` 正文整体注释停用（自注 "DEPRECATED: permanently disabled"）；VFS fdclose、RS live-update、QEMU VM paging 冒烟均无。
 
 **建议**：在 E1/E2 落地后建联调包：(a) PM↔VM fork 全链路（恢复/重写旧测试，改走 minix-sys 消息层而非 crate 内类型——旧失效原因正是 `pub(crate)` 边界收紧）；(b) VM↔VFS fdclose 往返；(c) RS live-update 全链路（RS_PREPARE → UPDATE → resume）；(d) QEMU VM paging 冒烟（boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap 测试页 → 串口结果，复用 `os/qemu-tests/` 基建）。
+
+---
+
+## E6 minix-sys PM 所需 SYS_* wrapper 扩充（= 04-stage-pm/todo.md §9 抽取）
+
+**问题**：E2 只覆盖 VM 侧 6 类 SYS_* 包装；PM 侧生产代码声明的内核调用面同样没有用户态入口。04-stage-pm/todo.md §6 的 24 项 D-XX 登记中有 6 项的解除条件是"对应内核调用经 minix-sys 可达"，但 minix-sys 侧没有任何 PM 专用 SYS_* 包装（`os/libs/minix-sys/src/` 全源仅 lib.rs 的 14 个 POSIX 形顶层函数）。
+
+**证据**（kernel 对端现状，2026-09-06 grep 核实）：
+- 对端已实现、可直接包 wrapper：SYS_TIMES（`os/kernel/src/syscall_clock.rs:90`）、SYS_CLEAR（`os/kernel/src/syscall_process.rs:366`）、SYS_KILL（`os/kernel/src/syscall_signal.rs:148`）、SYS_SIGSEND（`os/kernel/src/syscall_signal.rs:544`）、SYS_ABORT（`os/kernel/src/syscall.rs:1793`）、SYS_SAFECOPYFROM/TO（`os/kernel/src/syscall_copy.rs:361/:376`，E2 已列）。
+- 对端也不存在：SYS_GETMONPARAMS/SYS_GETIMAGE（`os/kernel/src/` 全源 grep 零命中）——PM 的 `BootParams::placeholder()`（`os/servers/pm/src/main.rs:15`）没有真实对端；需先与 01-stage-kernel 裁决启动参数/映像的传递路径（boot-shim handoff 是否已取代 C 的 monitor 参数语义），再双侧新建。
+
+**影响**：04-stage-pm/todo.md 的 D-02（启动参数）、D-09（sys_abort）、D-13（sys_kill）、D-18（sys_clear）、D-21（rusage safecopy）、D-24（sys_times/getticks）全部停在"逻辑完备、通电无门"；PM 的 `KernelIpcTransport`（`os/servers/pm/src/ipc/transport.rs:86-96` unimplemented）除 trap 层（E1）外也缺这层调用面。
+
+**建议**：复用 E2 的 `perform_kernel_call`（`os/libs/minix-sys/src/syscall.rs:201`，ENOTREADY 重试）与 `KernelCallTransport` 机制，为对端已实现的 6 类各加一个包装函数（签名对齐 kernel dispatch 的消息布局，message 构造用 minix-types 现有 union 成员），每个包装带一个 CannedTransport 回放单元测试；SYS_GETMONPARAMS/SYS_GETIMAGE 单独立项，待 01-stage-kernel 裁决传递路径后双侧补齐。
+
+**解锁**：04-stage-pm/todo.md D-02 / D-09 / D-13 / D-18 / D-21 / D-24 的真实通电；E5(a) PM↔VM fork 联调的信号与回收链前置。
+
+---
+
+## E7 minix-types PM 协议面系统化（= 04-stage-pm/todo.md P1-4 + P2-3 抽取）
+
+**问题**：minix-types 对 PM 的协议面是三个碎片。(a) `os/libs/minix-types/src/ipc/pm.rs:13-38` 的 `PmRequest`/`PmResponse` 是零使用死代码——整个工作区只有 `PmError` 被 `os/servers/pm/src/init.rs:390` 消费。(b) PM 调用号双址：`os/servers/pm/src/ipc/calls.rs:29-124` 的 `PmCall` 枚举（47 值，calls.rs:16-17 注释自述"将来内核侧需要调用号时再上移 minix-types"）与 minix-types 散落常量（如 `PM_PROCEVENTMASK`，被 `os/servers/pm/src/init.rs:368` 使用）并存，同一事实两处表达。(c) 47 个调用的消息布局没有系统化 wire 类型——C `m_lc_pm_*`/`m_pm_lc_*` union 字段（minix/com.h）当前只在 PM 主循环内联 unsafe 访问（`os/servers/pm/src/init.rs:430/438-440/459-460/480-481`）。另有调度协议常量缺失：`SEND_PRIORITY`/`SEND_TIME_SLICE`（C `minix3/minix/servers/pm/const.h:19-20`）全仓无对应。
+
+**证据**：`os/libs/minix-types/src/ipc/pm.rs` 全文 111 行仅 Fork 一个请求变体；VM 侧同型先例是 `NR_VM_CALLS` 双定义（02-stage-vm/todo.md:1047，`minix-types/src/ipc/vm.rs:149` vs `os/servers/vm/src/vm_server.rs:1173` 私有副本）；共享层"上移 minix-types"的 OQ 决策先例见 G1（01-stage-kernel/todo.md:342，ProcNr）。
+
+**影响**：PM 的分发接线（04-stage-pm/todo.md P1-1，40 个待点亮调用）每一臂都要先回答"消息怎么解码"；没有系统化 wire 类型，unsafe 解码将被复制约 40 份，wire 布局错误无类型层防护；调用号双址使 callnr.h 的单一真值破口随消费方（libc/commands）增多而扩大。
+
+**建议**：与 04-stage-pm P1-4 协同一次做齐——(1) 按调用族在 `os/libs/minix-types/src/ipc/pm.rs` 建 wire 结构体（对照 C union 逐字段 + `size_of` 断言，风格对齐 `ipc/message.rs` 既有成员如 `MessPmSchedSchedulingSetNice` :1165）；(2) 处置 `PmRequest`/`PmResponse` 死代码：要么作为新 wire 层的入口枚举重构，要么删除（待 P1-4 设计时定，不允许默认保留）；(3) 调用号收敛二选一：47 个 `pub const PM_*` 上移 minix-types（PmCall 枚举随之迁移，成为 callnr.h 的 Rust 等价物，倾向此案）或 minix-types 常量清空、pm crate 为唯一真值——需 OQ 确认归属；(4) 补 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量。
+
+**解锁**：04-stage-pm/todo.md P1-1（每臂解码）/ P1-4 / P2-3 的实施前提；未来 libc/commands 侧 PM 调用发起方的常量消费。
