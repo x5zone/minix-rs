@@ -883,11 +883,31 @@ impl VmServer {
             return DispatchAction::Reply(result);
         }
 
-        // Priority 2: RS_INIT (main.c:149-152)
+        // Priority 2: RS_INIT (main.c:149-152). C's do_sef_init_request
+        // unpacks mess_rs_init (sef_init.c:193-215); the grant inside it
+        // feeds the rproctab copy (main.c:246).
         if m_type == RS_INIT && source == RS_PROC_NR {
-            self.rs_handshake()
-                .expect("rs_handshake failed");
-            return DispatchAction::Suspend;
+            let init = minix_types::RsInit::decode_message(msg);
+            match self.rs_handshake(&init) {
+                Ok(()) => return DispatchAction::Suspend,
+                Err(e) => {
+                    // C panics on init failure (main.c:151 "do_sef_init_request
+                    // failed!"); minix-rs fails closed at the IPC boundary
+                    // ([ARCH: A-14] / V9-P0-1): drop + count + audit, no reply —
+                    // RS times out exactly as it would against a dead VM,
+                    // minus the whole-system outage.
+                    self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
+                    audit_log!(
+                        "[VM RS] handshake failed (gid={}): {:?} — RS_INIT dropped",
+                        init.rproctab_gid, e
+                    );
+                    // audit_log! compiles out without the feature; keep `e`
+                    // alive in every build (the variant is part of the drop
+                    // contract, surfaced again when a log channel lands).
+                    let _ = e;
+                    return DispatchAction::NoReply;
+                }
+            }
         }
 
         // Priority 3: VM_PAGEFAULT (main.c:153-164)
@@ -970,13 +990,13 @@ impl VmServer {
 
     /// RS handshake — replaces C's sef_startup() + sef_cb_init_fresh().
     /// C (main.c:237-250): sys_safecopyfrom → map_service for each rprocpub entry.
-    fn rs_handshake(&mut self) -> Result<(), VmError> {
+    fn rs_handshake(&mut self, init: &minix_types::RsInit) -> Result<(), VmError> {
         let table = VmProcTable::get_global();
 
-        // 1. Send RS_INIT, receive rproctab
-        // C: sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, 0, rprocpub, ...)
-        let rproctab = ipc_call_rs_init()
-            .map_err(|_| VmError::InternalError)?;
+        // 1. Fetch the rproctab through the RS grant carried by RS_INIT.
+        // C (main.c:246): sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, 0,
+        // rprocpub, sizeof(rprocpub)) — RS is the granter, not SELF.
+        let rproctab = ipc_call_rs_init(init.rproctab_gid)?;
 
         // 2. Register ACL for each boot service
         // C: for(i=0; i<NR_BOOT_PROCS; i++) if(rprocpub[i].in_use) map_service(&rprocpub[i]);
@@ -1164,40 +1184,26 @@ fn transid_strip(m_type: u32) -> u32 {
 /// C: `minix/com.h:909` — `#define VFS_TRANSACTION_BASE 0xB00`
 const VFS_TRANSACTION_BASE: u32 = 0xB00;
 
-fn ipc_call_rs_init() -> Result<RprocTab, ()> {
-    // TODO: expand the stub into a documented
-    // three-stage contract so the deferred path has explicit semantics.
+fn ipc_call_rs_init(_rproctab_gid: i32) -> Result<RprocTab, VmError> {
+    // C contract (ground truth: main.c:137-155 + main.c:237-260 + sef_init.c:193):
+    //   1. RS *sends* RS_INIT to VM — main.c:149 gates on
+    //      `msg.m_source == RS_PROC_NR`; VM never sends RS_INIT itself.
+    //   2. The message carries mess_rs_init.rproctab_gid — a grant RS holds
+    //      on its public process table (m_rs_init, ipc.h:1858-1867).
+    //   3. VM's init callback copies the table with
+    //      sys_safecopyfrom(RS_PROC_NR, gid, 0, rprocpub, sizeof(rprocpub))
+    //      — the granter is RS_PROC_NR, **not SELF** (main.c:246).
+    //   4. map_service(&rprocpub[i]) per in_use entry — the ACL loop in
+    //      `rs_handshake`.
     //
-    // The C source (proto.h + table.c) does this in three steps:
-    //
-    //   1. Build a `mess_rs_init` message (request type RS_INIT=0x714,
-    //      sender = VM endpoint, no payload) and send it to RS.
-    //   2. Receive a `mess_rs_init_reply` from RS that contains a
-    //      pointer to a `struct rprocinfo` describing the live
-    //      replicated services and the grant table metadata.
-    //   3. Copy that table out of RS's address space via
-    //      `sys_safecopyfrom(SELF, ...)` and decode it into our
-    //      `RprocTab`.
-    //
-    // The Rust rewrite is blocked on three DEFERRED dependencies:
-    //
-    //   - IpcTransport (this crate, `ipc/transport.rs:150`/`:164` is still
-    //     `unimplemented!()` for KernelIpcTransport; this depends on
-    //     kernel IPC primitive).
-    //   - sys_safecopyfrom syscall shim (depends on the kernel-side
-    //     SYS_SAFECOPYFROM dispatch and the SAFECOPY grant table;
-    //     see kernel `dispatch_safecopy` — DEFERRED).
-    //   - Endpoint ↔ ProcNr conversion on the kernel side (depends
-    //     on `ProcessTable::endpoint_to_nr()` being globally
-    //     available; partial fix in place, full wiring pending).
-    //
-    // Until all three land, returning `Ok(RprocTab::empty())` keeps
-    // `rs_handshake()` non-panicking and lets VM continue to service
-    // requests from PM/SYS without an RS handshake. The `Err(())`
-    // variant is reserved for "RS replied but the reply was malformed" —
-    // currently unreachable but kept for symmetry with the future
-    // implementation.
-    Ok(RprocTab::empty())
+    // Step 3's byte decode is **E-RSWIRE** (edge_todo.md): `struct rprocpub`'s
+    // byte ABI cannot be pinned from the minix3 subtree in this repository
+    // (devmajor_t / bitchunk_t / struct rs_pci are referenced but not defined
+    // here), and the layout is an RS↔VM shared contract. Until E-RSWIRE
+    // lands this returns NotImplemented — an honest known-unimplemented —
+    // replacing the previous fabricated `Ok(RprocTab::empty())`, which made
+    // every handshake silently register zero ACLs while looking successful.
+    Err(VmError::NotImplemented)
 }
 
 // C: com.h:60-61 — VFS_PROC_NR = 1, RS_PROC_NR = 2.
@@ -1240,6 +1246,10 @@ struct RprocEntry {
 }
 
 impl RprocEntry {
+    // V11/T9 step 3: unreachable until E-RSWIRE (the fake-success caller
+    // `Ok(RprocTab::empty())` died; the wire decoder will construct real
+    // entries). Kept + pinned by tests as the D8 stub shape.
+    #[allow(dead_code)]
     const EMPTY: Self = Self {
         in_use: false,
         endpoint: Endpoint::NONE,
@@ -1253,6 +1263,8 @@ struct RprocTab {
 }
 
 impl RprocTab {
+    // V11/T9 step 3: unreachable until E-RSWIRE — see RprocEntry::EMPTY.
+    #[allow(dead_code)]
     const fn empty() -> Self {
         Self {
             entries: [RprocEntry::EMPTY; 32],
@@ -2393,6 +2405,46 @@ mod tests {
         assert_eq!(m1.m1i3, 0x3000);
         // The endpoint slot must not be clobbered by the len write (25-R2).
         assert_eq!(m1.m1i1, 0);
+    }
+
+    /// V11/T9 step 3: an RS_INIT from RS carries the rproctab grant; the
+    /// handshake fails closed until E-RSWIRE (the rproctab byte decode is
+    /// pending) — no panic (the previous `.expect`), the message is dropped
+    /// and counted, and nothing is sent to RS. Flip when E-RSWIRE lands.
+    #[test]
+    fn test_run_once_rs_init_fails_closed_until_erswire() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // RS_INIT from RS_PROC_NR, carrying grant 7 (C main.c:149 shape).
+            let mut msg = Message::default();
+            msg.m_source = Endpoint::RS;
+            msg.m_type = RS_INIT as i32;
+            // SAFETY: test constructs the message with m_rs_init active.
+            unsafe {
+                msg.m_u.m_rs_init = minix_types::ipc::MessRsInit {
+                    rproctab_gid: 7,
+                    ..Default::default()
+                };
+            }
+            handle.queue_receive(msg, IpcStatus::default());
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+            // Fail-closed: no reply to RS (NoReply), drop counted, audit fired.
+            assert_eq!(handle.sent().len(), 0, "no reply to RS on failed handshake");
+            assert_eq!(server.dropped_messages(), 1, "failed handshake must be counted");
+        });
     }
 
     #[test]

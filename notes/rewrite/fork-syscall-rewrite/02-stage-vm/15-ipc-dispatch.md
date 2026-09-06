@@ -683,7 +683,7 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 | 缺口 | 状态 | 说明 |
 |------|------|------|
 | dispatch_on_msg 五优先级直接单测 | ✅ 已闭环 | **V10-P0-2**：`test_run_once_dispatch_reply_round`（vm_server.rs:1684）经 TestTransportHandle 驱动完整主循环一轮（receive → notify 检查 → dispatch → send 记录）；`test_run_once_receive_failure_counts`（:1782）覆盖丢弃路径；`test_pagefault_errors_counted`（:2071）覆盖 P3 失败路径 |
-| RS_INIT 分支测试 | ⚠️ 缺失 | rs_handshake 依赖 ipc_call_rs_init 桩（vm_server.rs:1124 返回 RprocTab::empty()），无消息级测试 |
+| RS_INIT 分支测试 | ✅ 已闭环（V11/T9 step 3） | `test_run_once_rs_init_fails_closed_until_erswire`（vm_server.rs）：TestIpcTransport 投递带 grant 的 RS_INIT → 握手 fail-closed（E-RSWIRE 前 NotImplemented）→ 无回复 + `dropped_messages==1`；grant 经 `RsInit::decode_message`（minix-types `m_rs_init` union 成员，roundtrip 测试同上）贯通 |
 | VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（vm_server.rs:2071）：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
 | is_ipc_notify 分支 | ✅ 已闭环 | **V10-P1-1**：`test_run_once_notify_skipped_before_dispatch`（vm_server.rs:1735）——NOTIFY 状态消息经 `IpcStatus::is_notify()` 在 dispatch 前跳过 |
 | acl_check 拒绝路径单测 | ⚠️ 部分 | AclState::acl_check 有单测（acl.rs:200+），但 dispatch_on_msg 层"拒绝→ENOSYS 回复"无直接测试 |

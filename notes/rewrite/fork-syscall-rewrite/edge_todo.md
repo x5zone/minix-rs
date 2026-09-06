@@ -23,7 +23,7 @@
 | T6 | 1 | VmContext 第二步：dispatcher 收 &mut VmContext + fdref/table 收敛 | V11-P1-2（2/2） | ✅ 2026-09-06（todo.md §15 Fix #24；fdref 收敛归 T10） |
 | T7 | 1 | per-call codec 注册表 + dispatch 表驱动化 | V9-P2-1 + V9-P2-2 | ✅ 2026-09-06（todo.md §15 Fix #26） |
 | T8 | 1 | 错误枚举收敛 → **判定闭合：现有 From 集中表即最优** | V10-P2-3 + P2-2 | ✅ 2026-09-06（todo.md §15 Fix #27，WONTFIX 级设计判定） |
-| T9 | 2 | KernelIpcTransport VM 侧完备 + KernelGateway seam | V11-P1-1（通电→E1/E2） | 🔄 step1 ✅（Fix #28）step2 ✅（Fix #29：Gateway + SYS_FORK wire + fork 迁移）；step3（safecopy wire + rs_handshake/ipc_call_rs_init 逻辑完备）随 T10/T13 |
+| T9 | 2 | KernelIpcTransport VM 侧完备 + KernelGateway seam | V11-P1-1（通电→E1/E2） | 🔄 step1 ✅（Fix #28）step2 ✅（Fix #29）step3 ✅（Fix #34：grant 贯通 + 假成功消灭 + fail-closed；rproctab 字节解码→**E-RSWIRE**） |
 | T10 | 2 | VFS_FDCLOSE 发送 + region close 入队 | （V11-P1-1 建议 2 / P1-3 链） | 🔄 入队半 ✅（Fix #33）；发送半 → **E-VFSWIRE** |
 | T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ⬜ |
 | T12 | 2 | RS_PREPARE map_proc_dyn_data | rs.rs:250 DEFERRED | ⬜ |
@@ -102,6 +102,21 @@
 3. 测试：Canned transport 上断言 VFS_VMCALL 字段逐项正确。
 
 **依赖**：E1（trap 层）落地后发送才真实可达；vfs 侧 do_vm_call 消息面定稿（09/13-stage 工作流）后定 wire。
+
+---
+
+## E-RSWIRE rprocpub 字节 ABI pinning + rproctab 解码（T9 step3 的余件）
+
+**背景**：RS_INIT 握手的 grant 贯通与 fail-closed 已落地（Fix #34）；`ipc_call_rs_init` 目前诚实返回 `NotImplemented`（pin 测试 `test_run_once_rs_init_fails_closed_until_erswire` 定格），假成功 `Ok(RprocTab::empty())` 已消灭。
+
+**阻塞点**：`struct rprocpub` 的字节 ABI 无法从本仓 minix3 子树 pinning——`devmajor_t`、`bitchunk_t`、`struct rs_pci` 在此树中被引用但**无定义**（rs.h/type.h 不完整）。按 Ground Truth 链（C 源 > doc > code），缺 C 事实就不能猜偏移。且该布局是 RS↔VM 共享契约（rs 服务器工作流同样消费），落点应在 minix-types。
+
+**解锁后工作（约一个完整迭代）**：
+1. 从完整 Minix3 源码树 pin 三类型定义 → 计算偏移表（ILP32：in_use short@0、sys_flags@4、endpoint@8、old_endpoint@12、new_endpoint@16、dev_nr、nr_domain、domain[8]、label[16]、proc_name[16]、vm_call_mask[BITMAP_CHUNKS(49)]、rs_pci、devman_id）；
+2. minix-types 增 `RprocpubWire`（repr(C)）+ `decode` + 偏移断言测试（手排字节十六进制锚定）；
+3. VM 侧：`Gateway::sys_safecopyfrom(granter, gid, offset, buf)`（wire 已定：SYS_SAFECOPYFROM=31、`MessLsysKernSafecopy{from_to,grant_id,offset,address,bytes}`，kernel 应答 Ok(0)=成功）+ `ipc_call_rs_init` 真实体（拷贝 + 解码 → RprocTab）+ 翻转 pin 测试 + 恢复 `rs_handshake` ACL 循环为可达。
+
+**依赖**：完整 Minix3 C 源码参照（或补全本树头文件）；无 E1/E2 依赖（解码可纯单测）。
 
 ---
 

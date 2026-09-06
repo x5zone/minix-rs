@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 8 — 跨服务协作（RS 服务：SET_PRIV / PREPARE / UPDATE / MEMCTL）
 > **源码**: `minix3/minix/servers/vm/rs.c`（全 391 行：`do_rs_set_priv` :34-66 / `do_rs_prepare` :71-145 / `do_rs_update` :150-213 / `rs_memctl_make_vm_instance` :218-276 / `rs_memctl_heap_prealloc` :281-295 / `rs_memctl_map_prealloc` :300-324 / `rs_memctl_get_prealloc_map` :329-344 / `do_rs_memctl` :349-390）+ 调用面（`main.c`：`map_service` :755-768、`sef_cb_init_fresh` rproctab 复制 :241-260（sys_safecopyfrom :246-250）、`adjust_proc_refs` 调用点 :215/:722；`utility.c`：`adjust_proc_refs` :477-492；`minix/rs.h`：`struct rprocpub` :165-183、`SF_VM_ROLLBACK` :198、`SF_VM_NOMMAP` :199、`IS_RPUB_BOOT_USR` :188；`minix/com.h`：请求码 :724/:736/:738/:766、MEMCTL 子请求 :741-745；`minix/ipc.h`：`mess_lsys_vm_update` :1529-1534）
-> **Rust 模块**: `os/servers/vm/src/rs.rs`（`RsError` :34 / `RsMemctlRequest` :72 / `RsMemctlResult` :81 / `RsUpdateResult` :87 / `RsUpdateFlags` :102 / `handle_rs_set_priv` :122 / `handle_rs_prepare` :168 / `handle_rs_update` :285 / `handle_rs_memctl` :339）+ `os/servers/vm/src/vm_server.rs`（`rs_handshake` :659 / `ipc_call_rs_init` :946 / `RprocEntry` :1013 / `RprocTab` :1029 / `RsMemctlAddrLen` 回复编码 :1166）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_rs_set_priv` :829 / `dispatch_rs_prepare` :843 / `dispatch_rs_update` :858 / `dispatch_rs_memctl` :874 / CALLMAP 解码 :1062-1103 / `From<RsError>` :1284-1306）
+> **Rust 模块**: `os/servers/vm/src/rs.rs`（`RsError` :34 / `RsMemctlRequest` :72 / `RsMemctlResult` :81 / `RsUpdateResult` :87 / `RsUpdateFlags` :102 / `handle_rs_set_priv` :122 / `handle_rs_prepare` :168 / `handle_rs_update` :285 / `handle_rs_memctl` :339）+ `os/servers/vm/src/vm_server.rs`（`rs_handshake` :972 / `ipc_call_rs_init` :1245 / `RprocEntry` :1216 / `RprocTab` :1232 / `RsMemctlAddrLen` 回复编码 :1371——V11/T9 step 3：RS_INIT grant 经 `RsInit::decode_message` 贯通入握手，`ipc_call_rs_init` 由假成功 `Ok(empty)` 改为诚实 `NotImplemented`（E-RSWIRE 前）+ P2 失败 fail-closed）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_rs_set_priv` :829 / `dispatch_rs_prepare` :843 / `dispatch_rs_update` :858 / `dispatch_rs_memctl` :874 / CALLMAP 解码 :1062-1103 / `From<RsError>` :1284-1306）
 > **前置**: `15-ipc-dispatch.md`（主循环分发）、`22-vm-exit.md`（LU 后旧实例退出路径）
 > **说明**: 本文档管 **RS（Reincarnation Server）驱动的 live update 中 VM 的全部服务面**——4 个 IPC handler（权限设置、准备、更新、内存控制）、`RprocTab` 握手语义、`adjust_proc_refs`，以及 A-8 缺口契约（RS_PREPARE 第 5 步 / RS_UPDATE 切换未实现）。**不覆盖**：SEF 生命周期与 `map_service` 启动注册的完整叙事（01）、swap_proc_* / map_proc_dyn_data 机制本体（10）、ACL 位图语义（04）、主循环分发框架（15）、查询服务（26）。
 
@@ -459,7 +459,7 @@ struct RprocTab { entries: [RprocEntry; 32] }
 
 - **32 槽**：握手 stub 的占位容量——与 C 的 `rprocpub[NR_SYS_PROCS]=64`（main.c:63，sys_config.h:9）及 minix-rs 的 `NR_PROCS=256`（minix-types types/com.rs:36，`VM_PROC_COUNT=NR_PROCS+1=257`，vmproc/table.rs:41）均不同源；常量表只用于握手 stub 的条目形态，真实解码落地时以 minix-rs 的进程表容量为准（差异诚实标注）。
 - `is_user` 字段：C 的判定是 `IS_RPUB_BOOT_USR`（endpoint==INIT_PROC_NR）；Rust 由未来握手解码填充（当前 stub 恒 false）。
-- `rs_handshake`（vm_server.rs:659-681）复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init()` 取表 → 逐条 `acl_set`。`ipc_call_rs_init`（:946-980）当前返回 `RprocTab::empty()`——真实 IPC 依赖 IpcTransport/safecopy（DEFERRED，A-8）。
+- `rs_handshake`（vm_server.rs:972-995）复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**V11/T9 step 3 更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现为诚实 `NotImplemented`——rprocpub 字节 ABI 解码挂 **edge E-RSWIRE**（本仓 minix3 子树缺 devmajor_t/bitchunk_t/rs_pci 定义，无法 pinning）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
 
 ### 3.10 差异清单
 
@@ -489,7 +489,7 @@ RS（m_source）→ 主循环 dispatch_on_msg（vm_server.rs:565）
   └─ handle_rs_*（rs.rs:122/168/285/339）→ VmReply → 回复编码（vm_server.rs:1233+）
 
 握手（启动期）：RS_INIT（主循环优先级 2，vm_server.rs:582-586）
-  └─ rs_handshake（vm_server.rs:659）→ ipc_call_rs_init（:946，stub）→ RprocTab → 逐条 acl_set
+  └─ rs_handshake（vm_server.rs:972，init 参数）→ ipc_call_rs_init（:1245，NotImplemented 至 E-RSWIRE）→ RprocTab → 逐条 acl_set
 ```
 
 ### 4.2 handle_rs_set_priv（rs.rs:122-142）
@@ -551,7 +551,7 @@ match request:
 
 ```rust
 fn rs_handshake(&mut self) -> Result<(), VmError> {
-    let rproctab = ipc_call_rs_init().map_err(|_| VmError::InternalError)?;  // C: sys_safecopyfrom
+    let rproctab = ipc_call_rs_init(init.rproctab_gid)?;  // C: sys_safecopyfrom(RS, gid, …)
     for entry in rproctab.iter() {
         if !entry.in_use { continue; }
         let slot = table.vm_isokendpt(entry.endpoint).map_err(|_| VmError::InvalidProcess)?;

@@ -69,6 +69,8 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_umap: MessLsysKrnSysUmap,
     /// Kernel: SYS_SAFECOPYFROM / SYS_SAFECOPYTO.
     pub m_lsys_kern_safecopy: MessLsysKernSafecopy,
+    /// RS_INIT (RS → service): SEF init request with the rproctab grant.
+    pub m_rs_init: MessRsInit,
     /// Kernel: SYS_MEMSET.
     pub m_lsys_krn_sys_memset: MessLsysKrnSysMemset,
     /// Kernel: SYS_SAFEMEMSET.
@@ -661,6 +663,37 @@ pub struct MessLsysKernSafecopy {
     pub bytes: u64,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 24],
+}
+
+/// RS_INIT payload (RS → service; VM's P2 handshake branch decodes it).
+///
+/// C: `mess_rs_init` — ipc.h:1858-1867 (56-byte union member). Field order
+/// is C's; `buff_addr`/`buff_len` widen to 64-bit on the minix-rs 64-bit
+/// wire (same convention as `MessVmVfsReply`). C's `type` field is spelled
+/// `type_` (Rust keyword).
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct MessRsInit {
+    /// C: `result` — init result (0 = OK).
+    pub result: i32,
+    /// C: `type` — `SEF_INIT_*` init type.
+    pub type_: i32,
+    /// C: `rproctab_gid` — grant RS holds on its public process table.
+    pub rproctab_gid: i32,
+    /// C: `old_endpoint` — endpoint of the previous incarnation.
+    pub old_endpoint: i32,
+    /// C: `restarts` — number of restarts.
+    pub restarts: i32,
+    /// C: `flags` — `SEF_LU_*`/init flags.
+    pub flags: i32,
+    /// C: `buff_addr` — state-transfer buffer address.
+    pub buff_addr: u64,
+    /// C: `buff_len` — state-transfer buffer length.
+    pub buff_len: u64,
+    /// C: `prepare_state` — `SEF_LU_STATE_*` prepare state.
+    pub prepare_state: i32,
+    /// Padding to 56 bytes (C union payload size).
+    pub _padding: [u8; 12],
 }
 
 /// SYS_MEMSET message payload.

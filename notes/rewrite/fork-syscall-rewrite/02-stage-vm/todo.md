@@ -1181,6 +1181,14 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **452 / 467 / 466 / 452 passed**（+2 gateway wire 测试）；四组合 clippy `^servers/` **0 警告**；`rg "unimplemented!|Endpoint::from_generation_slot(1" os/servers/vm/src/fork.rs` → 0
 - **Docs**: 18-vm-fork.md（模块清单 + 偏差表）；kernel_gateway.rs 模块文档（wire 约定与 E1/E2 依赖）
 
+### ✅ Fix #34: T9 step 3 — RS_INIT grant 贯通 + `ipc_call_rs_init` 假成功消灭（P0-fact 修正 + fail-closed）
+
+- **Files**: `libs/minix-types/src/ipc/message.rs`（`MessRsInit` union 成员，C ipc.h:1858-1867 56 字节布局，64 位 wire 约定同 `MessVmVfsReply`）、`libs/minix-types/src/ipc/rs.rs`（`RsInit::decode_message` + roundtrip 测试）、`servers/vm/src/vm_server.rs`（P2 分支：解码 grant → `rs_handshake(&init)`，失败 **fail-closed**——drop+计数+审计，取代 `.expect` panic（C main.c:151 是 panic；[ARCH: A-14]/V9-P0-1 边界哲学）；`ipc_call_rs_init` 由假成功 `Ok(RprocTab::empty())` 改为诚实 `Err(NotImplemented)` + P0-fact 注释修正：**RS_INIT 由 RS 发往 VM**（原注释"发送给 RS"反向）、safecopy 源是 `RS_PROC_NR`（原注释 SELF，反向）——main.c:149/:246 + sef_init.c:193 为准；`RprocTab::empty`/`EMPTY` 补 E-RSWIRE 标注）、pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`
+- **Ground Truth 判定**：方向核实的证据链——main.c:149 `msg.m_source == RS_PROC_NR`（VM 是接收方）、sef_init.c:193 `do_sef_init_request` 解 `m_rs_init`（rproctab_gid 在消息里）、main.c:246 `sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, …)`（RS 是 granter）。原注释三处与 C 相悖（方向、safecopy 源、"IpcTransport sendrecv to KERNEL"），若照注实现必成 P0-code-bug
+- **余件 → edge E-RSWIRE**：rprocpub 字节 ABI（本树缺 devmajor_t/bitchunk_t/rs_pci 定义）+ `Gateway::sys_safecopyfrom`（wire 已定稿于 edge 条目，暂无生产消费者故不顺手加——T3 无主 API 纪律）
+- **Verified**: `cargo test -p minix-types` → **169 passed**（+1 roundtrip）；四矩阵 **457 / 473 / 472 / 457 passed**（+1 pin 测试）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 25-rs-services.md（握手契约三处 + 模块清单行号）、15-ipc-dispatch.md（§5.3 RS_INIT 缺口行 ✅）
+
 ### ✅ Fix #32: T15 — audit 记录经 SYS_DIAGCTL 转发（KernelGateway::diag_write）
 
 - **Files**: `os/servers/vm/src/kernel_gateway.rs`（trait 增 `diag_write(&str)`：SYS_DIAGCTL=44、code=1（DIAGCTL_CODE_DIAG）、buf=调用方指针/len≤128（kernel/src/syscall.rs:2281-2340，DIAGBUFSIZE=128）；TrapKernelGateway 实现 + MockGateway 记录/`diag_log()` 访问器）、`os/servers/vm/src/audit.rs`（重写：`emit_to_gateway` 无条件可测核心——128 字节按字符边界分块转发；feature 构建下 `emit` = AssumeSyncCell sink 查找 + 转发；`register_gateway`/`clear_gateway` 随 VmServer 生命周期——diagnostic.rs 裸访问先例 + global.rs 单线程论证）、`os/servers/vm/src/vm_server.rs`（ctor 注册 / drop 清除，`vm_acl_audit` feature 门控）、3 个 audit 测试（转发/分块/字符边界）

@@ -8,6 +8,7 @@
 //! semantic payload views modeled after the vm.rs In/Out convention.
 
 use crate::{Endpoint, Gid, Pid, Uid, VirBytes};
+use super::message::Message;
 
 /// Base for RS messages. C: `RS_RQ_BASE` — com.h:463.
 pub const RS_RQ_BASE: i32 = 0x700;
@@ -106,6 +107,32 @@ pub struct RsInit {
     pub buff_len: usize,
     /// C: `prepare_state` — `SEF_LU_STATE_*` prepare state.
     pub prepare_state: i32,
+}
+
+impl RsInit {
+    /// Decode an `RS_INIT` message from RS.
+    ///
+    /// C: `mess_rs_init` (ipc.h:1858-1867); the receiver unpacks it in
+    /// `do_sef_init_request` (sef_init.c:193-215) — `rproctab_gid` is the
+    /// grant the init callback copies the rproctab through
+    /// (vm main.c:246 `sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, …)`).
+    pub fn decode_message(msg: &Message) -> Self {
+        // SAFETY: `m_rs_init` is the active union arm for RS_INIT messages
+        // (m_source == RS_PROC_NR, m_type == RS_INIT; the receiver's P2
+        // branch checks both before decoding).
+        let m = unsafe { msg.m_u.m_rs_init };
+        Self {
+            result: m.result,
+            init_type: m.type_,
+            rproctab_gid: m.rproctab_gid,
+            old_endpoint: Endpoint(m.old_endpoint),
+            restarts: m.restarts,
+            flags: m.flags,
+            buff_addr: VirBytes(m.buff_addr),
+            buff_len: m.buff_len as usize,
+            prepare_state: m.prepare_state,
+        }
+    }
 }
 
 /// Payload of the `RS_LU_PREPARE` message.
@@ -296,6 +323,38 @@ mod tests {
         assert_eq!(init.result, 0);
         assert_eq!(init.init_type, 1);
         assert_eq!(init.rproctab_gid, 7);
+        assert_eq!(init.old_endpoint, Endpoint::PM);
+        assert_eq!(init.restarts, 2);
+        assert_eq!(init.flags, 0x100);
+        assert_eq!(init.buff_addr, VirBytes(0x3000));
+        assert_eq!(init.buff_len, 64);
+        assert_eq!(init.prepare_state, 0);
+    }
+
+    #[test]
+    fn test_rs_init_decode_message_roundtrip() {
+        // V11/T9 step 3: the RS_INIT wire decode (MessRsInit union member).
+        let mut msg = Message::default();
+        msg.m_source = Endpoint::RS;
+        msg.m_type = RS_INIT;
+        // SAFETY: test constructs the message with m_rs_init as the active arm.
+        unsafe {
+            msg.m_u.m_rs_init = crate::ipc::MessRsInit {
+                result: 0,
+                type_: 1, // SEF_INIT_LU
+                rproctab_gid: 7,
+                old_endpoint: Endpoint::PM.get(),
+                restarts: 2,
+                flags: 0x100,
+                buff_addr: 0x3000,
+                buff_len: 64,
+                prepare_state: 0,
+                _padding: [0; 12],
+            };
+        }
+        let init = RsInit::decode_message(&msg);
+        assert_eq!(init.rproctab_gid, 7);
+        assert_eq!(init.init_type, 1);
         assert_eq!(init.old_endpoint, Endpoint::PM);
         assert_eq!(init.restarts, 2);
         assert_eq!(init.flags, 0x100);
