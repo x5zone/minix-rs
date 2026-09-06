@@ -596,7 +596,7 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 - **结构访问**：`page_align`/`PAGE_SIZE` trait 常量——VM 层页大小统一入口。
 - **4 级页表结构**：x86_64/paging.rs 的索引函数（PML4/PDPT/PD 边界值：canonical 高半、1GB/2MB 边界）+ 零根 walk（PRESENT=0 检测）——A-2 的层级正确性。
 - **VM 自映射状态与 adoption 契约**：`vm_self_map` 静态存储初始 `None`（A-9 状态机）+ init 一次性（二次调用 panic）+ adopt 根 PA round-trip（A1：handle 必须包装 handoff 根——若 `adopt` 退化为 `new()` 新建根，round-trip 断言即失败）。
-- **mock 隔离**：`with_mock_base_lock`/`with_custom_mock_base` 串行化依赖全局 mock base 的测试，防并行竞态（direct_map.rs:56-80）。
+- **mock 隔离**（V11/T26 演进）：窗口基址改为线程本地（`with_test_window`，每测试线程独立泄漏缓冲区），并行竞态由构造消除，不再需要互斥串行化（direct_map.rs 测试支持区）。
 
 ### 5.3 覆盖缺口与诚实标注
 

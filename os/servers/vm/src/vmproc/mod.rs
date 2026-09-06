@@ -80,50 +80,20 @@ pub(super) mod test_utils {
 
     /// Creates an ActiveProc with page table and regions initialized.
     /// Use this for tests that need page table access (fork, mmap, etc.).
+    ///
+    /// V11/T26: no transmute needed — annotating the table binding as
+    /// `&'static` (which `VmProcTable::get_global()` returns) lets the
+    /// typestate views carry the `'static` lifetime by ordinary inference;
+    /// the former transmute-to-'static helper existed only
+    /// because the lifetime was never named.
     pub fn get_active_vmproc(slot: UserSlot) -> ActiveProc<'static> {
-        let table = VmProcTable::get_global();
+        let table: &'static VmProcTable = VmProcTable::get_global();
         unsafe { table.reset_slot(slot); }
         let empty = table.get_empty(slot).unwrap();
         let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
         let mut active = empty.activate(ep);
         active.init_page_table().unwrap();
         active.init_regions();
-        // SAFETY: See extend_to_static_lifetime() documentation below.
-        unsafe { extend_to_static_lifetime(active) }
-    }
-
-    /// Creates an ActiveProc with only regions initialized (no page table).
-    /// Use this for tests that only need process metadata (ACL, flags, etc.)
-    /// and don't require page table operations.
-    /// Avoids SIGSEGV from accessing mock physical memory in init_page_table().
-    pub fn get_active_vmproc_no_pt(slot: UserSlot) -> ActiveProc<'static> {
-        let table = VmProcTable::get_global();
-        unsafe { table.reset_slot(slot); }
-        let empty = table.get_empty(slot).unwrap();
-        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
-        let mut active = empty.activate(ep);
-        active.init_regions();
-        // SAFETY: See extend_to_static_lifetime() documentation below.
-        unsafe { extend_to_static_lifetime(active) }
-    }
-
-    /// Extend an `ActiveProc<'_>` lifetime to `'static` for test use.
-    ///
-    /// # Safety
-    ///
-    /// This is safe ONLY when all of the following hold:
-    ///
-    /// 1. The `ActiveProc` borrows a slot from the global `VmProcTable`,
-    ///    which has `'static` lifetime (`VmProcTable::get_global()` returns
-    ///    `&'static VmProcTable`).
-    /// 2. The slot's memory is never moved or deallocated during the test.
-    /// 3. Single-threaded test execution ensures no concurrent access.
-    ///
-    /// This is only used in test code — production code uses the typestate
-    /// API without lifetime extension. The transmute is needed because Rust
-    /// infers a shorter lifetime from the local scope, even though the
-    /// underlying data is `'static`.
-    unsafe fn extend_to_static_lifetime(proc: ActiveProc<'_>) -> ActiveProc<'static> {
-        core::mem::transmute::<ActiveProc<'_>, ActiveProc<'static>>(proc)
+        active
     }
 }

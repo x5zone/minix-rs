@@ -35,10 +35,7 @@ use crate::ipc::dispatcher::MessageDispatcher;
 use crate::ipc::transport::IpcStatus;
 #[cfg(not(test))]
 use crate::pagetable::vm_self_map::init_vm_self_pt;
-#[cfg(not(test))]
 use crate::direct_map::vm_phys_to_virt;
-#[cfg(test)]
-use minix_types::VirBytes;
 use crate::region::PageFrames;
 use minix_types::PhysBytes;
 
@@ -309,19 +306,10 @@ impl VmServer {
             .expect("no free region in Direct Map range large enough for allocator metadata");
 
         let meta_phys_base = meta_region.base;
-        // In test builds on x86_64, vm_phys_to_virt uses a constant base (0x80000000)
-        // which is not valid heap memory. Use mock_vm_base() directly instead.
-        let meta_va = {
-            #[cfg(test)]
-            {
-                let base = minix_arch::direct_map::mock_vm_base();
-                VirBytes(base + meta_phys_base as u64)
-            }
-            #[cfg(not(test))]
-            {
-                vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64))
-            }
-        };
+        // V11/T26: one path for both profiles — `vm_phys_to_virt` is
+        // window-aware in test builds too (per-thread window base), so the
+        // former cfg split (arch global read vs funnel) is unnecessary.
+        let meta_va = vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64));
         // SAFETY: meta_va points to a valid direct-mapped physical region
         // of meta_size bytes; no aliasing references exist.
         let metadata = unsafe {
@@ -1721,7 +1709,6 @@ impl VmServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::direct_map::tests::with_custom_mock_base;
     use crate::boot::{BootModule, KernelAllocated};
 
     // V11-P1-3: pin the backend-selection semantics for every feature
@@ -1761,33 +1748,11 @@ mod tests {
 
     const TEST_TOTAL_PAGES: usize = 256;
 
-    /// One-time mock physical memory setup for all VM server tests.
-    /// Uses a leaked static buffer to avoid parallel test races on mock_vm_base.
-    static TEST_PHYS_INIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-    static TEST_MOCK_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-    fn ensure_mock_phys_init() {
-        use core::sync::atomic::Ordering;
-        if TEST_PHYS_INIT.swap(true, Ordering::SeqCst) {
-            return; // already initialized
-        }
-        let mock_phys_size = TEST_TOTAL_PAGES * CLICK_SIZE + CLICK_SIZE;
-        let mock_phys: alloc::vec::Vec<u8> = alloc::vec![0u8; mock_phys_size];
-        let mock_phys_leaked = alloc::boxed::Box::leak(mock_phys.into_boxed_slice());
-
-        let raw_base = mock_phys_leaked.as_ptr() as usize;
-        let aligned_base = (raw_base + CLICK_SIZE - 1) & !(CLICK_SIZE - 1);
-        minix_arch::direct_map::set_mock_vm_base(aligned_base as u64);
-        TEST_MOCK_BASE.store(aligned_base as u64, Ordering::SeqCst);
-    }
-
-    /// Run a test with the vm_server mock base set correctly.
-    /// Uses the global MOCK_BASE_MUTEX to prevent parallel test interference.
+    /// Run a test with the direct-map window pointed at a fresh per-thread
+    /// leaked buffer (V11/T26 — the former process-global mock base +
+    /// mutex serialization is replaced by thread-local windows).
     fn with_test_mock_base<F: FnOnce()>(f: F) {
-        // Ensure mock physical memory is initialized before reading TEST_MOCK_BASE.
-        ensure_mock_phys_init();
-        let base = TEST_MOCK_BASE.load(core::sync::atomic::Ordering::SeqCst);
-        with_custom_mock_base(base, f);
+        crate::direct_map::with_test_window(TEST_TOTAL_PAGES, f);
     }
 
     fn test_free_regions() -> [BootMemRegion; 1] {

@@ -1330,6 +1330,7 @@ Coverage Summary for vm:
 | G-V12-2 | SIGKMEM 信号处理入口缺失（与 G-V11-1 sef_cb_signal_handler 同簇） | main.c:731 注册 signal handler、:736-737 `SIGKMEM → do_memory()`；do_memory 定义于 pagefaults.c:294 | VM 侧零对应物（grep `sef_cb_signal_handler|signal_handler|SEF` 仅注释命中）；信号接收依赖 E1，处理体（收缩缓存）可 stage 内 seam + mock 落地 | T29 |
 | G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | T27 |
 | G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
+| G-V12-5 | minix-vm 依赖 minix-arch 未关 default features——`mock` DirectMap（运行时窗口基址变体）服务生产路径 | —（架构语义） | `arch/Cargo.toml` default=`["mock"]`，`servers/vm/Cargo.toml` 以 `{ path = "../../arch" }` 引入（绕过 workspace 表的 `default-features = false`）；VM 的 direct map 窗口本就是**内核动态授予**的运行时基址（E3 接线），"mock" 命名与生产用途混淆。处置归 E3：依赖收口 + 命名澄清（如 `RuntimeWindowDirectMap`）| 随 E3 |
 
 ### ✅ Fix #43: T24-pre — 恢复测试基线：rs.rs 测试对齐 RsUpdateCtx + clippy 回归归零
 
@@ -1354,6 +1355,13 @@ Coverage Summary for vm:
 - **After**: 删除全部 cfg 拆分，无条件 `let pt = Some(active.page_table_mut())`；helper 补页表初始化（debug_assert 即诚实闸门——翻转首轮就暴露了 munmap/mmap/brk 共 10 个测试的进程从未初始化页表的潜在跳过，正是 V11-P2-1 预测的缺口）。翻转后单元测试与生产代码形状一致；"真实 unmap 后 query 清空 + refcount 归零"的深度断言由专项测试 `test_free_region_pages_sim_paging_unmaps`（region/mod.rs，Fix #39 落地）单点权威承载，不做六份复制
 - **Verified**: `cargo test -p minix-vm --lib` → **471 passed / 0 failed**（翻转首轮 10 FAILED → helper 修复后全绿）；clippy 两档 `servers/vm` 0 警告
 - **Docs**: 15-ipc-dispatch.md §5.3 新增"munmap/brk 测试的页表路径 ✅（V11/T25）"行（同时清偿 Fix #39 预告的"SimPaging 关联行随下批刷新"）；munmap/mmap/brk 三处 helper 注释按真实理由改写
+
+### ✅ Fix #46: T26 — MOCK_BASE_MUTEX + extend_to_static_lifetime 归零（V11-P1-2/V9-P2-4 验收锚点达成）
+
+- **设计（多方案对比后选定）**：direct map 窗口基址在 VM 里是**运行时状态**（内核动态授予用户态 VM 的窗口，E3 接真值；arch 侧 `MockDirectMap` 实为运行时基址变体——见 G-V12-5 命名混淆登记）。候选方案：A 全局一次性基址——被否决，共享 leaked buffer 仍被并行测试**写入**位图元数据，互斥实际承担全测试体串行化，去掉锁即引入数据竞争；B 保留互斥仅改措辞——不满足锚点且不诚实；C Redox 式显式上下文参数化（base 进 `VmContext` 传参）——架构正确但属生产 API 演进，超出测试基建迭代边界。**选定**：基址存储改为**线程本地**（`thread_local! + Cell`），libtest 每测试一线程 → 并行隔离由构造保证；`vm_phys_to_virt`/`virt_to_phys` 漏斗增加 cfg(test) 线程本地分支（算术与 `MockDirectMap` 逐位同构），生产路径不变（仍委托 arch，E3 接管）。对照 Redox rmm `EmulateArch`：模拟存储实例化、测试互不串扰——同一哲学的测试域等价物。
+- **Files**: `os/servers/vm/src/direct_map.rs`（删 `MOCK_BASE_MUTEX`/`with_mock_base_lock`/`with_custom_mock_base` 的锁+save/restore+catch_unwind 机制；新 `TEST_VM_BASE` 线程本地 + `test_vm_base()`/`with_test_window(pages, f)`——每调用独占一个新泄漏缓冲区；漏斗两函数 cfg 分支；6 个既有测试迁移 + 新增 `test_windows_are_per_thread_and_independent`）、`os/servers/vm/src/alloc_page.rs`（删 `ALLOC_PHYS_INIT`/`ALLOC_MOCK_BASE`/`ensure_mock_phys_init`；wrapper 改一行委托；2 个未包窗口的测试补包——旧全局机制掩盖了它们的窗口依赖）、`os/servers/vm/src/vm_server.rs`（删 `TEST_PHYS_INIT`/`TEST_MOCK_BASE`/`ensure_mock_phys_init`；`relocate` 的 cfg(test) meta_va 分支删除——漏斗本身已窗口感知，单路径化）、`os/servers/vm/src/vmproc/mod.rs`（删 `extend_to_static_lifetime` transmute 与零调用方的 `get_active_vmproc_no_pt`；`get_active_vmproc` 以 `let table: &'static VmProcTable` 类型注解让 typestate 视图经普通推断携带 `'static`——transmute 从来只是"生命周期未被命名"的补丁）
+- **Verified**: `rg "MOCK_BASE_MUTEX|extend_to_static_lifetime" os/servers/vm/src` → **0**；`rg "set_mock_vm_base|mock_vm_base" os/servers/vm/src` → **0**（VM 不再触碰 arch 全局，arch 侧保留给自身测试与 E3）；三矩阵 **472 / 489 / 472 passed**（+1 线程隔离测试）；clippy 两档 `servers/vm` **0 警告**；vmproc/mod.rs 的 E0133（unsafe fn 缺 unsafe 块，edition 2024）随 transmute 删除消失
+- **Docs**: 01-vm-init-main.md（§4.4 修复记录行更新为线程本地演进）、07-pagetable-struct.md（§5.2 mock 隔离行）、02-vmproc-struct.md（§4.4 test_utils 行）；新登记 **G-V12-5**（§16.1：minix-arch default features 泄漏进 VM 生产依赖，"mock" DirectMap 实为运行时窗口语义，处置归 E3）
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 

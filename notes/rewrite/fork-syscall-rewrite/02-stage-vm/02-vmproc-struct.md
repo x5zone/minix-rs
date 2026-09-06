@@ -475,7 +475,7 @@ else
 | `EmptySlot`/`ActiveProc`/`ExitingProc` | `pub(crate)` | vm crate 内部通过视图访问 |
 | `VmFlags` | `pub(crate)` re-export | 视图方法返回值需要 |
 
-`test_utils`（`mod.rs:73-126`）：`get_active_vmproc`（初始化页表+区域）与 `get_active_vmproc_no_pt`（仅区域）供测试使用；`extend_to_static_lifetime` 用 transmute 把借用提升到 `'static`——安全前提是全局表 `'static` + 单线程测试。
+`test_utils`（`mod.rs`）：`get_active_vmproc`（初始化页表+区域）供测试使用（V11/T26：`get_active_vmproc_no_pt` 零调用方删除；transmute 提升借用改为**类型注解直取 `'static`**——`get_global()` 本就返回 `&'static VmProcTable`，为视图命名生命周期即可，无需 unsafe）。
 
 ### 4.5 `os/servers/vm/src/vm_server.rs`：init_proc 族
 

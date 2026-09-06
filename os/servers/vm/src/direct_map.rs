@@ -25,7 +25,18 @@ pub(crate) const VM_HEAP_LIMIT: u64 = VM_HEAP_BASE + VM_HEAP_SIZE;
 
 #[inline]
 pub(crate) fn vm_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
-    CurrentDirectMap::vm_phys_to_virt(phys.into())
+    #[cfg(test)]
+    {
+        // V11/T26: in test builds the runtime window base lives in a
+        // thread-local so every test thread gets an isolated window (the
+        // former process-global mock-base mutex serialization is gone).
+        // The arithmetic mirrors `MockDirectMap::vm_phys_to_virt`.
+        VirBytes(test_vm_base() + phys.as_u64())
+    }
+    #[cfg(not(test))]
+    {
+        CurrentDirectMap::vm_phys_to_virt(phys.into())
+    }
 }
 
 // V10-P2-2: DEAD in production (only `vm_phys_to_virt` is used); kept for
@@ -40,8 +51,20 @@ pub(crate) fn kernel_phys_to_virt(phys: AlignedPhysBytes) -> VirBytes {
 #[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) fn virt_to_phys(virt: VirBytes) -> AlignedPhysBytes {
-    let phys = CurrentDirectMap::virt_to_phys(virt);
-    AlignedPhysBytes::new_unchecked(phys.get())
+    #[cfg(test)]
+    {
+        let phys = if virt.0 >= KERNEL_DIRECT_MAP_BASE {
+            virt.0 - KERNEL_DIRECT_MAP_BASE
+        } else {
+            virt.0 - test_vm_base()
+        };
+        AlignedPhysBytes::new_unchecked(phys)
+    }
+    #[cfg(not(test))]
+    {
+        let phys = CurrentDirectMap::virt_to_phys(virt);
+        AlignedPhysBytes::new_unchecked(phys.get())
+    }
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -55,66 +78,66 @@ pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool {
         || (virt.0 >= VM_DIRECT_MAP_BASE && virt.0 < VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE)
 }
 
+// ── Test support: per-thread direct-map window (V11/T26) ────────────
+//
+// The VM's direct-map window base is runtime state — the kernel grants the
+// window to the userspace VM at boot (pre-E3 the arch crate's placeholder
+// stands in). Tests need the window pointed at real, writable memory, and
+// libtest runs each test on its own thread, so the base lives in a
+// thread-local: every test thread installs its own window, and no global
+// serialization is needed. The former process-global mutex + save/restore
+// + catch_unwind machinery existed to protect a process-global; per-thread
+// storage removes the sharing that required protecting.
+
+#[cfg(test)]
+thread_local! {
+    static TEST_VM_BASE: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The direct-map window base in effect on the current test thread.
+#[cfg(test)]
+pub(crate) fn test_vm_base() -> u64 {
+    TEST_VM_BASE.with(|c| c.get())
+}
+
+/// Run `f` with the direct-map window pointed at a freshly leaked,
+/// CLICK_SIZE-aligned buffer of `pages` pages.
+///
+/// Each call owns its buffer exclusively: the current thread's window is
+/// the only writer, and the buffer dies with the test process (leaked on
+/// purpose — the "physical memory" outlives the allocator state under
+/// test, mirroring how real physical memory outlives kernel objects).
+#[cfg(test)]
+pub(crate) fn with_test_window<F: FnOnce() -> R, R>(pages: usize, f: F) -> R {
+    use crate::phys_mem::CLICK_SIZE;
+    let mock_phys: alloc::vec::Vec<u8> = alloc::vec![0u8; pages * CLICK_SIZE + CLICK_SIZE];
+    let leaked = alloc::boxed::Box::leak(mock_phys.into_boxed_slice());
+    let raw = leaked.as_ptr() as usize;
+    let aligned = ((raw + CLICK_SIZE - 1) & !(CLICK_SIZE - 1)) as u64;
+    TEST_VM_BASE.with(|c| c.set(aligned));
+    f()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    /// Global mutex to serialize all tests that depend on mock_vm_base.
-    /// Without this, parallel tests race on the global mock_vm_base state,
-    /// causing double-free panics in BitmapAllocator (which stores bitmap
-    /// data at addresses derived from mock_vm_base).
-    static MOCK_BASE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Run a test with mock_vm_base set to the default VM_DIRECT_MAP_BASE.
-    /// Acquires MOCK_BASE_MUTEX to prevent parallel test interference.
-    /// Uses lock().unwrap_or_else() to recover from mutex poisoning
-    /// (which occurs when a #[should_panic] test panics while holding the lock).
-    pub(crate) fn with_mock_base_lock<F: FnOnce()>(f: F) {
-        let _guard = MOCK_BASE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let saved = minix_arch::direct_map::mock_vm_base();
-        minix_arch::direct_map::set_mock_vm_base(VM_DIRECT_MAP_BASE);
-        // Restore even when the test panics (e.g. #[should_panic] tests):
-        // a leaked custom mock base would corrupt later allocator tests.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        minix_arch::direct_map::set_mock_vm_base(saved);
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
-        }
-    }
-
-    /// Run a test with a custom mock_vm_base value.
-    /// Acquires MOCK_BASE_MUTEX to prevent parallel test interference.
-    /// Uses lock().unwrap_or_else() to recover from mutex poisoning.
-    pub(crate) fn with_custom_mock_base<F: FnOnce()>(base: u64, f: F) {
-        let _guard = MOCK_BASE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let saved = minix_arch::direct_map::mock_vm_base();
-        minix_arch::direct_map::set_mock_vm_base(base);
-        // Restore even when the test panics (e.g. #[should_panic] tests):
-        // a leaked custom mock base would corrupt later allocator tests.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        minix_arch::direct_map::set_mock_vm_base(saved);
-        if let Err(payload) = result {
-            std::panic::resume_unwind(payload);
-        }
-    }
-
     #[test]
     fn test_vm_phys_to_virt() {
-        with_mock_base_lock(|| {
+        let base = with_test_window(8, || {
             let phys = AlignedPhysBytes::new(0x1000);
-            let virt = vm_phys_to_virt(phys);
-            assert_eq!(virt.0, VM_DIRECT_MAP_BASE + 0x1000);
+            vm_phys_to_virt(phys).0
         });
+        assert!(base > 0x1000, "window base must be real (leaked) memory");
     }
 
     #[test]
     fn test_vm_phys_to_virt_with_real_constant() {
-        with_mock_base_lock(|| {
+        let (base, virt) = with_test_window(8, || {
             let phys = AlignedPhysBytes::new(0x1000);
-            let virt = vm_phys_to_virt(phys);
-            assert_eq!(virt.0, VM_DIRECT_MAP_BASE + 0x1000);
-            assert_eq!(virt_to_phys(virt), phys);
+            (test_vm_base(), vm_phys_to_virt(phys).0)
         });
+        assert_eq!(virt, base + 0x1000);
     }
 
     #[test]
@@ -126,7 +149,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_virt_to_phys_roundtrip() {
-        with_mock_base_lock(|| {
+        with_test_window(8, || {
             let phys = AlignedPhysBytes::new(0x2000);
             assert_eq!(virt_to_phys(vm_phys_to_virt(phys)), phys);
             assert_eq!(virt_to_phys(kernel_phys_to_virt(phys)), phys);
@@ -147,5 +170,19 @@ pub(crate) mod tests {
         // V10-P2-2: VM_HEAP_BASE must immediately follow the VM direct map
         // window (per-arch const-assert also enforces this at compile time).
         assert_eq!(VM_HEAP_BASE, VM_DIRECT_MAP_BASE + VM_DIRECT_MAP_SIZE);
+    }
+
+    #[test]
+    fn test_windows_are_per_thread_and_independent() {
+        // V11/T26: two sequential windows on one thread get independent
+        // bases (the second install replaces the first), proving tests no
+        // longer share window state.
+        let first = with_test_window(2, || test_vm_base());
+        let second = with_test_window(2, || {
+            let phys = AlignedPhysBytes::new(0x1000);
+            vm_phys_to_virt(phys).0 - 0x1000
+        });
+        assert_ne!(first, second);
+        assert_eq!(second, test_vm_base());
     }
 }

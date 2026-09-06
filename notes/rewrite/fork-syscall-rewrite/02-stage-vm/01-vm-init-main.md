@@ -765,7 +765,7 @@ pub fn init(&mut self) {
 #### 4.4.4 Drop 与测试基础设施修复
 
 - `impl Drop for VmServer`：调用 `global::unregister_page_alloc()`，兑现 `global.rs` 文档承诺的"drop 时清理全局分配器指针"契约。这是 15 个 pre-existing 测试失败的根因修复（测试并行构造 VmServer 时指针互踩）。
-- `direct_map.rs::with_custom_mock_base`/`with_mock_base_lock`：panic（含 `#[should_panic]` 测试）时仍恢复 mock base，修复 mock base 泄漏污染后续分配器测试。
+- `direct_map.rs::with_test_window`（V11/T26 演进）：direct map 窗口基址由进程全局 + 互斥串行化改为**线程本地**——libtest 每测试一线程，各线程安装自己的窗口（泄漏的 CLICK_SIZE 对齐缓冲区），并行天然隔离，互斥与 panic 恢复机制整体消亡。
 
 ### 4.5 端点常量修正（对应 §2.1 主循环）
 
