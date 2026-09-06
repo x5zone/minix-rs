@@ -1268,6 +1268,14 @@ Coverage Summary for vm:
 - **Verified**: 四矩阵 **469 / 487 / 486 / 469 passed**（+3）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 15-ipc-dispatch.md §5.1/§5.3 的 SimPaging 关联行随下一批文档刷新统一处理；region/mod.rs 模块头"unmap is exercised once…"注释已指向本条
 
+### ✅ Fix #40: T12 — `map_proc_dyn_data`（RS_PREPARE 步骤 5）实现，替换 rs.rs:250 的 DEFERRED
+
+- **Files**: `servers/vm/src/rs.rs`（新 `map_proc_dyn_data(table, src_slot, dst_slot)`：收集 src 在 `MMAP_BASE` 以上的 regions，逐个以 `VirRegion::new` + 逐字段继承（parent_slot/def_memtype/remaps/id/param 克隆）插入 dst；幂等性——dst 已有同 vaddr region 则跳过，对应 C multi-component LU 的多次调用补偿）、`handle_rs_prepare` 步骤 5 调用它（替换 DEFERRED 注释）、测试 `test_map_proc_dyn_data_transfers_and_is_idempotent`
+- **C 对照**：utility.c:283-300 `map_proc_dyn_data` → :228-274 `transfer_mmap_regions`（region_search GreaterEqual/AVL_LESS 范围选取 + dst 已存在跳过 + `map_proc_copy_range` CoW 复制）；非 magic 构建 `VM_MMAPBASE=VM_PAGE_SIZE`、`VM_MMAPTOP=VM_DATATOP`——minix-rs 以 `MMAP_BASE` 常量 + 全 region 过滤等价表达
+- **借用结构**：src 侧只读收集（`get_active(src_slot)` 不可变借用随 `src_regions` 生命周期），dst 侧 `get_active(dst_slot)` 可变借用于独立 slot 对象——两 slot 的 VmProc 存于分离的静态槽，无别名
+- **Verified**: 四矩阵 **470 / 488 / 487 / 470 passed**（+2 幂等/传输测试）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: rs.rs:250 的 DEFERRED 注释已由实现替换；25-rs-services.md 的步骤 5 描述可随下批文档刷新引用本条
+
 ### ✅ Fix #38: T16（G-V11-2 闭环）— `sanity_checks` feature 落地，引用计数校验接入主循环
 
 - **Files**: `servers/vm/Cargo.toml`（`sanity_checks = []` feature，对齐 C SANITYCHECKS 编译开关）、`servers/vm/src/sanity.rs`（`verify_refcounts` 门控从 `cfg_attr(not(test), allow(dead_code))` 改为 feature 门控 + 生产入口注释）、`servers/vm/src/vm_server.rs`（VmContext 增 `sanity_ticks`（feature 门控）；run_once 每 64 次 Handled 后调用 `verify_refcounts`，失配 → `pagefault_errors` 计数 + 审计——诊断而非控制流，不 panic）、dispatcher 测试字面量补字段

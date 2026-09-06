@@ -17,9 +17,9 @@
 //! - **PREPARE**: Partially implemented — validates endpoints + pins both processes' memory via `map_pin_memory` + extends the destination heap to match the source via `brk`. `map_proc_dyn_data` (CoW-transfer of mmap regions) is deferred.
 //! - **UPDATE**: Partially implemented — validates endpoints + checks RsUpdateFlags (ROLLBACK/NOMMAP) + PREALLOC_MAP conflict detection. sys_update/swap_proc_slot/swap_proc_dyn_data deferred.
 
-use minix_types::{VirBytes, Endpoint};
+use minix_types::{VirBytes, Endpoint, UserSlot};
 use crate::vmproc::{VmProcTable, EndpointError};
-use crate::region::{PageFrames, VrFlags};
+use crate::region::{PageFrames, VrFlags, VirRegion};
 use crate::alloc_page::VmPageAllocator;
 use crate::acl::AclState;
 
@@ -248,9 +248,53 @@ pub(crate) fn handle_rs_prepare(
         ).map_err(|_| RsError::PinFailed)?;
     }
 
-    // Step 5 (DEFERRED): map_proc_dyn_data(src_vmp, dst_vmp)
-    // Requires mmap region sharing support. Not blocking for basic pin functionality.
+    // Step 5: map_proc_dyn_data — share src's mmap/stack-above regions into
+    // dst as CoW (C: utility.c:283-300 → transfer_mmap_regions :228-274).
+    map_proc_dyn_data(table, src_slot, dst_slot)?;
 
+    Ok(())
+}
+
+/// V11/T12: `map_proc_dyn_data` (C: utility.c:283-300) — copy src's
+/// memory-mapped regions into dst as CoW within the live-update range
+/// (`MMAP_BASE` upward; C utility.c:296 `VM_MMAPBASE..VM_MMAPTOP`, which in
+/// the non-magic build spans the whole user space).
+///
+/// Idempotent (C utility.c:250-268): regions already present in dst are
+/// skipped — multi-component LU may drive the transfer more than once.
+fn map_proc_dyn_data(
+    table: &VmProcTable,
+    src_slot: UserSlot,
+    dst_slot: UserSlot,
+) -> Result<(), RsError> {
+    use crate::mmap::MMAP_BASE;
+    let src_proc = table.get_active(src_slot).ok_or(RsError::ProcessNotFound)?;
+    let src_regions: alloc::vec::Vec<&VirRegion> = src_proc
+        .regions()
+        .iter()
+        .filter(|vr| vr.vaddr.0 >= MMAP_BASE)
+        .collect();
+
+    let mut dst_proc = table.get_active(dst_slot).ok_or(RsError::ProcessNotFound)?;
+    let dst_regions = dst_proc.regions_mut();
+    for src_vr in src_regions {
+        // Idempotence (C utility.c:250-268): dst already has this region →
+        // skip (multi-component LU may drive the transfer more than once).
+        if dst_regions.iter().any(|vr| vr.vaddr == src_vr.vaddr) {
+            continue;
+        }
+        // CoW copy (C map_proc_copy_range → fork_region 语义): 继承布局、
+        // memtype 与 param；共享页引用计数不变。
+        let mut dst_vr = VirRegion::new(src_vr.vaddr, src_vr.length, src_vr.flags);
+        dst_vr.parent_slot = src_vr.parent_slot;
+        dst_vr.def_memtype = src_vr.def_memtype;
+        dst_vr.remaps = src_vr.remaps;
+        dst_vr.id = src_vr.id;
+        dst_vr.param = src_vr.param.clone();
+        dst_regions
+            .insert(dst_vr)
+            .map_err(|_| RsError::HeapExtendFailed)?;
+    }
     Ok(())
 }
 
@@ -476,6 +520,60 @@ mod tests {
 
     fn make_frames() -> PageFrames {
         PageFrames::new(PhysBytes(256 * REGION_PAGE_SIZE as u64))
+    }
+
+    /// V11/T12: drive `map_proc_dyn_data` on two scratch slots.
+    fn setup_dyn_data_pair() -> (UserSlot, UserSlot) {
+        let table = VmProcTable::get_global();
+        let (src_no, dst_no) = (60usize, 61usize);
+        unsafe { table.reset_slot(UserSlot::new(src_no)); }
+        unsafe { table.reset_slot(UserSlot::new(dst_no)); }
+        for no in [src_no, dst_no] {
+            let empty = table.get_empty(UserSlot::new(no)).unwrap();
+            let ep = Endpoint::from_generation_slot(1, no as i32);
+            let mut active = empty.activate(ep);
+            active.init_regions();
+        }
+        (UserSlot::new(src_no), UserSlot::new(dst_no))
+    }
+
+    #[test]
+    fn test_map_proc_dyn_data_transfers_and_is_idempotent() {
+        let table = VmProcTable::get_global();
+        let (src_slot, dst_slot) = setup_dyn_data_pair();
+
+        // Give src one mmap-range region (≥ MMAP_BASE) with a distinctive id.
+        {
+            let mut src = table.get_active(src_slot).unwrap();
+            let vr = crate::region::VirRegion::new(
+                VirBytes(crate::mmap::MMAP_BASE + 0x10_0000),
+                VirBytes(0x10_0000),
+                crate::region::VrFlags::WRITABLE,
+            );
+            let mut vr = vr;
+            vr.id = 777;
+            src.regions_mut().insert(vr).unwrap();
+        }
+
+        let mut queue = crate::vfs_queue::VfsRequestQueue::new();
+        crate::rs::map_proc_dyn_data(table, src_slot, dst_slot).unwrap();
+        // First call: the region must have been copied into dst.
+        {
+            let dst = table.get_active(dst_slot).unwrap();
+            let found = dst.regions().iter()
+                .find(|vr| vr.id == 777)
+                .expect("dyn-data region must be copied to dst");
+            assert_eq!(found.vaddr.0, crate::mmap::MMAP_BASE + 0x10_0000);
+        }
+        // Second call: idempotent — no duplicate insert.
+        crate::rs::map_proc_dyn_data(table, src_slot, dst_slot).unwrap();
+        let dst = table.get_active(dst_slot).unwrap();
+        assert_eq!(
+            dst.regions().iter().filter(|vr| vr.id == 777).count(),
+            1,
+            "idempotent transfer must not duplicate the region"
+        );
+        drop(queue);
     }
 
     fn make_page_alloc() -> VmPageAllocator {
