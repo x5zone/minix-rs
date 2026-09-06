@@ -2411,9 +2411,11 @@ fn dispatch_diagctl(
                     // SIGKMESS=72（sys/sys/signal.h:272）>64 亦超 SigSet
                     // 位宽。故本通知按 C 自身条件恒不触发——订阅状态
                     // （s_diag_sig 置位/复位/SET_SYS 清除，kpriv.rs
-                    // reset_pending_ipc）完整保留。已知缺口：sys_update
-                    // 状态转移不携带 s_diag_sig（C do_update.c:293 有），
-                    // 记录于 todo D-14 行。
+                    // reset_pending_ipc）完整保留。update 状态转移的
+                    // s_diag_sig 保全已闭合（misc.rs:1845 捕获、:1887
+                    // 回写，对齐 C do_update.c:293 adjust_priv_slot）；
+                    // 同点对账发现 s_alarm_timer 未保全为真实缺口
+                    // （C do_update.c:292，Rust 侧零处理），见 todo §22 U-1。
                     KcallResult::Ok(0)
                 }
                 None => KcallResult::Ok(EPERM),

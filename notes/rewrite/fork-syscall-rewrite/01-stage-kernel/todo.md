@@ -419,7 +419,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | D-11 | 信号 | cause_sig **致命信号 panic**（system.c:417-432） | 19 §4.7 | **✅ 已解决（2026-09-05）**：`is_lethal`（syscall_signal.rs:101-103，SIGS_IS_LETHAL 六信号）+ SELF 致命子路径（syscall_signal.rs:210-256）——s_bak_sig_mgr 提升（s_sig_mgr←backup、s_bak_sig_mgr←NONE、RTS_UNSET(NO_PRIV)）+ 递归 cause_signal 走外部路径 + 无 backup panic（消息同 C）；差异：省略 C 的 proc_stacktrace（syscall.rs:2295 DIAGCTL 栈路径可复用，见 doc 19 §4.7）；测试 `test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` / `test_is_lethal`（另见 .design/19-design.v2.md） |
 | D-12 | 信号 | cause_sig **去重检查**（system.c:439-448） | 19 §4.7 | **✅ 已解决（2026-08-14 核实）**：`was_signaled`（RTS_SIGNALED 判定）+ 无条件 `p_pending.add` 去重（syscall_signal.rs:285-286，行号 2026-09-05 漂移修正） |
 | D-13 | 信号 | `sig_delay_done`（system.c:454-464） | 19 §4.7 | **✅ 已解决（2026-09-05）**：`ProcessTable::sig_delay_done`（proc_table.rs，清 `MF_SIG_DELAY` + `cause_signal(SIGSNDELAY)`）实现并双路接线——(a) `process_misc_flags` SC_DEFER 分支（proc.c:379-381 语义：deferred syscall 完成且未阻塞 SEND → 立即结束延迟）；(b) receive 投递路径（proc.c:1082-1083 语义：IpcEngine receive Phase 3 记录 MF_SIG_DELAY sender → `dispatch_ipc` 改持 `&mut ProcessTable` 后统一 `sig_delay_done`）。设计要点：cause_signal 经 `rts_set` 带调度器 dequeue 副作用，故延迟结束通知必须在 ProcessTable 级而非 slice 级。已知限制：SIGSNDELAY=70 超出 `SigSet(u64)` 位宽，信号编号不随 GETKSIG map 送达 PM（与 SIGKSIG 同类），交付的内核行为是唤醒协议（RTS_SIGNALED + mini_notify）；扩宽 SigSet 到 C 的 128-bit 是独立跨切面任务。新增 6 测试（ipc.rs 2 + proc_table.rs 3 + syscall.rs 端到端 1）。doc 19 §1.5/§2.1/§2.3/§4.7/§4.8/§5、doc 12 §4.4/§5.1、doc 13 §1.3/§4.8、doc 17 §4.6 同步。`cargo test -p minix-kernel --lib` → 656 passed, 0 failed, 6 ignored。 |
-| D-14 | 信号 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | 19 §4.7 | **🟢 设计 no-op（2026-09-06，W-7 连带结论，证据链完整）**：C 全链 = log 驱动 DIAGCTL REGISTER（置 s_diag_sig）→ kputc END_OF_KMESS 消息边界触发 `send_diag_sig()` 广播（system.c:469-482）→ log 驱动 signal handler 读 kmess（log.c:115，SIGKMESS=72）。W-7 演进移除了 kmess 缓冲（EarlyConsole 直出）后：①REGISTER 侧通知条件 `kmess.km_size > 0` 的输入不存在 → 按 C 自身条件恒不触发；②广播触发点（END_OF_KMESS）不存在；③唯一消费者 log 驱动的读取角色被替代；④SIGKMESS=72 >64 超 SigSet 位宽（同 SIGSNDELAY 先例，即便实现也仅是纯唤醒）。订阅状态生命周期已完备：REGISTER/UNREGISTER（dispatch_diagctl）+ SET_SYS 清除（reset_pending_ipc 对齐 do_privctl.c:121-131）。**todo 原文两处过时**：目标是注册者自身（非 PM_PROC_NR）；"借用冲突"阻塞已由 dispatch_ipc 的 `&mut ProcessTable` 模式解除但无需使用（通知不可达）。**新增缺口记录**：sys_update 状态转移不携带 s_diag_sig（C do_update.c:293 有）——随 sys_update 完整实现时一并处理。新增 2 测试（REGISTER/UNREGISTER 生命周期 + 非 SYS_PROC EPERM）。`cargo test -p minix-kernel` → 675 passed |
+| D-14 | 信号 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | 19 §4.7 | **🟢 设计 no-op（2026-09-06，W-7 连带结论，证据链完整）**：C 全链 = log 驱动 DIAGCTL REGISTER（置 s_diag_sig）→ kputc END_OF_KMESS 消息边界触发 `send_diag_sig()` 广播（system.c:469-482）→ log 驱动 signal handler 读 kmess（log.c:115，SIGKMESS=72）。W-7 演进移除了 kmess 缓冲（EarlyConsole 直出）后：①REGISTER 侧通知条件 `kmess.km_size > 0` 的输入不存在 → 按 C 自身条件恒不触发；②广播触发点（END_OF_KMESS）不存在；③唯一消费者 log 驱动的读取角色被替代；④SIGKMESS=72 >64 超 SigSet 位宽（同 SIGSNDELAY 先例，即便实现也仅是纯唤醒）。订阅状态生命周期已完备：REGISTER/UNREGISTER（dispatch_diagctl）+ SET_SYS 清除（reset_pending_ipc 对齐 do_privctl.c:121-131）。**todo 原文两处过时**：目标是注册者自身（非 PM_PROC_NR）；"借用冲突"阻塞已由 dispatch_ipc 的 `&mut ProcessTable` 模式解除但无需使用（通知不可达）。**新增缺口记录**：sys_update 状态转移不携带 s_diag_sig（C do_update.c:293 有）——随 sys_update 完整实现时一并处理。**✅ 勘误闭合（2026-09-07 对账）**：该缺口已由 update 路径重构顺带闭合——misc.rs:1845-1846 捕获 src/dst_diag_sig、:1887/:1896 回写，对齐 C do_update.c:293 adjust_priv_slot 语义；syscall.rs:2412-2416 的"不携带"过时注释已同步修正。同点对账发现真实缺口：**s_alarm_timer 未保全**（C :292 恢复 7 字段含 s_alarm_timer，Rust misc.rs:1882-1896 仅恢复 6 字段）→ 登记为 §22 U-1；swap_memreq no-op 前提失效 → §22 U-2（W-8 重审）。新增 2 测试（REGISTER/UNREGISTER 生命周期 + 非 SYS_PROC EPERM）。`cargo test -p minix-kernel` → 675 passed |
 | **D-57** | 信号 | `proc_stacktrace` 接入 `cause_sig` 致命 SELF panic 路径（system.c:429 差异对齐） | 19 §4.7 / [32-stack-tracing.md](32-stack-tracing.md) | ✅ **已解决（2026-09-05，第二批）**：新增 `os/kernel/src/stacktrace.rs` 模块（`proc_stacktrace(rp: &KProcess)` + `make_read_word` 助手），`is_kernel_task` 分流（Direct Map alias `read_volatile` vs `cross_space_copy`）；syscall_signal.rs 致命无 backup 分支（:251-260）`#[cfg(not(test))]` 守门后 panic 前调用；syscall.rs DIAGCTL STACKTRACE 路径去重改用同一助手（消除原 ~75 行重复代码）；`Cell<*mut u8>` 承载 stack-allocated scratch 缓冲，保持 `Fn` 闭包语义（`StacktraceArch::walk_frames` bound）。**8 测试**：4 运行 + 4 `#[ignore]` 需真硬件（EarlyConsole → COM1 UART → hosted Linux 无 `iopl` SIGSEGV，与 `test_dispatch_diagctl_stacktrace_valid_endpoint_returns_ok` 同类）。doc 19 §4.3/§4.7 同步（移除"省略 proc_stacktrace"标注，差异表更新为"完整已实现"）。`cargo test -p minix-kernel --lib` → 650 passed, 0 failed, 6 ignored。 |
 | D-15 | 时钟 | `mini_notify(CLOCK, endpoint)` 到期通知分发 | 21 附录 B | **✅ 已解决（2026-09-06，随 D-46 软件半环）**：`CLOCK_STATE` 全局（SyncUnsafeCell<Option<ClockState>>，BklProtected 收编；init_clock_and_interrupts 不再丢弃 clock 而是装入全局）+ `clock::clock_irq_handler`（IrqHandler）：tick 推进 uptime/记账 + `expire_alarm_timers` 到期时从 CLOCK 源 `mini_notify_core` 通知订阅者（C do_setalarm.c:69-76 cause_alarm 语义）。到期通知批量栈数组（16 上限 + debug_assert）——SETALARM 每进程一次，同 tick 风暴为病态。新增 2 测试（delivers_alarm 端到端 + hook 注册验证）。`cargo test -p minix-kernel` → 687 passed |
 | D-16 | IPC 过滤 | `allow_ipc_filtered_msg`（system.c:803-874，L2 receive 路径偏好过滤） | 23 §4.5/Ch6 [P1] | **✅ 已解决（2026-09-06）**：`ipc_filter::chain_allowed` 链式判定（初始 allow = head 是黑名单；逐 filter 扫描，首个 EL_MATCH 翻转 allow，**外层遍历不因翻转提前退出**——顺序即优先级）+ CANRECEIVE 插桩全接线：receive Phase 1（notify 逐位过滤，被过滤位保留）、Phase 2（deliver_async 表项 continue 不写结果）、Phase 3（caller_q 过滤感知查找，被过滤发送者留队）、send Path A（被过滤 → 落入阻塞/排队路径）与 senda 直投（willing &= can_receive → pending）。设置端补 EL_CHECK 校验 + MATCH 标志聚合 + **链尾追加**语义（修复旧"替换非追加"偏离，C system.c:742-745）；CLEAR_IPC_FILTERS 释放整链。Rust 简化：全部消费点消息内容在内核侧可得（send 直投前已拷贝、senda 逐项已读、caller_q 用缓存的 p_sendmsg），C 的 m_src_p=NULL 远端 m_type 拉取分支无需复刻（已注释论证）。新增测试 9 个（ipc_filter 单元 6：el_check/el_match/ANY 类别/链翻转/free_chain；ipc.rs 集成 3：白名单放行+未列入阻塞留队、notify 过滤保持 pending、senda 过滤表项不标 AMF_DONE）。`cargo test -p minix-kernel` → 690 passed |
@@ -490,14 +490,14 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | T-9 | 20 §5.2 | IRQCTL 3 个（setpolicy_full / rmpolicy_owner / enable_disable）+ vdevio 对齐 panic + readbios copy（后两者需 QEMU pte_walk/copy_to_user） | IrqManager 接入 KernelState |
 | T-10 | 01 §5 | QEMU + OpenSBI + U-Boot riscv64 真实启动链集成测试（fatload kernel ELF → OpenSBI 跳转 → 串口捕获 TEST_RESULT）[P2] | QEMU 镜像 + U-Boot 工具链 + 串口监控脚本 |
 | T-11 | 29 §5.3 | runqueues_ok_cpu 集成测试（构造 SmpState + ProcessTable mock） | boot_integration |
-| T-12 | 17 §5.2 | §5.2 待补测试（DEFERRED 函数实现后） | D-1..D-7 落地 |
+| T-12 | 17 §5.2 | §5.2 待补测试（DEFERRED 函数实现后） | 依赖已解除（D-1..D-7 均落地）；**2026-09-07 对账：5 个测试名全零命中、`dispatch_fork` 域零测试（syscall_process.rs 测试区核查）→ 真实测试债不关闭**，排入收敛计划 §22 Phase 6 |
 
 ### 7.4 文档任务 / 改进方向
 
 | # | 条目 | 文档出处 | 说明 |
 |---|------|---------|------|
 | I-1 | kernel 独立 ELF 构建（build.rs + link.ld 链接为独立 ELF binary） | 02 §4 + 01 §5.2 | 三架构 link.ld 已就绪，构建系统未接入；当前 rlib 测试路径是合理简化，生产路径后续工作 |
-| I-2 | `release[]`/`version[]` 未实现 | 01 §2 | 保持 DEFERRED。已核实（2026-08-14）：C 侧仅 main.c:432-433 赋值且无消费方（banner 直打 OS_RELEASE，main.c:344）；Rust 侧无消费方（KernelInfo 无此字段；banner 硬编码 lib.rs:1831；MINIX_KERNINFO IPC 未实现 ipc.rs:1335）→ 待 MINIX_KERNINFO 落地时实现 |
+| I-2 | `release[]`/`version[]` 未实现 | 01 §2 | 保持 DEFERRED。已核实（2026-08-14）：C 侧仅 main.c:432-433 赋值且无消费方（banner 直打 OS_RELEASE，main.c:344）；Rust 侧无消费方（KernelInfo 无此字段；banner 硬编码 lib.rs:1831；MINIX_KERNINFO IPC 未实现 ipc.rs:1335）→ 待 MINIX_KERNINFO 落地时实现。**→ 移交 edge_todo.md `E-KERNINFO`（2026-09-07）**：真实消费方是用户态进程（kerninfo 共享的接收侧），且共享契约面在 minix-types/minix-sys，符合 edge 判定①③；kernel 侧现状 ipc.rs:1775 自注 "not yet implemented"、ipc.rs:2061 测试钉住 `IpcCall::from_raw(6) == None` |
 | I-3 | riscv64 QEMU `-kernel` 场景未完成 ELF 装载 + 高半核切换（临时妥协） | 01 §5 + §4.5 TODO | 生产路径三架构统一高半核；测试场景暴露的临时妥协 |
 | I-4 | 01 §5 ↔ 02 §5.1 测试对照表跨文档去重 | 01 §5 TODO [P2] | **✅ 已解决（2026-08-14）**：02 §5.1 测试归属声明已落地（L901，"hello-boot 等四类归 01 §5.2，本节仅 test-higher-half，合计 15/15"）+ 01 交叉引用（L1689）；01 残留 TODO 标记已清理为已解决注 |
 | I-5 | ACPI RSDP 搜索与表解析 | 05 §3 | QEMU virt 暂不依赖；支持物理机时需实现 |
@@ -506,8 +506,8 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 | I-8 | errno newtype（模式 16 裸整数） | 13 §6.5 [P2] | **与 §D1 同项**（架构建议），doc 13 独立提出 |
 | I-9 | D9: `s_ipcf`/`s_stack_guard` 裸 usize → `NonNull<T>` | 22 §3 [P2] | 当前对齐 C 裸指针语义（Option<usize>），redesign 阶段引入 |
 | I-10 | D10: `PrivId`/`SysId` type alias → newtype | 22 §3 [P2] | 改 newtype 需更新所有 callsite，影响面大 |
-| I-11 | BIOS 启动 / 实模式 / Multiboot/GRUB legacy 路径未覆盖 | 04 §2 + 01 §3.1 | 范围声明（当前仅 UEFI x86-64/aarch64 + OpenSBI+U-Boot riscv64），非缺口 |
-| I-12 | BKL guard RAII 重构建议 | 13 §6.2 | **已被 D6 明确拒绝**（BKL 语义需显式 release/reacquire 围绕阻塞操作）；§B1 的显式 transfer API 是不同方案，待 OQ |
+| I-11 | BIOS 启动 / 实模式 / Multiboot/GRUB legacy 路径未覆盖 | 04 §2 + 01 §3.1 | 范围声明（当前仅 UEFI x86-64/aarch64 + OpenSBI+U-Boot riscv64），非缺口。**✅ 关闭（2026-09-07 对账确认：非缺口，无需动作）** |
+| I-12 | BKL guard RAII 重构建议 | 13 §6.2 | **已被 D6 明确拒绝**（BKL 语义需显式 release/reacquire 围绕阻塞操作）；§B1 的显式 transfer API 是不同方案，待 OQ。**✅ 关闭（2026-09-07）：RAII 路线维持拒绝；transfer API 由 §1 B1 承接实施（Phase 2）** |
 | I-13 | `InterruptController` trait C-Rust 不对称分析 + `Send + Sync` 真实动机（doc 05 §3.3 缺文） | 05 §3.3 | 见下方 §7.4.1 详细背景与建议 |
 | I-14 | 启动主线文档 06/09/10/16 范围声明 vs 代码时序系统性错位（architecture-wide 调整的预登记） | 06/08/09/10/16 | 见下方 §7.4.2 详细背景与建议 |
 
@@ -1753,12 +1753,16 @@ todo.md §8.1/§8.2/§9.1-9.4 记录的 qemu-tests 编译失败（19 个 test-ke
 
 > 本节为 cause_sig 全语义实现完成（见 §0.1 "2026-09-05"行）后明确登记的**不阻塞收敛** backlog，
 > 与 §7.1 表格共同构成完整追踪。三项均为非缺口但仍未落地的实现项，遵循 §0.1 的 "📌 保持 DEFERRED" 范畴。
+>
+> **✅ 全节闭合（2026-09-07 对账）**：BL-1 随 D-57 落地（2026-09-05，syscall_signal.rs:274 起致命路径接线）、
+> BL-2 随 D-13 落地（2026-09-05，proc_table.rs:419 `sig_delay_done`）、BL-3 随 D-14 裁决为设计 no-op
+> （2026-09-06，W-7 连带结论）。下方"统一触发条件"随之失效，仅作历史存档。
 
 | 序号 | 关联条目 | 项 | 关联文档 / 代码 | 实施要点 / 备注 |
 |------|---------|-----|----------------|-----------------|
-| BL-1 | **D-57** | `proc_stacktrace` 接入 `cause_sig` 致命 SELF panic 路径 | doc 19 §4.7 / syscall_signal.rs:249-255 / syscall.rs:2295 / doc 32 | C system.c:429 在 panic 前调 `proc_stacktrace(rp)` 打印进程用户栈；Rust 当前省略，差异已在 doc 19 §4.7 标注。**复用路径**：DIAGCTL_CODE_STACKTRACE 已实现 `cross_space_copy` + `StacktraceArch::walk_frames` 闭包；新助手函数 `proc_stacktrace(&KProcess, &ProcessTable)` 即可 |
-| BL-2 | D-13 | `sig_delay_done`（system.c:454-464） | doc 19 §4.7 / T-1 行 | PM 通知接口 + `SIGSNDELAY` 常量；依赖 PM getksig 主路径已就绪（D-21/D-22 同批已落） |
-| BL-3 | D-14 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | doc 19 §4.7 / syscall.rs:2271-2315 / W-7 kmess 体系 ARCH 演进 | 借用冲突注释现存于 syscall.rs:2286（dispatch 已持 caller/priv_table 借用，与查 PM_PROC_NR 全局 proc_table 访问冲突）；PM 下次 getksig 轮询可观察 → 主用途已实现，PM 通知是次要副作用 |
+| BL-1 ✅ 已解决（2026-09-05，见 §7.1 D-57 行） | **D-57** | `proc_stacktrace` 接入 `cause_sig` 致命 SELF panic 路径 | doc 19 §4.7 / syscall_signal.rs:249-255 / syscall.rs:2295 / doc 32 | C system.c:429 在 panic 前调 `proc_stacktrace(rp)` 打印进程用户栈；Rust 当前省略，差异已在 doc 19 §4.7 标注。**复用路径**：DIAGCTL_CODE_STACKTRACE 已实现 `cross_space_copy` + `StacktraceArch::walk_frames` 闭包；新助手函数 `proc_stacktrace(&KProcess, &ProcessTable)` 即可 |
+| BL-2 ✅ 已解决（2026-09-05，见 §7.1 D-13 行） | D-13 | `sig_delay_done`（system.c:454-464） | doc 19 §4.7 / T-1 行 | PM 通知接口 + `SIGSNDELAY` 常量；依赖 PM getksig 主路径已就绪（D-21/D-22 同批已落） |
+| BL-3 🟢 设计 no-op（2026-09-06，见 §7.1 D-14 行） | D-14 | DIAGCTL `send_sig(PM_PROC_NR, SIGKMESS)`（do_diagctl.c:49-56） | doc 19 §4.7 / syscall.rs:2271-2315 / W-7 kmess 体系 ARCH 演进 | 借用冲突注释现存于 syscall.rs:2286（dispatch 已持 caller/priv_table 借用，与查 PM_PROC_NR 全局 proc_table 访问冲突）；PM 下次 getksig 轮询可观察 → 主用途已实现，PM 通知是次要副作用 |
 
 **统一触发条件**（任一出现即启动对应 backlog）：
 - 启动 doc 11-scheduling-primitives review（BL-2 因 T-1 链路依赖）
@@ -2208,3 +2212,344 @@ rg "架构范围说明" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-pr
 
 **追加日期**：2026-09-06。所有可完成的 TODO 已在前面轮次实现并提交；
 本表为不可完成项的最终清单，待 SMP bring-up（doc 16）后逐项解锁。
+
+## 21. V12 轮 Rust 全量扫描（2026-09-07，查漏补缺优先）
+
+> 来源：2026-09-07 架构级代码扫描，范围是 01-stage-kernel 相关的全部 Rust 实现
+> （`os/kernel/src/` 36 文件约 42229 行 ＋ `os/arch/src/` ＋ `os/plat/src/` ＋
+> `os/boot-shim/src/` ＋ 共享层 `minix-types`/`minix-boot`/`minix-platform` 中内核消费面），
+> 视角从整体到分层（共享层 → arch 层 → kernel 层 → boot 链），对照 Redox 实现与
+> Rust 社区最佳实践。
+> 方法：`tools/coverage-extract/coverage-extract.py kernel` 打底（1341 个 C 符号中，
+> 无文档无 Rust 的“完全缺口”经核实几乎全部落在 `arch/earm` 淘汰架构与 `arch/i386`
+> 历史遗留目录，非本项目三架构目标，不入清单）＋ 全库 `todo!`/`unimplemented!`/
+> `TODO`/`DEFERRED` grep ＋ 核心 C 文件（main/proc/system/clock/interrupt/table/smp/
+> debug/profile/utility/watchdog/cpulocals ＋ `system/do_*` 38 个）逐文件语义对账 ＋
+> `cargo test -p minix-kernel`（691 通过、0 失败、8 忽略）＋
+> `cargo clippy -p minix-kernel` 回归比对。
+> 约束：本轮只写 TODO，不改代码与文档；一次修一个，后续走 `todo-fix` 逐条实施。
+> 已有条目（§1-§6 架构建议 A1/A2/B1/C1/D1/D2/E1/G1/M1/R1、C-D-1~5、B-X、Edge 表
+> D-36~D-41/sched-1/tick-1/hw-1/hw-2/trap-1）不重复登记，下文只收录本轮新发现。
+> 编号：V12-A\* 为查漏类（行为缺口），V12-B\* 为架构类（设计优化）；严重度沿用
+> P0/P1/P2（P0 阻塞正确性，P1 尽快规划，P2 专项排期，P3 卫生项）。
+
+### 21.1 查漏类（Phase A：对照 C 源码的新缺口）
+
+#### V12-A1 `trap_style` 缺正式字段与返回路径切换 [P1]
+
+**问题**：`do_sigreturn.c:81` 的 `arch_proc_setcontext(rp, &rp->p_reg, 1, sc.trap_style)`
+在 Rust 侧只走了过场。内核分发层已透传（`os/kernel/src/syscall_signal.rs:803-804`
+`get_trap_style` 后调 `arch_setcontext`），但 arch 落地是占位：x86_64 把值暂存进
+`gp_regs[GP_R15]` 并自述“下次异常入口反正会覆盖 R15”（`os/arch/src/x86_64/signal.rs:339-352`
+`DEFERRED: proper trap_style field in CpuContext`），aarch64 直接丢弃参数
+（`os/arch/src/arm64/signal.rs:381-382` `arch_setcontext(_ctx, _trap_style)` 空实现）。
+C 语义的后半段——按 trap_style 选择返回路径（中断返回与快速系统调用返回的
+不同恢复序列）与 `p_kern_trap_style` 跟踪——在 `os/arch/src/arch/signal_context.rs:213-238`
+只有 trait 签名（`arch_setcontext`/`get_trap_style`），无状态承载、无路径分流。
+
+**证据**：`rg "trap_style" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/todo.md`
+零命中（本轮前未登记）；`rg "trap_style" os/kernel/src os/arch/src` 命中 10 处，
+全部是透传与占位，无字段定义、无返回路径条件分支。
+
+**影响**：信号返回后用户态恢复的返回路径恒定单一。若 C 在某 trap_style 下要求
+另一条恢复序列，当前实现走错路径即破坏用户栈与程序计数器。现阶段 hosted 单测
+不触发（真实 trap 入口本身缺失，见 Edge trap-1），属潜伏缺口，随 trap-1 落地而转正。
+
+**建议**：在 `CpuContext`（三架构各自结构）增正式 `trap_style` 字段（或等价的
+返回路径枚举），`arch_setcontext` 写字段而非借用通用寄存器暂存；`trap_return`
+层按字段分流返回序列；补三架构单测（置 trap_style → 断言字段值与分流选择）。
+设计时对比 Linux（`thread_info` 的系统调用返回路径标记）与 Redox（上下文恢复的
+显式状态机），优中选优。`todo-fix` 单条实施，同步更新 doc 31 与 doc 19 §4。
+
+#### V12-A2 生产路径绕过公开包装：`caller_q_find` 与 `el_match` 只剩测试调用 [P2]
+
+**问题**：两处出现“公开函数只被测试调用，生产走内部复刻”的分叉。
+
+1. `os/kernel/src/ipc.rs:529` 自由函数 `caller_q_find`（C `proc.c:1077-1105`
+头扫查找的忠实复刻）在生产代码中零调用——真实接收路径走的是同文件 728 行的
+方法 `caller_q_find_allowed`（带过滤感知的复刻）。自由函数仅存活于单测
+（`ipc.rs:2122/2124` 两处断言）与 `proc.rs:940` 的文档注释引用。
+2. `os/kernel/src/ipc_filter.rs:174` 公开包装 `el_match`（C `ipc_filter.h:40-41`）
+在生产中零调用——`chain_allowed`（同文件 216 行）直接调内部 `el_match_with`；
+`el_match` 仅存活于单测（同文件 546-566 六处断言）。
+
+**证据**：`cargo clippy -p minix-kernel` 报 `function caller_q_find is never used`
+（`ipc.rs:529`）与 `function el_match is never used`（`ipc_filter.rs:174`）；
+`rg "caller_q_find\(|el_match\(" os/kernel/src` 非测试命中为零（生产调用点
+`ipc.rs:1075` 用的是方法版，`ipc_filter.rs` 生产链用的是 `el_match_with`）。
+
+**影响**：同一 C 语义两处表达。将来修查找语义（如 ANY 匹配规则变化）必须同改两处，
+漏改即生产与测试断言分叉——测试全绿但测的不是生产走的函数（正是 `test-audit`
+要防的“测试测不到真东西”形态）。`proc.rs:940` 注释把测试专用函数写成生产操作集，
+属文档与代码不一致的轻症。
+
+**建议**：二选一并全库统一（`todo-fix` 单条， Elli 二者同属“一包装一内部”模式，
+允许同条实施）：方案一，生产改调公开包装（方法版瘦身为包装加过滤参数，
+自由函数成为唯一 walk 实现）；方案二，公开包装降级为 `#[cfg(test)]`
+测试辅助并修正 `proc.rs:940` 注释。决策时对比 C 单 walk 形态（C 只有一处循环），
+倾向方案一（单一真相源）。同步更新 doc 12 §4 与 doc 23 §4 的函数引用。
+
+#### V12-A3 `senda` 通知条件两分支恒等 [P2]
+
+**问题**：`os/kernel/src/ipc.rs:1628-1631` 的结果回写段中，
+`if (flags & AMF_NOTIFY) != 0 { do_notify = true; } else if r != OK && ...`
+两分支体完全相同（均为 `do_notify = true;`），clippy 报 `if has identical blocks`。
+C 原文（`proc.c:1300-1318`）两分支也是同值，但 C 是宏展开遗留，Rust 重写时应收敛。
+
+**证据**：clippy 原文定位 `ipc.rs:1628:42`；手工复核两分支体逐行一致。
+
+**影响**：纯可读性与维护性。读者会误以为两分支有差异（花时间找不存在的差别），
+且后续若一分支需改行为极易改漏另一分支。
+
+**建议**：合并为单条件
+`if (flags & AMF_NOTIFY) != 0 || (r != OK && (flags & AMF_NOTIFY_ERR) != 0)`，
+附注释说明对应 C 行号。机械项，可与 V12-A5 同批实施但分开 commit。
+
+#### V12-A4 boot 模块内存回收表述过时，需重验“函数存在 vs 启动链接线” [P2]
+
+**问题**：本 todo 历史表格（§7 系 boot 回收行，`cut_memmap() 无等价实现 ❌缺失` /
+`add_memmap() 无等价实现 ❌缺失`）的“无等价实现”断言已过时：
+`cut_memmap`/`add_memmap` 函数本体早已存在（`os/kernel/src/memmap.rs:98/174`，
+含 `pg_utils.c:86-125` 语义与单测），且 `os/kernel/src/vm_handoff.rs:188-189`
+已在 handoff 分类中真实调用 `cut_memmap`。但 `os/boot-shim/src/opensbi_helpers.rs:624-627`
+注释仍写“`cut_memmap` 的 Rust 实现是内核侧 TODO（见 todo.md §1）”，即至少注释侧
+停留在旧结论。
+
+**证据**：`rg "cut_memmap|add_memmap" os/kernel/src os/boot-shim/src` 命中
+memmap 实现、vm_handoff 两处真实调用、boot-shim 三处注释；对照 todo 旧表 ❌ 标记矛盾。
+这正是模式 70（跨轮状态陈旧）在本目录的又一实例（前例见 §0.1 18 项 DEFERRED 误报）。
+
+**影响**：读者按旧表会认为回收全无实现，实际是“函数有、接线待核”：
+handoff 路径已接，kmain 启动主链（Phase F 归还 bootstrap 区，
+`main.c:301` 对应语义）是否调用 `add_memmap` 仍需逐行核实（`lib.rs` 启动序列 grep）。
+
+**建议**：做一次 Step 0.7.1 式重验并改写旧表为两栏（函数存在性 / 启动链接线状态），
+同步修正 opensbi_helpers 注释的指向。判定标准：kmain 链每处 C `add_memmap` 调用点
+在 Rust 启动序列中有名有姓的对应（或显式 no-op 论证如 D-34 体例）。本条是文档
+准确性任务，不碰生产代码。
+
+### 21.2 架构类（Phase B：整体 → 分层的优化）
+
+#### V12-B1 生产路径 `expect`/`unwrap` 的 panic 与 errno 边界审计 [P1]
+
+**问题**：`os/kernel/src/proc_table.rs` 等生产文件存在一族以“非法 ProcNr 即 panic”
+为形态的断言（抽样：`:273/:295` `expect("vm_enqueue: invalid ProcNr")`、
+`:563/:571/:582/:600/:620/:629/:657/:662` 等 `unwrap()`、` :814`
+`panic!("notify_scheduler: mini_send failed ...")`）。CLAUDE.md 要求错误映射到
+Minix3 errno 且 D1/D2 已统一错误“类型”，但本条问的是另一维度：同样是非法输入，
+何时 panic、何时回 errno。C 侧此类路径多返回错误码（如 ESRCH）；Rust 侧若该
+ProcNr 可由用户态消息字段（如 endpoint）传导而来，panic 即把可触发的用户输入
+变成内核崩溃（拒绝服务面）。
+
+**证据**：`rg "expect\(|unwrap\(\)" os/kernel/src/proc_table.rs` 非测试命中约 20 处；
+抽查 `vm_enqueue` 的调用链上游是否已校验 endpoint（未在本轮穷举，需逐条登记）。
+现有注释多为 `// SAFETY` 形态而非“调用方已校验”的前置契约声明。
+
+**影响**： fail-fast 本身是好设计（内部不变量 locations xứng đáng panic），
+但用户可达路径的 panic 是正确性 bug。两者今天混在一起无区分标记。
+
+**建议**：逐条审计并二分（`todo-fix` 可拆多条，本条只登记审计任务）：
+内部不变量（调用方已校验、破坏即内存不安全）→ 保留 panic 并补前置契约注释
+（调用方名＋校验点行号）；用户可达（endpoint/消息字段传导）→ 改回 errno
+（ESRCH/EINVAL 对齐 C）。决策标尺：追溯到最近的用户态可控输入，
+中间无校验即判用户可达。同步更新 doc 12/17 对应章节的错误契约表。
+
+#### V12-B2 `unsafe` 集中区论证覆盖审计（device/lib/misc） [P2]
+
+**问题**：`rg -c unsafe os/kernel/src/*.rs` 显示三处集中：
+`syscall_device.rs:34`、`lib.rs:86`、`misc.rs:38`（全库其余文件多为个位数）。
+F1/F2 只收编了 `pt_alloc` 一处模型，集中区的每块 `unsafe` 是否都有
+SAFETY 论证（前置条件＋ наруш hậu quả＋单线程/BKL 归属）尚未系统核对。
+抽样见正反两例：正例 `lib.rs` 启动期静态多带 SAFETY 注释；
+反例 `os/arch/src/x86_64/paging.rs:868`（unsafe 函数内调 unsafe 函数缺内层块，
+`unsafe_op_in_unsafe_fn`）与 `:977`（冗余内层 `unsafe` 块）——clippy 已报警，
+说明至少 paging 两处论证形态不规范。
+
+**证据**：clippy `minix-arch 2 warnings`（上两处）＋ 三文件计数；
+`rg "SAFETY" os/kernel/src/syscall_device.rs` 覆盖率待数（本轮未穷举）。
+
+**影响**：`unsafe` 无论证即审计黑洞；冗余或缺失的块标记会误导后续重构者对
+“哪里是真正的信任边界”的判断。
+
+**建议**：以文件为单位补齐“每块 unsafe 一段 SAFETY”（前置＋归属＋违反后果），
+并修 paging 两处形态（补内层块／删冗余块）。对标 Redox 对 MMIO 原语的
+SAFETY 段风格。机械＋论证各半，可拆两条 `todo-fix`。
+
+#### V12-B3 内核消息体尺寸与内核栈拷贝审计 [P3]
+
+**问题**：共享层 clippy 报 `minix-types/src/ipc/vm.rs:667`
+`VmReply` 枚举至少 1560 字节（最大变体 64 region 数组内联所致，注释自述为
+有意权衡）。内核 syscall 路径按 TOCTOU 设计逐调用把用户消息拷进内核栈副本
+（D-8 `kernel_call` 语义），若内核侧 `Message` 联合体同量级偏大，
+每次系统调用即一次大栈帧拷贝——栈压力与缓存压力双升。
+
+**证据**：VmReply 1560 字节为实测警告值；内核 `Message` 的 `size_of` 本轮未实测，
+故本条定为审计而非断言（锚点纪律：无实测不写结论）。
+
+**影响**：若属实，优化方向是传引用/`Box` 化大变体或收窄内联数组；
+若不属实（Message 显著更小），关闭本条并记录实测值防后人重查。
+
+**建议**：实测 `size_of::<Message>()` 及各成员，列出内核栈拷贝点
+（`kernel_call`/`copy_msg_from_user` 为首），给出“栈帧字节数 × 调用频率”
+量级表；超阈值（建议阈值 512 字节，超即 P2 升级）再谈重排。
+Redox 对照：其 syscall 按值传递 usize 级参数、大负载走用户内存引用，
+可作为参照标尺。测量本身 stage 内完成；若结论要求改 minix-types 布局，
+届时按 edge 规则①另开 edge 条目（本轮不预开）。
+
+#### V12-B4 clippy 卫生回归批量清理 [P3]
+
+**问题**：2026-08-14 曾达成 kernel 零警告（§1 §C-D 背景），本轮实测回升：
+`minix-kernel 16` ＋ `minix-arch 2` ＋ `minix-platform 2` ＋ `minix-types 1`
+（含 8 处可自动修的 `needless_lifetimes`、3 处可合并 `if`、1 处 8 参数函数
+`kpriv.rs:1147 configure_boot_priv`——后者已是 C-D-2 登记项，此处只引用不重复、
+2 处无用导入 `vm_handoff.rs:39 MemoryRegion`／`syscall.rs:445 cause_signal`、
+2 处文档注释格式 `proc_table.rs:291` 等）。
+
+**证据**：`cargo clippy -p minix-kernel --lib`（2026-09-07 实测，见 §21 头部基线）；
+`MADT_TYPE_GICC/GICD never used` 经核实为 hosted-x86 跑 clippy 时
+`#[cfg(target_arch = "aarch64")]`（`acpi.rs:523/558` 真实使用）的跨架构误报，
+**不入修复**，此处记录以防后人重复开 TODO。
+
+**影响**：卫生项，但零警告是本项目的 gate 门面，放任即破窗。
+
+**建议**：机械批（导入／lifetimes／if 合并／注释格式）与 V12-A3 可同批不同 commit；
+C-D-2 参数结构体化维持原依赖（Round 3）不动。`push_exclusion never used`
+同样核实为特性门控误报（`lib.rs:876` 定义，`lib.rs:1041` 在非 mock 路径真实调用），
+不入修复，一并记录。
+
+### 21.3 本轮明确判定为非缺口项（防重查备忘，不入修）
+
+1. `announce`（`lib.rs:2123-2124`）、`prepare_shutdown`（`syscall.rs:1795-1799`）、
+`is_fpu`（`fpu_arch.rs:133`）、`env_get("hz")`（`clock.rs:943`＋`lib.rs:809` 编译期常量决策）、
+`cut_memmap`/`add_memmap` 函数本体（`memmap.rs:98/174`）——均有实现，接线问题仅 V12-A4 一条。
+2. `debug.c` 打印族：`runqueues_ok_cpu`（`debug.rs:47`）、`rtsflagstr`（`:203`）、
+`miscflagstr`（`:237`）、`print_proc`（`:258`）已实现；
+`print_proc_depends/recursive` 等 IPC 统计 hook 属 W-3 已排除。
+3. `profile.c` 除 `nmi_sprofile_handler`（W-4 无 NMI 子系统）外经 `dispatch_profile`
+覆盖；`watchdog.c` 全族 W-1；`usermapped_data.c` 三结构 W-2（64 位无此机制）。
+4. 跨 stage（edge）判定：本轮候选（minix-types `VmReply` 尺寸、minix-sys trap 层 E1/E2、
+RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合（如 V12-B3 的测量部分），
+**本轮不新增 edge 条目**。这符合微内核边界预期：stage 内消费稳定契约即可独立实现，
+联调测试代码才是 edge——本轮扫描未发现新的跨 stage 生产代码缺口。
+
+**扫描基线备忘**：`cargo test -p minix-kernel --lib` 691 通过／0 失败／8 忽略；
+`todo!`/`unimplemented!` 全库为零；设计快照 `design-coverage-check.sh` 01-stage-kernel
+除 00 与 99 外全 PASS（00/99 为总览与全局概念，无 per-doc 快照要求，沿用既有口径）。
+
+---
+
+## 22. 全量收敛执行计划（2026-09-07 立项：todo.md + smp_todo.md 未尽项收敛 campaign）
+
+> **定位**：本节是两个文件全部未实现 stub／DEFERRED／TODO 的权威执行清单。逐迭代串行执行——
+> 每轮一个 TODO：讲明白（grep 证据）→ 讲怎么修（≥2 方案对比 Linux／Redox／OS 理论，优中选优）→
+> 实施（代码＋文档＋测试同步）→ `cargo test -p {crate}` 全绿 → 全量 diff 回归 review（8 公共门）→
+> 本节打勾 + 对应行标注 → commit（一个 TODO 一个 commit）。
+>
+> **EDGE 判定裁定（2026-09-07）**：微内核边界下 stage 内生产代码可独立完整实现；仅三类进
+> edge_todo.md——①共享契约层的契约性变更（minix-types wire ABI／minix-sys trap 层／os/arch
+> 跨 stage 基建）、②其他 stage 目录内生产代码、③多进程联调集成测试。共享库中纯增量、仅内核
+> 消费的类型改进（D1 errno newtype、G1 ProcNr）不属 edge。本 campaign 唯一移交项：I-2 → E-KERNINFO。
+> notes/TODO.md 的 C-D-1..C-D-5 已转移出范围，不混入。
+
+### 22.0 环境基线（2026-09-07 实测）
+
+| 项 | 结果 |
+|---|---|
+| `cargo test -p minix-kernel` | 691 passed / 0 failed / 8 ignored（boot_integration 另 2 passed） |
+| QEMU | x86_64 / aarch64 / riscv64 / arm 四模拟器齐备 |
+| production targets | x86_64-unknown-uefi / aarch64-unknown-uefi / riscv64gc-unknown-none-elf 已安装 |
+| 工具链 | rustc 1.94.1 |
+| Phase 边界回归 | 全 workspace `cargo test` + `os/qemu-tests/run_all.sh` |
+
+### 22.1 本轮对账裁决（2026-09-07）
+
+- ✅ §18.5 BL-1/BL-2/BL-3 全节闭合（D-57/D-13 已落地、D-14 已裁决 no-op）。
+- ✅ I-11 关闭（范围声明非缺口）；I-12 关闭（RAII 路线维持拒绝，B1 承接）。
+- 🔁 T-12 **不关闭**：5 个测试名零命中、`dispatch_fork` 域零测试——真实测试债 → Phase 6。
+- 🔁 I-2 移交 edge_todo.md **E-KERNINFO**（消费方在用户态，E1 前无法端到端验证）。
+- 🆕 **U-1（新发现缺口）**：update 私有槽交换不保全 `s_alarm_timer`——C do_update.c:284-297
+  `adjust_priv_slot` 恢复 7 字段（含 :292 `s_alarm_timer`），Rust misc.rs:1882-1896 仅恢复 6 字段
+  （s_diag_sig 已闭合；misc.rs 对 s_alarm_timer 零命中）。随 D-14 勘误一并记录。
+- 🆕 **U-2（W-8 重审触发确认）**：misc.rs:1906-1909 swap_memreq no-op 注释前提失效——D-20
+  （2026-09-06）已建全局 VM 请求链；C do_update.c:313-337 在恰一侧 RTS_VMREQUEST 时真实换链，
+  非 runnable 不构成 no-op 理由（RTS_VMREQUEST 进程本就停止）。
+- §7.3 依赖列对账：T-1（D-10..D-13 ✅）、T-6（D5 ✅）、T-7（D-20 ✅）依赖均解除 → Phase 6。
+
+### 22.2 阶段清单（✅=完成；🔄=部分；⬜=待做）
+
+**Phase 0 — 基线与对账**
+- ✅ 环境基线记录（22.0）；陈旧行清理（BL ×3、I-11、I-12）；T-12 裁决；I-2 移交 E-KERNINFO；
+  U-1/U-2 登记；D-14 勘误 + syscall.rs:2412 注释修正；本节建立。
+
+**Phase 1 — V12 正确性/卫生批（§21，P1→P2→P3）**
+- ⬜ V12-A1 [P1] CpuContext 真实 `trap_style` 字段 + 返回路径选择（x86 现藏 GP_R15、arm64 丢弃、无分支）
+- ⬜ V12-B1 [P1] proc_table.rs ~20 处 panic 审计（内部不变量留 panic+契约注释 / 用户可达改 errno）
+- ⬜ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源
+- ⬜ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并
+- ⬜ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释
+- ⬜ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs:868/:977 形态修复
+- ⬜ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）
+- ⬜ V12-B4 [P3] clippy 卫生批（kernel 16 + arch 2 + platform 2 + types 1；两误报不修已记录）
+
+**Phase 2 — SMP 前置重构（避免 S-4/S-5 新代码二次迁移）**
+- ⬜ A1 [P1] 33 处裸 `unsafe fn` 访问器调用点 → `xxx_with(&BklSection)`；boot 期 BootPhase witness
+- ⬜ A2 [P2] 9 SyncUnsafeCell + 5 Atomic 全局收敛 `globals.rs`
+- ⬜ B1 [P1] `mem::forget` BKL 跨函数传递 → 显式 `BklGuard::transfer` API（smp.rs:577/:600）
+- ⬜ B-X [Backlog 启动] cfg(target_arch) 行为选择审计 + 第一批 trait 化（ArchNames / MockInterruptController；
+  `naked_asm!`/`asm!` 字面量 cfg 保留）
+
+**Phase 3 — SMP 主线（smp_todo §5 冻结序，每步一 commit）**
+- ⬜ S-2b aarch64 平台发现补齐（test-smp-topo-aarch64 SKIP→PASS）
+- ⬜ S-3a ApBootstrap ABI + 内存序契约 + relocation-free image toolchain spike（失败即换 .S）
+- ⬜ S-3b x86 early entry image（16→32→64 梯子 + 低内存拷贝 + BSP 页表根 PA<4GiB assert）
+- ⬜ S-3c arm/riscv stub + 三处固件 ABI 真 bug 修复（riscv IPI EID 0x735049 / arm PSCI 0xC4000003 / x86 mfence）
+- ⬜ S-3d AP alive 验证（boot_ack_mask，test-smp-ap-alive）
+- ⬜ S-8 asm trap stub + SYSCALL 入口（BSP 公共陷阱基建，固定 S-4 前；L4 test-timer-irq；解锁 D-46 硬件半环）
+- ⬜ S-4 init_ap 真实现（D-39：per-CPU GDT/TSS/GS_BASE/lidt + per-CPU MSR 重编程 + LAPIC local timer）
+- ⬜ S-5 smp_init 编排 + boot_lock（D-36 下半 + D-37：BKL 舞蹈 + 锁序表 + 握手超时）
+- ⬜ S-6a per-CPU ptproc（D-40：CURRENT_PTPROC_NR → CpuLocal）
+- ⬜ S-6b PLATFORM 容器冻结语义（D-41：Release 发布 / Acquire 首读）
+- ⬜ S-6c per-CPU 调度 running 指针（sched-1）
+- ⬜ S-6d per-CPU tick 统计（tick-1）
+- ⬜ S-7 AP 主循环（与 BSP 同 BKL 所有权前置；安全性声明落 16-smp）
+- ⬜ S-9 异常入口 BKL（D-38①，依赖 S-8）
+- ⬜ S-10 IPI 往返验证（test-smp-ipi；riscv SSIE 路径）
+- ⬜ S-11 shutdown(0)（hw-2/D-48 余项：语义层 + 三架构 QEMU 测试后端，硬件后端留接口）
+- ⬜ S-12 测试债 + CI 化（T-2 七个 SMP 测试 / T-3 init/load 顺序 / T-4 init_ap 路径 / T-5 QEMU 脚本 CI）
+- ⬜ S-13 收尾 sweep（Edge Items 表迁移、doc 16 状态刷新、smp_todo 封存）
+
+**Phase 4 — 剩余架构重构（§1）**
+- ⬜ D1 [P1] errno newtype 单一来源（=I-8）+ D2 [P2] ToErrno trait 统一 14 个映射函数（同批）
+- ⬜ G1 [P1] ProcNr 双定义上移 minix-types
+- ⬜ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch`
+- ⬜ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）
+- ⬜ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分
+- ⬜ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）
+
+**Phase 5 — 主线后功能缺口**
+- ⬜ U-1 update 私有槽交换保全 s_alarm_timer（对齐 C do_update.c:292；含 alarm 链归属语义分析）
+- ⬜ U-2 swap_memreq 真实现或新论证（W-8 重审；C do_update.c:313-337 对照 Rust VmRequestQueue）
+- ⬜ I-6 bill_ptr + 真实调度主循环（替换 lib.rs:2187 placeholder；安全窗口在 S-7/S-10 后）
+- ⬜ I-13 InterruptController trait 拆分（Router + per-CPU Ack；依赖 S-6 per-CPU 基建）
+- ⬜ SYS_PADCONF 真实现（syscall.rs:350 现 BadCall；对照 C do_padconf 语义）
+- ⬜ profiling/sprofiling deferred 体（misc.rs:2074 / lib.rs:2593）
+- ⬜ syscall.rs:1013 与 syscall_process.rs:382 缺口盘点补齐
+- ⬜ I-7 MF_REPLY_PEND typestate 评估（可结论"维持现状"）/ I-9 NonNull / I-10 PrivId/SysId newtype（评估后实施或维持论证）
+
+**Phase 6 — 测试债（§7.3）**
+- ⬜ T-1 cause_signal 10 行为测试（依赖已解除）
+- ⬜ T-6 STIME/SETTIME/SETALARM/VTIMER 8 非 EPERM 测试（D5 已解除）
+- ⬜ T-7 剩余 5 队列测试（D-20 已解除）
+- ⬜ T-12 doc 17 §5.2 五测试（fork ×3 / runctl RC_DELAY EBUSY / clear 幂等；dispatch_fork 域当前零测试）
+- ⬜ T-9 IRQCTL 3 测试 + vdevio 对齐 panic + readbios copy（IrqManager 接入 KernelState）
+- ⬜ T-8 E2E grant 8 测试（mock/QEMU；联调部分按 edge 规则③拆分）
+- ⬜ T-11 runqueues_ok_cpu 集成测试
+- ⬜ T-5 QEMU 脚本 CI 化（随 S-12；若 CI 基建不可达则诚实 DEFERRED 论证）
+- ⬜ T-10 riscv64 真实启动链集成（U-Boot 工具链；不可达则诚实 DEFERRED 论证）
+
+**Phase 7 — 文档与构建收尾**
+- ⬜ I-14 [P1] 启动主线文档 06/08/09/10/16 范围声明错位修复（按预登记 A/B/C 修复层裁决）
+- ⬜ I-1 kernel 独立 ELF 构建接入（build.rs + link.ld → xtask）
+- ⬜ I-3 riscv64 QEMU `-kernel` ELF 装载 + 高半核切换补全
+- ⬜ I-5 ACPI RSDP 搜索与表解析（QEMU virt 不依赖 → 实现或诚实 DEFERRED 论证）
+- ⬜ 终局 sweep：全 workspace `cargo test` + run_all.sh 全阶梯 + 8 公共门终检 + 本节与 §7.1/§0.1 状态对齐封存

@@ -209,3 +209,15 @@
 全部落定后逐条回写 03-stage-rs/todo.md §18.10 E-11 与 A5 路线图第 6 步。
 
 **解锁**：03-stage-rs 19 号主线通电；E-1 自升级；E5(c) 联调链。
+
+---
+
+## E-KERNINFO MINIX_KERNINFO 内核信息共享 + release/version 字段（= 01-stage-kernel todo.md I-2，2026-09-07 移交）
+
+**问题**：C 的 `MINIX_KERNINFO=6`（`minix3/minix/include/minix/ipcconst.h:12`）是 `do_ipc` 内的内核信息共享原语——调用者经它取得内核信息表（含 `release[]`/`version[]` 等）；Rust 内核侧未实现（`os/kernel/src/ipc.rs:1775` 自注 "not yet implemented"，`ipc.rs:2061` 测试钉住 `IpcCall::from_raw(6) == None`）。连带 `KernelInfo` 无 `release`/`version` 字段（C 生产者 main.c:432-433，banner 直打 OS_RELEASE 故内核自身无消费）。
+
+**为何 edge**：真实消费方是**用户态进程**（进程初始化时取内核信息页），用户态 trap 层未落地（E1）前无法端到端验证；共享契约面（kerninfo 的 grant/映射机制与 minix-types wire 布局）符合 edge 判定①③。
+
+**解锁后工作**：(1) minix-types 定 kerninfo wire（对照 C `struct minix_kerninfo`/`kinfo` 布局）；(2) kernel `ipc.rs` 增 KernInfo 分支（grant 共享或 safecopy，对齐 C `do_ipc` 该分支语义）+ `KernelInfo` 补 `release`/`version` 填充；(3) 翻转 `ipc.rs:2061` 钉子测试；(4) 用户态首个消费方（libc/服务器初始化）接线后端到端验证。
+
+**依赖**：E1（trap 层）落地后才有用户态调用方；内核侧实现本身可先行（stage 内单测覆盖），但无消费方即无法验证可观察行为——按 todo-fix 规则保持 DEFERRED 登记，不假完成。
