@@ -28,7 +28,7 @@
 use core::fmt;
 
 use minix_types::{
-    Endpoint, IpcError, Message, Pid, UserSlot, VfsCall, VfsReply, VfsReplyError,
+    Endpoint, IpcError, Message, Pid, UserSlot, VirBytes, VfsCall, VfsReply, VfsReplyError,
     VFS_PM_REBOOT_REPLY,
 };
 
@@ -300,6 +300,51 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
     Ok(())
 }
 
+/// `exec_restart` 的生产服务装配（C: `main.c:350-352` 的 exec_restart 调用）。
+///
+/// 只持 transport——`KernelExec::reply`/`TracerSig::send` 需要的进程表经
+/// 方法参数传入（`exec_restart` 自身持表），避免两个 `&mut ProcTable` 共存。
+struct ExecServices<'a, T: IpcTransport> {
+    transport: &'a mut T,
+}
+
+impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
+    fn exec(
+        &mut self,
+        _ep: Endpoint,
+        _sp: VirBytes,
+        _pc: VirBytes,
+        _ps: VirBytes,
+        _name: &[u8],
+    ) -> i32 {
+        // C: sys_exec（exec.c:197）——内核调用面未落地（edge_todo.md E6）：
+        // 返回 -ENOSYS，由 exec_restart 尾部的 panic（C `exec.c:198`
+        // panic("sys_exec failed") 同型）承接——失败可观测，不伪造成功。
+        minix_types::ENOSYS
+    }
+
+    fn kill(&mut self, _ep: Endpoint, _sig: i32) {
+        // C: sys_kill（exec.c:195 的 PARTIAL_EXEC 拆除分支）——内核调用面
+        // 未落地（edge E6，同 D-13 家族）；C 不检查返回值，此处显式 no-op。
+    }
+
+    fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32) {
+        // C: reply(who_p, result)（exec.c:167 失败回复）。
+        let mut msg = Message::default();
+        msg.m_type = code;
+        let ep = table.procs[slot.get()].endpoint();
+        let _ = self.transport.send(ep, &msg);
+    }
+}
+
+impl<T: IpcTransport> crate::exec::TracerSig for ExecServices<'_, T> {
+    fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32) {
+        let _ = crate::signal::check_sig(table, caller, pid, sig, false, self.transport);
+    }
+}
+
+impl<T: IpcTransport> crate::exec::ExecRestartServices for ExecServices<'_, T> {}
+
 /// 生产实现（DEFERRED 方法在对应文档落地前为 `unimplemented!`，自说明字符串标明归属）。
 pub struct PmServices<'a, T: IpcTransport> {
     table: &'a mut ProcTable,
@@ -477,9 +522,22 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn exec_restart(&mut self, slot: UserSlot, args: ExecRestartArgs) {
-        // [ARCH A-6] 执行重启 — 见 17-exec.md。
-        let _ = (slot, args);
-        unimplemented!("DEFERRED: exec_restart — 见 17-exec.md")
+        // C: main.c:350-352 — exec_restart(rmp, VFS_PM_STATUS, PC, NEWSP,
+        // NEWPS_STR)。生产端口 ExecServices 持 transport（与 self.table
+        // 不相交借用），17 的全语义（PARTIAL_EXEC 拆除/caught 复位/tracer
+        // 信号/sys_exec）在 crate::exec::exec_restart 内。
+        let mut svc = ExecServices {
+            transport: self.transport,
+        };
+        crate::exec::exec_restart(
+            self.table,
+            slot,
+            args.status,
+            VirBytes(args.pc),
+            VirBytes(args.newsp),
+            VirBytes(args.newps_str as u64),
+            &mut svc,
+        );
     }
 
     fn restart_signals(&mut self, slot: UserSlot) {

@@ -342,11 +342,12 @@ pub struct ExecCreds { pub allow_setuid: bool, pub new_uid: Uid, pub new_gid: Gi
 pub fn do_exec(table: &mut ProcTable, caller: UserSlot, req: ExecRequest, vfs: &mut dyn VfsExec) -> ReplyIntent // VFS_PM_EXEC 六字段 + VFS_CALL→SUSPEND
 pub fn do_newexec(table: &mut ProcTable, caller_ep: Endpoint, info: ExecCreds, tainted: &mut dyn TaintedCtl) -> Result<bool, ExecError> // allow_setuid 双重 + TAINTED 二重 + frame/Partial + reply.suid
 pub fn do_execrestart(table: &mut ProcTable, caller: UserSlot, req: ExecRestartReq) -> Result<(), ExecError> // RS→EPERM 门 + pc/ps_str→exec_restart
-pub fn exec_restart(table: &mut ProcTable, rmp: UserSlot, result: i32, pc: VirBytes, sp: VirBytes, ps_str: VirBytes, kern: &mut dyn KernelExec, tracer: &mut dyn TracerSig) // PARTIAL→SIGKILL vs reply + ~Partial + reset_caught + tracer→check_sig + sys_exec
+pub trait ExecRestartServices: KernelExec + TracerSig {} // 2026-09-06 收敛：生产装配共享 transport，两个 &mut 无法共存（同 13 RestartServices）
+pub fn exec_restart(table: &mut ProcTable, rmp: UserSlot, result: i32, pc: VirBytes, sp: VirBytes, ps_str: VirBytes, svc: &mut dyn ExecRestartServices) // PARTIAL→SIGKILL vs reply + ~Partial + reset_caught + tracer→check_sig + sys_exec
 
 pub trait VfsExec { fn forward_exec(&mut self, req: ExecRequest) -> Result<ReplyIntent, ExecError>; }
-pub trait KernelExec { fn exec(&mut self, ep: Endpoint, sp: VirBytes, pc: VirBytes, ps_str: VirBytes) -> i32; }
-pub trait TracerSig { fn send(&mut self, pid: Pid, sig: i32); }
+pub trait KernelExec { fn exec(&mut self, ep: Endpoint, sp: VirBytes, pc: VirBytes, ps_str: VirBytes, name: &[u8]) -> i32; fn kill(&mut self, ep: Endpoint, sig: i32); fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32); } // reply 的 table 供生产实现解析 slot→endpoint
+pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32); } // caller = 被 exec 的目标进程自身（C: check_sig(rmp, rmp->mp_pid, …)）
 ```
 
 - `do_exec` 的 `VFS_PM_EXEC` 六字段与 `VFS_CALL→SUSPEND` 的 `ReplyLater` 显式化与 `05` 的 `VfsCall::Exec` 复用。

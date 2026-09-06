@@ -272,7 +272,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-05 | `ipc/vfs.rs:401` | `sched_start_user` `unimplemented!()` | 16-scheduling.md | SCHED 客户端（A-8） |
 | D-06 | ~~`ipc/vfs.rs:407`~~ | ~~`exit_proc` 的 VFS 退出通知 `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #8：委托 09 的 `crate::exit::exit_proc` 二阶段退出，`main.c:381` FORK 失败路径） | 09-pm-exit.md | ~~接线 09 退出链时~~ 已达成（+1 委托测试） |
 | D-07 | ~~`ipc/vfs.rs:413`~~ | ~~`set_core_flag`（WCOREFLAG）`unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #9：WCOREFLAG 置入 `Lifecycle::Exiting.sig_status` bit7，u8 域位运算；wait4 组合改无符号字节） | 09-pm-exit.md | ~~同上~~ 已达成 |
-| D-08 | `ipc/vfs.rs:469` | `exec_restart` `unimplemented!()` | 17-exec.md | exec 重启路径接线 |
+| D-08 | ~~`ipc/vfs.rs:469`~~ | ~~`exec_restart` `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #10：ExecServices 生产端口 + ExecRestartServices supertrait 收敛；sys_exec 内核调用返回 -ENOSYS 由 exec_restart 的 C 同型 panic 承接） | 17-exec.md | ~~exec 重启路径接线~~ 逻辑达成（真实 sys_exec 挂 E6） |
 | D-09 | `ipc/vfs.rs:488` | `sys_abort` `unimplemented!()` | 01-stage-kernel | 内核 sys_abort |
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
 | D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
@@ -540,3 +540,18 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`lifecycle.rs` 字段文档；本文件 §6 D-07 行 + **新增 D-26**（wait4 回复载荷的 wire 建模缺失——`mess_pm_lc_wait4.status` 在 minix-types 无对应成员，挂 E7）。
 
 **未做（DEFERRED 论证）**：wait 状态码到 wire 的最后一跳（D-26）——共享层 minix-types 缺 union 成员，属 E7 范围，stage 内不私改共享层。
+
+### ✅ Fix #10: D-08 — VFS 端口 `exec_restart` 接通 17 全语义（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/exec.rs`（`KernelExec::reply`/`TracerSig::send` 增加 `table`/`caller` 参数；新增 supertrait `ExecRestartServices`；`exec_restart`/`do_execrestart` 收敛为单一 svc 参数；3 个测试的 mock 合并重构）
+- `os/servers/pm/src/ipc/vfs.rs`（新增生产端口 `ExecServices`：exec→`-ENOSYS`（E6 契约）、kill→显式 no-op（E6/D-13 家族）、reply→transport 发送、send→`check_sig`；生产 `exec_restart` 委托 17 全语义）
+- `17-exec.md`（§4.4 签名同步）
+
+**Before/After**：设计选型——(a) 端口持 `&mut ProcTable`+`&mut transport`：与 `exec_restart` 自身的表借用冲突，无解；(b) **trait 方法携带 `table` 参数 + 端口只持 transport**（已选）：`exec_restart` 保留表的独占所有权（它需要大量改表），端口方法被调用时拿到表的转引用——生产/测试两种装配都成立；(c) 完全合并进 restart_sigs 式单 trait——同 (b) 但方法粒度保留（exec/kill 不需要表就不传）。`KernelExec::exec` 的生产实现返回 `-ENOSYS`（内核调用面挂 E6），由 `exec_restart` 尾部已有的 panic 承接（C `exec.c:198` 同型 panic）——失败可观测而非伪造成功，符合通电口径。
+
+**Verified**：
+- `cargo test -p minix-pm`：**334 lib + 6 integration passed**（exec 10 项全过：失败回复/PARTIAL 拆除/caught 复位/tracer 信号）
+- `grep -n "unimplemented" os/servers/pm/src/ipc/vfs.rs`：仅剩 D-05/D-09 两处（各有独立的阻塞依赖）
+
+**Docs**：`17-exec.md` §4.4 三行签名；本文件 §6 D-08 行。

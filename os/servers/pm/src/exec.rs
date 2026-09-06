@@ -66,16 +66,27 @@ pub trait VfsExec {
 }
 
 /// Kernel exec (`sys_exec`, `exec.c:197`, D7, A-3).
+///
+/// `reply` 的 `table` 参数供生产实现解析 slot→endpoint（测试 mock 忽略）。
 pub trait KernelExec {
     fn exec(&mut self, ep: Endpoint, sp: VirBytes, pc: VirBytes, ps_str: VirBytes, name: &[u8]) -> i32;
     fn kill(&mut self, ep: Endpoint, sig: i32);
-    fn reply(&mut self, slot: UserSlot, code: i32);
+    fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32);
 }
 
 /// Tracer signal for `exec` (`check_sig`, `exec.c:193`, D5).
+///
+/// `caller` 为被 exec 的目标进程自身（C: `check_sig(rmp, rmp->mp_pid, …)`）。
 pub trait TracerSig {
-    fn send(&mut self, pid: Pid, sig: i32);
+    fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32);
 }
+
+/// `exec_restart` 两个注入点的合并 trait（D5/D7，2026-09-06 收敛）。
+///
+/// 与 [`crate::signal_flow::RestartServices`] 同一动机：生产装配中
+/// `KernelExec` 与 `TracerSig` 共享同一 transport，两个 `&mut` 无法共存，
+/// 合并为 supertrait、函数体内经 trait 上转取用。
+pub trait ExecRestartServices: KernelExec + TracerSig {}
 
 /// `do_exec` (`exec.c:38-56`, D1) — forward to VFS.
 pub fn do_exec(
@@ -191,14 +202,13 @@ pub fn do_execrestart(
     table: &mut ProcTable,
     who: Endpoint,
     info: ExecRestartInfo,
-    kern: &mut dyn KernelExec,
-    tracer: &mut dyn TracerSig,
+    svc: &mut dyn ExecRestartServices,
 ) -> Result<(), ExecError> {
     if who != Endpoint::RS {
         return Err(ExecError::Perm);
     }
     let slot = table.pm_isokendpt(info.endpoint).map_err(|_| ExecError::BadEndpoint)?;
-    exec_restart(table, slot, info.result, info.pc, table.procs[slot.get()].ipc.frame_addr, info.ps_str, kern, tracer);
+    exec_restart(table, slot, info.result, info.pc, table.procs[slot.get()].ipc.frame_addr, info.ps_str, svc);
     Ok(())
 }
 
@@ -210,17 +220,16 @@ pub fn exec_restart(
     pc: VirBytes,
     sp: VirBytes,
     ps_str: VirBytes,
-    kern: &mut dyn KernelExec,
-    tracer: &mut dyn TracerSig,
+    svc: &mut dyn ExecRestartServices,
 ) {
     if result != OK {
         // 161-167 PARTIAL_EXEC → SIGKILL else reply
         let is_partial = matches!(table.procs[target.get()].resources.exec_state, ExecState::Partial { .. });
         if is_partial {
-            kern.kill(table.procs[target.get()].endpoint(), 9); // SIGKILL
+            svc.kill(table.procs[target.get()].endpoint(), 9); // SIGKILL
             return;
         }
-        kern.reply(target, result);
+        svc.reply(table, target, result);
         return;
     }
 
@@ -240,14 +249,14 @@ pub fn exec_restart(
         if (flags & TO_NOEXEC) == 0 {
             let sig = if (flags & TO_ALTEXEC) != 0 { 17 } else { 5 }; // SIGSTOP vs SIGTRAP
             let pid = table.procs[target.get()].identity.id.pid;
-            tracer.send(pid, sig);
+            svc.send(table, target, pid, sig);
         }
     }
 
     // 197 sys_exec
     let ep = table.procs[target.get()].endpoint();
     let name = table.procs[target.get()].identity.name;
-    let r = kern.exec(ep, sp, pc, ps_str, &name);
+    let r = svc.exec(ep, sp, pc, ps_str, &name);
     if r != OK {
         panic!("sys_exec failed: {}", r);
     }
@@ -287,20 +296,18 @@ mod tests {
     impl VfsExec for NopVfs {
         fn forward_exec(&mut self, _req: ExecRequest) -> Result<ReplyIntent, ExecError> { Ok(ReplyIntent::ReplyLater) }
     }
-    struct TestKern { pub killed: Option<Endpoint>, pub replied: Option<(UserSlot,i32)>, pub execed: Option<Endpoint> }
-    impl KernelExec for TestKern {
+    /// `exec_restart` 的合并注入 mock（D5/D7 收敛后单一 service 对象）。
+    struct TestExecSvc { pub killed: Option<Endpoint>, pub replied: Option<(UserSlot,i32)>, pub execed: Option<Endpoint>, pub sig: Option<i32> }
+    impl TestExecSvc { fn new() -> Self { Self { killed: None, replied: None, execed: None, sig: None } } }
+    impl KernelExec for TestExecSvc {
         fn exec(&mut self, ep: Endpoint, _sp: VirBytes, _pc: VirBytes, _ps: VirBytes, _name: &[u8]) -> i32 { self.execed = Some(ep); 0 }
         fn kill(&mut self, ep: Endpoint, _sig: i32) { self.killed = Some(ep); }
-        fn reply(&mut self, slot: UserSlot, code: i32) { self.replied = Some((slot, code)); }
+        fn reply(&mut self, _table: &mut ProcTable, slot: UserSlot, code: i32) { self.replied = Some((slot, code)); }
     }
-    struct NopTracer;
-    impl TracerSig for NopTracer {
-        fn send(&mut self, _pid: Pid, _sig: i32) {}
+    impl TracerSig for TestExecSvc {
+        fn send(&mut self, _table: &mut ProcTable, _caller: UserSlot, _pid: Pid, sig: i32) { self.sig = Some(sig); }
     }
-    struct RecTracer { pub sig: Option<i32> }
-    impl TracerSig for RecTracer {
-        fn send(&mut self, _pid: Pid, sig: i32) { self.sig = Some(sig); }
-    }
+    impl ExecRestartServices for TestExecSvc {}
 
     #[test]
     fn test_do_exec_forwards() {
@@ -342,11 +349,10 @@ mod tests {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5);
         table.procs[5].resources.exec_state = ExecState::Partial { frame: FrameRegion { base: VirBytes(0x7000), len: 128 } };
-        let mut kern = TestKern { killed: None, replied: None, execed: None };
-        let mut tracer = NopTracer;
-        exec_restart(&mut table, UserSlot::new(5), -5, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut kern, &mut tracer);
-        assert!(kern.killed.is_some());
-        assert!(kern.replied.is_none());
+        let mut svc = TestExecSvc::new();
+        exec_restart(&mut table, UserSlot::new(5), -5, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut svc);
+        assert!(svc.killed.is_some());
+        assert!(svc.replied.is_none());
     }
 
     #[test]
@@ -355,12 +361,11 @@ mod tests {
         mk_proc(&mut table, 5);
         table.procs[5].resources.signals.caught = 1u64 << 2;
         table.procs[5].resources.signals.actions[2].sa_handler = 0x1000;
-        let mut kern = TestKern { killed: None, replied: None, execed: None };
-        let mut tracer = NopTracer;
-        exec_restart(&mut table, UserSlot::new(5), 0, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut kern, &mut tracer);
+        let mut svc = TestExecSvc::new();
+        exec_restart(&mut table, UserSlot::new(5), 0, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut svc);
         assert_eq!(table.procs[5].resources.signals.caught & (1u64 << 2), 0);
         assert_eq!(table.procs[5].resources.signals.actions[2].sa_handler, 0);
-        assert!(kern.execed.is_some());
+        assert!(svc.execed.is_some());
     }
 
     #[test]
@@ -369,10 +374,9 @@ mod tests {
         mk_proc(&mut table, 5);
         table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_exit: false, trace_options: crate::mproc::TraceOptions::empty() };
         // TO_NOEXEC not set, so should send SIGTRAP (5)
-        let mut kern = TestKern { killed: None, replied: None, execed: None };
-        let mut tracer = RecTracer { sig: None };
-        exec_restart(&mut table, UserSlot::new(5), 0, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut kern, &mut tracer);
-        assert_eq!(tracer.sig, Some(5));
+        let mut svc = TestExecSvc::new();
+        exec_restart(&mut table, UserSlot::new(5), 0, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut svc);
+        assert_eq!(svc.sig, Some(5));
     }
 
     #[test]
