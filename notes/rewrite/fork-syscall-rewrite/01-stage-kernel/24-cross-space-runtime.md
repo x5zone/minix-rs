@@ -264,7 +264,7 @@ int virtual_copy_f(struct proc * caller, struct vir_addr *src,
 |------|--------|----------|---------|
 | `data_copy_vmcheck` | 接受 `caller*` + endpoint + addr，返回 int (OK/EFAULT/VMSUSPEND) | 接受 `caller: &mut KProcess` + `src/dst: AddressRef` + `proc_cr3` 闭包，返回 CrossSpaceResult | 设计决策 D2/D3/D4 |
 | `virtual_copy_vmcheck` | `createpde` 临时 PDE + `lin_lin_copy` | Direct Map + `copy_nonoverlapping` | 架构演进 D1 |
-| `vm_suspend` | 修改 caller->p_vmrequest + RTS_VMREQUEST + 链表 + send_sig | `caller.suspend_for_vm_with_copy()` 设置 `p_vm_suspend: Option<VmSuspendContext>` + RTS_VMREQUEST | 设计决策 D5/D6 |
+| `vm_suspend` | 修改 caller->p_vmrequest + RTS_VMREQUEST + 链表 + send_sig（链空时；`send_sig` 失败即 `panic("send_sig failed")`，proc.c:256） | `caller.suspend_for_vm_with_copy()` 设置 `p_vm_suspend: Option<VmSuspendContext>` + RTS_VMREQUEST；链空时的唤醒通知在 `ProcessTable::vm_enqueue_and_notify_vm`——SYSTEM→VM `mini_notify_core` 失败即 panic（对齐 proc.c:256；VM endpoint 在表中不可解析 = 内核一致性破坏，无恢复路径。2026-09-07 V12-B1 审计：原 `let _ =` 静默吞掉失败偏离 C，已改 panic + 前置契约注释） | 设计决策 D5/D6 |
 | `do_copy` | 解析消息 + SELF 替换 + isokendpt + 溢出检查 + 分支 | `dispatch_vircopy` 在 syscall_copy.rs 中实现 | 已在 18-syscall-copy.md 覆盖 |
 | `kernel_call_resume` | 重新执行 saved.reqmsg | 简单版已实现（vm.rs:896，读 VM 结果 + 清 MF_KCALL_RESUME）并接入 `process_misc_flags`（proc_table.rs KCALL_RESUME 分支）；完整重派发延迟至 `switch_to_user`（见 10-switch-to-user.md §4.2） | 部分实现 |
 

@@ -292,16 +292,33 @@ impl ProcessTable {
     pub fn vm_enqueue_and_notify_vm(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
         let vm_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::VM_PROC_NR.0);
         let was_empty = {
+            // R-15 (2026-09-07): INVARIANT: `nr` is a caller-validated ProcNr
+            // resolved from the process table (the just-suspended process);
+            // `nr_to_idx` only returns None for out-of-range slots, which
+            // cannot occur for an in-table ProcNr.
             let idx = nr_to_idx(nr).expect("vm_enqueue: invalid ProcNr");
             self.vm_request_queue.enqueue(crate::proc::ProcNr(idx as i32), &mut self.procs)
         };
         if was_empty {
-            let _ = crate::ipc::mini_notify_core(
+            // C: proc.c:253-257 — `if (OK != send_sig(VM_PROC_NR, SIGKMEM))
+            // panic("send_sig failed")`. The wake-up notify is kernel-internal
+            // (SYSTEM→VM); its failure means the VM slot is dead or the table
+            // is inconsistent — a kernel integrity bug with no recovery path.
+            // R-15 (2026-09-07) audit: the previous `let _ =` silently
+            // swallowed this failure, diverging from C; tests exercising
+            // this path must arrange the VM slot, exactly as the
+            // `notify_scheduler` contract requires for the scheduler slot.
+            match crate::ipc::mini_notify_core(
                 self.procs_slice_mut(),
                 priv_table,
                 crate::proc::proc_nr::SYSTEM,
                 vm_ep,
-            );
+            ) {
+                crate::ipc::IpcOutcome::Delivered | crate::ipc::IpcOutcome::Blocked => {}
+                crate::ipc::IpcOutcome::Error(e) => {
+                    panic!("vm_enqueue_and_notify_vm: wake-up notify to VM failed: {e:?}");
+                }
+            }
         }
     }
 
@@ -923,6 +940,13 @@ impl ProcessTable {
                             0, crate::proc::proc_nr::CLOCK.0,
                         );
                         let _ = clock_ep;
+                        // R-15 (2026-09-07): INVARIANT: `nr` is the process
+                        // being dispatched (`process_misc_flags` is called
+                        // with the picked/current process's nr, resolved
+                        // from the table by the scheduler loop), so its slot
+                        // exists and `get_mut()` cannot return None. The
+                        // preceding `self.get(nr)` read at the loop top
+                        // proves the slot is present.
                         let r = self.get_mut(nr).unwrap();
                         r.suspend_for_vm(
                             crate::vm::VmSuspendType::DeliverMsg,

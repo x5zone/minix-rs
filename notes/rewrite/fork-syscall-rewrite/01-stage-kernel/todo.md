@@ -2373,6 +2373,31 @@ ProcNr 可由用户态消息字段（如 endpoint）传导而来，panic 即把�
 （ESRCH/EINVAL 对齐 C）。决策标尺：追溯到最近的用户态可控输入，
 中间无校验即判用户可达。同步更新 doc 12/17 对应章节的错误契约表。
 
+**✅ 已审计（2026-09-07，§22 Phase 1 迭代 2）——实测 17 处（非测试区 awk 穷举），结论：**
+
+- **16 处为内部不变量，维持 panic**：`:273/:295`（vm_enqueue 两臂）、`:563/:571/:582/:600`
+  （sched_enqueue 四臂）、`:620/:629`（sched_enqueue_head）、`:657/:662`（sched_dequeue）、
+  `:676/:694`（sched_proc_no_time）、`:733/:780`（notify_scheduler 两臂）、`:814`
+  （mini_send panic）。其中 14 处已有 R-15（2026-08-12）前置不变量注释且经调用方
+  核实成立（生产调用方仅三类：调度器内部 picked/current、`endpoint_to_nr` 解析过的
+  syscall 目标、D-20 挂起路径的当前进程——无一条从消息字段裸传）；C parity 成立
+  （C enqueue/dequeue 用 `assert(proc_ptr_ok(rp))` 同形态守护，notify_scheduler 对齐
+  proc.c:1889 panic）。
+- **2 处补齐契约注释**：`:295`（vm_enqueue_and_notify_vm 的 expect 原无注释，补 R-15：
+  nr 为刚挂起的当前进程）与 `:943`（process_misc_flags DeliverMsg 分支 `get_mut(nr).unwrap()`
+  原无注释，补 R-15：nr 为调度循环解析过的被派发进程，循环顶 `get(nr)` 已证槽位在表）。
+- **1 处分类纠偏（真修复）**：`vm_enqueue_and_notify_vm` 的 SYSTEM→VM 唤醒通知原为
+  `let _ =` 静默吞错——既非 errno 也非 panic，偏离 C proc.c:256
+  `panic("send_sig failed")`。改为 `IpcOutcome::Error` → panic + 契约注释。该 panic 非
+  用户可达（SYSTEM 是内核常量源，失败意味着 VM 槽 endpoint 无法解析 = 表损坏）。
+- **未发现用户可达 panic**：用户可控 endpoint 全部经 `endpoint_to_nr` 解析并在解析失败处
+  返回 EINVAL/ESRCH（如 dispatch_sigsend/sigreturn、exec/clear 目标解析），抵达这些
+  panic 点的 nr 均已是内核解析产物。
+- 文档同步：doc 24 §2.9 契约表 vm_suspend 行补 notify panic parity。
+  `cargo test -p minix-kernel` → 694 passed / 0 failed（含 DeliverMsg 分支测试，
+  验证 `ProcessTable::new()` 的 per-slot 默认 endpoint 使 VM 唤醒在正常表上走
+  挂起位路径而非 panic）。
+
 #### V12-B2 `unsafe` 集中区论证覆盖审计（device/lib/misc） [P2]
 
 **问题**：`rg -c unsafe os/kernel/src/*.rs` 显示三处集中：
@@ -2502,7 +2527,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 1 — V12 正确性/卫生批（§21，P1→P2→P3）**
 - ✅ V12-A1 [P1] CpuContext 真实 `trap_style` 字段 + 返回路径选择（x86 现藏 GP_R15、arm64 丢弃、无分支）→ **落地为 `KProcess.trap_style: TrapStyle`（arch 公共枚举）+ 双端信号往返 + finish 闸门 + MINIX3 BUG 校验先行修复；694+212 测试全绿（2026-09-07）**
-- ⬜ V12-B1 [P1] proc_table.rs ~20 处 panic 审计（内部不变量留 panic+契约注释 / 用户可达改 errno）
+- ✅ V12-B1 [P1] proc_table.rs ~20 处 panic 审计 → **17 处实测：16 内部不变量维持 panic（C assert parity）、1 补契约注释、1 分类纠偏（notify 吞错改 C-parity panic）；无用户可达 panic（2026-09-07）**
 - ⬜ V12-A2 [P2] `caller_q_find`/`el_match` 测试包装与生产路径收敛单一真相源
 - ⬜ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并
 - ⬜ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释
