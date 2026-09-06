@@ -190,6 +190,7 @@ PM do_fork → VFS 回复后 → sched_start_user() (pm/schedule.c:55)
 | S-8 | 消息传递模型 | 客户端 `_taskcall()` 同步阻塞（sched_start.c:38），服务端 `sef_receive_status` + `ipc_send` 异步回复（main.c:94-98,101-109） | 单线程事件循环 + `sendrec`/`notify`；`SUSPEND` 伪返回码保留（对齐 04-stage-pm A-3） | 02/13 | 设计差异 |
 | S-9 | balance_queues 策略 | C 注释 "This default policy will soon be changed"（schedule.c:355）；默认策略：noquantum 降一级、balance 恢复一级 | `QueueBalancer` trait 或显式策略结构，默认策略等价实现并标注演进点 | 11 | 设计差异 |
 | S-10 | 64 位宽度 | `unsigned`（32 位）、`NR_PROCS`、`BITMAP_CHUNKS(CONFIG_MAX_CPUS)` | u32/u64 显式、`NR_PROCS` 常量类型化（对齐 01-stage-kernel 64 位审计） | 03/05/10/99 | 已实现 |
+| S-11 | **组合层单一所有者** | 四个文件级全局分居两文件：`schedproc[NR_PROCS]`（schedproc.h:36）、`cpu_proc[]`（schedule.c:46）、`machine`（main.c:17）、`balance_timeout`（schedule.c:16）；出生路径一口气同时写表与台账（schedule.c:223-231） | 折进单一 `SchedServer` 结构（表、台账、拓扑、平衡器），单线程事件循环一个 `&mut` 走全轮，借用不拆；台账初值对齐 C 静态零初始化（每核存活、零负载） | 02 | 已实现 |
 
 ---
 

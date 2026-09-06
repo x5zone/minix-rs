@@ -131,10 +131,11 @@ os/servers/sched/src/
 ├── kernel_api/
 │   ├── mod.rs                — 契约面的总入口（09 建，12 续：注册归 12 管）
 │   ├── schedule.rs           — 参数下发面（09，参数怎么发下去）
-│   └── schedctl.rs           — 本篇：注册调用的组装与归属两种状态
+│   ├── schedctl.rs           — 本篇：注册调用的组装与归属两种状态
+│   └── transport.rs          — 内核线接缝（02，本篇调用怎么真的发出去）
 ├── scheduling/               — 服务端对端（06 接管时用 `register` 组装调用）
 ├── schedproc.rs              — 进程槽对端（03，槽结构的定义）
-├── dispatch.rs               — 事件循环对端（02，通知进循环走 NO_QUANTUM 分发）
+├── server.rs                 — 事件循环对端（02，通知进循环走 NO_QUANTUM 分发）
 └── lib.rs                    — 模块导出
 os/libs/minix-types/src/ipc/
 └── message.rs                — 消息对端（`MessLsysKrnSchedctl:821-831` 字段顺序的来源）

@@ -132,11 +132,30 @@ Rust 改写不照抄 `main.c` 的 switch 写法，而是参考 Linux 的表驱�
 - **Rust**：四个结构体进 minix-types（`os/libs/minix-types/src/ipc/message.rs`，`#[repr(C)]` 加补齐加 `Default`，和已有的三个同风格），联合体加四个成员，用布局测试锁定 56 字节。
 - **为什么**：消息体跟着使用方走（第 02 篇用分发表、第 06/13 篇用结构体），但权威位置在 types（了结 plan §6.2 的前置缺口）；布局测试锁定 56 字节就是"结构体本身即契约"。备选方案（结构体下沉到 sched crate）被否决：消息体是跨服务的契约，权威位置在 types。
 
+### D7 循环转起来：一轮一步（`server.rs` 的 `run_once` 加 `run`）
+
+- **C**：`while (TRUE)` 一口气转到底（`main.c:35-94`）；接收失败当场崩溃（`39-40`）。
+- **Rust**：`run_once()`（`os/servers/sched/src/server.rs:218`）只做一轮"收、分、回"，`run()`（`server.rs:186`）补上"永远"和一个传输失败上限——连续 64 轮收不到才 panic（对照 VM 同型先例 `os/servers/vm/src/vm_server.rs` 的 `MAX_CONSECUTIVE_RECV_FAILURES`）。
+- **为什么**：无限循环没法测试——测不到的代码等于没写。一轮一步之后，主循环的全部执行侧语义（见下）都能在 mock 传输上逐轮驱动：回件失败继续转（`main.c:101-106`）、时钟通知再设闹钟（`schedule.c:367-368`）、接管失败槽位残留（`schedule.c:223` 先于 `233-237`）……每条一个测试，循环本身没有秘密。64 次上限是对 C 的唯一偏离（C 第一条失败就崩溃）：收不到消息没有"暂时没消息"这种正常态，但数到上限再崩，既让传输层还没通电时（真实 trap 层是 edge E1 的事）失败得可诊断，也让失败路径本身可测。备选方案（直译 `while (TRUE)`）被否决了：起不了测试的循环是个盲区。
+
+### D8 四个全局收进一个所有者（[ARCH S-11]）
+
+- **C**：四个文件级全局分居两文件——进程表 `schedproc[NR_PROCS]`（`schedproc.h:36`）、CPU 台账 `cpu_proc[]`（`schedule.c:46`）、机器信息 `machine`（`main.c:17`）、平衡周期 `balance_timeout`（`schedule.c:16`）。
+- **Rust**：`SchedServer` 一把攥住四块状态（`os/servers/sched/src/server.rs:136`）：表、台账、拓扑、平衡器；单线程事件循环里一个 `&mut SchedServer` 走完每一轮。
+- **为什么**：出生路径要一口气同时写表和台账（`schedule.c:223-231`：置占用、选核、记账、下发在同一个函数里）；状态若散在 `main` 的局部变量里，借用检查会推着实现把参数拆成大元组。一个所有者，`&mut` 拿着全部，借用不用拆。台账初值是 `Some(0)` 而不是 `None`——C 的静态数组零初始化是"每核都活着、零负载"，`None` 是"判死"（10 篇 D2 的 `CPU_DEAD` 类型化），"没探测过"在这个服务器里不存在（启动时 `sys_getmachine` 告诉它有几核）。备选方案（两个持有者对应 C 的两个文件）被否决了：C 的全局分文件是历史产物，不是领域边界。
+
+### D9 两条线分开接：消息线与内核线（`kernel_api/transport.rs`）
+
+- **C**：消息和内核调用本就是两条通道——`sef_receive_status`/`ipc_send` 走 IPC 陷阱，`sys_schedctl`/`sys_schedule`/`sys_setalarm`/`sys_getmachine` 走内核调用陷阱（`minix3/minix/lib/libsys/` 两个入口）。
+- **Rust**：`IpcTransport`（收、发两个方法）加 `KernelApi`（五个内核调用方法）双 trait（`os/servers/sched/src/kernel_api/transport.rs:66,132`）；真实端按最终形态委托 minix-sys 的直接传输——真实 trap 层（edge E1）落地前，调用诚实地返回 `EIO`。
+- **为什么**：两半的 mock 形态不同——测循环只需要"给一条消息、收一条回复"的脚本，测内核调用只需要"记录参数、按序回答"的账本；合成一个 trait，每个测试都得同时写两半。`sys_getmachine` 还有一层指针契约要兑现：GETMINFO 传的是缓冲区指针，内核把 `struct machine` 原样拷进来（`type.h:122-131`；内核侧对端 `os/kernel/src/misc.rs:1038-1050`），所以缓冲区必须与 C 结构逐字节同布局。还有一处诚实的偏离要写明：C 的 `schedule_process` 每次下发前都重新 `pick_cpu`（`schedule.c:302`），重选会改私有字段还会重复记账；Rust 的就地下发不再重选——LOCAL 掩码下 CPU 根本不上线，重选改变不了内核看到的任何东西，只多记一次账，那是 C 的意外不是 C 的约定（10 篇 D3 的配对语义：一次选中配一次释放）。备选方案（单 trait、七个方法一锅端）被否决了：接口的宽度应该跟着 mock 的形状走。
+
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
 | S-8 消息传递模型（同步调用 + 异步回复） | `settle` 挂起即不回复；`SUSPEND` 伪返回码保留 | `os/servers/sched/src/dispatch.rs:92` + 本文档 D4 + §1.5 |
+| S-11 组合层单一所有者 | 四个 C 全局折进 `SchedServer`，一个 `&mut` 走全轮；台账初值对齐 C 零初始化 | `os/servers/sched/src/server.rs:136` + 本文档 D8 + plan.md ARCH 表 S-11 行 |
 
 ---
 
@@ -147,13 +166,16 @@ Rust 改写不照抄 `main.c` 的 switch 写法，而是参考 Linux 的表驱�
 ```
 os/servers/sched/src/
 ├── dispatch.rs           — 本篇：消息枚举、分流、校验、回复、拒收
+├── server.rs             — 本篇：组合层——四个全局的所有者、一轮一步的循环
+├── kernel_api/
+│   └── transport.rs      — 本篇：两条线的接缝（消息线 IpcTransport 加内核线 KernelApi）
 ├── sef.rs                — 启动对端（01 篇，两种启动方式与机器信息）
 └── lib.rs                — 模块导出
 os/libs/minix-types/src/ipc/
 └── message.rs            — 四个消息体加联合体成员（02/06/13 篇复用）
 ```
 
-> 设计决策：§3 D1（消息枚举）/ D2（通知调用分流）/ D4（回复规则）/ D6（消息体位置）。
+> 设计决策：§3 D1（消息枚举）/ D2（通知调用分流）/ D4（回复规则）/ D6（消息体位置）/ D7（一轮一步）/ D8（单一所有者）/ D9（两条线分开接）。
 
 ### 4.2 核心符号表
 
@@ -165,6 +187,10 @@ os/libs/minix-types/src/ipc/
 | 回复判断 | `main.c:89-96` | `os/servers/sched/src/dispatch.rs:21,92,103` | 挂起就不回复 |
 | 拒收 | `utility.c:18-23` | `os/servers/sched/src/dispatch.rs:115` | 固定 `ENOSYS` |
 | 消息体 | `ipc.h` 七个结构 | `os/libs/minix-types/src/ipc/message.rs` 四个结构加联合体 | 56 字节锁定 |
+| 一轮收分回 | `main.c:35-96` | `os/servers/sched/src/server.rs:218`（`run_once`）、`:186`（`run` 加失败上限） | 一轮一步可测 |
+| 四个全局的所有者 | `schedproc.h:36` 加 `schedule.c:16,46` 加 `main.c:17` | `os/servers/sched/src/server.rs:136`（`SchedServer`） | 表台账拓扑平衡器一把攥 |
+| 两条线的接缝 | `lib/libsys/` 两个通道 | `os/servers/sched/src/kernel_api/transport.rs:66,132` | 消息线加内核线 |
+| 通知判断 | `com.h:92` | `os/servers/sched/src/kernel_api/transport.rs:59`（`is_notify`） | 调用号等于 NOTIFY |
 
 ### 4.3 不变量
 
@@ -176,6 +202,10 @@ os/libs/minix-types/src/ipc/
 | 回复分三种情况 | `settle` 加 `classify` | 挂起就不回复 | `main.c:54,90-93` |
 | 未知编号固定拒收 | `no_sys_verdict` | 恒定 `ENOSYS` | `utility.c:22` |
 | 消息体 56 字节 | 补齐字段加测试 | 尺寸断言 | `ipc.h` 的 `_ASSERT_MSG_SIZE` |
+| 通知永不回复 | `run_once` 的通知臂提前返回 | 时钟臂加沉默臂都不经回件 | `main.c:54` |
+| 内核通知永不回复 | `run_once` 的信任门臂 | 成功失败都不回件 | `main.c:70-77` |
+| 接管先于占用 | `do_start` 的顺序 | `schedctl` 失败时槽位未动 | `schedule.c:218` 先于 `223` |
+| 失败残留是契约 | `do_start` 的返回路径 | 下发失败槽位仍占用 | `schedule.c:223` 先于 `233-237` |
 
 ---
 
@@ -189,12 +219,31 @@ os/libs/minix-types/src/ipc/
 | `test_notify_first` | `main.c:44-55` | 调用进分发，时钟通知整理、其他通知忽略 | `os/servers/sched/src/dispatch.rs:147` |
 | `test_seal_and_settle` | `main.c:68-96` + `utility.c:18-23` | 标记校验加挂起回复加拒收 | `os/servers/sched/src/dispatch.rs:157` |
 | `test_sched_message_layouts` | `ipc.h:1428-1912` | 四个结构体 56 字节加字段值 | `os/libs/minix-types/src/ipc/message.rs:2477` |
+| `test_start_from_pm_happy_path` | `main.c:57-87` + `schedule.c:140-249` | 一轮全链：分发、三门、接管、出生、全字段下发、回复写回调度者 | `os/servers/sched/src/server.rs:646` |
+| `test_inherit_copies_parent_state` | `schedule.c:199-211` | 继承父进程的当前位置与时间片，上限用消息的 | `os/servers/sched/src/server.rs:683` |
+| `test_start_refusals_touch_nothing` | `schedule.c:150-166` | 陌生人 EPERM、占用 EDEADEPT、越界 EINVAL，接管与出生都不发生 | `os/servers/sched/src/server.rs:710` |
+| `test_inherit_self_parent_refused` | `schedule.c:171` 加 `203` | init 自父继承被父门拒绝（占用标记在填值之后才置） | `os/servers/sched/src/server.rs:744` |
+| `test_start_fanout_failure_leaves_slot_occupied` | `schedule.c:223` 加 `233-237` | 下发失败槽位仍占用——C 的失败残留是真实语义 | `os/servers/sched/src/server.rs:759` |
+| `test_start_retries_after_dead_cpu` | `schedule.c:227-231` | EBADCPU 标死换核再试，台账跟着走 | `os/servers/sched/src/server.rs:774` |
+| `test_stop_clears_slot_and_ledger` | `schedule.c:112-135` | 台账减一、槽位清空，空门事后 agrees | `os/servers/sched/src/server.rs:793` |
+| `test_stop_refuses_strangers_and_dead_slots` | `schedule.c:118-125` | 陌生人 EPERM、空槽 EDEADEPT | `os/servers/sched/src/server.rs:817` |
+| `test_nice_regrades_and_rolls_back_on_failure` | `schedule.c:254-292` | 两个数一起改；下发失败快照写回（回滚半） | `os/servers/sched/src/server.rs:835` |
+| `test_nice_refuses_strangers_and_bad_ceilings` | `schedule.c:262-276` | 陌生人 EPERM、越界 EINVAL，表未动 | `os/servers/sched/src/server.rs:866` |
+| `test_kernel_noquantum_demotes_and_never_replies` | `main.c:68-77` 加 `schedule.c:87-107` | 内核通知降一级、失败也不回滚、永不回复（不回滚半） | `os/servers/sched/src/server.rs:895` |
+| `test_noquantum_floor_still_fans_out` | `schedule.c:99-103` | 谷底不降但就地下发照做 | `os/servers/sched/src/server.rs:926` |
+| `test_forged_noquantum_answers_eperm` | `main.c:78-83` | 伪造的通知以 EPERM 回件，表未动 | `os/servers/sched/src/server.rs:948` |
+| `test_clock_notification_rebalances_and_rearms` | `main.c:44-55` 加 `schedule.c:353-369` | 时钟通知升一级、LOCAL 下发、再设闹钟、不回复 | `os/servers/sched/src/server.rs:973` |
+| `test_other_notification_passes_in_silence` | `main.c:50-52` | 非时钟通知静默通过 | `os/servers/sched/src/server.rs:1005` |
+| `test_unknown_call_answers_enosys` | `utility.c:18-23` | 野编号的回复是 ENOSYS | `os/servers/sched/src/server.rs:1020` |
+| `test_reply_failure_does_not_kill_the_loop` | `main.c:101-106` | 回件失败只丢一次，下一轮照常作答 | `os/servers/sched/src/server.rs:1033` |
+| `test_receive_failure_is_reported_for_the_bound` | `main.c:39-40`（偏离点） | 一次接收失败丢一轮、喂给计数，不当场崩溃 | `os/servers/sched/src/server.rs:1053` |
+| `test_run_panics_after_sustained_receive_failures` | `main.c:39-40`（偏离点） | 连续 64 轮失败后循环大声终止 | `os/servers/sched/src/server.rs:1064` |
 
-测试策略：消息用五个取值的全枚举锁定（含未知编号拒收）；分流用三种形态全覆盖；校验用标记有无两极覆盖；回复用挂起、正常、错误码三格覆盖（含 `EPERM` 也要回复）；拒收用固定值覆盖；消息体用尺寸加字段值覆盖。
+测试策略：消息用五个取值的全枚举锁定（含未知编号拒收）；分流用三种形态全覆盖；校验用标记有无两极覆盖；回复用挂起、正常、错误码三格覆盖（含 `EPERM` 也要回复）；拒收用固定值覆盖；消息体用尺寸加字段值覆盖。主循环（`server.rs`）的执行侧语义逐轮驱动：八个执行语义点各有一个测试点名（回件失败、内核通知不回、伪造回 EPERM、通知不回、NICE 回滚加 NO_QUANTUM 不回滚、START 失败残留、平衡表遍历不管答案、回复写调度者），传输的 mock 一半管收发脚本、一半管内核调用账本（`kernel_api/transport.rs` 的 `mock` 模块）。
 
 ### 5.1 测试统计
 
-基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。本篇直接相关的测试是上表 4 个（含 types 侧布局测试 1 个）。完整测试清单：`rg "fn test_" os/servers/sched/src/dispatch.rs`。
+基线以 `cargo test -p minix-sched --lib` 实际输出为准（2026-09-06 主循环落地后为 79 passed，落地前 59）。本篇直接相关的测试是上表 23 个（dispatch 3 个加 server 19 个加 types 布局 1 个）。完整测试清单：`rg "fn test_" os/servers/sched/src/dispatch.rs os/servers/sched/src/server.rs`。
 
 ---
 
@@ -219,5 +268,5 @@ os/libs/minix-types/src/ipc/
 
 - C 源：`minix3/minix/servers/sched/main.c:35-106`（接收分发回复全部代码）、`minix3/minix/servers/sched/utility.c:18-23`（未知编号拒收）、`minix3/minix/include/minix/com.h:801-807,1151`（五个编号加挂起含义）、`minix3/minix/include/minix/com.h:92`（通知判断宏）、`minix3/minix/include/minix/ipcconst.h:28`（内核标记）、`minix3/minix/include/minix/ipc.h:261-273,1093-1113,1430-1445,1822-1828,1908-1913`（七个消息体）
 - 阶段文档：`01-sched-init-main.md`（上一站）、`06-start-scheduling.md`（下一站）、`03-schedproc-struct.md`（记录的去向）、`09-schedule-process.md`（内核侧消息体对端）、`12-kernel-interface.md`（记账字段对端）、`13-pm-interaction.md`（客户端消息体对端）
-- Rust 实现：`os/servers/sched/src/dispatch.rs:1`（本篇判定层）、`os/libs/minix-types/src/ipc/message.rs`（消息体权威位置）
+- Rust 实现：`os/servers/sched/src/dispatch.rs:1`（本篇判定层）、`os/servers/sched/src/server.rs:1`（本篇组合层：一轮一步的循环加四个全局的所有者）、`os/servers/sched/src/kernel_api/transport.rs:1`（两条线的接缝）、`os/libs/minix-types/src/ipc/message.rs`（消息体权威位置）
 - 对端：`../01-stage-kernel/11-scheduling-primitives.md`（内核调度原语）

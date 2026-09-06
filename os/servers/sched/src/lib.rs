@@ -14,10 +14,12 @@
 //! - [`valid`] — the sender names (who may knock).
 //! - [`priority`] — the model behind the numbers (how high, how long).
 //! - [`scheduling`] — the service arms (takeover first, 06).
-//! - [`kernel_api`] — the kernel boundary (what goes down, 09).
+//! - [`kernel_api`] — the kernel boundary (what goes down, 09; the two
+//!   wires it rides, 02).
 //! - [`cpu`] — the choice behind placement (who goes where, 10).
 //! - [`balancer`] — the wait behind rebalance (how long, one step up, 11).
 //! - [`client`] — the client's mirror (which road, what rides, whose name, 13).
+//! - [`server`] — the composition layer (the table, the ledger, the loop, 02).
 
 pub mod balancer;
 pub mod client;
@@ -28,6 +30,7 @@ pub mod priority;
 pub mod scheduling;
 pub mod schedproc;
 pub mod sef;
+pub mod server;
 pub mod table;
 pub mod valid;
 

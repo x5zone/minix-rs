@@ -155,3 +155,17 @@
 **建议**：与 04-stage-pm P1-4 协同一次做齐——(1) 按调用族在 `os/libs/minix-types/src/ipc/pm.rs` 建 wire 结构体（对照 C union 逐字段 + `size_of` 断言，风格对齐 `ipc/message.rs` 既有成员如 `MessPmSchedSchedulingSetNice` :1165）；(2) 处置 `PmRequest`/`PmResponse` 死代码：要么作为新 wire 层的入口枚举重构，要么删除（待 P1-4 设计时定，不允许默认保留）；(3) 调用号收敛二选一：47 个 `pub const PM_*` 上移 minix-types（PmCall 枚举随之迁移，成为 callnr.h 的 Rust 等价物，倾向此案）或 minix-types 常量清空、pm crate 为唯一真值——需 OQ 确认归属；(4) 补 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量。
 
 **解锁**：04-stage-pm/todo.md P1-1（每臂解码）/ P1-4 / P2-3 的实施前提；未来 libc/commands 侧 PM 调用发起方的常量消费。
+
+---
+
+## E8 minix-sys SCHED 所需内核调用真实通电（= 06-stage-sched/todo.md P1-3 抽取，2026-09-06）
+
+**问题**：SCHED 服务器的传输接缝已按最终形态落地（`os/servers/sched/src/kernel_api/transport.rs`：`IpcTransport` 收发 + `KernelApi` 五调用，打包布局与内核对端逐字段对齐），但真实端委托的 minix-sys 直传当前是 stub——`DirectTrapTransport`（`os/libs/minix-sys/src/ipc.rs:529-559`，EIO）与 `DirectKernelCallTransport`（`os/libs/minix-sys/src/syscall.rs:144-148`，-EIO）。主循环全部 79 个测试在 mock 上运行；生产二进制 `minix-sched` 一进 `run()` 即因传输失败计数到上限而 panic（诚实的失败，非静默）。
+
+**证据**（内核对端现状，2026-09-06 核实）：SYS_SCHEDULE（`os/kernel/src/syscall.rs:821`）、SYS_SCHEDCTL（`syscall_process.rs:592`）、SYS_SETALARM（`syscall_clock.rs:160`）、GETMINFO GET_MACHINE/GET_HZ（`misc.rs:1033-1050`，指针 safecopy 契约）全部已实现；缺的只是 trap 层本体。
+
+**影响**：SCHED 的真实通电（启动读机器 → 设闹钟 → 接收分发回复全链）；E5 联调包若含 PM↔SCHED 的 fork 接管链，本条是前置。
+
+**建议**：随 E1 一次解决——trap 层落地后 `DirectTrapTransport`/`DirectKernelCallTransport` 换真实 trap 序列，SCHED 侧零改动（接缝已按最终形态写好）；若 E1 前需要单独验证 SCHED 通电，可在 `os/libs/minix-sys/src/syscall.rs` 复用 `perform_kernel_call` 为 SCHED 五调用加命名包装（仿 E6 模板），但当前 `transport.rs` 的打包已完整、包装层无增量价值，倾向不单独建。
+
+**解锁**：06-stage-sched/todo.md P1-3 的真实通电；E5 的 PM↔SCHED 链路（若立项）。
