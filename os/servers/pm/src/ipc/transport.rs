@@ -101,13 +101,17 @@ impl IpcTransport for KernelIpcTransport {
 
 /// 测试专用 IPC 传输。
 ///
-/// 记录每次 `send` 的目标与消息（供断言），并为 `sendrec` 预置回复
-/// `m_type`（默认 OK=0，模拟 VFS 确认）。
+/// 记录每次 `send` 的目标与消息（供断言），并为 `sendrec` 预置回复：
+/// 有脚本（`queue_sendrec_reply`）时整条回复消息出队写入（含载荷
+/// 字段，供 VM_FORK 这类"回复即载荷"的协议用）；无脚本时退回旧行为
+/// ——仅覆盖回复 `m_type`（默认 OK=0，模拟 VFS 确认）。
 #[derive(Debug)]
 pub struct TestIpcTransport {
     /// 所有 `send` 调用记录（按序）。
     sent: alloc::vec::Vec<(Endpoint, Message)>,
-    /// `sendrec` 写入消息的回复 `m_type`。
+    /// `sendrec` 脚本化回复队列（整条消息，按序出队）。
+    sendrec_replies: alloc::collections::VecDeque<Message>,
+    /// 无脚本时 `sendrec` 写入消息的回复 `m_type`。
     reply_type: i32,
     /// 下一次 `receive` 返回的消息（+ 状态字）。
     next_receive: Option<(Message, IpcStatus)>,
@@ -119,14 +123,25 @@ impl TestIpcTransport {
     pub fn new() -> Self {
         Self {
             sent: alloc::vec::Vec::new(),
+            sendrec_replies: alloc::collections::VecDeque::new(),
             reply_type: 0,
             next_receive: None,
         }
     }
 
-    /// 设置 `sendrec` 的回复 `m_type`（默认 0 = OK）。
+    /// 设置 `sendrec` 的回复 `m_type`（默认 0 = OK；仅无脚本时生效）。
     pub fn set_reply_type(&mut self, reply: i32) {
         self.reply_type = reply;
+    }
+
+    /// 入队一条 `sendrec` 脚本化回复（整条消息，按序出队）。
+    ///
+    /// 与 `set_reply_type` 的区别：脚本回复**整体覆盖**调用方的消息
+    /// 缓冲——`m_type` 与 m1/m3 等载荷字段都来自脚本，供 `vm_fork`
+    /// 这类"回复即载荷"的协议（VMF_CHILD_ENDPOINT 在 m1i3）构造
+    /// 真实形态的应答；无脚本时的退回行为只覆盖 `m_type`。
+    pub fn queue_sendrec_reply(&mut self, reply: Message) {
+        self.sendrec_replies.push_back(reply);
     }
 
     /// 预置下一条 `receive` 返回的消息（主循环测试用）。
@@ -163,8 +178,13 @@ impl IpcTransport for TestIpcTransport {
 
     fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
         self.send(dest, msg)?;
-        // C: 回复覆盖 m_type（main.c:246-249 检查 `mess.m_type != OK`）。
-        msg.m_type = self.reply_type;
+        // C: 回复写入同一消息缓冲（main.c:246-249 检查 `mess.m_type != OK`）。
+        // 有脚本 → 整条覆盖；无脚本 → 仅覆盖 m_type。
+        if let Some(reply) = self.sendrec_replies.pop_front() {
+            *msg = reply;
+        } else {
+            msg.m_type = self.reply_type;
+        }
         Ok(())
     }
 }

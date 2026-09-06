@@ -970,19 +970,30 @@ mod tests {
     #[test]
     fn test_run_once_fork_no_sync_reply() {
         // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复，
-        // 回复经 05 的 VFS_PM_FORK_REPLY；但 PM 侧需先 tell_vfs 子进程（VFS_CALL）
+        // 回复经 05 的 VFS_PM_FORK_REPLY；但 PM 侧需先 vm_fork（sendrec VM）
+        // 再 tell_vfs 子进程（VFS_CALL）。
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
+        // 脚本化 VM_FORK 应答：空表 + 游标 0 → 子槽位 1（父在 5）。
+        let mut vm_reply = Message::default();
+        vm_reply.m_type = minix_types::OK;
+        unsafe {
+            vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
+        }
+        server.transport.queue_sendrec_reply(vm_reply);
         let mut msg = Message::default();
         msg.m_type = 2; // PM_FORK
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
-        // handle_fork 已向 VFS 发送 VFS_PM_FORK（子进程 VFS_CALL），但未向父进程同步回复
-        assert_eq!(server.transport.sent().len(), 1);
-        assert_eq!(server.transport.sent()[0].0, Endpoint::VFS);
-        assert_eq!(server.transport.sent()[0].1.m_type, minix_types::VFS_PM_FORK);
+        // 依次发出：VM_FORK（sendrec，先于一切不可回滚变更）→ VFS_PM_FORK
+        //（子进程 VFS_CALL）；未向父进程同步回复（SUSPEND）。
+        assert_eq!(server.transport.sent().len(), 2);
+        assert_eq!(server.transport.sent()[0].0, Endpoint::VM);
+        assert_eq!(server.transport.sent()[0].1.m_type, minix_types::VM_FORK as i32);
+        assert_eq!(server.transport.sent()[1].0, Endpoint::VFS);
+        assert_eq!(server.transport.sent()[1].1.m_type, minix_types::VFS_PM_FORK);
         // 子进程槽应处于 VFS_CALL（延续挂在子进程）
         assert!(server
             .table

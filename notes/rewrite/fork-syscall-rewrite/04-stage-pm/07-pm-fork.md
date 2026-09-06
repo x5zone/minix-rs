@@ -49,7 +49,7 @@
 
 > *PM may not fail fork after call to vm_fork(), as VM calls sys_fork().*
 
-VM 已调用内核 `sys_fork` 复制了 `proc` 与页表，PM 若此时 `EAGAIN` 会留下 VM 侧已复制但 PM 侧未占位的孤儿。Rust 侧的 `alloc_slot` 已在 `vm_fork` 前 `procs_in_use++`，因此 `vm_fork` 失败时需显式 `release_slot` 回滚——这是 C 与 Rust 顺序差异的补偿（见 §3.3/3.5）。
+VM 已调用内核 `sys_fork` 复制了 `proc` 与页表，PM 若此时 `EAGAIN` 会留下 VM 侧已复制但 PM 侧未占位的孤儿。Rust 侧的顺序与 C 完全对齐：`fork.rs` 的步骤 3 用 `find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功返回之后才手动执行（`fork.rs:62-64`）——`vm_fork` 失败时进程表零污染，无需任何回滚路径，"先可失败、后不可回滚"的分界因此天然成立。
 
 VFS 投递的异步性同样源于两阶段：`VFS_PM_FORK` 经 `asynsend3`（`tell_vfs` 的 `AMF_NOREPLY`）投递后 PM **不能阻塞等待**，否则与 05 的死锁论证同构（PM 等 VFS，VFS 某路径又需 PM，见 05 §1.2）。因此 PM 在 `tell_vfs` 后立即 `return SUSPEND`（`forkexit.c:139`），延续挂在**子进程**的 `VFS_CALL` 上，回复由 05 的 `handle_vfs_reply` 在 `VFS_PM_FORK_REPLY` 到达时异步完成（`sched_start_user` 成败双分支 + `reply(parent/child)`）。
 
@@ -138,7 +138,7 @@ if((s=vm_fork(rmp->mp_endpoint, next_child, &child_ep)) != OK) {
 /* PM may not fail fork after call to vm_fork(), as VM calls sys_fork(). */ // forkexit.c:82
 ```
 
-`vm_fork` 在 `minix/vm.h` 原型为 `int vm_fork(endpoint_t, int slot, endpoint_t *)`（`m1_i1/i2` 载荷，`VM_FORK 0xC01`），VM 侧经 `sys_fork`（`kernel/system/do_fork.c:69-72`）复制 `proc` 与页表并生成新 `endpoint`（`slot + generation`）。`s` 已是 `errno`（`EAGAIN` 表满或 `ENOMEM` 内存不足），PM 直接返 `s`；成功后即进入不可失败窗口，后续 `EAGAIN` 不再合法（Rust 侧 `alloc_slot` 的 `procs_in_use++` 已在 `vm_fork` 前，需在失败时回滚，见 §3.3）。
+`vm_fork` 在 `minix/vm.h` 原型为 `int vm_fork(endpoint_t, int slot, endpoint_t *)`（`m1_i1/i2` 载荷，`VM_FORK 0xC01`），VM 侧经 `sys_fork`（`kernel/system/do_fork.c:69-72`）复制 `proc` 与页表并生成新 `endpoint`（`slot + generation`）。`s` 已是 `errno`（`EAGAIN` 表满或 `ENOMEM` 内存不足），PM 直接返 `s`；成功后即进入不可失败窗口，后续 `EAGAIN` 不再合法。Rust 侧的对应实现在 `ipc/dispatcher.rs` 的 `vm_fork`（本轮起为**真实 `sendrec(VM, VM_FORK)` 任务调用**，见 §3.3/D3），errno 细粒度传播待 `PmError` 增加载荷变体（edge_todo.md E7），当前统一收敛为 `VmError`。
 
 ### 2.4 槽位占位与全量复制：`procs_in_use++` → `*rmc=*rmp` → 子资源重整（forkexit.c:84-116）
 
@@ -267,9 +267,9 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 
 `alloc_slot`（`mproc/table.rs:138`，`next_child` `Cell` 先递增后检查，与 `forkexit.c:69` 同序）在 `vm_fork` 前占位，满表 `None → EAGAIN`（`panic` 不可达路径在 Rust 侧为 `Option`）；`handle_fork` 不再手写 `next_child` 循环，直接 `alloc_slot().ok_or(ProcTableFull)`。
 
-### D3：`vm_fork` 同步调用的 `VmError` 回滚（ARCH A-4）
+### D3：`vm_fork` 真实任务调用——`sendrec(VM, VM_FORK)` 而非假成功（ARCH A-4）
 
-`VmForkIn { parent, child_slot } → Result<Endpoint, VmError>`（`minix-types/src/ipc/vm.rs`，跨服务契约）与 `mproc/fork.rs:78` 的 `vm_fork` 对齐，但 `alloc_slot` 的 `procs_in_use++` 在 `vm_fork` 前（C `86` 在后），失败时需 `release_slot(child_slot)` 回滚以保 `procs_in_use` 不变量；成功后 `child_ep` 需满足 `slot == child_slot`（`forkexit.c:75` 第二守卫）。
+C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/minix/lib/libsys/vm_fork.c:16-25`）：请求载荷 `VMF_ENDPOINT`/`VMF_SLOTNO` 走 m1（m1i1/m1i2），回复的子 endpoint 在 `VMF_CHILD_ENDPOINT`（m1i3），taskcall 返回值非 OK 即 errno（`forkexit.c:78-79` 直接 `return s`）。Rust 侧对应 `ipc/dispatcher.rs` 的自由函数 `vm_fork(transport, parent, child_slot)`：经 `IpcTransport::sendrec(Endpoint::VM, …)` 同步往返，回复 `m_type != OK` 或传输失败一律收敛为 `ForkCoordError::VmError`——**绝不伪造成功**（旧 `send_vm_fork` 占位按请求槽位捏造子 endpoint，违反 fail-closed 契约，已删除）。成功后 `child_ep` 需满足 `slot == child_slot`（`forkexit.c:75` 第二守卫，`debug_assert` 开发期守卫）。进程表零回滚：`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后执行，与 C `86` 同序，失败路径无 side-effect。errno 细粒度传播待 `PmError` 增加载荷变体（共享层，edge_todo.md E7）。
 
 ### D4：PID 分配收敛到 `PidGenerator`（ARCH A-11）
 
@@ -297,17 +297,18 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 
 ### 4.1 跨服务编排层（`os/servers/pm/src/fork.rs`）
 
-`handle_fork(table, parent_ep, transport) -> Result<Pid, ForkCoordError>`（`fork.rs:22`，`PmError → EAGAIN/ENOMEM/ENOSYS` 映射见 `fork.rs:197`）8 步：
+`handle_fork(table, parent_ep, transport) -> Result<Pid, ForkCoordError>`（`fork.rs:22`，`PmError → EAGAIN/ENOMEM/ENOSYS` 映射见 `fork.rs:197`）与 C 同序的 8 步：
 
-1. `find_parent_slot`（`fork.rs:73` 扫描 `endpoint==parent_ep && IN_USE`，`table.c:23` 的 `call_vec` 前置 `pm_isokendpt` 已保证父进程 `IN_USE`，此处二次校验为防御）；
-2. `table.alloc_slot().ok_or(ProcTableFull)?`（D2）；
-3. `child_pid = table.pid_generator.get_free_pid(table)`（D4，调用点在 `vm_fork` 之后以对齐 C `119`）；
-4. `child_ep = Endpoint::from_generation_slot(1, child_slot)`（`kernel/system/do_fork.c:69-72` 的代数递增在 Rust 侧简化为 `gen=1`，内核真实代数由 VM 侧回写，本章为协调器占位）；
-5. `send_vm_fork(VmForkIn{parent_ep, child_slot})?`（D3，失败时 `release_slot` 回滚）；
-6. `copy_mproc(table, parent_slot, child_slot, child_pid, child_ep)`（D5，`mproc/fork.rs:101` 的 `Process::fork_from`）；
-7. `tell_vfs(table, child_slot, VfsCall::Fork{child,parent,child_pid}, transport)?`（D6，`VFS_CALL` 置于子槽）；
-8. `send_kernel_request(KernelRequest::Fork{...})?`（`01-stage-kernel`，`sys_fork` 的 `proc` 复制）；
-9. `if child_tracer.is_some() { sig_proc(...) }`（D7，DEFERRED）→ `Ok(child_pid)`（调用方 `dispatcher` 映射 `ReplyLater`）。
+1. `find_parent_slot`（`fork.rs:28` 扫描 `endpoint==parent_ep && IN_USE`，`table.c:23` 的 `call_vec` 前置 `pm_isokendpt` 已保证父进程 `IN_USE`，此处二次校验为防御）；
+2. `can_alloc_for_user(is_root)`（`fork.rs:36`，D2，`LAST_FEW` 非 root 预留 → `EAGAIN`）；
+3. `find_free_slot`（`fork.rs:43`，轮转只找槽**不计数**，与 C 的 `next_child` 循环同构）；
+4. `vm_fork(transport, parent_ep, child_slot)?`（`fork.rs:53`，D3——真实 `sendrec(VM, VM_FORK)`，失败即返，进程表零污染）；
+5. `procs_in_use` 手动 `++` + `copy_mproc(...)`（`fork.rs:65-71`，D5——`++` 在 `vm_fork` 成功之后，C `86` 同序，无回滚补偿）；
+6. `child_pid = get_free_pid(table)`（`fork.rs:73`，D4——在复制之后、`tell_vfs` 之前，C `119` 同序）；
+7. `tell_vfs(table, child_slot, VfsCall::Fork{child,parent,child_pid}, transport)?`（`fork.rs:80`，D6，`VFS_CALL` 置于子槽）；
+8. `if child_tracer.is_some() { sig_proc(child, SIGSTOP, traced) }`（`fork.rs:86-98`，D7，DEFERRED）→ `Ok(child_pid)`（调用方 `init.rs` 映射 `ReplyLater`）。
+
+> 注意 C 的 `do_fork` **没有**独立的"内核 fork 请求"步骤——`proc` 复制由 VM 在 `vm_fork` 内经 `sys_fork` 完成（`kernel/system/do_fork.c:69-72`）。旧占位实现中的 `send_kernel_request(KernelRequest::Fork{...})` 步骤是与 C 不符的原型残留，已随假成功接缝一并删除。
 
 > **与 `mproc/fork.rs` 的职责正交**：`mproc/fork.rs` 的 `PmContext::do_fork_prepare` / `Process::fork_from` 只负责表层预检与显式构造（不触 `transport`），`fork.rs` 的 `handle_fork` 负责跨服务编排（触 `transport`），两者通过 `ProcTable` 共享状态（`cell.rs:23` 的 `Cell` 在单线程下安全）。
 
@@ -331,8 +332,8 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 |---|--------|--------|-----------|
 | 1 | 满表/近满非 root → `EAGAIN` | `forkexit.c:60-65` | `can_alloc_for_user → Err(EAGAIN)` |
 | 2 | 轮转先递增后检查 | `forkexit.c:69` | `find_free_slot` 的 `(next_child+1)%NR_PROCS` |
-| 3 | `vm_fork` 前可 `EAGAIN`，后不可 | `forkexit.c:78/82` | `VmFork` 失败→`EAGAIN`，成功后 `alloc_slot` 的 `++` 已不可回滚（需 `release_slot` 补偿） |
-| 4 | `procs_in_use++` 在 `*rmc=*rmp` 前 | `forkexit.c:86` | `alloc_slot` 的 `++` 在 `fork_from` 前（回滚补偿） |
+| 3 | `vm_fork` 前可 `EAGAIN`，后不可 | `forkexit.c:78/82` | `vm_fork` 失败即返（表零污染）；成功后进入不可失败窗口，`tell_vfs` 失败同样返 `VmError`（见 §5 差异表） |
+| 4 | `procs_in_use++` 在 `*rmc=*rmp` 前 | `forkexit.c:86` | 手动 `++` 在 `copy_mproc` 前，两者都在 `vm_fork` 成功之后（C 同序，无回滚） |
 | 5 | `mpsigact` 外置 | `forkexit.c:88-89` | `SignalState::actions` 按槽索引 |
 | 6 | `PRIV_PROC` 不继承，仅 `TAINTED` | `forkexit.c:100-106` | `RemainingFlags::TAINTED` 过滤 + `Kernel→User(SCHED)` |
 | 7 | 子资源清零 | `forkexit.c:107-114` | `child_utime=0`/`interval=0`/`started=getticks()` |

@@ -2,9 +2,9 @@
 //!
 //! Implements core logic of fork system call for PM server.
 
-use minix_types::{Endpoint, UserSlot, PmError, VmForkIn, VfsCall, EAGAIN, EPERM, OK};
+use minix_types::{Endpoint, UserSlot, PmError, VfsCall, EAGAIN, EPERM, OK};
 use crate::mproc::{ProcTable, Lifecycle, Privilege, SrvForkParams};
-use crate::ipc::{send_vm_fork, IpcTransport, tell_vfs};
+use crate::ipc::{vm_fork, IpcTransport, tell_vfs};
 
 /// Forks a process.
 ///
@@ -44,15 +44,13 @@ pub fn handle_fork<T: IpcTransport>(
         .find_free_slot()
         .ok_or(ForkCoordError::ProcTableFull)?;
 
-    // 4. VM copy address space (forkexit.c:78 vm_fork, sync, s is errno)
-    // C: vm_fork失败直接 return s；成功后进入不可失败窗口 (forkexit.c:82)
-    let vm_request = VmForkIn {
-        parent_endpoint,
-        child_slot: UserSlot::new(child_slot),
-    };
-    let vm_resp = send_vm_fork(vm_request).map_err(|_| ForkCoordError::VmError)?;
-    // VM 返回的 child endpoint（m1_i3），其 slot 必须等于 child_slot (forkexit.c:74-75 守卫)
-    let child_endpoint = vm_resp.child_endpoint;
+    // 4. VM copy address space (forkexit.c:77-79 vm_fork, sync taskcall)
+    // C: vm_fork 失败直接 return s（errno 传播）；成功后进入不可失败窗口
+    //（forkexit.c:83 "PM may not fail fork after call to vm_fork()"）。
+    // 真实 wire：sendrec(VM, VM_FORK)，回复子 endpoint 在 m1i3（vm_fork 文档）。
+    let child_endpoint = vm_fork(transport, parent_endpoint, UserSlot::new(child_slot))?;
+    // VM 的 sys_fork 使用 PM 传入的槽位，回复 endpoint 的 slot 必然等于
+    // next_child；开发期断言守卫该契约（release 下信任 VM，与 C 一致）。
     debug_assert_eq!(
         child_endpoint.slot() as usize,
         child_slot,
@@ -134,13 +132,8 @@ pub fn handle_srv_fork<T: IpcTransport>(
     // 3. Find slot (174-181, private static next_child per srv_fork — shared Cell in Rust)
     let child_slot = table.find_free_slot().ok_or(ForkCoordError::ProcTableFull)?;
 
-    // 4. VM fork (183-185)
-    let vm_request = VmForkIn {
-        parent_endpoint,
-        child_slot: UserSlot::new(child_slot),
-    };
-    let vm_resp = send_vm_fork(vm_request).map_err(|_| ForkCoordError::VmError)?;
-    let child_endpoint = vm_resp.child_endpoint;
+    // 4. VM fork (183-185) — 同 handle_fork 步骤 4：真实 sendrec(VM, VM_FORK)
+    let child_endpoint = vm_fork(transport, parent_endpoint, UserSlot::new(child_slot))?;
     debug_assert_eq!(child_endpoint.slot() as usize, child_slot);
 
     // 5. Occupy + srv copy (187-216) — retain PRIV_PROC, inject uid/gid
@@ -351,6 +344,20 @@ mod tests {
         table
     }
 
+    /// 向 mock 传输入队一条 VM_FORK 应答（OK + 子 endpoint 在 m1i3）。
+    ///
+    /// 真实协议中 VM 的 sys_fork 使用 PM 传入的槽位并递增代际；测试
+    /// 用 `child_endpoint` 显式给出期望的子 endpoint，`vm_fork` 的
+    /// debug_assert 槽位守卫依赖两者一致。
+    fn queue_vm_fork_reply(transport: &mut crate::ipc::TestIpcTransport, child_endpoint: Endpoint) {
+        let mut reply = minix_types::Message::default();
+        reply.m_type = OK;
+        unsafe {
+            reply.m_u.m_m1.m1i3 = child_endpoint.0;
+        }
+        transport.queue_sendrec_reply(reply);
+    }
+
     #[test]
     fn test_find_parent_slot_success() {
         let table = create_test_table_with_parent();
@@ -372,6 +379,9 @@ mod tests {
     fn test_handle_fork_success() {
         let mut table = create_test_table_with_parent();
         let mut transport = crate::ipc::TestIpcTransport::default();
+        // 脚本化 VM_FORK 应答：空表 + 游标 0 → 首个空闲槽为 1；
+        // 子 endpoint 代际 = 父(1) + 1（VM sys_fork 的代际递增契约）。
+        queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
 
         let result = handle_fork(
             &mut table,
@@ -382,6 +392,9 @@ mod tests {
 
         let child_pid = result.unwrap();
         assert!(child_pid > 0);
+        // 真实 wire：VM_FORK 任务调用已发出（sendrec 记录在 sent 里）。
+        assert_eq!(transport.sent()[0].0, Endpoint::VM);
+        assert_eq!(transport.sent()[0].1.m_type, minix_types::VM_FORK as i32);
     }
 
     #[test]
@@ -427,6 +440,7 @@ mod tests {
         table.procs[2].resources.scheduler = Endpoint::NONE;
 
         let mut transport = crate::ipc::TestIpcTransport::default();
+        queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 1000, gid: 100 };
         let result = handle_srv_fork(&mut table, Endpoint::RS, params, &mut transport);
         assert!(result.is_ok());
@@ -452,6 +466,7 @@ mod tests {
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
         let mut transport = crate::ipc::TestIpcTransport::default();
+        queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 42, gid: 43 };
         let _ = handle_srv_fork(&mut table, Endpoint::RS, params, &mut transport).unwrap();
         // VFS call should carry real uid/gid, not -1

@@ -17,9 +17,10 @@
 //! SUSPEND（com.h:1151，值 -998）被显式化为 [`ReplyIntent::ReplyLater`] /
 //! [`ReplyIntent::NoReply`]（ARCH A-6，plan.md §7.3）。
 
+use super::transport::IpcTransport;
 use crate::ipc::calls::{PmCall, dispatch_pm_call};
 use crate::mproc::ProcTable;
-use minix_types::{ENOSYS, Endpoint};
+use minix_types::{ENOSYS, Endpoint, Message, UserSlot};
 
 /// VFS→PM 回复消息类型基址。C: `VFS_PM_RS_BASE` — com.h:514。
 ///
@@ -102,34 +103,50 @@ pub fn dispatch_message(table: &mut ProcTable, msg: &minix_types::Message) -> Re
     }
 }
 
-// ── 服务间请求占位（07 落地前保留）──
+// ── PM → VM 服务间调用（同步任务调用，对齐 C libsys）──
 
-// 以下两个占位函数是 fork 协调器原型（fork.rs）使用的服务间请求
-// （VM_FORK / 内核请求）。VFS 请求已统一经 `tell_vfs`（`crate::ipc::vfs`）
-// 发送，不再有独立占位。真实异步协议归 07-pm-fork.md 与 05-stage-vfs。
-
-/// 发送 VM_FORK 请求到 VM 服务。
+/// 发送 VM_FORK 请求到 VM 服务（同步）。
 ///
-/// C: `vm_fork`（libsys）；真实协议见 02-stage-vm/18-vm-fork.md。
-pub fn send_vm_fork(
-    request: minix_types::VmForkIn,
-) -> Result<minix_types::VmForkOut, crate::fork::ForkCoordError> {
-    // 测试占位：VM 侧的 sys_fork 会生成 generation 递增的 endpoint；
-    // 此处按请求槽位生成 gen=1 的 endpoint，与 C 的 child_ep.slot == next_child 守卫一致
-    // （forkexit.c:74-75），02-stage-vm/18 的真实实现将替换。
-    Ok(minix_types::VmForkOut {
-        child_endpoint: Endpoint::from_generation_slot(1, request.child_slot.get() as i32),
-    })
-}
-
-/// 发送请求到内核。
+/// C: `vm_fork`（libsys，`minix3/minix/lib/libsys/vm_fork.c:16-25`）——
+/// `_taskcall(VM_PROC_NR, VM_FORK, &m)`：请求 m1 载荷 `VMF_ENDPOINT`
+/// （父 endpoint，m1i1）与 `VMF_SLOTNO`（子槽位，m1i2），回复的子进程
+/// endpoint 在 `VMF_CHILD_ENDPOINT`（m1i3）。C 的 do_fork 在 vm_fork
+/// 失败时把 errno 直接传播给 fork 调用者（`forkexit.c:77-79`），且一旦
+/// vm_fork 成功，fork 不允许再失败（`forkexit.c:83` "PM may not fail
+/// fork after call to vm_fork()"）——因此本函数是 fork 链路上唯一的
+/// VM 依赖点，其失败必须先于任何不可回滚的进程表变更被发现。
 ///
-/// 内核系统调用面归 01-stage-kernel；当前测试占位。
-pub fn send_kernel_request(
-    _request: minix_types::KernelRequest,
-) -> Result<minix_types::KernelResponse, crate::fork::ForkCoordError> {
-    // TODO: 内核 IPC 落地；当前测试占位。
-    Ok(minix_types::KernelResponse::ForkOk)
+/// # 错误
+///
+/// 传输失败或 VM 回复非 OK（负 errno）都收敛为
+/// [`ForkCoordError::VmError`]。errno 细粒度传播依赖 `PmError` 增加
+/// 载体变体（minix-types 共享层，登记于 edge_todo.md E7），当前以
+/// 统一 VmError 失败——失败语义正确，粒度待共享层支持。
+pub fn vm_fork<T: IpcTransport>(
+    transport: &mut T,
+    parent: Endpoint,
+    child_slot: UserSlot,
+) -> Result<Endpoint, crate::fork::ForkCoordError> {
+    let mut msg = Message::default();
+    msg.m_type = minix_types::VM_FORK as i32;
+    // 请求编码：m1i1 = VMF_ENDPOINT，m1i2 = VMF_SLOTNO（C 的 VMF_*
+    // 宏即 m1 字段别名；VmForkIn 只实现了 VM 侧的 DecodeFromM1，
+    // PM 侧发送端按同一布局手写，对应 ipc/vm.rs:841-849 的解码序）。
+    unsafe {
+        msg.m_u.m_m1.m1i1 = parent.0;
+        msg.m_u.m_m1.m1i2 = child_slot.get() as i32;
+    }
+    transport
+        .sendrec(Endpoint::VM, &mut msg)
+        .map_err(|_| crate::fork::ForkCoordError::VmError)?;
+    // C: taskcall 返回值非 OK → errno 传播（forkexit.c:78-79）。负数
+    // errno 直接视为 VM 拒绝；m_type == OK 才读取 m1i3。
+    if msg.m_type != minix_types::OK {
+        return Err(crate::fork::ForkCoordError::VmError);
+    }
+    // 回复解码：VMF_CHILD_ENDPOINT 在 m1i3
+    //（minix-types EncodeToM1 for VmForkOut，ipc/vm.rs:852-856）。
+    Ok(Endpoint(unsafe { msg.m_u.m_m1 }.m1i3))
 }
 
 #[cfg(test)]
@@ -217,5 +234,90 @@ mod tests {
             ),
             ReplyIntent::Reply(ENOSYS)
         );
+    }
+
+    // ── vm_fork（PM → VM 任务调用）──
+
+    /// 构造一条 VM_FORK 脚本化应答（OK + 子 endpoint 在 m1i3）。
+    fn vm_fork_ok_reply(child: Endpoint) -> Message {
+        let mut m = Message::default();
+        m.m_type = minix_types::OK;
+        unsafe {
+            m.m_u.m_m1.m1i3 = child.0;
+        }
+        m
+    }
+
+    #[test]
+    fn test_vm_fork_encodes_request_and_decodes_reply() {
+        // C: libsys vm_fork.c:16-25 — _taskcall(VM_PROC_NR, VM_FORK)，
+        // 请求 VMF_ENDPOINT/VMF_SLOTNO（m1i1/m1i2），回复 VMF_CHILD_ENDPOINT（m1i3）。
+        let mut transport = crate::ipc::TestIpcTransport::new();
+        let child = Endpoint::from_generation_slot(2, 7);
+        transport.queue_sendrec_reply(vm_fork_ok_reply(child));
+
+        let got = vm_fork(
+            &mut transport,
+            Endpoint::from_generation_slot(1, 3),
+            UserSlot::new(7),
+        )
+        .expect("vm_fork should succeed on scripted OK reply");
+        assert_eq!(got, child);
+
+        // 请求 wire：发往 VM，m_type = VM_FORK，载荷 m1i1/m1i2。
+        let (dest, sent_msg) = &transport.sent()[0];
+        assert_eq!(*dest, Endpoint::VM);
+        assert_eq!(sent_msg.m_type, minix_types::VM_FORK as i32);
+        let m1 = unsafe { sent_msg.m_u.m_m1 };
+        assert_eq!(m1.m1i1, Endpoint::from_generation_slot(1, 3).0);
+        assert_eq!(m1.m1i2, 7);
+    }
+
+    #[test]
+    fn test_vm_fork_vm_refusal_is_error() {
+        // C: forkexit.c:78-79 — vm_fork 返回非 OK → errno 传播为失败。
+        let mut transport = crate::ipc::TestIpcTransport::new();
+        let mut refusal = Message::default();
+        refusal.m_type = -12; // 负 errno（ENOMEM）
+        transport.queue_sendrec_reply(refusal);
+
+        let result = vm_fork(
+            &mut transport,
+            Endpoint::from_generation_slot(1, 3),
+            UserSlot::new(7),
+        );
+        assert_eq!(result.unwrap_err(), crate::fork::ForkCoordError::VmError);
+    }
+
+    #[test]
+    fn test_vm_fork_transport_failure_is_error() {
+        // 传输层失败（真实内核 IPC 未落地时 sendrec 会 Err）同样收敛为
+        // VmError——绝不伪造成功（原 send_vm_fork 假成功接缝的回归守卫）。
+        struct FailingSendrec;
+        impl IpcTransport for FailingSendrec {
+            fn receive(
+                &mut self,
+            ) -> Result<(Message, crate::ipc::IpcStatus), minix_types::IpcError> {
+                Err(minix_types::IpcError::WouldBlock)
+            }
+            fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), minix_types::IpcError> {
+                Ok(())
+            }
+            fn sendrec(
+                &mut self,
+                _dest: Endpoint,
+                _msg: &mut Message,
+            ) -> Result<(), minix_types::IpcError> {
+                Err(minix_types::IpcError::NoPerm)
+            }
+        }
+
+        let mut transport = FailingSendrec;
+        let result = vm_fork(
+            &mut transport,
+            Endpoint::from_generation_slot(1, 3),
+            UserSlot::new(7),
+        );
+        assert_eq!(result.unwrap_err(), crate::fork::ForkCoordError::VmError);
     }
 }

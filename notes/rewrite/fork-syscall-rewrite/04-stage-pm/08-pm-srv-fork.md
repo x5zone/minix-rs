@@ -231,7 +231,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### D7：5 步同构（容量→槽位→`vm_fork`→复制→`get_free_pid`→`tell_vfs`→`SIGSTOP`）
 
-`handle_srv_fork` 复用 `handle_fork` 的 9 步编排，仅 `fork_from` 改 `srv_fork_from`、`VfsCall::Fork` 改 `SrvFork`、`ReplyLater` 改 `Reply(pid)` + `send(child,OK)`，其余 `can_alloc`/`find_free_slot`/`vm_fork`/`get_free_pid`/`SIGSTOP` 同序。
+`handle_srv_fork` 复用 `handle_fork` 的 8 步编排（07 §4.1），仅 `fork_from` 改 `srv_fork_from`、`VfsCall::Fork` 改 `SrvFork`、`ReplyLater` 改 `Reply(pid)` + `send(child,OK)`，其余 `can_alloc`/`find_free_slot`/`vm_fork`（07 D3 的真实 `sendrec`）/`get_free_pid`/`SIGSTOP` 同序。
 
 ### D8：`VFS_PM_SRV_FORK_REPLY` 空分支对照
 

@@ -16,7 +16,7 @@
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
 | P1 | P1-1 | 分发层分裂成两套：`init.rs` 裸魔数内联拦截 7 个调用，`dispatch_pm_call` 只剩 1 个死臂 + 46 个 ENOSYS |
-| P1 | P1-2 | `send_vm_fork` / `send_kernel_request` 返回捏造的成功值，fail-closed 契约被反转成 fake-ok |
+| P1 | P1-2 | `send_vm_fork` / `send_kernel_request` 返回捏造的成功值，fail-closed 契约被反转成 fake-ok（**✅ 已修复** 2026-09-06，见 §10 Fix #1） |
 | P1 | P1-3 | 内核边界整体未实现：transport 三个方法 `unimplemented!()`，PM 二进制在第一条真实消息上 panic |
 | P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用中只有 Fork 有 wire 类型，其余靠内联 unsafe union 访问 |
 | P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位 |
@@ -129,7 +129,7 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 2. **次选**：注册表方案——仿 C `call_vec` 建 `fn(&mut PmContext, &Message) -> ReplyIntent` 的 47 项常量表。与方案 1 相比可动态替换 handler（便于测试注入），但 47 项静态域上编译期穷尽 match 已足够，且 match 能被编译器检查完整性，不引入函数指针的间接层。Redox 对 scheme 这类动态集合才用注册表（kernel `src/scheme/mod.rs` 的 `SchemeId` 查找），固定域用 match 是 Rust 社区惯例。
 3. 无论选哪条，`init.rs` 的 7 个内联块的 unsafe 解码应随迁移移入 codec 层（见 P1-4）。
 
-### P1-2 服务间请求的"假成功"接缝
+### P1-2 服务间请求的"假成功"接缝（✅ 已修复 2026-09-06，见 §10 Fix #1）
 
 **问题**：`send_vm_fork`（`os/servers/pm/src/ipc/dispatcher.rs:139-155`）不发送任何消息，直接构造一个 `child_endpoint = from_generation_slot(1, child_slot)` 的 `VmForkOut` 返回 `Ok`；`send_kernel_request`（`dispatcher.rs:159-165`）同样直接返回 `Ok(KernelResponse::ForkOk)`。生产 fork 路径 `handle_fork`（`fork.rs:53`）与 `handle_srv_fork`（`fork.rs:142`）都调用 `send_vm_fork` 并把这个捏造的 endpoint 写入子进程表项（`fork.rs:64`），随后向 VFS 发送 `VFS_PM_FORK`。
 
@@ -267,8 +267,8 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 |----|------|------|------|----------|
 | D-01 | `ipc/transport.rs:86/91/96` | KernelIpcTransport receive/send/sendrec `unimplemented!()` | 01-pm-init-main.md:382 | minix-sys 内核 IPC 面（01-stage-kernel） |
 | D-02 | `main.rs:15` | `BootParams::placeholder()` 启动参数占位 | 01-pm-init-main.md | `sys_getmonparams`/`sys_getimage` |
-| D-03 | `ipc/dispatcher.rs:139-155` | `send_vm_fork` 捏造成功应答（升级为 P1-2） | 07-pm-fork.md / 02-stage-vm/18 | 真实 VM_FORK 往返 |
-| D-04 | `ipc/dispatcher.rs:159-165` | `send_kernel_request` 捏造成功应答（升级为 P1-2） | 07-pm-fork.md | 内核 fork 请求面 |
+| D-03 | ~~`ipc/dispatcher.rs:139-155`~~ | ~~`send_vm_fork` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：真实 `vm_fork` sendrec，见 §10） | 07-pm-fork.md / 02-stage-vm/18 | ~~真实 VM_FORK 往返~~ 已实现（wire 层）；硬件通电仍挂 E1 |
+| D-04 | ~~`ipc/dispatcher.rs:159-165`~~ | ~~`send_kernel_request` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：零调用死代码删除；C 的 `do_fork` 无独立内核请求步骤，proc 复制在 VM 的 sys_fork 内） | 07-pm-fork.md | ~~内核 fork 请求面~~ 不适用（与 C 不符的原型残留） |
 | D-05 | `ipc/vfs.rs:401` | `sched_start_user` `unimplemented!()` | 16-scheduling.md | SCHED 客户端（A-8） |
 | D-06 | `ipc/vfs.rs:407` | `exit_proc` 的 VFS 退出通知 `unimplemented!()` | 09-pm-exit.md | 接线 09 退出链时 |
 | D-07 | `ipc/vfs.rs:413` | `set_core_flag`（WCOREFLAG）`unimplemented!()` | 09-pm-exit.md | 同上 |
@@ -355,3 +355,36 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 
 - **PM↔VFS 协议联调**：`minix-types/src/ipc/vfs.rs`（873 行）类型已齐，双侧消费同一契约，无已知不一致——联调条目应由 05-stage-vfs 的扫描自行登记，此处不预设。
 - **PM↔SCHED 客户端**（A-8，D-12）：`sched.rs` 的占位消费 SCHEDULING_* 消息契约，属 PM stage 内工作；缺失的 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量已并入 E7 范围。
+
+---
+
+## 10. 修复记录
+
+> 每轮一个 TODO（todo-fix 工作流）：先讲现状与依据（fix-guard），再列候选设计（translate 防线：对比 Linux/Redox/OS 理论），实施 code + doc + test 三方同步，回归 review 后提交。
+
+### ✅ Fix #1: P1-2（含 D-03/D-04）— VM fork 接缝 fail-closed 化（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/dispatcher.rs`（假成功占位 → 真实 `vm_fork` 自由函数，:105-155）
+- `os/servers/pm/src/ipc/transport.rs`（`TestIpcTransport` 增加脚本化 sendrec 回复队列）
+- `os/servers/pm/src/fork.rs`（`handle_fork`/`handle_srv_fork` 接线；新增 `queue_vm_fork_reply` 测试 helper）
+
+**Before**：`send_vm_fork(request)` 不发送任何消息，直接返回 `Ok(VmForkOut { child_endpoint: from_generation_slot(1, child_slot) })`——fork 链路建立在捏造的 VM 应答上；`send_kernel_request(_request)` 同样假成功，且全仓零调用。
+
+**After**：
+1. **设计选型**（三案对比）：(a) 沿用 crate 内惯例——`IpcTransport` seam 上的自由函数 `vm_fork`（与 `tell_vfs` 同构）；(b) 仿 VM 侧 KernelGateway 建独立 `VmGateway` trait；(c) `IpcTransport` 加 provided method。选 (a)：PM 已有 transport seam，`tell_vfs` 先例证明自由函数足够；KernelGateway 存在的原因是 VM 当时缺 seam，再加 trait 是重复抽象；(c) 把 VM 协议知识泄漏进通用传输 trait。**C 依据**：`vm_fork` 是 `_taskcall(VM_PROC_NR, VM_FORK)`（libsys vm_fork.c:16-25）——普通任务调用而非内核调用，`send_kernel_request` 步骤本身与 C 不符（`proc` 复制由 VM 的 `sys_fork` 完成，PM 无独立内核 fork 请求），随假成功一并删除（D-04 处置）。
+2. **wire 实现**：请求 m1i1=VMF_ENDPOINT / m1i2=VMF_SLOTNO，回复校验 `m_type == OK` 后读 m1i3=VMF_CHILD_ENDPOINT；传输失败或 VM 拒绝（非 OK）一律 `ForkCoordError::VmError`，fail-closed。errno 细粒度传播依赖 `PmError` 载荷变体（共享层，挂 edge E7）。
+3. **测试脚本化**：`TestIpcTransport::queue_sendrec_reply`（VecDeque 整条回复出队，退回旧行为仅覆盖 m_type）；4 个依赖假应答的测试改脚本化（预期失败→通过），新增 3 个 `vm_fork` 单元测试（编码/解码、VM 拒绝、传输失败）。
+4. **顺带对齐**：`handle_fork` 的顺序注释修正为 C 同序（`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后）——旧的"alloc_slot 在前需回滚"说法与代码不符。
+
+**Verified**：
+- `cargo test -p minix-pm --lib`：319 → **322 passed / 0 failed**（4 个假应答测试改造为脚本化 +3 个 vm_fork 新增）
+- `cargo check -p minix-pm`：通过
+- `grep -rn "send_vm_fork\|send_kernel_request" os/servers/pm/src/`：零命中（假接缝清除）
+
+**Docs**：
+- `07-pm-fork.md`：§1.2 回滚说法修正、§2.3 Rust 现状更新、D3 重写（假成功→真实 sendrec 全论证）、§4.1 步骤清单重写（8 步 C 同序 + 删 send_kernel_request 论证）、§4.5 不变量 3/4 行修正
+- `08-pm-srv-fork.md`：D7 步数对齐（9→8 步）并引用 07 D3
+- 本文件：§0 表 P1-2 行、P1-2 标题、§6 D-03/D-04 行标注
+
+**未做（DEFERRED 论证）**：真实硬件上的 VM_FORK 往返（VM 服务器运行 + trap 层）挂 `edge_todo.md` E5(a)/E1——本条 stage 内目标（接缝 fail-closed + wire 正确 + mock 验证）已完整达成，符合通电口径。
