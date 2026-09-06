@@ -1,0 +1,27 @@
+# Cargo configuration for minix-rs.
+#
+# R-17 (2026-08-12): Force single-threaded test execution.
+#
+# Kernel tests share global state (CLOCK_REALTIME, BKL_LOCKED, IRQ_MANAGER,
+# PROC_TABLE, SMP_STATE, etc.). Running tests in parallel causes data races
+# on these statics. The project uses custom spinlocks (BKL_TEST_LOCK,
+# SPROF_TEST_LOCK) for the most critical cases, but forcing
+# RUST_TEST_THREADS=1 is the defense-in-depth guarantee that no global-state
+# test is missed.
+#
+# To override for a specific run (e.g. benchmarking test speed):
+#   RUST_TEST_THREADS=4 cargo test
+#
+# See:
+#   - kernel/src/smp.rs BKL_TEST_LOCK
+#   - kernel/src/misc.rs SPROF_TEST_LOCK
+#   - kernel/src/lib.rs init_irq_manager_for_test (comment: "--test-threads=1")
+
+[env]
+RUST_TEST_THREADS = "1"
+# Test-thread stack size (bytes). Default 2 MiB overflowed after the
+# Message wire payload grew (V12-B3 pin: 72 -> 80 bytes, 2026-09-07 I3a/I3b):
+# deep dispatch test chains (e.g. dispatch_trace getuser) hold several
+# Messages per frame and marginally exceeded the old limit. 8 MiB restores
+# headroom; override per-run with RUST_MIN_STACK=<n> if needed.
+RUST_MIN_STACK = "8388608"

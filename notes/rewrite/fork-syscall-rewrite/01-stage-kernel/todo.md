@@ -169,6 +169,31 @@ boot 期单线程阶段用专门的 `boot_unchecked` 系列并限定 `#[cfg(any(
 **范围**：裸访问器调用点 **33 处**（`rg -n "proc_table\(\)|priv_table\(\)|irq_manager\(\)"`，排除 `_with`/`_boot_unchecked`；
 其中测试路径约 1/4，测试内可用 mock 或显式 `unsafe` + 注释），witness 版已有 35 处调用——双轨接近 1:1，正是收敛时机。
 
+**✅ 已修复（2026-09-07，§22 Phase 2 迭代 1）——实测 24 处（较登记时 33 已漂移），方案 = witness 全覆盖 + 新增 `BklSection::assume_held()` 链根**：
+
+- **新 API**（smp.rs）：`unsafe fn BklSection::assume_held()`——为"BKL 已由外层约定持有"的链根
+  （boot 路径 / 调度循环入口 / 未来 trap entry）产出 witness 而不重入自旋锁，debug 构建以
+  `bkl_is_locked` 断言兜底。设计对比：全链 threading（Redox CleanToken 式，零 unsafe）需先有
+  trap entry 作 witness 源——S-8 前无根；assume_held 以少量可审计根位即时收敛，S-8 时每根
+  一行替换为 threaded witness。Linux 对照：`might_sleep`/lockdep 的"约定 + 调试断言"同型。
+- **生产 15 处迁移**：①调度循环链全程 thread——switch_to_user 入口 assume_held + 三个根
+  accessor 换 `_with`，`check_quantum(+s)`→`sched_proc_no_time(+s)`→`notify_scheduler(+s)`
+  →`clock::cpu_load_with(+s)`；②`consume_kbill_kcall(+s)` + 新 `kbill_kcall_raw_with`，
+  finish_and_restore/idle 各自透传；③**kernel_call_finish 去全局化**——tables 由 kernel_call
+  透传（其 caller 本就以 split borrows 提供），两处裸 `crate::proc_table()/priv_table()` 消灭，
+  优于加 witness（该函数从此不碰全局）；④IRQ 链根三处 assume_held（`KernelNotifier::
+  notify_hardware`——trait 签名固定只能在根位取证、`dispatch_hardware_irq`、
+  `kernel_mini_notify`），`irq_manager_with` 替换裸访问；⑤boot 链——新增
+  `irq_manager_boot_unchecked`/`clock_state_boot_unchecked`（对齐既有 boot_unchecked 族），
+  `bsp_finish_booting` register_hook 与 `init_clock_and_interrupts` 迁入。
+- **测试 9 处**：持锁 harness 的（finish_and_restore ×3、idle）用 assume_held（bkl_acquire_for_test
+  已锁）；无锁的改真锁 `bkl_lock_section()`/`bkl_unlock()`（sched_proc_no_time ×2、
+  consume_kbill ×4、dispatch_clear ×3）——**debug 断言当场揪出 8 个"测试不持锁就跑 witness 链"
+  的旧隐患**，正是该 API 的价值演示。
+- 文档同步：doc 16 §D4 新增 assume_held 与迁移全景段。验证：kernel 694 passed / 0 failed；
+  三架构 production-target check 全过；clippy kernel 维持 2（均为已登记不修项，零新增）；
+  `cargo test -p minix-types` 175 passed（含 I3a/I3b 后的 Message=80 pin 更新，见 §22.1 跨会话记录）。
+
 ### A2. 全局静态收敛 `globals.rs` [P2]
 
 **现状**：9 个 `SyncUnsafeCell` 静态 + 5 个 `Atomic*`（KERNEL_MAY_ALLOC / FREE_UPPER_IDX / VM_RUNNING / CURRENT_PTPROC_NR / CURRENT_ROOT_PHYS）
@@ -2595,6 +2620,13 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
   （2026-09-06）已建全局 VM 请求链；C do_update.c:313-337 在恰一侧 RTS_VMREQUEST 时真实换链，
   非 runnable 不构成 no-op 理由（RTS_VMREQUEST 进程本就停止）。
 - §7.3 依赖列对账：T-1（D-10..D-13 ✅）、T-6（D5 ✅）、T-7（D-20 ✅）依赖均解除 → Phase 6。
+- 🔁 **跨会话记录（2026-09-07）**：并行会话 I3a/I3b（14 号接线）把 minix-types 的 Message
+  union 最大成员 64 → 72 字节、Message 72 → 80——V12-B3 的 pin 测试当场拦截该未对账增长
+  （pin 已随实测更新并注明来源）；连锁效应：宿主测试默认 2 MiB 栈被深帧链击穿
+  （`test_dispatch_trace_getuser_priv_struct` 栈溢出），`.cargo/config.toml` 已加
+  `RUST_MIN_STACK=8388608` 基建修复。共享工作区并行会话需注意：提交前 `git status`
+  核查暂存区（一次 commit 卷入对方 9 个文件后已重写修复）；在途编译错误会阻塞
+  依赖链所有 crate 的验证。
 
 ### 22.2 阶段清单（✅=完成；🔄=部分；⬜=待做）
 
@@ -2613,7 +2645,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ V12-B4 [P3] clippy 卫生批 → **kernel 13 → 2（10 处机械修复；剩余 2 处为已登记不修项）；arch 2 → 0；workspace 全绿（2026-09-07，Phase 1 收尾）**
 
 **Phase 2 — SMP 前置重构（避免 S-4/S-5 新代码二次迁移）**
-- ⬜ A1 [P1] 33 处裸 `unsafe fn` 访问器调用点 → `xxx_with(&BklSection)`；boot 期 BootPhase witness
+- ✅ A1 [P1] 33 处裸 unsafe fn 访问器调用点 → `xxx_with(&BklSection)`；boot 期 BootPhase witness → **实测 24 处：新增 `BklSection::assume_held()` 链根 + 调度循环全链 thread + kernel_call_finish 去全局化 + boot/IRQ 根位收敛；694 全绿（2026-09-07）**
 - ⬜ A2 [P2] 9 SyncUnsafeCell + 5 Atomic 全局收敛 `globals.rs`
 - ⬜ B1 [P1] `mem::forget` BKL 跨函数传递 → 显式 `BklGuard::transfer` API（smp.rs:577/:600）
 - ⬜ B-X [Backlog 启动] cfg(target_arch) 行为选择审计 + 第一批 trait 化（ArchNames / MockInterruptController；

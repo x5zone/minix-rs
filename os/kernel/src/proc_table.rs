@@ -685,7 +685,7 @@ impl ProcessTable {
     /// Handle quantum exhaustion based on scheduling policy.
     ///
     /// C: `proc_no_time()` in proc.c:1893-1910.
-    pub fn sched_proc_no_time(&mut self, nr: ProcNr) {
+    pub fn sched_proc_no_time(&mut self, nr: ProcNr, section: &crate::smp::BklSection<'_>) {
         let (kernel_scheduled, preemptible, quantum_ms) = {
             // R-15 (2026-08-12): INVARIANT: `nr` is a runnable process that
             // exhausted its quantum, so it must be in the table; `get()` cannot
@@ -701,7 +701,7 @@ impl ProcessTable {
             // User-scheduled + preemptible: dequeue + notify scheduler.
             // C: `notify_scheduler(p)` — proc.c:1860-1891.
             self.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
-            self.notify_scheduler(nr);
+            self.notify_scheduler(nr, section);
         } else {
             // Kernel-scheduled or non-preemptible: reset quantum
             let cpu_time = ms_to_cpu_time(quantum_ms);
@@ -736,7 +736,7 @@ impl ProcessTable {
     /// `cpu_load()` / `current_cpuid()` read per-CPU state from the
     /// global `SMP_STATE` (defensive: return 0 if not initialized, e.g.
     /// in unit tests without the full boot sequence).
-    fn notify_scheduler(&mut self, nr: ProcNr) {
+    fn notify_scheduler(&mut self, nr: ProcNr, section: &crate::smp::BklSection<'_>) {
         use minix_types::ipc::{Message, MessKrnLsysSchedule};
         use minix_types::SCHEDULING_NO_QUANTUM;
         use crate::ipc::{IpcEngine, IpcOutcome, KernelUserCopy, SendFlags};
@@ -777,7 +777,7 @@ impl ProcessTable {
             acnt_ipc_async,
             acnt_preempt,
             acnt_cpu: clock::current_cpuid().raw(),
-            acnt_cpu_load: clock::cpu_load(),
+            acnt_cpu_load: clock::cpu_load_with(section),
             _padding: [0; 24],
         };
         let mut msg = Message {
@@ -809,9 +809,9 @@ impl ProcessTable {
         // process_misc_flags contract — SAFETY per raw accessor doc).
         let mut engine = IpcEngine::new(
             self.procs_slice_mut(),
-            // SAFETY: BKL held by the caller (clock tick path). The global
-            // PRIV_TABLE is statically initialized and BKL-protected.
-            unsafe { crate::priv_table() },
+            // BKL ownership is proven by `section` (threaded from
+            // sched_proc_no_time ← check_quantum ← the scheduler loop).
+            crate::priv_table_with(section),
             &KernelUserCopy,
         )
         // D-16: wire the global IPC filter pool (BKL held — same proof).
@@ -1143,12 +1143,12 @@ impl ProcessTable {
     /// 如果进程无剩余时间片，调用 sched_proc_no_time。
     ///
     /// 返回 true 表示进程仍可运行，false 表示不可运行。
-    pub fn check_quantum(&mut self, nr: ProcNr) -> bool {
+    pub fn check_quantum(&mut self, nr: ProcNr, section: &crate::smp::BklSection<'_>) -> bool {
         let has_time_left = self.get(nr).is_some_and(|p| {
             p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0
         });
         if !has_time_left {
-            self.sched_proc_no_time(nr);
+            self.sched_proc_no_time(nr, section);
         }
         self.get(nr).is_some_and(|p| p.is_runnable())
     }

@@ -472,7 +472,7 @@ pub fn kernel_call(
     // C system.c:160 — kbill_kcall = caller (D-9, inside dispatch).
 
     // C system.c:162 — finish (VMSUSPEND / reply / BKL release).
-    kernel_call_finish(caller, &msg, result);
+    kernel_call_finish(caller, &msg, result, proc_table, priv_table);
     result
 }
 
@@ -2685,7 +2685,13 @@ fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
 ///
 /// This matches C's pattern where BKL is released before `switch_to_user()`
 /// (or before blocking in IPC sendrecv).
-pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallResult) {
+pub fn kernel_call_finish(
+    caller: &mut KProcess,
+    msg: &Message,
+    result: KcallResult,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &mut PrivTable,
+) {
     // VmSuspend path: save msg + set MF_KCALL_RESUME + release BKL.
     // C: system.c:60-63 — `if (result == VMSUSPEND) { saved.reqmsg = *msg;
     // p_misc_flags |= MF_KCALL_RESUME; }`
@@ -2695,9 +2701,9 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
         }
         caller.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
         // D-20 (C vm_suspend proc.c:253-257): enqueue into the global VM
-        // request chain + wake up VM via mini_notify(SYSTEM→VM).
-        let proc_table = unsafe { crate::proc_table() };
-        let priv_table = unsafe { crate::priv_table() };
+        // request chain + wake up VM via mini_notify(SYSTEM→VM). A1: the
+        // tables arrive as parameters (split borrows established by
+        // kernel_call's own caller) — no global accessor needed.
         proc_table.vm_enqueue_and_notify_vm(caller.p_nr, priv_table);
         // Release BKL — process is suspended waiting for VM.
         // Other CPUs can enter the kernel while we wait.
@@ -2779,7 +2785,7 @@ pub fn kernel_call_resume(
     // subsequent VMSUSPEND within the same call.
     let result = kernel_call_dispatch(caller, &mut msg_copy, priv_table, proc_table, clock_state);
     caller.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME);
-    kernel_call_finish(caller, &msg_copy, result);
+    kernel_call_finish(caller, &msg_copy, result, proc_table, priv_table);
 }
 
 #[cfg(test)]
@@ -3358,7 +3364,9 @@ mod tests {
         crate::smp::bkl_unlock();
         // Cleanup: consume with delta 0 — clears the marker without
         // attribution so later tests start neutral.
-        let _ = crate::consume_kbill_kcall(&mut proc_table, 0);
+        let section = crate::smp::bkl_lock_section();
+        let _ = crate::consume_kbill_kcall(&mut proc_table, 0, &section);
+        crate::smp::bkl_unlock();
     }
 
     /// D-8: kernel_call wrapper — TOCTOU defense + SIGSEGV on bad copy.
@@ -3386,7 +3394,9 @@ mod tests {
         // kernel_call_finish already released BKL (CallDenied → non-VmSuspend → unlock).
 
         // Cleanup: D-9 marker
-        let _ = crate::consume_kbill_kcall(&mut proc_table, 0);
+        let section = crate::smp::bkl_lock_section();
+        let _ = crate::consume_kbill_kcall(&mut proc_table, 0, &section);
+        crate::smp::bkl_unlock();
     }
 
     #[test]

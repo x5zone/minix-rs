@@ -554,7 +554,9 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
 
-        table.sched_proc_no_time(ProcNr(0));
+        let section = crate::smp::bkl_lock_section();
+        table.sched_proc_no_time(ProcNr(0), &section);
+        crate::smp::bkl_unlock();
 
         let left = table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
         assert!(left > 0);
@@ -568,7 +570,9 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
 
         table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
-        table.sched_proc_no_time(ProcNr(0));
+        let section = crate::smp::bkl_lock_section();
+        table.sched_proc_no_time(ProcNr(0), &section);
+        crate::smp::bkl_unlock();
 
         assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }

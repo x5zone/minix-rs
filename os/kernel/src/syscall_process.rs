@@ -433,8 +433,11 @@ pub fn dispatch_clear(
     // C: do_clear.c:41-46 — rm_irq_handler for all hooks owned by this process.
     // C iterates: `for (i=0; i < NR_IRQ_HOOKS; i++)` if `irq_hooks[i].proc_nr_e == rc->p_endpoint`.
     // Rust: use the global IrqManager (same accessor as dispatch_irqctl).
+    // A1 chain root: syscall dispatch holds the BKL (dispatch entry
+    // convention); S-8 will thread real witnesses through dispatch.
     {
-        let irq_mgr = unsafe { crate::irq_manager() };
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        let irq_mgr = crate::irq_manager_with(&section);
         // Iterate all hook slots; remove those owned by the target.
         for slot in 0..crate::syscall_device::NR_IRQ_HOOKS {
             if let Some(owner) = irq_mgr.hook_owner(slot)
@@ -1308,7 +1311,11 @@ mod tests {
         msg.m_u.m_m1.m1i1 = 99999; // invalid endpoint
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
+        // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
+        // real dispatch runs under the BKL; tests acquire it here.
+        let bkl_section = crate::smp::bkl_lock_section();
         let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1337,7 +1344,11 @@ mod tests {
         // dispatch_clear now calls the global irq_manager() during IRQ-hook
         // cleanup; install an empty IrqManager so the global is initialized.
         unsafe { crate::init_irq_manager_for_test(); }
+        // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
+        // real dispatch runs under the BKL; tests acquire it here.
+        let bkl_section = crate::smp::bkl_lock_section();
         let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(OK));
 
         // TARGET should be SLOT_FREE, not caller
@@ -1365,7 +1376,11 @@ mod tests {
         // dispatch_clear now calls the global irq_manager() during IRQ-hook
         // cleanup; install an empty IrqManager so the global is initialized.
         unsafe { crate::init_irq_manager_for_test(); }
+        // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
+        // real dispatch runs under the BKL; tests acquire it here.
+        let bkl_section = crate::smp::bkl_lock_section();
         let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(OK));
 
         // TARGET should have EXT_REG_INITIALIZED cleared

@@ -135,13 +135,14 @@ impl IrqNotify for KernelNotifier {
         // dropping the notification (which would cause the hook to fire
         // repeatedly with no effect, making debugging very hard).
         //
-        // SAFETY: `IrqManager::dispatch` is invoked from the trap entry
-        // path, which holds the BKL. Both `proc_table()` and `priv_table()`
-        // return `&'static mut` to global BSS — we borrow each once, and
-        // the borrows do not overlap (sequential reads/writes).
-        unsafe {
-            let proc_table = crate::proc_table();
-            let priv_table = crate::priv_table();
+        // A1 chain root: `IrqManager::dispatch` runs from the trap entry
+        // path, which holds the BKL (S-9 will lock it explicitly). The
+        // trait method signature is fixed, so the witness is rooted here —
+        // debug builds panic if the lock was lost.
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        {
+            let proc_table = crate::proc_table_with(&section);
+            let priv_table = crate::priv_table_with(&section);
 
             let proc = proc_table
                 .iter()
@@ -214,8 +215,10 @@ impl IrqNotify for KernelNotifier {
 ///   The caller should panic.
 pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
     let mut notifier = KernelNotifier;
-    // SAFETY: Caller (trap entry path) holds the BKL.
-    let mgr = unsafe { crate::irq_manager() };
+    // A1 chain root: the trap entry path holds the BKL (S-9 will lock it
+    // explicitly and thread a real witness). Debug builds assert the lock.
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let mgr = crate::irq_manager_with(&section);
     mgr.dispatch(irq, &mut notifier)
 }
 

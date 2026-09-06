@@ -982,6 +982,38 @@ pub fn bkl_lock_section<'a>() -> BklSection<'a> {
     BklSection { _lifetime: core::marker::PhantomData }
 }
 
+impl BklSection<'static> {
+    /// Produce a witness for a BKL that is **already held by an outer
+    /// convention** — locked by the boot path, the trap entry, or a test
+    /// harness — without locking again (re-locking the spinlock would
+    /// self-deadlock).
+    ///
+    /// This is the witness-level analogue of the `*_boot_unchecked`
+    /// accessors (A1, todo §1): call chains whose BKL ownership is
+    /// established somewhere up the stack produce their section here, in
+    /// ONE auditable place per chain root, and everything below consumes
+    /// `*_with(&section)` accessors. When the trap entry lands (smp_todo
+    /// S-8) and starts threading real `bkl_lock_section()` witnesses down
+    /// the dispatch chains, these roots are replaced by threaded
+    /// sections — a one-line change per root.
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold the BKL for at least as long as the returned
+    /// witness is in use. In debug builds this is checked (`bkl_is_locked`)
+    /// — forgetting the lock stops being silent corruption and becomes a
+    /// panic. Release builds trust the annotation, exactly like the C
+    /// side's convention-protected access.
+    pub unsafe fn assume_held() -> Self {
+        debug_assert!(
+            bkl_is_locked(),
+            "BklSection::assume_held called while the BKL is NOT held — \
+             the enclosing chain lost its BKL ownership invariant"
+        );
+        BklSection { _lifetime: core::marker::PhantomData }
+    }
+}
+
 /// Typed accessor: read SmpState while holding the BKL.
 ///
 /// # Why this signature?

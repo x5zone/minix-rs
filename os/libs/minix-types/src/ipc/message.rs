@@ -3787,9 +3787,9 @@ mod rs_accessor_tests {
 /// syscall copy path.
 #[test]
 fn test_message_total_size_pinned() {
-    assert_eq!(core::mem::size_of::<Message>(), 72);
+    assert_eq!(core::mem::size_of::<Message>(), 80);
     // The union's largest member is 64 bytes, not the nominal 56-byte
     // payload constant — pinning both facts keeps the distinction visible.
-    assert_eq!(core::mem::size_of::<MessageUnion>(), 64);
+    assert_eq!(core::mem::size_of::<MessageUnion>(), 72);
     assert_eq!(MESSAGE_PAYLOAD_SIZE, 56);
 }

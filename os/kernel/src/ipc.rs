@@ -2009,12 +2009,12 @@ pub fn mini_notify_core(
 /// Caller must hold the BKL (Big Kernel Lock). This is satisfied by
 /// the trap entry path, which acquires the BKL before dispatching.
 pub fn kernel_mini_notify(caller_nr: ProcNr, dst_endpoint: Endpoint) -> IpcOutcome {
-    // SAFETY: Caller must hold BKL. The trap entry path acquires BKL
-    // before exception/IRQ dispatch; the syscall path holds BKL
-    // throughout. Both `proc_table()` and `priv_table()` return
-    // `&'static mut` to global BSS — we only borrow each once per call.
-    let procs = unsafe { crate::proc_table() }.procs_slice_mut();
-    let priv_table = unsafe { crate::priv_table() };
+    // A1 chain root: the trap entry path acquires the BKL before
+    // exception/IRQ dispatch and the syscall path holds it throughout
+    // (S-8/S-9 will thread real witnesses). Debug builds assert the lock.
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let procs = crate::proc_table_with(&section).procs_slice_mut();
+    let priv_table = crate::priv_table_with(&section);
     mini_notify_core(procs, priv_table, caller_nr, dst_endpoint)
 }
 

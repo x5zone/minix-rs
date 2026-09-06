@@ -171,12 +171,12 @@ pub fn current_cpuid() -> CpuId {
 ///
 /// Caller must hold the BKL (or be in single-threaded boot). Both
 /// `SMP_STATE` and `PROC_TABLE` are BKL-protected globals.
-pub fn cpu_load() -> u32 {
-    // SAFETY: caller guarantees BKL. We borrow SMP_STATE and PROC_TABLE
-    // simultaneously — they are distinct statics, so the two `&'static mut`
-    // borrows do not alias.
-    unsafe {
-        let smp = match crate::try_smp_state() {
+pub fn cpu_load_with(section: &crate::smp::BklSection<'_>) -> u32 {
+    // SMP_STATE and PROC_TABLE are distinct statics — the two `&'static
+    // mut` borrows do not alias. BKL ownership is proven by `section`
+    // (A1 migration: was `unsafe { }` + caller-guarantees-BKL comment).
+    {
+        let smp = match crate::try_smp_state_with(section) {
             Some(s) => s,
             None => return 0,
         };
@@ -192,7 +192,7 @@ pub fn cpu_load() -> u32 {
         if last_tsc == 0 {
             // First call: establish baseline, no load to report.
             local.cpu_last_tsc = current_tsc;
-            let proc_table = crate::proc_table();
+            let proc_table = crate::proc_table_with(section);
             if let Some(idle) = proc_table.get(idle_nr) {
                 local.cpu_last_idle = idle.p_cycles.total.load(Ordering::Acquire);
             }
@@ -200,7 +200,7 @@ pub fn cpu_load() -> u32 {
         }
 
         let tsc_delta = current_tsc.saturating_sub(last_tsc);
-        let proc_table = crate::proc_table();
+        let proc_table = crate::proc_table_with(section);
         let current_idle = proc_table
             .get(idle_nr)
             .map(|p| p.p_cycles.total.load(Ordering::Acquire))
@@ -1265,10 +1265,11 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
 
 
     // SAFETY: the IRQ dispatch entry holds the BKL.
-    let table = unsafe { crate::proc_table() };
-    let priv_table = unsafe { crate::priv_table() };
+    // A1: boot context — single-threaded init before BKL/IRQs exist.
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
     let smp = unsafe { crate::smp_state() };
-    let clock = unsafe { crate::clock_state() };
+    let clock = unsafe { crate::clock_state_boot_unchecked() };
 
     let bsp = smp.bsp_cpu_id();
     let (cur_nr, bill_nr) = smp
@@ -1423,7 +1424,7 @@ mod clock_irq_handler_tests {
             r.p_getfrom_e = Endpoint::ANY;
         }
         {
-            let clock = unsafe { crate::clock_state() };
+            let clock = unsafe { crate::clock_state_boot_unchecked() };
             set_alarm_timer(
                 priv_table,
                 clock,

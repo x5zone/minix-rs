@@ -1639,8 +1639,28 @@ static CLOCK_STATE: SyncUnsafeCell<Option<crate::clock::ClockState>> = SyncUnsaf
 ///
 /// Caller must hold the BKL (the timer IRQ handler runs with it held —
 /// same contract as the other global accessors).
+///
+/// **Prefer [`clock_state_with`]** which takes a `BklSection` witness (R-03).
 pub unsafe fn clock_state() -> &'static mut crate::clock::ClockState {
     // SAFETY: raw-pointer read/write avoids the `static_mut_refs` lint.
+    unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
+}
+
+/// Clock state with BKL witness (R-03, A1 migration).
+pub fn clock_state_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::clock::ClockState {
+    // SAFETY: BklSection witness proves the BKL is held.
+    unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
+}
+
+/// Boot-time clock state accessor (A1 migration): init paths run before
+/// the BKL exists and before any IRQ can fire — single-threaded boot.
+///
+/// # Safety
+///
+/// Only safe during single-threaded boot (`init_clock_and_interrupts`).
+/// After boot, use [`clock_state_with`].
+pub unsafe fn clock_state_boot_unchecked() -> &'static mut crate::clock::ClockState {
+    // SAFETY: caller guarantees single-threaded boot context.
     unsafe { (*CLOCK_STATE.get()).as_mut().expect("CLOCK_STATE not initialized — init_clock_and_interrupts must run first") }
 }
 
@@ -1662,8 +1682,17 @@ pub fn set_kbill_kcall_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklS
 ///
 /// Caller must hold the BKL (production hooks run between BKL-acquiring
 /// dispatch and `bkl_unlock`); tests are single-threaded.
+///
+/// **Prefer [`kbill_kcall_raw_with`]** which takes a `BklSection` witness (R-03).
 pub unsafe fn kbill_kcall_raw() -> Option<crate::proc::ProcNr> {
     // SAFETY: static is never re-assigned to an invalid value (Option<ProcNr>).
+    unsafe { *KBILL_KCALL.get() }
+}
+
+/// kbill_kcall marker read with BKL witness (R-03, A1 migration).
+pub fn kbill_kcall_raw_with(_section: &crate::smp::BklSection<'_>) -> Option<crate::proc::ProcNr> {
+    // SAFETY: BklSection witness proves the BKL is held; static is never
+    // re-assigned to an invalid value (Option<ProcNr>).
     unsafe { *KBILL_KCALL.get() }
 }
 
@@ -1676,9 +1705,13 @@ pub unsafe fn kbill_kcall_raw() -> Option<crate::proc::ProcNr> {
 /// `idle`) while the BKL is still held — C consumes after its early BKL
 /// release (arch_clock.c:226-233 vs :279), a window Rust's single-lock
 /// discipline closes; single-CPU semantics are identical.
-pub(crate) fn consume_kbill_kcall(table: &mut crate::proc_table::ProcessTable, delta: u64) -> bool {
+pub(crate) fn consume_kbill_kcall(
+    table: &mut crate::proc_table::ProcessTable,
+    delta: u64,
+    section: &crate::smp::BklSection<'_>,
+) -> bool {
     // SAFETY: BKL held by caller (see doc).
-    let Some(nr) = (unsafe { kbill_kcall_raw() }) else {
+    let Some(nr) = kbill_kcall_raw_with(section) else {
         return false;
     };
     if let Some(p) = table.get(nr) {
@@ -1847,6 +1880,21 @@ pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix
 /// Panics if `IRQ_MANAGER` has not been initialized yet.
 pub fn irq_manager_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
     // SAFETY: BklSection witness proves BKL is held.
+    unsafe { &mut *IRQ_MANAGER.get() }
+        .as_mut()
+        .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
+}
+
+/// Boot-time IRQ manager accessor (A1 migration): hook registration in
+/// `bsp_finish_booting` runs before the BKL exists and before any IRQ can
+/// fire — single-threaded boot.
+///
+/// # Safety
+///
+/// Only safe during single-threaded boot (`bsp_finish_booting` /
+/// `init_clock_and_interrupts`). After boot, use [`irq_manager_with`].
+pub unsafe fn irq_manager_boot_unchecked() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+    // SAFETY: caller guarantees single-threaded boot context.
     unsafe { &mut *IRQ_MANAGER.get() }
         .as_mut()
         .expect("IRQ_MANAGER not initialized — init_clock_and_interrupts must run first")
@@ -2197,7 +2245,8 @@ fn bsp_finish_booting(
     // Hardware half (x86_64 asm IRQ stubs + IDT load + entry routing)
     // remains deferred — see todo.md D-46.
     let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
-    unsafe { crate::irq_manager() }
+    // A1: boot context — no BKL, no IRQs yet; boot_unchecked accessor.
+    unsafe { crate::irq_manager_boot_unchecked() }
         .register_hook(
             minix_plat::IrqVector::new(0),
             crate::clock::clock_irq_handler,
@@ -2604,6 +2653,7 @@ fn requeue_if_preempted(
 /// state region in the scheduler loop keeps its "runs under BKL" contract
 /// (see `process_misc_flags`).
 fn idle(
+    section: &crate::smp::BklSection<'_>,
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
     priv_table: &crate::kpriv::PrivTable,
@@ -2650,7 +2700,7 @@ fn idle(
     // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
     // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
     if tsc_delta > 0 {
-        consume_kbill_kcall(table, tsc_delta);
+        consume_kbill_kcall(table, tsc_delta, section);
     }
 
     // 5. BKL release (C: context_stop's must_bkl_unlock — arch_clock.c:
@@ -2783,6 +2833,7 @@ fn finish_and_restore(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
     picked: crate::proc::ProcNr,
+    section: &crate::smp::BklSection<'_>,
 ) -> ! {
     use core::sync::atomic::Ordering;
     use minix_arch::{
@@ -2816,7 +2867,7 @@ fn finish_and_restore(
     // whole-delta context_stop uses; must run before the BKL release
     // below (see consume_kbill_kcall doc).
     if tsc_delta > 0 {
-        consume_kbill_kcall(table, tsc_delta);
+        consume_kbill_kcall(table, tsc_delta, section);
     }
     // C releases the BKL inside context_stop (must_bkl_unlock,
     // arch_clock.c:226-233); the restore below is the last kernel act.
@@ -2941,12 +2992,16 @@ fn finish_and_restore(
 fn switch_to_user() -> ! {
     use crate::proc::proc_nr;
 
-    // SAFETY: distinct statics, no aliasing; BKL is held on entry (boot:
-    // bsp_finish_booting step 8.5; trap re-entry: dispatch paths) and the
-    // references live for the whole loop with every region BKL-covered.
-    let table = unsafe { crate::proc_table_boot_unchecked() };
-    let smp = unsafe { crate::smp_state_boot_unchecked() };
-    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    // A1: the BKL is held on entry (boot: bsp_finish_booting step 8.5;
+    // trap re-entry: dispatch paths). `assume_held` turns that convention
+    // into a debug-asserted witness; everything below consumes
+    // `*_with(&section)` accessors, so a lost lock panics instead of
+    // silently corrupting the tables. When the trap entry (S-8) threads
+    // real `bkl_lock_section()` witnesses, this root takes the parameter.
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let table = crate::proc_table_with(&section);
+    let smp = crate::smp_state_with(&section);
+    let priv_table = crate::priv_table_with(&section);
     let bsp = smp.bsp_cpu_id();
 
     // Seed proc_ptr = IDLE (C: main.c:54 — bsp_finish_booting step 2's
@@ -2983,7 +3038,7 @@ fn switch_to_user() -> ! {
                 if let Some(p) = pick_and_bill(table, smp, priv_table) {
                     break p;
                 }
-                idle(table, smp, priv_table);
+                idle(&section, table, smp, priv_table);
             };
             // C: proc.c:343 — `get_cpulocal_var(proc_ptr) = p;`
             current = Some(picked);
@@ -3009,12 +3064,12 @@ fn switch_to_user() -> ! {
         // `proc_no_time` when the quantum is exhausted (with its
         // scheduler-notify policy split) and the post-quantum runnability
         // re-check (C:427-428) — one `false` exit back to the pick path.
-        if !table.check_quantum(picked) {
+        if !table.check_quantum(picked, &section) {
             continue;
         }
 
         // ── Stage 5: finish + restore (never returns) ──
-        finish_and_restore(table, smp, picked);
+        finish_and_restore(table, smp, picked, &section);
     }
 }
 
@@ -3038,7 +3093,9 @@ mod tests {
         let nr = crate::proc::ProcNr(0);
         // SAFETY: single-threaded test.
         unsafe { *KBILL_KCALL.get() = Some(nr) };
-        assert!(consume_kbill_kcall(&mut table, 500));
+        let section = crate::smp::bkl_lock_section();
+        assert!(consume_kbill_kcall(&mut table, 500, &section));
+        crate::smp::bkl_unlock();
         assert_eq!(
             table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
             500
@@ -3046,7 +3103,9 @@ mod tests {
         // Marker cleared → second consume reports false, no attribution.
         // SAFETY: single-threaded test.
         assert!(unsafe { kbill_kcall_raw() }.is_none());
-        assert!(!consume_kbill_kcall(&mut table, 100));
+        let section = crate::smp::bkl_lock_section();
+        assert!(!consume_kbill_kcall(&mut table, 100, &section));
+        crate::smp::bkl_unlock();
         assert_eq!(
             table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
             500
@@ -3901,7 +3960,8 @@ mod tests {
         let mut smp = SmpState::new_single_cpu();
         let bsp = smp.bsp_cpu_id();
 
-        super::idle(&mut table, &mut smp, &priv_table);
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        super::idle(&section, &mut table, &mut smp, &priv_table);
 
         let local = smp.cpu_local(bsp).unwrap();
         assert_eq!(local.proc_ptr, Some(proc_nr::IDLE),
@@ -3934,7 +3994,8 @@ mod tests {
         // full-context style the entry path would stamp (smp_todo S-8).
         table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::IntHard;
 
-        super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), &section);
     }
 
     #[test]
@@ -3955,7 +4016,8 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
         // trap_style intentionally left NoEntry.
 
-        super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), &section);
     }
 
     #[test]
@@ -3975,7 +4037,8 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x5000);
         table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::Syscall;
 
-        super::finish_and_restore(&mut table, &mut smp, ProcNr(0));
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), &section);
     }
 
     #[test]
