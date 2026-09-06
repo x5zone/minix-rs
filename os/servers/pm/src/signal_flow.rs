@@ -258,13 +258,21 @@ pub fn check_pending(
     CheckPendingOutcome::Completed
 }
 
+/// `restart_sigs` 三个注入点的合并 trait（D5，2026-09-06 收敛）。
+///
+/// 原设计按 C 的三个模块级调用（`sys_resume`/`exit_proc`/`sig_proc`）拆成
+/// [`KernelResume`]/[`ExitHandler`]/[`SignalDeliver`] 三个独立 trait；生产
+/// 装配（`event.rs` 的事件终止分派）中三者共享同一 `transport`——三个独立
+/// 的 `&mut` 借用无法共存。合并为一个 supertrait，[`restart_sigs`] 函数体
+/// 内经 trait 上转（upcasting）按需取用；三个成员 trait 保留不动，测试仍
+/// 可单独注入 `check_pending`/`stop_proc` 等其他消费者。
+pub trait RestartServices: KernelResume + ExitHandler + SignalDeliver {}
+
 /// Restarts signal work after VFS reply (`restart_sigs`, `signal.c:687-714`, D5).
 pub fn restart_sigs(
     table: &mut ProcTable,
     target: UserSlot,
-    kres: &mut dyn KernelResume,
-    exit_h: &mut dyn ExitHandler,
-    deliver: &mut dyn SignalDeliver,
+    svc: &mut dyn RestartServices,
 ) -> RestartAction {
     let proc = &table.procs[target.get()];
     if proc.state.block.is_vfs_blocked()
@@ -273,15 +281,11 @@ pub fn restart_sigs(
     {
         return RestartAction::Noop;
     }
-    // Check TRACE_EXIT first (695-698)
-    // TRACE_EXIT modeled as Lifecycle::TraceZombie or a flag in TraceState::exit_pending?
-    // For simplicity, use a bool `trace_exit` stored in Lifecycle? We'll use a heuristic:
-    // if lifecycle is Exiting with sig 0 and a marker in trace state exit_pending?
-    // Here we check a dedicated flag in signal state? Instead we store a simple bool in block.unpaused? Not.
-    // We add a field `trace_exit` to TraceState for test injection.
+    // Check TRACE_EXIT first (695-698) — tracer 强制退出：以缓存的退出码
+    // 走 exit_proc（dump_core=FALSE，C `signal.c:697`）。
     if table.procs[target.get()].state.trace.exit_pending {
         let status = table.procs[target.get()].state.lifecycle.exit_code().map(|(c,_)| c).unwrap_or(0);
-        exit_h.exit_proc(table, target, status);
+        svc.exit_proc(table, target, status);
         return RestartAction::Exit(status);
     }
     if proc.state.block.stopped {
@@ -292,8 +296,8 @@ pub fn restart_sigs(
             ),
             "restart_sigs: !DELAY_CALL"
         );
-        let _ = check_pending(table, target, deliver);
-        let _ = try_resume_proc(table, target, kres);
+        let _ = check_pending(table, target, svc);
+        let _ = try_resume_proc(table, target, svc);
         return RestartAction::CheckAndResume;
     }
     RestartAction::Noop
@@ -509,15 +513,44 @@ mod tests {
         assert_eq!(table.procs[5].resources.signals.kernel_pending, 0);
     }
 
+    /// `restart_sigs` 的合并注入 mock（D5 收敛后单一 service 对象）：
+    /// 记录 exit 调用、转发 deliver 计数、kernel resume 恒 OK。
+    struct RestartMock {
+        exit_called: bool,
+        exit_status: i8,
+        delivered: usize,
+        resume_ok: bool,
+    }
+    impl RestartMock {
+        fn new() -> Self {
+            Self { exit_called: false, exit_status: 0, delivered: 0, resume_ok: true }
+        }
+    }
+    impl KernelResume for RestartMock {
+        fn resume(&mut self, _ep: Endpoint) -> i32 {
+            if self.resume_ok { 0 } else { -5 }
+        }
+    }
+    impl ExitHandler for RestartMock {
+        fn exit_proc(&mut self, _t: &mut ProcTable, _tr: UserSlot, status: i8) {
+            self.exit_called = true;
+            self.exit_status = status;
+        }
+    }
+    impl SignalDeliver for RestartMock {
+        fn sig_proc(&mut self, _t: &mut ProcTable, _tr: UserSlot, _s: i32, _k: bool) {
+            self.delivered += 1;
+        }
+    }
+    impl RestartServices for RestartMock {}
+
     #[test]
     fn test_restart_sigs_noop_when_vfs() {
         let mut table = ProcTable::new();
         mk_running(&mut table, 5);
         table.procs[5].state.block.ipc_blocked = Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
-        let mut k = OkRes;
-        let mut e = NoopExit;
-        let mut d = NoopDeliver;
-        assert_eq!(restart_sigs(&mut table, UserSlot::new(5), &mut k, &mut e, &mut d), RestartAction::Noop);
+        let mut svc = RestartMock::new();
+        assert_eq!(restart_sigs(&mut table, UserSlot::new(5), &mut svc), RestartAction::Noop);
     }
 
     #[test]
@@ -528,12 +561,10 @@ mod tests {
         table.procs[5].state.trace.exit_pending = true;
         // TRACE_EXIT is independent of EXITING; C checks TRACE_EXIT after guard
         // but before PROC_STOPPED branch. Keep lifecycle Running to avoid EXITING guard.
-        let mut k = OkRes;
-        let mut e = RecExit { called: false, status: 0 };
-        let mut d = NoopDeliver;
-        let r = restart_sigs(&mut table, UserSlot::new(5), &mut k, &mut e, &mut d);
+        let mut svc = RestartMock::new();
+        let r = restart_sigs(&mut table, UserSlot::new(5), &mut svc);
         assert_eq!(r, RestartAction::Exit(0));
-        assert!(e.called);
+        assert!(svc.exit_called);
     }
 
     #[test]
@@ -543,12 +574,11 @@ mod tests {
         table.procs[5].state.block.stopped = true;
         table.procs[5].resources.signals.pending = 1u64 << 2;
         table.procs[5].resources.signals.mask = 0;
-        let mut k = OkRes;
-        let mut e = NoopExit;
-        let mut d = NoopDeliver;
-        let r = restart_sigs(&mut table, UserSlot::new(5), &mut k, &mut e, &mut d);
+        let mut svc = RestartMock::new();
+        let r = restart_sigs(&mut table, UserSlot::new(5), &mut svc);
         assert_eq!(r, RestartAction::CheckAndResume);
         assert!(!table.procs[5].state.block.stopped);
+        assert_eq!(svc.delivered, 1, "pending signal must be redelivered");
     }
 
     #[test]

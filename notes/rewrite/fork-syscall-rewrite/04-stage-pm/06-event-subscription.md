@@ -505,7 +505,7 @@ assert(rmc->mp_eventsub == NO_EVENTSUB);        // fork 子进程断言
 - **信号**——`delay_call` 系统保证订阅必须发生在"不受事件影响的调用"（如 `semget` 而非 `semop`），详见 13-signal-flow.md。
 - **退出**——消息类型优先级保证（具体 TODO 在 `forkexit.c`），详见 09-pm-exit.md。
 
-本章仅保留钩子：`resume_event` 的终止分派 `exit_restart` / `restart_sigs` 在 Rust 侧为 DEFERRED 端口，本章只到调用点。
+终止分派两分支已全部落地（2026-09-06）：`exit_restart`（09）早已接线；`restart_sigs`（13）经生产适配器 `PmEventServices` 接真实实现——`SignalDeliver` → `sig_proc`、`ExitHandler` → `exit_proc`、`KernelResume` → 暂以"内核无停止态可撤销"的 OK 契约过渡（真实 `sys_resume` 挂 edge E6，todo.md §6 D-25）。事件重投的端到端行为由 `test_reply_signal_event_terminates_via_restart_sigs` 覆盖。
 
 ---
 

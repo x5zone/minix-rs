@@ -189,13 +189,13 @@ fn can_signal(table: &ProcTable, caller: UserSlot, target: UserSlot) -> bool {
 ///
 /// 9-step chain: TRACE→VFS|EVENT→PRIV_PROC→badignore→ignore→block→TRACE_STOPPED→caught→terminate.
 /// Returns `Ok(())` or `Err` (for sig_send failure).
-pub fn sig_proc(
+pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     target: UserSlot,
     signo: i32,
     trace: bool,
     ksig: bool,
-    _transport: &mut dyn crate::ipc::IpcTransport,
+    _transport: &mut T,
 ) -> Result<(), KillError> {
     let proc = &table.procs[target.get()];
     if !proc.is_in_use() || proc.state.lifecycle.is_exiting() {

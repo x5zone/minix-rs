@@ -24,6 +24,44 @@ use crate::ipc::IpcTransport;
 use crate::ipc::ReplyIntent;
 use crate::mproc::{EventCursor, ProcTable};
 
+/// 事件终止分派的生产服务装配（`event.c:122-123` 的 `restart_sigs` 入口）。
+///
+/// C 中 `restart_sigs` 直接调用模块级函数；Rust 侧经
+/// [`crate::signal_flow::RestartServices`] 注入（D5），`transport` 是唯一
+/// 外部依赖。三个成员 trait 的实现：
+/// - `SignalDeliver` → `crate::signal::sig_proc`（`trace=false`，C 的
+///   `check_pending` 重投路径 `signal.c:670`）；
+/// - `ExitHandler` → `crate::exit::exit_proc`（`dump_core=false`，C 的
+///   TRACE_EXIT 分支 `signal.c:697`）；
+/// - `KernelResume` → `sys_resume`（`signal.c:282`）。minix-sys 内核调用面
+///   落地前（edge_todo.md E6）内核侧不存在真实停止态——`block.stopped` 由
+///   PM 侧 `unpause`/`stop_proc` 自行置位，无需内核撤销，返回 OK 使
+///   `try_resume_proc` 清除 PM 侧状态；E6 落地后替换为真实 `sys_resume`
+///   （todo.md §6 D-25 登记）。
+struct PmEventServices<'a, T: IpcTransport + ?Sized> {
+    transport: &'a mut T,
+}
+
+impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServices<'_, T> {
+    fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
+        let _ = crate::signal::sig_proc(table, target, signo, false, ksig, self.transport);
+    }
+}
+
+impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServices<'_, T> {
+    fn exit_proc(&mut self, table: &mut ProcTable, target: UserSlot, status: i8) {
+        let _ = crate::exit::exit_proc(table, target, status, false, self.transport);
+    }
+}
+
+impl<T: IpcTransport + ?Sized> crate::signal_flow::KernelResume for PmEventServices<'_, T> {
+    fn resume(&mut self, _ep: Endpoint) -> i32 {
+        0 // OK — 见类型文档的 E6 契约说明
+    }
+}
+
+impl<T: IpcTransport + ?Sized> crate::signal_flow::RestartServices for PmEventServices<'_, T> {}
+
 /// 订阅表上限（`event.c:58` `NR_SUBS 4`）。
 pub const NR_SUBS: usize = 4;
 
@@ -227,8 +265,10 @@ impl EventRegistry {
                 crate::exit::exit_restart(table, target, transport);
             }
             ProcEvent::Signal => {
-                // 13-signal-flow.md: restart_sigs — 信号重投（DEFERRED，当前仅清标志）
-                // 为使事件流端到端可验证，当前仅清标志；13 落地时替换为真实 restart_sigs
+                // C: event.c:122-123 — restart_sigs(rmp)（13-signal-flow.md D5）：
+                // 清 EVENT_CALL 后重投挂起信号并按需恢复进程。
+                let mut svc = PmEventServices { transport };
+                crate::signal_flow::restart_sigs(table, target, &mut svc);
             }
         }
     }
@@ -997,5 +1037,47 @@ mod tests {
         let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn test_reply_signal_event_terminates_via_restart_sigs() {
+        // D-11 端到端：最后一个订阅者回复 Signal 事件 → 终止分派
+        //（event.c:122-123）→ restart_sigs → check_pending 重投挂起的
+        // SIGKILL → sig_proc 终止路径（sig_proc_exit → exit_proc）。
+        // 目标进程必须 Running（restart_sigs 的 EXITING 守卫会 Noop）。
+        let (mut table, mut reg, mut transport, sub, _tgt) = setup_reply_test();
+        reg.subs[0].as_mut().unwrap().mask = ProcEventMask::SIGNAL;
+        // 目标改为 Running（不走 Exit 分派的 Exiting 前提），保持 EVENT_CALL
+        // 阻塞在游标 0；PM 侧停止 + 挂起一个未阻塞的 SIGKILL。事件推断
+        //（event.c:265-273）要求非 Exiting 目标带 UNPAUSED 标志才会推断为
+        // Signal 事件。
+        table.procs[5].state.lifecycle = Lifecycle::Running;
+        table.procs[5].state.block.unpaused = true;
+        table.procs[5].state.block.stopped = true;
+        table.procs[5].resources.signals.pending = 1u64 << (crate::signal::SIGKILL - 1);
+        table.procs[5].resources.signals.mask = 0;
+
+        let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Signal);
+        let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport);
+        assert_eq!(intent, ReplyIntent::ReplyLater);
+        // 非空 mask 的订阅者保留订阅（remove_sub 仅在 mask 空且 waiting=0
+        // 时触发，event.c:130-161）；终止分派由游标越界触发而非订阅者移除。
+        assert_eq!(reg.len(), 1);
+        assert!(
+            !table.procs[5].state.block.is_event_blocked(),
+            "EVENT_CALL must be cleared before the termination dispatch"
+        );
+        assert_eq!(
+            table.procs[5].resources.signals.pending, 0,
+            "pending SIGKILL must have been redelivered (consumed)"
+        );
+        assert!(
+            matches!(
+                table.procs[5].state.lifecycle,
+                Lifecycle::Exiting { .. } | Lifecycle::Zombie { .. }
+            ),
+            "SIGKILL redelivery must terminate the target, got {:?}",
+            table.procs[5].state.lifecycle
+        );
     }
 }

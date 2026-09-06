@@ -292,7 +292,7 @@ Rust 改写遵循“显式 `MayDelay` 枚举 + `KernelStop/Resume` trait + `Unpa
 ### D5：`restart_sigs` 的分支收敛到 `RestartAction` 枚举
 
 - **C**：`693` 三条件 `return` + `695-698` `TRACE_EXIT → exit_proc` + `699-712` `PROC_STOPPED → check→resume`。
-- **Rust**：`enum RestartAction { Noop, Exit(i8), CheckAndResume }` + `restart_sigs(table, target, &mut dyn KernelResume, &mut dyn ExitHandler, &mut dyn SigProcCaller) -> RestartAction`（`TRACE_EXIT` 优先于 `PROC_STOPPED`，`Noop` 对应 `693` 提前 return）。
+- **Rust**：`enum RestartAction { Noop, Exit(i8), CheckAndResume }` + `restart_sigs(table, target, &mut dyn RestartServices) -> RestartAction`（`TRACE_EXIT` 优先于 `PROC_STOPPED`，`Noop` 对应 `693` 提前 return）。**2026-09-06 收敛**：原三个独立注入 trait 在生产装配（06 的事件终止分派）中共享同一 transport，三个 `&mut` 无法共存——合并为 supertrait `RestartServices: KernelResume + ExitHandler + SignalDeliver`，函数体内经 trait 上转（upcasting）按需取用；成员 trait 保留，`check_pending`/`stop_proc` 等其他消费者不受影响。
 
 ### D6：`SIGSNDELAY` 兑现收敛到 `handle_sigsn_delay`
 
@@ -385,7 +385,8 @@ pub fn stop_proc(table: &mut ProcTable, tgt: UserSlot, d: MayDelay, k: &mut dyn 
 pub fn try_resume_proc(table: &mut ProcTable, tgt: UserSlot, k: &mut dyn KernelResume) -> bool
 pub fn unpause(table: &mut ProcTable, tgt: UserSlot, k: &mut dyn KernelStop, v: &mut dyn VfsCtl) -> UnpauseOutcome
 pub fn check_pending(table: &mut ProcTable, tgt: UserSlot, caller: &mut dyn SigProcCaller) -> CheckPendingOutcome
-pub fn restart_sigs(table: &mut ProcTable, tgt: UserSlot, k: &mut dyn KernelResume, e: &mut dyn ExitHandler, c: &mut dyn SigProcCaller) -> RestartAction
+pub trait RestartServices: KernelResume + ExitHandler + SignalDeliver {}
+pub fn restart_sigs(table: &mut ProcTable, tgt: UserSlot, svc: &mut dyn RestartServices) -> RestartAction
 pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn KernelStop, c: &mut dyn SigProcCaller) -> bool
 ```
 

@@ -275,7 +275,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-08 | `ipc/vfs.rs:469` | `exec_restart` `unimplemented!()` | 17-exec.md | exec 重启路径接线 |
 | D-09 | `ipc/vfs.rs:488` | `sys_abort` `unimplemented!()` | 01-stage-kernel | 内核 sys_abort |
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
-| D-11 | `event.rs:170/230` | 事件重启的 exit_restart/restart_sigs 仅清标志 | 13-signal-flow.md | restart_sigs 完整实现 |
+| D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
 | D-13 | `exit.rs:33` | exit 路径 `sys_kill` no-op | 11-signal-core.md | 内核 sys_kill |
 | D-14 | `exit.rs:101` | 退出进程自身 times 计账为 0 | 10-pm-wait.md | 内核 sys_times |
@@ -289,6 +289,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-22 | `signal.rs:160` | 内核调度器判定返回硬编码 false（"stub for 11, real in 16"） | 16-scheduling.md | A-8 |
 | D-23 | `signal.rs:360-362` | SIGVTALRM/`check_vtimer` stub（`alarm.c:326-328`） | 14-itimer.md | 虚拟计时器 trait 落地（`timer.rs:165-167` 已定义 seam） |
 | D-24 | `mproc/fork.rs:222-228` | `getticks()` 返回 0（TODO 注释：应向 CLOCK 请求） | 14-itimer.md / 内核 sys_times | 内核 uptime 面 |
+| D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
 
 不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
 
@@ -487,3 +488,23 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`10-pm-wait.md` §4.1 实现描述更新（占位 → 真实语义 + 测试名）；本文件 §6 D-20 行。
 
 **未做（DEFERRED 论证）**：无——链路两端（D-10 置位端、本条消费端）均已在 crate 内闭合。
+
+### ✅ Fix #7: D-11 — 事件终止分派 Signal 分支接真实 restart_sigs（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/signal_flow.rs`（新增 supertrait `RestartServices: KernelResume + ExitHandler + SignalDeliver`；`restart_sigs` 签名从 3 个 trait 对象收敛为 1 个；3 个测试改用合并 mock）
+- `os/servers/pm/src/event.rs`（新增生产适配器 `PmEventServices`；Signal 分支从"仅清标志"no-op 接真实 `restart_sigs`；+1 端到端测试）
+- `os/servers/pm/src/signal.rs`（`sig_proc` 的未使用 transport 参数从 `&mut dyn` 放宽为 `<T: IpcTransport + ?Sized>`——消除 `?Sized` 泛型调用链上的 dyn 强制转换死结）
+
+**Before**：`resume_event` 的终止分派中 Signal 分支是 no-op（注释自述"13 落地时替换"）——事件重投语义缺失；Exit 分支实际已接线但注释仍称"两者 DEFERRED"（过时注释）。
+
+**After**（设计选型）：适配器与签名的组合两案——(a) 三个独立 trait + 三个 `&mut`（原设计）：生产装配时三者在同一调用帧共存，而它们共享 `transport` 的 `&mut`，借用检查器拒绝；为绕开会要求 `RefCell`/raw pointer。(b) **supertrait 合并 + trait upcasting**（已选，2024 edition 后的社区惯用法）：`restart_sigs(table, target, &mut dyn RestartServices)`，函数体内按需上转为 `&mut dyn ExitHandler` 等——单一借用、mock 装配更简、成员 trait 保留使 `check_pending`/`stop_proc` 等单注入点消费者不受影响。C 依据：C 的 `restart_sigs` 直接调模块级函数，trait 拆分本就是 Rust 侧测试注入的手段，合并不改变注入语义。
+- `PmEventServices::resume` 返回 OK 的过渡契约：`block.stopped` 在当前世界由 PM 侧 `unpause`/`stop_proc` 自行置位，内核侧无真实停止态可撤销——"无内核动作"是真话而非捏造（与 P1-2 的假成功有本质区别：不虚构任何数据）；真实 `sys_resume` 登记 D-25 挂 E6。
+
+**Verified**：
+- `cargo test -p minix-pm`：330 → **331 lib passed**（+1 端到端：SIGNAL 事件终止分派 → check_pending 重投 SIGKILL → sig_proc 终止 → 僵尸化；途中确认事件推断的 UNPAUSED 前提）+ 6 integration
+- `grep -n "仅清标志" os/servers/pm/src/event.rs`：零命中
+
+**Docs**：`13-signal-flow.md` D5（签名收敛论证）+ §4.4 代码块、`06-event-subscription.md` §2.10 钩子行（DEFERRED → 落地 + D-25 引用）；本文件 §6 D-11 行 + 新增 D-25 行。
+
+**未做（DEFERRED 论证）**：`KernelResume::resume` 的真实 `sys_resume`（D-25）——依赖 minix-sys 内核调用面（E6），按通电口径以显式契约过渡。
