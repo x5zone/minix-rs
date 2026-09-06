@@ -460,7 +460,7 @@ else
 - 内存统计：`total`/`total_max`/`region_top`/`minor_fault`/`major_fault` + `add_total`（L283，累加+峰值更新，对应 `region.c:85-90`）/`sub_total`（L290，饱和减）/`set_total`/`inc_minor_fault`（L300）/`inc_major_fault`（L305）
 - 地址空间：`init_page_table`（L342，创建页表 + 内核映射）/`init_regions`（L423）/`page_table`/`regions`/`region_count`/`add_region`/`remove_region`
 - fork 辅助：`init_from_fork`（L318，只设 INUSE + endpoint + total/total_max/region_top，对应 `fork.c:83` 只继承 INUSE）/`copy_acl_from`（L331，调 `AclState::acl_fork`，对应 `acl.c:110-114`）
-- 活更新：`mark_vm_instance`（L273，设 flag + `inc_vm_instance`，对应 `main.c:577-579`）、`swap_proc_slot`（L620，交换两槽内容但保留 endpoint/slot 身份）
+- 活更新：`mark_vm_instance`（L273，设 flag + `inc_vm_instance`，对应 `main.c:577-579`）。槽交换本身在表层 `VmProcTable::swap_slots`（03 文档 §2.6/§3.6；typestate 版 `swap_proc_slot` 已随 V11/T24 删除）
 
 **ExitingProc**（`vmproc_handle.rs:706-760`）：`new`（L707，debug_assert INUSE+EXITING）、`reap`（L744，unsafe，调 `clear()` → `EmptySlot`，对应 `do_exit` 的 `free_proc`+`clear_proc`）。
 
@@ -510,7 +510,7 @@ else
 
 ### 5.3 vmproc_handle.rs 测试（15 个）
 
-覆盖：`test_empty_slot_activate`、`test_activate_relaxed_*`（none/matching/exec_tmp 三用例 + should_panic 反例）、`test_active_proc_readonly`、`test_active_proc_write`、`test_active_proc_memory_tracking`、`test_mark_exiting`、`test_exiting_proc_reap`、`test_force_clear`、`test_page_fault_counters`、`test_full_lifecycle`（槽位复用：activate→mark_exiting→reap→再 activate→force_clear）、`test_swap_proc_slot_preserves_identities`。
+覆盖：`test_empty_slot_activate`、`test_activate_relaxed_*`（none/matching/exec_tmp 三用例 + should_panic 反例）、`test_active_proc_readonly`、`test_active_proc_write`、`test_active_proc_memory_tracking`、`test_mark_exiting`、`test_exiting_proc_reap`、`test_force_clear`、`test_page_fault_counters`、`test_full_lifecycle`（槽位复用：activate→mark_exiting→reap→再 activate→force_clear）、`test_swap_slots_preserves_identities`（V11/T24 自 typestate 版迁移到表层 `swap_slots`）。
 
 ### 5.4 覆盖缺口与建议
 

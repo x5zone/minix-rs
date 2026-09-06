@@ -42,9 +42,9 @@ use minix_sys::ipc::IpcTransport as _;
 /// Minix3's `sef_receive_status()`. The kernel fills in the flags describing
 /// the message (e.g. notification vs. regular IPC, sender is kernel, etc.).
 ///
-/// The Rust side currently only needs to know whether the message is a
-/// notification (`is_ipc_notify`); the rest is `#[allow(dead_code)]` until
-/// the kernel IPC returns the full status word.
+/// The Rust side consumes `is_notify()` (main loop skip, V10-P1-1) and
+/// `is_from_kernel()` (pagefault audit branch); further `IPC_STATUS_*`
+/// bits join as consumers appear.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IpcStatus {
     /// Raw status bits from the kernel. See Minix3 `ipc.h` `IPC_STATUS_*`.
@@ -66,9 +66,9 @@ impl IpcStatus {
     /// (minix/ipcconst.h:22-24) — the message originated in the kernel on
     /// behalf of a process (pagefaults, signals), never reply to it.
     ///
-    /// DEAD until kernel IPC core: `KernelIpcTransport::receive` fills
-    /// `flags` for real; until then every status is `default()` and this
-    /// returns `false`.
+    /// `KernelIpcTransport::receive` fills `flags` from the minix-sys trap
+    /// status word (V11/T9); the pre-E1 trap stub answers `flags == 0`, so
+    /// it reads `false` until the real trap wiring lands (edge E1).
     pub fn is_from_kernel(&self) -> bool {
         ((self.flags >> 16) & 1) != 0
     }
@@ -83,12 +83,11 @@ pub enum IpcError {
     /// Destination endpoint is invalid (`NONE` or out of range).
     InvalidEndpoint,
     /// Send queue is full.
-    // V10-P2-1 (DEFERRED): no producer until kernel IPC core returns
-    // EAGAIN-style errors.
+    // DEFERRED (edge E1 family): a producer appears only when the trap
+    // layer surfaces non-blocking receive results.
     #[allow(dead_code)]
     WouldBlock,
     /// The kernel returned a generic error (carries the raw code).
-    #[allow(dead_code)]
     Kernel(i32),
 }
 

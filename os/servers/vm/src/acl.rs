@@ -167,20 +167,13 @@ impl AclState {
         }
     }
 
-    /// A process has exited. Mark it as having no ACL.
-    ///
-    /// Corresponds to Minix3's `acl_clear()`.
-    /// Unlike Minix3, there is no shared slot table to free,
-    /// so simply returning `Uninitialized` is sufficient.
-    // V10-P2-1 (DEFERRED): test-only today — exit clears the ACL via
-    // `VmProc::clear()` instead of this path.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn acl_clear(&self) -> Self {
-        AclState::Uninitialized
-    }
+    // Exit-time ACL clearing (C `acl_clear()`, exit.c:48) has no standalone
+    // method: minix-rs folds it into `VmProc::clear()`, which resets
+    // `vm_acl` to `Uninitialized` as part of process cleanup — there is no
+    // shared slot table to free, so no separate step is needed (V11/T24).
 
-    // V10-P2-1 (DEFERRED): test-only; `mask` can converge with the
-    // V9-P2-3 Provider-enum work.
+    // Test-only; the ACL check path matches `AclState` inline, so this
+    // read accessor has no production consumer yet (revisit with V9-P2-3).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn mask(&self) -> Option<AclMask> {
         match self {
@@ -292,19 +285,6 @@ mod tests {
 
         let state = AclState::acl_set(true, None);
         assert_eq!(state, AclState::System(AclMask::empty()));
-    }
-
-    #[test]
-    fn test_acl_clear() {
-        let state = AclState::Default;
-        assert_eq!(state.acl_clear(), AclState::Uninitialized);
-
-        let mask = AclMask::VM_MMAP;
-        let state = AclState::System(mask);
-        assert_eq!(state.acl_clear(), AclState::Uninitialized);
-
-        let state = AclState::Uninitialized;
-        assert_eq!(state.acl_clear(), AclState::Uninitialized);
     }
 
     #[test]

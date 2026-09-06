@@ -397,7 +397,7 @@ AclState::Uninitialized => {
 ### 3.4 D4: 内联权限——消除全局槽位表
 
 - **C**: `acl_mask[64][2]`（512B）+ `acl_inuse[2]` static 全局；`acl_set` 线性扫描槽位、`SET_BIT/UNSET_BIT` 引用计数、耗尽时放弃（§2.4）
-- **Rust**: 无全局表；`System(AclMask)` 权限内联于进程状态（8 字节）；`acl_set` 为**纯函数**返回新状态（`acl.rs:147-160`）；`acl_clear` 幂等返回 `Uninitialized`（`acl.rs:179-181`）
+- **Rust**: 无全局表；`System(AclMask)` 权限内联于进程状态（8 字节）；`acl_set` 为**纯函数**返回新状态（`acl.rs`）；退出时 ACL 的清空不设独立方法——折叠进 `VmProc::clear()`（`vmproc.rs`，对应 C `do_exit` 里 `acl_clear`+`free_proc`+`clear_proc` 的组合，见 V11/T24 判定）
 
 ```rust
 pub(crate) fn acl_set(sys_proc: bool, mask: Option<AclMask>) -> Self {

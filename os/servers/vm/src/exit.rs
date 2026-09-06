@@ -317,8 +317,9 @@ pub(crate) enum VmProcctlHandlememResult {
 pub(crate) enum VmProcctlError {
     InvalidEndpoint,
     ProcessNotFound,
-    // V10-P2-1 (DEFERRED): no constructor yet — kept for the errno-mapping
-    // surface (V10-P2-3) and the CLEAR/HANDLEMEM permission checks.
+    // Judgment (V11/T24): no constructor today — kept for the exhaustive
+    // errno-mapping surface (V10-P2-3 closure) and the CLEAR/HANDLEMEM
+    // permission checks.
     #[allow(dead_code)]
     PermissionDenied,
     InvalidAddress,

@@ -787,7 +787,6 @@ impl MessageDispatcher {
         };
         match rs::handle_rs_update(update_ctx) {
             Ok(rs::RsUpdateResult::Ok) => VmReply::Ok,
-            Ok(rs::RsUpdateResult::Suspend) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),
         }
     }

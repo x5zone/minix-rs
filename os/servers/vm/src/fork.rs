@@ -344,10 +344,13 @@ pub(crate) fn do_fork(
     //   handle_memory_once(vmc, vir, sizeof(message), 1)  // child
     //   handle_memory_once(vmp, vir, sizeof(message), 1)  // parent
     //
-    // Note: In Minix3, msgaddr comes from sys_fork's return value
-    // (rpp->p_delivermsg_vir). Since our sys_fork is a stub, we use a
-    // placeholder. When IpcTransport is implemented, msgaddr will be
-    // returned by the real sys_fork call.
+    // Note: In Minix3, msgaddr is sys_fork's fifth OUTPUT parameter
+    // (fork.c:90 — the kernel reports where PM's fork message lives in the
+    // parent's address space, sourced from p_delivermsg_vir). minix-rs'
+    // `Gateway::sys_fork` wire (SYS_FORK, M1 m1i1/m1i2/m1i3) currently
+    // returns only the child endpoint; extending the reply to carry msgaddr
+    // is a kernel↔VM shared-wire decision (T33; edge E-FORKMSG if the
+    // kernel side needs to grow the field first).
     //
     // # DEFERRED
     //
@@ -366,12 +369,11 @@ pub(crate) fn do_fork(
     //   - Restructure `do_fork` to take both slots as a single
     //     tuple return.
     //
-    // **Dependency 2**: `sys_fork` is a stub (line 334 below). The
-    // real `sys_fork` must return the kernel-assigned child endpoint
-    // AND the `msgaddr` of the deliver-message buffer. Currently
-    // `sys_fork` returns only the endpoint; the `msgaddr` is a
-    // placeholder. This blocks Dependency 1 because the eager CoW
-    // resolution needs the real `msgaddr`.
+    // **Dependency 2**: `Gateway::sys_fork` (wired, V11/T9) returns only
+    // the child endpoint. The eager CoW resolution also needs `msgaddr` —
+    // the kernel's fifth sys_fork output (fork.c:90). Growing the reply
+    // layout is a shared kernel↔VM wire change (E2 family / E-FORKMSG),
+    // not something the VM can decide unilaterally.
     //
     // # Why safe to defer?
     //

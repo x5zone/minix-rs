@@ -455,9 +455,9 @@ impl VmServer {
         //   main.c:465      acl_init()                  → AclState::Uninitialized (compile-time default)
         //   main.c:468      map_region_init()           → RegionMap::new() lazily per process
         //   main.c:474-475  init_proc(VM_PROC_NR)+pt_init → init_vm_slot() + init_vm_self_pt() (new)
-        //   main.c:480      __minix_init()              → DEFERRED (kernel IPC vectors, minix-sys)
+        //   main.c:480      __minix_init()              → mark_initialized() (V10-P0-2; real trap wiring → E1)
         //   main.c:485-495  mem_add_total_pages()       → account_boot_memory()
-        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() (exec DEFERRED)
+        //   main.c:497-520  boot procs (exec_bootproc)  → init_boot_procs() + exec_bootproc (V11/T14; stack frame → E-BOOTFRAME)
         //   main.c:522-572  CALLMAP                     → compile-time match (MessageDispatcher)
         //   main.c:577-579  VM instance mark            → mark_vm_instance()
         //
@@ -474,7 +474,9 @@ impl VmServer {
         // Phase 2b: mem_add_total_pages() call points — main.c:485-495.
         self.account_boot_memory();
 
-        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc DEFERRED).
+        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc
+        // landed in V11/T14; the initial stack frame ABI waits on edge
+        // E-BOOTFRAME).
         self.init_boot_procs();
 
         // Phase 2d: VM instance mark — main.c:577-579.
@@ -543,9 +545,11 @@ impl VmServer {
     /// Boot process slots — main.c:497-520.
     ///
     /// C also runs `exec_bootproc()` + `free_mem()` per boot process here;
-    /// both are DEFERRED (ELF loading / pagetable bind / sys_exec depend on
-    /// the kernel IPC core, minix-sys). Slot population happens now so the
-    /// process table reflects the boot image before the main loop starts.
+    /// both are implemented (V11/T14 — ELF segment loading through the
+    /// Direct Map + `Gateway::sys_exec`, blob freed back to the allocator).
+    /// The minimal initial stack frame is edge E-BOOTFRAME (VM↔libc↔kernel
+    /// shared ABI), so `stack`/`ps_str` report 0 until it lands; real
+    /// kernel traffic for `sys_exec` waits on edge E2.
     fn init_boot_procs(&mut self) {
         let table = VmProcTable::get_global();
         // Own a copy: exec_bootproc needs &mut self while iterating.
@@ -914,18 +918,16 @@ impl VmServer {
 
         // C: if(result != SUSPEND) { ipc_send(who_e, &msg); }
         //
-        // DEFERRED: use `VmReplyForIpc` wrapper that
-        // *statically* excludes `VmReply::Suspend`, replacing the prior
-        // `unreachable!("Suspend filtered before reply_to_errno")` panic.
-        // The `DispatchAction` enum already encodes the three C outcomes
-        // (SUSPEND / no-reply / reply-with-payload); at this call site
-        // we map `DispatchAction::Reply(reply)` (where `reply` is *any*
-        // `VmReply`) into `VmReplyForIpc::new(reply)`. The wrapper
-        // constructor returns `None` for `VmReply::Suspend`, which would
-        // be a logic bug (we forgot to convert Suspend at dispatch
-        // boundary) — we explicitly check that case and panic with a
-        // useful error message rather than the previous cryptic
-        // `unreachable!()` panic from deep inside `reply_to_errno`.
+        // `VmReplyForIpc` *statically* excludes `VmReply::Suspend`
+        // (replacing the earlier `unreachable!("Suspend filtered before
+        // reply_to_errno")` panic). `DispatchAction` encodes the three C
+        // outcomes (SUSPEND / no-reply / reply-with-payload); at this call
+        // site `DispatchAction::Reply(reply)` — where `reply` is *any*
+        // `VmReply` — is funneled through `VmReplyForIpc::new(reply)`,
+        // which returns `None` for `VmReply::Suspend`. Hitting that case
+        // would be a logic bug (a Suspend escaping the dispatch boundary),
+        // so we panic with a remediation hint instead of sending a
+        // corrupt reply.
         match action {
             DispatchAction::Reply(reply) => {
                 let reply_for_ipc = VmReplyForIpc::new(reply)
@@ -942,13 +944,14 @@ impl VmServer {
                     .send(who_e, &reply_msg)
                     .unwrap_or_else(|_| panic!("ipc_send() failed"));
             }
-            // V10-P1-2: live-update scaffolding. C: main.c:191 — SUSPEND
-            // means "no reply now, resume later" (RS_INIT handshake and
-            // rs_update). The only current producer is the RS_INIT
-            // handshake (Priority 2 above); the rs_update Suspend path is
-            // unreachable until kernel `sys_update` lands — the empty arm
-            // is intentional and pinned by
-            // `dispatcher::tests::test_dispatch_rs_update_pins_not_implemented`.
+            // C: main.c:191 — SUSPEND means "no reply now, resume later".
+            // The only producer is the RS_INIT handshake branch (Priority 2
+            // above). rs_update never routes here: C's do_rs_update returns
+            // SUSPEND merely to suppress the main-loop's *second* reply
+            // (it already ipc_send'd OK to the external requester inside
+            // the handler, rs.c:201-208); minix-rs sends that one reply
+            // through DispatchAction::Reply instead, so this arm stays
+            // empty.
             DispatchAction::Suspend => {}
             DispatchAction::NoReply => {}
         }

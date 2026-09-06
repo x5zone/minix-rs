@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 4 — 自举的堆与元数据（自举终点）
 > **源码**: `minix3/minix/servers/vm/pagetable.c`（`pt_init` 搬迁段 :1311-1345 / `pt_init_done` :328 / spare page 池 :59-110、:1116-1162 / `vm_allocpages` :333-394 / `vm_freepages` :235-259 / `is_staticaddr` :85）+ `minix3/minix/servers/vm/alloc.c`（`reservedqueue_*` :60-237 / `missing_spares` :74 / `alloc_cycle` :227-237）+ `minix3/minix/servers/vm/utility.c`（`swap_proc_slot` :188 / `transfer_mmap_regions` :228 / `map_proc_dyn_data` :283 / `swap_proc_dyn_data` :312）+ `minix3/minix/servers/vm/region.c`（`map_setparent` :1535）+ `minix3/minix/servers/vm/main.c`（主循环 `alloc_cycle` 钩子 :118-119）
-> **Rust 模块**: `os/servers/vm/src/vm_server.rs`（`VmServer::relocate` :182 / `mark_alloc_failure` :396）+ `os/servers/vm/src/global.rs`（`heap_arena_grow` :481）+ `os/servers/vm/src/phys_mem/mod.rs`（`PhysAlloc`/`as_bitmap` :195）+ `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（`metadata_pa_range` :110 / `available_regions` :464）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`swap_proc_slot` :620）+ `os/servers/vm/src/rs.rs`（LU 支撑面 DEFERRED :210/:229）
+> **Rust 模块**: `os/servers/vm/src/vm_server.rs`（`VmServer::relocate` :182 / `mark_alloc_failure` :396）+ `os/servers/vm/src/global.rs`（`heap_arena_grow` :481）+ `os/servers/vm/src/phys_mem/mod.rs`（`PhysAlloc`/`as_bitmap` :195）+ `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（`metadata_pa_range` :110 / `available_regions` :464）+ `os/servers/vm/src/vmproc/table.rs`（`swap_slots`/`set_region_parent`，V11/T13）+ `os/servers/vm/src/rs.rs`（LU 支撑面已落地，V11/T12/T13）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理页分配器）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配器 + `missing_spares` 重解释）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（页表操作面）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md`（HeapArena）
 > **说明**: VM 自举终点语义模块：**Minix3 的初始化数据搬迁（spare page 池 + 页表结构，pagetable.c:1311-1345）+ Live Update 支撑面（swap_proc_slot / transfer_mmap_regions / map_proc_dyn_data / swap_proc_dyn_data / map_setparent）**。**不覆盖**：物理页分配器（05）、页分配器与保留页池（06）、页表结构/操作（07/08）、堆分配器（09）、RS Live Update 服务流程（25）。
 
@@ -169,13 +169,13 @@ relocate()（vm_server.rs:182）
 | `swap_proc_dyn_data` | utility.c:312 | VM 自身：先 `pt_map_in_range` 转移堆/栈区域（`VM_OWN_HEAPBASE..VM_OWN_MMAPTOP` + `VM_STACKTOP..VM_DATATOP`）；然后 `map_setparent` 交换区域父指针；非 VM 且无 `SF_VM_ROLLBACK|SF_VM_NOMMAP` 时反向 `map_proc_dyn_data(dst, src)` |
 | `map_setparent` | region.c:1535 | 把 vir_region 的 `parent` 指向自己——区域所有权切换到新实例，旧实例不再拥有这些区域 |
 
-Rust 侧状态：`swap_proc_slot` **已实现**（§4.3，typestate 版本）；`transfer_mmap_regions`/`map_proc_dyn_data`/`swap_proc_dyn_data`/`map_setparent` **DEFERRED**（rs.rs:210/:229，诚实标注，见 §4.5）——RS UPDATE 流程（25）消费它们，当前 RS_PREPARE 部分实现、RS_UPDATE 返回 NotImplemented（fail-closed，ARCH A-8）。
+Rust 侧状态：LU 支撑面**全链已实现**（V11/T12/T13，见 §3.5/§4.3/§4.5）——`swap_slots`（表层）、`map_proc_dyn_data`、`share_mappings`、`set_region_parent`；RS_PREPARE/RS_UPDATE 消费它们（25 文档 §3.7）。真实内核流量挂 edge E1/E2。
 
 ### 1.9 对照 Redox / Linux
 
 **Redox**：Redox 内核早期用 `linked_list_allocator` 的 bump/空链表分配器 + 固定帧分配器（`BumpAllocator`/`BuddyAllocator`）管物理帧，恒等映射 + 直接映射提供稳定 VA——自举后**不需要**像 Minix3 那样重建页表结构（无 liveupdate 的"PA 变化"问题）。这与 minix-rs 同构：Direct Map 消除页表重建需求，free-list 分配器（09 `VmAllocator`，A-3 v2 与 `linked_list_allocator` 同形态）对应 Redox 的 `linked_list_allocator::Heap`，物理帧分配器（05/06）对应 Redox `FrameAllocator`。Redox 的上下文切换/进程替换不涉及 VM 侧"页表搬迁"。
 
-**Linux**：`memblock`（早期物理内存跟踪，自举期用）→ `paging_init`/`memblock_free_all`（把 memblock 的空闲区域移交 buddy 分配器）是经典的"先静态后动态"迁移——与 Minix3 的"先 BSS 后动态"、minix-rs 的"先 BumpBuf 后 HeapArena"同构。Linux `kexec`/kpatch 与 Minix3 LU 无直接对应：kexec 是整内核重启加载，kpatch 是函数级热补丁；Minix3 LU 是**进程级热替换**（整服务重启 + 状态转移），minix-rs 用 typestate `swap_proc_slot` + 区域 parent 重定向实现其核心原语。
+**Linux**：`memblock`（早期物理内存跟踪，自举期用）→ `paging_init`/`memblock_free_all`（把 memblock 的空闲区域移交 buddy 分配器）是经典的"先静态后动态"迁移——与 Minix3 的"先 BSS 后动态"、minix-rs 的"先 BumpBuf 后 HeapArena"同构。Linux `kexec`/kpatch 与 Minix3 LU 无直接对应：kexec 是整内核重启加载，kpatch 是函数级热补丁；Minix3 LU 是**进程级热替换**（整服务重启 + 状态转移），minix-rs 用表级 `swap_slots` + 区域 parent 重定向（`set_region_parent`）实现其核心原语。
 
 ### 1.10 本章小结
 
@@ -183,7 +183,7 @@ Rust 侧状态：`swap_proc_slot` **已实现**（§4.3，typestate 版本）；
 - Minix3 搬迁页表结构（spare 池 + newpt_dyn），minix-rs 搬迁分配器元数据（BumpBuf → HeapArena）——后者因 Direct Map 结构性消除了页表重建需求。
 - `pt_init_done` + `level` 是 C 侧双路径分配/递归限制；minix-rs 单路径，两者都消失。
 - 备用页池（reservedqueue_*）是自举机制，minix-rs 不实现（ARCH A-1），`missing_spares` 重解释为压力计数。
-- LU 支撑面：`swap_proc_slot` 已实现；动态数据转移（transfer_mmap_regions 等）DEFERRED。
+- LU 支撑面：全链已实现（V11/T12/T13）——槽交换 + 动态数据转移 + parent 重定向。
 
 ---
 
@@ -448,11 +448,11 @@ C 搬迁页表结构（spare 池 + newpt_dyn，§2.1），Rust 搬迁分配器�
 | `level` 递归限制 | 无（08 D2：walk_alloc 递归结构性消失） | — |
 | `is_staticaddr`/`vm_self_pages` | 无（Direct Map 无静态/动态二分） | — |
 
-### 3.5 D5: LU 支撑面——swap_proc_slot 实现 + 转移族 DEFERRED
+### 3.5 D5: LU 支撑面——全链落地（V11/T12/T13）
 
-**已实现**：`swap_proc_slot`（vmproc_handle.rs:620，§4.3）——typestate 表达"内容交换、身份保留"，SAFETY 论证 4 条不变量。
+**已实现**：`swap_proc_slot` → `VmProcTable::swap_slots`（表级，§4.3）；`transfer_mmap_regions`/`map_proc_dyn_data` → `rs.rs::map_proc_dyn_data`（V11/T12，mmap 区域 CoW 转移 + 幂等）；`swap_proc_dyn_data` → `share_mappings`（dst 为 VM 的就地共享）+ 反向 `map_proc_dyn_data`（V11/T13）；`map_setparent` → `VmProcTable::set_region_parent`。RS_UPDATE 七步全链见 25 文档 §3.7；真实内核流量挂 edge E2。
 
-**DEFERRED**（诚实标注，不伪装实现）：`transfer_mmap_regions`/`map_proc_dyn_data`/`swap_proc_dyn_data`/`map_setparent`——它们依赖 mmap 区域 CoW 共享（13/17/20 的实施），当前 RS_PREPARE 部分实现（`map_pin_memory` 已实现）、RS_UPDATE 返回 NotImplemented（rs.rs:290）。rs.rs 模块头（:17-18）与函数注释（:162/:210/:229）三处一致声明。
+**演进记录**：本节曾把转移族整体标为 DEFERRED（ARCH A-8 关联）；随 V11/T12/T13 落地，DEFERRED 声明撤销，A-8 缺口的剩余半边只有跨 stage 通电（E1/E2）。
 
 ### 3.6 语义差异清单（C ↔ Rust 诚实标注）
 
@@ -463,8 +463,8 @@ C 搬迁页表结构（spare 池 + newpt_dyn，§2.1），Rust 搬迁分配器�
 | 备用页池 | reservedqueue_* 全量 | 结构消除；missing_spares → 压力计数 | ARCH A-1 |
 | 阶段切换 | pt_init_done + level | 无 | ARCH A-1 |
 | TLB 刷新 | sys_vmctl(FLUSHTLB) ×2 | arch 层管理，VM 侧无调用 | 架构差异 |
-| swap_proc_slot | 整槽 memcpy + 身份还原 | typestate + ptr::swap + 身份还原 | 同语义 |
-| 动态数据转移 | 全量实现 | DEFERRED（rs.rs） | ARCH A-8 关联 |
+| swap_proc_slot | 整槽 memcpy + 身份还原 | 表层 `swap_slots`（mem::swap + endpoint 还原） | 同语义 |
+| 动态数据转移 | 全量实现 | 已实现（V11/T12/T13：`map_proc_dyn_data`/`share_mappings`） | ARCH A-8（通电半边挂 E1/E2） |
 | 自用页计数 | vm_self_pages | 无 | 结构差异 |
 
 ---
@@ -549,34 +549,31 @@ fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
 
 线性扫描位图，把连续空闲页区间逐一交给回调——**空闲状态 → 区域列表**的枚举器，语义化搬迁的数据源。
 
-### 4.3 `swap_proc_slot`（vmproc_handle.rs:620-705）
+### 4.3 `swap_slots`（vmproc/table.rs，V11/T13）
 
-typestate 版本（§2.6 C 语义的 Rust 表达）：
+§2.6 C 语义的 Rust 表达——**表层实现**（V11/T24 收敛定案，03 文档 §3.6）：
 
 ```rust
-pub(crate) fn swap_proc_slot(&mut self, other: &mut ActiveProc<'_>) {
-    debug_assert_ne!(self.slot(), other.slot(), "...distinct slots");
-    let self_endpoint = self.inner.vm_endpoint;
-    let self_slot = self.inner.vm_slot;
-    let other_endpoint = other.inner.vm_endpoint;
-    let other_slot = other.inner.vm_slot;
-    // SAFETY: 1. distinct raw pointers (borrow checker + debug_assert)
-    //         2. bitwise-swap safe fields (Copy types + BTreeMap moves with struct)
-    //         3. single-threaded VM
-    //         4. no CR3 in-flight (both processes quiescent)
-    unsafe { core::ptr::swap(self.inner as *mut VmProc, other.inner as *mut VmProc); }
-    self.inner.vm_endpoint = self_endpoint;     /* 身份还原 */
-    self.inner.vm_slot = self_slot;
-    other.inner.vm_endpoint = other_endpoint;
-    other.inner.vm_slot = other_slot;
+pub(crate) fn swap_slots(&self, a: UserSlot, b: UserSlot) {
+    // SAFETY: distinct indices; single-threaded event loop.
+    unsafe {
+        let pa = &mut *self.slots[a.get()].get();
+        let pb = &mut *self.slots[b.get()].get();
+        let ep_a = pa.vm_endpoint;
+        let ep_b = pb.vm_endpoint;
+        core::mem::swap(pa, pb);
+        // C utility.c:206-209 — endpoints stay with their slots.
+        pa.vm_endpoint = ep_a;
+        pb.vm_endpoint = ep_b;
+    }
 }
 ```
 
 设计要点：
 
-- **typestate 保证**：`&mut ActiveProc` 只能通过 `VmProcTable` 的 split-borrow API 获得，两个视图不可能指向同一 slot——`debug_assert_ne` 是兜底。
-- **位交换安全性**：`VmProc` 全字段要么 `Copy`（endpoint/slot/flags/ACL/地址边界），要么可随结构移动（`RegionMap` 的 BTreeMap 节点指针相对自身、`PageTable` 无 CR3 绑定且旧主人已 unbound）——SAFETY 注释逐字段论证（vmproc_handle.rs:655-695）。
-- **身份还原**：与 C 的 `src_vmp->vm_endpoint = orig_src_vmproc.vm_endpoint` 逐字对应（§2.6）。
+- **表层归属**：交换天然是表级操作——两侧槽位同处一张全局表，RS 侧调用点（`rs.rs` UPDATE 流程）持有的也是槽号而非 typestate 视图。早先的 typestate 版本（`ActiveProc::swap_proc_slot`，两个 `&mut ActiveProc` + `ptr::swap` + 身份快照）与表层版本并存过一段时间，V11/T24 按"同一语义单一实现"纪律删除副本。
+- **位交换安全性**：`VmProc` 全字段要么 `Copy`（endpoint/slot/flags/ACL/地址边界），要么可随结构移动（`RegionMap` 的 BTreeMap 节点指针相对自身、`PageTable` 无 CR3 绑定且旧主人已 unbound）——该论证由两个版本共享，完整 SAFETY 注释在 `table.rs` 与 02 文档 §4.3。
+- **身份还原**：与 C 的 `src_vmp->vm_endpoint = orig_src_vmproc.vm_endpoint` 逐字对应（§2.6）。身份保持测试：`test_swap_slots_preserves_identities`。
 
 ### 4.4 `mark_alloc_failure`（vm_server.rs:396）
 
@@ -592,14 +589,9 @@ pub fn mark_alloc_failure(&mut self) {
 - 主循环的 alloc_cycle 钩子（对应 main.c:118-119）在压力计数 > 0 时获得补充/回收机会——体 DEFERRED 归 24-page-cache（页缓存回收）。
 - 模块头注释（vm_server.rs:53-61）三处一致标注 `[ARCH: A-1]` 结构消除。
 
-### 4.5 LU 支撑面 DEFERRED 声明（rs.rs:17-18 / :210 / :229）
+### 4.5 LU 支撑面落地状态（rs.rs）
 
-```rust
-//! - **PREPARE**: Partially implemented — ... `map_proc_dyn_data` are deferred.   (rs.rs:17)
-//! - **UPDATE**: Partially implemented — ... swap_proc_slot/swap_proc_dyn_data deferred. (rs.rs:18)
-```
-
-`RS_PREPARE` 的 step 5（rs.rs:210）与 `RS_UPDATE` 的 step 6（rs.rs:229）显式 DEFERRED——**fail-closed**（返回 NotImplemented，ARCH A-8），不伪装实现。25-rs-services 覆盖完整服务流程。
+rs.rs 模块头声明 PREPARE 与 UPDATE 均**已实现**（V11/T12/T13）：PREPARE 走 `map_pin_memory` + heap 扩展 + `map_proc_dyn_data`；UPDATE 走 Gateway `sys_update` + `swap_slots` + dyn-data 交换。C 的七步对照与逐步状态见 25 文档 §3.7；RS_UPDATE 的判定细节（含 SUSPEND 语义等价路线）见同篇 §4.4。真实内核流量（trap 层 + SYS_* wrapper）挂 edge E1/E2。
 
 ### 4.6 启动时序接线
 
@@ -631,13 +623,13 @@ C 对照：`pt_init()` 搬迁段（pagetable.c:1311-1345）位于 `init_vm()` �
 | `test_metadata_pa_range` | bitmap_alloc.rs:811 | 旧元数据 PA 范围记录 |
 | `test_metadata_pa_range_default` | bitmap_alloc.rs:822 | 默认 0 范围 |
 | `test_available_regions_init_clears_pa_range` | bitmap_alloc.rs:833 | 重建后 `metadata_pa_range` 清零（搬迁完成标志） |
-| `test_swap_proc_slot_preserves_identities` | vmproc_handle.rs:984 | 交换保留 endpoint/slot（LU 身份不变量） |
+| `test_swap_slots_preserves_identities` | vmproc_handle.rs 测试区 | 表层 `swap_slots`：endpoint 随槽保持 + 记账字段跨槽流动（LU 身份不变量；V11/T24 自 typestate 版迁移） |
 
 ### 5.2 覆盖维度
 
 - **语义化搬迁等价性**：`test_available_regions_init` 断言重建后 `free_pages == free_before` + 分配/释放功能正常。
 - **搬迁完成标志**：重建后 `metadata_pa_range() == (0, 0)`——新分配器无旧元数据要释放。
-- **LU 身份不变量**：`test_swap_proc_slot_preserves_identities` 交换后各槽 endpoint/slot 不变。
+- **LU 身份不变量**：`test_swap_slots_preserves_identities` 交换后各槽 endpoint 不变、记账字段跨槽流动。
 
 ### 5.3 覆盖缺口与诚实标注
 
@@ -660,7 +652,7 @@ C 对照：`pt_init()` 搬迁段（pagetable.c:1311-1345）位于 `init_vm()` �
 05（物理分配器）→ 06（页分配器）→ 07/08（页表结构/操作）→ 09（堆分配器）→ ★10（自举终点）
 ```
 
-搬迁完成后，VM 进入**地址空间数据结构**阶段（11-14）：`vir_region`/`phys_region` 映射、6 类 memtype、区域查找——这些数据结构运行在稳态分配器之上。主循环与分发（15）随后把各服务接线起来；页错误 + CoW（16/17）与 IPC 服务（18-22）消费本阶段的页表/分配能力；跨服务协作（23-26）中，25-rs-services 消费 `swap_proc_slot`（已实现）并承接 `map_proc_dyn_data`/`swap_proc_dyn_data` 的实施（DEFERRED）。
+搬迁完成后，VM 进入**地址空间数据结构**阶段（11-14）：`vir_region`/`phys_region` 映射、6 类 memtype、区域查找——这些数据结构运行在稳态分配器之上。主循环与分发（15）随后把各服务接线起来；页错误 + CoW（16/17）与 IPC 服务（18-22）消费本阶段的页表/分配能力；跨服务协作（23-26）中，25-rs-services 消费本篇的 LU 支撑面（全链已实现，V11/T12/T13）。
 
 ---
 

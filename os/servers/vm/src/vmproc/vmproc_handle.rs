@@ -599,101 +599,6 @@ impl<'a> ActiveProc<'a> {
         Ok(())
     }
 
-    /// Swaps the content of two processes, preserving their endpoint and slot.
-    ///
-    /// Used for live update: old service and new service swap vmproc content,
-    /// old service keeps its endpoint (clients still access via that endpoint),
-    /// but gains new service's memory state (new code, new data).
-    ///
-    /// Corresponds to Minix3's `swap_proc_slot()` in `lib/libmisc/utility.c`.
-    /// The C implementation uses a per-field `memcpy` of `struct vmproc`,
-    /// which is bitwise-equivalent to a `core::ptr::swap` because `vmproc`
-    /// has no self-referential pointers or heap-owned members.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let mut old_service = table.get_active(old_slot)?;
-    /// let mut new_service = table.get_active(new_slot)?;
-    /// old_service.swap_proc_slot(&mut new_service);
-    /// // old_service now has new_service's memory, but keeps original endpoint
-    /// ```
-    #[allow(dead_code)] // V10-P2-1 (DEFERRED): live-update path not wired
-    pub(crate) fn swap_proc_slot(&mut self, other: &mut ActiveProc<'_>) {
-        // The Rust borrow checker guarantees `&mut self` and `&mut other`
-        // cannot alias a single `VmProc`. The typestate system further
-        // requires that two ActiveProc views cannot reference the same slot
-        // (the table's split-borrow API only yields one view per slot).
-        // Belt-and-suspenders debug assertion catches misuse early.
-        debug_assert_ne!(
-            self.slot(), other.slot(),
-            "swap_proc_slot: self and other must reference distinct slots"
-        );
-
-        // Snapshot the four fields whose identity must be preserved across
-        // the swap (endpoint + slot for each side). All other fields will
-        // be exchanged as part of the bitwise swap.
-        let self_endpoint = self.inner.vm_endpoint;
-        let self_slot = self.inner.vm_slot;
-        let other_endpoint = other.inner.vm_endpoint;
-        let other_slot = other.inner.vm_slot;
-
-        // SAFETY: `core::ptr::swap` exchanges the bitwise contents of two
-        // distinct `VmProc` slots in the global process table. Safety
-        // rests on four invariants:
-        //
-        // 1. **Distinct raw pointers** — `self.inner` and `other.inner`
-        //    point to distinct slots in the static `VM_PROC_TABLE` array.
-        //    The borrow checker (`&mut self` and `&mut other`) plus the
-        //    debug_assert above forbid aliasing.
-        //
-        // 2. **Bitwise swap safety** — every field of `VmProc` is safe
-        //    to exchange by raw bit copy:
-        //      - `vm_slot: UserSlot`, `vm_endpoint: Endpoint`,
-        //        `vm_flags: VmFlags`, `vm_acl: AclState`,
-        //        `vm_region_top / vm_total / vm_total_max: VirBytes`,
-        //        `vm_*_page_fault: u64` — all are `Copy` types.
-        //      - `vm_boot: Option<BootImage>` — `BootImage` is `Copy`
-        //        per minix-types definition.
-        //      - `vm_pt: MaybeUninit<PageTable>` — `PageTable` is a
-        //        stack-allocated value with no CR3 binding at this
-        //        point (the kernel has not yet loaded it; the previous
-        //        owner has been unbound via typestate transitions). No
-        //        heap pointers are invalidated by a bitwise move.
-        //      - `vm_regions: MaybeUninit<RegionMap>` — `RegionMap` is
-        //        a `BTreeMap<VirBytes, VirRegion>`; BTreeMap nodes are
-        //        heap-owned but their internal pointers are relative
-        //        to the `BTreeMap` value itself, so they move with
-        //        the containing struct.
-        //      - `vm_pt_initialized` / `vm_regions_initialized: bool` —
-        //        trivially `Copy`.
-        //
-        // 3. **No concurrent access** — VM is single-threaded
-        //    (documented in `lib.rs` module-level header).
-        //
-        // 4. **No hardware in-flight** — neither process's page table
-        //    is loaded in CR3 at this point. Live update requires the
-        //    caller to ensure both processes are quiescent before
-        //    invoking swap.
-        //
-        // Minix3 reference: `swap_proc_slot()` in `lib/libmisc/utility.c`,
-        // which uses `memcpy` to exchange fields; semantically equivalent
-        // because `struct vmproc` has the same ownership profile as
-        // our `VmProc` (no self-referential pointers).
-        // SAFETY: See reasoning above — both pointers are valid, properly aligned,
-        // no aliasing, no active CR3, single-threaded VM, no self-referential pointers.
-        unsafe {
-            core::ptr::swap(self.inner as *mut VmProc, other.inner as *mut VmProc);
-        }
-
-        // Restore endpoint/slot so each typestate view's identity matches
-        // its original table position. This is the *purpose* of
-        // `swap_proc_slot`: the old service keeps its endpoint (clients
-        // still route to it) but gains the new service's memory state.
-        self.inner.vm_endpoint = self_endpoint;
-        self.inner.vm_slot = self_slot;
-        other.inner.vm_endpoint = other_endpoint;
-        other.inner.vm_slot = other_slot;
-    }
 }
 
 /// Exiting process typestate view.
@@ -982,50 +887,41 @@ mod tests {
         assert_eq!(empty.slot(), slot);
     }
 
-    // ── (2026-06-14) — swap_proc_slot SAFETY coverage ──
+    // ── swap_slots (C utility.c:188-216, table-level, V11/T13) ──
     //
-    // `swap_proc_slot` is the load-bearing primitive for live update:
-    // it exchanges the contents of two VmProc slots while preserving
-    // their slot/endpoint identity. This test verifies:
-    // 1. Endpoint/slot identity is preserved across the swap.
+    // `VmProcTable::swap_slots` exchanges the contents of two VmProc slots
+    // while endpoints stay with their slots. This test verifies:
+    // 1. Endpoint identity is preserved per slot across the swap.
     // 2. Non-identity fields (vm_total) actually flow across the swap.
-    //
-    // The `debug_assert_ne!(self.slot(), other.slot())` guard inside
-    // `swap_proc_slot` is defensive — the public typestate API
-    // (`VmProcTable::get_active`) returns at most one `&mut VmProc`
-    // per slot, so the Rust borrow checker already prevents aliasing
-    // at compile time. The debug_assert catches misuse only if a
-    // future caller manually constructs aliased `&mut ActiveProc`
-    // (e.g., via `&mut *ptr` casts). Such a misuse is fundamentally
-    // UB in Rust, so we cannot write a test for it without invoking
-    // UB itself; the guard is therefore not testable from safe code.
 
     #[test]
-    fn test_swap_proc_slot_preserves_identities() {
-        let mut a = get_active_vmproc(UserSlot::new(20));
-        let mut b = get_active_vmproc(UserSlot::new(21));
+    fn test_swap_slots_preserves_identities() {
+        let table = VmProcTable::get_global();
+        let (slot_a, slot_b) = (UserSlot::new(20), UserSlot::new(21));
+        unsafe { table.reset_slot(slot_a); }
+        unsafe { table.reset_slot(slot_b); }
+        let ep_a = Endpoint::from_generation_slot(1, 20);
+        let ep_b = Endpoint::from_generation_slot(1, 21);
+        for (slot, ep) in [(slot_a, ep_a), (slot_b, ep_b)] {
+            let empty = table.get_empty(slot).unwrap();
+            let mut active = empty.activate(ep);
+            active.init_regions();
+        }
 
-        // Snapshot the identities that must be preserved.
-        let ep_a = a.endpoint();
-        let ep_b = b.endpoint();
-        let slot_a = a.slot();
-        let slot_b = b.slot();
+        // Make B's non-identity state distinguishable so we can verify
+        // it actually flows to A during the swap.
+        table.get_active(slot_b).unwrap().add_total(VirBytes(4096));
+        let b_total_before_swap = table.get_active(slot_b).unwrap().total().0;
 
-        // Make b's non-identity state distinguishable so we can verify
-        // it actually flows to a during the swap.
-        b.add_total(VirBytes(4096));
-        let b_total_before_swap = b.total().0;
+        table.swap_slots(slot_a, slot_b);
 
-        // Swap
-        a.swap_proc_slot(&mut b);
+        // Identities preserved: endpoints stay with their slots.
+        let a = table.get_active(slot_a).unwrap();
+        let b = table.get_active(slot_b).unwrap();
+        assert_eq!(a.endpoint(), ep_a, "slot A keeps its endpoint");
+        assert_eq!(b.endpoint(), ep_b, "slot B keeps its endpoint");
 
-        // Identities preserved
-        assert_eq!(a.endpoint(), ep_a, "A's endpoint must be preserved");
-        assert_eq!(a.slot(), slot_a, "A's slot must be preserved");
-        assert_eq!(b.endpoint(), ep_b, "B's endpoint must be preserved");
-        assert_eq!(b.slot(), slot_b, "B's slot must be preserved");
-
-        // Non-identity state swapped: A now has B's total.
+        // Non-identity state swapped: A now carries B's accounting.
         assert_eq!(
             a.total().0, b_total_before_swap,
             "A now has B's memory accounting state"

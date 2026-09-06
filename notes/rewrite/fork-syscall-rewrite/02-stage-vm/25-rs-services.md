@@ -416,21 +416,21 @@ C 的 5 步在 Rust 中分步落地（rs.rs:168-248）：
 
 **设计立场**：分步实现中每一步单独正确；由于 UPDATE fail-closed（`UpdateNotImplemented`，ENOSYS），部分成功的 PREPARE 不可能导致错误的 LU 切换——RS 的 LU 流程会在 UPDATE 处停止。
 
-### 3.7 UPDATE 验证面完成 + 切换 DEFERRED（D6）
+### 3.7 UPDATE 七步全链落地（D6，V11/T13；真实内核流量挂 edge E2）
 
-C 的 7 步中 Rust 实现 1-2（rs.rs:285-325），3-7 DEFERRED：
+C 的 7 步全部有 Rust 对应（rs.rs `handle_rs_update`）：
 
 | 步骤 | C | Rust | 状态 |
 |------|---|------|------|
 | 1 | 验证端点 | `table.vm_isokendpt` | ✅ |
 | 2 | 非回滚非 NOMMAP + 目标带 PREALLOC_MAP → ENOSYS | `RsUpdateFlags::from_bits_truncate` + 区域扫描 | ✅ |
-| 3 | sys_update（内核切 endpoint） | **DEFERRED**（依赖 IpcTransport/`SYS_UPDATE`） | ❌ |
-| 4 | swap_proc_slot | **DEFERRED**（typestate 视图存在 vmproc_handle.rs:629，缺 LU 编排） | ❌ |
-| 5 | swap_proc_dyn_data | **DEFERRED**（10 篇机制未落地） | ❌ |
-| 6 | pt_bind | **DEFERRED** | ❌ |
-| 7 | 手动回复 + SUSPEND | **DEFERRED**（依赖真实 IPC 发送面） | ❌ |
+| 3 | sys_update（内核切 endpoint） | `Gateway.sys_update`（wire：M1 m1i1=src/m1i2=dst/m1i3=ROLLBACK 位；kernel `dispatch_update` 已真实，pre-E2 trap 桩答 -EIO → `UpdateKernelFailed`） | ✅（通电→E2） |
+| 4 | swap_proc_slot | `VmProcTable::swap_slots`（表级交换 + endpoint 归还各自槽；typestate 副本 V11/T24 删除，03 文档 §3.6） | ✅ |
+| 5 | swap_proc_dyn_data | `share_mappings`（dst 为 VM 的就地共享）+ `map_proc_dyn_data`（非 VM/回滚方向的 CoW 转移，V11/T12） | ✅ |
+| 6 | pt_bind | **判定闭合（偏差登记）**：kernel `sys_update` 已切调度身份，页表存在槽内随交换走，VM 无需重绑（Fix #42 判定记录） | ✅（等价） |
+| 7 | 手动回复 + SUSPEND | 语义等价路线：handler 返回 `RsUpdateResult::Ok` → dispatcher 回 `VmReply::Ok`（单次回复）。C 的"手动 ipc_send OK + 返回 SUSPEND 抑制主循环二次回复"（rs.c:201-210）在 Rust 折叠为一条主循环回复路径；`RsUpdateResult` 无 Suspend 变体（V11/T24 删除骨架——若存在反而会丢掉 C 会发的那条回复） | ✅（等价） |
 
-**设计理由**：第 1-2 步是纯验证（无副作用），提前实现让调用方在真正的 LU 落地前就能得到正确的 EINVAL/ENOSYS 反馈；第 3-7 步整体是 A-8 缺口（§4.8）。
+**设计理由**：第 1-2 步是纯验证（无副作用），提前实现让调用方在真正的 LU 落地前就能得到正确的 EINVAL/ENOSYS 反馈；第 3-7 步已随 V11/T13 落地，`RsError::UpdateKernelFailed` 保留内核原始 errno 供审计（经 VmError 边界坍缩为 EIO 的保真缺口登记于 02 todo §16.1 G-V12-4）。
 
 ### 3.8 MEMCTL 委托 brk/mmap（D7）
 
@@ -522,15 +522,19 @@ Ok(())
 
 `map_pin_memory` 的"先收集快照再处理"设计（region/mod.rs:128-153）：`handle_memory_once` 需要 `&mut RegionMap`，不能持有迭代器同时修改——与 fork.rs 的 `parent.regions().iter().collect()` 同构（18 篇 §4.3）。
 
-### 4.4 handle_rs_update（rs.rs:285-325）
+### 4.4 handle_rs_update（rs.rs）
 
 ```
-1. 验证 src/dst endpoint
+1. 验证 src/dst endpoint                    // vm_isokendpt → ProcessNotFound
 2. flags = RsUpdateFlags::from_bits_truncate(flags)
    if !ROLLBACK && !NOMMAP:
        目标区域含 PREALLOC_MAP → PreallocMapConflict（ENOSYS）
-3-7. (DEFERRED) sys_update + swap_proc_slot + swap_proc_dyn_data + pt_bind + 手动回复 —— A-8
-   → Err(RsError::UpdateNotImplemented)  // fail-closed
+3. Gateway.sys_update(src, dst, ROLLBACK?0x080:0)
+   → Err(Kernel(code)) → UpdateKernelFailed(code)   // pre-E2 trap 桩答 -EIO
+4. table.swap_slots(src_slot, dst_slot) + set_region_parent ×2
+5. dst 为 VM → share_mappings；否则（非回滚非 NOMMAP）→ map_proc_dyn_data 反向 CoW
+6. pt_bind：无对应物（kernel sys_update 已切身份，页表随槽走，Fix #42 偏差登记）
+7. → Ok(RsUpdateResult::Ok) → VmReply::Ok（单次回复，等价 C 手动回复+SUSPEND）
 ```
 
 ### 4.5 handle_rs_memctl（rs.rs:339-459）

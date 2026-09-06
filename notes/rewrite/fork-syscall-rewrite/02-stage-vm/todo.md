@@ -1339,6 +1339,14 @@ Coverage Summary for vm:
 - **Verified**: `cargo test -p minix-vm --lib` → **472 passed / 0 failed**（+1：flags 测试 2 → 3）；segment_tree **489** / buddy **472**；`cargo clippy -p minix-vm --lib` 对 `servers/vm` 代码 **0 警告**（minix-sys/arch 的存量警告属并行会话/edge 域，不在本轮范围）；`rg "UpdateNotImplemented" os/servers/vm/src` → 0
 - **Docs**: 模块头与 `RsUpdateResult` 的过时 pin 注释归 T24 清理批次（Fix #44）；G-V12-4（errno 坍缩保真缺口）随本条登记于 §16.1
 
+### ✅ Fix #44: T24 — 残留标注清理 + parity/死代码判定批次 + 五篇文档同步
+
+- **残留标注清理（已闭环条目的失真陈述）**：`rs.rs`（模块头 PREPARE/UPDATE 状态、`handle_rs_update` 文档七步状态）、`fork.rs`（两处 "sys_fork is a stub"——gateway 已接线且 msgaddr 是 fork.c:90 的第 5 出参而非返回值）、`vm_server.rs`（:917 VmReplyForIpc 将来时改现在时、Suspend 空臂注释、init 步序表 `__minix_init`/exec_bootproc 两行、`init_boot_procs` 文档——exec+free_mem 已落地 V11/T14，栈帧挂 E-BOOTFRAME）、`ipc/transport.rs`（`is_from_kernel` "DEAD until kernel IPC core" 失真——receive 已填真值；`IpcStatus` 结构头；`Kernel(i32)` 的多余 allow）、`sanity.rs`（`RefcountMismatch` 理由改真实）、`query.rs`/`exit.rs`（errno 映射面变体的措辞统一为 Fix #27 判定语言）
+- **死代码删除（同一语义第二份实现）**：`vmproc/vmproc_handle.rs` 的 `ActiveProc::swap_proc_slot`（~100 行 unsafe ptr::swap + 类型态视图）——T13 的生产路径走的是表级 `table.swap_slots`，typestate 副本零生产调用；其身份保持测试迁移为表级 `test_swap_slots_preserves_identities`（新增 `init_regions` 真实搭建 + 记账字段跨槽流动断言）。`acl.rs::acl_clear` 方法删除——机制折叠进 `VmProc::clear()`（vmproc.rs:203 自证 C 映射），删除其恒真断言测试 `test_acl_clear`
+- **判定与语义精确化**：`RsUpdateResult::Suspend` 变体删除（含 dispatcher 死臂）——执行中曾据 "C 不 suspend" 写判定，**复核 C 源后自我纠正**：rs.c:201-210 的 do_rs_update 手动 ipc_send OK（含 src/dst endpoint 对调）后 `return SUSPEND` 仅为抑制主循环二次回复；Rust 折叠为单次主循环回复路径，可观察行为等价，而 Rust 侧 Suspend 变体若被使用反而会丢掉 C 会发的那条回复。`query.rs` getrusage children 路径经核对已有完整 C parity 注释（utility.c:455-461），无需改动
+- **Verified**: 三矩阵 **471 / 488 / 471 passed**（-1 为删除的恒真 acl_clear 测试）；clippy 默认与 all-features 对 `servers/vm` 均 **0 警告**；`rg "swap_proc_slot" os/servers/vm/src` 仅剩 C 映射注释；`rg "acl_clear" os/servers/vm/src` 仅剩 VmProc::clear 的 C 映射注释；`rg "RsUpdateResult::Suspend" os/servers/vm/src` → 0
+- **Docs**: 五篇同步——`03-vmproc-table.md`（§2.6 实现归属、§3.6 D6 判定反转定案+演进记录、模块头、测试行）、`02-vmproc-struct.md`（ActiveProc 方法清单、§5.3 测试清单）、`04-acl.md`（§3.4 D4 acl_clear 折叠说明）、`10-vm-relocation.md`（§3.5 D5 全链落地+演进记录、§3.6 两行、§4.3 整节重写为表级实现、§4.5 DEFERRED 声明撤销、模块头、§1.9、测试行、结尾导览）、`25-rs-services.md`（§3.7 七步表翻转为落地状态、§4.4 流程块重写）——T12/T13 落地时遗留的文档滞后（Fix #40 预告"随下批文档刷新"）在本批一并清偿
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。

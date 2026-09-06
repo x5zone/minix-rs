@@ -48,8 +48,8 @@ pub(crate) enum QueryError {
     ProcessNotFound,
     NotMapped,
     NotSupported,
-    // V10-P2-1 (DEFERRED): no constructor yet — kept for the errno-mapping
-    // surface (V10-P2-3) and future query kinds.
+    // Judgment (V11/T24): no constructor today — kept for the exhaustive
+    // errno-mapping surface (V10-P2-3 closure) and future query kinds.
     #[allow(dead_code)]
     InvalidQuery,
 }

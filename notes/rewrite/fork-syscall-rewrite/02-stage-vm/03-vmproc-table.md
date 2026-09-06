@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 1 — 启动入口与进程模型（进程表锚点）
 > **源码**: `minix3/minix/servers/vm/glo.h:17-20`（表定义）；`minix3/minix/servers/vm/utility.c:84-94`（`vm_isokendpt`）、`utility.c:186-219`（`swap_proc_slot`）；`minix3/minix/servers/vm/main.c:131/457-462`（主循环验证 + 表初始化）；`minix3/minix/include/minix/endpoint.h:45-69`（endpoint 编码）
-> **Rust 模块**: `os/servers/vm/src/vmproc/table.rs`（进程表）+ `os/servers/vm/src/vmproc/vmproc_handle.rs:620`（`swap_proc_slot`，02 文档 §4.3）
+> **Rust 模块**: `os/servers/vm/src/vmproc/table.rs`（进程表 + `swap_slots` 表级交换，V11/T13）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md`（PCB 结构与状态机）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`
 > **说明**: 进程表 `vmproc[VMP_NR]` 的集合级语义：表如何初始化、slot 如何分配/查找/遍历、`vm_isokendpt` 如何把 endpoint 翻译成槽号、`VMP_EXECTMP` 保留槽的诚实定位。**不覆盖**：`struct vmproc` 的字段细节与 typestate 状态机（02）、ACL（04）、页表（07/08）、fork 全流程（18）、RS Live Update 流程（25）。
 
@@ -211,7 +211,7 @@ int swap_proc_slot(struct vmproc *src_vmp, struct vmproc *dst_vmp)
 
 语义：**交换两个槽的整块 `struct vmproc` 内容，但保留各自的 `vm_endpoint` 与 `vm_slot` 身份**。用途是 Live Update：旧服务与新服务互换内存状态（页表、区域、统计），但旧服务继续以原 endpoint 服务客户端。调用点：`main.c:707`（`sef_cb_init_lu_restart`）与 `rs.c:190`（`RS_UPDATE` 流程）。
 
-本文档只做表级定位：**`swap_proc_slot` 的完整 LU 流程归 `25-rs-services.md`**。Rust 的实现落在 typestate 层——`ActiveProc::swap_proc_slot`（`vmproc_handle.rs:620-695`，02 文档 §4.3），利用两个 `&mut ActiveProc` 视图 + `ptr::swap` + 身份快照恢复，语义与 C 一致（交换后两侧 endpoint/slot 不变）。
+本文档只做表级定位：**`swap_proc_slot` 的完整 LU 流程归 `25-rs-services.md`**。Rust 的实现落在表层——`VmProcTable::swap_slots`（`table.rs`，V11/T13 随 RS_UPDATE 落地）：在两个槽的 `UnsafeCell` 裸指针上 `core::mem::swap`，随后把各自的 endpoint 写回，语义与 C 一致（交换后两侧 endpoint/slot 不变）。早先的 typestate 版本（`ActiveProc::swap_proc_slot`）是同一语义的第二份实现，V11/T24 按"单一实现"纪律删除，身份保持测试迁移为表层的 `test_swap_slots_preserves_identities`（§3.6）。
 
 ### 2.7 fork 子槽边界（fork.c:46-48）
 
@@ -266,12 +266,12 @@ fork 的子进程槽由 **PM 指定**（消息带 `VMF_SLOTNO`），VM 侧校验
 - **理由**: 表管理需要集合级查询；`for_each_active_region` 是对 `ALLREGIONS` 的安全封装（不暴露裸 `&VmProc`，保持 typestate 契约）
 - **行为契约**: `find_free_slot` 是**查询不是分配**——它只返回索引、不持视图，返回后槽可能已被其他操作占用（`alloc_empty_slot` 才是原子分配入口）；`iter` 返回 `&VmProc` 绕过 typestate，故限制为 `pub(super)`（仅 vmproc 模块树内可用），且迭代期间借用整个表，禁止在迭代中调用任何视图操作（文档化限制，draft 素材 §5.3 有完整论证）
 
-### 3.6 D6: swap_proc_slot 归属——typestate 层实现，表层不重复
+### 3.6 D6: swap_proc_slot 归属——表层实现（V11/T24 收敛定案）
 
 - **C**: `swap_proc_slot` 是 utility.c 的表级函数（§2.6）
-- **Rust**: 实现落在 `ActiveProc::swap_proc_slot`（`vmproc_handle.rs:620-695`，02 文档 §4.3）——交换需要两个 `&mut ActiveProc` 视图（表 API 提供 `get_active`），放 typestate 层比表层更自然；表层（table.rs）**不重复实现**
-- **理由**: 避免同一语义两处实现（漂移风险）；`ptr::swap` + 身份快照恢复与 C 的"整结构交换 + 恢复 endpoint/slot"逐位对应
-- **边界声明**: 完整 RS UPDATE / LU restart 流程（`main.c:707`、`rs.c:190` 的调用链）DEFERRED，归 `25-rs-services.md`
+- **Rust**: 实现落在 `VmProcTable::swap_slots`（`table.rs`，V11/T13）——交换天然是表级操作：两侧槽位同处一张全局表，RS 侧调用点（`rs.rs` 的 UPDATE 流程）持有的也是槽号而非 typestate 视图；表层用 `UnsafeCell` 裸指针 + `core::mem::swap` 表达最直接
+- **演进记录**: 早期实现放在 typestate 层（`ActiveProc::swap_proc_slot`，两个 `&mut ActiveProc` 视图 + `ptr::swap` + 身份快照恢复）；T13 落地 RS_UPDATE 时表层另建了 `swap_slots`，形成同一语义两份实现。V11/T24 删除 typestate 副本（其身份保持测试迁移为表层的 `test_swap_slots_preserves_identities`）——D6 原始判据"避免同一语义两处实现（漂移风险）"最终以表层版本胜出
+- **边界声明**: 完整 RS UPDATE / LU restart 流程归 `25-rs-services.md`（RS_UPDATE 的 VM 侧已落地 V11/T13；真实内核流量挂 edge E2）
 
 ---
 
@@ -410,7 +410,7 @@ pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, Endpoi
 | `alloc_empty_slot` 跳过 IN_USE 槽的定向测试（现仅验证"空表分配"） | 预占前几槽后断言返回下一空闲槽 | P2（backlog） |
 | `find_free_slot` 全表扫描/`is_full` 拒绝路径 | 占满 257 槽成本高，建议用 mock 或小表 | P2（backlog） |
 | `RegionSnapshot`/`for_each_active_region`/`increment_region_remaps` 无直接测试 | 跨 `13-region-mapping`/`21-vm-munmap` 消费方覆盖 | P2（backlog） |
-| `swap_proc_slot` 表级测试 | 已由 `vmproc_handle.rs:984 test_swap_proc_slot_preserves_identities` 覆盖（02 文档 §5.3） | ✅ 闭环 |
+| `swap_slots` 表级测试 | `test_swap_slots_preserves_identities`（`vmproc_handle.rs` 测试区，V11/T24 自 typestate 版迁移：endpoint 身份保持 + 记账字段跨槽流动） | ✅ 闭环 |
 
 ---
 

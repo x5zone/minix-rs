@@ -14,8 +14,8 @@
 //! - **MEMCTL (HEAP_PREALLOC)**: Delegates to brk module.
 //! - **MEMCTL (MAP_PREALLOC)**: Delegates to mmap module.
 //! - **MEMCTL (GET_PREALLOC_MAP)**: Queries region with PREALLOC_MAP flag.
-//! - **PREPARE**: Partially implemented — validates endpoints + pins both processes' memory via `map_pin_memory` + extends the destination heap to match the source via `brk`. `map_proc_dyn_data` (CoW-transfer of mmap regions) is deferred.
-//! - **UPDATE**: Partially implemented — validates endpoints + checks RsUpdateFlags (ROLLBACK/NOMMAP) + PREALLOC_MAP conflict detection. sys_update/swap_proc_slot/swap_proc_dyn_data deferred.
+//! - **PREPARE**: Implemented — validates endpoints + pins both processes' memory via `map_pin_memory` + extends the destination heap to match the source via `brk` + transfers mmap regions CoW via `map_proc_dyn_data` (V11/T12).
+//! - **UPDATE**: Implemented — validates endpoints + checks RsUpdateFlags (ROLLBACK/NOMMAP) + PREALLOC_MAP conflict detection + kernel `sys_update` via the gateway + slot swap + dyn-data swap (V11/T13). Real kernel traffic waits for edge E2 (pre-E1 the trap stub answers -EIO, surfacing as `UpdateKernelFailed`).
 
 use minix_types::{VirBytes, Endpoint, UserSlot};
 use crate::vmproc::{VmProcTable, EndpointError};
@@ -86,15 +86,14 @@ pub(crate) enum RsMemctlResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // V10-P1-2: live-update scaffolding, see variant comments
 pub(crate) enum RsUpdateResult {
-    // V10-P1-2: live-update scaffolding — `handle_rs_update` currently
-    // always returns `Err(UpdateNotImplemented)` (kernel `sys_update`
-    // pending), so these two variants are unreachable in production. When
-    // live update lands, flip the pinned test
-    // `dispatcher::tests::test_dispatch_rs_update_pins_not_implemented`.
+    // C flow note (rs.c:201-210): `do_rs_update` ipc_send's an OK reply to
+    // the external requester itself (with the src/dst endpoint swap), then
+    // `return SUSPEND` — SUSPEND only suppresses the *second* reply from
+    // the main loop. minix-rs routes that single reply through
+    // `VmReply::Ok` instead, so no Suspend variant exists here: returning
+    // one would drop the reply C does send.
     Ok,
-    Suspend,
 }
 
 // Flags for VM_RS_UPDATE request.
@@ -304,17 +303,14 @@ fn map_proc_dyn_data(
 
 /// Handle VM_RS_UPDATE — execute live update process switch.
 ///
-/// Corresponds to Minix3's `do_rs_update()` (rs.c:150).
-///
-/// # Implementation status
-///
-/// Steps 1-3 (endpoint validation + flag check + PREALLOC_MAP check)
-/// are implemented. Steps 4-7 are deferred:
-///
-/// 4. `sys_update(src_e, dst_e, flags)` — kernel syscall (DEFERRED)
-/// 5. `swap_proc_slot(src_vmp, dst_vmp)` — typestate extension (DEFERRED)
-/// 6. `swap_proc_dyn_data(src_vmp, dst_vmp, flags)` — mmap sharing (DEFERRED)
-/// 7. `pt_bind()` + reply message (DEFERRED)
+/// Corresponds to Minix3's `do_rs_update()` (rs.c:150). Implemented
+/// (V11/T13): endpoint validation, flag check, PREALLOC_MAP check, kernel
+/// `sys_update` via the gateway, `VmProcTable::swap_slots` (C
+/// `swap_proc_slot`, utility.c:188-216), and the dyn-data swap
+/// (`share_mappings` / `map_proc_dyn_data`, C `swap_proc_dyn_data`
+/// utility.c:300-345). Step 7 (`pt_bind`) needs no VM-side counterpart —
+/// the kernel's `sys_update` already switches the scheduling identity and
+/// the page tables travel inside the swapped slots (documented deviation).
 ///
 /// # C source (rs.c:150-213)
 ///

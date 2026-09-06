@@ -29,7 +29,10 @@ use crate::vmproc::VmProcTable;
 
 /// A single refcount mismatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // V10-P2-1 (DEFERRED): see verify_refcounts below
+// Fields are read by tests; the production audit path (V11/T16) reports
+// only `mismatches.len()` today — per-PFN formatting joins when a syslog
+// consumer exists.
+#[allow(dead_code)]
 pub struct RefcountMismatch {
     pub pfn: u32,
     pub expected: u32,
