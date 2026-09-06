@@ -200,10 +200,10 @@ PM_FORK 到达（主循环 dispatch，04）
 | A-6 | **SUSPEND 显式化** | `return SUSPEND` 表示"本次不回复，稍后 reply()"（`main.c:106`） | 异步回复模型：dispatch 返回 `ReplyLater`/`NoReply` 变体 | 04/05 | 已实现（`ReplyIntent` 三变体，dispatcher.rs:45；handler 具体路径归 05/09+） |
 | A-7 | **定时器抽象** | `minix_timer_t` + `set_timer`/`expire_timers`，CLOCK notify 驱动（`alarm.c`、`main.c:65-67`） | 类型化 `Timeout`/`Clock` + 定时器队列（minix-types），到期回调 | 14 | 未实现 |
 | A-8 | **用户态调度协议** | `sched_start/inherit/stop/nice` 经 `_taskcall` 到 SCHED 服务（`schedule.c`、`minix/sched.h`） | sched 客户端模块 + 类型化 `SchedulingRequest` | 16 | 未实现 |
-| A-9 | **进程事件订阅** | `subs[NR_SUBS]` + 串行化 EVENT_CALL 往返（`event.c`） | 事件订阅表（若实现）或显式缺口契约 | 06 | **缺口**：未实现，标注 fail-closed |
+| A-9 | **进程事件订阅** | `subs[NR_SUBS]` + 串行化 EVENT_CALL 往返（`event.c`） | `EventRegistry`（`event.rs`，1000+ 行）+ 主循环接线 | 06 | 已实现（2026-09-06 复核：原"缺口"标注过时；终止分派 exit_restart/restart_sigs 均接线，todo.md Fix #7） |
 | A-10 | **延迟调用机制** | `DELAY_CALL`/`SIGSNDELAY` 内核延迟调用（`signal.c`、kernel `system.c:463`） | 依赖内核支持；Rust 侧 `DelayCall` 状态或显式缺口契约 | 13 | **缺口**：未实现，标注 defer |
 | A-11 | **64 位类型映射** | `pid_t`/`uid_t`/`gid_t`/`clock_t`/`endpoint_t` 平台相关 | `Pid`/`Uid`/`Gid`/`Clock`/`Endpoint`（`minix-types`），`UserSlot` 表达槽位 | 02/03/99 | 已实现 |
-| A-12 | **INIT 收养 / 双监护建模** | `mp_parent`/`mp_tracer` 两个监护指针 + `tracer_died`/`NEW_PARENT`（`forkexit.c:760-795`） | `Guardianship { parent, tracer }` 建模（`mproc/guardianship.rs`） | 09/10/18 | 部分实现 |
+| A-12 | **INIT 收养 / 双监护建模** | `mp_parent`/`mp_tracer` 两个监护指针 + `tracer_died`/`NEW_PARENT`（`forkexit.c:760-795`） | `Guardianship { parent, tracer }` 建模（`mproc/guardianship.rs`）+ `inherit_guardianship` 的 TO_TRACEFORK 条件继承（`fork.rs`，2026-09-06 D-10） | 09/10/18 | 已实现（继承/收养/解除链完备） |
 | A-13 | **进程组/会话语义** | `mp_procgrp` int + pid 相等即会话领导者（`getset.c`、`forkexit.c:exit_proc`） | 类型化 `ProcessGroup`/会话标记（设计决策） | 09/15 | 未实现（设计层） |
 
 ---
@@ -282,6 +282,7 @@ PM_FORK 到达（主循环 dispatch，04）
 | `ENABLE_SYSCALL_STATS` 的 `calls_stats` / `SI_CALL_STATS` | 编译宏可选（`misc.c:64/131-132`、`main.c:35/96`） | 20 标注为 cfg feature（A-7 sanity 模式），WONTFIX 文档化；2026-09-06 features 已声明于 Cargo.toml（todo.md P2-1/Fix #17） |
 | `SPROFILE` 的 `do_sprofile` | `#if SPROFILE`，默认 `ENOSYS`（`profile.c`） | 20 标注，默认 ENOSYS 语义保留 |
 | `uts_val` "COMPATIBILITY BLOCK" | 已废弃 uname 兼容块（`misc.c:33-70`） | 20 标注为兼容层，64 位下重新定义 |
+| `ESCRIPT`（`exec.c:31`） | C 内死代码：`#define ESCRIPT (-2000)`（"#! 脚本的 read_header 返回值"）定义后全源零使用，为 Minix2 时代 PM 自读可执行头的遗迹 | 2026-09-06 登记（todo.md P2-7）：Rust 不实现，行为正确 |
 | 内核侧 `sys_*` 接口实现 | `sys_times/sys_stop/sys_clear/sys_trace/sys_sigsend/...` | 交叉引用 `../01-stage-kernel/`，不在 PM 文档展开 |
 | VM 侧 `vm_fork/vm_willexit/vm_exit/vm_getrusage` 实现 | 调用点在 PM，实现在对端 | 交叉引用 `../02-stage-vm/18-vm-fork.md` 等 |
 | VFS 侧 `VFS_PM_*` 回复处理 | 对端实现 | 交叉引用 `../05-stage-vfs/`（如存在），PM 文档只写 PM 侧状态机 |

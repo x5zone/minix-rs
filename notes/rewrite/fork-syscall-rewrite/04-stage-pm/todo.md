@@ -22,12 +22,12 @@
 | P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位（**✅ 已修复** 2026-09-06，见 §10 Fix #3） |
 | P1 | P1-6 | 入口函数命名约定分裂（`do_*` 改名 `handle_*` 与保留 C 名混用），污染覆盖率工具的可追溯性（**✅ 已修复** 2026-09-06，见 §10 Fix #4） |
 | P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除（**✅ 已修复** 2026-09-06，见 §10 Fix #17） |
-| P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地 |
+| P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地（**✅ 已修复** 2026-09-06，见 §10 Fix #20） |
 | P2 | P2-3 | `minix-types/src/ipc/pm.rs` 的 `PmRequest`/`PmResponse` 是零使用的死代码；PM 调用号单一真值破口 |
 | P2 | P2-4 | `lib.rs` glob re-export 压平命名空间，5 对同名双层模块（`fork`/`mproc::fork` 等）加剧混淆（**✅ 已修复** 2026-09-06，见 §10 Fix #18） |
 | P2 | P2-5 | exit/wait 路径 9 处行为 stub 以散落注释存在，未按模式 60 登记为显式 DEFERRED 契约（**✅ 已修复** 2026-09-06，见 §10 Fix #19） |
 | P2 | P2-6 | 文档 00/99 仍是最小骨架，且 `.design/` 缺这两篇的 outline/outline-review/design 快照（模式 69） |
-| P2 | P2-7 | C 侧死代码 `ESCRIPT`（exec.c:31，定义后零使用）未登记进 plan.md §5.4 排除表 |
+| P2 | P2-7 | C 侧死代码 `ESCRIPT`（exec.c:31，定义后零使用）未登记进 plan.md §5.4 排除表（**✅ 已修复** 2026-09-06，见 §10 Fix #20） |
 | P3 | P3-1 | clippy 约 50 条告警未清理（文档缩进 17、可折叠 if 11、可派生 impl 6 等） |
 | P3 | P3-2 | 无用导入与无用参数（`Lifecycle` 两处、`dispatch_pm_call` 的 `table` 参数已无用） |
 
@@ -205,7 +205,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 
 **建议**：在 Cargo.toml 声明 `[features] syscall_stats = [] sprofile = []`（默认不开，与 C 的默认关闭一致），并在 CI 或本地检查命令中加入 `cargo check -p minix-pm --features syscall_stats,sprofile`，保证被门控代码可编译。这是十分钟级改动，消除一类"看起来有开关、实际是死代码"的虚构性。
 
-### P2-2 plan.md §4 ARCH 表与代码状态失同步
+### P2-2 plan.md §4 ARCH 表与代码状态失同步（✅ 已修复 2026-09-06，见 §10 Fix #20）
 
 **问题**：三处失同步。(a) A-5（`plan.md:199`）说 dispatch_pm_call"47 项已实现"——实际只有 1 个死臂 + 46 个 ENOSYS（§1.1），"已实现"的是枚举与解码，不是分发；(b) A-9（`plan.md:203`）说事件订阅"缺口：未实现，标注 fail-closed"——实际 `event.rs` 已有 1,001 行、24 个测试，且 `do_proceventmask_mut` 已在主循环接线（`init.rs:368-382`），fail-closed 契约已被真实实现取代；(c) A-4 说"部分实现（仅 Fork 变体）"仍然准确，但 Fork 变体本身是零使用死代码（P2-3），"部分实现"名存实亡。
 
@@ -239,7 +239,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 
 **建议**：00（总览）与 99（全局概念）是 22 篇的入口与收尾，plan.md §6.2（`plan.md:329`）已排为最后优先级，维持该排序即可；但建议在改写 00 时顺手把本文件（todo.md）的 P1-1/P1-3 结论纳入"当前实现状态"叙述，避免总览写成后立刻过时。快照按 Step 0.3 流程在下次触碰这两篇的 review 中补齐。
 
-### P2-7 C 死代码 `ESCRIPT` 未登记进排除表
+### P2-7 C 死代码 `ESCRIPT` 未登记进排除表（✅ 已修复 2026-09-06，见 §10 Fix #20）
 
 **问题**：`minix3/minix/servers/pm/exec.c:31` 定义 `#define ESCRIPT (-2000)`（"#! 脚本的 read_header 返回值"），但整个 PM C 源中零使用——它是 Minix2 时代 PM 自读可执行头的遗迹。plan.md §5.4 排除表（`plan.md:278-288`）登记了 `ENABLE_SYSCALL_STATS`、`SPROFILE` 等编译宏，未含此项。Rust 侧没有它，行为正确。
 
@@ -688,3 +688,14 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - `grep -rn "stubbed\|stub " os/servers/pm/src/{exit,wait}.rs | grep -v DEFERRED`：零命中
 
 **Docs**：本文件 §0/标题。
+
+### ✅ Fix #20: P2-2 + P2-7 — plan.md ARCH 表刷新 + ESCRIPT 排除登记（2026-09-06，纯文档轮）
+
+**File(s)**：
+- `plan.md`：§4 ARCH 表 A-5（轮 2 已改）→ 本轮补 A-9（"缺口"→"已实现"+ 复核说明）、A-12（"部分实现"→"已实现"，D-10 的 TO_TRACEFORK 继承补齐后）；§5.4 排除表新增 `ESCRIPT` 行（C 死代码，`exec.c:31` 定义后零使用，模式 78 显式标注）
+
+**Verified**：
+- ARCH 表逐行 grep 复核：A-1~A-3/A-6/A-11 与代码一致（无变化）；A-4（部分实现，E7）/A-7/A-8/A-10/A-13（未实现）维持——各自有真实的未落地依赖
+- `cargo test -p minix-pm`：**341 lib passed**（纯文档轮）
+
+**未做（DEFERRED 论证）**：A-4 的 wire 系统化（E7）、A-7/A-8 的服务端依赖、A-10 的内核 DELAY_CALL、A-13 的设计层决策——各自有登记的依赖，非遗漏。
