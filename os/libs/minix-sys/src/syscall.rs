@@ -225,6 +225,30 @@ pub fn sys_kill(
 /// C: SYS_CLEAR 是内核调用 2（`kernel/src/syscall.rs` `Syscall::Clear`；
 /// C `callnr.h` `SYS_CLEAR`）。
 pub const SYS_CLEAR_CALL: i32 = 2;
+/// C: SYS_ABORT 是内核调用 27（`kernel/src/syscall.rs` `Syscall::Abort`；
+/// C `callnr.h` `SYS_ABORT`）。
+pub const SYS_ABORT_CALL: i32 = 27;
+
+/// 请求内核中止系统（C: libsys `sys_abort`，`sys_abort.c:8-13`）。
+///
+/// `_kernel_call(SYS_ABORT, &m)`：载荷 m1i1 = `how`（`sys/reboot.h` 的
+/// RB_* 位组），无回复载荷——成功时机器直接停机，调用不会返回。
+/// C 的 PM 侧 REBOOT 处理（`main.c:304-312`）对返回值不予检查：abort
+/// 请求发出后 PM 在主循环等待 HARD_STOP 通知，失败也只是继续循环。
+pub fn sys_abort(
+    transport: &impl KernelCallTransport,
+    how: i32,
+) -> i32 {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m1i1 是 SYS_ABORT 的文档化载荷布局
+        //（kernel/src/syscall.rs dispatch_abort 读 m1.m1i1 = how）。
+        let m1 = unsafe { &mut msg.m_u.m_m1 };
+        m1.m1i1 = how;
+    }
+    perform_kernel_call(transport, SYS_ABORT_CALL, &mut msg, |_| {})
+}
+
 
 /// 通知内核回收已退出的进程（C: libsys `sys_clear`，`sys_clear.c:8-14`）。
 ///
@@ -322,6 +346,31 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, SYS_CLEAR_CALL);
         assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 11);
+    }
+
+    #[test]
+    fn test_sys_abort_encodes_how() {
+        // C: libsys sys_abort.c — m1i1 = how（RB_* 位组），SYS_ABORT = 27。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+
+        let r = sys_abort(&canned, 0x0800 | 0x0008); // RB_POWERDOWN
+
+        assert_eq!(r, 0);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, SYS_ABORT_CALL);
+        assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 0x0808);
+    }
+
+    #[test]
+    fn test_sys_abort_failure_passthrough() {
+        // C: main.c:309 — 返回值被忽略，失败时 PM 继续主循环。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-5);
+
+        assert_eq!(sys_abort(&canned, 0x0008), -5);
+        assert_eq!(canned.calls.get(), 1);
     }
 
     #[test]

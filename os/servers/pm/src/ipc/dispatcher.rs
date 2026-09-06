@@ -225,6 +225,7 @@ mod tests {
     impl crate::exit::KernelGateway for NoopKernel {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
     }
     fn msg_with(m_type: i32, source: Endpoint) -> Message {
         let mut m = Message::default();

@@ -561,9 +561,13 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn sys_abort(&mut self) {
-        // [ARCH A-3] 内核中止原语 — 见 01-stage-kernel。
-        let _ = self.abort_flag;
-        unimplemented!("DEFERRED: sys_abort — 见 01-stage-kernel.md")
+        // C: main.c:304-312 — REBOOT 回复特例：`sys_abort(abort_flag)` 后
+        // 返回主循环等待 HARD_STOP 通知。返回值 C 不予检查：abort 成功时
+        // 机器直接停机；失败（pre-E1 为 -EIO）PM 继续循环，不伪造停机状态。
+        // [E6 切片已落地] minix-sys `sys_abort`（edge_todo.md E6）。
+        if let Err(r) = self.kern.sys_abort(self.abort_flag) {
+            let _ = r; // C 同型：忽略返回值，主循环继续
+        }
     }
 }
 
@@ -984,6 +988,7 @@ mod tests {
     impl crate::exit::KernelGateway for NoopKernelGateway {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
     }
 
     #[test]
@@ -1016,6 +1021,30 @@ mod tests {
             svc.set_core_flag(UserSlot::new(2));
         }));
         assert!(result.is_err(), "set_core_flag on Running must panic");
+    }
+
+    #[test]
+    fn test_production_sys_abort_saves_how_to_kernel() {
+        // D-09：REBOOT 回复特例（main.c:304-312）——`sys_abort(abort_flag)`
+        // 经 KernelGateway 发出，abort_flag 即最初 reboot 请求的 how 位组。
+        use crate::ipc::transport::TestIpcTransport;
+
+        struct RecordingKernel { last_how: Option<i32> }
+        impl crate::exit::KernelGateway for RecordingKernel {
+            fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+            fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+            fn sys_abort(&mut self, how: i32) -> Result<(), i32> { self.last_how = Some(how); Ok(()) }
+        }
+
+        let mut table = ProcTable::new();
+        let mut transport = TestIpcTransport::default();
+        let mut events = crate::event::EventRegistry::new();
+        let mut kern = RecordingKernel { last_how: None };
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0x0808);
+
+        svc.sys_abort();
+
+        assert_eq!(kern.last_how, Some(0x0808), "abort_flag (how) must reach the kernel gateway");
     }
 
     #[test]

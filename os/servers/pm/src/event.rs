@@ -560,6 +560,7 @@ mod tests {
     impl crate::exit::KernelGateway for MockKernelGateway {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
     }
     use super::*;
     use crate::mproc::{Lifecycle, ProcTable};

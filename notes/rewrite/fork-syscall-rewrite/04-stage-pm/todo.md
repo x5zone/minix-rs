@@ -273,7 +273,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-06 | ~~`ipc/vfs.rs:407`~~ | ~~`exit_proc` 的 VFS 退出通知 `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #8：委托 09 的 `crate::exit::exit_proc` 二阶段退出，`main.c:381` FORK 失败路径） | 09-pm-exit.md | ~~接线 09 退出链时~~ 已达成（+1 委托测试） |
 | D-07 | ~~`ipc/vfs.rs:413`~~ | ~~`set_core_flag`（WCOREFLAG）`unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #9：WCOREFLAG 置入 `Lifecycle::Exiting.sig_status` bit7，u8 域位运算；wait4 组合改无符号字节） | 09-pm-exit.md | ~~同上~~ 已达成 |
 | D-08 | ~~`ipc/vfs.rs:469`~~ | ~~`exec_restart` `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #10：ExecServices 生产端口 + ExecRestartServices supertrait 收敛；sys_exec 内核调用返回 -ENOSYS 由 exec_restart 的 C 同型 panic 承接） | 17-exec.md | ~~exec 重启路径接线~~ 逻辑达成（真实 sys_exec 挂 E6） |
-| D-09 | `ipc/vfs.rs:488` | `sys_abort` `unimplemented!()` | 01-stage-kernel | 内核 sys_abort |
+| D-09 | ~~`ipc/vfs.rs:488`~~ | ~~`sys_abort` `unimplemented!()`~~ **✅ 已修复**（2026-09-07，Fix #25：`KernelGateway::sys_abort` + minix-sys `sys_abort` wrapper（E6 sys_abort 切片）+ PmServices 端口接通（REBOOT 特例 `main.c:304-312`，C 忽略返回值语义保留）；真实通电挂 E1） | 01-stage-kernel | ~~内核 sys_abort~~ wrapper 达成（通电挂 E1） |
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
 | D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
@@ -774,3 +774,22 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`09-pm-exit.md` §1.3 后新增"内核出口落地"段；`edge_todo.md` E6 进度注（sys_clear 切片）；本文件 §6 D-18 行。
 
 **未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、两调用点语义均已在 stage 内闭环；`exit.rs` 的 D-13（sys_kill）与 D-18（sys_clear）现已共用同一网关通道。
+
+### ✅ Fix #25: D-09 — `sys_abort` 端口接真实内核通道（2026-09-07）
+
+**File(s)**：
+- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_abort` wrapper + `SYS_ABORT_CALL = 27` 常量，载荷 m1i1 = how（RB_* 位组）；+2 wire/负 errno 测试）
+- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `sys_abort`；`TrapKernelGateway` 实现委托 minix-sys）
+- `os/servers/pm/src/ipc/vfs.rs`（`PmServices::sys_abort` 从 `unimplemented!()` 改为经网关真实发送；+1 端口级测试断言 abort_flag 到达网关；4 个网关 mock 补 `sys_abort`）
+- `05-vfs-interaction.md`（D4 端口落地状态刷新）
+
+**Before/After**：C `main.c:304-312`：REBOOT 回复特例发 `sys_abort(abort_flag)` 后返回主循环等待 HARD_STOP 通知，**返回值 C 不予检查**——abort 成功时机器直接停机；失败（pre-E1 `-EIO`）PM 继续循环，不伪造停机状态。Rust 修复前该端口是 `unimplemented!()`：任何 reboot 流程测试都无法走通。设计说明：`abort_flag` 是 PmServices 自有字段（最初 reboot 请求的 how 位组，`do_reboot` 写入），端口内直接读取 self.abort_flag 传递——不新增参数（trait 签名 `sys_abort(&mut self)` 不变，三个既有测试实现零改动之外仅补方法体）。
+
+**Verified**：
+- `cargo test -p minix-pm`：**343 lib + 7 integration passed**（+1 端口级测试：abort_flag=0x808 到达网关；vfs 既有 reboot 状态机测试（RecordingServices 录 SysAbort）无回归）
+- `cargo test -p minix-sys`：118 → **120 passed**（+2 sys_abort wire 测试）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
+
+**Docs**：`05-vfs-interaction.md` D4 端口落地状态全面刷新（06/09/13 已接线、sys_abort 落地、余 sched_start_user/sys_exec 占位）；`edge_todo.md` E6 进度注；本文件 §6 D-09 行。
+
+**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、端口语义均已在 stage 内闭环。

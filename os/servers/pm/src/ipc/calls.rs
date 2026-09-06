@@ -17,7 +17,6 @@
 //! 值即单一事实源；将来内核侧 libc 需要调用号时再上移 minix-types。
 
 use crate::event::EventRegistry;
-use minix_sys::syscall::DirectKernelCallTransport;
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
 use minix_types::{ENOSYS, Message, PmError, ProcEventMask, UserSlot, VirBytes};
@@ -324,6 +323,7 @@ mod tests {
     impl crate::exit::KernelGateway for NoopKernel {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
     }
         fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {
         let mut table = ProcTable::new();

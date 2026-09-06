@@ -32,6 +32,11 @@ pub trait KernelGateway {
     /// `_kernel_call(SYS_CLEAR, &m)`，载荷 m1i1 = 目标 endpoint，无回复
     /// 载荷；返回值 = 内核回复（OK 或负 errno）。
     fn sys_clear(&mut self, ep: Endpoint) -> Result<(), i32>;
+
+    /// C: `sys_abort(how)`（libsys `sys_abort.c:8-13`）——
+    /// `_kernel_call(SYS_ABORT, &m)`，载荷 m1i1 = `how`（RB_* 位组）。
+    /// 成功时机器直接停机；失败返回负 errno（C 调用方忽略）。
+    fn sys_abort(&mut self, how: i32) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -57,6 +62,15 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
 
     fn sys_clear(&mut self, ep: Endpoint) -> Result<(), i32> {
         let r = minix_sys::syscall::sys_clear(&self.transport, ep.0);
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn sys_abort(&mut self, how: i32) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_abort(&self.transport, how);
         if r < 0 {
             Err(r)
         } else {
@@ -610,6 +624,9 @@ mod tests {
             Ok(())
         }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> {
+            Ok(())
+        }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> {
             Ok(())
         }
     }
