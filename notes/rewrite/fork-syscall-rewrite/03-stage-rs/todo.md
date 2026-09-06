@@ -2364,6 +2364,22 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - **Verified**：`cargo test -p minix-rs` = **261 passed**；`tools/check-rs-unwired.sh`
   PASS（剩余 1 标记带契约）；clippy/fmt 零输出。文档同步：06 §2.1a。
 
+### ✅ Fix #59 — 轮19（SEF 回调接线：init_restart/init_lu 落地 + init_response/lu_response edge 定界）
+- **File**：`os/servers/rs/src/lib.rs`（RsServer 四个 SEF 回调主体）、文档 18 §2.9b
+- **After**：
+  - `init_restart`（main.c:499-544）：RS 槽 + old_endpoint 槽解析 → 更新中
+    `end_update(ERESTART, RS_REPLY)` → `update_service(RS_DONTSWAP)` →
+    `init_service(SEF_INIT_RESTART)`（RS 自初始化不发送）→ `setalarm(RS_DELTA_T)`
+    重挂（panic 语义保留）。
+  - `init_lu`（main.c:549-586）：`update_service(RS_DONTSWAP)` →
+    `init_service(SEF_INIT_LU)`。
+  - `init_response`/`lu_response`：决策面全就绪（`do_init_ready` 四参数 +
+    `do_upd_ready` + normalize 包装 + pending 持有），**edge = 消息载荷解码**——
+    `m_rs_init.result`/`m_rs_update.result` 位于 union 臂，安全提取归 19 的
+    receive 包装（R25 同源）。保持 ENOSYS + 落地形态注释。
+- **Verified**：`cargo test -p minix-rs` = **261 passed**；clippy/fmt 零输出；
+  T7 PASS（剩余 1 标记 = boot.rs:774 自升级，见 edge 清单）。文档同步：18 §2.9b。
+
 ### ✅ Fix #58 — 轮18（get_work receive 经 KernelApi 注入，R34.18-20 部分闭合）
 - **File**：`os/servers/rs/src/boot.rs`（KernelApi::receive 三元组缝 + 生产 ENOSYS）、
   `testutil.rs`（mock receive ENOSYS——罐装消息由 19 mock 面提供）、`lib.rs`

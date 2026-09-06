@@ -138,6 +138,15 @@ if ((replica_rp->r_priv.s_flags & rs_flags) == rs_flags) {
 
 ---
 
+## 2.9b init_restart/init_lu 编排落地（Fix #59，2026-09-06，todo §18）
+
+`RsServer::init_restart`/`init_lu`（lib.rs）按 main.c:499-544/:549-586 落地：
+RS 槽 + `info.old_endpoint` 槽解析 → 更新中 `end_update(ERESTART, RS_REPLY)`（init_restart）
+→ `update_service(RS_DONTSWAP)` → `init_service(SEF_INIT_RESTART/LU)`（RS 自初始化不发送，
+utility.c:29-31）→ `sys_setalarm(RS_DELTA_T)` 重挂（init_restart，main.c:540-541，panic
+语义保留）。alarm 重挂与 LU 后回调重绑（main.c:558）——重绑由 A3 的 restart_cb 形态在
+18 文档落地时定案；`kernel`/`read_exec` 缝参数在 start_update 保留位（Fix #55 注记）。
+
 ## 3. Rust 设计决策
 
 ### 3.1 self_lifecycle.rs 纯切片

@@ -257,30 +257,132 @@ impl SefCallbacks for RsServer {
         Ok(0) // C: sef_startup() returns OK after the fresh init.
     }
 
-    /// C: `sef_cb_init_restart` — main.c:140. DEFERRED until 18 lands; fail
-    /// closed (18-rs-self-lifecycle.md).
-    fn init_restart(&mut self, _init_type: SefInitType, _info: &SefInitInfo) -> Result<i32, Errno> {
-        Err(Errno::ENOSYS)
+    /// C: `sef_cb_init_restart` — main.c:499-544: the restart-stateful
+    /// default transfer, `end_update(ERESTART, RS_REPLY)` while updating,
+    /// `update_service(RS_DONTSWAP)` into the replica, `init_service`
+    /// (RS self-init sends nothing — utility.c:29-31), and the
+    /// `sys_setalarm(RS_DELTA_T)` re-arm (main.c:540-541, panic on failure
+    /// kept as `expect`).
+    fn init_restart(&mut self, _init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno> {
+        let kernel = self.kernel.as_mut();
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let old_rs = state
+            .table
+            .endpoint_slot(Endpoint::RS)
+            .ok_or(Errno::ENOSYS)?;
+        let new_rs = state
+            .table
+            .endpoint_slot(Endpoint(info.old_endpoint))
+            .ok_or(Errno::ENOSYS)?;
+
+        // If an update was in progress, end it (manager.c:527-529).
+        if state.table.get(old_rs).flags.contains(RFlags::UPDATING) {
+            let ticks = kernel.get_ticks().unwrap_or(0);
+            state.update.end_update(
+                &mut state.table,
+                kernel,
+                minix_types::ERESTART,
+                1,
+                ticks,
+                &mut |_s, _ps| {},
+                &mut |_s| Ok(()),
+            );
+        }
+
+        // Update the service into the replica (manager.c:531-537,
+        // RS_DONTSWAP = 0).
+        state.update.update_service(
+            &mut state.table,
+            kernel,
+            old_rs,
+            new_rs,
+            0,
+            SysFlags::empty(),
+        )?;
+
+        // Initialize the new RS instance (manager.c:538-540) — sends no
+        // message (utility.c:29-31).
+        let ticks = kernel.get_ticks().unwrap_or(0);
+        crate::service_create::init_service(
+            state.table.get_mut(new_rs),
+            None,
+            crate::sef::SefInitType::Restart,
+            0,
+            None,
+            crate::live_update::SEF_LU_STATE_NULL,
+            ticks,
+            &mut |_ep, _msg| Ok(()),
+        )?;
+
+        // Reschedule a synchronous alarm (manager.c:540-541); C panics on
+        // failure (main.c:542).
+        self.kernel
+            .setalarm(crate::monitor::delta_t(state.system_hz) as u32)
+            .expect("couldn't set alarm (main.c:542)");
+        Ok(0)
     }
 
-    /// C: `sef_cb_init_lu` — main.c:141. DEFERRED until 18 lands; fail
-    /// closed (18-rs-self-lifecycle.md).
-    fn init_lu(&mut self, _init_type: SefInitType, _info: &SefInitInfo) -> Result<i32, Errno> {
-        Err(Errno::ENOSYS)
+    /// C: `sef_cb_init_lu` — main.c:549-586: `update_service(RS_DONTSWAP)`
+    /// into the new instance, then `init_service(SEF_INIT_LU)` (the
+    /// callback-table rebind of main.c:558 pairs with A3's restart_cb note
+    /// in 18). RS self-init sends no message.
+    fn init_lu(&mut self, _init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno> {
+        let kernel = self.kernel.as_mut();
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let old_rs = state
+            .table
+            .endpoint_slot(Endpoint::RS)
+            .ok_or(Errno::ENOSYS)?;
+        let new_rs = state
+            .table
+            .endpoint_slot(Endpoint(info.old_endpoint))
+            .ok_or(Errno::ENOSYS)?;
+
+        // update_service(RS_DONTSWAP) (manager.c:573-578).
+        state.update.update_service(
+            &mut state.table,
+            kernel,
+            old_rs,
+            new_rs,
+            0,
+            SysFlags::empty(),
+        )?;
+
+        // Initialize the new RS instance (manager.c:580-584) — sends no
+        // message (utility.c:29-31).
+        let ticks = kernel.get_ticks().unwrap_or(0);
+        crate::service_create::init_service(
+            state.table.get_mut(new_rs),
+            None,
+            crate::sef::SefInitType::Lu,
+            0,
+            None,
+            crate::live_update::SEF_LU_STATE_NULL,
+            ticks,
+            &mut |_ep, _msg| Ok(()),
+        )?;
+        Ok(0)
     }
 
-    /// C: `sef_cb_init_response` — main.c:144. DEFERRED until 12 lands; fail
-    /// closed (12-rs-init-run.md).
+    /// C: `sef_cb_init_response` — main.c:591-609. **EDGE（19 接线）**：决策
+    /// 面（`do_init_ready` 四参数 + pending 持有 + normalize 包装）全部就绪；
+    /// 缺的是消息载荷解码——`m_rs_init.result` 位于 union 臂，安全提取归 19 的
+    /// receive 包装（R25 同源）。落地形态：
+    /// `let result = decode.result; if result != 0 { return Err(...) };
+    /// do_init_ready(flags, 0, is_updating, pending, ticks)` + mutations +
+    /// pending 回写（UpdateInitDone）。
     fn init_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
         Err(Errno::ENOSYS)
     }
 
-    /// C: `sef_cb_lu_response` — main.c:145. DEFERRED until 12 lands; fail
-    /// closed (12-rs-init-run.md).
+    /// C: `sef_cb_lu_response` — main.c:614-626. **EDGE（19 接线）**：同上，
+    /// 决策面 `do_upd_ready(result, gate_ok, has_next)` 就绪（gate 由
+    /// `state.update` + RS 槽 `upd` 判定），载荷解码归 19。落地形态：
+    /// `do_upd_ready(result, gate_ok, true)` → R24 载荷 → Unexpected 时
+    /// EINVAL，EDONTREPLY → EGENERIC（main.c:622-624）。
     fn lu_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
         Err(Errno::ENOSYS)
     }
-
     /// C: `sef_cb_signal_handler` — main.c:631-642. SIGCHLD drains exited
     /// children through `sigchld_cleanup` (07); SIGTERM runs the shutdown
     /// sweep and arms `shutting_down` (13); anything else is ignored.
