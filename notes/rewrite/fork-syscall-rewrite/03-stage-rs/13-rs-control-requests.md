@@ -81,6 +81,13 @@
    - `RSS_NOBLOCK` → 立即 `return OK`（调用者不等初始化）；
    - 否则 `r_flags |= RS_LATEREPLY; r_caller = m_source; r_caller_request = RS_UP` + `return EDONTREPLY`——**初始化完成后补发 reply**（12 的 `end_srv_init` → `late_reply`，06）。
 
+### 2.1c signal_handler 路由落地（Fix #57，2026-09-06）
+
+`RsServer::signal_handler`（lib.rs）主体按 main.c:631-642 落地：SIGCHLD → 逐子进程
+`sigchld_cleanup`（waitpid 排空循环，`KernelApi::waitpid` 注入缝，19）；SIGTERM →
+`shutdown_apply` + `shutting_down` 置位；未知信号静默。pre-boot `state` 缺失时直接返回
+（C 中 boot 先于一切信号，不可达）。
+
 ### 2.1b stop_service 的决策化（A4，2026-09-06，todo §18 Fix #52）
 
 `stop_service`（manager.c:988-1008）在 Rust 中拆为**纯决策 + 调用方副作用**：

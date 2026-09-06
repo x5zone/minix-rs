@@ -58,6 +58,8 @@ pub struct MockKernelApi {
     pub execve_ok: bool,
     /// `srv_kill`/`sched_stop` success switch (cleanup phase 2).
     pub kill_ok: bool,
+    /// Stack of `waitpid` results (LIFO); empty → `None` (no children).
+    pub children: Vec<Pid>,
     /// Privilege structures pushed by `privctl(SetSys)`, per endpoint.
     /// `getpriv` echoes them back — mirroring C, where `sys_getpriv` reads
     /// the kernel copy of what RS just set for that process
@@ -79,6 +81,7 @@ impl MockKernelApi {
             vm_ok: false,
             execve_ok: false,
             kill_ok: false,
+            children: Vec::new(),
             set_privs: Vec::new(),
         }
     }
@@ -231,5 +234,8 @@ impl KernelApi for MockKernelApi {
     fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno> {
         self.calls.push(Call::Reply(target, result));
         Ok(())
+    }
+    fn waitpid(&mut self) -> Option<Pid> {
+        self.children.pop()
     }
 }

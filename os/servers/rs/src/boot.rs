@@ -159,6 +159,12 @@ pub trait KernelApi {
         flags: crate::service_slot::SysFlags,
     ) -> Result<(), Errno>;
 
+    /// Non-blocking waitpid: the next exited child, if any.
+    ///
+    /// C: `waitpid(-1, &status, WNOHANG)` — request.c:1063 (do_sigchld's
+    /// drain loop). Wired 19; mock supplies canned children.
+    fn waitpid(&mut self) -> Option<Pid>;
+
     /// Tells the scheduler a process is finished.
     ///
     /// C: `sched_stop(rp->r_scheduler, rpub->endpoint)` — manager.c:462.
@@ -285,6 +291,9 @@ impl KernelApi for UnimplementedKernelApi {
         _flags: crate::service_slot::SysFlags,
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
+    }
+    fn waitpid(&mut self) -> Option<Pid> {
+        None
     }
     fn sched_stop(&mut self, _scheduler: Endpoint, _proc: Endpoint) -> Result<(), Errno> {
         Err(Errno::ENOSYS)

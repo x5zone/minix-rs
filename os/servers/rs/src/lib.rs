@@ -294,11 +294,33 @@ impl SefCallbacks for RsServer {
         Err(Errno::ENOSYS)
     }
 
-    /// C: `sef_cb_signal_handler` — main.c:148. Unreachable until the main
-    /// loop lands (06); no Result channel to fail closed through, so keep the
-    /// loud marker (06-rs-main-loop.md, T7 gate).
-    fn signal_handler(&mut self, _signo: i32) {
-        unimplemented!("sef_cb_signal_handler body: 06-rs-main-loop.md (unreachable until 06)")
+    /// C: `sef_cb_signal_handler` — main.c:631-642. SIGCHLD drains exited
+    /// children through `sigchld_cleanup` (07); SIGTERM runs the shutdown
+    /// sweep and arms `shutting_down` (13); anything else is ignored.
+    /// Pre-boot signals cannot reach here: `state` is only absent before
+    /// `init_fresh`, and the kernel does not signal RS before that.
+    fn signal_handler(&mut self, signo: i32) {
+        use minix_types::{SIGNAL_CHILD, SIGNAL_TERMINATE};
+        let Some(state) = self.state.as_mut() else {
+            return; // pre-boot: no table to act on (unreachable in C too)
+        };
+        match signo {
+            SIGNAL_CHILD => {
+                // C: main.c:635-637 — do_sigchld's waitpid drain loop
+                // (request.c:1063-1073); each exited child is cleaned via
+                // sigchld_cleanup. The waitpid face is the kernel seam (19).
+                while let Some(pid) = self.kernel.waitpid() {
+                    crate::monitor::sigchld_cleanup(&mut state.table, pid);
+                }
+            }
+            SIGNAL_TERMINATE => {
+                // C: main.c:638-640 — do_shutdown(NULL): the permission gate
+                // is skipped for the internal call (request.c:437-441) and
+                // `shutting_down` arms the no-restart policy (13).
+                state.shutting_down = crate::request::shutdown_apply(&mut state.table);
+            }
+            _ => {}
+        }
     }
 
     /// C: `sef_cb_signal_manager` — main.c:149. DEFERRED until 06 lands;
@@ -306,5 +328,81 @@ impl SefCallbacks for RsServer {
     /// sef.h:270 `(endpoint_t target, int signo)` (R26).
     fn signal_manager(&mut self, _target: Endpoint, _signo: i32) -> Result<i32, Errno> {
         Err(Errno::ENOSYS)
+    }
+}
+
+#[cfg(test)]
+mod signal_handler_tests {
+    use super::*;
+    use crate::process_table::RProcTable;
+    use crate::service_slot::RFlags;
+    use crate::testutil::MockKernelApi;
+    use minix_types::{Endpoint, SIGNAL_CHILD, SIGNAL_TERMINATE};
+
+    /// A server with a completed boot: table + one in-use VFS service with
+    /// pid 700, plus an exited child (pid 700's own child bookkeeping is the
+    /// sigchld target).
+    fn booted() -> RsServer {
+        let mut server = RsServer::new(crate::boot::BootTables::placeholder());
+        let mut table = RProcTable::new();
+        let id = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(id);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.endpoint = Endpoint::VFS;
+            s.pid = Some(700);
+        }
+        server.state = Some(crate::ServerState {
+            tables: crate::boot::BootTables::placeholder(),
+            machine: crate::boot::Machine::default(),
+            rinit: crate::boot::RinitState::default(),
+            table,
+            shutting_down: false,
+            system_hz: 60,
+            nr_uncaught_init_srvs: 0,
+            update: crate::live_update::UpdateState::default(),
+        });
+        server
+    }
+
+    #[test]
+    fn test_signal_term_runs_shutdown_sweep() {
+        // C: main.c:638-640 — SIGTERM → do_shutdown(NULL):全表 EXITING +
+        // shutting_down 置位（request.c:447-455）。
+        let mut server = booted();
+        server.signal_handler(SIGNAL_TERMINATE);
+        let state = server.state.as_ref().unwrap();
+        assert!(state.shutting_down);
+        assert!(
+            state
+                .table
+                .iter_in_use()
+                .all(|(_, s)| s.flags.contains(RFlags::EXITING))
+        );
+    }
+
+    #[test]
+    fn test_signal_chld_drains_exited_children() {
+        // C: main.c:635-637 — SIGCHLD → do_sigchld:每个 waitpid 到的子进程
+        // 走 sigchld_cleanup；pid 未命中时无副作用（request.c:1064-1065）。
+        let mut server = booted();
+        // 无已退出子进程 → 空转，表不动。
+        server.signal_handler(SIGNAL_CHILD);
+        let state = server.state.as_ref().unwrap();
+        assert!(
+            state
+                .table
+                .iter_in_use()
+                .all(|(_, s)| s.flags.contains(RFlags::IN_USE))
+        );
+    }
+
+    #[test]
+    fn test_signal_unknown_ignored() {
+        // C: main.c:641 — switch 无 default：未知信号静默忽略。
+        let mut server = booted();
+        server.signal_handler(9999);
+        let state = server.state.as_ref().unwrap();
+        assert!(!state.shutting_down);
     }
 }

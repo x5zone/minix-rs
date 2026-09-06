@@ -2341,6 +2341,16 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   与降级、run_service ALLOW+RS 早退、start 全管线）；clippy/fmt 零输出；T7 PASS。
   文档同步：13 §2.1b（A4 决策化）。
 
+### ✅ Fix #57 — 轮17（signal_handler 主体路由，R34.21/22 部分）
+- **File**：`os/servers/rs/src/lib.rs`（RsServer::signal_handler 主体 + KernelApi::waitpid
+  生产/ mock + booted-state 测试夹具）
+- **After**：SIGCHLD → waitpid 排空循环逐子进程 `sigchld_cleanup`（07）；SIGTERM →
+  `shutdown_apply` + `shutting_down` 置位；未知信号忽略。KernelApi 新增 `waitpid() ->
+  Option<Pid>`（WNOHANG 面，19 接线；mock 用 children 栈）。
+- **Verified**：`cargo test -p minix-rs` = **261 passed**（+3：TERM 扫描+置位、CHLD 空
+  排空无副作用、未知信号忽略）；clippy/fmt 零输出；T7 PASS。文档同步：13 §2.1c、
+  06 §2.1b。
+
 ### ✅ Fix #53 — A2（架构建议落地）：`UpdateState` 单点持有 + per-slot `r_upd` 载体
 - **File**：`os/servers/rs/src/live_update.rs`（`UpdateState` + 相位写入口 +
   `RupdateFlags` 迁入 + `UpdateEntry` 补 4 字段）、`lib.rs`（ServerState.update 挂载 +
