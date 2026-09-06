@@ -34,19 +34,19 @@
 | T5 | `&mut dyn KernelApi` 散落各纯函数参数，注入边界不统一 | P2 |✅（§13） |
 | T6 | Step 2/3 计数语义偏差（VM 不计入、无视 SF_SYNCH_BOOT、Step 3 fail-open） | P1 |✅ |
 | T7 | 20 处 `unimplemented!()`/`todo!()` 无编译期/CI 门禁，19 接线遗漏即系统级故障 | P1 |✅ |
-| D1 | `ServiceSlot` god struct（~35 全公开字段）无封装、无不变式 | P2 | ☐ |
-| D2 | `SlotId` 无世代/代数，free→reuse 后旧索引悬垂；`get()` 越界 panic | P2 | ☐ |
+| D1 | `ServiceSlot` god struct（~35 全公开字段）无封装、无不变式 | P2 | ☐ | EDGE（见 §18.10） |
+| D2 | `SlotId` 无世代/代数，free→reuse 后旧索引悬垂；`get()` 越界 panic | P2 | ☐ | EDGE（见 §18.10） |
 | D3 | 公共函数 totality：`caller_can_control`/`lookup_by_domain` 对越界计数可 panic | P1 |✅ |
 | D4 | 常量双定义（`RS_MAX_LABEL_LEN` 两处等） | P2 |✅ |
 | D5 | `RsStart::default` 与 C 调用方默认不一致（sigmgr=SELF/scheduler=KERNEL/quantum=1 vs RS/SCHED/200） | P2 |✅ |
-| D6 | `Privilege`/`ServiceSlot` 双份 io/irq 表（C 同构，可改进为单一权威） | P2 | ☐ |
+| D6 | `Privilege`/`ServiceSlot` 双份 io/irq 表（C 同构，可改进为单一权威） | P2 | ☐ | EDGE（见 §18.10） |
 | S1 | `build_cmd_dep` 不遇 NUL 停止 + `Label` 16 字节截断参数（潜在代码缺陷） | P1 |✅ |
 | S2 | `activate_boot_slot` 缺失 cmd/script/argc/vm_call_mask/scheduler/priority/quantum/alive_tm | P1 |✅ |
 | S3 | `sched_init_proc` 对 `NONE` 调度器不跳过（C sched_start.c:57-58） | P1 |✅ |
 | S4 | `KernelApi::sched_init_proc` 签名丢弃调度参数（scheduler/priority/quantum/cpu） | P1 |✅ |
 | E1 | MockKernelApi 四份复制、无共享测试工具模块 | P2 | ☐ |
-| E2 | 解析函数（IpcListIterator/parse_label/build_cmd_dep）无 fuzz/property 测试 | P2 | ☐ |
-| E3 | 无集成级 boot 顺序/消息交换测试（receive 不可用） | P2 | ☐ |
+| E2 | 解析函数（IpcListIterator/parse_label/build_cmd_dep）无 fuzz/property 测试 | P2 | ☐ | EDGE（见 §18.10） |
+| E3 | 无集成级 boot 顺序/消息交换测试（receive 不可用） | P2 | ☐ | EDGE（见 §18.10） |
 
 ## 2. 顶层架构问题
 
@@ -1977,7 +1977,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 |----|------|--------|------|------|
 | R20 | edit_slot/init_slot 整体缺失 + RsStart 载体字段不全 | P1-design-missing | ✅ | 已修（Fix #46/#48/#49，2026-09-06） |
 | R21 | from_calls 无法表达 is_init=false 组合语义 | P1 | ✅ | 已修（Fix #44，2026-09-06） |
-| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ✅ | 已修（Fix #51/#52，2026-09-06；restart_service 编排随轮 16 LU 后收口） |
+| R22 | 生命周期编排层缺失（create 15 步只有 2 步 + cleanup 第一相） | P1-design-missing | ✅ | 已修（Fix #51/#52/#56，2026-09-06） |
 | R23 | LU 中段编排缺失 + rupdate 全局碎片化 + r_upd 载体未建 | P1-design-missing | ✅ | 已修（Fix #53/#54/#55/#56，2026-09-06） |
 | R24 | do_upd_ready 缺载荷，RS_PREPARE_DONE 无处落地 | P1 | ✅ | 已修（Fix #42，2026-09-06） |
 | R25 | HeartbeatNotify 缺 timestamp 字段 | P1 | ✅ | 已修（Fix #41，2026-09-06） |
@@ -1986,15 +1986,15 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R28 | clone_service 两分支漏标 DEFERRED | P2 | ✅ | 已修（Fix #50，2026-09-06） |
 | R29 | TrapMask 宽度分歧（0x3E vs 0xFFFF）+ DSRV_T/DSRV_I 缺失 | P2/OQ-2 | ✅ | 已修（Fix #47，2026-09-06，OQ-2=全宽） |
 | R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
-| R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | 19/IS 阶段 |
+| R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | EDGE（见 §18.10） |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
-| R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | D1 同轮 |
-| R34 | 测试盲区清单 24 条 | P2 | ☐ | 1-13 可立即补；14-17 随 13/14；18-23=E3 具体化 |
+| R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | EDGE（见 §18.10） |
+| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13 随各轮已补；18-23=E3（见 §18.10） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
-| A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ☐ | 18 落地期 |
+| A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ☐ | EDGE（见 §18.10） |
 | A4 | 控制请求域统一决策载荷模式 | 建议 | ☐ | 13 落地期 |
-| A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ☐ | 全局 |
+| A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ✅ | 1-4/6 步已按此执行 |
 
 **OQ 清单（上交用户）**
 - OQ-1：self_lifecycle.rs 13 个导出保持"纯切片等 18 号接线"形态，还是先内联进 recovery/
@@ -2491,3 +2491,77 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   R27(b) SelfTerminate 短路且无内核调用、restart 脚本分支不进 clone）；clippy/fmt 零
   输出；T7 PASS。文档同步：16 §3.1 表 +6 行（update/rollback/end_srv_update/
   rev_iter/end_update/complete_srv_update）。
+
+
+### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
+
+> 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
+> 迭代）明确不在代码中实现，避免与后续主线冲突。每条附落地要点，立项时直接取用。
+
+**E-1 Self-upgrade 进程面（原轮 20，boot.rs:774 unimplemented 标记保留）**
+- 决策面已全就绪：`self_lifecycle.rs` 13 个纯切片 + `srv_update_action` +
+  `is_rs_restart_replica` + `sig_mgr_updates`（均 250+ 测试锁定）。
+- 缺口 = 进程创建/身份交换的真实面：`srv_fork` 后 RS 自身继续运行的同时驱动
+  `update_service(RS_DONTSWAP)` + `init_service` + YIELD 链——该链每步都压在
+  19 的进程/IPC 缝上。立项=18 号文档的接线轮。OQ-1 决策：保持纯切片形态。
+
+**E-2 R9 KernelApi 拆 trait（boot.rs 单体 13 方法 → SysApi/PmApi/VmApi/SchedApi）**
+- 现有 19 个方法（含 R22a/R22b/R23 增补的 receive/waitpid/sys_update/srv_execve/
+  srv_kill/sched_stop/setuid/reply）按域归位；预支 5 方法归位（boot.rs:81-114）。
+- 拆分须一次完成：所有 impl（Unimplemented/Mock/未来生产）同步迁移。
+- 依赖：无硬依赖，但建议在 19 接线前做，避免接线后双倍迁移。
+
+**E-3 D2/R8 SlotId 世代计数**
+- `SlotId(u16)` → `(generation: u8/u16, index: u16)` 或全局世代表；
+  free→reuse 后旧 id 失效（R8 的 ABA 防护）。影响所有持 id 的结构
+  （链/endpoint 索引/决策载荷）。建议独立分支 + 全测试迁移。
+
+**E-4 D1/R33/R7 god struct 收敛**
+- `ServiceSlot` 45 叶子字段按域拆分（身份/策略/监控/LU 四组）+
+  手工 `PartialEq`（排除 exec 深比较，R33）+ 链不变式断言（R7）。
+- 与 D6（双表收敛）联动：拆分时一次性归并 io/irq 表到 `Privilege` 单一权威。
+
+**E-5 D6 io/irq 双表收敛**
+- `ServiceSlot.io_tab/irq_tab`（C r_io_tab/r_irq_tab 备份对）与
+  `Privilege.io_ranges/irqs` 收敛为单一权威 + 派生视图。注意 C 的 limit/len
+  两种形态（IoRange 已按 base+len 统一，N9/Fix #39）。
+
+**E-6 T3 BootError 区分**
+- boot 不变式违例（lookup 失败/getnpid 负值/表计数不符）从 `ENOSYS` 分离为
+  `BootError` 枚举：`LookupFailed`/`CountMismatch`/`KernelCallFailed(e)`。
+- 影响面：boot.rs 错误路径 + 01 号文档 §5 + 调用方（main.rs/main.rs 测试）。
+
+**E-7 R10 调用顺序类型化**
+- 剩余项：`start_update` 链式调用的 abort/end 交错（部分已随 R27 内嵌化）、
+  `do_edit` 的 sched_stop→edit_slot→privctl→sched_init 序列（13 号落地时一并）。
+- 形态：类型化步骤 token（R10 提案）或编排内 debug_assert 序列锚。
+
+**E-8 R31 诊断面**
+- `Errno` Display（T3 收口后）承接 `init_strerror`/`lu_strerror`
+  （error.c:48/:56 的错误名清单）；`srv_to_string_gen`/`srv_upd_to_string`/
+  `print_services_status`/`print_update_status`（utility.c:142-546）归
+  IS 阶段（08-stage-is）dump 面。`exec_restart` 归 19。
+
+**E-9 E2 proptest**
+- 目标函数：`parse_label`/`parse_filter_el`（四级回退）、`build_cmd_dep`
+  （分词/截断）、`rebuild_args`（argc 自洽，R15）、`IpcListIterator`
+  （NULL_C 终止）、`CallMask::from_calls`（base 组合，R21）、
+  `compute_backoff`（移位极值）。不变式：无 panic + 幂等 + 边界回收。
+
+**E-10 E3 集成测试 + R34.18-23**
+- 场景：boot 全链 mock（四步 + getnpid + setalarm 断言）、do_period 全流程
+  （update_period 派发门 → 槽门 → 决策 → setalarm）、rollback→心跳重发扫
+  （R27(a) 的集成面）、signal_manager 六分支（待编排落地后）、
+  catch_boot_init_ready 三 panic 分支。
+- R34 清单对账：1-13 已随各实现轮补齐；14-17 随 13/14 号接线轮；
+  18-23 由本条覆盖；24（IPC_ALL 位域契约）随 E-9。
+
+**E-11 生产接线面（19 号主线，恒为边界）**
+- `minix-sys::receive`/`send`/`asynsend`/`sys_datacopy`/`cpf_revoke`/
+  `cpf_grant_direct`/`sys_privctl`/`sys_getpriv`/`sys_getmachine`/`sys_getinfo`/
+  `sys_setalarm`/`sys_kill`/`sys_update`/`sys_diagctl_stacktrace`/`vm_memctl`/
+  `vm_set_priv`/`vm_prepare`/`getnpid`/`getnuid`/`waitpid`/`setuid`/
+  `read_exec`（文件 I/O）/`ds_publish_label`/`run_script` 的 fork+execle/
+  `env_parse` 配置面/`srv_execve` 真实 exec。
+- 以上在 §18 迭代中全部保持 ENOSYS fail-closed + doc-contract（T7 门 PASS）；
+  接线即 19-rs-external-interfaces.md 主线。
