@@ -196,7 +196,7 @@ PM_FORK 到达（主循环 dispatch，04）
 | A-2 | **flags 正交位 → 状态机枚举** | `IN_USE/WAITING/ZOMBIE/...` 19 个正交位（`mproc.h:86-104`，另有 `MP_MAGIC` 魔数），任意组合 | `Lifecycle` 互斥枚举（Unused/Running/Exiting/Zombie/TraceZombie/ToldParent）+ `BlockState`/`WaitState` 组合子（`mproc/lifecycle.rs`、`block.rs`、`wait.rs`） | 02/09/10 | 已实现（位→枚举映射须逐位对照） |
 | A-3 | **全局状态 → PmContext** | `mp`/`who_p`/`who_e`/`call_nr`/`mproc` 文件级全局（`glo.h:16-23`） | `PmContext<'a>` 显式传参 + `ProcTable`（`mproc/context.rs`、`table.rs`），借用检查器作编译期锁 | 03/04 | 已实现（04 完成显式参数调用点：run_once/reply 用 `UserSlot`，init.rs:279/337） |
 | A-4 | **message union → 类型化 IPC** | `m_in.m_lc_pm_*`/`m_pm_lc_*` 手写 union 字段（`com.h`） | `PmRequest`/`PmResponse`/`PmError` + codec trait（`minix-types/src/ipc/pm.rs`），errno 映射 | 04/07 | 部分实现（目前仅 Fork 变体） |
-| A-5 | **call_vec 函数指针表 → match 分发** | `call_vec[NR_PM_CALLS]` 表 + `call_index`（`table.c`） | `dispatch_pm_call` match 分发（`ipc/calls.rs`，47 变体 `#[repr(i32)]`） | 04 | 已实现（`dispatch_pm_call` 47 项，calls.rs:201） |
+| A-5 | **call_vec 函数指针表 → match 分发** | `call_vec[NR_PM_CALLS]` 表 + `call_index`（`table.c`） | `dispatch_pm_call` match 分发（`ipc/calls.rs`，47 变体 `#[repr(i32)]`） | 04 | 部分实现（2026-09-06 修正：单一分发表已收敛，主循环零内联拦截；7 个调用接线真实 handler，40 个 ENOSYS 占位，calls.rs:201） |
 | A-6 | **SUSPEND 显式化** | `return SUSPEND` 表示"本次不回复，稍后 reply()"（`main.c:106`） | 异步回复模型：dispatch 返回 `ReplyLater`/`NoReply` 变体 | 04/05 | 已实现（`ReplyIntent` 三变体，dispatcher.rs:45；handler 具体路径归 05/09+） |
 | A-7 | **定时器抽象** | `minix_timer_t` + `set_timer`/`expire_timers`，CLOCK notify 驱动（`alarm.c`、`main.c:65-67`） | 类型化 `Timeout`/`Clock` + 定时器队列（minix-types），到期回调 | 14 | 未实现 |
 | A-8 | **用户态调度协议** | `sched_start/inherit/stop/nice` 经 `_taskcall` 到 SCHED 服务（`schedule.c`、`minix/sched.h`） | sched 客户端模块 + 类型化 `SchedulingRequest` | 16 | 未实现 |

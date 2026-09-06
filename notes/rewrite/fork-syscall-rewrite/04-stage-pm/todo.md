@@ -15,7 +15,7 @@
 
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
-| P1 | P1-1 | 分发层分裂成两套：`init.rs` 裸魔数内联拦截 7 个调用，`dispatch_pm_call` 只剩 1 个死臂 + 46 个 ENOSYS |
+| P1 | P1-1 | 分发层分裂成两套：`init.rs` 裸魔数内联拦截 7 个调用，`dispatch_pm_call` 只剩 1 个死臂 + 46 个 ENOSYS（**✅ 已修复** 2026-09-06，见 §10 Fix #2） |
 | P1 | P1-2 | `send_vm_fork` / `send_kernel_request` 返回捏造的成功值，fail-closed 契约被反转成 fake-ok（**✅ 已修复** 2026-09-06，见 §10 Fix #1） |
 | P1 | P1-3 | 内核边界整体未实现：transport 三个方法 `unimplemented!()`，PM 二进制在第一条真实消息上 panic |
 | P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用中只有 Fork 有 wire 类型，其余靠内联 unsafe union 访问 |
@@ -113,7 +113,7 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 ## 3. P1：架构级问题（建议尽快规划）
 
-### P1-1 分发层分裂成两套并行实现
+### P1-1 分发层分裂成两套并行实现（✅ 已修复 2026-09-06，见 §10 Fix #2）
 
 **问题**：主循环 `run_once`（`os/servers/pm/src/init.rs:296-507`）里，7 个调用（Exit=1、Fork=2、Wait4=3、Kill=11、ProcEventMask=40、SrvFork=41、SrvKill=42）用裸魔数 `msg.m_type == N` 内联拦截并直接调用 handler（`init.rs:368/386/399/429/437/458/479`），消息解码用内联 `unsafe { msg.m_u.m_lc_pm_* }` 访问。其余 40 个调用落入 `dispatch_message` → `dispatch_pm_call`（`ipc/calls.rs:201`），全部返回 ENOSYS。这造成四个后果：
 
@@ -388,3 +388,29 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - 本文件：§0 表 P1-2 行、P1-2 标题、§6 D-03/D-04 行标注
 
 **未做（DEFERRED 论证）**：真实硬件上的 VM_FORK 往返（VM 服务器运行 + trap 层）挂 `edge_todo.md` E5(a)/E1——本条 stage 内目标（接缝 fail-closed + wire 正确 + mock 验证）已完整达成，符合通电口径。
+
+### ✅ Fix #2: P1-1 — 分发收敛到单一分发表（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/calls.rs`（`dispatch_pm_call` 重写为 47 臂穷尽 match：7 个真实臂 + 40 个 ENOSYS 占位；签名扩展为 `(call, table, events, transport, caller, msg)`）
+- `os/servers/pm/src/ipc/dispatcher.rs`（`dispatch_message` 事件回复臂接真实 `do_proc_event_reply`；签名同步扩展）
+- `os/servers/pm/src/init.rs`（`run_once` 删除全部 7 个内联拦截块，只留 VFS 回复拦截 + 统一分发/回复；清理随之失效的导入）
+
+**Before**：主循环用裸魔数（`msg.m_type == 2/41/1/3/11/42`）内联拦截 7 个调用，unsafe 解码散落 `init.rs`；`dispatch_pm_call(call, table, caller)` 只有 1 个 Fork 死臂（服务器路径永不触发）+ 46 个 ENOSYS；`table` 参数无用（clippy 报告）；`PROC_EVENT_REPLY` 在 `run_once` 与 `dispatch_message` 双路拦截。
+
+**After**（设计选型，两案对比）：(a) **单一穷尽 match**（已选）——C `call_vec` 是一张表，所有调用同路；编译期保证 47 臂完整，接线进度一目了然。(b) 注册表 `fn(&mut Cx, &Message) -> ReplyIntent` 47 项（仿 C 函数指针的形）——可动态替换便于注入，但 47 个 handler 是编译期固定域，match 的穷尽性检查优于运行时表，且避免函数指针间接层；Redox 只对动态集合（scheme）用注册表。选 (a)。
+- 载荷解码从 `init.rs` 收编进各 match 臂（仍按原 union 臂逐字段解码，语义不变：Fork 用 `m_source`、Exit 用 `m_lc_pm_exit.status`、Wait4 三字段、Kill/SrvKill 双字段、SrvFork 的 `m_lsys_pm_srv_fork`、ProcEventMask 的 `m_lsys_pm_proceventmask.mask`）。
+- SUSPEND 映射保持 plan.md §7.3 契约：Fork Ok→ReplyLater / Exit→NoReply / Wait4→handler 意图 / Kill·SrvKill 的 is_exiting→ReplyLater / SrvFork→Reply(pid)。
+- `dispatch_message` 的事件回复臂从 ReplyLater 钩子换成真实 `do_proc_event_reply`（06 已落地，钩子过时）。
+
+**Verified**：
+- `cargo test -p minix-pm --lib`：322 → **325 passed / 0 failed**（calls.rs 新增 fork 成功/父不存在/Exit NoReply 三测试，dispatcher.rs 新增事件回复非内核调用者 ENOSYS 测试；旧 ENOSYS 占位断言改指 GetPid）
+- `cargo clippy -p minix-pm --lib`：`dispatch_pm_call` 的 unused `table` 参数告警消失（P3-2 该项闭环）
+- `grep -n "msg.m_type == " os/servers/pm/src/init.rs`：零命中（裸魔数清除）
+
+**Docs**：
+- `04-ipc-dispatch.md`：§3.6 D6 表（46→40 + 接线计数）、差异论证段重写、§4.2 重写（单一分发表 + "主循环不得内联拦截"设计点）、§4.3 代码示例与钩子注记更新、§6 下一入口更新
+- `plan.md`：A-5 状态"已实现"→"部分实现（7 接线/40 占位 + 单一表收敛说明）"
+- 本文件：§0 表 P1-1 行、P1-1 标题
+
+**未做（DEFERRED 论证）**：40 个未接线调用的点亮依赖各自归属文档（07~20）与 E7 wire 类型，不在本条范围。

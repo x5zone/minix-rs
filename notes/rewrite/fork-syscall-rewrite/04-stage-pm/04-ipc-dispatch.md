@@ -415,11 +415,11 @@ pub enum ReplyIntent {
 |--------|--------|----------|---------|
 | 未注册/越界调用 → ENOSYS | main.c:94-101 | `PmCall::from_call_nr → None` → `Reply(ENOSYS)` | 一致 |
 | 非 PM 消息 → ENOSYS | main.c:102-103 | dispatch 兜底 `Reply(ENOSYS)` | 一致 |
-| 已注册但 handler 未实现 | —（C 全实现） | `dispatch_pm_call` 默认臂 `Reply(ENOSYS)` | **过渡差异**：46 个 handler DEFERRED 到 07~20，落地前返回 ENOSYS |
+| 已注册但 handler 未实现 | —（C 全实现） | `dispatch_pm_call` 默认臂 `Reply(ENOSYS)` | **过渡差异**：40 个 handler DEFERRED 到 07~20，落地前返回 ENOSYS（7 个已接线，见 §4.2） |
 | receive 失败 → panic | main.c:61-62 | 连续 64 次失败 → panic | 计数防瞬断（D4） |
 | endpoint 非法 → panic | main.c:75-76 | `panic!("PM got message from invalid endpoint")` | 一致（fail-fast） |
 
-**ENOSYS 占位与 C 的差异论证**：C 中 47 个调用号全部有 handler；Rust 在 07~20 档落地前对未实现调用返回 ENOSYS。这不是外部语义变化——未实现的 handler 在 minix-rs 当前阶段**本就不存在**，ENOSYS 是诚实的"暂不支持"，且与 C 对 NULL 表项的防御语义同源（C 的 NULL 分支同样是 ENOSYS）。Fork 例外：它是唯一"分发层语义可完整建模"的调用（C 中返回 SUSPEND，见 §4.3），故 04 已实现其分发层行为。
+**ENOSYS 占位与 C 的差异论证**：C 中 47 个调用号全部有 handler；Rust 在 07~20 档落地前对未实现调用返回 ENOSYS。这不是外部语义变化——未实现的 handler 在 minix-rs 当前阶段**本就不存在**，ENOSYS 是诚实的"暂不支持"，且与 C 对 NULL 表项的防御语义同源（C 的 NULL 分支同样是 ENOSYS）。2026-09-06 起分发收敛为单一分发表：Fork/SrvFork/Exit/Wait4/Kill/SrvKill/ProcEventMask 七个调用已接入真实 handler（07/08/09/10/11/06 档逻辑），其余 40 个维持占位。
 
 **panic vs 丢弃的边界**：PM 的 endpoint 验证失败 panic（与 C 一致），而 VM 选择丢弃（VM A-14）——差异原因：PM 的 `mproc` 表是进程语义的权威，内核必须给它合法 endpoint；VM 没有进程表概念，坏消息丢弃即可。两者都符合各自 C 语义。
 
@@ -442,37 +442,55 @@ trait 新增 `receive`（transport.rs:51）。`KernelIpcTransport::receive`（tr
 
 ### 4.2 calls.rs：47 调用分发表
 
-`PmCall` 枚举（calls.rs:29-124）47 个变体，判别值 = 调用号。`from_call_nr`（calls.rs:133）显式匹配 1..=47；`call_nr()`（calls.rs:188）返回判别值。`dispatch_pm_call`（calls.rs:201）：
+`PmCall` 枚举（calls.rs:29-124）47 个变体，判别值 = 调用号。`from_call_nr`（calls.rs:133）显式匹配 1..=47；`call_nr()`（calls.rs:188）返回判别值。`dispatch_pm_call`（calls.rs:201）是**单一分发表**——C 的 `call_vec` 是一张 47 项函数指针表，所有已注册调用走同一路径；Rust 对应为这一个穷尽 match，已落地的 7 个 handler（Fork/SrvFork/Exit/Wait4/Kill/SrvKill/ProcEventMask）在此解码消息载荷并调用，其余 40 个返回 ENOSYS 占位：
 
 ```rust
-pub fn dispatch_pm_call(call: PmCall, table: &mut ProcTable, caller: Endpoint) -> ReplyIntent {
+pub fn dispatch_pm_call<T: IpcTransport>(
+    call: PmCall, table: &mut ProcTable, events: &mut EventRegistry,
+    transport: &mut T, caller: UserSlot, msg: &Message,
+) -> ReplyIntent {
     match call {
-        // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复。
-        PmCall::Fork => ReplyIntent::ReplyLater,
-        // 其余 46 个调用：handler 归属 07~20（ENOSYS 占位）。
+        // C: do_fork（forkexit.c:139 return SUSPEND）——Ok → ReplyLater，
+        //    Err（表满/父不存在/VM 拒绝）→ Reply(errno)。
+        PmCall::Fork => match crate::fork::handle_fork(table, msg.m_source, transport) { ... },
+        // C: do_srv_fork（forkexit.c:237/239）——Reply(child_pid)。
+        PmCall::SrvFork => { ... }
+        // C: do_exit（forkexit.c:246-266）——永不回复（NoReply 子情形）。
+        PmCall::Exit => { ... ReplyIntent::NoReply }
+        // C: do_wait4 —— 同步回复或 SUSPEND，handler 直接返回意图。
+        PmCall::Wait4 => { ... }
+        // C: do_kill / do_srv_kill —— 成功 Reply(0)，caller 自杀且已
+        //    EXITING → ReplyLater，失败 → Reply(errno)。
+        PmCall::Kill | PmCall::SrvKill => { ... }
+        // C: do_proceventmask（event.c:179-206）——经 EventRegistry。
+        PmCall::ProcEventMask => events.do_proceventmask_mut(...),
+        // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。
         _ => ReplyIntent::Reply(ENOSYS),
     }
 }
 ```
 
-**关键设计点：fork 的分发层语义**。C 的 `do_fork` 在发出 `VFS_PM_FORK` 后返回 SUSPEND（forkexit.c:139），父/子回复由 05 档的 `VFS_PM_FORK_REPLY` 处理（main.c:369-394）异步完成。因此 `PmCall::Fork → ReplyLater` 是 C 语义的直接建模——**不是**旧的同步 `Ok(child_pid)` 原型（该原型是 07 档落地前的最小占位，与 C 不符，已由本档修正为分发层 SUSPEND 语义）。
+**关键设计点：单一分发表，主循环不得内联拦截**。C 的 `main.c:90-101` 对所有 PM 调用一视同仁地走 `call_vec`；Rust 侧曾出现"7 个调用在 `run_once` 内联拦截、其余走分发表"的双轨过渡态——裸魔数（`msg.m_type == 2/41/1/3/11/42`）绕过 `PmCall` 枚举，解码散落两处，`dispatch_pm_call` 的 Fork 臂沦为死代码。2026-09-06 收敛后：`run_once` 只保留 VFS 回复拦截（main.c:84-87）与统一回复逻辑（main.c:106），事件回复（main.c:88-89）与全部 PM 调用都经 `dispatch_message → dispatch_pm_call`——接线进度只看一张表，未接线臂的 ENOSYS 占位一目了然。
 
 ### 4.3 dispatcher.rs：三路分发（仅事件回复 + PM 调用两路）
 
 > **2026-09-02 接线修正**：VFS→PM 异步回复（`IS_VFS_PM_RS && source == VFS`）已移至 `PmServer::run_once` 主循环**第一路**拦截（main.c:84-87 在 `while` 循环体最前），由 `handle_vfs_reply` 状态机（05）处理，不再进入本分发函数。`dispatcher.rs` 因此只保留事件回复与 PM 调用两路，无死分支。
 
-`dispatch_message`（dispatcher.rs:73）镜像 main.c:84-103 的后两路：
+`dispatch_message`（dispatcher.rs:85）镜像 main.c:84-103 的后两路（事件回复已接真实 `do_proc_event_reply`，不再是钩子）：
 
 ```rust
-pub fn dispatch_message(table: &mut ProcTable, msg: &Message) -> ReplyIntent {
+pub fn dispatch_message<T: IpcTransport>(
+    table: &mut ProcTable, events: &mut EventRegistry,
+    transport: &mut T, caller: UserSlot, msg: &Message,
+) -> ReplyIntent {
     let call_nr = msg.m_type;
 
     if call_nr == PROC_EVENT_REPLY {
-        // C: main.c:88-89 — do_proc_event_reply()。
-        ReplyIntent::ReplyLater          // 钩子：语义归 06
+        // C: main.c:88-89 — do_proc_event_reply()（06 已落地）。
+        events.do_proc_event_reply(msg, caller, table, transport)
     } else if is_pm_call(call_nr) {
         match PmCall::from_call_nr(call_nr) {
-            Some(call) => dispatch_pm_call(call, table, msg.m_source),
+            Some(call) => dispatch_pm_call(call, table, events, transport, caller, msg),
             None => ReplyIntent::Reply(ENOSYS),   // 未注册号
         }
     } else {
@@ -608,8 +626,8 @@ fn reply(&mut self, slot: UserSlot, result: i32) {
 **下一入口**：
 
 - **05-vfs-interaction.md**——主循环第一路 `IS_VFS_PM_RS → handle_vfs_reply` 的 11 种回复状态机；04 只留下"ReplyLater"钩子，05 落地后替换为真实状态机调用。
-- **06-event-subscription.md**——主循环第二路 `PROC_EVENT_REPLY → do_proc_event_reply` 的事件订阅语义。
-- **07~20**——主循环第三路的 47 个 handler：04 的分发表已完整，各 handler 在对应文档落地时替换 `ENOSYS` 占位。
+- **06-event-subscription.md**——主循环第二路 `PROC_EVENT_REPLY → do_proc_event_reply` 的事件订阅语义（已接真实 registry，见 §4.3）。
+- **07~20**——主循环第三路的 47 个 handler：04 的单一分发表已收敛（2026-09-06，主循环零内联拦截），Fork/SrvFork/Exit/Wait4/Kill/SrvKill/ProcEventMask 七个已接入真实 handler，其余 40 个在对应文档落地时替换 `ENOSYS` 占位。
 
 ---
 

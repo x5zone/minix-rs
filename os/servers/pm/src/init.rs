@@ -19,7 +19,6 @@ use crate::ipc::{
     handle_vfs_reply, is_vfs_pm_rs,
 };
 use crate::mproc::{Guardianship, INIT_PID, Lifecycle, Privilege, ProcTable, SigSet};
-use minix_types::{ProcEventMask, VirBytes, PROC_EVENT_REPLY};
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Message, NR_BOOT_PROCS, NR_PROCS, UserSlot};
 
@@ -345,158 +344,16 @@ impl<T: IpcTransport> PmServer<T> {
             return RunStep::Handled;
         }
 
-        // C: main.c:88-89 — 第二路：进程事件订阅者回复（06-event-subscription.md）。
-        // 必须在普通 PM 调用之前拦截（与 main.c 84-89 顺序一致：VFS 第一、PROC_EVENT_REPLY 第二）。
-        if msg.m_type == PROC_EVENT_REPLY {
-            let intent = self.event_registry.do_proc_event_reply(
-                &msg,
-                caller,
-                &mut self.table,
-                &mut self.transport,
-            );
-            // C: main.c:88-89 `result = do_proc_event_reply()` → `SUSPEND` 不回复；
-            // 仅 ENOSYS 时回复调用者（误调用的普通进程）。
-            if let ReplyIntent::Reply(code) = intent {
-                self.reply(caller, code);
-            }
-            return RunStep::Handled;
-        }
-
-        // C: main.c:90-103 — 第三路分发前：PM_PROCEVENTMASK 的掩码更新（06）。
-        // `dispatch_pm_call` 当前对未实现调用返回 ENOSYS 占位，但 proceventmask
-        // 需经 EventRegistry 真正更新订阅表（否则掩码更新无 side-effect）。
-        if msg.m_type == minix_types::PM_PROCEVENTMASK {
-            // C: event.c:179 — mask 在 m_lsys_pm_proceventmask.mask
-            let mask_bits = unsafe { msg.m_u.m_lsys_pm_proceventmask.mask };
-            let mask = ProcEventMask::from_bits_truncate(mask_bits);
-            let intent = self.event_registry.do_proceventmask_mut(
-                caller,
-                mask,
-                &mut self.table,
-                &mut self.transport,
-            );
-            if let ReplyIntent::Reply(code) = intent {
-                self.reply(caller, code);
-            }
-            return RunStep::Handled;
-        }
-
-        // C: main.c:90-101 — PM_FORK handler（07-pm-fork.md, table.c:23）
-        // fork 的容量/EAGAIN 与 SUSPEND 需在分发前处理，以区分同步失败 vs 异步投递
-        if msg.m_type == 2 {
-            match crate::fork::handle_fork(&mut self.table, msg.m_source, &mut self.transport) {
-                Ok(_child_pid) => return RunStep::Handled, // SUSPEND (ReplyLater)
-                Err(e) => {
-                    let pm_err: minix_types::PmError = e.into();
-                    self.reply(caller, pm_err.to_errno());
-                    return RunStep::Handled;
-                }
-            }
-        }
-
-        // C: main.c:90-101 — PM_SRV_FORK handler（08-pm-srv-fork.md, table.c:23, forkexit.c:142）
-        // RS 专用，EPERM 门 + 立即双回复（reply(child,OK) + return pid），vs fork 的 SUSPEND
-        if msg.m_type == 41 {
-            // 解码 SrvForkParams (uid/gid) from MessLsysPmSrvFork
-            let params = {
-                let pl = unsafe { msg.m_u.m_lsys_pm_srv_fork };
-                crate::mproc::SrvForkParams {
-                    uid: pl.uid,
-                    gid: pl.gid,
-                }
-            };
-            match crate::fork::handle_srv_fork(
-                &mut self.table,
-                msg.m_source,
-                params,
-                &mut self.transport,
-            ) {
-                Ok(child_pid) => {
-                    // 同步返父 pid (Reply) — handle_srv_fork 已 reply(child,OK)
-                    self.reply(caller, child_pid);
-                    return RunStep::Handled;
-                }
-                Err(e) => {
-                    let pm_err: minix_types::PmError = e.into();
-                    self.reply(caller, pm_err.to_errno());
-                    return RunStep::Handled;
-                }
-            }
-        }
-
-        // C: main.c:90-101 — PM_EXIT handler（09-pm-exit.md, table.c:23, forkexit.c:245）
-        // do_exit 永不回复（SUSPEND 的 NoReply 子类），PRIV_PROC→SIGKILL 门
-        if msg.m_type == 1 {
-            let status = unsafe { msg.m_u.m_lc_pm_exit.status };
-            let _ = crate::exit::handle_exit(&mut self.table, caller, status, &mut self.transport);
-            return RunStep::Handled; // NoReply (beyond the grave)
-        }
-
-        // C: main.c:90-101 — PM_WAIT4 handler（10-pm-wait.md, table.c:23, forkexit.c:471）
-        // do_wait4 三环 + WNOHANG/ECHILD + SUSPEND（WAITING）
-        if msg.m_type == 3 {
-            let pidarg = unsafe { msg.m_u.m_lc_pm_wait4.pid };
-            let options = unsafe { msg.m_u.m_lc_pm_wait4.options };
-            let addr = unsafe { msg.m_u.m_lc_pm_wait4.addr };
-            let intent = crate::wait::handle_wait4(
-                &mut self.table,
-                caller,
-                pidarg,
-                options as u32,
-                VirBytes(addr),
-                &mut self.transport,
-            );
-            // handle_wait4's Reply(pid/0/ECHILD) are synchronous replies (W_STOPCODE, WNOHANG, ECHILD)
-            // ReplyLater are async (tell_parent/tell_tracer already replied or WAITING set)
-            if let ReplyIntent::Reply(code) = intent {
-                self.reply(caller, code);
-            }
-            return RunStep::Handled;
-        }
-
-        // C: main.c:90-101 — PM_KILL handler（11-signal-core.md, signal.c:197）
-        if msg.m_type == 11 {
-            let pid = unsafe { msg.m_u.m_lc_pm_kill.pid };
-            let signo = unsafe { msg.m_u.m_lc_pm_kill.signo };
-            match crate::signal::handle_kill(&mut self.table, caller, pid, signo, &mut self.transport) {
-                Ok(count) => {
-                    // Self-kill SUSPEND check is inside handle_kill (caller Exiting → SUSPEND)
-                    if self.table.procs[caller.get()].state.lifecycle.is_exiting() {
-                        return RunStep::Handled; // SUSPEND
-                    }
-                    self.reply(caller, 0);
-                    let _ = count;
-                    return RunStep::Handled;
-                }
-                Err(e) => {
-                    self.reply(caller, e.to_errno());
-                    return RunStep::Handled;
-                }
-            }
-        }
-
-        // C: main.c:90-101 — PM_SRV_KILL handler（11-signal-core.md, signal.c:204）
-        if msg.m_type == 42 {
-            let pid = unsafe { msg.m_u.m_rs_pm_srv_kill.pid };
-            let signo = unsafe { msg.m_u.m_rs_pm_srv_kill.signo };
-            match crate::signal::handle_srv_kill(&mut self.table, caller, pid, signo, &mut self.transport) {
-                Ok(count) => {
-                    if self.table.procs[caller.get()].state.lifecycle.is_exiting() {
-                        return RunStep::Handled;
-                    }
-                    self.reply(caller, 0);
-                    let _ = count;
-                    return RunStep::Handled;
-                }
-                Err(e) => {
-                    self.reply(caller, e.to_errno());
-                    return RunStep::Handled;
-                }
-            }
-        }
-
-        // C: main.c:90-103 — 第三路：普通 PM 调用（剩余 43 个）。
-        let intent = dispatch_message(&mut self.table, &msg);
+        // C: main.c:88-103 — 第二/三路：事件回复 + PM 调用族统一经
+        // dispatch_message → dispatch_pm_call 的**单一分发表**（ARCH A-5）。
+        // 主循环不内联拦截任何 PM 调用（旧实现 7 个内联块已收编，04 文档 §3.6）。
+        let intent = dispatch_message(
+            &mut self.table,
+            &mut self.event_registry,
+            &mut self.transport,
+            caller,
+            &msg,
+        );
 
         // C: main.c:106 — result != SUSPEND → reply(who_p, result)。
         if let ReplyIntent::Reply(code) = intent {

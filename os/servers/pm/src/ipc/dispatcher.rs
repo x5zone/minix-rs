@@ -77,24 +77,30 @@ pub fn is_pm_call(nr: i32) -> bool {
 ///
 /// VFS→PM 异步回复（`IS_VFS_PM_RS && source == VFS`）已在 `run_once` 入口
 /// 拦截并交由 `handle_vfs_reply` 状态机处理（main.c:84-87 在主循环第一路），
-/// 因此**不会**进入本分发。本函数仅处理事件回复与 PM 调用两路。
+/// 因此**不会**进入本分发。本函数处理事件回复与 PM 调用两路——PM 调用
+/// 全部经 [`dispatch_pm_call`] 的单一分发表（ARCH A-5），主循环不得内联
+/// 拦截。
 ///
 /// # 返回
 ///
 /// [`ReplyIntent`]：主循环据此决定是否回复（main.c:106 等价）。
-pub fn dispatch_message(table: &mut ProcTable, msg: &minix_types::Message) -> ReplyIntent {
+pub fn dispatch_message<T: IpcTransport>(
+    table: &mut ProcTable,
+    events: &mut crate::event::EventRegistry,
+    transport: &mut T,
+    caller: UserSlot,
+    msg: &Message,
+) -> ReplyIntent {
     let call_nr = msg.m_type;
 
     if call_nr == PROC_EVENT_REPLY {
-        // C: main.c:88-89 — do_proc_event_reply()。
-        //
-        // 钩子：事件订阅语义归 06-event-subscription.md。
-        ReplyIntent::ReplyLater
+        // C: main.c:88-89 — do_proc_event_reply()（06-event-subscription.md）。
+        events.do_proc_event_reply(msg, caller, table, transport)
     } else if is_pm_call(call_nr) {
         // C: main.c:90-101 — call_index = call_nr - PM_BASE；越界/NULL →
         // ENOSYS。
         match PmCall::from_call_nr(call_nr) {
-            Some(call) => dispatch_pm_call(call, table, msg.m_source),
+            Some(call) => dispatch_pm_call(call, table, events, transport, caller, msg),
             None => ReplyIntent::Reply(ENOSYS),
         }
     } else {
@@ -152,6 +158,9 @@ pub fn vm_fork<T: IpcTransport>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::EventRegistry;
+    use crate::ipc::TestIpcTransport;
+    use crate::mproc::Lifecycle;
     use minix_types::Message;
 
     fn msg_with(m_type: i32, source: Endpoint) -> Message {
@@ -159,6 +168,19 @@ mod tests {
         m.m_type = m_type;
         m.m_source = source;
         m
+    }
+
+    /// 构造 dispatch_message 测试环境：`slot` 处注册 Running 进程
+    ///（`kernel=true` 时置 Privilege::Kernel，供事件回复的内核门）。
+    fn setup(slot: usize, ep: Endpoint, kernel: bool) -> (ProcTable, EventRegistry, TestIpcTransport) {
+        let mut table = ProcTable::new();
+        table.procs[slot].identity.endpoint = ep;
+        table.procs[slot].identity.id.pid = 100 + slot as i32;
+        table.procs[slot].state.lifecycle = Lifecycle::Running;
+        if kernel {
+            table.procs[slot].resources.privilege = crate::mproc::Privilege::Kernel;
+        }
+        (table, EventRegistry::new(), TestIpcTransport::new())
     }
 
     #[test]
@@ -188,49 +210,80 @@ mod tests {
         // 在主循环第一路（main.c:84-87）拦截，不进入本三路分发；此处仅当
         // 来源非 VFS 时才会落入 dispatch_message，此时它不属于 PM 调用族
         // → ENOSYS（main.c:102-103 兜底）。
-        let mut table = ProcTable::new();
-        let intent = dispatch_message(&mut table, &msg_with(0x980 + 7, Endpoint::RS));
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, false);
+        let intent = dispatch_message(
+            &mut table,
+            &mut events,
+            &mut transport,
+            UserSlot::new(3),
+            &msg_with(0x980 + 7, Endpoint::RS),
+        );
         assert_eq!(intent, ReplyIntent::Reply(ENOSYS));
     }
 
     #[test]
     fn test_proc_event_reply_routes_to_reply_later() {
         // C: main.c:88-89 — PROC_EVENT_REPLY → do_proc_event_reply()。
-        let mut table = ProcTable::new();
-        let intent = dispatch_message(&mut table, &msg_with(PROC_EVENT_REPLY, Endpoint::RS));
+        // 内核调用者 + 默认消息（event 位为 0 → endpoint 解析失败）
+        // → SUSPEND 前置（event.c:241-245 → ReplyLater）。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, true);
+        let intent = dispatch_message(
+            &mut table,
+            &mut events,
+            &mut transport,
+            UserSlot::new(3),
+            &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
+        );
         assert_eq!(intent, ReplyIntent::ReplyLater);
     }
 
     #[test]
+    fn test_proc_event_reply_from_user_process_is_enosys() {
+        // event.c:232-233 — 仅系统服务可回复；普通进程误用 → ENOSYS 回复。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, false);
+        let intent = dispatch_message(
+            &mut table,
+            &mut events,
+            &mut transport,
+            UserSlot::new(3),
+            &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
+        );
+        assert_eq!(intent, ReplyIntent::Reply(ENOSYS));
+    }
+
+    #[test]
     fn test_pm_call_routes_to_dispatch_pm_call() {
-        // C: main.c:90-101 — IS_PM_CALL → call_vec。
-        let mut table = ProcTable::new();
-        // 未实现调用 → ENOSYS（DEFERRED 07~20）。
+        // C: main.c:90-101 — IS_PM_CALL → call_vec（单一分发表）。
+        // 未接线调用（GetPid）→ ENOSYS（DEFERRED，40 个）。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, false);
         assert_eq!(
             dispatch_message(
                 &mut table,
-                &msg_with(11, Endpoint::from_generation_slot(1, 0))
+                &mut events,
+                &mut transport,
+                UserSlot::new(3),
+                &msg_with(4, ep)
             ),
             ReplyIntent::Reply(ENOSYS)
-        );
-        // fork → SUSPEND 语义（forkexit.c:139）。
-        assert_eq!(
-            dispatch_message(
-                &mut table,
-                &msg_with(2, Endpoint::from_generation_slot(1, 0))
-            ),
-            ReplyIntent::ReplyLater
         );
     }
 
     #[test]
     fn test_unknown_type_returns_enosys() {
         // C: main.c:102-103 — 非 PM 调用 → ENOSYS。
-        let mut table = ProcTable::new();
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, false);
         assert_eq!(
             dispatch_message(
                 &mut table,
-                &msg_with(0x100, Endpoint::from_generation_slot(1, 0))
+                &mut events,
+                &mut transport,
+                UserSlot::new(3),
+                &msg_with(0x100, ep)
             ),
             ReplyIntent::Reply(ENOSYS)
         );

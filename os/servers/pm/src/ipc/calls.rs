@@ -16,9 +16,10 @@
 //! 调用号常量不单独散列（不重复 callnr.h 47 个 `pub const`）：枚举判别
 //! 值即单一事实源；将来内核侧 libc 需要调用号时再上移 minix-types。
 
-use crate::ipc::ReplyIntent;
+use crate::event::EventRegistry;
+use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
-use minix_types::{ENOSYS, Endpoint};
+use minix_types::{ENOSYS, Endpoint, Message, PmError, ProcEventMask, UserSlot, VirBytes};
 
 /// PM 系统调用枚举（C: `callnr.h:14-60`，`PM_BASE + 1` ~ `PM_BASE + 47`）。
 ///
@@ -192,24 +193,116 @@ impl PmCall {
 
 /// 分发一个已注册的 PM 调用（C: `call_vec[call_index]()`，main.c:99）。
 ///
-/// handler 签名与 C `int (*)(void)` 的差异见 04 文档 §3.3（D3/D5）：
-/// C handler 读全局 `m_in`/`mp`；Rust 显式传 `table` + caller endpoint。
+/// **单一分发表**（ARCH A-5）：C 的 `call_vec` 是一张 47 项函数指针表，
+/// 所有已注册调用走同一路径；Rust 对应为这一个穷尽 match——已落地的
+/// handler（7 个）在此解码消息载荷并调用，未落地的（40 个）返回
+/// `Reply(ENOSYS)` 占位（过渡差异，文档化于 04 文档 §3.6 D6）。
+/// 主循环不得绕过本函数内联拦截任何调用（旧实现的 7 个内联块已收编）。
 ///
-/// 各 handler 的完整语义在对应文档落地前返回 `Reply(ENOSYS)` 占位——
-/// 这是 C 中"已注册调用"与 Rust"已实现调用"的过渡差异，文档化于
-/// 04 文档 §3.6（D6）。
-pub fn dispatch_pm_call(call: PmCall, table: &mut ProcTable, caller: Endpoint) -> ReplyIntent {
+/// handler 签名与 C `int (*)(void)` 的差异见 04 文档 §3.3（D3/D5）：
+/// C handler 读全局 `m_in`/`mp`；Rust 显式传 `table`/`events`/`transport`
+/// + caller 槽位 + 消息引用（ARCH A-3：隐式全局 → 显式参数）。
+pub fn dispatch_pm_call<T: IpcTransport>(
+    call: PmCall,
+    table: &mut ProcTable,
+    events: &mut EventRegistry,
+    transport: &mut T,
+    caller: UserSlot,
+    msg: &Message,
+) -> ReplyIntent {
     match call {
         // C: do_fork（forkexit.c:139 `return SUSPEND`）——fork 的回复不是
         // 同步的：do_fork 发出 VFS_PM_FORK 后返回 SUSPEND，父/子回复由
         // 05 的 VFS_PM_FORK_REPLY（handle_vfs_reply，main.c:369-394）
-        // 异步完成。04 的分发层只建模"本次不回复"。
-        //
-        // DEFERRED: do_fork 本体（vm_fork/mproc 复制/VFS_PM_FORK/tracer
-        // SIGSTOP）归 07-pm-fork.md；现有 fork.rs 协调占位（同步回复）
-        // 与 C 语义不符，07 落地时替换。
-        PmCall::Fork => ReplyIntent::ReplyLater,
-        // 其余 46 个调用：handler 归属 07~20（ENOSYS 占位）。
+        // 异步完成。失败（表满/内存不足/VM 拒绝）同步回复 errno
+        //（forkexit.c:60-79 的 `return EAGAIN/ENOMEM/s`）。
+        PmCall::Fork => match crate::fork::handle_fork(table, msg.m_source, transport) {
+            Ok(_child_pid) => ReplyIntent::ReplyLater,
+            Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
+        },
+        // C: do_srv_fork（forkexit.c:237/239）——与 fork 相反：立即
+        // reply(child, OK) 后同步返回 pid。
+        PmCall::SrvFork => {
+            let params = {
+                let pl = unsafe { msg.m_u.m_lsys_pm_srv_fork };
+                crate::mproc::SrvForkParams {
+                    uid: pl.uid,
+                    gid: pl.gid,
+                }
+            };
+            match crate::fork::handle_srv_fork(table, msg.m_source, params, transport) {
+                Ok(child_pid) => ReplyIntent::Reply(child_pid),
+                Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
+            }
+        }
+        // C: do_exit（forkexit.c:246-266）——返回 SUSPEND 且**永不回复**
+        //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
+        PmCall::Exit => {
+            let status = unsafe { msg.m_u.m_lc_pm_exit.status };
+            let _ = crate::exit::handle_exit(table, caller, status, transport);
+            ReplyIntent::NoReply
+        }
+        // C: do_wait4（forkexit.c:471-542）——同步回复（W_STOPCODE/WNOHANG/
+        // ECHILD）或 SUSPEND（wait_test 命中后挂 WAITING，由 tell_parent/
+        // tell_tracer 稍后回复）。handler 直接返回回复意图。
+        PmCall::Wait4 => {
+            let (pidarg, options, addr) = unsafe {
+                let pl = msg.m_u.m_lc_pm_wait4;
+                (pl.pid, pl.options, pl.addr)
+            };
+            crate::wait::handle_wait4(
+                table,
+                caller,
+                pidarg,
+                options as u32,
+                VirBytes(addr),
+                transport,
+            )
+        }
+        // C: do_kill（signal.c:197-204）——成功回复 0；caller 自杀且已处
+        // EXITING 时是 SUSPEND（check_sig 的 sig_proc_exit 链，signal.c:384）
+        // → 本次不回复。
+        PmCall::Kill => {
+            let (pid, signo) = unsafe {
+                let pl = msg.m_u.m_lc_pm_kill;
+                (pl.pid, pl.signo)
+            };
+            match crate::signal::handle_kill(table, caller, pid, signo, transport) {
+                Ok(_count) => {
+                    if table.procs[caller.get()].state.lifecycle.is_exiting() {
+                        ReplyIntent::ReplyLater
+                    } else {
+                        ReplyIntent::Reply(0)
+                    }
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_srv_kill（signal.c:204-211）——同 do_kill 的回复模式。
+        PmCall::SrvKill => {
+            let (pid, signo) = unsafe {
+                let pl = msg.m_u.m_rs_pm_srv_kill;
+                (pl.pid, pl.signo)
+            };
+            match crate::signal::handle_srv_kill(table, caller, pid, signo, transport) {
+                Ok(_count) => {
+                    if table.procs[caller.get()].state.lifecycle.is_exiting() {
+                        ReplyIntent::ReplyLater
+                    } else {
+                        ReplyIntent::Reply(0)
+                    }
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_proceventmask（event.c:179-206）——掩码更新走 EventRegistry
+        //（06-event-subscription.md），回复意图由 registry 决定。
+        PmCall::ProcEventMask => {
+            let mask_bits = unsafe { msg.m_u.m_lsys_pm_proceventmask.mask };
+            let mask = ProcEventMask::from_bits_truncate(mask_bits);
+            events.do_proceventmask_mut(caller, mask, table, transport)
+        }
+        // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。
         _ => ReplyIntent::Reply(ENOSYS),
     }
 }
@@ -217,6 +310,17 @@ pub fn dispatch_pm_call(call: PmCall, table: &mut ProcTable, caller: Endpoint) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::TestIpcTransport;
+
+    /// 构造 (table, events, transport) 测试三元组，并在 `slot` 注册一个
+    /// Running 进程（endpoint 带代际，供 pm_isokendpt/find 语义）。
+    fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {
+        let mut table = ProcTable::new();
+        table.procs[slot].identity.endpoint = ep;
+        table.procs[slot].identity.id.pid = 100 + slot as i32;
+        table.procs[slot].state.lifecycle = crate::mproc::Lifecycle::Running;
+        (table, EventRegistry::new(), TestIpcTransport::new())
+    }
 
     #[test]
     fn test_call_nr_roundtrip_all_registered() {
@@ -238,35 +342,95 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_fork_is_reply_later() {
-        // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复。
-        let mut table = ProcTable::new();
+    fn test_dispatch_fork_success_is_reply_later() {
+        // C: do_fork 返回 SUSPEND（forkexit.c:139）——fork 同步不回复；
+        // 父进程已注册时 handle_fork 走到 vm_fork（脚本化 OK 应答）→ ReplyLater。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut vm_reply = Message::default();
+        vm_reply.m_type = minix_types::OK;
+        unsafe {
+            vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
+        }
+        transport.queue_sendrec_reply(vm_reply);
+
+        let mut msg = Message::default();
+        msg.m_type = 2;
+        msg.m_source = ep;
         let intent = dispatch_pm_call(
             PmCall::Fork,
             &mut table,
-            Endpoint::from_generation_slot(1, 0),
+            &mut events,
+            &mut transport,
+            UserSlot::new(3),
+            &msg,
         );
         assert_eq!(intent, ReplyIntent::ReplyLater);
+        // fork 链路真实发出：先 VM_FORK（sendrec 记录在 sent），后 VFS_PM_FORK。
+        assert_eq!(transport.sent()[0].0, Endpoint::VM);
+        assert_eq!(transport.sent().len() >= 2, true);
+    }
+
+    #[test]
+    fn test_dispatch_fork_parent_unknown_is_error_reply() {
+        // C: forkexit.c:59-79 的同步可失败段——父进程不存在 → errno 回复
+        //（pm_isokendpt 防御，ESRCH），不再有"静默 ReplyLater"的假路径。
+        let (mut table, mut events, mut transport) =
+            setup_with_caller(3, Endpoint::from_generation_slot(1, 3));
+        let mut msg = Message::default();
+        msg.m_type = 2;
+        msg.m_source = Endpoint::from_generation_slot(9, 9); // 未注册的父
+        let intent = dispatch_pm_call(
+            PmCall::Fork,
+            &mut table,
+            &mut events,
+            &mut transport,
+            UserSlot::new(3),
+            &msg,
+        );
+        assert_eq!(
+            intent,
+            ReplyIntent::Reply(minix_types::PmError::InvalidEndpoint.to_errno())
+        );
+    }
+
+    #[test]
+    fn test_dispatch_exit_is_no_reply() {
+        // C: do_exit 返回 SUSPEND 且永不回复（forkexit.c:246-266，
+        // plan.md §7.3 的 NoReply 子情形）。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut msg = Message::default();
+        msg.m_type = 1;
+        msg.m_source = ep;
+        let intent = dispatch_pm_call(
+            PmCall::Exit,
+            &mut table,
+            &mut events,
+            &mut transport,
+            UserSlot::new(3),
+            &msg,
+        );
+        assert_eq!(intent, ReplyIntent::NoReply);
     }
 
     #[test]
     fn test_dispatch_unimplemented_call_is_enosys() {
         // C: call_vec[call_index]() 已注册但 handler 未实现 → ENOSYS 占位
-        // （DEFERRED 07~20）。
-        let mut table = ProcTable::new();
+        //（DEFERRED，40 个：07~20 未落地者）。GetPid(4) 当前未接线。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut msg = Message::default();
+        msg.m_type = 4;
+        msg.m_source = ep;
         assert_eq!(
             dispatch_pm_call(
-                PmCall::Kill,
+                PmCall::GetPid,
                 &mut table,
-                Endpoint::from_generation_slot(1, 0)
-            ),
-            ReplyIntent::Reply(ENOSYS)
-        );
-        assert_eq!(
-            dispatch_pm_call(
-                PmCall::Exit,
-                &mut table,
-                Endpoint::from_generation_slot(1, 0)
+                &mut events,
+                &mut transport,
+                UserSlot::new(3),
+                &msg
             ),
             ReplyIntent::Reply(ENOSYS)
         );
