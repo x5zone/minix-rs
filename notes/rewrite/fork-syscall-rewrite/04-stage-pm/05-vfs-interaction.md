@@ -229,7 +229,7 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 
 06/09/13/16/17 尚未落地，若不抽象，协议语义无法单测。`trait VfsReplyServices` 把状态机的"效果"（reply、sched_start_user、exit_proc、publish_event、exec_restart、restart_signals、sys_abort、reply_to_guardian 等）定义为端口方法，两个行为不同的实现：
 
-- `PmServices`——生产实现，未落地的方法用 `unimplemented!("DEFERRED: 见 XX-*.md")` 自说明，与既有 `KernelIpcTransport` 惯例一致。
+- `PmServices`——生产实现，未落地的方法用 `unimplemented!("DEFERRED: 见 XX-*.md")` 自说明，与既有 `KernelIpcTransport` 惯例一致。2026-09-06 起 `exit_proc` 已落地（委托 09 的二阶段退出 `crate::exit::exit_proc`，FORK 调度失败路径 `main.c:381` 可达）。
 - `RecordingServices`——测试实现，录制调用序列供断言。
 
 这让 05 的协议语义（清标志、抽取 NEW_PARENT、11 路分支、尾部条件）在依赖未落地时即可 100% 断言。
@@ -331,7 +331,7 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 ## 6 过渡
 
 - 04-ipc-dispatch.md 的 VFS 回复"钩子"已落地为真实状态机：dispatcher 不再含 VFS 分支，`run_once` 第一路直接拦截（D8）。
-- 06（事件订阅）、09（exit 收养）、13（信号重投）、16、17（exec 重启）未落地时，`VfsReplyServices` 的对应方法在 `PmServices` 中 `unimplemented!("DEFERRED: 见 XX-*.md")` 自说明，使 05 协议可独立测试与验证。
+- 06（事件订阅）、09（exit 收养）、13（信号重投）、16、17（exec 重启）未落地时，`VfsReplyServices` 的对应方法在 `PmServices` 中 `unimplemented!("DEFERRED: 见 XX-*.md")` 自说明，使 05 协议可独立测试与验证。**2026-09-06 状态**：06 已接线、09 的 `exit_proc` 已接线（`set_core_flag` 尚待 sig_status 字段决策）、13 已接线；16/17 的 `sched_start_user`/`exec_restart` 仍为占位。
 - 07-pm-fork 协调器已把 fork 的 VFS 发送切到 `tell_vfs`，消除旧 `VfsRequest`/`send_vfs_request` 双 API。
 - 下一步：09 落地 `mark_new_parent` 设置侧；13 落地 `restart_signals` 真实实现替换 no-op 脚手架；REBOOT 写入侧（`do_reboot`）归 20 档。
 

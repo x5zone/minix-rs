@@ -270,7 +270,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-03 | ~~`ipc/dispatcher.rs:139-155`~~ | ~~`send_vm_fork` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：真实 `vm_fork` sendrec，见 §10） | 07-pm-fork.md / 02-stage-vm/18 | ~~真实 VM_FORK 往返~~ 已实现（wire 层）；硬件通电仍挂 E1 |
 | D-04 | ~~`ipc/dispatcher.rs:159-165`~~ | ~~`send_kernel_request` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：零调用死代码删除；C 的 `do_fork` 无独立内核请求步骤，proc 复制在 VM 的 sys_fork 内） | 07-pm-fork.md | ~~内核 fork 请求面~~ 不适用（与 C 不符的原型残留） |
 | D-05 | `ipc/vfs.rs:401` | `sched_start_user` `unimplemented!()` | 16-scheduling.md | SCHED 客户端（A-8） |
-| D-06 | `ipc/vfs.rs:407` | `exit_proc` 的 VFS 退出通知 `unimplemented!()` | 09-pm-exit.md | 接线 09 退出链时 |
+| D-06 | ~~`ipc/vfs.rs:407`~~ | ~~`exit_proc` 的 VFS 退出通知 `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #8：委托 09 的 `crate::exit::exit_proc` 二阶段退出，`main.c:381` FORK 失败路径） | 09-pm-exit.md | ~~接线 09 退出链时~~ 已达成（+1 委托测试） |
 | D-07 | `ipc/vfs.rs:413` | `set_core_flag`（WCOREFLAG）`unimplemented!()` | 09-pm-exit.md | 同上 |
 | D-08 | `ipc/vfs.rs:469` | `exec_restart` `unimplemented!()` | 17-exec.md | exec 重启路径接线 |
 | D-09 | `ipc/vfs.rs:488` | `sys_abort` `unimplemented!()` | 01-stage-kernel | 内核 sys_abort |
@@ -508,3 +508,17 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`13-signal-flow.md` D5（签名收敛论证）+ §4.4 代码块、`06-event-subscription.md` §2.10 钩子行（DEFERRED → 落地 + D-25 引用）；本文件 §6 D-11 行 + 新增 D-25 行。
 
 **未做（DEFERRED 论证）**：`KernelResume::resume` 的真实 `sys_resume`（D-25）——依赖 minix-sys 内核调用面（E6），按通电口径以显式契约过渡。
+
+### ✅ Fix #8: D-06 — VFS 端口 `exit_proc` 委托 09 退出链（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/vfs.rs`（生产 impl 的 `exit_proc` 从 `unimplemented!()` 改为委托 `crate::exit::exit_proc`；+1 单测）
+- `05-vfs-interaction.md`（端口落地状态两处刷新）
+
+**Before/After**：生产端口一行委托（`status as i8` 截断对应 C 的 exit_status 语义，`dump_core` 直传），C 锚点 `main.c:381`（FORK 调度失败 `exit_proc(rmp, -1, FALSE)`）。设计说明：端口处不做任何逻辑（无重试、无状态修补），09 的 `exit_proc` 全链自带 dump_core 双门与收养链——端口的职责只是"把 VFS 回复翻译成 PM 内部调用"。
+
+**Verified**：
+- `cargo test -p minix-pm`：**331 lib + 6 integration passed**；新单测断言子进程离开 Running + `VFS_PM_EXIT` 已发送
+- 注意：该端口当前在 FORK 失败分支的可达性仍被 D-05（`sched_start_user` 非 KERNEL/NONE 时 `unimplemented!`）遮蔽——非内核调度器的调度失败要到 A-8（16-scheduling.md）落地才可能发生；本条完成的是"端口就绪"，分支可达性归 D-05
+
+**Docs**：`05-vfs-interaction.md` 两处端口状态行；本文件 §6 D-06 行。

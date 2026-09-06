@@ -402,9 +402,11 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool) {
-        // [ARCH A-9] 进程退出推进 — 见 09-pm-exit.md。
-        let _ = (slot, status, dump_core);
-        unimplemented!("DEFERRED: exit_proc — 见 09-pm-exit.md")
+        // C: main.c:381 — fork 调度失败路径 `exit_proc(rmp, -1, FALSE
+        // /*dump_core*/)`：直接走二阶段退出（09 的 exit_proc 全链：sys_stop
+        // → VFS_PM_EXIT → 僵尸化 → 收养链），不重读消息、不经 do_exit 的
+        // 入口门。status 截断为 i8 与 C 的 exit_status 语义一致。
+        crate::exit::exit_proc(self.table, slot, status as i8, dump_core, self.transport);
     }
 
     fn set_core_flag(&mut self, slot: UserSlot) {
@@ -898,6 +900,39 @@ mod tests {
         // TestIpcTransport 应记录一条发往 VFS 的消息
         assert_eq!(transport.sent().len(), 1);
         assert_eq!(transport.last_sent_dest(), Some(Endpoint::VFS));
+    }
+
+    #[test]
+    fn test_production_exit_proc_delegates_to_exit_chain() {
+        // D-06：生产端口 exit_proc 委托 09 的二阶段退出——FORK 调度失败
+        //（main.c:381 exit_proc(rmp, -1, FALSE)）时子进程僵尸化并通知 VFS。
+        use crate::ipc::transport::TestIpcTransport;
+        use crate::mproc::Lifecycle;
+
+        let mut table = ProcTable::new();
+        let mut transport = TestIpcTransport::default();
+        let mut events = crate::event::EventRegistry::new();
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, 0);
+        // 待拆除的子进程（RS fork 出的 PRIV_PROC 语义在 08；此处普通用户进程）
+        svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
+        svc.table.procs[1].identity.id.pid = 42;
+        svc.table.procs[1].state.lifecycle = Lifecycle::Running;
+
+        svc.exit_proc(UserSlot::new(1), -1, false);
+
+        // 子进程已进入退出/僵尸态，且 VFS_PM_EXIT 已发出。
+        assert!(
+            !matches!(svc.table.procs[1].state.lifecycle, Lifecycle::Running),
+            "exit_proc must move the child out of Running, got {:?}",
+            svc.table.procs[1].state.lifecycle
+        );
+        assert!(
+            transport
+                .sent()
+                .iter()
+                .any(|(ep, m)| *ep == Endpoint::VFS && m.m_type == minix_types::VFS_PM_EXIT),
+            "VFS_PM_EXIT must be sent"
+        );
     }
 
     #[test]
