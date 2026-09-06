@@ -44,7 +44,7 @@
 | S2 | `activate_boot_slot` 缺失 cmd/script/argc/vm_call_mask/scheduler/priority/quantum/alive_tm | P1 |✅ |
 | S3 | `sched_init_proc` 对 `NONE` 调度器不跳过（C sched_start.c:57-58） | P1 |✅ |
 | S4 | `KernelApi::sched_init_proc` 签名丢弃调度参数（scheduler/priority/quantum/cpu） | P1 |✅ |
-| E1 | MockKernelApi 四份复制、无共享测试工具模块 | P2 | ☐ |
+| E1 | MockKernelApi 四份复制、无共享测试工具模块 | P2 | ✅ |
 | E2 | 解析函数（IpcListIterator/parse_label/build_cmd_dep）无 fuzz/property 测试 | P2 | ✅ | 已修（Fix #64，2026-09-06，零依赖 property 测试） |
 | E3 | 无集成级 boot 顺序/消息交换测试（receive 不可用） | P2 | ☐ | EDGE（见 §18.10） |
 
@@ -1990,10 +1990,10 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ✅ | 已修（Fix #68，2026-09-07，derive 删除） |
 | R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18/19/21 已补（E-10，Fix #65）；20 随 06 接线；22/23 gated（见 §18.10 E-10） |
-| A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
+| A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ✅ | 形态 a 已采纳并落地（Fix #51/#52/#55/#56） |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
 | A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ✅ | 已修（Fix #63，2026-09-06） |
-| A4 | 控制请求域统一决策载荷模式 | 建议 | ☐ | 13 落地期 |
+| A4 | 控制请求域统一决策载荷模式 | 建议 | 🔶 | stop_decision 已落（Fix #52）；dispatch 逐请求路由随 06 接线（OQ-4） |
 | A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ✅ | 1-4/6 步已按此执行 |
 
 **OQ 清单（上交用户）**
@@ -2763,9 +2763,12 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 - ~~影响面：boot.rs 错误路径 + 01 号文档 §5 + 调用方（main.rs/main.rs 测试）。~~（已完成）
 
 **E-7 R10 调用顺序类型化**
-- 剩余项：`start_update` 链式调用的 abort/end 交错（部分已随 R27 内嵌化）、
-  `do_edit` 的 sched_stop→edit_slot→privctl→sched_init 序列（13 号落地时一并）。
-- 形态：类型化步骤 token（R10 提案）或编排内 debug_assert 序列锚。
+- 🔄 **gated（13/06 号接线轮）**：剩余项全部压在未落地的编排上——
+  `start_update` 链式调用的 abort/end 交错（abort 钩子内嵌时序已随 R27/Fix #56
+  修正注释与实现）、`do_edit` 的 sched_stop→edit_slot→privctl→sched_init 序列
+  （13 号落地时一并）。
+- 形态：类型化步骤 token（R10 提案）或编排内 debug_assert 序列锚（E-3 的
+  `assert_consistent` 是同思路的先例——不变量断言优先于类型机器）。
 
 **E-8 R31 诊断面**
 - ✅ **错误名面已修（Fix #66，2026-09-07）**：`minix_types::Errno` 落地
