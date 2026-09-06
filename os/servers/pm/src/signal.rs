@@ -11,6 +11,16 @@ use crate::mproc::{ProcTable, Lifecycle, SignalState, _NSIG};
 pub const SIGKILL: i32 = 9;
 pub const SIGTERM: i32 = 15;
 pub const SIGCHLD: i32 = 20;
+/// Lethal signal family（`SIGS_IS_LETHAL`，`sys/signal.h:279-281` 的成员，
+/// 值见 `sys/signal.h:55-65`）。
+pub const SIGILL: i32 = 4;
+pub const SIGABRT: i32 = 6;
+pub const SIGEMT: i32 = 7;
+pub const SIGFPE: i32 = 8;
+pub const SIGPIPE: i32 = 13;
+pub const SIGBUS: i32 = 10;
+pub const SIGSEGV: i32 = 11;
+
 pub const SIGSTOP: i32 = 17;
 
 /// Kill error, maps to `errno`.
@@ -150,19 +160,25 @@ pub fn check_sig(
     }
 }
 
-/// Whether signal is lethal (SIGS_IS_LETHAL, `sys/sigtype.h`).
+/// Whether signal is lethal (`SIGS_IS_LETHAL`, `sys/signal.h:279-281`):
+/// SIGILL | SIGBUS | SIGFPE | SIGSEGV | SIGEMT | SIGABRT.
 fn is_lethal(signo: i32) -> bool {
-    matches!(signo, 9 | 15 | 6 | 11 | 4 | 5 | 8 | 10 | 7) // KILL, TERM, ABRT, SEGV, ILL, TRAP, FPE, BUS, EMT (approx)
+    matches!(signo, SIGILL | SIGBUS | SIGFPE | SIGSEGV | SIGEMT | SIGABRT)
 }
 
-/// Whether signal needs stacktrace (`SIGS_IS_STACKTRACE`).
-fn is_stacktrace(_signo: i32) -> bool {
-    false // stub for 11, real in 16
+/// Whether signal needs a stacktrace (`SIGS_IS_STACKTRACE`,
+/// `sys/signal.h:286`): lethal 且非 SIGABRT。C 对 PRIV_PROC 的系统信号先
+/// `sys_diagctl_stacktrace`（`signal.c:455-457`）。
+fn is_stacktrace(signo: i32) -> bool {
+    is_lethal(signo) && signo != SIGABRT
 }
 
-/// Whether signal is termination (`SIGS_IS_TERMINATION`).
+/// Whether signal is termination (`SIGS_IS_TERMINATION`,
+/// `sys/signal.h:282-284`): lethal 或 SIGKILL/SIGPIPE。终止类走
+/// `sig_proc_exit`；非终止类转 `SIGS_SIGNAL_RECEIVED` 消息
+///（`signal.c:459-470`）。
 fn is_termination(signo: i32) -> bool {
-    !matches!(signo, 1 | 13 | 17 | 23 | 20 | 28 | 29) // HUP, PIPE, STOP, CONT, CHLD, WINCH, INFO are not termination (approx)
+    is_lethal(signo) || signo == SIGKILL || signo == SIGPIPE
 }
 
 /// Checks permission (`signal.c:622-628`).
@@ -412,6 +428,28 @@ mod tests {
     }
 
     #[test]
+    fn test_stacktrace_and_termination_match_c_macros() {
+        // C: sys/signal.h:279-286 — SIGS_IS_STACKTRACE = LETHAL && !=ABRT；
+        // SIGS_IS_TERMINATION = LETHAL || KILL || PIPE。
+        assert!(is_stacktrace(SIGILL));
+        assert!(is_stacktrace(SIGBUS));
+        assert!(is_stacktrace(SIGFPE));
+        assert!(is_stacktrace(SIGSEGV));
+        assert!(is_stacktrace(SIGEMT));
+        assert!(!is_stacktrace(SIGABRT), "ABRT lethal but no stacktrace");
+        assert!(!is_stacktrace(9), "SIGKILL not lethal");
+        assert!(!is_stacktrace(13), "SIGPIPE not lethal");
+
+        assert!(is_termination(SIGABRT));
+        assert!(is_termination(SIGSEGV));
+        assert!(is_termination(9));  // SIGKILL
+        assert!(is_termination(13)); // SIGPIPE
+        assert!(!is_termination(15), "SIGTERM not in C's termination set");
+        assert!(!is_termination(2), "SIGINT not termination");
+        assert!(!is_termination(SIGSTOP), "SIGSTOP not termination");
+    }
+
+    #[test]
     fn test_kill_eperm_for_lethal_priv() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, true); // PRIV_PROC
@@ -419,7 +457,11 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(1000, 100));
         let mut t = crate::ipc::TestIpcTransport::default();
-        let res = check_sig(&mut table, UserSlot::new(0), 42, 9, false, &mut t); // SIGKILL lethal, !ksig, PRIV_PROC → EPERM
+        // D-22 语义修正：SIGS_IS_LETHAL（sys/signal.h:279-281）= ILL|BUS|FPE|
+        // SEGV|EMT|ABRT，不含 SIGKILL——旧近似列表把 9 计入 lethal 是与 C 的
+        // 真实偏差（SIGKILL 对 PRIV_PROC 经 kill(2) 在 C 中合法）。改用真
+        // lethal 的 SIGSEGV 验证 EPERM 保护。
+        let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut t); // SIGSEGV lethal, !ksig, PRIV_PROC → EPERM
         assert_eq!(res.unwrap_err(), KillError::PermissionDenied);
     }
 

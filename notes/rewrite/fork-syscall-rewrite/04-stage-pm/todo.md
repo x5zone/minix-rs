@@ -286,7 +286,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-19 | ~~`exit.rs:219`~~ | ~~`vm_exit`（页表回收）no-op~~ **✅ 已修复**（2026-09-06，Fix #12：真实 `sendrec(VM, VM_EXIT)` + 失败 panic 对齐 `forkexit.c:455-457`） | 02-stage-vm/22 | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
 | D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功（C 侧 `utility.c:92` 本身只填 utime/stime） | 10-pm-wait.md | sys_datacopy + rusage 范围决策 |
-| D-22 | `signal.rs:160` | 内核调度器判定返回硬编码 false（"stub for 11, real in 16"） | 16-scheduling.md | A-8 |
+| D-22 | ~~`signal.rs:160`~~ | ~~`is_stacktrace` 返回硬编码 false~~ **✅ 已修复**（2026-09-06，Fix #13：`is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写——原计划臆断为位掩码，实为 `sys/signal.h:279-286` 的谓词宏；连带修复旧 lethal 近似列表错含 SIGKILL/TERM/TRAP 的真实语义偏差，EPERM 保护测试改用 SIGSEGV） | ~~16-scheduling.md~~ 11-signal-core.md（语义实属信号系统，原归属登记有误） | ~~A-8~~ 无依赖，纯谓词 |
 | D-23 | `signal.rs:360-362` | SIGVTALRM/`check_vtimer` stub（`alarm.c:326-328`） | 14-itimer.md | 虚拟计时器 trait 落地（`timer.rs:165-167` 已定义 seam） |
 | D-24 | `mproc/fork.rs:222-228` | `getticks()` 返回 0（TODO 注释：应向 CLOCK 请求） | 14-itimer.md / 内核 sys_times | 内核 uptime 面 |
 | D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
@@ -588,3 +588,18 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`09-pm-exit.md` 占位行刷新；本文件 §6 D-19 行。
 
 **未做（DEFERRED 论证）**：VM 侧真实页表回收与硬件往返挂 `edge_todo.md` E5(a)/E1。
+
+### ✅ Fix #13: D-22 — `is_stacktrace`/`is_termination` 按真 C 谓词重写（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/signal.rs`（三个谓词函数重写 + 补 7 个 lethal 族本地常量 + 1 谓词精确集测试 + 1 个既有测试的语义修正）
+
+**Before/After**：C ground truth 是**谓词宏**（`sys/signal.h:279-286`）而非位掩码（原 D-22 记录有臆断）：`SIGS_IS_LETHAL = ILL|BUS|FPE|SEGV|EMT|ABRT`、`SIGS_IS_STACKTRACE = LETHAL && !=ABRT`、`SIGS_IS_TERMINATION = LETHAL || KILL || PIPE`。旧 Rust 实现三处错：`is_stacktrace` 硬编码 false（PRIV_PROC 的 stacktrace 分支死代码）；`is_lethal` 近似列表错含 SIGKILL/TERM/TRAP；`is_termination` 反向近似列表与 C 集合不符。连带发现：`test_kill_eperm_for_lethal_priv` 用 SIGKILL 编码了旧错误行为（C 中 SIGKILL 经 kill(2) 对 PRIV_PROC 合法）——按 Ground Truth 链改用 SIGSEGV 并留修正注释。归属修正：D-22 实属 11-signal-core.md（信号系统语义），原登记 16-scheduling 有误。
+
+**Verified**：
+- `cargo test -p minix-pm`：336 → **339 lib passed**（+1 谓词精确集测试；1 测试按 C 语义修正）+ 6 integration
+- `grep -n "false // stub" os/servers/pm/src/signal.rs`：零命中
+
+**Docs**：本文件 §6 D-22 行（含归属修正）；`signal.rs` 谓词 doc 注释带 C 锚点。
+
+**未做（DEFERRED 论证）**：无——纯函数重写，`sys_diagctl_stacktrace` 的内核调用本体归 D-09 家族（E6）。
