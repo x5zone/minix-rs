@@ -461,7 +461,9 @@ grep 确认生产路径无任何调用者（boot.rs 的 `BootParams` 是实际�
 **验证**：`rg "find_boot_image|set_boot_image|BOOT_INFO" os/servers/vm/src --glob '!global.rs'`
 为 0。
 
-### V9-P3-2 大匿名映射懒分配 roadmap（Reserved → 逐页 fault → 稀疏表示）
+### ✅ V9-P3-2 大匿名映射懒分配 roadmap——**判定闭合：步骤 1-2 已是现状行为，步骤 3 为证据门控优化**（2026-09-06，见 §15 Fix #35）
+
+> 原三项 roadmap 经 T20 深审后重判：demand paging 已是生产现状（匿名映射在建区时零物理分配、fault 时经 def_memtype 物化），无需"接线"；稀疏表示属纯优化、无行为差异，挂性能证据触发。完整判定链见 Fix #35。
 
 **问题**：`VirRegion.physblocks: Vec<PageSlot>` 对整段映射一次性分配 Vec；lazy 族
 （`map_lazy` 等）无生产调用方（P0-1 修复后标注 `#[allow(dead_code)]`）。Redox demand
@@ -1188,6 +1190,19 @@ Coverage Summary for vm:
 - **余件 → edge E-RSWIRE**：rprocpub 字节 ABI（本树缺 devmajor_t/bitchunk_t/rs_pci 定义）+ `Gateway::sys_safecopyfrom`（wire 已定稿于 edge 条目，暂无生产消费者故不顺手加——T3 无主 API 纪律）
 - **Verified**: `cargo test -p minix-types` → **169 passed**（+1 roundtrip）；四矩阵 **457 / 473 / 472 / 457 passed**（+1 pin 测试）；四组合 clippy `^servers/` **0 警告**
 - **Docs**: 25-rs-services.md（握手契约三处 + 模块清单行号）、15-ipc-dispatch.md（§5.3 RS_INIT 缺口行 ✅）
+
+### ✅ Fix #35: T20（V9-P3-2）— 懒分配 roadmap 判定闭合：demand paging 已是现状，稀疏表示证据门控
+
+- **性质**：设计判定（无代码改动）。
+- **判定链（demand paging 已达成）**：
+  1. 匿名 mmap（`handle_mmap` anon 分支，mmap.rs:333-348）：建区 `VirRegion::with_memtype` + 插入 + `add_total`——**零物理页分配**；
+  2. 缺页：kernel VM_PAGEFAULT → `dispatch_pagefault`（vm_server.rs）→ `handle_pagefault`（cow_exec_pf.rs:23）→ `region.def_memtype` 分派 → `AnonymousMemory::ev_pagefault`（memtype.rs:279）——**Empty/未映射槽 → `NeedNewPage`**（memtype.rs:294-299）；
+  3. 物化：`alloc_and_map`（cow_exec_pf.rs:173）——`alloc_pfn` + `region.map_page`（槽 Empty→Mapped + 页表 + 引用计数）。
+  即 V9-P3-2 步骤 2（fault 实化）与步骤 1 的能力面（P0-1 的 `PageSlot::Reserved`/`map_lazy`，供需要"承诺"标记的路径使用）**均已就位**；V9-P3-2 当年"map_lazy 无生产调用方"的观察实为"不需要调用方"——region 级 `def_memtype` 已向 fault 处理器提供全部所需语义。
+- **步骤 3（GB 级稀疏/游程表示）**：纯优化、零行为差异；现有测试地址空间均为小规模，无性能证据触发。登记为**证据门控优化项**（触发条件：实际出现 ≥GB 级匿名映射且 `physblocks: Vec<PageSlot>` 的逐槽内存成为可测瓶颈），非 TODO。
+- **测试佐证**：`test_map_lazy` 全链路（vir_region.rs:560，P0-1 修复）；`handle_memory_once` ×3（fork.rs，走同一 ev_pagefault/alloc 路径）。
+- **Verified**: 无代码改动；四矩阵 457/473/472/457 passed 维持。
+- **Docs**: 无需同步（行为未变，本条即判定记录）
 
 ### ✅ Fix #32: T15 — audit 记录经 SYS_DIAGCTL 转发（KernelGateway::diag_write）
 
