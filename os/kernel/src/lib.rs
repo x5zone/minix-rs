@@ -551,13 +551,22 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // The SmpState is created here (single-CPU BSP-only configuration)
     // and stored in the global `SMP_STATE` so that `cpu_load()` and
     // `notify_scheduler()` can reach per-CPU state without it being
-    // threaded through every call site. SMP expansion (16-smp.md) will
-    // replace this with a real SMP discovery (AP CPUs booted before
-    // bsp_finish_booting).
+    // threaded through every call site.
+    //
+    // D-36 (2026-09-06): query the platform's CPU topology (MADT/DTB
+    // parsed by minix-platform) instead of hardcoding single-CPU. The
+    // SmpState records the total CPU count, but only the BSP is marked
+    // READY — APs join the scheduler after boot_ap completes
+    // (16-smp.md). Single-CPU QEMU/-smp1 configs get the same
+    // behavior as before (nr_cpus=1).
     //
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
-        *SMP_STATE.get() = Some(smp::SmpState::new_single_cpu());
+        let topo = platform_desc().cpu_topology();
+        *SMP_STATE.get() = Some(smp::SmpState::with_ncpus(
+            topo.nr_cpus.max(1),
+            crate::proc::CpuId::new_unchecked(topo.bsp_id),
+        ));
         let smp_state = crate::smp_state_boot_unchecked();
         let proc_table = crate::proc_table_boot_unchecked();
         bsp_finish_booting(proc_table, smp_state)

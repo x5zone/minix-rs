@@ -1588,4 +1588,45 @@ mod tests {
         assert!(bkl_is_locked());
         guard.release();
     }
+
+
+#[cfg(test)]
+mod d36_tests {
+    use super::*;
+
+    /// D-36: with_ncpus sets ncpus/bsp_cpu_id correctly; only BSP is
+    /// READY (APs join after boot_ap). Matches C smp.c boot flow where
+    /// non-BSP CPUs stay out of the scheduler until booted.
+    #[test]
+    fn test_with_ncpus_multi_cpu_state() {
+        let smp = SmpState::with_ncpus(4, CpuId::new_unchecked(2));
+        assert_eq!(smp.ncpus, 4);
+        assert_eq!(smp.bsp_cpu_id, CpuId::new_unchecked(2));
+        // BSP is READY.
+        assert!(smp.cpus[2].test_flag(CpuFlags::BSP | CpuFlags::READY));
+        // Non-BSP CPUs are NOT ready.
+        for i in 0..4 {
+            if i != 2 {
+                assert!(!smp.cpus[i].test_flag(CpuFlags::READY));
+            }
+        }
+    }
+
+    /// D-36: with_ncpus clamps to MAX_CPUS.
+    #[test]
+    fn test_with_ncpus_clamps_to_max() {
+        let smp = SmpState::with_ncpus(9999, CpuId::BSP);
+        assert_eq!(smp.ncpus, MAX_CPUS as u32);
+    }
+
+    /// D-36: with_ncpus(1) equals new_single_cpu (backward compat).
+    #[test]
+    fn test_with_ncpus_single_cpu_compat() {
+        let a = SmpState::with_ncpus(1, CpuId::BSP);
+        let b = SmpState::new_single_cpu();
+        assert_eq!(a.ncpus, b.ncpus);
+        assert_eq!(a.bsp_cpu_id, b.bsp_cpu_id);
+    }
+}
+
 }
