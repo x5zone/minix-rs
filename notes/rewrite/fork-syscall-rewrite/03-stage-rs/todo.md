@@ -538,7 +538,7 @@ S2（activate_boot_slot 补全）→ E2（proptest 补解析函数）。
 - T5：`&mut dyn KernelApi` 注入边界未统一为 monitor 模式（P2，19 前定）。
 - D1/D2/D6：`ServiceSlot` god struct / `SlotId` 世代 / io-irq 双表（P2，结构性，另行立项）。
 - T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（内部不变式域，19 接线时区分
-  `BootError`）。
+  `BootError`）。→ ✅ §18.10 E-6（Fix #61，2026-09-06）
 
 ---
 
@@ -969,7 +969,7 @@ N1/N10 与 D4 的"常量双定义"是同一根因的两个后果（无单一权�
 - T5：`&mut dyn KernelApi` 注入边界未统一（P2，19 前）。→ ✅ §13（monitor 模式统一，纯模块不再 import `KernelApi`）
 - D1/D2/D6：`ServiceSlot` god struct / `SlotId` 世代 / io-irq 双表（P2，结构性）。
 - N8 子项：`UpdateChain` 的 `ChainIdx` newtype（P2，16 落地时）。
-- T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（19 接线时区分 `BootError`）。
+- T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（19 接线时区分 `BootError`）。→ ✅ §18.10 E-6（Fix #61，2026-09-06）
 
 ---
 
@@ -1017,7 +1017,7 @@ N1/N10 与 D4 的"常量双定义"是同一根因的两个后果（无单一权�
 - E2：proptest property 测试未补（P2，接线期）。
 - D1/D2/D6：`ServiceSlot` god struct / `SlotId` 世代 / io-irq 双表（P2，结构性，另行立项）。
 - N8 子项：`UpdateChain` 的 `ChainIdx` newtype（P2，16 落地时）。
-- T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（19 接线时区分 `BootError`）。
+- T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（19 接线时区分 `BootError`）。→ ✅ §18.10 E-6（Fix #61，2026-09-06）
 - exec.rs 测试模块历史告警（unused `Endpoint` import + 未用 `slot_with_image`，`cargo test --no-run`）——
   非本轮 scope，18/10 接线时随手清理。
 
@@ -1276,7 +1276,7 @@ N1/N10 与 D4 的"常量双定义"是同一根因的两个后果（无单一权�
 ### 遗留（未修，属后续轮次/立项）
 - R7-R10：结构性立项，与 D1/D2/D6 合并（19 接线层定形后另行推进；R5 范围断言已先行）。
 - E2：proptest property 测试未补（P2，接线期；§14.3 已给出具体测试点）。
-- T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（19 接线时区分 `BootError`）。
+- T3 残留：`boot.rs` lookup 失败与 getnpid 负值共用 `ENOSYS`（19 接线时区分 `BootError`）。→ ✅ §18.10 E-6（Fix #61，2026-09-06）
 - 附带观察：`slot.rs` `RsStart` 缺 `rss_nr_io`（C rs.h:124 有 `int rss_nr_io`）、
   `nr_irq: usize` vs C `int`（rs.h:122）——08-rs-slot-config 接线时核对。→ ✅ §17（Fix #39）
 
@@ -2522,6 +2522,33 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   文档同步：01 §3.5 重写（五域面 + R9 修正理由 + S4 语义保留）、10 §3.2 表头域归属、99 §3.4
   域拆分条目。
 
+### ✅ Fix #61 — E-6/T3 残留（P2，19 前定）：boot 错误域二分——`BootError` 与 `ENOSYS` 解耦
+- **File**：`os/servers/rs/src/boot.rs`（`BootError` + 全链签名）、`lib.rs`（诊断字段 +
+  trait 面降级）、`main.rs`（致命启动报告）、`sef.rs`（测试扩展）；文档 01（§3.4 后 E-6
+  注记 + init_fresh 签名 + §5.2/§5.4 同步）
+- **Before**：boot 的两族失败共用一个 `Errno::ENOSYS`——表计数不符/endpoint 错位（R17）/
+  lookup 未命中/getnpid 负值（C 全部 `panic`，main.c:226/427-429/731/746）与"内核面未接线"
+  （T2 的 ENOSYS 语义）在类型上不可区分；main.rs 的 panic 消息硬编码 "kernel API wiring
+  pending"，对表损坏类失败是误导。
+- **After**：`pub enum BootError { Lookup(LookupError), CountMismatch, EndpointMismatch,
+  InvalidPid(Pid), Kernel(Errno) }`（Copy，可经 `boot_diagnostic()` 读取）；`BootInit` 的
+  validate_tables/step0-4/init_fresh 全链返回 `Result<(), BootError>`，`From<Errno>` 让内核
+  调用 `?` 自动归入 `Kernel`（无 map_err 噪声），`From<LookupError>` 同理；线面
+  `From<BootError> for Errno`——`Kernel(e)` 保留原 errno（接线期 ENOSYS 语义不变），
+  不变式违例 → `EINVAL`（C 无对应 errno：panic 族；EINVAL 诚实表达"boot 数据不可用"，
+  ENOSYS 从此专属"未接线"）。方案对比：a) BootError 枚举 + From 双向转换（选定）vs b) 全程
+  裸 Errno + 诊断日志（no_std 无 log 设施，类型不可区分）vs c) boot 失败改 panic 对齐 C
+  （违反 T2 已定契约：fail-closed Err 保持进程存活、缺口在调用点可见）。SEF 回调面
+  （`SefCallbacks::init_fresh -> Result<i32, Errno>`）保持 C `int` 契约不动，lib.rs 降级点
+  同时把类型化原因存入 `RsServer.boot_diagnostic`——main.rs 报告恢复 C panic 消息的
+  诊断能力。
+- **Verified**：`cargo test -p minix-rs` = **264 passed**（+2：`test_step4_negative_pid_
+  reports_invalid_pid`（含线面 EINVAL 断言）、`test_boot_error_wire_mapping`；validate
+  两测从 `is_err()` 升级为 `Err(BootError::CountMismatch)`/`Err(BootError::EndpointMismatch)`
+  变体断言；`test_deferred_callbacks_fail_closed` 扩展诊断断言）；clippy/fmt 触碰文件零输出；
+  `tools/check-rs-unwired.sh` PASS。文档同步：01 §3.4 后 E-6 注记块、init_fresh 签名、
+  §5.2 表 4 行更新 + 2 行新增、§5.3 一行扩展、§5.4 计数 262→264（boot.rs 21，01 范围 33 项）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2565,9 +2592,18 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   两种形态（IoRange 已按 base+len 统一，N9/Fix #39）。
 
 **E-6 T3 BootError 区分**
-- boot 不变式违例（lookup 失败/getnpid 负值/表计数不符）从 `ENOSYS` 分离为
-  `BootError` 枚举：`LookupFailed`/`CountMismatch`/`KernelCallFailed(e)`。
-- 影响面：boot.rs 错误路径 + 01 号文档 §5 + 调用方（main.rs/main.rs 测试）。
+- ✅ **已修（Fix #61，2026-09-06）**：`BootError` 枚举贯穿 `BootInit`（validate_tables/
+  step0-4/init_fresh 全链 `Result<(), BootError>`）——变体 `Lookup(LookupError)`/
+  `CountMismatch`/`EndpointMismatch`(R17)/`InvalidPid(Pid)`/`Kernel(Errno)`；`From<Errno>`
+  使内核调用 `?` 自动归入 `Kernel`（T6 两处 fail-closed 即 `Kernel(ENOSYS)`），线面映射
+  `From<BootError> for Errno`：`Kernel(e)` 保留原 errno、不变式违例 → `EINVAL`（`ENOSYS`
+  从此专属"未接线"）。SEF 回调面保持 C `int` errno 契约，类型化原因存
+  `RsServer::boot_diagnostic()`，main.rs 致命启动报告打印。01 文档 §3.4 后补 E-6 注记 +
+  §5 测试表同步，测试 +3（validate 两测升为变体断言、负 pid、线面映射）。原设计草案的
+  变体名 `LookupFailed`/`KernelCallFailed(e)` 落地为 `Lookup(LookupError)`/`Kernel(Errno)`
+  ——前者复用既有 `LookupError` 载荷（携带 ImageTable/PrivTable 区分），后者与
+  `From<Errno>` 的自动传播配合。
+- ~~影响面：boot.rs 错误路径 + 01 号文档 §5 + 调用方（main.rs/main.rs 测试）。~~（已完成）
 
 **E-7 R10 调用顺序类型化**
 - 剩余项：`start_update` 链式调用的 abort/end 交错（部分已随 R27 内嵌化）、

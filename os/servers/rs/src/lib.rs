@@ -56,7 +56,7 @@ pub mod table;
 mod testutil;
 
 pub use access::{caller_can_control, caller_is_root, check_call_permission};
-pub use boot::{BootInit, BootTables, KernelApi, Machine};
+pub use boot::{BootError, BootInit, BootTables, KernelApi, Machine};
 pub use exec::{free_exec, has_shared_exec, share_exec, validate_image};
 pub use ipc_mask::{IpcListIterator, add_backward_ipc, add_forward_ipc, init_privs};
 pub use live_update::{
@@ -130,6 +130,12 @@ pub struct RsServer {
     /// completes; [`RsServer::run`] fails closed on a missing state.
     state: Option<ServerState<'static>>,
     kernel: alloc::boxed::Box<dyn KernelApi>,
+    /// Typed cause of the last failed fresh boot (E-6). The SEF callback
+    /// face returns a bare errno (C `int` face — `From<BootError> for
+    /// Errno` flattens `Kernel(e) → e`, invariant violations → `EINVAL`),
+    /// so the fatal-boot report (main.rs panic) reads the diagnostic here
+    /// instead of re-deriving it from the errno.
+    boot_diagnostic: Option<boot::BootError>,
 }
 
 /// Runtime server state handed over by the boot (T1).
@@ -184,7 +190,17 @@ impl RsServer {
             boot: Some(BootInit::new(tables)),
             state: None,
             kernel,
+            boot_diagnostic: None,
         }
+    }
+
+    /// Typed cause of the last failed fresh boot, if any (E-6).
+    ///
+    /// The SEF face flattens boot errors to a bare errno; this keeps the
+    /// [`boot::BootError`] variant for the fatal-boot report (main.rs) and
+    /// for tests asserting the invariant family.
+    pub fn boot_diagnostic(&self) -> Option<boot::BootError> {
+        self.boot_diagnostic
     }
 
     /// Runs the SEF startup and the 4-step boot.
@@ -251,7 +267,12 @@ impl SefCallbacks for RsServer {
     /// boot; the boot state is handed over to [`RsServer::state`] (T1).
     fn init_fresh(&mut self, _init_type: SefInitType, _info: &SefInitInfo) -> Result<i32, Errno> {
         let boot = self.boot.as_mut().expect("boot machine present");
-        boot.init_fresh(self.kernel.as_mut())?;
+        boot.init_fresh(self.kernel.as_mut()).map_err(|e| {
+            // E-6: keep the typed cause for the fatal-boot report; the SEF
+            // face carries the wire errno (Kernel(e) → e, invariant → EINVAL).
+            self.boot_diagnostic = Some(e);
+            Errno::from(e)
+        })?;
         // T1 handover: the boot state becomes the runtime state.
         self.state = Some(self.boot.take().expect("boot machine present").into_state());
         Ok(0) // C: sef_startup() returns OK after the fresh init.

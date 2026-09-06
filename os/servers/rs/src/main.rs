@@ -33,10 +33,13 @@ fn main() {
         // path fails closed (Err(ENOSYS)) until then. C treats boot failure
         // as fatal (main.c:226 `panic(...)`); do not enter the main loop on
         // an incomplete boot — an RS that never finished booting cannot
-        // manage services.
+        // manage services. The SEF face carries a bare errno; the typed
+        // cause (E-6) distinguishes "kernel face not wired" (`ENOSYS`) from
+        // "boot invariant violation" (`EINVAL`, e.g. a corrupt boot table).
         if let Err(e) = server.init(SefInitType::Fresh) {
             panic!(
-                "RS boot failed: {e:?} (kernel API wiring pending — 19-rs-external-interfaces.md)"
+                "RS boot failed: {e:?} (boot diagnostic: {:?})",
+                server.boot_diagnostic()
             );
         }
 

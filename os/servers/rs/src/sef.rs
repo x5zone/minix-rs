@@ -124,5 +124,13 @@ mod tests {
         assert_eq!(s.init_response(&m), Err(Errno::ENOSYS));
         assert_eq!(s.lu_response(&m), Err(Errno::ENOSYS));
         assert_eq!(s.signal_manager(Endpoint::RS, 1), Err(Errno::ENOSYS));
+        // E-6: the fresh boot through the fail-closed kernel face fails with
+        // Kernel(ENOSYS) — the wire face keeps ENOSYS and the typed cause
+        // lands on the server diagnostic for the fatal-boot report.
+        assert_eq!(s.init(SefInitType::Fresh), Err(Errno::ENOSYS));
+        assert_eq!(
+            s.boot_diagnostic(),
+            Some(crate::boot::BootError::Kernel(Errno::ENOSYS))
+        );
     }
 }

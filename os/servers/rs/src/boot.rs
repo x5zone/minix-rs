@@ -419,9 +419,9 @@ impl<'a> BootTables<'a> {
     /// R17: every image row must also satisfy `endpoint.slot() == proc_nr` —
     /// the kernel derives boot endpoints as `_ENDPOINT(0, proc_nr)`, so a
     /// hand-edited row with a mismatched pair would boot the wrong endpoint.
-    pub fn validate_tables(&self) -> Result<(), Errno> {
+    pub fn validate_tables(&self) -> Result<(), BootError> {
         if self.image.iter().any(|ip| ip.endpoint.slot() != ip.proc_nr) {
-            return Err(Errno::ENOSYS); // boot protocol violation (R17)
+            return Err(BootError::EndpointMismatch); // boot protocol violation (R17)
         }
         let image_srvs = self
             .image
@@ -434,7 +434,7 @@ impl<'a> BootTables<'a> {
             .filter(|e| !e.endpoint.is_kernel_task())
             .count();
         if image_srvs != priv_srvs {
-            return Err(Errno::ENOSYS); // boot protocol violation; C panics (main.c:226)
+            return Err(BootError::CountMismatch); // C panics (main.c:226)
         }
         Ok(())
     }
@@ -494,6 +494,68 @@ pub enum LookupError {
     ImageTable,
     /// Priv table lookup failed (C panic, main.c:746).
     PrivTable,
+}
+
+/// Failure modes of the boot sequence itself (E-6, T3 残留).
+///
+/// C has a single failure mode for boot — `panic()` (main.c:226, 427-429;
+/// lookup panics main.c:731/746) — because a half-booted RS cannot run. The
+/// Rust shell keeps the fail-closed `Err` contract (T2) but separates two
+/// families that the flat `ENOSYS` used to conflate: **kernel-call failures**
+/// ([`BootError::Kernel`] — e.g. `ENOSYS` while the 19 wiring is pending)
+/// and **boot invariant violations** (the rest — the boot tables or the
+/// kernel's answer are unusable, the C panic family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootError {
+    /// A boot table lookup missed. C: `panic("boot image table lookup
+    /// failed")` / priv variant — main.c:731/746.
+    Lookup(LookupError),
+    /// The image and priv boot tables disagree about the system-service set.
+    /// C: `panic` — main.c:225-227.
+    CountMismatch,
+    /// An image row's endpoint is not derived from its proc_nr (R17) — the
+    /// kernel derives boot endpoints as `_ENDPOINT(0, proc_nr)`, so this row
+    /// would boot the wrong endpoint. C has no equivalent check (the kernel
+    /// builds its own table); the check exists because the Rust placeholder
+    /// tables are hand-written.
+    EndpointMismatch,
+    /// `getnpid` returned a non-positive pid for a boot service. C:
+    /// `panic("unable to get pid")` — main.c:427-429.
+    InvalidPid(Pid),
+    /// A kernel call failed during boot. Distinct from the invariant family:
+    /// with the 19 wiring pending this is `Kernel(Errno::ENOSYS)` — "the
+    /// mechanism does not exist yet", not "the boot data is corrupt".
+    Kernel(Errno),
+}
+
+impl From<Errno> for BootError {
+    fn from(e: Errno) -> Self {
+        BootError::Kernel(e)
+    }
+}
+
+impl From<LookupError> for BootError {
+    fn from(e: LookupError) -> Self {
+        BootError::Lookup(e)
+    }
+}
+
+impl From<BootError> for Errno {
+    fn from(e: BootError) -> Self {
+        match e {
+            // Kernel-call failures keep their errno (the wire face of the
+            // failed call).
+            BootError::Kernel(errno) => errno,
+            // C has no errno for boot invariant violations — it panics
+            // (main.c:225-227/427-429). EINVAL keeps the wire face honest:
+            // `ENOSYS` stays reserved for "mechanism not wired" (T2), while
+            // "boot data unusable" reads as invalid input.
+            BootError::Lookup(_)
+            | BootError::CountMismatch
+            | BootError::EndpointMismatch
+            | BootError::InvalidPid(_) => Errno::EINVAL,
+        }
+    }
 }
 
 /// Looks up an entry in the boot image table.
@@ -620,7 +682,7 @@ impl<'a> BootInit<'a> {
     /// Step order is fixed and cannot be reordered from outside:
     /// `step1_set_attrs` → `step2_allow_run` → `step3_catch_init_ready` →
     /// `step4_finish`.
-    pub fn init_fresh(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    pub fn init_fresh(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         self.step0_prepare(sys)?;
         self.step1_set_attrs(sys)?;
         self.step2_allow_run(sys)?;
@@ -632,7 +694,7 @@ impl<'a> BootInit<'a> {
     /// Step 0 — preparation: config, frequency, grant, resets, image copy.
     ///
     /// C: main.c:178-237.
-    fn step0_prepare(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    fn step0_prepare(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         // C: sys_getmachine(&machine) — main.c:53. Fetched once at startup
         // (before the main loop), not per request — `check_request`'s CPU
         // resolution (request.c:1286-1296) reads this snapshot (N3).
@@ -671,14 +733,14 @@ impl<'a> BootInit<'a> {
     /// C: main.c:244-346. RS/VM skip `SYS_PRIV_SET_SYS` (main.c:285-291) —
     /// they are already running. The priv-structure construction itself
     /// (send mask, call masks, sig mgr) belongs to 03/05.
-    fn step1_set_attrs(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    fn step1_set_attrs(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         let tables = self.tables;
         for (slot_nr, priv_) in tables.priv_table.iter().enumerate() {
             if priv_.endpoint.is_kernel_task() {
                 continue; // C: iskerneln skip — main.c:248-250
             }
             // C: boot_image_info_lookup(ep, image, &ip, NULL, &sys, &dev) — main.c:253-254.
-            let ip = lookup_image(tables.image, priv_.endpoint).map_err(|_| Errno::ENOSYS)?;
+            let ip = lookup_image(tables.image, priv_.endpoint)?;
             let sys_ = lookup_sys(tables.sys_table, priv_.endpoint);
             let dev = lookup_dev(tables.dev_table, priv_.endpoint);
 
@@ -720,7 +782,7 @@ impl<'a> BootInit<'a> {
     ///
     /// C: main.c:348-399. RS/VM go through `init_service` (12) directly;
     /// other services get `sched_init_proc` + `SYS_PRIV_ALLOW` first.
-    fn step2_allow_run(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    fn step2_allow_run(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         let tables = self.tables;
         let mut nr_uncaught_init_srvs = 0usize;
 
@@ -753,7 +815,7 @@ impl<'a> BootInit<'a> {
                     // a blocking receive for THIS service's init-ready before
                     // boot proceeds. The receive primitive is 12; failing
                     // closed beats silently skipping the sync (T6).
-                    return Err(Errno::ENOSYS);
+                    return Err(BootError::Kernel(Errno::ENOSYS));
                 }
                 // C: else branch — main.c:393-394: count, Step 3 catches it.
                 nr_uncaught_init_srvs += 1;
@@ -768,13 +830,13 @@ impl<'a> BootInit<'a> {
     /// C: `while(nr_uncaught_init_srvs) { catch_boot_init_ready(ANY); ... }` —
     /// main.c:401-407: a blocking receive per outstanding init-ready. The
     /// receive mechanism is 12-rs-init-run.md.
-    fn step3_catch_init_ready(&mut self, _sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    fn step3_catch_init_ready(&mut self, _sys: &mut dyn KernelApi) -> Result<(), BootError> {
         if self.nr_uncaught_init_srvs > 0 {
             // A counter-only loop would "complete" boot without the messages
             // actually arriving — fail-open, and C blocks forever here if a
             // service never replies (fail-closed). Until 12 lands there is no
             // receive primitive; fail closed explicitly (T6).
-            return Err(Errno::ENOSYS);
+            return Err(BootError::Kernel(Errno::ENOSYS));
         }
         Ok(())
     }
@@ -782,7 +844,7 @@ impl<'a> BootInit<'a> {
     /// Step 4 — pid lookup + periodic alarm.
     ///
     /// C: main.c:409-433. `getnpid` signature: 19; alarm semantics: 07.
-    fn step4_finish(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    fn step4_finish(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         let tables = self.tables;
         for priv_ in tables.priv_table {
             if priv_.endpoint.is_kernel_task() {
@@ -798,7 +860,7 @@ impl<'a> BootInit<'a> {
             let pid = sys.getnpid(priv_.endpoint)?;
             if pid < 0 {
                 // C: panic("unable to get pid") — main.c:427-429.
-                return Err(Errno::ENOSYS);
+                return Err(BootError::InvalidPid(pid));
             }
             self.table.get_mut(id).pid = Some(pid);
         }
@@ -941,11 +1003,12 @@ mod tests {
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
         // T6: step 3 (catch init-ready) has no receive primitive until 12;
-        // the boot must fail closed (ENOSYS) instead of "completing" without
-        // the messages actually arriving (main.c:401-407).
+        // the boot must fail closed (Kernel(ENOSYS) — "mechanism not wired",
+        // E-6) instead of "completing" without the messages actually
+        // arriving (main.c:401-407).
         assert_eq!(
             boot.init_fresh(&mut sys),
-            Err(Errno::ENOSYS),
+            Err(BootError::Kernel(Errno::ENOSYS)),
             "step 3 fail-closed until 12 (T6)"
         );
 
@@ -1120,6 +1183,42 @@ mod tests {
     }
 
     #[test]
+    fn test_step4_negative_pid_reports_invalid_pid() {
+        // E-6: C panics on a non-positive pid ("unable to get pid",
+        // main.c:427-429); the Rust shell fails closed with the typed cause,
+        // and the wire face reads EINVAL — not the wiring-gap ENOSYS.
+        let mut sys = MockKernelApi::new(100);
+        sys.pids = vec![-1]; // getnpid pops this for the first boot service
+        let mut boot = BootInit::new(BootTables::placeholder());
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+        let err = boot.step4_finish(&mut sys).expect_err("negative pid");
+        assert_eq!(err, BootError::InvalidPid(-1));
+        assert_eq!(
+            Errno::from(err),
+            Errno::EINVAL,
+            "wire face: boot invariant violation, not a wiring gap"
+        );
+    }
+
+    #[test]
+    fn test_boot_error_wire_mapping() {
+        // E-6: kernel-call failures keep their errno; boot invariant
+        // violations read EINVAL at the wire face — `ENOSYS` stays reserved
+        // for "mechanism not wired" (T2), so the two families that the flat
+        // ENOSYS used to conflate are distinguishable from the outside too.
+        assert_eq!(Errno::from(BootError::Kernel(Errno::ENOSYS)), Errno::ENOSYS);
+        assert_eq!(Errno::from(BootError::CountMismatch), Errno::EINVAL);
+        assert_eq!(Errno::from(BootError::EndpointMismatch), Errno::EINVAL);
+        assert_eq!(Errno::from(BootError::InvalidPid(-1)), Errno::EINVAL);
+        assert_eq!(
+            Errno::from(BootError::Lookup(LookupError::ImageTable)),
+            Errno::EINVAL
+        );
+    }
+
+    #[test]
     fn test_step1_skips_privctl_for_rs_vm() {
         // Custom tables: only RS + VM are boot services.
         let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(8, Endpoint::VM)];
@@ -1173,9 +1272,10 @@ mod tests {
         // Image describes 2 services; priv table describes 12 → mismatch.
         let image: &[BootImage] = &[boot_image(2, Endpoint::RS), boot_image(8, Endpoint::VM)];
         let tables = BootTables::new(image);
-        assert!(
-            tables.validate_tables().is_err(),
-            "main.c:225-227 mismatch check"
+        assert_eq!(
+            tables.validate_tables(),
+            Err(BootError::CountMismatch),
+            "main.c:225-227 mismatch check (E-6: typed cause)"
         );
     }
 
@@ -1186,7 +1286,11 @@ mod tests {
         // endpoint, so the placeholder must fail validation (fail-closed).
         let image: &[BootImage] = &[boot_image(2, Endpoint::PM)]; // proc_nr 2, slot 0
         let tables = BootTables::new(image);
-        assert!(tables.validate_tables().is_err(), "R17 mismatch check");
+        assert_eq!(
+            tables.validate_tables(),
+            Err(BootError::EndpointMismatch),
+            "R17 mismatch check (E-6: typed cause)"
+        );
     }
 
     #[test]
@@ -1290,7 +1394,10 @@ mod tests {
         boot.step2_allow_run(&mut sys).expect("step 2");
         // VM is counted (main.c:369-370) → step 3 has work to do.
         assert_eq!(boot.nr_uncaught_init_srvs, 1);
-        assert_eq!(boot.step3_catch_init_ready(&mut sys), Err(Errno::ENOSYS));
+        assert_eq!(
+            boot.step3_catch_init_ready(&mut sys),
+            Err(BootError::Kernel(Errno::ENOSYS))
+        );
     }
 
     #[test]
@@ -1335,7 +1442,7 @@ mod tests {
         boot.step1_set_attrs(&mut sys).expect("step 1");
         assert_eq!(
             boot.step2_allow_run(&mut sys),
-            Err(Errno::ENOSYS),
+            Err(BootError::Kernel(Errno::ENOSYS)),
             "SF_SYNCH_BOOT sync catch is fail-closed until 12 (T6)"
         );
     }

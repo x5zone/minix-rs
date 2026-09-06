@@ -693,7 +693,7 @@ pub struct BootInit<'a> {
     nr_uncaught_init_srvs: usize, // C: nr_uncaught_init_srvs（main.c:349-406）
 }
 impl BootInit<'_> {
-    pub fn init_fresh(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
+    pub fn init_fresh(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         self.step0_prepare(sys)?;      // main.c:178-237（前置：配置/HZ/grant/复位/计数核对/表重置）
         self.step1_set_attrs(sys)?;    // main.c:244-346
         self.step2_allow_run(sys)?;    // main.c:348-399
@@ -723,8 +723,20 @@ impl BootInit<'_> {
 
 > **T6 修复（2026-08-15）——Step 2/3 fail-closed**：Step 2 对 `SF_SYNCH_BOOT` 服务不再计入
 > `nr_uncaught_init_srvs`（C 是同步 `catch_boot_init_ready`，main.c:390-392；12 落地前显式
-> `Err(ENOSYS)`）；Step 3 在计数 > 0 时显式 `Err(ENOSYS)`（C 阻塞接收 = fail-closed，main.c:401-407），
-> 不再"假装收完"。boot 测试改走私有 step 方法直接驱动各步，并新增 SYNCH_BOOT/Step 3 fail-closed 断言。
+> `Err(BootError::Kernel(ENOSYS))`）；Step 3 在计数 > 0 时同样 fail-closed（C 阻塞接收 =
+> fail-closed，main.c:401-407），不再"假装收完"。boot 测试改走私有 step 方法直接驱动各步，
+> 并新增 SYNCH_BOOT/Step 3 fail-closed 断言。
+
+> **E-6（2026-09-06）——boot 错误域二分**：boot 的失败在 C 里只有一种结局——`panic()`（main.c:226
+> 计数不符、main.c:427-429 拿不到 pid、main.c:731/746 查表未命中），因为半启动的 RS 无法运行。
+> Rust 保留 fail-closed `Err` 契约（T2），但把过去混在一个 `ENOSYS` 里的两族失败拆进
+> `BootError`：**内核调用失败**（`BootError::Kernel(e)`——19 接线前即 `Kernel(ENOSYS)`，
+> "机制尚不存在"）与 **boot 不变式违例**（`Lookup(LookupError)`/`CountMismatch`/
+> `EndpointMismatch`/`InvalidPid(Pid)`——boot 表或内核应答不可用，即 C 的 panic 族）。
+> 线面映射（`From<BootError> for Errno`）：`Kernel(e)` 保留原 errno；不变式违例 → `EINVAL`——
+> `ENOSYS` 从此只表示"未接线"，"boot 数据不可用"在调用点即可区分。SEF 回调面只携带 errno
+> （C `int` 面），类型化原因存于 `RsServer::boot_diagnostic()`，main.rs 的致命启动报告直接
+> 打印它（对照 C：panic 消息本身携带原因，main.c:226）。
 
 ### 3.5 外部边界：KernelApi 与五个域面（对应 §2.1/§2.3，外部契约归 19）
 
@@ -955,8 +967,9 @@ impl RsServer {
 |------|------|
 | `test_init_fresh_step_order` | `MockKernelApi` 记录调用序列：step1 privctl(SetSys)×10（RS/VM 跳过）→ step2 sched×10+Allow×10 → step4 getnpid×12+setalarm(100)；顺序与 C 一致（main.c:158-433） |
 | `test_step1_skips_privctl_for_rs_vm` | RS/VM 跳过 `privctl(SetSys)`（main.c:285-291 例外） |
-| `test_validate_tables_mismatch` | image 表与 priv 表系统服务数不一致 → Err（对应 main.c:225-227 panic） |
-| `test_validate_tables_rejects_proc_nr_endpoint_mismatch` | 单行 `proc_nr != endpoint.slot()` → Err（R17，fail-closed） |
+| `test_validate_tables_mismatch` | image 表与 priv 表系统服务数不一致 → `Err(BootError::CountMismatch)`（E-6 类型化；对应 main.c:225-227 panic） |
+| `test_validate_tables_rejects_proc_nr_endpoint_mismatch` | 单行 `proc_nr != endpoint.slot()` → `Err(BootError::EndpointMismatch)`（R17，fail-closed；E-6 类型化） |
+| `test_boot_error_wire_mapping` | E-6 线面映射：`Kernel(e)` 保留原 errno，四类不变式违例 → `EINVAL`（`ENOSYS` 专属"未接线"） |
 | `test_boot_img_truncates_long_name` | >16 字节名称钳制到字段（R17，不再 const 越界） |
 | `test_lookup_image_not_found` | `lookup_image` 未命中 → `LookupError::ImageTable`（对应 main.c:731 panic） |
 | `test_lookup_priv_found` / `test_lookup_priv_not_found` | `lookup_priv` 命中 / 未命中 → `LookupError::PrivTable`（对应 main.c:746） |
@@ -966,8 +979,9 @@ impl RsServer {
 | `test_domain_face_implementable_in_isolation` | E-2：测试 double 只实现单个域面（`SysApi`）即可经 `&mut dyn SysApi` 使用——单体 trait 时代每个 shell 测试被迫全量 22 方法 |
 | `test_init_fresh_populates_table` | Step 1 后 12 个 boot 服务占 slot 0..11 且 `IN_USE|ACTIVE`，A-4 索引命中；非 boot slot 保持空闲（对应 main.c:244-346） |
 | `test_step4_sets_pid` | Step 4 每个 boot slot 携带 `getnpid` 返回的 pid（对应 main.c:426；mock 返回 100） |
-| `test_step3_fails_closed_when_init_ready_pending` | T6：有未收 init-ready 时 Step 3 fail-closed（`Err(ENOSYS)`，对应 main.c:401-407 的阻塞 receive 语义） |
-| `test_step2_synch_boot_fails_closed` | T6：`SF_SYNCH_BOOT` 服务同步 catch 未接线时 fail-closed（对应 main.c:390-392），不得静默跳过 sync |
+| `test_step4_negative_pid_reports_invalid_pid` | E-6：`getnpid` 负值 → `Err(BootError::InvalidPid(-1))`，线面 `EINVAL`（对应 main.c:427-429 panic） |
+| `test_step3_fails_closed_when_init_ready_pending` | T6：有未收 init-ready 时 Step 3 fail-closed（`Err(BootError::Kernel(ENOSYS))`，对应 main.c:401-407 的阻塞 receive 语义） |
+| `test_step2_synch_boot_fails_closed` | T6：`SF_SYNCH_BOOT` 服务同步 catch 未接线时 fail-closed（`Err(BootError::Kernel(ENOSYS))`，对应 main.c:390-392），不得静默跳过 sync |
 | `test_rs_server_handover_after_fresh_init` | T1：fresh boot 完成后运行时状态归 server 所有（`state()` 可达 table/hz/shutting_down），machine 快照随 boot→run 交接存活；boot 机器被消费（无双重所有权） |
 | `test_boot_slot_populates_s2_fields` | S2：boot slot 携带 cmd/args/argc/vm_call_mask/scheduler/priority/quantum/alive_tm（对应 main.c:308-333，07/09/10 依赖） |
 
@@ -975,7 +989,7 @@ impl RsServer {
 
 | 测试 | 覆盖 |
 |------|------|
-| `test_deferred_callbacks_fail_closed` | 12/18/06 未接线的回调（`init_restart`/`init_lu`/`init_response`/`lu_response`/`signal_manager`）全部 fail-closed（`Err(ENOSYS)`，T2） |
+| `test_deferred_callbacks_fail_closed` | 12/18/06 未接线的回调（`init_restart`/`init_lu`/`init_response`/`lu_response`/`signal_manager`）全部 fail-closed（`Err(ENOSYS)`，T2）；E-6 补充：经失败内核面的 fresh boot 线面保持 `ENOSYS` 且 `boot_diagnostic()` 携带 `BootError::Kernel(ENOSYS)` |
 | `test_classify_clock_notify` | `is_notify` + `CLOCK` → `ClockNotify`（对应 main.c:80-83） |
 | `test_classify_heartbeat_notify` | 非 CLOCK 通知 → `HeartbeatNotify { source, timestamp }`（对应 main.c:85-91） |
 | `test_classify_heartbeat_carries_timestamp` | 心跳 timestamp 穿过分类原样携带（R25，main.c:87） |
@@ -986,7 +1000,7 @@ impl RsServer {
 
 ### 5.4 测试总数
 
-`cargo test -p minix-rs --lib` 实测 **262 passed / 0 failed**（2026-09-06，E-2 修复轮）。全部测试可 grep 验证：`rg -c "#\[test\]"` 全 crate 合计 262。01 范围四模块共 31 项：boot.rs 19、table.rs 3、sef.rs 1、dispatch.rs 8。
+`cargo test -p minix-rs --lib` 实测 **264 passed / 0 failed**（2026-09-06，E-6 修复轮）。全部测试可 grep 验证：`rg -c "#\[test\]"` 全 crate 合计 264。01 范围四模块共 33 项：boot.rs 21、table.rs 3、sef.rs 1、dispatch.rs 8。
 
 ## 6. 过渡
 
