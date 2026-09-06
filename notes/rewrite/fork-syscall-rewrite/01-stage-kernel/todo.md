@@ -2493,6 +2493,16 @@ Redox 对照：其 syscall 按值传递 usize 级参数、大负载走用户内�
 可作为参照标尺。测量本身 stage 内完成；若结论要求改 minix-types 布局，
 届时按 edge 规则①另开 edge 条目（本轮不预开）。
 
+**✅ 已实测关闭（2026-09-07，§22 Phase 1 迭代 7）——远低于阈值，无需行动**：
+`Message` = **72 字节**（8 头部 + union 64，其中 union 最大成员 64 字节、
+超出名义 `MESSAGE_PAYLOAD_SIZE`=56——两者均已 pin 进测试
+`test_message_total_size_pinned`，message.rs）。量级表：每次 syscall 经
+`kernel_call` 拷 1 个 Message（72B）到内核栈 + 每次消息投递经
+`copy_msg_from_user/to_user` 再拷 1 次——每 syscall 至多 ~2×72=144 字节瞬时
+栈占用，距 512 字节阈值余量 3.5 倍，无需传引用/Box 化。`VmReply` 1560 字节
+警告属 VM 服务器侧类型，不 ride 内核 syscall 拷贝路径（注释已说明）。
+`cargo test -p minix-types` → 173 passed。
+
 #### V12-B4 clippy 卫生回归批量清理 [P3]
 
 **问题**：2026-08-14 曾达成 kernel 零警告（§1 §C-D 背景），本轮实测回升：
@@ -2585,7 +2595,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ V12-A3 [P2] ipc.rs senda notify 同分支 if/else 合并 → **单一布尔表达式 + C 锚点；顺带清 A2 引入的 needless_borrow；clippy 13（2026-09-07）**
 - ✅ V12-A4 [P2] boot 模块 reclaim 断言重审（add_memmap 启动链接线）+ opensbi_helpers.rs:624 陈旧注释 → **接线本已落地（lib.rs:495-510），旧表 5 行 + 2 断言全部改写；注释修正（2026-09-07）**
 - ✅ V12-B2 [P2] 三文件 unsafe 集中区 SAFETY 论证盘点 + paging.rs 两处形态修复 → **paging 修复（arch clippy 2→0）+ 真发现 IoBatchBuf 对齐 UB（12 cast）以 align(8) 包装修复 + misc:1645 union 读取补论证（2026-09-07）**
-- ⬜ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）
+- ✅ V12-B3 [P3] `size_of::<Message>()` 与内核栈拷贝成本实测（阈值 512 字节）→ **实测 72 字节（union 64 + 头 8），远低于阈值，关闭并 pin 进测试（2026-09-07）**
 - ⬜ V12-B4 [P3] clippy 卫生批（kernel 16 + arch 2 + platform 2 + types 1；两误报不修已记录）
 
 **Phase 2 — SMP 前置重构（避免 S-4/S-5 新代码二次迁移）**

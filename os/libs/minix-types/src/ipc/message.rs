@@ -3625,3 +3625,20 @@ mod rs_accessor_tests {
         assert_eq!(m.rs_req_payload(), None);
     }
 }
+
+/// Pin the wire size of `Message` and its payload so that "how big is the
+/// kernel's per-syscall stack copy" stays a checked fact instead of a
+/// guess. V12-B3 (2026-09-07): measured at Message = 72 bytes (m_source +
+/// m_type headers plus the 56-byte payload and struct padding, align 8) —
+/// far below the
+/// 512-byte stack-pressure threshold; `VmReply`'s 1560-byte warning
+/// (ipc/vm.rs) is a VM-server-side type and does not ride the kernel's
+/// syscall copy path.
+#[test]
+fn test_message_total_size_pinned() {
+    assert_eq!(core::mem::size_of::<Message>(), 72);
+    // The union's largest member is 64 bytes, not the nominal 56-byte
+    // payload constant — pinning both facts keeps the distinction visible.
+    assert_eq!(core::mem::size_of::<MessageUnion>(), 64);
+    assert_eq!(MESSAGE_PAYLOAD_SIZE, 56);
+}
