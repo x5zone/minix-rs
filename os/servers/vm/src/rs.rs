@@ -175,6 +175,7 @@ pub(crate) fn handle_rs_prepare(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
+    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     src: Endpoint,
     dst: Endpoint,
     _flags: u32,
@@ -231,7 +232,7 @@ pub(crate) fn handle_rs_prepare(
             endpoint: dst,
             new_brk_addr: VirBytes(src_data_end),
         };
-        crate::brk::handle_brk(table, page_alloc, frames, &req)
+        crate::brk::handle_brk(table, page_alloc, frames, vfs_queue, &req)
             .map_err(|_| RsError::HeapExtendFailed)?;
     }
 
@@ -292,6 +293,7 @@ pub(crate) fn handle_rs_update(
     table: &VmProcTable,
     _page_alloc: &mut VmPageAllocator,
     _frames: &mut PageFrames,
+    _vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     src: Endpoint,
     dst: Endpoint,
     flags: u32,
@@ -391,7 +393,7 @@ pub(crate) fn handle_rs_memctl(
                 endpoint: target,
                 new_brk_addr: new_brk,
             };
-            crate::brk::handle_brk(table, page_alloc, frames, &req)
+            crate::brk::handle_brk(table, page_alloc, frames, vfs_queue, &req)
                 .map(|_| RsMemctlResult::AddrLen {
                     addr: current_brk,
                     len,
@@ -744,6 +746,7 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
+            &mut crate::vfs_queue::VfsRequestQueue::new(),
             Endpoint(1),
             Endpoint(2),
             0,
@@ -786,6 +789,7 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
+            &mut crate::vfs_queue::VfsRequestQueue::new(),
             src,
             dst,
             0,
@@ -832,6 +836,7 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
+            &mut crate::vfs_queue::VfsRequestQueue::new(),
             src,
             dst,
             0,
@@ -854,6 +859,7 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
+            &mut crate::vfs_queue::VfsRequestQueue::new(),
             Endpoint(1),
             Endpoint(2),
             0,
@@ -874,6 +880,7 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
+            &mut crate::vfs_queue::VfsRequestQueue::new(),
             Endpoint(1),
             Endpoint(2),
             RsUpdateFlags::ROLLBACK.bits(),
@@ -893,6 +900,7 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
+            &mut crate::vfs_queue::VfsRequestQueue::new(),
             Endpoint(1),
             Endpoint(2),
             RsUpdateFlags::NOMMAP.bits(),
