@@ -4,7 +4,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 个文件，14,098 行），以及 `os/libs/minix-types/` 中与 PM 相关的类型边界。
 > 方法：先做查漏补缺（Gate A 覆盖度枚举：`coverage-extract.py` 对 `minix3/minix/servers/pm` 提取 109 个 C 符号，与文档和 Rust 侧逐一对照；47 个调用号矩阵；DEFERRED/stub 全量收敛；Minix3 易漏语义点逐条 grep 验证），再做整体到分层的架构审查（工作区边界 → 服务器骨架 → 分发层 → 子系统层 → mproc 状态层 → 测试层），对照 Redox 实现与 Rust/OS 社区最佳实践。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
-> 状态（2026-09-06）：全部条目待处理。本次审查未发现 P0 级真实 bug；发现 P1 架构级问题 6 项、P2 结构性改进 7 项、P3 代码卫生 2 项，另有 D-XX 缺口登记 24 项（§6）。
+> 状态（2026-09-06，campaign 完成后更新）：本轮 21 次 todo-fix 迭代全部完成——P1×6、P2×7、P3×2 全闭环；D-XX 缺口 24+2 项中 11 项完整实现（D-03/D-04/D-06/D-07/D-08/D-10/D-11/D-15/D-19/D-20/D-22/D-23/D-24），余项均为带"依赖未解除"论证的跨阶段通电项（挂 edge E1/E2/E5/E6/E7 或 16-stage SCHED）。测试基线 319 → **341 lib + 6 integration passed**，clippy lib 0 warning 0 error，Gate A 名称匹配 89.0% → 93.6%。逐条证据见 §10 修复记录（Fix #1–#21）。
 > 增补（2026-09-06）：跨阶段条目抽取见 §9；登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（本阶段新增 E6/E7，既有 E1-E5 为 02-stage-vm campaign 条目）。
 
 ---
