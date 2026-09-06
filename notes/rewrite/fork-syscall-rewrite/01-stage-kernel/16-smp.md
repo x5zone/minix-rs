@@ -1123,6 +1123,8 @@ pub fn bkl_unlock() {
 | `test_sched_handler_full_vminhibit` | VM_INHIBIT 设 RTS_VMINHIBIT | `smp_sched_handler` (smp.c:180) |
 | `test_ipi_sched_handler_idle_no_preempt` | IDLE 进程不设 PREEMPTED | `smp_ipi_sched_handler` (smp.c:194) |
 | `test_wait_for_aps_single_cpu` | BSP 等待 APs 完成（单 CPU 退化） | `wait_for_APs` (smp.c:30) |
+| `test-smp-topo`（QEMU 集成，S-2） | `-smp 4` 下 RSDP→MADT：nr_cpus=4、APIC ID {0,1,2,3} 互异、BSP∈发现集（x86_64 PASS / aarch64 SKIP→S-2b：AAVMF 无 FDT config table + acpi 模块 x86 门控，见 smp_todo §20） | `AcpiDesc::parse` + `CpuTopology`（D-36 上半） |
+| `test-smp-topo-riscv64`（QEMU 集成，S-2） | OpenSBI a1→DTB：nr_cpus=4、hart {0,1,2,3} 互异、BSP∈发现集（PASS） | `DeviceTreeDesc::parse` + `CpuTopology`（D-36 上半） |
 
 ### 5.2 待补充测试（DEFERRED 函数完善后）
 

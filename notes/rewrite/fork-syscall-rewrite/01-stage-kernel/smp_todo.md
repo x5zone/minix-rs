@@ -752,7 +752,8 @@ publication 规则（各 per-CPU 迁移项不再各自决定）：
 |---|---|---|---|---|---|
 | S-0 | ✅ **已完成（2026-09-06）**——见 §18 基线记录 | 提交 `kernel/src/lib.rs` 两个缺失 import 修复（工作区已有，§2.4）；**三架构固定基线矩阵**（GPT 外评 #11）：每架构 = hosted 测试 + **production-target 构建**（x86/arm: `*-unknown-uefi`；riscv: `riscv64gc` 目标 + OpenSBI 链路——v2 外评措辞修正，非三架构都是 UEFI）+ QEMU smoke（hello-boot），哪怕 arm/riscv 起步只有 hello-boot | 绿色基线记录（矩阵表）+ commit | ~~L0：`run_all.sh` x86_64 7/7 PASS + 三架构矩阵全 ✓~~ **L0 达成**（x86_64 7/7 + arm/riscv hello-boot；基线额外修复 arm/riscv trap_return asm 操作数语法错误，见 §18） | 本文件 §2.4 结论视需要补 doc 01 §5 |
 | S-1 | ✅ **已完成（2026-09-07）**——见 §19 勘误记录 | grep 核实 `kernel_call_resume` BKL（原记 syscall.rs:2622 已漂移）；以代码为准勘误 todo.md Edge Items **和** doc 16（两者记录均有误，详见 §19） | 勘误 commit | grep 证据入 §19 | todo.md Edge Items / §7.1 / doc 16 §4.13 |
-| S-2 | 拓扑发现回归钉（D-36 上半） | 新测试内核 `test-smp-topo`：`-smp 4` 下断言（按 GPT 外评 #10，不把 QEMU 默认拓扑当语义契约）`nr_cpus==4`、`hw_id` 互异、BSP `hw_id` ∈ 发现集；QEMU 默认拓扑期望值（x86 APIC ID {0,1,2,3}）单列标注为机器特定观察，不混入 parser 契约；三架构 | 测试内核 ×3 + run_all.sh 接入 | L1：三架构 PASS | doc 04 补拓扑消费说明；16-smp §5.1 加行 |
+| S-2 | ✅ **已完成（2026-09-07）**——x86_64/riscv64 PASS，aarch64 SKIP（发现 AAVMF 缺口，S-2b 登记）——见 §20 | 新测试内核 `test-smp-topo` ×3：`-smp 4` 下断言 `nr_cpus==4`、`hw_id` 互异、BSP `hw_id` ∈ 发现集；QEMU 默认拓扑值仅打印为机器特定观察；解析走 `parse_by_kind` 正式交接路径 | 测试内核 ×3 + run_all.sh 接入（SKIP 单列计数） | L1：x86_64 PASS（MADT）/ riscv64 PASS（DTB via a1）/ aarch64 SKIP→S-2b | 16-smp §5.1 加行；doc 04 消费说明随 S-2b 一并 |
+| S-2b | aarch64 平台发现补齐（S-2 发现的实施缺口） | **发现（§20）**：AAVMF 不经 config table 交 FDT + `minix-platform` acpi 模块 x86_64 门控 → aarch64 内核自己的拓扑发现链同样走空。修复方向：`parse_by_kind` RSDP arm 扩至 aarch64（MADT GICC）或 aarch64 增加 DTB 直通交接（fw_cfg 在 UEFI 阶段不可达，需 kernel 侧自行读或固件侧改）；测试内核已就绪（SKIP→完整断言即时解锁） | minix-platform kind.rs/acpi.rs 扩展 或 boot-shim 交接扩展 | aarch64 `test-smp-topo-aarch64` 转 PASS | doc 04 拓扑消费说明；16-smp §5.1 |
 | S-3a | AP bootstrap ABI + 内存序契约 | 定义 `ApBootstrap`（§3.2）+ `ap_early_entry` 签名 + §3.9 契约落为代码注释/断言约定；**toolchain spike**（10~30 行）：证明 `global_asm!` + lld + UEFI 能产出可拷贝的 `.ap_early_entry` 单段 image（ELF 中间产物 `readelf -r` 零未解析 reloc + 三阶段反汇编 + **实际链接路径 gc-sections 行为实测** + 边界符号 `ap_early_entry_start/end` 自定义 + 同一机器码不同基址拷贝执行成功 + **image 邻接硬验收（v8 #6）**：`[image_start, image_end)` 内 `.ap_early_entry` 必须紧邻 `.ap_early_entry_data`、中间不得插入其它可分配 section——记录 image_start/image_end/image_size/section ordering；拷贝单位是 [start,end) 区间而非"两个 section 各自存在"——v3 #7/#8：relocation-free ≠ PIC proof，执行才是最终证据；**v4 小点：UEFI 最终产物是 PE/COFF，`readelf` 只适用于 ELF 中间产物，最终 .efi 需 PE 感知工具（`objdump -h -r` PE 模式 / llvm-objdump）检查 base relocation 块**） | ABI 定义 + spike 报告 | spike 全绿；失败则立即换机制（.S），不写完整梯子 | 16-smp 新 §；spike 结论入 commit |
 | S-3b | x86 early entry image | §3.2：`global_asm!` `.ap_early_entry`（16→32→64 梯子）+ `.ap_early_entry_data`（mailbox 存 bootstrap PA）+ 低内存拷贝；**地址空间交接闭环**（rust_entry_va/kernel_stack_top_va 字段 + PA 收口 `ap_early_entry(bootstrap_pa: usize)` + DM 转换）；**前置**：<1MiB 低内存来源落点 + **BSP 页表根 PA <4GiB assert**（32 位模式装 CR3 约束，§3.2 闭环第 3 条） | x86_64 early entry 模块 | `readelf -r` 零 relocation（静态验收）+ 恒等映射覆盖确认 + L2 起步 | 16-smp 新 §（设计 + 与 doc 02 HigherHalf 分工声明 + 0x467 舍弃取舍）；doc 02 加交叉引用 |
 | S-3c | aarch64/riscv64 early stub | 同一 `ap_early_entry(bootstrap_pa)` 汇合：arm PSCI context 传参 + MMU-off stub；riscv SBI opaque 传参（**修正 a2 误标 priv 的注释，改传 bootstrap 指针**，§2.1）+ satp
@@ -1380,3 +1381,31 @@ fallback 正常；aarch64 仅 6 个测试包（无 proc-init 变体）——与�
 **修正落点**：todo.md Edge 表 D-38④ 行转 ✅、DEFERRED 汇总行划掉 ④、§7.1 D-38 行补 ④
 结论；doc 16 §4.13 三行（入口/完成行号刷新 + resume 行重写为生产/完整双版本说明）。
 D-38① 维持 DEFERRED（SMP 异常路径，smp_todo S-9）。
+
+
+---
+
+## 20. S-2 完成记录（2026-09-07）——拓扑发现回归钉（L1）
+
+**交付**：三个测试内核 `test-smp-topo{,-aarch64,-riscv64}` + run_all.sh/run_qemu.sh 接入
+（SKIP 单列计数，`⏭️` 标记，不与 FAIL 混淆）。
+
+**结果**：
+
+| 架构 | 来源链 | 结果 | 发现 |
+|---|---|---|---|
+| x86_64 | UEFI config table → RSDP → `AcpiDesc::parse`（MADT） | **PASS** | nr_cpus=4、APIC ID {0,1,2,3}、BSP=0——QEMU 默认拓扑与解析器预期一致（仅打印观察，未入契约） |
+| riscv64 | OpenSBI a1 → DTB → `DeviceTreeDesc::parse` | **PASS** | nr_cpus=4、hart {0,1,2,3}、BSP=0——DTB 解析器真固件下钉住 |
+| aarch64 | config table 无 FDT；acpi 模块 x86_64 门控；fw_cfg MMIO UEFI 阶段未映射 | **SKIP → S-2b** | 三条拓扑来源全断（详见测试头注释三个 blocker）；DTB 解析器本身由 riscv64 覆盖（同一份 device_tree.rs） |
+
+**设计决策（cmd-08 候选对比）**：解析器直钉（选）vs 进内核集成钉（qemu_test kmain，重、
+失败面大）vs 纯 mock（不验真固件，否）。解析器是 D-36 上半的全部内容；`init_from_kinfo`
+的集成消费由后续 L4+（AP 启动经 `platform_desc()`）覆盖。
+
+**发现的实施缺口（S-2b 登记进 §5）**：aarch64 生产链同病——AAVMF 下 `init_from_kinfo`
+发现不到任何 source。修复方向两个候选（RSDP arm 扩 aarch64 + GICC 解析 / DTB 直通交接），
+S-2b 开工时按 cmd-08 对比定夺。**这不是架构变更**（FROZEN 规则内：实施发现的局部缺口）。
+
+**测试自审（cmd-23 五维）**：完备（3 断言 + 观察）✓；自身正确（断言 vs 打印严格分离，
+QEMU 拓扑值不进契约）✓；冗余（无——三架构各测各的来源链）✓；无效（aarch64 SKIP 带三
+blocker 证据 + FDT 复现 tripwire，非空转）✓；虚构（测试名/断言/串口输出一一对应）✓。

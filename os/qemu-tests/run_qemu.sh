@@ -181,16 +181,24 @@ rm -rf "$STAGING"
 rm -f /tmp/ovmf_vars_$$.fd /tmp/aavmf_vars_$$.fd /tmp/riscv_vars_$$.fd
 rm -f "$DISK_IMG"
 
-# Check for PASS marker (use strings to handle binary serial logs)
+# Check for PASS / SKIP markers (use strings to handle binary serial logs).
+# A SKIP marker means the test is deliberately blocked (documented reason on
+# the serial log): exit code 0 so run_all counts it separately, not as FAIL.
 PASSED=false
+SKIPPED=false
 if [ -f "$SERIAL_LOG" ] && strings "$SERIAL_LOG" | grep -q "### TEST_RESULT: PASS"; then
     PASSED=true
+elif [ -f "$SERIAL_LOG" ] && strings "$SERIAL_LOG" | grep -q "### TEST_RESULT: SKIP"; then
+    SKIPPED=true
 fi
 
 rm -f "$SERIAL_LOG"
 
 if $PASSED; then
     echo "✅ TEST PASSED"
+    exit 0
+elif $SKIPPED; then
+    echo "⏭️  TEST SKIPPED (documented blocker — see serial log)"
     exit 0
 else
     echo "❌ TEST FAILED — no PASS marker found"

@@ -1,0 +1,26 @@
+[package]
+name = "test-smp-topo-aarch64"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+uefi = { version = "0.33", features = ["alloc"] }
+minix-plat = { workspace = true }
+minix-platform = { workspace = true }
+minix-boot = { workspace = true }
+minix-types = { workspace = true }
+boot-shim = { workspace = true, features = ["uefi"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+name = "test-smp-topo-aarch64"
+path = "src/main.rs"
+# Bare-metal firmware binary: never compile a host test harness
+# (host `cargo test` would link std → duplicate panic_impl /
+# global_allocator conflicts with uefi).
+test = false

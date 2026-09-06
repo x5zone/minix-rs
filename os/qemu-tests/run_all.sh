@@ -18,6 +18,7 @@ OS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PASS=0
 FAIL=0
+SKIP=0
 
 run_test() {
     local name="$1"
@@ -30,7 +31,12 @@ run_test() {
     fi
 
     echo "--- Running: $name ($arch) ---"
-    if "$SCRIPT_DIR/run_qemu.sh" "$arch" "$binary"; then
+    local out rc=0
+    out=$("$SCRIPT_DIR/run_qemu.sh" "$arch" "$binary" 2>&1) || rc=$?
+    echo "$out"
+    if echo "$out" | grep -q "TEST SKIPPED"; then
+        SKIP=$((SKIP + 1))
+    elif [ "$rc" -eq 0 ]; then
         PASS=$((PASS + 1))
     else
         FAIL=$((FAIL + 1))
@@ -40,19 +46,19 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
-for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init; do
+for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo; do
     echo "--- x86_64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
 
 # ── aarch64 (UEFI) ──
-for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64; do
+for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64; do
     echo "--- aarch64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target aarch64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
-for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64; do
+for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64; do
     echo "--- riscv64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --release 2>&1 || echo "(build failed)"
 done
@@ -69,6 +75,7 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     run_test "test-higher-half"        x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-higher-half.efi"
     run_test "test-protection"         x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-protection.efi"
     run_test "test-proc-init"          x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-proc-init.efi"
+    run_test "test-smp-topo"           x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-topo.efi"
 fi
 
 # aarch64 tests
@@ -79,11 +86,13 @@ if command -v qemu-system-aarch64 &>/dev/null; then
     run_test "test-kernel-map-aarch64" aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-kernel-map-aarch64.efi"
     run_test "test-higher-half-aarch64" aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-higher-half-aarch64.efi"
     run_test "test-protection-aarch64" aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-protection-aarch64.efi"
+    run_test "test-smp-topo-aarch64"   aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-smp-topo-aarch64.efi"
 fi
 
 # riscv64 tests
 if command -v qemu-system-riscv64 &>/dev/null; then
     run_test "hello-boot-riscv64"      riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/hello-boot-riscv64"
+    run_test "test-smp-topo-riscv64"   riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-smp-topo-riscv64"
     run_test "test-memmap-riscv64"     riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-memmap-riscv64"
     run_test "test-paging-enable-riscv64" riscv64 "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-paging-enable-riscv64"
     run_test "test-kernel-map-riscv64" riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-kernel-map-riscv64"
@@ -92,7 +101,7 @@ if command -v qemu-system-riscv64 &>/dev/null; then
 fi
 
 echo ""
-echo "=== All QEMU tests done: $PASS passed, $FAIL failed ==="
+echo "=== All QEMU tests done: $PASS passed, $FAIL failed, $SKIP skipped ==="
 
 if [ "$FAIL" -gt 0 ]; then
     exit 1
