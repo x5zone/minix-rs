@@ -2,12 +2,15 @@
 //!
 //! C ground truth: `minix3/minix/servers/pm/misc.c` (447 lines, 72/108/149/169/198/291/400)
 //! + `profile.c:22` + `mcontext.c:13/23` + `utility.c:57/144`
-//! Design: `.design/20-design.v1.md` D1–D8 (explicit `UtsField/SysInfoWhat/EpInfo/RebootCtl/ParamStore/RusageWho`).
-//! Single-threaded — `&mut ProcTable` without `Arc`.
+//!   Design: `.design/20-design.v1.md` D1–D8 (explicit `UtsField/SysInfoWhat/EpInfo/RebootCtl/ParamStore/RusageWho`).
+//!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Clock, Pid, Uid, Gid, Endpoint, VirBytes, EINVAL, EPERM, ESRCH, ENOSPC, E2BIG, ENOSYS};
 use crate::mproc::ProcTable;
 use crate::ipc::ReplyIntent;
+
+/// 自身/子进程的 (utime, stime) 二元对（`getrusage`/`sys_times` 汇聚的类型化别名）。
+type UtimeStimePair = ((i64, i64), (i64, i64));
 
 /// `UTS_TBL` length (`misc.c:46` 8).
 pub const UTS_TBL_LEN: usize = 8;
@@ -169,7 +172,7 @@ pub fn rusage_from_ticks(ticks: Clock, hz: Clock) -> (i64, i64) {
     if hz == 0 {
         return (0, 0);
     }
-    let usec = (ticks as i64 as u128 * 1_000_000u128) / hz as u128;
+    let usec = (ticks as u128 * 1_000_000u128) / hz as u128;
     let sec = (usec / 1_000_000) as i64;
     let usec_rem = (usec % 1_000_000) as i64;
     (sec, usec_rem)
@@ -252,6 +255,8 @@ pub trait McontextCtl {
 }
 
 /// `SprofCtl` (`profile.c:31-33`, D7).
+/// （8 参数与 C 的 `sys_vtimer`/profile 消息载荷一一对应，`[ARCH: A-3]`。）
+#[allow(clippy::too_many_arguments)]
 pub trait SprofCtl {
     fn sprof(&mut self, action: i32, mem_size: usize, freq: u32, intr_type: i32, ep: Endpoint, ctl_ptr: VirBytes, mem_ptr: VirBytes) -> i32;
 }
@@ -433,6 +438,7 @@ pub fn set_rusage_times(ru_utime_sec: &mut i64, ru_utime_usec: &mut i64, ru_stim
 }
 
 /// `do_getrusage` (`misc.c:400-447`, D6).
+    #[allow(clippy::too_many_arguments)] // C 的 getrusage 消息布局要求 8 参数直传（misc.c:201-210）
 pub fn do_getrusage(
     table: &ProcTable,
     caller: minix_types::UserSlot,
@@ -440,7 +446,7 @@ pub fn do_getrusage(
     hz: Clock,
     ctl: &mut dyn TimesVmCtl,
     _cpy: &mut dyn CopyToUser,
-) -> Result<((i64, i64), (i64, i64)), MiscError> {
+) -> Result<UtimeStimePair, MiscError> {
     let ep = table.procs[caller.get()].endpoint();
     let (utime, stime) = match who {
         RusageWho::Slf => ctl.sys_times(ep).map_err(|_| MiscError::Inval)?,

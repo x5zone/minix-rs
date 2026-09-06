@@ -24,10 +24,12 @@ use core::fmt;
 /// - `ZOMBIE` → `Zombie`
 /// - `TOLD_PARENT` → `ToldParent`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Lifecycle {
     /// Slot not in use.
     ///
     /// Process table slot is free and can be allocated.
+    #[default]
     Unused,
     
     /// Running normally.
@@ -81,11 +83,6 @@ pub enum Lifecycle {
     },
 }
 
-impl Default for Lifecycle {
-    fn default() -> Self {
-        Self::Unused
-    }
-}
 
 impl Lifecycle {
     /// Checks if slot is in use.

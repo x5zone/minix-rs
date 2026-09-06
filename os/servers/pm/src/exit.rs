@@ -2,15 +2,15 @@
 //!
 //! C ground truth: `minix3/minix/servers/pm/forkexit.c:242-469` (do_exit/exit_proc/exit_restart)
 //! + `590-807` (zombify/check_parent/tracer_died/cleanup) + `mproc.h:86-104`
-//! flags + `main.c:365` publish_event.
+//!   flags + `main.c:365` publish_event.
 //!
 //! Design: explicit orchestrator + `Lifecycle` enum (`mproc/lifecycle.rs:27`)
 //! + `Guardianship` (`mproc/guardianship.rs`) + `BlockState`.
-//! Single-threaded event loop — `&mut ProcTable` without `Arc`/`Mutex`.
+//!   Single-threaded event loop — `&mut ProcTable` without `Arc`/`Mutex`.
 
-use minix_types::{Endpoint, UserSlot, VfsCall, OK};
+use minix_types::{Endpoint, UserSlot, VfsCall};
 use crate::ipc::ReplyIntent;
-use crate::mproc::{ProcTable, Lifecycle, Guardianship, BlockState, IpcBlockReason};
+use crate::mproc::{ProcTable, Lifecycle};
 
 /// Exit status truncation: Minix3 `mp_exitstatus` is `char` (`mproc.h:25`).
 fn trunc_status(status: i32) -> i8 {
@@ -96,7 +96,7 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // POSIX: accumulate at parent only after wait, but child saves its own times here.
     // [DEFERRED: D-14] `sys_times` 计账——内核 uptime 面挂 edge E6
     {
-        let proc = &mut table.procs[proc_nr];
+        let _proc = &mut table.procs[proc_nr];
         // `sys_times` would fetch user/sys ticks; here we just keep existing child_utime/stime
         // [DEFERRED: D-14] 自身 times 增量为 0（依赖同上）
         let _ = proc_ep;
@@ -269,8 +269,8 @@ pub(crate) fn zombify(table: &mut ProcTable, slot: UserSlot) {
         _ => (0, 0),
     };
 
-    if let Some(tracer_slot) = tracer {
-        if tracer_slot != parent {
+    if let Some(tracer_slot) = tracer
+        && tracer_slot != parent {
             table.procs[slot.get()].state.lifecycle = Lifecycle::TraceZombie { exit_code, sig_status };
             // Do not send SIGCHLD to tracer (forkexit.c:611-614)
             if wait_test(table, tracer_slot, slot) {
@@ -280,7 +280,6 @@ pub(crate) fn zombify(table: &mut ProcTable, slot: UserSlot) {
             check_parent(table, slot, false);
             return;
         }
-    }
     table.procs[slot.get()].state.lifecycle = Lifecycle::Zombie { exit_code, sig_status };
     check_parent(table, slot, false);
 }
@@ -485,6 +484,7 @@ mod tests {
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Guardianship, Privilege, Credentials};
     use minix_types::{Endpoint, UserSlot};
+    use crate::mproc::{BlockState, IpcBlockReason};
 
     fn running_proc(table: &mut ProcTable, slot: usize, pid: i32) {
         table.procs[slot].state.lifecycle = Lifecycle::Running;

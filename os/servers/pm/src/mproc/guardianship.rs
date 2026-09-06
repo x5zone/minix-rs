@@ -116,6 +116,8 @@ impl Guardianship {
     }
 
     /// Tries to set tracer (`T_OK`, `trace.c:58`).
+    /// 单元错误仅表达"已有 tracer"的成败（调用方转换为 `EPERM`）。
+    #[allow(clippy::result_unit_err)]
     pub fn try_set_tracer(&mut self, parent: UserSlot) -> Result<(), ()> {
         if self.tracer().is_some() {
             return Err(());

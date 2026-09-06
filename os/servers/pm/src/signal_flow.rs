@@ -3,11 +3,11 @@
 //!
 //! C ground truth: `minix3/minix/servers/pm/signal.c:226-289` (stop/try_resume)
 //! + `651-776` (check_pending/restart_sigs/unpause) + `344-369` (SIGSNDELAY)
-//! Design: `.design/13-design.v1.md` D1–D8 (explicit `MayDelay`/`KernelStop`/`UnpauseOutcome`/etc).
-//! Single-threaded — `&mut ProcTable` without `Arc`.
+//!   Design: `.design/13-design.v1.md` D1–D8 (explicit `MayDelay`/`KernelStop`/`UnpauseOutcome`/etc).
+//!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot};
-use crate::mproc::{ProcTable, Lifecycle, BlockState, IpcBlockReason};
+use crate::mproc::{ProcTable, IpcBlockReason};
 
 /// `may_delay` as explicit enum (D1: `bool` → `MayDelay`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,7 +306,7 @@ pub fn restart_sigs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials, SignalState};
+    use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials, SignalState, BlockState};
     use minix_types::{Endpoint, UserSlot};
 
     fn mk_running(table: &mut ProcTable, slot: usize) {

@@ -5,7 +5,7 @@
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot, Pid, VirBytes, EPERM, EINVAL, ESRCH, OK};
-use crate::mproc::{ProcTable, Lifecycle, FrameRegion, ExecState, RemainingFlags};
+use crate::mproc::{ProcTable, FrameRegion, ExecState, RemainingFlags};
 use crate::ipc::ReplyIntent;
 
 /// `VFS_PM_EXEC` message encoding (6 fields, `ipc.h:469`).
@@ -108,7 +108,7 @@ pub fn do_exec(
 fn apply_tainted_and_creds(
     table: &mut ProcTable,
     target: UserSlot,
-    allow_setuid: bool,
+    _allow_setuid: bool,
     info: &ExecInfo,
 ) {
     let proc = &mut table.procs[target.get()];
@@ -140,11 +140,10 @@ fn apply_tainted_and_creds(
     let mut tainted = false;
     if effective_allow && info.allow_setuid {
         tainted = true;
-    } else if let Some(creds) = proc.resources.privilege.credentials() {
-        if creds.user.effective != creds.user.real || creds.group.effective != creds.group.real {
+    } else if let Some(creds) = proc.resources.privilege.credentials()
+        && (creds.user.effective != creds.user.real || creds.group.effective != creds.group.real) {
             tainted = true;
         }
-    }
     proc.resources.tainted = tainted;
     if tainted {
         proc.resources.flags.insert(RemainingFlags::TAINTED);

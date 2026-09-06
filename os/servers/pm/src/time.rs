@@ -4,8 +4,8 @@
 //! + `minix3/minix/include/minix/ipc.h:469` `mess_lc_pm_time/mess_pm_lc_time`
 //! + `minix3/sys/sys/time.h:283/288` `CLOCK_REALTIME 0/MONOTONIC 3`
 //! + `minix3/minix/lib/libsys/getuptime.c:9-22` + `libsys/clock_time.c:13-40`
-//! Design: `.design/19-design.v1.md` D1–D8 (explicit `ClockId/decompose_clock/clock_resolution/ClockSource/BootTimeCtl/SetTimeCtl/ClockTime`).
-//! Single-threaded — `&mut ProcTable` without `Arc`.
+//!   Design: `.design/19-design.v1.md` D1–D8 (explicit `ClockId/decompose_clock/clock_resolution/ClockSource/BootTimeCtl/SetTimeCtl/ClockTime`).
+//!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Clock, Time, UserSlot, EINVAL, EPERM};
 use crate::mproc::ProcTable;

@@ -2,7 +2,7 @@
 //!
 //! Implements core logic of fork system call for PM server.
 
-use minix_types::{Endpoint, UserSlot, PmError, VfsCall, EAGAIN, EPERM, OK};
+use minix_types::{Endpoint, UserSlot, PmError, VfsCall, OK};
 use crate::mproc::{ProcTable, Lifecycle, Privilege, SrvForkParams};
 use crate::ipc::{vm_fork, IpcTransport, tell_vfs};
 
@@ -142,7 +142,7 @@ pub fn do_srv_fork<T: IpcTransport>(
 
     // 5. Occupy + srv copy (187-216) — retain PRIV_PROC, inject uid/gid
     table.procs_in_use.set(table.procs_in_use.get() + 1);
-    let child_pid;
+    
     {
         // Use mproc's srv_fork_from for explicit construction
         let child = crate::mproc::Process::srv_fork_from(
@@ -163,7 +163,7 @@ pub fn do_srv_fork<T: IpcTransport>(
     let inherited =
         inherit_guardianship(&table.procs[parent_slot].state.guardianship, UserSlot::new(parent_slot));
     table.procs[child_slot].state.guardianship = inherited;
-    child_pid = table.pid_generator.get_free_pid(table);
+    let child_pid = table.pid_generator.get_free_pid(table);
     table.procs[child_slot].identity.id.pid = child_pid;
 
     // 6. VFS srv fork (222-230, REUID/REGID = uid/gid)

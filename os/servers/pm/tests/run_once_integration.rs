@@ -19,7 +19,7 @@
 use minix_pm::init::{BootParams, RunStep};
 use minix_pm::ipc::{IpcStatus, TestIpcTransport};
 use minix_pm::mproc::{Lifecycle, WaitTarget};
-use minix_types::{Endpoint, Message, UserSlot};
+use minix_types::{Endpoint, Message};
 
 /// 构造一台带空参数表的服务器（`placeholder()` 不播种任何进程）。
 fn server() -> minix_pm::init::PmServer<TestIpcTransport> {
@@ -38,10 +38,11 @@ fn seed_running(server: &mut minix_pm::init::PmServer<TestIpcTransport>, slot: u
 
 /// 构造一条来自 `source` 的请求消息。
 fn request(m_type: i32, source: Endpoint) -> Message {
-    let mut m = Message::default();
-    m.m_type = m_type;
-    m.m_source = source;
-    m
+    Message {
+        m_type,
+        m_source: source,
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -53,11 +54,11 @@ fn fork_request_runs_full_chain_and_suspends() {
     let parent_ep = seed_running(&mut srv, 5, 100);
 
     // 脚本化 VM_FORK 应答：空表 + 游标 0 → 子槽位 1，子代际 = 父(1)+1。
-    let mut vm_reply = Message::default();
-    vm_reply.m_type = minix_types::OK;
-    unsafe {
-        vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
-    }
+    let mut vm_reply = Message {
+        m_type: minix_types::OK,
+        ..Default::default()
+    };
+    vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
     srv.transport_mut()
         .queue_sendrec_reply(vm_reply);
     srv.transport_mut()
@@ -122,11 +123,9 @@ fn wait4_without_children_replies_echild() {
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     let mut wait_msg = request(3, caller_ep); // PM_WAIT4 = 3
-    unsafe {
-        wait_msg.m_u.m_lc_pm_wait4.pid = -1; // 任意子进程
-        wait_msg.m_u.m_lc_pm_wait4.options = 0;
-        wait_msg.m_u.m_lc_pm_wait4.addr = 0;
-    }
+    wait_msg.m_u.m_lc_pm_wait4.pid = -1; // 任意子进程
+    wait_msg.m_u.m_lc_pm_wait4.options = 0;
+    wait_msg.m_u.m_lc_pm_wait4.addr = 0;
     srv.transport_mut()
         .queue_receive(wait_msg, IpcStatus::default());
 
@@ -146,10 +145,8 @@ fn kill_unknown_pid_replies_esrch() {
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     let mut kill_msg = request(11, caller_ep); // PM_KILL = 11
-    unsafe {
-        kill_msg.m_u.m_lc_pm_kill.pid = 9999; // 不存在的 PID
-        kill_msg.m_u.m_lc_pm_kill.signo = 15; // SIGTERM
-    }
+    kill_msg.m_u.m_lc_pm_kill.pid = 9999; // 不存在的 PID
+    kill_msg.m_u.m_lc_pm_kill.signo = 15; // SIGTERM
     srv.transport_mut()
         .queue_receive(kill_msg, IpcStatus::default());
 

@@ -20,8 +20,8 @@
 //! 2. **Invariant protection**: fork logic binds PM internal state
 //! 3. **Microkernel principle**: Other services don't need to know PM's fork implementation
 
-use minix_types::{Pid, Endpoint, UserSlot, NR_PROCS, LAST_FEW, Clock, Uid, Gid, EAGAIN, ENOMEM, EINVAL};
-use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, ProcTable, NR_ITIMERS, RemainingFlags, ExecState};
+use minix_types::{Pid, Endpoint, UserSlot, Clock, Uid, Gid, EAGAIN, ENOMEM, EINVAL};
+use crate::mproc::{PmContext, Process, Lifecycle, Privilege, Credentials, ProcessIdentity, ProcessId, ProcessState, BlockState, WaitState, Guardianship, TraceState, ProcessResources, ProcessIpc, NR_ITIMERS, RemainingFlags, ExecState};
 
 /// PM -> VM: Fork request message.
 #[derive(Debug, Clone, Copy)]
@@ -301,14 +301,14 @@ impl Process {
             exec_state: ExecState::Idle,
         };
 
-        let proc = Self {
+        
+
+        Self {
             identity,
             state,
             resources,
             ipc: ProcessIpc::default(),
-        };
-
-        proc
+        }
     }
 
     /// Fork semantics: create child process from parent.
@@ -406,6 +406,8 @@ impl Process {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mproc::ProcTable;
+    use minix_types::{NR_PROCS, LAST_FEW};
     extern crate std;
     use std::boxed::Box;
     

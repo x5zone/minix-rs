@@ -5,7 +5,7 @@
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot, Pid, EINVAL, ESRCH, EPERM, EDEADEPT};
-use crate::mproc::{ProcTable, Lifecycle, SignalState, _NSIG};
+use crate::mproc::{ProcTable, _NSIG};
 
 /// Signal numbers (subset, `sys/signal.h`).
 pub const SIGKILL: i32 = 9;
@@ -92,11 +92,10 @@ pub fn check_sig(
         return Err(KillError::InvalidSignal); // EINVAL for INIT+KILL
     }
     // Broadcast SIGTERM: RS first (588-589)
-    if pid == -1 && signo == SIGTERM {
-        if let Ok(rs_slot) = table.pm_isokendpt(Endpoint::RS) {
+    if pid == -1 && signo == SIGTERM
+        && let Ok(rs_slot) = table.pm_isokendpt(Endpoint::RS) {
             let _ = sig_proc(table, rs_slot, signo, true, ksig, transport);
         }
-    }
 
     let mut count = 0;
     let mut error_code = KillError::NoSuchProcess;
@@ -375,7 +374,6 @@ pub fn process_ksig(
     // Pretend PM is sender (312)
     let _ = proc.identity.procgrp;
     let pid = proc.identity.id.pid;
-    drop(proc);
     // SIGVTALRM/SIGPROF → 重置虚拟计时器（C: signal.c:326-328 的
     // check_vtimer + fall-through 到单播 default 分支）。注意 SIGVTALRM
     // = 26：旧代码误写 12（SIGSYS），该分支从未命中过——真实 bug，随

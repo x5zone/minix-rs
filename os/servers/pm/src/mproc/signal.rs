@@ -118,6 +118,7 @@ impl Default for SignalState {
 /// Corresponds to C's `struct sigaction`.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
+#[derive(Default)]
 pub struct SigAction {
     /// Signal handler address or special value.
     ///
@@ -131,15 +132,6 @@ pub struct SigAction {
     pub sa_flags: i32,
 }
 
-impl Default for SigAction {
-    fn default() -> Self {
-        Self {
-            sa_handler: 0,
-            sa_mask: 0,
-            sa_flags: 0,
-        }
-    }
-}
 
 /// Handler disposition (`SIG_DFL=0` / `SIG_IGN=1` / handler address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,7 +341,7 @@ impl SignalState {
         }
         let signo = unblocked.trailing_zeros() + 1;
         let ksig = (self.kernel_pending >> (signo - 1) & 1) != 0;
-        Some((signo as u32, ksig))
+        Some((signo, ksig))
     }
 
     /// Clears `pending` and `kernel_pending` for `signo` (668-669).

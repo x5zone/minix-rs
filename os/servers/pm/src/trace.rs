@@ -5,7 +5,7 @@
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot, Pid, EINVAL, EPERM, EBUSY, ESRCH, OK};
-use crate::mproc::{ProcTable, Guardianship, TraceOptions, RemainingFlags};
+use crate::mproc::{ProcTable, Guardianship, TraceOptions};
 use crate::ipc::ReplyIntent;
 
 /// `T_*` commands (`sys/ptrace.h:226`).
@@ -173,7 +173,8 @@ pub fn do_trace(
             Ok(ReplyIntent::Reply(OK))
         }
         x if x == T_DETACH => {
-            if req.data < 0 || req.data >= 64 {
+            // data 为 u64：C 的 `data < 0` 分支对无符号恒假，仅保留上界
+            if req.data >= 64 {
                 return Err(TraceError::Inval);
             }
             let child = table.find_proc(req.pid).ok_or(TraceError::Srch)?;
@@ -199,7 +200,7 @@ pub fn do_trace(
             table.procs[child.get()].resources.signals.trace_mask = 0;
             if req.data > 0 {
                 // sig_proc with TRUE
-                table.procs[child.get()].resources.signals.pending |= 1u64 << (req.data as u64 - 1);
+                table.procs[child.get()].resources.signals.pending |= 1u64 << (req.data - 1);
             }
             table.procs[child.get()].state.trace.stopped = false;
             table.procs[child.get()].state.guardianship.set_trace_options(0);
@@ -207,7 +208,8 @@ pub fn do_trace(
             Ok(ReplyIntent::Reply(OK))
         }
         x if x == T_RESUME || x == T_STEP || x == T_SYSCALL => {
-            if req.data < 0 || req.data >= 64 {
+            // data 为 u64：C 的 `data < 0` 分支对无符号恒假，仅保留上界
+            if req.data >= 64 {
                 return Err(TraceError::Inval);
             }
             let child = table.find_proc(req.pid).ok_or(TraceError::Srch)?;
@@ -221,7 +223,7 @@ pub fn do_trace(
                 return Err(TraceError::BusyTrace);
             }
             if req.data > 0 {
-                table.procs[child.get()].resources.signals.pending |= 1u64 << (req.data as u64 - 1);
+                table.procs[child.get()].resources.signals.pending |= 1u64 << (req.data - 1);
             }
             // 231-236 sigtrace short-circuit
             if table.procs[child.get()].resources.signals.trace_mask != 0 {
@@ -230,7 +232,7 @@ pub fn do_trace(
             table.procs[child.get()].state.trace.stopped = false;
             // check_pending would be called
             // sys_trace透传 – for test just return OK
-            let mut data = req.data as u64;
+            let mut data = req.data;
             let r = ctl.trace(req.req, table.procs[child.get()].endpoint(), req.addr, &mut data);
             if r != OK {
                 return Err(TraceError::Inval);
@@ -249,7 +251,7 @@ pub fn do_trace(
             if !table.procs[child.get()].state.trace.stopped {
                 return Err(TraceError::BusyTrace);
             }
-            let mut data = req.data as u64;
+            let mut data = req.data;
             let r = ctl.trace(req.req, table.procs[child.get()].endpoint(), req.addr, &mut data);
             if r != OK {
                 return Err(TraceError::Inval);
@@ -282,9 +284,10 @@ pub fn trace_stop(
     if rpmp.state.wait.waiting {
         rpmp.state.wait.waiting = false;
         rpmp.ipc.reply = Some({
-            let mut m = minix_types::Message::default();
-            m.m_type = w_stopcode(signo);
-            m
+            minix_types::Message {
+                m_type: w_stopcode(signo),
+                ..Default::default()
+            }
         });
         table.procs[child.get()].resources.signals.trace_mask &= !(1u64 << (signo as u64 - 1));
         // In real code, reply(tracer, pid) – for test we just set reply

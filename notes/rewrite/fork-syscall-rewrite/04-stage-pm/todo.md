@@ -28,8 +28,8 @@
 | P2 | P2-5 | exit/wait 路径 9 处行为 stub 以散落注释存在，未按模式 60 登记为显式 DEFERRED 契约（**✅ 已修复** 2026-09-06，见 §10 Fix #19） |
 | P2 | P2-6 | 文档 00/99 仍是最小骨架，且 `.design/` 缺这两篇的 outline/outline-review/design 快照（模式 69） |
 | P2 | P2-7 | C 侧死代码 `ESCRIPT`（exec.c:31，定义后零使用）未登记进 plan.md §5.4 排除表（**✅ 已修复** 2026-09-06，见 §10 Fix #20） |
-| P3 | P3-1 | clippy 约 50 条告警未清理（文档缩进 17、可折叠 if 11、可派生 impl 6 等） |
-| P3 | P3-2 | 无用导入与无用参数（`Lifecycle` 两处、`dispatch_pm_call` 的 `table` 参数已无用） |
+| P3 | P3-1 | clippy 约 50 条告警未清理（文档缩进 17、可折叠 if 11、可派生 impl 6 等）（**✅ 已修复** 2026-09-06，见 §10 Fix #21） |
+| P3 | P3-2 | 无用导入与无用参数（`Lifecycle` 两处、`dispatch_pm_call` 的 `table` 参数已无用）（**✅ 已修复** 2026-09-06，Fix #2/#21 闭环；见 §10） |
 
 验证命令（2026-09-06 实测）：
 
@@ -249,11 +249,11 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 
 ## 5. P3：代码卫生
 
-### P3-1 clippy 告警清理（约 50 条）
+### P3-1 clippy 告警清理（约 50 条）（✅ 已修复 2026-09-06，见 §10 Fix #21）
 
 实测分布（`cargo clippy -p minix-pm --lib`，2026-09-06）：文档列表缩进 17、可折叠 if 11、可派生 impl 6、无用 cast（u64→u64 等）6、未声明的 cfg 特性值 6（随 P2-1 消除）、`too many arguments` 2、类型上限恒假比较 2、其余零散。全部是机械项或低风险项，可在 P1-1/P1-4 迁移后一次性清理（先迁移再清理，避免双倍改写）。
 
-### P3-2 无用导入与无用参数
+### P3-2 无用导入与无用参数（✅ 已修复 2026-09-06，见 §10 Fix #21）
 
 `use Lifecycle` 未使用两处（`exec.rs:8:31`、`sched.rs:12:44`）；`dispatch_pm_call` 的 `table` 参数已无用（`ipc/calls.rs:201:39`，因为只剩 Fork 死臂——这条会随 P1-1 自然消失，可作为迁移完成的天然验证点）。另外 `cargo check` 有 30 条 lib warning 与 clippy 大部分重叠，P3-1 清理时一并核对归零。
 
@@ -699,3 +699,21 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - `cargo test -p minix-pm`：**341 lib passed**（纯文档轮）
 
 **未做（DEFERRED 论证）**：A-4 的 wire 系统化（E7）、A-7/A-8 的服务端依赖、A-10 的内核 DELAY_CALL、A-13 的设计层决策——各自有登记的依赖，非遗漏。
+
+### ✅ Fix #21: P3-1/P3-2 — clippy 收敛与卫生清理（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/`（15+ 文件的机械卫生：doc 列表缩进 17 处、`Message` 字面量初始化替代 default+赋值 5 处、移除 3 处冗余 unsafe、删 `drop(proc)` 无效调用）
+- `os/servers/pm/src/{timer,trace}.rs`（**3 处 clippy correctness 级 error 修复**——基线统计时被告警数字掩盖）：
+  - `timer.rs:148` `v <= i64::MAX` 恒真比较 → `saturating_add`
+  - `trace.rs:176/210` `req.data < 0` 对 u64 恒假 → 仅保留 `>= 64` 上界（C 的 int 语义在 Rust 无符号建模下不可达，注释说明）
+- `os/servers/pm/src/lib.rs`（P2-4 联动：显式 re-export 后的导入收敛）
+
+**Before/After**：clippy lib：约 50 告警 + 3 error → **0 告警 0 error**。过程教训：`cargo clippy --fix --lib` 会把"仅测试使用"的导入当无用删除（不分析 cfg(test)）——首次尝试破坏测试编译，已整体回退改为手修 + 逐文件导入下移到测试模块。
+
+**Verified**：
+- `cargo test -p minix-pm`：**341 lib + 6 integration passed**
+- `cargo clippy -p minix-pm --lib`：0 warning / 0 error
+- 依赖 crate 残留（不在 pm 范围）：minix-sys 4 条（collapsible-if 3 + MountTable Default 1）、minix-types 1 条（large_enum_variant，02-stage-vm 已判定 WONTFIX）
+
+**Docs**：本文件 §0/标题标注。

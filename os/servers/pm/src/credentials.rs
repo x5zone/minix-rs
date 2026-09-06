@@ -4,7 +4,7 @@
 //! Design: `.design/15-design.v1.md` D1–D8 (explicit `GetOp`/`SetOp`/`Credentials` methods/`tainted: bool`/VfsForwarder).
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
-use minix_types::{Endpoint, UserSlot, Pid, Uid, Gid, VirBytes, EINVAL, EPERM, EFAULT, ESRCH, ENOSYS};
+use minix_types::{Endpoint, UserSlot, Pid, Uid, Gid, VirBytes, EINVAL, EPERM, EFAULT, ESRCH};
 use crate::mproc::{ProcTable, Credentials, NGROUPS_MAX, RemainingFlags};
 use crate::ipc::ReplyIntent;
 

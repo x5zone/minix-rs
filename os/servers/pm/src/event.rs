@@ -15,10 +15,7 @@
 //! `&mut EventRegistry` / `&mut ProcTable` / `&mut dyn IpcTransport` 在单线程下安全。
 //! `nested` 为 `usize` 计数非 `Atomic`。
 
-use minix_types::{
-    Endpoint, Message, ProcEvent, ProcEventMask, UserSlot, NR_PROCS, PROC_EVENT,
-    PROC_EVENT_REPLY,
-};
+use minix_types::{Endpoint, Message, ProcEvent, ProcEventMask, UserSlot};
 
 use crate::ipc::IpcTransport;
 use crate::ipc::ReplyIntent;
@@ -50,7 +47,7 @@ impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServ
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServices<'_, T> {
     fn exit_proc(&mut self, table: &mut ProcTable, target: UserSlot, status: i8) {
-        let _ = crate::exit::exit_proc(table, target, status, false, self.transport);
+        crate::exit::exit_proc(table, target, status, false, self.transport);
     }
 }
 
@@ -179,12 +176,11 @@ impl EventRegistry {
             let ep = proc.endpoint();
             let mut to_remove: Option<usize> = None;
             for i in 0..self.nsubs {
-                if let Some(sub) = self.subs[i] {
-                    if sub.endpoint == ep {
+                if let Some(sub) = self.subs[i]
+                    && sub.endpoint == ep {
                         to_remove = Some(i);
                         break;
                     }
-                }
             }
             if let Some(slot) = to_remove {
                 self.remove_sub(slot, table, transport);
@@ -333,8 +329,8 @@ impl EventRegistry {
 
         // 命中已订阅项
         for i in 0..self.nsubs {
-            if let Some(sub) = self.subs[i] {
-                if sub.endpoint == table.procs[caller.get()].endpoint() {
+            if let Some(sub) = self.subs[i]
+                && sub.endpoint == table.procs[caller.get()].endpoint() {
                     if mask.is_empty() && sub.waiting == 0 {
                         // 退订且无等待 → 立即删除（event.c:188-189）
                         // remove_sub 需 &mut ProcTable + transport 以调整游标；
@@ -374,7 +370,6 @@ impl EventRegistry {
                     }
                     return ReplyIntent::Reply(minix_types::OK);
                 }
-            }
         }
 
         if mask.is_empty() {
@@ -412,8 +407,8 @@ impl EventRegistry {
         }
 
         for i in 0..self.nsubs {
-            if let Some(sub) = self.subs[i] {
-                if sub.endpoint == table.procs[caller.get()].endpoint() {
+            if let Some(sub) = self.subs[i]
+                && sub.endpoint == table.procs[caller.get()].endpoint() {
                     if mask.is_empty() && sub.waiting == 0 {
                         self.remove_sub(i, table, transport);
                     } else {
@@ -421,7 +416,6 @@ impl EventRegistry {
                     }
                     return ReplyIntent::Reply(minix_types::OK);
                 }
-            }
         }
 
         if mask.is_empty() {
@@ -444,11 +438,11 @@ impl EventRegistry {
 
     /// `do_proc_event_reply`（`event.c:218-309`）。
     ///
-    /// 7 步校验（任一失败 → `ReplyLater` / `printf+SUSPEND`，仅 `!PRIV_PROC → Reply(ENOSYS)`）：
+    ///   7 步校验（任一失败 → `ReplyLater` / `printf+SUSPEND`，仅 `!PRIV_PROC → Reply(ENOSYS)`）：
     /// 1. `!PRIV_PROC → ENOSYS`；2. `pm_isokendpt(endpt)`；3. `EVENT_CALL`；4. 游标 `< nsubs`；
     /// 5. `subs[i].endpoint == who_e`；6. 标志推断事件；7. `msg.event == inferred`。
-    /// 成功路径：`waiting--` 后 `mask empty && waiting==0 → remove_sub` 否则 `cursor++ → resume_event`；
-    /// 任何路径恒返 `ReplyLater`（不回复本回复消息，`main.c:88-89`）。
+    ///    成功路径：`waiting--` 后 `mask empty && waiting==0 → remove_sub` 否则 `cursor++ → resume_event`；
+    ///    任何路径恒返 `ReplyLater`（不回复本回复消息，`main.c:88-89`）。
     pub fn do_proc_event_reply(
         &mut self,
         msg: &Message,
@@ -553,7 +547,7 @@ impl EventRegistry {
 mod tests {
     use super::*;
     use crate::mproc::{Lifecycle, ProcTable};
-    use minix_types::{Endpoint, Message, UserSlot, OK, EPERM, ENOMEM, ENOSYS};
+    use minix_types::{Endpoint, Message, UserSlot, OK, EPERM, ENOMEM, ENOSYS, NR_PROCS, PROC_EVENT, PROC_EVENT_REPLY};
 
     fn mk_table_with_subscriber(mask: ProcEventMask, waiting: usize) -> (ProcTable, EventRegistry, UserSlot, UserSlot) {
         let mut table = ProcTable::new();

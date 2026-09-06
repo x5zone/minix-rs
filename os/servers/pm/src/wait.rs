@@ -2,10 +2,10 @@
 //!
 //! C ground truth: `minix3/minix/servers/pm/forkexit.c:471-807` (do_wait4/wait_test/tell_parent/tell_tracer/cleanup)
 //! + `utility.c:92-106` set_rusage_times + `mproc.h:86-92` WAITING/ZOMBIE/TOLD_PARENT.
-//! Design: explicit `WaitTarget` enum (`mproc/wait.rs:30`) + `WaitState` + `Lifecycle`.
-//! Single-threaded — `&mut ProcTable` without `Arc`.
+//!   Design: explicit `WaitTarget` enum (`mproc/wait.rs:30`) + `WaitState` + `Lifecycle`.
+//!   Single-threaded — `&mut ProcTable` without `Arc`.
 
-use minix_types::{Endpoint, UserSlot, Pid, VirBytes, Message, ECHILD};
+use minix_types::{UserSlot, Pid, VirBytes, Message, ECHILD};
 use crate::ipc::ReplyIntent;
 use crate::mproc::{ProcTable, Lifecycle, WaitTarget};
 
@@ -55,7 +55,7 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
     // Collect matching children indices for later decision
     let mut candidates = alloc::vec::Vec::new();
     for (idx, proc) in table.procs.iter().enumerate() {
-        if (proc.state.lifecycle.is_in_use() && !matches!(proc.state.lifecycle, Lifecycle::ToldParent { .. })) {
+        if proc.state.lifecycle.is_in_use() && !matches!(proc.state.lifecycle, Lifecycle::ToldParent { .. }) {
             // IN_USE and not TOLD_PARENT (502)
         } else {
             continue;
@@ -166,9 +166,9 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
         table.procs[caller.get()].state.wait.waiting = true;
         table.procs[caller.get()].state.wait.target = WaitTarget::from_pidarg(pidarg, table.procs[caller.get()].identity.procgrp);
         table.procs[caller.get()].state.wait.rusage_addr = rusage_addr;
-        return ReplyIntent::ReplyLater;
+        ReplyIntent::ReplyLater
     } else {
-        return ReplyIntent::Reply(ECHILD);
+        ReplyIntent::Reply(ECHILD)
     }
 }
 

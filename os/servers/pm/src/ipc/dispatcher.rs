@@ -133,15 +133,15 @@ pub fn vm_fork<T: IpcTransport>(
     parent: Endpoint,
     child_slot: UserSlot,
 ) -> Result<Endpoint, crate::fork::ForkCoordError> {
-    let mut msg = Message::default();
-    msg.m_type = minix_types::VM_FORK as i32;
     // 请求编码：m1i1 = VMF_ENDPOINT，m1i2 = VMF_SLOTNO（C 的 VMF_*
     // 宏即 m1 字段别名；VmForkIn 只实现了 VM 侧的 DecodeFromM1，
     // PM 侧发送端按同一布局手写，对应 ipc/vm.rs:841-849 的解码序）。
-    unsafe {
-        msg.m_u.m_m1.m1i1 = parent.0;
-        msg.m_u.m_m1.m1i2 = child_slot.get() as i32;
-    }
+    let mut msg = Message {
+        m_type: minix_types::VM_FORK as i32,
+        ..Default::default()
+    };
+    msg.m_u.m_m1.m1i1 = parent.0;
+    msg.m_u.m_m1.m1i2 = child_slot.get() as i32;
     transport
         .sendrec(Endpoint::VM, &mut msg)
         .map_err(|_| crate::fork::ForkCoordError::VmError)?;
@@ -168,11 +168,11 @@ pub fn vm_fork<T: IpcTransport>(
 /// 传输失败或 VM 回复非 OK → `Err(errno 值)`；调用方（`exit.rs` 的
 /// `exit_proc` 步骤 6）以同文案 panic 对齐 C。
 pub fn vm_willexit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoint) -> Result<(), i32> {
-    let mut msg = Message::default();
-    msg.m_type = minix_types::VM_WILLEXIT as i32;
-    unsafe {
-        msg.m_u.m_m1.m1i1 = endpoint.0;
-    }
+    let mut msg = Message {
+        m_type: minix_types::VM_WILLEXIT as i32,
+        ..Default::default()
+    };
+    msg.m_u.m_m1.m1i1 = endpoint.0;
     transport
         .sendrec(Endpoint::VM, &mut msg)
         .map_err(|_| minix_types::EIO)?;
@@ -195,11 +195,11 @@ pub fn vm_willexit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoi
 /// 传输失败或 VM 回复非 OK → `Err(errno 值)`；调用方（`exit.rs` 的
 /// `exit_restart` 步骤 5）以同文案 panic 对齐 C。
 pub fn vm_exit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoint) -> Result<(), i32> {
-    let mut msg = Message::default();
-    msg.m_type = minix_types::VM_EXIT as i32;
-    unsafe {
-        msg.m_u.m_m1.m1i1 = endpoint.0;
-    }
+    let mut msg = Message {
+        m_type: minix_types::VM_EXIT as i32,
+        ..Default::default()
+    };
+    msg.m_u.m_m1.m1i1 = endpoint.0;
     transport
         .sendrec(Endpoint::VM, &mut msg)
         .map_err(|_| minix_types::EIO)?;

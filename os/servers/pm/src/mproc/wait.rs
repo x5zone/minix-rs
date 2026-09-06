@@ -27,10 +27,12 @@ pub struct WaitState {
 ///
 /// Corresponds to the first parameter of `waitpid()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum WaitTarget {
     /// `wait()` - wait for any child.
     ///
     /// Corresponds to `pid == -1`.
+    #[default]
     AnyChild,
     
     /// `waitpid(pid)` - wait for specific child.
@@ -62,11 +64,6 @@ impl WaitTarget {
     }
 }
 
-impl Default for WaitTarget {
-    fn default() -> Self {
-        Self::AnyChild
-    }
-}
 
 impl WaitState {
     /// Creates new wait state (default: not waiting).

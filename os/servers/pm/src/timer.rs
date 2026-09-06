@@ -144,10 +144,8 @@ impl TicksConv {
             None => return i64::MAX,
         };
         let ticks_usec = (usec_part + US - 1) / US;
-        match sec_ticks.checked_add(ticks_usec) {
-            Some(v) if v <= i64::MAX => v,
-            _ => i64::MAX,
-        }
+        // 饱和到 i64::MAX（旧 `v <= i64::MAX` 比较恒真，clippy correctness）
+        sec_ticks.saturating_add(ticks_usec)
     }
 
     /// `timeval_from_ticks` (`alarm.c:70-76` D1) without overflow.
@@ -229,7 +227,7 @@ pub fn getset_vtimer(
     let idx = which as usize;
     let ep = table.procs[target.get()].endpoint();
     // Prepare set ticks
-    let set_ticks = if let Some(v) = &set {
+    let _set_ticks = if let Some(v) = &set {
         let nt = conv.ticks_from_timeval(&v.it_value);
         if nt <= 0 {
             table.procs[target.get()].resources.intervals[idx] = 0;
@@ -248,7 +246,7 @@ pub fn getset_vtimer(
     let set_for_vtimer = set.as_ref().map(|v| conv.ticks_from_timeval(&v.it_value));
     // Get oldticks via vtimer get
     let mut oldticks: Clock = 0;
-    let get_opt = if get { Some(&mut oldticks as *mut Clock) } else { None };
+    let _get_opt = if get { Some(&mut oldticks as *mut Clock) } else { None };
     // We need to call vctl with proper Option<&mut Clock>
     // Since trait uses Option<&mut Clock>, we can pass mutable reference
     let mut old_holder: Clock = 0;
@@ -338,11 +336,10 @@ pub fn handle_clock_notify(table: &mut ProcTable, now: Clock, tctl: &mut dyn Tim
     // Here we scan ProcTable for any timer with exptime <= now.
     let mut to_expire: Vec<Endpoint> = Vec::new();
     for proc in table.procs.iter() {
-        if let Some(t) = &proc.resources.timer {
-            if t.expire_time <= now {
+        if let Some(t) = &proc.resources.timer
+            && t.expire_time <= now {
                 to_expire.push(proc.endpoint());
             }
-        }
     }
     for ep in to_expire {
         // For periodic, cause_sigalrm will rearm via interval; but we need to handle rearm via set_alarm
@@ -382,11 +379,10 @@ pub fn do_itimer(
     if op.set.is_none() && !op.get {
         return Err(ItimerError::InvalidVal);
     }
-    if let Some(v) = &op.set {
-        if !v.it_value.is_sane() || !v.it_interval.is_sane() {
+    if let Some(v) = &op.set
+        && (!v.it_value.is_sane() || !v.it_interval.is_sane()) {
             return Err(ItimerError::InvalidVal);
         }
-    }
     let target = caller;
     let mut old_val: Option<Itimerval> = None;
     match which_e {

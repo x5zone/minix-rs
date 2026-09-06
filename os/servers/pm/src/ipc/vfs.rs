@@ -330,8 +330,10 @@ impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
 
     fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32) {
         // C: reply(who_p, result)（exec.c:167 失败回复）。
-        let mut msg = Message::default();
-        msg.m_type = code;
+        let msg = Message {
+            m_type: code,
+            ..Default::default()
+        };
         let ep = table.procs[slot.get()].endpoint();
         let _ = self.transport.send(ep, &msg);
     }

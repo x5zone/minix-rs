@@ -24,7 +24,7 @@
 
 use minix_types::{Pid, Endpoint, UserSlot, Clock, VirBytes};
 use minix_types::Message;
-use crate::mproc::{Lifecycle, BlockState, WaitState, Guardianship, TraceState, TraceOptions, Credentials, SignalState};
+use crate::mproc::{Lifecycle, BlockState, WaitState, Guardianship, TraceState, Credentials, SignalState};
 
 /// Maximum process name length.
 pub const PROC_NAME_LEN: usize = 16;
@@ -76,6 +76,7 @@ impl Default for ProcessIdentity {
 ///
 /// All state information for a process.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ProcessState {
     /// Lifecycle state (mutually exclusive).
     pub lifecycle: Lifecycle,
@@ -89,17 +90,6 @@ pub struct ProcessState {
     pub trace: TraceState,
 }
 
-impl Default for ProcessState {
-    fn default() -> Self {
-        Self {
-            lifecycle: Lifecycle::default(),
-            block: BlockState::default(),
-            wait: WaitState::default(),
-            guardianship: Guardianship::default(),
-            trace: TraceState::default(),
-        }
-    }
-}
 
 /// Minix timer.
 #[derive(Debug, Clone, Copy)]
@@ -185,14 +175,13 @@ impl FrameRegion {
 
 /// `ExecState` (`PARTIAL_EXEC 0x4000`, D3, A-2).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ExecState {
+    #[default]
     Idle,
     Partial { frame: FrameRegion },
 }
 
-impl Default for ExecState {
-    fn default() -> Self { Self::Idle }
-}
 
 /// Process resources.
 ///
@@ -331,6 +320,7 @@ impl Default for ProcessIpc {
 /// | mp_magic | (type-system invariant, no field) |
 #[derive(Debug, Clone)]
 #[repr(C)]
+#[derive(Default)]
 pub struct Process {
     /// Identity information.
     pub identity: ProcessIdentity,
@@ -342,16 +332,6 @@ pub struct Process {
     pub ipc: ProcessIpc,
 }
 
-impl Default for Process {
-    fn default() -> Self {
-        Self {
-            identity: ProcessIdentity::default(),
-            state: ProcessState::default(),
-            resources: ProcessResources::default(),
-            ipc: ProcessIpc::default(),
-        }
-    }
-}
 
 impl Process {
     /// Creates a new process.
@@ -431,6 +411,7 @@ impl Process {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mproc::TraceOptions;
     
     #[test]
     fn test_process_default() {

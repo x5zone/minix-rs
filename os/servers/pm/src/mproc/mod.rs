@@ -36,6 +36,7 @@
 
 mod constants;
 mod pid_gen;
+#[allow(clippy::module_inception)] // C 亦为 mproc.c/mproc.h：state 层与父模块同名是有意的分层命名
 mod mproc;
 mod table;
 mod lifecycle;

@@ -3,15 +3,14 @@
 //!
 //! C ground truth: `minix3/minix/servers/pm/signal.c:40-192` (do_sigaction et al)
 //! + `minix3/minix/servers/pm/signal.c:776-855` (`sig_send`)
-//! Design: `.design/12-design.v1.md` D1–D8 (explicit `SigHandler`/`SigMaskOp`/
-//! `without_unkillable`/`KernelSig`).
-//! Single-threaded — `&mut ProcTable` without `Arc`.
+//!   Design: `.design/12-design.v1.md` D1–D8 (explicit `SigHandler`/`SigMaskOp`/
+//!   `without_unkillable`/`KernelSig`).
+//!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, VirBytes, UserSlot, EINVAL, EFAULT, ENOMEM};
 use crate::mproc::{
     ProcTable, SigSet, SigHandler, SigMaskOp, MaskOpEffect, SigMsg,
-    SigAction, SIGKILL, _NSIG, UNKILLABLE_MASK,
-    SigSetExt, SIG_BLOCK, SIG_UNBLOCK,
+    SigAction, SIGKILL, _NSIG,
 };
 use crate::ipc::ReplyIntent;
 
@@ -262,6 +261,7 @@ mod tests {
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials};
     use minix_types::{Endpoint, VirBytes, UserSlot, EINVAL};
+    use crate::mproc::{UNKILLABLE_MASK, SigSetExt, SIG_BLOCK, SIG_UNBLOCK};
 
     fn mk_proc(table: &mut ProcTable, slot: usize, pid: i32) {
         table.procs[slot].state.lifecycle = Lifecycle::Running;

@@ -19,7 +19,7 @@
 use crate::event::EventRegistry;
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
-use minix_types::{ENOSYS, Endpoint, Message, PmError, ProcEventMask, UserSlot, VirBytes};
+use minix_types::{ENOSYS, Message, PmError, ProcEventMask, UserSlot, VirBytes};
 
 /// PM 系统调用枚举（C: `callnr.h:14-60`，`PM_BASE + 1` ~ `PM_BASE + 47`）。
 ///
@@ -311,6 +311,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
 mod tests {
     use super::*;
     use crate::ipc::TestIpcTransport;
+    use minix_types::Endpoint;
 
     /// 构造 (table, events, transport) 测试三元组，并在 `slot` 注册一个
     /// Running 进程（endpoint 带代际，供 pm_isokendpt/find 语义）。

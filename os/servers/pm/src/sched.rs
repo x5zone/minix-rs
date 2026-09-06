@@ -5,11 +5,11 @@
 //! - `minix3/minix/servers/pm/utility.c:91-103` (nice_to_priority)
 //! - `minix3/minix/servers/pm/main.c:276-289` (get_nice_value)
 //! - `minix3/minix/servers/pm/misc.c:239-286` (do_getsetpriority)
-//! Design: `.design/16-design.v1.md` D1–D8.
-//! Single-threaded — `&mut ProcTable` without `Arc`.
+//!   Design: `.design/16-design.v1.md` D1–D8.
+//!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot, Pid, EINVAL, EPERM, EACCES, ESRCH};
-use crate::mproc::{ProcTable, Credentials, Lifecycle};
+use crate::mproc::{ProcTable, Credentials};
 
 /// `PRIO_MIN / PRIO_MAX` (`sys/resource.h:43-44`).
 pub const PRIO_MIN: i32 = -20;
@@ -218,7 +218,7 @@ pub fn sched_nice(table: &mut ProcTable, rmp_slot: UserSlot, nice: i32, sched: &
         return Err(SchedError::Inval);
     }
     let mapping = NiceMapping::default();
-    let maxprio = mapping.to_queue(nice).map_err(|_| SchedError::Inval)? as u32;
+    let maxprio = mapping.to_queue(nice).map_err(|_| SchedError::Inval)?;
     let ep = table.procs[rmp_slot.get()].endpoint();
     let res = sched.set_nice(scheduler, ep, maxprio);
     if res != 0 {
