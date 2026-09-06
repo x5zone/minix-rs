@@ -778,8 +778,15 @@ impl MessageDispatcher {
         let VmContext { proc_table, page_alloc, page_frames, vfs_queue, gateway, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        let mut gateway = gateway.borrow_mut();
-        match rs::handle_rs_update(table, page_alloc, frames, vfs_queue, gateway.as_mut(), src, dst, flags) {
+        let update_ctx = &mut rs::RsUpdateCtx {
+            table,
+            frames: page_frames.as_mut().expect("page_frames not initialized"),
+            gateway: &mut **gateway.borrow_mut(),
+            src,
+            dst,
+            flags,
+        };
+        match rs::handle_rs_update(update_ctx) {
             Ok(rs::RsUpdateResult::Ok) => VmReply::Ok,
             Ok(rs::RsUpdateResult::Suspend) => VmReply::Suspend,
             Err(e) => VmReply::Error(e.into()),
@@ -1286,7 +1293,6 @@ impl From<rs::RsError> for VmError {
             // C: real_brk() returns ENOMEM on failure (break.c:63-68).
             rs::RsError::HeapExtendFailed => VmError::OutOfMemory,
             rs::RsError::PreallocMapConflict => VmError::NotImplemented,
-            rs::RsError::UpdateNotImplemented => VmError::NotImplemented,
             // V11/T13: kernel sys_update errno passed through (C rs.c:177).
             rs::RsError::UpdateKernelFailed(_) => VmError::InternalError,
             // C: rs.c:386-388 — `do_rs_memctl` default arm returns EINVAL.

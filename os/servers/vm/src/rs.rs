@@ -44,7 +44,6 @@ pub(crate) enum RsError {
 
     // ── UPDATE specific ──
     PreallocMapConflict,
-    UpdateNotImplemented,
     /// Kernel `sys_update` answered a negative errno (V11/T13; C rs.c:177
     /// passes `r` straight through).
     UpdateKernelFailed(i32),
@@ -336,16 +335,22 @@ fn map_proc_dyn_data(
 ///     // 5. Reply + return SUSPEND
 /// }
 /// ```
-pub(crate) fn handle_rs_update(
-    table: &VmProcTable,
-    _page_alloc: &mut VmPageAllocator,
-    frames: &mut PageFrames,
-    _vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
-    gateway: &mut dyn crate::kernel_gateway::KernelGateway,
-    src: Endpoint,
-    dst: Endpoint,
-    flags: u32,
-) -> Result<RsUpdateResult, RsError> {
+/// V11/T13: parameter bundle for [`handle_rs_update`] — collapses the
+/// former 8-argument signature (clippy too_many_arguments) into one typed
+/// context.
+pub(crate) struct RsUpdateCtx<'a> {
+    pub table: &'a VmProcTable,
+    pub frames: &'a mut PageFrames,
+    pub gateway: &'a mut dyn crate::kernel_gateway::KernelGateway,
+    pub src: Endpoint,
+    pub dst: Endpoint,
+    pub flags: u32,
+}
+
+pub(crate) fn handle_rs_update(ctx: &mut RsUpdateCtx) -> Result<RsUpdateResult, RsError> {
+    let RsUpdateCtx { table, frames, gateway, src, dst, flags } = ctx;
+    let flags = *flags;
+    let (src, dst) = (*src, *dst);
     use crate::region::VrFlags;
 
     // Step 1: Validate source and destination endpoints.
@@ -439,7 +444,6 @@ fn share_mappings(
             }
         }
     }
-    drop(src_proc);
 
     let mut dst_proc = table.get_active(dst_slot).ok_or(RsError::ProcessNotFound)?;
     let dst_regions = dst_proc.regions_mut();
@@ -1045,17 +1049,16 @@ mod tests {
         // Invalid dst (Endpoint(2) — slot 2 not in the test table)
         // returns ProcessNotFound before reaching the NotImplemented stub.
         let mut gateway = update_gateway();
-                let result = handle_rs_update(
+                let result = handle_rs_update(&mut RsUpdateCtx {
                         table,
-            &mut page_alloc,
-            &mut frames,
-            &mut crate::vfs_queue::VfsRequestQueue::new(),
-            &mut **gateway.borrow_mut(),
-            
-            Endpoint(1),
-            Endpoint(2),
-            0,
-        );
+                        page_alloc: &mut page_alloc,
+                        frames: &mut frames,
+                        vfs_queue: &mut crate::vfs_queue::VfsRequestQueue::new(),
+                        gateway: &mut **gateway.borrow_mut(),
+                        src: Endpoint(1),
+                        dst: Endpoint(2),
+                        flags: 0,
+                        });
         assert_eq!(result, Err(RsError::ProcessNotFound));
     }
 
