@@ -208,26 +208,28 @@ impl<'a> PmContext<'a> {
     /// ```
     ///
     /// But we use explicit `fork_from` method, forcing check of every field.
-    pub fn fork_child_from_parent(&mut self, child_index: usize, child_pid: Pid, child_endpoint: Endpoint) {
+    pub fn fork_child_from_parent(
+        &mut self,
+        child_index: usize,
+        child_pid: Pid,
+        child_endpoint: Endpoint,
+        clock: &dyn crate::time::ClockSource,
+    ) {
         let parent = self.current_proc().clone();
-        
-        let child = Process::fork_from(&parent, child_index, child_pid, child_endpoint, self.current);
-        
+
+        // C: `rmc->mp_started = getticks()`（forkexit.c:114）——子进程的
+        // started 取当前内核 uptime；ClockSource 由调用方注入（E6 前为
+        // 测试 mock）。
+        let started = clock
+            .uptime()
+            .map(|(ticks, _, _)| ticks)
+            .unwrap_or(0);
+        let child = Process::fork_from(&parent, child_index, child_pid, child_endpoint, self.current, started);
+
         self.table.procs[child_index] = child;
     }
 }
 
-/// Gets current clock ticks.
-///
-/// Corresponds to Minix3's `getticks()` function.
-///
-/// # TODO
-/// Currently returns 0, need to implement real clock acquisition later:
-/// - Request time from CLOCK task via IPC
-/// - Or use kernel-provided clock interface
-fn getticks() -> Clock {
-    0
-}
 
 /// Srv-fork parameters (RS → PM, `mess_lsys_pm_srv_fork`, `ipc.h:1422`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +255,7 @@ impl Process {
         child_endpoint: Endpoint,
         parent_index: usize,
         params: SrvForkParams,
+        started: Clock,
     ) -> Self {
         let identity = ProcessIdentity {
             id: ProcessId {
@@ -288,7 +291,7 @@ impl Process {
             signals: parent.resources.signals.clone(),
             child_utime: 0,
             child_stime: 0,
-            started: getticks(),
+            started,
             timer: None,
             intervals: [0; NR_ITIMERS],
             nice: parent.resources.nice,
@@ -323,13 +326,14 @@ impl Process {
     /// | `rmc->mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `flags` keeps only TAINTED; `ipc_blocked` reset (DELAY_CALL unreachable at fork: a process with DELAY_CALL set is mid-send in the kernel and cannot execute fork) |
     /// | `rmc->mp_flags &= ~PRIV_PROC` | `privilege = Privilege::User(..)` (PRIV_PROC not inherited by normal fork) |
     /// | `if (rmc->mp_flags & PRIV_PROC) scheduler = SCHED_PROC_NR` | kernel parent → `scheduler = Endpoint::SCHED` |
-    /// | `rmc->mp_started = getticks()` | `started = getticks()` |
+    /// | `rmc->mp_started = getticks()` | `started`（调用方注入，`forkexit.c:114`） |
     pub fn fork_from(
         parent: &Process, 
         child_index: usize, 
         child_pid: Pid, 
         child_endpoint: Endpoint,
         parent_index: usize,
+        started: Clock,
     ) -> Self {
         
         let identity = ProcessIdentity {
@@ -375,7 +379,7 @@ impl Process {
             
             child_utime: 0,
             child_stime: 0,
-            started: getticks(),
+            started,
             timer: None,
             intervals: [0; NR_ITIMERS],
             nice: parent.resources.nice,
@@ -456,11 +460,21 @@ mod tests {
         let mut ctx = create_test_context();
         
         let fork_result = ctx.do_fork_prepare().unwrap();
+        struct FixedClock(Clock);
+        impl crate::time::ClockSource for FixedClock {
+            fn uptime(&self) -> Result<(Clock, Clock, minix_types::Time), crate::time::TimeError> {
+                Ok((100_000, 5_000, minix_types::Time::default()))
+            }
+        }
         ctx.fork_child_from_parent(
             fork_result.child_index,
             fork_result.child_pid,
             fork_result.child_endpoint,
+            &FixedClock(0),
         );
+        // started 来自注入的时钟（D-24：uptime ticks）
+        let child = ctx.table.get(fork_result.child_index).unwrap();
+        assert_eq!(child.resources.started, 100_000);
         
         let child = ctx.table.get(fork_result.child_index).unwrap();
         assert!(child.is_in_use());
@@ -479,7 +493,7 @@ mod tests {
     #[test]
     fn test_fork_child_index_correct() {
         let parent = Process::new(0, 100);
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         assert_eq!(child.identity.id.index, UserSlot::new(5));
         assert_eq!(child.identity.id.pid, 200);
@@ -492,7 +506,7 @@ mod tests {
         parent.identity.procgrp = 500;
         parent.resources.nice = 10;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         assert_eq!(child.identity.procgrp, 500);
         assert_eq!(child.resources.nice, 10);
@@ -505,7 +519,7 @@ mod tests {
         parent.resources.child_stime = 2000;
         parent.resources.intervals = [100, 200, 300];
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         assert_eq!(child.resources.child_utime, 0);
         assert_eq!(child.resources.child_stime, 0);
@@ -517,7 +531,7 @@ mod tests {
         let mut parent = Process::new(0, 100);
         parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::ALARM_ON | RemainingFlags::PARTIAL_EXEC;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         // Normal fork inherits only TAINTED (forkexit.c:106).
         assert!(child.resources.flags.contains(RemainingFlags::TAINTED));
@@ -530,7 +544,7 @@ mod tests {
         let mut parent = Process::new(0, 100);
         parent.resources.flags = RemainingFlags::ALARM_ON | RemainingFlags::PARTIAL_EXEC;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         assert!(child.resources.flags.is_empty());
     }
@@ -543,7 +557,7 @@ mod tests {
         let mut parent = Process::new(0, 100);
         parent.state.block.ipc_blocked = Some(crate::mproc::IpcBlockReason::DelayedSignal);
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         assert!(child.state.block.ipc_blocked.is_none());
     }
@@ -554,7 +568,7 @@ mod tests {
         parent.resources.privilege = Privilege::Kernel;
         parent.resources.scheduler = Endpoint::NONE;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         // forkexit.c:96-100: a PRIV_PROC parent's regular-fork child is a
         // *user* process scheduled by SCHED; PRIV_PROC is not inherited.
@@ -571,7 +585,7 @@ mod tests {
         parent.resources.privilege = Privilege::User(Credentials::new(1000, 100));
         parent.resources.scheduler = Endpoint::PM;
         
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
         
         assert_eq!(child.resources.scheduler, Endpoint::PM);
     }
@@ -579,7 +593,7 @@ mod tests {
     #[test]
     fn test_fork_parent_relationship() {
         let parent = Process::new(10, 100);
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 10);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 10, 0);
         
         assert_eq!(child.state.guardianship.parent(), UserSlot::new(10));
     }
@@ -591,7 +605,7 @@ mod tests {
         parent.ipc.reply = Some(minix_types::Message::default());
         parent.ipc.event_subscriber = Some(UserSlot::new(5));
 
-        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0);
+        let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
 
         assert!(child.ipc.reply.is_none());
         assert!(child.ipc.event_subscriber.is_none());
@@ -606,7 +620,7 @@ mod tests {
             p
         };
         let params = SrvForkParams { uid: 1001, gid: 100 };
-        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params);
+        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params, 777);
         let creds = child.resources.privilege.credentials().unwrap();
         assert_eq!(creds.user.real, 1001);
         assert_eq!(creds.user.effective, 1001);
@@ -620,7 +634,7 @@ mod tests {
         let mut parent = Process::new(2, 2);
         parent.resources.flags = RemainingFlags::TAINTED | RemainingFlags::ALARM_ON;
         let params = SrvForkParams { uid: 0, gid: 0 };
-        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params);
+        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params, 777);
         assert!(!child.resources.flags.contains(RemainingFlags::TAINTED));
         assert!(!child.resources.flags.contains(RemainingFlags::ALARM_ON));
     }
@@ -630,7 +644,7 @@ mod tests {
         let mut parent = Process::new(2, 2);
         parent.resources.intervals = [100, 200, 300];
         let params = SrvForkParams { uid: 0, gid: 0 };
-        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params);
+        let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params, 777);
         assert_eq!(child.resources.intervals, [0; NR_ITIMERS]);
         assert_eq!(child.resources.child_utime, 0);
     }

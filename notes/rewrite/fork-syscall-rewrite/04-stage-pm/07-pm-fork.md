@@ -277,7 +277,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 ### D5：`Process::fork_from` 显式构造（ARCH A-1/A-2）
 
-`core::array::from_fn` 的反面——`mproc/fork.rs:249` 的 `Process::fork_from(parent, child_idx, child_pid, child_ep, parent_idx)` 将 `*rmc=*rmp` 的 15 字段整拷贝改为 9 步显式构造（身份/亲缘/`Privilege` 接管/`RemainingFlags` 仅 `TAINTED`/`BlockState::default`/`SignalState` 克隆/`intervals` 清零/`started=getticks()`/`Ipc::default`），编译期穷尽新字段（`make impossible to forget a field`）；`DELAY_CALL` 不继承（`mproc/fork.rs:307` 论证 mid-send 进程不可 `fork`）且 `mp_eventsub` 断言由 `BlockState::default` 保证（06 不变量）。
+`core::array::from_fn` 的反面——`mproc/fork.rs:249` 的 `Process::fork_from(parent, child_idx, child_pid, child_ep, parent_idx, started)` 将 `*rmc=*rmp` 的 15 字段整拷贝改为 9 步显式构造（身份/亲缘/`Privilege` 接管/`RemainingFlags` 仅 `TAINTED`/`BlockState::default`/`SignalState` 克隆/`intervals` 清零/`started=注入时钟`/`Ipc::default`），编译期穷尽新字段（`make impossible to forget a field`）；`DELAY_CALL` 不继承（`mproc/fork.rs:307` 论证 mid-send 进程不可 `fork`）且 `mp_eventsub` 断言由 `BlockState::default` 保证（06 不变量）。
 
 ### D6：`tell_vfs` 的 `VFS_CALL` 置于子进程（ARCH A-4/A-6）
 
@@ -314,7 +314,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 ### 4.2 进程复制层（`os/servers/pm/src/mproc/fork.rs`）
 
-`Process::fork_from`（`mproc/fork.rs:249`，9 步）：`Identity`（`pid/endpoint/procgrp/name`）→ `State`（`Running`/`BlockState::default`/`WaitState::default`/`Normal{parent}`/`TraceState::default`）→ `Privilege` 接管（`Kernel → User(root)/SCHED`，`User → inherit`）→ `Resources`（`child_utime/stime=0`/`started=getticks()`/`intervals=0`/`scheduler`/`RemainingFlags::TAINTED`）→ `SignalState` 克隆（`actions`/`mask`）→ `Ipc::default`（`reply=None`/`event_subscriber=None`，06 不变量）。`TO_TRACEFORK` 分支当前恒清零（P2 差异，见 §5）。
+`Process::fork_from`（`mproc/fork.rs:249`，9 步）：`Identity`（`pid/endpoint/procgrp/name`）→ `State`（`Running`/`BlockState::default`/`WaitState::default`/`Normal{parent}`/`TraceState::default`）→ `Privilege` 接管（`Kernel → User(root)/SCHED`，`User → inherit`）→ `Resources`（`child_utime/stime=0`/`started=注入时钟`/`intervals=0`/`scheduler`/`RemainingFlags::TAINTED`）→ `SignalState` 克隆（`actions`/`mask`）→ `Ipc::default`（`reply=None`/`event_subscriber=None`，06 不变量）。`TO_TRACEFORK` 分支当前恒清零（P2 差异，见 §5）。
 
 ### 4.3 容量与 PID 层（`os/servers/pm/src/mproc/{table, pid_gen}.rs`）
 
@@ -336,7 +336,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 | 4 | `procs_in_use++` 在 `*rmc=*rmp` 前 | `forkexit.c:86` | 手动 `++` 在 `copy_mproc` 前，两者都在 `vm_fork` 成功之后（C 同序，无回滚） |
 | 5 | `mpsigact` 外置 | `forkexit.c:88-89` | `SignalState::actions` 按槽索引 |
 | 6 | `PRIV_PROC` 不继承，仅 `TAINTED` | `forkexit.c:100-106` | `RemainingFlags::TAINTED` 过滤 + `Kernel→User(SCHED)` |
-| 7 | 子资源清零 | `forkexit.c:107-114` | `child_utime=0`/`interval=0`/`started=getticks()` |
+| 7 | 子资源清零 | `forkexit.c:107-114` | `child_utime=0`/`interval=0`/`started=注入时钟`（2026-09-06 D-24：getticks 桩删除，uptime 由调用方 ClockSource 注入，内核面挂 E6） |
 | 8 | `mp_eventsub == NO_EVENTSUB` | `forkexit.c:116` | `BlockState::default` + `Ipc::default`（`None`） |
 | 9 | `VFS_CALL` 置于子进程 | `forkexit.c:130` `tell_vfs(rmc)` | `tell_vfs(child_slot, Fork)` |
 | 10 | `return SUSPEND` | `forkexit.c:139` | `ReplyLater`（`PmCall::Fork`） |

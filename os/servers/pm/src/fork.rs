@@ -152,6 +152,9 @@ pub fn do_srv_fork<T: IpcTransport>(
             child_endpoint,
             parent_slot,
             params,
+            // [E6: 内核 uptime 未接线] C 的 `getticks()`（forkexit.c:114）
+            // 依赖内核 uptime；minix-sys 落地前显式取 0（todo.md §6 D-24）。
+            0,
         );
         table.procs[child_slot] = child;
     }

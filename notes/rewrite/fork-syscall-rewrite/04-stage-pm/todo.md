@@ -288,7 +288,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-21 | `wait.rs:124` | rusage 跨地址空间拷贝假装成功（C 侧 `utility.c:92` 本身只填 utime/stime） | 10-pm-wait.md | sys_datacopy + rusage 范围决策 |
 | D-22 | ~~`signal.rs:160`~~ | ~~`is_stacktrace` 返回硬编码 false~~ **✅ 已修复**（2026-09-06，Fix #13：`is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写——原计划臆断为位掩码，实为 `sys/signal.h:279-286` 的谓词宏；连带修复旧 lethal 近似列表错含 SIGKILL/TERM/TRAP 的真实语义偏差，EPERM 保护测试改用 SIGSEGV） | ~~16-scheduling.md~~ 11-signal-core.md（语义实属信号系统，原归属登记有误） | ~~A-8~~ 无依赖，纯谓词 |
 | D-23 | ~~`signal.rs:360-362`~~ | ~~SIGVTALRM/`check_vtimer` stub~~ **✅ 已修复**（2026-09-06，Fix #14：process_ksig 接真实 check_vtimer（VTimerCtl 显式接缝）；连带修复 `signo == 12` 应为 26 的真 bug——旧分支从未命中） | 14-itimer.md | ~~虚拟计时器 trait 落地~~ PM 侧达成（VTimerCtl 生产实现 = 内核 sys_vtimer 挂 E6） |
-| D-24 | `mproc/fork.rs:222-228` | `getticks()` 返回 0（TODO 注释：应向 CLOCK 请求） | 14-itimer.md / 内核 sys_times | 内核 uptime 面 |
+| D-24 | ~~`mproc/fork.rs:222-228`~~ | ~~`getticks()` 返回 0~~ **✅ 已修复**（2026-09-06，Fix #15：getticks 桩删除；`fork_from`/`srv_fork_from` 显式注入 `started: Clock`，`fork_child_from_parent` 经 ClockSource 计算；活路径零值收敛为带 E6 注释的显式 seam） | 14-itimer.md / 内核 sys_times | ~~内核 uptime 面~~ 结构达成（真实 uptime 挂 E6） |
 | D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
 | D-26 | `wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷 | wait4 回复的状态码载荷建模缺失：C 写 `mp_reply.m_pm_lc_wait4.status`（`ipc.h:1774-1779` `mess_pm_lc_wait4`），minix-types 无该 union 成员，现经 `ipc.reply` 机制只承载 m_type——`w_exitcode`/`w_stopcode` 到 wire 的最后一跳待补 | 10-pm-wait.md / edge E7 | minix-types 增 `MessPmLcWait4` + `m_pm_lc_wait4` 成员（E7 wire 系统化的一部分）；两环代码注释即锚点 |
 
@@ -619,3 +619,19 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 **Docs**：`14-itimer.md` check_vtimer 现状行；本文件 §6 D-23 行。
 
 **未做（DEFERRED 论证）**：`VTimerCtl` 生产实现（内核 `sys_vtimer`，`alarm.c:239` 未检查返回值）挂 edge E6——PM 侧逻辑与接缝完备。
+
+### ✅ Fix #15: D-24 — `getticks` 桩删除，`started` 显式注入（2026-09-06）
+
+**File(s)**：
+- `os/servers/pm/src/mproc/fork.rs`（删除 `fn getticks() -> Clock { 0 }`；`fork_from`/`srv_fork_from` 增加 `started: Clock` 参数；`PmContext::fork_child_from_parent` 增加 `clock: &dyn ClockSource` 参数并计算 uptime；测试更新 + FixedClock 断言 started=100_000）
+- `os/servers/pm/src/fork.rs`（协调器 `do_srv_fork` 的 `srv_fork_from` 调用点显式传 0 + E6 注释）
+
+**Before/After**：设计选型——(a) 保留 `getticks()` 桩但改读 ClockSource 全局：隐藏的假零依旧；(b) **构造器显式注入 `started: Clock`**（已选）："数据在诞生处注入"——构造器不再自己找时间，调用方对其世界的时钟负责；`PmContext` 层（有合法测试时钟）走真 ClockSource 计算，活协调器路径的零值收敛为带 `[E6]` 注释的显式 seam（可 grep、可追踪），不再是函数内部的说谎返回值。C 锚点 `forkexit.c:114` `rmc->mp_started = getticks()`。
+
+**Verified**：
+- `cargo test -p minix-pm`：341 → **341 lib passed**（含新断言 started=100_000）+ 6 integration
+- `grep -rn "fn getticks" os/servers/pm/src/`：零命中
+
+**Docs**：`07-pm-fork.md` §D5/§4.2/§4.5 三处 started 表述；本文件 §6 D-24 行。
+
+**未做（DEFERRED 论证）**：真实内核 uptime（`sys_times`/getuptime 三值）挂 E6——PmContext 层的 ClockSource 接缝已就绪，生产实现落地即接管。
