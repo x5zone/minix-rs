@@ -410,7 +410,14 @@ impl PublicSlot {
 /// pointer (type.h:57) is replaced by the embedded [`PublicSlot`] `pub_`
 /// (ARCH A-3, 02-rs-process-table.md §3.1). Field groups and mechanism
 /// ownership: 02-rs-process-table.md §2.3.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// No `PartialEq` (R33): whole-slot equality is semantically undefined for
+/// a 45-field struct — which fields should count is arbitrary — and a
+/// derived `==` would deep-compare the exec image (`exec: Option<Arc<[u8]>>`)
+/// byte by byte. The crate compares slots field-by-field (the documented
+/// style in every test); Redox's `Resource` handles likewise have no
+/// whole-structure equality.
+#[derive(Debug, Clone)]
 pub struct ServiceSlot {
     /// Public half (`r_pub`). C: type.h:57 + rs.h:165-183.
     pub pub_: PublicSlot,

@@ -34,7 +34,7 @@
 | T5 | `&mut dyn KernelApi` 散落各纯函数参数，注入边界不统一 | P2 |✅（§13） |
 | T6 | Step 2/3 计数语义偏差（VM 不计入、无视 SF_SYNCH_BOOT、Step 3 fail-open） | P1 |✅ |
 | T7 | 20 处 `unimplemented!()`/`todo!()` 无编译期/CI 门禁，19 接线遗漏即系统级故障 | P1 |✅ |
-| D1 | `ServiceSlot` god struct（~35 全公开字段）无封装、无不变式 | P2 | ☐ | EDGE（见 §18.10） |
+| D1 | `ServiceSlot` god struct（~35 全公开字段）无封装、无不变式 | P2 | 🔶 | 判定闭合：全拆不采纳（镜像保真是 A-3 契约），R33 已修（Fix #68）；重开权在用户 |
 | D2 | `SlotId` 无世代/代数，free→reuse 后旧索引悬垂；`get()` 越界 panic | P2 | 🔶 | 判定闭合：世代不采纳 + assert_consistent 落地（Fix #67，2026-09-07）；越界 panic 已随 Fix #29 |
 | D3 | 公共函数 totality：`caller_can_control`/`lookup_by_domain` 对越界计数可 panic | P1 |✅ |
 | D4 | 常量双定义（`RS_MAX_LABEL_LEN` 两处等） | P2 |✅ |
@@ -1988,7 +1988,7 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R30 | caller_can_control 丢 IN_USE 复核，索引不变式无声明 | P2 | ✅ | 已修（Fix #43，2026-09-06） |
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | EDGE（见 §18.10） |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
-| R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ☐ | EDGE（见 §18.10） |
+| R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ✅ | 已修（Fix #68，2026-09-07，derive 删除） |
 | R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18/19/21 已补（E-10，Fix #65）；20 随 06 接线；22/23 gated（见 §18.10 E-10） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ☐ | 13/16 落地期 |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
@@ -2665,6 +2665,21 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   fmt 干净；T7 PASS。附带清除 R22a 轮 4 处 `eprintln!` 调试残留（回归 review 疏漏，
   本轮披露）。
 
+### ✅ Fix #68 — E-4/D1/R33（P2 结构性，判定闭合）：`ServiceSlot` 删除 derive(PartialEq, Eq)
+- **File**：`os/servers/rs/src/service_slot.rs`（derive 移除 + 语义注）；todo.md
+  （D1 行 / E-4 判定 / §16 R33 关联）
+- **Before**：`ServiceSlot` 派生 `PartialEq`/`Eq`——任何整槽 `==` 都会深比较
+  `exec: Option<Arc<[u8]>>` 逐字节（R33：相等比较退化为 ELF 比较的脚枪）。
+- **判定过程**：grep 证实全 crate（生产+测试）**零处**整槽相等——测试的既定风格
+  就是字段级断言（clone_slot 测试 12 个字段各断各的）。方案对比：a) 手工 PartialEq
+  只比较身份字段——"哪些字段算相等"在 45 字段上没有自然答案，部分相等的 `==`
+  比没有 `==` 更危险（语义撒谎）vs b) 删除 derive（选定——未定义的语义不提供，
+  脚枪根除）vs c) 保持 derive——脚枪保留，不成立。Redox 对照：`Resource`/`Scheme`
+  句柄无全结构相等概念。
+- **Verified**：`cargo test -p minix-rs` = **282 passed**（删除后零编译错误——
+  反证无使用点）；clippy/fmt 零输出；T7 PASS。`PublicSlot` 的 derive 保留
+  （发布面相等语义良定义、无重字段）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2713,9 +2728,16 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   4 处 `eprintln!` 调试输出（recovery.rs 2、service_create.rs 2）。
 
 **E-4 D1/R33/R7 god struct 收敛**
-- `ServiceSlot` 45 叶子字段按域拆分（身份/策略/监控/LU 四组）+
-  手工 `PartialEq`（排除 exec 深比较，R33）+ 链不变式断言（R7）。
-- 与 D6（双表收敛）联动：拆分时一次性归并 io/irq 表到 `Privilege` 单一权威。
+- ✅ **判定闭合（2026-09-07，Fix #68）：45 字段按域拆分不采纳；R33 已修（删除
+  `ServiceSlot` 的 `PartialEq`/`Eq` derive）；R7 链断言已随 Fix #67 落地
+  （`assert_consistent`）；D6 已随 Fix #62 以派生快照收敛**。拆分不采纳的理由：
+  (1) D1 的原始分析自己承认"镜像 C 是文档可追溯性的需要"——逐字段 C 锚点是
+  A-3/02 文档的既定契约，按域拆子结构会打断 1:1 字段映射并迫使全部字段访问点
+  （~500 处）与全部文档表重写；(2) 全 crate 零处整槽 `==`（grep 证实），god struct
+  的实际缺陷只有 R33 的深比较脚枪，删除 derive 即根除；(3) 封装收益（私有字段
+  强制不变式）的真实触发条件是 19 接线后出现跨模块误写——届时按痛点立项，
+  不预先支付迁移成本。**OQ 上交**：若用户裁决"拆分必须做"，按身份/策略/监控/LU
+  四组方案独立立项（预计 2-3 个迭代）。
 
 **E-5 D6 io/irq 双表收敛**
 - ✅ **已修（Fix #62，2026-09-06）**：C ground truth 先行核实——备份表（type.h:99
