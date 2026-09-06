@@ -220,6 +220,49 @@ mod tests {
         assert_eq!(ep, Endpoint(42));
     }
 
+    /// V11/T21 (V11-P2-1): with SimPaging as the test `PageTable`,
+    /// `free_region_pages` can pass `Some(pt)` and exercise REAL unmap
+    /// dispatch — the mapped page leaves the simulated page table and its
+    /// frame refcount drops. This is the test-side proof that the
+    /// cfg(test) `PageTable` alias swap works end to end.
+    #[test]
+    fn test_free_region_pages_sim_paging_unmaps() {
+        use crate::pagetable::{PageTable, Paging};
+
+        let mut frames = make_frames();
+        let mut page_alloc = make_page_alloc();
+        let pfn = page_alloc.alloc_pfn().expect("alloc in test");
+        let mut region = VirRegion::with_memtype(
+            VirBytes(0x1000),
+            VirBytes(0x1000),
+            VrFlags::WRITABLE | VrFlags::ANON,
+            &crate::memtype::MEM_TYPE_ANON,
+        );
+        region.map_page(&mut frames, VirBytes(0), pfn, &crate::memtype::MEM_TYPE_ANON);
+
+        let mut pt = <PageTable as Paging>::new().expect("sim paging new");
+        let vaddr = VirBytes(0x1000);
+        pt.map(vaddr, minix_types::PhysBytes(pfn as u64 * 0x1000),
+               crate::pagetable::PageFlags::WRITABLE)
+            .expect("sim map");
+        assert!(pt.query(vaddr).is_some(), "mapping must be live pre-free");
+
+        let mut queue = crate::vfs_queue::VfsRequestQueue::new();
+        free_region_pages(
+            region,
+            Some(&mut pt),
+            &mut frames,
+            &mut page_alloc,
+            &mut queue,
+            Endpoint(42),
+        );
+
+        // Real unmap happened through the trait: the virtual page is gone…
+        assert!(pt.query(vaddr).is_none(), "unmap must clear the sim entry");
+        // …and the physical frame was released (refcount 1 → 0).
+        assert_eq!(frames.get(pfn).unwrap().refcount, 0);
+    }
+
     /// Test that pinning an empty region map succeeds trivially.
     #[test]
     fn test_map_pin_memory_empty() {

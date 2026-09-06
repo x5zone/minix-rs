@@ -16,11 +16,22 @@
 //! - `vm_self_map`: VM self page table mapping interface (vm_self_mappages)
 
 pub(crate) mod vm_self_map;
+// V11/T21 (V11-P2-1): software-simulated page table — real Paging trait
+// dispatch exercised in host tests (Redox rmm `EmulateArch` approach).
+#[cfg(test)]
+pub(crate) mod sim;
 
 // C `pt_t` (dual-view struct) is structurally eliminated ([ARCH: A-2]):
 // the page table is a trait object whose root is a single physical page;
 // intermediate levels are allocated on demand by the arch implementation.
+// V11/T21: cfg(test) swaps the arch page table for the software-simulated
+// one — handlers exercise real map/unmap/query dispatch in `cargo test`
+// (mock-style tests previously skipped page-table operations entirely,
+// doc-mandated by 02-stage-vm V11-P2-1).
+#[cfg(not(test))]
 pub(crate) type PageTable = minix_arch::CurrentPaging;
+#[cfg(test)]
+pub(crate) type PageTable = sim::SimPaging;
 
 pub(crate) use minix_arch::paging::PageFlags;
 pub(crate) use minix_arch::paging::PageTableError;

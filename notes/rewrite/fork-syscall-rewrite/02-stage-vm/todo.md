@@ -1259,6 +1259,15 @@ Coverage Summary for vm:
 - **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
 - **Docs**: 15-ipc-dispatch.md §4.1/§4.5
 
+### ✅ Fix #39: T21（V11-P2-1）— SimPaging 软件页表 + cfg(test) PageTable 别名切换
+
+- **Files**: `servers/vm/src/pagetable/sim.rs`（新，cfg(test)：`SimPaging` 全 `Paging` trait 实现——BTreeMap 软件页表，map/remap/unmap/update_flags/query 真实分派、enable/switch/flush 计数器可观测）、`servers/vm/src/pagetable/mod.rs`（`PageTable` 别名 cfg(test) 切换为 SimPaging；生产别名 `CurrentPaging` 不变）、`servers/vm/src/region/mod.rs`（+1 测试：free_region_pages 携 SimPaging 做真实 unmap，query 清空 + refcount 归零双断言）
+- **Ground Truth 对照**：Redox rmm `EmulateArch` 同思路（rmm README "software emulation"）；`map_kernel` 对 `P: Paging` 泛型故 SimPaging 下直接可用——VM handler 测试从此可传 `Some(pt)` 走真实 map/unmap/query 分派，不再 `None` 跳过
+- **连锁清理**：`vmproc_handle.rs` 测试分支的 `MaybeUninit::zeroed()` 桩由 `SimPaging::new()` 取代（零化 BTreeMap 属 UB，必须构造合法实例）——见下一条目；munmap/brk/exit 的 `let pt = None` 测试分支可后续逐测试翻转为 `Some`（本条先立基础设施）
+- **连锁落地**：`vmproc_handle.rs` init_page_table 测试分支由 `MaybeUninit::zeroed()` 桩改为 `SimPaging::new()`（合法实例，非零化位型——BTreeMap 零化是 UB）；`brk.rs`/`vmproc.rs` 的过时注释（V11-P2-4 修复后遗留）随别名切换全部失义删除
+- **Verified**: 四矩阵 **469 / 487 / 486 / 469 passed**（+3）；四组合 clippy `^servers/` **0 警告**
+- **Docs**: 15-ipc-dispatch.md §5.1/§5.3 的 SimPaging 关联行随下一批文档刷新统一处理；region/mod.rs 模块头"unmap is exercised once…"注释已指向本条
+
 ### ✅ Fix #38: T16（G-V11-2 闭环）— `sanity_checks` feature 落地，引用计数校验接入主循环
 
 - **Files**: `servers/vm/Cargo.toml`（`sanity_checks = []` feature，对齐 C SANITYCHECKS 编译开关）、`servers/vm/src/sanity.rs`（`verify_refcounts` 门控从 `cfg_attr(not(test), allow(dead_code))` 改为 feature 门控 + 生产入口注释）、`servers/vm/src/vm_server.rs`（VmContext 增 `sanity_ticks`（feature 门控）；run_once 每 64 次 Handled 后调用 `verify_refcounts`，失配 → `pagefault_errors` 计数 + 审计——诊断而非控制流，不 panic）、dispatcher 测试字面量补字段

@@ -349,17 +349,14 @@ impl<'a> ActiveProc<'a> {
     ///
     /// Corresponds to Minix3's `pt_new()` which calls `pt_mapkernel()`.
     pub(crate) fn init_page_table(&mut self) -> Result<(), minix_arch::paging::PageTableError> {
-        // In test builds, write a zero-initialized page table stub. The real
-        // `<PageTable as Paging>::new()` (minix-arch x86_64) needs a registered
-        // pt_alloc and the VM direct-map window, neither of which exists in
-        // host unit tests. The zeroed bit-pattern (root_paddr=0) is safe to
-        // hold but must not be used for real paging ops — free_region_pages
-        // skips unmap in tests via Option<&mut PageTable>.
-        // Exit condition: a test-injectable Paging implementation (SimPaging,
-        // 02-stage-vm todo V11-P2-1).
+        // In test builds, construct a fresh software page table (V11/T21
+        // SimPaging): no pt_alloc or VM direct-map window exists in host
+        // unit tests, so the simulated table stands in for the arch one.
+        // It is a valid, usable `Paging` implementor — handlers may map/
+        // unmap through it in tests.
         #[cfg(test)]
         {
-            self.inner.vm_pt = core::mem::MaybeUninit::zeroed();
+            self.inner.vm_pt.write(crate::pagetable::PageTable::new());
             self.inner.vm_pt_initialized = true;
             return Ok(());
         }
