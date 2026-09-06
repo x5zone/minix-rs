@@ -61,6 +61,11 @@ pub mod sysctl {
 /// Subfunctions for `RS_FI`. C: `RS_FI_CRASH` — com.h:492.
 pub const RS_FI_CRASH: i32 = 1;
 
+/// Inject a fault into a service. C: `COMMON_REQ_FI_CTL` — com.h:607
+/// (`COMMON_RQ_BASE + 2`); RS sends it to the target service with the
+/// `m_lsys_fi_ctl` payload (`fi_service` — utility.c:69-77).
+pub const COMMON_REQ_FI_CTL: i32 = 0xE02;
+
 // ── Typed payload views (ARCH A-2, semantic layer) ─────────────────────────
 
 /// Payload of the RS control/query requests.
@@ -141,26 +146,25 @@ impl RsInit {
     /// endpoint is RS by construction — RS is the only process that sends
     /// `RS_INIT`. The union write is the exact inverse of [`Self::decode_message`].
     pub fn encode_message(&self) -> Message {
-        let mut msg = Message::default();
-        msg.m_source = Endpoint::RS;
-        msg.m_type = RS_INIT;
-        // SAFETY: `m_rs_init` is set as the active arm of a freshly built
-        // RS_INIT message; the payload is plain-old-data and is read back
-        // only through this same arm (`decode_message`).
-        unsafe {
-            msg.m_u.m_rs_init = crate::ipc::MessRsInit {
-                result: self.result,
-                type_: self.init_type,
-                rproctab_gid: self.rproctab_gid,
-                old_endpoint: self.old_endpoint.get(),
-                restarts: self.restarts,
-                flags: self.flags,
-                buff_addr: self.buff_addr.0,
-                buff_len: self.buff_len as u64,
-                prepare_state: self.prepare_state,
-                _padding: [0; 12],
-            };
-        }
+        let mut msg = Message {
+            m_source: Endpoint::RS,
+            m_type: RS_INIT,
+            ..Default::default()
+        };
+        // Union field writes are safe; only reads go through `decode_message`,
+        // whose caller guarantees `m_type` tags this arm.
+        msg.m_u.m_rs_init = crate::ipc::MessRsInit {
+            result: self.result,
+            type_: self.init_type,
+            rproctab_gid: self.rproctab_gid,
+            old_endpoint: self.old_endpoint.get(),
+            restarts: self.restarts,
+            flags: self.flags,
+            buff_addr: self.buff_addr.0,
+            buff_len: self.buff_len as u64,
+            prepare_state: self.prepare_state,
+            _padding: [0; 12],
+        };
         msg
     }
 }
@@ -232,6 +236,38 @@ pub struct LsysFiCtl {
     pub size: usize,
     /// C: `subtype` — `RS_FI_*` fault type.
     pub subtype: i32,
+}
+
+impl LsysFiCtl {
+    /// Decode a fault-injection request from RS.
+    ///
+    /// C: `m_lsys_fi_ctl` (ipc.h:1048-1056); the receiver is the target
+    /// service's COMMON request loop (`COMMON_REQ_FI_CTL`). The caller
+    /// checks `m_type == COMMON_REQ_FI_CTL` before decoding.
+    pub fn decode_message(msg: &Message) -> Self {
+        // SAFETY: `m_lsys_fi_ctl` is the active union arm for
+        // COMMON_REQ_FI_CTL messages; the arm is plain-old-data.
+        let m = unsafe { msg.m_u.m_lsys_fi_ctl };
+        Self {
+            gid: m.gid,
+            size: m.size as usize,
+            subtype: m.subtype,
+        }
+    }
+
+    /// Encode as a `COMMON_REQ_FI_CTL` message for sending (the exact
+    /// inverse of [`Self::decode_message`]); `m_source` is RS by
+    /// construction — RS is the only fault-injection issuer
+    /// (utility.c:71-75).
+    pub fn encode_message(&self) -> Message {
+        let mut msg = Message {
+            m_source: Endpoint::RS,
+            m_type: COMMON_REQ_FI_CTL,
+            ..Default::default()
+        };
+        msg.m_u.m_lsys_fi_ctl = crate::ipc::MessLsysFiCtl::new(self.gid, self.size, self.subtype);
+        msg
+    }
 }
 
 /// Payload of the fault-injection reply.
@@ -414,6 +450,23 @@ mod tests {
         assert_eq!(msg.m_source, Endpoint::RS);
         let decoded = RsInit::decode_message(&msg);
         assert_eq!(decoded, init);
+    }
+
+    #[test]
+    fn test_lsys_fi_ctl_encode_roundtrip() {
+        // I3a: the COMMON_REQ_FI_CTL wire shape (fi_service — utility.c:
+        // 71-75) — m_type + sender identity + the subtype roundtrip.
+        let fi = LsysFiCtl {
+            gid: 0,
+            size: 0,
+            subtype: RS_FI_CRASH,
+        };
+        let msg = fi.encode_message();
+        assert_eq!(msg.m_type, COMMON_REQ_FI_CTL);
+        assert_eq!(msg.m_source, Endpoint::RS);
+        let decoded = LsysFiCtl::decode_message(&msg);
+        assert_eq!(decoded, fi);
+        assert_eq!(decoded.subtype, 1); // RS_FI_CRASH — com.h:492
     }
 
     #[test]

@@ -154,6 +154,9 @@ pub struct MockKernelApi {
     /// Messages handed to `asynsend`, in order (I2 boot init tests decode
     /// these to assert the RS_INIT payload — utility.c:62).
     pub sent: Vec<(Endpoint, minix_types::Message)>,
+    /// Reply payloads, in order (I3a payload replies — RS_LOOKUP's endpoint
+    /// rides in `m_rs_req.endpoint`, request.c:1174).
+    pub replies: Vec<(Endpoint, i32, minix_types::Message)>,
     /// Calls that must fail with `ENOSYS` (fail-injection, R34.18/E-10):
     /// matching is by variant, payloads ignored — `Call::SetAlarm(0)` fails
     /// every `setalarm`. Plain recording methods honor this; the methods
@@ -189,6 +192,7 @@ impl MockKernelApi {
             payload: None,
             inbox: Vec::new(),
             sent: Vec::new(),
+            replies: Vec::new(),
         }
     }
 }
@@ -388,8 +392,14 @@ impl VmApi for MockKernelApi {
 }
 
 impl IpcApi for MockKernelApi {
-    fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno> {
+    fn reply(
+        &mut self,
+        target: Endpoint,
+        result: i32,
+        payload: &minix_types::Message,
+    ) -> Result<(), Errno> {
         self.calls.push(Call::Reply(target, result));
+        self.replies.push((target, result, *payload));
         if self.failing(&Call::Reply(target, result)) {
             return Err(Errno::ENOSYS);
         }

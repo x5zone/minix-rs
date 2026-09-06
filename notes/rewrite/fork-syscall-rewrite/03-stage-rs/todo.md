@@ -2807,6 +2807,32 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   +1 encode roundtrip）；clippy 零告警；fmt 干净；T7 PASS（asynsend 生产 impl 走
   Err(ENOSYS) 不触发 panic 标记门，E-11 doc contract 注释在位）。
 
+### ✅ Fix #74 — I3a 14 号 LOOKUP/FI 两臂接线 + reply 缝载荷忠实化
+- **File**：`lib.rs`（`do_lookup`/`do_fi` handler + `reply_unless_suppressed` 载荷化
+  + `do_request` 转发 + 2 接线测试）、`boot.rs`（`IpcApi::reply` 增 payload 参 +
+  catch_boot_init_ready 回发 RS_INIT 回显）、`recovery.rs`/`live_update.rs`/
+  `service_create.rs`（late reply 点补 fresh 默认载荷，utility.c:332-349）、
+  `testutil.rs`（mock reply 记录 `replies` 载荷表）；minix-types
+  `message.rs`（`rs_req_name`/`set_rs_req_endpoint`/`rs_req_endpoint` +
+  `MessLsysFiCtl` 臂 + `is_rs_req_arm` 全族守卫）、`ipc/rs.rs`
+  （`COMMON_REQ_FI_CTL` com.h:607 + `LsysFiCtl` 编解码 + roundtrip 测试）；文档 14 号
+- **Before**：RS_LOOKUP/RS_FI 落在 dispatch 死表返回 ENOSYS；`IpcApi::reply(target,
+  result)` 丢载荷——C 的 reply 语义是"把 handler 原位变异过的请求消息整个回发"
+  （utility.c:318-345），RS_LOOKUP 的端点结果正住在 `m_rs_req.endpoint`
+  （request.c:1174），旧缝形对此不可表达。
+- **After**：reply 缝忠实化为 `(target, result, payload)`（C late_reply 的 fresh 消息
+  语义以 `Message::default()` 载荷表达）；`m_rs_req` 臂守卫从三调用号扩为全族
+  （INIT/LU_PREPARE 除外——C ipc.h union 归属事实）；`do_lookup` 走
+  name/name_len 门→拷贝→查槽→原位写端点；`do_fi` 走 addr/len 拷标签→查槽→
+  `check_call_permission(RS_FI)`→`asynsend(LsysFiCtl{RS_FI_CRASH})`。clippy 教正：
+  union 字段写入本即安全，encode 侧去掉多余 unsafe 块并改结构化初始化。
+- **Verified**：`cargo test -p minix-rs` = **299 passed**（+2：
+  `test_do_lookup_resolves_label_into_reply_payload` 含载荷端点断言/ESRCH/EINVAL
+  三分支、`test_do_fi_injects_crash_request` 含 ESRCH 分支）；`cargo test -p
+  minix-types` = **175 passed**（+1 `test_lsys_fi_ctl_encode_roundtrip`）；
+  clippy 触碰 crate 零告警；fmt 干净；T7 PASS。RS_GETSYSINFO/RS_SYSCTL 两臂
+  留 I3b（前者拷出半压 edge E-RSWIRE 字节 ABI，后者 UPD_* 编排在 16 号链上）。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18

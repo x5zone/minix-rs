@@ -216,9 +216,17 @@ pub trait IpcApi {
 
     /// Sends a reply message to a service.
     ///
-    /// C: `reply(who, rp, m_ptr)` — utility.c:309 (06); used by
-    /// `late_reply` (utility.c:332) and the main loop reply path.
-    fn reply(&mut self, target: Endpoint, result: i32) -> Result<(), Errno>;
+    /// C: `reply(who, rp, m_ptr)` — utility.c:318-345: the handler-mutated
+    /// request message (or a fresh one — `late_reply`, utility.c:332-349)
+    /// is sent back with `m_type = result`. `payload` carries that message
+    /// so payload replies (RS_LOOKUP's endpoint, request.c:1174) survive
+    /// the seam.
+    fn reply(
+        &mut self,
+        target: Endpoint,
+        result: i32,
+        payload: &minix_types::Message,
+    ) -> Result<(), Errno>;
 
     /// Notifies a service — the do_period status ping (06/07).
     ///
@@ -393,7 +401,12 @@ impl IpcApi for UnimplementedKernelApi {
     ) -> Result<(minix_types::Message, crate::dispatch::IpcStatus, Clock), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn reply(&mut self, _target: Endpoint, _result: i32) -> Result<(), Errno> {
+    fn reply(
+        &mut self,
+        _target: Endpoint,
+        _result: i32,
+        _payload: &minix_types::Message,
+    ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
     fn notify(&mut self, _endpoint: Endpoint) -> Result<(), Errno> {
@@ -953,10 +966,11 @@ impl<'a> BootInit<'a> {
             // C: main.c:805-807 — a failed boot-time init is fatal for RS.
             panic!("unable to complete init for service: {m:?}");
         }
-        // C: main.c:810-816 — unblock the service, except VM (its reply was
+        // C: main.c:810-816 — unblock the service with the echo of its own
+        // RS_INIT message (m_type = OK), except VM (its reply was
         // asynchronous; a synchronous reply could deadlock).
         if m.m_source != minix_types::Endpoint::VM {
-            let _ = sys.reply(m.m_source, 0);
+            let _ = sys.reply(m.m_source, 0, &m);
         }
         // C: main.c:819-822 — mark the slot no longer initializing.
         let id = self

@@ -264,7 +264,7 @@ impl RsServer {
         }
         loop {
             // C: get_work() → sef_receive_status(ANY) — main.c:62, 826-833.
-            let (msg, rcv_sts, ts) = self.get_work()?;
+            let (mut msg, rcv_sts, ts) = self.get_work()?;
             let who_e = msg.m_source;
             // C: main.c:63-66 — a message from a bogus source is a
             // kernel-side program error; C panics and so does the rewrite
@@ -287,11 +287,11 @@ impl RsServer {
                 // ENOSYS arm until the 16 chain context lands.
                 DispatchKind::InitReady => {
                     let result = self.do_init_ready(&msg).unwrap_or_else(|e| e.to_i32());
-                    self.reply_unless_suppressed(who_e, result);
+                    self.reply_unless_suppressed(who_e, result, &msg);
                 }
                 DispatchKind::LuPrepareReady => {
                     let result = self.lu_response(&msg).unwrap_or_else(|e| e.to_i32());
-                    self.reply_unless_suppressed(who_e, result);
+                    self.reply_unless_suppressed(who_e, result, &msg);
                 }
                 // C: main.c:102-114 + 124-129 — handler result replied to the
                 // caller unless EDONTREPLY. [`RsServer::do_request`] owns the
@@ -299,20 +299,28 @@ impl RsServer {
                 // closed until their 19 decode lands (OQ-4).
                 DispatchKind::Request(n) => {
                     let result = self
-                        .do_request(who_e, n, &msg)
+                        .do_request(who_e, n, &mut msg)
                         .unwrap_or_else(|e| e.to_i32());
-                    self.reply_unless_suppressed(who_e, result);
+                    self.reply_unless_suppressed(who_e, result, &msg);
                 }
             }
         }
     }
 
-    /// Replies unless the result suppresses it (C: main.c:124-129). The
-    /// reply itself is fire-and-forget — C's `reply` (utility.c:309-318)
-    /// does not propagate `ipc_send` failures to the loop.
-    fn reply_unless_suppressed(&mut self, who_e: Endpoint, result: i32) {
+    /// Replies unless the result suppresses it (C: main.c:124-129 —
+    /// `m_ptr->m_type = r; if (r != EDONTREPLY) reply(...)`) The reply
+    /// echoes the received message with `m_type = result`, so handler
+    /// payload mutations ride along (RS_LOOKUP's endpoint — request.c:1174).
+    /// Fire-and-forget: C's `reply` (utility.c:318-345) does not propagate
+    /// `ipc_send` failures to the loop.
+    fn reply_unless_suppressed(
+        &mut self,
+        who_e: Endpoint,
+        result: i32,
+        msg: &minix_types::Message,
+    ) {
         if result != minix_types::EDONTREPLY {
-            let _ = self.kernel.reply(who_e, result);
+            let _ = self.kernel.reply(who_e, result, msg);
         }
     }
 
@@ -326,13 +334,94 @@ impl RsServer {
         &mut self,
         caller: Endpoint,
         call_nr: i32,
-        msg: &minix_types::Message,
+        msg: &mut minix_types::Message,
     ) -> Result<i32, Errno> {
         match call_nr {
             minix_types::RS_SHUTDOWN => self.do_shutdown(caller),
             minix_types::RS_DOWN => self.do_down(msg),
+            minix_types::RS_LOOKUP => self.do_lookup(msg),
+            minix_types::RS_FI => self.do_fi(msg),
             n => Ok(dispatch::dispatch_request(n).0),
         }
+    }
+
+    /// C: `do_lookup` — request.c:1144-1176: name-length gate, copy the
+    /// label from the caller (`m_rs_req.name`/`name_len`), look the service
+    /// up, and write the endpoint into the request payload — `reply` echoes
+    /// the mutated message back (request.c:1174).
+    fn do_lookup(&mut self, m: &mut minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // C: request.c:1151-1157 — `len < 2 || len >= 100` → EINVAL, then
+        // copy the label bytes (sys_datacopy, request.c:1158-1162).
+        let Some((name, name_len)) = m.rs_req_name() else {
+            return Err(Errno::EINVAL);
+        };
+        crate::query::lookup_name_len(name_len as usize)?;
+
+        let mut namebuf = [0u8; crate::query::NAME_BUF_LEN];
+        let n = (name_len as usize).min(namebuf.len() - 1);
+        self.kernel
+            .safecopy_from(m.m_source, name as usize, &mut namebuf[..n])?;
+        namebuf[n] = 0;
+
+        let label = crate::service_slot::Label::from_bytes(&namebuf[..n]);
+        let Some(id) = state.table.lookup_by_label(&label) else {
+            return Err(Errno::ESRCH);
+        };
+        // C: request.c:1174 — m_rs_req.endpoint = rrpub->endpoint; the main
+        // loop's reply (m_type = OK) carries it back to the caller.
+        let endpoint = state.table.get(id).pub_.endpoint;
+        m.set_rs_req_endpoint(endpoint);
+        Ok(0)
+    }
+
+    /// C: `do_fi` — request.c:1229-1263: copy the target label, resolve the
+    /// slot, check permission against `RS_FI`, then inject the fault
+    /// (`fi_service` — an asynchronous `COMMON_REQ_FI_CTL` crash request,
+    /// utility.c:69-77).
+    fn do_fi(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // C: request.c:1244-1246 — copy_label(source, m_rs_req.addr, len).
+        let Some((addr, len)) = m.rs_req_payload() else {
+            return Err(Errno::EINVAL);
+        };
+        let mut label_buf = [0u8; crate::service_slot::RS_MAX_LABEL_LEN];
+        let n = (len as usize).min(label_buf.len() - 1);
+        self.kernel
+            .safecopy_from(m.m_source, addr as usize, &mut label_buf[..n])?;
+        label_buf[n] = 0;
+        let label = crate::service_slot::Label::from_bytes(&label_buf[..n]);
+
+        // C: request.c:1249-1255 — lookup + permission against RS_FI.
+        let Some(id) = state.table.lookup_by_label(&label) else {
+            return Err(Errno::ESRCH);
+        };
+        let updating = state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::UPDATING);
+        let caller_euid = self.kernel.getnuid(m.m_source);
+        crate::access::check_call_permission(
+            m.m_source,
+            minix_types::RS_FI,
+            Some(state.table.get(id)),
+            &state.table,
+            updating,
+            caller_euid,
+        )?;
+
+        // C: fi_service — utility.c:69-77: COMMON_REQ_FI_CTL + RS_FI_CRASH,
+        // asynchronous send (the seam is IpcApi::asynsend).
+        let fi = minix_types::LsysFiCtl {
+            gid: 0,
+            size: 0,
+            subtype: minix_types::RS_FI_CRASH,
+        }
+        .encode_message();
+        let target = state.table.get(id).pub_.endpoint;
+        self.kernel.asynsend(target, &fi)?;
+        Ok(0)
     }
 
     /// C: `do_down` — request.c:110-146: decode the target label
@@ -510,8 +599,9 @@ impl RsServer {
                 Ok(minix_types::EDONTREPLY)
             }
             crate::ready::ReadyOutcome::FreshInitDone => {
-                // C: request.c:517-524 — unblock the service, then finalize.
-                let _ = self.kernel.reply(m.m_source, 0);
+                // C: request.c:517-524 — unblock the service with the echo of
+                // its own RS_INIT message (m_type = OK), then finalize.
+                let _ = self.kernel.reply(m.m_source, 0, m);
                 let has_prev = state.table.get(id).prev_rp.is_some();
                 crate::ready::end_srv_init(state.table.get_mut(id), has_prev);
                 Ok(minix_types::EDONTREPLY)
@@ -1130,6 +1220,110 @@ mod signal_handler_tests {
         assert!(s.flags.contains(RFlags::LATEREPLY), "late reply armed");
         assert_eq!(s.caller, Endpoint::PM);
         assert_eq!(s.caller_request, minix_types::RS_DOWN);
+    }
+
+    /// A booted server whose VFS slot carries the given label (system
+    /// privilege excluded) and whose safecopy seam serves the given payload
+    /// — the 14 wiring tests' fixture.
+    fn booted_vfs_labeled(label: &'static [u8], payload: &'static [u8]) -> RsServer {
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.payload = Some(payload.to_vec());
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::VFS;
+            s.pub_.label = crate::service_slot::Label::from_bytes(label);
+        }
+        server
+    }
+
+    #[test]
+    fn test_do_lookup_resolves_label_into_reply_payload() {
+        // 14 wiring: RS_LOOKUP — the length gate (request.c:1151-1157), the
+        // label copy via the safecopy seam (request.c:1158-1162), and the
+        // endpoint written into the request payload; the main loop's reply
+        // (m_type = OK) carries it back (request.c:1174).
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_LOOKUP,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.name = 0x4000;
+        m.m_u.m_rs_req.name_len = 3;
+
+        assert_eq!(server.do_lookup(&mut m), Ok(0));
+        assert_eq!(
+            m.rs_req_endpoint(),
+            Some(Endpoint::VFS),
+            "the resolved endpoint rides in the reply payload"
+        );
+
+        // Unknown label → ESRCH (request.c:1168-1171): the copy yields
+        // "nox", which no slot carries.
+        let mut miss_server = booted_vfs_labeled(b"vfs", b"nox");
+        let mut miss = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_LOOKUP,
+            m_u: Default::default(),
+        };
+        miss.m_u.m_rs_req.name = 0x4000;
+        miss.m_u.m_rs_req.name_len = 3;
+        assert_eq!(miss_server.do_lookup(&mut miss), Err(Errno::ESRCH));
+
+        // Name-length gate: len < 2 → EINVAL (request.c:1151-1157).
+        let mut short = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_LOOKUP,
+            m_u: Default::default(),
+        };
+        short.m_u.m_rs_req.name = 0x4000;
+        short.m_u.m_rs_req.name_len = 1;
+        assert_eq!(server.do_lookup(&mut short), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_do_fi_injects_crash_request() {
+        // 14 wiring: RS_FI — label copy (request.c:1244-1246), lookup →
+        // ESRCH (request.c:1249-1253), permission against RS_FI, then the
+        // asynchronous COMMON_REQ_FI_CTL crash request (fi_service,
+        // utility.c:69-77). The wire shape itself is pinned by minix-types'
+        // LsysFiCtl encode/decode roundtrip test.
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        {
+            let state = server.state.as_mut().unwrap();
+            // RS_FI targets a system process (manager.c:103-105 gate).
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+        }
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_FI,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = 0x4000;
+        m.m_u.m_rs_req.len = 3;
+
+        assert_eq!(server.do_fi(&m), Ok(0), "asynsend seam accepts the send");
+
+        // Unknown label → ESRCH: the label copy yields "nox", which no
+        // slot carries (separate instance — the fixture's payload is
+        // fixed at construction).
+        let mut miss_server = booted_vfs_labeled(b"vfs", b"nox");
+        let mut miss = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_FI,
+            m_u: Default::default(),
+        };
+        miss.m_u.m_rs_req.addr = 0x4000;
+        miss.m_u.m_rs_req.len = 3;
+        assert_eq!(miss_server.do_fi(&miss), Err(Errno::ESRCH));
     }
 
     #[test]

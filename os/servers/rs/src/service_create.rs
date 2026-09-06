@@ -128,10 +128,11 @@ pub fn clone_slot(table: &mut RProcTable, src: SlotId) -> Result<SlotId, Errno> 
     c.pub_.endpoint = Endpoint::NONE; // manager.c:1831
     rebuild_args(&mut c); // manager.c:1833
     if c.pub_.sys_flags.contains(SysFlags::USE_COPY) {
-        // manager.c:1834-1835: share_exec(clone_rp, rp) — Arc already shared
-        // by the clone above; routed through the single implementation
-        // (OQ-3 resolution, todo §18).
-        crate::exec::share_exec(&mut c, &table.get(src).clone());
+        // manager.c:1834-1835: share_exec(clone_rp, rp) — the clone above
+        // already shares the Arc (ServiceSlot::clone clones the Arc, not the
+        // buffer); routed through the single implementation as a plain
+        // borrow (OQ-3 resolution — no whole-slot copy here).
+        crate::exec::share_exec(&mut c, table.get(src));
     }
     c.old_rp = None; // manager.c:1837
     c.new_rp = None; // manager.c:1838
@@ -521,6 +522,29 @@ mod tests {
         assert_eq!(c.priv_.init_flags, 0);
         assert_eq!(c.argc, 1); // rebuild_args from "/bin/x"
         assert_eq!(t.get(src).cmd[..6], *b"/bin/x"); // source untouched
+    }
+
+    #[test]
+    fn test_clone_slot_use_copy_shares_exec_image() {
+        // C: manager.c:1834-1835 — a `SF_USE_COPY` clone shares the source's
+        // exec image (share_exec). Rust expresses the share as one `Arc`; the
+        // clone must reference the *same* buffer, not a deep copy, and the
+        // routing must go through `exec::share_exec` without copying the
+        // whole source slot (OQ-3 resolution).
+        let mut t = RProcTable::new();
+        let src = t.alloc_slot().unwrap();
+        let mut s = in_use_slot();
+        s.pub_.sys_flags |= SysFlags::USE_COPY;
+        s.exec = Some(alloc::sync::Arc::from(&b"\x7fELF-image"[..]));
+        *t.get_mut(src) = s;
+
+        let clone = clone_slot(&mut t, src).unwrap();
+        let src_exec = t.get(src).exec.clone().unwrap();
+        let clone_exec = t.get(clone).exec.clone().unwrap();
+        assert!(
+            alloc::sync::Arc::ptr_eq(&src_exec, &clone_exec),
+            "USE_COPY clone must share the exec Arc, not deep-copy it"
+        );
     }
 
     #[test]
@@ -1755,7 +1779,11 @@ pub fn restart_service(
 ) {
     // See if a late reply has to be sent (manager.c:1252-1253).
     if table.get(rp).flags.contains(RFlags::LATEREPLY) {
-        let _ = kernel.reply(table.get(rp).pub_.endpoint, 0);
+        let _ = kernel.reply(
+            table.get(rp).pub_.endpoint,
+            0,
+            &minix_types::Message::default(),
+        );
         table.get_mut(rp).flags.remove(RFlags::LATEREPLY);
     }
 

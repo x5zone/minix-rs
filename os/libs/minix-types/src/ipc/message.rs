@@ -73,6 +73,8 @@ pub union MessageUnion {
     pub m_rs_init: MessRsInit,
     /// RS generic control request (RS_UP/RS_DOWN/RS_EDIT/...).
     pub m_rs_req: MessRsReq,
+    /// Fault injection (RS → service): COMMON_REQ_FI_CTL — C ipc.h:2536.
+    pub m_lsys_fi_ctl: MessLsysFiCtl,
     /// Kernel: SYS_MEMSET.
     pub m_lsys_krn_sys_memset: MessLsysKrnSysMemset,
     /// Kernel: SYS_SAFEMEMSET.
@@ -330,10 +332,7 @@ impl Message {
     /// accessor lives here.
     #[inline]
     pub fn rs_req_payload(&self) -> Option<(u64, u64)> {
-        if self.m_type == crate::RS_UP
-            || self.m_type == crate::RS_DOWN
-            || self.m_type == crate::RS_EDIT
-        {
+        if Self::is_rs_req_arm(self.m_type) {
             // SAFETY: `m_type` tags the `m_rs_req` arm in use; the arm is
             // plain-old-data, so the read is sound.
             let req = unsafe { &self.m_u.m_rs_req };
@@ -341,6 +340,58 @@ impl Message {
         } else {
             None
         }
+    }
+
+    /// C union-membership test for `m_rs_req`: the arm is shared by the
+    /// whole `RS_RQ_BASE` control family except the two typed arms
+    /// `RS_INIT`(+20, `m_rs_init`) and `RS_LU_PREPARE`(+21, `m_rs_update`)
+    /// — do_sysctl reads `m_rs_req.subtype` (request.c:1184), do_fi reads
+    /// `m_rs_req.addr`/`len` (request.c:1245-1246), do_lookup reads
+    /// `m_rs_req.name_len`/`name` (request.c:1151-1156).
+    #[inline]
+    pub fn is_rs_req_arm(m_type: i32) -> bool {
+        (crate::RS_RQ_BASE..=crate::RS_RQ_BASE + 24).contains(&m_type)
+            && m_type != crate::RS_INIT
+            && m_type != crate::RS_LU_PREPARE
+    }
+
+    /// The label-pointer/length pair RS_LOOKUP copies by
+    /// (`m_rs_req.name`/`name_len` — request.c:1151-1156). `None` when
+    /// `m_type` is not an `m_rs_req` message.
+    #[inline]
+    pub fn rs_req_name(&self) -> Option<(u64, i32)> {
+        if Self::is_rs_req_arm(self.m_type) {
+            // SAFETY: `m_type` tags the `m_rs_req` arm in use; the arm is
+            // plain-old-data, so the read is sound.
+            let req = unsafe { &self.m_u.m_rs_req };
+            Some((req.name, req.name_len))
+        } else {
+            None
+        }
+    }
+
+    /// Writes the resolved endpoint into the request payload for the
+    /// payload-carrying reply (RS_LOOKUP — C do_lookup mutates
+    /// `m_ptr->m_rs_req.endpoint` in place, request.c:1174; `reply` then
+    /// sends the mutated message back, utility.c:318-345).
+    pub fn set_rs_req_endpoint(&mut self, endpoint: Endpoint) {
+        debug_assert!(Self::is_rs_req_arm(self.m_type));
+        // SAFETY: `m_type` tags the `m_rs_req` arm in use; the arm is
+        // plain-old-data, so the write is sound.
+        let req = unsafe { &mut self.m_u.m_rs_req };
+        req.endpoint = endpoint.get();
+    }
+
+    /// Reads back the endpoint written by [`Self::set_rs_req_endpoint`]
+    /// (the RS_LOOKUP reply payload assertion path).
+    pub fn rs_req_endpoint(&self) -> Option<Endpoint> {
+        if !Self::is_rs_req_arm(self.m_type) {
+            return None;
+        }
+        // SAFETY: `m_type` tags the `m_rs_req` arm in use; the arm is
+        // plain-old-data, so the read is sound.
+        let req = unsafe { &self.m_u.m_rs_req };
+        Some(Endpoint(req.endpoint))
     }
 
     #[inline]
@@ -2698,6 +2749,48 @@ pub struct MessRsReq {
     /// C: `int subtype`.
     pub subtype: i32,
     _pad2: [u8; 20],
+}
+
+/// Fault injection request — C: `mess_lsys_fi_ctl` — ipc.h:1048-1056
+/// (x86-64 layout: gid@0, size@8, subtype@16, padding to 56 bytes).
+/// Sent by RS as `COMMON_REQ_FI_CTL` (com.h:607) to inject a fault into a
+/// service (RS `fi_service` — utility.c:69-77).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysFiCtl {
+    /// C: `cp_grant_id_t gid` — grant for the fault-injection arguments.
+    pub gid: i32,
+    _pad: [u8; 4],
+    /// C: `size_t size` — argument size.
+    pub size: u64,
+    /// C: `int subtype` — `RS_FI_CRASH` (com.h:492).
+    pub subtype: i32,
+    _pad2: [u8; 44],
+}
+
+impl Default for MessLsysFiCtl {
+    fn default() -> Self {
+        Self {
+            gid: 0,
+            _pad: [0; 4],
+            size: 0,
+            subtype: 0,
+            _pad2: [0; 44],
+        }
+    }
+}
+
+impl MessLsysFiCtl {
+    /// Builds a fault-injection payload with zeroed padding.
+    pub fn new(gid: i32, size: usize, subtype: i32) -> Self {
+        Self {
+            gid,
+            _pad: [0; 4],
+            size: size as u64,
+            subtype,
+            _pad2: [0; 44],
+        }
+    }
 }
 
 /// ```

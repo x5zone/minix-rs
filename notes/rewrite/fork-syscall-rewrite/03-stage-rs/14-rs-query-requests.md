@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 4 — 服务生命周期（观测面）
 > **源码**: `minix3/minix/servers/rs/request.c`（`do_getsysinfo`—1095、`do_lookup`—1144、`do_sysctl`—1181、`do_fi`—1229）、`minix3/minix/servers/rs/utility.c:69-77,142-222,485-546`（`fi_service`/`srv_to_string_gen`/`srv_upd_to_string`/`print_services_status`/`print_update_status`）
-> **Rust 模块**: `os/servers/rs/src/query.rs`（`GetsysinfoTable`/`getsysinfo_table`/`NAME_BUF_LEN`/`lookup_name_len`/`SysctlAction`/`classify_sysctl`/`RS_FI_CRASH` + `SI_*`/`RS_SYSCTL_*` 常量）
+> **Rust 模块**: `os/servers/rs/src/query.rs`（`GetsysinfoTable`/`getsysinfo_table`/`NAME_BUF_LEN`/`lookup_name_len`/`SysctlAction`/`classify_sysctl` + `SI_*` 常量；`RS_SYSCTL_*`/`RS_FI_CRASH` 子功能号消费 `os/libs/minix-types/src/ipc/rs.rs` 的单一定义）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`lookup_slot_by_label`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`copy_label`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`EDONTREPLY`/`rs_asynsend`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（`start_update_prepare`/`abort_update_proc`）
 > **说明**: 本文档是 RS 的**只读观测面**：13 回答了"如何操作服务的生命周期"，本文档回答"如何**看**服务的状态、导出进程表、触发故障注入"。四个 handler 中，`do_lookup`/`do_getsysinfo` 不改变任何槽位，`do_sysctl` 的 `UPD_*` 子功能委托 16，`do_fi` 是唯一的"注入"入口（把服务搞崩，然后交给 15 恢复）。
 
@@ -140,8 +140,8 @@ Rust 侧，整个打印族（格式化 + 输出）归 **19 的诊断输出面**�
 | `GetsysinfoTable` + `getsysinfo_table(what)` | request.c:1111-1133 | `SI_*` 三口径枚举；未知 `what` → `EINVAL` |
 | `NAME_BUF_LEN` + `lookup_name_len(len)` | request.c:1154-1157 | `len < 2 || len >= 100` → `EINVAL` |
 | `SysctlAction` + `classify_sysctl(subtype)` | request.c:1185-1221 | 5 子功能枚举；未知 subtype → `EINVAL` |
-| `RS_SYSCTL_*` 常量 | com.h:485-489 | 五个子功能号 |
-| `RS_FI_CRASH` | com.h:492 | 故障注入子类型（=1） |
+| `RS_SYSCTL_*` 子功能号 | com.h:485-489 | 定义在 minix-types `sysctl` 模块，query.rs 消费 |
+| `RS_FI_CRASH` | com.h:492 | 定义在 minix-types `ipc::rs`（=1），query.rs 接线时消费 |
 | `SI_PROC_TAB`/`SI_PROCPUB_TAB`/`SI_PROCALL_TAB` | sysinfo.h:11,15-16 | 三口径常量（=2/11/12） |
 
 `COMMON_REQ_FI_CTL`（`0xE02`）消息构造与 `lookup_endpoint`（label → endpoint 解析）不落在 `query.rs`——它们分别是 19 的 IPC 面与 handler 组装的一部分；`query.rs` 保持"能判定、不动作"的纯切片边界。
@@ -158,22 +158,36 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 
 ### 3.3 常量归属
 
-`SI_*`（sysinfo.h:11,15-16）、`RS_SYSCTL_*`（com.h:485-489）、`RS_FI_CRASH`（com.h:492）落在 `query.rs`，与 `dispatch.rs` 既有 RS_* 本地常量同款模式：正式家在 minix-types（ARCH A-2），19/99 落地时迁移（见 §7 的 99）。`RS_*` 消息号本体已在 `os/libs/minix-types/src/ipc/rs.rs`（com.h:463-482）。
+`SI_*`（sysinfo.h:11,15-16）落在 `query.rs`——它们是"哪张表"的分类输入，minix-types 的消息面没有对应物。`RS_SYSCTL_*`（com.h:485-489）与 `RS_FI_CRASH`（com.h:492）的唯一定义在 `os/libs/minix-types/src/ipc/rs.rs`（`sysctl` 子模块 + `RS_FI_CRASH` 常量），与全部 `RS_*` 消息号同家（ARCH A-2 单一权威，见 §7 的 99）；`query.rs` 经 `use minix_types::sysctl` 消费，不再本地复制——同一 C 常量两处定义是漂移温床，`RS_FI_CRASH` 曾因此双份（值相同、测试各一份），已收敛为单点。
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 模块结构
+### 4.1 模块结构与接线状态
 
-`os/servers/rs/src/query.rs` 函数表见 §3.1：两个判定函数（`getsysinfo_table`/`classify_sysctl`）、一个校验函数（`lookup_name_len`）、两组常量（`SI_*`/`RS_SYSCTL_*`）+ `RS_FI_CRASH`。无状态、无 I/O——handler 组装与 IPC 面全部在调用方（19）。
+`os/servers/rs/src/query.rs` 函数表见 §3.1：两个判定函数（`getsysinfo_table`/`classify_sysctl`）、一个校验函数（`lookup_name_len`）、`SI_*` 常量组。无状态、无 I/O。
+
+四个 handler 的**接线状态**（2026-09-07，I3a/I3b 迭代）：
+
+| 臂 | 状态 | 落点 |
+|----|------|------|
+| `RS_LOOKUP` | ✅ 已接线（I3a） | `lib.rs::do_lookup`——`lookup_name_len` 门 → `safecopy_from` 拷名 → `lookup_by_label` → `set_rs_req_endpoint` 把端点写进请求载荷，主循环的 reply（m_type=OK）把它带回调用方（request.c:1174） |
+| `RS_FI` | ✅ 已接线（I3a） | `lib.rs::do_fi`——`copy_label` 同款拷贝 → 查槽 → `check_call_permission(RS_FI)` → `asynsend(COMMON_REQ_FI_CTL + RS_FI_CRASH)`（utility.c:69-77；消息编解码在 minix-types `LsysFiCtl`） |
+| `RS_GETSYSINFO` | ⏳ I3b | 权限门 + 分类已可用；拷出半压在 rproctab 字节 ABI（edge E-RSWIRE，见 §3.2） |
+| `RS_SYSCTL` | ⏳ I3b | `classify_sysctl` 已可用；`UPD_*` 子臂的编排组合在 16 号链上 |
 
 ### 4.2 关键不变量
 
 1. **未知输入永不产生动作**：`getsysinfo_table` 的 default（request.c:1131-1132）与 `classify_sysctl` 的 default（request.c:1217-1219）都返回 `EINVAL`，不存在"静默忽略"分支。
 2. **长度校验先于一切**（request.c:1152-1156）：`lookup_name_len` 在拷贝前拒绝 `len < 2 || len >= 100`，永不触碰表。
-3. **分类与动作分离**：`query.rs` 只回答"是什么"，不回答"做什么"——`UPD_*` 动作委托 16，打印委托 19，拷贝委托 19，注入消息构造委托 19。
+3. **分类与动作分离**：`query.rs` 只回答"是什么"，不回答"做什么"——`UPD_*` 动作委托 16，打印委托 19，拷贝委托 19，注入消息构造经 minix-types 的线面类型。
 4. **表选择与字节编码分离**（ARCH）：`GetsysinfoTable` 是语义选择；C 布局尺寸不是 Rust 布局，字节编码只存在于 19 的序列化器。
+5. **回复携带载荷**（I3a）：C 的 `reply`（utility.c:318-345）把 handler 原位变异过的请求消息整个发回——RS_LOOKUP 的端点就住在 `m_rs_req.endpoint` 里。Rust 的 `IpcApi::reply` 因此携带 `(target, result, payload)` 三参，`Message::set_rs_req_endpoint`/`rs_req_endpoint` 是载荷的唯一读写口。
+
+### 4.3 handler shell（lib.rs）
+
+`do_lookup`/`do_fi` 遵循 13 号 `do_down` 确立的 shell 形态：从 `Message` 的 union 臂解出载荷描述（`rs_req_name`/`rs_req_payload`）→ `IpcApi::safecopy_from` 拷贝 → 查槽 → 权限门 → 副作用经 `IpcApi` 缝（`asynsend`）。错误一律以 errno 返回，由主循环统一回复。
 
 ---
 
@@ -184,9 +198,17 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 1. `getsysinfo_table`：三值映射到 `GetsysinfoTable::{ProcTab,ProcPubTab,ProcAllTab}`；未知值（`99`）→ `EINVAL`。
 2. `lookup_name_len`：`0`/`1`/`100`/`101` → `EINVAL`；`2`/`99` → `Ok`。
 3. `classify_sysctl`：5 子功能映射到 `SysctlAction` 五个变体；`0`/`6` → `EINVAL`。
-4. `RS_FI_CRASH`：= 1（com.h:492）。
 
-测试总数声明：本文档范围为 `query` 模块测试数（4 项，以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
+lib.rs 接线测试（I3a）：
+
+1. `test_do_lookup_resolves_label_into_reply_payload`：已知 label → `Ok(0)` 且载荷中端点 = VFS；未知 label → `ESRCH`；`len=1` → `EINVAL`（request.c:1151-1174 三分支）。
+2. `test_do_fi_injects_crash_request`：已知 label → `Ok(0)`（asynsend 缝接受发送）；未知 label → `ESRCH`。目标槽须 `SYS_PROC`（manager.c:103-105 门）。
+
+minix-types（`cargo test -p minix-types`）：
+
+1. `test_lsys_fi_ctl_encode_roundtrip`：`LsysFiCtl` 编码 → 解码往返，m_type = `COMMON_REQ_FI_CTL`、subtype = `RS_FI_CRASH`（=1，com.h:492）。
+
+测试总数声明：本文档直接范围为 `query` 模块测试数（3 项）+ lib.rs 接线测试 2 项 + minix-types 1 项。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
 
 ---
 
@@ -196,7 +218,7 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 
 - **`RS_SYSCTL` 的 `UPD_*` 子功能**是 **16-rs-live-update** 状态机的控制入口：`UPD_START`/`UPD_RUN` 调 `start_update_prepare`，`UPD_STOP` 调 `abort_update_proc`，`UPD_RUN` 的 LATEREPLY 三字段消费点在 06/16；
 - **`RS_FI` 注入崩溃**后，服务进入 **15-rs-terminate-restart** 的恢复路径（`crash_service`/backoff/restart）；
-- **`RS_GETSYSINFO` 的序列化器**与 `RS_LOOKUP` 的消息面在 **19-rs-external-interfaces** 落地；`SI_*`/`COMMON_REQ_FI_CTL`/`RS_SYSCTL_*` 常量随 99/19 迁移到 minix-types。
+- **`RS_GETSYSINFO` 的序列化器**与 rproctab 字节 ABI 在 **edge E-RSWIRE/E9** 落地（见 §3.2 的 ARCH 决策）；`COMMON_REQ_FI_CTL`/`RS_FI_CRASH`/`RS_SYSCTL_*` 已在 minix-types（§3.3），`SI_*` 保留在 query.rs。
 
 ---
 

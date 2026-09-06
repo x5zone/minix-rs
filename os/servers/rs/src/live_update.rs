@@ -1682,7 +1682,11 @@ impl UpdateState {
         // Reply or cancel the survivor (update.c:977-987).
         if reply_flag == 1 {
             // RS_REPLY — m_type = result.
-            let _ = kernel.reply(table.get(surviving).pub_.endpoint, result);
+            let _ = kernel.reply(
+                table.get(surviving).pub_.endpoint,
+                result,
+                &minix_types::Message::default(),
+            );
         } else if reply_flag == 2 && !table.get(surviving).flags.contains(RFlags::TERMINATED) {
             // RS_CANCEL — a NULL prepare completes a prepare-only survivor.
             request_prepare(table.get(surviving), crate::live_update::SEF_LU_STATE_NULL);
@@ -1696,7 +1700,11 @@ impl UpdateState {
             if id == old && lu_detached {
                 table.get_mut(id).flags.insert(RFlags::CLEANUP_DETACH);
                 crate::recovery::cleanup_service(table, id, kernel, run_script);
-                let _ = kernel.reply(table.get(id).pub_.endpoint, minix_types::EDEADEPT);
+                let _ = kernel.reply(
+                    table.get(id).pub_.endpoint,
+                    minix_types::EDEADEPT,
+                    &minix_types::Message::default(),
+                );
             } else {
                 crate::recovery::cleanup_service(table, id, kernel, run_script);
             }
@@ -1935,7 +1943,11 @@ impl UpdateState {
         if let Some(last_idx) = self.chain.last {
             let last_slot = self.chain.entries[last_idx].slot;
             if table.get(last_slot).flags.contains(RFlags::LATEREPLY) {
-                let _ = kernel.reply(table.get(last_slot).pub_.endpoint, result);
+                let _ = kernel.reply(
+                    table.get(last_slot).pub_.endpoint,
+                    result,
+                    &minix_types::Message::default(),
+                );
                 table.get_mut(last_slot).flags.remove(RFlags::LATEREPLY);
             }
             self.chain.entries[last_idx] = UpdateEntry::new(last_slot, Endpoint::NONE);

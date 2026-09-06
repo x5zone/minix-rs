@@ -598,10 +598,11 @@ pub fn cleanup_service(
         let _ = kernel.privctl(endpoint, PrivCtlOp::Disallow, None);
         let _ = kernel.privctl(endpoint, PrivCtlOp::ClearIpcRefs, None);
 
-        // Send a late reply if there is any pending (manager.c:441,
-        // late_reply → OK).
+        // Send a late reply if there is any pending (manager.c:441 →
+        // late_reply, utility.c:332-349: a fresh zero message whose
+        // m_type = code).
         if table.get(rp).flags.contains(RFlags::LATEREPLY) {
-            let _ = kernel.reply(endpoint, 0);
+            let _ = kernel.reply(endpoint, 0, &minix_types::Message::default());
             table.get_mut(rp).flags.remove(RFlags::LATEREPLY);
         }
         return;
