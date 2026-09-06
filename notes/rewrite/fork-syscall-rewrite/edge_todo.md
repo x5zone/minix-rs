@@ -31,7 +31,7 @@
 | T13 | 2 | RS_UPDATE 步骤 5-7（VM 侧）+ 步骤 4 走 Gateway | rs.rs:328 DEFERRED（通电→E2） | ⬜ |
 | T14 | 2 | exec_bootproc（minix-elf + VM 映射 + Gateway.sys_exec） | vm_server.rs:385 DEFERRED（通电→E2） | ⬜ |
 | T15 | 2 | audit 日志转发（Gateway.diagctl） | audit.rs:16（通电→E2） | ✅ 2026-09-06（todo.md §15 Fix #32） |
-| T16 | 2 | sanity_checks feature + usedpages 等价物 | V10-P2-1 sanity 行 + G-V11-2 | ⬜ |
+| T16 | 2 | sanity_checks feature + usedpages 等价物 | V10-P2-1 sanity 行 + G-V11-2 | ✅ 2026-09-06（todo.md §15 Fix #38；usedpages 语义由 verify_refcounts 覆盖） |
 | T17 | 2 | bitmap cache_freepages 三步路径 → **判定闭合：语义已被双层覆盖，钩子删除** | bitmap_alloc.rs:347 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #31） |
 | T18 | 2 | alloc 失败计数接入 InfoStats（周期循环判定不采纳） | alloc_stats.rs:46 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #30） |
 | T19 | 2 | exec_newmem / DMA 三条 parity 处置（删 dead stub，不实现） | dispatcher.rs:820/:1223 | ✅ 2026-09-06（todo.md §15 Fix #25） |

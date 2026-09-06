@@ -20,6 +20,9 @@ name = "minix_vm"
 path = "src/lib.rs"
 
 [features]
+# V11/T16 (G-V11-2): C SANITYCHECKS 的 Rust 对应——编译期开启引用计数
+# 全量校验的调用面（run_once 周期执行）。C: alloc.c/region.c SANITYCHECKS。
+sanity_checks = []
 default = ["bitmap_alloc"]
 bitmap_alloc = []
 segment_tree_alloc = []

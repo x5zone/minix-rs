@@ -52,10 +52,13 @@ pub struct RefcountMismatch {
 /// ALLREGIONS(;,if(pr->ph->flags & PBF_INCACHE) pr->ph->seencount++;);
 /// ALLREGIONS(;,MYASSERT(pr->ph->refcount == pr->ph->seencount););
 /// ```
-// V10-P2-1 (DEFERRED): C compiles this under SANITYCHECKS; Rust has no
-// production entry point yet — wire it behind a `sanity_checks` feature +
-// periodic main-loop call when the allocator/region work stabilizes.
-#[cfg_attr(not(test), allow(dead_code))]
+// V11/T16 (G-V11-2 闭环)：生产入口 = `sanity_checks` feature（对应 C
+// SANITYCHECKS 编译开关），由 `VmServer::run_once` 周期调用。
+// C: alloc.c `#if SANITYCHECKS` + region.c `map_sanitycheck`（:168-261）。
+#[cfg_attr(
+    all(not(test), not(feature = "sanity_checks")),
+    allow(dead_code)
+)]
 pub fn verify_refcounts(
     frames: &PageFrames,
     table: &VmProcTable,

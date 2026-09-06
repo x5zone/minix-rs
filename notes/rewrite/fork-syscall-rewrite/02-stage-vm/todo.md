@@ -1259,6 +1259,14 @@ Coverage Summary for vm:
 - **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
 - **Docs**: 15-ipc-dispatch.md §4.1/§4.5
 
+### ✅ Fix #38: T16（G-V11-2 闭环）— `sanity_checks` feature 落地，引用计数校验接入主循环
+
+- **Files**: `servers/vm/Cargo.toml`（`sanity_checks = []` feature，对齐 C SANITYCHECKS 编译开关）、`servers/vm/src/sanity.rs`（`verify_refcounts` 门控从 `cfg_attr(not(test), allow(dead_code))` 改为 feature 门控 + 生产入口注释）、`servers/vm/src/vm_server.rs`（VmContext 增 `sanity_ticks`（feature 门控）；run_once 每 64 次 Handled 后调用 `verify_refcounts`，失配 → `pagefault_errors` 计数 + 审计——诊断而非控制流，不 panic）、dispatcher 测试字面量补字段
+- **语义**：C `alloc.c/region.c` 的 `#if SANITYCHECKS` 对应物；release 无 feature 零开销（cfg 编译消除）；失配处理与 [ARCH: A-15] 同款（计数 + 审计，绝不以诊断充当控制流）
+- **usedpages 等价（G-V11-2）判定**：C `usedpages_add_f` 是 SANITYCHECKS 下的双重分配检测器；本仓 `verify_refcounts` 的"计算引用 vs PageFrames.refcount"对比已覆盖同一故障类别（且能定位具体 PFN），不重复造第二套检测器
+- **Verified**: 五组合 check/test 全绿（default/all-features/sanity_checks/segment_tree/buddy）；四组合 clippy `^servers/` **0 警告**；`rg "cfg(feature = \"sanity_checks\")" servers/vm/src` 非 0
+- **Docs**: sanity.rs 注释（V10-P2-1 DEFERRED → T16 判定）；26-vm-queries/05 的 SANITYCHECKS 关联引用不变
+
 ### ✅ Fix #37: T23（V11-P2-5）— CI feature 矩阵 + run_once 分支补测 + 顺序脆弱性修复
 
 - **Files**: `.github/workflows/vm-tests.yml`（新增：四 feature 组合 check/test + clippy `-D warnings`，触发路径限 vm/minix-types/minix-sys/minix-arch）、`os/servers/vm/src/vm_server.rs`（+2 测试：`test_run_once_invalid_caller_dropped`——invalid caller 分支 drop+计数无回复；`test_vmreplyforipc_rejects_suspend`——钉 reply-encode 失败不变式；两测试尾部补 `reset_boot_slots()` 清理）、`servers/vm/src/vmproc/vmproc.rs` + `servers/vm/src/global.rs`（`reset_vm_instance_count_for_test` cfg(test) 归零助手——修 P2-4 顺序脆弱性）、`os/tests/pm_vm_fork_test.rs`（文件头补复活条件注释：E1+E2 落地后按 minix-sys 消息层重写）、`tests/pm_vm_fork.rs` 同

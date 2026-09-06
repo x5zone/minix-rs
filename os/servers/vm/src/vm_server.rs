@@ -87,6 +87,10 @@ pub(crate) struct VmContext {
     pub(crate) pagefault_errors: u64,
     /// Main-loop dropped-message count ([ARCH: A-14], saturating).
     pub(crate) dropped_messages: u64,
+    /// V11/T16 (`sanity_checks` feature): dispatches since the last
+    /// refcount verification. C: SANITYCHECKS 周期校验 (alloc.c)。
+    #[cfg(feature = "sanity_checks")]
+    pub(crate) sanity_ticks: u32,
 }
 
 impl VmContext {
@@ -119,6 +123,8 @@ impl VmContext {
             vm_allocated_bytes,
             pagefault_errors: 0,
             dropped_messages: 0,
+            #[cfg(feature = "sanity_checks")]
+            sanity_ticks: 0u32,
         }
     }
 
@@ -770,6 +776,28 @@ impl VmServer {
             // `dispatcher::tests::test_dispatch_rs_update_pins_not_implemented`.
             DispatchAction::Suspend => {}
             DispatchAction::NoReply => {}
+        }
+
+        // V11/T16 ([ARCH: A-16] family): C runs SANITYCHECKS refcount
+        // verification periodically (alloc.c `#if SANITYCHECKS`). Feature-
+        // gated so release builds pay nothing; a mismatch is counted and
+        // audited, never a panic (diagnostics, not control flow).
+        #[cfg(feature = "sanity_checks")]
+        {
+            self.ctx.sanity_ticks = self.ctx.sanity_ticks.wrapping_add(1);
+            if self.ctx.sanity_ticks.is_multiple_of(64)
+                && let Some(frames) = self.ctx.page_frames.as_ref()
+                && let Err(mismatches) = crate::sanity::verify_refcounts(
+                    frames,
+                    VmProcTable::get_global(),
+                )
+            {
+                self.ctx.pagefault_errors = self.ctx.pagefault_errors.saturating_add(1);
+                audit_log!("[VM SANITY] {} refcount mismatches detected", mismatches.len());
+                // audit_log! compiles out without vm_acl_audit; keep the
+                // mismatch list alive in every build.
+                let _ = &mismatches;
+            }
         }
         RunStep::Handled
     }
