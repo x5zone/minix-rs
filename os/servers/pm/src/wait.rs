@@ -42,6 +42,7 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
     options: u32,
     rusage_addr: VirBytes,
     transport: &mut T,
+    kern: &mut dyn crate::exit::KernelGateway,
 ) -> ReplyIntent {
     const WNOHANG: u32 = 0x01;
     // Normalize pidarg==0 → -procgrp (493)
@@ -89,7 +90,7 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
         if proc.state.guardianship.tracer() == Some(caller) && matches!(proc.state.lifecycle, Lifecycle::TraceZombie { .. }) {
             // 512-517: TRACE_ZOMBIE → tell_tracer + check_parent + SUSPEND
             crate::exit::tell_tracer(table, UserSlot::new(idx), transport);
-            crate::exit::check_parent(table, UserSlot::new(idx), true, transport);
+            crate::exit::check_parent(table, UserSlot::new(idx), true, transport, kern);
             return ReplyIntent::ReplyLater;
         }
     }
@@ -128,7 +129,7 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             // SYS_TIMES（edge E6）+ E1；C 侧自身仅填 utime/stime。
             let child_slot = UserSlot::new(idx);
             let _ = rusage_addr;
-            crate::exit::tell_parent(table, child_slot, transport);
+            crate::exit::tell_parent(table, child_slot, rusage_addr, transport, kern);
             if !is_vfs_or_event_blocked(table, child_slot) {
                 crate::exit::cleanup(table, child_slot);
             }
@@ -158,6 +159,16 @@ fn is_vfs_or_event_blocked(table: &ProcTable, slot: UserSlot) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// wait.rs 测试用内核网关 mock（sys_times 恒零值；datacopy 恒 OK）。
+    struct NoopKernelGateway;
+    impl crate::exit::KernelGateway for NoopKernelGateway {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
+    }
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Guardianship, Privilege, Credentials};
     use minix_types::{Endpoint, UserSlot, VirBytes};
@@ -176,7 +187,8 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         table.procs[0].state.guardianship = Guardianship::Normal { parent: UserSlot::new(11) };
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::Reply(ECHILD));
     }
 
@@ -188,7 +200,8 @@ mod tests {
         running_child(&mut table, 5, 100, 0);
         // child is Running, not Zombie, so children>0 but no exited child
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0x01, VirBytes(0), &mut transport); // WNOHANG=1
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0x01, VirBytes(0), &mut transport, &mut kern); // WNOHANG=1
         assert_eq!(intent, ReplyIntent::Reply(0));
     }
 
@@ -199,7 +212,8 @@ mod tests {
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
         running_child(&mut table, 5, 100, 0);
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert!(table.procs[0].state.wait.waiting);
     }
@@ -216,7 +230,8 @@ mod tests {
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.guardianship = Guardianship::Normal { parent: UserSlot::new(0) };
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // After tell_parent, child should be ToldParent and parent WAITING cleared if it was waiting
         // In this test parent was not WAITING, so tell_parent was via zombify path? Actually wait4's ZOMBIE branch calls tell_parent directly
@@ -263,7 +278,8 @@ mod tests {
         traced_stopped_child(&mut table, 5, 100, two_pending);
 
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
 
         assert_eq!(intent, ReplyIntent::Reply(100)); // 子进程 pid
         // D-26 wire 契约：状态在 m_pm_lc_wait4.status 载荷（C forkexit.c:528）
@@ -291,7 +307,8 @@ mod tests {
         traced_stopped_child(&mut table, 5, 100, 0);
 
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
 
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert!(table.procs[0].ipc.reply.is_none(), "no fabricated stop code");
@@ -314,7 +331,8 @@ mod tests {
         table.procs[5].state.wait.waiting = false;
 
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let told = crate::exit::tell_parent(&mut table, UserSlot::new(5), &mut transport);
+        // D-21：addr = 父进程 wait4 传入的 rusage 缓冲地址（VirBytes(0x7000)）
+        let told = crate::exit::tell_parent(&mut table, UserSlot::new(5), VirBytes(0x7000), &mut transport, &mut NoopKernelGateway);
 
         assert!(told);
         let sent = transport.sent();
@@ -353,7 +371,8 @@ mod tests {
         table.procs[5].state.guardianship = Guardianship::Normal { parent: UserSlot::new(0) };
 
         let mut transport = crate::ipc::TestIpcTransport::default();
-        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
+        let mut kern = NoopKernelGateway;
+        let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
 
         assert_eq!(intent, ReplyIntent::ReplyLater); // tell_parent 已在 wire 回复父
         match table.procs[5].state.lifecycle {

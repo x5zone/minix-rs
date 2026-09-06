@@ -209,9 +209,9 @@ impl KernelCallTransport for CannedKernelCallTransport {
 // - 返回值 = 内核回复 m_type（负 errno 或非负结果），**不**吞错——
 //   调用方按各自 C 原位的语义决定忽略或 panic。
 
-/// C: SYS_KILL 是内核调用 5（`kernel/src/syscall_signal.rs:138`
+/// C: SYS_KILL 是内核调用 6（`kernel/src/syscall_signal.rs:138`
 /// `Syscall::Kill`；C `callnr.h` `SYS_KILL`）。
-pub const SYS_KILL_CALL: i32 = 5;
+pub const SYS_KILL_CALL: i32 = 6;
 
 /// 向内核发送"终止信号"请求（C: libsys `sys_kill`，`sys_kill.c:8-17`）。
 ///
@@ -246,6 +246,13 @@ pub const SYS_ABORT_CALL: i32 = 27;
 /// `dispatch_times`；C `callnr.h` `SYS_TIMES`）。
 pub const SYS_TIMES_CALL: i32 = 25;
 
+/// C: SYS_VIRCOPY 是内核调用 15（`kernel/src/syscall.rs` `Syscall::Vircopy`）。
+pub const SYS_VIRCOPY_CALL: i32 = 15;
+
+/// C: `SELF`（kernel/src/syscall_copy.rs:124）——源/目标 endpoint 为调用者
+/// 自身时使用的哨兵值，内核分发时替换为调用者真实 endpoint。
+pub const SELF: i32 = -2;
+
 /// 请求内核中止系统（C: libsys `sys_abort`，`sys_abort.c:8-13`）。
 ///
 /// `_kernel_call(SYS_ABORT, &m)`：载荷 m1i1 = `how`（`sys/reboot.h` 的
@@ -275,8 +282,10 @@ pub fn sys_times(
     transport: &impl KernelCallTransport,
     endpt: i32,
 ) -> Result<MessKrnLsysSysTimes, i32> {
-    let mut msg = Message::default();
-    msg.m_type = SYS_TIMES_CALL;
+    let mut msg = Message {
+        m_type: SYS_TIMES_CALL,
+        ..Default::default()
+    };
     {
         // SAFETY: m_lsys_krn_sys_times 是 SYS_TIMES 的文档化载荷布局
         //（kernel/src/syscall_clock.rs dispatch_times 读 req.endpt）。
@@ -289,6 +298,34 @@ pub fn sys_times(
     }
     // SAFETY: 内核以 m_krn_lsys_sys_times 覆写回复载荷（dispatch_times 尾部）。
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_times })
+}
+
+/// 虚地址复制（C: libsys `sys_vircopy`/`sys_datacopy` 家族，
+/// `kernel/src/syscall_copy.rs dispatch_vircopy` = `Syscall::Vircopy = 15`）。
+///
+/// 载荷 `mess_lsys_krn_sys_copy`：src_endpt（`SELF` 由内核替换为调用者
+/// endpoint，`syscall_copy.rs:124` `SELF = -2`）→ dst_endpt 的虚地址。
+/// PM 的 rusage 投递（tell_parent）与 exec 的 frame 拷贝共用此通道。
+pub fn sys_vircopy(
+    transport: &impl KernelCallTransport,
+    src_endpt: i32,
+    src_addr: u64,
+    dst_endpt: i32,
+    dst_addr: u64,
+    nr_bytes: u64,
+) -> i32 {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_copy 是 VIRCOPY/PHYSCOPY 共用的载荷布局
+        //（kernel/src/syscall_copy.rs:244-260 读 src/dst/nr_bytes）。
+        let cp = unsafe { &mut msg.m_u.m_lsys_krn_sys_copy };
+        cp.src_endpt = src_endpt;
+        cp.src_addr = src_addr;
+        cp.dst_endpt = dst_endpt;
+        cp.dst_addr = dst_addr;
+        cp.nr_bytes = nr_bytes;
+    }
+    perform_kernel_call(transport, SYS_VIRCOPY_CALL, &mut msg, |_| {})
 }
 
 
@@ -367,6 +404,9 @@ mod tests {
         let r = sys_kill(&canned, 7, 9); // endpoint 7, SIGKILL
 
         assert_eq!(r, 0);
+        // 调用号必须与 kernel/src/syscall.rs 的 `Syscall::Kill = 6` 一致
+        //（对齐 05750e28c 引入的内核枚举；错号 5 = SYS_TRACE）。
+        assert_eq!(SYS_KILL_CALL, 6);
         let sent = canned.sent.borrow();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, SYS_KILL_CALL);
@@ -413,6 +453,26 @@ mod tests {
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, SYS_TIMES_CALL);
         assert_eq!(unsafe { sent[0].m_u.m_lsys_krn_sys_times }.endpt, 7);
+    }
+
+    #[test]
+    fn test_sys_vircopy_encodes_copy_payload() {
+        // C: do_copy.c — m_lsys_krn_sys_copy {src_endpt, src_addr, dst_endpt,
+        // dst_addr, nr_bytes}；SELF(-2) 由内核替换为调用者 endpoint。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+
+        let r = sys_vircopy(&canned, -2, 0x1000, 9, 0x7000, 144);
+
+        assert_eq!(r, 0);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_VIRCOPY_CALL);
+        let cp = unsafe { &sent[0].m_u.m_lsys_krn_sys_copy };
+        assert_eq!(cp.src_endpt, -2);
+        assert_eq!(cp.src_addr, 0x1000);
+        assert_eq!(cp.dst_endpt, 9);
+        assert_eq!(cp.dst_addr, 0x7000);
+        assert_eq!(cp.nr_bytes, 144);
     }
 
     #[test]

@@ -55,6 +55,9 @@ pub struct ProcTable {
     ///
     /// C: `get_free_pid` 内 `static pid_t next_pid`（utility.c:36）。
     pub pid_generator: PidGenerator,
+    /// 时钟频率（ticks/秒）。C: `system_hz` 全局（glo.h，main.c:238
+    /// `system_hz = sys_hz()`），ticks↔timeval 换算基准（ARCH A-3 全局入表）。
+    pub system_hz: u32,
 }
 
 impl ProcTable {
@@ -67,6 +70,9 @@ impl ProcTable {
             procs: core::array::from_fn(|_| Process::default()),
             procs_in_use: Cell::new(0),
             next_child: Cell::new(0),
+            // C: 编译期 `HZ` 预设（ibm-pc 分支 60）；`init_fresh` 以
+            // `sys_hz()` 结果覆写（main.c:238）。
+            system_hz: 60,
             pid_generator: PidGenerator::new(),
         }
     }

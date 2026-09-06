@@ -8,7 +8,7 @@
 //! + `Guardianship` (`mproc/guardianship.rs`) + `BlockState`.
 //!   Single-threaded event loop — `&mut ProcTable` without `Arc`/`Mutex`.
 
-use minix_types::{Endpoint, Message, UserSlot, VfsCall};
+use minix_types::{Endpoint, Message, UserSlot, VfsCall, VirBytes};
 use crate::ipc::ReplyIntent;
 use crate::mproc::{ProcTable, Lifecycle};
 
@@ -42,6 +42,12 @@ pub trait KernelGateway {
     /// `sys_times.c:8-24`）——读取目标进程的 user/system CPU ticks。
     /// 失败返回负 errno。
     fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32>;
+
+    /// C: `sys_datacopy(src_ep, src, dst_ep, dst, len)`（libsys
+    /// `sys_datacopy.c`；kernel `dispatch_vircopy` = `Syscall::Vircopy = 15`）
+    /// ——把 `bytes` 写入 `dst_ep` 进程虚地址 `dst_addr` 处。
+    /// 失败返回负 errno（如父进程缓冲非法）。
+    fn copy_to_user(&mut self, bytes: &[u8], dst_ep: Endpoint, dst_addr: u64) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -86,6 +92,22 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
     fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
         let times = minix_sys::syscall::sys_times(&self.transport, ep.0)?;
         Ok((times.user_time as minix_types::Clock, times.system_time as minix_types::Clock))
+    }
+
+    fn copy_to_user(&mut self, bytes: &[u8], dst_ep: Endpoint, dst_addr: u64) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_vircopy(
+            &self.transport,
+            minix_sys::syscall::SELF,
+            bytes.as_ptr() as u64,
+            dst_ep.0,
+            dst_addr,
+            bytes.len() as u64,
+        );
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -256,11 +278,11 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 
     // ---- 11. Zombify if !dump_core (384-385) ----
     if !dump_core {
-        zombify(table, slot, transport);
+        zombify(table, slot, transport, kern);
     }
 
     // ---- 12. Disinherit loop (388-409) ----
-    disinherit(table, slot, transport);
+    disinherit(table, slot, transport, kern);
 
     // ---- 13. SIGHUP for session leader (412) ----
     if procgrp != 0 {
@@ -298,7 +320,7 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
                 // For normal path, already zombified, but we check again for safety
                 // In Rust we only zombify if currently Exiting
                 if matches!(lc, Lifecycle::Exiting { .. }) {
-                    zombify(table, slot, transport);
+                    zombify(table, slot, transport, kern);
                 }
             }
         }
@@ -349,6 +371,7 @@ pub(crate) fn zombify<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     slot: UserSlot,
     transport: &mut T,
+    kern: &mut dyn KernelGateway,
 ) {
     let lc = table.procs[slot.get()].state.lifecycle;
     if matches!(lc, Lifecycle::TraceZombie { .. } | Lifecycle::Zombie { .. }) {
@@ -371,11 +394,11 @@ pub(crate) fn zombify<T: crate::ipc::IpcTransport + ?Sized>(
                 tell_tracer(table, slot, transport);
             }
             // check_parent will be called after tell_tracer or directly
-            check_parent(table, slot, false, transport);
+            check_parent(table, slot, false, transport, kern);
             return;
         }
     table.procs[slot.get()].state.lifecycle = Lifecycle::Zombie { exit_code, sig_status };
-    check_parent(table, slot, false, transport);
+    check_parent(table, slot, false, transport, kern);
 }
 
 /// Check if parent is waiting and tell or SIGCHLD (`forkexit.c:626-665`).
@@ -386,6 +409,7 @@ pub(crate) fn check_parent<T: crate::ipc::IpcTransport + ?Sized>(
     child_slot: UserSlot,
     try_cleanup: bool,
     transport: &mut T,
+    kern: &mut dyn KernelGateway,
 ) {
     let parent_slot = table.procs[child_slot.get()].state.guardianship.parent();
     if parent_slot.get() >= table.procs.len() {
@@ -397,7 +421,8 @@ pub(crate) fn check_parent<T: crate::ipc::IpcTransport + ?Sized>(
         return;
     }
     if wait_test(table, parent_slot, child_slot) {
-        let waited = tell_parent(table, child_slot, transport);
+        let addr = table.procs[parent_slot.get()].state.wait.rusage_addr;
+        let waited = tell_parent(table, child_slot, addr, transport, kern);
         let mut try_cleanup = try_cleanup;
         if !waited {
             try_cleanup = false;
@@ -416,6 +441,7 @@ pub fn tracer_died<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     child_slot: UserSlot,
     transport: &mut T,
+    kern: &mut dyn crate::exit::KernelGateway,
 ) {
     let old = table.procs[child_slot.get()].state.guardianship.clone();
     table.procs[child_slot.get()].state.guardianship = match old {
@@ -436,7 +462,7 @@ pub fn tracer_died<T: crate::ipc::IpcTransport + ?Sized>(
     ) {
         let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap();
         table.procs[child_slot.get()].state.lifecycle = Lifecycle::Zombie { exit_code: ec, sig_status: ss };
-        check_parent(table, child_slot, true, transport);
+        check_parent(table, child_slot, true, transport, kern);
     }
 }
 
@@ -477,15 +503,42 @@ fn wait_test(table: &ProcTable, parent_slot: UserSlot, child_slot: UserSlot) -> 
 pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     child_slot: UserSlot,
+    addr: VirBytes,
     transport: &mut T,
+    kern: &mut dyn crate::exit::KernelGateway,
 ) -> bool {
     let parent_slot = table.procs[child_slot.get()].state.guardianship.parent();
     if parent_slot.get() >= table.procs.len() {
         return false;
     }
     let child_pid = table.procs[child_slot.get()].identity.id.pid;
-    // In C: `sys_datacopy` of rusage may fail → `reply(parent, errno)` + return FALSE
-    // For 09 we assume success (no rusage addr)
+    let parent_ep = table.procs[parent_slot.get()].endpoint();
+    // C: forkexit.c:692-704 — 先经 sys_datacopy 把 rusage 写入父进程用户
+    // 内存（仅 ru_utime/ru_stime 两字段，utility.c set_rusage_times）；
+    // 失败 → reply(parent, errno) + FALSE，子进程保持 ZOMBIE 可重试。
+
+    // set_rusage_times（utility.c:144-157）：ticks → usec 按 system_hz。
+    let hz: u64 = u64::from(table.system_hz);
+    let (child_utime, child_stime) = {
+        let child = &table.procs[child_slot.get()];
+        (child.resources.child_utime, child.resources.child_stime)
+    };
+    let mut rusage = [0u8; 144]; // C: sizeof(struct rusage) x86-64
+    {
+        let u_usec = (child_utime.max(0) as u64 * 1_000_000) / hz;
+        let s_usec = (child_stime.max(0) as u64 * 1_000_000) / hz;
+        // ru_utime: tv_sec @0, tv_usec @8；ru_stime: tv_sec @16, tv_usec @24
+        rusage[0..8].copy_from_slice(&(u_usec / 1_000_000).to_ne_bytes());
+        rusage[8..16].copy_from_slice(&(u_usec % 1_000_000).to_ne_bytes());
+        rusage[16..24].copy_from_slice(&(s_usec / 1_000_000).to_ne_bytes());
+        rusage[24..32].copy_from_slice(&(s_usec % 1_000_000).to_ne_bytes());
+    }
+    if let Err(r) = kern.copy_to_user(&rusage, parent_ep, addr.0) {
+        // datacopy 失败：reply(parent, errno) + FALSE（forkexit.c:699-701），
+        // 子进程保持 ZOMBIE，父进程可重试 wait。
+        let _ = transport.send(parent_ep, &Message { m_type: r, ..Default::default() });
+        return false;
+    }
 
     // C: forkexit.c:707-709 — 状态写 mp_reply.m_pm_lc_wait4.status（载荷，
     // D-26 wire 契约），pid 作返回值走 reply(parent, pid)。
@@ -495,15 +548,12 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
         ..Default::default()
     };
     reply_msg.m_u.m_pm_lc_wait4.status = crate::wait::w_exitcode(ec as u8 as i32, ss as u8 as i32);
-    let parent_ep = table.procs[parent_slot.get()].endpoint();
     let _ = transport.send(parent_ep, &reply_msg);
 
     table.procs[parent_slot.get()].state.wait.waiting = false;
     // ZOMBIE → TOLD_PARENT
     table.procs[child_slot.get()].state.lifecycle = Lifecycle::ToldParent { exit_code: ec, sig_status: ss };
     // Accumulate child times at parent (forkexit.c:722-723)
-    let child_utime = table.procs[child_slot.get()].resources.child_utime;
-    let child_stime = table.procs[child_slot.get()].resources.child_stime;
     table.procs[parent_slot.get()].resources.child_utime += child_utime;
     table.procs[parent_slot.get()].resources.child_stime += child_stime;
 
@@ -548,6 +598,7 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     exiting_slot: UserSlot,
     transport: &mut T,
+    kern: &mut dyn crate::exit::KernelGateway,
 ) {
     let proc_nr = exiting_slot.get();
     // Collect affected slots first to avoid borrow conflicts
@@ -565,7 +616,7 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
         }
     }
     for idx in tracer_died_slots {
-        tracer_died(table, UserSlot::new(idx), transport);
+        tracer_died(table, UserSlot::new(idx), transport, kern);
     }
     for idx in to_adopt {
         let child_slot = UserSlot::new(idx);
@@ -602,7 +653,7 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
             table.procs[idx].state.lifecycle,
             Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }
         ) {
-            check_parent(table, child_slot, true, transport);
+            check_parent(table, child_slot, true, transport, kern);
         }
     }
     // SIGHUP for session leader (procgrp !=0)
@@ -629,6 +680,7 @@ mod tests {
     #[derive(Default)]
     struct KillRecorder {
         killed: Option<(Endpoint, i32)>,
+        copied_bytes: Option<alloc::vec::Vec<u8>>,
     }
     impl KernelGateway for KillRecorder {
         fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
@@ -642,6 +694,10 @@ mod tests {
             Ok((30, 12)) // 脚本化计账值（D-14 验证累加）
         }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> {
+            Ok(())
+        }
+        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+            self.copied_bytes = Some(bytes.to_vec());
             Ok(())
         }
     }
@@ -680,6 +736,38 @@ mod tests {
         assert!(kern.killed.is_none(), "user exit must not go through sys_kill");
         // exit_proc 走完 zombify 后：父未 wait → Zombie（非 ToldParent）。
         assert!(matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
+    }
+
+    #[test]
+    fn test_tell_parent_delivers_rusage_via_datacopy() {
+        // D-21：tell_parent 经 VIRCOPY 把 144 字节 rusage 写入父进程用户
+        // 内存（forkexit.c:692-704），仅 ru_utime/ru_stime 两 timeval 有值
+        //（set_rusage_times，utility.c:144-157）；datacopy 失败 →
+        // reply(parent, errno) + FALSE，子保持 ZOMBIE。
+        let mut table = ProcTable::new();
+        table.system_hz = 100; // 显式 hz 隔离断言
+        running_proc(&mut table, 5, 42);
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        // 子进程桶：(30 ticks, 12 ticks) @ hz=100 → (300000 usec, 120000 usec)
+        table.procs[5].resources.child_utime = 30;
+        table.procs[5].resources.child_stime = 12;
+        table.procs[5].state.lifecycle = Lifecycle::Zombie { exit_code: 7, sig_status: 0 };
+        let addr = VirBytes(0x7000);
+
+        let told = tell_parent(&mut table, UserSlot::new(5), addr, &mut transport, &mut kern);
+
+        assert!(told);
+        let copied = kern.copied_bytes.as_ref().expect("rusage must be datacopied");
+        assert_eq!(copied.len(), 144);
+        let u_sec = u64::from_ne_bytes(copied[0..8].try_into().unwrap());
+        let u_usec = u64::from_ne_bytes(copied[8..16].try_into().unwrap());
+        let s_sec = u64::from_ne_bytes(copied[16..24].try_into().unwrap());
+        let s_usec = u64::from_ne_bytes(copied[24..32].try_into().unwrap());
+        assert_eq!((u_sec, u_usec), (0, 300000));
+        assert_eq!((s_sec, s_usec), (0, 120000));
+        // 其余 112 字节保持零（C 同样 memset 后只填两字段）
+        assert!(copied[32..].iter().all(|&b| b == 0));
     }
 
     #[test]
@@ -745,7 +833,7 @@ mod tests {
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
         let mut t = crate::ipc::TestIpcTransport::default();
         let mut kern_rec = KillRecorder::default();
-        zombify(&mut table, UserSlot::new(5), &mut t);
+        zombify(&mut table, UserSlot::new(5), &mut t, &mut kern_rec);
         assert!(matches!(
             table.procs[5].state.lifecycle,
             Lifecycle::TraceZombie { .. }
@@ -763,7 +851,8 @@ mod tests {
         table.procs[11].state.block.ipc_blocked = Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
         table.procs[10].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
         let mut t = crate::ipc::TestIpcTransport::default();
-        disinherit(&mut table, UserSlot::new(10), &mut t);
+        let mut kern = KillRecorder::default();
+        disinherit(&mut table, UserSlot::new(10), &mut t, &mut kern);
         assert_eq!(table.procs[11].state.guardianship.parent(), UserSlot::new(11));
         assert!(matches!(
             table.procs[11].state.block.ipc_blocked,
