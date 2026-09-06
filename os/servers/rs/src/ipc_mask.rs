@@ -225,6 +225,39 @@ mod tests {
     use alloc::vec::Vec;
     use minix_types::Endpoint;
 
+    #[test]
+    fn test_ipc_list_iterator_properties() {
+        // E-9: differential property against a reference splitter — the
+        // iterator must segment exactly like C's scan (whitespace-separated
+        // words, first NUL ends the list, oversized entries skipped —
+        // manager.c:2138-2143), be fused, and never panic.
+        let alphabet: &[u8] = b"ab Z\t9\0";
+        let mut rng = crate::testutil::XorShift::new(0x1C0F_FEA7);
+        for _ in 0..5000 {
+            let len = rng.below(80);
+            let mut list = alloc::vec![0u8; len];
+            rng.fill(&mut list, alphabet);
+
+            // Reference split: up to the first NUL, split on whitespace,
+            // drop empty words, skip entries that do not fit a Label.
+            let first_nul = list.iter().position(|&b| b == 0).unwrap_or(len);
+            let mut expected: Vec<Label> = Vec::new();
+            for tok in list[..first_nul].split(|&b| b.is_ascii_whitespace()) {
+                if !tok.is_empty() && tok.len() <= crate::service_slot::RS_MAX_LABEL_LEN {
+                    expected.push(Label::from_bytes(tok));
+                }
+            }
+
+            let got: Vec<Label> = IpcListIterator::new(&list).collect();
+            assert_eq!(got, expected, "list {list:?}");
+
+            // Fused: once exhausted, next() keeps returning None.
+            let mut it = IpcListIterator::new(&list);
+            while it.next().is_some() {}
+            assert!(it.next().is_none());
+        }
+    }
+
     /// Shell-injected priv-id resolver for the SYSTEM/USER pseudo-names
     /// (T5): the values mirror the deleted `MockSys` (SYSTEM → 4,
     /// INIT → `USER_PRIV_ID`); anything else resolves to `None` (the C

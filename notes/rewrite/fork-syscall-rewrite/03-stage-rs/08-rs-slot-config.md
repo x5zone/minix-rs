@@ -424,6 +424,7 @@ slot.rs
 | `test_build_cmd_dep_trailing_spaces` | 尾部空格丢弃（manager.c:308） |
 | `test_build_cmd_dep_empty_cmd_keeps_argv0` | 空命令/纯空格/NUL 开头 → `[""]`，argc≥1（N11） |
 | `test_build_cmd_dep_stops_at_nul` | NUL 提前终止（manager.c:305-306），NUL 后填充不入参 |
+| `test_build_cmd_dep_properties` / `test_rebuild_args_properties`（E-9） | 生成式不变式（XorShift 5000/2000 次）：token 分词 + S1 NUL 停止 + N11 argv0 + 确定性；R15 argc↔缓冲前缀自洽 + 尾部归零 |
 | `test_build_cmd_dep_long_token_not_truncated` | >16 字节 token 不截断（S1） |
 | `test_build_cmd_dep_argv_cap` | `ARGV_ELEMENTS-1` 上限（manager.c:311-313） |
 | `test_rss_constants` | `RSS_IRQ_ALL=17`/`RSS_IO_ALL=17`/CPU 特例值/标志位 |

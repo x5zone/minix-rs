@@ -142,6 +142,7 @@ static char *get_next_name(ptr, name, caller_label)    /* manager.c:2115 */
 4. 返回 `q`（下一个词的起点）作为新指针，循环到返回 NULL。
 
 Rust 对应 `IpcListIterator`（ipc_mask.rs:43-90）：纯迭代器，无 unsafe；NUL 与空白都终止单词（与 C 的 `q[0] != '\0' && !isspace(...)` 一致）；超长条目递归跳过（保留 C 的语义，丢弃 no_std 下的 printf 诊断，A-11 家族）。
+生成式不变式（E-9）：`test_ipc_list_iterator_properties` 以参照分词器做差分——随机器 NUL/空白/字母混合流上，迭代器的分段与"首个 NUL 截断 + 空白切分 + 超长（>16 字节）跳过"的参照实现完全一致，且迭代器耗尽后保持 `None`（fused）。
 
 ### 2.4 `add_forward_ipc`（manager.c:2157-2224）——正向扫描
 

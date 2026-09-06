@@ -263,6 +263,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_compute_backoff_properties() {
+        // E-9: generated restarts across the full i32 range — totality
+        // (no panic, Fix #32), bounds [1, MAX_BACKOFF], the use_copy and
+        // no_bin_exp overrides, and monotone non-decrease over the
+        // meaningful range.
+        let mut rng = crate::testutil::XorShift::new(0xB0FF_00F5);
+        for _ in 0..5000 {
+            let r = rng.next_u64() as i32;
+            let b = compute_backoff(r, false, false);
+            assert!((1..=MAX_BACKOFF).contains(&b), "restarts {r} → {b}");
+            if r <= 0 {
+                assert_eq!(b, 1, "negative restarts clamp to shift 0");
+            }
+            if r >= (BACKOFF_BITS - 2) as i32 {
+                assert_eq!(b, MAX_BACKOFF, "shift capped at BACKOFF_BITS-2");
+            }
+            assert_eq!(compute_backoff(r, true, false), 1, "no_bin_exp → 1");
+            if b > 1 {
+                assert_eq!(compute_backoff(r, false, true), 1, "use_copy → 1");
+            }
+        }
+        // Monotone non-decrease over 0..=BACKOFF_BITS.
+        let mut prev = 0i64;
+        for r in 0..=BACKOFF_BITS as i32 {
+            let b = compute_backoff(r, false, false);
+            assert!(b >= prev, "backoff decreased at restarts {r}");
+            prev = b;
+        }
+    }
+
+    #[test]
     fn test_terminate_init_failure_refresh_falls_through() {
         // C: manager.c:1078-1086 + 1154-1156 — init failure + SF_NO_BIN_EXP
         // sets RS_REFRESHING and falls into the refresh path.

@@ -652,6 +652,7 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 - `[ALL_C]` → 全 1（58 位内全 1，59 位以上为 0）；与 `base` 无关（C 覆写 chunk，utility.c:122-129）
 - 单调用 `[KERNEL_CALL + 4]` → 仅位 4 置位
 - **组合语义（R21）**：结果 = `base` ∪ bits(calls)；`base = empty()` ≡ C `is_init=TRUE`（先清零），传活掩码 ≡ `is_init=FALSE`（basic 位叠加，manager.c:1527-1540 的 edit_slot 路径）——`test_call_mask_from_calls_composes_onto_base` 锁定三态（base 位保留、新位加入、ALL_C 覆写 base）
+- **生成式不变式（E-9）**：`test_call_mask_from_calls_properties` 在随机 base/调用表上锁定 base 保留、逐位加入、`NULL_C` 终止（其后垃圾项不可见）、越界 `EINVAL`（N7）、`ALL_C` 全掩码覆写——tot 域约束为 1..=64（`CallMask` 单 u64 块，真实调用点 `NR_SYS_CALLS`/`NR_VM_CALLS` 均 < 64）
 - N7：越界调用号（`KERNEL_CALL+200` / `KERNEL_CALL-5`）→ `Err(EINVAL)`；`tot_nr_calls=64` 全 1 不溢出
 - `NULL_C` 截断（calls 数组含 NULL_C 停止计数）
 - `test_validate_range_counts`：`nr_io_range`/`nr_mem_range`/`nr_irq` 负数或超表限 → `Err(EINVAL)`（do_privctl.c:308-331；C int 语义负数拒绝，不包绕）

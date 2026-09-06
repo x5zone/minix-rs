@@ -15,6 +15,43 @@ use crate::service_slot::Label;
 use alloc::vec::Vec;
 use minix_types::{Clock, Endpoint, Errno, Pid};
 
+/// Deterministic xorshift64* PRNG for property-style tests (E-9).
+///
+/// `proptest` is not available in this workspace (no registry access); the
+/// E-9 properties only need reproducible pseudo-random inputs, so this
+/// tiny generator keeps the crate dependency-free while preserving the
+/// property-test essentials: generated (not hand-picked) inputs, explicit
+/// invariants, and a fixed seed so a failure replays exactly.
+pub struct XorShift(u64);
+
+impl XorShift {
+    /// `seed | 1` — the generator never leaves the zero state.
+    pub fn new(seed: u64) -> Self {
+        Self(seed | 1)
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Uniform value in `0..n` (`n > 0`).
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
+
+    /// Fills `buf` with bytes drawn from `alphabet`.
+    pub fn fill(&mut self, buf: &mut [u8], alphabet: &[u8]) {
+        for b in buf.iter_mut() {
+            *b = alphabet[self.below(alphabet.len())];
+        }
+    }
+}
+
 /// Records the kernel calls made through the mock, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {

@@ -520,6 +520,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_call_mask_from_calls_properties() {
+        // E-9: the composition invariants over generated call lists —
+        // base preserved (R21), each in-range bit set, NULL_C terminates
+        // the list (later entries ignored, even garbage), ALL_C fills the
+        // call space regardless of base, and any out-of-range entry fails
+        // closed with EINVAL (N7).
+        let mut rng = crate::testutil::XorShift::new(0xCA11_5EED);
+        for _ in 0..5000 {
+            // Domain: 1..=64 — `CallMask` is one u64 chunk and every real
+            // call site passes a compile-time `tot` (NR_SYS_CALLS /
+            // NR_VM_CALLS, both < 64). For a hypothetical tot > 64 an
+            // offset in [64, tot) would hit `set_bit`'s full-build assert
+            // (fail-fast) rather than the EINVAL guard — recorded, not
+            // reachable from any caller.
+            let tot = rng.below(64) + 1;
+            let call_base = 32; // C: KERNEL_CALL for sys masks
+            let chunk_mask = if tot >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << tot) - 1
+            };
+            let base = CallMask(rng.next_u64() & chunk_mask);
+
+            // (a) in-range list: base preserved + listed bits set.
+            let n = rng.below(tot + 1);
+            let calls: alloc::vec::Vec<i32> =
+                (0..n).map(|_| call_base + rng.below(tot) as i32).collect();
+            let m = CallMask::from_calls(base, &calls, tot, call_base).expect("in range");
+            assert_eq!(m.0 & base.0, base.0, "base preserved");
+            for &c in &calls {
+                assert!(m.test_bit((c - call_base) as usize));
+            }
+
+            // (b) NULL_C terminates: garbage after it is ignored.
+            let mut calls2 = calls.clone();
+            calls2.push(NULL_C);
+            calls2.push(call_base + tot as i32 + 100); // out of range, ignored
+            assert_eq!(CallMask::from_calls(base, &calls2, tot, call_base), Ok(m));
+
+            // (c) out-of-range before any NULL_C → EINVAL (after the
+            // terminator it would be invisible — that is case (b)).
+            let mut calls3 = calls.clone();
+            calls3.push(call_base + tot as i32 + 1);
+            assert_eq!(
+                CallMask::from_calls(base, &calls3, tot, call_base),
+                Err(Errno::EINVAL)
+            );
+
+            // (d) ALL_C fills the call space regardless of base.
+            let all = CallMask::from_calls(base, &[ALL_C], tot, call_base).expect("ALL_C");
+            assert_eq!(all.0, chunk_mask);
+        }
+    }
+
+    #[test]
     fn test_priv_flags_bit_values() {
         // C: include/minix/const.h:143-153.
         assert_eq!(PrivFlags::PREEMPTIBLE.bits(), 0x002);

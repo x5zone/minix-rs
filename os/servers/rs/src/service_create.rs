@@ -555,6 +555,48 @@ mod tests {
     }
 
     #[test]
+    fn test_rebuild_args_properties() {
+        // E-9: the R15 invariant over generated commands — `argc` counts
+        // exactly the token prefix that fits, the first `argc` NUL-
+        // terminated entries of `args` are those tokens in order, and the
+        // tail is zeroed. An argc overcount (the R15 bug shape) fails the
+        // walk; an unterminated write fails the NUL lookup.
+        let alphabet: &[u8] = b"abc xy/-";
+        let mut rng = crate::testutil::XorShift::new(0xA9CF_BEEF);
+        for _ in 0..2000 {
+            let mut s = ServiceSlot::vacant();
+            let len = rng.below(crate::service_slot::MAX_COMMAND_LEN + 1);
+            rng.fill(&mut s.cmd[..len], alphabet);
+            // Owned copy: `build_cmd_dep` borrows `s.cmd`, and the walk below
+            // needs `&mut s` — the reference tokens cannot hold the borrow.
+            let tokens: Vec<Vec<u8>> = crate::slot::build_cmd_dep(&s.cmd)
+                .iter()
+                .map(|t| t.to_vec())
+                .collect();
+
+            rebuild_args(&mut s);
+
+            assert!(s.argc >= 1, "argv[0] exists (N11), cmd len {len}");
+            assert!((s.argc as usize) <= tokens.len());
+            let mut off = 0usize;
+            for k in 0..s.argc as usize {
+                let rel = s.args[off..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .expect("entry NUL within buffer (R15)");
+                let end = off + rel;
+                assert_eq!(
+                    &s.args[off..end],
+                    &tokens[k][..],
+                    "entries are the token prefix"
+                );
+                off = end + 1;
+            }
+            assert!(s.args[off..].iter().all(|&b| b == 0), "tail zeroed");
+        }
+    }
+
+    #[test]
     fn test_link_replica_lu_vs_replica() {
         // C: manager.c:735-747 — LU links new/old, replica links next/prev.
         let mut t = RProcTable::new();

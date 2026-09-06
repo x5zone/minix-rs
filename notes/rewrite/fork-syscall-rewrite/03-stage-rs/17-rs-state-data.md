@@ -213,6 +213,7 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 6. `parse_filter_el`：MATCH 门控（source/type 各自解析与否）+ 默认值。
 7. `vm_fallback_entry`：三字段断言（WHITELIST|MATCH_SOURCE|MATCH_TYPE、`Endpoint::RS`、`VM_RS_UPDATE`）。
 8. `ANY_*` 端点值：`0xFC00`/`0x17C00`/`0x1FC00`（`_ENDPOINT(1..3, slot(ANY))`，`MAX_NR_TASKS=1023` 下 `ANY=0x7C00`）。
+9. `test_parse_label_properties`（E-9）：XorShift 生成输入（5000 次）——totality（Ok 或 `ESRCH`，无 panic）、Ok 臂归因（伪名/全串十进制）、digit-only 值一致、DS hook 转发优先于一切臂。
 9. 常量表：`IPCF_MAX_ELEMENTS=128`、`SEF_LU_STATE_EVAL=4`、`VM_RS_UPDATE=0xC29`、`RS_MAX_LABEL_LEN=16`。
 
 测试总数声明：本文档范围为 `state_data` 模块测试数（以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。

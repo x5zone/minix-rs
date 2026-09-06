@@ -232,6 +232,7 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 8. `terminate_decision` backoff 分支：`mutations.backoff` 携带计算值（含 `USE_COPY` 折叠，R13）。
 9. `compute_backoff`：restarts 0/1/4/10（封顶 30）、`NO_BIN_EXP` → 1、`USE_COPY` 折叠（C 1163-1174）。
 10. `test_compute_backoff_negative_returns_1`（R16）：负 restarts clamp → 1（不继承 C 的负移位 UB）。
+11. `test_compute_backoff_properties`（E-9）：全 i32 域生成——totality、界 [1, MAX_BACKOFF]、restarts≤0 → 1、≥BACKOFF_BITS-2 → MAX_BACKOFF、no_bin_exp/use_copy 覆盖、单调不减。
 11. `script_reason` 三值（C 1195-1199）。
 12. `late_reply_result` 四组合（C 1134-1135）。
 13. `cleanup_decision` 两组合（C 451-452）。

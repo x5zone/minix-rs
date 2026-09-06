@@ -851,6 +851,44 @@ mod tests {
     }
 
     #[test]
+    fn test_build_cmd_dep_properties() {
+        // E-9: generated inputs (deterministic xorshift, fixed seed) instead
+        // of hand-written samples. Invariants: parsing always yields at
+        // least argv[0] (N11); tokens are separator-free; no token reaches
+        // past the first NUL (S1); empty output means exactly one empty
+        // argv[0]; and the parse is deterministic.
+        let alphabet: &[u8] = b"ab z9-/\\\0";
+        let mut rng = crate::testutil::XorShift::new(0x5EED_2026);
+        for _ in 0..5000 {
+            let len = rng.below(3 * crate::service_slot::RS_MAX_LABEL_LEN + 5);
+            let mut cmd = alloc::vec![0u8; len];
+            rng.fill(&mut cmd, alphabet);
+            let tokens = build_cmd_dep(&cmd);
+
+            // argv[0] always exists (N11, Fix #23).
+            assert!(!tokens.is_empty(), "cmd {cmd:?}");
+            // An empty token means the no-token case: exactly argv[0]="".
+            if tokens.iter().any(|t| t.is_empty()) {
+                assert_eq!(tokens.len(), 1, "cmd {cmd:?}");
+            }
+            // Separator-free tokens, none reaching past the first NUL.
+            let first_nul = cmd.iter().position(|&b| b == 0).unwrap_or(cmd.len());
+            let head = &cmd[..first_nul];
+            for t in &tokens {
+                assert!(!t.contains(&b' ') && !t.contains(&0), "cmd {cmd:?}");
+                if !t.is_empty() {
+                    assert!(
+                        head.windows(t.len()).any(|w| w == *t),
+                        "token {t:?} not in head {head:?}"
+                    );
+                }
+            }
+            // Determinism.
+            assert_eq!(tokens, build_cmd_dep(&cmd));
+        }
+    }
+
+    #[test]
     fn test_rss_constants() {
         assert_eq!(RSS_IRQ_ALL, 17);
         assert_eq!(RSS_IO_ALL, 17);

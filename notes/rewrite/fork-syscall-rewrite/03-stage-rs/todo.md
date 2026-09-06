@@ -45,7 +45,7 @@
 | S3 | `sched_init_proc` 对 `NONE` 调度器不跳过（C sched_start.c:57-58） | P1 |✅ |
 | S4 | `KernelApi::sched_init_proc` 签名丢弃调度参数（scheduler/priority/quantum/cpu） | P1 |✅ |
 | E1 | MockKernelApi 四份复制、无共享测试工具模块 | P2 | ☐ |
-| E2 | 解析函数（IpcListIterator/parse_label/build_cmd_dep）无 fuzz/property 测试 | P2 | ☐ | EDGE（见 §18.10） |
+| E2 | 解析函数（IpcListIterator/parse_label/build_cmd_dep）无 fuzz/property 测试 | P2 | ✅ | 已修（Fix #64，2026-09-06，零依赖 property 测试） |
 | E3 | 无集成级 boot 顺序/消息交换测试（receive 不可用） | P2 | ☐ | EDGE（见 §18.10） |
 
 ## 2. 顶层架构问题
@@ -2594,6 +2594,19 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   clippy/fmt 触碰文件零输出；`tools/check-rs-unwired.sh` PASS。文档同步：18 §2.9b 重绑段、
   01 §3.3 补条目。
 
+### ✅ Fix #64 — E-9/E2（P2 测试基建）：解析面零依赖 property 测试 6 项
+- **File**：`os/servers/rs/src/testutil.rs`（`XorShift` PRNG）、`slot.rs`/`service_create.rs`/
+  `state_data.rs`/`ipc_mask.rs`/`privilege.rs`/`recovery.rs`（各 1 个 property 测试）
+- **Before**：解析函数（请求面、攻击者可控输入）只有手写样例——E2 自 2026-08-15 挂账，
+  R34.24（IPC_ALL 位域契约）等边缘无系统覆盖。
+- **After**：`proptest` 不可用（离线）→ `testutil::XorShift`（xorshift64*，seed|1 防零态，
+  `below(n)`/`fill(alphabet)` 辅助；固定种子 = 失败可精确重放）+ 5000/2000 次迭代的生成式
+  不变式断言（清单见 E-9 标注）。每个不变式对应一条 C 语义锚点（S1/N11/R15/A-14/N6/N7/
+  R21/Fix #32）。方案对比：a) 零依赖 PRNG property（选定——离线可落地，覆盖生成式输入）
+  vs b) 等 proptest 可用（无限期挂账）vs c) 穷举边界样例（已有单测，无生成覆盖）。
+- **Verified**：`cargo test -p minix-rs` = **272 passed**（+6）；测试自查修正 3 处测试自身
+  错误（Gate E 记录）；clippy 触碰文件零告警；`cargo fmt` 收敛 3 文件格式；T7 PASS。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18
@@ -2666,10 +2679,18 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   IS 阶段（08-stage-is）dump 面。`exec_restart` 归 19。
 
 **E-9 E2 proptest**
-- 目标函数：`parse_label`/`parse_filter_el`（四级回退）、`build_cmd_dep`
-  （分词/截断）、`rebuild_args`（argc 自洽，R15）、`IpcListIterator`
-  （NULL_C 终止）、`CallMask::from_calls`（base 组合，R21）、
-  `compute_backoff`（移位极值）。不变式：无 panic + 幂等 + 边界回收。
+- ✅ **已修（Fix #64，2026-09-06）**：proptest 在本工作区不可用（无 registry 访问，Cargo.lock
+  无缓存）——改为**零依赖 property 测试**：`testutil::XorShift`（xorshift64*，固定种子可复现）
+  + 每函数显式不变式，覆盖 E-9 清单 6 个目标（parse_filter_el 经 parse_label/常量臂间接受
+  覆盖）：`test_build_cmd_dep_properties`（token 分词/S1 NUL 停止/N11 argv0/确定性）、
+  `test_rebuild_args_properties`（R15 argc↔缓冲自洽走链 + 尾部归零）、
+  `test_parse_label_properties`（totality/Ok 臂归因/十进制值/ds_lookup 转发）、
+  `test_ipc_list_iterator_properties`（对照参照分词器的差分性质 + fused）、
+  `test_call_mask_from_calls_properties`（base 保留/NULL_C 终止/越界 EINVAL/ALL_C 全掩码）、
+  `test_compute_backoff_properties`（totality/界/单调/no_bin_exp/use_copy）。**测试自查抓出
+  3 处测试自身错误**（rebuild 借用、NULL_C 之后的越界不可达、tot=64 移位溢出——均为测试
+  侧理解偏差，非产品缺陷）。**记录不修**：假想 tot>64 时 offsets∈[64,tot) 会触发 set_bit
+  全构建 assert（fail-fast）；真实调用点 tot 全为编译期常量且 < 64，不可达，不扩大 N7 改动。
 
 **E-10 E3 集成测试 + R34.18-23**
 - 场景：boot 全链 mock（四步 + getnpid + setalarm 断言）、do_period 全流程

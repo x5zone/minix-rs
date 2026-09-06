@@ -230,6 +230,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_label_properties() {
+        // E-9: generated inputs over the parse surface. Totality: Ok or
+        // `Err(ESRCH)`, never a panic. When Ok without the DS/pseudo-name
+        // arms, the label must be a full decimal parse (A-14: empty is
+        // ESRCH in Rust, unlike C's strtol). Digit-only labels parse to
+        // their value; ds_lookup hits are forwarded verbatim.
+        let alphabet: &[u8] = b"0123456789abc -";
+        let mut rng = crate::testutil::XorShift::new(0xD5_1A_BE1);
+        for _ in 0..5000 {
+            let len = rng.below(40);
+            let mut buf = alloc::vec![0u8; len];
+            rng.fill(&mut buf, alphabet);
+            let s = core::str::from_utf8(&buf).expect("ASCII alphabet is UTF-8");
+            let r = parse_label(s, |_| None);
+            match r {
+                Ok(ep) => {
+                    let decimal_ok = s.parse::<i32>().map(|v| Endpoint(v) == ep).unwrap_or(false);
+                    assert!(
+                        s == "ANY_USR" || s == "ANY_SYS" || s == "ANY_TSK" || decimal_ok,
+                        "unexpected Ok for {s:?}"
+                    );
+                }
+                Err(e) => assert_eq!(e, Errno::ESRCH, "label {s:?}"),
+            }
+        }
+        // Digit-only labels (≤ 9 digits, no overflow) parse to the value.
+        for _ in 0..500 {
+            let len = rng.below(9) + 1;
+            let mut buf = alloc::vec![0u8; len];
+            rng.fill(&mut buf, b"0123456789");
+            buf[0] = b'1' + rng.below(9) as u8; // avoid a leading zero reparse quirk
+            let s = core::str::from_utf8(&buf).unwrap();
+            let v: i32 = s.parse().unwrap();
+            assert_eq!(parse_label(s, |_| None), Ok(Endpoint(v)), "label {s:?}");
+        }
+        // ds_lookup forwards before every other arm.
+        assert_eq!(parse_label("42", |_| Some(Endpoint(77))), Ok(Endpoint(77)));
+    }
+
+    #[test]
     fn test_validate_state_data_size() {
         // C: manager.c:190 — size != sizeof(rs_state_data) → E2BIG.
         assert_eq!(validate_state_data_size(RS_STATE_DATA_SIZE), Ok(()));
