@@ -189,6 +189,12 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 
 ---
 
+> **接线落地（2026-09-07，Fix #71）**：`do_down` 已 live——`MessRsReq`（ipc.h:1886-1895）
+> 解码经 `Message::rs_req_payload()`（minix-types，三调用号标签守卫），label 拷贝经
+> `KernelApi::safecopy_from`（sys_datacopy 缝，19 接线），stop 流程消费 `stop_decision`
+> （A4 载荷模式）并经 PM 面 srv_kill 发信号；恒 EDONTREPLY（迟回复由 cleanup 路径发出，
+> request.c:142-146）。RS_UP 臂的 `rs_start` 结构解码需 RsStartWire ABI（rs.h:104-151），
+> 待独立迭代；signal_manager 六分支待 18 号编排轮。
 ## 5. 测试要点
 
 `request.rs` 内 6 项测试（`cargo test -p minix-rs --lib request` 过滤子串会命中其他模块的 `*request` 测试，共 15 通过；以 `request::tests` 6 项为准）：

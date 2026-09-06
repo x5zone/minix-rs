@@ -2737,6 +2737,27 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   clippy 触碰 crate 零告警；fmt 干净；T7 PASS。测试自查修正 3 处夹具缺端点索引
   （endpoint_slot 查找路径）与 1 处计数假设错误（placeholder 全表 uncaught=10 非 1）。
 
+### ✅ Fix #71 — 13 号 RS_DOWN 臂接线（载荷缝 safecopy_from + MessRsReq 解码 + stop 流程贯通）
+- **File**：`os/libs/minix-types/src/ipc/message.rs`（`MessRsReq` repr(C) 56 字节 +
+  `m_rs_req` union 臂 + `rs_req_payload()` 访问器 + 测试）、`boot.rs`
+  （`KernelApi::safecopy_from` 缝，生产 ENOSYS + doc contract）、`testutil.rs`
+  （`payload` 罐装字节）、`lib.rs`（`do_down` + 集成测试）；文档 13
+- **Before**：`do_down`（request.c:110-146）零载体——其唯一载荷是 16 字节 label
+  （`copy_label`，纯字节无结构 ABI），但因 `m_rs_req.addr/len` 的 union 读取
+  （`MessRsReq` 在 minix-types 缺席）与 `sys_datacopy` 缝一起挂账。
+- **After**：`MessRsReq` 按 ipc.h:1886-1895 逐字段（x86-64：len/name_len/endpoint/
+  addr/name/subtype + 填充 = 56 字节）；`rs_req_payload()` 三调用号标签守卫；
+  `KernelApi::safecopy_from`（sys_datacopy 缝——E-11 的数据拷贝面以 seam 形态先行，
+  生产 ENOSYS、mock 罐装字节）；`do_down` 全流程：copy_label 解码 → `lookup_by_label`
+  ESRCH → 权限门 → TERMINATED 分支（unpublish 聚合决策 + cleanup 两相）→
+  stop_decision（EXITING + stop_tm）+ LATEREPLY/caller/caller_request + StopSignal
+  经 PM 面 srv_kill（RS 自身 SIGHUP/其余 SIGTERM）→ 恒 EDONTREPLY（迟回复由
+  cleanup 路径发出）。
+- **Verified**：`cargo test -p minix-rs` = **294 passed**（+1 集成测试：label 解码→
+  权限→stop 流程→LATEREPLY 簿记全链；自查修正 2 处——unpublish_result 是 4-bool
+  聚合决策面非效果执行体、测试夹具缺 SYS_PROC 被 request.c:104-105 权限门拦下）；
+  clippy 触碰 crate 零告警；fmt 干净；T7 PASS。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18

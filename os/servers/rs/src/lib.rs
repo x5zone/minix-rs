@@ -326,12 +326,101 @@ impl RsServer {
         &mut self,
         caller: Endpoint,
         call_nr: i32,
-        _msg: &minix_types::Message,
+        msg: &minix_types::Message,
     ) -> Result<i32, Errno> {
         match call_nr {
             minix_types::RS_SHUTDOWN => self.do_shutdown(caller),
+            minix_types::RS_DOWN => self.do_down(msg),
             n => Ok(dispatch::dispatch_request(n).0),
         }
+    }
+
+    /// C: `do_down` — request.c:110-146: decode the target label
+    /// (`copy_label` — a 16-byte payload, no structure ABI), resolve the
+    /// slot, check permission, then either clean up an already-terminated
+    /// service or run the stop flow. The reply is deferred until the service
+    /// dies (`RS_LATEREPLY` + late_reply via the sigchld/cleanup path), so
+    /// the handler always answers `EDONTREPLY`.
+    fn do_down(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // C: request.c:121-123 — copy_label(source, m_rs_req.addr, len).
+        let Some((addr, len)) = m.rs_req_payload() else {
+            return Err(Errno::EINVAL);
+        };
+        let mut label_buf = [0u8; crate::service_slot::RS_MAX_LABEL_LEN];
+        let n = (len as usize).min(label_buf.len() - 1);
+        self.kernel
+            .safecopy_from(m.m_source, addr as usize, &mut label_buf[..n])?;
+        label_buf[n] = 0;
+        let label = crate::service_slot::Label::from_bytes(&label_buf[..n]);
+
+        // C: request.c:126-134 — lookup + permission.
+        let Some(id) = state.table.lookup_by_label(&label) else {
+            return Err(Errno::ESRCH);
+        };
+        let updating = state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::UPDATING);
+        let caller_euid = self.kernel.getnuid(m.m_source);
+        crate::access::check_call_permission(
+            m.m_source,
+            minix_types::RS_DOWN,
+            Some(state.table.get(id)),
+            &state.table,
+            updating,
+            caller_euid,
+        )?;
+
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        if state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::TERMINATED)
+        {
+            // C: request.c:136-141 — a recovery script is bringing down an
+            // already-gone service: unpublish + cleanup, reply OK now.
+            // C: unpublish_service(rp) — manager.c:864-920 (the DS effect
+            // seam is 19; the aggregate decision face is publish.rs, R32).
+            let _ = crate::publish::unpublish_result(false, false, false, false);
+            crate::recovery::cleanup_service(
+                &mut state.table,
+                id,
+                self.kernel.as_mut(),
+                &mut |_| Ok(()),
+            );
+            return Ok(0);
+        }
+        // C: request.c:142-145 — stop_service(rp, RS_EXITING) + late reply.
+        let decision = crate::request::stop_decision(
+            state.table.get(id),
+            crate::service_slot::RFlags::EXITING,
+            ticks,
+        );
+        decision.mutations.apply(state.table.get_mut(id));
+        state
+            .table
+            .get_mut(id)
+            .flags
+            .insert(crate::service_slot::RFlags::LATEREPLY);
+        state.table.get_mut(id).caller = m.m_source;
+        state.table.get_mut(id).caller_request = minix_types::RS_DOWN;
+        match decision.signal {
+            crate::request::StopSignal::Hangup => {
+                // RS itself (manager.c:1003) — SIGHUP via the PM face.
+                let _ = self
+                    .kernel
+                    .srv_kill(state.table.get(id).pid.unwrap_or(0), 1);
+            }
+            crate::request::StopSignal::Term => {
+                let _ = self
+                    .kernel
+                    .srv_kill(state.table.get(id).pid.unwrap_or(0), 15);
+            }
+        }
+        Ok(minix_types::EDONTREPLY)
     }
 
     /// C: `do_shutdown` — request.c:431-455: caller permission, then the
@@ -997,6 +1086,50 @@ mod signal_handler_tests {
         }
         let r = server.init_response(&rs_init_envelope(0)).unwrap();
         assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_run_down_request_stops_service_with_late_reply() {
+        // 13 wiring: RS_DOWN (payload = the 16-byte label via the safecopy
+        // seam) — permission, the stop flow (EXITING + stop_tm + SIGTERM
+        // through the PM face), and the late-reply bookkeeping
+        // (request.c:142-146); EDONTREPLY defers the reply to cleanup.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.payload = Some(b"vfs".to_vec());
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_DOWN,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = 0x4000;
+        m.m_u.m_rs_req.len = 3;
+        mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        {
+            let state = server.state.as_mut().unwrap();
+            state
+                .table
+                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::VFS;
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.pid = Some(700);
+            // RS_DOWN targets a system process (request.c:104-105 gate).
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+        }
+        let _ = server.run();
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert!(s.flags.contains(RFlags::EXITING), "stop flow ran");
+        assert!(s.flags.contains(RFlags::LATEREPLY), "late reply armed");
+        assert_eq!(s.caller, Endpoint::PM);
+        assert_eq!(s.caller_request, minix_types::RS_DOWN);
     }
 
     #[test]

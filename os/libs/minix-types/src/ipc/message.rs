@@ -71,6 +71,8 @@ pub union MessageUnion {
     pub m_lsys_kern_safecopy: MessLsysKernSafecopy,
     /// RS_INIT (RS → service): SEF init request with the rproctab grant.
     pub m_rs_init: MessRsInit,
+    /// RS generic control request (RS_UP/RS_DOWN/RS_EDIT/...).
+    pub m_rs_req: MessRsReq,
     /// Kernel: SYS_MEMSET.
     pub m_lsys_krn_sys_memset: MessLsysKrnSysMemset,
     /// Kernel: SYS_SAFEMEMSET.
@@ -317,6 +319,25 @@ impl Message {
             // SAFETY: `m_type == RS_INIT` tags the union arm in use; the
             // arm is plain-old-data (`MessRsInit`), so the read is sound.
             Some(unsafe { self.m_u.m_rs_init.result })
+        } else {
+            None
+        }
+    }
+
+    /// The generic RS control-request payload — C: `m.m_rs_req.addr`/`len`
+    /// (request.c:121 do_down, request.c:37 do_up). `None` when `m_type` is
+    /// not an RS request; see [`Message::rs_init_result`] for why the
+    /// accessor lives here.
+    #[inline]
+    pub fn rs_req_payload(&self) -> Option<(u64, u64)> {
+        if self.m_type == crate::RS_UP
+            || self.m_type == crate::RS_DOWN
+            || self.m_type == crate::RS_EDIT
+        {
+            // SAFETY: `m_type` tags the `m_rs_req` arm in use; the arm is
+            // plain-old-data, so the read is sound.
+            let req = unsafe { &self.m_u.m_rs_req };
+            Some((req.addr, req.len as u64))
         } else {
             None
         }
@@ -2657,6 +2678,28 @@ impl Default for MessLcPmKill {
 /// C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885:
 /// ```c
 /// typedef struct { pid_t pid; int nr; uint8_t padding[48]; } mess_rs_pm_srv_kill;
+/// C: `mess_rs_req` — ipc.h:1886-1895 (x86-64 layout, 56 bytes): the generic
+/// RS control-request payload (RS_UP/RS_DOWN/RS_EDIT/... carry a caller
+/// pointer + length to the real request structure).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MessRsReq {
+    /// C: `int len` — payload length at `addr`.
+    pub len: i32,
+    /// C: `int name_len` — label length (RS_EDIT's name field).
+    pub name_len: i32,
+    /// C: `endpoint_t endpoint` — target endpoint.
+    pub endpoint: i32,
+    _pad: [u8; 4],
+    /// C: `void *addr` — caller-space pointer to the request structure.
+    pub addr: u64,
+    /// C: `const char *name` — caller-space label pointer.
+    pub name: u64,
+    /// C: `int subtype`.
+    pub subtype: i32,
+    _pad2: [u8; 20],
+}
+
 /// ```
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -3564,5 +3607,21 @@ mod rs_accessor_tests {
         assert_eq!(m.rs_init_result(), Some(5));
         m.m_type = crate::RS_LU_PREPARE; // wrong arm → None
         assert_eq!(m.rs_init_result(), None);
+    }
+
+    #[test]
+    fn test_rs_req_payload_accessor() {
+        // RS_DOWN decode: addr/len survive the union round trip under the
+        // RS request m_type tag; other types refuse.
+        let mut m = Message {
+            m_source: crate::Endpoint::PM,
+            m_type: crate::RS_DOWN,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = 0x1234;
+        m.m_u.m_rs_req.len = 42;
+        assert_eq!(m.rs_req_payload(), Some((0x1234, 42)));
+        m.m_type = crate::RS_INIT;
+        assert_eq!(m.rs_req_payload(), None);
     }
 }

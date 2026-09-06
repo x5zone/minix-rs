@@ -226,6 +226,14 @@ pub trait IpcApi {
     /// the notify timestamp (ipc.h:1715). Wired
     /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
     fn notify(&mut self, endpoint: Endpoint) -> Result<(), Errno>;
+
+    /// Copies a request payload from the caller's address space.
+    ///
+    /// C: `sys_datacopy(src_e, addr, SELF, dst, len)` — manager.c:141
+    /// (`copy_rs_start`) / manager.c:160 (`copy_label`). Wired
+    /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    fn safecopy_from(&mut self, source: Endpoint, addr: usize, buf: &mut [u8])
+    -> Result<(), Errno>;
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -381,6 +389,14 @@ impl IpcApi for UnimplementedKernelApi {
         Err(Errno::ENOSYS)
     }
     fn notify(&mut self, _endpoint: Endpoint) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn safecopy_from(
+        &mut self,
+        _source: Endpoint,
+        _addr: usize,
+        _buf: &mut [u8],
+    ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }

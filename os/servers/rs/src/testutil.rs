@@ -135,6 +135,9 @@ pub struct MockKernelApi {
     /// (manager.c:604-605). Per-endpoint storage because boot Step 1 pushes
     /// 12 different structures in sequence.
     pub set_privs: Vec<(Endpoint, Privilege)>,
+    /// Canned `safecopy_from` payload: `receive`-style tests stage the
+    /// request bytes here; `None` → `Err(ENOSYS)` (fail-closed default).
+    pub payload: Option<Vec<u8>>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
     /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
     pub inbox: Vec<(minix_types::Message, crate::dispatch::IpcStatus, Clock)>,
@@ -169,6 +172,7 @@ impl MockKernelApi {
             children: Vec::new(),
             set_privs: Vec::new(),
             fail_calls: Vec::new(),
+            payload: None,
             inbox: Vec::new(),
         }
     }
@@ -394,5 +398,20 @@ impl IpcApi for MockKernelApi {
         }
         self.calls.push(Call::Notify(endpoint));
         Ok(())
+    }
+    fn safecopy_from(
+        &mut self,
+        _source: Endpoint,
+        _addr: usize,
+        buf: &mut [u8],
+    ) -> Result<(), Errno> {
+        match &self.payload {
+            Some(bytes) => {
+                let n = bytes.len().min(buf.len());
+                buf[..n].copy_from_slice(&bytes[..n]);
+                Ok(())
+            }
+            None => Err(Errno::ENOSYS),
+        }
     }
 }
