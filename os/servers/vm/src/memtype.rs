@@ -896,58 +896,37 @@ impl MemType for CacheMemory {
         slot.is_mapped()
     }
 
-    /// Map the faulting page to the pre-cached PFN.
+    /// Cache regions never fault in correct operation.
     ///
-    /// In Minix3, `cache_pagefault()` (mem_cache.c:181) links the faulting
-    /// `phys_region` to a pre-existing `phys_block` stored in
-    /// `region->param.pb_cache`, then clears the cache pointer.
+    /// C's `cache_pagefault` (mem_cache.c:181) is only ever driven
+    /// synchronously by `do_mapcache`'s loop — it sets `param.pb_cache`
+    /// and faults the page in within the same iteration (mem_cache.c:156).
+    /// minix-rs fuses that loop into `dispatch_mapcache`'s eager
+    /// `map_page` (dispatcher.rs), so every slot of a cache region is
+    /// `Mapped` before the region exists to the caller:
     ///
-    /// In the PFN model, this translates to:
-    ///   1. If page already mapped → return Handled (no action)
-    ///   2. Extract cached PFN from `VrParam::PbCache { pfn }`
-    ///   3. If pfn == 0 → error (C: assert(region->param.pb_cache) fails)
-    ///   4. `map_page(offset, pfn, &MEM_TYPE_CACHE)` — link to cached page
-    ///   5. Clear pfn to 0 (cache consumed, C: `region->param.pb_cache = NULL`)
-    ///   6. Return Handled
+    ///   - Mapped slot → `Handled` (defensive no-op);
+    ///   - Unmapped slot → `Err(InvalidParam)` — the analog of C's
+    ///     `assert(region->param.pb_cache)` (mem_cache.c:188): a fault
+    ///     here would fabricate a non-cached page, so the request
+    ///     fail-closes instead.
     fn ev_pagefault(
         &self,
         _proc_endpoint: Endpoint,
         region: &mut crate::region::VirRegion,
-        frames: &mut PageFrames,
+        _frames: &mut PageFrames,
         offset: VirBytes,
         _write: bool,
         _table: &VmProcTable,
         _alloc: &mut dyn PfnAllocator,
         _cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
-        // Step 1: Already mapped → no action needed.
-        // C: "if(ph->ph->phys != MAP_NONE) return OK" (implicit in assert)
         if let Some(slot) = region.get_slot(offset)
             && slot.is_mapped() {
                 return Ok(PagefaultResult::Handled);
             }
 
-        // Step 2-3: Extract cached PFN. pfn==0 means no cached page,
-        // which is a programming error (C: assert(region->param.pb_cache)).
-        let cached_pfn = match &region.param {
-            crate::region::VrParam::PbCache { pfn } => *pfn,
-            _ => return Err(MemTypeError::InvalidParam),
-        };
-        if cached_pfn == 0 {
-            return Err(MemTypeError::InvalidParam);
-        }
-
-        // Step 4: Map the faulting slot to the cached PFN.
-        // C: pb_link(ph, region->param.pb_cache, offset, region)
-        region.map_page(frames, offset, cached_pfn, &MEM_TYPE_CACHE);
-
-        // Step 5: Clear the cached PFN (cache consumed).
-        // C: region->param.pb_cache = NULL
-        if let crate::region::VrParam::PbCache { pfn } = &mut region.param {
-            *pfn = 0;
-        }
-
-        Ok(PagefaultResult::Handled)
+        Err(MemTypeError::InvalidParam)
     }
 
     /// No-op. Cache page refcount is managed by the PFN model.
@@ -963,16 +942,9 @@ impl MemType for CacheMemory {
         Err(MemTypeError::NotSupported)
     }
 
-    /// Clear the cached PFN to prevent dangling references.
-    ///
-    /// Minix3's `mem_type_cache` has no `ev_delete` (NULL) — cache cleanup
-    /// happens in `do_forgetcache`/`rmcache`. In the PFN model, we clear
-    /// the cached PFN so that a stale reference cannot point to a freed page.
-    fn ev_delete(&self, region: &mut crate::region::VirRegion) {
-        if let crate::region::VrParam::PbCache { pfn } = &mut region.param {
-            *pfn = 0;
-        }
-    }
+    // V11/T28: no `ev_delete` override — C's `mem_type_cache.ev_delete`
+    // is NULL (cache cleanup lives in rmcache/the PageCache index). The
+    // former override only cleared the removed `PbCache` param.
 
     /// No-op. Cache regions support low-shrink without special handling.
     fn ev_low_shrink(
@@ -1603,9 +1575,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_pagefault_maps_cached_pfn() {
-        // CacheMemory::ev_pagefault maps the faulting slot to the cached PFN
-        // and clears the cache pointer. Corresponds to C cache_pagefault().
+    fn test_cache_pagefault_unmapped_slot_fails_closed() {
+        // V11/T28: cache regions are fully mapped at creation (eager
+        // MAPCACHE), so a fault on an unmapped slot is a contract
+        // violation — the analog of C's
+        // `assert(region->param.pb_cache)` (mem_cache.c:188) — and the
+        // request fail-closes with InvalidParam instead of fabricating a
+        // non-cached page.
         use crate::region::PfnAllocError;
 
         struct TestAlloc { next: u32 }
@@ -1623,40 +1599,20 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut cache = PageCache::new();
 
-        // Pre-allocate a PFN to simulate a cached page block.
-        // Use pfn=5 to avoid pfn==0 (which means "no cached page").
-        let cached_pfn: u32 = 5;
-        // Initialize the frame's refcount for the cached PFN.
-        if let Some(state) = frames.get_mut(cached_pfn) {
-            state.refcount = 1;
-        }
-
         let mut region = crate::region::VirRegion::new(
             minix_types::VirBytes(0x1000),
             minix_types::VirBytes(0x1000),
             crate::region::VrFlags::empty(),
         );
         region.def_memtype = Some(&MEM_TYPE_CACHE);
-        region.param = crate::region::VrParam::PbCache { pfn: cached_pfn };
 
-        // Page fault at offset 0 — should map to cached_pfn.
         let result = MEM_TYPE_CACHE.ev_pagefault(
             Endpoint(1), &mut region, &mut frames,
             minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
-        assert_eq!(result, Ok(PagefaultResult::Handled));
-
-        // Verify the slot is now mapped to the cached PFN.
-        let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
-        assert!(slot.is_mapped());
-        assert_eq!(slot.pfn(), Some(cached_pfn));
-
-        // Verify the cache pointer was cleared (pfn set to 0).
-        if let crate::region::VrParam::PbCache { pfn } = &region.param {
-            assert_eq!(*pfn, 0, "cached pfn should be cleared after pagefault");
-        } else {
-            panic!("param should still be PbCache variant");
-        }
+        assert_eq!(result, Err(MemTypeError::InvalidParam));
+        assert!(region.get_slot(minix_types::VirBytes(0)).is_none(),
+            "no slot may be fabricated by the failed fault");
     }
 
     #[test]
@@ -1686,7 +1642,6 @@ mod tests {
             crate::region::VrFlags::empty(),
         );
         region.def_memtype = Some(&MEM_TYPE_CACHE);
-        region.param = crate::region::VrParam::PbCache { pfn: 99 };
         region.map_page(&mut frames, minix_types::VirBytes(0), pfn, &MEM_TYPE_CACHE);
 
         let result = MEM_TYPE_CACHE.ev_pagefault(
@@ -1694,46 +1649,6 @@ mod tests {
             minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Ok(PagefaultResult::Handled));
-        // Cache pointer should NOT be cleared (early return, no action taken).
-        if let crate::region::VrParam::PbCache { pfn } = &region.param {
-            assert_eq!(*pfn, 99, "cached pfn should not be cleared when page already mapped");
-        }
-    }
-
-    #[test]
-    fn test_cache_pagefault_zero_pfn() {
-        // pfn==0 in PbCache means no cached page — returns InvalidParam.
-        // C: assert(region->param.pb_cache) would fail.
-        use crate::region::PfnAllocError;
-
-        struct TestAlloc { next: u32 }
-        impl PfnAllocator for TestAlloc {
-            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
-                let pfn = self.next;
-                self.next += 1;
-                Ok(pfn)
-            }
-            fn free_pfn(&mut self, _pfn: u32) {}
-        }
-
-        let table = VmProcTable::get_global();
-        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 8));
-        let mut alloc = TestAlloc { next: 0 };
-        let mut cache = PageCache::new();
-
-        let mut region = crate::region::VirRegion::new(
-            minix_types::VirBytes(0x1000),
-            minix_types::VirBytes(0x1000),
-            crate::region::VrFlags::empty(),
-        );
-        region.def_memtype = Some(&MEM_TYPE_CACHE);
-        region.param = crate::region::VrParam::PbCache { pfn: 0 };
-
-        let result = MEM_TYPE_CACHE.ev_pagefault(
-            Endpoint(1), &mut region, &mut frames,
-            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
-        );
-        assert_eq!(result, Err(MemTypeError::InvalidParam));
     }
 
     #[test]
@@ -1799,11 +1714,11 @@ mod tests {
         MEM_TYPE_CONTIG_ANON.ev_delete(&mut region);
         assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
 
-        // 5. CacheMemory — clears the cached PFN.
+        // 5. CacheMemory — no-op delete (C ev_delete is NULL; cache
+        // cleanup lives in the PageCache index, V11/T28).
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
-        region.param = VrParam::PbCache { pfn: 0x123 };
         MEM_TYPE_CACHE.ev_delete(&mut region);
-        assert!(matches!(region.param, VrParam::PbCache { pfn: 0 }));
+        assert!(matches!(region.param, VrParam::Direct { phys } if phys.0 == 0));
 
         // 6. MappedFile — resets inited + drops the fdref reference.
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());

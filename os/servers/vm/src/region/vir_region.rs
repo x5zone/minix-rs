@@ -53,14 +53,13 @@ impl VrFlags {
 pub(crate) enum VrParam {
     Direct { phys: PhysBytes },
     Shared { ep: i32, vaddr: VirBytes, id: i32 },
-    // V10-P2-1: constructed only by tests today (`dispatch_mapcache`
-    // pre-maps its pages, so the cached-PFN param stays at `Direct{0}`;
-    // C's `do_mapcache` sets `param.pb_cache` transiently per page and
-    // consumes it in `map_pf`). `CacheMemory::ev_pagefault`/`ev_delete`
-    // consume this variant — keep it wired for the setcache pagefault
-    // path; revisit when that path has a production constructor.
-    #[cfg_attr(not(test), allow(dead_code))]
-    PbCache { pfn: u32 },
+    // V11/T28 judgment: C's `param.pb_cache` (mem_cache.c) was a one-shot
+    // mailbox between `do_mapcache`'s loop and `cache_pagefault` — set and
+    // consumed within the same syscall iteration. minix-rs fuses that loop
+    // into `dispatch_mapcache`'s eager `map_page` (the hit PFN goes
+    // directly into `PageSlot::Mapped`), so no cached-PFN param exists and
+    // none is needed. The former test-only `PbCache { pfn }` variant was
+    // plumbing without a driver and was removed.
     File { inited: bool, fdref_id: Option<u32>, offset: u64, clearend: u16 },
 }
 
