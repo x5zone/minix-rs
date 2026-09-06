@@ -285,6 +285,10 @@ Rust 改写遵循"显式扫描器 + `WaitState` 同生同灭 + `Lifecycle` 互�
 
 `do_wait4(caller, pidarg, options, rusage_addr, table, transport) -> WaitOutcome`（`do_wait4` 主扫描 + 三环 + `WNOHANG`/`ECHILD`）+ `wait_test` + `tell_parent` + `tell_tracer` + `cleanup` + `set_rusage_times` 的 `rusage` 填充（`W_EXITCODE`/`W_STOPCODE` 宏 + `sys_datacopy` 占位）。TRACE_STOPPED 环（`forkexit.c:519-531`）2026-09-06 起为真实实现：扫描 `SignalState::trace_mask` 取最低待报告信号位并消费（对应 `sigismember`+`sigdelset`），回复载荷 `W_STOPCODE(i)`、返回 pid；`sigtrace` 为空时与 C 一致落出该环继续 ZOMBIE 环，不虚构停止码（测试 `test_wait4_trace_stopped_reports_lowest_signal_and_consumes_bit` / `test_wait4_trace_stopped_empty_sigtrace_falls_through`）。
 
+**回复载荷的 wire 契约（2026-09-06 D-26 落地）**：wait status 的"最后一跳"是载荷而非 m_type——C 在三处把状态写入 `mp_reply.m_pm_lc_wait4.status`（`forkexit.c:528` TRACE_STOPPED、`707-708` tell_parent、`748-749` tell_tracer），m_type 是子 pid（tag），载荷才是 status（body）。Rust 对应 `minix-types` 新增 `MessPmLcWait4 { status: i32 }`（56 字节，`ipc.h:1774-1779`）与 `m_u.m_pm_lc_wait4` arm；ZOMBIE/TRACE_STOPPED 两环与 `tell_parent`/`tell_tracer` 的 wire 消息均按"m_type=pid + 载荷=status"发出。end-to-end 断言见 `tests/run_once_integration.rs` 的 `wait4_zombie_replies_pid_tag_with_status_payload`。
+
+`do_wait4(caller, pidarg, options, rusage_addr, table, transport) -> WaitOutcome`（`do_wait4` 主扫描 + 三环 + `WNOHANG`/`ECHILD`）+ `wait_test` + `tell_parent` + `tell_tracer` + `cleanup` + `set_rusage_times` 的 `rusage` 填充（`W_EXITCODE`/`W_STOPCODE` 宏 + `sys_datacopy` 占位）。TRACE_STOPPED 环（`forkexit.c:519-531`）2026-09-06 起为真实实现：扫描 `SignalState::trace_mask` 取最低待报告信号位并消费（对应 `sigismember`+`sigdelset`），回复载荷 `W_STOPCODE(i)`、返回 pid；`sigtrace` 为空时与 C 一致落出该环继续 ZOMBIE 环，不虚构停止码（测试 `test_wait4_trace_stopped_reports_lowest_signal_and_consumes_bit` / `test_wait4_trace_stopped_empty_sigtrace_falls_through`）。
+
 ### 4.2 `os/servers/pm/src/mproc/wait.rs`
 
 `WaitState` + `WaitTarget` 枚举 + `is_waiting_for` + `rusage_addr`（`mproc.h:31-32` `mp_wpid/mp_waddr`）。

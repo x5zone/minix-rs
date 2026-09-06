@@ -189,6 +189,8 @@ pub union MessageUnion {
     pub m_lc_pm_exit: MessLcPmExit,
     /// PM: wait4 params (user → PM). C: `mess_lc_pm_wait4` — ipc.h:460-470
     pub m_lc_pm_wait4: MessLcPmWait4,
+    /// PM: wait4 reply (PM → user). C: `mess_pm_lc_wait4` — ipc.h:1774-1779
+    pub m_pm_lc_wait4: MessPmLcWait4,
     /// PM: kill params (user → PM). C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) / 535 (sig) overlay
     pub m_lc_pm_kill: MessLcPmKill,
     /// PM: srv_kill params (RS → PM). C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885
@@ -2565,6 +2567,43 @@ impl Default for MessLcPmWait4 {
     }
 }
 
+/// PM: wait4 reply (PM → user) — `mess_pm_lc_wait4`.
+///
+/// C: `mess_pm_lc_wait4` — ipc.h:1774-1779:
+/// ```c
+/// typedef struct {
+///     int status;                // wait status (W_EXITCODE / W_STOPCODE)
+///     uint8_t padding[52];
+/// } mess_pm_lc_wait4;
+/// ```
+///
+/// Wire layout: `status` @0 (i32), padding @4..56.
+///
+/// # Semantics
+///
+/// C 的 wait4 回复是"tag + typed body"契约的典型：`do_wait4` 把
+/// `W_EXITCODE/W_STOPCODE` 写入 `mp_reply.m_pm_lc_wait4.status`
+///（`forkexit.c:528/707-708/748-749`），把子进程 pid 作为返回值交给
+/// 主循环 `reply(parent, pid)`（`main.c:106`）——m_type 是 tag（pid），
+/// 该载荷才是 wait status 本体。libc 的 wait4 包装按此布局读取。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessPmLcWait4 {
+    /// Wait status. C: `int status` (payload offset 0) — `W_EXITCODE`/`W_STOPCODE`.
+    pub status: i32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 52],
+}
+
+impl Default for MessPmLcWait4 {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            _padding: [0; 52],
+        }
+    }
+}
+
 /// PM: kill params (user → PM) — `mess_lc_pm_kill`.
 ///
 /// C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) overlay, used by `do_kill` via `m_lc_pm_sig` union overlay.
@@ -3278,6 +3317,19 @@ mod tests {
     use core::mem::size_of;
 
     #[test]
+    fn test_pm_wait4_message_layouts() {
+        // C: ipc.h `_ASSERT_MSG_SIZE` — request 与 reply 载荷均为 56 字节；
+        // status/pid 字段偏移是 libc wait4 包装的读取契约。
+        assert_eq!(size_of::<MessLcPmWait4>(), 56);
+        assert_eq!(size_of::<MessPmLcWait4>(), 56);
+        // 字段序固定 C 布局：请求 pid@0/options@4/addr@8；回复 status@0。
+        let req = MessLcPmWait4 { pid: -1, options: 1, addr: 0x7000, ..Default::default() };
+        assert_eq!(req.pid, -1);
+        assert_eq!(req.options, 1);
+        let reply = MessPmLcWait4 { status: 0o200 | 6, ..Default::default() };
+        assert_eq!(reply.status, 0o200 | 6);
+    }
+
     fn test_sched_message_layouts() {
         // C: ipc.h `_ASSERT_MSG_SIZE` — every payload is 56 bytes.
         assert_eq!(size_of::<MessLsysSchedSchedulingStart>(), 56);

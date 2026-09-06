@@ -290,7 +290,7 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 | D-23 | ~~`signal.rs:360-362`~~ | ~~SIGVTALRM/`check_vtimer` stub~~ **✅ 已修复**（2026-09-06，Fix #14：process_ksig 接真实 check_vtimer（VTimerCtl 显式接缝）；连带修复 `signo == 12` 应为 26 的真 bug——旧分支从未命中） | 14-itimer.md | ~~虚拟计时器 trait 落地~~ PM 侧达成（VTimerCtl 生产实现 = 内核 sys_vtimer 挂 E6） |
 | D-24 | ~~`mproc/fork.rs:222-228`~~ | ~~`getticks()` 返回 0~~ **✅ 已修复**（2026-09-06，Fix #15：getticks 桩删除；`fork_from`/`srv_fork_from` 显式注入 `started: Clock`，`fork_child_from_parent` 经 ClockSource 计算；活路径零值收敛为带 E6 注释的显式 seam） | 14-itimer.md / 内核 sys_times | ~~内核 uptime 面~~ 结构达成（真实 uptime 挂 E6） |
 | D-25 | `event.rs` `PmEventServices::resume` | `KernelResume` 生产适配器暂返回 OK（"内核无停止态可撤销"过渡契约），真实 `sys_resume`（`signal.c:282`）待内核调用面 | 13-signal-flow.md / edge E6 | minix-sys SYS_* 面（E6）；代码注释即验证锚点 |
-| D-26 | `wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷 | wait4 回复的状态码载荷建模缺失：C 写 `mp_reply.m_pm_lc_wait4.status`（`ipc.h:1774-1779` `mess_pm_lc_wait4`），minix-types 无该 union 成员，现经 `ipc.reply` 机制只承载 m_type——`w_exitcode`/`w_stopcode` 到 wire 的最后一跳待补 | 10-pm-wait.md / edge E7 | minix-types 增 `MessPmLcWait4` + `m_pm_lc_wait4` 成员（E7 wire 系统化的一部分）；两环代码注释即锚点 |
+| D-26 | ~~`wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷~~ | ~~wait4 回复的状态码载荷建模缺失~~ **✅ 已修复**（2026-09-06，Fix #22：`MessPmLcWait4` + `m_pm_lc_wait4` arm 落地 minix-types；ZOMBIE/TRACE_STOPPED/tell_parent/tell_tracer 四处 wire 按"m_type=pid + 载荷=status"发出；E7 首切片） | 10-pm-wait.md / edge E7 | ~~minix-types 增成员~~ 已达成 |
 
 不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
 
@@ -717,3 +717,22 @@ plan.md §5.4（`plan.md:282-283`）的处理是"20 标注为 cfg feature，WONT
 - 依赖 crate 残留（不在 pm 范围）：minix-sys 4 条（collapsible-if 3 + MountTable Default 1）、minix-types 1 条（large_enum_variant，02-stage-vm 已判定 WONTFIX）
 
 **Docs**：本文件 §0/标题标注。
+
+### ✅ Fix #22: D-26 — wait4 回复载荷的 wire 最后一跳（2026-09-06）
+
+**File(s)**：
+- `os/libs/minix-types/src/ipc/message.rs`（新增 `MessPmLcWait4 { status: i32, _padding: [u8; 52] }` + `m_pm_lc_wait4` union arm + 布局断言测试——**E7 首切片**，纯新增零破坏）
+- `os/servers/pm/src/wait.rs`（TRACE_STOPPED 环 / ZOMBIE 环按载荷契约重写；ZOMBIE 环内联副本收敛到 `tell_parent`，消除载荷 bug 的重复源头）
+- `os/servers/pm/src/exit.rs`（`tell_parent`/`tell_tracer`/`check_parent`/`zombify`/`tracer_died`/`disinherit` 沿调用链穿 transport，wire 在 C 的原位发出；`w_exitcode` 提为 `pub(crate)` 复用）
+- `tests/run_once_integration.rs`（+1 端到端：tag/载荷分解断言）
+
+**Before/After**：修复前 wait status 只进了 `ipc.reply` 的 m_type 占位，wire 消息的载荷全零——libc 的 wait4 按布局读取时永远拿到 0。设计选型：(a) 按 C 精确补 typed 载荷（已选——libc wait4 包装的读取契约）；(b) 复用 `m_m1.m1i1` 当状态槽（伪造 wire 契约，translate 陷阱）；(c) 一次做完 E7 全量（违反一轮一条）。**结构收益**：ZOMBIE 环曾内联复制 tell_parent 的七步逻辑（载荷 bug 正是在这份副本里）——收敛后单一事实源。Linux 对照：内核 wait4 由 `copy_to_user` 写类型化 status/rusage；Redox scheme 回复同为 typed payload——"tag(m_type) + typed body(载荷)"是回复消息的通用契约，m_type 兼载 body 是对契约的破坏。
+
+**Verified**：
+- `cargo test -p minix-pm`：341 → **342 lib passed**（D-20 断言迁移到载荷；+1 tell_parent 异步 tag/载荷断言）+ **7 integration**（+1 wait4 僵尸回收：tag=pid、载荷=W_EXITCODE、ToldParent）
+- `cargo test -p minix-types --lib`：169 → **170 passed**（+wait4 布局断言）
+- `grep -n "m_type: w_status\|m_type: status" os/servers/pm/src/wait.rs`：零命中（m_type 兼载状态的历史清除）
+
+**Docs**：`10-pm-wait.md` §4.1（wire 契约节 + 测试表）；`edge_todo.md` E7 进度注（首切片）；本文件 §6 D-26 行。
+
+**未做（DEFERRED 论证）**：E7 的其余 wire 族（47 调用系统化）与 D-21 的 rusage 载荷（依赖 SYS_TIMES，E6）——各自保留登记。

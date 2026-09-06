@@ -8,7 +8,7 @@
 //! + `Guardianship` (`mproc/guardianship.rs`) + `BlockState`.
 //!   Single-threaded event loop — `&mut ProcTable` without `Arc`/`Mutex`.
 
-use minix_types::{Endpoint, UserSlot, VfsCall};
+use minix_types::{Endpoint, Message, UserSlot, VfsCall};
 use crate::ipc::ReplyIntent;
 use crate::mproc::{ProcTable, Lifecycle};
 
@@ -174,11 +174,11 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
 
     // ---- 11. Zombify if !dump_core (384-385) ----
     if !dump_core {
-        zombify(table, slot);
+        zombify(table, slot, transport);
     }
 
     // ---- 12. Disinherit loop (388-409) ----
-    disinherit(table, slot);
+    disinherit(table, slot, transport);
 
     // ---- 13. SIGHUP for session leader (412) ----
     if procgrp != 0 {
@@ -211,7 +211,7 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable,
                 // For normal path, already zombified, but we check again for safety
                 // In Rust we only zombify if currently Exiting
                 if matches!(lc, Lifecycle::Exiting { .. }) {
-                    zombify(table, slot);
+                    zombify(table, slot, transport);
                 }
             }
         }
@@ -255,7 +255,11 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(table: &mut ProcTable,
 /// - `TRACE_ZOMBIE|ZOMBIE` already → panic
 /// - `tracer != NO_TRACER && tracer != parent` → `TRACE_ZOMBIE` else `ZOMBIE`
 /// - `!wait_test(tracer) → return` else `tell_tracer` + `check_parent(FALSE)`
-pub(crate) fn zombify(table: &mut ProcTable, slot: UserSlot) {
+pub(crate) fn zombify<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    slot: UserSlot,
+    transport: &mut T,
+) {
     let lc = table.procs[slot.get()].state.lifecycle;
     if matches!(lc, Lifecycle::TraceZombie { .. } | Lifecycle::Zombie { .. }) {
         panic!("zombify: process was already a zombie");
@@ -274,20 +278,25 @@ pub(crate) fn zombify(table: &mut ProcTable, slot: UserSlot) {
             table.procs[slot.get()].state.lifecycle = Lifecycle::TraceZombie { exit_code, sig_status };
             // Do not send SIGCHLD to tracer (forkexit.c:611-614)
             if wait_test(table, tracer_slot, slot) {
-                tell_tracer(table, slot);
+                tell_tracer(table, slot, transport);
             }
             // check_parent will be called after tell_tracer or directly
-            check_parent(table, slot, false);
+            check_parent(table, slot, false, transport);
             return;
         }
     table.procs[slot.get()].state.lifecycle = Lifecycle::Zombie { exit_code, sig_status };
-    check_parent(table, slot, false);
+    check_parent(table, slot, false, transport);
 }
 
 /// Check if parent is waiting and tell or SIGCHLD (`forkexit.c:626-665`).
 ///
 /// `try_cleanup` saves ordering in exit_proc/exit_restart.
-pub(crate) fn check_parent(table: &mut ProcTable, child_slot: UserSlot, try_cleanup: bool) {
+pub(crate) fn check_parent<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    child_slot: UserSlot,
+    try_cleanup: bool,
+    transport: &mut T,
+) {
     let parent_slot = table.procs[child_slot.get()].state.guardianship.parent();
     if parent_slot.get() >= table.procs.len() {
         return;
@@ -298,7 +307,7 @@ pub(crate) fn check_parent(table: &mut ProcTable, child_slot: UserSlot, try_clea
         return;
     }
     if wait_test(table, parent_slot, child_slot) {
-        let waited = tell_parent(table, child_slot);
+        let waited = tell_parent(table, child_slot, transport);
         let mut try_cleanup = try_cleanup;
         if !waited {
             try_cleanup = false;
@@ -313,7 +322,11 @@ pub(crate) fn check_parent(table: &mut ProcTable, child_slot: UserSlot, try_clea
 }
 
 /// Tracer died (`forkexit.c:759-790`).
-pub fn tracer_died(table: &mut ProcTable, child_slot: UserSlot) {
+pub fn tracer_died<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    child_slot: UserSlot,
+    transport: &mut T,
+) {
     let old = table.procs[child_slot.get()].state.guardianship.clone();
     table.procs[child_slot.get()].state.guardianship = match old {
         crate::mproc::Guardianship::Traced { parent, .. } => crate::mproc::Guardianship::Normal { parent },
@@ -333,7 +346,7 @@ pub fn tracer_died(table: &mut ProcTable, child_slot: UserSlot) {
     ) {
         let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap();
         table.procs[child_slot.get()].state.lifecycle = Lifecycle::Zombie { exit_code: ec, sig_status: ss };
-        check_parent(table, child_slot, true);
+        check_parent(table, child_slot, true, transport);
     }
 }
 
@@ -371,7 +384,11 @@ fn wait_test(table: &ProcTable, parent_slot: UserSlot, child_slot: UserSlot) -> 
 /// Simplified for 09: `sys_datacopy` of rusage (omitted) + `reply(parent, pid)` +
 /// `WAITING` cleared + `ZOMBIE→TOLD_PARENT`.
 /// Returns `true` if wait succeeded (for check_parent try_cleanup).
-fn tell_parent(table: &mut ProcTable, child_slot: UserSlot) -> bool {
+pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    child_slot: UserSlot,
+    transport: &mut T,
+) -> bool {
     let parent_slot = table.procs[child_slot.get()].state.guardianship.parent();
     if parent_slot.get() >= table.procs.len() {
         return false;
@@ -379,13 +396,20 @@ fn tell_parent(table: &mut ProcTable, child_slot: UserSlot) -> bool {
     let child_pid = table.procs[child_slot.get()].identity.id.pid;
     // In C: `sys_datacopy` of rusage may fail → `reply(parent, errno)` + return FALSE
     // For 09 we assume success (no rusage addr)
-    let _ = child_pid;
 
-    // Simulate reply(parent, pid) — in real PM: `parent->mp_reply.m_pm_lc_wait4.status = W_EXITCODE`
-    // and `reply(parent_slot, pid)`. For test we just clear WAITING.
+    // C: forkexit.c:707-709 — 状态写 mp_reply.m_pm_lc_wait4.status（载荷，
+    // D-26 wire 契约），pid 作返回值走 reply(parent, pid)。
+    let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap_or((0, 0));
+    let mut reply_msg = Message {
+        m_type: child_pid,
+        ..Default::default()
+    };
+    reply_msg.m_u.m_pm_lc_wait4.status = crate::wait::w_exitcode(ec as u8 as i32, ss as u8 as i32);
+    let parent_ep = table.procs[parent_slot.get()].endpoint();
+    let _ = transport.send(parent_ep, &reply_msg);
+
     table.procs[parent_slot.get()].state.wait.waiting = false;
     // ZOMBIE → TOLD_PARENT
-    let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap_or((0, 0));
     table.procs[child_slot.get()].state.lifecycle = Lifecycle::ToldParent { exit_code: ec, sig_status: ss };
     // Accumulate child times at parent (forkexit.c:722-723)
     let child_utime = table.procs[child_slot.get()].resources.child_utime;
@@ -397,18 +421,31 @@ fn tell_parent(table: &mut ProcTable, child_slot: UserSlot) -> bool {
 }
 
 /// Tell tracer: `tell_tracer` (`forkexit.c:732-754`).
-pub(crate) fn tell_tracer(table: &mut ProcTable, child_slot: UserSlot) {
+pub(crate) fn tell_tracer<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    child_slot: UserSlot,
+    transport: &mut T,
+) {
     let tracer_slot = table.procs[child_slot.get()]
         .state
         .guardianship
         .tracer()
         .expect("tracer must exist");
     let child_pid = table.procs[child_slot.get()].identity.id.pid;
-    let _ = child_pid;
-    // In C: `tracer->mp_reply... = W_EXITCODE` + `reply(tracer, pid)` + `WAITING` cleared
+    // C: forkexit.c:748-749 — `tracer->mp_reply.m_pm_lc_wait4.status =
+    // W_EXITCODE(ec, sigstatus & 0377)` 后 `reply(tracer, pid)`（D-26 载荷契约）。
+    let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap();
+    let mut reply_msg = Message {
+        m_type: child_pid,
+        ..Default::default()
+    };
+    reply_msg.m_u.m_pm_lc_wait4.status =
+        crate::wait::w_exitcode(ec as u8 as i32, ss as u8 as i32 & 0o377);
+    let tracer_ep = table.procs[tracer_slot.get()].endpoint();
+    let _ = transport.send(tracer_ep, &reply_msg);
+
     table.procs[tracer_slot.get()].state.wait.waiting = false;
     // TRACE_ZOMBIE → ZOMBIE (now zombie to parent)
-    let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap();
     table.procs[child_slot.get()].state.lifecycle = Lifecycle::Zombie { exit_code: ec, sig_status: ss };
 }
 
@@ -417,7 +454,11 @@ pub(crate) fn tell_tracer(table: &mut ProcTable, child_slot: UserSlot) {
 /// - `tracer == proc_nr → tracer_died`
 /// - `parent == proc_nr → parent = INIT_PROC_NR + VFS_CALL→NEW_PARENT + ZOMBIE→check_parent`
 /// - `procgrp !=0 → SIGHUP` (session leader, 412)
-fn disinherit(table: &mut ProcTable, exiting_slot: UserSlot) {
+fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    exiting_slot: UserSlot,
+    transport: &mut T,
+) {
     let proc_nr = exiting_slot.get();
     // Collect affected slots first to avoid borrow conflicts
     let mut to_adopt = Vec::new();
@@ -434,7 +475,7 @@ fn disinherit(table: &mut ProcTable, exiting_slot: UserSlot) {
         }
     }
     for idx in tracer_died_slots {
-        tracer_died(table, UserSlot::new(idx));
+        tracer_died(table, UserSlot::new(idx), transport);
     }
     for idx in to_adopt {
         let child_slot = UserSlot::new(idx);
@@ -471,7 +512,7 @@ fn disinherit(table: &mut ProcTable, exiting_slot: UserSlot) {
             table.procs[idx].state.lifecycle,
             Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }
         ) {
-            check_parent(table, child_slot, true);
+            check_parent(table, child_slot, true, transport);
         }
     }
     // SIGHUP for session leader (procgrp !=0)
@@ -547,7 +588,8 @@ mod tests {
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].state.wait.waiting = false;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        zombify(&mut table, UserSlot::new(5));
+        let mut t = crate::ipc::TestIpcTransport::default();
+        zombify(&mut table, UserSlot::new(5), &mut t);
         assert!(matches!(
             table.procs[5].state.lifecycle,
             Lifecycle::TraceZombie { .. }
@@ -564,7 +606,8 @@ mod tests {
         table.procs[11].state.guardianship = Guardianship::Normal { parent: UserSlot::new(10) };
         table.procs[11].state.block.ipc_blocked = Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
         table.procs[10].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
-        disinherit(&mut table, UserSlot::new(10));
+        let mut t = crate::ipc::TestIpcTransport::default();
+        disinherit(&mut table, UserSlot::new(10), &mut t);
         assert_eq!(table.procs[11].state.guardianship.parent(), UserSlot::new(11));
         assert!(matches!(
             table.procs[11].state.block.ipc_blocked,

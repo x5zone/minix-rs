@@ -12,7 +12,7 @@ use crate::mproc::{ProcTable, Lifecycle, WaitTarget};
 fn w_stopcode(sig: i32) -> i32 {
     (sig << 8) | 0x7F
 }
-fn w_exitcode(exit: i32, sig: i32) -> i32 {
+pub(crate) fn w_exitcode(exit: i32, sig: i32) -> i32 {
     (exit << 8) | sig
 }
 
@@ -88,8 +88,8 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
         let proc = &table.procs[idx];
         if proc.state.guardianship.tracer() == Some(caller) && matches!(proc.state.lifecycle, Lifecycle::TraceZombie { .. }) {
             // 512-517: TRACE_ZOMBIE → tell_tracer + check_parent + SUSPEND
-            crate::exit::tell_tracer(table, UserSlot::new(idx));
-            crate::exit::check_parent(table, UserSlot::new(idx), true);
+            crate::exit::tell_tracer(table, UserSlot::new(idx), transport);
+            crate::exit::check_parent(table, UserSlot::new(idx), true, transport);
             return ReplyIntent::ReplyLater;
         }
     }
@@ -106,13 +106,13 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             if let Some(signo) = reported {
                 table.procs[idx].resources.signals.trace_mask &= !(1u64 << (signo - 1));
                 let status = w_stopcode(signo);
-                // C: mp->mp_reply.m_pm_lc_wait4.status = W_STOPCODE(i)（528）
-                // 后 reply(parent, pid)——Rust 把状态放入 caller 的回复缓冲，
-                // 主循环 reply() 复用（init.rs reply 的 ipc.reply 优先）。
-                table.procs[caller.get()].ipc.reply = Some(Message {
-                    m_type: status,
-                    ..Default::default()
-                });
+                // C: forkexit.c:524-531 — mp_reply.m_pm_lc_wait4.status =
+                // W_STOPCODE(i)（载荷，D-26 wire 契约），返回值 pid 作 m_type；
+                // caller 的回复缓冲供挂起后异步回复路径（check_parent →
+                // tell_parent）复用。
+                let mut reply = Message::default();
+                reply.m_u.m_pm_lc_wait4.status = status;
+                table.procs[caller.get()].ipc.reply = Some(reply);
                 return ReplyIntent::Reply(table.procs[idx].identity.id.pid);
             }
         }
@@ -120,36 +120,15 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
     for &idx in &candidates {
         let proc = &table.procs[idx];
         if proc.state.guardianship.parent() == caller && matches!(proc.state.lifecycle, Lifecycle::Zombie { .. }) {
-            // 537-545: ZOMBIE → tell_parent + cleanup if not VFS|EVENT
+            // 537-545: ZOMBIE → tell_parent + cleanup if not VFS|EVENT。
+            // tell_parent（exit.rs，D-26 wire 契约）负责 reply(parent, pid)
+            // + 载荷 W_EXITCODE + WAITING 清 + TOLD_PARENT + 时间累计；
+            // 本环只补 cleanup（VFS|EVENT 挂起时延迟到 reply 之后）。
+            // [DEFERRED: D-21] sys_datacopy(rusage)——内核 CPU 时间读取需
+            // SYS_TIMES（edge E6）+ E1；C 侧自身仅填 utime/stime。
             let child_slot = UserSlot::new(idx);
-            let (ec, ss) = table.procs[child_slot.get()].state.lifecycle.exit_code().unwrap_or((0, 0));
-            let child_pid = table.procs[child_slot.get()].identity.id.pid;
-            // [DEFERRED: D-21] sys_datacopy(rusage)——内核 CPU 时间读取需 SYS_TIMES（edge E6）+ E1；C 侧自身仅填 utime/stime（utility.c:92 TODO），范围跟随 C
-            let _ = (rusage_addr, ss);
-            // W_EXITCODE + reply(parent, pid) + WAITING clear + ZOMBIE→TOLD_PARENT + time accumulate
-            // 组合按字节语义（C: W_EXITCODE(status,sig) = status<<8|sig）：
-            // i8 经 u8 转换避免符号扩展——退出码 0xFF（exit(-1)）与
-            // WCOREFLAG（bit7，D-07）都必须以无符号字节进入 wait status。
-            let w_status = w_exitcode(ec as u8 as i32, ss as u8 as i32);
-            // Prepare parent's reply buffer (like C's mp_reply)
-            table.procs[caller.get()].ipc.reply = Some(Message {
-                m_type: w_status,
-                ..Default::default()
-            });
-            // Send reply to parent (like C's reply(parent, pid) inside tell_parent)
-            let parent_ep = table.procs[caller.get()].endpoint();
-            let reply_msg = Message {
-                m_type: child_pid,
-                m_u: table.procs[caller.get()].ipc.reply.take().unwrap_or_default().m_u,
-                ..Default::default()
-            };
-            let _ = transport.send(parent_ep, &reply_msg);
-            table.procs[caller.get()].state.wait.waiting = false;
-            table.procs[child_slot.get()].state.lifecycle = Lifecycle::ToldParent { exit_code: ec, sig_status: ss };
-            let child_utime = table.procs[child_slot.get()].resources.child_utime;
-            let child_stime = table.procs[child_slot.get()].resources.child_stime;
-            table.procs[caller.get()].resources.child_utime += child_utime;
-            table.procs[caller.get()].resources.child_stime += child_stime;
+            let _ = rusage_addr;
+            crate::exit::tell_parent(table, child_slot, transport);
             if !is_vfs_or_event_blocked(table, child_slot) {
                 crate::exit::cleanup(table, child_slot);
             }
@@ -287,8 +266,13 @@ mod tests {
         let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport);
 
         assert_eq!(intent, ReplyIntent::Reply(100)); // 子进程 pid
+        // D-26 wire 契约：状态在 m_pm_lc_wait4.status 载荷（C forkexit.c:528）
         let reply = table.procs[0].ipc.reply.expect("reply buffer must carry W_STOPCODE");
-        assert_eq!(reply.m_type, w_stopcode(5), "lowest pending signal first");
+        assert_eq!(
+            unsafe { reply.m_u.m_pm_lc_wait4.status },
+            w_stopcode(5),
+            "lowest pending signal first (payload)"
+        );
         assert_eq!(
             table.procs[5].resources.signals.trace_mask,
             1u64 << (17 - 1),
@@ -311,6 +295,41 @@ mod tests {
 
         assert_eq!(intent, ReplyIntent::ReplyLater);
         assert!(table.procs[0].ipc.reply.is_none(), "no fabricated stop code");
+    }
+
+    #[test]
+    fn test_tell_parent_async_writes_status_payload() {
+        // D-26 异步路径：父未 wait → 子保持 Zombie；父随后 wait（SUSPEND）
+        // 由 zombify→check_parent→tell_parent 补发 reply(parent, pid) +
+        // m_pm_lc_wait4.status 载荷（forkexit.c:707-709）。
+        let mut table = ProcTable::new();
+        table.procs[0].state.lifecycle = Lifecycle::Running;
+        table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
+        table.procs[0].identity.id.pid = 50;
+        // 僵尸子：exit(7)（无信号）。
+        table.procs[5].state.lifecycle = Lifecycle::Zombie { exit_code: 7, sig_status: 0 };
+        table.procs[5].identity.id.pid = 100;
+        table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
+        table.procs[5].state.guardianship = Guardianship::Normal { parent: UserSlot::new(0) };
+        table.procs[5].state.wait.waiting = false;
+
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let told = crate::exit::tell_parent(&mut table, UserSlot::new(5), &mut transport);
+
+        assert!(told);
+        let sent = transport.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(sent[0].1.m_type, 100, "m_type = child pid (tag)");
+        assert_eq!(
+            unsafe { sent[0].1.m_u.m_pm_lc_wait4.status },
+            w_exitcode(7, 0),
+            "payload = W_EXITCODE (body)"
+        );
+        assert!(matches!(
+            table.procs[5].state.lifecycle,
+            Lifecycle::ToldParent { .. }
+        ));
     }
 
     #[test]
@@ -345,10 +364,17 @@ mod tests {
             ref other => panic!("unexpected lifecycle {:?}", other),
         }
         assert!(!table.procs[0].state.wait.waiting, "WAITING must clear");
-        // wire：父收到 m_type = 子 pid 的回复。
-        assert!(transport
+        // D-26 wire 契约：m_type = 子 pid，载荷 m_pm_lc_wait4.status =
+        // W_EXITCODE(0, 0o200|6)——状态在载荷而非 m_type。
+        let wire = transport
             .sent()
             .iter()
-            .any(|(ep, m)| *ep == Endpoint::from_generation_slot(1, 0) && m.m_type == 100));
+            .find(|(ep, m)| *ep == Endpoint::from_generation_slot(1, 0) && m.m_type == 100)
+            .expect("reply(parent, pid) must be sent");
+        assert_eq!(
+            unsafe { wire.1.m_u.m_pm_lc_wait4.status },
+            0o200 | 6,
+            "WCOREFLAG must travel in the typed payload"
+        );
     }
 }

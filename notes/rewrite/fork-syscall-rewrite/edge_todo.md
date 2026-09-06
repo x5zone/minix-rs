@@ -156,6 +156,8 @@
 
 **解锁**：04-stage-pm/todo.md P1-1（每臂解码）/ P1-4 / P2-3 的实施前提；未来 libc/commands 侧 PM 调用发起方的常量消费。
 
+> **进度（2026-09-06）**：首个切片已落地——`MessPmLcWait4 { status }` + `m_pm_lc_wait4` arm（`message.rs`，56 字节断言 `test_pm_wait4_message_layouts`），wait4 回复载荷契约（04-stage-pm/todo.md D-26/Fix #22）闭环；其余 wire 族照本切片的风格推进。
+
 ---
 
 ## E8 minix-sys SCHED 所需内核调用真实通电（= 06-stage-sched/todo.md P1-3 抽取，2026-09-06）

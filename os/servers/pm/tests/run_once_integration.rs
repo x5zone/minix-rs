@@ -116,6 +116,44 @@ fn exit_request_never_replies_and_zombifies_child() {
 }
 
 #[test]
+fn wait4_zombie_replies_pid_tag_with_status_payload() {
+    // D-26 端到端：僵尸子进程 + 等待中的父 → ZOMBIE 环 tell_parent →
+    // wire 回复 m_type = 子 pid（tag）、载荷 m_pm_lc_wait4.status =
+    // W_EXITCODE（body）。libc 的 wait4 按此布局读取（forkexit.c:707-709）。
+    let mut srv = server();
+    let parent_ep = seed_running(&mut srv, 5, 100);
+    // 僵尸子：exit(7)（W_EXITCODE(7,0) = 0x0700）。
+    let table = srv.table_mut();
+    table.procs[6].state.lifecycle = Lifecycle::Zombie { exit_code: 7, sig_status: 0 };
+    table.procs[6].identity.id.pid = 101;
+    table.procs[6].identity.endpoint = Endpoint::from_generation_slot(1, 6);
+    table.procs[6].state.guardianship = minix_pm::mproc::Guardianship::Normal {
+        parent: minix_types::UserSlot::new(5),
+    };
+    table.procs[5].state.wait.waiting = true;
+    table.procs[5].state.wait.target = minix_pm::mproc::WaitTarget::AnyChild;
+
+    let mut wait_msg = request(3, parent_ep); // PM_WAIT4 = 3
+    wait_msg.m_u.m_lc_pm_wait4.pid = -1;
+    srv.transport_mut()
+        .queue_receive(wait_msg, IpcStatus::default());
+
+    assert_eq!(srv.run_once(), RunStep::Handled);
+
+    let sent = srv.transport().sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, parent_ep);
+    assert_eq!(sent[0].1.m_type, 101, "tag = child pid");
+    let status = unsafe { sent[0].1.m_u.m_pm_lc_wait4.status };
+    assert_eq!(status, 7 << 8, "body = W_EXITCODE(7, 0)");
+    // 僵尸已被回收为 TOLD_PARENT。
+    assert!(matches!(
+        srv.table().procs[6].state.lifecycle,
+        Lifecycle::ToldParent { .. }
+    ));
+}
+
+#[test]
 fn wait4_without_children_replies_echild() {
     // C: do_wait4 尾段（forkexit.c:550-563）——无匹配子进程 → ECHILD，
     // 与 WNOHANG 无关。
