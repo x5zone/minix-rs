@@ -48,7 +48,7 @@
 | T30 | 5 | 分配漏斗回收-重试（alloc_pfn_reclaiming；C alloc_mem do-while 语义） | "24-page-cache" 停泊项 | ✅ 2026-09-07（todo.md §16 Fix #50；三矩阵 484/501/484） |
 | T31 | 5 | 缺页计数生产者接线 + InfoUsage 槽位判定（Getrusage 为出口，VM_INFO wire C-parity） | vmproc_handle.rs:305 | ✅ 2026-09-07（todo.md §16 Fix #51；新登记 G-V12-6） |
 | T32 | 6 | VFS transid 路径 C-parity 修复（真 bug：clean_type 门拒绝真实 transid 消息） | vm_server.rs:1227 | ✅ 2026-09-07（todo.md §16 Fix #52；三矩阵 486/503/486） |
-| T33 | 6 | fork eager CoW（msgaddr 若缺 kernel 对端 → 登记 E-FORKMSG） | T11 收尾 | ⬜ |
+| T33 | 6 | fork eager CoW——VM 侧完成（借用两相 + msgaddr 经 gateway Option）；kernel 缺 msgaddr 出参 → **E-FORKMSG 登记** | T11 收尾 | ✅ 2026-09-07（todo.md §16 Fix #53；三矩阵 488/505/488） |
 | T34 | 6 | MemType 收敛设计与实施 | V9-P2-3 | ⬜ |
 | T35 | 7 | 剩余判定批次（WouldBlock/heap shrink/vm_self_query/force_clear/VmProcIter/as_buddy/用量查询/bitmap perf/cow_resolve_region/acl mask/G-V12-4） | todo.md §16 | ⬜ |
 | T36 | 7 | 收尾回归：todo/edge 对账 + checklist §8 刷新 + Gate E + 四矩阵全绿 | 收敛审计 | ⬜ |
@@ -164,6 +164,14 @@
 **依赖**：minix3 libc 源码参照（crt0 约定）；与 E1/E2 无序（frame 构造纯 VM 内）。
 
 ---
+
+## E-FORKMSG kernel sys_fork 应答补 msgaddr 出参（= 02-stage-vm T33 余件，2026-09-07 登记）
+
+**问题**：C 的 `sys_fork` 有第五个出参 `msgaddr`（fork.c:90，内核自 `p_delivermsg_vir` 报告 PM 的 fork 消息在父地址空间的位置）；`do_fork` 用它对父子两侧的交付消息缓冲做 eager CoW（fork.c:100-108，`handle_memory_once` ×2），防止内核写 fork 应答时撞上 VM 单线程死锁。minix-rs kernel 的 `dispatch_fork`（syscall_process.rs:122-215）只回 child endpoint，VM 侧 `do_fork` 的 eager-CoW 相以 `fork_msgaddr == None` 门控跳过（fork.rs，V11/T33）。
+
+**跨 stage 文件**：`os/kernel/src/syscall_process.rs`（dispatch_fork 应答补 msgaddr——来源 `caller.p_delivermsg` 等价物）、`os/libs/minix-sys` 或 reply wire（KcallResult/`m_krn_lsys_sys_fork` 加字段）、`os/servers/vm/src/kernel_gateway.rs`（`sys_fork` 的 `None` 换真值，VM 侧零改动——消费代码已就位并有 mock 测试）。
+
+**解锁**：T33 的 eager-CoW 相在真实硬件上生效；E5(a) PM↔VM fork 联调的正确性前提（内核写应答不撞 CoW 死锁）。
 
 ## E5 端到端联调测试包
 

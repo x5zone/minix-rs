@@ -188,7 +188,7 @@ pub(crate) fn do_fork(
     gateway: &mut dyn crate::kernel_gateway::KernelGateway,
     table: &VmProcTable,
     frames: &mut PageFrames,
-    _pfn_alloc: &mut dyn PfnAllocator,
+    pfn_alloc: &mut dyn PfnAllocator,
     parent_endpoint: Endpoint,
     child_slot: UserSlot,
 ) -> Result<Endpoint, VmForkError> {
@@ -196,7 +196,7 @@ pub(crate) fn do_fork(
         .vm_isokendpt(parent_endpoint)
         .map_err(|_| VmForkError::InvalidEndpoint)?;
 
-    let parent = table
+    let mut parent = table
         .get_active(parent_slot)
         .ok_or(VmForkError::InvalidSlot)?;
 
@@ -328,78 +328,59 @@ pub(crate) fn do_fork(
     // (kernel_gateway.rs) and maps failure to a fail-closed error reply:
     // pre-E1 the trap stub answers -EIO while the kernel state is
     // untouched, so the error is exact rather than a fabricated endpoint.
-    let child_endpoint = gateway
+    // C: fork.c:57-63 — sys_fork commits the child in the kernel and
+    // returns its endpoint plus the deliver-message buffer address
+    // (`msgaddr`, the fifth output parameter, fork.c:90). minix-rs routes
+    // the call through the gateway: kernel-call failure maps to a
+    // fail-closed error reply (pre-E1 the trap stub answers -EIO while
+    // kernel state is untouched); the C msgaddr output has no reply field
+    // in the minix-rs kernel yet (edge E-FORKMSG), so the gateway hands
+    // back `None` for it and the eager-CoW phase below is skipped.
+    let (child_endpoint, fork_msgaddr) = gateway
         .sys_fork(parent.endpoint(), child.slot())
         .map_err(VmForkError::KernelCall)?;
     child.set_endpoint(child_endpoint);
 
-    // C: fork.c:97-108 — pre-fault message buffer pages for child and parent.
-    // After sys_fork, the kernel writes the fork reply to both the parent's
-    // and child's message buffers. If these pages are CoW (read-only), the
-    // write would trigger a page fault, which would deadlock because VM is
-    // single-threaded. handle_memory_once resolves CoW eagerly.
+    // C: fork.c:100-108 — pre-fault the deliver-message buffer for child
+    // and parent (in that order). After sys_fork both sides' buffer pages
+    // are CoW-shared (refcount 2, read-only PTEs); the kernel is about to
+    // write the fork reply into both, and a write fault here would hit the
+    // VM single-threaded event loop. `handle_memory_once(write)` resolves
+    // the CoW eagerly, leaving each side a private page.
     //
-    // C code:
-    //   vir = msgaddr;
-    //   handle_memory_once(vmc, vir, sizeof(message), 1)  // child
-    //   handle_memory_once(vmp, vir, sizeof(message), 1)  // parent
+    // C panics on failure; minix-rs propagates fail-closed (same
+    // post-commit posture as the sys_fork error above).
     //
-    // Note: In Minix3, msgaddr is sys_fork's fifth OUTPUT parameter
-    // (fork.c:90 — the kernel reports where PM's fork message lives in the
-    // parent's address space, sourced from p_delivermsg_vir). minix-rs'
-    // `Gateway::sys_fork` wire (SYS_FORK, M1 m1i1/m1i2/m1i3) currently
-    // returns only the child endpoint; extending the reply to carry msgaddr
-    // is a kernel↔VM shared-wire decision (T33; edge E-FORKMSG if the
-    // kernel side needs to grow the field first).
-    //
-    // # DEFERRED
-    //
-    // The eager CoW resolution for fork's deliver-message buffer is
-    // blocked by 2 independent dependencies:
-    //
-    // **Dependency 1 (this TODO)**: `VmProcTable` does not support
-    // simultaneous mutable access to two slots. The C version of
-    // `do_fork` calls `handle_memory_once` for both `vmc` (child)
-    // and `vmp` (parent) with the same `msgaddr`. In Rust, the
-    // `VmProcTable::get_active()` returns a `&ActiveProc<'_>` (an
-    // immutable view) for the parent, while `child` is a mutable
-    // `EmptySlot`/etc. We need either:
-    //   - Split borrowing (NLL doesn't support it across struct
-    //     fields without explicit `RefCell`/`UnsafeCell`); or
-    //   - Restructure `do_fork` to take both slots as a single
-    //     tuple return.
-    //
-    // **Dependency 2**: `Gateway::sys_fork` (wired, V11/T9) returns only
-    // the child endpoint. The eager CoW resolution also needs `msgaddr` —
-    // the kernel's fifth sys_fork output (fork.c:90). Growing the reply
-    // layout is a shared kernel↔VM wire change (E2 family / E-FORKMSG),
-    // not something the VM can decide unilaterally.
-    //
-    // # Why safe to defer?
-    //
-    // The C source comment in `fork.c:97-108` says:
-    //   "making these messages writable is an optimisation and
-    //    its return value needn't be checked"
-    //
-    // If the pages are still CoW when the kernel writes the reply,
-    // the child process will trigger a page fault on first access.
-    // The page fault handler will resolve CoW normally (allocating
-    // a fresh page for the child). The only cost is a one-time page
-    // fault per fork, not a deadlock. (The "deadlock" concern in
-    // the original comment was about the *parent* triggering a
-    // page fault, not the child — but the child is a fresh process
-    // and can handle its own page faults asynchronously.)
-    //
-    // # Implementation path
-    //
-    // When Dependencies 1 and 2 are resolved:
-    // ```ignore
-    // let msgaddr = sys_fork(parent_endpoint, child.slot()).1; // tuple
-    // handle_memory_once(&mut child, msgaddr, MEM_MESSAGE_SIZE, 1)?;
-    // handle_memory_once(parent,       msgaddr, MEM_MESSAGE_SIZE, 1)?;
-    // ```
-    // (The second call's mutable access to `parent` is what
-    // Dependency 1's split-borrow restructure is for.)
+    // Dependency notes (V11/T33): the former "two live views cannot
+    // coexist" blocker dissolved when the typestate API gained
+    // `activate_relaxed` — `parent` and `child` are views of *different*
+    // slots and coexist here exactly as C's `vmp`/`vmc` do. The remaining
+    // dependency is the kernel reply field (edge E-FORKMSG); until it
+    // lands, `fork_msgaddr == None` skips the phase (the kernel never
+    // delivers a fork reply pre-E2 anyway).
+    if let Some(msgaddr) = fork_msgaddr {
+        let msg_len = VirBytes(core::mem::size_of::<minix_types::Message>() as u64);
+
+        // C fork.c:103 — child first.
+        handle_memory_once(
+            child.regions_mut(),
+            frames,
+            pfn_alloc,
+            VirBytes(msgaddr),
+            msg_len,
+            true,
+        )?;
+
+        // C fork.c:105-107 — then the parent.
+        handle_memory_once(
+            parent.regions_mut(),
+            frames,
+            pfn_alloc,
+            VirBytes(msgaddr),
+            msg_len,
+            true,
+        )?;
+    }
 
     Ok(child_endpoint)
 }
@@ -473,6 +454,125 @@ mod tests {
 
     fn make_frames(pages: u32) -> PageFrames {
         PageFrames::new(PhysBytes(pages as u64 * PAGE_SIZE))
+    }
+
+    /// Shared MockGateway handle for the do_fork tests (same idiom as
+    /// rs.rs's `update_gateway`).
+    fn update_gateway() -> alloc::rc::Rc<core::cell::RefCell<
+        crate::kernel_gateway::MockGateway>>
+    {
+        alloc::rc::Rc::new(core::cell::RefCell::new(
+            crate::kernel_gateway::MockGateway::new(),
+        ))
+    }
+
+    /// Parent setup for do_fork tests: live slot with one writable anon
+    /// region (def_memtype ANON) whose first page is mapped (the future
+    /// deliver-message buffer). Returns the parent endpoint.
+    fn init_fork_parent(
+        slot: UserSlot,
+        frames: &mut PageFrames,
+        alloc: &mut TestAlloc,
+    ) -> Endpoint {
+        let table = VmProcTable::get_global();
+        unsafe { table.reset_slot(slot); }
+        let empty = table.get_empty(slot).unwrap();
+        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+        let mut active = empty.activate(ep);
+        active.init_page_table().unwrap();
+        active.init_regions();
+        {
+            let mut proc = table.get_active(slot).unwrap();
+            let mut region = crate::region::VirRegion::new(
+                VirBytes(0x3000_0000),
+                VirBytes(0x4000),
+                VrFlags::ANON | VrFlags::WRITABLE,
+            );
+            region.def_memtype = Some(&MEM_TYPE_ANON);
+            proc.regions_mut().insert(region).unwrap();
+        }
+        let pfn = alloc.alloc_pfn().unwrap();
+        let mut proc = table.get_active(slot).unwrap();
+        let region = proc.regions_mut().find_mut(VirBytes(0x3000_0000)).unwrap();
+        region.map_page(frames, VirBytes(0), pfn, &MEM_TYPE_ANON);
+        ep
+    }
+
+    /// V11/T33: do_fork's eager-CoW phase (C fork.c:100-108). The mock
+    /// gateway hands back a msgaddr pointing at the parent's single mapped
+    /// page (refcount 2 after the CoW fork); the child phase resolves the
+    /// child's copy, after which the parent's refcount is 1 and the parent
+    /// phase is a no-op — the exact C end state: each side private.
+    #[test]
+    fn test_do_fork_eager_cow_resolves_message_pages() {
+        let table = VmProcTable::get_global();
+        let mut frames = make_frames(16);
+        let mut alloc = TestAlloc { next: 5 };
+        let (parent_slot, child_slot) = (UserSlot::new(74), UserSlot::new(75));
+
+        let parent_ep = init_fork_parent(parent_slot, &mut frames, &mut alloc);
+        assert_ne!(parent_ep, Endpoint::NONE);
+
+        let gateway = update_gateway();
+        gateway.borrow_mut().fork_reply = Ok(Endpoint::from_generation_slot(2, 75));
+        gateway.borrow_mut().fork_msgaddr = core::cell::Cell::new(Some(0x3000_0000));
+
+        let child_ep = do_fork(
+            &mut *gateway.borrow_mut(),
+            table,
+            &mut frames,
+            &mut alloc,
+            parent_ep,
+            child_slot,
+        ).unwrap();
+
+        assert_ne!(child_ep, parent_ep);
+        // Parent: kept its original (now private) page.
+        let parent_view = table.get_active(parent_slot).unwrap();
+        let src_slot = parent_view.regions().iter()
+            .find(|vr| vr.vaddr.0 == 0x3000_0000).unwrap()
+            .get_slot(VirBytes(0)).and_then(|s| s.pfn()).unwrap();
+        assert_eq!(frames.get(src_slot).map(|s| s.refcount), Some(1),
+            "parent side resolved to a private page");
+        // Child: resolved its own copy (different frame).
+        let child_view = table.get_active(child_slot).unwrap();
+        let dst_pfn = child_view.regions().iter()
+            .find(|vr| vr.vaddr.0 == 0x3000_0000).unwrap()
+            .get_slot(VirBytes(0)).and_then(|s| s.pfn())
+            .expect("child message page must be mapped after eager CoW");
+        assert_ne!(dst_pfn, src_slot, "child got its own copy");
+    }
+
+    #[test]
+    fn test_do_fork_without_msgaddr_skips_prefault() {
+        // Pre-E-FORKMSG shape: gateway hands back no msgaddr → the eager
+        // phase is skipped and both sides stay CoW-shared (refcount 2).
+        let table = VmProcTable::get_global();
+        let mut frames = make_frames(16);
+        let mut alloc = TestAlloc { next: 5 };
+        let (parent_slot, child_slot) = (UserSlot::new(76), UserSlot::new(77));
+
+        let parent_ep = init_fork_parent(parent_slot, &mut frames, &mut alloc);
+
+        let gateway = update_gateway();
+        gateway.borrow_mut().fork_reply = Ok(Endpoint::from_generation_slot(2, 77));
+        // fork_msgaddr stays None.
+
+        do_fork(
+            &mut *gateway.borrow_mut(),
+            table,
+            &mut frames,
+            &mut alloc,
+            parent_ep,
+            child_slot,
+        ).unwrap();
+
+        let parent_view = table.get_active(parent_slot).unwrap();
+        let src_slot = parent_view.regions().iter()
+            .find(|vr| vr.vaddr.0 == 0x3000_0000).unwrap()
+            .get_slot(VirBytes(0)).and_then(|s| s.pfn()).unwrap();
+        assert_eq!(frames.get(src_slot).map(|s| s.refcount), Some(2),
+            "CoW-sharing must be untouched without a msgaddr");
     }
 
     #[test]

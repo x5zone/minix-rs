@@ -1417,6 +1417,14 @@ Coverage Summary for vm:
 - **Verified**: `test_vfs_transid_routes_to_procctl_clear` + 更新后的 3 个 transid 测试全绿；三矩阵 **486 / 503 / 486 passed**；clippy `servers/vm` 0 警告；`VM_PROCCTL` 导入移至 cfg(test)（生产代码不再引用）
 - **Docs**: 本条即判定记录；handle_vfs_transid 文档重写（wire 真相 + 同步化偏差指针）
 
+### ✅ Fix #53: T33 — fork eager-CoW 相落地（T11 闭环；kernel msgaddr 出参挂 E-FORKMSG）
+
+- **依赖前提双重更新**：① "依赖 1：VmProcTable 不支持双 slot 同时可变借用"已随 typestate API 演进消失——`get_active` 与 `activate_relaxed` 的视图分属不同 slot，天然共存（do_fork 现状即如此）；② "依赖 2：msgaddr"确认为跨 stage——kernel `dispatch_fork` 应答只含 child endpoint（syscall_process.rs:210-215），扩 reply 登记 **edge E-FORKMSG**。
+- **实现**：`kernel_gateway.rs`（`sys_fork` 返回 `(Endpoint, Option<u64>)`——第二元即 msgaddr；trap 实现回 `None`（pre-E-FORKMSG），MockGateway 增 `fork_msgaddr` 脚本面 + wire 测试更新钉 `None`）、`fork.rs`（do_fork 尾部：sys_fork 后按 C 顺序（child 先、parent 后）对各侧 `handle_memory_once(msgaddr, sizeof(Message), write=true)` 做 eager CoW——`pfn_alloc` 参数由弃用转实用；失败沿 C panic 语义改 fail-closed 传播（与 sys_fork 错误同姿态）；`fork_msgaddr == None` 时整相跳过）
+- **语义**：kernel 写 fork 应答前，父子两侧的消息缓冲页已是私有页——消除单线程 VM 下"内核写应答 → 写故障 → 死锁"的窗口（C 同动机）；pre-E-FORKMSG 缺省跳过 = 现行为不变（E5 联调前内核本就不交付 fork 应答）
+- **Verified**: 新增 `test_do_fork_eager_cow_resolves_message_pages`（CoW fork 后 refcount 2 → 子相解析得私有拷贝（pfn 不同）→ 父相 refcount 1 保留原页——C 端态逐项断言）+ `test_do_fork_without_msgaddr_skips_prefault`（None → CoW 共享 refcount 2 不动）；三矩阵 **488 / 505 / 488 passed**；clippy `servers/vm` 0 警告
+- **Docs**: 本条即判定记录；E-FORKMSG 登记 edge_todo.md（跨 stage 文件清单 + 解锁条件）
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。

@@ -75,7 +75,16 @@ pub(crate) trait KernelGateway {
     /// endpoint, `m1i2` = child slot, `m1i3` = flags (0). Reply: `m_type` =
     /// child endpoint on success, negative errno on failure
     /// (KcallResult::Ok(child_endpoint.0) → reply_code()).
-    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<Endpoint, GatewayError>;
+    ///
+    /// The second tuple element is C's fifth `sys_fork` output — the
+    /// deliver-message buffer address (`msgaddr`, fork.c:90, sourced from
+    /// `p_delivermsg_vir`) that do_fork eager-CoWs for parent and child
+    /// (fork.c:101-108). The minix-rs kernel reply does not carry it yet
+    /// (kernel dispatch_fork returns only the endpoint), so the trap
+    /// implementation answers `None` until edge E-FORKMSG grows the field;
+    /// tests script it to drive the eager-CoW path end to end.
+    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
+        -> Result<(Endpoint, Option<u64>), GatewayError>;
 
     /// Notify the kernel of a process's new image (entry point + stack).
     ///
@@ -150,7 +159,7 @@ pub(crate) struct TrapKernelGateway<T: KernelCallTransport> {
 const SYS_FORK_CALL: i32 = 0;
 
 impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
-    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<Endpoint, GatewayError> {
+    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<(Endpoint, Option<u64>), GatewayError> {
         let mut msg = Message::default();
         {
             // SAFETY: M1 fields are the documented SYS_FORK wire layout
@@ -171,7 +180,9 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         }
         // C: do_fork.c:111 — the child endpoint comes back in the reply's
         // result slot (m_type), assigned by the kernel to the child slot.
-        Ok(Endpoint(reply))
+        // The C `msgaddr` output (fork.c:90) has no reply field yet — edge
+        // E-FORKMSG; `None` keeps do_fork's eager-CoW phase off.
+        Ok((Endpoint(reply), None))
     }
 
     fn diag_write(&mut self, text: &str) -> Result<(), GatewayError> {
@@ -319,6 +330,8 @@ pub(crate) struct MockGateway {
     pub fork_reply: Result<Endpoint, GatewayError>,
     /// Last (parent, child_slot) seen, for call-shape assertions.
     pub last_fork: core::cell::Cell<Option<(Endpoint, UserSlot)>>,
+    /// msgaddr handed back by `sys_fork` (V11/T33; `None` = pre-E-FORKMSG).
+    pub fork_msgaddr: core::cell::Cell<Option<u64>>,
     /// Diagnostic text recorded by `diag_write` (V11/T15).
     pub diag_log: RefCell<alloc::string::String>,
     /// Last `sys_exec` seen: (endpt, ip, stack, ps_str) (V11/T14).
@@ -341,6 +354,7 @@ impl MockGateway {
         Self {
             fork_reply: Err(GatewayError::Kernel(-minix_types::EIO)),
             last_fork: core::cell::Cell::new(None),
+            fork_msgaddr: core::cell::Cell::new(None),
             diag_log: RefCell::new(alloc::string::String::new()),
             last_exec: Cell::new(None),
             update_reply: Cell::new(0),
@@ -354,9 +368,13 @@ impl MockGateway {
 
 #[cfg(test)]
 impl KernelGateway for MockGateway {
-    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<Endpoint, GatewayError> {
+    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
+        -> Result<(Endpoint, Option<u64>), GatewayError>
+    {
         self.last_fork.set(Some((parent, child_slot)));
-        self.fork_reply
+        // V11/T33: hand back the scripted msgaddr so tests can drive the
+        // eager-CoW phase end to end (None = pre-E-FORKMSG shape).
+        self.fork_reply.clone().map(|ep| (ep, self.fork_msgaddr.get()))
     }
 
     fn diag_write(&mut self, text: &str) -> Result<(), GatewayError> {
@@ -419,13 +437,16 @@ mod tests {
 
     /// V11/T9: the SYS_FORK wire — call number 0, reply m_type = child
     /// endpoint (kernel syscall_process.rs:210-215 → reply_code()).
+    /// V11/T33: the msgaddr half of the tuple is `None` pre-E-FORKMSG
+    /// (the kernel reply carries no such field yet).
     #[test]
     fn test_trap_gateway_sys_fork_wire() {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(77); // kernel answers: child endpoint = 77
         let mut g = TrapKernelGateway { transport: canned };
-        let ep = g.sys_fork(Endpoint(10), UserSlot::new(3)).unwrap();
+        let (ep, msgaddr) = g.sys_fork(Endpoint(10), UserSlot::new(3)).unwrap();
         assert_eq!(ep, Endpoint(77));
+        assert_eq!(msgaddr, None);
     }
 
     /// V11/T14: the SYS_EXEC wire — call number 1, `MessLsysKrnSysExec`
