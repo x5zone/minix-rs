@@ -776,11 +776,7 @@ impl RsServer {
         let ds_lookup = |_label: &str| -> Option<Endpoint> { None };
         let state_out = crate::state_data::init_state_data(
             prepare_state,
-            rs_start.state_data.size,
-            rs_start.state_data.ipcf_els_addr as usize,
-            rs_start.state_data.ipcf_els_size,
-            rs_start.state_data.eval_addr as usize,
-            rs_start.state_data.eval_len,
+            &rs_start.state_data,
             &mut fetch,
             &ds_lookup,
             m.m_source == Endpoint::VM,

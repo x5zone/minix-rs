@@ -225,6 +225,10 @@ pub fn vm_fallback_entry() -> IpcFilterEl {
     }
 }
 
+/// The caller-space fetch seam signature. C: `sys_datacopy(src_e, addr,
+/// SELF, buf, len)` — reads the requester's eval bytes and filter blocks.
+pub type StateFetchFn<'a> = dyn FnMut(usize, &mut [u8]) -> Result<(), Errno> + 'a;
+
 /// `init_state_data` 的产出（17 号状态传输的授权/消费面）。
 ///
 /// C: manager.c:172-285 写入 `dst_rs_state_data` 的三件套 —— `size` 原样、
@@ -254,38 +258,34 @@ pub struct PreparedStateData {
 /// （request.c:788-796 的 `rupdate_upd_clear` 语义）。
 pub fn init_state_data(
     prepare_state: i32,
-    src_size: usize,
-    ipcf_els_addr: usize,
-    ipcf_els_size: usize,
-    eval_addr: usize,
-    eval_len: usize,
-    fetch: &mut dyn FnMut(usize, &mut [u8]) -> Result<(), Errno>,
+    src: &crate::slot::RsStateData,
+    fetch: &mut StateFetchFn<'_>,
     ds_lookup: &dyn Fn(&str) -> Option<Endpoint>,
     src_is_vm: bool,
 ) -> Result<PreparedStateData, Errno> {
     // manager.c:181-183 — the request's size field must be the struct's own
     // size (requester contract).
-    validate_state_data_size(src_size)?;
+    validate_state_data_size(src.size)?;
 
     // manager.c:185-209 — the eval expression: EVAL requires addr+len, the
     // bytes are copied and NUL-terminated, and dst.size records src.size.
     let mut eval: Option<alloc::vec::Vec<u8>> = None;
     let mut size = 0usize;
-    validate_eval(prepare_state, eval_addr != 0, eval_len)?;
+    validate_eval(prepare_state, src.eval_addr != 0, src.eval_len)?;
     if prepare_state == SEF_LU_STATE_EVAL {
-        let mut b = alloc::vec![0u8; eval_len + 1];
-        fetch(eval_addr, &mut b[..eval_len])?;
+        let mut b = alloc::vec![0u8; src.eval_len + 1];
+        fetch(src.eval_addr as usize, &mut b[..src.eval_len])?;
         // b[eval_len] stays 0 — the C NUL terminator (manager.c:208).
         eval = Some(b);
-        size = src_size;
+        size = src.size;
     }
 
     // manager.c:213-216 — the filter-block count (E2BIG on a partial block).
-    let num_blocks = num_ipc_filter_blocks(ipcf_els_size)?;
+    let num_blocks = num_ipc_filter_blocks(src.ipcf_els_size)?;
 
     // manager.c:217-219 — a NULL element pointer means "no filters": early
     // OK with whatever the eval branch recorded.
-    if ipcf_els_addr == 0 {
+    if src.ipcf_els_addr == 0 {
         return Ok(PreparedStateData {
             size,
             eval,
@@ -302,7 +302,10 @@ pub fn init_state_data(
     // parse elements until the flags word reads 0.
     let mut block = [0u8; RS_IPCF_FILTER_BLOCK_SIZE];
     for i in 0..num_blocks {
-        fetch(ipcf_els_addr + i * RS_IPCF_FILTER_BLOCK_SIZE, &mut block)?;
+        fetch(
+            src.ipcf_els_addr as usize + i * RS_IPCF_FILTER_BLOCK_SIZE,
+            &mut block,
+        )?;
         for j in 0..IPCF_MAX_ELEMENTS {
             let base = j * RS_IPCF_FILTER_EL_SIZE;
             let flags = i32::from_le_bytes([
@@ -342,7 +345,7 @@ pub fn init_state_data(
 
     // manager.c:278-280 — dst.size records src.size on the success tail.
     Ok(PreparedStateData {
-        size: src_size,
+        size: src.size,
         eval,
         ipcf_els_size: buff.len(),
         ipcf_els_buff: buff,
