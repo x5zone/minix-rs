@@ -19,7 +19,7 @@
 use minix_types::{
     Clock, Endpoint, Errno, MAX_NR_TASKS, NR_PROCS, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI,
     RS_GETSYSINFO, RS_INIT, RS_LOOKUP, RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN,
-    RS_SYSCTL, RS_UNCLONE, RS_UP, RS_UPDATE,
+    RS_SYSCTL, RS_UNCLONE, RS_UPDATE,
 };
 
 // RS message types are defined in `minix-types::ipc::rs` (ARCH A-2,
@@ -141,19 +141,21 @@ impl DispatchResult {
 /// annotated; handlers land with their owning docs. Until then, all requests
 /// fail closed with `ENOSYS`, matching the C `default` branch — main.c:118-121.
 ///
-/// Wiring status (I3-I5, 2026-09-07): `RS_DOWN`/`RS_REFRESH`/`RS_RESTART`/
-/// `RS_SHUTDOWN`/`RS_CLONE`/`RS_UNCLONE` (13) and `RS_SYSCTL`/`RS_FI`/
-/// `RS_GETSYSINFO`/`RS_LOOKUP` (14) run live through `RsServer::do_request` —
-/// they never reach this table. The remaining arms `RS_UP`/`RS_EDIT`/
-/// `RS_UPDATE` share one gate: their first act is `copy_rs_start`
-/// (request.c:37/:306/:542), and the `rs_start_t` byte ABI cannot be pinned
-/// from this tree (`bitchunk_t`/`uid_t` have no typedef — edge E-RSSTART).
-/// They stay fail-closed here until that landing.
+/// Wiring status (I3-I5, 2026-09-07; R4, 2026-09-07): `RS_UP` (13),
+/// `RS_DOWN`/`RS_REFRESH`/`RS_RESTART`/`RS_SHUTDOWN`/`RS_CLONE`/`RS_UNCLONE`
+/// (13) and `RS_SYSCTL`/`RS_FI`/`RS_GETSYSINFO`/`RS_LOOKUP` (14) run live
+/// through `RsServer::do_request` — they never reach this table. The
+/// remaining arms `RS_EDIT`/`RS_UPDATE` share one gate: their first act is
+/// `copy_rs_start` (request.c:306/:542) — the byte ABI itself is pinned and
+/// decoded since Fix #81 (`minix_types::rs_start_off`), and the two arms'
+/// handler shells land with the R5/R6 rounds of the §21 campaign. They stay
+/// fail-closed here until then.
 pub fn dispatch_request(call_nr: i32) -> DispatchResult {
     match call_nr {
         // → 13-rs-control-requests.md
-        RS_UP | RS_DOWN | RS_REFRESH | RS_RESTART | RS_SHUTDOWN | RS_CLONE | RS_UNCLONE
-        | RS_EDIT => DispatchResult(Errno::ENOSYS.to_i32()),
+        RS_DOWN | RS_REFRESH | RS_RESTART | RS_SHUTDOWN | RS_CLONE | RS_UNCLONE | RS_EDIT => {
+            DispatchResult(Errno::ENOSYS.to_i32())
+        }
         // → 16-rs-live-update.md
         RS_UPDATE => DispatchResult(Errno::ENOSYS.to_i32()),
         // → 14-rs-query-requests.md
@@ -166,6 +168,7 @@ pub fn dispatch_request(call_nr: i32) -> DispatchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::RS_UP;
 
     #[test]
     fn test_classify_clock_notify() {

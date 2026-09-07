@@ -81,6 +81,30 @@
    - `RSS_NOBLOCK` → 立即 `return OK`（调用者不等初始化）；
    - 否则 `r_flags |= RS_LATEREPLY; r_caller = m_source; r_caller_request = RS_UP` + `return EDONTREPLY`——**初始化完成后补发 reply**（12 的 `end_srv_init` → `late_reply`，06）。
 
+### 2.1d do_up 接线落地（R4，2026-09-07，todo §21 Fix #82）
+
+`RsServer::do_up`（lib.rs）按 request.c:15-106 逐行落地，`do_request` 的 `RS_UP` 臂
+转真。三个值得展开的形态决策：
+
+- **字节面两段式**。`copy_rs_start` 的解码半是 `minix_types::decode_rs_start`
+  （08 §3.5 的 wire 面），取数半是 lib.rs 的 `fetch_rs_start`——按 C 的逐分支拷贝
+  语义取调用方缓冲（cmd/IPC 清单/脚本按"原始声明长度入 `RsStart` 字段 + 读取钳制
+  到缓冲容量"；标签走 `copy_label` 的 `min(dst_len-1, src_len)` 截断；`script_addr
+  == NULL`、`l_len == 0` 的读跳过与 C 一致；`trg_label` 不在此取——C 在 do_update
+  自己的函数体里消费它，request.c:627-629）。C 把拷贝内嵌在 `edit_slot` 的检查之间，
+  Rust 拆成"先拷贝后检查"两段：单字段无效的 errno 与 C 完全一致（门在 `edit_slot`
+  里、开在原始声明长度上）；复合无效请求的 errno 先后顺序在拷贝/检查边界处与 C
+  不同——两种都拒绝且不伤槽位，这是 fetch/check 拆分的显式设计差异。
+- **`RsStart.progname_len` 补字段**。progname 的 E2BIG 门（manager.c:1593）开在
+  *声明长度*上，而 `Label` 只有 16 字节内容、无法表达"声称 20 字节但缓冲里第 3 字节
+  就是 NUL"——旧的"NUL 位置推导长度"是对错误量的门。`progname_len` 与
+  `cmdlen`/`scriptlen`/`ipclen` 同型（原始声明值），`edit_slot` 的门改开在其上。
+- **`init_slot` 的行进出**。`init_slot(slot, rs_start, table, read_exec)` 的 reviewed
+  签名（Fix #49）把行与表分开收，`do_up` 用 `mem::replace` + `vacant()` 把行取出
+  调用后放回：新分配行是空行，REUSE 供体扫描（edit_slot 的 `iter_all`，不过滤
+  IN_USE）看到的与 C 跳过自身后的语义一致；失败的 init_slot 留下脏但未 IN_USE 的
+  行，与 C 的 find-only 分配契约相同。
+
 ### 2.1c signal_handler 路由落地（Fix #57，2026-09-06）
 
 `RsServer::signal_handler`（lib.rs）主体按 main.c:631-642 落地：SIGCHLD → 逐子进程

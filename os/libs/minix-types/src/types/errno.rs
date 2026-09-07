@@ -208,6 +208,8 @@ impl Errno {
     pub const ENODEV: Errno = Errno(ENODEV);
     /// C: `ENOMEM` — sys/errno.h:12.
     pub const ENOMEM: Errno = Errno(ENOMEM);
+    /// C: `EFAULT` — sys/errno.h:14.
+    pub const EFAULT: Errno = Errno(EFAULT);
     /// C: `ENOSYS` — sys/errno.h:78.
     pub const ENOSYS: Errno = Errno(ENOSYS);
     /// C: `ERESTART` — sys/errno.h:196 (positive user-space convention).

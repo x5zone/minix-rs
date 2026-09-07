@@ -147,7 +147,9 @@ pub struct MockKernelApi {
     /// table when no `SetSys` entry exists; empty → `vacant` (previous
     /// behavior, kept for non-boot endpoints).
     pub kernel_privs: Vec<(Endpoint, Privilege)>,
-    /// Canned `safecopy_from` payload: `receive`-style tests stage the
+    /// Canned `safecopy_from` payload: a flat caller-address-space image
+    /// based at 0 (R4 — reads at the requested address, EFAULT out of
+    /// range); `receive`-style tests stage the
     /// request bytes here; `None` → `Err(ENOSYS)` (fail-closed default).
     pub payload: Option<Vec<u8>>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
@@ -448,13 +450,21 @@ impl IpcApi for MockKernelApi {
     fn safecopy_from(
         &mut self,
         _source: Endpoint,
-        _addr: usize,
+        addr: usize,
         buf: &mut [u8],
     ) -> Result<(), Errno> {
+        // R4 mock-fidelity upgrade: the payload is a flat image of the
+        // caller's address space based at 0 — `sys_datacopy` copies from
+        // the *requested address* (manager.c:140-142), and do_up is the
+        // first handler to fetch several buffers from different addresses
+        // of one request. Out-of-range reads fail EFAULT like the kernel.
         match &self.payload {
             Some(bytes) => {
-                let n = bytes.len().min(buf.len());
-                buf[..n].copy_from_slice(&bytes[..n]);
+                let end = addr.checked_add(buf.len()).ok_or(Errno::EFAULT)?;
+                if end > bytes.len() {
+                    return Err(Errno::EFAULT);
+                }
+                buf.copy_from_slice(&bytes[addr..end]);
                 Ok(())
             }
             None => Err(Errno::ENOSYS),

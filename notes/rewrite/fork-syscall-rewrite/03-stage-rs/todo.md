@@ -2234,7 +2234,7 @@ I6（见 Fix #78）。
 | R1 | A-4 slot.upd 镜像一致性校验 | ✅ Fix #79 |
 | R2 | semantic-map 回填 | ✅ Fix #80 |
 | R3 | E-RSSTART 改判 + `RsStartWire`（minix-types wire 面 + LP64 偏移断言） | ✅ Fix #81 |
-| R4 | RS_UP 臂接线（do_up，request.c:15-106） | ☐ |
+| R4 | RS_UP 臂接线（do_up，request.c:15-106） | ✅ Fix #82 |
 | R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ☐ |
 | R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ☐ |
 | R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ☐ |
@@ -2263,3 +2263,30 @@ I6（见 Fix #78）。
   87851af52 为 boot handoff 新增 2 测后的基线）；39 偏移 + `SIZE=920` 编译期断言
   全过（手推 LP64 布局与编译器 repr(C) 排布零偏差）；clippy 触碰文件零告警
   （vm.rs:667 的 large-size-difference 为既有）；fmt 干净。
+
+### ✅ Fix #82 — R4：RS_UP 臂接线（do_up，request.c:15-106）
+- **File**：`os/servers/rs/src/lib.rs`（`do_up` handler + `fetch_rs_start` 取数器 +
+  `do_request` 的 RS_UP 臂 + 5 个接线测试）、`slot.rs`（`RsStart.progname_len` 字段 +
+  `edit_slot` 的 progname 门改开在声明长度上）、`dispatch.rs`（RS_UP 移出死表臂 +
+  注记更新）、`testutil.rs`（mock safecopy_from 升级为地址感知：payload = 以 0 为基的
+  平坦调用方地址空间，越界 EFAULT——do_up 是首个多缓冲取数 handler，真实
+  `sys_datacopy` 本就按地址取）、`minix-types errno.rs`（补 `Errno::EFAULT` 关联
+  常量）；文档 13 §2.1d（接线落地 + 三形态决策）、08 §3.1（progname_len）
+- **After**：`do_up` 按 C 逐行——权限（NULL 目标，仅 root）→ `alloc_slot` →
+  `safecopy_from` 920 字节 + `decode_rs_start`（Fix #81 wire 面）+ `fetch_rs_start`
+  取调用方缓冲（cmd/ipc/script 按声明长度入字段、读取钳制；标签走 `copy_label`
+  截断；`trg_label` 留给 do_update 自己取，request.c:627-629）→ `check_request` →
+  SEF_INIT_* init_flags 映射 → `init_slot`（`mem::replace`+`vacant()` 行进出，新分配
+  行的供体扫描语义与 C 跳过自身一致）→ label/dev_nr/domain 三重复门（EBUSY，脏行
+  不 IN_USE 与 C find-only 契约同）→ `start_service`（read_exec/publish 为 19 号
+  noop 缝；asynsend 收集后经真实 `IpcApi::asynsend` 缝重放——`rs_asynsend` 在 C
+  亦为异步失败忽略，utility.c:223-240，时序可观察行为不变）→ NOBLOCK 立即 OK /
+  LATEREPLY + caller + caller_request + `Ok(EDONTREPLY)`。
+- **Verified**：`cargo test -p minix-rs` = **314 passed**（+5：happy path 全字段
+  断言含 cmd 字节/quantum/LATEREPLY/caller、NOBLOCK 立即 OK 无 LATEREPLY、
+  重复 label EBUSY 且行不 IN_USE、非 root EPERM（fail_calls 注入 GetNuid 失败）、
+  结构体拷出界 EFAULT 传播）；既有 4 处 payload 测试的 addr 基址随 mock 语义升级
+  归零（do_down/do_lookup/do_fi）；minix-types 180 passed；clippy 触碰文件零告警
+  （minix-sys 的历史告警不在本 crate）；fmt 干净；T7 PASS。测试自查修正 3 处测试
+  自身错误：EDONTREPLY 是 `Ok(203)` 标记而非 Err、镜像缺 IPC 清单触发 C 本有的
+  EINVAL 门（manager.c:1475-1479）、重复门需夹具行真带 label。

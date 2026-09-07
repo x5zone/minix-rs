@@ -292,7 +292,8 @@ pub struct RsStart {
     pub script: [u8; MAX_SCRIPT_LEN], pub scriptlen: usize,  // rss_script（rs.h:116-117）
     pub heap_prealloc_bytes: i64, pub map_prealloc_bytes: i64, // rs.h:120-121（C long）
     pub ipc_list: [u8; MAX_IPC_LIST], pub ipclen: usize,
-    pub progname: Label, pub nr_control: i32, pub control: [Label; RS_NR_CONTROL],
+    pub progname: Label, pub progname_len: usize,   // 声明长度（E2BIG 门开在其上，Fix #82）
+    pub nr_control: i32, pub control: [Label; RS_NR_CONTROL],
     pub system: CallMask,        // rss_system（rs.h:130，bitchunk_t[2] → 64 位）
     pub vm: CallMask,            // rss_vm（rs.h:135）
     pub label: Label, pub trg_label: Label,   // rss_label/rss_trg_label（rs.h:131-132）

@@ -1164,3 +1164,46 @@ pub fn bkl_unlock() {
 - [10-switch-to-user.md](10-switch-to-user.md) — BKL 在 switch_to_user 的释放
 - [22-privilege.md](22-privilege.md) — VMINHIBIT 与权限管理
 - [17-syscall-process.md](17-syscall-process.md) — fork/exec 的 CPU 亲和性继承
+
+---
+
+## 9. AP early entry 梯子（S-3b，2026-09-08 落地）
+
+### 9.1 这段代码为什么存在
+
+AP 被 INIT-SIPI 唤醒时，Intel 把它放回 16 位实模式，入口物理地址 = SIPI 向量 × 4096。这是硬件契约，绕不开：任何架构下，"让第二个 CPU 跑起来"都需要一小段机器码，完成从 16 位实模式到内核长模式的攀登。C 版 Minix3 把这段代码叫 trampoline（`arch/i386/trampoline.S`），拷贝到 1 MiB 以下的空闲内存。
+
+本项目的取舍（§3.2 冻结）：**不新建叫 trampoline 的抽象层**。这段代码的真实身份是"由 Rust 构建链携带的体系结构私有早期启动代码段"——它是 arch 内部实现细节。三架构的汇合点不是汇编，而是同一个 Rust 函数签名：
+
+```rust
+unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> !
+```
+
+汇编只负责把 CPU 送到这里并交一个物理地址；其余信息（hw_id、页表根、内核栈顶、入口 VA）全部装在 `ApBootstrap` 记录（40 字节，`#[repr(C)]`，字段偏移编译期断言钉住）里，由 BSP 经 Direct Map 填写、AP 侧读回。
+
+### 9.2 梯子本体（`minix-arch::x86_64::ap_early_entry`）
+
+| 阶段 | 模式 | 关键动作 | 地址形态 |
+|------|------|---------|---------|
+| 16 位实模式 | CS=0x0800, IP=0 | cli；DS/SS=0；`lgdt`（66 0F 01 15 + disp32）；CR0.PE=1 | 线性 = 0x8000 + 段内偏移（DS 基 0，偏移即常量） |
+| 32 位保护模式 | flat data | CR3 ← 记录里的 root（<4GiB，`fill_bootstrap` 断言）；CR4.PAE=1；EFER.LME=1；CR0.PG=1 | 开页后同一线性地址继续取指——靠 boot 根的恒等映射 PML4[0] = [0, 4 GiB)（`arch_boot_impl` Step 1）|
+| 32→64 过渡 | far jump | `EA` + offset32 + selector CODE64：offset 零扩展落在低位 64 位尾（恒等映射内）| 同上 |
+| 64 位长模式（低位尾） | identity | 从记录拉 rsp（per-AP 内核栈顶）与 rcx（bootstrap PA）；`jmp rax` 进高位 Rust 入口 | 高地址来自记录，寄存器间接跳转 |
+
+三个工程决定，各有一条实证注脚：
+
+1. **数据区 gap 常量化（DATA_GAP = 0x1000）**。lld-link 把 `.ap_early_entry_data` 放在代码段后的下一个 4 KiB 边界（S-3a spike 实测 0x1040 的 blob：代码 36 字节 + 页隙 + 数据 64 字节）。间隙是链接器决定的，但梯子低模式用绝对寻址引用数据区——间隙必须烧进指令。锚定方式：Rust 侧 `mailbox_offset()`（运行时符号运算）与 `DATA_GAP` 常量由 hosted 测试 `test_data_gap_matches_linker_layout` 钉住——工具链变化时测试先红，AP 不会先炸。BSP 侧 `fill_bootstrap`/AP 侧 `ap_early_entry` 的所有记录读写都走 `mailbox_offset()`，杜绝"假设间隙为零"的写法。
+2. **far jump / lgdt 用原字节（`.byte 0xEA` / `db 0x66,0x0F,0x01,0x15`）**。LLVM IAS 对 16 位段的 far-jump/lgdt 助记符支持不稳（`lgdtl` 不识别、双符号内存操作数不折叠），原字节完全可控且自带规范出处（EA 编码 = opcode 0xEA；lgdt m16&32 = 66 0F 01 /2）。
+3. **Intel 语法**。rustc 的 `asm!`/`global_asm!` 默认 Intel 语法（除非 `options(att_syntax)`）——S-3a 的 spike 曾因此踩过 AT&T/Intel 混用的坑，梯子正式版统一 Intel。
+
+### 9.3 与 doc 02 HigherHalf 的分工声明
+
+doc 02 的 HigherHalf 解决的是 **BSP 侧**"固件低地址入口 → 内核高半核"的一次性跳转；本节梯子解决的是 **AP 侧**"INIT-SIPI 16 位实模式 → 长模式"的重复性启动。两者方向相反（上行走高，下行走低再拔高）、触发机制不同（UEFI 入口 vs INIT-SIPI）、生命周期不同（HigherHalf 一次性，梯子每 AP 一次），共享的只有页表根与 Direct Map 通道。不合并、不互相引用抽象。
+
+### 9.4 C 的 0x467 warm-reset 保险为何舍弃
+
+C 版在 `smp_start_aps` 里把 trampoline 基址写进 BIOS 数据区 0x467，并预置 RTC shutdown code 0xA——AP 若在启动中途崩溃，BIOS 的 warm-reset 路径会把 CPU 送回 trampoline 重来。这是 BIOS 时代的自愈机制。UEFI 世界里这条路径不存在（AAVMF 不实现 BIOS warm-reset 语义，写 0x467 是无效动作）；AP 启动失败由 BSP 的 per-AP 超时（S-5）显式报告。**舍弃，不移植**——与 `test-smp-topo` 系列对旧世界假设的剥离同方向。
+
+### 9.5 内存序衔接（§3.9 的落点）
+
+`fill_bootstrap`（BSP）按"先填记录、后置 MAGIC"的顺序写；**发布屏障（x86 `mfence`）归 `SmpArch::boot_ap`**——在固件调用前执行（C arch_smp.c:130 先例），随 S-3c 落地。AP 侧 x86 为 TSO，无需 consumer fence；ARM/RISC-V 的 consumer barrier 由各自 S-3c 梯子首指令前补。Rust 层的 boot_ack/online 掩码（Release/Acquire，经 SmpState）不与此混淆——那条通道管掩码，本节管记录。

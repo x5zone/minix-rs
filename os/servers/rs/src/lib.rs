@@ -444,6 +444,7 @@ impl RsServer {
     ) -> Result<i32, Errno> {
         match call_nr {
             minix_types::RS_SHUTDOWN => self.do_shutdown(caller),
+            minix_types::RS_UP => self.do_up(msg),
             minix_types::RS_DOWN => self.do_down(msg),
             minix_types::RS_LOOKUP => self.do_lookup(msg),
             minix_types::RS_FI => self.do_fi(msg),
@@ -954,7 +955,147 @@ impl RsServer {
         Ok(minix_types::EDONTREPLY)
     }
 
-    /// C: `do_shutdown` — request.c:431-455: caller permission, then the
+    /// C: `do_up` — request.c:15-106: start a new system service from a
+    /// full `rs_start_t` the caller holds in its own address space.
+    /// Permission (request.c:21-23) → slot allocation (:25-31) →
+    /// `copy_rs_start` (:33-37, the byte-ABI decode via
+    /// `minix_types::decode_rs_start` + the buffer fetches of
+    /// [`fetch_rs_start`]) → `check_request` (:38-41) → init-flags
+    /// (:43-60) → `init_slot` (:62-68) → duplicate gates (:70-85) →
+    /// `start_service` (:87-91) → noblock reply or late-reply arming
+    /// (:93-106).
+    fn do_up(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let Some((addr, _name_len)) = m.rs_req_payload() else {
+            return Err(Errno::EINVAL);
+        };
+        crate::access::check_call_permission(
+            m.m_source,
+            minix_types::RS_UP,
+            None,
+            &state.table,
+            false,
+            self.kernel.getnuid(m.m_source),
+        )?;
+
+        // Allocate a new system service slot (request.c:25-31). The row is
+        // *not* IN_USE yet — `create_service` marks it; a failure anywhere
+        // below leaves it dirty-but-vacant exactly like C (alloc_slot is
+        // find-only, Fix #54).
+        let id = state.table.alloc_slot()?;
+
+        // Copy the request structure (request.c:33-37 → manager.c:135-147):
+        // the struct bytes, then the pointed-to buffers (fetch_rs_start).
+        let mut buf = [0u8; minix_types::rs_start_off::SIZE];
+        self.kernel
+            .safecopy_from(m.m_source, addr as usize, &mut buf)?;
+        let wire = minix_types::decode_rs_start(&buf)?;
+        let kernel = self.kernel.as_mut();
+        let rs_start = fetch_rs_start(kernel, m.m_source, &wire)?;
+
+        crate::slot::check_request(&rs_start, &state.machine)?;
+
+        // Check flags (request.c:43-60).
+        let noblock = rs_start.flags.contains(crate::slot::RssFlags::NOBLOCK);
+        let mut init_flags = 0u32;
+        if rs_start
+            .flags
+            .contains(crate::slot::RssFlags::FORCE_INIT_CRASH)
+        {
+            init_flags |= crate::request::SEF_INIT_CRASH;
+        }
+        if rs_start
+            .flags
+            .contains(crate::slot::RssFlags::FORCE_INIT_FAIL)
+        {
+            init_flags |= crate::request::SEF_INIT_FAIL;
+        }
+        if rs_start
+            .flags
+            .contains(crate::slot::RssFlags::FORCE_INIT_TIMEOUT)
+        {
+            init_flags |= crate::request::SEF_INIT_TIMEOUT;
+        }
+        if rs_start
+            .flags
+            .contains(crate::slot::RssFlags::FORCE_INIT_DEFCB)
+        {
+            init_flags |= crate::request::SEF_INIT_DEFCB;
+        }
+
+        // Initialize the slot as requested (request.c:62-68). read_exec is
+        // the 19 file-I/O seam (exec.c read_seg — E-11): the noop keeps the
+        // orchestration observable without faking a real image load.
+        // init_slot's reviewed shape (Fix #49) takes the row and the table
+        // separately, so the row is taken out for the call and put back —
+        // for a fresh allocation the donor scan (RSS_REUSE, edit_slot)
+        // sees the same vacant row C's loop skips, and a failed init_slot
+        // leaves the dirty-but-vacant row in place exactly like C.
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let mut slot = core::mem::replace(
+            state.table.get_mut(id),
+            crate::service_slot::ServiceSlot::vacant(),
+        );
+        crate::service_create::init_slot(&mut slot, &rs_start, &state.table, &mut |_| Ok(()))?;
+        *state.table.get_mut(id) = slot;
+
+        // Duplicate gates (request.c:70-85): label, device number, domains.
+        if state
+            .table
+            .lookup_by_label(&state.table.get(id).pub_.label)
+            .is_some()
+        {
+            return Err(Errno::EBUSY);
+        }
+        let dev_nr = state.table.get(id).pub_.dev_nr;
+        if dev_nr > 0 && state.table.lookup_by_dev_nr(dev_nr).is_some() {
+            return Err(Errno::EBUSY);
+        }
+        for i in 0..state.table.get(id).pub_.nr_domain.max(0) as usize {
+            let domain = state.table.get(id).pub_.domain[i];
+            if state.table.lookup_by_domain(domain).is_some() {
+                return Err(Errno::EBUSY);
+            }
+        }
+
+        // Start the service (request.c:87-91): create → activate → publish
+        // → run. read_exec/publish are the 19 file-I/O and DS seams (same
+        // noop convention as do_down's script closure); asynsend collects
+        // the RS_INIT sends and replays them through the real IpcApi seam
+        // right after — `rs_asynsend` is asynchronous in C too
+        // (utility.c:223-240, failures ignored), so the deferred send keeps
+        // the observable order.
+        let mut sent: alloc::vec::Vec<(Endpoint, minix_types::Message)> = alloc::vec::Vec::new();
+        crate::service_create::start_service(
+            &mut state.table,
+            id,
+            self.kernel.as_mut(),
+            init_flags,
+            ticks,
+            &mut |_| Ok(()),
+            &mut |_, _| Ok(()),
+            &mut |ep, msg| {
+                sent.push((ep, msg.encode_message()));
+                Ok(())
+            },
+        )?;
+        for (ep, out) in sent {
+            let _ = self.kernel.asynsend(ep, &out);
+        }
+
+        // Unblock the caller immediately if requested (request.c:93-96);
+        // otherwise arm the late reply (request.c:98-105) — the reply is
+        // sent when the service completes initialization (12).
+        if noblock {
+            return Ok(0);
+        }
+        let slot = state.table.get_mut(id);
+        slot.flags.insert(crate::service_slot::RFlags::LATEREPLY);
+        slot.caller = m.m_source;
+        slot.caller_request = minix_types::RS_UP;
+        Ok(minix_types::EDONTREPLY)
+    }
+
     /// no-restart sweep (`shutting_down` + `RS_EXITING` over the table —
     /// [`request::shutdown_apply`]). The NULL-message *internal* form
     /// (request.c:436 `m_ptr != NULL` gate) is the SIGTERM arm of
@@ -1148,6 +1289,167 @@ impl RsServer {
     fn get_work(&mut self) -> Result<(minix_types::Message, dispatch::IpcStatus, Clock), Errno> {
         self.kernel.receive(minix_types::Endpoint::ANY)
     }
+}
+
+/// Assembles the post-copy [`crate::slot::RsStart`] from the decoded wire
+/// view: fetches the caller-space buffers through the safecopy seam — the
+/// second half of C's two-phase design (rs.h:63 "Labels are copied over
+/// separately"; in C the byte copies live *inside* `edit_slot`'s branches,
+/// manager.c:1475-1483/:1578-1626, and the Rust pure-`edit_slot` split them
+/// out to the request handler — Fix #48's "RsStart 本就是拷贝后内存结构").
+///
+/// Copy shapes follow the C per-branch semantics exactly:
+/// - cmd / IPC list / script: raw claimed lengths ride in `RsStart`
+///   (`cmdlen`/`ipclen`/`scriptlen`), so `edit_slot`'s gates fire on the
+///   claim (E2BIG manager.c:1578/:1618, EINVAL manager.c:1475-1479) — the
+///   read is clamped to the buffer only so a hostile length cannot overrun
+///   it (C never reads past the gate; the extra read of caller memory is
+///   unobservable, see the design note below).
+/// - progname: the claimed `rss_prognamelen` (manager.c:1593) rides in
+///   `RsStart.progname_len` for the same reason; `Label` carries the bytes.
+/// - labels (service/target/control): `copy_label`'s clamp — C
+///   manager.c:151-169 copies `min(dst_len-1, src_len)` bytes and
+///   NUL-terminates, no E2BIG.
+/// - script/label reads C skips (`script_addr == NULL`, `l_len == 0`) are
+///   skipped here too; `trg_label` is *not* fetched — C consumes it in
+///   `do_update`'s own body (request.c:627-629), not in `edit_slot`, and
+///   that arm fetches it itself.
+///
+/// Design note (fetch/check split): C interleaves each copy with its gate;
+/// the Rust split runs all copies first and all gates in `edit_slot`. For
+/// a request that is invalid in exactly one field the observable errno is
+/// identical; for a compound-invalid request whose unreadable buffer would
+/// fail the copy, the errno can differ (C's gate errno vs. the copy's
+/// EFAULT) — both reject with no slot damage, and the raw-length gates in
+/// `edit_slot` fire on the claim before content matters.
+fn fetch_rs_start(
+    kernel: &mut dyn crate::boot::KernelApi,
+    src: Endpoint,
+    wire: &minix_types::RsStartWire,
+) -> Result<crate::slot::RsStart, Errno> {
+    use crate::service_slot::{
+        Label, MAX_COMMAND_LEN, MAX_IPC_LIST, MAX_SCRIPT_LEN, RS_MAX_LABEL_LEN,
+    };
+    use crate::service_slot::{RS_NR_PCI_CLASS, RS_NR_PCI_DEVICE, RsPciClass, RsPciId};
+    use crate::slot::{RSS_NR_IO, RsStart};
+
+    let mut fetch = |buf: &mut [u8], addr: u64, len: usize| -> Result<usize, Errno> {
+        let n = len.min(buf.len());
+        if n > 0 {
+            kernel.safecopy_from(src, addr as usize, &mut buf[..n])?;
+        }
+        Ok(n)
+    };
+    let label_of = |kernel: &mut dyn crate::boot::KernelApi,
+                    l: minix_types::RsLabelWire|
+     -> Result<Label, Errno> {
+        let mut buf = [0u8; RS_MAX_LABEL_LEN];
+        if l.len > 0 {
+            let n = (l.len as usize).min(RS_MAX_LABEL_LEN - 1);
+            kernel.safecopy_from(src, l.addr as usize, &mut buf[..n])?;
+            buf[n] = 0;
+        }
+        Ok(Label::from_bytes(&buf[..]))
+    };
+
+    let mut cmd = [0u8; MAX_COMMAND_LEN];
+    fetch(&mut cmd, wire.cmd_addr, wire.cmd_len as usize)?;
+    let mut ipc_list = [0u8; MAX_IPC_LIST];
+    fetch(&mut ipc_list, wire.ipc_addr, wire.ipc_len as usize)?;
+    let mut script = [0u8; MAX_SCRIPT_LEN];
+    if wire.script_addr != 0 && wire.script_len > 0 {
+        fetch(&mut script, wire.script_addr, wire.script_len as usize)?;
+    }
+    let progname_len = wire.progname_len as usize;
+    let mut progname_buf = [0u8; RS_MAX_LABEL_LEN];
+    if progname_len > 0 {
+        let n = progname_len.min(RS_MAX_LABEL_LEN - 1);
+        kernel.safecopy_from(src, wire.progname_addr as usize, &mut progname_buf[..n])?;
+        progname_buf[n] = 0;
+    }
+    let progname = Label::from_bytes(&progname_buf[..]);
+
+    let mut control = [Label::empty(); crate::service_slot::RS_NR_CONTROL];
+    for (i, slot_label) in control.iter_mut().enumerate() {
+        if i >= wire.nr_control.max(0) as usize {
+            break;
+        }
+        *slot_label = label_of(kernel, wire.control[i])?;
+    }
+
+    Ok(RsStart {
+        flags: crate::slot::RssFlags::from_bits_retain(wire.flags),
+        uid: wire.uid,
+        sigmgr: Endpoint(wire.sigmgr),
+        scheduler: Endpoint(wire.scheduler),
+        priority: wire.priority,
+        quantum: wire.quantum,
+        cpu: wire.cpu,
+        period: wire.period,
+        restarts: wire.restarts,
+        asr_count: wire.asr_count,
+        cmd,
+        cmdlen: wire.cmd_len as usize,
+        ipc_list,
+        ipclen: wire.ipc_len as usize,
+        progname,
+        progname_len,
+        nr_control: wire.nr_control,
+        control,
+        nr_irq: wire.nr_irq,
+        irq: wire.irq,
+        nr_io: wire.nr_io,
+        io: {
+            let mut io = [crate::privilege::IoRange::default(); RSS_NR_IO];
+            for (i, r) in io.iter_mut().enumerate() {
+                r.base = wire.io[i].base;
+                r.len = wire.io[i].len;
+            }
+            io
+        },
+        major: wire.major,
+        script,
+        scriptlen: wire.script_len as usize,
+        heap_prealloc_bytes: wire.heap_prealloc_bytes,
+        map_prealloc_bytes: wire.map_prealloc_bytes,
+        system: crate::privilege::CallMask(wire.system),
+        vm: crate::privilege::CallMask(wire.vm),
+        label: label_of(kernel, wire.label)?,
+        trg_label: Label::empty(), // do_update's own copy (request.c:627-629)
+        nr_pci_id: wire.nr_pci_id,
+        pci_id: {
+            let mut pci = [RsPciId::default(); RS_NR_PCI_DEVICE];
+            for (i, p) in pci.iter_mut().enumerate() {
+                p.vid = wire.pci_id[i].vid;
+                p.did = wire.pci_id[i].did;
+                p.sub_vid = wire.pci_id[i].sub_vid;
+                p.sub_did = wire.pci_id[i].sub_did;
+            }
+            pci
+        },
+        nr_pci_class: wire.nr_pci_class,
+        pci_class: {
+            let mut pci = [RsPciClass::default(); RS_NR_PCI_CLASS];
+            for (i, p) in pci.iter_mut().enumerate() {
+                p.pciclass = wire.pci_class[i].pciclass;
+                p.mask = wire.pci_class[i].mask;
+            }
+            pci
+        },
+        state_data: crate::slot::RsStateData {
+            size: wire.state_data.size as usize,
+            ipcf_els_addr: wire.state_data.ipcf_els_addr,
+            ipcf_els_size: wire.state_data.ipcf_els_size as usize,
+            ipcf_els_gid: (wire.state_data.ipcf_els_gid >= 0)
+                .then_some(wire.state_data.ipcf_els_gid as u32),
+            eval_addr: wire.state_data.eval_addr,
+            eval_len: wire.state_data.eval_len as usize,
+            eval_gid: (wire.state_data.eval_gid >= 0).then_some(wire.state_data.eval_gid as u32),
+        },
+        devman_id: wire.devman_id,
+        nr_domain: wire.nr_domain,
+        domain: wire.domain,
+    })
 }
 
 impl SefCallbacks for RsServer {
@@ -1739,7 +2041,7 @@ mod signal_handler_tests {
             m_type: minix_types::RS_DOWN,
             m_u: Default::default(),
         };
-        m.m_u.m_rs_req.addr = 0x4000;
+        m.m_u.m_rs_req.addr = 0;
         m.m_u.m_rs_req.len = 3;
         mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
         let mut server = booted_with(alloc::boxed::Box::new(mock));
@@ -1768,6 +2070,169 @@ mod signal_handler_tests {
         assert!(s.flags.contains(RFlags::LATEREPLY), "late reply armed");
         assert_eq!(s.caller, Endpoint::PM);
         assert_eq!(s.caller_request, minix_types::RS_DOWN);
+    }
+
+    /// Builds the flat caller-space image do_up's safecopy chain reads:
+    /// the `rs_start_t` struct at 0 (fields written at the pinned
+    /// `rs_start_off` offsets — Fix #81), the command string at 0x1000 and
+    /// the label/progname text at 0x1100/0x1200 (rs.h:63 — labels are
+    /// copied over separately).
+    fn do_up_image(cmd: &[u8], label: &[u8]) -> alloc::vec::Vec<u8> {
+        use minix_types::rs_start_off as off;
+        let mut img = alloc::vec![0u8; 0x2000];
+        fn put32(img: &mut [u8], o: usize, v: u32) {
+            img[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        fn put64(img: &mut [u8], o: usize, v: u64) {
+            img[o..o + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        put64(&mut img, off::CMD_ADDR, 0x1000);
+        put64(&mut img, off::CMD_LEN, cmd.len() as u64);
+        put32(&mut img, off::QUANTUM, 200);
+        // The C caller defaults (minix-service parse.c:1165-1168):
+        // sigmgr = RS, scheduler = SCHED, quantum = USER_QUANTUM.
+        put32(&mut img, off::SIGMGR, Endpoint::RS.get() as u32);
+        put32(&mut img, off::SCHEDULER, Endpoint::SCHED.get() as u32);
+        put64(&mut img, off::IPC_ADDR, 0x1300);
+        put64(&mut img, off::IPC_LEN, 3);
+        img[0x1300..0x1303].copy_from_slice(b"ipc");
+        put64(&mut img, off::LABEL_ADDR, 0x1100);
+        put64(&mut img, off::LABEL_LEN, label.len() as u64);
+        put64(&mut img, off::PROGNAME_ADDR, 0x1200);
+        put64(&mut img, off::PROGNAME_LEN, label.len() as u64);
+        img[0x1000..0x1000 + cmd.len()].copy_from_slice(cmd);
+        img[0x1100..0x1100 + label.len()].copy_from_slice(label);
+        img[0x1200..0x1200 + label.len()].copy_from_slice(label);
+        img
+    }
+
+    /// A booted server whose create faces succeed and whose safecopy image
+    /// is the given flat buffer — the do_up fixture.
+    fn booted_do_up(image: alloc::vec::Vec<u8>) -> RsServer {
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.payload = Some(image);
+        mock.ticks = 500;
+        mock.vm_ok = true;
+        mock.execve_ok = true;
+        mock.fork_pid = Some(701);
+        mock.child_endpoint = Some(Endpoint::MEM);
+        booted_with(alloc::boxed::Box::new(mock))
+    }
+
+    fn do_up_message(addr: u64) -> minix_types::Message {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_UP,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = addr;
+        m
+    }
+
+    #[test]
+    fn test_do_up_starts_service_and_arms_late_reply() {
+        // 13/R4 wiring: RS_UP (request.c:15-106) — struct decode (Fix #81),
+        // buffer fetches, check_request, init_slot, the duplicate gates and
+        // start_service; the reply is deferred (LATEREPLY + EDONTREPLY,
+        // request.c:98-105).
+        let mut server = booted_do_up(do_up_image(b"/bin/tty", b"tty"));
+        let m = do_up_message(0);
+        assert_eq!(
+            server.do_up(&m),
+            Ok(minix_types::EDONTREPLY),
+            "late reply: the EDONTREPLY marker suppresses the immediate reply"
+        );
+        let state = server.state.as_ref().unwrap();
+        let label = crate::service_slot::Label::from_bytes(b"tty");
+        let id = state
+            .table
+            .lookup_by_label(&label)
+            .expect("service slot created");
+        let s = state.table.get(id);
+        assert!(s.flags.contains(RFlags::IN_USE | RFlags::ACTIVE));
+        assert!(s.flags.contains(RFlags::LATEREPLY), "late reply armed");
+        assert_eq!(s.caller, Endpoint::PM);
+        assert_eq!(s.caller_request, minix_types::RS_UP);
+        assert_eq!(s.pub_.proc_name.as_bytes()[..3], *b"tty");
+        assert_eq!(s.quantum, 200);
+        let mut cmd = [0u8; 8];
+        cmd.copy_from_slice(&s.cmd[..8]);
+        assert_eq!(&cmd, b"/bin/tty", "cmd bytes fetched from caller space");
+    }
+
+    #[test]
+    fn test_do_up_noblock_replies_immediately() {
+        // C: request.c:93-96 — RSS_NOBLOCK returns OK without arming the
+        // late reply.
+        let mut img = do_up_image(b"/bin/tty", b"tty");
+        img[minix_types::rs_start_off::FLAGS..minix_types::rs_start_off::FLAGS + 4]
+            .copy_from_slice(&crate::slot::RssFlags::NOBLOCK.bits().to_le_bytes());
+        let mut server = booted_do_up(img);
+        let m = do_up_message(0);
+        assert_eq!(server.do_up(&m), Ok(0), "nobblock replies OK now");
+        let state = server.state.as_ref().unwrap();
+        let label = crate::service_slot::Label::from_bytes(b"tty");
+        let id = state.table.lookup_by_label(&label).expect("created");
+        assert!(
+            !state.table.get(id).flags.contains(RFlags::LATEREPLY),
+            "no late reply for noblock"
+        );
+    }
+
+    #[test]
+    fn test_do_up_rejects_duplicate_label() {
+        // C: request.c:70-77 — a same-label service → EBUSY; the freshly
+        // allocated row stays dirty-but-vacant (never IN_USE), matching the
+        // find-only alloc contract.
+        let mut server = booted_do_up(do_up_image(b"/bin/tty", b"vfs"));
+        {
+            // The pre-existing VFS row must carry the colliding label
+            // (request.c:71-77 matches on the ACTIVE rows' labels).
+            let s = server
+                .state
+                .as_mut()
+                .unwrap()
+                .table
+                .get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+        }
+        let m = do_up_message(0);
+        assert_eq!(server.do_up(&m), Err(Errno::EBUSY));
+        let state = server.state.as_ref().unwrap();
+        assert!(
+            !state
+                .table
+                .get(crate::service_slot::SlotId::new(1))
+                .flags
+                .contains(RFlags::IN_USE),
+            "the fresh row is not marked in-use"
+        );
+    }
+
+    #[test]
+    fn test_do_up_requires_root_caller() {
+        // C: manager.c:91-97 — NULL-target RS_UP needs a root caller; a
+        // failing getnuid means "not root" → EPERM.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.payload = Some(do_up_image(b"/bin/tty", b"tty"));
+        mock.vm_ok = true;
+        mock.execve_ok = true;
+        mock.fork_pid = Some(701);
+        mock.child_endpoint = Some(Endpoint::MEM);
+        mock.fail_calls = alloc::vec![crate::testutil::Call::GetNuid(Endpoint::PM)];
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let m = do_up_message(0);
+        assert_eq!(server.do_up(&m), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn test_do_up_struct_copy_failure_propagates() {
+        // C: request.c:33-37 — copy_rs_start failure propagates; an empty
+        // image makes the struct fetch read past its end → EFAULT from the
+        // seam (the address-aware mock mirrors the kernel's EFAULT).
+        let mut server = booted_do_up(alloc::vec::Vec::new());
+        let m = do_up_message(0);
+        assert_eq!(server.do_up(&m), Err(Errno::EFAULT));
     }
 
     /// A booted server whose VFS slot carries the given label (system
@@ -1813,7 +2278,7 @@ mod signal_handler_tests {
             m_type: minix_types::RS_LOOKUP,
             m_u: Default::default(),
         };
-        m.m_u.m_rs_req.name = 0x4000;
+        m.m_u.m_rs_req.name = 0;
         m.m_u.m_rs_req.name_len = 3;
 
         assert_eq!(server.do_lookup(&mut m), Ok(0));
@@ -1831,7 +2296,7 @@ mod signal_handler_tests {
             m_type: minix_types::RS_LOOKUP,
             m_u: Default::default(),
         };
-        miss.m_u.m_rs_req.name = 0x4000;
+        miss.m_u.m_rs_req.name = 0;
         miss.m_u.m_rs_req.name_len = 3;
         assert_eq!(miss_server.do_lookup(&mut miss), Err(Errno::ESRCH));
 
@@ -1841,7 +2306,7 @@ mod signal_handler_tests {
             m_type: minix_types::RS_LOOKUP,
             m_u: Default::default(),
         };
-        short.m_u.m_rs_req.name = 0x4000;
+        short.m_u.m_rs_req.name = 0;
         short.m_u.m_rs_req.name_len = 1;
         assert_eq!(server.do_lookup(&mut short), Err(Errno::EINVAL));
     }
@@ -1865,7 +2330,7 @@ mod signal_handler_tests {
             m_type: minix_types::RS_FI,
             m_u: Default::default(),
         };
-        m.m_u.m_rs_req.addr = 0x4000;
+        m.m_u.m_rs_req.addr = 0;
         m.m_u.m_rs_req.len = 3;
 
         assert_eq!(server.do_fi(&m), Ok(0), "asynsend seam accepts the send");
@@ -1879,7 +2344,7 @@ mod signal_handler_tests {
             m_type: minix_types::RS_FI,
             m_u: Default::default(),
         };
-        miss.m_u.m_rs_req.addr = 0x4000;
+        miss.m_u.m_rs_req.addr = 0;
         miss.m_u.m_rs_req.len = 3;
         assert_eq!(miss_server.do_fi(&miss), Err(Errno::ESRCH));
     }
@@ -1995,7 +2460,7 @@ mod signal_handler_tests {
             m_type,
             m_u: Default::default(),
         };
-        m.m_u.m_rs_req.addr = 0x4000;
+        m.m_u.m_rs_req.addr = 0;
         m.m_u.m_rs_req.len = 3;
         m
     }

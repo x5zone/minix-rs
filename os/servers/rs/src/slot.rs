@@ -121,6 +121,12 @@ pub struct RsStart {
     pub ipclen: usize,
     /// C: `rss_progname`/`rss_prognamelen` — rs.h:140-141.
     pub progname: Label,
+    /// Claimed progname length. C: `rss_prognamelen` — rs.h:141 (`size_t`).
+    /// Sibling of `cmdlen`/`scriptlen`/`ipclen`: the raw request value, so
+    /// `edit_slot`'s E2BIG gate (manager.c:1593) fires on what the caller
+    /// *claimed* before any byte is inspected — `Label` alone cannot carry
+    /// "claimed 20, buffer holds an early NUL".
+    pub progname_len: usize,
     /// Number of control entries. C: `int rss_nr_control` — rs.h:136.
     /// `i32` (not `usize`): C `int` may carry the pre-validation negative
     /// "unset/invalid" state (R2 — todo §14.1); `ServiceSlot.nr_control`
@@ -244,6 +250,7 @@ impl Default for RsStart {
             ipc_list: [0; MAX_IPC_LIST],
             ipclen: 0,
             progname: Label::empty(),
+            progname_len: 0,
             nr_control: 0,
             control: [Label::empty(); RS_NR_CONTROL],
             nr_irq: 0,
@@ -496,16 +503,12 @@ pub fn edit_slot(
     }
     crate::service_create::rebuild_args(slot);
 
-    // Copy in the program name (manager.c:1596-1615 is the label block; the
-    // progname copy is manager.c:1589-1593's sibling at :1593-1595 in C —
-    // E2BIG bound, then the byte copy; `Label` carries the bytes already).
-    let progname_len = rs_start
-        .progname
-        .as_bytes()
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(RS_MAX_LABEL_LEN);
-    if progname_len > RS_MAX_LABEL_LEN - 1 {
+    // Copy in the program name (manager.c:1593-1595): E2BIG on the claimed
+    // length before any byte is read, then the copy. The claimed value lives
+    // in `progname_len` — a `Label` cannot express "claimed 20, buffer has
+    // an early NUL", so the old NUL-position derivation was a gate on the
+    // wrong quantity.
+    if rs_start.progname_len > RS_MAX_LABEL_LEN - 1 {
         return Err(Errno::E2BIG);
     }
     slot.pub_.proc_name = rs_start.progname;
