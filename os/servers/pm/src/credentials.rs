@@ -8,8 +8,10 @@ use minix_types::{Endpoint, UserSlot, Pid, Uid, Gid, VirBytes, EINVAL, EPERM, EF
 use crate::mproc::{ProcTable, Credentials, NGROUPS_MAX, RemainingFlags};
 use crate::ipc::ReplyIntent;
 
-/// `GID_MAX` (`sys/limits.h`, 32-bit `0xFFFFFFFF` or `i32::MAX`).
-pub const GID_MAX: u64 = u32::MAX as u64;
+/// `GID_MAX`（`sys/sys/syslimits.h:53`，`2147483647U`）。gid_t 是 32 位
+/// 无符号（`sys/sys/ansi.h:38` `__uint32_t`），因此 C 的 `> GID_MAX`
+/// 校验（getset.c:191）真实拒绝 [2^31, 2^32-1] 区间——Rust 同值同语义。
+pub const GID_MAX: u64 = 2147483647;
 
 /// `SUPER_USER` (`unistd.h`, `0`).
 pub const SUPER_USER: Uid = 0;
@@ -418,10 +420,15 @@ mod tests {
         mk_proc(&mut table, 0, 0, 0);
         let mut c = NopCopy;
         let mut v = NopVfs;
-        // GID_MAX is u32::MAX, so no u32 gid can exceed it; instead verify that
-        // the check is present by using a valid gid that should succeed.
-        let res = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: vec![100] }, &mut c, &mut v);
-        assert_eq!(res.unwrap(), ReplyIntent::ReplyLater);
+        // gid_t 为 u32、GID_MAX = 2^31-1：[2^31, 2^32-1] 区间被拒绝
+        //（C getset.c:191，syslimits.h:53——V2-P3-2 修复前该检查恒假）。
+        let over = vec![(GID_MAX as u64 + 1) as Gid];
+        let res = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: over }, &mut c, &mut v);
+        assert_eq!(res.unwrap_err(), SetError::Inval);
+        // 边界值 GID_MAX 本身合法。
+        let boundary = vec![GID_MAX as Gid];
+        let res_ok = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: boundary }, &mut c, &mut v);
+        assert_eq!(res_ok.unwrap(), ReplyIntent::ReplyLater);
         // Exceeding NGROUPS_MAX should be Inval (already tested in super check)
         let many = vec![1; NGROUPS_MAX + 1];
         let res2 = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: many }, &mut c, &mut v);
@@ -458,7 +465,7 @@ mod tests {
     fn test_constants_match_c() {
         assert_eq!(NGROUPS_MAX, 16);
         assert_eq!(crate::mproc::RemainingFlags::TAINTED.bits(), 0x40000);
-        assert_eq!(GID_MAX, u32::MAX as u64);
+        assert_eq!(GID_MAX, 2147483647);
     }
 
     fn mk_running(table: &mut ProcTable, slot: usize) {

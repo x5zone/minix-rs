@@ -931,6 +931,16 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无。
 
+### ✅ Fix #37: V2-P3-2 — GID_MAX 校验恢复真实语义（2026-09-08）
+
+**File(s)**：`os/servers/pm/src/credentials.rs`（`GID_MAX` 从 `u32::MAX` 改为 C 真值 `2147483647`（syslimits.h:53）；`test_setgroups_gid_max` 补 [2^31, 2^32-1] 拒绝与边界值两断言；`test_constants_match_c` 数值同步）。
+
+**Before/After**：gid_t 为 32 位无符号（ansi.h:38），C 的 `> GID_MAX`（getset.c:191）拒绝 [2^31, 2^32-1]；Rust 常量取 `u32::MAX` 使检查恒假。修复后同值同语义，`setgroups(gid=2^31)` → EINVAL。原测试注释"无法构造超限值"自证恒假——测试自身正确性维度的漏网之鱼，本轮修正。
+
+**Verified**：`cargo test -p minix-pm`：354 lib + 8 integration passed；clippy 0 warning。
+
+**未做（DEFERRED 论证）**：无。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1145,7 +1155,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 
 - **优先级**：P3；**类型**：注释漂移（模式 77 变体：不是行号漂移而是"实现已赶上/前提已消失"）；**文件**：`wait.rs:128-131`（D-21 已实现 + `let _ = rusage_addr;` 死绑定）、`exit.rs:515-516`（"(omitted)" doc 注释）、`event.rs:213-214`（"两者 DEFERRED"与 Fix #7 后的现实矛盾）、`main.rs:10`（"RS_INIT 握手归主循环"前提在本树 C 中不存在）。**建议**：逐处更新注释为当前事实；wait.rs 的死绑定删除。**验证**：四处 grep 逐条确认。
 
-#### V2-P3-2 setgroups 的 GID_MAX 检查恒假（C 侧可拒绝 ≥2^31 的 gid）
+#### V2-P3-2 setgroups 的 GID_MAX 检查恒假（C 侧可拒绝 ≥2^31 的 gid）（✅ 已修复 2026-09-08，见 §10 Fix #37）
 
 - **优先级**：P3；**类型**：语义偏移（微观）；**文件**：`credentials.rs:203-207`（`(g as u64) > GID_MAX`，Gid=u32 时恒假；测试 `test_setgroups_gid_max` 自述"无法构造超限值"）；C 侧 `getset.c:191` 以 `GID_MAX = 2147483647U`（`minix3/sys/sys/syslimits.h:53`）比较，gid_t 为 32 位时可拒绝 [2^31, 2^32-1] 区间。**建议**：`SetGroups` 改存 `u64` 或在 wire 解码层用 i64 载荷校验；或登记为"与 C 恒假检查同构的有意简化"（C 的检查实际上也只能在 64 位 gid_t 下触发，需先核实 C gid_t 宽度 `[待验证]`）。**验证**：构造 gid=2^31 的 setgroups（wire 层）→ EINVAL。
 
