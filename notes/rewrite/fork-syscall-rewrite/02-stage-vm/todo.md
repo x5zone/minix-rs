@@ -1425,6 +1425,16 @@ Coverage Summary for vm:
 - **Verified**: 新增 `test_do_fork_eager_cow_resolves_message_pages`（CoW fork 后 refcount 2 → 子相解析得私有拷贝（pfn 不同）→ 父相 refcount 1 保留原页——C 端态逐项断言）+ `test_do_fork_without_msgaddr_skips_prefault`（None → CoW 共享 refcount 2 不动）；三矩阵 **488 / 505 / 488 passed**；clippy `servers/vm` 0 警告
 - **Docs**: 本条即判定记录；E-FORKMSG 登记 edge_todo.md（跨 stage 文件清单 + 解锁条件）
 
+### 16.1.1 T35 预判笔记（2026-09-07 执行前侦察，逐项预判供执行时核证）
+
+- **WouldBlock**（transport.rs:86）：C 的 IPC 有非阻塞接收语义（EWOULDBLOCK），post-E1 会真实产生——**保留变体**，注释改事实性（非 DEFERRED 措辞）。
+- **heap shrink**（heap_arena.rs:150）：HeapArena 本身是 [ARCH A-1] 的 minix-rs 自有设施（C VM 无对应物），`shrink` 无生产调用方亦无 C 锚点——倾向**删除**（连带其测试）；执行时 grep 确认零引用。
+- **vm_self_query / force_clear / VmProcIter**：三者均为 test-only 且各有测试消费——**保留**，注记改事实性措辞（诊断面/测试面），不删（vm_self_query 是 V11-P2-1 诊断面的预留口）。
+- **as_buddy/as_buddy_mut**（phys_mem/mod.rs:182）：buddy 后端被 feature 选择后 PhysAlloc::Buddy 变体在运行期真实存在，accessor 属对称面——**保留**，注记改事实性。
+- **buddy/segtree total_memory/free_memory/is_under_pressure**：执行时先查 query.rs `handle_info` 的 vsi_free/vsi_total 数据源——若走 page_alloc 统计则这些 per-backend 实现确为死面，**删除或 cfg(test)**；若被引用则接线。
+- **G-V12-4**（errno 直传）：`VmError` 增携带 errno 的变体 + dispatcher 两处 arm（UpdateKernelFailed/KernelCall）改直传——修后 RS 收到内核原始 errno（C rs.c:177 parity）；注意 VmError 全部 match 点的穷尽性波及。
+- **acl mask**（acl.rs:185）：归 T34 一并处理（V9-P2-3 的 ACL 关联）。
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。
