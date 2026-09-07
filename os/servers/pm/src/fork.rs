@@ -80,8 +80,9 @@ pub fn do_fork<T: IpcTransport>(
         parent: parent_endpoint,
         child_pid,
     };
-    tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport)
-        .map_err(|_| ForkCoordError::VfsError)?;
+    // tell_vfs 失败即 panic（utility.c 同型；V2-P2-3：不变式违规或传输
+    // 损坏不是用户可见的 fork 错误码）。
+    tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport);
 
     // 8. Tracer SIGSTOP (forkexit.c:132-135)
     // C: if (rmc->mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, TRUE /*trace*/, FALSE);
@@ -178,8 +179,9 @@ pub fn do_srv_fork<T: IpcTransport>(
         reuid: params.uid as i32,
         regid: params.gid as i32,
     };
-    tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport)
-        .map_err(|_| ForkCoordError::VfsError)?;
+    // tell_vfs 失败即 panic（utility.c 同型；V2-P2-3：不变式违规或传输
+    // 损坏不是用户可见的 fork 错误码）。
+    tell_vfs(table, UserSlot::new(child_slot), vfs_call, transport);
 
     // 7. Tracer SIGSTOP (forkexit.c:231-234) — 与 do_fork 步骤 8 同构；
     // 子进程的 tracer 继承同样走 TO_TRACEFORK 条件（forkexit.c:187-216 的
@@ -369,7 +371,6 @@ pub enum ForkCoordError {
     /// VM service error.
     VmError,
     /// VFS service error.
-    VfsError,
     /// Kernel error.
     KernelError,
 }
@@ -384,7 +385,6 @@ impl From<ForkCoordError> for PmError {
             ForkCoordError::ProcTableFull => PmError::ProcTableFull,
             ForkCoordError::SlotInUse => PmError::SlotInUse,
             ForkCoordError::VmError => PmError::InternalError,
-            ForkCoordError::VfsError => PmError::InternalError,
             ForkCoordError::KernelError => PmError::InternalError,
         }
     }

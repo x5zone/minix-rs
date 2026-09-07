@@ -268,7 +268,9 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
             VfsCall::Exit { endpoint: proc_ep }
         };
         // tell_vfs on exiting slot (utility.c:123-139) → VFS_CALL
-        let _ = crate::ipc::tell_vfs(table, slot, call, transport);
+        // tell_vfs 失败即 panic（utility.c 同型，V2-P2-3）——进程死亡时
+        // VFS 告知丢失不可接受，静默继续会让 VFS 永远保留死进程状态。
+        crate::ipc::tell_vfs(table, slot, call, transport);
     }
 
     // ---- 9. PRIV_PROC immediate sys_clear (361-369) ----

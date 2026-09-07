@@ -47,27 +47,6 @@ const WCOREFLAG: i32 = 0o200;
 
 /// `tell_vfs` 的发送错误。
 ///
-/// C 在对应位置直接 `panic`（`utility.c:131-132` 的 not-idle、`135-136` 的发送失败）。
-/// Rust 侧改为返回 `Result`：生产路径由调用方按 C 语义 fail-fast，测试路径可断言。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VfsCallError {
-    /// 目标进程正在进行另一次 VFS/事件调用（C: `VFS_CALL | EVENT_CALL` 已置位）。
-    ///
-    /// C: `utility.c:122-123` panic("tell_vfs: not idle: %d")。
-    NotIdle,
-    /// IPC 发送失败（C: `asynsend3` 失败 panic）。
-    SendFailed(IpcError),
-}
-
-impl fmt::Display for VfsCallError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotIdle => write!(f, "tell_vfs: target process is not idle (already VFS/EVENT blocked)"),
-            Self::SendFailed(e) => write!(f, "tell_vfs: IPC send to VFS failed: {:?}", e),
-        }
-    }
-}
-
 /// 进程事件类型（供 [`VfsReplyServices::publish_event`] 使用）。
 ///
 /// 对应 C `event.c:86-91` 中由 `EXITING` / `UNPAUSED` 标志推断的两类事件；此处把推断
@@ -184,22 +163,24 @@ pub fn tell_vfs<T: IpcTransport + ?Sized>(
     slot: UserSlot,
     call: VfsCall,
     transport: &mut T,
-) -> Result<(), VfsCallError> {
-    // ① not-idle（utility.c:122-123）：VFS_CALL 或 EVENT_CALL 均不可
+) {
+    // ① not-idle（utility.c:122-123）：VFS_CALL 或 EVENT_CALL 均不可——
+    // 同一进程不可能同时有两个未完成的 VFS 调用（05 文档 §2.1：标志位
+    // 即 continuation 槽位）。违反即 PM 状态损坏，panic 交由 RS 重启。
     if table.procs[slot.get()].state.block.ipc_blocked.is_some() {
-        return Err(VfsCallError::NotIdle);
+        panic!("tell_vfs: not idle: {call:?}");
     }
 
-    // ② 异步发送（utility.c:127 asynsend3(VFS_PROC_NR, AMF_NOREPLY)）
+    // ② 异步发送（utility.c:127 asynsend3(VFS_PROC_NR, AMF_NOREPLY)）。
+    // 发送失败 = 传输层损坏，panic 与 C 同型（utility.c:127-129）。
     let msg = call.encode();
-    transport
-        .send(Endpoint::VFS, &msg)
-        .map_err(VfsCallError::SendFailed)?;
+    if let Err(e) = transport.send(Endpoint::VFS, &msg) {
+        panic!("tell_vfs: unable to send to VFS: {e:?}");
+    }
 
     // ③ 置 VFS_CALL（utility.c:128）——必须在发送成功后
     table.procs[slot.get()].state.block.ipc_blocked =
         Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
-    Ok(())
 }
 
 /// 处理 VFS 回复（C: `main.c:294-424` `handle_vfs_reply`）。
@@ -973,8 +954,7 @@ mod tests {
             eid: 0,
             rid: 0,
         };
-        let r = tell_vfs(&mut table, slot, call, &mut transport);
-        assert!(r.is_ok());
+        tell_vfs(&mut table, slot, call, &mut transport);
         assert_eq!(
             table.procs[slot.get()].state.block.ipc_blocked,
             Some(IpcBlockReason::VfsCall { reply_to_new_parent: false })
@@ -1095,6 +1075,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "tell_vfs: not idle")]
     fn test_tell_vfs_not_idle_when_blocked() {
         use crate::ipc::transport::TestIpcTransport;
         use crate::mproc::ProcTable;
@@ -1111,8 +1092,7 @@ mod tests {
             eid: 0,
             rid: 0,
         };
-        let r = tell_vfs(&mut table, slot, call, &mut transport);
-        assert_eq!(r, Err(VfsCallError::NotIdle));
-        assert_eq!(transport.sent().len(), 0);
+        tell_vfs(&mut table, slot, call, &mut transport);
+        unreachable!("not-idle must panic before sending");
     }
 }

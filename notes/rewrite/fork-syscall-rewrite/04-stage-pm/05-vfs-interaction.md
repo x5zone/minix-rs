@@ -223,7 +223,7 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 
 ### D3：`tell_vfs` 的三段式与 C 同序
 
-`tell_vfs(table, slot, call, transport)`（minix-pm）：① not-idle 检查（进程 `ipc_blocked.is_some()`）→ ② 编码并 `send` → ③ 成功后置 `IpcBlockReason::VfsCall { reply_to_new_parent: false }`。顺序与 C 一致（先检查、再发送、再置位）。检查失败返回 `VfsCallError::NotIdle`——保留 C 的 "not idle" panic 语义，由调用层决定 fail-fast。
+`tell_vfs(table, slot, call, transport)`（minix-pm）：① not-idle 检查（进程 `ipc_blocked.is_some()`）→ ② 编码并 `send` → ③ 成功后置 `IpcBlockReason::VfsCall { reply_to_new_parent: false }`。顺序与 C 一致（先检查、再发送、再置位）。两处失败——not-idle（不变式违规，`utility.c:122-123`）与发送失败（传输层损坏，`utility.c:127-129`）——都在 `tell_vfs` 内部直接 `panic`，与 C 逐点同型：PM 无法安全服务时交给 RS 重启，而不是把内部损坏降级成一次用户可见的 errno（那会掩盖病因；todo.md §11 V2-P2-3 曾记录 exit 路径吞错、fork 路径降级的两处 fail-open）。
 
 ### D4：状态机效果经端口 trait 施加，双实现
 

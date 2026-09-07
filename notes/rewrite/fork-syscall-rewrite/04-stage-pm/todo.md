@@ -903,6 +903,24 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：handler 交付链（sigframe 建立）依赖 V2-P2-8，随批次 B。
 
+### ✅ Fix #35: V2-P2-3 — tell_vfs 错误路径 fail-closed（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/ipc/vfs.rs`（`tell_vfs` 双错误改内部 panic：not-idle = PM 状态不变式违规、发送失败 = 传输层损坏，对齐 utility.c:122-129；签名去 `Result`（Err 永不可达的 API 坏味）；删除 `VfsCallError` 枚举；`test_tell_vfs_not_idle_when_blocked` 改 `#[should_panic]`）
+- `os/servers/pm/src/exit.rs`（exit 路径 `let _ = tell_vfs(...)` 吞错 → 直接调用，panic 即 fail-fast）
+- `os/servers/pm/src/fork.rs`（`map_err(|_| ForkCoordError::VfsError)` 降级 ×2 → 直接调用；删除 `ForkCoordError::VfsError` 变体与 `PmError::InternalError` 映射）
+- `notes/.../05-vfs-interaction.md`（§3 Rust 侧描述更正）
+
+**Before/After**：C 的 tell_vfs 两处 panic 都在被调方内部；Rust 曾改返回 Result 且调用方一个吞错（exit）、一个降级为用户可见 errno（fork）——内部损坏被伪装成普通失败。修复后语义与 C 逐点同型：PM 无法安全服务 → panic → RS 重启（Minix3 的可重启性是 panic 敢于 fail-fast 的前提）。**设计选型**：(a) panic 移入 tell_vfs 内部（首选：与 C 同位置，"not idle" 判定就在被调方，调用方无需重复查询；Result 永不 Err 的假 API 消除）；(b) 调用点各自 panic、tell_vfs 保留 Result（劣：每个调用点重复策略，API 谎报可恢复性）；(c) fork 保留降级（否决：把不变式违规伪装成用户错误正是本条要消灭的）。
+
+**Verified**：
+- `cargo test -p minix-pm`：354 lib + 8 integration passed（not-idle 测试改 should_panic 后通过）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error
+
+**Docs**：`05-vfs-interaction.md` §3；本文件 V2-P2-3 标 ✅。
+
+**未做（DEFERRED 论证）**：无。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1061,7 +1079,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：`do_exec` 开头加 `caller ∈ {VFS, RS}` 门（返回 `ExecError::Perm`），与同文件 do_execrestart 同风格。方案二：把校验放 dispatch 臂——劣：校验离语义实现远，单测覆盖不到。
 - **验证**：单测：普通进程 endpoint 调 do_exec → Perm。
 
-#### V2-P2-3 tell_vfs 错误路径两处 fail-open（C 均为 panic）
+#### V2-P2-3 tell_vfs 错误路径两处 fail-open（C 均为 panic）（✅ 已修复 2026-09-08，见 §10 Fix #35）
 
 - **优先级**：P2
 - **类型**：fail-closed 契约破坏（P1-2 同型残留）
