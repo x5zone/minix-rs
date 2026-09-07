@@ -2240,7 +2240,7 @@ I6（见 Fix #78）。
 | R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ✅ Fix #85（PROCPUB live；rproc 内部表 pinning 为 E-RSWIRE 余件） |
 | R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ✅ Fix #86 |
 | R9-R10 | A-2 Effects 聚合（用户裁决：执行） | ☐ |
-| R11 | 收敛轮（翻态 + Gate E + edge 对账 + Rule Discovery） | ☐ |
+| R11 | 收敛轮（翻态 + Gate E + edge 对账 + Rule Discovery） | ✅ 2026-09-08 |
 
 ### ✅ Fix #81 — R3：E-RSSTART 改判关单 + `rs_start_t` wire 解码面（minix-types::ipc::rs_start）
 - **File**：`os/libs/minix-types/src/ipc/rs_start.rs`（新建：`rs_start_off` 偏移单点表 +
@@ -2380,3 +2380,42 @@ I6（见 Fix #78）。
 - **Verified**：`cargo test -p minix-rs` = **325 passed**（零回归）；clippy 触碰
   文件零告警（清除一处 const 搬移遗留的悬空 doc）；fmt 干净；T7 PASS。
   lib.rs 3913 → 2261 行（<3k，A-1 的行数观察项一并解除）。
+
+### ✅ R11 收敛记录（2026-09-08）
+
+**测试对账（Gate E）**：minix-rs **325 passed**（304 基线 + R1 +5 / R4 +5 / R5 +4 /
+R6 +4 / R7 +3，逐轮对账零偏差）；minix-types **182 passed**（175 + R3 +3 / R7 +2
+/ 并发 E3 提交 +2）。全部新增测试名逐一 grep 命中（各 Fix 的 Verified 块已录）。
+clippy 触碰文件零告警；fmt 干净；T7 门 PASS（boot.rs:1045 唯一标记带 18 号契约）。
+
+**edge 对账**：E-RSSTART 关单（改判 + RsStartWire + 三臂 live，Fix #81/#82/#83/#84）；
+E-RSWIRE 拆分——RS 侧半的 `SI_PROCPUB_TAB` live（Fix #85，`rprocpub` wire 同时
+是 VM 半的消费面），`SI_PROC_TAB`/`SI_PROCALL_TAB` 的 `struct rproc` 内部表
+pinning 为余件（传递链 struct priv → minix_timer_t/sys_map_t，无树内消费者），
+VM 侧半留 edge（`ipc_call_rs_init` 真实体）。
+
+**遗留队列（全部有主）**：R9a/R9b（A-2 执行，设计定稿见 §21.1）→ 下一 session
+首轮；E9/E-1（trap 层 + SYS_* wrapper + PM/VM 对端）→ edge；A-3/R31/P2-S1 →
+归属他处；D1 维持闭合（2026-09-07 用户裁决）。
+
+**Step 5.7 Rule Discovery（campaign 终答）**：
+1. **「布局见证三件套」模式**（新，两实例）：跨边界字节 ABI 的 Rust pinning
+   固定形态 = 偏移常量单点表 + `#[repr(C)]` 私有见证结构 + `offset_of!`/`size_of`
+   编译期断言，解码一律 `from_le_bytes` 安全读取（零 unsafe、零对齐假设）。
+   R3（rs_start）与 R7（rprocpub）两次实例化，后者当场抓住 rs_pci_id 对齐误读
+   （u16×4 → 对齐 2，非指针式 8 对齐）——误读在测试构建期失败而非线上错解码。
+   建议沉淀 review-patterns（模式 85 候选：LWT，Layout Witness Triple）。
+2. **「mock 保真度随消费面升级」模式**（确认既有实践为可复用规则）：mock 的
+   seam 语义在 handler 消费面变宽时必须同步升级到真实原语语义（Fix #51 的
+   kernel_privs 回显、R4 的 safecopy 地址感知化——忽略地址的罐装 blob 在单取数
+   handler 时代恰好正确，多缓冲取数时代即成假绿）。
+3. CACG（Copy-struct ABI Gate，I7 提出）经 R3/R4/R6 实战确认：三臂接线前先
+   审计结构体内 typedef 的本树定义完整性——本 campaign 的零返工直接受益。
+
+### §21 campaign 终态（2026-09-08 快照）
+
+- **已完成**：R1-R8 + R11 共 9 轮、8 个 Fix（#79-#86）；生产臂 13/14/16 号
+  全部 live（dispatch 死表仅剩未知号 default 臂）；`rs_start_t`/`rprocpub` 两个
+  字节 ABI pinning 落地 minix-types。
+- **测试**：minix-rs 304→325、minix-types 175→182。
+- **待执行**：R9a/R9b（A-2，设计定稿 §21.1）——下一 session 首轮。
