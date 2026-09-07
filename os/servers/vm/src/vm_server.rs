@@ -16,7 +16,9 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, VM_PROCCTL, EncodeToM1};
+use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE, EncodeToM1};
+#[cfg(test)]
+use minix_types::VM_PROCCTL;
 #[cfg(test)]
 use minix_types::{VmForkIn, VmBrkIn, VmExitIn};
 use crate::vmproc::VmProcTable;
@@ -1325,63 +1327,40 @@ impl VmServer {
         Ok(())
     }
 
-    /// VFS transid dispatch — extracts transid, strips it, calls procctl.
-    /// C (main.c:131-141): TRNS_GET_ID → TRNS_DEL_ID → do_procctl
+    /// VFS transid dispatch — the resume path for VFS's asynchronous
+    /// VM_PROCCTL (HANDLEMEM) conversation. C (main.c:141-148):
     ///
-    /// # Current state (2026-06-14 procctl protocol partial fix)
+    /// ```c
+    /// transid = TRNS_GET_ID(msg.m_type);
+    /// if(msg.m_source == VFS_PROC_NR && IS_VFS_FS_TRANSID(transid)) {
+    ///     msg.m_type = TRNS_DEL_ID(msg.m_type);
+    ///     result = do_procctl(&msg, transid);
+    /// }
+    /// ```
     ///
-    /// The full C path is `TRNS_GET_ID → TRNS_DEL_ID → do_procctl`. `do_procctl`
-    /// itself is a multi-call dispatch (process control IPC), which is currently
-    /// DEFERRED on the procctl protocol design (follow-up).
-    ///
-    /// What this function does today:
-    /// 1. Validate parameters (`clean_type` in known range, `transid` non-zero)
-    /// 2. Record the transid in a tracing log so the call site can be observed
-    /// 3. Return a structured `VmError::NotImplemented` so callers get a
-    ///    meaningful error code (not a panic or `Ok(())` silent no-op)
-    ///
-    /// This is strictly an improvement over the previous stub which silently
-    /// discarded all parameters with `let _ = (...)`.
+    /// Ground-truth wire shape (vfsif.h:79-81, com.h:909-912): the arriving
+    /// message's `m_type` IS the transid (`0xB00 | seq`), so `TRNS_DEL_ID`
+    /// yields **0** — the original call number never travels in `m_type`;
+    /// do_procctl re-reads the procctl parameters from the message body
+    /// (the m9 overlay). The `transid` argument itself identifies which
+    /// suspended operation to resume — in minix-rs it has no consumer:
+    /// VMPPARAM_HANDLEMEM completes synchronously (documented deviation,
+    /// 22-vm-exit.md), so this path routes to the same single-shot
+    /// dispatch_procctl a fresh request would take.
     fn handle_vfs_transid(
         &mut self,
-        clean_type: u32,
-        transid: i32,
+        _clean_type: u32,
+        _transid: i32,
         msg: &Message,
     ) -> VmReply {
-        // C: main.c:141-148
-        //   transid = TRNS_GET_ID(msg.m_type);
-        //   if(msg.m_source == VFS_PROC_NR && IS_VFS_FS_TRANSID(transid)) {
-        //       msg.m_type = TRNS_DEL_ID(msg.m_type);
-        //       result = do_procctl(&msg, transid);
-        //   }
-        //
-        // The clean_type (after TRNS_DEL_ID) is the actual VM request number.
-        // In Minix3, only VM_PROCCTL is routed through the VFS transid path.
-        // We validate clean_type and transid, then delegate to dispatch_procctl.
-
-        // Validate clean_type: must be VM_PROCCTL.
-        // C: only do_procctl is called in the VFS transid branch.
-        if clean_type != VM_PROCCTL {
-            return VmReply::Error(VmError::InternalError);
-        }
-
-        // A zero transid means no transaction ID was attached.
-        // C: TRNS_GET_ID returns 0 when no transid; the assert
-        // `!IS_VFS_FS_TRANSID(transid)` in main.c:135 guarantees
-        // that a valid transid is non-zero in this branch.
-        if transid == 0 {
-            return VmReply::Error(VmError::InvalidProcess);
-        }
-
-        // Decode the procctl request from the message.
+        // Decode the procctl request from the message body.
         // C: do_procctl reads VMPCTL_PARAM, VMPCTL_WHO, VMPCTL_M1,
-        //    VMPCTL_LEN, VMPCTL_FLAGS from the message.
-        // Wire layout is the C m9 layout (param@16/who@20/m1@24/len@28/
-        // flags@32); `decode_message` reads the dedicated overlay.
+        //    VMPCTL_LEN, VMPCTL_FLAGS from the m9 overlay (param@16/
+        //    who@20/m1@24/len@28/flags@32).
         let request = VmProcctlIn::decode_message(msg);
 
-        // The caller is always VFS in this path.
-        // C: main.c:143 — msg.m_source == VFS_PROC_NR is the gate.
+        // The caller is always VFS in this path (P1 gate).
+        // C: main.c:142 — msg.m_source == VFS_PROC_NR is the gate.
         let caller = VFS_PROC_NR;
 
         // Pre-init defense (unreachable past run()): preserve the old
@@ -1497,16 +1476,18 @@ fn transid_extract(m_type: u32) -> i32 {
     (m_type & 0xFFFF) as i32
 }
 
-/// Strip the transaction ID from a VFS transid-encoded message type,
-/// returning the underlying call number.
+/// Strip the transaction ID from a VFS transid-encoded message type.
 ///
 /// C: `TRNS_DEL_ID(t)` in `minix/vfsif.h:81`.
 /// ```c
 /// #define TRNS_DEL_ID(t)  ((short)((t) >> 16))
 /// ```
+///
+/// Note (V11/T32): for a genuine transid message (`m_type == 0xB00 | seq`)
+/// this yields **0** — the original call number does not travel in
+/// `m_type`; do_procctl re-reads its parameters from the message body.
 fn transid_strip(m_type: u32) -> u32 {
-    // C casts to short (i16) which sign-extends. The result is the
-    // actual VM request number (e.g. VM_PROCCTL).
+    // C casts to short (i16) which sign-extends.
     ((m_type >> 16) as i16) as u32
 }
 
@@ -2542,6 +2523,62 @@ mod tests {
     }
 
     #[test]
+    fn test_vfs_transid_routes_to_procctl_clear() {
+        // V11/T32: a genuine VFS transid message carries m_type = 0xB00|seq
+        // (the transid IS the type; TRNS_DEL_ID yields 0) and the procctl
+        // parameters in the m9 body. P1 must route it to VM_PROCCTL: CLEAR
+        // from VFS executes and empties the target's address space.
+        use crate::region::{VirRegion, VrFlags};
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(73);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, 73);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            drop(active);
+            {
+                let mut proc = table.get_active(slot).unwrap();
+                let mut region = VirRegion::new(
+                    VirBytes(0x3000_0000),
+                    VirBytes(0x4000),
+                    VrFlags::ANON | VrFlags::WRITABLE,
+                );
+                region.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
+                proc.regions_mut().insert(region).unwrap();
+            }
+
+            let mut msg = Message::default();
+            msg.m_source = VFS_PROC_NR; // P1 gate: VFS only (crate-local const)
+            msg.m_type = 0xB01; // VFS_TRANSACTION_BASE + seq — the transid IS the type
+            {
+                // SAFETY: m9 overlay — VMPCTL_PARAM=1 (CLEAR), VMPCTL_WHO=ep
+                // (kernel syscall.rs / lib/minix-types m9 offsets).
+                let p = unsafe { &mut msg.m_u.m_lc_vm_procctl };
+                p.param = 1; // VMPPARAM_CLEAR
+                p.who = ep.0;
+            }
+            let kernel_status = IpcStatus { flags: 1 << 16 };
+            let action = server.dispatch_on_msg(&msg, &kernel_status, UserSlot::new(0));
+            match action {
+                DispatchAction::Reply(VmReply::Ok) => {}
+                DispatchAction::Reply(other) => {
+                    panic!("transid CLEAR must succeed, got {other:?}")
+                }
+                DispatchAction::Suspend => panic!("transid CLEAR must not suspend"),
+                DispatchAction::NoReply => panic!("transid CLEAR must reply"),
+            }
+            let proc = table.get_active(slot).unwrap();
+            assert_eq!(proc.regions().len(), 0, "CLEAR empties the address space");
+        });
+    }
+
+    #[test]
     fn test_vm_server_vfs_queue_access() {
         with_test_mock_base(|| {
             let server = make_test_vm_server();
@@ -2610,10 +2647,14 @@ mod tests {
             let mut server = make_test_vm_server();
             server.init();
 
-            // clean_type != VM_PROCCTL → InternalError
+            // V11/T32 (C parity): TRNS_DEL_ID on a genuine transid message
+            // yields 0 — the call number does not travel in m_type — so
+            // clean_type carries no routing information and is not gated;
+            // the message routes to do_procctl unconditionally and the
+            // zeroed body fails validation (VMPCTL_WHO = 0 → EINVAL).
             let msg = Message::default();
             let reply = server.handle_vfs_transid(0x600, 1, &msg);
-            assert!(matches!(reply, VmReply::Error(VmError::InternalError)));
+            assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));
         });
     }
 
@@ -2623,7 +2664,10 @@ mod tests {
             let mut server = make_test_vm_server();
             server.init();
 
-            // transid == 0 → InvalidProcess
+            // A zeroed body fails validation (VMPCTL_WHO = 0 → EINVAL;
+            // V11/T32: the former dedicated transid==0 gate is gone —
+            // a genuine transid message always carries the 0xB marker and
+            // can never extract to 0).
             let msg = Message::default();
             let reply = server.handle_vfs_transid(VM_PROCCTL, 0, &msg);
             assert!(matches!(reply, VmReply::Error(VmError::InvalidProcess)));

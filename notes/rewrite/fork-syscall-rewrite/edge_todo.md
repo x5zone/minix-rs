@@ -47,7 +47,7 @@
 | T29 | 5 | SIGKMEM 信号 seam + do_memory 排空循环（kernel 对端已落地；通电挂 E1） | G-V12-2 + G-V11-1 | ✅ 2026-09-07（todo.md §16 Fix #49；三矩阵 480/497/480） |
 | T30 | 5 | 分配漏斗回收-重试（alloc_pfn_reclaiming；C alloc_mem do-while 语义） | "24-page-cache" 停泊项 | ✅ 2026-09-07（todo.md §16 Fix #50；三矩阵 484/501/484） |
 | T31 | 5 | 缺页计数生产者接线 + InfoUsage 槽位判定（Getrusage 为出口，VM_INFO wire C-parity） | vmproc_handle.rs:305 | ✅ 2026-09-07（todo.md §16 Fix #51；新登记 G-V12-6） |
-| T32 | 6 | do_procctl multi-call | vm_server.rs:1227 | ⬜ |
+| T32 | 6 | VFS transid 路径 C-parity 修复（真 bug：clean_type 门拒绝真实 transid 消息） | vm_server.rs:1227 | ✅ 2026-09-07（todo.md §16 Fix #52；三矩阵 486/503/486） |
 | T33 | 6 | fork eager CoW（msgaddr 若缺 kernel 对端 → 登记 E-FORKMSG） | T11 收尾 | ⬜ |
 | T34 | 6 | MemType 收敛设计与实施 | V9-P2-3 | ⬜ |
 | T35 | 7 | 剩余判定批次（WouldBlock/heap shrink/vm_self_query/force_clear/VmProcIter/as_buddy/用量查询/bitmap perf/cow_resolve_region/acl mask/G-V12-4） | todo.md §16 | ⬜ |

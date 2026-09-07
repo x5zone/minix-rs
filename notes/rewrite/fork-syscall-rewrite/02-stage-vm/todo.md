@@ -1409,6 +1409,14 @@ Coverage Summary for vm:
 - **Verified**: `test_pagefault_accounting_minor_and_violation` 通过（served→minor、violation不计、major 仅在 VfsIo）；三矩阵 **485 / 502 / 485 passed**；clippy `servers/vm` 0 警告；`rg "inc_minor_fault|inc_major_fault"` 生产者唯一（dispatch_pagefault）
 - **Docs**: 本条即判定记录；G-V12-6 新登记（§16.1）
 
+### ✅ Fix #52: T32 — VFS transid 路径 C-parity 修复（真 bug：clean_type 门拒绝一切真实 transid 消息）
+
+- **盘点前提修正（双重）**：① campaign 原条目名"do_procctl multi-call"前提错误——C 的 `do_procctl`（exit.c:117-155）是**单 param** switch，不存在多对循环；② 实际 DEFERRED 项 `handle_vfs_transid` 非未实现，而是**实现带错**。
+- **真 bug（P1 级，被 pre-E2 掩蔽）**：C 的 transid wire（vfsif.h:79-81 + com.h:909-912）里，transid 报文的 `m_type` 就是 `0xB00|seq`——`TRNS_DEL_ID(t) = (short)(t>>16)` 对真实报文剥出 **0**（调用号不随行，do_procctl 从 m9 body 重读参数）。而 Rust 实现的门 `clean_type != VM_PROCCTL → InternalError` 要求剥出值恰为 VM_PROCCTL——**每一条真实的 VFS transid 消息都会被拒**。`transid_strip` 的文档（"返回底层调用号"）同样失真。
+- **修复**：`handle_vfs_transid` 删 clean_type 门（无条件路由 dispatch_procctl，对齐 C；垃圾 body 由参数校验拒绝），重写函数文档（wire 真相 + transid 无消费者——HANDLEMEM 同步化偏差，22-vm-exit.md）+ `transid_strip` 文档纠正；更新两个旧契约测试（`wrong_clean_type` 改钉"无条件路由 + 零 body 校验拒绝"、`zero_transid` 注记修正）+ 新增 dispatch 级测试 `test_vfs_transid_routes_to_procctl_clear`（m_type=0xB01 + m9 body CLEAR → P1 路由 → 目标地址空间清空）
+- **Verified**: `test_vfs_transid_routes_to_procctl_clear` + 更新后的 3 个 transid 测试全绿；三矩阵 **486 / 503 / 486 passed**；clippy `servers/vm` 0 警告；`VM_PROCCTL` 导入移至 cfg(test)（生产代码不再引用）
+- **Docs**: 本条即判定记录；handle_vfs_transid 文档重写（wire 真相 + 同步化偏差指针）
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。
