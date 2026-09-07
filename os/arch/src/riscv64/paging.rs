@@ -204,6 +204,15 @@ enum PteChannel {
 
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
+    // V11/E4: in this crate's own test build (mock feature), the VM window
+    // routes through MockDirectMap so tests can point it at real leaked
+    // memory via `set_mock_vm_base` — mirroring the x86_64 funnel.
+    // Production keeps the riscv64 constant base.
+    #[cfg(all(test, feature = "mock"))]
+    if matches!(channel, PteChannel::VmDm) {
+        return crate::arch::direct_map::MockDirectMap::vm_phys_to_virt(PhysBytes(phys)).0
+            as *mut u64;
+    }
     match channel {
         PteChannel::KernelDm => {
             Riscv64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
@@ -406,6 +415,34 @@ fn walk_alloc(root_paddr: u64, vaddr: u64, channel: PteChannel) -> Result<u64, P
     Ok(l0 + (l0_idx as u64) * 8)
 }
 
+impl Riscv64Paging {
+/// Free all page-table pages directly or transitively referenced by
+/// `table_paddr`'s valid non-leaf entries. `level` 0 = L2 (root),
+/// 1 = L1; children at level 2 are leaf L0 pages (freed without
+/// recursion). Data pages (leaf PTEs) are never touched here.
+///
+/// SAFETY: Direct Map channel active; the caller guarantees the whole
+/// tree is exclusive to this (dead) address space and no CPU walks it.
+unsafe fn free_child_tables(&self, table_paddr: u64, level: u8) {
+    if level >= 2 {
+        return;
+    }
+    let base = channel_to_ptr(table_paddr, self.channel);
+    for i in 0..512usize {
+        // SAFETY: sequential reads within the table page, which the
+        // caller has excluded from all other access.
+        let pte = unsafe { core::ptr::read_volatile(base.add(i)) };
+        // Valid non-leaf: V=1 and R|W|X = 0 (Sv39 spec 4.3c). Leaves
+        // are data pages owned by the region/exit path — skipped.
+        if pte & Sv39PteFlags::V.bits() != 0 && !pte_is_leaf(pte) {
+            let child = pte_to_paddr(pte);
+            unsafe { self.free_child_tables(child, level + 1) };
+            crate::pt_alloc::free_pt_page(minix_types::PhysBytes(child));
+        }
+    }
+}
+}
+
 impl Paging for Riscv64Paging {
     const PAGE_SIZE: usize = 4096;
 
@@ -510,16 +547,33 @@ impl Paging for Riscv64Paging {
     }
 
     unsafe fn destroy(&mut self) {
-        // Full reclaim requires a free function registered with pt_alloc
-        // (currently only alloc is registered). Without free, we zero the
-        // root L2 to prevent use-after-free if the physical page is reused,
-        // and accept the intermediate-table leak.
+        // V11/E4: full three-level reclaim when a pt_free function is
+        // registered (C pagetable.c:1427-1437 `pt_free` parity — previously
+        // "accept the intermediate-table leak"). Without pt_free (boot-stage
+        // tables with no allocator domain), keep the zero-root-only legacy
+        // shape: zero the root L2 to prevent use-after-free if the physical
+        // page is reused.
         //
         // SAFETY: the handle's Direct Map channel must be active;
-        // root_paddr is the physical address of our L2 (root) page.
+        // root_paddr is the physical address of our L2 (root) page. The
+        // exit path guarantees the page table is not active on any CPU —
+        // single-threaded VM, no concurrent walker.
+        if !crate::pt_alloc::is_free_registered() {
+            let ptr = channel_to_ptr(self.root_paddr, self.channel);
+            unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+            return;
+        }
+        // Depth-first: free every intermediate table below the root (L1
+        // pages, then L0 pages; leaf/data PTEs — V=1 with R|W|X — are data
+        // pages owned by the region/exit path — skipped). Then zero the
+        // root and return the root page itself to the allocator.
+        unsafe { self.free_child_tables(self.root_paddr, 0) };
         let ptr = channel_to_ptr(self.root_paddr, self.channel);
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+        crate::pt_alloc::free_pt_page(minix_types::PhysBytes(self.root_paddr));
     }
+
+
 
     fn map(
         &mut self,

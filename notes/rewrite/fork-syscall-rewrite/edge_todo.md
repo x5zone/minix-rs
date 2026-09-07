@@ -95,7 +95,7 @@
 
 ## E4 pt_alloc free 注册 + 三架构 destroy 中间页回收（= 02-stage-vm V11-P2-8）
 
-> **进度（2026-09-07，x86_64 完成）**：`pt_alloc::register_free/free_pt_page/is_free_registered` 落地（同一 write-once 惯例；无注册时 no-op）；`X86_64Paging::destroy` 四级 DFS 回收——中间表页逐级归还 pt_alloc，PS 位（大页帧）与数据页跳过（归 exit 的 region 路径），根页清零后最后归还（UAF 语义不变）；`channel_to_ptr` 的 VmDm 臂在 arch 自身 test build 路由 MockDirectMap（`set_mock_vm_base` 指向泄漏缓冲），宿主完整验证：1 root + 1 PDPT + 3 PD + 3 PT = 8 表页回收、3 数据页幸存、root 最后释放。riscv64 destroy 确认同型泄漏（仅清零根）；aarch64 同型（arch/src 无独立 aarch64 paging 文件——目标可用时处置）。**余件：riscv64/aarch64 的同型回收 + kernel/VM 侧 `register_free` 接线**（VM 的 `alloc_page::vm_pt_alloc` 注册了 alloc；free 的注册点随 VM 进程退出路径完善时补——当前 VM 侧进程页表分配/释放生命周期未闭环，先于本项无实际回收诉求）。
+> **进度（2026-09-08，x86_64 + riscv64 完成）**：riscv64 Sv39 三级树同款回收落地——`free_child_tables` 以 V 位 + 非 leaf（R|W|X=0）判定表页（leaf = 数据页，归 region/exit 路径），L0 的子即数据故 level ≥ 2 停止下探；`channel_to_ptr` 同款 cfg(test+mock) 路由。**验证方式差异**：riscv64 模块 `target_arch` 门控，宿主不编译、QEMU/harness 均无 std——实现经 `cargo check --target riscv64gc-unknown-none-elf --no-default-features --features riscv64` 编译验证（kernel 同款 shape，0 error），运行时验证归 QEMU（E5 族）；原 riscv64 宿主测试草稿因 no_std 目标无 std harness 已删。x86_64 部分此前已完成（宿主测试在位）。**余件：aarch64（arch/src 无独立 paging 文件，目标可用时处置）+ kernel/VM 侧 `register_free` 接线**（随 VM 进程退出路径完善时补）。
 >
 > 原始问题描述（x86_64 部分已修复）：`pt_alloc.rs` 只有 `register/is_registered/alloc_pt_page`，没有 free；`x86_64/paging.rs` 的 `destroy` 只清零根 PML4——每次进程退出泄漏中间页表页（C `pt_free` pagetable.c:1427-1437 回收；Redox/Linux 同样回收）。
 
