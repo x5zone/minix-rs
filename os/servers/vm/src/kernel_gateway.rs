@@ -33,6 +33,7 @@ use minix_sys::syscall::{CannedKernelCallTransport, DirectKernelCallTransport};
 #[cfg(test)]
 use core::cell::{Cell, RefCell};
 use minix_types::{Endpoint, Message, UserSlot};
+use minix_sys::syscall::sys_kill as minix_sys_kill;
 
 /// Failure of a kernel call made through the gateway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +136,19 @@ pub(crate) trait KernelGateway {
     /// (kernel vm.rs VmCheckResult).
     fn sys_vmctl_memreq_reply(&mut self, target: Endpoint, ok: bool)
         -> Result<(), GatewayError>;
+
+    /// Deliver a signal to a process.
+    ///
+    /// C: `sys_kill(endpoint, sig)` (libsys) → kernel `do_kill`
+    /// (kernel/src/syscall_signal.rs). VM's use: SIGSEGV delivery when a
+    /// page fault is not servable (G-V12-6; C pagefaults.c:109-119).
+    fn sys_kill(&mut self, endpoint: Endpoint, signal: i32) -> Result<(), GatewayError>;
+
+    /// Clear the kernel's pagefault suspension (RTS_PAGEFAULT) on a process.
+    ///
+    /// C: `sys_vmctl(ep, VMCTL_CLEAR_PAGEFAULT)` — after a pagefault is
+    /// disposed of (served or SIGSEGV'd), the process must be un-suspended.
+    fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint) -> Result<(), GatewayError>;
 
     /// Test/diagnostic accessor: concatenated diag text (default empty;
     /// `MockGateway` returns what `diag_write` recorded).
@@ -258,6 +272,33 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         Ok(())
     }
 
+    fn sys_kill(&mut self, endpoint: Endpoint, signal: i32) -> Result<(), GatewayError> {
+        // V11/T35+: reuse minix-sys's SYS_KILL wrapper (same wire the PM
+        // side uses — kernel/src/syscall_signal.rs:141-147 m_sigcalls).
+        let reply = minix_sys_kill(&self.transport, endpoint.0, signal);
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
+
+    fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint) -> Result<(), GatewayError> {
+        let mut msg = Message::default();
+        {
+            // SAFETY: SYS_VMCTL wire — SVMCTL_WHO (m1i1) target,
+            // SVMCTL_PARAM (m1i2) = VMCTL_CLEAR_PAGEFAULT (12).
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            m1.m1i1 = endpoint.0;
+            m1.m1i2 = VMCTL_CLEAR_PAGEFAULT;
+            m1.m1i3 = 0;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_VMCTL_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
+
     fn sys_exec(
         &mut self,
         endpt: Endpoint,
@@ -316,6 +357,9 @@ const SYS_VMCTL_CALL: i32 = 43;
 /// C com.h VMCTL_MEMREQ_GET / VMCTL_MEMREQ_REPLY).
 const VMCTL_MEMREQ_GET: i32 = 14;
 const VMCTL_MEMREQ_REPLY: i32 = 15;
+/// SVMCTL_PARAM sub-command: clear RTS_PAGEFAULT on the target
+/// (kernel/src/vm.rs VmCtlParam::ClearPageFault = 12; C VMCTL_CLEAR_PAGEFAULT).
+const VMCTL_CLEAR_PAGEFAULT: i32 = 12;
 /// C: SYS_UPDATE is kernel call 52 (kernel/src/syscall.rs:112 `Update = 52`).
 const SYS_UPDATE_CALL: i32 = 52;
 /// C: SYS_EXEC kernel call number — kernel/src/syscall.rs `Syscall::Exec`
@@ -346,6 +390,10 @@ pub(crate) struct MockGateway {
     pub memreq_replies: RefCell<alloc::vec::Vec<(Endpoint, bool)>>,
     /// When non-zero, `sys_vmctl_memreq_get` answers this errno (V11/T29).
     pub memreq_error: Cell<i32>,
+    /// (endpoint, signal) pairs recorded by `sys_kill` (V11/T35).
+    pub kills: RefCell<alloc::vec::Vec<(Endpoint, i32)>>,
+    /// Endpoints recorded by `sys_vmctl_clear_pagefault` (V11/T35).
+    pub clear_pagefaults: RefCell<alloc::vec::Vec<Endpoint>>,
 }
 
 #[cfg(test)]
@@ -362,6 +410,8 @@ impl MockGateway {
             pending_memreqs: RefCell::new(alloc::collections::VecDeque::new()),
             memreq_replies: RefCell::new(alloc::vec::Vec::new()),
             memreq_error: Cell::new(0),
+            kills: RefCell::new(alloc::vec::Vec::new()),
+            clear_pagefaults: RefCell::new(alloc::vec::Vec::new()),
         }
     }
 }
@@ -397,6 +447,15 @@ impl KernelGateway for MockGateway {
         -> Result<(), GatewayError>
     {
         self.memreq_replies.borrow_mut().push((target, ok));
+        Ok(())
+    }
+    fn sys_kill(&mut self, endpoint: Endpoint, signal: i32) -> Result<(), GatewayError> {
+        self.kills.borrow_mut().push((endpoint, signal));
+        Ok(())
+    }
+
+    fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint) -> Result<(), GatewayError> {
+        self.clear_pagefaults.borrow_mut().push(endpoint);
         Ok(())
     }
 

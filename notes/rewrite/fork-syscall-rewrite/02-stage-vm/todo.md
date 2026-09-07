@@ -1331,7 +1331,7 @@ Coverage Summary for vm:
 | G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | ✅ T27（Fix #47） |
 | G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
 | G-V12-5 | minix-vm 依赖 minix-arch 未关 default features——`mock` DirectMap（运行时窗口基址变体）服务生产路径 | —（架构语义） | `arch/Cargo.toml` default=`["mock"]`，`servers/vm/Cargo.toml` 以 `{ path = "../../arch" }` 引入（绕过 workspace 表的 `default-features = false`）；VM 的 direct map 窗口本就是**内核动态授予**的运行时基址（E3 接线），"mock" 命名与生产用途混淆。处置归 E3：依赖收口 + 命名澄清（如 `RuntimeWindowDirectMap`）| 随 E3 |
-| G-V12-6 | dispatch_pagefault 对只读 anon 区域的写故障不拒绝（静默分配可写页） | mem_anon.c anon_pagefault / handle_memory 的 `!(region->flags & VR_WRITABLE) && wrflag → EFAULT`（pagefaults.c:362-366） | fault 路径的 anon `ev_pagefault` 对未映射槽恒 `NeedNewPage`（可写性检查只在 fork 的 `handle_memory_once`，fork.rs:56-59）；T31 测试如实钉住现行为。修复方向：handle_pagefault 入口补区域可写性闸（对齐 fork 路径） | 登记待修（T35 邻域） |
+| G-V12-6 | dispatch_pagefault 对只读 anon 区域的写故障不拒绝（静默分配可写页） | pagefaults.c:109-119（用户故障路径的区域可写性检查：写只读 → SIGSEGV + VMCTL_CLEAR_PAGEFAULT） | ✅ 已修复（V11/T35+）：dispatch_pagefault 入口补可写性闸——SIGSEGV 经 gateway.sys_kill 交付 + sys_vmctl_clear_pagefault 清挂起（wire 对齐 kernel 43/12/6），未服务不计 minor；测试断言交付与计数不变 |
 
 ### ✅ Fix #43: T24-pre — 恢复测试基线：rs.rs 测试对齐 RsUpdateCtx + clippy 回归归零
 
@@ -1462,6 +1462,14 @@ Coverage Summary for vm:
 - **Gate E 抽样**：本轮全部新测试名逐一 `grep -rl "fn {name}"` 精确命中（eager-CoW/transid 路由/缺页记账/do_memory 排空/回收重试/CALLMAP 对账——6/6）。
 - **终审基线（2026-09-07）**：三 feature 矩阵 **488 / 505 / 488 passed**、0 failed；clippy 默认与 all-features 对 `servers/vm` **0 警告**；`unimplemented!/todo!` 全树 0；生产代码 `DEFERRED` 字样 18 处逐一归因（9 历史叙述 / 6 准确 open 项 / 3 指针）。
 - **campaign 结论**：todo.md V11 后残留 open 项全部处置完毕——实现（T25/T27/T29/T30/T31）、判定闭合（T28/T32/T34 + T30 前提修正 ×3）、清理（T24/T25/T35）；跨 stage 余件全部登记 edge_todo.md（E-FORKMSG 新增；E1–E9/E-RSWIRE/E-VFSWIRE/E-BOOTFRAME/E-KERNINFO 维持）。
+
+### ✅ Fix #57: G-V12-6 — 只读区域写故障 SIGSEGV 门（campaign 后首个遗留修复）
+
+- **C 对照**：pagefaults.c:109-119——用户故障路径在区域查找后立即检查 `!(region->flags & VR_WRITABLE) && wr`：写只读区域 → `sys_kill(ep, SIGSEGV)` + `sys_vmctl(ep, VMCTL_CLEAR_PAGEFAULT)` + return（不分配、不服务，进程按信号处置终止/转储）。minix-rs 的 fault 路径缺此闸：只读 anon 区域的写故障被静默分配可写页（T31 测试如实钉住后登记）。
+- **实现**：`kernel_gateway.rs`（trait 增 `sys_kill`（复用 minix-sys E6 的 `sys_kill` 包装——SYS_KILL=6、m_sigcalls wire）与 `sys_vmctl_clear_pagefault`（SYS_VMCTL=43、VMCTL_CLEAR_PAGEFAULT=12，kernel vm.rs VmCtlParam）；Trap 走真实 wire（pre-E2 -EIO fail-closed + 审计）、Mock 记录交付）、`vm_server.rs`（`dispatch_pagefault` 区域查找后补可写性闸：`write && !is_writable` → sys_kill(SIGSEGV) + clear_pagefault + `Error(AccessViolation)`——不计 minor/major）
+- **测试教训（续）**：`vpf_flags` 的写位是 **bit 1（值 2）**（x86 PFE_W，kernel page_fault.rs:467 解码 `(flags & 2) != 0`）——初版传 1（P 位）导致门静默不触发；`Box<dyn>` 不可回读 mock 字段，新增 `SharedMockGateway` 委托（Rc<RefCell<MockGateway>> 双句柄）使交付断言可见
+- **Verified**: `test_pagefault_accounting_minor_and_violation` 扩展（写只读 → SIGSEGV 交付 + 挂起清除 + 计数不变）；三矩阵 **488 / 505 / 488 passed**；clippy 两档 `servers/vm` 0 警告
+- **Docs**: G-V12-6 闭合标注；本条即判定记录
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 

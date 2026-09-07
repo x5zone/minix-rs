@@ -1394,6 +1394,25 @@ impl VmServer {
             Some(r) => r,
             None => return VmReply::Error(VmError::InvalidAddress),
         };
+        // C pagefaults.c:109-119 — a write to a read-only region is not a
+        // servable fault: deliver SIGSEGV to the faulting process, clear its
+        // kernel pagefault suspension (RTS_PAGEFAULT), and stop. Pre-E2 the
+        // trap stub answers -EIO for both calls; the failure is audited and
+        // the error reply still counts the episode (G-V12-6).
+        if request.write && !region.is_writable() {
+            if let Err(e) = self.ctx.gateway.borrow_mut()
+                .sys_kill(proc_endpoint, minix_types::SIGNAL_SEGMENT_VIOLATION)
+            {
+                let _ = &e;
+                audit_log!("[VM PF] SIGSEGV delivery failed: {e:?}");
+            }
+            if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_clear_pagefault(proc_endpoint) {
+                let _ = &e;
+                audit_log!("[VM PF] clear_pagefault failed: {e:?}");
+            }
+            return VmReply::Error(VmError::AccessViolation);
+        }
+
         // V9-P1-3 step 1: destructure the memory context into disjoint
         // &mut fields instead of the former parts_mut() 4-tuple.
         let VmContext { page_alloc, page_frames, page_cache, vfs_queue, .. } = &mut self.ctx;
@@ -2510,16 +2529,36 @@ mod tests {
             assert_eq!(proc.minor_fault(), 1, "served fault counts minor");
             assert_eq!(proc.major_fault(), 0);
 
-            // Second served fault also counts (accounting is per served
-            // fault, not per page). NOTE: a write fault on a read-only anon
-            // region is currently *served* too — the fault path lacks the
-            // writability gate fork's handle_memory has — registered as
-            // G-V12-6, not masked here.
-            let msg = fault_msg(0x3000_1000, 1);
+            // V11/T35 (G-V12-6 closed): a write to the read-only region is
+            // not servable — SIGSEGV is delivered to the faulting process
+            // and its kernel pagefault suspension is cleared; no fault is
+            // counted. Swap in a Mock gateway (behind a shared delegate so
+            // the test can inspect the delivery record afterwards).
+            let mock = alloc::rc::Rc::new(core::cell::RefCell::new(
+                crate::kernel_gateway::MockGateway::new(),
+            ));
+            server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(SharedMockGateway(alloc::rc::Rc::clone(&mock)))
+                    as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
+            ));
+            let msg = fault_msg(0x3000_1000, 2); // bit 1 = write (x86 PFE_W)
             let _ = server.dispatch_on_msg(&msg, &kernel_status, UserSlot::new(0));
             let proc = table.get_active(slot).unwrap();
-            assert_eq!(proc.minor_fault(), 2, "each served fault counts once");
-            assert_eq!(proc.major_fault(), 0, "no VFS I/O involved");
+            assert_eq!(proc.minor_fault(), 1, "violations are not served faults");
+            assert_eq!(proc.major_fault(), 0);
+            {
+                let gw = mock.borrow();
+                assert_eq!(
+                    gw.kills.borrow().as_slice(),
+                    &[(ep, minix_types::SIGNAL_SEGMENT_VIOLATION)],
+                    "SIGSEGV must be delivered to the faulting process"
+                );
+                assert_eq!(
+                    gw.clear_pagefaults.borrow().as_slice(),
+                    &[ep],
+                    "kernel pagefault suspension must be cleared"
+                );
+            }
         });
     }
 
@@ -3149,5 +3188,50 @@ mod tests {
                 assert_eq!(m1.m1i2, 15, "second kernel call is the REPLY");
             }
         });
+    }
+    /// Shared-handle delegate around [`crate::kernel_gateway::MockGateway`]:
+    /// the boxed trait object in `VmContext` and the test's inspection
+    /// handle point at the same concrete mock (V11/T35).
+    struct SharedMockGateway(alloc::rc::Rc<core::cell::RefCell<crate::kernel_gateway::MockGateway>>);
+
+    impl crate::kernel_gateway::KernelGateway for SharedMockGateway {
+        fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
+            -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_fork(parent, child_slot)
+        }
+        fn sys_exec(&mut self, endpt: Endpoint, ip: u64, stack: u64, name_ptr: u64, ps_str: u64)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_exec(endpt, ip, stack, name_ptr, ps_str)
+        }
+        fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_update(src, dst, flags)
+        }
+        fn sys_vmctl_memreq_get(&mut self)
+            -> Result<Option<crate::kernel_gateway::KernelMemReq>, crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_vmctl_memreq_get()
+        }
+        fn sys_vmctl_memreq_reply(&mut self, target: Endpoint, ok: bool)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_vmctl_memreq_reply(target, ok)
+        }
+        fn sys_kill(&mut self, endpoint: Endpoint, signal: i32)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_kill(endpoint, signal)
+        }
+        fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_vmctl_clear_pagefault(endpoint)
+        }
+        fn diag_write(&mut self, text: &str) -> Result<(), crate::kernel_gateway::GatewayError> {
+            self.0.borrow_mut().diag_write(text)
+        }
     }
 }
