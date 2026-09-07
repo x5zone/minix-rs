@@ -1329,7 +1329,7 @@ Coverage Summary for vm:
 | G-V12-1 | CacheMemory::ev_pagefault 缓存查找 + PbCache 接线 | mem_cache.c:181 `cache_pagefault` | **盘点前提修正**：ev_pagefault 早已实现 PbCache 邮箱语义（非恒 NeedNewPage），且 dispatch_mapcache 是急切映射（命中即 map_page），两者互不连接。判定：C 邮箱是 do_mapcache 内部管道，Rust 已内联——删 PbCache 变体，ev_pagefault 固定 fail-closed 契约 | ✅ T28（Fix #48） |
 | G-V12-2 | SIGKMEM 信号处理入口缺失（与 G-V11-1 sef_cb_signal_handler 同簇） | main.c:731/:736-737；do_memory 定义于 pagefaults.c:294 | **盘点前提修正**：do_memory 不是"收缩缓存"而是排空内核 memreq 队列（sys_vmctl_get_memreq 循环），且 kernel 对端已落地（kernel/src/vm.rs VmRequestHandler + SYS_VMCTL 43/14/15 wire）。VM 侧 handle_signal + do_memory + gateway 两调用已实现，通电挂 E1 | ✅ T29（Fix #49） |
 | G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | ✅ T27（Fix #47） |
-| G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
+| G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | **判定更新（V11/T35+）**：直传的正确编码取决于 RS 消费方期望（负值 m_type vs 全仓正数 errno 惯例）——RS live-update 消费面未落地（E9），单方面定契约即 drift；挂 E-RSWIRE/RS 工作流协同定案 | 维持坍缩（挂 wire 协同） |
 | G-V12-5 | minix-vm 依赖 minix-arch 未关 default features——`mock` DirectMap（运行时窗口基址变体）服务生产路径 | —（架构语义） | `arch/Cargo.toml` default=`["mock"]`，`servers/vm/Cargo.toml` 以 `{ path = "../../arch" }` 引入（绕过 workspace 表的 `default-features = false`）；VM 的 direct map 窗口本就是**内核动态授予**的运行时基址（E3 接线），"mock" 命名与生产用途混淆。处置归 E3：依赖收口 + 命名澄清（如 `RuntimeWindowDirectMap`）| 随 E3 |
 | G-V12-6 | dispatch_pagefault 对只读 anon 区域的写故障不拒绝（静默分配可写页） | pagefaults.c:109-119（用户故障路径的区域可写性检查：写只读 → SIGSEGV + VMCTL_CLEAR_PAGEFAULT） | ✅ 已修复（V11/T35+）：dispatch_pagefault 入口补可写性闸——SIGSEGV 经 gateway.sys_kill 交付 + sys_vmctl_clear_pagefault 清挂起（wire 对齐 kernel 43/12/6），未服务不计 minor；测试断言交付与计数不变 |
 
@@ -1470,6 +1470,13 @@ Coverage Summary for vm:
 - **测试教训（续）**：`vpf_flags` 的写位是 **bit 1（值 2）**（x86 PFE_W，kernel page_fault.rs:467 解码 `(flags & 2) != 0`）——初版传 1（P 位）导致门静默不触发；`Box<dyn>` 不可回读 mock 字段，新增 `SharedMockGateway` 委托（Rc<RefCell<MockGateway>> 双句柄）使交付断言可见
 - **Verified**: `test_pagefault_accounting_minor_and_violation` 扩展（写只读 → SIGSEGV 交付 + 挂起清除 + 计数不变）；三矩阵 **488 / 505 / 488 passed**；clippy 两档 `servers/vm` 0 警告
 - **Docs**: G-V12-6 闭合标注；本条即判定记录
+
+### ✅ Fix #58: heap-shrink 删除 + G-V12-4 判定精化（T35 收尾余项）
+
+- **heap shrink 删除**（heap_arena.rs）：`shrink` 是 minix-rs 自有 HeapArena 设施的无驱动路径——C VM 无 heap arena 对应物（[ARCH A-1]），生产无调用方，唯一消费者是它自己的 3 个测试。按 T19/T28 先例删除（连带测试；git 可复原）。判定与 T35 预判一致。
+- **G-V12-4 判定精化**：直传方案暴露 wire 层未决问题——kernel errno 为负值（GatewayError::Kernel(-EIO)），`KernelErrno(-5).to_errno() = -5` 会让应答 m_type 变负，与 minix-rs 全仓正数 errno 应答惯例冲突；而正确编码取决于 RS live-update 消费方（E9，未落地）的期望。**判定：维持 InternalError/EIO 坍缩，wire 编码决策挂 E-RSWIRE/RS 工作流协同**——单方面定契约即 drift（G-V12-6 反例：等价场景下提前定契约会错）。
+- **Verified**: 三矩阵 486 / 503 / 486 passed（-2：shrink 两测试随实现删除）；clippy 0；`rg "fn shrink" servers/vm/src` → 0
+- **Docs**: G-V12-4 条目判定更新（todo.md §16.1）
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 

@@ -140,49 +140,6 @@ impl HeapArena {
         unsafe { *self.limit.get() = new_limit; }
         Ok(old_limit)
     }
-
-    /// Shrink the arena by unmapping `pages` pages from the end.
-    ///
-    /// Unmaps the pages from VM's page table and frees the physical pages
-    /// back to the page allocator. Pages are unmapped from highest VA
-    /// downward to maintain contiguity.
-    ///
-    /// No production caller (V11/T35 judgment pending: delete vs wire) — the heap-shrink
-    /// path (process exit / heap release) is not wired. Revisit with the
-    /// 24-page-cache reclaim work.
-    #[allow(dead_code)]
-    pub fn shrink(
-        &self,
-        pages: usize,
-        page_alloc: &mut VmPageAllocator,
-    ) -> Result<(), HeapArenaError> {
-        if pages == 0 {
-            return Err(HeapArenaError::ZeroPages);
-        }
-
-        let current_limit = self.limit();
-        let mapped_pages = (current_limit - self.base) / PAGE_SIZE;
-
-        if pages > mapped_pages as usize {
-            return Err(HeapArenaError::Underflow {
-                requested: pages,
-                mapped: mapped_pages as usize,
-            });
-        }
-
-        let new_limit = current_limit - pages as u64 * PAGE_SIZE;
-
-        for i in 0..pages {
-            let va = VB(new_limit + i as u64 * PAGE_SIZE);
-            if let Ok(phys) = vm_self_unmap(va) {
-                page_alloc.free_page(AlignedPhysBytes::new(phys.0));
-            }
-        }
-
-        // SAFETY: Single-threaded VM; limit write is exclusive.
-        unsafe { *self.limit.get() = new_limit; }
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -315,42 +272,6 @@ mod tests {
 
             // Cleanup: unmap the pre-mapped page.
             let _ = crate::pagetable::vm_self_unmap(va1);
-        });
-    }
-
-    #[test]
-    fn test_shrink_unmaps_and_frees_pages() {
-        with_vm_self_pt(|| {
-            let mut alloc = make_page_alloc(64);
-            let arena = HeapArena::new();
-
-            arena.grow(3, &mut alloc).expect("grow 3 pages");
-            let phys_before = arena.mapped_bytes();
-
-            arena.shrink(2, &mut alloc).expect("shrink 2 pages");
-            assert_eq!(arena.limit(), VM_HEAP_BASE + PAGE_SIZE);
-            assert_eq!(arena.mapped_bytes(), phys_before - 2 * PAGE_SIZE);
-            // Top two VAs are unmapped.
-            assert!(vm_self_query(VB(VM_HEAP_BASE + PAGE_SIZE)).is_none());
-            assert!(vm_self_query(VB(VM_HEAP_BASE + 2 * PAGE_SIZE)).is_none());
-            // Bottom page still mapped.
-            assert!(vm_self_query(VB(VM_HEAP_BASE)).is_some());
-        });
-    }
-
-    #[test]
-    fn test_shrink_underflow_is_error() {
-        with_vm_self_pt(|| {
-            let mut alloc = make_page_alloc(8);
-            let arena = HeapArena::new();
-            assert!(matches!(
-                arena.shrink(1, &mut alloc),
-                Err(HeapArenaError::Underflow { requested: 1, mapped: 0 })
-            ));
-            assert!(matches!(
-                arena.shrink(0, &mut alloc),
-                Err(HeapArenaError::ZeroPages)
-            ));
         });
     }
 }
