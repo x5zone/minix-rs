@@ -2441,6 +2441,27 @@ VM 侧半留 edge（`ipc_call_rs_init` 真实体）。
 - **测试**：minix-rs 304→325、minix-types 175→182。
 - **待执行**：无（R9a/R9b 已于本 §21.1 完成）。
 
+### ✅ Fix #90 — R13：`init_state_data` 组合 + do_update 状态数据段接线（17 号域闭环）
+- **File**：`os/servers/rs/src/state_data.rs`（`PreparedStateData` +
+  `init_state_data` 组合——manager.c:172-285 逐分支 + `write_filter_el` 线面
+  序列化）、`live_update.rs`（`UpdateEntry.eval_buff`/`ipcf_els_buff` owned
+  字段——C malloc 的对应物，`slot.exec` 先例）、`shell_request.rs`
+  （do_update 状态数据段接线 + 测试改写）；文档 17 §3.1（接线注记）
+- **Before**：do_update 的状态数据段整体 ENOSYS（携带状态数据的请求被拒）。
+- **After**：`init_state_data` 组合落地——`validate_state_data_size`（size=56
+  请求方契约）→ `validate_eval`（EVAL 门）→ eval 字节取数（NUL 结尾）→
+  `num_ipc_filter_blocks`（E2BIG）→ NULL 早退 → 按块取数 + 逐元素
+  `parse_filter_el`（DS 缝 19 + ANY_*/strtol 回退）→ VM fallback 块 →
+  尾部 `dst.size = src.size`（manager.c:278-280）。产出由
+  `UpdateEntry.eval_buff`/`ipcf_els_buff` 持有（C malloc 的 owned 对应物，
+  `slot.exec` 先例）；授权三笔（cpf_grant_direct）留 19 号，gid=None 注记。
+  组合过程中修正一处遗漏：尾部 `dst.size = src.size` 赋值（manager.c:278-280）
+  初版未写入，测试当场抓出。
+- **Verified**：`cargo test -p minix-rs` = **327 passed**（既有 do_update 测试
+  改为合法 56 字节规格——C 请求方本就恒填 sizeof(rs_state_data)；新增断言
+  prepare_state_data.size=56、授权就绪过滤块 1536 字节）；clippy 触碰文件零
+  告警；fmt 干净；T7 PASS。
+
 ### ✅ Fix #89 — R12：`struct rproc` 内部表 pinning + SI_PROC_TAB/SI_PROCALL_TAB 两臂 live（E-RSWIRE RS 半彻底关闭）
 
 - **File**：`os/libs/minix-types/src/ipc/rproc.rs`（新建：`rproc_off`/`upd`/
