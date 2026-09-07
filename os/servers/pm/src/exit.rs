@@ -456,8 +456,20 @@ pub(crate) fn check_parent<T: crate::ipc::IpcTransport + ?Sized>(
             cleanup(table, child_slot);
         }
     } else {
-        // Parent not waiting → SIGCHLD (11-signal-core.md, deferred)
-        let _ = (parent_slot, child_slot);
+        // Parent not waiting → SIGCHLD（D-28）。C check_parent 尾部：
+        // `sig_proc(p_mp, SIGCHLD, TRUE /*trace*/, FALSE /*ksig*/)`——
+        // 默认处置下 SIGCHLD ∈ ign_sset 被忽略，装了 handler 的父进程
+        // 收到通知（sigframe 交付链依赖 V2-P2-8，随批次 B 落地）。
+        let _ = child_slot;
+        let _ = crate::signal::sig_proc(
+            table,
+            parent_slot,
+            crate::signal::SIGCHLD,
+            true,
+            false,
+            kern,
+            transport,
+        );
     }
 }
 
@@ -731,6 +743,30 @@ mod tests {
         );
         // 异组进程存活。
         assert!(table.procs[3].is_in_use() && !table.procs[3].is_exiting());
+    }
+
+    /// D-28/V2-P2-5：父进程未等待时 check_parent 向其投递 SIGCHLD
+    /// （C check_parent 尾部 sig_proc(p_mp, SIGCHLD, TRUE, FALSE)）。
+    /// 用 mask 阻塞使投递可观察：pending 位被置位；父进程不退出。
+    #[test]
+    fn test_check_parent_sends_sigchld_when_parent_not_waiting() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 1, 100); // 父：未等待
+        running_proc(&mut table, 2, 101);
+        table.procs[2].state.guardianship = Guardianship::Normal { parent: UserSlot::new(1) };
+        table.procs[2].state.lifecycle = Lifecycle::Zombie { exit_code: 0, sig_status: 0 };
+        // 父进程阻塞 SIGCHLD → 投递落入 pending（可观察）。
+        table.procs[1].resources.signals.mask = crate::init::sig_bit(crate::signal::SIGCHLD);
+
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        check_parent(&mut table, UserSlot::new(2), false, &mut t, &mut kern);
+
+        assert!(
+            table.procs[1].resources.signals.pending & crate::init::sig_bit(crate::signal::SIGCHLD) != 0,
+            "SIGCHLD must be pending on the blocked parent"
+        );
+        assert!(table.procs[1].is_in_use() && !table.procs[1].is_exiting());
     }
 
     /// D-13：记录 sys_kill 调用的网关 mock。

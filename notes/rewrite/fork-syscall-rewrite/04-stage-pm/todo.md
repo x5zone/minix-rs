@@ -242,6 +242,7 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 | D-25 | ~~`event.rs` `PmEventServices::resume`~~ | ~~暂返回 OK~~ **✅ 已修复**（2026-09-07，Fix #28：`PmEventServices::resume` 经 `KernelGateway::sys_resume` → minix-sys `sys_runctl(ep, RC_RESUME, 0)` 真实恢复；kernel `dispatch_runctl` RC_RESUME 分支对端真实） | 13-signal-flow.md / edge E6 | ~~minix-sys SYS_* 面~~ 达成（真实通电挂 E1） |
 | D-26 | ~~`wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷~~ | ~~wait4 回复的状态码载荷建模缺失~~ **✅ 已修复**（2026-09-06，Fix #22：`MessPmLcWait4` + `m_pm_lc_wait4` arm 落地 minix-types；ZOMBIE/TRACE_STOPPED/tell_parent/tell_tracer 四处 wire 按"m_type=pid + 载荷=status"发出；E7 首切片） | 10-pm-wait.md / edge E7 | ~~minix-types 增成员~~ 已达成 |
 | D-27 | ~~`exit.rs:302-307`~~ / ~~`exit.rs:674-676`~~ | ~~SIGHUP 会话组广播 no-op~~ **✅ 已修复**（2026-09-08，Fix #32：exit_proc 第 13 步经 `check_sig(-procgrp, SIGHUP)` 真实广播，caller 为死亡首领本人；disinherit 尾注释改为指针；真实通电挂 E1） | 09-pm-exit.md | ~~check_sig 复用~~ 已达成（stage 内，无外部依赖） |
+| D-28 | ~~`exit.rs:448-451`~~ | ~~check_parent 的 SIGCHLD 分支 no-op~~ **✅ 已修复**（2026-09-08，Fix #34：`sig_proc(parent, SIGCHLD, trace=TRUE, ksig=FALSE)`，默认处置由 ign_sset 忽略，handler 交付链随批次 B 的 sig_send 落地） | 09-pm-exit.md | 无（stage 内） |
 
 不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
 
@@ -890,6 +891,18 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：真实通电挂 E1。
 
+### ✅ Fix #34: V2-P2-5 — check_parent 的 SIGCHLD 投递（D-28）（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/exit.rs`（check_parent else 分支实现 `sig_proc(parent_slot, SIGCHLD, trace=TRUE, ksig=FALSE)`，对齐 C check_parent 尾部；新增 `test_check_parent_sends_sigchld_when_parent_not_waiting`——父进程 mask 阻塞 SIGCHLD 使 pending 位可观察）
+- `notes/.../09-pm-exit.md`（§5.1 测试行）；本文件 §6 D-28 行、V2-P2-5 标 ✅
+
+**Before/After**：C 在父未等待时向其投递 SIGCHLD（装了 handler 的父进程由此得到通知，默认处置下被 ign_sset 忽略）；Rust 是 `let _ = (...)` 无编号 DEFERRED。修复后一行 C 语义落地。**设计选型**：(a) 现在实现（首选：单行调用不依赖批次 B，默认处置路径即可测；handler 装批后的完整交付随 V2-P2-8 联动）；(b) 仅登记随批次 B（劣：no-op 继续存活且不可观察）。
+
+**Verified**：`cargo test -p minix-pm`：354 lib（+1）+ 8 integration passed；clippy 0 warning。
+
+**未做（DEFERRED 论证）**：handler 交付链（sigframe 建立）依赖 V2-P2-8，随批次 B。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1066,7 +1079,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：与 C 同型——该分支改调 `kern.sys_kill(Endpoint::RS, SIGTERM)`（KernelGateway 已有该方法，Fix #23 落地），由内核 ksig 回环驱动后续。方案二：给 PRIV_PROC !ksig 分支实现直接投递——劣：偏离 C 的特权模型（PM 不直接决定系统进程的死活）。
 - **验证**：单测：kill(-1, SIGTERM) → 断言 mock 网关收到 sys_kill(RS, SIGTERM)。
 
-#### V2-P2-5 check_parent 的"父未等待 → SIGCHLD"分支 no-op
+#### V2-P2-5 check_parent 的"父未等待 → SIGCHLD"分支 no-op（✅ 已修复 2026-09-08，见 §10 Fix #34）
 
 - **优先级**：P2
 - **类型**：语义缺失（含未登记的 DEFERRED）
