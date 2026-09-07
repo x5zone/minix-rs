@@ -10,6 +10,7 @@ pub mod timer_irq_gate;
 pub mod fpu;
 pub mod signal;
 pub mod smp;
+pub mod ap_early_entry;
 pub mod arch_init;
 pub mod boot;
 pub mod cpu_identity;

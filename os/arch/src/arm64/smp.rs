@@ -54,9 +54,16 @@ const SGIR_TARGET_LIST_FILTER: u32 = 0 << 24;
 /// we use ID 0. ARM GIC Architecture Specification §4.3.22.
 const SCHED_SGI_INTID: u32 = 0;
 
-/// PSCI `CPU_ON` function ID, SMC32/HVC32 calling convention (bit 31 set,
-/// 32-bit). The SMC64 equivalent is 0xC4000003. ARM DEN 0022D (PSCI) §5.4.3.
-const PSCI_CPU_ON_32: u64 = 0x8400_0003;
+/// PSCI `CPU_ON` function ID, **SMC64/HVC64 calling convention**
+/// (0xC400_0003; ARM DEN 0022D (PSCI) §5.4.3).
+///
+/// S-3c fix: this used to be the SMC32/HVC32 form (0x8400_0003). Under the
+/// 32-bit convention the firmware reads the entry address and context as
+/// *w2/w3* — upper 32 bits of x2/x3 are zeroed — which truncates any entry
+/// above 4 GiB. The kernel image is linked at 0x1400_0000+ (>4 GiB), so
+/// the AP would start at a garbage physical address. The 64-bit form keeps
+/// the full x2/x3 widths; arguments are identical otherwise.
+const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 
 /// GIC distributor base address, populated during `arch_init`.
 ///
@@ -223,25 +230,31 @@ impl SmpArch for AArch64SmpArch {
         //
         // ARM64 secondary CPUs are powered on by firmware through PSCI
         // (Power State Coordination Interface, ARM DEN 0022D). We issue the
-        // `CPU_ON` call via `hvc #0` (hypervisor conduit). The SMC64
-        // variant (0xC4000003) would be used with `smc #0` if the conduit
-        // were the secure monitor.
+        // SMC64 `CPU_ON` call via `hvc #0` (hypervisor conduit) — the SMC64
+        // form keeps the full 64-bit entry address (see PSCI_CPU_ON_64 for
+        // the S-3c truncation rationale).
         //
-        // PSCI CPU_ON parameters (SMC32/HVC32 calling convention):
-        //   x0 = function ID  (0x84000003)
+        // PSCI CPU_ON parameters (SMC64/HVC64 calling convention):
+        //   x0 = function ID  (0xC4000003)
         //   x1 = target_cpu   (MPIDR-based affinity of the secondary CPU)
-        //   x2 = entry_point  (physical address of AP trampoline)
-        //   x3 = context_id   (opaque cookie passed to the AP; 0 here)
+        //   x2 = entry_point  (physical address of AP early stub)
+        //   x3 = context_id   (opaque cookie delivered to the AP in x0 —
+        //        §3.1: carries the bootstrap pointer so the stub can find
+        //        its record without relative-address arithmetic)
         // On success x0 = 0 (PSCI_SUCCESS); a non-zero value is an error.
         //
         // We use the linear CPU id as the MPIDR target. Real MPIDR encoding
         // uses affinity fields (Aff0..Aff3); a production port would
         // translate cpu -> MPIDR via a per-platform table. This
         // simplification matches the single-cluster boot model.
-        let fid = PSCI_CPU_ON_32;
+        let fid = PSCI_CPU_ON_64;
         let target_cpu = cpu as u64;
         let entry_point = entry as u64;
-        let context_id: u64 = 0;
+        // §3.1: the AP receives this in x0 — the bootstrap pointer (the
+        // stub sits inside the kernel image and reads its record relative
+        // to known image addresses, but handing the entry cookie through
+        // keeps the channel open for record-at-any-address layouts).
+        let context_id: u64 = entry as u64;
         let ret: u64;
 
         // SAFETY: `hvc #0` traps to the hypervisor/firmware PSCI handler.

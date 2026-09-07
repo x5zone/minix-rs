@@ -1207,3 +1207,25 @@ C 版在 `smp_start_aps` 里把 trampoline 基址写进 BIOS 数据区 0x467，�
 ### 9.5 内存序衔接（§3.9 的落点）
 
 `fill_bootstrap`（BSP）按"先填记录、后置 MAGIC"的顺序写；**发布屏障（x86 `mfence`）归 `SmpArch::boot_ap`**——在固件调用前执行（C arch_smp.c:130 先例），随 S-3c 落地。AP 侧 x86 为 TSO，无需 consumer fence；ARM/RISC-V 的 consumer barrier 由各自 S-3c 梯子首指令前补。Rust 层的 boot_ack/online 掩码（Release/Acquire，经 SmpState）不与此混淆——那条通道管掩码，本节管记录。
+
+---
+
+## 10. arm/riscv AP early stub 与三处固件 ABI 修复（S-3c，2026-09-08 落地）
+
+### 10.1 两个 stub 模块（骨架 + 契约）
+
+`minix-arch::{arm64,riscv64}::ap_early_entry` 各自承载本架构的 AP 早期入口契约（§3.1 对照表的 arm/riscv 列）：**arch-local 静态记录形态**（v7 #4）——记录内嵌内核镜像、不复制；入口现场由固件给定（arm：PSCI 后 EL1/MMU-off、x0 = context cookie；riscv：SBI 后 S-mode/MMU-off、a1 = opaque cookie、a0 = hartid）；义务清单 = 读记录（PC 相对）→ consumer barrier（arm `dsb ish` / riscv `fence rw,rw`，§3.9 首读屏障）→ 装 TTBR/satp → 开 MMU → 分支高位 Rust 汇合点。骨架期的义务清单即契约，实体随 S-4 落地。
+
+**恒等覆盖核验（§3.2 闭环第 3 条，静态完成）**：stub 与记录都活在内核镜像内；BSP 根（boot-shim 构建）对内核镜像同时建立恒等与高位映射——MMU 在镜像 PA 处开启时 PC 仍然有映射，记录 MMU-off（恒等读）与 MMU-on（高位读）双通道可达。x86 之外的架构**没有 <1MiB 约束**（§3.1 表"关键不对称"行）。
+
+### 10.2 三处固件 ABI 真 bug（全部现存代码缺陷，非理论问题）
+
+| # | 架构 | 原状 | 实害 | 修复 |
+|---|------|------|------|------|
+| ① | riscv64 | `send_sched_ipi` 用 v0.1 legacy `send_ipi`（EID 0，FID 3） | 现代 OpenSBI 不再实现 legacy 扩展——每次 ecall 返回 NOT_SUPPORTED，**调度 IPI 从未发出过** | 换 v0.2 IPI 扩展：EID 0x735049（"sPI"）+ FID 0，参数（mask, base）不变 |
+| ② | aarch64 | PSCI `CPU_ON` 用 SMC32/HVC32 形（0x84000003） | 32 位约定下固件按 w2/w3 读参——**entry 地址高 32 位被清零**；内核镜像链接在 0x1400_0000+（>4GiB），AP 会起在截断后的垃圾地址 | 换 SMC64/HVC64 形（0xC4000003）；context_id（x3，AP 的 x0）同时改传 bootstrap 指针（§3.1 传值通道） |
+| ③ | x86_64 | `boot_ap` INIT 前无发布屏障 | BSP 填写的 early entry image 字节可能尚未到达一致性点，唤醒的 AP 读到陈旧指令/数据 | ICR 写前补 `mfence`（C arch_smp.c:130 先例；§3.9 publisher fence 归属） |
+
+### 10.3 riscv a2 语义勘误（§2.1/§3.1 的"改传 bootstrap 指针"）
+
+`hart_start` 的 a2 原注释误标 "priv (0 = S-mode)"——a2 是**透传给 AP 的 opaque cookie**（AP 的 a1），特权级由 hart_start 语义隐含（S-mode）。`boot_ap` 现把 entry 指针经 a2 传给 AP，通道按 §3.1 打开。

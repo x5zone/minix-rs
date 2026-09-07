@@ -250,6 +250,13 @@ impl SmpArch for X86_64SmpArch {
         );
         let sipi_vector = (entry >> 12) as u32;
 
+        // §3.9 publisher fence (S-3c fix): the BSP has filled the early
+        // entry image / bootstrap record before calling boot_ap — `mfence`
+        // pushes those stores to the coherence point so the woken AP
+        // cannot observe stale bytes. C: arch_smp.c:130 `mfence()` before
+        // the INIT IPI; the fence was missing in the Rust port.
+        unsafe { core::arch::asm!("mfence", options(nomem, nostack)); }
+
         // Step 1: Send INIT IPI
         wait_icr_idle();
         let icr_high = (cpu & 0xFF) << 24;

@@ -37,14 +37,14 @@
 
 use crate::smp::SmpArch;
 
-/// Legacy SBI extension ID (EID 0). The legacy calling convention places
-/// the EID in `a7` and the function ID in `a6`. RISC-V SBI specification
-/// §3 (legacy extensions).
-const SBI_LEGACY_EID: u64 = 0;
+/// SBI IPI extension ID (EID 0x735049, ASCII "sPI"). RISC-V SBI
+/// specification §11. The v0.1 legacy `send_ipi` (EID 0, FID 3) that this
+/// replaced is not implemented by modern OpenSBI — S-3c fix.
+const SBI_IPI_EID: u64 = 0x73_5049;
 
-/// Legacy SBI `send_ipi` function ID (FID 3). RISC-V SBI specification
-/// §3.3.
-const SBI_LEGACY_SEND_IPI_FID: u64 = 3;
+/// SBI IPI extension `send_ipi` function ID (FID 0). RISC-V SBI
+/// specification §11.
+const SBI_IPI_SEND_FID: u64 = 0;
 
 /// SBI HSM extension ID (EID 0x48534D, ASCII "HSM"). RISC-V SBI
 /// specification §9 (Hart State Management extension).
@@ -67,15 +67,18 @@ impl SmpArch for Riscv64SmpArch {
     fn send_sched_ipi(cpu: u32) {
         // C: arch_send_smp_schedule_ipi(cpu) — smp.c:65
         //
-        // Legacy SBI send_ipi (RISC-V SBI specification §3.3):
-        //   a7 = 0           (legacy EID)
-        //   a6 = 3           (legacy FID for send_ipi)
+        // SBI v0.2+ IPI extension `send_ipi` (RISC-V SBI specification
+        // §11, EID 0x735049 = "sPI", FID 0):
+        //   a7 = 0x735049    (EID, IPI extension)
+        //   a6 = 0           (FID, send_ipi)
         //   a0 = hart mask   (one bit per hart; bit n = hart n)
         //   a1 = hart_mask_base (hart id of bit 0; 0 for hart 0)
-        // The legacy mask covers harts 0..63 relative to hart_mask_base, so
-        // a single CPU maps to mask = 1 << cpu with base 0. The CPU id is
-        // masked to 6 bits to stay within the 64-bit mask and to keep the
-        // shift in range (no undefined shift).
+        //
+        // S-3c fix: this used to call the SBI v0.1 LEGACY send_ipi
+        // (EID 0, FID 3), which modern OpenSBI no longer implements —
+        // every ecall silently failed (a0 = SBI_ERR_NOT_SUPPORTED) and no
+        // IPI was ever raised. The v0.2 IPI extension takes the same
+        // (mask, base) arguments, so the fix is the EID/FID pair only.
         let hart_mask: u64 = 1u64 << (cpu & 0x3F);
         let hart_mask_base: u64 = 0;
         let ret: u64;
@@ -91,13 +94,14 @@ impl SmpArch for Riscv64SmpArch {
                 "ecall",
                 inout("a0") hart_mask => ret,
                 in("a1") hart_mask_base,
-                in("a6") SBI_LEGACY_SEND_IPI_FID,
-                in("a7") SBI_LEGACY_EID,
+                in("a6") SBI_IPI_SEND_FID,
+                in("a7") SBI_IPI_EID,
                 options(nostack),
             );
         }
-        // Legacy SBI returns 0 on success in a0; non-zero is an error. We
-        // discard the result to match the trait's fire-and-forget contract.
+        // SBI v0.2 returns 0 on success in a0; non-zero is an SBI error
+        // (e.g. SBI_ERR_NOT_SUPPORTED). We discard the result to match the
+        // trait's fire-and-forget contract.
         let _ = ret;
     }
 
@@ -159,13 +163,18 @@ impl SmpArch for Riscv64SmpArch {
         //   a7 = 0x48534D   (EID, HSM)
         //   a6 = 0          (FID, hart_start)
         //   a0 = hartid     (target hart to start)
-        //   a1 = start_addr (physical address of AP entry/trampoline)
-        //   a2 = priv       (0 = S-mode)
+        //   a1 = start_addr (physical address of the AP early stub)
+        //   a2 = opaque     (handed to the AP in a1 — §2.1/§3.1: carries
+        //                    the bootstrap pointer so the stub can locate
+        //                    its record; the old comment mislabeled this
+        //                    "priv mode" — S-3c fix, it is a pass-through
+        //                    cookie, not a privilege selector; S-mode is
+        //                    implied by hart_start semantics)
         // On success a0 = 0; otherwise a0 holds an SBI error code (e.g.
         // SBI_ERR_ALREADY_AVAILABLE if the hart is already running).
         let hartid = cpu as u64;
         let start_addr = entry as u64;
-        let priv_mode: u64 = 0;
+        let opaque = entry as u64;
         let ret: u64;
 
         // SAFETY: `ecall` traps to SBI firmware. All argument registers
@@ -179,7 +188,7 @@ impl SmpArch for Riscv64SmpArch {
                 "ecall",
                 inout("a0") hartid => ret,
                 in("a1") start_addr,
-                in("a2") priv_mode,
+                in("a2") opaque,
                 in("a6") SBI_HSM_HART_START_FID,
                 in("a7") SBI_HSM_EID,
                 options(nostack),
