@@ -204,6 +204,21 @@ lib.rs 瘦身为入口 + 引导序列 + re-export。收益：全局状态审计�
 
 **范围**：纯移动 + 引用修正，`cargo test` 回归（kernel 609 测试）。
 
+**✅ 已修复（2026-09-07，§22 Phase 2 迭代 3）**：新建 `os/kernel/src/globals.rs`（396 行）——
+`SyncUnsafeCell` 包装器 + sealed `BklProtected`/`Sealed` trait + `bkl_protected_impls!`
+审批清单 + 泛型 Option/[T;N] 复合 impl + 测试 mod，以及全部 13 个静态声明
+（9 SyncUnsafeCell + 4 Atomic；登记的 FREE_UPPER_IDX 已随 D-34 帧分配器重构消失，
+实测 4 个 Atomic）+ `ROOT_PHYS_UNSET` 哨兵常量随其静态同步迁移。lib.rs 以
+`pub mod globals` + `use globals::{...}` re-export 承接——**访问器族零改动**
+（静态经根作用域 use 解析，既有的 `*_with`/`boot_unchecked`/raw 全部原样）。
+范围裁定：A2 建议的"访问器族一并迁移"不采纳——审计点 = "存在哪些全局 +
+包装准入清单"（已单一文件化），访问器是 lib.rs API 面的一部分且消费方
+都在 lib.rs，搬移只产生 churn 无审计收益；记录于此防后人重查。
+修迁移引入的 6 个新警告至零（cfg 门控 FREE_MEMMAP 对齐 kmain 的
+not(mock)/not(qemu_test) 门、测试 mod 补回丢失的 `#[cfg(test)]`、
+ROOT_PHYS_UNSET 哨兵随迁、路径 crate 限定）。验证：kernel 694 passed /
+0 failed；clippy 回到基线 2（已登记项）；三架构 production-target check 全过。
+
 ### B1. BKL guard `mem::forget` 跨函数传递 → 显式 transfer [P1]
 
 **现状**：smp.rs:577/600 `R-05: forget guard — BKL stays held, released later by caller`——
@@ -2658,7 +2673,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 2 — SMP 前置重构（避免 S-4/S-5 新代码二次迁移）**
 - ✅ A1 [P1] 33 处裸 unsafe fn 访问器调用点 → `xxx_with(&BklSection)`；boot 期 BootPhase witness → **实测 24 处：新增 `BklSection::assume_held()` 链根 + 调度循环全链 thread + kernel_call_finish 去全局化 + boot/IRQ 根位收敛；694 全绿（2026-09-07）**
-- ⬜ A2 [P2] 9 SyncUnsafeCell + 5 Atomic 全局收敛 `globals.rs`
+- ✅ A2 [P2] 9 SyncUnsafeCell + 5 Atomic 全局收敛 `globals.rs` → **globals.rs 396 行落地（13 静态 + 包装器 + BklProtected 清单 + 哨兵常量），访问器零改动 re-export 承接（2026-09-07）**
 - ✅ B1 [P1] `mem::forget` BKL 跨函数传递 → 显式 `BklGuard::transfer` API → **11 处散点收敛 + kernel_call_finish 入口断言；全库 forget 仅剩 transfer 内部一点（2026-09-07）**
 - ⬜ B-X [Backlog 启动] cfg(target_arch) 行为选择审计 + 第一批 trait 化（ArchNames / MockInterruptController；
   `naked_asm!`/`asm!` 字面量 cfg 保留）
