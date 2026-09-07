@@ -218,6 +218,18 @@ guard 跨函数用 `mem::forget` 转移，drop 语义失效（RAII 断链）。r
 注意：`bkl_is_locked()`（smp.rs:1005）可作为 debug 断言锚点，建议在 `kernel_call_finish` 路径加
 `debug_assert!(bkl_is_locked())`。
 
+**✅ 已修复（2026-09-07，§22 Phase 2 迭代 2）**：新增 `BklGuard::transfer(self)`——
+全库唯一保留的 `mem::forget`（集中在 guard 自身类型内，ManuallyDrop 方案被
+clippy `unused_must_use` 否决后定稿）。11 处散点 forget 全部收敛：schedule_sync ×4
+（含可重入 IPI 自处理两臂 + 等待循环两端）、schedule_stop_proc、bkl_lock_section、
+kernel_call_dispatch、dispatch_ipc_entry、bsp_finish_booting、idle 的 halt 后再取锁、
+bkl_acquire_for_test。同批落地本条建议的 `debug_assert!(bkl_is_locked())` 于
+`kernel_call_finish` 入口（A1 的 assume_held 断言 + 本条断言 = 丢锁双重响亮失败）。
+"谁在故意持锁"从 grep `mem::forget`（含误报）变成 grep `.transfer()`（精确）；
+未来 RAII 原生重构只有 transfer 一处抑制点要换。文档同步：doc 16 §D4、smp.rs
+模块级注释三处 mem::forget 表述、syscall.rs 测试注释两处。
+验证：kernel 694 passed / 0 failed；clippy 维持 2（已登记项，零新增）。
+
 ### A3. KProcess / KPriv `Drop + panic` slot ownership 防御 [Done: 2026-09-02]
 
 **已实施**。`KProcess`（proc.rs）与 `KPriv`（kpriv.rs）均加防御性 `Drop`——占用槽（`SLOT_FREE` 清除 /
@@ -2647,7 +2659,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 **Phase 2 — SMP 前置重构（避免 S-4/S-5 新代码二次迁移）**
 - ✅ A1 [P1] 33 处裸 unsafe fn 访问器调用点 → `xxx_with(&BklSection)`；boot 期 BootPhase witness → **实测 24 处：新增 `BklSection::assume_held()` 链根 + 调度循环全链 thread + kernel_call_finish 去全局化 + boot/IRQ 根位收敛；694 全绿（2026-09-07）**
 - ⬜ A2 [P2] 9 SyncUnsafeCell + 5 Atomic 全局收敛 `globals.rs`
-- ⬜ B1 [P1] `mem::forget` BKL 跨函数传递 → 显式 `BklGuard::transfer` API（smp.rs:577/:600）
+- ✅ B1 [P1] `mem::forget` BKL 跨函数传递 → 显式 `BklGuard::transfer` API → **11 处散点收敛 + kernel_call_finish 入口断言；全库 forget 仅剩 transfer 内部一点（2026-09-07）**
 - ⬜ B-X [Backlog 启动] cfg(target_arch) 行为选择审计 + 第一批 trait 化（ArchNames / MockInterruptController；
   `naked_asm!`/`asm!` 字面量 cfg 保留）
 

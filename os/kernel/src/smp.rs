@@ -25,7 +25,7 @@
 //! - **D5**: bitflags `SchedIpiFlags` replaces raw bit operations
 //! - **D6**: BKL release/reacquire pattern preserved from C. R-05 (2026-08-12)
 //!   unified `BklGuard` and `BklGuardRaii` into a single RAII type — `Drop`
-//!   releases the BKL. Cross-function BKL transfer uses `mem::forget(guard)`;
+//!   releases the BKL. Cross-function BKL transfer uses `BklGuard::transfer()`;
 //!   explicit early release uses `BklGuard::release()`.
 //! - **D7**: `SmpArch` trait for hardware abstraction (no `#[cfg(target_arch)]`)
 //! - **D8**: `ProcNr` index replaces raw `struct proc *` pointers
@@ -568,14 +568,14 @@ impl SmpState {
                 // Reentrant: handle our own IPI if pending
                 if self.sched_ipi_data[current_cpu.index()].has_pending() {
                     // R-05: forget guard — explicit bkl_unlock() below
-                    core::mem::forget(bkl_lock());
+                    bkl_lock().transfer();
                     self.sched_handler_full(proc_table, current_cpu);
                     bkl_unlock();
                 }
                 A::pause();
             }
             // R-05: forget guard — BKL stays held, released later by caller
-            core::mem::forget(bkl_lock());
+            bkl_lock().transfer();
         }
 
         // Set IPI data and flags
@@ -591,14 +591,14 @@ impl SmpState {
         while self.sched_ipi_data[target_cpu.index()].has_pending() {
             if self.sched_ipi_data[current_cpu.index()].has_pending() {
                 // R-05: forget guard — explicit bkl_unlock() below
-                core::mem::forget(bkl_lock());
+                bkl_lock().transfer();
                 self.sched_handler_full(proc_table, current_cpu);
                 bkl_unlock();
             }
             A::pause();
         }
         // R-05: forget guard — BKL stays held, released later by caller
-        core::mem::forget(bkl_lock());
+        bkl_lock().transfer();
     }
 
     /// Stop a process on a remote CPU.
@@ -740,7 +740,7 @@ impl SmpState {
         // Reacquire BKL
         // C: smp.c:48
         // R-05: forget guard — BKL stays held, released later by caller
-        core::mem::forget(bkl_lock());
+        bkl_lock().transfer();
     }
 }
 
@@ -884,12 +884,12 @@ static BKL_LOCKED: AtomicBool = AtomicBool::new(false);
 /// `bkl_unlock()`. This eliminates the "forgot to call `bkl_unlock()`"
 /// class of deadlocks. For code paths that need to keep the BKL held
 /// after the guard's scope (e.g. `kernel_call_dispatch` →
-/// `kernel_call_finish`), use `core::mem::forget(guard)`. For explicit
+/// `kernel_call_finish`), use `BklGuard::transfer()`. For explicit
 /// early release, use [`BklGuard::release`].
 ///
 /// D6 update: The old design had two types — `BklGuard` (non-RAII) and
 /// `BklGuardRaii` (RAII). R-05 unifies them into a single RAII type.
-/// Cross-function BKL transfer uses `mem::forget`; blocking-IPC release/
+/// Cross-function BKL transfer uses `BklGuard::transfer()`; blocking-IPC release/
 /// reacquire uses `release()`/`bkl_lock()`.
 ///
 /// C: `BKL_LOCK()` / `BKL_UNLOCK()` — smp.c:27, spinlock.h
@@ -907,6 +907,26 @@ impl BklGuard {
     /// The witness borrows this guard, so it cannot outlive the guard.
     pub fn section(&self) -> BklSection<'_> {
         BklSection { _lifetime: core::marker::PhantomData }
+    }
+
+    /// Transfer this guard's BKL ownership to the enclosing scope,
+    /// suppressing the `Drop` release — the lock stays held and is released
+    /// by an explicit `bkl_unlock()` further up the chain.
+    ///
+    /// B1 (todo §1): this replaces the former `core::mem::forget(guard)`
+    /// idiom at every cross-function transfer point. Mechanics are
+    /// identical (ManuallyDrop suppresses Drop), but the transfer is now a
+    /// named, greppable API on the guard's own type instead of a raw
+    /// `forget` scattered across call sites — "who intentionally keeps the
+    /// BKL held" is one search away, and a future RAII-native redesign has
+    /// exactly one suppression point to replace.
+    pub fn transfer(self) {
+        // `mem::forget` suppresses `Drop` (which would `bkl_unlock`), so the
+        // guard leaks and the BKL simply stays held. This is the ONE
+        // deliberate `forget` in the entire codebase (B1): every
+        // cross-function BKL transfer goes through here instead of a
+        // scattered `core::mem::forget` at call sites.
+        core::mem::forget(self);
     }
 
     /// Explicitly release the BKL early, consuming the guard.
@@ -978,7 +998,7 @@ pub fn bkl_lock_section<'a>() -> BklSection<'a> {
     // call bkl_unlock() explicitly. The BklSection witness proves to the
     // type system that the BKL was acquired.
     let guard = bkl_lock();
-    core::mem::forget(guard);
+    guard.transfer();
     BklSection { _lifetime: core::marker::PhantomData }
 }
 
@@ -1057,7 +1077,7 @@ pub fn smp_state_with<'a, 'b>(
 /// R-05 (2026-08-12): The returned [`BklGuard`] is RAII — `Drop` calls
 /// [`bkl_unlock`]. For most critical sections, simply let the guard go
 /// out of scope. For cross-function BKL transfer (e.g. `kernel_call_dispatch`
-/// → `kernel_call_finish`), use `core::mem::forget(guard)` to keep the BKL
+/// → `kernel_call_finish`), use `BklGuard::transfer()` to keep the BKL
 /// held and call `bkl_unlock()` explicitly at the release point. For explicit
 /// early release (e.g. before blocking IPC), use [`BklGuard::release`].
 ///
@@ -1070,7 +1090,7 @@ pub fn smp_state_with<'a, 'b>(
 ///    is held (BKL is a spinlock; sleep inside a spinlock is
 ///    deadlock).
 /// 3. **Ensuring exactly one release per `bkl_lock()`** — either via
-///    `Drop` (RAII), `mem::forget` + explicit `bkl_unlock()`, or
+///    `Drop` (RAII), `BklGuard::transfer()` + explicit `bkl_unlock()`, or
 ///    `BklGuard::release()`. Do NOT mix explicit `bkl_unlock()` with
 ///    RAII drop on the same guard (double unlock).
 pub fn bkl_lock() -> BklGuard {
@@ -1120,7 +1140,7 @@ pub fn bkl_unlock() {
 
 // R-05: bkl_lock_raii() and BklGuardRaii have been removed.
 // BklGuard is now RAII (Drop releases BKL). Use bkl_lock() for all
-// critical sections. For cross-function BKL transfer, use mem::forget(guard).
+// critical sections. For cross-function BKL transfer, use bkl_lock().transfer().
 // For explicit early release, use guard.release().
 
 /// Diagnostic helper: query whether the BKL is currently held.
@@ -1365,7 +1385,7 @@ mod tests {
         // must leave it free again.
         // R-05: forget guard since we unlock explicitly.
         assert!(!bkl_is_locked());
-        core::mem::forget(bkl_lock());
+        bkl_lock().transfer();
         assert!(bkl_is_locked());
         bkl_unlock();
         assert!(!bkl_is_locked());
@@ -1386,10 +1406,10 @@ mod tests {
         // *can* be re-acquired after explicit unlock (re-entry protocol
         // is the caller's responsibility — see SAFETY contract).
         // R-05: forget guards since we unlock explicitly.
-        core::mem::forget(bkl_lock());
+        bkl_lock().transfer();
         bkl_unlock();
         // After explicit unlock, a fresh lock must succeed.
-        core::mem::forget(bkl_lock());
+        bkl_lock().transfer();
         bkl_unlock();
         bkl_test_teardown();
     }
@@ -1504,7 +1524,7 @@ mod tests {
         // Verify RAII + explicit unlock can coexist:
         // explicit unlock → RAII reacquire → RAII release.
         // R-05: forget the first guard since we unlock explicitly.
-        core::mem::forget(bkl_lock());
+        bkl_lock().transfer();
         bkl_unlock();
         assert!(!bkl_is_locked());
         {

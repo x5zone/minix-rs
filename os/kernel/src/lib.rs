@@ -2300,12 +2300,12 @@ fn bsp_finish_booting(
     // switch_to_user() / IPC wait paths. On single-CPU, the BKL is always
     // held while in kernel mode. On SMP, it serializes kernel entry points.
     //
-    // R-05: BklGuard is now RAII (Drop releases BKL). We must mem::forget
-    // the guard to keep the BKL held across the call to switch_to_user(),
-    // which will release it before entering the idle loop. Binding the
-    // guard to a variable and letting it drop at end of scope would release
-    // the BKL too early (before switch_to_user).
-    core::mem::forget(smp::bkl_lock());
+    // R-05/B1: the guard is RAII (Drop releases BKL); `transfer()` hands
+    // ownership to the ambient held-BKL scope so the lock stays held across
+    // the call to switch_to_user(), which will release it before entering
+    // the idle loop. Binding the guard to a variable and letting it drop at
+    // end of scope would release the BKL too early.
+    smp::bkl_lock().transfer();
 
     // Step 9: switch_to_user() — never returns
     // C: switch_to_user(); NOT_REACHABLE;
@@ -2711,7 +2711,7 @@ fn idle(
     // Re-acquire the BKL: the halt window released it and the wake
     // interrupt's handler has returned. Every state access below the
     // return point (pick_proc, queues, priv table) must hold the BKL.
-    core::mem::forget(crate::smp::bkl_lock());
+    crate::smp::bkl_lock().transfer();
 
     // No end-of-idle accounting here — C measures idle time from the NEXT
     // context_stop after the interrupt (proc.c:221-222 comment).
@@ -3745,7 +3745,7 @@ mod tests {
     /// the correct end state.
     fn bkl_acquire_for_test() {
         crate::smp::bkl_lock_reset_for_test();
-        core::mem::forget(crate::smp::bkl_lock());
+        crate::smp::bkl_lock().transfer();
     }
 
     /// Make a user process runnable in `table` at `nr` with the given

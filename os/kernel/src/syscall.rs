@@ -486,8 +486,9 @@ pub fn kernel_call_dispatch(
     // Acquire BKL — C: BKL_LOCK() in mpx.S kernel_call_entry_common
     // R-03: Keep the guard alive and derive a BklSection witness for
     // compile-time BKL proof on global accessor calls (irq_manager_with, etc.).
-    // R-05: BklGuard is now RAII (Drop releases BKL). We mem::forget the
-    // guard because BKL must stay held until kernel_call_finish() releases it.
+    // R-05/B1: BklGuard is RAII (Drop releases BKL); transfer() hands
+    // ownership to the ambient held-BKL scope because BKL must stay held
+    // until kernel_call_finish() releases it.
     let bkl_guard = crate::smp::bkl_lock();
     let result = {
         let bkl_section = bkl_guard.section();
@@ -499,11 +500,11 @@ pub fn kernel_call_dispatch(
     // call's kernel work is still the caller's); kernel_call_resume does
     // not re-set it.
     crate::set_kbill_kcall_with(caller.p_nr, &bkl_guard.section());
-    // BKL is NOT released here — mem::forget prevents Drop from releasing.
+    // BKL is NOT released here — transfer() suppressed the guard's Drop.
     // BKL is released in:
     //   1. kernel_call_finish() — for normal completion (before switch_to_user)
     //   2. switch_to_user() — before returning to user mode
-    core::mem::forget(bkl_guard);
+    bkl_guard.transfer();
     result
 }
 
@@ -648,18 +649,19 @@ pub fn dispatch_ipc_entry(
         .expect("dispatch_ipc_entry: caller_nr out of range") as usize;
 
     // Acquire BKL — C: BKL_LOCK() in mpx.S ipc_entry assembly.
-    // R-05: BklGuard is RAII; mem::forget prevents Drop from releasing
-    // because BKL must stay held until kernel_call_finish() releases it.
+    // R-05/B1: the guard is RAII; `transfer()` hands ownership to the
+    // ambient held-BKL scope because BKL must stay held until
+    // kernel_call_finish() releases it.
     let bkl_guard = crate::smp::bkl_lock();
     // `caller` is derived from `proc_table` by the trap entry (raw-pointer
     // global access); passing `proc_table` (not a slice) lets dispatch_ipc
     // run the scheduler-aware sig_delay_done protocol.
     let result = dispatch_ipc(proc_table, caller_idx, msg, priv_table, ipc_call);
-    // BKL is NOT released here — mem::forget prevents Drop from releasing.
+    // BKL is NOT released here — transfer() suppressed the guard's Drop.
     // BKL is released in:
     //   1. kernel_call_finish() — for normal completion (before switch_to_user)
     //   2. switch_to_user() — before returning to user mode
-    core::mem::forget(bkl_guard);
+    bkl_guard.transfer();
     result
 }
 
@@ -2692,6 +2694,10 @@ pub fn kernel_call_finish(
     proc_table: &mut crate::proc_table::ProcessTable,
     priv_table: &mut PrivTable,
 ) {
+    // B1: the dispatch entry transferred a held BKL into this chain
+    // (kernel_call_dispatch / dispatch_ipc_entry via `transfer()`); the
+    // VmSuspend branch below releases it. A lost lock must fail loudly.
+    debug_assert!(crate::smp::bkl_is_locked(), "kernel_call_finish entered without the BKL held");
     // VmSuspend path: save msg + set MF_KCALL_RESUME + release BKL.
     // C: system.c:60-63 — `if (result == VMSUSPEND) { saved.reqmsg = *msg;
     // p_misc_flags |= MF_KCALL_RESUME; }`
@@ -3477,7 +3483,7 @@ mod tests {
         // s_ipc_to whitelist check fails first (before trap-mask check).
         assert_eq!(result, KcallResult::Ok(crate::errno::ECALLDENIED));
 
-        // dispatch_ipc_entry acquires BKL via mem::forget(bkl_guard) —
+        // dispatch_ipc_entry acquires BKL via bkl_guard.transfer() —
         // BKL is NOT released by Drop. We must release manually to avoid
         // poisoning subsequent tests.
         crate::smp::bkl_unlock();
@@ -3488,7 +3494,7 @@ mod tests {
         // dispatch_ipc_entry must acquire BKL before calling dispatch_ipc.
         // We verify this indirectly: after dispatch_ipc_entry returns
         // (via the SEND path), BKL is held (not released by Drop due to
-        // mem::forget). We release it manually with bkl_unlock().
+        // transfer()). We release it manually with bkl_unlock().
         //
         // If BKL were not acquired, bkl_unlock() here would underflow
         // (unlock without lock) and panic.
@@ -3506,7 +3512,7 @@ mod tests {
             &mut proc_table,
         );
         // BKL should be held now (acquired by dispatch_ipc_entry,
-        // not released due to mem::forget). Release it to restore state.
+        // not released due to transfer()). Release it to restore state.
         crate::smp::bkl_unlock();
     }
 
