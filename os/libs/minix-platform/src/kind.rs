@@ -58,7 +58,11 @@ pub unsafe fn parse_by_kind(source: PlatformDescSource) -> Result<PlatformDescEn
                 Err(_e) => Err(PlatformParseError::DtbParse),
             }
         }
-        #[cfg(target_arch = "x86_64")]
+        // S-2b: aarch64 joins the RSDP arm — AAVMF exposes the ACPI 2.0
+        // RSDP via config table (empirically verified: 8 entries, ACPI2
+        // present, both DTB GUIDs absent), and `AcpiDesc::parse` handles
+        // MADT GICC for aarch64 topology.
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         RSDP => {
             // SAFETY: caller guarantees phys_addr points to a valid RSDP.
             match unsafe { crate::acpi::AcpiDesc::parse(source.phys_addr().0 as usize) } {

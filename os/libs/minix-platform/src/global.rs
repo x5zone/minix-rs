@@ -16,7 +16,7 @@ use crate::desc::PlatformDesc;
 use crate::kind::parse_by_kind;
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use crate::device_tree::DeviceTreeDesc;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::acpi::AcpiDesc;
 use crate::qemu_virt::QemuVirtDesc;
 
@@ -97,8 +97,8 @@ pub enum PlatformDescEnum {
     /// Parsed from a Flattened Device Tree (ARM64/RISC-V only).
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     DeviceTree(DeviceTreeDesc),
-    /// Parsed from ACPI tables (x86-64 only).
-    #[cfg(target_arch = "x86_64")]
+    /// Parsed from ACPI tables (x86-64, and aarch64 since S-2b).
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     Acpi(AcpiDesc),
     /// Hardcoded QEMU `virt` fallback (always available).
     QemuVirt(QemuVirtDesc),
@@ -109,7 +109,7 @@ impl core::fmt::Debug for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(_) => f.write_str("DeviceTree(...)"),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(_) => f.write_str("Acpi(...)"),
             Self::QemuVirt(_) => f.write_str("QemuVirt"),
         }
@@ -121,7 +121,7 @@ impl PlatformDesc for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.interrupt_controller(),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.interrupt_controller(),
             Self::QemuVirt(d) => d.interrupt_controller(),
         }
@@ -130,7 +130,7 @@ impl PlatformDesc for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.timer(),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.timer(),
             Self::QemuVirt(d) => d.timer(),
         }
@@ -139,7 +139,7 @@ impl PlatformDesc for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.early_console(),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.early_console(),
             Self::QemuVirt(d) => d.early_console(),
         }
@@ -148,7 +148,7 @@ impl PlatformDesc for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.cpu_topology(),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.cpu_topology(),
             Self::QemuVirt(d) => d.cpu_topology(),
         }
@@ -157,7 +157,7 @@ impl PlatformDesc for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(d) => d.arch_misc(),
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.arch_misc(),
             Self::QemuVirt(d) => d.arch_misc(),
         }
@@ -166,7 +166,7 @@ impl PlatformDesc for PlatformDescEnum {
         match self {
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             Self::DeviceTree(_) => crate::desc::PlatformSource::DeviceTree,
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(_) => crate::desc::PlatformSource::Acpi,
             Self::QemuVirt(_) => crate::desc::PlatformSource::QemuVirt,
         }

@@ -265,7 +265,8 @@ impl AcpiDesc {
         }
     }
 
-    /// Construct from pre-parsed values (for tests).
+    /// Construct from pre-parsed values (for tests; x86 field types).
+    #[cfg(target_arch = "x86_64")]
     pub fn from_parsed(
         ic: ApicDesc,
         timer: PitDesc,
@@ -449,8 +450,11 @@ unsafe fn parse_madt(
 
         match entry_type {
             MADT_TYPE_IOAPIC => {
-                // IOAPIC structure: extract base address.
+                // IOAPIC structure: extract base address (x86 only — the
+                // aarch64 MADT never contains IOAPIC records, and the
+                // `ioapic_base` accumulator is x86-gated to match).
                 // Layout: type(1) + length(1) + ioapic_id(1) + reserved(1) + ioapic_addr(4) + gsi_base(4).
+                #[cfg(target_arch = "x86_64")]
                 if entry_len >= 12 {
                     let ioapic_addr_bytes = unsafe {
                         core::slice::from_raw_parts(
@@ -521,9 +525,14 @@ unsafe fn parse_madt(
             }
             #[cfg(target_arch = "aarch64")]
             MADT_TYPE_GICC => {
-                // GICC (80 bytes): MPIDR at offset 56, GICR base at 48, Flags
-                // at offset 12 (bit 0 = Processor Enabled). Layout per ACPI
-                // 6.x §5.2.12.5.
+                // GICC (80 bytes), ACPICA `acpi_madt_generic_cpu_interface`
+                // layout: Flags u32 at +12 (bit 0 = Processor Enabled),
+                // GICR base u64 at +48. Hardware ID: ACPICA puts the MPIDR
+                // at +56, but QEMU's GICv2 MADT leaves it zeroed (GICv2 has
+                // no MPIDR-driven discovery) — the ACPI Processor UID (u32
+                // at +8) is the usable per-CPU identity there and matches
+                // the DTB MPIDR Aff0 on QEMU virt, so it is used as hw_id
+                // (S-2b, byte-verified against the live AAVMF MADT).
                 if entry_len >= 64 {
                     let base = (madt_phys + offset) as *const u8;
                     // SAFETY: entry_len >= 64, bounds checked.
@@ -539,7 +548,10 @@ unsafe fn parse_madt(
                     let flags = u32_le_from_slice(flags_bytes);
                     let enabled = (flags & 1) != 0;
                     if enabled && (nr_cpus as usize) < MAX_CPUS {
-                        let hw_id = read_u64(56); // MPIDR
+                        let uid_bytes = unsafe {
+                            core::slice::from_raw_parts(base.add(8), 4)
+                        };
+                        let hw_id = u64::from(u32_le_from_slice(uid_bytes));
                         let cpu_gicr = read_u64(48);
                         if nr_cpus == 0 {
                             bsp_id = hw_id as u32;
@@ -556,11 +568,15 @@ unsafe fn parse_madt(
             }
             #[cfg(target_arch = "aarch64")]
             MADT_TYPE_GICD => {
-                // GIC Distributor (24 bytes): base at offset 12.
+                // GIC Distributor (24 bytes), ACPICA
+                // `acpi_madt_generic_distributor` layout: header(4) +
+                // GIC ID(4) + base_address(8, at +8) + global_irq_offset(4)
+                // + version(1). Empirically pinned on QEMU virt GICv2
+                // (S-2b): base 0x08000000 at +8, version 2 at +20.
                 if entry_len >= 20 {
                     let base = (madt_phys + offset) as *const u8;
                     let bytes = unsafe {
-                        core::slice::from_raw_parts(base.add(12), 8)
+                        core::slice::from_raw_parts(base.add(8), 8)
                     };
                     gicd_base =
                         u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
@@ -631,6 +647,9 @@ pub enum AcpiParseError {
     MadtNotFound,
     /// MADT table is too short to contain a header.
     MadtTooShort,
+    /// aarch64: MADT lists CPUs but no GIC Distributor record — the
+    /// interrupt controller base would be missing for every consumer.
+    GicdNotFound,
 }
 
 impl fmt::Display for AcpiParseError {
@@ -640,6 +659,7 @@ impl fmt::Display for AcpiParseError {
             Self::NoXsdtPointer => write!(f, "RSDP has no XSDT/RSDT pointer"),
             Self::MadtNotFound => write!(f, "MADT (APIC) table not found"),
             Self::MadtTooShort => write!(f, "MADT table too short"),
+            Self::GicdNotFound => write!(f, "MADT has CPUs but no GICD record"),
         }
     }
 }

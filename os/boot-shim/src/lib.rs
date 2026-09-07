@@ -57,7 +57,7 @@ pub mod opensbi_helpers;
 // determines which impl is compiled.
 
 #[cfg(feature = "uefi")]
-pub use uefi_helpers::UefiBootShim;
+pub use uefi_helpers::{find_platform_sources, UefiBootShim};
 
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
 pub use opensbi_helpers::OpenSbiBootShim;

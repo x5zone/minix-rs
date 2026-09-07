@@ -35,10 +35,12 @@ pub mod kind;
 pub mod qemu_virt;
 pub mod test_support;
 
-#[cfg(target_arch = "x86_64")]
+// S-2b: aarch64 joins the ACPI discovery chain (AAVMF exposes the ACPI 2.0
+// RSDP via config table; AcpiDesc::parse handles MADT GICC for topology).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub mod acpi;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use acpi::{AcpiDesc, AcpiParseError};
 pub use desc::*;
 pub use device_tree::{DeviceTreeDesc, DtParseError};

@@ -1129,6 +1129,7 @@ pub fn bkl_unlock() {
 | `test_wait_for_aps_single_cpu` | BSP 等待 APs 完成（单 CPU 退化） | `wait_for_APs` (smp.c:30) |
 | `test-smp-topo`（QEMU 集成，S-2） | `-smp 4` 下 RSDP→MADT：nr_cpus=4、APIC ID {0,1,2,3} 互异、BSP∈发现集（x86_64 PASS / aarch64 SKIP→S-2b：AAVMF 无 FDT config table + acpi 模块 x86 门控，见 smp_todo §20） | `AcpiDesc::parse` + `CpuTopology`（D-36 上半） |
 | `test-smp-topo-riscv64`（QEMU 集成，S-2） | OpenSBI a1→DTB：nr_cpus=4、hart {0,1,2,3} 互异、BSP∈发现集（PASS） | `DeviceTreeDesc::parse` + `CpuTopology`（D-36 上半） |
+| `test-smp-topo-aarch64`（QEMU 集成，S-2b） | `-smp 4` 下 ACPI2 RSDP→MADT GICC：nr_cpus=4、hw_id {0,1,2,3} 互异、BSP∈发现集（**PASS，2026-09-07**；AAVMF config table 无 FDT（legacy 与 UEFI 规范 DTB GUID 均缺，字节级实证）但有 ACPI2 RSDP——发现链走 ACPI；解析偏移修正：GICD base@+8（原 +12 读零）、GICC hw_id 用 Processor UID（QEMU GICv2 的 MPIDR 字段恒 0），均字节级实测钉住） | `AcpiDesc::parse`（MADT GICC）+ `CpuTopology`（D-36 上半） |
 
 ### 5.2 待补充测试（DEFERRED 函数完善后）
 

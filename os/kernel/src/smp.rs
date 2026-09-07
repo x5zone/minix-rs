@@ -1148,10 +1148,11 @@ pub fn bkl_unlock() {
 /// assertion, and test code only (the value can change immediately
 /// after the load).
 ///
-/// Available in `test` and `debug_assertions` builds. In release builds
-/// without `debug_assertions`, this function is not available — the BKL
-/// witness (`BklSection`) should be used for compile-time proof instead.
-#[cfg(any(test, debug_assertions))]
+/// Available in all builds: `debug_assert!` type-checks its payload even
+/// in release (where the branch is codegen'd out), so the release kernel
+/// must still be able to *name* this function — the A1/B1 assertion sites
+/// (`assume_held`, `kernel_call_finish`) depend on it. For control flow,
+/// the witness (`BklSection`) remains the compile-time proof.
 pub fn bkl_is_locked() -> bool {
     BKL_LOCKED.load(Ordering::Acquire)
 }

@@ -90,7 +90,7 @@ unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
 /// Must be called **before** `exit_boot_services()`, because the UEFI
 /// System Table (which holds the configuration table pointer) is only
 /// valid while boot services are available.
-fn find_platform_sources() -> &'static [PlatformDescSource] {
+pub fn find_platform_sources() -> &'static [PlatformDescSource] {
     use core::cell::RefCell;
     let sources = RefCell::new(Vec::<PlatformDescSource>::new());
 
