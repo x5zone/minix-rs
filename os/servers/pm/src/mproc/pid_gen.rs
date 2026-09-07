@@ -131,17 +131,19 @@ impl PidGenerator {
     /// ```
     pub fn get_free_pid(&self, table: &ProcTable) -> Pid {
         loop {
-            let candidate = self.next_pid.get();
-
-            let next = if candidate < NR_PIDS {
-                candidate + 1
+            // C utility.c:38：先自增 next_pid 再检查再返回——初值
+            // INIT_PID+1（2）只是游标，永不作为分配结果，首个 PID 是
+            // INIT_PID+2（3）。V2-P1-1：旧实现返回自增前的旧值，相位
+            // 与 C 相差一位，pid 2 在 C 中永不使用。
+            let next = if self.next_pid.get() < NR_PIDS {
+                self.next_pid.get() + 1
             } else {
                 INIT_PID + 1
             };
             self.next_pid.set(next);
 
-            if !self.any_conflict(candidate, table) {
-                return candidate;
+            if !self.any_conflict(next, table) {
+                return next;
             }
         }
     }
@@ -197,8 +199,10 @@ mod tests {
         let generator = PidGenerator::new();
         let table = create_test_table();
 
+        // C utility.c:38 先自增再返回：首分配 = INIT_PID + 2（3），
+        // PID 2 永不使用（V2-P1-1 相位修正）。
         let pid = generator.get_free_pid(&table);
-        assert_eq!(pid, INIT_PID + 1);
+        assert_eq!(pid, INIT_PID + 2);
     }
 
     #[test]
@@ -220,14 +224,15 @@ mod tests {
 
         let table = create_test_table();
 
+        // 新相位（C utility.c:38）：返回自增后的值。
         let pid1 = generator.get_free_pid(&table);
-        assert_eq!(pid1, NR_PIDS - 1);
+        assert_eq!(pid1, NR_PIDS);
 
         let pid2 = generator.get_free_pid(&table);
-        assert_eq!(pid2, NR_PIDS);
+        assert_eq!(pid2, INIT_PID + 1);
 
         let pid3 = generator.get_free_pid(&table);
-        assert_eq!(pid3, INIT_PID + 1);
+        assert_eq!(pid3, INIT_PID + 2);
     }
 
     #[test]
@@ -236,12 +241,13 @@ mod tests {
         let mut table = create_test_table();
 
         table.procs[0].state.lifecycle = Lifecycle::Running;
-        table.procs[0].identity.id.pid = 2;
-        table.procs[0].identity.procgrp = 2;
+        table.procs[0].identity.id.pid = 3;
+        table.procs[0].identity.procgrp = 3;
 
+        // 新相位下首候选是 3（INIT_PID+2），与槽内 pid/procgrp 冲突 → 跳到 4。
         let pid = generator.get_free_pid(&table);
-        assert_ne!(pid, 2);
-        assert!(pid >= INIT_PID + 1 && pid <= NR_PIDS);
+        assert_ne!(pid, 3);
+        assert!(pid >= INIT_PID + 2 && pid <= NR_PIDS);
     }
 
     #[test]
@@ -253,7 +259,7 @@ mod tests {
         table.procs[0].identity.id.pid = 100;
         table.procs[0].identity.procgrp = 3;
 
-        generator.next_pid.set(3);
+        generator.next_pid.set(2); // 新相位下首候选 = 3
         let pid = generator.get_free_pid(&table);
         assert_ne!(pid, 3);
     }
@@ -277,11 +283,11 @@ mod tests {
         // 对活进程的唯一性契约不变。
         let generator = PidGenerator::new();
         let mut table = create_test_table();
-        generator.next_pid.set(7);
+        generator.next_pid.set(7); // 新相位下候选 = 8
 
         // 未使用槽位持有陈旧 procgrp=7：不参与冲突检测。
         table.procs[0].identity.procgrp = 7;
         let pid = generator.get_free_pid(&table);
-        assert_eq!(pid, 7);
+        assert_eq!(pid, 8);
     }
 }

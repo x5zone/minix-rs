@@ -792,10 +792,12 @@ mod tests {
         let rs = server.table().get(2).unwrap();
         assert_eq!(rs.parent(), UserSlot::new(11));
 
-        // PID 分配：PM→2, VFS→3, RS→4（get_free_pid 顺序）。
-        assert_eq!(server.table().get(0).unwrap().identity.id.pid, 2);
-        assert_eq!(server.table().get(1).unwrap().identity.id.pid, 3);
-        assert_eq!(server.table().get(2).unwrap().identity.id.pid, 4);
+        // PID 分配：PM→3, VFS→4, RS→5（get_free_pid 顺序；C 相位下
+        // 首个分配值是 INIT_PID+2=3，pid 2 永不使用——utility.c:38 先
+        // 自增再返回，V2-P1-1 相位修正）。
+        assert_eq!(server.table().get(0).unwrap().identity.id.pid, 3);
+        assert_eq!(server.table().get(1).unwrap().identity.id.pid, 4);
+        assert_eq!(server.table().get(2).unwrap().identity.id.pid, 5);
 
         // 负 proc_nr（内核 task）跳过，不计入 procs_in_use。
         assert_eq!(server.table().procs_in_use.get(), 4);

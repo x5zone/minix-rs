@@ -201,7 +201,7 @@ pid_t get_free_pid(void) {                // utility.c:34
 
 `NR_PIDS=30000`（`const.h:3`），`NO_PID=0`（`const.h:8`），`INIT_PID=1`（`const.h:9`）；`next_pid` 轮转时跳过 `0/1`，双字段扫描保证 `pid` 与 `procgrp`（进程组亦占用 PID 命名空间）均不碰撞；复杂度期望 `O(1)`（冲突率约 `NR_PROCS/NR_PIDS ≈ 0.8%`），最坏 `O(NR_PROCS)`。
 
-`forkexit.c:119-120` 的 `new_pid = get_free_pid(); rmc->mp_pid = new_pid` 将全局唯一命名注入子进程（Rust `PidGenerator::get_free_pid` 同算法，`mproc/pid_gen.rs:32`，`Cell<Pid>` 单线程安全）。
+`forkexit.c:119-120` 的 `new_pid = get_free_pid(); rmc->mp_pid = new_pid` 将全局唯一命名注入子进程（Rust `PidGenerator::get_free_pid` 同算法，`mproc/pid_gen.rs`，`Cell<Pid>` 单线程安全）。注意 C 的相位语义：`next_pid` 先自增再检查再返回（utility.c:38），首个分配值是 `INIT_PID+2`=3，pid 2 永不使用——Rust 实现曾返回自增前的旧值（首个分配 2），2026-09-08 修正（todo.md §11 V2-P1-1）。
 
 ### 2.6 VFS 投递：`VFS_PM_FORK` 的 `tell_vfs(rmc)`（forkexit.c:122-130）
 

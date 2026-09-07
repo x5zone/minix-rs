@@ -843,6 +843,23 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：真实通电（trap 层）挂 edge E1——本条目的通道贯通与 wire 语义在 mock 层已完整验证。
 
+### ✅ Fix #31: V2-P1-1 — PID 轮转相位对齐 C（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/mproc/pid_gen.rs`（`get_free_pid` 改为"先自增 next_pid、检查并返回新值"，对齐 utility.c:38 的 C 语义；5 个测试同步新相位：首分配 INIT_PID+2、回绕 30000→2→3、冲突/procgrp/stale 三测试的候选锚点平移）
+- `os/servers/pm/src/init.rs`（`test_fill_boot_system_procs` 的 PID 断言 PM→3/VFS→4/RS→5）
+- `notes/.../07-pm-fork.md`（§2.5 补相位语义说明）
+
+**Before/After**：C 的 `next_pid` 先自增（utility.c:38），首个分配 INIT_PID+2=3，pid 2 全生命周期不使用；Rust 返回自增前旧值（首个分配 2），全部 boot 系统进程 PID 漂移一位。修复后启动 PID 序列与 C 逐一对齐。**设计选型**：(a) 返回自增后值（首选：pid 是外部可观察值，Rewrite 契约保护编号序列；Linux `alloc_pid` 的 RESERVED_PIDS=300 启动保留与 C 跳过 pid 2 是同类的"相位保留"实践，Redox 无轮转不可比——V2-Redox-4）；(b) 保留相位改 fill_boot 起点补偿（否决：双真相源，pid_gen 的语义偏离会再次扩散）；(c) 声明有意偏离（否决：无任何收益）。**方法论备注**：pid_gen 的 doc 注释一直写的是 C 的正确语义（"Candidate PID = next_pid++"），是代码没照文档实现——文档-代码同步门的双向性（本次是代码落后于文档）。
+
+**Verified**：
+- `cargo test -p minix-pm`：351 lib + 8 integration passed（5 个 pid_gen 测试 + 1 个 fill_boot 测试平移后全绿）
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error
+
+**Docs**：`07-pm-fork.md` §2.5；本文件 V2-P1-1 标 ✅。
+
+**未做（DEFERRED 论证）**：无——本条目 stage 内完整闭环。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -965,7 +982,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：`sig_bit` 改为 `1u64 << (sig - 1)`（对齐 C `__sigmask`），`init.rs:703-718` 断言值同步 -1；consumer 不动。方案二：consumer 全部改 `1<<signo` 对齐 producer。选一后全文 grep `CORE_SIGSET|IGN_SIGSET|NOIGN_SIGSET` 复核每个消费点（含 `signal.rs:276` 的 badignore）。**顺带修 badignore 谓词**：C 是 `sigismember(&noign_sset, signo) && (ignored(signo) || masked(signo))` 的单信号成员判定（signal.c:483-486），Rust 写成了"集合整体与 NOIGN_SIGSET 有交叠"（`signal.rs:275-277`），即使位基统一后谓词仍不等价，须改为 `(state.ignored | state.mask) & sig_bit(signo) != 0`。
 - **验证**：新增单元测试：`is_core` 对 1..=_NSIG 全信号逐个断言与 C core_sigs[] 一致；`kill(pid, SIGCONT)` 集成测试断言进程存活且回复 0。
 
-#### V2-P1-1 PID 轮转相位偏移：C 永不分配 PID 2，Rust 从 2 开始
+#### V2-P1-1 PID 轮转相位偏移：C 永不分配 PID 2，Rust 从 2 开始（✅ 已修复 2026-09-08，见 §10 Fix #31）
 
 - **优先级**：P1
 - **类型**：语义偏移（外部可观察值）
