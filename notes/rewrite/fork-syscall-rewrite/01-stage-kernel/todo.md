@@ -2700,7 +2700,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ S-3a ApBootstrap ABI + 内存序契约 + relocation-free image toolchain spike（失败即换 .S）→ **global_asm! 链路成立：PE 双段落地（CODE 36B + 可写 DATA 64B）、.reloc 零覆盖、拷贝执行三证明 PASS；工具链四发现（MS x64 ABI / imm64 限制 / 页边界段距 / COFF 段名截断）；无需回退 .S（2026-09-07）**
 - ⬜ S-3b x86 early entry image（16→32→64 梯子 + 低内存拷贝 + BSP 页表根 PA<4GiB assert）
 - ✅ S-3c arm/riscv stub + 三处固件 ABI 真 bug 修复（riscv IPI EID 0x735049 / arm PSCI 0xC4000003 / x86 mfence）→ **三修复全落地（两处实害：legacy ecall 静默失败、>4GiB entry 截断）+ 两架构 stub 骨架 + a2 语义勘误；arch 217 全绿（2026-09-08）**
-- ⬜ S-3d AP alive 验证（boot_ack_mask，test-smp-ap-alive）
+- 🔶 S-3d AP alive 验证 → **WIP（2026-09-08）**：boot_ack_mask + publish/observe + 单测落地；test-smp-ap-alive 内核已建并入 run_all；当前 INIT/SIPI 已发出但 AP 未达 Rust 入口（marker=0、无复位、ESR=0）——16 位段 lgdt 编码疑点，待 QEMU gdb 单步（smp_todo §5 S-3d 行有完整诊断记录）
 - ⬜ S-8 asm trap stub + SYSCALL 入口（BSP 公共陷阱基建，固定 S-4 前；L4 test-timer-irq；解锁 D-46 硬件半环）
 - ⬜ S-4 init_ap 真实现（D-39：per-CPU GDT/TSS/GS_BASE/lidt + per-CPU MSR 重编程 + LAPIC local timer）
 - ⬜ S-5 smp_init 编排 + boot_lock（D-36 下半 + D-37：BKL 舞蹈 + 锁序表 + 握手超时）

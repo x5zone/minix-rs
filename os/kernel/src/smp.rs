@@ -49,7 +49,7 @@
 //! - IPC sendrecv suspend/resume paths
 //! - Per-CPU run queue cross-CPU access
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::proc::{proc_nr, CpuId, MiscFlagsBits, ProcNr, RtsFlagsBits};
 use crate::sched::Scheduler;
@@ -343,9 +343,29 @@ pub struct SmpState {
     sched_ipi_data: [SchedIpiData; MAX_CPUS],
     /// Number of APs that have finished booting. C: `ap_cpus_booted`
     ap_cpus_booted: AtomicU32,
+    /// AP handshake bitmap (S-3d): bit n set == AP with logical_id n has
+    /// finished reading the bootstrap record and published its ack
+    /// (Release). BSP observes with Acquire. **Distinct from online** —
+    /// v3 #1 two-state split: ack ≠ "AP is running init_ap"; the online
+    /// state arrives with S-4/S-7.
+    boot_ack_mask: AtomicU64,
 }
 
 impl SmpState {
+    /// AP publishes its handshake: "I have finished reading the bootstrap
+    /// record" (S-3d, §3.9). Release so the BSP's Acquire observation also
+    /// sees every byte the AP consumed. Only the handshake bit — the
+    /// online state is a separate lifecycle (S-4/S-7).
+    pub fn publish_boot_ack(&self, logical_id: u32) {
+        self.boot_ack_mask.fetch_or(1u64 << logical_id, Ordering::Release);
+    }
+
+    /// BSP side: has the AP with `logical_id` published its handshake?
+    /// (Acquire pairs with [`Self::publish_boot_ack`].)
+    pub fn observe_boot_ack(&self, logical_id: u32) -> bool {
+        self.boot_ack_mask.load(Ordering::Acquire) & (1u64 << logical_id) != 0
+    }
+
     /// Create a new SmpState for a single-CPU (BSP-only) configuration.
     ///
     /// C: `ncpus = 1`, `bsp_cpu_id = 0`, `cpu_set_flag(bsp_cpu_id, CPU_IS_READY)`
@@ -357,6 +377,7 @@ impl SmpState {
             cpu_locals: [const { CpuLocal::new() }; MAX_CPUS],
             sched_ipi_data: [const { SchedIpiData::new() }; MAX_CPUS],
             ap_cpus_booted: AtomicU32::new(0),
+            boot_ack_mask: AtomicU64::new(0),
         };
         state.cpus[0].set_flag(CpuFlags::BSP | CpuFlags::READY);
         state
@@ -372,6 +393,7 @@ impl SmpState {
             cpu_locals: [const { CpuLocal::new() }; MAX_CPUS],
             sched_ipi_data: [const { SchedIpiData::new() }; MAX_CPUS],
             ap_cpus_booted: AtomicU32::new(0),
+            boot_ack_mask: AtomicU64::new(0),
         };
         state.cpus[bsp_cpu_id.index()].set_flag(CpuFlags::BSP | CpuFlags::READY);
         state
@@ -1175,7 +1197,18 @@ pub(crate) fn bkl_lock_reset_for_test() {
 mod tests {
     use super::*;
 
-    #[test]
+        #[test]
+    fn test_boot_ack_publish_and_observe() {
+        // S-3d: the AP publishes its handshake bit (Release); the BSP
+        // observes it (Acquire). Only the addressed logical_id's bit moves.
+        let smp = SmpState::new_single_cpu();
+        assert!(!smp.observe_boot_ack(1));
+        smp.publish_boot_ack(1);
+        assert!(smp.observe_boot_ack(1));
+        assert!(!smp.observe_boot_ack(2), "other bits must stay clear");
+    }
+
+#[test]
     fn test_smp_state_single_cpu() {
         let smp = SmpState::new_single_cpu();
         assert_eq!(smp.ncpus(), 1);
