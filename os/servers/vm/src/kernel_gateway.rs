@@ -42,6 +42,27 @@ pub(crate) enum GatewayError {
     Kernel(i32),
 }
 
+/// One fetched kernel memory request.
+///
+/// Reply payload of SYS_VMCTL `VMCTL_MEMREQ_GET` (kernel syscall.rs fills
+/// `SVMCTL_MRG_*` M1 fields; C: `sys_vmctl_get_memreq` out-params
+/// `(&who, &mem, &len, &wrflag, &who_s, &mem_s, &requestor)` — minix-rs
+/// narrows to the fields the CHECK path consumes, kernel vm.rs §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // consumed via handle_signal (wired at E1)
+pub(crate) struct KernelMemReq {
+    /// Process whose address space the kernel asks about (`SVMCTL_MRG_TARGET`).
+    pub target: Endpoint,
+    /// Range start (page-aligned virtual address, `SVMCTL_MRG_ADDR`).
+    pub start: u64,
+    /// Range length in bytes (`SVMCTL_MRG_LENGTH`).
+    pub length: u64,
+    /// Write access requested (`SVMCTL_MRG_FLAG`).
+    pub write: bool,
+    /// Originating process (kernel/driver; `SVMCTL_MRG_REQUESTOR`).
+    pub requestor: Endpoint,
+}
+
 /// The VM's view of the kernel syscalls it consumes. Grows per consumer:
 /// `sys_fork` (fork.rs) today; safecopy (rs handshake), `sys_update`
 /// (RS live update), `sys_exec` (boot proc) and diag output (audit) join
@@ -87,6 +108,24 @@ pub(crate) trait KernelGateway {
     /// kernel/src/syscall.rs:2281+, m_type = Syscall::Diagctl = 44).
     /// Callers chunk longer text at 128 bytes (audit.rs).
     fn diag_write(&mut self, text: &str) -> Result<(), GatewayError>;
+
+    /// Fetch the next pending kernel memory request.
+    ///
+    /// C: `sys_vmctl_get_memreq()` → kernel `VMCTL_MEMREQ_GET` (= 14,
+    /// kernel/src/vm.rs VmCtlParam; reply fills `SVMCTL_MRG_*`). `Ok(None)`
+    /// = queue empty (kernel answers ENOENT = 2); `Ok(Some)` = a
+    /// VMPTYPE_CHECK request (the only type minix-rs queues).
+    fn sys_vmctl_memreq_get(&mut self)
+        -> Result<Option<KernelMemReq>, GatewayError>;
+
+    /// Reply to the previously fetched memory request.
+    ///
+    /// C: `sys_vmctl_memreq_reply(target, result)` → kernel
+    /// `VMCTL_MEMREQ_REPLY` (= 15); `ok == false` reports EFAULT — the
+    /// kernel's `check_resumed_caller` only distinguishes vmresult != OK
+    /// (kernel vm.rs VmCheckResult).
+    fn sys_vmctl_memreq_reply(&mut self, target: Endpoint, ok: bool)
+        -> Result<(), GatewayError>;
 
     /// Test/diagnostic accessor: concatenated diag text (default empty;
     /// `MockGateway` returns what `diag_write` recorded).
@@ -153,6 +192,61 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         Ok(())
     }
 
+    fn sys_vmctl_memreq_get(&mut self)
+        -> Result<Option<KernelMemReq>, GatewayError>
+    {
+        let mut msg = Message::default();
+        {
+            // SAFETY: SYS_VMCTL wire — kernel dispatch_vmctl reads
+            // SVMCTL_WHO (m1i1), SVMCTL_PARAM (m1i2), SVMCTL_VALUE (m1i3)
+            // (kernel/src/syscall.rs:1936-1941).
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            m1.m1i1 = Endpoint::VM.0;
+            m1.m1i2 = VMCTL_MEMREQ_GET;
+            m1.m1i3 = 0;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_VMCTL_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        // Kernel signals "no pending request" by returning ENOENT = 2 as
+        // the result value (kernel/src/syscall.rs: VMCTL_MEMREQ_GET arm).
+        if reply == minix_types::ENOENT {
+            return Ok(None);
+        }
+        // Reply fields land in the same message (kernel fills SVMCTL_MRG_*:
+        // m1i1 = target, m1p1 = addr, m1p2 = length, m1i3 = write flag,
+        // m1p3 = requestor; kernel/src/syscall.rs:2010-2023).
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        Ok(Some(KernelMemReq {
+            target: Endpoint(m1.m1i1),
+            start: m1.m1p1,
+            length: m1.m1p2,
+            write: m1.m1i3 != 0,
+            requestor: Endpoint(m1.m1p3 as i32),
+        }))
+    }
+
+    fn sys_vmctl_memreq_reply(&mut self, target: Endpoint, ok: bool)
+        -> Result<(), GatewayError>
+    {
+        let mut msg = Message::default();
+        {
+            // SAFETY: SYS_VMCTL wire — SVMCTL_WHO carries the target the
+            // request was fetched for, SVMCTL_VALUE the check result
+            // (0 = OK, anything else = fault; kernel vm.rs VmCheckResult).
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            m1.m1i1 = target.0;
+            m1.m1i2 = VMCTL_MEMREQ_REPLY;
+            m1.m1i3 = if ok { 0 } else { 1 };
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_VMCTL_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
+
     fn sys_exec(
         &mut self,
         endpt: Endpoint,
@@ -201,6 +295,16 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
 
 /// C: SYS_DIAGCTL is kernel call 44 (kernel/src/syscall.rs:106).
 const SYS_DIAGCTL_CALL: i32 = 44;
+
+/// SYS_VMCTL kernel-call number (kernel/src/syscall.rs:105 `Syscall::Vmctl = 43`).
+#[cfg(test)]
+pub(crate) const SYS_VMCTL_CALL: i32 = 43;
+#[cfg(not(test))]
+const SYS_VMCTL_CALL: i32 = 43;
+/// SVMCTL_PARAM sub-commands (kernel/src/vm.rs VmCtlParam TryFrom: 14/15;
+/// C com.h VMCTL_MEMREQ_GET / VMCTL_MEMREQ_REPLY).
+const VMCTL_MEMREQ_GET: i32 = 14;
+const VMCTL_MEMREQ_REPLY: i32 = 15;
 /// C: SYS_UPDATE is kernel call 52 (kernel/src/syscall.rs:112 `Update = 52`).
 const SYS_UPDATE_CALL: i32 = 52;
 /// C: SYS_EXEC kernel call number — kernel/src/syscall.rs `Syscall::Exec`
@@ -223,6 +327,12 @@ pub(crate) struct MockGateway {
     pub update_reply: Cell<i32>,
     /// Last (src, dst, flags) seen by `sys_update` (V11/T13).
     pub last_update: Cell<Option<(Endpoint, Endpoint, u32)>>,
+    /// Pending kernel memory requests for `sys_vmctl_memreq_get` (V11/T29).
+    pub pending_memreqs: RefCell<alloc::collections::VecDeque<KernelMemReq>>,
+    /// (target, ok) pairs recorded by `sys_vmctl_memreq_reply` (V11/T29).
+    pub memreq_replies: RefCell<alloc::vec::Vec<(Endpoint, bool)>>,
+    /// When non-zero, `sys_vmctl_memreq_get` answers this errno (V11/T29).
+    pub memreq_error: Cell<i32>,
 }
 
 #[cfg(test)]
@@ -235,6 +345,9 @@ impl MockGateway {
             last_exec: Cell::new(None),
             update_reply: Cell::new(0),
             last_update: Cell::new(None),
+            pending_memreqs: RefCell::new(alloc::collections::VecDeque::new()),
+            memreq_replies: RefCell::new(alloc::vec::Vec::new()),
+            memreq_error: Cell::new(0),
         }
     }
 }
@@ -252,6 +365,23 @@ impl KernelGateway for MockGateway {
     }
 
     #[cfg(test)]
+    fn sys_vmctl_memreq_get(&mut self)
+        -> Result<Option<KernelMemReq>, GatewayError>
+    {
+        let err = self.memreq_error.get();
+        if err != 0 {
+            return Err(GatewayError::Kernel(err));
+        }
+        Ok(self.pending_memreqs.borrow_mut().pop_front())
+    }
+
+    fn sys_vmctl_memreq_reply(&mut self, target: Endpoint, ok: bool)
+        -> Result<(), GatewayError>
+    {
+        self.memreq_replies.borrow_mut().push((target, ok));
+        Ok(())
+    }
+
     fn diag_log(&self) -> alloc::string::String {
         self.diag_log.borrow().clone()
     }
@@ -320,5 +450,57 @@ mod tests {
             g.sys_fork(Endpoint(10), UserSlot::new(3)),
             Err(GatewayError::Kernel(-minix_types::EIO))
         );
+    }
+    #[test]
+    fn test_trap_gateway_memreq_get_wire() {
+        // SYS_VMCTL VMCTL_MEMREQ_GET: request wire (m1i1 = SVMCTL_WHO,
+        // m1i2 = 14) + reply payload parse (SVMCTL_MRG_* fields).
+        let mut canned = CannedKernelCallTransport::new();
+        let mut check = Message::default();
+        check.m_type = 1; // VMPTYPE_CHECK
+        {
+            // SAFETY: reply fields land in M1 (kernel syscall.rs:2010-2023).
+            let m1 = unsafe { &mut check.m_u.m_m1 };
+            m1.m1i1 = 70;                 // SVMCTL_MRG_TARGET
+            m1.m1p1 = 0x3000_0000;        // SVMCTL_MRG_ADDR
+            m1.m1p2 = 0x2000;             // SVMCTL_MRG_LENGTH
+            m1.m1i3 = 1;                  // SVMCTL_MRG_FLAG (write)
+            m1.m1p3 = 0;                  // SVMCTL_MRG_REQUESTOR (kernel)
+        }
+        canned.reply_message(check);
+        canned.reply(minix_types::ENOENT); // second GET: queue empty
+
+        let mut gw = crate::kernel_gateway::TrapKernelGateway { transport: canned };
+        let first = gw.sys_vmctl_memreq_get().unwrap();
+        assert_eq!(first, Some(KernelMemReq {
+            target: Endpoint(70),
+            start: 0x3000_0000,
+            length: 0x2000,
+            write: true,
+            requestor: Endpoint(0),
+        }));
+        assert_eq!(gw.sys_vmctl_memreq_get().unwrap(), None, "ENOENT = empty queue");
+
+        let sent = gw.transport.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_VMCTL_CALL);
+        let req = unsafe { &sent[0].m_u.m_m1 };
+        assert_eq!(req.m1i2, VMCTL_MEMREQ_GET);
+        assert_eq!(req.m1i1, Endpoint::VM.0);
+    }
+
+    #[test]
+    fn test_trap_gateway_memreq_reply_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0); // kernel answers OK
+
+        let mut gw = crate::kernel_gateway::TrapKernelGateway { transport: canned };
+        gw.sys_vmctl_memreq_reply(Endpoint(70), false).unwrap();
+
+        let sent = gw.transport.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_VMCTL_CALL);
+        let req = unsafe { &sent[0].m_u.m_m1 };
+        assert_eq!(req.m1i1, 70, "SVMCTL_WHO = target endpoint");
+        assert_eq!(req.m1i2, VMCTL_MEMREQ_REPLY);
+        assert_eq!(req.m1i3, 1, "false verdict = fault (VmCheckResult::Fault)");
     }
 }

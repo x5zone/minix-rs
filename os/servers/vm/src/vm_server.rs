@@ -37,7 +37,9 @@ use crate::ipc::transport::IpcStatus;
 use crate::pagetable::vm_self_map::init_vm_self_pt;
 use crate::direct_map::vm_phys_to_virt;
 use crate::region::PageFrames;
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::PhysBytes;
+#[cfg(test)]
+use minix_types::VirBytes;
 
 /// Cache-reclaim batch size for the main-loop `alloc_cycle` hook.
 ///
@@ -815,6 +817,110 @@ impl VmServer {
     /// after the reclaim. Until then the counter is cleared so the next
     /// failure re-arms the hook — the loop always gets a fresh replenishment
     /// attempt per pressure episode.
+    /// C: `SIGKMEM` (minix3/sys/sys/signal.h:271) — kernel memory request
+    /// pending.
+    pub(crate) const SIGKMEM: i32 = 71;
+
+    /// Kernel-signal dispatch — the body of C's `sef_cb_signal_handler`
+    /// (main.c:733-749).
+    ///
+    /// C registers the handler with SEF at startup; real signal delivery
+    /// needs the trap layer (edge E1) and only then becomes reachable in
+    /// production. The dispatch body itself is stage-internal so its
+    /// behavior is testable and E1 only has to call this entry.
+    ///
+    /// C tail (main.c:744-748): after handling, a pending spare-page
+    /// deficit triggers `alloc_cycle()`; `pt_clearmapcache()` has no
+    /// counterpart (map cache eliminated, [ARCH: A-1]).
+    #[cfg_attr(not(test), allow(dead_code))] // entry wired at edge E1
+    pub(crate) fn handle_signal(&mut self, signo: i32) {
+        // C: "Check for known kernel signals, ignore anything else."
+        if signo == Self::SIGKMEM {
+            self.do_memory();
+        }
+        if self.missing_spares > 0 {
+            self.alloc_cycle();
+        }
+    }
+
+    /// C: `do_memory()` (pagefaults.c:294-339) — drain the kernel's pending
+    /// memory requests. Each request is a VMPTYPE_CHECK: confirm the range
+    /// is mapped (and writable when requested), resolving CoW along the
+    /// way, then report OK/EFAULT back to the kernel.
+    ///
+    /// Kernel protocol: SYS_VMCTL `VMCTL_MEMREQ_GET` (fetch; ENOENT when
+    /// the queue is empty) then `VMCTL_MEMREQ_REPLY` (verdict) — both via
+    /// the gateway, so pre-E2 the trap stub's -EIO fail-closes the loop
+    /// with an audit line instead of spinning.
+    #[cfg_attr(not(test), allow(dead_code))] // reached via handle_signal (E1)
+    pub(crate) fn do_memory(&mut self) {
+        // Defensive bound: the kernel's request queue is depth-bounded by
+        // the process count, so a correct kernel always reaches ENOENT far
+        // below this. A transport that keeps answering "valid request"
+        // forever (e.g. a misbehaving script) would otherwise hang the VM —
+        // the only memory manager — so the drain stops at the bound and
+        // audits ([ARCH: A-14] input-trust posture).
+        const MAX_MEMREQ_BATCH: usize = 1024;
+        for serviced in 0..MAX_MEMREQ_BATCH {
+            let req = match self.ctx.gateway.borrow_mut().sys_vmctl_memreq_get() {
+                Ok(Some(req)) => req,
+                Ok(None) => return,
+                Err(e) => {
+                    let _ = &e; // audit_log! compiles args away without features
+                    audit_log!("[VM SIGKMEM] memreq_get failed: {e:?}");
+                    return;
+                }
+            };
+
+            let ok = self.handle_kernel_memreq(&req);
+            if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_memreq_reply(req.target, ok) {
+                let _ = &e; // audit_log! compiles args away without features
+                audit_log!("[VM SIGKMEM] memreq_reply failed: {e:?}");
+                return;
+            }
+            let _ = serviced;
+        }
+        audit_log!("[VM SIGKMEM] drain bound {} reached — kernel re-signals", MAX_MEMREQ_BATCH);
+    }
+
+    /// C: `VMPTYPE_CHECK` arm of do_memory (pagefaults.c:311-330) —
+    /// `handle_memory_start(vmp, mem, len, wrflag, KERNEL, ...)`. The
+    /// mapping work itself is `handle_memory_once` (fork.rs), the same
+    /// machinery fork uses: walk the range, resolve CoW, allocate fresh
+    /// anonymous pages on demand.
+    ///
+    /// C panics on a bad target endpoint (`do_memory: bad endpoint`);
+    /// minix-rs fails closed instead ([ARCH: A-14] — the VM is the only
+    /// memory manager, an audit line plus an EFAULT verdict beats a
+    /// whole-system halt).
+    #[cfg_attr(not(test), allow(dead_code))] // reached via handle_signal (E1)
+    fn handle_kernel_memreq(&mut self, req: &crate::kernel_gateway::KernelMemReq) -> bool {
+        let table = VmProcTable::get_global();
+        let slot = match table.vm_isokendpt(req.target) {
+            Ok(s) => s,
+            Err(_) => {
+                audit_log!("[VM SIGKMEM] bad target endpoint {}", req.target.0);
+                return false;
+            }
+        };
+
+        let VmContext { page_alloc, page_frames, .. } = &mut self.ctx;
+        let frames = page_frames.as_mut().expect("page_frames not initialized");
+        let mut proc = match table.get_active(slot) {
+            Some(p) => p,
+            None => return false,
+        };
+        crate::fork::handle_memory_once(
+            proc.regions_mut(),
+            frames,
+            page_alloc,
+            minix_types::VirBytes(req.start),
+            minix_types::VirBytes(req.length),
+            req.write,
+        )
+        .is_ok()
+    }
+
     fn alloc_cycle(&mut self) {
         debug_assert!(self.missing_spares > 0);
         // C: alloc_mem → cache_freepages(1024) 重试（alloc.c:242-279，main.c:118-119）。
@@ -2703,5 +2809,197 @@ mod tests {
         assert_eq!(e.endpoint, Endpoint::NONE);
         assert_eq!(e.call_mask, 0);
         assert!(!e.is_user);
+    }
+    // ── V11/T29: SIGKMEM signal seam + do_memory drain loop ──────────
+
+    /// Swaps the server's gateway for a trap gateway over a scripted
+    /// canned transport (kernel-observable wire assertions) and returns
+    /// the shared canned handle.
+    fn install_canned_gateway(
+        server: &mut VmServer,
+        canned: alloc::rc::Rc<minix_sys::syscall::CannedKernelCallTransport>,
+    ) {
+        struct SharedCanned(alloc::rc::Rc<minix_sys::syscall::CannedKernelCallTransport>);
+        impl minix_sys::syscall::KernelCallTransport for SharedCanned {
+            fn kernel_call(&self, message: &mut Message) -> i32 {
+                self.0.kernel_call(message)
+            }
+        }
+        server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+            alloc::boxed::Box::new(crate::kernel_gateway::TrapKernelGateway {
+                transport: SharedCanned(canned),
+            }),
+        ));
+    }
+
+    #[test]
+    fn test_do_memory_services_kernel_check_request() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+            let boot_procs = [vm_boot_image()];
+            let regions = test_free_regions();
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Target process with a writable anonymous region.
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(71);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, 71);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            drop(active);
+            {
+                let mut proc = table.get_active(slot).unwrap();
+                proc.regions_mut().insert(crate::region::VirRegion::new(
+                    VirBytes(0x3000_0000),
+                    VirBytes(0x4000),
+                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                )).unwrap();
+            }
+
+            // Scripted kernel: CHECK over the region, then queue empty.
+            let mut canned = minix_sys::syscall::CannedKernelCallTransport::new();
+            let mut check = Message::default();
+            check.m_type = 1; // VMPTYPE_CHECK
+            {
+                // SAFETY: SVMCTL_MRG_* reply fields (kernel syscall.rs).
+                let m1 = unsafe { &mut check.m_u.m_m1 };
+                m1.m1i1 = ep.0;
+                m1.m1p1 = 0x3000_0000;
+                m1.m1p2 = 0x2000;
+                m1.m1i3 = 1;
+                m1.m1p3 = 0;
+            }
+            // Script per kernel call: GET (payload) → REPLY (OK) → GET
+            // (ENOENT terminates the drain). The canned transport's
+            // exhausted-script default (0) would read as a live request,
+            // so every call is scripted explicitly.
+            canned.reply_message(check);
+            canned.reply(0);
+            canned.reply(minix_types::ENOENT);
+            let canned = alloc::rc::Rc::new(canned);
+            install_canned_gateway(&mut server, alloc::rc::Rc::clone(&canned));
+
+            server.do_memory();
+
+            // Kernel-observable verdicts: GET wire, then REPLY wire with an
+            // OK verdict, then the drain stopped at ENOENT.
+            let sent = canned.sent.borrow();
+            assert_eq!(sent.len(), 3, "GET, REPLY, second GET");
+            assert_eq!(sent[0].m_type, crate::kernel_gateway::SYS_VMCTL_CALL);
+            assert_eq!(sent[1].m_type, crate::kernel_gateway::SYS_VMCTL_CALL);
+            {
+                // SAFETY: reply wire inspection (SYS_VMCTL M1 fields).
+                let m1 = unsafe { &sent[1].m_u.m_m1 };
+                assert_eq!(m1.m1i1, ep.0, "reply targets the fetched request");
+                assert_eq!(m1.m1i2, 15, "VMCTL_MEMREQ_REPLY");
+                assert_eq!(m1.m1i3, 0, "valid writable range → OK verdict");
+            }
+        });
+    }
+
+    #[test]
+    fn test_do_memory_reports_fault_for_unmapped_range() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+            let boot_procs = [vm_boot_image()];
+            let regions = test_free_regions();
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(71);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, 71);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            drop(active);
+
+            let mut canned = minix_sys::syscall::CannedKernelCallTransport::new();
+            let mut check = Message::default();
+            check.m_type = 1;
+            {
+                // SAFETY: SVMCTL_MRG_* reply fields.
+                let m1 = unsafe { &mut check.m_u.m_m1 };
+                m1.m1i1 = ep.0;
+                m1.m1p1 = 0x5000_0000; // no region covers this
+                m1.m1p2 = 0x2000;
+                m1.m1i3 = 1;
+                m1.m1p3 = 0;
+            }
+            // GET (payload) → REPLY (OK) → GET (ENOENT); see test above
+            // for why every call is scripted explicitly.
+            canned.reply_message(check);
+            canned.reply(0);
+            canned.reply(minix_types::ENOENT);
+            let canned = alloc::rc::Rc::new(canned);
+            install_canned_gateway(&mut server, alloc::rc::Rc::clone(&canned));
+
+            server.do_memory();
+
+            let sent = canned.sent.borrow();
+            assert_eq!(sent.len(), 3);
+            {
+                // SAFETY: reply wire inspection.
+                let m1 = unsafe { &sent[1].m_u.m_m1 };
+                assert_eq!(m1.m1i3, 1, "unmapped range → fault verdict");
+            }
+        });
+    }
+
+    #[test]
+    fn test_handle_signal_routes_sigkmem_only() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+            let boot_procs = [vm_boot_image()];
+            let regions = test_free_regions();
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            let mut canned = minix_sys::syscall::CannedKernelCallTransport::new();
+            // SIGKMEM routes into the drain loop: GET (raw CHECK reply; no
+            // payload, so the request's own M1 fields read back) → REPLY →
+            // GET → ENOENT stops the loop. Every call scripted explicitly.
+            canned.reply(1);            // VMPTYPE_CHECK
+            canned.reply(0);            // REPLY acknowledged OK
+            canned.reply(minix_types::ENOENT);
+            let canned = alloc::rc::Rc::new(canned);
+            install_canned_gateway(&mut server, alloc::rc::Rc::clone(&canned));
+
+            // Unknown signal → no kernel interaction (C ignores the rest).
+            server.handle_signal(0);
+            assert_eq!(canned.calls.get(), 0);
+            server.handle_signal(VmServer::SIGKMEM);
+            let sent = canned.sent.borrow();
+            assert_eq!(sent.len(), 3, "GET, REPLY, terminating GET");
+            {
+                // SAFETY: request wire inspection.
+                let m1 = unsafe { &sent[1].m_u.m_m1 };
+                assert_eq!(m1.m1i2, 15, "second kernel call is the REPLY");
+            }
+        });
     }
 }
