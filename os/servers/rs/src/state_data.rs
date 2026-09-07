@@ -225,6 +225,139 @@ pub fn vm_fallback_entry() -> IpcFilterEl {
     }
 }
 
+/// `init_state_data` 的产出（17 号状态传输的授权/消费面）。
+///
+/// C: manager.c:172-285 写入 `dst_rs_state_data` 的三件套 —— `size` 原样、
+/// malloc'd 的 NUL 结尾 eval 表达式、malloc'd 的解析后过滤块字节
+/// （`ipcf_els_buff`）。owned 缓冲即 C 两次 `malloc` 的 Rust 对应物
+/// （同 `slot.exec` 先例），授权（cpf_grant_direct，19 号）消费这些字节。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedStateData {
+    /// `dst.size` — `src.size` 原样（EVAL 或过滤块分支写入；无二者时 0）。
+    pub size: usize,
+    /// NUL 结尾的 eval 表达式字节（含结尾 NUL；非 EVAL 分支为 `None`）。
+    pub eval: Option<alloc::vec::Vec<u8>>,
+    /// 解析后的过滤块字节（每元素 [`IPCF_EL_SIZE`] 字节线面，VM 源追加
+    /// fallback 块）。空 = 无过滤块。
+    pub ipcf_els_buff: alloc::vec::Vec<u8>,
+    /// `ipcf_els_buff_size` — C: `sizeof(ipc_filter_el_t) * IPCF_MAX_ELEMENTS
+    /// * blocks`（manager.c:225-229）。
+    pub ipcf_els_size: usize,
+}
+
+/// C: `init_state_data` — manager.c:172-285 的组合。
+///
+/// `fetch(addr, buf)` = `sys_datacopy(src_e, addr, SELF, ..)` 缝（读调用方的
+/// eval 字节与过滤块，19 号传输面）；`ds_lookup` =
+/// `ds_retrieve_label_endpt`（19 号 DS 缝）；`src_is_vm` = 源是否 VM_PROC_NR
+/// （manager.c:265-277 的 VM fallback 块）。失败时调用方按 C 清理新实例
+/// （request.c:788-796 的 `rupdate_upd_clear` 语义）。
+pub fn init_state_data(
+    prepare_state: i32,
+    src_size: usize,
+    ipcf_els_addr: usize,
+    ipcf_els_size: usize,
+    eval_addr: usize,
+    eval_len: usize,
+    fetch: &mut dyn FnMut(usize, &mut [u8]) -> Result<(), Errno>,
+    ds_lookup: &dyn Fn(&str) -> Option<Endpoint>,
+    src_is_vm: bool,
+) -> Result<PreparedStateData, Errno> {
+    // manager.c:181-183 — the request's size field must be the struct's own
+    // size (requester contract).
+    validate_state_data_size(src_size)?;
+
+    // manager.c:185-209 — the eval expression: EVAL requires addr+len, the
+    // bytes are copied and NUL-terminated, and dst.size records src.size.
+    let mut eval: Option<alloc::vec::Vec<u8>> = None;
+    let mut size = 0usize;
+    validate_eval(prepare_state, eval_addr != 0, eval_len)?;
+    if prepare_state == SEF_LU_STATE_EVAL {
+        let mut b = alloc::vec![0u8; eval_len + 1];
+        fetch(eval_addr, &mut b[..eval_len])?;
+        // b[eval_len] stays 0 — the C NUL terminator (manager.c:208).
+        eval = Some(b);
+        size = src_size;
+    }
+
+    // manager.c:213-216 — the filter-block count (E2BIG on a partial block).
+    let num_blocks = num_ipc_filter_blocks(ipcf_els_size)?;
+
+    // manager.c:217-219 — a NULL element pointer means "no filters": early
+    // OK with whatever the eval branch recorded.
+    if ipcf_els_addr == 0 {
+        return Ok(PreparedStateData {
+            size,
+            eval,
+            ipcf_els_buff: alloc::vec::Vec::new(),
+            ipcf_els_size: 0,
+        });
+    }
+
+    // manager.c:221-231 — the destination buffer, zero-filled, one extra
+    // block for VM's fallback entry.
+    let mut buff = alloc::vec![0u8; ipcf_els_buff_size(num_blocks, src_is_vm)];
+
+    // manager.c:233-277 — per block: fetch the 24-byte-element block, then
+    // parse elements until the flags word reads 0.
+    let mut block = [0u8; RS_IPCF_FILTER_BLOCK_SIZE];
+    for i in 0..num_blocks {
+        fetch(ipcf_els_addr + i * RS_IPCF_FILTER_BLOCK_SIZE, &mut block)?;
+        for j in 0..IPCF_MAX_ELEMENTS {
+            let base = j * RS_IPCF_FILTER_EL_SIZE;
+            let flags = i32::from_le_bytes([
+                block[base],
+                block[base + 1],
+                block[base + 2],
+                block[base + 3],
+            ]);
+            if flags == 0 {
+                break; // manager.c:246 — the terminator element
+            }
+            let m_label =
+                core::str::from_utf8(&block[base + 4..base + 20]).map_err(|_| Errno::EINVAL)?; // R11 UTF-8 boundary
+            let m_type = i32::from_le_bytes([
+                block[base + 20],
+                block[base + 21],
+                block[base + 22],
+                block[base + 23],
+            ]);
+            let el = parse_filter_el(
+                &SourceIpcFilterEl {
+                    flags: IpcfFlags::from_bits_truncate(flags),
+                    m_label,
+                    m_type,
+                },
+                ds_lookup,
+            )?;
+            write_filter_el(&mut buff, i, j, &el);
+        }
+    }
+
+    // manager.c:265-277 (request.c:265-277 tail) — VM sources get the
+    // fallback element so VM can still reach RS at update time.
+    if src_is_vm {
+        write_filter_el(&mut buff, num_blocks, 0, &vm_fallback_entry());
+    }
+
+    // manager.c:278-280 — dst.size records src.size on the success tail.
+    Ok(PreparedStateData {
+        size: src_size,
+        eval,
+        ipcf_els_size: buff.len(),
+        ipcf_els_buff: buff,
+    })
+}
+
+/// Writes one parsed element in kernel wire form (12 bytes: flags /
+/// m_source / m_type, all `i32` little-endian).
+fn write_filter_el(out: &mut [u8], block: usize, el: usize, e: &IpcFilterEl) {
+    let o = block * IPCF_MAX_ELEMENTS * IPCF_EL_SIZE + el * IPCF_EL_SIZE;
+    out[o..o + 4].copy_from_slice(&e.flags.bits().to_le_bytes());
+    out[o + 4..o + 8].copy_from_slice(&e.m_source.get().to_le_bytes());
+    out[o + 8..o + 12].copy_from_slice(&e.m_type.to_le_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

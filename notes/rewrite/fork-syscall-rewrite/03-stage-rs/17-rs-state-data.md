@@ -126,6 +126,17 @@ ipcf_els_buff[i][0].m_type = VM_RS_UPDATE;   /* VM_RQ_BASE+41 = 0xC29，com.h:73
 
 ## 3. Rust 设计决策
 
+> **R13 接线落地（2026-09-08，todo §21 Fix #90）**：`init_state_data` 组合函数已
+> 落地 `state_data.rs`（manager.c:172-285 逐分支）——上表四个纯切片是其子步骤，
+> 组合本体 + `PreparedStateData` 产出（size / NUL 结尾 eval 字节 / 授权就绪的
+> 过滤块字节）一并在本模块。`do_update`（16 号，request.c:788-836）消费它：
+> fetch 缝 = `sys_datacopy`（生产 ENOSYS，mock 全真）、`ds_lookup` 缝 = 19 号
+> DS、三笔 `cpf_grant_direct` = 19 号授权面（E-11）——授权前失败按 C 清理新实例
+> （`rupdate_upd_clear` 语义，request.c:788-796/:830-835）。解析后的字节由
+> `UpdateEntry.eval_buff`/`ipcf_els_buff` 持有（C malloc 的 owned-buffer 对应物，
+> 同 `slot.exec` 先例），随描述符进入 17 号状态传输。
+## 3. Rust 设计决策
+
 ### 3.1 state_data.rs 纯切片
 
 与 16 同款：IPC/内存面（`sys_datacopy`/`malloc`/`cpf_grant_direct`/`cpf_revoke`/`ds_retrieve_label_endpt`）归 19，RS 自升级 `cpf_reload` 归 18，`init_state_data` 的编排归 16（request.c:814 调用点）；`state_data.rs` 拥有**数据形状、纯校验与 label 解析**：

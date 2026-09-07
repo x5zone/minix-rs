@@ -1082,6 +1082,9 @@ mod signal_handler_tests {
         put64(&mut img, off::IPC_ADDR, 0x1300);
         put64(&mut img, off::IPC_LEN, 3);
         img[0x1300..0x1303].copy_from_slice(b"ipc");
+        // The state-data spec: the requester sets size to
+        // sizeof(struct rs_state_data) = 56 (manager.c:181-183, 17 号).
+        put64(&mut img, off::STATE_DATA, 56);
         put64(&mut img, off::LABEL_ADDR, 0x1100);
         put64(&mut img, off::LABEL_LEN, label.len() as u64);
         put64(&mut img, off::PROGNAME_ADDR, 0x1200);
@@ -1216,17 +1219,26 @@ mod signal_handler_tests {
     }
 
     #[test]
-    fn test_do_update_with_state_data_fails_closed() {
-        // request.c:792-836 — the init_state_data composition (17) and the
-        // cpf grants (19) are the documented boundary; a request that
-        // carries state data fails closed instead of scheduling without its
-        // state transfer.
+    fn test_do_update_with_state_data_schedules() {
+        // request.c:788-836 — a VALID state-data spec (size = 56, one filter
+        // block at 0x2800) passes init_state_data; the parsed filter bytes
+        // are stored on the descriptor (the owned-buffer analog of C's
+        // malloc'd ipcf_els, manager.c:231-234). The cpf_grant_direct triple
+        // is the 19 grant face (E-11): gid stays `None` here.
         let mut img = do_up_image(b"/bin/tty", b"vfs");
         let flags = crate::slot::RssFlags::SELF_LU | crate::slot::RssFlags::BATCH;
         img[minix_types::rs_start_off::FLAGS..minix_types::rs_start_off::FLAGS + 4]
             .copy_from_slice(&flags.bits().to_le_bytes());
         img[minix_types::rs_start_off::STATE_DATA..minix_types::rs_start_off::STATE_DATA + 8]
-            .copy_from_slice(&128u64.to_le_bytes());
+            .copy_from_slice(&56u64.to_le_bytes());
+        // One filter block (IPCF_MAX_ELEMENTS zero elements) at 0x2800:
+        // src.ipcf_els = addr, src.ipcf_els_size = one block (rs.h:96-97).
+        img.resize(0x4000, 0);
+        let block_addr = 0x2800;
+        img[minix_types::rs_start_off::STATE_DATA + 8..minix_types::rs_start_off::STATE_DATA + 16]
+            .copy_from_slice(&(block_addr as u64).to_le_bytes());
+        img[minix_types::rs_start_off::STATE_DATA + 16..minix_types::rs_start_off::STATE_DATA + 24]
+            .copy_from_slice(&(crate::state_data::RS_IPCF_FILTER_BLOCK_SIZE as u64).to_le_bytes());
         let mut server = booted_do_up(img);
         {
             let state = server.state.as_mut().unwrap();
@@ -1242,12 +1254,19 @@ mod signal_handler_tests {
             s.scheduler = Endpoint::SCHED;
         }
         let m = do_update_message(0);
-        assert_eq!(server.do_update(&m), Err(Errno::ENOSYS));
-        assert_eq!(
-            server.state.as_ref().unwrap().update.chain.len(),
-            0,
-            "nothing scheduled"
+        assert_eq!(server.do_update(&m), Ok(0), "batch schedules");
+        let state = server.state.as_ref().unwrap();
+        assert_eq!(state.update.chain.len(), 1, "scheduled");
+        let entry = state.update.chain.get(0);
+        assert_eq!(entry.prepare_state_data.size, 56);
+        assert!(
+            entry
+                .ipcf_els_buff
+                .as_ref()
+                .is_some_and(|b| b.len() == 1536),
+            "one grant-ready filter block (12 × 128 bytes)"
         );
+        assert!(entry.eval_buff.is_none(), "no EVAL state");
     }
 
     #[test]
@@ -1445,8 +1464,9 @@ mod signal_handler_tests {
         m.m_u.m_rs_req.addr = addr;
         // The same union viewed through the m_rs_update arm (do_update reads
         // state/prepare_maxtime from it, request.c:646-657): a reached state
-        // of SEF_LU_STATE_EVAL and the default max time (0 → 2*RS_DELTA_T).
-        m.m_u.m_rs_update.state = crate::live_update::SEF_LU_STATE_EVAL;
+        // of SEF_LU_STATE_UNREACHABLE and the default max time (0 →
+        // 2*RS_DELTA_T).
+        m.m_u.m_rs_update.state = crate::live_update::SEF_LU_STATE_UNREACHABLE;
         m
     }
 

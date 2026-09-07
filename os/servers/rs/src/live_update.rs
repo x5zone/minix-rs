@@ -317,6 +317,13 @@ pub struct UpdateEntry {
     /// State data for the update. C: `prepare_state_data` — type.h:37
     /// (A2 carrier completion; consumed by 17-rs-state-data.md).
     pub prepare_state_data: crate::slot::RsStateData,
+    /// Owned eval-expression bytes. C: `dst->eval_addr` — manager.c:201-209
+    /// mallocs and NUL-terminates; the Rust owned-buffer analog (the
+    /// `slot.exec` precedent). Consumed by the 17 state transfer.
+    pub eval_buff: Option<alloc::vec::Vec<u8>>,
+    /// Owned parsed filter-block bytes. C: `dst->ipcf_els` —
+    /// manager.c:231-234 mallocs the zero-filled destination buffer.
+    pub ipcf_els_buff: Option<alloc::vec::Vec<u8>>,
     /// State data grant. C: `prepare_state_data_gid` — type.h:38 (A2).
     pub prepare_state_data_gid: Option<u32>,
     /// Previous descriptor in the chain (ARCH A-3). C: `prev_rpupd` — type.h:40.
@@ -338,6 +345,8 @@ impl UpdateEntry {
             prepare_tm: 0,
             prepare_maxtime: 0,
             prepare_state_data: Default::default(),
+            eval_buff: None,
+            ipcf_els_buff: None,
             prepare_state_data_gid: None,
             prev: None,
             next: None,

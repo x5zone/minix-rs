@@ -762,15 +762,47 @@ impl RsServer {
             }
         }
 
-        // State data (request.c:792-836): `init_state_data`'s composition is
-        // 17-rs-state-data.md and the three cpf_grant_direct calls are the
-        // 19 grant face (E-11). Fail closed on any request that actually
-        // carries state — an empty spec schedules cleanly.
-        if rs_start.state_data.size > 0
-            || rs_start.state_data.ipcf_els_addr != 0
-            || rs_start.state_data.eval_addr != 0
-        {
-            return Err(Errno::ENOSYS);
+        // State data (request.c:788-836) — the `init_state_data`
+        // composition (manager.c:172-285, 17 号): spec validation, the eval
+        // bytes and the filter blocks through the fetch seam, labels
+        // resolved through the DS seam (19: noop here). The three
+        // cpf_grant_direct calls (request.c:798-835) are the 19 grant face
+        // (E-11) — the gid fields stay `None` until it lands. Failure
+        // cleans the new instance (C: rupdate_upd_clear,
+        // request.c:788-796/:830-835).
+        let mut fetch = |a: usize, buf: &mut [u8]| -> Result<(), Errno> {
+            self.kernel.safecopy_from(m.m_source, a, buf)
+        };
+        let ds_lookup = |_label: &str| -> Option<Endpoint> { None };
+        let state_out = crate::state_data::init_state_data(
+            prepare_state,
+            rs_start.state_data.size,
+            rs_start.state_data.ipcf_els_addr as usize,
+            rs_start.state_data.ipcf_els_size,
+            rs_start.state_data.eval_addr as usize,
+            rs_start.state_data.eval_len,
+            &mut fetch,
+            &ds_lookup,
+            m.m_source == Endpoint::VM,
+        );
+        match state_out {
+            Ok(out) => {
+                entry.prepare_state_data.size = out.size;
+                entry.eval_buff = out.eval;
+                entry.ipcf_els_buff = Some(out.ipcf_els_buff);
+            }
+            Err(e) => {
+                if let Some(nid) = new_id {
+                    let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                    crate::recovery::cleanup_service(
+                        &mut state.table,
+                        nid,
+                        self.kernel.as_mut(),
+                        &mut noop_script,
+                    );
+                }
+                return Err(e);
+            }
         }
 
         // Fill the descriptor and schedule it (request.c:838-845) — the
