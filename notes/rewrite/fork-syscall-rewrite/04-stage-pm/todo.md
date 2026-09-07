@@ -921,6 +921,16 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无。
 
+### ✅ Fix #36: V2-P3-3 — Exit 臂透传 do_exit 的回复意图（2026-09-08）
+
+**File(s)**：`os/servers/pm/src/ipc/calls.rs`（Exit 臂 `let _ = do_exit(...)` + 硬编码 NoReply → 直接返回 do_exit 的值）。
+
+**Before/After**：do_exit 两分支恒返 NoReply，丢弃等价；但硬编码会在未来语义变化时静默吞回复。无新测试（既有 `exit_request_never_replies_and_zombifies` 集成测试即本行为的锚点）。
+
+**Verified**：`cargo test -p minix-pm`：354 lib + 8 integration passed；clippy 0 warning。
+
+**未做（DEFERRED 论证）**：无。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1139,7 +1149,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 
 - **优先级**：P3；**类型**：语义偏移（微观）；**文件**：`credentials.rs:203-207`（`(g as u64) > GID_MAX`，Gid=u32 时恒假；测试 `test_setgroups_gid_max` 自述"无法构造超限值"）；C 侧 `getset.c:191` 以 `GID_MAX = 2147483647U`（`minix3/sys/sys/syslimits.h:53`）比较，gid_t 为 32 位时可拒绝 [2^31, 2^32-1] 区间。**建议**：`SetGroups` 改存 `u64` 或在 wire 解码层用 i64 载荷校验；或登记为"与 C 恒假检查同构的有意简化"（C 的检查实际上也只能在 64 位 gid_t 下触发，需先核实 C gid_t 宽度 `[待验证]`）。**验证**：构造 gid=2^31 的 setgroups（wire 层）→ EINVAL。
 
-#### V2-P3-3 dispatch 的 Exit 臂丢弃 do_exit 返回的 ReplyIntent
+#### V2-P3-3 dispatch 的 Exit 臂丢弃 do_exit 返回的 ReplyIntent（✅ 已修复 2026-09-08，见 §10 Fix #36）
 
 - **优先级**：P3；**类型**：健壮性；**文件**：`ipc/calls.rs` Exit 臂（`let _ = crate::exit::do_exit(...)` 后硬编码 `ReplyIntent::NoReply`）。`do_exit` 现两分支恒返 NoReply（`exit.rs:133-155`），丢弃等价；但未来语义变化时此处会静默吞回复。**建议**：直接返回 do_exit 的值（或 `debug_assert!(matches!(..., ReplyIntent::NoReply))`）。**验证**：编译 + 现有 exit 集成测试不回归。
 

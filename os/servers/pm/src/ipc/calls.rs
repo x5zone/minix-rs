@@ -240,8 +240,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
         PmCall::Exit => {
             let status = unsafe { msg.m_u.m_lc_pm_exit.status };
-            let _ = crate::exit::do_exit(table, caller, status, transport, kern);
-            ReplyIntent::NoReply
+            // do_exit 当前恒返 NoReply——直接透传而非丢弃，未来语义变化
+            // 时回复意图不会被静默吞掉。
+            crate::exit::do_exit(table, caller, status, transport, kern)
         }
         // C: do_wait4（forkexit.c:471-542）——同步回复（W_STOPCODE/WNOHANG/
         // ECHILD）或 SUSPEND（wait_test 命中后挂 WAITING，由 tell_parent/
