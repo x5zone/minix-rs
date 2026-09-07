@@ -210,8 +210,8 @@ impl EventRegistry {
     /// ① 推断事件（`EXITING → Exit` / `UNPAUSED → Signal` else panic）；
     /// ② `for i = cursor .. nsubs` 遇 `mask.contains(event)` 即
     /// `asynsend3` + `waiting++` 后 `return`（挂起）；
-    /// ③ 无更多匹配订阅者 → 清 `EventCall` → `exit_restart` 或 `restart_sigs`
-    /// （两者 DEFERRED，当前仅清标志使进程可继续）。
+    /// ③ 无更多匹配订阅者 → 清 `EventCall` → 终止分派：Exit 走
+    /// `exit_restart`、Signal 走 `restart_sigs`（D-11/Fix #7 真实化）。
     pub fn resume_event<T: IpcTransport + ?Sized>(
         &mut self,
         target: UserSlot,

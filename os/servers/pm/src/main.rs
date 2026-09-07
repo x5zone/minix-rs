@@ -7,7 +7,8 @@ use minix_pm::init::{BootParams, PmServer};
 
 fn main() {
     // C: main.c:49-56 — main() → sef_local_startup() → sef_startup()
-    // → sef_cb_init_fresh()。RS_INIT 握手归主循环（04），此处直接构造
+    // → sef_cb_init_fresh()。本树 C 的 PM 启动只与 VFS 同步
+    //（VFS_PM_INIT，main.c:220-236），无 RS_INIT 握手；此处直接构造
     // 服务器并执行 init_fresh 等价初始化。
     //
     // 占位参数：真实启动路径由 sys_getmonparams/sys_getimage 填充

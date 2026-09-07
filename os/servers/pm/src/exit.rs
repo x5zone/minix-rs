@@ -536,8 +536,9 @@ fn wait_test(table: &ProcTable, parent_slot: UserSlot, child_slot: UserSlot) -> 
 
 /// Tell parent: `tell_parent` (`forkexit.c:670-726`).
 ///
-/// Simplified for 09: `sys_datacopy` of rusage (omitted) + `reply(parent, pid)` +
-/// `WAITING` cleared + `ZOMBIE→TOLD_PARENT`.
+/// rusage（144 字节，仅 utime/stime）经 `KernelGateway::copy_to_user`
+/// 真实写入父进程用户内存（D-21/Fix #27），随后 `reply(parent, pid)`、
+/// 清 `WAITING`、`ZOMBIE→TOLD_PARENT`、子时间并入父桶（722-723）。
 /// Returns `true` if wait succeeded (for check_parent try_cleanup).
 pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,

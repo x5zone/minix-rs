@@ -125,10 +125,8 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
             // tell_parent（exit.rs，D-26 wire 契约）负责 reply(parent, pid)
             // + 载荷 W_EXITCODE + WAITING 清 + TOLD_PARENT + 时间累计；
             // 本环只补 cleanup（VFS|EVENT 挂起时延迟到 reply 之后）。
-            // [DEFERRED: D-21] sys_datacopy(rusage)——内核 CPU 时间读取需
-            // SYS_TIMES（edge E6）+ E1；C 侧自身仅填 utime/stime。
+            // rusage 经 tell_parent 的 VIRCOPY 真实投递（D-21/Fix #27）。
             let child_slot = UserSlot::new(idx);
-            let _ = rusage_addr;
             crate::exit::tell_parent(table, child_slot, rusage_addr, transport, kern);
             if !is_vfs_or_event_blocked(table, child_slot) {
                 crate::exit::cleanup(table, child_slot);

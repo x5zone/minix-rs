@@ -978,6 +978,21 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无。
 
+### ✅ Fix #41: V2-P3-1 — 四处 stale 注释与死绑定清理（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/wait.rs:128-131`（`[DEFERRED: D-21]` 注释已被 Fix #27 实现取代 → 删除；`let _ = rusage_addr;` 死绑定 → 删除，rusage_addr 已直接传 tell_parent）
+- `os/servers/pm/src/exit.rs:515-516`（doc 注释 "sys_datacopy of rusage (omitted)" → 更新为已实现描述）
+- `os/servers/pm/src/event.rs:213-214`（"两者 DEFERRED，当前仅清标志" 与 Fix #7 后 `event.rs:272/278` 真实调用 exit_restart/restart_sigs 矛盾 → 更新）
+- `os/servers/pm/src/main.rs:10`（"RS_INIT 握手归主循环（04）"——本树 C 无 RS_INIT（grep 零命中），前提删除）
+- `notes/.../todo.md`；V2-P3-1 标 ✅
+
+**Before/After**：四处注释均落后于代码/前提失效（模式 77 的"实现已赶上"变体）。逐处 grep 验证零残留。
+
+**Verified**：`cargo test -p minix-pm`：356 lib + 8 integration passed；clippy 0 warning。
+
+**未做（DEFERRED 论证）**：无。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1188,7 +1203,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一：按 C 全语义实现（依赖 mproc/signal.rs 的 `prepare_sigmsg`/`sigreturn_addr` 既有字段）。方案二：登记 D-29 并与批次 B 联动实施（sigaction 的 handler 安装 → sig_send 的 frame 建立 → sigreturn 的恢复，三步须同轮验证）。推荐方案二：三步分离会造成"半可达"状态。
 - **验证**：批次 B 的集成测试：handler 进程收信号 → handler 执行 → sigreturn 恢复 mask（需进程上下文模拟，属 12-signal-handlers.md 范围）。
 
-#### V2-P3-1 stale 注释与死绑定四处（随 P0/P1 修复顺带清理）
+#### V2-P3-1 stale 注释与死绑定四处（随 P0/P1 修复顺带清理）（✅ 已修复 2026-09-08，见 §10 Fix #41）
 
 - **优先级**：P3；**类型**：注释漂移（模式 77 变体：不是行号漂移而是"实现已赶上/前提已消失"）；**文件**：`wait.rs:128-131`（D-21 已实现 + `let _ = rusage_addr;` 死绑定）、`exit.rs:515-516`（"(omitted)" doc 注释）、`event.rs:213-214`（"两者 DEFERRED"与 Fix #7 后的现实矛盾）、`main.rs:10`（"RS_INIT 握手归主循环"前提在本树 C 中不存在）。**建议**：逐处更新注释为当前事实；wait.rs 的死绑定删除。**验证**：四处 grep 逐条确认。
 
