@@ -1391,6 +1391,15 @@ Coverage Summary for vm:
 - **Verified**: `cargo test -p minix-vm --lib vm_server` → **41 passed**（+3：`test_do_memory_services_kernel_check_request`（wire 三连断言：GET wire + REPLY wire verdict=OK + 终止）、`test_do_memory_reports_fault_for_unmapped_range`（verdict=fault）、`test_handle_signal_routes_sigkmem_only`（未知信号零交互 + SIGKMEM 三连））；kernel_gateway wire 测试 ×2；三矩阵 **480 / 497 / 480 passed**；clippy `servers/vm` 0 警告
 - **Docs**: 本条即判定记录；通电依赖（信号经 trap 层交付）挂 E1，E1 落地后 `handle_signal` 成为 sef_cb_signal_handler 的调用点
 
+### ✅ Fix #50: T30 — 分配漏斗接入回收-重试（C alloc_mem do-while 语义落地）
+
+- **C 调用图核实**：`alloc_mem`（alloc.c:242-270）的 `do { alloc_pages } while(NO_MEM && cache_freepages>0)` 是**所有**物理分配的重试漏斗——页表页分配（pagetable.c:375 `pt_ptalloc`）与保留队列补充（alloc.c:157）都汇入它，缺页分配（map_handle_memory → vm_allocpage → alloc_mem）同源。重试属于**分配漏斗**而非主循环钩子；`alloc_cycle`（main.c:118-119）在 C 里承担的是另一件事——spare 池亏空补充（reservedqueue）。
+- **设计（≥2 方案对比）**：A 漏斗包装 + 全局回收汇（C-faithful；回收需要 cache/frames 访问权，沿 `register_page_alloc`/`audit::register_gateway` 的注册惯例）——**选定**；B 主循环层重试——失败点在深层（map_page/alloc_pfn），穿透签名即 VmContext 刚消灭的参数化债务复活；C Linux `__alloc_pages_slowpath` 式水位+多轮回收——超配 minix3 单线程无 kswapd 的现实。对照：Linux 的 reclaim-inside-alloc 路径（`try_to_free_pages` 后重试）与 C 的 do-while 同构，均为"分配路径内回收"。
+- **Files**: `global.rs`（`RECLAIM_BATCH=1024` + `register_reclaim/unregister_reclaim/reclaim_pages`——cache/frames 裸指针对，注册生命周期同 PAGE_ALLOC_PTR 惯例；无注册（宿主单测）→ 0）、`alloc_page.rs`（`alloc_pfn_reclaiming(alloc)` 包装 + 可注入回收的核心 `alloc_pfn_reclaiming_inner`（16 次防御上界，注释说明 C do-while 的天然终止性 + do_memory 同款姿态）；`vm_pt_alloc` 切换至漏斗）、`cow_exec_pf.rs`（`alloc_and_map`/`cow_resolve_core` 两处生产分配点切换）、`vm_server.rs`（init 注册/Drop 注销；`alloc_cycle` 注释校正——它是 spare 池钩子，分配期重试已归漏斗）
+- **测试安全契约（WSL 事故后的硬规则）**：重试核心经 `&mut dyn FnMut(&mut dyn PfnAllocator) -> usize` 注入回收，单测全程无全局态、有界、确定性 ×3（重试成功/零产出即停/病态汇有界终止）+ 无汇时 `reclaim_pages==0` 单测；测试桩初版两处逻辑错误（Cell 深拷贝不共享、reclaim 未归还页）均由断言当场暴露——先读码后跑测 + 断言带消息的纪律生效
+- **Verified**: 三矩阵 **484 / 501 / 484 passed**（+4）；clippy `servers/vm` 0 警告；`rg "alloc_pfn_reclaiming"` 命中漏斗定义 + 3 个生产切换点；已知偏差：重试期的每次尝试仍计入 `alloc_failures`（压力计数语义，膨胀受 16 上界约束，注释已声明）
+- **Docs**: 本条即判定记录；`alloc_cycle` 注释校正（T30 前它误领了 alloc_mem 重试的职责描述）
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。

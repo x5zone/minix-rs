@@ -476,6 +476,13 @@ impl VmServer {
         let total_phys = PhysBytes(self.ctx.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
         self.ctx.page_frames = Some(PageFrames::new(total_phys));
 
+        // V11/T30: the reclaim-retry funnel needs kernel-visible access to
+        // the cache/frames pair (C alloc_mem reads the global cache). Same
+        // registration lifetime as the audit gateway and page allocator.
+        if let Some(frames) = self.ctx.page_frames.as_mut() {
+            crate::global::register_reclaim(&mut self.ctx.page_cache, frames);
+        }
+
         // C: __minix_init() (main.c:480) — SEF startup makes the IPC
         // channel ready before the main loop. V10-P0-2: without this, a
         // `KernelIpcTransport` stays uninitialized and `run()` would
@@ -923,9 +930,13 @@ impl VmServer {
 
     fn alloc_cycle(&mut self) {
         debug_assert!(self.missing_spares > 0);
-        // C: alloc_mem → cache_freepages(1024) 重试（alloc.c:242-279，main.c:118-119）。
-        // plan.md §7.3：补充体 DEFERRED 归 24-page-cache —— 回收页缓存后再清压力计数；
-        // 若回收后压力仍在，下一次分配失败会重新武装计数（每压力片段一次回收机会）。
+        // C: main.c:118-119 — main-loop spare-pool replenishment hook (the
+        // C reserved-queue refill at alloc.c:157). Allocation-time reclaim
+        // (C alloc_mem's cache_freepages retry) lives in the funnel since
+        // V11/T30 (`alloc_page::alloc_pfn_reclaiming`); this hook stays for
+        // the spare-pool deficit (`missing_spares`) that the funnel does
+        // not see. 回收批次有界；若回收后压力仍在，下一次分配失败会重新
+        // 武装计数（每压力片段一次回收机会）。
         if let Some(frames) = self.ctx.page_frames.as_mut() {
             let _freed = self.ctx.page_cache.free_pages(FREE_CACHE_BATCH, frames, &mut self.ctx.page_alloc);
         }
@@ -1433,6 +1444,9 @@ impl Drop for VmServer {
         // (same test-isolation contract as unregister_page_alloc below).
         #[cfg(all(not(test), feature = "vm_acl_audit"))]
         crate::audit::clear_gateway();
+
+        // V11/T30: clear the reclaim sink with the same lifetime contract.
+        crate::global::unregister_reclaim();
 
         // Clear the global page-allocator pointer so a subsequent VmServer
         // (e.g. the next unit test) can register its own allocator without

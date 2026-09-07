@@ -30,9 +30,11 @@ use crate::region::{PfnAllocator, PfnAllocError, PAGE_SIZE};
 /// (`[ARCH: A-1]`): the VA is a constant offset (`VM_DIRECT_MAP_BASE + phys`),
 /// so allocation is a single non-recursive path regardless of init phase.
 pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTableError> {
-    let phys = crate::global::page_alloc_mut()
-        .alloc_phys(1, PageAllocFlags::empty())
+    // V11/T30: C pagetable.c:375 allocates page-table pages through
+    // `alloc_mem` (the reclaim-retry funnel), so the Rust hook does too.
+    let pfn = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
         .map_err(|_| PageTableError::AllocationFailed)?;
+    let phys = AlignedPhysBytes::new(pfn as u64 * PAGE_SIZE);
     let virt = vm_phys_to_virt(phys);
     // Zero-fill via the Direct Map. `Paging::walk_alloc` (x86_64/paging.rs)
     // reads PRESENT bits of freshly allocated tables and must observe zeros.
@@ -142,6 +144,53 @@ impl PfnAllocator for VmPageAllocator {
     }
 }
 
+/// C `alloc_mem` (alloc.c:242-270) — the allocation funnel with
+/// reclaim-retry: try the allocator; on failure drive page-cache reclaim
+/// passes (`crate::global::reclaim_pages`, the `cache_freepages`
+/// equivalent) and retry while reclaim yields pages.
+///
+/// Without a registered reclaim sink (host unit tests that inject their
+/// own `PfnAllocator`), the first reclaim yields 0 and this is a plain
+/// single try — injected-allocator tests behave exactly as before.
+///
+/// Note on accounting: every retried attempt still records an allocation
+/// failure in `VmAllocStats` — the counter measures pressure episodes and
+/// the inflation is bounded by the retry bound below.
+pub(crate) fn alloc_pfn_reclaiming(alloc: &mut dyn PfnAllocator) -> Result<u32, PfnAllocError> {
+    alloc_pfn_reclaiming_inner(alloc, &mut |a| crate::global::reclaim_pages(a))
+}
+
+/// Retry core with the reclaim pass injected — the global sink read makes
+/// parallel-test registration a non-concern, and the deterministic core is
+/// unit-testable without touching process-global state (V11/T30 test-safety
+/// contract: no test spins an unbounded loop or grows an unbounded buffer).
+fn alloc_pfn_reclaiming_inner(
+    alloc: &mut dyn PfnAllocator,
+    reclaim: &mut dyn FnMut(&mut dyn PfnAllocator) -> usize,
+) -> Result<u32, PfnAllocError> {
+    // Defensive bound: C's do-while terminates because each pass with
+    // progress strictly shrinks the reclaimable set; the bound additionally
+    // caps pathological sinks (same posture as do_memory's drain bound).
+    const MAX_RECLAIM_RETRIES: usize = 16;
+
+    match alloc.alloc_pfn() {
+        Ok(pfn) => Ok(pfn),
+        Err(first) => {
+            let mut last = first;
+            for _ in 0..MAX_RECLAIM_RETRIES {
+                if reclaim(alloc) == 0 {
+                    break;
+                }
+                match alloc.alloc_pfn() {
+                    Ok(pfn) => return Ok(pfn),
+                    Err(e) => last = e,
+                }
+            }
+            Err(last)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +201,98 @@ mod tests {
     /// per-thread leaked buffer (V11/T26: 512 pages covers the largest
     /// allocator under test; each window is exclusive to this test thread,
     /// so no global serialization is needed).
+    // ── V11/T30: alloc_mem reclaim-retry funnel (deterministic core) ──
+
+    /// Counting stub allocator: succeeds `budget` times, then reports OOM.
+    struct BudgetAlloc {
+        budget: usize,
+        alloc_calls: usize,
+    }
+    impl BudgetAlloc {
+        fn new(budget: usize) -> Self {
+            Self { budget, alloc_calls: 0 }
+        }
+    }
+    impl PfnAllocator for BudgetAlloc {
+        fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+            self.alloc_calls += 1;
+            if self.budget > 0 {
+                self.budget -= 1;
+                Ok(self.alloc_calls as u32)
+            } else {
+                Err(PfnAllocError::OutOfMemory)
+            }
+        }
+        fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    #[test]
+    fn test_reclaim_retry_recovers_via_reclaim_pass() {
+        // C alloc.c:242-270 — first alloc fails, one reclaim pass returns a
+        // page to the allocator, retry succeeds. The reclaim closure models
+        // exactly that: it hands one page back (cache.c:288-305 frees the
+        // block through the same allocator).
+        let budget: alloc::rc::Rc<core::cell::Cell<usize>> =
+            alloc::rc::Rc::new(core::cell::Cell::new(0));
+        struct SharedBudget(alloc::rc::Rc<core::cell::Cell<usize>>);
+        impl PfnAllocator for SharedBudget {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let left = self.0.get();
+                if left == 0 {
+                    return Err(PfnAllocError::OutOfMemory);
+                }
+                self.0.set(left - 1);
+                Ok(1)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+        let mut alloc = SharedBudget(alloc::rc::Rc::clone(&budget));
+        let mut reclaim_calls = 0usize;
+        let mut reclaim = |_: &mut dyn PfnAllocator| {
+            reclaim_calls += 1;
+            budget.set(budget.get() + 1); // a cached page returns
+            1 // productive pass
+        };
+        let pfn = alloc_pfn_reclaiming_inner(&mut alloc, &mut reclaim).unwrap();
+        assert_eq!(pfn, 1);
+        assert_eq!(reclaim_calls, 1, "exactly one reclaim pass");
+        assert_eq!(alloc.0.get(), 0, "the returned page was consumed");
+    }
+
+    #[test]
+    fn test_reclaim_retry_stops_when_reclaim_yields_zero() {
+        // A zero-yield pass makes further retries pointless (C do-while
+        // condition) — the original error is preserved.
+        let mut alloc = BudgetAlloc::new(0);
+        let mut reclaim = |_: &mut dyn PfnAllocator| 0usize;
+        let result = alloc_pfn_reclaiming_inner(&mut alloc, &mut reclaim);
+        assert!(result.is_err());
+        assert_eq!(alloc.alloc_calls, 1, "no retry after a barren pass");
+    }
+
+    #[test]
+    fn test_reclaim_retry_is_bounded() {
+        // A pathological sink that always yields pages must not spin: the
+        // defensive bound terminates the loop with the error preserved.
+        let mut alloc = BudgetAlloc::new(0);
+        let mut reclaim = |_: &mut dyn PfnAllocator| 1usize;
+        let result = alloc_pfn_reclaiming_inner(&mut alloc, &mut reclaim);
+        assert!(result.is_err());
+        assert_eq!(
+            alloc.alloc_calls,
+            1 + 16, // initial try + MAX_RECLAIM_RETRIES retries
+            "retry count must be bounded"
+        );
+    }
+
+    #[test]
+    fn test_reclaim_pages_without_sink_is_zero() {
+        // No sink registered (this test never calls VmServer::init()) → the
+        // global reclaim is a no-op, so the wrapper is a plain single try.
+        let mut alloc = BudgetAlloc::new(0);
+        assert_eq!(crate::global::reclaim_pages(&mut alloc), 0);
+    }
+
     fn with_alloc_mock_base<F: FnOnce()>(f: F) {
         with_test_window(512, f);
     }

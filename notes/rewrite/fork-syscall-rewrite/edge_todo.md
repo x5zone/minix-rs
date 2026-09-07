@@ -45,7 +45,7 @@
 | T27 | 4 | dispatcher 4 函数 happy-path 补测 | G-V12-3 | ✅ 2026-09-07（todo.md §16 Fix #47；四矩阵 476/493/476/476） |
 | T28 | 5 | CacheMemory::ev_pagefault 缓存查找 + PbCache 接线 → **判定闭合：邮箱机制删除，契约 fail-closed 化** | G-V12-1 | ✅ 2026-09-07（todo.md §16 Fix #48） |
 | T29 | 5 | SIGKMEM 信号 seam + do_memory 排空循环（kernel 对端已落地；通电挂 E1） | G-V12-2 + G-V11-1 | ✅ 2026-09-07（todo.md §16 Fix #49；三矩阵 480/497/480） |
-| T30 | 5 | alloc_cycle 回收后重试（C alloc.c do-while 语义） | "24-page-cache" 停泊项 | ⬜ |
+| T30 | 5 | 分配漏斗回收-重试（alloc_pfn_reclaiming；C alloc_mem do-while 语义） | "24-page-cache" 停泊项 | ✅ 2026-09-07（todo.md §16 Fix #50；三矩阵 484/501/484） |
 | T31 | 5 | 缺页计数生产者接线 + InfoUsage 槽位判定 | vmproc_handle.rs:305 | ⬜ |
 | T32 | 6 | do_procctl multi-call | vm_server.rs:1227 | ⬜ |
 | T33 | 6 | fork eager CoW（msgaddr 若缺 kernel 对端 → 登记 E-FORKMSG） | T11 收尾 | ⬜ |

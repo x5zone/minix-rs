@@ -495,6 +495,79 @@ pub(crate) fn unregister_page_alloc() {
     PAGE_ALLOC_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
 }
 
+/// Batch size for one page-cache reclaim pass (V11/T30; C `cache_freepages`
+/// is called with `CLICKS_PER_PAGE`-scaled batches — alloc.c:242-270 passes
+/// the whole request through; the Rust funnel drains up to this many
+/// single-reference cached pages per retry round).
+pub(crate) const RECLAIM_BATCH: usize = 1024;
+
+// ── V11/T30: page-cache reclaim sink ─────────────────────────────────
+//
+// The allocation funnel's reclaim-retry (C `alloc_mem`'s
+// `while(NO_MEM && cache_freepages(clicks) > 0)` loop, alloc.c:242-270)
+// needs access to the PageCache/PageFrames pair, which — like the page
+// allocator above — lives in `VmContext` and cannot travel through the
+// `PfnAllocator` trait signatures. The sink follows the same registration
+// pattern as `PAGE_ALLOC_PTR`: registered at `VmServer::init()`, cleared
+// at drop.
+static RECLAIM_CACHE_PTR: AtomicPtr<crate::page_cache::PageCache> =
+    AtomicPtr::new(core::ptr::null_mut());
+static RECLAIM_FRAMES_PTR: AtomicPtr<crate::region::PageFrames> =
+    AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the reclaim sink. Same overwrite guard as
+/// [`register_page_alloc`]: first registration or idempotent re-register
+/// with the same pointers; anything else panics.
+pub(crate) fn register_reclaim(
+    cache: &mut crate::page_cache::PageCache,
+    frames: &mut crate::region::PageFrames,
+) {
+    let cache_ptr = cache as *mut crate::page_cache::PageCache;
+    let frames_ptr = frames as *mut crate::region::PageFrames;
+    match RECLAIM_CACHE_PTR.compare_exchange(
+        core::ptr::null_mut(),
+        cache_ptr,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    ) {
+        Ok(_) => {}
+        Err(old) if old == cache_ptr => {}
+        Err(old) => panic!(
+            "register_reclaim: overwriting different cache sink (old={old:?}, new={cache_ptr:?})"
+        ),
+    }
+    RECLAIM_FRAMES_PTR.store(frames_ptr, Ordering::SeqCst);
+}
+
+/// Clear the reclaim sink (VmServer drop; test teardown).
+pub(crate) fn unregister_reclaim() {
+    RECLAIM_CACHE_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
+    RECLAIM_FRAMES_PTR.store(core::ptr::null_mut(), Ordering::SeqCst);
+}
+
+/// One reclaim pass: drain single-reference cached pages back to `alloc`.
+///
+/// C: `cache_freepages(clicks)` (cache.c:288-305 via alloc.c:250). No sink
+/// registered (host unit tests that never call `VmServer::init()`) → 0,
+/// which makes the retry funnel a plain single try.
+///
+/// # Safety contract
+///
+/// Mirrors [`page_alloc_mut`]: the pointers are set in `VmServer::init()`
+/// and cleared at drop; the single-threaded event loop guarantees no
+/// concurrent dereference, and callers never hold an aliasing borrow of
+/// the same `PageCache`/`PageFrames` when the funnel retries.
+pub(crate) fn reclaim_pages(alloc: &mut dyn crate::region::page_state::PfnAllocator) -> usize {
+    let cache_ptr = RECLAIM_CACHE_PTR.load(Ordering::SeqCst);
+    let frames_ptr = RECLAIM_FRAMES_PTR.load(Ordering::SeqCst);
+    if cache_ptr.is_null() || frames_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: see the function doc — registration lifetime covers the
+    // call, single-threaded, no aliasing borrows at the funnel retry point.
+    unsafe { (*cache_ptr).free_pages(RECLAIM_BATCH, &mut *frames_ptr, alloc) }
+}
+
 /// Mutable access to the registered VM page allocator.
 ///
 /// Used by allocator hooks that cannot receive `&mut VmPageAllocator` through

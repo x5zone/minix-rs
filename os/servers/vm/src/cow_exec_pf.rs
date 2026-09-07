@@ -177,7 +177,8 @@ pub(crate) fn alloc_and_map(
     offset: VirBytes,
     memtype: &'static dyn MemType,
 ) -> Result<u32, CowError> {
-    let pfn = alloc.alloc_pfn()
+    // V11/T30: C alloc_mem semantics — reclaim-retry at the funnel.
+    let pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowError::NoMemory)?;
 
     // NOTE: If map_page could fail in the future, we would need to roll back:
@@ -218,7 +219,8 @@ pub(crate) fn cow_resolve_core(
         return Ok(old_pfn);
     }
 
-    let new_pfn = alloc.alloc_pfn()
+    // V11/T30: reclaim-retry funnel (C alloc_mem).
+    let new_pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowCoreError::NoMemory)?;
 
     copy_page_content(frames, old_pfn, new_pfn);
