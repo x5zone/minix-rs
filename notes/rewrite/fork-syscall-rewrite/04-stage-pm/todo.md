@@ -806,6 +806,43 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **Docs**：`13-signal-flow.md` D5 段（D-25 落地注）；`edge_todo.md` E6 进度；本文件 §6 D-25 行。
 
+### ✅ Fix #29: V2-P0-2 — 信号集合位基统一到 C `__sigmask` + badignore 谓词修正（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/init.rs`（`sig_bit` 改 `1u64 << (sig - 1)` 并提为 `pub(crate)`——全 crate 唯一位基入口；`test_signal_sets_match_c` 断言值换为 C sigset_t 逐位数值；新增 `test_signal_set_membership_matches_c_arrays` 用 C `__sigmask` 原始掩码逐信号对账三个数组）
+- `os/servers/pm/src/signal.rs`（`sig_proc` 消费点改调 `init::sig_bit`，本文件不再出现裸移位；badignore 从"集合级交叠"改为 C signal.c:483-486 的单信号成员判定 `ksig && noign(signo) && (ignored(signo) || masked(signo))`；删除 :309-311 的错误翻译死分支；默认忽略门改为与 caught 分支 `else if` 联动——捕获投递失败的默认忽略信号必须终止而非忽略，对齐 C signal.c:535-539 的互斥结构；新增 SIGCONT 存活、badignore 强制终止、非 noign 忽略三测试）
+- `notes/.../01-pm-init-main.md`（§3.3 位基描述更正 + 事故记录 + §5 测试表补行）、`11-signal-core.md`（D4 重写 + §5.2 补三个测试名）
+
+**Before/After**：位基分裂使有效 core 集 = {ILL,TRAP,ABRT,EMT,FPE,KILL,SEGV,SYS}（误加 KILL/SYS、丢 QUIT/BUS）、有效默认忽略集 = {CHLD,TTIN,INFO,USR1}（丢 CONT/WINCH）——`kill(pid, SIGCONT)` 在干净进程上落入终止分支。修复后集合数值与 C `sigset_t` 逐位相等，SIGCONT 默认忽略恢复。**设计选型（三案）**：(a) producer 对齐 C（首选：`SigSet` 数值可与 C 直接对照，未来 E7 wire 载荷免换算）；(b) consumer 全改 `1<<sig`（偏离 C，否决）；(c) `SigSetExt::contains_sig` 方法化封装（长期最优但超本条范围，记录为演进）。位基单点化是 Linux `sigismember` 与 Redox `currently_pending_unblocked()` 的共同实践。
+
+**Verified**：
+- `cargo test -p minix-pm`：350 lib（346 + 4 新）+ 7 integration passed
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error
+- 既有测试无一位基依赖需改（旧约定从未被其他测试断言）
+
+**Docs**：`01-pm-init-main.md` §3.3/§5；`11-signal-core.md` D4/§5.2；本文件 V2-P0-2 标 ✅。
+
+**未做（DEFERRED 论证）**：无——本条目 stage 内完整闭环。
+
+### ✅ Fix #30: V2-P0-1 — 信号终止链贯通真实 transport（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/signal.rs`（根因修复：`sig_proc` 的 `_transport` 形参改名 `transport` 并下传——此前整条链在此丢弃通道；`sig_proc_exit` 泛型化 `<T: IpcTransport + ?Sized>` 接收调用者真实通道，删除 `TestIpcTransport::default()` 生产构造；新增 `test_signal_termination_tells_vfs`：SIGKILL → VFS_PM_EXIT、SIGSEGV → VFS_PM_DUMPCORE 断言）
+- `os/servers/pm/src/ipc/transport.rs`（`TestIpcTransport` 文档加 TSTL 警告：仅供测试注入，生产构造即模式违规；不做 `#[cfg(test)]` 门控的理由——集成测试以普通依赖编译本 crate）
+- `os/servers/pm/tests/run_once_integration.rs`（新增 `kill_termination_tells_vfs_exit`：kill 全链经服务器通道断言 VFS_PM_EXIT + VM_WILLEXIT + 回复 0）
+- `notes/.../11-signal-core.md`（D6 补 transport 贯通契约 + §5.2 测试名）
+
+**Before/After**：`sig_proc_exit` 曾构造一次性 mock 传给 `exit_proc`，而 exit_proc 尾部无条件 `tell_vfs`（forkexit.c:350-358）——信号终止的 VFS 告知全部进黑洞，core 路径进程永久卡 EXITING。修复后 kill 全链（check_sig→sig_proc→sig_proc_exit→exit_proc→tell_vfs）贯穿同一通道。**设计选型**：(a) transport 沿调用链下传（首选：与 check_sig/sig_proc 既有形态一致，零新抽象）；(b) tell_vfs 从 exit_proc 拆出后置（否决：拆散 C 的步骤顺序与 PRIV_PROC sys_clear 时机）；(c) `#[cfg(test)]` 门控 mock 类型（否决：破坏集成测试可见性，改以文档警告 + 模式登记防御）。**连带发现**（登记不修，见 V2-P2-7/V2-P2-8）：`unpause` 的 VFS_CALL 分支不发 VFS_PM_UNPAUSE、`sig_send` 为空壳——caught 路径（sigaction 接线后可达）的两个缺口。
+
+**Verified**：
+- `cargo test -p minix-pm`：351 lib（+1）+ 8 integration（+1）passed
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error
+- 新集成测试在修复前必失败（mock 吞消息 → VFS 断言空）——TDD 锚点
+
+**Docs**：`11-signal-core.md` D6/§5.2；本文件 V2-P0-1 标 ✅ + V2-P2-7/V2-P2-8 登记。
+
+**未做（DEFERRED 论证）**：真实通电（trap 层）挂 edge E1——本条目的通道贯通与 wire 语义在 mock 层已完整验证。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -908,7 +945,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 
 ### 11.2 V2 条目
 
-#### V2-P0-1 信号终止路径把 VFS 告知发进测试 mock，进程卡死且 VFS 永不知情
+#### V2-P0-1 信号终止路径把 VFS 告知发进测试 mock，进程卡死且 VFS 永不知情（✅ 已修复 2026-09-08，见 §10 Fix #30）
 
 - **优先级**：P0（可达路径上的真实行为错误——Kill=11 已接线）
 - **类型**：代码 bug（测试 mock 泄漏进生产路径）
@@ -1000,6 +1037,22 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：以本文件 §11.1.1 的批次表为准台账（每个调用一行，含前置条件），不新增 40 个 D 编号；在 `calls.rs:283` 兜底臂注释指回该表。后续每接线一批，表中该行同步划账。
 - **验证**：`calls.rs` 兜底臂注释含指向 §11.1.1 的引用；批次表随接线滚动更新。
 
+#### V2-P2-7 unpause 的 VFS_CALL 分支不发 VFS_PM_UNPAUSE（2026-09-08 R2 执行中发现）
+
+- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
+- **文件**：`os/servers/pm/src/signal.rs` `unpause`（VFS_CALL 分支 `return false`，无消息发送）
+- **问题**：C 的 `unpause`（signal.c:719-770）对 VFS_CALL/EVENT_CALL 挂起的进程经 `tell_vfs(VFS_PM_UNPAUSE)` 请求 VFS 中断其阻塞调用，回复（Unpause 事件）到来后才建立 sigframe。Rust 该分支直接返回 false（信号转 pending），不发任何消息——被捕获信号对"卡在 VFS 调用里"的进程永远无法及时投递。
+- **建议**：随 caught 路径补全（V2-P2-8）一并做：`unpause` 增 transport 形参，VFS_CALL 分支走 `crate::ipc::tell_vfs(VfsCall::Unpause)`（ipc/vfs.rs:285 的 Unpause 回复分支已备）。
+- **验证**：单测：VFS_CALL 挂起进程 + 被捕获信号 → transport 收到 UNPAUSE 请求，VFS 回复后 sigframe 建立。
+
+#### V2-P2-8 sig_send 是空壳（caught 投递的核心步骤缺失）（2026-09-08 R2 执行中发现）
+
+- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
+- **文件**：`os/servers/pm/src/signal.rs` `sig_send`（`let _ = (table, target, signo); Ok(())`）
+- **问题**：C 的 `sig_send`（signal.c:772-855）是被捕获信号投递的核心：保存/替换 mask、写 `mp_sigreturn`、构造 sigframe 参数、唤醒目标进程。Rust 版不做任何事直接返回成功——一旦 sigaction 批次（§11.1.1 批次 B）接线，被捕获信号将"看起来送达"而进程毫无感知。
+- **建议**：方案一：按 C 全语义实现（依赖 mproc/signal.rs 的 `prepare_sigmsg`/`sigreturn_addr` 既有字段）。方案二：登记 D-29 并与批次 B 联动实施（sigaction 的 handler 安装 → sig_send 的 frame 建立 → sigreturn 的恢复，三步须同轮验证）。推荐方案二：三步分离会造成"半可达"状态。
+- **验证**：批次 B 的集成测试：handler 进程收信号 → handler 执行 → sigreturn 恢复 mask（需进程上下文模拟，属 12-signal-handlers.md 范围）。
+
 #### V2-P3-1 stale 注释与死绑定四处（随 P0/P1 修复顺带清理）
 
 - **优先级**：P3；**类型**：注释漂移（模式 77 变体：不是行号漂移而是"实现已赶上/前提已消失"）；**文件**：`wait.rs:128-131`（D-21 已实现 + `let _ = rusage_addr;` 死绑定）、`exit.rs:515-516`（"(omitted)" doc 注释）、`event.rs:213-214`（"两者 DEFERRED"与 Fix #7 后的现实矛盾）、`main.rs:10`（"RS_INIT 握手归主循环"前提在本树 C 中不存在）。**建议**：逐处更新注释为当前事实；wait.rs 的死绑定删除。**验证**：四处 grep 逐条确认。
@@ -1063,21 +1116,3 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 8. **批次 F（调度）**：依赖 SCHED 服务器（跨阶段，06-stage）。
 9. **V2-P3 批次 + plan.md ARCH 四列对照表**。
 10. 跨阶段部分（E6 wrapper 清单扩充、E7 wire 成员与 rs_start 先例）见 §9 索引与 edge_todo.md 对应条目，单线程执行。
-
-### ✅ Fix #29: V2-P0-2 — 信号集合位基统一到 C `__sigmask` + badignore 谓词修正（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/init.rs`（`sig_bit` 改 `1u64 << (sig - 1)` 并提为 `pub(crate)`——全 crate 唯一位基入口；`test_signal_sets_match_c` 断言值换为 C sigset_t 逐位数值；新增 `test_signal_set_membership_matches_c_arrays` 用 C `__sigmask` 原始掩码逐信号对账三个数组）
-- `os/servers/pm/src/signal.rs`（`sig_proc` 消费点改调 `init::sig_bit`，本文件不再出现裸移位；badignore 从"集合级交叠"改为 C signal.c:483-486 的单信号成员判定 `ksig && noign(signo) && (ignored(signo) || masked(signo))`；删除 :309-311 的错误翻译死分支；默认忽略门改为与 caught 分支 `else if` 联动——捕获投递失败的默认忽略信号必须终止而非忽略，对齐 C signal.c:535-539 的互斥结构；新增 SIGCONT 存活、badignore 强制终止、非 noign 忽略三测试）
-- `notes/.../01-pm-init-main.md`（§3.3 位基描述更正 + 事故记录 + §5 测试表补行）、`11-signal-core.md`（D4 重写 + §5.2 补三个测试名）
-
-**Before/After**：位基分裂使有效 core 集 = {ILL,TRAP,ABRT,EMT,FPE,KILL,SEGV,SYS}（误加 KILL/SYS、丢 QUIT/BUS）、有效默认忽略集 = {CHLD,TTIN,INFO,USR1}（丢 CONT/WINCH）——`kill(pid, SIGCONT)` 在干净进程上落入终止分支。修复后集合数值与 C `sigset_t` 逐位相等，SIGCONT 默认忽略恢复。**设计选型（三案）**：(a) producer 对齐 C（首选：`SigSet` 数值可与 C 直接对照，未来 E7 wire 载荷免换算）；(b) consumer 全改 `1<<sig`（偏离 C，否决）；(c) `SigSetExt::contains_sig` 方法化封装（长期最优但超本条范围，记录为演进）。位基单点化是 Linux `sigismember` 与 Redox `currently_pending_unblocked()` 的共同实践。
-
-**Verified**：
-- `cargo test -p minix-pm`：350 lib（346 + 4 新）+ 7 integration passed
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-- 既有测试无一位基依赖需改（旧约定从未被其他测试断言）
-
-**Docs**：`01-pm-init-main.md` §3.3/§5；`11-signal-core.md` D4/§5.2；本文件 V2-P0-2 标 ✅。
-
-**未做（DEFERRED 论证）**：无——本条目 stage 内完整闭环。

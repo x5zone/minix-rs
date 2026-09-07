@@ -257,3 +257,44 @@ fn corrupt_vfs_reply_is_fail_fast_not_enosys() {
         .queue_receive(request(0x980 + 7, vfs_ep), IpcStatus::default());
     let _ = srv.run_once();
 }
+
+#[test]
+fn kill_termination_tells_vfs_exit() {
+    // V2-P0-1（todo.md §11）：kill 成功终止目标后必须经服务器真实通道
+    // 向 VFS 发 VFS_PM_EXIT（C forkexit.c:350-358 无条件 tell_vfs）——
+    // 修复前该消息被 sig_proc_exit 内部构造的一次性 mock 吞掉，VFS
+    // 永远不知道进程死亡。SIGKILL 默认处置 → 普通终止 → zombify +
+    // VFS_PM_EXIT；终止链同时经同一通道告知 VM（vm_willexit）。
+    let mut srv = server();
+    let caller_ep = seed_running(&mut srv, 5, 100);
+    seed_running(&mut srv, 6, 101);
+
+    let mut kill_msg = request(11, caller_ep); // PM_KILL = 11
+    kill_msg.m_u.m_lc_pm_kill.pid = 101;
+    kill_msg.m_u.m_lc_pm_kill.signo = 9; // SIGKILL
+    srv.transport_mut()
+        .queue_receive(kill_msg, IpcStatus::default());
+
+    assert_eq!(srv.run_once(), RunStep::Handled);
+
+    let sent = srv.transport().sent();
+    assert!(
+        sent.iter()
+            .any(|(ep, m)| *ep == Endpoint::VFS && m.m_type == minix_types::VFS_PM_EXIT),
+        "kill must notify VFS with VFS_PM_EXIT, sent={:?}",
+        sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
+    );
+    // 终止链还经同一通道告知 VM（vm_willexit，D-15/Fix #11）。
+    assert!(
+        sent.iter()
+            .any(|(ep, m)| *ep == Endpoint::VM && m.m_type == minix_types::VM_WILLEXIT as i32),
+        "exit chain must tell VM_WILLEXIT, sent={:?}",
+        sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
+    );
+    // 调用者收到 kill(2) 成功语义回复 0（dispatch Kill 臂的固定回复值）。
+    assert!(
+        sent.iter().any(|(ep, m)| *ep == caller_ep && m.m_type == 0),
+        "caller must receive success reply 0, sent={:?}",
+        sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
+    );
+}

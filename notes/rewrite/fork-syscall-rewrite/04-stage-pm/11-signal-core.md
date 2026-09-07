@@ -282,7 +282,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 ### D6：`sig_proc_exit` 的 `core_sset` 分支
 
-`is_core_dump(signo)` + `exit_proc(dump_core)`，`dump_core` 双门（`realuid != effuid` 与 `PRIV_PROC`）。
+`is_core_dump(signo)` + `exit_proc(dump_core)`，`dump_core` 双门（`realuid != effuid` 与 `PRIV_PROC`）。`exit_proc` 尾部无条件 `tell_vfs`（`forkexit.c:350-358`），因此 `sig_proc`→`sig_proc_exit` 全程携带调用者的真实 transport——曾经在此构造一次性测试 mock，导致信号终止的 VFS 告知全部丢失（todo.md §11 V2-P0-1，已修复并由 `test_signal_termination_tells_vfs` 锁定）。
 
 ### D7：`check_sig` 计数与 `SUSPEND`
 
@@ -330,6 +330,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 - `test_sigproc_default_ignores_sigcont`：干净进程收 SIGCONT 存活（默认忽略门，V2-P0-2 回归锚点）
 - `test_badignore_forces_default_on_ignored_lethal_ksig`：ksig + noign 信号被 ignore → 强制终止
 - `test_ignored_non_noign_ksig_still_ignored`：ksig 但信号 ∉ noign → ignore 生效
+- `test_signal_termination_tells_vfs`：SIGKILL → VFS_PM_EXIT、SIGSEGV → VFS_PM_DUMPCORE 经真实通道（V2-P0-1 回归锚点）；集成层对应 `kill_termination_tells_vfs_exit`（含 VM_WILLEXIT 断言）
 
 ---
 

@@ -214,7 +214,7 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
     trace: bool,
     ksig: bool,
     kern: &mut dyn crate::exit::KernelGateway,
-    _transport: &mut T,
+    transport: &mut T,
 ) -> Result<(), KillError> {
     let proc = &table.procs[target.get()];
     if !proc.is_in_use() || proc.state.lifecycle.is_exiting() {
@@ -266,7 +266,7 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             let _ = (target, signo);
             return Ok(());
         } else {
-            return sig_proc_exit(table, target, signo, kern);
+            return sig_proc_exit(table, target, signo, transport, kern);
         }
     }
     // User process: badignore / ignore / block / TRACE_STOPPED / caught / terminate
@@ -314,25 +314,27 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // caught 分支互斥：捕获失败的默认忽略信号必须终止而非忽略）
         return Ok(());
     }
-    sig_proc_exit(table, target, signo, kern)
+    sig_proc_exit(table, target, signo, transport, kern)
 }
 
 /// Terminates process via signal (`sig_proc_exit`, `546-563`).
-fn sig_proc_exit(
+fn sig_proc_exit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     target: UserSlot,
     signo: i32,
+    transport: &mut T,
     kern: &mut dyn crate::exit::KernelGateway,
 ) -> Result<(), KillError> {
     let is_core = crate::init::CORE_SIGSET & crate::init::sig_bit(signo) != 0;
-    // In C: exit_proc(rmp, 0, dump_core) where dump_core = is_core
-    // For 11 we delegate to exit::exit_proc with a nop transport (no VFS).
+    // C: exit_proc(rmp, 0, dump_core=is_core)——exit_proc 尾部无条件
+    // tell_vfs（DUMPCORE 或 EXIT，forkexit.c:350-358），所以 transport
+    // 必须是调用者的真实通道。V2-P0-1：曾在此构造一次性 mock，信号
+    // 终止的 VFS 告知全部丢失（core 路径进程永久卡 EXITING）。
     // 内核出口（step 9 sys_clear）用生产网关：本路径目标为用户进程
     //（PRIV_PROC 在前置分支已返回），step 9 不会触发；若未来语义变化
     // 命中，pre-E1 诚实 panic（C 失败语义同型）。
     let status = 0;
-    let mut nop = crate::ipc::TestIpcTransport::default();
-    crate::exit::exit_proc(table, target, status as i8, is_core, &mut nop, kern);
+    crate::exit::exit_proc(table, target, status as i8, is_core, transport, kern);
     Ok(())
 }
 
@@ -511,6 +513,37 @@ mod tests {
         let res = check_sig(&mut table, UserSlot::new(0), 42, SIGWINCH_TEST, true, &mut kern, &mut t);
         assert!(res.is_ok());
         assert!(table.procs[5].is_in_use() && !table.procs[5].is_exiting());
+    }
+
+    /// V2-P0-1：信号终止必须经调用者的真实通道告知 VFS（forkexit.c
+    /// :350-358 无条件 tell_vfs）——SIGKILL → VFS_PM_EXIT，SIGSEGV
+    /// （∈ core_sigs）→ VFS_PM_DUMPCORE。修复前这些消息进一次性 mock
+    /// 黑洞，core 路径进程永久卡 EXITING。
+    #[test]
+    fn test_signal_termination_tells_vfs() {
+        let mut kern = TestKernel { user: 0, sys: 0 };
+
+        // SIGKILL：普通终止 → VFS_PM_EXIT
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        check_sig(&mut table, UserSlot::new(0), 42, SIGKILL, false, &mut kern, &mut t).unwrap();
+        assert!(
+            t.sent().iter().any(|(ep, m)| *ep == Endpoint::VFS && m.m_type == minix_types::VFS_PM_EXIT),
+            "SIGKILL termination must tell VFS_PM_EXIT, sent={:?}",
+            t.sent().iter().map(|(_, m)| m.m_type).collect::<Vec<_>>()
+        );
+
+        // SIGSEGV：core 信号 → VFS_PM_DUMPCORE
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut kern, &mut t).unwrap();
+        assert!(
+            t.sent().iter().any(|(ep, m)| *ep == Endpoint::VFS && m.m_type == minix_types::VFS_PM_DUMPCORE),
+            "core signal must send VFS_PM_DUMPCORE, sent={:?}",
+            t.sent().iter().map(|(_, m)| m.m_type).collect::<Vec<_>>()
+        );
     }
 
     /// 记录型 VTimerCtl mock：捕获 (which, set 值)。

@@ -105,6 +105,12 @@ impl IpcTransport for KernelIpcTransport {
 /// 有脚本（`queue_sendrec_reply`）时整条回复消息出队写入（含载荷
 /// 字段，供 VM_FORK 这类"回复即载荷"的协议用）；无脚本时退回旧行为
 /// ——仅覆盖回复 `m_type`（默认 OK=0，模拟 VFS 确认）。
+///
+/// ⚠️ **仅供测试与集成测试注入使用**。`send` 只把消息记进本地缓冲，
+/// `receive` 立即返回 WouldBlock——生产代码构造本类型意味着该路径的
+/// 对外通信全部丢失（模式 TSTL，见 todo.md §11.5；V2-P0-1 即实例）。
+/// 不做 `#[cfg(test)]` 门控是因为集成测试（`tests/`）以普通依赖方式
+/// 编译本 crate，看不到 cfg(test) 项。
 #[derive(Debug)]
 pub struct TestIpcTransport {
     /// 所有 `send` 调用记录（按序）。
