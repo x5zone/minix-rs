@@ -29,7 +29,7 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 /// - 2: full boot contract — free regions (A2 classification), the
 ///   LiveBootstrap deduction record, reserved modules, the boot image
 ///   table and the kernel footprint.
-pub const VM_BOOT_HANDOFF_VERSION: u32 = 2;
+pub const VM_BOOT_HANDOFF_VERSION: u32 = 3;
 
 /// Maximum free-region entries the handoff page carries.
 ///
@@ -121,6 +121,17 @@ pub struct VmBootHandoff {
     /// Boot page-table pages the kernel allocated while mapping itself.
     /// C: `kinfo.kernel_allocated_bytes_dynamic` (pg_utils.c:154).
     pub kernel_allocated_dynamic: u64,
+    /// Kernel text virtual base (V11/E3: per-process kernel mapping
+    /// source — replaces VM's hardcoded mock, kernel `kern_virt_base`).
+    pub kern_virt_base: u64,
+    /// Kernel text physical base (V11/E3; kernel `kern_phys_base`).
+    pub kern_phys_base: u64,
+    /// Pages in the kernel image span (V11/E3; `kern_size / PAGE_SIZE`).
+    /// C splits text/data; minix-rs maps the whole contiguous span.
+    pub kern_text_pages: u32,
+    /// Pages in the kernel data span (V11/E3; 0 = whole-span-as-text,
+    /// the minix-rs kernel image is one contiguous span).
+    pub kern_data_pages: u32,
     /// Fresh-boot flag (C: `is_first_time()`, main.c:79-88). 1 = fresh.
     pub is_first_time: u32,
     /// Valid entries in `free_regions`.
@@ -147,6 +158,25 @@ pub struct VmBootHandoff {
 }
 
 impl VmBootHandoff {
+    /// Kernel layout for per-process kernel mappings (V11/E3).
+    ///
+    /// `Some` for version ≥ 3 handoffs (the kernel reports its text/data
+    /// span); `None` for version ≤ 2 — the consumer keeps its historical
+    /// fallback (VM: the mock `KernelLayout` constants + a warning).
+    pub fn kernel_layout(&self) -> Option<KernelLayout> {
+        if self.version < 3 {
+            return None;
+        }
+        Some(KernelLayout::new(
+            self.kern_virt_base,
+            self.kern_phys_base,
+            self.kern_text_pages as usize,
+            self.kern_data_pages as usize,
+            0xFFFF_8000_0000_0000, // kernel DM window base (arch constant)
+            4,                     // sentinel pages (DM window size is arch-fixed)
+        ))
+    }
+
     /// Total size in bytes — must stay within one 4 KiB page.
     ///
     /// The `const _` assertion below enforces this at compile time.
@@ -367,5 +397,58 @@ mod tests {
         let a = KernelLayout::new(1, 2, 3, 4, 5, 6);
         let b = a; // Copy semantics
         assert_eq!(a, b);
+    }
+    #[cfg(test)]
+    mod kernel_layout_tests {
+        use super::*;
+
+        /// A minimal v3 handoff: only the fields kernel_layout() reads.
+        fn handoff(version: u32) -> VmBootHandoff {
+            let mut h = VmBootHandoff {
+                magic: VM_BOOT_HANDOFF_MAGIC,
+                version,
+                root_paddr: 0,
+                vm_allocated_bytes: 0,
+                kernel_allocated_static: 0,
+                kernel_allocated_dynamic: 0,
+                kern_virt_base: 0,
+                kern_phys_base: 0,
+                kern_text_pages: 0,
+                kern_data_pages: 0,
+                is_first_time: 1,
+                free_region_count: 0,
+                deducted_count: 0,
+                module_count: 0,
+                free_regions: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS],
+                deducted: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_DEDUCTED],
+                modules: [HandoffModule::ZERO; VM_BOOT_HANDOFF_MAX_MODULES],
+                boot_procs: [BootImage::empty(); NR_BOOT_PROCS],
+            };
+            // Handoff::validate expects the field to be zeroed when fresh —
+            // the tests only read kernel_layout(), so nothing else matters.
+            h
+        }
+
+        #[test]
+        fn test_kernel_layout_v3_reports_span() {
+            let mut h = handoff(3);
+            h.kern_virt_base = 0xFFFF_FFFF_8000_0000;
+            h.kern_phys_base = 0x100_0000;
+            h.kern_text_pages = 24;
+            h.kern_data_pages = 0;
+            let l = h.kernel_layout().expect("v3 must carry the layout");
+            assert_eq!(l.kernel_text_vbase, 0xFFFF_FFFF_8000_0000);
+            assert_eq!(l.kernel_text_pbase, 0x100_0000);
+            assert_eq!(l.kernel_text_pages, 24);
+            assert_eq!(l.kernel_data_pages, 0);
+        }
+
+        #[test]
+        fn test_kernel_layout_v2_is_none() {
+            assert!(
+                handoff(2).kernel_layout().is_none(),
+                "version ≤ 2 handoffs carry no kernel layout (VM keeps mock)"
+            );
+        }
     }
 }

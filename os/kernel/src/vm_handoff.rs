@@ -298,6 +298,15 @@ pub fn build_vm_handoff(
         vm_allocated_bytes: vm_alloc.used_frames() * PAGE_SIZE,
         kernel_allocated_static: kernel_info.kern_size(),
         kernel_allocated_dynamic: boot_alloc_used_bytes(),
+        // V11/E3: kernel layout for VM's per-process kernel mappings —
+        // C kinfo carries the same role (kernel text/data base + pages).
+        // minix-rs maps the whole contiguous image span as "text"
+        // (data_pages = 0); the VM's map_kernel walks text_pages then
+        // data_pages, so the sum is what matters.
+        kern_virt_base: kernel_info.kern_virt_base().0,
+        kern_phys_base: kernel_info.kern_phys_base().0,
+        kern_text_pages: (kernel_info.kern_size() / 4096) as u32,
+        kern_data_pages: 0,
         is_first_time: 1,
         free_region_count: classification.free_region_count as u32,
         deducted_count: classification.deducted_count as u32,

@@ -100,6 +100,11 @@ pub struct BootParams<'a> {
     /// C: `is_first_time()` (main.c:79-88) — returns true when RS still
     /// holds `RTS_BOOTINHIBIT`, which gates `init_vm()` in `main()`.
     pub is_first_time: bool,
+    /// Kernel layout reported by the handoff (V11/E3) — drives
+    /// `init_global_state`'s per-process kernel mapping constants.
+    /// `None` for version ≤ 2 handoffs (the historical mock constants
+    /// apply) and for host tests (`BootParams::simple`).
+    pub kernel_layout: Option<minix_types::KernelLayout>,
 }
 
 impl<'a> BootParams<'a> {
@@ -118,6 +123,7 @@ impl<'a> BootParams<'a> {
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
             is_first_time: true,
+            kernel_layout: None,
         }
     }
 
@@ -289,6 +295,9 @@ pub fn read_boot_params() -> BootParams<'static> {
         },
         vm_allocated_bytes: handoff.vm_allocated_bytes,
         is_first_time: handoff.is_first_time != 0,
+        // V11/E3: version ≥ 3 handoffs carry the kernel layout; version ≤ 2
+        // yields None (consumer falls back to the mock constants + warn).
+        kernel_layout: handoff.kernel_layout(),
     };
     params.validate();
     reconcile(&params, &handoff.deducted[..handoff.deducted_count as usize]);
@@ -441,6 +450,7 @@ mod tests {
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
             is_first_time: true,
+            kernel_layout: None,
         };
         assert_eq!(params.extra_pages(), 3);
     }
@@ -460,6 +470,7 @@ mod tests {
             },
             vm_allocated_bytes: 0,
             is_first_time: true,
+            kernel_layout: None,
         };
         assert_eq!(params.extra_pages(), 4);
     }

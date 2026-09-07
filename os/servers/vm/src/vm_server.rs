@@ -188,6 +188,9 @@ pub struct VmServer {
     /// [`BootParams`] so `init()` does not borrow external memory; the
     /// kernel→VM boot protocol is a one-shot hand-off.
     boot_procs: [BootImage; NR_BOOT_PROCS],
+    /// Kernel layout from the boot handoff (V11/E3): `None` = pre-E3
+    /// handoff/test shape → `init_global_state` keeps the mock constants.
+    kernel_layout: Option<minix_types::KernelLayout>,
     /// Pages to charge to the global page total during init.
     ///
     /// C: `mem_add_total_pages()` call points (main.c:485-495).
@@ -284,6 +287,7 @@ impl VmServer {
         for (i, img) in params.boot_procs.iter().take(NR_BOOT_PROCS).enumerate() {
             boot_procs[i] = *img;
         }
+        let kernel_layout = params.kernel_layout;
 
         Self {
             ctx: VmContext::new(page_alloc, params.kernel_allocated, params.vm_allocated_bytes),
@@ -291,6 +295,7 @@ impl VmServer {
             missing_spares: 0,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
+            kernel_layout,
             transport,
         }
     }
@@ -518,18 +523,25 @@ impl VmServer {
         // unchanged, but the mechanism is now in place to supply correct
         // values without touching `init_page_table()`.
         //
+        // V11/E3: a version ≥ 3 handoff carries the real kernel layout —
+        // consume it. `None` (pre-E3 handoffs, host tests via
+        // `BootParams::simple`) keeps the historical mock constants.
+        let layout = self.kernel_layout.unwrap_or_else(|| {
+            audit_log!("[VM BOOT] handoff lacks kernel layout (version < 3) — mock constants in use");
+            minix_types::KernelLayout::new(
+                0xFFFF_FFFF_8000_0000, // kernel_text_vbase (mock)
+                0x100_0000,            // kernel_text_pbase (16 MiB, mock)
+                8,                     // kernel_text_pages (mock)
+                8,                     // kernel_data_pages (mock)
+                0xFFFF_8000_0000_0000, // dm_vbase (KERNEL_DIRECT_MAP_BASE)
+                4,                     // dm_pages (sentinel only)
+            )
+        });
         // SAFETY: Called before any `init_page_table()` call (process table
         // setup happens in `init_proc_table()` after this). Single-threaded
         // VM ensures no concurrent reader of `KERNEL_LAYOUT`.
         unsafe {
-            crate::global::set_kernel_layout(minix_types::KernelLayout::new(
-                0xFFFF_FFFF_8000_0000, // kernel_text_vbase
-                0x100_0000,            // kernel_text_pbase (16 MiB)
-                8,                     // kernel_text_pages
-                8,                     // kernel_data_pages
-                0xFFFF_8000_0000_0000, // dm_vbase (KERNEL_DIRECT_MAP_BASE)
-                4,                     // dm_pages (sentinel only)
-            ));
+            crate::global::set_kernel_layout(layout);
         }
     }
 
@@ -2778,6 +2790,7 @@ mod tests {
             kernel_allocated: KernelAllocated::ZERO,
             vm_allocated_bytes: 0,
             is_first_time: true,
+            kernel_layout: None,
         }
     }
 

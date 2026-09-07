@@ -89,11 +89,7 @@
 
 ## E3 VmBootHandoff 补 kernel text/data span（= 02-stage-vm V11-P2-7）
 
-**问题**：`minix-types/src/types/boot.rs:107-147` 的 `VmBootHandoff` 没有 kernel text/data 的 `(paddr, pages)` 字段（kernel image 只隐含在 `deducted` 记录里）；VM 侧 `KernelLayout` 只能填 mock（`os/servers/vm/src/vm_server.rs:450-460` 的 `0xFFFF_FFFF_8000_0000` 等，TODO 自认 boot-info 未接线）。
-
-**跨 stage 文件**：`os/libs/minix-types/src/types/boot.rs`（加字段 + version 递增）、`os/kernel/src/vm_handoff.rs`（`build_vm_handoff` :289-304 填充；kernel text paddr 可用 `kern_phys_base()`）、`os/servers/vm/src/boot.rs`（`read_boot_params` 解析）+ `vm_server.rs`（`init_global_state` 消费 mock 替换）。
-
-**建议**：三处一次改齐；`debug_assert` 保证 mock 值与真实值不共存；handoff `version` 字段同步递增并在 VM 侧做版本协商（不认识新字段时保持 mock + 显式警告）。
+> **进度（2026-09-08，完成）**：`VmBootHandoff` 增 `kern_virt_base/kern_phys_base/kern_text_pages/kern_data_pages` 四字段（version 2 → 3；size 断言 ≤ 4096 仍通过）；kernel `build_vm_handoff` 从 `kern_virt_base()/kern_phys_base()/kern_size()` 填充（minix-rs 内核映像为单一连续 span——text_pages = 全映像页数，data_pages = 0）；VM `read_boot_params` 解析为 `BootParams.kernel_layout: Option<KernelLayout>`（handoff v≥3 → `kernel_layout()`，v≤2 → None）；`init_global_state` 消费——`Some` 用真值，`None`（pre-E3 handoff/宿主测试）保留 mock 常量 + 审计告警。minix-types 访问器测试 ×2（v3 报告 span / v2 None）。**P1-4 实质闭环**：真实硬件上 `init_page_table` 的内核映射来自 boot handoff 而非硬编码 mock。余件：riscv64 Sv39 的 `VM_BOOT_HANDOFF_VA`（0x1_0000_0000 < 2^38 ✓ 已兼容）。
 
 ---
 
@@ -122,6 +118,18 @@
 
 ## E-RSSTART rs_start_t 字节 ABI pinning + copy_rs_start 解码（03-stage-rs RS_UP/RS_EDIT 臂，2026-09-07 登记）
 
+> **改判（2026-09-07，用户批准并入 03-stage-rs campaign 后关单）**：阻塞前提
+> （"`bitchunk_t`/`uid_t` 在本树无 typedef，rs_start_t 字节 ABI 不可 pinning"）经独立
+> 核实**不成立**——minix3/ 是完整 NetBSD 式全树：`bitchunk_t = uint32_t`
+> （`minix3/sys/sys/types.h:124`，固定宽度、无架构依赖）、`uid_t = uint32_t`
+> （types.h:221 + ansi.h:46）、`struct rs_start` 完整（`minix3/minix/include/minix/rs.h:104-151`）。
+> 当初的 grep 只覆盖了 `minix3/minix/` 子树而漏掉 `minix3/sys/`。wire 解码面已落地
+> （`minix-types::ipc::rs_start`，Fix #81：偏移常量单点表 + repr(C) 布局见证 +
+> 39 个 offset_of 编译期断言 + x86-64 LP64 数据模型声明）；**RS_UP/RS_EDIT/
+> RS_UPDATE 三臂接线转入 03-stage-rs/todo.md §21 campaign 执行（R4-R6），本条目
+> 关单**。下文保留原文以存档判定过程；原文的"约 230 字节"与 ILP32 假设作废
+> （实际 `sizeof(struct rs_start)` = 920，LP64）。
+
 **问题**：RS 的 `RS_UP`（do_up，request.c:15-106）与 `RS_EDIT`（do_edit，request.c:298-385）第一步都是 `copy_rs_start`——把调用方内存里的完整 `struct rs_start`（rs.h:107-166，约 230 字节：rss_flags/rss_cmd/rss_uid/位图数组/irq·io·pci 表/rss_label/…）按 C ABI 整结构拷入 RS。该结构含 `bitchunk_t rss_system[SYS_CALL_MASK_SIZE]`、`bitchunk_t rss_vm[VM_CALL_MASK_SIZE]` 与 `uid_t rss_uid`，而 `bitchunk_t` 在本 minix3 子树**只有使用没有 typedef**（bitmap.h:12 引用 `sizeof(bitchunk_t)`，全树 grep 无定义），`uid_t` 亦属 sys/types.h 外部类型——字节偏移无法从本树 pinning，猜偏移违反 Ground Truth 链（同 E-RSWIRE 判据）。
 
 **影响**：13-rs-control-requests 的 `do_up`/`do_edit` 两臂停在缝上：权限/查槽/编排（create_service/edit_slot/run_service——决策与编排已全就绪，Fix #46-#52）就等这条解码；RS 侧其余 label 型控制臂（down/refresh/restart/clone/unclone/lookup/fi/getsysinfo/sysctl）已全部 live（Fix #71/#74/#75/#76），不依赖本条。
@@ -131,7 +139,7 @@
 2. minix-types 增 `RsStartWire`（repr(C)）+ `decode` + 偏移断言；
 3. rs 侧 `RsServer::do_up`/`do_edit` 接线：label 改取 rs_start 内的 rss_label，编排消费 `check_create_preconditions`/`create_service`/`edit_slot`/`run_service` 全链（sched_stop→edit_slot→privctl(UpdateSys)→sched_init 序列含 E-7 的类型化锚）。
 
-**依赖**：完整 Minix3 C 源码参照（或补全本树头文件中 `bitchunk_t`/`uid_t` 的定义链）；无 E1/E2 依赖（解码纯单测可验证）。
+**依赖**：~~完整 Minix3 C 源码参照（或补全本树头文件中 `bitchunk_t`/`uid_t` 的定义链）~~（已解除——定义在树内）；无 E1/E2 依赖（解码纯单测可验证）。
 
 ---
 
@@ -141,12 +149,14 @@
 
 **阻塞点**：`struct rprocpub` 的字节 ABI 无法从本仓 minix3 子树 pinning——`devmajor_t`、`bitchunk_t`、`struct rs_pci` 在此树中被引用但**无定义**（rs.h/type.h 不完整）。按 Ground Truth 链（C 源 > doc > code），缺 C 事实就不能猜偏移。且该布局是 RS↔VM 共享契约（rs 服务器工作流同样消费），落点应在 minix-types。
 
+> **拆分注记（2026-09-07，同 E-RSSTART 改判）**：阻塞前提同样不成立——`devmajor_t = int32_t`（`minix3/sys/sys/types.h:286-288`）、`bitchunk_t = uint32_t`（:124）、`struct rs_pci` 完整（`minix3/minix/include/minix/rs.h:154-162`）、`struct rprocpub` 完整（rs.h:165-183）。本条目拆两半：**RS 侧半**（do_getsysinfo 拷出所需的 rprocpub/rproc wire 解码）转入 03-stage-rs/todo.md §21 campaign R7 执行；**VM 侧半**（下文第 3 步：`Gateway::sys_safecopyfrom` + `ipc_call_rs_init` 真实体 + pin 测试翻转）仍留本条目——属 VM stage 生产代码（edge 判定②）。原文偏移表的 ILP32 假设作废：重写目标 x86-64 为 LP64，`rs_start_t` 的 pinning 先例（`minix-types::ipc::rs_start`，Fix #81）即为风格模板。
+
 **解锁后工作（约一个完整迭代）**：
 1. 从完整 Minix3 源码树 pin 三类型定义 → 计算偏移表（ILP32：in_use short@0、sys_flags@4、endpoint@8、old_endpoint@12、new_endpoint@16、dev_nr、nr_domain、domain[8]、label[16]、proc_name[16]、vm_call_mask[BITMAP_CHUNKS(49)]、rs_pci、devman_id）；
 2. minix-types 增 `RprocpubWire`（repr(C)）+ `decode` + 偏移断言测试（手排字节十六进制锚定）；
 3. VM 侧：`Gateway::sys_safecopyfrom(granter, gid, offset, buf)`（wire 已定：SYS_SAFECOPYFROM=31、`MessLsysKernSafecopy{from_to,grant_id,offset,address,bytes}`，kernel 应答 Ok(0)=成功）+ `ipc_call_rs_init` 真实体（拷贝 + 解码 → RprocTab）+ 翻转 pin 测试 + 恢复 `rs_handshake` ACL 循环为可达。
 
-**依赖**：完整 Minix3 C 源码参照（或补全本树头文件）；无 E1/E2 依赖（解码可纯单测）。
+**依赖**：~~完整 Minix3 C 源码参照（或补全本树头文件）~~（已解除，同 E-RSSTART）；无 E1/E2 依赖（解码可纯单测）。
 
 ---
 
