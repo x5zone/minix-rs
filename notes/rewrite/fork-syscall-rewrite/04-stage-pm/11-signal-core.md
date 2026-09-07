@@ -274,7 +274,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 ### D4：`SigSet = u64` 位图
 
-`1<<(signo-1)`，`_NSIG 64`，`core/ign/noign` 三集合为 `SigSet` 常量（`init.rs:98-123` 的 `CORE_SIGSET` 等）。
+位基对齐 C `__sigmask(n) = 1<<((n-1)&31)`（`sys/sys/sigtypes.h:67`）：bit i 对应信号 i+1，`_NSIG 64`。位基的唯一出现点是 `init.rs` 的 `sig_bit(sig)`（`pub(crate)`），`sig_proc`/`sig_proc_exit` 等消费方一律传信号编号取掩码——历史上 producer（`1<<sig`）与 consumer（`1<<(signo-1)`）位基分裂导致 SIGCONT 误杀、SIGKILL 误入 core 集合（todo.md §11 V2-P0-2），修复后由 `init.rs` 的两道集合测试与 `signal.rs` 的 SIGCONT 存活、badignore 两向测试共同锁定。`core/ign/noign` 三集合为 `SigSet` 常量（`CORE_SIGSET` 等）。
 
 ### D5：`process_ksig` 双重过滤
 
@@ -327,6 +327,9 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 ### 5.2 `signal.rs`（`check_sig` 四态与 `sig_proc` 9 链）
 
 - `test_kill_all` / `test_kill_eperm` 等
+- `test_sigproc_default_ignores_sigcont`：干净进程收 SIGCONT 存活（默认忽略门，V2-P0-2 回归锚点）
+- `test_badignore_forces_default_on_ignored_lethal_ksig`：ksig + noign 信号被 ignore → 强制终止
+- `test_ignored_non_noign_ksig_still_ignored`：ksig 但信号 ∉ noign → ignore 生效
 
 ---
 

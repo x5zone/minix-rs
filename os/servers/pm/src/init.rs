@@ -86,9 +86,12 @@ const SIGWINCH: i32 = 28;
 /// C: `SIGINFO` — signal.h:73。
 const SIGINFO: i32 = 29;
 
-/// 构造单个信号的位图（SigSet = u64，bit i 对应信号 i；_NSIG = 64）。
-const fn sig_bit(sig: i32) -> SigSet {
-    1u64 << sig
+/// 构造单个信号的位图。位基对齐 C `__sigmask(n) = 1 << ((n-1) & 31)`
+///（`sys/sys/sigtypes.h:67`，`sigaddset`/`sigismember` 的语义）：bit i
+/// 对应信号 i+1，本 crate 的 `SigSet` 数值因此与 C `sigset_t` 逐位可比。
+/// 位基只允许出现在本函数——调用方一律传信号编号。
+pub(crate) const fn sig_bit(sig: i32) -> SigSet {
+    1u64 << (sig - 1)
 }
 
 /// 引发 core dump 的信号集合。
@@ -701,19 +704,51 @@ mod tests {
 
     #[test]
     fn test_signal_sets_match_c() {
-        // C: main.c:154-165 + sys/sys/signal.h。
+        // C: main.c:154-165（sigaddset 构建）+ sys/sys/sigtypes.h:67
+        //（__sigmask(n) = 1<<((n-1)&31)，bit i 对应信号 i+1）。
+        // 断言值是 C sigset_t 的逐位数值，与位基约定一起锁死。
         assert_eq!(
             CORE_SIGSET,
-            (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 10) | (1 << 11)
+            (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 9) | (1 << 10)
         );
-        assert_eq!(IGN_SIGSET, (1 << 19) | (1 << 20) | (1 << 28) | (1 << 29));
+        assert_eq!(IGN_SIGSET, (1 << 18) | (1 << 19) | (1 << 27) | (1 << 28));
         assert_eq!(
             NOIGN_SIGSET,
-            (1 << 4) | (1 << 5) | (1 << 7) | (1 << 8) | (1 << 10) | (1 << 11)
+            (1 << 3) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 9) | (1 << 10)
         );
         // 全部信号编号 ≤ 29 < _NSIG = 64（u64 位图内）。
         let highest_used = CORE_SIGSET | IGN_SIGSET | NOIGN_SIGSET;
-        assert_eq!(highest_used.ilog2() as i32, 29);
+        assert_eq!(highest_used.ilog2() as i32, 28);
+    }
+
+    /// 逐信号对账：成员资格直接用 C `__sigmask` 的原始掩码表达式
+    /// （`1 << (signo-1)`）判定，不经过 `sig_bit`——本测试与
+    /// test_signal_sets_match_c 各自独立锁定集合数值，位基约定若再被
+    /// 改错，两个测试都会失败。
+    #[test]
+    fn test_signal_set_membership_matches_c_arrays() {
+        // C main.c:137-141：core_sigs/ign_sigs/noign_sigs 三个数组的原值。
+        let core = [SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGEMT, SIGFPE, SIGBUS, SIGSEGV];
+        let ign = [SIGCHLD, SIGWINCH, SIGCONT, SIGINFO];
+        let noign = [SIGILL, SIGTRAP, SIGEMT, SIGFPE, SIGBUS, SIGSEGV];
+        for signo in 1..=31 {
+            let c_mask = 1u64 << (signo - 1);
+            assert_eq!(
+                CORE_SIGSET & c_mask != 0,
+                core.contains(&signo),
+                "core membership mismatch for signal {signo}"
+            );
+            assert_eq!(
+                IGN_SIGSET & c_mask != 0,
+                ign.contains(&signo),
+                "ign membership mismatch for signal {signo}"
+            );
+            assert_eq!(
+                NOIGN_SIGSET & c_mask != 0,
+                noign.contains(&signo),
+                "noign membership mismatch for signal {signo}"
+            );
+        }
     }
 
     #[test]

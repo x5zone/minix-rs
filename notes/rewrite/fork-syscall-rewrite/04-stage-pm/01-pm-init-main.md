@@ -392,9 +392,9 @@ static void sef_local_startup(void)
 ### 3.3 D3：编译期信号集合
 
 - **C**：main.c:154-165 运行时 `sigemptyset` + 循环 `sigaddset` 构建三个全局集合。
-- **Rust**：`CORE_SIGSET`/`IGN_SIGSET`/`NOIGN_SIGSET` 为 `const` 位图（`SigSet = u64`，bit i 对应信号 i），`const fn sig_bit(sig) -> SigSet { 1u64 << sig }` 组合。
+- **Rust**：`CORE_SIGSET`/`IGN_SIGSET`/`NOIGN_SIGSET` 为 `const` 位图，位基对齐 C `__sigmask(n) = 1<<((n-1)&31)`（`sys/sys/sigtypes.h:67`）：bit i 对应信号 i+1，集合数值与 C `sigset_t` 逐位可比。构造经 `const fn sig_bit(sig) = 1u64 << (sig-1)`，该函数是整个 crate 唯一允许出现信号位基的地方——调用方一律传信号编号。这与 C `sigismember`、Linux 同名 API、Redox 把共享页掩码位运算封装在 `currently_pending_unblocked()` 之后的做法是同一条纪律：位基单点化。
 - **为什么**：集合构建后只读（signal.c:483/533/552 仅 `sigismember` 查询），运行时构建是纯浪费；编译期常量把"这些信号永不改变"变成类型事实。位图用 u64（`_NSIG = 64`，signal.h:45），信号编号 ≤ 29 全部可表达。
-- **替代方案**：`OnceCell` 惰性初始化。否决——无状态、无初始化顺序问题，const 即可。
+- **替代方案**：`OnceCell` 惰性初始化。否决——无状态、无初始化顺序问题，const 即可。位基取 `1<<sig`（bit = 信号编号）曾是真实发生过的缺陷：消费方按 `1<<(signo-1)` 判定，两侧相差一位，SIGCONT 因此失去默认忽略、SIGKILL 被误判为 core 信号（todo.md §11 V2-P0-2）。现在由两道测试独立锁死：`test_signal_sets_match_c` 断言 C sigset_t 的逐位数值，`test_signal_set_membership_matches_c_arrays` 用 C 原始掩码表达式逐信号对账三个数组的成员资格。
 - **行为契约**：core={3,4,5,6,7,8,10,11}，ign={19,20,28,29}，noign={4,5,7,8,10,11}（signal.h 数值）。消费方是 11（`check_sig`/`sig_proc_exit`），当前以 `pub(crate)` + `#[allow(dead_code)]` 暴露。
 
 ### 3.4 D4：类型化 boot 填充
@@ -564,6 +564,7 @@ server.run();                              // 主循环（主体归 04）
 | 测试函数 | 验证点 | C 对应 |
 |---------|--------|--------|
 | `init::tests::test_signal_sets_match_c` | core/ign/noign 位图数值与最高信号编号 | signal.h + main.c:154-165 |
+| `init::tests::test_signal_set_membership_matches_c_arrays` | 逐信号成员资格（用 C `__sigmask` 原始掩码，独立于 `sig_bit`） | main.c:137-141 三个数组 |
 | `init::tests::test_nice_from_queue_default_queues` | USR_Q/SRV_Q→0；端点 MAX_USER_Q→-17、MIN_USER_Q→20 | main.c:283-289 |
 | `init::tests::test_fill_boot_init_identity` | INIT pid=procgrp=1、父=自身、scheduler=KERNEL | main.c:188-201 |
 | `init::tests::test_fill_boot_system_procs` | PRIV_PROC、父=RS（RS 父=INIT）、PID 顺序、负槽跳过、procs_in_use | main.c:179-216 |

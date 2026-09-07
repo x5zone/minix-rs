@@ -270,47 +270,48 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         }
     }
     // User process: badignore / ignore / block / TRACE_STOPPED / caught / terminate
-    let sig_bit = 1u64 << (signo - 1);
+    // 位基统一经 `init::sig_bit`（对齐 C `__sigmask`），本函数不再出现裸移位。
+    let sigmask = crate::init::sig_bit(signo);
     let state = &table.procs[target.get()].resources.signals;
+    // badignore（C signal.c:483-486）：仅当内核信号本身属于 noign 集合、
+    // 且该信号又被 ignore 或 mask 时，才强制默认处理（不可通过设置吞掉）。
     let badignore = ksig
-        && (state.ignored & crate::init::NOIGN_SIGSET != 0 || state.mask & crate::init::NOIGN_SIGSET != 0)
-        && (state.ignored & sig_bit != 0 || state.mask & sig_bit != 0);
-    // For 11 we simplify badignore check to noign set
-    if !badignore && (state.ignored & sig_bit != 0) {
+        && (crate::init::NOIGN_SIGSET & sigmask != 0)
+        && (state.ignored & sigmask != 0 || state.mask & sigmask != 0);
+    if !badignore && (state.ignored & sigmask != 0) {
         return Ok(());
     }
-    if !badignore && (state.mask & sig_bit != 0) {
-        table.procs[target.get()].resources.signals.pending |= sig_bit;
+    if !badignore && (state.mask & sigmask != 0) {
+        table.procs[target.get()].resources.signals.pending |= sigmask;
         if ksig {
-            table.procs[target.get()].resources.signals.kernel_pending |= sig_bit;
+            table.procs[target.get()].resources.signals.kernel_pending |= sigmask;
         }
         return Ok(());
     }
     if table.procs[target.get()].state.trace.stopped && signo != SIGKILL {
-        table.procs[target.get()].resources.signals.pending |= sig_bit;
+        table.procs[target.get()].resources.signals.pending |= sigmask;
         if ksig {
-            table.procs[target.get()].resources.signals.kernel_pending |= sig_bit;
+            table.procs[target.get()].resources.signals.kernel_pending |= sigmask;
         }
         return Ok(());
     }
-    if !badignore && (state.caught & sig_bit != 0) {
+    if !badignore && (state.caught & sigmask != 0) {
         // Try unpause then sig_send
         if !unpause(table, target) {
-            table.procs[target.get()].resources.signals.pending |= sig_bit;
+            table.procs[target.get()].resources.signals.pending |= sigmask;
             if ksig {
-                table.procs[target.get()].resources.signals.kernel_pending |= sig_bit;
+                table.procs[target.get()].resources.signals.kernel_pending |= sigmask;
             }
             return Ok(());
         }
         if sig_send(table, target, signo).is_ok() {
             return Ok(());
         }
-        // Fall through to terminate on sig_send failure
-    } else if state.ignored & crate::init::IGN_SIGSET != 0 && (state.ignored & sig_bit == 0) {
-        // Default ignore via ign_sset? Simplified
-    }
-    // Default ignore via ign_sset (533-535)
-    if sig_bit & crate::init::IGN_SIGSET != 0 && !badignore {
+        // Fall through to terminate on sig_send failure（C 同：printf 后
+        // 落入终止，signal.c:531-534）
+    } else if !badignore && (crate::init::IGN_SIGSET & sigmask != 0) {
+        // Signal defaults to being ignored（C signal.c:535-539，注意与
+        // caught 分支互斥：捕获失败的默认忽略信号必须终止而非忽略）
         return Ok(());
     }
     sig_proc_exit(table, target, signo, kern)
@@ -323,7 +324,7 @@ fn sig_proc_exit(
     signo: i32,
     kern: &mut dyn crate::exit::KernelGateway,
 ) -> Result<(), KillError> {
-    let is_core = crate::init::CORE_SIGSET & (1u64 << (signo - 1)) != 0;
+    let is_core = crate::init::CORE_SIGSET & crate::init::sig_bit(signo) != 0;
     // In C: exit_proc(rmp, 0, dump_core) where dump_core = is_core
     // For 11 we delegate to exit::exit_proc with a nop transport (no VFS).
     // 内核出口（step 9 sys_clear）用生产网关：本路径目标为用户进程
@@ -461,6 +462,55 @@ mod tests {
         let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, false, &mut kern_rec, &mut t);
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), 1);
+    }
+
+    // ---- 信号集合与 badignore 行为（todo.md V2-P0-2 回归锚点）----
+
+    /// C signal.h:71/80（sys/sys/signal.h）。
+    const SIGCONT_TEST: i32 = 19;
+    const SIGWINCH_TEST: i32 = 28;
+
+    /// C signal.c:535-539：SIGCONT ∈ ign_sset，默认忽略——干净进程收到
+    /// SIGCONT 必须存活。位序错位（V2-P0-2）曾使本路径落入终止分支。
+    #[test]
+    fn test_sigproc_default_ignores_sigcont() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernel { user: 0, sys: 0 };
+        let res = check_sig(&mut table, UserSlot::new(0), 42, SIGCONT_TEST, false, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), 1);
+        assert!(table.procs[5].is_in_use() && !table.procs[5].is_exiting());
+    }
+
+    /// C signal.c:483-486：ksig + 信号 ∈ noign_sset + 被进程 ignore →
+    /// badignore 强制默认处理（SIGSEGV ∈ core_sigs → dump 终止路径），
+    /// ignore 设置被穿透。
+    #[test]
+    fn test_badignore_forces_default_on_ignored_lethal_ksig() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].resources.signals.ignored = crate::init::sig_bit(crate::signal::SIGSEGV);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernel { user: 0, sys: 0 };
+        let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, true, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert!(table.procs[5].is_exiting());
+    }
+
+    /// ksig 但信号 ∉ noign_sset（SIGWINCH）且被 ignore → 正常忽略：
+    /// badignore 只穿透 noign 集合内的信号（C signal.c:483-491）。
+    #[test]
+    fn test_ignored_non_noign_ksig_still_ignored() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].resources.signals.ignored = crate::init::sig_bit(SIGWINCH_TEST);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = TestKernel { user: 0, sys: 0 };
+        let res = check_sig(&mut table, UserSlot::new(0), 42, SIGWINCH_TEST, true, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert!(table.procs[5].is_in_use() && !table.procs[5].is_exiting());
     }
 
     /// 记录型 VTimerCtl mock：捕获 (which, set 值)。
