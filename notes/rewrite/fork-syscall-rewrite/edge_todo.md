@@ -257,3 +257,27 @@
 **解锁后工作**：(1) minix-types 定 kerninfo wire（对照 C `struct minix_kerninfo`/`kinfo` 布局）；(2) kernel `ipc.rs` 增 KernInfo 分支（grant 共享或 safecopy，对齐 C `do_ipc` 该分支语义）+ `KernelInfo` 补 `release`/`version` 填充；(3) 翻转 `ipc.rs:2061` 钉子测试；(4) 用户态首个消费方（libc/服务器初始化）接线后端到端验证。
 
 **依赖**：E1（trap 层）落地后才有用户态调用方；内核侧实现本身可先行（stage 内单测覆盖），但无消费方即无法验证可观察行为——按 todo-fix 规则保持 DEFERRED 登记，不假完成。
+
+---
+
+## E-MINTYPES-RS minix-types RS 消息层的三个可重构观察（2026-09-07 扫描登记，低优先）
+
+**来源**：03-stage-rs 扫描轮（03-stage-rs/todo.md §20）P3 共享基建审查。三项均为
+"可重构/设计脆弱"级而非 bug，当前唯一消费者是 RS（VM/PM 未来接入 rs 消息族时收益），
+故登记 edge 由后续单线程裁决，不阻塞任何 stage。
+
+1. **`Message::is_rs_req_arm` 范围守卫脆弱**（message.rs）：`m_rs_req` 臂归属用
+   `RS_RQ_BASE..=RS_RQ_BASE+24` 硬编码范围 + 排除 `RS_INIT`/`RS_LU_PREPARE` 判定。
+   新增 RS 调用号超出 +24 时守卫**静默失配**（返回 None 而非编译期报错）。建议：
+   改枚举/表驱动（RS 消息号的 union 臂归属在类型层表达），或至少加"新增调用号时
+   守卫同步"的编译期断言。
+2. **message.rs 单文件 3,831 行**：union 臂约 40+，RS/LSYS/内核/PM/VFS 各族混居。
+   按族拆分为 `message/{rs,lsys,kernel,pm,vfs}.rs` 子模块是纯机械重构；动手时机
+   建议挂在下一次大批消息臂新增前（避免拆分与新增的冲突窗口）。
+3. **COMMON_RQ_BASE 族常量寄居 ipc/rs.rs**：`SIGS_SIGNAL_RECEIVED`（com.h:597）与
+   `COMMON_REQ_FI_CTL`（com.h:607）属 common 请求族（非 RS 专属），当前仅 RS 消费
+   故寄居 rs 模块可接受；PM/VFS（fi_ctl 的接收方是服务自身）未来消费时应上移
+   `ipc/common.rs` 或等价归属。
+
+**解锁后工作**：三项互相独立，均为 minix-types 内部重构（接口不变、调用方零改动
+或纯 re-export 调整），各约 0.5 个迭代。无 E1/E2 依赖。
