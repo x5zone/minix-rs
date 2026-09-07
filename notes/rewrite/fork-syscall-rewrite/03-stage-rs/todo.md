@@ -2174,6 +2174,26 @@ I6（见 Fix #78）。
 > 回归 review → 本节标注 → commit）。§20 条目（A 系列 + semantic-map 回填）与
 > E-RSSTART/E-RSWIRE 解锁后的接线轮（见 §21）逐项记录于此。
 
+
+### ✅ §21.1 执行完成（2026-09-08，Fix #87/#88）
+
+- **R9a（Fix #87）**：`CreateEffects`/`RestartEffects`/`TerminateEffects` +
+  `InitSpec` 落地，15 处调用点迁移。两个执行期发现落档：
+  1. **`&mut dyn` 字段上 `Default` 音响性不成立**（引用本地临时闭包即悬垂）——
+     Box 持有束配 Default、转发束（RestartEffects）保持 `&mut dyn` 无 Default，
+     按调用形态分型。
+  2. **`restart_service` 的 `_publish` 无消费者**（Rust run_service 不收
+     publish 缝）——RestartEffects 直接不含该字段，死缝消除。
+- **R9b（Fix #88）**：`PrepareEffects`/`StartUpdateEffects`/`EndEffects` 落地；
+  `start_update` 的 stay-unused `kernel`/`read_exec` 死参一并删除
+  （complete_srv 深路径落地时按需重加）。
+- **最终状态**：too_many_arguments allow 从 15 处收敛到 **4 处**——
+  ready.rs init_message（数据参数，注记"payload struct 归 12 调用点"）、
+  process_table activate_boot_slot（数据参数，镜像 C boot 循环体）、
+  live_update end_srv_update/end_update_rev_iter（数据参数 result/reply_flag/
+  skip/only = C 显式形参，注记非缝闭包）。全部带理由，无裸 allow。
+- **Verified**：325 passed 零回归；clippy rs crate 零告警；fmt 干净；T7 PASS。
+
 ### ✅ Fix #79 — A-4（P2 一致性）：`slot.upd` 镜像一致性校验 + `clear_upds` 镜像清理
 - **File**：`os/servers/rs/src/process_table.rs`（`assert_consistent` 增 `update:
   Option<&UpdateState>` 参数 + 第四条双向不变式 + 5 个测试）、`live_update.rs`
@@ -2239,7 +2259,8 @@ I6（见 Fix #78）。
 | R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ✅ Fix #84 |
 | R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ✅ Fix #85（PROCPUB live；rproc 内部表 pinning 为 E-RSWIRE 余件） |
 | R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ✅ Fix #86 |
-| R9-R10 | A-2 Effects 聚合（用户裁决：执行） | ☐ |
+| R9a | Create/Terminate 族：`CreateEffects`（Box+Default）/`RestartEffects`（&mut dyn 转发束）/`TerminateEffects`（Box+Default）+ `InitSpec` 数据束 | ✅ Fix #87 |
+| R9b | Lu 族：`PrepareEffects`/`StartUpdateEffects`/`EndEffects` 三束 + start_update 死参删除 | ✅ Fix #88 |
 | R11 | 收敛轮（翻态 + Gate E + edge 对账 + Rule Discovery） | ✅ 2026-09-08 |
 
 ### ✅ Fix #81 — R3：E-RSSTART 改判关单 + `rs_start_t` wire 解码面（minix-types::ipc::rs_start）
@@ -2394,7 +2415,7 @@ E-RSWIRE 拆分——RS 侧半的 `SI_PROCPUB_TAB` live（Fix #85，`rprocpub` w
 pinning 为余件（传递链 struct priv → minix_timer_t/sys_map_t，无树内消费者），
 VM 侧半留 edge（`ipc_call_rs_init` 真实体）。
 
-**遗留队列（全部有主）**：R9a/R9b（A-2 执行，设计定稿见 §21.1）→ 下一 session
+**遗留队列（全部有主）**：R9a/R9b（A-2 执行，设计定稿见 §21.1）→ ✅ 已执行（Fix #87/#88）
 首轮；E9/E-1（trap 层 + SYS_* wrapper + PM/VM 对端）→ edge；A-3/R31/P2-S1 →
 归属他处；D1 维持闭合（2026-09-07 用户裁决）。
 
@@ -2418,4 +2439,4 @@ VM 侧半留 edge（`ipc_call_rs_init` 真实体）。
   全部 live（dispatch 死表仅剩未知号 default 臂）；`rs_start_t`/`rprocpub` 两个
   字节 ABI pinning 落地 minix-types。
 - **测试**：minix-rs 304→325、minix-types 175→182。
-- **待执行**：R9a/R9b（A-2，设计定稿 §21.1）——下一 session 首轮。
+- **待执行**：无（R9a/R9b 已于本 §21.1 完成）。
