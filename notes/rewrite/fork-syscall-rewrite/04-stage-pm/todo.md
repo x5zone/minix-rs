@@ -941,6 +941,18 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无。
 
+### ✅ Fix #38: V2-P2-2 — do_exec 补 VFS/RS 调用者门（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/exec.rs`（`do_exec` 开头加 `caller ∈ {VFS, RS}` 门 → `ExecError::Perm`，对齐 exec.c:70-71；删除 `let _ = table; let _ = caller;`；`test_do_exec_forwards` 的发起方改为 RS，新增 `test_do_exec_caller_gate`）
+- `notes/.../17-exec.md`（§4 do_exec 签名行 + §5 测试行）
+
+**Before/After**：exec 四入口中 do_execrestart/srv_fork/srv_kill/getprocnr 都有调用者门，唯独 do_exec 收了 caller 却丢弃——exec 是 TAINTED/setuid 链的起点，任意进程代他人发起 exec 是权限漏洞。修复后与 C 一致：仅 VFS（用户 execve 载体）与 RS（服务重启）可发起。**设计选型**：(a) 门放 do_exec 开头（首选：与同文件 do_execrestart 同风格，语义与校验同处）；(b) 放 dispatch 臂（劣：校验离语义远，单测覆盖不到）。
+
+**Verified**：`cargo test -p minix-pm`：355 lib（+1）+ 8 integration passed；clippy 0 warning。
+
+**未做（DEFERRED 论证）**：无。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1090,7 +1102,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选，批次 D 前置）：收敛为单一重挂点——`cause_sigalrm` 拿到 `TimerCtl` 完整做 C 语义（check_sig + 周期重挂经 `tctl.set`），`handle_clock_notify` 退化为"扫描到期 + 调 cause_sigalrm"；init.rs:349-352 接 `handle_clock_notify`（notify 源 = CLOCK endpoint 判定）；删除 `SigSender`，cause_sigalrm 直接调 `signal.rs` 的投递函数（check_sig 的 ksig=FALSE 分支）。方案二：保留 SigSender 但提供生产 impl 桥接 check_sig——多一层间接，无收益。C 的 O(timer 队列) 到期 vs Rust O(NR_PROCS) 扫描的差异在文档标注即可（每 tick 扫描上限 NR_PROCS≈256，量级有界且不随定时器数量增长）。
 - **验证**：单测：周期 itimer 两次到期两次 SIGALRM；`grep -n 'let _ = tctl' os/servers/pm/src/timer.rs` 零命中；init.rs 的 CLOCK notify 分支调用 `handle_clock_notify`。
 
-#### V2-P2-2 do_exec 缺 VFS/RS 调用者门（exec 三个入口中唯一漏网）
+#### V2-P2-2 do_exec 缺 VFS/RS 调用者门（exec 三个入口中唯一漏网）（✅ 已修复 2026-09-08，见 §10 Fix #38）
 
 - **优先级**：P2
 - **类型**：权限校验缺失（当前不可达，接线前必修）

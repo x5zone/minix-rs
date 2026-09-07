@@ -339,7 +339,7 @@ impl SignalState {
 pub struct ExecRequest { pub caller: UserSlot, pub path: PathView, pub frame: FrameView, pub ps_str: VirBytes }
 pub struct ExecCreds { pub allow_setuid: bool, pub new_uid: Uid, pub new_gid: Gid, pub progname: [u8;16], pub stack_high: VirBytes, pub frame_len: usize }
 
-pub fn do_exec(table: &mut ProcTable, caller: UserSlot, req: ExecRequest, vfs: &mut dyn VfsExec) -> ReplyIntent // VFS_PM_EXEC 六字段 + VFS_CALL→SUSPEND
+pub fn do_exec(table: &mut ProcTable, caller: UserSlot, req: ExecRequest, vfs: &mut dyn VfsExec) -> ReplyIntent // 调用者门(VFS|RS→否则 EPERM, exec.c:70-71) + VFS_PM_EXEC 六字段 + VFS_CALL→SUSPEND
 pub fn do_newexec(table: &mut ProcTable, caller_ep: Endpoint, info: ExecCreds, tainted: &mut dyn TaintedCtl) -> Result<bool, ExecError> // allow_setuid 双重 + TAINTED 二重 + frame/Partial + reply.suid
 pub fn do_execrestart(table: &mut ProcTable, caller: UserSlot, req: ExecRestartReq) -> Result<(), ExecError> // RS→EPERM 门 + pc/ps_str→exec_restart
 pub trait ExecRestartServices: KernelExec + TracerSig {} // 2026-09-06 收敛：生产装配共享 transport，两个 &mut 无法共存（同 13 RestartServices）
@@ -375,6 +375,7 @@ pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot
 
 - `test_do_exec_forwards`：`VFS_PM_EXEC` 六字段 + `VFS_CALL→SUSPEND`（`38-56`）
 - `test_do_newexec_perm_gate`：`VFS/RS→EPERM` 门（`70-71`）
+- `test_do_exec_caller_gate`：`do_exec` 的调用者门——非 VFS/RS 发起 → `EPERM`（`70-71`，todo.md §11 V2-P2-2）
 - `test_do_newexec_tainted_double`：`allow_setuid` 双重 + `TAINTED` 二重（`83-109`）
 - `test_partial_exec_sentinel`：`PARTIAL_EXEC` 置位→`173` 清零→`161` `SIGKILL` 分叉
 - `test_exec_restart_resets_caught`：`catch` 重置而 `ignore` 保留（`178-184`）

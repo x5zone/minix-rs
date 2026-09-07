@@ -95,12 +95,17 @@ pub fn do_exec(
     req: ExecRequest,
     vfs: &mut dyn VfsExec,
 ) -> Result<ReplyIntent, ExecError> {
-    // In C, `tell_vfs(mp, &m)` sets VFS_CALL and returns SUSPEND.
-    // Here we delegate to VfsExec which encodes VFS_PM_EXEC and does tell_vfs internally.
+    // C exec.c:70-71：exec 只能由 VFS（用户 execve 的载体）或 RS（服务
+    // 进程重启）发起——这是 exec 的调用者门，exec_restart 的 RS 门
+    //（exec.c:136）与 do_newexec 的 PM 门同族。
+    let caller_ep = table.procs[caller.get()].endpoint();
+    if caller_ep != Endpoint::VFS && caller_ep != Endpoint::RS {
+        return Err(ExecError::Perm);
+    }
+    // C 中本调用经 tell_vfs 置 VFS_CALL 并返回 SUSPEND；VfsExec 的生产
+    // 实现内部编码 VFS_PM_EXEC 并做 tell_vfs。
     vfs.forward_exec(req)?;
-    // Mark PARTIAL? No, do_exec does not set PARTIAL_EXEC; do_newexec does.
-    let _ = table;
-    let _ = caller;
+    // do_exec 不置 PARTIAL_EXEC（那是 do_newexec 的职责，exec.c:107）。
     Ok(ReplyIntent::ReplyLater)
 }
 
@@ -312,10 +317,23 @@ mod tests {
     fn test_do_exec_forwards() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0);
+        // C exec.c:70-71 的调用者门：RS 发起合法（VFS 同理）。
+        table.procs[0].identity.endpoint = Endpoint::RS;
         let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
         let mut vfs = NopVfs;
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs).unwrap();
         assert_eq!(r, ReplyIntent::ReplyLater);
+    }
+
+    /// V2-P2-2：exec 的调用者门——非 VFS/RS 发起 → EPERM（exec.c:70-71）。
+    #[test]
+    fn test_do_exec_caller_gate() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 0); // slot 0 endpoint 非VFS/RS
+        let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
+        let mut vfs = NopVfs;
+        let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs);
+        assert_eq!(r.unwrap_err(), ExecError::Perm);
     }
 
     #[test]
