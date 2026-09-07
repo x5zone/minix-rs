@@ -2235,7 +2235,7 @@ I6（见 Fix #78）。
 | R2 | semantic-map 回填 | ✅ Fix #80 |
 | R3 | E-RSSTART 改判 + `RsStartWire`（minix-types wire 面 + LP64 偏移断言） | ✅ Fix #81 |
 | R4 | RS_UP 臂接线（do_up，request.c:15-106） | ✅ Fix #82 |
-| R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ☐ |
+| R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ✅ Fix #83 |
 | R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ☐ |
 | R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ☐ |
 | R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ☐ |
@@ -2290,3 +2290,23 @@ I6（见 Fix #78）。
   （minix-sys 的历史告警不在本 crate）；fmt 干净；T7 PASS。测试自查修正 3 处测试
   自身错误：EDONTREPLY 是 `Ok(203)` 标记而非 Err、镜像缺 IPC 清单触发 C 本有的
   EINVAL 门（manager.c:1475-1479）、重复门需夹具行真带 label。
+
+### ✅ Fix #83 — R5：RS_EDIT 臂接线（do_edit，request.c:298-385）+ E-7 收口
+- **File**：`os/servers/rs/src/lib.rs`（`do_edit` handler + `do_request` 臂 + 4 个
+  接线测试）、`dispatch.rs`（RS_EDIT 移出死表 + 注记更新——13 号死臂清零，仅剩
+  RS_UPDATE）；文档 13（§2.1e 落地注记 + §5 测试表 +9 项接线测试 + 全局计数 318）
+- **After**：结构体往返（decode + fetch）先行——目标 label 取自 `rss_label`
+  （`resolve_by_label` 前奏不适用，其 label 源是 `m_rs_req.name`）；权限带
+  updating 标志（manager.c:108-110 的 EBUSY 规则在 check_call_permission 内）；
+  getpriv 同步 r_priv（内核副本覆写）；sched_stop 门消费 reviewed 的
+  `on_stop_result(StopSite::EditSlot)`——E-7 的类型化锚落地为"序列即函数体"：
+  顺序是顺序执行的真实代码 + 类型化缝，R10 的注释顺序顾虑在此臂闭合；
+  `edit_slot` 行进出同 R4；privctl(UpdateSys) → vm_set_priv（SYS_PROC 判定）→
+  sched_decision/sched_init_proc；SF_USE_REPL 时 next_rp cleanup +
+  `clone_service(RST_SYS_PROC)`（失败仅忽略——C 的 printf 警告是 19 诊断面）。
+- **Verified**：`cargo test -p minix-rs` = **318 passed**（+4：quantum/priority
+  重配且行保持 live、未知 label ESRCH、updating 目标 EBUSY、sched_stop 失败
+  abort 且槽位不动）；测试自查修正 3 处夹具缺陷（mock sched_stop 需
+  kill_ok=true、sched_decision 断言要求 SYS_PROC 行带 scheduler、getpriv 同步
+  覆写 priv_ 需 kernel_privs 种子——均为夹具建设不足，非产品缺陷）；clippy 触碰
+  文件零告警；fmt 干净；T7 PASS。

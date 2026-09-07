@@ -105,6 +105,19 @@
   IN_USE）看到的与 C 跳过自身后的语义一致；失败的 init_slot 留下脏但未 IN_USE 的
   行，与 C 的 find-only 分配契约相同。
 
+### 2.1e do_edit 接线落地（R5，2026-09-07，todo §21 Fix #83）
+
+`RsServer::do_edit`（lib.rs）按 request.c:298-385 逐行落地。与 do_up 的关键差异：
+目标 label 来自 `rss_label`（结构体内，经 `copy_label` 截断语义），不是
+`m_rs_req.name`，所以结构体往返先行、`resolve_by_label` 前奏不适用。E-7 的
+`sched_stop → edit_slot → privctl(UpdateSys) → sched_init` 序列就是 handler
+函数体本身——顺序是真实顺序执行的代码 + 类型化缝，R10"调用顺序只存在于注释"的
+顾虑在此臂上闭合；stop 门复用 reviewed 的 `on_stop_result(StopSite::EditSlot)`
+（失败 → abort，槽位不动；cleanup 站点才继续）。`edit_slot` 的行进出与 do_up
+同款（take/put）；既有行不被 take 出表的供体扫描语义与此处一致（空行不可能
+自匹配）。SF_USE_REPL 的 replica 重建：next_rp 先 cleanup 再 `clone_service`，
+失败仅忽略（C 的 printf 警告是 19 号诊断面）。
+
 ### 2.1c signal_handler 路由落地（Fix #57，2026-09-06）
 
 `RsServer::signal_handler`（lib.rs）主体按 main.c:631-642 落地：SIGCHLD → 逐子进程
@@ -237,7 +250,21 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 4. `stop_service`：RS endpoint → `Hangup`；其他 → `Term`；`how` 置位；`stop_tm` 记录。
 5. `shutdown_apply`：全表 IN_USE 槽 `EXITING`；返回 `true`。
 
-测试总数声明：本文档范围为 **6 项**（`request` 模块内）。全局 `cargo test -p minix-rs --lib` = 208 通过（2026-08-16，随并行模块增长，以各 doc 范围为准）。
+6. **接线集成测试**（lib.rs，R4/R5 —— 2026-09-07，Fix #82/#83）：
+   - `test_do_up_starts_service_and_arms_late_reply`：struct 解码 + 缓冲取数（cmd 字节/
+     quantum 逐字段断言）+ 三重复门 + LATEREPLY/caller 簿记 + `Ok(EDONTREPLY)`；
+   - `test_do_up_noblock_replies_immediately`：`RSS_NOBLOCK` → 立即 OK、无 LATEREPLY；
+   - `test_do_up_rejects_duplicate_label`：重复 label → `EBUSY`，新行不 IN_USE；
+   - `test_do_up_requires_root_caller`：getnuid 失败（非 root）→ `EPERM`；
+   - `test_do_up_struct_copy_failure_propagates`：结构体拷出界 → `EFAULT` 传播；
+   - `test_do_edit_updates_settings_in_sequence`：quantum/priority 重配 + 行保持 live；
+   - `test_do_edit_unknown_label_is_esrch`；
+   - `test_do_edit_updating_target_is_ebusy`（manager.c:108-110）；
+   - `test_do_edit_sched_stop_failure_aborts_untouched`（E-7 EditSlot 门：abort 且槽位
+     不动）。
+
+测试总数声明：本文档范围为 **6 项**（`request` 模块内）+ **9 项**接线集成测试（lib.rs）。
+全局 `cargo test -p minix-rs --lib` = 318 通过（2026-09-07，§21 R5 时点）。
 
 ---
 

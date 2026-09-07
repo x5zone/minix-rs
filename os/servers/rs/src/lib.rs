@@ -445,6 +445,7 @@ impl RsServer {
         match call_nr {
             minix_types::RS_SHUTDOWN => self.do_shutdown(caller),
             minix_types::RS_UP => self.do_up(msg),
+            minix_types::RS_EDIT => self.do_edit(msg),
             minix_types::RS_DOWN => self.do_down(msg),
             minix_types::RS_LOOKUP => self.do_lookup(msg),
             minix_types::RS_FI => self.do_fi(msg),
@@ -1051,7 +1052,7 @@ impl RsServer {
         if dev_nr > 0 && state.table.lookup_by_dev_nr(dev_nr).is_some() {
             return Err(Errno::EBUSY);
         }
-        for i in 0..state.table.get(id).pub_.nr_domain.max(0) as usize {
+        for i in 0..usize::from(state.table.get(id).pub_.nr_domain) {
             let domain = state.table.get(id).pub_.domain[i];
             if state.table.lookup_by_domain(domain).is_some() {
                 return Err(Errno::EBUSY);
@@ -1094,6 +1095,155 @@ impl RsServer {
         slot.caller = m.m_source;
         slot.caller_request = minix_types::RS_UP;
         Ok(minix_types::EDONTREPLY)
+    }
+
+    /// C: `do_edit` — request.c:298-385: re-configure an existing service.
+    /// The label comes from `rss_label` *inside* the rs_start struct (not
+    /// from `m_rs_req.name` like the label arms), so the struct round-trip
+    /// runs first. E-7's typed sequence — getpriv sync → sched_stop →
+    /// edit_slot → privctl(UpdateSys) → vm_set_priv → sched_init_proc →
+    /// replica refresh — is this handler body itself: the ordering is real
+    /// sequentially-composed code with typed seams, closing R10's
+    /// "call order only in comments" concern for this arm.
+    fn do_edit(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let Some((addr, _)) = m.rs_req_payload() else {
+            return Err(Errno::EINVAL);
+        };
+
+        // Copy the request structure (request.c:303-307) and its buffers.
+        let mut buf = [0u8; minix_types::rs_start_off::SIZE];
+        self.kernel
+            .safecopy_from(m.m_source, addr as usize, &mut buf)?;
+        let wire = minix_types::decode_rs_start(&buf)?;
+        let rs_start = fetch_rs_start(self.kernel.as_mut(), m.m_source, &wire)?;
+
+        // Copy label + lookup (request.c:309-322).
+        let Some(id) = state.table.lookup_by_label(&rs_start.label) else {
+            return Err(Errno::ESRCH);
+        };
+        // Permission (request.c:324-326) — the updating→EBUSY rule lives in
+        // check_call_permission (manager.c:108-110).
+        let updating = state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::UPDATING);
+        let caller_euid = self.kernel.getnuid(m.m_source);
+        crate::access::check_call_permission(
+            m.m_source,
+            minix_types::RS_EDIT,
+            Some(state.table.get(id)),
+            &state.table,
+            updating,
+            caller_euid,
+        )?;
+
+        let endpoint = state.table.get(id).pub_.endpoint;
+
+        // Synch the privilege structure with the kernel (request.c:329-334):
+        // the kernel copy overwrites the slot's.
+        let synced = self.kernel.getpriv(endpoint)?;
+        state.table.get_mut(id).priv_ = synced;
+
+        // Tell the scheduler this process is finished (request.c:336-341).
+        // E-7: the stop gate routes by site — an edit aborts on failure
+        // (the slot is untouched so far), a cleanup would continue.
+        let scheduler = state.table.get(id).scheduler;
+        let stop_result = match self.kernel.sched_stop(scheduler, endpoint) {
+            Ok(()) => 0,
+            Err(e) => e.to_i32(),
+        };
+        if let crate::sched::StopOutcome::Abort(e) =
+            crate::sched::on_stop_result(crate::sched::StopSite::EditSlot, stop_result)
+        {
+            return Err(Errno::from_i32(e));
+        }
+
+        // Edit the slot as requested (request.c:343-347) — row out/in like
+        // do_up (the reviewed slot-first signature; a failed edit leaves the
+        // row dirty-but-vacant-free: it was in-use before and stays so, the
+        // take/put only hides it from the donor scan).
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let mut slot = core::mem::replace(
+            state.table.get_mut(id),
+            crate::service_slot::ServiceSlot::vacant(),
+        );
+        let edit_r = crate::slot::edit_slot(&mut slot, &rs_start, &state.table, &mut |_| Ok(()));
+        *state.table.get_mut(id) = slot;
+        edit_r?;
+
+        // Update the privilege structure (request.c:349-355).
+        self.kernel.privctl(
+            endpoint,
+            crate::privilege::PrivCtlOp::UpdateSys,
+            Some(&state.table.get(id).priv_),
+        )?;
+
+        // Update VM calls (request.c:357-363).
+        let (mask, is_sys) = {
+            let s = state.table.get(id);
+            (
+                s.pub_.vm_call_mask,
+                s.priv_
+                    .flags
+                    .contains(crate::privilege::PrivFlags::SYS_PROC),
+            )
+        };
+        self.kernel.vm_set_priv(endpoint, mask, is_sys)?;
+
+        // Reinitialize scheduling (request.c:365-370 → utility.c:364-382):
+        // the pure decision decides skip vs kernel call.
+        let (cfg, is_sys) = {
+            let s = state.table.get(id);
+            (
+                crate::sched::SchedulerConfig::from_slot(
+                    s.scheduler,
+                    s.pub_.endpoint,
+                    s.priority,
+                    s.quantum,
+                    s.cpu,
+                ),
+                s.priv_
+                    .flags
+                    .contains(crate::privilege::PrivFlags::SYS_PROC),
+            )
+        };
+        if let crate::sched::SchedAction::Start(cfg) = crate::sched::sched_decision(&cfg, is_sys) {
+            self.kernel.sched_init_proc(cfg)?;
+        }
+
+        // Cleanup old replicas and create a new one, if necessary
+        // (request.c:372-382) — a clone failure only warns in C (the printf
+        // is the 19 diag face), so the result is ignored here.
+        if state
+            .table
+            .get(id)
+            .pub_
+            .sys_flags
+            .contains(crate::service_slot::SysFlags::USE_REPL)
+        {
+            if let Some(next) = state.table.get(id).next_rp {
+                crate::recovery::cleanup_service(
+                    &mut state.table,
+                    next,
+                    self.kernel.as_mut(),
+                    &mut |_| Ok(()),
+                );
+                state.table.get_mut(id).next_rp = None;
+            }
+            let _ = crate::service_create::clone_service(
+                &mut state.table,
+                id,
+                self.kernel.as_mut(),
+                crate::privilege::PrivFlags::RST_SYS_PROC,
+                0,
+                ticks,
+                &mut |_| Ok(()),
+            );
+        }
+
+        Ok(0)
     }
 
     /// no-restart sweep (`shutting_down` + `RS_EXITING` over the table —
@@ -2106,6 +2256,120 @@ mod signal_handler_tests {
         img
     }
 
+    fn do_edit_message(addr: u64) -> minix_types::Message {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_EDIT,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = addr;
+        m
+    }
+
+    #[test]
+    fn test_do_edit_updates_settings_in_sequence() {
+        // 13/R5 wiring: RS_EDIT (request.c:298-385) — struct decode, label
+        // from rss_label, the E-7 sequence (getpriv sync → sched_stop →
+        // edit_slot → privctl(UpdateSys) → vm_set_priv → sched_init_proc),
+        // Ok(0).
+        let mut img = do_up_image(b"/bin/tty", b"vfs");
+        img[minix_types::rs_start_off::QUANTUM..minix_types::rs_start_off::QUANTUM + 4]
+            .copy_from_slice(&77i32.to_le_bytes());
+        img[minix_types::rs_start_off::PRIORITY..minix_types::rs_start_off::PRIORITY + 4]
+            .copy_from_slice(&3i32.to_le_bytes());
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.payload = Some(img);
+        mock.ticks = 500;
+        mock.vm_ok = true;
+        mock.execve_ok = true;
+        mock.fork_pid = Some(701);
+        mock.child_endpoint = Some(Endpoint::MEM);
+        mock.kill_ok = true;
+        // The kernel's priv copy for VFS carries SYS_PROC — do_edit syncs
+        // r_priv from it (request.c:329-334), so the slot's post-edit
+        // is_sys_proc depends on this seeded entry.
+        let mut kpriv = crate::privilege::Privilege::vacant();
+        kpriv.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+        mock.kernel_privs.push((Endpoint::VFS, kpriv));
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.quantum = 200;
+            s.priority = 8;
+            // A system service with a scheduler — sched_decision asserts
+            // (utility.c:369-370) that a system process carries one, and
+            // edit_slot's scheduling branch (manager.c:1570) only rewrites
+            // the four fields when the row's CURRENT scheduler is set.
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+            s.scheduler = Endpoint::SCHED;
+        }
+        let m = do_edit_message(0);
+        assert_eq!(server.do_edit(&m), Ok(0));
+        let state = server.state.as_ref().unwrap();
+        let s = state.table.get(crate::service_slot::SlotId::new(0));
+        assert_eq!(s.quantum, 77, "quantum re-edited");
+        assert_eq!(s.priority, 3, "priority re-edited");
+        assert!(
+            s.flags.contains(RFlags::IN_USE | RFlags::ACTIVE),
+            "the edited row stays live"
+        );
+    }
+
+    #[test]
+    fn test_do_edit_unknown_label_is_esrch() {
+        // C: request.c:315-321 — a label no ACTIVE row carries → ESRCH.
+        let mut server = booted_do_up(do_up_image(b"/bin/tty", b"nox"));
+        let m = do_edit_message(0);
+        assert_eq!(server.do_edit(&m), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn test_do_edit_updating_target_is_ebusy() {
+        // C: manager.c:108-110 (via check_call_permission) — an update in
+        // progress makes every edit EBUSY.
+        let mut server = booted_do_up(do_up_image(b"/bin/tty", b"vfs"));
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.flags.insert(RFlags::UPDATING);
+        }
+        let m = do_edit_message(0);
+        assert_eq!(server.do_edit(&m), Err(Errno::EBUSY));
+    }
+
+    #[test]
+    fn test_do_edit_sched_stop_failure_aborts_untouched() {
+        // E-7: the stop gate routes by site — an edit aborts on a failed
+        // sched_stop (StopSite::EditSlot → StopOutcome::Abort) with the slot
+        // untouched (the quantum stays as it was).
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.payload = Some(do_up_image(b"/bin/tty", b"vfs"));
+        mock.vm_ok = true;
+        mock.execve_ok = true;
+        mock.fork_pid = Some(701);
+        mock.child_endpoint = Some(Endpoint::MEM);
+        // kill_ok stays false — the mock's sched_stop fails, and the
+        // EditSlot stop gate must abort the edit.
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.quantum = 200;
+        }
+        let m = do_edit_message(0);
+        assert!(server.do_edit(&m).is_err(), "the stop gate aborts the edit");
+        let state = server.state.as_ref().unwrap();
+        assert_eq!(
+            state.table.get(crate::service_slot::SlotId::new(0)).quantum,
+            200,
+            "the slot was not edited"
+        );
+    }
+
     /// A booted server whose create faces succeed and whose safecopy image
     /// is the given flat buffer — the do_up fixture.
     fn booted_do_up(image: alloc::vec::Vec<u8>) -> RsServer {
@@ -2116,6 +2380,9 @@ mod signal_handler_tests {
         mock.execve_ok = true;
         mock.fork_pid = Some(701);
         mock.child_endpoint = Some(Endpoint::MEM);
+        // do_edit's sched_stop gate: the mock short-circuits on kill_ok
+        // (the default false models "no scheduler handback" for boot tests).
+        mock.kill_ok = true;
         booted_with(alloc::boxed::Box::new(mock))
     }
 

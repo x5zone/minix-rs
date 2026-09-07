@@ -17,9 +17,9 @@
 //! ```
 
 use minix_types::{
-    Clock, Endpoint, Errno, MAX_NR_TASKS, NR_PROCS, RS_CLONE, RS_DOWN, RS_EDIT, RS_FI,
-    RS_GETSYSINFO, RS_INIT, RS_LOOKUP, RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN,
-    RS_SYSCTL, RS_UNCLONE, RS_UPDATE,
+    Clock, Endpoint, Errno, MAX_NR_TASKS, NR_PROCS, RS_CLONE, RS_DOWN, RS_FI, RS_GETSYSINFO,
+    RS_INIT, RS_LOOKUP, RS_LU_PREPARE, RS_REFRESH, RS_RESTART, RS_SHUTDOWN, RS_SYSCTL, RS_UNCLONE,
+    RS_UPDATE,
 };
 
 // RS message types are defined in `minix-types::ipc::rs` (ARCH A-2,
@@ -141,19 +141,18 @@ impl DispatchResult {
 /// annotated; handlers land with their owning docs. Until then, all requests
 /// fail closed with `ENOSYS`, matching the C `default` branch — main.c:118-121.
 ///
-/// Wiring status (I3-I5, 2026-09-07; R4, 2026-09-07): `RS_UP` (13),
+/// Wiring status (I3-I6 + §21 R4/R5, 2026-09-07): `RS_UP`/`RS_EDIT`,
 /// `RS_DOWN`/`RS_REFRESH`/`RS_RESTART`/`RS_SHUTDOWN`/`RS_CLONE`/`RS_UNCLONE`
 /// (13) and `RS_SYSCTL`/`RS_FI`/`RS_GETSYSINFO`/`RS_LOOKUP` (14) run live
-/// through `RsServer::do_request` — they never reach this table. The
-/// remaining arms `RS_EDIT`/`RS_UPDATE` share one gate: their first act is
-/// `copy_rs_start` (request.c:306/:542) — the byte ABI itself is pinned and
-/// decoded since Fix #81 (`minix_types::rs_start_off`), and the two arms'
-/// handler shells land with the R5/R6 rounds of the §21 campaign. They stay
-/// fail-closed here until then.
+/// through `RsServer::do_request` — they never reach this table. The sole
+/// remaining arm `RS_UPDATE` opens with `copy_rs_start` (request.c:542) —
+/// the byte ABI is pinned and decoded since Fix #81
+/// (`minix_types::rs_start_off`), and the arm's handler shell lands with
+/// the §21 R6 round. It stays fail-closed here until then.
 pub fn dispatch_request(call_nr: i32) -> DispatchResult {
     match call_nr {
         // → 13-rs-control-requests.md
-        RS_DOWN | RS_REFRESH | RS_RESTART | RS_SHUTDOWN | RS_CLONE | RS_UNCLONE | RS_EDIT => {
+        RS_DOWN | RS_REFRESH | RS_RESTART | RS_SHUTDOWN | RS_CLONE | RS_UNCLONE => {
             DispatchResult(Errno::ENOSYS.to_i32())
         }
         // → 16-rs-live-update.md
