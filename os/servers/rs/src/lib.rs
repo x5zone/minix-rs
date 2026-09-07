@@ -176,6 +176,10 @@ pub struct ServerState<'a> {
     pub update: live_update::UpdateState,
 }
 
+/// VM's default mmapped-region preallocation on a non-identity update.
+/// C: `RS_VM_DEFAULT_MAP_PREALLOC_LEN` — const.h:83 (8 MiB).
+const RS_VM_DEFAULT_MAP_PREALLOC_LEN: i64 = 1024 * 1024 * 8;
+
 impl RsServer {
     /// Creates the server with the boot tables.
     ///
@@ -328,11 +332,390 @@ impl RsServer {
         }
     }
 
-    /// C: `do_update` — request.c:534-…: the live-update initiation
-    /// request. Its first act is `copy_rs_start` (request.c:542), so this
-    /// arm is gated on the `rs_start_t` byte ABI (edge E-RSSTART —
-    /// `bitchunk_t`/`uid_t` have no typedef in this tree) and stays
-    /// fail-closed on the dispatch death table until that landing.
+    /// C: `do_update` — request.c:534-889: schedule a live update for a
+    /// service. The `rs_start_t` round-trip (decode + fetch, Fix #81/#82)
+    /// opens the arm; the target label comes from `rss_label`, the target
+    /// state endpoint from `rss_trg_label` (request.c:625-640). The flag
+    /// mapping (`lu_flags_from_rss`), the phase gates
+    /// (`validate_update_request`), the VM-default preallocation
+    /// (`vm_default_prealloc`), the descriptor (with the A-4 mirror
+    /// responsibility) and the prepare walk (`start_update_prepare`) are
+    /// the reviewed 16 slices this handler composes. The state-data segment
+    /// (request.c:792-836: the `init_state_data` composition is 17's; the
+    /// three `cpf_grant_direct` calls are the 19 grant face, E-11) fails
+    /// closed: a request that actually carries state data is rejected
+    /// ENOSYS instead of silently scheduling an update without its state
+    /// transfer.
+    fn do_update(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        let Some((addr, _)) = m.rs_req_payload() else {
+            return Err(Errno::EINVAL);
+        };
+
+        // Copy the request structure (request.c:542-546) and its buffers.
+        let mut buf = [0u8; minix_types::rs_start_off::SIZE];
+        self.kernel
+            .safecopy_from(m.m_source, addr as usize, &mut buf)?;
+        let wire = minix_types::decode_rs_start(&buf)?;
+        let mut rs_start = fetch_rs_start(self.kernel.as_mut(), m.m_source, &wire)?;
+
+        // Copy label + lookup (request.c:548-556).
+        let Some(id) = state.table.lookup_by_label(&rs_start.label) else {
+            return Err(Errno::ESRCH);
+        };
+        let endpoint = state.table.get(id).pub_.endpoint;
+
+        // Check flags (request.c:568-623). The VM-default preallocation
+        // decision (request.c:591-599) sits between the C flag writes but
+        // only reads the SELF|ASR bits — which do not depend on the
+        // preallocation value — so a first mapping pass feeds the default
+        // decision and the second sees the defaulted value (its NOMMAP
+        // test, request.c:601-605, must observe the default exactly as C's
+        // in-place rewrite does).
+        let prepare_only = rs_start
+            .flags
+            .contains(crate::slot::RssFlags::PREPARE_ONLY_LU);
+        let force_init_st = rs_start
+            .flags
+            .contains(crate::slot::RssFlags::FORCE_INIT_ST);
+        let (lu_probe, _) =
+            crate::live_update::lu_flags_from_rss(rs_start.flags, rs_start.map_prealloc_bytes);
+        let defaulted = crate::live_update::vm_default_prealloc(
+            rs_start.map_prealloc_bytes,
+            endpoint,
+            lu_probe,
+            force_init_st,
+            RS_VM_DEFAULT_MAP_PREALLOC_LEN,
+        );
+        rs_start.map_prealloc_bytes = defaulted;
+        let (lu_flags, init_flags) =
+            crate::live_update::lu_flags_from_rss(rs_start.flags, rs_start.map_prealloc_bytes);
+        let do_self_update = rs_start.flags.contains(crate::slot::RssFlags::SELF_LU);
+        let noblock = rs_start.flags.contains(crate::slot::RssFlags::NOBLOCK);
+        let batch_mode = rs_start.flags.contains(crate::slot::RssFlags::BATCH);
+
+        // Lookup target label (request.c:625-640) — the state endpoint for
+        // a stateful transfer; copy_label's clamp shapes the bytes.
+        let mut state_endpoint = Endpoint::NONE;
+        if wire.trg_label.len > 0 {
+            let n = (wire.trg_label.len as usize).min(crate::service_slot::RS_MAX_LABEL_LEN - 1);
+            let mut label_buf = [0u8; crate::service_slot::RS_MAX_LABEL_LEN];
+            self.kernel.safecopy_from(
+                m.m_source,
+                wire.trg_label.addr as usize,
+                &mut label_buf[..n],
+            )?;
+            label_buf[n] = 0;
+            let trg_label = crate::service_slot::Label::from_bytes(&label_buf[..]);
+            let Some(trg) = state.table.lookup_by_label(&trg_label) else {
+                return Err(Errno::ESRCH);
+            };
+            state_endpoint = state.table.get(trg).pub_.endpoint;
+        }
+
+        // Permission (request.c:642-644).
+        let updating = state
+            .table
+            .get(id)
+            .flags
+            .contains(crate::service_slot::RFlags::UPDATING);
+        let caller_euid = self.kernel.getnuid(m.m_source);
+        crate::access::check_call_permission(
+            m.m_source,
+            minix_types::RS_UPDATE,
+            Some(state.table.get(id)),
+            &state.table,
+            updating,
+            caller_euid,
+        )?;
+
+        // Prepare state / max time (request.c:646-657) and the phase gates
+        // (request.c:659-686): updating → EBUSY, scheduled-without-batch →
+        // EBUSY, already in the chain → EINVAL, prepare-only endpoint rules.
+        // The default max time is 2*RS_DELTA_T (const.h:58, hz-scaled).
+        let upd = minix_types::RsUpdate::decode_message(m);
+        let prepare_state = upd.state;
+        let prepare_maxtime = crate::live_update::resolve_prepare_maxtime(
+            u32::try_from(upd.prepare_maxtime.max(0)).unwrap_or(0),
+            (2 * crate::monitor::delta_t(state.system_hz)) as u32,
+        );
+        crate::live_update::validate_update_request(
+            crate::live_update::update_phase(state.update.flags, state.update.chain.len()),
+            batch_mode,
+            state.table.get(id).upd.is_some(),
+            prepare_only,
+            endpoint,
+            prepare_state,
+        )?;
+
+        // Initialize the update descriptor (request.c:689-695) — the A-4
+        // mirror write rides on the add below.
+        let mut entry = crate::live_update::UpdateEntry::new(id, endpoint);
+        entry.lu_flags = lu_flags;
+        entry.init_flags = init_flags;
+        state.update.chain.set_new_upd_flags(&mut entry);
+
+        // The new instance (request.c:697-760): a self update clones the
+        // running service into a replica; a regular update allocates and
+        // initializes a fresh slot that inherits the old instance's
+        // immutable defaults, links to it, and is created without running.
+        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let mut new_id: Option<crate::service_slot::SlotId> = None;
+        if !prepare_only {
+            if do_self_update {
+                crate::service_create::clone_service(
+                    &mut state.table,
+                    id,
+                    self.kernel.as_mut(),
+                    crate::privilege::PrivFlags::LU_SYS_PROC,
+                    entry.init_flags,
+                    ticks,
+                    &mut |_| Ok(()),
+                )?;
+                new_id = state.table.get(id).new_rp;
+            } else {
+                let nid = state.table.alloc_slot()?;
+                // Row out/in (Fix #49's slot-first signature) — the row is a
+                // fresh vacant one, so the donor scan sees exactly what C's
+                // loop would.
+                let mut slot = core::mem::replace(
+                    state.table.get_mut(nid),
+                    crate::service_slot::ServiceSlot::vacant(),
+                );
+                let init_r = crate::service_create::init_slot(
+                    &mut slot,
+                    &rs_start,
+                    &state.table,
+                    &mut |_| Ok(()),
+                );
+                // Inherit the old instance's immutable defaults while the
+                // row is still out of the table (the def borrow and the
+                // local row do not alias).
+                if init_r.is_ok() {
+                    crate::service_create::inherit_service_defaults(state.table.get(id), &mut slot);
+                }
+                *state.table.get_mut(nid) = slot;
+                init_r?;
+                // Link the two versions (request.c:732-734).
+                state.table.get_mut(nid).old_rp = Some(id);
+                state.table.get_mut(id).new_rp = Some(nid);
+                // Create the new version but don't let it run
+                // (request.c:736-745).
+                {
+                    let s = state.table.get_mut(nid);
+                    s.priv_
+                        .flags
+                        .insert(crate::privilege::PrivFlags::LU_SYS_PROC);
+                    s.priv_.init_flags |= entry.init_flags;
+                }
+                crate::service_create::create_service(
+                    &mut state.table,
+                    nid,
+                    self.kernel.as_mut(),
+                    ticks,
+                    &mut |_| Ok(()),
+                )?;
+                new_id = Some(nid);
+            }
+        }
+
+        // Default state endpoint (request.c:762-766).
+        if state_endpoint == Endpoint::NONE
+            && let Some(nid) = new_id
+        {
+            state_endpoint = state.table.get(nid).pub_.endpoint;
+        }
+
+        // RS's backup signal manager for rollback during initialization
+        // (request.c:768-777) — the composed update (Fix #45.5) executes as
+        // one UpdateSys privctl; failure cleans the new instance.
+        if state
+            .table
+            .get(id)
+            .priv_
+            .flags
+            .contains(crate::privilege::PrivFlags::ROOT_SYS_PROC)
+            && let Some(nid) = new_id
+        {
+            // C: update_sig_mgrs(new_rp, SELF, new_rp->r_pub->endpoint) —
+            // utility.c:387-422: sync the new instance's priv from the
+            // kernel, set sig_mgr (SELF expanded to the new endpoint) and
+            // the backup, then push with UpdateSys. Failure cleans the new
+            // instance (request.c:771-776).
+            let new_ep = state.table.get(nid).pub_.endpoint;
+            let synced = self.kernel.getpriv(new_ep)?;
+            let mut p = synced;
+            let u = crate::self_lifecycle::self_update_sig_mgr_update(new_ep);
+            p.sig_mgr = u.sig_mgr;
+            p.bak_sig_mgr = u.bak_sig_mgr;
+            let r = self
+                .kernel
+                .privctl(new_ep, crate::privilege::PrivCtlOp::UpdateSys, Some(&p));
+            match r {
+                Ok(()) => {
+                    state.table.get_mut(nid).priv_ = p;
+                }
+                Err(e) => {
+                    let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                    crate::recovery::cleanup_service(
+                        &mut state.table,
+                        nid,
+                        self.kernel.as_mut(),
+                        &mut noop_script,
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
+        // Preallocate heap / mmapped regions if requested
+        // (request.c:779-811). Negative means "not requested" and zeroes in
+        // place (request.c:781-783/:789-791). The vm_memctl seam carries
+        // (proc, req, a, b) with no out-params — the mapped address of
+        // MAP_PREALLOC arrives with the 19 transport (E-11), so the
+        // recorded address stays 0 here while the length is live.
+        if !prepare_only && let Some(nid) = new_id {
+            if rs_start.heap_prealloc_bytes < 0 {
+                rs_start.heap_prealloc_bytes = 0;
+            }
+            if rs_start.heap_prealloc_bytes != 0 {
+                self.kernel.vm_memctl(
+                    state.table.get(nid).pub_.endpoint,
+                    crate::boot::VmRsMemReq::HeapPrealloc,
+                    0,
+                    rs_start.heap_prealloc_bytes as usize,
+                )?;
+                if state
+                    .table
+                    .get(id)
+                    .priv_
+                    .flags
+                    .contains(crate::privilege::PrivFlags::ROOT_SYS_PROC)
+                {
+                    let _ = self.kernel.vm_memctl(
+                        state.table.get(nid).pub_.endpoint,
+                        crate::boot::VmRsMemReq::Pin,
+                        0,
+                        0,
+                    );
+                }
+            }
+            if rs_start.map_prealloc_bytes < 0 {
+                rs_start.map_prealloc_bytes = 0;
+            }
+            if rs_start.map_prealloc_bytes != 0 {
+                self.kernel.vm_memctl(
+                    state.table.get(nid).pub_.endpoint,
+                    crate::boot::VmRsMemReq::MapPrealloc,
+                    0,
+                    rs_start.map_prealloc_bytes as usize,
+                )?;
+                state.table.get_mut(nid).map_prealloc_len = rs_start.map_prealloc_bytes as usize;
+            }
+        }
+
+        // State data (request.c:792-836): `init_state_data`'s composition is
+        // 17-rs-state-data.md and the three cpf_grant_direct calls are the
+        // 19 grant face (E-11). Fail closed on any request that actually
+        // carries state — an empty spec schedules cleanly.
+        if rs_start.state_data.size > 0
+            || rs_start.state_data.ipcf_els_addr != 0
+            || rs_start.state_data.eval_addr != 0
+        {
+            return Err(Errno::ENOSYS);
+        }
+
+        // Fill the descriptor and schedule it (request.c:838-845) — the
+        // mirror write is `chain.add`'s documented caller responsibility.
+        entry.prepare_state = prepare_state;
+        entry.state_endpoint = state_endpoint;
+        entry.prepare_tm = ticks;
+        entry.prepare_maxtime = prepare_maxtime as i64;
+        let mirror = entry.clone();
+        state.update.chain.add(entry);
+        state.table.get_mut(id).upd = Some(mirror);
+
+        // Batch mode replies immediately (request.c:847-850).
+        if batch_mode {
+            return Ok(0);
+        }
+
+        // Start preparing (request.c:852-861) — allow_retries = 0. The
+        // prepare walk's abort/end callbacks cannot capture the update state
+        // and table their caller already holds (the A-2 aliasing wall), so
+        // the two failure exits resolve post-return with exactly the calls C
+        // makes inside: EAGAIN → abort_update_proc(EAGAIN)
+        // (update.c:408-417), ESRCH → end_update(OK, RS_REPLY)
+        // (request.c:853-858 — nothing left to prepare).
+        let is_idle = state.table.iter_in_use().all(|(_, s)| s.flags.is_idle());
+        let mut update = core::mem::take(&mut state.update);
+        let mut noop_abort = |_: i32| {};
+        let mut noop_end = |_: i32| {};
+        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+        let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+        let prepared = update.start_update_prepare(
+            &mut state.table,
+            is_idle,
+            false,
+            &mut noop_abort,
+            &mut noop_end,
+            &mut noop_req,
+            &mut noop_vm,
+        );
+        match prepared {
+            Err(Errno::EAGAIN) => {
+                // C ignores the abort's internals here (update.c:411 — the
+                // call statement's value is unused).
+                let _ = crate::live_update::abort_update_proc(
+                    &mut update,
+                    &mut state.table,
+                    self.kernel.as_mut(),
+                    Errno::EAGAIN.to_i32(),
+                    ticks,
+                    &mut |_| Ok(()),
+                );
+                state.update = update;
+                return Err(Errno::EAGAIN);
+            }
+            Err(Errno::ESRCH) => {
+                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                let _ = update.end_update(
+                    &mut state.table,
+                    self.kernel.as_mut(),
+                    0,
+                    crate::live_update::RS_REPLY,
+                    ticks,
+                    &mut noop_req,
+                    &mut noop_script,
+                );
+                state.update = update;
+                return Ok(0);
+            }
+            Err(e) => {
+                state.update = update;
+                return Err(e);
+            }
+            Ok(_) => {}
+        }
+        state.update = update;
+
+        // Noblock (request.c:863-866) or the late reply on the last
+        // descriptor's service (request.c:868-874).
+        if noblock {
+            return Ok(0);
+        }
+        if let Some(last) = state.update.chain.rev_iter().next() {
+            let last_id = last.slot;
+            crate::request::mark_late_reply(
+                state.table.get_mut(last_id),
+                m.m_source,
+                minix_types::RS_UPDATE,
+            );
+        }
+        Ok(minix_types::EDONTREPLY)
+    }
+
     /// C: `do_upd_ready` — request.c:890-938 (main loop `RS_LU_PREPARE`
     /// arm, main.c:117): chain gate, `RS_PREPARE_DONE`, then either
     /// `end_update(result, RS_REPLY)` on failure, the next preparer walk
@@ -446,6 +829,7 @@ impl RsServer {
             minix_types::RS_SHUTDOWN => self.do_shutdown(caller),
             minix_types::RS_UP => self.do_up(msg),
             minix_types::RS_EDIT => self.do_edit(msg),
+            minix_types::RS_UPDATE => self.do_update(msg),
             minix_types::RS_DOWN => self.do_down(msg),
             minix_types::RS_LOOKUP => self.do_lookup(msg),
             minix_types::RS_FI => self.do_fi(msg),
@@ -2254,6 +2638,178 @@ mod signal_handler_tests {
         img[0x1100..0x1100 + label.len()].copy_from_slice(label);
         img[0x1200..0x1200 + label.len()].copy_from_slice(label);
         img
+    }
+
+    #[test]
+    fn test_do_update_schedules_self_update_batch() {
+        // 16/R6 wiring: RS_UPDATE (request.c:534-889) — self update,
+        // batch mode (request.c:847-850 replies OK). The descriptor is
+        // scheduled with the A-4 mirror (slot.upd), lu_flags carry SELF,
+        // and the reply is immediate.
+        let mut img = do_up_image(b"/bin/tty", b"vfs");
+        let flags = crate::slot::RssFlags::SELF_LU | crate::slot::RssFlags::BATCH;
+        img[minix_types::rs_start_off::FLAGS..minix_types::rs_start_off::FLAGS + 4]
+            .copy_from_slice(&flags.bits().to_le_bytes());
+        let mut server = booted_do_up(img);
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            // A system service (manager.c:103-105 — non-system targets are
+            // only editable, never updatable) with a launch command: the
+            // replica's create passes the preconditions (manager.c:563-568),
+            // and a scheduler — utility.c:369-370 asserts a system process
+            // carries one.
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+            s.cmd[..8].copy_from_slice(b"/bin/vfs");
+            s.scheduler = Endpoint::SCHED;
+        }
+        let m = do_update_message(0);
+        assert_eq!(server.do_update(&m), Ok(0), "batch replies OK now");
+        let state = server.state.as_ref().unwrap();
+        assert_eq!(state.update.chain.len(), 1, "one descriptor scheduled");
+        let entry = state.update.chain.get(0);
+        assert_eq!(entry.slot, crate::service_slot::SlotId::new(0));
+        assert!(
+            entry.lu_flags.contains(crate::live_update::LuFlags::SELF),
+            "RSS_SELF_LU mapped to SEF_LU_SELF"
+        );
+        // The A-4 mirror: slot.upd equals the authoritative chain entry.
+        assert_eq!(
+            state
+                .table
+                .get(crate::service_slot::SlotId::new(0))
+                .upd
+                .as_ref(),
+            Some(entry)
+        );
+    }
+
+    #[test]
+    fn test_do_update_regular_allocates_linked_instance() {
+        // request.c:708-760 — a regular update allocates a fresh slot,
+        // initializes it, inherits the old instance's immutable defaults,
+        // links both directions and creates it without running; the
+        // non-batch flow then walks the prepare and arms the late reply on
+        // the last descriptor's service (request.c:868-874).
+        let mut img = do_up_image(b"/bin/tty.new", b"vfs");
+        let mut server = booted_do_up(img);
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.pub_
+                .sys_flags
+                .insert(crate::service_slot::SysFlags::CORE_SRV);
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+        }
+        let m = do_update_message(0);
+        assert_eq!(
+            server.do_update(&m),
+            Ok(minix_types::EDONTREPLY),
+            "late reply: the update completes initialization later"
+        );
+        let state = server.state.as_ref().unwrap();
+        let old = crate::service_slot::SlotId::new(0);
+        let new = state
+            .table
+            .get(old)
+            .new_rp
+            .expect("regular update links a new instance");
+        assert_eq!(state.table.get(new).old_rp, Some(old));
+        assert!(
+            state
+                .table
+                .get(new)
+                .priv_
+                .flags
+                .contains(crate::privilege::PrivFlags::LU_SYS_PROC),
+            "the new version is created but does not run"
+        );
+        assert!(
+            state.table.get(old).flags.contains(RFlags::LATEREPLY),
+            "late reply armed on the updating service"
+        );
+    }
+
+    #[test]
+    fn test_do_update_second_batch_is_einval_when_already_in_chain() {
+        // C: request.c:669-671 — batch mode tolerates a second request only
+        // for services NOT already in the scheduled chain; scheduling the
+        // same service again → EINVAL. (The updating-phase EBUSY,
+        // request.c:659-663, is locked by validate_update_request's own
+        // unit tests.)
+        let mut img = do_up_image(b"/bin/tty", b"vfs");
+        let flags = crate::slot::RssFlags::SELF_LU | crate::slot::RssFlags::BATCH;
+        img[minix_types::rs_start_off::FLAGS..minix_types::rs_start_off::FLAGS + 4]
+            .copy_from_slice(&flags.bits().to_le_bytes());
+        let mut server = booted_do_up(img);
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            // A system service (manager.c:103-105 — non-system targets are
+            // only editable, never updatable) with a launch command: the
+            // replica's create passes the preconditions (manager.c:563-568),
+            // and a scheduler — utility.c:369-370 asserts a system process
+            // carries one.
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+            s.cmd[..8].copy_from_slice(b"/bin/vfs");
+            s.scheduler = Endpoint::SCHED;
+        }
+        let m = do_update_message(0);
+        assert_eq!(server.do_update(&m), Ok(0));
+        // The same service again → already in the chain → EINVAL.
+        assert_eq!(server.do_update(&do_update_message(0)), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn test_do_update_with_state_data_fails_closed() {
+        // request.c:792-836 — the init_state_data composition (17) and the
+        // cpf grants (19) are the documented boundary; a request that
+        // carries state data fails closed instead of scheduling without its
+        // state transfer.
+        let mut img = do_up_image(b"/bin/tty", b"vfs");
+        let flags = crate::slot::RssFlags::SELF_LU | crate::slot::RssFlags::BATCH;
+        img[minix_types::rs_start_off::FLAGS..minix_types::rs_start_off::FLAGS + 4]
+            .copy_from_slice(&flags.bits().to_le_bytes());
+        img[minix_types::rs_start_off::STATE_DATA..minix_types::rs_start_off::STATE_DATA + 8]
+            .copy_from_slice(&128u64.to_le_bytes());
+        let mut server = booted_do_up(img);
+        {
+            let state = server.state.as_mut().unwrap();
+            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            // A system service (manager.c:103-105 — non-system targets are
+            // only editable, never updatable) with a launch command: the
+            // replica's create passes the preconditions (manager.c:563-568),
+            // and a scheduler — utility.c:369-370 asserts a system process
+            // carries one.
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+            s.cmd[..8].copy_from_slice(b"/bin/vfs");
+            s.scheduler = Endpoint::SCHED;
+        }
+        let m = do_update_message(0);
+        assert_eq!(server.do_update(&m), Err(Errno::ENOSYS));
+        assert_eq!(
+            server.state.as_ref().unwrap().update.chain.len(),
+            0,
+            "nothing scheduled"
+        );
+    }
+
+    fn do_update_message(addr: u64) -> minix_types::Message {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_UPDATE,
+            m_u: Default::default(),
+        };
+        m.m_u.m_rs_req.addr = addr;
+        // The same union viewed through the m_rs_update arm (do_update reads
+        // state/prepare_maxtime from it, request.c:646-657): a reached state
+        // of SEF_LU_STATE_EVAL and the default max time (0 → 2*RS_DELTA_T).
+        m.m_u.m_rs_update.state = crate::live_update::SEF_LU_STATE_EVAL;
+        m
     }
 
     fn do_edit_message(addr: u64) -> minix_types::Message {

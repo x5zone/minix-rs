@@ -167,6 +167,30 @@ Minix3 的系统服务（VM/PM/VFS/驱动）重启成本高：IPC 引用、内�
 
 ## 3. Rust 设计决策
 
+### 3.0b do_update 接线落地（R6，2026-09-07，todo §21 Fix #84）
+
+`RsServer::do_update`（lib.rs）按 request.c:534-889 逐行落地，`RS_UPDATE` 臂转真——
+调度死表至此清零。三个形态决策值得展开：
+
+- **VM 默认预分配的两趟映射**。C 的旗标写入是增量的：VM 默认预分配决策
+  （request.c:591-599）落在 DETACHED 写入之后、NOMMAP 写入之前，且只读 SELF|ASR
+  位——这两个位不依赖预分配值。Rust 的 reviewed 切片 `lu_flags_from_rss` 一次映射
+  全部旗标，于是 handler 用两趟：第一趟给默认决策提供 SELF|ASR 位，第二趟看到
+  已默认化的预分配值（其 NOMMAP 测试必须像 C 的原地改写一样观察到默认值）。
+- **准备行的 abort/end 后置解析**。`start_update_prepare` 的 abort/end 回调无法
+  捕获调用方已持有的 update 状态与表（A-2 记录过的别名墙），C 在内部做的两次
+  调用在返回后补齐：EAGAIN → `abort_update_proc(EAGAIN)`（update.c:408-417，
+  忙 RS 拆掉刚调度的链）、ESRCH → `end_update(OK, RS_REPLY)`（request.c:853-858，
+  无可准备者）。可观察顺序与 C 一致。
+- **状态数据段的 17/19 边界**。`init_state_data` 的组合（manager.c:172-260）属
+  17-rs-state-data.md；三笔 `cpf_grant_direct` 是 19 号授权面（E-11）。携带状态
+  数据的请求在此 fail-closed（ENOSYS），而不是调度一个没有状态传输的更新——
+  空规格的请求正常调度。
+
+描述符入链时的镜像写入（`slot.upd = Some(entry)`）是 A-4 建立的调用方责任在本
+臂的兑现；monitor 的 `upd_init_maxtime` 与 `end_srv_update` 的 `state_endpoint`
+消费因此始终读到与链一致的值。
+
 ### 3.1 live_update.rs 纯切片
 
 与 13/14/15 同款：IPC/动作面（`clone_service`/`alloc_slot`/`init_slot`/`create_service`/`vm_memctl`/`vm_update`/`sys_whoami`/`request_prepare_update_service`/`rs_receive_ticks`）归 10/17/18/19，`end_srv_init` 归 12，`late_reply` 归 06，`cleanup_service` 归 15；`live_update.rs` 拥有**状态机本体与纯判定**：

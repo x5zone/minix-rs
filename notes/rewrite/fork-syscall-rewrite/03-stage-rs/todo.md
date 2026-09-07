@@ -2236,7 +2236,7 @@ I6（见 Fix #78）。
 | R3 | E-RSSTART 改判 + `RsStartWire`（minix-types wire 面 + LP64 偏移断言） | ✅ Fix #81 |
 | R4 | RS_UP 臂接线（do_up，request.c:15-106） | ✅ Fix #82 |
 | R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ✅ Fix #83 |
-| R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ☐ |
+| R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ✅ Fix #84 |
 | R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ☐ |
 | R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ☐ |
 | R9-R10 | A-2 Effects 聚合（用户裁决：执行） | ☐ |
@@ -2310,3 +2310,29 @@ I6（见 Fix #78）。
   kill_ok=true、sched_decision 断言要求 SYS_PROC 行带 scheduler、getpriv 同步
   覆写 priv_ 需 kernel_privs 种子——均为夹具建设不足，非产品缺陷）；clippy 触碰
   文件零告警；fmt 干净；T7 PASS。
+
+### ✅ Fix #84 — R6：RS_UPDATE 臂接线（do_update，request.c:534-889）——调度死表清零
+- **File**：`os/servers/rs/src/lib.rs`（`do_update` handler + `do_request` 臂 +
+  `RS_VM_DEFAULT_MAP_PREALLOC_LEN` 模块常量 + 4 个接线测试 + 删除 do_upd_ready_shell
+  的陈旧占位 doc）、`dispatch.rs`（RS_UPDATE 移出死表——13/14/16 号死臂全清零）、
+  `minix-types errno.rs`（补 `Errno::EAGAIN`）；文档 16 §3.0b（落地注记 +
+  三形态决策）
+- **After**：结构体往返 → label 查找 → 两趟旗标映射（VM 默认预分配只读 SELF|ASR
+  位，与预分配值无关——第一趟喂默认决策、第二趟吃默认化后的值）→ trg_label 状态
+  端点（ESRCH）→ 权限 → prepare_state/maxtime（默认 2*RS_DELTA_T，const.h:58）→
+  `validate_update_request` 相位门 → 描述符（lu/init 旗标 + `set_new_upd_flags`）→
+  新实例（自更新 `clone_service(LU_SYS_PROC)`；常规更新 alloc+init_slot+inherit+
+  双向链接+LU_SYS_PROC+create_service）→ state_endpoint 默认 → ROOT 的备份信号
+  管理器（getpriv 同步 + `self_update_sig_mgr_update` 对 + UpdateSys，失败清理新
+  实例，request.c:768-777）→ heap/map 预分配（负值归零；MAP_PREALLOC 的回传地址
+  随 19 传输，seam 无出参——记录地址 0、长度活）→ 状态数据段 fail-closed（17/19
+  边界，ENOSYS）→ 描述符四字段填充 + `chain.add` + A-4 镜像写 → batch 立即 OK →
+  `start_update_prepare(allow_retries=0)`（abort/end 后置解析：EAGAIN →
+  `abort_update_proc`、ESRCH → `end_update(OK, RS_REPLY)`——A-2 别名墙下的可观察
+  顺序保持）→ NOBLOCK → 末描述符服务 LATEREPLY + `Ok(EDONTREPLY)`。
+- **Verified**：`cargo test -p minix-rs` = **322 passed**（+4：自更新 batch 调度
+  （链、SELF 位、A-4 镜像全等断言）、常规更新分配+双向链接+LU_SYS_PROC+LATEREPLY、
+  在链重复 EINVAL（request.c:669-671）、携带状态数据 ENOSYS 且零调度）；测试自查
+  修正 4 处夹具/断言缺陷（SYS_PROC 种子——manager.c:103-105 的可更新性门、副本的
+  cmd 前置门——manager.c:563-568、scheduler 断言——utility.c:370、消息 union 的
+  m_rs_update 臂 state 写入）；clippy 触碰文件零告警；fmt 干净；T7 PASS。

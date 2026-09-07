@@ -190,6 +190,8 @@ impl Errno {
     pub const ENOEXEC: Errno = Errno(ENOEXEC);
     /// C: `ESRCH` — sys/errno.h:3.
     pub const ESRCH: Errno = Errno(ESRCH);
+    /// C: `EAGAIN` — sys/errno.h:11.
+    pub const EAGAIN: Errno = Errno(EAGAIN);
     /// C: `EBUSY` — sys/errno.h:16.
     pub const EBUSY: Errno = Errno(EBUSY);
     /// C: `EINVAL` — sys/errno.h:22.
