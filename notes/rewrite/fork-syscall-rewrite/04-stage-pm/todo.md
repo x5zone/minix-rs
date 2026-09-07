@@ -7,6 +7,7 @@
 > 状态（2026-09-06，campaign 完成后更新；2026-09-08 账目对账修正）：本轮 21 次 todo-fix 迭代完成——P1 闭环 4 项（P1-1/P1-2/P1-5/P1-6），P2 闭环 5 项（P2-1/P2-2/P2-4/P2-5/P2-7），P3 闭环 2 项；仍开放 P1-3/P1-4/P2-3/P2-6。D-XX 缺口 26 项中 20 项完整实现（D-03/04/06/07/08/09/10/11/13/14/15/18/19/20/21/22/23/24/25/26），余 6 项（D-01/D-02/D-05/D-12/D-16/D-17）均为带"依赖未解除"论证的跨阶段通电项（挂 edge E1/E2/E5/E6/E7 或 16-stage SCHED）。测试基线 319 → **346 lib + 7 integration passed**，clippy lib 0 warning 0 error，Gate A 名称匹配 89.0% → 93.6%。逐条证据见 §10 修复记录（Fix #1–#28；#27 于 2026-09-08 补记，对应提交 de9415604 + d79307ee6）。
 > 增补（2026-09-06）：跨阶段条目抽取见 §9；登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（本阶段新增 E6/E7，既有 E1-E5 为 02-stage-vm campaign 条目）。
 > **第 2 轮（2026-09-08，§11）**：全量查漏补缺 + 架构审查重跑。新基线 346 lib + 7 integration / clippy 0 / Gate A 93.6%；新发现 V2-P0×2（信号终止路径 mock transport 泄漏、信号集合位约定分裂）、V2-P1×2（PID 相位偏移、SIGHUP 广播缺失 + D-13 台账错位）、V2-P2×6、V2-P3×4；已完成条目正文压缩为索引（结论保留，论证见 git 历史）；Redox 对照按 2024-12 起的 procmgr 迁移事实更新（§11.3）。
+> **第 2 轮实施 campaign（2026-09-08 收官，Fix #29–#42）**：V2 条目 stage 内部分全部闭环——P0×2（位基统一/mock 泄漏贯通）、P1×2（PID 相位/SIGHUP 广播 D-27）、P2×5（RS 回环/SIGCHLD D-28/tell_vfs fail-closed/exec 门/itimer 收敛接线）、P2-6 登记、P3（GID_MAX/stale 注释/sa_flags 对齐）；期间新登记 V2-P2-7（unpause UNPAUSE）与 V2-P2-8（sig_send 空壳），随批次 B（wire 类型，edge E7）实施。测试基线 346+7 → **356 lib + 8 integration passed**，clippy 0 warning。仍开放：P1-3/P1-4/P2-3/P2-6（edge E1/E6/E7 与文档专项）、D-01/02/05/12/16/17、V2-P2-7/8（批次 B）、40 臂接线批次 A-G（edge E7 前置）。
 
 ---
 
@@ -993,6 +994,18 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无。
 
+### ✅ Fix #42: V2-P3-4(c) + campaign 收官 — exec 重置对齐 C 不清 sa_flags（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/mproc/signal.rs`（`reset_caught_for_exec` 删除 `sa_flags = 0`——C exec.c:178-184 只动 handler 与 mask）
+- 本文件（V2-P3-4 状态标注；头部 campaign 总结）
+
+**处置**：(c) sa_flags 超集已消除；(a) coredump printf/`sys_diagctl_stacktrace` 诊断面挂 edge E6（已列入 E6 进度清单）；(b) svrctl IOCGROUP 校验随批次 G 的 wire 解码落地。三处均保持对账可见。
+
+**Verified**：`cargo test -p minix-pm`：356 lib + 8 integration passed；`cargo clippy -p minix-pm --lib` 0 warning；`bash tools/check-rs-unwired.sh` PASS；`bash tools/todo-staleness-check.sh` PASS。
+
+**未做（DEFERRED 论证）**：(a)(b) 见上——依赖共享契约层，非 stage 内可解。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1215,7 +1228,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 
 - **优先级**：P3；**类型**：健壮性；**文件**：`ipc/calls.rs` Exit 臂（`let _ = crate::exit::do_exit(...)` 后硬编码 `ReplyIntent::NoReply`）。`do_exit` 现两分支恒返 NoReply（`exit.rs:133-155`），丢弃等价；但未来语义变化时此处会静默吞回复。**建议**：直接返回 do_exit 的值（或 `debug_assert!(matches!(..., ReplyIntent::NoReply))`）。**验证**：编译 + 现有 exit 集成测试不回归。
 
-#### V2-P3-4 三处微小诊断/校验差异（对账备注，不单独立项修复）
+#### V2-P3-4 三处微小诊断/校验差异（对账备注，不单独立项修复）（(c) ✅ 2026-09-08 Fix #42；(a) 挂 edge E6、(b) 随批次 G wire）
 
 (a) C 的 sig_proc_exit 对非 PRIV_PROC 的 core 信号有 `printf("PM: coredump signal…") + sys_diagctl_stacktrace`（signal.c:556-558），Rust 无此诊断且 minix-sys 无 `sys_diagctl_stacktrace` wrapper（并入 edge E6 清单）；(b) C do_svrctl 有 IOCGROUP ∈ {'P','M'} 前置校验（misc.c:307），Rust 以形参化接口替代（misc.rs:403-428），权限面等价；(c) Rust exec 重置额外清 sa_flags（`mproc/signal.rs:359-370`），C 不清（exec.c:178-184），无已知行为影响。三项在对应批次接线时顺带对齐即可。
 

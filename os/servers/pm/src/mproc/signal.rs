@@ -364,7 +364,8 @@ impl SignalState {
                 let idx = (sn - 1) as usize;
                 self.actions[idx].sa_handler = 0; // SIG_DFL
                 self.actions[idx].sa_mask = 0;
-                self.actions[idx].sa_flags = 0;
+                // sa_flags 不清——C exec.c:178-184 只动 handler 与 mask
+                //（V2-P3-4c：曾多清 sa_flags，属无行为依据的超集）。
             }
         }
     }
