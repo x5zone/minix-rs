@@ -147,7 +147,7 @@ impl HeapArena {
     /// back to the page allocator. Pages are unmapped from highest VA
     /// downward to maintain contiguity.
     ///
-    /// V10-P2-1 (DEFERRED): no production caller yet — the heap-shrink
+    /// No production caller (V11/T35 judgment pending: delete vs wire) — the heap-shrink
     /// path (process exit / heap release) is not wired. Revisit with the
     /// 24-page-cache reclaim work.
     #[allow(dead_code)]

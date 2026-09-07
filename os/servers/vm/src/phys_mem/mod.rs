@@ -179,7 +179,7 @@ impl PhysAlloc {
         matches!(self, PhysAlloc::Bitmap(_))
     }
 
-    // V11-P2-3 (DEFERRED): buddy accessors, symmetric with `as_bitmap` —
+    // Buddy accessors, symmetric with `as_bitmap` (V11/T35 judgment: kept — —
     // zero callers today because `relocate()` constructs the buddy backend
     // directly and nothing else needs to reach into the enum variant. Kept
     // as the enum's documented accessor surface for the buddy runtime path.

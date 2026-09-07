@@ -179,7 +179,7 @@ impl<'a> ActiveProc<'a> {
     ///
     /// # Safety
     /// Caller must ensure this process's page table is no longer in use by hardware.
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1 (DEFERRED): swap/exit paths use it in tests only
+    #[cfg_attr(not(test), allow(dead_code))] // test-only (V11/T35 judgment: kept as the clear-path primitive)
     pub(crate) unsafe fn force_clear(self) -> EmptySlot<'a> {
         // SAFETY: Caller guarantees this process's page table is no longer in use
         // by hardware. Single-threaded VM ensures no concurrent access.

@@ -82,9 +82,9 @@ pub enum IpcError {
     Unimplemented,
     /// Destination endpoint is invalid (`NONE` or out of range).
     InvalidEndpoint,
-    /// Send queue is full.
-    // DEFERRED (edge E1 family): a producer appears only when the trap
-    // layer surfaces non-blocking receive results.
+    /// Send queue is full / non-blocking receive had nothing.
+    // C's IPC has a non-blocking receive mode (EWOULDBLOCK); a producer
+    // appears when the trap layer (edge E1) surfaces it.
     #[allow(dead_code)]
     WouldBlock,
     /// The kernel returned a generic error (carries the raw code).

@@ -122,7 +122,7 @@ impl VmSelfPageTable {
         self.inner.unmap(vaddr)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1 (DEFERRED): test-only today
+    #[cfg_attr(not(test), allow(dead_code))] // Diagnostic face, test-only today (V11/T35 judgment: keep)
     pub(crate) fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
         self.inner.query(vaddr)
     }
@@ -227,7 +227,7 @@ pub(crate) fn vm_self_unmap(va: VirBytes) -> Result<PhysBytes, PageTableError> {
 /// # Panics
 ///
 /// Panics if `init_vm_self_pt()` has not been called yet.
-#[cfg_attr(not(test), allow(dead_code))] // V10-P2-1 (DEFERRED): test-only today
+#[cfg_attr(not(test), allow(dead_code))] // Diagnostic face, test-only today (V11/T35 judgment: keep)
 pub(crate) fn vm_self_query(va: VirBytes) -> Option<(PhysBytes, PageFlags)> {
     get_pt_mut().query(va)
 }

@@ -497,7 +497,7 @@ impl VmProcTable {
 /// This iterator returns `&VmProc` directly, bypassing the typestate
 /// system. It is restricted to `pub(super)` to prevent external code
 /// from accessing process data without typestate enforcement.
-#[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only (via table.iter())
+#[cfg_attr(not(test), allow(dead_code))] // test-only iteration face (V11/T35 judgment: kept)
 pub(super) struct VmProcIter<'a> {
     table: &'a VmProcTable,
     index: usize,
