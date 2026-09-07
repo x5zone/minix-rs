@@ -2238,7 +2238,7 @@ I6（见 Fix #78）。
 | R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ✅ Fix #83 |
 | R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ✅ Fix #84 |
 | R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ✅ Fix #85（PROCPUB live；rproc 内部表 pinning 为 E-RSWIRE 余件） |
-| R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ☐ |
+| R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ✅ Fix #86 |
 | R9-R10 | A-2 Effects 聚合（用户裁决：执行） | ☐ |
 | R11 | 收敛轮（翻态 + Gate E + edge 对账 + Rule Discovery） | ☐ |
 
@@ -2362,3 +2362,21 @@ I6（见 Fix #78）。
 - **Verified**：`cargo test -p minix-rs` = **325 passed**（+3）；minix-types =
   **182 passed**（+2：字段解码、短缓冲 EINVAL）；clippy 触碰文件零告警；fmt
   干净；T7 PASS。
+
+### ✅ Fix #86 — R8：A-1 lib.rs 拆分（方案 a，触发器已 fired）
+- **File**：`os/servers/rs/src/shell_request.rs`（新建，~1500 行：13/14 号全部
+  handler shell——do_request/do_up/do_edit/do_update/do_down/do_refresh/
+  do_restart/do_clone/do_unclone/do_getsysinfo/do_sysctl/do_lookup/do_fi/
+  do_shutdown + resolve_by_label/stop_with_late_reply 共享前奏 + fetch_rs_start/
+  serialize_rprocpub_row/copy_out_procpub_table 助手与
+  RS_VM_DEFAULT_MAP_PREALLOC_LEN 常量）、`shell_update.rs`（新建：12/16 号
+  do_init_ready/do_upd_ready_shell）、`lib.rs`（3913→2261 行：保留 06 主循环
+  run/get_work/reply_unless_suppressed、07 do_period/do_heartbeat、15 信号面、
+  18 SEF impl、结构体与全部测试）
+- **After**：方案 a（§20.3 预案）落地——同 crate 多文件 `impl RsServer` 合法，
+  模块边界与文档域对齐（13/14 → shell_request、12/16 → shell_update、
+  06/07/15/18 → lib.rs）。搬移方法统一 `pub(crate)`（run 的分派与测试直驱跨
+  模块可见）；自由助手 `pub(crate)`。纯机械迁移：方法体零改动。
+- **Verified**：`cargo test -p minix-rs` = **325 passed**（零回归）；clippy 触碰
+  文件零告警（清除一处 const 搬移遗留的悬空 doc）；fmt 干净；T7 PASS。
+  lib.rs 3913 → 2261 行（<3k，A-1 的行数观察项一并解除）。
