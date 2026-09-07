@@ -41,6 +41,10 @@ use crate::paging::PageTableError;
 
 type PtAllocFn = fn() -> Result<(PhysBytes, VirBytes), PageTableError>;
 
+/// Free function for page-table pages (V11/E4): takes the physical address
+/// of the page and returns it to the source allocator.
+type PtFreeFn = fn(PhysBytes);
+
 /// Wrapper for a function pointer stored in a static.
 /// SAFETY: write-once-then-read-only. The slot is written exactly once
 /// (`register()`), during boot (single-threaded) or user-space VM init
@@ -56,6 +60,20 @@ unsafe impl Sync for PtAllocSlot {}
 
 static PT_ALLOC: PtAllocSlot = PtAllocSlot(UnsafeCell::new(uninit_alloc));
 static PT_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+static PT_FREE: PtAllocSlotUnary = PtAllocSlotUnary(UnsafeCell::new(uninit_free));
+static PT_FREE_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+/// No-op free used before `register_free()` — keeps `free_pt_page` callable
+/// unconditionally (destroy paths check `is_free_registered()` and fall back
+/// to zero-root-only when absent).
+fn uninit_free(_phys: PhysBytes) {}
+
+/// Wrapper for a single-argument function pointer stored in a static.
+/// SAFETY: same write-once-then-read-only contract as [`PtAllocSlot`].
+struct PtAllocSlotUnary(UnsafeCell<PtFreeFn>);
+
+unsafe impl Sync for PtAllocSlotUnary {}
 
 fn uninit_alloc() -> Result<(PhysBytes, VirBytes), PageTableError> {
     Err(PageTableError::AllocationFailed)
@@ -107,4 +125,39 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
     // concurrent access, then only read.
     let alloc_fn = unsafe { core::ptr::read(PT_ALLOC.0.get()) };
     alloc_fn()
+}
+
+/// Register a page-table page free function (V11/E4).
+///
+/// Pair with [`register`]: the same allocator domain that hands out
+/// page-table pages takes them back here. Same write-once contract as
+/// [`register`] — callers register during init before concurrent access.
+pub fn register_free(free_fn: PtFreeFn) {
+    debug_assert!(
+        !PT_FREE_REGISTERED.load(Ordering::Relaxed),
+        "pt_alloc::register_free called twice"
+    );
+    // SAFETY: write-once contract — see `register()`.
+    unsafe {
+        core::ptr::write(PT_FREE.0.get(), free_fn);
+    }
+    PT_FREE_REGISTERED.store(true, Ordering::Release);
+}
+
+/// Returns true if a page-table page free function has been registered.
+pub fn is_free_registered() -> bool {
+    PT_FREE_REGISTERED.load(Ordering::Relaxed)
+}
+
+/// Return a page-table page to its source allocator.
+///
+/// No-op before `register_free()` — destroy paths gate the full-reclaim
+/// walk on [`is_free_registered()`] and fall back to zero-root-only when
+/// absent (boot-stage tables with no allocator domain).
+#[inline]
+pub fn free_pt_page(phys: PhysBytes) {
+    let _ = PT_FREE_REGISTERED.load(Ordering::Acquire);
+    // SAFETY: write-once-then-read-only — set via `register_free()`.
+    let free_fn = unsafe { core::ptr::read(PT_FREE.0.get()) };
+    free_fn(phys)
 }

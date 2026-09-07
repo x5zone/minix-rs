@@ -99,11 +99,9 @@
 
 ## E4 pt_alloc free 注册 + 三架构 destroy 中间页回收（= 02-stage-vm V11-P2-8）
 
-**问题**：`os/arch/src/arch/pt_alloc.rs` 只有 `register/is_registered/alloc_pt_page`（:69/:90/:101），没有 free；`x86_64/paging.rs:487-497` 的 `destroy` 只清零根 PML4、自述 "accept the intermediate-table leak"——每次进程退出泄漏 1-3 个中间页表页（C 的 `pt_free` pagetable.c:1427-1437 会回收；Redox `Drop for Table` + Linux `free_pgtables` 均回收）。
-
-**跨 stage 文件**：`os/arch/src/arch/pt_alloc.rs`（加 free 注册槽）、`os/arch/src/x86_64/paging.rs`（destroy 四级遍历回收）、需核查 aarch64/riscv64 的同型 destroy 是否同样只清零（UNVERIFIED）。
-
-**建议**：pt_alloc 注册槽从单函数指针扩为 `{ alloc, free }`（或 trait）；destroy 逐级回收中间页并归还注册来源的分配器，保持"先清零根防 UAF"语义与 `exit.rs:188-189` 的 SAFETY 前提不变；补"destroy 后中间页归还"测试。
+> **进度（2026-09-07，x86_64 完成）**：`pt_alloc::register_free/free_pt_page/is_free_registered` 落地（同一 write-once 惯例；无注册时 no-op）；`X86_64Paging::destroy` 四级 DFS 回收——中间表页逐级归还 pt_alloc，PS 位（大页帧）与数据页跳过（归 exit 的 region 路径），根页清零后最后归还（UAF 语义不变）；`channel_to_ptr` 的 VmDm 臂在 arch 自身 test build 路由 MockDirectMap（`set_mock_vm_base` 指向泄漏缓冲），宿主完整验证：1 root + 1 PDPT + 3 PD + 3 PT = 8 表页回收、3 数据页幸存、root 最后释放。riscv64 destroy 确认同型泄漏（仅清零根）；aarch64 同型（arch/src 无独立 aarch64 paging 文件——目标可用时处置）。**余件：riscv64/aarch64 的同型回收 + kernel/VM 侧 `register_free` 接线**（VM 的 `alloc_page::vm_pt_alloc` 注册了 alloc；free 的注册点随 VM 进程退出路径完善时补——当前 VM 侧进程页表分配/释放生命周期未闭环，先于本项无实际回收诉求）。
+>
+> 原始问题描述（x86_64 部分已修复）：`pt_alloc.rs` 只有 `register/is_registered/alloc_pt_page`，没有 free；`x86_64/paging.rs` 的 `destroy` 只清零根 PML4——每次进程退出泄漏中间页表页（C `pt_free` pagetable.c:1427-1437 回收；Redox/Linux 同样回收）。
 
 ---
 

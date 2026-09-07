@@ -131,11 +131,25 @@ enum PteChannel {
 
 #[inline]
 fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
+    // V11/E4: in this crate's own test build (mock feature), the VM window
+    // routes through MockDirectMap so tests can point it at real leaked
+    // memory via `set_mock_vm_base` — mirroring the VM-side test funnel.
+    // Production keeps the x86_64 constant base.
     match channel {
         PteChannel::KernelDm => {
             X86_64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
         }
+        #[cfg(not(all(test, feature = "mock")))]
         PteChannel::VmDm => X86_64DirectMap::vm_phys_to_virt(PhysBytes(phys)).0 as *mut u64,
+        // V11/E4: in this crate's own test build (mock feature), the VM
+        // window routes through MockDirectMap so tests can point it at
+        // real leaked memory via `set_mock_vm_base` — mirroring the
+        // VM-side test funnel. Production keeps the x86_64 constant base.
+        #[cfg(all(test, feature = "mock"))]
+        PteChannel::VmDm => {
+            crate::arch::direct_map::MockDirectMap::vm_phys_to_virt(PhysBytes(phys)).0
+                as *mut u64
+        }
     }
 }
 
@@ -484,17 +498,39 @@ impl Paging for X86_64Paging {
         Ok(Self { root_paddr: root_phys.0, channel: PteChannel::VmDm })
     }
 
+
+
     unsafe fn destroy(&mut self) {
-        // Full reclaim requires a free function registered with pt_alloc
-        // (currently only alloc is registered). Without free, we zero the
-        // root PML4 to prevent use-after-free if the physical page is
-        // reused, and accept the intermediate-table leak.
+        // V11/E4: full four-level reclaim when a pt_free function is
+        // registered (the VM process-exit path — C pagetable.c:1427-1437
+        // `pt_free` parity, previously "accept the intermediate-table
+        // leak", G-V12-6-era gap E4). Without pt_free (boot-stage tables
+        // with no allocator domain), keep the zero-root-only legacy shape:
+        // zero the root PML4 to prevent use-after-free if the physical
+        // page is reused, and leave intermediates unreclaimed.
         //
         // SAFETY: the handle's Direct Map channel must be active;
-        // root_paddr is the physical address of our PML4 page.
+        // root_paddr is the physical address of our PML4 page. The exit
+        // path guarantees the page table is not active on any CPU
+        // (exit.rs SAFETY contract) — single-threaded VM, no concurrent
+        // walker.
+        if !crate::pt_alloc::is_free_registered() {
+            let ptr = channel_to_ptr(self.root_paddr, self.channel);
+            unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+            return;
+        }
+        // Depth-first: free every intermediate table below the root
+        // (PS-bit entries are huge-frame data pages owned by the region /
+        // exit path — skipped, never traversed as tables). Then zero the
+        // root (UAF guard, unchanged) and finally return the root page
+        // itself to the allocator.
+        unsafe { self.free_child_tables(self.root_paddr, 0) };
         let ptr = channel_to_ptr(self.root_paddr, self.channel);
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+        crate::pt_alloc::free_pt_page(minix_types::PhysBytes(self.root_paddr));
     }
+
+
 
     fn map(
         &mut self,
@@ -616,6 +652,36 @@ impl Paging for X86_64Paging {
             asm!("invlpg [{}]", in(reg) vaddr.0, options(nostack, preserves_flags));
         }
     }
+}
+
+impl X86_64Paging {
+/// Free all page-table pages directly or transitively referenced by
+/// `table_paddr`'s present, non-huge entries. `level` 0 = PML4,
+/// 1 = PDPT, 2 = PD; children at level 3 are leaf PT pages (freed
+/// without recursion). Data pages are never touched here.
+///
+/// SAFETY: Direct Map channel active; the caller guarantees the whole
+/// tree is exclusive to this (dead) address space and no CPU walks it.
+unsafe fn free_child_tables(&self, table_paddr: u64, level: u8) {
+    if level >= 3 {
+        return;
+    }
+    let base = channel_to_ptr(table_paddr, self.channel);
+    for i in 0..512usize {
+        // SAFETY: sequential reads within the table page, which the
+        // caller has excluded from all other access.
+        let pte = unsafe { core::ptr::read_volatile(base.add(i)) };
+        if pte & X64PteFlags::PRESENT.bits() != 0
+            && pte & X64PteFlags::PS.bits() == 0
+        {
+            let child = pte & ADDR_MASK;
+            if level + 1 < 3 {
+                unsafe { self.free_child_tables(child, level + 1) };
+            }
+            crate::pt_alloc::free_pt_page(minix_types::PhysBytes(child));
+        }
+    }
+}
 }
 
 impl HugePages for X86_64Paging {
@@ -1091,5 +1157,92 @@ mod tests {
         // intentionally a no-op marker; real walk tests run under QEMU.
         // The flag encoding tests above validate the PTE interpretation
         // logic that walk_read depends on.
+    }
+    // ── V11/E4: destroy 四级回收（宿主可验证版）──────────────────────
+    //
+    // 手写 PTE 树（绕过 map()——其 write_pte_dm 含 invlpg 特权指令，
+    // 宿主必然 SIGSEGV）。destroy 本体只做 read_volatile + write_bytes
+    // + pt_alloc free，宿主完整可验证。T26 技巧：泄漏真实缓冲 +
+    // `set_mock_vm_base` 指向它。状态放 static（register 收 fn 指针）。
+
+    static E4_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    static E4_FREED: std::sync::Mutex<alloc::vec::Vec<u64>> = std::sync::Mutex::new(alloc::vec::Vec::new());
+
+    const E4_POOL_BYTES: usize = 16 * 4096;
+
+    /// Hand-built four-level tree over pool offsets:
+    /// root(0) → PDPT(0x1000) → PD1(0x2000)/PD2(0x4000)/PD3(0x5000) →
+    /// PT1(0x3000)/PT2(0x7000)/PT3(0x9000) → data(0x6000/0x8000/0xA000,
+    /// never freed by destroy).
+    #[test]
+    fn test_destroy_reclaims_intermediate_tables_and_root() {
+        let pool: &'static mut [u8; E4_POOL_BYTES] =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new([0u8; E4_POOL_BYTES]));
+        let base = pool.as_mut_ptr() as u64;
+        // Point the mock Direct Map at the pool so DM accesses land in
+        // real bytes (MockDirectMap is the selected impl under default
+        // features — arch/src/lib.rs).
+        crate::arch::direct_map::set_mock_vm_base(base);
+        E4_BASE.store(base, core::sync::atomic::Ordering::SeqCst);
+        E4_FREED.lock().unwrap().clear();
+
+        crate::pt_alloc::register(|| {
+            let off = E4_NEXT.fetch_add(4096, core::sync::atomic::Ordering::SeqCst);
+            Ok((minix_types::PhysBytes(off as u64),
+                minix_types::VirBytes(E4_BASE.load(core::sync::atomic::Ordering::SeqCst) + off as u64)))
+        });
+        crate::pt_alloc::register_free(|phys| {
+            E4_FREED.lock().unwrap().push(phys.get());
+        });
+
+        // Static bump: root(0), PDPT(0x1000), PD1(0x2000), PT1(0x3000),
+        // PD2(0x4000), PT2(0x7000), PD3(0x5000), PT3(0x9000),
+        // data(0x6000, 0x8000, 0xA000).
+        static E4_NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+        let page = |offset: u64| -> u64 { base + offset };
+
+        let write_pte = |table_off: u64, idx: usize, child_off: u64| {
+            let pte = X64PteFlags::PRESENT.bits() | child_off;
+            unsafe {
+                core::ptr::write_volatile((base + table_off + (idx as u64) * 8) as *mut u64, pte)
+            }
+        };
+        write_pte(0, 0, 0x1000);          // root[0] → PDPT
+        write_pte(0x1000, 0, 0x2000);     // PDPT[0] → PD1
+        write_pte(0x1000, 1, 0x4000);     // PDPT[1] → PD2
+        write_pte(0x1000, 2, 0x5000);     // PDPT[2] → PD3
+        write_pte(0x2000, 0, 0x3000);     // PD1[0] → PT1
+        write_pte(0x3000, 1, 0x6000);     // PT1[1] → data
+        write_pte(0x4000, 2, 0x7000);     // PD2[2] → PT2
+        write_pte(0x7000, 0, 0x8000);     // PT2[0] → data
+        write_pte(0x5000, 0, 0x9000);     // PD3[0] → PT3
+        write_pte(0x9000, 0, 0xA000);     // PT3[0] → data
+
+        // Build the handle directly over root offset 0 (VmDm channel).
+        let mut pt = X86_64Paging {
+            root_paddr: 0,
+            channel: PteChannel::VmDm,
+        };
+        unsafe { pt.destroy() };
+
+        let freed = E4_FREED.lock().unwrap();
+        // All 8 table pages (root + PDPT + 3 PD + 3 PT), none of the data.
+        // Set compare (order-insensitive) — PTEs carry pool *offsets*, so
+        // the freed physical values are offsets too.
+        let mut got = freed.clone();
+        got.sort();
+        let mut want: alloc::vec::Vec<u64> = alloc::vec![
+            0x3000, 0x4000, 0x5000, // PT1, PD2, PD3
+            0x2000, 0x7000, 0x9000, // PD1, PT2, PT3
+            0x1000, 0,              // PDPT, root (freed last)
+        ];
+        want.sort();
+        assert_eq!(got, want, "freed set = 8 table pages, no data pages");
+        // Ordering contract: the root page (pool offset 0) is freed last.
+        assert_eq!(freed.last().copied(), Some(0), "root freed last");
+        // Data pages untouched.
+        for d in [0x6000u64, 0x8000, 0xA000] {
+            assert!(!freed.contains(&d), "data page {d:#x} must survive");
+        }
     }
 }
