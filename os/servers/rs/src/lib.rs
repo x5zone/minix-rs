@@ -1342,11 +1342,98 @@ mod signal_handler_tests {
         m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rprocpub_off::SIZE as u64;
         assert_eq!(server.do_getsysinfo(&m), Ok(0));
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
-        assert_eq!(
-            server.do_getsysinfo(&m),
-            Err(Errno::ENOSYS),
-            "struct rproc pinning stays the E-RSWIRE remainder"
+        m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rproc_off::SIZE as u64;
+        assert_eq!(server.do_getsysinfo(&m), Ok(0), "rproc table copy-out live");
+    }
+
+    #[test]
+    fn test_getsysinfo_rproc_copyout_serves_table() {
+        // R12: SI_PROC_TAB (request.c:1113-1115) — every row serializes to
+        // the pinned `struct rproc` layout (witness-derived offsets in
+        // `minix_types::rproc_off`); the exact-size gate at :1134-1136.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        let mut table = RProcTable::new();
+        let id = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(id);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::VFS;
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.pid = Some(700);
+            s.restarts = 2;
+            s.scheduler = Endpoint::SCHED;
+            s.priority = 4;
+            s.quantum = 100;
+            s.priv_.id = crate::privilege::PrivId(7);
+            s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
+        }
+        let size = (table.len() * minix_types::rproc_off::SIZE) as u64;
+        let r = crate::shell_request::copy_out_rproc_table(
+            &mut mock,
+            &table,
+            Endpoint::PM,
+            0x6000,
+            size,
         );
+        assert_eq!(r, Ok(()));
+        let (dest, addr, bytes) = &mock.sent_copies[0];
+        assert_eq!(*dest, Endpoint::PM);
+        assert_eq!(*addr, 0x6000);
+        assert_eq!(bytes.len() as u64, size);
+
+        // Field spot-checks at the witness-derived offsets: the C-visible
+        // identity and scheduling facts land byte-exact.
+        use minix_types::rproc_off::{self as o, priv_off};
+        let rd32 =
+            |b: &[u8], off: usize| i32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
+        assert_eq!(rd32(bytes, o::R_PID), 700);
+        assert_eq!(rd32(bytes, o::R_RESTARTS), 2);
+        assert_eq!(rd32(bytes, o::R_SCHEDULER), Endpoint::SCHED.get());
+        assert_eq!(rd32(bytes, o::R_PRIORITY), 4);
+        assert_eq!(rd32(bytes, o::R_QUANTUM), 100);
+        let pr = o::R_PRIV;
+        let s_flags = i16::from_le_bytes([bytes[pr + 6], bytes[pr + 7]]);
+        assert!(
+            s_flags & (crate::privilege::PrivFlags::SYS_PROC.bits() as i16) != 0,
+            "SYS_PROC lands in s_flags"
+        );
+        // s_id is a 2-byte short (priv.h:23) followed by s_flags — read the
+        // 2-byte field, not a 4-byte word.
+        let s_id = i16::from_le_bytes([bytes[pr + 4], bytes[pr + 5]]);
+        assert_eq!(s_id, 7);
+        assert_eq!(
+            rd32(bytes, pr + priv_off::S_K_CALL_MASK),
+            table.get(id).priv_.k_call_mask.0 as i32
+        );
+    }
+
+    #[test]
+    fn test_getsysinfo_procall_tab_serves_both_tables() {
+        // C: request.c:1113-1121 — SI_PROCALL_TAB copies rproc rows then
+        // rprocpub rows back to back; the early gate rejects when the rproc
+        // half alone exceeds the declared size (request.c:1116-1118).
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        let table = RProcTable::new();
+        let proc_len = table.len() * minix_types::rproc_off::SIZE;
+        let pub_len = table.len() * minix_types::rprocpub_off::SIZE;
+        let r = crate::shell_request::copy_out_procall_table(
+            &mut mock,
+            &table,
+            Endpoint::PM,
+            0x7000,
+            (proc_len + pub_len) as u64,
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(mock.sent_copies[0].2.len(), proc_len + pub_len);
+        let r = crate::shell_request::copy_out_procall_table(
+            &mut mock,
+            &table,
+            Endpoint::PM,
+            0x7000,
+            (proc_len + pub_len - 1) as u64,
+        );
+        assert_eq!(r, Err(Errno::EINVAL), "early gate on the rproc half");
     }
 
     fn do_update_message(addr: u64) -> minix_types::Message {
@@ -1739,10 +1826,11 @@ mod signal_handler_tests {
         assert_eq!(server.do_getsysinfo(&m), Err(Errno::EINVAL));
 
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
+        m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rproc_off::SIZE as u64;
         assert_eq!(
             server.do_getsysinfo(&m),
-            Err(Errno::ENOSYS),
-            "the copy-out half stays fail-closed until E-RSWIRE"
+            Ok(0),
+            "the rproc copy-out is live (R12)"
         );
     }
 

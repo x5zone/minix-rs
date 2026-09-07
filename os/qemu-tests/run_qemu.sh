@@ -105,6 +105,7 @@ case "$ARCH" in
             -serial "file:$SERIAL_LOG"
             -display none
             -no-reboot
+            -d int,cpu_reset -D /tmp/qemu_int.log
         )
         ;;
     aarch64)

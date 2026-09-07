@@ -2440,3 +2440,30 @@ VM 侧半留 edge（`ipc_call_rs_init` 真实体）。
   字节 ABI pinning 落地 minix-types。
 - **测试**：minix-rs 304→325、minix-types 175→182。
 - **待执行**：无（R9a/R9b 已于本 §21.1 完成）。
+
+### ✅ Fix #89 — R12：`struct rproc` 内部表 pinning + SI_PROC_TAB/SI_PROCALL_TAB 两臂 live（E-RSWIRE RS 半彻底关闭）
+
+- **File**：`os/libs/minix-types/src/ipc/rproc.rs`（新建：`rproc_off`/`upd`/
+  `priv_off` 偏移表 + repr(C) 三层见证 RprocLayout/RprocUpdLayout/PrivLayout
+  （含 minix_timer_t/sigset_t/sys_map_t 传递类型）+ 地标测试）、`ipc/mod.rs`、
+  `os/servers/rs/src/shell_request.rs`（`serialize_rproc_row` +
+  `copy_out_rproc_table`/`copy_out_procall_table` + 两臂接线 + 2 测试）、
+  lib.rs（两处旧 ENOSYS 期望翻转为 live）
+- **方法升级（对 §21.1 设计的修正）**：`rs_start`/`rprocpub` 的手推偏移常数在
+  60 字段规模下不可靠——本轮 witness 直接成为偏移的**唯一来源**（模块常量 =
+  `offset_of!` 派生值），另以 ~20 个**独立手算地标**断言兜底。两道防线各抓到
+  一类错误：见证层抓出 `s_id` 是 short（首版误写 i32）；地标层抓出
+  `s_init_flags`@8（对齐推算误写 12）与 `s_trap_mask`@36（误插 2 字节 phantom
+  pad，priv 尾段整体偏移 -4，SIZE 1104 非 1112）。最终 `sizeof(struct rproc)`
+  = **3752**。
+- **序列化映射**：chain/argv/exec 指针字段 = 0（A-3 索引模型无裸地址；C 收方
+  对其本就 opaque）；`struct priv` 从权威副本 `slot.priv_` 写入（Fix #62），
+  内核运行时字段（async 表/pending 位图/timer/grant 表）RS 从不建模 = 0；
+  `io_range` limit = base+len-1（type.h:135-136）；`s_id` 为 2 字节 short。
+- **SI_PROCALL_TAB**：rproc 行段 + rprocpub 行段背靠背单缓冲（C fallthrough
+  语义，request.c:1113-1121），早门 `proc_len > size` → EINVAL。
+- **Verified**：`cargo test -p minix-rs` = **327 passed**（+2）；minix-types =
+  **184 passed**（+1 地标测试；20 个地标断言全过——手推与编译器布局最终零偏差，
+  过程中修正 3 处手推错误）；clippy 触碰文件零告警；fmt 干净；T7 PASS。
+  E-RSWIRE 的 RS 侧半至此彻底关闭（rprocpub 于 Fix #85、rproc 于本 Fix），
+  仅剩 VM 侧消费半（ipc_call_rs_init 真实体）。

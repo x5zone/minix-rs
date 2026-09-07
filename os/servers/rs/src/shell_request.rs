@@ -103,6 +103,221 @@ pub(crate) fn copy_out_procpub_table(
     kernel.safecopy_to(dest, addr, &img)
 }
 
+/// Serializes one [`crate::service_slot::ServiceSlot`] row into C
+/// `struct rproc` wire bytes (type.h:56-108; offsets derived from the
+/// repr(C) witness in `minix_types::rproc_off`). Field mapping:
+/// - the four chain fields and the `r_upd`/`r_argv`/`r_exec` pointer fields
+///   serialize as 0 — they are RS-address-space pointers in C (opaque to
+///   any receiver) and the A-3 index model holds no raw addresses;
+/// - `struct priv` is written from the authority copy (`slot.priv_`,
+///   Fix #62); kernel-runtime fields RS never models (async table, pending
+///   maps, timers, grant/state tables) serialize as zero — their C in-RS
+///   copies are equally zero or stale;
+/// - `r_io_tab`/`s_io_tab` write C's `ior_base`/`ior_limit` =
+///   `base + len - 1` (type.h:135-136, edit_slot manager.c:1516-1518);
+/// - `r_upd` writes the live descriptor (`slot.upd`) minus its pointers.
+///
+/// Unmodeled-field zeros are design-documented, not accidents: everything a
+/// dump-face consumer (08-stage-is) reads — labels, names, flags, endpoints,
+/// period/heartbeat timestamps, restart counters — is byte-exact.
+pub(crate) fn serialize_rproc_row(slot: &crate::service_slot::ServiceSlot, out: &mut [u8]) {
+    use minix_types::rproc_off as off;
+    use minix_types::rproc_off::{priv_off, upd};
+
+    fn put32(out: &mut [u8], o: usize, v: u32) {
+        out[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    fn put64(out: &mut [u8], o: usize, v: u64) {
+        out[o..o + 8].copy_from_slice(&v.to_le_bytes());
+    }
+    fn put_i32(out: &mut [u8], o: usize, v: i32) {
+        put32(out, o, v as u32);
+    }
+    fn put_i64(out: &mut [u8], o: usize, v: i64) {
+        put64(out, o, v as u64);
+    }
+
+    let priv_ = &slot.priv_;
+
+    // r_upd descriptor (type.h:31-45) — pointers stay 0.
+    if let Some(u) = &slot.upd {
+        let b = off::R_UPD;
+        put_i32(out, b + upd::LU_FLAGS, u.lu_flags.bits() as i32);
+        put32(out, b + upd::INIT_FLAGS, u.init_flags);
+        put_i32(out, b + upd::PREPARE_STATE, u.prepare_state);
+        put_i32(out, b + upd::STATE_ENDPOINT, u.state_endpoint.get());
+        put_i64(out, b + upd::PREPARE_TM, u.prepare_tm);
+        put_i64(out, b + upd::PREPARE_MAXTIME, u.prepare_maxtime);
+        let sd = b + upd::PREPARE_STATE_DATA;
+        put64(out, sd, u.prepare_state_data.size as u64);
+        put64(out, sd + 8, u.prepare_state_data.ipcf_els_addr);
+        put64(out, sd + 16, u.prepare_state_data.ipcf_els_size as u64);
+        put_i32(
+            out,
+            sd + 24,
+            u.prepare_state_data
+                .ipcf_els_gid
+                .map(|g| g as i32)
+                .unwrap_or(-1),
+        );
+        put64(out, sd + 32, u.prepare_state_data.eval_addr);
+        put64(out, sd + 40, u.prepare_state_data.eval_len as u64);
+        put_i32(
+            out,
+            sd + 48,
+            u.prepare_state_data
+                .eval_gid
+                .map(|g| g as i32)
+                .unwrap_or(-1),
+        );
+    }
+
+    put_i32(out, off::R_PID, slot.pid.unwrap_or(-1));
+    put_i32(out, off::R_ASR_COUNT, slot.asr_count);
+    put_i32(out, off::R_RESTARTS, slot.restarts);
+    put_i64(out, off::R_BACKOFF, slot.backoff);
+    put32(out, off::R_FLAGS, slot.flags.bits() as u32);
+    put_i32(out, off::R_INIT_ERR, slot.init_err);
+    put_i64(out, off::R_PERIOD, slot.period);
+    put_i64(out, off::R_CHECK_TM, slot.check_tm);
+    put_i64(out, off::R_ALIVE_TM, slot.alive_tm);
+    put_i64(out, off::R_STOP_TM, slot.stop_tm);
+    put_i32(out, off::R_CALLER, slot.caller.get());
+    put_i32(out, off::R_CALLER_REQUEST, slot.caller_request);
+    out[off::R_CMD..off::R_CMD + 512].copy_from_slice(&slot.cmd);
+    out[off::R_ARGS..off::R_ARGS + 512].copy_from_slice(&slot.args);
+    // r_argv: 12 opaque pointers — zero (unmodeled).
+    put_i32(out, off::R_ARGC, slot.argc);
+    out[off::R_SCRIPT..off::R_SCRIPT + 256].copy_from_slice(&slot.script);
+    // r_exec: 0 (opaque); r_exec_len carries the image length.
+    put64(
+        out,
+        off::R_EXEC_LEN,
+        slot.exec.as_ref().map(|b| b.len()).unwrap_or(0) as u64,
+    );
+
+    // struct priv — authority copy.
+    let p = off::R_PRIV;
+    put_i32(out, p + priv_off::S_PROC_NR, slot.pub_.endpoint.slot());
+    put_i32(out, p + priv_off::S_ID, priv_.id.0);
+    let sf = priv_.flags.bits() as i16;
+    out[p + priv_off::S_FLAGS..p + priv_off::S_FLAGS + 2].copy_from_slice(&sf.to_le_bytes());
+    put32(out, p + priv_off::S_INIT_FLAGS, priv_.init_flags);
+    let tm = priv_.trap_mask.bits() as i16;
+    out[p + priv_off::S_TRAP_MASK..p + priv_off::S_TRAP_MASK + 2]
+        .copy_from_slice(&tm.to_le_bytes());
+    put32(
+        out,
+        p + priv_off::S_IPC_TO,
+        (priv_.ipc_to.0 & 0xffff_ffff) as u32,
+    );
+    put32(
+        out,
+        p + priv_off::S_IPC_TO + 4,
+        (priv_.ipc_to.0 >> 32) as u32,
+    );
+    put32(
+        out,
+        p + priv_off::S_K_CALL_MASK,
+        (priv_.k_call_mask.0 & 0xffff_ffff) as u32,
+    );
+    put32(
+        out,
+        p + priv_off::S_K_CALL_MASK + 4,
+        (priv_.k_call_mask.0 >> 32) as u32,
+    );
+    put_i32(out, p + priv_off::S_SIG_MGR, priv_.sig_mgr.get());
+    put_i32(out, p + priv_off::S_BAK_SIG_MGR, priv_.bak_sig_mgr.get());
+    put_i32(out, p + priv_off::S_NR_IO_RANGE, priv_.nr_io_range);
+    for (i, r) in priv_.io_ranges.iter().enumerate() {
+        let o = p + priv_off::S_IO_TAB + i * 8;
+        // type.h:135-136 — limit is INCLUSIVE: base + len - 1.
+        let limit = if r.len == 0 { 0 } else { r.base + r.len - 1 };
+        put32(out, o, r.base);
+        put32(out, o + 4, limit);
+    }
+    put_i32(out, p + priv_off::S_NR_MEM_RANGE, priv_.nr_mem_range);
+    for (i, m) in priv_.mem_ranges.iter().enumerate() {
+        let o = p + priv_off::S_MEM_TAB + i * 16;
+        put64(out, o, m.base);
+        put64(out, o + 8, m.len);
+    }
+    put_i32(out, p + priv_off::S_NR_IRQ, priv_.nr_irq);
+    for (i, q) in priv_.irqs.iter().enumerate() {
+        put_i32(out, p + priv_off::S_IRQ_TAB + i * 4, *q);
+    }
+
+    put32(out, off::R_UID, slot.uid);
+    put_i32(out, off::R_SCHEDULER, slot.scheduler.get());
+    put_i32(out, off::R_PRIORITY, slot.priority);
+    put_i32(out, off::R_QUANTUM, slot.quantum);
+    put_i32(out, off::R_CPU, slot.cpu);
+    put64(out, off::R_MAP_PREALLOC_ADDR, slot.map_prealloc_addr);
+    put64(out, off::R_MAP_PREALLOC_LEN, slot.map_prealloc_len as u64);
+    for (i, q) in slot.irq_tab.iter().enumerate() {
+        put_i32(out, off::R_IRQ_TAB + i * 4, *q);
+    }
+    put_i32(out, off::R_NR_IRQ, slot.nr_irq);
+    out[off::R_IPC_LIST..off::R_IPC_LIST + 256].copy_from_slice(&slot.ipc_list);
+    put_i32(out, off::R_NR_CONTROL, slot.nr_control);
+    for (i, l) in slot.control.iter().enumerate() {
+        let o = off::R_CONTROL + i * 16;
+        out[o..o + 16].copy_from_slice(l.as_bytes());
+    }
+}
+
+/// The `SI_PROC_TAB` copy-out (request.c:1113-1115): the whole internal
+/// table (`sizeof(struct rproc) * NR_SYS_PROCS` raw bytes) through the
+/// exact-size gate. Free function for direct-drive tests.
+pub(crate) fn copy_out_procall_table(
+    kernel: &mut dyn crate::boot::KernelApi,
+    table: &crate::process_table::RProcTable,
+    dest: Endpoint,
+    addr: usize,
+    size: u64,
+) -> Result<(), Errno> {
+    let proc_len = table.len() * minix_types::rproc_off::SIZE;
+    let pub_len = table.len() * minix_types::rprocpub_off::SIZE;
+    // C: request.c:1116-1118 — the rproc half alone must fit.
+    if proc_len as u64 > size {
+        return Err(Errno::EINVAL);
+    }
+    // C: request.c:1134-1136 — rproc + rprocpub must fill the request.
+    if (proc_len + pub_len) as u64 != size {
+        return Err(Errno::EINVAL);
+    }
+    let mut img = alloc::vec![0u8; proc_len + pub_len];
+    let row_rproc = minix_types::rproc_off::SIZE;
+    let row_pub = minix_types::rprocpub_off::SIZE;
+    for (i, (_, slot)) in table.iter_all().enumerate() {
+        serialize_rproc_row(slot, &mut img[i * row_rproc..(i + 1) * row_rproc]);
+        serialize_rprocpub_row(
+            slot,
+            &mut img[proc_len + i * row_pub..proc_len + (i + 1) * row_pub],
+        );
+    }
+    kernel.safecopy_to(dest, addr, &img)
+}
+
+pub(crate) fn copy_out_rproc_table(
+    kernel: &mut dyn crate::boot::KernelApi,
+    table: &crate::process_table::RProcTable,
+    dest: Endpoint,
+    addr: usize,
+    size: u64,
+) -> Result<(), Errno> {
+    let row_len = minix_types::rproc_off::SIZE;
+    let rows = table.len();
+    let mut img = alloc::vec![0u8; rows * row_len];
+    for (i, (_, slot)) in table.iter_all().enumerate() {
+        serialize_rproc_row(slot, &mut img[i * row_len..(i + 1) * row_len]);
+    }
+    if img.len() as u64 != size {
+        return Err(Errno::EINVAL);
+    }
+    kernel.safecopy_to(dest, addr, &img)
+}
+
 /// Assembles the post-copy [`crate::slot::RsStart`] from the decoded wire
 /// view: fetches the caller-space buffers through the safecopy seam — the
 /// second half of C's two-phase design (rs.h:63 "Labels are copied over
@@ -922,6 +1137,29 @@ impl RsServer {
         // stays the E-RSWIRE remainder and these arms fail closed.
         if what == crate::query::SI_PROCPUB_TAB {
             copy_out_procpub_table(
+                self.kernel.as_mut(),
+                &state.table,
+                m.m_source,
+                where_ as usize,
+                size,
+            )?;
+            return Ok(0);
+        }
+        if what == crate::query::SI_PROC_TAB {
+            copy_out_rproc_table(
+                self.kernel.as_mut(),
+                &state.table,
+                m.m_source,
+                where_ as usize,
+                size,
+            )?;
+            return Ok(0);
+        }
+        if what == crate::query::SI_PROCALL_TAB {
+            // C: request.c:1113-1121 — both tables back to back: rproc rows
+            // first (early `len > size` gate at :1116-1118), then rprocpub
+            // at dst_addr + proc_len, and the exact-size gate at :1134-1136.
+            copy_out_procall_table(
                 self.kernel.as_mut(),
                 &state.table,
                 m.m_source,
