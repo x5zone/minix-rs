@@ -299,11 +299,21 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 12. Disinherit loop (388-409) ----
     disinherit(table, slot, transport, kern);
 
-    // ---- 13. SIGHUP for session leader (412) ----
+    // ---- 13. SIGHUP for session leader (411-412) ----
     if procgrp != 0 {
-        // `check_sig(-procgrp, SIGHUP)` → signal.c:568 broadcast to procgrp
-        // [DEFERRED: D-13] 同上：sys_kill 依赖 edge E6；pending 记录仅供测试观察
-        let _ = procgrp;
+        // 会话首领死亡 → 向其进程组广播 SIGHUP（D-27）。C 复用 check_sig
+        // 的负 pid 组扫描（signal.c:601-604 的 mp_procgrp 匹配），caller
+        // 是死亡的首领本人（权限判定与 C 一致）；首领自身已 EXITING，
+        // sig_proc 的退出守卫跳过投递。返回值 C 不检查（412）。
+        let _ = crate::signal::check_sig(
+            table,
+            slot,
+            -procgrp,
+            crate::signal::SIGHUP,
+            false,
+            kern,
+            transport,
+        );
     }
 }
 
@@ -608,7 +618,8 @@ pub(crate) fn tell_tracer<T: crate::ipc::IpcTransport + ?Sized>(
 ///
 /// - `tracer == proc_nr → tracer_died`
 /// - `parent == proc_nr → parent = INIT_PROC_NR + VFS_CALL→NEW_PARENT + ZOMBIE→check_parent`
-/// - `procgrp !=0 → SIGHUP` (session leader, 412)
+///
+/// C 的 `SIGHUP` 广播（411-412）在循环之后、仍在 `exit_proc` 内，由调用方执行。
 fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     exiting_slot: UserSlot,
@@ -671,9 +682,8 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
             check_parent(table, child_slot, true, transport, kern);
         }
     }
-    // SIGHUP for session leader (procgrp !=0)
-    // In C: procgrp = (mp_pid == mp_procgrp) ? mp_procgrp : 0; check_sig(-procgrp, SIGHUP)
-    // [DEFERRED: D-13] signal path deferred to 11（sys_kill 依赖 edge E6）
+    // SIGHUP 不在本函数：C 的 411-412 在 disinherit 循环之后（仍是
+    // exit_proc 主体），由 exit_proc 尾部执行（D-27）。
 }
 
 #[cfg(test)]
@@ -690,6 +700,38 @@ mod tests {
         table.procs[slot].identity.procgrp = pid;
     }
 
+
+    /// D-27/V2-P1-2：会话首领死亡 → 进程组广播 SIGHUP（forkexit.c:411-412，
+    /// check_sig(-procgrp) 负 pid 组扫描）。同组成员默认处置终止，异组进程
+    /// 存活；首领自身已 EXITING，sig_proc 的退出守卫跳过重复投递。
+    #[test]
+    fn test_session_leader_death_broadcasts_sighup() {
+        let mut table = ProcTable::new();
+        // 首领 slot 1：pid == procgrp == 100（会话首领）。
+        running_proc(&mut table, 1, 100);
+        // 同组成员 slot 2；异组进程 slot 3。
+        running_proc(&mut table, 2, 101);
+        table.procs[2].identity.procgrp = 100;
+        running_proc(&mut table, 3, 102);
+        table.procs[3].identity.procgrp = 200;
+
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        do_exit(&mut table, UserSlot::new(1), 0, &mut t, &mut kern);
+
+        // 同组成员被 SIGHUP 默认处置终止（EXITING → zombify）。
+        assert!(
+            table.procs[2].is_exiting()
+                || matches!(
+                    table.procs[2].state.lifecycle,
+                    Lifecycle::Zombie { .. } | Lifecycle::ToldParent { .. }
+                ),
+            "group member must be terminated by SIGHUP, got {:?}",
+            table.procs[2].state.lifecycle
+        );
+        // 异组进程存活。
+        assert!(table.procs[3].is_in_use() && !table.procs[3].is_exiting());
+    }
 
     /// D-13：记录 sys_kill 调用的网关 mock。
     #[derive(Default)]

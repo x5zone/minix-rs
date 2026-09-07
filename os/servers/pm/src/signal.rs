@@ -22,6 +22,9 @@ pub const SIGBUS: i32 = 10;
 pub const SIGSEGV: i32 = 11;
 
 pub const SIGSTOP: i32 = 17;
+/// Hangup（`sys/sys/signal.h:52`）——会话首领死亡时向其进程组广播
+///（`check_sig(-procgrp, SIGHUP)`，forkexit.c:412）。
+pub const SIGHUP: i32 = 1;
 
 /// Kill error, maps to `errno`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,14 +82,14 @@ pub fn do_srv_kill(
 /// `pid` four meanings: `>0` one, `0` process group (caller procgrp), `-1` all (except `INIT_PID`), `<-1` group `-pid`.
 /// `signo == 0` is existence probe (no `sig_proc`, just count).
 /// Returns `Ok(count)` or `Err(errno)`, and `SUSPEND` is modeled as `Err` with `caller` now `EXITING` (self-kill).
-pub fn check_sig(
+pub fn check_sig<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     caller: UserSlot,
     pid: Pid,
     signo: i32,
     ksig: bool,
     kern: &mut dyn crate::exit::KernelGateway,
-    transport: &mut dyn crate::ipc::IpcTransport,
+    transport: &mut T,
 ) -> Result<usize, KillError> {
     if signo < 0 || signo >= _NSIG as i32 {
         return Err(KillError::InvalidSignal);

@@ -227,7 +227,7 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 | D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
 | D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
 | D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
-| D-13 | ~~`exit.rs:33`~~ | ~~exit 路径 `sys_kill` no-op~~ **✅ 已修复**（2026-09-06，Fix #23：`do_exit` PRIV_PROC 分支经 `KernelGateway`/`TrapKernelGateway` 真实发送 `sys_kill(endpoint, SIGKILL)`（C 忽略返回值语义保留）；minix-sys `sys_kill` wrapper 落地 = E6 sys_kill 切片闭环；真实通电仍挂 E1） | 11-signal-core.md | ~~edge E6（SYS_KILL wrapper）+ E1（trap）~~ wrapper 达成（通电挂 E1） |
+| D-13 | ~~`exit.rs:33`~~ | ~~exit 路径 `sys_kill` no-op~~ **✅ 已修复**（范围注记 2026-09-08：本行只覆盖 do_exit 的 PRIV_PROC 违规分支一处；SIGHUP 广播两站点已拆出为 D-27，见下）（2026-09-06，Fix #23：`do_exit` PRIV_PROC 分支经 `KernelGateway`/`TrapKernelGateway` 真实发送 `sys_kill(endpoint, SIGKILL)`（C 忽略返回值语义保留）；minix-sys `sys_kill` wrapper 落地 = E6 sys_kill 切片闭环；真实通电仍挂 E1） | 11-signal-core.md | ~~edge E6（SYS_KILL wrapper）+ E1（trap）~~ wrapper 达成（通电挂 E1） |
 | D-14 | ~~`exit.rs:101`~~ | ~~退出进程自身 times 计账为 0~~ **✅ 已修复**（2026-09-07，Fix #26：`KernelGateway::proc_times`（minix-sys `sys_times` wrapper，SYS_TIMES=25）→ exit_proc step 4 累加进 child 桶；失败 panic 对齐 `forkexit.c:308-309`） | 10-pm-wait.md | ~~edge E6（SYS_TIMES wrapper）~~ wrapper 达成（真实通电挂 E1） |
 | D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
 | D-16 | `exit.rs:142` | core dump 路径名指针为 0——**依赖未解除的显式 DEFERRED**：C 传 `mp_name` 指针（m7p1，VFS 异步 safecopy PM 内存，`forkexit.c:356`），Rust (a) 无法对表内数据形成跨异步稳定指针、(b) `VfsCall::DumpCore.path` 为 i32 容不下 64 位指针——需与 05-stage-vfs 协同重设计契约（按值 [u8;16] 或 minix-types 增 path+len 成员） | 09-pm-exit.md | 契约决策 + minix-types wire 成员（edge E7） |
@@ -241,6 +241,7 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 | D-24 | ~~`mproc/fork.rs:222-228`~~ | ~~`getticks()` 返回 0~~ **✅ 已修复**（2026-09-06，Fix #15：getticks 桩删除；`fork_from`/`srv_fork_from` 显式注入 `started: Clock`，`fork_child_from_parent` 经 ClockSource 计算；活路径零值收敛为带 E6 注释的显式 seam） | 14-itimer.md / 内核 sys_times | ~~内核 uptime 面~~ 结构达成（真实 uptime 挂 E6） |
 | D-25 | ~~`event.rs` `PmEventServices::resume`~~ | ~~暂返回 OK~~ **✅ 已修复**（2026-09-07，Fix #28：`PmEventServices::resume` 经 `KernelGateway::sys_resume` → minix-sys `sys_runctl(ep, RC_RESUME, 0)` 真实恢复；kernel `dispatch_runctl` RC_RESUME 分支对端真实） | 13-signal-flow.md / edge E6 | ~~minix-sys SYS_* 面~~ 达成（真实通电挂 E1） |
 | D-26 | ~~`wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷~~ | ~~wait4 回复的状态码载荷建模缺失~~ **✅ 已修复**（2026-09-06，Fix #22：`MessPmLcWait4` + `m_pm_lc_wait4` arm 落地 minix-types；ZOMBIE/TRACE_STOPPED/tell_parent/tell_tracer 四处 wire 按"m_type=pid + 载荷=status"发出；E7 首切片） | 10-pm-wait.md / edge E7 | ~~minix-types 增成员~~ 已达成 |
+| D-27 | ~~`exit.rs:302-307`~~ / ~~`exit.rs:674-676`~~ | ~~SIGHUP 会话组广播 no-op~~ **✅ 已修复**（2026-09-08，Fix #32：exit_proc 第 13 步经 `check_sig(-procgrp, SIGHUP)` 真实广播，caller 为死亡首领本人；disinherit 尾注释改为指针；真实通电挂 E1） | 09-pm-exit.md | ~~check_sig 复用~~ 已达成（stage 内，无外部依赖） |
 
 不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
 
@@ -860,6 +861,23 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无——本条目 stage 内完整闭环。
 
+### ✅ Fix #32: V2-P1-2 — SIGHUP 会话组广播实现（D-27）（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/exit.rs`（exit_proc 第 13 步：`procgrp != 0` 时 `check_sig(-procgrp, SIGHUP, ksig=false)`，caller 为死亡首领本人——权限判定与 C 一致，首领自身由 sig_proc 的退出守卫跳过；disinherit 尾部的重复 DEFERRED 注释改为指针注释，doc 注释同步；新增 `test_session_leader_death_broadcasts_sighup`：同组成员终止、异组存活、首领不重复投递）
+- `os/servers/pm/src/signal.rs`（`check_sig` 泛型化 `<T: IpcTransport + ?Sized>`——exit_proc 的泛型通道得以贯穿，对 dyn 调用方透明；新增 `SIGHUP = 1` 常量，锚点 sys/sys/signal.h:52）
+- `notes/.../todo.md`（§6 新增 D-27 行，D-13 行加范围注记）
+
+**Before/After**：SIGHUP 广播（POSIX 挂断传播核心）在两处站点均为 no-op 且挂在已关闭的 D-13 编号下（台账错位）。修复后复用 check_sig 的负 pid 组扫描（signal.c:601-604 匹配语义），与 C 的调用形态逐点一致（forkexit.c:411-412）。**设计选型**：(a) 复用 check_sig（首选：C 同一子程序，四态选择/权限/守卫全继承）；(b) 手写组扫描循环（否决：重复逻辑，绕过权限与 lethal 保护）；实现点选 exit_proc 第 13 步（C 位置），disinherit 尾部的第二站点改为指针注释避免双重广播。
+
+**Verified**：
+- `cargo test -p minix-pm`：352 lib（+1）+ 8 integration passed
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error
+
+**Docs**：`09-pm-exit.md`（正文 §2.2/收养段此前已描述 C 契约，本次补测试行）；本文件 V2-P1-2 标 ✅。
+
+**未做（DEFERRED 论证）**：真实通电（trap 层）挂 E1。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -991,7 +1009,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：`get_free_pid` 返回自增后的值（把 candidate/next 语义对调），`test_pid_first_allocation` 改断言 `INIT_PID + 2`，回绕分支同步核对（C 回绕后首个是 2，即 `next_pid=NR_PIDS → 下一值 INIT_PID+1=2`）。方案二：维持现状并在模块头声明"相位差异有意"——不可取：无任何理由偏离 C 的编号序列，且 pid 2 在 C 中被跳过可能正是某些历史工具的隐含依赖。
 - **验证**：单测断言首个 PID=3、回绕后=2；`fill_boot_procs` 后 RS 的 PID 与 C 一致。
 
-#### V2-P1-2 session leader 死亡的 SIGHUP 组广播未实现，且 D-13 台账错位、§0.1 基线过度声称
+#### V2-P1-2 session leader 死亡的 SIGHUP 组广播未实现，且 D-13 台账错位、§0.1 基线过度声称（✅ 已修复 2026-09-08，见 §10 Fix #32）
 
 - **优先级**：P1
 - **类型**：语义缺失 + 账目错位
