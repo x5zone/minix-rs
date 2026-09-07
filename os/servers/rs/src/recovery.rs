@@ -834,17 +834,17 @@ fn reincarnate_service(
     table.set_endpoint_index(ep, None);
 
     let restarts = table.get(rp).restarts; // manager.c:1045-1049
-    let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
-    let mut noop_publish = |_: &RProcTable, _: SlotId| Ok(());
+    let mut effects = crate::service_create::CreateEffects {
+        asynsend: alloc::boxed::Box::new(asynsend),
+        ..Default::default()
+    };
     let _ = crate::service_create::start_service(
         table,
         rp,
         kernel,
         0, // SEF_INIT_FRESH carries no script flags — fresh incarnation
         ticks,
-        &mut noop_read_exec,
-        &mut noop_publish,
-        asynsend,
+        &mut effects,
     );
     table.get_mut(rp).restarts = restarts + 1;
 }
@@ -857,7 +857,21 @@ fn reincarnate_service(
 /// ([`abort_update_proc`]), norestart arming, the EXITING path (core fatal,
 /// late reply, unpublish hook, per-instance cleanup, reincarnate), the
 /// REFRESHING restart, and the backoff branch.
-#[allow(clippy::too_many_arguments)]
+/// The termination-family seam bundle (A-2 — §20.3): owned closures
+/// (`Box<dyn FnMut>`) so a caller can pass real effects while tests use
+/// noops. C: the implicit globals unpublish_service/run_script/rs_asynsend
+/// (manager.c:1140/:1209, utility.c:223).
+pub struct TerminateEffects<'a> {
+    /// DS unpublish hook. C: unpublish_service — manager.c:1140 (11/19).
+    pub unpublish: alloc::boxed::Box<dyn FnMut(SlotId) + 'a>,
+    /// Recovery script hook. C: run_script — manager.c:1209 (15/19).
+    pub run_script: alloc::boxed::Box<crate::service_create::SlotEffectFn<'a>>,
+    /// RS_INIT async send. C: rs_asynsend — utility.c:223 (19).
+    pub asynsend: alloc::boxed::Box<
+        dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno> + 'a,
+    >,
+}
+
 pub fn terminate_service(
     table: &mut RProcTable,
     upd: &mut crate::live_update::UpdateState,
@@ -865,9 +879,7 @@ pub fn terminate_service(
     kernel: &mut dyn KernelApi,
     ticks: Clock,
     shutting_down: bool,
-    unpublish: &mut dyn FnMut(SlotId),
-    run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
-    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+    effects: &mut TerminateEffects,
 ) -> TerminateOutcome {
     let outcome = TerminateOutcome {
         self_terminate: false,
@@ -902,23 +914,23 @@ pub fn terminate_service(
                 crate::live_update::RS_REPLY,
                 ticks,
                 &mut |_: &ServiceSlot, _: i32| {},
-                run_script,
+                &mut effects.run_script,
             );
             table.get_mut(rp).init_err = minix_types::ERESTART;
         }
         // manager.c:1154-1156 — refresh path: restart in place.
         TerminateAction::Refresh => {
             let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
-            let mut noop_publish = |_: &RProcTable, _: SlotId| Ok(());
             crate::service_create::restart_service(
                 table,
                 rp,
                 kernel,
                 ticks,
-                &mut noop_read_exec,
-                run_script,
-                &mut noop_publish,
-                asynsend,
+                &mut crate::service_create::RestartEffects {
+                    read_exec: &mut noop_read_exec,
+                    run_script: &mut effects.run_script,
+                    asynsend: &mut effects.asynsend,
+                },
             );
         }
         // manager.c:1160-1175 — wait out the binary backoff (do_period
@@ -929,16 +941,16 @@ pub fn terminate_service(
         // manager.c:1177-1179 — first unexpected exit: immediate restart.
         TerminateAction::Restart => {
             let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
-            let mut noop_publish = |_: &RProcTable, _: SlotId| Ok(());
             crate::service_create::restart_service(
                 table,
                 rp,
                 kernel,
                 ticks,
-                &mut noop_read_exec,
-                run_script,
-                &mut noop_publish,
-                asynsend,
+                &mut crate::service_create::RestartEffects {
+                    read_exec: &mut noop_read_exec,
+                    run_script: &mut effects.run_script,
+                    asynsend: &mut effects.asynsend,
+                },
             );
         }
         TerminateAction::CleanupAll {
@@ -957,7 +969,7 @@ pub fn terminate_service(
                     kernel,
                     minix_types::ERESTART,
                     ticks,
-                    run_script,
+                    &mut effects.run_script,
                 );
             }
 
@@ -982,7 +994,7 @@ pub fn terminate_service(
                     kernel,
                     minix_types::EDEADSRCDST,
                     ticks,
-                    run_script,
+                    &mut effects.run_script,
                 );
             }
 
@@ -1002,17 +1014,17 @@ pub fn terminate_service(
             let _ = kernel.reply(caller, r, &minix_types::Message::default());
 
             // manager.c:1140 — unpublish (the DS effect is the 11/19 seam hook).
-            unpublish(rp);
+            (effects.unpublish)(rp);
 
             // manager.c:1141-1143 — cleanup every instance of the service.
             for inst in get_service_instances(table, rp) {
-                cleanup_service(table, inst, kernel, run_script);
+                cleanup_service(table, inst, kernel, &mut effects.run_script);
             }
 
             // manager.c:1145-1151 — reincarnate after cleanup (the decision
             // already cleared RS_REINCARNATE via `mutations.clear`).
             if reincarnate {
-                reincarnate_service(table, rp, kernel, ticks, asynsend);
+                reincarnate_service(table, rp, kernel, ticks, &mut effects.asynsend);
             }
         }
     }

@@ -385,17 +385,17 @@ impl RsServer {
                 PeriodAction::Restart => {
                     let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                     let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
-                    let mut noop_publish = |_: &RProcTable, _: crate::service_slot::SlotId| Ok(());
                     let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
                     service_create::restart_service(
                         &mut state.table,
                         id,
                         self.kernel.as_mut(),
                         now,
-                        &mut noop_exec,
-                        &mut noop_script,
-                        &mut noop_publish,
-                        &mut noop_asynsend,
+                        &mut crate::service_create::RestartEffects {
+                            read_exec: &mut noop_exec,
+                            run_script: &mut noop_script,
+                            asynsend: &mut noop_asynsend,
+                        },
                     );
                 }
                 // C: request.c:989/:1029 — SIGTERM timeout / missed ping →
@@ -508,11 +508,13 @@ impl SefCallbacks for RsServer {
                 let ticks = kernel.get_ticks().unwrap_or(0);
                 crate::service_create::init_service(
                     state.table.get_mut(new_rs),
-                    None,
-                    crate::sef::SefInitType::Restart,
-                    0,
-                    None,
-                    crate::live_update::SEF_LU_STATE_NULL,
+                    crate::service_create::InitSpec {
+                        old_endpoint: None,
+                        init_type: crate::sef::SefInitType::Restart,
+                        init_flags: 0,
+                        gid: None,
+                        prepare_state: crate::live_update::SEF_LU_STATE_NULL,
+                    },
                     ticks,
                     &mut |_ep, _msg| Ok(()),
                 )?;
@@ -563,11 +565,13 @@ impl SefCallbacks for RsServer {
         let ticks = kernel.get_ticks().unwrap_or(0);
         crate::service_create::init_service(
             state.table.get_mut(new_rs),
-            None,
-            crate::sef::SefInitType::Lu,
-            0,
-            None,
-            crate::live_update::SEF_LU_STATE_NULL,
+            crate::service_create::InitSpec {
+                old_endpoint: None,
+                init_type: crate::sef::SefInitType::Lu,
+                init_flags: 0,
+                gid: None,
+                prepare_state: crate::live_update::SEF_LU_STATE_NULL,
+            },
             ticks,
             &mut |_ep, _msg| Ok(()),
         )?;
@@ -691,9 +695,11 @@ impl SefCallbacks for RsServer {
                     self.kernel.as_mut(),
                     ticks,
                     shutting_down,
-                    &mut unpublish,
-                    &mut noop_script,
-                    &mut noop_asynsend,
+                    &mut crate::recovery::TerminateEffects {
+                        unpublish: alloc::boxed::Box::new(&mut unpublish),
+                        run_script: alloc::boxed::Box::new(&mut noop_script),
+                        asynsend: alloc::boxed::Box::new(&mut noop_asynsend),
+                    },
                 )
             };
             if outcome.self_terminate {

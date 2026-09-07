@@ -892,11 +892,13 @@ impl<'a> BootInit<'a> {
                 };
                 crate::service_create::init_service(
                     self.table.get_mut(id),
-                    None,
-                    crate::sef::SefInitType::Fresh,
-                    init_flags,
-                    gid,
-                    crate::live_update::SEF_LU_STATE_NULL,
+                    crate::service_create::InitSpec {
+                        old_endpoint: None,
+                        init_type: crate::sef::SefInitType::Fresh,
+                        init_flags,
+                        gid,
+                        prepare_state: crate::live_update::SEF_LU_STATE_NULL,
+                    },
                     ticks,
                     &mut asynsend,
                 )?;
@@ -918,11 +920,13 @@ impl<'a> BootInit<'a> {
                 };
                 crate::service_create::init_service(
                     self.table.get_mut(id),
-                    None,
-                    crate::sef::SefInitType::Fresh,
-                    init_flags,
-                    gid,
-                    crate::live_update::SEF_LU_STATE_NULL,
+                    crate::service_create::InitSpec {
+                        old_endpoint: None,
+                        init_type: crate::sef::SefInitType::Fresh,
+                        init_flags,
+                        gid,
+                        prepare_state: crate::live_update::SEF_LU_STATE_NULL,
+                    },
                     ticks,
                     &mut asynsend,
                 )?;

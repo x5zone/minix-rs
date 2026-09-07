@@ -785,18 +785,17 @@ impl RsServer {
         let kernel = self.kernel.as_mut();
         let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
-        let mut noop_publish =
-            |_: &crate::process_table::RProcTable, _: crate::service_slot::SlotId| Ok(());
         let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
         crate::service_create::restart_service(
             &mut state.table,
             id,
             kernel,
             ticks,
-            &mut noop_exec,
-            &mut noop_script,
-            &mut noop_publish,
-            &mut noop_asynsend,
+            &mut crate::service_create::RestartEffects {
+                read_exec: &mut noop_exec,
+                run_script: &mut noop_script,
+                asynsend: &mut noop_asynsend,
+            },
         );
         state.table.get_mut(id).script = script;
         Ok(0)
@@ -1304,19 +1303,25 @@ impl RsServer {
         // (utility.c:223-240, failures ignored), so the deferred send keeps
         // the observable order.
         let mut sent: alloc::vec::Vec<(Endpoint, minix_types::Message)> = alloc::vec::Vec::new();
-        crate::service_create::start_service(
-            &mut state.table,
-            id,
-            self.kernel.as_mut(),
-            init_flags,
-            ticks,
-            &mut |_| Ok(()),
-            &mut |_, _| Ok(()),
-            &mut |ep, msg| {
-                sent.push((ep, msg.encode_message()));
-                Ok(())
-            },
-        )?;
+        {
+            let mut effects = crate::service_create::CreateEffects {
+                asynsend: alloc::boxed::Box::new(
+                    |ep: Endpoint, msg: &crate::ready::InitMessage| {
+                        sent.push((ep, msg.encode_message()));
+                        Ok(())
+                    },
+                ),
+                ..Default::default()
+            };
+            crate::service_create::start_service(
+                &mut state.table,
+                id,
+                self.kernel.as_mut(),
+                init_flags,
+                ticks,
+                &mut effects,
+            )?;
+        }
         for (ep, out) in sent {
             let _ = self.kernel.asynsend(ep, &out);
         }

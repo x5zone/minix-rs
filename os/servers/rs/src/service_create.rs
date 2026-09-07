@@ -1413,26 +1413,91 @@ pub fn run_service(
 ///
 /// C: `start_service` — manager.c:950-983. `publish` is the
 /// `publish_service` seam (manager.c:787-860 — DS/devman/PCI effects, 11).
-#[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/ticks/两注入缝）
+/// The create/publish/run seam bundle (A-2 — §20.3): one struct per call
+/// family instead of loose `&mut dyn` parameters. Seams are owned
+/// (`Box<dyn FnMut>`) so `Default` can provide the 19-gated noop set — the
+/// `&mut dyn` shape of the original proposal cannot implement `Default`
+/// (a reference to a locally created closure would dangle).
+/// Binary-load / recovery-script seam signature (read_exec 与 run_script
+/// 同形：吃槽位、可失败)。
+pub type SlotEffectFn<'a> = dyn FnMut(&mut ServiceSlot) -> Result<(), Errno> + 'a;
+/// DS publish seam signature. C: publish_service (11 号/19).
+pub type PublishFn<'a> = dyn FnMut(&RProcTable, SlotId) -> Result<(), Errno> + 'a;
+/// RS_INIT async-send seam signature. C: rs_asynsend (utility.c:223).
+pub type AsynsendFn<'a> = dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno> + 'a;
+
+pub struct CreateEffects<'a> {
+    /// Binary load. C: exec.c read_seg (19-rs-external-interfaces.md).
+    pub read_exec: alloc::boxed::Box<SlotEffectFn<'a>>,
+    /// DS publish face. C: publish_service — manager.c:962-966 (11 号/19).
+    pub publish: alloc::boxed::Box<PublishFn<'a>>,
+    /// RS_INIT async send. C: rs_asynsend — utility.c:223 (production
+    /// ENOSYS until the 19 wiring).
+    pub asynsend: alloc::boxed::Box<
+        dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno> + 'a,
+    >,
+}
+
+impl Default for CreateEffects<'_> {
+    fn default() -> Self {
+        Self {
+            read_exec: alloc::boxed::Box::new(|_| Ok(())),
+            publish: alloc::boxed::Box::new(|_, _| Ok(())),
+            asynsend: alloc::boxed::Box::new(|_, _| Ok(())),
+        }
+    }
+}
+
+/// The restart forwarding bundle (A-2): restart fans straight into
+/// `clone_service` + `run_service`, so the bundle only lives for one call
+/// and re-borrows the caller's closures — `&mut dyn` fields, no `Default`
+/// (unsound for the same reason as above). C restart's own `_publish` is
+/// dropped: the Rust `run_service` takes no publish seam, so the field had
+/// no consumer to serve.
+pub struct RestartEffects<'a> {
+    /// Binary load for a freshly cloned replica (19 号 file I/O).
+    pub read_exec: &'a mut SlotEffectFn<'a>,
+    /// Recovery script hook. C: run_script — manager.c:1255-1261 (15/19).
+    pub run_script: &'a mut SlotEffectFn<'a>,
+    /// RS_INIT async send (utility.c:223).
+    pub asynsend: &'a mut AsynsendFn<'a>,
+}
+
+/// The initialization request data of one `init_service` (A-2): the five
+/// non-seam parameters grouped so the call reads (slot, what, ticks,
+/// asynsend). Field-for-field C: utility.c:18-64.
+#[derive(Debug, Clone, Copy)]
+pub struct InitSpec {
+    /// Old instance endpoint (utility.c:33-42 — LU state endpoint wins,
+    /// else the previous replica; `None` for fresh boot slots).
+    pub old_endpoint: Option<Endpoint>,
+    /// Initialization type. C: `init_type` (sef.h `SEF_INIT_*` family).
+    pub init_type: crate::sef::SefInitType,
+    /// Initialization flags (SEF_INIT_* bits, already folded).
+    pub init_flags: u32,
+    /// State-data grant (`None` = GRANT_INVALID/-1 sentinel at encode).
+    pub gid: Option<u32>,
+    /// Reached live-update state (SEF_LU_STATE_*).
+    pub prepare_state: i32,
+}
+
 pub fn start_service(
     table: &mut RProcTable,
     rp: SlotId,
     kernel: &mut dyn KernelApi,
     init_flags: u32,
     ticks: Clock,
-    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
-    publish: &mut dyn FnMut(&RProcTable, SlotId) -> Result<(), Errno>,
-    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+    effects: &mut CreateEffects,
 ) -> Result<(), Errno> {
     // Create and make active (manager.c:952-960).
     crate::ready::fold_init_flags(table.get_mut(rp), init_flags); // manager.c:952-953
-    create_service(table, rp, kernel, ticks, read_exec)?;
+    create_service(table, rp, kernel, ticks, &mut effects.read_exec)?;
     activate_service(table, rp, None); // manager.c:959-960
 
     // Publish service properties (manager.c:962-966) — 11-rs-publish.md
     // seam; failure propagates WITHOUT cleanup in C (start_service returns
     // immediately, leaving the created service for the monitor).
-    publish(table, rp)?;
+    (effects.publish)(table, rp)?;
 
     // Run (manager.c:968-972).
     run_service(
@@ -1442,7 +1507,7 @@ pub fn start_service(
         crate::sef::SefInitType::Fresh,
         init_flags,
         ticks,
-        asynsend,
+        &mut effects.asynsend,
     )
 }
 
@@ -1615,9 +1680,11 @@ mod r22b_tests {
                     &mut k,
                     0,
                     100,
-                    &mut no_script,
-                    &mut publish,
-                    &mut asynsend
+                    &mut crate::service_create::CreateEffects {
+                        read_exec: Box::new(&mut no_script),
+                        publish: Box::new(&mut publish),
+                        asynsend: Box::new(&mut asynsend),
+                    }
                 )
                 .is_ok()
             );
@@ -1644,14 +1711,9 @@ mod r22b_tests {
 /// (utility.c:29-31). `gid` is the rproctab grant (12 接线注入);
 /// `prepare_state` is the LU descriptor value (16, `SEF_LU_STATE_NULL`
 /// outside updates).
-#[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（gid/prepare_state/ticks/asynsend）
 pub fn init_service(
     slot: &mut ServiceSlot,
-    old_endpoint: Option<Endpoint>,
-    init_type: crate::sef::SefInitType,
-    init_flags: u32,
-    gid: Option<u32>,
-    prepare_state: i32,
+    spec: InitSpec,
     ticks: Clock,
     asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
@@ -1664,19 +1726,19 @@ pub fn init_service(
 
     let flags = crate::ready::init_flags(
         slot.pub_.sys_flags.contains(SysFlags::USE_SCRIPT),
-        init_flags,
+        spec.init_flags,
     ); // utility.c:54-57
     let (buff_addr, buff_len) = crate::ready::take_map_prealloc(slot); // utility.c:53-60
 
     let msg = crate::ready::init_message(
-        init_type,
+        spec.init_type,
         flags,
-        gid,
-        old_endpoint,
+        spec.gid,
+        spec.old_endpoint,
         slot.restarts + 1, // m_rs_init.restarts = r_restarts+1 (utility.c:58)
         buff_addr,
         buff_len,
-        prepare_state,
+        spec.prepare_state,
     );
     asynsend(slot.pub_.endpoint, &msg) // utility.c:62
 }
@@ -1687,7 +1749,6 @@ pub fn init_service(
 /// gate, slot clone + link, `create_service` of the replica (failure →
 /// unlink), and the RS-restart backup signal-manager setup (failure →
 /// unlink + kill).
-#[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/ticks/read_exec 缝）
 pub fn clone_service(
     table: &mut RProcTable,
     rp: SlotId,
@@ -1767,16 +1828,12 @@ pub fn clone_service(
 /// `run_service(SEF_INIT_RESTART)` of the replica, and the detach-policy
 /// bookkeeping (`RS_CLEANUP_DETACH` when the old version wants detaching
 /// and the restart counter still allows it).
-#[allow(clippy::too_many_arguments)]
 pub fn restart_service(
     table: &mut RProcTable,
     rp: SlotId,
     kernel: &mut dyn KernelApi,
     ticks: Clock,
-    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
-    run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
-    _publish: &mut dyn FnMut(&RProcTable, SlotId) -> Result<(), Errno>,
-    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+    effects: &mut RestartEffects,
 ) {
     // See if a late reply has to be sent (manager.c:1252-1253).
     if table.get(rp).flags.contains(RFlags::LATEREPLY) {
@@ -1790,7 +1847,7 @@ pub fn restart_service(
 
     // Run a recovery script if available (manager.c:1255-1261).
     if table.get(rp).script[0] != 0 {
-        if let Err(e) = run_script(table.get_mut(rp)) {
+        if let Err(e) = (effects.run_script)(table.get_mut(rp)) {
             let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
         }
         return;
@@ -1808,7 +1865,7 @@ pub fn restart_service(
                 PrivFlags::RST_SYS_PROC,
                 0,
                 ticks,
-                read_exec,
+                &mut effects.read_exec,
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -1841,7 +1898,7 @@ pub fn restart_service(
         crate::sef::SefInitType::Restart,
         0,
         ticks,
-        asynsend,
+        &mut effects.asynsend,
     )
     .is_err()
     {

@@ -2086,11 +2086,13 @@ impl UpdateState {
             let new_slot = table.get_mut(new);
             if crate::service_create::init_service(
                 new_slot,
-                old_endpoint,
-                crate::sef::SefInitType::Lu,
-                init_flags,
-                None,
-                crate::live_update::SEF_LU_STATE_NULL,
+                crate::service_create::InitSpec {
+                    old_endpoint,
+                    init_type: crate::sef::SefInitType::Lu,
+                    init_flags,
+                    gid: None,
+                    prepare_state: crate::live_update::SEF_LU_STATE_NULL,
+                },
                 ticks,
                 asynsend,
             )
@@ -2248,17 +2250,17 @@ mod r23c_tests {
                 Ok(())
             };
             let mut no_load = |_slot: &mut ServiceSlot| Ok(());
-            let mut no_publish = |_t: &RProcTable, _rp: SlotId| Ok(());
             let mut no_send = |_ep: Endpoint, _m: &crate::ready::InitMessage| Ok(());
             crate::service_create::restart_service(
                 &mut table,
                 rp,
                 &mut k,
                 0,
-                &mut no_load,
-                &mut script,
-                &mut no_publish,
-                &mut no_send,
+                &mut crate::service_create::RestartEffects {
+                    read_exec: &mut no_load,
+                    run_script: &mut script,
+                    asynsend: &mut no_send,
+                },
             );
         }
         assert!(script_ran);
