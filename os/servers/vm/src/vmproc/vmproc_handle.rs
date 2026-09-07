@@ -302,15 +302,13 @@ impl<'a> ActiveProc<'a> {
     }
 
     #[inline]
-    // V10-P2-1 (DEFERRED): pagefault accounting counters have no producer
-    // yet — the fault path does not bump them.
-    #[allow(dead_code)]
+    // V11/T31: producer = `dispatch_pagefault` (minor: fresh page / CoW /
+    // in-place handled; major: VFS-I/O-backed fault, counted at enqueue).
     pub(crate) fn inc_minor_fault(&mut self) {
         self.inner.vm_minor_page_fault += 1;
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn inc_major_fault(&mut self) {
         self.inner.vm_major_page_fault += 1;
     }

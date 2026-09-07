@@ -1423,7 +1423,23 @@ impl VmServer {
             proc_endpoint, region, frames, page_alloc,
             fault_addr, request.write, table, page_cache, vfs_queue,
         ) {
-            Ok(_action) => VmReply::Ok,
+            Ok(action) => {
+                // V11/T31: fault accounting. Minix3's VM has no fault
+                // counters — the fields are a minix-rs extension following
+                // Linux getrusage semantics: minor = satisfied without
+                // block I/O (fresh zero page, CoW copy, in-place handled);
+                // major = the fault needed VFS I/O, counted at enqueue
+                // (Linux counts major when I/O is required, not at
+                // completion). Access violations are not faults served.
+                match action {
+                    crate::cow_exec_pf::PagefaultAction::Suspended => proc.inc_major_fault(),
+                    crate::cow_exec_pf::PagefaultAction::AccessViolation => {}
+                    crate::cow_exec_pf::PagefaultAction::Handled
+                    | crate::cow_exec_pf::PagefaultAction::MappedNewPage
+                    | crate::cow_exec_pf::PagefaultAction::CowResolved => proc.inc_minor_fault(),
+                }
+                VmReply::Ok
+            }
             Err(_e) => {
                 VmReply::Error(VmError::AccessViolation)
             }
@@ -1704,7 +1720,10 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             //   m1p1 = vui_total, m1p2 = vui_common, m1p3 = vui_shared
             //   m1i1 = vui_virtual (page count), m1i2 = vui_mvirtual (page count)
             //   m1i3 = vui_maxrss (KB, saturated)
-            // vui_minflt / vui_majflt have no remaining M1 slot — DEFERRED
+            // vui_minflt / vui_majflt have no M1 slot — judgment (V11/T31):
+            // C's vm_stats_info (minix/vm.h:41-45) carries no fault fields,
+            // so the VM_INFO wire stays C-parity; the counters' observable
+            // exit is Getrusage (minor/major wired at dispatch_pagefault).
             // to the sys_datacopy path (VMI-3 follow-up; MIB gets them via
             // the full reply once transport lands).
             m1.m1p1 = total.0;
@@ -2449,6 +2468,76 @@ mod tests {
             let action = server.dispatch_on_msg(&msg, &from_kernel, UserSlot::new(0));
             assert!(matches!(action, DispatchAction::NoReply));
             assert_eq!(server.pagefault_errors(), 1, "failed pagefault must be counted");
+        });
+    }
+
+    #[test]
+    fn test_pagefault_accounting_minor_and_violation() {
+        // V11/T31: a successfully served fault bumps minor (fresh anon
+        // page); a write to a read-only region is an access violation and
+        // counts nothing (Linux getrusage semantics — minix3 VM has no
+        // counters, the fields are a minix-rs extension).
+        use crate::region::{VirRegion, VrFlags};
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(72);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, 72);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            drop(active);
+            {
+                let mut proc = table.get_active(slot).unwrap();
+                let mut region = VirRegion::new(
+                    VirBytes(0x3000_0000),
+                    VirBytes(0x4000),
+                    VrFlags::ANON, // read-only anonymous
+                );
+                // `VirRegion::new` leaves the memtype unset (callers choose
+                // it explicitly — rs.rs/mmap.rs do the same).
+                region.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
+                proc.regions_mut().insert(region).unwrap();
+            }
+
+            let kernel_status = IpcStatus { flags: 1 << 16 };
+            // VmPagefaultIn::decode_message reads the faulting endpoint from
+            // m_source (doc 16 [ARCH]: the kernel sends on behalf of the
+            // process, packing the endpoint as the source).
+            let fault_msg = |addr: u64, write: u32| {
+                let mut msg = Message::default();
+                msg.m_source = ep;
+                msg.m_type = minix_types::VM_PAGEFAULT as i32;
+                let mut pf = minix_types::ipc::MessVmPagefault::default();
+                pf.vpf_addr = addr;
+                pf.vpf_flags = write;
+                unsafe {
+                    msg.m_u.m_vm_pagefault = pf;
+                }
+                msg
+            };
+
+            // Read fault on the anon region → fresh page → minor.
+            let msg = fault_msg(0x3000_0000, 0);
+            let _ = server.dispatch_on_msg(&msg, &kernel_status, UserSlot::new(0));
+            let proc = table.get_active(slot).unwrap();
+            assert_eq!(proc.minor_fault(), 1, "served fault counts minor");
+            assert_eq!(proc.major_fault(), 0);
+
+            // Second served fault also counts (accounting is per served
+            // fault, not per page). NOTE: a write fault on a read-only anon
+            // region is currently *served* too — the fault path lacks the
+            // writability gate fork's handle_memory has — registered as
+            // G-V12-6, not masked here.
+            let msg = fault_msg(0x3000_1000, 1);
+            let _ = server.dispatch_on_msg(&msg, &kernel_status, UserSlot::new(0));
+            let proc = table.get_active(slot).unwrap();
+            assert_eq!(proc.minor_fault(), 2, "each served fault counts once");
+            assert_eq!(proc.major_fault(), 0, "no VFS I/O involved");
         });
     }
 

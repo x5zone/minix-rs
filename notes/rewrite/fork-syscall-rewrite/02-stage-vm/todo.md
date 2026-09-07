@@ -1331,6 +1331,7 @@ Coverage Summary for vm:
 | G-V12-3 | dispatcher 4 个新函数（procctl/remap/remap_ro/vfs_reply）只有 reject 半边测试 | —（测试基建） | dispatcher.rs:1589-1596 注释自认 "Real end-to-end behavior is DEFERRED" | ✅ T27（Fix #47） |
 | G-V12-4 | `RsError::UpdateKernelFailed(code)` 的内核 errno 在 VmError 边界坍缩为 InternalError/EIO | rs.c:177 `if(r!=OK) return r`——内核 errno 原样传给 RS | dispatcher.rs:1296 `UpdateKernelFailed(_) => VmError::InternalError`，code 字段被丢弃；`VmError` 无 errno 直传变体。修复需 minix-types 层加变体（wire 层变更），单独立项 | 待定（小项，随 T35 或独立） |
 | G-V12-5 | minix-vm 依赖 minix-arch 未关 default features——`mock` DirectMap（运行时窗口基址变体）服务生产路径 | —（架构语义） | `arch/Cargo.toml` default=`["mock"]`，`servers/vm/Cargo.toml` 以 `{ path = "../../arch" }` 引入（绕过 workspace 表的 `default-features = false`）；VM 的 direct map 窗口本就是**内核动态授予**的运行时基址（E3 接线），"mock" 命名与生产用途混淆。处置归 E3：依赖收口 + 命名澄清（如 `RuntimeWindowDirectMap`）| 随 E3 |
+| G-V12-6 | dispatch_pagefault 对只读 anon 区域的写故障不拒绝（静默分配可写页） | mem_anon.c anon_pagefault / handle_memory 的 `!(region->flags & VR_WRITABLE) && wrflag → EFAULT`（pagefaults.c:362-366） | fault 路径的 anon `ev_pagefault` 对未映射槽恒 `NeedNewPage`（可写性检查只在 fork 的 `handle_memory_once`，fork.rs:56-59）；T31 测试如实钉住现行为。修复方向：handle_pagefault 入口补区域可写性闸（对齐 fork 路径） | 登记待修（T35 邻域） |
 
 ### ✅ Fix #43: T24-pre — 恢复测试基线：rs.rs 测试对齐 RsUpdateCtx + clippy 回归归零
 
@@ -1399,6 +1400,14 @@ Coverage Summary for vm:
 - **测试安全契约（WSL 事故后的硬规则）**：重试核心经 `&mut dyn FnMut(&mut dyn PfnAllocator) -> usize` 注入回收，单测全程无全局态、有界、确定性 ×3（重试成功/零产出即停/病态汇有界终止）+ 无汇时 `reclaim_pages==0` 单测；测试桩初版两处逻辑错误（Cell 深拷贝不共享、reclaim 未归还页）均由断言当场暴露——先读码后跑测 + 断言带消息的纪律生效
 - **Verified**: 三矩阵 **484 / 501 / 484 passed**（+4）；clippy `servers/vm` 0 警告；`rg "alloc_pfn_reclaiming"` 命中漏斗定义 + 3 个生产切换点；已知偏差：重试期的每次尝试仍计入 `alloc_failures`（压力计数语义，膨胀受 16 上界约束，注释已声明）
 - **Docs**: 本条即判定记录；`alloc_cycle` 注释校正（T30 前它误领了 alloc_mem 重试的职责描述）
+
+### ✅ Fix #51: T31 — 缺页计数生产者接线 + InfoUsage 槽位判定闭合
+
+- **C 事实核实**：Minix3 VM **没有任何**缺页计数（`min_flt/maj_flt` 在 servers/vm 全树零命中；C 的 Getrusage 由 PM 填充、VM 侧 utility.c 返回零——本仓 Getrusage 已编码真实计数属既有 [ARCH] 扩展）。`vm_minor/major_page_fault` 字段与 `vsi_*` wire 均无 C 对应物——计数器是 minix-rs 的扩展，其语义按 Linux getrusage 惯例定义：**minor = 无块 I/O 满足**（新零页、CoW 拷贝、原位 Handled）；**major = 故障需要 VFS I/O**（Linux 在需要 I/O 时即计，不等完成）。
+- **Files**: `vm_server.rs`（`dispatch_pagefault` 的 `Ok(action)` 臂接计数：`Suspended → major`（VFS I/O 挂起即计）、`AccessViolation → 不计`（未被服务的故障）、其余三臂 → `minor`；:1707 的 InfoUsage 槽位 DEFERRED 改判定记录——C `vm_stats_info`（minix/vm.h:41-45）无 fault 字段，VM_INFO wire 保持 C-parity，计数器的可观察出口是 Getrusage）、`vmproc_handle.rs`（`inc_minor_fault/inc_major_fault` 摘除 dead_code，V10-P2-1 注记替换为生产者指向）
+- **测试过程披露**：初版测试三连失败并各揭示一层事实——① m_source 必须是故障进程端点（`VmPagefaultIn::decode_message` 契约，doc 16 [ARCH]）；② `VirRegion::new` 不设 `def_memtype`（调用方显式选择，rs/mmap 同惯例），测试补 `MEM_TYPE_ANON`；③ **发现真实缺口 G-V12-6**：写故障落在只读 anon 区域时被静默服务（可写性闸只在 fork 的 `handle_memory_once`，fault 路径缺失）——测试按纪律如实钉住现行为（"each served fault counts once"）并登记缺口，不掩盖
+- **Verified**: `test_pagefault_accounting_minor_and_violation` 通过（served→minor、violation不计、major 仅在 VfsIo）；三矩阵 **485 / 502 / 485 passed**；clippy `servers/vm` 0 警告；`rg "inc_minor_fault|inc_major_fault"` 生产者唯一（dispatch_pagefault）
+- **Docs**: 本条即判定记录；G-V12-6 新登记（§16.1）
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
