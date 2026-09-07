@@ -389,8 +389,9 @@ pub(crate) fn do_fork(
 ///
 /// Thin wrapper around `cow_resolve_core` that maps `CowCoreError` to
 /// `VmForkError`.
-// V10-P2-1 (DEFERRED): CoW is exercised via tests only — the fork
-// production path that faults pages post-`sys_fork` is not wired.
+// Test-only single-page CoW entry. The fork production path's eager-CoW
+// phase (V11/T33) goes through `handle_memory_once`, which resolves CoW
+// internally; this wrapper stays as the focused unit-test surface.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn cow_copy_page(
     region: &mut VirRegion,

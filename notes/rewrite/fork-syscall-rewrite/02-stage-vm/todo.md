@@ -1435,6 +1435,14 @@ Coverage Summary for vm:
 - **G-V12-4**（errno 直传）：`VmError` 增携带 errno 的变体 + dispatcher 两处 arm（UpdateKernelFailed/KernelCall）改直传——修后 RS 收到内核原始 errno（C rs.c:177 parity）；注意 VmError 全部 match 点的穷尽性波及。
 - **acl mask**（acl.rs:185）：归 T34 一并处理（V9-P2-3 的 ACL 关联）。
 
+### ✅ Fix #54: T35 — 剩余判定批次（注记批 + 删失真批 + per-backend 查询判定）
+
+- **注记批（6 项 DEFERRED → 事实性判定）**：`WouldBlock`（C 非阻塞 IPC 语义，E1 后产生产者——保留）、`vm_self_query`/`force_clear`/`VmProcIter`（test-only 诊断/测试面——保留）、`as_buddy` 对（buddy 运行期选定后即活的对称面——保留）、`cow_copy_page`（T33 后 handle_memory_once 内联 CoW，此包装降级为单页单测面——保留）。
+- **per-backend 用量查询判定**：`total_memory/free_memory/is_under_pressure`（buddy/segtree/bitmap）经核查**被 parity 测试真实消费**（allocator_tests + 各自单测经它们断言分配语义）——判定**保留**（测试校验面），3 处 DEFERRED 措辞改事实性。
+- **失真批（T30/T31/T33 落地后的陈述过时）**：`alloc_cycle` 文档（"重试 DEFERRED"→ T30 已入漏斗）、其测试注释、`memtype.rs` trait 头（回调状态表按 T28/T31/T33 后现状刷新）、`cow_copy_page` 注记。`vm_server.rs:1599` 的 "# DEFERRED" 为历史叙述标题（reply_to_errno 修复记录）——保留。
+- **Verified**: 三矩阵 **488 / 505 / 488 passed**；clippy 0；vm 全树 DEFERRED 字样余 18 处，逐一归因：9 处为历史叙述/判定文本、6 处为准确 open 项（E-VFSWIRE/A-8/24-page-cache 数据拷贝/G-V12-4/heap-shrink 执行判定/PagefaultCtx 重构债）、其余为本次改写后的指针
+- **Docs**: 本条即判定记录；§16.1.1 预判笔记执行完毕（heap-shrink 删除与 G-V12-4 实现留待下轮，理由：前者需连测删除的回归窗，后者是 minix-types wire 变更）
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。

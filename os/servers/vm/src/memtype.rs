@@ -8,11 +8,12 @@ use crate::vmproc::{ActiveProc, VmProcTable};
 use crate::region::{PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
 use crate::page_cache::PageCache;
 
-// V10-P2-1 (DEFERRED): several C-memtype callbacks (`ev_new`, `ev_resize`,
-// `ev_split`, `ev_low_shrink`, `ev_sanitycheck`, `writable`, `pt_flags`)
-// are part of the trait contract but have no invoking flow yet — the
-// resize/split/low-shrink paths are not wired. They are intentionally
-// kept (with their C counterparts documented) until those flows land.
+// Callback status (V11/T31/T33 refresh): `ev_pagefault`, `ev_delete`,
+// `ev_unreference`, `ev_reference`, `ev_copy`, `writable` are all on live
+// production paths. `ev_new`/`ev_resize`/`ev_split`/`ev_low_shrink`/
+// `ev_sanitycheck`/`pt_flags` remain contract-complete but await their
+// invoking flows (resize/split/low-shrink are not wired) — kept with
+// their C counterparts documented until those flows land.
 pub(crate) trait MemType {
     fn name(&self) -> &'static str;
 

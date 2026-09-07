@@ -821,11 +821,11 @@ impl VmServer {
     ///
     /// Rust design: the reserve queues are eliminated by the Direct Map
     /// (`[ARCH: A-1]`, 06-page-allocator.md §3.3). The cache-reclaim half is
-    /// implemented below as a bounded batch (`page_cache.free_pages`); what
-    /// remains DEFERRED to 24-page-cache is retrying the failed allocation
-    /// after the reclaim. Until then the counter is cleared so the next
-    /// failure re-arms the hook — the loop always gets a fresh replenishment
-    /// attempt per pressure episode.
+    /// implemented below as a bounded batch (`page_cache.free_pages`);
+    /// allocation-time reclaim-retry (the C `alloc_mem` half) lives in
+    /// `alloc_page::alloc_pfn_reclaiming` since V11/T30. The counter is
+    /// cleared here so the next failure re-arms the hook — the loop always
+    /// gets a fresh replenishment attempt per pressure episode.
     /// C: `SIGKMEM` (minix3/sys/sys/signal.h:271) — kernel memory request
     /// pending.
     pub(crate) const SIGKMEM: i32 = 71;
@@ -2258,7 +2258,8 @@ mod tests {
 
             // alloc_cycle() clears the counter so the next failure re-arms
             // the hook — observable contract: > 0 → next loop pass
-            // re-attempts replenishment (body DEFERRED to 24-page-cache).
+            // re-attempts replenishment (allocation-time retry lives in
+            // the funnel, V11/T30).
             server.alloc_cycle();
             assert_eq!(server.missing_spares(), 0);
         });
