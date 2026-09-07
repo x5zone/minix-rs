@@ -46,7 +46,7 @@
 | S4 | `KernelApi::sched_init_proc` 签名丢弃调度参数（scheduler/priority/quantum/cpu） | P1 |✅ |
 | E1 | MockKernelApi 四份复制、无共享测试工具模块 | P2 | ✅ |
 | E2 | 解析函数（IpcListIterator/parse_label/build_cmd_dep）无 fuzz/property 测试 | P2 | ✅ | 已修（Fix #64，2026-09-06，零依赖 property 测试） |
-| E3 | 无集成级 boot 顺序/消息交换测试（receive 不可用） | P2 | ☐ | EDGE（见 §18.10） |
+| E3 | 无集成级 boot 顺序/消息交换测试（receive 不可用） | P2 | 🔶 | mock 层集成面已落地（Fix #65/#69/#70/#77）；R34.22 signal_manager 收尾归 §18.11 队列 I6 |
 
 ## 2. 顶层架构问题
 
@@ -3049,3 +3049,52 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `env_parse` 配置面/`srv_execve` 真实 exec。
 - 以上在 §18 迭代中全部保持 ENOSYS fail-closed + doc-contract（T7 门 PASS）；
   接线即 19-rs-external-interfaces.md 主线。
+
+---
+
+## 18.11 收敛 campaign 状态（2026-09-07——§18.9 迭代协议的批量执行，cmd-08 变体 A 队列）
+
+> 依 2026-09-07 批准的收敛计划执行：每轮一个 TODO（讲明白 → ≥2 方案对比 → 实现 →
+> 测试 → 文档同步 → 全门验证 → 回归 review → commit），边界判定遵循 edge_todo.md
+> 的三类规则 + Fix #70/#71 先例（仅本 stage 消费的消息 union 视图随轮提交；真实
+> 传输恒为 edge E9）。
+
+### 已完成轮次（Fix #72-#77，见 §18.9 逐条记录）
+
+| 轮 | 内容 | 关单 | 基线 |
+|----|------|------|------|
+| I1 | 死代码裁决：6 常量副本收敛 minix-types 单一权威 + `set_endpoint_mapping` 删除 + OQ-3 关单（share_exec 单一权威 + 整槽拷贝消除）+ awaiting-wiring 标注机制（8 处） | OQ-3、§18.4 全档 | 294 |
+| I2 | boot Step 2 `init_service` 接线：RS 早退/VM asynsend/三时间戳；`IpcApi::asynsend` 缝先行；mock 保真度修正（kernel_privs） | boot.rs:823 DEFERRED | 297 |
+| I3a | 14 号 LOOKUP/FI 两臂 + reply 缝载荷忠实化（`IpcApi::reply` 增 payload——C reply 语义是回发变异后的整条消息） | R34.14 部分 | 299 |
+| I3b | 14 号 GETSYSINFO/SYSCTL 两臂（拷出半压 E-RSWIRE 缝上 fail-closed；UPD_* 消费 LU 编排）——**14 号死表清零** | R34.14/15 | 301 |
+| I4 | 13 号 label 型四臂（REFRESH/RESTART/CLONE/UNCLONE）+ `resolve_by_label`/`stop_with_late_reply` 共享前奏 | §2.3/§2.4/§2.6 臂 | 304 |
+| I5 | 16 号 RS_LU_PREPARE 臂（`do_upd_ready_shell`：链门/PREPARE_DONE/三路派发）+ run() 臂走裸 shell 的结构修正 + 三孤儿裁决删除 + monitor 描述符消费 | monitor/service_create 3 处陈旧 DEFERRED | 302 |
+
+### 边界判定变更（本轮 campaign 新登记 edge）
+
+- **E-RSSTART**（edge_todo.md）：`rs_start_t` 字节 ABI pinning——`RS_UP`/`RS_EDIT`/
+  `RS_UPDATE` 三臂首步都是 `copy_rs_start`（request.c:37/:306/:542），而
+  `bitchunk_t`（rss_system/rss_vm 位图数组）/`uid_t` 在本 C 树无 typedef，偏移不可
+  pinning（同 E-RSWIRE 判据）。三臂在 dispatch 死表保持 fail-closed；编排侧
+  （create_service/edit_slot/run_service/E-7 序列）已全部就绪，解码落地即接线。
+
+### 剩余队列（stage 内，按序执行）
+
+| 队列 | 内容 | 依赖 | 锚点 |
+|------|------|------|------|
+| **I6** | **signal_manager 七分支**（R34.22）：spurious→OK / TERMINATED→EDEADEPT / inactive→OK / stacktrace→diagctl 缝 / termination→**terminate_service 执行体**（manager.c:1055-1160：init 失败分支、abort update、norestart、EXITING 路径的 late-reply+unpublish+cleanup 实例+reincarnate、REFRESHING→restart_service、backoff 分支）+ **rs_idle_period**（utility.c:441-478：DEAD 清理 + 缺失副本补建）+ `SysApi::diagctl_stacktrace` 缝 + 非终止信号 asynsend 转发（SIGS_SIGNAL_RECEIVED，com.h:597） | 无 edge 依赖——terminate_service 执行体/rs_idle_period 均为 stage 内编排（决策面与全部底层原语已就绪）；建议独立一轮（规模 ≈ I4） | C main.c:647-703、manager.c:1055-1160、utility.c:441-478 |
+| **I7** | 收束对账：§1 表 E3/状态终审、§18.6 R34/A4 翻终态、SYMBOLS 覆盖率复测、全部测试数对账 | I6 完成后 | — |
+
+### 剩余非本 stage 项（维持归属，无动作）
+
+- **E-1/E-11/E9**：生产接线（trap 层 E1、SYS_* wrapper、PM/VM 对端）——edge_todo.md E9。
+- **R31 残余**：`srv_to_string_gen`/`srv_upd_to_string`/`print_services_status`/
+  `print_update_status` 归 08-stage-is dump 面；`exec_restart` 归 19（§18.10 E-8）。
+- **E-RSSTART/E-RSWIRE**：字节 ABI pinning（需完整 Minix3 源码参照）。
+
+### 验证基线（收束时点）
+
+`cargo test -p minix-rs` = **302 passed / 0 failed**；`cargo test -p minix-types` =
+**175 passed**；clippy 触碰文件零告警；fmt 干净；T7 门（`tools/check-rs-unwired.sh`）
+PASS。commit 轨迹：I1（af23e523a 捎带后经 7d7297d2b 重收录）/ I2（b73ef058e）/
+I3a（3a10b74a6）/ I3b（29eff3b90）/ I4（7d7297d2b）/ I5（f11141121）。
