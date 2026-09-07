@@ -227,3 +227,24 @@ mod tests {
         assert_eq!(t.cpus[3].mtimecmp_addr, Some(0x200_4018));
     }
 }
+
+// ── Unit-test + boot-banner support (B-X: arch-dispatched, kernel stays cfg-free) ──
+
+/// Hardcoded unit-test controller descriptor (QEMU virt PLIC defaults).
+pub fn unit_test_irq_desc() -> PlicDesc {
+    PlicDesc {
+        plic_base: 0x0C00_0000,
+        nr_irqs: 16,
+        context: 1,
+    }
+}
+
+/// Boot-banner labels (kmain_verify output, qemu_test builds).
+pub const ARCH_NAME: &str = "riscv64";
+pub const SP_LABEL: &str = "  SP (at entry):  ";
+pub const PC_LABEL: &str = "  PC (at entry):  ";
+pub const FP_LABEL: &str = "  FP (at entry):  ";
+/// Per-arch debug banner printed at kmain_verify entry (riscv64 boot
+/// brings this over from the old `#[cfg(target_arch)]` line — the other
+/// arches emit nothing).
+pub const REACHED_BANNER: &str = "kmain_verify: reached!\n";

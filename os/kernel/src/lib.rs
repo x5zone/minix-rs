@@ -669,46 +669,22 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
     // Ensure early console is initialized for test kernel output.
     Console::init();
 
-    #[cfg(target_arch = "riscv64")]
-    Console::write_str("kmain_verify: reached!\n");
+    // B-X: per-arch banner strings come from minix-platform::test_support
+    // (arch-dispatched re-export) — the kernel carries no
+    // `#[cfg(target_arch)]` for output selection.
+    Console::write_str(minix_platform::test_support::REACHED_BANNER);
 
     let kern_high = kernel_info.kern_virt_base().0;
 
-    // Architecture-specific labels for register output.
-    // TODO(refactor): these `#[cfg(target_arch)]` blocks select behavior
-    // (output strings) and should be replaced with an `ArchNames` trait
-    // in `minix_plat`. The naked_asm blocks above (L534/544/552) and the
-    // `asm!("hlt"/"wfi")` blocks below (L636/641) are **literal asm
-    // constraints** — those must stay because `naked_asm!` requires
-    // compile-time symbol names. Tracked in todo.md as B-X (hardware
-    // abstraction hardening backlog).
-    #[cfg(target_arch = "x86_64")]
-    const ARCH_NAME: &str = "x86_64";
-    #[cfg(target_arch = "aarch64")]
-    const ARCH_NAME: &str = "aarch64";
-    #[cfg(target_arch = "riscv64")]
-    const ARCH_NAME: &str = "riscv64";
-
-    #[cfg(target_arch = "x86_64")]
-    const SP_LABEL: &str = "  RSP (at entry): ";
-    #[cfg(target_arch = "x86_64")]
-    const PC_LABEL: &str = "  RIP (at entry): ";
-    #[cfg(target_arch = "x86_64")]
-    const FP_LABEL: &str = "  RBP (at entry): ";
-
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    const SP_LABEL: &str = "  SP (at entry):  ";
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    const PC_LABEL: &str = "  PC (at entry):  ";
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-    const FP_LABEL: &str = "  FP (at entry):  ";
+    // B-X: banner labels are arch-dispatched from
+    // minix_platform::test_support (ARCH_NAME/SP_LABEL/PC_LABEL/FP_LABEL).
 
     // ── Print captured register values ──
     Console::write_str("### test-higher-half ###\n");
-    Console::write_str("  arch: "); Console::write_str(ARCH_NAME); Console::write_str("\n");
-    Console::write_str(SP_LABEL); Console::write_hex(sp); Console::write_str("\n");
-    Console::write_str(PC_LABEL); Console::write_hex(pc); Console::write_str("\n");
-    Console::write_str(FP_LABEL); Console::write_hex(fp); Console::write_str("\n");
+    Console::write_str("  arch: "); Console::write_str(minix_platform::test_support::ARCH_NAME); Console::write_str("\n");
+    Console::write_str(minix_platform::test_support::SP_LABEL); Console::write_hex(sp); Console::write_str("\n");
+    Console::write_str(minix_platform::test_support::PC_LABEL); Console::write_hex(pc); Console::write_str("\n");
+    Console::write_str(minix_platform::test_support::FP_LABEL); Console::write_hex(fp); Console::write_str("\n");
     Console::write_str("  kern_virt_base: "); Console::write_hex(kern_high); Console::write_str("\n");
 
     // ── Assertions ──
@@ -1662,56 +1638,17 @@ pub(crate) unsafe fn init_irq_manager_for_test() { unsafe {
 }}
 
 /// Construct a `CurrentInterruptController` for unit tests without
-/// touching hardware. Only the matching target arch's descriptor is
-/// compiled; the others are `cfg`-elided.
+/// touching hardware.
 ///
-/// TODO(refactor): three `#[cfg(target_arch)]` arms selecting per-arch
-/// mock constructors is exactly the pattern CLAUDE.md says to avoid
-/// ("use trait `Current*` for behavior selection"). The clean form is
-/// one `MockInterruptController` impl per arch wired through the existing
-/// `minix_plat::CurrentInterruptController` registration (same place as
-/// `qemu_virt.rs`). Tracked in todo.md as B-X (hardware abstraction
-/// hardening backlog).
+/// B-X: the per-arch descriptor construction lives in
+/// `minix_platform::test_support` (arch-dispatched re-export, one
+/// `unit_test_irq_desc()` per arch submodule) — the kernel carries no
+/// `#[cfg(target_arch)]` arms for behavior selection.
 #[cfg(test)]
-#[cfg(target_arch = "x86_64")]
 fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
     use minix_plat::InterruptController;
-    use minix_platform::arch::x86_64::ApicDesc;
-    let desc = ApicDesc {
-        lapic_base: 0xFEE0_0000,
-        ioapic_base: 0xFEC0_0000,
-        nr_irqs: 16,
-    };
-    minix_plat::CurrentInterruptController::new(&desc)
+    minix_plat::CurrentInterruptController::new(&minix_platform::test_support::unit_test_irq_desc())
 }
-
-#[cfg(test)]
-#[cfg(target_arch = "aarch64")]
-fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
-    use minix_plat::InterruptController;
-    use minix_platform::arch::aarch64::Gicv3Desc;
-    let desc = Gicv3Desc {
-        gicd_base: 0x0800_0000,
-        gicr_base: 0x080A_0000,
-        gicr_stride: 0x1_0000,
-        nr_irqs: 16,
-    };
-    minix_plat::CurrentInterruptController::new(&desc)
-}
-
-#[cfg(test)]
-#[cfg(target_arch = "riscv64")]
-fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
-    use minix_plat::InterruptController;
-    use minix_platform::arch::riscv64::PlicDesc;
-    let desc = PlicDesc {
-        plic_base: 0x0C00_0000,
-        nr_irqs: 16,
-        context: 1,
-    };
-    minix_plat::CurrentInterruptController::new(&desc)
-}
-
 /// Get a reference to the global SMP state.
 ///
 /// # Panics

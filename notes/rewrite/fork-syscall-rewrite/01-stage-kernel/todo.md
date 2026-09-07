@@ -132,6 +132,23 @@ CLAUDE.md 原则：
 - [kernel/src/lib.rs:582](file:///os/kernel/src/lib.rs#L582) `ARCH_NAME` 字符串常量上方（"Architecture-specific labels for register output"）
 - [kernel/src/lib.rs:1539](file:///os/kernel/src/lib.rs#L1539) `new_test_interrupt_controller` 注释下方
 
+**✅ 第一批已落地（2026-09-07，§22 Phase 2 迭代 4）**：
+
+- **新增 `minix-platform::test_support`**（沿 qemu_virt 房规：per-arch 子模块持有实现 +
+  文件级 cfg 分发 re-export）——每架构 `unit_test_irq_desc()`（ApicDesc/Gicv3Desc/PlicDesc
+  的 QEMU virt 硬编码默认值）+ `ARCH_NAME`/`SP_LABEL`/`PC_LABEL`/`FP_LABEL` 横幅常量 +
+  `REACHED_BANNER`（riscv 独有调试行归一为"各架构自带横幅串，其余为空"）。
+- **kernel 侧 13 处行为选择 cfg 消除**：kmain_verify 的 9 个 cfg 常量块 + 1 个 riscv
+  cfg 打印行 + `new_test_interrupt_controller` 三 cfg 变体合一（TODO 锚点注释随之销毁）。
+  kernel 侧行为选择 cfg 清零；剩余 cfg(target_arch) 全部为 sanctioned 字面量约束
+  （naked_asm/hlt/wfi）。
+- **审计两表更新**：合法表新增 global.rs:95-175 `PlatformDescEnum`（9 处 cfg——枚举变体
+  按架构存在性裁剪，属"定义 current"非行为选择）；违规表新增 lib.rs:1132-1137
+  （DirectMap 值构造三 cfg 分支——建议 minix-arch 提供 CurrentDirectMap 值构造器，
+  下批实施）。
+- 验证：kernel 694 + platform 13 全绿；三架构 production-target check 全过；
+  clippy 维持各自基线（kernel 2 / platform 2 / types 1，均已登记）。
+
 ## 1. 建议总览
 
 | ID | 层级 | 主题 | 严重度 | 状态 |

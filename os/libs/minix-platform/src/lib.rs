@@ -33,6 +33,7 @@ pub mod device_tree;
 pub mod global;
 pub mod kind;
 pub mod qemu_virt;
+pub mod test_support;
 
 #[cfg(target_arch = "x86_64")]
 pub mod acpi;

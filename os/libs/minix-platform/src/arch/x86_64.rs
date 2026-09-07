@@ -191,3 +191,23 @@ mod tests {
         assert_eq!(pit.lapic_base, 0xFEE0_0000);
     }
 }
+
+// ── Unit-test + boot-banner support (B-X: arch-dispatched, kernel stays cfg-free) ──
+
+/// Hardcoded unit-test controller descriptor (QEMU virt defaults — mirrors
+/// what the kernel's `new_test_interrupt_controller` used to inline).
+pub fn unit_test_irq_desc() -> ApicDesc {
+    ApicDesc {
+        lapic_base: 0xFEE0_0000,
+        ioapic_base: 0xFEC0_0000,
+        nr_irqs: 16,
+    }
+}
+
+/// Boot-banner labels (kmain_verify output, qemu_test builds).
+pub const ARCH_NAME: &str = "x86_64";
+pub const SP_LABEL: &str = "  RSP (at entry): ";
+pub const PC_LABEL: &str = "  RIP (at entry): ";
+pub const FP_LABEL: &str = "  RBP (at entry): ";
+/// Per-arch debug banner printed at kmain_verify entry.
+pub const REACHED_BANNER: &str = "";

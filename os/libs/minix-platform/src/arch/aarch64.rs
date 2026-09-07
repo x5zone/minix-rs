@@ -172,3 +172,23 @@ mod tests {
         assert_eq!(t.cpus[3].gicr_base, Some(0x0810_0000));
     }
 }
+
+// ── Unit-test + boot-banner support (B-X: arch-dispatched, kernel stays cfg-free) ──
+
+/// Hardcoded unit-test controller descriptor (QEMU virt GICv3 defaults).
+pub fn unit_test_irq_desc() -> Gicv3Desc {
+    Gicv3Desc {
+        gicd_base: 0x0800_0000,
+        gicr_base: 0x080A_0000,
+        gicr_stride: 0x1_0000,
+        nr_irqs: 16,
+    }
+}
+
+/// Boot-banner labels (kmain_verify output, qemu_test builds).
+pub const ARCH_NAME: &str = "aarch64";
+pub const SP_LABEL: &str = "  SP (at entry):  ";
+pub const PC_LABEL: &str = "  PC (at entry):  ";
+pub const FP_LABEL: &str = "  FP (at entry):  ";
+/// Per-arch debug banner printed at kmain_verify entry.
+pub const REACHED_BANNER: &str = "";
