@@ -2021,8 +2021,10 @@ mod tests {
         // The boot machine is consumed by the handover (no double ownership).
         assert!(server.boot.is_none());
         // E-3: the post-boot table is settled-consistent (all 12 boot rows
-        // indexed at their own endpoints).
-        state.table.assert_consistent();
+        // indexed at their own endpoints). A-4: the fresh UpdateState is in
+        // play from the handover on — its empty chain trivially matches the
+        // boot rows' vacant mirrors.
+        state.table.assert_consistent(Some(&state.update));
     }
 
     #[test]

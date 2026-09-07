@@ -199,7 +199,9 @@ C 用两个位（`RS_UPDATING`/`RS_INITIALIZING`）+ 三个宏（`RUPDATE_IS_UPD
 
 C 的 `rprocupd *prev_rpupd/next_rpupd` 双向裸指针链（type.h:40-41）→ `Vec<UpdateEntry>` + `Option<usize>` 索引链。`UpdateEntry` 自带 `endpoint`（插入排序需要），不触碰 `ServiceSlot`；`vm`/`rs` 指针用 `Option<usize>` 表达 `rupdate.vm_rpupd`/`rs_rpupd`（type.h:50-51）。
 
-**P2-3 收口边界**：`UpdateEntry` 建模 rpupd 的决策相关字段（`lu_flags`/`init_flags`/`prepare_state`/`state_endpoint` + 链 + vm/rs 索引）；`prepare_tm`/`prepare_maxtime`（`clock_t` 计时，07 的 `update_period` 超时消费）与 grants（`prepare_state_data*`/`prepare_state_data_gid`，17 的 `rs_state_data` 形状 + cpf）**显式 DEFERRED**——02 的 P2-3 以"决策字段建模 + 计时/grants 显式 DEFERRED"关闭。
+`UpdateEntry` 建模 rpupd 的全部字段：决策相关字段（`lu_flags`/`init_flags`/`prepare_state`/`state_endpoint`）、计时字段（`prepare_tm`/`prepare_maxtime`——07 的 `update_period` 超时消费）与 grants（`prepare_state_data`/`prepare_state_data_gid`，17 的 `rs_state_data` 形状 + cpf 面）。
+
+**镜像与权威（A-4）**：这次拆分有一个 C 不存在的新责任。C 的描述符只有一份存储——内嵌在 `rproc.r_upd`（type.h:62），链指针直接指进槽内（update.c:196 取 `&rp->r_upd` 的地址），写哪个字段都无所谓"两侧"。索引链让 `Vec` 里的条目成为权威副本之后，槽侧的 `ServiceSlot.upd` 就退化成一个必须显式同步的镜像，而它有真实消费者：`upd_init_maxtime` 从镜像读 `prepare_maxtime`（const.h:116 的 LU 初始化超时窗），`state_endpoint` 参与 `old_endpoint` 推导（utility.c:33-42）。因此同步责任随写点走——入链的调用方负责写镜像（`UpdateChain::add` 文档注记），`clear_upds` 对应 C 描述符重初始化（update.c:157-158）同时清两侧，`upd_move` 两侧一起搬。兜底是 settled-state 检查器的第四条不变式（`RProcTable::assert_consistent`，02 文档 §4.1 不变量 6）：镜像与权威全等、双向存在。
 
 ### 3.4 更新谓词注入
 
@@ -227,6 +229,7 @@ C 的 `rprocupd *prev_rpupd/next_rpupd` 双向裸指针链（type.h:40-41）→ 
 4. **`update_phase` 解码顺序**：`INITIALIZING` 优先于 `UPDATING`（初始化是进行中的子态）；`num_rpupds > 0 && !UPDATING` 才是 `Scheduled`（const.h:111）。
 5. **`end_update_role` 精确复刻 rev-iter 语义**（update.c:822-847）：反向遍历中 `is_after_curr` 是累积状态（curr 之后的所有条目）；`initializing` 时 curr 之前的条目是 `Initializing` 角色，否则是 `PrepareDone`。
 6. **`abort_action` 分派**：scheduled → 清链（无 end_update）；initializing → `EndWithReply`；updating → `EndWithCancel`（update.c:722-733）。
+7. **镜像与权威同步**（A-4）：`clear_upds` 同时清链条与槽侧镜像（对应 C update.c:157-158 的描述符重初始化——若只清链，陈旧的 `prepare_maxtime` 会在链清空后继续喂 `upd_init_maxtime`）；入链/插入后变异的镜像责任见 §3.3。
 7. **`init_flags |= lu_flags`**（request.c:622-623）：LU 标志随 init 标志传给新实例——`lu_flags_from_rss` 的返回值保证这一关系。
 
 ---

@@ -446,6 +446,15 @@ impl UpdateChain {
     /// `INCLUDES_VM|INCLUDES_RS|MULTI` flags of the new entry propagate to
     /// every entry's `lu_flags` and `init_flags` (update.c:64-67); the
     /// `vm`/`rs` pointers latch to the first matching entry (update.c:69-72).
+    ///
+    /// Mirror responsibility (A-4): the chain copy inserted here is the
+    /// authoritative one. C initializes the embedded `rp->r_upd` in place,
+    /// so "add" and "populate the slot-side descriptor" are one action; the
+    /// A-3 split turns them into two, and the caller owns the second —
+    /// write `slot.upd = Some(entry)` for the same row, or the settled-state
+    /// check (`assert_consistent`, invariant 4) fires on the orphaned
+    /// authority side. Post-insertion field mutations go through
+    /// `get_mut` and must re-sync the mirror the same way.
     pub fn add(&mut self, entry: UpdateEntry) {
         // C: update.c:30-31 — a descriptor being added must be unlinked.
         assert!(entry.prev.is_none() && entry.next.is_none());
@@ -978,7 +987,12 @@ impl UpdateChain {
             }
             // Grant revocation (cpf_revoke) is the 19 boundary; the fields
             // reset to the vacant state either way (update.c:157-158 →
-            // rupdate_upd_init).
+            // rupdate_upd_init). A-3: the reset lands on BOTH copies — the
+            // chain entry dies with the walk below, and the slot-side mirror
+            // (`r_upd` in C) is cleared here, or a stale `prepare_maxtime`
+            // would keep feeding `upd_init_maxtime` after the chain is gone.
+            let slot = entry.slot;
+            table.get_mut(slot).upd = None;
             idx = entry.next;
         }
         self.entries.clear();
@@ -1117,6 +1131,28 @@ mod r23a_tests {
         // The descriptor's new instance went through cleanup phase 1
         // (manager.c:436 — RS_DEAD) via cleanup_service.
         assert!(table.get(n).flags.contains(RFlags::DEAD));
+    }
+
+    #[test]
+    fn test_clear_upds_clears_slot_mirrors() {
+        // A-4 + C update.c:157-158: `rupdate_upd_clear` re-initializes the
+        // embedded `rp->r_upd` — in the A-3 split that embedded copy is the
+        // slot-side mirror, so clearing only the chain would leave a stale
+        // `prepare_maxtime` feeding `upd_init_maxtime` (monitor.rs:96) after
+        // the chain is gone.
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        let mut entry = UpdateEntry::new(a, Endpoint::PM);
+        entry.prepare_maxtime = 99;
+        table.get_mut(a).upd = Some(entry.clone());
+        let mut st = UpdateState::default();
+        st.chain.add(entry);
+
+        let mut k = crate::testutil::MockKernelApi::new(60);
+        st.clear_upds(&mut table, &mut k, &mut no_script);
+
+        assert!(st.chain.is_empty());
+        assert_eq!(table.get(a).upd, None);
     }
 
     #[test]

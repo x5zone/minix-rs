@@ -696,6 +696,16 @@ service_slot.rs
    debug-only 的 settled-state 断言——swap 的第三方原始索引项（Fix #43）与 clone 的
    "in-use + endpoint=NONE"中间态（manager.c:1824-1846）合法地豁免，故只在流程结束的
    黄金路径测试中调用，不在流程中途调用。
+6. ** Live Update 镜像一致性（A-4，同一检查器的第四条不变式）**：当 `UpdateState` 在场时，
+   任一行 `upd` 镜像（C `r_upd`，type.h:62）必须与更新链内同槽位的权威描述符**全等**，且
+   链内每个描述符必须在其所属行有镜像。这条不变式翻译的是 C 的"单一存储"事实——C 的描述符
+   就内嵌在 `rproc.r_upd` 里，链指针直接指进槽内（update.c:196 `&rp->r_upd`），"镜像与本
+   体"的分别根本不存在；Rust 的索引链（A-3）持有权威副本之后，槽侧副本就成了必须显式同步
+   的重复品。它不是装饰性检查：镜像的 `prepare_maxtime` 是 `upd_init_maxtime` 的输入
+   （monitor.rs:96，const.h:116 的 LU 初始化超时窗），`state_endpoint` 参与 `old_endpoint`
+   推导（utility.c:33-42）——副本漂移意味着这些消费读到旧值。同步责任随写点走：链插入的
+   调用方负责写镜像（`UpdateChain::add` 的文档注记），链清除（`clear_upds`，对应
+   update.c:157-158 的描述符重初始化）同时清两侧。
 
 ### 4.2 process_table.rs：RProcTable 槽位管理
 

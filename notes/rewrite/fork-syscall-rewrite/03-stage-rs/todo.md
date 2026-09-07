@@ -2139,6 +2139,7 @@ I6（见 Fix #78）。
 - 方案 a：monitor 改读链（effective_period 增 `upd: &UpdateState` 参）——打破槽位自足性，签名面扩大。
 - 方案 b：维持镜像 + 一致性责任显式化——`RProcTable::assert_consistent`（Fix #67）增加一条"slot.upd 为 Some 时须与链内同 id entry 一致"的 debug 校验，变异点补注释。
 - **推荐 b**：一条 debug 断言的成本，换陈旧镜像的编译期后兜底。P2 条目（1 个 todo-fix 轮内完成）。
+- ✅ **已修（Fix #79，2026-09-07）**：方案 b 落地，形态上有一处基于代码事实的修正——`UpdateChain` 挂在 `UpdateState`（ServerState）而非 `RProcTable` 内，校验器无法只凭 `&self` 触达链条，故 `assert_consistent` 增设 `update: Option<&UpdateState>` 参数（裸表单测传 `None` 诚实表达"链条不在场"；boot handover 黄金测试传 `Some(&state.update)`），而不是把检查拆成第二个自由函数——单一入口保证既有 golden 调用点自动获得新不变式，不用靠"记得再调一次"。第四条不变式是双向的：镜像 → 权威要求**全等**（C 单一存储没有"部分相等"概念），权威 → 镜像要求行内存在。落地过程中校验器首跑即抓出一个真实漂移点：`clear_upds` 只清链条、不清槽侧镜像，而其注释声称的"字段复位到 vacant 态（update.c:157-158 → rupdate_upd_init）"在镜像侧没有发生——陈旧的 `prepare_maxtime` 会在链清空后继续喂 `upd_init_maxtime`（monitor.rs:96）。修复 = `clear_upds` 同步清镜像（这正是 C `rupdate_upd_clear` 重置内嵌本体的 A-3 对应物）。`UpdateChain::add` 补镜像责任注记（R6 的 do_update 入链时消费）。
 
 **A-5【P3·测试基建】booted_* 夹具族收敛**
 - 现状：lib.rs 测试内 4 个 booted 变体（booted/booted_with/booted_vfs_labeled/booted_vfs_sysproc），参数轴（label/payload/vm_ok/execve_ok/fork_pid/child_endpoint/ticks/SYS_PROC/scheduler）以叠加包装表达。
@@ -2152,7 +2153,7 @@ I6（见 Fix #78）。
 |------|------|------|
 | P0 | 无 | — |
 | P1 | A-2 编排闭包参数膨胀（Effects 聚合方案） | 建议+成本已录，执行待裁决 |
-| P2 | A-1 lib.rs 归宿（观察项，触发器已定）/ A-3 可观测性缝（方向 c，随 19）/ A-4 slot.upd 一致性校验（推荐执行）/ A-5 夹具（维持，记录） | A-4 建议尽快；其余记录 |
+| P2 | A-1 lib.rs 归宿（观察项，触发器已定）/ A-3 可观测性缝（方向 c，随 19）/ ~~A-4 slot.upd 一致性校验~~（✅ Fix #79）/ A-5 夹具（维持，记录） | A-4 已修；其余记录 |
 | 覆盖率 | 40 项 ⚠️ 全部定谳：21 名称不匹配 + 10 ARCH + 5 归属他处 + 5 引 L5；零真缺口 | 判定表 20.1 |
 
 ### 20.5 Step 5.7 Rule Discovery
@@ -2162,7 +2163,35 @@ I6（见 Fix #78）。
 
 ### 20.6 修复优先级路线（供后续 todo-fix 排队）
 
-1. A-4 slot.upd 一致性校验（小，1 轮）；
+1. ~~A-4 slot.upd 一致性校验（小，1 轮）~~ ✅ Fix #79（2026-09-07）；
 2. semantic-map 回填（工具配置，1 轮内可并）；
-3. A-2 Effects 聚合（大，2-3 轮，**待裁决**）；
-4. A-1/A-3/A-5：记录，触发条件到达再动。
+3. A-2 Effects 聚合（大，2-3 轮，**待裁决**——2026-09-07 用户裁决：执行）；
+4. A-1/A-3/A-5：记录，触发条件到达再动（A-1 触发器 = lib.rs >3k 行或 E-RSSTART 落地）。
+
+### 20.7 §20 扫描轮修复记录（2026-09-07 起，Fix #79 起）
+
+> 迭代协议同 §18.9（讲明白 → ≥2 方案对比 → 实现 → 测试 → 文档同步 → 全门验证 →
+> 回归 review → 本节标注 → commit）。§20 条目（A 系列 + semantic-map 回填）与
+> E-RSSTART/E-RSWIRE 解锁后的接线轮（见 §21）逐项记录于此。
+
+### ✅ Fix #79 — A-4（P2 一致性）：`slot.upd` 镜像一致性校验 + `clear_upds` 镜像清理
+- **File**：`os/servers/rs/src/process_table.rs`（`assert_consistent` 增 `update:
+  Option<&UpdateState>` 参数 + 第四条双向不变式 + 5 个测试）、`live_update.rs`
+  （`clear_upds` 同步清镜像 + `add` 镜像责任注记 + 1 测试）、`boot.rs`/
+  `service_create.rs`（4 处既有调用点迁移）；文档 02 §4.1（不变量 6）、16 §3.3/§4.2
+  （镜像与权威 + 不变量 7，顺带修正 §3.3 P2-3 段的陈旧 DEFERRED 声称——
+  prepare_tm/prepare_maxtime/grants 已随 Fix #53 补齐）
+- **Before**：镜像建立后链条 entry 变异（或链清空）无任何告警；`clear_upds` 的注释
+  声称"字段复位到 vacant 态（update.c:157-158）"，但只清了链条副本、槽侧镜像残留
+  ——陈旧 `prepare_maxtime` 会在链清空后继续喂 `upd_init_maxtime`（monitor.rs:96）。
+- **After**：方案对比——a) 校验器挂 `assert_consistent`（选定，单一入口 + golden
+  调用点自动覆盖）vs b) live_update 独立自由函数（检查分裂两模块，golden 测试要记得
+  调两处——漏调失防，R10 同型教训）vs c) monitor 改读链条（§20.3 已否）。第四条
+  不变式双向：镜像 → 权威全等（C 单一存储 update.c:196 无"部分相等"概念）、权威 →
+  镜像行内存在。`clear_upds` 清镜像 = C `rupdate_upd_clear` 重置内嵌本体的 A-3
+  对应物，非发明。
+- **Verified**：`cargo test -p minix-rs` = **309 passed**（+5：synced 正测、
+  drift/orphan/unmirrored 三个 `#[should_panic]` 负测、clear 镜像清理行为测试）；
+  clippy 触碰文件零告警；fmt 干净；`tools/check-rs-unwired.sh` PASS（boot.rs:1045
+  唯一标记带 18 号契约）。校验器设计过程中首跑即抓出 clear_upds 漂移点（见 Before）
+  ——不变式断言优先于类型机器的又一实例（E-3 同思路）。

@@ -349,15 +349,26 @@ impl RProcTable {
     /// 2. every in-use row with a live endpoint is indexed at *its own*
     ///    endpoint (`by_endpoint` round-trip, ARCH A-4);
     /// 3. every chain link (`old_rp`/`new_rp`/`prev_rp`/`next_rp`) points
-    ///    at an existing row.
+    ///    at an existing row;
+    /// 4. when the live-update chain is in play, the per-slot descriptor
+    ///    mirror (`ServiceSlot.upd` — C `r_upd`, type.h:62) matches the
+    ///    authoritative chain entry both ways (A-4). C stores the descriptor
+    ///    once — embedded in `rproc`, with the chain pointers aiming into it
+    ///    (update.c:196) — so "mirror vs. authority" cannot drift; the A-3
+    ///    index chain owns the copy, making the slot-side one a synchronized
+    ///    duplicate. It feeds live consumers (`upd_init_maxtime` reads
+    ///    `prepare_maxtime` off the mirror — monitor.rs:96; `state_endpoint`
+    ///    feeds `old_endpoint` resolution — utility.c:33-42), so drift is a
+    ///    real defect, not a cosmetic one.
     ///
     /// Mid-restructure states may violate (2) legitimately — swap's raw
     /// third-party index entries stay visible by design (Fix #43), and a
     /// fresh clone is in-use with `Endpoint::NONE` (manager.c:1824-1846).
     /// This is therefore a *settled-state* check: call it at the end of
-    /// golden-path tests once the flow completes, never mid-flow.
+    /// golden-path tests once the flow completes, never mid-flow. Pass
+    /// `None` when no `UpdateState` is in scope (bare-table unit tests).
     #[cfg(test)]
-    pub(crate) fn assert_consistent(&self) {
+    pub(crate) fn assert_consistent(&self, update: Option<&crate::live_update::UpdateState>) {
         for (i, slot) in self.slots.iter().enumerate() {
             let id = SlotId::new(i);
             assert_eq!(
@@ -380,6 +391,42 @@ impl RProcTable {
                         "row {i}: chain link out of range"
                     );
                 }
+            }
+        }
+        if let Some(update) = update {
+            // Mirror → authority: every slot-side copy has an equal chain
+            // entry (full equality — C's single storage has no notion of
+            // "partially equal").
+            for (i, slot) in self.slots.iter().enumerate() {
+                if let Some(mirror) = &slot.upd {
+                    let id = SlotId::new(i);
+                    let entry = (0..update.chain.len())
+                        .map(|j| update.chain.get(j))
+                        .find(|e| e.slot == id);
+                    assert!(
+                        entry.is_some(),
+                        "row {i}: upd mirror exists but the chain holds no descriptor for it"
+                    );
+                    assert_eq!(
+                        entry.unwrap(),
+                        mirror,
+                        "row {i}: upd mirror drifted from the authoritative chain descriptor"
+                    );
+                }
+            }
+            // Authority → mirror: every chain entry is mirrored at its own
+            // row (C: the chain pointer literally aims at `&rp->r_upd`).
+            for j in 0..update.chain.len() {
+                let entry = update.chain.get(j);
+                assert!(
+                    entry.slot.get() < self.slots.len(),
+                    "chain entry {j}: slot out of range"
+                );
+                let mirrored = self.slots[entry.slot.get()]
+                    .upd
+                    .as_ref()
+                    .is_some_and(|m| m.slot == entry.slot);
+                assert!(mirrored, "chain entry {j}: no upd mirror at its own row");
             }
         }
     }
@@ -860,7 +907,7 @@ mod tests {
             s.pub_.endpoint = ep;
         }
         table.set_endpoint_index(ep, Some(a));
-        table.assert_consistent();
+        table.assert_consistent(None);
 
         let b = table.alloc_slot().unwrap();
         {
@@ -869,7 +916,7 @@ mod tests {
             s.pub_.in_use = true;
             s.pub_.endpoint = Endpoint::NONE;
         }
-        table.assert_consistent();
+        table.assert_consistent(None);
     }
 
     #[test]
@@ -887,7 +934,72 @@ mod tests {
             s.pub_.endpoint = Endpoint::from_generation_slot(0, 30);
         }
         // Deliberately no set_endpoint_index — settled state is stale.
-        table.assert_consistent();
+        table.assert_consistent(None);
+    }
+
+    #[test]
+    fn test_assert_consistent_accepts_synced_upd_mirrors() {
+        // A-4: the legal LU settled shape — the chain holds the authoritative
+        // descriptor and the slot-side mirror is an equal copy (C has one
+        // storage, update.c:196; the A-3 split requires the duplicate to be
+        // synchronized).
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        table.get_mut(a).flags = RFlags::IN_USE;
+        table.get_mut(a).pub_.in_use = true;
+
+        let mut st = crate::live_update::UpdateState::default();
+        let entry = crate::live_update::UpdateEntry::new(a, Endpoint::PM);
+        st.chain.add(entry.clone());
+        table.get_mut(a).upd = Some(entry);
+        table.assert_consistent(Some(&st));
+    }
+
+    #[test]
+    #[should_panic(expected = "upd mirror drifted")]
+    fn test_assert_consistent_catches_upd_mirror_drift() {
+        // A-4: the hazard the invariant exists for — a post-insertion
+        // `get_mut` mutation of the authoritative descriptor without
+        // re-syncing the mirror. The mirror feeds `upd_init_maxtime`
+        // (monitor.rs:96), so stale `prepare_maxtime` mis-times the LU init
+        // window (const.h:116).
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+
+        let mut st = crate::live_update::UpdateState::default();
+        let entry = crate::live_update::UpdateEntry::new(a, Endpoint::PM);
+        st.chain.add(entry.clone());
+        table.get_mut(a).upd = Some(entry);
+        st.chain.get_mut(0).prepare_maxtime = 42;
+        table.assert_consistent(Some(&st));
+    }
+
+    #[test]
+    #[should_panic(expected = "the chain holds no descriptor")]
+    fn test_assert_consistent_catches_orphan_upd_mirror() {
+        // A-4: mirror without authority — exactly the shape `clear_upds`
+        // produced before it learned to clear the slot side (the C
+        // `rupdate_upd_clear` re-initializes the embedded `r_upd`,
+        // update.c:157-158, so this state has no C counterpart).
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+        table.get_mut(a).upd = Some(crate::live_update::UpdateEntry::new(a, Endpoint::PM));
+        let st = crate::live_update::UpdateState::default();
+        table.assert_consistent(Some(&st));
+    }
+
+    #[test]
+    #[should_panic(expected = "no upd mirror at its own row")]
+    fn test_assert_consistent_catches_unmirrored_chain_entry() {
+        // A-4: authority without mirror — the `chain.add` path's caller-side
+        // responsibility (see `UpdateChain::add`'s mirror note) left undone.
+        let mut table = RProcTable::new();
+        let a = table.alloc_slot().unwrap();
+
+        let mut st = crate::live_update::UpdateState::default();
+        st.chain
+            .add(crate::live_update::UpdateEntry::new(a, Endpoint::PM));
+        table.assert_consistent(Some(&st));
     }
 
     #[test]
