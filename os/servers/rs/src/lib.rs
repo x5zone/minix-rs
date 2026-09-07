@@ -180,6 +180,100 @@ pub struct ServerState<'a> {
 /// C: `RS_VM_DEFAULT_MAP_PREALLOC_LEN` — const.h:83 (8 MiB).
 const RS_VM_DEFAULT_MAP_PREALLOC_LEN: i64 = 1024 * 1024 * 8;
 
+/// Serializes one [`crate::service_slot::ServiceSlot`] row into C
+/// `struct rprocpub` wire bytes (rs.h:165-183; offsets pinned by
+/// `minix_types::rprocpub_off`). Field mappings:
+/// - `old_endpoint`/`new_endpoint`: `None` → `Endpoint::NONE` — the
+///   crate's established "unset" sentinel (the `InitMessage` encode,
+///   Fix #73, maps the same way).
+/// - `vm_call_mask`: the `CallMask(u64)` splits back into C's
+///   `bitchunk_t[2]` little-endian chunks — bit *i* of the u64 is call *i*
+///   exactly as C's chunk layout defines.
+/// - `devman_id`: `None` → 0 (C's memset-zero vacancy, rs.h:182).
+fn serialize_rprocpub_row(slot: &crate::service_slot::ServiceSlot, out: &mut [u8]) {
+    use minix_types::rprocpub_off as off;
+    fn put16(out: &mut [u8], o: usize, v: u16) {
+        out[o..o + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    fn put32(out: &mut [u8], o: usize, v: u32) {
+        out[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    let pub_ = &slot.pub_;
+    out[off::IN_USE..off::IN_USE + 2].copy_from_slice(&(pub_.in_use as i16).to_le_bytes());
+    put32(out, off::SYS_FLAGS, pub_.sys_flags.bits() as u32);
+    put32(out, off::ENDPOINT, pub_.endpoint.get() as u32);
+    put32(
+        out,
+        off::OLD_ENDPOINT,
+        pub_.old_endpoint.unwrap_or(Endpoint::NONE).get() as u32,
+    );
+    put32(
+        out,
+        off::NEW_ENDPOINT,
+        pub_.new_endpoint.unwrap_or(Endpoint::NONE).get() as u32,
+    );
+    put32(out, off::DEV_NR, pub_.dev_nr);
+    put32(out, off::NR_DOMAIN, pub_.nr_domain as i32 as u32);
+    for (i, d) in pub_.domain.iter().enumerate() {
+        put32(out, off::DOMAIN + i * 4, *d as u32);
+    }
+    out[off::LABEL..off::LABEL + 16].copy_from_slice(pub_.label.as_bytes());
+    out[off::PROC_NAME..off::PROC_NAME + 16].copy_from_slice(pub_.proc_name.as_bytes());
+    put32(
+        out,
+        off::VM_CALL_MASK,
+        (pub_.vm_call_mask.0 & 0xffff_ffff) as u32,
+    );
+    put32(
+        out,
+        off::VM_CALL_MASK + 4,
+        (pub_.vm_call_mask.0 >> 32) as u32,
+    );
+    let pci = off::PCI_ACL;
+    out[pci + off::PCI_LABEL..pci + off::PCI_LABEL + 16]
+        .copy_from_slice(pub_.pci_acl.label.as_bytes());
+    put32(out, pci + off::PCI_ENDPOINT, pub_.pci_acl.endpoint as u32);
+    put32(out, pci + off::PCI_NR_DEVICE, pub_.pci_acl.nr_device as u32);
+    for (i, d) in pub_.pci_acl.device.iter().enumerate() {
+        let o = pci + off::PCI_DEVICE + i * 8;
+        put16(out, o, d.vid);
+        put16(out, o + 2, d.did);
+        put16(out, o + 4, d.sub_vid);
+        put16(out, o + 6, d.sub_did);
+    }
+    put32(out, pci + off::PCI_NR_CLASS, pub_.pci_acl.nr_class as u32);
+    for (i, c) in pub_.pci_acl.class.iter().enumerate() {
+        put32(out, pci + off::PCI_CLASS + i * 8, c.pciclass);
+        put32(out, pci + off::PCI_CLASS + i * 8 + 4, c.mask);
+    }
+    put32(out, off::DEVMAN_ID, pub_.devman_id.unwrap_or(0) as u32);
+}
+
+/// The `SI_PROCPUB_TAB` copy-out (request.c:1119-1121 + :1134-1136):
+/// serialize every row of the public table (vacant rows included — C
+/// copies the raw array), gate on the caller-declared size, and hand the
+/// bytes to the requester through the safecopy seam. Free function so the
+/// direct-drive tests can retain the mock and assert the served bytes.
+fn copy_out_procpub_table(
+    kernel: &mut dyn crate::boot::KernelApi,
+    table: &crate::process_table::RProcTable,
+    dest: Endpoint,
+    addr: usize,
+    size: u64,
+) -> Result<(), Errno> {
+    let row_len = minix_types::rprocpub_off::SIZE;
+    let rows = table.len();
+    let mut img = alloc::vec![0u8; rows * row_len];
+    for (i, (_, slot)) in table.iter_all().enumerate() {
+        serialize_rprocpub_row(slot, &mut img[i * row_len..(i + 1) * row_len]);
+    }
+    // C: request.c:1134-1136 — `len != size` → EINVAL.
+    if img.len() as u64 != size {
+        return Err(Errno::EINVAL);
+    }
+    kernel.safecopy_to(dest, addr, &img)
+}
+
 impl RsServer {
     /// Creates the server with the boot tables.
     ///
@@ -1067,13 +1161,30 @@ impl RsServer {
 
         // C: request.c:1102-1105 + 1107-1133 — decode the request triple and
         // classify the table; unknown `what` → EINVAL (request.c:1131-1132).
-        let Some((what, _where, _size)) = m.getsysinfo_req() else {
+        let Some((what, where_, size)) = m.getsysinfo_req() else {
             return Err(Errno::EINVAL);
         };
         crate::query::getsysinfo_table(what)?;
 
-        // The raw-memory copy (`sys_datacopy` of the C-ABI table plus the
-        // exact-size gates) is edge E-RSWIRE/E9 territory — fail closed.
+        // C: request.c:1107-1136 — `SI_PROCPUB_TAB` copies the whole public
+        // table (`sizeof(struct rprocpub) * NR_SYS_PROCS` raw bytes, vacant
+        // rows included — C copies the array, not the live rows) through
+        // the exact-size gate at :1134-1136. `SI_PROC_TAB`/`SI_PROCALL_TAB`
+        // need the *internal* `struct rproc` byte ABI (type.h:56-108), which
+        // transitively pins `struct priv` (kernel/priv.h:21-72) and its
+        // `minix_timer_t`/`sys_map_t`/`sigset_t` fields — no in-tree
+        // consumer yet (the IS dump face is 08-stage-is); that pinning
+        // stays the E-RSWIRE remainder and these arms fail closed.
+        if what == crate::query::SI_PROCPUB_TAB {
+            copy_out_procpub_table(
+                self.kernel.as_mut(),
+                &state.table,
+                m.m_source,
+                where_ as usize,
+                size,
+            )?;
+            return Ok(0);
+        }
         Err(Errno::ENOSYS)
     }
 
@@ -2795,6 +2906,93 @@ mod signal_handler_tests {
             server.state.as_ref().unwrap().update.chain.len(),
             0,
             "nothing scheduled"
+        );
+    }
+
+    #[test]
+    fn test_getsysinfo_procpub_copyout_serves_table() {
+        // 14/R7 wiring: SI_PROCPUB_TAB (request.c:1119-1121) — every row of
+        // the public table serializes to the pinned `struct rprocpub`
+        // layout (Fix #85) and goes out through the safecopy seam after the
+        // exact-size gate (request.c:1134-1136).
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.ticks = 500;
+        let mut table = RProcTable::new();
+        let id = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(id);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::VFS;
+            s.pub_.label = crate::service_slot::Label::from_bytes(b"vfs");
+            s.pub_
+                .sys_flags
+                .insert(crate::service_slot::SysFlags::CORE_SRV);
+            s.pub_.dev_nr = 3;
+        }
+        let size = (table.len() * minix_types::rprocpub_off::SIZE) as u64;
+        let r = crate::copy_out_procpub_table(&mut mock, &table, Endpoint::PM, 0x5000, size);
+        assert_eq!(r, Ok(()));
+        assert_eq!(mock.sent_copies.len(), 1);
+        let (dest, addr, bytes) = &mock.sent_copies[0];
+        assert_eq!(*dest, Endpoint::PM);
+        assert_eq!(*addr, 0x5000);
+        assert_eq!(
+            bytes.len() as u64,
+            size,
+            "one pinned struct rprocpub per row"
+        );
+        // Row 0 carries the live service: in_use, endpoint, label, sys
+        // flags, dev_nr.
+        use minix_types::rprocpub_off as o;
+        let w0 = minix_types::decode_rproc_pub(&bytes[..o::SIZE]).expect("row 0 decodes");
+        assert_eq!(w0.in_use, 1);
+        assert_eq!(w0.endpoint, Endpoint::VFS.get());
+        assert_eq!(&w0.label[..4], b"vfs\0");
+        assert_eq!(
+            w0.sys_flags,
+            crate::service_slot::SysFlags::CORE_SRV.bits() as u32
+        );
+        assert_eq!(w0.dev_nr, 3);
+        // Row 1 is vacant: endpoint NONE (the unset sentinel), zero label.
+        let w1 =
+            minix_types::decode_rproc_pub(&bytes[o::SIZE..2 * o::SIZE]).expect("row 1 decodes");
+        assert_eq!(w1.in_use, 0);
+        assert_eq!(w1.endpoint, Endpoint::NONE.get());
+    }
+
+    #[test]
+    fn test_getsysinfo_size_gate_einval() {
+        // C: request.c:1134-1136 — a declared size that differs from the
+        // table's byte length → EINVAL, nothing copied.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        let table = RProcTable::new();
+        let size = (table.len() * minix_types::rprocpub_off::SIZE) as u64 + 1;
+        let r = crate::copy_out_procpub_table(&mut mock, &table, Endpoint::PM, 0x5000, size);
+        assert_eq!(r, Err(Errno::EINVAL));
+        assert!(mock.sent_copies.is_empty());
+    }
+
+    #[test]
+    fn test_do_getsysinfo_procpub_tab_roundtrip() {
+        // Through the handler: the live arm returns OK; the internal-table
+        // arm stays fail-closed (struct rproc pinning is the E-RSWIRE
+        // remainder — see the do_getsysinfo doc note).
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_GETSYSINFO,
+            m_u: Default::default(),
+        };
+        m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROCPUB_TAB;
+        m.m_u.m_lsys_getsysinfo.where_ = 0x5000;
+        m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rprocpub_off::SIZE as u64;
+        assert_eq!(server.do_getsysinfo(&m), Ok(0));
+        m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
+        assert_eq!(
+            server.do_getsysinfo(&m),
+            Err(Errno::ENOSYS),
+            "struct rproc pinning stays the E-RSWIRE remainder"
         );
     }
 

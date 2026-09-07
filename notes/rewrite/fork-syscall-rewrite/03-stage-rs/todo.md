@@ -2237,7 +2237,7 @@ I6（见 Fix #78）。
 | R4 | RS_UP 臂接线（do_up，request.c:15-106） | ✅ Fix #82 |
 | R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ✅ Fix #83 |
 | R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ✅ Fix #84 |
-| R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ☐ |
+| R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ✅ Fix #85（PROCPUB live；rproc 内部表 pinning 为 E-RSWIRE 余件） |
 | R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ☐ |
 | R9-R10 | A-2 Effects 聚合（用户裁决：执行） | ☐ |
 | R11 | 收敛轮（翻态 + Gate E + edge 对账 + Rule Discovery） | ☐ |
@@ -2336,3 +2336,29 @@ I6（见 Fix #78）。
   修正 4 处夹具/断言缺陷（SYS_PROC 种子——manager.c:103-105 的可更新性门、副本的
   cmd 前置门——manager.c:563-568、scheduler 断言——utility.c:370、消息 union 的
   m_rs_update 臂 state 写入）；clippy 触碰文件零告警；fmt 干净；T7 PASS。
+
+### ✅ Fix #85 — R7：do_getsysinfo 拷出半（SI_PROCPUB_TAB live，E-RSWIRE RS 半）
+- **File**：`os/libs/minix-types/src/ipc/rprocpub.rs`（新建：`rprocpub_off` 偏移表 +
+  `RprocPubWire`/`decode_rproc_pub` + repr(C) 见证 + 2 测试）、`ipc/mod.rs`、
+  `os/servers/rs/src/boot.rs`（`IpcApi::safecopy_to` 缝——生产 ENOSYS + E-11
+  doc contract）、`testutil.rs`（mock `safecopy_to` 记录 `sent_copies`）、
+  `lib.rs`（`serialize_rprocpub_row` + `copy_out_procpub_table` 自由函数 +
+  do_getsysinfo 的 PROCPUB 臂 + 3 测试）；文档 14（接线表/测试表刷新）、
+  edge_todo.md（E-RSWIRE 状态更新）
+- **Before**：`do_getsysinfo` 的拷出半整体 ENOSYS（E-RSWIRE 门的诚实 fail-closed）。
+- **After**：`SI_PROCPUB_TAB` 全量 live——全表 64 行序列化为 pinned 的
+  `struct rprocpub` 布局（含空行——C 拷贝的是原始数组而非活跃行），尺寸门
+  （request.c:1134-1136 `len != size → EINVAL`）后经 safecopy_to 缝交付。
+  字段映射：`old/new_endpoint` None→NONE（InitMessage encode 同款语义）、
+  `vm_call_mask` CallMask(u64) 拆回 bitchunk_t[2] 小端、`devman_id` None→0
+  （C memset 空）。**`SI_PROC_TAB`/`SI_PROCALL_TAB` 保持 ENOSYS 并非偷懒**：
+  `struct rproc`（type.h:56-108）传递 pinning `struct priv`
+  （kernel/priv.h:21-72）与其 `minix_timer_t`/`sys_map_t`/`sigset_t` 字段，
+  量级为独立立项且树内无消费者（IS dump 面归 08-stage-is）——精确锚点已写入
+  do_getsysinfo 文档注记与 E-RSWIRE 条目。
+- **布局收获**：见证断言当场抓住一处对 `struct rs_pci` 的误读——`rs_pci_id`
+  是四个 `u16_t`（对齐 2），32 项 device 表恰在 24..280（非 8 字节对齐推算的
+  380），`nr_class`/`class` 偏移随之修正。offset_of 编译期断言的价值实例。
+- **Verified**：`cargo test -p minix-rs` = **325 passed**（+3）；minix-types =
+  **182 passed**（+2：字段解码、短缓冲 EINVAL）；clippy 触碰文件零告警；fmt
+  干净；T7 PASS。

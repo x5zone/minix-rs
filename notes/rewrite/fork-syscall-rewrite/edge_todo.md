@@ -3,6 +3,7 @@
 > 来源：2026-09-06 V11 架构审查（02-stage-vm/todo.md §14）拆分出的跨 stage 条目。
 > 2026-09-06 增补：04-stage-pm 架构审查（04-stage-pm/todo.md §9）拆分出的跨 stage 条目 E6-E7。
 > 2026-09-06 增补：03-stage-rs 的 §18.10 E-11 生产接线面登记为 E9（KernelApi 五域面真实传输，E-2 拆分后的接线形态）。
+> 2026-09-08 增补：02-stage-vm V12 轮（02-stage-vm/todo.md §17）登记 E-VMMCPWIRE（vmmcp wire 字宽必现截断）与 E-VMMOCK（G-V12-5 余件：minix-arch default features 收口），并在 E5 增补"缺页故障完整回路"验收面。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -149,7 +150,7 @@
 
 **阻塞点**：`struct rprocpub` 的字节 ABI 无法从本仓 minix3 子树 pinning——`devmajor_t`、`bitchunk_t`、`struct rs_pci` 在此树中被引用但**无定义**（rs.h/type.h 不完整）。按 Ground Truth 链（C 源 > doc > code），缺 C 事实就不能猜偏移。且该布局是 RS↔VM 共享契约（rs 服务器工作流同样消费），落点应在 minix-types。
 
-> **拆分注记（2026-09-07，同 E-RSSTART 改判）**：阻塞前提同样不成立——`devmajor_t = int32_t`（`minix3/sys/sys/types.h:286-288`）、`bitchunk_t = uint32_t`（:124）、`struct rs_pci` 完整（`minix3/minix/include/minix/rs.h:154-162`）、`struct rprocpub` 完整（rs.h:165-183）。本条目拆两半：**RS 侧半**（do_getsysinfo 拷出所需的 rprocpub/rproc wire 解码）转入 03-stage-rs/todo.md §21 campaign R7 执行；**VM 侧半**（下文第 3 步：`Gateway::sys_safecopyfrom` + `ipc_call_rs_init` 真实体 + pin 测试翻转）仍留本条目——属 VM stage 生产代码（edge 判定②）。原文偏移表的 ILP32 假设作废：重写目标 x86-64 为 LP64，`rs_start_t` 的 pinning 先例（`minix-types::ipc::rs_start`，Fix #81）即为风格模板。
+> **拆分注记（2026-09-07，同 E-RSSTART 改判）**：阻塞前提同样不成立——`devmajor_t = int32_t`（`minix3/sys/sys/types.h:286-288`）、`bitchunk_t = uint32_t`（:124）、`struct rs_pci` 完整（`minix3/minix/include/minix/rs.h:154-162`）、`struct rprocpub` 完整（rs.h:165-183）。本条目拆两半：**RS 侧半**（do_getsysinfo 拷出）已由 03-stage-rs §21 R7 执行——`rprocpub` wire 落地（`minix-types::ipc::rprocpub`，Fix #85：偏移表 + repr(C) 见证 + decode；`SI_PROCPUB_TAB` 全表拷出 live），`struct rproc` **内部表**的 pinning（type.h:56-108 → `struct priv` kernel/priv.h:21-72 → minix_timer_t/sys_map_t 传递链）仍开放且树内无消费者（IS dump 面），`SI_PROC_TAB`/`SI_PROCALL_TAB` 两臂保持 ENOSYS；**VM 侧半**（下文第 3 步：`Gateway::sys_safecopyfrom` + `ipc_call_rs_init` 真实体 + pin 测试翻转）仍留本条目——属 VM stage 生产代码（edge 判定②），其 wire 消费面（`RprocPubWire`/`decode_rproc_pub`）已就绪。原文偏移表的 ILP32 假设作废：x86-64 LP64，风格模板 = `minix-types::ipc::{rs_start, rprocpub}`（Fix #81/#85）。
 
 **解锁后工作（约一个完整迭代）**：
 1. 从完整 Minix3 源码树 pin 三类型定义 → 计算偏移表（ILP32：in_use short@0、sys_flags@4、endpoint@8、old_endpoint@12、new_endpoint@16、dev_nr、nr_domain、domain[8]、label[16]、proc_name[16]、vm_call_mask[BITMAP_CHUNKS(49)]、rs_pci、devman_id）；
@@ -190,6 +191,8 @@
 
 **建议**：在 E1/E2 落地后建联调包：(a) PM↔VM fork 全链路（恢复/重写旧测试，改走 minix-sys 消息层而非 crate 内类型——旧失效原因正是 `pub(crate)` 边界收紧）；(b) VM↔VFS fdclose 往返；(c) RS live-update 全链路（RS_PREPARE → UPDATE → resume）；(d) QEMU VM paging 冒烟（boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap 测试页 → 串口结果，复用 `os/qemu-tests/` 基建）。
 
+> **验收面增补（2026-09-08，02-stage-vm V12 轮）**：(d) 冒烟必须覆盖**缺页故障完整回路**——进程触发缺页 → 内核 VM_PAGEFAULT 送达 VM → VM 解析（CoW 拷贝或新页分配）→ **VM 写进程硬件 PTE**（G-V12-8，当前缺失的最后一环）→ 内核清 RTS_PAGEFAULT 恢复进程 → 指令重执行不再故障。没有 PTE 写入的通电冒烟会以"同一地址反复缺页活锁"的形式失败，这正是该回路必须成为 (d) 的显式断言项的原因。
+
 ---
 
 ## E6 minix-sys PM 所需 SYS_* wrapper 扩充（= 04-stage-pm/todo.md §9 抽取）
@@ -207,6 +210,8 @@
 **解锁**：04-stage-pm/todo.md D-02 / D-09 / D-13 / D-18 / D-21 / D-24 的真实通电；E5(a) PM↔VM fork 联调的信号与回收链前置。
 
 > **进度（2026-09-06）**：`sys_kill` wrapper 已落地（`syscall.rs` 的 `sys_kill` + `SYS_KILL_CALL` 常量，wire 断言测试 ×2；`CannedKernelCallTransport` 增 `sent` 逐调用消息记录供 wire 形状断言）——消费侧 04-stage-pm/todo.md D-13/Fix #23 同轮闭环；余下进度：SYS_CLEAR（轮 24）、SYS_ABORT（轮 25）、SYS_TIMES（轮 26）、SYS_RUNCTL/SYS_RESUME（轮 28）已落地；待做 SYS_GETMONPARAMS/SYS_GETIMAGE wrapper（kernel 对端亦缺，需双侧新建）。
+>
+> **进度（2026-09-08，V2 轮扩充）**：已落地 wrapper 达 6 个（sys_kill/sys_clear/sys_abort/sys_times/sys_runctl+sys_resume/sys_vircopy）。04-stage-pm 第二轮审查（04-stage-pm/todo.md §11.1.1 接线批次表）给出 PM 侧完整需求清单，待做 wrapper 及 kernel 对端现状：`sys_setalarm`（kernel 对端已有 `syscall_clock.rs:160`，E8 已列）、`sys_vtimer`（ITIMER_VIRTUAL/PROF，对端待核实）、`sys_datacopy`（注意≠sys_vircopy：SELF 本地拷贝语义，getgroups/setgroups/itimer value 双向拷贝需要）、`sys_settime`/`sys_stime`（time.c do_settime/do_stime）、GETUPTIME 面（time.c getuptime 依赖，PM `ClockSource` 的生产实现）、`sys_getmcontext`/`sys_setmcontext`（mcontext.c 直通）、`sys_sprof`（profile.c，feature 门）、`sys_sigreturn`（C signal.c:176-192 do_sigreturn 调用，kernel 对端待核实）、`sys_diagctl_stacktrace`（C signal.c:556-558 coredump 诊断，04-stage-pm V2-P3-4a）、SYS_GETMONPARAMS/SYS_GETIMAGE（维持"双侧新建"结论）。
 
 ---
 
@@ -223,6 +228,8 @@
 **解锁**：04-stage-pm/todo.md P1-1（每臂解码）/ P1-4 / P2-3 的实施前提；未来 libc/commands 侧 PM 调用发起方的常量消费。
 
 > **进度（2026-09-06）**：首个切片已落地——`MessPmLcWait4 { status }` + `m_pm_lc_wait4` arm（`message.rs`，56 字节断言 `test_pm_wait4_message_layouts`），wait4 回复载荷契约（04-stage-pm/todo.md D-26/Fix #22）闭环；其余 wire 族照本切片的风格推进。
+>
+> **进度（2026-09-08，V2 轮增补）**：(1) **仓库内先例确立**：`minix-types::ipc::rs_start`（约 900 行 per-server 类型化 wire 模块，commit 764d738af，03-stage-rs Fix #81）为建议 (1) 的"按调用族建 wire 结构体"提供了本仓样式模板，实施时应对照该模块的组织方式（wire 结构 + `size_of` 断言 + 解码函数）。(2) **wire 成员清单按 04-stage-pm/todo.md §11.1.1 接线批次表逐批落地**：A 凭证 13 调用（`m_lc_pm_getuid`/`setuid`/`groups`/`getsid` 等）→ B 信号控制 6 → C 时间 6 → D itimer → E exec 3（`m_lexec_pm_exec_new`/`m_rs_pm_exec_restart`）→ F 调度 2（含补 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量）→ G 杂项 9。(3) A 批次 wire 设计时需决定 gid 载荷宽度以恢复 C 的 GID_MAX 拒绝语义（04-stage-pm/todo.md §11 V2-P3-2，GID_MAX=2^31-1，`minix3/sys/sys/syslimits.h:53`）。
 
 ---
 
@@ -292,3 +299,25 @@
 
 **解锁后工作**：三项互相独立，均为 minix-types 内部重构（接口不变、调用方零改动
 或纯 re-export 调整），各约 0.5 个迭代。无 E1/E2 依赖。
+
+---
+
+## E-VMMCPWIRE vmmcp 消息族字段宽度修正：reply.addr u32 → 64 位（02-stage-vm V12 轮登记，2026-09-08）
+
+**问题**：minix-types 的 `MessVmmcpReply.addr` 是 `u32`（`os/libs/minix-types/src/ipc/message.rs:2512-2515`），而 C 的对应字段是 `void *addr`（`minix3/minix/include/minix/ipc.h:2395-2400`，x86_64 上 64 位；C 赋值 `msg->m_vmmcp_reply.addr = (void *) vr->vaddr`，mem_cache.c:170）。VM 侧编码随之截断：`reply.addr = addr.0 as u32`（`os/servers/vm/src/vm_server.rs:1704`），而 mapcache 的分配地址走 MMAP 窗口（`MMAP_BASE = 0x1_0000_0000`，`os/servers/vm/src/mmap.rs:204`）——**高 32 位恒非零，截断恒发生**，属必现 wire bug 而非边角。同簇疑点：`mmap.rs:373` 的 `length: aligned_len.0 as u32`（>4GB 映射静默截断），以及 `mess_vmmcp` 请求方向字段宽的逐字段核查。
+
+**为何 edge**：minix-types 消息布局是共享契约（edge 判定①类）——字段加宽是 wire ABI 变更，消费面（未来 minixfs/lib 的 vm_map_cacheblock 等价物，C 侧 libsys/vm_cache.c:47-54）尚未存在，现在改零成本、通电后改即破坏二进制契约。
+
+**建议**：(1) `MessVmmcpReply.addr: u32 → u64`（对齐 C `void *`），VM 编码去截断；(2) 对照 `mess_vmmcp`/`mess_vmmcp_reply` 原始结构逐字段核查请求/回复两个方向（含 `_ASSERT_MSG_SIZE` 对应的 56 字节 payload 断言）；(3) wire 回放测试断言大地址高位保全；(4) 顺手按"pattern 84 候选"（02-stage-vm/todo.md §17.6）对 VM 消息族做一次系统性字段宽度对账，同类问题一次清完。
+
+**解锁**：02-stage-vm/todo.md V12-P1-3（VM 侧半边）；E5(b) VFS 缓存协作链的正确性前提。
+
+---
+
+## E-VMMOCK minix-arch default features 泄漏收口 + "mock" 命名澄清（02-stage-vm G-V12-5 余件，2026-09-08 登记）
+
+**问题**：`os/servers/vm/Cargo.toml:18` 以裸 path 依赖引入 `minix-arch`（`minix-arch = { path = "../../arch" }`），绕过了 workspace 表的 `default-features = false`（`os/Cargo.toml:235`）；而 `os/arch/Cargo.toml:18` 的 `default = ["mock"]` —— mock feature 就此泄漏进 VM 生产构建。kernel 与 boot-shim 均已正确关闭默认（`os/kernel/Cargo.toml:13`、`os/boot-shim/Cargo.toml:17`），VM 是唯一漏网点。同时 `mock` feature 实际门控的是"运行时窗口基址变体"（Direct Map 窗口基址是内核动态授予的运行时值，E3 已接真值），命名与生产用途混淆——这是 02-stage-vm/todo.md §16.1 G-V12-5 的原始登记内容，原定"处置归 E3"，但 **E3 的完成注记（2026-09-08）未包含依赖收口**，为防孤儿单列本条。
+
+**建议**：(1) `os/servers/vm/Cargo.toml` 的 minix-arch 依赖补 `default-features = false`，跑三 feature 矩阵回归（G-V12-8 之前这主要影响编译面与 arch 内 mock 项的 dead_code 噪音，预期零行为差异——若有差异即暴露了生产代码误依赖 mock 项，需逐处修正）；(2) arch 侧把 `mock` feature 更名为诚实表达运行时窗口语义的名字（如 `runtime-window`，或直接内联为非 feature 代码路径），同步 kernel/boot-shim 的引用；(3) 在 02-stage-vm/todo.md §2 表 G-V12-5 行回写闭单。
+
+**解锁**：VM 生产依赖面的单一真相；arch 命名与语义一致。无 E1/E2 依赖，可独立先行。

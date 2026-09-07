@@ -257,6 +257,14 @@ pub trait IpcApi {
     /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
     fn safecopy_from(&mut self, source: Endpoint, addr: usize, buf: &mut [u8])
     -> Result<(), Errno>;
+
+    /// Copies RS-owned bytes into a requester's address space.
+    ///
+    /// C: `sys_datacopy(SELF, src, dst_e, dst_addr, len)` — request.c:1122
+    /// (do_getsysinfo's table copy-out) and request.c:862 (grant-backed
+    /// state data). Wired 19-rs-external-interfaces.md (DEFERRED —
+    /// `minix-sys` is a stub).
+    fn safecopy_to(&mut self, dest: Endpoint, addr: usize, buf: &[u8]) -> Result<(), Errno>;
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -437,6 +445,9 @@ impl IpcApi for UnimplementedKernelApi {
         _addr: usize,
         _buf: &mut [u8],
     ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn safecopy_to(&mut self, _dest: Endpoint, _addr: usize, _buf: &[u8]) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }

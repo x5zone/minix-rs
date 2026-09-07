@@ -152,6 +152,8 @@ pub struct MockKernelApi {
     /// range); `receive`-style tests stage the
     /// request bytes here; `None` → `Err(ENOSYS)` (fail-closed default).
     pub payload: Option<Vec<u8>>,
+    /// Bytes handed to `safecopy_to`, in order (R7 copy-out assertions).
+    pub sent_copies: Vec<(Endpoint, usize, Vec<u8>)>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
     /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
     pub inbox: Vec<(minix_types::Message, crate::dispatch::IpcStatus, Clock)>,
@@ -194,6 +196,7 @@ impl MockKernelApi {
             kernel_privs: Vec::new(),
             fail_calls: Vec::new(),
             payload: None,
+            sent_copies: Vec::new(),
             inbox: Vec::new(),
             sent: Vec::new(),
             replies: Vec::new(),
@@ -469,5 +472,9 @@ impl IpcApi for MockKernelApi {
             }
             None => Err(Errno::ENOSYS),
         }
+    }
+    fn safecopy_to(&mut self, dest: Endpoint, addr: usize, buf: &[u8]) -> Result<(), Errno> {
+        self.sent_copies.push((dest, addr, buf.to_vec()));
+        Ok(())
     }
 }
