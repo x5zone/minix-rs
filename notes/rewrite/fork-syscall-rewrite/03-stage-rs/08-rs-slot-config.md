@@ -347,7 +347,8 @@ pub fn check_request(rs_start: &RsStart, machine: &Machine)
 
 ### 3.4 `edit_slot` 已实现（R20b）；`init_slot` 的 sys_datacopy 面（DEFERRED→19）
 
-`copy_rs_start`/`copy_label` 仍归 19（消息接收时的内核拷入）。**`edit_slot` 已实现（2026-09-06，
+`copy_rs_start` 的**字节面已落地**（`minix-types::ipc::rs_start`，见 §3.5）；仍在 19 号的
+只剩拷贝动作本身（`safecopy_from` 缝的真实传输）。**`edit_slot` 已实现（2026-09-06，
 todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 按 manager.c:1460-1707
 逐分支落地。关键形态：
 
@@ -365,6 +366,38 @@ todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 
   per-lifetime 复位（含 C 字面量 -1 的 scheduler/sig_mgr 瞬态，manager.c:1786-1787）→ 委托
   `edit_slot`。PCI ACL 载体 `RsPci` 补进 `PublicSlot`（rs.h:180，label/endpoint 由 11 填）。
   `inherit_service_defaults`（manager.c:1303-1330，IMM_SF/IMM_F 合并）同轮落地。
+
+### 3.5 `rs_start_t` 字节 ABI：`minix-types::ipc::rs_start`（E-RSSTART 解锁）
+
+C 的三条控制臂（`do_up`/`do_edit`/`do_update`，request.c:37/:306/:542）第一步都是
+`copy_rs_start`——把调用方内存里完整的 `struct rs_start`（rs.h:104-151，x86-64 LP64 下
+920 字节）按 C ABI 整结构拷入 RS。这条 ABI 曾经被登记为"不可 pinning"（edge E-RSSTART，
+理由是 `bitchunk_t`/`uid_t` 在树内无定义），后来证实是误判：`bitchunk_t` 就定义在
+`minix3/sys/sys/types.h:124`（`uint32_t`，固定宽度、无架构依赖），`uid_t` 在同文件 :221，
+整棵 NetBSD 式 sys 树是齐备的。字节事实一经 pinning，解码面随之落地，形态上有三个
+值得展开的决策。
+
+**偏移表 + 布局见证 + 安全读取的三层结构。** `rs_start_off` 常量模块是偏移的单点权威；
+测试构建里有一个 `#[repr(C)]` 的私有见证结构 `RsStartLayout`，按 C 的字段顺序与
+C 等宽类型逐字段镜像——`repr(C)` 让编译器按 GCC 的 x86-64 ABI 规则排布它，39 个
+`offset_of!`/`size_of` 编译期断言把每个偏移常量钉在编译器布局上。这意味着偏移表
+不可能漂移：手算错一个、或者读错一个 C 字段顺序，测试构建当场编译失败。解码本身
+不用结构体重解释，而是 `from_le_bytes` 在常量偏移上安全读取——safecopy 来的字节缓冲
+没有 8 字节对齐保证，整结构重解释要么强加对齐要求要么引入未对齐读取，收益为零。
+
+**指针字段保持地址语义，两段式取数。** `RsStartWire` 视图里的 `cmd_addr`/`script_addr`/
+`label.addr` 等就是调用方地址空间的裸地址——C 的 `copy_rs_start` 只拷结构本身，
+cmd/脚本/IPC 清单/标签的字节要靠后续的 `sys_datacopy` 逐个取（rs.h:63 明言
+"Labels are copied over separately"）。这与本 crate `RsStart` 的内联缓冲（`cmd: [u8; N]`）
+是同一个事实的两端：wire 是"拷贝前"，`RsStart` 是"拷贝后"，中间的取数阶段属于
+请求 handler（R4/R5 的 do_up/do_edit 接线）。
+
+**位图数组的无损合并。** `rss_system`/`rss_vm` 在 C 里是 `bitchunk_t[2]`（`uint32_t`，
+`SYS_CALL_MASK_SIZE = ceil(58/32) = 2`，com.h:270-272）；小端 chunk 序下第 *i* 位的
+语义与一个 `u64` 的第 *i* 位完全一致，所以视图直接合并成 `u64`——与本 crate
+`CallMask(u64)` 的背书类型精确对接，`edit_slot` 的掩码拷入分支（Fix #48）无需任何
+转换层。测试以"见证结构按自身 offset_of 序列化 → 解码 → 全字段比对"的往返方式
+驱动，验证的是解码器对 ABI 布局本身的理解，而不是对手排字节副本的巧合命中。
 
 ---
 

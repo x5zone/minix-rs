@@ -2212,3 +2212,54 @@ I6（见 Fix #78）。
   剩余 ⚠️ 恰 20 项，逐名核对与判定表吻合：B 类（ARCH 不需要，8）+ D 类（引 L5
   可观测性含 rs_strerror 的吸收判定，5）+ C 类（归属他 stage，5）+ E-RSSTART 门
   （2）——零假阳性。文档覆盖 171/171（100%）不变。
+
+---
+
+## 21. E-RSSTART 解锁 campaign（2026-09-07 起——三臂接线 + getsysinfo 拷出 + §20 收尾项）
+
+> **起点**：E-RSSTART/E-RSWIRE 的阻塞前提（"bitchunk_t/uid_t 本树无 typedef"）经独立
+> 核实为误判——minix3/ 是完整 NetBSD 式全树，`bitchunk_t = uint32_t`
+> （minix3/sys/sys/types.h:124，固定宽度）、`uid_t = uint32_t`（:221）、`devmajor_t = int32_t`
+> （:286-288）、`struct rs_start`（rs.h:104-151）/`struct rprocpub`（rs.h:165-183）/
+> `struct rs_pci`（rs.h:154-162）全部在树内。用户批准三项裁决：①E-RSSTART 与
+> E-RSWIRE 的 RS 侧半并入本 campaign（VM 侧半留 edge）；②A-2 Effects 聚合执行；
+> ③D1 god-struct 维持闭合。**数据模型决策：wire 偏移按 x86-64 LP64 pinning**
+> （指针/long/size_t = 8 字节），E-RSWIRE 原文 ILP32 偏移假设作废。
+> 迭代协议同 §18.9/§20.7。
+
+### 轮次队列
+
+| 轮 | 内容 | 状态 |
+|----|------|------|
+| R1 | A-4 slot.upd 镜像一致性校验 | ✅ Fix #79 |
+| R2 | semantic-map 回填 | ✅ Fix #80 |
+| R3 | E-RSSTART 改判 + `RsStartWire`（minix-types wire 面 + LP64 偏移断言） | ✅ Fix #81 |
+| R4 | RS_UP 臂接线（do_up，request.c:15-106） | ☐ |
+| R5 | RS_EDIT 臂接线（do_edit + E-7 序列类型化锚） | ☐ |
+| R6 | RS_UPDATE 臂接线（do_update，16 号链消费） | ☐ |
+| R7 | do_getsysinfo 拷出半（E-RSWIRE RS 半） | ☐ |
+| R8 | A-1 lib.rs 拆分（触发器 = E-RSSTART 落地，已 fired） | ☐ |
+| R9-R10 | A-2 Effects 聚合（用户裁决：执行） | ☐ |
+| R11 | 收敛轮（翻态 + Gate E + edge 对账 + Rule Discovery） | ☐ |
+
+### ✅ Fix #81 — R3：E-RSSTART 改判关单 + `rs_start_t` wire 解码面（minix-types::ipc::rs_start）
+- **File**：`os/libs/minix-types/src/ipc/rs_start.rs`（新建：`rs_start_off` 偏移单点表 +
+  `RsStartWire` 解码视图 + `decode_rs_start` + `#[repr(C)] RsStartLayout` 布局见证 +
+  3 测试）、`ipc/mod.rs`（注册）；文档 08 §3.4 修正 + §3.5（wire face 三决策）、
+  99 §3.1（权威表 +1 行）、edge_todo.md（E-RSSTART 改判关单 + E-RSWIRE 拆分注记）
+- **Before**：三条控制臂压在"rs_start_t 字节 ABI 不可 pinning"上（E-RSSTART）——前提
+  经 minix3/sys/sys/types.h:124/:221 与 rs.h:104-151 的在树定义证伪。
+- **After**：方案对比——a) 偏移常量表 + repr(C) 见证 + `from_le_bytes` 安全读取
+  （选定）vs b) repr(C) 整结构重解释（safecopy 缓冲无 8 字节对齐保证，需拷贝或
+  未对齐读取——风险为正收益为零）vs c) 裸数字偏移散落（无单点真相）。39 个
+  `offset_of!`/`size_of` 编译期断言把偏移表钉在编译器布局上：偏移错或 C 字段序读错
+  = 测试构建当场编译失败。解码视图保持指针字段为调用方地址（C rs.h:63
+  "Labels are copied over separately"——两段式取数是 C 自身设计，取数半归 R4/R5
+  handler）；`bitchunk_t[2]` 小端合并为 `u64` 与 rs 侧 `CallMask(u64)` 背书精确对接。
+  测试驱动 = 见证结构按自身 offset_of 序列化 → 解码 → 全字段比对（验证对 ABI 的
+  理解而非对手排字段的巧合命中）。
+- **Verified**：`cargo test -p minix-types` = **180 passed**（提交基线 177 + 本轮
+  3：ABI 往返全字段比对、短缓冲 EINVAL、大 scratch 缓冲接受；177 = 并发 E3 提交
+  87851af52 为 boot handoff 新增 2 测后的基线）；39 偏移 + `SIZE=920` 编译期断言
+  全过（手推 LP64 布局与编译器 repr(C) 排布零偏差）；clippy 触碰文件零告警
+  （vm.rs:667 的 large-size-difference 为既有）；fmt 干净。

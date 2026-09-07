@@ -133,6 +133,7 @@ RS 的常量分散在 4 个头文件：`const.h`（服务状态标志、时间�
 | 族 | 权威 Rust 位置 | 重复定义策略 |
 |----|---------------|-------------|
 | RS_* 消息类型/子功能 | `minix-types::ipc::rs` | 唯一 |
+| rs_start_t 字节 ABI（偏移表/解码视图） | `minix-types::ipc::rs_start` | 唯一（E-RSSTART 解锁，Fix #81） |
 | SI_* 查询分类 | `os/servers/rs/src/query.rs` | 唯一 |
 | SEF_LU_*/SEF_LU_STATE_*/RS_REPLY/RS_CANCEL | `os/servers/rs/src/live_update.rs` | 唯一 |
 | MAX_DET_RESTART/BACKOFF_BITS/MAX_BACKOFF | `os/servers/rs/src/recovery.rs` | 唯一 |
