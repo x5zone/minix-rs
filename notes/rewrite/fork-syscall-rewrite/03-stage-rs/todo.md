@@ -1990,11 +1990,11 @@ ARCH 不需要（头文件机制，无 Rust 对应义务）：`BEG_RPROC_ADDR`/`
 | R31 | error.c 错误表 + 诊断字符串化 4 函数缺失 | P2 | ☐ | EDGE（见 §18.10） |
 | R32 | 一致性杂项 7 小项（死存储/双份字段/同名函数/清零无执行者等） | P2 | ✅ | 已修（Fix #45，2026-09-06） |
 | R33 | ServiceSlot 派生 PartialEq 的深比较风险 | P2 | ✅ | 已修（Fix #68，2026-09-07，derive 删除） |
-| R34 | 测试盲区清单 24 条 | P2 | 🔶 | 1-13/18-21/23 已补（Fix #65/#69/#70）；22 gated（见 §18.10 E-10） |
+| R34 | 测试盲区清单 24 条 | P2 | ✅ | 全部闭合：1-13（各实现轮）/14-15（Fix #75）/16（Fix #71+#76 集成面）/17（Fix #69）/18-21（Fix #65/#69） /22（Fix #78 signal_manager 七分支）/23（Fix #70）/24（Fix #64） |
 | A1 | 编排层引入形态（三方案对比，推荐忠实编排函数） | 建议 | ✅ | 形态 a 已采纳并落地（Fix #51/#52/#55/#56） |
 | A2 | UpdateState 挂 ServerState + r_upd 入 ServiceSlot | 建议 | ✅ | 已修（Fix #53，2026-09-06） |
 | A3 | SEF 回调重绑建模（restart_cb 枚举） | 建议 | ✅ | 已修（Fix #63，2026-09-06） |
-| A4 | 控制请求域统一决策载荷模式 | 建议 | 🔶 | stop_decision 已落（Fix #52）；dispatch 逐请求路由随 06 接线（OQ-4） |
+| A4 | 控制请求域统一决策载荷模式 | 建议 | ✅ | stop_decision 已落（Fix #52）；dispatch 逐请求路由已随 campaign I2-I6 完成——13/14/16 号全部活臂经 do_request 直达，死表仅剩 E-RSSTART 门的三臂（UP/EDIT/UPDATE） |
 | A5 | 接线路线图（06→12→13→08→16→19 依赖序） | 建议 | ✅ | 1-4/6 步已按此执行 |
 
 **OQ 清单（上交用户）**
@@ -3084,7 +3084,9 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 | 队列 | 内容 | 依赖 | 锚点 |
 |------|------|------|------|
 | ✅ I6 | **R34.22 闭合**（2026-09-07，Fix #78，见 §18.9） | — | C main.c:647-703、manager.c:1055-1166、utility.c:441-478 |
-| **I7（末轮）** | 终审收束：§1/§18.6 状态终审翻态、SYMBOLS 覆盖率复测、全部测试数对账、Step 5.7 Rule Discovery 终答 | 无 | — |
+| ✅ I7 | 终审收束（2026-09-07）：§1/§18.6 翻态完成；SYMBOLS 复测 **171 C 符号 / 文档覆盖 99.4% / Rust name-match 77.2%**（余量为 E-RSSTART/E9 门上的线面名，非缺口）；测试对账 minix-rs 304 + minix-types 175 全绿；Rule Discovery 终答见下 | 无 | — |
+
+**Step 5.7 Rule Discovery（campaign 终答）**：本轮发现一个可复用模式——**「copy_* 结构 ABI 门」**：微内核服务的控制臂若以"整结构拷贝"（copy_rs_start/copy 訊息族）开场，其接线次序应先于解码轮做**结构完整性审计**（grep 结构体内全部 typedef 是否在本树有定义），凡有缺失即登记 edge 并把该臂保持死表 fail-closed——避免"编排就绪却卡在解码"的半成品接线轮（本 campaign 的 I4/I5 就因提前发现 E-RSSTART 而免于两次返工）。建议沉淀入 review-patterns（模式 84 候选：CACG, Copy-struct ABI Gate）。
 
 ### 剩余非本 stage 项（维持归属，无动作）
 
