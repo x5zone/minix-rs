@@ -970,6 +970,14 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：`TimerCtl` 生产实现挂 edge E6（sys_setalarm/sys_vtimer wrapper）；真实通电挂 E1。
 
+### ✅ Fix #40: V2-P2-6 — ENOSYS 兜底臂的登记义务落到批次表（2026-09-08）
+
+**File(s)**：`os/servers/pm/src/ipc/calls.rs`（兜底臂注释指向 todo.md §11.1 的接线批次表，约定"每接线一批同步划账"）；本文件 V2-P2-6 标 ✅。
+
+**Verified**：`cargo test -p minix-pm`：356 lib + 8 integration passed（纯注释改动）。
+
+**未做（DEFERRED 论证）**：无。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1155,7 +1163,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：在 §6 登记 D-28 并实现——`sig_proc(parent, SIGCHLD, trace=TRUE, ksig=FALSE)` 一行调用（依赖 V2-P0-2 先修，否则 SIGCHLD 的默认忽略判定仍在错位状态下运行——按 11.1.4 的推算 CHLD 恰好落回有效忽略集，但这属于巧合而非正确）。方案二：仅登记不实现，随批次 B（信号族接线）一并做——可接受，但 D 编号必须先落账。
 - **验证**：单测：父进程装 SIGCHLD handler（sigaction 接线后）+ 子进程退出 → handler 收到信号；无 handler 时进程存活。
 
-#### V2-P2-6 ENOSYS 兜底臂吞掉 40 个调用的逐项登记义务
+#### V2-P2-6 ENOSYS 兜底臂吞掉 40 个调用的逐项登记义务（✅ 已修复 2026-09-08，见 §10 Fix #40）
 
 - **优先级**：P2（流程性）
 - **类型**：诚实契约缺口（模式 60）

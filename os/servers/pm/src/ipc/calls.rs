@@ -305,7 +305,11 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mask = ProcEventMask::from_bits_truncate(mask_bits);
             events.do_proceventmask_mut(caller, mask, table, transport, kern)
         }
-        // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。
+        // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
+        // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
+        // 建议批次 A-G）见 04-stage-pm/todo.md §11.11——每接线一批同步
+        // 划账该表（V2-P2-6：兜底臂使"未接线"无需标记即可编译，台账是
+        // 义务的承接面）。
         _ => ReplyIntent::Reply(ENOSYS),
     }
 }
