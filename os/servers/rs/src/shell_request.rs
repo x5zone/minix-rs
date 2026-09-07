@@ -592,8 +592,10 @@ impl RsServer {
             false,
             &mut noop_abort,
             &mut noop_end,
-            &mut noop_req,
-            &mut noop_vm,
+            &mut crate::live_update::PrepareEffects {
+                request_prepare: &mut noop_req,
+                vm_prepare: &mut noop_vm,
+            },
         );
         match prepared {
             Err(Errno::EAGAIN) => {
@@ -619,8 +621,10 @@ impl RsServer {
                     0,
                     crate::live_update::RS_REPLY,
                     ticks,
-                    &mut noop_req,
-                    &mut noop_script,
+                    &mut crate::live_update::EndEffects {
+                        request_prepare: &mut noop_req,
+                        run_script: &mut noop_script,
+                    },
                 );
                 state.update = update;
                 return Ok(0);
@@ -956,8 +960,10 @@ impl RsServer {
                     true,
                     &mut noop_abort,
                     &mut noop_end,
-                    &mut noop_req,
-                    &mut noop_vm,
+                    &mut crate::live_update::PrepareEffects {
+                        request_prepare: &mut noop_req,
+                        vm_prepare: &mut noop_vm,
+                    },
                 ) {
                     // C: request.c:1194-1198 — ESRCH means "done already" → OK.
                     Err(Errno::ESRCH) => Ok(0),
@@ -1015,8 +1021,10 @@ impl RsServer {
                             minix_types::EINTR,
                             reply_flag,
                             ticks,
-                            &mut noop_req,
-                            &mut noop_script,
+                            &mut crate::live_update::EndEffects {
+                                request_prepare: &mut noop_req,
+                                run_script: &mut noop_script,
+                            },
                         );
                         Ok(0)
                     }

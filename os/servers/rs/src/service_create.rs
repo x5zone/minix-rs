@@ -1433,9 +1433,7 @@ pub struct CreateEffects<'a> {
     pub publish: alloc::boxed::Box<PublishFn<'a>>,
     /// RS_INIT async send. C: rs_asynsend — utility.c:223 (production
     /// ENOSYS until the 19 wiring).
-    pub asynsend: alloc::boxed::Box<
-        dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno> + 'a,
-    >,
+    pub asynsend: alloc::boxed::Box<AsynsendFn<'a>>,
 }
 
 impl Default for CreateEffects<'_> {

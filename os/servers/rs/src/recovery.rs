@@ -867,9 +867,7 @@ pub struct TerminateEffects<'a> {
     /// Recovery script hook. C: run_script — manager.c:1209 (15/19).
     pub run_script: alloc::boxed::Box<crate::service_create::SlotEffectFn<'a>>,
     /// RS_INIT async send. C: rs_asynsend — utility.c:223 (19).
-    pub asynsend: alloc::boxed::Box<
-        dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno> + 'a,
-    >,
+    pub asynsend: alloc::boxed::Box<crate::service_create::AsynsendFn<'a>>,
 }
 
 pub fn terminate_service(
@@ -907,14 +905,17 @@ pub fn terminate_service(
         // r_init_err = ERESTART; the rollback is this round's whole job.
         TerminateAction::InitUpdateRollback => {
             let init_err = table.get(rp).init_err;
+            let mut noop_req = |_: &ServiceSlot, _: i32| {};
             upd.end_update(
                 table,
                 kernel,
                 init_err,
                 crate::live_update::RS_REPLY,
                 ticks,
-                &mut |_: &ServiceSlot, _: i32| {},
-                &mut effects.run_script,
+                &mut crate::live_update::EndEffects {
+                    request_prepare: &mut noop_req,
+                    run_script: &mut effects.run_script,
+                },
             );
             table.get_mut(rp).init_err = minix_types::ERESTART;
         }

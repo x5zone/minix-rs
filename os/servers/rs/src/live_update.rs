@@ -646,8 +646,10 @@ pub fn abort_update_proc(
                 reason,
                 reply_flag,
                 ticks,
-                &mut noop_req,
-                run_script,
+                &mut EndEffects {
+                    request_prepare: &mut noop_req,
+                    run_script,
+                },
             );
             Ok(())
         }
@@ -1192,6 +1194,45 @@ mod r23a_tests {
 
 // ── LU mid-section orchestration (R23b — update.c:401-652) ──────────────────
 
+/// The prepare-phase seam pair (A-2 — §20.3): one bundle instead of two
+/// loose `&mut dyn` parameters. `&mut dyn` fields (no `Default`) — the
+/// bundle only lives for the duration of one walk, re-borrowing the
+/// caller's closures.
+pub struct PrepareEffects<'a> {
+    /// Sends `RS_LU_PREPARE` to a service. C: request_prepare_update_service
+    /// (manager.c:455-462, 19 号 asynsend seam).
+    pub request_prepare: &'a mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+    /// Asks VM to pre-allocate for a new instance. C: vm_prepare
+    /// (update.c:489-515, 19 号 vm_memctl seam).
+    pub vm_prepare: &'a mut dyn FnMut(Endpoint, Endpoint, crate::service_slot::SysFlags),
+}
+
+/// The end-phase seam pair (A-2): shared by `end_srv_update`,
+/// `end_update_rev_iter` and `end_update`.
+pub struct EndEffects<'a> {
+    /// Sends `RS_LU_PREPARE` (re-scheduling branch, update.c:932-1008).
+    pub request_prepare: &'a mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+    /// Recovery script hook. C: run_script — manager.c:1209 (15/19).
+    pub run_script: &'a mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+}
+
+/// The start-update six-seam bundle (A-2). `kernel`/`read_exec` from the
+/// pre-Effects shape are dropped: both stayed unused until the
+/// complete_srv deep path (manager.c:657-702) lands — that landing
+/// re-adds what it consumes.
+pub struct StartUpdateEffects<'a> {
+    /// Sends `RS_LU_PREPARE` (prepare-only cancellation walk).
+    pub request_prepare: &'a mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
+    /// Per-instance swap. C: update_service (update.c:262-329).
+    pub update_service: &'a mut dyn FnMut(SlotId, SlotId, SysFlags) -> Result<(), Errno>,
+    /// Whole-update end. C: end_update (update.c:865-927).
+    pub end_update: &'a mut dyn FnMut(i32),
+    /// Per-instance completion. C: complete_srv_update — manager.c:657-702.
+    pub complete_srv: &'a mut dyn FnMut(usize) -> Result<(), Errno>,
+    /// Waits for VM's initialization. C: update.c:585-640 (06/12/19).
+    pub receive_vm_init: &'a mut dyn FnMut(Clock) -> i32,
+}
+
 impl UpdateState {
     /// Whether a multi-component update includes VM.
     /// C: `RUPDATE_IS_UPD_VM_MULTI()` — const.h:113.
@@ -1209,12 +1250,10 @@ impl UpdateState {
     /// descriptor, skipping prepare-only ones (update.c:516-525). Returns
     /// the slot whose prepare was requested, or `None` when the chain is
     /// exhausted.
-    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化
     pub fn start_update_prepare_next(
         &mut self,
         table: &mut crate::process_table::RProcTable,
-        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
-        vm_prepare: &mut dyn FnMut(Endpoint, Endpoint, crate::service_slot::SysFlags),
+        prepare: &mut PrepareEffects,
     ) -> Option<SlotId> {
         let updating = self.flags.contains(RupdateFlags::UPDATING);
         let mut idx = if !updating {
@@ -1240,7 +1279,7 @@ impl UpdateState {
                     (old.pub_.new_endpoint, old.pub_.sys_flags, new_ep)
                 };
                 if let Some(new_ep) = new_ep {
-                    vm_prepare(old_new_ep.unwrap_or(new_ep), new_ep, old_sys_flags);
+                    (prepare.vm_prepare)(old_new_ep.unwrap_or(new_ep), new_ep, old_sys_flags);
                 }
             }
         }
@@ -1256,7 +1295,7 @@ impl UpdateState {
             let prepare_state = e.prepare_state;
             let preparing_only = e.is_preparing_only();
             let has_next = e.next.is_some();
-            request_prepare(table.get(slot), prepare_state); // update.c:521
+            (prepare.request_prepare)(table.get(slot), prepare_state); // update.c:521
             if !preparing_only {
                 break;
             }
@@ -1279,7 +1318,6 @@ impl UpdateState {
     /// policy flags for multi-component updates including VM (update.c:442-
     /// 454); `ESRCH` (with `end_update(OK, RS_REPLY)`) when the chain is
     /// already exhausted.
-    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（全局表/hz/idle/abort/end）
     pub fn start_update_prepare(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1287,8 +1325,7 @@ impl UpdateState {
         allow_retries: bool,
         abort: &mut dyn FnMut(i32),
         end: &mut dyn FnMut(i32),
-        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
-        vm_prepare: &mut dyn FnMut(Endpoint, Endpoint, crate::service_slot::SysFlags),
+        prepare: &mut PrepareEffects,
     ) -> Result<SlotId, Errno> {
         // C: update.c:403-406 — UPD_SCHEDULED = descriptors exist and the
         // update has not started.
@@ -1343,7 +1380,7 @@ impl UpdateState {
 
         // Request the first service to prepare (manager.c:455-462). Done
         // already → end the update now with ESRCH.
-        match self.start_update_prepare_next(table, request_prepare, vm_prepare) {
+        match self.start_update_prepare_next(table, prepare) {
             None => {
                 end(0); // end_update(OK, RS_REPLY) — OK = 0
                 Err(Errno::ESRCH)
@@ -1410,22 +1447,11 @@ impl UpdateState {
     /// `receive_vm_init` (the VM wait + `do_init_ready` + reply block,
     /// update.c:600-640 — 06/12/19). `vm_rpupd`/`last` feed the
     /// `UPD_INIT_MAXTIME` wait window (const.h:116).
-    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/表/五缝）
     pub fn start_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
-        kernel: &mut dyn crate::boot::KernelApi,
-        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
-        update_service: &mut dyn FnMut(SlotId, SlotId, SysFlags) -> Result<(), Errno>,
-        end_update: &mut dyn FnMut(i32),
-        complete_srv: &mut dyn FnMut(usize) -> Result<(), Errno>,
-        receive_vm_init: &mut dyn FnMut(Clock) -> i32,
-        read_exec: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+        effects: &mut StartUpdateEffects,
     ) -> Result<(), Errno> {
-        // `kernel`/`read_exec` seams stay unused until the complete_srv deep
-        // path (manager.c:657-702) lands; keeping them in the signature
-        // avoids a breaking change for the wiring layer.
-        let _ = (kernel, read_exec);
         debug_assert!(self.flags.contains(RupdateFlags::UPDATING)); // update.c:539
         debug_assert!(!self.chain.is_empty()); // update.c:540
         debug_assert!(self.num_init_ready_pending == 0); // update.c:541
@@ -1441,7 +1467,7 @@ impl UpdateState {
             };
             walk = next;
             if preparing_only {
-                request_prepare(table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
+                (effects.request_prepare)(table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
             }
         }
 
@@ -1459,16 +1485,21 @@ impl UpdateState {
             walk = next;
             if !preparing_only {
                 init_ready_pending = true;
-                self.start_srv_update(table, i, update_service, end_update)?;
+                self.start_srv_update(
+                    table,
+                    i,
+                    &mut *effects.update_service,
+                    &mut *effects.end_update,
+                )?;
                 if !self.is_upd_vm_multi() || is_vm {
-                    complete_srv(i)?;
+                    (effects.complete_srv)(i)?;
                 }
             }
         }
 
         // Nothing more to do → end the update now (update.c:579-582).
         if !init_ready_pending {
-            end_update(0); // end_update(OK, 0)
+            (effects.end_update)(0); // end_update(OK, 0)
             return Ok(());
         }
 
@@ -1482,7 +1513,7 @@ impl UpdateState {
                 .and_then(|v| self.chain.entries.get(v))
                 .map(|e| e.prepare_maxtime)
                 .unwrap_or(0);
-            let vm_result = receive_vm_init(maxtime);
+            let vm_result = (effects.receive_vm_init)(maxtime);
             if vm_result == 0 {
                 for i in 0..self.chain.entries.len() {
                     let (preparing_only, is_vm) = {
@@ -1490,7 +1521,7 @@ impl UpdateState {
                         (e.is_preparing_only(), Some(i) == self.chain.vm)
                     };
                     if !preparing_only && !is_vm {
-                        complete_srv(i)?;
+                        (effects.complete_srv)(i)?;
                     }
                 }
             }
@@ -1538,18 +1569,36 @@ mod r23b_tests {
         let mut vm_prep = |_old: Endpoint, _new: Endpoint, _f: SysFlags| {};
 
         let first = st
-            .start_update_prepare_next(&mut table, &mut req, &mut vm_prep)
+            .start_update_prepare_next(
+                &mut table,
+                &mut PrepareEffects {
+                    request_prepare: &mut req,
+                    vm_prepare: &mut vm_prep,
+                },
+            )
             .expect("first walk");
         assert_eq!(first, a);
         assert!(st.flags.contains(RupdateFlags::UPDATING)); // update.c:510
 
         let second = st
-            .start_update_prepare_next(&mut table, &mut req, &mut vm_prep)
+            .start_update_prepare_next(
+                &mut table,
+                &mut PrepareEffects {
+                    request_prepare: &mut req,
+                    vm_prepare: &mut vm_prep,
+                },
+            )
             .expect("second walk");
         assert_eq!(second, b);
         assert!(
-            st.start_update_prepare_next(&mut table, &mut req, &mut vm_prep)
-                .is_none()
+            st.start_update_prepare_next(
+                &mut table,
+                &mut PrepareEffects {
+                    request_prepare: &mut req,
+                    vm_prepare: &mut vm_prep,
+                }
+            )
+            .is_none()
         );
         let _ = requested;
     }
@@ -1576,7 +1625,13 @@ mod r23b_tests {
             let mut req = |slot: &crate::service_slot::ServiceSlot, _ps: i32| {
                 dispatched.push(slot.pub_.endpoint);
             };
-            let _ = st.start_update_prepare_next(&mut table, &mut req, &mut |_o, _n, _f| {});
+            let _ = st.start_update_prepare_next(
+                &mut table,
+                &mut PrepareEffects {
+                    request_prepare: &mut req,
+                    vm_prepare: &mut |_o, _n, _f| {},
+                },
+            );
         }
         // The walk continued past the prepare-only head in one call.
         assert_eq!(st.chain.curr, Some(1));
@@ -1710,7 +1765,8 @@ impl UpdateState {
     /// version (with all its instances) goes through `cleanup_service` — a
     /// detached old instance is marked `RS_CLEANUP_DETACH`, cleaned and
     /// replied with `EDEADEPT`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // 数据参数（result/reply_flag/ticks）=
+    // C end_srv_update 的显式形参（update.c:932-941）——非缝闭包，不在 A-2 束化范围
     pub fn end_srv_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1719,8 +1775,7 @@ impl UpdateState {
         result: i32,
         mut reply_flag: i32,
         ticks: Clock,
-        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
-        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+        effects: &mut EndEffects,
     ) {
         let _ = RssFlags::empty();
         let (old, lu_detached) = {
@@ -1766,7 +1821,7 @@ impl UpdateState {
             );
         } else if reply_flag == 2 && !table.get(surviving).flags.contains(RFlags::TERMINATED) {
             // RS_CANCEL — a NULL prepare completes a prepare-only survivor.
-            request_prepare(table.get(surviving), crate::live_update::SEF_LU_STATE_NULL);
+            (effects.request_prepare)(table.get(surviving), crate::live_update::SEF_LU_STATE_NULL);
         }
 
         // Cleanup (or detach-mark) every instance of the exiting version
@@ -1776,14 +1831,14 @@ impl UpdateState {
         for id in exiting_instances {
             if id == old && lu_detached {
                 table.get_mut(id).flags.insert(RFlags::CLEANUP_DETACH);
-                crate::recovery::cleanup_service(table, id, kernel, run_script);
+                crate::recovery::cleanup_service(table, id, kernel, &mut effects.run_script);
                 let _ = kernel.reply(
                     table.get(id).pub_.endpoint,
                     minix_types::EDEADEPT,
                     &minix_types::Message::default(),
                 );
             } else {
-                crate::recovery::cleanup_service(table, id, kernel, run_script);
+                crate::recovery::cleanup_service(table, id, kernel, &mut effects.run_script);
             }
         }
     }
@@ -1794,8 +1849,8 @@ impl UpdateState {
     /// classifying each non-prepare-only descriptor by its position relative
     /// to `curr` and the `RS_INITIALIZING` phase, then dispatches to the
     /// matching `end_update_*` handler (inlined here).
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)] // 同 end_update
+    #[allow(clippy::too_many_arguments)] // 数据参数（result/reply_flag/skip/only）=
+    // C end_update_rev_iter 的显式形参（update.c:816-825）——非缝闭包
     pub fn end_update_rev_iter(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1805,8 +1860,7 @@ impl UpdateState {
         skip: Option<usize>,
         only: Option<usize>,
         ticks: Clock,
-        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
-        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+        effects: &mut EndEffects,
     ) {
         let initializing = self.flags.contains(RupdateFlags::INITIALIZING);
         // Reverse walk: last → first via prev links.
@@ -1872,14 +1926,16 @@ impl UpdateState {
                     result,
                     reply_flag,
                     ticks,
-                    request_prepare,
-                    run_script,
+                    &mut EndEffects {
+                        request_prepare: &mut effects.request_prepare,
+                        run_script: &mut effects.run_script,
+                    },
                 );
             } else if is_before_prepare {
                 // end_update_before_prepare (update.c:763-774): still waiting
                 // — clean the new version, keep the old running.
                 if let Some(new) = table.get(self.chain.entries[i].slot).new_rp {
-                    crate::recovery::cleanup_service(table, new, kernel, run_script);
+                    crate::recovery::cleanup_service(table, new, kernel, &mut effects.run_script);
                 }
             } else if is_prepare_done {
                 // end_update_prepare_done (update.c:780-794): unblock + end
@@ -1891,8 +1947,10 @@ impl UpdateState {
                     result,
                     1,
                     ticks,
-                    request_prepare,
-                    run_script,
+                    &mut EndEffects {
+                        request_prepare: &mut effects.request_prepare,
+                        run_script: &mut effects.run_script,
+                    },
                 );
             } else {
                 // is_initializing — end_update_initializing (update.c:795-
@@ -1913,8 +1971,10 @@ impl UpdateState {
                     result,
                     1,
                     ticks,
-                    request_prepare,
-                    run_script,
+                    &mut EndEffects {
+                        request_prepare: &mut effects.request_prepare,
+                        run_script: &mut effects.run_script,
+                    },
                 );
             }
         }
@@ -1925,8 +1985,6 @@ impl UpdateState {
     /// C: `end_update` — update.c:865-927. Returns
     /// [`EndUpdateOutcome::RsSelfTerminate`] when a failed update hits an
     /// RS_INIT_DONE new RS instance (C `exit(1)`, update.c:883-887 — R27(b)).
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)] // 参数 = C 隐式全局的显式化（kernel/ticks/两缝）
     pub fn end_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -1934,8 +1992,7 @@ impl UpdateState {
         result: i32,
         reply_flag: i32,
         ticks: Clock,
-        request_prepare: &mut dyn FnMut(&crate::service_slot::ServiceSlot, i32),
-        run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+        effects: &mut EndEffects,
     ) -> crate::recovery::CrashOutcome {
         debug_assert!(self.flags.contains(RupdateFlags::UPDATING)); // update.c:875
 
@@ -1963,7 +2020,7 @@ impl UpdateState {
                 continue;
             }
             if !initializing {
-                request_prepare(table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
+                (effects.request_prepare)(table.get(slot), crate::live_update::SEF_LU_STATE_NULL);
             }
             table.get_mut(slot).flags.remove(RFlags::PREPARE_DONE);
         }
@@ -1977,8 +2034,10 @@ impl UpdateState {
             self.chain.vm,
             None,
             ticks,
-            request_prepare,
-            run_script,
+            &mut EndEffects {
+                request_prepare: &mut effects.request_prepare,
+                run_script: &mut effects.run_script,
+            },
         );
         if self.chain.vm.is_some() {
             self.end_update_rev_iter(
@@ -1989,8 +2048,10 @@ impl UpdateState {
                 None,
                 self.chain.vm,
                 ticks,
-                request_prepare,
-                run_script,
+                &mut EndEffects {
+                    request_prepare: &mut effects.request_prepare,
+                    run_script: &mut effects.run_script,
+                },
             );
         }
 
@@ -2055,7 +2116,6 @@ impl UpdateState {
     /// any failure (C panics on the init/yield failures — kept as `expect`/
     /// panic per "can't fail" invariant); other services `run_service` and
     /// roll back + `end_update(r, RS_REPLY)` on failure.
-    #[allow(clippy::too_many_arguments)]
     pub fn complete_srv_update(
         &mut self,
         table: &mut crate::process_table::RProcTable,
@@ -2117,8 +2177,10 @@ impl UpdateState {
                 minix_types::ERESTART,
                 1,
                 ticks,
-                &mut request_prepare_stub,
-                &mut no_script_fn,
+                &mut EndEffects {
+                    request_prepare: &mut request_prepare_stub,
+                    run_script: &mut no_script_fn,
+                },
             );
             return Err(Errno::from_i32(minix_types::ERESTART));
         }
@@ -2143,8 +2205,10 @@ impl UpdateState {
                 Errno::EGENERIC.to_i32(),
                 1,
                 ticks,
-                &mut request_prepare_stub,
-                &mut no_script_fn,
+                &mut EndEffects {
+                    request_prepare: &mut request_prepare_stub,
+                    run_script: &mut no_script_fn,
+                },
             );
             return Err(Errno::EGENERIC);
         }
@@ -2217,14 +2281,17 @@ mod r23c_tests {
         let mut st = UpdateState::default();
         st.begin_updating();
         let mut k = crate::testutil::MockKernelApi::new(60);
+        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
         let outcome = st.end_update(
             &mut table,
             &mut k,
             Errno::EGENERIC.to_i32(),
             1,
             0,
-            &mut |_s, _ps| {},
-            &mut no_script_fn,
+            &mut EndEffects {
+                request_prepare: &mut noop_req,
+                run_script: &mut no_script_fn,
+            },
         );
         assert_eq!(outcome, crate::recovery::CrashOutcome::SelfTerminate);
         // The short-circuit happens before any per-descriptor teardown.

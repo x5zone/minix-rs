@@ -42,7 +42,13 @@ impl RsServer {
         let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
         let has_next = state
             .update
-            .start_update_prepare_next(&mut state.table, &mut noop_req, &mut noop_vm)
+            .start_update_prepare_next(
+                &mut state.table,
+                &mut live_update::PrepareEffects {
+                    request_prepare: &mut noop_req,
+                    vm_prepare: &mut noop_vm,
+                },
+            )
             .is_some();
 
         let decision = crate::ready::do_upd_ready(result, gate_ok, has_next);
@@ -66,8 +72,10 @@ impl RsServer {
                     result,
                     crate::live_update::RS_REPLY,
                     ticks,
-                    &mut noop_req,
-                    &mut noop_script,
+                    &mut live_update::EndEffects {
+                        request_prepare: &mut noop_req,
+                        run_script: &mut noop_script,
+                    },
                 );
                 Ok(minix_types::EDONTREPLY)
             }
@@ -85,16 +93,15 @@ impl RsServer {
                 let mut noop_end = |_: i32| {};
                 let mut noop_complete = |_: usize| Ok(());
                 let mut noop_receive_vm_init = |_: Clock| 0;
-                let mut noop_read_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                 state.update.start_update(
                     &mut state.table,
-                    self.kernel.as_mut(),
-                    &mut noop_req,
-                    &mut noop_update,
-                    &mut noop_end,
-                    &mut noop_complete,
-                    &mut noop_receive_vm_init,
-                    &mut noop_read_exec,
+                    &mut live_update::StartUpdateEffects {
+                        request_prepare: &mut noop_req,
+                        update_service: &mut noop_update,
+                        end_update: &mut noop_end,
+                        complete_srv: &mut noop_complete,
+                        receive_vm_init: &mut noop_receive_vm_init,
+                    },
                 )?;
                 Ok(minix_types::EDONTREPLY)
             }
@@ -155,8 +162,10 @@ impl RsServer {
                         0, // OK
                         1, // RS_REPLY
                         ticks,
-                        &mut |_s, _ps| {},
-                        &mut |_s| Ok(()),
+                        &mut live_update::EndEffects {
+                            request_prepare: &mut |_s, _ps| {},
+                            run_script: &mut |_s| Ok(()),
+                        },
                     );
                 }
                 Ok(minix_types::EDONTREPLY)

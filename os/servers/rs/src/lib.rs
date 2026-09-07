@@ -487,8 +487,10 @@ impl SefCallbacks for RsServer {
                         minix_types::ERESTART,
                         1,
                         ticks,
-                        &mut |_s, _ps| {},
-                        &mut |_s| Ok(()),
+                        &mut crate::live_update::EndEffects {
+                            request_prepare: &mut |_s, _ps| {},
+                            run_script: &mut |_s| Ok(()),
+                        },
                     );
                 }
 
@@ -2091,8 +2093,10 @@ mod signal_handler_tests {
                     true,
                     &mut noop_abort,
                     &mut noop_end,
-                    &mut noop_req,
-                    &mut noop_vm,
+                    &mut crate::live_update::PrepareEffects {
+                        request_prepare: &mut noop_req,
+                        vm_prepare: &mut noop_vm,
+                    },
                 )
                 .expect("prepare schedules the single entry");
             // The scheduling phase creates the new instance (C
@@ -2146,8 +2150,10 @@ mod signal_handler_tests {
                     true,
                     &mut noop_abort,
                     &mut noop_end,
-                    &mut noop_req,
-                    &mut noop_vm,
+                    &mut crate::live_update::PrepareEffects {
+                        request_prepare: &mut noop_req,
+                        vm_prepare: &mut noop_vm,
+                    },
                 )
                 .expect("reschedule");
             let replica =
