@@ -289,8 +289,12 @@ impl RsServer {
                     let result = self.do_init_ready(&msg).unwrap_or_else(|e| e.to_i32());
                     self.reply_unless_suppressed(who_e, result, &msg);
                 }
+                // C: main.c:117 — RS_LU_PREPARE → do_upd_ready (raw result;
+                // EDONTREPLY honored — the update continuation defers its
+                // own replies). The EDONTREPLY→EGENERIC normalization is the
+                // sef_cb_lu_response wrapper's job (18), not the loop's.
                 DispatchKind::LuPrepareReady => {
-                    let result = self.lu_response(&msg).unwrap_or_else(|e| e.to_i32());
+                    let result = self.do_upd_ready_shell(&msg).unwrap_or_else(|e| e.to_i32());
                     self.reply_unless_suppressed(who_e, result, &msg);
                 }
                 // C: main.c:102-114 + 124-129 — handler result replied to the
@@ -321,6 +325,108 @@ impl RsServer {
     ) {
         if result != minix_types::EDONTREPLY {
             let _ = self.kernel.reply(who_e, result, msg);
+        }
+    }
+
+    /// C: `do_update` — request.c:534-…: the live-update initiation
+    /// request. Its first act is `copy_rs_start` (request.c:542), so this
+    /// arm is gated on the `rs_start_t` byte ABI (edge E-RSSTART —
+    /// `bitchunk_t`/`uid_t` have no typedef in this tree) and stays
+    /// fail-closed on the dispatch death table until that landing.
+    /// C: `do_upd_ready` — request.c:890-938 (main loop `RS_LU_PREPARE`
+    /// arm, main.c:117): chain gate, `RS_PREPARE_DONE`, then either
+    /// `end_update(result, RS_REPLY)` on failure, the next preparer walk
+    /// (`start_update_prepare_next`), or `start_update`. Composed from the
+    /// landed decision (`ready::do_upd_ready`) and orchestration
+    /// (`UpdateState::{start_update_prepare_next,start_update,end_update}`);
+    /// the prepare/update callback closures are the 19 asynsend seam.
+    fn do_upd_ready_shell(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
+        // C: request.c:897 — result = m_rs_update.result (typed decode).
+        let result = minix_types::RsUpdate::decode_message(m).result;
+
+        // C: request.c:903-910 — chain gate: a current entry must exist, its
+        // slot must be the sender, and the update must not be initializing.
+        // The current entry is captured up front — the walk below advances
+        // `curr`, and the PREPARE_DONE mutation belongs to the entry that
+        // reported (request.c:911 fires before the walk).
+        let gate_curr = state.update.chain.curr().filter(|curr| {
+            state
+                .table
+                .get(state.update.chain.get(*curr).slot)
+                .pub_
+                .endpoint
+                == m.m_source
+        });
+        let gate_ok = gate_curr.is_some()
+            && !state
+                .update
+                .flags
+                .contains(live_update::RupdateFlags::INITIALIZING);
+
+        // C: request.c:922-924 — walk to the next preparer before the
+        // decision consumes the answer as `has_next`; the prepare requests
+        // it issues are the 19 asynsend seam (noop, do_period convention).
+        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+        let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+        let has_next = state
+            .update
+            .start_update_prepare_next(&mut state.table, &mut noop_req, &mut noop_vm)
+            .is_some();
+
+        let decision = crate::ready::do_upd_ready(result, gate_ok, has_next);
+        if let Some(curr) = gate_curr {
+            let curr_slot = state.update.chain.get(curr).slot;
+            decision.mutations.apply(state.table.get_mut(curr_slot));
+        }
+
+        match decision.outcome {
+            // Gate failed — request.c:910 (`return EINVAL`).
+            crate::ready::UpdReadyOutcome::Unexpected => Err(Errno::EINVAL),
+            crate::ready::UpdReadyOutcome::PrepareFailed { result } => {
+                // request.c:917-922 — end the update; the old version keeps
+                // running and is replied to (RS_REPLY).
+                let ticks = self.kernel.get_ticks().unwrap_or(0);
+                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                state.update.end_update(
+                    &mut state.table,
+                    self.kernel.as_mut(),
+                    result,
+                    crate::live_update::RS_REPLY,
+                    ticks,
+                    &mut noop_req,
+                    &mut noop_script,
+                );
+                Ok(minix_types::EDONTREPLY)
+            }
+            // request.c:930-932 — the next preparer was asked; reply deferred.
+            crate::ready::UpdReadyOutcome::NextPrepare => Ok(minix_types::EDONTREPLY),
+            crate::ready::UpdReadyOutcome::StartUpdate => {
+                // request.c:934-935 — perform the update and request each new
+                // instance to initialize; the VM-update/init faces are the 19
+                // seam (noop here, do_period convention).
+                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                let mut noop_update =
+                    |_: crate::service_slot::SlotId,
+                     _: crate::service_slot::SlotId,
+                     _: crate::service_slot::SysFlags| Ok(());
+                let mut noop_end = |_: i32| {};
+                let mut noop_complete = |_: usize| Ok(());
+                let mut noop_receive_vm_init = |_: Clock| 0;
+                let mut noop_read_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                state.update.start_update(
+                    &mut state.table,
+                    self.kernel.as_mut(),
+                    &mut noop_req,
+                    &mut noop_update,
+                    &mut noop_end,
+                    &mut noop_complete,
+                    &mut noop_receive_vm_init,
+                    &mut noop_read_exec,
+                )?;
+                Ok(minix_types::EDONTREPLY)
+            }
         }
     }
 
@@ -1197,13 +1303,18 @@ impl SefCallbacks for RsServer {
         Ok(if r == minix_types::EDONTREPLY { 0 } else { r })
     }
 
-    /// C: `sef_cb_lu_response` — main.c:614-626. The decode half landed with
-    /// `rs_init_result`'s sibling pattern (minix-types); the shell still
-    /// needs the LU chain context (`do_upd_ready`'s gate + the
-    /// complete/rollback orchestration consumers, 16 号) — fail-closed until
-    /// that wiring lands.
-    fn lu_response(&mut self, _m: &minix_types::Message) -> Result<i32, Errno> {
-        Err(Errno::ENOSYS)
+    /// C: `sef_cb_lu_response` — main.c:614-626: run the update-ready
+    /// handler, then normalize `EDONTREPLY` → `EGENERIC` (R3: reaching the
+    /// caller means the update did not happen). The wrapper for the RS
+    /// self-update path (18); the main-loop `RS_LU_PREPARE` arm keeps the
+    /// raw result ([`RsServer::do_upd_ready_shell`], main.c:117).
+    fn lu_response(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
+        let r = self.do_upd_ready_shell(m).unwrap_or_else(|e| e.to_i32());
+        Ok(if r == minix_types::EDONTREPLY {
+            Errno::EGENERIC.to_i32()
+        } else {
+            r
+        })
     }
     /// C: `sef_cb_signal_handler` — main.c:631-642. SIGCHLD drains exited
     /// children through `sigchld_cleanup` (07); SIGTERM runs the shutdown
@@ -1899,6 +2010,127 @@ mod signal_handler_tests {
         assert!(
             state.table.get(id).next_rp.is_none(),
             "the replica is cleaned up now (cleanup_service_now)"
+        );
+    }
+
+    #[test]
+    fn test_do_upd_ready_shell_gates_and_updates() {
+        // 16 wiring: RS_LU_PREPARE (request.c:890-938) — the chain gate
+        // (sender == curr entry, not initializing, request.c:903-910), the
+        // PREPARE_DONE mutation (request.c:911, R24), and the outcome
+        // dispatch: single-entry chain → start_update → EDONTREPLY
+        // (request.c:934-935); a wrong sender → EINVAL; a prepare failure →
+        // end_update(RS_REPLY) (request.c:917-922).
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        let mut m = minix_types::Message {
+            m_source: Endpoint::VFS,
+            m_type: minix_types::RS_LU_PREPARE,
+            m_u: Default::default(),
+        };
+
+        // Gate fail: no scheduled chain at all → EINVAL (request.c:910).
+        assert_eq!(server.do_upd_ready_shell(&m), Err(Errno::EINVAL));
+
+        // Schedule a one-entry chain and walk it (the UPD_START flow does
+        // this) — curr points at the VFS slot and the update is UPDATING.
+        {
+            let state = server.state.as_mut().unwrap();
+            let id = crate::service_slot::SlotId::new(0);
+            state
+                .update
+                .chain
+                .add(crate::live_update::UpdateEntry::new(id, Endpoint::VFS));
+            let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+            let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+            let mut noop_abort = |_: i32| {};
+            let mut noop_end = |_: i32| {};
+            state
+                .update
+                .start_update_prepare(
+                    &mut state.table,
+                    true,
+                    true,
+                    &mut noop_abort,
+                    &mut noop_end,
+                    &mut noop_req,
+                    &mut noop_vm,
+                )
+                .expect("prepare schedules the single entry");
+            // The scheduling phase creates the new instance (C
+            // `rp->r_new_rp` — update.c:631 requires it at start time).
+            let replica =
+                crate::service_create::clone_slot(&mut state.table, id).expect("clone the replica");
+            state.table.get_mut(id).new_rp = Some(replica);
+        }
+
+        // A different sender than the curr entry → gate fail → EINVAL.
+        let mut wrong = m;
+        wrong.m_source = Endpoint::PM;
+        assert_eq!(server.do_upd_ready_shell(&wrong), Err(Errno::EINVAL));
+
+        // The curr service reports readiness → start_update runs, the slot
+        // carries PREPARE_DONE, and the reply is deferred (request.c:934-935).
+        assert_eq!(server.do_upd_ready_shell(&m), Ok(minix_types::EDONTREPLY));
+        let s = server
+            .state
+            .as_ref()
+            .unwrap()
+            .table
+            .get(crate::service_slot::SlotId::new(0));
+        assert!(
+            s.flags.contains(RFlags::PREPARE_DONE),
+            "PREPARE_DONE fires before the result check (R24)"
+        );
+
+        // A prepare failure ends the update (request.c:917-922) — on a fresh
+        // scheduled instance, reporting a nonzero result runs
+        // end_update(RS_REPLY): the old version is replied to and keeps
+        // running, so the reply is deferred (EDONTREPLY) and the update
+        // leaves the UPDATING state.
+        let mut server2 = booted_vfs_labeled(b"vfs", b"vfs");
+        {
+            let state = server2.state.as_mut().unwrap();
+            let id = crate::service_slot::SlotId::new(0);
+            state
+                .update
+                .chain
+                .add(crate::live_update::UpdateEntry::new(id, Endpoint::VFS));
+            let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+            let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+            let mut noop_abort = |_: i32| {};
+            let mut noop_end = |_: i32| {};
+            state
+                .update
+                .start_update_prepare(
+                    &mut state.table,
+                    true,
+                    true,
+                    &mut noop_abort,
+                    &mut noop_end,
+                    &mut noop_req,
+                    &mut noop_vm,
+                )
+                .expect("reschedule");
+            let replica =
+                crate::service_create::clone_slot(&mut state.table, id).expect("clone the replica");
+            state.table.get_mut(id).new_rp = Some(replica);
+        }
+        let mut fail = m;
+        fail.m_u.m_rs_update.result = 5; // prepare failure
+        assert_eq!(
+            server2.do_upd_ready_shell(&fail),
+            Ok(minix_types::EDONTREPLY),
+            "end_update defers the reply to the old instance"
+        );
+        assert!(
+            !server2
+                .state
+                .as_ref()
+                .unwrap()
+                .update
+                .flags
+                .contains(crate::live_update::RupdateFlags::UPDATING),
+            "the failed update is no longer updating"
         );
     }
 

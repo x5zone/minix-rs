@@ -242,9 +242,10 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 /// the swapped row ids (C's `*src_rpp = dst_rp; *dst_rpp = src_rp`,
 /// manager.c:1928-1929).
 ///
-/// The rupdate chain traversal (RUPDATE_ITER, manager.c:1919-1921) is
-/// DEFERRED to 16-rs-live-update.md (per-service `r_upd` descriptors are not
-/// modelled yet — 02 STATE P2-3).
+/// The rupdate chain traversal (RUPDATE_ITER, manager.c:1919-1921) lives
+/// with the chain's owner: the live-update orchestration drives this swap
+/// and fixes the descriptors afterwards (`srv_update` — the per-slot `upd`
+/// views are re-pointed there, live_update.rs swap path).
 pub fn swap_slot(table: &mut RProcTable, src: SlotId, dst: SlotId) -> (SlotId, SlotId) {
     // 1-3. Swap row contents. C: manager.c:1886-1896. The public half moves
     // with its row; `build_cmd_dep` re-derives the argument vector (1904-1906).

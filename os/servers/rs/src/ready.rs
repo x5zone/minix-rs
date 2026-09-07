@@ -16,7 +16,7 @@
 
 use crate::sef::SefInitType;
 use crate::service_slot::{RFlags, ServiceSlot, SlotMutations};
-use minix_types::{Clock, Endpoint, Errno};
+use minix_types::{Clock, Endpoint};
 
 /// C: `SEF_INIT_SCRIPT_RESTART` — sef.h:102 (`0x10`).
 pub const SEF_INIT_SCRIPT_RESTART: u32 = 0x10;
@@ -343,52 +343,14 @@ pub fn end_srv_init(rp: &mut ServiceSlot, has_prev: bool) -> bool {
     has_prev
 }
 
-/// Whether the boot init-ready catcher replies to the source.
-///
-/// C: `catch_boot_init_ready` — main.c:812-815: no reply to VM, which sent
-/// the reply asynchronously (a synchronous reply could deadlock).
-///
-/// awaiting-wiring: 12-rs-init-run.md/06-rs-main-loop.md — the landed
-/// `catch_boot_init_ready` keeps the VM exception inline; this decision
-/// primitive stays as the tested statement of the rule until the response
-/// shell converges (adopt there or delete — decide at the shell round).
-pub fn should_reply_ready(src: Endpoint) -> bool {
-    src != Endpoint::VM
-}
-
-/// C: `sef_cb_init_response` — main.c:591-609.
-///
-/// Non-OK result propagates; otherwise the simulated RS-to-RS init runs
-/// `do_init_ready`, and `EDONTREPLY` (its normal success) becomes `OK`.
-///
-/// awaiting-wiring: 06-rs-main-loop.md — `RsServer::init_response` landed
-/// with the equivalent normalization inline; adopt this primitive there or
-/// delete it when the response shell converges.
-pub fn normalize_init_response(result: i32, ready: Result<(), Errno>) -> i32 {
-    if result != 0 {
-        return result;
-    }
-    match ready {
-        Ok(()) => 0,
-        Err(Errno::EDONTREPLY) => 0,
-        Err(e) => e.to_i32(),
-    }
-}
-
-/// C: `sef_cb_lu_response` — main.c:614-626.
-///
-/// `do_upd_ready` normally returns `EDONTREPLY`; reaching the caller means
-/// the update did not happen → `EGENERIC` (sys/errno.h:200).
-///
-/// awaiting-wiring: 16-rs-live-update.md — consumed by `RsServer::
-/// lu_response` when the LU chain context lands at that arm.
-pub fn normalize_lu_response(ready: Result<(), Errno>) -> i32 {
-    match ready {
-        Ok(()) => 0,
-        Err(Errno::EDONTREPLY) => Errno::EGENERIC.to_i32(),
-        Err(e) => e.to_i32(),
-    }
-}
+// I5 shell-convergence round (Fix #77): the three response-shell primitives
+// that previously waited here (`should_reply_ready`, `normalize_init_response`,
+// `normalize_lu_response`) were deleted — their landed consumers
+// (`RsServer::init_response`/`lu_response`, `catch_boot_init_ready`) implement
+// the equivalent rules inline with C-anchored comments, and the helpers'
+// signatures never matched the landed call shapes. The rules stay tested
+// through the consumers' own tests (init_response normalization, the VM
+// no-reply exception in boot).
 
 #[cfg(test)]
 mod tests {
@@ -650,33 +612,5 @@ mod tests {
         assert!(!end_srv_init(&mut rp, false));
         assert_eq!(rp.restarts, 1);
         assert_eq!(rp.next_rp, None);
-    }
-
-    #[test]
-    fn test_should_reply_ready_vm_exception() {
-        // C: main.c:812-815 — VM is not replied to.
-        assert!(!should_reply_ready(Endpoint::VM));
-        assert!(should_reply_ready(Endpoint::VFS));
-        assert!(should_reply_ready(Endpoint::PM));
-    }
-
-    #[test]
-    fn test_normalize_init_response() {
-        // C: main.c:591-609 — result wins; EDONTREPLY → OK.
-        assert_eq!(normalize_init_response(5, Ok(())), 5);
-        assert_eq!(normalize_init_response(0, Err(Errno::EDONTREPLY)), 0);
-        assert_eq!(normalize_init_response(0, Err(Errno::from_i32(42))), 42);
-        assert_eq!(normalize_init_response(0, Ok(())), 0);
-    }
-
-    #[test]
-    fn test_normalize_lu_response() {
-        // C: main.c:614-626 — EDONTREPLY → EGENERIC.
-        assert_eq!(
-            normalize_lu_response(Err(Errno::EDONTREPLY)),
-            Errno::EGENERIC.to_i32()
-        );
-        assert_eq!(normalize_lu_response(Err(Errno::from_i32(3))), 3);
-        assert_eq!(normalize_lu_response(Ok(())), 0);
     }
 }

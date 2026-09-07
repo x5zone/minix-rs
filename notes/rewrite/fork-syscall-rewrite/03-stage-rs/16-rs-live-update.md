@@ -33,6 +33,21 @@ Minix3 的系统服务（VM/PM/VFS/驱动）重启成本高：IPC 引用、内�
 
 `RS_UPDATE` 消息（13 之后的主循环分派）是唯一入口；`RS_LU_PREPARE`（服务的 prepare 完成通知）走 `do_upd_ready`（12/16）。`update_period`（07）负责超时。
 
+> **接线落地（2026-09-07，I5/Fix #77）**：`RS_LU_PREPARE` 臂已 live——主循环的
+> `LuPrepareReady` 分类走 `RsServer::do_upd_ready_shell`（裸结果，EDONTREPLY 生效，
+> 对齐 main.c:117），链门（sender == curr 槽且非 INITIALIZING，request.c:903-910）
+> → `RS_PREPARE_DONE`（request.c:911，R24）→ 三路派发：prepare 失败
+> `end_update(result, RS_REPLY)`（request.c:917-922）/ 下一准备者
+> `start_update_prepare_next`（request.c:922-932）/ 全部就绪 `start_update`
+> （request.c:934-935），编排全部消费 `UpdateState` 既有方法，回调缝按 19 号
+> 约定传 noop。`sef_cb_lu_response` 包装（EDONTREPLY→EGENERIC，main.c:614-626）
+> 由 `SefCallbacks::lu_response` 承载（18 号自升级路径用）。**`RS_UPDATE` 臂
+> （do_update，request.c:534）压 `rs_start_t` 字节 ABI**——首步即
+> `copy_rs_start`，而 `bitchunk_t`/`uid_t` 本树无 typedef（edge E-RSSTART），
+> 在 dispatch 死表上 fail-closed 等待。`do_upd_ready` 的 ready.rs 三辅助
+> （should_reply_ready/normalize_init_response/normalize_lu_response）在本轮
+> 裁决删除：落地的 wrapper 以内联等价实现承载同样规则（Fix #77）。
+
 ### 1.2 LU 状态机总图（WHAT）
 
 ```

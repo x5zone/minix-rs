@@ -32,9 +32,8 @@ pub fn default_prepare_maxtime(hz: u32) -> i64 {
 /// C: `UPD_INIT_MAXTIME(&rp->r_upd)` — const.h:116. The update descriptor's
 /// `prepare_maxtime` override wins only when it differs from the default
 /// (`RS_DEFAULT_PREPARE_MAXTIME`); otherwise the init timeout `RS_INIT_T`
-/// applies. `prepare_maxtime` is not modelled yet (16-rs-live-update,
-/// update-descriptor timing fields DEFERRED), so callers pass `None` for the
-/// unmodelled default; the 16 wiring replaces it with the descriptor value.
+/// applies. The per-slot descriptor is `ServiceSlot.upd` (populated by the
+/// live-update orchestration); `None` — no descriptor — takes the default.
 pub fn upd_init_maxtime(hz: u32, prepare_maxtime: Option<i64>) -> i64 {
     match prepare_maxtime {
         Some(pm) if pm != default_prepare_maxtime(hz) => pm,
@@ -91,9 +90,10 @@ pub fn effective_period(rp: &ServiceSlot, hz: u32) -> i64 {
     if rp.flags.contains(RFlags::INITIALIZING) {
         if rp.flags.contains(RFlags::UPDATING) {
             // C: `UPD_INIT_MAXTIME(&rp->r_upd)` — const.h:116. The
-            // `prepare_maxtime` override lives in the update descriptor
-            // (16, DEFERRED); unmodelled → C default branch (`RS_INIT_T`).
-            upd_init_maxtime(hz, None)
+            // `prepare_maxtime` override lives in the per-slot descriptor
+            // (`ServiceSlot.upd`, populated by the live-update orchestration);
+            // no descriptor → the C default branch (`RS_INIT_T`).
+            upd_init_maxtime(hz, rp.upd.as_ref().map(|u| u.prepare_maxtime))
         } else {
             init_timeout(hz)
         }

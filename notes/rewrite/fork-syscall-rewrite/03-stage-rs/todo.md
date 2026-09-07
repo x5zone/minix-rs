@@ -2879,6 +2879,34 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   夹具缺陷（mock ticks/child_endpoint 缺失、clone 前置条件缺 cmd——均测试侧
   建设不足，非产品缺陷）。
 
+### ✅ Fix #77 — I5 16 号 RS_LU_PREPARE 臂接线（lu_response shell）+ RS_UPDATE E-RSSTART 判定 + 三孤儿裁决
+- **File**：`lib.rs`（`do_upd_ready_shell` 编排 shell + `lu_response` 落地 +
+  run() 的 LuPrepareReady 臂改走裸 shell + 1 接线测试）、`ready.rs`
+  （删 should_reply_ready/normalize_init_response/normalize_lu_response 三孤儿
+  + 其测试）、`dispatch.rs`（接线状态注记）、`monitor.rs`（upd_init_maxtime 读
+  `ServiceSlot.upd` 描述符 + 2 处 DEFERRED 标记清除）、`service_create.rs`
+  （swap_slot 链遍历归属注记）；minix-types `message.rs`（`MessRsUpdate` 臂）、
+  `ipc/rs.rs`（`RsUpdate::decode_message`）；文档 16 号接线落地注记
+- **Before**：`RS_LU_PREPARE` 臂的 `lu_response` 恒 ENOSYS（16-gated"缺链上下文"
+  ——Fix #53 的 UpdateState 落地后前提已解除）；monitor 的 `upd_init_maxtime`
+  忽略描述符（3 处 DEFERRED 注释指 16 号，前提均已解除）；ready.rs 三辅助按
+  awaiting-wiring 注释的承诺"shell 收敛轮裁决采用或删除"。
+- **After**：shell 按 C 顺序组合——链门（sender==curr 且非 INITIALIZING，
+  request.c:903-910，gate 用 curr 在走链前捕获）→ PREPARE_DONE（R24）→
+  PrepareFailed→`end_update(result, RS_REPLY)` / NextPrepare→EDONTREPLY /
+  StartUpdate→`start_update`（8 回调缝按 19 号约定 noop）。**结构修正**：
+  run() 的 LuPrepareReady 臂改走裸 shell（main.c:117 原始结果、EDONTREPLY 生效），
+  EDONTREPLY→EGENERIC 归一是 sef_cb_lu_response 包装的职责（main.c:614-626）——
+  此前两者混用会让主循环把"延迟回复"误报为 EGENERIC。三孤儿删除（签名与落地
+  调用形不符，规则由 wrapper 自身测试承载）。**RS_UPDATE 臂判定**：C do_update
+  首步即 `copy_rs_start`（request.c:542）——与 RS_UP/RS_EDIT 同压 E-RSSTART
+  字节 ABI，保持死表 fail-closed。
+- **Verified**：`cargo test -p minix-rs` = **302 passed**（+1
+  `test_do_upd_ready_shell_gates_and_updates`（无链 EINVAL/错 sender EINVAL/
+  StartUpdate PREPARE_DONE+EDONTREPLY/失败 end_update 清 UPDATING），
+  -3 删除孤儿测试，净 -2）；`cargo test -p minix-types` = **175 passed**；
+  clippy 触碰文件零告警；fmt 干净；T7 PASS。
+
 ### 18.10 EDGE 清单（§18 迭代收束——追加以避免与 19 号主线冲突，2026-09-06）
 
 > 以下条目为**结构性重构 / 测试基建 / 生产接线边界**，属独立立项范围，本轮（§18

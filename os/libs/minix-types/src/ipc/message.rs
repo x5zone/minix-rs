@@ -73,6 +73,8 @@ pub union MessageUnion {
     pub m_rs_init: MessRsInit,
     /// RS generic control request (RS_UP/RS_DOWN/RS_EDIT/...).
     pub m_rs_req: MessRsReq,
+    /// RS live-update prepare ready (service → RS): C ipc.h:2533.
+    pub m_rs_update: MessRsUpdate,
     /// Sysinfo table export (GETSYSINFO family) — C ipc.h:2529.
     pub m_lsys_getsysinfo: MessLsysGetsysinfo,
     /// Fault injection (RS → service): COMMON_REQ_FI_CTL — C ipc.h:2536.
@@ -2778,6 +2780,40 @@ pub struct MessRsReq {
     /// C: `int subtype`.
     pub subtype: i32,
     _pad2: [u8; 20],
+}
+
+/// RS live-update prepare-ready payload — C: `mess_rs_update` —
+/// ipc.h:1898-1907 (x86-64 layout: result@0, state@4, prepare_maxtime@8,
+/// flags@12, state_data_gid@16, padding to 56 bytes). A service sends it as
+/// `RS_LU_PREPARE` when it finished preparing for its live update
+/// (`do_upd_ready` — request.c:890-938 reads `m_rs_update.result`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessRsUpdate {
+    /// C: `int result` — prepare result (0 = OK).
+    pub result: i32,
+    /// C: `int state` — `SEF_LU_STATE_*` reached state.
+    pub state: i32,
+    /// C: `int prepare_maxtime` — requested prepare time budget.
+    pub prepare_maxtime: i32,
+    /// C: `int flags` — `SEF_LU_*` flags.
+    pub flags: i32,
+    /// C: `gid_t state_data_gid` — grant for the state data.
+    pub state_data_gid: i32,
+    _pad: [u8; 36],
+}
+
+impl Default for MessRsUpdate {
+    fn default() -> Self {
+        Self {
+            result: 0,
+            state: 0,
+            prepare_maxtime: 0,
+            flags: 0,
+            state_data_gid: 0,
+            _pad: [0; 36],
+        }
+    }
 }
 
 /// Sysinfo table export request — C: `mess_lsys_getsysinfo` —

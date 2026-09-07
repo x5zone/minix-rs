@@ -140,6 +140,15 @@ impl DispatchResult {
 /// C: the `switch(call_nr)` — main.c:102-114. Each arm's handler ownership is
 /// annotated; handlers land with their owning docs. Until then, all requests
 /// fail closed with `ENOSYS`, matching the C `default` branch — main.c:118-121.
+///
+/// Wiring status (I3-I5, 2026-09-07): `RS_DOWN`/`RS_REFRESH`/`RS_RESTART`/
+/// `RS_SHUTDOWN`/`RS_CLONE`/`RS_UNCLONE` (13) and `RS_SYSCTL`/`RS_FI`/
+/// `RS_GETSYSINFO`/`RS_LOOKUP` (14) run live through `RsServer::do_request` —
+/// they never reach this table. The remaining arms `RS_UP`/`RS_EDIT`/
+/// `RS_UPDATE` share one gate: their first act is `copy_rs_start`
+/// (request.c:37/:306/:542), and the `rs_start_t` byte ABI cannot be pinned
+/// from this tree (`bitchunk_t`/`uid_t` have no typedef — edge E-RSSTART).
+/// They stay fail-closed here until that landing.
 pub fn dispatch_request(call_nr: i32) -> DispatchResult {
     match call_nr {
         // → 13-rs-control-requests.md

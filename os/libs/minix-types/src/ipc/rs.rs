@@ -186,6 +186,26 @@ pub struct RsUpdate {
     pub state_data_gid: i32,
 }
 
+impl RsUpdate {
+    /// Decode a live-update prepare-ready message from a service.
+    ///
+    /// C: `m_rs_update` (ipc.h:1898-1907); the receiver reads
+    /// `m_rs_update.result` in `do_upd_ready` (request.c:897). The caller
+    /// checks `m_type == RS_LU_PREPARE` before decoding.
+    pub fn decode_message(msg: &Message) -> Self {
+        // SAFETY: `m_rs_update` is the active union arm for RS_LU_PREPARE
+        // messages; the arm is plain-old-data.
+        let m = unsafe { msg.m_u.m_rs_update };
+        Self {
+            result: m.result,
+            state: m.state,
+            prepare_maxtime: m.prepare_maxtime,
+            flags: m.flags,
+            state_data_gid: m.state_data_gid,
+        }
+    }
+}
+
 /// Payload of the PM→RS exec-restart message.
 ///
 /// C: `mess_rs_pm_exec_restart` — ipc.h:1869-1877.
