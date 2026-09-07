@@ -49,7 +49,7 @@
 | T31 | 5 | 缺页计数生产者接线 + InfoUsage 槽位判定（Getrusage 为出口，VM_INFO wire C-parity） | vmproc_handle.rs:305 | ✅ 2026-09-07（todo.md §16 Fix #51；新登记 G-V12-6） |
 | T32 | 6 | VFS transid 路径 C-parity 修复（真 bug：clean_type 门拒绝真实 transid 消息） | vm_server.rs:1227 | ✅ 2026-09-07（todo.md §16 Fix #52；三矩阵 486/503/486） |
 | T33 | 6 | fork eager CoW——VM 侧完成（借用两相 + msgaddr 经 gateway Option）；kernel 缺 msgaddr 出参 → **E-FORKMSG 登记** | T11 收尾 | ✅ 2026-09-07（todo.md §16 Fix #53；三矩阵 488/505/488） |
-| T34 | 6 | MemType 收敛设计与实施 | V9-P2-3 | ⬜ |
+| T34 | 6 | MemType 收敛设计 → **判定闭合：保留 trait（C vtable 直接对应物；Redox Provider 类比不成立）** | V9-P2-3 | ✅ 2026-09-07（todo.md §16 Fix #55） |
 | T35 | 7 | 剩余判定批次——注记批+失真批+per-backend 查询判定 ✅；余 heap-shrink 删除、G-V12-4 errno 直传（下轮，理由见 Fix #54） | todo.md §16 | 🔄 主体 ✅ 2026-09-07（todo.md §16 Fix #54） |
 | T36 | 7 | 收尾回归：todo/edge 对账 + checklist §8 刷新 + Gate E + 四矩阵全绿 | 收敛审计 | ⬜ |
 

@@ -128,7 +128,7 @@ remap 创建的多进程共享：
 Rust 用 `trait MemType`（memtype.rs:10）替代函数指针表：
 
 ```rust
-pub(crate) trait MemType: Send + Sync {
+pub(crate) trait MemType {
     fn name(&self) -> &'static str;
     fn ev_new(...) -> Result<(), MemTypeError> { Ok(()) }        /* C NULL → 跳过 */
     fn ev_delete(&self, _region: &mut VirRegion) {}              /* C NULL → 跳过 */
@@ -309,9 +309,9 @@ struct mem_type mem_type_anon_contig = {
 
 ### 3.1 D1: trait 替代函数指针表（ARCH 主决策）
 
-`trait MemType: Send + Sync`（memtype.rs:10）15 方法**全带默认实现**。C 的 NULL 判空调用（`if (mt->ev_xxx)`)变成"框架直接调用，默认实现处理"——**减少一处判空分支，把"无特化"表达为默认行为**。
+`trait MemType`（memtype.rs:10）方法带默认实现（`ev_pagefault` 除外——V10-P1-3 把它改为**必须实现**，杜绝漏实现被默认值静默吞掉）。C 的 NULL 判空调用（`if (mt->ev_xxx)`)变成"框架直接调用，默认实现处理"——**减少一处判空分支，把"无特化"表达为默认行为**。
 
-`Send + Sync` 约束：MemType 实例是 `&'static` 单例（unit struct），无内部可变状态——满足单线程 VM 模型且不阻碍未来并发演进。
+`Send + Sync` supertrait 已移除（V10-P1-3）：单线程用户态服务器无此需求，该约束本是 `&'static` 单例存入 static 的存储机制泄漏到 API 契约——存储边界在 `MEM_TYPE_*` 注册处按 `AssumeSyncCell` 同一论证局部处理。
 
 ### 3.2 D2: PagefaultResult 显式化页错误结果
 

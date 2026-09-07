@@ -419,7 +419,7 @@ V9-P2-1 合并实现。
 
 **验证**：`rg "as usize - vm_rq_base" os/servers/vm/src` 归零。
 
-### V9-P2-3 MemType trait → Provider enum（Redox 证据）
+### ✅ V9-P2-3 MemType trait → Provider enum——判定闭合：保留 trait（V11/T34，见 §16 Fix #55）
 
 **问题**：`MemType` trait 15 方法每个都带 `&mut dyn PfnAllocator / &VmProcTable /
 &mut PageCache` 大依赖注入（memtype.rs:17），实现方被迫耦合全局状态。§6 已提拆小
@@ -1442,6 +1442,19 @@ Coverage Summary for vm:
 - **失真批（T30/T31/T33 落地后的陈述过时）**：`alloc_cycle` 文档（"重试 DEFERRED"→ T30 已入漏斗）、其测试注释、`memtype.rs` trait 头（回调状态表按 T28/T31/T33 后现状刷新）、`cow_copy_page` 注记。`vm_server.rs:1599` 的 "# DEFERRED" 为历史叙述标题（reply_to_errno 修复记录）——保留。
 - **Verified**: 三矩阵 **488 / 505 / 488 passed**；clippy 0；vm 全树 DEFERRED 字样余 18 处，逐一归因：9 处为历史叙述/判定文本、6 处为准确 open 项（E-VFSWIRE/A-8/24-page-cache 数据拷贝/G-V12-4/heap-shrink 执行判定/PagefaultCtx 重构债）、其余为本次改写后的指针
 - **Docs**: 本条即判定记录；§16.1.1 预判笔记执行完毕（heap-shrink 删除与 G-V12-4 实现留待下轮，理由：前者需连测删除的回归窗，后者是 minix-types wire 变更）
+
+### ✅ Fix #55: T34 — MemType 收敛设计判定：保留 trait，不做 enum 重写（V9-P2-3 闭环）
+
+- **性质**：设计判定（无代码改动；文档同步两处）。
+- **证据链（override 矩阵 + C/Redox/Linux 对照）**：
+  1. **C 的 `mem_type_t` 本就是行为钩子 vtable**（name + 14 回调函数指针），Linux `vm_operations_struct` 同构（12 文档 §1.9 已论证）——Rust trait 是该结构的直接对应物，不是 translate 偏差。
+  2. **Redox Provider enum 的类比不成立**：Redox 的 Provider（Allocated/PhysBorrowed/External…）枚举的是**数据来源种类**，页故障按"数据在哪"分派；minix3 的 memtype 回调是**行为钩子**（fault/copy/resize 如何做）——"行为多态"硬套"数据枚举"只是把 match 从调用点搬到 enum 臂内，~12 个 dyn 调用点 + 6 实现 × 19 方法的机械翻新，零行为收益。
+  3. **危险默认已除**（V10-P1-3）：`ev_pagefault` 必须实现、`Send + Sync` supertrait 移除——当初"enum 化防误实现"的动机已被更低成本的修复消解。
+  4. **测试面完整**（V11/T22/T28）：ev_delete ×6 表驱动、各实现契约测试在位。
+  5. **6 个零调用方法**（ev_new/ev_resize/ev_split/ev_low_shrink/ev_sanitycheck/pt_flags）判定保留：它们是 C mem_type 契约面（resize/split/low-shrink 流程的预留钩子，均有 C 回调对应物）且已被 T22 测试覆盖——删除即丢失已测的 C-parity 面。
+- **判定**：**保留 trait**。重开条件：resize/split/low-shrink 流程落地后若默认实现误用再现，或方法面增长失控（>24），重评。
+- **Verified**: 无代码改动；三矩阵 488 / 505 / 488 passed 维持；`rg "Send + Sync" servers/vm/src/memtype.rs` → 0
+- **Docs**: `12-memtype.md` §3.1 两处陈旧表述同步（supertrait 移除 + ev_pagefault 必实现现状）；acl.rs `mask` 注记的"依赖 V9-P2-3"随之解除（V11/T35 已改事实性）
 
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
