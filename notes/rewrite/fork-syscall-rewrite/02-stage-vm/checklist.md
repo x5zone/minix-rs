@@ -398,7 +398,7 @@
 | F-061 | `boot_alloc` | main.c:305 | 启动分配 (static) | `BumpBuf` (heap_arena.rs) | 已实现 |
 | F-062 | `libexec_alloc_vm_prealloc` | main.c:317 | libexec 预分配 (static) | `VmServer::libexec_prealloc` | 已实现 |
 | F-063 | `libexec_alloc_vm_ondemand` | main.c:324 | libexec 按需 (static) | `VmServer::libexec_ondemand` | 已实现 |
-| F-064 | `exec_bootproc` | main.c:331 | 执行启动进程 (static) | `VmServer::exec_bootproc` | **未实现 (TODO)** |
+| F-064 | `exec_bootproc` | main.c:331 | 执行启动进程 (static) | `VmServer::exec_bootproc` (vm_server.rs, V11/T14) | ✅ 已实现 (2026-09-07): ELF 装载 + sys_exec wire；栈帧挂 E-BOOTFRAME |
 | F-065 | `do_procctl_notrans` | main.c:419 | 无事务 procctl (static) | 跳过 (走 dispatcher) | 跳过 |
 | F-066 | `init_vm` | main.c:428 | VM 初始化 | `VmServer::init` (vm_server.rs:140) | 已实现 |
 | F-067 | `sef_cb_init_vm_multi_lu` | main.c:592 | 多组件 LU 初始化 (static) | **未实现** | TODO |
@@ -671,8 +671,8 @@
 | I-020 | VM_VFS_MMAP | mmap.c:135 | `dispatch_vfs_mmap` | 已实现 (mmap.rs:273) |
 | I-021 | VM_VFS_REPLY | vfs.c:109 | `dispatch_vfs_reply` | ✅ Done (2026-06-16) — 完整实现: reqid>0 校验 + VfsReply 构造(req_id/result/fd/dev/size_pages) + VfsRequestQueue::handle_reply + 延迟回调(DispatchResult) + VmReply::Suspend; 3 个测试覆盖 |
 | I-022 | VM_RS_SET_PRIV | rs.c:34 | `rs::handle_rs_set_priv` | 已实现 |
-| I-023 | VM_RS_PREPARE | rs.c:71 | `rs::handle_rs_prepare` | **NotImplemented** |
-| I-024 | VM_RS_UPDATE | rs.c:150 | `rs::handle_rs_update` | **NotImplemented** |
+| I-023 | VM_RS_PREPARE | rs.c:71 | `rs::handle_rs_prepare` | ✅ 已实现 (V11/T12) |
+| I-024 | VM_RS_UPDATE | rs.c:150 | `rs::handle_rs_update` | ✅ 已实现 (V11/T13；通电→E2) |
 | I-025 | VM_RS_MEMCTL | rs.c:349 | `rs::handle_rs_memctl` | 已实现 |
 | I-026 | VM_ADDDMA | (新增) | `dispatch_adddma` | **NotImplemented** |
 | I-027 | VM_DELDMA | (新增) | `dispatch_deldma` | **NotImplemented** |
@@ -712,14 +712,14 @@
 5. ~~**dispatch_remap/remap_ro** — 共享内存重映射~~ → **已修复 (2026-06-16)**: dispatch_remap 完整实现 (endpoint 验证 + 源 region 查找/匹配 + 目标地址槽查找 + VR_SHARED region 创建); dispatch_remap_ro 复用 dispatch_remap_impl(readonly=true); 4 个测试覆盖
 6. ~~**dispatch_shm_un_map** — 共享内存解除映射~~ → **已修复**: dispatch_shm_unmap 已实现 (dispatcher.rs:134), 调用 handle_munmap
 7. ~~**dispatch_vfs_reply** — VFS 应答处理~~ → ✅ **已修复 (2026-06-16)**: 完整实现 dispatch_vfs_reply (dispatcher.rs:294) — reqid>0 校验 + VfsReply 构造 + VfsRequestQueue::handle_reply + 延迟回调(DispatchResult) + VmReply::Suspend; 3 个测试覆盖
-8. **handle_rs_prepare/update** — Live Update 协议
+8. ~~**handle_rs_prepare/update** — Live Update 协议~~ → ✅ **已闭环 (2026-09-07, V11/T12+T13)**: PREPARE 全链（map_pin_memory + heap 扩展 + map_proc_dyn_data 幂等 CoW 转移）；UPDATE 七步全链（Gateway.sys_update + swap_slots + share_mappings/map_proc_dyn_data；pt_bind 判定为 kernel 已覆盖）；25 文档 §3.7 七步表
 9. ~~**add_region/remove_region** — `vmproc_handle.rs:431-440` 是 stub~~ → **已修复**: 实现为 VirRegion::insert/remove
 10. ~~**brk/mmap overlap 检查** — brk 扩展 + mmap 无 MAP_FIXED 时不检查 overlap~~ → **已修复**: brk 用 find_overlap 检查堆栈冲突; mmap 插入前防御性检查; RegionMap::insert 返回 Result 含 overlap 检查
 11. ~~**handle_memory_once** — 通知内核 fork 消息页面~~ → **已修复 (2026-06-14)**: 函数已实现 + 3 个测试; do_fork 调用待 VmProcTable split borrow
-12. **do_memory** (handle_signal) — 不存在于当前代码 (Minix3 SIGKMEM 在 VM 侧无处理函数)
-13. **exec_bootproc** — 启动进程 ELF 加载
+12. ~~**do_memory** (handle_signal) — 不存在于当前代码~~ → ✅ **已闭环 (2026-09-07, V11/T29)**: `handle_signal(SIGKMEM)` → `do_memory` 排空循环（Gateway sys_vmctl_memreq_get/reply，SYS_VMCTL 43/14/15 wire 对齐 kernel dispatch_vmctl；MAX_MEMREQ_BATCH 上界）；kernel 对端 VmRequestHandler 已存在；通电挂 E1（todo.md §16 Fix #49）
+13. ~~**exec_bootproc** — 启动进程 ELF 加载~~ → ✅ **已闭环 (2026-09-07, V11/T14)**: 装载半（Direct Map 直读 + minix_elf 逐段映射实化 + blob 释放）+ Gateway.sys_exec wire；栈帧 ABI 挂 E-BOOTFRAME（todo.md §16，Fix #41）
 14. ~~**SharedMemory::ev_pagefault** — 跨进程 PFN 共享~~ → **已修复 (2026-06-16)**: ev_pagefault 签名增加 &VmProcTable + &mut PfnAllocator; 完整实现 getsrc→vm_isokendpt→map_lookup→源页映射→PFN共享; MemTypeError 新增 InvalidProcess/InvalidAddress; 3 个测试
-15. **CacheMemory::ev_pagefault** — 缓存索引查找 (当前 NeedNewPage)
+15. ~~**CacheMemory::ev_pagefault** — 缓存索引查找~~ → ✅ **判定闭合 (2026-09-07, V11/T28)**: 盘点前提修正——ev_pagefault 早已实现 PbCache 邮箱语义且 dispatch_mapcache 是急切映射；C 的 pb_cache 是 do_mapcache 内部一次性管道，Rust 已内联——PbCache 变体删除，ev_pagefault 固定 fail-closed（Mapped→Handled / 未映射→InvalidParam）（todo.md §16 Fix #48）
 16. ~~**ContiguousAnonymous::ev_new/pagefault** — 连续物理页分配~~ → **已修复 (2026-06-14)**: ev_new 实现连续 PFN 分配 + 连续性验证 + map_page; ev_pagefault 改为 panic (与 C 一致); ev_new 签名扩展 (region, frames, alloc)
 17. ~~**cache_freepages** — LRU 淘汰 (当前返回 0)~~ → **已修复**: PageCache::free_pages 已实现 (page_cache.rs:140, LRU eviction)
 18. ~~**pt_clearmapcache** — 页表映射缓存清理~~ → **设计差异 (2026-06-16)**: Direct Map 架构下此操作完全消除, 内核通过 kernel direct map 直接访问页目录, 无需缓存 PDE, 对应 C 函数 `sys_vmctl(VMCTL_CLEARMAPCACHE)` 无 Rust 等价物

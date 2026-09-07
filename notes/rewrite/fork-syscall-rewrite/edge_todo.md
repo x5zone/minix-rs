@@ -51,7 +51,7 @@
 | T33 | 6 | fork eager CoW——VM 侧完成（借用两相 + msgaddr 经 gateway Option）；kernel 缺 msgaddr 出参 → **E-FORKMSG 登记** | T11 收尾 | ✅ 2026-09-07（todo.md §16 Fix #53；三矩阵 488/505/488） |
 | T34 | 6 | MemType 收敛设计 → **判定闭合：保留 trait（C vtable 直接对应物；Redox Provider 类比不成立）** | V9-P2-3 | ✅ 2026-09-07（todo.md §16 Fix #55） |
 | T35 | 7 | 剩余判定批次——注记批+失真批+per-backend 查询判定 ✅；余 heap-shrink 删除、G-V12-4 errno 直传（下轮，理由见 Fix #54） | todo.md §16 | 🔄 主体 ✅ 2026-09-07（todo.md §16 Fix #54） |
-| T36 | 7 | 收尾回归：todo/edge 对账 + checklist §8 刷新 + Gate E + 四矩阵全绿 | 收敛审计 | ⬜ |
+| T36 | 7 | 收尾回归：todo/edge 对账 + checklist §8 刷新 + Gate E + 四矩阵全绿 | 收敛审计 | ✅ 2026-09-07（todo.md §16 Fix #56；campaign 完结——T24–T36 全部闭环） |
 
 ---
 

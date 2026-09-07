@@ -1456,6 +1456,13 @@ Coverage Summary for vm:
 - **Verified**: 无代码改动；三矩阵 488 / 505 / 488 passed 维持；`rg "Send + Sync" servers/vm/src/memtype.rs` → 0
 - **Docs**: `12-memtype.md` §3.1 两处陈旧表述同步（supertrait 移除 + ev_pagefault 必实现现状）；acl.rs `mask` 注记的"依赖 V9-P2-3"随之解除（V11/T35 已改事实性）
 
+### ✅ Fix #56: T36 — campaign 收尾对账（终审全绿，campaign 完结）
+
+- **对账范围**：edge_todo.md §0 T24–T36 全行状态核对（T24–T35 ✅、T33 余件挂 E-FORKMSG、T35 余 2 小项记录在案）；checklist.md §8/§符号表刷新（#8/#12/#13/#15、F-064、I-023/024——均为 2026-06 陈旧状态，本轮 T12/T13/T14/T28/T29 已闭环）。
+- **Gate E 抽样**：本轮全部新测试名逐一 `grep -rl "fn {name}"` 精确命中（eager-CoW/transid 路由/缺页记账/do_memory 排空/回收重试/CALLMAP 对账——6/6）。
+- **终审基线（2026-09-07）**：三 feature 矩阵 **488 / 505 / 488 passed**、0 failed；clippy 默认与 all-features 对 `servers/vm` **0 警告**；`unimplemented!/todo!` 全树 0；生产代码 `DEFERRED` 字样 18 处逐一归因（9 历史叙述 / 6 准确 open 项 / 3 指针）。
+- **campaign 结论**：todo.md V11 后残留 open 项全部处置完毕——实现（T25/T27/T29/T30/T31）、判定闭合（T28/T32/T34 + T30 前提修正 ×3）、清理（T24/T25/T35）；跨 stage 余件全部登记 edge_todo.md（E-FORKMSG 新增；E1–E9/E-RSWIRE/E-VFSWIRE/E-BOOTFRAME/E-KERNINFO 维持）。
+
 ### 16.2 T24+ 收尾 campaign 顺序（真相源在 edge_todo.md §0，此处为条目索引）
 
 T24 残留标注清理+判定批次 → T25 pt=None→SimPaging 翻转 ×6 → T26 MOCK_BASE_MUTEX/extend_to_static_lifetime 归零 → T27 dispatcher happy-path 补测（G-V12-3）→ T28 CacheMemory 页故障查找（G-V12-1）→ T29 SIGKMEM seam + do_memory（G-V12-2 + G-V11-1）→ T30 alloc_cycle 回收后重试 → T31 缺页计数生产者 + InfoUsage 槽位判定 → T32 do_procctl multi-call → T33 fork eager CoW（T11 收尾）→ T34 MemType 收敛（V9-P2-3）→ T35 剩余判定批次 → T36 收尾对账。
