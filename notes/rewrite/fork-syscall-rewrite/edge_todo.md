@@ -55,20 +55,23 @@
 
 ---
 
-## E1 minix-sys 用户态 trap 层落地
+## E1 minix-sys 用户态 trap 层落地（2026-09-07 阻塞精化：前置是 01-stage-kernel 的 trap 桥）
 
-**问题**：minix-sys 的两个 transport 都是 `-EIO` stub——`DirectTrapTransport`（`os/libs/minix-sys/src/ipc.rs:529-559` 全部方法返回 `Err(TrapStatus(EIO))`，注释 :523-525 自述 "The real trap instruction sequences will replace these bodies when the 64-bit trap wiring lands (stage plan item A-6)"）与 `DirectKernelCallTransport`（`os/libs/minix-sys/src/syscall.rs:144-148` 返回 `-EIO`）。全仓不存在任何用户态 trap 指令序列/入口。
+**问题**：minix-sys 的两个 transport 都是 `-EIO` stub——`DirectTrapTransport`（`os/libs/minix-sys/src/ipc.rs` 全部方法返回 `Err(TrapStatus(EIO))`）与 `DirectKernelCallTransport`（`os/libs/minix-sys/src/syscall.rs` 返回 `-EIO`）。全仓不存在任何用户态 trap 指令序列/入口。
 
-**证据**：kernel 侧接收端已就绪——IPC 经 IDT 向量 33 进入（`os/kernel/src/syscall.rs:548-556`，对齐 C `protect.c:147`）；kernel-call 走向量 32 + a7 调用号分发。用户态 `TrapVector`（minix-sys ipc.rs:81-103：KernelCall=32、InterProcess=33）与 `IpcStatus` 位解析（:135-178）已定义完备，缺的只是真实 trap 体。
+**2026-09-07 阻塞精化（stale-premise 复查）**：原描述"kernel 侧接收端已就绪，缺的只是真实 trap 体"**不完整**。kernel 侧现状：
+- **已就绪**：`dispatch_ipc_entry` / `kernel_call_dispatch` 的 C 级分派（syscall.rs，含 BKL/权限/死锁检测，测试完备）；IDT 门配置机制（`os/arch/src/x86_64/trap_entry.rs`：gate 33 DPL=3、SYSCALL MSR、`configure_ipc_entry/configure_syscall`）。
+- **未落地**：① IDT handler 地址为占位 0——"后续 boot 阶段 `set_handler()` + `load()`"的阶段尚未存在（kernel/src/lib.rs `init_protection` 注释自证）；② **trap 桥不存在**：捕获用户寄存器 → 保存用户上下文到 KProcess → 定位当前进程 → 从用户内存拷贝消息 → 调用 `dispatch_ipc_entry`/`kernel_call_dispatch` 的入口 asm/Rust 胶水（`dispatch_ipc_entry` 生产调用方为零，仅测试）；③ `switch_to_user` 仅存在于文档引用（sched.rs §3.3），无实现——内核从不返回用户态。
+- **推论**：用户侧 trap asm 的寄存器/clobber 约定（C i386 先例：eax=端点/ebx=消息指针/ecx=IPC 调用号/int $33——本树 libc 仅 arm+i386 变体，无 amd64 参照）**无法对齐一个尚未设计的内核桥**。按反 guess 纪律（E-RSWIRE 先例），用户侧实现须待 01-stage-kernel 落地 trap 桥设计（入口 stub + 寄存器约定 + 用户上下文布局）后再动。
 
-**影响**：VM/PM/VFS 等全部用户态服务器的 IPC 与 kernel-call 在真实硬件上不可运行；02-stage-vm campaign 的 T9-T15（transport、fdclose、fork、RS、exec、audit）的"真实通电"全部挂在本条。
+**影响**：不变——全部用户态服务器的 IPC/kernel-call 真实通电挂本条；且本条真实前置是 **01-stage-kernel 的 trap 桥 + switch_to_user**（该 stage 的 V12 工作流进行中）。
 
-**建议**：
-1. 按 stage plan A-6 落地 64 位 trap wiring：x86_64 优先（IPC 向量 33 与 kernel-call 向量 32 的用户态封装，`core::arch::asm!` 内联），clobber 约定与 kernel 侧 `ipc_entry`/`dispatch_ipc_entry` 的寄存器契约逐一对齐；
-2. `DirectTrapTransport` 各方法把 stub 换成真实 trap 序列，保留 `CannedTransport` 测试路径不变；
-3. 落地后逐条回写 T9-T15 的通电标注，并跑 E5 的联调测试包。
+**建议（更新后的执行序）**：
+1. 01-stage-kernel：落地 trap 桥设计（x86_64 入口 asm：IDT gate 32/33 handler、用户上下文保存/恢复布局、switch_to_user）——寄存器约定在桥设计时定稿并文档化；
+2. minix-sys（本条主体）：按定稿约定写用户侧 `int $0x21/0x20`（或 syscall）序列，`DirectTrapTransport`/`DirectKernelCallTransport` 换真实 trap 体（CannedTransport 测试路径不变）；
+3. 回写 T9-T15 通电标注 + E5 联调包。
 
-**解锁**：T9 / T10 / T11 / T13 / T14 / T15 的真实通电；E5 前置。
+**解锁**：T9 / T10 / T11 / T13 / T14 / T15 的真实通电；E5 前置；E6/E8/E9 的传输半。
 
 ---
 
