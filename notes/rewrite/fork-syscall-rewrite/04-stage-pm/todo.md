@@ -953,6 +953,23 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：无。
 
+### ✅ Fix #39: V2-P2-1 — itimer 的 CLOCK notify 接线 + 周期重挂收敛（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/timer.rs`（`cause_sigalrm` 重写为完整 C 语义：guard 与 alarm.c:326-330 逐条一致，**先重挂后投递**——interval>0 经 `set_alarm`→`TimerCtl.set` 重挂内核 timer（C :334-339 的回调内 set_timer），否则清 ALARM_ON；caller 伪装 PM slot 0 后直连 `check_sig`，删除 `SigSender` 中间 trait；`handle_clock_notify` 退化为"扫到期 → 调 cause_sigalrm"，不再自行改簿记（`let _ = tctl` 消失）；新增生产 `TrapTimerCtl` pre-E6 fail-closed 占位；三个测试重写为真实投递链可观察点，新增一拍未到期不触发断言）
+- `os/servers/pm/src/init.rs`（`PmServer` 增 `timer: Box<dyn TimerCtl>` 字段，`with_kernel_gateway` 默认 `TrapTimerCtl`，新增 `with_timer_ctl` 注入构造；run_once 的 notify 分支接 CLOCK → `handle_clock_notify`——init.rs:349 的显式留白消失；`test_run_once_skips_notify` 改非 CLOCK 源，新增 `test_run_once_clock_notify_drives_expire_timers`）
+- `notes/.../14-itimer.md`（§3.6/§4.2/§4.4 同步：SigSender 移除、单一重挂点、接线现状）
+
+**Before/After**：三处各做一半的周期重挂逻辑（主循环显式跳过 CLOCK、cause_sigalrm 空壳 interval 分支、handle_clock_notify 绕过 TimerCtl 只改簿记）收敛为单一重挂点——内核 seam 接通后周期 itimer 的"每次到期都重新挂内核 watchdog"语义与 C 一致。**设计选型**：(a) 重挂收敛进 cause_sigalrm（首选：C alarm.c:338 的回调内 set_alarm 同位；SigSender 删除——C 的回调最终调 check_sig，中间层 send_sigalrm 绕过了权限/忽略/阻塞判定）；(b) 保留 SigSender 加生产桥接 impl（否决：多一层间接零收益）。**边界**：`TimerCtl` 生产实现（sys_setalarm wrapper）与 CLOCK 真实通电仍挂 edge E6/E1——本条目的 stage 内逻辑与 mock 端到端已闭环。
+
+**Verified**：
+- `cargo test -p minix-pm`：356 lib（+2）+ 8 integration passed
+- `cargo clippy -p minix-pm --lib`：0 warning 0 error
+
+**Docs**：`14-itimer.md` §3/§4；本文件 V2-P2-1 标 ✅。
+
+**未做（DEFERRED 论证）**：`TimerCtl` 生产实现挂 edge E6（sys_setalarm/sys_vtimer wrapper）；真实通电挂 E1。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1093,7 +1110,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：实现广播——`procgrp != 0` 时对表内 `procgrp` 匹配的活进程逐个走 `sig_proc(target, SIGHUP, ksig=false)`（复用 `signal.rs` 既有投递路径；C 的 check_sig 负 pid 即此语义，signal.c:568），exit_proc 第 13 步与 zombify 路径共用一个函数；在 §6 新开 D-27（SIGHUP 广播）承接两处标记，D-13 行注明"仅覆盖 PRIV_PROC 违规分支"。方案二：若判定"会话语义整体归 13/11 文档后续阶段"，也必须先做台账拆分（新编号 + §6 行），不能留死引用。选方案一：代码路径已备，工作量小。
 - **验证**：集成测试：三个进程同组、组长退出 → 两成员收到 SIGHUP 默认终止；`grep -rn 'D-13' os/servers/pm/src` 命中行的归属与 §6 一致。
 
-#### V2-P2-1 itimer 的 CLOCK notify 未接线，且周期重挂逻辑三处分裂（A-7 的锐化）
+#### V2-P2-1 itimer 的 CLOCK notify 未接线，且周期重挂逻辑三处分裂（A-7 的锐化）（✅ 已修复 2026-09-08，见 §10 Fix #39；TimerCtl 生产实现仍挂 edge E6/E1）
 
 - **优先级**：P2
 - **类型**：接线缺口 + 逻辑层内部分裂

@@ -173,11 +173,6 @@ pub trait TimerCtl {
     fn now(&self) -> Clock;
 }
 
-/// Signal sender for `cause_sigalrm` (`alarm.c:343` D7, ksig==FALSE).
-pub trait SigSender {
-    fn send_sigalrm(&mut self, pid: Pid);
-}
-
 /// Remaining real time pure function (`alarm.c:254-265` D5).
 pub fn remaining_real(interval: Clock, timer: &Option<crate::mproc::MinixTimer>, now: Clock) -> Clock {
     if let Some(t) = timer {
@@ -297,72 +292,101 @@ pub fn set_alarm(table: &mut ProcTable, target: UserSlot, ticks: Clock, tctl: &m
     }
 }
 
-/// `cause_sigalrm` (`alarm.c:317-344` D7).
-pub fn cause_sigalrm(table: &mut ProcTable, ep: Endpoint, sig: &mut dyn SigSender) -> bool {
+/// `cause_sigalrm` (`alarm.c:317-344` D7)。定时器到期回调：guard 与 C
+/// 逐条一致（isokendpt / IN_USE 且未 EXITING / ALARM_ON），随后**先重挂
+/// 后投递**——interval > 0 时经 [`set_alarm`] 重挂内核 timer（C :334-339
+/// 注释明确"从 expire_timers 回调里再调 set_timer 是安全的"），否则清
+/// ALARM_ON；最后以 PM（slot 0）身份 `check_sig(pid, SIGALRM, ksig=FALSE)`
+/// 投递。返回是否触发了投递流程（invalid endpoint / guard 拦截 → false）。
+pub fn cause_sigalrm<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    ep: Endpoint,
+    tctl: &mut dyn TimerCtl,
+    kern: &mut dyn crate::exit::KernelGateway,
+    transport: &mut T,
+) -> bool {
     let slot = match table.pm_isokendpt(ep) {
         Ok(s) => s.get(),
         Err(_) => return false,
     };
-    let proc = &table.procs[slot];
-    if !proc.is_in_use() || proc.is_exiting() {
-        return false;
+    {
+        let proc = &table.procs[slot];
+        if !proc.is_in_use() || proc.is_exiting() {
+            return false;
+        }
+        if !proc.resources.flags.contains(RemainingFlags::ALARM_ON) {
+            return false;
+        }
     }
-    if !proc.resources.flags.contains(RemainingFlags::ALARM_ON) {
-        return false;
-    }
-    // Periodic rearm (337-339)
+    // 单一重挂点：周期 itimer 的下一次到期由这里经 TimerCtl 重挂内核
+    // timer；handle_clock_notify 只负责"发现到期"（V2-P2-1 收敛）。
     let interval = table.procs[slot].resources.intervals[ITIMER_REAL as usize];
-    // Need to avoid double borrow: clone interval before mutable borrow
-    let interval_copy = interval;
-    if interval_copy > 0 {
-        // set_alarm will need TimerCtl; for cause_sigalrm's periodic case, caller should have provided TimerCtl.
-        // Here we only handle flag; actual timer rearm is via set_alarm called by handle_clock_notify or via interval check.
-        // For test, we simulate by keeping ALARM_ON and updating timer via a separate call; here we just keep ALARM_ON.
-        // To keep behavior faithful, we leave timer as is; exhaustive rearm is done by handle_clock_notify's set.
-        // But we ensure ALARM_ON stays.
+    if interval > 0 {
+        set_alarm(table, UserSlot::new(slot), interval, tctl);
     } else {
         table.procs[slot].resources.flags.remove(RemainingFlags::ALARM_ON);
         table.procs[slot].resources.timer = None;
     }
-    // Pretend from PM (341) and check_sig(SIGALRM,FALSE)
+    // Pretend from PM (341)——caller 是 slot 0（PM 本身），check_sig 的
+    // 权限判定因此与 C 一致。
     let pid = table.procs[slot].pid();
-    sig.send_sigalrm(pid);
+    let _ = crate::signal::check_sig(
+        table,
+        UserSlot::new(0),
+        pid,
+        SIGALRM,
+        false,
+        kern,
+        transport,
+    );
     true
 }
 
-/// `handle_clock_notify` (`main.c:65-67` CLOCK → expire_timers → cause_sigalrm).
-pub fn handle_clock_notify(table: &mut ProcTable, now: Clock, tctl: &mut dyn TimerCtl, sig: &mut dyn SigSender) {
-    // In C, expire_timers iterates timer queue and calls cause_sigalrm for expired.
-    // Here we scan ProcTable for any timer with exptime <= now.
-    let mut to_expire: Vec<Endpoint> = Vec::new();
+/// 生产 `TimerCtl`（pre-E6 诚实占位）。真实实现 = minix-sys
+/// `sys_setalarm` wrapper（edge E6）；CLOCK notify 通电挂 edge E1——trap
+/// 层落地前本实现的任何方法都不应被触达，触达即 `unimplemented!()`。
+pub struct TrapTimerCtl;
+
+impl TimerCtl for TrapTimerCtl {
+    fn set(&mut self, _ep: Endpoint, _ticks: Clock) {
+        unimplemented!("TimerCtl::set — sys_setalarm wrapper 落地于 edge E6（通电挂 E1）");
+    }
+    fn cancel(&mut self, _ep: Endpoint) {
+        unimplemented!("TimerCtl::cancel — sys_setalarm wrapper 落地于 edge E6");
+    }
+    fn exptime(&self, _ep: Endpoint) -> Option<Clock> {
+        unimplemented!("TimerCtl::exptime — sys_setalarm wrapper 落地于 edge E6");
+    }
+    fn now(&self) -> Clock {
+        unimplemented!("TimerCtl::now — 内核 uptime 面（edge E6）");
+    }
+}
+
+/// `handle_clock_notify` (`main.c:65-71` CLOCK → `expire_timers`)。
+///
+/// C 的 timer 队列由内核管理、到期回调 `cause_sigalrm`；Rust 以表内
+/// `resources.timer`（`expire_time`）为队列对应物（A-7），每收到 CLOCK
+/// notify 扫描一次到期者并逐个调 [`cause_sigalrm`]——重挂只发生在
+/// `cause_sigalrm` 内部（经 `TimerCtl`），本函数不做任何簿记修改。
+/// 先收集后处理：投递（check_sig → 可能 exit_proc）会修改进程表。
+pub fn handle_clock_notify<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    now: Clock,
+    tctl: &mut dyn TimerCtl,
+    kern: &mut dyn crate::exit::KernelGateway,
+    transport: &mut T,
+) {
+    let mut expired: Vec<Endpoint> = Vec::new();
     for proc in table.procs.iter() {
         if let Some(t) = &proc.resources.timer
-            && t.expire_time <= now {
-                to_expire.push(proc.endpoint());
-            }
-    }
-    for ep in to_expire {
-        // For periodic, cause_sigalrm will rearm via interval; but we need to handle rearm via set_alarm
-        // For simplicity, rearm here if interval>0
-        let slot = match table.pm_isokendpt(ep) {
-            Ok(s) => s.get(),
-            Err(_) => continue,
-        };
-        let interval = table.procs[slot].resources.intervals[ITIMER_REAL as usize];
-        if interval > 0 {
-            // Re-arm: new exptime = now + interval
-            let new_exp = now + interval;
-            table.procs[slot].resources.timer = Some(crate::mproc::MinixTimer { expire_time: new_exp, reload_time: interval });
-            // Keep ALARM_ON
-        } else {
-            table.procs[slot].resources.timer = None;
-            table.procs[slot].resources.flags.remove(RemainingFlags::ALARM_ON);
+            && t.expire_time <= now
+        {
+            expired.push(proc.endpoint());
         }
-        let pid = table.procs[slot].pid();
-        sig.send_sigalrm(pid);
     }
-    // Also need to handle the case where cause_sigalrm's interval rearm via set_alarm; we did it here.
-    let _ = tctl; // tctl used for ALARM_ON sync, but we updated timer directly
+    for ep in expired {
+        cause_sigalrm(table, ep, tctl, kern, transport);
+    }
 }
 
 /// `do_itimer` (`alarm.c:92-154` D3).
@@ -439,9 +463,18 @@ mod tests {
         fn exptime(&self, _ep: Endpoint) -> Option<Clock> { self.exptime }
         fn now(&self) -> Clock { self.now }
     }
-    struct TestSig { sent: Vec<Pid> }
-    impl SigSender for TestSig {
-        fn send_sigalrm(&mut self, pid: Pid) { self.sent.push(pid); }
+    /// cause_sigalrm 投递链的内核网关 mock（恒 OK）。
+    #[derive(Default)]
+    struct TestKern;
+    impl crate::exit::KernelGateway for TestKern {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, _b: &[u8], _e: Endpoint, _a: u64) -> Result<(), i32> { Ok(()) }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+            Ok((0, 0))
+        }
     }
 
     #[test]
@@ -615,34 +648,50 @@ mod tests {
         table.procs[5].resources.flags.insert(RemainingFlags::ALARM_ON);
         table.procs[5].resources.timer = Some(crate::mproc::MinixTimer { expire_time: 100, reload_time: 100 });
         let ep = table.procs[5].endpoint();
-        let mut sig = TestSig { sent: Vec::new() };
-        assert!(cause_sigalrm(&mut table, ep, &mut sig));
-        assert_eq!(sig.sent.len(), 1);
+        // 命中：SIGALRM 默认处置终止进程，VFS 收到 EXIT 告知（经真实通道）。
+        let mut tctl = TestTimerCtl { now: 100, exptime: None };
+        let mut kern = TestKern;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        assert!(cause_sigalrm(&mut table, ep, &mut tctl, &mut kern, &mut t));
+        assert!(
+            t.sent().iter().any(|(dst, m)| *dst == Endpoint::VFS && m.m_type == minix_types::VFS_PM_EXIT),
+            "SIGALRM default disposition must terminate via check_sig"
+        );
         // Invalid endpoint
-        assert!(!cause_sigalrm(&mut table, Endpoint::from_generation_slot(9, 9), &mut sig));
-        // Not ALARM_ON
+        assert!(!cause_sigalrm(&mut table, Endpoint::from_generation_slot(9, 9), &mut tctl, &mut kern, &mut t));
+        // EXITING 进程被 guard 拦截
         mk_running(&mut table, 6);
         let ep2 = table.procs[6].endpoint();
         table.procs[6].state.lifecycle = crate::mproc::Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
-        assert!(!cause_sigalrm(&mut table, ep2, &mut sig));
+        assert!(!cause_sigalrm(&mut table, ep2, &mut tctl, &mut kern, &mut t));
     }
 
     #[test]
     fn test_cause_sigalrm_periodic_resets() {
         let mut table = ProcTable::new();
         mk_running(&mut table, 5);
+        // 目标捕获 SIGALRM（存活），使"重挂"可观察——若默认处置终止，
+        // exit_proc 的 set_alarm(0)（forkexit.c:300-301）会清掉刚重挂的
+        // timer，那是正确的 C 行为但不是本测试的观察点。
+        table.procs[5].resources.signals.caught = crate::init::sig_bit(SIGALRM);
         table.procs[5].resources.flags.insert(RemainingFlags::ALARM_ON);
         table.procs[5].resources.timer = Some(crate::mproc::MinixTimer { expire_time: 100, reload_time: 100 });
         table.procs[5].resources.intervals[ITIMER_REAL as usize] = 100;
         let ep = table.procs[5].endpoint();
-        let mut sig = TestSig { sent: Vec::new() };
-        cause_sigalrm(&mut table, ep, &mut sig);
-        // Periodic should keep ALARM_ON
+        // 周期：重挂经 set_alarm → TimerCtl.set（内核 seam 被真实调用，
+        // V2-P2-1 收敛前这里是空壳注释）。
+        let mut tctl = TestTimerCtl { now: 100, exptime: None };
+        let mut kern = TestKern;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        cause_sigalrm(&mut table, ep, &mut tctl, &mut kern, &mut t);
         assert!(table.procs[5].resources.flags.contains(RemainingFlags::ALARM_ON));
-        // One-shot should clear
+        assert_eq!(tctl.exptime, Some(200), "periodic must re-arm via TimerCtl.set(now+interval)");
+        assert!(table.procs[5].is_in_use(), "caught SIGALRM must not terminate");
+        // One-shot: interval=0 → 清 ALARM_ON、timer 摘除。
         table.procs[5].resources.intervals[ITIMER_REAL as usize] = 0;
-        cause_sigalrm(&mut table, ep, &mut sig);
+        cause_sigalrm(&mut table, ep, &mut tctl, &mut kern, &mut t);
         assert!(!table.procs[5].resources.flags.contains(RemainingFlags::ALARM_ON));
+        assert!(table.procs[5].resources.timer.is_none());
     }
 
     #[test]
@@ -653,10 +702,26 @@ mod tests {
         table.procs[5].resources.timer = Some(crate::mproc::MinixTimer { expire_time: 100, reload_time: 0 });
         table.procs[5].resources.intervals[ITIMER_REAL as usize] = 0;
         let mut tctl = TestTimerCtl { now: 150, exptime: Some(100) };
-        let mut sig = TestSig { sent: Vec::new() };
-        handle_clock_notify(&mut table, 150, &mut tctl, &mut sig);
-        assert_eq!(sig.sent.len(), 1);
+        let mut kern = TestKern;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        handle_clock_notify(&mut table, 150, &mut tctl, &mut kern, &mut t);
+        // 到期 → cause_sigalrm → SIGALRM 默认处置终止（经真实投递链）：
+        // dump=false → zombify，终态是 Zombie。
+        assert!(
+            matches!(
+                table.procs[5].state.lifecycle,
+                crate::mproc::Lifecycle::Zombie { .. } | crate::mproc::Lifecycle::Exiting { .. }
+            ),
+            "expired one-shot alarm must terminate, got {:?}",
+            table.procs[5].state.lifecycle
+        );
         assert!(table.procs[5].resources.timer.is_none());
+        // 未到期（expire 300）不触发。
+        mk_running(&mut table, 6);
+        table.procs[6].resources.flags.insert(RemainingFlags::ALARM_ON);
+        table.procs[6].resources.timer = Some(crate::mproc::MinixTimer { expire_time: 300, reload_time: 0 });
+        handle_clock_notify(&mut table, 150, &mut tctl, &mut kern, &mut t);
+        assert!(table.procs[6].is_in_use() && !table.procs[6].is_exiting());
     }
 
     #[test]

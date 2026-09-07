@@ -95,7 +95,7 @@ Rust 改写不是照抄 `system_hz * tv_sec` 乘法，而是在吸收工业级 O
 
 **`seL4` 周期 `Notification`。** `seL4` 无 `itimer`，以 `seL4_SetNTFN` + `timer` 驱动的 `Notification` 周期唤醒等待者（`sel4::Notification::signal`），PM 的 `set_alarm→cause_sigalrm→check_sig` 同为“到期→信号”但 `seL4` 的 `Notification` 为显式 capability（`seL4_Signal`），PM 的 `SIGALRM` 为隐式 `pending` 位图（`12` 的 `add_pending`）——显式 capability 可精准投递单线程，隐式位图需 `check_pending` 重检（13）而 `REAL` 的 `ksig==FALSE` 使 `SIGALRM` 仍可被 `SIG_IGN` 丢弃。
 
-**结论（本章的设计基线）。** 把 C 的“`US` 宏 + `system_hz*sec` 乘法溢出钳位 + `MAX_SECS/US` 约束分散 + `which` 的 `int` 分派 + `optr/nptr` 双 `NULL` + `ALARM_ON` 位与 `mp_timer` 双重 + `cause_sigalrm` 的 `mp=mproc[0]` 伪装”改写为“`TicksConv { hz }` + `Timeval::is_sane` + `ItimerWhich` 枚举 + `VTimerCtl::vtimer` 的 `Option<Clock>` + `AlarmState { timer: Option<MinixTimer> }` 的 `Some/None` 唯一真源 + `SigSender::send_sigalrm` 显式端口”——与 Linux/Redox 的 `ITIMER_*` 三族 + `interval` 周期同源，又因 PM 单线程无共享而以 `&mut ProcTable` 的 `TicksConv` 显式参的向上取整收敛。
+**结论（本章的设计基线）。** 把 C 的“`US` 宏 + `system_hz*sec` 乘法溢出钳位 + `MAX_SECS/US` 约束分散 + `which` 的 `int` 分派 + `optr/nptr` 双 `NULL` + `ALARM_ON` 位与 `mp_timer` 双重 + `cause_sigalrm` 的 `mp=mproc[0]` 伪装”改写为“`TicksConv { hz }` + `Timeval::is_sane` + `ItimerWhich` 枚举 + `VTimerCtl::vtimer` 的 `Option<Clock>` + `AlarmState { timer: Option<MinixTimer> }` 的 `Some/None` 唯一真源 + `cause_sigalrm` 直连 `check_sig`”——与 Linux/Redox 的 `ITIMER_*` 三族 + `interval` 周期同源，又因 PM 单线程无共享而以 `&mut ProcTable` 的 `TicksConv` 显式参的向上取整收敛。
 
 ### 1.8 小结
 
@@ -340,7 +340,7 @@ static void cause_sigalrm(int arg)
 
 ## 3 Rust 设计决策
 
-Rust 改写遵循“显式 `TicksConv` + `Timeval::is_sane` + `ItimerWhich` 枚举 + `VTimerCtl` 的 `Option<Clock>` + `remaining` 纯函数 + `AlarmState` 的 `Option` 唯一真源 + `SigSender` 显式端口”的 8 决策，保留 C 的 `which` 分派与 `interval` 回绕，但以类型系统使 `ticks` 变换与 `ALARM_ON` 状态显式化。以下决策对应设计契约 `.design/14-design.v1.md` 的 D1–D8。
+Rust 改写遵循“显式 `TicksConv` + `Timeval::is_sane` + `ItimerWhich` 枚举 + `VTimerCtl` 的 `Option<Clock>` + `remaining` 纯函数 + `AlarmState` 的 `Option` 唯一真源 + `cause_sigalrm` 直连 `check_sig`”的 8 决策，保留 C 的 `which` 分派与 `interval` 回绕，但以类型系统使 `ticks` 变换与 `ALARM_ON` 状态显式化。以下决策对应设计契约 `.design/14-design.v1.md` 的 D1–D8。
 
 ### D1：`ticks ↔ timeval` 的 `US` 与 `LONG_MAX` 收敛到 `TicksConv`（ARCH A-7/A-11）
 
@@ -378,7 +378,7 @@ Rust 改写遵循“显式 `TicksConv` + `Timeval::is_sane` + `ItimerWhich` 枚�
 ### D7：`cause_sigalrm` 三守卫 + 重设收敛到 `TimerExpiry` 端口（ARCH A-7）
 
 - **C**：`323-343` 三守卫 + `337-339` 区间分支 + `341-343` `mp=mproc[0]; check_sig(SIGALRM,FALSE)`。
-- **Rust**：`fn cause_sigalrm(table, ep: Endpoint, sig_sender: &mut dyn SigSender) -> bool`（`pm_isokendpt→IN_USE|EXITING→ALARM_ON→set_or_clear→check_sig`，`ksig==FALSE` 显式参，`SigSender::send_sigalrm(pid)` 抽象 `check_sig`）。
+- **Rust**：`fn cause_sigalrm<T: IpcTransport + ?Sized>(table, ep: Endpoint, tctl: &mut dyn TimerCtl, kern, transport) -> bool`（`pm_isokendpt→IN_USE|EXITING→ALARM_ON→**先重挂后投递**：interval>0 经 `set_alarm` 重挂内核 timer、否则清 `ALARM_ON`→`check_sig(pid, SIGALRM, ksig=FALSE)`，caller 伪装 PM slot 0）。2026-09-08（todo.md §11 V2-P2-1）删除 `SigSender` 中间层——C 的回调最终调的就是 `check_sig`，抽象一层 `send_sigalrm` 反而绕过了权限/忽略/阻塞判定；重挂收敛为 `cause_sigalrm` 内的单一位置。
 
 ### D8：常量收敛到 `minix-types`（单一真相）
 
@@ -425,7 +425,7 @@ pub struct ItimerOp { pub set: Option<Itimerval>, pub get: bool }
 pub trait VTimerCtl { fn vtimer(&mut self, ep: Endpoint, which: ItimerWhich, set: Option<Clock>, get: Option<&mut Clock>) -> i32; }
 pub trait TimerCtl { fn set(&mut self, ep: Endpoint, ticks: Clock); fn cancel(&mut self, ep: Endpoint); fn exptime(&self, ep: Endpoint) -> Clock; }
 pub trait ClockSource { fn getticks(&self) -> Clock; }
-pub trait SigSender { fn send_sigalrm(&mut self, pid: Pid); }
+pub struct TrapTimerCtl; // 生产 TimerCtl：sys_setalarm wrapper 落地于 edge E6（pre-E1 fail-closed）
 
 pub fn do_itimer(table: &mut ProcTable, caller: UserSlot, which: i32, op: ItimerOp, hz: i64, vctl: &mut dyn VTimerCtl, tctl: &mut dyn TimerCtl, sigcpy: &mut dyn CopyCtl) -> Result<Option<Itimerval>, ItimerError>
 pub fn getset_vTimer(table: &mut ProcTable, target: UserSlot, which: ItimerWhich, set: Option<Itimerval>, get: bool, conv: &TicksConv, vctl: &mut dyn VTimerCtl) -> Option<Itimerval>
@@ -433,8 +433,8 @@ pub fn check_vtimer(table: &mut ProcTable, proc_nr: usize, sig: i32, vctl: &mut 
 pub fn get_realtimer(table: &ProcTable, target: UserSlot, conv: &TicksConv, now: Clock) -> Itimerval
 pub fn set_realtimer(table: &mut ProcTable, target: UserSlot, val: &Itimerval, conv: &TicksConv, tctl: &mut dyn TimerCtl)
 pub fn set_alarm(table: &mut ProcTable, target: UserSlot, ticks: Clock, tctl: &mut dyn TimerCtl)
-pub fn cause_sigalrm(table: &mut ProcTable, ep: Endpoint, sig: &mut dyn SigSender) -> bool
-pub fn handle_clock_notify(table: &mut ProcTable, now: Clock, tctl: &mut dyn TimerCtl, sig: &mut dyn SigSender) // expire_timers 驱动
+pub fn cause_sigalrm<T: IpcTransport + ?Sized>(table: &mut ProcTable, ep: Endpoint, tctl: &mut dyn TimerCtl, kern, transport: &mut T) -> bool // 先重挂后投递
+pub fn handle_clock_notify<T: IpcTransport + ?Sized>(table: &mut ProcTable, now: Clock, tctl: &mut dyn TimerCtl, kern, transport: &mut T) // expire_timers 驱动，重挂只在 cause_sigalrm 内
 ```
 
 - `ticks_from_timeval`：`checked_mul(hz, sec) → None→MAX` + `checked_mul(hz, usec) → (hz*usec+US-1)/US` 向上取整 + `checked_add` 钳位（`59/62`）。
@@ -457,12 +457,14 @@ pub fn handle_clock_notify(table: &mut ProcTable, now: Clock, tctl: &mut dyn Tim
 ### 4.4 `init.rs` 接线：`CLOCK notify → expire_timers`
 
 ```rust
-// main.c:65-67  is_ipc_notify(CLOCK) → expire_timers → cause_sigalrm 回调
-// timer.rs: handle_clock_notify(table, now=getticks(), tctl, sig)
-//   遍历 ProcTable 的 Some(timer) 且 exptime <= now 的槽位，调用 cause_sigalrm
+// main.c:65-71  is_ipc_notify(CLOCK) → expire_timers → cause_sigalrm 回调
+if msg.m_source == Endpoint::CLOCK {
+    let now = self.timer.now();
+    handle_clock_notify(&mut self.table, now, self.timer.as_mut(), self.kern.as_mut(), &mut self.transport);
+}
 ```
 
-生产 `ClockSource::getticks()` + `TimerCtl::exptime` 注入，测试 `TestClockSource { now }` + `TestTimerCtl { timers }` 计数。
+2026-09-08 已接线（todo.md §11 V2-P2-1）：主循环 CLOCK 分支调 `handle_clock_notify`（表内 `expire_time` 为内核 timer 队列的对应物，先收集后处理）；生产 `TrapTimerCtl` 为 pre-E6 fail-closed 占位（`sys_setalarm` wrapper 挂 edge E6，CLOCK 通电挂 E1），测试注入 `TestTimerCtl { now, exptime }`。
 
 ### 4.5 不变量表
 

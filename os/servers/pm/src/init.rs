@@ -189,6 +189,9 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     params: BootParams,
     /// IPC 传输（VFS_PM_INIT 同步等）。
     transport: T,
+    /// 内核定时器出口（CLOCK notify → `expire_timers`，14-itimer.md；
+    /// 生产 `TrapTimerCtl` pre-E6 fail-closed，测试注入脚本化实现）。
+    timer: Box<dyn crate::timer::TimerCtl>,
     /// `init()` 是否已完成（run() 前置断言）。
     initialized: bool,
     /// 内核中止标志（C: `glo.h:26` `abort_flag`；由 do_reboot 写入，归 20-misc-queries.md）。
@@ -226,6 +229,17 @@ impl<T: IpcTransport> PmServer<T> {
         transport: T,
         kern: Box<dyn crate::exit::KernelGateway>,
     ) -> Self {
+        Self::with_timer_ctl(params, transport, kern, Box::new(crate::timer::TrapTimerCtl))
+    }
+
+    /// 显式指定内核网关与定时器出口构造（测试注入脚本化实现；
+    /// 真实通电挂 edge E1/E6）。
+    pub fn with_timer_ctl(
+        params: BootParams,
+        transport: T,
+        kern: Box<dyn crate::exit::KernelGateway>,
+        timer: Box<dyn crate::timer::TimerCtl>,
+    ) -> Self {
         Self {
             // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
             // 保证空槽（Lifecycle::Unused）+ PID 生成器就绪。
@@ -234,6 +248,7 @@ impl<T: IpcTransport> PmServer<T> {
             params,
             transport,
             kern,
+            timer,
             initialized: false,
             // 内核中止标志初始为 0（无中止）；do_reboot 在 20-misc-queries.md 写入。
             abort_flag: 0,
@@ -350,8 +365,18 @@ impl<T: IpcTransport> PmServer<T> {
         // 通知是异步信号（时钟 tick / 内核中断），不是请求消息，跳过
         // endpoint 验证直接 continue。
         if rcv_sts.is_notify() {
-            // CLOCK notify 的 expire_timers 处理归 14-itimer.md（A-7）；
-            // 04 只建模"通知跳过"。
+            // C main.c:65-71：is_ipc_notify → CLOCK → expire_timers（14）。
+            // 其它源的通知不是请求消息，跳过 endpoint 验证直接 continue。
+            if msg.m_source == Endpoint::CLOCK {
+                let now = self.timer.now();
+                crate::timer::handle_clock_notify(
+                    &mut self.table,
+                    now,
+                    self.timer.as_mut(),
+                    self.kern.as_mut(),
+                    &mut self.transport,
+                );
+            }
             return RunStep::Handled;
         }
 
@@ -848,10 +873,36 @@ mod tests {
 
     #[test]
     fn test_run_once_skips_notify() {
-        // C: main.c:65-71 — is_ipc_notify → continue（通知不产生回复）。
+        // C: main.c:65-71 — is_ipc_notify：非 CLOCK 源的通知不产生回复、
+        // 不做 endpoint 验证。
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let mut msg = Message::default();
         msg.m_type = 0x1000; // NOTIFY_MESSAGE（com.h:90）
+        msg.m_source = Endpoint::RS; // 非 CLOCK
+        server.transport.queue_receive(msg, IpcStatus { flags: 4 });
+        assert_eq!(server.run_once(), RunStep::Handled);
+        assert!(server.transport.sent().is_empty());
+    }
+
+    /// V2-P2-1：CLOCK notify 进入 expire_timers 路径（handle_clock_notify），
+    /// 无到期 timer 时零副作用、零回复。
+    #[test]
+    fn test_run_once_clock_notify_drives_expire_timers() {
+        struct StubTimer;
+        impl crate::timer::TimerCtl for StubTimer {
+            fn set(&mut self, _ep: Endpoint, _ticks: minix_types::Clock) { panic!("no arm expected"); }
+            fn cancel(&mut self, _ep: Endpoint) {}
+            fn exptime(&self, _ep: Endpoint) -> Option<minix_types::Clock> { None }
+            fn now(&self) -> minix_types::Clock { 42 }
+        }
+        let mut server = PmServer::with_timer_ctl(
+            test_params(),
+            TestIpcTransport::new(),
+            Box::new(crate::exit::TrapKernelGateway::new(minix_sys::syscall::DirectKernelCallTransport)),
+            Box::new(StubTimer),
+        );
+        let mut msg = Message::default();
+        msg.m_type = 0x1000;
         msg.m_source = Endpoint::CLOCK;
         server.transport.queue_receive(msg, IpcStatus { flags: 4 });
         assert_eq!(server.run_once(), RunStep::Handled);
