@@ -20,6 +20,7 @@ pub mod clock;
 pub mod cpu_identity;
 pub mod fpu_arch;
 pub mod signal_context;
+pub mod ap_early_entry;
 pub mod trap_style;
 pub mod smp;
 pub mod arch_init;

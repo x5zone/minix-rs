@@ -754,7 +754,7 @@ publication 规则（各 per-CPU 迁移项不再各自决定）：
 | S-1 | ✅ **已完成（2026-09-07）**——见 §19 勘误记录 | grep 核实 `kernel_call_resume` BKL（原记 syscall.rs:2622 已漂移）；以代码为准勘误 todo.md Edge Items **和** doc 16（两者记录均有误，详见 §19） | 勘误 commit | grep 证据入 §19 | todo.md Edge Items / §7.1 / doc 16 §4.13 |
 | S-2 | ✅ **已完成（2026-09-07）**——x86_64/riscv64 PASS，aarch64 SKIP（发现 AAVMF 缺口，S-2b 登记）——见 §20 | 新测试内核 `test-smp-topo` ×3：`-smp 4` 下断言 `nr_cpus==4`、`hw_id` 互异、BSP `hw_id` ∈ 发现集；QEMU 默认拓扑值仅打印为机器特定观察；解析走 `parse_by_kind` 正式交接路径 | 测试内核 ×3 + run_all.sh 接入（SKIP 单列计数） | L1：x86_64 PASS（MADT）/ riscv64 PASS（DTB via a1）/ aarch64 SKIP→S-2b | 16-smp §5.1 加行；doc 04 消费说明随 S-2b 一并 |
 | S-2b | ✅ **已完成（2026-09-07）**——见 §20.1 完成记录 | 实测裁决：boot-shim 的 aarch64 ACPI fallback **本已存在**（扫描 ACPI2/ACPI GUID → RSDP source），真缺口是 kernel 侧三处门/偏移：①`kind.rs` RSDP 臂 x86 独占（→ 放开 aarch64）；②`global.rs`/`lib.rs` 的 `PlatformDescEnum::Acpi` 变体与 acpi 模块声明 x86 独占（→ 放开）；③`acpi.rs` 解析偏移两处真 bug（字节级实证：**GICD base 在 +8 而非 +12**——原读恒 0 触发 GicdNotFound；**GICC hw_id 的 MPIDR@+56 在 QEMU GICv2 恒 0**——改用 ACPI Processor UID@+8，恰与 DTB MPIDR Aff0 一致）。另修 B1/A1 连带缺口：`bkl_is_locked` 解除 `cfg(any(test, debug_assertions))` 门（release 测试内核的 debug_assert 载荷必须可命名） | minix-platform kind.rs/global.rs/lib.rs/acpi.rs + test 内核转正 | **aarch64 `test-smp-topo-aarch64` 转 PASS**（nr_cpus=4、hw_id {0,1,2,3}、BSP=0） | doc 04 拓扑消费说明；16-smp §5.1 已加行 |
-| S-3a | AP bootstrap ABI + 内存序契约 | 定义 `ApBootstrap`（§3.2）+ `ap_early_entry` 签名 + §3.9 契约落为代码注释/断言约定；**toolchain spike**（10~30 行）：证明 `global_asm!` + lld + UEFI 能产出可拷贝的 `.ap_early_entry` 单段 image（ELF 中间产物 `readelf -r` 零未解析 reloc + 三阶段反汇编 + **实际链接路径 gc-sections 行为实测** + 边界符号 `ap_early_entry_start/end` 自定义 + 同一机器码不同基址拷贝执行成功 + **image 邻接硬验收（v8 #6）**：`[image_start, image_end)` 内 `.ap_early_entry` 必须紧邻 `.ap_early_entry_data`、中间不得插入其它可分配 section——记录 image_start/image_end/image_size/section ordering；拷贝单位是 [start,end) 区间而非"两个 section 各自存在"——v3 #7/#8：relocation-free ≠ PIC proof，执行才是最终证据；**v4 小点：UEFI 最终产物是 PE/COFF，`readelf` 只适用于 ELF 中间产物，最终 .efi 需 PE 感知工具（`objdump -h -r` PE 模式 / llvm-objdump）检查 base relocation 块**） | ABI 定义 + spike 报告 | spike 全绿；失败则立即换机制（.S），不写完整梯子 | 16-smp 新 §；spike 结论入 commit |
+| S-3a | AP bootstrap ABI + 内存序契约 | 定义 `ApBootstrap`（§3.2）+ `ap_early_entry` 签名 + §3.9 契约落为代码注释/断言约定；**toolchain spike**（10~30 行）：证明 `global_asm!` + lld + UEFI 能产出可拷贝的 `.ap_early_entry` 单段 image（ELF 中间产物 `readelf -r` 零未解析 reloc + 三阶段反汇编 + **实际链接路径 gc-sections 行为实测** + 边界符号 `ap_early_entry_start/end` 自定义 + 同一机器码不同基址拷贝执行成功 + **image 邻接硬验收（v8 #6）**：`[image_start, image_end)` 内 `.ap_early_entry` 必须紧邻 `.ap_early_entry_data`、中间不得插入其它可分配 section——记录 image_start/image_end/image_size/section ordering；拷贝单位是 [start,end) 区间而非"两个 section 各自存在"——v3 #7/#8：relocation-free ≠ PIC proof，执行才是最终证据；**v4 小点：UEFI 最终产物是 PE/COFF，`readelf` 只适用于 ELF 中间产物，最终 .efi 需 PE 感知工具（`objdump -h -r` PE 模式 / llvm-objdump）检查 base relocation 块**） | ABI 定义 + spike 报告 | spike 全绿；失败则立即换机制（.S），不写完整梯子 | 16-smp 新 §；spike 结论入 commit | → ✅ **已完成（2026-09-07）**：`ApBootstrap` 40 字节 ABI 冻结（offset 断言钉住）；spike 全绿——见 §5.1 spike 报告 |
 | S-3b | x86 early entry image | §3.2：`global_asm!` `.ap_early_entry`（16→32→64 梯子）+ `.ap_early_entry_data`（mailbox 存 bootstrap PA）+ 低内存拷贝；**地址空间交接闭环**（rust_entry_va/kernel_stack_top_va 字段 + PA 收口 `ap_early_entry(bootstrap_pa: usize)` + DM 转换）；**前置**：<1MiB 低内存来源落点 + **BSP 页表根 PA <4GiB assert**（32 位模式装 CR3 约束，§3.2 闭环第 3 条） | x86_64 early entry 模块 | `readelf -r` 零 relocation（静态验收）+ 恒等映射覆盖确认 + L2 起步 | 16-smp 新 §（设计 + 与 doc 02 HigherHalf 分工声明 + 0x467 舍弃取舍）；doc 02 加交叉引用 |
 | S-3c | aarch64/riscv64 early stub | 同一 `ap_early_entry(bootstrap_pa)` 汇合：arm PSCI context 传参 + MMU-off stub；riscv SBI opaque 传参（**修正 a2 误标 priv 的注释，改传 bootstrap 指针**，§2.1）+ satp
   stub；**本步打包三处固件 ABI 修复（v6 #1/#2，全部为现存代码真 bug）**：①riscv
@@ -1421,3 +1421,27 @@ blocker 证据 + FDT 复现 tripwire，非空转）✓；虚构（测试名/断�
 **验收**：`test-smp-topo-aarch64` SKIP → **PASS**（nr_cpus=4、hw_id {0,1,2,3} 互异、BSP=0）。MADT 原始记录字节级诊断（GICD 24 字节 hex dump）留档于本节与 16-smp §5.1 行。
 
 **测试自审（cmd-23 五维）**：断言三连（来源非空 / nr_cpus==4 / hw_id 互异 + BSP∈集合）钉 D-36 上半的 aarch64 全链（boot-shim 扫描 → parse_by_kind → AcpiDesc::parse → CpuTopology），与 x86/riscv 变体各测各来源链、无冗余 ✓。
+
+---
+
+## 5.1 S-3a spike 报告（2026-09-07）——global_asm! + lld + UEFI 链路成立
+
+**载体**：`minix-arch::x86_64::ap_early_entry`（`.ap_early_entry` AX 段 + `.ap_early_entry_data` AW 段 + `ap_early_entry_start`/`ap_early_entry`/`ap_early_entry_data_start`/`ap_early_entry_end` 边界符号）+ `test-smp-spike` 测试内核（x86_64，已入 run_all.sh）。
+
+**PE/COFF 验收（objdump pei-x86-64，v4 要求的 PE 感知检查）**：
+
+| 项 | 结果 |
+|---|---|
+| 段表 | `.ap_early_entry` 0x24=36B CODE @0x140005000；`.ap_early_entry_data` 0x40=64B DATA（可写）@0x140006000 |
+| 段名 | COFF 8 字符截断，两者均显示 `.ap_earl`（字符串表区分） |
+| 反汇编 | 5 条指令与设计逐条一致（rcx 捕获 / movabs ACK / rip-rel 写 / rip-rel 读 / 穿参回写 + ret） |
+| base relocation | `.reloc` 共 0x20 字节，**零条目落在 0x140005000/0x140006000 两页**——blob 零 base reloc |
+| 拷贝执行 | 拷贝 [start,end) 至堆缓冲后调偏移 0：三证明 PASS（ACK 写入 = 执行 + rip-rel 写；echo = 寄存器绝对；读回 = rip-rel 读） |
+
+**工具链现实（spike 的核心产出——四条，全为实证）**：
+1. **x86_64-unknown-uefi = Microsoft x64 ABI**：`extern "C"` 首参在 RCX。SysV 式 RDI 读参被 #GP 实证否决（非 canonical 地址写即 GP）——S-3b 梯子定义自己的入口寄存器时不得假设 SysV。
+2. **64 位立即数不可直写内存**：`mov qword ptr [mem], imm64` 非法——必须 `movabs reg` + 寄存器存储。
+3. **lld-link 将新段放下一 4KiB 页边界**：`.ap_early_entry_data` 在 +0x1000（blob 4160 字节 = 代码 36 + 页隙 + 数据 64）。[start,end) 自包含性不受影响（隙内无外来 section），代价是每 AP 多占一页低内存——记录不修。
+4. **COFF 段名 8 字符截断**（`.ap_earl`）——段身份靠字符串表，无功能影响。
+
+**结论**：方案 A（`global_asm!`）成立，**无需回退 .S**。内存序契约（§3.9 boot_ack Release 语义）已随 `ApBootstrap` 文档落入 ABI 层，S-3b/S-3d 按此实现。

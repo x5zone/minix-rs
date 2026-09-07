@@ -14,6 +14,8 @@ pub mod smp;
 pub mod arch_init;
 pub mod boot;
 pub mod cpu_identity;
+#[cfg(target_arch = "x86_64")]
+pub mod ap_early_entry;
 pub mod tlb;
 
 pub use protection::{X86_64Protection, X86PrivilegeLevel};

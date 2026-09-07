@@ -2697,7 +2697,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 3 — SMP 主线（smp_todo §5 冻结序，每步一 commit）**
 - ✅ S-2b aarch64 平台发现补齐（test-smp-topo-aarch64 SKIP→PASS）→ **发现链走 ACPI（AAVMF 无 FDT config table 字节级实证，但 ACPI2 RSDP 存在）；修 kind.rs/global.rs/acpi 三层门 + acpi.rs 两处解析偏移真 bug（GICD base@+8 非 +12；GICC hw_id 用 UID 因 QEMU GICv2 MPIDR 恒 0）+ bkl_is_locked 解门；QEMU 22/22 零 SKIP（2026-09-07）**
-- ⬜ S-3a ApBootstrap ABI + 内存序契约 + relocation-free image toolchain spike（失败即换 .S）
+- ✅ S-3a ApBootstrap ABI + 内存序契约 + relocation-free image toolchain spike（失败即换 .S）→ **global_asm! 链路成立：PE 双段落地（CODE 36B + 可写 DATA 64B）、.reloc 零覆盖、拷贝执行三证明 PASS；工具链四发现（MS x64 ABI / imm64 限制 / 页边界段距 / COFF 段名截断）；无需回退 .S（2026-09-07）**
 - ⬜ S-3b x86 early entry image（16→32→64 梯子 + 低内存拷贝 + BSP 页表根 PA<4GiB assert）
 - ⬜ S-3c arm/riscv stub + 三处固件 ABI 真 bug 修复（riscv IPI EID 0x735049 / arm PSCI 0xC4000003 / x86 mfence）
 - ⬜ S-3d AP alive 验证（boot_ack_mask，test-smp-ap-alive）
