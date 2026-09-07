@@ -85,6 +85,10 @@ fn main() -> Status {
     //    then read it back — a dead MMIO window reads all-ones/all-zero,
     //    which would explain a hang in the IPI path.
     unsafe {
+        // Clear the ladder trace page (linear 0x8200..0x8210, identity).
+        for i in 0..16usize {
+            core::ptr::write_volatile((0x8200 + i) as *mut u8, 0);
+        }
         let spur = (LAPIC_BASE + 0xF0) as *mut u32;
         spur.write_volatile(0x1FF);
         let rb = spur.read_volatile();
@@ -161,6 +165,12 @@ fn main() -> Status {
             early_console::write_hex(MARKER.load(Ordering::Acquire));
             early_console::write_str(" ack = ");
             early_console::write_hex(BOOT_ACK.load(Ordering::Acquire));
+            early_console::write_str("\n  ladder trace:");
+            for i in 0..10usize {
+                let b = unsafe { core::ptr::read_volatile((0x8200 + i) as *const u8) };
+                early_console::write_str(" ");
+                early_console::write_hex(b as u64);
+            }
             early_console::write_str("\n");
             fail("AP did not publish boot_ack within the timeout window");
         }

@@ -72,6 +72,13 @@ core::arch::global_asm!(
     "  xor ax, ax",
     "  mov ds, ax",
     "  mov ss, ax",
+    // Stage trace (S-3d diagnostics): each stage writes its code byte to
+    // the trace page at linear 0x8200 (DS = 0, identity RAM). The BSP
+    // dumps these bytes at timeout to pinpoint the failing stage.
+    "  mov byte ptr [0x8200], 1",   // stage 1: 16-bit entered
+    "  mov byte ptr [0x8201], 2",   // lgdt done
+    "  mov byte ptr [0x8202], 3",   // PE on
+    "  mov byte ptr [0x8203], 4",   // far jump to 32-bit taken
     // lgdt m16&32 [0x8030] — the descriptor at blob offset 0x030.
     "  .byte 0x66, 0x0F, 0x01, 0x15",
     "  .word 0x8030",
@@ -94,11 +101,13 @@ core::arch::global_asm!(
     "  mov ax, 0x0020",
     "  mov ds, ax",
     "  mov ss, ax",
+    "  mov byte ptr [0x8204], 5",  // stage 5: 32-bit entered
     // Root page table → CR3 (record @0x148, field root @+16 → linear
     // 0x8158; fill_bootstrap asserts root <4GiB — the 32-bit mov cr3
     // writes bits 31:0 only, §3.2 invariant).
     "  mov eax, dword ptr [0x00808158]",
     "  mov cr3, eax",
+    "  mov byte ptr [0x8205], 6",  // CR3 loaded
     // PAE (long-mode prerequisite).
     "  mov eax, cr4",
     "  or eax, 0x20",
@@ -112,17 +121,21 @@ core::arch::global_asm!(
     "  mov eax, cr0",
     "  or eax, 0x80000000",
     "  mov cr0, eax",
+    "  mov byte ptr [0x8206], 7",  // PG on (identity fetch next)
     // Far jump: 32-bit EA form (off32 sel16) → CODE64 @ run 0x80C0.
     "  .byte 0xEA",
     "  .long 0x008080C0",
     "  .word 0x0018",
     // ── 64-bit long mode, low identity region ──
+    // 64-bit tail frozen at blob offset 0x0C0.
+    ".org 0x0C0",
     ".code64",
     "ap_long_low:",
     // Per-AP kernel stack (record field stack @ blob 0x160 → linear
     // 0x8160). Absolute 32-bit addressing reaches the installed copy
     // through the identity mapping — rip-relative would reach the
     // ORIGINAL blob (link-time VAs), not the copy.
+    "  mov byte ptr [0x8207], 8",  // stage 8: 64-bit tail entered
     "  mov rsp, qword ptr [0x00808160]",
     // Rust entry: RCX = bootstrap PA (MS x64 first argument).
     "  mov ecx, 0x8000",
