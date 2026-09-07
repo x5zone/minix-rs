@@ -22,7 +22,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
 use minix_arch::arch::ap_early_entry::{ApBootstrap, BOOT_MAGIC_SENT};
 use minix_arch::smp::SmpArch;
-use minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA;
+use minix_arch::x86_64::ap_early_entry::{OFF_MAGIC, OFF_RECORD, AP_STARTUP_PA};
 use minix_arch::x86_64::smp::X86_64SmpArch;
 use minix_plat::x86_64::early_console;
 use uefi::prelude::*;
@@ -50,7 +50,7 @@ static mut AP_STACK: [u8; 0x10000] = [0u8; 0x10000];
 /// Mirrors the frozen `ap_early_entry` contract: snapshot what the record
 /// says, publish the handshake, park with interrupts off.
 unsafe extern "C" fn ap_entry_test(bootstrap_pa: usize) -> ! {
-    let magic = core::ptr::read_volatile(bootstrap_pa as *const u64);
+    let magic = core::ptr::read_volatile((bootstrap_pa + OFF_MAGIC) as *const u64);
     MARKER.store(0xA1, Ordering::Release);
     if magic == BOOT_MAGIC_SENT {
         // logical_id = 1 (the first AP) → bit 1.
@@ -116,13 +116,16 @@ fn main() -> Status {
         kernel_stack_top_va: (core::ptr::addr_of!(AP_STACK) as usize) as u64 + 0x10000,
         rust_entry_va: ap_entry_test as usize as u64,
     };
+    // The data area sits at fixed blob offsets (hand-frozen layout —
+    // 16-smp §9); mirror fill_bootstrap exactly.
+    let mbox = base + OFF_MAGIC;
     unsafe {
-        core::ptr::write_volatile(base as *mut u64, BOOT_MAGIC_SENT);
+        core::ptr::write_volatile(mbox as *mut u64, BOOT_MAGIC_SENT);
         core::ptr::write_volatile(
-            (base + 8) as *mut ApBootstrap,
+            (mbox + (OFF_RECORD - OFF_MAGIC)) as *mut ApBootstrap,
             record,
         );
-        core::ptr::write_volatile(base as *mut u64, BOOT_MAGIC_SENT);
+        core::ptr::write_volatile(mbox as *mut u64, BOOT_MAGIC_SENT);
     }
     // The publisher fence (x86 mfence, §3.9) is inside boot_ap — S-3c fix.
 
