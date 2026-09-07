@@ -26,7 +26,7 @@
 | T8 | 1 | 错误枚举收敛 → **判定闭合：现有 From 集中表即最优** | V10-P2-3 + P2-2 | ✅ 2026-09-06（todo.md §15 Fix #27，WONTFIX 级设计判定） |
 | T9 | 2 | KernelIpcTransport VM 侧完备 + KernelGateway seam | V11-P1-1（通电→E1/E2） | 🔄 step1 ✅（Fix #28）step2 ✅（Fix #29）step3 ✅（Fix #34：grant 贯通 + 假成功消灭 + fail-closed；rproctab 字节解码→**E-RSWIRE**） |
 | T10 | 2 | VFS_FDCLOSE 发送 + region close 入队 | （V11-P1-1 建议 2 / P1-3 链） | 🔄 入队半 ✅（Fix #33）；发送半 → **E-VFSWIRE** |
-| T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ⬜ |
+| T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ✅ 2026-09-07（stub 删除随 Fix #29；eager-CoW 相随 Fix #53；通电→E2+E-FORKMSG） |
 | T12 | 2 | RS_PREPARE map_proc_dyn_data | rs.rs:250 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #40） |
 | T13 | 2 | RS_UPDATE 步骤 5-7（VM 侧）+ 步骤 4 走 Gateway | rs.rs:328 DEFERRED（通电→E2） | ✅ 2026-09-06（todo.md §15 Fix #42） |
 | T14 | 2 | exec_bootproc（minix-elf + VM 映射 + Gateway.sys_exec） | vm_server.rs:385 DEFERRED（通电→E2） | 🔄 装载半+sys_exec wire ✅（Fix #41）；栈帧 ABI → **E-BOOTFRAME** |
