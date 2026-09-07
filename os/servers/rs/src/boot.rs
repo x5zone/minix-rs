@@ -95,6 +95,13 @@ pub trait SysApi {
         dst: Endpoint,
         flags: crate::service_slot::SysFlags,
     ) -> Result<(), Errno>;
+
+    /// Requests a stacktrace dump from a service.
+    ///
+    /// C: `sys_diagctl_stacktrace(target)` — main.c:681-683 (the signal
+    /// manager's stacktrace-signal branch). Wired
+    /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    fn diagctl_stacktrace(&mut self, target: Endpoint) -> Result<(), Errno>;
 }
 
 /// Scheduler face — scheduling a process has a *composite* transport target
@@ -327,6 +334,10 @@ impl SysApi for UnimplementedKernelApi {
         _dst: Endpoint,
         _flags: crate::service_slot::SysFlags,
     ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    // E-11/E9: sys_diagctl_stacktrace's real transport is 19's wiring; fail-closed.
+    fn diagctl_stacktrace(&mut self, _target: Endpoint) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }
@@ -1083,6 +1094,9 @@ mod tests {
             hz: u32,
         }
         impl SysApi for SysOnly {
+            fn diagctl_stacktrace(&mut self, _target: Endpoint) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
             fn get_machine(&mut self) -> Result<Machine, Errno> {
                 Err(Errno::ENOSYS)
             }

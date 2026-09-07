@@ -604,6 +604,47 @@ pub fn abort_action(phase: UpdatePhase) -> AbortAction {
     }
 }
 
+/// C: `abort_update_proc(reason)` — update.c:707-743, the phase-dispatched
+/// abort: idle → EINVAL, scheduled → `rupdate_clear_upds`, initializing →
+/// `end_update(reason, RS_REPLY)`, updating → `end_update(reason, RS_CANCEL)`.
+/// `reason` must be nonzero (update.c:710 assert).
+pub fn abort_update_proc(
+    upd: &mut UpdateState,
+    table: &mut crate::process_table::RProcTable,
+    kernel: &mut dyn crate::boot::KernelApi,
+    reason: i32,
+    ticks: Clock,
+    run_script: &mut dyn FnMut(&mut crate::service_slot::ServiceSlot) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    debug_assert_ne!(reason, 0, "abort_update_proc: reason != OK (update.c:710)");
+    let phase = update_phase(upd.flags, upd.chain.len());
+    match abort_action(phase) {
+        AbortAction::Nothing => Err(Errno::EINVAL),
+        AbortAction::ClearScheduled => {
+            upd.clear_upds(table, kernel, run_script);
+            Ok(())
+        }
+        AbortAction::EndWithReply | AbortAction::EndWithCancel => {
+            let reply_flag = if phase == UpdatePhase::Initializing {
+                RS_REPLY
+            } else {
+                RS_CANCEL
+            };
+            let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+            upd.end_update(
+                table,
+                kernel,
+                reason,
+                reply_flag,
+                ticks,
+                &mut noop_req,
+                run_script,
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Adjusts the end-update reply flag for a successful VM multi-component
 /// update.
 ///

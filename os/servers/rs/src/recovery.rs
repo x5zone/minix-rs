@@ -16,7 +16,7 @@ use crate::boot::KernelApi;
 use crate::privilege::PrivCtlOp;
 use crate::process_table::RProcTable;
 use crate::service_slot::{Label, RFlags, ServiceSlot, SlotId, SlotMutations, SysFlags};
-use minix_types::{Endpoint, Errno};
+use minix_types::{Clock, Endpoint, Errno};
 
 /// C: `MAX_DET_RESTART` — const.h:25 (maximum number of detached restarts).
 pub const MAX_DET_RESTART: i32 = 10;
@@ -758,4 +758,328 @@ pub fn detach_service(
 
     // Allow the service to run (manager.c:526-527) — result ignored in C.
     let _ = kernel.privctl(slot.pub_.endpoint, PrivCtlOp::Allow, None);
+}
+
+/// Signal class helpers — C `SIGS_IS_*` (sys/sys/signal.h:280-287).
+///
+/// Lethal: SIGILL(4)/SIGABRT(6)/SIGEMT(7)/SIGFPE(8)/SIGKILL(9)/SIGBUS(10)/
+/// SIGSEGV(11); termination adds SIGPIPE(13).
+pub fn sigs_is_lethal(signo: i32) -> bool {
+    matches!(signo, 4 | 6 | 7 | 8 | 9 | 10 | 11)
+}
+/// C: `SIGS_IS_TERMINATION` — lethal + SIGPIPE(13).
+pub fn sigs_is_termination(signo: i32) -> bool {
+    sigs_is_lethal(signo) || signo == 13
+}
+/// C: `SIGS_IS_STACKTRACE` — lethal except SIGABRT (main.c:681-683).
+pub fn sigs_is_stacktrace(signo: i32) -> bool {
+    sigs_is_lethal(signo) && signo != 6
+}
+
+/// Collects the instance family of a service (rp + its replica chain).
+///
+/// C: `get_service_instances` — manager.c:1141 (via proto.h): rp, prev, next,
+/// old, new — at most five rows.
+pub fn get_service_instances(table: &RProcTable, rp: SlotId) -> alloc::vec::Vec<SlotId> {
+    let mut instances = alloc::vec::Vec::new();
+    instances.push(rp);
+    let s = table.get(rp);
+    if let Some(p) = s.prev_rp {
+        instances.push(p);
+    }
+    if let Some(n) = s.next_rp {
+        instances.push(n);
+    }
+    if let Some(o) = s.old_rp {
+        instances.push(o);
+    }
+    if let Some(n2) = s.new_rp {
+        instances.push(n2);
+    }
+    instances
+}
+
+/// The result of a [`terminate_service`] run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminateOutcome {
+    /// C: `_exit(1)` — a core system service died outside shutdown
+    /// (manager.c:1123-1126). The caller ends RS (R27's SelfTerminate shape).
+    pub self_terminate: bool,
+}
+
+/// Restarts a service as if it were never started before.
+///
+/// C: `reincarnate_service` — manager.c:1033-1051: clone the slot, reset the
+/// flags to bare `RS_IN_USE`, clear the endpoint index, run
+/// `start_service(SEF_INIT_FRESH)` keeping the restart count (+1).
+fn reincarnate_service(
+    table: &mut RProcTable,
+    old_rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    ticks: Clock,
+    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) {
+    // manager.c:1036-1040 — clone failure is reported and ignored (the
+    // service stays dead; the ping path will pick it up).
+    let Ok(rp) = crate::service_create::clone_slot(table, old_rp) else {
+        return;
+    };
+    {
+        let r = table.get_mut(rp);
+        r.flags = RFlags::IN_USE; // manager.c:1042
+    }
+    // manager.c:1043 — rproc_ptr[endpoint] = NULL (the fresh instance gets
+    // its own endpoint from start_service).
+    let ep = table.get(rp).pub_.endpoint;
+    table.set_endpoint_index(ep, None);
+
+    let restarts = table.get(rp).restarts; // manager.c:1045-1049
+    let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
+    let mut noop_publish = |_: &RProcTable, _: SlotId| Ok(());
+    let _ = crate::service_create::start_service(
+        table,
+        rp,
+        kernel,
+        0, // SEF_INIT_FRESH carries no script flags — fresh incarnation
+        ticks,
+        &mut noop_read_exec,
+        &mut noop_publish,
+        asynsend,
+    );
+    table.get_mut(rp).restarts = restarts + 1;
+}
+
+/// Executes the [`terminate_decision`] for one service.
+///
+/// C: `terminate_service` — manager.c:1055-1166. The decision face
+/// ([`terminate_decision`]) owns the flag tree; this executor runs its
+/// effects: init-failure rollback (16 hook), global-update abort
+/// ([`abort_update_proc`]), norestart arming, the EXITING path (core fatal,
+/// late reply, unpublish hook, per-instance cleanup, reincarnate), the
+/// REFRESHING restart, and the backoff branch.
+#[allow(clippy::too_many_arguments)]
+pub fn terminate_service(
+    table: &mut RProcTable,
+    upd: &mut crate::live_update::UpdateState,
+    rp: SlotId,
+    kernel: &mut dyn KernelApi,
+    ticks: Clock,
+    shutting_down: bool,
+    unpublish: &mut dyn FnMut(SlotId),
+    run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+    asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) -> TerminateOutcome {
+    let outcome = TerminateOutcome {
+        self_terminate: false,
+    };
+
+    // The decision owns C's whole flag tree (manager.c:1067-1179); this
+    // executor applies its payload and runs the effects. `SRV_IS_UPDATING`
+    // is the slot-level `RS_UPDATING` flag.
+    let slot_updating = table.get(rp).flags.contains(RFlags::UPDATING);
+    let d = {
+        let s = table.get(rp);
+        terminate_decision(
+            s.flags,
+            s.pub_.sys_flags,
+            s.restarts,
+            !s.script.is_empty() && s.script[0] != 0,
+            shutting_down,
+            slot_updating,
+        )
+    };
+    d.mutations.apply(table.get_mut(rp));
+
+    match d.action {
+        // manager.c:1071-1076 — end_update(r_init_err, RS_REPLY), then
+        // r_init_err = ERESTART; the rollback is this round's whole job.
+        TerminateAction::InitUpdateRollback => {
+            let init_err = table.get(rp).init_err;
+            upd.end_update(
+                table,
+                kernel,
+                init_err,
+                crate::live_update::RS_REPLY,
+                ticks,
+                &mut |_: &ServiceSlot, _: i32| {},
+                run_script,
+            );
+            table.get_mut(rp).init_err = minix_types::ERESTART;
+        }
+        // manager.c:1154-1156 — refresh path: restart in place.
+        TerminateAction::Refresh => {
+            let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
+            let mut noop_publish = |_: &RProcTable, _: SlotId| Ok(());
+            crate::service_create::restart_service(
+                table,
+                rp,
+                kernel,
+                ticks,
+                &mut noop_read_exec,
+                run_script,
+                &mut noop_publish,
+                asynsend,
+            );
+        }
+        // manager.c:1160-1175 — wait out the binary backoff (do_period
+        // restarts when it drains).
+        TerminateAction::Backoff { backoff } => {
+            table.get_mut(rp).backoff = backoff;
+        }
+        // manager.c:1177-1179 — first unexpected exit: immediate restart.
+        TerminateAction::Restart => {
+            let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
+            let mut noop_publish = |_: &RProcTable, _: SlotId| Ok(());
+            crate::service_create::restart_service(
+                table,
+                rp,
+                kernel,
+                ticks,
+                &mut noop_read_exec,
+                run_script,
+                &mut noop_publish,
+                asynsend,
+            );
+        }
+        TerminateAction::CleanupAll {
+            norestart,
+            reincarnate,
+            core_fatal,
+        } => {
+            // manager.c:1093-1097 — end a running update before any recovery.
+            if upd
+                .flags
+                .contains(crate::live_update::RupdateFlags::UPDATING)
+            {
+                let _ = crate::live_update::abort_update_proc(
+                    upd,
+                    table,
+                    kernel,
+                    minix_types::ERESTART,
+                    ticks,
+                    run_script,
+                );
+            }
+
+            // manager.c:1121-1126 — a core service exiting outside shutdown
+            // is fatal for RS itself (`_exit(1)`).
+            if core_fatal && !shutting_down {
+                return TerminateOutcome {
+                    self_terminate: true,
+                };
+            }
+
+            // manager.c:1128-1133 — abort a scheduled update when one of its
+            // services is exiting.
+            if !upd.chain.is_empty()
+                && !upd
+                    .flags
+                    .contains(crate::live_update::RupdateFlags::UPDATING)
+            {
+                let _ = crate::live_update::abort_update_proc(
+                    upd,
+                    table,
+                    kernel,
+                    minix_types::EDEADSRCDST,
+                    ticks,
+                    run_script,
+                );
+            }
+
+            // manager.c:1135-1138 — the late reply: OK for RS_DOWN (and a
+            // norestart RS_REFRESH), EDEADEPT otherwise.
+            let r = {
+                let s = table.get(rp);
+                if s.caller_request == minix_types::RS_DOWN
+                    || (s.caller_request == minix_types::RS_REFRESH && norestart)
+                {
+                    0
+                } else {
+                    minix_types::EDEADEPT
+                }
+            };
+            let caller = table.get(rp).caller;
+            let _ = kernel.reply(caller, r, &minix_types::Message::default());
+
+            // manager.c:1140 — unpublish (the DS effect is the 11/19 seam hook).
+            unpublish(rp);
+
+            // manager.c:1141-1143 — cleanup every instance of the service.
+            for inst in get_service_instances(table, rp) {
+                cleanup_service(table, inst, kernel, run_script);
+            }
+
+            // manager.c:1145-1151 — reincarnate after cleanup (the decision
+            // already cleared RS_REINCARNATE via `mutations.clear`).
+            if reincarnate {
+                reincarnate_service(table, rp, kernel, ticks, asynsend);
+            }
+        }
+    }
+    outcome
+}
+
+/// Cleans up dead services and recreates missing replicas when RS is idle.
+///
+/// C: `rs_idle_period` — utility.c:441-478. During shutdown the idle gate is
+/// overridden (dead services must be cleaned to avoid deadlocks); otherwise
+/// the replica pass is skipped too.
+pub fn rs_idle_period(
+    table: &mut RProcTable,
+    kernel: &mut dyn KernelApi,
+    ticks: Clock,
+    shutting_down: bool,
+    run_script: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
+    _asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+) {
+    // utility.c:448-453 — not much to do when RS is not idle (the shutdown
+    // override keeps dead-service cleanup running).
+    if !shutting_down && !table.iter_in_use().all(|(_, s)| s.flags.is_idle()) {
+        return;
+    }
+
+    // utility.c:455-462 — clean up dead services.
+    let dead: alloc::vec::Vec<SlotId> = table
+        .iter_all()
+        .filter(|(_, s)| s.flags.contains(RFlags::IN_USE) && s.flags.contains(RFlags::DEAD))
+        .map(|(id, _)| id)
+        .collect();
+    for id in dead {
+        cleanup_service(table, id, kernel, run_script);
+    }
+
+    if shutting_down {
+        return;
+    }
+
+    // utility.c:464-477 — create missing replicas (one at a time for VM
+    // during/after an update).
+    let need: alloc::vec::Vec<SlotId> = table
+        .iter_in_use()
+        .filter(|(_, s)| {
+            s.flags.contains(RFlags::ACTIVE)
+                && s.pub_.sys_flags.contains(SysFlags::USE_REPL)
+                && s.next_rp.is_none()
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in need {
+        let (vm_pending, ep) = {
+            let s = table.get(id);
+            (s.old_rp.is_some() || s.new_rp.is_some(), s.pub_.endpoint)
+        };
+        if ep == Endpoint::VM && vm_pending {
+            continue; // utility.c:470-473
+        }
+        let _ = crate::service_create::clone_service(
+            table,
+            id,
+            kernel,
+            crate::privilege::PrivFlags::RST_SYS_PROC,
+            0,
+            ticks,
+            read_exec,
+        );
+    }
 }

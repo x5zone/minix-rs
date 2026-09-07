@@ -73,6 +73,7 @@ pub enum Call {
     Reply(Endpoint, i32),
     Notify(Endpoint),
     Asynsend(Endpoint, i32),
+    DiagctlStacktrace(Endpoint),
 }
 
 impl Call {
@@ -101,6 +102,7 @@ impl Call {
                 | (Call::Reply(..), Call::Reply(..))
                 | (Call::Notify(..), Call::Notify(..))
                 | (Call::Asynsend(..), Call::Asynsend(..))
+                | (Call::DiagctlStacktrace(..), Call::DiagctlStacktrace(..))
         )
     }
 }
@@ -276,6 +278,13 @@ impl SysApi for MockKernelApi {
         if self.failing(&Call::SysUpdate(src, dst)) {
             return Err(Errno::ENOSYS);
         }
+        Ok(())
+    }
+    fn diagctl_stacktrace(&mut self, target: Endpoint) -> Result<(), Errno> {
+        if self.failing(&Call::DiagctlStacktrace(target)) {
+            return Err(Errno::ENOSYS);
+        }
+        self.calls.push(Call::DiagctlStacktrace(target));
         Ok(())
     }
 }

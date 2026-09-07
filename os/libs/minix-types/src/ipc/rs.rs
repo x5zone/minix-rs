@@ -66,6 +66,11 @@ pub const RS_FI_CRASH: i32 = 1;
 /// `m_lsys_fi_ctl` payload (`fi_service` — utility.c:69-77).
 pub const COMMON_REQ_FI_CTL: i32 = 0xE02;
 
+/// Forward a received signal to a service. C: `SIGS_SIGNAL_RECEIVED` —
+/// com.h:597 (`COMMON_RQ_BASE + 0`); RS's signal manager translates every
+/// non-termination signal into this message (main.c:699-701).
+pub const SIGS_SIGNAL_RECEIVED: i32 = 0xE00;
+
 // ── Typed payload views (ARCH A-2, semantic layer) ─────────────────────────
 
 /// Payload of the RS control/query requests.

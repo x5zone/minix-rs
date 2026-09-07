@@ -32,6 +32,8 @@
 
 `terminate_service` 用一株 30+ 分支的决策树回答这些问题。Rust 侧把它提炼为**纯决策函数**（`terminate_decision`）：输入槽位状态与策略标志，输出"做什么动作 + 要置哪些位"，动作的执行（IPC、fork、清理）全部留在调用方——这是 13/14 同款的"纯切片"边界。
 
+> **执行体落地（2026-09-07，I6/Fix #78）**：`recovery::terminate_service` 把决策驱动为效果——`InitUpdateRollback`（end_update(r_init_err, RS_REPLY) + r_init_err=ERESTART 早退）、`Refresh`/`Restart`（restart_service）、`Backoff{backoff}`（写回 r_backoff 等 07 消耗）、`CleanupAll{core_fatal,…}`（core 致命→self_terminate；全局更新 abort（ERESTART）与被调度更新 abort（EDEADSRCDST）；late reply 按 caller_request 归一；unpublish 缝；实例族 `get_service_instances` 逐个 cleanup；reincarnate 清位后 `reincarnate_service`）。信号管理器（06）的终止臂是其首个生产调用方，随后 `rs_idle_period`（utility.c:441-478：DEAD 清理 + 缺失副本补建，VM 单副本规则）。`abort_update_proc` 同轮收敛为 live_update 的组合助手（do_sysctl UPD_STOP 复用）。
+
 ### 1.2 终止/恢复状态机图（WHAT）
 
 ```

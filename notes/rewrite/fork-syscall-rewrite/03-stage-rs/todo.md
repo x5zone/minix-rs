@@ -3069,6 +3069,7 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 | I3b | 14 号 GETSYSINFO/SYSCTL 两臂（拷出半压 E-RSWIRE 缝上 fail-closed；UPD_* 消费 LU 编排）——**14 号死表清零** | R34.14/15 | 301 |
 | I4 | 13 号 label 型四臂（REFRESH/RESTART/CLONE/UNCLONE）+ `resolve_by_label`/`stop_with_late_reply` 共享前奏 | §2.3/§2.4/§2.6 臂 | 304 |
 | I5 | 16 号 RS_LU_PREPARE 臂（`do_upd_ready_shell`：链门/PREPARE_DONE/三路派发）+ run() 臂走裸 shell 的结构修正 + 三孤儿裁决删除 + monitor 描述符消费 | monitor/service_create 3 处陈旧 DEFERRED | 302 |
+| I6 | **R34.22 闭合**：signal_manager 七分支 + `terminate_service` 执行体（决策驱动，manager.c:1055-1166 全分支）+ `rs_idle_period` + `reincarnate_service`/`get_service_instances` 原语 + `abort_update_proc` 组合助手收敛 + `SysApi::diagctl_stacktrace`/`SIGS_SIGNAL_RECEIVED` 缝 | R34.22、§1 R34 表 | 304 |
 
 ### 边界判定变更（本轮 campaign 新登记 edge）
 
@@ -3082,8 +3083,8 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
 
 | 队列 | 内容 | 依赖 | 锚点 |
 |------|------|------|------|
-| **I6** | **signal_manager 七分支**（R34.22）：spurious→OK / TERMINATED→EDEADEPT / inactive→OK / stacktrace→diagctl 缝 / termination→**terminate_service 执行体**（manager.c:1055-1160：init 失败分支、abort update、norestart、EXITING 路径的 late-reply+unpublish+cleanup 实例+reincarnate、REFRESHING→restart_service、backoff 分支）+ **rs_idle_period**（utility.c:441-478：DEAD 清理 + 缺失副本补建）+ `SysApi::diagctl_stacktrace` 缝 + 非终止信号 asynsend 转发（SIGS_SIGNAL_RECEIVED，com.h:597） | 无 edge 依赖——terminate_service 执行体/rs_idle_period 均为 stage 内编排（决策面与全部底层原语已就绪）；建议独立一轮（规模 ≈ I4） | C main.c:647-703、manager.c:1055-1160、utility.c:441-478 |
-| **I7** | 收束对账：§1 表 E3/状态终审、§18.6 R34/A4 翻终态、SYMBOLS 覆盖率复测、全部测试数对账 | I6 完成后 | — |
+| ✅ I6 | **R34.22 闭合**（2026-09-07，Fix #78，见 §18.9） | — | C main.c:647-703、manager.c:1055-1166、utility.c:441-478 |
+| **I7（末轮）** | 终审收束：§1/§18.6 状态终审翻态、SYMBOLS 覆盖率复测、全部测试数对账、Step 5.7 Rule Discovery 终答 | 无 | — |
 
 ### 剩余非本 stage 项（维持归属，无动作）
 
@@ -3092,9 +3093,51 @@ $ python3 tools/coverage-extract/coverage-extract.py rs \
   `print_update_status` 归 08-stage-is dump 面；`exec_restart` 归 19（§18.10 E-8）。
 - **E-RSSTART/E-RSWIRE**：字节 ABI pinning（需完整 Minix3 源码参照）。
 
-### 验证基线（收束时点）
+### 验证基线（最新时点，I6 后）
 
-`cargo test -p minix-rs` = **302 passed / 0 failed**；`cargo test -p minix-types` =
+`cargo test -p minix-rs` = **304 passed / 0 failed**；`cargo test -p minix-types` =
 **175 passed**；clippy 触碰文件零告警；fmt 干净；T7 门（`tools/check-rs-unwired.sh`）
 PASS。commit 轨迹：I1（af23e523a 捎带后经 7d7297d2b 重收录）/ I2（b73ef058e）/
-I3a（3a10b74a6）/ I3b（29eff3b90）/ I4（7d7297d2b）/ I5（f11141121）。
+I3a（3a10b74a6）/ I3b（29eff3b90）/ I4（7d7297d2b）/ I5（f11141121）/ I7'（da066c338）/
+I6（见 Fix #78）。
+
+### ✅ Fix #78 — I6 signal_manager 七分支接线（R34.22 闭合）+ terminate_service 执行体
+- **File**：`recovery.rs`（`terminate_service` 决策驱动执行体 + `reincarnate_service`/
+  `get_service_instances` 原语 + `rs_idle_period` + `sigs_is_*` 分类）、
+  `live_update.rs`（`abort_update_proc` 组合助手——do_sysctl UPD_STOP 内联派发收敛）、
+  `boot.rs`（`SysApi::diagctl_stacktrace` 缝，生产 ENOSYS + E-11 doc contract +
+  SysOnly 测试双同步）、`testutil.rs`（`Call::DiagctlStacktrace` 记录）、`lib.rs`
+  （`signal_manager` 七分支 + 2 接线测试）；minix-types `ipc/rs.rs`
+  （`SIGS_SIGNAL_RECEIVED` com.h:597）；文档 06/15 号接线落地注记 + §18.11 队列表
+- **Before**：`signal_manager` 恒 `Err(ENOSYS)`（lib.rs:1351，"DEFERRED until 06
+  lands"——06 已落地但 15 的 terminate 执行体未建）；`terminate_decision` 决策树
+  无生产执行方（§18.4 第三档"18/19 号预支"）；`rs_idle_period`/
+  `reincarnate_service`/`get_service_instances` 三个 utility 编排在 Rust 缺席。
+- **After**：signal_manager 按 C 顺序七分支 live——spurious 清除（OK）/
+  TERMINATED→EDEADEPT / inactive 清除 / stacktrace→diagctl 缝 / 终止→TERMINATED
+  置位 + `terminate_service` + `rs_idle_period` + EDEADEPT / VM 免转发 /
+  非终止→`asynsend(SIGS_SIGNAL_RECEIVED)`。执行体纯决策驱动：`d.mutations.apply`
+  先行（init 失败旗标/norestart 武装/reincarnate 清位全在决策载荷），再按
+  `TerminateAction` 执行效果（rollback 早退/refresh restart/backoff 写回/
+  cleanup 族含 late-reply 归一、unpublish 缝、实例族清理、reincarnate；
+  core_fatal+非 shutdown→self_terminate）。测试抓出两处认知修正：SIGTERM(15)
+  不在 C `SIGS_IS_TERMINATION`（lethal 4/6/7/8/9/10/11 + PIPE 13）——终止臂
+  测试改用 SIGKILL(9)；Backoff 分支保留槽位使"二次终止→EDEADEPT"可达。
+- **Verified**：`cargo test -p minix-rs` = **304 passed**（+2：
+  `test_signal_manager_routes_all_branches`（七分支主体）、
+  `test_signal_manager_vm_and_stacktrace`（VM 免转发 + 终止优先））；clippy 触碰
+  文件零告警；fmt 干净；T7 PASS。
+
+## 19. 收敛终态（2026-09-07 campaign 收官快照）
+
+- **stage 内 TODO 全部消化**：§1 T/D/S/E 系列全 ✅；§14-§18 各轮 R 系列全 ✅；
+  §18.4 死代码清单全处置；OQ-1/-2/-3/-4 全关单；R34 盲区 24 条中 1-13/18-23 闭合。
+- **遗留（全部有主，非 stage 内可做）**：
+  1. **E-RSSTART**（edge）：`rs_start_t` 字节 ABI → `RS_UP`/`RS_EDIT`/`RS_UPDATE`
+     三臂接线（编排已就绪）；
+  2. **E9**（edge）：生产传输（E1 trap 层 + SYS_* wrapper）→ 19 号主线通电；
+  3. **R31 残余**：打印/dump 面归 08-stage-is；`exec_restart` 归 19；
+  4. **E-1**：RS 自升级进程面（压 E9 的 srv_fork 缝）。
+- **测试基线**：`cargo test -p minix-rs` = **304 passed**；minix-types = **175
+  passed**；campaign 净增 +93 测试（211→304）与 8 个生产接线轮（06 主循环、
+  boot init_service、13 号六臂、14 号四臂、16 号 LU_PREPARE、signal_manager）。

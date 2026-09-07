@@ -262,6 +262,8 @@ static int sef_cb_signal_manager(endpoint_t target, int signo)  /* main.c:647 */
 - **`sef_cb_signal_handler`**：RS 自己收到的信号。SIGCHLD → `do_sigchld`（07 的子进程清理）；SIGTERM → `do_shutdown`（13 的关停）。
 - **`sef_cb_signal_manager`**：内核转发的**系统信号**（RS 是系统服务信号管理器）。终止信号 → 置 `RS_TERMINATED` + `terminate_service`（→15）+ 立即 `rs_idle_period`；非终止信号 → 转成 `SIGS_SIGNAL_RECEIVED` 消息发给服务；**VM 免转发**（main.c:695）。
 
+> **接线落地（2026-09-07，I6/Fix #78）**：七分支全部 live——spurious 清除（main.c:655-662）、TERMINATED→EDEADEPT（:665-669）、inactive 清除（:672-678）、stacktrace→`SysApi::diagctl_stacktrace` 缝（:681-683）、终止→`recovery::terminate_service` 执行体（15 的执行器本轮落地）+ `rs_idle_period` + EDEADEPT（:686-692）、VM 免转发（:694-697）、非终止→`asynsend(SIGS_SIGNAL_RECEIVED)`（:699-701）。信号分类依据 `SIGS_IS_TERMINATION`/`SIGS_IS_STACKTRACE`（sys/sys/signal.h:280-287：lethal=ILL/ABRT/EMT/FPE/KILL/BUS/SEGV，终止加 PIPE；注意 SIGTERM **不是**终止类）。core service 死于非 shutdown → 执行体返回 self_terminate，RS 以 EGENERIC 退出（`_exit(1)` 同构）。
+
 ---
 
 ## 3. Rust 设计决策
