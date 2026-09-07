@@ -2164,7 +2164,7 @@ I6（见 Fix #78）。
 ### 20.6 修复优先级路线（供后续 todo-fix 排队）
 
 1. ~~A-4 slot.upd 一致性校验（小，1 轮）~~ ✅ Fix #79（2026-09-07）；
-2. semantic-map 回填（工具配置，1 轮内可并）；
+2. ~~semantic-map 回填（工具配置，1 轮内可并）~~ ✅ Fix #80（2026-09-07）；
 3. A-2 Effects 聚合（大，2-3 轮，**待裁决**——2026-09-07 用户裁决：执行）；
 4. A-1/A-3/A-5：记录，触发条件到达再动（A-1 触发器 = lib.rs >3k 行或 E-RSSTART 落地）。
 
@@ -2195,3 +2195,20 @@ I6（见 Fix #78）。
   clippy 触碰文件零告警；fmt 干净；`tools/check-rs-unwired.sh` PASS（boot.rs:1045
   唯一标记带 18 号契约）。校验器设计过程中首跑即抓出 clear_upds 漂移点（见 Before）
   ——不变式断言优先于类型机器的又一实例（E-3 同思路）。
+
+### ✅ Fix #80 — §20.5-2（工具配置）：semantic-map 回填，name-match 假 ⚠️ 归零
+- **File**：`tools/coverage-extract/rs-semantic-map.json`（18 项新映射 +
+  `sef_local_startup` 陈旧映射修复 + `_note` 记录回填来源）、
+  `.review/claude/rs/scan/SYMBOLS.md`（重跑刷新）
+- **Before**：coverage-extract 的 name-match 产生 21 个假 ⚠️（§20.1 A 类判定表
+  ——Rust 等价物已存在但名字对不上），每次复测都要人工重判；其中 `sef_local_startup`
+  的映射指向已不存在的 `SefCallbacks::local_startup`（N5 重构后被 `RsServer::init`
+  + trait 分派吸收）——映射本身陈旧，是 21 项里唯一"映射错"而非"映射缺"的。
+- **After**：20.1 判定表 21 项中 19 项回写映射（Rust 符号名逐一 grep 核实后写入：
+  `RsServer::resolve_by_label`/`UpdateState::end_update`/`RProcTable::iter_all`/
+  `RsServer::reply_unless_suppressed` 等）；**`copy_rs_start`/`do_edit` 刻意不回填**
+  ——它们是 E-RSSTART 门上的真缺口，保持 ⚠️ 可见直至接线轮落地，避免制造假覆盖。
+- **Verified**：重跑 coverage-extract：Rust name-match **115 (67.3%) → 151 (88.3%)**；
+  剩余 ⚠️ 恰 20 项，逐名核对与判定表吻合：B 类（ARCH 不需要，8）+ D 类（引 L5
+  可观测性含 rs_strerror 的吸收判定，5）+ C 类（归属他 stage，5）+ E-RSSTART 门
+  （2）——零假阳性。文档覆盖 171/171（100%）不变。
