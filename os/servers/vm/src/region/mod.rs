@@ -135,6 +135,7 @@ pub(crate) fn map_pin_memory(
     regions: &mut RegionMap,
     frames: &mut PageFrames,
     pfn_alloc: &mut dyn PfnAllocator,
+    pt: &mut crate::pagetable::PageTable,
 ) -> Result<(), PinMemoryError> {
     // Phase 1: Collect region (vaddr, length) pairs.
     // We must collect first because handle_memory_once needs &mut RegionMap,
@@ -146,8 +147,9 @@ pub(crate) fn map_pin_memory(
 
     // Phase 2: Process each region with wrflag=true.
     // C: map_handle_memory(vmp, vr, 0, vr->length, 1 /* wrflag */, NULL, 0, 0)
+    // G-V12-8: CoW resolution inside also writes the PTEs via `pt`.
     for (vaddr, length) in region_specs {
-        crate::fork::handle_memory_once(regions, frames, pfn_alloc, vaddr, length, true)
+        crate::fork::handle_memory_once(regions, frames, pfn_alloc, vaddr, length, true, pt)
             .map_err(|_| PinMemoryError::PageNotMapped)?;
     }
 
@@ -269,7 +271,8 @@ mod tests {
         let mut regions = RegionMap::new();
         let mut frames = make_frames();
         let mut alloc = make_page_alloc();
-        let result = map_pin_memory(&mut regions, &mut frames, &mut alloc);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+        let result = map_pin_memory(&mut regions, &mut frames, &mut alloc, &mut pt);
         assert!(result.is_ok());
     }
 
@@ -284,7 +287,8 @@ mod tests {
 
         let mut frames = make_frames();
         let mut alloc = make_page_alloc();
-        let result = map_pin_memory(&mut regions, &mut frames, &mut alloc);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+        let result = map_pin_memory(&mut regions, &mut frames, &mut alloc, &mut pt);
         // No CoW pages to resolve, so pinning succeeds.
         assert!(result.is_ok());
     }

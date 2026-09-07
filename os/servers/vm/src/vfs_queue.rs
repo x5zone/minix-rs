@@ -63,8 +63,10 @@ pub(crate) struct VfsRequest {
     pub(crate) fd: i32,
     #[allow(dead_code)]
     pub(crate) offset: u64,
+    // u64 to carry >4 GiB FdLookup lengths (aligned mmap sizes) without
+    // truncation; the VFS wire itself is built when KernelIpcTransport lands.
     #[allow(dead_code)]
-    pub(crate) length: u32,
+    pub(crate) length: u64,
     pub(crate) callback: Option<VfsCallbackFn>,
     pub(crate) state: Option<VfsRequestState>,
 }

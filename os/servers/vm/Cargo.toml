@@ -15,7 +15,10 @@ minix-sys = { workspace = true }
 # V11/T14: boot-proc ELF loading (exec_bootproc segment parsing);
 # the same no_std parser boot-shim uses (loader.rs).
 minix-elf = { workspace = true }
-minix-arch = { path = "../../arch" }
+# E-VMMOCK (G-V12-5 余件): close the default-features leak — arch's
+# `default = ["mock"]` must not enter the VM production build (kernel and
+# boot-shim already opt out via the workspace table).
+minix-arch = { path = "../../arch", default-features = false }
 bitflags = { workspace = true }
 
 [lib]

@@ -31,8 +31,21 @@ fn main() {
         let mut server = VmServer::new_with_boot_params(params);
 
         // C: main.c:101-108 — if(is_first_time()) { init_vm(); __vm_init_fresh=1; }
+        //
+        // G-V12-10: a warm start (`is_first_time == false`, C hot-restart
+        // semantics after RTS_BOOTINHIBIT clears) cannot be served here — C
+        // survives it because its state lives in BSS globals that outlive the
+        // restart, while minix-rs state lives inside the VmServer instance.
+        // Refuse loudly instead of silently panicking at `run()`'s first
+        // `assert!(self.initialized)` (02-stage-vm/todo.md G-V12-10).
         if params.is_first_time {
             server.init();
+        } else {
+            panic!(
+                "VM warm restart (is_first_time = false) is not supported: \
+                 minix-rs keeps no cross-restart BSS state (C main.c:101-108 \
+                 semantics); see 02-stage-vm/todo.md G-V12-10"
+            );
         }
 
         // C: sef_local_startup() — the RS_INIT handshake happens inside the

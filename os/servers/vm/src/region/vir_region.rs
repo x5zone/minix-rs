@@ -296,8 +296,16 @@ impl VirRegion {
         }
     }
 
-    #[allow(dead_code)]
+    /// C `pr_writable` (region.c:130-133): the page is writable only when
+    /// the region carries VR_WRITABLE **and** the memory type says the page
+    /// itself is writable. The PTE-write paths (fault sync G-V12-8, fork's
+    /// `write_page_table_mappings`) must consult this — a bare
+    /// `self.is_writable() && refcount == 1` ignores the memtype and lets
+    /// never-writable pages (e.g. MappedFile) get RW mappings.
     pub(crate) fn is_page_writable(&self, frames: &PageFrames, offset: VirBytes) -> bool {
+        if !self.is_writable() {
+            return false;
+        }
         let Some(slot) = self.get_slot(offset) else {
             return false;
         };

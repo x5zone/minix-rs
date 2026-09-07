@@ -312,6 +312,8 @@
 
 **解锁**：02-stage-vm/todo.md V12-P1-3（VM 侧半边）；E5(b) VFS 缓存协作链的正确性前提。
 
+> **进度（2026-09-08，✅ 闭单）**：建议 (1)(3) 已落地——`MessVmmcpReply.addr: u64`（`addr @0, flags @8, padding[47]`，56 字节保持），VM `encode_reply_data` 去截断，`VfsRequest.length` 同批拓宽 u64；测试 `test_vmmcp_reply_layout_64bit_addr`（minix-types）+ `test_encode_mapcache_reply_preserves_high_addr_bits`（vm_server）。依据记录：02-stage-vm/todo.md §17.9 Fix #59。**余件转入低优先**：建议 (4) 的 VM 消息族系统性字段宽度对账（pattern 84 候选）——`mess_vmmcp` 请求方向初查字段类型与 C 一致（dev/off/ino 皆 64 位 + block/flags_ptr 指针宽待 minix-sys 消费时定），留作后续扫描项，不阻塞通电。
+
 ---
 
 ## E-VMMOCK minix-arch default features 泄漏收口 + "mock" 命名澄清（02-stage-vm G-V12-5 余件，2026-09-08 登记）
@@ -321,3 +323,5 @@
 **建议**：(1) `os/servers/vm/Cargo.toml` 的 minix-arch 依赖补 `default-features = false`，跑三 feature 矩阵回归（G-V12-8 之前这主要影响编译面与 arch 内 mock 项的 dead_code 噪音，预期零行为差异——若有差异即暴露了生产代码误依赖 mock 项，需逐处修正）；(2) arch 侧把 `mock` feature 更名为诚实表达运行时窗口语义的名字（如 `runtime-window`，或直接内联为非 feature 代码路径），同步 kernel/boot-shim 的引用；(3) 在 02-stage-vm/todo.md §2 表 G-V12-5 行回写闭单。
 
 **解锁**：VM 生产依赖面的单一真相；arch 命名与语义一致。无 E1/E2 依赖，可独立先行。
+
+> **进度（2026-09-08，建议 (1) 完成）**：`os/servers/vm/Cargo.toml` 已补 `default-features = false`，三 feature 矩阵回归零差异（490/507/490 passed）——VM 生产代码无 mock 项依赖，收口无行为影响。**余件**：建议 (2) arch 侧 `mock` 更名（涉 kernel/boot-shim 引用同步）与 (3) G-V12-5 行闭单回写（待 (2) 一并完成）。依据记录：02-stage-vm/todo.md §17.9 Fix #62。

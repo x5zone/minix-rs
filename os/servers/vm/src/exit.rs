@@ -275,13 +275,16 @@ pub(crate) fn handle_procctl_handlemem(
 
     // Use handle_memory_once to resolve CoW / ensure pages are mapped.
     // C: handle_memory_start → handle_memory_step → map_handle_memory
+    // G-V12-8: the resolution must also write the process PTEs.
+    let (regions, pt) = proc.mem_parts_mut();
     let result = crate::fork::handle_memory_once(
-        proc.regions_mut(),
+        regions,
         frames,
         page_alloc,
         mem,
         length,
         writable,
+        pt,
     );
 
     match result {

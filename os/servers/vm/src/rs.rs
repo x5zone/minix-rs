@@ -193,10 +193,12 @@ pub(crate) fn handle_rs_prepare(
     {
         let mut src_proc = table.get_active(src_slot)
             .ok_or(RsError::ProcessNotFound)?;
+        let (src_regions, src_pt) = src_proc.mem_parts_mut();
         crate::region::map_pin_memory(
-            src_proc.regions_mut(),
+            src_regions,
             frames,
             page_alloc,
+            src_pt,
         ).map_err(|_| RsError::PinFailed)?;
     }
 
@@ -242,10 +244,12 @@ pub(crate) fn handle_rs_prepare(
     {
         let mut dst_proc = table.get_active(dst_slot)
             .ok_or(RsError::ProcessNotFound)?;
+        let (dst_regions, dst_pt) = dst_proc.mem_parts_mut();
         crate::region::map_pin_memory(
-            dst_proc.regions_mut(),
+            dst_regions,
             frames,
             page_alloc,
+            dst_pt,
         ).map_err(|_| RsError::PinFailed)?;
     }
 
@@ -491,7 +495,8 @@ pub(crate) fn handle_rs_memctl(
             if crate::global::vm_instance_count() <= 1 {
                 return Ok(RsMemctlResult::Ok);
             }
-            crate::region::map_pin_memory(active.regions_mut(), frames, page_alloc)
+            let (active_regions, active_pt) = active.mem_parts_mut();
+            crate::region::map_pin_memory(active_regions, frames, page_alloc, active_pt)
                 .map_err(|_| RsError::PinFailed)?;
             Ok(RsMemctlResult::Ok)
         }

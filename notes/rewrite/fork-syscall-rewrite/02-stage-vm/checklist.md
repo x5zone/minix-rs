@@ -5,6 +5,8 @@
 > 范围: 24 个 .c 文件 + 多个 .h + arch/ 子目录
 > 验证依据: `minix3/minix/servers/vm/` (C 源) ↔ `os/servers/vm/src/` (Rust 实现)
 
+> **⚠️ 复检横幅（2026-09-08，V12 轮）**：本表数字停留在 2026-06-12 基线，早于 V9–V11 审查修复与 T1–T36 收尾 campaign 的大面积落地，**下文各"实现率"数字已失效，不能作为现状引用**。机器重跑（coverage-extract.py，2026-09-08）：371 个 C 符号、文档覆盖 91.9%；175 项逐一语义判定见 `todo.md` §17.1（COVERED 103 / ARCH-EVOLVED 32 / DEBUG-ONLY 27 / COMPILE-FLAG 4 / OBSOLETE 8 / REAL-GAP 1，唯一函数级真缺口 `shared_delete` 为 G-V12-7）。按 175 项判定逐类重写本表六张分册的系统性刷新已登记为 todo.md G-V12-13，本轮仅修正有直接证据的个别行。
+
 ## 0. 覆盖度总览
 
 | 分类 | 总数 | 已实现 | 未实现 | 实现率 |
@@ -403,7 +405,7 @@
 | F-066 | `init_vm` | main.c:428 | VM 初始化 | `VmServer::init` (vm_server.rs:140) | 已实现 |
 | F-067 | `sef_cb_init_vm_multi_lu` | main.c:592 | 多组件 LU 初始化 (static) | **未实现** | TODO |
 | F-068 | `sef_cb_init_lu_restart` | main.c:677 | LU 重启 (static) | **未实现** | TODO |
-| F-069 | `sef_cb_signal_handler` | main.c:731 | 信号处理 (static) | `VmServer::handle_signal` (vm_server.rs:307) | **stub** (no-op) |
+| F-069 | `sef_cb_signal_handler` | main.c:731 | 信号处理 (static) | `VmServer::handle_signal` (vm_server.rs:857) + `do_memory` 排空循环 (:877) + `handle_kernel_memreq` (:918) | ✅ 已实现 (2026-09-07, T29/todo.md §16 Fix #49): SIGKMEM 分派 + sys_vmctl_memreq_get/reply 排空内核内存请求队列（复检 2026-09-08 V12 轮：真实信号交付仍挂 edge E1） |
 | F-070 | `map_service` | main.c:755 | 映射服务 (static) | 集成在 dispatcher | 已实现 |
 
 ### 4.9 mem_*.c (memtype 回调族)
@@ -441,8 +443,8 @@
 | F-106-F-117 | mappedfile_* (12 callbacks) | mem_file.c:43-280 | 文件映射回调 (static) | `MappedFile::ev_*` | 已实现 (ev_copy/split 简化) |
 | F-118 | `mappedfile_setfile` | mem_file.c:191 | 设置文件 | `MappedFile::ev_setfile` | 已实现 |
 | F-119 | `mem_type_shared` | mem_shared.c:28 | 共享类型表 | `SharedMemory` + `MEM_TYPE_SHARED` (memtype.rs:694) | 已实现 |
-| F-120-F-130 | shared_* (11 callbacks) | mem_shared.c:41-207 | 共享回调 (static) | `SharedMemory::ev_*` | ✅ 已修复 (2026-06-16): ev_pagefault 完整实现 (getsrc→vm_isokendpt→map_lookup→源页映射→PFN共享); 签名增加 &VmProcTable + &mut PfnAllocator; MemTypeError 新增 InvalidProcess/InvalidAddress; 3 个测试覆盖 |
-| F-131 | `shared_setsource` | mem_shared.c:167 | 设置源 | `SharedMemory::ev_setsource` | 已实现 (stub) |
+| F-120-F-130 | shared_* (11 callbacks) | mem_shared.c:41-207 | 共享回调 (static) | `SharedMemory::ev_*` | ✅ 已修复 (2026-06-16): ev_pagefault 完整实现 (getsrc→vm_isokendpt→map_lookup→源页映射→PFN共享); 签名增加 &VmProcTable + &mut PfnAllocator; MemTypeError 新增 InvalidProcess/InvalidAddress; 3 个测试覆盖。⚠️ 复检 (2026-09-08 V12 轮): 其中 `shared_delete` (mem_shared.c:110-123) 的"源区域 remaps 递减"半边缺失——`SharedMemory` 未覆写 `ev_delete`，remaps 只增不减 → 登记 todo.md **G-V12-7** |
+| F-131 | `shared_setsource` | mem_shared.c:167 | 设置源 | dispatcher remap 路径 (dispatcher.rs:1443-1467 设 `VrParam::Shared` + `increment_region_remaps`) | ✅ 已实现 (复检 2026-09-08: 非 stub——VM_REMAP 完整接线，见 I-010；C 的 ev_setsource 语义内联在 remap) |
 
 ### 4.10 mmap.c (12 函数)
 

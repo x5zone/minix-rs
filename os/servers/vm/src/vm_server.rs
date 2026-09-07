@@ -931,13 +931,18 @@ impl VmServer {
             Some(p) => p,
             None => return false,
         };
+        // G-V12-8: the CHECK verdict tells the kernel the range is mapped —
+        // the CoW resolution inside must also write the PTEs, or the process
+        // re-faults on resume (C: handle_memory_start → pt_writemap).
+        let (regions, pt) = proc.mem_parts_mut();
         crate::fork::handle_memory_once(
-            proc.regions_mut(),
+            regions,
             frames,
             page_alloc,
             minix_types::VirBytes(req.start),
             minix_types::VirBytes(req.length),
             req.write,
+            pt,
         )
         .is_ok()
     }
@@ -1402,16 +1407,15 @@ impl VmServer {
         };
         let proc_endpoint = proc.endpoint();
         let fault_addr = request.vaddr;
-        let region = match proc.regions_mut().find_mut(fault_addr) {
-            Some(r) => r,
-            None => return VmReply::Error(VmError::InvalidAddress),
-        };
         // C pagefaults.c:109-119 — a write to a read-only region is not a
         // servable fault: deliver SIGSEGV to the faulting process, clear its
         // kernel pagefault suspension (RTS_PAGEFAULT), and stop. Pre-E2 the
         // trap stub answers -EIO for both calls; the failure is audited and
         // the error reply still counts the episode (G-V12-6).
-        if request.write && !region.is_writable() {
+        // Read-only borrow — ends before the mem_parts_mut split below.
+        if request.write
+            && !proc.regions().find(fault_addr).is_some_and(|r| r.is_writable())
+        {
             if let Err(e) = self.ctx.gateway.borrow_mut()
                 .sys_kill(proc_endpoint, minix_types::SIGNAL_SEGMENT_VIOLATION)
             {
@@ -1429,9 +1433,16 @@ impl VmServer {
         // &mut fields instead of the former parts_mut() 4-tuple.
         let VmContext { page_alloc, page_frames, page_cache, vfs_queue, .. } = &mut self.ctx;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
+        // G-V12-8: the fault path owns the process page table and must keep
+        // it in sync with the bookkeeping slot (C: map_pf → pt_writemap).
+        let (regions, pt) = proc.mem_parts_mut();
+        let region = match regions.find_mut(fault_addr) {
+            Some(r) => r,
+            None => return VmReply::Error(VmError::InvalidAddress),
+        };
         match crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
-            fault_addr, request.write, table, page_cache, vfs_queue,
+            fault_addr, request.write, table, page_cache, vfs_queue, pt,
         ) {
             Ok(action) => {
                 // V11/T31: fault accounting. Minix3's VM has no fault
@@ -1699,9 +1710,12 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
         VmReply::MapCache { addr } => {
             // C: msg->m_vmmcp_reply.addr = vr->vaddr (mem_cache.c:170);
             // libminixfs reads it back in vm_map_cacheblock (libsys/vm_cache.c:47-54).
+            // The addr field is u64 on the minix-rs x86_64 wire (edge
+            // E-VMMCPWIRE): MMAP-window VAs are ≥4 GiB and a u32 would
+            // truncate every reply.
             // SAFETY: cache replies use the m_vmmcp_reply format.
             let reply = unsafe { &mut msg.m_u.m_vmmcp_reply };
-            reply.addr = addr.0 as u32;
+            reply.addr = addr.0;
         }
         VmReply::VfsMmap(out) => out.encode(m1),
         VmReply::GetPhys { phys_addr } => { m1.m1p1 = phys_addr.0; }
@@ -1945,6 +1959,20 @@ mod tests {
             );
             assert!(matches!(result.reply, VmReply::Error(VmError::InvalidProcess)));
         });
+    }
+
+    #[test]
+    fn test_encode_mapcache_reply_preserves_high_addr_bits() {
+        // E-VMMCPWIRE regression: m_vmmcp_reply.addr is u64 on the minix-rs
+        // x86_64 wire. The former u32 field truncated every MapCache reply,
+        // because MMAP-window VAs are always ≥4 GiB (mmap.rs MMAP_BASE).
+        let addr = minix_types::VirBytes(0x0000_0123_4567_89AB);
+        let mut msg = Message::default();
+        encode_reply_data(VmReply::MapCache { addr }, &mut msg);
+        // SAFETY: MapCache replies use the m_vmmcp_reply overlay.
+        let reply = unsafe { msg.m_u.m_vmmcp_reply };
+        assert_eq!(reply.addr, 0x0000_0123_4567_89AB);
+        assert_eq!(reply.flags, 0);
     }
 
     #[test]

@@ -37,6 +37,7 @@ pub(crate) fn handle_memory_once(
     mem: VirBytes,
     len: VirBytes,
     wrflag: bool,
+    pt: &mut crate::pagetable::PageTable,
 ) -> Result<(), VmForkError> {
     // Page-align start and length, matching Minix3's handle_memory_start.
     let page_offset = mem.0 % PAGE_SIZE;
@@ -71,8 +72,10 @@ pub(crate) fn handle_memory_once(
             if wrflag {
                 // Resolve CoW for this page if needed.
                 // C: map_handle_memory(vmp, region, offset, PAGE_SIZE, wrflag, ...)
+                // — C 的该路径同样写 PTE（pt_writemap），否则内核恢复进程后
+                // 指令重执行二次故障（G-V12-8）。
                 if region.needs_cow(frames, offset) {
-                    cow_resolve_core(region, frames, pfn_alloc, offset)
+                    cow_resolve_core(region, frames, pfn_alloc, offset, pt)
                         .map_err(|_| VmForkError::CowAllocFailed)?;
                 }
             }
@@ -361,24 +364,30 @@ pub(crate) fn do_fork(
     if let Some(msgaddr) = fork_msgaddr {
         let msg_len = VirBytes(core::mem::size_of::<minix_types::Message>() as u64);
 
-        // C fork.c:103 — child first.
+        // C fork.c:103 — child first. G-V12-8: the eager CoW must also
+        // write each side's PTEs, or the kernel write of the fork reply
+        // re-faults on resume.
+        let (child_regions, child_pt) = child.mem_parts_mut();
         handle_memory_once(
-            child.regions_mut(),
+            child_regions,
             frames,
             pfn_alloc,
             VirBytes(msgaddr),
             msg_len,
             true,
+            child_pt,
         )?;
 
         // C fork.c:105-107 — then the parent.
+        let (parent_regions, parent_pt) = parent.mem_parts_mut();
         handle_memory_once(
-            parent.regions_mut(),
+            parent_regions,
             frames,
             pfn_alloc,
             VirBytes(msgaddr),
             msg_len,
             true,
+            parent_pt,
         )?;
     }
 
@@ -398,12 +407,14 @@ pub(crate) fn cow_copy_page(
     frames: &mut PageFrames,
     alloc: &mut dyn PfnAllocator,
     offset: VirBytes,
+    pt: &mut crate::pagetable::PageTable,
 ) -> Result<(), VmForkError> {
-    cow_resolve_core(region, frames, alloc, offset)
+    cow_resolve_core(region, frames, alloc, offset, pt)
         .map(|_| ())
         .map_err(|e| match e {
             crate::cow_exec_pf::CowCoreError::NoMemory => VmForkError::CowAllocFailed,
             crate::cow_exec_pf::CowCoreError::PageNotMapped => VmForkError::PageNotMapped,
+            crate::cow_exec_pf::CowCoreError::PageTable(_) => VmForkError::CowAllocFailed,
         })
 }
 
@@ -605,13 +616,14 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
 
         frames.get_mut(pfn).unwrap().refcount = 2;
 
-        cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &mut pt).unwrap();
 
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
 
@@ -626,11 +638,12 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
 
-        cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        cow_copy_page(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &mut pt).unwrap();
 
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
         assert_eq!(slot.pfn(), Some(pfn));
@@ -768,9 +781,10 @@ mod tests {
         regions.insert(region).unwrap();
 
         // wrflag=true, but refcount=1 so no CoW needed.
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
         let result = handle_memory_once(
             &mut regions, &mut frames, &mut alloc,
-            VirBytes(0x1000), VirBytes(0x1000), true,
+            VirBytes(0x1000), VirBytes(0x1000), true, &mut pt,
         );
         assert!(result.is_ok());
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
@@ -793,9 +807,10 @@ mod tests {
 
         regions.insert(region).unwrap();
 
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
         let result = handle_memory_once(
             &mut regions, &mut frames, &mut alloc,
-            VirBytes(0x1000), VirBytes(0x1000), true,
+            VirBytes(0x1000), VirBytes(0x1000), true, &mut pt,
         );
         assert!(result.is_ok());
 
@@ -814,9 +829,10 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut regions = crate::region::RegionMap::new(); // empty
 
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
         let result = handle_memory_once(
             &mut regions, &mut frames, &mut alloc,
-            VirBytes(0x1000), VirBytes(0x1000), true,
+            VirBytes(0x1000), VirBytes(0x1000), true, &mut pt,
         );
         assert_eq!(result, Err(VmForkError::PageNotMapped));
     }

@@ -2498,25 +2498,33 @@ pub struct MessVmmcp {
 
 /// Cache-block map reply payload (VM → VFS) for `VM_MAPCACHEPAGE`.
 ///
-/// C: `message.m_m2` — `mess_vmmcp_reply` (ipc.h:2396-2400):
+/// C: `message.m_vmmcp_reply` — `mess_vmmcp_reply` (ipc.h:2395-2400):
 /// ```c
 /// typedef struct {
-///     void *addr;          /* 32-bit on i386 */
+///     void *addr;          /* i386 layout: 4+1+51 = 56 */
 ///     u8_t flags;
 ///     uint8_t padding[51];
 /// } mess_vmmcp_reply;
 /// ```
-/// Wire layout: `addr` @0 (u32), `flags` @4 (u8), padding @5..56.
+/// The C header is written for i386 pointer width; with 8-byte `void *` the
+/// same field list (8+1+51 = 60) no longer fits the 56-byte payload. minix-rs
+/// targets x86_64, where the mapped VA lives in the MMAP window at ≥4 GiB and
+/// cannot survive a 32-bit field, so the wire carries the honest 64-bit
+/// address — the same 64-bit-overlay decision as `m_vm_pagefault`
+/// (02-stage-vm doc 16 §3.6 #2; tracked as edge E-VMMCPWIRE).
+/// Wire layout: `addr` @0 (u64), `flags` @8 (u8), padding @9..56.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MessVmmcpReply {
     /// Mapped virtual address of the cache block in the caller's address
-    /// space. C: `mess_vmmcp_reply.addr` (payload offset 0, 32-bit pointer)
-    pub addr: u32,
-    /// Reserved reply flags. C: `mess_vmmcp_reply.flags` (payload offset 4)
+    /// space. C: `mess_vmmcp_reply.addr` (payload offset 0; 64-bit on the
+    /// x86_64 wire — a u32 here truncates every reply).
+    pub addr: u64,
+    /// Reserved reply flags. C: `mess_vmmcp_reply.flags` (offset 8 on the
+    /// 64-bit wire; offset 4 in the i386 C header).
     pub flags: u8,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 51],
+    pub _padding: [u8; 47],
 }
 
 impl Default for MessVmmcpReply {
@@ -2524,7 +2532,7 @@ impl Default for MessVmmcpReply {
         Self {
             addr: 0,
             flags: 0,
-            _padding: [0; 51],
+            _padding: [0; 47],
         }
     }
 }
@@ -3587,6 +3595,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(reply.status, 0o200 | 6);
+    }
+
+    #[test]
+    fn test_vmmcp_reply_layout_64bit_addr() {
+        // C: ipc.h `mess_vmmcp_reply` — 56-byte payload. The i386 C layout
+        // (void* = 4) cannot carry the minix-rs x86_64 MMAP-window VAs
+        // (≥4 GiB), so the wire widens addr to u64 (edge E-VMMCPWIRE).
+        // flags moves to offset 8 (after the 8-byte addr).
+        assert_eq!(size_of::<MessVmmcpReply>(), 56);
+        let reply = MessVmmcpReply {
+            addr: 0x0000_0123_4567_89AB,
+            ..Default::default()
+        };
+        assert_eq!(reply.addr, 0x0000_0123_4567_89AB);
+        assert_eq!(reply.flags, 0);
     }
 
     fn test_sched_message_layouts() {

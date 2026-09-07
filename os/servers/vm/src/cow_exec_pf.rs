@@ -7,6 +7,7 @@ use crate::region::{VirRegion, PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
 use crate::memtype::{MemType, PagefaultResult, MemTypeError, MEM_TYPE_ANON};
 use crate::vmproc::VmProcTable;
 use crate::page_cache::PageCache;
+use crate::pagetable::{PageFlags, PageTable, PageTableError, Paging};
 use crate::vfs_queue::{VfsQueueError, VfsReply, VfsRequest, VfsRequestQueue, VfsRequestState, VfsRequestType};
 use crate::fdref::FdRefTable;
 use crate::region::VrParam;
@@ -31,6 +32,7 @@ pub(crate) fn handle_pagefault(
     table: &VmProcTable,
     cache: &mut PageCache,
     vfs_queue: &mut VfsRequestQueue,
+    pt: &mut PageTable,
 ) -> Result<PagefaultAction, CowError> {
     let offset = VirBytes(fault_addr.0 - region.vaddr.0);
 
@@ -40,13 +42,19 @@ pub(crate) fn handle_pagefault(
     let result = memtype.ev_pagefault(proc_endpoint, region, frames, offset, write, table, alloc, cache)?;
 
     match result {
-        PagefaultResult::Handled => Ok(PagefaultAction::Handled),
+        PagefaultResult::Handled => {
+            // Memtype resolved the fault itself (e.g. a cache hit linked the
+            // PFN into the slot) — make the hardware PTE agree before the
+            // kernel resumes the faulting instruction.
+            sync_slot_pte(region, frames, offset, pt).map_err(CowError::from)?;
+            Ok(PagefaultAction::Handled)
+        }
         PagefaultResult::NeedNewPage => {
-            alloc_and_map(region, frames, alloc, offset, memtype)?;
+            alloc_and_map(region, frames, alloc, offset, memtype, pt)?;
             Ok(PagefaultAction::MappedNewPage)
         }
         PagefaultResult::NeedCow => {
-            cow_resolve(region, frames, alloc, offset)?;
+            cow_resolve(region, frames, alloc, offset, pt)?;
             Ok(PagefaultAction::CowResolved)
         }
         PagefaultResult::NeedVfsIo => {
@@ -56,6 +64,41 @@ pub(crate) fn handle_pagefault(
             Ok(PagefaultAction::AccessViolation)
         }
     }
+}
+
+/// Make the hardware PTE for `offset` agree with the VM bookkeeping slot.
+///
+/// C 对应: `map_pf` 尾部的 `pt_writemap`（region.c/pagetable.c:784，CoW 写位
+/// 翻转走 WMF_WRITEFLAGSONLY）与 `map_ph_writept`——Minix3 的缺页路径由 VM
+/// 自己写进程页表。G-V12-8: 本函数之前缺失，`handle_pagefault` 链只更新
+/// PageSlot/PageFrames 记账，通电后指令重执行会二次故障（活锁）。
+///
+/// 三路分派：同帧不同位 → `update_flags`（WMF_WRITEFLAGSONLY）；换帧 →
+/// `remap`（WMF_OVERWRITE，单操作替换、无"无映射"窗口）；未映射 → `map`。
+/// 写权限判定用 `is_page_writable`（C `pr_writable`，region.c:130-133）。
+fn sync_slot_pte(
+    region: &VirRegion,
+    frames: &PageFrames,
+    offset: VirBytes,
+    pt: &mut PageTable,
+) -> Result<(), CowCoreError> {
+    let pfn = region
+        .get_slot(offset)
+        .and_then(PageSlot::pfn)
+        .ok_or(CowCoreError::PageNotMapped)?;
+    let vaddr = VirBytes(region.vaddr.0 + offset.0);
+    let paddr = frames.pfn_to_phys(pfn);
+    let flags = if region.is_page_writable(frames, offset) {
+        PageFlags::read_write()
+    } else {
+        PageFlags::read_only()
+    };
+    let result = match pt.query(vaddr) {
+        Some((cur_paddr, _)) if cur_paddr == paddr => pt.update_flags(vaddr, flags),
+        Some(_) => pt.remap(vaddr, paddr, flags).map(|_| ()),
+        None => pt.map(vaddr, paddr, flags),
+    };
+    result.map_err(CowCoreError::PageTable)
 }
 
 /// Enqueue a `FdIo` VFS request for a file-backed page fault.
@@ -89,7 +132,7 @@ pub(crate) fn enqueue_fdio(
         caller_endpoint: proc_endpoint,
         fd: fdref.fd,
         offset: file_offset + offset.0,
-        length: PAGE_SIZE as u32,
+        length: PAGE_SIZE,
         callback: Some(mappedfile_pf_cont),
         state: Some(VfsRequestState::FdIo {
             region_vaddr: region.vaddr,
@@ -133,12 +176,14 @@ pub(crate) fn mappedfile_pf_cont(
     let table = VmProcTable::get_global();
     let slot = table.vm_isokendpt(*caller_endpoint).map_err(|_| VfsQueueError::InvalidFd)?;
     let mut proc = table.get_active(slot).ok_or(VfsQueueError::InvalidFd)?;
-    let region = proc.regions_mut().find_mut(*region_vaddr)
-        .ok_or(VfsQueueError::InvalidFd)?;
     // V9-P1-3 step 1: disjoint &mut fields via VmContext destructuring.
     let crate::vm_server::VmContext { page_alloc, page_frames, page_cache: cache, vfs_queue, .. } =
         &mut server.ctx;
     let frames = page_frames.as_mut().expect("page_frames not initialized");
+    // G-V12-8: the retry resolves the fault and must write the PTE too.
+    let (regions, pt) = proc.mem_parts_mut();
+    let region = regions.find_mut(*region_vaddr)
+        .ok_or(VfsQueueError::InvalidFd)?;
 
     match handle_pagefault(
         *caller_endpoint,
@@ -150,6 +195,7 @@ pub(crate) fn mappedfile_pf_cont(
         table,
         cache,
         vfs_queue,
+        pt,
     ) {
         Ok(PagefaultAction::Suspended) => {
             // Another FDIO was enqueued (repeated miss); the process stays
@@ -176,6 +222,7 @@ pub(crate) fn alloc_and_map(
     alloc: &mut dyn PfnAllocator,
     offset: VirBytes,
     memtype: &'static dyn MemType,
+    pt: &mut PageTable,
 ) -> Result<u32, CowError> {
     // V11/T30: C alloc_mem semantics — reclaim-retry at the funnel.
     let pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
@@ -185,6 +232,7 @@ pub(crate) fn alloc_and_map(
     //   alloc.free_pfn(pfn);
     // Currently map_page is infallible (just sets slot + increments refcount).
     region.map_page(frames, offset, pfn, memtype);
+    sync_slot_pte(region, frames, offset, pt).map_err(CowError::from)?;
 
     Ok(pfn)
 }
@@ -194,8 +242,9 @@ pub(crate) fn cow_resolve(
     frames: &mut PageFrames,
     alloc: &mut dyn PfnAllocator,
     offset: VirBytes,
+    pt: &mut PageTable,
 ) -> Result<u32, CowError> {
-    cow_resolve_core(region, frames, alloc, offset).map_err(Into::into)
+    cow_resolve_core(region, frames, alloc, offset, pt).map_err(Into::into)
 }
 
 /// Core CoW resolution: allocate a new physical page, copy content from the
@@ -207,6 +256,7 @@ pub(crate) fn cow_resolve_core(
     frames: &mut PageFrames,
     alloc: &mut dyn PfnAllocator,
     offset: VirBytes,
+    pt: &mut PageTable,
 ) -> Result<u32, CowCoreError> {
     let Some(old_pfn) = region.get_slot(offset).and_then(PageSlot::pfn) else {
         return Err(CowCoreError::PageNotMapped);
@@ -216,6 +266,9 @@ pub(crate) fn cow_resolve_core(
         .unwrap_or(0);
 
     if refcount <= 1 {
+        // Already private: C's wp_page_reuse analogue — only the PTE write
+        // bit needs flipping (WMF_WRITEFLAGSONLY), the frame stays.
+        sync_slot_pte(region, frames, offset, pt)?;
         return Ok(old_pfn);
     }
 
@@ -227,6 +280,9 @@ pub(crate) fn cow_resolve_core(
 
     let pending = region.unmap_page(frames, offset);
     region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
+    // G-V12-8: point the hardware PTE at the private copy (C pt_writemap
+    // WMF_OVERWRITE) — without this the resumed instruction re-faults.
+    sync_slot_pte(region, frames, offset, pt)?;
 
     // If the old page's refcount dropped to 0 and it's not cached, unmap_page
     // returns (pfn, memtype) so the caller can notify the memtype (ev_unreference)
@@ -291,6 +347,7 @@ fn verify_cow_consistency(
 pub(crate) enum CowCoreError {
     NoMemory,
     PageNotMapped,
+    PageTable(PageTableError),
 }
 
 impl From<CowCoreError> for CowError {
@@ -298,6 +355,7 @@ impl From<CowCoreError> for CowError {
         match e {
             CowCoreError::NoMemory => CowError::NoMemory,
             CowCoreError::PageNotMapped => CowError::PageNotMapped,
+            CowCoreError::PageTable(e) => CowError::PageTable(e),
         }
     }
 }
@@ -336,6 +394,7 @@ pub(crate) fn cow_resolve_region(
     region: &mut VirRegion,
     frames: &mut PageFrames,
     alloc: &mut dyn PfnAllocator,
+    pt: &mut PageTable,
 ) -> Result<usize, CowError> {
     let num_pages = region.physblocks.len();
     let mut resolved = 0;
@@ -343,7 +402,7 @@ pub(crate) fn cow_resolve_region(
     for i in 0..num_pages {
         let offset = VirBytes((i as u64) * PAGE_SIZE);
         if region.needs_cow(frames, offset) {
-            cow_resolve(region, frames, alloc, offset)?;
+            cow_resolve(region, frames, alloc, offset, pt)?;
             resolved += 1;
         }
     }
@@ -366,6 +425,7 @@ pub(crate) enum CowError {
     NoMemType,
     PageNotMapped,
     MemType(MemTypeError),
+    PageTable(PageTableError),
 }
 
 impl From<MemTypeError> for CowError {
@@ -405,8 +465,9 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
-        let pfn = alloc_and_map(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &MEM_TYPE_ANON).unwrap();
+        let pfn = alloc_and_map(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &MEM_TYPE_ANON, &mut pt).unwrap();
 
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
         assert!(slot.is_mapped());
@@ -419,13 +480,14 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
 
         frames.get_mut(pfn).unwrap().refcount = 2;
 
-        let new_pfn = cow_resolve(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        let new_pfn = cow_resolve(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &mut pt).unwrap();
 
         assert_ne!(new_pfn, pfn);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
@@ -438,11 +500,12 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
 
-        let result_pfn = cow_resolve(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        let result_pfn = cow_resolve(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &mut pt).unwrap();
         assert_eq!(result_pfn, pfn);
     }
 
@@ -452,6 +515,7 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
         let pfn0 = alloc.alloc_pfn().unwrap();
         let pfn1 = alloc.alloc_pfn().unwrap();
@@ -461,7 +525,7 @@ mod tests {
         frames.get_mut(pfn0).unwrap().refcount = 2;
         frames.get_mut(pfn1).unwrap().refcount = 3;
 
-        let resolved = cow_resolve_region(&mut region, &mut frames, &mut alloc).unwrap();
+        let resolved = cow_resolve_region(&mut region, &mut frames, &mut alloc, &mut pt).unwrap();
         assert_eq!(resolved, 2);
 
         assert_eq!(frames.get(pfn0).unwrap().refcount, 1);
@@ -474,16 +538,117 @@ mod tests {
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&MEM_TYPE_ANON);
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
 
-        let result = cow_resolve_core(&mut region, &mut frames, &mut alloc, VirBytes(0x0000)).unwrap();
+        let result = cow_resolve_core(&mut region, &mut frames, &mut alloc, VirBytes(0x0000), &mut pt).unwrap();
         assert_eq!(result, pfn);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
         let slot = region.get_slot(VirBytes(0x0000)).unwrap();
         assert_eq!(slot.pfn(), Some(pfn));
+    }
+
+    // --- G-V12-8: the fault path must keep the hardware PTE in sync with
+    // the bookkeeping slot (C: map_pf → pt_writemap). SimPaging makes the
+    // PTE side assertable for the first time.
+
+    /// Region with VR_WRITABLE so `is_page_writable` (C pr_writable) can
+    /// return true for a private anon page.
+    fn make_writable_anon_region() -> VirRegion {
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::WRITABLE);
+        region.def_memtype = Some(&MEM_TYPE_ANON);
+        region
+    }
+
+    #[test]
+    fn test_demand_fault_maps_pte_present() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+        let mut queue = VfsRequestQueue::new();
+        let table = VmProcTable::get_global();
+        let mut region = make_writable_anon_region();
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), true, table, &mut cache, &mut queue, &mut pt,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::MappedNewPage);
+
+        let pfn = region.get_slot(VirBytes(0x0000)).and_then(PageSlot::pfn).unwrap();
+        let (paddr, flags) = pt.query(VirBytes(0x1000))
+            .expect("PTE must be mapped after a demand fault");
+        assert_eq!(paddr, frames.pfn_to_phys(pfn));
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(flags.contains(PageFlags::WRITABLE), "private writable page must get a RW PTE");
+    }
+
+    #[test]
+    fn test_cow_fault_pte_repoints_to_new_frame() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+        let mut queue = VfsRequestQueue::new();
+        let table = VmProcTable::get_global();
+        let mut region = make_writable_anon_region();
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
+        frames.get_mut(pfn).unwrap().refcount = 2;
+        // Fork-shaped pre-state: the PTE still maps the SHARED frame read-only.
+        let old_paddr = frames.pfn_to_phys(pfn);
+        pt.map(VirBytes(0x1000), old_paddr, PageFlags::read_only()).unwrap();
+
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), true, table, &mut cache, &mut queue, &mut pt,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::CowResolved);
+
+        let new_pfn = region.get_slot(VirBytes(0x0000)).and_then(PageSlot::pfn).unwrap();
+        assert_ne!(new_pfn, pfn, "CoW must copy to a private frame");
+        let (paddr, flags) = pt.query(VirBytes(0x1000))
+            .expect("PTE must be mapped after CoW resolution");
+        assert_eq!(paddr, frames.pfn_to_phys(new_pfn), "PTE must point at the private copy");
+        assert!(flags.contains(PageFlags::WRITABLE));
+    }
+
+    #[test]
+    fn test_cow_fast_path_flips_pte_writable_without_recopy() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+        let mut queue = VfsRequestQueue::new();
+        let table = VmProcTable::get_global();
+        let mut region = make_writable_anon_region();
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+
+        let pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), pfn, &MEM_TYPE_ANON);
+        // refcount already 1 (sharper exited): C wp_page_reuse analogue —
+        // same frame, flags-only flip (WMF_WRITEFLAGSONLY).
+        let paddr = frames.pfn_to_phys(pfn);
+        pt.map(VirBytes(0x1000), paddr, PageFlags::read_only()).unwrap();
+
+        // refcount==1 + write → `anon_pagefault` verdicts `Handled` ("safely
+        // writable without CoW"); the PTE write-bit flip happens in the
+        // Handled arm's PTE sync (G-V12-8) — before this fix the stale
+        // read-only PTE would re-fault the resumed instruction.
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), true, table, &mut cache, &mut queue, &mut pt,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::Handled);
+
+        assert_eq!(region.get_slot(VirBytes(0x0000)).and_then(PageSlot::pfn), Some(pfn));
+        let (cur_paddr, flags) = pt.query(VirBytes(0x1000)).unwrap();
+        assert_eq!(cur_paddr, paddr, "fast path must keep the frame");
+        assert!(flags.contains(PageFlags::WRITABLE), "fast path must flip the write bit");
     }
 
     fn make_file_region(fdref_id: u32, file_offset: u64) -> VirRegion {
@@ -514,9 +679,10 @@ mod tests {
 
         // C mappedfile_pagefault: cache miss → vfs_request(VMVFSREQ_FDIO,
         // procfd, vmp, referenced_offset, VM_PAGE_SIZE, cb, ...) → SUSPEND.
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
         let action = handle_pagefault(
             Endpoint(100), &mut region, &mut frames, &mut alloc,
-            VirBytes(0x1000), false, table, &mut cache, &mut queue,
+            VirBytes(0x1000), false, table, &mut cache, &mut queue, &mut pt,
         ).unwrap();
         assert_eq!(action, PagefaultAction::Suspended);
 
@@ -524,7 +690,7 @@ mod tests {
         assert_eq!(active.request_type, VfsRequestType::FdIo);
         assert_eq!(active.fd, 7);
         assert_eq!(active.offset, 0x5000, "referenced_offset = file offset + page offset");
-        assert_eq!(active.length, PAGE_SIZE as u32);
+        assert_eq!(active.length, PAGE_SIZE as u64);
         assert_eq!(
             active.callback.map(|f| f as usize),
             Some(mappedfile_pf_cont as usize)
@@ -555,9 +721,10 @@ mod tests {
         let mut region = make_file_region(fdref_id, 0x5000);
 
         // First fault: cache miss → FDIO request enqueued (page suspended).
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
         let action = handle_pagefault(
             Endpoint(100), &mut region, &mut frames, &mut alloc,
-            VirBytes(0x1000), false, table, &mut cache, &mut queue,
+            VirBytes(0x1000), false, table, &mut cache, &mut queue, &mut pt,
         ).unwrap();
         assert_eq!(action, PagefaultAction::Suspended);
 
@@ -588,7 +755,7 @@ mod tests {
 
         let action = handle_pagefault(
             Endpoint(100), &mut region, &mut frames, &mut alloc,
-            VirBytes(0x1000), false, table, &mut cache, &mut queue,
+            VirBytes(0x1000), false, table, &mut cache, &mut queue, &mut pt,
         ).unwrap();
         assert_eq!(action, PagefaultAction::Handled);
         let slot = region.get_slot(VirBytes(0)).unwrap();

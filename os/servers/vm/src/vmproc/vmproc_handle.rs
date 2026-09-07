@@ -447,6 +447,29 @@ impl<'a> ActiveProc<'a> {
         unsafe { self.inner.vm_regions.assume_init_ref() }
     }
 
+    /// Disjoint borrow of the whole region map and the process page table —
+    /// the two things a page-fault handler needs simultaneously.
+    ///
+    /// `regions_mut()` and `page_table_mut()` both take `&mut self`, so the
+    /// fault path cannot use them in sequence; this accessor splits the two
+    /// distinct `VmProc` fields instead (same destructuring discipline as
+    /// `VmContext`). C 对应: `handle_memory` 直接持有 `vmp->vm_regions`
+    /// 与 `vmp->vm_pt`（G-V12-8：缺页路径必须由 VM 自己写 PTE）。
+    ///
+    /// # Panics
+    /// Panics in debug mode if vm_regions/vm_pt have not been initialized.
+    #[inline]
+    pub(crate) fn mem_parts_mut(&mut self) -> (&mut RegionMap, &mut PageTable) {
+        debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed before init_regions()");
+        debug_assert!(self.inner.vm_pt_initialized, "vm_pt accessed before init_page_table()");
+        // SAFETY: both MaybeUninit fields are initialized at activate time
+        // (init_regions/init_page_table); the debug asserts above document
+        // that contract, and `&mut self` guarantees exclusive access.
+        let regions = unsafe { self.inner.vm_regions.assume_init_mut() };
+        let pt = unsafe { self.inner.vm_pt.assume_init_mut() };
+        (regions, pt)
+    }
+
     /// Reset usage statistics (C `reset_vm_rusage`, exit.c:25-31).
     ///
     /// Called on the VMPPARAM_CLEAR path — C `free_proc()` resets
@@ -515,10 +538,12 @@ impl<'a> ActiveProc<'a> {
                     let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
                     let paddr = frames.pfn_to_phys(pfn);
 
-                    let writable = region.is_writable()
-                        && frames.get(pfn)
-                            .map(|s| s.refcount == 1)
-                            .unwrap_or(false);
+                    // V12-P1-2: full C `pr_writable` (region.c:130-133) —
+                    // VR_WRITABLE && mem_type->writable. The former inline
+                    // `is_writable() && refcount == 1` ignored the memtype
+                    // and mapped never-writable pages (MappedFile) RW.
+                    let writable =
+                        region.is_page_writable(frames, VirBytes(i as u64 * PAGE_SIZE));
                     let flags = if writable {
                         PageFlags::read_write()
                     } else {

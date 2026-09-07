@@ -370,7 +370,7 @@ pub(crate) fn handle_mmap(
             caller_endpoint: target,
             fd: request.fd,
             offset: request.offset,
-            length: aligned_len.0 as u32,
+            length: aligned_len.0,
             callback: Some(mmap_file_cont),
             state: Some(VfsRequestState::FdLookup { mmap: *request }),
         };

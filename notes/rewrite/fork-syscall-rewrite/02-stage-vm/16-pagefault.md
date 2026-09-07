@@ -409,6 +409,7 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 | 8 | `pt_clearmapcache()` 成功后调用 | Rust 无 mapcache 生产实现（24 范围） | ⚠️ 随 24 |
 | 9 | 主动路径 `vfs_avail` 计算（requestor==VFS ? 0 : 1） | 无对应（do_memory DEFERRED） | ⚠️ DEFERRED |
 | 10 | VFS 异步回调 `pf_cont`/`handle_memory_continue` | `NeedVfsIo → Suspended` 表示"等 VFS"，但回调接线未实现（23 范围） | ⚠️ DEFERRED |
+| 11 | PTE 写入：`map_pf` 尾部 `pt_writemap`（pagetable.c:784，CoW 走 WMF_WRITEFLAGSONLY）+ `map_ph_writept`——VM 自己写进程页表，否则恢复后指令二次故障 | 2026-09-08 前缺失（`vm_pt` 在故障路径零使用，本表原漏登记此行——G-V12-8）。现 `sync_slot_pte`（cow_exec_pf.rs）三路分派 query→update_flags / remap / map，贯穿 handle_pagefault 四结算点与 handle_memory_once/map_pin_memory 主动路径 | ✅ 已实现（G-V12-8，todo.md §17.9 Fix #60） |
 
 ---
 
@@ -505,17 +506,20 @@ if m_type == VM_PAGEFAULT {
 
 ## 5. 测试要点
 
-### 5.1 单元测试清单（grep 实证，2026-08-16）
+### 5.1 单元测试清单（grep 实证，2026-08-16；行号复检 2026-09-08 G-V12-8 批次）
 
-**cow_exec_pf.rs**（5 个，:280-365）：
+**cow_exec_pf.rs**（8 个，:463-647）：
 
 | 测试 | 位置 | 契约 |
 |------|------|------|
-| test_alloc_and_map | :281 | 分配 + 映射：slot 已映射且 pfn 正确 |
-| test_cow_resolve | :295 | refcount=2 写 → 新 pfn、旧 refcount 1、新 refcount 1 |
-| test_cow_resolve_no_sharing | :314 | refcount=1 → 返回原 pfn（快速路径） |
-| test_cow_resolve_region | :328 | 区域批量解析，返回已解析页数 |
-| test_cow_resolve_core_refcount_one_fast_path | :350 | refcount=1 快速路径不动映射 |
+| test_alloc_and_map | :463 | 分配 + 映射：slot 已映射且 pfn 正确 |
+| test_cow_resolve | :478 | refcount=2 写 → 新 pfn、旧 refcount 1、新 refcount 1 |
+| test_cow_resolve_no_sharing | :498 | refcount=1 → 返回原 pfn（快速路径） |
+| test_cow_resolve_region | :513 | 区域批量解析，返回已解析页数 |
+| test_cow_resolve_core_refcount_one_fast_path | :536 | refcount=1 快速路径不动映射 |
+| test_demand_fault_maps_pte_present | :567 | G-V12-8：需求页故障 → PTE present + RW（SimPaging 断言） |
+| test_cow_fault_pte_repoints_to_new_frame | :591 | G-V12-8：CoW → PTE 指向新私帧 + RW |
+| test_cow_fast_path_flips_pte_writable_without_recopy | :622 | G-V12-8：refcount==1 写故障（`anon_pagefault` 判 Handled）→ PTE 同帧翻写位 |
 
 **minix-types vm.rs**（2 个，本轮新增）：
 
