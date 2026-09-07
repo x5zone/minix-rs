@@ -123,7 +123,7 @@ if (proc_id == INIT_PID && signo == SIGKILL) return(EINVAL); // 585 INIT_PID 1 �
 if (proc_id == -1 && signo == SIGTERM) sys_kill(RS_PROC_NR, signo); // 588-589 全系统 SIGTERM 先杀 RS（RS 清理服务）
 ```
 
-`signo` 越界 `EINVAL`（`sys/errno.h:22`），`INIT_PID + SIGKILL → EINVAL` 使 `INIT` 永活（`main.c:194` `INIT` 父为自身，`exit.c:336` `INIT` 死亡仅 `stacktrace`），`RS` 先杀时序在 `do_kill` 首行显式 `if target==All && signo==SIGTERM { sig_proc(RS) }`（D7）。
+`signo` 越界 `EINVAL`（`sys/errno.h:22`），`INIT_PID + SIGKILL → EINVAL` 使 `INIT` 永活（`main.c:194` `INIT` 父为自身，`exit.c:336` `INIT` 死亡仅 `stacktrace`），`RS` 先杀时序在 `check_sig` 开头显式 `if pid == -1 && signo == SIGTERM { kern.sys_kill(RS, SIGTERM) }`——与 C 同走内核回环（PM 不直接投递系统进程；直接 `sig_proc(RS)` 会落入 `PRIV_PROC !ksig` 空分支，RS 实际收不到，todo.md §11 V2-P2-4）。
 
 ### 2.3 `check_sig` 主扫描：逆序 `NR_PROCS-1..0` + `count` + `SUSPEND` 自杀
 
@@ -331,6 +331,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 - `test_badignore_forces_default_on_ignored_lethal_ksig`：ksig + noign 信号被 ignore → 强制终止
 - `test_ignored_non_noign_ksig_still_ignored`：ksig 但信号 ∉ noign → ignore 生效
 - `test_signal_termination_tells_vfs`：SIGKILL → VFS_PM_EXIT、SIGSEGV → VFS_PM_DUMPCORE 经真实通道（V2-P0-1 回归锚点）；集成层对应 `kill_termination_tells_vfs_exit`（含 VM_WILLEXIT 断言）
+- `test_broadcast_sigterm_notifies_rs_via_kernel`：广播 SIGTERM 经 `sys_kill(RS)` 内核回环（V2-P2-4 回归锚点）
 
 ---
 

@@ -878,6 +878,18 @@ fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.
 
 **未做（DEFERRED 论证）**：真实通电（trap 层）挂 E1。
 
+### ✅ Fix #33: V2-P2-4 — 广播 SIGTERM 的 RS 优先通知改走 sys_kill 内核回环（2026-09-08）
+
+**File(s)**：
+- `os/servers/pm/src/signal.rs`（check_sig 广播分支：`sig_proc(RS 槽)` → `kern.sys_kill(Endpoint::RS, SIGTERM)`，对齐 signal.c:588-589；新增 `test_broadcast_sigterm_notifies_rs_via_kernel`）
+- `notes/.../11-signal-core.md`（§2.3 描述更正 + §5.2 测试行）
+
+**Before/After**：Rust 对 RS 槽直接 `sig_proc(ksig=false)`，落入 PRIV_PROC `!ksig` 空分支——RS 实际收不到任何通知；C 走 `sys_kill(RS_PROC_NR)` 内核回环产生真实 ksig。**设计选型**：(a) 内核回环（首选：C 同型，符合"PM 不直接投递系统进程"的特权边界，V2-Redox-5 印证决策在用户态、对系统进程的投递经内核）；(b) 给 PRIV_PROC !ksig 分支实现直接投递（否决：偏离 C 特权模型，且会绕过内核的信号管理）。
+
+**Verified**：`cargo test -p minix-pm`：353 lib（+1）+ 8 integration passed；clippy 0 warning。
+
+**未做（DEFERRED 论证）**：真实通电挂 E1。
+
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
@@ -1045,7 +1057,7 @@ todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_re
 - **建议**：方案一（首选）：区分两类错误——`NotIdle` 属不变式违规，调用方 `panic!`（对齐 C）；`SendFailed` 在 exit 路径 panic（C 同）、fork 路径可保留降级但注释标注"传输层损坏"语义。方案二：全链 panic（最贴 C）——劣：失去对传输抖动的表达力，且与 `tell_vfs` 返回 Result 的既有设计冲突。
 - **验证**：`grep -n 'let _ = .*tell_vfs' os/servers/pm/src` 零命中；单测：not-idle 构造 → panic（`#[should_panic]`）。
 
-#### V2-P2-4 kill(-1, SIGTERM) 的 RS 优先通知空转
+#### V2-P2-4 kill(-1, SIGTERM) 的 RS 优先通知空转（✅ 已修复 2026-09-08，见 §10 Fix #33）
 
 - **优先级**：P2
 - **类型**：语义偏移

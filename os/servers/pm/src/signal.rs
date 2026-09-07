@@ -97,11 +97,12 @@ pub fn check_sig<T: crate::ipc::IpcTransport + ?Sized>(
     if pid == 1 && signo == SIGKILL {
         return Err(KillError::InvalidSignal); // EINVAL for INIT+KILL
     }
-    // Broadcast SIGTERM: RS first (588-589)
-    if pid == -1 && signo == SIGTERM
-        && let Ok(rs_slot) = table.pm_isokendpt(Endpoint::RS) {
-            let _ = sig_proc(table, rs_slot, signo, true, ksig, kern, transport);
-        }
+    // Broadcast SIGTERM: RS first（signal.c:588-589）——经 sys_kill 内核
+    // 回环产生 ksig，PM 不直接投递系统进程（sig_proc 的 PRIV_PROC !ksig
+    // 分支是空操作，直接调它 RS 实际收不到通知，V2-P2-4）。C 不检查返回值。
+    if pid == -1 && signo == SIGTERM {
+        let _ = kern.sys_kill(Endpoint::RS, SIGTERM);
+    }
 
     let mut count = 0;
     let mut error_code = KillError::NoSuchProcess;
@@ -547,6 +548,35 @@ mod tests {
             "core signal must send VFS_PM_DUMPCORE, sent={:?}",
             t.sent().iter().map(|(_, m)| m.m_type).collect::<Vec<_>>()
         );
+    }
+
+    /// V2-P2-4：广播 SIGTERM 先经 sys_kill(RS) 内核回环通知 RS（C
+    /// signal.c:588-588），而非直接 sig_proc（PRIV_PROC !ksig 空转）。
+    #[test]
+    fn test_broadcast_sigterm_notifies_rs_via_kernel() {
+        struct RecordKill {
+            killed: Option<(Endpoint, i32)>,
+        }
+        impl crate::exit::KernelGateway for RecordKill {
+            fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
+                self.killed = Some((ep, sig));
+                Ok(())
+            }
+            fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+            fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+            fn copy_to_user(&mut self, _b: &[u8], _e: Endpoint, _a: u64) -> Result<(), i32> { Ok(()) }
+            fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+            fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+                Ok((0, 0))
+            }
+        }
+
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = RecordKill { killed: None };
+        check_sig(&mut table, UserSlot::new(0), -1, SIGTERM, false, &mut kern, &mut t).unwrap();
+        assert_eq!(kern.killed, Some((Endpoint::RS, SIGTERM)));
     }
 
     /// 记录型 VTimerCtl mock：捕获 (which, set 值)。
