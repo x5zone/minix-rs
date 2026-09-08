@@ -685,7 +685,7 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 
 ### 7.4.1 [I-14] 启动主线文档 06/08/09/10/16 范围声明 vs 代码时序系统性错位（2026-09-04）
 
-> **状态：📌 P1 [doc] [architecture] 结构性错位 — 留作大调整专项预登记（用户裁决：追加记入，本 session 不动手）**
+> **状态：✅ P1 → B 层完成（2026-09-09，见下方解决记录）；C 层（全量重编号）裁决不做**
 
 **背景**：本次回归 review（2026-09-04，fix #9 见 [08-system-init-boot-finish.md:33](08-system-init-boot-finish.md) 作者自注 "TODO，看起来 06,07,08 的时序并不正确"）触发的子。代码实读 `os/kernel/src/lib.rs` 实际 kmain 阶段顺序：
 
@@ -2874,7 +2874,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ⏸ T-10 riscv64 真实启动链集成（U-Boot 工具链；不可达则诚实 DEFERRED 论证）→ **诚实 DEFERRED（2026-09-09，依赖未解除具体清单）：①U-Boot 二进制缺失——u-boot-qemu 包（apt 候选 2025.10）安装需 sudo（当前环境无密码免提），本机无 mkimage/riscv64-gcc 无法自建；②FAT 建盘（fatload kernel.elf）需 dosfstools（同 sudo 依赖）；③可行面已验证——QEMU 内置 OpenSBI 可代 -bios、qemu-efi-riscv64 的 UEFI 路径已工作（run_all.sh riscv64 测试走此路径）。解除条件：有 sudo 的环境 `apt install opensbi u-boot-qemu dosfstools` + 串口监控脚本（U-Boot 提示符驱动 fatload+bootelf），预计半天**。注：CI 侧 qemu-tests.yml（T-5）在 ubuntu-latest 上具备全部安装条件，可随该工作流补齐
 
 **Phase 7 — 文档与构建收尾**
-- ⬜ I-14 [P1] 启动主线文档 06/08/09/10/16 范围声明错位修复（按预登记 A/B/C 修复层裁决）
+- ✅ I-14 [P1] 启动主线文档 06/08/09/10/16 范围声明错位修复（按预登记 A/B/C 修复层裁决）→ **B 层完成（2026-09-09）：09/16 前置声明对齐实时序；06/08/10 三项核销确认（先期重写已消解，rg 实证）；08 T8/T9 映射表消解；C 层不做（风险>收益）。详见 §7.4.1 解决记录**
 - ⬜ I-1 kernel 独立 ELF 构建接入（build.rs + link.ld → xtask）
 - ⬜ I-3 riscv64 QEMU `-kernel` ELF 装载 + 高半核切换补全
 - ⬜ I-5 ACPI RSDP 搜索与表解析（QEMU virt 不依赖 → 实现或诚实 DEFERRED 论证）
