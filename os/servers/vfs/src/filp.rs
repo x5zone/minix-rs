@@ -288,13 +288,22 @@ impl Default for FilpTable {
 }
 
 /// `get_fd` dual-scan error (`filedes.c:88-150`): `EMFILE` vs `ENFILE`.
+///
+/// Named `FdScanError` (not `FdError`) to stay unambiguous with the fd-table
+/// operations' `FdError` in `filedes.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FdError {
+pub enum FdScanError {
     TooManyOpen,
     FilpFull,
 }
 
-impl FdError {
+impl minix_types::ToErrno for FdScanError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
+impl FdScanError {
     pub fn to_errno(self) -> i32 {
         match self {
             Self::TooManyOpen => minix_types::EMFILE,
@@ -309,6 +318,12 @@ pub enum FilpError {
     Closed,
     Busy,
     FilpFull,
+}
+
+impl minix_types::ToErrno for FilpError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
 }
 
 impl FilpError {

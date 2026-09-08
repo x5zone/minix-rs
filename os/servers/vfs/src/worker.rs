@@ -224,6 +224,12 @@ pub enum WorkerError {
     NotSuspended,
 }
 
+impl minix_types::ToErrno for WorkerError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl WorkerError {
     /// Minix errno mapping — all map to `EINVAL` family except `EDEADLK`
     /// which is preserved for the `vmnt` self-lock path; worker errors are

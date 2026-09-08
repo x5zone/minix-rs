@@ -440,6 +440,12 @@ pub enum FsError {
     Io(i32),
 }
 
+impl minix_types::ToErrno for FsError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl FsError {
     pub fn to_errno(self) -> i32 {
         match self {

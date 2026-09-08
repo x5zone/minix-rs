@@ -297,6 +297,12 @@ pub enum CdevError {
     Inval,
 }
 
+impl minix_types::ToErrno for CdevError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl CdevError {
     /// The Minix3 errno value.
     pub fn to_errno(self) -> i32 {

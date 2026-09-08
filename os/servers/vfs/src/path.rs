@@ -154,6 +154,12 @@ pub enum PathError {
     Inval,
 }
 
+impl minix_types::ToErrno for PathError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl PathError {
     pub fn to_errno(self) -> i32 {
         match self {

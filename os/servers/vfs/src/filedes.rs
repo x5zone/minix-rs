@@ -58,6 +58,12 @@ pub enum FdError {
     Inval,       // EINVAL
 }
 
+impl minix_types::ToErrno for FdError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl FdError {
     pub fn to_errno(self) -> i32 {
         match self {

@@ -316,6 +316,12 @@ pub enum CommError {
     Restart, // `ERESTART` → `EIO`
 }
 
+impl minix_types::ToErrno for CommError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl CommError {
     pub fn to_errno(self) -> i32 {
         match self {

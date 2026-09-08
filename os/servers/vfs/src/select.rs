@@ -783,6 +783,12 @@ pub enum SelectError {
     Io,
 }
 
+impl minix_types::ToErrno for SelectError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl SelectError {
     /// The Minix3 errno value.
     pub fn to_errno(self) -> i32 {

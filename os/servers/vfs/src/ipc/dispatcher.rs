@@ -40,6 +40,12 @@ pub enum PmError {
     NotImplemented,
 }
 
+impl minix_types::ToErrno for PmError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl PmError {
     pub fn to_errno(self) -> i32 {
         match self {

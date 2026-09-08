@@ -472,6 +472,12 @@ pub enum MountError {
     Io,
 }
 
+impl minix_types::ToErrno for MountError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl MountError {
     /// The Minix3 errno value.
     pub fn to_errno(self) -> i32 {

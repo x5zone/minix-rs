@@ -673,6 +673,12 @@ pub enum PipeError {
     Inval,
 }
 
+impl minix_types::ToErrno for PipeError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl PipeError {
     /// The Minix3 errno value.
     pub fn to_errno(self) -> i32 {

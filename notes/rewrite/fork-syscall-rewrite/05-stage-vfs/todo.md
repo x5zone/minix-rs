@@ -28,7 +28,7 @@
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2） |
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
-| P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
+| P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #19） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #12） |
 | P3 | R2-P3-1 | request.rs 计数注释漂移：33 常量 = 32 活 + 1 死，FsReq 32 变体与活类型双射（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #2） |
@@ -69,7 +69,7 @@
 
 ### P2-1～P2-6 / P3-1 / P3-2（R1 存档 §4/§5）
 
-- P2-1 **数字漂移修正**：现为 **30 个 `pub enum *Error` + 30 个 `fn to_errno`**（首轮 20/29，全 crate grep 实测）；两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。方案已被本轮修订：否决"crate 级单一 VfsError"大收敛，改为接入 minix-types 的 `ToErrno` 通道——见 **R2-P2-1**。
+- P2-1 **数字漂移修正**：现为 **30 个 `pub enum *Error` + 30 个 `fn to_errno`**（首轮 20/29，全 crate grep 实测）；两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。方案已被本轮修订：否决"crate 级单一 VfsError"大收敛，改为接入 minix-types 的 `ToErrno` 通道——见 **R2-P2-1**。**✅ 已修复** 2026-09-09（§10 Fix #19）。
 - P2-2 复核 ✅：call_table.rs 64 臂同构 match、`CallTable`:206、`NullResolver`:350 原样；本轮 R2-P1-2 给出它的终局（随绑定层落地删除）。
 - P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。**✅ 已修复** 2026-09-09（§10 Fix #17：11 个替身定义与 impl 全部 `#[cfg(test)]` 圈定，含 fcntl.rs:752 的 `ScriptedFcntl` 与 fs_comm 的 `TestTransIdCodec`——后者连带把 main_loop 的 re-export 拆为条件导出）。
 - P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。**✅ 已修复** 2026-09-09（§10 Fix #14：移 cfg(test) 更名 `NextFitDemo`，辩护注释的假语义一并修正——C 与 Linux 的 fd 分配都是 start 起最低空闲，不存在第二真实策略）。
@@ -171,7 +171,7 @@
 - **验证**：真值消息（如 `m_type = BDEV_RS_BASE + BDEV_REPLY`）路由到 Bdev 臂；`grep -n "0x700\|0x500" os/servers/vfs/src/main_loop.rs` 在路由判定处归零。
 - **边界**：R2-P1-2（同轮）、P1-1；与 request.rs 的 FS_BASE 无数值冲突（0xA00 & !0x7f = 0xA00，与三个 RS 基址互异）。
 
-#### R2-P2-1（P2）ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的方案修订）
+#### ✅ R2-P2-1（P2）ToErrno 统一映射通道未接入——已修复 2026-09-09（§10 Fix #19）
 
 - **Rust 现状**：`pub enum *Error` 30 个、固有 `fn to_errno` 30 个（P2-1 复核更新后的数字）；minix-types 已落 `ToErrno` trait（`os/libs/minix-types/src/types/errno.rs:507`，返回 `Errno` newtype；PmError/KernelError 已 impl——commit 893386cd8 "D1/D2 落地"）；os/servers/vfs 对 `ToErrno` **零匹配**。两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。
 - **方案修订**（取代 R1 存档 §4 P2-1 的"crate 级单一 VfsError"首选）：02-stage-vm 同题判定先例（edge T8，Fix #27）= 不做大收敛、"From 集中表即最优"。VFS 对应动作：① 30 个枚举逐一 `impl ToErrno`（新 trait 方法委托既有固有方法，机械）；② 消费端统一 `ToErrno::to_errno(&e).to_i32()`；③ filp.rs 的 `FdError` 改名或并入 `FilpError`，消除重名。
@@ -397,6 +397,14 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **重要回归补修**：Fix #17 的 cfg(test) 圈定漏掉了三个 impl 块（cdev `TtySource for NoTty`、sdev `SockChannel for SilentChannel`、socket `SockLookup for EmptyTable`），导致 **`cargo build`（非 test）自 Fix #17 起断裂**——当时回归只跑了 `cargo test`（cfg test 激活掩盖断裂）。本条补齐三个 impl 的门控，`cargo check` 与 `cargo test` 双绿。教训入档：替身门控类修改的回归必须包含非 test 构建。
 - **死产夹具判定**：`AltFilpTable`/`AltFprocTable`/`AltTll`/`AltFs`(×2)/`AltVnodeTable`/`AltVmntTable` 七个 Gate D 死产测试夹具删除——"never constructed/never used" 实证死代码，属 §9.6 规则草案的收编范围（为何死：注释自认 Gate D 产物且零构造点；消除影响：无生产引用、无测试断言引用）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`cargo check` 与 `cargo clippy --lib --tests` 对 servers/vfs 的警告计数归零（minix-sys/minix-types 的 5+1 条不在本 stage 范围）。
+
+### ✅ Fix #19: R2-P2-1 — 30 个错误枚举接入 ToErrno 统一映射通道（2026-09-09）
+
+- **File**：29 个模块文件（每个错误枚举一个 trait impl）+ `filp.rs`（`FdError` → `FdScanError` 改名）。
+- **Before**：30 个 `pub enum *Error` 各带固有 `fn to_errno(self) -> i32`，对 minix-types 已落地的 `ToErrno` trait（commit 893386cd8 的 D1/D2 通道）零接入；filp.rs/filedes.rs 双同名 `FdError`。
+- **After**：30 个枚举逐一 `impl minix_types::ToErrno`（`Errno::from_i32((*self).to_errno())` 委托既有固有方法——兼容设计按 trait 文档"new trait impls delegate to them"）；`filp.rs` 的 fd 双扫描错误更名 `FdScanError`（`EMFILE`/`ENFILE` 两变体，与 filedes 的 fd 表操作 `FdError` 不再同名）。宏 vs 手写：30 个 impl 以脚本生成、逐文件编译验证——比宏抽象少一层间接，且 diff 可逐条审。
+- **Verified**：`grep -rn "impl minix_types::ToErrno" os/servers/vfs/src | wc -l` = **30**；`grep -rn "enum FdError" | wc -l` = **1**；`cargo test` = **345 passed / 0 failed**。
+- **边界**：固有 `to_errno(self) -> i32` 保留（ToErrno 文档声明的兼容通道）；消费端随各模块后续触改逐步切 `ToErrno::to_errno(&e).to_i32()`，不做一次性全量重写（VM 侧 T8 判定先例：映射点唯一即可，调用形态不强制）。
 
 ### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
 

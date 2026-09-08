@@ -555,6 +555,12 @@ pub enum OpenError {
     Io,
 }
 
+impl minix_types::ToErrno for OpenError {
+    fn to_errno(&self) -> minix_types::Errno {
+        minix_types::Errno::from_i32((*self).to_errno())
+    }
+}
+
 impl OpenError {
     /// The Minix3 errno value.
     pub fn to_errno(self) -> i32 {
