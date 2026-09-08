@@ -207,6 +207,21 @@ fn can_signal(table: &ProcTable, caller: UserSlot, target: UserSlot) -> bool {
     }
 }
 
+/// 把 [`crate::exit::KernelGateway`] 的 `sys_delay_stop` 适配为
+/// [`crate::signal_flow::KernelStop`] seam（13-design D1 的窄接口）。
+/// 用独立桥接而非 supertrait/dyn 上转：signal_flow 不感知中央网关类型，
+/// 也不依赖 trait upcasting 的工具链版本。
+struct GatewayStopBridge<'a>(&'a mut dyn crate::exit::KernelGateway);
+
+impl crate::signal_flow::KernelStop for GatewayStopBridge<'_> {
+    fn delay_stop(&mut self, ep: Endpoint) -> i32 {
+        match self.0.sys_delay_stop(ep) {
+            Ok(()) => 0, // OK
+            Err(e) => e,
+        }
+    }
+}
+
 /// Sends signal to process (`sig_proc`, `384-540`).
 ///
 /// 9-step chain: TRACE→VFS|EVENT→PRIV_PROC→badignore→ignore→block→TRACE_STOPPED→caught→terminate.
@@ -237,18 +252,33 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         }
         return Ok(());
     }
-    // VFS|EVENT pending (425-444)
-    if table.procs[target.get()].state.block.ipc_blocked.is_some() {
+    // VFS|EVENT pending（425-444）：置 pending 位后停住进程——防止它在
+    // VFS/事件回复到达之后、PM 复查信号之前再次发起调用；PROC_STOPPED
+    // 兼作 restart_sigs 复查的指示位（C signal.c:430-443 注释语义）。
+    // V3-P1-3 之前该分支只置位不停止，check_pending 的 VFS|EVENT 不变式
+    //（必已 stopped，signal_flow.rs:254）随之断裂。
+    // 分支条件按 C signal.c:425 用 VFS_CALL|EVENT_CALL——旧代码的
+    // `ipc_blocked.is_some()` 会把 C 不含的 DELAY_CALL 也拦进来。
+    if table.procs[target.get()].state.block.is_vfs_blocked()
+        || table.procs[target.get()].state.block.is_event_blocked()
+    {
         table.procs[target.get()].resources.signals.pending |= 1u64 << (signo - 1);
         if ksig {
             table.procs[target.get()].resources.signals.kernel_pending |= 1u64 << (signo - 1);
         }
-        // Stop if not already stopped/delay
-        if !table.procs[target.get()].state.block.stopped
-            && table.procs[target.get()].state.block.ipc_blocked.is_none()
-        {
-            // In C: stop_proc(FALSE) — but VFS|EVENT case already has VFS_CALL, so PROC_STOPPED not set here?
-            // For 11 we keep pending and rely on 13's restart_sigs
+        // C: `if (!(PROC_STOPPED | DELAY_CALL)) stop_proc(rmp, FALSE)`——
+        // FALSE = 不可延迟，内核回 EBUSY 时 stop_proc 内部 panic（C 同型）。
+        // C 守卫的 DELAY_CALL 一半在 Rust 不可表示：IpcBlockReason 三变体
+        // 互斥（block.rs:50-84，ARCH A-2），VFS_CALL/EVENT_CALL 与
+        // DELAY_CALL 不能共存，故此处守卫只剩 STOPPED 一半。
+        if !table.procs[target.get()].state.block.stopped {
+            let mut bridge = GatewayStopBridge(kern);
+            let _ = crate::signal_flow::stop_proc(
+                table,
+                target,
+                crate::signal_flow::MayDelay::MustStop,
+                &mut bridge,
+            );
         }
         return Ok(());
     }
@@ -424,6 +454,7 @@ mod tests {
         pub sys: minix_types::Clock,
     }
     impl crate::exit::KernelGateway for TestKernel {
+        fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
@@ -558,6 +589,7 @@ mod tests {
             killed: Option<(Endpoint, i32)>,
         }
         impl crate::exit::KernelGateway for RecordKill {
+            fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
             fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
                 self.killed = Some((ep, sig));
                 Ok(())
@@ -700,5 +732,116 @@ mod tests {
         assert!(res.is_ok());
         // ignored → no pending
         assert_eq!(table.procs[5].resources.signals.pending & (1u64 << (SIGCHLD - 1)), 0);
+    }
+
+    // ---- VFS_CALL 分支的 stop_proc 接线（todo.md V3-P1-3 回归锚点）----
+
+    /// 记录 `sys_delay_stop` 调用并支持脚本化返回值的内核网关 mock：
+    /// `reply == 0` 时成功，否则原样返回该负 errno（如 EBUSY = 16）。
+    struct StopRecorder {
+        calls: Vec<Endpoint>,
+        reply: i32,
+    }
+    impl Default for StopRecorder {
+        fn default() -> Self {
+            Self { calls: Vec::new(), reply: 0 }
+        }
+    }
+    impl crate::exit::KernelGateway for StopRecorder {
+        fn sys_delay_stop(&mut self, ep: minix_types::Endpoint) -> Result<(), i32> {
+            self.calls.push(ep);
+            if self.reply == 0 { Ok(()) } else { Err(self.reply) }
+        }
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+    }
+
+    /// C signal.c:425-443：VFS_CALL 挂起的进程收到信号 → pending 置位 +
+    /// `stop_proc(rmp, FALSE)` 停住（PROC_STOPPED 兼作 restart_sigs 复查
+    /// 指示）。V3-P1-3 之前只置位不停。
+    #[test]
+    fn test_sig_proc_vfs_call_stops_and_sets_pending() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.block.ipc_blocked =
+            Some(crate::mproc::IpcBlockReason::VfsCall { reply_to_new_parent: false });
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = StopRecorder::default();
+        let res = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, false, &mut kern, &mut t);
+        assert!(res.is_ok());
+        let bit = 1u64 << (SIGTERM - 1);
+        assert_eq!(table.procs[5].resources.signals.pending & bit, bit);
+        assert!(table.procs[5].state.block.stopped, "stop_proc must set PROC_STOPPED");
+        assert_eq!(kern.calls, vec![table.procs[5].identity.endpoint]);
+    }
+
+    /// ksig=TRUE 时同步置 `mp_ksigpending`（C signal.c:428-429）。
+    #[test]
+    fn test_sig_proc_vfs_call_ksig_sets_kernel_pending() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.block.ipc_blocked =
+            Some(crate::mproc::IpcBlockReason::VfsCall { reply_to_new_parent: false });
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = StopRecorder::default();
+        let res = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, true, &mut kern, &mut t);
+        assert!(res.is_ok());
+        let bit = 1u64 << (SIGTERM - 1);
+        assert_eq!(table.procs[5].resources.signals.kernel_pending & bit, bit);
+        assert!(table.procs[5].state.block.stopped);
+    }
+
+    /// C 守卫 `!(PROC_STOPPED | DELAY_CALL)`：已停进程不再重复调内核
+    ///（stop_proc 的 assert 也不允许），只置 pending。
+    #[test]
+    fn test_sig_proc_vfs_call_skips_stop_when_already_stopped() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.block.ipc_blocked =
+            Some(crate::mproc::IpcBlockReason::VfsCall { reply_to_new_parent: false });
+        table.procs[5].state.block.stopped = true;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = StopRecorder::default();
+        let res = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, false, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert!(kern.calls.is_empty(), "must not re-stop an already-stopped process");
+        let bit = 1u64 << (SIGTERM - 1);
+        assert_eq!(table.procs[5].resources.signals.pending & bit, bit);
+    }
+
+    /// DELAY_CALL（无 VFS_CALL/EVENT_CALL）不进入本分支——C signal.c:425
+    /// 只测两个 flag。SIGCONT 默认忽略，进程存活且零内核调用。
+    #[test]
+    fn test_sig_proc_delay_call_bypasses_vfs_branch() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.block.ipc_blocked = Some(crate::mproc::IpcBlockReason::DelayedSignal);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = StopRecorder::default();
+        let res = sig_proc(&mut table, UserSlot::new(5), SIGCONT_TEST, false, false, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert!(kern.calls.is_empty());
+        assert_eq!(table.procs[5].resources.signals.pending, 0);
+        assert_eq!(table.procs[5].state.lifecycle, Lifecycle::Running);
+    }
+
+    /// `stop_proc(rmp, FALSE)` = 不可延迟：内核回 EBUSY 必须 panic
+    ///（C signal.c:248 "stop_proc: unexpected delay call"）。
+    #[test]
+    fn test_sig_proc_vfs_call_ebusy_must_stop_panics() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.block.ipc_blocked =
+            Some(crate::mproc::IpcBlockReason::VfsCall { reply_to_new_parent: false });
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = StopRecorder { calls: Vec::new(), reply: 16 }; // EBUSY
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, false, &mut kern, &mut t);
+        }));
+        assert!(res.is_err(), "MustStop + EBUSY must panic");
     }
 }

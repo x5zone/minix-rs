@@ -391,7 +391,7 @@ pub fn restart_sigs(table: &mut ProcTable, tgt: UserSlot, svc: &mut dyn RestartS
 pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn KernelStop, c: &mut dyn SigProcCaller) -> bool
 ```
 
-- `stop_proc`：`assert(!(stopped|delayed|unpaused))`（`237`）→ `k.delay_stop → Stopped→stopped=true` / `Busy→MustStop:panic` / `Busy→MayDefer: ipc_blocked=DelayedSignal`。
+- `stop_proc`：`assert(!(stopped|delayed|unpaused))`（`237`）→ `k.delay_stop → Stopped→stopped=true` / `Busy→MustStop:panic` / `Busy→MayDefer: ipc_blocked=DelayedSignal`。生产消费点：`sig_proc` 的 `VFS_CALL` 分支（11-signal-core.md §4.1）经 `GatewayStopBridge`（signal.rs）调用——C `signal.c:441-443` 的 `stop_proc(rmp, FALSE)` 即 `MayDelay::MustStop`；内核停止能力挂在 `KernelGateway::sys_delay_stop`（exit.rs，生产实现 pre-E6 诚实回 `-EIO`，wrapper 归 edge E6）。C 守卫的 `DELAY_CALL` 一半在 Rust 不可表示（`IpcBlockReason` 三变体互斥）。
 - `try_resume_proc`：`assert(stopped)`（`271`）→ `!can_resume→false` → `k.resume → clear_stopped_and_unpaused → true`。
 - `unpause`：`assert(!(VFS|EVENT))`（`731`）→ `UNPAUSED→Ready`（`734-738` `assert(delay|proc==proc)`）→ `DELAY→Busy`（`741`）→ `WAITING|SIGSUSPENDED→stop(MustStop)→Ready`（`745-753`）→ `!stopped && stop(MayDefer)=Deferred→Busy`（`760-761`）→ `tell_unpause→VfsWait`（`763-769`）。
 - `check_pending`：`while next_unblocked → take → sig_proc(FALSE,ksig) → if is_vfs_or_event_stopped → break`（`672-679` 的 `assert(PROC_STOPPED)` 在 Rust 为 `debug_assert!(stopped)`）。

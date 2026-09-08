@@ -34,6 +34,7 @@ impl minix_pm::exit::KernelGateway for MockKernelGateway {
     fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
     fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
     fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
         Ok((self.user, self.sys))
     }
@@ -216,6 +217,41 @@ fn kill_unknown_pid_replies_esrch() {
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
     assert_eq!(sent[0].1.m_type, minix_types::ESRCH);
+}
+
+#[test]
+fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
+    // V3-P1-3：fork 挂起窗口（子槽 VFS_CALL，forkexit.c:130）内 kill(子)
+    // → sig_proc 的 VFS_CALL 分支置 pending 并经 sys_delay_stop 停住子
+    // 进程（C signal.c:425-443）——PM 复查信号前子进程不得再发起调用。
+    let mut srv = server();
+    let parent_ep = seed_running(&mut srv, 5, 100);
+
+    // fork 全链：VM_FORK 脚本化 OK → 子槽 1 挂 VFS_CALL。
+    let mut vm_reply = Message {
+        m_type: minix_types::OK,
+        ..Default::default()
+    };
+    vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
+    srv.transport_mut().queue_sendrec_reply(vm_reply);
+    srv.transport_mut()
+        .queue_receive(request(2, parent_ep), IpcStatus::default());
+    assert_eq!(srv.run_once(), RunStep::Handled);
+    assert!(srv.table().procs[1].state.block.is_vfs_blocked());
+
+    // 父进程 kill(子 pid, SIGTERM)。
+    let child_pid = srv.table().procs[1].identity.id.pid;
+    let mut kill_msg = request(11, parent_ep);
+    kill_msg.m_u.m_lc_pm_kill.pid = child_pid;
+    kill_msg.m_u.m_lc_pm_kill.signo = 15; // SIGTERM
+    srv.transport_mut()
+        .queue_receive(kill_msg, IpcStatus::default());
+    assert_eq!(srv.run_once(), RunStep::Handled);
+
+    // 子进程：SIGTERM pending + PROC_STOPPED（C signal.c:426/441-443）。
+    let bit = 1u64 << (15 - 1);
+    assert_eq!(srv.table().procs[1].resources.signals.pending & bit, bit);
+    assert!(srv.table().procs[1].state.block.stopped, "stop_proc must stop the VFS-suspended child");
 }
 
 #[test]

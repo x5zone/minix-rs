@@ -300,6 +300,8 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 `do_kill`/`check_sig` 逆序扫描 + `sig_proc` 9 链 + `sig_proc_exit` + `process_ksig` 双检 + `SIGVTALRM` 重启 + `SIGSNDELAY` 恢复。
 
+`VFS|EVENT` 挂起分支（C `signal.c:425-444`）已按 C 全语义落地：置 `pending`/`kernel_pending` 位后，未停止的进程经 `stop_proc(MustStop)` 停住（C 的 `stop_proc(rmp, FALSE)`，内核 `EBUSY` 即 panic）。内核停止能力经 `KernelGateway::sys_delay_stop`（exit.rs，生产实现 pre-E6 诚实回 `-EIO`）+ `GatewayStopBridge` 适配到 13 的 `KernelStop` seam——sig_proc 签名与全部调用点零变化。分支条件按 C 用 `VFS_CALL|EVENT_CALL` 两个 flag（`is_vfs_blocked()||is_event_blocked()`），不含 C 也不含的 `DELAY_CALL`。
+
 ### 4.2 `os/servers/pm/src/mproc/signal.rs`
 
 `SignalState` 四位图 + `SigAction` + `CORE/IGN/NOIGN` 常量。
@@ -332,6 +334,11 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 - `test_ignored_non_noign_ksig_still_ignored`：ksig 但信号 ∉ noign → ignore 生效
 - `test_signal_termination_tells_vfs`：SIGKILL → VFS_PM_EXIT、SIGSEGV → VFS_PM_DUMPCORE 经真实通道（V2-P0-1 回归锚点）；集成层对应 `kill_termination_tells_vfs_exit`（含 VM_WILLEXIT 断言）
 - `test_broadcast_sigterm_notifies_rs_via_kernel`：广播 SIGTERM 经 `sys_kill(RS)` 内核回环（V2-P2-4 回归锚点）
+- `test_sig_proc_vfs_call_stops_and_sets_pending` / `test_sig_proc_vfs_call_ksig_sets_kernel_pending`：VFS_CALL 分支 pending/ksigpending 置位 + `stop_proc(MustStop)` 停住（V3-P1-3 回归锚点）
+- `test_sig_proc_vfs_call_skips_stop_when_already_stopped`：C 守卫 `!(PROC_STOPPED|DELAY_CALL)` 的已停半边
+- `test_sig_proc_delay_call_bypasses_vfs_branch`：DELAY_CALL 不进本分支（C 只测两个 flag）
+- `test_sig_proc_vfs_call_ebusy_must_stop_panics`：`stop_proc(FALSE)` 契约——内核 `EBUSY` 即 panic
+- 集成层 `kill_on_fork_suspended_child_stops_it_and_records_pending`：fork 挂起窗口内 kill(子) 端到端
 
 ---
 

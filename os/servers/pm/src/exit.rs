@@ -54,6 +54,13 @@ pub trait KernelGateway {
     ///（OK = 0 / 负 errno），调用方（signal.c:285 `try_resume_proc`）对
     /// 非 OK panic。
     fn sys_resume(&mut self, ep: Endpoint) -> Result<(), i32>;
+
+    /// C: `sys_delay_stop(proc_ep)`（libsys `delay_stop.c`；`signal.c:239`
+    /// `stop_proc` 内）——内核侧停住目标进程（`PROC_STOPPED`），返回
+    /// OK = 已停 / `EBUSY` = 内核延迟调用在途（仅 `may_delay=TRUE` 时
+    /// 可接受）/ 其它负 errno = 失败（`stop_proc` 对失败 panic，C 同型）。
+    /// 生产实现依赖 minix-sys wrapper（edge_todo.md E6 清单已登记）。
+    fn sys_delay_stop(&mut self, ep: Endpoint) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -123,6 +130,14 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
         } else {
             Ok(())
         }
+    }
+
+    fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> {
+        // pre-E6 诚实占位：minix-sys 的 sys_delay_stop wrapper 尚未落地
+        //（edge_todo.md E6 清单），任何调用都以 -EIO 失败——`stop_proc`
+        // 对失败 panic（C signal.c:245 "sys_delay_stop failed" 同型），
+        // 不伪造停止状态。
+        Err(-minix_types::EIO)
     }
 }
 
@@ -779,6 +794,7 @@ mod tests {
         copied_bytes: Option<alloc::vec::Vec<u8>>,
     }
     impl KernelGateway for KillRecorder {
+        fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
             self.killed = Some((ep, sig));
             Ok(())

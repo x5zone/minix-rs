@@ -1,1281 +1,615 @@
 # 04-stage-pm Rust 实现架构级 Review TODO
 
-> 来源：2026-09-06 架构级代码审查 + 查漏补缺（关注整体与分层架构，非逐函数审查）。
-> 范围：`os/servers/pm/src/` 全部 Rust 代码（37 个文件，14,098 行），以及 `os/libs/minix-types/` 中与 PM 相关的类型边界。
-> 方法：先做查漏补缺（Gate A 覆盖度枚举：`coverage-extract.py` 对 `minix3/minix/servers/pm` 提取 109 个 C 符号，与文档和 Rust 侧逐一对照；47 个调用号矩阵；DEFERRED/stub 全量收敛；Minix3 易漏语义点逐条 grep 验证），再做整体到分层的架构审查（工作区边界 → 服务器骨架 → 分发层 → 子系统层 → mproc 状态层 → 测试层），对照 Redox 实现与 Rust/OS 社区最佳实践。
+> 来源：架构级代码审查 + 查漏补缺系列（关注整体与分层架构，非逐函数审查）。已完成三轮：
+> - **第 1 轮（2026-09-06/07，§0-§10）**：Gate A 覆盖度枚举（109 个 C 符号）+ 47 调用号矩阵 + 整体到分层架构审查。21 次 todo-fix 闭环 P1×4/P2×5/P3×2 + D-XX×20。
+> - **第 2 轮（2026-09-08，§11）**：新基线全量重跑。V2-P0×2/P1×2/P2×8/P3×4 全部闭环（Fix #29–#42），新登记 D-27/D-28。
+> - **第 3 轮（2026-09-09，§12）**：在新基线（356 lib + 8 integration / clippy 应为 0 / coverage 93.6%）上对第 1、2 轮未逐函数对账的 C 文件（trace.c/event.c/misc.c/schedule.c/main.c）做第 3 批逐函数对账 + Gate E 全量测试名对账 + 架构深审。发现 trace 域整体失真、内核信号主循环入口缺失、sig_proc 两处分支缺口、getsysinfo 假数据 stub、文档 §5 测试名大面积失同步等（V3-P1×5、V3-P2×10、V3-P3×6）。
+> 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
-> 状态（2026-09-06，campaign 完成后更新；2026-09-08 账目对账修正）：本轮 21 次 todo-fix 迭代完成——P1 闭环 4 项（P1-1/P1-2/P1-5/P1-6），P2 闭环 5 项（P2-1/P2-2/P2-4/P2-5/P2-7），P3 闭环 2 项；仍开放 P1-3/P1-4/P2-3/P2-6。D-XX 缺口 26 项中 20 项完整实现（D-03/04/06/07/08/09/10/11/13/14/15/18/19/20/21/22/23/24/25/26），余 6 项（D-01/D-02/D-05/D-12/D-16/D-17）均为带"依赖未解除"论证的跨阶段通电项（挂 edge E1/E2/E5/E6/E7 或 16-stage SCHED）。测试基线 319 → **346 lib + 7 integration passed**，clippy lib 0 warning 0 error，Gate A 名称匹配 89.0% → 93.6%。逐条证据见 §10 修复记录（Fix #1–#28；#27 于 2026-09-08 补记，对应提交 de9415604 + d79307ee6）。
-> 增补（2026-09-06）：跨阶段条目抽取见 §9；登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（本阶段新增 E6/E7，既有 E1-E5 为 02-stage-vm campaign 条目）。
-> **第 2 轮（2026-09-08，§11）**：全量查漏补缺 + 架构审查重跑。新基线 346 lib + 7 integration / clippy 0 / Gate A 93.6%；新发现 V2-P0×2（信号终止路径 mock transport 泄漏、信号集合位约定分裂）、V2-P1×2（PID 相位偏移、SIGHUP 广播缺失 + D-13 台账错位）、V2-P2×6、V2-P3×4；已完成条目正文压缩为索引（结论保留，论证见 git 历史）；Redox 对照按 2024-12 起的 procmgr 迁移事实更新（§11.3）。
-> **第 2 轮实施 campaign（2026-09-08 收官，Fix #29–#42）**：V2 条目 stage 内部分全部闭环——P0×2（位基统一/mock 泄漏贯通）、P1×2（PID 相位/SIGHUP 广播 D-27）、P2×5（RS 回环/SIGCHLD D-28/tell_vfs fail-closed/exec 门/itimer 收敛接线）、P2-6 登记、P3（GID_MAX/stale 注释/sa_flags 对齐）；期间新登记 V2-P2-7（unpause UNPAUSE）与 V2-P2-8（sig_send 空壳），随批次 B（wire 类型，edge E7）实施。测试基线 346+7 → **356 lib + 8 integration passed**，clippy 0 warning。仍开放：P1-3/P1-4/P2-3/P2-6（edge E1/E6/E7 与文档专项）、D-01/02/05/12/16/17、V2-P2-7/8（批次 B）、40 臂接线批次 A-G（edge E7 前置）。
+> 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
+> 状态（2026-09-09，V3 轮登记完毕，尚未实施）：开放条目 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 接线批次 A-G + D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ **§12 V3 全部条目**。测试基线 **356 lib + 8 integration passed**（2026-09-09 实测）；clippy lib 出现 3 条 unused import 回退（V3-P2-9）。
 
 ---
 
-## 0. 审查结论速览
+## 0. 审查结论速览（第 1 轮）
 
-一句话总结：**PM 的语义逻辑层完成度很高（47 个调用的业务逻辑全部有 Rust 模块，Minix3 易漏语义点基本都在），但逻辑层与消息循环之间的接线层几乎完全断开（47 个调用中 7 个在主循环里用裸魔数内联拦截，其余 40 个返回 ENOSYS），且内核与 VM 边界存在两处"假装成功"的接缝。** 主要工作不在补逻辑，而在收敛分发、打通边界、让 319 个测试覆盖到的代码真正被主循环走到。
+一句话总结：**PM 的语义逻辑层完成度很高（47 个调用的业务逻辑全部有 Rust 模块，Minix3 易漏语义点基本都在），但逻辑层与消息循环之间的接线层几乎完全断开（47 个调用中 7 个在主循环里用裸魔数内联拦截，其余 40 个返回 ENOSYS），且内核与 VM 边界存在两处"假装成功"的接缝。** 主要工作不在补逻辑，而在收敛分发、打通边界、让测试覆盖到的代码真正被主循环走到。
+
+> V2 轮修正：第 1 轮"逻辑层完成度很高"的判断在 trace 域不成立——V3 轮逐函数对账发现 `trace.rs` 是"部分 stub + T_* 常量 ABI 大面积错误"（§12 V3-P1-1）。"逻辑已备、只差接线"的表述此后仅适用于已逐函数对账过的域。
 
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
-| P1 | P1-1 | 分发层分裂成两套：`init.rs` 裸魔数内联拦截 7 个调用，`dispatch_pm_call` 只剩 1 个死臂 + 46 个 ENOSYS（**✅ 已修复** 2026-09-06，见 §10 Fix #2） |
-| P1 | P1-2 | `send_vm_fork` / `send_kernel_request` 返回捏造的成功值，fail-closed 契约被反转成 fake-ok（**✅ 已修复** 2026-09-06，见 §10 Fix #1） |
-| P1 | P1-3 | 内核边界整体未实现：transport 三个方法 `unimplemented!()`，PM 二进制在第一条真实消息上 panic |
-| P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用中只有 Fork 有 wire 类型，其余靠内联 unsafe union 访问 |
-| P1 | P1-5 | 测试结构验证的是"测试用的分发路径"而非生产分发路径，端到端集成测试缺位（**✅ 已修复** 2026-09-06，见 §10 Fix #3） |
-| P1 | P1-6 | 入口函数命名约定分裂（`do_*` 改名 `handle_*` 与保留 C 名混用），污染覆盖率工具的可追溯性（**✅ 已修复** 2026-09-06，见 §10 Fix #4） |
-| P2 | P2-1 | `cfg(feature = "syscall_stats"/"sprofile")` 使用了未在 Cargo.toml 声明的特性，被门控代码永久编译排除（**✅ 已修复** 2026-09-06，见 §10 Fix #17） |
-| P2 | P2-2 | plan.md §4 ARCH 表与代码失同步：A-5 宣称"已实现"实为 1 个死臂，A-9 宣称"缺口"实际已落地（**✅ 已修复** 2026-09-06，见 §10 Fix #20） |
-| P2 | P2-3 | `minix-types/src/ipc/pm.rs` 的 `PmRequest`/`PmResponse` 是零使用的死代码；PM 调用号单一真值破口 |
-| P2 | P2-4 | `lib.rs` glob re-export 压平命名空间，5 对同名双层模块（`fork`/`mproc::fork` 等）加剧混淆（**✅ 已修复** 2026-09-06，见 §10 Fix #18） |
-| P2 | P2-5 | exit/wait 路径 9 处行为 stub 以散落注释存在，未按模式 60 登记为显式 DEFERRED 契约（**✅ 已修复** 2026-09-06，见 §10 Fix #19） |
-| P2 | P2-6 | 文档 00/99 仍是最小骨架，且 `.design/` 缺这两篇的 outline/outline-review/design 快照（模式 69） |
-| P2 | P2-7 | C 侧死代码 `ESCRIPT`（exec.c:31，定义后零使用）未登记进 plan.md §5.4 排除表（**✅ 已修复** 2026-09-06，见 §10 Fix #20） |
-| P3 | P3-1 | clippy 约 50 条告警未清理（文档缩进 17、可折叠 if 11、可派生 impl 6 等）（**✅ 已修复** 2026-09-06，见 §10 Fix #21） |
-| P3 | P3-2 | 无用导入与无用参数（`Lifecycle` 两处、`dispatch_pm_call` 的 `table` 参数已无用）（**✅ 已修复** 2026-09-06，Fix #2/#21 闭环；见 §10） |
-
-验证命令（2026-09-06 实测）：
-
-```bash
-cargo test -p minix-pm --lib          # 319 passed / 0 failed
-cargo check -p minix-pm               # 通过，lib 30 条 warning
-cargo clippy -p minix-pm --lib        # 约 50 条告警（见 P3-1 分布）
-bash tools/check-rs-unwired.sh        # PASS（所有生产 unwired 标记均带文档契约）
-python3 tools/coverage-extract/coverage-extract.py pm \
-  notes/rewrite/fork-syscall-rewrite/04-stage-pm \
-  --rust-dir os --c-dir minix3/minix/servers/pm \
-  --semantic-map tools/coverage-extract/pm-semantic-map.json \
-  --output .review/claude/fork-syscall-rewrite/04-stage-pm-arch/SYMBOLS.md
-# 结果：109 个 C 符号；文档覆盖 107（98.2%）；Rust 名称匹配 97（89.0%）；
-# 12 个未匹配逐条核实结论见 §1.3
-bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 04-stage-pm
-# 结果：01–20 快照齐全；00/99 缺 outline/outline-review/design（见 P2-6）
-```
+| P1 | P1-1 | 分发层分裂成两套（✅ 已修复 2026-09-06，Fix #2） |
+| P1 | P1-2 | `send_vm_fork` / `send_kernel_request` 假成功（✅ 已修复 2026-09-06，Fix #1） |
+| P1 | P1-3 | 内核边界整体未实现：transport 三方法 `unimplemented!()`（跨阶段，挂 E1/E6） |
+| P1 | P1-4 | codec 层缺口（ARCH A-4）：47 个调用只有 Wait4 载荷有 wire 类型（跨阶段主体挂 E7） |
+| P1 | P1-5 | 测试验证"测试分发路径"而非生产路径（✅ 已修复 2026-09-06，Fix #3） |
+| P1 | P1-6 | 入口命名分裂损害可追溯性（✅ 已修复 2026-09-06，Fix #4） |
+| P2 | P2-1 | 虚构 cfg 特性门（✅ 已修复，Fix #17） |
+| P2 | P2-2 | plan.md ARCH 表失同步（✅ 已修复，Fix #20） |
+| P2 | P2-3 | `minix-types` 的 `PmRequest`/`PmResponse` 死代码 + 调用号双址（本体在共享层，挂 E7） |
+| P2 | P2-4 | glob re-export 压平命名空间（✅ 已修复，Fix #18） |
+| P2 | P2-5 | 行为 stub 未登记 DEFERRED 契约（✅ 已修复，Fix #19） |
+| P2 | P2-6 | 文档 00/99 最小骨架 + `.design/` 快照缺失（模式 69） |
+| P2 | P2-7 | C 死代码 `ESCRIPT` 未登记排除表（✅ 已修复，Fix #20） |
+| P3 | P3-1/P3-2 | clippy 清理 + 无用导入（✅ 已修复，Fix #21；V3 复测发现 3 条回退，见 V3-P2-9） |
 
 ## 0.1 审查基线：确认良好、不需要动的部分
 
 | 方面 | 证据 |
 |------|------|
-| `Process` 四层组合（identity/state/resources/ipc）+ 与 `mproc.h` 逐字段的映射表 | `os/servers/pm/src/mproc/mproc.rs:334`（结构体），`mproc/mproc.rs:302-331`（映射表） |
-| SUSPEND 显式化为 `ReplyIntent` 三变体，与 plan.md §7.3 契约一致 | `os/servers/pm/src/ipc/dispatcher.rs:48`，契约见 `plan.md:393-406` |
-| 47 个调用号 `PmCall` 枚举与 callnr.h 一一对应，并有全量 roundtrip 测试 | `os/servers/pm/src/ipc/calls.rs:29-124`，测试 `calls.rs:222`（`test_call_nr_roundtrip_all_registered`） |
-| Minix3 易漏语义点覆盖率高：fork 的 LAST_FEW 非 root 预留、session leader 死亡向进程组发 SIGHUP、孤儿重挂 INIT 的 NEW_PARENT、TO_TRACEFORK、TAINTED、PARTIAL_EXEC、`mp_sigmask2`、NR_PIDS=30000、itimer 三族 | `os/servers/pm/src/fork.rs:35`、`src/exit.rs:76-80` 与 `exit.rs:176`、`src/exit.rs:407`（`disinherit`）与 `exit.rs:544`（`test_disinherit_new_parent`）、`src/mproc/guardianship.rs:58-59`、`src/exec.rs:96-100`、`src/mproc/mproc.rs:165-166`、`src/mproc/signal.rs:60`、`src/mproc/constants.rs:24-26`、`src/timer.rs:32-34`。**⚠️ V2 勘误（2026-09-08）**：本行两处过度声称——"session leader 死亡发 SIGHUP"实为未实现（见 §11 V2-P1-2）；"NR_PIDS=30000"存在但相位与 C 偏移（§11 V2-P1-1）。其余各点 V2 复核仍成立。 |
-| 凭证 13 个调用（getset.c 的 7 个 get + 6 个 set）建模为显式 `GetOp`/`SetOp` 枚举 | `os/servers/pm/src/credentials.rs:19-45`，对照 C `getset.c:28`（do_get 7 分支）与 `getset.c:110`（do_set 6 分支） |
-| 单线程 `&mut ProcTable` 用借用检查器替代 C 的文件级全局（ARCH A-3） | `os/servers/pm/src/mproc/context.rs`，调用点 `src/init.rs:326` |
-| 每个模块头部带 Minix3 C file:line 锚点与归属文档编号，可追溯性好 | 抽查 `src/ipc/calls.rs:1-17`、`src/ipc/dispatcher.rs:1-28`、`src/timer.rs:16` |
+| `Process` 四层组合 + 与 `mproc.h` 逐字段映射表 | `os/servers/pm/src/mproc/mproc.rs:334`（结构体），`mproc/mproc.rs:302-331`（映射表） |
+| SUSPEND 显式化为 `ReplyIntent` 三变体 | `os/servers/pm/src/ipc/dispatcher.rs:49-57`，契约见 `plan.md:393-406` |
+| 47 个调用号 `PmCall` 枚举与 callnr.h 一一对应 + 全量 roundtrip 测试 | `os/servers/pm/src/ipc/calls.rs:30-125`，测试 `calls.rs:348` |
+| Minix3 易漏语义点覆盖（V1 抽查 11 项 + V2 抽查 10 项） | 详见 §1.3 与 §11.1.4；其中两处 V2 勘误后由 Fix #29/#31/#32 修复 |
+| 凭证 13 个调用建模为显式 `GetOp`/`SetOp` 枚举 | `os/servers/pm/src/credentials.rs:19-45`，对照 `getset.c:28/110` |
+| 单线程 `&mut ProcTable` 用借用检查器替代 C 文件级全局（ARCH A-3） | `os/servers/pm/src/mproc/context.rs` |
+| 每个模块头部带 Minix3 C file:line 锚点与归属文档编号 | 抽查 `ipc/calls.rs:1-17`、`ipc/dispatcher.rs:1-28`、`timer.rs:16` |
 
 ---
 
-## 1. 查漏补缺总表
+## 1. 查漏补缺总表（第 1 轮）
 
 ### 1.1 47 个调用号 × 接线 × 逻辑 × 测试 矩阵
 
-结论先行：**47 个调用的业务逻辑在 Rust 侧全部有对应模块（多数还有单元测试），但通过真实消息循环可达的只有 7 个；其余 40 个在 `dispatch_pm_call` 中返回 ENOSYS（`os/servers/pm/src/ipc/calls.rs:213`）。** 缺口的性质是"接线与编解码"，不是"语义缺失"。
+> V3 复核（2026-09-09）：接线仍为 7 个（Exit/Fork/Wait4/Kill/SrvFork/SrvKill/ProcEventMask），其余 40 个落 `calls.rs:313` 兜底臂 ENOSYS。逐函数逻辑质量复查结论与第 1 轮"逻辑已备"的差异见 §12.1（trace 域降级、misc/sched 域多处部分实现）。
 
-| 调用群 | 调用号 | 逻辑模块（有/无） | 消息循环可达 | 说明 |
+| 调用群 | 调用号 | 逻辑模块 | 消息循环可达 | 说明 |
 |--------|--------|------------------|--------------|------|
-| 生命周期 | 1 Exit, 2 Fork, 3 Wait4, 41 SrvFork | 有：`exit.rs:24`（do_exit）、`fork.rs:22`（do_fork）、`wait.rs:38`（do_wait4）、`fork.rs:112`（do_srv_fork） | 可达，但走 `init.rs` 内联拦截 | `init.rs:386/399/429/437` 用裸魔数 `msg.m_type == 2/41/1/3` 拦截，不经过 `PmCall` 枚举 |
-| 信号发送 | 11 Kill, 42 SrvKill | 有：`signal.rs:39`（do_kill）、`signal.rs:52`（do_srv_kill） | 可达，同样内联拦截 | `init.rs:458/479` |
-| 事件 | 40 ProcEventMask | 有：`event.rs:363`（do_proceventmask_mut）、`event.rs:412`（do_proc_event_reply） | 可达 | `init.rs:368` 拦截；这是唯一用 `minix_types::PM_PROCEVENTMASK` 常量而非裸数字的拦截点 |
-| 凭证 | 4-6, 9-10, 12-13, 15-16, 29-32（共 13 个） | 有：`credentials.rs:87`（do_get）、`credentials.rs:148`（do_set） | 不可达（ENOSYS） | 逻辑与测试齐备，等待接线 |
-| 信号控制 | 20-24（sigaction/sigsuspend/sigpending/sigprocmask/sigreturn） | 有：`signal_handlers.rs` | 不可达 | 同上 |
-| 时间 | 7, 28, 33-35 | 有：`time.rs` | 不可达 | 同上 |
-| 定时器 | 17 Itimer | 有：`timer.rs` | 不可达 | A-7（`plan.md:201`）标注内核定时器抽象未实现，但 PM 侧逻辑已备 |
-| exec 族 | 14, 43, 44 | 有：`exec.rs`（do_exec/do_newexec/do_execrestart） | 不可达 | `ipc/vfs.rs:469` 的 `exec_restart`（VFS 回复侧）在生产 impl 中 `unimplemented!()` |
-| 调度 | 26, 27 | 有：`sched.rs:280`（nice_to_priority）、`sched.rs:285`（get_nice_value） | 不可达 | A-8（`plan.md:202`）SCHED 客户端未实现（D-12） |
-| ptrace | 8 | 有：`trace.rs` | 不可达 | `wait.rs:101` 的 trace-stop 返回码仍是模拟值（D-20） |
-| 杂项查询 | 18-19, 25, 36-39, 45-47 | 有：`misc.rs`（sysuname/getsysinfo/getprocnr/getepinfo/reboot/svrctl/getrusage/sprofile/mcontext） | 不可达 | sprofile 与 syscall_stats 受 P2-1 的虚构特性门影响 |
-| 兜底 | dispatch 的 Fork 臂 | — | 死代码 | `ipc/calls.rs:211` 的 `PmCall::Fork => ReplyLater` 在服务器路径上永远不触发（Fork 已被 `init.rs:386` 拦截）；clippy 也报告 `calls.rs:201:39` 的 `table` 参数已无用 |
+| 生命周期 | 1 Exit, 2 Fork, 3 Wait4, 41 SrvFork | `exit.rs:133`、`fork.rs:22/112`、`wait.rs:38` | ✅ 经单一分发表 | Fix #2 收编后走 `dispatch_pm_call` |
+| 信号发送 | 11 Kill, 42 SrvKill | `signal.rs:39/52` | ✅ 同上 | |
+| 事件 | 40 ProcEventMask | `event.rs`（`do_proceventmask_mut`） | ✅ 同上 | 非 mut 变体有游标 bug，见 V3-P2-8 |
+| 凭证 | 4-6, 9-10, 12-13, 15-16, 29-32（13 个） | `credentials.rs:87/148` | ❌ ENOSYS | 批次 A |
+| 信号控制 | 8, 20-24 | `signal_handlers.rs`、`trace.rs` | ❌ ENOSYS | 批次 B；**trace.rs 状态见 V3-P1-1（部分 stub + 常量 ABI 错误）** |
+| 时间 | 7, 28, 33-35 | `time.rs` | ❌ ENOSYS | 批次 C |
+| 定时器 | 17 Itimer | `timer.rs:368` | ❌ ENOSYS | 批次 D；CLOCK notify 已接线（Fix #39） |
+| exec 族 | 14, 43, 44 | `exec.rs` | ❌ ENOSYS | 批次 E；`do_exec` 调用者门已补（Fix #38） |
+| 调度 | 26, 27 | `sched.rs:247` | ❌ ENOSYS | 批次 F；`sched_start_user` 语义偏差见 V3-P2-3 |
+| ptrace | 8 | `trace.rs` | ❌ ENOSYS | 批次 B；**接线前必须先修 V3-P1-1** |
+| 杂项查询 | 18-19, 25, 36-39, 45-47 | `misc.rs` | ❌ ENOSYS | 批次 G；`do_getsysinfo` 假数据见 V3-P1-4 |
 
-### 1.2 C 函数面对账（proto.h 71 个函数 + 38 个宏）
+### 1.2 C 函数面对账（第 1 轮，proto.h 粒度）
 
-Gate A 工具（`coverage-extract.py`）报告 109 个 C 符号中 Rust 名称匹配 97 个（89.0%），12 个未匹配逐条核实如下，其中**真正的语义缺口只有 2 个**：
+Gate A（coverage-extract.py）109 个 C 符号，Rust 名称匹配 102（93.6%）。7 个未匹配逐条核实（V2 复核结论，V3 维持）：`NO_EVENTSUB` 有语义表达（`block.rs:36-45` 编码为 `None`）；`SEND_PRIORITY`/`SEND_TIME_SLICE` 真缺口（挂 E7）；`ESCRIPT` C 死代码正确缺失；`EXTERN`/`_SYSTEM`/`_TABLE` C 编译宏无需对应。
 
-| C 符号 | 核实结论 | 证据 |
-|--------|----------|------|
-| `do_exit` / `do_wait4` / `do_kill` / `do_srv_kill` | Rust 语义存在，入口改名（见 P1-6） | `exit.rs:24`（do_exit）、`wait.rs:38`（do_wait4）、`signal.rs:39/52` |
-| `is_sane_timeval` | 存在，成为 `Timeval` 方法 | `timer.rs:53`（`is_sane`） |
-| `NO_EVENTSUB` | 存在，表达为 `None` 与 `NO_EVENTSUB_RAW = -1` | `event.rs:30-32` |
-| `SEND_PRIORITY` / `SEND_TIME_SLICE`（const.h:19-20） | **真缺口**：调度协议消息常量未建模 | 全库 grep 零命中；属 A-8（`plan.md:202`）范围 |
-| `ESCRIPT`（exec.c:31） | Rust 缺失是**正确的**：C 里它也是死代码（定义后零使用），见 P2-7 | `grep -rn ESCRIPT minix3/minix/servers/pm/` 仅命中定义行 |
-| `EXTERN` / `_SYSTEM` / `_TABLE` | C 编译宏，Rust 无需对应 | `glo.h:4`、`pm.h:4`、`table.c:5` |
+### 1.3 Minix3 易漏语义点抽查（第 1 轮 11 项）
 
-### 1.3 Minix3 易漏语义点抽查（11 项全部在位）
-
-fork 的非 root 进程数预留与 EAGAIN（`fork.rs:31-35`，对照 `forkexit.c:60-65`）、next_child 轮转槽位扫描（`fork.rs:40-43` 注释对照 `forkexit.c:68-75`）、session leader 死亡记忆 procgrp 并发 SIGHUP（`exit.rs:76-80` 与 `exit.rs:176`，对照 `forkexit.c:298/412`）、INIT 死亡打印栈回溯后直接返回 / VFS 死亡 panic（`exit.rs:120-122`，对照 `forkexit.c:336-345`）、disinherit 重挂 INIT（`exit.rs:407`，对照 `forkexit.c:760-795`）、TO_TRACEFORK（`guardianship.rs:58-59`）、exec 的 TAINTED 双重判定与 allow_setuid（`exec.rs:96-100`）、`mp_sigmask2` 保存掩码（`mproc/signal.rs:60`）、NR_PIDS=30000（`mproc/constants.rs:24-26`）、itimer 三族与 NR_ITIMERS=3（`timer.rs:32-34`、`mproc/mproc.rs:33`）、nice 与优先级队列双向换算（`sched.rs:280/285`，对照 `utility.c:91` 与 `main.c:276`）。
-
-这项抽查的结论是：**文档 07–20 描述的语义面在 Rust 侧基本落地，查漏补缺的重心应从"补语义"转向"补接线与补契约"。**
+fork 的 LAST_FEW 非 root 预留、next_child 轮转槽位、disinherit 重挂 INIT、TO_TRACEFORK 条件继承、exec 的 TAINTED 双重判定、`mp_sigmask2` 保存掩码、NR_PIDS=30000 轮转、itimer 三族、nice 与优先级队列双向换算——逐项锚点见 2026-09-08 压缩前版本（git 历史），V2 勘误与修复状态见 §6 D-27/D-28 与 Fix #29-#32。
 
 ---
 
-## 2. P0：真实 bug（本次未发现）
+## 2. P0：真实 bug（三轮均未发现可达路径上的 P0）
 
-按 02-stage-vm todo.md 的 P0 定义（在可达路径上、被测试或行为验证暴露的真实错误），本次审查**没有发现 P0**。当前所有路径失败都有一个共同原因：内核 IPC 未落地（P1-3），因此"行为错误"尚无法与"无法运行"区分。P1-2 的假成功接缝最接近 P0（它在测试里伪装成正常工作），但因为真实二进制在第一条消息上就会 panic（`transport.rs:86-96`），尚未产生用户可见的错误行为，故按架构级问题记录。
-
----
-
-## 3. P1：架构级问题（建议尽快规划）
-
-### P1-1 分发层分裂成两套并行实现（✅ 已修复 2026-09-06，见 §10 Fix #2）
-
-已完成（Fix #2）：7 个内联拦截块收编进 `dispatch_pm_call` 单一穷尽 match，主循环不再绕过分发表。原问题（两套分发并存、Fork 死臂、调用表三处事实源分裂、单测验证测试路径）的完整论证见本文件 git 历史（2026-09-08 压缩前版本）。
-
-### P1-2 服务间请求的"假成功"接缝（✅ 已修复 2026-09-06，见 §10 Fix #1）
-
-已完成（Fix #1）：`send_vm_fork` 改经 `IpcTransport` 真实 sendrec 且 fail-closed；`send_kernel_request` 判定为与 C 不符的原型残留，随假成功一并删除（D-03/D-04 同时闭环）。V2 轮发现同型残留一处：`sig_proc_exit` 的 mock transport（§11 V2-P0-1）。
-
-### P1-3 内核边界整体未实现（最大依赖簇）
-
-**问题**：PM 与内核的边界上有 6 个 `unimplemented!()`/placeholder：`KernelIpcTransport` 的 receive/send/sendrec（`ipc/transport.rs:86/91/96`）、`BootParams::placeholder()`（`main.rs:15`）、`PmServices::sys_abort`（`ipc/vfs.rs:488`）。另有 4 个 VFS 协同方法在生产 impl 中 `unimplemented!()`：`sched_start_user`（`vfs.rs:401`）、`exit_proc` 通知（`vfs.rs:407`）、`set_core_flag`（`vfs.rs:413`）、`exec_restart`（`vfs.rs:469`）。这意味着 `minix-pm` 二进制在第一条真实消息的 `receive()` 上就会 panic——当前 14,098 行代码的运行时形态是"可测试的库 + 不可运行的守护进程"。
-
-**影响**：这是 D-XX 登记表中最大的一簇依赖（§6 的 D-01/D-02/D-05~D-09）。01-stage-kernel 的 `minix-sys` 系统调用面落地前，PM 的全部生命周期语义（fork 的 VFS 协同、exit 的 vm_willexit/vm_exit、exec 的 exec_restart）都只能以单测形态存在。
-
-**建议**：
-1. **首选**：不急于在本阶段实现，但要做两件事：(a) 把 §6 依赖表中每一项的"解除条件"写成可 grep 的断言（例如 transport 三方法的 unimplemented 消息里写明依赖 `01-stage-kernel` 的哪个符号），目前 `transport.rs:86-96` 已有此格式，保持；(b) 在 `minix-sys` 落地时优先实现 receive/sendrec 最小面（main 循环只需要 `receive` + `send` + CLOCK notify 判定三个能力，`init.rs:305` 与 `init.rs:334`），避免"一次性全量实现 sys_*"的大爆炸集成。
-2. **次选**：为 transport 增加第二个生产实现（例如 Unix domain socket 模拟内核通道，供 qemu-tests 之外的宿主机集成测试用）。trait 接缝（`transport.rs:46` 的 `IpcTransport`）已经为此准备好，且满足"trait 至少两个行为不同的实现"的存在性检查（当前 TestIpcTransport 是唯一真实现）。
-3. 参考 Redox：内核系统调用面（`kernel/src/syscall/`）与用户态服务是同步演进的，没有出现过"服务写完、系统调用面后补"的窗口；本项目的补法建议按 P1-1 收敛后的分发入口倒推需要的最小内核面，而不是按 kernel 侧清单正推。
-
-**跨阶段拆分**：trap 层挂 `edge_todo.md` E1；SYS_* wrapper 挂 E2（VM 清单）与 E6（PM 清单，2026-09-06 新增）；本条 stage 内只保留 transport 实现与最小面倒推。
-
-### P1-4 codec 层缺口：47 个调用只有 1 个 wire 类型（ARCH A-4）
-
-**问题**：`plan.md:198`（A-4）记录"message union → 类型化 IPC：部分实现（目前仅 Fork 变体）"，实际比记录的更薄：`os/libs/minix-types/src/ipc/pm.rs` 的 `PmRequest` 枚举只有 `Fork` 一个变体，且全库零使用（见 P2-3）。47 个调用的消息解码现状是三种并存：`init.rs` 内联 unsafe union 访问（7 个调用）、测试里直接构造参数绕过消息层（大多数模块）、以及完全无解码（40 个 ENOSYS 调用）。C 侧 `m_in.m_lc_pm_*`/`m_pm_lc_*` 的 union 字段位型（`com.h`）没有系统性的 Rust 对应。
-
-**影响**：接线（P1-1）的每一臂都需要先回答"这个调用的消息怎么解码"。没有 codec 层，P1-1 的迁移会把 47 段 unsafe 解码内联进 match 臂，重复且易错；wire 布局错误（union 字段错位）也不会有任何类型层防护。
-
-**建议**：
-1. **首选**：按调用族在 `minix-types` 建 wire 结构体（`ExitStatus`、`Wait4Args`、`KillArgs`、`SigactionArgs`……），每族带 `size_of` 断言与 C `m_lc_pm_*` 的逐字段对照注释（`message.rs` 中 `MessPmSchedSchedulingSetNice` 等已有此风格，`libs/minix-types/src/ipc/message.rs`，带 size assert）。是否保留单一 `PmRequest` 枚举可作为第二层封装：枚举变体持有各 wire 结构体，解码函数 `PmRequest::from_message(&Message) -> Result<PmRequest, PmError>` 做一次集中 unsafe。
-2. **次选**：只做集中 unsafe 解码函数（按调用号 match 返回小型参数元组），不建结构体。改动小，但丢失字段语义与 size 断言，长期看是债务。
-3. 与 05-stage-vfs 协同：`VfsPmRequest`（`minix-types/src/ipc/vfs.rs`）已有 Exit/Fork 变体的字段化先例，PM 侧 wire 类型应与其保持同一风格。
-4. 参考 Redox：relibc 与内核之间每个系统调用都有独立的 `Call` 结构与手写编解码（relibc `src/platform/redox.rs`），字段错位在编译期不可查但集中可审——本项目用 size 断言可以比 Redox 做得更好。
-
-**跨阶段拆分**：wire 结构体系统化、死代码处置与调用号收敛的本体在 minix-types（共享契约层），归 `edge_todo.md` E7；本条目 stage 内只做消费端接线（2026-09-06 增补）。
-
-### P1-5 测试验证的是"测试分发路径"，生产分发路径无端到端覆盖（✅ 已修复 2026-09-06，见 §10 Fix #3）
-
-已完成（Fix #3）：新增 `tests/run_once_integration.rs`（7 场景）驱动 `PmServer::run_once` 完整消息循环：fork 全链路 wire 序列、exit 永不回复、wait4 三环、kill ESRCH、未接线 ENOSYS、损坏 VFS 回复 panic、僵尸回收载荷。
-
-### P1-6 入口函数命名约定分裂，损害 C↔Rust 可追溯性（✅ 已修复 2026-09-06，见 §10 Fix #4）
-
-已完成（Fix #4）：6 个 `handle_*` 入口统一回 C 名 `do_*`，Gate A 覆盖率工具名称匹配恢复（V2 复测 93.6%）。
+V2 轮的 V2-P0-1（mock 泄漏）与 V2-P0-2（位基分裂）曾按 P0 登记，均已修复（Fix #29/#30）。V3 轮未发现新的可达路径 P0——本轮发现的 trace 域失真、信号链缺口、假数据 stub 全部位于未接线调用（ENOSYS 兜底）或未通电边界之后，按 P1 登记。
 
 ---
 
-## 4. P2：结构性改进（正确性 gate 通过后规划）
+## 3. P1：架构级问题（第 1 轮遗留）
 
-### P2-1 虚构的 cfg 特性门：`syscall_stats` 与 `sprofile`（✅ 已修复 2026-09-06，见 §10 Fix #17）
+### P1-1 分发收敛到单一分发表（✅ 已修复 2026-09-06，Fix #2）
 
-已完成（Fix #17）：Cargo.toml 声明 `syscall_stats`/`sprofile` 特性（默认关，与 C 编译宏一致），门控代码恢复可编译性。
+### P1-2 服务间请求"假成功"接缝（✅ 已修复 2026-09-06，Fix #1；同族第 2/3 例分别由 Fix #30 与 §12 V3-P1-4 承接）
 
-### P2-2 plan.md §4 ARCH 表与代码状态失同步（✅ 已修复 2026-09-06，见 §10 Fix #20）
+### P1-3 内核边界整体未实现（最大依赖簇，跨阶段）
 
-已完成（Fix #20）：plan.md §4 ARCH 表按实现现状刷新（A-5 拆分"建模已实现/分发接线 7/47"、A-9 改"已实现"）。
+`KernelIpcTransport` 三方法 `unimplemented!()`（`ipc/transport.rs:86/91/96`）、`BootParams::placeholder()`（`main.rs:15`）。trap 层挂 edge E1；SYS_* wrapper 挂 E2/E6。本条 stage 内只保留 transport 实现与最小内核面倒推。**V3 增补**：主循环的内核信号入口缺失是本簇的新成员（§12 V3-P1-2），不在原 E6 清单内。
 
-### P2-3 `minix-types/src/ipc/pm.rs` 的遗留类型是零使用死代码；调用号单一真值破口
+### P1-4 codec 层缺口（ARCH A-4，跨阶段主体挂 E7）
 
-**问题**：`PmRequest`/`PmResponse`（`os/libs/minix-types/src/ipc/pm.rs:13-38`）在包括 pm crate 在内的整个 os/ 工作区零使用（`PmError` 除外，它被 `init.rs:390` 使用）。同时 PM 调用号出现两处表达：`pm/src/ipc/calls.rs` 的 `PmCall` 枚举（47 值，注释明确"将来内核侧需要时再上移 minix-types"，`calls.rs:16-17`）与 `minix-types` 里的个别常量（`init.rs:368` 使用 `minix_types::PM_PROCEVENTMASK`）。同一个"47 个调用号"的事实，一部分住在 pm crate、一部分住在 minix-types。
+47 个调用只有 `MessPmLcWait4` 一个 wire 成员（Fix #22 落地）。V3 增补阶段内过渡方案（unsafe 解码集中化）见 §12.3 观察 2。
 
-**建议**：(a) 删除 `PmRequest`/`PmResponse`（或等 codec 层 P1-4 设计时再决定去留，但要在 P1-4 的方案里显式处置它们，不能默认保留）；(b) `PM_PROCEVENTMASK` 这类常量要么下沉回 pm crate 统一从 `PmCall` 取值，要么在 `calls.rs:16-17` 的"单一事实源"注释里写清当前的双址现状与收敛计划——现状是注释宣称单一真值，代码已经双址。
+### P1-5 测试分发路径（✅ 已修复 2026-09-06，Fix #3）
 
-**跨阶段拆分**：本体在 minix-types（共享契约层），处置归 `edge_todo.md` E7；PM 侧在本条目闭环时引用 E7 的收敛结论，不在 stage 内单独改动共享层（2026-09-06 增补）。
-
-### P2-4 `lib.rs` glob re-export + 5 对同名双层模块（✅ 已修复 2026-09-06，见 §10 Fix #18）
-
-已完成（Fix #18）：`lib.rs` 移除 glob re-export，公共 API 显式逐项导出，logic/state 两层路径不再压平。
-
-### P2-5 exit/wait 路径的行为 stub 应升级为显式 DEFERRED 契约（✅ 已修复 2026-09-06，见 §10 Fix #19）
-
-已完成（Fix #19）：exit/wait 路径散落 stub 注释统一为 `[DEFERRED: D-XX]` 显式契约（登记表见 §6）。
-
-### P2-6 文档 00/99 仍是最小骨架，且缺 `.design/` 快照
-
-**问题**：`00-pm-overview.md` 与 `99-global-concepts.md` 均为 16 行骨架，状态行自记"pending（最小骨架，待改写）"；`tools/design-coverage-check.sh fork-syscall-rewrite --stage 04-stage-pm` 报告两篇各缺 outline/outline-review/design 三个快照（模式 69 PSMD）。01–20 的快照齐全（63 个文件）。此外 plan.md §6.1 的状态表（`plan.md:300/321`）将 00/99 记为"骨架 —"，与文档头状态一致，这点是同步的。
-
-**建议**：00（总览）与 99（全局概念）是 22 篇的入口与收尾，plan.md §6.2（`plan.md:329`）已排为最后优先级，维持该排序即可；但建议在改写 00 时顺手把本文件（todo.md）的 P1-1/P1-3 结论纳入"当前实现状态"叙述，避免总览写成后立刻过时。快照按 Step 0.3 流程在下次触碰这两篇的 review 中补齐。
-
-### P2-7 C 死代码 `ESCRIPT` 未登记进排除表（✅ 已修复 2026-09-06，见 §10 Fix #20）
-
-已完成（Fix #20）：C 死代码 `ESCRIPT`（exec.c:31）登记进 plan.md §5.4 排除表。
+### P1-6 入口命名统一（✅ 已修复 2026-09-06，Fix #4）
 
 ---
 
-## 5. P3：代码卫生
+## 4. P2：结构性改进（第 1 轮遗留）
 
-### P3-1 clippy 告警清理（约 50 条）（✅ 已修复 2026-09-06，见 §10 Fix #21）
+### P2-1 cfg 特性门（✅ 已修复，Fix #17）
+### P2-2 plan.md ARCH 表同步（✅ 已修复，Fix #20）
+### P2-3 `minix-types` 死代码 + 调用号双址（开放，本体挂 E7）
 
-已完成（Fix #21）；V2 基线复核（2026-09-08）：`cargo clippy -p minix-pm --lib` 0 warning 0 error 维持。
+V3 增补一处同族实例：`dispatcher.rs:32` 本地定义 `PROC_EVENT_REPLY: i32 = 0xE80`，而 `minix-types` 已有同值常量（`ipc/event.rs:27`，带常量锁定测试）——已并入 E7 清单（§12 V3-P3-5）。
 
-### P3-2 无用导入与无用参数（✅ 已修复 2026-09-06，见 §10 Fix #21）
+### P2-4 glob re-export（✅ 已修复，Fix #18）
+### P2-5 stub 注释契约化（✅ 已修复，Fix #19；V3 发现一处漏网：`ipc/vfs.rs:533-540`，见 V3-P2-1）
+### P2-6 文档 00/99 最小骨架 + `.design/` 快照缺失（开放，维持 plan.md §6.2 排序）
+### P2-7 ESCRIPT 排除登记（✅ 已修复，Fix #20）
 
-已完成（Fix #2/#21）：无用导入（`Lifecycle` 两处）与 `dispatch_pm_call` 无用 `table` 参数已清理。
+---
+
+## 5. P3：代码卫生（第 1 轮）
+
+### P3-1 clippy 清理（✅ Fix #21；**V3 复测回退 3 条**，见 V3-P2-9）
+### P3-2 无用导入与无用参数（✅ Fix #2/#21）
 
 ---
 
 ## 6. D-XX：DEFERRED / stub / unimplemented 全量登记
 
-> 2026-09-06 全量 grep（`DEFERRED`、`stub`、`unimplemented!`、`todo!`）收敛。`tools/check-rs-unwired.sh` PASS（所有生产 unwired 标记带文档契约）。"解除条件"列是该条目从 DEFERRED 转为可修复的 grep 锚点。
+> 2026-09-06 全量收敛 + 2026-09-08 V2 复核。**V3 复核（2026-09-09）新发现一处漏网**：`ipc/vfs.rs:533-540` 的 `restart_signals` no-op（带 "DEFERRED 脚手架" 字样但无编号、前提失真）——见 V3-P2-1，暂以 V3 编号跟踪，实施时若保持 DEFERRED 形态则登记 D-29。V2-P2-8 曾预占 D-29（sig_send），该条目随批次 B 实施时按当时的实际形态取号，两处取号顺序以实施先后为准。
 
 | ID | 位置 | 内容 | 归属 | 解除条件 |
 |----|------|------|------|----------|
-| D-01 | `ipc/transport.rs:86/91/96` | KernelIpcTransport receive/send/sendrec `unimplemented!()` | 01-pm-init-main.md:382 | minix-sys 内核 IPC 面（01-stage-kernel） |
-| D-02 | `main.rs:15` | `BootParams::placeholder()` 启动参数占位 | 01-pm-init-main.md | `sys_getmonparams`/`sys_getimage` |
-| D-03 | ~~`ipc/dispatcher.rs:139-155`~~ | ~~`send_vm_fork` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：真实 `vm_fork` sendrec，见 §10） | 07-pm-fork.md / 02-stage-vm/18 | ~~真实 VM_FORK 往返~~ 已实现（wire 层）；硬件通电仍挂 E1 |
-| D-04 | ~~`ipc/dispatcher.rs:159-165`~~ | ~~`send_kernel_request` 捏造成功应答~~ **✅ 已修复**（2026-09-06，Fix #1：零调用死代码删除；C 的 `do_fork` 无独立内核请求步骤，proc 复制在 VM 的 sys_fork 内） | 07-pm-fork.md | ~~内核 fork 请求面~~ 不适用（与 C 不符的原型残留） |
-| D-05 | `ipc/vfs.rs:401` | `sched_start_user` `unimplemented!()` | 16-scheduling.md | SCHED 客户端（A-8） |
-| D-06 | ~~`ipc/vfs.rs:407`~~ | ~~`exit_proc` 的 VFS 退出通知 `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #8：委托 09 的 `crate::exit::exit_proc` 二阶段退出，`main.c:381` FORK 失败路径） | 09-pm-exit.md | ~~接线 09 退出链时~~ 已达成（+1 委托测试） |
-| D-07 | ~~`ipc/vfs.rs:413`~~ | ~~`set_core_flag`（WCOREFLAG）`unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #9：WCOREFLAG 置入 `Lifecycle::Exiting.sig_status` bit7，u8 域位运算；wait4 组合改无符号字节） | 09-pm-exit.md | ~~同上~~ 已达成 |
-| D-08 | ~~`ipc/vfs.rs:469`~~ | ~~`exec_restart` `unimplemented!()`~~ **✅ 已修复**（2026-09-06，Fix #10：ExecServices 生产端口 + ExecRestartServices supertrait 收敛；sys_exec 内核调用返回 -ENOSYS 由 exec_restart 的 C 同型 panic 承接） | 17-exec.md | ~~exec 重启路径接线~~ 逻辑达成（真实 sys_exec 挂 E6） |
-| D-09 | ~~`ipc/vfs.rs:488`~~ | ~~`sys_abort` `unimplemented!()`~~ **✅ 已修复**（2026-09-07，Fix #25：`KernelGateway::sys_abort` + minix-sys `sys_abort` wrapper（E6 sys_abort 切片）+ PmServices 端口接通（REBOOT 特例 `main.c:304-312`，C 忽略返回值语义保留）；真实通电挂 E1） | 01-stage-kernel | ~~内核 sys_abort~~ wrapper 达成（通电挂 E1） |
-| D-10 | ~~`fork.rs:86-99/175-186`~~ | ~~tracer SIGSTOP 记意图不执行~~ **✅ 已修复**（2026-09-06，Fix #5：真实 `sig_proc` + `inherit_guardianship` 的 TO_TRACEFORK 条件继承，含隐藏阻塞 copy_mproc 重置监护的修复） | 11-signal-core.md | ~~sig_proc 可跨模块调用~~ 已达成 |
-| D-11 | ~~`event.rs:170/230`~~ | ~~事件重启的 exit_restart/restart_sigs 仅清标志~~ **✅ 已修复**（2026-09-06，Fix #7：Signal 分支接真实 restart_sigs，PmEventServices 适配器；Exit 分支本已接线且注释过时） | 13-signal-flow.md | ~~restart_sigs 完整实现~~ 已达成（KernelResume 的真实 sys_resume 拆出 D-25） |
-| D-12 | `init.rs:675/706/719` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8（`plan.md:202`） |
-| D-13 | ~~`exit.rs:33`~~ | ~~exit 路径 `sys_kill` no-op~~ **✅ 已修复**（范围注记 2026-09-08：本行只覆盖 do_exit 的 PRIV_PROC 违规分支一处；SIGHUP 广播两站点已拆出为 D-27，见下）（2026-09-06，Fix #23：`do_exit` PRIV_PROC 分支经 `KernelGateway`/`TrapKernelGateway` 真实发送 `sys_kill(endpoint, SIGKILL)`（C 忽略返回值语义保留）；minix-sys `sys_kill` wrapper 落地 = E6 sys_kill 切片闭环；真实通电仍挂 E1） | 11-signal-core.md | ~~edge E6（SYS_KILL wrapper）+ E1（trap）~~ wrapper 达成（通电挂 E1） |
-| D-14 | ~~`exit.rs:101`~~ | ~~退出进程自身 times 计账为 0~~ **✅ 已修复**（2026-09-07，Fix #26：`KernelGateway::proc_times`（minix-sys `sys_times` wrapper，SYS_TIMES=25）→ exit_proc step 4 累加进 child 桶；失败 panic 对齐 `forkexit.c:308-309`） | 10-pm-wait.md | ~~edge E6（SYS_TIMES wrapper）~~ wrapper 达成（真实通电挂 E1） |
-| D-15 | ~~`exit.rs:116`~~ | ~~`vm_willexit` 假装 Ok~~ **✅ 已修复**（2026-09-06，Fix #11：真实 `sendrec(VM, VM_WILLEXIT)` + 失败 panic 对齐 `forkexit.c:332-334`） | 02-stage-vm | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
-| D-16 | `exit.rs:142` | core dump 路径名指针为 0——**依赖未解除的显式 DEFERRED**：C 传 `mp_name` 指针（m7p1，VFS 异步 safecopy PM 内存，`forkexit.c:356`），Rust (a) 无法对表内数据形成跨异步稳定指针、(b) `VfsCall::DumpCore.path` 为 i32 容不下 64 位指针——需与 05-stage-vfs 协同重设计契约（按值 [u8;16] 或 minix-types 增 path+len 成员） | 09-pm-exit.md | 契约决策 + minix-types wire 成员（edge E7） |
-| D-17 | `exit.rs:192` | `sched_stop` 假装 Ok——**依赖未解除**：C `exit_restart` 的 `sched_stop` 走 SCHED 服务的 SCHEDULING_STOP 消息（`schedule.c` 客户端，A-8），SCHED 服务器（16-stage）尚未存在，无对端可通话 | 16-scheduling.md | A-8（SCHED 客户端 + 服务器落地） |
-| D-18 | ~~`exit.rs:215`~~ | ~~`sys_clear`（内核侧进程回收）no-op~~ **✅ 已修复**（2026-09-07，Fix #24：`KernelGateway::sys_clear` + minix-sys wrapper（E6 切片）+ PmServer 持有网关下穿 exit_proc/exit_restart 两调用点；失败 panic 对齐 `forkexit.c:367-368/450-451`） | 01-stage-kernel | ~~edge E6 + E1~~ wrapper 达成（真实通电挂 E1） |
-| D-19 | ~~`exit.rs:219`~~ | ~~`vm_exit`（页表回收）no-op~~ **✅ 已修复**（2026-09-06，Fix #12：真实 `sendrec(VM, VM_EXIT)` + 失败 panic 对齐 `forkexit.c:455-457`） | 02-stage-vm/22 | ~~VM 协同面~~ wire 达成（真实往返挂 E5(a)/E1） |
-| D-20 | ~~`wait.rs:101`~~ | ~~trace-stop 返回码用模拟值~~ **✅ 已修复**（2026-09-06，Fix #6：真实 sigtrace 扫描 + sigdelset 消费 + 空集落环，forkexit.c:519-531 全语义） | 18-trace.md | ~~ptrace 停止状态建模~~ 已达成（trace_mask/trace.stopped 建模 D-10 时已备） |
-| D-21 | ~~`wait.rs:124`~~ | ~~rusage 跨地址空间拷贝假装成功~~ **✅ 已修复**（2026-09-07，Fix #27：`tell_parent` 构造 144 字节 rusage（utime/stime timeval 对，按 `table.system_hz` 换算），经 `KernelGateway::copy_to_user` → minix-sys `sys_vircopy` 真实投递父进程（`exit.rs:518-574`）；datacopy 失败 → reply(parent, errno) + 子保持 ZOMBIE 可重试，对齐 `forkexit.c:692-704`；真实通电挂 E1。遗留：`wait.rs:128-131` 的 `[DEFERRED: D-21]` 注释与 `let _ = rusage_addr;` 死绑定未随实现清理，`exit.rs:515-516` doc 注释仍写 "(omitted)"——登记为 V2 卫生项） | 10-pm-wait.md | ~~edge E6（SAFECOPY）~~ 已达成（`sys_vircopy` wrapper，SYS_VIRCOPY_CALL=15；真实通电挂 E1） |
-| D-22 | ~~`signal.rs:160`~~ | ~~`is_stacktrace` 返回硬编码 false~~ **✅ 已修复**（2026-09-06，Fix #13：`is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写——原计划臆断为位掩码，实为 `sys/signal.h:279-286` 的谓词宏；连带修复旧 lethal 近似列表错含 SIGKILL/TERM/TRAP 的真实语义偏差，EPERM 保护测试改用 SIGSEGV） | ~~16-scheduling.md~~ 11-signal-core.md（语义实属信号系统，原归属登记有误） | ~~A-8~~ 无依赖，纯谓词 |
-| D-23 | ~~`signal.rs:360-362`~~ | ~~SIGVTALRM/`check_vtimer` stub~~ **✅ 已修复**（2026-09-06，Fix #14：process_ksig 接真实 check_vtimer（VTimerCtl 显式接缝）；连带修复 `signo == 12` 应为 26 的真 bug——旧分支从未命中） | 14-itimer.md | ~~虚拟计时器 trait 落地~~ PM 侧达成（VTimerCtl 生产实现 = 内核 sys_vtimer 挂 E6） |
-| D-24 | ~~`mproc/fork.rs:222-228`~~ | ~~`getticks()` 返回 0~~ **✅ 已修复**（2026-09-06，Fix #15：getticks 桩删除；`fork_from`/`srv_fork_from` 显式注入 `started: Clock`，`fork_child_from_parent` 经 ClockSource 计算；活路径零值收敛为带 E6 注释的显式 seam） | 14-itimer.md / 内核 sys_times | ~~内核 uptime 面~~ 结构达成（真实 uptime 挂 E6） |
-| D-25 | ~~`event.rs` `PmEventServices::resume`~~ | ~~暂返回 OK~~ **✅ 已修复**（2026-09-07，Fix #28：`PmEventServices::resume` 经 `KernelGateway::sys_resume` → minix-sys `sys_runctl(ep, RC_RESUME, 0)` 真实恢复；kernel `dispatch_runctl` RC_RESUME 分支对端真实） | 13-signal-flow.md / edge E6 | ~~minix-sys SYS_* 面~~ 达成（真实通电挂 E1） |
-| D-26 | ~~`wait.rs` ZOMBIE/TRACE_STOPPED 两环的回复载荷~~ | ~~wait4 回复的状态码载荷建模缺失~~ **✅ 已修复**（2026-09-06，Fix #22：`MessPmLcWait4` + `m_pm_lc_wait4` arm 落地 minix-types；ZOMBIE/TRACE_STOPPED/tell_parent/tell_tracer 四处 wire 按"m_type=pid + 载荷=status"发出；E7 首切片） | 10-pm-wait.md / edge E7 | ~~minix-types 增成员~~ 已达成 |
-| D-27 | ~~`exit.rs:302-307`~~ / ~~`exit.rs:674-676`~~ | ~~SIGHUP 会话组广播 no-op~~ **✅ 已修复**（2026-09-08，Fix #32：exit_proc 第 13 步经 `check_sig(-procgrp, SIGHUP)` 真实广播，caller 为死亡首领本人；disinherit 尾注释改为指针；真实通电挂 E1） | 09-pm-exit.md | ~~check_sig 复用~~ 已达成（stage 内，无外部依赖） |
-| D-28 | ~~`exit.rs:448-451`~~ | ~~check_parent 的 SIGCHLD 分支 no-op~~ **✅ 已修复**（2026-09-08，Fix #34：`sig_proc(parent, SIGCHLD, trace=TRUE, ksig=FALSE)`，默认处置由 ign_sset 忽略，handler 交付链随批次 B 的 sig_send 落地） | 09-pm-exit.md | 无（stage 内） |
+| D-01 | `ipc/transport.rs:86/91/96` | KernelIpcTransport receive/send/sendrec `unimplemented!()` | 01-pm-init-main.md:382 | minix-sys trap 层（E1） |
+| D-02 | `main.rs:15` | `BootParams::placeholder()` 启动参数占位 | 01-pm-init-main.md | SYS_GETMONPARAMS/SYS_GETIMAGE（E6，双侧新建） |
+| D-03 | ✅ 已修复（Fix #1，2026-09-06）：真实 `vm_fork` sendrec | | | |
+| D-04 | ✅ 已修复（Fix #1）：`send_kernel_request` 判定为与 C 不符的原型残留，删除 | | | |
+| D-05 | `ipc/vfs.rs:453` | `sched_start_user` 非 KERNEL/NONE 调度器 `unimplemented!()` | 16-scheduling.md | A-8（SCHED 客户端）；**V3 增补：其逻辑层 `sched.rs:200-212` 有调度器端点硬编码偏差，见 V3-P2-3** |
+| D-06 | ✅ 已修复（Fix #8，2026-09-06） | | | |
+| D-07 | ✅ 已修复（Fix #9，2026-09-06） | | | |
+| D-08 | ✅ 已修复（Fix #10，2026-09-06） | | | |
+| D-09 | ✅ 已修复（Fix #25，2026-09-07） | | | |
+| D-10 | ✅ 已修复（Fix #5，2026-09-06）；**V3 勘误：sig_proc 的 trace 分支（signal.rs:229-239）仍是置位 stub，Fix #5 的"真实 sig_proc"声明对该分支过度声称——见 V3-P1-1** | | | |
+| D-11 | ✅ 已修复（Fix #7，2026-09-06） | | | |
+| D-12 | `init.rs:654-656` | minix_sched 客户端占位（sched_start 假 endpoint） | 16-scheduling.md | A-8 |
+| D-13 | ✅ 已修复（Fix #23，2026-09-06；范围仅 do_exit 的 PRIV_PROC 违规分支） | | | |
+| D-14 | ✅ 已修复（Fix #26，2026-09-07） | | | |
+| D-15 | ✅ 已修复（Fix #11，2026-09-06） | | | |
+| D-16 | `exit.rs:261/265` | core dump 路径名指针为 0——依赖未解除（VFS 契约重设计 + minix-types wire 成员） | 09-pm-exit.md | 契约决策 + E7 |
+| D-17 | `exit.rs:323` | `sched_stop` 假装 Ok——SCHED 服务器（16-stage）尚不存在 | 16-scheduling.md | A-8 |
+| D-18 | ✅ 已修复（Fix #24，2026-09-07） | | | |
+| D-19 | ✅ 已修复（Fix #12，2026-09-06） | | | |
+| D-20 | ✅ 已修复（Fix #6，2026-09-06） | | | |
+| D-21 | ✅ 已修复（Fix #27，2026-09-07 实施 / 09-08 补记） | | | |
+| D-22 | ✅ 已修复（Fix #13，2026-09-06） | | | |
+| D-23 | ✅ 已修复（Fix #14，2026-09-06） | | | |
+| D-24 | ✅ 已修复（Fix #15，2026-09-06） | | | |
+| D-25 | ✅ 已修复（Fix #28，2026-09-07） | | | |
+| D-26 | ✅ 已修复（Fix #22，2026-09-06） | | | |
+| D-27 | ✅ 已修复（Fix #32，2026-09-08）：SIGHUP 会话组广播 | | | |
+| D-28 | ✅ 已修复（Fix #34，2026-09-08）：check_parent 的 SIGCHLD 投递 | | | |
 
-不属于 DEFERRED 但同源的两个已知缺口（plan.md §4 已登记，此处仅索引）：A-7 定时器抽象（`plan.md:201`）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY（`plan.md:204`）、A-13 进程组/会话设计层（`plan.md:207`）。
+不属于 DEFERRED 但同源（plan.md §4 登记）：A-7 定时器抽象（部分收敛，Fix #39）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY、A-13 进程组/会话设计层。
 
 ---
 
-## 7. 对照 Redox 的架构参考
+## 7. 对照 Redox 的架构参考（第 1 轮 5 条 + V2 轮 7 条）
 
-> 本次审查的联网调研受网络限制未完成，以下引用为 Redox 仓库路径级参考（基于既有知识整理，未逐行核对行号；采纳前建议对 GitLab 源码复核）。05 条均给出与 PM 现状的映射。
-
-1. **进程管理的位置：内核 vs 用户态服务器。** Redox 没有独立的 PM 服务器，进程生命周期管理在内核 `redox-os/kernel` 的 `src/context/`（`Context` 结构 + `Status::{Runnable, Blocked, Stopped, Halted}` 状态机），用户态只通过系统调用与之交互。Minix3 把 PM 放用户态是微内核纯粹性的选择，本项目沿用。这决定了 minix-rs 的一个硬约束：**PM 的任何生命周期语义要端到端验证，内核 IPC（P1-3）是第一依赖**——Redox 不存在这层断档，其 context 状态机从第一天就是可运行的。
-2. **状态建模：互斥枚举 + 阻塞原因结构化。** Redox 的 `Status` 枚举与本项目 `Lifecycle`（`mproc/lifecycle.rs`，ARCH A-2）是同一方向；Redox 进一步把"为何阻塞"表达为 context 的等待条件（wake 机制），而 minix-rs 的 `BlockState`（`mproc/block.rs`，VFS_CALL/EVENT_CALL/EventCall cursor）已经是组合子风格。可借鉴点：Redox 的唤醒条件与状态是绑定的（Blocked 必带 wake reason），`BlockState` 若未来出现"阻塞原因与恢复动作不匹配"的构造，可参考其把恢复动作编码进状态变体。
-3. **信号的决策边界。** Redox 的信号投递决策在内核（`kernel/src/scheme/sig.rs` 的信号方案 + 用户态 trampoline 由 redox-rt 提供），Minix3 把全部决策（check_sig/sig_proc）放在 PM。minix-rs 保持 C 的边界是正确选择；对照的启示是：无论决策在内核还是服务器，**投递动作的内核接口（`sys_sigsend`/`sys_kill`，对应 D-13/D-18）必须与决策逻辑同步设计**，否则会出现 Redox 不存在的"决策完毕无法投递"断档。
-4. **动态注册表 vs 编译期穷尽 match。** Redox 的 scheme 是动态集合，内核用注册表 + `SchemeId` 查找（`kernel/src/scheme/mod.rs`）；PM 的 47 个调用是编译期固定域，`PmCall` 穷尽 match（A-5）是更优解，编译器保证完整性。对照结论：**A-5 的方向不需要动摇，需要的是单一入口**（P1-1）——Redox 的注册表之所以可行，是因为所有 scheme 调用走同一条内核路径；PM 当前"一张死表 + 内联旁路"恰好破坏了这个前提。
-5. **用户态服务的异步往返记账。** Redox 的 relibc/posix scheme 用句柄记账 + 事件总线管理异步回复（`relibc/src/platform/` 侧），与 PM↔VFS 的 11 路回复状态机（`ipc/vfs.rs`，`handle_vfs_reply`）是同型问题。PM 的状态机目前是 match 分派 + 各状态下手工回复，规模尚可控；若后续 11 路之外再膨胀（RS 协同、MIB 读取），可参考 Redox 把"句柄 → 挂起请求上下文"做成显式记账表，而不是扩展 match 臂数量。
+第 1 轮 §7 的 5 条（进程管理位置 / 状态建模 / 信号决策边界 / 注册表 vs 穷尽 match / 异步往返记账）与 V2 轮 §11.3 的 7 条（V2-Redox-1 用户态迁移事实、僵尸记账、孤儿语义、PID 轮转、信号终态形态、fork 协议、事件循环惯例）继续有效，正文保留在 2026-09-08 压缩前版本与本文件 §11.3。V3 轮增补见 §12.4。
 
 ---
 
 ## 8. 建议的推进顺序
 
-> 2026-09-06 轮的推进顺序已执行完毕（逐条证据见 §10）；V2 轮的推进顺序见 §11.6。
+第 1 轮顺序已执行完毕（Fix #1-#28）；第 2 轮见 §11.6；**第 3 轮见 §12.5**。
 
 ## 9. 跨阶段条目抽取索引（edge_todo.md）
 
-> **判定规则**：沿用 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` 头部的三类定义——① 共享契约/基础设施层（minix-types、minix-sys）的缺陷与重构；② 对方 stage 目录里的生产代码；③ 多进程联调测试。stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）不属于 edge，保留在本文件实施。
->
-> **通电口径**（沿用 02-stage-vm campaign 惯例，模式 60 诚实契约）：依赖共享 trap 层/系统调用面的条目，PM 侧逻辑完备 + mock 测试即标 ✅，真实通电挂对应 edge 条目。
+> **判定规则**：① 共享契约/基础设施层（minix-types、minix-sys）的缺陷与重构；② 对方 stage 目录里的生产代码；③ 多进程联调测试。stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）不属于 edge。
+> **通电口径**：依赖共享 trap 层/系统调用面的条目，PM 侧逻辑完备 + mock 测试即标 ✅，真实通电挂对应 edge 条目。
 
-### 9.1 P/D 条目 → edge 条目映射
+### 9.1 P/D 条目 → edge 条目映射（要点）
 
-| 本文件条目 | stage 内保留部分 | 跨阶段部分（edge_todo.md） |
+- P1-3 内核边界 → E1（trap 层）+ E2/E6（SYS_* wrapper）
+- P1-4 codec 层 → E7（wire 结构体系统化；stage 内只做消费端接线）
+- P2-3 死代码与调用号双址 → E7
+- D-02 → E6；D-15/D-19 真实往返 → E5(a)；D-05/D-12/D-17 → A-8/06-stage；D-16 → E7
+
+### 9.2 V3 轮（§12）跨阶段抽取
+
+| V3 条目 | stage 内部分 | 跨阶段部分 |
 |---|---|---|
-| P1-1 分发层分裂 | 全部 stage 内 | 消费的 wire 类型缺口随 P1-4 → E7 |
-| P1-2 假成功接缝 | fail-closed 改造（返回 Err / unimplemented） | 真实 VM_FORK 往返 → E5(a)（联调）+ E1/E2（trap 与 SYS_FORK wire） |
-| P1-3 内核边界未实现 | KernelIpcTransport 实现与最小内核面倒推 | trap 层 → E1；SYS_* wrapper → E2（VM 清单）/ E6（PM 清单，2026-09-06 新增） |
-| P1-4 codec 层缺口 | PM 侧接线（match 臂消费 wire 类型） | wire 结构体系统化 → E7 |
-| P2-3 死代码与调用号双址 | —（本体在 minix-types，非 PM 生产代码） | E7（死代码处置 + 调用号收敛 + SEND_PRIORITY/SEND_TIME_SLICE） |
-| P1-5/P1-6、P2-1/P2-2/P2-4~P2-7、P3 | 全部 stage 内 | 无 |
+| V3-P1-2 内核信号入口 | notify 分支 + process_ksig 驱动设计 | 内核 ksig 对端现状核实 + wrapper → **E6 清单增补** |
+| V3-P1-4 getsysinfo 假数据 | 真实拷出路径（SysInfoCtl 扩展） | 若需 wire 成员 → E7 |
+| V3-P2-6 错误码折叠 | 3 个错误枚举加透传通道 | 无 |
+| V3-P3-5 PROC_EVENT_REPLY 双址 | —（本体在共享层消费侧） | **E7 清单增补** |
 
-### 9.2 D-XX 表（§6）跨阶段解除条件对照
-
-| D-XX | 解除条件归属 |
-|---|---|
-| D-01 transport 三方法 unimplemented | E1（minix-sys trap 层） |
-| D-02 BootParams::placeholder | E6（SYS_GETMONPARAMS/SYS_GETIMAGE——kernel 对端亦缺，需双侧新建） |
-| D-03/D-04 send_vm_fork / send_kernel_request 假成功 | stage 内先改 fail-closed；真实往返 → E5(a) + E2（SYS_FORK wire） |
-| D-09 sys_abort | E6（kernel 对端已实现，`os/kernel/src/syscall.rs:1793`） |
-| D-13 sys_kill | E6（`os/kernel/src/syscall_signal.rs:148`） |
-| D-15/D-19 vm_willexit / vm_exit | 02-stage-vm 生产代码 + 联调 → E5(a) |
-| D-18 sys_clear | E6（`os/kernel/src/syscall_process.rs:366`） |
-| D-21 rusage safecopy | E6（SYS_SAFECOPYFROM/TO，`os/kernel/src/syscall_copy.rs:361`） |
-| D-24 getticks | E6（SYS_TIMES，`os/kernel/src/syscall_clock.rs:90`） |
-
-其余 D-XX（D-05~D-08、D-10~D-12、D-14、D-16、D-17、D-20、D-22、D-23）的解除条件都在 PM stage 内或其归属文档（11/13/14/16/17/18）内，不涉及跨 stage。
-
-### 9.3 不在本阶段登记的边界事项
-
-- **PM↔VFS 协议联调**：`minix-types/src/ipc/vfs.rs`（873 行）类型已齐，双侧消费同一契约，无已知不一致——联调条目应由 05-stage-vfs 的扫描自行登记，此处不预设。
-- **PM↔SCHED 客户端**（A-8，D-12）：`sched.rs` 的占位消费 SCHEDULING_* 消息契约，属 PM stage 内工作；缺失的 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量已并入 E7 范围。
-
-### 9.4 V2 轮（§11）跨阶段抽取补充（2026-09-08）
-
-本轮 V2 条目经三类判定核对后，**没有新增独立 E 条目**——所有跨界依赖都落在既有 E1/E5/E6/E7 的范围内，只有两处进度/清单增补：
-
-| V2 条目/批次 | stage 内部分 | 跨阶段部分（edge_todo.md） |
-|---|---|---|
-| V2-P0-1/P0-2（信号终止与集合位序） | 全部 stage 内（transport 贯通、常量层修正） | 通电仍挂 E1（无新增登记） |
-| V2-P1-2（SIGHUP 广播，新 D-27） | stage 内（复用 check_sig + 既有 sys_kill wrapper） | 无 |
-| V2-P2-1（itimer，批次 D） | 重挂收敛 + notify 接线 | `sys_setalarm`/`sys_vtimer` wrapper → E6（2026-09-08 进度块已更新清单）；通电 → E1 |
-| 接线批次 A/B/C/G（§11.1.1） | match 臂 + handler 接线 + 集成测试 | wire 类型 → E7（含 rs_start 先例）；`sys_datacopy`/`sys_sigreturn` 等 wrapper → E6 |
-| 批次 E（exec） | V2-P2-2 caller 门 + 臂 | `sys_exec` kernel 对端（既有 D-08 注）；D-16 core-name 契约 → E7 |
-| V2-P3-2（GID_MAX） | 判定与实现 | gid 载荷宽度决策随 E7 A 批次 |
-
-微内核阶段独立性的结论（对应用户口径）：PM 的 stage 内生产代码不依赖任何其它 stage 即可完整实现并测试——本轮 40 臂批次表中每一项的前置条件要么是 PM 内部工作，要么是共享契约层（minix-types/minix-sys，E6/E7）或对方 stage 生产代码（SCHED 服务器属 06-stage）或联调（E5/E1），与 edge_todo.md 头部的三类判定完全吻合，无第④类。
+其余 V3 条目均为 stage 内工作。
 
 ---
 
-## 10. 修复记录
-
-> 每轮一个 TODO（todo-fix 工作流）：先讲现状与依据（fix-guard），再列候选设计（translate 防线：对比 Linux/Redox/OS 理论），实施 code + doc + test 三方同步，回归 review 后提交。
-
-### ✅ Fix #1: P1-2（含 D-03/D-04）— VM fork 接缝 fail-closed 化（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/dispatcher.rs`（假成功占位 → 真实 `vm_fork` 自由函数，:105-155）
-- `os/servers/pm/src/ipc/transport.rs`（`TestIpcTransport` 增加脚本化 sendrec 回复队列）
-- `os/servers/pm/src/fork.rs`（`do_fork`/`do_srv_fork` 接线；新增 `queue_vm_fork_reply` 测试 helper）
-
-**Before**：`send_vm_fork(request)` 不发送任何消息，直接返回 `Ok(VmForkOut { child_endpoint: from_generation_slot(1, child_slot) })`——fork 链路建立在捏造的 VM 应答上；`send_kernel_request(_request)` 同样假成功，且全仓零调用。
-
-**After**：
-1. **设计选型**（三案对比）：(a) 沿用 crate 内惯例——`IpcTransport` seam 上的自由函数 `vm_fork`（与 `tell_vfs` 同构）；(b) 仿 VM 侧 KernelGateway 建独立 `VmGateway` trait；(c) `IpcTransport` 加 provided method。选 (a)：PM 已有 transport seam，`tell_vfs` 先例证明自由函数足够；KernelGateway 存在的原因是 VM 当时缺 seam，再加 trait 是重复抽象；(c) 把 VM 协议知识泄漏进通用传输 trait。**C 依据**：`vm_fork` 是 `_taskcall(VM_PROC_NR, VM_FORK)`（libsys vm_fork.c:16-25）——普通任务调用而非内核调用，`send_kernel_request` 步骤本身与 C 不符（`proc` 复制由 VM 的 `sys_fork` 完成，PM 无独立内核 fork 请求），随假成功一并删除（D-04 处置）。
-2. **wire 实现**：请求 m1i1=VMF_ENDPOINT / m1i2=VMF_SLOTNO，回复校验 `m_type == OK` 后读 m1i3=VMF_CHILD_ENDPOINT；传输失败或 VM 拒绝（非 OK）一律 `ForkCoordError::VmError`，fail-closed。errno 细粒度传播依赖 `PmError` 载荷变体（共享层，挂 edge E7）。
-3. **测试脚本化**：`TestIpcTransport::queue_sendrec_reply`（VecDeque 整条回复出队，退回旧行为仅覆盖 m_type）；4 个依赖假应答的测试改脚本化（预期失败→通过），新增 3 个 `vm_fork` 单元测试（编码/解码、VM 拒绝、传输失败）。
-4. **顺带对齐**：`do_fork` 的顺序注释修正为 C 同序（`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后）——旧的"alloc_slot 在前需回滚"说法与代码不符。
-
-**Verified**：
-- `cargo test -p minix-pm --lib`：319 → **322 passed / 0 failed**（4 个假应答测试改造为脚本化 +3 个 vm_fork 新增）
-- `cargo check -p minix-pm`：通过
-- `grep -rn "send_vm_fork\|send_kernel_request" os/servers/pm/src/`：零命中（假接缝清除）
-
-**Docs**：
-- `07-pm-fork.md`：§1.2 回滚说法修正、§2.3 Rust 现状更新、D3 重写（假成功→真实 sendrec 全论证）、§4.1 步骤清单重写（8 步 C 同序 + 删 send_kernel_request 论证）、§4.5 不变量 3/4 行修正
-- `08-pm-srv-fork.md`：D7 步数对齐（9→8 步）并引用 07 D3
-- 本文件：§0 表 P1-2 行、P1-2 标题、§6 D-03/D-04 行标注
-
-**未做（DEFERRED 论证）**：真实硬件上的 VM_FORK 往返（VM 服务器运行 + trap 层）挂 `edge_todo.md` E5(a)/E1——本条 stage 内目标（接缝 fail-closed + wire 正确 + mock 验证）已完整达成，符合通电口径。
-
-### ✅ Fix #2: P1-1 — 分发收敛到单一分发表（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/calls.rs`（`dispatch_pm_call` 重写为 47 臂穷尽 match：7 个真实臂 + 40 个 ENOSYS 占位；签名扩展为 `(call, table, events, transport, caller, msg)`）
-- `os/servers/pm/src/ipc/dispatcher.rs`（`dispatch_message` 事件回复臂接真实 `do_proc_event_reply`；签名同步扩展）
-- `os/servers/pm/src/init.rs`（`run_once` 删除全部 7 个内联拦截块，只留 VFS 回复拦截 + 统一分发/回复；清理随之失效的导入）
-
-**Before**：主循环用裸魔数（`msg.m_type == 2/41/1/3/11/42`）内联拦截 7 个调用，unsafe 解码散落 `init.rs`；`dispatch_pm_call(call, table, caller)` 只有 1 个 Fork 死臂（服务器路径永不触发）+ 46 个 ENOSYS；`table` 参数无用（clippy 报告）；`PROC_EVENT_REPLY` 在 `run_once` 与 `dispatch_message` 双路拦截。
-
-**After**（设计选型，两案对比）：(a) **单一穷尽 match**（已选）——C `call_vec` 是一张表，所有调用同路；编译期保证 47 臂完整，接线进度一目了然。(b) 注册表 `fn(&mut Cx, &Message) -> ReplyIntent` 47 项（仿 C 函数指针的形）——可动态替换便于注入，但 47 个 handler 是编译期固定域，match 的穷尽性检查优于运行时表，且避免函数指针间接层；Redox 只对动态集合（scheme）用注册表。选 (a)。
-- 载荷解码从 `init.rs` 收编进各 match 臂（仍按原 union 臂逐字段解码，语义不变：Fork 用 `m_source`、Exit 用 `m_lc_pm_exit.status`、Wait4 三字段、Kill/SrvKill 双字段、SrvFork 的 `m_lsys_pm_srv_fork`、ProcEventMask 的 `m_lsys_pm_proceventmask.mask`）。
-- SUSPEND 映射保持 plan.md §7.3 契约：Fork Ok→ReplyLater / Exit→NoReply / Wait4→handler 意图 / Kill·SrvKill 的 is_exiting→ReplyLater / SrvFork→Reply(pid)。
-- `dispatch_message` 的事件回复臂从 ReplyLater 钩子换成真实 `do_proc_event_reply`（06 已落地，钩子过时）。
-
-**Verified**：
-- `cargo test -p minix-pm --lib`：322 → **325 passed / 0 failed**（calls.rs 新增 fork 成功/父不存在/Exit NoReply 三测试，dispatcher.rs 新增事件回复非内核调用者 ENOSYS 测试；旧 ENOSYS 占位断言改指 GetPid）
-- `cargo clippy -p minix-pm --lib`：`dispatch_pm_call` 的 unused `table` 参数告警消失（P3-2 该项闭环）
-- `grep -n "msg.m_type == " os/servers/pm/src/init.rs`：零命中（裸魔数清除）
-
-**Docs**：
-- `04-ipc-dispatch.md`：§3.6 D6 表（46→40 + 接线计数）、差异论证段重写、§4.2 重写（单一分发表 + "主循环不得内联拦截"设计点）、§4.3 代码示例与钩子注记更新、§6 下一入口更新
-- `plan.md`：A-5 状态"已实现"→"部分实现（7 接线/40 占位 + 单一表收敛说明）"
-- 本文件：§0 表 P1-1 行、P1-1 标题
-
-**未做（DEFERRED 论证）**：40 个未接线调用的点亮依赖各自归属文档（07~20）与 E7 wire 类型，不在本条范围。
-
-### ✅ Fix #3: P1-5 — crate 外端到端集成测试层（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/tests/run_once_integration.rs`（新增，6 个端到端场景）
-- `os/servers/pm/src/init.rs`（`run_once` 改 pub 单步驱动接口；新增 `table_mut`/`transport`/`transport_mut` 访问器）
-
-**Before**：319 个单元测试全部针对逻辑模块；分发测试验证 `dispatch_message`/`dispatch_pm_call` 而生产走 `init.rs` 内联路径（Fix #2 后已同路）；跨 crate 集成测试 `os/tests/pm_vm_fork.rs` 整体停用且无替代——"从收到 Message 到发出 Reply"的完整链路零覆盖。
-
-**After**（设计选型）：测试位置两案——(a) crate 外 `tests/` 目录（已选）：真外部视角，只能走公共 API，防止测试绕过封装（旧 pm_vm_fork 之死正是内部类型耦合）；(b) crate 内 `#[cfg(test)]` 模块：可触私有状态但等于仍是"内部视角"。选 (a)，配套最小公共面：`run_once` pub（单步驱动接口，`run()` 循环体即调它）+ `table_mut`/`transport_mut` 访问器（对应 C 在 main 循环前直接填 `mproc`/预置消息的 harness 播种，生产路径不经过）。
-- 六场景：① fork 全链路 wire 序列（VM_FORK → VFS_PM_FORK + SUSPEND 零 caller 回复 + 子槽 VFS_CALL）；② exit 永不回复 + 父 wait 中 → ToldParent；③ wait4 无子 → ECHILD；④ kill 无目标 → ESRCH；⑤ 未接线调用 → ENOSYS；⑥ 损坏 VFS 回复 → fail-fast panic（非 ENOSYS 兜底）。
-- 播种用 `BootParams::placeholder()`（空 boot image，不产生进程）+ `table_mut` 手工填表——对应 C 语义，不依赖 init 流程。
-
-**Verified**：
-- `cargo test -p minix-pm --lib`：**325 passed**（无回归）
-- `cargo test -p minix-pm --test run_once_integration`：**6 passed / 0 failed**
-- 测试名对账：§5.1 表行 9-18 按当代测试名刷新（旧 `test_dispatch_fork_is_reply_later` 等已演化名全部 grep 命中）
-
-**Docs**：`04-ipc-dispatch.md` §5.1（行 9-18 测试名对账刷新 + 新增 14a 行）、§5.2 统计更新（325 lib + 6 integration）；本文件 §0 表与标题标注。
-
-**未做（DEFERRED 论证）**：跨服务器联调（PM↔VM fork 全链路双活）挂 `edge_todo.md` E5(a)——本条目标是 crate 内端到端（消息面），与 E5(a)（多进程通电）分层不重叠。
-
-### ✅ Fix #4: P1-6 — 入口命名统一回 C 名（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/{fork,exit,wait,signal,ipc/calls}.rs`（6 个协调器重命名：`handle_fork→do_fork`、`handle_srv_fork→do_srv_fork`、`handle_exit→do_exit`、`handle_wait4→do_wait4`、`handle_kill→do_kill`、`handle_srv_kill→do_srv_kill`；含测试名与注释同步）
-- `tools/coverage-extract/pm-semantic-map.json`（补 `is_sane_timeval → Timeval::is_sane` 方法化改名映射）
-- 文档 05/07/08/09/10/11/12/04 + 本文件的散文引用同步
-
-**Before/After**：重命名比 P1-6 原清单（4 个）多收编 2 个——`do_fork`/`do_srv_fork` 的 C 名同样被 `handle_*` 遮蔽，属同构问题一并统一；`handle_vfs_reply`/`handle_clock_notify` 保留（前者本身就是 C 函数名 main.c:295）。P1-6 原方案 1 的理由全部兑现：同文件已保留 C 名的内部函数一致、覆盖率工具零误报、改名未换来语义信息。
-
-**Verified**：
-- `cargo test -p minix-pm`：**325 lib + 6 integration passed**（纯重命名零语义变化）
-- Gate A 复测（coverage-extract.py）：Rust 名称匹配 **89.0% → 93.6%**，文档覆盖 **98.2% → 100%**；剩余 7 个未匹配均已核实为非缺口（SEND_* 挂 E7、ESCRIPT 是 C 死代码、EXTERN/_SYSTEM/_TABLE 是 C 编译宏）
-- `grep -rn "fn handle_" os/servers/pm/src/`：仅剩 `handle_vfs_reply`/`handle_clock_notify`
-
-**Docs**：`07-pm-fork.md` §4.1/§5 测试表（`test_do_fork_success` 等新名）、`08-pm-srv-fork.md` D7、`09/10/11/12` 散文、`05-vfs-interaction.md` §接线记录、`04-ipc-dispatch.md` §4.2、本文件 §1.1/§1.2 矩阵。
-
-**未做（DEFERRED 论证）**：无——本条为纯机械重命名，无外部依赖。
-
-### ✅ Fix #5: D-10 — tracer SIGSTOP 与 TO_TRACEFORK 条件继承（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/fork.rs`（新增共享决策函数 `inherit_guardianship`；`copy_mproc` 的监护写入改条件继承；`do_fork` 第 8 步 / `do_srv_fork` 第 7 步接真实 `crate::signal::sig_proc(child, SIGSTOP, trace=true, ksig=false)`；+3 测试）
-
-**Before**：两处 no-op 注释（"DEFERRED — 11-signal-core.md"）；且 `copy_mproc`/`srv_fork_from` 无条件把子进程监护重置为 `Normal`——即使接线了 `sig_proc`，`tracer().is_some()` 也恒假（探索阶段发现的**隐藏阻塞**：C 经 `*rmc=*rmp` 整体复制继承 tracer，Rust 的显式构造路径把它丢了）。
-
-**After**（设计选型）：监护继承的落点两案——(a) 提取共享 `inherit_guardianship(parent, parent_slot)` 供两条构造路径复用（已选）；(b) 在 `Guardianship`/构造函数内部隐式继承（改 `srv_fork_from` 签名或语义）。选 (a)：C 的语义点是显式的（复制后条件清除），Rust 的显式构造哲学下把决策函数放在编排层与 C 的"复制 → 条件清除"两段式同构，且不污染 `mproc` 层构造器的无副作用性。语义对照 `forkexit.c:87-96`：父 `Traced` + `TRACEFORK` → 子继承（`trace_exit=false`，对应 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`）；否则 `Normal`。`sig_proc` 的 trace 分支（`signal.c:384` → `signal.rs:210-216`）置 `sigtrace` SIGSTOP 位 + `trace.stopped`。
-
-**Verified**：
-- `cargo test -p minix-pm`：325 → **328 lib passed**（+3：TO_TRACEFORK 继承+停止 / 无 TRACEFORK 清除+运行 / srv 路径继承）+ 6 integration
-- `grep -rn "DEFERRED" os/servers/pm/src/fork.rs`：零命中
-
-**Docs**：`07-pm-fork.md` §2.7 重写（继承链论证）、D7 重写（DEFERRED → 落地记录 + 隐藏阻塞说明）、§4.1 步骤 8、§5.2 测试表 +3、§5.3 对账刷新；`08-pm-srv-fork.md` §2.7、步骤 8、§5.2/§5.3 对账；本文件 §6 D-10 行。
-
-**未做（DEFERRED 论证）**：无——`sig_proc` 的 ptrace 停止态表达（`trace.stopped` + `sigtrace`）已在 crate 内自洽；真实 `sys_trace` 停止调用挂内核面（E6 SYS_TRACE 范围，08-trace 文档域）。
-
-### ✅ Fix #6: D-20 — wait4 的 TRACE_STOPPED 环真实化（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/wait.rs`（TRACE_STOPPED 环重写 + 2 测试）
-
-**Before**：停止态子进程一律返回 `w_stopcode(5)`（SIGTRAP 硬编码占位），不读 `trace_mask`、不消费信号位——tracer wait 到的停止信号是虚构的。
-
-**After**：对齐 `forkexit.c:519-531` 全语义——扫描 `SignalState::trace_mask`（`mp_sigtrace` 的 Rust 表达）取最低待报告信号 → 清位（`sigdelset`）→ 回复载荷 `W_STOPCODE(i)` → 返回 pid；**sigtrace 为空时落出该环**继续 ZOMBIE 环（C 的 for 未命中即落出），不虚构停止码。设计说明：消费位是 C 语义的一部分（同一停止信号只报告一次），与 D-10 落地的 `sig_proc` trace 分支（置位）构成完整的"投递 → 缓冲 → 报告"链。
-
-**Verified**：
-- `cargo test -p minix-pm`：328 → **330 lib passed**（+2：最低位优先消费且余位保留 / 空集落环不虚构）+ 6 integration
-- `grep -n "w_stopcode(5)" os/servers/pm/src/wait.rs`：零命中
-
-**Docs**：`10-pm-wait.md` §4.1 实现描述更新（占位 → 真实语义 + 测试名）；本文件 §6 D-20 行。
-
-**未做（DEFERRED 论证）**：无——链路两端（D-10 置位端、本条消费端）均已在 crate 内闭合。
-
-### ✅ Fix #7: D-11 — 事件终止分派 Signal 分支接真实 restart_sigs（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/signal_flow.rs`（新增 supertrait `RestartServices: KernelResume + ExitHandler + SignalDeliver`；`restart_sigs` 签名从 3 个 trait 对象收敛为 1 个；3 个测试改用合并 mock）
-- `os/servers/pm/src/event.rs`（新增生产适配器 `PmEventServices`；Signal 分支从"仅清标志"no-op 接真实 `restart_sigs`；+1 端到端测试）
-- `os/servers/pm/src/signal.rs`（`sig_proc` 的未使用 transport 参数从 `&mut dyn` 放宽为 `<T: IpcTransport + ?Sized>`——消除 `?Sized` 泛型调用链上的 dyn 强制转换死结）
-
-**Before**：`resume_event` 的终止分派中 Signal 分支是 no-op（注释自述"13 落地时替换"）——事件重投语义缺失；Exit 分支实际已接线但注释仍称"两者 DEFERRED"（过时注释）。
-
-**After**（设计选型）：适配器与签名的组合两案——(a) 三个独立 trait + 三个 `&mut`（原设计）：生产装配时三者在同一调用帧共存，而它们共享 `transport` 的 `&mut`，借用检查器拒绝；为绕开会要求 `RefCell`/raw pointer。(b) **supertrait 合并 + trait upcasting**（已选，2024 edition 后的社区惯用法）：`restart_sigs(table, target, &mut dyn RestartServices)`，函数体内按需上转为 `&mut dyn ExitHandler` 等——单一借用、mock 装配更简、成员 trait 保留使 `check_pending`/`stop_proc` 等单注入点消费者不受影响。C 依据：C 的 `restart_sigs` 直接调模块级函数，trait 拆分本就是 Rust 侧测试注入的手段，合并不改变注入语义。
-- `PmEventServices::resume` 返回 OK 的过渡契约：`block.stopped` 在当前世界由 PM 侧 `unpause`/`stop_proc` 自行置位，内核侧无真实停止态可撤销——"无内核动作"是真话而非捏造（与 P1-2 的假成功有本质区别：不虚构任何数据）；真实 `sys_resume` 登记 D-25 挂 E6。
-
-**Verified**：
-- `cargo test -p minix-pm`：330 → **331 lib passed**（+1 端到端：SIGNAL 事件终止分派 → check_pending 重投 SIGKILL → sig_proc 终止 → 僵尸化；途中确认事件推断的 UNPAUSED 前提）+ 6 integration
-- `grep -n "仅清标志" os/servers/pm/src/event.rs`：零命中
-
-**Docs**：`13-signal-flow.md` D5（签名收敛论证）+ §4.4 代码块、`06-event-subscription.md` §2.10 钩子行（DEFERRED → 落地 + D-25 引用）；本文件 §6 D-11 行 + 新增 D-25 行。
-
-**未做（DEFERRED 论证）**：`KernelResume::resume` 的真实 `sys_resume`（D-25）——依赖 minix-sys 内核调用面（E6），按通电口径以显式契约过渡。
-
-### ✅ Fix #8: D-06 — VFS 端口 `exit_proc` 委托 09 退出链（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/vfs.rs`（生产 impl 的 `exit_proc` 从 `unimplemented!()` 改为委托 `crate::exit::exit_proc`；+1 单测）
-- `05-vfs-interaction.md`（端口落地状态两处刷新）
-
-**Before/After**：生产端口一行委托（`status as i8` 截断对应 C 的 exit_status 语义，`dump_core` 直传），C 锚点 `main.c:381`（FORK 调度失败 `exit_proc(rmp, -1, FALSE)`）。设计说明：端口处不做任何逻辑（无重试、无状态修补），09 的 `exit_proc` 全链自带 dump_core 双门与收养链——端口的职责只是"把 VFS 回复翻译成 PM 内部调用"。
-
-**Verified**：
-- `cargo test -p minix-pm`：**331 lib + 6 integration passed**；新单测断言子进程离开 Running + `VFS_PM_EXIT` 已发送
-- 注意：该端口当前在 FORK 失败分支的可达性仍被 D-05（`sched_start_user` 非 KERNEL/NONE 时 `unimplemented!`）遮蔽——非内核调度器的调度失败要到 A-8（16-scheduling.md）落地才可能发生；本条完成的是"端口就绪"，分支可达性归 D-05
-
-**Docs**：`05-vfs-interaction.md` 两处端口状态行；本文件 §6 D-06 行。
-
-### ✅ Fix #9: D-07 — `set_core_flag`（WCOREFLAG）落地（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/vfs.rs`（生产 impl 真实实现 + 1 单测；非 Exiting 目标 fail-fast 对应 C `main.c:362` 的 assert）
-- `os/servers/pm/src/mproc/lifecycle.rs`（`Exiting.sig_status` 字段文档补 bit7 = WCOREFLAG 位语义）
-- `os/servers/pm/src/wait.rs`（ZOMBIE 环的 `w_exitcode` 组合改 `as u8 as i32` 无符号字节语义 + 1 端到端测试）
-
-**Before/After**：生产端口一行位运算（`sig_status = sig_status as u8 | WCOREFLAG as u8`），C 锚点 `main.c:357-358`。设计说明：(a) 不新增独立 sigstatus 字段——`Lifecycle::Exiting.sig_status` 已是 C `mp_sigstatus` 信号字节的 Rust 等价物，WCOREFLAG 就是它的 bit7（i8 承载 0o200 是位语义问题不是模型问题）；(b) **连带修复**：wait4 组合处 `ec as i32/ss as i32` 的符号扩展会破坏 bit7 与退出码 0xFF——改为 `as u8 as i32` 字节语义（C `W_EXITCODE(status,sig) = status<<8|sig` 全程无符号字节）。
-
-**Verified**：
-- `cargo test -p minix-pm`：331 → **334 lib passed**（+1 set_core_flag 位运算与 fail-fast、+1 僵尸→ToldParent 的 WCOREFLAG 位保留与 wire m_type）+ 6 integration
-- Core 分支可达性：`VfsReply::Core { status == OK }` → `set_core_flag`（`vfs.rs:255-262`），与 C fallthrough 到 EXIT 分支一致
-
-**Docs**：`lifecycle.rs` 字段文档；本文件 §6 D-07 行 + **新增 D-26**（wait4 回复载荷的 wire 建模缺失——`mess_pm_lc_wait4.status` 在 minix-types 无对应成员，挂 E7）。
-
-**未做（DEFERRED 论证）**：wait 状态码到 wire 的最后一跳（D-26）——共享层 minix-types 缺 union 成员，属 E7 范围，stage 内不私改共享层。
-
-### ✅ Fix #10: D-08 — VFS 端口 `exec_restart` 接通 17 全语义（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/exec.rs`（`KernelExec::reply`/`TracerSig::send` 增加 `table`/`caller` 参数；新增 supertrait `ExecRestartServices`；`exec_restart`/`do_execrestart` 收敛为单一 svc 参数；3 个测试的 mock 合并重构）
-- `os/servers/pm/src/ipc/vfs.rs`（新增生产端口 `ExecServices`：exec→`-ENOSYS`（E6 契约）、kill→显式 no-op（E6/D-13 家族）、reply→transport 发送、send→`check_sig`；生产 `exec_restart` 委托 17 全语义）
-- `17-exec.md`（§4.4 签名同步）
-
-**Before/After**：设计选型——(a) 端口持 `&mut ProcTable`+`&mut transport`：与 `exec_restart` 自身的表借用冲突，无解；(b) **trait 方法携带 `table` 参数 + 端口只持 transport**（已选）：`exec_restart` 保留表的独占所有权（它需要大量改表），端口方法被调用时拿到表的转引用——生产/测试两种装配都成立；(c) 完全合并进 restart_sigs 式单 trait——同 (b) 但方法粒度保留（exec/kill 不需要表就不传）。`KernelExec::exec` 的生产实现返回 `-ENOSYS`（内核调用面挂 E6），由 `exec_restart` 尾部已有的 panic 承接（C `exec.c:198` 同型 panic）——失败可观测而非伪造成功，符合通电口径。
-
-**Verified**：
-- `cargo test -p minix-pm`：**334 lib + 6 integration passed**（exec 10 项全过：失败回复/PARTIAL 拆除/caught 复位/tracer 信号）
-- `grep -n "unimplemented" os/servers/pm/src/ipc/vfs.rs`：仅剩 D-05/D-09 两处（各有独立的阻塞依赖）
-
-**Docs**：`17-exec.md` §4.4 三行签名；本文件 §6 D-08 行。
-
-### ✅ Fix #11: D-15 — `vm_willexit` 真实化（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/dispatcher.rs`（新增 `vm_willexit` 自由函数，与 `vm_fork` 同构；+2 单测）
-- `os/servers/pm/src/exit.rs`（`exit_proc` 步骤 6 从 no-op 接真实调用；失败 panic 与 C 同文案）
-
-**Before/After**：C 语义（`forkexit.c:332-334`）：`vm_willexit` 失败即 panic——VM 的内存记账依赖该预告，缺失永久失衡，不可恢复。Rust 侧 wire：`_taskcall(VM, VM_WILLEXIT)`，载荷 `VMWE_ENDPOINT`（m1i1，`com.h:644`），无回复载荷；传输失败收敛为 `-EIO`、VM 拒绝透传 errno，调用方以同文案 panic。`?Sized` 泛型保持与 `exit_proc` 的调用链兼容。
-
-**Verified**：
-- `cargo test -p minix-pm`：334 → **336 lib passed**（+2：endpoint 编码/OK 应答、VM 拒绝透传）+ 6 integration
-- `grep -n "vm_willexit" os/servers/pm/src/exit.rs` → 真实调用点
-
-**Docs**：`09-pm-exit.md` §3 占位行刷新；本文件 §6 D-15 行。
-
-**未做（DEFERRED 论证）**：VM 侧真实处理（对端记账语义）与硬件往返挂 `edge_todo.md` E5(a)/E1——PM 侧 wire 与失败语义已完备。
-
-### ✅ Fix #12: D-19 — `vm_exit` 真实化（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/dispatcher.rs`（新增 `vm_exit` 自由函数；+2 单测）
-- `os/servers/pm/src/exit.rs`（`exit_restart` 步骤 5 接真实调用；参数 `_transport` 更名 `transport`——它终于被使用了；失败 panic 与 C 同文案）
-- `os/servers/pm/src/event.rs`（3 个测试的 wire 断言按新现实刷新：终止分派现在包含一条 VM_EXIT 发送）
-
-**Before/After**：C 语义（`forkexit.c:455-457`）：`vm_exit` 失败即 panic——页表随进程终结，VM 不回收即永久泄漏。Rust wire：`_taskcall(VM, VM_EXIT)`，载荷 `VME_ENDPOINT`（m1i1，`com.h:631`）。连带修正：`_transport` 参数更名——"未使用参数"的过渡标记随真实接线自然消失。
-
-**Verified**：
-- `cargo test -p minix-pm`：336 → **338 lib passed**（+2 vm_exit 单测）+ 6 integration（3 个 event 测试断言从 is_empty 更新为含 VM_EXIT 的精确计数）
-- `grep -n "stubbed" os/servers/pm/src/exit.rs`：仅剩 D-13/D-14/D-16/D-17/D-18 家族（各有登记）
-
-**Docs**：`09-pm-exit.md` 占位行刷新；本文件 §6 D-19 行。
-
-**未做（DEFERRED 论证）**：VM 侧真实页表回收与硬件往返挂 `edge_todo.md` E5(a)/E1。
-
-### ✅ Fix #13: D-22 — `is_stacktrace`/`is_termination` 按真 C 谓词重写（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/signal.rs`（三个谓词函数重写 + 补 7 个 lethal 族本地常量 + 1 谓词精确集测试 + 1 个既有测试的语义修正）
-
-**Before/After**：C ground truth 是**谓词宏**（`sys/signal.h:279-286`）而非位掩码（原 D-22 记录有臆断）：`SIGS_IS_LETHAL = ILL|BUS|FPE|SEGV|EMT|ABRT`、`SIGS_IS_STACKTRACE = LETHAL && !=ABRT`、`SIGS_IS_TERMINATION = LETHAL || KILL || PIPE`。旧 Rust 实现三处错：`is_stacktrace` 硬编码 false（PRIV_PROC 的 stacktrace 分支死代码）；`is_lethal` 近似列表错含 SIGKILL/TERM/TRAP；`is_termination` 反向近似列表与 C 集合不符。连带发现：`test_kill_eperm_for_lethal_priv` 用 SIGKILL 编码了旧错误行为（C 中 SIGKILL 经 kill(2) 对 PRIV_PROC 合法）——按 Ground Truth 链改用 SIGSEGV 并留修正注释。归属修正：D-22 实属 11-signal-core.md（信号系统语义），原登记 16-scheduling 有误。
-
-**Verified**：
-- `cargo test -p minix-pm`：336 → **339 lib passed**（+1 谓词精确集测试；1 测试按 C 语义修正）+ 6 integration
-- `grep -n "false // stub" os/servers/pm/src/signal.rs`：零命中
-
-**Docs**：本文件 §6 D-22 行（含归属修正）；`signal.rs` 谓词 doc 注释带 C 锚点。
-
-**未做（DEFERRED 论证）**：无——纯函数重写，`sys_diagctl_stacktrace` 的内核调用本体归 D-09 家族（E6）。
-
-### ✅ Fix #14: D-23 — `process_ksig` 接真实 `check_vtimer`（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/signal.rs`（process_ksig 增加 `vctl: &mut dyn VTimerCtl` 显式接缝；stub 分支接真实 `check_vtimer`；**修复 `signo == 12` 应为 26 的真 bug**——SIGVTALRM=26（timer.rs:26），旧分支用 12（SIGSYS）从未命中过；+2 测试）
-- `os/servers/pm/src/signal.rs` 借用重排：pid 提取提前于可变借用调用
-
-**Before/After**：C `signal.c:326-328`：process_ksig 的 switch 对 SIGVTALRM/SIGPROF 先 `check_vtimer(proc_nr, signo)` 再 fall-through 单播。Rust 侧旧 stub 的条件表达式本身写错了信号号——修复后 26/27 正确路由到 `check_vtimer`（interval>0 时经 VTimerCtl 重设内核虚拟计时器，`alarm.c:222-241`）。设计说明：VTimerCtl 作为显式函数参数（而非内部构造）——生产装配者必须显式提供内核 sys_vtimer 适配器（E6），不存在被遗忘的静默 no-op；SIGSYS 不触碰计时器以回归测试锁定。
-
-**Verified**：
-- `cargo test -p minix-pm`：339 → **341 lib passed**（+2：SIGVTALRM 触发 Virtual 重启且 set=50 / SIGSYS 不触碰计时器）+ 6 integration
-- `grep -n "signo == 12" os/servers/pm/src/signal.rs`：零命中
-
-**Docs**：`14-itimer.md` check_vtimer 现状行；本文件 §6 D-23 行。
-
-**未做（DEFERRED 论证）**：`VTimerCtl` 生产实现（内核 `sys_vtimer`，`alarm.c:239` 未检查返回值）挂 edge E6——PM 侧逻辑与接缝完备。
-
-### ✅ Fix #15: D-24 — `getticks` 桩删除，`started` 显式注入（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/mproc/fork.rs`（删除 `fn getticks() -> Clock { 0 }`；`fork_from`/`srv_fork_from` 增加 `started: Clock` 参数；`PmContext::fork_child_from_parent` 增加 `clock: &dyn ClockSource` 参数并计算 uptime；测试更新 + FixedClock 断言 started=100_000）
-- `os/servers/pm/src/fork.rs`（协调器 `do_srv_fork` 的 `srv_fork_from` 调用点显式传 0 + E6 注释）
-
-**Before/After**：设计选型——(a) 保留 `getticks()` 桩但改读 ClockSource 全局：隐藏的假零依旧；(b) **构造器显式注入 `started: Clock`**（已选）："数据在诞生处注入"——构造器不再自己找时间，调用方对其世界的时钟负责；`PmContext` 层（有合法测试时钟）走真 ClockSource 计算，活协调器路径的零值收敛为带 `[E6]` 注释的显式 seam（可 grep、可追踪），不再是函数内部的说谎返回值。C 锚点 `forkexit.c:114` `rmc->mp_started = getticks()`。
-
-**Verified**：
-- `cargo test -p minix-pm`：341 → **341 lib passed**（含新断言 started=100_000）+ 6 integration
-- `grep -rn "fn getticks" os/servers/pm/src/`：零命中
-
-**Docs**：`07-pm-fork.md` §D5/§4.2/§4.5 三处 started 表述；本文件 §6 D-24 行。
-
-**未做（DEFERRED 论证）**：真实内核 uptime（`sys_times`/getuptime 三值）挂 E6——PmContext 层的 ClockSource 接缝已就绪，生产实现落地即接管。
-
-### ✅ Fix #16: D-16 论证升级 + 全部余下 DEFERRED 行的自包含化（2026-09-06，纯文档轮）
-
-**File(s)**：
-- `os/servers/pm/src/exit.rs`（D-16 代码注释升级为 `[DEFERRED: D-16]` 显式契约：C 指针语义 + 两层阻塞论证）
-- 本文件 §6：D-13/D-14/D-16/D-17/D-18/D-21 五行增补"**依赖未解除**"自包含论证（todo-fix 硬约束：DEFERRED 必须写明依赖为何未解除，不许静默降级）
-
-**要点**：D-16（core name 指针）经重新核实定为**契约级缺口**而非可单独修复项——C 的 `VFS_PM_PATH = mp_name`（m7p1）是指向 PM 静态 mproc 表的指针、由 VFS 异步 safecopy 读取；Rust (a) 不能对表内数据形成跨异步稳定指针，(b) minix-types 的 `VfsCall::DumpCore.path: i32` 容不下 64 位指针。解除条件 = 与 05-stage-vfs 协同的契约决策 + E7 wire 成员。其余各行补齐对端现状（哪些 kernel 已实现/未实现）与 edge 条目引用，使每条 DEFERRED 的存在性与解除条件都可独立审计。
-
-**Verified**：`cargo test -p minix-pm`：**341 lib + 6 integration passed**（纯注释/文档轮，零代码语义变化）。
-
-**未做（DEFERRED 论证）**：即本轮登记的全部内容——每条的解除条件与 edge 归属见 §6/§9。
-
-### ✅ Fix #17: P2-1 — cfg 特性声明恢复门控代码可编译性（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/Cargo.toml`（`[features] syscall_stats = [] sprofile = []`，带 C 宏对齐与验证命令的文档注释）
-- `20-misc-queries.md` §D7/边界行、`plan.md` §5.4 状态刷新
-
-**Before/After**：`misc.rs` 的 `#[cfg(feature = …)]` 门此前引用了不存在的特性——门控代码在任何构建下都被排除（静默死代码），且 `cargo check --features syscall_stats` 直接报错，正确性无法验证。声明后：默认关（与 C 的 `ENABLE_SYSCALL_STATS`/`SPROFILE` 默认一致），`--features syscall_stats,sprofile` 构建可编译，门控代码恢复"可开启的可选项"语义（plan.md §5.4 的原意）。
-
-**Verified**：
-- `cargo check -p minix-pm --features syscall_stats,sprofile`：通过
-- `cargo check -p minix-pm`（默认）：通过
-- clippy 的 6 条 `unexpected cfg condition value` 告警随之消除
-
-**Docs**：`20-misc-queries.md`、`plan.md` §5.4、本文件 §0/标题。
-
-### ✅ Fix #18: P2-4 — glob re-export 移除、公共 API 显式化（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/lib.rs`（`pub use ipc::*; pub use mproc::*;` → 仅 `pub use ipc::TestIpcTransport;`）
-
-**Before/After**：双 glob 把 ipc/ 与 mproc/ 两棵树压平到 crate 根，顶层与 mproc 下 5 对同名双层模块（fork/signal/wait/credentials/trace 的 logic 层与 state 层）在根上只暴露一份符号。移除后统一走完整模块路径（`pm::ipc::*` / `pm::mproc::*` / `pm::init::*`），仅保留测试接缝 `TestIpcTransport` 的显式 re-export（内部 14 处 `crate::TestIpcTransport` 的既有惯例 + 外部集成测试）。探索阶段已确认外部唯一消费者（os/tests）走模块路径，零破坏。
-
-**Verified**：
-- `cargo test -p minix-pm`：**341 lib + 6 integration passed**（含外部 tests/ 目录——crate 外视角无路径断裂）
-- `grep -rn "pub use .*\*" os/servers/pm/src/lib.rs`：零命中
-
-**Docs**：lib.rs 模块注释（压平问题与决策记录）；本文件 §0/标题。
-
-### ✅ Fix #19: P2-5 — stub 注释统一为 `[DEFERRED: D-XX]` 显式契约（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/exit.rs`（8 处注释升级）、`os/servers/pm/src/wait.rs`（1 处）
-
-**Before/After**：campaign 中 D-15/D-19/D-20 等已实现后，剩余 stub 的存在形式从"散落的 `stubbed as Ok`/`simulate` 注释"统一为 `[DEFERRED: D-XX] <语义> —— <依赖未解除论证> <edge 引用>` 格式（与 `ipc/vfs.rs` 的 unimplemented 惯例、`§6` 登记表、`§9.2` 对照表三处一致）。任何一处 stub 的存在性、归属、解除条件现在都能被 `grep -rn "DEFERRED" os/servers/pm/src/` 一条命令审计（模式 60 诚实显式 TODO）。
-
-**Verified**：
-- `cargo test -p minix-pm`：**341 lib passed**（纯注释轮，零语义变化）
-- `grep -rn "stubbed\|stub " os/servers/pm/src/{exit,wait}.rs | grep -v DEFERRED`：零命中
-
-**Docs**：本文件 §0/标题。
-
-### ✅ Fix #20: P2-2 + P2-7 — plan.md ARCH 表刷新 + ESCRIPT 排除登记（2026-09-06，纯文档轮）
-
-**File(s)**：
-- `plan.md`：§4 ARCH 表 A-5（轮 2 已改）→ 本轮补 A-9（"缺口"→"已实现"+ 复核说明）、A-12（"部分实现"→"已实现"，D-10 的 TO_TRACEFORK 继承补齐后）；§5.4 排除表新增 `ESCRIPT` 行（C 死代码，`exec.c:31` 定义后零使用，模式 78 显式标注）
-
-**Verified**：
-- ARCH 表逐行 grep 复核：A-1~A-3/A-6/A-11 与代码一致（无变化）；A-4（部分实现，E7）/A-7/A-8/A-10/A-13（未实现）维持——各自有真实的未落地依赖
-- `cargo test -p minix-pm`：**341 lib passed**（纯文档轮）
-
-**未做（DEFERRED 论证）**：A-4 的 wire 系统化（E7）、A-7/A-8 的服务端依赖、A-10 的内核 DELAY_CALL、A-13 的设计层决策——各自有登记的依赖，非遗漏。
-
-### ✅ Fix #21: P3-1/P3-2 — clippy 收敛与卫生清理（2026-09-06）
-
-**File(s)**：
-- `os/servers/pm/src/`（15+ 文件的机械卫生：doc 列表缩进 17 处、`Message` 字面量初始化替代 default+赋值 5 处、移除 3 处冗余 unsafe、删 `drop(proc)` 无效调用）
-- `os/servers/pm/src/{timer,trace}.rs`（**3 处 clippy correctness 级 error 修复**——基线统计时被告警数字掩盖）：
-  - `timer.rs:148` `v <= i64::MAX` 恒真比较 → `saturating_add`
-  - `trace.rs:176/210` `req.data < 0` 对 u64 恒假 → 仅保留 `>= 64` 上界（C 的 int 语义在 Rust 无符号建模下不可达，注释说明）
-- `os/servers/pm/src/lib.rs`（P2-4 联动：显式 re-export 后的导入收敛）
-
-**Before/After**：clippy lib：约 50 告警 + 3 error → **0 告警 0 error**。过程教训：`cargo clippy --fix --lib` 会把"仅测试使用"的导入当无用删除（不分析 cfg(test)）——首次尝试破坏测试编译，已整体回退改为手修 + 逐文件导入下移到测试模块。
-
-**Verified**：
-- `cargo test -p minix-pm`：**341 lib + 6 integration passed**
-- `cargo clippy -p minix-pm --lib`：0 warning / 0 error
-- 依赖 crate 残留（不在 pm 范围）：minix-sys 4 条（collapsible-if 3 + MountTable Default 1）、minix-types 1 条（large_enum_variant，02-stage-vm 已判定 WONTFIX）
-
-**Docs**：本文件 §0/标题标注。
-
-### ✅ Fix #22: D-26 — wait4 回复载荷的 wire 最后一跳（2026-09-06）
-
-**File(s)**：
-- `os/libs/minix-types/src/ipc/message.rs`（新增 `MessPmLcWait4 { status: i32, _padding: [u8; 52] }` + `m_pm_lc_wait4` union arm + 布局断言测试——**E7 首切片**，纯新增零破坏）
-- `os/servers/pm/src/wait.rs`（TRACE_STOPPED 环 / ZOMBIE 环按载荷契约重写；ZOMBIE 环内联副本收敛到 `tell_parent`，消除载荷 bug 的重复源头）
-- `os/servers/pm/src/exit.rs`（`tell_parent`/`tell_tracer`/`check_parent`/`zombify`/`tracer_died`/`disinherit` 沿调用链穿 transport，wire 在 C 的原位发出；`w_exitcode` 提为 `pub(crate)` 复用）
-- `tests/run_once_integration.rs`（+1 端到端：tag/载荷分解断言）
-
-**Before/After**：修复前 wait status 只进了 `ipc.reply` 的 m_type 占位，wire 消息的载荷全零——libc 的 wait4 按布局读取时永远拿到 0。设计选型：(a) 按 C 精确补 typed 载荷（已选——libc wait4 包装的读取契约）；(b) 复用 `m_m1.m1i1` 当状态槽（伪造 wire 契约，translate 陷阱）；(c) 一次做完 E7 全量（违反一轮一条）。**结构收益**：ZOMBIE 环曾内联复制 tell_parent 的七步逻辑（载荷 bug 正是在这份副本里）——收敛后单一事实源。Linux 对照：内核 wait4 由 `copy_to_user` 写类型化 status/rusage；Redox scheme 回复同为 typed payload——"tag(m_type) + typed body(载荷)"是回复消息的通用契约，m_type 兼载 body 是对契约的破坏。
-
-**Verified**：
-- `cargo test -p minix-pm`：341 → **342 lib passed**（D-20 断言迁移到载荷；+1 tell_parent 异步 tag/载荷断言）+ **7 integration**（+1 wait4 僵尸回收：tag=pid、载荷=W_EXITCODE、ToldParent）
-- `cargo test -p minix-types --lib`：169 → **170 passed**（+wait4 布局断言）
-- `grep -n "m_type: w_status\|m_type: status" os/servers/pm/src/wait.rs`：零命中（m_type 兼载状态的历史清除）
-
-**Docs**：`10-pm-wait.md` §4.1（wire 契约节 + 测试表）；`edge_todo.md` E7 进度注（首切片）；本文件 §6 D-26 行。
-
-**未做（DEFERRED 论证）**：E7 的其余 wire 族（47 调用系统化）与 D-21 的 rusage 载荷（依赖 SYS_TIMES，E6）——各自保留登记。
-
-### ✅ Fix #23: D-13 — `do_exit` 的 PRIV_PROC 违规分支真实发送 `sys_kill`（2026-09-06）
-
-**File(s)**：
-- `os/libs/minix-sys/src/syscall.rs`（**E6 首切片**：`sys_kill` wrapper + `SYS_KILL_CALL` 常量 + `CannedKernelCallTransport.sent` 逐调用消息记录 + wire 断言测试 ×2）
-- `os/servers/pm/src/exit.rs`（新增 `KernelGateway` trait + `TrapKernelGateway` 生产实现（镜像 VM 侧 `kernel_gateway.rs` 先例）；`do_exit` 增 `kern: &mut dyn KernelGateway` 参数，PRIV_PROC 分支从 no-op 改真实发送；+1 用户进程负向断言测试）
-- `os/servers/pm/src/ipc/calls.rs`（PM_EXIT 分发臂构造生产网关）
-
-**Before/After**：C `do_exit`（forkexit.c:245-262）：PRIV_PROC 调 exit(2) 是违规——printf 警告 + `sys_kill(endpoint, SIGKILL)` 后直接 SUSPEND，**不走** `exit_proc`（"System processes do not use PM's exit()"），真正的终止由内核信号回环（process_ksig，11）完成；`sys_kill` 返回值 C 不予检查。Rust 修复前该分支是 no-op（违规进程永远存活且无任何处置痕迹）。设计选型：(a) 网关 trait + 生产/测试双实现（已选，镜像 VM `KernelGateway` 先例）；(b) 直调 minix-sys 无接缝（不可测，否决）；(c) 复用 `IpcTransport`（kernel call 走向量 32 与 IPC 向量 33 是不同通道，模型错误，否决）。pre-E1 行为：trap 桩回 `-EIO`，`Result` 保留错误可观测性、`do_exit` 按 C 忽略之——不伪造任何状态。
-
-**Verified**：
-- `cargo test -p minix-pm`：342 → **343 lib passed**（`test_do_exit_priv_proc` 增 sys_kill 捕获断言 + 进程保持 Running；+1 用户进程不触 sys_kill 的负向断言）+ **7 integration**
-- `cargo test -p minix-sys`：113 → **115 passed**（+sys_kill wire 编码 / 负 errno 透传）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
-
-**Docs**：`09-pm-exit.md` §2.1 落地段新增；`edge_todo.md` E6 进度注（sys_kill 切片闭环）；本文件 §6 D-13 行。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、语义均已在 stage 内闭环；同轮顺手修正一处过时断言（ZOMBIE vs Exiting，见本轮 diff 的 `test_do_exit_user_process_skips_sys_kill`）。
-
-### ✅ Fix #24: D-18 — `sys_clear` 两调用点接真实内核通道（2026-09-07）
-
-**File(s)**：
-- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_clear` wrapper + `SYS_CLEAR_CALL = 2` 常量 + m1i1 载荷 wire 测试）
-- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `sys_clear`；`TrapKernelGateway` 实现委托 minix-sys；`exit_proc`/`exit_restart` 增 `kern` 参数并在 step 9 / step 4 调用，失败 panic 对齐 C）
-- `os/servers/pm/src/init.rs`（`PmServer` 持有 `Box<dyn KernelGateway>`，`with_transport` 默认装配生产网关，`with_kernel_gateway` 供测试注入；run_once 经 `self.kern.as_mut()` 下穿 VFS 臂/事件臂/分发臂）
-- `os/servers/pm/src/ipc/{calls,dispatcher}.rs`、`os/servers/pm/src/event.rs`（kern 参数沿分发链与 EventRegistry 穿线）
-- `tests/run_once_integration.rs`（exit 场景注入 mock-ok 网关）
-
-**Before/After**：设计选型——(a) PmServer 持有 `Box<dyn KernelGateway>` 并沿调用链下穿（已选）：内核出口与 IPC transport 是两类通道（向量 32/33），网关作为与 transport 对等的能力对象由服务器持有，分发臂与 handler 显式传递（A-3 显式参数风格）；(b) 全局 thread_local 网关：隐式全局违反 A-3，否决；(c) 每个 handler 内联构造 Trap 网关：无状态可行但测试无法注入脚本化应答，否决。**C 语义对照**：exit_proc step 9（`forkexit.c:366-368`，PRIV_PROC 直毁——VFS 可能阻塞在该块设备驱动上，等待即死锁）与 exit_restart step 4（`forkexit.c:449-451`，VFS 回复后回收用户进程）失败均 panic；Rust 逐字对齐 `panic!("… sys_clear failed: {}", r)`。
-
-**Verified**：
-- `cargo test -p minix-pm`：**343 lib + 7 integration passed**（exit 集成场景经 `with_kernel_gateway` 注入 mock-ok 网关验证 step 4 直毁不 panic；既有全部 exit/kill/事件测试无回归）
-- `cargo test -p minix-sys`：116 → **118 passed**（+sys_clear wire/负 errno ×1）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
-
-**Docs**：`09-pm-exit.md` §1.3 后新增"内核出口落地"段；`edge_todo.md` E6 进度注（sys_clear 切片）；本文件 §6 D-18 行。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、两调用点语义均已在 stage 内闭环；`exit.rs` 的 D-13（sys_kill）与 D-18（sys_clear）现已共用同一网关通道。
-
-### ✅ Fix #25: D-09 — `sys_abort` 端口接真实内核通道（2026-09-07）
-
-**File(s)**：
-- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_abort` wrapper + `SYS_ABORT_CALL = 27` 常量，载荷 m1i1 = how（RB_* 位组）；+2 wire/负 errno 测试）
-- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `sys_abort`；`TrapKernelGateway` 实现委托 minix-sys）
-- `os/servers/pm/src/ipc/vfs.rs`（`PmServices::sys_abort` 从 `unimplemented!()` 改为经网关真实发送；+1 端口级测试断言 abort_flag 到达网关；4 个网关 mock 补 `sys_abort`）
-- `05-vfs-interaction.md`（D4 端口落地状态刷新）
-
-**Before/After**：C `main.c:304-312`：REBOOT 回复特例发 `sys_abort(abort_flag)` 后返回主循环等待 HARD_STOP 通知，**返回值 C 不予检查**——abort 成功时机器直接停机；失败（pre-E1 `-EIO`）PM 继续循环，不伪造停机状态。Rust 修复前该端口是 `unimplemented!()`：任何 reboot 流程测试都无法走通。设计说明：`abort_flag` 是 PmServices 自有字段（最初 reboot 请求的 how 位组，`do_reboot` 写入），端口内直接读取 self.abort_flag 传递——不新增参数（trait 签名 `sys_abort(&mut self)` 不变，三个既有测试实现零改动之外仅补方法体）。
-
-**Verified**：
-- `cargo test -p minix-pm`：**343 lib + 7 integration passed**（+1 端口级测试：abort_flag=0x808 到达网关；vfs 既有 reboot 状态机测试（RecordingServices 录 SysAbort）无回归）
-- `cargo test -p minix-sys`：118 → **120 passed**（+2 sys_abort wire 测试）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
-
-**Docs**：`05-vfs-interaction.md` D4 端口落地状态全面刷新（06/09/13 已接线、sys_abort 落地、余 sched_start_user/sys_exec 占位）；`edge_todo.md` E6 进度注；本文件 §6 D-09 行。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wire、包装、网关、端口语义均已在 stage 内闭环。
-
-### ✅ Fix #26: D-14 — exit 时 sys_times 计账接真实内核通道（2026-09-07）
-
-**File(s)**：
-- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_times` wrapper，请求 `m_lsys_krn_sys_times.endpt` / 回复解码 `m_krn_lsys_sys_times` 四值；`CannedKernelCallTransport` 增整条载荷脚本 `reply_message`；+2 wire 测试）
-- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `proc_times`；`exit_proc` step 4 累加 user/system ticks 进死亡进程的 child 桶，失败 panic 对齐 `forkexit.c:308-309`；+1 累加断言测试）
-- `os/servers/pm/src/signal.rs`（信号终止链 `do_kill`/`do_srv_kill`/`check_sig`/`sig_proc`/`sig_proc_exit`/`process_ksig` 沿调用链穿 `kern`；测试 mock 换 `TestKernel` 脚本化计账）
-- `os/servers/pm/src/{event,ipc/vfs}.rs`（PmEventServices/ExecServices 增 kern 字段，适配器传递）
-- `tests/run_once_integration.rs`（注入零值 mock 网关）
-
-**Before/After**：设计选型——(a) minix-sys wrapper 返回完整 `MessKrnLsysSysTimes`（已选，C libsys 同型返回四值，后续 14-itimer 的 ClockSource 可复用 real/boot ticks）；(b) wrapper 只返回 (user, sys) 二元（丢信息，否决）；(c) PM 直调 perform_kernel_call 绕过 minix-sys（违反 E6 分层，否决）。**架构要点**：kern 沿信号终止链（do_kill/check_sig/sig_proc/sig_proc_exit）与事件链（PmEventServices/RestartServices）下穿——C 中这些函数直接调 libsys，Rust 以显式参数传递同一能力（A-3）。
-
-**Verified**：
-- `cargo test -p minix-pm`：343 → **345 lib passed**（+1 累加断言：脚本 (30,12) → 僵尸桶 utime=30/stime=12）+ **7 integration passed**（注入零值 mock 网关）
-- `cargo test -p minix-sys`：**122 passed**（+2 sys_times wire 测试）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
-
-**Docs**：`09-pm-exit.md` 计账落地段；`edge_todo.md` E6 进度注；本文件 §6 D-14 行。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层，E1）——wrapper、网关方法、累加语义、测试均已闭环；D-21（rusage 的 sys_datacopy 投递）另需 SAFECOPY wrapper，保持登记。
-
-### ✅ Fix #27: D-21 — rusage 经 VIRCOPY 真实投递父进程（2026-09-07 实施，2026-09-08 补记）
-
-> 本条目对应提交 de9415604（轮 27）+ d79307ee6（轮 27-28 收口），当时漏写本记录，2026-09-08 V2 轮账目对账时依提交信息与代码现状补记。
-
-**File(s)**：
-- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_vircopy` wrapper + `SYS_VIRCOPY_CALL = 15` + `SELF` 哨兵导出；`CannedKernelCallTransport` 增整条载荷脚本 `reply_message`；+2 wire 测试）
-- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `copy_to_user`（Trap 实现委托 `minix_sys::syscall::sys_vircopy`，`exit.rs:103-110`）；`tell_parent` 真实实现：144 字节 rusage（ru_utime/ru_stime timeval 对，ticks→usec 按 `table.system_hz` 换算，`ProcTable` 增 `system_hz` 字段对齐 C `glo.h` 全局）→ VIRCOPY 投递父进程；datacopy 失败 → reply(parent, errno) + FALSE（子保持 ZOMBIE 可重试），对齐 `forkexit.c:692-704`；+1 布局断言测试 `test_tell_parent_delivers_rusage_via_datacopy`，hz=100 隔离）
-- `os/servers/pm/src/mproc/table.rs`（`ProcTable` 增 `system_hz` 字段，new 缺省 60，init_fresh 覆写）
-
-**Before/After**：D-21 原状为 `wait.rs` wait 循环里 `let _ = rusage_addr;` 丢弃地址 + 假装拷贝成功。修复后 rusage 真实写入父进程用户内存，回复时序与 C 一致（先 datacopy 后 reply(parent,pid)）。设计选型：投递通道用 VIRCOPY（`dispatch_vircopy` = Syscall::Vircopy 15）而非 SAFECOPY——与 C libsys `sys_datacopy` 的内核侧实现同型，且 kernel 对端已就绪。
-
-**Verified**：
-- `cargo test -p minix-pm`：**346 lib + 7 integration passed**（提交信息自证）
-- `cargo test -p minix-sys`：+sys_vircopy wire 测试（提交信息自证 121→122 passed 区间）
-
-**Docs**：`10-pm-wait.md`；`edge_todo.md` E6 进度注；本文件 §6 D-21 行（2026-09-08 划账）。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层，E1）。遗留卫生项：`wait.rs:128-131` stale 注释与死绑定、`exit.rs:515-516` "(omitted)" doc 注释——V2 轮登记为 P3（本补记时未改生产代码）。
-
-### ✅ Fix #28: D-25 — `sys_resume` 经 SYS_RUNCTL 真实现（2026-09-07）
-
-**File(s)**：
-- `os/libs/minix-sys/src/syscall.rs`（**E6 切片**：`sys_runctl` wrapper + `SYS_RUNCTL_CALL = 46` + `RC_STOP/RC_RESUME/RC_DELAY` 常量 + `sys_resume` 便捷函数；+1 wire 测试）
-- `os/servers/pm/src/exit.rs`（`KernelGateway` 增 `sys_resume`；`TrapKernelGateway` 委托 minix-sys）
-- `os/servers/pm/src/event.rs`（`PmEventServices::resume` 从"暂返回 OK 过渡契约"改为经 `self.kern.sys_resume(ep)` 真实发送，raw 内核回复透传）
-
-**Before/After**：round 26 D-14 时发现 kernel 已有 `dispatch_runctl` 的 RC_RESUME 分支（`syscall_process.rs:42` `RC_RESUME = 1`），"内核无停止态可撤销"的过渡契约前提不再成立。修复后 `PmEventServices::resume` 经 `self.kern.sys_resume(ep)` 真实发送 `SYS_RUNCTL(ep, RC_RESUME, 0)`；pre-E1 Trap 回 `-EIO` → `try_resume_proc` panic（fail-closed，signal.c:285 同型）；测试注入 mock 恒 OK。
-
-**Verified**：
-- `cargo test -p minix-pm`：**346 lib + 7 integration passed**（D-11 的 `test_reply_signal_event_terminates_via_restart_sigs` 现走真实 `sys_resume` mock 路径）
-- `cargo test -p minix-sys`：**121 passed**（+sys_runctl wire 测试）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error 维持
-
-**Docs**：`13-signal-flow.md` D5 段（D-25 落地注）；`edge_todo.md` E6 进度；本文件 §6 D-25 行。
-
-### ✅ Fix #29: V2-P0-2 — 信号集合位基统一到 C `__sigmask` + badignore 谓词修正（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/init.rs`（`sig_bit` 改 `1u64 << (sig - 1)` 并提为 `pub(crate)`——全 crate 唯一位基入口；`test_signal_sets_match_c` 断言值换为 C sigset_t 逐位数值；新增 `test_signal_set_membership_matches_c_arrays` 用 C `__sigmask` 原始掩码逐信号对账三个数组）
-- `os/servers/pm/src/signal.rs`（`sig_proc` 消费点改调 `init::sig_bit`，本文件不再出现裸移位；badignore 从"集合级交叠"改为 C signal.c:483-486 的单信号成员判定 `ksig && noign(signo) && (ignored(signo) || masked(signo))`；删除 :309-311 的错误翻译死分支；默认忽略门改为与 caught 分支 `else if` 联动——捕获投递失败的默认忽略信号必须终止而非忽略，对齐 C signal.c:535-539 的互斥结构；新增 SIGCONT 存活、badignore 强制终止、非 noign 忽略三测试）
-- `notes/.../01-pm-init-main.md`（§3.3 位基描述更正 + 事故记录 + §5 测试表补行）、`11-signal-core.md`（D4 重写 + §5.2 补三个测试名）
-
-**Before/After**：位基分裂使有效 core 集 = {ILL,TRAP,ABRT,EMT,FPE,KILL,SEGV,SYS}（误加 KILL/SYS、丢 QUIT/BUS）、有效默认忽略集 = {CHLD,TTIN,INFO,USR1}（丢 CONT/WINCH）——`kill(pid, SIGCONT)` 在干净进程上落入终止分支。修复后集合数值与 C `sigset_t` 逐位相等，SIGCONT 默认忽略恢复。**设计选型（三案）**：(a) producer 对齐 C（首选：`SigSet` 数值可与 C 直接对照，未来 E7 wire 载荷免换算）；(b) consumer 全改 `1<<sig`（偏离 C，否决）；(c) `SigSetExt::contains_sig` 方法化封装（长期最优但超本条范围，记录为演进）。位基单点化是 Linux `sigismember` 与 Redox `currently_pending_unblocked()` 的共同实践。
-
-**Verified**：
-- `cargo test -p minix-pm`：350 lib（346 + 4 新）+ 7 integration passed
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-- 既有测试无一位基依赖需改（旧约定从未被其他测试断言）
-
-**Docs**：`01-pm-init-main.md` §3.3/§5；`11-signal-core.md` D4/§5.2；本文件 V2-P0-2 标 ✅。
-
-**未做（DEFERRED 论证）**：无——本条目 stage 内完整闭环。
-
-### ✅ Fix #30: V2-P0-1 — 信号终止链贯通真实 transport（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/signal.rs`（根因修复：`sig_proc` 的 `_transport` 形参改名 `transport` 并下传——此前整条链在此丢弃通道；`sig_proc_exit` 泛型化 `<T: IpcTransport + ?Sized>` 接收调用者真实通道，删除 `TestIpcTransport::default()` 生产构造；新增 `test_signal_termination_tells_vfs`：SIGKILL → VFS_PM_EXIT、SIGSEGV → VFS_PM_DUMPCORE 断言）
-- `os/servers/pm/src/ipc/transport.rs`（`TestIpcTransport` 文档加 TSTL 警告：仅供测试注入，生产构造即模式违规；不做 `#[cfg(test)]` 门控的理由——集成测试以普通依赖编译本 crate）
-- `os/servers/pm/tests/run_once_integration.rs`（新增 `kill_termination_tells_vfs_exit`：kill 全链经服务器通道断言 VFS_PM_EXIT + VM_WILLEXIT + 回复 0）
-- `notes/.../11-signal-core.md`（D6 补 transport 贯通契约 + §5.2 测试名）
-
-**Before/After**：`sig_proc_exit` 曾构造一次性 mock 传给 `exit_proc`，而 exit_proc 尾部无条件 `tell_vfs`（forkexit.c:350-358）——信号终止的 VFS 告知全部进黑洞，core 路径进程永久卡 EXITING。修复后 kill 全链（check_sig→sig_proc→sig_proc_exit→exit_proc→tell_vfs）贯穿同一通道。**设计选型**：(a) transport 沿调用链下传（首选：与 check_sig/sig_proc 既有形态一致，零新抽象）；(b) tell_vfs 从 exit_proc 拆出后置（否决：拆散 C 的步骤顺序与 PRIV_PROC sys_clear 时机）；(c) `#[cfg(test)]` 门控 mock 类型（否决：破坏集成测试可见性，改以文档警告 + 模式登记防御）。**连带发现**（登记不修，见 V2-P2-7/V2-P2-8）：`unpause` 的 VFS_CALL 分支不发 VFS_PM_UNPAUSE、`sig_send` 为空壳——caught 路径（sigaction 接线后可达）的两个缺口。
-
-**Verified**：
-- `cargo test -p minix-pm`：351 lib（+1）+ 8 integration（+1）passed
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-- 新集成测试在修复前必失败（mock 吞消息 → VFS 断言空）——TDD 锚点
-
-**Docs**：`11-signal-core.md` D6/§5.2；本文件 V2-P0-1 标 ✅ + V2-P2-7/V2-P2-8 登记。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层）挂 edge E1——本条目的通道贯通与 wire 语义在 mock 层已完整验证。
-
-### ✅ Fix #31: V2-P1-1 — PID 轮转相位对齐 C（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/mproc/pid_gen.rs`（`get_free_pid` 改为"先自增 next_pid、检查并返回新值"，对齐 utility.c:38 的 C 语义；5 个测试同步新相位：首分配 INIT_PID+2、回绕 30000→2→3、冲突/procgrp/stale 三测试的候选锚点平移）
-- `os/servers/pm/src/init.rs`（`test_fill_boot_system_procs` 的 PID 断言 PM→3/VFS→4/RS→5）
-- `notes/.../07-pm-fork.md`（§2.5 补相位语义说明）
-
-**Before/After**：C 的 `next_pid` 先自增（utility.c:38），首个分配 INIT_PID+2=3，pid 2 全生命周期不使用；Rust 返回自增前旧值（首个分配 2），全部 boot 系统进程 PID 漂移一位。修复后启动 PID 序列与 C 逐一对齐。**设计选型**：(a) 返回自增后值（首选：pid 是外部可观察值，Rewrite 契约保护编号序列；Linux `alloc_pid` 的 RESERVED_PIDS=300 启动保留与 C 跳过 pid 2 是同类的"相位保留"实践，Redox 无轮转不可比——V2-Redox-4）；(b) 保留相位改 fill_boot 起点补偿（否决：双真相源，pid_gen 的语义偏离会再次扩散）；(c) 声明有意偏离（否决：无任何收益）。**方法论备注**：pid_gen 的 doc 注释一直写的是 C 的正确语义（"Candidate PID = next_pid++"），是代码没照文档实现——文档-代码同步门的双向性（本次是代码落后于文档）。
-
-**Verified**：
-- `cargo test -p minix-pm`：351 lib + 8 integration passed（5 个 pid_gen 测试 + 1 个 fill_boot 测试平移后全绿）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-
-**Docs**：`07-pm-fork.md` §2.5；本文件 V2-P1-1 标 ✅。
-
-**未做（DEFERRED 论证）**：无——本条目 stage 内完整闭环。
-
-### ✅ Fix #32: V2-P1-2 — SIGHUP 会话组广播实现（D-27）（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/exit.rs`（exit_proc 第 13 步：`procgrp != 0` 时 `check_sig(-procgrp, SIGHUP, ksig=false)`，caller 为死亡首领本人——权限判定与 C 一致，首领自身由 sig_proc 的退出守卫跳过；disinherit 尾部的重复 DEFERRED 注释改为指针注释，doc 注释同步；新增 `test_session_leader_death_broadcasts_sighup`：同组成员终止、异组存活、首领不重复投递）
-- `os/servers/pm/src/signal.rs`（`check_sig` 泛型化 `<T: IpcTransport + ?Sized>`——exit_proc 的泛型通道得以贯穿，对 dyn 调用方透明；新增 `SIGHUP = 1` 常量，锚点 sys/sys/signal.h:52）
-- `notes/.../todo.md`（§6 新增 D-27 行，D-13 行加范围注记）
-
-**Before/After**：SIGHUP 广播（POSIX 挂断传播核心）在两处站点均为 no-op 且挂在已关闭的 D-13 编号下（台账错位）。修复后复用 check_sig 的负 pid 组扫描（signal.c:601-604 匹配语义），与 C 的调用形态逐点一致（forkexit.c:411-412）。**设计选型**：(a) 复用 check_sig（首选：C 同一子程序，四态选择/权限/守卫全继承）；(b) 手写组扫描循环（否决：重复逻辑，绕过权限与 lethal 保护）；实现点选 exit_proc 第 13 步（C 位置），disinherit 尾部的第二站点改为指针注释避免双重广播。
-
-**Verified**：
-- `cargo test -p minix-pm`：352 lib（+1）+ 8 integration passed
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-
-**Docs**：`09-pm-exit.md`（正文 §2.2/收养段此前已描述 C 契约，本次补测试行）；本文件 V2-P1-2 标 ✅。
-
-**未做（DEFERRED 论证）**：真实通电（trap 层）挂 E1。
-
-### ✅ Fix #33: V2-P2-4 — 广播 SIGTERM 的 RS 优先通知改走 sys_kill 内核回环（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/signal.rs`（check_sig 广播分支：`sig_proc(RS 槽)` → `kern.sys_kill(Endpoint::RS, SIGTERM)`，对齐 signal.c:588-589；新增 `test_broadcast_sigterm_notifies_rs_via_kernel`）
-- `notes/.../11-signal-core.md`（§2.3 描述更正 + §5.2 测试行）
-
-**Before/After**：Rust 对 RS 槽直接 `sig_proc(ksig=false)`，落入 PRIV_PROC `!ksig` 空分支——RS 实际收不到任何通知；C 走 `sys_kill(RS_PROC_NR)` 内核回环产生真实 ksig。**设计选型**：(a) 内核回环（首选：C 同型，符合"PM 不直接投递系统进程"的特权边界，V2-Redox-5 印证决策在用户态、对系统进程的投递经内核）；(b) 给 PRIV_PROC !ksig 分支实现直接投递（否决：偏离 C 特权模型，且会绕过内核的信号管理）。
-
-**Verified**：`cargo test -p minix-pm`：353 lib（+1）+ 8 integration passed；clippy 0 warning。
-
-**未做（DEFERRED 论证）**：真实通电挂 E1。
-
-### ✅ Fix #34: V2-P2-5 — check_parent 的 SIGCHLD 投递（D-28）（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/exit.rs`（check_parent else 分支实现 `sig_proc(parent_slot, SIGCHLD, trace=TRUE, ksig=FALSE)`，对齐 C check_parent 尾部；新增 `test_check_parent_sends_sigchld_when_parent_not_waiting`——父进程 mask 阻塞 SIGCHLD 使 pending 位可观察）
-- `notes/.../09-pm-exit.md`（§5.1 测试行）；本文件 §6 D-28 行、V2-P2-5 标 ✅
-
-**Before/After**：C 在父未等待时向其投递 SIGCHLD（装了 handler 的父进程由此得到通知，默认处置下被 ign_sset 忽略）；Rust 是 `let _ = (...)` 无编号 DEFERRED。修复后一行 C 语义落地。**设计选型**：(a) 现在实现（首选：单行调用不依赖批次 B，默认处置路径即可测；handler 装批后的完整交付随 V2-P2-8 联动）；(b) 仅登记随批次 B（劣：no-op 继续存活且不可观察）。
-
-**Verified**：`cargo test -p minix-pm`：354 lib（+1）+ 8 integration passed；clippy 0 warning。
-
-**未做（DEFERRED 论证）**：handler 交付链（sigframe 建立）依赖 V2-P2-8，随批次 B。
-
-### ✅ Fix #35: V2-P2-3 — tell_vfs 错误路径 fail-closed（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/ipc/vfs.rs`（`tell_vfs` 双错误改内部 panic：not-idle = PM 状态不变式违规、发送失败 = 传输层损坏，对齐 utility.c:122-129；签名去 `Result`（Err 永不可达的 API 坏味）；删除 `VfsCallError` 枚举；`test_tell_vfs_not_idle_when_blocked` 改 `#[should_panic]`）
-- `os/servers/pm/src/exit.rs`（exit 路径 `let _ = tell_vfs(...)` 吞错 → 直接调用，panic 即 fail-fast）
-- `os/servers/pm/src/fork.rs`（`map_err(|_| ForkCoordError::VfsError)` 降级 ×2 → 直接调用；删除 `ForkCoordError::VfsError` 变体与 `PmError::InternalError` 映射）
-- `notes/.../05-vfs-interaction.md`（§3 Rust 侧描述更正）
-
-**Before/After**：C 的 tell_vfs 两处 panic 都在被调方内部；Rust 曾改返回 Result 且调用方一个吞错（exit）、一个降级为用户可见 errno（fork）——内部损坏被伪装成普通失败。修复后语义与 C 逐点同型：PM 无法安全服务 → panic → RS 重启（Minix3 的可重启性是 panic 敢于 fail-fast 的前提）。**设计选型**：(a) panic 移入 tell_vfs 内部（首选：与 C 同位置，"not idle" 判定就在被调方，调用方无需重复查询；Result 永不 Err 的假 API 消除）；(b) 调用点各自 panic、tell_vfs 保留 Result（劣：每个调用点重复策略，API 谎报可恢复性）；(c) fork 保留降级（否决：把不变式违规伪装成用户错误正是本条要消灭的）。
-
-**Verified**：
-- `cargo test -p minix-pm`：354 lib + 8 integration passed（not-idle 测试改 should_panic 后通过）
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-
-**Docs**：`05-vfs-interaction.md` §3；本文件 V2-P2-3 标 ✅。
-
-**未做（DEFERRED 论证）**：无。
-
-### ✅ Fix #36: V2-P3-3 — Exit 臂透传 do_exit 的回复意图（2026-09-08）
-
-**File(s)**：`os/servers/pm/src/ipc/calls.rs`（Exit 臂 `let _ = do_exit(...)` + 硬编码 NoReply → 直接返回 do_exit 的值）。
-
-**Before/After**：do_exit 两分支恒返 NoReply，丢弃等价；但硬编码会在未来语义变化时静默吞回复。无新测试（既有 `exit_request_never_replies_and_zombifies` 集成测试即本行为的锚点）。
-
-**Verified**：`cargo test -p minix-pm`：354 lib + 8 integration passed；clippy 0 warning。
-
-**未做（DEFERRED 论证）**：无。
-
-### ✅ Fix #37: V2-P3-2 — GID_MAX 校验恢复真实语义（2026-09-08）
-
-**File(s)**：`os/servers/pm/src/credentials.rs`（`GID_MAX` 从 `u32::MAX` 改为 C 真值 `2147483647`（syslimits.h:53）；`test_setgroups_gid_max` 补 [2^31, 2^32-1] 拒绝与边界值两断言；`test_constants_match_c` 数值同步）。
-
-**Before/After**：gid_t 为 32 位无符号（ansi.h:38），C 的 `> GID_MAX`（getset.c:191）拒绝 [2^31, 2^32-1]；Rust 常量取 `u32::MAX` 使检查恒假。修复后同值同语义，`setgroups(gid=2^31)` → EINVAL。原测试注释"无法构造超限值"自证恒假——测试自身正确性维度的漏网之鱼，本轮修正。
-
-**Verified**：`cargo test -p minix-pm`：354 lib + 8 integration passed；clippy 0 warning。
-
-**未做（DEFERRED 论证）**：无。
-
-### ✅ Fix #38: V2-P2-2 — do_exec 补 VFS/RS 调用者门（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/exec.rs`（`do_exec` 开头加 `caller ∈ {VFS, RS}` 门 → `ExecError::Perm`，对齐 exec.c:70-71；删除 `let _ = table; let _ = caller;`；`test_do_exec_forwards` 的发起方改为 RS，新增 `test_do_exec_caller_gate`）
-- `notes/.../17-exec.md`（§4 do_exec 签名行 + §5 测试行）
-
-**Before/After**：exec 四入口中 do_execrestart/srv_fork/srv_kill/getprocnr 都有调用者门，唯独 do_exec 收了 caller 却丢弃——exec 是 TAINTED/setuid 链的起点，任意进程代他人发起 exec 是权限漏洞。修复后与 C 一致：仅 VFS（用户 execve 载体）与 RS（服务重启）可发起。**设计选型**：(a) 门放 do_exec 开头（首选：与同文件 do_execrestart 同风格，语义与校验同处）；(b) 放 dispatch 臂（劣：校验离语义远，单测覆盖不到）。
-
-**Verified**：`cargo test -p minix-pm`：355 lib（+1）+ 8 integration passed；clippy 0 warning。
-
-**未做（DEFERRED 论证）**：无。
-
-### ✅ Fix #39: V2-P2-1 — itimer 的 CLOCK notify 接线 + 周期重挂收敛（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/timer.rs`（`cause_sigalrm` 重写为完整 C 语义：guard 与 alarm.c:326-330 逐条一致，**先重挂后投递**——interval>0 经 `set_alarm`→`TimerCtl.set` 重挂内核 timer（C :334-339 的回调内 set_timer），否则清 ALARM_ON；caller 伪装 PM slot 0 后直连 `check_sig`，删除 `SigSender` 中间 trait；`handle_clock_notify` 退化为"扫到期 → 调 cause_sigalrm"，不再自行改簿记（`let _ = tctl` 消失）；新增生产 `TrapTimerCtl` pre-E6 fail-closed 占位；三个测试重写为真实投递链可观察点，新增一拍未到期不触发断言）
-- `os/servers/pm/src/init.rs`（`PmServer` 增 `timer: Box<dyn TimerCtl>` 字段，`with_kernel_gateway` 默认 `TrapTimerCtl`，新增 `with_timer_ctl` 注入构造；run_once 的 notify 分支接 CLOCK → `handle_clock_notify`——init.rs:349 的显式留白消失；`test_run_once_skips_notify` 改非 CLOCK 源，新增 `test_run_once_clock_notify_drives_expire_timers`）
-- `notes/.../14-itimer.md`（§3.6/§4.2/§4.4 同步：SigSender 移除、单一重挂点、接线现状）
-
-**Before/After**：三处各做一半的周期重挂逻辑（主循环显式跳过 CLOCK、cause_sigalrm 空壳 interval 分支、handle_clock_notify 绕过 TimerCtl 只改簿记）收敛为单一重挂点——内核 seam 接通后周期 itimer 的"每次到期都重新挂内核 watchdog"语义与 C 一致。**设计选型**：(a) 重挂收敛进 cause_sigalrm（首选：C alarm.c:338 的回调内 set_alarm 同位；SigSender 删除——C 的回调最终调 check_sig，中间层 send_sigalrm 绕过了权限/忽略/阻塞判定）；(b) 保留 SigSender 加生产桥接 impl（否决：多一层间接零收益）。**边界**：`TimerCtl` 生产实现（sys_setalarm wrapper）与 CLOCK 真实通电仍挂 edge E6/E1——本条目的 stage 内逻辑与 mock 端到端已闭环。
-
-**Verified**：
-- `cargo test -p minix-pm`：356 lib（+2）+ 8 integration passed
-- `cargo clippy -p minix-pm --lib`：0 warning 0 error
-
-**Docs**：`14-itimer.md` §3/§4；本文件 V2-P2-1 标 ✅。
-
-**未做（DEFERRED 论证）**：`TimerCtl` 生产实现挂 edge E6（sys_setalarm/sys_vtimer wrapper）；真实通电挂 E1。
-
-### ✅ Fix #40: V2-P2-6 — ENOSYS 兜底臂的登记义务落到批次表（2026-09-08）
-
-**File(s)**：`os/servers/pm/src/ipc/calls.rs`（兜底臂注释指向 todo.md §11.1 的接线批次表，约定"每接线一批同步划账"）；本文件 V2-P2-6 标 ✅。
-
-**Verified**：`cargo test -p minix-pm`：356 lib + 8 integration passed（纯注释改动）。
-
-**未做（DEFERRED 论证）**：无。
-
-### ✅ Fix #41: V2-P3-1 — 四处 stale 注释与死绑定清理（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/wait.rs:128-131`（`[DEFERRED: D-21]` 注释已被 Fix #27 实现取代 → 删除；`let _ = rusage_addr;` 死绑定 → 删除，rusage_addr 已直接传 tell_parent）
-- `os/servers/pm/src/exit.rs:515-516`（doc 注释 "sys_datacopy of rusage (omitted)" → 更新为已实现描述）
-- `os/servers/pm/src/event.rs:213-214`（"两者 DEFERRED，当前仅清标志" 与 Fix #7 后 `event.rs:272/278` 真实调用 exit_restart/restart_sigs 矛盾 → 更新）
-- `os/servers/pm/src/main.rs:10`（"RS_INIT 握手归主循环（04）"——本树 C 无 RS_INIT（grep 零命中），前提删除）
-- `notes/.../todo.md`；V2-P3-1 标 ✅
-
-**Before/After**：四处注释均落后于代码/前提失效（模式 77 的"实现已赶上"变体）。逐处 grep 验证零残留。
-
-**Verified**：`cargo test -p minix-pm`：356 lib + 8 integration passed；clippy 0 warning。
-
-**未做（DEFERRED 论证）**：无。
-
-### ✅ Fix #42: V2-P3-4(c) + campaign 收官 — exec 重置对齐 C 不清 sa_flags（2026-09-08）
-
-**File(s)**：
-- `os/servers/pm/src/mproc/signal.rs`（`reset_caught_for_exec` 删除 `sa_flags = 0`——C exec.c:178-184 只动 handler 与 mask）
-- 本文件（V2-P3-4 状态标注；头部 campaign 总结）
-
-**处置**：(c) sa_flags 超集已消除；(a) coredump printf/`sys_diagctl_stacktrace` 诊断面挂 edge E6（已列入 E6 进度清单）；(b) svrctl IOCGROUP 校验随批次 G 的 wire 解码落地。三处均保持对账可见。
-
-**Verified**：`cargo test -p minix-pm`：356 lib + 8 integration passed；`cargo clippy -p minix-pm --lib` 0 warning；`bash tools/check-rs-unwired.sh` PASS；`bash tools/todo-staleness-check.sh` PASS。
-
-**未做（DEFERRED 论证）**：(a)(b) 见上——依赖共享契约层，非 stage 内可解。
+## 10. 修复记录（Fix #1–#42 索引）
+
+> 每轮一个 TODO（todo-fix 工作流）。逐条修复的完整论证（设计选型多方案对比、C 逐点语义对照、修复前后 grep 证据、文档同步清单、DEFERRED 论证）见 git 提交历史：第 1 轮 Fix #1–#28 对应提交系列 `fix(pm)`（2026-09-06/07，含 de9415604、d79307ee6），第 2 轮 Fix #29–#42 对应提交系列 `fix(pm)`（2026-09-08，8ec64f98f…14a07ccc6）。本表只保留账目索引。
+
+| Fix | 条目 | 日期 | 一句话 |
+|-----|------|------|--------|
+| #1 | P1-2 + D-03/D-04 | 09-06 | VM fork 假成功 → 真实 sendrec fail-closed |
+| #2 | P1-1 | 09-06 | 7 个内联拦截收编 `dispatch_pm_call` 单一穷尽 match |
+| #3 | P1-5 | 09-06 | crate 外 `tests/run_once_integration.rs` 端到端层 |
+| #4 | P1-6 | 09-06 | `handle_*` 统一回 C 名 `do_*` |
+| #5 | D-10 | 09-06 | tracer SIGSTOP + TO_TRACEFORK 条件继承（`inherit_guardianship`） |
+| #6 | D-20 | 09-06 | wait4 TRACE_STOPPED 环真实语义（扫描/消费/载荷） |
+| #7 | D-11 | 09-06 | 事件终止分派 Signal 分支接真实 `restart_sigs`（supertrait 合并） |
+| #8 | D-06 | 09-06 | VFS 端口 `exit_proc` 委托 09 退出链 |
+| #9 | D-07 | 09-06 | WCOREFLAG 置 bit7 + wait4 无符号字节组合 |
+| #10 | D-08 | 09-06 | `exec_restart` 端口接 17 全语义（`ExecRestartServices`） |
+| #11 | D-15 | 09-06 | `vm_willexit` 真实化（失败 panic 对齐 C） |
+| #12 | D-19 | 09-06 | `vm_exit` 真实化 |
+| #13 | D-22 | 09-06 | `is_lethal`/`is_stacktrace`/`is_termination` 按真 C 谓词宏重写 |
+| #14 | D-23 | 09-06 | `process_ksig` 接真实 `check_vtimer`（连带修 signo==12 应为 26 的真 bug） |
+| #15 | D-24 | 09-06 | `getticks` 桩删除，`started` 显式注入（ClockSource） |
+| #16 | D-16 论证升级 | 09-06 | 全部余下 DEFERRED 行自包含化（依赖未解除论证） |
+| #17 | P2-1 | 09-06 | cfg 特性声明恢复 |
+| #18 | P2-4 | 09-06 | glob re-export 移除 |
+| #19 | P2-5 | 09-06 | stub 注释统一 `[DEFERRED: D-XX]` 契约格式 |
+| #20 | P2-2/P2-7 | 09-06 | plan.md ARCH 表刷新 + ESCRIPT 排除登记 |
+| #21 | P3-1/P3-2 | 09-06 | clippy 约 50 告警 + 3 error 收敛到 0 |
+| #22 | D-26 | 09-06 | wait4 回复载荷 wire（`MessPmLcWait4`，E7 首切片） |
+| #23 | D-13 | 09-06 | PRIV_PROC 违规分支真实 `sys_kill`（`KernelGateway` 诞生，E6 切片） |
+| #24 | D-18 | 09-07 | `sys_clear` 两调用点接真实内核通道 |
+| #25 | D-09 | 09-07 | `sys_abort` 端口接通（REBOOT 特例语义保留） |
+| #26 | D-14 | 09-07 | exit 时 `sys_times` 计账（kern 沿信号链下穿） |
+| #27 | D-21 | 09-07 | rusage 经 VIRCOPY 真实投递父进程（144 字节 + hz 换算） |
+| #28 | D-25 | 09-07 | `sys_resume` 经 SYS_RUNCTL 真实现 |
+| #29 | V2-P0-2 | 09-08 | 信号集合位基统一到 C `__sigmask` + badignore 谓词修正 |
+| #30 | V2-P0-1 | 09-08 | 信号终止链贯通真实 transport（消灭 mock 泄漏） |
+| #31 | V2-P1-1 | 09-08 | PID 轮转相位对齐 C（先自增再返回） |
+| #32 | V2-P1-2 / D-27 | 09-08 | SIGHUP 会话组广播实现 |
+| #33 | V2-P2-4 | 09-08 | 广播 SIGTERM 的 RS 通知改走 sys_kill 内核回环 |
+| #34 | V2-P2-5 / D-28 | 09-08 | check_parent 父未等待时投递 SIGCHLD |
+| #35 | V2-P2-3 | 09-08 | tell_vfs 错误路径 fail-closed（内部 panic 对齐 C） |
+| #36 | V2-P3-3 | 09-08 | Exit 臂透传 do_exit 回复意图 |
+| #37 | V2-P3-2 | 09-08 | GID_MAX 校验恢复 2^31-1 真值 |
+| #38 | V2-P2-2 | 09-08 | `do_exec` 补 VFS/RS 调用者门 |
+| #39 | V2-P2-1 | 09-08 | itimer CLOCK notify 接线 + 周期重挂收敛到 `cause_sigalrm` |
+| #40 | V2-P2-6 | 09-08 | ENOSYS 兜底臂注释指向接线批次表 |
+| #41 | V2-P3-1 | 09-08 | 四处 stale 注释与死绑定清理 |
+| #42 | V2-P3-4(c) | 09-08 | exec 重置对齐 C 不清 sa_flags（campaign 收官） |
 
 ---
 
 ## 11. 第 2 轮全量查漏补缺 + 架构审查（V2，2026-09-08）
 
-> 来源：2026-09-08 第二轮架构级审查（cmd-04 原型：查漏补缺 + 分层架构审查）。上一轮（§0-§10，2026-09-06/07）之后，代码经历 Fix #22-#28 与 `sys_vircopy`/`sys_runctl` 等 E6 切片落地，本轮在此新基线上重跑。
-> 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 15,900 行）+ PM 消费的 `minix-types`/`minix-sys` 边界。不做 21 篇概念文档的 doc review（上轮 plan.md §7 已做）。
-> 方法：先查漏补缺（Gate A 重生成 SYMBOLS.md、47 调用号矩阵复核、6 个易漏 C 文件逐函数对账、24 处 DEFERRED/stub 全量收敛、Minix3 语义抽查第二批 10 项），再整体到分层架构审查（内核接入 seam → 服务器骨架 → 分发层 → 子系统层 → 状态层 → VFS 协议层 → 测试层），对照 Redox 与 Rust/OS 社区实践。10 项语义抽查中的信号类条目由独立审查代理执行，P0/P1 级结论全部经本会话二次 grep 验证后才登记。
-> 条目编号：V2-P0-x / V2-P1-x / V2-P2-x / V2-P3-x，与上轮 P1-x/P2-x/P3-x 不冲突。
+> 基线：Fix #22-#28 后的 346 lib + 7 integration。方法：Gate A 重生成 + 47 调用矩阵复核 + 6 个 C 文件逐函数对账（utility/getset/time/mcontext/profile/alarm）+ 24 处 DEFERRED 收敛 + 语义抽查第二批 10 项 + 分层架构审查 + Redox 联网调研。
 
-### 11.0 Gate 证据
+### 11.0 Gate 证据（V2）
 
-gate-evidence-A（覆盖率枚举，本次重新生成，未复用上轮产物）：
+coverage 109/109 文档覆盖、102 Rust 名称匹配（93.6%）；测试名对账全过（当时口径：todo.md 引用的测试函数全部 grep 命中）。**V3 注：文档 §5 全量测试名对账是 V3 才做的（V3-P1-5），V2 的对账范围只含 todo.md 引用。**
+
+### 11.1 查漏补缺总表 V2
+
+#### 11.1.1 47 调用号矩阵复核 + 40 臂接线批次表（活动台账，每接线一批同步划账）
+
+| 批次 | 调用号 | C handler | Rust 逻辑位置 | 前置条件 |
+|------|--------|-----------|--------------|----------|
+| A 凭证（13 个） | 4,5,6,9,10,12,13,15,16,29,30,31,32 | do_get/do_set（getset.c） | `credentials.rs:87/148` | wire 类型（`m_lc_pm_getuid` 族）；`CopyGroups` 生产实现（minix-sys `sys_datacopy`，E6）；`VfsForwarder` 生产实现。**V3 增补：do_getepinfo 两处语义偏差先修（V3-P2-4）** |
+| B 信号控制（6 个） | 8,20,21,22,23,24 | do_trace/do_sigaction/do_sigsuspend/do_sigpending/do_sigprocmask/do_sigreturn | `trace.rs`/`signal_handlers.rs` | wire 类型；`sys_sigreturn` wrapper（E6）；**V3 增补：批次 B 的 trace 部分必须先做 V3-P1-1 重构（常量 + 分支 + stub 清算），现状态不满足"逻辑已备"前提** |
+| C 时间（6 个） | 7,28,33,34,35,36 | do_stime/do_time/do_getres/do_gettime/do_settime/do_getrusage | `time.rs`/`misc.rs` | ClockSource 生产实现（GETUPTIME，E6）；`sys_settime`/`sys_stime`（E6）；rusage 拷出未接线见 V3-P2-6 前置 |
+| D 定时器（1 个） | 17 | do_itimer | `timer.rs:368` | `TimerCtl`/`VTimerCtl` 生产实现（E6）；`sys_datacopy`；CLOCK notify 时间戳来源修正（V3-P2-10） |
+| E exec（3 个） | 14,43,44 | do_exec/do_newexec/do_execrestart | `exec.rs` | caller 门已补（Fix #38）；wire 类型；`sys_exec` wrapper 与 kernel 对端（D-08 注）；D-16 契约（E7） |
+| F 调度（2 个） | 26,27 | do_getsetpriority | `sched.rs:247` | SCHED 客户端（D-12/A-8）；`SEND_PRIORITY`/`SEND_TIME_SLICE`（E7）；**V3 增补：`sched_start_user` 端点语义先修（V3-P2-3）** |
+| G 杂项（9 个） | 18,19,25,37,38,39,45,46,47 | do_[gs]etmcontext/do_sysuname/do_reboot/do_svrctl/do_sprofile/do_getepinfo/do_getprocnr/do_getsysinfo | `misc.rs` | wire 类型；`sys_[gs]etmcontext`/`sys_sprof`（E6）；**V3 增补：getsysinfo 假数据（V3-P1-4）、svrctl 分支细节（V3-P2-5）、sysuname req 分支必须在接线前修** |
+| **H 内核信号入口（V3 新增）** | —（通知面，非调用号） | process_ksig 经 SIGKSIG（main.c:121 + sef_signal.c:104-108） | `signal.rs:374`（现无生产调用者） | 内核 ksig 对端核实（E6 增补）；notify 分支识别内核源；getksig/endksig 语义 vs kernel_pending 表内建模的设计决策 |
+
+#### 11.1.2 C 函数面第二轮对账（utility/getset/time/mcontext/profile/alarm 逐函数）
+
+V2 结论保留在 git 历史（2026-09-08 压缩前版本）。两条产出：V2-P1-1（PID 相位，已修）、V2-P3-2（GID_MAX，已修）。**V3 补充**：该轮未覆盖的 trace/event/misc/schedule/main 五文件对账见 §12.1。
+
+#### 11.1.3 DEFERRED / stub 全量收敛（V2 时点 24 处）
+
+V2 结论保留在 git 历史。**V3 勘误**：该轮收敛漏掉 `ipc/vfs.rs:533-540` 的 `restart_signals` no-op（注释含 "DEFERRED 脚手架" 字样但无编号）——见 V3-P2-1。另 Fix #29 的验证声明"signal.rs 本文件不再出现裸移位"与现状不符（signal.rs:233/242/244/289-298 仍有 7 处裸移位，位基正确但未走 `init::sig_bit` 单点）——见 V3-P3-4。
+
+#### 11.1.4 Minix3 易漏语义抽查第二批（10 项）
+
+判定四色（covered/gap/deferred/N.A.），全表见 git 历史。要点：kill 广播四分支 covered（RS 站点 gap 已修）、setsid covered、wait4 只测 WNOHANG covered、exec 信号重置 covered（超集已修）、sigmask2 闭环 covered、alarm 跨 fork/exec/exit covered、core dump 触发链 gap（已修）、getsysinfo/reboot superuser 门 covered、SIGHUP 广播 gap（已修）、PAUSE N.A.。
+
+### 11.2 V2 条目
+
+已闭环（索引）：V2-P0-1（✅ Fix #30）、V2-P0-2（✅ Fix #29）、V2-P1-1（✅ Fix #31）、V2-P1-2（✅ Fix #32）、V2-P2-1（✅ Fix #39）、V2-P2-2（✅ Fix #38）、V2-P2-3（✅ Fix #35）、V2-P2-4（✅ Fix #33）、V2-P2-5（✅ Fix #34）、V2-P2-6（✅ Fix #40）、V2-P3-1（✅ Fix #41）、V2-P3-2（✅ Fix #37）、V2-P3-3（✅ Fix #36）、V2-P3-4（(c) ✅ Fix #42；(a) 挂 E6；(b) 扩展为 V3-P2-5）。
+
+仍开放：
+
+#### V2-P2-7 unpause 的 VFS_CALL 分支不发 VFS_PM_UNPAUSE（批次 B 联动）
+
+- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
+- **文件**：`os/servers/pm/src/signal.rs` `unpause`（VFS_CALL 分支 `return false`，无消息发送）
+- **问题**：C 的 `unpause`（signal.c:719-770）对 VFS_CALL/EVENT_CALL 挂起的进程经 `tell_vfs(VFS_PM_UNPAUSE)` 请求 VFS 中断其阻塞调用，回复（Unpause 事件）到来后才建立 sigframe。Rust 该分支直接返回 false（信号转 pending），不发任何消息——被捕获信号对"卡在 VFS 调用里"的进程永远无法及时投递。
+- **建议**：随 caught 路径补全（V2-P2-8）一并做：`unpause` 增 transport 形参，VFS_CALL 分支走 `crate::ipc::tell_vfs(VfsCall::Unpause)`（ipc/vfs.rs 的 Unpause 回复分支已备）。
+- **验证**：单测：VFS_CALL 挂起进程 + 被捕获信号 → transport 收到 UNPAUSE 请求，VFS 回复后 sigframe 建立。
+
+#### V2-P2-8 sig_send 是空壳（caught 投递的核心步骤缺失，批次 B 联动）
+
+- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
+- **文件**：`os/servers/pm/src/signal.rs` `sig_send`（`let _ = (table, target, signo); Ok(())`）
+- **问题**：C 的 `sig_send`（signal.c:772-855）是被捕获信号投递的核心：保存/替换 mask、写 `mp_sigreturn`、构造 sigframe 参数、唤醒目标进程。Rust 版不做任何事直接返回成功——一旦 sigaction 批次（批次 B）接线，被捕获信号将"看起来送达"而进程毫无感知。
+- **建议**：与批次 B 联动实施（sigaction 的 handler 安装 → sig_send 的 frame 建立 → sigreturn 的恢复，三步须同轮验证）；`unpause`（V2-P2-7）同轮。
+- **验证**：批次 B 的集成测试：handler 进程收信号 → handler 执行 → sigreturn 恢复 mask。
+
+### 11.3 对照 Redox 的架构参考（V2，7 条）
+
+V2-Redox-1（用户态迁移 `1d5f8fd46d71`）、V2-Redox-2（僵尸记账 WaitMap）、V2-Redox-3（孤儿跟 C 不跟 Redox）、V2-Redox-4（PID 轮转必须保真）、V2-Redox-5（信号共享页 + trampoline 终态）、V2-Redox-6（fork 是协议）、V2-Redox-7（事件循环惯例 redox-scheme/Tock）——正文见 2026-09-08 压缩前版本（git 历史），结论继续有效。V3 增补见 §12.4。
+
+### 11.4 模块级观察（V2 分层审查结论）
+
+- **L0 内核接入 seam**：约 25 个端口 trait 两种风格并存（中央 KernelGateway vs 接口隔离窄 trait）。判定：不收敛为单一 trait，但需四列对照表（内核能力 ↔ trait ↔ minix-sys wrapper ↔ C libsys）进 plan.md ARCH 附录。**V3 更新**：trait 总数已达 30（V3 实测清单见 §12.3 观察 1），四列对照表仍未落地；`CopyToUser`（misc.rs:135）与 `KernelGateway::copy_to_user`（exit.rs:50）被确认是同一关切的双端口。
+- **L1 服务器骨架**：`run_once` 与 C 主循环逐段对应（V3 的 main.c 对账确认：主循环判定顺序、setreply/reply 载荷语义、REBOOT 特例、EXITING 丢弃全部 covered；有意偏差均有文档记录）。
+- **L2 分发层**：enum 穷尽 match + 兜底臂结构维持；兜底臂已指回批次表（Fix #40）。
+- **L3 子系统层**：exit→wait 僵尸链、exec 三方握手、signal 骨架 ✓。**V3 增补：sig_proc 内部两处分支缺口（V3-P1-3 / V3-P2-2）与 trace 域失真（V3-P1-1）修正"L3 骨架 ✓"的覆盖面。**
+- **L4 状态层**：mproc 38 字段 + 19 flag 位映射可追溯；pid_gen 活进程扫描偏差已文档化。
+- **L5 VFS 协议层**：11 路回复与 C 逐路对应。**V3 增补：尾部 `restart_signals` 端口是 no-op（V3-P2-1）；`publish_event` 裸指针借用拆分可免（V3-P2-7）。**
+- **L6 测试层**：接线分支集成测试义务随批次表逐批履行；"测试全绿但行为错误"教训（V2 两 P0 的直接证据是 mock 掩盖）。**V3 增补：`test_constants_match_c` 只断言 18 个常量中恰好正确的 2 个——"测试名声称对账 C 但断言子集规避"是同一教训的常量类变体（§12.5 Rule Discovery）。**
+
+### 11.5 Rule Discovery（V2）
+
+TSTL（测试 seam 泄漏进生产路径）与 SBCD（位集合 producer/consumer 位基漂移）两个候选模式，目标文件 `prompt/skill/review-patterns-skill.md`，登记状态待规则集维护轮确认。V3 追加候选见 §12.5。
+
+### 11.6 建议的推进顺序（V2）
+
+原 10 步顺序（V2-P0-2 → … → 批次 F）执行到第 5 步后与 V3 轮合并——**以 §12.5 的 V3 顺序为准**（它吸收了 V2 遗留的批次 A-G 与 V2-P2-7/8，并插入 V3 新条目）。
+
+---
+
+## 12. 第 3 轮全量查漏补缺 + 架构审查（V3，2026-09-09）
+
+> 来源：cmd-04 模式第 3 轮（查漏补缺 + 分层架构审查）。前两轮已覆盖的 C 文件不重复对账；本轮对第 2 轮未做逐函数对账的五个 C 文件（trace.c 276 行 / event.c 353 行 / misc.c 447 行 / schedule.c 112 行 / main.c 424 行）逐函数对账，外加 Gate E 文档 §5 全量测试名对账（21 篇文档，第 1、2 轮只做过 todo.md 引用级对账）。
+> 方法与证据：coverage-extract 重跑（109 符号 / 文档 100% / Rust 名称匹配 93.6%，7 个未匹配结论与前两轮一致无新增真缺口）；`cargo test -p minix-pm` 356 lib + 8 integration passed；五个对账子任务由独立审查代理执行，P1 级以上结论全部经本会话二次 grep/读源验证后才登记（其中一条——`sched.rs` 特权门旁路——经二次核实被**降级**为设计观察，见 §12.3 观察 6）。
+
+### 12.0 Gate 证据（V3）
 
 ```bash
 python3 tools/coverage-extract/coverage-extract.py pm \
   notes/rewrite/fork-syscall-rewrite/04-stage-pm \
   --rust-dir os --c-dir minix3/minix/servers/pm \
   --semantic-map tools/coverage-extract/pm-semantic-map.json \
-  --output .review/zcode/fork-syscall-rewrite/04-stage-pm-arch/SYMBOLS.md
-# Coverage Summary for pm:
-#   Total C symbols: 109
-#   Doc covered: 109 (100.0%)
-#   Rust covered (name-match): 102 (93.6%)
+  --output .review/zcode/fork-syscall-rewrite/04-stage-pm-arch/SYMBOLS-v3.md
+# Total C symbols: 109; Doc covered: 109 (100.0%); Rust covered (name-match): 102 (93.6%)
+
+cd os && cargo test -p minix-pm
+# test result: ok. 356 passed; 0 failed  +  8 integration passed
+
+cargo clippy -p minix-pm --lib
+# minix-pm (lib): 3 warnings（ipc/vfs.rs:28/31 与 timer.rs:7 的 unused import——V2 收官时为 0，回退见 V3-P2-9）
+# minix-sys (lib): 5 warnings（非本轮范围，含 syscall.rs:308 新增 1 条 empty-line-after-doc）
+cargo test -p minix-pm --no-run 2>&1 | grep 'unused variable'  # 22 处，全部位于 #[cfg(test)] 代码（V3-P2-9）
 ```
 
-7 个未匹配符号逐条核实（与上轮 §1.2 结论一致，无新增真缺口）：`NO_EVENTSUB` 有语义表达（`event.rs:76` `NO_EVENTSUB_RAW`，工具不匹配名称）；`SEND_PRIORITY`/`SEND_TIME_SLICE` 真缺口（挂 edge E7，`const.h:19-20`）；`ESCRIPT` C 死代码正确缺失；`EXTERN`/`_SYSTEM`/`_TABLE` C 编译宏无需对应。
-
-gate-evidence-E（测试基线与测试名对账）：
-
-```bash
-cargo test -p minix-pm --lib    # 346 passed; 0 failed
-cargo test -p minix-pm          # + 7 integration passed（run_once_integration）
-cargo clippy -p minix-pm --lib  # 0 warning 0 error（32 条 workspace profile 告警属其他 crate，非本轮范围）
-bash tools/check-rs-unwired.sh  # PASS
-```
-
-todo.md 引用的测试函数全部 grep 命中：`test_call_nr_roundtrip_all_registered`（`ipc/calls.rs:343`，注意上轮 §0.1 标注的 :222 已因后续修复漂移）、`test_disinherit_new_parent`（`exit.rs:862`，上轮标注 :544 同样漂移）、`test_tell_parent_delivers_rusage_via_datacopy`（`exit.rs:760`）。行号漂移本身按模式 77 处理，不在本轮逐条修复。
-
-### 11.1 查漏补缺总表 V2
-
-#### 11.1.1 47 调用号矩阵复核 + 40 臂接线批次表
-
-现状复核：接线仍是 7 个（Exit/Fork/Wait4/Kill/ProcEventMask/SrvFork/SrvKill），经 `dispatch_pm_call` 的 7 个显式臂分发；其余 40 个落入兜底臂 `_ => ReplyIntent::Reply(ENOSYS)`（`os/servers/pm/src/ipc/calls.rs:283`）。与上轮 §1.1 的差异：上轮描述的"`init.rs` 内联拦截"已被 Fix #2 消除，矩阵的"可达"列整体 +1 精度。40 臂的接线前置条件与建议批次（每批 = wire 类型 + match 臂 + 集成测试 + 文档同步）：
-
-| 批次 | 调用号 | C handler | Rust 逻辑位置 | 前置条件 |
-|------|--------|-----------|--------------|----------|
-| A 凭证（13 个） | 4,5,6,9,10,12,13,15,16,29,30,31,32 | do_get/do_set（getset.c） | `credentials.rs:87/148` | wire 类型（`m_lc_pm_getuid` 族）；`CopyGroups` 生产实现（需 minix-sys `sys_datacopy` wrapper，edge E6）；`VfsForwarder` 生产实现（`tell_vfs` + `ipc/vfs.rs:242-249` 的回复分支已备） |
-| B 信号控制（6 个） | 8,20,21,22,23,24 | do_trace/do_sigaction/do_sigsuspend/do_sigpending/do_sigprocmask/do_sigreturn | `trace.rs`/`signal_handlers.rs` | wire 类型；`sys_sigreturn` wrapper（E6）；**必须先修 V2-P0-2**（集合位序错位会被 sigaction 落地放大） |
-| C 时间（6 个） | 7,28,33,34,35,36 | do_stime/do_time/do_getres/do_gettime/do_settime/do_getrusage | `time.rs`/`misc.rs` | `ClockSource` 生产实现（内核 GETUPTIME 面，E6）；`sys_settime`/`sys_stime` wrapper（E6）；rusage 拷贝复用 `KernelGateway::copy_to_user`（已备） |
-| D 定时器（1 个） | 17 | do_itimer | `timer.rs:368` | **V2-P2-1**（CLOCK notify 接线 + 周期重挂收敛）；`TimerCtl`/`VTimerCtl` 生产实现（`sys_setalarm`/`sys_vtimer`，E6）；`sys_datacopy`（itimer value 双向拷贝） |
-| E exec（3 个） | 14,43,44 | do_exec/do_newexec/do_execrestart | `exec.rs:92/156/200` | **V2-P2-2**（caller 门）；wire 类型；`sys_exec` wrapper 与 kernel 对端（D-08 注）；D-16 core-name 契约（edge E7） |
-| F 调度（2 个） | 26,27 | do_getsetpriority | `sched.rs` | SCHED 客户端（D-12/A-8）；`SEND_PRIORITY`/`SEND_TIME_SLICE` 常量（E7） |
-| G 杂项（9 个） | 18,19,25,37,38,39,45,46,47 | do_[gs]etmcontext/do_sysuname/do_reboot/do_svrctl/do_sprofile/do_getepinfo/do_getprocnr/do_getsysinfo | `misc.rs` | wire 类型；`sys_[gs]etmcontext`/`sys_sprof` wrapper（E6，sprof 带 feature 门）；reboot 的 `sys_abort` 已备（Fix #25） |
-
-#### 11.1.2 C 函数面第二轮对账（utility/getset/time/mcontext/profile/alarm 逐函数）
-
-上轮对账止步于 proto.h 粒度；本轮对 6 个易漏 C 文件逐函数核对。新发现两条（详见 V2-P1-1、V2-P3-2），其余判定：
-
-| C 函数 | 判定 | 证据 |
-|--------|------|------|
-| get_free_pid（utility.c:32-49） | **行为偏差**（相位偏移） | C 先自增再检查（utility.c:38），首个分配 INIT_PID+2=3，PID 2 永不使用；Rust 返回自增前旧值（`mproc/pid_gen.rs:132-157`），首个分配 2，且 `pid_gen.rs:196-201` 测试把该相位锁死为断言 |
-| find_param（utility.c:57-71） | 覆盖（形参化） | `misc.rs:184`（monitor 参数显式传入，C 读全局 monitor_params——A-3 惯例） |
-| find_proc（utility.c:76-84） | 覆盖 | `mproc/table.rs:225` |
-| nice_to_priority（utility.c:86-99） | 覆盖 | `sched.rs:280` → `NiceMapping::to_queue`（上轮已验证公式） |
-| pm_isokendpt（utility.c:104-115） | 覆盖（逐分支等价） | `mproc/table.rs` `pm_isokendpt`：槽位域 EINVAL / endpoint 不匹配或非 IN_USE EDEADEPT |
-| tell_vfs（utility.c:108-127） | 覆盖但错误路径偏软 | `ipc/vfs.rs:182-200`：not-idle 与发送失败 C 均 panic，Rust 均返回 Err——错误去向见 V2-P2-3 |
-| set_rusage_times（utility.c:133-152） | 覆盖（内联进 tell_parent） | `exit.rs:535-550`（按 `table.system_hz` 换算，对齐 C `sys_hz()`） |
-| do_get/do_set 13 调用（getset.c） | 覆盖，一处恒假检查 | `credentials.rs:87/148`；GID_MAX 检查恒假见 V2-P3-2；SETSID/ISSETUGID/GETSID 按 pid 定位全部在位 |
-| do_gettime/do_getres/do_settime/do_time/do_stime（time.c） | 覆盖（seam 后待生产 impl） | `time.rs:119/137/142/167/181/188`；REALTIME/MONOTONIC 分支、EPERM 门、boottime 换算逐点对应 |
-| do_[gs]etmcontext（mcontext.c:13/23） | 覆盖（seam） | `misc.rs:480/487` `McontextCtl` |
-| do_sprofile（profile.c:22-45） | 覆盖（同型 ENOSYS） | `misc.rs:466-477`：`#if SPROFILE` ↔ `#[cfg(feature = "sprofile")]`，两侧默认都返回 ENOSYS |
-| do_itimer/set_alarm/cause_sigalrm（alarm.c:92-154/299-311/317-344） | 覆盖但周期重挂路径分裂 | `timer.rs:368/286/301`；见 V2-P2-1 |
-
-#### 11.1.3 DEFERRED / stub 全量收敛（24 处 grep 对账）
-
-`grep -rn 'DEFERRED\|unimplemented!\|todo!' os/servers/pm/src` 共 24 处。对账结论：
-
-- 与 §6 台账一致且仍开放：D-01（`transport.rs:86/91/96`）、D-02（`main.rs:15`）、D-05（`ipc/vfs.rs:453`）、D-12（`init.rs:578/609/622`）、D-16（`exit.rs:261/265`）、D-17（`exit.rs:323`）。
-- **台账错位一处**：`exit.rs:305`、`exit.rs:676` 仍挂 `[DEFERRED: D-13]`，但 §6 的 D-13 行已被 Fix #23 整体划账（该修复只覆盖 `do_exit` 的 PRIV_PROC 违规分支一处 `sys_kill`）。SIGHUP 广播两站点实为未实现——升格为 V2-P1-2。
-- **stale 注释四处**（均已实现或前提失效，代码注释未跟上）：`wait.rs:128-131`（D-21 已由 Fix #27 实现 + `let _ = rusage_addr` 死绑定）；`exit.rs:515-516`（doc 注释仍写 "sys_datacopy of rusage (omitted)"）；`event.rs:213-214`（doc 注释写 "两者 DEFERRED，当前仅清标志"，实际 `event.rs:272/278` 已真实调用 `exit_restart`/`restart_sigs`——Fix #7 之后未更新）；`main.rs:10`（"RS_INIT 握手归主循环（04）"——本树 C 的 PM 根本没有 RS_INIT 握手，`grep -rn RS_INIT minix3/minix/servers/pm/` 零命中，该前提应删除）。登记为 V2-P3-1。
-- 其余 10 处为文档注释性质的 DEFERRED 字样（`transport.rs:67/197`、`ipc/vfs.rs:44/100/351/555`、`ipc/dispatcher.rs:335`、`ipc/calls.rs:14/442`、`exit.rs:676` 已计入上两行），无新缺口。
-- D-21 划账与 Fix #27 补记已于本轮账目对账完成（见 §6 D-21 行、§10 Fix #27）。
-
-#### 11.1.4 Minix3 易漏语义抽查第二批（10 项）
-
-判定四色：covered（语义等价）/ gap（缺失或行为不同）/ deferred（显式 DEFERRED 有归属）/ N.A.（本树 C 不存在该语义，Rust 一致缺失）。
-
-| # | 语义点 | 判定 | 关键锚点 |
-|---|--------|------|----------|
-| 1 | kill 负数/0 广播四分支 + 权限（非 root 需 uid 有交集） | covered（子项 gap 见 V2-P2-4） | C signal.c:597-632 ↔ `signal.rs:106-149`、`can_signal` 四组合 |
-| 2 | setsid 规则（procgrp==pid → EPERM）+ VFS 转发 SUSPEND | covered（`credentials.rs:212-219`），整调用未接线归批次 A；setpgid **N.A.**（callnr.h 无此调用，两侧一致无） | C getset.c:205-212 |
-| 3 | wait4 options：C 只测 WNOHANG（forkexit.c:553-554），未知位不过滤 | covered（`wait.rs:142-144`；i32→u32 位型保持） | C forkexit.c:487-491 |
-| 4 | exec 后信号处置重置（catch 清、ignore 保持）+ SIGKILL 不可捕获/阻塞五处 | covered（微小超集：Rust 额外清 sa_flags，V2-P3-4 备注） | C exec.c:178-184、signal.c:49/80-187 ↔ `mproc/signal.rs:26/233-275`、`mproc/signal.rs:359-370` |
-| 5 | sigsuspend/sigreturn mask 保存恢复（sigmask2 闭环） | covered | C signal.c:160-192/792-795 ↔ `signal_handlers.rs:168-197`、`mproc/signal.rs:266-298` |
-| 6 | alarm 跨 fork 清零 / 跨 exec 保留 / 退出清 | covered | C forkexit.c:104-113、exec.c（不触碰 timer）、forkexit.c:300-301 ↔ `fork.rs:236/340/347`、`exit.rs:200-207` |
-| 7 | core dump 触发链（core_sset + dump_core 双重门 + VFS_PM_DUMPCORE） | **gap**：位序错位使有效 core 集合漂移（V2-P0-2）；`path: 0` 已 D-16 登记；`TestIpcTransport` 泄漏见 V2-P0-1 | C signal.c:545-563、forkexit.c:285-292/351-357 ↔ `signal.rs:320-336`、`exit.rs:174-186/253-272` |
-| 8 | getsysinfo/reboot superuser 门；svrctl 无门（C 也无）；getprocnr RS-only | covered（svrctl 的 IOCGROUP 前置校验差异记 V2-P3-4） | C misc.c:116-122/204/307/154-157 ↔ `misc.rs:307-350/384-428` |
-| 9 | session leader 死亡向进程组发 SIGHUP；普通组长死亡无传播（两侧一致） | **gap**（V2-P1-2）；普通组长 N.A. | C forkexit.c:298/411-412 ↔ `exit.rs:302-307/674-676` |
-| 10 | PAUSE 调用 | N.A.（callnr.h 47 调用无 PAUSE，两侧一致无） | C callnr.h:14-60 |
-
-### 11.2 V2 条目
-
-#### V2-P0-1 信号终止路径把 VFS 告知发进测试 mock，进程卡死且 VFS 永不知情（✅ 已修复 2026-09-08，见 §10 Fix #30）
-
-- **优先级**：P0（可达路径上的真实行为错误——Kill=11 已接线）
-- **类型**：代码 bug（测试 mock 泄漏进生产路径）
-- **文件**：`os/servers/pm/src/signal.rs:318-336`（`sig_proc_exit`）、`os/servers/pm/src/ipc/transport.rs`（`TestIpcTransport::send` 推入本地 Vec 即返回 Ok）
-- **问题**：`sig_proc_exit` 在生产代码中构造 `let mut nop = crate::ipc::TestIpcTransport::default();` 并传给 `exit_proc`（signal.rs:333-334；该函数在 `#[cfg(test)]` 模块之外，tests 模块始于 signal.rs:411）。`exit_proc` 的收尾对 C `forkexit.c:350-358` **无条件** `tell_vfs`（DUMPCORE 或 EXIT 二选一），Rust 侧该消息进入一次性 mock 即被丢弃（`exit.rs:271` 还叠加 `let _ =` 忽略返回值）。后果分两支：(a) core 信号（默认处置 SIGSEGV 等）走 dump_core=TRUE 分支——不 zombify、等 VFS 回复驱动 `exit_restart`，但 VFS 永远收不到请求，进程**永久卡在 EXITING+VFS_CALL**，父进程 wait4 永久挂起；(b) 普通终止信号（含 SIGKILL）虽能 zombify，VFS 侧永远收不到 VFS_PM_EXIT，跨服务器状态漂移（fd/锁不清理）。注释里 "no VFS" 的理由与事实不符：exit_proc 恰恰必然 tell_vfs。
-- **证据**：`cargo test -p minix-pm` 全绿（346+7）——现有测试全部经由 mock 或未覆盖信号终止的 VFS 时序，即"测试通过"恰因 mock 吞掉了差异；`kill(pid, SIGKILL)` 从 `dispatch_pm_call` Kill 臂（`ipc/calls.rs`）→ `do_kill` → `check_sig` → `sig_proc:316` → `sig_proc_exit` 全程可达。
-- **建议**：方案一（首选）：`sig_proc_exit` 增加 `transport: &mut dyn IpcTransport` 形参（`check_sig`/`sig_proc` 链上已贯穿 transport，只差最后一段），删掉 mock 构造；补集成测试：kill + 默认处置 SIGSEGV → 断言 VFS 收到 `VFS_PM_DUMPCORE` 且父进程 wait 可回收。方案二（次选）：若双借用是动机，把 tell_vfs 提为 `exit_proc` 之后的独立步骤并传真实 transport；劣于方案一（拆散 C 的顺序语义）。修复时顺带处理 exit.rs:271 的 `let _ =`（见 V2-P2-3）。
-- **验证**：新集成测试失败→修复→通过；`grep -n 'TestIpcTransport' os/servers/pm/src --include='*.rs' -r` 在非测试代码零命中（配合 V2 11.5 的模式提案）。
-
-#### V2-P0-2 信号集合位约定分裂：默认忽略集失效（SIGCONT 误杀）、core 集漂移（SIGKILL 误入）（✅ 已修复 2026-09-08，见 §10 Fix #29）
-
-- **优先级**：P0（可达路径上的真实行为错误，与 V2-P0-1 同链路叠加）
-- **类型**：代码 bug（数据表示的 producer/consumer 位基不一致，且被测试锁死）
-- **文件**：`os/servers/pm/src/init.rs:90-92`（`sig_bit(sig) = 1u64 << sig`，producer 位基 = 信号编号）、`init.rs:703-718`（`test_signal_sets_match_c` 断言 `1<<3|…|1<<11`，把错位约定固化为契约）；消费侧 `os/servers/pm/src/signal.rs:326`（`CORE_SIGSET & (1<<(signo-1))`，位基 = 编号-1）、`signal.rs:275-277`（badignore）、`signal.rs:309-313`（默认忽略门）
-- **问题**：C 的信号集合位基是 `bit(signo-1)`（`sys/sys/sigtypes.h:67-71` `__sigmask(n) = 1<<((n-1)&31)`，`sigaddset` 语义；集合构建见 main.c:154-165）。Rust 的 producer 用 `1<<sig`、consumer 用 `1<<(signo-1)`，两者相差一位。按 Minix 编号表（`sys/sys/signal.h:52-83`：SIGEMT=7、SIGBUS=10、SIGCONT=19、SIGCHLD=20）推算实际效果：有效 core 集 = {ILL,TRAP,ABRT,EMT,FPE,**KILL**,SEGV,**SYS**}（C 为 {QUIT,ILL,TRAP,ABRT,EMT,FPE,BUS,SEGV}——QUIT/BUS 丢 core，KILL/SYS 误入）；有效默认忽略集 = {**TTIN**,CHLD,INFO,**USR1**}（C 为 {CHLD,CONT,WINCH,INFO}——**CONT 与 WINCH 失去默认忽略**）。当下可达后果：所有进程的 ignored/caught 集合为空（sigaction 未接线），`kill(pid, SIGCONT)` 经 `sig_proc` 一路落到 `signal.rs:316` 终止——C 中 SIGCONT 默认忽略（signal.c:535-539 `sigismember(&ign_sset, signo)` → return），进程不该死。SIGKILL 误判 core 会叠加 V2-P0-1（走 dump 路径卡死）。
-- **证据**：`init.rs:90-92/99-125` 与 `signal.rs:326` 并排读即证；`init.rs:707` 断言值 `(1<<3)|…|(1<<11)` 即错位本体（C 对应集合应是 `1<<(3-1)|…`）。
-- **建议**：方案一（首选）：`sig_bit` 改为 `1u64 << (sig - 1)`（对齐 C `__sigmask`），`init.rs:703-718` 断言值同步 -1；consumer 不动。方案二：consumer 全部改 `1<<signo` 对齐 producer。选一后全文 grep `CORE_SIGSET|IGN_SIGSET|NOIGN_SIGSET` 复核每个消费点（含 `signal.rs:276` 的 badignore）。**顺带修 badignore 谓词**：C 是 `sigismember(&noign_sset, signo) && (ignored(signo) || masked(signo))` 的单信号成员判定（signal.c:483-486），Rust 写成了"集合整体与 NOIGN_SIGSET 有交叠"（`signal.rs:275-277`），即使位基统一后谓词仍不等价，须改为 `(state.ignored | state.mask) & sig_bit(signo) != 0`。
-- **验证**：新增单元测试：`is_core` 对 1..=_NSIG 全信号逐个断言与 C core_sigs[] 一致；`kill(pid, SIGCONT)` 集成测试断言进程存活且回复 0。
-
-#### V2-P1-1 PID 轮转相位偏移：C 永不分配 PID 2，Rust 从 2 开始（✅ 已修复 2026-09-08，见 §10 Fix #31）
-
-- **优先级**：P1
-- **类型**：语义偏移（外部可观察值）
-- **文件**：`os/servers/pm/src/mproc/pid_gen.rs:132-157`（`get_free_pid`）、`pid_gen.rs:196-201`（`test_pid_first_allocation` 断言 `INIT_PID + 1`）
-- **问题**：C `get_free_pid`（utility.c:32-49）的 `next_pid` 先自增再查重再返回（utility.c:38），首个分配值 = INIT_PID+2 = 3，PID 2 在系统全生命周期永不使用；Rust 返回自增前的旧值，首个分配 = 2。启动时 RS/PM/FS 等全部 boot 系统进程的 PID 整体漂移一位（`init.rs:460-465` 消费同一生成器）。PID 是外部可观察值（ps/getpid/kill 语义），属 Rewrite 契约保护面。
-- **建议**：方案一（首选）：`get_free_pid` 返回自增后的值（把 candidate/next 语义对调），`test_pid_first_allocation` 改断言 `INIT_PID + 2`，回绕分支同步核对（C 回绕后首个是 2，即 `next_pid=NR_PIDS → 下一值 INIT_PID+1=2`）。方案二：维持现状并在模块头声明"相位差异有意"——不可取：无任何理由偏离 C 的编号序列，且 pid 2 在 C 中被跳过可能正是某些历史工具的隐含依赖。
-- **验证**：单测断言首个 PID=3、回绕后=2；`fill_boot_procs` 后 RS 的 PID 与 C 一致。
+### 12.1 查漏补缺总表 V3：第 3 批 C 文件逐函数对账
+
+#### 12.1.1 trace.c ↔ trace.rs（结论：**逻辑未备**，修正第 1 轮"逻辑已备"判断）
+
+| C 函数/分支 | 判定 | C 锚点 | Rust 锚点 | 说明 |
+|---|---|---|---|---|
+| T_* 常量全集 | **ABI 错误 15/18** | `sys/sys/ptrace.h:226-250` | `trace.rs:12-28` | T_STOP 应为 -1（Rust 6，且与 T_SETDATA 同值冲突）、T_DETACH 应为 10（Rust 11）、T_RESUME=PT_CONTINUE=7（Rust 14）、T_STEP=104（Rust 15）、T_SYSCALL=14（Rust 16）、T_SETOPT=105/T_GETRANGE=106/T_SETRANGE=107（Rust 20/21/22）、T_GETINS=1/T_GETDATA=2/T_SETINS=4/T_SETDATA=5/T_GETUSER=102/T_SETUSER=103 全部不符；仅 T_OK=0/T_ATTACH=9/T_EXIT=8 正确 |
+| `test_constants_match_c` | **测试自身失真** | — | `trace.rs:398-401` | 测试名声称对账 C，实际只断言恰好正确的 2 个常量（T_OK/T_ATTACH）——16 个错误值零覆盖 |
+| T_READB_INS / T_WRITEB_INS | **整支缺失** | trace.c:101-134 | 无 | root 专属（root 门在通用守卫 trace.c:140-143 **之前**）；Rust 请求 100/101 会落入 `_` 臂被要求 tracer+TRACE_STOPPED——与 C 相反 |
+| T_GETRANGE / T_SETRANGE | **整支缺失** | trace.c:167-188 | 无 | ptrace_range 的 datacopy 提取、TS_INS/TS_DATA 校验、pr_size 上界、vircopy 双向全缺；`TraceCtl::vircopy/datacopy`（trace.rs:60-61）是从未调用的死方法 |
+| do_trace 接线 | 缺失（批次 B 已知） | callnr.h PM_PTRACE=8 | `calls.rs:313` 兜底臂 | `do_trace`/`trace_stop` 全仓无生产调用者 |
+| T_OK / T_ATTACH | partial | trace.c:56-90 | trace.rs:81-135 | 权限链 covered；**T_ATTACH 缺 `TO_NOEXEC` 置位与 `sig_proc(SIGSTOP)` 真实调用**（trace.rs:129-133，注释自认 "for test just set sigtrace"）——attach 后目标不停、tracer 收不到 W_STOPCODE；且未用文档 D1 承诺的 `try_set_tracer`（`guardianship.rs:121` 存在但代码内联构造） |
+| T_EXIT | partial | trace.c:147-159 | trace.rs:137-160 | TRACE_EXIT 置位 covered（但只更新 `exit_pending`，不更新 `trace_exit`——双份状态见下）；else 分支应调 `exit_proc`（trace.c:153-154）实为与 VFS 分支相同的仅置 Exiting |
+| T_DETACH | **多处失真** | trace.c:191-215 | trace.rs:175-208 | ① `trace_flags = 0` 是 no-op bug：trace.rs:206 在 191 行已把监护转 `Normal` 后调用 `set_trace_options(0)`，而该方法只匹配 `Traced`（`guardianship.rs:112-115`）→ 清零永不生效；② sigtrace 重放/data 信号/check_pending 全部"置 pending 位代替调用"（trace.rs:196-207 注释自认 for test；`check_sig`/`sig_proc`/`check_pending` 都已存在可调）；③ C 在 215 行落穿到 244-249 的内核 sys_trace 透传（内核侧完成 detach），Rust 直接 Reply(OK) |
+| T_RESUME/STEP/SYSCALL | partial | trace.c:220-249 | trace.rs:210-241 | data>0 信号置位代替 sig_proc（:225-227）；check_pending 仅注释（:233）；sys_trace 透传存在但内核错误折叠为 EINVAL、READ 类读值无载荷可回（C trace.c:246/248 透传 r + `reply.data = data`） |
+| trace_stop | **死代码 + 载荷契约违反** | trace.c:256-276 | trace.rs:265-295 | 无生产调用者（grep 全仓仅测试）；reply 只存 `ipc.reply` intent 不发送（trace.rs:293 注释自认）；W_STOPCODE 放 `m_type` 而非 wait4 status 载荷——违反 Fix #22（D-26）确立的"tag(m_type) + typed body(载荷)"契约 |
+| sig_proc 的 TRACE 分支 | **置位 stub** | signal.c:411-421（`sigaddset(sigtrace)` + `trace_stop`） | `signal.rs:229-239` | 置 trace_mask 位 + 直接 `stopped = true`——无 trace_stop 调用、无内核 sys_trace 停止、无 tracer 回复。**V2 Fix #5 的"真实 sig_proc"声明对本分支过度声称** |
+| TRACE_EXIT 双份状态 | 结构缺陷 | mproc.h:100（一个位） | `mproc/trace.rs:18`（exit_pending）+ `guardianship.rs:38`（trace_exit） | 同一 C 位由两处独立 bool 表达，do_trace 只更新前者，可分歧 |
+| 文档 18 | 失同步 | — | `18-trace.md` | 全文零 DEFERRED 标记但代码是 stub 态；§2.14 TO_NOEXEC=0x1 与 C 0x4（ptrace.h:211）矛盾（代码 guardianship.rs:62-63 与 C 一致，文档错）；D1 承诺的 try_set_tracer/TraceDetach::replay_sigtrace/WaitCode::stop 抽象代码未消费 |
+
+**结论**：18 号（ptrace）的真实状态是"部分 stub + 常量 ABI 错误 + 测试名谎报"，不是"逻辑已备、等 wire"。接线批次 B 的前置条件必须加"V3-P1-1 重构"。
+
+#### 12.1.2 event.c ↔ event.rs（结论：覆盖完整，1 个 pub 接口 bug + 2 处弱化）
+
+5 个 C 函数（resume_event/remove_sub/do_proceventmask/do_proc_event_reply/publish_event）全部 covered 或 partial-with-anchor（逐函数锚点表见对账报告要点：`event.c:74-123 ↔ event.rs:215-281`、`event.c:130-161 ↔ event.rs:289-322`、`event.c:170-211 ↔ event.rs:331-404/410-450`、`event.c:218-309 ↔ event.rs:459-557`、`event.c:316-353 ↔ event.rs:164-206`）。事件类型全集即 `PROC_EVENT_EXIT`/`PROC_EVENT_SIGNAL` 两种（syslib.h:292-293），无缺失。缺口归入 V3-P2-8（非 mut 变体游标 bug）与 V3-P3（waiting 上界弱化、诊断缺失、mask 截断语义、文档 06:522 表述错误）。
+
+#### 12.1.3 misc.c / schedule.c ↔ misc.rs / sched.rs（结论：主体 covered，6 处真缺口）
+
+| C 函数 | 判定 | 锚点 | 说明 |
+|---|---|---|---|
+| do_getsysinfo | **数据路径假实现** | misc.c:142-143 ↔ `misc.rs:333-336` | 权限门与 size 校验真实，但拷出内容恒为 len 个零字节（`let _ = src; cpy.copy_to_user(&vec![0u8; len], …)`，注释自认 "In tests, we copy dummy bytes"——生产代码、无 DEFERRED 标记）→ V3-P1-4 |
+| do_getepinfo | partial | misc.c:184-190 ↔ `misc.rs:362-378` | ngroups 语义（全量 vs 截断）+ groups 拷出未接线 → V3-P2-4 |
+| do_svrctl | partial | misc.c:307-395 ↔ `misc.rs:404-428, 213-218` | 四分支缺失 + 检查顺序相反 → V3-P2-5（扩展 V2-P3-4(b)） |
+| do_sysuname | partial | misc.c:72-100 ↔ `misc.rs:275-304` | req 方向分支缺失（req!=0→EINVAL 无处产生）+ 用户目的地址 placeholder（EFAULT 无载体）→ V3-P2-5 同批 |
+| do_getrusage | partial | misc.c:429-446 ↔ `misc.rs:442-463` | rusage 结构拷出未接线（`_cpy` 未用）+ 底层错误折叠 EINVAL（见 V3-P2-6） |
+| do_getsetpriority | covered（含一处待核实模式） | misc.c:239-286 ↔ `sched.rs:247-277` | `unwrap_or_default()` 凭据模式见 §12.3 观察 6（不构成对 C 的偏差） |
+| sched_init | covered | schedule.c:20-50 ↔ `sched.rs:171-197` | 两个 C assert 仅注释（sched.rs:181-185）；失败日志 cfg(test) |
+| sched_start_user | **语义偏差** | schedule.c:55-84 + main.c:371-373 ↔ `sched.rs:200-212` | C 继承父进程的 `mp_scheduler`（调用点守卫 KERNEL/NONE），Rust 硬编码 `SCHED_PROC_NR` 且无守卫 → V3-P2-3 |
+| sched_nice / nice_to_priority / get_nice_value | covered | schedule.c:89-112 / utility.c:91-103 / main.c:275-289 ↔ `sched.rs:215-228/280-287` | 公式逐项一致（含量化误差测试） |
+
+#### 12.1.4 main.c ↔ init.rs（结论：骨架 covered，1 个结构性缺口 + 4 处小项）
+
+C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_fresh(131-244)/reply(249-270)/get_nice_value(275-289)/handle_vfs_reply(294-424)。Rust 对应：`main.rs`、`init.rs`（`init()`:297、`run_once()`:357、`reply()`:451、`fill_boot_procs()`:474）、`ipc/vfs.rs`（handle_vfs_reply:190-282）。
+
+- 主循环判定顺序（notify → pm_isokendpt → EXITING 丢弃 → VFS 回复第一路 → 事件/PM 调用 → result!=SUSPEND 才 reply）与 C 逐段 covered；`reply()` 的预填载荷复用（`ipc.reply.take()`）与 C 持久 `mp_reply` 同型；REBOOT 特例（sys_abort 后返回主循环等 HARD_STOP）表达等价。
+- `sef_cb_init_fresh` 八步：1/2/5/6/8 covered（VFS_PM_INIT 从"填充循环内逐条 send"移到"填充完成后统一发送"，屏障语义不变、init.rs:546-548 已注明）；3/4/7 deferred（D-02/D-12 家族）。
+- `fill_boot_procs` 逐项 covered（负 proc_nr 跳过、procs_in_use、INIT 特例、系统进程 parent RS/INIT、get_free_pid、endpoint）。
+- handle_vfs_reply 11 路 + 尾部条件全部 covered，**但尾部 `restart_sigs` 的端口实现是 no-op**（C main.c:421-423 ↔ `vfs.rs:278-280` 条件判定正确 + `vfs.rs:533-540` no-op）→ V3-P2-1。
+- **结构性缺口**：内核信号入口（C main.c:121 `sef_setcb_signal_manager(process_ksig)` + sef_signal.c:104-108 在 receive 路径拦 SIGKSIG/SIGKSIGSM）→ Rust notify 分支只认 CLOCK（init.rs:367-381），SIGKSIG 类通知静默丢弃；`process_ksig`（signal.rs:374）全仓只有测试调用者 → V3-P1-2。
+- 小项：CLOCK notify 时间戳来源（C 用通知载荷 m_notify.timestamp，main.c:66-67；Rust 用处理时刻 `TimerCtl::now()`，init.rs:370-371）→ V3-P2-10；calls_stats 计数缺失（main.c:34-36/95-97）→ V3-P3-3；reply 失败告警生产静默（init.rs:465-467，C 总是 printf）→ V3-P3-2；文档 01 的 C 行号锚点整体偏移 3-4 行 + init.rs:3 头注释范围错 → V3-P3-6。
+
+#### 12.1.5 Gate E：文档 §5 测试名全量对账（21 篇）
+
+21 篇文档（00/99 无测试声称）共声称 324 个测试名：全命中 279、改名漂移 31、**完全虚构 14**、crate 归属错位 14（05/06 的这些名实际位于 `os/libs/minix-types/src/ipc/{vfs,event}.rs` 而非 servers/pm，文档未注明 crate）。数量声称无 >50% 偏差；历史快照数字（07/08/12 的"N passed"）已过时属正常演化。完整清单（逐名 + file:line）见本轮对账报告要点：
+
+- **完全虚构（全仓无 `fn 该名`，14 个）**：`test_remove_sub_nested_guard`（06:645）、`test_run_once_proc_event_reply_no_sync_reply`（06:662）、`test_srv_fork_privilege_retained`（08:290）、`test_srv_fork_ipc_reset`（08:295）、`test_mess_lc_pm_sig_roundtrip`/`test_mess_lc_pm_sigset_roundtrip`/`test_sigmsg_roundtrip`（12:592——wire 尚不存在，属 E7 前置产物的超前声称）、`test_block_can_resume_guard`（13:441）、`test_block_delayed_isolated`（13:442）、`test_intervals_default_zero`（14:509）、`test_nice_scheduler_default`（16:375）、`test_sched_init_fills_scheduler`（16:376）、`test_try_set_tracer`（18:420）、`test_do_getres_invalid_clock`（19:425）、`test_time_types_64bit`（19:436）、`test_find_param_monitor`（20:480）、`test_frame_region_base`/`test_exec_state_idle_partial`（17:388-390，最接近名存疑）。
+- **代表性改名漂移**：10 篇 wait4 族全后缀化（`test_wait4_zombie` → `test_wait4_zombie_tell_parent` 等，10:329-335）、06 的 `publish_event→publish` 系统性漂移（06:635-639）、09:316-324 五成名不存在、11:329 kill 两项、12:570/587、07:384 前缀漂移 + 行号过期（:763→实际 :824）。
+- **crate 归属错位（14 个）**：05:305-313 的 10 个 + 06:615-618 的 4 个，实际在 minix-types。
+- 同轮抽查验证：`test_try_set_tracer` 等五名全仓 grep 零命中已本会话复现。
+
+→ 汇总为 **V3-P1-5**（文档对账批次）。
+
+### 12.2 V3 条目
+
+#### V3-P1-1 trace 域整体失真：T_* 常量 ABI 大面积错误 + 生产路径置位 stub + 测试名谎报（批次 B 前置重构）
+
+- **优先级**：P1（当前不可达——PmCall::Ptrace 落 ENOSYS 兜底臂；但这是第 1 轮"逻辑已备"结论的修正，且常量同时喂给 `ctl.trace()` 内核透传与 `trace_stop`，接线即坏）
+- **类型**：代码 bug（ABI/语义）+ 诚实契约缺失 + 测试自身失真
+- **证据**：§12.1.1 全表（核心锚点：`trace.rs:12-28` ↔ `sys/sys/ptrace.h:226-250`；`trace.rs:398-401`；`trace.rs:129-133/196-207/225-227/293` 的 "for test" 注释；`guardianship.rs:112-115` 的 set_trace_options 只匹配 Traced；`signal.rs:229-239`；`18-trace.md` 零 DEFERRED 标记）
+- **建议**（接线批次 B 之前一次重构）：
+  1. 常量层：18 个 T_* 按 `sys/sys/ptrace.h:37-55,226-250` 全量对账；**先修 `test_constants_match_c` 为全量断言**（测试先行锁定），再改常量值。
+  2. 分支层：T_ATTACH 补 TO_NOEXEC + 真实 `sig_proc(SIGSTOP)`；T_DETACH 按重放→data 信号→check_pending→内核透传全链重写（复用既有 `check_sig`/`sig_proc`/`check_pending`）；T_EXIT else 分支调 `exit_proc`；T_READB_INS/T_WRITEB_INS/T_GETRANGE/T_SETRANGE 四支按 C 补齐（root 门位置含在语义内）。
+  3. 状态层：`trace_flags` 从 `Traced` 变体解出（或 `set_trace_options` 覆盖 Normal 态），修复 T_DETACH 清零 no-op；`exit_pending`/`trace_exit` 二选一收敛。
+  4. 载荷层：`trace_stop` 的 tracer 回复走 wait4 status 载荷契约（D-26 同型）+ 真实发送；sys_trace 透传错误码与读值保真（与 V3-P2-6 同批）。
+  5. 契约层：trace.rs 全部 "for test" 注释清除或升级为 `[DEFERRED: D-XX]`；18-trace.md 同步（TO_NOEXEC 位值 + D1 抽象的消费现状）。
+- **验证**：全量常量断言测试 + do_trace 分支矩阵测试（对照 C 每个返回路径）+ 接线后集成测试。
+
+#### V3-P1-2 内核信号（SIGKSIG）主循环入口缺失：process_ksig 无生产调用者（新接线批次 H）
+
+- **优先级**：P1（结构性：内核→PM 信号回环的唯一入口不存在，且 V2 两轮批次表均未登记）
+- **类型**：接线缺口 + 登记缺失
+- **文件**：`os/servers/pm/src/init.rs:367-381`（notify 分支只认 CLOCK，其余通知静默丢弃）；`os/servers/pm/src/signal.rs:374`（process_ksig 仅测试调用）；C 侧 `main.c:121` + `minix3/minix/lib/libsys/sef_signal.c:104-108`
+- **问题**：C 把 `process_ksig` 注册为 SEF 信号管理回调，SEF 在 receive 路径拦截 SIGKSIG/SIGKSIGSM 通知后调用它——内核信号是主循环输入面的一部分。Rust 的 `kernel_pending` 数据面已贯通（signal.rs:243-244 写、signal_flow.rs:239/247 读），但没有入口驱动：post-E1 通电后内核 ksig 通知会被 notify 分支吞掉，进程信号永久滞留。
+- **建议**：(a) 设计决策一次：C 的 process_ksig 走 `sys_getksig`/`sys_endksig` 内核信号队列循环；Rust 已用表内 `kernel_pending` 位图建模——入口应读表驱动 process_ksig 循环，还是在入口改走内核队列（需要 kernel 对端）？两案对比后落 `[ARCH]` 标注（若选表内驱动则不加内核调用，若选队列则 E6 增 wrapper）。(b) notify 分支增加内核源判定 → 驱动 process_ksig。(c) §11.1.1 批次表增 H 行（已增）；kernel 对端现状核实登记 E6。
+- **验证**：mock 内核通知 → process_ksig 被驱动 → SIGKILL 类 ksig 终止链走到 exit_proc；非 CLOCK/非内核通知仍被丢弃。
+
+#### V3-P1-3 sig_proc 的 VFS_CALL/EVENT_CALL 分支缺 stop_proc 调用（✅ 已修复 2026-09-09）
+
+- **原状态**：C `signal.c:425-443` 在置 pending 后 `if (!(PROC_STOPPED|DELAY_CALL)) stop_proc(rmp, FALSE)`（防进程在 VFS 回复后、信号复查前再发起调用；PROC_STOPPED 兼作 restart_sigs 复查指示）；Rust 该处是永假死 if + "rely on 13's restart_sigs" 注释，且分支条件误用 `ipc_blocked.is_some()`（把 C 不含的 DELAY_CALL 也拦入）。kill 已接线，打在 fork 挂起进程上为可达路径。
+- **修复**（V3-P1-3 / Fix #43）：分支条件改 `is_vfs_blocked()||is_event_blocked()`；未停止时经 `GatewayStopBridge` 调 `signal_flow::stop_proc(MustStop)`（= C `stop_proc(rmp, FALSE)`，EBUSY 即 panic 同 C）。内核停止能力按 §12.3 规约进 `KernelGateway`（新增 `sys_delay_stop`，生产 `TrapKernelGateway` pre-E6 诚实回 `-EIO`，wrapper 挂 edge E6 已登记项）；桥接适配器避免全量形参穿线（sig_proc/check_sig 签名与 10 个调用点零变化）。C 守卫的 DELAY_CALL 半边在 `IpcBlockReason` 互斥建模下不可表示（注释声明）。+5 单测（StopRecorder）+1 集成测试 `kill_on_fork_suspended_child_stops_it_and_records_pending`；doc 11 §4.1/§5.2、doc 13 §4.4 同步。测试基线 356→**361 lib + 9 integration passed**。
+
+#### V3-P1-4 do_getsysinfo 数据路径假实现：拷出恒为零字节且无 DEFERRED 契约（批次 G 前置）
+
+- **优先级**：P1（不可达但契约违约；假成功家族第 3 例——P1-2/V2-P0-1 之后）
+- **类型**：假数据 stub 未登记（模式 60 违约）
+- **文件**：`os/servers/pm/src/misc.rs:333-336`；C `misc.c:142-143`
+- **问题**：权限门（effuid!=0→EPERM）与 size 精确匹配（EINVAL）都真实实现，唯独数据路径 `let _ = src; cpy.copy_to_user(&vec![0u8; len], dst)?` 恒拷 len 个零字节，注释自认 "In tests, we copy dummy bytes"。这是生产函数（非 `#[cfg(test)]`），无任何 DEFERRED 标记——`grep DEFERRED misc.rs` 零命中。批次 G 接线时若不修，RS 拿到的"进程表"是全零。
+- **建议**：登记 D-XX + 两案：(a) `SysInfoCtl` 扩展真实指针拷出（生产实现经 minix-sys safecopy，挂 E6 已列的 SYS_SAFECOPYFROM 族）；(b) wire 未就绪期间 fail-closed 返回 ENOSYS（诚实失败优于假数据）。推荐 (b) 先行、(a) 随批次 G。
+- **验证**：`grep -n "dummy\|vec!\[0u8" os/servers/pm/src/misc.rs` 零命中；接通后 RS 侧对表魔数/字段抽样断言。
+
+#### V3-P1-5 文档 §5 测试声称与代码大面积失同步（Gate E 违约，一次文档对账批次）
 
-#### V2-P1-2 session leader 死亡的 SIGHUP 组广播未实现，且 D-13 台账错位、§0.1 基线过度声称（✅ 已修复 2026-09-08，见 §10 Fix #32）
+- **优先级**：P1（测试名对账门是任何 cmd 不可裁剪的通用强制门；Gate D 第 1 项口径下"§5 声称的测试 fn 缺失"即 P0，按文档批次统一处理）
+- **类型**：文档-代码失同步（虚构声称 14 + 改名漂移 31 + crate 归属错位 14 + 行号过期若干）
+- **证据**：§12.1.5 全表（每名带 doc:line 与 grep 结论；代表性名字已本会话二次 grep 复现）
+- **建议**：一次纯文档批次，逐篇 §5 刷新：每个虚构名二选一——"文档错"（删除/改名）或"测试缺"（若该测试确实应存在，转 todo-fix 补测试；12:592 的三个 wire roundtrip 名属 E7 前置产物，改写为 forward-reference 并注明）；crate 归属错位的 14 个名补注 minix-types 路径；顺带清理 07:384 行号过期、01 文档 C 锚点整体偏移、init.rs:3 头注释范围错。
+- **验证**：重跑 Gate E 全量对账（0 虚构 / 0 漂移 / 归属全对）。
 
-- **优先级**：P1
-- **类型**：语义缺失 + 账目错位
-- **文件**：`os/servers/pm/src/exit.rs:302-307`（exit_proc 第 13 步 no-op）、`exit.rs:674-676`（zombify 路径 no-op）
-- **问题**：C 在 exit_proc 尾部 `if (procgrp != 0) check_sig(-procgrp, SIGHUP, FALSE)`（forkexit.c:411-412，procgrp 的捕获在 :298），即会话首领死亡向其进程组广播 SIGHUP——POSIX 挂断传播的核心机制。Rust 两处均为 `let _ = procgrp;` no-op，注释挂 `[DEFERRED: D-13]`。但 §6 的 D-13 行已被 Fix #23 划账（该修复只覆盖 do_exit 的 PRIV_PROC 违规 sys_kill 一处），这两处成了**挂在已关闭编号下的活缺口**；§0.1 基线表"session leader 死亡记忆 procgrp 并发 SIGHUP（exit.rs:76-80 与 exit.rs:176）"为过度声称（所指行号实为 TrapKernelGateway 的 sys_kill 实现，且"发"SIGHUP 从未存在）。
-- **建议**：方案一（首选）：实现广播——`procgrp != 0` 时对表内 `procgrp` 匹配的活进程逐个走 `sig_proc(target, SIGHUP, ksig=false)`（复用 `signal.rs` 既有投递路径；C 的 check_sig 负 pid 即此语义，signal.c:568），exit_proc 第 13 步与 zombify 路径共用一个函数；在 §6 新开 D-27（SIGHUP 广播）承接两处标记，D-13 行注明"仅覆盖 PRIV_PROC 违规分支"。方案二：若判定"会话语义整体归 13/11 文档后续阶段"，也必须先做台账拆分（新编号 + §6 行），不能留死引用。选方案一：代码路径已备，工作量小。
-- **验证**：集成测试：三个进程同组、组长退出 → 两成员收到 SIGHUP 默认终止；`grep -rn 'D-13' os/servers/pm/src` 命中行的归属与 §6 一致。
+#### V3-P2-1 VFS 回复尾部的 `restart_signals` 端口 no-op，注释前提失真（V2 的 24 处收敛漏网）
 
-#### V2-P2-1 itimer 的 CLOCK notify 未接线，且周期重挂逻辑三处分裂（A-7 的锐化）（✅ 已修复 2026-09-08，见 §10 Fix #39；TimerCtl 生产实现仍挂 edge E6/E1）
+- **优先级**：P2；**类型**：stale stub + 登记缺失
+- **文件**：`os/servers/pm/src/ipc/vfs.rs:533-540`（生产 impl `let _ = slot;`）；调用点 `vfs.rs:279`；C `main.c:421-423`
+- **问题**：注释称"当前 PM 尚未建模挂起信号，13 落地后替换"——pending 集合与 `restart_sigs` 自 Fix #7（2026-09-06）起都是真的，前提失真（模式 77 变体）。尾部条件判定（`is_in_use && !is_exiting`，vfs.rs:278-280）正确，但投递体为空：VFS 回复路径的挂起信号重查丢失。V2 的 24 处 DEFERRED 收敛未覆盖它（注释含 DEFERRED 字样但无编号，与 `wait.rs:128-131` 同类——后者已被 Fix #41 清理）。
+- **建议**：直接接 `crate::signal_flow::restart_sigs`（PmServices 已持 table/transport/kern，借用结构同 publish_event）；与 V2-P2-8（sig_send）同轮可端到端验证。若暂不实施，必须改写注释为 `[DEFERRED: D-XX]` 诚实契约。
+- **验证**：`grep -n "尚未建模挂起信号" os/servers/pm/src/ipc/vfs.rs` 零命中；单测：EXIT 回复尾部对 pending SIGKILL 的进程触发终止。
 
-- **优先级**：P2
-- **类型**：接线缺口 + 逻辑层内部分裂
-- **文件**：`os/servers/pm/src/init.rs:349-352`（notify 一律跳过，CLOCK 分支显式留白）、`os/servers/pm/src/timer.rs:317-322`（`cause_sigalrm` 的 interval>0 分支为空壳注释）、`timer.rs:334-366`（`handle_clock_notify` 直接改表内簿记，`let _ = tctl` 绕过 TimerCtl seam）、`timer.rs:177-179` + `timer.rs:443`（`SigSender` trait 仅测试实现）
-- **问题**：C 的 alarm/周期 itimer 由内核 watchdog 驱动：`set_alarm` → `set_timer`（kernel timer，alarm.c:299-311），到期回调 `cause_sigalrm`（alarm.c:317-344）→ `check_sig(SIGALRM)`，周期>0 时**回调内再调 `set_alarm` 重挂内核 timer**（alarm.c:338）。Rust 现状三处各做一半：主循环收到 notify 直接跳过（A-7 上轮只登记为"内核定时器抽象未实现"，未暴露下面两层）；`cause_sigalrm` 的周期分支空壳；`handle_clock_notify` 有重挂但只写 `resources.timer` 字段、不调 `tctl.set(...)`——内核 seam 接通后周期 itimer 只会触发一次。另 `SigSender` 绕过了 C 的 `check_sig` 语义（alarm.c:341 走完整投递判定），生产实现出现时必须桥回 `signal.rs`。
-- **建议**：方案一（首选，批次 D 前置）：收敛为单一重挂点——`cause_sigalrm` 拿到 `TimerCtl` 完整做 C 语义（check_sig + 周期重挂经 `tctl.set`），`handle_clock_notify` 退化为"扫描到期 + 调 cause_sigalrm"；init.rs:349-352 接 `handle_clock_notify`（notify 源 = CLOCK endpoint 判定）；删除 `SigSender`，cause_sigalrm 直接调 `signal.rs` 的投递函数（check_sig 的 ksig=FALSE 分支）。方案二：保留 SigSender 但提供生产 impl 桥接 check_sig——多一层间接，无收益。C 的 O(timer 队列) 到期 vs Rust O(NR_PROCS) 扫描的差异在文档标注即可（每 tick 扫描上限 NR_PROCS≈256，量级有界且不随定时器数量增长）。
-- **验证**：单测：周期 itimer 两次到期两次 SIGALRM；`grep -n 'let _ = tctl' os/servers/pm/src/timer.rs` 零命中；init.rs 的 CLOCK notify 分支调用 `handle_clock_notify`。
+#### V3-P2-2 sig_proc 的 PRIV_PROC `!ksig` 分支静默丢弃（C 一律 sys_kill 内核转发）
 
-#### V2-P2-2 do_exec 缺 VFS/RS 调用者门（exec 三个入口中唯一漏网）（✅ 已修复 2026-09-08，见 §10 Fix #38）
+- **优先级**：P2；**类型**：语义缺失（V2-P2-4/Fix #33 的同族第二站点）
+- **文件**：`os/servers/pm/src/signal.rs:260-264`；C `signal.c:456-462`
+- **问题**：C 对系统进程的 !ksig 信号**一律** `sys_kill(rmp->mp_endpoint, signo)`（注释：让内核选择正确的信号管理器，若 PM 是管理器信号会回来再实际处理）。Fix #33 只修了 check_sig 广播里对 RS 的调用点；sig_proc 本体的这一分支仍是 `let _ = (target, signo); return Ok(())`——任何 ksig=false 的投递打到系统进程（如 SIGHUP 组广播命中系统进程、SIGCHLD 到系统父进程）都静默丢失。`kern.sys_kill` 能力已备（KernelGateway）。
+- **建议**：一行修复 `kern.sys_kill(proc.endpoint(), signo)`（忽略返回值，C 不检查）；补单测（mock 网关捕获）。
+- **验证**：`grep -n "let _ = (target, signo)" os/servers/pm/src/signal.rs` 零命中。
 
-- **优先级**：P2
-- **类型**：权限校验缺失（当前不可达，接线前必修）
-- **文件**：`os/servers/pm/src/exec.rs:92-104`（`do_exec` 签名收 `caller` 却 `let _ = caller; let _ = table;`）
-- **问题**：C 要求 exec 只能由 VFS 或 RS 发起（exec.c:70-71 `if (who_e != VFS_PROC_NR && who_e != RS_PROC_NR) return EPERM`）。Rust 的 `do_execrestart` 有 RS 门（exec.rs:206-208 ✓）、`do_srv_fork` 有 RS 门（fork.rs:122-124 ✓）、`do_srv_kill` 有（signal.rs:67-69 ✓）、`do_getprocnr` 有（misc.rs:345-347 ✓）——唯独 `do_exec` 没有任何调用者校验。exec 是权限敏感入口（TAINTED/setuid 链的起点），接线时若不补门，任意进程可代他人发起 exec。
-- **建议**：方案一（首选）：`do_exec` 开头加 `caller ∈ {VFS, RS}` 门（返回 `ExecError::Perm`），与同文件 do_execrestart 同风格。方案二：把校验放 dispatch 臂——劣：校验离语义实现远，单测覆盖不到。
-- **验证**：单测：普通进程 endpoint 调 do_exec → Perm。
+#### V3-P2-3 sched_start_user 调度器端点硬编码 + 缺 KERNEL/NONE 守卫（批次 F 前置）
 
-#### V2-P2-3 tell_vfs 错误路径两处 fail-open（C 均为 panic）（✅ 已修复 2026-09-08，见 §10 Fix #35）
+- **优先级**：P2（A-8 落地前不可达，但语义分叉应在逻辑层先修，避免接线时固化）
+- **文件**：`os/servers/pm/src/sched.rs:200-212`；C `schedule.c:55-84` + `main.c:371-373`
+- **问题**：C 的调用点先守卫 `mp_scheduler` 非 KERNEL/NONE（main.c:371-372），再把 `rmp->mp_scheduler`（父进程的调度器）作为 `ep` 形参传 `sched_start`——语义是**继承父的调度器**。Rust 硬编码 `SCHED_PROC_NR` 且函数内无守卫；形参 `ep` 被改义为 schedulee。同族：`sched_init` 的两个 C assert（schedule.c:34/36）在 Rust 仅是注释（sched.rs:181-185）。
+- **建议**：签名改收 scheduler 端点（或从 `resources.scheduler` 读父值），补 KERNEL/NONE 守卫返回 Err（与 D-05 的 unimplemented 呼应）；assert 落地为 `assert_eq!`（测试环境 INIT 恒满足）。
+- **验证**：单测：父 scheduler=SCHED → 继承 SCHED；父=KERNEL → 守卫分支。
 
-- **优先级**：P2
-- **类型**：fail-closed 契约破坏（P1-2 同型残留）
-- **文件**：`os/servers/pm/src/exit.rs:271`（`let _ = crate::ipc::tell_vfs(...)` 完全吞错）、`os/servers/pm/src/fork.rs:83-84/181-182`（`map_err(|_| ForkCoordError::VfsError)` 把不变式违规降级为用户可见 fork 失败）
-- **问题**：C 的 `tell_vfs` 两处 panic（utility.c:122-123 not-idle、:127-129 发送失败）——两者都意味着 PM 或传输层已坏，进程状态不可信。Rust 的 `tell_vfs` 改回 Err（`ipc/vfs.rs:182-200`，方向本身合理），但两个调用方把它变成静默/降级：exit 路径吞错 = 进程死亡时 VFS 告知可能静默丢失（与 V2-P0-1 叠加）；fork 路径把内部不变式违规（刚创建的子槽不可能 not-idle）伪装成一次普通的 fork 失败（父进程收到 errno，真实病因不可见）。
-- **建议**：方案一（首选）：区分两类错误——`NotIdle` 属不变式违规，调用方 `panic!`（对齐 C）；`SendFailed` 在 exit 路径 panic（C 同）、fork 路径可保留降级但注释标注"传输层损坏"语义。方案二：全链 panic（最贴 C）——劣：失去对传输抖动的表达力，且与 `tell_vfs` 返回 Result 的既有设计冲突。
-- **验证**：`grep -n 'let _ = .*tell_vfs' os/servers/pm/src` 零命中；单测：not-idle 构造 → panic（`#[should_panic]`）。
+#### V3-P2-4 do_getepinfo 两处语义偏差（批次 A/G 前置）
 
-#### V2-P2-4 kill(-1, SIGTERM) 的 RS 优先通知空转（✅ 已修复 2026-09-08，见 §10 Fix #33）
+- **优先级**：P2；**类型**：语义偏移 + 拷出未接线
+- **文件**：`os/servers/pm/src/misc.rs:362-378`；C `misc.c:169-193`
+- **问题**：(a) 回复的 `ngroups` 字段 C 填**全量** `mp_ngroups`、截断只影响拷贝数（misc.c:184-186）；Rust 先截断再填（misc.rs:362-365,378）——调用方（RS 的 getepinfo 消费者）失去真实组数，无法区分"只有 8 组"与"有 20 组但缓冲只有 8"。(b) groups 到用户缓冲的 sys_datacopy 未接线（`_cpy` 形参未用，misc.rs:357），EFAULT 类错误无透传路径。
+- **建议**：`EpInfo.ngroups` 改填全量值；groups 拷出随批次 A 的 wire/`CopyGroups` 生产实现一并落（`_cpy` 启用 + 错误透传）。
+- **验证**：单测：目标 20 组 + 调用方缓冲 8 → ngroups=20、拷出 8 组。
 
-- **优先级**：P2
-- **类型**：语义偏移
-- **文件**：`os/servers/pm/src/signal.rs:100-104`（广播 TERM 先对 RS 槽调 `sig_proc(ksig=false)`）+ `signal.rs:252-260`（PRIV_PROC 的 `!ksig` 分支 `let _ = (target, signo)` 空操作）
-- **问题**：C 对广播 SIGTERM 的特殊处理是 `sys_kill(RS_PROC_NR, signo)`（signal.c:588-589）——经内核产生真实 ksig 回环，RS 确实收到信号。Rust 在用户态直接对本表 RS 槽调 `sig_proc`，而 `sig_proc` 的 PRIV_PROC 分支在 `!ksig` 时什么都不做 → RS 实际收不到任何通知。C 之所以走内核，是因为 PM 无权直接投递系统进程信号；Rust 绕过了这层语义。
-- **建议**：方案一（首选）：与 C 同型——该分支改调 `kern.sys_kill(Endpoint::RS, SIGTERM)`（KernelGateway 已有该方法，Fix #23 落地），由内核 ksig 回环驱动后续。方案二：给 PRIV_PROC !ksig 分支实现直接投递——劣：偏离 C 的特权模型（PM 不直接决定系统进程的死活）。
-- **验证**：单测：kill(-1, SIGTERM) → 断言 mock 网关收到 sys_kill(RS, SIGTERM)。
+#### V3-P2-5 do_svrctl / do_sysuname 分支细节五处偏离（扩展 V2-P3-4(b)，批次 G 前置）
 
-#### V2-P2-5 check_parent 的"父未等待 → SIGCHLD"分支 no-op（✅ 已修复 2026-09-08，见 §10 Fix #34）
+- **优先级**：P2；**类型**：语义偏移
+- **文件**：`os/servers/pm/src/misc.rs:404-428, 213-218, 275-304`；C `misc.c:291-395, 72-100`
+- **问题**：(a) IOCGROUP ∈ {'P','M'} 门与未知 req→EINVAL 缺失（Rust 以 `is_set: bool` 替代四 req 判别，V2-P3-4(b) 已登记）；(b) GET 的 key 长度上界 `keylen > 64 → EINVAL`（misc.c:316,359）缺失；(c) keylen==0 全表时 C 的 val_len 取 `sizeof(monitor_params)` 全缓冲长（misc.c:352-354）触发 E2BIG，Rust 用实际串长+1（misc.rs:409,412-414）——缓冲不足时两侧判定不同；(d) SET 的 ENOSPC 与 30 边界检查顺序与 C 相反（misc.c:327→328-334 vs misc.rs:213-218），双条件并存时错误码不同；(e) do_sysuname 无 `req` 方向分支（req!=0→EINVAL 无处产生，misc.c:85-96）且用户目的地址用 placeholder（misc.rs:300，EFAULT 无载体）。
+- **建议**：随批次 G 的 wire 解码一次做齐：req 参数还原 + IOCGROUP 门 + 两个边界 + 顺序对齐 + sysuname 方向分支。
+- **验证**：分支矩阵测试（对照 C 每个错误码路径）。
 
-- **优先级**：P2
-- **类型**：语义缺失（含未登记的 DEFERRED）
-- **文件**：`os/servers/pm/src/exit.rs:448-451`
-- **问题**：C 的 `check_parent` 在父进程未等待子进程时执行 `sig_proc(p_mp, SIGCHLD, TRUE, FALSE)`（forkexit.c check_parent 尾部 else 分支）——装了 SIGCHLD 处理器的父进程靠它得到通知。Rust 该分支是 `let _ = (parent_slot, child_slot);`，注释写 "(11-signal-core.md, deferred)" 但无 D-XX 编号，不满足模式 60 的登记要求。注意与上轮 §1.3 的抽查结论无冲突（该轮未覆盖此点）。
-- **建议**：方案一（首选）：在 §6 登记 D-28 并实现——`sig_proc(parent, SIGCHLD, trace=TRUE, ksig=FALSE)` 一行调用（依赖 V2-P0-2 先修，否则 SIGCHLD 的默认忽略判定仍在错位状态下运行——按 11.1.4 的推算 CHLD 恰好落回有效忽略集，但这属于巧合而非正确）。方案二：仅登记不实现，随批次 B（信号族接线）一并做——可接受，但 D 编号必须先落账。
-- **验证**：单测：父进程装 SIGCHLD handler（sigaction 接线后）+ 子进程退出 → handler 收到信号；无 handler 时进程存活。
+#### V3-P2-6 错误码折叠为 EINVAL 的横切模式（内核/服务真实 errno 被吞）
 
-#### V2-P2-6 ENOSYS 兜底臂吞掉 40 个调用的逐项登记义务（✅ 已修复 2026-09-08，见 §10 Fix #40）
+- **优先级**：P2；**类型**：错误保真（违反"错误类型必须映射 Minix3 errno 值"的保真面——映射本身合法，折叠丢信息）
+- **证据**（三文件同模式）：`sched.rs:207-209, 224-226`（sched.inherit/set_nice 失败→`SchedError::Inval`，C schedule.c:79/108 透传 rv）；`trace.rs:237-238, 256-258`（ctl.trace 非 OK→`TraceError::Inval`，C trace.c:246 透传 r）；`misc.rs:452, 460`（sys_times/vm_rusage 失败→`MiscError::Inval`，C misc.c:430-431/441-442 透传）
+- **问题**：三类错误枚举把底层真实 errno（如内核返回的 EPERM/EFAULT）折叠成统一 EINVAL。用户态观察到的 errno 与 C 不一致，且排障时丢失真实病因。
+- **建议**：一次小重构：三个错误枚举各加 `Raw(i32)` 载荷变体（或为透传型调用直接返回 `Result<i32, i32>`），`to_errno` 透传。涉及 sched.rs/trace.rs/misc.rs + 各自测试。
+- **验证**：mock 注入非 EINVAL 底层错误 → 用户态收到同值 errno。
 
-- **优先级**：P2（流程性）
-- **类型**：诚实契约缺口（模式 60）
-- **文件**：`os/servers/pm/src/ipc/calls.rs:283`（`_ => ReplyIntent::Reply(ENOSYS)`）
-- **问题**：兜底臂使"未接线"无需任何 per-call 标记即可编译通过，40 个调用的过渡状态只存在于 04 文档 §3.6 D6 的一段总述里；其中 setsid/sigaction 族/exec 族等**逻辑已齐备**的调用与逻辑也缺失的调用在 ENOSYS 上不可区分。独立代理审查与本轮均判定：这满足"文档化过渡差异"的底线（04 文档有论证），但不满足"每个 DEFERRED 可被一条 grep 找到"的 P2-5 既定标准。
-- **建议**：以本文件 §11.1.1 的批次表为准台账（每个调用一行，含前置条件），不新增 40 个 D 编号；在 `calls.rs:283` 兜底臂注释指回该表。后续每接线一批，表中该行同步划账。
-- **验证**：`calls.rs` 兜底臂注释含指向 §11.1.1 的引用；批次表随接线滚动更新。
+#### V3-P2-7 publish_event 的裸指针四路借用拆分可免（删 unsafe）
 
-#### V2-P2-7 unpause 的 VFS_CALL 分支不发 VFS_PM_UNPAUSE（2026-09-08 R2 执行中发现）
+- **优先级**：P2；**类型**：不必要的 unsafe（no_std 代码库应最小化 unsafe 面）
+- **文件**：`os/servers/pm/src/ipc/vfs.rs:502-510`
+- **问题**：用 `*mut` 拆分 `self` 的四个字段借用（table/transport/registry/kern）。Rust 的字段级重借用（`&mut self.table`、`&mut self.transport`……逐字段传参）即可满足借用检查器——四个 `&mut` 字段互不相交，`PmServices::new` 的构造方式（init.rs:406-412 从不相交字段构造）就是先例。同文件 `exec_restart`（vfs.rs:513-531）就是直接字段组合而未用 unsafe。
+- **建议**：改为按字段传参的自由函数或直接逐字段重借用；删 4 个裸指针与 unsafe 块。零行为变化。
+- **验证**：`grep -n "as \*mut" os/servers/pm/src/ipc/vfs.rs` 零命中；既有测试全绿。
 
-- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
-- **文件**：`os/servers/pm/src/signal.rs` `unpause`（VFS_CALL 分支 `return false`，无消息发送）
-- **问题**：C 的 `unpause`（signal.c:719-770）对 VFS_CALL/EVENT_CALL 挂起的进程经 `tell_vfs(VFS_PM_UNPAUSE)` 请求 VFS 中断其阻塞调用，回复（Unpause 事件）到来后才建立 sigframe。Rust 该分支直接返回 false（信号转 pending），不发任何消息——被捕获信号对"卡在 VFS 调用里"的进程永远无法及时投递。
-- **建议**：随 caught 路径补全（V2-P2-8）一并做：`unpause` 增 transport 形参，VFS_CALL 分支走 `crate::ipc::tell_vfs(VfsCall::Unpause)`（ipc/vfs.rs:285 的 Unpause 回复分支已备）。
-- **验证**：单测：VFS_CALL 挂起进程 + 被捕获信号 → transport 收到 UNPAUSE 请求，VFS 回复后 sigframe 建立。
+#### V3-P2-8 event 的 `do_proceventmask` 非 mut 变体带游标 bug 且以 pub 存活
 
-#### V2-P2-8 sig_send 是空壳（caught 投递的核心步骤缺失）（2026-09-08 R2 执行中发现）
+- **优先级**：P2；**类型**：潜伏 bug 的活接口 + 断言弱化
+- **文件**：`os/servers/pm/src/event.rs:331-404`（非 mut 变体）、`event.rs:410-450`（生产 `_mut` 变体）、`calls.rs:306`（生产走 `_mut`）
+- **问题**：非 mut 变体的退订路径内联前移数组但**不调整其它进程的游标**（C event.c:142-160 的 remove_sub 会把 cursor > slot 的进程游标回退）——其它进程正阻塞在事件投递上时，游标将指向错误的订阅者。生产路径不用它（calls.rs:306 走 `_mut`），但它以 `pub fn` 存活且有 3 个测试引用（event.rs:641/682/703）——误用即引入真实 bug。同族：`waiting < NR_PROCS` 守卫为 `debug_assert!` 且常量硬编码 256 未引用 `minix_types::NR_PROCS`（event.rs:258；C event.c:108-109 是自增前无条件 assert）——release 构建下上界完全无检查。
+- **建议**：删除非 mut 变体（3 个测试迁到 `_mut` 版）或改为委托 `_mut`；waiting 守卫改 `assert!` + 引用 `NR_PROCS` 常量。
+- **验证**：`grep -n "pub fn do_proceventmask(" os/servers/pm/src/event.rs` 零命中（若选删除）。
 
-- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
-- **文件**：`os/servers/pm/src/signal.rs` `sig_send`（`let _ = (table, target, signo); Ok(())`）
-- **问题**：C 的 `sig_send`（signal.c:772-855）是被捕获信号投递的核心：保存/替换 mask、写 `mp_sigreturn`、构造 sigframe 参数、唤醒目标进程。Rust 版不做任何事直接返回成功——一旦 sigaction 批次（§11.1.1 批次 B）接线，被捕获信号将"看起来送达"而进程毫无感知。
-- **建议**：方案一：按 C 全语义实现（依赖 mproc/signal.rs 的 `prepare_sigmsg`/`sigreturn_addr` 既有字段）。方案二：登记 D-29 并与批次 B 联动实施（sigaction 的 handler 安装 → sig_send 的 frame 建立 → sigreturn 的恢复，三步须同轮验证）。推荐方案二：三步分离会造成"半可达"状态。
-- **验证**：批次 B 的集成测试：handler 进程收信号 → handler 执行 → sigreturn 恢复 mask（需进程上下文模拟，属 12-signal-handlers.md 范围）。
+#### V3-P2-9 clippy 基线回退：lib 3 条 unused import + 测试代码 22 条 unused variable
 
-#### V2-P3-1 stale 注释与死绑定四处（随 P0/P1 修复顺带清理）（✅ 已修复 2026-09-08，见 §10 Fix #41）
+- **优先级**：P2；**类型**：卫生回退（V2 收官时 lib 0 warning）
+- **证据**：`ipc/vfs.rs:28`（`core::fmt`）、`ipc/vfs.rs:31`（`IpcError`）、`timer.rs:7`（`Pid`）；测试侧 22 处（event.rs×6、ipc/calls.rs×4、ipc/vfs.rs×7、fork.rs/signal.rs/dispatcher.rs/misc.rs/tests 各 1，多为 mock 形参未加下划线前缀）。回退源头是 Fix #41/#42 收尾批次清理了使用点却留下导入。
+- **建议**：一次卫生批次恢复 0 基线；campaign 收尾清单增加 `cargo clippy -p minix-pm --lib --all-targets` 项（--lib 不覆盖 cfg(test) 代码）。
+- **验证**：clippy lib 0 warning；`--all-targets` unused 告警 0。
 
-- **优先级**：P3；**类型**：注释漂移（模式 77 变体：不是行号漂移而是"实现已赶上/前提已消失"）；**文件**：`wait.rs:128-131`（D-21 已实现 + `let _ = rusage_addr;` 死绑定）、`exit.rs:515-516`（"(omitted)" doc 注释）、`event.rs:213-214`（"两者 DEFERRED"与 Fix #7 后的现实矛盾）、`main.rs:10`（"RS_INIT 握手归主循环"前提在本树 C 中不存在）。**建议**：逐处更新注释为当前事实；wait.rs 的死绑定删除。**验证**：四处 grep 逐条确认。
+#### V3-P2-10 CLOCK notify 时间戳来源：处理时刻时钟 vs 通知载荷时间戳
 
-#### V2-P3-2 setgroups 的 GID_MAX 检查恒假（C 侧可拒绝 ≥2^31 的 gid）（✅ 已修复 2026-09-08，见 §10 Fix #37）
+- **优先级**：P2；**类型**：语义偏差（低severity，批次 D 前置）
+- **文件**：`os/servers/pm/src/init.rs:370-371`（`self.timer.now()`）+ `timer.rs:372-390`；C `main.c:66-67`（`m_in.m_notify.timestamp`）
+- **问题**：C 把通知消息携带的内核时间戳传给 expire_timers；Rust 用处理时刻的时钟——主循环拥塞时（前面消息处理耗时）到期判定整体后移，SIGALRM 可能晚发。
+- **建议**：批次 D 接线时改读通知载荷时间戳（wire 字段就绪性随 E7 的 notify 消息族；若 wire 缺字段则登记 E7）。
+- **验证**：单测：构造带旧时间戳的通知 → 到期判定按载荷时间。
 
-- **优先级**：P3；**类型**：语义偏移（微观）；**文件**：`credentials.rs:203-207`（`(g as u64) > GID_MAX`，Gid=u32 时恒假；测试 `test_setgroups_gid_max` 自述"无法构造超限值"）；C 侧 `getset.c:191` 以 `GID_MAX = 2147483647U`（`minix3/sys/sys/syslimits.h:53`）比较，gid_t 为 32 位时可拒绝 [2^31, 2^32-1] 区间。**建议**：`SetGroups` 改存 `u64` 或在 wire 解码层用 i64 载荷校验；或登记为"与 C 恒假检查同构的有意简化"（C 的检查实际上也只能在 64 位 gid_t 下触发，需先核实 C gid_t 宽度 `[待验证]`）。**验证**：构造 gid=2^31 的 setgroups（wire 层）→ EINVAL。
+#### V3-P3 小项清单（卫生/文档，一次或分批清理）
 
-#### V2-P3-3 dispatch 的 Exit 臂丢弃 do_exit 返回的 ReplyIntent（✅ 已修复 2026-09-08，见 §10 Fix #36）
+1. **is_superuser 三处重复**：`time.rs:211-216` 与 `misc.rs:265-270` 逐字相同的自由函数 + `mproc/credentials.rs:59-61` 的方法——收敛到单一 helper（方法或 crate 级 fn）。
+2. **诊断输出生产静默且口径不一**：`reply()` 发送失败告警 `#[cfg(test)]`（init.rs:465-467，C main.c:267-269 总是 printf）vs `PmServices::send_reply` 生产 eprintln（vfs.rs:366-369）；`sched_init` 失败日志 cfg(test)（sched.rs:191-193）；getsysinfo/getprocnr 未授权审计缺失（misc.c:118-121,154-157；其中 sys_diagctl_stacktrace 部分挂 E6）。建议做一次 no_std 日志面选型决策（crate 级），统一口径。
+3. **calls_stats 计数缺失**：C main.c:34-36/95-97 在 ENABLE_SYSCALL_STATS 下逐调用计数，misc 的 SI_CALL_STATS 消费端已在（misc.rs:27/111/324-328），feature 已声明（Fix #17）但计数本体未落。
+4. **signal.rs 残留 7 处裸移位**：trace/VFS/PRIV 分支用 `1u64 << (signo - 1)`（signal.rs:233/242/244/289-298），位基正确但未走 Fix #29 确立的 `init::sig_bit` 单点入口（该 fix 的"本文件不再出现裸移位"验证声明与现状不符）。
+5. **PROC_EVENT_REPLY 常量双址**：`dispatcher.rs:32` 本地 `0xE80` 与 minix-types 同值常量（`ipc/event.rs:27`）并存——并入 E7 清单。
+6. **文档锚点/表述漂移合集**：01 文档 C 行号整体偏移 3-4 行 + init.rs:3 头注释范围错（"main.c:49-268"应为 131-244）；07:384 行号过期（:763→:824）；18 §2.14 TO_NOEXEC=0x1 与 C 0x4 矛盾；06:522 "from_bits_truncate 保留未知位"与实际语义（丢弃）不符；20 §1.1 `__arraycount=8` 与 C 9 元素不符 + §3 声称 `ArrayVec<_,2>` 实为 `Vec`（misc.rs:204）；misc.c do_getsetpriority 归属 16 文档已声明但 20 文档 §2 表仍有残句（[待验证]）。并入 V3-P1-5 的文档批次执行。
 
-- **优先级**：P3；**类型**：健壮性；**文件**：`ipc/calls.rs` Exit 臂（`let _ = crate::exit::do_exit(...)` 后硬编码 `ReplyIntent::NoReply`）。`do_exit` 现两分支恒返 NoReply（`exit.rs:133-155`），丢弃等价；但未来语义变化时此处会静默吞回复。**建议**：直接返回 do_exit 的值（或 `debug_assert!(matches!(..., ReplyIntent::NoReply))`）。**验证**：编译 + 现有 exit 集成测试不回归。
+### 12.3 架构审查 V3（分层观察与建议）
 
-#### V2-P3-4 三处微小诊断/校验差异（对账备注，不单独立项修复）（(c) ✅ 2026-09-08 Fix #42；(a) 挂 edge E6、(b) 随批次 G wire）
+#### 观察 1：内核接入端口已达 30 个 trait，双风格并存的成本开始显形
 
-(a) C 的 sig_proc_exit 对非 PRIV_PROC 的 core 信号有 `printf("PM: coredump signal…") + sys_diagctl_stacktrace`（signal.c:556-558），Rust 无此诊断且 minix-sys 无 `sys_diagctl_stacktrace` wrapper（并入 edge E6 清单）；(b) C do_svrctl 有 IOCGROUP ∈ {'P','M'} 前置校验（misc.c:307），Rust 以形参化接口替代（misc.rs:403-428），权限面等价；(c) Rust exec 重置额外清 sa_flags（`mproc/signal.rs:359-370`），C 不清（exec.c:178-184），无已知行为影响。三项在对应批次接线时顺带对齐即可。
+V3 实测清单（`grep 'pub trait' os/servers/pm/src`）：中央 `KernelGateway`（exit.rs:25，6 方法：sys_kill/sys_clear/sys_abort/proc_times/copy_to_user/sys_resume）+ 内核能力窄 trait（`KernelStop`/`KernelResume`（signal_flow.rs:27/33）、`KernelSig`（signal_handlers.rs:70）、`KernelExec`（exec.rs:71））+ 子系统窄端口（`TimerCtl`/`VTimerCtl`、`ClockSource`/`BootTimeCtl`/`SetTimeCtl`/`ClockTime`、`SchedCtl`、`TraceCtl`、`SysInfoCtl`/`CopyToUser`/`RebootCtl`/`TimesVmCtl`/`McontextCtl`/`SprofCtl`、`CopyGroups`/`VfsForwarder`、`VfsCtl`/`SignalDeliver`/`ExitHandler`/`RestartServices`、`VfsExec`/`TracerSig`、`VfsReplyServices`、`SigSetExt`、`IpcTransport`）。
 
-### 11.3 对照 Redox 的架构参考（V2）
+两个具体重叠：(a) `misc.rs:135` 的 `CopyToUser` 与 `KernelGateway::copy_to_user`（exit.rs:50）是同一"把字节写入目标进程用户内存"关切的两套端口——getrusage/getepinfo 走前者、tell_parent 走后者；(b) 测试 mock 成本：`KernelGateway` 已有 12 个 impl（grep 实测），每个新方法都要求全部 mock 跟进（Fix #25 曾为此单独提交 accaf077c 补 mock）。
 
-> 本小节为 2026-09-08 联网调研成果（GitLab/GitHub raw 源码逐文件核对；行号对应 master 2026-09 快照与 commit `1b9fcbf593` 迁移前快照）。上轮 §7 的 5 条参考继续有效，其中"进程管理在内核"的表述已被本节 V2-Redox-1 的迁移事实取代。
+**方案对比**：
+- (a) 大一统：全部能力并入 KernelGateway，窄 trait 删除。否——mock 膨胀到每测试 20+ 方法，接口隔离的本意（每个子系统的测试替身最小化）被摧毁。
+- (b) **冻结双风格 + 书面规约**（推荐）：规约三条——新内核能力一律进 `KernelGateway`；窄 trait 不新增，仅在借用冲突需要合并注入点时以 supertrait 组合承接（`RestartServices = KernelResume + ExitHandler + SignalDeliver`（signal_flow.rs:269）与 `ExecRestartServices = KernelExec + TracerSig`（exec.rs:89）已是两个先例）；`CopyToUser` 类与 KernelGateway 重叠的端口在下次触碰时收敛（getrusage 的 `_cpy` 反正要随批次 G 接线）。同时把 V2 承诺的**四列对照表**（内核能力 ↔ trait ↔ minix-sys wrapper ↔ C libsys 函数）落进 plan.md ARCH 附录——它既是接线批次的查询面，也是双风格的边界声明。
+- (c) view-trait（`impl KernelSig for dyn KernelGateway` 类 blanket impl）：dyn 兼容性手术，收益不抵复杂度。否。
 
-**V2-Redox-1：Redox 正在把进程管理迁往用户态——"Minix3 式用户态 PM"路线获得了最强外部背书。** 2024-12-16 commit `1d5f8fd46d71`（"Move proc code to userspace."）删除了内核的 `src/context/process.rs`；master 上内核只剩线程级 `Context`（`src/context/context.rs:92-93` 注释 "typically mapped to a userspace thread"），退出时 `exit_this_context()`（`src/syscall/process.rs:37`）直接移除上下文、向 proc scheme 发 `EVENT_READ`——僵尸/收尸/kill 语义整体移交用户态 procmgr（后续 commit `cb1a838f052a` 2025-03-30 "Start moving kill to procmgr."）。对本项目的含义：PM 的表驱动生命周期不需要向"内核内进程模型"靠拢，方向与 Redox 的演进一致；上轮 §7 第 1 条"Redox 没有独立 PM 服务器"的表述按迁移后事实更正。
+#### 观察 2：unsafe 消息解码分散在 6 个分发臂——E7 落地前的阶段内过渡
 
-**V2-Redox-2：僵尸与等待记账的最小 Rust 表达（迁移前参照实现）。** 迁移前（commit `1b9fcbf593` 的父快照）`Process`（`src/context/process.rs:28`）= `ProcessInfo`（pid/pgid/ppid/session_id/ruid/euid 等，:36-54）+ `waitpid: Arc<WaitMap<WaitpidKey, (ProcessId, usize)>>` + `ProcessStatus::{PossiblyRunnable, Stopped(usize), Exiting, Exited(usize)}`（:71-76）。`Exited(usize)` 保留退出码滞留进程表直到 waitpid 的 `reap()`（`src/syscall/process.rs:615`）收走——语义即僵尸，但用"状态变体 + 等待信箱"而非独立 ZOMBIE 标志位。`WaitMap`（`src/sync/wait_map.rs:8`）是键控多播信箱：`WaitpidKey { pid, pgid }` 支持"任意子/按进程组"匹配，`receive_nonblock` 即 WNOHANG。对照 PM：`Lifecycle::{Zombie, ToldParent}` + `state.wait.waiting` 反向通知与 C 同型，是合理选择；若未来 wait4 需要支持复杂匹配（Redox 的 `grim_reaper` 闭包按 WUNTRACED/WCONTINUED 过滤，process.rs:665-681），WaitMap 是现成参考。另注意：本树 Minix3 的 wait4 只测 WNOHANG（forkexit.c:553-554），Redox 的 WUNTRACED/WCONTINUED 支持不构成对 PM 的行为要求。
+`dispatch_pm_call` 已接线的 7 臂中有 6 处内联 `unsafe { msg.m_u.m_lc_pm_* }` 解码（calls.rs:228/242/252/269/286/304），字段映射靠注释对照 C。E7 的 wire 类型系统化是终局（共享层），但 40 臂接线期间 unsafe 会按臂复制。**阶段内建议**：在 pm crate 内建 `ipc/decode.rs`，每调用一个 `fn decode_xxx(&Message) -> Args`（unsafe 单点 + C `ipc.h` 字段对照注释 + 布局断言测试），分发臂只调 decode——unsafe 面从"散布 40 臂"收敛为"单文件"。这不是 E7 的替代而是其消费端预备（E7 落地后 decode 模块改为委托 wire 类型，调用点零改动）。
 
-**V2-Redox-3：孤儿的去向——两家语义不同，PM 跟 C 不跟 Redox。** Redox `exit()`（迁移前 `src/syscall/process.rs:75` 起）把孤儿交给**祖父**（`process.ppid = ppid`，注释原文 "Transfer child processes to parent (TODO: to init)"——交 INIT 尚未实现）；Minix3 是重挂 INIT（forkexit.c:760-795，PM 的 disinherit ✓ 已实现）。此为真实语义差异点：重写保持 C 行为正确，切勿"参考 Redox"改成祖父收养。
+#### 观察 3：错误保真（横切，见 V3-P2-6）
 
-**V2-Redox-4：PID 分配——Redox 无轮转，PM 的轮转是 Minix3 语义，必须保真。** Redox 用 `NEXT_PID: AtomicProcessId` 顺序 `fetch_add`（`src/context/process.rs:77-79`，INIT=1），无复用，master 的 `src/context/context.rs:158` 还留着 "TODO: id can reappear after wraparound?" 的已知债。对照 V2-P1-1：Minix3 的 NR_PIDS=30000 轮转 + `mp_procgrp` 查重是明确的行为契约，修复相位偏移时应严格对 C，不存在"现代化"空间。
+错误枚举把底层 errno 折叠为 EINVAL 的模式出现在 sched/trace/misc 三处。OS 边界上的错误码是外部可观察契约的一部分（与 pid 相位同类），建议作为 crate 级规约写入 plan.md：**透传型调用（对内核/他服务的 raw call）的错误必须保真，只有 PM 自身判定才产生语义化枚举变体**。
 
-**V2-Redox-5：信号机制的终态形态（共享页 + trampoline）。** master 的 `SignalState`（`src/context/context.rs:173-186`）把 pending/blocked 掩码放用户态共享控制页，内核 `signal_handler()`（`src/context/signal.rs:7`）只在上下文切换时"查位 + 改寄存器跳 trampoline"，restorer 与 sigaction 全在 relibc（`redox-rt/src/signal.rs:24` 起）。SIGSTOP/SIGCONT 互清语义在迁移前内核 `send_signal` 特判（`src/syscall/process.rs:255-330`），迁移后由 procmgr 承担。对照 PM：Minix3 的决策全在 PM（check_sig/sig_proc）+ 投递经内核 ksig 回环，与 Redox 终态"决策在用户态"同向；`signal.rs` 现有的 ignored/caught/pending 位图与该形态同构，V2-P0-2 修复后即是对齐的正确基座。
+#### 观察 4：双层模块与信号域四模块的导航性（P3，暂不动）
 
-**V2-Redox-6：fork 是协议不是指令——两家用不同协议实现了同一语义。** Redox 的 fork 完全在用户态（`redox-rt/src/proc.rs:959` `fork_impl`，经 proc fd 复制 + CoW 地址空间快照，内核只提供 CoW 原语——commit `11fdb3bb469` 2023-06-21）；Minix3 的 fork 是"PM 复制表项 + 通知 VM/VFS"的消息协议。共同点：fork 都不依赖内核魔法，都是进程管理器的显式多步协议。PM 的 fork 链（VFS_PM_FORK 异步回复 + vm_fork 同步往返）与 Redox 的句柄复制协议规模相当，结构不需要变。
+顶层与 `mproc/` 下 5 对同名双层模块（fork/wait/signal/credentials/trace）是"编排层 vs 状态层"的切分，P2-4 修复后路径已可分辨，维持。信号域散布 4 个顶层模块（signal.rs 704 + signal_handlers.rs 505 + signal_flow.rs 617 + mproc/signal.rs 637，合计约 2463 行）且 `sig_send`/`sig_proc` 等符号跨文件引用，是 crate 内导航成本最高的域——批次 B（信号控制接线）是检验点：若接线时发现跨模块借用/重命名摩擦，再评估合并为 `signal/` 子目录（core/handlers/flow/state）。现在不动（避免与批次 B 的 diff 冲突）。
 
-**V2-Redox-7：用户态服务器事件循环的 Rust 惯例。** Redox 官方守护进程骨架 redox-scheme crate（v0.11.4）的主循环是 `loop { call_rw(...) }` + 按 opcode 分发到 `SchemeSync`/`SchemeAsync` trait 方法（`src/lib.rs:515`、`src/scheme.rs:861/1136`）；错误惯例是 `libredox::error::Error` + errno 整数编码（`Error::mux` 把 Result 编码为 -errno）。PM 的 `run_once` + `PmCall` enum match + `*Error::to_errno()` 与该形态逐点同构，判定：结构不动。no_std 侧的权威先例是 Tock `ErrorCode`（`kernel/src/errorcode.rs:13`，枚举 + `Result<T, ErrorCode>` + 边界转换），PM 的 `PmError::to_errno()` 模式与之一致；Tock 的 `process::State` 枚举（`kernel/src/process.rs:963-997`，`Stopped` 变体携带被打断前的状态用于恢复）对 PM 的 `Lifecycle::Stopped` 族建模是同向印证。
+#### 观察 5：测试架构——"测试名声称对账 C"的子集谎报（Rule Discovery V3-1）
 
-### 11.4 模块级观察（分层审查结论，未升级为条目部分）
+`trace.rs:398-401` 的 `test_constants_match_c` 只断言 18 个常量中恰好正确的 2 个。与 V2 的 TSTL/SBCD 同族但不同形：**测试名声称全面对账（match_c），断言集却恰好规避了所有错误项**。候选模式 CSL（Constants-match Subset Lie）建议：凡名含 `match_c`/`matches_c` 的测试，断言项数量必须与被对账全集一致或显式注释排除理由；检查命令：`rg "fn test_\w*match_c" os/servers/pm/src -A5` 人工核对断言覆盖面。登记状态与 V2 两个候选模式一并待规则集维护轮。
 
-- **L0 内核接入 seam**：PM 现有约 25 个端口 trait：全局 2 个（`IpcTransport`、`KernelGateway`）+ 内核能力拆分 4 个（`KernelStop`/`KernelSig`/`KernelResume`/`KernelExec`）+ 各子系统窄端口（`TimerCtl`/`VTimerCtl`/`ClockSource`/`SetTimeCtl`/`McontextCtl`/`SprofCtl`/`CopyGroups`/`VfsForwarder`/`SigSender` 等）。两种风格并存（中央网关 vs 接口隔离）是历史演化的自然结果：Fix #26 的信号链 kern 下穿采用了后者。判定：**不收敛为单一 trait**（接口隔离让每个子系统的测试替身最小化，符合"trait 至少两个行为不同实现"的存在性检查的初衷），但需要一个**内核能力 ↔ trait ↔ minix-sys wrapper ↔ C libsys 函数**的四列对照表进 plan.md ARCH 附录，作为接线批次的查询面（V2-P2-6 的配套）。`TestIpcTransport` 可在生产代码构造的问题是真实的（V2-P0-1 的温床），建议随 P0-1 修复将其移入 `#[cfg(test)]` 或加 `#[doc(hidden)]` + clippy lint。
-- **L1 服务器骨架**：`run_once`（`init.rs:339-410`）与 C main.c:59-106 逐段对应且注释锚点完整；VFS 回复损坏 panic 有 C 同型依据（main.c:317-418 四类）；`run()` 的失败上限防 busy-spin 是合理增量。上轮"init.rs 965 行混合职责"的担忧在分发收编后已缓解（剩余体积主要是 boot 链 + 测试），不再立条目。`reply()` 复用 `ipc.reply` 预填载荷的机制与 C 的持久 `mp_reply` 缓冲同型（C 同样存在跨调用 stale 载荷的可能），Rust 的 `.take()` 还更干净——无需改动。
-- **L2 分发层**：enum 穷尽 match + 兜底臂的结构判定维持上轮（防 translate 反向：不回退到 C 函数指针表）。兜底臂的登记义务见 V2-P2-6。
-- **L3 子系统层**：exit→wait 僵尸链（zombify/tell_parent/cleanup 的顺序与 C forkexit.c:670-726 对齐，Fix #26/#27 后计账闭环）；exec 三方 restart 握手（PM↔VFS↔RS，exec_restart 的 RS 门 ✓）；signal 家族的 check_sig/sig_proc 骨架 ✓（缺口即 V2-P0-1/P0-2/P1-2/P2-4/P2-5）。错误码全部映射 Minix3 errno，未发现自造错误码。
-- **L4 状态层**：`mproc.h` 38 个字段 + 19 个 flag 位全部在 `mproc/mproc.rs:296-331` 的映射表中可追溯（mp_magic → 类型系统不变量）；`Process` 四层组合 + `PmContext` 借用入口的边界经上轮与本轮两轮抽查无违例。`pid_gen` 的"只扫活进程 vs C 扫全槽"是已文档化的安全方向偏差（`pid_gen.rs:50`），保留。
-- **L5 VFS 协议层**：`handle_vfs_reply` 的 11 路（SetUid/SetGid/SetGroups/SetSid/Exec/Core/Exit/Fork/SrvFork/Unpause/Reboot 特例）与 C main.c:334-419 逐路对应，每路的挂起点/恢复路径/提前 return 均有注释锚点（`ipc/vfs.rs:209-301`）；`tell_vfs` 三步语义对齐（错误路径偏软见 V2-P2-3）。上轮 §9.3 "PM↔VFS 类型已齐、无已知不一致"的判断维持。
-- **L6 测试层**：346 lib + 7 integration；Gate E 测试名对账全过（见 11.0）。缺口是结构性的：**接线分支的集成测试为零**（40 臂 ENOSYS 只有一个汇总测试）——按 review.md 联调标准"每个架构分支 ≥1 集成测试"，该义务随 §11.1.1 批次表逐批履行（每批 = wire + 臂 + 至少 1 个 run_once 集成场景）。本轮两个 P0 都是"测试全绿但行为错误"，直接证据是 mock 掩盖——11.5 的模式提案由此而来。
+#### 观察 6：`unwrap_or_default()` 凭据模式（设计观察，非偏差——对子代理结论的降级）
 
-### 11.5 Rule Discovery（Step 5.7）
+`sched.rs:258-259`、`trace.rs:103-104` 等处对 `privilege.credentials()` 用 `.cloned().unwrap_or_default()`：`Privilege::Kernel` 槽位得到全零凭据 = effuid 0 = 超级用户。审查代理曾标为"特权门旁路"，经对照 C 判定为**等价模拟**：C 的 mproc 表每槽都有 mp_effuid 字段且系统进程启动即为 0（超级用户），Rust 的全零默认恰好复现该行为，不存在对 C 的偏离。保留为设计观察：该模式把"无凭据"隐式映射为"root"，是脆弱默认——未来若 `Credentials` 增字段或语义变化，会静默放权。建议在 `Privilege` 上提供显式的 `effective_uid_or_root()` 类命名方法，让"缺省即 root"成为显式契约而非 derivational 副作用。
 
-本轮发现两个候选新模式：
+#### 观察 7：Redox 参照（V3 增补）
 
-1. **TSTL（Test Seam Leak，测试 seam 泄漏进生产路径）**——V2-P0-1 的根因模式。定义：seam 的测试实现（`TestIpcTransport` 类）可在 `#[cfg(test)]` 之外构造，生产代码用它填充暂时不想接线的依赖，测试全绿而生产路径丢失行为。检查命令：`grep -rn 'Test[A-Z][a-zA-Z]*::' os/servers/pm/src --include='*.rs' | grep -v '#\[cfg(test)\]'`（需人工排除测试模块）。建议严重度：P0（行为丢失类）。目标文件：`prompt/skill/review-patterns-skill.md`（新模式）+ review-code-checklist 的 seam 维度。与现有模式 4（虚构 trait）的区别：模式 4 查"trait 只有测试实现"，TSTL 查"测试实现被生产代码消费"。
-2. **SBCD（Set-Bit-Convention Drift，位集合 producer/consumer 位基漂移）**——V2-P0-2 的根因模式。定义：同一 bit 集合的构建方与消费方使用不同位基（`1<<n` vs `1<<(n-1)`），且构建方的单测把错误约定锁死（断言值即错误本体）。检查命令：对每个 `*_SIGSET`/`*_MASK` 常量，grep 全部消费点的移位表达式并比对位基。建议严重度：P1（视消费点可达性可升 P0）。目标文件：同上。
+见 §12.4。
 
-### 11.6 建议的推进顺序（V2）
+### 12.4 对照 Redox 的架构参考（V3 增补）
 
-1. **V2-P0-2**（位序 + badignore，常量层小改动，先行——它影响所有后续信号行为的验证基准）。
-2. **V2-P0-1**（sig_proc_exit 贯通真实 transport + `TestIpcTransport` 收进 `#[cfg(test)]` + 集成测试）。
-3. **V2-P1-1/P1-2**（PID 相位一行修 + 测试更新；SIGHUP 广播复用 check_sig + D-27 落账 + §0.1 勘误）。
-4. **V2-P2-5/V2-P2-4/V2-P2-3**（SIGCHLD 登记、RS 经 sys_kill、tell_vfs 错误路径——都是信号/退出链的收尾）。
-5. **V2-P2-1 + 接线批次 D**（itimer 收敛后接 17 号调用）。
-6. **接线批次 A → B → C → G**（凭证 → 信号控制 → 时间 → 杂项；每批含 V2-P2-6 的台账划账 + 集成测试）。
-7. **批次 E（exec）**：依赖 V2-P2-2 门 + D-16 契约（edge E7）+ sys_exec（E6）。
-8. **批次 F（调度）**：依赖 SCHED 服务器（跨阶段，06-stage）。
-9. **V2-P3 批次 + plan.md ARCH 四列对照表**。
-10. 跨阶段部分（E6 wrapper 清单扩充、E7 wire 成员与 rs_start 先例）见 §9 索引与 edge_todo.md 对应条目，单线程执行。
+V2 轮（§11.3）已核对 GitLab 源码与迁移提交。V3 轮补充两项 2025 年的公开材料，均为方向性佐证（未逐行核对源码，采纳前建议复核）：
+
+1. **FOSDEM 2025 报告 "POSIX Signals in User Space on the Redox Microkernel"**（[slides](https://archive.fosdem.org/2025/events/attachments/fosdem-2025-5670-posix-signals-in-user-space-on-the-redox-microkernel/slides/238302/posix-sig_whCJBqp.pdf)）：确认用户态进程管理器（procmgr）与用户态信号的落地，及其核心约束——**"userspace needs state and locks; only SIGKILL can force-cancel an IPC syscall"**。与 PM 的对照：Minix3 用 VFS_CALL 挂起 + `stop_proc`（C signal.c:436-443）达成同款"信号复查前不得再入"的防重入——这正是 V3-P1-3 缺失的那个调用；"只有 SIGKILL 能强制取消在途 IPC"与 `sig_proc` 对 SIGKILL 的特殊豁免（signal.rs:229 `signo != SIGKILL`）同构。
+2. **Redox 官方博客 "Towards Userspaceification of POSIX – Part I"**（[kernel-11](https://www.redox-os.org/news/kernel-11/)）：进程管理/信号迁用户态的动机与 scheme 机制路线。对 PM 的含义：minix-rs "生命周期语义放用户态服务器 + 决策在 PM、投递经内核回环"的边界选择与 Redox 的演进终态一致（V2-Redox-1/5 的延续），无需为"现代化"而把决策移进内核。
+
+### 12.5 Rule Discovery（Step 5.7，V3）
+
+1. **CSL（Constants-match Subset Lie，候选模式）**：§12.3 观察 5——`test_constants_match_c` 型"对账名 + 子集断言"。建议严重度 P1（测试自身正确性维度）；目标文件 `prompt/skill/review-patterns-skill.md` 测试族。
+2. **假成功家族扩展提案**：V3-P1-4（getsysinfo 拷零字节）表明 V2 的 TSTL（测试 seam 泄漏）应扩展为更宽的"生产路径测试数据/替身族"——判定特征：生产代码中出现仅为测试服务的构造（mock 类型、dummy 数据、假应答），且无 DEFERRED 契约。与 TSTL 合并登记为一条模式的两类实例。
+
+### 12.6 建议的推进顺序（V3，吸收 V2 §11.6 遗留）
+
+1. **卫生批**：V3-P2-9（clippy 回归 0）+ V3-P3-1/3/4/5 小项 + `--all-targets` 进收尾清单。
+2. **trace 域重构（V3-P1-1）**：先修测试（全量常量断言）→ 常量 → 分支 → 状态/载荷 → 契约与文档 18。这是批次 B 的前置。
+3. **信号链三缺口**：V3-P1-3（stop_proc 接入）→ V3-P2-2（PRIV_PROC 转发一行）→ V3-P2-1（restart_signals 接线，与 V2-P2-7/V2-P2-8 同轮设计）。
+4. **内核信号入口批次 H（V3-P1-2）**：两案设计决策 + notify 分支 + E6 对端核实。
+5. **接线批次 A → C → G**（按 §11.1.1 前置条件，含 V3-P1-4、V3-P2-4/5、V3-P2-10 的逐项先修与划账）。
+6. **错误保真批（V3-P2-6）**：三枚举 Raw 透传 + 规约入 plan.md。
+7. **批次 E（exec）与批次 B（信号控制，trace 重构后）**。
+8. **批次 F（调度）**：依赖 SCHED 服务器（06-stage）+ V3-P2-3 先修。
+9. **文档对账批（V3-P1-5 + V3-P3-6）**：可与任一等待外部依赖的窗口并行。
+10. 跨阶段部分（E6 清单增补：sys_delay_stop、内核 ksig 对端；E7 增补：PROC_EVENT_REPLY 双址）见 §9.2 与 edge_todo.md，单线程执行。

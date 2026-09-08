@@ -223,6 +223,7 @@ mod tests {
     #[derive(Default)]
     struct NoopKernel;
     impl crate::exit::KernelGateway for NoopKernel {
+        fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
