@@ -74,7 +74,7 @@
 - P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。
 - P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。
 - P2-5 复核 ✅：device_map.rs:152 裸 `i32`、filp.rs:195 裸 `usize` 原样。
-- P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。
+- P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。**✅ 已修复** 2026-09-09（§10 Fix #13：收敛到 fs_comm 协议属主，main_loop re-export，-63 行重复）。
 - P3-1 复核 ✅：本轮 clippy 实测 40 条 warning 行（约 30 条落 vfs 自身），与首轮量级一致。
 - P3-2 复核 ✅："有意省略表"仍未建立（99-global-concepts.md 零命中）；落点已随 R2-P2-2（99 改写）合并推进。
 
@@ -355,6 +355,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`PmHandler::fetch_group_list` 作为 `sys_datacopy_wrapper`（misc.c:752）的接缝口，**默认实现 fail-closed `ENOSYS`**（模式 60 诚实契约：通电挂 P1-2/edge E1，不算 DEFERRED 充数——语义入口、门与数据流已全部就位，唯余 transport）；臂内 `ngroups > NGROUPS_MAX → TooManyGroups(EINVAL)`（C panic misc.c:748-750 → fail-closed Err，与 10 号文档 D4 的 EFAULT 决策同向并登记）、`group_no==0` 免拷贝直清（`setgroups(0)` 合法语义）、正数路径 `fetch → 栈缓冲 → handle_setgroups`。`PmError::NotImplemented(ENOSYS)` 变体新增（对齐 minix-types ToErrno 的 D1/D2 方向）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**（338→341：ENOSYS 预通电态且 fproc 不动 / 超限 EINVAL / 零组直清三测试）。
 - **边界**：`fetch_group_list` 的生产实现（真实 sys_datacopy）随 P1-2 接线矩阵第一束（内核 IPC 原语）落地，届时拷贝失败映射 EFAULT；10-pm-protocol.md D4 已登记完整决策链。
+
+### ✅ Fix #13: P2-6 — TransIdCodec 收敛到 fs_comm 单一定义（2026-09-09）
+
+- **File**：`os/servers/vfs/src/main_loop.rs`（删 63 行重复定义 → `pub use` re-export）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/11-fs-comm.md`（三处引用同步）。
+- **Before**：`TransIdCodec` trait + `VfsTransIdCodec` + `TestTransIdCodec` 在 fs_comm.rs:76-117 与 main_loop.rs:130-180 双重定义，实现逻辑相同（0xB00 基），协议常量改动需改两处。
+- **After**：唯一定义在 fs_comm.rs（协议属主——`TransId`/`TRANSACTION_BASE` 的家），main_loop `pub use` re-export 供 route_message 泛型与测试消费（`ARCH A-4` 迁移标注）；11-fs-comm.md 的模块图/实现清单/测试表三处同步为"唯一定义 + re-export"。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（纯收敛，两侧测试原样通过）。
 
 ### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
 

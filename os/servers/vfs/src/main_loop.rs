@@ -122,68 +122,10 @@ pub enum NotifyKind {
     Other { endpoint: Endpoint },
 }
 
-/// `TRNS_GET_ID` / `VFS_TRANSID` codec — typed encoding of the worker slot
-/// into `m_type`'s low 16 bits (see `vfsif.h:79` + `com.h:911`).
-///
-/// `ARCH A-4`: the `0xFFFF` masking and `~0xff` prefix checks are encapsulated
-/// here rather than scattered `TRNS_GET_ID` macro uses.
-pub trait TransIdCodec {
-    /// Encode `slot` as a FS transid (low 16 bits) ready to be OR'd into `m_type`.
-    fn encode(&self, slot: usize) -> u32;
-    /// Decode `raw` (`TRNS_GET_ID(m_type)`) to a worker slot, if it is a
-    /// FS transid (`IS_VFS_FS_TRANSID`).
-    fn decode(&self, raw: u32) -> Option<usize>;
-    /// Whether `raw` (already `TRNS_GET_ID` extracted) is a FS transid.
-    fn is_fs_transid(&self, raw: u32) -> bool;
-}
-
-/// Minix3-faithful codec: `VFS_TRANSACTION_BASE = 0xB00`, `VFS_TRANSID = 0xB01`,
-/// `IS_VFS_FS_TRANSID(t) == ((t & ~0xff)==0xB00)`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct VfsTransIdCodec;
-
-impl TransIdCodec for VfsTransIdCodec {
-    fn encode(&self, slot: usize) -> u32 {
-        const VFS_TRANSID: u32 = 0xB01;
-        VFS_TRANSID + slot as u32
-    }
-    fn decode(&self, raw: u32) -> Option<usize> {
-        if !self.is_fs_transid(raw) {
-            return None;
-        }
-        const VFS_TRANSID: u32 = 0xB01;
-        Some((raw - VFS_TRANSID) as usize)
-    }
-    fn is_fs_transid(&self, raw: u32) -> bool {
-        const VFS_TRANSACTION_BASE: u32 = 0xB00;
-        (raw & !0xff) == VFS_TRANSACTION_BASE
-    }
-}
-
-/// Test codec with a different base — behaviourally different from [`VfsTransIdCodec`].
-///
-/// For the same `raw = 0xB01`, `VfsTransIdCodec` says `is_fs_transid==true`
-/// and decodes to slot 0, while `TestTransIdCodec { base: 0xC00 }` says
-/// `false` / `None`.  This satisfies Gate D “≥2 behaviourally different impls”.
-#[derive(Debug, Clone, Copy)]
-pub struct TestTransIdCodec {
-    pub base: u32,
-}
-
-impl TransIdCodec for TestTransIdCodec {
-    fn encode(&self, slot: usize) -> u32 {
-        (self.base + 1) + slot as u32
-    }
-    fn decode(&self, raw: u32) -> Option<usize> {
-        if !self.is_fs_transid(raw) {
-            return None;
-        }
-        Some((raw - (self.base + 1)) as usize)
-    }
-    fn is_fs_transid(&self, raw: u32) -> bool {
-        (raw & !0xff) == self.base
-    }
-}
+/// `TRNS_GET_ID` / `VFS_TRANSID` codec — canonical definition lives in
+/// `fs_comm.rs` (the protocol owner); re-exported here so the route layer
+/// and its tests share one contract (P2-6 convergence, `ARCH A-4`).
+pub use crate::fs_comm::{TestTransIdCodec, TransIdCodec, VfsTransIdCodec};
 
 /// VFS startup phase.
 ///
