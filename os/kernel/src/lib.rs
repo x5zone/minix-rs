@@ -1734,15 +1734,7 @@ pub(crate) fn kernel_info() -> Option<&'static KernelInfo> {
 /// Caller must ensure BKL is held if called after boot initialization.
 /// C: `ipc_filter_pool` global array access.
 ///
-/// **Prefer [`ipc_filter_pool_with`]** which takes a `BklSection` witness (R-03).
-pub(crate) fn ipc_filter_pool() -> &'static mut crate::ipc_filter::IpcFilterPool {
-    // SAFETY: Caller must hold BKL for post-boot access.
-    // During boot, single-threaded access is guaranteed.
-    unsafe { &mut *IPC_FILTER_POOL.get() }
-}
-
 /// Get a mutable reference to the global IPC filter pool with BKL witness (R-03).
-#[allow(dead_code)] // BKL-witness accessor (FIX-09); new pattern not yet wired to all call sites
 pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'static mut crate::ipc_filter::IpcFilterPool {
     // SAFETY: BklSection witness proves BKL is held.
     unsafe { &mut *IPC_FILTER_POOL.get() }

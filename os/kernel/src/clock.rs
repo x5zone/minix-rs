@@ -1262,14 +1262,20 @@ impl Default for ClockState {
 /// `Completed` under `IrqPolicy::REENABLE` (the timer re-arms in
 /// hardware), matching C `generic_handler` (do_irqctl.c:171).
 pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
-
-
-    // SAFETY: the IRQ dispatch entry holds the BKL.
-    // A1: boot context — single-threaded init before BKL/IRQs exist.
-    let table = unsafe { crate::proc_table_boot_unchecked() };
-    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
-    let smp = unsafe { crate::smp_state() };
-    let clock = unsafe { crate::clock_state_boot_unchecked() };
+    // A1 chain root (D-63①): this handler runs on the IRQ dispatch path,
+    // which holds the BKL — the same root `dispatch_hardware_irq`
+    // (irq_manager.rs) witnesses from. The `IrqHandler` fn-pointer
+    // signature cannot carry a witness parameter (same constraint as
+    // `KernelNotifier::notify_hardware`), so the root re-takes it here;
+    // debug builds assert the lock. This is NOT a boot path: before
+    // D-63① these accesses went through `*_boot_unchecked` accessors
+    // whose contract is "single-threaded init before BKL exists", which a
+    // runtime timer IRQ violates.
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let table = crate::proc_table_with(&section);
+    let priv_table = crate::priv_table_with(&section);
+    let smp = crate::smp_state_with(&section);
+    let clock = crate::clock_state_with(&section);
 
     let bsp = smp.bsp_cpu_id();
     let (cur_nr, bill_nr) = smp
@@ -1411,6 +1417,11 @@ mod clock_irq_handler_tests {
     /// DELIVERMSG），ctx 按 REENABLE 返回 Completed，uptime 推进。
     #[test]
     fn test_clock_irq_handler_delivers_alarm_notification() {
+        // D-63①: the handler now witnesses the BKL via `assume_held`
+        // (debug builds assert the lock) — take it like the IRQ entry
+        // would (lib.rs `bkl_acquire_for_test` pattern).
+        crate::smp::bkl_lock_reset_for_test();
+        let _bkl = crate::smp::bkl_lock().transfer();
         let (table, mut priv_table) = setup_globals();
 
         let r_priv = priv_table.assign_static(ProcNr(4)).unwrap();
@@ -1445,6 +1456,12 @@ mod clock_irq_handler_tests {
         };
         let action = clock_irq_handler(&mut ctx);
         assert_eq!(action, IrqAction::Completed);
+        // Leave the BKL unlocked: this test's guard was `transfer()`ed into
+        // the ambient scope (leaked), and a later test that spins on
+        // `bkl_lock()` without a reset would hang. (lib.rs's
+        // `bkl_acquire_for_test` users tolerate a locked exit only because
+        // every consumer resets first — don't rely on that cross-module.)
+        crate::smp::bkl_unlock();
 
         let r = table.get(ProcNr(4)).unwrap();
         assert!(r.p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));

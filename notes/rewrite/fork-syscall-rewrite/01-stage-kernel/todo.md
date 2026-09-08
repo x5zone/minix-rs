@@ -478,7 +478,19 @@ MINIX3 BUG 标注引 `arch_system.c:239`，实际合并语句在 :243-245（~5 �
 misc.rs:2219-2222 自述）。修法：迁 globals.rs 或按 A2 反例条款论证豁免并登记；
 `static mut` 至少升 SyncUnsafeCell + BklProtected 审批。
 
-#### D-63 A1 约定破例两处（witness 通道） [P2]
+#### D-63 A1 约定破例两处（witness 通道） [P2] — ✅ 已修复（2026-09-09，两处同批）
+
+**✅ 解决记录**：① `clock_irq_handler`（`os/kernel/src/clock.rs`）迁移到 `_with` 访问器族 +
+`BklSection::assume_held()` 链根取证（`IrqHandler` fn 指针签名无法携带 witness，与
+`KernelNotifier::notify_hardware` 同constraint；"boot context" 误导注释删除）——"运行期 IRQ
+路径用 boot_unchecked"的契约违反消除；② `ipc_filter_pool` 裸访问器消灭：`notify_scheduler`
+（proc_table.rs，`section` 参数本就在作用域，纯疏漏）、`kernel_call_dispatch_inner` 的
+Statectl 臂（syscall.rs，同上）、`dispatch_ipc`（syscall.rs，assume_held 链根 + kernel_call
+dispatch 契约注释）三处全部迁 `_with`，`lib.rs` 删除裸访问器与 `#[allow(dead_code)]`。
+测试侧：`clock_irq_handler` 直调测试与 4 个触及 assume_held 链根的测试补 RAII 取锁
+（`bkl_lock_reset_for_test` + `bkl_lock()` 不 transfer，作用域尾自动解锁——首版用 transfer
+遗留锁定态导致字母序后续测试自旋挂死，回归 review 拦截后修正）。验证：kernel 730/0/8 全绿，
+clippy 零新增。
 
 ① `os/kernel/src/clock.rs:1271-1275` `clock_irq_handler`（D-46 新代码）在**运行期定时器
 IRQ 路径**用 `*_boot_unchecked` 访问器族——"boot context" 注释名不副实，`_with` 访问器

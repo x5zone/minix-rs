@@ -604,7 +604,7 @@ fn kernel_call_dispatch_inner(
         Syscall::Update => dispatch_update(caller, msg, proc_table, priv_table),
 
         Syscall::Schedctl => dispatch_schedctl(caller, msg, proc_table),
-        Syscall::Statectl => dispatch_statectl(caller, msg, proc_table, priv_table, crate::ipc_filter_pool()),
+        Syscall::Statectl => dispatch_statectl(caller, msg, proc_table, priv_table, crate::ipc_filter_pool_with(bkl_section)),
         Syscall::Safememset => dispatch_safememset(caller, msg, proc_table, priv_table),
         // D6: ARM-specific — return BadCall on other architectures.
         Syscall::Padconf => CurrentArchSyscall::dispatch_padconf(caller, msg),
@@ -767,10 +767,15 @@ pub(crate) fn dispatch_ipc(
     // block ends that borrow so the `sig_delay_done` protocol below can
     // touch `proc_table` again (the scheduler-aware `cause_signal`).
     let (outcome, pending_sig_delay) = {
-        // D-16: wire the global IPC filter pool (BKL held — kernel_call
-        // dispatch contract; SAFETY per the raw accessor's doc).
+        // D-16: wire the global IPC filter pool. A1 chain root (D-63②):
+        // this is the kernel_call dispatch path — the BKL is held by the
+        // kernel_call contract (kernel_call_dispatch acquires it); the
+        // fn signature cannot carry the witness, so the root takes
+        // `assume_held` (debug builds assert the lock). S-8 will thread a
+        // real witness from the trap entry.
+        let section = unsafe { crate::smp::BklSection::assume_held() };
         let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy)
-            .with_filter_pool(crate::ipc_filter_pool());
+            .with_filter_pool(crate::ipc_filter_pool_with(&section));
         let outcome = engine.do_ipc(
             caller_nr,
             ipc_call,
@@ -3724,6 +3729,12 @@ mod tests {
         use crate::proc_table::nr_to_idx;
         use crate::ipc::caller_q_push;
 
+        // D-63②: dispatch_ipc's A1 chain root asserts the BKL — hold it
+        // via RAII (drops unlocked at test end).
+        let _bkl = {
+            crate::smp::bkl_lock_reset_for_test();
+            crate::smp::bkl_lock()
+        };
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let receiver_nr = ProcNr(1);

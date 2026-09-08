@@ -881,7 +881,7 @@ impl ProcessTable {
             &KernelUserCopy,
         )
         // D-16: wire the global IPC filter pool (BKL held — same proof).
-        .with_filter_pool(crate::ipc_filter_pool());
+        .with_filter_pool(crate::ipc_filter_pool_with(section));
         let outcome = engine.send(nr, scheduler_ep, &msg, SendFlags::FROM_KERNEL);
 
         // C: `if (err) panic("WARNING: Scheduling: mini_send returned %d\n", err)`.
@@ -1916,6 +1916,13 @@ mod tests {
     /// MF_SC_DEFER is cleared and IPC is dispatched.
     #[test]
     fn test_process_misc_flags_clears_sc_defer() {
+        // D-63②: the exercised path reaches A1 chain roots
+        // (`notify_scheduler`) whose `assume_held` asserts the BKL — hold
+        // it via RAII (drops unlocked at test end).
+        let _bkl = {
+            crate::smp::bkl_lock_reset_for_test();
+            crate::smp::bkl_lock()
+        };
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
@@ -2025,6 +2032,12 @@ mod tests {
     /// non-runnable — the scheduler must pick another process (C: proc.c:413).
     #[test]
     fn test_process_misc_flags_sc_defer_ends_sig_delay() {
+        // D-63②: hold the BKL via RAII for the `assume_held` chain roots
+        // (same reason as test_process_misc_flags_clears_sc_defer).
+        let _bkl = {
+            crate::smp::bkl_lock_reset_for_test();
+            crate::smp::bkl_lock()
+        };
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
@@ -2071,6 +2084,12 @@ mod tests {
     /// when the message is finally taken by the receiver.
     #[test]
     fn test_process_misc_flags_sc_defer_blocked_in_send_keeps_sig_delay() {
+        // D-63②: hold the BKL via RAII for the `assume_held` chain roots
+        // (same reason as test_process_misc_flags_clears_sc_defer).
+        let _bkl = {
+            crate::smp::bkl_lock_reset_for_test();
+            crate::smp::bkl_lock()
+        };
         let mut table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
         let nr = ProcNr(0);
