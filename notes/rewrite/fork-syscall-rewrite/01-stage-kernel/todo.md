@@ -2832,7 +2832,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ⬜ I-6 bill_ptr + 真实调度主循环（替换 lib.rs:2187 placeholder；安全窗口在 S-7/S-10 后）
 - ⬜ I-13 InterruptController trait 拆分（Router + per-CPU Ack；依赖 S-6 per-CPU 基建）
 - ✅ SYS_PADCONF 真实现（syscall.rs:350 现 BadCall；对照 C do_padconf 语义）→ **核实闭合（维持现状）+ 注释勘误 + pinning 测试。Ground truth：`map(SYS_PADCONF, do_padconf)` 仅 `#if defined(__arm__)`（system.c:251-253），do_padconf.c 仅存在于 arch/earm（TI OMAP BSP）；非 arm C 构建 call_vec 条目 NULL → EBADREQUEST（system.c:120-123）。Rust 无 arm32 target，`BadCall` 经 reply_code 映射 EBADREQUEST(212) 即 C 奇偶正确应答——trait-default 结构本身就是 C 条件 map 表的镜像（X86_64Syscall 覆盖 i386 专属调用、padconf 走默认 = __arm__ 专属），无板级硬件 owner 故不建 PadConf trait（frame.rs 先例）。修正 syscall.rs 三处 "deferred" 误导注释为已验证事实；新增 test_padconf_unused_kernel_call_replies_ebadrequest 双链 pinning（变体=BadCall + 应答=212）。694→699 全绿。相邻发现记录不修：devio/vdevio/iopenable/readbios 默认在非 x86 上同属 NULL 条目情形（BadCall→212 奇偶一致），T-9 项内覆盖（2026-09-08）**
-- ⬜ profiling/sprofiling deferred 体（misc.rs:2074 / lib.rs:2593）
+- 🔄 profiling/sprofiling deferred 体（misc.rs:2074 / lib.rs:2593）→ **复测（2026-09-08）：部件层已全实现——dispatch_sprofile 完整 C 语义（EBUSY/EINVAL/isokendpt 校验 + 回滚 + RTC/NMI 选择 + Stop 双 data_copy 拷出，misc.rs:2266 起）、profile_sample 含 C typo 复刻（profile.c:84-89）、profile_clock_handler + clean_seen_flag，8 测试覆盖。剩余 deferred 本体 = trap 入口接线（硬件 IRQ → profile_clock_handler 传 PC，现零生产调用方）——依赖 S-8/S-9 公共陷阱基建（同 D-46 硬件半环），未解除前无法落地。两处 documented 豁免：NMI 臂 ENOSYS（WONTFIX 论证 misc.rs:2340-2352，用户态回退 RTC）、idle 轮询变体（默认构建奇偶，lib.rs:2233-2237）。S-8 落地后由 S-13 收尾接线**
 - ⬜ syscall.rs:1013 与 syscall_process.rs:382 缺口盘点补齐
 - ⬜ I-7 MF_REPLY_PEND typestate 评估（可结论"维持现状"）/ I-9 NonNull / I-10 PrivId/SysId newtype（评估后实施或维持论证）
 
