@@ -468,6 +468,8 @@ Rust 改写遵循“显式 `SigHandler` 三态 + `SigMaskOp` 枚举 + `without_u
 
 ### 4.1 模块结构
 
+> **sig_send/unpause 落地现状（V2-P2-7/V2-P2-8，2026-09-09）**：`sig_send`（signal.rs）已按 C `signal.c:772-855` 全语义实现——`prepare_sigmsg`（D7 四步）之外补上 C 800-808 的 `mp_sigmask` 簿记（sa_mask 并入 + NODEFER/默认当前信号 defer；suspended 时 sm_mask 以 mask2 起底而 mp_sigmask 以 mask 起底，两者是不同的值）、`sys_sigsend` 投递（minix-sys wrapper = E6 切片，SIGSEND=9，sigctx 指针语义）、EFAULT/ENOMEM 的合法失败分档（C 返回 FALSE 落终止兜底）与 WAITING/SIGSUSPENDED 的 EINTR 打断 + try_resume_proc。`unpause`（signal.rs）按 C `signal.c:719-770` 三路径真实化：UNPAUSED 就绪 / DELAY_CALL 忙 / WAITING|SIGSUSPENDED 停住即就绪 / 其余 stop_proc(MayDefer) + `VFS_PM_UNPAUSE` 请求（回复经 restart_signals → restart_sigs 重投）——此前对运行中进程直接返回 true 且不置 stopped，sig_send 的 PROC_STOPPED 断言因此死路。
+
 ```
 os/servers/pm/src/
 ├── mproc/

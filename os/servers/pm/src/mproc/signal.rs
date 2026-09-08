@@ -306,6 +306,18 @@ impl SignalState {
             sm_mask |= bit;
         }
 
+        // C signal.c:800-808 —— `mp_sigmask` 的簿记更新与 `sm_mask` 分离：
+        // sa_mask 永远并入 mp_sigmask；NODEFER 从 mp_sigmask 删当前信号，
+        // 否则加入。suspended 时 sm_mask 以 mask2 起底而 mp_sigmask 以
+        // 当前 mask 起底——两者是不同的值（handler 运行期掩码 vs PM 簿记）。
+        // 缺此簿记时 sigreturn 的恢复基线错位（V2-P2-8）。
+        self.mask |= action.sa_mask;
+        if (action.sa_flags & SA_NODEFER) != 0 {
+            self.mask &= !bit;
+        } else {
+            self.mask |= bit;
+        }
+
         // Step 4: SA_RESETHAND (810-813) — mutate caught/handler.
         if (action.sa_flags & SA_RESETHAND) != 0 {
             self.caught &= !bit;

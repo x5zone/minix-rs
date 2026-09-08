@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1（Fix #48 restart_signals）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1（#48）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -293,21 +293,13 @@ V2 结论保留在 git 历史。**V3 勘误**：该轮收敛漏掉 `ipc/vfs.rs:5
 
 仍开放：
 
-#### V2-P2-7 unpause 的 VFS_CALL 分支不发 VFS_PM_UNPAUSE（批次 B 联动）
+#### V2-P2-7 unpause 三路径真实化（✅ 已修复 2026-09-09，Fix #49）
 
-- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
-- **文件**：`os/servers/pm/src/signal.rs` `unpause`（VFS_CALL 分支 `return false`，无消息发送）
-- **问题**：C 的 `unpause`（signal.c:719-770）对 VFS_CALL/EVENT_CALL 挂起的进程经 `tell_vfs(VFS_PM_UNPAUSE)` 请求 VFS 中断其阻塞调用，回复（Unpause 事件）到来后才建立 sigframe。Rust 该分支直接返回 false（信号转 pending），不发任何消息——被捕获信号对"卡在 VFS 调用里"的进程永远无法及时投递。
-- **建议**：随 caught 路径补全（V2-P2-8）一并做：`unpause` 增 transport 形参，VFS_CALL 分支走 `crate::ipc::tell_vfs(VfsCall::Unpause)`（ipc/vfs.rs 的 Unpause 回复分支已备）。
-- **验证**：单测：VFS_CALL 挂起进程 + 被捕获信号 → transport 收到 UNPAUSE 请求，VFS 回复后 sigframe 建立。
+#### V2-P2-8 sig_send 空壳（✅ 已修复 2026-09-09，Fix #49，与 V2-P2-7 同轮——二者耦合即 V2 所荐"三步同轮"）
 
-#### V2-P2-8 sig_send 是空壳（caught 投递的核心步骤缺失，批次 B 联动）
-
-- **优先级**：P2；**类型**：语义缺失（caught 路径，sigaction 接线前不可达）
-- **文件**：`os/servers/pm/src/signal.rs` `sig_send`（`let _ = (table, target, signo); Ok(())`）
-- **问题**：C 的 `sig_send`（signal.c:772-855）是被捕获信号投递的核心：保存/替换 mask、写 `mp_sigreturn`、构造 sigframe 参数、唤醒目标进程。Rust 版不做任何事直接返回成功——一旦 sigaction 批次（批次 B）接线，被捕获信号将"看起来送达"而进程毫无感知。
-- **建议**：与批次 B 联动实施（sigaction 的 handler 安装 → sig_send 的 frame 建立 → sigreturn 的恢复，三步须同轮验证）；`unpause`（V2-P2-7）同轮。
-- **验证**：批次 B 的集成测试：handler 进程收信号 → handler 执行 → sigreturn 恢复 mask。
+- **原状态**：`sig_send` 是 `Ok(())` 空壳（signal.c:772-855 全缺失）；本地 `unpause` 对运行中进程直接返回 true 且不置 stopped（VFS_CALL 分支不发 VFS_PM_UNPAUSE）。caught 路径（sigaction 接线后可达）的投递核心整体缺失，且 sig_send 的 PROC_STOPPED 断言依赖 unpause 先停——两缺陷互为因果，故同轮落地。
+- **修复**（Fix #49）：(1) `sig_send` 按 C 全语义实现——`prepare_sigmsg`（D7）之外补 C 800-808 的 `mp_sigmask` 簿记（suspended 时 sm_mask 以 mask2 起底、mp_sigmask 以 mask 起底，两值不同，prepare_sigmsg 同轮补此簿记）、`sys_sigsend` 投递、EFAULT/ENOMEM 合法失败分档（FALSE → 终止兜底）、WAITING/SIGSUSPENDED 的 EINTR 打断 + try_resume_proc（GatewayResumeBridge）。(2) `unpause` 按 C 三路径真实化（UNPAUSED 就绪 / DELAY_CALL 忙 / WAITING|SIGSUSPENDED 停住即就绪 / 其余 stop_proc(MayDefer) + VFS_PM_UNPAUSE 请求）——设计选型：内联于 sig_proc（sig_proc 已持 table/transport/kern）而非接 `signal_flow::unpause` 的 VfsCtl seam（该 seam 拿不到 table，借用不可达）。(3) minix-sys（E6 切片）：`SigMsgWire`（type.h:71-77，40 字节 repr(C)）+ `sys_sigsend`（SIGSEND=9，sigctx 指针语义）+ wire 测试。
+- **验证**：+4 单测（sigmsg 组装与 mask 簿记 / EFAULT 优雅失败 / WAITING 停住就绪 / 运行中 defer 到 VFS）；minix-sys wire 测试。基线 **377 lib + 11 integration passed**；批次 B 余项（sigaction 族 wire + sys_sigreturn）保持登记。
 
 ### 11.3 对照 Redox 的架构参考（V2，7 条）
 

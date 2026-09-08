@@ -350,15 +350,16 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         return Ok(());
     }
     if !badignore && (state.caught & sigmask != 0) {
-        // Try unpause then sig_send
-        if !unpause(table, target) {
+        // C signal.c:509-518：unpause 三路径——未就绪（延迟/VFS 等待）则
+        // 信号转 pending，等 UNPAUSE 回复经 restart_signals 重投。
+        if !unpause(table, target, kern, transport) {
             table.procs[target.get()].resources.signals.pending |= sigmask;
             if ksig {
                 table.procs[target.get()].resources.signals.kernel_pending |= sigmask;
             }
             return Ok(());
         }
-        if sig_send(table, target, signo).is_ok() {
+        if sig_send(table, target, signo, kern, transport).is_ok() {
             return Ok(());
         }
         // Fall through to terminate on sig_send failure（C 同：printf 后
@@ -392,31 +393,155 @@ fn sig_proc_exit<T: crate::ipc::IpcTransport + ?Sized>(
     Ok(())
 }
 
-/// Unpauses a process blocked on WAIT or SIGSUSPEND or VFS (`unpause`, `719-770`).
+/// Unpauses a process for `sig_send`（`unpause`，`signal.c:719-770`）。
 ///
-/// Returns `true` if already unpaused or successfully unpaused, `false` if delayed.
-fn unpause(table: &mut ProcTable, target: UserSlot) -> bool {
-    // Simplified for 11: if VFS_CALL|EVENT_CALL → tell_vfs UNPAUSE, else if WAITING|SIGSUSPENDED → stop_proc
+/// 返回 `true` = 进程就绪可立即 spawn handler；`false` = 信号转 pending
+///（C 返回 FALSE，调用方 `sigaddset(pending)` 后 return）。
+/// 三路径：UNPAUSED 已置（等 restart_sigs 重查的进程，已停止）→ true；
+/// DELAY_CALL 在途 → false；WAITING/SIGSUSPENDED → `stop_proc(FALSE)` 停住
+/// → true；其余未停止 → `stop_proc(TRUE)`（内核 EBUSY 则 false）+
+/// `tell_vfs(VFS_PM_UNPAUSE)` 请求 VFS 中断其阻塞调用 → false（UNPAUSE
+/// 回复经 restart_signals 重投）。V2-P2-7 之前此函数对运行中进程直接
+/// 返回 true 且不置 stopped——sig_send 的 PROC_STOPPED 断言因此死路。
+fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    target: UserSlot,
+    kern: &mut dyn crate::exit::KernelGateway,
+    transport: &mut T,
+) -> bool {
     let proc = &table.procs[target.get()];
-    if proc.state.block.ipc_blocked.is_some() {
-        // In C: tell_vfs UNPAUSE or stop_proc with may_delay
-        return false;
-    }
-    if proc.state.wait.waiting || proc.resources.signals.suspended {
-        // In C: stop_proc(FALSE) for WAITING|SIGSUSPENDED
-        table.procs[target.get()].state.block.stopped = true;
+    assert!(
+        !proc.state.block.is_vfs_blocked() && !proc.state.block.is_event_blocked(),
+        "unpause: !(VFS|EVENT)（VFS|EVENT 在 sig_proc 前置分支已返回）"
+    );
+    if proc.state.block.unpaused {
+        // C 734-738：UNPAUSED 必伴 PROC_STOPPED（stop 由 unpause 前一轮建立）。
+        assert!(
+            proc.state.block.stopped
+                && !matches!(
+                    proc.state.block.ipc_blocked,
+                    Some(crate::mproc::IpcBlockReason::DelayedSignal)
+                ),
+            "unpause UNPAUSED must be (DELAY|PROC)==PROC"
+        );
         return true;
     }
-    // Not paused in PM, try VFS unpause
-    true
+    if matches!(
+        proc.state.block.ipc_blocked,
+        Some(crate::mproc::IpcBlockReason::DelayedSignal)
+    ) {
+        return false; // C 741-742：延迟调用在途 → pending
+    }
+    if proc.state.wait.waiting || proc.resources.signals.suspended {
+        // C 745-753：PM 侧睡眠 → stop_proc(FALSE) 已排除 EBUSY → true。
+        let mut stop_bridge = GatewayStopBridge(&mut *kern);
+        let _ = crate::signal_flow::stop_proc(
+            table,
+            target,
+            crate::signal_flow::MayDelay::MustStop,
+            &mut stop_bridge,
+        );
+        return true;
+    }
+    // C 760-769：未停止 → stop_proc(TRUE)（EBUSY = 延迟，false）+ 请求 VFS
+    // 中断其阻塞调用；UNPAUSE 回复经 restart_signals → restart_sigs 重投。
+    if !proc.state.block.stopped {
+        let mut stop_bridge = GatewayStopBridge(&mut *kern);
+        if let Ok(crate::signal_flow::StopOutcome::Deferred) = crate::signal_flow::stop_proc(
+            table,
+            target,
+            crate::signal_flow::MayDelay::MayDefer,
+            &mut stop_bridge,
+        ) {
+            return false;
+        }
+    }
+    let ep = table.procs[target.get()].endpoint();
+    let mut call = minix_types::Message {
+        m_type: minix_types::VFS_PM_UNPAUSE,
+        ..Default::default()
+    };
+    call.m_u.m_m1.m1i1 = ep.0;
+    transport
+        .send(Endpoint::VFS, &call)
+        .unwrap_or_else(|e| panic!("tell_vfs: send failed: {:?}", e));
+    false
 }
 
-/// Sends signal via handler (`sig_send`, `772-855`).
+/// 把 [`crate::exit::KernelGateway`] 的 `sys_resume` 适配为
+/// [`crate::signal_flow::KernelResume`] seam（13-design D2）。
+struct GatewayResumeBridge<'a>(&'a mut dyn crate::exit::KernelGateway);
+
+impl crate::signal_flow::KernelResume for GatewayResumeBridge<'_> {
+    fn resume(&mut self, ep: Endpoint) -> i32 {
+        self.0.sys_resume(ep).err().unwrap_or(0) // OK = 0；Err 携带原始 errno
+    }
+}
+
+/// Sends signal via handler (`sig_send`, `signal.c:772-855`).
 ///
-/// Returns `true` if handler setup succeeded.
-fn sig_send(table: &mut ProcTable, target: UserSlot, signo: i32) -> Result<(), KillError> {
-    // Simplified: set pending cleared, mask updated, and mark as needing sigframe
-    let _ = (table, target, signo);
+/// 被捕获信号投递的核心：`prepare_sigmsg`（D7 四步 mask 演化、RESETHAND
+/// 与 pending 清除，见 mproc/signal.rs）交 `sys_sigsend` 由内核建立
+/// sigframe 并唤醒（signal.c:818）；WAITING/SIGSUSPENDED 时打断阻塞调用
+///（清标志、reply(EINTR)、try_resume_proc，signal.c:823-836）。V2-P2-8
+/// 之前是 `Ok(())` 空壳——sigaction 接线后被捕获信号将"看起来送达"而
+/// 进程无感。EFAULT/ENOMEM 意为进程内存装不下 handler（合法失败，目标
+/// 将被杀，C 返回 FALSE）；其它错误 panic（C "sys_sigsend failed" 同型）。
+fn sig_send<T: crate::ipc::IpcTransport + ?Sized>(
+    table: &mut ProcTable,
+    target: UserSlot,
+    signo: i32,
+    kern: &mut dyn crate::exit::KernelGateway,
+    transport: &mut T,
+) -> Result<(), KillError> {
+    assert!(
+        table.procs[target.get()].state.block.stopped,
+        "sig_send: PROC_STOPPED"
+    );
+    // D7 四步（mask/sigmsg 组装 + RESETHAND + pending 清除 + mp_sigmask 簿记）。
+    let sigmsg = table.procs[target.get()]
+        .resources
+        .signals
+        .prepare_sigmsg(signo as u32)
+        .ok_or(KillError::InvalidSignal)?;
+    let wire = minix_sys::syscall::SigMsgWire {
+        signo: sigmsg.signo as u32,
+        mask: sigmsg.mask,
+        sighandler: sigmsg.handler.0,
+        sigreturn: sigmsg.sigreturn.0,
+        stkptr: 0, // C 由内核在建立 sigframe 时从进程上下文取，sigmsg 不携带
+    };
+    let ep = table.procs[target.get()].endpoint();
+    match kern.sys_sigsend(ep, &wire) {
+        Err(r) if r == -minix_types::EFAULT || r == -minix_types::ENOMEM => {
+            return Err(KillError::NoSuchProcess); // C: return(FALSE) → 终止兜底
+        }
+        Err(r) => panic!("sys_sigsend failed: {}", r),
+        Ok(()) => {}
+    }
+    // WAITING|SIGSUSPENDED → 打断阻塞调用（signal.c:823-836）：清两标志、
+    // reply(EINTR)（UNPAUSED 未置——停止由 unpause() 刚建立）、try_resume。
+    let suspended_in_pm = table.procs[target.get()].state.wait.waiting
+        || table.procs[target.get()].resources.signals.suspended;
+    if suspended_in_pm {
+        table.procs[target.get()].state.wait.waiting = false;
+        table.procs[target.get()].resources.signals.suspended = false;
+        let ep = table.procs[target.get()].endpoint();
+        let eintr = minix_types::Message { m_type: minix_types::EINTR, ..Default::default() };
+        transport.send(ep, &eintr).ok();
+        assert!(
+            !table.procs[target.get()].state.block.unpaused,
+            "sig_send: WAITING path must not have UNPAUSED"
+        );
+        let mut resume_bridge = GatewayResumeBridge(&mut *kern);
+        crate::signal_flow::try_resume_proc(table, target, &mut resume_bridge);
+    } else {
+        // 非挂起路径：经 restart_sigs 而来（UNPAUSED 必置，signal.c:841）。
+        assert!(
+            table.procs[target.get()].state.block.unpaused,
+            "sig_send: non-suspended path requires UNPAUSED"
+        );
+    }
     Ok(())
 }
 
@@ -541,6 +666,7 @@ mod tests {
         pub sys: minix_types::Clock,
     }
     impl crate::exit::KernelGateway for TestKernel {
+        fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
         fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
@@ -681,6 +807,7 @@ mod tests {
             killed: Option<(Endpoint, i32)>,
         }
         impl crate::exit::KernelGateway for RecordKill {
+            fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
             fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
             fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
@@ -827,6 +954,7 @@ mod tests {
         endksig_calls: Vec<(minix_types::Endpoint, i32)>,
     }
     impl crate::exit::KernelGateway for KsigRecorder {
+        fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
@@ -904,6 +1032,118 @@ mod tests {
         assert!(table.procs[5].state.lifecycle.is_exiting() || matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
     }
 
+    // ---- sig_send / unpause 真实语义（todo.md V2-P2-7/V2-P2-8 回归锚点）----
+
+    /// 记录 sys_sigsend 的 sigmsg 内容。
+    struct SigSendRecorder {
+        calls: Vec<(minix_types::Endpoint, u32, u64)>,
+        reply_err: Option<i32>,
+    }
+    impl crate::exit::KernelGateway for SigSendRecorder {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+        fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+        fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_sigsend(&mut self, ep: minix_types::Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> {
+            self.calls.push((ep, sigmsg.signo, sigmsg.sighandler));
+            match self.reply_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+    }
+
+    /// C signal.c:772-818：sig_send 组装 sigmsg（mask/signo/handler/
+    /// sigreturn）+ mp_sigmask 簿记（sa_mask 并入 + 当前信号 defer）+
+    /// pending 清除 + sys_sigsend 投递。
+    #[test]
+    fn test_sig_send_books_mask_and_sends() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        // 安装 handler（caught + sa_mask 含 SIGUSR2 位）+ 停止态。
+        let sig = 16; // SIGUSR1（Minix：USR1=16）
+        table.procs[5].state.block.stopped = true;
+        // C signal.c:841-844：非挂起路径经 restart_sigs 而来，UNPAUSED 必置。
+        table.procs[5].state.block.unpaused = true;
+        table.procs[5].resources.signals.caught = 1u64 << (sig - 1);
+        table.procs[5].resources.signals.actions[sig as usize - 1].sa_handler = 0xCAFEBABE;
+        table.procs[5].resources.signals.actions[sig as usize - 1].sa_mask = 1u64 << (17 - 1);
+        table.procs[5].resources.signals.sigreturn_addr = minix_types::VirBytes(0x7000);
+        table.procs[5].resources.signals.pending = 1u64 << (sig - 1);
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None };
+        let mut t = crate::ipc::TestIpcTransport::default();
+
+        let res = sig_send(&mut table, UserSlot::new(5), sig, &mut kern, &mut t);
+        assert!(res.is_ok());
+        // sigmsg：signo/handler/sigreturn 逐字段（mask = mask|sa_mask|bit16）。
+        assert_eq!(kern.calls.len(), 1);
+        assert_eq!(kern.calls[0].0, table.procs[5].identity.endpoint);
+        assert_eq!(kern.calls[0].1, sig as u32);
+        assert_eq!(kern.calls[0].2, 0xCAFEBABE);
+        // mp_sigmask 簿记：sa_mask(17) + 自身(16) 并入（C signal.c:800-808）。
+        // 信号 s 的位 = 1<<(s-1)：16→0x8000，17→0x10000。
+        assert_eq!(
+            table.procs[5].resources.signals.mask & ((1 << 15) | (1 << 16)),
+            (1 << 15) | (1 << 16)
+        );
+        assert_eq!(table.procs[5].resources.signals.pending & (1 << 15), 0);
+        // pending 已清（C 814-815）。
+        assert_eq!(table.procs[5].resources.signals.pending & (1 << 15), 0);
+    }
+
+    /// C signal.c:820-822：EFAULT/ENOMEM = 进程内存装不下 handler——合法
+    /// 失败返回 FALSE（调用方落终止兜底），不 panic。
+    #[test]
+    fn test_sig_send_efault_falls_back() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let sig = 16;
+        table.procs[5].state.block.stopped = true;
+        table.procs[5].resources.signals.caught = 1u64 << (sig - 1);
+        table.procs[5].resources.signals.actions[sig as usize - 1].sa_handler = 0xCAFEBABE;
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: Some(-minix_types::EFAULT) };
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let res = sig_send(&mut table, UserSlot::new(5), sig, &mut kern, &mut t);
+        assert!(res.is_err(), "EFAULT must be a graceful FALSE");
+    }
+
+    /// C unpause 745-753：WAITING → stop_proc 停住 → true（就绪 spawn）。
+    #[test]
+    fn test_unpause_waiting_stops_process() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.wait.waiting = true;
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None };
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let ready = unpause(&mut table, UserSlot::new(5), &mut kern, &mut t);
+        assert!(ready);
+        assert!(table.procs[5].state.block.stopped, "WAITING path must stop");
+    }
+
+    /// C unpause 760-769：运行中 → stop_proc(MayDefer) + VFS_PM_UNPAUSE
+    /// 请求 → false（信号转 pending，等 UNPAUSE 回复重投）。
+    #[test]
+    fn test_unpause_running_defers_to_vfs() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None };
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let ready = unpause(&mut table, UserSlot::new(5), &mut kern, &mut t);
+        assert!(!ready);
+        assert!(table.procs[5].state.block.stopped, "defer path stops first");
+        assert_eq!(t.sent().len(), 1, "VFS_PM_UNPAUSE must be requested");
+        assert_eq!(t.sent()[0].0, Endpoint::VFS);
+        assert_eq!(t.sent()[0].1.m_type, minix_types::VFS_PM_UNPAUSE);
+    }
+
     #[test]
     fn test_sig_proc_ignored() {
         let mut table = ProcTable::new();
@@ -931,6 +1171,7 @@ mod tests {
         }
     }
     impl crate::exit::KernelGateway for StopRecorder {
+        fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
         fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }

@@ -300,6 +300,55 @@ pub fn sys_times(
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_times })
 }
 
+/// C: SYS_SIGSEND 是内核调用 9（`kernel/src/syscall.rs` `Syscall::Sigsend`）。
+pub const SYS_SIGSEND_CALL: i32 = 9;
+
+/// C: `struct sigmsg`（`minix/type.h:71-77`，x86-64 布局 40 字节）——
+/// `sys_sigsend` 经 `m_sigcalls.sigctx` 指针指向调用方内存中的此结构，
+/// 内核 safecopy 取回后建立 sigframe 并唤醒目标进程。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SigMsgWire {
+    /// Signal number being caught. C: `int sm_signo`（offset 0）。
+    pub signo: u32,
+    /// Mask to restore when handler returns. C: `sigset_t sm_mask`（offset 8）。
+    pub mask: u64,
+    /// Handler address. C: `vir_bytes sm_sighandler`（offset 16）。
+    pub sighandler: u64,
+    /// `_sigreturn` trampoline in libc. C: `vir_bytes sm_sigreturn`（offset 24）。
+    pub sigreturn: u64,
+    /// User stack pointer at signal time. C: `vir_bytes sm_stkptr`（offset 32）。
+    pub stkptr: u64,
+}
+
+/// C: `sys_sigsend(proc_nr_e, smp)`（libsys `sys_sigsend.c:8-18`）——
+/// `_kernel_call(SYS_SIGSEND, &m)`：载荷 `m_sigcalls.endpt`（目标）+
+/// `m_sigcalls.sigctx`（调用方内存中 `sigmsg` 的虚地址，内核 safecopy
+/// 取回）。返回 EFAULT/ENOMEM = 进程内存装不下 handler（合法失败，
+/// 目标将被杀）；其它负 errno = PM/内核失配（调用方 panic，C 同型）。
+pub fn sys_sigsend(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+    sigmsg: &SigMsgWire,
+) -> Result<(), i32> {
+    let mut msg = Message {
+        m_type: SYS_SIGSEND_CALL,
+        ..Default::default()
+    };
+    {
+        // SAFETY: m_sigcalls 是 SIGSEND 的文档化载荷布局
+        //（kernel/src/syscall_signal.rs dispatch_sigsend 读 endpt/sigctx）。
+        let sc = unsafe { &mut msg.m_u.m_sigcalls };
+        sc.endpt = endpt;
+        sc.sigctx = sigmsg as *const SigMsgWire as u64;
+    }
+    let r = perform_kernel_call(transport, SYS_SIGSEND_CALL, &mut msg, |_| {});
+    if r < 0 {
+        return Err(r);
+    }
+    Ok(())
+}
+
 /// C: SYS_GETKSIG 是内核调用 7（`kernel/src/syscall.rs` `Syscall::Getksig`）。
 pub const SYS_GETKSIG_CALL: i32 = 7;
 /// C: SYS_ENDKSIG 是内核调用 8（`kernel/src/syscall.rs` `Syscall::Endksig`）。

@@ -99,6 +99,12 @@ pub trait KernelGateway {
     /// ——确认消费一个内核信号（清 SIG_PENDING）。调用方必须是目标
     /// 进程的信号管理器（否则 EPERM）。拉取循环的确认半边。
     fn end_ksig(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
+
+    /// C: `sys_sigsend(proc_nr_e, smp)`（libsys `sys_sigsend.c:8-18`）——
+    /// 内核按 `sigmsg` 建立 sigframe 并唤醒目标进程（被捕获信号的投递
+    /// 动作，signal.c:818）。EFAULT/ENOMEM = 进程内存装不下 handler
+    ///（合法失败）；其它负 errno = PM/内核失配（调用方 panic，C 同型）。
+    fn sys_sigsend(&mut self, ep: Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -235,6 +241,10 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
 
     fn end_ksig(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
         minix_sys::syscall::sys_endksig(&self.transport, ep.0, sig)
+    }
+
+    fn sys_sigsend(&mut self, ep: Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> {
+        minix_sys::syscall::sys_sigsend(&self.transport, ep.0, sigmsg)
     }
 }
 
@@ -890,6 +900,7 @@ mod tests {
         copied_bytes: Option<alloc::vec::Vec<u8>>,
     }
     impl KernelGateway for KillRecorder {
+        fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
         fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
