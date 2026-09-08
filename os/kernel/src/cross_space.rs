@@ -227,6 +227,7 @@ pub fn memset_vmcheck(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proc::ProcNr;
     use crate::syscall::KcallResult;
 
     /// Sanity: CrossSpaceResult variants are distinct.
@@ -310,4 +311,107 @@ mod tests {
     fn _ensure_kcall_result_import_used() {
         let _: Option<KcallResult> = None;
     }
+
+    // ── T-7: data_copy_vmcheck 行为矩阵（doc 24 §5.2 计划）──
+
+    /// L1 奇偶：C virtual_copy_vmcheck（memory.c:507-535）三态——OK /
+    /// EFAULT / VMSUSPEND。Rust 对应 Completed(Ok) / Completed(Err) /
+    /// Suspended。宿主可安全触发：零字节物理→物理 = Ok；closure 返 None =
+    /// UnknownEndpoint(Err)；未映射用户地址 = Suspended。
+    #[test]
+    fn test_data_copy_vmcheck_parity_with_c() {
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+
+        // OK 态：零字节物理→物理（无解析、无内存访问）。
+        let ok = data_copy_vmcheck(
+            &mut caller,
+            AddressRef::Physical(PhysBytes(0x2000)),
+            AddressRef::Physical(PhysBytes(0x3000)),
+            0,
+            |_| Some(PhysBytes(0)),
+        );
+        assert_eq!(ok, CrossSpaceResult::Completed(Ok(())));
+
+        // EFAULT 态：endpoint 无 cr3 → Completed(Err(UnknownEndpoint))。
+        let fault = data_copy_vmcheck(
+            &mut caller,
+            AddressRef::Process { endpoint: Endpoint(999), offset: VirBytes(0) },
+            AddressRef::Physical(PhysBytes(0)),
+            4,
+            |_| None,
+        );
+        assert!(matches!(fault, CrossSpaceResult::Completed(Err(_))));
+
+        // VMSUSPEND 态：未映射用户目标 → Suspended(Dst)。
+        let suspend = data_copy_vmcheck(
+            &mut caller,
+            AddressRef::Physical(PhysBytes(0)),
+            AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
+            4,
+            |_| Some(PhysBytes(0)),
+        );
+        assert!(matches!(suspend, CrossSpaceResult::Suspended(_)));
+    }
+
+    /// VMSUSPEND 副作用：caller.p_rts_flags 置 RTS_VMREQUEST 且
+    /// p_vm_suspend 就绪（C vm_suspend() proc.c:234-257 内联）。
+    #[test]
+    fn test_data_copy_vmcheck_sets_rts_vmrequest() {
+        use crate::proc::RtsFlagsBits;
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let r = data_copy_vmcheck(
+            &mut caller,
+            AddressRef::Physical(PhysBytes(0)),
+            AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
+            4,
+            |_| Some(PhysBytes(0)),
+        );
+        assert!(matches!(r, CrossSpaceResult::Suspended(_)));
+        assert!(caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
+            "挂起必须置 RTS_VMREQUEST");
+        assert!(caller.p_vm_suspend.is_some(), "挂起必须保存 VmSuspendContext");
+    }
+
+    /// VMSUSPEND 后 copy_context 保全：VmCopyContext(src, dst, bytes,
+    /// fault_type) + VmCheckParams{start, length, write_flag} 与故障面一致
+    /// （kernel_call_resume 重试依据）。
+    #[test]
+    fn test_data_copy_vmcheck_preserves_copy_context() {
+        use crate::proc::RtsFlagsBits;
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let r = data_copy_vmcheck(
+            &mut caller,
+            AddressRef::Physical(PhysBytes(0)),
+            AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
+            4,
+            |_| Some(PhysBytes(0)),
+        );
+        assert!(matches!(r, CrossSpaceResult::Suspended(VmFaultType::Dst)));
+        let ctx = caller.p_vm_suspend.as_ref()
+            .and_then(|s| s.copy_context.as_ref())
+            .expect("挂起必须携带 copy_context");
+        assert_eq!(ctx.bytes, 4);
+        assert!(matches!(ctx.fault_type, VmFaultType::Dst));
+        let params = &caller.p_vm_suspend.as_ref().unwrap().check_params;
+        assert_eq!(params.start.0, 0x1000, "check_params.start = 故障侧虚拟地址");
+        assert_eq!(params.length.0, 4);
+        assert!(params.write_flag, "Dst 故障 → write_flag = true");
+        let _ = RtsFlagsBits::VMREQUEST; // 引用避免未用告警（本测试聚焦上下文）
+    }
+
+    /// 边界：零字节拷贝返回 Completed(Ok)。注意与 C 的差异——解析先于
+    /// 字节数检查，故零字节仅在物理地址（免解析）上有确定语义。
+    #[test]
+    fn test_zero_byte_copy_returns_ok() {
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let r = data_copy_vmcheck(
+            &mut caller,
+            AddressRef::Physical(PhysBytes(0x2000)),
+            AddressRef::Physical(PhysBytes(0x3000)),
+            0,
+            |_| None,
+        );
+        assert_eq!(r, CrossSpaceResult::Completed(Ok(())));
+    }
 }
+

@@ -418,15 +418,20 @@ pub fn suspend_for_vm_with_copy(
 | `test_cross_space_result_match_exhaustive` | L2 | match 穷尽性（新增 variant 时编译失败） | — |
 | `test_vm_copy_context_construction` | L1 | VmCopyContext 保存 src/dst/bytes/fault_type | C: `p_vmrequest.params.check` |
 
-### 5.2 待补充测试（随 DEFERRED 项落地）
+### 5.2 待补充测试（随 DEFERRED 项落地）→ ✅ 全部补齐（2026-09-08，T-7）
 
-| 测试名 | 类型 | 覆盖点 |
-|--------|------|--------|
-| `test_data_copy_vmcheck_parity_with_c` | L1 | data_copy_vmcheck 与 C 行为对照（OK/Fault/Suspend） |
-| `test_data_copy_vmcheck_sets_rts_vmrequest` | L1 | VMSUSPEND 后 caller.p_rts_flags 含 VMREQUEST |
-| `test_data_copy_vmcheck_preserves_copy_context` | L1 | VMSUSPEND 后 caller.p_vm_suspend.copy_context 字段正确 |
-| `test_zero_byte_copy_returns_ok` | 边界 | 零字节拷贝返回 Completed(Ok) |
-| `test_self_replacement_at_dispatcher` | L1 | SELF → caller.p_endpoint 替换 |
+> 5 个测试全部落地（cross_space.rs 4 个 + syscall_copy.rs 1 个）。实现注记：奇偶测试的三态
+> 宿主触发路径 = 零字节物理→物理（Ok）/ closure 返 None（UnknownEndpoint→Err）/ 未映射用户
+> 地址（Suspended）；`data_copy_vmcheck` 的 src/dst 按值取 `AddressRef`（与 `cross_space_copy`
+> 取引用不同）；零字节语义注记——解析先于字节数检查，零字节仅在物理地址（免解析）上有确定 Ok。
+
+| 测试名 | 类型 | 覆盖点 | 状态 |
+|--------|------|--------|------|
+| `test_data_copy_vmcheck_parity_with_c` | L1 | 三态对照：Completed(Ok)/Completed(Err)/Suspended | ✅ cross_space.rs |
+| `test_data_copy_vmcheck_sets_rts_vmrequest` | L1 | VMSUSPEND 后 RTS_VMREQUEST + p_vm_suspend | ✅ cross_space.rs |
+| `test_data_copy_vmcheck_preserves_copy_context` | L1 | copy_context{bytes,fault_type} + check_params{start,length,write_flag} | ✅ cross_space.rs |
+| `test_zero_byte_copy_returns_ok` | 边界 | 零字节物理→物理 Completed(Ok) | ✅ cross_space.rs |
+| `test_self_replacement_at_dispatcher` | L1 | dst=SELF→EFAULT（替换生效）vs dst=未知→EINVAL（对照判据） | ✅ syscall_copy.rs |
 
 **已落地（从待补充移出）**：
 

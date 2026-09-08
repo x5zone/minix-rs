@@ -2378,4 +2378,49 @@ mod tests {
         let result = dispatch_vumap(&mut caller, &mut msg, &proc_table, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
+
+    #[test]
+    fn test_self_replacement_at_dispatcher() {
+        // C do_copy.c:64-65 — SELF → caller.p_endpoint 替换发生在 dispatcher 层。
+        // 判据：dst=SELF 时校验必须通过（走到拷贝层，CP_FLAG_TRY 下页失败 →
+        // EFAULT）；若无替换，endpoint_to_nr(SELF) 找不到 → EINVAL。
+        // 对照组：dst=非 SELF 且不在表中 → EINVAL（证明 EFAULT 判据有效）。
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        {
+            let p = proc_table.get_mut(ProcNr(0)).unwrap();
+            p.p_endpoint = Endpoint(100);
+            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        }
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+
+        // dst=SELF：替换后校验通过，未映射用户地址在 TRY 模式下 EFAULT。
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Vircopy as i32;
+        // SAFETY: m_type 已设置；测试侧 union 写。
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE; // 物理源
+            msg.m_u.m_lsys_krn_sys_copy.src_addr = 0x2000;
+            msg.m_u.m_lsys_krn_sys_copy.dst_endpt = SELF;
+            msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0x1000; // 未映射
+            msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 4;
+            msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
+        }
+        let r = dispatch_vircopy(&mut caller, &msg, &proc_table);
+        assert_eq!(r, KcallResult::Ok(EFAULT),
+            "SELF 已替换为 caller endpoint（校验通过 → TRY 拷贝页失败 → EFAULT）");
+
+        // 对照：dst=777（非 SELF 且不在表）→ EINVAL。
+        let mut msg2 = Message::default();
+        msg2.m_type = Syscall::Vircopy as i32;
+        unsafe {
+            msg2.m_u.m_lsys_krn_sys_copy.src_endpt = NONE;
+            msg2.m_u.m_lsys_krn_sys_copy.dst_endpt = 777;
+            msg2.m_u.m_lsys_krn_sys_copy.dst_addr = 0x1000;
+            msg2.m_u.m_lsys_krn_sys_copy.nr_bytes = 4;
+            msg2.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
+        }
+        let r2 = dispatch_vircopy(&mut caller, &msg2, &proc_table);
+        assert_eq!(r2, KcallResult::Ok(EINVAL),
+            "非 SELF 的未知 endpoint 直接 EINVAL（对照判据）");
+    }
 }
