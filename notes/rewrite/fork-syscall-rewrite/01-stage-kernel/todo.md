@@ -668,11 +668,11 @@ Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（�
 
 | # | 条目 | 文档出处 | 说明 |
 |---|------|---------|------|
-| I-1 | kernel 独立 ELF 构建（build.rs + link.ld 链接为独立 ELF binary） | 02 §4 + 01 §5.2 | 三架构 link.ld 已就绪，构建系统未接入；当前 rlib 测试路径是合理简化，生产路径后续工作 |
+| I-1 | kernel 独立 ELF 构建（build.rs + link.ld 链接为独立 ELF binary） | 02 §4 + 01 §5.2 | **⏸ 诚实 DEFERRED（2026-09-09）**：三架构 link.ld 确认就绪（os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld）；但 artifact 无引导路径——`KernelLoadResult.entry_point`（boot-shim/src/loader.rs:66）在 loader.rs 之外**零消费者**，boot-shim→kernel.elf 的最终跳转未设计（入口 ABI：e_entry 处接收什么参数/寄存器态，无任何代码或文档定义）。解除前置：(a) 入口交接 ABI 设计（boot-shim → e_entry 传 KernelInfo 指针 or 引导结构）；(b) boot-shim 终局跳转实现（per-arch 页表切换+跳转，S-4/S-8 相邻）；(c) kernel bin 目标 + build.rs（测试内核已有成熟先例：hello-boot-riscv64/build.rs `cargo:rustc-link-arg=-T`）。(c) 单独实现 = 不可引导的 artifact（frame.rs「无消费者抽象不建」先例） |
 | I-2 | `release[]`/`version[]` 未实现 | 01 §2 | 保持 DEFERRED。已核实（2026-08-14）：C 侧仅 main.c:432-433 赋值且无消费方（banner 直打 OS_RELEASE，main.c:344）；Rust 侧无消费方（KernelInfo 无此字段；banner 硬编码 lib.rs:1831；MINIX_KERNINFO IPC 未实现 ipc.rs:1335）→ 待 MINIX_KERNINFO 落地时实现。**→ 移交 edge_todo.md `E-KERNINFO`（2026-09-07）**：真实消费方是用户态进程（kerninfo 共享的接收侧），且共享契约面在 minix-types/minix-sys，符合 edge 判定①③；kernel 侧现状 ipc.rs:1775 自注 "not yet implemented"、ipc.rs:2061 测试钉住 `IpcCall::from_raw(6) == None` |
-| I-3 | riscv64 QEMU `-kernel` 场景未完成 ELF 装载 + 高半核切换（临时妥协） | 01 §5 + §4.5 TODO | 生产路径三架构统一高半核；测试场景暴露的临时妥协 |
+| I-3 | riscv64 QEMU `-kernel` 场景未完成 ELF 装载 + 高半核切换（临时妥协） | 01 §5 + §4.5 TODO | **✅ 核实闭合（2026-09-09）——妥协已被后续工作消解**：全量 QEMU 跑批（T-5）7 个 riscv64 测试全 PASS，其中 test-higher-half-riscv64（HighHalf trait 切换：栈/PC 切高半核→kmain）与 test-kernel-map-riscv64（高半核映射数据正确）正是本项能力验证；opensbi_helpers.rs 已重写（DTB 平台发现 + higher-half-from-first-instruction 设计注，原 L193-244 审计文本不复存在）。01 §5:959 的 TODO 为过时声称（Pattern #70）。「更真实的生产链路（U-Boot fatload）」志向归 T-10 DEFERRED 承接 |
 | I-4 | 01 §5 ↔ 02 §5.1 测试对照表跨文档去重 | 01 §5 TODO [P2] | **✅ 已解决（2026-08-14）**：02 §5.1 测试归属声明已落地（L901，"hello-boot 等四类归 01 §5.2，本节仅 test-higher-half，合计 15/15"）+ 01 交叉引用（L1689）；01 残留 TODO 标记已清理为已解决注 |
-| I-5 | ACPI RSDP 搜索与表解析 | 05 §3 | QEMU virt 暂不依赖；支持物理机时需实现 |
+| I-5 | ACPI RSDP 搜索与表解析 | 05 §3 | **⏸ 诚实 DEFERRED（2026-09-09，维持原判断并具体化）**：三家族 QEMU virt 平台均不依赖 ACPI——平台发现走 KernelInfo（boot-shim 构造）+ DTB（riscv64 唯一源，opensbi_helpers.rs DTB source；x86_64/aarch64 由 boot-shim 传 memmap/topology），内核无 RSDP 消费方。常量骨架在位（arch/src/acpi.rs MADT_TYPE_GICC/GICD 等）。解除条件：物理机 x86_64 支持（真实 MADT/HPET/ACPI 表消费方出现）时实现 RSDP 搜索（EBDA + 0xE0000-0xFFFFF 扫描） |
 | I-6 | `bill_ptr` 完整联动 | 11 §4 [已知缺口] | 保持 DEFERRED。已复核（2026-08-14）：调度循环仍为 placeholder（lib.rs:2187-2189 `loop { spin_loop() }`），bill_ptr 调度期联动确未接线 |
 | I-7 | `MF_REPLY_PEND` typestate 演进评估 | 12 §3.11 TODO | 当前保留标志位（决策已定），未来评估 typestate（`SendRec<Sending> → SendRec<Receiving>`） |
 | I-8 | errno newtype（模式 16 裸整数） | 13 §6.5 [P2] | **与 §D1 同项**（架构建议），doc 13 独立提出 |
@@ -2875,7 +2875,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 7 — 文档与构建收尾**
 - ✅ I-14 [P1] 启动主线文档 06/08/09/10/16 范围声明错位修复（按预登记 A/B/C 修复层裁决）→ **B 层完成（2026-09-09）：09/16 前置声明对齐实时序；06/08/10 三项核销确认（先期重写已消解，rg 实证）；08 T8/T9 映射表消解；C 层不做（风险>收益）。详见 §7.4.1 解决记录**
-- ⬜ I-1 kernel 独立 ELF 构建接入（build.rs + link.ld → xtask）
-- ⬜ I-3 riscv64 QEMU `-kernel` ELF 装载 + 高半核切换补全
-- ⬜ I-5 ACPI RSDP 搜索与表解析（QEMU virt 不依赖 → 实现或诚实 DEFERRED 论证）
+- ⏸ I-1 kernel 独立 ELF 构建接入（build.rs + link.ld → xtask）→ **诚实 DEFERRED（2026-09-09）：artifact 无引导路径（KernelLoadResult.entry_point 零消费者，boot-shim 终局跳转未设计）；解除前置 = 入口 ABI 设计 + boot-shim 跳转实现（S-4/S-8 相邻）+ bin 目标；详见 §7.4 I-1 行**
+- ✅ I-3 riscv64 QEMU `-kernel` ELF 装载 + 高半核切换补全 → **核实闭合（2026-09-09）：妥协已被消解——全量 QEMU 跑批 7 个 riscv64 测试全 PASS（test-higher-half-riscv64 = HighHalf 切换、test-kernel-map-riscv64 = 高半核映射数据）；opensbi_helpers 已重写（DTB + higher-half 首指令设计）。U-Boot 生产链志向归 T-10 DEFERRED**
+- ⏸ I-5 ACPI RSDP 搜索与表解析（QEMU virt 不依赖 → 实现或诚实 DEFERRED 论证）→ **诚实 DEFERRED（2026-09-09）：三家族 QEMU virt 均无 RSDP 消费方（平台发现走 KernelInfo + DTB）；MADT 常量骨架在位；解除条件 = 物理机 x86_64 支持（真实 ACPI 表消费方）**
 - ⬜ 终局 sweep：全 workspace `cargo test` + run_all.sh 全阶梯 + 8 公共门终检 + 本节与 §7.1/§0.1 状态对齐封存
