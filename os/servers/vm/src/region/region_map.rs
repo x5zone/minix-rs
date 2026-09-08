@@ -89,16 +89,27 @@ impl RegionMap {
         self.regions.get_mut(&key)
     }
 
+    /// Find the first region overlapping `[start, end)`.
+    ///
+    /// V12-P2-9: a vaddr-keyed BTreeMap only needs two probes for this —
+    /// the predecessor (whose extent may reach past `start`) and the
+    /// entries starting inside `[start, end)`. The former front-to-back
+    /// scan walked the whole map before reaching the relevant keys
+    /// (O(n); the "two nearest neighbors" claim on `insert` was untrue).
     pub(crate) fn find_overlap(&self, start: VirBytes, end: VirBytes) -> Option<&VirRegion> {
-        for (_, r) in self.regions.range(..end) {
-            if r.overlaps(start, end) {
+        // Predecessor: the region at or before `start` may straddle it.
+        if let Some((_, r)) = self.regions.range(..=start).next_back()
+            && r.overlaps(start, end) {
                 return Some(r);
             }
-            if r.vaddr >= end {
-                break;
-            }
-        }
-        None
+        // Regions starting inside the query range (each entry with
+        // `vaddr < end` that follows `start` overlaps by construction —
+        // its vaddr lies in [start, end)).
+        self.regions
+            .range(start..end)
+            .next()
+            .filter(|(_, r)| r.overlaps(start, end))
+            .map(|(_, r)| r)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -172,13 +183,21 @@ impl RegionMap {
     /// Returns `Err(region)` if the new region overlaps an existing region.
     /// The caller is responsible for handling the overlap (e.g., unmapping
     /// the overlapping range first, as MAP_FIXED does).
-    /// If the region's start address already exists, returns the old region
-    /// via `Option<VirRegion>` (BTreeMap replacement semantics).
+    ///
+    /// V12-P2-9: zero-length regions are rejected (`Err`) as well. A
+    /// zero-length region overlaps nothing (its span is empty), so the old
+    /// guard passed it through to `BTreeMap::insert`, which silently
+    /// REPLACED an existing region at the same vaddr — an unrequested
+    /// destroy on a mere validation slip.
     pub(crate) fn insert(&mut self, region: VirRegion) -> Result<Option<VirRegion>, VirRegion> {
+        if region.length.0 == 0 {
+            return Err(region);
+        }
         let end = region.end_addr();
-        // Check for overlap with any existing region. BTreeMap is sorted by vaddr,
-        // so we only need to check the two nearest neighbors.
-        if let Some(_existing) = self.find_overlap(region.vaddr, end) {
+        // Check for overlap with any existing region. BTreeMap is sorted by
+        // vaddr, so `find_overlap` only needs the two nearest neighbors
+        // (see its doc comment).
+        if self.find_overlap(region.vaddr, end).is_some() {
             return Err(region);
         }
         Ok(self.regions.insert(region.vaddr, region))
@@ -275,6 +294,49 @@ mod tests {
         assert_eq!(overlap.unwrap().vaddr, VirBytes(0x1000));
 
         assert!(map.find_overlap(VirBytes(0x5000), VirBytes(0x6000)).is_none());
+    }
+
+    /// V12-P2-9: the overlap probe must find a STRADDLING predecessor
+    /// without walking the map from the front — here the answer sits at
+    /// the highest key, so a front-to-back scan is distinguishable from
+    /// the neighbor probe by work done, and correctness is asserted by
+    /// ordering many regions before the straddler.
+    #[test]
+    fn test_find_overlap_predecessor_straddle() {
+        let mut map = RegionMap::new();
+        // Eight unrelated low regions, then a high straddler.
+        for i in 0..8u64 {
+            insert_unwrap(&mut map, make_region(0x1000 + i * 0x1000, 0x1000));
+        }
+        insert_unwrap(&mut map, make_region(0x100_0000, 0x1_0000));
+
+        // Query starts inside the straddler's span [0x100_0000, 0x101_0000),
+        // ends past it.
+        let overlap = map.find_overlap(VirBytes(0x100_8000), VirBytes(0x102_0000));
+        assert!(overlap.is_some());
+        assert_eq!(overlap.unwrap().vaddr, VirBytes(0x100_0000));
+
+        // A query strictly between the low cluster and the straddler
+        // must still find nothing.
+        assert!(map.find_overlap(VirBytes(0x9000), VirBytes(0xF_0000)).is_none());
+    }
+
+    /// V12-P2-9: zero-length regions are rejected on insert — the old path
+    /// let them slip past the overlap guard (an empty span overlaps
+    /// nothing) into `BTreeMap::insert`, which silently REPLACED the
+    /// region already living at that vaddr.
+    #[test]
+    fn test_insert_zero_length_rejected() {
+        let mut map = RegionMap::new();
+        let original = make_region(0x1000, 0x2000);
+        insert_unwrap(&mut map, original);
+
+        let zero = make_region(0x1000, 0);
+        assert!(map.insert(zero).is_err(), "zero-length insert must be refused");
+
+        // The pre-existing region survived untouched.
+        let kept = map.find_overlap(VirBytes(0x1000), VirBytes(0x3000)).unwrap();
+        assert_eq!(kept.length, VirBytes(0x2000));
     }
 
     #[test]
