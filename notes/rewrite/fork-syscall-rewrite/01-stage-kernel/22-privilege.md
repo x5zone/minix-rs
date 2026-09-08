@@ -596,7 +596,7 @@ Rust 在 D-49 之前的实现正是踩在这个坑里：`update_from_request` �
 
 ### syscall.rs `dispatch_privctl` 测试（Phase 6, 2026-08-13）
 
-> Rust 实现: os/kernel/src/syscall.rs:2748-2995 — 9 个测试覆盖 5 个原有子命令 + 4 个 Phase 6 新落地子命令的边界路径。
+> Rust 实现: os/kernel/src/syscall.rs:3056-3370 — 9 个测试覆盖 5 个原有子命令 + 4 个 Phase 6 新落地子命令的边界路径。
 
 | 测试函数 | 验证行为 | 对应 C 符号 |
 |---------|---------|------------|

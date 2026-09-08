@@ -274,7 +274,7 @@ idle 的每一步都有明确目的：
 | 信号路由落点（SIGTRAP/SIGSEGV） | 循环体内直接 `cause_signal`（C 位置） vs 返回路由枚举给 `switch_to_user` vs 塞进 `ipc::delivermsg` | **循环体内直接路由**（proc_table.rs，D-43/D-45，2026-09-05） | `cause_signal` 签名就是 `&mut ProcessTable`，`sig_delay_done` 已证明 `&mut self` 方法内可传 `self`；方案 2 的返回值路线终点与方案 1 相同（都是回 Stage 2 重选），却要改返回类型和全部调用点；方案 3 会倒退 FIX-20 的提取契约（`delivermsg` 刻意只持 `&mut KProcess` + `&dyn UserCopy`，无表访问）。详见 §3.3 |
 | restore 的抽象 | 直接内联汇编 vs trait | **`TrapReturnArch` trait**（trap_return.rs:72） | 与 `TrapEntryArch`（进入路径）对称，构成"进入/返回"一对抽象；OS 层只依赖 trait，架构差异（iretq/eret/sret）完全下沉到 arch crate |
 | TrapReturnArch 的 Frame 来源 | 借用 `ExceptionArch::Frame` vs 独立关联类型 | **独立关联类型** | 借用式会强迫 mock 实现补齐 ExceptionArch 的 8 个无关方法；x86-64 实现直接复用 `X86_64ExceptionFrame`，实践中无重复 |
-| 地址空间切换 | 新增 `Paging::switch_root` vs 复用 `TlbArch::set_active_root` | **复用**（tlb_arch.rs:135） | 该方法已为 VMCTL_SETADDRSPACE 而生（dispatch_vmctl 调用，syscall.rs:2036-2043）；调度器增加第二个调用方不构成"新抽象"的理由，新增 trait 反而制造单方法冗余 |
+| 地址空间切换 | 新增 `Paging::switch_root` vs 复用 `TlbArch::set_active_root` | **复用**（tlb_arch.rs:135） | 该方法已为 VMCTL_SETADDRSPACE 而生（dispatch_vmctl 调用，syscall.rs:2411-2415）；调度器增加第二个调用方不构成"新抽象"的理由，新增 trait 反而制造单方法冗余 |
 | CR3 相等比较 | 读硬件寄存器（C 做法） vs 软件镜像 | **软件镜像 `CURRENT_ROOT_PHYS`**（lib.rs:2265） | trait 边界内没有"读 CR3"的开口（`TlbArch` 只提供写入）；镜像由 `set_active_root_tracked`（lib.rs:2324）在每次硬件写入后同步更新，语义等价且便于测试 |
 | gotos | 保留标号语义 vs 循环重构 | **外层 loop + continue** | 两个 `goto not_runnable_pick_new` 都是从循环体深处跳回"重新选进程"，与 `continue` 语义精确对应；标号在 Rust 中表达为循环边界，控制流等价且无 unsafe |
 | idle 的停机原语 | 复用 `SmpArch::halt_cpu` vs 新增 `idle_halt` | **新增 `idle_halt`**（arch/smp.rs:84） | 语义不同：`halt_cpu` 服务于 IPI 停机（中断上下文，IF 已由入口路径管理），`idle_halt` 是"先开中断再停机"（klib.S:407-414 的 `sti; hlt`）——x86 上顺序错了就永远睡死，不能共用 |

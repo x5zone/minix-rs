@@ -303,8 +303,8 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 
 | 调用 | 原 DEFERRED 项 | 现状态 | 实现位置 |
 |------|---------------|--------|---------|
-| `SYS_TRACE` | 内存读写（`COPYFROMPROC/COPYTOPROC`） | ✅ 已实现（`data_copy_vmcheck` + VMSUSPEND 恢复） | misc.rs:1239-1571 |
-| `SYS_TRACE` | `T_GETUSER`/`T_SETUSER` 字段访问 | ✅ 已实现（快照 + `write_user_register`） | misc.rs:1447-1571 |
+| `SYS_TRACE` | 内存读写（`COPYFROMPROC/COPYTOPROC`） | ✅ 已实现（`data_copy_vmcheck` + VMSUSPEND 恢复） | misc.rs:1378-1753 |
+| `SYS_TRACE` | `T_GETUSER`/`T_SETUSER` 字段访问 | ✅ 已实现（快照 + `write_user_register`） | misc.rs:1666-1753 |
 | `SYS_UPDATE` | 槽位交换体（swap/adjust/指针更新） | ✅ 已实现（`swap_slots`/`adjust_*_slot`/ptproc+memreq no-op） | misc.rs:1572-1836 |
 | `SYS_SPROF` | 采样时钟初始化 | ✅ 已实现（`init_profile_clock`/`stop_profile_clock`，PROF_RTC） | misc.rs:2041/2065 |
 | `SYS_SPROF` | STOP 数据搬运 | ✅ 已实现（`data_copy_vmcheck` 拷 sprof_info + 采样缓冲区） | misc.rs:2107-2169 |
@@ -332,7 +332,7 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 - `T_GETUSER`/`T_SETUSER` 的对齐检查是 C 显式前置检查（`do_trace.c:106`/`137`），独立于字段访问，可单独实现并测试。
 - 内存读写 `T_GETINS` 等的 `COPYFROMPROC`/`COPYTOPROC` 是字节级 `virtual_copy`，无对齐要求。Rust 通过 `data_copy_vmcheck` 实现相同语义（Direct Map + PTE walk），并额外支持 VMSUSPEND（C 的 `virtual_copy` 在页未映射时返回 EFAULT；`data_copy_vmcheck` 请求 VM 处理页缺失后重试）。
 
-> design.md §D5 ↔ misc.rs:1239-1571（`dispatch_trace` 全函数）
+> design.md §D5 ↔ misc.rs:1378-1753（`dispatch_trace` 全函数）
 
 ### 3.6 D6: GET_WHOAMI 直接写 reply message
 
@@ -443,7 +443,7 @@ pub fn dispatch_getinfo(
 ) -> KcallResult
 ```
 
-> design.md §D6/D7/D9 ↔ misc.rs:721-1170（`dispatch_getinfo` 全函数）+ misc.rs:268（`msg_getinfo`）
+> design.md §D6/D7/D9 ↔ misc.rs:766-1309（`dispatch_getinfo` 全函数）+ misc.rs:270（`msg_getinfo`）
 
 **分派逻辑**：
 - `WhoAmI`：直接写 `m_krn_lsys_sys_getwhoami` reply（D6，misc.rs:726）
@@ -460,8 +460,8 @@ pub fn dispatch_getinfo(
 - `IrqActids`：`IRQ_MANAGER.actids` 快照（`try_irq_manager()` 未初始化时 `EINVAL`，misc.rs:1010）
 - `IdleTsc`：读 IDLE 槽位 `p_cycles.total`（SMP 求和待多 CPU 接线，misc.rs:1040）
 - `Image`：`build_boot_image` 按 C table.c 的 boot image 顺序构造 `BootImageStruct[NR_BOOT_PROCS]`（17 项，对齐 C 的 `sizeof(struct boot_image) * NR_BOOT_PROCS`）：内核 task 在 `image[0..NR_TASKS]`（start_addr/len=0），模块 i 在 `image[NR_TASKS+i]` 取 `BOOT_MODULE_PROC_NRS[i]` 的 C proc 号，endpoint/name 来自进程表槽位、start_addr/len 来自 multiboot 模块（misc.rs:666）
-- `Randomness`：✅ 完整实现（`misc.rs:1056-1073`）—— 快照整个 `KRandomness`（2184 字节）后 `wipe_all()` 清零所有 bin，再 `copy_struct_to_caller` 拷贝快照到用户空间。`try_krandom()` 返回 `None` 时返回 `EINVAL`（boot 未完成）
-- `RandomnessBin`：✅ 完整实现（`misc.rs:1074-1102`）—— 验证 `0 ≤ bin < RANDOM_SOURCES(16)` → `EINVAL`；`r_size < RANDOM_ELEMENTS` 时返回 `ENOENT`（bin 未满）；快照单 bin 后 `wipe_bin(bin_idx)` 清零，再 `copy_struct_to_caller` 拷贝
+- `Randomness`：✅ 完整实现（`misc.rs:1192-1202`）—— 快照整个 `KRandomness`（2184 字节）后 `wipe_all()` 清零所有 bin，再 `copy_struct_to_caller` 拷贝快照到用户空间。`try_krandom()` 返回 `None` 时返回 `EINVAL`（boot 未完成）
+- `RandomnessBin`：✅ 完整实现（`misc.rs:1210-1234`）—— 验证 `0 ≤ bin < RANDOM_SOURCES(16)` → `EINVAL`；`r_size < RANDOM_ELEMENTS` 时返回 `ENOENT`（bin 未满）；快照单 bin 后 `wipe_bin(bin_idx)` 清零，再 `copy_struct_to_caller` 拷贝
 - `MonParams`：`KernelInfo.param_buf` 为空 → `EINVAL`（P9-1，misc.rs:1150）
 
 **`copy_struct_to_caller<T>` 通用 helper**（misc.rs:624）：封装 `GET_*` 子请求共有的"E2BIG 检查 + `data_copy_vmcheck` 从内核栈拷到用户空间"模式。`dispatch_getinfo` 现接收 `clock_state: &ClockState` 参数（与 `dispatch_setalarm` 对齐），供 `Hz`/`LoadInfo` 读取时钟状态。
@@ -479,7 +479,7 @@ pub fn dispatch_trace(
 ) -> KcallResult
 ```
 
-> design.md §D3/D5/D9 ↔ misc.rs:1239-1571
+> design.md §D3/D5/D9 ↔ misc.rs:1378-1753
 
 **前置验证**（对齐 C do_trace.c:83-87）：
 1. `TraceRequest::try_from(request)` → `EINVAL`
@@ -594,8 +594,8 @@ pub fn dispatch_profile(
 | `krandom` 全局 | kernel/glo.h | `KRANDOM: SyncUnsafeCell<KRandomness>` | BKL 保护，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式 |
 | `krandom_init()` | main.c:48-49（`krandom.random_sources`/`random_elements` 直接赋值，**无此函数**） | `krandom::init()`（`lib.rs:387` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
 | `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | ✅ 已实现 read_tsc 采样（D-33，2026-09-06；**[ARCH: deviation]** C i386/earm 为空体） |
-| `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1056-1073） | 快照 + `wipe_all` + 拷贝 |
-| `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1074-1102） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
+| `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1192-1202） | 快照 + `wipe_all` + 拷贝 |
+| `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1210-1234） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
 
 **设计决策**（krandom.rs 文件头 D1-D4）：
 
@@ -607,7 +607,7 @@ pub fn dispatch_profile(
 **dispatch_getinfo 接入点**：
 
 ```rust
-// misc.rs:1056-1073 — GET_RANDOMNESS
+// misc.rs:1192-1202 — GET_RANDOMNESS
 GetInfoRequest::Randomness => {
     // C: do_getinfo.c:148-160 — copy entire krandom struct, then wipe all bins.
     // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
@@ -618,7 +618,7 @@ GetInfoRequest::Randomness => {
     return copy_struct_to_caller(caller, &krandom_snapshot, val_ptr, val_len);
 }
 
-// misc.rs:1074-1102 — GET_RANDOMNESS_BIN
+// misc.rs:1210-1234 — GET_RANDOMNESS_BIN
 GetInfoRequest::RandomnessBin => {
     let bin = val_len2_e;
     if bin < 0 || bin >= crate::krandom::RANDOM_SOURCES as i32 {
@@ -769,8 +769,8 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | ~~GETINFO GET_PROC/GET_PROCTAB~~ | do_getinfo.c:GET_PROC/PROCTAB | ✅ 已实现: `ProcInfoStruct` 快照（misc.rs:784/754，ProcTab 分块拷贝避免 27KB 栈缓冲） | — |
 | ~~GETINFO GET_PRIV/GET_PRIVTAB~~ | do_getinfo.c:GET_PRIV/PRIVTAB | ✅ 已实现: `PrivInfoStruct` 快照（misc.rs:893/791） | — |
 | ~~GETINFO GET_REGS~~ | do_getinfo.c:GET_REGS | ✅ 已实现: cpu_context 物理地址直拷（misc.rs:915） | — |
-| ~~GETINFO GET_RANDOMNESS~~ | do_getinfo.c:148-160 | ✅ 已实现（`misc.rs:1056-1073`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
-| ~~GETINFO GET_RANDOMNESS_BIN~~ | do_getinfo.c:161-178 | ✅ 已实现（`misc.rs:1074-1102`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
+| ~~GETINFO GET_RANDOMNESS~~ | do_getinfo.c:148-160 | ✅ 已实现（`misc.rs:1192-1202`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
+| ~~GETINFO GET_RANDOMNESS_BIN~~ | do_getinfo.c:161-178 | ✅ 已实现（`misc.rs:1210-1234`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
 | ~~GETINFO IMAGE/IRQHOOKS/IRQACTIDS/IDLETSC~~ | do_getinfo.c 各 case | ✅ 已实现: boot modules + IrqManager 快照 + IDLE 槽位（misc.rs:1135/1103/1010/1040） | — |
 | GETINFO MONPARAMS | do_getinfo.c:143-146 | ⚠️ `KernelInfo.param_buf` 字段存在但 boot-shim 填充为空切片 → `EINVAL`（P9-1，misc.rs:1150） | boot-shim 接入 UEFI load options |
 | ~~TRACE 跨地址空间拷贝~~ | do_trace.c COPYFROMPROC/COPYTOPROC | ✅ 已实现: `data_copy_vmcheck` | — |

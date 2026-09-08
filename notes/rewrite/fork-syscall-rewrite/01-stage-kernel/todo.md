@@ -294,6 +294,28 @@ bkl_acquire_for_test。同批落地本条建议的 `debug_assert!(bkl_is_locked(
 这是工程优化不是正确性修复——进入本轮 backlog，按文档（doc 29/30/32 对应章节）同步更新。
 **方法学教训**：大函数统计必须按顶层 fn 边界精测（本审查首次粗筛 14 项仅 5 项属实）。
 
+**解决记录（2026-09-08）**：方案 A 落地——每臂 verbatim 提取为语义 helper（dispatcher 变薄 match，
+helper 体逐字保留含 C 锚点注释），4 函数全部低于 250 行；statectl 复测仅 62 行（D-7/IPC filter 重构
+时已瘦身）不再 qualify。行数变化（顶层 fn 边界精测）：
+- `dispatch_getinfo` misc.rs:766（468→35 行）→ 18 个 `getinfo_*` helper（WhoAmI/…/MonParams，misc.rs:802-1309）
+- `dispatch_privctl` syscall.rs:1301（446→111 行）→ 10 个 `privctl_*` 子命令 helper（allow/disallow/yield/
+  query_mem/set_user/set_sys/add_io/add_mem/add_irq/update_sys，syscall.rs:1390-1746）
+- `dispatch_vmctl` syscall.rs:2027（349→157 行）→ 7 个 `vmctl_*` helper + 5 个小臂 inline
+  （FlushTlb/InvlPg/ClearMapCache/GetPdbr/KernPhysMap；syscall.rs:2185-2436）
+- `dispatch_trace` misc.rs:1378（294→139 行）→ 6 个 `trace_*` helper + 5 个纯标志位小臂 inline
+  （Stop/Detach/Resume/Step/Syscall；misc.rs:1518-1753）
+- 行为保持论证：helper 体 verbatim；vmctl 原尾部 `VmCtlResult`→`KcallResult` 映射经逐臂验证只可能命中
+  `Ok(v)→Ok(v)`（无任何臂产 VmSuspend/BadParam），子 handler 直接返回 KcallResult 值恒等；
+  `TRACE_WORD_SIZE`/`WORD_MASK` 常量提升为模块级 `TRACE_WORD_SIZE`/`TRACE_WORD_MASK`（值不变）
+- 行为契约验证（Gate B 等价）：`cargo test -p minix-kernel` 693+2 passed 全绿——含 privctl 10 测试、
+  trace 12 测试、getinfo/trace try_from 2 测试等直接覆盖四个 dispatcher 的行为契约；clippy 零新警告
+- 文档同步（我方 splice 引发的行号位移，46 处锚点逐一实测更新）：doc 25（14 处，getinfo/trace 区间）、
+  doc 09（5 处，vmctl 位置）、doc 10（1 处，SetAddrSpace Step 3）、doc 13（20 处，kernel_call_finish/
+  resume + 测试表）、doc 22（1 处，privctl 测试区间）、doc 32（5 处，dispatch_diagctl）
+- 既有漂移记录不修：doc 20:246/340/343 的 `syscall.rs:1606-1623`（dispatch_irqctl）在本项改动前已与
+  现实错位（该函数已不在 old-privctl 区间内），属 C1 之前的历史漂移；doc 13:918 的
+  `syscall.rs:2540-2542 EBADREQUEST 裸常量` 已随 D1 errno 整合迁至 minix-types errno.rs:127，声称过时
+
 ## 3. 错误处理统一建议
 
 ### D1. errno newtype 化 [P1, 设计决策]
@@ -2781,7 +2803,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ G1 [P1] ProcNr 双定义上移 minix-types → **newtype + impl 迁至 `types/proc_nr.rs`（含 5 单元测试），arch 删 `= i32` 别名改 `pub use`，kernel re-export（~600 使用点零 diff），边界拆包 3 处归零 + arch 21 处测试点包 newtype；types 189 / arch 220 / kernel 693+2 全绿（2026-09-08，详见 §5 G1 解决记录）**
 - ✅ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch` → **落地为全关联类型组合（17 族覆盖全部 20 个 Current* 别名；supertrait 形式因 Paging 句柄语义不可实现，见 §5 解决记录）+ `CurrentArch` 单点 cfg 锚点 + MockArch 矩阵镜像；TypeId 逐族 pin 测试 3 个；四条真实 target 编译路径零错误；不做调用点迁移（OQ 并存裁决）（2026-09-08）**
 - ✅ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）→ **核实闭合：前提过时（CTOS）——PageFlags 语义位图（paging.rs:28）+ 三架构私有翻译层 + kernel 全消费点语义化早已落地，目标已达成；关联常量形式经反查被否决（弱于现状的封装强度），详见 §5 解决记录（2026-09-08）**
-- ⬜ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分
+- ✅ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分 → **4 函数落地（getinfo 468→35 / privctl 446→111 / vmctl 349→157 / trace 294→139；statectl 复测 62 行已不 qualify）——每臂 verbatim 提取 helper + C 锚点注释保留；693+2 测试全绿 + 46 处文档行号锚点同步（6 个 doc）；详见 §2 C1 解决记录（2026-09-08）**
 - ⬜ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）
 
 **Phase 5 — 主线后功能缺口**

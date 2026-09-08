@@ -777,459 +777,535 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
     };
 
     match req {
-        GetInfoRequest::WhoAmI => {
-            // C: do_getinfo.c:132-141 — GET_WHOAMI
-            // This is special: it writes directly into the reply message,
-            // no data_copy_vmcheck needed.
-            let (privflags, initflags) = caller.priv_id
-                .and_then(|pid| priv_table.get(pid))
-                // C: do_getinfo.c:139 — `privflags = priv(caller)->s_flags` (u16
-                // wire width); to_wire strips the kernel-only extension bits.
-                .map(|priv_| (priv_.flags.s_flags.to_wire() as i32, priv_.init.s_init_flags))
-                .unwrap_or((0, 0));
+        GetInfoRequest::WhoAmI => getinfo_whoami(caller, msg, priv_table),
+        GetInfoRequest::KInfo => getinfo_kinfo(msg),
+        GetInfoRequest::Proc => getinfo_proc(caller, proc_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::ProcTab => getinfo_proc_tab(caller, proc_table, val_ptr, val_len),
+        GetInfoRequest::PrivTab => getinfo_priv_tab(caller, priv_table, val_ptr, val_len),
+        GetInfoRequest::LoadInfo => getinfo_load_info(caller, clock_state, val_ptr, val_len),
+        GetInfoRequest::Priv => getinfo_priv(caller, proc_table, priv_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::Regs => getinfo_regs(caller, proc_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::CpuTicks => getinfo_cpu_ticks(caller, val_len2_e, val_ptr, val_len),
+        GetInfoRequest::Hz => getinfo_hz(caller, clock_state, val_ptr, val_len),
+        GetInfoRequest::Machine => getinfo_machine(caller, val_ptr, val_len),
+        GetInfoRequest::CpuInfo => getinfo_cpu_info(caller, val_ptr, val_len),
+        GetInfoRequest::IrqActids => getinfo_irq_actids(caller, val_ptr, val_len),
+        GetInfoRequest::IdleTsc => getinfo_idle_tsc(caller, proc_table, val_ptr, val_len),
+        GetInfoRequest::Randomness => getinfo_randomness(caller, val_ptr, val_len),
+        GetInfoRequest::RandomnessBin => getinfo_randomness_bin(caller, val_len2_e, val_ptr, val_len),
+        GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller, val_ptr, val_len),
+        GetInfoRequest::Image => getinfo_image(caller, proc_table, val_ptr, val_len),
+        GetInfoRequest::MonParams => getinfo_mon_params(),
+    }
+}
 
-            let mut name_buf = [0u8; 44];
-            let src_bytes = caller.p_name.as_bytes();
-            let copy_len = src_bytes.len().min(43); // leave room for NUL
-            name_buf[..copy_len].copy_from_slice(&src_bytes[..copy_len]);
+/// GET_WHOAMI — caller's own endpoint/name/priv flags in the reply message.
+///
+/// C: do_getinfo.c:132-141 — GET_WHOAMI
+/// This is special: it writes directly into the reply message,
+/// no data_copy_vmcheck needed.
+fn getinfo_whoami(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
+    let (privflags, initflags) = caller.priv_id
+        .and_then(|pid| priv_table.get(pid))
+        // C: do_getinfo.c:139 — `privflags = priv(caller)->s_flags` (u16
+        // wire width); to_wire strips the kernel-only extension bits.
+        .map(|priv_| (priv_.flags.s_flags.to_wire() as i32, priv_.init.s_init_flags))
+        .unwrap_or((0, 0));
 
-            // Write reply into the message union
-            // SAFETY: `m_type == SYS_GETINFO` with `request == GET_WHOAMI`
-            // guarantees the `m_krn_lsys_sys_getwhoami` variant is active.
-            // `#[repr(C)]` union write is sound.
-            msg.m_u.m_krn_lsys_sys_getwhoami = MessKrnLsysSysGetwhoami {
-                endpt: caller.p_endpoint.get(),
-                privflags,
-                initflags,
-                name: name_buf,
-            };
-            KcallResult::Ok(OK)
-        }
-        GetInfoRequest::KInfo => {
-            // C: do_getinfo.c:41-70 — build kinfo structure
-            // C copies the entire `struct kinfo` via data_copy_vmcheck.
-            // Rust: Return key fields in the reply message (m_m4 format).
-            // Full data_copy_vmcheck path: `data_copy_vmcheck` is available,
-            // but `struct kinfo` C-compatible layout + conversion is not yet
-            // designed. Key fields are returned in the reply message instead.
-            //
-            // Fields returned (C kinfo mapping):
-            //   m4l1 = nr_procs  (C: kinfo.nr_procs)
-            //   m4l2 = nr_tasks  (C: kinfo.nr_tasks)
-            //   m4l3 = user_sp   (C: kinfo.user_sp — pre_init.c:156 USR_STACKTOP)
-            //   m4l4 = freepde_start (C: kinfo.freepde_start — pre_init.c:233)
-            //   m4l5 = vir_kern_start (C: kinfo.vir_kern_start — pre_init.c:113)
-            let (user_sp, freepde_start, vir_kern_start) =
-                crate::kernel_info()
-                    .map(|ki| {
-                        (ki.user_sp.0 as i64, ki.free_upper_idx().unwrap_or(0) as i64, ki.kern_virt_base.0 as i64)
-                    })
-                    .unwrap_or((0, 0, 0));
-            // SAFETY: `m_type == SYS_GETINFO` with `request == GET_KINFO`
-            // guarantees the M4 format is active. `#[repr(C)]` union write is sound.
-            msg.m_u.m_m4 = MessageM4 {
-                m4l1: NR_PROCS as i64,
-                m4l2: NR_TASKS as i64,
-                m4l3: user_sp,
-                m4l4: freepde_start,
-                m4l5: vir_kern_start,
-                _padding: [0u8; 16],
-            };
-            KcallResult::Ok(OK)
-        }
-        GetInfoRequest::Proc => {
-            // C: do_getinfo.c:107-114 — copy single process table entry.
-            // C: nr_e = (val_len2_e == SELF) ? caller->p_endpoint : val_len2_e
-            // C: if(!isokendpt(nr_e, &nr)) return EINVAL
-            let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
-                caller.p_endpoint.0
-            } else {
-                val_len2_e
-            };
-            let target_nr = match proc_table.endpoint_to_nr(Endpoint(target_ep)) {
-                Some(nr) => nr,
-                None => return KcallResult::Ok(EINVAL),
-            };
-            // Build a snapshot of the KProcess's user-visible fields, then
-            // release the proc_table borrow before data_copy_vmcheck borrows
-            // caller (caller and proc_table are separate parameters, but
-            // building the owned snapshot first keeps the borrow flow clean).
-            let info = proc_table.get(target_nr)
-                .map(ProcInfoStruct::from_kprocess)
-                .unwrap_or_default();
-            copy_struct_to_caller(caller, &info, val_ptr, val_len)
-        }
-        GetInfoRequest::ProcTab => {
-            // C: do_getinfo.c:102-130 — copy entire process table.
-            // NR_PROCS + NR_TASKS entries; each copied separately to avoid
-            // a large stack buffer (261 * sizeof(ProcInfoStruct) ≈ 27KB,
-            // which would overflow the typical 8-16KB kernel stack).
-            let total = NR_PROCS + NR_TASKS;
-            let elem_size = core::mem::size_of::<ProcInfoStruct>();
-            let length = total * elem_size;
-            if val_len > 0 && (length as i64) > (val_len as i64) {
-                return KcallResult::Ok(E2BIG);
-            }
-            let caller_endpt = caller.p_endpoint;
-            let caller_cr3 = caller.p_seg.phys_root;
-            let proc_cr3 = |endpt: Endpoint| {
-                if endpt == caller_endpt { Some(caller_cr3) } else { None }
-            };
-            for i in 0..total {
-                // Build the snapshot; the proc_table borrow ends here.
-                let info = proc_table.get_by_index(i)
-                    .map(ProcInfoStruct::from_kprocess)
-                    .unwrap_or_default();
-                let src_phys = CurrentDirectMap::virt_to_phys(
-                    VirBytes(&info as *const ProcInfoStruct as u64),
-                );
-                let src = AddressRef::Physical(src_phys);
-                let dst = AddressRef::Process {
-                    endpoint: caller_endpt,
-                    offset: VirBytes(val_ptr + (i * elem_size) as u64),
-                };
-                match data_copy_vmcheck(caller, src, dst, elem_size, proc_cr3) {
-                    CrossSpaceResult::Completed(Ok(())) => continue,
-                    CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                    CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                }
-            }
-            KcallResult::Ok(OK)
-        }
-        GetInfoRequest::PrivTab => {
-            // C: do_getinfo.c:132-150 — copy privilege table.
-            // NR_SYS_PROCS entries; each copied separately (same chunked
-            // approach as GET_PROCTAB to keep stack usage bounded).
-            let total = crate::kpriv::NR_SYS_PROCS;
-            let elem_size = core::mem::size_of::<PrivInfoStruct>();
-            let length = total * elem_size;
-            if val_len > 0 && (length as i64) > (val_len as i64) {
-                return KcallResult::Ok(E2BIG);
-            }
-            let caller_endpt = caller.p_endpoint;
-            let caller_cr3 = caller.p_seg.phys_root;
-            let proc_cr3 = |endpt: Endpoint| {
-                if endpt == caller_endpt { Some(caller_cr3) } else { None }
-            };
-            for i in 0..total {
-                let info = priv_table.get(i as crate::kpriv::PrivId)
-                    .map(PrivInfoStruct::from_kpriv)
-                    .unwrap_or_default();
-                let src_phys = CurrentDirectMap::virt_to_phys(
-                    VirBytes(&info as *const PrivInfoStruct as u64),
-                );
-                let src = AddressRef::Physical(src_phys);
-                let dst = AddressRef::Process {
-                    endpoint: caller_endpt,
-                    offset: VirBytes(val_ptr + (i * elem_size) as u64),
-                };
-                match data_copy_vmcheck(caller, src, dst, elem_size, proc_cr3) {
-                    CrossSpaceResult::Completed(Ok(())) => continue,
-                    CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                    CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                }
-            }
-            KcallResult::Ok(OK)
-        }
-        GetInfoRequest::LoadInfo => {
-            // C: do_getinfo.c:71-75 — copy load info
-            let history = clock_state.load_history();
-            let mut loadinfo = LoadInfoStruct {
-                proc_load_history: [0u16; 150],
-                proc_last_slot: 0,
-                last_clock: clock_state.uptime(),
-            };
-            // Copy available history entries (Rust keeps 150; C ABI expects 150).
-            let n = history.len().min(150);
-            for (i, hist_val) in history.iter().take(n).enumerate() {
-                loadinfo.proc_load_history[i] = *hist_val;
-            }
-            copy_struct_to_caller(caller, &loadinfo, val_ptr, val_len)
-        }
-        GetInfoRequest::Priv => {
-            // C: do_getinfo.c:115-122 — copy single privilege structure.
-            // Same endpoint validation as GET_PROC.
-            let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
-                caller.p_endpoint.0
-            } else {
-                val_len2_e
-            };
-            let target_nr = match proc_table.endpoint_to_nr(Endpoint(target_ep)) {
-                Some(nr) => nr,
-                None => return KcallResult::Ok(EINVAL),
-            };
-            // Resolve process → priv_id → KPriv, then build a snapshot.
-            // The chain releases each borrow before the next (priv_id is
-            // Copy, so the proc_table borrow ends before priv_table is touched).
-            let info = proc_table.get(target_nr)
-                .and_then(|p| p.priv_id)
-                .and_then(|pid| priv_table.get(pid))
-                .map(PrivInfoStruct::from_kpriv)
-                .unwrap_or_default();
-            copy_struct_to_caller(caller, &info, val_ptr, val_len)
-        }
-        GetInfoRequest::Regs => {
-            // C: do_getinfo.c:123-131 — copy general process registers (p_reg).
-            // The register state is arch-private (CurrentCpuContext). Expose
-            // it as raw bytes, matching C's `sizeof(p->p_reg)` behavior.
-            let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
-                caller.p_endpoint.0
-            } else {
-                val_len2_e
-            };
-            let target_nr = match proc_table.endpoint_to_nr(Endpoint(target_ep)) {
-                Some(nr) => nr,
-                None => return KcallResult::Ok(EINVAL),
-            };
-            // Extract the physical address and size of cpu_context before
-            // calling data_copy_vmcheck. The cpu_context lives in the
-            // process table (a stable, direct-mapped allocation), so the
-            // physical address remains valid across a VmSuspend retry —
-            // unlike a stack-local source, this is safe to resume from.
-            let (reg_phys, reg_size) = match proc_table.get(target_nr) {
-                Some(p) => {
-                    let size = core::mem::size_of_val(&p.cpu_context);
-                    let phys = CurrentDirectMap::virt_to_phys(
-                        VirBytes(&p.cpu_context as *const _ as u64),
-                    );
-                    (phys, size)
-                }
-                None => return KcallResult::Ok(EINVAL),
-            };
-            if val_len > 0 && (reg_size as i64) > (val_len as i64) {
-                return KcallResult::Ok(E2BIG);
-            }
-            let caller_endpt = caller.p_endpoint;
-            let caller_cr3 = caller.p_seg.phys_root;
-            let proc_cr3 = |endpt: Endpoint| {
-                if endpt == caller_endpt { Some(caller_cr3) } else { None }
-            };
-            let src = AddressRef::Physical(reg_phys);
-            let dst = AddressRef::Process {
-                endpoint: caller_endpt,
-                offset: VirBytes(val_ptr),
-            };
-            match data_copy_vmcheck(caller, src, dst, reg_size, proc_cr3) {
-                CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
-                CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
-                CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
-            }
-        }
-        GetInfoRequest::CpuTicks => {
-            // C: do_getinfo.c:192-202 — per-state CPU ticks.
-            // val_len2_e is the CPU index, not an endpoint.
-            let cpu = val_len2_e as u32;
-            // C: if (cpu >= CONFIG_MAX_CPUS) return EINVAL
-            // CONFIG_MAX_CPUS is typically 1 or small; use a conservative bound.
-            if cpu >= 256 {
-                return KcallResult::Ok(EINVAL);
-            }
-            // C: get_cpu_ticks(cpu, ticks) — per-state tick counter.
-            // Rust does not yet expose per-CPU tick accounting; return zeros
-            // (the array is zero-initialized) until get_cpu_ticks is wired.
-            let ticks: [u64; MINIX_CPUSTATES] = [0; MINIX_CPUSTATES];
-            copy_struct_to_caller(caller, &ticks, val_ptr, val_len)
-        }
-        GetInfoRequest::Hz => {
-            // C: do_getinfo.c:81-84 — copy system_hz
-            let hz: i32 = clock_state.system_hz();
-            copy_struct_to_caller(caller, &hz, val_ptr, val_len)
-        }
-        GetInfoRequest::Machine => {
-            // C: do_getinfo.c:61-65 — copy machine info
-            // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
-            // try_smp_state() returns None before boot init (e.g. in unit
-            // tests); fall back to single-CPU defaults in that case.
-            let smp = unsafe { crate::try_smp_state() };
-            let machine = MachineStruct {
-                processors_count: smp.as_ref().map(|s| s.ncpus()).unwrap_or(1),
-                bsp_id: smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0),
-                ..Default::default()
-            };
-            copy_struct_to_caller(caller, &machine, val_ptr, val_len)
-        }
-        GetInfoRequest::CpuInfo => {
-            // C: do_getinfo.c:76-80 — copy the whole cpu_info[] array
-            // (length = sizeof(cpu_info) = CONFIG_MAX_CPUS × struct cpu_info,
-            // including unprobed slots, which C leaves zero-filled).
-            //
-            // The DATA IS PRODUCED by the kernel, mirroring C: smp::cpu_identify()
-            // fills the global CPU_INFO table at boot (BSP: bsp_finish_booting
-            // Step 0 — C main.c:45; APs: ap_finish_booting — C arch_smp.c:232,
-            // pending SMP bring-up in 16-smp.md). Unprobed slots convert to the
-            // all-zero record (C zero-fill behavior); see CpuInfoEntry for the
-            // wire layout and the non-x86 mapping note.
-            let mut cpuinfo = [CpuInfoEntry::default(); crate::smp::MAX_CPUS];
-            for (slot, entry) in cpuinfo.iter_mut().enumerate() {
-                // SAFETY: CpuId::new_unchecked contract (id < MAX_CPUS) holds —
-                // `slot` ranges over 0..MAX_CPUS.
-                let cpu = CpuId::new_unchecked(slot as u32);
-                if let Some(id) = crate::smp::cpu_identity(cpu) {
-                    *entry = CpuInfoEntry::from(id);
-                }
-            }
-            copy_struct_to_caller(caller, &cpuinfo, val_ptr, val_len)
-        }
-        GetInfoRequest::IrqActids => {
-            // C: do_getinfo.c:179-183 — copy irq_actids[] array.
-            //
-            // C: `sys_datacopy_check(caller_ptr, val_ptr, KERNEL, (vir_bytes)
-            //     irq_actids, sizeof(irq_actids))` where `irq_actids` is a
-            //     `u32_t[NR_IRQ_VECTORS]` global (glo.h:49).
-            //
-            // We snapshot the global `IRQ_MANAGER.actids` under BKL and copy
-            // it to the caller. If `IRQ_MANAGER` is not yet initialized
-            // (e.g. in unit tests that skip boot), return EINVAL — matching
-            // C's behavior of not having the data available.
-            //
-            // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
-            // try_irq_manager() returns None before boot init (e.g. in unit
-            // tests); we return EINVAL in that case.
-            let actids_snapshot: [u32; NR_IRQ_VECTORS] = match unsafe { crate::try_irq_manager() } {
-                Some(mgr) => {
-                    let src = mgr.irq_actids();
-                    // src.len() is always NR_IRQ_VECTORS by construction;
-                    // the assert catches a future size mismatch if the
-                    // IrqManager layout ever diverges from this constant.
-                    debug_assert_eq!(src.len(), NR_IRQ_VECTORS);
-                    let mut arr = [0u32; NR_IRQ_VECTORS];
-                    arr.copy_from_slice(src);
-                    arr
-                }
-                None => return KcallResult::Ok(EINVAL),
-            };
-            copy_struct_to_caller(caller, &actids_snapshot, val_ptr, val_len)
-        }
-        GetInfoRequest::IdleTsc => {
-            // C: do_getinfo.c:184-191 — copy IDLE process's p_cycles.
-            //
-            // C: `update_idle_time()` resets `idl->p_cycles = 0` then sums
-            // all CPUs' `idle_proc.p_cycles`. In single-CPU Rust, we read
-            // the IDLE process's `p_cycles.total` directly.
-            //
-            // For SMP, each CPU's idle_proc is a separate KProcess slot;
-            // summing would require iterating CpuLocal. Since the current
-            // build is single-CPU, we read the single IDLE slot.
-            let idle_cycles: u64 = proc_table
-                .get(crate::proc::proc_nr::IDLE)
-                .map(|p| p.p_cycles.total.load(core::sync::atomic::Ordering::Acquire))
-                .unwrap_or(0);
-            copy_struct_to_caller(caller, &idle_cycles, val_ptr, val_len)
-        }
-        GetInfoRequest::Randomness => {
-            // C: do_getinfo.c:148-160 — copy entire krandom struct, then
-            // wipe all bins.
-            //
-            // C uses a static `copy` variable to preserve counters while
-            // wiping the original. We snapshot under BKL, then wipe.
-            //
-            // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
-            let krandom_snapshot = match unsafe { crate::krandom::try_krandom() } {
-                Some(kr) => {
-                    let snapshot = *kr;
-                    kr.wipe_all();
-                    snapshot
-                }
-                None => return KcallResult::Ok(EINVAL),
-            };
-            copy_struct_to_caller(caller, &krandom_snapshot, val_ptr, val_len)
-        }
-        GetInfoRequest::RandomnessBin => {
-            // C: do_getinfo.c:161-178 — copy one randomness bin by index,
-            // then wipe that bin after successful copy.
-            //
-            // val_len2_e is the bin index (not an endpoint).
-            let bin = val_len2_e;
-            // C: if(bin < 0 || bin >= RANDOM_SOURCES) return EINVAL
-            // RANDOM_SOURCES = 16 (include/minix/type.h:182).
-            if bin < 0 || bin >= crate::krandom::RANDOM_SOURCES as i32 {
-                return KcallResult::Ok(EINVAL);
-            }
-            // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
-            let bin_snapshot = match unsafe { crate::krandom::try_krandom() } {
-                Some(kr) => {
-                    let bin_idx = bin as usize;
-                    // C: if(krandom.bin[bin].r_size < RANDOM_ELEMENTS)
-                    //         return ENOENT
-                    if kr.bin[bin_idx].r_size < crate::krandom::RANDOM_ELEMENTS as i32 {
-                        return KcallResult::Ok(ENOENT);
-                    }
-                    let snapshot = kr.bin[bin_idx];
-                    // C: wipe_rnd_bin = bin (wiped after successful copy)
-                    kr.wipe_bin(bin_idx);
-                    snapshot
-                }
-                None => return KcallResult::Ok(EINVAL),
-            };
-            copy_struct_to_caller(caller, &bin_snapshot, val_ptr, val_len)
-        }
-        GetInfoRequest::IrqHooks => {
-            // C: do_getinfo.c:91-95 — copy irq_hooks[] array.
-            //
-            // C: `length = sizeof(struct irq_hook) * NR_IRQ_HOOKS`
-            //     `src_vir = (vir_bytes) irq_hooks`
-            //
-            // Build a C-compatible snapshot of the IRQ hook table from
-            // the global IrqManager. Rust uses index-based linked lists,
-            // so `next` and `handler` are exported as 0 (user-space tools
-            // only read the non-pointer fields).
-            let mut hooks: [IrqHookStruct; crate::syscall_device::NR_IRQ_HOOKS] =
-                [IrqHookStruct::default(); crate::syscall_device::NR_IRQ_HOOKS];
-            // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
-            if let Some(mgr) = unsafe { crate::try_irq_manager() } {
-                for (slot, hook) in hooks.iter_mut().enumerate() {
-                    if let (Some(irq), Some(id), Some(ep), Some(notify_id), Some(policy)) = (
-                        mgr.hook_irq(slot),
-                        mgr.hook_irq_id(slot),
-                        mgr.hook_owner(slot),
-                        mgr.hook_notify_id(slot),
-                        mgr.hook_policy(slot),
-                    ) {
-                        hook.irq = irq.get() as i32;
-                        hook.id = id.0 as i32;
-                        hook.proc_nr_e = ep.0;
-                        hook.notify_id = notify_id.get() as u64;
-                        hook.policy = policy.bits() as u64;
-                    }
-                }
-            }
-            copy_struct_to_caller(caller, &hooks, val_ptr, val_len)
-        }
-        GetInfoRequest::Image => {
-            // C: do_getinfo.c:86-90 — copy boot image table.
-            //
-            // C: `length = sizeof(struct boot_image) * NR_BOOT_PROCS`
-            //     `src_vir = (vir_bytes) image`
-            //
-            // In C, `image[]` is a static table initialized in `table.c`.
-            // In Rust, it is rebuilt from the process table + boot modules
-            // in the same boot image order (see `build_boot_image`).
-            let boot_modules = crate::kernel_info()
-                .map(|ki| ki.boot_modules())
-                .unwrap_or(&[]);
-            let image = build_boot_image(proc_table, boot_modules);
-            copy_struct_to_caller(caller, &image, val_ptr, val_len)
-        }
-        GetInfoRequest::MonParams => {
-            // C: do_getinfo.c:143-146 — copy boot monitor parameter buffer.
-            //
-            // C: `src_vir = (vir_bytes) kinfo.param_buf`
-            //     `length = sizeof(kinfo.param_buf)`
-            //
-            // P9-1 (2026-08-13): `KernelInfo.param_buf` field now exists
-            // (minix-boot/src/kernel_info.rs:129, `&'static [u8]`).
-            // However, the boot-shim currently populates it with an empty
-            // slice (`&[]`) because UEFI load options are not yet wired
-            // to fill it. When the boot-shim forwards UEFI load options
-            // into `param_buf`, this branch should copy the bytes to the
-            // caller's buffer via `data_copy_vmcheck`.
-            //
-            // Until then, return EINVAL to indicate the data is not
-            // available (buffer is empty). This matches C's behavior when
-            // the multiboot parameter buffer is empty.
-            KcallResult::Ok(EINVAL)
+    let mut name_buf = [0u8; 44];
+    let src_bytes = caller.p_name.as_bytes();
+    let copy_len = src_bytes.len().min(43); // leave room for NUL
+    name_buf[..copy_len].copy_from_slice(&src_bytes[..copy_len]);
+
+    // Write reply into the message union
+    // SAFETY: `m_type == SYS_GETINFO` with `request == GET_WHOAMI`
+    // guarantees the `m_krn_lsys_sys_getwhoami` variant is active.
+    // `#[repr(C)]` union write is sound.
+    msg.m_u.m_krn_lsys_sys_getwhoami = MessKrnLsysSysGetwhoami {
+        endpt: caller.p_endpoint.get(),
+        privflags,
+        initflags,
+        name: name_buf,
+    };
+    KcallResult::Ok(OK)
+}
+
+/// GET_KINFO — key kernel parameters in the reply message (m_m4 format).
+///
+/// C: do_getinfo.c:41-70 — build kinfo structure
+/// C copies the entire `struct kinfo` via data_copy_vmcheck.
+/// Rust: Return key fields in the reply message (m_m4 format).
+/// Full data_copy_vmcheck path: `data_copy_vmcheck` is available,
+/// but `struct kinfo` C-compatible layout + conversion is not yet
+/// designed. Key fields are returned in the reply message instead.
+///
+/// Fields returned (C kinfo mapping):
+///   m4l1 = nr_procs  (C: kinfo.nr_procs)
+///   m4l2 = nr_tasks  (C: kinfo.nr_tasks)
+///   m4l3 = user_sp   (C: kinfo.user_sp — pre_init.c:156 USR_STACKTOP)
+///   m4l4 = freepde_start (C: kinfo.freepde_start — pre_init.c:233)
+///   m4l5 = vir_kern_start (C: kinfo.vir_kern_start — pre_init.c:113)
+fn getinfo_kinfo(msg: &mut Message) -> KcallResult {
+    let (user_sp, freepde_start, vir_kern_start) =
+        crate::kernel_info()
+            .map(|ki| {
+                (ki.user_sp.0 as i64, ki.free_upper_idx().unwrap_or(0) as i64, ki.kern_virt_base.0 as i64)
+            })
+            .unwrap_or((0, 0, 0));
+    // SAFETY: `m_type == SYS_GETINFO` with `request == GET_KINFO`
+    // guarantees the M4 format is active. `#[repr(C)]` union write is sound.
+    msg.m_u.m_m4 = MessageM4 {
+        m4l1: NR_PROCS as i64,
+        m4l2: NR_TASKS as i64,
+        m4l3: user_sp,
+        m4l4: freepde_start,
+        m4l5: vir_kern_start,
+        _padding: [0u8; 16],
+    };
+    KcallResult::Ok(OK)
+}
+
+/// GET_PROC — copy a single process table entry to the caller.
+///
+/// C: do_getinfo.c:107-114 — copy single process table entry.
+/// C: nr_e = (val_len2_e == SELF) ? caller->p_endpoint : val_len2_e
+/// C: if(!isokendpt(nr_e, &nr)) return EINVAL
+fn getinfo_proc(caller: &mut KProcess, proc_table: &ProcessTable, val_ptr: u64, val_len: i32, val_len2_e: i32) -> KcallResult {
+    let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
+        caller.p_endpoint.0
+    } else {
+        val_len2_e
+    };
+    let target_nr = match proc_table.endpoint_to_nr(Endpoint(target_ep)) {
+        Some(nr) => nr,
+        None => return KcallResult::Ok(EINVAL),
+    };
+    // Build a snapshot of the KProcess's user-visible fields, then
+    // release the proc_table borrow before data_copy_vmcheck borrows
+    // caller (caller and proc_table are separate parameters, but
+    // building the owned snapshot first keeps the borrow flow clean).
+    let info = proc_table.get(target_nr)
+        .map(ProcInfoStruct::from_kprocess)
+        .unwrap_or_default();
+    copy_struct_to_caller(caller, &info, val_ptr, val_len)
+}
+
+/// GET_PROCTAB — copy the entire process table (chunked per-entry copies).
+///
+/// C: do_getinfo.c:102-130 — copy entire process table.
+/// NR_PROCS + NR_TASKS entries; each copied separately to avoid
+/// a large stack buffer (261 * sizeof(ProcInfoStruct) ≈ 27KB,
+/// which would overflow the typical 8-16KB kernel stack).
+fn getinfo_proc_tab(caller: &mut KProcess, proc_table: &ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+    let total = NR_PROCS + NR_TASKS;
+    let elem_size = core::mem::size_of::<ProcInfoStruct>();
+    let length = total * elem_size;
+    if val_len > 0 && (length as i64) > (val_len as i64) {
+        return KcallResult::Ok(E2BIG);
+    }
+    let caller_endpt = caller.p_endpoint;
+    let caller_cr3 = caller.p_seg.phys_root;
+    let proc_cr3 = |endpt: Endpoint| {
+        if endpt == caller_endpt { Some(caller_cr3) } else { None }
+    };
+    for i in 0..total {
+        // Build the snapshot; the proc_table borrow ends here.
+        let info = proc_table.get_by_index(i)
+            .map(ProcInfoStruct::from_kprocess)
+            .unwrap_or_default();
+        let src_phys = CurrentDirectMap::virt_to_phys(
+            VirBytes(&info as *const ProcInfoStruct as u64),
+        );
+        let src = AddressRef::Physical(src_phys);
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(val_ptr + (i * elem_size) as u64),
+        };
+        match data_copy_vmcheck(caller, src, dst, elem_size, proc_cr3) {
+            CrossSpaceResult::Completed(Ok(())) => continue,
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         }
     }
+    KcallResult::Ok(OK)
+}
+
+/// GET_PRIVTAB — copy the privilege table (chunked per-entry copies).
+///
+/// C: do_getinfo.c:132-150 — copy privilege table.
+/// NR_SYS_PROCS entries; each copied separately (same chunked
+/// approach as GET_PROCTAB to keep stack usage bounded).
+fn getinfo_priv_tab(caller: &mut KProcess, priv_table: &PrivTable, val_ptr: u64, val_len: i32) -> KcallResult {
+    let total = crate::kpriv::NR_SYS_PROCS;
+    let elem_size = core::mem::size_of::<PrivInfoStruct>();
+    let length = total * elem_size;
+    if val_len > 0 && (length as i64) > (val_len as i64) {
+        return KcallResult::Ok(E2BIG);
+    }
+    let caller_endpt = caller.p_endpoint;
+    let caller_cr3 = caller.p_seg.phys_root;
+    let proc_cr3 = |endpt: Endpoint| {
+        if endpt == caller_endpt { Some(caller_cr3) } else { None }
+    };
+    for i in 0..total {
+        let info = priv_table.get(i as crate::kpriv::PrivId)
+            .map(PrivInfoStruct::from_kpriv)
+            .unwrap_or_default();
+        let src_phys = CurrentDirectMap::virt_to_phys(
+            VirBytes(&info as *const PrivInfoStruct as u64),
+        );
+        let src = AddressRef::Physical(src_phys);
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(val_ptr + (i * elem_size) as u64),
+        };
+        match data_copy_vmcheck(caller, src, dst, elem_size, proc_cr3) {
+            CrossSpaceResult::Completed(Ok(())) => continue,
+            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        }
+    }
+    KcallResult::Ok(OK)
+}
+
+/// GET_LOADINFO — copy the load-average history window.
+///
+/// C: do_getinfo.c:71-75 — copy load info
+fn getinfo_load_info(caller: &mut KProcess, clock_state: &ClockState, val_ptr: u64, val_len: i32) -> KcallResult {
+    let history = clock_state.load_history();
+    let mut loadinfo = LoadInfoStruct {
+        proc_load_history: [0u16; 150],
+        proc_last_slot: 0,
+        last_clock: clock_state.uptime(),
+    };
+    // Copy available history entries (Rust keeps 150; C ABI expects 150).
+    let n = history.len().min(150);
+    for (i, hist_val) in history.iter().take(n).enumerate() {
+        loadinfo.proc_load_history[i] = *hist_val;
+    }
+    copy_struct_to_caller(caller, &loadinfo, val_ptr, val_len)
+}
+
+/// GET_PRIV — copy a single privilege structure.
+///
+/// C: do_getinfo.c:115-122 — copy single privilege structure.
+/// Same endpoint validation as GET_PROC.
+fn getinfo_priv(caller: &mut KProcess, proc_table: &ProcessTable, priv_table: &PrivTable, val_ptr: u64, val_len: i32, val_len2_e: i32) -> KcallResult {
+    let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
+        caller.p_endpoint.0
+    } else {
+        val_len2_e
+    };
+    let target_nr = match proc_table.endpoint_to_nr(Endpoint(target_ep)) {
+        Some(nr) => nr,
+        None => return KcallResult::Ok(EINVAL),
+    };
+    // Resolve process → priv_id → KPriv, then build a snapshot.
+    // The chain releases each borrow before the next (priv_id is
+    // Copy, so the proc_table borrow ends before priv_table is touched).
+    let info = proc_table.get(target_nr)
+        .and_then(|p| p.priv_id)
+        .and_then(|pid| priv_table.get(pid))
+        .map(PrivInfoStruct::from_kpriv)
+        .unwrap_or_default();
+    copy_struct_to_caller(caller, &info, val_ptr, val_len)
+}
+
+/// GET_REGS — copy the target's CPU context as raw bytes.
+///
+/// C: do_getinfo.c:123-131 — copy general process registers (p_reg).
+/// The register state is arch-private (CurrentCpuContext). Expose
+/// it as raw bytes, matching C's `sizeof(p->p_reg)` behavior.
+fn getinfo_regs(caller: &mut KProcess, proc_table: &ProcessTable, val_ptr: u64, val_len: i32, val_len2_e: i32) -> KcallResult {
+    let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
+        caller.p_endpoint.0
+    } else {
+        val_len2_e
+    };
+    let target_nr = match proc_table.endpoint_to_nr(Endpoint(target_ep)) {
+        Some(nr) => nr,
+        None => return KcallResult::Ok(EINVAL),
+    };
+    // Extract the physical address and size of cpu_context before
+    // calling data_copy_vmcheck. The cpu_context lives in the
+    // process table (a stable, direct-mapped allocation), so the
+    // physical address remains valid across a VmSuspend retry —
+    // unlike a stack-local source, this is safe to resume from.
+    let (reg_phys, reg_size) = match proc_table.get(target_nr) {
+        Some(p) => {
+            let size = core::mem::size_of_val(&p.cpu_context);
+            let phys = CurrentDirectMap::virt_to_phys(
+                VirBytes(&p.cpu_context as *const _ as u64),
+            );
+            (phys, size)
+        }
+        None => return KcallResult::Ok(EINVAL),
+    };
+    if val_len > 0 && (reg_size as i64) > (val_len as i64) {
+        return KcallResult::Ok(E2BIG);
+    }
+    let caller_endpt = caller.p_endpoint;
+    let caller_cr3 = caller.p_seg.phys_root;
+    let proc_cr3 = |endpt: Endpoint| {
+        if endpt == caller_endpt { Some(caller_cr3) } else { None }
+    };
+    let src = AddressRef::Physical(reg_phys);
+    let dst = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(val_ptr),
+    };
+    match data_copy_vmcheck(caller, src, dst, reg_size, proc_cr3) {
+        CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
+        CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
+        CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
+    }
+}
+
+/// GET_CPU_TICKS — per-state CPU tick counters for one CPU.
+///
+/// C: do_getinfo.c:192-202 — per-state CPU ticks.
+/// val_len2_e is the CPU index, not an endpoint.
+fn getinfo_cpu_ticks(caller: &mut KProcess, val_len2_e: i32, val_ptr: u64, val_len: i32) -> KcallResult {
+    let cpu = val_len2_e as u32;
+    // C: if (cpu >= CONFIG_MAX_CPUS) return EINVAL
+    // CONFIG_MAX_CPUS is typically 1 or small; use a conservative bound.
+    if cpu >= 256 {
+        return KcallResult::Ok(EINVAL);
+    }
+    // C: get_cpu_ticks(cpu, ticks) — per-state tick counter.
+    // Rust does not yet expose per-CPU tick accounting; return zeros
+    // (the array is zero-initialized) until get_cpu_ticks is wired.
+    let ticks: [u64; MINIX_CPUSTATES] = [0; MINIX_CPUSTATES];
+    copy_struct_to_caller(caller, &ticks, val_ptr, val_len)
+}
+
+/// GET_HZ — copy the system clock frequency.
+///
+/// C: do_getinfo.c:81-84 — copy system_hz
+fn getinfo_hz(caller: &mut KProcess, clock_state: &ClockState, val_ptr: u64, val_len: i32) -> KcallResult {
+    let hz: i32 = clock_state.system_hz();
+    copy_struct_to_caller(caller, &hz, val_ptr, val_len)
+}
+
+/// GET_MACHINE — processor count and BSP id.
+///
+/// C: do_getinfo.c:61-65 — copy machine info
+/// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
+/// try_smp_state() returns None before boot init (e.g. in unit
+/// tests); fall back to single-CPU defaults in that case.
+fn getinfo_machine(caller: &mut KProcess, val_ptr: u64, val_len: i32) -> KcallResult {
+    let smp = unsafe { crate::try_smp_state() };
+    let machine = MachineStruct {
+        processors_count: smp.as_ref().map(|s| s.ncpus()).unwrap_or(1),
+        bsp_id: smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0),
+        ..Default::default()
+    };
+    copy_struct_to_caller(caller, &machine, val_ptr, val_len)
+}
+
+/// GET_CPUINFO — copy the whole cpu_info[] array (unprobed slots zeroed).
+///
+/// C: do_getinfo.c:76-80 — copy the whole cpu_info[] array
+/// (length = sizeof(cpu_info) = CONFIG_MAX_CPUS × struct cpu_info,
+/// including unprobed slots, which C leaves zero-filled).
+///
+/// The DATA IS PRODUCED by the kernel, mirroring C: smp::cpu_identify()
+/// fills the global CPU_INFO table at boot (BSP: bsp_finish_booting
+/// Step 0 — C main.c:45; APs: ap_finish_booting — C arch_smp.c:232,
+/// pending SMP bring-up in 16-smp.md). Unprobed slots convert to the
+/// all-zero record (C zero-fill behavior); see CpuInfoEntry for the
+/// wire layout and the non-x86 mapping note.
+fn getinfo_cpu_info(caller: &mut KProcess, val_ptr: u64, val_len: i32) -> KcallResult {
+    let mut cpuinfo = [CpuInfoEntry::default(); crate::smp::MAX_CPUS];
+    for (slot, entry) in cpuinfo.iter_mut().enumerate() {
+        // SAFETY: CpuId::new_unchecked contract (id < MAX_CPUS) holds —
+        // `slot` ranges over 0..MAX_CPUS.
+        let cpu = CpuId::new_unchecked(slot as u32);
+        if let Some(id) = crate::smp::cpu_identity(cpu) {
+            *entry = CpuInfoEntry::from(id);
+        }
+    }
+    copy_struct_to_caller(caller, &cpuinfo, val_ptr, val_len)
+}
+
+/// GET_IRQACTIDS — snapshot the IRQ handler-availability table.
+///
+/// C: do_getinfo.c:179-183 — copy irq_actids[] array.
+///
+/// C: `sys_datacopy_check(caller_ptr, val_ptr, KERNEL, (vir_bytes)
+///     irq_actids, sizeof(irq_actids))` where `irq_actids` is a
+///     `u32_t[NR_IRQ_VECTORS]` global (glo.h:49).
+///
+/// We snapshot the global `IRQ_MANAGER.actids` under BKL and copy
+/// it to the caller. If `IRQ_MANAGER` is not yet initialized
+/// (e.g. in unit tests that skip boot), return EINVAL — matching
+/// C's behavior of not having the data available.
+///
+/// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
+/// try_irq_manager() returns None before boot init (e.g. in unit
+/// tests); we return EINVAL in that case.
+fn getinfo_irq_actids(caller: &mut KProcess, val_ptr: u64, val_len: i32) -> KcallResult {
+    let actids_snapshot: [u32; NR_IRQ_VECTORS] = match unsafe { crate::try_irq_manager() } {
+        Some(mgr) => {
+            let src = mgr.irq_actids();
+            // src.len() is always NR_IRQ_VECTORS by construction;
+            // the assert catches a future size mismatch if the
+            // IrqManager layout ever diverges from this constant.
+            debug_assert_eq!(src.len(), NR_IRQ_VECTORS);
+            let mut arr = [0u32; NR_IRQ_VECTORS];
+            arr.copy_from_slice(src);
+            arr
+        }
+        None => return KcallResult::Ok(EINVAL),
+    };
+    copy_struct_to_caller(caller, &actids_snapshot, val_ptr, val_len)
+}
+
+/// GET_IDLETSC — the IDLE process's accumulated cycles.
+///
+/// C: do_getinfo.c:184-191 — copy IDLE process's p_cycles.
+///
+/// C: `update_idle_time()` resets `idl->p_cycles = 0` then sums
+/// all CPUs' `idle_proc.p_cycles`. In single-CPU Rust, we read
+/// the IDLE process's `p_cycles.total` directly.
+///
+/// For SMP, each CPU's idle_proc is a separate KProcess slot;
+/// summing would require iterating CpuLocal. Since the current
+/// build is single-CPU, we read the single IDLE slot.
+fn getinfo_idle_tsc(caller: &mut KProcess, proc_table: &ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+    let idle_cycles: u64 = proc_table
+        .get(crate::proc::proc_nr::IDLE)
+        .map(|p| p.p_cycles.total.load(core::sync::atomic::Ordering::Acquire))
+        .unwrap_or(0);
+    copy_struct_to_caller(caller, &idle_cycles, val_ptr, val_len)
+}
+
+/// GET_RANDOMNESS — copy the whole krandom struct, then wipe all bins.
+///
+/// C: do_getinfo.c:148-160 — copy entire krandom struct, then
+/// wipe all bins.
+///
+/// C uses a static `copy` variable to preserve counters while
+/// wiping the original. We snapshot under BKL, then wipe.
+///
+/// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
+fn getinfo_randomness(caller: &mut KProcess, val_ptr: u64, val_len: i32) -> KcallResult {
+    let krandom_snapshot = match unsafe { crate::krandom::try_krandom() } {
+        Some(kr) => {
+            let snapshot = *kr;
+            kr.wipe_all();
+            snapshot
+        }
+        None => return KcallResult::Ok(EINVAL),
+    };
+    copy_struct_to_caller(caller, &krandom_snapshot, val_ptr, val_len)
+}
+
+/// GET_RANDOMNESS_BIN — copy one randomness bin by index, then wipe it.
+///
+/// C: do_getinfo.c:161-178 — copy one randomness bin by index,
+/// then wipe that bin after successful copy.
+///
+/// val_len2_e is the bin index (not an endpoint).
+fn getinfo_randomness_bin(caller: &mut KProcess, val_len2_e: i32, val_ptr: u64, val_len: i32) -> KcallResult {
+    let bin = val_len2_e;
+    // C: if(bin < 0 || bin >= RANDOM_SOURCES) return EINVAL
+    // RANDOM_SOURCES = 16 (include/minix/type.h:182).
+    if bin < 0 || bin >= crate::krandom::RANDOM_SOURCES as i32 {
+        return KcallResult::Ok(EINVAL);
+    }
+    // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
+    let bin_snapshot = match unsafe { crate::krandom::try_krandom() } {
+        Some(kr) => {
+            let bin_idx = bin as usize;
+            // C: if(krandom.bin[bin].r_size < RANDOM_ELEMENTS)
+            //         return ENOENT
+            if kr.bin[bin_idx].r_size < crate::krandom::RANDOM_ELEMENTS as i32 {
+                return KcallResult::Ok(ENOENT);
+            }
+            let snapshot = kr.bin[bin_idx];
+            // C: wipe_rnd_bin = bin (wiped after successful copy)
+            kr.wipe_bin(bin_idx);
+            snapshot
+        }
+        None => return KcallResult::Ok(EINVAL),
+    };
+    copy_struct_to_caller(caller, &bin_snapshot, val_ptr, val_len)
+}
+
+/// GET_IRQHOOKS — snapshot the IRQ hook table.
+///
+/// C: do_getinfo.c:91-95 — copy irq_hooks[] array.
+///
+/// C: `length = sizeof(struct irq_hook) * NR_IRQ_HOOKS`
+///     `src_vir = (vir_bytes) irq_hooks`
+///
+/// Build a C-compatible snapshot of the IRQ hook table from
+/// the global IrqManager. Rust uses index-based linked lists,
+/// so `next` and `handler` are exported as 0 (user-space tools
+/// only read the non-pointer fields).
+fn getinfo_irq_hooks(caller: &mut KProcess, val_ptr: u64, val_len: i32) -> KcallResult {
+    let mut hooks: [IrqHookStruct; crate::syscall_device::NR_IRQ_HOOKS] =
+        [IrqHookStruct::default(); crate::syscall_device::NR_IRQ_HOOKS];
+    // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
+    if let Some(mgr) = unsafe { crate::try_irq_manager() } {
+        for (slot, hook) in hooks.iter_mut().enumerate() {
+            if let (Some(irq), Some(id), Some(ep), Some(notify_id), Some(policy)) = (
+                mgr.hook_irq(slot),
+                mgr.hook_irq_id(slot),
+                mgr.hook_owner(slot),
+                mgr.hook_notify_id(slot),
+                mgr.hook_policy(slot),
+            ) {
+                hook.irq = irq.get() as i32;
+                hook.id = id.0 as i32;
+                hook.proc_nr_e = ep.0;
+                hook.notify_id = notify_id.get() as u64;
+                hook.policy = policy.bits() as u64;
+            }
+        }
+    }
+    copy_struct_to_caller(caller, &hooks, val_ptr, val_len)
+}
+
+/// GET_IMAGE — copy the boot image table.
+///
+/// C: do_getinfo.c:86-90 — copy boot image table.
+///
+/// C: `length = sizeof(struct boot_image) * NR_BOOT_PROCS`
+///     `src_vir = (vir_bytes) image`
+///
+/// In C, `image[]` is a static table initialized in `table.c`.
+/// In Rust, it is rebuilt from the process table + boot modules
+/// in the same boot image order (see `build_boot_image`).
+fn getinfo_image(caller: &mut KProcess, proc_table: &ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+    let boot_modules = crate::kernel_info()
+        .map(|ki| ki.boot_modules())
+        .unwrap_or(&[]);
+    let image = build_boot_image(proc_table, boot_modules);
+    copy_struct_to_caller(caller, &image, val_ptr, val_len)
+}
+
+/// GET_MONPARAMS — boot monitor parameter buffer (not yet populated).
+///
+/// C: do_getinfo.c:143-146 — copy boot monitor parameter buffer.
+///
+/// C: `src_vir = (vir_bytes) kinfo.param_buf`
+///     `length = sizeof(kinfo.param_buf)`
+///
+/// P9-1 (2026-08-13): `KernelInfo.param_buf` field now exists
+/// (minix-boot/src/kernel_info.rs:129, `&'static [u8]`).
+/// However, the boot-shim currently populates it with an empty
+/// slice (`&[]`) because UEFI load options are not yet wired
+/// to fill it. When the boot-shim forwards UEFI load options
+/// into `param_buf`, this branch should copy the bytes to the
+/// caller's buffer via `data_copy_vmcheck`.
+///
+/// Until then, return EINVAL to indicate the data is not
+/// available (buffer is empty). This matches C's behavior when
+/// the multiboot parameter buffer is empty.
+fn getinfo_mon_params() -> KcallResult {
+    KcallResult::Ok(EINVAL)
 }
 
 /// Dispatch SYS_TRACE.
@@ -1349,12 +1425,6 @@ pub fn dispatch_trace(
     // PhysBytes is Copy, so this extracts the value without holding the borrow.
     let target_cr3 = target.p_seg.phys_root;
 
-    // Word size used by C `long` in the struct proc / struct priv layout.
-    // C: `sizeof(long)` — 8 on 64-bit, 4 on 32-bit. We pin it as 8 (the
-    // Rust rewrite is 64-bit only; the doc explicitly targets 64-bit).
-    const WORD_SIZE: u64 = 8;
-    const WORD_MASK: u64 = WORD_SIZE - 1;
-
     match req {
         // ── Implemented: pure flag/RTS operations ───────────────────
 
@@ -1412,185 +1482,273 @@ pub fn dispatch_trace(
         // C: do_trace.c:95-103 — T_GETINS / T_GETDATA:
         // COPYFROMPROC(tr_addr, &tr_data, sizeof(long)).
         TraceRequest::GetIns | TraceRequest::GetData => {
-            let mut buf: u64 = 0;
-            let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                &mut buf as *mut u64 as u64,
-            ));
-            let proc_cr3 = |ep: Endpoint| {
-                if ep == target_endpoint { Some(target_cr3) } else { None }
-            };
-            let src = AddressRef::Process {
-                endpoint: target_endpoint,
-                offset: VirBytes(tr_addr),
-            };
-            let dst = AddressRef::Physical(buf_phys);
-            match data_copy_vmcheck(caller, src, dst, WORD_SIZE as usize, proc_cr3) {
-                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                CrossSpaceResult::Completed(Ok(())) => {
-                    write_trace_reply_data(msg, buf as i64);
-                }
-            }
-            KcallResult::Ok(0)
+            trace_copy_word_from_proc(caller, msg, target_endpoint, target_cr3, tr_addr)
         }
 
         // C: do_trace.c:126-134 — T_SETINS / T_SETDATA:
         // COPYTOPROC(tr_addr, &tr_data, sizeof(long)).
         TraceRequest::SetIns | TraceRequest::SetData => {
-            let buf: u64 = tr_data as u64;
-            let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                &buf as *const u64 as u64,
-            ));
-            let proc_cr3 = |ep: Endpoint| {
-                if ep == target_endpoint { Some(target_cr3) } else { None }
-            };
-            let src = AddressRef::Physical(buf_phys);
-            let dst = AddressRef::Process {
-                endpoint: target_endpoint,
-                offset: VirBytes(tr_addr),
-            };
-            match data_copy_vmcheck(caller, src, dst, WORD_SIZE as usize, proc_cr3) {
-                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                CrossSpaceResult::Completed(Ok(())) => {
-                    write_trace_reply_data(msg, 0);
-                }
-            }
-            KcallResult::Ok(0)
+            trace_copy_word_to_proc(caller, msg, target_endpoint, target_cr3, tr_addr, tr_data)
         }
 
         // C: do_trace.c:191-194 — T_READB_INS:
         // COPYFROMPROC(tr_addr, &ub, 1) — byte-level copy.
         TraceRequest::ReadBIns => {
-            let mut buf: u8 = 0;
-            let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                // R-16 (2026-08-12): SAFETY: this is a 64-bit kernel, so
-                // `*mut u8` is 64-bit and `as u64` cannot truncate.
-                &mut buf as *mut u8 as u64,
-            ));
-            let proc_cr3 = |ep: Endpoint| {
-                if ep == target_endpoint { Some(target_cr3) } else { None }
-            };
-            let src = AddressRef::Process {
-                endpoint: target_endpoint,
-                offset: VirBytes(tr_addr),
-            };
-            let dst = AddressRef::Physical(buf_phys);
-            match data_copy_vmcheck(caller, src, dst, 1, proc_cr3) {
-                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                CrossSpaceResult::Completed(Ok(())) => {
-                    write_trace_reply_data(msg, buf as i64);
-                }
-            }
-            KcallResult::Ok(0)
+            trace_copy_byte_from_proc(caller, msg, target_endpoint, target_cr3, tr_addr)
         }
 
         // C: do_trace.c:196-200 — T_WRITEB_INS:
         // COPYTOPROC(tr_addr, &ub, 1) — byte-level copy.
         TraceRequest::WriteBIns => {
-            let buf: u8 = tr_data as u8;
-            let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                &buf as *const u8 as u64,
-            ));
-            let proc_cr3 = |ep: Endpoint| {
-                if ep == target_endpoint { Some(target_cr3) } else { None }
-            };
-            let src = AddressRef::Physical(buf_phys);
-            let dst = AddressRef::Process {
-                endpoint: target_endpoint,
-                offset: VirBytes(tr_addr),
-            };
-            match data_copy_vmcheck(caller, src, dst, 1, proc_cr3) {
-                CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                CrossSpaceResult::Completed(Ok(())) => {
-                    write_trace_reply_data(msg, 0);
-                }
-            }
-            KcallResult::Ok(0)
+            trace_copy_byte_to_proc(caller, msg, target_endpoint, target_cr3, tr_addr, tr_data)
         }
 
         // C: do_trace.c:105-124 — T_GETUSER: read from proc/priv struct.
-        // C explicitly checks alignment: `if ((tr_addr & (sizeof(long)-1)) != 0) return(EFAULT)`.
-        // Step 2: if offset <= sizeof(proc) - WORD_SIZE → read from proc.
-        //         else → offset -= round_up(sizeof(proc)); if within priv → read priv.
-        // Step 3: writeback tr_data into m_krn_lsys_sys_trace.data.
         TraceRequest::GetUser => {
-            // C: do_trace.c:106 — alignment check
-            if tr_addr & WORD_MASK != 0 {
-                return KcallResult::Ok(EFAULT);
-            }
-            // C: do_trace.c:108-111 — read long from proc struct at offset.
-            // Build a ProcInfoStruct snapshot, then read a u64 at the offset.
-            let proc_info = proc_table.get(target_nr)
-                .map(ProcInfoStruct::from_kprocess)
-                .unwrap_or_default();
-            let proc_size = core::mem::size_of::<ProcInfoStruct>() as u64;
-            let word: u64 = if tr_addr + WORD_SIZE <= proc_size {
-                read_word_at_offset(&proc_info, tr_addr as usize)
-            } else {
-                // C: do_trace.c:117-123 — read from priv struct.
-                // Align proc_size up to sizeof(long) boundary, then
-                // subtract to get the priv-struct offset.
-                let priv_offset = tr_addr - ((proc_size + WORD_MASK) & !WORD_MASK);
-                let priv_info = proc_table.get(target_nr)
-                    .and_then(|rp| rp.priv_id)
-                    .and_then(|pid| priv_table.get(pid))
-                    .map(PrivInfoStruct::from_kpriv)
-                    .unwrap_or_default();
-                let priv_size = core::mem::size_of::<PrivInfoStruct>() as u64;
-                if priv_offset + WORD_SIZE > priv_size {
-                    return KcallResult::Ok(EFAULT);
-                }
-                read_word_at_offset(&priv_info, priv_offset as usize)
-            };
-            write_trace_reply_data(msg, word as i64);
-            KcallResult::Ok(0)
+            trace_get_user(proc_table, priv_table, target_nr, msg, tr_addr)
         }
 
         // C: do_trace.c:136-168 — T_SETUSER: write to p_reg (register area).
-        // C checks alignment + bounds: `tr_addr & (sizeof(reg_t)-1) != 0 ||
-        // tr_addr > sizeof(stackframe_s) - sizeof(reg_t)` → EFAULT.
-        //
-        // Implementation: alignment check matches C. The actual register
-        // write uses `CpuContextArch::write_user_register`, which
-        // provides arch-specific segment register protection (x86:
-        // forbid cs/ds/es/gs/fs/ss) and PSW bit masking (SETPSW).
-        //
-        // C bug note: on x86_64, the C source has no write path
-        // (only `#if defined(__i386__)` is compiled). Rust implements
-        // the correct behavior for all architectures.
         TraceRequest::SetUser => {
-            // C: do_trace.c:136-138 — alignment + bounds check.
-            if tr_addr & WORD_MASK != 0 {
-                return KcallResult::Ok(EFAULT);
-            }
-            // Delegate to arch layer for the actual write.
-            // `write_user_register` returns Err(()) for protected
-            // registers (segment selectors on x86) and out-of-bounds
-            // offsets.
-            use minix_arch::{CpuContextArch, CurrentCpuContextArch};
-            let write_result = proc_table.get_mut(target_nr).map(|rp| {
-                <CurrentCpuContextArch as CpuContextArch>::write_user_register(
-                    &mut rp.cpu_context,
-                    tr_addr as usize,
-                    tr_data as u64,
-                )
-            });
-            match write_result {
-                Some(Ok(())) => {
-                    write_trace_reply_data(msg, 0);
-                    KcallResult::Ok(0)
-                }
-                Some(Err(_)) => {
-                    // WriteUserRegError::BadAddress | Protected — both map
-                    // to EFAULT, matching C's do_trace.c T_SETUSER.
-                    KcallResult::Ok(EFAULT)
-                }
-                None => KcallResult::Ok(EINVAL),
-            }
+            trace_set_user(proc_table, target_nr, msg, tr_addr, tr_data)
         }
+    }
+}
+
+/// Word size used by C `long` in the struct proc / struct priv layout.
+/// C: `sizeof(long)` — 8 on 64-bit, 4 on 32-bit. We pin it as 8 (the
+/// Rust rewrite is 64-bit only; the doc explicitly targets 64-bit).
+const TRACE_WORD_SIZE: u64 = 8;
+const TRACE_WORD_MASK: u64 = TRACE_WORD_SIZE - 1;
+
+/// T_GETINS / T_GETDATA — read one C `long` from the target's address space.
+///
+/// C: do_trace.c:95-103 — `COPYFROMPROC(tr_addr, &tr_data, sizeof(long))`.
+/// The read goes through `data_copy_vmcheck` (Direct Map + PTE walk); a page
+/// fault on an unmapped page suspends the caller for VM handling (C fails
+/// with EFAULT there — see the dispatcher's cross-space copy note).
+fn trace_copy_word_from_proc(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    target_endpoint: Endpoint,
+    target_cr3: PhysBytes,
+    tr_addr: u64,
+) -> KcallResult {
+    let mut buf: u64 = 0;
+    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+        &mut buf as *mut u64 as u64,
+    ));
+    let proc_cr3 = |ep: Endpoint| {
+        if ep == target_endpoint { Some(target_cr3) } else { None }
+    };
+    let src = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(tr_addr),
+    };
+    let dst = AddressRef::Physical(buf_phys);
+    match data_copy_vmcheck(caller, src, dst, TRACE_WORD_SIZE as usize, proc_cr3) {
+        CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+        CrossSpaceResult::Completed(Ok(())) => {
+            write_trace_reply_data(msg, buf as i64);
+        }
+    }
+    KcallResult::Ok(0)
+}
+
+/// T_SETINS / T_SETDATA — write one C `long` into the target's address space.
+///
+/// C: do_trace.c:126-134 — `COPYTOPROC(tr_addr, &tr_data, sizeof(long))`.
+fn trace_copy_word_to_proc(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    target_endpoint: Endpoint,
+    target_cr3: PhysBytes,
+    tr_addr: u64,
+    tr_data: i64,
+) -> KcallResult {
+    let buf: u64 = tr_data as u64;
+    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+        &buf as *const u64 as u64,
+    ));
+    let proc_cr3 = |ep: Endpoint| {
+        if ep == target_endpoint { Some(target_cr3) } else { None }
+    };
+    let src = AddressRef::Physical(buf_phys);
+    let dst = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(tr_addr),
+    };
+    match data_copy_vmcheck(caller, src, dst, TRACE_WORD_SIZE as usize, proc_cr3) {
+        CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+        CrossSpaceResult::Completed(Ok(())) => {
+            write_trace_reply_data(msg, 0);
+        }
+    }
+    KcallResult::Ok(0)
+}
+
+/// T_READB_INS — read one byte from the target's instruction stream.
+///
+/// C: do_trace.c:191-194 — `COPYFROMPROC(tr_addr, &ub, 1)` — byte-level copy.
+fn trace_copy_byte_from_proc(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    target_endpoint: Endpoint,
+    target_cr3: PhysBytes,
+    tr_addr: u64,
+) -> KcallResult {
+    let mut buf: u8 = 0;
+    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+        // R-16 (2026-08-12): SAFETY: this is a 64-bit kernel, so
+        // `*mut u8` is 64-bit and `as u64` cannot truncate.
+        &mut buf as *mut u8 as u64,
+    ));
+    let proc_cr3 = |ep: Endpoint| {
+        if ep == target_endpoint { Some(target_cr3) } else { None }
+    };
+    let src = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(tr_addr),
+    };
+    let dst = AddressRef::Physical(buf_phys);
+    match data_copy_vmcheck(caller, src, dst, 1, proc_cr3) {
+        CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+        CrossSpaceResult::Completed(Ok(())) => {
+            write_trace_reply_data(msg, buf as i64);
+        }
+    }
+    KcallResult::Ok(0)
+}
+
+/// T_WRITEB_INS — write one byte into the target's instruction stream.
+///
+/// C: do_trace.c:196-200 — `COPYTOPROC(tr_addr, &ub, 1)` — byte-level copy.
+fn trace_copy_byte_to_proc(
+    caller: &mut KProcess,
+    msg: &mut Message,
+    target_endpoint: Endpoint,
+    target_cr3: PhysBytes,
+    tr_addr: u64,
+    tr_data: i64,
+) -> KcallResult {
+    let buf: u8 = tr_data as u8;
+    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
+        &buf as *const u8 as u64,
+    ));
+    let proc_cr3 = |ep: Endpoint| {
+        if ep == target_endpoint { Some(target_cr3) } else { None }
+    };
+    let src = AddressRef::Physical(buf_phys);
+    let dst = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(tr_addr),
+    };
+    match data_copy_vmcheck(caller, src, dst, 1, proc_cr3) {
+        CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+        CrossSpaceResult::Completed(Ok(())) => {
+            write_trace_reply_data(msg, 0);
+        }
+    }
+    KcallResult::Ok(0)
+}
+
+/// T_GETUSER — read a C `long` from the target's proc/priv struct image.
+///
+/// C: do_trace.c:105-124. C explicitly checks alignment:
+/// `if ((tr_addr & (sizeof(long)-1)) != 0) return(EFAULT)`.
+/// Step 2: if offset <= sizeof(proc) - WORD_SIZE → read from proc.
+///         else → offset -= round_up(sizeof(proc)); if within priv → read priv.
+/// Step 3: writeback tr_data into m_krn_lsys_sys_trace.data.
+fn trace_get_user(
+    proc_table: &ProcessTable,
+    priv_table: &PrivTable,
+    target_nr: ProcNr,
+    msg: &mut Message,
+    tr_addr: u64,
+) -> KcallResult {
+    // C: do_trace.c:106 — alignment check
+    if tr_addr & TRACE_WORD_MASK != 0 {
+        return KcallResult::Ok(EFAULT);
+    }
+    // C: do_trace.c:108-111 — read long from proc struct at offset.
+    // Build a ProcInfoStruct snapshot, then read a u64 at the offset.
+    let proc_info = proc_table.get(target_nr)
+        .map(ProcInfoStruct::from_kprocess)
+        .unwrap_or_default();
+    let proc_size = core::mem::size_of::<ProcInfoStruct>() as u64;
+    let word: u64 = if tr_addr + TRACE_WORD_SIZE <= proc_size {
+        read_word_at_offset(&proc_info, tr_addr as usize)
+    } else {
+        // C: do_trace.c:117-123 — read from priv struct.
+        // Align proc_size up to sizeof(long) boundary, then
+        // subtract to get the priv-struct offset.
+        let priv_offset = tr_addr - ((proc_size + TRACE_WORD_MASK) & !TRACE_WORD_MASK);
+        let priv_info = proc_table.get(target_nr)
+            .and_then(|rp| rp.priv_id)
+            .and_then(|pid| priv_table.get(pid))
+            .map(PrivInfoStruct::from_kpriv)
+            .unwrap_or_default();
+        let priv_size = core::mem::size_of::<PrivInfoStruct>() as u64;
+        if priv_offset + TRACE_WORD_SIZE > priv_size {
+            return KcallResult::Ok(EFAULT);
+        }
+        read_word_at_offset(&priv_info, priv_offset as usize)
+    };
+    write_trace_reply_data(msg, word as i64);
+    KcallResult::Ok(0)
+}
+
+/// T_SETUSER — write a C `long` into the target's register area (p_reg).
+///
+/// C: do_trace.c:136-168. C checks alignment + bounds:
+/// `tr_addr & (sizeof(reg_t)-1) != 0 || tr_addr > sizeof(stackframe_s) - sizeof(reg_t)` → EFAULT.
+///
+/// Implementation: alignment check matches C. The actual register
+/// write uses `CpuContextArch::write_user_register`, which
+/// provides arch-specific segment register protection (x86:
+/// forbid cs/ds/es/gs/fs/ss) and PSW bit masking (SETPSW).
+///
+/// C bug note: on x86_64, the C source has no write path
+/// (only `#if defined(__i386__)` is compiled). Rust implements
+/// the correct behavior for all architectures.
+fn trace_set_user(
+    proc_table: &mut ProcessTable,
+    target_nr: ProcNr,
+    msg: &mut Message,
+    tr_addr: u64,
+    tr_data: i64,
+) -> KcallResult {
+    // C: do_trace.c:136-138 — alignment + bounds check.
+    if tr_addr & TRACE_WORD_MASK != 0 {
+        return KcallResult::Ok(EFAULT);
+    }
+    // Delegate to arch layer for the actual write.
+    // `write_user_register` returns Err(()) for protected
+    // registers (segment selectors on x86) and out-of-bounds
+    // offsets.
+    use minix_arch::{CpuContextArch, CurrentCpuContextArch};
+    let write_result = proc_table.get_mut(target_nr).map(|rp| {
+        <CurrentCpuContextArch as CpuContextArch>::write_user_register(
+            &mut rp.cpu_context,
+            tr_addr as usize,
+            tr_data as u64,
+        )
+    });
+    match write_result {
+        Some(Ok(())) => {
+            write_trace_reply_data(msg, 0);
+            KcallResult::Ok(0)
+        }
+        Some(Err(_)) => {
+            // WriteUserRegError::BadAddress | Protected — both map
+            // to EFAULT, matching C's do_trace.c T_SETUSER.
+            KcallResult::Ok(EFAULT)
+        }
+        None => KcallResult::Ok(EINVAL),
     }
 }
 

@@ -220,7 +220,7 @@ static void proc_stacktrace_execute(struct proc *whichproc, reg_t v_bp, reg_t pc
 	return OK;
 ```
 
-`SYS_DIAGCTL` 的 `DIAGCTL_CODE_STACKTRACE` 子命令：对指定进程（`proc_nr` 从消息参数取）执行回溯。这是用户/系统管理触发路径（1.1 节场景 2）。注意 C 的 case 体先做 `isokendpt` 端点合法性校验（失败返回 `EINVAL`），再执行回溯并 `return OK`——完整的 DIAGCTL 分发见 doc 13（`dispatch_diagctl`，syscall.rs:2108）。
+`SYS_DIAGCTL` 的 `DIAGCTL_CODE_STACKTRACE` 子命令：对指定进程（`proc_nr` 从消息参数取）执行回溯。这是用户/系统管理触发路径（1.1 节场景 2）。注意 C 的 case 体先做 `isokendpt` 端点合法性校验（失败返回 `EINVAL`），再执行回溯并 `return OK`——完整的 DIAGCTL 分发见 doc 13（`dispatch_diagctl`，syscall.rs:2453）。
 
 ### 2.5 `util_stacktrace()` — panic 路径内核栈回溯（utility.c:39）
 
@@ -245,7 +245,7 @@ static void proc_stacktrace_execute(struct proc *whichproc, reg_t v_bp, reg_t pc
 | D3 | 跨地址空间读取 | `PRCOPY` 宏（iskernel 分支）| **`read_word: impl Fn(u64) -> Option<u64>` 闭包** | 把"user 需 data_copy / kernel 直读"抽象为注入依赖，None = 读失败终止 |
 | D4 | 截断上限 | `n > 50` | **`MAX_STACK_FRAMES = 32`** | 显式封顶约束诊断路径内核时间（C 上限靠 printf 可写性兜底）|
 | D5 | KTS 上下文恢复 | sp+16 从用户栈恢复 bp | **无 KTS 概念**（ARCH）| Rust 陷阱入口总保存完整 gp_regs（os/arch/src/x86_64/signal.rs:38 GP_RBP=5），i386 SYSENTER 部分保存约束不存在 |
-| D6 | syscall 接线 | DIAGCTL STACKTRACE 直调 | **已接线**（syscall.rs:2176）| Rust `dispatch_diagctl` 完整实现：endpoint→nr 解析（C isokendpt 对应）+ `cross_space_copy` read_word 闭包（C PRCOPY 对应）+ `walk_frames` 输出（见 §4.5）；与 C 的差异：无 KTS 特判（完整 gp_regs 总是可读）+ Suspended 视同读失败 |
+| D6 | syscall 接线 | DIAGCTL STACKTRACE 直调 | **已接线**（syscall.rs:2521）| Rust `dispatch_diagctl` 完整实现：endpoint→nr 解析（C isokendpt 对应）+ `cross_space_copy` read_word 闭包（C PRCOPY 对应）+ `walk_frames` 输出（见 §4.5）；与 C 的差异：无 KTS 特判（完整 gp_regs 总是可读）+ Suspended 视同读失败 |
 
 ### D1 细节：为何是 trait 而非 `#[cfg(target_arch)]`
 
@@ -367,7 +367,7 @@ impl StacktraceArch for AArch64CpuContextArch {
 ### 4.5 接线状态与测试补充（2026-08-13 同步）
 
 **接线（DIAGCTL 已实现，2026-08-14 核实）**：
-- `dispatch_diagctl`（syscall.rs:2108）`DIAGCTL_CODE_STACKTRACE` 子命令（syscall.rs:2176-2265）**已完整实现**：
+- `dispatch_diagctl`（syscall.rs:2453）`DIAGCTL_CODE_STACKTRACE` 子命令（syscall.rs:2521-2560）**已完整实现**：
   1. `endpoint_to_nr` + `proc_table.get` —— C `isokendpt` 校验对应（失败 `EINVAL`）
   2. `read_word` 闭包：`cross_space_copy`（doc 24）从目标进程地址空间读 8 字节（`AddressRef::Process` → `AddressRef::Physical` 直接映射缓冲），`Completed(Ok)` → `u64::from_le_bytes`，**其余（含 `Suspended`）→ `None` 终止**——C 的 `data_copy` 失败即停语义对应（C 用 `data_copy` 而非 `data_copy_vmcheck`，无 VMSUSPEND 副作用；Rust 同样刻意避免 `VmSuspend`）
   3. `CurrentStacktraceArch::walk_frames(&target_ctx, read_word, emit)` 输出到 EarlyConsole
@@ -442,7 +442,7 @@ pub fn proc_stacktrace(rp: &KProcess) {
 
 5. **失败容错（C "诊断路径不能二次崩溃"原则）**：`walk_frames` 内部 `read_word` 返回 `None` 即 break + 占位符；`cross_space_copy` 的 `Suspended`（VM 页错误）也映射为 `None`——BKL 临界区绝不能因栈回溯自身触发 VM 挂起
 
-#### DIAGCTL STACKTRACE 路径改用助手（syscall.rs:2208-2244，2026-09-05 重构）
+#### DIAGCTL STACKTRACE 路径改用助手（syscall.rs:2521-2560，2026-09-05 重构）
 
 原内联 ~75 行 DIAGCTL STACKTRACE 实现（含 `walk_frames` 调用 + read_word 闭包 + 头/尾输出）现改为：
 

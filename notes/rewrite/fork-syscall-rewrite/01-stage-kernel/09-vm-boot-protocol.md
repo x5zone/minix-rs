@@ -221,10 +221,10 @@ pub enum VmCtlError {
 
 ### 4.4 dispatch_vmctl 实现
 
-**位置**: `os/kernel/src/syscall.rs:1751`（~350 行完整实现，由 `kernel_call_dispatch` 统一分派）
+**位置**: `os/kernel/src/syscall.rs:2027-2436`（dispatcher + 子命令 helper 族，由 `kernel_call_dispatch` 统一分派）
 
 ```rust
-// os/kernel/src/syscall.rs:1751
+// os/kernel/src/syscall.rs:2027
 /// 处理 SYS_VMCTL 系统调用。
 /// C: do_vmctl() — do_vmctl.c:17-173
 fn dispatch_vmctl(
@@ -254,12 +254,12 @@ fn dispatch_vmctl(
 
 ### 4.5 SetAddrSpace 分支实现
 
-**位置**: `os/kernel/src/syscall.rs:1963`
+**位置**: `os/kernel/src/syscall.rs:2212`
 
 对应 C 的 `setcr3()`（arch_do_vmctl.c:19-33）5 步时序：
 
 ```rust
-// os/kernel/src/syscall.rs:1963
+// os/kernel/src/syscall.rs:2212
 VmCtlParam::SetAddrSpace => {
     // SVMCTL_PTROOT = m1_i3, SVMCTL_PTROOT_V = m1_p1
     let ptroot_phys = value_raw as u64;
@@ -322,7 +322,7 @@ VmCtlParam::SetAddrSpace => {
 
 ### 4.7 GetPdbr / FlushTlb / InvlPg / ClearMapCache 实现（FIX-24, Phase 5）
 
-C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（os/kernel/src/syscall.rs:1751-2098）。
+C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（os/kernel/src/syscall.rs:2027-2436）。
 
 **TlbArch trait 抽象**（os/arch/src/arch/tlb_arch.rs）：
 

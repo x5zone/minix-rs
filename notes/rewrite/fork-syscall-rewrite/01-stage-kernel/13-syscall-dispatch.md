@@ -127,8 +127,8 @@ SMP 环境下，`kernel_call_dispatch` + `kernel_call_finish` 必须在 BKL 临�
 |------|------|---------|------|
 | 入口 | `kernel_call_dispatch` | acquire（guard 持有 + forget）| `syscall.rs:399` |
 | 持有 | dispatch_inner + match + handler | 保持（`bkl_section` witness 传入 inner）| `syscall.rs:425-540` |
-| VmSuspend 释放 | `kernel_call_finish` VmSuspend 分支 | `bkl_unlock()` | `syscall.rs:2580` |
-| 正常释放 | `kernel_call_finish` 非 VmSuspend 末尾 | `bkl_unlock()`（Ok/NoReply/BadCall/CallDenied 统一路径）| `syscall.rs:2605` |
+| VmSuspend 释放 | `kernel_call_finish` VmSuspend 分支 | `bkl_unlock()` | `syscall.rs:2889` |
+| 正常释放 | `kernel_call_finish` 非 VmSuspend 末尾 | `bkl_unlock()`（Ok/NoReply/BadCall/CallDenied 统一路径）| `syscall.rs:2914` |
 | Resume 重新获取 | `kernel_call_resume` → `kernel_call_dispatch` | re-acquire（新 guard）| `syscall.rs:399`（经 dispatch） |
 
 **为什么 VmSuspend 路径要释放 BKL**？挂起期间进程等待 VM（独立进程、独立 CPU 调度），若不释放 BKL，其他 CPU 无法进入内核处理 VM 的回复——死锁。
@@ -405,7 +405,7 @@ Rust 等价物：`enum Syscall` 的 `#[repr(u16)]` 值即"注册"，无需 `syst
 - **trait bound**：从未被用作泛型约束
 - **机制 vs 策略分离**：用户空间消息投递是机制（12 已定义），不是策略
 
-**最终选择**：自由函数复用 12-ipc-core §1.3 的延迟拷贝设计。`copy_msg_to_user` 实现于 syscall.rs:2543-2546：
+**最终选择**：自由函数复用 12-ipc-core §1.3 的延迟拷贝设计。`copy_msg_to_user` 实现于 syscall.rs:2837-2840：
 
 ```rust
 fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
@@ -618,7 +618,7 @@ fn kernel_call_dispatch_inner(
 
 ### 4.5 kernel_call_finish（卓越性重构后）
 
-syscall.rs:2568-2621：
+syscall.rs:2862-2915：
 
 ```rust
 pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallResult) {
@@ -668,7 +668,7 @@ pub fn kernel_call_finish(caller: &mut KProcess, msg: &Message, result: KcallRes
 
 ### 4.6 kernel_call_resume（卓越性强化后）
 
-syscall.rs:2622-2660：
+syscall.rs:2931-2967：
 
 ```rust
 pub fn kernel_call_resume(
@@ -724,7 +724,7 @@ pub fn kernel_call_resume(
 
 ### 4.7 copy_msg_to_user（复用 12 delivermsg）
 
-syscall.rs:2543-2546：
+syscall.rs:2837-2840：
 
 ```rust
 fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
@@ -810,26 +810,26 @@ pub fn dispatch_ipc_entry(
 
 | 测试 | 验证 | 实现位置 |
 |------|------|---------|
-| `Syscall::try_from(0) == Ok(Fork)` | Fork 编号对齐 C | syscall.rs:2666 |
-| `Syscall::try_from(11) == Err(())` | 空缺号编译期排除 | syscall.rs:2674 |
-| `Syscall::try_from(58) == Err(())` | 超出范围排除 | syscall.rs:2675 |
-| `Syscall::try_from(255) == Err(())` | 大值排除 | syscall.rs:2676 |
+| `Syscall::try_from(0) == Ok(Fork)` | Fork 编号对齐 C | syscall.rs:2976 |
+| `Syscall::try_from(11) == Err(())` | 空缺号编译期排除 | syscall.rs:2984 |
+| `Syscall::try_from(58) == Err(())` | 超出范围排除 | syscall.rs:2985 |
+| `Syscall::try_from(255) == Err(())` | 大值排除 | syscall.rs:2986 |
 | `Syscall::Padconf as u16 == 57` | 上界值与 C 一致 | const assert |
 
 ### 5.2 Dispatch 路由与权限
 
 | 测试 | 验证 | 实现位置 |
 |------|------|---------|
-| `dispatch_schedule` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:2683-2694 |
-| `dispatch_schedule` 无效 endpoint → EPERM（先于 endpoint 检查） | 权限优先级 | syscall.rs:2696-2716 |
-| `dispatch_schedule` SYS_PROC caller 通过权限检查 → EINVAL（endpoint NONE） | FIX-25 回归测试：验证 `caller_has_sys_proc_with_table` 正确识别 SYS_PROC，不再被 legacy `caller_has_sys_proc` 误拒 | syscall.rs:2718-2744 |
-| `dispatch_privctl` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:2746-2756 |
-| `dispatch_privctl` 未知 request → EINVAL | switch default 分支 | syscall.rs:2758-2786 |
-| `dispatch_privctl` DISALLOW 设置 `RTS_NO_PRIV` | 子命令 (2) 正常路径 | syscall.rs:2788-2817 |
-| `dispatch_privctl` DISALLOW 已设置 → EPERM | 子命令 (2) 边界 | syscall.rs:2819-2845 |
-| `dispatch_privctl` QUERY_MEM 无 mem range → EPERM | 子命令 (8) 边界 | syscall.rs:2847-2876 |
+| `dispatch_schedule` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:2992-3003 |
+| `dispatch_schedule` 无效 endpoint → EPERM（先于 endpoint 检查） | 权限优先级 | syscall.rs:3005-3024 |
+| `dispatch_schedule` SYS_PROC caller 通过权限检查 → EINVAL（endpoint NONE） | FIX-25 回归测试：验证 `caller_has_sys_proc_with_table` 正确识别 SYS_PROC，不再被 legacy `caller_has_sys_proc` 误拒 | syscall.rs:3027-3051 |
+| `dispatch_privctl` 拒绝非 SYS_PROC 调用方 | 权限路径 EPERM | syscall.rs:3056-3066 |
+| `dispatch_privctl` 未知 request → EINVAL | switch default 分支 | syscall.rs:3068-3097 |
+| `dispatch_privctl` DISALLOW 设置 `RTS_NO_PRIV` | 子命令 (2) 正常路径 | syscall.rs:3099-3129 |
+| `dispatch_privctl` DISALLOW 已设置 → EPERM | 子命令 (2) 边界 | syscall.rs:3131-3158 |
+| `dispatch_privctl` QUERY_MEM 无 mem range → EPERM | 子命令 (8) 边界 | syscall.rs:3160-3190 |
 | `dispatch_privctl` DEFERRED 子命令 → ENOSYS | 子命令 (3/5/6/7/9/11) | **已落地（Phase 6, 2026-08-13）** — 详见 [22-privilege.md §4.7](22-privilege.md) |
-| `dispatch_getmcontext` 无效 endpoint → EINVAL | 边界检查 | syscall.rs:2994-3005 |
+| `dispatch_getmcontext` 无效 endpoint → EINVAL | 边界检查 | syscall.rs:3375-3385 |
 | `dispatch_runctl` 各模式行为 | 多路径分支 | syscall_process 模块测试 |
 | `dispatch_statectl` IPC 过滤器分配 | 复杂路径覆盖 | syscall_process 模块测试 |
 
@@ -875,7 +875,7 @@ pub fn dispatch_ipc_entry(
 
 **问题**：原 Rust 实现在 dispatch 之前 clear `KCALL_RESUME`，handlers 无法感知 retry。
 
-**修复**（syscall.rs:2622-2660）：调整顺序——dispatch 先执行（保持 set），dispatch 返回后才 clear，对齐 C system.c:630-635。
+**修复**（syscall.rs:2931-2967）：调整顺序——dispatch 先执行（保持 set），dispatch 返回后才 clear，对齐 C system.c:630-635。
 
 **验证**：`cargo test -p minix-kernel --lib syscall` 160/160 PASS（+1 ignored）。
 

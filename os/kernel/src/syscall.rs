@@ -1356,381 +1356,46 @@ fn dispatch_privctl(
         // SYS_PRIV_ALLOW = 1: Allow process to run.
         // C: do_privctl.c:56-64 — check RTS_NO_PRIV set + s_proc_nr != NONE,
         // then RTS_UNSET(rp, RTS_NO_PRIV)
-        1 => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    // C: if (!RTS_ISSET(rp, RTS_NO_PRIV) || priv(rp)->s_proc_nr == NONE)
-                    if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                        return KcallResult::Ok(EPERM);
-                    }
-                    // Check s_proc_nr != NONE (C: priv(rp)->s_proc_nr == NONE)
-                    let has_priv = p.priv_id
-                        .and_then(|id| priv_table.get(id))
-                        .map(|kp| kp.identity.s_proc_nr.is_some())
-                        .unwrap_or(false);
-                    if !has_priv {
-                        return KcallResult::Ok(EPERM);
-                    }
-                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::NO_PRIV);
-                    KcallResult::Ok(0)
-                }
-                None => KcallResult::Ok(EINVAL),
-            }
-        }
+        1 => privctl_allow(proc_table, priv_table, target_nr),
 
         // SYS_PRIV_DISALLOW = 2: Disallow process from running.
         // C: do_privctl.c:75-79 — if RTS_NO_PRIV already set, EPERM;
         // else RTS_SET(rp, RTS_NO_PRIV)
-        2 => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    if p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                        return KcallResult::Ok(EPERM);
-                    }
-                    p.p_rts_flags.set(crate::proc::RtsFlagsBits::NO_PRIV);
-                    KcallResult::Ok(0)
-                }
-                None => KcallResult::Ok(EINVAL),
-            }
-        }
+        2 => privctl_disallow(proc_table, target_nr),
 
         // SYS_PRIV_YIELD = 10: Allow process to run and suspend the caller.
         // C: do_privctl.c:66-73 — check target has RTS_NO_PRIV + s_proc_nr,
         // then RTS_SET(caller, RTS_NO_PRIV) + RTS_UNSET(rp, RTS_NO_PRIV)
-        10 => {
-            let target = proc_table.get(target_nr);
-            match target {
-                Some(p) => {
-                    if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                        return KcallResult::Ok(EPERM);
-                    }
-                    let has_priv = p.priv_id
-                        .and_then(|id| priv_table.get(id))
-                        .map(|kp| kp.identity.s_proc_nr.is_some())
-                        .unwrap_or(false);
-                    if !has_priv {
-                        return KcallResult::Ok(EPERM);
-                    }
-                    // C: RTS_SET(caller, RTS_NO_PRIV) — suspend caller
-                    caller.p_rts_flags.set(crate::proc::RtsFlagsBits::NO_PRIV);
-                    // C: RTS_UNSET(rp, RTS_NO_PRIV) — allow target
-                    let target = proc_table.get_mut(target_nr);
-                    match target {
-                        Some(p) => {
-                            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::NO_PRIV);
-                        }
-                        None => return KcallResult::Ok(EINVAL),
-                    }
-                    KcallResult::Ok(0)
-                }
-                None => KcallResult::Ok(EINVAL),
-            }
-        }
+        10 => privctl_yield(caller, proc_table, priv_table, target_nr),
 
         // SYS_PRIV_QUERY_MEM = 8: Check if process may map physical range.
         // C: do_privctl.c:232-251 — check s_mem_tab for containing range
-        8 => {
-            // C: addr = phys_start; limit = addr + phys_len - 1
-            let addr = phys_start;
-            let limit = if phys_len == 0 {
-                0u64
-            } else {
-                match phys_start.checked_add(phys_len - 1) {
-                    Some(l) => l,
-                    None => return KcallResult::Ok(EPERM), // overflow
-                }
-            };
-            // C: if (limit < addr) return EPERM
-            if limit < addr {
-                return KcallResult::Ok(EPERM);
-            }
-            // Get target's priv and check s_mem_tab
-            let target = proc_table.get(target_nr);
-            match target {
-                Some(p) => {
-                    let allowed = p.priv_id
-                        .and_then(|id| priv_table.get(id))
-                        .map(|kp| {
-                            // C: for i in 0..s_nr_mem_range:
-                            //   if addr >= s_mem_tab[i].base && limit <= s_mem_tab[i].limit
-                            //     return OK
-                            for i in 0..kp.mem.s_nr_mem_range as usize {
-                                let entry = &kp.mem.s_mem_tab[i];
-                                if addr >= entry.base && limit <= entry.limit {
-                                    return true;
-                                }
-                            }
-                            false
-                        })
-                        .unwrap_or(false);
-                    if allowed {
-                        KcallResult::Ok(0)
-                    } else {
-                        KcallResult::Ok(EPERM)
-                    }
-                }
-                None => KcallResult::Ok(EPERM),
-            }
-        }
+        8 => privctl_query_mem(proc_table, priv_table, target_nr, phys_start, phys_len),
 
         // SYS_PRIV_SET_USER = 4: Link target to USER_PRIV_ID.
         // C: do_privctl.c:176-185 — check RTS_NO_PRIV, then
         // priv(rp) = priv_addr(USER_PRIV_ID)
-        4 => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                        return KcallResult::Ok(EPERM);
-                    }
-                    // C: priv(rp) = priv_addr(USER_PRIV_ID)
-                    // Link target's priv_id to USER_PRIV_ID
-                    p.priv_id = Some(crate::kpriv::USER_PRIV_ID);
-                    // Update USER_PRIV_ID's s_proc_nr to point to target
-                    if let Some(user_priv) = priv_table.get_mut(crate::kpriv::USER_PRIV_ID) {
-                        user_priv.identity.s_proc_nr = Some(target_nr);
-                    }
-                    KcallResult::Ok(0)
-                }
-                None => KcallResult::Ok(EINVAL),
-            }
-        }
+        4 => privctl_set_user(proc_table, priv_table, target_nr),
 
         // SYS_PRIV_SET_SYS = 3: Set privilege structure for a blocked system process.
         // C: do_privctl.c:86-174
-        3 => {
-            // C: do_privctl.c:88 — target must have RTS_NO_PRIV
-            if !target_has_no_priv {
-                return KcallResult::Ok(EPERM);
-            }
-
-            // C: do_privctl.c:91-104 — determine priv_id
-            // If arg_ptr provided and DYN_PRIV_ID not set, use static id from request.
-            // Else use NULL_PRIV_ID for dynamic allocation.
-            let priv_id = if arg_ptr != 0 {
-                let mut req = crate::kpriv::PrivUpdateRequest::new();
-                let copy_result = copy_struct_from_user(
-                    caller, proc_table, arg_ptr,
-                    &mut req as *mut _ as *mut u8,
-                    core::mem::size_of::<crate::kpriv::PrivUpdateRequest>(),
-                );
-                match copy_result {
-                    crate::vm::CrossSpaceResult::Completed(Ok(())) => req,
-                    crate::vm::CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
-                    crate::vm::CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
-                }
-            } else {
-                crate::kpriv::PrivUpdateRequest::new()
-            };
-
-            // C: do_privctl.c:101-103 — static id if not DYN_PRIV_ID
-            let alloc_id = if !crate::capability::ProcessCapability::from_wire(priv_id.s_flags)
-                .contains(crate::capability::ProcessCapability::DYN_PRIV_ID)
-                && arg_ptr != 0
-            {
-                priv_id.s_id
-            } else {
-                crate::kpriv::NULL_PRIV_ID
-            };
-
-            // C: do_privctl.c:110-115 — get_priv(rp, priv_id)
-            let allocated = priv_table.get_priv(target_nr, alloc_id);
-            match allocated {
-                Ok(actual_id) => {
-                    // C: system.c:298 — get_priv links both directions
-                    // (`rc->p_priv = sp`). `PrivTable::get_priv` can only
-                    // reach the priv slot (s_proc_nr), so the process-side
-                    // link happens here. Without it the target stays
-                    // priv-less from its own side: a later UPDATE_SYS or
-                    // GET_PRIV on this process would fail as if SET_SYS
-                    // never ran.
-                    if let Some(p) = proc_table.get_mut(target_nr) {
-                        p.priv_id = Some(actual_id);
-                    }
-                    // C: do_privctl.c:116-119 — restore s_id + s_proc_nr
-                    // (get_priv already sets s_proc_nr; s_id is the slot index)
-                    let target_ep = proc_table.get(target_nr)
-                        .map(|p| p.p_endpoint)
-                        .unwrap_or(minix_types::Endpoint::NONE);
-
-                    // C: do_privctl.c:127 — reset_kernel_timer(&priv(rp)->s_alarm_timer)
-                    // Chain-aware alarm reset: the priv slot may be recycled
-                    // with a stale node still linked into the clock chain, so
-                    // the local node clear in `reset_pending_ipc` (C:
-                    // `tmr_inittimer` semantics) must be preceded by the
-                    // chain unlink.
-                    crate::clock::reset_alarm_timer(priv_table, clock_state, actual_id);
-
-                    if let Some(priv_) = priv_table.get_mut(actual_id) {
-                        // C: do_privctl.c:121-131 — clear pending IPC state
-                        priv_.reset_pending_ipc();
-                        // C: do_privctl.c:133-164 — set defaults
-                        priv_.flags.s_flags = crate::capability::ProcessCapability::DSRV_F;
-                        priv_.init.s_init_flags = 0; // DSRV_I = 0
-                        priv_.ipc.s_trap_mask = crate::capability::TrapMask::ALL; // DSRV_T = ~0
-                        priv_.ipc.s_k_call_mask = crate::capability::KCallMask::ALL; // DSRV_KC = ALL_C
-                        priv_.signals.s_sig_mgr = minix_types::Endpoint::RS; // DSRV_SM = ROOT_SYS_PROC_NR
-                        priv_.signals.s_bak_sig_mgr = minix_types::Endpoint::NONE;
-                        priv_.reset_resources(target_ep);
-                    }
-
-                    // C: do_privctl.c:138-143 — default target mask: map =
-                    // DSRV_M (= ALL_M) expanded to every priv id, then
-                    // fill_sendto_mask — the association/self guards apply
-                    // and every send-capable target receives the reciprocal
-                    // bit (system.c:349-358). A raw `s_ipc_to = ALL` here
-                    // would also pre-authorize slots RS has not bound yet
-                    // and set the self bit, which C never does.
-                    priv_table.fill_sendto_mask(actual_id, crate::capability::IpcMask::ALL);
-
-                    // C: do_privctl.c:167-172 — override with user-provided settings
-                    if arg_ptr != 0
-                        && priv_table.update_priv(actual_id, &priv_id).is_err() {
-                            return KcallResult::Ok(EINVAL);
-                        }
-                    KcallResult::Ok(0)
-                }
-                Err(ENOSPC) => KcallResult::Ok(ENOSPC),
-                Err(EINVAL) => KcallResult::Ok(EINVAL),
-                Err(EBUSY) => KcallResult::Ok(EBUSY),
-                Err(_) => KcallResult::Ok(EINVAL),
-            }
-        }
+        3 => privctl_set_sys(caller, proc_table, priv_table, clock_state, target_nr, arg_ptr, target_has_no_priv),
 
         // SYS_PRIV_ADD_IO = 5: Add I/O port range to target's privilege.
         // C: do_privctl.c:187-204
-        5 => {
-            if target_has_no_priv {
-                return KcallResult::Ok(EPERM);
-            }
-            let target_priv_id = match target_priv_id {
-                Some(id) => id,
-                None => return KcallResult::Ok(EPERM),
-            };
-            let mut io_range = crate::kpriv::IoRange::new();
-            let copy_result = copy_struct_from_user(
-                caller, proc_table, arg_ptr,
-                &mut io_range as *mut _ as *mut u8,
-                core::mem::size_of::<crate::kpriv::IoRange>(),
-            );
-            match copy_result {
-                crate::vm::CrossSpaceResult::Completed(Ok(())) => {
-                    match priv_table.get_mut(target_priv_id) {
-                        Some(priv_) => {
-                            match priv_.add_io(&io_range) {
-                                Ok(()) => KcallResult::Ok(0),
-                                Err(()) => KcallResult::Ok(ENOSPC),
-                            }
-                        }
-                        None => KcallResult::Ok(EINVAL),
-                    }
-                }
-                crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
-                crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
-            }
-        }
+        5 => privctl_add_io(caller, proc_table, priv_table, target_priv_id, target_has_no_priv, arg_ptr),
 
         // SYS_PRIV_ADD_MEM = 6: Add memory range to target's privilege.
         // C: do_privctl.c:206-216
-        6 => {
-            if target_has_no_priv {
-                return KcallResult::Ok(EPERM);
-            }
-            let target_priv_id = match target_priv_id {
-                Some(id) => id,
-                None => return KcallResult::Ok(EPERM),
-            };
-            let mut mem_range = crate::kpriv::MemRange::new();
-            let copy_result = copy_struct_from_user(
-                caller, proc_table, arg_ptr,
-                &mut mem_range as *mut _ as *mut u8,
-                core::mem::size_of::<crate::kpriv::MemRange>(),
-            );
-            match copy_result {
-                crate::vm::CrossSpaceResult::Completed(Ok(())) => {
-                    match priv_table.get_mut(target_priv_id) {
-                        Some(priv_) => {
-                            match priv_.add_mem(&mem_range) {
-                                Ok(()) => KcallResult::Ok(0),
-                                Err(()) => KcallResult::Ok(ENOSPC),
-                            }
-                        }
-                        None => KcallResult::Ok(EINVAL),
-                    }
-                }
-                crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
-                crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
-            }
-        }
+        6 => privctl_add_mem(caller, proc_table, priv_table, target_priv_id, target_has_no_priv, arg_ptr),
 
         // SYS_PRIV_ADD_IRQ = 7: Add IRQ to target's privilege.
         // C: do_privctl.c:218-230
-        7 => {
-            if target_has_no_priv {
-                return KcallResult::Ok(EPERM);
-            }
-            let target_priv_id = match target_priv_id {
-                Some(id) => id,
-                None => return KcallResult::Ok(EPERM),
-            };
-            let mut irq: i32 = 0;
-            let copy_result = copy_struct_from_user(
-                caller, proc_table, arg_ptr,
-                &mut irq as *mut _ as *mut u8,
-                core::mem::size_of::<i32>(),
-            );
-            match copy_result {
-                crate::vm::CrossSpaceResult::Completed(Ok(())) => {
-                    match priv_table.get_mut(target_priv_id) {
-                        Some(priv_) => {
-                            match priv_.add_irq(irq) {
-                                Ok(()) => KcallResult::Ok(0),
-                                Err(()) => KcallResult::Ok(ENOSPC),
-                            }
-                        }
-                        None => KcallResult::Ok(EINVAL),
-                    }
-                }
-                crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
-                crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
-            }
-        }
+        7 => privctl_add_irq(caller, proc_table, priv_table, target_priv_id, target_has_no_priv, arg_ptr),
 
         // SYS_PRIV_UPDATE_SYS = 9: Update existing privilege structure.
         // C: do_privctl.c:253-268
-        9 => {
-            // C: do_privctl.c:255 — arg_ptr must be non-null
-            if arg_ptr == 0 {
-                return KcallResult::Ok(EINVAL);
-            }
-            let target_priv_id = match target_priv_id {
-                Some(id) => id,
-                None => return KcallResult::Ok(EINVAL),
-            };
-            let mut req = crate::kpriv::PrivUpdateRequest::new();
-            let copy_result = copy_struct_from_user(
-                caller, proc_table, arg_ptr,
-                &mut req as *mut _ as *mut u8,
-                core::mem::size_of::<crate::kpriv::PrivUpdateRequest>(),
-            );
-            match copy_result {
-                crate::vm::CrossSpaceResult::Completed(Ok(())) => {
-                    // C: do_privctl.c:265-267 — update_priv(rp, &priv).
-                    // Table-level: field copies onto the target slot plus
-                    // the whole-table target-mask fill (fill_sendto_mask,
-                    // system.c:349-358) that grants/revokes the reciprocal
-                    // bits and applies the association/self guards.
-                    match priv_table.update_priv(target_priv_id, &req) {
-                        Ok(()) => KcallResult::Ok(0),
-                        Err(_) => KcallResult::Ok(EINVAL),
-                    }
-                }
-                crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
-                crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
-            }
-        }
+        9 => privctl_update_sys(caller, proc_table, priv_table, target_priv_id, arg_ptr),
 
         // SYS_PRIV_CLEAR_IPC_REFS = 11: Clear pending IPC for target.
         // C: do_privctl.c:81-84 — clear_ipc_refs(rp, EDEADSRCDST)
@@ -1742,6 +1407,452 @@ fn dispatch_privctl(
         // Unknown request
         // C: do_privctl.c:270-273 — printf + return EINVAL
         _ => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SYS_PRIV_ALLOW — clear RTS_NO_PRIV after eligibility checks.
+///
+/// C: do_privctl.c:56-64.
+fn privctl_allow(
+    proc_table: &mut ProcessTable,
+    priv_table: &crate::kpriv::PrivTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            // C: if (!RTS_ISSET(rp, RTS_NO_PRIV) || priv(rp)->s_proc_nr == NONE)
+            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
+                return KcallResult::Ok(EPERM);
+            }
+            // Check s_proc_nr != NONE (C: priv(rp)->s_proc_nr == NONE)
+            let has_priv = p.priv_id
+                .and_then(|id| priv_table.get(id))
+                .map(|kp| kp.identity.s_proc_nr.is_some())
+                .unwrap_or(false);
+            if !has_priv {
+                return KcallResult::Ok(EPERM);
+            }
+            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::NO_PRIV);
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SYS_PRIV_DISALLOW — set RTS_NO_PRIV (refuse unless already set → EPERM).
+///
+/// C: do_privctl.c:75-79.
+fn privctl_disallow(proc_table: &mut ProcessTable, target_nr: ProcNr) -> KcallResult {
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            if p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
+                return KcallResult::Ok(EPERM);
+            }
+            p.p_rts_flags.set(crate::proc::RtsFlagsBits::NO_PRIV);
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SYS_PRIV_YIELD — allow the target and suspend the caller in its place.
+///
+/// C: do_privctl.c:66-73 — check target has RTS_NO_PRIV + s_proc_nr,
+/// then RTS_SET(caller, RTS_NO_PRIV) + RTS_UNSET(rp, RTS_NO_PRIV).
+fn privctl_yield(
+    caller: &mut KProcess,
+    proc_table: &mut ProcessTable,
+    priv_table: &crate::kpriv::PrivTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target = proc_table.get(target_nr);
+    match target {
+        Some(p) => {
+            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
+                return KcallResult::Ok(EPERM);
+            }
+            let has_priv = p.priv_id
+                .and_then(|id| priv_table.get(id))
+                .map(|kp| kp.identity.s_proc_nr.is_some())
+                .unwrap_or(false);
+            if !has_priv {
+                return KcallResult::Ok(EPERM);
+            }
+            // C: RTS_SET(caller, RTS_NO_PRIV) — suspend caller
+            caller.p_rts_flags.set(crate::proc::RtsFlagsBits::NO_PRIV);
+            // C: RTS_UNSET(rp, RTS_NO_PRIV) — allow target
+            let target = proc_table.get_mut(target_nr);
+            match target {
+                Some(p) => {
+                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::NO_PRIV);
+                }
+                None => return KcallResult::Ok(EINVAL),
+            }
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SYS_PRIV_QUERY_MEM — may the target map the physical range
+/// `[phys_start, phys_start+phys_len)`? Checks the priv `s_mem_tab`.
+///
+/// C: do_privctl.c:232-251.
+fn privctl_query_mem(
+    proc_table: &ProcessTable,
+    priv_table: &crate::kpriv::PrivTable,
+    target_nr: ProcNr,
+    phys_start: u64,
+    phys_len: u64,
+) -> KcallResult {
+    // C: addr = phys_start; limit = addr + phys_len - 1
+    let addr = phys_start;
+    let limit = if phys_len == 0 {
+        0u64
+    } else {
+        match phys_start.checked_add(phys_len - 1) {
+            Some(l) => l,
+            None => return KcallResult::Ok(EPERM), // overflow
+        }
+    };
+    // C: if (limit < addr) return EPERM
+    if limit < addr {
+        return KcallResult::Ok(EPERM);
+    }
+    // Get target's priv and check s_mem_tab
+    let target = proc_table.get(target_nr);
+    match target {
+        Some(p) => {
+            let allowed = p.priv_id
+                .and_then(|id| priv_table.get(id))
+                .map(|kp| {
+                    // C: for i in 0..s_nr_mem_range:
+                    //   if addr >= s_mem_tab[i].base && limit <= s_mem_tab[i].limit
+                    //     return OK
+                    for i in 0..kp.mem.s_nr_mem_range as usize {
+                        let entry = &kp.mem.s_mem_tab[i];
+                        if addr >= entry.base && limit <= entry.limit {
+                            return true;
+                        }
+                    }
+                    false
+                })
+                .unwrap_or(false);
+            if allowed {
+                KcallResult::Ok(0)
+            } else {
+                KcallResult::Ok(EPERM)
+            }
+        }
+        None => KcallResult::Ok(EPERM),
+    }
+}
+
+/// SYS_PRIV_SET_USER — link the target to the shared USER_PRIV_ID slot.
+///
+/// C: do_privctl.c:176-185 — check RTS_NO_PRIV, then
+/// priv(rp) = priv_addr(USER_PRIV_ID).
+fn privctl_set_user(
+    proc_table: &mut ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
+                return KcallResult::Ok(EPERM);
+            }
+            // C: priv(rp) = priv_addr(USER_PRIV_ID)
+            // Link target's priv_id to USER_PRIV_ID
+            p.priv_id = Some(crate::kpriv::USER_PRIV_ID);
+            // Update USER_PRIV_ID's s_proc_nr to point to target
+            if let Some(user_priv) = priv_table.get_mut(crate::kpriv::USER_PRIV_ID) {
+                user_priv.identity.s_proc_nr = Some(target_nr);
+            }
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SYS_PRIV_SET_SYS — allocate and initialise a privilege structure.
+///
+/// C: do_privctl.c:86-174 — determine priv_id (static vs dynamic),
+/// get_priv, restore s_id/s_proc_nr, reset the alarm timer, clear pending
+/// IPC, apply DSRV_* defaults, fill the send-to mask, then override with
+/// user-provided settings when `arg_ptr` carries a PrivUpdateRequest.
+#[allow(clippy::too_many_arguments)]
+fn privctl_set_sys(
+    caller: &mut KProcess,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    clock_state: &mut ClockState,
+    target_nr: ProcNr,
+    arg_ptr: u64,
+    target_has_no_priv: bool,
+) -> KcallResult {
+    // C: do_privctl.c:88 — target must have RTS_NO_PRIV
+    if !target_has_no_priv {
+        return KcallResult::Ok(EPERM);
+    }
+
+    // C: do_privctl.c:91-104 — determine priv_id
+    // If arg_ptr provided and DYN_PRIV_ID not set, use static id from request.
+    // Else use NULL_PRIV_ID for dynamic allocation.
+    let priv_id = if arg_ptr != 0 {
+        let mut req = crate::kpriv::PrivUpdateRequest::new();
+        let copy_result = copy_struct_from_user(
+            caller, proc_table, arg_ptr,
+            &mut req as *mut _ as *mut u8,
+            core::mem::size_of::<crate::kpriv::PrivUpdateRequest>(),
+        );
+        match copy_result {
+            crate::vm::CrossSpaceResult::Completed(Ok(())) => req,
+            crate::vm::CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            crate::vm::CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
+        }
+    } else {
+        crate::kpriv::PrivUpdateRequest::new()
+    };
+
+    // C: do_privctl.c:101-103 — static id if not DYN_PRIV_ID
+    let alloc_id = if !crate::capability::ProcessCapability::from_wire(priv_id.s_flags)
+        .contains(crate::capability::ProcessCapability::DYN_PRIV_ID)
+        && arg_ptr != 0
+    {
+        priv_id.s_id
+    } else {
+        crate::kpriv::NULL_PRIV_ID
+    };
+
+    // C: do_privctl.c:110-115 — get_priv(rp, priv_id)
+    let allocated = priv_table.get_priv(target_nr, alloc_id);
+    match allocated {
+        Ok(actual_id) => {
+            // C: system.c:298 — get_priv links both directions
+            // (`rc->p_priv = sp`). `PrivTable::get_priv` can only
+            // reach the priv slot (s_proc_nr), so the process-side
+            // link happens here. Without it the target stays
+            // priv-less from its own side: a later UPDATE_SYS or
+            // GET_PRIV on this process would fail as if SET_SYS
+            // never ran.
+            if let Some(p) = proc_table.get_mut(target_nr) {
+                p.priv_id = Some(actual_id);
+            }
+            // C: do_privctl.c:116-119 — restore s_id + s_proc_nr
+            // (get_priv already sets s_proc_nr; s_id is the slot index)
+            let target_ep = proc_table.get(target_nr)
+                .map(|p| p.p_endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+
+            // C: do_privctl.c:127 — reset_kernel_timer(&priv(rp)->s_alarm_timer)
+            // Chain-aware alarm reset: the priv slot may be recycled
+            // with a stale node still linked into the clock chain, so
+            // the local node clear in `reset_pending_ipc` (C:
+            // `tmr_inittimer` semantics) must be preceded by the
+            // chain unlink.
+            crate::clock::reset_alarm_timer(priv_table, clock_state, actual_id);
+
+            if let Some(priv_) = priv_table.get_mut(actual_id) {
+                // C: do_privctl.c:121-131 — clear pending IPC state
+                priv_.reset_pending_ipc();
+                // C: do_privctl.c:133-164 — set defaults
+                priv_.flags.s_flags = crate::capability::ProcessCapability::DSRV_F;
+                priv_.init.s_init_flags = 0; // DSRV_I = 0
+                priv_.ipc.s_trap_mask = crate::capability::TrapMask::ALL; // DSRV_T = ~0
+                priv_.ipc.s_k_call_mask = crate::capability::KCallMask::ALL; // DSRV_KC = ALL_C
+                priv_.signals.s_sig_mgr = minix_types::Endpoint::RS; // DSRV_SM = ROOT_SYS_PROC_NR
+                priv_.signals.s_bak_sig_mgr = minix_types::Endpoint::NONE;
+                priv_.reset_resources(target_ep);
+            }
+
+            // C: do_privctl.c:138-143 — default target mask: map =
+            // DSRV_M (= ALL_M) expanded to every priv id, then
+            // fill_sendto_mask — the association/self guards apply
+            // and every send-capable target receives the reciprocal
+            // bit (system.c:349-358). A raw `s_ipc_to = ALL` here
+            // would also pre-authorize slots RS has not bound yet
+            // and set the self bit, which C never does.
+            priv_table.fill_sendto_mask(actual_id, crate::capability::IpcMask::ALL);
+
+            // C: do_privctl.c:167-172 — override with user-provided settings
+            if arg_ptr != 0
+                && priv_table.update_priv(actual_id, &priv_id).is_err() {
+                    return KcallResult::Ok(EINVAL);
+                }
+            KcallResult::Ok(0)
+        }
+        Err(ENOSPC) => KcallResult::Ok(ENOSPC),
+        Err(EINVAL) => KcallResult::Ok(EINVAL),
+        Err(EBUSY) => KcallResult::Ok(EBUSY),
+        Err(_) => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SYS_PRIV_ADD_IO — add an I/O port range to the target's privilege.
+///
+/// C: do_privctl.c:187-204.
+fn privctl_add_io(
+    caller: &mut KProcess,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    target_priv_id: Option<crate::kpriv::PrivId>,
+    target_has_no_priv: bool,
+    arg_ptr: u64,
+) -> KcallResult {
+    if target_has_no_priv {
+        return KcallResult::Ok(EPERM);
+    }
+    let target_priv_id = match target_priv_id {
+        Some(id) => id,
+        None => return KcallResult::Ok(EPERM),
+    };
+    let mut io_range = crate::kpriv::IoRange::new();
+    let copy_result = copy_struct_from_user(
+        caller, proc_table, arg_ptr,
+        &mut io_range as *mut _ as *mut u8,
+        core::mem::size_of::<crate::kpriv::IoRange>(),
+    );
+    match copy_result {
+        crate::vm::CrossSpaceResult::Completed(Ok(())) => {
+            match priv_table.get_mut(target_priv_id) {
+                Some(priv_) => {
+                    match priv_.add_io(&io_range) {
+                        Ok(()) => KcallResult::Ok(0),
+                        Err(()) => KcallResult::Ok(ENOSPC),
+                    }
+                }
+                None => KcallResult::Ok(EINVAL),
+            }
+        }
+        crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
+        crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
+    }
+}
+
+/// SYS_PRIV_ADD_MEM — add a memory range to the target's privilege.
+///
+/// C: do_privctl.c:206-216.
+fn privctl_add_mem(
+    caller: &mut KProcess,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    target_priv_id: Option<crate::kpriv::PrivId>,
+    target_has_no_priv: bool,
+    arg_ptr: u64,
+) -> KcallResult {
+    if target_has_no_priv {
+        return KcallResult::Ok(EPERM);
+    }
+    let target_priv_id = match target_priv_id {
+        Some(id) => id,
+        None => return KcallResult::Ok(EPERM),
+    };
+    let mut mem_range = crate::kpriv::MemRange::new();
+    let copy_result = copy_struct_from_user(
+        caller, proc_table, arg_ptr,
+        &mut mem_range as *mut _ as *mut u8,
+        core::mem::size_of::<crate::kpriv::MemRange>(),
+    );
+    match copy_result {
+        crate::vm::CrossSpaceResult::Completed(Ok(())) => {
+            match priv_table.get_mut(target_priv_id) {
+                Some(priv_) => {
+                    match priv_.add_mem(&mem_range) {
+                        Ok(()) => KcallResult::Ok(0),
+                        Err(()) => KcallResult::Ok(ENOSPC),
+                    }
+                }
+                None => KcallResult::Ok(EINVAL),
+            }
+        }
+        crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
+        crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
+    }
+}
+
+/// SYS_PRIV_ADD_IRQ — add an IRQ line to the target's privilege.
+///
+/// C: do_privctl.c:218-230.
+fn privctl_add_irq(
+    caller: &mut KProcess,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    target_priv_id: Option<crate::kpriv::PrivId>,
+    target_has_no_priv: bool,
+    arg_ptr: u64,
+) -> KcallResult {
+    if target_has_no_priv {
+        return KcallResult::Ok(EPERM);
+    }
+    let target_priv_id = match target_priv_id {
+        Some(id) => id,
+        None => return KcallResult::Ok(EPERM),
+    };
+    let mut irq: i32 = 0;
+    let copy_result = copy_struct_from_user(
+        caller, proc_table, arg_ptr,
+        &mut irq as *mut _ as *mut u8,
+        core::mem::size_of::<i32>(),
+    );
+    match copy_result {
+        crate::vm::CrossSpaceResult::Completed(Ok(())) => {
+            match priv_table.get_mut(target_priv_id) {
+                Some(priv_) => {
+                    match priv_.add_irq(irq) {
+                        Ok(()) => KcallResult::Ok(0),
+                        Err(()) => KcallResult::Ok(ENOSPC),
+                    }
+                }
+                None => KcallResult::Ok(EINVAL),
+            }
+        }
+        crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
+        crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
+    }
+}
+
+/// SYS_PRIV_UPDATE_SYS — update an existing privilege structure from user.
+///
+/// C: do_privctl.c:253-268.
+fn privctl_update_sys(
+    caller: &mut KProcess,
+    proc_table: &mut ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    target_priv_id: Option<crate::kpriv::PrivId>,
+    arg_ptr: u64,
+) -> KcallResult {
+    // C: do_privctl.c:255 — arg_ptr must be non-null
+    if arg_ptr == 0 {
+        return KcallResult::Ok(EINVAL);
+    }
+    let target_priv_id = match target_priv_id {
+        Some(id) => id,
+        None => return KcallResult::Ok(EINVAL),
+    };
+    let mut req = crate::kpriv::PrivUpdateRequest::new();
+    let copy_result = copy_struct_from_user(
+        caller, proc_table, arg_ptr,
+        &mut req as *mut _ as *mut u8,
+        core::mem::size_of::<crate::kpriv::PrivUpdateRequest>(),
+    );
+    match copy_result {
+        crate::vm::CrossSpaceResult::Completed(Ok(())) => {
+            // C: do_privctl.c:265-267 — update_priv(rp, &priv).
+            // Table-level: field copies onto the target slot plus
+            // the whole-table target-mask fill (fill_sendto_mask,
+            // system.c:349-358) that grants/revokes the reciprocal
+            // bits and applies the association/self guards.
+            match priv_table.update_priv(target_priv_id, &req) {
+                Ok(()) => KcallResult::Ok(0),
+                Err(_) => KcallResult::Ok(EINVAL),
+            }
+        }
+        crate::vm::CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
+        crate::vm::CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
     }
 }
 fn dispatch_trace(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::misc::dispatch_trace(caller, msg, proc_table, priv_table) }
@@ -1919,7 +2030,7 @@ fn dispatch_vmctl(
     proc_table: &mut crate::proc_table::ProcessTable,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    use crate::vm::{VmCtlParam, VmCtlResult};
+    use crate::vm::VmCtlParam;
     use minix_arch::TlbArch;
     use minix_types::VirBytes;
 
@@ -1968,141 +2079,39 @@ fn dispatch_vmctl(
         }
     };
 
-    let result = match param {
+    // Note on the result mapping: the pre-split dispatcher funnelled every
+    // arm through `VmCtlResult` and converted at the end
+    // (Ok(v)→Ok(v), VmSuspend→VmSuspend, BadParam→Ok(EINVAL)). No arm in
+    // this switch ever produced VmSuspend or BadParam, so the sub-handlers
+    // and inline arms below return `KcallResult` directly with the same
+    // values — the funnel was an Ok-to-Ok identity for every path here.
+    match param {
         // ── ClearPageFault: clear RTS_PAGEFAULT on target ──
         // C: do_vmctl.c:32-35 — assert(RTS_ISSET(p,RTS_PAGEFAULT)); RTS_UNSET(p, RTS_PAGEFAULT);
-        VmCtlParam::ClearPageFault => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::PAGEFAULT) {
-                        // C: assert(RTS_ISSET(p, RTS_PAGEFAULT)) — convert to error return
-                        return KcallResult::Ok(EINVAL);
-                    }
-                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::PAGEFAULT);
-                    VmCtlResult::Ok(0)
-                }
-                None => return KcallResult::Ok(EINVAL),
-            }
-        }
+        VmCtlParam::ClearPageFault => vmctl_clear_page_fault(proc_table, target_nr),
 
         // ── MemReqGet: VM fetches the next pending memory request ──
         // C: do_vmctl.c:36-72 — traverse vmrequest linked list with IPC filter.
         // On success, fills reply message fields (SVMCTL_MRG_*) and returns
         // the request type (VMPTYPE_CHECK=1). On no-match, returns ENOENT=2.
-        VmCtlParam::MemReqGet => {
-            // Bind to a local so the &mut proc_table borrow ends before
-            // we access proc_table again for reading endpoint info.
-            let get_result = proc_table.vm_memreq_get();
-            match get_result {
-                Ok((proc_nr, params)) => {
-                    // C: do_vmctl.c:61-72 — populate reply message fields.
-                    // SVMCTL_MRG_TARGET, SVMCTL_MRG_ADDR, SVMCTL_MRG_LENGTH,
-                    // SVMCTL_MRG_FLAG, SVMCTL_MRG_REQUESTOR.
-                    let m1 = unsafe { &mut msg.m_u.m_m1 };
-                    // Read target endpoint and requestor endpoint from the
-                    // process that was just dequeued. The mutable borrow from
-                    // vm_memreq_get() has ended, so we can borrow again.
-                    let proc = proc_table.get(proc_nr);
-                    let target_ep = proc.and_then(|p| p.p_vm_suspend.as_ref())
-                        .map(|ctx| ctx.target.0)
-                        .unwrap_or(0);
-                    let requestor_ep = proc.map(|p| p.p_endpoint.0).unwrap_or(0);
-
-                    m1.m1i1 = target_ep;                       // SVMCTL_MRG_TARGET
-                    m1.m1p1 = params.start.0;                  // SVMCTL_MRG_ADDR
-                    m1.m1p2 = params.length.0;                 // SVMCTL_MRG_LENGTH
-                    m1.m1i3 = if params.write_flag { 1 } else { 0 }; // SVMCTL_MRG_FLAG
-                    m1.m1p3 = requestor_ep as u64;             // SVMCTL_MRG_REQUESTOR
-
-                    // C: return rp->p_vmrequest.req_type (= VMPTYPE_CHECK = 1)
-                    VmCtlResult::Ok(1) // VMPTYPE_CHECK
-                }
-                Err(crate::vm::VmCtlError::NoRequest) => VmCtlResult::Ok(ENOENT),
-                Err(crate::vm::VmCtlError::InvalidState) => VmCtlResult::Ok(EINVAL),
-                Err(crate::vm::VmCtlError::InvalidEndpoint) => VmCtlResult::Ok(EINVAL),
-            }
-        }
+        VmCtlParam::MemReqGet => vmctl_memreq_get(proc_table, msg),
 
         // ── MemReqReply: VM replies with the result of a memory request ──
         // C: do_vmctl.c:73-109 — set vmresult, set MF_KCALL_RESUME for
         // KernelCall type, clear RTS_VMREQUEST. Returns OK=0.
-        VmCtlParam::MemReqReply => {
-            // C: m_ptr->SVMCTL_VALUE carries the VM check result.
-            let vm_result = match value_raw {
-                0 => crate::vm::VmCheckResult::Ok,   // VM confirmed valid
-                _ => crate::vm::VmCheckResult::Fault, // VM reported fault
-            };
-
-            match proc_table.vm_memreq_reply(target_nr, vm_result) {
-                Ok(()) => VmCtlResult::Ok(0), // C: return OK
-                Err(crate::vm::VmCtlError::InvalidState) => VmCtlResult::Ok(EINVAL),
-                Err(crate::vm::VmCtlError::NoRequest) => VmCtlResult::Ok(EINVAL),
-                Err(crate::vm::VmCtlError::InvalidEndpoint) => VmCtlResult::Ok(EINVAL),
-            }
-        }
+        VmCtlParam::MemReqReply => vmctl_memreq_reply(proc_table, target_nr, value_raw),
 
         // ── VmInhibitSet: set RTS_VMINHIBIT on target ──
         // C: do_vmctl.c:119-131
-        VmCtlParam::VmInhibitSet => {
-            // D-35 (C do_vmctl.c:118-130): if SMP and target on a different
-            // CPU, send IPI via schedule_vminhibit; else set locally.
-            // Single-CPU build: always local (target_cpu == current_cpu).
-            let target_cpu = proc_table
-                .get(target_nr)
-                .map(|p| crate::proc::CpuId::new_unchecked(
-                    p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire),
-                ))
-                .unwrap_or(crate::proc::CpuId::BSP);
-            // SAFETY: dispatch_vmctl runs under BKL (kernel_call contract).
-            let smp = unsafe { crate::smp_state() };
-            let current_cpu = smp.bsp_cpu_id();
-            if target_cpu != current_cpu {
-                // SMP: route through IPI (schedule_sync → send_sched_ipi).
-                smp.schedule_vminhibit::<minix_arch::CurrentSmpArch>(
-                    proc_table, target_nr, current_cpu,
-                );
-            } else {
-                // Local: direct RTS_SET.
-                if let Some(p) = proc_table.get_mut(target_nr) {
-                    p.p_rts_flags.set(crate::proc::RtsFlagsBits::VMINHIBIT);
-                    p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
-                }
-            }
-            VmCtlResult::Ok(0)
-        }
+        VmCtlParam::VmInhibitSet => vmctl_vminhibit_set(proc_table, target_nr),
 
         // ── VmInhibitClear: clear RTS_VMINHIBIT on target ──
         // C: do_vmctl.c:132-160
-        VmCtlParam::VmInhibitClear => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    // C: assert(RTS_ISSET(p, RTS_VMINHIBIT)) — convert to error
-                    if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::VMINHIBIT) {
-                        return KcallResult::Ok(EINVAL);
-                    }
-                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
-                    // C: SMP-only MF_SENDA_VM_MISS handling + stale TLB fill
-                    // not yet implemented (SMP/BKL).
-                    VmCtlResult::Ok(0)
-                }
-                None => return KcallResult::Ok(EINVAL),
-            }
-        }
+        VmCtlParam::VmInhibitClear => vmctl_vminhibit_clear(proc_table, target_nr),
 
         // ── BootInhibitClear: clear RTS_BOOTINHIBIT on target ──
         // C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT)
-        VmCtlParam::BootInhibitClear => {
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::BOOTINHIBIT);
-                    VmCtlResult::Ok(0)
-                }
-                None => return KcallResult::Ok(EINVAL),
-            }
-        }
+        VmCtlParam::BootInhibitClear => vmctl_boot_inhibit_clear(proc_table, target_nr),
 
         // ── ClearMapCache: clear cached mappings ──
         // C: do_vmctl.c:161-164 — mem_clear_mapcache()
@@ -2113,96 +2122,13 @@ fn dispatch_vmctl(
         // (no cache table), so there is nothing to clear. Return OK (0)
         // to indicate success — matching the C behavior on architectures
         // where mem_clear_mapcache() is a no-op.
-        VmCtlParam::ClearMapCache => {
-            VmCtlResult::Ok(0)
-        }
+        VmCtlParam::ClearMapCache => KcallResult::Ok(0),
 
         // ── SetAddrSpace: switch target's page table root ──
         // C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
-        //
-        // C setcr3 (arch_do_vmctl.c:19-33) does:
-        //   1. p->p_seg.p_cr3 = cr3
-        //   2. p->p_seg.p_cr3_v = v
-        //   3. if (p == ptproc) write_cr3(p->p_seg.p_cr3)
-        //   4. if (p->p_nr == VM_PROC_NR) arch_enable_paging(p)
-        //   5. RTS_UNSET(p, RTS_VMINHIBIT)
-        //
-        // Rust implements all 5 steps:
-        //   - Steps 1-2: data layer (p_seg.phys_root / virt_root).
-        //   - Step 3: `TlbArch::set_active_root` when target is current ptproc
-        //     (tracked by `CURRENT_PTPROC_NR` global, initialized in
-        //     `init_post_and_memory`). The arch impls write CR3/TTBR0/satp.
-        //   - Step 4: no-op on 64-bit (paging enabled at boot via
-        //     `Paging::enable`).
-        //   - Step 5: clear RTS_VMINHIBIT.
-        //
-        // # C bug correction
-        //
-        // Minix3 C never sets `vm_running = 1` (only `main.c:47` sets it to 0).
-        // Rust corrects this: when the target is `VM_PROC_NR`, set
-        // `vm_running = true` so readers (`do_umap_remote`, `acpi`, `oxpcie`)
-        // see VM as active. See `09-vm-boot-protocol.md §3 decision4` and
-        // `lib.rs::set_vm_running` doc comment.
-        VmCtlParam::SetAddrSpace => {
-            // SVMCTL_PTROOT = m1_i3 (same field as SVMCTL_VALUE)
-            // SVMCTL_PTROOT_V = m1_p1 (virtual address of page table root)
-            let ptroot_phys = value_raw as u64; // m1_i3 (i32) → u64 physical address
-            let ptroot_virt = unsafe { msg.m_u.m_m1.m1p1 }; // m1_p1
-
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    // Steps 1-2: Set page table roots.
-                    // C: p->p_seg.p_cr3 = cr3; p->p_seg.p_cr3_v = v;
-                    p.p_seg.phys_root = minix_types::PhysBytes(ptroot_phys);
-                    p.p_seg.virt_root = if ptroot_virt != 0 {
-                        Some(minix_types::VirBytes(ptroot_virt))
-                    } else {
-                        None
-                    };
-
-                    // Step 3: If target is the current ptproc, reload the
-                    // hardware root register (CR3/TTBR0/satp) so the new
-                    // page table takes effect immediately.
-                    // C: if (p == get_cpulocal_var(ptproc)) write_cr3(p->p_seg.p_cr3);
-                    //
-                    // The ptproc comparison uses proc-nr (i32) rather than
-                    // pointer identity. This is equivalent because proc-nrs
-                    // uniquely identify process slots in the ProcessTable
-                    // (one-to-one mapping, no aliasing).
-                    //
-                    // `set_active_root_tracked` = C's write_cr3 + the Rust
-                    // CR3-mirror update: the scheduler's
-                    // `switch_address_space` compares against the mirror
-                    // (C reads the live CR3), so the mirror must reflect
-                    // every root change or the first dispatch after this
-                    // would needlessly reload the same root.
-                    if crate::current_ptproc_nr() == Some(p.p_nr) {
-                        crate::set_active_root_tracked(
-                            minix_types::PhysBytes(ptroot_phys),
-                        );
-                    }
-
-                    // Step 4: arch_enable_paging — no-op on 64-bit
-                    // (paging enabled in `arch_boot_impl` via `Paging::enable`).
-
-                    // Step 5: Clear VMINHIBIT.
-                    // C: RTS_UNSET(p, RTS_VMINHIBIT) — allows scheduling.
-                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
-
-                    // C bug correction: set vm_running = true when target is VM.
-                    // C source omits this (never writes vm_running=1). Rust
-                    // corrects the omission so VM is marked as running after
-                    // it has switched to its own page table.
-                    if p.p_nr == crate::proc::proc_nr::VM_PROC_NR {
-                        crate::set_vm_running(true);
-                    }
-
-                    VmCtlResult::Ok(0)
-                }
-                None => return KcallResult::Ok(EINVAL),
-            }
-        }
+        // (see vmctl_set_addr_space for the full 5-step C mapping and
+        // the vm_running C-bug correction note)
+        VmCtlParam::SetAddrSpace => vmctl_set_addr_space(proc_table, target_nr, value_raw, msg),
 
         // ── Arch-specific commands: GetPdbr, FlushTlb, InvlPg ──
         // C: handled by arch_do_vmctl() in arch_do_vmctl.c:38-65
@@ -2215,10 +2141,9 @@ fn dispatch_vmctl(
             // C: arch_do_vmctl.c:38-40 — rv = p->p_seg.p_cr3
             // Return the target process's page table root physical address.
             // This is a simple field read — no arch operation needed.
-            let target = proc_table.get(target_nr);
-            match target {
-                Some(p) => VmCtlResult::Ok(p.p_seg.phys_root.0 as i32),
-                None => return KcallResult::Ok(EINVAL),
+            match proc_table.get(target_nr) {
+                Some(p) => KcallResult::Ok(p.p_seg.phys_root.0 as i32),
+                None => KcallResult::Ok(EINVAL),
             }
         }
 
@@ -2232,7 +2157,7 @@ fn dispatch_vmctl(
             // SAFETY: Called from syscall dispatch context with paging
             // enabled. The target process must be valid (checked above).
             unsafe { minix_arch::CurrentTlbArch::flush_all(); }
-            VmCtlResult::Ok(0)
+            KcallResult::Ok(0)
         }
 
         VmCtlParam::InvlPg => {
@@ -2245,21 +2170,268 @@ fn dispatch_vmctl(
             // enabled. The virtual address is provided by the caller
             // (VM server) and is expected to be a valid user-space address.
             unsafe { minix_arch::CurrentTlbArch::flush_addr(vaddr); }
-            VmCtlResult::Ok(0)
+            KcallResult::Ok(0)
         }
 
         // ── 32-bit legacy: KernPhysMap, KernMapReply ──
         // C: do_vmctl.c:105-118 — arch_phys_map/arch_phys_map_reply
         // These are 32-bit-only (x86 PAE) and unused on 64-bit.
         VmCtlParam::KernPhysMap | VmCtlParam::KernMapReply => {
-            VmCtlResult::Ok(ENOSYS)
+            KcallResult::Ok(ENOSYS)
         }
+    }
+}
+
+/// ClearPageFault — clear RTS_PAGEFAULT on the target.
+///
+/// C: do_vmctl.c:32-35 — assert(RTS_ISSET(p,RTS_PAGEFAULT));
+/// RTS_UNSET(p, RTS_PAGEFAULT). The C assert converts to EINVAL.
+fn vmctl_clear_page_fault(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::PAGEFAULT) {
+                // C: assert(RTS_ISSET(p, RTS_PAGEFAULT)) — convert to error return
+                return KcallResult::Ok(EINVAL);
+            }
+            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::PAGEFAULT);
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// MemReqGet — VM fetches the next pending memory request.
+///
+/// C: do_vmctl.c:36-72 — traverse vmrequest linked list with IPC filter.
+/// On success, fills reply message fields (SVMCTL_MRG_*) and returns
+/// the request type (VMPTYPE_CHECK=1). On no-match, returns ENOENT=2.
+fn vmctl_memreq_get(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+) -> KcallResult {
+    // Bind to a local so the &mut proc_table borrow ends before
+    // we access proc_table again for reading endpoint info.
+    let get_result = proc_table.vm_memreq_get();
+    match get_result {
+        Ok((proc_nr, params)) => {
+            // C: do_vmctl.c:61-72 — populate reply message fields.
+            // SVMCTL_MRG_TARGET, SVMCTL_MRG_ADDR, SVMCTL_MRG_LENGTH,
+            // SVMCTL_MRG_FLAG, SVMCTL_MRG_REQUESTOR.
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            // Read target endpoint and requestor endpoint from the
+            // process that was just dequeued. The mutable borrow from
+            // vm_memreq_get() has ended, so we can borrow again.
+            let proc = proc_table.get(proc_nr);
+            let target_ep = proc.and_then(|p| p.p_vm_suspend.as_ref())
+                .map(|ctx| ctx.target.0)
+                .unwrap_or(0);
+            let requestor_ep = proc.map(|p| p.p_endpoint.0).unwrap_or(0);
+
+            m1.m1i1 = target_ep;                       // SVMCTL_MRG_TARGET
+            m1.m1p1 = params.start.0;                  // SVMCTL_MRG_ADDR
+            m1.m1p2 = params.length.0;                 // SVMCTL_MRG_LENGTH
+            m1.m1i3 = if params.write_flag { 1 } else { 0 }; // SVMCTL_MRG_FLAG
+            m1.m1p3 = requestor_ep as u64;             // SVMCTL_MRG_REQUESTOR
+
+            // C: return rp->p_vmrequest.req_type (= VMPTYPE_CHECK = 1)
+            KcallResult::Ok(1) // VMPTYPE_CHECK
+        }
+        Err(crate::vm::VmCtlError::NoRequest) => KcallResult::Ok(ENOENT),
+        Err(crate::vm::VmCtlError::InvalidState) => KcallResult::Ok(EINVAL),
+        Err(crate::vm::VmCtlError::InvalidEndpoint) => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// MemReqReply — VM replies with the result of a memory request.
+///
+/// C: do_vmctl.c:73-109 — set vmresult, set MF_KCALL_RESUME for
+/// KernelCall type, clear RTS_VMREQUEST. Returns OK=0.
+/// C: m_ptr->SVMCTL_VALUE carries the VM check result.
+fn vmctl_memreq_reply(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    target_nr: ProcNr,
+    value_raw: i32,
+) -> KcallResult {
+    let vm_result = match value_raw {
+        0 => crate::vm::VmCheckResult::Ok,   // VM confirmed valid
+        _ => crate::vm::VmCheckResult::Fault, // VM reported fault
     };
 
-    match result {
-        VmCtlResult::Ok(v) => KcallResult::Ok(v),
-        VmCtlResult::VmSuspend => KcallResult::VmSuspend,
-        VmCtlResult::BadParam => KcallResult::Ok(EINVAL),
+    match proc_table.vm_memreq_reply(target_nr, vm_result) {
+        Ok(()) => KcallResult::Ok(0), // C: return OK
+        Err(crate::vm::VmCtlError::InvalidState) => KcallResult::Ok(EINVAL),
+        Err(crate::vm::VmCtlError::NoRequest) => KcallResult::Ok(EINVAL),
+        Err(crate::vm::VmCtlError::InvalidEndpoint) => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// VmInhibitSet — set RTS_VMINHIBIT on the target.
+///
+/// C: do_vmctl.c:119-131.
+/// D-35 (C do_vmctl.c:118-130): if SMP and target on a different
+/// CPU, send IPI via schedule_vminhibit; else set locally.
+/// Single-CPU build: always local (target_cpu == current_cpu).
+fn vmctl_vminhibit_set(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target_cpu = proc_table
+        .get(target_nr)
+        .map(|p| crate::proc::CpuId::new_unchecked(
+            p.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire),
+        ))
+        .unwrap_or(crate::proc::CpuId::BSP);
+    // SAFETY: dispatch_vmctl runs under BKL (kernel_call contract).
+    let smp = unsafe { crate::smp_state() };
+    let current_cpu = smp.bsp_cpu_id();
+    if target_cpu != current_cpu {
+        // SMP: route through IPI (schedule_sync → send_sched_ipi).
+        smp.schedule_vminhibit::<minix_arch::CurrentSmpArch>(
+            proc_table, target_nr, current_cpu,
+        );
+    } else {
+        // Local: direct RTS_SET.
+        if let Some(p) = proc_table.get_mut(target_nr) {
+            p.p_rts_flags.set(crate::proc::RtsFlagsBits::VMINHIBIT);
+            p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
+        }
+    }
+    KcallResult::Ok(0)
+}
+
+/// VmInhibitClear — clear RTS_VMINHIBIT on the target.
+///
+/// C: do_vmctl.c:132-160. C's assert on RTS_VMINHIBIT converts to EINVAL;
+/// SMP-only MF_SENDA_VM_MISS handling + stale TLB fill not yet implemented.
+fn vmctl_vminhibit_clear(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            // C: assert(RTS_ISSET(p, RTS_VMINHIBIT)) — convert to error
+            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::VMINHIBIT) {
+                return KcallResult::Ok(EINVAL);
+            }
+            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// BootInhibitClear — clear RTS_BOOTINHIBIT on the target.
+///
+/// C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT).
+fn vmctl_boot_inhibit_clear(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    target_nr: ProcNr,
+) -> KcallResult {
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::BOOTINHIBIT);
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// SetAddrSpace — switch the target's page table root.
+///
+/// C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
+///
+/// C setcr3 (arch_do_vmctl.c:19-33) does:
+///   1. p->p_seg.p_cr3 = cr3
+///   2. p->p_seg.p_cr3_v = v
+///   3. if (p == ptproc) write_cr3(p->p_seg.p_cr3)
+///   4. if (p->p_nr == VM_PROC_NR) arch_enable_paging(p)
+///   5. RTS_UNSET(p, RTS_VMINHIBIT)
+///
+/// Rust implements all 5 steps:
+///   - Steps 1-2: data layer (p_seg.phys_root / virt_root).
+///   - Step 3: `TlbArch::set_active_root` when target is current ptproc
+///     (tracked by `CURRENT_PTPROC_NR` global, initialized in
+///     `init_post_and_memory`). The arch impls write CR3/TTBR0/satp.
+///   - Step 4: no-op on 64-bit (paging enabled at boot via
+///     `Paging::enable`).
+///   - Step 5: clear RTS_VMINHIBIT.
+///
+/// # C bug correction
+///
+/// Minix3 C never sets `vm_running = 1` (only `main.c:47` sets it to 0).
+/// Rust corrects this: when the target is `VM_PROC_NR`, set
+/// `vm_running = true` so readers (`do_umap_remote`, `acpi`, `oxpcie`)
+/// see VM as active. See `09-vm-boot-protocol.md §3 decision4` and
+/// `lib.rs::set_vm_running` doc comment.
+fn vmctl_set_addr_space(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    target_nr: ProcNr,
+    value_raw: i32,
+    msg: &Message,
+) -> KcallResult {
+    // SVMCTL_PTROOT = m1_i3 (same field as SVMCTL_VALUE)
+    // SVMCTL_PTROOT_V = m1_p1 (virtual address of page table root)
+    let ptroot_phys = value_raw as u64; // m1_i3 (i32) → u64 physical address
+    let ptroot_virt = unsafe { msg.m_u.m_m1.m1p1 }; // m1_p1
+
+    let target = proc_table.get_mut(target_nr);
+    match target {
+        Some(p) => {
+            // Steps 1-2: Set page table roots.
+            // C: p->p_seg.p_cr3 = cr3; p->p_seg.p_cr3_v = v;
+            p.p_seg.phys_root = minix_types::PhysBytes(ptroot_phys);
+            p.p_seg.virt_root = if ptroot_virt != 0 {
+                Some(minix_types::VirBytes(ptroot_virt))
+            } else {
+                None
+            };
+
+            // Step 3: If target is the current ptproc, reload the
+            // hardware root register (CR3/TTBR0/satp) so the new
+            // page table takes effect immediately.
+            // C: if (p == get_cpulocal_var(ptproc)) write_cr3(p->p_seg.p_cr3);
+            //
+            // The ptproc comparison uses proc-nr (i32) rather than
+            // pointer identity. This is equivalent because proc-nrs
+            // uniquely identify process slots in the ProcessTable
+            // (one-to-one mapping, no aliasing).
+            //
+            // `set_active_root_tracked` = C's write_cr3 + the Rust
+            // CR3-mirror update: the scheduler's
+            // `switch_address_space` compares against the mirror
+            // (C reads the live CR3), so the mirror must reflect
+            // every root change or the first dispatch after this
+            // would needlessly reload the same root.
+            if crate::current_ptproc_nr() == Some(p.p_nr) {
+                crate::set_active_root_tracked(
+                    minix_types::PhysBytes(ptroot_phys),
+                );
+            }
+
+            // Step 4: arch_enable_paging — no-op on 64-bit
+            // (paging enabled in `arch_boot_impl` via `Paging::enable`).
+
+            // Step 5: Clear VMINHIBIT.
+            // C: RTS_UNSET(p, RTS_VMINHIBIT) — allows scheduling.
+            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
+
+            // C bug correction: set vm_running = true when target is VM.
+            // C source omits this (never writes vm_running=1). Rust
+            // corrects the omission so VM is marked as running after
+            // it has switched to its own page table.
+            if p.p_nr == crate::proc::proc_nr::VM_PROC_NR {
+                crate::set_vm_running(true);
+            }
+
+            KcallResult::Ok(0)
+        }
+        None => KcallResult::Ok(EINVAL),
     }
 }
 /// Dispatch SYS_DIAGCTL.
