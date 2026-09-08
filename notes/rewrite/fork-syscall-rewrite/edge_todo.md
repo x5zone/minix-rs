@@ -4,6 +4,7 @@
 > 2026-09-06 增补：04-stage-pm 架构审查（04-stage-pm/todo.md §9）拆分出的跨 stage 条目 E6-E7。
 > 2026-09-06 增补：03-stage-rs 的 §18.10 E-11 生产接线面登记为 E9（KernelApi 五域面真实传输，E-2 拆分后的接线形态）。
 > 2026-09-08 增补：02-stage-vm V12 轮（02-stage-vm/todo.md §17）登记 E-VMMCPWIRE（vmmcp wire 字宽必现截断）与 E-VMMOCK（G-V12-5 余件：minix-arch default features 收口），并在 E5 增补"缺页故障完整回路"验收面。
+> 2026-09-09 增补：02-stage-vm V13 轮（02-stage-vm/todo.md §18）登记 E-VMTLB（kernel 侧目标进程 TLB 刷新机制缺失，真 SMP 正确性前提），并在 E-RSWIRE 增补 VM 侧三项落地要求（call_mask u64、RS_SET_PRIV 真掩码、五消息结构专属 wire struct）。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -157,6 +158,11 @@
 2. minix-types 增 `RprocpubWire`（repr(C)）+ `decode` + 偏移断言测试（手排字节十六进制锚定）；
 3. VM 侧：`Gateway::sys_safecopyfrom(granter, gid, offset, buf)`（wire 已定：SYS_SAFECOPYFROM=31、`MessLsysKernSafecopy{from_to,grant_id,offset,address,bytes}`，kernel 应答 Ok(0)=成功）+ `ipc_call_rs_init` 真实体（拷贝 + 解码 → RprocTab）+ 翻转 pin 测试 + 恢复 `rs_handshake` ACL 循环为可达。
 
+> **增补（2026-09-09，02-stage-vm V13 轮，02-stage-vm/todo.md §18.2）**：第 3 步落地时必须一并做三件 VM 侧事，否则 wire 通即引入新缺陷——
+> (a) `RprocEntry.call_mask: u32 → u64`（vm_server.rs:1594-1599）：minix-types 的 wire 已是 u64（rprocpub.rs:89，2×u32 little-endian 合并），VM 内部 u32 会截断调用号 +32..+48 的 9 个调用授权（消费点 vm_server.rs:1340 `entry.call_mask as u64`）；
+> (b) `RS_SET_PRIV` 真掩码：E2 的 SYS_SAFECOPYFROM 可用后，dispatcher.rs:1091-1102 的硬编码 `mask = None` 换成 C rs.c:41-56 的 sys_datacopy 语义（M2 的 m2l1 是掩码缓冲指针）；
+> (c) 五个 C 消息结构（getphys/getref/info/rusage/update）补专属 wire struct + `size_of`/`offset_of` 断言（现 overlay 解码字段语义与 C 错位：getref addr C@4 vs Rust m1p1@16、info next C@16 vs Rust m2l2@24、rusage children C@8 vs Rust@4；C 锚 ipc.h:928-934/:1486-1492/:1494-1502/:1513-1520），并把其余 VM payload 缺失的 56 字节断言补齐（12 个结构仅 MessVmmcpReply 有）。
+
 **依赖**：~~完整 Minix3 C 源码参照（或补全本树头文件）~~（已解除，同 E-RSSTART）；无 E1/E2 依赖（解码可纯单测）。
 
 ---
@@ -212,6 +218,8 @@
 > **进度（2026-09-06）**：`sys_kill` wrapper 已落地（`syscall.rs` 的 `sys_kill` + `SYS_KILL_CALL` 常量，wire 断言测试 ×2；`CannedKernelCallTransport` 增 `sent` 逐调用消息记录供 wire 形状断言）——消费侧 04-stage-pm/todo.md D-13/Fix #23 同轮闭环；余下进度：SYS_CLEAR（轮 24）、SYS_ABORT（轮 25）、SYS_TIMES（轮 26）、SYS_RUNCTL/SYS_RESUME（轮 28）已落地；待做 SYS_GETMONPARAMS/SYS_GETIMAGE wrapper（kernel 对端亦缺，需双侧新建）。
 >
 > **进度（2026-09-08，V2 轮扩充）**：已落地 wrapper 达 6 个（sys_kill/sys_clear/sys_abort/sys_times/sys_runctl+sys_resume/sys_vircopy）。04-stage-pm 第二轮审查（04-stage-pm/todo.md §11.1.1 接线批次表）给出 PM 侧完整需求清单，待做 wrapper 及 kernel 对端现状：`sys_setalarm`（kernel 对端已有 `syscall_clock.rs:160`，E8 已列）、`sys_vtimer`（ITIMER_VIRTUAL/PROF，对端待核实）、`sys_datacopy`（注意≠sys_vircopy：SELF 本地拷贝语义，getgroups/setgroups/itimer value 双向拷贝需要）、`sys_settime`/`sys_stime`（time.c do_settime/do_stime）、GETUPTIME 面（time.c getuptime 依赖，PM `ClockSource` 的生产实现）、`sys_getmcontext`/`sys_setmcontext`（mcontext.c 直通）、`sys_sprof`（profile.c，feature 门）、`sys_sigreturn`（C signal.c:176-192 do_sigreturn 调用，kernel 对端待核实）、`sys_diagctl_stacktrace`（C signal.c:556-558 coredump 诊断，04-stage-pm V2-P3-4a）、SYS_GETMONPARAMS/SYS_GETIMAGE（维持"双侧新建"结论）。
+>
+> **进度（2026-09-09，V3 轮增补，来源 04-stage-pm/todo.md §12 V3-P1-2 / V3-P1-3）**：清单增两项。① **`sys_delay_stop`**——13-signal-flow 的 `KernelStop` 生产实现前置（`os/servers/pm/src/signal_flow.rs:115-140` `stop_proc` 的内核停止 seam）；04-stage-pm V3-P1-3（sig_proc 的 VFS_CALL 分支接真实 stop_proc）mock 层实施不受阻，生产语义完备依赖本项。② **内核 ksig 对端核实**——C 的内核→PM 信号回环入口是 SEF 拦截 SIGKSIG 通知后调 `process_ksig`（`minix3/minix/servers/pm/main.c:121` + `minix3/minix/lib/libsys/sef_signal.c:104-108`），C 的 process_ksig 内部走 sys_getksig/sys_endksig 内核信号队列循环；Rust 侧 `process_ksig`（`os/servers/pm/src/signal.rs:374`）现无生产调用者（04-stage-pm V3-P1-2，新接线批次 H）——需核实 os/kernel 是否已实现 getksig/endksig 或等价通知面；若无，wrapper 归本条、kernel 对端归 01-stage-kernel 工作流（双侧新建，同 SYS_GETMONPARAMS 先例）。
 
 ---
 
@@ -230,6 +238,8 @@
 > **进度（2026-09-06）**：首个切片已落地——`MessPmLcWait4 { status }` + `m_pm_lc_wait4` arm（`message.rs`，56 字节断言 `test_pm_wait4_message_layouts`），wait4 回复载荷契约（04-stage-pm/todo.md D-26/Fix #22）闭环；其余 wire 族照本切片的风格推进。
 >
 > **进度（2026-09-08，V2 轮增补）**：(1) **仓库内先例确立**：`minix-types::ipc::rs_start`（约 900 行 per-server 类型化 wire 模块，commit 764d738af，03-stage-rs Fix #81）为建议 (1) 的"按调用族建 wire 结构体"提供了本仓样式模板，实施时应对照该模块的组织方式（wire 结构 + `size_of` 断言 + 解码函数）。(2) **wire 成员清单按 04-stage-pm/todo.md §11.1.1 接线批次表逐批落地**：A 凭证 13 调用（`m_lc_pm_getuid`/`setuid`/`groups`/`getsid` 等）→ B 信号控制 6 → C 时间 6 → D itimer → E exec 3（`m_lexec_pm_exec_new`/`m_rs_pm_exec_restart`）→ F 调度 2（含补 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量）→ G 杂项 9。(3) A 批次 wire 设计时需决定 gid 载荷宽度以恢复 C 的 GID_MAX 拒绝语义（04-stage-pm/todo.md §11 V2-P3-2，GID_MAX=2^31-1，`minix3/sys/sys/syslimits.h:53`）。
+>
+> **进度（2026-09-09，V3 轮增补，来源 04-stage-pm/todo.md §12 V3-P3-5）**：双址清单增一处——`os/servers/pm/src/ipc/dispatcher.rs:32` 本地定义 `PROC_EVENT_REPLY: i32 = 0xE80`，而 minix-types 已有同值常量（`os/libs/minix-types/src/ipc/event.rs:27`，带常量锁定测试）。建议 (3) 调用号收敛时一并处置（PM 侧改为消费 minix-types 的常量，与 `VFS_PM_RS_BASE` 经 `dispatcher.rs:28` 的 re-export 先例同型）。另记一条 PM 侧预备建议：40 臂接线期间，pm crate 内建 `ipc/decode.rs` 集中各调用的 unsafe union 解码（每调用一个函数 + C ipc.h 字段对照注释 + 布局断言），E7 wire 落地后该模块改为委托 wire 类型、调用点零改动（04-stage-pm/todo.md §12.3 观察 2，属 PM stage 内工作，此处仅登记衔接关系）。
 
 ---
 
@@ -349,3 +359,19 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **解锁**：全 workspace clippy 零告警的 CI 门禁前提（当前"触碰文件零告警"纪律是逐轮
 人工维持的，机械清零后可升级为全局门）。无前置依赖，但刻意等 E1/E2 避免冲突。
+
+---
+
+## E-VMTLB kernel 侧目标进程 TLB 刷新机制缺失（02-stage-vm V13 轮登记，2026-09-09）
+
+**问题**：VM 服务器直接写进程硬件 PTE 之后（Fix #60 起故障路径、更早起 munmap/brk/fork 路径），C 对"目标进程在其他 CPU 上的陈旧 TLB 翻译"有显式机制，Rust 内核没有任何对应物：
+
+- C 机制：进程级 `MF_FLUSH_TLB` 标志 + 调度点刷新——`minix3/minix/kernel/proc.c:345-347`（`if (p->p_misc_flags & MF_FLUSH_TLB && get_cpulocal_var(ptproc) == p) tlb_must_refresh = 1`，随后 `switch_address_space(p)` 重载根寄存器）。
+- Rust 现状：`rg "MF_FLUSH_TLB|tlb_must_refresh" os/kernel/src` 零命中；且调度器 `switch_address_space` 带"同根跳过重载"优化（os/kernel/src/syscall.rs:2410-2417 注释自述 mirror 比对语义——镜像必须跟上每次根变更，否则首次分发会无谓重载）。
+- 风险窗口：真 SMP + 共享页场景（fork 后 CoW 父子页、shm 多映射方）——VM 翻 RO/解除映射时，另一 CPU 上仍在运行的共享方进程的 TLB 保留旧翻译（RO 旧项使写持续故障、已 unmap 旧项使进程继续写已回收物理页）。当前单核 + "VM 只改非运行进程 PTE"的结构纪律（IPC 阻塞 + RTS 停止）下不可达；E5 通电若开 SMP 即暴露。
+
+**为何 edge**：机制主体在 kernel（01-stage 生产代码，edge 判定②），与 VM 的 PTE 写路径（02-stage）协同才可验收（edge 判定③）。
+
+**解锁后工作**：(1) kernel 进程结构补 MF_FLUSH_TLB 等价标志 + 调度点刷新（对照 proc.c:345-347）；(2) 与 switch_address_space 的同根跳过优化对账（刷新标志必须在比较之前生效）；(3) 同步评估 C VM 侧四处 `sys_vmctl(SELF, VMCTL_FLUSHTLB)`（pagetable.c:119/255/319/430，宿主 pt_assert[SANITY]/vm_freepages×2/vm_pagelock[MEMPROTECT]）——它们依附 C 的"进程内存别名映射进 VM 地址空间"模型，minix-rs 的 direct map 下翻译恒定、VM 自刷不需要（该 ARCH 偏差在 02-stage-vm/todo.md §18.2 V13-P2-1(b) 登记）；(4) E5 若含 SMP 配置，冒烟须覆盖"fork 后父子并发写 CoW 页"。
+
+**依赖**：无 E1/E2 硬依赖（机制可先行 + 单测），但验收（E5 SMP 冒烟）前置 E1/E2；与 01-stage-kernel 的 SMP 工作窗（smp_gpt 系列设计迭代）协同排期。
