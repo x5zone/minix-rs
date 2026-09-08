@@ -157,9 +157,9 @@ impl VirRegion {
     /// callback when present, else appends via `map_page_region`
     /// (region.c:1037-1045); minix-rs folds the resize semantics into this
     /// single operation ([ARCH: A-12], 19-vm-brk.md §3.2).
-    pub(crate) fn extend(&mut self, extra: VirBytes) -> Result<(), VmError> {
+    pub(crate) fn extend(&mut self, extra: VirBytes) -> Result<(), VirRegionError> {
         if extra.0 == 0 || !extra.0.is_multiple_of(PAGE_SIZE) {
-            return Err(VmError::InvalidParam);
+            return Err(VirRegionError::InvalidParam);
         }
         let old_pages = self.physblocks.len();
         let added_pages = (extra.0 / PAGE_SIZE) as usize;
@@ -328,9 +328,9 @@ impl VirRegion {
         }
     }
 
-    pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VmError> {
+    pub(crate) fn split(self, split_len: VirBytes) -> Result<(Self, Self), VirRegionError> {
         if split_len.0 == 0 || !split_len.0.is_multiple_of(PAGE_SIZE) || split_len.0 >= self.length.0 {
-            return Err(VmError::InvalidParam);
+            return Err(VirRegionError::InvalidParam);
         }
 
         let rem_len = VirBytes(self.length.0 - split_len.0);
@@ -422,7 +422,7 @@ impl VirRegion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VmError {
+pub(crate) enum VirRegionError {
     InvalidParam,
 }
 
@@ -542,11 +542,11 @@ mod tests {
     fn test_vir_region_split_invalid() {
         let region1 = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         let result1 = region1.split(VirBytes(0x1001));
-        assert!(matches!(result1, Err(VmError::InvalidParam)));
+        assert!(matches!(result1, Err(VirRegionError::InvalidParam)));
 
         let region2 = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         let result2 = region2.split(VirBytes(0x4000));
-        assert!(matches!(result2, Err(VmError::InvalidParam)));
+        assert!(matches!(result2, Err(VirRegionError::InvalidParam)));
     }
 
     #[test]
@@ -615,7 +615,7 @@ mod tests {
     fn test_extend_invalid() {
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x2000), VrFlags::empty());
 
-        assert!(matches!(region.extend(VirBytes(0)), Err(VmError::InvalidParam)));
-        assert!(matches!(region.extend(VirBytes(0x1001)), Err(VmError::InvalidParam)));
+        assert!(matches!(region.extend(VirBytes(0)), Err(VirRegionError::InvalidParam)));
+        assert!(matches!(region.extend(VirBytes(0x1001)), Err(VirRegionError::InvalidParam)));
     }
 }

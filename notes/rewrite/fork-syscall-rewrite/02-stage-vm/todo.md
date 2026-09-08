@@ -413,6 +413,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Verified**: 三矩阵 **501/519/501 passed**（+1）；clippy servers/vm 0 警告
 - **Docs**: 24-page-cache.md §3.6 新增第 10 行（回滚语义 C-parity + unwind 面更小）
 
+### ✅ Fix #75: V12-P2-3 / V10-P2-3 — 错误类型残余闭环（改名 + 两项勘误）
+
+- **改名**：`region::vir_region::VmError`（单变体 `InvalidParam`）→ **`VirRegionError`**——消除与 `minix_types::VmError` 的同名异型碰撞（`rg "enum VmError"` 从此全仓唯一）。纯重命名，extend/split 的四个生产调用方（brk/munmap）本就经各自错误类型转换，零行为变更。
+- **勘误 1**："dispatcher.rs:1664/:1812 直接外泄 VfsQueueError"——两处均为 `#[cfg(test)]` 区的 nop 回调签名，非生产路径。生产面 VfsQueueError 的三个归宿各有设计：`enqueue_fdio` 映入 `CowError`、`free_region_pages` 失败 audit+drop（fdclose 丢失可观测）、VFS 回调边界由 `handle_reply` 消费——无 errno 外泄。
+- **勘误 2**：`CacheError` 无需 From——唯一生产消费点 `dispatch_setcache` 已按 C cache.c:222-226 映射 EINVAL；为映射而映射的 From 是无调用方的死代码（本批自己的 pattern 86 教训）。
+- **Files**: `region/vir_region.rs`（重命名，7 处）
+- **测试**: 无新增（重命名）；三矩阵 501/519/501 + clippy 0 警告回归
+- **边界**: V10-P2-3 的"验证锚点"（`rg "pub(crate) enum .*Error"` 收敛到 1 个对外）达成：对外唯一 `minix_types::VmError`，crate 内剩模块级类型（VirRegionError/CacheError/VfsQueueError/CowError/MemTypeError/MunmapError 等），各有明确消费边界
+
 ---
 
 ## 存档指引
