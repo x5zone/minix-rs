@@ -1,0 +1,57 @@
+name: qemu-tests
+
+# T-5: QEMU integration tests in CI. Runs the three-family boot test
+# matrix (x86_64 UEFI / aarch64 UEFI / riscv64 OpenSBI) via
+# os/qemu-tests/run_all.sh — previously a manual-only script.
+#
+# Each test kernel writes "### TEST_RESULT: PASS <name> ###" on success;
+# run_all.sh fails (exit 1) if any test fails.
+
+on:
+  push:
+    paths:
+      - 'os/kernel/**'
+      - 'os/arch/**'
+      - 'os/plat/**'
+      - 'os/libs/minix-types/**'
+      - 'os/libs/minix-boot/**'
+      - 'os/libs/minix-elf/**'
+      - 'os/libs/minix-platform/**'
+      - 'os/boot-shim/**'
+      - 'os/qemu-tests/**'
+      - '.github/workflows/qemu-tests.yml'
+  pull_request:
+    paths:
+      - 'os/kernel/**'
+      - 'os/arch/**'
+      - 'os/plat/**'
+      - 'os/libs/minix-types/**'
+      - 'os/libs/minix-boot/**'
+      - 'os/libs/minix-elf/**'
+      - 'os/libs/minix-platform/**'
+      - 'os/boot-shim/**'
+      - 'os/qemu-tests/**'
+      - '.github/workflows/qemu-tests.yml'
+
+jobs:
+  qemu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-uefi, aarch64-unknown-uefi, riscv64gc-unknown-none-elf
+
+      - name: Install QEMU and firmware
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-arm qemu-system-misc \
+            ovmf qemu-efi-aarch64 qemu-efi-riscv64
+
+      - name: Run QEMU boot test matrix
+        working-directory: os
+        run: bash qemu-tests/run_all.sh
