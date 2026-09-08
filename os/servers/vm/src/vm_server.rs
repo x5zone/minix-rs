@@ -534,7 +534,7 @@ impl VmServer {
 
     /// init_proc(VM_PROC_NR) — main.c:262-283, called at main.c:474.
     fn init_vm_slot(&self) {
-        let table = VmProcTable::get_global();
+        let table = self.ctx.proc_table; // V12-P2-5: ctx 字段即全局别名，语法统一
         if let Some(ip) = self.boot_procs.iter().find(|ip| ip.proc_nr == VM_PROC_NR) {
             Self::init_proc(table, *ip);
         }
@@ -549,7 +549,7 @@ impl VmServer {
     /// shared ABI), so `stack`/`ps_str` report 0 until it lands; real
     /// kernel traffic for `sys_exec` waits on edge E2.
     fn init_boot_procs(&mut self) {
-        let table = VmProcTable::get_global();
+        let table = self.ctx.proc_table; // V12-P2-5: 语法统一（同对象）
         // Own a copy: exec_bootproc needs &mut self while iterating.
         let boot_procs = self.boot_procs;
         for ip in &boot_procs {
@@ -621,7 +621,7 @@ impl VmServer {
         const PS: usize = crate::region::PAGE_SIZE as usize;
         use crate::region::page_state::PfnAllocator as _;
 
-        let table = VmProcTable::get_global();
+        let table = self.ctx.proc_table; // V12-P2-5: 语法统一（同对象）
         let slot = table
             .vm_isokendpt(ip.endpoint)
             .map_err(|_| "boot proc endpoint not registered")?;

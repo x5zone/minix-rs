@@ -98,9 +98,9 @@ V12 原表（重校后逐项处置见 §18.9 Fix #70）：
 
 处置（删/接线/标注三分）与验证见 V12 存档 §17.2。
 
-### V12-P2-5（P2）不变量双轨：proc_table 双访问路径 + page_frames 双处置
+### ✅ V12-P2-5（P2）不变量双轨：proc_table 双访问路径 + page_frames 双处置——已判定收尾 2026-09-09（§18.9 Fix #73）
 
-复核 ✅（重锚点）：`VmProcTable::get_global()` 直接调用现集中于 rs.rs:614/:629/:685/:697/:710/:723 六处（vm_server.rs 侧已随 VmContext 收敛消失）——双路径未根除，只是搬家。`page_frames` expect vs 软错误双处置维持。方案见 V12 存档。
+复核 ✅ 2026-09-09：`VmContext.proc_table: &'static VmProcTable` 本身就是全局的别名——"双路径"是**语法不一致而非双真相源**；且原锚点（rs.rs 六处）全部位于 `#[cfg(test)]` 区，生产路径早已走 ctx。生产区 `get_global` 残留仅 vm_server.rs boot 路径三处（已统一为 `self.ctx.proc_table`）与 munmap.rs 漏斗一处（T2 有意例外）。page_frames 双处置为生命周期阶段差异，两者各自正确。判定详情见 §18.9 Fix #73。
 
 ### V12-P2-6（P2）mapcache 失败回滚顺序与 C 相反
 
@@ -289,7 +289,7 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）；~~**V12-P1-1**（分配器低内存边界 + 审计）~~ ✅（§18.9 Fix #65）——**通电前语义修正批全部闭环**；
 2. ~~**V13-P2-1(a)(b)**（TLB 不变量登记 + 死内核面注释）~~ ✅（§18.9 Fix #69，(c) 挂 edge）；
 3. ~~**V13-P2-3**（ACL 闸 None 即拒绝）~~ ✅（Fix #66）；~~**V13-P2-4**（MAKE_VM 锚定已登记偏差 + 扫描勘误）~~ ✅（Fix #68）；~~**V13-P3-1(1)**（伪造 fault 源 audit）~~ ✅（Fix #67）；
-4. **待执行批**：~~P2-4 死状态三分~~ ✅（Fix #70）；~~P2-8 注释漂移~~ ✅（Fix #71）；~~P2-9 region 两处~~ ✅（Fix #72）；余：P2-5 双路径收敛 → P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig，每条独立 todo-fix 周期；
+4. **待执行批**：~~P2-4 死状态三分~~ ✅（Fix #70）；~~P2-8 注释漂移~~ ✅（Fix #71）；~~P2-9 region 两处~~ ✅（Fix #72）；~~P2-5 双路径收敛~~ ✅（Fix #73，判定收窄）；余：P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig，每条独立 todo-fix 周期；
 5. 文档批：G-V12-11（clearend，含 V13-P1-1 慢路的 clearend 分支设计）、G-V12-12（00/99 骨架 + design 快照）、G-V12-13（checklist 系统性刷新）；V12-P3-1/2 机会主义；
 6. edge 侧（单线程执行 edge_todo.md）：E-VMTLB（新）、E-RSWIRE 批（V13-P2-2/5/6 + E-VMMOCK 余件）、E-VFSWIRE（P3-1(2) 的死进程路径对账）、E1/E2 通电件、E5 冒烟（含 V12 增补的故障完整回路验收面）。
 
@@ -395,6 +395,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **测试（新增 2）**：`test_find_overlap_predecessor_straddle`（8 个低位 region + 高位跨越者，查询起点落在跨越者腹内——线性扫与邻居探测在正确性上等价、在探测路径上区分）；`test_insert_zero_length_rejected`（拒绝 + 原区域存活）。首版测试两次断言失败均为**测试自身十六进制算术错误**（0x100_0000 + 0x1_0000 = 0x101_0000），代码无误——修正的是测试。
 - **Verified**: 三矩阵 **500/518/500 passed**（+2）；clippy servers/vm 0 警告
 - **Docs**: 本条即判定记录（13-region-mapping 的 §3.2 已随 Fix #70 两态化更新，find_overlap 行为属内部实现细化）
+
+### ✅ Fix #73: V12-P2-5 — proc_table 访问语法统一 + 双轨判定收窄（勘误：非双真相源）
+
+- **勘误**：V12/V13 的"rs.rs 六处生产双路径"锚点全部位于 `#[cfg(test)]` 区——生产路径早已随 T5/T6 的 VmContext 收敛走 ctx。且 `VmContext.proc_table: &'static VmProcTable`（vm_server.rs:62）本身就是 `get_global()` 返回对象的别名——两个"路径"是同一对象的两种写法，不存在第二个真相源。
+- **处置**：(a) vm_server.rs boot 路径三处 `get_global()`（init_vm_slot/init_boot_procs/exec_bootproc）统一为 `self.ctx.proc_table`——生产区现仅存 munmap.rs 漏斗一处有意例外（T2 的 release_shared_remap 表访问，带注释）。(b) page_frames 的 `ok_or` 软错误（init 期）与 `expect`（初始化后不变量）判定为**阶段正确形态**，维持现状。
+- **Files**: `vm_server.rs`（三处语法统一，零行为变更）
+- **测试**：无新增；`cargo test -p minix-vm --lib` → 500 passed 回归
+- **边界**：munmap.rs 漏斗的 get_global 是 T2 设计的一部分（缺表则共享释放无法路由），勿当漂移清除
 
 ---
 
