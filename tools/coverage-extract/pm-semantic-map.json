@@ -466,5 +466,8 @@
   ],
   "T_ATTACH": [
     "trace::T_ATTACH"
+  ],
+  "do_proceventmask": [
+    "EventRegistry::do_proceventmask_mut"
   ]
 }

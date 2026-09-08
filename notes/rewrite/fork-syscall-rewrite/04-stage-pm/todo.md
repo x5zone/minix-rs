@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8/9/10（#48/#50/#51/#52/#53/#55/#54/#56/#57）+ V2-P2-7/P2-8（#49）+ V3-P3 主体（#58，D-31/D-32 登记除外）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> **第 3 轮实施 campaign（2026-09-09 收官，Fix #43–#58）**：V3 全部 P1 闭环（P1-1 trace 域重构 / P1-2 批次 H 内核信号入口 / P1-3 stop_proc / P1-4 getsysinfo fail-closed / P1-5 文档对账 0 MISS）+ V3-P2 十项中八项闭环（P2-5 svrctl/sysuname 维持批次 G 前置——IOCGROUP 门与 req 分支依赖 E7 wire 解码，无法在 stage 内诚实完成；P2-10 时间戳已修）+ V2-P2-7/8（unpause/sig_send 联动落地）+ V3-P3 主体。新登记 D-29（getsysinfo 数据路径）/D-30（getepinfo groups 拷出）/D-31（诊断口径，挂 E6 控制台）/D-32（calls_stats，随批次 G）。E6 切片新增：sys_trace/sys_getksig/sys_endksig wrapper（kernel 对端均已真实）。测试基线 356+8 → **379 lib + 11 integration passed**，clippy lib **0 warning**，unwired PASS，Gate A 93.6%（semantic-map 补 do_proceventmask→_mut 映射）。**仍开放**：P2-6（docs 00/99 改写，独立文档创作轮）+ V3-P2-5（批次 G 前置）+ D-01/02/05/12/16/17 + P1-3/P1-4/P2-3（跨阶段，edge E1/E6/E7/A-8）+ 44 条 field_reassign 测试风格 lint（V3-P3 记账，零生产影响）。开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
