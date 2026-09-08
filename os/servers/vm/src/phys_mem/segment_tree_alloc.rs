@@ -136,7 +136,7 @@ impl SegmentTreeAllocator {
     // (phys_mem/mod.rs) is the single authority the relocation path consumes;
     // the two formulas had drifted (this one used SegmentNode + padding).
 
-    // V11-P2-3 (DEFERRED): fine-grained usage queries, same disposition as
+    // Fine-grained usage queries — consumed by allocator parity tests, same disposition as
     // the buddy backend — production callers arrive with the 24-page-cache
     // reclaim path.
     #[allow(dead_code)]
@@ -251,13 +251,7 @@ impl PhysAllocator for SegmentTreeAllocator {
             alloc_clicks += align_clicks;
         }
 
-        let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
-            (1024 * 1024) / CLICK_SIZE
-        } else if flags.contains(PageAllocFlags::LOWER16MB) {
-            (16 * 1024 * 1024) / CLICK_SIZE
-        } else {
-            self.total_pages
-        };
+        let max_page = super::max_page_bound(flags, self.total_pages);
 
         let mem = match self.find_first_fit(alloc_clicks) {
             Some(m) => m,

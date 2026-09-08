@@ -543,8 +543,9 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 
 ### 4.4 `buddy_alloc.rs` / `segment_tree_alloc.rs`：可选后端
 
-- **buddy**（`buddy_alloc.rs`）：SoA 三数组 `free_list_heads/page_next/page_orders`；`init`（L52）把 free regions 按 2 的幂拆分插入（`add_free_region`，L123，`pos.trailing_zeros()` 保证对齐）；`alloc_mem`（L309）`order = max(size_order, align_order)` 天然满足对齐，尾部 `block_size - clicks` 释放（无浪费，S-1）；`free_mem`（L372）`try_merge` 合并 buddy（L170）；`memstats`（L431）`largest_free` + `free_pages`，`free_nodes=0`（诚实标注）。
+- **buddy**（`buddy_alloc.rs`）：SoA 三数组 `free_list_heads/page_next/page_orders`；`init`（L52）把 free regions 按 2 的幂拆分插入（`add_free_region`，L123，`pos.trailing_zeros()` 保证对齐）；`alloc_mem`（L309）`order = max(size_order, align_order)` 天然满足对齐，尾部 `block_size - clicks` 释放（无浪费，S-1）；`free_mem`（L372）`try_merge` 合并 buddy（L170）；`memstats`（L431）`largest_free` + `free_pages`，`free_nodes=0`（诚实标注）。**低内存边界（V12-P1-1 修复，2026-09-09）**：`alloc_block` 三段式遵守 `max_page`——①链表跳过完全越界的块取第一个界内块（旧实现直接弹链表头，被释放到高位的高页会挡住低内存请求）；②**跨越边界**的块（base < max_page < end）弹出向下切刻，逐级释放完全越界的上半（下半因边界对齐必然界内）；③从上一级取界内块正常分裂（发上半、留下半，低地址留给后续低内存请求）。边界换算单点化：`max_page_bound`（`mod.rs`，LOWER1MB→256 页 / LOWER16MB→4096 页，等价 C alloc.c:406-416 的 maxpage 表），三个后端共同消费，不再各抄一份。
 - **segment-tree**（`segment_tree_alloc.rs`，`segment_tree_alloc` feature 门控）：每节点 `(max_free,left_free,right_free,len)`；`alloc_mem`（L242）`find_first_fit`（L190）O(log n) 找最大适配连续块；**局限**：LOWER16MB/LOWER1MB 是先分配后检查（`mem + alloc_clicks > max_page` 则 `LowMemoryExhausted`，L274-276），不是 C 的"限制搜索范围"——实验性后端；V10-P0-1 起 `segment_tree_alloc` feature 会真正选中它（§3.3 注），默认构建仍走 bitmap。
+- **后端选择的可观测性（V12-P1-1）**：`relocate` 完成后经 `audit_log!` 记录选中的后端与页数（`PhysAllocType::name()`）； relocate 的 `#[cfg(not(...))]` Bitmap 回落臂在当前 `choose_allocator_type` 下**不可达**（该函数只会在对应 feature 开启时点名该后端），两个回落臂仅为保持 match 穷尽而存在，`vm_server.rs` 处已加注释锚定，勿读作活路径。
 
 ### 4.5 `boot.rs` / `global.rs` / `vm_server.rs`：boot 契约与调用点
 
@@ -567,7 +568,7 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 |------|--------|---------|
 | `phys_mem/bitmap_alloc.rs` | 24 | alloc/free 基本路径、零页、耗尽、memstats、多区间、内存压力、page cache（单页/低端禁用/失效条目跳过）、low-mem 错误、OOM 分类、reserve_pages、available_regions、metadata_pa_range、find_bit 回归（1 页/2 页 run/起始点跳过） |
 | `phys_mem/buddy_alloc.rs` | 14 | alloc/free、零页、耗尽、buddy 合并、largest_free、内部碎片、多分配、多区间、单页、合并链、low-mem 错误、OOM 分类、ALIGN64K/ALIGN16K 无泄漏 |
-| `phys_mem/allocator_tests.rs` | 42 | 跨后端 parity（三后端同一请求序列可观察等价；segment-tree 相关用例以 `segment_tree_alloc` feature 门控） |
+| `phys_mem/allocator_tests.rs` | 46 | 跨后端 parity（三后端同一请求序列可观察等价；segment-tree 相关用例以 `segment_tree_alloc` feature 门控）；V12-P1-1 新增低内存边界矩阵——`{bitmap,buddy,segment-tree} × LOWER16MB` 的高位链表头形状 + buddy 的跨越块切刻（LOWER1MB） |
 | `phys_mem/mod.rs` | 4 | `metadata_size` 公式（bitmap/buddy/页对齐/0 页边界） |
 | `phys_mem/stats.rs` | 3 | `MemStats` 记账（基本/峰值/失败） |
 | `alloc_stats.rs` | 4 | `VmAllocStats` 记账（基本/泄漏检测/失败跟踪/压力） |

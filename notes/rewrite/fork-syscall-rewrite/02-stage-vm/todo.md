@@ -67,9 +67,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 复核 ✅ 2026-09-09：`rg "inhibit" os/servers/vm/src` 零命中（仅 boot.rs 的 RTS_BOOTINHIBIT 属另一机制）。处置：先在 25-rs-services.md 偏差表登记"inhibit 被同步模型吸收"，E9 后按需立项。
 
-### V12-P1-1（P1）三分配器对低内存约束行为不一致 + 后端选择不可观测
+### ✅ V12-P1-1（P1）三分配器对低内存约束行为不一致 + 后端选择不可观测——已修复 2026-09-09（§18.9 Fix #65）
 
-复核 ✅ 2026-09-09：`buddy_alloc.rs:261-266` 顶层 `pop_free` 仍不检查 `max_page`（带 PAF_LOWER16MB/LOWER1MB 的请求若顶层空闲链有块直接返回）；`choose_allocator_type`（vm_server.rs:359 一带）与 `relocate` 仍无审计日志。修复方案（maxpage 约束上移 PhysAlloc 门面 + parity 测试 PAF_LOWER× 三后端矩阵）见 V12 存档 §17.2。
+复核 ✅ 2026-09-09：`buddy_alloc.rs:261-266` 顶层 `pop_free` 仍不检查 `max_page`；`choose_allocator_type` 与 `relocate` 仍无审计日志。修复见 §18.9 Fix #65。
 
 ### V12-P2-1（P2）模块边界：cache 业务内联在 dispatcher + reply 编码住在 vm_server
 
@@ -284,7 +284,7 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 
 ### 18.8 建议的推进顺序
 
-1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）——剩余通电前语义修正：V12-P1-1；
+1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）；~~**V12-P1-1**（分配器低内存边界 + 审计）~~ ✅（§18.9 Fix #65）——**通电前语义修正批全部闭环**；
 2. V13-P2-1(a)(b) 文档/注释批（不变量登记 + ARCH 偏差行 + 死内核面注释）——纯文档，可先行；
 3. V12-P2 批按 V12 存档原顺序（4→8→9→5→6→3→1→2→7），V13-P2-3（ACL 闸形状）与 P2-4（MAKE_VM 登记）插入 P2-5 前后；
 4. V13-P2-2 / P2-5 / P2-6 随 edge E-RSWIRE 批次执行（勿提前单做，wire 定稿一次对齐）；
@@ -294,6 +294,16 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 ---
 
 ### 18.9 修复记录（2026-09-09 起，逐条执行的 todo-fix campaign）
+
+### ✅ Fix #65: V12-P1-1 — buddy 低内存边界三态处理 + max_page 换算单源化 + relocate 审计
+
+- **问题**：三后端对 `PAF_LOWER16MB/LOWER1MB` 行为各异——bitmap 全范围限界扫描、segment-tree 先分配后校验、buddy 顶层 `pop_free` 完全无视 `max_page`（同一请求三答案）；且边界换算表（LOWER1MB→256 页 / LOWER16MB→4096 页）在三个后端各抄一份。`relocate` 的后端选择零审计，cfg 回落臂伪装成活路径。
+- **设计（方案对比）**：A（选定）——buddy 三段式：界内块直接用（链表跳过完全越界的头）；**跨越边界**的块弹出向下切刻（逐级释放完全越界的上半，下半因边界的 2 的幂对齐必然逐级收缩到界内）；从上级取界内块正常分裂（发上半留下半）。边界换算上移 `mod.rs::max_page_bound` 单点。B（否决）——门面分配后校验拒绝：C 语义是"在界内**找**"而非"界外即失败"，拒绝会把可满足的请求变 ENOMEM。C（否决）——双空闲链（界内/界外分列）：boot 期分配器不值得该复杂度。Linux 同构参照：zone 约束由 zonelist 选区单点表达，buddy 机制层不复制策略。
+- **Files**: `phys_mem/mod.rs`（`max_page_bound` + `PhysAllocType::name`）、`phys_mem/buddy_alloc.rs`（`alloc_block` 三段式 + `pop_free_fitting`/`pop_straddling`，原 `pop_free` 替换）、`phys_mem/bitmap_alloc.rs`/`segment_tree_alloc.rs`（换算表收敛到单点）、`vm_server.rs`（relocate 审计行 + 回落臂不可达注释）
+- **测试（新增 4）**：`buddy_lower16mb_skips_high_head`（高位页后释放占链表头 → 低内存请求跳过之，pre-fix 必返越界块）、`buddy_lower1mb_carves_straddling_block`（整池块跨越 1MB 线 → 切刻低部）、`bitmap_lower16mb_skips_high_head` / `segment_tree_lower16mb_skips_high_head`（parity 矩阵对称补齐）
+- **Verified**: 三矩阵 **498/516/498 passed**（默认 +3、segtree +4、buddy +3，与各 feature 的测试面一致）；clippy servers/vm 0 警告
+- **Docs**: 05-physical-memory.md §4.4 buddy 低内存三段式 + 换算单点 + 可观测性段；§5.1 测试表行更新
+- **边界**：segment-tree 的"先分配后检查"局限维持原登记（§4.4，实验性后端）；`pop_free` 旧名移除（唯一调用方是 `alloc_block` 顶层路径）
 
 ### ✅ Fix #64: G-V12-7 — 共享重映射删除时源区域 `remaps` 递减（`release_shared_remap` + region id 计数器）
 

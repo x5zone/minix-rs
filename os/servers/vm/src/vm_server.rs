@@ -409,6 +409,12 @@ impl VmServer {
         // whose feature is disabled falls back to Bitmap (the bootstrap
         // allocator), so `PhysAllocType` stays feature-independent while
         // `PhysAlloc` construction matches the compiled-in backend.
+        //
+        // V12-P1-1: under the current `choose_allocator_type` the fallback
+        // arms are UNREACHABLE — it only names a backend whose feature is
+        // on, so each `#[cfg(not(...))]` fallback never runs in any feature
+        // combination. They keep the match exhaustive without making
+        // `PhysAllocType` cfg-dependent; do not read them as live paths.
         let new_alloc = match alloc_type {
             PhysAllocType::Bitmap => {
                 PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
@@ -434,6 +440,16 @@ impl VmServer {
                 }
             }
         };
+
+        // V12-P1-1: the relocation's backend decision is otherwise
+        // unobservable in production — one audit line makes "asked for X,
+        // got Y" diagnosable after the fact.
+        audit_log!(
+            "[VM alloc] relocate: {} backend over {} pages (metadata {} bytes)",
+            alloc_type.name(),
+            total_pages,
+            meta_size
+        );
 
         {
             let phys_alloc = self.ctx.page_alloc.phys_alloc_mut();

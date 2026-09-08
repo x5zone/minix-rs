@@ -243,6 +243,19 @@ pub(crate) enum PhysAllocType {
 }
 
 impl PhysAllocType {
+    /// Backend name for audit lines (V12-P1-1: the relocation's backend
+    /// choice is unobservable otherwise). The only caller is inside
+    /// `audit_log!`, whose arguments compile away without the audit
+    /// feature — hence the allow.
+    #[allow(dead_code)]
+    pub fn name(&self) -> &'static str {
+        match self {
+            PhysAllocType::Bitmap => "bitmap",
+            PhysAllocType::Buddy => "buddy",
+            PhysAllocType::SegmentTree => "segment-tree",
+        }
+    }
+
     pub fn metadata_size(&self, total_pages: usize) -> usize {
         let exact = self.metadata_size_exact(total_pages);
         (exact + CLICK_SIZE - 1) & !(CLICK_SIZE - 1)
@@ -364,6 +377,21 @@ pub(super) fn compute_memory_bounds(regions: &[BootMemRegion]) -> (usize, usize,
 
 pub(super) fn is_low_mem_flag(flags: PageAllocFlags) -> bool {
     flags.intersects(PageAllocFlags::LOWER1MB | PageAllocFlags::LOWER16MB)
+}
+
+/// The exclusive page ceiling a request may land under — the single
+/// translation of the `PAF_LOWER*` flags (V12-P1-1). Every backend consumes
+/// this one function; a duplicated flags→bound table is exactly how the
+/// backends drifted apart. Mirrors C's AHLO bound (alloc.c: the allocator
+/// scans only below the requested limit).
+pub(super) fn max_page_bound(flags: PageAllocFlags, total_pages: usize) -> usize {
+    if flags.contains(PageAllocFlags::LOWER1MB) {
+        (1024 * 1024) / CLICK_SIZE
+    } else if flags.contains(PageAllocFlags::LOWER16MB) {
+        (16 * 1024 * 1024) / CLICK_SIZE
+    } else {
+        total_pages
+    }
 }
 
 pub(super) fn oom_error(flags: PageAllocFlags) -> AllocError {

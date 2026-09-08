@@ -102,7 +102,7 @@ impl BuddyAllocator {
         heads_size + next_size + orders_size + METADATA_ALIGN_PADDING
     }
 
-    // V11-P2-3 (DEFERRED): fine-grained pressure/usage queries on the buddy
+    // Fine-grained pressure/usage queries — consumed by allocator parity
     // backend. Mirrors `BitmapAllocator::is_under_pressure` (tested there);
     // production wiring lands with the 24-page-cache reclaim path, which is
     // when the buddy runtime-selection path picks its first callers.
@@ -261,30 +261,79 @@ impl BuddyAllocator {
         if order > self.max_order {
             return None;
         }
+        let size = 1usize << order;
 
-        if let Some(page) = self.pop_free(order) {
-            let block_size = 1usize << order;
+        // V12-P1-1: honor a low-memory bound (`PAF_LOWER1MB/16MB` →
+        // `max_page`) at every step. Three situations, in preference order:
+        //
+        // 1. A fully in-bounds block at this order — use it directly,
+        //    skipping any fully-above blocks that a high free put at the
+        //    list head (C alloc.c scans within the AHLO bound).
+        if let Some(page) = self.pop_free_fitting(order, max_page) {
             self.page_orders[page] = (order as u8) | FLAG_ALLOCATED;
-            self.free_pages -= block_size;
+            self.free_pages -= size;
             return Some(page);
         }
 
+        // 2. A block that STRADDLES the bound (`base < max_page < end`) at
+        //    a higher order — carve its low part: split off the half above
+        //    the bound (freed for future unrestricted requests), descend,
+        //    until the survivor lies fully under the bound.
+        if let Some((mut k, mut page)) = self.pop_straddling(order + 1, max_page) {
+            // Carve while the block straddles. An order-`order` block can
+            // never straddle: both its base and the bound are aligned to
+            // `1 << order` (the bounds are powers of two in pages), so
+            // `base < max_page` already implies `base + size <= max_page`.
+            while page + (1usize << k) > max_page {
+                debug_assert!(k > order, "an order-t block cannot straddle a 2^t-aligned bound");
+                let half = 1usize << (k - 1);
+                let high = page + half;
+                if max_page > high {
+                    // The low half fits under the bound; the fault line
+                    // sits inside the high half — descend there.
+                    self.page_orders[page] = (k - 1) as u8;
+                    self.push_free(k - 1, page);
+                    self.free_pages += half;
+                    page = high;
+                } else {
+                    // The high half lies fully above the bound — free it;
+                    // the fault line sits inside the low half.
+                    self.page_orders[high] = (k - 1) as u8;
+                    self.push_free(k - 1, high);
+                    self.free_pages += half;
+                }
+                k -= 1;
+            }
+            // The survivor is fully in-bounds at order k: split down the
+            // ordinary way, handing out the upper halves and leaving the
+            // lower halves free — future low-bound requests want low pages.
+            while k > order {
+                let half = 1usize << (k - 1);
+                self.page_orders[page] = (k - 1) as u8;
+                self.push_free(k - 1, page);
+                self.free_pages += half;
+                page += half;
+                k -= 1;
+            }
+            self.page_orders[page] = (order as u8) | FLAG_ALLOCATED;
+            self.free_pages -= size;
+            return Some(page);
+        }
+
+        // 3. Split an in-bounds block from one level up (the recursion
+        //    re-runs all checks there).
         if order < self.max_order
             && let Some(block) = self.alloc_block(order + 1, max_page) {
+                // The recursion only returns in-bounds blocks, so the
+                // upper buddy is in-bounds too. Hand out the upper half and
+                // leave the lower half on the free list.
                 let buddy = block + (1usize << order);
                 let buddy_size = 1usize << order;
-                if buddy + buddy_size <= max_page {
-                    self.page_orders[block] = order as u8;
-                    self.push_free(order, block);
-                    self.free_pages += buddy_size;
-                    self.page_orders[buddy] = (order as u8) | FLAG_ALLOCATED;
-                    return Some(buddy);
-                }
-                self.page_orders[buddy] = order as u8;
-                self.push_free(order, buddy);
+                self.page_orders[block] = order as u8;
+                self.push_free(order, block);
                 self.free_pages += buddy_size;
-                self.page_orders[block] = (order as u8) | FLAG_ALLOCATED;
-                return Some(block);
+                self.page_orders[buddy] = (order as u8) | FLAG_ALLOCATED;
+                return Some(buddy);
             }
 
         None
@@ -300,15 +349,60 @@ impl BuddyAllocator {
         self.free_list_heads[order] = page as u32;
     }
 
-    fn pop_free(&mut self, order: usize) -> Option<usize> {
-        let head = self.free_list_heads[order];
-        if head == FREE_LIST_SENTINEL {
-            return None;
+    /// Pop the first free block at `order` that lies **fully** under
+    /// `max_page` — walk-and-unlink, since the head may be entirely above
+    /// the bound while a later block is below. Straddling blocks are left
+    /// alone here; `pop_straddling` owns them (V12-P1-1).
+    fn pop_free_fitting(&mut self, order: usize, max_page: usize) -> Option<usize> {
+        let block = 1usize << order;
+        let mut prev = FREE_LIST_SENTINEL;
+        let mut cur = self.free_list_heads[order];
+        while cur != FREE_LIST_SENTINEL {
+            let page = cur as usize;
+            let next = self.page_next[page];
+            if page + block <= max_page {
+                if prev == FREE_LIST_SENTINEL {
+                    self.free_list_heads[order] = next;
+                } else {
+                    self.page_next[prev as usize] = next;
+                }
+                self.page_next[page] = FREE_LIST_SENTINEL;
+                return Some(page);
+            }
+            prev = cur;
+            cur = next;
         }
-        let page = head as usize;
-        self.free_list_heads[order] = self.page_next[page];
-        self.page_next[page] = FREE_LIST_SENTINEL;
-        Some(page)
+        None
+    }
+
+    /// Pop the first block, at any order from `min_order` up, that
+    /// **straddles** the bound (`base < max_page < end`). Such a block's
+    /// low part can be carved down to satisfy a low-memory request; blocks
+    /// fully above the bound are skipped and stay on their lists.
+    fn pop_straddling(&mut self, min_order: usize, max_page: usize) -> Option<(usize, usize)> {
+        let mut k = min_order;
+        while k <= self.max_order {
+            let size = 1usize << k;
+            let mut prev = FREE_LIST_SENTINEL;
+            let mut cur = self.free_list_heads[k];
+            while cur != FREE_LIST_SENTINEL {
+                let page = cur as usize;
+                let next = self.page_next[page];
+                if page < max_page && page + size > max_page {
+                    if prev == FREE_LIST_SENTINEL {
+                        self.free_list_heads[k] = next;
+                    } else {
+                        self.page_next[prev as usize] = next;
+                    }
+                    self.page_next[page] = FREE_LIST_SENTINEL;
+                    return Some((k, page));
+                }
+                prev = cur;
+                cur = next;
+            }
+            k += 1;
+        }
+        None
     }
 
     fn remove_from_free_list(&mut self, order: usize, target: usize) -> bool {
@@ -367,13 +461,7 @@ impl PhysAllocator for BuddyAllocator {
             0
         };
 
-        let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
-            (1024 * 1024) / CLICK_SIZE
-        } else if flags.contains(PageAllocFlags::LOWER16MB) {
-            (16 * 1024 * 1024) / CLICK_SIZE
-        } else {
-            self.total_pages
-        };
+        let max_page = super::max_page_bound(flags, self.total_pages);
 
         let size_order = Self::order_for_pages(clicks);
         let align_order = if align_clicks > 0 {

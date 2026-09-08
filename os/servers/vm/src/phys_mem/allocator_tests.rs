@@ -330,6 +330,108 @@ mod flags {
         alloc.free_mem(addr, 1);
     }
 
+    // --- V12-P1-1: low-memory bounds × three backends. The plain tests
+    // above never leave the bound's good side — a fresh allocator's first
+    // free block starts at page 0, so an out-of-bounds answer was
+    // impossible to observe. These force the bad shapes: a freed HIGH page
+    // at the head of the free list, and (buddy only) the whole-memory
+    // block straddling the bound. ---
+
+    /// Buddy: after a high page is freed LAST it heads the free list; a
+    /// low-memory request must skip it instead of returning it
+    /// (pre-fix `pop_free` handed the out-of-bounds head straight back).
+    #[test]
+    fn buddy_lower16mb_skips_high_head() {
+        let metadata = make_metadata();
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32));
+
+        // Drain past the 16MB line so both sides of it are held allocated.
+        let mut low: Option<AlignedPhysBytes> = None;
+        let mut high: Option<AlignedPhysBytes> = None;
+        let bound_pages = (16 * 1024 * 1024) / CLICK_SIZE;
+        for _ in 0..(bound_pages + 16) {
+            let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+            if addr.as_usize() < 16 * 1024 * 1024 {
+                low.get_or_insert(addr);
+            } else {
+                high.get_or_insert(addr);
+            }
+        }
+        let low = low.expect("drain must cover the low side");
+        let high = high.expect("drain must cover the high side");
+
+        // Free the low page first, the high page second: LIFO puts the
+        // out-of-bounds block at the head of the order-0 free list.
+        alloc.free_mem(low, 1);
+        alloc.free_mem(high, 1);
+
+        let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
+        assert!(addr.as_usize() < 16 * 1024 * 1024,
+            "low-memory request must not receive the out-of-bounds head block");
+        // The skipped high block stays available for unrestricted callers.
+        let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+        alloc.free_mem(addr, 1);
+    }
+
+    /// Buddy: on a fresh 32MB pool the only free block spans the whole
+    /// memory and straddles the 16MB line; the request must carve its low
+    /// part (pre-fix this worked by accident — the split path happened to
+    /// walk the low half; the carve path now owns that job explicitly).
+    #[test]
+    fn buddy_lower1mb_carves_straddling_block() {
+        let metadata = make_metadata();
+        let mut alloc = BuddyAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32));
+        let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER1MB).unwrap();
+        assert!(addr.as_usize() < 1024 * 1024);
+        alloc.free_mem(addr, 1);
+    }
+
+    /// Bitmap parity: a freed high page must not change where low-memory
+    /// requests land (first-fit from the low end already honors the bound).
+    #[test]
+    fn bitmap_lower16mb_skips_high_head() {
+        let metadata = make_metadata();
+        let mut alloc = BitmapAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32), 0, 0);
+        let bound_pages = (16 * 1024 * 1024) / CLICK_SIZE;
+        let mut low: Option<AlignedPhysBytes> = None;
+        let mut high: Option<AlignedPhysBytes> = None;
+        for _ in 0..(bound_pages + 16) {
+            let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+            if addr.as_usize() < 16 * 1024 * 1024 {
+                low.get_or_insert(addr);
+            } else {
+                high.get_or_insert(addr);
+            }
+        }
+        alloc.free_mem(low.unwrap(), 1);
+        alloc.free_mem(high.unwrap(), 1);
+        let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
+        assert!(addr.as_usize() < 16 * 1024 * 1024);
+    }
+
+    /// Segment-tree parity for the same shape.
+    #[test]
+    #[cfg(feature = "segment_tree_alloc")]
+    fn segment_tree_lower16mb_skips_high_head() {
+        let metadata = make_metadata();
+        let mut alloc = SegmentTreeAllocator::init(metadata, total_pages(&make_regions(32)), &make_regions(32));
+        let bound_pages = (16 * 1024 * 1024) / CLICK_SIZE;
+        let mut low: Option<AlignedPhysBytes> = None;
+        let mut high: Option<AlignedPhysBytes> = None;
+        for _ in 0..(bound_pages + 16) {
+            let addr = alloc.alloc_mem(1, PageAllocFlags::empty()).unwrap();
+            if addr.as_usize() < 16 * 1024 * 1024 {
+                low.get_or_insert(addr);
+            } else {
+                high.get_or_insert(addr);
+            }
+        }
+        alloc.free_mem(low.unwrap(), 1);
+        alloc.free_mem(high.unwrap(), 1);
+        let addr = alloc.alloc_mem(1, PageAllocFlags::LOWER16MB).unwrap();
+        assert!(addr.as_usize() < 16 * 1024 * 1024);
+    }
+
     #[test]
     fn bitmap_align64k() {
         let metadata = make_metadata();

@@ -335,13 +335,7 @@ impl PhysAllocator for BitmapAllocator {
             alloc_clicks += align_clicks;
         }
 
-        let max_page = if flags.contains(PageAllocFlags::LOWER1MB) {
-            (1024 * 1024) / CLICK_SIZE
-        } else if flags.contains(PageAllocFlags::LOWER16MB) {
-            (16 * 1024 * 1024) / CLICK_SIZE
-        } else {
-            self.total_pages
-        };
+        let max_page = super::max_page_bound(flags, self.total_pages);
 
         let use_cache = !super::is_low_mem_flag(flags);
 
