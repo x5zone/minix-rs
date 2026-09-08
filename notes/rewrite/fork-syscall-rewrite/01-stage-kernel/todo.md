@@ -453,7 +453,7 @@ arm64 init/mask_all 补 GICR_ICENABLER0 处理（SGI/PPI 全屏蔽 + 按需 unma
 
 ### 23.3 新发现 P2
 
-#### D-60 注释准确性批（4 处漂移 + 1 处虚构 + 1 处失真） [P2]
+#### D-60 注释准确性批（4 处漂移 + 1 处虚构 + 1 处失真） [P2] — ✅ 已修复/核实闭合（2026-09-09）
 
 `os/kernel/src/lib.rs:1807`（`see smp.rs:200`）、`os/kernel/src/lib.rs:1823`
 （`see proc_table.rs:276`）、`os/kernel/src/syscall.rs:2858`（`see vm.rs:323`——
@@ -464,6 +464,17 @@ LVT timer entry 在 X86_64ArchInit::init() 使能"——实际 `os/arch/src/x86_
 实际只是丢弃返回值（C 同样不检查，注释失真非行为缺口）；`os/arch/src/x86_64/cpu_identity.rs:57`
 MINIX3 BUG 标注引 `arch_system.c:239`，实际合并语句在 :243-245（~5 行漂移）。
 修法：fix-guard 逐处 grep 目标符号现址后重写。
+
+**✅ 解决记录（2026-09-09，fix-guard 逐处 grep 复核后执行）**：
+- **已修 3 处**（行内行号引用改为符号引用——`CpuLocal::set_running` / `ProcessTable::rts_unset`
+  / `ipc::delivermsg`，消灭行号腐烂这一类）：lib.rs `set_running(IDLE)` 注释（:200→符号）、
+  lib.rs `rts_unset auto-enqueues` 注释（:276→符号；现址 418）、syscall.rs `copy_msg_to_user`
+  doc（vm.rs:323 文件级失效→`ipc::delivermsg` 消费点，grep 核实在 ipc.rs:402）。
+- **已随 D-59 闭合**：lib.rs "LVT 使能点" 虚构声称（该注释块在 D-59 Step 6 重写中删除）。
+- **复核剔除 2 条（防重查）**：① cpu_identity.rs 的 C 锚点 `:239` **正确**——C 源
+  `arch_system.c:239-240` 正是 model 合语句，V13 扫描代理报的 ":243-245 漂移" 为误报；
+  ② "Failure is logged" 全库 grep 零命中（已被此前批次修复或扫描误读），无需动作。
+- 验证：kernel 730/0/8 全绿（注释改动无行为面）。
 
 #### D-62 A2 收尾：globals.rs 之外 4 组静态漏网 [P2]
 

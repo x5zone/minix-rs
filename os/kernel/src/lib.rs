@@ -1794,7 +1794,7 @@ fn bsp_finish_booting(
 
     // Step 2: bill_ptr = proc_ptr = idle_proc
     // C: get_cpulocal_var(bill_ptr) = get_cpulocal_var_ptr(idle_proc) — main.c:54-55
-    // Rust: CpuLocal::set_running(IDLE) — see smp.rs:200.
+    // Rust: CpuLocal::set_running(IDLE) — see `CpuLocal::set_running` in smp.rs.
     // We plumb this through the (single-CPU) SmpState when one exists. For now
     // we record the intent by setting the bill pointer inside proc_table via
     // the sched-side bookkeeping hook used by the rest of the kernel.
@@ -1810,7 +1810,7 @@ fn bsp_finish_booting(
     // C: for (i=0; i < NR_BOOT_PROCS - NR_TASKS; i++)
     //       RTS_UNSET(proc_addr(i), RTS_PROC_STOP);
     // Rust: ProcessTable::rts_unset auto-enqueues a newly-runnable process
-    // (see proc_table.rs:276). Iterate from 0 (first user boot module) up to
+    // (see `ProcessTable::rts_unset` in proc_table.rs). Iterate from 0 (first user boot module) up to
     // but excluding kernel tasks (which were marked PROC_STOP during
     // init_proc_and_boot and must stay stopped — they're invoked lazily).
     // C also skips kernel tasks (the loop is `for i in 0..NR_BOOT_PROCS-NR_TASKS`).

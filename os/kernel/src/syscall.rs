@@ -2860,7 +2860,8 @@ use minix_types::Endpoint;
 ///
 /// This approach avoids direct user-space memory writes from the syscall
 /// dispatch path, which is safer and aligns with the IPC engine's
-/// message delivery mechanism (see vm.rs:323).
+/// message delivery mechanism (`MF_DELIVERMSG` flag + `p_delivermsg`,
+/// consumed by `ipc::delivermsg`).
 fn copy_msg_to_user(caller: &mut KProcess, msg: &Message) {
     caller.p_delivermsg = *msg;
     caller.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
