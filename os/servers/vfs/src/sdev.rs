@@ -22,9 +22,10 @@
 //! Transports (`asynsend3`), waiting, revival execution, and the upper
 //! socket layer (24) stay outside; select replies stay with 23.
 
-use minix_types::VirBytes;
+use minix_types::{DevId, Endpoint, VirBytes};
 
 use crate::cdev::grant_dir;
+use crate::device_map::{smap_endpt_by_dev, SmapTable};
 use crate::fproc::{SdevAux, SdevCall};
 
 /// `SDEV_RQ_BASE` (`minix3/minix/include/minix/com.h:1037` = 0x1900).
@@ -427,6 +428,36 @@ pub fn finish_kind(call: SdevCall) -> FinishGroup {
     }
 }
 
+/// Stop plan for a vanished socket driver (`sdev_stop:910-925`).
+///
+/// The blocked-on state clears and the suspended call finishes with `EIO`
+/// as the reply type — one convention shared with worker-thread stopping,
+/// and the in-flight twin of select's death wake (`unsuspend_hit` marks the
+/// fd ready so the *next* call surfaces the error; `stop` fails the call
+/// that is already suspended).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopPlan {
+    /// Revival group — same routing as a live reply (`sdev_finish`).
+    pub group: FinishGroup,
+    /// The reply value: always `EIO` for a driver death (`sdev.c:921-923`).
+    pub reply: i32,
+}
+
+/// Pure stop decision for one suspended socket call.
+pub fn stop(call: SdevCall) -> StopPlan {
+    StopPlan {
+        group: finish_kind(call),
+        reply: minix_types::EIO,
+    }
+}
+
+/// Whether a suspended socket slot belongs to the dying driver
+/// (`pipe.c:347-350`'s match): the smap row for the suspended device must
+/// exist and be owned by the vanished endpoint.
+pub fn stop_matches(dev: DevId, smap_table: &SmapTable, dead: Endpoint) -> bool {
+    smap_endpt_by_dev(smap_table, dev) == Some(dead.get())
+}
+
 /// Close-status normalization (`sdev_finish:804-806`): a closed fd reads
 /// as closed unless the driver is still working on it.
 pub fn close_normalize(status: i32) -> i32 {
@@ -599,6 +630,49 @@ impl SdevError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_stop_plans_eio_by_group() {
+        // Driver death finishes every suspended call with `EIO`, routed by
+        // the same revival groups as a live reply (`sdev.c:921-925`).
+        assert_eq!(
+            stop(SdevCall::Read),
+            StopPlan {
+                group: FinishGroup::Recv,
+                reply: minix_types::EIO,
+            }
+        );
+        assert_eq!(
+            stop(SdevCall::Accept),
+            StopPlan {
+                group: FinishGroup::Accept,
+                reply: minix_types::EIO,
+            }
+        );
+        assert_eq!(
+            stop(SdevCall::Bind),
+            StopPlan {
+                group: FinishGroup::Simple,
+                reply: minix_types::EIO,
+            }
+        );
+    }
+
+    #[test]
+    fn test_stop_matches_smap_row() {
+        // Only slots whose suspended device belongs to the vanished driver
+        // stop (`pipe.c:347-350`); free rows never match.
+        let mut stbl = SmapTable::default();
+        stbl.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 9).get());
+        let dev = crate::device_map::make_smap_dev(1, 7);
+        assert!(stop_matches(dev, &stbl, Endpoint::from_generation_slot(0, 9)));
+        assert!(!stop_matches(dev, &stbl, Endpoint::from_generation_slot(0, 8)));
+        assert!(!stop_matches(
+            crate::device_map::make_smap_dev(2, 7),
+            &stbl,
+            Endpoint::from_generation_slot(0, 8)
+        ));
+    }
 
     #[test]
     fn test_ask_kinds_cover_all_ops() {

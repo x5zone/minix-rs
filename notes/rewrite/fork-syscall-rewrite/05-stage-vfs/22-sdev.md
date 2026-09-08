@@ -229,6 +229,8 @@ os/servers/vfs/src/
 | `test_grant_and_flag_packing` | `sdev.c:205-206,355-402` | 配给 + 拼合 + 关断 + 关闭模式 | `sdev.rs:700` |
 | `test_finish_groups` | `sdev.c:785-892,975-979` | 三组 + 归一 + 失败门 + 续办 | `sdev.rs:731` |
 | `test_route_reply_matrix` | `sdev.c:1004-1113` | 十样本路由 + 需分 | `sdev.rs:763` |
+| `test_stop_plans_eio_by_group` | `sdev.c:910-925` | 停尸决策：三组续办 + `EIO` 负类型 | `sdev.rs` |
+| `test_stop_matches_smap_row` | `pipe.c:347-350` | 停尸匹配：smap 行端点比对，空行不命中 | `sdev.rs` |
 | `test_errno_map_covers_sdev_c` | `sdev.c` 全文件 | 4 变体→errno 全映射 | `sdev.rs:821` |
 
 测试策略：问型以十七操作全枚举锁定；通道以脚本/静默双实现覆盖；挂起以三形状 + 四非法覆盖；授权以配给/拼合/关断/模式覆盖；复活以三组 + 归一 + 失败门覆盖；路由以十样本矩阵覆盖；错误以 4 变体全映射覆盖。

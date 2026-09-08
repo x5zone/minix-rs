@@ -25,7 +25,7 @@
 | **P0** | **R2-P0-1** | REQ 消息基址 `FS_BASE=0x600` 与 C（com.h:589）/minix-fs（0xA00）不符——VFS↔FS wire 绝对值错误，注释的 C 锚点系伪造（§9.2；**✅ 已修复** 2026-09-09，§9.9 Fix #1） |
 | P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：`DirectFetcher::fetch` 伪造返回 `"a".repeat`、`eat_path` 签名吃 `TestFproc`、`StrictResolver` 恒返回 vnode 99（§9.2） |
 | P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2） |
-| P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2） |
+| P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2） |
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
@@ -149,7 +149,7 @@
 - **验证**：`grep -rn "struct CallTable" os/servers/vfs/src` 归零；match 无 `_` 通配臂（编译期穷举）；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` 全绿。
 - **边界**：P1-1（同点收敛）、P2-2（本条闭合它）、R2-P1-1（path 决策函数签名前置）；`SyscallResult`/`Route` 类型设计本身保留（首轮 §7 已肯定）。
 
-#### R2-P1-3（P1-design-missing）`sdev_stop` 驱动死亡级联缺失：socket 驱动死亡时被挂起进程永久悬挂
+#### ✅ R2-P1-3（P1-design-missing）`sdev_stop` 驱动死亡级联缺失——已修复 2026-09-09（§10 Fix #11；sdev 侧决策闭合，运行时编排归 P1-2）
 
 - **Rust 现状**：sdev.c 25 函数对位中唯一 ❌。Rust 侧 `ChannelEvent::Dead`（sdev.rs:217）只是测试脚本事件；select 维度的死亡唤醒有 `unsuspend_hit`（select.rs:719），sdev 维度（挂起在 SDEV_CANCEL/读写/accept 上的 slot）无级联；上游触发点 `smap_by_endpt`/`unmap_by_endpt`（device_map.rs:496 一带）本身也未接线。
 - **C 行为**：sdev.c:912 `sdev_stop`——驱动死亡时遍历挂起 socket 请求，回 EIO 并复活；与 C-3 的 `invalidate_filp_by_char_major`/`by_sock_drv`（filedes.c:260/:277）同属"驱动死亡级联"族。
@@ -324,6 +324,14 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`CopyFdCtx { filp_table, vnode_table, smap_table, policy, caller_endpoint(who_e), remote_slot, is_super, cloexec }` 显式注入 C 的隐式环境（`FreeCtx` 同型）；方向由 `kind` 决定（From 取 remote 装 caller + CLOEXEC 剥离；To 取 caller 装 remote + CLOEXEC 置位；Close 清 remote fd）；三守门齐（EPERM/`ioctl_holder` EBADF/自复制 EDEADLK）。`device_map` 新增 `smap_endpt_by_dev`（C `get_smap_by_dev`，smap.c:216-237）。设计要点：否决"调用方按 kind 交换 src/dst"的旧签名——方向错配必须在函数内不可表达；取用侧/安装侧的分化与 C 的 `get_filp2(COPYFD_TO?fp:rfp)` 一处分化同构。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **343 passed / 0 failed**（341→343：+EDEADLK、+ioctl_holder EBADF；既有 5 测试全部迁移到新签名并保持语义断言）。回归 review 曾逮到区间替换吞掉 `test_copy_close` 的 `#[test]` 属性（342≠343 账目不符），已补回。
 - **边界**：close 路径的 `nr_locks` 释放与 `lock_filp(READ)` 真锁仍在 P1-2 接线矩阵；`SmapEntry.endpt` 的裸 `i32` 属 P2-5 类型化批。
+
+### ✅ Fix #11: R2-P1-3 — sdev_stop 停尸决策补齐（2026-09-09）
+
+- **File**：`os/servers/vfs/src/sdev.rs`（`StopPlan`/`stop`/`stop_matches` + 2 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/22-sdev.md`（测试表）。
+- **Before**：sdev.c 25 函数对位中唯一 ❌——`sdev_stop`（sdev.c:910-925）无任何 Rust 对应；`ChannelEvent::Dead` 只是测试脚本事件。
+- **After**：`stop(call) -> StopPlan { group: finish_kind(call), reply: EIO }`——驱动死亡时挂起调用以 EIO 负类型按原有复活组收尾（C "统一口径"：:918 清挂起 → :921-923 EIO 续办）；`stop_matches(dev, smap_table, dead)` 判定挂起槽位是否属于死驱动（`pipe.c:347-350` 的 smap 行端点比对）。至此死亡级联的三面决策函数全部就位：filedes 失效族（Fix #5/#6）+ select 死亡唤醒（`DeathKind`/`unsuspend_hit`，既有）+ sdev 停尸（本条）；编排分类器 `classify_driver_waiter`/`DriverWake::StopSdev` pipe.rs 既有。
+- **诚实边界**：运行时编排（fproc 扫描循环 + dmap/smap unmap 触发序）无法在任何纯决策层落地——它就是事件循环本身，归 P1-2 接线矩阵（该条建议 1 已含"驱动级联"步）。本条闭合的是语义缺口（❌ 对位缺失），非接线缺口。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（343→345）。
 
 ### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
 
