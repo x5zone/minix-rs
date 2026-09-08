@@ -3,7 +3,8 @@
 //! `request.c` hides three repetitions: `grant` construction / `fs_sendrec`
 //! / `revoke` / `ERESTART → vm_handlemem → retry(0)` and `RES_64BIT` early
 //! `EINVAL` and `m_source → res->fs_e` back-fill.  This module makes each
-//! repetition a type: `FsReq` (33 variants, `FS_BASE 0xA00` prefix), `FsResp`
+//! repetition a type: `FsReq` (32 variants, one per live `REQ_*` type,
+//! `FS_BASE 0xA00` prefix), `FsResp`
 //! (`NodeDetails` 7 fields vs `LookupRes` 9 fields), `GrantScope` (`Try` vs
 //! `NoTry`), `FsFlags` (`RES_64BIT`守门).  `REQ_GETNODE 0xA01` is dead.
 //!
@@ -26,7 +27,7 @@ pub const fn is_fs_rq(raw: u32) -> bool {
     (raw & !0xff) == FS_BASE
 }
 
-/// `REQ_*` constants — `vfsif.h:41-73` (33 live + 1 dead).
+/// `REQ_*` constants — `vfsif.h:41-73` (33 constants: 32 live + 1 dead).
 pub const REQ_GETNODE: u32 = FS_BASE + 1; // dead — Should be removed
 pub const REQ_PUTNODE: u32 = FS_BASE + 2;
 pub const REQ_SLINK: u32 = FS_BASE + 3;
@@ -122,7 +123,8 @@ pub struct VfsUCred {
     pub sgroups: [u32; 16],
 }
 
-/// Typed `REQ_*` request — 33 live variants (no `GetNode`).
+/// Typed `REQ_*` request — 32 variants, one per live `REQ_*` type (no
+/// `GetNode`; `vfsif.h` defines 33 constants of which `REQ_GETNODE` is dead).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsReq {
     PutNode {

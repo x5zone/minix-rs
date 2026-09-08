@@ -30,7 +30,7 @@
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2） |
-| P3 | R2-P3-1 | request.rs 计数注释漂移：注释称 33 变体实际 32（§9.2） |
+| P3 | R2-P3-1 | request.rs 计数注释漂移：33 常量 = 32 活 + 1 死，FsReq 32 变体与活类型双射（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #2） |
 | P3 | R2-P3-2 | device_map.rs 四源合一（dmap+smap+device.c ioctl 决策+mapdriver）的职责注记（§9.2） |
 | edge | E-REQWIRE（新） | REQ_* VFS↔FS 共享契约双侧独立定义（vfs request.rs vs minix-fs protocol.rs）——收敛 minix-types 或建全量对账测试 |
 | edge | E-VFSWIRE 增补 | VFS 侧 `VmVfsReq` 消息级解码未建；wire 定稿须以 C 绝对值断言（FS_BASE 0x600 教训） |
@@ -180,7 +180,7 @@
 - **修改方案**：**A（选定）**——加 `gcov_privilege_gate(caller) -> Result<(), GcovError>` 决策函数（照 protect.rs `in_group` 的决策模式，测试直调）；B——并入调度层统一特权检查。否决 B：C 是 per-call 门，位置语义要保真。
 - **验证**：非特权 caller 决策函数返回 EPERM 的单测；`grep -n "super_user\|EPERM" os/servers/vfs/src/misc.rs` 命中新函数。
 
-#### R2-P3-1（P3）request.rs 计数注释漂移
+#### ✅ R2-P3-1（P3）request.rs 计数注释漂移——已修复 2026-09-09（§10 Fix #2，真相比登记更深一层：33 常量 = 32 活 + 1 死，32 变体与活类型双射）
 
 模块头（request.rs:6）与 `FsReq` 定义处（:120）注释称 "33 variants / 33 live variants"，实际 32 变体（本枚举 awk 计数）；`NREQS=34`（:17）对照 C `minix3/minix/include/minix/vfsif.h:75`（NREQS 34，含死 REQ_GETNODE）正确。随 R2-P0-1 同文件分两批顺带修。
 
@@ -262,3 +262,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`FS_BASE = 0xA00`，注释锚 `com.h:589` 并注明 vfsif.h 仅引用、FS 侧（minix-fs protocol.rs）按 0xA00 分发；新增 `test_fs_wire_values_match_c_absolute`（绝对值 pin：REQ_GETNODE=0xA01/REQ_READ=0xA13/REQ_LOOKUP=0xA1A/REQ_BPEEK=0xA21 + 0x600 旧基址回归拒绝 + 与 CDEV_RS/BDEV_RS 命名空间互异）；文档全部数值与锚点同步为 0xA 系。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **335 passed / 0 failed**（334→335，+1 新测试）；`grep -rn "0x600" os/servers/vfs/src` 仅余回归守卫断言（request.rs:568-569）与已登记的 is_cdev_rs 占位（main_loop.rs:555/:1218，新条目 R2-P1-4）；文档 grep 0x6 系旧值零残留。
 - **回归 review**：测试名对账——12-request-wrappers.md §5 测试表已增补新测试行；fix-guard 残留清查牵出 R2-P1-4（RS 前缀虚构值），已登记不顺手修。
+
+### ✅ Fix #2: R2-P3-1 — REQ 计数三重校准：33 常量 = 32 活 + 1 死（2026-09-09）
+
+- **File**：`os/servers/vfs/src/request.rs`（:6/:30/:125 三处注释）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/12-request-wrappers.md`（12 处计数与 1 处虚构测试名）。
+- **Before**：代码注释称 "33 variants / 33 live variants / 33 live + 1 dead"；文档称 "33 变体 / 33 有效请求 / 33 包装 / 33 函数"，且 §3 D6 引用不存在的测试名 `test_dead_getnode_is_unknown`（Gate E 违规）。
+- **After（真相）**：`vfsif.h:41-73` 定义 **33 个常量**（`FS_BASE+1..+33`），其中 `REQ_GETNODE` 死 → **32 个活类型**；`FsReq` **32 变体与活类型一一对应**（`NREQS 34` 是表容量冗余，非活类型数）；`request.c` 的 `req_*` 函数实为 **36 个**（含 `_actual` 重试后半，`grep -oE "\breq_[a-z_0-9]+\(" | sort -u` 实测）——文档三处"33 函数"一并校准；虚构测试名改为真实存在的 `test_nreqs_getnode_dead`。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **335 passed / 0 failed**（注释级修改，无行为变化）；文档 grep 无残留错误计数。
+- **回归 review 与 workspace 事件**：修复期间并行会话对 `os/libs/minix-types/src/ipc/vm.rs` 的半成品删除（`VmExecNewmemOut` 类型已删、:938 impl 与 ：1608 测试引用未删）卡死全 workspace 编译 E0425 约 7 分钟——本次按其删除意图补完收尾（仅删悬空代码，不改其它语义），该文件**不并入本提交**（留给其所属会话）；这是共享工作树的已知风险，用户约定跨 stage 条目走 edge_todo 单线程执行正是为规避此类冲突。
