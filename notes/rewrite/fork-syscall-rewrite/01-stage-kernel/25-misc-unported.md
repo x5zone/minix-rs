@@ -544,7 +544,7 @@ pub fn proc_is_updatable(p: &KProcess) -> bool {
 - `adjust_proc_slot`：恢复 endpoint/nr/priv_id/caller_q/scheduler/cpu/cpu_mask（`caller_q` 通过 `mem::replace` 提取/恢复）
 - `adjust_priv_slot`：恢复 s_id/s_proc_nr/pending bits/diag_sig/s_alarm_timer（C do_update.c:292 七字段全量，2026-09-08 补齐 s_alarm_timer——U-1）
 - `swap_proc_slot_pointer`（ptproc）no-op：两进程均非 runnable，ptproc 不指向它们
-- `swap_memreq` no-op：vmrequest 全局链未实现；两进程非 runnable，VMREQUEST 通常未设置
+- `swap_memreq`：已实现（2026-09-08，U-2）——`ProcessTable::vm_swap_requestor`（proc_table.rs），恰一侧 RTS_VMREQUEST 时重锚链条目到进程现居槽位；`proc_is_updatable` 不排除 VMREQUEST 位，非 runnable ≠ 链外
 - `adjust_asyn_table` 跳过：C 中失败仅打印 warning（非致命），需跨地址空间 `data_copy`，仅在 live update 场景触发
 
 ### 4.5 dispatch_profile 状态机
@@ -779,7 +779,7 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | ~~UPDATE 槽位交换~~ | do_update.c:129-147 | ✅ 已实现: `ProcessTable::swap_slots` + `PrivTable::swap_slots` (`core::mem::swap` + `split_at_mut`) + `adjust_proc_slot`/`adjust_priv_slot` 恢复 identity 字段 | — |
 | ~~UPDATE inherit_priv_*~~ | do_update.c:94-105 | ✅ 已实现: `KPriv::add_irq/add_io/add_mem` (dedup + CHECK_* flag) | — |
 | ~~UPDATE abort_proc_ipc_send~~ | do_update.c:220-236 | ✅ 已实现: `SenderQueue::remove_by_nr` + `RTS_SENDING` clear + `MF_SENDING_FROM_KERNEL` clear | — |
-| UPDATE swap_memreq | do_update.c:313-337 | ✅ 设计 no-op：vmrequest 全局链未实现 + 两进程非 runnable（`proc_is_updatable` 保证）→ VMREQUEST 通常未设置 | VmRequestQueue（未来） |
+| UPDATE swap_memreq | do_update.c:313-337 | ✅ 已实现（2026-09-08，U-2）：`ProcessTable::vm_swap_requestor`——D-20 的 VmRequestQueue 已存在，恰一侧 VMREQUEST 时重锚 stale 条目；`proc_is_updatable` 不排除 VMREQUEST（如 NO_PRIV 用户进程 kcall 挂 VM 检查），no-op 前提失效 | `ProcessTable::vm_swap_requestor` |
 | ~~SPROF 时钟初始化（PROF_RTC）~~ | do_sprofile.c:75-82 | ✅ 已实现: `ClockArch::init_profile_clock(freq)` / `stop_profile_clock()` | — |
 | SPROF PROF_NMI | do_sprofile.c | NMI 子系统超范围（设计排除），返回 `ENOSYS` | N/A（设计排除） |
 | ~~SPROF 数据拷贝~~ | do_sprofile.c:117-120 | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（misc.rs:2107-2169，`addr_of!` 规避 `static_mut_refs`） | — |

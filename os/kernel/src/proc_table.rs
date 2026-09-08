@@ -322,6 +322,72 @@ impl ProcessTable {
         }
     }
 
+    /// C: `swap_memreq()` — do_update.c:313-337. Called from `dispatch_update`
+    /// AFTER the slot content swap: the vmrequest chain anchors processes by
+    /// slot, so if the requesting process moved from one slot to the other,
+    /// its chain entry is stale and must be re-anchored (the pending request
+    /// follows the process, not the slot).
+    ///
+    /// C semantics mirrored exactly:
+    /// - both or neither slot has `RTS_VMREQUEST` → early return;
+    /// - walk the chain for either slot's entry; when found, the OTHER slot
+    ///   (where the process now lives, i.e. the one with the flag set)
+    ///   inherits the found entry's CURRENT `p_next_requestor` field and
+    ///   takes over its position (head or predecessor link);
+    /// - chain successors beyond the replaced entry are dropped with the
+    ///   same value-flow as C (`dst->nextrequestor = src->nextrequestor`
+    ///   reads the moved-in process's field) — C accepts this truncation
+    ///   for depth > 1 and so does the mirror.
+    ///
+    /// Chain values are table-index-encoded `ProcNr` values (see
+    /// `vm_enqueue`), so both slots are converted before comparison.
+    pub(crate) fn vm_swap_requestor(&mut self, src_nr: ProcNr, dst_nr: ProcNr) {
+        use crate::proc::RtsFlagsBits;
+        // C reads the RTS flags post-swap: the slot holding the requesting
+        // process has VMREQUEST set, the other is clear.
+        let src_set = self.get(src_nr)
+            .map(|p| p.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST))
+            .unwrap_or(false);
+        let dst_set = self.get(dst_nr)
+            .map(|p| p.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST))
+            .unwrap_or(false);
+        if src_set == dst_set {
+            return; // C: nothing to do
+        }
+        let src_idx = nr_to_idx(src_nr).expect("vm_swap_requestor: invalid src");
+        let dst_idx = nr_to_idx(dst_nr).expect("vm_swap_requestor: invalid dst");
+        let src_enc = ProcNr(src_idx as i32);
+        let dst_enc = ProcNr(dst_idx as i32);
+
+        let mut current = self.vm_request_queue.head();
+        let mut prev: Option<ProcNr> = None;
+        while let Some(nr) = current {
+            let next = self.procs[nr.0 as usize].p_next_requestor;
+            let stale_idx = if nr == src_enc {
+                src_idx
+            } else if nr == dst_enc {
+                dst_idx
+            } else {
+                prev = Some(nr);
+                current = next;
+                continue;
+            };
+            // The requesting process now lives in the OTHER slot.
+            let fresh_idx = if stale_idx == src_idx { dst_idx } else { src_idx };
+            // C: other->p_vmrequest.nextrequestor = found->nextrequestor
+            // (the found slot's CURRENT field — after the content swap it
+            // belongs to the moved-in process).
+            self.procs[fresh_idx].p_next_requestor = self.procs[stale_idx].p_next_requestor;
+            // C: *rpp = other (predecessor link or chain head).
+            let fresh_enc = ProcNr(fresh_idx as i32);
+            match prev {
+                None => self.vm_request_queue.set_head(Some(fresh_enc)),
+                Some(p) => self.procs[p.0 as usize].p_next_requestor = Some(fresh_enc),
+            }
+            return;
+        }
+    }
+
     /// Set RTS flags on a process. If the process transitions from runnable
     /// to non-runnable, automatically dequeues it from the scheduler.
     ///
@@ -1536,6 +1602,127 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         let result = table.vm_memreq_get();
         assert!(matches!(result, Err(crate::vm::VmCtlError::NoRequest)));
+    }
+
+    #[test]
+    fn test_vm_swap_requestor_reanchors_stale_entry_at_head() {
+        // C: do_update.c:313-337 — the requesting process moved from src to
+        // dst slot in the content swap; the chain entry naming the src slot
+        // is stale and must be re-anchored to dst (head position).
+        use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckParams};
+        use minix_types::VirBytes;
+
+        let mut table = crate::test_helpers::test_proc_table();
+        let src = ProcNr(0);
+        let dst = ProcNr(1);
+        // Post-swap state: dst slot holds the requesting process (VMREQUEST
+        // set), src slot holds the moved-in process (flag clear).
+        for (nr, vmreq) in [(src, false), (dst, true)] {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            if vmreq {
+                proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
+                let target_ep = proc.p_endpoint;
+                proc.p_vm_suspend = Some(VmSuspendContext {
+                    state: VmSuspendState::Pending,
+                    suspend_type: VmSuspendType::KernelCall,
+                    target: target_ep,
+                    check_params: VmCheckParams {
+                        start: VirBytes(0x1000),
+                        length: VirBytes(0x100),
+                        write_flag: false,
+                    },
+                    saved_msg: Default::default(),
+                    copy_context: None,
+                });
+            }
+        }
+        // Stale chain: head names the src slot (pre-swap anchor).
+        table.vm_enqueue(src);
+        // Chain values are index-encoded: nr 0 lives at table index 5.
+        let src_enc = ProcNr(nr_to_idx(src).unwrap() as i32);
+        let dst_enc = ProcNr(nr_to_idx(dst).unwrap() as i32);
+        assert_eq!(table.vm_request_queue().head(), Some(src_enc));
+
+        table.vm_swap_requestor(src, dst);
+
+        assert_eq!(table.vm_request_queue().head(), Some(dst_enc),
+            "chain head must be re-anchored to the slot holding the process");
+        assert!(table.get(dst).unwrap().p_next_requestor.is_none());
+    }
+
+    #[test]
+    fn test_vm_swap_requestor_rewrites_predecessor_link_mid_chain() {
+        // Same scenario, but the stale entry sits behind another requestor:
+        // the predecessor's link (not the head) must be rewritten.
+        use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckParams};
+        use minix_types::VirBytes;
+
+        let mut table = crate::test_helpers::test_proc_table();
+        let head_proc = ProcNr(2);
+        let src = ProcNr(0);
+        let dst = ProcNr(1);
+        for (nr, vmreq) in [(src, false), (dst, true)] {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            if vmreq {
+                proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
+                let target_ep = proc.p_endpoint;
+                proc.p_vm_suspend = Some(VmSuspendContext {
+                    state: VmSuspendState::Pending,
+                    suspend_type: VmSuspendType::KernelCall,
+                    target: target_ep,
+                    check_params: VmCheckParams {
+                        start: VirBytes(0x1000),
+                        length: VirBytes(0x100),
+                        write_flag: false,
+                    },
+                    saved_msg: Default::default(),
+                    copy_context: None,
+                });
+            }
+        }
+        // Chain: head_proc -> src (stale). head_proc's link is rewritten.
+        // Chain values are index-encoded (nr 2 -> idx 7, nr 0 -> idx 5).
+        let head_enc = ProcNr(nr_to_idx(head_proc).unwrap() as i32);
+        table.vm_enqueue(src);
+        table.vm_enqueue(head_proc);
+        let dst_enc = ProcNr(nr_to_idx(dst).unwrap() as i32);
+        assert_eq!(table.vm_request_queue().head(), Some(head_enc));
+
+        table.vm_swap_requestor(src, dst);
+
+        assert_eq!(table.vm_request_queue().head(), Some(head_enc),
+            "head entry is unaffected for a mid-chain re-anchor");
+        assert_eq!(table.get(head_proc).unwrap().p_next_requestor, Some(dst_enc),
+            "predecessor link must be rewritten to the new slot");
+        assert!(table.get(dst).unwrap().p_next_requestor.is_none());
+    }
+
+    #[test]
+    fn test_vm_swap_requestor_noop_when_both_or_neither() {
+        // C early return: both or neither slot has RTS_VMREQUEST — the chain
+        // must be untouched.
+        let mut table = crate::test_helpers::test_proc_table();
+        let src = ProcNr(0);
+        let dst = ProcNr(1);
+        for nr in [src, dst] {
+            let proc = table.get_mut(nr).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        }
+        table.vm_enqueue(src);
+
+        // Neither set.
+        table.vm_swap_requestor(src, dst);
+        assert_eq!(table.vm_request_queue().head(),
+            ProcNr(nr_to_idx(src).unwrap() as i32).into());
+
+        // Both set.
+        table.get_mut(src).unwrap().p_rts_flags.set(RtsFlagsBits::VMREQUEST);
+        table.get_mut(dst).unwrap().p_rts_flags.set(RtsFlagsBits::VMREQUEST);
+        table.vm_swap_requestor(src, dst);
+        assert_eq!(table.vm_request_queue().head(),
+            ProcNr(nr_to_idx(src).unwrap() as i32).into());
     }
 
     /// Test: vm_memreq_get dequeues a process with pending VM request.

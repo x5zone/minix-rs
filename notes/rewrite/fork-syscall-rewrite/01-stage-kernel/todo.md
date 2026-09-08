@@ -2828,7 +2828,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 5 — 主线后功能缺口**
 - ✅ U-1 update 私有槽交换保全 s_alarm_timer（对齐 C do_update.c:292；含 alarm 链归属语义分析）→ **修复落地：save/restore 第 7 字段（misc.rs update 路径），链一致性论证 = PrivId 锚定链（ClockState::timers_head + AlarmTimerNode::next）在逐槽恢复后引用内容不变；新测试 test_dispatch_update_preserves_alarm_timers_per_slot（变异验证：删恢复行测试即红）；694+2 全绿；doc 25 同步（2026-09-08）**
-- ⬜ U-2 swap_memreq 真实现或新论证（W-8 重审；C do_update.c:313-337 对照 Rust VmRequestQueue）
+- ✅ U-2 swap_memreq 真实现或新论证（W-8 重审；C do_update.c:313-337 对照 Rust VmRequestQueue）→ **真实现落地：`ProcessTable::vm_swap_requestor`（proc_table.rs，与 vm_enqueue 同层封装）+ dispatch_update 接线。可行性论证：`proc_is_updatable` 不排除 VMREQUEST 位（NO_PRIV 用户进程 kcall 挂 VM 检查即 updatable 且在链中），no-op 前提失效；实现逐行镜像 C（恰一侧早退 / 双槽遍历 / 对侧继承 found 槽位当前 next / 头或前驱重写 / 深度 >1 尾部截断为 C 同款值流）。链值 = table index 编码（nr_to_idx）。4 测试（头重锚/中链前驱重写/双侧或全无早退/端到端 dispatch_update 接线）全部经变异验证；698+2 全绿；doc 25 ×2 + checklist ×2 + checklist 行号锚点 ×2 同步（2026-09-08）**
 - ⬜ I-6 bill_ptr + 真实调度主循环（替换 lib.rs:2187 placeholder；安全窗口在 S-7/S-10 后）
 - ⬜ I-13 InterruptController trait 拆分（Router + per-CPU Ack；依赖 S-6 per-CPU 基建）
 - ⬜ SYS_PADCONF 真实现（syscall.rs:350 现 BadCall；对照 C do_padconf 语义）

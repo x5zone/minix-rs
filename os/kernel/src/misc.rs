@@ -1783,9 +1783,14 @@ fn trace_set_user(
 ///     endpoint, nr, priv_id, caller_q_head/tail, scheduler, cpu, cpu_mask
 ///     on proc; s_id, s_proc_nr, pending bits, alarm, diag_sig on priv)
 ///
-/// `swap_proc_slot_pointer` (ptproc) and `swap_memreq` (vmrequest chain)
-/// are no-ops: both processes are non-runnable (proc_is_updatable check),
-/// so neither ptproc nor vmrequest chain can reference them.
+/// `swap_proc_slot_pointer` (ptproc) is a no-op: both processes are
+/// non-runnable (proc_is_updatable check), so the per-CPU "currently
+/// running process" pointer never references either.
+/// `swap_memreq` (vmrequest chain) IS wired: the chain anchors processes
+/// by slot, and a slot-anchored entry goes stale across the content swap
+/// when the requesting process moves (`ProcessTable::vm_swap_requestor`,
+/// C do_update.c:313-337) — non-runnability does NOT imply absence from
+/// the chain (RTS_VMREQUEST processes are stopped, hence updatable).
 /// `adjust_asyn_table` (async message table copy via data_copy) is skipped:
 /// it is non-fatal in C (warning on failure), requires data_copy between
 /// process address spaces, and is only triggered when both src and dst
@@ -2077,11 +2082,13 @@ pub fn dispatch_update(
     // so the per-CPU "currently running process" pointer (ptproc) never
     // points to either. The swap would be a no-op in C as well.
 
-    // C: do_update.c:147 — swap_memreq(src_rp, dst_rp)
-    // No-op: the global vmrequest chain is not yet implemented in Rust.
-    // When it is, this should swap src/dst in the chain if exactly one
-    // has RTS_VMREQUEST set. Both processes are non-runnable (checked
-    // by proc_is_updatable), so VMREQUEST is typically not set.
+    // C: do_update.c:147 (do_update.c:313-337) — swap_memreq(src_rp, dst_rp).
+    // The vmrequest chain anchors processes by slot: if the requesting
+    // process moved to the other slot in the content swap above, its chain
+    // entry is stale and must be re-anchored. Reachable for updatable
+    // processes because proc_is_updatable does not exclude RTS_VMREQUEST
+    // (e.g. a NO_PRIV user process suspended mid-kcall for VM assistance).
+    proc_table.vm_swap_requestor(src_nr, dst_nr);
 
     let _ = caller;
     KcallResult::Ok(0)
@@ -3374,6 +3381,60 @@ mod tests {
         assert_eq!(proc_table.get(ProcNr(0)).unwrap().p_nr, ProcNr(0));
         assert_eq!(proc_table.get(ProcNr(1)).unwrap().p_endpoint, Endpoint(200));
         assert_eq!(proc_table.get(ProcNr(1)).unwrap().p_nr, ProcNr(1));
+    }
+
+    #[test]
+    fn test_dispatch_update_reanchors_vmrequest_chain_entry() {
+        // C: do_update.c:147 + do_update.c:313-337 — end-to-end wiring: a
+        // VMREQUEST process suspended in the vmrequest chain is updated; the
+        // content swap moves it to the other slot and the chain entry must
+        // be re-anchored to that slot (a lost re-anchor leaves the chain
+        // pointing at a process with no pending request).
+        let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = 100; // src endpoint
+        msg.m_u.m_m1.m1i2 = 200; // dst endpoint
+        msg.m_u.m_m1.m1i3 = 0;
+
+        use crate::vm::{VmSuspendContext, VmSuspendType, VmSuspendState, VmCheckParams};
+        use minix_types::VirBytes;
+        // The process at dst slot (nr 1) is suspended in a VM request and
+        // enqueued — pre-swap the chain anchors it at its own slot.
+        {
+            let p = proc_table.get_mut(ProcNr(1)).unwrap();
+            p.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
+            let target_ep = p.p_endpoint;
+            p.p_vm_suspend = Some(VmSuspendContext {
+                state: VmSuspendState::Pending,
+                suspend_type: VmSuspendType::KernelCall,
+                target: target_ep,
+                check_params: VmCheckParams {
+                    start: VirBytes(0x2000),
+                    length: VirBytes(0x100),
+                    write_flag: false,
+                },
+                saved_msg: Default::default(),
+                copy_context: None,
+            });
+        }
+        proc_table.vm_enqueue(ProcNr(1));
+
+        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        assert_eq!(result, KcallResult::Ok(0), "swap should succeed");
+
+        // Post-swap the requesting process lives at the src slot (nr 0):
+        // its VMREQUEST flag moved there with the content swap, and the
+        // chain must now anchor THAT slot.
+        assert!(proc_table.get(ProcNr(0)).unwrap()
+            .p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
+            "VMREQUEST flag follows the process to the src slot");
+        let head = proc_table.vm_request_queue().head();
+        assert_eq!(head,
+            Some(ProcNr(crate::proc_table::nr_to_idx(ProcNr(0)).unwrap() as i32)),
+            "chain must be re-anchored to the slot now holding the process");
+        // The re-anchored entry still carries the pending request.
+        assert!(proc_table.get(ProcNr(0)).unwrap().p_vm_suspend.is_some());
     }
 
     #[test]
