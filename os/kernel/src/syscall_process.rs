@@ -377,21 +377,22 @@ pub fn dispatch_exit(
 /// The caller (typically PM) passes the endpoint of the process to be
 /// cleaned up; the kernel clears that **target** process, not the caller.
 ///
-/// # Subsystem deferrals
+/// # Operation status (re-inventoried 2026-09-08 — all C do_clear.c steps live)
 ///
-/// The following C operations are deferred because their subsystems are
-/// not yet wired up:
-/// - `release_address_space(rc)` — requires VM integration (page table release)
-/// - `clear_endpoint(rc)` — requires IPC module integration
+/// Every C operation is implemented; the former "subsystem deferrals"
+/// (D-3/D-4) were closed when VM and IPC integration landed:
+/// - `release_address_space(rc)` — `syscall::release_address_space`
+///   (C do_clear.c:35)
+/// - IRQ hook cleanup (`rm_irq_handler`) — global `irq_manager()`
+///   (C do_clear.c:41-46)
+/// - `reset_kernel_timer(&priv(rc)->s_alarm_timer)` —
+///   `clock::reset_alarm_timer` (C do_clear.c:52)
+/// - `clear_endpoint(rc)` — full sequence via `syscall::clear_endpoint`
+///   (C do_clear.c:49; 2026-08-13 Phase 8)
 ///
-/// The following C operations ARE now implemented:
-/// - IRQ hook cleanup (`rm_irq_handler`) — via global `irq_manager()`
-/// - `reset_kernel_timer(&priv(rc)->s_alarm_timer)` — via `clock::reset_alarm_timer()`
-///
-/// The core operations that ARE implemented here (endpoint validation,
-/// RTS_SLOT_FREE, FPU flag clear, SYS_PROC privilege release) are
-/// sufficient to prevent slot leaks and ensure the slot can be reused
-/// by a new process.
+/// The remaining core operations (endpoint validation, RTS_SLOT_FREE,
+/// FPU flag clear, SYS_PROC privilege release) prevent slot leaks and
+/// make the slot reusable by a new process.
 pub fn dispatch_clear(
     _caller: &mut KProcess,
     msg: &Message,
