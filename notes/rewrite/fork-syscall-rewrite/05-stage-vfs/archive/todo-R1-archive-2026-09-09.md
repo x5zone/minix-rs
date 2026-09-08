@@ -71,6 +71,8 @@
 
 ### P0-1 `close_fd` 对已关闭 filp 返回 EINVAL，C 语义是 EIO
 
+> **修正（2026-09-09，Fix #3）**：本条对 C 行为的转述有误。`get_filp2`（filedes.c:186-188）的 `FILP_CLOSED→EIO` 门带 `locktype != VNODE_OPCL` 前置——**close(2) 走 `OPCL`，穿过 `CLOSED` 继续关闭**（open.c:696-704 清 fd 后走 `close_filp`）；EIO 是给 read/write 等非 `OPCL` 访问的。因此 bug 本身成立（Rust 在 C 会成功的地方返回 EINVAL），但修法不是本条"建议 1"的 `FdError::Closed→EIO`，而是**删除早退、放行关闭**。EIO 归属非 `OPCL` 访问路径（P1-5 的 `FilpLockMode` 接缝）。以下原文保留存档。
+
 **问题**：`filedes::close_fd`（os/servers/vfs/src/filedes.rs:174-176）对 `filp.mode == FILP_CLOSED` 返回 `FdError::Inval`，行内注释自认 "EIO mapped to Inval for test"。C 的 close 路径经 `get_filp2(..., VNODE_OPCL)`（open.c:700），对已关闭 filp 返回 **EIO**（filedes.c:183-190）。
 **证据**：注释自我承认；且 `filp.rs:183` 的 `FilpError::Closed → EIO` 证明 crate 内两条路径互相矛盾——同一"已关闭"事实在 filp 层是 EIO、在 fd 层是 EINVAL。
 **影响**：接线后 `close()` 一个已被驱动失效（`FILP_CLOSED`）的 fd 会向应用返回 EINVAL 而非 EIO，违反 C 外部行为。

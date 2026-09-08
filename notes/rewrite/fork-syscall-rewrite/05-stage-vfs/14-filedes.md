@@ -1,6 +1,6 @@
-# 14 — 文件描述符表：`fp_filp[OPEN_MAX]` 的 `get_fd` 最低空闲与 `close_fd` 的 `FILP_CLOSED` 抑制
+# 14 — 文件描述符表：`fp_filp[OPEN_MAX]` 的 `get_fd` 最低空闲与 `close_fd` 的 `OPCL` 放行
 
-本文讲清 VFS 如何在 `OPEN_MAX 256` 的 `fp_filp[OPEN_MAX]` 每进程私有索引、`FD_CLOEXEC` 的 `Bitmap` 位集、`NR_FILPS 1024` 的全局 `filp[1024]` 共享池、`FILP_CLOSED` 的 `EIO` 抑制哨兵、`EMFILE` 的 `fd` 耗尽与 `ENFILE` 的 `filp` 耗尽、`O_CLOEXEC` 的 `cloexec` 置位、`COPYFD_FLAGS` 的 `FROM/TO/CLOSE` 三操作、`invalidate_filp` 的 `FILP_CLOSED` 只关语义的约束下，以 `get_fd` 的 `start→OPEN_MAX` 最低空闲扫描与 `filp_count==0 && trylock` 空闲 `filp` 分配及 `check_fds` 的 `nfds` 窗口校验与 `close_fd` 的 `filp==NULL→EBADF / mode==FILP_CLOSED→EIO / NULL fd→Close / cloexec 清除→close_filp→select/lock 释放` 建立 `Fd → Filp → Vnode` 的二跳共享，并以 `do_copyfd` 的 `super_user→ACL` 守门与 `isokendpt→slot` 解引及 `filp_count++` 共享为驱动 `COPYFD` 提供可观测复制。
+本文讲清 VFS 如何在 `OPEN_MAX 256` 的 `fp_filp[OPEN_MAX]` 每进程私有索引、`FD_CLOEXEC` 的 `Bitmap` 位集、`NR_FILPS 1024` 的全局 `filp[1024]` 共享池、`FILP_CLOSED` 的 `EIO` 抑制哨兵、`EMFILE` 的 `fd` 耗尽与 `ENFILE` 的 `filp` 耗尽、`O_CLOEXEC` 的 `cloexec` 置位、`COPYFD_FLAGS` 的 `FROM/TO/CLOSE` 三操作、`invalidate_filp` 的 `FILP_CLOSED` 只关语义的约束下，以 `get_fd` 的 `start→OPEN_MAX` 最低空闲扫描与 `filp_count==0 && trylock` 空闲 `filp` 分配及 `check_fds` 的 `nfds` 窗口校验与 `close_fd` 的 `filp==NULL→EBADF / OPCL 放行 FILP_CLOSED / NULL fd→Close / cloexec 清除→close_filp→select/lock 释放` 建立 `Fd → Filp → Vnode` 的二跳共享，并以 `do_copyfd` 的 `super_user→ACL` 守门与 `isokendpt→slot` 解引及 `filp_count++` 共享为驱动 `COPYFD` 提供可观测复制。
 
 前置阅读：`02-fproc-struct.md`（`FProc{filps:[Option<FilpId>;256], cloexec_set:Bitmap, tty}` 的 `fp_filp` 私有索引）、`04-filp-table.md`（`FilpTable` 的 `count==0` 哨兵与 `alloc_filp` 双扫描及 `FilpFlags`）、`07-tll-lock.md`（`TLL_NONE/READ/WRITE` 与 `FilpLock`）、`05-vnode-table.md`（`Vnode` 的 `put_vnode` 与 `v_ref_count`）。
 
@@ -32,7 +32,7 @@
 
 `check_fds:88 for(i=0; i<OPEN_MAX; i++) if(fp_filp[i]==NULL && --nfds==0) return OK` 的 `nfds` 窗口校验使 `select` 的 `FD_SETSIZE` 窗口在 `14` 的 `select` 调用前可观测：`check_fds(fp, nfds)` 的 `nfds` 个空闲 `fd` 预检在 `23-select.md` 的 `do_select` 的 `check_fds` 调用可观测。
 
-### 1.4 `close_fd` 的 `FILP_CLOSED` 抑制：只关语义
+### 1.4 `close_fd` 的 `OPCL` 放行与 `FILP_CLOSED` 的只关语义
 
 `open.c:690 close_fd:699 get_filp2(rfp, fd, OPCL)→NULL→EBADF` 的 `EBADF` 守门与 `filedes.c:250 invalidate_filp: rfilp->filp_mode=FILP_CLOSED` 的 `FILP_CLOSED` 只关哨兵使 `get_filp2:191 if(mode==FILP_CLOSED)→EIO` 的 `EIO` 抑制在 `14` 的 `invalidate_filp_by_char_major` 后可观测：驱动 `dmap_unmap_by_endpt` 后的 `invalidate_filp_by_char_major(major)` 使 `read` 的 `FILP_CLOSED→EIO` 而 `close` 的 `FILP_CLOSED` 可通过 `get_filp2:191` 的 `locktype==OPCL` 分支（`close_fd` 的 `get_filp2(OPCL)` 允许 `CLOSED`）。
 
@@ -46,7 +46,7 @@
 
 ### 1.7 小结
 
-`fp_filp[256]` 的 `NULL` 空闲在 `get_fd` 的 `start→OPEN_MAX` 最低空闲可观测，`filp[1024]` 的 `count==0` 空闲在 `get_fd` 的 `filp_count==0 && trylock` 可观测，`FD_CLOEXEC` 的 `Bitmap` 位集在 `cloexec_set` 的 `FD_SET/FD_CLR` 可观测，`close_fd` 的 `EBADF/EIO` 双守门使 `FILP_CLOSED` 的只关语义在 `invalidate` 后可观测，`do_copyfd` 的 `FROM/TO/CLOSE` 三操作在 `super_user` 守门后可观测。下一节以 `filedes.c:88-656` 全文与 `open.c:690` 的 `close_fd` 为主线逐段核对。
+`fp_filp[256]` 的 `NULL` 空闲在 `get_fd` 的 `start→OPEN_MAX` 最低空闲可观测，`filp[1024]` 的 `count==0` 空闲在 `get_fd` 的 `filp_count==0 && trylock` 可观测，`FD_CLOEXEC` 的 `Bitmap` 位集在 `cloexec_set` 的 `FD_SET/FD_CLR` 可观测，`close_fd` 的 `EBADF` 守门与 `get_filp2` 的 `EBADF/EIO` 双守门（`OPCL` 放行 `CLOSED`）使 `FILP_CLOSED` 的只关语义在 `invalidate` 后可观测，`do_copyfd` 的 `FROM/TO/CLOSE` 三操作在 `super_user` 守门后可观测。下一节以 `filedes.c:88-656` 全文与 `open.c:690` 的 `close_fd` 为主线逐段核对。
 
 ---
 
@@ -111,11 +111,11 @@ Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 
 - **C**：`check_fds:95 --nfds==0 → OK` 的 `nfds` 递减窗口。
 - **Rust**：`FProc::check_fds(&self, nfds: usize) -> Result<(), FdError>` 的 `count_ones(nfds)` 使 `count >= nfds → Ok else EMFILE` 在 `FProc::available_fds() -> usize` 的 `OPEN_MAX - count_ones` 可观测。
 
-### D4 `close_fd` 的 `EBADF/EIO` 双守门与 `FILP_CLOSED` 抑制
+### D4 `close_fd` 的 `EBADF` 守门与 `OPCL` 放行
 
-- **C**：`get_filp2(OPCL)→NULL→EBADF` 与 `mode==FILP_CLOSED→EIO` 的 `OPCL` 例外。
-- **Rust**：`FProc::close_fd(&mut self, fd: Fd, filp_table: &mut FilpTable) -> Result<(), FdError>` 的 `get_mut(fd).ok_or(BadFd) → FdError::BadFd` 与 `filp.mode==Closed→Err(Io)` 的 `EIO` 抑制在 `FdError::Io(EIO)` 可测试；`FILP_CLOSED` 的 `Closed` 哨兵在 `FilpId` 的 `Option<FilpId>` 的 `Some(CLOSED)` 分化使 `close` 的 `OPCL` 允许 `CLOSED` 在 `close_fd` 的 `allow_closed=true` 分支可测试。
-- **为什么**：`FILP_CLOSED` 的 `mode==CLOSED` 在 `invalidate_filp:254 mode=CLOSED` 的 `FILP_CLOSED` 只关语义使 `read` 的 `EIO` 与 `close` 的 `OK` 分化在类型层面不可误用。
+- **C**：`get_filp2(OPCL)→NULL→EBADF` 与 `mode==FILP_CLOSED→EIO` 的 `OPCL` 例外（`filedes.c:186-188` 的 `locktype != VNODE_OPCL` 前置使 `close(2)` 穿过 `CLOSED`）。
+- **Rust**：`close_fd(&mut FProc, Fd, &mut FilpTable) -> Result<(), FdError>` 的 `filps[fd].ok_or(BadFd)` 与 filp 表探针使 `NULL→BadFd` 可测试；`FILP_CLOSED` **不设闸**——`OPCL` 是 `get_filp2` 门中唯一的例外（注释 "disallow all use except close(2)"），驱动死亡后被失效的 filp 仍持有槽位，close 必须继续释放（清 fd + cloexec + `filp_count--`）；非 `OPCL` 访问的 `EIO` 属 `get_filp` 的锁型接缝（`filp.rs` 的 `FilpError::Closed → EIO`），不在本函数。
+- **为什么**：`FILP_CLOSED` 的只关语义使 `read` 的 `EIO`（非 `OPCL` 访问）与 `close` 的 `OK`（`OPCL` 放行）在两条路径上各自成立，混在 `close_fd` 里会把"释放资源"误做成"拒绝关闭"。
 
 ### D5 `do_copyfd` 的 `FROM/TO/CLOSE` 与 `super_user` 守门显式
 
@@ -190,7 +190,7 @@ os/servers/vfs/src/
 | `test_get_fd_lowest` | `filedes.c:110` | `start=0→Fd0, 占用0→Fd1` 的 `LowestFree` | `filedes.rs` |
 | `test_get_fd_enfile` | `filedes.c:154` | `filp 1024 耗尽→ENFILE` | `filedes.rs` |
 | `test_close_ebadf` | `open.c:690` | `fd 99 NULL→EBADF` | `filedes.rs` |
-| `test_close_eio` | `filedes.c:191` | `mode==CLOSED→EIO` 的 `FILP_CLOSED` 抑制 | `filedes.rs` |
+| `test_close_after_invalidate_proceeds` | `filedes.c:186-188` | `OPCL` 放行 `FILP_CLOSED`：invalidate 后 close 继续，释放 fd 与 `filp_count` | `filedes.rs` |
 | `test_close_ok` | `open.c:690` | `close_fd→NULL + FD_CLR + count--` | `filedes.rs` |
 | `test_cloexec_copy` | `filedes.c:524` | `From→To→Cloexec` 的 `FD_SET` 位集 | `filedes.rs` |
 | `test_invalidate` | `filedes.c:250` | `invalidate→CLOSED` 单写 | `filedes.rs` |
@@ -200,7 +200,7 @@ os/servers/vfs/src/
 | `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→NULL` 回滚 | `filedes.rs` |
 | `test_fd_alloc_policy_two_impls` | `filedes.c:121` | `FdAllocPolicy` trait `LowestFree vs NextFit` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
 
-测试策略：`Fd` 的 `u8` 上界以 `Fd(256)→BadFd` 的 `TryFrom` 早拒绝样本覆盖；`check_fds` 以 `available 2, nfds 3→EMFILE` 的 `nfds` 窗口样本覆盖；`get_fd` 以 `LowestFree(0)→0` 的 `start..256` 扫描样本覆盖；`close_fd` 以 `EBADF/EIO/OK` 的三守门样本覆盖；`FdAllocPolicy` 以 `LowestFree(5→5) vs NextFit(5→10)` 的 `dyn` 行为差异样本覆盖。
+测试策略：`Fd` 的 `u8` 上界以 `Fd(256)→BadFd` 的 `TryFrom` 早拒绝样本覆盖；`check_fds` 以 `available 2, nfds 3→EMFILE` 的 `nfds` 窗口样本覆盖；`get_fd` 以 `LowestFree(0)→0` 的 `start..256` 扫描样本覆盖；`close_fd` 以 `EBADF/CLOSED 放行/OK` 的三守门样本覆盖；`FdAllocPolicy` 以 `LowestFree(5→5) vs NextFit(5→10)` 的 `dyn` 行为差异样本覆盖。
 
 ---
 

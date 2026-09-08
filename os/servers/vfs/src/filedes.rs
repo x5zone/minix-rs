@@ -7,7 +7,7 @@
 //! Design notes (14-filedes.md §3):
 //! - `Fd(u8)` newtype makes `256` bound type-safe (ARCH A-8)
 //! - `FdAllocPolicy` trait `LowestFree` vs `NextFit` makes `start→OPEN_MAX` scan pluggable
-//! - `FProc::close_fd` models `FILP_CLOSED` suppression vs `EBADF`
+//! - `close_fd` passes `FILP_CLOSED` (the `VNODE_OPCL` exemption, `filedes.c:186-188`) and fails `EBADF`
 
 use core::cell::Cell;
 
@@ -163,18 +163,23 @@ pub fn get_fd(
     Ok((fd, filp_id))
 }
 
-/// `close_fd` — `open.c:690` `EBADF` / `EIO` / `NULL fd` + `FD_CLR` + `close_filp`.
+/// `close_fd` — `open.c:690` `close(2)` through `get_filp2(VNODE_OPCL)`.
+///
+/// `OPCL` is the one access that passes a `FILP_CLOSED` filp (`filedes.c:186-188`
+/// "disallow all use except close(2)"): a filp invalidated by a dying driver
+/// still owns its slot, so close must proceed and release it — clearing the
+/// fd and the cloexec bit, then decrementing `filp_count`.  Non-OPCL users
+/// get `EIO` from `get_filp2`'s gate (the `FilpLockMode` seam, `filp.rs`),
+/// never from here.
 ///
 /// Simplified: `may_suspend` is accepted but not used (socket `SUSPEND` is
 /// DEFERRED to 22-sdev).  Lock release (`nr_locks`) is also DEFERRED to 30.
 pub fn close_fd(fproc: &mut FProc, fd: Fd, filp_table: &mut FilpTable) -> Result<(), FdError> {
     let idx = fd.get();
     let filp_idx = fproc.filps[idx].ok_or(FdError::BadFd)?;
-    let filp = filp_table.get(FilpId(filp_idx)).ok_or(FdError::BadFd)?;
-    if filp.mode == FILP_CLOSED {
-        return Err(FdError::Inval); // EIO mapped to Inval for test
-    }
-    // Clear fd and cloexec
+    filp_table.get(FilpId(filp_idx)).ok_or(FdError::BadFd)?;
+    // Clear fd and cloexec first (`open.c:704 rfp->fp_filp[fd_nr] = NULL`
+    // before `close_filp`, so re-entrant closes fail `EBADF`).
     fproc.filps[idx] = None;
     fproc.cloexec_set.set(fd.get(), false);
     // Dec count and maybe put_vnode (simplified)
@@ -352,17 +357,21 @@ mod tests {
     }
 
     #[test]
-    fn test_close_eio() {
+    fn test_close_after_invalidate_proceeds() {
+        // C: `get_filp2`'s `FILP_CLOSED→EIO` gate exempts `VNODE_OPCL`
+        // (filedes.c:186-188), so `close(2)` on an invalidated filp proceeds
+        // and releases the slot (`open.c:696-704`).
         let mut fp = new_fproc();
         let mut tbl = FilpTable::new();
         let policy = LowestFree;
         let (fd, fid) = get_fd(&mut fp, 0, &policy, &mut tbl, 0o644).unwrap();
         fp.filps[fd.get()] = Some(fid.get());
         tbl.inc_count(fid);
-        // Invalidate to CLOSED
+        // Invalidate to CLOSED (driver died), then close.
         invalidate_filp(&mut tbl, fid);
-        let r = close_fd(&mut fp, fd, &mut tbl);
-        assert_eq!(r.unwrap_err(), FdError::Inval);
+        close_fd(&mut fp, fd, &mut tbl).unwrap();
+        assert!(fp.filps[fd.get()].is_none());
+        assert_eq!(tbl.get(fid).unwrap().count, 0);
     }
 
     #[test]

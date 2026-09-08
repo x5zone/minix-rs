@@ -53,7 +53,7 @@
 
 ### P0-1 / P0-2 / P0-3（filedes.rs 三连，R1 存档 §2）
 
-- P0-1 复核 ✅：filedes.rs:175 `return Err(FdError::Inval); // EIO mapped to Inval for test` 原样；filp.rs 的 `Closed => EIO` 映射仍并存（层间矛盾维持）。
+- ✅ P0-1 已修复 2026-09-09（§10 Fix #3）：filedes.rs:175 的 `Inval` 早退删除；**修复时修正首轮前提**——C 的 `get_filp2` 门（filedes.c:186-188）只对非 `OPCL` 访问返回 EIO（"disallow all use except close(2)"），close(2) 走 `VNODE_OPCL` 应**穿过 CLOSED 继续关闭**，故正确行为是放行而非返回 EIO（首轮"B 方案 FdError::Closed→EIO"被否决，详见归档条目的修正注）。测试 `test_close_eio` → `test_close_after_invalidate_proceeds`。
 - P0-2 复核 ✅：filedes.rs:264-273 `CopyKind::Close` 仍无 `filp_count > 1` 闸门，:265 注释自认原文。
 - P0-3 复核 ✅：filedes.rs:200 `_proc_e: Endpoint` 仍未用，:207 "for test determinism" 注释原样。
 - **附加清点**（首轮 §7 建议的全文件清点，仍未执行）：filedes.rs"自认偏离"注释共 6 处——:168（may_suspend）/ :180（dec_count simplified）/ :199/:207（invalidate 全失效）/ :234（cred.is_super）/ :269（Close 分支 just clear）。修 P0 三连时逐一消除，不留"修了行为留了假注释"。
@@ -270,3 +270,12 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After（真相）**：`vfsif.h:41-73` 定义 **33 个常量**（`FS_BASE+1..+33`），其中 `REQ_GETNODE` 死 → **32 个活类型**；`FsReq` **32 变体与活类型一一对应**（`NREQS 34` 是表容量冗余，非活类型数）；`request.c` 的 `req_*` 函数实为 **36 个**（含 `_actual` 重试后半，`grep -oE "\breq_[a-z_0-9]+\(" | sort -u` 实测）——文档三处"33 函数"一并校准；虚构测试名改为真实存在的 `test_nreqs_getnode_dead`。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **335 passed / 0 failed**（注释级修改，无行为变化）；文档 grep 无残留错误计数。
 - **回归 review 与 workspace 事件**：修复期间并行会话对 `os/libs/minix-types/src/ipc/vm.rs` 的半成品删除（`VmExecNewmemOut` 类型已删、:938 impl 与 ：1608 测试引用未删）卡死全 workspace 编译 E0425 约 7 分钟——本次按其删除意图补完收尾（仅删悬空代码，不改其它语义），该文件**不并入本提交**（留给其所属会话）；这是共享工作树的已知风险，用户约定跨 stage 条目走 edge_todo 单线程执行正是为规避此类冲突。
+
+### ✅ Fix #3: P0-1 — close_fd 删除 FILP_CLOSED 早退，OPCL 放行继续关闭（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（close_fd :166-190 + 模块注释 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（标题/intro/§1.4/小结/D4/测试表 7 处）。
+- **Before**：`close_fd` 对 `filp.mode == FILP_CLOSED` 返回 `FdError::Inval`，注释自认 "EIO mapped to Inval for test"。
+- **Ground Truth 复核（关键）**：C `get_filp2`（filedes.c:186-188）的 EIO 门带 `locktype != VNODE_OPCL` 前置——close(2) 的 `OPCL` 路径**穿过** `FILP_CLOSED`（`open.c:696-704`：清 fd → `close_filp` → FD_CLR）；EIO 属 read/write 等非 `OPCL` 访问。首轮条目"建议 1（FdError::Closed→EIO）"会引入新偏离（C 成功处返回 EIO、泄漏描述符），按反查原则以 C 为准否决。
+- **After**：close_fd 无条件放行（EBADF 探针保留：fd 未开或 filp 槽失效仍拒），清 fd + cloexec + `dec_count`；EIO 语义归属 P1-5 的 `FilpLockMode` 接缝（`filp.rs` 已有 `Closed → EIO`）。测试 `test_close_eio`（断言 EINVAL）→ `test_close_after_invalidate_proceeds`（断言 Ok + fd 清空 + count 归零）；14-filedes.md 的标题、intro、§1.4、小结、D4、测试表同步（D4 原描述的 `allow_closed=true` 分支设计一并修正为"无条件放行"）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **335 passed / 0 failed**；`grep -n "Inval" os/servers/vfs/src/filedes.rs` 在 close_fd 无命中；文档 `mode==FILP_CLOSED→EIO` 仅存于描述 C 的 `get_filp2` 门处（合法）。
+- **边界**：P1-5（`FilpLockMode` 三态化是 EIO 语义的正式落点，下一步）、P0-2/P0-3（同文件，下一轮 fix-guard 各自读行）。
