@@ -542,7 +542,7 @@ pub fn proc_is_updatable(p: &KProcess) -> bool {
 - `abort_proc_ipc_send`：清除 `RTS_SENDING` + `SenderQueue::remove_by_nr` 从 target 的 caller_q 移除
 - 槽位交换：`ProcessTable::swap_slots` + `PrivTable::swap_slots`（`core::mem::swap` + `split_at_mut`）
 - `adjust_proc_slot`：恢复 endpoint/nr/priv_id/caller_q/scheduler/cpu/cpu_mask（`caller_q` 通过 `mem::replace` 提取/恢复）
-- `adjust_priv_slot`：恢复 s_id/s_proc_nr/pending bits/diag_sig
+- `adjust_priv_slot`：恢复 s_id/s_proc_nr/pending bits/diag_sig/s_alarm_timer（C do_update.c:292 七字段全量，2026-09-08 补齐 s_alarm_timer——U-1）
 - `swap_proc_slot_pointer`（ptproc）no-op：两进程均非 runnable，ptproc 不指向它们
 - `swap_memreq` no-op：vmrequest 全局链未实现；两进程非 runnable，VMREQUEST 通常未设置
 - `adjust_asyn_table` 跳过：C 中失败仅打印 warning（非致命），需跨地址空间 `data_copy`，仅在 live update 场景触发

@@ -2007,6 +2007,15 @@ pub fn dispatch_update(
     let dst_sig_pending = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.signals.s_sig_pending));
     let src_diag_sig = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.mem.s_diag_sig));
     let dst_diag_sig = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.mem.s_diag_sig));
+    // C: do_update.c:292 — s_alarm_timer is the 7th adjust_priv_slot field.
+    // The alarm node is chain-anchored by PrivId (ClockState::timers_head +
+    // `AlarmTimerNode::next: Option<PrivId>`), so the chain stays coherent
+    // only if each slot keeps its own timer value across the content swap:
+    // restoring per-slot makes every chain-referenced slot hold the same
+    // timer it held before the swap — the service's armed alarm survives
+    // the update and stays with its slot, exactly as in C.
+    let src_alarm_timer = src_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.runtime.s_alarm_timer));
+    let dst_alarm_timer = dst_priv_id.and_then(|pid| priv_table.get(pid).map(|p| p.runtime.s_alarm_timer));
 
     // C: do_update.c:129-133 — Swap slots.
     proc_table.swap_slots(src_nr, dst_nr);
@@ -2048,6 +2057,7 @@ pub fn dispatch_update(
             if let Some(v) = src_int_pending { p.signals.s_int_pending = v; }
             if let Some(v) = src_sig_pending { p.signals.s_sig_pending = v; }
             if let Some(v) = src_diag_sig { p.mem.s_diag_sig = v; }
+            if let Some(v) = src_alarm_timer { p.runtime.s_alarm_timer = v; }
             p.identity.s_proc_nr = Some(src_nr_val);
         }
         if let Some(p) = priv_table.get_mut(dst_pid) {
@@ -2057,6 +2067,7 @@ pub fn dispatch_update(
             if let Some(v) = dst_int_pending { p.signals.s_int_pending = v; }
             if let Some(v) = dst_sig_pending { p.signals.s_sig_pending = v; }
             if let Some(v) = dst_diag_sig { p.mem.s_diag_sig = v; }
+            if let Some(v) = dst_alarm_timer { p.runtime.s_alarm_timer = v; }
             p.identity.s_proc_nr = Some(dst_nr_val);
         }
     }
@@ -3363,6 +3374,45 @@ mod tests {
         assert_eq!(proc_table.get(ProcNr(0)).unwrap().p_nr, ProcNr(0));
         assert_eq!(proc_table.get(ProcNr(1)).unwrap().p_endpoint, Endpoint(200));
         assert_eq!(proc_table.get(ProcNr(1)).unwrap().p_nr, ProcNr(1));
+    }
+
+    #[test]
+    fn test_dispatch_update_preserves_alarm_timers_per_slot() {
+        // C: do_update.c:292 — adjust_priv_slot restores s_alarm_timer so the
+        // armed alarm stays with its PRIV SLOT across the content swap. The
+        // clock chain (ClockState::timers_head + AlarmTimerNode::next, both
+        // PrivId-anchored) references slots, so a lost restore would make the
+        // chain read the swapped-in timer of the other process.
+        let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = 100;
+        msg.m_u.m_m1.m1i2 = 200;
+        msg.m_u.m_m1.m1i3 = 0;
+
+        // Arm a distinct alarm on each priv slot (values chosen so a lost
+        // restore would swap them and fail the assert).
+        let src_pid = proc_table.get(ProcNr(0)).unwrap().priv_id.unwrap();
+        let dst_pid = proc_table.get(ProcNr(1)).unwrap().priv_id.unwrap();
+        priv_table.get_mut(src_pid).unwrap().runtime.s_alarm_timer.exp_time = 1111;
+        priv_table.get_mut(src_pid).unwrap().runtime.s_alarm_timer.action =
+            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(100) });
+        priv_table.get_mut(dst_pid).unwrap().runtime.s_alarm_timer.exp_time = 2222;
+        priv_table.get_mut(dst_pid).unwrap().runtime.s_alarm_timer.action =
+            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(200) });
+
+        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        assert_eq!(result, KcallResult::Ok(0), "swap should succeed");
+
+        // Post-swap: each slot retains its own armed alarm.
+        let src_t = priv_table.get(src_pid).unwrap().runtime.s_alarm_timer;
+        let dst_t = priv_table.get(dst_pid).unwrap().runtime.s_alarm_timer;
+        assert_eq!(src_t.exp_time, 1111, "src slot alarm must stay at src slot");
+        assert_eq!(src_t.action,
+            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(100) }));
+        assert_eq!(dst_t.exp_time, 2222, "dst slot alarm must stay at dst slot");
+        assert_eq!(dst_t.action,
+            Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(200) }));
     }
 
     #[test]

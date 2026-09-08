@@ -2827,7 +2827,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）→ **三模式脚本落地（--new/--apply/--check）+ 23 文件规范化（删死 profile 块、依赖顺序统一）+ README 模板工作流；--check PASS + 6 kernel 三家族真实构建 0 error（2026-09-08，详见 §2 M1 解决记录）**
 
 **Phase 5 — 主线后功能缺口**
-- ⬜ U-1 update 私有槽交换保全 s_alarm_timer（对齐 C do_update.c:292；含 alarm 链归属语义分析）
+- ✅ U-1 update 私有槽交换保全 s_alarm_timer（对齐 C do_update.c:292；含 alarm 链归属语义分析）→ **修复落地：save/restore 第 7 字段（misc.rs update 路径），链一致性论证 = PrivId 锚定链（ClockState::timers_head + AlarmTimerNode::next）在逐槽恢复后引用内容不变；新测试 test_dispatch_update_preserves_alarm_timers_per_slot（变异验证：删恢复行测试即红）；694+2 全绿；doc 25 同步（2026-09-08）**
 - ⬜ U-2 swap_memreq 真实现或新论证（W-8 重审；C do_update.c:313-337 对照 Rust VmRequestQueue）
 - ⬜ I-6 bill_ptr + 真实调度主循环（替换 lib.rs:2187 placeholder；安全窗口在 S-7/S-10 后）
 - ⬜ I-13 InterruptController trait 拆分（Router + per-CPU Ack；依赖 S-6 per-CPU 基建）
