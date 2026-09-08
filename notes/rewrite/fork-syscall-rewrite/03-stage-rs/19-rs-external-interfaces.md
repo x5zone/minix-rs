@@ -50,6 +50,15 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 | 函数 | 签名 | 调用点 | 语义 |
 |------|------|--------|------|
 | `sys_getinfo` | `(request, ptr, len, ptr2, len2)` | main.c:181（`GET_HZ`） | 读系统频率 `system_hz`（01/07 依赖） |
+
+> **时钟读取的失败语义（R37，2026-09-09）**：C 的 `getticks()`（sysutil.h:57）经
+> `getuptime`（libsys/getuptime.c:9-23）读 `minix_kerninfo` 共享页，恒返回 OK——C
+> 语义下时间戳不可失败。Rust 侧它是 `SysApi::get_ticks` seam（消息传输后即可失败），
+> 全部 17 个调用点按内核调用失败统一 `?` 传播，**绝不降级为 0**：`prepare_tm=0` 会让
+> 超时判定立即为真（误回滚）、`alive_tm=0` 会误报服务死亡（check_tm=0 → 立即
+> PingTimeoutCrash）。传播发生在 prepare 回滚臂时，更新保持 armed，由 `do_period` 的
+> `update_period` 看门狗臂（R36）在下个 CLOCK tick 内兜底收敛——watchdog 依赖的
+> `prepare_tm`/`prepare_maxtime` 未被污染。
 | `sys_getimage` | `(struct boot_image *image)` | main.c:196 | 读 boot 映像表（01） |
 | `sys_getmachine` | `(struct machine *machine)` | main.c:53 | 机器信息（01） |
 | `sys_privctl` | `(proc_ep, request, void *p)` | utility.c:412（`SYS_PRIV_UPDATE_SYS`）、main.c:478/485（`SET_SYS`/`YIELD`）、update.c:360（`DISALLOW`） | 权限结构全操作（03/18） |

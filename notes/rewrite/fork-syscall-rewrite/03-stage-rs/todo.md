@@ -314,6 +314,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
   - 归属：可立即 todo-fix；顺带把 lib.rs:356-358 的陈旧 deferral 注释删除。
 
 - **R37（P2-健壮性）— `get_ticks().unwrap_or(0)` ×17 处：缝失败把时间戳静默归零**
+  ✅ 已修（2026-09-09，见 §22.7 Fix #93）
   - C 证据：`getticks()`（sysutil.h:57）经 `getuptime`（libsys/getuptime.c:9-23）读
     `minix_kerninfo` 共享页，**恒返回 OK**——C 语义下时间戳不可失败。
   - Rust 现状：`kernel.get_ticks().unwrap_or(0)` 共 17 处（boot.rs:876/:1009、
@@ -404,7 +405,7 @@ E-MINSYS-HYGIENE 一句话条目）。
 
 1. ~~**R35**（P1，1 轮）：peek/walk 分离 + gate 失败链状态负断言测试~~ ✅ Fix #91；
 2. ~~**R36**（P1，1 轮）：do_period 补 update_period 臂 + 超时回滚测试 + 删陈旧注释~~ ✅ Fix #92；
-3. **R37**（P2，1-2 轮）：get_ticks 失败策略定型（? 传播 / expect 分点）+ 测试；
+3. ~~**R37**（P2，1-2 轮）：get_ticks 失败策略定型（? 传播 / expect 分点）+ 测试~~ ✅ Fix #93；
 4. **R38 + R39**（P2，可并 1 轮）：doc 19 §3.3 后记 + semantic-map 双回填；
 5. R40 随 1/2 顺带；R41/R42 记录不动作。
    修复遵循 fix-guard.md（读目标行 ±5、grep 确认、单条修复、修后验证 + 本节标注）；
@@ -493,3 +494,25 @@ E-MINSYS-HYGIENE 一句话条目）。
    版本（walk）与纯版本（peek）应同时提供，壳层按决策结果执行副作用版本。同型风险点
    已排查：do_update 的 prepare 段（决策后执行 ✅）、do_init_ready（决策输入全为纯读 ✅）、
    signal_handler（无决策函数 ✅）——全 crate 仅 R35 一处。
+
+### ✅ Fix #93 — R37（P2）：`get_ticks` 失败策略定型——17 处 `unwrap_or(0)` 全部改为 `?` 传播
+
+- **File**：`boot.rs`（3）/`shell_update.rs`（3）/`shell_request.rs`（8）/`lib.rs`（4）
+  共 17 个调用点 + `lib.rs` 夹具参数化（`booted_vfs_kernel`，注入 seam 失败用）+
+  `19-rs-external-interfaces.md` §2.1（时钟读取失败语义声明）；todo.md 翻态
+- **Before**：C 的 `getticks()` 读 kerninfo 共享页恒成功（getuptime.c:9-23），Rust 缝
+  可失败时全部 17 处静默降级为 tick 0——`prepare_tm=0` 使超时判定立即为真（误回滚）、
+  `alive_tm=0`/`check_tm=0` 使幸存服务被误判 PingTimeoutCrash（fail-open 劣化）。
+- **After**：方案对比——a) 全点 `?` 传播（选定）vs b) `expect`/panic（时钟缝失败是
+  传输故障不是程序错误；panic = RS 死亡 = 整机不可用，拒绝）vs c) 缓存上次 tick 回退
+  （为 C 不可达路径引入隐藏陈旧状态机，拒绝）。a 的关键论证：**回滚路径上的传播也有
+  收敛兜底**——Fix #92 的 do_period 看门狗臂读的 `prepare_tm`/`prepare_maxtime` 未被
+  污染，传播后更新保持 armed，下个 CLOCK tick 内照常回滚；传播 = 与同 handler 内
+  privctl/getpriv 等内核调用失败同一待遇（一致性）。
+- **Tests**（+1，332→333）：`test_clock_seam_failure_propagates_instead_of_poisoning`
+  ——`fail_calls` 注入 GetTicks 失败，PrepareFailed 臂返回 Err 且链条保持 armed
+  （2 条目不动），锁定"传播而非毒化"策略。
+- **Verified**：`cargo test -p minix-rs` = **333 passed**（+1）；clippy rs crate 零告警；
+  fmt 干净；T7 PASS。回归 review：18 处替换逐点核对（含 live_update.rs 既有 1 处 `?`
+  形态一致）；`booted_vfs_labeled` 重构为委托 `booted_vfs_kernel`（既有调用点零改动，
+  A-5 夹具参数化而非新增变体）；无测试依赖旧 fail-open 行为（333 全绿即证）。

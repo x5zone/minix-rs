@@ -873,7 +873,7 @@ impl<'a> BootInit<'a> {
                 .expect("boot service slot missing at step 2");
             let init_flags = self.table.get(id).priv_.init_flags;
             let gid = self.rinit.rproctab_gid;
-            let ticks = sys.get_ticks().unwrap_or(0);
+            let ticks = sys.get_ticks()?;
 
             // RS/VM are already running as we speak — C: main.c:362-373.
             // init_service marks them initializing; for RS itself it stops
@@ -1006,7 +1006,7 @@ impl<'a> BootInit<'a> {
         SlotMutations {
             clear: crate::service_slot::RFlags::INITIALIZING,
             check_tm: Some(0),
-            alive_tm: Some(sys.get_ticks().unwrap_or(0)),
+            alive_tm: Some(sys.get_ticks()?),
             ..Default::default()
         }
         .apply(self.table.get_mut(id));

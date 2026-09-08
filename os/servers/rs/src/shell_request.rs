@@ -607,7 +607,7 @@ impl RsServer {
         // running service into a replica; a regular update allocates and
         // initializes a fresh slot that inherits the old instance's
         // immutable defaults, links to it, and is created without running.
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         let mut new_id: Option<crate::service_slot::SlotId> = None;
         if !prepare_only {
             if do_self_update {
@@ -978,7 +978,7 @@ impl RsServer {
         request: i32,
     ) -> Result<i32, Errno> {
         let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         let decision = crate::request::stop_decision(state.table.get(id), how, ticks);
         decision.mutations.apply(state.table.get_mut(id));
         crate::request::mark_late_reply(state.table.get_mut(id), caller, request);
@@ -1028,7 +1028,7 @@ impl RsServer {
         // (request.c:191-196): save, clear, restart, restore.
         let script = state.table.get(id).script;
         state.table.get_mut(id).script[0] = 0;
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         let kernel = self.kernel.as_mut();
         let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
@@ -1063,7 +1063,7 @@ impl RsServer {
             .pub_
             .sys_flags
             .insert(crate::service_slot::SysFlags::USE_REPL);
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         let mut noop_read_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
         match crate::service_create::clone_service(
             &mut state.table,
@@ -1278,7 +1278,7 @@ impl RsServer {
                         } else {
                             crate::live_update::RS_CANCEL
                         };
-                        let ticks = self.kernel.get_ticks().unwrap_or(0);
+                        let ticks = self.kernel.get_ticks()?;
                         let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
                         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                         state.update.end_update(
@@ -1416,7 +1416,7 @@ impl RsServer {
             caller_euid,
         )?;
 
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         if state
             .table
             .get(id)
@@ -1542,7 +1542,7 @@ impl RsServer {
         // for a fresh allocation the donor scan (RSS_REUSE, edit_slot)
         // sees the same vacant row C's loop skips, and a failed init_slot
         // leaves the dirty-but-vacant row in place exactly like C.
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         let mut slot = core::mem::replace(
             state.table.get_mut(id),
             crate::service_slot::ServiceSlot::vacant(),
@@ -1680,7 +1680,7 @@ impl RsServer {
         // do_up (the reviewed slot-first signature; a failed edit leaves the
         // row dirty-but-vacant-free: it was in-use before and stays so, the
         // take/put only hides it from the donor scan).
-        let ticks = self.kernel.get_ticks().unwrap_or(0);
+        let ticks = self.kernel.get_ticks()?;
         let mut slot = core::mem::replace(
             state.table.get_mut(id),
             crate::service_slot::ServiceSlot::vacant(),

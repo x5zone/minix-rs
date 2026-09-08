@@ -57,7 +57,7 @@ impl RsServer {
             crate::ready::UpdReadyOutcome::PrepareFailed { result } => {
                 // request.c:917-922 — end the update; the old version keeps
                 // running and is replied to (RS_REPLY). C never walks here.
-                let ticks = self.kernel.get_ticks().unwrap_or(0);
+                let ticks = self.kernel.get_ticks()?;
                 let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                 state.update.end_update(
@@ -150,7 +150,7 @@ impl RsServer {
             result,
             updating,
             state.update.num_init_ready_pending,
-            self.kernel.get_ticks().unwrap_or(0),
+            self.kernel.get_ticks()?,
         );
         decision.mutations.apply(state.table.get_mut(id));
         match decision.outcome {
@@ -171,7 +171,7 @@ impl RsServer {
                 state.update.num_init_ready_pending = pending_remaining;
                 if pending_remaining == 0 {
                     // C: request.c:511-514 — end_update(OK, RS_REPLY).
-                    let ticks = self.kernel.get_ticks().unwrap_or(0);
+                    let ticks = self.kernel.get_ticks()?;
                     state.update.end_update(
                         &mut state.table,
                         self.kernel.as_mut(),

@@ -519,7 +519,7 @@ impl SefCallbacks for RsServer {
 
                 // If an update was in progress, end it (manager.c:527-529).
                 if state.table.get(old_rs).flags.contains(RFlags::UPDATING) {
-                    let ticks = kernel.get_ticks().unwrap_or(0);
+                    let ticks = kernel.get_ticks()?;
                     state.update.end_update(
                         &mut state.table,
                         kernel,
@@ -546,7 +546,7 @@ impl SefCallbacks for RsServer {
 
                 // Initialize the new RS instance (manager.c:538-540) — sends no
                 // message (utility.c:29-31).
-                let ticks = kernel.get_ticks().unwrap_or(0);
+                let ticks = kernel.get_ticks()?;
                 crate::service_create::init_service(
                     state.table.get_mut(new_rs),
                     crate::service_create::InitSpec {
@@ -603,7 +603,7 @@ impl SefCallbacks for RsServer {
 
         // Initialize the new RS instance (manager.c:580-584) — sends no
         // message (utility.c:29-31).
-        let ticks = kernel.get_ticks().unwrap_or(0);
+        let ticks = kernel.get_ticks()?;
         crate::service_create::init_service(
             state.table.get_mut(new_rs),
             crate::service_create::InitSpec {
@@ -711,7 +711,7 @@ impl SefCallbacks for RsServer {
                 let s = state.table.get_mut(id);
                 s.flags.insert(RFlags::TERMINATED);
             }
-            let ticks = self.kernel.get_ticks().unwrap_or(0);
+            let ticks = self.kernel.get_ticks()?;
             let shutting_down = state.shutting_down;
             // C: unpublish_service(rp) — the DS effect is the 19 seam; the
             // aggregate decision face is publish.rs (R32). The USE_COPY fact
@@ -1768,7 +1768,16 @@ mod signal_handler_tests {
         mock.execve_ok = true;
         mock.fork_pid = Some(701);
         mock.child_endpoint = Some(Endpoint::MEM);
-        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        booted_vfs_kernel(alloc::boxed::Box::new(mock), label)
+    }
+
+    /// [`booted_vfs_labeled`]'s table setup with an injected kernel seam —
+    /// for tests that need seam-level failure injection (R37).
+    fn booted_vfs_kernel(
+        kernel: alloc::boxed::Box<dyn KernelApi>,
+        label: &'static [u8],
+    ) -> RsServer {
+        let mut server = booted_with(kernel);
         {
             let state = server.state.as_mut().unwrap();
             state
@@ -2549,6 +2558,41 @@ mod signal_handler_tests {
         assert!(
             server4.state.as_ref().unwrap().update.chain.len() > 0,
             "the initializing phase has no prepare deadline"
+        );
+    }
+
+    #[test]
+    fn test_clock_seam_failure_propagates_instead_of_poisoning() {
+        // R37 policy lock: get_ticks is a kernel seam that CAN fail (C's
+        // getticks cannot — it reads the kerninfo page, getuptime.c:9-23).
+        // Handlers propagate the failure (`?`) instead of degrading
+        // timestamps to 0: poisoned prepare_tm/alive_tm would fake timeouts
+        // and crash healthy services. On the PrepareFailed rollback arm the
+        // propagation leaves the update armed — convergence is the
+        // do_period watchdog's job (R36 arm), which still sees intact
+        // prepare_tm/maxtime.
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.fail_calls = alloc::vec![crate::testutil::Call::GetTicks];
+        let mut server = booted_vfs_kernel(alloc::boxed::Box::new(mock), b"vfs");
+        two_entry_chain(&mut server);
+        let mut fail = minix_types::Message {
+            m_source: Endpoint::VFS,
+            m_type: minix_types::RS_LU_PREPARE,
+            m_u: Default::default(),
+        };
+        fail.m_u.m_rs_update.result = 5; // prepare failure → rollback arm
+
+        // The clock read fails → the handler surfaces the seam error
+        // instead of rolling back with tick-0 poisoned timestamps.
+        assert!(
+            server.do_upd_ready_shell(&fail).is_err(),
+            "clock seam failure must propagate, not degrade to tick 0"
+        );
+        let state = server.state.as_ref().unwrap();
+        assert_eq!(
+            state.update.chain.len(),
+            2,
+            "rollback deferred: the update stays armed for the do_period watchdog"
         );
     }
 
