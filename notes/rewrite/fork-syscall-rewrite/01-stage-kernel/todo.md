@@ -498,6 +498,26 @@ const 集合），各 arch 实现时给出本架构位值；PageFlags 位语义�
 收益：pte_walk.rs / cross_space 等跨 arch 代码可统一引用，消除各 arch 重复定义。
 **注意**：与 CLAUDE.md"硬件语义不泄漏到 OS 层"一致——PTE 位属 arch 层，在 trait 常量中定义正是抽象化而非泄漏。
 
+**解决记录（2026-09-08，核实闭合——登记前提过时，Pattern #70 CTOS 实例）**：
+- **目标已由既有设计达成，且形式更强**：登记建议的两半均已存在——
+  ①"PageFlags 位语义统一枚举化"：`bitflags PageFlags: u16` 11 个语义位
+  （PRESENT/WRITABLE/USER_ACCESSIBLE/EXECUTABLE/GLOBAL/WRITE_THROUGH/NO_CACHE/ACCESSED/DIRTY/GUARD_PAGE/
+  HUGE_PAGE，`os/arch/src/arch/paging.rs:28`）+ 5 个语义构造器（read_only:77 / read_write:85 /
+  kernel_read_only:92 / kernel_read_write:99 / kernel_executable:110）；
+  ②"跨 arch 统一引用"：kernel 全部消费点走语义层——`os/kernel/src/lib.rs:303/:328`、
+  `os/kernel/src/dm_coverage.rs:67-68`、`os/kernel/src/vm.rs:22/:207`、PteWalkArch::walk 签名本身返回
+  `Option<(PhysBytes, PageFlags)>`（`os/arch/src/arch/pte_walk_arch.rs:77`）
+- **raw 位值不出 arch crate（by design）**：三架构各自私有翻译层——x86_64 `pte.rs:24-37` 私有 const +
+  `:53 flags_to_pte`；arm64 `paging.rs:93/:123`；riscv64 `paging.rs:128/:156`。PTE 常量均非 `pub`
+- **建议形式（关联常量）被否决的反查论证**：`Arch::ENTRY_FLAG_*` 式会把各架构位值以统一名字暴露给共享层——
+  硬件事实离 OS 层只差一步，弱于现状（位值完全封在 arch crate 内、跨层只流通语义位）。登记"注意"条说
+  "在 trait 常量中定义正是抽象化"——语义化（PageFlags）比常量化更强的抽象化，CLAUDE.md 约束按更强者执行。
+  各 arch "重复定义"的 raw 位值是各架构硬件事实（x86 bit0 ≠ arm64 AP 位布局），非同一真相的两份拷贝，
+  无可消除项；唯一真相（语义位集）已在 PageFlags 单点定义
+- **登记中仍属实的事实**：Paging trait 至今唯一常量仍是 `PAGE_SIZE`（`os/arch/src/arch/paging.rs:153`）——
+  但这不构成缺口：跨层无 raw 位需求
+- **无需代码/测试改动**：翻译层与语义层已有测试覆盖（arch 223 passed 含 paging/pte_walk 测试族）
+
 ### 对照总结
 
 Redox 与我们最大分歧在 Arch 抽象（cfg 换模块 vs trait）与锁（锁序类型系统 vs 单 BKL）——
@@ -2760,7 +2780,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ⬜ D1 [P1] errno newtype 单一来源（=I-8）+ D2 [P2] ToErrno trait 统一 14 个映射函数（同批）
 - ✅ G1 [P1] ProcNr 双定义上移 minix-types → **newtype + impl 迁至 `types/proc_nr.rs`（含 5 单元测试），arch 删 `= i32` 别名改 `pub use`，kernel re-export（~600 使用点零 diff），边界拆包 3 处归零 + arch 21 处测试点包 newtype；types 189 / arch 220 / kernel 693+2 全绿（2026-09-08，详见 §5 G1 解决记录）**
 - ✅ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch` → **落地为全关联类型组合（17 族覆盖全部 20 个 Current* 别名；supertrait 形式因 Paging 句柄语义不可实现，见 §5 解决记录）+ `CurrentArch` 单点 cfg 锚点 + MockArch 矩阵镜像；TypeId 逐族 pin 测试 3 个；四条真实 target 编译路径零错误；不做调用点迁移（OQ 并存裁决）（2026-09-08）**
-- ⬜ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）
+- ✅ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）→ **核实闭合：前提过时（CTOS）——PageFlags 语义位图（paging.rs:28）+ 三架构私有翻译层 + kernel 全消费点语义化早已落地，目标已达成；关联常量形式经反查被否决（弱于现状的封装强度），详见 §5 解决记录（2026-09-08）**
 - ⬜ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分
 - ⬜ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）
 
