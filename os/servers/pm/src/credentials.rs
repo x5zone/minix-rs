@@ -422,7 +422,7 @@ mod tests {
         let mut v = NopVfs;
         // gid_t 为 u32、GID_MAX = 2^31-1：[2^31, 2^32-1] 区间被拒绝
         //（C getset.c:191，syslimits.h:53——V2-P3-2 修复前该检查恒假）。
-        let over = vec![(GID_MAX as u64 + 1) as Gid];
+        let over = vec![(GID_MAX + 1) as Gid];
         let res = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: over }, &mut c, &mut v);
         assert_eq!(res.unwrap_err(), SetError::Inval);
         // 边界值 GID_MAX 本身合法。

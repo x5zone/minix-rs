@@ -335,9 +335,6 @@ mod tests {
     use crate::ipc::TestIpcTransport;
     use minix_types::Endpoint;
 
-    /// 构造 (table, events, transport) 测试三元组，并在 `slot` 注册一个
-    /// Running 进程（endpoint 带代际，供 pm_isokendpt/find 语义）。
-
     /// 测试用内核网关 mock（sys_kill/sys_clear 恒 OK）。
     #[derive(Default)]
     struct NoopKernel;
@@ -352,7 +349,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             Ok(())
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -391,12 +388,10 @@ mod tests {
         // 父进程已注册时 do_fork 走到 vm_fork（脚本化 OK 应答）→ ReplyLater。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
-        let mut kern = NoopKernel::default();
+        let _kern = NoopKernel;
         let mut vm_reply = Message::default();
         vm_reply.m_type = minix_types::OK;
-        unsafe {
-            vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
-        }
+        vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
         transport.queue_sendrec_reply(vm_reply);
 
         let mut msg = Message::default();
@@ -414,7 +409,7 @@ mod tests {
         assert_eq!(intent, ReplyIntent::ReplyLater);
         // fork 链路真实发出：先 VM_FORK（sendrec 记录在 sent），后 VFS_PM_FORK。
         assert_eq!(transport.sent()[0].0, Endpoint::VM);
-        assert_eq!(transport.sent().len() >= 2, true);
+        assert!(transport.sent().len() >= 2);
     }
 
     #[test]
@@ -447,7 +442,7 @@ mod tests {
         // plan.md §7.3 的 NoReply 子情形）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
-        let mut kern = NoopKernel::default();
+        let _kern = NoopKernel;
         let mut msg = Message::default();
         msg.m_type = 1;
         msg.m_source = ep;
@@ -469,7 +464,7 @@ mod tests {
         //（DEFERRED，40 个：07~20 未落地者）。GetPid(4) 当前未接线。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
-        let mut kern = NoopKernel::default();
+        let _kern = NoopKernel;
         let mut msg = Message::default();
         msg.m_type = 4;
         msg.m_source = ep;

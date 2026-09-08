@@ -176,7 +176,7 @@ mod tests {
         fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
     }
     use super::*;
-    use crate::mproc::{ProcTable, Lifecycle, Guardianship, Privilege, Credentials};
+    use crate::mproc::{ProcTable, Lifecycle, Guardianship};
     use minix_types::{Endpoint, UserSlot, VirBytes};
 
     fn running_child(table: &mut ProcTable, slot: usize, pid: i32, parent: usize) {
@@ -250,7 +250,7 @@ mod tests {
         // pidarg==0 → -procgrp
         let target = WaitTarget::from_pidarg(0, 42);
         assert_eq!(target, WaitTarget::Group(-42));
-        let mut state = crate::mproc::WaitState { waiting: true, target, rusage_addr: VirBytes(0) };
+        let state = crate::mproc::WaitState { waiting: true, target, rusage_addr: VirBytes(0) };
         assert!(state.is_waiting_for(100, 42));
         assert!(!state.is_waiting_for(100, 43));
     }

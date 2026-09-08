@@ -233,7 +233,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             Ok(())
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -288,7 +288,7 @@ mod tests {
         // → ENOSYS（main.c:102-103 兜底）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
-        let mut kern = NoopKernel::default();
+        let mut kern = NoopKernel;
         let intent = dispatch_message(
             &mut table,
             &mut events,
@@ -307,7 +307,7 @@ mod tests {
         // → SUSPEND 前置（event.c:241-245 → ReplyLater）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, true);
-        let mut kern = NoopKernel::default();
+        let mut kern = NoopKernel;
         let intent = dispatch_message(
             &mut table,
             &mut events,
@@ -324,7 +324,7 @@ mod tests {
         // event.c:232-233 — 仅系统服务可回复；普通进程误用 → ENOSYS 回复。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
-        let mut kern = NoopKernel::default();
+        let mut kern = NoopKernel;
         let intent = dispatch_message(
             &mut table,
             &mut events,
@@ -342,7 +342,7 @@ mod tests {
         // 未接线调用（GetPid）→ ENOSYS（DEFERRED，40 个）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
-        let mut kern = NoopKernel::default();
+        let mut kern = NoopKernel;
         assert_eq!(
             dispatch_message(
                 &mut table,
@@ -361,7 +361,7 @@ mod tests {
         // C: main.c:102-103 — 非 PM 调用 → ENOSYS。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
-        let mut kern = NoopKernel::default();
+        let mut kern = NoopKernel;
         assert_eq!(
             dispatch_message(
                 &mut table,
@@ -430,9 +430,7 @@ mod tests {
     fn vm_fork_ok_reply(child: Endpoint) -> Message {
         let mut m = Message::default();
         m.m_type = minix_types::OK;
-        unsafe {
-            m.m_u.m_m1.m1i3 = child.0;
-        }
+        m.m_u.m_m1.m1i3 = child.0;
         m
     }
 

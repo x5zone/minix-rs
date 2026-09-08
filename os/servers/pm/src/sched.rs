@@ -306,7 +306,7 @@ pub fn get_nice_value(queue: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::init::INIT_PROC_NR;
+    
     use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials};
     use minix_types::{Endpoint, UserSlot};
 

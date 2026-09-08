@@ -679,7 +679,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             Ok(())
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -944,7 +944,7 @@ mod tests {
         let mut novt = NopVTimer;
         let mut kern_rec = TestKernel { user: 0, sys: 0 };
         let res = process_ksig(&mut table, Endpoint::from_generation_slot(9, 9), 15, &mut novt, &mut kern_rec, &mut t);
-        let mut kern_rec = TestKernel { user: 30, sys: 12 };
+        let _kern_rec = TestKernel { user: 30, sys: 12 };
         assert_eq!(res.unwrap_err(), KillError::InvalidEndpoint);
     }
 
@@ -1183,15 +1183,12 @@ mod tests {
 
     /// 记录 `sys_delay_stop` 调用并支持脚本化返回值的内核网关 mock：
     /// `reply == 0` 时成功，否则原样返回该负 errno（如 EBUSY = 16）。
+    #[derive(Default)]
     struct StopRecorder {
         calls: Vec<Endpoint>,
         reply: i32,
     }
-    impl Default for StopRecorder {
-        fn default() -> Self {
-            Self { calls: Vec::new(), reply: 0 }
-        }
-    }
+    
     impl crate::exit::KernelGateway for StopRecorder {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
         fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }

@@ -25,10 +25,9 @@
 //!   （[`VfsReplyServices`]），消除 `main.c`/`event.c`/`signal.c` 四处散落、靠 `panic`
 //!   兜底的状态推断（ARCH A-2 / A-6 延伸）。
 
-use core::fmt;
 
 use minix_types::{
-    Endpoint, IpcError, Message, Pid, UserSlot, VirBytes, VfsCall, VfsReply, VfsReplyError,
+    Endpoint, Message, Pid, UserSlot, VirBytes, VfsCall, VfsReply, VfsReplyError,
     VFS_PM_REBOOT_REPLY,
 };
 
@@ -636,27 +635,27 @@ impl VfsReplyServices for RecordingServices {
         np
     }
 
-    fn is_unpaused(&self, slot: UserSlot) -> bool {
+    fn is_unpaused(&self, _slot: UserSlot) -> bool {
         self.unpaused
     }
 
-    fn is_exiting(&self, slot: UserSlot) -> bool {
+    fn is_exiting(&self, _slot: UserSlot) -> bool {
         self.exiting
     }
 
-    fn is_in_use(&self, slot: UserSlot) -> bool {
+    fn is_in_use(&self, _slot: UserSlot) -> bool {
         self.in_use
     }
 
-    fn procgrp_of(&self, slot: UserSlot) -> Pid {
+    fn procgrp_of(&self, _slot: UserSlot) -> Pid {
         self.procgrp
     }
 
-    fn pid_of(&self, slot: UserSlot) -> Pid {
+    fn pid_of(&self, _slot: UserSlot) -> Pid {
         self.pid
     }
 
-    fn parent_slot(&self, slot: UserSlot) -> UserSlot {
+    fn parent_slot(&self, _slot: UserSlot) -> UserSlot {
         self.parent
     }
 
@@ -727,9 +726,7 @@ mod tests {
             m_type,
             ..Default::default()
         };
-        unsafe {
-            m.m_u.m_m7.m7i1 = endpt.get();
-        }
+        m.m_u.m_m7.m7i1 = endpt.get();
         m
     }
 
@@ -775,12 +772,10 @@ mod tests {
     fn test_exec_restart_receives_args() {
         let mut svc = RecordingServices::new();
         let mut msg = reply_msg(VFS_PM_EXEC_REPLY, Endpoint::from_generation_slot(1, 1));
-        unsafe {
-            msg.m_u.m_m7.m7i2 = 0; // status OK
-            msg.m_u.m_m7.m7p1 = 0x1000;
-            msg.m_u.m_m7.m7p2 = 0x2000;
-            msg.m_u.m_m7.m7i5 = 0x3000;
-        }
+        msg.m_u.m_m7.m7i2 = 0; // status OK
+        msg.m_u.m_m7.m7p1 = 0x1000;
+        msg.m_u.m_m7.m7p2 = 0x2000;
+        msg.m_u.m_m7.m7i5 = 0x3000;
         handle_vfs_reply(&mut svc, &msg).unwrap();
         assert!(svc.effects.contains(&RecordedEffect::ExecRestart {
             slot: UserSlot::new(1),
@@ -793,9 +788,7 @@ mod tests {
         let mut svc = RecordingServices::new();
         svc.exiting = true; // EXITING 置位，供 assert_exiting 通过
         let mut msg = reply_msg(VFS_PM_CORE_REPLY, Endpoint::from_generation_slot(1, 1));
-        unsafe {
-            msg.m_u.m_m7.m7i2 = 0; // status OK
-        }
+        msg.m_u.m_m7.m7i2 = 0; // status OK
         handle_vfs_reply(&mut svc, &msg).unwrap();
         // Core: set_core_flag → assert_exiting → publish(Exit) → 提前 return（无 restart_signals）
         assert!(svc.effects.contains(&RecordedEffect::SetCoreFlag { slot: UserSlot::new(1) }));
@@ -977,7 +970,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             Ok(())
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -995,7 +988,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut kern = NoopKernelGateway::default();
+        let mut kern = NoopKernelGateway;
         let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
         svc.table.procs[1].state.lifecycle =
             Lifecycle::Exiting { exit_code: 0, sig_status: 6 }; // SIGABRT
@@ -1063,7 +1056,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut kern = NoopKernelGateway::default();
+        let mut kern = NoopKernelGateway;
         let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
         // 待拆除的子进程（RS fork 出的 PRIV_PROC 语义在 08；此处普通用户进程）
         svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
@@ -1118,7 +1111,7 @@ mod tests {
         let mut table = crate::mproc::ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut kern = NoopKernelGateway::default();
+        let mut kern = NoopKernelGateway;
         let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
         svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
         svc.table.procs[1].identity.id.pid = 42;
@@ -1150,7 +1143,7 @@ mod tests {
         let mut table = crate::mproc::ProcTable::new();
         let mut transport = TestIpcTransport::default();
         let mut events = crate::event::EventRegistry::new();
-        let mut kern = NoopKernelGateway::default();
+        let mut kern = NoopKernelGateway;
         let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
         svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
         svc.table.procs[1].identity.id.pid = 42;

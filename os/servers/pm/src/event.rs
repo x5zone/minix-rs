@@ -511,7 +511,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             Ok(())
         }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
@@ -519,7 +519,7 @@ mod tests {
     }
     use super::*;
     use crate::mproc::{Lifecycle, ProcTable};
-    use minix_types::{Endpoint, Message, UserSlot, OK, EPERM, ENOMEM, ENOSYS, NR_PROCS, PROC_EVENT, PROC_EVENT_REPLY};
+    use minix_types::{Endpoint, Message, UserSlot, OK, EPERM, ENOMEM, ENOSYS, PROC_EVENT, PROC_EVENT_REPLY};
 
     fn mk_table_with_subscriber(mask: ProcEventMask, waiting: usize) -> (ProcTable, EventRegistry, UserSlot, UserSlot) {
         let mut table = ProcTable::new();
@@ -634,7 +634,7 @@ mod tests {
         let mut table = ProcTable::new();
         let mut reg = EventRegistry::new();
         for i in 0..NR_SUBS {
-            let slot = UserSlot::new(i);
+            let _slot = UserSlot::new(i);
             table.procs[i].state.lifecycle = Lifecycle::Running;
             table.procs[i].identity.endpoint = Endpoint::from_generation_slot(1, i as i32);
             table.procs[i].resources.privilege = crate::mproc::Privilege::Kernel;
@@ -747,8 +747,8 @@ mod tests {
         let mut reply = Message::default();
         reply.m_type = PROC_EVENT_REPLY;
         reply.m_source = Endpoint::from_generation_slot(1, 2);
-        unsafe { reply.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get(); }
-        unsafe { reply.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32; }
+        reply.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get();
+        reply.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32;
         let caller = UserSlot::new(2);
         let intent = reg.do_proc_event_reply(&reply, caller, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
@@ -763,8 +763,8 @@ mod tests {
         let mut reply2 = Message::default();
         reply2.m_type = PROC_EVENT_REPLY;
         reply2.m_source = Endpoint::from_generation_slot(1, 3);
-        unsafe { reply2.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get(); }
-        unsafe { reply2.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32; }
+        reply2.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get();
+        reply2.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32;
         let caller2 = UserSlot::new(3);
         let intent2 = reg.do_proc_event_reply(&reply2, caller2, &mut table, &mut transport, &mut kern);
         assert_eq!(intent2, ReplyIntent::ReplyLater);
@@ -809,7 +809,7 @@ mod tests {
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint(11), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.nsubs = 2;
         // process waiting on second subscriber (cursor 1)
-        let tgt = UserSlot::new(5);
+        let _tgt = UserSlot::new(5);
         table.procs[5].state.lifecycle = Lifecycle::Running;
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.block.set_event_blocked(EventCursor(1));
@@ -829,7 +829,7 @@ mod tests {
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::EXIT, waiting: 1 });
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 3), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.nsubs = 2;
-        let tgt = UserSlot::new(5);
+        let _tgt = UserSlot::new(5);
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.block.set_event_blocked(EventCursor(0));
@@ -875,10 +875,8 @@ mod tests {
     fn reply_msg(endpt: Endpoint, event: ProcEvent) -> Message {
         let mut m = Message::default();
         m.m_type = PROC_EVENT_REPLY;
-        unsafe {
-            m.m_u.m_pm_lsys_proc_event.endpt = endpt.get();
-            m.m_u.m_pm_lsys_proc_event.event = event as u32;
-        }
+        m.m_u.m_pm_lsys_proc_event.endpt = endpt.get();
+        m.m_u.m_pm_lsys_proc_event.event = event as u32;
         m
     }
 
@@ -974,7 +972,7 @@ mod tests {
         // subscriber with empty mask but waiting
         reg.subs[0] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 2), mask: ProcEventMask::empty(), waiting: 1 });
         reg.nsubs = 1;
-        let tgt = UserSlot::new(5);
+        let _tgt = UserSlot::new(5);
         table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
         table.procs[5].identity.endpoint = Endpoint::from_generation_slot(1, 5);
         table.procs[5].state.block.set_event_blocked(EventCursor(0));
@@ -999,7 +997,7 @@ mod tests {
     #[test]
     fn test_reply_advances_to_next_subscriber() {
         let mut kern = MockKernelGateway;
-        let (mut table, mut reg, mut transport, sub, tgt) = setup_reply_test();
+        let (mut table, mut reg, mut transport, sub, _tgt) = setup_reply_test();
         // add second subscriber
         reg.subs[1] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, 3), mask: ProcEventMask::EXIT, waiting: 0 });
         reg.nsubs = 2;

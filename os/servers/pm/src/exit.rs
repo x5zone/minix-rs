@@ -827,7 +827,7 @@ mod tests {
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Guardianship, Privilege, Credentials};
     use minix_types::{Endpoint, UserSlot};
-    use crate::mproc::{BlockState, IpcBlockReason};
+    use crate::mproc::IpcBlockReason;
 
     fn running_proc(table: &mut ProcTable, slot: usize, pid: i32) {
         table.procs[slot].state.lifecycle = Lifecycle::Running;

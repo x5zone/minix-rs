@@ -1001,9 +1001,7 @@ mod tests {
         // 脚本化 VM_FORK 应答：空表 + 游标 0 → 子槽位 1（父在 5）。
         let mut vm_reply = Message::default();
         vm_reply.m_type = minix_types::OK;
-        unsafe {
-            vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
-        }
+        vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
         server.transport.queue_sendrec_reply(vm_reply);
         let mut msg = Message::default();
         msg.m_type = 2; // PM_FORK
@@ -1041,7 +1039,7 @@ mod tests {
         msg.m_type = VFS_PM_SETUID_REPLY; // SETUID 分支：reply(OK) + 尾部 restart_signals
         msg.m_source = Endpoint::VFS;
         // SAFETY: 回复消息的 m7_i1 承载目标进程 endpoint（main.c:315-321）。
-        unsafe { msg.m_u.m_m7.m7i1 = ep.get(); }
+        msg.m_u.m_m7.m7i1 = ep.get();
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
         // 状态机已即时施加效果：向 slot 5 进程回复 OK（而非向 VFS 同步回复）。

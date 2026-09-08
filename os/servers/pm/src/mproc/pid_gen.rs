@@ -247,7 +247,7 @@ mod tests {
         // 新相位下首候选是 3（INIT_PID+2），与槽内 pid/procgrp 冲突 → 跳到 4。
         let pid = generator.get_free_pid(&table);
         assert_ne!(pid, 3);
-        assert!(pid >= INIT_PID + 2 && pid <= NR_PIDS);
+        assert!((INIT_PID + 2..=NR_PIDS).contains(&pid));
     }
 
     #[test]

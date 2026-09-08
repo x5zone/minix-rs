@@ -260,8 +260,8 @@ pub fn sig_send(
 mod tests {
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials};
-    use minix_types::{Endpoint, VirBytes, UserSlot, EINVAL};
-    use crate::mproc::{UNKILLABLE_MASK, SigSetExt, SIG_BLOCK, SIG_UNBLOCK};
+    use minix_types::{Endpoint, VirBytes, UserSlot};
+    use crate::mproc::{UNKILLABLE_MASK, SIG_BLOCK, SIG_UNBLOCK};
 
     fn mk_proc(table: &mut ProcTable, slot: usize, pid: i32) {
         table.procs[slot].state.lifecycle = Lifecycle::Running;

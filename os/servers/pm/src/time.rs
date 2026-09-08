@@ -371,8 +371,8 @@ mod tests {
         assert_eq!(do_settime(&table, UserSlot::new(0), req, &mut ctl).unwrap_err(), TimeError::Perm);
         // super succeeds
         table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 0;
-        let res = do_settime(&table, UserSlot::new(0), req, &mut ctl).unwrap();
-        assert_eq!(res, ());
+        do_settime(&table, UserSlot::new(0), req, &mut ctl).unwrap();
+        assert_eq!((), ());
         assert_eq!(ctl.last, Some((true, ClockId::Realtime, 2000, 0)));
     }
 

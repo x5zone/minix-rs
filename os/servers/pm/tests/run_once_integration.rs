@@ -27,21 +27,18 @@ struct MockKernelGateway {
     pub user: minix_types::Clock,
     pub sys: minix_types::Clock,
     pub ksig_script: Vec<Option<(i32, u64)>>,
-    pub endksig_calls: Vec<(i32, i32)>,
 }
 
 impl minix_pm::exit::KernelGateway for MockKernelGateway {
+    fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
     fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> {
-        Ok(match self.ksig_script.remove(0) {
-            Some((ep, mask)) => Some((Endpoint(ep), mask)),
-            None => None,
-        })
+        Ok(self.ksig_script.remove(0).map(|(ep, mask)| (Endpoint(ep), mask)))
     }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
     fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
     fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-    fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
     fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_trace(&mut self, _req: i32, _ep: Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
@@ -57,7 +54,7 @@ fn server() -> minix_pm::init::PmServer<TestIpcTransport> {
     minix_pm::init::PmServer::with_kernel_gateway(
         BootParams::placeholder(),
         TestIpcTransport::new(),
-        Box::new(MockKernelGateway { user: 0, sys: 0, ksig_script: Vec::new(), endksig_calls: Vec::new() }),
+        Box::new(MockKernelGateway { user: 0, sys: 0, ksig_script: Vec::new() }),
     )
 }
 
@@ -376,7 +373,7 @@ fn ptrace_attach_runs_full_chain_and_replies_with_payload() {
     let sent = srv.transport().sent();
     let (_, reply) = sent
         .iter()
-        .find(|(ep, m)| *ep == debugger_ep)
+        .find(|(ep, _m)| *ep == debugger_ep)
         .expect("debugger must be replied");
     assert_eq!(reply.m_type, 0);
     assert_eq!(unsafe { reply.m_u.m_pm_lc_ptrace.data }, 0);
@@ -402,7 +399,6 @@ fn kernel_sigksig_notify_drains_pending_kernel_signals() {
                 Some((target_ep.0, 1u64 << (15 - 1))),
                 None,
             ],
-            endksig_calls: Vec::new(),
         }),
     );
     let _ = seed_running(&mut srv, 5, 42);
@@ -410,8 +406,7 @@ fn kernel_sigksig_notify_drains_pending_kernel_signals() {
     // 内核通知：SYSTEM 源即拉取触发（SigSet(u64) 装不下 SIGKSIG 位 73，
     // kernel syscall_signal.rs:88-94 已声明该限制——SYSTEM 通知本身即
     // "有积累"的唯一载体，PM 按 SYSTEM 源触发）。
-    let mut notify = Message::default();
-    notify.m_source = Endpoint::SYSTEM;
+    let notify = Message { m_source: Endpoint::SYSTEM, ..Default::default() };
     srv.transport_mut()
         .queue_receive(notify, IpcStatus { flags: 4 });
     assert_eq!(srv.run_once(), RunStep::Handled);

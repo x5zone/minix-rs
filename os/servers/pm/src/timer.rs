@@ -4,7 +4,7 @@
 //! Design: `.design/14-design.v1.md` D1–D8 (explicit `TicksConv`/`ItimerWhich`/`AlarmState`/`Option`).
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
-use minix_types::{Endpoint, UserSlot, Pid, EINVAL};
+use minix_types::{Endpoint, UserSlot, EINVAL};
 use crate::mproc::{ProcTable, RemainingFlags};
 
 /// Clock ticks (`clock_t`, 64-bit `i64` extension, A-11).

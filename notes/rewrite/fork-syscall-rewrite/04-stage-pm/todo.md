@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8（#48/#50/#51/#52/#53/#55/#54）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8/9（#48/#50/#51/#52/#53/#55/#54/#56）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -503,12 +503,12 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #54）：非 mut 变体整体删除（70+ 行近似实现与注释消亡），3 个测试迁移到 `_mut` 版（同一行为面）；waiting 守卫改自增前 `assert!` + 引用 `minix_types::NR_PROCS`（C event.c:108-109 同位）。
 - **验证**：`grep -n "pub fn do_proceventmask(" os/servers/pm/src/event.rs` 零命中；基线 379 lib passed。
 
-#### V3-P2-9 clippy 基线回退：lib 3 条 unused import + 测试代码 22 条 unused variable
+#### V3-P2-9 clippy 基线回退：lib 3 条 unused import + 测试代码 22 条 unused variable（✅ 已修复 2026-09-09，Fix #56）
 
-- **优先级**：P2；**类型**：卫生回退（V2 收官时 lib 0 warning）
-- **证据**：`ipc/vfs.rs:28`（`core::fmt`）、`ipc/vfs.rs:31`（`IpcError`）、`timer.rs:7`（`Pid`）；测试侧 22 处（event.rs×6、ipc/calls.rs×4、ipc/vfs.rs×7、fork.rs/signal.rs/dispatcher.rs/misc.rs/tests 各 1，多为 mock 形参未加下划线前缀）。回退源头是 Fix #41/#42 收尾批次清理了使用点却留下导入。
-- **建议**：一次卫生批次恢复 0 基线；campaign 收尾清单增加 `cargo clippy -p minix-pm --lib --all-targets` 项（--lib 不覆盖 cfg(test) 代码）。
-- **验证**：clippy lib 0 warning；`--all-targets` unused 告警 0。
+- **原状态**：lib 3 条 unused import（Fix #41/#42 收尾清理了使用点却留下导入）+ 测试代码 22 条 unused variable。
+- **修复**（Fix #56）：lib 3 条导入删除（0 warning 恢复）；测试侧 unused 经 `cargo clippy --all-targets --fix` 批量清理（下划线前缀/导入收敛）；campaign 收尾清单增加 `--all-targets` 项。
+- **验证**：`cargo clippy -p minix-pm --lib` 0 warning；`--all-targets` unused 类 0。
+- **新发现（转 V3-P3 记账）**：首次 `--all-targets` 扫描暴露 44 条 `field_reassign_with_default`（测试代码 `Message::default()` + 字段赋值的预存风格，clippy 不支持自动修复）+ 少量 dead mock——零生产影响，转入 V3-P3 处置。
 
 #### V3-P2-10 CLOCK notify 时间戳来源：处理时刻时钟 vs 通知载荷时间戳
 

@@ -704,7 +704,7 @@ mod tests {
         mk_running(&mut table, 0, 0);
         let mut ctl = TestTimesVm { hz: 100 };
         let mut cpy = NopCopy;
-        let ((u_sec, _), (s_sec, _)) = do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, 100, &mut ctl, &mut cpy).unwrap();
+        let ((u_sec, _), (_s_sec, _)) = do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, 100, &mut ctl, &mut cpy).unwrap();
         assert_eq!(u_sec, 1); // 120/100
         let ((u2, _), _) = do_getrusage(&table, UserSlot::new(0), RusageWho::Children, 100, &mut ctl, &mut cpy).unwrap();
         assert_eq!(u2, 2); // child_utime 200/100

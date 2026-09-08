@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_can_alloc_for_user() {
-        let mut table = ProcTable::new();
+        let table = ProcTable::new();
         assert!(table.can_alloc_for_user(false));
         assert!(table.can_alloc_for_user(true));
 

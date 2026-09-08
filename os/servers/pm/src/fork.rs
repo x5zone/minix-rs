@@ -413,7 +413,7 @@ mod tests {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
-        fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
             Ok(())
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -443,9 +443,7 @@ mod tests {
     fn queue_vm_fork_reply(transport: &mut crate::ipc::TestIpcTransport, child_endpoint: Endpoint) {
         let mut reply = minix_types::Message::default();
         reply.m_type = OK;
-        unsafe {
-            reply.m_u.m_m1.m1i3 = child_endpoint.0;
-        }
+        reply.m_u.m_m1.m1i3 = child_endpoint.0;
         transport.queue_sendrec_reply(reply);
     }
 
