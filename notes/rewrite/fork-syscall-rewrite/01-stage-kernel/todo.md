@@ -567,10 +567,28 @@ kmain 头注/流程注释与实际不符，注释级同步。
 （lib.rs:2266-2270），读点 clock_irq_handler→tick_with(billp)（clock.rs:1277-1327，
 对齐 C clock.c:114-152 的 billp 三用途）。**生产单跳限制的根因是 S-8 缺席**（首个
 restore_to_user 交出 CPU 后无向量回内核），非调度器缺陷。
-**剩余三个小余项**（并入本条跟踪）：① idle 的 kernel_ticks 未接线
-（`os/kernel/src/lib.rs:2281-2285` 已自登记）；② `CpuLocal::set_running`
-（`os/kernel/src/smp.rs:200-205`）无条件写 bill_ptr、无 C 两写点都有的 BILLABLE 判定
-（现仅 boot/测试调用，复用即埋雷）；③ S-8 落地后循环多轮行为端到端验证。
+**剩余三个小余项**（并入本条跟踪）：① idle 的 kernel_ticks 未接线；②
+`CpuLocal::set_running` 无 BILLABLE 判定；③ S-8 落地后循环多轮行为端到端验证。
+
+**✅ 余项解决记录（2026-09-09，①② 落地；③ 维持 S-8 依赖）**：
+- **① kernel_ticks 裁决为 no-op（C write-only 实证）**：全 C 树 grep 显示
+  `kernel_ticks[CONFIG_MAX_CPUS]`（glo.h:86）只有声明与 arch_clock.c:231 的累加、
+  **无任何读方**（do_getinfo/debug 均不触）——接线即 write-only 状态（D-34 标准）。
+  idle Step 4 的缺口 TODO 注释改写为该裁决 + 证据。随带补上 **p_cycles 的 KERNEL
+  分支累加**（C arch_clock.c:232，`p_cycles` 经 GET_PROC 可观察，是真缺口）：
+  `idle` 中 `kernel.p_cycles.add_cycles(tsc_delta)`。
+- **② set_running 收紧为 proc_ptr 原语**：bill_ptr 写是调用点策略（C 的三个写点
+  两个 BILLABLE 门控、boot 点目标是自带 BILLABLE 的 idle；Rust 门控路径 =
+  set_bill_to_idle / pick_and_bill / idle）。原语不再无条件写 bill_ptr，
+  新增反例测试 `test_cpu_local_set_running_does_not_bill`（原测试断言的正是
+  要消除的行为，已同步改写）。
+- 🆕 **I-16（本条派生，open，P2）**：**p_cycles.total 全库无累加点**——
+  `CyclesStats::add_cycles`（proc.rs:733）在生产代码零调用方，GET_PROC/SCHEDCTL
+  导出的 p_cycles 恒 0；C 的 context_stop 一般分支（arch_clock.c:245-250）在每次
+  上下文切换/时钟路径累积 `p->p_cycles += tmp`。修法需在 Rust 的切换链
+  （finish_and_restore / pick 循环）找 C context_stop 调用点全集一一对应，
+  属记账面专项（建议与 I-15 时钟镜像收敛同窗口做）。
+- **③ 维持**：S-8 落地后端到端验证（原依赖不变）。
 
 ### 23.4 新发现 P3（D-65 轻微项批）
 

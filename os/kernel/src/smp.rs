@@ -194,14 +194,20 @@ impl CpuLocal {
         }
     }
 
-    /// Mark this CPU as currently running `nr`; also bills time to `nr`
-    /// (or to `idle_proc` if `nr == idle_proc`).
+    /// Mark this CPU as currently running `nr`.
     ///
-    /// Mirrors C's `get_cpulocal_var(proc_ptr) = p; get_cpulocal_var(bill_ptr) = p;`
-    /// in `bsp_finish_booting()` and similar call sites.
+    /// I-6② (2026-09-09): this primitive no longer writes `bill_ptr`. In
+    /// C, every `bill_ptr` write is BILLABLE-gated at its call site
+    /// (`proc.c:186-188` in `idle`, `proc.c:1808-1809` in `pick_proc`;
+    /// the boot write `main.c:56` targets idle, whose privilege carries
+    /// BILLABLE). Billing is therefore call-site policy, and this crate's
+    /// gated billing paths are `ProcessTable::set_bill_to_idle`,
+    /// `pick_and_bill` and `idle` — all of which check `is_billable`.
+    /// An unconditional write here (the pre-I-6② behavior) would have
+    /// billed non-billable processes the moment a future caller reused
+    /// this primitive.
     pub fn set_running(&mut self, nr: ProcNr) {
         self.proc_ptr = Some(nr);
-        self.bill_ptr = Some(nr);
     }
 
     /// Record a context-switch timestamp. C: `tsc_ctr_switch = read_tsc()`
@@ -1268,12 +1274,21 @@ mod tests {
         let mut local = CpuLocal::new();
         local.set_running(proc_nr::IDLE);
         assert_eq!(local.proc_ptr, Some(proc_nr::IDLE));
-        assert_eq!(local.bill_ptr, Some(proc_nr::IDLE));
 
         // Switch to a user process.
         local.set_running(ProcNr(7));
         assert_eq!(local.proc_ptr, Some(ProcNr(7)));
-        assert_eq!(local.bill_ptr, Some(ProcNr(7)));
+    }
+
+    #[test]
+    fn test_cpu_local_set_running_does_not_bill() {
+        // I-6②: `set_running` is the proc_ptr primitive only — `bill_ptr`
+        // writes are BILLABLE-gated call-site policy (set_bill_to_idle /
+        // pick_and_bill / idle), never an unconditional side effect here.
+        let mut local = CpuLocal::new();
+        assert_eq!(local.bill_ptr, None);
+        local.set_running(ProcNr(7));
+        assert_eq!(local.bill_ptr, None);
     }
 
     #[test]

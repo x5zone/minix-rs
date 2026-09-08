@@ -2270,16 +2270,26 @@ fn idle(
     // 4. context_stop(KERNEL) — charge the kernel-execution delta and
     // advance the TSC baseline (C:207; the quantum decrement itself is
     // skipped for the endpoint < 0 pseudo-process, arch_clock.c:314).
-    // # Known gap (C-parity accounting): C also accumulates
-    // `kernel_ticks[cpu]` and `p->p_cycles` here (arch_clock.c:231-232).
-    // TODO(P2, code): wire per-CPU kernel-tick statistics into
-    // `clock::decrement_quantum_in` with the clock accounting path
-    // (15-clock-timer.md) — see 10-switch-to-user.md §4.5.
+    // # I-6① resolution (2026-09-09): C also accumulates `kernel_ticks[cpu]`
+    // and `p->p_cycles` here (arch_clock.c:231-232). `kernel_ticks[cpu]`
+    // (glo.h:86) is deliberately NOT wired — a whole-C-tree grep shows no
+    // reader anywhere (declare-only in glo.h, accumulate-only in
+    // arch_clock.c), so wiring it would be write-only state (the D-34
+    // standard). `p_cycles` IS observable (GET_PROC, misc.rs) and the
+    // KERNEL-branch delta is accumulated below.
     let tsc = crate::clock::read_tsc();
     let kernel = table
         .get_mut(proc_nr::KERNEL)
         .expect("idle: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
+    // C: arch_clock.c:232 — `p->p_cycles += tmp` for the KERNEL branch.
+    if tsc_delta > 0 {
+        table
+            .get_mut(proc_nr::KERNEL)
+            .expect("idle: KERNEL pseudo-process slot must exist")
+            .p_cycles
+            .add_cycles(tsc_delta);
+    }
     // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
     // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
     if tsc_delta > 0 {
