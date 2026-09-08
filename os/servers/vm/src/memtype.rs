@@ -31,6 +31,14 @@ pub(crate) trait MemType {
     }
 
     // C NULL → skip cleanup. Default no-op: framework releases resources.
+    // NOTE (G-V12-7): C's `shared_delete` decrements the *source* region's
+    // `remaps` across the process table. In minix-rs that step cannot live
+    // here: the deletion funnels hold an `ActiveProc`/`ExitingProc` (an
+    // exclusive `&mut VmProc`) for the slot being torn down, so a memtype
+    // hook has no legal mutable path into the table cell (and the source
+    // may be that very slot — self-remap). The decrement lives in
+    // `region::release_shared_remap`, invoked by the deletion funnels; see
+    // 12-memtype.md §shared for the deviation note.
     fn ev_delete(&self, _region: &mut crate::region::VirRegion) {}
 
     // C NULL → skip reference. PageFrames manages refcount in PFN model, default no-op.

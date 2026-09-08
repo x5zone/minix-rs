@@ -59,9 +59,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 不做大规模 errno 重构；`From<模块错误> for VmError` 集中表即最优。V12 新发现两处残余并入本条跟踪：`vir_region.rs:428` 第二个同名 `VmError`（单变体 `InvalidParam`）与 `CacheError`/`VfsQueueError` 无 errno 收敛路径（dispatcher.rs:1664/:1812 直接外泄 `VfsQueueError`）。复核 ✅ 2026-09-09（两处锚点均在）。
 
-### G-V12-7（P1）`SharedMemory` 无 `ev_delete` 覆写：源区域 `remaps` 永不递减
+### ✅ G-V12-7（P1）`SharedMemory` 无 `ev_delete` 覆写：源区域 `remaps` 永不递减——已修复 2026-09-09（§18.9 Fix #64）
 
-复核 ✅ 2026-09-09：`memtype.rs:34` 默认 `ev_delete` 为空实现；memtype.rs:1178 的非空 `ev_delete` 属于 **MappedFile**（清 fdref），SharedMemory 仍走默认空实现。全仓 `remaps` 写点仅 fork 复制（fork.rs:102）与递增（vmproc/table.rs:481 一带）。修复方案与验证（remap → shm_unmap → GET_REF 回 1 往返测试）见 V12 存档 §17.1.2。
+复核 ✅ 2026-09-09：`memtype.rs:34` 默认 `ev_delete` 为空实现；memtype.rs:1178 的非空 `ev_delete` 属于 **MappedFile**（清 fdref），SharedMemory 仍走默认空实现。全仓 `remaps` 写点仅 fork 复制（fork.rs:102）与递增（vmproc/table.rs:481 一带）。修复见 §18.9 Fix #64（落点设计变更：递减由删除漏斗承担而非 ev_delete，理由见 12-memtype.md §3.7）。
 
 ### G-V12-9（P1-design-missing）VM inhibit 机制无实现
 
@@ -284,7 +284,7 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 
 ### 18.8 建议的推进顺序
 
-1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）——剩余通电前语义修正：G-V12-7、V12-P1-1；
+1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）——剩余通电前语义修正：V12-P1-1；
 2. V13-P2-1(a)(b) 文档/注释批（不变量登记 + ARCH 偏差行 + 死内核面注释）——纯文档，可先行；
 3. V12-P2 批按 V12 存档原顺序（4→8→9→5→6→3→1→2→7），V13-P2-3（ACL 闸形状）与 P2-4（MAKE_VM 登记）插入 P2-5 前后；
 4. V13-P2-2 / P2-5 / P2-6 随 edge E-RSWIRE 批次执行（勿提前单做，wire 定稿一次对齐）；
@@ -294,6 +294,16 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 ---
 
 ### 18.9 修复记录（2026-09-09 起，逐条执行的 todo-fix campaign）
+
+### ✅ Fix #64: G-V12-7 — 共享重映射删除时源区域 `remaps` 递减（`release_shared_remap` + region id 计数器）
+
+- **问题**：共享重映射区域被删除时，源区域的 `remaps` 永不递减（C `shared_delete`，mem_shared.c:110-123）。`remaps` 支撑两个可观察行为——`anon_writable` 的 `remaps > 0` 恒可写分支与 GET_REF 的 `1 + remaps`——因此每次 shm unmap 后源的引用计数报告永久虚高。连带发现：`VirRegion::new` 的 id 恒 0（C 是 `region.c:445` 的全局计数器），使 `getsrc` 的 id 校验形同虚设。
+- **设计（方案对比）**：A（否决）——`ev_delete` 增加 `&VmProcTable` 参数、逻辑住 memtype（C 同构）。否决原因非风格而是借用安全：删除漏斗持有被拆进程的 `ActiveProc`/`ExitingProc`（独占 `&mut VmProc`），自重映射形态下 memtype 钩子对表槽位的任何可变访问都与该句柄别名冲突。B（选定）——递减提到删除漏斗旁：`region::release_shared_remap` 复刻 `getsrc` 校验链后按源位置分路（同进程走手中 RegionMap、跨进程走 `table.decrement_region_remaps`，后者 SAFETY 契约要求非在持槽位）。C（否决）——延迟批量结算：引入两阶段状态，复杂度不值。
+- **Files**: `region/mod.rs`（`RegionRemapsError` 六变体 + map 级 `decrement_remaps_in` + `release_shared_remap`）、`vmproc/table.rs`（`decrement_region_remaps`，镜像递增侧）、`region/vir_region.rs`（`next_region_id` 计数器 + `shared_source()` 访问器 + split 右半取新 id）、`munmap.rs`（`unmap_range` 整区臂捕获并释放——shared 无 split/low-shrink 支持，中间/头/尾臂本就 EINVAL 不可达）、`exit.rs`（`free_process_phys` 前置释放遍历，两个调用点穿 slot/table）
+- **测试（新增 4）**：`test_release_shared_remap_cross_process`（跨进程递减）、`test_release_shared_remap_self_uses_own_map`（自映射走本进程映射）、`test_release_shared_remap_rejects_mismatches`（id 错位/源缺失/类型变更/下溢/未定义源五分支全部拒绝且源不动）、`test_region_ids_unique_per_new`
+- **Verified**: 三矩阵 **495/512/495 passed**（+5 含 T1 后基线）；clippy servers/vm 0 警告
+- **Docs**: 12-memtype.md §1.6 勘误（`shared_unreference`/`shared_delete` 职责纠正）+ §3.6 偏差行 + 新 §3.7（落点论证）+ §5.1 测试行
+- **边界**：GET_REF 读取路径（query.rs）无需改动——它读的 `1 + remaps` 现在随删除自动回落；`memtype.rs` 的 ev_delete 默认实现注释已指向 12-memtype.md §3.7 的偏差说明
 
 ### ✅ Fix #63: V13-P1-1 — CoW 复用捷径加 `is_page_writable` 门（独占文件页走复制路径，C cow_block 语义）
 

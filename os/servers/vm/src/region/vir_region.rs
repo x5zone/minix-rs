@@ -14,10 +14,29 @@
 //! `get_slot()`.
 
 use super::page_state::{PageFrames, PageSlot, PageFlags, PAGE_SIZE};
-use minix_types::{PhysBytes, VirBytes, UserSlot};
+use minix_types::{AssumeSyncCell, PhysBytes, VirBytes, UserSlot};
 use alloc::vec::Vec;
 use crate::memtype::MemType;
 use crate::phys_mem::PageAllocFlags;
+
+/// Monotonic region id source — C `region.c:445` (`newregion->id = id++`).
+/// Uniqueness is load-bearing for shared memory: a remap records the source
+/// region's `id`, and every `getsrc` use re-validates that the region still
+/// living at the recorded vaddr is the *same* region (mem_shared.c:88-93).
+/// A constant id would make that check vacuous — a freed source's vaddr
+/// reused by an unrelated region would silently pass.
+static NEXT_REGION_ID: AssumeSyncCell<i32> = AssumeSyncCell::new(1);
+
+fn next_region_id() -> i32 {
+    // SAFETY: single-threaded VM server; ids are drawn only from this
+    // event loop (and tests on the same thread).
+    unsafe {
+        let slot = NEXT_REGION_ID.get();
+        let id = *slot;
+        *slot = id.wrapping_add(1);
+        id
+    }
+}
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -113,7 +132,7 @@ impl VirRegion {
             parent_slot: None,
             def_memtype: None,
             remaps: 0,
-            id: 0,
+            id: next_region_id(),
             param: VrParam::default(),
         }
     }
@@ -321,6 +340,21 @@ impl VirRegion {
         }
     }
 
+    /// The `(ep, vaddr, id)` source triple when this region is a shared
+    /// remap — the input C's `shared_delete`/`getsrc` work from
+    /// (mem_shared.c:110-123). `None` for every non-shared region, and for
+    /// shared-typed regions whose param never recorded a source.
+    pub(crate) fn shared_source(&self) -> Option<(i32, VirBytes, i32)> {
+        match self.def_memtype {
+            Some(m) if m.name() == crate::memtype::MEM_TYPE_SHARED.name() => {}
+            _ => return None,
+        }
+        match self.param {
+            VrParam::Shared { ep, vaddr, id } => Some((ep, vaddr, id)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn prepare_cow(&mut self, frames: &mut PageFrames) {
         // Mark all mapped pages with refcount > 1 as COW.
         // This sets the COW flag on the PageState so that
@@ -352,7 +386,11 @@ impl VirRegion {
         left.remaps = self.remaps;
         left.id = self.id;
         right.remaps = self.remaps;
-        right.id = self.id + 1;
+        // The right half is a brand-new region identity: C's split_region
+        // mints a fresh id from the same counter as region creation, not a
+        // derivation from the parent (a `parent + 1` guess can collide with
+        // a later-allocated region).
+        right.id = next_region_id();
 
         match &self.param {
             VrParam::File { inited: true, fdref_id, offset, clearend } => {
@@ -444,6 +482,20 @@ mod tests {
             Ok(pfn)
         }
         fn free_pfn(&mut self, _pfn: u32) {}
+    }
+
+    /// G-V12-7: C mints a fresh id per region (`region.c:445`,
+    /// `newregion->id = id++`); shared-remap `getsrc` validates the recorded
+    /// id against the survivor at the recorded vaddr, which only detects a
+    /// recycled address if ids never repeat.
+    #[test]
+    fn test_region_ids_unique_per_new() {
+        let a = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        let b = VirRegion::new(VirBytes(0x2000), VirBytes(0x1000), VrFlags::empty());
+        let c = VirRegion::new(VirBytes(0x3000), VirBytes(0x1000), VrFlags::empty());
+        assert_ne!(a.id, b.id);
+        assert_ne!(b.id, c.id);
+        assert_ne!(a.id, c.id);
     }
 
     fn make_frames(pages: u32) -> PageFrames {

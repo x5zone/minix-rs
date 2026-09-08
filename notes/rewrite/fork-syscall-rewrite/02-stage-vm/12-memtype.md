@@ -106,7 +106,7 @@ remap 创建的多进程共享：
 
 - **递归缺页**：`shared_pagefault`（:122）——从 `vr->param.shared`（ep/vaddr/id）定位源进程区域，递归调用源区域的 ev_pagefault（共享语义 = 源页的别名）；源不可达返回 EINVAL。
 - **源设置**：`shared_setsource`（:167）——设置 `param.shared.{ep, vaddr, id}`；零 ep/vaddr/id 忽略（防御）。
-- **引用管理**：`shared_unreference`（:49）——源区域的 remaps 递减；`shared_delete`（:110）——区域删除时对源 `shared_unreference`；`shared_refcount`（:207）——`1 + remaps`。
+- **源释放**（勘误 2026-09-09）：`shared_unreference`（:49）是**页级**回调、只委托 `mem_type_anon.ev_unreference`（共享页的释放语义与 anon 相同），**不做** remaps 递减；真正递减源区域 `remaps` 的是区域级 `shared_delete`（:110-123）——经 `getsrc`（:62-98，六步校验：类型、参数齐全、端点可解析、源区域存在、源为 anon 类型、id 匹配）后 `assert(remaps > 0)` 并 `src_region->remaps--`。早期文档把两者写成调用关系，与 C 原文不符。`remaps` 支撑两个可观察行为：`anon_writable` 的 `remaps > 0` 恒可写分支（mem_anon.c:105-113）与 `shared_refcount` 的 `1 + remaps`（:207）。
 - **复制**：`shared_copy`（:194）——复制 param.shared + `shared_setsource(newvr, ...)` 重新登记。
 
 ### 1.7 连续匿名内存（mem_type_anon_contig，mem_anon_contig.c:24）
@@ -367,6 +367,20 @@ C 的 ev_pagefault 用返回值（OK/ENOMEM/...）+"已分配"副作用表达结
 | ev_unreference 参数 | phys_region* | pfn（PFN 模型） | ARCH |
 | ContiguousAnonymous 连续分配 | alloc_mem 连续段 | TODO（memtype.rs:696，依赖 alloc_contiguous） | **未完成面** |
 | writable 判定 | refcount==1 + remaps | 同语义 | 一致 |
+| `shared_delete` 的源递减 | 区域级 ev_delete 内做 `getsrc` + `remaps--` | 删除漏斗的 `release_shared_remap`（region/mod.rs）承担——见 §3.7 | ARCH（G-V12-7） |
+
+### 3.7 D7：`shared_delete` 的落点——为什么源递减不在 `ev_delete` 里（G-V12-7）
+
+把"删掉一个共享重映射时，源区域的 `remaps` 必须递减"翻译成 Rust，第一直觉是塞进 `SharedMemory::ev_delete`——C 就是这么放的（mem_shared.c:110-123）。但这在 minix-rs 的所有权模型下行不通，原因不是风格而是**借用安全**：删除漏斗（munmap 的 `unmap_range`、exit 的 `free_process_phys`）手里握着被拆除进程的 `ActiveProc`/`ExitingProc`——一个对 `VmProc` 的独占 `&mut`。源递减要改写进程表另一个槽位里的区域，而槽位内容只能通过 `AssumeSyncCell` 的裸指针访问；安全契约（`decrement_region_remaps` 的 SAFETY 注释）要求该槽位**没有任何在持句柄**。共享重映射偏偏有一种合法形态让源和删除方是**同一个进程**（进程可以 remap 自己的区域）——memtype 钩子在这种形态下无论如何拿不到合法的可变访问。
+
+所以递减被提到删除漏斗旁：`region::release_shared_remap(param, own_slot, own_regions, table)`。它完整复刻 `getsrc` 的校验链（参数齐全 → 端点可解析 → 源区域存在 → 仍是 anon 类型 → id 匹配），然后按源的位置分路——源在被拆除进程自己的区域映射里就走 `own_regions`（那次 `&mut` 本来就活着），跨进程才走表（此刻必然是不同槽位，契约满足）。每一处校验失败都对应 C `getsrc` 的一行 printf，Rust 侧换成 `audit_log!`；C 的 `assert(remaps > 0)` 降级为带检查的下溢错误（V9-P0-1：IPC 边界不 panic）。id 匹配这一步依赖区域 id 的唯一性——C 用 `region.c:445` 的全局计数器（`newregion->id = id++`），Rust 的 `VirRegion::new` 此前恒写 0，使 id 校验形同虚设，本轮一并补上了计数器（`next_region_id`，split 的右半也从计数器取新 id，替代原先 `parent + 1` 的碰撞隐患）。
+
+| 测试 | 位置 | 契约 |
+|------|------|------|
+| `test_release_shared_remap_cross_process` | region/mod.rs | 跨进程删除 → 源 `remaps` 减一 |
+| `test_release_shared_remap_self_uses_own_map` | region/mod.rs | 自重映射删除 → 经本进程映射递减 |
+| `test_release_shared_remap_rejects_mismatches` | region/mod.rs | id 错位/源缺失/类型变更/下溢/未定义源 → 拒绝且源不动 |
+| `test_region_ids_unique_per_new` | region/vir_region.rs | 每个新区域 id 唯一（getsrc id 校验的前提） |
 
 ---
 

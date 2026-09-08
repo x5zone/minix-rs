@@ -5,7 +5,7 @@
 //!
 //! Corresponds to Minix3's `do_exit()` and `do_willexit()` in `exit.c`.
 
-use minix_types::Endpoint;
+use minix_types::{Endpoint, UserSlot};
 use crate::vmproc::{VmProcTable, EndpointError};
 use crate::region::{RegionMap, PageFrames, PageFlags, PfnAllocator};
 use crate::alloc_page::VmPageAllocator;
@@ -51,7 +51,7 @@ pub(crate) fn handle_vm_exit(
     let mut exiting = table.get_exiting(slot)
         .ok_or(VmExitError::NotExiting)?;
 
-    free_process_phys(exiting.regions_mut(), frames, page_alloc, vfs_queue, endpoint);
+    free_process_phys(exiting.regions_mut(), frames, page_alloc, vfs_queue, endpoint, slot, table);
 
     // SAFETY: Single-threaded VM ensures no concurrent access to this slot.
     // reap() restores the VmProc slot to vacant state (empty typestate).
@@ -102,7 +102,27 @@ fn free_process_phys(
     page_alloc: &mut VmPageAllocator,
     vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     owner: Endpoint,
+    own_slot: UserSlot,
+    table: &VmProcTable,
 ) {
+    // G-V12-7: release shared remaps up front — a deleted shared region must
+    // decrement its source's `remaps` (C `shared_delete`, mem_shared.c:
+    // 110-123, which map_free runs from the per-region ev_delete). The
+    // source may live in this very process (self-remap) or in another one;
+    // `release_shared_remap` routes each case to the legal mutable handle.
+    let shared_sources = regions
+        .iter()
+        .filter_map(|r| r.shared_source())
+        .collect::<alloc::vec::Vec<_>>();
+    for src in &shared_sources {
+        crate::region::release_shared_remap(
+            &crate::region::VrParam::Shared { ep: src.0, vaddr: src.1, id: src.2 },
+            own_slot,
+            regions,
+            table,
+        );
+    }
+
     for region in regions.iter_mut() {
         // Capture the fdref id before ev_delete clears it, mirroring the
         // munmap path (`free_region_pages`, region/mod.rs): fdref balance is
@@ -196,7 +216,7 @@ pub(crate) fn handle_procctl_clear(
 
     // Step 1: Free physical pages for all regions.
     // C: free_proc(vmp) → map_free_proc(vmp)
-    free_process_phys(proc.regions_mut(), frames, page_alloc, vfs_queue, endpoint);
+    free_process_phys(proc.regions_mut(), frames, page_alloc, vfs_queue, endpoint, slot, table);
 
     // Step 2: Clear region map + reset usage stats.
     // C: free_proc → region_init(&vmp->vm_regions_avl) +

@@ -484,6 +484,37 @@ impl VmProcTable {
             Err(())
         }
     }
+
+    /// Decrement the source region's `remaps` when a shared remap of it is
+    /// deleted — the increment half's counterpart (C `shared_delete`,
+    /// mem_shared.c:110-123, `src_region->remaps--`). The identity checks
+    /// and the decrement itself live in [`crate::region::decrement_remaps_in`];
+    /// this wrapper only resolves the slot to its region map.
+    ///
+    /// SAFETY contract: `slot` must not be the slot of any currently-held
+    /// `ActiveProc`/`ExitingProc` — the raw cell access would alias the
+    /// handle's exclusive `&mut VmProc`. Deletion funnels honor this by
+    /// routing same-slot (self-remap) sources through the doomed process's
+    /// own region map instead (see [`crate::region::release_shared_remap`]).
+    pub(crate) fn decrement_region_remaps(
+        &self,
+        slot: UserSlot,
+        addr: VirBytes,
+        expected_id: i32,
+    ) -> Result<(), crate::region::RegionRemapsError> {
+        // SAFETY: same slot-access pattern as `increment_region_remaps` —
+        // a different slot than any held ActiveProc, single-threaded VM.
+        let proc = unsafe { &mut *self.slots[slot.get()].get() };
+        if !proc.vm_flags.contains(VmFlags::IN_USE) {
+            return Err(crate::region::RegionRemapsError::SourceProcessGone);
+        }
+        if !proc.vm_regions_initialized {
+            return Err(crate::region::RegionRemapsError::RegionsNotInitialized);
+        }
+        // SAFETY: vm_regions_initialized is true.
+        let regions = unsafe { proc.vm_regions.assume_init_mut() };
+        crate::region::decrement_remaps_in(regions, addr, expected_id)
+    }
 }
 
 /// Iterator over the process table.

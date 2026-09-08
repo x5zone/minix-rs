@@ -12,8 +12,9 @@ pub(crate) use page_state::{PageFrames, PageSlot, PageFlags, PAGE_SIZE, PfnAlloc
 pub(crate) use region_map::RegionMap;
 
 use crate::alloc_page::VmPageAllocator;
+use crate::memtype::MemType;
 use crate::pagetable::Paging;
-use minix_types::{Endpoint, VirBytes};
+use minix_types::{Endpoint, UserSlot, VirBytes};
 
 /// Free all pages in a region, unmapping them from the page table and
 /// releasing physical frames.
@@ -84,6 +85,109 @@ pub(crate) fn free_region_pages(
                 );
             }
         }
+    }
+}
+
+/// Why a shared-remap release can be refused — one variant per C `getsrc`
+/// failure branch (mem_shared.c:62-98), so the audit log can say exactly
+/// which invariant broke instead of a bare errno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegionRemapsError {
+    /// Source endpoint no longer resolves to an in-use process.
+    SourceProcessGone,
+    /// Source process exists but its region table was never initialized.
+    RegionsNotInitialized,
+    /// No region lives at the recorded source vaddr.
+    SourceRegionMissing,
+    /// The region at the vaddr is no longer anon typed (re-typed, or the
+    /// original source was freed and a non-anon mapping took the address).
+    SourceNotAnon,
+    /// Region id mismatch — the original source was freed and its vaddr
+    /// recycled by a different region (why region ids are unique,
+    /// C `region.c:445`).
+    IdMismatch,
+    /// More shared remaps were deleted than were made (C
+    /// `assert(src_region->remaps > 0)`, demoted to a checked error —
+    /// no panics at the IPC boundary, V9-P0-1).
+    Underflow,
+}
+
+/// Validate and decrement the source region's `remaps` inside one process's
+/// region map — the map-level core behind both release paths. The checks
+/// mirror C `getsrc`'s tail (mem_shared.c:84-98): the region at `addr` must
+/// exist, still be anon typed, and still carry `expected_id`; the `remaps`
+/// underflow check replaces C's `assert`.
+pub(crate) fn decrement_remaps_in(
+    regions: &mut RegionMap,
+    addr: VirBytes,
+    expected_id: i32,
+) -> Result<(), RegionRemapsError> {
+    let Some(region) = regions.get_mut(&addr) else {
+        return Err(RegionRemapsError::SourceRegionMissing);
+    };
+    // Shared remaps are only ever taken of anon regions, so a re-typed
+    // survivor at the same vaddr is a mismatch, not a decrement target.
+    if region.def_memtype.map(|m| m.name()) != Some(crate::memtype::MEM_TYPE_ANON.name()) {
+        return Err(RegionRemapsError::SourceNotAnon);
+    }
+    if region.id != expected_id {
+        return Err(RegionRemapsError::IdMismatch);
+    }
+    if region.remaps <= 0 {
+        return Err(RegionRemapsError::Underflow);
+    }
+    region.remaps -= 1;
+    Ok(())
+}
+
+/// Release one deleted shared-remap region's claim on its source: re-validate
+/// the source identity (C `getsrc`) and decrement the source's `remaps`
+/// (C `shared_delete`, mem_shared.c:110-123).
+///
+/// Why this lives beside the deletion funnels instead of in
+/// `MemType::ev_delete`: the funnels hold an `ActiveProc`/`ExitingProc` — an
+/// exclusive `&mut VmProc` — for the slot being torn down, so a memtype hook
+/// has no legal mutable path into the table cell. The source may even be the
+/// very slot being torn down (a process can remap its own region); that case
+/// goes through `own_regions`, the doomed process's own map, while only
+/// genuinely cross-process sources reach the table — always from a slot
+/// other than the held handle's, which is exactly what
+/// `VmProcTable::decrement_region_remaps`' safety contract demands.
+///
+/// `remaps` feeds two observable behaviors — the source stays writable while
+/// a remap holds (`anon_writable`, mem_anon.c:105-113) and GET_REF reports
+/// `1 + remaps` (mem_shared.c:207-209) — which is why a missed decrement is
+/// semantic drift and not just stale bookkeeping (G-V12-7: before this
+/// existed, every shm unmap inflated the source's refcount report forever).
+pub(crate) fn release_shared_remap(
+    param: &VrParam,
+    own_slot: UserSlot,
+    own_regions: &mut RegionMap,
+    table: &crate::vmproc::VmProcTable,
+) {
+    let VrParam::Shared { ep, vaddr, id } = *param else {
+        return;
+    };
+    if ep == 0 || vaddr.0 == 0 {
+        // C getsrc: "shared region has not defined source region."
+        audit_log!("[VM shared] release: source not defined (ep={ep})");
+        return;
+    }
+    let Ok(src_slot) = table.vm_isokendpt(Endpoint(ep)) else {
+        // C getsrc: "shared memory with missing source process."
+        audit_log!("[VM shared] release: source process gone (ep={ep})");
+        return;
+    };
+    let outcome = if src_slot == own_slot {
+        decrement_remaps_in(own_regions, vaddr, id)
+    } else {
+        table.decrement_region_remaps(src_slot, vaddr, id)
+    };
+    if let Err(e) = outcome {
+        audit_log!("[VM shared] release: source remaps left untouched: {e:?}");
+        // The audit macro compiles out without the `vm_acl_audit` feature;
+        // touch the binding so the no-audit build stays warning-free.
+        let _ = &e;
     }
 }
 
@@ -291,5 +395,145 @@ mod tests {
         let result = map_pin_memory(&mut regions, &mut frames, &mut alloc, &mut pt);
         // No CoW pages to resolve, so pinning succeeds.
         assert!(result.is_ok());
+    }
+
+    // --- G-V12-7: shared-remap release (`release_shared_remap`) — C
+    // `shared_delete`'s source `remaps--` with its `getsrc` validation. ---
+
+    /// Spin up an in-use slot with an initialized region map, mirroring the
+    /// dispatcher tests' harness (`init_test_slots`).
+    fn init_process(slot: UserSlot) -> Endpoint {
+        let table = crate::vmproc::VmProcTable::get_global();
+        unsafe { table.reset_slot(slot); }
+        let empty = table.get_empty(slot).unwrap();
+        let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+        let mut active = empty.activate(ep);
+        active.init_regions();
+        active.endpoint()
+    }
+
+    fn install_source_region(slot: UserSlot, remaps: i32, def_memtype: &'static dyn MemType)
+        -> (VirBytes, i32)
+    {
+        let table = crate::vmproc::VmProcTable::get_global();
+        let mut proc = table.get_active(slot).expect("source process active");
+        let mut src = VirRegion::new(VirBytes(0x2000_0000), VirBytes(PAGE_SIZE as u64), VrFlags::WRITABLE);
+        src.def_memtype = Some(def_memtype);
+        src.remaps = remaps;
+        let vaddr = src.vaddr;
+        let id = src.id;
+        proc.regions_mut().insert(src).unwrap();
+        (vaddr, id)
+    }
+
+    fn source_remaps(slot: UserSlot, vaddr: VirBytes) -> Option<i32> {
+        let table = crate::vmproc::VmProcTable::get_global();
+        let mut proc = table.get_active(slot)?;
+        proc.regions_mut().get_mut(&vaddr).map(|r| r.remaps)
+    }
+
+    /// Cross-process release: the deleter's own map is NOT the source's, so
+    /// the decrement must land in the source process's table entry.
+    #[test]
+    fn test_release_shared_remap_cross_process() {
+        let src_slot = UserSlot::new(80);
+        let dst_slot = UserSlot::new(81);
+        let src_ep = init_process(src_slot);
+        init_process(dst_slot);
+        let (vaddr, id) = install_source_region(src_slot, 2, &crate::memtype::MEM_TYPE_ANON);
+
+        let mut deleter_map = RegionMap::new();
+        release_shared_remap(
+            &VrParam::Shared { ep: src_ep.0, vaddr, id },
+            dst_slot,
+            &mut deleter_map,
+            crate::vmproc::VmProcTable::get_global(),
+        );
+
+        assert_eq!(source_remaps(src_slot, vaddr), Some(1),
+            "cross-process release must decrement the source's remaps");
+    }
+
+    /// Self-remap release: the source lives in the deleting process's own
+    /// map — the table cell is off-limits (an ActiveProc for that slot would
+    /// alias it), so the decrement goes through `own_regions`.
+    #[test]
+    fn test_release_shared_remap_self_uses_own_map() {
+        let slot = UserSlot::new(82);
+        let ep = init_process(slot);
+        let (vaddr, id) = install_source_region(slot, 1, &crate::memtype::MEM_TYPE_ANON);
+
+        let table = crate::vmproc::VmProcTable::get_global();
+        let mut proc = table.get_active(slot).expect("deleter active");
+        release_shared_remap(
+            &VrParam::Shared { ep: ep.0, vaddr, id },
+            slot,
+            proc.regions_mut(),
+            table,
+        );
+
+        assert_eq!(source_remaps(slot, vaddr), Some(0),
+            "self-remap release must decrement through the process's own map");
+    }
+
+    /// Each `getsrc` mismatch refuses the decrement and leaves the source
+    /// untouched (C `shared_delete` returns early the same way) — wrong id,
+    /// missing vaddr, re-typed source, exhausted remaps, undefined source.
+    #[test]
+    fn test_release_shared_remap_rejects_mismatches() {
+        let src_slot = UserSlot::new(83);
+        let dst_slot = UserSlot::new(84);
+        let src_ep = init_process(src_slot);
+        init_process(dst_slot);
+        let (vaddr, id) = install_source_region(src_slot, 2, &crate::memtype::MEM_TYPE_ANON);
+        let mut deleter_map = RegionMap::new();
+        let table = crate::vmproc::VmProcTable::get_global();
+
+        // (a) id mismatch — the source was freed and the vaddr recycled.
+        release_shared_remap(
+            &VrParam::Shared { ep: src_ep.0, vaddr, id: id + 1 },
+            dst_slot, &mut deleter_map, table,
+        );
+        assert_eq!(source_remaps(src_slot, vaddr), Some(2), "id mismatch must refuse");
+
+        // (b) no region at the recorded vaddr.
+        release_shared_remap(
+            &VrParam::Shared { ep: src_ep.0, vaddr: VirBytes(0x3000_0000), id },
+            dst_slot, &mut deleter_map, table,
+        );
+        assert_eq!(source_remaps(src_slot, vaddr), Some(2), "missing vaddr must refuse");
+
+        // (c) survivor at the vaddr is no longer anon typed.
+        let table2 = crate::vmproc::VmProcTable::get_global();
+        {
+            let mut proc = table2.get_active(src_slot).unwrap();
+            proc.regions_mut().get_mut(&vaddr).unwrap().def_memtype =
+                Some(&crate::memtype::MEM_TYPE_DIRECT);
+        }
+        release_shared_remap(
+            &VrParam::Shared { ep: src_ep.0, vaddr, id },
+            dst_slot, &mut deleter_map, table,
+        );
+        assert_eq!(source_remaps(src_slot, vaddr), Some(2), "non-anon source must refuse");
+
+        // (d) remaps already zero — underflow refused.
+        {
+            let mut proc = table2.get_active(src_slot).unwrap();
+            let r = proc.regions_mut().get_mut(&vaddr).unwrap();
+            r.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
+            r.remaps = 0;
+        }
+        release_shared_remap(
+            &VrParam::Shared { ep: src_ep.0, vaddr, id },
+            dst_slot, &mut deleter_map, table,
+        );
+        assert_eq!(source_remaps(src_slot, vaddr), Some(0), "underflow must refuse (no wrap)");
+
+        // (e) undefined source triple — no endpoint lookup at all.
+        release_shared_remap(
+            &VrParam::Shared { ep: 0, vaddr: VirBytes(0), id },
+            dst_slot, &mut deleter_map, table,
+        );
+        assert_eq!(source_remaps(src_slot, vaddr), Some(0), "undefined source must no-op");
     }
 }

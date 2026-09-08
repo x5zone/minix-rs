@@ -180,6 +180,8 @@ pub(crate) fn unmap_range(
     length: VirBytes,
 ) -> Result<(), MunmapError> {
     let owner = active.endpoint();
+    let own_slot = active.slot();
+    let table = crate::vmproc::VmProcTable::get_global();
     let unmap_start = addr;
     let unmap_end = VirBytes(addr.0 + length.0);
     // C: map_unmap_range rejects a wrapping range (region.c:1234
@@ -211,10 +213,25 @@ pub(crate) fn unmap_range(
 
             if unmap_start <= reg_start && unmap_end >= reg_end {
                 // Whole region falls inside the unmap range.
+                // G-V12-7: capture the shared source before the region is
+                // torn down — C `shared_delete` (mem_shared.c:110-123)
+                // decrements the source's `remaps` on deletion. Only this
+                // arm can fire for shared regions: the middle/head/tail
+                // splits below are gated on memtype split/low-shrink
+                // support, which shared memory lacks.
+                let shared_src = region.shared_source();
                 let freed_len = region.length;
                 {
                     let pt = Some(active.page_table_mut());
                     crate::region::free_region_pages(region, pt, frames, page_alloc, vfs_queue, owner);
+                }
+                if let Some(src) = shared_src {
+                    crate::region::release_shared_remap(
+                        &crate::region::VrParam::Shared { ep: src.0, vaddr: src.1, id: src.2 },
+                        own_slot,
+                        active.regions_mut(),
+                        table,
+                    );
                 }
                 active.sub_total(VirBytes(freed_len.0));
             } else if unmap_start > reg_start && unmap_end < reg_end {
