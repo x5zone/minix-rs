@@ -35,21 +35,14 @@ impl RsServer {
                 .flags
                 .contains(live_update::RupdateFlags::INITIALIZING);
 
-        // C: request.c:922-924 — walk to the next preparer before the
-        // decision consumes the answer as `has_next`; the prepare requests
-        // it issues are the 19 asynsend seam (noop, do_period convention).
-        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
-        let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
-        let has_next = state
-            .update
-            .start_update_prepare_next(
-                &mut state.table,
-                &mut live_update::PrepareEffects {
-                    request_prepare: &mut noop_req,
-                    vm_prepare: &mut noop_vm,
-                },
-            )
-            .is_some();
+        // C: request.c:917-930 — the *mutating* walk runs only after the
+        // gate passed AND result == OK. The decision's `has_next` input is
+        // the walk's own answer, so it is taken as a pure peek
+        // ([`UpdateState::peek_next`] shares the target rule with the walk)
+        // instead of running the walk eagerly — an eager walk would advance
+        // `curr` and arm RS_UPDATING even on the EINVAL / PrepareFailed
+        // paths C leaves untouched (R35).
+        let has_next = state.update.peek_next().is_some();
 
         let decision = crate::ready::do_upd_ready(result, gate_ok, has_next);
         if let Some(curr) = gate_curr {
@@ -58,11 +51,12 @@ impl RsServer {
         }
 
         match decision.outcome {
-            // Gate failed — request.c:910 (`return EINVAL`).
+            // Gate failed — request.c:910 (`return EINVAL`); no walk, no
+            // chain state change.
             crate::ready::UpdReadyOutcome::Unexpected => Err(Errno::EINVAL),
             crate::ready::UpdReadyOutcome::PrepareFailed { result } => {
                 // request.c:917-922 — end the update; the old version keeps
-                // running and is replied to (RS_REPLY).
+                // running and is replied to (RS_REPLY). C never walks here.
                 let ticks = self.kernel.get_ticks().unwrap_or(0);
                 let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
@@ -79,12 +73,34 @@ impl RsServer {
                 );
                 Ok(minix_types::EDONTREPLY)
             }
-            // request.c:930-932 — the next preparer was asked; reply deferred.
-            crate::ready::UpdReadyOutcome::NextPrepare => Ok(minix_types::EDONTREPLY),
+            // request.c:930-932 — the walk dispatches the next preparer and
+            // the reply is deferred. The peek above guarantees the walk
+            // dispatches (its `None` bail precedes every mutation, so
+            // `has_next == true` implies a `Some` return).
+            crate::ready::UpdReadyOutcome::NextPrepare => {
+                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+                let walked = state.update.start_update_prepare_next(
+                    &mut state.table,
+                    &mut live_update::PrepareEffects {
+                        request_prepare: &mut noop_req,
+                        vm_prepare: &mut noop_vm,
+                    },
+                );
+                debug_assert!(
+                    walked.is_some(),
+                    "peek_next said Some; the walk must dispatch the same target"
+                );
+                let _ = walked;
+                Ok(minix_types::EDONTREPLY)
+            }
             crate::ready::UpdReadyOutcome::StartUpdate => {
                 // request.c:934-935 — perform the update and request each new
                 // instance to initialize; the VM-update/init faces are the 19
-                // seam (noop here, do_period convention).
+                // seam (noop here, do_period convention). C's walk already
+                // ran and returned NULL (zero mutations — update.c:470-472),
+                // so going straight to start_update is the same observable
+                // sequence.
                 let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
                 let mut noop_update =
                     |_: crate::service_slot::SlotId,

@@ -1249,6 +1249,47 @@ impl UpdateState {
         self.chain.vm.is_some() && self.chain.len() > 1
     }
 
+    /// The descriptor index the next prepare walk would dispatch first.
+    ///
+    /// C: the target-selection head of `start_update_prepare_next`
+    /// (update.c:470-477) — `first` before the update started, `curr → next`
+    /// once updating. `None` (chain exhausted) is the only walk outcome that
+    /// carries zero state change: C bails before the VM pre-stage, the
+    /// `RS_UPDATING` write and the dispatch loop, and this helper shares that
+    /// rule with [`UpdateState::peek_next`] so the walk and its pure
+    /// pre-read can never disagree (R35).
+    fn next_prepare_target(&self) -> Option<usize> {
+        if self.flags.contains(RupdateFlags::UPDATING) {
+            self.chain.curr.and_then(|c| self.chain.entries[c].next)
+        } else {
+            self.chain.first
+        }
+    }
+
+    /// Pure pre-read of [`UpdateState::start_update_prepare_next`]: which
+    /// service would the walk ask to prepare, if it ran now?
+    ///
+    /// C: `do_upd_ready` (request.c:903-924) only reaches
+    /// `start_update_prepare_next()` after the gate passed and `result ==
+    /// OK` — a gate rejection or a failed prepare must leave the chain
+    /// untouched. Feeding the pure decision (ready::do_upd_ready) therefore
+    /// requires *peeking* the walk's answer, not running it. The peek
+    /// replays the walk's dispatch loop without its mutations (no
+    /// `RS_UPDATING` write, no `curr` advance, no effects), so
+    /// `peek_next().is_some()` is exactly "the walk would dispatch and
+    /// return `Some`".
+    pub fn peek_next(&self) -> Option<SlotId> {
+        let mut idx = self.next_prepare_target()?;
+        loop {
+            let e = &self.chain.entries[idx];
+            if !e.is_preparing_only() || e.next.is_none() {
+                break;
+            }
+            idx = e.next.unwrap();
+        }
+        Some(self.chain.entries[idx].slot)
+    }
+
     /// Requests the next service in the update chain to prepare.
     ///
     /// C: `start_update_prepare_next` — update.c:467-527. Walks `curr →
@@ -1258,18 +1299,14 @@ impl UpdateState {
     /// phase write), then dispatches `request_prepare_update_service` per
     /// descriptor, skipping prepare-only ones (update.c:516-525). Returns
     /// the slot whose prepare was requested, or `None` when the chain is
-    /// exhausted.
+    /// exhausted — in which case nothing below the target selection ran,
+    /// exactly as in C (update.c:470-472).
     pub fn start_update_prepare_next(
         &mut self,
         table: &mut crate::process_table::RProcTable,
         prepare: &mut PrepareEffects,
     ) -> Option<SlotId> {
-        let updating = self.flags.contains(RupdateFlags::UPDATING);
-        let mut idx = if !updating {
-            self.chain.first
-        } else {
-            self.chain.curr.and_then(|c| self.chain.entries[c].next)
-        }?;
+        let mut idx = self.next_prepare_target()?;
 
         // VM-multi pre-stage (update.c:489-515): all services except VM (and
         // prepare-only ones) ask VM to prepare their new instances.
@@ -2343,5 +2380,53 @@ mod r23c_tests {
         // Script path returns before any clone.
         assert!(!table.get(rp).flags.contains(RFlags::EXITING));
         assert!(k.calls.is_empty());
+    }
+
+    #[test]
+    fn test_peek_next_matches_walk_targets() {
+        // R35: the pure pre-read must answer exactly "which slot would
+        // start_update_prepare_next dispatch" — the target rule is shared
+        // (`next_prepare_target`), the skip loop is replayed without
+        // mutations.
+        let mut st = UpdateState::default();
+        // Empty chain → None (C update.c:470-472 bails before any write).
+        assert_eq!(st.peek_next(), None);
+        assert!(
+            !st.flags.contains(RupdateFlags::UPDATING),
+            "a peek must never arm RS_UPDATING"
+        );
+
+        // Fresh chain, not yet updating → the first entry.
+        let a = UpdateEntry::new(SlotId::new(0), Endpoint::VFS);
+        let b = UpdateEntry::new(SlotId::new(1), Endpoint::PM);
+        st.chain.add(a);
+        st.chain.add(b);
+        assert_eq!(st.peek_next(), Some(SlotId::new(0)));
+
+        // Updating with curr on entry 0 → the next entry.
+        st.flags.insert(RupdateFlags::UPDATING);
+        st.chain.curr = Some(0);
+        assert_eq!(st.peek_next(), Some(SlotId::new(1)));
+
+        // Exhausted (curr on the last entry) → None.
+        st.chain.curr = Some(1);
+        assert_eq!(st.peek_next(), None);
+    }
+
+    #[test]
+    fn test_peek_next_skips_prepare_only_entries() {
+        // The walk dispatches prepare-only descriptors and keeps going
+        // (update.c:516-525); the peek's return is the walk's — the LAST
+        // dispatched slot, i.e. the first non-prepare-only entry.
+        let mut st = UpdateState::default();
+        let mut b = UpdateEntry::new(SlotId::new(1), Endpoint::PM);
+        b.lu_flags |= LuFlags::PREPARE_ONLY;
+        st.chain
+            .add(UpdateEntry::new(SlotId::new(0), Endpoint::VFS));
+        st.chain.add(b);
+        st.chain.add(UpdateEntry::new(SlotId::new(2), Endpoint::DS));
+        st.flags.insert(RupdateFlags::UPDATING);
+        st.chain.curr = Some(0);
+        assert_eq!(st.peek_next(), Some(SlotId::new(2)));
     }
 }

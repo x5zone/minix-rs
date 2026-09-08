@@ -40,13 +40,21 @@ Minix3 的系统服务（VM/PM/VFS/驱动）重启成本高：IPC 引用、内�
 > `end_update(result, RS_REPLY)`（request.c:917-922）/ 下一准备者
 > `start_update_prepare_next`（request.c:922-932）/ 全部就绪 `start_update`
 > （request.c:934-935），编排全部消费 `UpdateState` 既有方法，回调缝按 19 号
-> 约定传 noop。`sef_cb_lu_response` 包装（EDONTREPLY→EGENERIC，main.c:614-626）
+> 约定传 noop。**决策输入与突变执行分离（R35，2026-09-09）**：派发所需的
+> `has_next` 由纯窥视 `UpdateState::peek_next` 提供（与走链共享目标选择规则
+> `next_prepare_target`，update.c:470-477），带突变的 `start_update_prepare_next`
+> 只在 NextPrepare/StartUpdate 两臂执行——C 的 gate 拒绝与 prepare 失败路径
+> 都不触碰链状态（`None` 早退先于一切写入），急切走链会把 `curr` 推进到
+> 下一个服务并武装 `RS_UPDATING` 且无清理。`sef_cb_lu_response` 包装
+> （EDONTREPLY→EGENERIC，main.c:614-626）
 > 由 `SefCallbacks::lu_response` 承载（18 号自升级路径用）。**`RS_UPDATE` 臂
 > （do_update，request.c:534）压 `rs_start_t` 字节 ABI**——首步即
 > `copy_rs_start`，而 `bitchunk_t`/`uid_t` 本树无 typedef（edge E-RSSTART），
 > 在 dispatch 死表上 fail-closed 等待。`do_upd_ready` 的 ready.rs 三辅助
 > （should_reply_ready/normalize_init_response/normalize_lu_response）在本轮
 > 裁决删除：落地的 wrapper 以内联等价实现承载同样规则（Fix #77）。
+> （后记：E-RSSTART 已关单、RS_UPDATE 臂已 live，见 todo.md §21；本段
+> 历史注记保留原判词以存档。）
 
 ### 1.2 LU 状态机总图（WHAT）
 

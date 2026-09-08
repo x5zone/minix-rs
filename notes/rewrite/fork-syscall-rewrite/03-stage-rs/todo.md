@@ -259,7 +259,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
 ### 6.2 新发现（R35-R42，全部 ☐ 待修）
 
 - **R35（P1-code-bug）— `do_upd_ready_shell` 在 gate 判定前无条件走链，gate 失败路径污染
-  LU 链状态**
+  LU 链状态** ✅ 已修（2026-09-09，见 §22.7 Fix #91）
   - C 证据：request.c:890-938 的顺序是 ①gate（`!rpupd || rp != rpupd->rp ||
     RUPDATE_IS_INITIALIZING()`）不过 → 直接 `return EINVAL`（零状态变更）；②
     `rp->r_flags |= RS_PREPARE_DONE`；③`result != OK` → `end_update(result, RS_REPLY)`
@@ -401,13 +401,50 @@ E-MINSYS-HYGIENE 一句话条目）。
 
 ### 6.5 修复优先级路线（供 todo-fix 排队）
 
-1. **R35**（P1，1 轮）：peek/walk 分离 + gate 失败链状态负断言测试；
+1. ~~**R35**（P1，1 轮）：peek/walk 分离 + gate 失败链状态负断言测试~~ ✅ Fix #91；
 2. **R36**（P1，1 轮）：do_period 补 update_period 臂 + 超时回滚测试 + 删陈旧注释；
 3. **R37**（P2，1-2 轮）：get_ticks 失败策略定型（? 传播 / expect 分点）+ 测试；
 4. **R38 + R39**（P2，可并 1 轮）：doc 19 §3.3 后记 + semantic-map 双回填；
 5. R40 随 1/2 顺带；R41/R42 记录不动作。
    修复遵循 fix-guard.md（读目标行 ±5、grep 确认、单条修复、修后验证 + 本节标注）；
    每轮完成后 `cargo test -p minix-rs -p minix-types` + clippy/fmt + T7 门。
+
+### 6.7 §22 修复记录（2026-09-09 起，迭代协议同 §18.9）
+
+> 每轮一项：讲明白 → ≥2 方案对比（Linux/Redox/OS 理论/Rust 社区）→ 测试先行实施 →
+> 文档同步 → 全门验证（test/clippy/fmt/T7）→ 回归 review（git diff 全量走查）→ 本节
+> 标注 → commit。
+
+### ✅ Fix #91 — R35（P1）：`do_upd_ready_shell` peek/walk 分离，gate 失败不再污染链状态
+
+- **File**：`os/servers/rs/src/live_update.rs`（新增私有 `next_prepare_target`——
+  walk 与 peek 共享的目标选择规则，update.c:470-477；新增纯 `peek_next`——
+  无突变地重放派发循环；`start_update_prepare_next` 头部改用共享助手，`None`
+  早退语义不变）、`os/servers/rs/src/shell_update.rs`（`do_upd_ready_shell`
+  重排：peek 喂决策 → mutations.apply → 四分支按 C 顺序执行效果；NextPrepare
+  臂 `debug_assert!(walked.is_some())` 编码"peek ⇒ walk 必派发"）、
+  `16-rs-live-update.md`（接线注记补 R35 设计说明）；todo.md 翻态
+- **Before**：`has_next` 由带突变的 `start_update_prepare_next` 急切求值——gate 失败
+  （EINVAL）与 prepare 失败两条 C 零突变的路径都会推进 `chain.curr`、武装
+  `RS_UPDATING`、（19 后）向下一服务误发 prepare。
+- **After**：方案对比——a) 纯 peek 与 walk 共享目标规则（选定：`next_prepare_target`
+  单一真相，peek 重放 preparing-only 跳过循环保证返回值与 walk 严格一致）vs
+  b) 决策函数收 `&UpdateChain` 自行窥视（破坏 ready.rs 纯函数面，拒绝）vs c) 壳层
+  内联 C 式分支（放弃 R13 决策-载荷模式，与 A4 判定冲突，拒绝）。C 侧等价性依据：
+  `start_update_prepare_next` 仅在目标选择早退（update.c:470-472）返回 NULL，彼时
+  零突变；peek-None ⇔ walk-None-零突变，StartUpdate 臂直接 `start_update` 与 C 的
+  可观察序列一致。
+- **Tests**（+4，327→331）：`test_peek_next_matches_walk_targets`（空链 None 不武装
+  UPDATING / 新链 peek 首 / updating peek next / 尽头 None）、
+  `test_peek_next_skips_prepare_only_entries`（peek 返回最后被派发的槽——跳过
+  preparing-only）、`test_do_upd_ready_gate_failure_leaves_chain_untouched`（错误
+  sender + INITIALIZING 两路 gate 拒绝后 `curr`/flags 不变——旧实现此测试失败）、
+  `test_do_upd_ready_walks_two_entry_chain_to_start_update`（双链：首报告走链推进
+  curr=1、PREPARE_DONE 归报告者；次报告 peek None → start_update）。
+- **Verified**：`cargo test -p minix-rs` = **331 passed**（+4）；clippy rs crate 零告警；
+  fmt 干净；`tools/check-rs-unwired.sh` PASS。回归 review（git diff 走查）确认：
+  walk 体其余逻辑（VM-multi 预阶段、UPDATING 写点、派发循环）零改动；`end_update`
+  的 ESRCH/`start_update_prepare` 路径（do_update 的 `mem::take` 段）未触碰。
 
 ### 6.6 Step 5.7 Rule Discovery
 

@@ -2287,6 +2287,158 @@ mod signal_handler_tests {
         );
     }
 
+    /// Schedules a two-entry chain (slot 0 = VFS, slot 1 = PM) and walks it
+    /// to `curr = entry 0` with `RS_UPDATING` armed — the state a batch
+    /// RS_UPDATE leaves behind while the first service is preparing. Both
+    /// slots get a cloned replica (`new_rp`), which start_update requires
+    /// (update.c:631).
+    fn two_entry_chain(server: &mut RsServer) {
+        let mut table = &mut server.state.as_mut().unwrap().table;
+        let id_pm = {
+            let pid = table.alloc_slot().unwrap();
+            let s = table.get_mut(pid);
+            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+            s.pub_.in_use = true;
+            s.pub_.endpoint = Endpoint::PM;
+            s.cmd[..7].copy_from_slice(b"/bin/pm");
+            pid
+        };
+        let vfs = crate::service_slot::SlotId::new(0);
+        let replica_vfs = crate::service_create::clone_slot(table, vfs).unwrap();
+        let replica_pm = crate::service_create::clone_slot(table, id_pm).unwrap();
+        table.get_mut(vfs).new_rp = Some(replica_vfs);
+        table.get_mut(id_pm).new_rp = Some(replica_pm);
+        let state = server.state.as_mut().unwrap();
+        state
+            .update
+            .chain
+            .add(crate::live_update::UpdateEntry::new(vfs, Endpoint::VFS));
+        state
+            .update
+            .chain
+            .add(crate::live_update::UpdateEntry::new(id_pm, Endpoint::PM));
+        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+        let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+        let mut noop_abort = |_: i32| {};
+        let mut noop_end = |_: i32| {};
+        state
+            .update
+            .start_update_prepare(
+                &mut state.table,
+                true,
+                true,
+                &mut noop_abort,
+                &mut noop_end,
+                &mut crate::live_update::PrepareEffects {
+                    request_prepare: &mut noop_req,
+                    vm_prepare: &mut noop_vm,
+                },
+            )
+            .expect("prepare schedules the first entry");
+    }
+
+    #[test]
+    fn test_do_upd_ready_gate_failure_leaves_chain_untouched() {
+        // R35 negative: a gate rejection must not advance the chain. C
+        // returns EINVAL before touching rupdate state (request.c:903-910);
+        // an eager walk here would move `curr` to the second entry and arm
+        // RS_UPDATING with no cleanup, letting a later forged report pass
+        // the gate against the wrong service.
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        two_entry_chain(&mut server);
+        let before = {
+            let state = server.state.as_ref().unwrap();
+            (state.update.chain.curr(), state.update.flags)
+        };
+
+        // Wrong sender: curr expects VFS, PM reports → EINVAL.
+        let mut wrong = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::RS_LU_PREPARE,
+            m_u: Default::default(),
+        };
+        assert_eq!(server.do_upd_ready_shell(&wrong), Err(Errno::EINVAL));
+        wrong.m_source = Endpoint::VFS;
+        // Right sender but the update is initializing → also gated.
+        server
+            .state
+            .as_mut()
+            .unwrap()
+            .update
+            .flags
+            .insert(crate::live_update::RupdateFlags::INITIALIZING);
+        assert_eq!(server.do_upd_ready_shell(&wrong), Err(Errno::EINVAL));
+
+        let state = server.state.as_ref().unwrap();
+        assert_eq!(
+            state.update.chain.curr(),
+            before.0,
+            "gate failures leave curr pointing at the reporting entry"
+        );
+        assert!(
+            state
+                .update
+                .flags
+                .contains(crate::live_update::RupdateFlags::INITIALIZING),
+            "the gate flag survives: no end_update ran to clear it"
+        );
+        let after_flags = state.update.flags & !crate::live_update::RupdateFlags::INITIALIZING;
+        assert_eq!(
+            after_flags, before.1,
+            "no phase flag changed beyond the test's own INITIALIZING write"
+        );
+    }
+
+    #[test]
+    fn test_do_upd_ready_walks_two_entry_chain_to_start_update() {
+        // R35: the NextPrepare arm runs the real walk after the decision —
+        // `curr` advances to the second entry (which receives the prepare
+        // request via the 19 seam), and the second report drives start_update.
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        two_entry_chain(&mut server);
+        let mut ready_vfs = minix_types::Message {
+            m_source: Endpoint::VFS,
+            m_type: minix_types::RS_LU_PREPARE,
+            m_u: Default::default(),
+        };
+
+        // First report → walk dispatches entry 1, reply deferred.
+        assert_eq!(
+            server.do_upd_ready_shell(&ready_vfs),
+            Ok(minix_types::EDONTREPLY)
+        );
+        {
+            let state = server.state.as_ref().unwrap();
+            assert_eq!(state.update.chain.curr(), Some(1), "the walk advanced");
+            let vfs_slot = state.update.chain.get(0).slot;
+            assert!(
+                state
+                    .table
+                    .get(vfs_slot)
+                    .flags
+                    .contains(RFlags::PREPARE_DONE),
+                "PREPARE_DONE belongs to the reporter (request.c:911)"
+            );
+        }
+
+        // Second report → exhausted chain (peek None) → start_update.
+        ready_vfs.m_source = Endpoint::PM;
+        assert_eq!(
+            server.do_upd_ready_shell(&ready_vfs),
+            Ok(minix_types::EDONTREPLY)
+        );
+        let state = server.state.as_ref().unwrap();
+        let pm_slot = state.update.chain.get(1).slot;
+        assert!(
+            state
+                .table
+                .get(pm_slot)
+                .flags
+                .contains(RFlags::PREPARE_DONE),
+            "the second reporter carries PREPARE_DONE too"
+        );
+    }
+
     #[test]
     #[should_panic(expected = "run() requires a completed fresh boot")]
     fn test_run_requires_completed_boot() {
