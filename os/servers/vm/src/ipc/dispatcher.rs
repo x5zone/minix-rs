@@ -2556,6 +2556,75 @@ mod tests {
         }
     }
 
+    /// V12-P2-6 regression: a cache MISS on page k>0 must roll back the
+    /// pages already linked by the same request — each frame's refcount
+    /// returns to the cache-only baseline (IN_CACHE keeps the cached pages
+    /// out of the free funnel during the unwind). C do_mapcache performs
+    /// the same whole-region rollback (`map_unmap_region` + ENOENT,
+    /// mem_cache.c:155-157) — the rollback is C-parity, not a Rust wart;
+    /// this test pins the refcount symmetry V12 asked for.
+    #[test]
+    fn test_dispatch_mapcache_mid_failure_rolls_back_refcounts() {
+        let table = default_table();
+        let page_alloc = default_vm();
+
+        // Caller: an active slot with an empty region map, so the mmap
+        // window is entirely free for the 3-page region.
+        let caller_slot = UserSlot::new(85);
+        unsafe { table.reset_slot(caller_slot); }
+        let empty = table.get_empty(caller_slot).unwrap();
+        let caller_ep = Endpoint::from_generation_slot(1, 85);
+        let mut caller = empty.activate(caller_ep);
+        caller.init_regions();
+        drop(caller);
+
+        let mut frames = default_frames();
+        let mut cache = _default_cache();
+        // Cache hits for pages 0 and 1; page 2 (dev_offset 0x2000) misses.
+        cache.addcache(1, 0, Some(7), 0, false, 0, &mut frames).unwrap();
+        cache.addcache(1, 0x1000, Some(7), 0x1000, false, 1, &mut frames).unwrap();
+        // Baseline: the cache's own reference on each linked frame.
+        assert_eq!(frames.get(0).unwrap().refcount, 1);
+        assert_eq!(frames.get(1).unwrap().refcount, 1);
+
+        let req = VmCacheIn {
+            dev: 1,
+            dev_offset: 0,
+            ino: 7,
+            ino_offset: 0,
+            pages: 3,
+            flags: 0,
+            block: 0,
+        };
+        let mut ctx = crate::vm_server::VmContext {
+            proc_table: table,
+            gateway: test_gateway(),
+            page_alloc,
+            page_frames: Some(frames),
+            page_cache: cache,
+            vfs_queue: crate::vfs_queue::VfsRequestQueue::new(),
+            kernel_allocated: crate::boot::KernelAllocated::ZERO,
+            vm_allocated_bytes: 0,
+            pagefault_errors: 0,
+            dropped_messages: 0,
+            #[cfg(feature = "sanity_checks")] sanity_ticks: 0,
+        };
+        match MessageDispatcher::dispatch_mapcache(&mut ctx, caller_ep, req) {
+            VmReply::Error(VmError::NotFound) => {}
+            other => panic!("dispatch_mapcache(miss on page 2) must return NotFound, got {:?}", other),
+        }
+
+        // Rollback symmetry: both early links unwound, frames back to the
+        // cache-only baseline (not freed — IN_CACHE).
+        let frames = ctx.page_frames.as_mut().unwrap();
+        assert_eq!(frames.get(0).unwrap().refcount, 1, "page-0 link must roll back");
+        assert_eq!(frames.get(1).unwrap().refcount, 1, "page-1 link must roll back");
+        assert!(frames.get(0).unwrap().is_cached());
+        assert!(frames.get(1).unwrap().is_cached());
+
+        unsafe { table.reset_slot(caller_slot); }
+    }
+
     // ── VM_RS_MEMCTL sub-request decode (25-P0-1 regression) ─────
 
     #[test]

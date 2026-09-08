@@ -307,6 +307,7 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 | 7 | **`find_cached_page_bypfn` 移除** | 旧双键模型的 `pfn_index` 反索引是 C 没有的发明（checklist F-039a）；单键模型下无消费者 |
 | 8 | **`_MINIX_MAGIC` 分支不实现** | mem_cache.c:119-128/:135-137 的插桩预留（分配 1 页洞）仅编译宏启用；Rust 不实现（注释说明） |
 | 9 | **`cache_sanitycheck_internal` 跳过** | `CACHE_SANITY=0`（vm.h:9）编译宏；Rust 用单测覆盖等价不变量 |
+| 10 | **mapcache 区域先建后插 + 失败整区回滚** | C 在调用者映射表内建区（`map_page_region`），失败 `map_unmap_region` 整区回滚（mem_cache.c:155-157/:165-166）；Rust 先在表外组装区域、提交时插入，失败只需 `unmap_region_pages` 退引用计数（缓存的帧受 IN_CACHE 保护不进回收漏斗）——回滚语义 C-parity， unwind 面更小（区域从未进调用者页表）。中途失败注入测试 `test_dispatch_mapcache_mid_failure_rolls_back_refcounts` 定格 refcount 对称性（V12-P2-6） |
 
 ### 3.7 D6：alloc_cycle 补充体（cache_freepages 接线）
 

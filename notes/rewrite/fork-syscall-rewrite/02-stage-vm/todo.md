@@ -102,9 +102,9 @@ V12 原表（重校后逐项处置见 §18.9 Fix #70）：
 
 复核 ✅ 2026-09-09：`VmContext.proc_table: &'static VmProcTable` 本身就是全局的别名——"双路径"是**语法不一致而非双真相源**；且原锚点（rs.rs 六处）全部位于 `#[cfg(test)]` 区，生产路径早已走 ctx。生产区 `get_global` 残留仅 vm_server.rs boot 路径三处（已统一为 `self.ctx.proc_table`）与 munmap.rs 漏斗一处（T2 有意例外）。page_frames 双处置为生命周期阶段差异，两者各自正确。判定详情见 §18.9 Fix #73。
 
-### V12-P2-6（P2）mapcache 失败回滚顺序与 C 相反
+### ✅ V12-P2-6（P2）mapcache 失败回滚顺序与 C 相反——已勘误收尾 2026-09-09（§18.9 Fix #74）
 
-复核 ✅（重锚点）：仍先逐页映射后插 cache 索引、失败手工 `unmap_region_pages` 回滚（dispatcher.rs:522/:546），C 是先链接再映射天然免回滚（mem_cache.c:141-163）。方案见 V12 存档。
+复核 ✅：V12 的前提不成立——C 的 do_mapcache 在 miss 时**同样** `map_unmap_region` 整区回滚（mem_cache.c:155-157），两侧顺序同构（区域先建 → 逐页链接 → 失败回滚）。Rust 的"表外组装、提交时插入"回滚面反而更小。真实价值 = V12 建议的中途失败注入测试，已补（`test_dispatch_mapcache_mid_failure_rolls_back_refcounts`，refcount 对称性定格）。勘误与差异表见 24-page-cache.md §3.6 第 10 行、§18.9 Fix #74。
 
 ### V12-P2-7（P2）`ContiguousAnonymous::ev_new` 质量债
 
@@ -403,6 +403,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `vm_server.rs`（三处语法统一，零行为变更）
 - **测试**：无新增；`cargo test -p minix-vm --lib` → 500 passed 回归
 - **边界**：munmap.rs 漏斗的 get_global 是 T2 设计的一部分（缺表则共享释放无法路由），勿当漂移清除
+
+### ✅ Fix #74: V12-P2-6 — mapcache 回滚勘误 + 中途失败注入测试
+
+- **勘误**：V12 称"C 先查 cache/注册再 map_pf，失败天然无需回滚"不成立——C do_mapcache 同样是"区域先建（map_page_region，:131-134）→ 逐页 find+链接 → 失败 map_unmap_region 整区回滚"（miss :155-157、map_pf 败 :165-166）。两侧顺序同构；V12 把"回滚代码的存在"误读成了"顺序相反"。
+- **真实差异（更优）**：Rust 区域在调用者映射表**外**组装、提交时插入——失败回滚只退 refcount（缓存帧受 IN_CACHE 保护不进回收漏斗），无需回退 PTE（区域从未进页表）。
+- **Files**: `ipc/dispatcher.rs`（新增测试，零生产代码变更）
+- **测试（新增 1）**：`test_dispatch_mapcache_mid_failure_rolls_back_refcounts`——3 页请求、前 2 页命中链接、第 3 页 miss → ENOENT；断言两帧 refcount 回到 cache-only 基线且 IN_CACHE 保持
+- **Verified**: 三矩阵 **501/519/501 passed**（+1）；clippy servers/vm 0 警告
+- **Docs**: 24-page-cache.md §3.6 新增第 10 行（回滚语义 C-parity + unwind 面更小）
 
 ---
 
