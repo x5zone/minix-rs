@@ -45,7 +45,7 @@ bsp_finish_booting (lib.rs:1948)
   ├─ Step 4:   for nr < NR_BOOT_PROCS-NR_TASKS
   │             rts_unset(nr, PROC_STOP)          (C: main.c:64-66)
   ├─ Step 5:   cycles_accounting —— BSP TSC 基线 (C: main.c:71)
-  ├─ Step 6:   boot_cpu_init_timer —— 幂等重设   (C: main.c:73-76)
+  ├─ Step 6:   boot_cpu_init_timer —— 编程+注册+开门 (C: main.c:73-76；D-59 后为唯一定时器硬件触点)
   ├─ Step 7:   fpu_presence = true               (C: main.c:78)
   ├─ Step 8:   kernel_may_alloc = 0              (C: main.c:105)
   ├─ Step 8.5: 获取 BKL（RAII guard mem::forget）(C: BKL_LOCK() — main.c:149，main() 中早于本函数)
@@ -56,7 +56,7 @@ bsp_finish_booting (lib.rs:1948)
 - Step 0 与 C 同位同序——`cpu_identify()` 是 C `bsp_finish_booting` 的第一条语句（main.c:45），Rust `smp::cpu_identify()` 同样置于 Step 1 之前；此时仅 BSP 单核运行，写入全局 `CPU_INFO` 无并发（AP 路径见 §4.6）
 - Step 4 范围 `nr < NR_BOOT_PROCS - NR_TASKS`——故意排除 kernel task（永不作为运行实体被调度，见 [06 §1.4](06-proc-init-boot-proc.md)）
 - Step 5 必须先于 Step 6——TSC 基线在 timer 初始化之前建立（C `main.c:71` 注："First reset the CPU accounting values, as the timer initialization (indirectly) uses them"）
-- Step 6 是幂等重设：硬件 timer 已在 Phase B（`init_clock_and_interrupts`）初始化，此处经平台描述符重建 clock arch 实例再调 `init_timer`（x86 重写同一 PIT 模式字节；aarch64/riscv64 重写已运行的比较器，无副作用）；BSP timer IRQ handler 注册延迟到 IrqManager 全局化之后（[05 §4.7.2](05-clock-interrupt-init.md)）
+- Step 6 是定时器硬件的唯一触点（D-59，2026-09-09）：Phase B（`init_clock_and_interrupts`）纯软件——C `init_clock`（clock.c:48-66）即纯软件；此处按 C `boot_cpu_init_timer`（clock.c:294）三段执行——`init_timer` 只编程（x86 PIT / aarch64 `CNTP_CVAL` 且保持 `CNTP_CTL=Enable=0,IMASK=1` / riscv64 `mtimecmp` 不碰 `sie.STIE`）→ `register_hook` 挂 `minix_plat::TIMER_IRQ`（首 handler 触发 C parity 的自动 unmask，interrupt.c:65）→ `<CurrentTimerIrqGate>::enable_timer_irq()` 开模块本地门（aarch64 `CNTP_CTL=1` / riscv64 `sie.STIE` / x86 no-op，`[ARCH: gate-semantics]`，[05 §3.7 D-59 解决记录](05-clock-interrupt-init.md)）
 - Step 8 关闭分配窗口后，内核不得再直接分配物理内存（§1.4 规则 2）
 - Step 9 永不返回——内核从此进入五阶段调度循环（[10 §4](10-switch-to-user.md)：选进程 → 杂项标志 → 量子检查 → 终局分派，无就绪进程则 idle）
 - C 的 krandom / cpu_set_flag 两步差异见 §4.6"与 C 12 步的差异说明"表
@@ -843,32 +843,26 @@ fn bsp_finish_booting(
         bsp_local.note_context_switch(tsc);
     }
 
-    // Step 6: boot_cpu_init_timer — start the periodic tick
-    // C: boot_cpu_init_timer(system_hz) — clock.c:294.
-    // (a) `init_local_timer(freq)` was already done in Phase B via
-    //     `CurrentClockArch::init_timer(DEFAULT_HZ)`.
-    // (b) Timer IRQ handler registration is deferred to the real
-    //     interrupt-dispatch path (`IrqManager::register_hook`, Step 1.5.7).
-    //     The deleted `ArchBoot::register_timer_handler` was a mock
-    //     placeholder with no readers — see 05-clock-interrupt-init.md §4.7.1.
-    // Behavior change (05-clock-interrupt-init.md §3.7): with `boot_init_timer`
-    // gone, `enable_timer_irq` is no longer called. aarch64/riscv64 are
-    // unchanged — `init_timer` above writes the same enable (CNTP_CTL_EL0
-    // Enable=1/IMASK=0, sie.STIE=1), so the timer is live with no handler
-    // yet; only x86_64 differs (LAPIC LVT Timer Mask stays 1, while the PIT
-    // remains the boot clock source). Step 1.5.7's core is the IRQ-chain
-    // registration (`IrqManager::register_hook`); x86_64 additionally calls
-    // `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()` if the
-    // LAPIC LVT timer becomes the clock source.
+    // Step 6: boot_cpu_init_timer — program, register, then open the gates
+    // C: boot_cpu_init_timer(system_hz) — clock.c:294. Since D-59 this is
+    // the ONLY place the boot timer's hardware is touched:
+    // (a) `init_timer` programs the source only (PIT divisor on x86_64;
+    //     CNTP_CVAL with CNTP_CTL kept Enable=0/IMASK=1 on aarch64;
+    //     mtimecmp without touching sie.STIE on riscv64);
+    // (b) `register_hook` installs the handler under `minix_plat::TIMER_IRQ`
+    //     and — C parity, interrupt.c:65 — unmasks the controller-side
+    //     delivery line on the first handler;
+    // (c) `<CurrentTimerIrqGate>::enable_timer_irq()` opens the
+    //     module-local gate (CNTP_CTL Enable / sie.STIE / no-op on x86_64,
+    //     `[ARCH: gate-semantics]`).
+    // See 05-clock-interrupt-init.md §3.7 "D-59 解决记录".
     // Instance-based design (04-platform-discovery.md §3.4): construct a
     // transient clock arch instance from the global platform descriptor.
-    use minix_arch::{ClockArch, CurrentClockArch};
+    use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
     use minix_platform::{platform_desc, PlatformDesc};
-    {
-        let pd = platform_desc();
-        let mut clock_arch = CurrentClockArch::new(pd.timer());
-        clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
-    }
+    let pd = platform_desc();
+    let mut clock_arch = CurrentClockArch::new(pd.timer());
+    clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
 
     // Step 7: FPU presence probe
     let bsp_id = smp_state.bsp_cpu_id();

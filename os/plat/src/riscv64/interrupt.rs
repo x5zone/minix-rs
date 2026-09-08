@@ -27,6 +27,18 @@ const PLIC_CLAIM: usize = 0x200004;
 /// reading claims an interrupt, writing completes it.
 const PLIC_COMPLETE: usize = PLIC_CLAIM;
 
+/// The boot clock source's dispatch identity: pseudo-vector 0.
+///
+/// The S-mode timer is a CPU-local interrupt — it fires when `mtime`
+/// crosses `mtimecmp` and is gated by `sie.STIE`; it never crosses the
+/// PLIC, so it has no controller source number. Vector 0 is reserved as
+/// the timer's dispatch identity (the future trap entry maps
+/// `scause == SupervisorTimer` to it), and the PLIC mask/unmask paths
+/// already treat vector 0 as "no controller line" — a reserved pseudo
+/// vector, not an accident. The module-local gate lives in
+/// `TimerIrqGate` (`sie.STIE`).
+pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
+
 /// RISC-V 64-bit PLIC interrupt controller.
 ///
 /// # Fields
@@ -177,5 +189,16 @@ mod tests {
         // clamp bounds MMIO access to the supported IRQ source count.
         assert_eq!(ic.nr_irqs, NR_IRQ_VECTORS);
         assert_eq!(ic.plic_base(), 0x0C00_0000);
+    }
+
+    #[test]
+    fn test_timer_irq_is_the_reserved_pseudo_vector() {
+        // D-59: the S-mode timer never crosses the PLIC (it is a CPU-local
+        // interrupt gated by sie.STIE), so its dispatch identity is the
+        // reserved pseudo-vector 0 — the same value the PLIC mask/unmask
+        // paths special-case as "no controller line". If the constant ever
+        // moves off 0, the trap-entry mapping (scause SupervisorTimer →
+        // vector) and the PLIC special case must move with it.
+        assert_eq!(TIMER_IRQ.get(), 0);
     }
 }

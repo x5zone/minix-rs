@@ -17,6 +17,20 @@ use minix_platform::arch::aarch64::Gicv3Desc;
 
 use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
 
+/// The boot clock source's IRQ vector: the EL1 non-secure physical timer
+/// (CNTP — the bank that `CNTP_CTL_EL0` controls at EL1) is PPI INTID 30.
+///
+/// GIC PPI assignment: INTID 30 is CNTPNSIRQ (non-secure physical timer);
+/// 29 is the *secure* EL1 timer (CNTPSIRQ) and 27 the virtual timer
+/// (CNTVIRQ). QEMU virt assigns the non-secure timer device-tree PPI 14,
+/// which lands on INTID 14 + 16 (PPI base) = 30 — matching the GIC
+/// recommendation. Delivery is gated twice: the PPI enable bit lives in
+/// `GICR_ISENABLER0` bit 30 (controller-side gate, unmasked by the
+/// first-handler rule in `IrqManager`), and the timer module's own
+/// `CNTP_CTL_EL0.Enable` (module-local gate, opened by
+/// `TimerIrqGate::enable_timer_irq`).
+pub const TIMER_IRQ: IrqVector = IrqVector::new(30);
+
 /// GICD_CTLR: Distributor Control Register.
 const GICD_CTLR: usize = 0x0000;
 /// GICD_CTLR.EnableGrp1NS bit.
@@ -228,4 +242,16 @@ mod tests {
     //   语义，不是项目代码。无价值。
     //
     // 保留 `test_new_from_gicv3_descriptor`（验证 new() 正确填充字段）。
+
+    #[test]
+    fn test_timer_irq_is_the_ns_physical_timer_ppi() {
+        // D-59: the boot clock source (CNTP at EL1, non-secure) is PPI
+        // INTID 30. This pin carries the GIC PPI assignment fact — if the
+        // constant is ever changed, the change must cite the timer bank
+        // actually used by `ArmGenericTimerDesc` / `CNTP_CTL_EL0`, not
+        // just a different number. It also documents that 30 < 32, so the
+        // controller-side gate goes through GICR (PPI path), not GICD.
+        assert_eq!(TIMER_IRQ.get(), 30);
+        assert!(TIMER_IRQ.get() < 32);
+    }
 }

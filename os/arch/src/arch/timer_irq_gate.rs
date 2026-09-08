@@ -34,22 +34,30 @@
 //! - riscv64: no Minix3 port ([ARCH: K-2]); RISC-V Privileged Spec 1.12 §4.1.3
 //!   (Supervisor Interrupt Registers, `sie.STIE` bit 5).
 //!
-//! # Three-architecture coverage (FIX-22, Phase 2 → TimerIrqGate)
+//! # Three-architecture coverage (FIX-22, Phase 2 → TimerIrqGate; semantics
+//! refined by D-59, 2026-09-09 `[ARCH: gate-semantics]`)
 //!
-//! `enable_timer_irq` / `disable_timer_irq` differ genuinely across the three
-//! architectures (x86 LAPIC LVT Timer mask, ARM CNTP_CTL_EL0, RISC-V sie.STIE),
-//! so they stay in a trait — this is the architecture capability boundary:
+//! `enable_timer_irq` / `disable_timer_irq` open and close the *module-local*
+//! gate of the current boot clock source. The gate genuinely differs across
+//! the three architectures, so they stay in a trait — this is the
+//! architecture capability boundary:
 //!
-//! | Method | x86-64 | ARM64 | RISC-V |
-//! |--------|--------|-------|--------|
-//! | `enable_timer_irq` | LAPIC LVT Timer Mask = 0 (+ SVR Enable; SVR/LVT responsibility split, see doc §4.7.1) | CNTP_CTL_EL0 Enable=1, IMASK=0 + `isb` | `csrs sie` STIE bit 5 |
-//! | `disable_timer_irq` | LAPIC LVT Timer Mask = 1 | CNTP_CTL_EL0 Enable=0, IMASK=1 + `isb` | `csrc sie` STIE bit 5 |
+//! | Boot clock source | Module-local gate | `enable_timer_irq` |
+//! |--------|--------|-------|
+//! | x86-64: 8254 PIT | **none** — the delivery gate is the IOAPIC IRQ 0 line, unmasked by `IrqManager`'s first-handler rule (interrupt.c:65) | no-op (the LAPIC LVT Timer gate belongs to the *future* LAPIC timer source and must not be opened while the PIT is the source) |
+//! | aarch64: CNTP | `CNTP_CTL_EL0` Enable/IMASK + `isb` | Enable=1, IMASK=0 + `isb` |
+//! | riscv64: CLINT mtimecmp | `sie.STIE` (bit 5) | `csrs sie` STIE |
+//!
+//! `disable_timer_irq` mirrors each enable. The controller-side delivery
+//! gate (IOAPIC redtbl / GICR_ISENABLER0 bit 30 / — none for the RISC-V
+//! local timer) is *not* this trait's job: it lives behind
+//! `IrqManager::register_hook`'s C-parity unmask, driven by
+//! `minix_plat::TIMER_IRQ`.
 //!
 //! Timer handler *registration* is intentionally NOT part of this trait:
 //! the old `ArchBoot::register_timer_handler` was a mock placeholder with no
 //! readers (trap entry reads nothing from it; real dispatch goes through
-//! `IrqManager::register_hook`). It is deferred until a real hardware binding
-//! exists. See 05-clock-interrupt-init.md §4.7.2 for the context.
+//! `IrqManager::register_hook`). See 05-clock-interrupt-init.md §4.7.2.
 
 /// Open/close the timer IRQ delivery gate: the paired hardware operations.
 ///
@@ -64,11 +72,15 @@ pub trait TimerIrqGate: Sized {
     ///
     /// # Invariant (call timing)
     ///
-    /// Must be called after the interrupt controller is initialized
-    /// (`InterruptController::init`, Phase B of `init_clock_and_interrupts`):
-    /// on x86-64 the LAPIC must be globally enabled (IA32_APIC_BASE bit 11),
-    /// on aarch64 the GIC delivery path must be established. See
-    /// 05-clock-interrupt-init.md §3.7 "调用时序约束".
+    /// Must be called after the boot clock source is programmed
+    /// (`ClockArch::init_timer`, bsp_finish_booting Step 6) AND after the
+    /// timer hook is registered (`IrqManager::register_hook` under
+    /// `minix_plat::TIMER_IRQ`) — the C order inside
+    /// `boot_cpu_init_timer` (clock.c:294: `init_local_timer` then
+    /// `register_local_timer_handler`, whose `put_irq_handler` caller rule
+    /// enables the line). Opening the gate before the handler exists
+    /// leaves a live interrupt source with nothing to serve it (the
+    /// pre-D-59 defect). See 05-clock-interrupt-init.md §3.7.
     fn enable_timer_irq();
 
     /// Mask the timer IRQ.

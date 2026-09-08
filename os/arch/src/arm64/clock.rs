@@ -65,8 +65,17 @@ impl ClockArch for AArch64ClockArch {
         unsafe {
             // Set the compare value for the EL1 physical timer
             core::arch::asm!("msr cntp_cval_el0, {}", in(reg) compare);
-            // Enable the timer (bit 0 = ENABLE)
-            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
+            // Program the timer module but leave it gated:
+            // CNTP_CTL_EL0 = 0b10 (Enable=0, IMASK=1). Opening this gate is
+            // `TimerIrqGate::enable_timer_irq`'s job, done at the C
+            // `boot_cpu_init_timer` position (bsp_finish_booting Step 6)
+            // AFTER the handler is registered — not here. Arming + opening
+            // in one step (the pre-D-59 behavior) left the timer live
+            // through the rest of boot with no handler attached.
+            // C parity: init_local_timer only programs the source; the
+            // enable is register_local_timer_handler's `enable_irq`
+            // (arch_clock.c:177-196 / interrupt.c:65).
+            core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0x2u64);
         }
     }
 

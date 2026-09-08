@@ -42,6 +42,40 @@ pub use interrupt::{
 };
 pub use port_io::PortIo;
 
+/// The IRQ vector that carries the boot clock source's interrupt, on the
+/// current architecture's interrupt-controller numbering.
+///
+/// The boot clock source is registered with `IrqManager::register_hook`
+/// under this vector (`bsp_finish_booting` Step 6, the C
+/// `boot_cpu_init_timer` position, clock.c:294); the controller-side
+/// delivery gate (the IRQ line) is unmasked there by the C-parity
+/// "unmask on first handler" rule (interrupt.c:65).
+///
+/// Per-architecture values and their hardware reasons live next to each
+/// architecture's interrupt controller driver; the cfg selection here is
+/// the sanctioned "define current" pattern (CLAUDE.md hardware-abstraction
+/// rule): it picks a constant, it does not pick behavior.
+///
+/// - x86_64: `0` — the 8254 PIT output is IOAPIC input 0
+///   (C: CLOCK_IRQ = 0, arch/i386).
+/// - aarch64: `30` — the EL1 non-secure physical timer (CNTP, the bank
+///   that `CNTP_CTL_EL0` controls at EL1) is PPI INTID 30 per the GIC PPI
+///   assignment (CNTPNSIRQ); QEMU virt maps it as device-tree PPI 14 with
+///   PPI base 16.
+/// - riscv64: `0` — a pseudo-vector. The S-mode timer is a CPU-local
+///   interrupt (gated by `sie.STIE`, no PLIC source exists); vector 0 is
+///   reserved as its dispatch identity (the future trap entry maps
+///   `scause == SupervisorTimer` here), and the PLIC driver's mask/unmask
+///   treat 0 as "no controller line" by design.
+#[cfg(target_arch = "x86_64")]
+pub const TIMER_IRQ: IrqVector = crate::x86_64::interrupt::TIMER_IRQ;
+#[cfg(target_arch = "aarch64")]
+pub const TIMER_IRQ: IrqVector = crate::arm64::interrupt::TIMER_IRQ;
+#[cfg(target_arch = "riscv64")]
+pub const TIMER_IRQ: IrqVector = crate::riscv64::interrupt::TIMER_IRQ;
+#[cfg(all(feature = "mock", not(target_arch = "x86_64"), not(target_arch = "aarch64"), not(target_arch = "riscv64")))]
+pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
+
 #[cfg(feature = "mock")]
 pub use mock::{MockInterruptController, MockEarlyConsole, MockPortIo};
 

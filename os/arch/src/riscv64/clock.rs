@@ -79,10 +79,15 @@ impl ClockArch for Riscv64ClockArch {
             core::ptr::write_volatile(mtimecmp_addr as *mut u64, mtimecmp);
         }
 
-        // Enable S-mode timer interrupt (STIE bit in sie)
-        unsafe {
-            core::arch::asm!("csrs sie, {bits}", bits = in(reg) 0x20u64);
-        }
+        // Program only — do NOT enable `sie.STIE` here. Opening the
+        // S-mode timer gate is `TimerIrqGate::enable_timer_irq`'s job,
+        // done at the C `boot_cpu_init_timer` position (bsp_finish_booting
+        // Step 6) AFTER the handler is registered. Arming + opening in one
+        // step (the pre-D-59 behavior) left the timer live through the
+        // rest of boot with no handler attached. C parity: init_local_timer
+        // only programs the source; the enable is
+        // register_local_timer_handler's `enable_irq` (arch_clock.c:177-196
+        // / interrupt.c:65) — on RISC-V the analog local gate is STIE.
     }
 
     fn read_ticks(&self) -> u64 {

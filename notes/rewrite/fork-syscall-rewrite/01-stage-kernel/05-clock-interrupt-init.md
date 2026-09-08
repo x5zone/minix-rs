@@ -597,7 +597,7 @@ pub trait ArchInit: Sized + Send + Sync {
 
 这些功能依赖进程表、调度器、SMP 状态，属于后续里程碑（06-proc-init、[11-scheduling-primitives.md](11-scheduling-primitives.md)、[14-exception-interrupt.md](14-exception-interrupt.md) 以及 SMP 文档），所以不在本阶段展开。
 
-**行为变更声明（2026-08-15，V3 P0-1；2026-08-15 复核修正）**：删除 `boot_init_timer`（连同 `ArchBoot` trait、`MockArchBoot` 与三个 `MOCK_*` 全局）后，`enable_timer_irq` 不再被单独调用。**逐架构核对（下表）只有 x86_64 存在真实行为差异**——aarch64/riscv64 的 `ClockArch::init_timer` 写入与旧 `enable_timer_irq` 完全相同的寄存器：
+**行为变更声明（2026-08-15，V3 P0-1；2026-08-15 复核修正；✅ 本节的 P0-1 缺口已由 D-59 于 2026-09-09 修复，修复后状态见下方"D-59 解决记录"，下表保留为修复前的历史核对）**：删除 `boot_init_timer`（连同 `ArchBoot` trait、`MockArchBoot` 与三个 `MOCK_*` 全局）后，`enable_timer_irq` 不再被单独调用。**逐架构核对（下表）只有 x86_64 存在真实行为差异**——aarch64/riscv64 的 `ClockArch::init_timer` 写入与旧 `enable_timer_irq` 完全相同的寄存器：
 
 | 架构 | 旧行为（boot 期间，旧 arch_boot.rs L192-230 / L291-318 / L354-378 的 enable_timer_irq） | 新行为（boot 期间） | 差异？ |
 |------|------------------------------------------------------------------------------------------|---------------------|--------|
@@ -607,9 +607,19 @@ pub trait ArchInit: Sized + Send + Sync {
 
 因此**不是**"boot 期间 timer IRQ 在三个架构全部保持 masked"：aarch64/riscv64 的 timer 在 boot 期间保持 live（与旧行为一致），可触发但尚无 handler。timer IRQ 在 boot 期间的核心动作是 IRQ-chain 注册（`IrqManager::register_hook`）；仅当 x86_64 采用 LAPIC LVT Timer 作为时钟源时才需额外调用 `<CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq()`（骨架见 `os/kernel/src/lib.rs` `bsp_finish_booting` 注释）。
 
-**调用时序约束**：`TimerIrqGate::enable_timer_irq` / `disable_timer_irq` 必须在中断控制器初始化之后调用：
+**D-59 解决记录（2026-09-09）**：上表记录的"aarch64/riscv64 timer 全程 live、且 `enable_timer_irq` 零调用"缺口已修复，新形态与 C 时序逐点对齐：
 
-- **x86_64**：`X86_64InterruptController::init_lapic`（`os/plat/src/x86_64/interrupt.rs` L112-120）设置 IA32_APIC_BASE 全局 enable bit 11 并写 SVR Enable，此后 LAPIC MMIO 才可访问。`bsp_finish_booting`（TimerIrqGate 的唯一调用点）晚于该步骤，LAPIC 必已映射 → 旧 LAPIC-null fallback 删除安全；新实现未映射时 `panic!`（不再写 mock 状态）。
+1. **Phase B 纯软件化**：`init_clock_and_interrupts` 不再调用 `ClockArch::init_timer`（C `init_clock` clock.c:48-66 即纯软件）。硬件定时器的编程、handler 注册、门控打开全部收敛到 `bsp_finish_booting` Step 6——C `boot_cpu_init_timer`（clock.c:294）的位置。
+2. **Step 6 三段序列**（对应 C `(a) init_local_timer → (b) register_local_timer_handler`）：先 `init_timer` 只编程（aarch64 写 `CNTP_CVAL` 后保持 `CNTP_CTL_EL0 = Enable=0/IMASK=1`；riscv64 写 `mtimecmp` 不碰 `sie.STIE`；x86_64 编程 PIT）；再 `IrqManager::register_hook`（挂在 `minix_plat::TIMER_IRQ` 上，首 handler 触发 C parity 的自动 unmask——interrupt.c:65——打开控制器侧交付门）；最后 `<CurrentTimerIrqGate>::enable_timer_irq()` 打开定时器模块本地门。
+3. **`TIMER_IRQ` 按架构定义**（`os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs`，crate 根 cfg 选择）：x86_64 = 0（PIT → IOAPIC 输入 0，C `CLOCK_IRQ`）；aarch64 = 30（CNTP 非安全 PPI，GIC PPI 分配 CNTPNSIRQ，QEMU virt device-tree PPI 14 + 基 16）；riscv64 = 0（伪向量——本地定时器不过 PLIC，向量 0 保留为分发标识，PLIC mask/unmask 对 0 恒 no-op）。
+4. **x86_64 门控语义修正 `[ARCH: gate-semantics]`**：`X86_64TimerIrqGate::enable/disable_timer_irq` 改为文档化 no-op——PIT 没有模块本地门（交付门就是 IOAPIC 线，由第 2 步的 unmask 承担）；旧实现清 LAPIC LVT Timer Mask 是陷阱（LVT 定时器未编程也非时钟源，unmask 它等于打开一个无 handler 的中断源）。LVT 门随未来 LAPIC 时钟源批次回归。
+5. **riscv64 `arch_init` 不再提前开中断**：原 Step 2 的 `csrs sie, 0x22`（STIE+SSIE）删除——STIE 归第 2 步的门控；SSIE 归 SMP IPI bring-up（smp_todo.md S-7/S-10）。
+
+Linux 对照：clockevent 子系统同样把定时器编程（`clockevents_config_and_register`）与 IRQ 使能分离，使能在 late-time 阶段；C Minix3 的"编程+注册相邻且在 boot 最后"是同一原则。
+
+**调用时序约束（D-59 后）**：`TimerIrqGate::enable_timer_irq` 必须晚于同 Step 6 的两步——`ClockArch::init_timer`（编程）与 `IrqManager::register_hook`（handler 注册 + 控制器侧 unmask）。开门早于 handler 注册 = 打开一个无 handler 的活中断源（修复前 aarch64/riscv64 的 boot 期状态）。控制器初始化前置条件不变：
+
+- **x86_64**：当前实现是文档化 no-op（`[ARCH: gate-semantics]`，见解决记录第 4 条），无硬件前置；未来 LAPIC LVT 门恢复时须在 `init_lapic` 之后（IA32_APIC_BASE bit 11）。
 - **aarch64**：`AArch64InterruptController::init` 完成 GIC distributor 全局 enable（GICD_CTLR.EnableGrp1NS）、redistributor wake（GICR_WAKER）与 CPU interface enable（ICC_SRE_EL1 / ICC_PMR_EL1 / ICC_IGRPEN1_EL1），timer PPI 的 GIC delivery path 在 `enable_timer_irq` 之前已成立。
 - **riscv64**：无前置要求（sie.STIE 是纯 supervisor CSR 写）。
 
@@ -673,13 +683,13 @@ Rust 版将 C 版 `cstart()` 的后三个调用（`init_clock()`、`intr_init()`
 
 > 回答"除了时钟、中断和早期控制台输出，还有什么架构特定的杂项必须在这个阶段完成"。
 
-- `init()`：执行架构特定的杂项初始化。x86-64 包括 ACPI（电源管理表）；aarch64 包括 PMU（性能监控单元）、`bsp_init`；riscv64 包括 PMP（物理内存保护）、S-mode 中断使能。这些初始化彼此无关，但都是启动的必要步骤。串口初始化由 `EarlyConsole::init()` 负责，不属于 `ArchInit`。
+- `init()`：执行架构特定的杂项初始化。x86-64 包括 ACPI（电源管理表）；aarch64 包括 PMU（性能监控单元）、`bsp_init`；riscv64 包括 PMP。这些初始化彼此无关，但都是启动的必要步骤。串口初始化由 `EarlyConsole::init()` 负责，不属于 `ArchInit`。
 - **边界**：`ArchInit` 是**阶段 trait**，不是**功能 trait**。它只收留那些尚未、也不宜抽象为跨架构一致接口的杂项；像 APIC、GIC、PLIC 这类有明确跨架构语义的中断控制器逻辑已经在 `InterruptController::init()` 中处理，像 COM1/PL011/SBI 这类早期控制台已经在 `EarlyConsole::init()` 中处理，不应再放进 `ArchInit`。
 
-三个初始化 trait 的调用顺序由 `init_clock_and_interrupts()` 保证：`ClockArch::init_timer()` → `InterruptController::init()` → `ArchInit::init()`。`EarlyConsole::init()` 在 `kmain()` 入口（或测试内核的 `kmain_verify()`）最先调用，确保后续诊断输出使用正确的 UART 配置；它不属于 `init_clock_and_interrupts()` 的三步序列，但同样只执行一次。其中：
+`init_clock_and_interrupts()` 的调用顺序（D-59 后）为：`InterruptController::init()` → `ArchInit::init()`——**`ClockArch::init_timer` 已不在此阶段**（D-59 解决记录第 1 条：C `init_clock` 是纯软件，硬件编程随 handler 注册与门控一起收敛到 `bsp_finish_booting` Step 6）。`EarlyConsole::init()` 在 `kmain()` 入口（或测试内核的 `kmain_verify()`）最先调用，确保后续诊断输出使用正确的 UART 配置；它不属于 `init_clock_and_interrupts()` 的序列，但同样只执行一次。其中：
 
-- `ClockArch::init_timer()` 与 `InterruptController::init()` **没有强硬件依赖**，交换顺序不会导致错误。x86-64 的 PIT、ARM 的 Generic Timer、RISC-V 的 CLINT 都与中断控制器是独立外设；本阶段尚未开中断，即使定时器先配好也不会触发中断。
-- `ArchInit::init()` 必须在最后，因为它可能依赖时钟和中断控制器已就绪（例如 x86-64 的 `ArchInit` 需要知道 `system_hz`，或若后续把 APIC timer 配置纳入此阶段，也需要它已在时钟初始化之后）。
+- `InterruptController::init()` 内部 `mask_all`：控制器初始化完成时每一条 IRQ 线都是屏蔽态——这是 handler 注册前不会有意外中断的保证（C `intr_init` parity）。
+- `ArchInit::init()` 在控制器之后，且（D-59 起）不再做任何中断使能：原 riscv64 分支的 `sie = STIE | SSIE` 写入已删除，两个位分别归 `TimerIrqGate`（Step 6 门控）与 SMP IPI bring-up（S-7/S-10）。
 
 这个顺序与 Minix3 `cstart()` 的 `init_clock → intr_init → arch_init` 保持一致，但 Rust 版的拆分让每一步的职责比 C 版更清晰。
 

@@ -23,6 +23,14 @@ use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
 /// C: IRQ0_VECTOR — interrupt.h:34
 pub const IRQ0_VECTOR: u8 = 0x50;
 
+/// The boot clock source's IRQ vector: the 8254 PIT output is IOAPIC
+/// input 0, so the timer hook registers under IRQ 0.
+///
+/// C: CLOCK_IRQ = 0 (arch/i386); the timer hook is installed on this
+/// vector by `put_irq_handler` (arch_clock.c:190) and the line is
+/// unmasked by the first-handler rule (interrupt.c:65).
+pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
+
 /// LAPIC spurious interrupt vector.
 const LAPIC_SPURIOUS_VECTOR: u8 = 0xFF;
 
@@ -257,5 +265,15 @@ mod tests {
         // nr_irqs above the platform max must be clamped so mask_all's
         // 0..nr_irq_vectors loop stays within the IDT vector space.
         assert_eq!(ic.nr_irq_vectors, NR_IRQ_VECTORS);
+    }
+
+    #[test]
+    fn test_timer_irq_is_ioapic_input_zero() {
+        // D-59: the boot clock source (8254 PIT) delivers through IOAPIC
+        // input 0, so the boot-end hook registration must target vector 0.
+        // Pinning the value here keeps the kernel-side boot chain honest:
+        // if the clock source ever moves to the LAPIC timer, this pin must
+        // be revisited together with TimerIrqGate's x86 semantics.
+        assert_eq!(TIMER_IRQ.get(), 0);
     }
 }

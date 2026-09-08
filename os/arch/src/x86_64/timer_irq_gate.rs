@@ -1,90 +1,58 @@
-//! x86-64 `TimerIrqGate` implementation: LAPIC LVT Timer + SVR.
+//! x86-64 `TimerIrqGate` implementation: the boot clock source has no
+//! module-local gate.
 //!
-//! Programs the Local APIC for timer IRQ delivery:
-//! - `enable_timer_irq`: clears LAPIC LVT Timer Mask bit (LVT offset 0x320,
-//!   bit 16) and ensures the LAPIC SVR Enable bit (offset 0xF0, bit 8) is set
-//! - `disable_timer_irq`: sets LAPIC LVT Timer Mask bit
+//! # Semantics (D-59, 2026-09-09) — `[ARCH: gate-semantics]`
 //!
-//! C: `arch_clock.c:177` (register_local_timer_handler, APIC path) +
-//! `apic.c` — `APIC_LVTT_MASK` defined at apic.c:44, LVT Timer mask set at
-//! apic.c:475-477; SVR enable corresponds to `lapic_enable()` (apic.c:674-700).
+//! `TimerIrqGate::enable_timer_irq` / `disable_timer_irq` open and close
+//! the *module-local* gate of the current boot clock source. On x86-64 the
+//! boot clock source is the 8254 PIT (`X86_64ClockArch::init_timer`
+//! programs it), and the PIT has no module-local gate: its output is
+//! delivered as IOAPIC input 0, whose mask bit *is* the delivery gate.
+//! That gate is opened by the C-parity "unmask on first handler" rule in
+//! `IrqManager::register_hook` (interrupt.c:65) when the timer hook is
+//! installed at `bsp_finish_booting` Step 6 — so both gate methods are
+//! intentionally no-ops here.
+//!
+//! C: `register_local_timer_handler` (arch_clock.c:177-196) — the PIC
+//! path installs the hook on `CLOCK_IRQ` (IRQ 0) and `put_irq_handler`'s
+//! caller rule enables the line; there is no separate timer-module
+//! register to program. `[ARCH: gate-semantics]` is recorded in
+//! 05-clock-interrupt-init.md §3.7 and todo.md §23 D-59.
+//!
+//! # Why clearing the LAPIC LVT Timer mask here was a trap
+//!
+//! An earlier revision cleared the LAPIC LVT Timer Mask (offset 0x320,
+//! bit 16) and set the SVR enable. That gate belongs to the *LAPIC
+//! timer*, which is not the boot clock source (and is not programmed):
+//! unmasking it would have let an unconfigured timer deliver interrupts
+//! with no handler. The LVT gate comes back with the LAPIC timer clock
+//! source itself (see 05-clock-interrupt-init.md §3.7 and the S-4/S-8
+//! SMP batches; the mask-write idiom survives in
+//! `X86_64ClockArch::stop_local_timer`).
 //!
 //! # Call timing invariant
 //!
-//! `enable_timer_irq` must be called after `X86_64InterruptController::init`
-//! (Phase B of `init_clock_and_interrupts`), which sets the IA32_APIC_BASE
-//! global enable bit (see os/plat/src/x86_64/interrupt.rs `init_lapic`).
-//! If the LAPIC is not yet globally enabled, this is a boot-order violation
-//! and we panic instead of silently recording mock state (see
-//! 05-clock-interrupt-init.md §3.7 "调用时序约束").
+//! Still must be called after `InterruptController::init` if a future
+//! implementation touches the LAPIC again; today's no-op has no hardware
+//! precondition.
 
 use crate::arch::timer_irq_gate::TimerIrqGate;
 
-/// x86-64 timer IRQ gate: LAPIC LVT Timer mask/unmask (+ SVR enable).
+/// x86-64 timer IRQ gate: no module-local gate for the PIT clock source.
 pub struct X86_64TimerIrqGate;
-
-/// Read the LAPIC MMIO base address from the IA32_APIC_BASE MSR.
-///
-/// Returns `Some` only when the APIC global enable bit (bit 11) is set.
-///
-/// C: `apic.c:lapic_base()` — reads the LAPIC base from IA32_APIC_BASE
-fn lapic_base_x86_64() -> Option<*mut u32> {
-    let lo: u32;
-    let hi: u32;
-    // SAFETY: rdmsr with a fixed MSR index (0x1B, IA32_APIC_BASE) is
-    // side-effect-free and always available in 64-bit mode.
-    unsafe {
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") 0x1B, // IA32_APIC_BASE
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    let base = ((hi as u64) << 32 | lo as u64) & 0xFFFFF000;
-    // Check the APIC global enable bit (bit 11).
-    if lo & (1 << 11) == 0 {
-        return None;
-    }
-    Some(base as *mut u32)
-}
 
 impl TimerIrqGate for X86_64TimerIrqGate {
     fn enable_timer_irq() {
-        // SAFETY: `lapic_base_x86_64` returns the LAPIC MMIO region only
-        // when the APIC is globally enabled; the caller must have run
-        // `InterruptController::init` first (see module docs). Volatile
-        // reads/writes are required because LAPIC registers are MMIO.
-        unsafe {
-            let lapic_base = lapic_base_x86_64()
-                .expect("X86_64TimerIrqGate::enable_timer_irq: LAPIC not enabled — must be called after InterruptController::init");
-            // Clear LVT Timer Mask bit (LVT offset 0x320, bit 16).
-            // C: APIC_LVTT_MASK (apic.c:44); the mask is set at apic.c:475-477.
-            let lvt_timer = lapic_base.add(0x320 / 4);
-            let v = core::ptr::read_volatile(lvt_timer);
-            core::ptr::write_volatile(lvt_timer, v & !(1 << 16));
-            // Set SVR Enable bit (offset 0xF0, bit 8).
-            // C: apic.c:lapic_enable() sets the SVR enable (apic.c:674-700).
-            // Note: also performed by X86_64InterruptController::init_lapic;
-            // kept here (idempotent) until the SVR/LVT responsibility split
-            // is decided (see 05-clock-interrupt-init.md §4.7.1).
-            let svr = lapic_base.add(0xF0 / 4);
-            let v = core::ptr::read_volatile(svr);
-            core::ptr::write_volatile(svr, v | (1 << 8));
-        }
+        // The boot clock source (8254 PIT) has no module-local gate; its
+        // delivery gate is IOAPIC input 0, unmasked by
+        // `IrqManager::register_hook`'s first-handler rule. See the module
+        // documentation for why this is deliberately not the LAPIC LVT
+        // Timer mask.
     }
 
     fn disable_timer_irq() {
-        // SAFETY: same invariant as `enable_timer_irq`.
-        unsafe {
-            let lapic_base = lapic_base_x86_64()
-                .expect("X86_64TimerIrqGate::disable_timer_irq: LAPIC not enabled — must be called after InterruptController::init");
-            // Set LVT Timer Mask bit (LVT offset 0x320, bit 16).
-            // C: apic.c:475-477 — the LAPIC timer is masked during calibration.
-            let lvt_timer = lapic_base.add(0x320 / 4);
-            let v = core::ptr::read_volatile(lvt_timer);
-            core::ptr::write_volatile(lvt_timer, v | (1 << 16));
-        }
+        // Mirror of `enable_timer_irq`: nothing to close on the PIT path.
+        // (Masking an unprogrammed LVT timer here would silently break the
+        // future LAPIC-timer source's assumptions instead of helping.)
     }
 }
