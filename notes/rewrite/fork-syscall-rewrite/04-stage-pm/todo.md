@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4（#48/#50/#51/#52）+ V2-P2-7/P2-8（#49）+ V3-P2-6（#44/#53）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/8（#48/#50/#51/#52/#53/#54）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -499,13 +499,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **建议**：改为按字段传参的自由函数或直接逐字段重借用；删 4 个裸指针与 unsafe 块。零行为变化。
 - **验证**：`grep -n "as \*mut" os/servers/pm/src/ipc/vfs.rs` 零命中；既有测试全绿。
 
-#### V3-P2-8 event 的 `do_proceventmask` 非 mut 变体带游标 bug 且以 pub 存活
+#### V3-P2-8 event 的 `do_proceventmask` 非 mut 变体带游标 bug 且以 pub 存活（✅ 已修复 2026-09-09，Fix #54）
 
-- **优先级**：P2；**类型**：潜伏 bug 的活接口 + 断言弱化
-- **文件**：`os/servers/pm/src/event.rs:331-404`（非 mut 变体）、`event.rs:410-450`（生产 `_mut` 变体）、`calls.rs:306`（生产走 `_mut`）
-- **问题**：非 mut 变体的退订路径内联前移数组但**不调整其它进程的游标**（C event.c:142-160 的 remove_sub 会把 cursor > slot 的进程游标回退）——其它进程正阻塞在事件投递上时，游标将指向错误的订阅者。生产路径不用它（calls.rs:306 走 `_mut`），但它以 `pub fn` 存活且有 3 个测试引用（event.rs:641/682/703）——误用即引入真实 bug。同族：`waiting < NR_PROCS` 守卫为 `debug_assert!` 且常量硬编码 256 未引用 `minix_types::NR_PROCS`（event.rs:258；C event.c:108-109 是自增前无条件 assert）——release 构建下上界完全无检查。
-- **建议**：删除非 mut 变体（3 个测试迁到 `_mut` 版）或改为委托 `_mut`；waiting 守卫改 `assert!` + 引用 `NR_PROCS` 常量。
-- **验证**：`grep -n "pub fn do_proceventmask(" os/servers/pm/src/event.rs` 零命中（若选删除）。
+- **原状态**：非 mut 变体内联前移数组但不调整其它进程游标（C event.c:142-160 的 remove_sub 游标回退缺失），自带大段"取巧/近似"注释且以 `pub fn` 存活（3 个测试引用）；`waiting < NR_PROCS` 守卫为 `debug_assert!` 且硬编码 256。
+- **修复**（Fix #54）：非 mut 变体整体删除（70+ 行近似实现与注释消亡），3 个测试迁移到 `_mut` 版（同一行为面）；waiting 守卫改自增前 `assert!` + 引用 `minix_types::NR_PROCS`（C event.c:108-109 同位）。
+- **验证**：`grep -n "pub fn do_proceventmask(" os/servers/pm/src/event.rs` 零命中；基线 379 lib passed。
 
 #### V3-P2-9 clippy 基线回退：lib 3 条 unused import + 测试代码 22 条 unused variable
 

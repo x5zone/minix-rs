@@ -264,9 +264,15 @@ impl EventRegistry {
                 transport
                     .send(sub.endpoint, &msg)
                     .expect("resume_event: asynsend to subscriber failed");
-                // waiting++（event.c:108-109）
+                // waiting++（event.c:108-109）。C 的 assert 在自增**前**
+                // 无条件执行（`assert(waiting < NR_PROCS)`）——release 下
+                // 同样生效；上界引用 NR_PROCS 常量而非硬编码 256（V3-P2-8）。
+                assert!(
+                    self.subs[cursor.0].expect("resume_event: cursor in prefix").waiting
+                        < minix_types::NR_PROCS,
+                    "resume_event: waiting must stay below NR_PROCS"
+                );
                 self.subs[cursor.0].as_mut().unwrap().waiting += 1;
-                debug_assert!(self.subs[cursor.0].unwrap().waiting < 256, "waiting < NR_PROCS");
                 // 更新游标（已指向当前订阅者，等待其回复）
                 table.procs[target.get()].state.block.set_event_blocked(cursor);
                 return;
@@ -334,85 +340,6 @@ impl EventRegistry {
 
     // ── do_proceventmask / do_proc_event_reply ──
 
-    /// `do_proceventmask`（`event.c:170-211`）。
-    ///
-    /// 仅 `PRIV_PROC` 可订阅（否则 `EPERM`）；已订阅项命中 → `mask==0 && waiting==0 → remove_sub`
-    /// 否则更新 `mask`；未命中且 `mask==0 → OK`；`nsubs==NR_SUBS → ENOMEM`；否则 push。
-    /// 返回 `ReplyIntent` 供主循环 `reply`（`EPERM/ENOMEM/OK` 均需回复调用者）。
-    pub fn do_proceventmask(
-        &mut self,
-        caller: UserSlot,
-        mask: ProcEventMask,
-        table: &ProcTable,
-    ) -> ReplyIntent {
-        // 仅系统服务可订阅（event.c:176-177）
-        if !table.procs[caller.get()].is_kernel_process() {
-            return ReplyIntent::Reply(minix_types::EPERM);
-        }
-
-        // 命中已订阅项
-        for i in 0..self.nsubs {
-            if let Some(sub) = self.subs[i]
-                && sub.endpoint == table.procs[caller.get()].endpoint() {
-                    if mask.is_empty() && sub.waiting == 0 {
-                        // 退订且无等待 → 立即删除（event.c:188-189）
-                        // remove_sub 需 &mut ProcTable + transport 以调整游标；
-                        // 但 proceventmask 的 remove_sub 场景下无等待进程的 resume
-                        // 不需 transport（waiting==0 时 remove_sub 的遍历不会触发
-                        // resume_event 的 send）。此处用空 transport 占位：
-                        // 调用方需传入 transport；在 do_proceventmask 的 waiting==0
-                        // 分支下，resume 不会发送，故可用 &mut ProcTable 的 clone
-                        // 作最小侵入——为保持 API 一致，本方法暂不触发 remove 的
-                        // resume 侧发送；若 waiting==0，remove_sub 的遍历仅做游标
-                        // 回退，不发送。因此可安全地用临时空表传递。
-                        //
-                        // 为避免在 &ProcTable 上做 &mut 转换，本分支的实现改为
-                        // 直接前移 subs 并手动调整 nsubs，复用 remove_sub 的
-                        // 数组前移逻辑但跳过 transport 遍历——此时 waiting==0 保
-                        // 证无进程等待该订阅者，遍历无 resume 需求。
-                        self.subs.copy_within(i + 1..self.nsubs, i);
-                        self.subs[self.nsubs - 1] = None;
-                        self.nsubs -= 1;
-                        // 调整游标（无 resume，因 waiting==0 无等待者）
-                        // 仍需回退游标 > slot 的进程
-                        // 由于本方法仅有 &ProcTable（不可变），无法调整 ProcTable；
-                        // 但 waiting==0 意味着无进程正等待该订阅者（否则 waiting>0），
-                        // 因此游标调整在此分支下无实际受影响者——可跳过。
-                        // 为保持与 C 同行为（C 会遍历 mproc 并对 mp_eventsub>slot 者 --），
-                        // 调用方应在可变表上调用；本实现要求调用方在 waiting==0 时
-                        // 已保证无受影响者，或由外层 remove_sub 完整路径处理。
-                        // 简化：直接返回，调用方若需完整游标调整，应使用
-                        // `remove_sub_with_table`（见下）。
-                        //
-                        // 取巧：若外部能提供 &mut ProcTable，则走完整路径；否则
-                        // 此分支为近似。当前测试以 waiting==0 且无受影响进程为主，
-                        // 近似可接受。为覆盖完整语义，增加 `do_proceventmask_with_table`
-                        //（见下）供可变表路径使用。
-                    } else {
-                        self.subs[i].as_mut().unwrap().mask = mask;
-                    }
-                    return ReplyIntent::Reply(minix_types::OK);
-                }
-        }
-
-        if mask.is_empty() {
-            return ReplyIntent::Reply(minix_types::OK);
-        }
-
-        if self.is_full() {
-            // C: printf + ENOMEM（event.c:200-204）
-            return ReplyIntent::Reply(minix_types::ENOMEM);
-        }
-
-        let ep = table.procs[caller.get()].endpoint();
-        self.subs[self.nsubs] = Some(Subscriber {
-            endpoint: ep,
-            mask,
-            waiting: 0,
-        });
-        self.nsubs += 1;
-        ReplyIntent::Reply(minix_types::OK)
-    }
 
     /// `do_proceventmask` 的完整可变表版本（供 `remove_sub` 需调整游标时）。
     ///
@@ -656,7 +583,7 @@ mod tests {
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
         // default Privilege::User (non-priv)
         let mut reg = EventRegistry::new();
-        let intent = reg.do_proceventmask(caller, ProcEventMask::EXIT, &table);
+        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::EXIT, &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(EPERM));
         assert_eq!(reg.len(), 0);
     }
@@ -697,7 +624,7 @@ mod tests {
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
         table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
         let mut reg = EventRegistry::new();
-        let intent = reg.do_proceventmask(caller, ProcEventMask::empty(), &table);
+        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::empty(), &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(OK));
         assert_eq!(reg.len(), 0);
     }
@@ -718,7 +645,7 @@ mod tests {
         table.procs[10].state.lifecycle = Lifecycle::Running;
         table.procs[10].identity.endpoint = Endpoint::from_generation_slot(1, 10);
         table.procs[10].resources.privilege = crate::mproc::Privilege::Kernel;
-        let intent = reg.do_proceventmask(caller, ProcEventMask::EXIT, &table);
+        let intent = reg.do_proceventmask_mut(caller, ProcEventMask::EXIT, &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(ENOMEM));
         assert_eq!(reg.len(), NR_SUBS);
     }
