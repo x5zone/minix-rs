@@ -287,6 +287,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
   - 归属：可立即 todo-fix（16 号域接线缺陷）。
 
 - **R36（P1-design-missing）— `update_period` 检查臂缺失：prepare 阶段超时永不触发回滚**
+  ✅ 已修（2026-09-09，见 §22.7 Fix #92）
   - C 证据：do_period 头部（request.c:950-954）——`RUPDATE_IS_UPDATING() &&
     !RUPDATE_IS_INITIALIZING()` 时每个时钟 tick 先调 `update_period(m_ptr)`（且扫表
     **继续**，非 return）；`update_period`（update.c:371-396）：取 `curr_rpupd`，按
@@ -402,7 +403,7 @@ E-MINSYS-HYGIENE 一句话条目）。
 ### 6.5 修复优先级路线（供 todo-fix 排队）
 
 1. ~~**R35**（P1，1 轮）：peek/walk 分离 + gate 失败链状态负断言测试~~ ✅ Fix #91；
-2. **R36**（P1，1 轮）：do_period 补 update_period 臂 + 超时回滚测试 + 删陈旧注释；
+2. ~~**R36**（P1，1 轮）：do_period 补 update_period 臂 + 超时回滚测试 + 删陈旧注释~~ ✅ Fix #92；
 3. **R37**（P2，1-2 轮）：get_ticks 失败策略定型（? 传播 / expect 分点）+ 测试；
 4. **R38 + R39**（P2，可并 1 轮）：doc 19 §3.3 后记 + semantic-map 双回填；
 5. R40 随 1/2 顺带；R41/R42 记录不动作。
@@ -445,6 +446,33 @@ E-MINSYS-HYGIENE 一句话条目）。
   fmt 干净；`tools/check-rs-unwired.sh` PASS。回归 review（git diff 走查）确认：
   walk 体其余逻辑（VM-multi 预阶段、UPDATING 写点、派发循环）零改动；`end_update`
   的 ESRCH/`start_update_prepare` 路径（do_update 的 `mem::take` 段）未触碰。
+
+### ✅ Fix #92 — R36（P1）：`do_period` 补 `update_period` 检查臂——prepare 超时回滚 live
+
+- **File**：`os/servers/rs/src/lib.rs`（`do_period` 头部：updating && !initializing 门 →
+  读 `chain.curr()` 条目 → `monitor::has_update_timed_out` → 超时
+  `UpdateState::end_update(EINTR, RS_CANCEL, now)` → SelfTerminate 上抛；扫表同 tick
+  继续——C request.c:950-954 的忠实形状；删除"deferred with the 16 wiring"陈旧注释；
+  doc 注释同步）、`07-rs-period-heartbeat.md`（§2.1 接线落地注记）、todo.md 翻态
+- **Before**：检查臂缺失，`has_update_timed_out` 零生产消费点——prepare 阶段挂死的
+  批量更新永不回滚（`RS_UPDATING` 滞留、旧实例困于 updating 门、`effective_period`
+  按 LU 初始化超时误喂 ping）。
+- **After**：方案对比——a) 壳层组合已有纯决策（选定：纯决策 `has_update_timed_out`
+  已存在且语义锁定，壳层只补门 + 读 curr + 执行效果）vs b) 在 UpdateState 上加编排
+  方法 `update_period(...)`（C 的 update_period 本就是读 + end_update 的薄组合，多一层
+  方法只是搬运）vs c) 塞进 period_decision（污染 monitor 决策面——超时检查属于
+  update 域不属于服务心跳域）。`now` 直接用 tick 自带的 CLOCK 时戳（= C end_update
+  内部 `getticks()` 同钟值），避免一次多余 seam 调用；`SelfTerminate`（R27b：
+  result≠0 且 RS INIT_DONE）按 do_period 既有 crash 形状上抛 `Err(EGENERIC)`
+  （C `exit(1)`）。
+- **Tests**（+1，331→332）：`test_do_period_update_timeout_rolls_back` 四例——逾期
+  tick 回滚（UPDATING 清 + 链清空）、未到期不动、maxtime=0 永不超时（update.c:386
+  的 `prepare_maxtime > 0` 门）、initializing 相位豁免（request.c:951）。
+- **Verified**：`cargo test -p minix-rs` = **332 passed**（+1）；clippy rs crate 零告警；
+  fmt 干净；T7 PASS。回归 review：`end_update` 的 UPDATING debug_assert 在本臂
+  恒满足（门先行）；init 豁免分支不触达 end_update；`chain.curr()` 为 None（空链但
+  flags 残留的非法态）时跳过检查而非 panic——与 C 的 NULL 解引用相比是防御性收敛，
+  不改变合法态语义。
 
 ### 6.6 Step 5.7 Rule Discovery
 

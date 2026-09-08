@@ -59,6 +59,18 @@ void do_period(m_ptr)                                /* request.c:943 */
   if(RUPDATE_IS_UPDATING() && !RUPDATE_IS_INITIALIZING()) { /* 953-954 */
       update_period(m_ptr);                          /* request.c:954 */
   }
+```
+
+> **接线落地（2026-09-09，R36）**：`do_period` 的 update 检查臂已 live——updating 且非
+> initializing 时，每 tick 读 `chain.curr()` 条目的 `prepare_tm`/`prepare_maxtime`，经
+> `monitor::has_update_timed_out`（与 update.c:386 逐分支一致，含 maxtime=0 永不超时）
+> 判定，超时即 `UpdateState::end_update(EINTR, RS_CANCEL)` 回滚（`now` 用 tick 自带的
+> CLOCK 时戳，与 C end_update 内部 `getticks()` 同钟）；扫表在同 tick 继续。init
+> initializing 相位豁免（C request.c:951 的 `!RUPDATE_IS_INITIALIZING()`）。测试：
+> `test_do_period_update_timeout_rolls_back`（超时回滚 / 未到期不动 / maxtime=0 / 
+> initializing 豁免四例）。
+
+```c
   for (rp=...; rp<END_RPROC_ADDR; rp++) {            /* request.c:960 */
       if ((rp->r_flags & RS_ACTIVE) &&               /* request.c:963 */
           (!SRV_IS_UPDATING(rp) ||

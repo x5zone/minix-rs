@@ -343,9 +343,13 @@ impl RsServer {
         }
     }
 
-    /// C: `do_period` — request.c:946-1040 (07): the CLOCK-tick status sweep
-    /// over the service table. Per in-use slot passing the ACTIVE/update gate
-    /// (request.c:968-970): the decision layer ([`monitor::period_decision`])
+    /// C: `do_period` — request.c:946-1040 (07): the CLOCK-tick handler.
+    /// While an update is in flight, the current preparer's deadline is
+    /// checked first (`update_period` — update.c:371-396; EINTR/RS_CANCEL
+    /// rollback on timeout). Then the status sweep runs over the service
+    /// table: per in-use slot passing the ACTIVE/update gate
+    /// (request.c:968-970), the decision layer
+    /// ([`monitor::period_decision`])
     /// classifies backoff tick / stop timeout / ping timeout / ping request /
     /// free pass; the mutations apply once (R13) and the action executes:
     /// `Restart` → [`service_create::restart_service`] (request.c:977-978),
@@ -353,9 +357,44 @@ impl RsServer {
     /// `PingRequest` → the notify seam (request.c:1035).
     fn do_period(&mut self, now: Clock) -> Result<(), Errno> {
         let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
-        // 16 号: `RUPDATE_IS_UPDATING() && !RUPDATE_IS_INITIALIZING()` routes
-        // the tick into `update_period` first (request.c:952-954) — the LU
-        // mid-state checker; deferred with the 16 wiring.
+        // C: request.c:950-954 — while an update is in flight and not yet
+        // initializing, every clock tick first checks the current preparer's
+        // deadline (update_period — update.c:371-396): a timed-out prepare
+        // ends the whole update with EINTR/RS_CANCEL so the old versions
+        // resume. Without this arm a stalled prepare would hang the update
+        // forever (R36). The sweep below continues in the same tick, as in
+        // C. `now` is the tick's own CLOCK timestamp — the same clock C's
+        // end_update-internal getticks() reads.
+        let updating_phase = state
+            .update
+            .flags
+            .contains(live_update::RupdateFlags::UPDATING)
+            && !state
+                .update
+                .flags
+                .contains(live_update::RupdateFlags::INITIALIZING);
+        if updating_phase && let Some(curr) = state.update.chain.curr() {
+            let (prepare_tm, prepare_maxtime) = {
+                let entry = state.update.chain.get(curr);
+                (entry.prepare_tm, entry.prepare_maxtime)
+            };
+            if monitor::has_update_timed_out(now, prepare_tm, prepare_maxtime) {
+                let outcome = state.update.end_update(
+                    &mut state.table,
+                    self.kernel.as_mut(),
+                    minix_types::EINTR,
+                    live_update::RS_CANCEL,
+                    now,
+                    &mut live_update::EndEffects {
+                        request_prepare: &mut |_s, _ps| {},
+                        run_script: &mut |_s| Ok(()),
+                    },
+                );
+                if outcome == recovery::CrashOutcome::SelfTerminate {
+                    return Err(Errno::EGENERIC); // C: exit(1) — update.c:883-887
+                }
+            }
+        }
         let another_initializing = state.table.lookup_by_flags(RFlags::INITIALIZING).is_some(); // request.c:1018 — `lookup_slot_by_flags(RS_INITIALIZING)`
         let hz = state.system_hz;
         for i in 0..state.table.len() {
@@ -2436,6 +2475,80 @@ mod signal_handler_tests {
                 .flags
                 .contains(RFlags::PREPARE_DONE),
             "the second reporter carries PREPARE_DONE too"
+        );
+    }
+
+    #[test]
+    fn test_do_period_update_timeout_rolls_back() {
+        // R36: while updating (not initializing), a tick past the current
+        // preparer's deadline ends the update with EINTR/RS_CANCEL
+        // (update.c:386-395) — the chain and the phase flags are cleared and
+        // the old versions keep running. Without this arm a stalled prepare
+        // would hang the update forever.
+        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
+        two_entry_chain(&mut server);
+        {
+            let state = server.state.as_mut().unwrap();
+            // Deadline: prepare_tm 0 + maxtime 30 → due at tick 30.
+            state.update.chain.get_mut(0).prepare_maxtime = 30;
+        }
+        // Overdue tick.
+        server.do_period(100).unwrap();
+        {
+            let state = server.state.as_ref().unwrap();
+            assert!(
+                !state
+                    .update
+                    .flags
+                    .contains(crate::live_update::RupdateFlags::UPDATING),
+                "the timed-out update left the updating phase"
+            );
+            assert_eq!(state.update.chain.len(), 0, "the chain was torn down");
+        }
+
+        // Not yet due → the update keeps going.
+        let mut server2 = booted_vfs_labeled(b"vfs", b"vfs");
+        two_entry_chain(&mut server2);
+        server2
+            .state
+            .as_mut()
+            .unwrap()
+            .update
+            .chain
+            .get_mut(0)
+            .prepare_maxtime = 30;
+        server2.do_period(10).unwrap();
+        let state = server2.state.as_ref().unwrap();
+        assert!(state.update.chain.len() > 0, "prepare still in flight");
+        assert!(
+            state
+                .update
+                .flags
+                .contains(crate::live_update::RupdateFlags::UPDATING)
+        );
+
+        // maxtime 0 = no deadline (update.c:386 — `prepare_maxtime > 0`).
+        let mut server3 = booted_vfs_labeled(b"vfs", b"vfs");
+        two_entry_chain(&mut server3);
+        server3.do_period(10_000).unwrap();
+        assert!(
+            server3.state.as_ref().unwrap().update.chain.len() > 0,
+            "maxtime 0 never times out"
+        );
+
+        // The initializing phase is exempt (C: request.c:951 —
+        // `!RUPDATE_IS_INITIALIZING()`): an overdue tick does not cancel.
+        let mut server4 = booted_vfs_labeled(b"vfs", b"vfs");
+        two_entry_chain(&mut server4);
+        {
+            let state = server4.state.as_mut().unwrap();
+            state.update.chain.get_mut(0).prepare_maxtime = 30;
+            state.update.begin_initializing();
+        }
+        server4.do_period(100).unwrap();
+        assert!(
+            server4.state.as_ref().unwrap().update.chain.len() > 0,
+            "the initializing phase has no prepare deadline"
         );
     }
 
