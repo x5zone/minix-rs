@@ -206,6 +206,32 @@ PM_FORK 到达（主循环 dispatch，04）
 | A-12 | **INIT 收养 / 双监护建模** | `mp_parent`/`mp_tracer` 两个监护指针 + `tracer_died`/`NEW_PARENT`（`forkexit.c:760-795`） | `Guardianship { parent, tracer }` 建模（`mproc/guardianship.rs`）+ `inherit_guardianship` 的 TO_TRACEFORK 条件继承（`fork.rs`，2026-09-06 D-10） | 09/10/18 | 已实现（继承/收养/解除链完备） |
 | A-13 | **进程组/会话语义** | `mp_procgrp` int + pid 相等即会话领导者（`getset.c`、`forkexit.c:exit_proc`） | 类型化 `ProcessGroup`/会话标记（设计决策） | 09/15 | 未实现（设计层） |
 
+### 4.1 内核能力四列对照表（V3-P1-1/2/3 系列接线后刷新；规约见 todo.md §12.3 观察 1）
+
+> 规约：**新内核能力一律进中央 `KernelGateway`**（`os/servers/pm/src/exit.rs`）；窄 trait（`KernelStop`/`KernelResume`/`KernelSig`/`KernelExec` 等）不新增，仅在借用冲突需要合并注入点时以 supertrait 组合承接（`RestartServices`/`ExecRestartServices` 先例）。各域 trait 保持为函数域视图。
+
+| 内核能力（C libsys） | trait 方法 | minix-sys wrapper（SYS_* = 内核调用号） | kernel 对端 | PM 消费点 |
+|---|---|---|---|---|
+| `sys_kill` | `KernelGateway::sys_kill` | `sys_kill`（SYS_KILL=6） | `dispatch_kill` | do_exit 违规分支/广播 SIGTERM/PRIV_PROC !ksig 转发 |
+| `sys_clear` | `KernelGateway::sys_clear` | `sys_clear`（SYS_CLEAR=2） | `dispatch_clear` | exit_proc step 9 / exit_restart step 4 |
+| `sys_abort` | `KernelGateway::sys_abort` | `sys_abort`（SYS_ABORT=27） | `dispatch_abort` | REBOOT 特例（main.c:304-312） |
+| `sys_times` | `KernelGateway::proc_times` | `sys_times`（SYS_TIMES=25） | `dispatch_times` | exit 计账 / getrusage |
+| `sys_runctl(RC_RESUME)` | `KernelGateway::sys_resume` | `sys_runctl`+`sys_resume`（SYS_RUNCTL=46） | `dispatch_runctl` | try_resume_proc / 事件恢复 |
+| `sys_vircopy` | `KernelGateway::copy_to_user`/`sys_vircopy`/`copy_from_user` | `sys_vircopy`（SYS_VIRCOPY=15） | `dispatch_vircopy` | rusage 投递 / T_GETRANGE 搬运 / 参数块取入 |
+| `sys_trace` | `KernelGateway::sys_trace` | `sys_trace`（SYS_TRACE=5） | `dispatch_trace` | trace 透传 / trace_stop 的 T_STOP |
+| `sys_getksig`/`sys_endksig` | `KernelGateway::get_ksig`/`end_ksig` | `sys_getksig`（7）/`sys_endksig`（8） | `dispatch_getksig`/`dispatch_endksig` | SIGKSIG 拉取循环（批次 H） |
+| `sys_sigsend` | `KernelGateway::sys_sigsend` | `sys_sigsend`（SYS_SIGSEND=9） | `dispatch_sigsend` | sig_send 被捕获信号投递 |
+| `sys_delay_stop` | `KernelStop::delay_stop`（signal_flow seam；暂无 KernelGateway 方法） | 未落地（E6） | 待核实 | stop_proc（V3-P1-3 起 sig_proc VFS 分支消费） |
+| `sys_setalarm`/`sys_vtimer` | `TimerCtl`/`VTimerCtl`（Trap 占位） | 未落地（E6） | setalarm 已有/vtimer 待核实 | itimer/虚拟计时器 |
+| `sys_datacopy` | （copy_from_user 以 vircopy 同型承接，Fix #27 先例） | 待评估独立 wrapper（E6） | — | getsysinfo 表拷出（D-29）/ getepinfo groups（D-30）/ itimer value |
+| `sys_sigreturn` | 批次 B | 未落地（E6） | 待核实 | do_sigreturn |
+| `SYS_GETMONPARAMS`/`SYS_GETIMAGE` | — | 双侧新建（E6） | 不存在 | BootParams（D-02） |
+| 内核控制台输出（printf 等价） | — | SYS_DIAGCTL code 1（E2 面） | 已有 | D-31 诊断口径统一的前置 |
+
+### 4.2 错误保真规约（V3-P2-6）
+
+**透传型调用**（对内核/其他服务的 raw call，如 `sched.inherit`/`sys_trace`/`sys_times`）的错误必须保真：错误枚举以 `Kernel(i32)` 类载荷携带原始负 errno 并原样上抛（`TraceError::Kernel`/`SchedError::Kernel`/`MiscError::Kernel`）。**只有 PM 自身的判定**（权限不足、参数越界、状态不变式）才产生语义化枚举变体（`Inval`/`Perm`/...）。禁止 `map_err(|_| Inval)` 式折叠——用户态观察到的 errno 是外部可观察契约的一部分（与 PID 相位同类）。
+
 ---
 
 ## 5. 覆盖完整性核对（对照 minix3 源码）
