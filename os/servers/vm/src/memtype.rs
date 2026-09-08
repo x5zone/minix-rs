@@ -4,6 +4,12 @@
 
 use minix_types::{Endpoint, VirBytes};
 use minix_arch::paging::PageFlags;
+// V12-P2-2 (判定闭合，2026-09-09): this "reverse" dependency on the process
+// table is C-parity, not layering drift — C's memtype.h callbacks take
+// `struct vmproc *vmp` directly (memtype.h:18/:21/:22), because the policy
+// hooks legitimately need cross-process lookup (shared_memory's getsrc) and
+// caller memory access (split/resize). Rust makes the same shape explicit:
+// the table/proc arrive as method parameters instead of global-array pokes.
 use crate::vmproc::{ActiveProc, VmProcTable};
 use crate::region::{PageFrames, PageSlot, PfnAllocator, PAGE_SIZE};
 use crate::page_cache::PageCache;

@@ -75,9 +75,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 复核 ✅（重锚点）：`dispatch_mapcache`/`dispatch_setcache` 现于 dispatcher.rs:459/:580（约 250 行 mem_cache.c 业务内联）；reply 编码 `reply_to_errno`/`encode_reply_data` 仍在 vm_server.rs（约 190 行线格式代码）。方案（cache 四操作下沉 page_cache.rs、reply 编码迁 ipc/）见 V12 存档。
 
-### V12-P2-2（P2）`memtype` 反向依赖 `vmproc`
+### ✅ V12-P2-2（P2）`memtype` 反向依赖 `vmproc`——判定闭合（C-parity，维持现状）2026-09-09（§18.9 Fix #76）
 
-复核 ✅ 2026-09-09：memtype.rs:7 仍 `use crate::vmproc::{ActiveProc, VmProcTable}`。方案（table 显式传参，比照 ev_pagefault 先例）见 V12 存档。
+复核 ✅：该依赖方向是 MINIX3 自己的架构形状——C `memtype.h:18/:21/:22` 的回调签名直接收 `struct vmproc *vmp`（策略钩子合法地需要跨进程查找与调用方内存访问）。Rust 的 `&VmProcTable`/`&mut ActiveProc` 显式传参是同形翻译且更干净。memtype.rs:7 已加判定注释。详见 §18.9 Fix #76。
 
 ### V12-P2-3（P2）错误类型两处残余（并入 V10-P2-3 收敛面）
 
@@ -421,6 +421,13 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `region/vir_region.rs`（重命名，7 处）
 - **测试**: 无新增（重命名）；三矩阵 501/519/501 + clippy 0 警告回归
 - **边界**: V10-P2-3 的"验证锚点"（`rg "pub(crate) enum .*Error"` 收敛到 1 个对外）达成：对外唯一 `minix_types::VmError`，crate 内剩模块级类型（VirRegionError/CacheError/VfsQueueError/CowError/MemTypeError/MunmapError 等），各有明确消费边界
+
+### ✅ Fix #76: V12-P2-2 — memtype 反向依赖判定闭合（C-parity，维持现状）
+
+- **判定**：不解耦。C 的 memtype 回调签名本就收 `struct vmproc *vmp`（memtype.h:18 ev_pagefault / :21 ev_resize / :22 ev_split——策略钩子需要跨进程查找（shared getsrc）与调用方内存访问（split/resize）），"策略层不碰进程表"的纯化理想与 ground truth 的结构相悖。Rust 的 `&VmProcTable`/`&mut ActiveProc` 显式传参是同形翻译，且比 C 的全局数组直捅更干净；解耦需引入 region-lookup 间接层，与单线程事件循环的简单性原则冲突。
+- **Files**: `memtype.rs`（:7 import 处加判定注释，零行为变更）
+- **测试**：无新增；501/519/501 + clippy 0 警告回归
+- **边界**：`use crate::vmproc` 的 import 语句保留——它服务的是合法的签名依赖，非历史残留
 
 ---
 
