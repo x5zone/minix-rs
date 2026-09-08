@@ -501,6 +501,16 @@ pub fn smap_by_endpt(table: &SmapTable, endpt: i32) -> Option<u8> {
         .map(|i| i as u8)
 }
 
+/// Owning driver endpoint by socket device (`get_smap_by_dev`, `smap.c:216-237`).
+///
+/// Returns the raw row endpoint (`None` = free row or out-of-range device);
+/// the raw `i32` matches the table's storage (P2-5 types the table later).
+pub fn smap_endpt_by_dev(table: &SmapTable, dev: u64) -> Option<i32> {
+    let (num, _) = split_smap_dev(dev)?;
+    let row = table.entries.get((num - 1) as usize)?;
+    row.endpt
+}
+
 /// Row by domain (`get_smap_by_domain`, `smap.c:265-273`).
 pub fn smap_by_domain(table: &SmapTable, domain: i32) -> Option<u8> {
     if domain < 0 || (domain as usize) >= PF_MAX {

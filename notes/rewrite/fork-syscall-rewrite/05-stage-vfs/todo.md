@@ -27,7 +27,7 @@
 | P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2） |
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2） |
-| **P0** | **R2-P0-2** | `copy_fd` 的 From/To 方向建模偏离 C（kind 应决定方向）且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模（§9.2；Fix #4 已补 count 配对与 Close 闸门） |
+| **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2） |
@@ -113,7 +113,7 @@
 - **验证**：`grep -rn "0x600" os/servers/vfs/src` 归零；新绝对值断言入测；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` 全绿；对端 protocol.rs 不动。
 - **边界**：与 P1-2（REQ 协议面）、edge E-REQWIRE 交叉；修 A 时勿动 FsReq 变体结构（那是 E-REQWIRE 范围）；同文件注释漂移顺带修 R2-P3-1（fix-guard 一次一条，分两批）。
 
-#### R2-P0-2（P0-design-deviation）`copy_fd` 的 From/To 方向建模偏离 C，EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门缺失
+#### ✅ R2-P0-2（P0-design-deviation）`copy_fd` 的 From/To 方向建模偏离 C，EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门缺失——已修复 2026-09-09（§10 Fix #10）
 
 - **Rust 现状**（Fix #4 后）：`From`/`To` 两分支行为仍相同——都从 `src` 读 filp、向 `dst` 分配（copy_fd，filedes.rs:237-290 一带），而 C 的方向由 `what` 决定：`COPYFD_FROM` 从**远端**读、写入**调用者**表（filedes.c:600-602 `rfp = fp` 重定向），`COPYFD_TO` 从**调用者**读、写入**远端**表（filedes.c:568 `get_filp2((what == COPYFD_TO) ? fp : rfp, ...)`）——即同一对 `(src, dst)` 参数在两种 kind 下语义应互换，当前不互换。count 配对已由 Fix #4 补上（`inc_count`/Close 闸门），但 `COPYFD_CLOEXEC` 剥离（filedes.c:600）、`S_ISSOCK` 自复制 `EDEADLK`（filedes.c:606-613）、`filp_ioctl_fp == rfp → EBADF`（filedes.c:582-585，VND IOCTL 死锁防护）均未建模（注释自认 DEFERRED）。
 - **C 行为**（Ground Truth）：filedes.c:524-650 如上；`COPYFD_CLOSE` 的注释明言"只用于撤销一次成功的 copy-to，且假定调用者自己仍持有引用"。
@@ -316,6 +316,14 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **测试踩坑与 C 锚点**：初版测试用元组连续 `alloc_filp` 后才 `inc_count`——`alloc_filp` 不预留槽位（C 的分配点 `open.c:134` 立即 `filp_count = 1`，Rust 延迟给调用方，get_fd 注释已声明），三次分配全落槽位 0。测试改为交错分配并在注释标注该契约；`alloc_filp` 的延迟置位语义保持现状（属 get_fd 组合层设计，不自作主张改签名），后续轮次若发现第三个踩坑点再评估立条。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**（336→338）。
 - **边界**：R2-P1-3（sdev_stop 驱动死亡级联——本族 + smap unmap + select 唤醒的触发序设计，下一步）；P2-5（`filp.vnode` 裸 usize 类型化时三函数同步改型）。
+
+### ✅ Fix #10: R2-P0-2 — copy_fd 方向建模 + 三守门齐装（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（`CopyFdCtx` + copy_fd 重写 + 测试群重写）、`os/servers/vfs/src/device_map.rs`（`smap_endpt_by_dev` 助手）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D5/测试表）。
+- **Before**：`From`/`To` 行为相同（都读 src 写 dst，方向建模缺失）；`S_ISSOCK` 自复制 EDEADLK、`COPYFD_CLOEXEC` 剥离/置位、`filp_ioctl_holder` VND 死锁探针全部缺席。
+- **After**：`CopyFdCtx { filp_table, vnode_table, smap_table, policy, caller_endpoint(who_e), remote_slot, is_super, cloexec }` 显式注入 C 的隐式环境（`FreeCtx` 同型）；方向由 `kind` 决定（From 取 remote 装 caller + CLOEXEC 剥离；To 取 caller 装 remote + CLOEXEC 置位；Close 清 remote fd）；三守门齐（EPERM/`ioctl_holder` EBADF/自复制 EDEADLK）。`device_map` 新增 `smap_endpt_by_dev`（C `get_smap_by_dev`，smap.c:216-237）。设计要点：否决"调用方按 kind 交换 src/dst"的旧签名——方向错配必须在函数内不可表达；取用侧/安装侧的分化与 C 的 `get_filp2(COPYFD_TO?fp:rfp)` 一处分化同构。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **343 passed / 0 failed**（341→343：+EDEADLK、+ioctl_holder EBADF；既有 5 测试全部迁移到新签名并保持语义断言）。回归 review 曾逮到区间替换吞掉 `test_copy_close` 的 `#[test]` 属性（342≠343 账目不符），已补回。
+- **边界**：close 路径的 `nr_locks` 释放与 `lock_filp(READ)` 真锁仍在 P1-2 接线矩阵；`SmapEntry.endpt` 的裸 `i32` 属 P2-5 类型化批。
 
 ### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
 

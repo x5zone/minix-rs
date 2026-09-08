@@ -13,7 +13,7 @@ use core::cell::Cell;
 
 use minix_types::{Endpoint, Mode, UserSlot};
 
-use crate::device_map::split_smap_dev;
+use crate::device_map::{smap_endpt_by_dev, split_smap_dev, SmapTable};
 use crate::filp::{FILP_CLOSED, FilpId, FilpTable};
 use crate::fproc::{FProc, OPEN_MAX};
 use crate::mount::DevCodec;
@@ -277,53 +277,109 @@ pub enum CopyKind {
     Close,
 }
 
-/// `do_copyfd` — `filedes.c:524` super_user → `EPERM`, `isokendpt`, `S_ISSOCK` `EDEADLK`.
+/// Context for [`copy_fd`] — C's implicit environment made explicit
+/// (the `super_user`/`who_e` globals and the shared tables; `FreeCtx` 同型).
+pub struct CopyFdCtx<'a> {
+    pub filp_table: &'a mut FilpTable,
+    pub vnode_table: &'a VnodeTable,
+    pub smap_table: &'a SmapTable,
+    pub policy: &'a dyn FdAllocPolicy,
+    /// `who_e` — the back-calling driver (UDS/VND), for the `S_ISSOCK`
+    /// self-copy deadlock check.
+    pub caller_endpoint: Endpoint,
+    /// The remote process's slot — `filp_ioctl_fp`'s identity compare.
+    pub remote_slot: UserSlot,
+    /// `super_user` — `COPYFD` is a driver back-call privilege.
+    pub is_super: bool,
+    /// `COPYFD_CLOEXEC` from `what` (`filedes.c:546`).
+    pub cloexec: bool,
+}
+
+/// `do_copyfd` — `filedes.c:524-650`.  Direction is decided by `kind`:
 ///
-/// `src`/`dst` follow the `From` direction (remote → caller); the caller of
-/// this decision function passes the pair per the message's endpoint.
-/// Simplified: `cred.is_super` replaces `super_user` global; `S_ISSOCK`
-/// `EDEADLK` and `COPYFD_CLOEXEC` stripping are DEFERRED (noted per branch).
+/// - `From`: filp read from the **remote** table, installed in the
+///   **caller's** (`filedes.c:600-602` redirects `rfp = fp`; `COPYFD_CLOEXEC`
+///   is stripped — a copied-in fd never starts life close-on-exec).
+/// - `To`: filp read from the **caller's** table, installed in the
+///   **remote's** with `COPYFD_CLOEXEC` honored (`filedes.c:568`).
+/// - `Close`: revert a prior `To` — gate `filp_count > 1`, then clear the
+///   **remote's** fd (`filedes.c:631-646`).
+///
+/// Guards shared by all three: `super_user → EPERM`, the `filp_ioctl_fp`
+/// VND self-IOCTL probe (`:582-585`), and — for `From` on a socket — the
+/// owning-driver self-copy `EDEADLK` check (`:606-613`).
 pub fn copy_fd(
-    src: &mut FProc,
-    dst: &mut FProc,
-    src_fd: Fd,
+    caller: &mut FProc,
+    remote: &mut FProc,
+    fd: Fd,
     kind: CopyKind,
-    is_super: bool,
-    filp_table: &mut FilpTable,
-    policy: &dyn FdAllocPolicy,
+    ctx: CopyFdCtx<'_>,
 ) -> Result<Fd, FdError> {
-    if !is_super {
+    if !ctx.is_super {
         return Err(FdError::Perm);
     }
-    let filp_idx = src.filps[src_fd.get()].ok_or(FdError::BadFd)?;
+    // `rfilp = get_filp2((what == COPYFD_TO) ? fp : rfp, fd, VNODE_NONE)` —
+    // the filp comes from the caller for `To`, from the remote otherwise.
+    let filp_idx = match kind {
+        CopyKind::To => caller.filps[fd.get()],
+        CopyKind::From | CopyKind::Close => remote.filps[fd.get()],
+    }
+    .ok_or(FdError::BadFd)?;
+    let fid = FilpId(filp_idx);
+    {
+        let f = ctx.filp_table.get(fid).ok_or(FdError::BadFd)?;
+        // VND deadlock guard: the remote process is blocked in an IOCTL on
+        // this very filp (`filedes.c:582-585`).
+        if f.ioctl_holder == Some(ctx.remote_slot) {
+            return Err(FdError::BadFd);
+        }
+    }
     match kind {
         CopyKind::From => {
-            // `S_ISSOCK` self-copy deadlock would be `EDEADLK` — stub always ok for test
-            let idx = policy.allocate(&dst.filps, 0).ok_or(FdError::TooManyOpen)?;
-            let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
-            dst.filps[idx] = Some(filp_idx);
-            // `filedes.c:652 rfilp->filp_count++` — the copy owns a reference.
-            filp_table.inc_count(FilpId(filp_idx));
-            Ok(fd)
+            // Owning-driver self-copy: a socket whose driver is the caller
+            // itself must not be copied back into it (`filedes.c:606-613`).
+            let self_copy = ctx
+                .filp_table
+                .get(fid)
+                .and_then(|f| f.vnode)
+                .and_then(|v| ctx.vnode_table.get(VnodeId(v)))
+                .map_or(false, |vn| {
+                    (vn.mode & S_IFMT) == S_IFSOCK
+                        && smap_endpt_by_dev(ctx.smap_table, vn.sdev)
+                            == Some(ctx.caller_endpoint.get())
+                });
+            if self_copy {
+                return Err(FdError::Deadlk);
+            }
+            // `rfp = fp; flags &= ~COPYFD_CLOEXEC` — install in the caller,
+            // never close-on-exec (`filedes.c:600-602`).
+            let idx = ctx.policy.allocate(&caller.filps, 0).ok_or(FdError::TooManyOpen)?;
+            let new_fd = Fd::new(idx).ok_or(FdError::BadFd)?;
+            caller.filps[idx] = Some(filp_idx);
+            ctx.filp_table.inc_count(fid);
+            Ok(new_fd)
         }
         CopyKind::To => {
-            let idx = policy.allocate(&dst.filps, 0).ok_or(FdError::TooManyOpen)?;
-            let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
-            dst.filps[idx] = Some(filp_idx);
-            filp_table.inc_count(FilpId(filp_idx));
-            Ok(fd)
+            // Install in the remote with `COPYFD_CLOEXEC` honored
+            // (`filedes.c:617-624`).
+            let idx = ctx.policy.allocate(&remote.filps, 0).ok_or(FdError::TooManyOpen)?;
+            let new_fd = Fd::new(idx).ok_or(FdError::BadFd)?;
+            remote.filps[idx] = Some(filp_idx);
+            if ctx.cloexec {
+                remote.cloexec_set.set(new_fd.get(), true);
+            }
+            ctx.filp_table.inc_count(fid);
+            Ok(new_fd)
         }
         CopyKind::Close => {
-            // `COPYFD_CLOSE` reverts a prior `COPYFD_TO` (`filedes.c:631-646`):
-            // the fd lives in the process the copy targeted, and the gate is
-            // `filp_count > 1` because the caller must still hold its own
-            // reference — dropping the last one is `EBADF`, not a silent clear.
-            let fid = FilpId(filp_idx);
-            let count = filp_table.get(fid).ok_or(FdError::BadFd)?.count;
+            // `COPYFD_CLOSE` reverts a prior `To`: gate `filp_count > 1`
+            // (the caller still holds its own reference), then clear the
+            // remote's fd (`filedes.c:631-646`).
+            let count = ctx.filp_table.get(fid).ok_or(FdError::BadFd)?.count;
             if count > 1 {
-                filp_table.dec_count(fid);
-                src.filps[src_fd.get()] = None;
-                Ok(src_fd)
+                ctx.filp_table.dec_count(fid);
+                remote.filps[fd.get()] = None;
+                Ok(fd)
             } else {
                 Err(FdError::BadFd)
             }
@@ -442,23 +498,46 @@ mod tests {
         assert_eq!(tbl.get(fid).unwrap().count, 0);
     }
 
+    /// `CopyFdCtx` with a plain caller/remote pair and empty smap — helpers.
+    fn copy_ctx<'a>(
+        tbl: &'a mut FilpTable,
+        vtbl: &'a VnodeTable,
+        stbl: &'a SmapTable,
+        policy: &'a dyn FdAllocPolicy,
+        remote_slot: UserSlot,
+    ) -> CopyFdCtx<'a> {
+        CopyFdCtx {
+            filp_table: tbl,
+            vnode_table: vtbl,
+            smap_table: stbl,
+            policy,
+            caller_endpoint: Endpoint::from_generation_slot(0, 9),
+            remote_slot,
+            is_super: true,
+            cloexec: false,
+        }
+    }
+
     #[test]
     fn test_cloexec_copy() {
-        let mut src = new_fproc();
-        let mut dst = new_fproc();
+        // COPYFD_FROM: filp comes from the REMOTE, lands in the CALLER, and
+        // never starts life close-on-exec (`filedes.c:600-602` strips the
+        // flag).  The source fd's own cloexec bit is irrelevant.
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
         let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let stbl = SmapTable::new();
         let fid = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid);
-        src.filps[5] = Some(fid.get());
-        src.cloexec_set.set(5, true);
+        remote.filps[5] = Some(fid.get());
+        remote.cloexec_set.set(5, true);
         let policy = LowestFree;
-        // COPYFD_FROM with LowestFree should allocate dst fd 0
-        let new_fd = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::From, true, &mut tbl, &policy).unwrap();
+        let ctx = copy_ctx(&mut tbl, &vtbl, &stbl, &policy, UserSlot::new(1));
+        let new_fd = copy_fd(&mut caller, &mut remote, Fd(5), CopyKind::From, ctx).unwrap();
         assert_eq!(new_fd.get(), 0);
-        assert_eq!(dst.filps[0], Some(fid.get()));
-        // Cloexec copy: From clears CLOEXEC in our impl (flags&=~CLOEXEC)
-        // So dst cloexec should not be set
-        assert!(!dst.cloexec_set.get(0));
+        assert_eq!(caller.filps[0], Some(fid.get()));
+        assert!(!caller.cloexec_set.get(0));
     }
 
     #[test]
@@ -566,50 +645,142 @@ mod tests {
 
     #[test]
     fn test_copy_from() {
-        let mut src = new_fproc();
-        let mut dst = new_fproc();
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
         let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let stbl = SmapTable::new();
         let fid = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid);
-        src.filps[3] = Some(fid.get());
+        remote.filps[3] = Some(fid.get());
         let policy = LowestFree;
-        let fd = copy_fd(&mut src, &mut dst, Fd(3), CopyKind::From, true, &mut tbl, &policy).unwrap();
-        assert_eq!(dst.filps[fd.get()], Some(fid.get()));
+        let ctx = copy_ctx(&mut tbl, &vtbl, &stbl, &policy, UserSlot::new(1));
+        let fd = copy_fd(&mut caller, &mut remote, Fd(3), CopyKind::From, ctx).unwrap();
+        assert_eq!(caller.filps[fd.get()], Some(fid.get()));
     }
 
     #[test]
     fn test_copy_to() {
-        let mut src = new_fproc();
-        let mut dst = new_fproc();
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
         let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let stbl = SmapTable::new();
         let fid = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid);
-        src.filps[7] = Some(fid.get());
+        caller.filps[7] = Some(fid.get());
         let policy = LowestFree;
-        let fd = copy_fd(&mut src, &mut dst, Fd(7), CopyKind::To, true, &mut tbl, &policy).unwrap();
+        // COPYFD_TO: filp comes from the CALLER, lands in the REMOTE with
+        // COPYFD_CLOEXEC honored (`filedes.c:617-624`).
+        let ctx = CopyFdCtx {
+            filp_table: &mut tbl,
+            vnode_table: &vtbl,
+            smap_table: &stbl,
+            policy: &policy,
+            caller_endpoint: Endpoint::from_generation_slot(0, 9),
+            remote_slot: UserSlot::new(1),
+            is_super: true,
+            cloexec: true,
+        };
+        let fd = copy_fd(&mut caller, &mut remote, Fd(7), CopyKind::To, ctx).unwrap();
         assert_eq!(fd.get(), 0);
-        assert_eq!(dst.filps[0], Some(fid.get()));
+        assert_eq!(remote.filps[0], Some(fid.get()));
+        assert!(remote.cloexec_set.get(0));
         // The copy owns a reference (filedes.c:652 filp_count++)
         assert_eq!(tbl.get(fid).unwrap().count, 2);
         // Non-super should EPERM
-        let r = copy_fd(&mut src, &mut dst, Fd(7), CopyKind::To, false, &mut tbl, &policy);
+        let ctx = CopyFdCtx {
+            filp_table: &mut tbl,
+            vnode_table: &vtbl,
+            smap_table: &stbl,
+            policy: &policy,
+            caller_endpoint: Endpoint::from_generation_slot(0, 9),
+            remote_slot: UserSlot::new(1),
+            is_super: false,
+            cloexec: false,
+        };
+        let r = copy_fd(&mut caller, &mut remote, Fd(7), CopyKind::To, ctx);
         assert_eq!(r.unwrap_err(), FdError::Perm);
     }
 
     #[test]
-    fn test_copy_close() {
-        let mut src = new_fproc();
-        let mut dst = new_fproc();
+    fn test_copy_from_self_socket_edeadlk() {
+        // A socket filp owned by the calling driver itself must not be
+        // copied back into it (`filedes.c:606-613` → EDEADLK).
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
         let mut tbl = FilpTable::new();
+        let mut vtbl = VnodeTable::new();
+        let mut stbl = SmapTable::new();
+        let fid = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid);
+        remote.filps[3] = Some(fid.get());
+        tbl.get_mut(fid).unwrap().vnode = Some(1);
+        vtbl.get_mut(VnodeId(1)).unwrap().mode = S_IFSOCK | 0o600;
+        vtbl.get_mut(VnodeId(1)).unwrap().sdev = crate::device_map::make_smap_dev(1, 7);
+        stbl.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 9).get());
+        let policy = LowestFree;
+        let ctx = CopyFdCtx {
+            filp_table: &mut tbl,
+            vnode_table: &vtbl,
+            smap_table: &stbl,
+            policy: &policy,
+            caller_endpoint: Endpoint::from_generation_slot(0, 9),
+            remote_slot: UserSlot::new(1),
+            is_super: true,
+            cloexec: false,
+        };
+        let r = copy_fd(&mut caller, &mut remote, Fd(3), CopyKind::From, ctx);
+        assert_eq!(r.unwrap_err(), FdError::Deadlk);
+    }
+
+    #[test]
+    fn test_copy_to_ioctl_holder_ebadf() {
+        // The remote process is blocked in an IOCTL on this very filp — VND
+        // deadlock guard rejects the copy (`filedes.c:582-585` → EBADF).
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
+        let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let stbl = SmapTable::new();
+        let fid = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid);
+        caller.filps[7] = Some(fid.get());
+        tbl.get_mut(fid).unwrap().ioctl_holder = Some(UserSlot::new(1));
+        let policy = LowestFree;
+        let ctx = CopyFdCtx {
+            filp_table: &mut tbl,
+            vnode_table: &vtbl,
+            smap_table: &stbl,
+            policy: &policy,
+            caller_endpoint: Endpoint::from_generation_slot(0, 9),
+            remote_slot: UserSlot::new(1),
+            is_super: true,
+            cloexec: false,
+        };
+        let r = copy_fd(&mut caller, &mut remote, Fd(7), CopyKind::To, ctx);
+        assert_eq!(r.unwrap_err(), FdError::BadFd);
+    }
+
+    #[test]
+    fn test_copy_close() {
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
+        let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let stbl = SmapTable::new();
         let fid = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid);
         tbl.inc_count(fid);
-        src.filps[5] = Some(fid.get());
-        dst.filps[5] = Some(fid.get());
+        // The reverted fd lives in the REMOTE (`filedes.c:631-646`).
+        remote.filps[5] = Some(fid.get());
+        caller.filps[5] = Some(fid.get());
         let policy = LowestFree;
-        let r = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::Close, true, &mut tbl, &policy).unwrap();
+        let ctx = copy_ctx(&mut tbl, &vtbl, &stbl, &policy, UserSlot::new(1));
+        let r = copy_fd(&mut caller, &mut remote, Fd(5), CopyKind::Close, ctx).unwrap();
         assert_eq!(r.get(), 5);
-        assert!(src.filps[5].is_none());
+        assert!(remote.filps[5].is_none());
+        assert!(caller.filps[5].is_some());
         // The revert dropped the copied reference only (count 2 → 1)
         assert_eq!(tbl.get(fid).unwrap().count, 1);
     }
@@ -618,17 +789,20 @@ mod tests {
     fn test_copy_close_last_reference_ebadf() {
         // C: `COPYFD_CLOSE` with `filp_count == 1` is `EBADF` (`filedes.c:644`)
         // — it must never drop the caller's last reference, and the fd stays.
-        let mut src = new_fproc();
-        let mut dst = new_fproc();
+        let mut caller = new_fproc();
+        let mut remote = new_fproc();
         let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let stbl = SmapTable::new();
         let fid = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid);
-        src.filps[5] = Some(fid.get());
-        dst.filps[5] = Some(fid.get());
+        remote.filps[5] = Some(fid.get());
+        caller.filps[5] = Some(fid.get());
         let policy = LowestFree;
-        let r = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::Close, true, &mut tbl, &policy);
+        let ctx = copy_ctx(&mut tbl, &vtbl, &stbl, &policy, UserSlot::new(1));
+        let r = copy_fd(&mut caller, &mut remote, Fd(5), CopyKind::Close, ctx);
         assert_eq!(r.unwrap_err(), FdError::BadFd);
-        assert!(src.filps[5].is_some());
+        assert!(remote.filps[5].is_some());
         assert_eq!(tbl.get(fid).unwrap().count, 1);
     }
 

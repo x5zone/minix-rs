@@ -120,8 +120,8 @@ Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 
 ### D5 `do_copyfd` 的 `FROM/TO/CLOSE` 与 `super_user` 守门显式
 
 - **C**：`do_copyfd:539 super_user→EPERM` 的 `SU_UID` 守门与 `isokendpt→EINVAL` 的三守门及 `COPYFD_FROM: S_ISSOCK && smap_endpt==who_e → EDEADLK` 的自复制 `EDEADLK`。
-- **Rust**：`copy_fd(&mut FProc, &mut FProc, Fd, CopyKind, is_super, &mut FilpTable, &dyn FdAllocPolicy) -> Result<Fd, FdError>` 的 `is_super→EPERM` 守门、`From/To` 安装后 `inc_count`（`filedes.c:652`）与 `Close` 的 `count>1→dec_count + 清 fd / 否则 EBADF`（`filedes.c:636-646`）可测试；`S_ISSOCK→EDEADLK` 守门、`COPYFD_CLOEXEC` 剥离与 From/To 方向按消息端点的建模挂 R2-P0-2。
-- **为什么**：`int what` 的 `COPYFD_FROM 0/TO 1/CLOSE 2` 裸整数在 Rust 以 `CopyFdKind` 枚举使 `what & COPYFD_FLAGS` 的 `CLOEXEC` 剥离在 `CopyFdKind::flags` 可观测。
+- **Rust**：`CopyFdCtx { filp_table, vnode_table, smap_table, policy, caller_endpoint(who_e), remote_slot(isokendpt 恒等), is_super, cloexec }` 把 C 的隐式环境显式注入（`FreeCtx` 同型），`copy_fd(caller, remote, fd, kind, ctx)` 的方向由 `kind` 决定——`From`：filp 取自 remote、装入 caller 且 `COPYFD_CLOEXEC` 剥离（`filedes.c:600-602`）；`To`：filp 取自 caller、装入 remote 且 `CLOEXEC` 置位（`:617-624`）；`Close`：`count>1 → dec + 清 remote fd / 否则 EBADF`（`:636-646`）。三守门齐：`is_super→EPERM`、`filp_ioctl_holder==remote_slot→EBADF`（`:582-585` VND 死锁防护）、`From` 的 `S_ISSOCK && smap_endpt_by_dev(v_sdev)==who_e→EDEADLK`（`:606-613`）。
+- **为什么**：方向由 `kind` 决定而非调用方交换参数——C 的消息只带一个远端端点，`FROM/TO` 的取用侧与安装侧在 `get_filp2(COPYFD_TO?fp:rfp)` 一处分化，Rust 以 `match kind` 的取用/安装矩阵使方向错配在函数内不可表达；裸 `src/dst` 双进程参数的旧签名被否决——两种 kind 下同一参数语义互换，等于把 C 的方向正确性外包给每个调用点的纪律。
 
 ### D6 `invalidate_filp` 族的 `FILP_CLOSED` 传播与 `CLOEXEC` 位集
 
@@ -199,9 +199,11 @@ os/servers/vfs/src/
 | `test_invalidate_by_endpt` | `filedes.c:298` | `fs_e==ep→CLOSED` 按端点计数（endpoint 5→1、6→2、他端点不动） | `filedes.rs` |
 | `test_invalidate_by_char_major` | `filedes.c:254` | `S_ISCHR && major==4` 命中；他 major 与 regular 文件不动 | `filedes.rs` |
 | `test_invalidate_by_sock_drv` | `filedes.c:269` | `S_ISSOCK && smap_num==1` 命中；num 2 与 char 设备不动 | `filedes.rs` |
-| `test_copy_from` | `filedes.c:579` | `COPYFD_FROM` 的 `S_ISSOCK→EDEADLK` 守门 | `filedes.rs` |
-| `test_copy_to` | `filedes.c:618` | `COPYFD_TO` 的 `LowestFree` 分配 `fd` | `filedes.rs` |
-| `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 fd` 回滚 | `filedes.rs` |
+| `test_copy_from` | `filedes.c:600-602` | `From` 取 remote 装 caller、CLOEXEC 不置 | `filedes.rs` |
+| `test_copy_to` | `filedes.c:617-624` | `To` 取 caller 装 remote、`CLOEXEC` 置位 + count++ + `EPERM` | `filedes.rs` |
+| `test_copy_from_self_socket_edeadlk` | `filedes.c:606-613` | `S_ISSOCK && smap_endpt==who_e → EDEADLK` | `filedes.rs` |
+| `test_copy_to_ioctl_holder_ebadf` | `filedes.c:582-585` | remote 持 `ioctl_holder → EBADF`（VND 死锁防护） | `filedes.rs` |
+| `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 remote fd`、caller 引用保留 | `filedes.rs` |
 | `test_copy_close_last_reference_ebadf` | `filedes.c:644` | `count==1→EBADF` 且 fd 不清除 | `filedes.rs` |
 | `test_fd_alloc_policy_two_impls` | `filedes.c:121` | `FdAllocPolicy` trait `LowestFree vs NextFit` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
 
