@@ -882,15 +882,20 @@ pub(crate) fn dispatch_statectl(
 | `test_dispatch_schedctl_no_flag_sets_caller_as_scheduler_on_target` | 无 flag 设 caller 为 scheduler | schedctl |
 | `test_dispatch_schedctl_preserves_minus_one_sentinels` | -1 sentinel → Option（保持当前值） | schedctl |
 
-### 5.2 待补充测试（DEFERRED 函数实现后）
+### 5.2 待补充测试（DEFERRED 函数实现后）→ ✅ 全部补齐（2026-09-08，T-12）
 
-| 测试函数 | 验证行为 | 依赖 |
+> 5 个测试全部落地于 syscall_process.rs（`test_t12_*` 前缀）。附带行为修正：幂等测试暴露
+> `dispatch_clear` 用 `endpoint_to_nr`（跳过 SLOT_FREE 槽）解析目标，导致第二次 clear 返回
+> EINVAL ≠ C 的 isemptyp→OK（do_clear.c:38，C isokendpt 不排除已释放槽位）——已修正为
+> 不排除释放槽的解析，幂等语义与 C 对齐。
+
+| 测试函数（落地名） | 验证行为 | 状态 |
 |---------|---------|------|
-| `test_dispatch_fork_creates_child_with_new_endpoint` | fork 创建子 + 新 endpoint 代际 +1 | dispatch_fork |
-| `test_dispatch_fork_rejects_non_receiving_parent` | 父非 RECEIVING → EINVAL | dispatch_fork |
-| `test_dispatch_fork_downgrades_sys_proc_child` | SYS_PROC 父 → USER 子 + RTS_NO_PRIV | dispatch_fork |
-| `test_dispatch_runctl_rc_delay_returns_ebusy` | RC_DELAY + SENDING → EBUSY | runctl |
-| `test_dispatch_clear_idempotent_on_empty_slot` | 已 clear 再 clear → OK | clear |
+| `test_t12_fork_creates_child_with_new_endpoint` | fork 创建子 + endpoint 代际 +1（(1<<15)+3） | ✅ |
+| `test_t12_fork_rejects_non_receiving_parent` | 父非 RECEIVING → EINVAL | ✅ |
+| `test_t12_fork_downgrades_sys_proc_child` | SYS_PROC 父 → USER_PRIV_ID 子 + RTS_NO_PRIV | ✅ |
+| `test_t12_runctl_rc_delay_returns_ebusy` | RC_DELAY + SENDING → EBUSY + MF_SIG_DELAY | ✅ |
+| `test_dispatch_clear_idempotent_on_empty_slot`→`test_t12_clear_idempotent_on_empty_slot` | 已 clear 再 clear → OK（含 isokendpt 奇偶修正） | ✅ |
 
 ---
 

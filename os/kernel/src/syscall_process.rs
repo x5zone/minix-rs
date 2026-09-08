@@ -405,8 +405,16 @@ pub fn dispatch_clear(
     let endpt = m1.m1i1; // m_lsys_krn_sys_clear.endpt
 
     // C: do_clear.c:29 — isokendpt(endpt, &exit_p)
+    //
+    // C 的 isokendpt 不排除已释放槽位（仅校验 proc 范围 + endpoint 匹配），
+    // 因此重复 clear 幂等：第一次清空槽位后，第二次 isokendpt 仍解析到该
+    // 槽并走 isemptyp → OK（do_clear.c:38）。Rust 的 endpoint_to_nr 跳过
+    // SLOT_FREE 槽，会让第二次 clear 变成 EINVAL（C 行为偏离），故此处用
+    // 不排除释放槽的解析。
     let target_endpoint = Endpoint(endpt);
-    let target_nr = match proc_table.endpoint_to_nr(target_endpoint) {
+    let target_nr = match proc_table.iter()
+        .find(|p| p.p_endpoint == target_endpoint)
+        .map(|p| p.p_nr) {
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
@@ -417,6 +425,7 @@ pub fn dispatch_clear(
     // would mark the PM's own slot as SLOT_FREE — a P0 semantic drift.
 
     // C: do_clear.c:38 — if(isemptyp(rc)) return OK
+    // （幂等路径：重复 clear 命中此处 → OK）
     if proc_table.get(target_nr).is_none_or(|p| {
         p.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE)
     }) {
@@ -1578,5 +1587,134 @@ mod tests {
         assert_eq!(target.p_sched.priority.load(core::sync::atomic::Ordering::Acquire), 7);
         assert_eq!(target.p_sched.quantum.size_ms.load(core::sync::atomic::Ordering::Acquire), 20);
         assert_eq!(target.p_sched.scheduler, None);
+    }
+
+    // ── T-12: doc 17 §5.2 五测试（fork ×3 / runctl RC_DELAY / clear 幂等）──
+
+    #[test]
+    fn test_t12_fork_creates_child_with_new_endpoint() {
+        // C do_fork.c:69-72 — 子 endpoint 代际 +1：gen0 slot3 → (1<<15)+3。
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = 100; // 父 endpoint
+        msg.m_u.m_m1.m1i2 = 3;   // 子槽位
+        msg.m_u.m_m1.m1i3 = 0;   // flags
+
+        let result = dispatch_fork(&mut caller, &msg, &mut proc_table, &priv_table);
+        let child_ep = match result {
+            KcallResult::Ok(v) => v,
+            other => panic!("fork 应成功，实际 {:?}", other),
+        };
+        assert_eq!(child_ep, (1 << 15) + 3, "子 endpoint = (gen+1)<<15 | slot");
+        let child = proc_table.get(ProcNr(3)).unwrap();
+        assert_eq!(child.p_endpoint.0, (1 << 15) + 3);
+        assert_eq!(child.p_nr, ProcNr(3));
+    }
+
+    #[test]
+    fn test_t12_fork_rejects_non_receiving_parent() {
+        // C do_fork.c:51 — 父进程非 RECEIVING（非同步 fork 点）→ EINVAL。
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        // 不置 RECEIVING
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = 100;
+        msg.m_u.m_m1.m1i2 = 3;
+        msg.m_u.m_m1.m1i3 = 0;
+
+        let result = dispatch_fork(&mut caller, &msg, &mut proc_table, &priv_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_t12_fork_downgrades_sys_proc_child() {
+        // C do_fork.c:105-107 — SYS_PROC 父 → 子挂 USER_PRIV_ID 且置
+        // RTS_NO_PRIV（运行前需重新授权）。
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let pid = priv_table.assign_static(ProcNr(0)).expect("priv slot");
+        priv_table.get_mut(pid).unwrap().flags.s_flags =
+            crate::capability::ProcessCapability::SYS_PROC;
+        caller.priv_id = Some(pid);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = 100;
+        msg.m_u.m_m1.m1i2 = 3;
+        msg.m_u.m_m1.m1i3 = 0;
+
+        let result = dispatch_fork(&mut caller, &msg, &mut proc_table, &priv_table);
+        assert!(matches!(result, KcallResult::Ok(_)));
+        let child = proc_table.get(ProcNr(3)).unwrap();
+        assert_eq!(child.priv_id, Some(crate::kpriv::USER_PRIV_ID),
+            "子进程必须挂 USER_PRIV_ID");
+        assert!(child.p_rts_flags.is_set(RtsFlagsBits::NO_PRIV),
+            "SYS_PROC 父的子进程必须置 RTS_NO_PRIV");
+    }
+
+    #[test]
+    fn test_t12_runctl_rc_delay_returns_ebusy() {
+        // C do_runctl.c:44-50 — RC_DELAY + 目标 SENDING → 置 MF_SIG_DELAY
+        // 并返回 EBUSY（延迟停止，等待 IPC 完成）。
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let target_nr = ProcNr(1);
+        if let Some(target) = proc_table.get_mut(target_nr) {
+            target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            target.p_rts_flags.set(RtsFlagsBits::SENDING);
+        }
+        let target_ep = proc_table.get(target_nr).unwrap().p_endpoint;
+
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = target_ep.0;
+        msg.m_u.m_m1.m1i2 = RC_STOP;
+        msg.m_u.m_m1.m1i3 = RC_DELAY;
+
+        let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
+        assert_eq!(result, KcallResult::Ok(EBUSY));
+        assert!(proc_table.get(target_nr).unwrap()
+            .p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY),
+            "EBUSY 路径必须置 MF_SIG_DELAY");
+    }
+
+    #[test]
+    fn test_t12_clear_idempotent_on_empty_slot() {
+        // C do_clear.c:38 — 已 clear 的槽位再 clear → isemptyp → OK（幂等）。
+        // C isokendpt 不排除已释放槽位，故第二次仍解析到该槽。
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let target_nr = ProcNr(1);
+        if let Some(target) = proc_table.get_mut(target_nr) {
+            target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        }
+        let target_ep = proc_table.get(target_nr).unwrap().p_endpoint;
+
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut clock_state = crate::clock::ClockState::new();
+        // IRQ-hook 清理读全局 IRQ_MANAGER（同既有 clear 测试的初始化）。
+        unsafe { crate::init_irq_manager_for_test(); }
+        // clear 的 IRQ-hook 清理路径需要 BKL witness（A1 约定，同既有测试）。
+        let bkl_section = crate::smp::bkl_lock_section();
+
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = target_ep.0;
+
+        let first = dispatch_clear(&mut caller, &msg, &mut proc_table,
+            &mut priv_table, &mut clock_state);
+        assert_eq!(first, KcallResult::Ok(OK), "第一次 clear 应成功");
+
+        // C isokendpt 不排除释放槽 → 第二次命中 isemptyp → OK（非 EINVAL）。
+        let second = dispatch_clear(&mut caller, &msg, &mut proc_table,
+            &mut priv_table, &mut clock_state);
+        assert_eq!(second, KcallResult::Ok(OK),
+            "重复 clear 必须幂等返回 OK（C do_clear.c:38）");
+        crate::smp::bkl_unlock();
     }
 }
