@@ -711,4 +711,90 @@ mod tests {
         );
         assert!(matches!(result, VerifyGrantOutcome::Err(EINVAL)));
     }
+
+    // ── T-8（doc 18 §5.2）：verify_grant 宿主可测面——priv 字段级校验分支 ──
+
+    /// 范围超限：grant 表只有 2 项，grant_id=10（idx=10 >= 2）→ EPERM
+    /// （do_safecopy.c:103-114 grant 索引越界）。宿主可测：该分支只读
+    /// granter 的 priv 字段，先于授权条目的跨空间读取。
+    #[test]
+    fn test_t8_verify_grant_range_exceeded_returns_eperm() {
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+
+        // caller（发起 safecopy 的一方）与 granter（ep 200）均在表中。
+        proc_table.get_mut(ProcNr(0)).unwrap()
+            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table.get_mut(ProcNr(1)).unwrap()
+            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
+
+        // granter 的 priv：表非空、2 项、临时表 endpoint = 自身（跳过临时表分支）。
+        let pid = priv_table.assign_static(ProcNr(1)).expect("priv slot");
+        {
+            let kp = priv_table.get_mut(pid).unwrap();
+            kp.runtime.s_grant_table = 0x4000; // 非零 → HASGRANTTABLE 通过
+            kp.runtime.s_grant_entries = 2;    // 只有 2 项
+            kp.runtime.s_grant_endpoint = Endpoint(200);
+        }
+        proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
+
+        // grant_id=10 → g_idx=10 >= s_grant_entries=2 → EPERM。
+        // 闭包返 None 即可：越界分支先于授权条目的跨空间读取触发。
+        let result = verify_grant(
+            &mut caller,
+            Endpoint(200),   // granter
+            Endpoint(100),   // grantee
+            10,              // grant_id → idx 10，越界
+            16,              // bytes
+            CpFlags::READ,
+            0,
+            &proc_table,
+            &priv_table,
+            &|_| None,
+        );
+        assert!(matches!(result, VerifyGrantOutcome::Err(EPERM)),
+            "越界 grant 索引必须返回 EPERM，实际 {:?}", result);
+    }
+
+    /// 临时授权表分支：granter 的 s_grant_endpoint ≠ 自身且不匹配 grantee
+    /// → ENOTREADY（do_safecopy.c:83-90）。
+    #[test]
+    fn test_t8_verify_grant_temp_table_mismatch_enotready() {
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+
+        proc_table.get_mut(ProcNr(0)).unwrap()
+            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table.get_mut(ProcNr(1)).unwrap()
+            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
+
+        let pid = priv_table.assign_static(ProcNr(1)).expect("priv slot");
+        {
+            let kp = priv_table.get_mut(pid).unwrap();
+            kp.runtime.s_grant_table = 0x4000;
+            kp.runtime.s_grant_entries = 8;
+            // 临时表 endpoint = 300（≠ granter 自身 200，≠ grantee 100）
+            kp.runtime.s_grant_endpoint = Endpoint(300);
+        }
+        proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
+
+        let result = verify_grant(
+            &mut caller,
+            Endpoint(200),
+            Endpoint(100),
+            0,               // idx 0，在 s_grant_entries=8 范围内
+            16,
+            CpFlags::READ,
+            0,
+            &proc_table,
+            &priv_table,
+            &|_| None,
+        );
+        assert!(matches!(result, VerifyGrantOutcome::Err(ENOTREADY)),
+            "临时授权表 grantee 不匹配必须返回 ENOTREADY，实际 {:?}", result);
+    }
 }

@@ -773,16 +773,29 @@ pub fn data_copy_vmcheck(
 
 原 DEFERRED 函数（verify_grant / vm_lookup / vm_memset / 跨进程 PTE walk）现已实现，下列测试转为端到端 / 集成测试目标（需 QEMU 或 mock grant 表构造真实跨进程场景）：
 
-| 测试函数 | 验证行为 | 依赖 |
+### 5.2 待补充测试（端到端 / 集成测试）→ 分域执行（2026-09-08，T-8）
+
+**宿主已覆盖（grant.rs `test_t8_*` + 既有）**：
+
+| 测试函数 | 验证行为 | 状态 |
 |---------|---------|------|
-| `test_verify_grant_rejects_invalid_granter` | 无效 granter endpoint → EINVAL | verify_grant（已实现，需构造 mock grant 表） |
-| `test_verify_grant_rejects_invalid_grant_id` | 无效 grant ID → EINVAL | verify_grant（已实现） |
-| `test_verify_grant_indirect_chain_depth` | 间接链超过 5 层 → ELOOP | verify_grant 间接链（已实现） |
-| `test_verify_grant_magic_redirect` | magic grant 重定向 granter | verify_grant magic（已实现） |
-| `test_verify_grant_range_exceeded` | 超出 grant 范围 → EPERM | verify_grant 范围检查（已实现） |
-| `test_data_copy_vmcheck_cross_process` | 跨进程 VA→PA→Direct Map→memcpy | data_copy_vmcheck（已接入 dispatch） |
-| `test_vm_lookup_returns_phys_addr` | VA→PA 翻译 | lookup_in_table（已接入 dispatch） |
-| `test_vm_memset_fills_pattern` | 跨空间填充字节模式 | memset_vmcheck（已接入 dispatch） |
+| `test_verify_grant_invalid_endpoint` | 无效 granter endpoint → EINVAL | ✅ 既有（即 `test_verify_grant_rejects_invalid_granter`） |
+| `test_verify_grant_invalid_grant_id` | 无效 grant ID → EINVAL | ✅ 既有（即 `test_verify_grant_rejects_invalid_grant_id`） |
+| `test_t8_verify_grant_range_exceeded_returns_eperm` | 表 2 项 + grant_id idx 10 → EPERM | ✅ 2026-09-08（priv 字段级分支，先于跨空间读取，宿主可测） |
+| `test_t8_verify_grant_temp_table_mismatch_enotready` | 临时表 endpoint 不匹配 grantee → ENOTREADY | ✅ 2026-09-08（同上） |
+
+**QEMU 域（跨空间读取依赖真实页表——宿主 PTE walk 必然 PageFault → Suspended，无法到达断言）**：
+
+| 测试函数 | 验证行为 | 阻塞点 |
+|---------|---------|--------|
+| `test_verify_grant_indirect_chain_depth` | 间接链超过 5 层 → ELOOP | 链条逐层读授权条目（data_copy_vmcheck），需可遍历页表 |
+| `test_verify_grant_magic_redirect` | magic grant 重定向 granter | magic 判定在条目读取之后 |
+| `test_data_copy_vmcheck_cross_process` | 跨进程 VA→PA→Direct Map→memcpy 成功路径 | 同上 |
+| `test_vm_lookup_returns_phys_addr` | VA→PA 翻译成功路径 | 同上 |
+| `test_vm_memset_fills_pattern` | 跨空间填充字节模式 | 同上 |
+
+> 拆分依据：verify_grant 的授权条目从 granter 用户空间经 data_copy_vmcheck 读取（grant.rs:452-470）；
+> 宿主 PTE walk 对任何用户地址返回 PageFault → Suspended。QEMU 侧由 T-5 CI 化 / T-8 联调承接。
 
 > **测试统计**（截至 2026-08-14）：`os/kernel/src/syscall_copy.rs` 含 54 个 `fn test_*`，覆盖验证层与 Direct Map primitive。PTE walk 基础设施（`PteWalkArch` trait 三架构实现）已落地，`pte_walk.rs` 与 `cross_space.rs` 层已有测试覆盖。原 DEFERRED 的拷贝/映射层（verify_grant / vm_lookup dispatch / vm_memset dispatch）已全部实现并接入 dispatch，上表 8 个测试转为端到端集成测试目标（需 QEMU + mock grant 表构造跨进程场景）。
 
