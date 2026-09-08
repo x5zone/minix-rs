@@ -123,7 +123,7 @@ Rust 改写不是照抄三文件的直线代码，而是吸收 Linux/Redox 的�
 ### D1 表项值化
 
 - **C**：八字段/六字段裸全局数组 + `NONE` 哨兵（`dmap.c:22`、`smap.c:15-16`）。
-- **Rust**：`DmapEntry{driver: Option<i32>, label: [u8;16], recovering, servicing}` + `SmapEntry{num, endpt: Option<i32>, label}` + 定长数组表（`os/servers/vfs/src/device_map.rs:69,301,94,319`）。
+- **Rust**：`DmapEntry{driver: Option<Endpoint>, label: [u8;16], recovering, servicing}` + `SmapEntry{num, endpt: Option<Endpoint>, label}` + 定长数组表（`os/servers/vfs/src/device_map.rs:69,301,94,319`；P2-5 已将全线裸 `i32` 端点类型化为 `Endpoint`）。
 - **为什么**：`NONE` 即 `None`（17 同例）；一基编号构造固化。锁与选择执行态不入表（表只存路由知识，执行态归 07/20/21/23）。
 
 ### D2 目录 trait 化

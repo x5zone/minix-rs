@@ -13,6 +13,7 @@
 //! - `ioctl_route` reuses 15's `FileType` instead of redefining dispatch
 //! - dmap locking reuses 07's borrow model (no second lock abstraction)
 
+use minix_types::Endpoint;
 use crate::open::FileType;
 
 /// `NR_DEVICES` (`minix3/minix/include/minix/dmap.h:82`): major table size.
@@ -37,10 +38,10 @@ pub const LABEL_MAX: usize = 16;
 pub const CTTY_MAJOR: u32 = 5;
 
 /// `CTTY_ENDPT` = `VFS_PROC_NR` (`const.h:52`, `com.h:60` = 1).
-pub const CTTY_ENDPT: i32 = 1;
+pub const CTTY_ENDPT: Endpoint = Endpoint::VFS;
 
 /// `RS_PROC_NR` (`com.h:61` = 2): only RS may map drivers.
-pub const RS_PROC_NR: i32 = 2;
+pub const RS_PROC_NR: Endpoint = Endpoint::RS;
 
 /// `IOC_OUT/IOC_IN` (`minix3/sys/sys/ioccom.h:74,76`): direction bits.
 pub const IOC_OUT: u64 = 0x4000_0000;
@@ -68,7 +69,7 @@ pub const CPF_WRITE: u32 = 0x0000_02;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmapEntry {
     /// Owning driver endpoint (`None` = `NONE`, unmapped).
-    pub driver: Option<i32>,
+    pub driver: Option<Endpoint>,
     /// Driver label, NUL-padded (`LABEL_MAX` bytes).
     pub label: [u8; LABEL_MAX],
     /// Recovery in progress (`dmap_recovering`).
@@ -149,7 +150,7 @@ impl Default for DmapTable {
 }
 
 /// Whether `proc` drives `major` (`dmap_driver_match`, `dmap.c:252-259`).
-pub fn driver_match(table: &DmapTable, proc: i32, major: u32) -> bool {
+pub fn driver_match(table: &DmapTable, proc: Endpoint, major: u32) -> bool {
     match table.get(major) {
         Some(row) => row.driver == Some(proc),
         None => false,
@@ -167,7 +168,7 @@ pub fn get_by_major(table: &DmapTable, major: u32) -> Option<&DmapEntry> {
 ///
 /// The linear scan is honest: `smap.c:249` notes the same O(n) wish for
 /// the socket twin, and 135 pointer-free rows are a cache line or two.
-pub fn get_by_endpt(table: &DmapTable, proc: i32) -> Option<u32> {
+pub fn get_by_endpt(table: &DmapTable, proc: Endpoint) -> Option<u32> {
     for (i, row) in table.entries.iter().enumerate() {
         if row.driver == Some(proc) {
             return Some(i as u32);
@@ -193,7 +194,7 @@ pub fn map_driver(
     table: &mut DmapTable,
     label: Option<&[u8]>,
     major: u32,
-    endpoint: Option<i32>,
+    endpoint: Option<Endpoint>,
 ) -> Result<(), MapError> {
     if (major as usize) >= NR_DEVICES {
         return Err(MapError::NoDev);
@@ -218,7 +219,7 @@ pub fn map_driver(
 /// Count rows driven by `proc`, clearing each (`dmap_unmap_by_endpt`,
 /// `dmap.c:180-195`). Per-row failures are logged-and-continued in C;
 /// here every clear succeeds, so the count is exact.
-pub fn unmap_by_endpt(table: &mut DmapTable, proc: i32) -> u32 {
+pub fn unmap_by_endpt(table: &mut DmapTable, proc: Endpoint) -> u32 {
     let mut cleared = 0;
     for row in table.entries.iter_mut() {
         if row.driver == Some(proc) {
@@ -233,18 +234,18 @@ pub fn unmap_by_endpt(table: &mut DmapTable, proc: i32) -> u32 {
 /// (`ds_retrieve_label_endpt`, `dmap.c:148-152`).
 pub trait EndpointDirectory {
     /// Resolve `label` to an endpoint (`None` = unknown label).
-    fn lookup(&self, label: &str) -> Option<i32>;
+    fn lookup(&self, label: &str) -> Option<Endpoint>;
 }
 
 /// Fixed directory (test double with real answers).
 #[derive(Debug, Clone, Copy)]
 pub struct StaticDir {
     /// Sorted or unsorted pairs; linear scan is fine for tests.
-    pub pairs: &'static [(&'static str, i32)],
+    pub pairs: &'static [(&'static str, Endpoint)],
 }
 
 impl EndpointDirectory for StaticDir {
-    fn lookup(&self, label: &str) -> Option<i32> {
+    fn lookup(&self, label: &str) -> Option<Endpoint> {
         self.pairs
             .iter()
             .find(|(name, _)| *name == label)
@@ -260,7 +261,7 @@ impl EndpointDirectory for StaticDir {
 pub struct EmptyDir;
 
 impl EndpointDirectory for EmptyDir {
-    fn lookup(&self, _label: &str) -> Option<i32> {
+    fn lookup(&self, _label: &str) -> Option<Endpoint> {
         None
     }
 }
@@ -268,12 +269,12 @@ impl EndpointDirectory for EmptyDir {
 /// Resolve a driver label through an abstract directory.
 ///
 /// Unknown labels become `EINVAL`, mirroring `do_mapdriver` (`dmap.c:149`).
-pub fn resolve_driver<D: EndpointDirectory>(dir: &D, label: &str) -> Result<i32, MapError> {
+pub fn resolve_driver<D: EndpointDirectory>(dir: &D, label: &str) -> Result<Endpoint, MapError> {
     dir.lookup(label).ok_or(MapError::Inval)
 }
 
 /// Whether the caller may map drivers: RS only (`dmap.c:123`).
-pub fn check_mapper(caller: i32) -> Result<(), MapError> {
+pub fn check_mapper(caller: Endpoint) -> Result<(), MapError> {
     if caller != RS_PROC_NR {
         return Err(MapError::Perm);
     }
@@ -308,7 +309,7 @@ pub struct SmapEntry {
     /// One-based slot number (never zero, so no socket is `NO_DEV`).
     pub num: u32,
     /// Owning driver endpoint (`None` = free).
-    pub endpt: Option<i32>,
+    pub endpt: Option<Endpoint>,
     /// Driver label, NUL-padded.
     pub label: [u8; LABEL_MAX],
 }
@@ -391,7 +392,7 @@ pub fn check_domain(table: &SmapTable, domain: i32, self_idx: Option<u8>) -> Dom
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ReplaceSideEffects {
     /// Old endpoint whose sleepers to scatter (`unsuspend_by_endpt`).
-    pub unsuspend: Option<i32>,
+    pub unsuspend: Option<Endpoint>,
     /// Smap number whose sockets to invalidate.
     pub invalidate_num: Option<u32>,
 }
@@ -418,8 +419,8 @@ pub fn register_plan(
     existing: Option<u8>,
     free: Option<u8>,
     domains_ok: &[DomainCheck],
-    old_endpt: Option<i32>,
-    new_endpt: i32,
+    old_endpt: Option<Endpoint>,
+    new_endpt: Endpoint,
 ) -> Result<RegisterPlan, MapError> {
     for check in domains_ok {
         match check {
@@ -493,7 +494,7 @@ pub fn split_smap_dev(dev: u64) -> Option<(u32, i32)> {
 
 /// Row by endpoint (`get_smap_by_endpt`, `smap.c:244-259`).
 /// The O(n) scan is inherited honestly (cf. `smap.c:249`).
-pub fn smap_by_endpt(table: &SmapTable, endpt: i32) -> Option<u8> {
+pub fn smap_by_endpt(table: &SmapTable, endpt: Endpoint) -> Option<u8> {
     table
         .entries
         .iter()
@@ -505,7 +506,7 @@ pub fn smap_by_endpt(table: &SmapTable, endpt: i32) -> Option<u8> {
 ///
 /// Returns the raw row endpoint (`None` = free row or out-of-range device);
 /// the raw `i32` matches the table's storage (P2-5 types the table later).
-pub fn smap_endpt_by_dev(table: &SmapTable, dev: u64) -> Option<i32> {
+pub fn smap_endpt_by_dev(table: &SmapTable, dev: u64) -> Option<Endpoint> {
     let (num, _) = split_smap_dev(dev)?;
     let row = table.entries.get((num - 1) as usize)?;
     row.endpt
@@ -657,7 +658,8 @@ impl MapError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::open::FileType;
+    use minix_types::Endpoint;
+use crate::open::FileType;
 
     #[test]
     fn test_dmap_init_and_ctty() {
@@ -682,50 +684,50 @@ mod tests {
         let mut table = DmapTable::new();
         // Out-of-range majors refuse (`dmap.c:71`).
         assert_eq!(
-            map_driver(&mut table, None, 135, Some(7)).unwrap_err(),
+            map_driver(&mut table, None, 135, Some(Endpoint::from_generation_slot(0, 7))).unwrap_err(),
             MapError::NoDev
         );
         assert_eq!(MapError::NoDev.to_errno(), minix_types::ENODEV);
         // Overlong labels refuse (`dmap.c:89-93`).
         let long = [b'x'; LABEL_MAX];
         assert_eq!(
-            map_driver(&mut table, Some(&long), 4, Some(7)).unwrap_err(),
+            map_driver(&mut table, Some(&long), 4, Some(Endpoint::from_generation_slot(0, 7))).unwrap_err(),
             MapError::Inval
         );
         // Store and match (`dmap_driver_match`, `dmap.c:252-259`).
-        map_driver(&mut table, Some(b"tty"), 4, Some(7)).unwrap();
-        assert!(driver_match(&table, 7, 4));
-        assert!(!driver_match(&table, 8, 4));
-        assert!(!driver_match(&table, 7, 200));
+        map_driver(&mut table, Some(b"tty"), 4, Some(Endpoint::from_generation_slot(0, 7))).unwrap();
+        assert!(driver_match(&table, Endpoint::from_generation_slot(0, 7), 4));
+        assert!(!driver_match(&table, Endpoint::from_generation_slot(0, 8), 4));
+        assert!(!driver_match(&table, Endpoint::from_generation_slot(0, 7), 200));
         // Live lookup by major and by endpoint.
         assert!(get_by_major(&table, 4).is_some());
-        assert_eq!(get_by_endpt(&table, 7), Some(4));
-        assert_eq!(get_by_endpt(&table, 9), None);
+        assert_eq!(get_by_endpt(&table, Endpoint::from_generation_slot(0, 7)), Some(4));
+        assert_eq!(get_by_endpt(&table, Endpoint::from_generation_slot(0, 9)), None);
         // Unmap clears (`proc_nr_e == NONE`, `dmap.c:75-86`).
         map_driver(&mut table, None, 4, None).unwrap();
-        assert!(!driver_match(&table, 7, 4));
+        assert!(!driver_match(&table, Endpoint::from_generation_slot(0, 7), 4));
         assert!(get_by_major(&table, 4).is_none());
         // Sweep unmaps every row owned by an endpoint.
-        map_driver(&mut table, Some(b"a"), 4, Some(7)).unwrap();
-        map_driver(&mut table, Some(b"b"), 5, Some(7)).unwrap();
-        assert_eq!(unmap_by_endpt(&mut table, 7), 2);
-        assert_eq!(get_by_endpt(&table, 7), None);
+        map_driver(&mut table, Some(b"a"), 4, Some(Endpoint::from_generation_slot(0, 7))).unwrap();
+        map_driver(&mut table, Some(b"b"), 5, Some(Endpoint::from_generation_slot(0, 7))).unwrap();
+        assert_eq!(unmap_by_endpt(&mut table, Endpoint::from_generation_slot(0, 7)), 2);
+        assert_eq!(get_by_endpt(&table, Endpoint::from_generation_slot(0, 7)), None);
     }
 
     #[test]
     fn test_mapper_gate_and_directory() {
         // Only RS maps (`dmap.c:123`).
         assert!(check_mapper(RS_PROC_NR).is_ok());
-        assert_eq!(check_mapper(1).unwrap_err(), MapError::Perm);
+        assert_eq!(check_mapper(Endpoint::from_generation_slot(0, 1)).unwrap_err(), MapError::Perm);
         assert_eq!(MapError::Perm.to_errno(), minix_types::EPERM);
         // Gate D: the two directories behave differently through one bound.
-        static PAIRS: &[(&str, i32)] = &[("tty", 7), ("inet", 12)];
+        static PAIRS: &[(&str, Endpoint)] = &[("tty", Endpoint::from_generation_slot(0, 7)), ("inet", Endpoint::from_generation_slot(0, 12))];
         let full = StaticDir { pairs: PAIRS };
         let empty = EmptyDir;
-        fn via<D: EndpointDirectory>(d: &D) -> Result<i32, MapError> {
+        fn via<D: EndpointDirectory>(d: &D) -> Result<Endpoint, MapError> {
             resolve_driver(d, "tty")
         }
-        assert_eq!(via(&full).unwrap(), 7);
+        assert_eq!(via(&full).unwrap(), Endpoint::from_generation_slot(0, 7));
         assert_eq!(via(&empty).unwrap_err(), MapError::Inval);
         assert_eq!(resolve_driver(&full, "nope").unwrap_err(), MapError::Inval);
         // Service head: boot users skip, deviceless mark only.
@@ -755,19 +757,19 @@ mod tests {
     #[test]
     fn test_register_plan_matrix() {
         // Fresh claim takes the free slot.
-        let p = register_plan(None, Some(2), &[DomainCheck::Ok], None, 9).unwrap();
+        let p = register_plan(None, Some(2), &[DomainCheck::Ok], None, Endpoint::from_generation_slot(0, 9)).unwrap();
         assert_eq!(p.slot, 2);
         assert!(!p.reuse);
         assert_eq!(p.effects, ReplaceSideEffects::default());
         // Restart reuses the labelled slot, no side effects when the
         // endpoint is unchanged (stateful restart, `smap.c:108-120`).
-        let p = register_plan(Some(1), Some(2), &[DomainCheck::Ok], Some(9), 9).unwrap();
+        let p = register_plan(Some(1), Some(2), &[DomainCheck::Ok], Some(Endpoint::from_generation_slot(0, 9)), Endpoint::from_generation_slot(0, 9)).unwrap();
         assert_eq!(p.slot, 1);
         assert!(p.reuse);
         assert_eq!(p.effects.unsuspend, None);
         // Changed endpoint owes scatter + invalidate.
-        let p = register_plan(Some(1), Some(2), &[DomainCheck::Ok], Some(7), 9).unwrap();
-        assert_eq!(p.effects.unsuspend, Some(7));
+        let p = register_plan(Some(1), Some(2), &[DomainCheck::Ok], Some(Endpoint::from_generation_slot(0, 7)), Endpoint::from_generation_slot(0, 9)).unwrap();
+        assert_eq!(p.effects.unsuspend, Some(Endpoint::from_generation_slot(0, 7)));
         // Domain failures precede slot checks, in order.
         assert_eq!(
             register_plan(
@@ -775,23 +777,23 @@ mod tests {
                 Some(2),
                 &[DomainCheck::Ok, DomainCheck::Busy],
                 None,
-                9
+                Endpoint::from_generation_slot(0, 9)
             )
             .unwrap_err(),
             MapError::Busy
         );
         assert_eq!(
-            register_plan(None, Some(2), &[DomainCheck::Unspec], None, 9).unwrap_err(),
+            register_plan(None, Some(2), &[DomainCheck::Unspec], None, Endpoint::from_generation_slot(0, 9)).unwrap_err(),
             MapError::Inval
         );
         assert_eq!(
-            register_plan(None, Some(2), &[DomainCheck::BadRange], None, 9).unwrap_err(),
+            register_plan(None, Some(2), &[DomainCheck::BadRange], None, Endpoint::from_generation_slot(0, 9)).unwrap_err(),
             MapError::Inval
         );
         assert_eq!(MapError::Busy.to_errno(), minix_types::EBUSY);
         // No slot anywhere is ENOMEM (`smap.c:94-95`).
         assert_eq!(
-            register_plan(None, None, &[DomainCheck::Ok], None, 9).unwrap_err(),
+            register_plan(None, None, &[DomainCheck::Ok], None, Endpoint::from_generation_slot(0, 9)).unwrap_err(),
             MapError::NoMem
         );
         assert_eq!(MapError::NoMem.to_errno(), minix_types::ENOMEM);
@@ -835,10 +837,10 @@ mod tests {
         assert_eq!(split_smap_dev((1u64 << 32) | 0xFFFF_FFFF), None);
         // Endpoint and domain lookups.
         let mut table = SmapTable::new();
-        table.entries[2].endpt = Some(12);
+        table.entries[2].endpt = Some(Endpoint::from_generation_slot(0, 12));
         table.pfmap[2] = Some(2);
-        assert_eq!(smap_by_endpt(&table, 12), Some(2));
-        assert_eq!(smap_by_endpt(&table, 13), None);
+        assert_eq!(smap_by_endpt(&table, Endpoint::from_generation_slot(0, 12)), Some(2));
+        assert_eq!(smap_by_endpt(&table, Endpoint::from_generation_slot(0, 13)), None);
         assert_eq!(smap_by_domain(&table, 2), Some(2));
         assert_eq!(smap_by_domain(&table, 3), None);
         assert_eq!(smap_by_domain(&table, -1), None);

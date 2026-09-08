@@ -73,7 +73,7 @@
 - P2-2 复核 ✅：call_table.rs 64 臂同构 match、`CallTable`:206、`NullResolver`:350 原样；本轮 R2-P1-2 给出它的终局（随绑定层落地删除）。
 - P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。
 - P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。**✅ 已修复** 2026-09-09（§10 Fix #14：移 cfg(test) 更名 `NextFitDemo`，辩护注释的假语义一并修正——C 与 Linux 的 fd 分配都是 start 起最低空闲，不存在第二真实策略）。
-- P2-5 复核 ✅：device_map.rs:152 裸 `i32`、filp.rs:195 裸 `usize` 原样。
+- ✅ P2-5 已修复 2026-09-09（§10 Fix #15）：`device_map` 全线 `Option<i32>` 端点 → `Option<Endpoint>`（DmapEntry/SmapEntry 字段、driver_match/get_by_endpt/unmap_by_endpt/map_driver/check_mapper/EndpointDirectory/smap_by_endpt/smap_endpt_by_dev/RegisterPlan、CTTY_ENDPT/RS_PROC_NR 常量）；`filp::find_by_vnode(usize) → VnodeId`。bdev/cdev 各自决策函数的 i32 参数为 wire 边界，保持并注明。
 - P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。**✅ 已修复** 2026-09-09（§10 Fix #13：收敛到 fs_comm 协议属主，main_loop re-export，-63 行重复）。
 - P3-1 复核 ✅：本轮 clippy 实测 40 条 warning 行（约 30 条落 vfs 自身），与首轮量级一致。
 - P3-2 复核 ✅："有意省略表"仍未建立（99-global-concepts.md 零命中）；落点已随 R2-P2-2（99 改写）合并推进。
@@ -339,6 +339,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：misc.rs gcov 决策组四门齐（label/endpt/grant/target），独缺 C gcov.c:31-34 的 `super_user → EPERM` 门；31 号文档 §2.7/:52 早已描述"root 检查"——文档对、代码缺。
 - **After**：`gcov_privilege_gate(is_super: bool) -> Result<(), MiscError>`（`Perm → EPERM`），五门之首；测试并入 `test_probe_and_obsolete`（super 过 / 非 root Perm）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（断言并入既有 gcov 测试，无新增 fn）。
+
+### ✅ Fix #15: P2-5 — device_map/filp 的端点与 vnode 引用类型化（2026-09-09）
+
+- **File**：`os/servers/vfs/src/device_map.rs`（约 20 处签名/字段）、`os/servers/vfs/src/filp.rs`（find_by_vnode）、`os/servers/vfs/src/filedes.rs`、`os/servers/vfs/src/sdev.rs`（消费方）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/19-device-map.md`（字段表）。
+- **Before**：`DmapEntry.driver`/`SmapEntry.endpt`/`RegisterPlan.unsuspend` 等全线 `Option<i32>`；`driver_match(table, proc: i32, ...)` 等 ~10 个签名吃裸 i32；`find_by_vnode(vnode: usize)` 裸 usize 指向 vnode 表（无 generation 保护）。
+- **After**：全线 `Option<Endpoint>`/`Endpoint`（`CTTY_ENDPT = Endpoint::VFS`、`RS_PROC_NR = Endpoint::RS` 常量同型化）；`find_by_vnode(vnode: VnodeId, bits)`。设计取舍：域号（`check_domain`/`smap_by_domain` 的 `domain: i32`，PF_* 族）与 sockid（`split_smap_dev`）不是端点，保持原类型——类型化的边界是"是不是进程身份"，不做无差别替换；`bdev::resolve_driver`/`cdev::resolve_gate` 的 `Option<i32>` 参数是 wire 边界（消费方在路由层接线时转换），本条不改，待 R2-P1-2 分发收敛时以 Endpoint 贯通。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`grep -n "i32" device_map.rs` 剩余仅为 domain/sockid/errno 等合法非端点量。回归 review 曾修复三处误转（register_plan 槽位号 u8、check_domain 的 self_idx u8、smap 行号断言）——宽泛正则替换后必须以编译错误清单逐条回溯。
 
 ### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
 

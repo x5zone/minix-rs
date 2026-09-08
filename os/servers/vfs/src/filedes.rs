@@ -9,6 +9,7 @@
 //! - `FdAllocPolicy` parametrizes the `start→OPEN_MAX` scan (`O_DUPFD`'s `arg`); `NextFitDemo` (cfg(test)) is a test-only contrast, not a C policy
 //! - `close_fd` passes `FILP_CLOSED` (the `VNODE_OPCL` exemption, `filedes.c:186-188`) and fails `EBADF`
 
+#[cfg(test)]
 use core::cell::Cell;
 
 use minix_types::{Endpoint, Mode, UserSlot};
@@ -17,7 +18,9 @@ use crate::device_map::{smap_endpt_by_dev, split_smap_dev, SmapTable};
 use crate::filp::{FILP_CLOSED, FilpId, FilpTable};
 use crate::fproc::{FProc, OPEN_MAX};
 use crate::mount::DevCodec;
-use crate::open::{S_IFCHR, S_IFMT, S_IFREG, S_IFSOCK};
+use crate::open::{S_IFCHR, S_IFMT, S_IFSOCK};
+#[cfg(test)]
+use crate::open::S_IFREG;
 use crate::vnode::{Vnode, VnodeId, VnodeTable};
 
 /// `Fd` — typed file descriptor `0..255` (u8 bound makes `256` unrepresentable).
@@ -357,7 +360,7 @@ pub fn copy_fd(
                 .map_or(false, |vn| {
                     (vn.mode & S_IFMT) == S_IFSOCK
                         && smap_endpt_by_dev(ctx.smap_table, vn.sdev)
-                            == Some(ctx.caller_endpoint.get())
+                            == Some(ctx.caller_endpoint)
                 });
             if self_copy {
                 return Err(FdError::Deadlk);
@@ -729,7 +732,7 @@ mod tests {
         tbl.get_mut(fid).unwrap().vnode = Some(1);
         vtbl.get_mut(VnodeId(1)).unwrap().mode = S_IFSOCK | 0o600;
         vtbl.get_mut(VnodeId(1)).unwrap().sdev = crate::device_map::make_smap_dev(1, 7);
-        stbl.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 9).get());
+        stbl.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 9));
         let policy = LowestFree;
         let ctx = CopyFdCtx {
             filp_table: &mut tbl,

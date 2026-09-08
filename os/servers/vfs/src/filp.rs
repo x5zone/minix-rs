@@ -11,6 +11,8 @@
 
 use minix_types::{DevId, Mode, UserSlot, VirBytes};
 
+use crate::vnode::VnodeId;
+
 /// `NR_FILPS` (`const.h:5` 1024).
 pub const NR_FILPS: usize = 1024;
 
@@ -211,9 +213,13 @@ impl FilpTable {
     }
 
     /// `find_filp` (`filedes.c:205-224`) — shared detection `vp + bits`.
-    pub fn find_by_vnode(&self, vnode: usize, bits: Mode) -> Option<FilpId> {
+    ///
+    /// The vnode reference is a typed [`VnodeId`], not a bare `usize`: a
+    /// recycled slot must not be confusable with a live one (P2-5; the
+    /// generation guard on `FilpId`/`UserSlot` is the same principle).
+    pub fn find_by_vnode(&self, vnode: VnodeId, bits: Mode) -> Option<FilpId> {
         for (i, f) in self.slots.iter().enumerate() {
-            if f.count != 0 && f.vnode == Some(vnode) && (f.mode & bits) != 0 {
+            if f.count != 0 && f.vnode == Some(vnode.get()) && (f.mode & bits) != 0 {
                 return Some(FilpId(i));
             }
         }
@@ -392,9 +398,9 @@ mod tests {
         table.inc_count(id);
         table.get_mut(id).unwrap().vnode = Some(42);
         table.get_mut(id).unwrap().mode = 0o1;
-        assert_eq!(table.find_by_vnode(42, 0o1).unwrap(), id);
-        assert!(table.find_by_vnode(42, 0o2).is_none());
-        assert!(table.find_by_vnode(99, 0o1).is_none());
+        assert_eq!(table.find_by_vnode(VnodeId(42), 0o1).unwrap(), id);
+        assert!(table.find_by_vnode(VnodeId(42), 0o2).is_none());
+        assert!(table.find_by_vnode(VnodeId(99), 0o1).is_none());
     }
 
     #[test]

@@ -455,7 +455,7 @@ pub fn stop(call: SdevCall) -> StopPlan {
 /// (`pipe.c:347-350`'s match): the smap row for the suspended device must
 /// exist and be owned by the vanished endpoint.
 pub fn stop_matches(dev: DevId, smap_table: &SmapTable, dead: Endpoint) -> bool {
-    smap_endpt_by_dev(smap_table, dev) == Some(dead.get())
+    smap_endpt_by_dev(smap_table, dev) == Some(dead)
 }
 
 /// Close-status normalization (`sdev_finish:804-806`): a closed fd reads
@@ -663,7 +663,7 @@ mod tests {
         // Only slots whose suspended device belongs to the vanished driver
         // stop (`pipe.c:347-350`); free rows never match.
         let mut stbl = SmapTable::default();
-        stbl.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 9).get());
+        stbl.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 9));
         let dev = crate::device_map::make_smap_dev(1, 7);
         assert!(stop_matches(dev, &stbl, Endpoint::from_generation_slot(0, 9)));
         assert!(!stop_matches(dev, &stbl, Endpoint::from_generation_slot(0, 8)));
