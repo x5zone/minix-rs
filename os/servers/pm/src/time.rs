@@ -209,12 +209,8 @@ pub fn do_settime(
 
 /// `is_superuser` helper (`getset.c:114` reuse, `mproc/credentials.rs:Credentials::is_superuser`).
 fn is_superuser(table: &ProcTable, caller: UserSlot) -> bool {
-    table.procs[caller.get()]
-        .resources
-        .privilege
-        .credentials()
-        .map(|c| c.user.effective == 0)
-        .unwrap_or(false)
+    // V3-P3-1：与 misc.rs 的同名谓词收敛为单一定义（委托，消除三处重复）。
+    crate::misc::is_superuser(table, caller)
 }
 
 // For `do_settime` to compare, we need to handle monotonic inv separately without extra trait; use direct match above.

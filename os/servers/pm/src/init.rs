@@ -1,6 +1,6 @@
 //! PM 启动链：SEF 回调注册 + `sef_cb_init_fresh` 等价实现。
 //!
-//! C 对应: `minix3/minix/servers/pm/main.c:49-268`（main / sef_local_startup /
+//! C 对应: `minix3/minix/servers/pm/main.c:131-244`（main / sef_local_startup /
 //!         sef_cb_init_fresh）+ `minix3/minix/servers/pm/schedule.c:36-69`
 //!         （sched_init 调用点）。
 //! 文档: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md`

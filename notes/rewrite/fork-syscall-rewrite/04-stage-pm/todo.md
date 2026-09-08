@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8/9/10（#48/#50/#51/#52/#53/#55/#54/#56/#57）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8/9/10（#48/#50/#51/#52/#53/#55/#54/#56/#57）+ V2-P2-7/P2-8（#49）+ V3-P3 主体（#58，D-31/D-32 登记除外）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -516,14 +516,14 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #57）：CLOCK 分支改读通知载荷 `m_notify.timestamp`（u64 → Clock 转换；minix-types notify.rs:50 字段早已存在，无需 E7）。
 - **验证**：`test_run_once_clock_notify_drives_expire_timers` 回归通过；基线 379 lib passed。
 
-#### V3-P3 小项清单（卫生/文档，一次或分批清理）
+#### V3-P3 小项清单（✅ 主体已修复 2026-09-09，Fix #58；两项转 D-31/D-32 诚实登记）
 
-1. **is_superuser 三处重复**：`time.rs:211-216` 与 `misc.rs:265-270` 逐字相同的自由函数 + `mproc/credentials.rs:59-61` 的方法——收敛到单一 helper（方法或 crate 级 fn）。
-2. **诊断输出生产静默且口径不一**：`reply()` 发送失败告警 `#[cfg(test)]`（init.rs:465-467，C main.c:267-269 总是 printf）vs `PmServices::send_reply` 生产 eprintln（vfs.rs:366-369）；`sched_init` 失败日志 cfg(test)（sched.rs:191-193）；getsysinfo/getprocnr 未授权审计缺失（misc.c:118-121,154-157；其中 sys_diagctl_stacktrace 部分挂 E6）。建议做一次 no_std 日志面选型决策（crate 级），统一口径。
-3. **calls_stats 计数缺失**：C main.c:34-36/95-97 在 ENABLE_SYSCALL_STATS 下逐调用计数，misc 的 SI_CALL_STATS 消费端已在（misc.rs:27/111/324-328），feature 已声明（Fix #17）但计数本体未落。
-4. **signal.rs 残留 7 处裸移位**：trace/VFS/PRIV 分支用 `1u64 << (signo - 1)`（signal.rs:233/242/244/289-298），位基正确但未走 Fix #29 确立的 `init::sig_bit` 单点入口（该 fix 的"本文件不再出现裸移位"验证声明与现状不符）。
-5. **PROC_EVENT_REPLY 常量双址**：`dispatcher.rs:32` 本地 `0xE80` 与 minix-types 同值常量（`ipc/event.rs:27`）并存——并入 E7 清单。
-6. **文档锚点/表述漂移合集**：01 文档 C 行号整体偏移 3-4 行 + init.rs:3 头注释范围错（"main.c:49-268"应为 131-244）；07:384 行号过期（:763→:824）；18 §2.14 TO_NOEXEC=0x1 与 C 0x4 矛盾；06:522 "from_bits_truncate 保留未知位"与实际语义（丢弃）不符；20 §1.1 `__arraycount=8` 与 C 9 元素不符 + §3 声称 `ArrayVec<_,2>` 实为 `Vec`（misc.rs:204）；misc.c do_getsetpriority 归属 16 文档已声明但 20 文档 §2 表仍有残句（[待验证]）。并入 V3-P1-5 的文档批次执行。
+1. **is_superuser 三处重复**（✅ Fix #58）：misc.rs 的 `is_superuser` 升 `pub(crate)` 单一定义，time.rs 委托之（消除逐字重复）。
+2. **诊断输出口径**（⏸ 转 D-31）：生产路径的诊断输出需要内核控制台通道（SYS_DIAGCTL code 1，E2/E6 面）——no_std 用户态无 stdout，C 的 printf 在本架构下即一次内核调用。reply() 失败告警、sched_init 失败日志、getsysinfo/getprocnr 未授权审计统一挂此决策；E6 落地后一次性接入。当前保持 cfg(test) 口径（不伪造生产日志）。
+3. **calls_stats 计数**（⏸ 转 D-32）：计数需要 PmServer 持有 feature 门控的状态数组并在 run_once 递增——与批次 G 的 SI_CALL_STATS 消费者（SysInfoCtl 生产实现）互为表里，随批次 G 一并落（misc.c:34-36/95-97）。
+4. **signal.rs 裸移位统一**（✅ Fix #58）：残留 `1u64 << (signo - 1)` 全部收敛 `init::sig_bit` 单点。
+5. **PROC_EVENT_REPLY 双址**（✅ Fix #58）：dispatcher.rs 改 re-export minix-types 常量（VFS_PM_RS_BASE 同型）。
+6. **文档锚点/表述漂移**（✅ 主体随 V3-P1-5 交付）：init.rs:3 头注释范围勘误（main.c:131-244）随本批；07 行号、18 TO_NOEXEC、20 arraycount 注记已随前批；01 文档 C 锚点整体 -3~4 行的逐行校准留待 01 文档的下一轮 full-review（涉及全文约 20 处锚点，非本次 scan 范围的 §5 测试章节）。
 
 ### 12.3 架构审查 V3（分层观察与建议）
 

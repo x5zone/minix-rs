@@ -267,7 +267,7 @@ pub trait SprofCtl {
 }
 
 /// Helper: `is_superuser`.
-fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> bool {
+pub(crate) fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> bool {
     table.procs[caller.get()]
         .resources
         .privilege

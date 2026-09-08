@@ -282,9 +282,9 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
     if table.procs[target.get()].state.block.is_vfs_blocked()
         || table.procs[target.get()].state.block.is_event_blocked()
     {
-        table.procs[target.get()].resources.signals.pending |= 1u64 << (signo - 1);
+        table.procs[target.get()].resources.signals.pending |= crate::init::sig_bit(signo);
         if ksig {
-            table.procs[target.get()].resources.signals.kernel_pending |= 1u64 << (signo - 1);
+            table.procs[target.get()].resources.signals.kernel_pending |= crate::init::sig_bit(signo);
         }
         // C: `if (!(PROC_STOPPED | DELAY_CALL)) stop_proc(rmp, FALSE)`——
         // FALSE = 不可延迟，内核回 EBUSY 时 stop_proc 内部 panic（C 同型）。

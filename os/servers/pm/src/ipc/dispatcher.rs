@@ -29,7 +29,9 @@ pub use minix_types::VFS_PM_RS_BASE;
 
 /// 进程事件订阅者回复消息类型。C: `PROC_EVENT_REPLY` —
 /// `COMMON_RS_BASE + 0` — com.h:619（COMMON_RS_BASE = 0xE80，com.h:598）。
-pub const PROC_EVENT_REPLY: i32 = 0xE80;
+/// V3-P3-5：收敛到 minix-types 单一真值（与上方 `VFS_PM_RS_BASE` 的
+/// re-export 同型），消除本地 0xE80 双址。
+pub use minix_types::PROC_EVENT_REPLY;
 
 /// 主循环对一次分发的回复意图（ARCH A-6：C `SUSPEND` 显式化）。
 ///
