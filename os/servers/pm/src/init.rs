@@ -380,7 +380,10 @@ impl<T: IpcTransport> PmServer<T> {
             // C main.c:65-71：is_ipc_notify → CLOCK → expire_timers（14）。
             // 其它源的通知不是请求消息，跳过 endpoint 验证直接 continue。
             if msg.m_source == Endpoint::CLOCK {
-                let now = self.timer.now();
+                // C main.c:66-67 用通知载荷的内核时间戳（m_notify.timestamp，
+                // 打点在内核侧）——V3-P2-10 之前用处理时刻的 TimerCtl 时钟，
+                // 主循环拥塞时到期判定整体后移。
+                let now = unsafe { msg.m_u.m_notify.timestamp } as minix_types::Clock;
                 crate::timer::handle_clock_notify(
                     &mut self.table,
                     now,

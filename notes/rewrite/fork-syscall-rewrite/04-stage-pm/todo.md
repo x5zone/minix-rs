@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8/9（#48/#50/#51/#52/#53/#55/#54/#56）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8/9/10（#48/#50/#51/#52/#53/#55/#54/#56/#57）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -510,13 +510,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **验证**：`cargo clippy -p minix-pm --lib` 0 warning；`--all-targets` unused 类 0。
 - **新发现（转 V3-P3 记账）**：首次 `--all-targets` 扫描暴露 44 条 `field_reassign_with_default`（测试代码 `Message::default()` + 字段赋值的预存风格，clippy 不支持自动修复）+ 少量 dead mock——零生产影响，转入 V3-P3 处置。
 
-#### V3-P2-10 CLOCK notify 时间戳来源：处理时刻时钟 vs 通知载荷时间戳
+#### V3-P2-10 CLOCK notify 时间戳来源：处理时刻时钟 vs 通知载荷时间戳（✅ 已修复 2026-09-09，Fix #57）
 
-- **优先级**：P2；**类型**：语义偏差（低severity，批次 D 前置）
-- **文件**：`os/servers/pm/src/init.rs:370-371`（`self.timer.now()`）+ `timer.rs:372-390`；C `main.c:66-67`（`m_in.m_notify.timestamp`）
-- **问题**：C 把通知消息携带的内核时间戳传给 expire_timers；Rust 用处理时刻的时钟——主循环拥塞时（前面消息处理耗时）到期判定整体后移，SIGALRM 可能晚发。
-- **建议**：批次 D 接线时改读通知载荷时间戳（wire 字段就绪性随 E7 的 notify 消息族；若 wire 缺字段则登记 E7）。
-- **验证**：单测：构造带旧时间戳的通知 → 到期判定按载荷时间。
+- **原状态**：Rust 用处理时刻的 `TimerCtl::now()`；C 用通知载荷的内核时间戳（main.c:66-67）——主循环拥塞时到期判定整体后移。
+- **修复**（Fix #57）：CLOCK 分支改读通知载荷 `m_notify.timestamp`（u64 → Clock 转换；minix-types notify.rs:50 字段早已存在，无需 E7）。
+- **验证**：`test_run_once_clock_notify_drives_expire_timers` 回归通过；基线 379 lib passed。
 
 #### V3-P3 小项清单（卫生/文档，一次或分批清理）
 
