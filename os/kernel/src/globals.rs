@@ -3,7 +3,8 @@
 //!
 //! Every process-global lives here: the `SyncUnsafeCell` wrapper, the
 //! sealed `BklProtected` trait with its approved-type list (the friction
-//! point for wrapping a new type), and the 13 statics themselves.
+//! point for wrapping a new type), and the 24 statics themselves
+//! (13 as of A2 + 11 collected in by D-62, 2026-09-09).
 //! Accessor families (`*_with` / `*_boot_unchecked` / raw) stay in
 //! `lib.rs` — they are the crate's API surface and consume these via
 //! re-export, so the audit point for "what globals exist" and the
@@ -144,6 +145,12 @@ mod bkl_protected {
         crate::krandom::KRandomness,
         crate::proc::ProcNr,
         crate::clock::ClockState,
+        crate::misc::SprofInfo,
+
+        // Primitive element type for buffer arrays (`[u8; N]` via the
+        // composite impl below) — a plain byte has no mutation surface of
+        // its own; buffer access is BKL-serialized by the owning static.
+        u8,
     }
 
     // Generic composite impls — derive BklProtected from the inner type.
@@ -394,3 +401,91 @@ pub(crate) static CURRENT_PTPROC_NR: AtomicI32 = AtomicI32::new(i32::MIN);
 pub(crate) const ROOT_PHYS_UNSET: u64 = u64::MAX;
 
 pub(crate) static CURRENT_ROOT_PHYS: AtomicU64 = AtomicU64::new(ROOT_PHYS_UNSET);
+
+
+// ── V13 D-62（2026-09-09）收编的漏网静态 ──
+// A2 的"单一审计点"此前被 4 组静态打破（本体散在 krandom/smp/clock/misc）。
+// 本体全部迁入本文件；声明即登记，包装类型必须已在 `bkl_protected_impls!`
+// 审批清单或泛型复合 impl 覆盖范围内。
+
+/// Randomness state. C: `krandom` — random.h/krandom.c.
+/// Access is BKL-protected: the IRQ path (single-writer via
+/// `get_randomness`) and the syscall path (single-reader via
+/// `dispatch_getinfo`) never run concurrently under BKL.
+pub(crate) static KRANDOM: SyncUnsafeCell<crate::krandom::KRandomness> =
+    SyncUnsafeCell::new(crate::krandom::KRandomness::new());
+
+/// Track whether `KRANDOM` has been initialized (fields set to non-zero).
+/// In Rust, `KRandomness::new()` is a const fn so it is initialized at link time.
+pub(crate) static KRANDOM_INIT: AtomicBool = AtomicBool::new(false);
+
+/// Per-CPU CPUID identity table (filled at `bsp_finish_booting` Step 0).
+/// C: `cpu_info[CONFIG_MAX_CPUS]` — archtypes.h:39. Written during boot
+/// (BSP; the C AP path records under boot_lock + BKL, arch_smp.c:227-232,
+/// and will do the same when SMP bring-up lands); post-boot readers
+/// (GET_CPUINFO) hold the BKL.
+pub(crate) static CPU_INFO: SyncUnsafeCell<crate::smp::CpuInfoTable> =
+    SyncUnsafeCell::new(crate::smp::CpuInfoTable::new());
+
+// Clock mirrors (D-62③ 裁决：显式双源契约，见 clock.rs 模块 doc)。
+// 写侧：仅 `ClockState::tick_with`/`set_boottime`/`set_realtime`（持 BKL，
+// Release）；读侧：`clock::get_monotonic` 等无锁 Acquire。两源允许相差
+// ≤1 tick（写点相邻且在 BKL 内）。C ground truth 是单源 `kclockinfo`
+// （clock.c:189 直写），Rust 双源是无 `&ClockState` 读取的 ergonomics
+// 产物；收敛需穿透 IpcEngine 签名（build_notify_message 等），登记为
+// 独立重构路径，未在本批实施。
+
+/// Monotonic uptime in ticks (mirror of `ClockState::uptime`).
+/// C: `kclockinfo.uptime` — read by `get_monotonic()` (clock.c:203).
+pub(crate) static CLOCK_UPTIME: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Wall-clock ticks since boot (mirror of `ClockState::realtime`).
+/// C: `kclockinfo.realtime` — read by `get_realtime()` (clock.c:178).
+pub(crate) static CLOCK_REALTIME: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Boot time in seconds since UNIX epoch, set by `SYS_STIME`
+/// (mirror of `ClockState::boottime`).
+/// C: `kclockinfo.boottime` — read by `get_boottime()` (clock.c:220).
+pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// TSC cycles per millisecond, calibrated during boot (standalone
+/// calibration constant — NOT a mirror; single source).
+/// C: `tsc_per_ms[cpuid]` — kernel/proc.h. Per-CPU values arrive with SMP.
+pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+// Statistical-profiling state (C: sprof_ep / sprof_info_addr_vir /
+// sprof_data_addr_vir / sprof_mem_size / sprof_info — profile.h:15-18,
+// do_sprofile.c:23; buffer — profile.c:16). All access serialized by the
+// BKL (PROF_START/STOP syscall paths, sample-save on the timer IRQ path).
+
+/// Profiler control endpoint.
+pub(crate) static SPROF_EP: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+/// User-space address of the profiler info record.
+pub(crate) static SPROF_INFO_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// User-space address of the sample buffer copy-out area.
+pub(crate) static SPROF_DATA_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// Size of the user-space copy-out area.
+pub(crate) static SPROF_MEM_SIZE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Global profiling record (PROF_START resets, PROF_STOP reads).
+/// Upgraded from `static mut` (D-62④): the `SyncUnsafeCell` wrapper keeps
+/// the same raw-pointer access shape (`get()` replaces `addr_of_mut!`)
+/// while putting the static under the BklProtected audit list.
+pub(crate) static SPROF_INFO: SyncUnsafeCell<crate::misc::SprofInfo> =
+    SyncUnsafeCell::new(crate::misc::SprofInfo {
+        mem_used: 0,
+        total_samples: 0,
+        idle_samples: 0,
+        system_samples: 0,
+        user_samples: 0,
+    });
+
+/// Static sample buffer (BSS-allocated, zero-initialized).
+/// C: `char sprof_sample_buffer[SAMPLE_BUFFER_SIZE]` — profile.c:16.
+/// Upgraded from `static mut` (D-62④), same wrapper rationale as SPROF_INFO.
+pub(crate) static SPROF_SAMPLE_BUFFER: SyncUnsafeCell<[u8; crate::misc::SAMPLE_BUFFER_SIZE]> =
+    SyncUnsafeCell::new([0; crate::misc::SAMPLE_BUFFER_SIZE]);

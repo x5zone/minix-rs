@@ -546,6 +546,7 @@ pub struct ClockState {
 - 所有字段 BKL 保护下可变，无 interior mutability
 
 **全局原子镜像**：`uptime`/`realtime`/`boottime` 通过 `CLOCK_UPTIME`/`CLOCK_REALTIME`/`CLOCK_BOOTTIME` 三个 `AtomicU64` 镜像到全局，使 `get_monotonic()`/`get_realtime()`/`get_boottime()` 无需 `&ClockState` 即可读取（用于 scheduler 等不便传递 `&ClockState` 的路径）。
+> **D-62③ 双源契约（2026-09-09）**：镜像声明已收编到 `os/kernel/src/globals.rs`（单一审计点）。契约：写侧仅 `ClockState::tick_with`/`set_boottime`/`set_realtime`（持 BKL，Release 双写字段与镜像）；读侧无锁 Acquire；两源允许相差 ≤1 tick。C ground truth 是单源 `kclockinfo`（clock.c:189 直写）——Rust 双源是 ergonomics 产物，完全收敛需穿透 `IpcEngine` 签名（`build_notify_message` 等），已登记为独立重构路径（todo.md D-62），本批不实施。
 
 ### 4.2 AlarmTimerNode — 侵入式定时器节点（D2-G, D3-C）
 

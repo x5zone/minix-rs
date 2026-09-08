@@ -169,12 +169,9 @@ impl Default for KRandomness {
 /// Access is BKL-protected. The IRQ path (single-writer via
 /// `get_randomness`) and the syscall path (single-reader via
 /// `dispatch_getinfo`) never run concurrently under BKL.
-static KRANDOM: crate::SyncUnsafeCell<KRandomness> = crate::SyncUnsafeCell::new(KRandomness::new());
-
-/// Track whether `KRANDOM` has been initialized (fields set to non-zero).
-/// C: main.c:48 sets `krandom.random_sources = RANDOM_SOURCES`.
-/// In Rust, `KRANDOM` is `const fn new()` so it's initialized at link time.
-static KRANDOM_INIT: AtomicBool = AtomicBool::new(false);
+// D-62①: the `KRANDOM` / `KRANDOM_INIT` declarations moved to
+// `globals.rs` (the single audit point for kernel statics). Imported here.
+use crate::globals::{KRANDOM, KRANDOM_INIT};
 
 /// Mark the krandom global as initialized.
 ///

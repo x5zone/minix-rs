@@ -834,8 +834,9 @@ impl CpuInfoTable {
 /// process runs); the C AP path records under boot_lock + BKL
 /// (arch_smp.c:227-232) and will do the same when SMP bring-up lands
 /// (16-smp.md). Post-boot readers (GET_CPUINFO) hold the BKL.
-static CPU_INFO: crate::SyncUnsafeCell<CpuInfoTable> =
-    crate::SyncUnsafeCell::new(CpuInfoTable::new());
+// D-62②: the `CPU_INFO` declaration moved to `globals.rs` (the single
+// audit point for kernel statics). Imported here.
+use crate::globals::CPU_INFO;
 
 /// Probe and record the identity of the currently executing CPU.
 ///

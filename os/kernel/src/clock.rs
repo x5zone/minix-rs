@@ -47,36 +47,17 @@ use minix_types::Endpoint;
 use crate::kpriv::{PrivId, PrivTable};
 use crate::proc::{CpuId, KProcess, MiscFlagsBits};
 
-// ── Global clock state mirrors (read by scheduler without &ClockState) ──
-
-/// Monotonic uptime in ticks, updated by BSP tick handler.
-///
-/// C: `kclockinfo.uptime` — global variable read by `get_monotonic()`.
-/// In Rust, we use an AtomicU64 so that scheduler code can read uptime
-/// without needing a `&ClockState` reference (which would require threading
-/// through the entire scheduler call chain).
-static CLOCK_UPTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Wall-clock ticks since boot, updated by BSP tick handler.
-///
-/// C: `kclockinfo.realtime` — global variable read by `get_realtime()`.
-/// Mirrored from `ClockState::realtime` so that code without `&ClockState`
-/// can read the current wall-clock time.
-static CLOCK_REALTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Boot time in seconds since UNIX epoch, set by `SYS_STIME`.
-///
-/// C: `kclockinfo.boottime` — global variable read by `get_boottime()`.
-/// Mirrored from `ClockState::boottime` so that code without `&ClockState`
-/// can read the boot timestamp.
-static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// TSC cycles per millisecond, calibrated during boot.
-///
-/// C: `tsc_per_ms[cpuid]` — per-CPU array in `kernel/proc.h`.
-/// For now we use a single global; per-CPU values will be added when
-/// SMP calibration is implemented.
-static TSC_PER_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+// ── Global clock mirrors — declarations live in `globals.rs` (D-62③) ──
+// `CLOCK_UPTIME` / `CLOCK_REALTIME` / `CLOCK_BOOTTIME` / `TSC_PER_MS` are
+// imported below. Contract: the write side is only `ClockState::tick_with`
+// / `set_boottime` / `set_realtime` (BKL-held, Release stores into both the
+// field and the mirror); the read side is the lock-free `get_*` accessors
+// below (Acquire loads). The two sources may differ by at most one tick.
+// C ground truth is single-source (`kclockinfo`, clock.c:189); the Rust
+// mirror exists so lock-free readers need no `&ClockState` threading.
+// Full convergence (threading `&BklSection` through `IpcEngine`) is
+// registered as a follow-up refactor in todo.md D-62.
+use crate::globals::{CLOCK_BOOTTIME, CLOCK_REALTIME, CLOCK_UPTIME, TSC_PER_MS};
 
 /// Default TSC frequency assumption: 1 GHz (1M cycles/ms).
 /// Used as fallback when calibration has not yet run.

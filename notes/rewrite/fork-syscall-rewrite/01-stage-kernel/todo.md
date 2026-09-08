@@ -476,7 +476,7 @@ MINIX3 BUG 标注引 `arch_system.c:239`，实际合并语句在 :243-245（~5 �
   ② "Failure is logged" 全库 grep 零命中（已被此前批次修复或扫描误读），无需动作。
 - 验证：kernel 730/0/8 全绿（注释改动无行为面）。
 
-#### D-62 A2 收尾：globals.rs 之外 4 组静态漏网 [P2]
+#### D-62 A2 收尾：globals.rs 之外 4 组静态漏网 [P2] — ✅ 已修复（2026-09-09，③ 契约显式化 + 收敛路径登记）
 
 `os/kernel/src/globals.rs:1-6` 的"单一审计点"声明对核心状态成立，但：①
 `os/kernel/src/krandom.rs:172/:177`（`KRANDOM` SyncUnsafeCell + `KRANDOM_INIT` AtomicBool）；
@@ -488,6 +488,26 @@ MINIX3 BUG 标注引 `arch_system.c:239`，实际合并语句在 :243-245（~5 �
 256KB SPROF_SAMPLE_BUFFER）连 SyncUnsafeCell 模式都绕过（仅 addr_of_mut! 纪律，
 misc.rs:2219-2222 自述）。修法：迁 globals.rs 或按 A2 反例条款论证豁免并登记；
 `static mut` 至少升 SyncUnsafeCell + BklProtected 审批。
+
+**✅ 解决记录（2026-09-09，11 个静态全部收编 globals.rs）**：
+- **①②④ 迁移**：`KRANDOM`/`KRANDOM_INIT`、`CPU_INFO`、`SPROF_*` 六件 + `SPROF_INFO`/
+  `SPROF_SAMPLE_BUFFER` 两个 `static mut` 升级 `SyncUnsafeCell`（`get()` 取代
+  `addr_of_mut!`，19 个访问点机械替换；misc.rs 声明块删除改 import）；`SprofInfo` 与
+  `u8`（`[u8;N]` 复合 impl 的元素类型）加入 `bkl_protected_impls!` 审批清单（即 A2
+  设计的"审批摩擦点"动作）；globals.rs 头部清单 13 → 24。
+- **③ 裁决：双源契约显式化，完全收敛登记为独立路径**。穷举消费方（sched/proc_table/
+  ipc/syscall_clock 共 6 点）证实**全部持 BKL**——镜像注释"免穿引用读"的存在理由已
+  失效；但完全收敛（删镜像、读侧走 `clock_state_with`）需给 `IpcEngine::
+  build_notify_message` 等引擎内部函数穿透 `&BklSection` 签名，属 IPC 引擎级重构，
+  不属"A2 收尾"边界。本批落地：4 个 Atomic 迁 globals.rs + 写侧 Release 双写/读侧
+  Acquire/两源差 ≤1 tick 的契约写入 clock.rs 与 doc 15（C 单源 `kclockinfo` 差异如实
+  记录）；收敛重构作为独立条目跟进（见下）。
+- 🆕 **I-15（本条派生，open）**：时钟镜像收敛单源——删除 CLOCK_UPTIME/REALTIME/
+  BOOTTIME 镜像，`get_*` 改 `&BklSection` 签名读 `ClockState`，穿透 `IpcEngine`
+  `build_notify_message`/`mini_notify` 链。触发时机：IPC 引擎重构窗口（S-8 trap 入口
+  改造会重塑 IPC 入口，届时一并做）。
+- 验证：kernel 730/0/8 全绿；clippy 零新增；doc 15/25 声称同步（SPROF 访问描述、
+  镜像契约）。
 
 #### D-63 A1 约定破例两处（witness 通道） [P2] — ✅ 已修复（2026-09-09，两处同批）
 

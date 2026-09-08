@@ -570,7 +570,7 @@ pub fn dispatch_profile(
 **PROF_STOP**：
 1. `SPROFILING.compare_exchange(true, false)` 失败 → `EBUSY`（对齐 C do_sprofile.c:101-104）
 2. ✅ `crate::clock::stop_profile_clock()`（misc.rs:2094，经 `ClockArch` 接线）
-3. ✅ 数据搬运已实现（对齐 C do_sprofile.c:117-120）：`SPROF_INFO`（`addr_of!` 规避 `static_mut_refs`，P1-5）与采样缓冲区经 `data_copy_vmcheck` 双拷贝到用户空间（misc.rs:2107-2169）；`mem_used == 0` 时缓冲区拷贝为 no-op
+3. ✅ 数据搬运已实现（对齐 C do_sprofile.c:117-120）：`SPROF_INFO`（指针地址经 `SyncUnsafeCell::get` 获取，D-62④）与采样缓冲区经 `data_copy_vmcheck` 双拷贝到用户空间（`dispatch_profile`，misc.rs:2251 起）；`mem_used == 0` 时缓冲区拷贝为 no-op
 4. `clean_seen_flag()`
 
 **Rollback 机制**：验证失败时 `SPROFILING.store(false)` 回滚，避免后续 `PROF_START` 被毒化。这是 Rust 相对 C 的改进——C 在验证失败后直接 return，`sprofiling` 仍是 0（因为还没到 `sprofiling = 1`），但 Rust 用 `compare_exchange` 提前设置了 true，需要显式回滚。
@@ -673,7 +673,7 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
    > **C typo 复刻**：C 第二个 `2*sizeof(struct sprof_sample)` 实为 `sprof_proc` 的笔误；Rust 复刻 C 的精确检查（语义对齐优先于"正确性修正"），并附注释说明
 3. **样本分类**（对齐 C profile.c:92-109）：IDLE → `idle_samples++`；KERNEL/（`SYS_PROC` 且可运行）→ `MF_SPROF_SEEN` 门控的 `sprof_save_proc` + `sprof_save_sample` + `system_samples++`；其余 → `user_samples++`；最终 `total_samples++`
 
-**SPROF_INFO 访问**：`SPROF_INFO` 是 `static mut`（misc.rs:1947），经 `addr_of_mut!` 访问（P1-5：规避 `static_mut_refs` lint）。BKL 保护：IRQ 路径（`profile_sample`）与 syscall 路径（`dispatch_profile`）不会并发。
+**SPROF_INFO 访问**：`SPROF_INFO` 与 `SPROF_SAMPLE_BUFFER` 已升级为 `SyncUnsafeCell` 包装并收编到 `os/kernel/src/globals.rs`（D-62④，2026-09-09），访问经 `get()` 取裸指针（取代原 `addr_of_mut!`，同样是引用不落地的形态）。BKL 保护：IRQ 路径（`profile_sample`）与 syscall 路径（`dispatch_profile`）不会并发。
 
 **与 `dispatch_profile` 的接线**：`SPROFILING`（AtomicBool@2179）是两面的共享状态——syscall 侧 `compare_exchange` 启停，中断侧 `load` 门控。`profile_sample` 的调用点（时钟中断 handler）待 `ClockArch` 采样接线落地（profile_clock_handler 等价物），当前由测试直接调用验证语义。
 
@@ -782,7 +782,7 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | UPDATE swap_memreq | do_update.c:313-337 | ✅ 已实现（2026-09-08，U-2）：`ProcessTable::vm_swap_requestor`——D-20 的 VmRequestQueue 已存在，恰一侧 VMREQUEST 时重锚 stale 条目；`proc_is_updatable` 不排除 VMREQUEST（如 NO_PRIV 用户进程 kcall 挂 VM 检查），no-op 前提失效 | `ProcessTable::vm_swap_requestor` |
 | ~~SPROF 时钟初始化（PROF_RTC）~~ | do_sprofile.c:75-82 | ✅ 已实现: `ClockArch::init_profile_clock(freq)` / `stop_profile_clock()` | — |
 | SPROF PROF_NMI | do_sprofile.c | NMI 子系统超范围（设计排除），返回 `ENOSYS` | N/A（设计排除） |
-| ~~SPROF 数据拷贝~~ | do_sprofile.c:117-120 | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（misc.rs:2107-2169，`addr_of!` 规避 `static_mut_refs`） | — |
+| ~~SPROF 数据拷贝~~ | do_sprofile.c:117-120 | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（`dispatch_profile`，misc.rs:2251 起；指针经 `SyncUnsafeCell::get`，D-62④） | — |
 | ~~SPROF clean_seen_flag~~ | do_sprofile.c:25-31 | ✅ 已实现: 遍历清除 `MF_SPROF_SEEN`（misc.rs:1980 调用，`&mut ProcessTable` 消费点） | — |
 | ~~SPROF profile_sample~~ | profile.c:75-110 | ✅ 已实现: `profile_sample`（misc.rs:2329）+ 8 个测试（见 §4.8） | — |
 

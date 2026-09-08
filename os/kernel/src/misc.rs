@@ -2217,29 +2217,14 @@ pub const SAMPLE_BUFFER_SIZE: usize = 256 * 1024;
 /// C: `sprof_ep`, `sprof_info_addr_vir`, `sprof_data_addr_vir`,
 /// `sprof_mem_size`, `sprof_info` — profile.h:15-18, do_sprofile.c:23.
 ///
-/// Scalar fields use atomics (Rust 2024 `static_mut_refs` compliance, see
-/// P1-5). `SPROF_INFO` is a struct and uses `addr_of_mut!` for field access
-/// to avoid creating references. All access is serialized by the BKL.
-static SPROF_EP: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
-static SPROF_INFO_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static SPROF_DATA_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static SPROF_MEM_SIZE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-static mut SPROF_INFO: SprofInfo = SprofInfo {
-    mem_used: 0,
-    total_samples: 0,
-    idle_samples: 0,
-    system_samples: 0,
-    user_samples: 0,
+// D-62④: the `SPROF_*` declarations moved to `globals.rs` (the single
+// audit point for kernel statics) and the two `static mut`s were upgraded
+// to `SyncUnsafeCell` wrappers (access shape: `get()` replaces
+// `addr_of_mut!`). Imported here.
+use crate::globals::{
+    SPROF_DATA_ADDR, SPROF_EP, SPROF_INFO, SPROF_INFO_ADDR, SPROF_MEM_SIZE,
+    SPROF_SAMPLE_BUFFER,
 };
-
-/// Static sample buffer (BSS-allocated, zero-initialized).
-///
-/// C: `char sprof_sample_buffer[SAMPLE_BUFFER_SIZE]` — profile.c:16.
-/// Rust uses a smaller buffer; see `SAMPLE_BUFFER_SIZE` comment.
-///
-/// Written to by `sprof_save_sample` / `sprof_save_proc` during profiling,
-/// read by `dispatch_profile` (PROF_STOP) to copy data to user space.
-static mut SPROF_SAMPLE_BUFFER: [u8; SAMPLE_BUFFER_SIZE] = [0; SAMPLE_BUFFER_SIZE];
 
 /// Dispatch SYS_SPROF (statistical profiling).
 ///
@@ -2309,7 +2294,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
             );
             // C: do_sprofile.c:64-68 — reset counters.
             // SAFETY: BKL is held; SPROFILING was just set to true (exclusive access).
-            let info = core::ptr::addr_of_mut!(SPROF_INFO);
+            let info = SPROF_INFO.get();
             unsafe { *info = SprofInfo::default(); }
 
             // C: do_sprofile.c:75-82 — intr-specific initialization.
@@ -2385,7 +2370,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
             let data_addr = SPROF_DATA_ADDR.load(Ordering::Relaxed);
             // SAFETY: BKL is held; SPROF_INFO accessed only under BKL.
             let mem_used = unsafe {
-                let info = core::ptr::addr_of!(SPROF_INFO);
+                let info = SPROF_INFO.get();
                 (*info).mem_used as usize
             };
 
@@ -2400,7 +2385,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
                 use minix_arch::{CurrentDirectMap, DirectMapArch};
                 use minix_types::VirBytes;
                 use core::ptr::addr_of;
-                let ptr = addr_of!(SPROF_INFO) as u64;
+                let ptr = SPROF_INFO.get() as u64;
                 CurrentDirectMap::virt_to_phys(VirBytes(ptr))
             };
             let info_proc_cr3 = |ep: Endpoint| {
@@ -2431,7 +2416,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
                     use minix_arch::{CurrentDirectMap, DirectMapArch};
                     use minix_types::VirBytes;
                     use core::ptr::addr_of;
-                    let ptr = addr_of!(SPROF_SAMPLE_BUFFER) as u64;
+                    let ptr = SPROF_SAMPLE_BUFFER.get() as u64;
                     CurrentDirectMap::virt_to_phys(VirBytes(ptr))
                 };
                 let buf_proc_cr3 = |ep: Endpoint| {
@@ -2544,7 +2529,7 @@ pub struct SprofProc {
 /// `addr_of_mut!` (Rust 2024 `static_mut_refs` compliance, P1-5).
 unsafe fn sprof_save_sample(endpoint: i32, pc: u64) { unsafe {
     // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
-    let info = core::ptr::addr_of_mut!(SPROF_INFO);
+    let info = SPROF_INFO.get();
     let offset = (*info).mem_used as usize;
     if offset + core::mem::size_of::<SprofSample>() > SAMPLE_BUFFER_SIZE {
         // Buffer overflow — should have been caught by the space check in
@@ -2553,7 +2538,7 @@ unsafe fn sprof_save_sample(endpoint: i32, pc: u64) { unsafe {
         return;
     }
     let sample = SprofSample { proc: endpoint, pc };
-    let base = core::ptr::addr_of_mut!(SPROF_SAMPLE_BUFFER) as *mut u8;
+    let base = SPROF_SAMPLE_BUFFER.get() as *mut u8;
     let dst = base.add(offset) as *mut SprofSample;
     core::ptr::write_unaligned(dst, sample);
     (*info).mem_used += core::mem::size_of::<SprofSample>() as i32;
@@ -2573,7 +2558,7 @@ unsafe fn sprof_save_sample(endpoint: i32, pc: u64) { unsafe {
 /// `static mut` accessed only under BKL via `addr_of_mut!` (P1-5).
 unsafe fn sprof_save_proc(proc: &KProcess) { unsafe {
     // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
-    let info = core::ptr::addr_of_mut!(SPROF_INFO);
+    let info = SPROF_INFO.get();
     let offset = (*info).mem_used as usize;
     if offset + core::mem::size_of::<SprofProc>() > SAMPLE_BUFFER_SIZE {
         (*info).mem_used = -1;
@@ -2583,7 +2568,7 @@ unsafe fn sprof_save_proc(proc: &KProcess) { unsafe {
         proc: proc.p_endpoint.get(),
         name: *proc.p_name.as_bytes(),
     };
-    let base = core::ptr::addr_of_mut!(SPROF_SAMPLE_BUFFER) as *mut u8;
+    let base = SPROF_SAMPLE_BUFFER.get() as *mut u8;
     let dst = base.add(offset) as *mut SprofProc;
     core::ptr::write_unaligned(dst, record);
     (*info).mem_used += core::mem::size_of::<SprofProc>() as i32;
@@ -2608,7 +2593,7 @@ unsafe fn sprof_save_proc(proc: &KProcess) { unsafe {
 /// Caller must hold the BKL. `SPROF_INFO` accessed via `addr_of_mut!` (P1-5).
 pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable) { unsafe {
     // SAFETY: BKL held; access via addr_of_mut! avoids static_mut_refs.
-    let info = core::ptr::addr_of_mut!(SPROF_INFO);
+    let info = SPROF_INFO.get();
 
     // C: profile.c:80-81 — are we profiling, and not full?
     if !SPROFILING.load(Ordering::Acquire) || (*info).mem_used == -1 {
@@ -3890,7 +3875,7 @@ fn sprof_test_teardown() {
         SPROF_INFO_ADDR.store(0x1000, Ordering::Relaxed);
         SPROF_DATA_ADDR.store(0x2000, Ordering::Relaxed);
         // SAFETY: BKL is held (simulated by test lock); SPROF_INFO accessed via addr_of_mut!.
-        let info = core::ptr::addr_of_mut!(SPROF_INFO);
+        let info = SPROF_INFO.get();
         unsafe { *info = SprofInfo::default(); }
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
@@ -3979,7 +3964,7 @@ fn sprof_test_teardown() {
         SPROFILING.store(true, Ordering::Release);
         SPROF_MEM_SIZE.store(mem_size, Ordering::Relaxed);
         // SAFETY: BKL is held (simulated by test lock); SPROF_INFO accessed via addr_of_mut!.
-        let info = core::ptr::addr_of_mut!(SPROF_INFO);
+        let info = SPROF_INFO.get();
         unsafe { *info = SprofInfo::default(); }
         // Return a guard that calls sprof_test_teardown on drop.
         struct ProfileSampleGuard;
@@ -3987,7 +3972,7 @@ fn sprof_test_teardown() {
             fn drop(&mut self) {
                 SPROF_MEM_SIZE.store(0, Ordering::Relaxed);
                 // SAFETY: test lock is still held (sprof_test_setup guard).
-                let info = core::ptr::addr_of_mut!(SPROF_INFO);
+                let info = SPROF_INFO.get();
                 unsafe { *info = SprofInfo::default(); }
                 SPROFILING.store(false, Ordering::Release);
                 sprof_test_teardown();
@@ -4010,7 +3995,7 @@ fn sprof_test_teardown() {
         }
         // No counters should have changed.
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.total_samples, 0);
         assert_eq!(info.mem_used, 0);
         sprof_test_teardown();
@@ -4021,7 +4006,7 @@ fn sprof_test_teardown() {
         // C: profile.c:81 — `if (sprof_info.mem_used == -1) return`.
         let _guard = profile_sample_setup(SAMPLE_BUFFER_SIZE);
         // SAFETY: BKL is held; SPROF_INFO accessed via addr_of_mut!.
-        let info = core::ptr::addr_of_mut!(SPROF_INFO);
+        let info = SPROF_INFO.get();
         unsafe { (*info).mem_used = -1; }
         let priv_table = crate::test_helpers::test_priv_table();
         let proc = KProcess::new(ProcNr(0), Endpoint(100));
@@ -4030,7 +4015,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0xDEAD, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.total_samples, 0);
         assert_eq!(info.mem_used, -1);
     }
@@ -4046,7 +4031,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0x1000, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.idle_samples, 1);
         assert_eq!(info.system_samples, 0);
         assert_eq!(info.user_samples, 0);
@@ -4066,7 +4051,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0xBADC0DE, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.system_samples, 1);
         assert_eq!(info.idle_samples, 0);
         assert_eq!(info.user_samples, 0);
@@ -4088,7 +4073,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0x2000, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.user_samples, 1);
         assert_eq!(info.system_samples, 0);
         assert_eq!(info.idle_samples, 0);
@@ -4115,7 +4100,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0x3000, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.system_samples, 1);
         assert_eq!(info.total_samples, 1);
         // Should have written SprofProc + SprofSample.
@@ -4144,7 +4129,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0x3004, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         assert_eq!(info.system_samples, 2);
         assert_eq!(info.total_samples, 2);
         // 1 SprofProc + 2 SprofSample.
@@ -4165,7 +4150,7 @@ fn sprof_test_teardown() {
             profile_sample(&proc, 0xDEAD, &priv_table);
         }
         // SAFETY: BKL is held.
-        let info = unsafe { SPROF_INFO };
+        let info = unsafe { *SPROF_INFO.get() };
         // mem_used should be -1 (buffer full marker).
         assert_eq!(info.mem_used, -1);
         // No sample should have been counted.
