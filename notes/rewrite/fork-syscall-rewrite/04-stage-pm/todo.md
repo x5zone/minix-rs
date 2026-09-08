@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（P1-3 #43 / P1-1 #44 / P1-2 #45 批次H / P1-4 #46 D-29 / P1-5 #47 文档对账 0 MISS）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1（Fix #48 restart_signals）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -461,13 +461,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #47，纯文档批次）：12 篇文档共 51 处改名（旧名 → 经 grep 验证的实际名）；真幻影名按性质处置——12 的三个 wire roundtrip 名改写为 forward-reference（E7 前置产物，不再以测试名声称）、13 的 `can_resume()/is_delayed()` 谓词族未建成（§4.2 代码示例改写为实际实现 + §5.2 两行删除）、14/19 的两个无载体声称改写为诚实注记；05/06 的 §5 头部补 crate 归属注记；07 的 :763 行号过期修正。01 文档 C 锚点偏移与 init.rs:3 头注释（V3-P3-6 范围）随后续批次。
 - **验证**：Gate E 全量对账重跑——**TOTAL MISS: 0**（反引号包裹的测试名 100% grep 命中，搜索根 = servers/pm + minix-types + minix-sys + kernel）。
 
-#### V3-P2-1 VFS 回复尾部的 `restart_signals` 端口 no-op，注释前提失真（V2 的 24 处收敛漏网）
+#### V3-P2-1 VFS 回复尾部的 `restart_signals` 端口 no-op，注释前提失真（✅ 已修复 2026-09-09，Fix #48）
 
-- **优先级**：P2；**类型**：stale stub + 登记缺失
-- **文件**：`os/servers/pm/src/ipc/vfs.rs:533-540`（生产 impl `let _ = slot;`）；调用点 `vfs.rs:279`；C `main.c:421-423`
-- **问题**：注释称"当前 PM 尚未建模挂起信号，13 落地后替换"——pending 集合与 `restart_sigs` 自 Fix #7（2026-09-06）起都是真的，前提失真（模式 77 变体）。尾部条件判定（`is_in_use && !is_exiting`，vfs.rs:278-280）正确，但投递体为空：VFS 回复路径的挂起信号重查丢失。V2 的 24 处 DEFERRED 收敛未覆盖它（注释含 DEFERRED 字样但无编号，与 `wait.rs:128-131` 同类——后者已被 Fix #41 清理）。
-- **建议**：直接接 `crate::signal_flow::restart_sigs`（PmServices 已持 table/transport/kern，借用结构同 publish_event）；与 V2-P2-8（sig_send）同轮可端到端验证。若暂不实施，必须改写注释为 `[DEFERRED: D-XX]` 诚实契约。
-- **验证**：`grep -n "尚未建模挂起信号" os/servers/pm/src/ipc/vfs.rs` 零命中；单测：EXIT 回复尾部对 pending SIGKILL 的进程触发终止。
+- **原状态**：生产 impl `let _ = slot;`，注释前提（"PM 尚未建模挂起信号"）自 Fix #7 起失真；调用点 vfs.rs:279 条件判定正确但投递体为空——VFS 回复路径的挂起信号重查丢失，且 V2 的 24 处 DEFERRED 收敛漏网。
+- **修复**（Fix #48）：`restart_signals` 委托 `signal_flow::restart_sigs`（复用事件域 `PmEventServices` 的 RestartServices 全实现——struct 升 `pub(crate)` + `new` 构造器，借结构与 publish_event 同型）。+2 单测（挂起 SIGKILL 经尾部重查终止 / 未停止态 Noop 信号保留）。
+- **验证**：`grep -n "尚未建模挂起信号" os/servers/pm/src/ipc/vfs.rs` 零命中；基线 373 lib passed。
 
 #### V3-P2-2 sig_proc 的 PRIV_PROC `!ksig` 分支静默丢弃（C 一律 sys_kill 内核转发）
 

@@ -35,10 +35,21 @@ use crate::mproc::{EventCursor, ProcTable};
 ///   PM 侧 `unpause`/`stop_proc` 自行置位，无需内核撤销，返回 OK 使
 ///   `try_resume_proc` 清除 PM 侧状态；E6 落地后替换为真实 `sys_resume`
 ///   （todo.md §6 D-25 登记）。
-struct PmEventServices<'a, T: IpcTransport + ?Sized> {
+pub(crate) struct PmEventServices<'a, T: IpcTransport + ?Sized> {
     transport: &'a mut T,
     /// 内核调用出口（sig_proc 终止路径的 sys_times 计账，D-14）。
     kern: &'a mut dyn crate::exit::KernelGateway,
+}
+
+impl<'a, T: IpcTransport + ?Sized> PmEventServices<'a, T> {
+    /// 事件/信号两域共用的生产适配器（restart_sigs 的 RestartServices
+    /// 全实现；VFS 回复尾部的 `restart_signals` 亦复用，V3-P2-1）。
+    pub(crate) fn new(
+        transport: &'a mut T,
+        kern: &'a mut dyn crate::exit::KernelGateway,
+    ) -> Self {
+        Self { transport, kern }
+    }
 }
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServices<'_, T> {

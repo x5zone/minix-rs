@@ -531,12 +531,14 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
     }
 
     fn restart_signals(&mut self, slot: UserSlot) {
-        // [ARCH A-2] 信号重投 — 见 13-signal-flow.md。
-        //
-        // DEFERRED 脚手架：当前 PM 尚未建模挂起信号，且此方法是每条成功路径的
-        // 尾部清理，若 `unimplemented!()` 会让整个协议在集成层无法端到端验证。
-        // 13 落地后由真实实现替换（投递 pending 信号）。
-        let _ = slot;
+        // C: main.c:421-423 — VFS 回复尾部 `if ((IN_USE|EXITING)==IN_USE)
+        // restart_sigs(rmp)`：回复落定后重查挂起信号（PROC_STOPPED 兼作
+        // 复查指示，sig_proc 的 VFS|EVENT 分支自 V3-P1-3 起真实置位）。
+        // V3-P2-1 之前是 no-op 脚手架，其注释前提（"PM 尚未建模挂起信号"）
+        // 自 Fix #7 起失真，且 V2 的 24 处 DEFERRED 收敛漏掉了它。
+        // 复用事件域的 `PmEventServices`（RestartServices 全实现，Fix #7/#28）。
+        let mut ev = crate::event::PmEventServices::new(self.transport, self.kern);
+        crate::signal_flow::restart_sigs(self.table, slot, &mut ev);
     }
 
     fn set_unpaused(&mut self, slot: UserSlot) {
@@ -1106,5 +1108,60 @@ mod tests {
         };
         tell_vfs(&mut table, slot, call, &mut transport);
         unreachable!("not-idle must panic before sending");
+    }
+
+    /// V3-P2-1 回归锚点：VFS 回复尾部的 restart_signals 委托
+    /// `restart_sigs`——挂起且未阻塞的 SIGKILL 在回复落定后投递（终止链）。
+    #[test]
+    fn test_restart_signals_delivers_pending_sigkill() {
+        use crate::ipc::transport::TestIpcTransport;
+        use crate::mproc::Lifecycle;
+        let mut table = crate::mproc::ProcTable::new();
+        let mut transport = TestIpcTransport::default();
+        let mut events = crate::event::EventRegistry::new();
+        let mut kern = NoopKernelGateway::default();
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
+        svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
+        svc.table.procs[1].identity.id.pid = 42;
+        svc.table.procs[1].state.lifecycle = Lifecycle::Running;
+        // C 的 restart_sigs 前置：PROC_STOPPED（sig_proc 的 VFS|EVENT 分支
+        // 置位，V3-P1-3）+ 挂起未阻塞的 SIGKILL。
+        svc.table.procs[1].state.block.stopped = true;
+        svc.table.procs[1].resources.signals.pending = 1u64 << (9 - 1);
+
+        svc.restart_signals(UserSlot::new(1));
+
+        // SIGKILL → sig_proc → 终止链 → 僵尸。
+        assert!(
+            matches!(
+                svc.table.procs[1].state.lifecycle,
+                Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }
+            ),
+            "pending SIGKILL must terminate, got {:?}",
+            svc.table.procs[1].state.lifecycle
+        );
+    }
+
+    /// 无停止态、无 TRACE_EXIT → Noop：信号保持挂起（C restart_sigs 的
+    /// 早退分支，signal.c:693）。
+    #[test]
+    fn test_restart_signals_noop_when_not_stopped() {
+        use crate::ipc::transport::TestIpcTransport;
+        use crate::mproc::Lifecycle;
+        let mut table = crate::mproc::ProcTable::new();
+        let mut transport = TestIpcTransport::default();
+        let mut events = crate::event::EventRegistry::new();
+        let mut kern = NoopKernelGateway::default();
+        let mut svc = PmServices::new(&mut table, &mut transport, &mut events, &mut kern, 0);
+        svc.table.procs[1].identity.endpoint = Endpoint::from_generation_slot(2, 1);
+        svc.table.procs[1].identity.id.pid = 42;
+        svc.table.procs[1].state.lifecycle = Lifecycle::Running;
+        svc.table.procs[1].resources.signals.pending = 1u64 << (9 - 1);
+
+        svc.restart_signals(UserSlot::new(1));
+
+        // 不满足重查前置：信号原样挂起、进程存活。
+        assert_eq!(svc.table.procs[1].resources.signals.pending, 1u64 << (9 - 1));
+        assert_eq!(svc.table.procs[1].state.lifecycle, Lifecycle::Running);
     }
 }
