@@ -93,6 +93,32 @@ impl VmntLock {
             _ => self.state = LockState::Unlocked,
         }
     }
+    /// `downgrade_vmnt_lock` (`vmnt.c:221-228`): exclusive → shared.
+    ///
+    /// A mutating call that still needs the mount mounted (e.g. unmount's
+    /// final sweep) downgrades so concurrent lookups proceed while it
+    /// finishes.  Unlocked stays unlocked (tll's downgrade on a free lock
+    /// is a no-op there too).
+    pub fn downgrade(&mut self) {
+        if self.state == LockState::Write {
+            self.state = LockState::Read(1);
+        }
+    }
+    /// `upgrade_vmnt_lock` (`vmnt.c:237-243`): shared → exclusive.
+    ///
+    /// Only a single reader can promote (a second reader makes the write
+    /// side wait-forever in C; here it refuses with `Busy`).  Already-write
+    /// is idempotent-ok, matching `tll.rs::upgrade`'s contract.
+    pub fn upgrade(&mut self) -> Result<(), VmntError> {
+        match self.state {
+            LockState::Write => Ok(()),
+            LockState::Read(1) => {
+                self.state = LockState::Write;
+                Ok(())
+            }
+            _ => Err(VmntError::Busy),
+        }
+    }
 }
 
 /// `struct vmnt` (`vmnt.h:7-21`).
@@ -449,4 +475,21 @@ mod tests {
         assert_eq!(VmntFlags::CANSTAT.bits(), 0x10);
     }
 
+
+    #[test]
+    fn test_vmnt_lock_downgrade_upgrade() {
+        let mut lock = VmntLock::default();
+        lock.try_lock(VmntAccess::Write).unwrap();
+        // Write → Read: a fresh shared holder can now join (`vmnt.c:221-228`).
+        lock.downgrade();
+        lock.try_lock(VmntAccess::Read).unwrap();
+        // Read(2) cannot promote — a second reader blocks the write side.
+        assert_eq!(lock.upgrade(), Err(VmntError::Busy));
+        lock.unlock(); // Read(1)
+        // Single reader promotes to exclusive (`vmnt.c:237-243`).
+        lock.upgrade().unwrap();
+        // Already-write is idempotent-ok (tll.rs upgrade contract).
+        assert!(lock.upgrade().is_ok());
+        assert!(lock.is_locked());
+    }
 }

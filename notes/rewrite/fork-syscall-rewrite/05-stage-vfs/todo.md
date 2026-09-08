@@ -406,6 +406,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Verified**：`grep -rn "impl minix_types::ToErrno" os/servers/vfs/src | wc -l` = **30**；`grep -rn "enum FdError" | wc -l` = **1**；`cargo test` = **345 passed / 0 failed**。
 - **边界**：固有 `to_errno(self) -> i32` 保留（ToErrno 文档声明的兼容通道）；消费端随各模块后续触改逐步切 `ToErrno::to_errno(&e).to_i32()`，不做一次性全量重写（VM 侧 T8 判定先例：映射点唯一即可，调用形态不强制）。
 
+### ✅ Fix #20: C-4 — VmntLock 补 downgrade/upgrade（2026-09-09）
+
+- **File**：`os/servers/vfs/src/vmnt.rs`（VmntLock 两方法 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/06-vmnt-table.md`（§2.5 落地说明）。
+- **Before**：`VmntLock` 只有 `try_lock`/`unlock`（对比 tll.rs 与 vnode.rs 都有 downgrade/upgrade）；unmount 与跨挂载"lookup 先 READ 探路、命中后 WRITE 修改"的升级路径无锁原语可用。
+- **After**：`downgrade`（Write→Read(1)，Unlocked 幂等——同 tll 对自由锁的 no-op）与 `upgrade`（Read(1)→Write；多读者 `Busy`——C 的写侧永等在此硬化为拒绝并登记；已 Write 幂等 ok，同 tll.rs 契约）。测试矩阵：降级后共享加入、双读者拒绝晋升、单读者晋升、幂等。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**（345→346）。
+
 ### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
 
 - **File**：`os/servers/vfs/src/select.rs`（Query 变体 + filter_step 构造 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/23-select.md`（D3）。

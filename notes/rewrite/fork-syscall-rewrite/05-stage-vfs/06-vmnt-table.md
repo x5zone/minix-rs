@@ -35,7 +35,7 @@
 
 `vmnt.h:31-33` 的 `VMNT_READ TLL_READ` / `WRITE TLL_READSER` / `EXCL TLL_WRITE` 映射使 `lock_vmnt(vmp, VMNT_EXCL)` 的 `TLL_WRITE` 独占在 `mount` 的排他路径中显式：`vmnt.c:157` 的 `initial_locktype = (locktype==EXCL ? WRITE : locktype)` 将 `EXCL` 的 `WRITE` 化（`EXCL` 本为 `WRITE` 的别名，`TLL_WRITE` 的独占语义直接复用），`159` 的 `if (m_fs_e == who_e) return EDEADLK` 则将“请求者即 FS 自身”的自锁检测显式为 `EDEADLK`（与 `vnode` 的 `lock` 无自锁检测分化，`filp` 的 `try_lock` 无自锁检测分化）。`EDEADLK` 的 `EDEADLK 35` 在 `minix_types` 的 `EDEADLK` 单一映射（`errno.rs:11`）。
 
-`vmnt.c:170` 的 `if (locktype==READ) fp->fp_vmnt_rdlocks++` 的 `LOCK_DEBUG` 计数在 Rust 以 `VmntLockState::Read(n)` 的 `n` 显式读锁持有度（`fproc.h:79` 的 `fp_vmnt_rdlocks` 正交）。`VMNT_READ` 的 `TLL_READ` 多读者与 `VMNT_WRITE` 的 `TLL_READSER` 串行读（`S` 为 `Serial`）的分化在 `mount` 的 `lookup` 先 `READ` 探路、命中后 `WRITE` 修改的升级路径中显式：`vmnt.c:218-224` 的 `upgrade_vmnt_lock` 以 `tll_upgrade` 将 `READ` 提升为 `WRITE`（`open` 的 `lookup` 先 `READ` 探路，命中后 `WRITE` 修改，与 `vnode` 的 `upgrade_vnode_lock` 同型）。
+`vmnt.c:170` 的 `if (locktype==READ) fp->fp_vmnt_rdlocks++` 的 `LOCK_DEBUG` 计数在 Rust 以 `VmntLockState::Read(n)` 的 `n` 显式读锁持有度（`fproc.h:79` 的 `fp_vmnt_rdlocks` 正交）。`VMNT_READ` 的 `TLL_READ` 多读者与 `VMNT_WRITE` 的 `TLL_READSER` 串行读（`S` 为 `Serial`）的分化在 `mount` 的 `lookup` 先 `READ` 探路、命中后 `WRITE` 修改的升级路径中显式：`vmnt.c:218-224` 的 `upgrade_vmnt_lock` 以 `tll_upgrade` 将 `READ` 提升为 `WRITE`（`open` 的 `lookup` 先 `READ` 探路，命中后 `WRITE` 修改，与 `vnode` 的 `upgrade_vnode_lock` 同型）。 **Rust 落地（C-4 闭合）**：`VmntLock::downgrade`（Write→Read(1)，Unlocked 幂等）与 `VmntLock::upgrade`（Read(1)→Write；多读者 `Busy`——C 的写侧永等在此硬化为拒绝；已 Write 幂等 ok，同 `tll.rs::upgrade` 契约）。
 
 ### 1.4 FS 退出时的端点回收级联
 
