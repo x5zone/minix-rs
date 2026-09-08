@@ -843,7 +843,7 @@ Linux/Redox 对照：Linux 的返回路径标记（`TIF_*`）挂 `thread_info`�
 
 ## 5. 测试
 
-### 5.1 现有测试（13 个，可 grep）
+### 5.1 现有测试（18 个，可 grep）
 
 > 注：`sig_delay_done`（todo D-13）的行为测试分布在 `proc_table.rs` / `ipc.rs` / `syscall.rs` 三个测试模块（而非 syscall_signal.rs），见下方「sig_delay_done 专项测试（D-13，2026-09-05）」小节。
 
@@ -862,6 +862,11 @@ Linux/Redox 对照：Linux 的返回路径标记（`TIF_*`）挂 `thread_info`�
 | `test_cause_signal_self_path_non_lethal` | syscall_signal.rs:978 | 自管理非致命：写自身 s_sig_pending，不设 RTS_SIGNALED | `cause_sig` SELF 路径 |
 | `test_cause_signal_self_lethal_promotes_backup` | syscall_signal.rs:998 | 致命 SELF：backup 提升 + NO_PRIV 解除 + 递归外部投递 | `cause_sig` 致命路径 |
 | `test_cause_signal_self_lethal_no_backup_panics` | syscall_signal.rs:1030 | 致命 SELF + 无 backup → panic | `cause_sig` 致命路径 |
+| `test_getksig_delivers_pending_then_reports_none` | syscall_signal.rs:1144 | GETKSIG 全生命周期：找到 SIGNALED 目标回填 (endpt, map) 并清状态；二次调用返回 NONE | `do_getksig.c:27-40`（T-1，2026-09-08） |
+| `test_endksig_clears_sig_pending_when_no_new_signal` | syscall_signal.rs:1183 | ENDKSIG 无新信号时清除 RTS_SIG_PENDING | `do_endksig.c:35-36`（T-1，2026-09-08） |
+| `test_endksig_keeps_sig_pending_when_new_signal_arrived` | syscall_signal.rs:1205 | ENDKSIG 有新信号（SIGNALED 置位）时保留 SIG_PENDING | `do_endksig.c:35`（T-1，2026-09-08） |
+| `test_sigsend_unmapped_sigctx_returns_vmsuspend` | syscall_signal.rs:1230 | SIGSEND sigmsg 拷贝遇未映射 sigctx → VmSuspend | `do_sigsend.c:36-39`（T-1，2026-09-08） |
+| `test_sigreturn_unmapped_sigctx_returns_vmsuspend` | syscall_signal.rs:1252 | SIGRETURN sigcontext 拷回遇未映射 sigctx → VmSuspend | `do_sigreturn.c:33-35`（T-1，2026-09-08） |
 
 > 注：`test_sigsend_kernel_process` 当前因 `endpoint_to_nr` 找不到内核进程返回 EINVAL（非 EPERM），因测试用空 ProcessTable 无内核任务槽；语义上 iskerneln 应返回 EPERM，待 ProcessTable 测试基建完善后细化。
 
@@ -897,13 +902,20 @@ rg "fn test_" os/kernel/src/syscall_signal.rs --type rust -n
 
 ### 5.2 待补充测试
 
+> **✅ 全部补齐（2026-09-08，T-1）**：下表 5 项均已落地（§5.1 末 5 行，函数名与计划名略异但行为一一对应：
+> `test_getksig_finds_signaled`→`test_getksig_delivers_pending_then_reports_none`（合并 NONE 分支）、
+> `test_endksig_clears_pending`→`test_endksig_clears_sig_pending_when_no_new_signal`、
+> `test_endksig_keeps_pending`→`test_endksig_keeps_sig_pending_when_new_signal_arrived`、
+> `test_sigsend_vmsuspend_on_page_fault`→`test_sigsend_unmapped_sigctx_returns_vmsuspend`、
+> `test_sigreturn_vmsuspend_on_page_fault`→`test_sigreturn_unmapped_sigctx_returns_vmsuspend`）。
+
 | 测试函数 | 验证行为 | 依赖 |
 |---------|---------|------|
-| `test_getksig_finds_signaled` | GETKSIG 扫描找到 RTS_SIGNALED 进程 | dispatch_getksig（已实现，待测试基建） |
-| `test_endksig_clears_pending` | ENDKSIG 无新信号时清除 SIG_PENDING | dispatch_endksig（已实现） |
-| `test_endksig_keeps_pending` | ENDKSIG 有新信号时保留 SIG_PENDING | dispatch_endksig（已实现） |
-| `test_sigsend_vmsuspend_on_page_fault` | SIGSEND sigmsg 拷贝触发 VmSuspend + RTS_VMREQUEST | MockPteWalk 返回 None（已具备） |
-| `test_sigreturn_vmsuspend_on_page_fault` | SIGRETURN sigcontext 拷贝触发 VmSuspend | MockPteWalk 返回 None（已具备） |
+| ~~`test_getksig_finds_signaled`~~ | GETKSIG 扫描找到 RTS_SIGNALED 进程 | ✅ 已落地 |
+| ~~`test_endksig_clears_pending`~~ | ENDKSIG 无新信号时清除 SIG_PENDING | ✅ 已落地 |
+| ~~`test_endksig_keeps_pending`~~ | ENDKSIG 有新信号时保留 SIG_PENDING | ✅ 已落地 |
+| ~~`test_sigsend_vmsuspend_on_page_fault`~~ | SIGSEND sigmsg 拷贝触发 VmSuspend + RTS_VMREQUEST | ✅ 已落地 |
+| ~~`test_sigreturn_vmsuspend_on_page_fault`~~ | SIGRETURN sigcontext 拷贝触发 VmSuspend | ✅ 已落地 |
 
 ---
 

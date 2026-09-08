@@ -1137,4 +1137,134 @@ mod tests {
         let (_, _, mut procs, mut privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
         cause_signal(ProcNr(0), SIGABRT, &mut procs, &mut privs);
     }
+
+    // ── T-1: GETKSIG / ENDKSIG / sigsend / sigreturn 行为矩阵 ──
+
+    #[test]
+    fn test_getksig_delivers_pending_then_reports_none() {
+        // C do_getksig.c:27-40 — 第一次调用：找到 SIGNALED 目标，回填
+        // (endpt, map) 并清 SIGNALED + p_pending；第二次调用：无待处理 →
+        // endpt = NONE。
+        let (target_ep, manager_ep, mut procs, mut privs) =
+            occupy_two_slots(ProcNr(0), ProcNr(1));
+        // 目标的信号管理器改为 manager（C: priv(rp)->s_sig_mgr）
+        privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        {
+            let t = procs.get_mut(ProcNr(0)).unwrap();
+            t.p_rts_flags.set(RtsFlagsBits::SIGNALED);
+            t.p_pending.add(SIGTRAP as u8);
+        }
+        let mut caller = KProcess::new(ProcNr(1), manager_ep);
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Getksig as i32;
+
+        let result = dispatch_getksig(&mut caller, &mut msg, &mut procs, &privs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        // SAFETY: 回填变体由 dispatch_getksig 写入；测试侧 unsafe 读。
+        let (got_endpt, got_map) = unsafe { (msg.m_u.m_sigcalls.endpt, msg.m_u.m_sigcalls.map) };
+        assert_eq!(got_endpt, target_ep.get());
+        // SigSet 位编码与 C sigset_t 同款：信号号 s → bit (s-1)（POSIX sigaddset）。
+        assert_eq!(got_map, 1u64 << (SIGTRAP - 1));
+        // C do_getksig.c:33-34 — 消费后清 p_pending + RTS_SIGNALED
+        let t = procs.get(ProcNr(0)).unwrap();
+        assert!(!t.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
+        assert_eq!(t.p_pending.get(), 0);
+
+        // 第二次调用：无 SIGNALED 目标 → endpt = NONE（C do_getksig.c:40）
+        let mut msg2 = Message::default();
+        msg2.m_type = Syscall::Getksig as i32;
+        let result2 = dispatch_getksig(&mut caller, &mut msg2, &mut procs, &privs);
+        assert_eq!(result2, KcallResult::Ok(OK));
+        let none_endpt = unsafe { msg2.m_u.m_sigcalls.endpt };
+        assert_eq!(none_endpt, Endpoint::NONE.get());
+    }
+
+    #[test]
+    fn test_endksig_clears_sig_pending_when_no_new_signal() {
+        // C do_endksig.c:35-36 — SIG_PENDING 置位且无新信号（SIGNALED 清）→
+        // 清 RTS_SIG_PENDING，返回 OK。
+        let (target_ep, manager_ep, mut procs, mut privs) =
+            occupy_two_slots(ProcNr(0), ProcNr(1));
+        privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        procs.get_mut(ProcNr(0)).unwrap()
+            .p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
+        let mut caller = KProcess::new(ProcNr(1), manager_ep);
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Endksig as i32;
+        // SAFETY: m_type set above; test-only union write (msg_sigcalls 读侧同款).
+        unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
+
+        let result = dispatch_endksig(&mut caller, &msg, &mut procs, &privs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        assert!(!procs.get(ProcNr(0)).unwrap()
+            .p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING),
+            "无新信号时 ENDKSIG 必须清 RTS_SIG_PENDING");
+    }
+
+    #[test]
+    fn test_endksig_keeps_sig_pending_when_new_signal_arrived() {
+        // C do_endksig.c:35 — 若 ENDKSIG 处理期间新信号到达（SIGNALED 置位），
+        // RTS_SIG_PENDING 保留（管理器需再次 GETKSIG）。
+        let (target_ep, manager_ep, mut procs, mut privs) =
+            occupy_two_slots(ProcNr(0), ProcNr(1));
+        privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
+        {
+            let t = procs.get_mut(ProcNr(0)).unwrap();
+            t.p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
+            t.p_rts_flags.set(RtsFlagsBits::SIGNALED);
+        }
+        let mut caller = KProcess::new(ProcNr(1), manager_ep);
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Endksig as i32;
+        // SAFETY: m_type set above; test-only union write (msg_sigcalls 读侧同款).
+        unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
+
+        let result = dispatch_endksig(&mut caller, &msg, &mut procs, &privs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        assert!(procs.get(ProcNr(0)).unwrap()
+            .p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING),
+            "新信号已到达（SIGNALED 置位）时 SIG_PENDING 必须保留");
+    }
+
+    #[test]
+    fn test_sigsend_unmapped_sigctx_returns_vmsuspend() {
+        // C do_sigsend.c:36-39 — Step 1 从调用者用户空间拷贝 sigmsg；
+        // sigctx 指向未映射地址 → PTE walk 页失败 → VmSuspend（VM 协助）。
+        let (target_ep, _, mut procs, _privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
+        // 目标必须有已记录的内核入口（NoEntry → EINVAL，到不了拷贝）
+        procs.get_mut(ProcNr(0)).unwrap().trap_style =
+            minix_arch::TrapStyle::IntHard;
+        let mut caller = KProcess::new(ProcNr(1), Endpoint(200));
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Sigsend as i32;
+        // SAFETY: m_type set above; test-only union write.
+        unsafe {
+            msg.m_u.m_sigcalls.endpt = target_ep.get();
+            msg.m_u.m_sigcalls.sigctx = 0x1000; // 未映射
+        }
+
+        let result = dispatch_sigsend(&mut caller, &msg, &mut procs);
+        assert_eq!(result, KcallResult::VmSuspend,
+            "未映射 sigctx 的拷贝必须挂起等待 VM 协助");
+    }
+
+    #[test]
+    fn test_sigreturn_unmapped_sigctx_returns_vmsuspend() {
+        // C do_sigreturn.c:33-35 — Step 1 从目标用户空间拷回 sigcontext；
+        // sigctx 未映射 → VmSuspend（Rust 统一用 data_copy_vmcheck，
+        // 用户栈可页失败——doc 注释明示与 C data_copy 的差异）。
+        let (target_ep, _, mut procs, _privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
+        let mut caller = KProcess::new(ProcNr(1), Endpoint(200));
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Sigreturn as i32;
+        // SAFETY: m_type set above; test-only union write.
+        unsafe {
+            msg.m_u.m_sigcalls.endpt = target_ep.get();
+            msg.m_u.m_sigcalls.sigctx = 0x1000; // 未映射
+        }
+
+        let result = dispatch_sigreturn(&mut caller, &msg, &mut procs);
+        assert_eq!(result, KcallResult::VmSuspend,
+            "未映射 sigctx 的 sigcontext 拷回必须挂起等待 VM 协助");
+    }
 }
