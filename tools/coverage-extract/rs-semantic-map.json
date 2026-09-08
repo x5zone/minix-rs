@@ -1,6 +1,6 @@
 {
   "_comment": "C→Rust 语义映射表（rs 模块）。用于 coverage-extract.py 的 --semantic-map。",
-  "_note": "2026-09-06 全量扩展（§18 轮查漏补缺）：原表仅覆盖 01-rs-boot-init 语义，现按 02~19 号文档语义补全。映射依据 = os/servers/rs 各模块实现 + 四份深读报告的行号锚点；完全缺失的 C 函数刻意不映射，让其显示为缺口。2026-09-07 §20 扫描轮回填：20.1 判定表 A 类（名称不匹配）18 项映射回写 + sef_local_startup 陈旧映射修复（N5 重构后 RsServer::init 吸收）。仍刻意不回填：copy_rs_start / do_edit —— rs_start_t 解码压 edge E-RSSTART 门，接线轮落地后随 do_up/do_edit handler 扩展映射。",
+  "_note": "2026-09-06 全量扩展（§18 轮查漏补缺）：原表仅覆盖 01-rs-boot-init 语义，现按 02~19 号文档语义补全。映射依据 = os/servers/rs 各模块实现 + 四份深读报告的行号锚点；完全缺失的 C 函数刻意不映射，让其显示为缺口。2026-09-07 §20 扫描轮回填：20.1 判定表 A 类（名称不匹配）18 项映射回写 + sef_local_startup 陈旧映射修复（N5 重构后 RsServer::init 吸收）。仍刻意不回填：copy_rs_start / do_edit —— rs_start_t 解码压 edge E-RSSTART 门，接线轮落地后随 do_up/do_edit handler 扩展映射。 | 2026-09-09 R39 回填：copy_rs_start（E-RSSTART 关单后等价物 = fetch_rs_start + decode_rs_start，Fix #82/#81）与 rs_strerror（Errno::name/Display + error.rs 描述表吸收，Fix #66）——§22.6.1 判定表余量。",
   "main": [
     "RsServer::run",
     "RsServer::new",
@@ -598,5 +598,13 @@
   ],
   "RS_VM_DEFAULT_MAP_PREALLOC_LEN": [
     "vm_default_prealloc"
+  ],
+  "copy_rs_start": [
+    "fetch_rs_start",
+    "decode_rs_start"
+  ],
+  "rs_strerror": [
+    "init_strerror",
+    "lu_strerror"
   ]
 }

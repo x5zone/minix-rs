@@ -192,10 +192,18 @@ rollback→心跳重发扫、catch_boot_init_ready 三 panic 分支等场景级�
   `RS_DONTREPLY`→`DispatchResult` 模型；`sef_local_startup`→`RsServer::init`+trait 分派；
   `RS_VM_DEFAULT_MAP_PREALLOC_LEN`→调用方参数注入；`copy_rs_start`/`do_edit` 曾刻意不回填
   （E-RSSTART 门）——**该门前已关单，回填待办见 §6.2 R39**。
-- **B 类（ARCH 不需要）**：头文件守卫/EXTERN/_SYSTEM/_TABLE/errentry/RS_USE_PAGING。
-- **C 类（归属他 stage）**：`exec_restart`→19；四个打印函数→08-stage-is。
-- **D 类（L5 可观测性吸收）**：DEBUG_*/PRIV_DEBUG → rs_verbose 输出缝（E-11 diagctl）；
-  `rs_strerror`→`Errno::name`/`Display`+error.rs（Fix #66）。
+- **B 类（ARCH 不需要，全 10 项显式列出——本表是覆盖率的文档引用源，压缩会掉 Doc
+  covered）**：头文件守卫 `RS_CONST_H`（const.h:4）/`RS_GLO_H`（glo.h:4）/
+  `RS_TYPE_H`（type.h:4）；机制宏 `EXTERN`（glo.h:8）/`_SYSTEM`（inc.h:7）/
+  `_TABLE`（table.c:7）/`errentry`（error.c:9）；死配置 `RS_USE_PAGING`
+  （const.h:84）；调试开关 `DEBUG`（const.h:10）/`PRIV_DEBUG`（const.h:14）。
+- **C 类（归属他 stage）**：`exec_restart`（exec.c:121）→19；
+  `srv_to_string_gen`（utility.c:142）/`srv_upd_to_string`（utility.c:189）/
+  `print_services_status`（utility.c:485）/`print_update_status`（utility.c:516）
+  →08-stage-is。
+- **D 类（L5 可观测性吸收）**：`DEBUG_DEFAULT`（const.h:6）/`PRIV_DEBUG_DEFAULT`
+  （const.h:7）→ rs_verbose 输出缝（E-11 diagctl）；`rs_strerror`（error.c:33）→
+  `Errno::name`/`Display`+error.rs 描述表（Fix #66；R39 已回填 semantic-map）。
 
 **§20 结论**：函数级零真缺口；调用图反查无 P0/P1；A-2（Effects 聚合）、A-4（slot.upd
 镜像一致性）、A-1（lib.rs 拆分触发器）均已执行（Fix #79/#86/#87/#88）。A-5（夹具族）
@@ -329,7 +337,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
     19 接线前定型，避免接线时 17 处逐一决断。
   - 归属：可立即 todo-fix（一次一个模块，5 个文件）。
 
-- **R38（P2-doc-sync）— doc 19 §3.3 codec 决策声明被实际路线超越**
+- **R38（P2-doc-sync）— doc 19 §3.3 codec 决策声明被实际路线超越** ✅ 已修（2026-09-09，见 §22.7 Fix #94）
   - 现状：19-rs-external-interfaces.md:143 写"Rust 侧以语义层 struct 建模（无
     `#[repr(C)]` 字节布局），`DecodeFromM1`/`EncodeToM1` 实现 DEFERRED——wire-up 时按
     64 字节协议定稿传输层，再补 codec"。
@@ -342,7 +350,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
     的 P2（模式 73 同族），不影响正确性。
   - 归属：文档修复，1 轮。
 
-- **R39（P2-工具配置）— semantic-map 回填 `copy_rs_start`（E-RSSTART 关单后的过期缺口）**
+- **R39（P2-工具配置）— semantic-map 回填 `copy_rs_start`（E-RSSTART 关单后的过期缺口）** ✅ 已修（2026-09-09，见 §22.7 Fix #94）
   - 现状：Fix #80 刻意不回填 `copy_rs_start`/`do_edit`（当时是 E-RSSTART 门上的真缺口，
     保持 ⚠️ 可见）。E-RSSTART 已关单且 do_up/do_edit/do_update 三臂 live（Fix #82-#84），
     `do_edit` 已回填而 `copy_rs_start` 遗漏——它是 E-RSSTART 时代留下的唯一过期 ⚠️。
@@ -406,7 +414,7 @@ E-MINSYS-HYGIENE 一句话条目）。
 1. ~~**R35**（P1，1 轮）：peek/walk 分离 + gate 失败链状态负断言测试~~ ✅ Fix #91；
 2. ~~**R36**（P1，1 轮）：do_period 补 update_period 臂 + 超时回滚测试 + 删陈旧注释~~ ✅ Fix #92；
 3. ~~**R37**（P2，1-2 轮）：get_ticks 失败策略定型（? 传播 / expect 分点）+ 测试~~ ✅ Fix #93；
-4. **R38 + R39**（P2，可并 1 轮）：doc 19 §3.3 后记 + semantic-map 双回填；
+4. ~~**R38 + R39**（P2，可并 1 轮）：doc 19 §3.3 后记 + semantic-map 双回填~~ ✅ Fix #94；
 5. R40 随 1/2 顺带；R41/R42 记录不动作。
    修复遵循 fix-guard.md（读目标行 ±5、grep 确认、单条修复、修后验证 + 本节标注）；
    每轮完成后 `cargo test -p minix-rs -p minix-types` + clippy/fmt + T7 门。
@@ -516,3 +524,22 @@ E-MINSYS-HYGIENE 一句话条目）。
   fmt 干净；T7 PASS。回归 review：18 处替换逐点核对（含 live_update.rs 既有 1 处 `?`
   形态一致）；`booted_vfs_labeled` 重构为委托 `booted_vfs_kernel`（既有调用点零改动，
   A-5 夹具参数化而非新增变体）；无测试依赖旧 fail-open 行为（333 全绿即证）。
+
+### ✅ Fix #94 — R38+R39（P2 合并轮）：doc 19 §3.3 落地后记 + semantic-map 双回填
+
+- **File**：`19-rs-external-interfaces.md`（§3.3 落地后记：三条实际路线取代预案文本——
+  ①控制结构字节 ABI pinning（LWT，Fix #81/#85/#89）②消息槽目标字段读取器
+  （`rs_init_result()`/`rs_req_payload()`/`RsUpdate::decode_message`）③Message 72 字节
+  实测 pinning，commit `deec0c347`；§3.1/§3.2 字段语义表维持有效）、
+  `tools/coverage-extract/rs-semantic-map.json`（`copy_rs_start`→`fetch_rs_start`+
+  `decode_rs_start`、`rs_strerror`→`init_strerror`+`lu_strerror`，`_note` 记录来源）、
+  `03-stage-rs/todo.md`（§4 standing 分类符号名显式化——见下）
+- **R39 附带发现（测试自查抓出）**：§22 清理 todo.md 时把 §4 分类表的部分符号名压缩
+  掉了，而那 5 个符号（`RS_CONST_H`/`RS_GLO_H`/`RS_TYPE_H`/`DEBUG_DEFAULT`/
+  `PRIV_DEBUG_DEFAULT`）的唯一文档引用就是 todo.md——Doc covered 从 100% 掉到
+  97.1%（SYMBOLS 复测当场暴露）。修复 = §4 B/C/D 分类逐符号显式列出（含 file:line
+  锚点），并加注"本表是覆盖率的文档引用源，压缩会掉 Doc covered"。
+- **Verified**：coverage-extract 复测 = **171 C 符号 / Doc covered 171（100%）/
+  name-match 154（90.1%）**；剩余 17 个 ⚠️ 逐名核对全部落在 §4 B/C/D standing
+  分类（C 类 5 + B/D 类 12），零假阳性。`cargo test -p minix-rs -p minix-types`
+  333/189 passed（本轮零代码改动）；clippy/fmt/T7 全绿。

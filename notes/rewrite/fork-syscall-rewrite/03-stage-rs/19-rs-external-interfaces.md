@@ -150,6 +150,17 @@ C 的 `message` 联合体按 `m_type` 选择子格式；Rust 用**语义层 stru
 > **⚠️ ARCH A-2 风险项（快照事实）**：本树 `include/minix/ipc.h` 的 `mess_1`（ipc.h:37-43）按 **56 字节**布局（`_ASSERT_MSG_SIZE` = 56，ipcconst.h:17-19），但 `sizeof(message) == 64`（ipc.h:2675 断言）——i386 下 payload 最大 56 字节 + `__ALIGNED(16)`（ipc.h:2673）→ sizeof 64。`mess_rs_init`（ipc.h:1858-1867）在 64 位布局下为 64 字节，与 `_ASSERT_MSG_SIZE(mess_rs_init)` 的 56 冲突——快照处于 56→64 消息迁移的中间态。
 >
 > **决策**：Rust 侧以**语义层 struct** 建模（字段级类型，无 `#[repr(C)]` 字节布局），`DecodeFromM1`/`EncodeToM1` 实现 **DEFERRED**——wire-up 时按 64 字节协议定稿传输层，再补 codec。语义字段（§3.1/§3.2 表）不受布局影响。
+>
+> **落地后记（2026-09-09，R38）**：上段决策文本描述的是当时的预案，实际落地走了三条
+> 更精确的路线，以此为准：**①控制结构走字节 ABI pinning**——`rs_start_t`/
+> `rprocpub`/`rproc` 三个结构以「布局见证三件套」落 `minix-types::ipc::{rs_start,
+> rprocpub, rproc}`（偏移常量单点表 + `#[repr(C)]` 见证 + `offset_of!`/`size_of`
+> 编译期断言，解码 `from_le_bytes` 安全读取；Fix #81/#85/#89），而非"无 repr(C)"；
+> **②消息槽走目标字段读取器**——`Message::rs_init_result()`/`rs_req_payload()`/
+> `RsUpdate::decode_message` 只读取臂内确有语义的字段（union 安全读的正是 56/64
+> 迁移态下不动整槽的答案），而非泛型 `DecodeFromM1` 整槽 codec；**③尺寸疑虑以实测
+> pinning 关闭**——`Message` 实测 72 字节（< 512 阈值），尺寸断言钉进测试
+> （minix-types，commit `deec0c347`）。§3.1/§3.2 的字段语义表仍然有效。
 
 ---
 
