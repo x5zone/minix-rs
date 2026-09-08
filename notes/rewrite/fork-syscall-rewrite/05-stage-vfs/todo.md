@@ -30,7 +30,7 @@
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
-| P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2） |
+| P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #12） |
 | P3 | R2-P3-1 | request.rs 计数注释漂移：33 常量 = 32 活 + 1 死，FsReq 32 变体与活类型双射（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #2） |
 | P3 | R2-P3-2 | device_map.rs 四源合一（dmap+smap+device.c ioctl 决策+mapdriver）的职责注记（§9.2） |
 | edge | E-REQWIRE（新） | REQ_* VFS↔FS 共享契约双侧独立定义（vfs request.rs vs minix-fs protocol.rs）——收敛 minix-types 或建全量对账测试 |
@@ -184,7 +184,7 @@
 - **改写要求**：00 按快照 Ch1-Ch7 展开启动主线叙事（mthread→A-1 的"演进而非退化"论证须带 R1 存档 §6.5/6.7 的 Redox 事实锚点）；99 定稿时一并落 P3-2/C-10 的"有意省略表"与引用计数双层不变量（filp_count ↔ v_ref_count ↔ v_fs_count——它是 C-3/P0-3 失效族的正确性基础）。正文改写后快照升 v2 复审。
 - **验证**：plan.md §6 实施路线两行"骨架"状态翻转；coverage-check 复跑仍 ALL PASS。
 
-#### R2-P2-3（P2）`do_gcov_flush` 缺 super_user 特权门
+#### ✅ R2-P2-3（P2）`do_gcov_flush` 缺 super_user 特权门——已修复 2026-09-09（§10 Fix #12）
 
 - **Rust 现状**：misc.rs gcov 决策组四门齐——`gcov_label_gate`（:555，顺带修复并注释了 gcov.c:39-44 的 labellen==0 越界 bug）、`gcov_endpt_ok`（:566）、`gcov_grant_outcome`（:575）、`gcov_target`（:593）；独缺 C gcov.c:31 的 `super_user` → EPERM 门。
 - **C 行为**：gcov.c:10-73 `do_gcov_flush` 第一步特权检查。
@@ -332,6 +332,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`stop(call) -> StopPlan { group: finish_kind(call), reply: EIO }`——驱动死亡时挂起调用以 EIO 负类型按原有复活组收尾（C "统一口径"：:918 清挂起 → :921-923 EIO 续办）；`stop_matches(dev, smap_table, dead)` 判定挂起槽位是否属于死驱动（`pipe.c:347-350` 的 smap 行端点比对）。至此死亡级联的三面决策函数全部就位：filedes 失效族（Fix #5/#6）+ select 死亡唤醒（`DeathKind`/`unsuspend_hit`，既有）+ sdev 停尸（本条）；编排分类器 `classify_driver_waiter`/`DriverWake::StopSdev` pipe.rs 既有。
 - **诚实边界**：运行时编排（fproc 扫描循环 + dmap/smap unmap 触发序）无法在任何纯决策层落地——它就是事件循环本身，归 P1-2 接线矩阵（该条建议 1 已含"驱动级联"步）。本条闭合的是语义缺口（❌ 对位缺失），非接线缺口。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（343→345）。
+
+### ✅ Fix #12: R2-P2-3 — gcov 五门之首的 root 门补齐（2026-09-09）
+
+- **File**：`os/servers/vfs/src/misc.rs`（`gcov_privilege_gate` + 测试断言）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/31-misc-queries.md`（实现清单 + 守门表，行号按插入后实测重校）。
+- **Before**：misc.rs gcov 决策组四门齐（label/endpt/grant/target），独缺 C gcov.c:31-34 的 `super_user → EPERM` 门；31 号文档 §2.7/:52 早已描述"root 检查"——文档对、代码缺。
+- **After**：`gcov_privilege_gate(is_super: bool) -> Result<(), MiscError>`（`Perm → EPERM`），五门之首；测试并入 `test_probe_and_obsolete`（super 过 / 非 root Perm）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（断言并入既有 gcov 测试，无新增 fn）。
 
 ### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
 

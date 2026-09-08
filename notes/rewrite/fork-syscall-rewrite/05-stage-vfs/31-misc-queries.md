@@ -146,7 +146,7 @@ Rust 改写不是照抄 `misc.c` 的开关与指针表，而是吸收 Linux/Redo
 ### D7 杂项三则与 FS 对话
 
 - **C**：gcov 五项检查（`31/39/46/50/54`）+ 本地远端分流（`59-68`）+ 释放授权（`70`）/ getrusage 废弃调用固定返回（`1000-1005`）/ panic_hook 打印（`989-993`）/ `req_sync` 下发不等待 + `req_utime` 问答。
-- **Rust**：`gcov_label_gate()`（`misc.rs:555`，空标签拒绝——MINIX3 BUG 修复，见下）+ `gcov_endpt_ok()`（`566`）+ `gcov_grant_outcome()`（`575`）+ `GcovTarget/gcov_target()`（`585,593`）+ `getrusage_verdict()`（`605`，恒 `OK`）+ panic_hook 无符号 + `MiscFs{sync_fs, utime}`（`614`，`ScriptedMisc` 记录调用应答 vs `RefusingMisc` 固定拒绝）+ `MiscVerdict::{Done, Suspend}`（`688`）+ `MiscError` 九变体（`701`）。
+- **Rust**：`gcov_privilege_gate()`（`misc.rs:553`，root 门——非 root `EPERM` 先于一切检查）+ `gcov_label_gate()`（`misc.rs:565`，空标签拒绝——MINIX3 BUG 修复，见下）+ `gcov_endpt_ok()`（`576`）+ `gcov_grant_outcome()`（`585`）+ `GcovTarget/gcov_target()`（`595,603`）+ `getrusage_verdict()`（`605`，恒 `OK`）+ panic_hook 无符号 + `MiscFs{sync_fs, utime}`（`614`，`ScriptedMisc` 记录调用应答 vs `RefusingMisc` 固定拒绝）+ `MiscVerdict::{Done, Suspend}`（`688`）+ `MiscError` 九变体（`701`）。
 - **为什么**：废弃也有前置条件（删除前保持兼容）；下发不等待是 D3 同源；空标签拒绝是**内存安全修复**：C `39` 放行空标签致 `44` 之 `label[len-1]` 越界（MINIX3 BUG 标注，模式 78）；gcov 全 trait 化（grant/taskcall/revoke）被否决：授权与释放是外层执行，判定层只做检查与分流。
 
 ### ARCH 决策总表
@@ -207,6 +207,7 @@ os/servers/vfs/src/
 | 键值域（verbose 0-4） | `verbose_gate` | 越界拒绝 | `misc.c:848` |
 | 时间戳三态（NOW/OMIT/显值） | `resolve_nsec` | 纳秒超十亿即 `EINVAL` | `time.c:117,134` |
 | 废弃固定返回（getrusage 恒 OK） | `getrusage_verdict` | 删除前保持兼容 | `misc.c:1005` |
+| root 门（覆盖率数据敏感） | `gcov_privilege_gate` | 非 root `EPERM`，五门之首 | `gcov.c:31-34` |
 | 空标签拒绝（标签非空） | `gcov_label_gate` | 空标签越界拒绝 | `gcov.c:39` + BUG 修复 |
 
 ---

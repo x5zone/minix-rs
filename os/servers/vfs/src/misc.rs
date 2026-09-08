@@ -547,6 +547,16 @@ pub const LABEL_MAX: usize = 16;
 ///
 /// Below 16 the copy fits and the terminator lands inside (`44`).
 /// Zero refuses too: C would write `label[len - 1]` out of bounds on an
+/// Privilege gate (`do_gcov_flush:31-34`): coverage data is sensitive
+/// system information — non-root callers refuse with `EPERM` before any
+/// other check.  The first of gcov's five doors.
+pub fn gcov_privilege_gate(is_super: bool) -> Result<(), MiscError> {
+    if !is_super {
+        return Err(MiscError::Perm);
+    }
+    Ok(())
+}
+
 /// empty label.
 ///
 /// MINIX3 BUG (`gcov.c:39-44`): the length check admits `labellen == 0`,
@@ -992,6 +1002,9 @@ mod tests {
         assert_eq!(gcov_label_gate(0), Err(MiscError::Inval));
         assert_eq!(gcov_label_gate(16), Err(MiscError::Inval));
         assert_eq!(gcov_label_gate(100), Err(MiscError::Inval));
+        // Privilege door first (`31-34`): non-root refuses before anything.
+        assert!(gcov_privilege_gate(true).is_ok());
+        assert_eq!(gcov_privilege_gate(false), Err(MiscError::Perm));
         // Init keeps no coverage (`50-51`).
         assert!(gcov_endpt_ok(false).is_ok());
         assert_eq!(gcov_endpt_ok(true), Err(MiscError::NoEnt));
