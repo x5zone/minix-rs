@@ -160,7 +160,7 @@ Rust 改写不是照抄 `exec.c` 的打开文件与装载流程，而是吸收 L
 ### D7 收尾步骤
 
 - **C**：`clo_exec` + 有效 uid/gid 应用 + 写入进程名 + 终局清理（`exec.c:721-731,376-384,386-401`）。
-- **Rust**：`frame_gate()` + `stack_start()` + `settle_ids()` + `plan_cleanup()`（`os/servers/vfs/src/exec.rs:486,494,502,518,526`）。
+- **Rust**：`frame_gate()` + `stack_start()` + `settle_ids()` + `plan_cleanup()` + `clo_exec()`（`os/servers/vfs/src/exec.rs`；`clo_exec` 为 exec 收尾扫描——逐 fd 查 `FD_CLOEXEC` 命中即 `close_fd`，`(void)` 忽略关闭错误与 C 同因：扫描必须跑完，失败不回滚，`exec.c:721-731`）。
 - **为什么**：收尾是"旧地址空间退场、新进程名生效"的知识；关→改→名→理的顺序即步骤，错序即泄漏或错付。替代方案（散写）被否决：顺序知识集中才不丢步。
 
 ### ARCH 决策总表

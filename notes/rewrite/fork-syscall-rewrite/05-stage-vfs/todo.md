@@ -406,6 +406,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Verified**：`grep -rn "impl minix_types::ToErrno" os/servers/vfs/src | wc -l` = **30**；`grep -rn "enum FdError" | wc -l` = **1**；`cargo test` = **345 passed / 0 failed**。
 - **边界**：固有 `to_errno(self) -> i32` 保留（ToErrno 文档声明的兼容通道）；消费端随各模块后续触改逐步切 `ToErrno::to_errno(&e).to_i32()`，不做一次性全量重写（VM 侧 T8 判定先例：映射点唯一即可，调用形态不强制）。
 
+### ✅ Fix #21: C-2 — exec 收尾的 clo_exec 扫描补齐（2026-09-09）
+
+- **File**：`os/servers/vfs/src/exec.rs`（`clo_exec` + 测试 + 模块 scope note 修正）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/25-exec.md`（D7）。
+- **Before**：`fproc.cloexec_set` 只有存储位图，exec.rs 十一阶段流水线无收尾扫描——接线后 exec 会向新程序泄漏 CLOEXEC fd。
+- **After**：`clo_exec(rfp, filp_table)`——`0..OPEN_MAX` 逐 fd 查 `cloexec_set`，命中即 `close_fd`（C 以 `(void)` 忽略关闭错误：扫描必须跑完、失败不回滚，exec.c:721-731 逐字对应）。模块 scope note 的"fd-table execution stays with 14"修正为"close_fd 原语归 14，exec 尾扫描归本篇"——C 的 clo_exec 本就在 exec.c。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **347 passed / 0 failed**（346→347：`test_clo_exec_tail_scan`——非 CLOEXEC 幸存、CLOEXEC 关闭、引用释放）。
+
 ### ✅ Fix #20: C-4 — VmntLock 补 downgrade/upgrade（2026-09-09）
 
 - **File**：`os/servers/vfs/src/vmnt.rs`（VmntLock 两方法 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/06-vmnt-table.md`（§2.5 落地说明）。

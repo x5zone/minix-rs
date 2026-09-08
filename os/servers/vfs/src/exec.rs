@@ -16,7 +16,8 @@
 //! Scope note: path lookup (`eat_path`/`fetch_name`) stays with
 //! 13-path-lookup.md; permission checks (`forbidden`) stay with
 //! 29-protect.md; FS reads (`req_stat`/`req_readwrite`) stay with
-//! 12-request-wrappers.md; fd-table execution stays with 14-filedes.md;
+//! 12-request-wrappers.md; the fd-table primitive (`close_fd`) stays with
+//! 14-filedes.md while the exec-tail scan over it lives here;
 //! `minix_vfs_mmap`/`libexec_*` execute VM-side (02-stage-vm/20);
 //! `libexec_pm_newexec` runs PM-side (04-stage-pm/17); waiting and replies
 //! stay with 08/09. This module only decides: phase, gate, switch,
@@ -35,6 +36,9 @@ pub use crate::path::PATH_MAX;
 pub const DEFAULT_STACK_LIMIT: u64 = 4 * 1024 * 1024;
 // `PROC_NAME_LEN`: authoritative at `crate::fproc::PROC_NAME_LEN` (single source).
 pub use crate::fproc::PROC_NAME_LEN;
+use crate::fproc::{FProc, OPEN_MAX};
+use crate::filedes::close_fd;
+use minix_types::Bitmap;
 /// `PROT_WRITE` (`minix3/sys/sys/mman.h:64`).
 pub const PROT_WRITE: u32 = 0x02;
 /// `MVM_WRITABLE` (`minix3/minix/include/minix/vm.h:34`).
@@ -530,6 +534,21 @@ pub fn plan_cleanup(has_newfilp: bool, vmfd: i32, vmfd_used: bool) -> CleanupPla
     }
 }
 
+/// `clo_exec` (`exec.c:721-731`) — the exec tail-scan.  Every fd carrying
+/// `FD_CLOEXEC` is closed before the new image starts: leaking a
+/// close-on-exec descriptor into the new program is exactly the bug this
+/// prevents.  C ignores close errors (`(void) close_fd`) because the scan
+/// must run to completion — so do we.
+pub fn clo_exec(rfp: &mut FProc, filp_table: &mut crate::filp::FilpTable) {
+    for i in 0..OPEN_MAX {
+        if rfp.cloexec_set.get(i) {
+            if let Some(fd) = crate::filedes::Fd::new(i) {
+                let _ = close_fd(rfp, fd, filp_table);
+            }
+        }
+    }
+}
+
 /// What `pm_exec` tells the main loop (ARCH A-5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecVerdict {
@@ -580,6 +599,7 @@ impl ExecError {
 
 #[cfg(test)]
 mod tests {
+    use crate::filedes::{get_fd, LowestFree};
     use super::*;
 
     #[test]
@@ -805,5 +825,27 @@ mod tests {
         ] {
             assert_eq!(err.to_errno(), errno, "{err:?}");
         }
+    }
+    #[test]
+    fn test_clo_exec_tail_scan() {
+        // C: every `FD_CLOEXEC` fd is closed before the new image runs
+        // (`exec.c:721-731`); non-cloexec fds survive the scan.
+        let mut rfp = FProc::new_unused();
+        let mut tbl = crate::filp::FilpTable::new();
+        let policy = LowestFree;
+        let (fd0, fid0) = get_fd(&mut rfp, 0, &policy, &mut tbl, 0o644).unwrap();
+        rfp.filps[fd0.get()] = Some(fid0.get());
+        tbl.inc_count(fid0);
+        let (fd1, fid1) = get_fd(&mut rfp, 1, &policy, &mut tbl, 0o644).unwrap();
+        rfp.filps[fd1.get()] = Some(fid1.get());
+        tbl.inc_count(fid1);
+        // fd1 carries `FD_CLOEXEC` (the `O_CLOEXEC` open case).
+        rfp.cloexec_set.set(fd1.get(), true);
+
+        clo_exec(&mut rfp, &mut tbl);
+
+        assert!(rfp.filps[fd0.get()].is_some()); // 非 CLOEXEC 幸存
+        assert!(rfp.filps[fd1.get()].is_none()); // CLOEXEC 已关
+        assert_eq!(tbl.get(fid1).unwrap().count, 0); // 引用已释放
     }
 }
