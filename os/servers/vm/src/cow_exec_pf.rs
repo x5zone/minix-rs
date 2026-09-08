@@ -265,9 +265,23 @@ pub(crate) fn cow_resolve_core(
         .map(|s| s.refcount)
         .unwrap_or(0);
 
-    if refcount <= 1 {
-        // Already private: C's wp_page_reuse analogue — only the PTE write
-        // bit needs flipping (WMF_WRITEFLAGSONLY), the frame stays.
+    // V13-P1-1: exclusive ownership alone does not license the write-bit
+    // flip — the reuse shortcut is only valid for memtypes where a
+    // privately-held page is writable (the anon family). For MappedFile,
+    // whose `writable()` is constantly false, C has no refcount shortcut at
+    // all: `mappedfile_pagefault` always `cow_block`s, and `cow_block`
+    // re-types the page to anon ("After COW we are a normal piece of
+    // anonymous memory", mem_file.c:70-71). Taking the shortcut there wrote
+    // a read-only PTE and reported success, so the resumed instruction
+    // re-faulted on the same address forever. Linux draws the same line in
+    // `do_wp_page`: only exclusive PageAnon pages reuse (wp_page_reuse);
+    // file-backed private pages always wp_page_copy. Gate the shortcut on
+    // `is_page_writable` (C `pr_writable`) and let sole-held file pages fall
+    // through to the copy path below.
+    if refcount <= 1 && region.is_page_writable(frames, offset) {
+        // Already private and the memtype says a private page is writable:
+        // C's wp_page_reuse analogue — only the PTE write bit needs flipping
+        // (WMF_WRITEFLAGSONLY), the frame stays.
         sync_slot_pte(region, frames, offset, pt)?;
         return Ok(old_pfn);
     }
@@ -308,19 +322,18 @@ pub(crate) fn cow_resolve_core(
 #[cfg(debug_assertions)]
 fn verify_cow_consistency(
     frames: &PageFrames,
-    old_pfn: u32,
+    _old_pfn: u32,
     new_pfn: u32,
     region: &VirRegion,
     offset: VirBytes,
 ) {
-    if let Some(old_state) = frames.get(old_pfn) {
-        assert!(
-            old_state.refcount >= 1,
-            "old_pfn {} refcount should be >= 1 after CoW, got {}",
-            old_pfn, old_state.refcount
-        );
-    }
-
+    // V13-P1-1: the old page's post-CoW refcount has two legal outcomes and
+    // which one applies is unknown here — 0 when this CoW displaced the last
+    // reference (sole-held file page, now freed via the unref funnel) or ≥1
+    // when other sharers remain (fork shape). The former became reachable
+    // with the is_page_writable gate; the old `refcount >= 1` assertion only
+    // held for the fork shape and has been dropped. The sharp invariants are
+    // the new frame's refcount and the slot's identity below.
     if let Some(new_state) = frames.get(new_pfn) {
         assert_eq!(
             new_state.refcount, 1,
@@ -498,7 +511,11 @@ mod tests {
     fn test_cow_resolve_no_sharing() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
-        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        // V13-P1-1: the reuse shortcut now requires the region to be
+        // writable (is_page_writable = VR_WRITABLE && memtype.writable), so
+        // the no-sharing case must be modelled on a writable anon region —
+        // that is the shape in which C's wp_page_reuse analogue applies.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::WRITABLE);
         region.def_memtype = Some(&MEM_TYPE_ANON);
         let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
@@ -536,7 +553,10 @@ mod tests {
     fn test_cow_resolve_core_refcount_one_fast_path() {
         let mut frames = make_frames(4);
         let mut alloc = TestAlloc { next: 0 };
-        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        // V13-P1-1: the reuse shortcut requires is_page_writable to hold —
+        // VR_WRITABLE on the region and a memtype whose private pages are
+        // writable. Anon with refcount 1 is exactly that shape.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::WRITABLE);
         region.def_memtype = Some(&MEM_TYPE_ANON);
         let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 
@@ -649,6 +669,54 @@ mod tests {
         let (cur_paddr, flags) = pt.query(VirBytes(0x1000)).unwrap();
         assert_eq!(cur_paddr, paddr, "fast path must keep the frame");
         assert!(flags.contains(PageFlags::WRITABLE), "fast path must flip the write bit");
+    }
+
+    #[test]
+    fn test_cow_mappedfile_sole_page_copies_and_retypes_to_anon() {
+        // V13-P1-1 regression: a sole-held (refcount == 1) MappedFile page in
+        // a writable region must take the COPY path on a write fault. C's
+        // mappedfile_pagefault has no refcount shortcut and cow_block re-types
+        // the page to anon (mem_file.c:70-71, "After COW we are a normal
+        // piece of anonymous memory"). The pre-fix fast path kept the frame,
+        // wrote the PTE read-only (MappedFile::writable is constantly false)
+        // and returned Ok — the resumed instruction re-faulted on the same
+        // address forever.
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut cache = PageCache::new();
+        let mut queue = VfsRequestQueue::new();
+        let table = VmProcTable::get_global();
+        let mut region = make_file_region(7, 0);
+        region.flags |= VrFlags::WRITABLE;
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+
+        let old_pfn = alloc.alloc_pfn().unwrap();
+        region.map_page(&mut frames, VirBytes(0x0000), old_pfn, &MEM_TYPE_MAPPED_FILE);
+        pt.map(VirBytes(0x1000), frames.pfn_to_phys(old_pfn), PageFlags::read_only()).unwrap();
+
+        let action = handle_pagefault(
+            Endpoint(100), &mut region, &mut frames, &mut alloc,
+            VirBytes(0x1000), true, table, &mut cache, &mut queue, &mut pt,
+        ).unwrap();
+        assert_eq!(action, PagefaultAction::CowResolved);
+
+        let slot = region.get_slot(VirBytes(0x0000)).unwrap();
+        let new_pfn = slot.pfn().unwrap();
+        assert_ne!(new_pfn, old_pfn, "sole-held file page must still be copied (C cow_block)");
+        assert_eq!(
+            slot.memtype().map(|m| m.name()),
+            Some(MEM_TYPE_ANON.name()),
+            "post-CoW the page must be re-typed anonymous (C cow_block)"
+        );
+        let (paddr, flags) = pt.query(VirBytes(0x1000)).unwrap();
+        assert_eq!(paddr, frames.pfn_to_phys(new_pfn), "PTE must point at the private copy");
+        assert!(
+            flags.contains(PageFlags::WRITABLE),
+            "PTE must end writable — the resumed write must not re-fault"
+        );
+        // The displaced file page left the region for good: its refcount
+        // dropped to zero and the frame returned to the allocator funnel.
+        assert_eq!(frames.get(old_pfn).map(|s| s.refcount), Some(0));
     }
 
     fn make_file_region(fdref_id: u32, file_offset: u64) -> VirRegion {

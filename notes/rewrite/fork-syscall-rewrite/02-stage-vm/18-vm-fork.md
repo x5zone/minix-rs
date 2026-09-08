@@ -418,7 +418,7 @@ C 在 sys_fork 后调用 `handle_memory_once` ×2（fork.c:97-108）把消息页
 |------|------|------|
 | test_fork_region_basic | :490 | 区域复制 + refcount 递增 |
 | test_cow_copy_page | :513 | CoW 页复制（pfn 分离） |
-| test_cow_copy_page_no_sharing | :534 | 无共享快速路径 |
+| test_cow_copy_page_no_sharing | :636 | 无共享快速路径（WRITABLE anon，V13-P1-1 门控） |
 | test_fork_rollback_on_ev_reference_error | :550 | ev_reference 失败逐 pfn 回滚 |
 | test_fork_regions_rollback_on_failure | :596 | 多区域任一失败整体回滚 |
 | test_handle_memory_once_no_cow | :659 | 已映射地址直接 OK |

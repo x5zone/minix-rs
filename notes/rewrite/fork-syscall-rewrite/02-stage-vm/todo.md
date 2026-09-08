@@ -24,7 +24,7 @@
 
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
-| **P1** | **V13-P1-1** | CoW 快路 refcount≤1 只翻写位不换 memtype：MappedFile 槽位写故障 RO 原样成功 → 活循环（C cow_block 显式换 anon，§18.2） |
+| **P1** | **V13-P1-1** | CoW 快路 refcount≤1 只翻写位不换 memtype：MappedFile 槽位写故障 RO 原样成功 → 活循环（C cow_block 显式换 anon，§18.2）（**✅ 已修复** 2026-09-09，§18.9 Fix #63） |
 | P2 | V13-P2-1 | TLB 纪律三缺口：不改 PTE 的进程运行状态不变量全隐式 + C VM 自刷四处（别名模型）无 Rust 对应且偏差未登记 + 内核 FlushTlb/InvlPg 命令零消费者（§18.2；SMP 半边挂 edge E-VMTLB） |
 | P2 | V13-P2-2 | `RprocEntry.call_mask: u32` 在 E-RSWIRE 落地时必截断 wire 的 u64 掩码——+32..+48 的 9 个调用永远无法授权（§18.2） |
 | P2 | V13-P2-3 | ACL 闸 fail-open：`get_active(caller)==None`（EXITING 等）时整个 acl_check 被跳过（§18.2） |
@@ -35,7 +35,7 @@
 | edge | E-VMTLB（新） | kernel 侧目标进程 TLB 刷新机制（C MF_FLUSH_TLB）缺失 + 同根跳过优化耦合——真 SMP 正确性前提 |
 | edge | E-RSWIRE 增补 | ACL u64 掩码对账（V13-P2-2）+ RS_SET_PRIV 真掩码（V13-P2-5）随 wire 工作面一并定稿 |
 
-验证命令（2026-09-09 实测基线，与 V12 修复批次后记录 490/507/490 一致，无回归）：
+验证命令（2026-09-09 实测基线，与 V12 修复批次后记录 490/507/490 一致，无回归；Fix #63 后基线见 §18.9）：
 - `cargo test -p minix-vm --lib`：**490 passed / 0 failed**
 - `cargo test -p minix-vm --lib --no-default-features --features segment_tree_alloc`：**507 passed / 0 failed**
 - `cargo test -p minix-vm --lib --no-default-features --features buddy_alloc`：**490 passed / 0 failed**
@@ -152,7 +152,7 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 ### 18.2 本轮新条目
 
-### ❌ V13-P1-1（P1 潜伏活循环）CoW 快路 refcount≤1 只翻写位、不换 memtype——MappedFile 槽位写故障将无限再故障
+### ✅ V13-P1-1（P1 潜伏活循环）CoW 快路 refcount≤1 只翻写位、不换 memtype——MappedFile 槽位写故障将无限再故障——已修复 2026-09-09（§18.9 Fix #63）
 
 - **Rust 现状**：`cow_resolve_core` 快路（cow_exec_pf.rs:268-273）在 `refcount <= 1` 时只调 `sync_slot_pte` 后原样返回旧 pfn。`sync_slot_pte`（:91-95）以 `region.is_page_writable` 定权限位，而 MappedFile 的 `writable()` 恒 false（memtype.rs:995-997，注释自述 "Always `false`"）→ 快路对该槽位**写出的仍是 RO PTE**，并返回 `Ok(old_pfn)`——VM 记账"成功"、内核清 RTS_PAGEFAULT、指令重执行、同址再故障：活循环。慢路正确：:282 `region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON)` 有换型。
 - **C 行为**（Ground Truth）：C 的 refcount 快路只存在于 anon 型内部——`anon_pagefault`/`anon_writable`（mem_anon.c:105-113，refcount 判定是 anon_writable 语义的一部分）；mappedfile **没有** refcount 捷径，写故障恒走 `cow_block`（mem_file.c:127-130/:164），且 `cow_block` 显式 `ph->memtype = &mem_type_anon` 并注释 **"After COW we are a normal piece of anonymous memory"**（mem_file.c:70-71）。即 C 语义：CoW 之后的页就是 anon 页，与原 memtype 的可写性无关。
@@ -284,12 +284,26 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 
 ### 18.8 建议的推进顺序
 
-1. **V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）——与 G-V12-7、V12-P1-1 同为"通电前语义修正"批；
+1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）——剩余通电前语义修正：G-V12-7、V12-P1-1；
 2. V13-P2-1(a)(b) 文档/注释批（不变量登记 + ARCH 偏差行 + 死内核面注释）——纯文档，可先行；
 3. V12-P2 批按 V12 存档原顺序（4→8→9→5→6→3→1→2→7），V13-P2-3（ACL 闸形状）与 P2-4（MAKE_VM 登记）插入 P2-5 前后；
 4. V13-P2-2 / P2-5 / P2-6 随 edge E-RSWIRE 批次执行（勿提前单做，wire 定稿一次对齐）；
 5. V13-P3-1 + G-V12-11..13 + V12-P3 批（机会主义）；
 6. edge 侧并行：E-VMTLB 随 01-stage-kernel SMP 工作窗；E5 通电冒烟维持 V12 增补的"缺页故障完整回路"验收面（PTE 回路已有 SimPaging 断言，QEMU 冒烟待 E1/E2）。
+
+---
+
+### 18.9 修复记录（2026-09-09 起，逐条执行的 todo-fix campaign）
+
+### ✅ Fix #63: V13-P1-1 — CoW 复用捷径加 `is_page_writable` 门（独占文件页走复制路径，C cow_block 语义）
+
+- **问题**：`cow_resolve_core` 快路仅凭 `refcount <= 1` 就翻 PTE 写位返回。对 `MappedFile`（`writable()` 恒 false，C "We are never writable"，mem_file.c:173-175）的独占持有页，这会写下只读 PTE 并报成功 → 指令重执行同址再故障，无限活循环。C 无此捷径：`mappedfile_pagefault` 写故障恒 `cow_block`，复制后显式 `ph->memtype = &mem_type_anon`（mem_file.c:70-71）。
+- **设计（方案对比）**：A（选定）——快路条件改合取 `refcount <= 1 && region.is_page_writable(...)`，复用前提 = 独占持有 ∧ 私有即可写；与 Linux `do_wp_page`（仅 PageAnon 独占才 `wp_page_reuse`，file 页恒 `wp_page_copy`）、Redox（refcount One 且 grant 语义允许写才 reprotect）同构。B（否决）——删除共享捷径、完全复刻 C 的 per-memtype 分型：行为等价但丢失复用判据的显式落点。C（否决）——memtype 内自拷贝：Rust 无 per-phys_region memtype 变更点，slot 变更归 cow_resolve 所有。
+- **Files**: `os/servers/vm/src/cow_exec_pf.rs`（快路合取门 + `verify_cow_consistency` 删除对旧帧 refcount≥1 的单形状断言——独占页被拷贝后合法归 0）
+- **测试（新增 1 + 修正 3）**：新增 `test_cow_mappedfile_sole_page_copies_and_retypes_to_anon`（独占文件页写故障 → CowResolved + 换帧 + slot memtype 变 ANON + PTE RW + 旧帧 refcount 归 0）；`test_cow_resolve_no_sharing`/`test_cow_resolve_core_refcount_one_fast_path`/fork 的 `test_cow_copy_page_no_sharing` 三个既有测试原用 `VrFlags::empty()` 的不可写 region 编码旧快路的过宽语义，修正为 `WRITABLE`（快速路径成立的前提形状，test-audit 第 2 维"测试自身过宽"）
+- **Verified**: 三矩阵 **491/508/491 passed**；`cargo clippy -p minix-vm --lib` servers/vm 自身 0 警告
+- **Docs**: 16-pagefault.md §3.3 重写（复用前提的合取语义 + 活循环因果链）+ §5 测试表刷新；17-cow-mechanism.md §1.5 Linux 对照更新 + §5 测试表刷新；18-vm-fork.md §5 测试表行更新
+- **边界**：慢路仍不做 clearend 尾页清零（G-V12-11 维持开口，C mem_file.c:73-79 的 clearend 分支在该条一并设计）；本门不影响 anon 的 Handled 快路（那在 `AnonymousMemory::ev_pagefault` 内部，与 Fix #60 测试 `test_cow_fast_path_flips_pte_writable_without_recopy` 覆盖的路径相同）
 
 ---
 

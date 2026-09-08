@@ -60,7 +60,7 @@
 
 ### 1.5 对照：Redox 与 Linux
 
-- **Linux**：`mm/memory.c` 的 `do_wp_page()`——写保护页错误时检查 `page_mapcount(page)`：>1 则 `wp_page_copy`（分配新页 + `copy_user_highpage` + 更新 PTE），==1 则 `wp_page_reuse`（只改 PTE 权限，不拷贝）。对应 minix-rs 的 `cow_resolve_core` 快速路径（`refcount <= 1` 直接返回，cow_exec_pf.rs:103-105）。Linux 的 refcount 语义更复杂（`_mapcount` 只计页表映射数，另有 `_refcount` 计内核引用），Minix3/Rust 的 `refcount` 只计 phys_region 映射数。
+- **Linux**：`mm/memory.c` 的 `do_wp_page()`——写保护页错误时的复用判据是合取的：仅 `PageAnon` 且映射独占的页走 `wp_page_reuse`（只改 PTE 权限，不拷贝）；file-backed 私有页即使独占也一律 `wp_page_copy`。对应 minix-rs 的 `cow_resolve_core` 快速路径（`refcount <= 1 && is_page_writable`，cow_exec_pf.rs:268-287——V13-P1-1 收紧，独占文件页落入复制路径换型 anon，对齐 C `cow_block`）。Linux 的 refcount 语义更复杂（`_mapcount` 只计页表映射数，另有 `_refcount` 计内核引用），Minix3/Rust 的 `refcount` 只计 phys_region 映射数。
 - **Redox**：内核态 `page_fault_handler` 直接处理，CoW 通过 `AddressSpace` 的页表操作实现，无用户态服务器参与。Minix3 把"何时分裂"的策略留给用户态 VM，内核只负责转发异常与解除阻塞。
 - **对照要点**：三家都基于"页表只读 + 引用计数 > 1 → 写时复制"的 x86 页保护机制；差异在处理者位置与 refcount 粒度。
 
@@ -402,9 +402,10 @@ C `shared_pagefault`（mem_shared.c:122）→ Rust 已实现等价流程：
 |------|------|------|
 | test_alloc_and_map | :281 | 分配 + 映射（slot 状态 + pfn） |
 | test_cow_resolve | :295 | refcount=2 写 → 新 pfn、旧 1、新 1 |
-| test_cow_resolve_no_sharing | :314 | refcount=1 → 原 pfn（快速路径） |
-| test_cow_resolve_region | :328 | 区域批量分裂 |
-| test_cow_resolve_core_refcount_one_fast_path | :350 | 快速路径不动映射 |
+| test_cow_resolve_no_sharing | :511 | refcount=1 → 原 pfn（快速路径；WRITABLE anon，V13-P1-1 门控） |
+| test_cow_resolve_region | :528 | 区域批量分裂 |
+| test_cow_resolve_core_refcount_one_fast_path | :553 | 快速路径不动映射（WRITABLE anon） |
+| test_cow_mappedfile_sole_page_copies_and_retypes_to_anon | :675 | V13-P1-1：独占文件页写故障 → 复制 + 换型 anon + PTE RW |
 
 **memtype.rs**（CoW 相关）：
 

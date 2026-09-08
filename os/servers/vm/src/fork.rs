@@ -636,7 +636,10 @@ mod tests {
     fn test_cow_copy_page_no_sharing() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
-        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        // V13-P1-1: the reuse shortcut is gated on is_page_writable, so the
+        // no-sharing shape must carry VR_WRITABLE (anon private page) for the
+        // same-frame outcome to apply.
+        let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::WRITABLE);
         region.def_memtype = Some(&MEM_TYPE_ANON);
         let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
 

@@ -364,9 +364,13 @@ match result {
 
 对应关系：`NoMemory` ← C `ENOMEM`（`pb_new`/`pb_reference` 失败，region.c:691-701）；`PageNotMapped` ← C `map_lookup` 失败/`physblock_get` 空（C 里分别走 SIGSEGV 与 `pb_new` 路径）；`MemType` ← C `ev_pagefault` 的 errno。**关键简化**：PFN 模型下 `PhysBlock` 对象不存在，`pb_new`/`pb_reference` 两条失败路径收敛为 `alloc_pfn()` 一条 `NoMemory`（doc 11/13 详述）。
 
-### 3.3 D3：refcount ≤ 1 快速路径
+### 3.3 D3：refcount ≤ 1 快速路径——复用前提是"独占持有 **且** 私有即可写"（V13-P1-1 收紧）
 
-`cow_resolve_core`（cow_exec_pf.rs:85-128）在 `frames.get(old_pfn).refcount <= 1` 时直接返回 `old_pfn`（:103-105）——页面已是私有，无需分配/拷贝/换映射。对应 Linux `do_wp_page` 的 `wp_page_reuse`；C 的 `mem_cow`（mem_anon.c）无条件复制。快速路径由 `test_cow_resolve_no_sharing` 与 `test_cow_resolve_core_refcount_one_fast_path` 覆盖（§5.1）。
+写保护页错误到来时，"这页只有我一个持有者"并不足以直接把写位翻开——还要问一句：**这类页在私有时允许写吗？** 对匿名内存答案是肯定的：私有的匿名页写就是写自己，`refcount == 1` 翻位即可（§3.1 `anon_writable` 语义）。但对 `MappedFile`（file-backed 页）答案永远是否定的——C 的 `mappedfile_writable` 直说 "We are never writable"（mem_file.c:173-175），其写故障没有引用计数的捷径，一律 `cow_block` 复制，且复制后把 `phys_region` 的 memtype 显式换成 anon（"After COW we are a normal piece of anonymous memory"，mem_file.c:70-71）。
+
+因此 `cow_resolve_core` 的复用捷径是合取条件 `refcount <= 1 && region.is_page_writable(...)`（cow_exec_pf.rs:268-287）。右半边不满足时——典型是独占持有的文件页（缓存项被逐出后 refcount 归一）——落入其后的复制路径：分配新页、拷贝、slot 换型 `MEM_TYPE_ANON`、PTE 同步，恰好就是 C `cow_block` 的语义。这条合取不是防御性冗余：若只看左半边，快路会为一个永不可写的页写下只读 PTE 并报告成功，内核恢复进程后指令在原地址再次故障——无限活循环（V13-P1-1，2026-09-09 修复）。Linux 在 `do_wp_page` 里画的是同一条线：仅 `PageAnon` 且映射独占的页走 `wp_page_reuse`，file-backed 私有页一律 `wp_page_copy`。
+
+快速路径由 `test_cow_resolve_no_sharing` 与 `test_cow_resolve_core_refcount_one_fast_path` 覆盖（两者的 region 均为 `VR_WRITABLE`——这正是捷径成立的前提形状）；独占文件页必须走复制路径由 `test_cow_mappedfile_sole_page_copies_and_retypes_to_anon` 定格（§5.1）。
 
 ### 3.4 D4：decode_message——64 位 wire format（ARCH + 本轮 P0 修复）
 
@@ -514,12 +518,13 @@ if m_type == VM_PAGEFAULT {
 |------|------|------|
 | test_alloc_and_map | :463 | 分配 + 映射：slot 已映射且 pfn 正确 |
 | test_cow_resolve | :478 | refcount=2 写 → 新 pfn、旧 refcount 1、新 refcount 1 |
-| test_cow_resolve_no_sharing | :498 | refcount=1 → 返回原 pfn（快速路径） |
-| test_cow_resolve_region | :513 | 区域批量解析，返回已解析页数 |
-| test_cow_resolve_core_refcount_one_fast_path | :536 | refcount=1 快速路径不动映射 |
-| test_demand_fault_maps_pte_present | :567 | G-V12-8：需求页故障 → PTE present + RW（SimPaging 断言） |
-| test_cow_fault_pte_repoints_to_new_frame | :591 | G-V12-8：CoW → PTE 指向新私帧 + RW |
-| test_cow_fast_path_flips_pte_writable_without_recopy | :622 | G-V12-8：refcount==1 写故障（`anon_pagefault` 判 Handled）→ PTE 同帧翻写位 |
+| test_cow_resolve_no_sharing | :511 | refcount=1 → 返回原 pfn（快速路径；region 需 VR_WRITABLE，V13-P1-1） |
+| test_cow_resolve_region | :528 | 区域批量解析，返回已解析页数 |
+| test_cow_resolve_core_refcount_one_fast_path | :553 | refcount=1 快速路径不动映射（WRITABLE anon，V13-P1-1） |
+| test_demand_fault_maps_pte_present | :587 | G-V12-8：需求页故障 → PTE present + RW（SimPaging 断言） |
+| test_cow_fault_pte_repoints_to_new_frame | :611 | G-V12-8：CoW → PTE 指向新私帧 + RW |
+| test_cow_fast_path_flips_pte_writable_without_recopy | :642 | G-V12-8：refcount==1 写故障（`anon_pagefault` 判 Handled）→ PTE 同帧翻写位 |
+| test_cow_mappedfile_sole_page_copies_and_retypes_to_anon | :675 | V13-P1-1：独占文件页写故障 → 复制 + 换型 anon + PTE RW（C cow_block 语义） |
 
 **minix-types vm.rs**（2 个，本轮新增）：
 
