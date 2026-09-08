@@ -103,8 +103,8 @@ Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 
 ### D2 `get_fd` 的 `LowestFree` 策略显式：`FdAllocPolicy` trait
 
 - **C**：`get_fd:121 for(i=start; i<OPEN_MAX; i++) if(fp_filp[i]==NULL)` 的最低空闲策略硬编码。
-- **Rust**：`trait FdAllocPolicy { fn allocate(&self, table: &[Option<FilpId>], start: usize) -> Option<usize>; }` 的 `LowestFree`（`start..OPEN_MAX` 线性扫描最低空闲）与 `NextFit { next: Cell<usize> }` 的 `next→OPEN_MAX` 环绕扫描双实现；`FProc::alloc_fd(&self, start, policy: &dyn FdAllocPolicy) -> Result<Fd, FdError>` 的 `policy` 注入使 `F_DUPFD` 的 `start=arg` 下界在 `LowestFree` 的 `arg..256` 可测试。
-- **为什么**：`O_DUPFD` 的 `arg` 下界在 `Linux` 以 `__alloc_fd` 的 `start` 参数显式，Rust 以 `policy` 注入使策略可测试（`LowestFree( arg=5)→Some(5)` vs `NextFit(next=10)→Some(10)` 的行为差异）。
+- **Rust**：`trait FdAllocPolicy { fn allocate(&self, table: &[Option<FilpId>], start: usize) -> Option<usize>; }` 的 `LowestFree`（`start..OPEN_MAX` 线性扫描最低空闲，C 与 Linux `__alloc_fd` 同为最低空闲——不存在第二真实策略）单生产实现，`NextFitDemo { next: Cell<usize> }` 的环绕扫描为 cfg(test) 多态对照；`FProc::alloc_fd(&self, start, policy: &dyn FdAllocPolicy) -> Result<Fd, FdError>` 的 `policy` 注入使 `F_DUPFD` 的 `start=arg` 下界在 `LowestFree` 的 `arg..256` 可测试。
+- **为什么**：`O_DUPFD` 的 `arg` 下界在 `Linux` 以 `__alloc_fd` 的 `start` 参数显式，Rust 以 `policy` 注入使策略可测试（`LowestFree( arg=5)→Some(5)` 的 start 参数化可测试，测试对照实现 `NextFitDemo` 仅证 trait 多态、非 C 语义）。
 
 ### D3 `check_fds` 的 `nfds` 窗口显式
 
@@ -165,7 +165,7 @@ os/servers/vfs/src/
 | `invalidate_filp_by_char_major` | `filedes.c:254` | `invalidate_by_char_major(&mut FilpTable, &VnodeTable, major) -> usize` | `S_ISCHR && major(v_sdev)==major → CLOSED` 计数 |
 | `invalidate_filp_by_sock_drv` | `filedes.c:269` | `invalidate_by_sock_drv(&mut FilpTable, &VnodeTable, num) -> usize` | `S_ISSOCK && smap_num==num → CLOSED` 计数 |
 | `Fd` | `int fd` | `filedes.rs:Fd(u8)` | `TryFrom<usize> → Option<Fd>` 的 `EBADF` 早拒绝 |
-| `FdAllocPolicy` | `get_fd:121 for` | `trait FdAllocPolicy::allocate(table, start)->Option<usize>` | `LowestFree` vs `NextFit` 双实现 |
+| `FdAllocPolicy` | `get_fd:121 for` | `trait FdAllocPolicy::allocate(table, start)->Option<usize>` | `LowestFree` 生产单实现；`NextFitDemo` cfg(test) 对照 |
 
 ### 4.3 不变量
 
@@ -205,9 +205,9 @@ os/servers/vfs/src/
 | `test_copy_to_ioctl_holder_ebadf` | `filedes.c:582-585` | remote 持 `ioctl_holder → EBADF`（VND 死锁防护） | `filedes.rs` |
 | `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 remote fd`、caller 引用保留 | `filedes.rs` |
 | `test_copy_close_last_reference_ebadf` | `filedes.c:644` | `count==1→EBADF` 且 fd 不清除 | `filedes.rs` |
-| `test_fd_alloc_policy_two_impls` | `filedes.c:121` | `FdAllocPolicy` trait `LowestFree vs NextFit` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
+| `test_fd_alloc_policy_two_impls` | `filedes.c:121` | `LowestFree` vs cfg(test) 对照 `NextFitDemo` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
 
-测试策略：`Fd` 的 `u8` 上界以 `Fd(256)→BadFd` 的 `TryFrom` 早拒绝样本覆盖；`check_fds` 以 `available 2, nfds 3→EMFILE` 的 `nfds` 窗口样本覆盖；`get_fd` 以 `LowestFree(0)→0` 的 `start..256` 扫描样本覆盖；`close_fd` 以 `EBADF/CLOSED 放行/OK` 的三守门样本覆盖；`FdAllocPolicy` 以 `LowestFree(5→5) vs NextFit(5→10)` 的 `dyn` 行为差异样本覆盖。
+测试策略：`Fd` 的 `u8` 上界以 `Fd(256)→BadFd` 的 `TryFrom` 早拒绝样本覆盖；`check_fds` 以 `available 2, nfds 3→EMFILE` 的 `nfds` 窗口样本覆盖；`get_fd` 以 `LowestFree(0)→0` 的 `start..256` 扫描样本覆盖；`close_fd` 以 `EBADF/CLOSED 放行/OK` 的三守门样本覆盖；`FdAllocPolicy` 以 `LowestFree(5→5) vs NextFitDemo(5→10)` 的 `dyn` 行为差异样本覆盖（对照实现非 C 语义，cfg(test) 限定）。
 
 ---
 

@@ -72,7 +72,7 @@
 - P2-1 **数字漂移修正**：现为 **30 个 `pub enum *Error` + 30 个 `fn to_errno`**（首轮 20/29，全 crate grep 实测）；两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。方案已被本轮修订：否决"crate 级单一 VfsError"大收敛，改为接入 minix-types 的 `ToErrno` 通道——见 **R2-P2-1**。
 - P2-2 复核 ✅：call_table.rs 64 臂同构 match、`CallTable`:206、`NullResolver`:350 原样；本轮 R2-P1-2 给出它的终局（随绑定层落地删除）。
 - P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。
-- P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。
+- P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。**✅ 已修复** 2026-09-09（§10 Fix #14：移 cfg(test) 更名 `NextFitDemo`，辩护注释的假语义一并修正——C 与 Linux 的 fd 分配都是 start 起最低空闲，不存在第二真实策略）。
 - P2-5 复核 ✅：device_map.rs:152 裸 `i32`、filp.rs:195 裸 `usize` 原样。
 - P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。**✅ 已修复** 2026-09-09（§10 Fix #13：收敛到 fs_comm 协议属主，main_loop re-export，-63 行重复）。
 - P3-1 复核 ✅：本轮 clippy 实测 40 条 warning 行（约 30 条落 vfs 自身），与首轮量级一致。
@@ -362,6 +362,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：`TransIdCodec` trait + `VfsTransIdCodec` + `TestTransIdCodec` 在 fs_comm.rs:76-117 与 main_loop.rs:130-180 双重定义，实现逻辑相同（0xB00 基），协议常量改动需改两处。
 - **After**：唯一定义在 fs_comm.rs（协议属主——`TransId`/`TRANSACTION_BASE` 的家），main_loop `pub use` re-export 供 route_message 泛型与测试消费（`ARCH A-4` 迁移标注）；11-fs-comm.md 的模块图/实现清单/测试表三处同步为"唯一定义 + re-export"。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（纯收敛，两侧测试原样通过）。
+
+### ✅ Fix #14: P2-4 — NextFit 移 cfg(test) 更名 NextFitDemo（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（定义/文档/trait 文档/测试 6 处）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D2/模块图/实现表/测试表/策略行 7 处）。
+- **Before**：`pub struct NextFit` 在生产编译单元，:70 的 trait 文档以 "O_DUPFD arg lower-bound variant" 辩护其真实语义——该辩护不成立：O_DUPFD 复用的是 `get_fd(start=arg)` 的同一 `LowestFree` 策略，并非第二种分配策略。
+- **After**：`#[cfg(test)] pub struct NextFitDemo`——对照实现限定测试；trait 文档如实声明"Minix3（filedes.c:121）与 Linux（`alloc_fd(start, end)`）都是 start 起最低空闲，不存在第二真实策略；trait 建模的是 `start` 参数化（O_DUPFD 的 arg），Demo 仅证多态"。落实 §9.6 Rule Discovery 规则草案（"无 C 来源第二实现 → 移 cfg(test) 或删除"）的首个适用案例。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`grep -rn "NextFit" os/servers/vfs/src` 仅 cfg(test) 域与文档注释命中。
 
 ### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
 

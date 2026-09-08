@@ -6,7 +6,7 @@
 //!
 //! Design notes (14-filedes.md §3):
 //! - `Fd(u8)` newtype makes `256` bound type-safe (ARCH A-8)
-//! - `FdAllocPolicy` trait `LowestFree` vs `NextFit` makes `start→OPEN_MAX` scan pluggable
+//! - `FdAllocPolicy` parametrizes the `start→OPEN_MAX` scan (`O_DUPFD`'s `arg`); `NextFitDemo` (cfg(test)) is a test-only contrast, not a C policy
 //! - `close_fd` passes `FILP_CLOSED` (the `VNODE_OPCL` exemption, `filedes.c:186-188`) and fails `EBADF`
 
 use core::cell::Cell;
@@ -70,9 +70,12 @@ impl FdError {
 
 /// `FdAllocPolicy` — how `get_fd` scans `fp_filp[start..]` for `NULL`.
 ///
-/// `ARCH` : `LowestFree` is Minix3's `for(i=start; i<OPEN_MAX; i++) if(NULL)` linear scan;
-/// `NextFit` is the `O_DUPFD` `arg` lower-bound variant that wraps around.
-/// Two impls satisfy Gate D.
+/// `LowestFree` is the only real policy in either OS: Minix3's
+/// `for(i=start; i<OPEN_MAX; i++) if(NULL)` (`filedes.c:121`) and Linux's
+/// `alloc_fd(start, end)` are both lowest-free-from-`start`; `O_DUPFD`
+/// reuses the same policy with `start = arg`.  The trait exists to make
+/// that `start` parametrization injectable; `NextFitDemo` (cfg(test)) is a
+/// polymorphism contrast, not a second C policy.
 pub trait FdAllocPolicy {
     fn allocate(&self, table: &[Option<usize>], start: usize) -> Option<usize>;
 }
@@ -92,13 +95,19 @@ impl FdAllocPolicy for LowestFree {
     }
 }
 
-/// `NextFit` — circular next-fit (starts at `Cell` next, wraps).
+/// Circular next-fit — `cfg(test)` contrast for [`FdAllocPolicy`].
+///
+/// No C origin: neither Minix3 nor Linux allocates fds by wrapped
+/// next-fit.  Kept (test-only, renamed from `NextFit`) so the trait's
+/// polymorphism has a behaviourally different second impl to test against.
+#[cfg(test)]
 #[derive(Debug)]
-pub struct NextFit {
+pub struct NextFitDemo {
     next: Cell<usize>,
 }
 
-impl NextFit {
+#[cfg(test)]
+impl NextFitDemo {
     pub fn new(start: usize) -> Self {
         Self {
             next: Cell::new(start),
@@ -106,7 +115,8 @@ impl NextFit {
     }
 }
 
-impl FdAllocPolicy for NextFit {
+#[cfg(test)]
+impl FdAllocPolicy for NextFitDemo {
     fn allocate(&self, table: &[Option<usize>], start: usize) -> Option<usize> {
         let base = self.next.get() % OPEN_MAX;
         // Try base..OPEN_MAX then 0..base, but respect caller's start as lower bound
@@ -127,7 +137,8 @@ impl FdAllocPolicy for NextFit {
     }
 }
 
-impl Default for NextFit {
+#[cfg(test)]
+impl Default for NextFitDemo {
     fn default() -> Self {
         Self::new(0)
     }
@@ -812,7 +823,7 @@ mod tests {
         fp.filps[5] = Some(1);
         fp.filps[6] = Some(2);
         let fifo = LowestFree;
-        let next = NextFit::new(5);
+        let next = NextFitDemo::new(5);
         // LowestFree from 5 → 7 (since 5,6 occupied)
         assert_eq!(fifo.allocate(&fp.filps, 5), Some(7));
         // NextFit from 5 → 7 as well initially, but after one alloc it moves
@@ -823,7 +834,7 @@ mod tests {
         assert_eq!(next.allocate(&fp.filps, 5), Some(8));
         // Polymorphic via trait object
         let policies: Vec<Box<dyn FdAllocPolicy>> =
-            vec![Box::new(LowestFree), Box::new(NextFit::new(10))];
+            vec![Box::new(LowestFree), Box::new(NextFitDemo::new(10))];
         assert_eq!(policies[0].allocate(&fp.filps, 5), Some(8));
         assert_eq!(policies[1].allocate(&fp.filps, 5), Some(10)); // NextFit starts at 10
     }
