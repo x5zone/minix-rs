@@ -2149,6 +2149,16 @@ fn dispatch_vmctl(
         // flush_addr) + direct field read (GetPdbr). Three architectures
         // covered: x86_64 (CR3/INVLPG), aarch64 (TLBI ALLE1IS/VAAE1IS),
         // riscv64 (SFENCE.VMA).
+        //
+        // V13-P2-1 (02-stage-vm): the VM server has ZERO callers of
+        // FlushTlb/InvlPg — that is by design, not a missing wire. C's VM
+        // flushed itself at 4 sites (pagetable.c:119/255/319/430) because it
+        // aliased process memory into its own address space; minix-rs's
+        // Direct Map keeps translations constant, and `Paging`'s
+        // `write_pte_dm` binds an invlpg to every PTE write (08-pagetable-ops
+        // §1.8). These commands stay as the kernel-side escape hatch for a
+        // world where VM ever needs explicit TLB maintenance again — do not
+        // read the absence of consumers as an unwired edge.
         VmCtlParam::GetPdbr => {
             // C: arch_do_vmctl.c:38-40 — rv = p->p_seg.p_cr3
             // Return the target process's page table root physical address.

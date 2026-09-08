@@ -161,7 +161,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 - **验证**：新测试——MAP_PRIVATE 文件区、独占页（refcount==1）写故障 → 断言 PTE 变 RW、slot memtype 变 ANON、二次故障不再发生（SimPaging 可完全驱动）；`rg "refcount <= 1" os/servers/vm/src/cow_exec_pf.rs` 处伴随 is_page_writable 门。
 - **边界**：与 G-V12-11（clearend 未建模）交叉——慢路补 clearend 分支时（C mem_file.c:73-79 在 cow_block 内清尾页）一并设计，勿两次打开同一函数族。
 
-### V13-P2-1（P2）TLB 纪律三缺口：承载 Fix #60 的隐式不变量 + 未登记的 ARCH 偏差 + 死内核面
+### ✅ V13-P2-1（P2）TLB 纪律三缺口：承载 Fix #60 的隐式不变量 + 未登记的 ARCH 偏差 + 死内核面——(a)(b) 已处置 2026-09-09（§18.9 Fix #69），(c) 挂 edge E-VMTLB
+
+> **勘误（Fix #69 复核）**：扫描称"ARCH 偏差未登记"不准确——08-pagetable-ops.md §1.8 已完整论证（且揭示扫描遗漏的关键事实：`write_pte_dm` 每次 PTE 写入后立即 invlpg，写与失效绑定）。真实残余 = 不变量登记（本条 a）+ 内核死面注释（b）+ SMP 机制缺失（c，维持 edge）。
 
 Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 TLB 不用旧值"的问题。本轮把 C 的完整机制挖到底，结论分三半：
 
@@ -350,6 +352,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **测试**：无新增（纯注释变更）；`cargo test -p minix-vm --lib` → 499 passed 回归
 - **Verified**: clippy servers/vm 0 警告
 - **Docs**: 25-rs-services.md 已有登记，无需改动；本条 + todo V13-P2-4 条目勘误即登记闭环
+
+### ✅ Fix #69: V13-P2-1(a)(b) — TLB 不变量登记 + 内核死 VMCTL 面注释（含扫描勘误；(c) 挂 edge E-VMTLB）
+
+- **勘误**：扫描称"ARCH 偏差未登记"不准确——08-pagetable-ops.md §1.8 已完整论证 C 全局清缓存 vs Direct Map 逐条 invlpg，且明确 `write_pte_dm` 写后立即 invlpg（扫描遗漏，Step 1.0e 教训第二例）。真实残余收窄为两件。
+- **处置**：(a) "VM 只改不在运行的进程的页表"不变量正式登记为 16-pagefault.md §3.7（逐路径的停等机制表 + 违反后果 + 新路径准入门槛）；§3.6 新增第 12 行（TLB 一致性状态）并修正第 3 行过时状态（clear_pagefault 已随 Fix #60 接线）。(b) `os/kernel/src/syscall.rs` 的 FlushTlb/InvlPg/GetPdbr 臂补注释：VM 侧零调用是设计使然（direct map 恒定翻译 + 写后 invlpg），勿读作未接线 edge。
+- **Files**: `16-pagefault.md`（§3.6 两行 + 新 §3.7）、`os/kernel/src/syscall.rs`（注释，零行为变更）
+- **测试**：无新增（注释/文档变更）；kernel 侧 `cargo check` 通过（注释不触编译面）+ VM 499 全绿回归
+- **边界**：(c) SMP 目标进程刷新（C MF_FLUSH_TLB，proc.c:345-347）维持 edge E-VMTLB；E-VMTLB 的"VM 自刷四处"引用即 08 §1.8 的已登记内容，无需重复
 
 ---
 

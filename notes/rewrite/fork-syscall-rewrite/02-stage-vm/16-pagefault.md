@@ -405,7 +405,7 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 |---|--------|----------|------|
 | 1 | `handle_pagefault` 验证链 + memtype 分发 | `dispatch_pagefault` + `cow_exec_pf::handle_pagefault` 等价实现（vm_server.rs:986-1057） | ✅ 已实现 |
 | 2 | wire format：`m_source` + `m1_i1`/`m1_i2` | `decode_message`：`m_source` + `m_vm_pagefault`（64 位 ARCH） | ✅ 已实现（本轮修复） |
-| 3 | SIGSEGV + `VMCTL_CLEAR_PAGEFAULT` 恢复进程 | VM 侧无 `sys_vmctl`；`dispatch_pagefault` 返回 `VmReply`，主循环对 `VmReply::Error` 计数 + 审计（V9-P1-1，todo），不再静默丢弃；进程恢复契约仍未接线 | ⚠️ DEFERRED（错误可观测；恢复契约未接线） |
+| 3 | SIGSEGV + `VMCTL_CLEAR_PAGEFAULT` 恢复进程 | `gateway.sys_kill`（SIGSEGV）+ `gateway.sys_vmctl_clear_pagefault` 已接线（vm_server.rs，G-V12-6/Fix #60 批次）；E2 前失败走 audit + 计数（V9-P1-1），不再静默丢弃 | ✅ 已实现（通电挂 E1/E2） |
 | 4 | `pf_errstr` 诊断日志 | no_std 无 printf；错误以 `CowError`/`VmReply::Error(AccessViolation)` 传递 | ⚠️ 简化 |
 | 5 | major/minor 缺页计数（:135-138） | 字段存在（vmproc.rs:55-56）+ `inc_minor_fault`/`inc_major_fault` 方法（vmproc_handle.rs:300-307），生产路径未调用（仅测试） | ⚠️ 缺口 |
 | 6 | `do_memory`/`handle_memory_start/step/final/continue` 异步状态机 | 未实现；`fork.rs::handle_memory_once` 仅同步子集 | ⚠️ DEFERRED |
@@ -414,6 +414,24 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 | 9 | 主动路径 `vfs_avail` 计算（requestor==VFS ? 0 : 1） | 无对应（do_memory DEFERRED） | ⚠️ DEFERRED |
 | 10 | VFS 异步回调 `pf_cont`/`handle_memory_continue` | `NeedVfsIo → Suspended` 表示"等 VFS"，但回调接线未实现（23 范围） | ⚠️ DEFERRED |
 | 11 | PTE 写入：`map_pf` 尾部 `pt_writemap`（pagetable.c:784，CoW 走 WMF_WRITEFLAGSONLY）+ `map_ph_writept`——VM 自己写进程页表，否则恢复后指令二次故障 | 2026-09-08 前缺失（`vm_pt` 在故障路径零使用，本表原漏登记此行——G-V12-8）。现 `sync_slot_pte`（cow_exec_pf.rs）三路分派 query→update_flags / remap / map，贯穿 handle_pagefault 四结算点与 handle_memory_once/map_pin_memory 主动路径 | ✅ 已实现（G-V12-8，todo.md §17.9 Fix #60） |
+| 12 | TLB 一致性：C VM 自刷四处（pagetable.c:119/255/319/430，别名映射模型）+ 内核 SMP 侧 `MF_FLUSH_TLB`（proc.c:345-347） | `write_pte_dm` 写后逐条 invlpg（08 §1.8，ARCH 已登记）；SMP 目标进程刷新机制缺失 → edge E-VMTLB；VMCTL FlushTlb/InvlPg 内核命令 VM 侧零调用（有意，见 §3.7） | ⚠️ 单核自洽 / SMP 挂 E-VMTLB（V13-P2-1） |
+
+### 3.7 D8：PTE 写入安全的不变量——"VM 只改不在运行的进程的页表"（V13-P2-1a 登记）
+
+`sync_slot_pte` 让 VM 直接改写进程硬件页表，这条链的正确性压在一条**结构性不变量**上：VM 修改某个进程 PTE 的时刻，该进程必然不在任何 CPU 上运行。各路径的保证机制：
+
+| 路径 | 目标进程为何不在运行 |
+|------|---------------------|
+| 缺页故障（`dispatch_pagefault`） | 目标带 `RTS_PAGEFAULT`（不可运行），内核代为停等 |
+| munmap / shm_unmap / unmap_phys（`unmap_range`） | 调用方即受益进程，阻塞在 IPC 等回复 |
+| brk 收缩 | 同上（进程阻塞在 PM 的调用里） |
+| fork 的 `write_page_table_mappings` / CoW 预写 | 父进程阻塞在 PM 的 fork 调用里；子进程尚未运行 |
+| exit / procctl 清理 | 进程已 `RTS_*` 停止或 EXITING |
+| RS pin（`map_pin_memory`） | 目标是新拉起的服务，尚未运行 |
+
+只要不变量成立，被改页表就不会有别的 CPU 缓存其旧翻译（该进程恢复运行前必然经历 `switch_address_space` 的根寄存器重载），叠加 `write_pte_dm` 的写后 invlpg（本 CPU 即时失效），TLB 一致性在单核与多核都闭合。**违反它的后果是静默的内存腐坏**：例如对运行中进程 unmap 一页，另一 CPU 的 TLB 仍缓存旧翻译，进程继续写入已回收的物理页。因此任何新增的"对运行中进程改页表"的路径（如未来 RS live-update 的 `share_mappings`）必须先建立等价的停等协议，而不是直接复用本链路。
+
+SMP 侧的剩余缺口（其他 CPU 上**共享方**进程的陈旧翻译，C 用 `MF_FLUSH_TLB` + 调度点刷新覆盖）不在此闭合——登记为 edge E-VMTLB，随 01-stage-kernel 的 SMP 工作处置。
 
 ---
 
