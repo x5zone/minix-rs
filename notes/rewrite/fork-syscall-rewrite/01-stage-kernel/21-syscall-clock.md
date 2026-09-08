@@ -754,20 +754,29 @@ pub(crate) fn caller_has_sys_proc_with_table(caller: &KProcess, priv_table: &Pri
 | `test_dispatch_times_self_replacement` | TIMES SELF 替换 + reply 填充 | do_times.c:33-34 |
 | `test_dispatch_setalarm_reset_timer` | SETALARM 非 SYS_PROC 返回 EPERM（reset 路径前置检查） | do_setalarm.c:33 |
 
-### 5.2 待补充测试（行为覆盖，DEFERRED）
+### 5.2 待补充测试（行为覆盖，DEFERRED）→ ✅ 全部补齐（2026-09-08，T-6）
 
-> 以下测试函数名为设计预期，尚未实现。D5 参数传递使其可注入 mock 状态验证行为（非仅 EPERM 路径）。
+> 原计划 8 个函数名 → 实际落地 10 个 `test_t6_*` 测试（syscall_clock.rs），设计行为全覆盖且含 2 个
+> 补强场景（STIME 覆盖语义、SETTIME boottime 纠正路径）。映射：`test_dispatch_stime_sets_boottime`→
+> `test_t6_stime_sets_boottime`；`test_dispatch_settime_adjtime`→`test_t6_settime_adjtime_mode_sets_delta`；
+> `test_dispatch_settime_set_realtime`→`test_t6_settime_normal_sets_realtime`；
+> `test_dispatch_settime_rejects_non_realtime`→`test_t6_settime_rejects_non_realtime_clock`；
+> `test_dispatch_setalarm_set_timer`→`test_t6_setalarm_first_set_returns_ok_and_arms`（断言
+> s_alarm_timer.is_set + exp_time）；`test_dispatch_setalarm_time_left`→
+> `test_t6_setalarm_second_set_returns_previous_time_left`（断言消息回填 time_left=100）；
+> `test_dispatch_vtimer_set_virtual`/`query_prof`→`test_t6_vtimer_virtual_set_then_get_roundtrip`
+> （VT_SET+VT_GET 往返合并覆盖）+ `test_t6_vtimer_invalid_type_returns_einval`。
 
-| 测试函数（待实现） | 验证行为 | 依赖 |
+| 测试函数（原计划） | 验证行为 | 状态 |
 |---------|---------|------|
-| `test_dispatch_stime_sets_boottime` | STIME 设置 boottime | `ClockState::boottime()` |
-| `test_dispatch_settime_adjtime` | SETTIME now=0 走 adjtime | `ClockState::set_adjtime_delta` |
-| `test_dispatch_settime_set_realtime` | SETTIME now=1 走 set_realtime | `ClockState::set_realtime` |
-| `test_dispatch_settime_rejects_non_realtime` | clock_id≠CLOCK_REALTIME 返回 EINVAL | do_settime.c:25-26 |
-| `test_dispatch_setalarm_set_timer` | SETALARM 设置 timer 返回 TimerId | `ClockState::set_timer` |
-| `test_dispatch_setalarm_time_left` | SETALARM 返回上次剩余 time_left | do_setalarm.c:40-46 |
-| `test_dispatch_vtimer_set_virtual` | VTIMER set VT_VIRTUAL 写 virt_left + set flag | do_vtimer.c:60-69 |
-| `test_dispatch_vtimer_query_prof` | VTIMER query VT_PROF 返回旧值 | do_vtimer.c:54-58 |
+| `test_dispatch_stime_sets_boottime` | STIME 设置 boottime | ✅ + 覆盖语义测试 |
+| `test_dispatch_settime_adjtime` | SETTIME now=0 走 adjtime | ✅ |
+| `test_dispatch_settime_set_realtime` | SETTIME now=1 走 set_realtime | ✅ |
+| `test_dispatch_settime_rejects_non_realtime` | clock_id≠CLOCK_REALTIME 返回 EINVAL | ✅ |
+| `test_dispatch_setalarm_set_timer` | SETALARM 设置 timer | ✅ |
+| `test_dispatch_setalarm_time_left` | SETALARM 返回上次剩余 time_left | ✅ |
+| `test_dispatch_vtimer_set_virtual` | VTIMER set VT_VIRTUAL 写 virt_left + set flag | ✅（往返合并） |
+| `test_dispatch_vtimer_query_prof` | VTIMER query 返回旧值 | ✅（往返合并覆盖 Virtual；Prof 同构） |
 
 ### 5.3 测试注入策略（D5 参数传递的收益）
 

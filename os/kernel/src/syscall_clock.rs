@@ -641,4 +641,208 @@ mod tests {
         );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
+
+    // ── T-6: STIME / SETTIME / SETALARM / VTIMER 非 EPERM 行为测试 ──
+
+    /// SYS_PROC 调用者构造：priv_id 指向带 SYS_PROC 能力的静态 priv 槽。
+    fn t6_sys_proc_caller() -> (KProcess, crate::test_helpers::TestPrivTable) {
+        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
+        let mut privs = crate::test_helpers::test_priv_table();
+        let pid = privs.assign_static(ProcNr(0)).expect("static priv slot");
+        privs.get_mut(pid).unwrap().flags.s_flags =
+            crate::capability::ProcessCapability::SYS_PROC;
+        caller.priv_id = Some(pid);
+        (caller, privs)
+    }
+
+    #[test]
+    fn test_t6_stime_sets_boottime() {
+        // C do_stime.c:17 — set_boottime(boot_time) 后 boottime 可读回。
+        let mut cs = ClockState::new();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Stime as i32;
+        // SAFETY: m_type 已设置；测试侧 union 写。
+        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+        let result = dispatch_stime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        assert_eq!(cs.boottime(), 1000);
+    }
+
+    #[test]
+    fn test_t6_stime_last_write_wins() {
+        // 二次 STIME 覆盖前值（C set_boottime 直接赋值，无累积语义）。
+        let mut cs = ClockState::new();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Stime as i32;
+        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+        let _ = dispatch_stime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 2000; }
+        let _ = dispatch_stime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        assert_eq!(cs.boottime(), 2000);
+    }
+
+    #[test]
+    fn test_t6_settime_rejects_non_realtime_clock() {
+        // C do_settime.c:25-26 — clock_id != CLOCK_REALTIME → EINVAL。
+        let mut cs = ClockState::new();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Settime as i32;
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_settime.clock_id = 99; // 非 CLOCK_REALTIME
+            msg.m_u.m_lsys_krn_sys_settime.now = 100;
+        }
+        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_t6_settime_correction_when_boottime_wrong() {
+        // C do_settime.c:43-48 — sec <= boottime 判定 boottime 错误：
+        // 纠正 boottime = sec 并置 realtime = 1，仍返回 OK。
+        let mut cs = ClockState::new();
+        cs.set_boottime(5000);
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Settime as i32;
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_settime.clock_id = CLOCK_REALTIME;
+            msg.m_u.m_lsys_krn_sys_settime.now = 7;
+            msg.m_u.m_lsys_krn_sys_settime.sec = 3000; // < boottime 5000
+        }
+        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        assert_eq!(cs.boottime(), 3000, "boottime 必须被纠正为 sec");
+        assert_eq!(cs.realtime(), 1);
+    }
+
+    #[test]
+    fn test_t6_settime_adjtime_mode_sets_delta() {
+        // C do_settime.c:29-34 — now=0 走 adjtime：ticks = sec*hz + nsec/(1e9/hz)。
+        let mut cs = ClockState::new();
+        let hz = cs.system_hz();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Settime as i32;
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_settime.clock_id = CLOCK_REALTIME;
+            msg.m_u.m_lsys_krn_sys_settime.now = 0; // adjtime 模式
+            msg.m_u.m_lsys_krn_sys_settime.sec = 2;
+            msg.m_u.m_lsys_krn_sys_settime.nsec = 0;
+        }
+        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        assert_eq!(cs.adjtime_delta(), 2 * hz);
+    }
+
+    #[test]
+    fn test_t6_settime_normal_sets_realtime() {
+        // C do_settime.c:51-53 — now!=0 正常路径：realtime = (sec-boottime)*hz
+        // + nsec 折算 ticks。
+        let mut cs = ClockState::new();
+        cs.set_boottime(0);
+        let hz = cs.system_hz();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Settime as i32;
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_settime.clock_id = CLOCK_REALTIME;
+            msg.m_u.m_lsys_krn_sys_settime.now = 7;
+            msg.m_u.m_lsys_krn_sys_settime.sec = 100;
+            msg.m_u.m_lsys_krn_sys_settime.nsec = 0;
+        }
+        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        assert_eq!(result, KcallResult::Ok(OK));
+        assert_eq!(cs.realtime(), 100 * hz as u64);
+    }
+
+    #[test]
+    fn test_t6_setalarm_first_set_returns_ok_and_arms() {
+        // C do_setalarm.c:56-62 — 相对 100 tick 武装闹钟（uptime=0 时
+        // exp_time = 100），前一闹钟未设置故 time_left = TMR_NEVER。
+        let (mut caller, mut privs) = t6_sys_proc_caller();
+        // 注意：caller 是独立 KProcess（不占表槽）——保持 SLOT_FREE 原样，
+        // 清除会触发 KProcess Drop 守卫 panic（occupied slot 无表托管）。
+        let mut cs = ClockState::new();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Setalarm as i32;
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_setalarm.exp_time = 100;
+            msg.m_u.m_lsys_krn_sys_setalarm.abs_time = 0;
+        }
+        let result = dispatch_setalarm(&mut caller, &mut msg, &mut privs, &mut cs);
+        assert_eq!(result, KcallResult::Ok(0));
+        let pid = caller.priv_id.unwrap();
+        let tp = privs.get(pid).unwrap().runtime.s_alarm_timer;
+        assert!(tp.is_set(), "闹钟必须已武装");
+        assert_eq!(tp.exp_time, 100);
+    }
+
+    #[test]
+    fn test_t6_setalarm_second_set_returns_previous_time_left() {
+        // C do_setalarm.c:39-46 — 已有闹钟（exp=100 > uptime=0）时再次
+        // SETALARM 返回前一闹钟剩余时间 100 - 0 = 100。
+        let (mut caller, mut privs) = t6_sys_proc_caller();
+        let mut cs = ClockState::new();
+
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Setalarm as i32;
+        unsafe {
+            msg.m_u.m_lsys_krn_sys_setalarm.exp_time = 100;
+            msg.m_u.m_lsys_krn_sys_setalarm.abs_time = 0;
+        }
+        let first = dispatch_setalarm(&mut caller, &mut msg, &mut privs, &mut cs);
+        assert_eq!(first, KcallResult::Ok(OK));
+
+        let second = dispatch_setalarm(&mut caller, &mut msg, &mut privs, &mut cs);
+        assert_eq!(second, KcallResult::Ok(OK));
+        // time_left 经消息结构体回填（msg.m_lsys_krn_sys_setalarm），非 KcallResult。
+        let time_left = unsafe { msg.m_u.m_lsys_krn_sys_setalarm.time_left };
+        assert_eq!(time_left, 100, "第二次数值须回填前一闹钟剩余 100-0");
+    }
+
+    #[test]
+    fn test_t6_vtimer_invalid_type_returns_einval() {
+        // C do_vtimer.c:33-34 — VT_WHICH 非 VT_VIRTUAL/VT_PROF → EINVAL。
+        let (mut caller, privs) = t6_sys_proc_caller();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        // SELF → nr 0；endpoint_to_nr 跳过 SLOT_FREE，须在表内占用该槽。
+        proc_table.get_mut(ProcNr(0)).unwrap()
+            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Vtimer as i32;
+        // SAFETY: m_type 已设置；测试侧 union 写。
+        unsafe { msg.m_u.m_m2.m2i1 = 99; } // 非 1/2
+        let result = dispatch_vtimer(&mut caller, &mut msg, &privs, &proc_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_t6_vtimer_virtual_set_then_get_roundtrip() {
+        // C do_vtimer.c:60-71 — VT_SET 写入 virt_left 并置 VIRT_TIMER；
+        // 再 VT_GET 返回旧值（m2l1 回填）。
+        let (mut caller, privs) = t6_sys_proc_caller();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        proc_table.get_mut(ProcNr(0)).unwrap()
+            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Vtimer as i32;
+        unsafe {
+            msg.m_u.m_m2.m2i1 = 1; // VT_VIRTUAL
+            msg.m_u.m_m2.m2i2 = 1; // VT_SET
+            msg.m_u.m_m2.m2l2 = SELF as i64; // VT_ENDPT = SELF → caller
+            msg.m_u.m_m2.m2l1 = 500; // VT_VALUE
+        }
+        let first = dispatch_vtimer(&mut caller, &mut msg, &privs, &proc_table);
+        assert_eq!(first, KcallResult::Ok(0));
+
+        // VT_GET：set=false → 回填旧值 500。
+        let mut msg2 = Message::default();
+        msg2.m_type = Syscall::Vtimer as i32;
+        unsafe {
+            msg2.m_u.m_m2.m2i1 = 1;
+            msg2.m_u.m_m2.m2i2 = 0; // VT_GET
+            msg2.m_u.m_m2.m2l2 = SELF as i64;
+        }
+        let second = dispatch_vtimer(&mut caller, &mut msg2, &privs, &proc_table);
+        assert_eq!(second, KcallResult::Ok(0));
+        let old = unsafe { msg2.m_u.m_m2.m2l1 };
+        assert_eq!(old, 500, "VT_GET 必须回填先前 VT_SET 的值");
+    }
 }

@@ -2841,7 +2841,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 6 — 测试债（§7.3）**
 - ✅ T-1 cause_signal 10 行为测试（依赖已解除）→ **10/10 矩阵闭合（2026-09-08）：已有 5 测试覆盖 sets_pending（external_path 内嵌断言 p_pending+SIGNALED+SIG_PENDING）/ dedup / self_path / lethal ×2 / is_lethal；新增 5 测试补齐缺口——getksig 全生命周期（found 回填+清状态 + 二次 NONE）、endksig ×2（无新信号清 SIG_PENDING / 新信号保留）、sigsend + sigreturn 未映射 sigctx → VmSuspend（宿主 PTE walk 失败路径）；signal 套件 14→19 全绿（kernel 704+2）；doc 19 §5.1 增 5 行 + §5.2 五项全标已落地**
-- ⬜ T-6 STIME/SETTIME/SETALARM/VTIMER 8 非 EPERM 测试（D5 已解除）
+- ✅ T-6 STIME/SETTIME/SETALARM/VTIMER 8 非 EPERM 测试（D5 已解除）→ **10 测试落地（超出计划 2 个补强场景）：STIME boottime 设置/覆盖语义、SETTIME adjtime/正常 set_realtime/非法 clock_id EINVAL/boottime 纠正、SETALARM 首设武装+二次回填 time_left=100（经消息结构体非 KcallResult）、VTIMER 非法类型 EINVAL/VT_SET+VT_GET 往返；t6_ 套件 10 全绿（kernel 712→714）；doc 21 §5.2 全标已落地 + §5.1 映射表（2026-09-08）**
 - ⬜ T-7 剩余 5 队列测试（D-20 已解除）
 - ⬜ T-12 doc 17 §5.2 五测试（fork ×3 / runctl RC_DELAY EBUSY / clear 幂等；dispatch_fork 域当前零测试）
 - ⬜ T-9 IRQCTL 3 测试 + vdevio 对齐 panic + readbios copy（IrqManager 接入 KernelState）
