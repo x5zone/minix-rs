@@ -282,7 +282,15 @@ pub trait ArchSyscall {
         KcallResult::BadCall
     }
 
-    /// SYS_PADCONF — pad configuration (ARM-only). C: do_padconf.c
+    /// SYS_PADCONF — pad configuration (32-bit arm only).
+    ///
+    /// C: `map(SYS_PADCONF, do_padconf)` is compiled `#if defined(__arm__)`
+    /// only (system.c:251-253); do_padconf.c exists solely under
+    /// `arch/earm/` (TI OMAP BSP). On every non-arm C build the call_vec
+    /// entry is NULL → `EBADREQUEST` (system.c:120-123). The Rust kernel
+    /// has no arm32 target, so `BadCall` (= EBADREQUEST via
+    /// `reply_code()`) IS the C-parity answer for all supported
+    /// architectures — there is nothing to implement.
     fn dispatch_padconf(caller: &mut KProcess, msg: &Message) -> KcallResult {
         let _ = (caller, msg);
         KcallResult::BadCall
@@ -347,12 +355,16 @@ impl ArchSyscall for X86_64Syscall {
 
 /// ARM (32-bit) syscall dispatch — overrides ARM-specific syscalls.
 ///
-/// `SYS_PADCONF` currently returns `BadCall` (real implementation deferred).
+/// Unused today (no `arm` target in this workspace). `SYS_PADCONF` keeps
+/// the trait default: its C map is `#if defined(__arm__)` only
+/// (system.c:251-253), so `BadCall` (= EBADREQUEST, system.c:120-123
+/// NULL-entry behavior) is the correct answer on every architecture this
+/// workspace builds.
 pub struct ArmSyscall;
 
 impl ArchSyscall for ArmSyscall {
-    // dispatch_padconf uses default (BadCall) — real implementation deferred.
-    // When ARM pad configuration is implemented, override here.
+    // dispatch_padconf uses the trait default (BadCall → EBADREQUEST) —
+    // correct by ground truth, not a deferred implementation.
 }
 
 /// Default syscall dispatch for architectures without arch-specific syscalls
@@ -3863,5 +3875,27 @@ mod tests {
         // user-space mapping), but the function should still return OK
         // (matching C's unconditional `return OK` after proc_stacktrace).
         assert_eq!(result, KcallResult::Ok(OK));
+    }
+
+    #[test]
+    fn test_padconf_unused_kernel_call_replies_ebadrequest() {
+        // C ground truth: the SYS_PADCONF map entry is `#if defined(__arm__)`
+        // only (system.c:251-253) and do_padconf.c exists only under
+        // arch/earm/. On every non-arm C build the call_vec entry is NULL and
+        // kernel_call answers `EBADREQUEST` (system.c:120-123). The Rust
+        // kernel has no arm32 target, so the trait default's `BadCall` —
+        // which `reply_code()` maps to EBADREQUEST (212) — IS the C-parity
+        // reply. This test pins both links of that chain.
+        let caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let msg = Message::default();
+
+        let result = <CurrentArchSyscall as ArchSyscall>::dispatch_padconf(
+            &mut { caller },
+            &msg,
+        );
+        assert_eq!(result, KcallResult::BadCall,
+            "padconf on a non-arm32 kernel is the C NULL-entry case");
+        assert_eq!(result.reply_code(), Some(EBADREQUEST),
+            "user-visible reply must be EBADREQUEST (212), matching system.c:123");
     }
 }
