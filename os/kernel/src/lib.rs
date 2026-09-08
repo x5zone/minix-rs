@@ -372,11 +372,12 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 /// It orchestrates the six-phase boot sequence:
 ///
 /// Phase A (this function): Entry — validate kinfo, allow kernel alloc
-/// Phase B: cstart — prot_init + clock + intr + arch_init
+/// Phase B: cstart — prot_init + clock + intr (software only; D-59) + arch_init
 /// Phase C: proc_init + arch_boot_proc
 /// Phase D: arch_post_init + memory_init
-/// Phase E: system_init
-/// Phase F: bsp_finish_booting + switch_to_user
+/// Phase E: (no boot-time action — C `system_init` became the `enum Syscall`
+///          dispatch; per-call work runs when syscalls arrive)
+/// Phase F: bsp_finish_booting (timer program+register+gate, D-59) + switch_to_user
 ///
 /// C: main.c:115-147
 #[cfg(all(not(feature = "mock"), not(feature = "qemu_test")))]
@@ -443,6 +444,20 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
                 module.len as u64,
             );
         }
+        // Step 3: Cut the kernel image itself (D-64①). C parity: pre_init
+        // appends the kernel as an extra boot module (`kern_mod`) and cuts
+        // it together with the real modules (pre_init.c:196-216). On the
+        // UEFI path this is a no-op — the kernel image is LOADER_DATA and
+        // never appears in the conventional memmap — but on the OpenSBI
+        // path the shim reports whole DRAM as conventional, so without
+        // this cut GET_MEMINFO would advertise the kernel image as free
+        // memory. The result is ignored: a no-op cut returns Err, which is
+        // the UEFI-path expectation.
+        let _ = memmap::cut_memmap(
+            mmap,
+            kernel_info.kern_phys_base().0,
+            kernel_info.kern_size(),
+        );
     }
 
     // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.
@@ -488,11 +503,11 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     let proc_table = unsafe { crate::proc_table_boot_unchecked() };
     init_post_and_memory(proc_table);  // covered in 07
 
-    // Phase E: system_init — register syscall handlers
-    // C: system_init() — system.c:168-278
-    // D1/D2: In Rust, enum Syscall + match + const assert replaces C's
-    // call_vec[] + map() macro. IrqManager and KPriv constructors handle
-    // the IRQ hook pool and alarm timer initialization respectively.
+    // Phase E: (no boot-time action) — C `system_init()` registered the
+    // syscall table (system.c:168-278 call_vec[]); in Rust the `enum
+    // Syscall` + match dispatch IS the table, and the per-call work runs
+    // when syscalls arrive. IrqManager (IRQ hook pool) and alarm-timer
+    // initialization happen in Phase B / ClockState instead.
     // See 08-system-init-boot-finish.md §4.4
 
     // Phase F: add_memmap + bsp_finish_booting

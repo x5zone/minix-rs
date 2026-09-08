@@ -150,6 +150,14 @@ impl BootShim for UefiBootShim {
         let memmap = build_memmap();
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
+        // D-64②: wire the bootstrap-outside-memmap defense (it existed as
+        // an uncalled helper). The two LOADER_DATA allocations above must
+        // never sit in a page the memmap snapshot reports as conventional
+        // — otherwise the kernel's A2 handoff classification would hand
+        // live page-table pages to the VM PMM (07-paging_init_design
+        // §6.0-A2). Fail fast while the boot-shim can still print.
+        assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
+        assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
 
         // Both file accesses must happen before ExitBootServices because
         // they depend on the SimpleFileSystem protocol.

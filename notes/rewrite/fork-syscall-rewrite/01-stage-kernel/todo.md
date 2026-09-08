@@ -530,7 +530,7 @@ IRQ 路径**用 `*_boot_unchecked` 访问器族——"boot context" 注释名不
 （lib.rs:1748）挂着 `#[allow(dead_code)]`——同文件新代码走旧通道。修法：迁移到 `_with`/
 `assume_held` 链根取证（同 A1 已迁 24 处的形态）。
 
-#### D-64 boot 链窄项三件 [P2]
+#### D-64 boot 链窄项三件 [P2] — ✅ 已修复（2026-09-09，三件同批）
 
 ① **OpenSBI 路径 FREE_MEMMAP 含内核镜像**：`os/boot-shim/src/opensbi_helpers.rs:396-403`
 把整段 DRAM 报成单一 CONVENTIONAL 区（含内核/模块/shim）；kernel Phase A.2 只 cut 模块
@@ -542,6 +542,20 @@ IRQ 路径**用 `*_boot_unchecked` 访问器族——"boot context" 注释名不
 （删除需说明"为何死"：kernel 侧 vm_handoff 扣除已兜底）。③ Phase E 注释壳
 （`os/kernel/src/lib.rs:491-496` 无可执行语句，system_init 已被 enum match 取代）——
 kmain 头注/流程注释与实际不符，注释级同步。
+
+**✅ 解决记录（2026-09-09，三件同批）**：
+- **① 内核镜像自切**：Phase A.2 新增 Step 3——`cut_memmap(kern_phys_base, kern_size)`
+  （C parity：`pre_init.c:196-216` 把内核当额外 module `kern_mod` 一并 cut）。UEFI 路径
+  no-op（内核 LOADER_DATA 不在 conventional memmap，cut 返 Err 被忽略=预期）；OpenSBI
+  路径修复 GET_MEMINFO 把内核镜像报成可用内存的偏差。
+- **② 死防护代码接线**（选择 wire 而非删除——它是真实的 fail-fast 防线）：
+  `prepare_boot` 在 root page/bump region 两笔 LOADER_DATA 分配后调用
+  `assert_bootstrap_outside_memmap`，固件若把 conventional 页分给引导分配即刻 panic
+  （此时 boot-shim 尚能打印诊断）。
+- **③ Phase E 注释**：kmain 头注 Phase E 行改为"无 boot 期动作"（C system_init 已被
+  enum Syscall 分派吸收）+ Phase B/F 行补 D-59 后状态；Phase E 体注改写为准确叙述。
+- 文档同步：doc 01 回收逻辑分布表补第 4 行（内核镜像自切 + 两路径差异）。
+- 验证：kernel 730/0/8 全绿（memmap 18/18）；boot-shim x86_64-unknown-uefi check 通过。
 
 #### I-6 改判：bill_ptr 链路已闭环，主循环真实可达（原"保持 DEFERRED"降级为三个小余项）
 
