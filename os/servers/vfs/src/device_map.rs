@@ -4,6 +4,16 @@
 //! `smap.c:1-273` (socket-driver table), `device.c:1-95` (type-independent
 //! ioctl dispatch and grant decoding), and `dmap.h:1-27` (table layout).
 //!
+//! Source map (C file → where it landed here):
+//! - `dmap.c` → `DmapEntry`/`DmapTable`/`driver_match`/`get_by_major`/
+//!   `get_by_endpt`/`map_driver`/`unmap_by_endpt`
+//! - `smap.c` → `SmapEntry`/`SmapTable`/`register_plan`/`find_slot_by_label`/
+//!   `find_free_slot`/`smap_by_endpt`/`smap_by_domain`/`smap_endpt_by_dev`
+//! - `device.c` → `ioctl_route`/`ioctl_access`/`ioctl_size`（do_ioctl 分流
+//!   与 make_ioctl_grant 的解码半；授权创建半属内核 IPC 束）
+//! - `mapdriver`（misc.c 调用面）→ `classify_service`/`check_mapper`/
+//!   `EndpointDirectory`/`resolve_driver`
+//!
 //! Design decisions (see 19-device-map.md §3):
 //! - `DmapEntry/SmapEntry` are fixed-size values (`None` replaces `NONE`)
 //! - `EndpointDirectory` trait isolates DS label resolution (test doubles)

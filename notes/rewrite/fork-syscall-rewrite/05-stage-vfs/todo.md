@@ -196,7 +196,7 @@
 
 模块头（request.rs:6）与 `FsReq` 定义处（:120）注释称 "33 variants / 33 live variants"，实际 32 变体（本枚举 awk 计数）；`NREQS=34`（:17）对照 C `minix3/minix/include/minix/vfsif.h:75`（NREQS 34，含死 REQ_GETNODE）正确。随 R2-P0-1 同文件分两批顺带修。
 
-#### R2-P3-2（P3）device_map.rs 四源合一的职责注记
+#### ✅ R2-P3-2（P3）device_map.rs 四源合一的职责注记——已修复 2026-09-09（§10 Fix #16）
 
 device_map.rs（906 行）聚合 dmap.c（:69-230）、smap.c（:307-560）、device.c 的 ioctl 决策（:561-613）、mapdriver 服务分类（:276-305）四个 C 来源。聚合不违反语义，但 ioctl 决策的家与 C 的 device.c 文件错位，按 C 索引找不到。方案：拆 `device.rs`（ioctl_route/ioctl_access/ioctl_size 三函数）或模块头加"来源映射注记"。P2-5 类型化落地时顺带定夺，不单开一轮。
 
@@ -346,6 +346,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：`DmapEntry.driver`/`SmapEntry.endpt`/`RegisterPlan.unsuspend` 等全线 `Option<i32>`；`driver_match(table, proc: i32, ...)` 等 ~10 个签名吃裸 i32；`find_by_vnode(vnode: usize)` 裸 usize 指向 vnode 表（无 generation 保护）。
 - **After**：全线 `Option<Endpoint>`/`Endpoint`（`CTTY_ENDPT = Endpoint::VFS`、`RS_PROC_NR = Endpoint::RS` 常量同型化）；`find_by_vnode(vnode: VnodeId, bits)`。设计取舍：域号（`check_domain`/`smap_by_domain` 的 `domain: i32`，PF_* 族）与 sockid（`split_smap_dev`）不是端点，保持原类型——类型化的边界是"是不是进程身份"，不做无差别替换；`bdev::resolve_driver`/`cdev::resolve_gate` 的 `Option<i32>` 参数是 wire 边界（消费方在路由层接线时转换），本条不改，待 R2-P1-2 分发收敛时以 Endpoint 贯通。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`grep -n "i32" device_map.rs` 剩余仅为 domain/sockid/errno 等合法非端点量。回归 review 曾修复三处误转（register_plan 槽位号 u8、check_domain 的 self_idx u8、smap 行号断言）——宽泛正则替换后必须以编译错误清单逐条回溯。
+
+### ✅ Fix #16: R2-P3-2 — device_map.rs 补 C 文件 → 函数级来源地图（2026-09-09）
+
+- **File**：`os/servers/vfs/src/device_map.rs`（模块头 source map）。
+- **Before**：模块头只列四个 C 来源文件名，未说各自落点；按 C `device.c` 索引的读者找不到 ioctl 决策三函数。
+- **After**：模块头增函数级 source map（dmap.c / smap.c / device.c / mapdriver 四行，各列对应 Rust 符号；device.c 行注明授权创建半属内核 IPC 束）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（注释级）。
 
 ### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
 
