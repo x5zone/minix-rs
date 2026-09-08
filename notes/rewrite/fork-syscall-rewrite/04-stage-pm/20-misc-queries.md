@@ -447,12 +447,12 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, hz: Clo
 | # | 不变量 | C 锚点 | Rust 表达 | 检测 |
 |---|--------|--------|-----------|------|
 | 1 | `uts_tbl` 的 `NULL` 哨兵 + 越界 | `misc.c:79-83` | `UtsField::try_from` | `test_uts_field` |
-| 2 | `getsysinfo` 精确匹配 | `misc.c:139-140` | `size!=len→Inval` | `test_getsysinfo_size` |
+| 2 | `getsysinfo` 精确匹配 | `misc.c:139-140` | `size!=len→Inval` | `test_getsysinfo_perm_size` |
 | 3 | `getprocnr` RS 门 | `misc.c:154-157` | `caller_ep != RS → Perm` | `test_getprocnr_rs_only` |
-| 4 | `getepinfo` `return pid` | `misc.c:192` | `EpInfo { pid }` | `test_getepinfo_pid` |
-| 5 | `reboot` 永不回复 | `misc.c:232` | `ReplyLater` | `test_reboot_suspend` |
-| 6 | `svrctl` 三码 | `misc.c:327/380/375` | `ENOSPC/E2BIG/ESRCH` | `test_svrctl_3codes` |
-| 7 | `getrusage` 双源 | `misc.c:407-409` | `RusageWho::Slf/Children` | `test_getrusage_who` |
+| 4 | `getepinfo` `return pid` | `misc.c:192` | `EpInfo { pid }` | `test_getepinfo_trunc` |
+| 5 | `reboot` 永不回复 | `misc.c:232` | `ReplyLater` | `test_reboot_perm_suspend` |
+| 6 | `svrctl` 三码 | `misc.c:327/380/375` | `ENOSPC/E2BIG/ESRCH` | `test_svrctl_local_e2big` |
+| 7 | `getrusage` 双源 | `misc.c:407-409` | `RusageWho::Slf/Children` | `test_getrusage_self_children` |
 
 ---
 
@@ -471,13 +471,13 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, hz: Clo
 - `test_find_param_kvp`：`monitor_params` 的 `KVP` 线性（`utility.c:57` `split('\0')`）
 - `test_getrusage_self_children`：`RUSAGE_SELF→sys_times` vs `CHILDREN→child_utime`（`407-434`）
 - `test_rusage_from_ticks`：`ticks*1e6/hz → sec/usec` 的 `u64` 防溢出（`149-155`）
-- `test_sprofile_ennosys`：`SPROFILE` 缺省→`ENOSYS`（`profile.c:43`）
+- `test_sprofile_enosys`：`SPROFILE` 缺省→`ENOSYS`（`profile.c:43`）
 - `test_mcontext_passthrough`：`sys_get/setmcontext` 直通（`mcontext.c:15/25`）
 
 ### 5.2 `minix-types`（常量）
 
 - `test_constants_match_c`：锁定 `PM_SYSUNAME 25/GETSYSINFO 47/GETPROCNR 46/GETEPINFO 45/REBOOT 37/SVRCTL 38/GETRUSAGE 36/SPROF 39`（`callnr.h:25-39`）、`SI_PROC_TAB 0`（`sysinfo.h`）、`RB_POWERDOWN 1`（`reboot.h`）、`RUSAGE_SELF 0`（`resource.h`）
-- `test_find_param_monitor`：`find_param` 的 `KVP` 纯函数
+- `test_find_param_kvp`：`find_param` 的 `KVP` 纯函数
 
 测试策略：`SysInfoCtl/RebootCtl/ParamStore/TimesVmCtl/SprofCtl/McontextCtl` 均 `Test*` mock 可注入 `OK/EPERM/ENOSYS` 与计数；`find_param` 纯函数脱离 `ProcTable` 独立测；`svrctl` 的 `keylen==0→全表` 与 `E2BIG` 分叉在 `ParamStore` 内单元测；`getrusage` 的 `ticks*1e6/hz` 在 `rusage_from_ticks` 纯函数验证 `u64` 防溢出。
 

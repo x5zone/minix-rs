@@ -314,14 +314,14 @@ Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"�
 
 - `test_do_exit_priv_proc`：`PRIV_PROC→SIGKILL` vs `exit_proc`
 - `test_exit_proc_dump_core_suppressed`：`realuid != effuid` 与 `PRIV_PROC` 双抑制
-- `test_exit_proc_vfs_call`：`VFS_PM_EXIT` 投递且 `VFS_CALL` 保留
-- `test_exit_priv_sys_clear`：`PRIV_PROC` 立即 `sys_clear`
-- `test_exit_lifecycle_exiting`：`EXITING` 保留位
+- `test_signal_termination_tells_vfs`：`VFS_PM_EXIT` 投递且 `VFS_CALL` 保留
+- `test_exit_restart_cleans_priv`：`PRIV_PROC` 立即 `sys_clear`
+- `test_exiting_state`：`EXITING` 保留位
 - `test_zombify_trace_zombie`：`TRACE_ZOMBIE` vs `ZOMBIE`
 - `test_disinherit_new_parent`：`VFS_CALL→NEW_PARENT`
 - `test_session_leader_death_broadcasts_sighup`：会话首领死亡 → `check_sig(-procgrp, SIGHUP)` 组广播（同组成员终止、异组存活，D-27）
 - `test_check_parent_sends_sigchld_when_parent_not_waiting`：父未等待 → `sig_proc(parent, SIGCHLD, TRUE, FALSE)`（mask 阻塞使 pending 可观察，D-28）
-- `test_exit_restart_priv`：`PRIV_PROC` 不二次 `sys_clear` 等
+- `test_exit_restart_cleans_priv`：`PRIV_PROC` 不二次 `sys_clear` 等
 
 ### 5.2 测试总数声明（截至日期）
 

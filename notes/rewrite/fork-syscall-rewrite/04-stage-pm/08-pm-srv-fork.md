@@ -287,12 +287,12 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### 5.1 `mproc/fork.rs`（`srv_fork_from` 显式构造）
 
-- `test_srv_fork_privilege_retained`：`Kernel` 父→子 `is_kernel_process()==true` 且 `scheduler==NONE`（`PRIV_PROC` 保留）
+- `test_srv_fork_credentials_injected`：`Kernel` 父→子 `is_kernel_process()==true` 且 `scheduler==NONE`（`PRIV_PROC` 保留）
 - `test_srv_fork_credentials_injected`：`uid=1001,gid=100 → child.credentials.user.real==1001` 六字段同值
-- `test_srv_fork_flags_inheritance`：`PRIV_PROC` 保留，`TAINTED` 丢弃（与 `fork` 正交）
-- `test_srv_fork_no_tainted`：`ALARM_ON|TAINTED` → 仅 `PRIV_PROC` 保留（若父有）
+- `test_srv_fork_flags_not_tainted`：`PRIV_PROC` 保留，`TAINTED` 丢弃（与 `fork` 正交）
+- `test_srv_fork_flags_not_tainted`：`ALARM_ON|TAINTED` → 仅 `PRIV_PROC` 保留（若父有）
 - `test_srv_fork_intervals_cleared`：`intervals` 清零
-- `test_srv_fork_ipc_reset`：`reply/event_subscriber` 清零（`NO_EVENTSUB`）
+- `test_srv_fork_intervals_cleared`：`reply/event_subscriber` 清零（`NO_EVENTSUB`）
 
 ### 5.2 `fork.rs`（`do_srv_fork` 编排）
 

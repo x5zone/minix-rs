@@ -300,6 +300,8 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 
 ## 5 测试矩阵
 
+> 注：本节部分测试位于 `os/libs/minix-types/src/ipc/vfs.rs`（共享契约层的 wire 测试），非 `servers/pm` crate。
+
 ### 5.1 minix-types（协议编解码）
 
 - `test_vfs_pm_constants_match_com_h`：锁定所有 `VFS_PM_*` 数值等于 §2.1 表格（P0 回归守卫）。

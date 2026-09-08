@@ -330,7 +330,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 ### 5.2 `signal.rs`（`check_sig` 四态与 `sig_proc` 9 链）
 
-- `test_kill_all` / `test_kill_eperm` 等
+- `test_kill_broadcast` / `test_kill_eperm` 等
 - `test_sigproc_default_ignores_sigcont`：干净进程收 SIGCONT 存活（默认忽略门，V2-P0-2 回归锚点）
 - `test_badignore_forces_default_on_ignored_lethal_ksig`：ksig + noign 信号被 ignore → 强制终止
 - `test_ignored_non_noign_ksig_still_ignored`：ksig 但信号 ∉ noign → ignore 生效

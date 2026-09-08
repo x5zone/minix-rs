@@ -381,7 +381,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 - `ipc/calls.rs` `test_dispatch_fork_success_is_reply_later` + `test_dispatch_fork_parent_unknown_is_error_reply`：单一分发表 Fork 臂的 Ok → ReplyLater / 父不存在 → errno 回复（2026-09-06 分发收敛后，04 §4.2）
 - `init.rs` `test_run_once_fork_no_sync_reply`：`run_once(PM_FORK) → Handled`，wire 序列为 `[VM_FORK, VFS_PM_FORK]` 且无 caller 回复（`main.c:106` `SUSPEND` 不回复本消息；vm_fork 真实 sendrec 后 sent 为 2 条而非空）
-- `ipc/vfs.rs:763` `test_fork_success` 系列（`handle_vfs_reply` 的 FORK 双分支，05 §5.2）：`sched_start_user` 成败 → `exit_proc` 或 `reply(parent/child)` 且 `NEW_PARENT` 抑制，`restart_sigs` 尾部
+- `ipc/vfs.rs:824` `test_fork_success` 系列（`handle_vfs_reply` 的 FORK 双分支，05 §5.2）：`sched_start_user` 成败 → `exit_proc` 或 `reply(parent/child)` 且 `NEW_PARENT` 抑制，`restart_sigs` 尾部
 
 完整测试清单：`rg "^\s*fn test_" os/servers/pm/src/{fork,mproc/fork}.rs`（19） + `rg "fork" os/servers/pm/src/{init,ipc/{calls,vfs}}.rs`（3）— 本章直接相关 **22** 项；`cargo test -p minix-pm --lib` 截至 2026-09-02 为 **160 passed**（含 06 的 30），本章新增 `0`（`fork.rs` 已有 4）+ `mproc/fork.rs` 15 已在基线内，`cargo test -p minix-types` **108 passed** 不变。
 

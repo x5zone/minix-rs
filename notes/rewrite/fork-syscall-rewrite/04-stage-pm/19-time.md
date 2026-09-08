@@ -405,7 +405,7 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 | 2 | `SUPER_USER` 门 | `time.c:75-77/119-121` `eff!=0→EPERM` | `!is_superuser→Err(Perm)` | `test_do_settime_perm` / `test_do_stime_perm` |
 | 3 | `boottime = sec - realtime/hz` | `time.c:124` | `boottime=sec-realtime/hz` | `test_do_stime_boottime` |
 | 4 | `sec=boottime+clock/hz, nsec=(clock%hz)*1e9/hz` | `time.c:42/44` | `decompose_clock` | `test_decompose_clock` |
-| 5 | `do_getres` 的 `1e9/hz` | `time.c:60` | `clock_resolution(hz)` | `test_do_getres_resolution` |
+| 5 | `do_getres` 的 `1e9/hz` | `time.c:60` | `clock_resolution(hz)` | `test_clock_resolution` |
 | 6 | `clock_time` 直通 | `time.c:99` | `ClockTime::clock_time` | `test_do_time_clock_time` |
 
 ---
@@ -420,9 +420,9 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 - `test_clock_resolution`：`hz=100→10ms` + `hz=1000→1ms` + `hz=0→0`（`60` 的 `1e9/hz`，`58` 的 `tv_sec=0`）
 - `test_clock_id_try_from`：`0→Realtime` + `3→Monotonic` + `1/2/99→EINVAL`（`31/55/79` 的 `default→EINVAL`，`CLOCK_MONOTONIC 3` 非 `1`）
 - `test_do_gettime_realtime_vs_monotonic`：`REALTIME→realtime` vs `MONOTONIC→ticks` 分派（`32-36`）+ `ticks=150, realtime=250, boottime=1000, hz=100 → REALTIME sec=1002, MONOTONIC sec=1001`（`42-44` 的 `clock/hz` 分派差异）
-- `test_do_gettime_invalid_clock`：`clk_id=1→EINVAL`（`39` `default→EINVAL`）
+- `test_do_gettime_no_uptime`：`clk_id=1→EINVAL`（`39` `default→EINVAL`）
 - `test_do_getres_realtime_monotonic`：`REALTIME→0,1e9/hz` + `MONOTONIC→0,1e9/hz`（`56-60` 双时钟同分辨率）
-- `test_do_getres_invalid_clock`：`clk_id=99→EINVAL`（`63`）
+- `test_clock_id_try_from`：`clk_id=99→EINVAL`（`63`）
 - `test_do_settime_perm`：`eff!=0→EPERM` + `eff==0→set_time` 直通（`75-77` `SUPER_USER` 门）
 - `test_do_settime_monotonic_inval`：`MONOTONIC→EINVAL` 不可变（`84-86` `monotonic cannot be changed`）
 - `test_do_stime_perm`：`eff!=0→EPERM`（`119-121`）
@@ -433,7 +433,7 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 ### 5.2 `minix-types`（常量）
 
 - `test_constants_match_c`：锁定 `CLOCK_REALTIME 0/MONOTONIC 3`（`sys/time.h:283/288`）、`PM_GETTIMEOFDAY 28/STIME 7/CLOCK_* 33-35`（`callnr.h:41/46-48`）、`NSEC_PER_SEC 1e9`（`time.c:44` `1000000000ULL`）
-- `test_time_types_64bit`：`Clock/Time=i64` 的 `A-11` 64 位扩展（`2038` 不溢出）
+- （`Pid/Uid/Clock` 的 64 位宽度由 minix-types 类型别名定义锁定，无独立测试——原声称 test_time_types_64bit 未建成，删除）：`Clock/Time=i64` 的 `A-11` 64 位扩展（`2038` 不溢出）
 
 测试策略：`ClockSource/BootTimeCtl/SetTimeCtl/ClockTime` 均 `Test*` mock 可注入 `ticks/realtime/boottime/hz` 与计数；`decompose_clock` 纯函数脱离 `ProcTable` 独立测；`do_gettime` 的 `getuptime` 失败在 Rust 以 `Result::Err→TimeError::NoUptime` 对偶（C 的 `panic` 在测试 mock 不触发）；`do_settime` 的 `now` 四参在 `TestSetTimeCtl { last_now }` 计数验“渐变 vs 跳变”透传。
 

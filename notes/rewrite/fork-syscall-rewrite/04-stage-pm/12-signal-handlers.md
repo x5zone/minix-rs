@@ -536,7 +536,7 @@ pub fn sig_send(table: &mut ProcTable, target: UserSlot, signo: i32, k: &mut dyn
 
 `mess_lc_pm_sig { pid: i32, nr: i32, act: u64, oact: u64, ret: u64 }`（`act/oact/ret` 为 `VirBytes`，`ipc.h:532-540` 的 `vir_bytes act/oact/ret`），`mess_lc_pm_sigset { how: i32, ctx: u64, set: SigSet }`（`ipc.h:542-549` 的 `how/set/ctx`），`mess_sigcalls { map: SigSet, endpt: i32, sig: i32, sigctx: u64 }`（`ipc.h:1912-1922`，`sys_sigsend/sigreturn` 共用） + `SigMsg { sm_mask, sm_signo, sighandler, sigreturn }`（`type.h:73`），各 `_ASSERT_MSG_SIZE 56B`，与 `MessageUnion` 新增 `m_lc_pm_sig` / `m_lc_pm_sigset` / `m_sigcalls` 成员。
 
-常量 `SIGKILL/SIGSTOP/_NSIG/SA_NODEFER/SA_RESETHAND/SIG_BLOCK/UNBLOCK/SETMASK/INQUIRE` 收敛到 `minix-types`（单一真相，`sys/signal.h:97-180` 数值锁定，由 `test_signal_constants_match_signal_h` 守卫）。
+常量 `SIGKILL/SIGSTOP/_NSIG/SA_NODEFER/SA_RESETHAND/SIG_BLOCK/UNBLOCK/SETMASK/INQUIRE` 收敛到 `minix-types`（单一真相，`sys/signal.h:97-180` 数值锁定，由 `test_signal_numbers_match_c_header（minix-types）` 守卫）。
 
 ### 4.5 不变量表
 
@@ -545,8 +545,8 @@ pub fn sig_send(table: &mut ProcTable, target: UserSlot, signo: i32, k: &mut dyn
 | 1 | `SIGKILL` 不可重装 | `signal.c:49` | `signo==SIGKILL→Ok(None)` 早返 | `debug_assert` 不可达 `install(KILL)` |
 | 2 | `KILL/STOP` 不可屏蔽 | `80-81/124-125/141-142/166-167/186-187` | `without_unkillable` 一处方法 | `test_without_unkillable_removes_kill_stop` |
 | 3 | `SIG_IGN` 四联动 | `68-71` | `install(Ignore)` 原子四清 | `test_sigaction_ignore_clears_pending_and_catch` |
-| 4 | `UNBLOCK/SETMASK` 后重检 | `137/144` | `MaskOpEffect::needs_check` | `test_sigprocmask_unblock_triggers_check` |
-| 5 | `suspend` 的 `mask2` 配对 | `164/792-795` | `prepare_suspend` + `prepare_sigmsg` 的 `suspended` 分支 | `test_sigsuspend_saves_mask2_and_sigsend_uses_it` |
+| 4 | `UNBLOCK/SETMASK` 后重检 | `137/144` | `MaskOpEffect::needs_check` | `test_sigprocmask_unblock_does_not_strip` |
+| 5 | `suspend` 的 `mask2` 配对 | `164/792-795` | `prepare_suspend` + `prepare_sigmsg` 的 `suspended` 分支 | `test_sig_send_suspended_uses_mask2` |
 | 6 | `sig_send` 前置 `PROC_STOPPED` | `787` | `assert!(block.stopped)` | `test_sig_send_requires_stopped` |
 | 7 | `EFAULT/ENOMEM→false` | `823` | `SigSendError::FaultOrNoMem` | `test_sig_send_fault_returns_false` |
 | 8 | `WAITING\|SIGSUSPENDED→EINTR` | `832-844` | `PostAction::InterruptedWait` | `test_sig_send_waiting_returns_eintr` |
@@ -555,7 +555,7 @@ pub fn sig_send(table: &mut ProcTable, target: UserSlot, signo: i32, k: &mut dyn
 
 ## 5 测试矩阵
 
-> 基线：`cargo test -p minix-pm --lib` 截至 2026-09-02 为 **116 passed / 0 failed**（原 91 + 本档新增 ~25：`mproc/signal.rs` 8 + `signal_handlers.rs` 17）。`cargo test -p minix-types --lib` 66 passed（新增 `test_signal_constants` 等）。结果见 `cargo test` 末段统计段（§2.4j 格式）。
+> 基线：`cargo test -p minix-pm --lib` 截至 2026-09-02 为 **116 passed / 0 failed**（原 91 + 本档新增 ~25：`mproc/signal.rs` 8 + `signal_handlers.rs` 17）。`cargo test -p minix-types --lib` 66 passed（新增 `test_signal_constants（位于 os/kernel/src/syscall_signal.rs，非 minix-types）` 等）。结果见 `cargo test` 末段统计段（§2.4j 格式）。
 
 ### 5.1 `mproc/signal.rs`（位图与安装语义）
 
@@ -584,12 +584,12 @@ pub fn sig_send(table: &mut ProcTable, target: UserSlot, signo: i32, k: &mut dyn
 - `test_sig_send_requires_stopped`：`sig_send` 前置 `PROC_STOPPED` 断言（`787`）
 - `test_sig_send_fault_returns_false`：`EFAULT/ENOMEM → Err(FaultOrNoMem)`（`823`）
 - `test_sig_send_unexpected_panics`：其他错误 `panic`（`828`，`#[should_panic]`）
-- `test_sig_send_waiting_vs_unpaused`：`WAITING|SIGSUSPENDED → InterruptedWait` vs `else→AwaitVfsUnpause`（`832-851`）
+- `test_sig_send_waiting_returns_eintr（与 test_sig_send_unpaused 两测覆盖）`：`WAITING|SIGSUSPENDED → InterruptedWait` vs `else→AwaitVfsUnpause`（`832-851`）
 
 ### 5.3 `minix-types`（消息与常量）
 
-- `test_signal_constants_match_signal_h`：锁定 `SIGKILL=9/SIGSTOP=17/_NSIG=64/SA_NODEFER=0x10/SA_RESETHAND=0x04` 等于 `sys/signal.h:45/62/70/152-153`
-- `test_mess_lc_pm_sig_roundtrip` / `test_mess_lc_pm_sigset_roundtrip` / `test_sigmsg_roundtrip`：消息编解码往返（`ipc.h:532-551` + `type.h:73`）
+- `test_signal_numbers_match_c_header（minix-types）`：锁定 `SIGKILL=9/SIGSTOP=17/_NSIG=64/SA_NODEFER=0x10/SA_RESETHAND=0x04` 等于 `sys/signal.h:45/62/70/152-153`
+- （sig/sigset 消息编解码往返测试——wire 成员随 edge E7 落地后补，当前不存在） / （sigset 载荷布局断言——wire 成员随 edge E7 落地后补，当前不存在） / （sigmsg 四步往返测试——wire 成员随 edge E7 落地后补，当前不存在）：消息编解码往返（`ipc.h:532-551` + `type.h:73`）
 
 测试策略：位图语义在 `mproc/signal.rs` 纯逻辑层验证（无需 `ProcTable`）；IPC 语义在 `signal_handlers.rs` 经 `ProcTable` + mock `KernelSig` 验证；`sys_sigsend/sigreturn` 的三分支经 `TestKernelSig` 可注入错误码；`check_pending` 的触发由 `MaskOpEffect` 断言（本档只到 `needs_check`，13 再验证实际重投）。
 

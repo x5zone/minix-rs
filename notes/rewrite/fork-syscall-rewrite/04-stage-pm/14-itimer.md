@@ -473,10 +473,10 @@ if msg.m_source == Endpoint::CLOCK {
 | 1 | `ticks` 向上取整 | `alarm.c:59` `+US-1` | `TicksConv::ticks_from` 的 `(hz*usec+US-1)/US` | `test_ticks_upward_rounds` |
 | 2 | `LONG_MAX` 钳位 | `alarm.c:57/62` | `checked_mul→None→MAX` | `test_ticks_overflow_clamps` |
 | 3 | `is_sane` 的 `MAX_SECS/US` | `alarm.c:85-86` | `Timeval::is_sane` | `test_is_sane_timeval` |
-| 4 | `ALARM_ON` 唯一性 | `mproc.h:90` / `alarm.c:254/306` | `Option<MinixTimer>` | `test_alarm_on_is_option` |
-| 5 | `newticks<=0→0` | `alarm.c:189/289` | `if newticks<=0 { interval=0 }` | `test_interval_zero_on_cancel` |
-| 6 | `oldticks<=0→interval` 回绕 | `alarm.c:212/263` | `if oldticks<=0 { oldticks=interval }` | `test_interval_returned_when_expired` |
-| 7 | `SIGALRM` 的 `ksig==FALSE` | `alarm.c:343` | `SigSender::send_sigalrm(pid)` 单播 | `test_cause_sigalrm_ksig_false` |
+| 4 | `ALARM_ON` 唯一性 | `mproc.h:90` / `alarm.c:254/306` | `Option<MinixTimer>` | `test_get_realtimer_alarm_on` |
+| 5 | `newticks<=0→0` | `alarm.c:189/289` | `if newticks<=0 { interval=0 }` | `test_getset_vtimer_interval_zero_on_cancel` |
+| 6 | `oldticks<=0→interval` 回绕 | `alarm.c:212/263` | `if oldticks<=0 { oldticks=interval }` | `test_getset_vtimer_returns_interval_when_expired` |
+| 7 | `SIGALRM` 的 `ksig==FALSE` | `alarm.c:343` | `SigSender::send_sigalrm(pid)` 单播 | `test_cause_sigalrm_three_guards` |
 
 ---
 
@@ -505,8 +505,8 @@ if msg.m_source == Endpoint::CLOCK {
 
 ### 5.2 `mproc/mproc.rs`（`ALARM_ON` 唯一真源）
 
-- `test_alarm_on_is_option`：`timer Some/None` 与 `ALARM_ON` 互为真值（`254/306`）
-- `test_intervals_default_zero`：`intervals [0;3]` 默认零
+- `test_get_realtimer_alarm_on`：`timer Some/None` 与 `ALARM_ON` 互为真值（`254/306`）
+- （`IntervalState` 默认零值由结构体 derive 锁定，无独立测试——原声称 test_intervals_default_zero 未建成，删除）：`intervals [0;3]` 默认零
 
 ### 5.3 `minix-types`（常量）
 

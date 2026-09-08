@@ -395,11 +395,11 @@ pub struct PtraceRange { pub space: TsSpace, pub addr: VirBytes, pub ptr: VirByt
 
 | # | 不变量 | C 锚点 | Rust 表达 | 检测 |
 |---|--------|--------|-----------|------|
-| 1 | `T_OK` 的 `tracer==NO_TRACER` 守卫 | `trace.c:56` | `try_set_tracer` | `test_t_ok_ebusy` |
-| 2 | `T_ATTACH` 的 `SUPER_USER` 三重 | `trace.c:67-71` | `may_attach` | `test_t_attach_perm` |
-| 3 | `T_EXIT` 的 `VFS|EVENT→save` | `trace.c:150-151` | `TraceExitState::Pending` | `test_t_exit_save` |
+| 1 | `T_OK` 的 `tracer==NO_TRACER` 守卫 | `trace.c:56` | `try_set_tracer` | `test_t_ok_sets_tracer_and_zero_payload` |
+| 2 | `T_ATTACH` 的 `SUPER_USER` 三重 | `trace.c:67-71` | `may_attach` | `test_t_attach_sets_noexec_and_stops_child` |
+| 3 | `T_EXIT` 的 `VFS|EVENT→save` | `trace.c:150-151` | `TraceExitState::Pending` | `test_t_exit_defers_when_vfs_blocked_else_exits` |
 | 4 | `T_DETACH` 的 `sigtrace→check_sig` 全量 | `trace.c:197-201` | `replay_sigtrace` | `test_t_detach_replay` |
-| 5 | `TRACE_STOPPED` 的 `sys_trace(T_STOP)` 先于置位 | `trace.c:263` 先于 `266` | `TraceStop::stop` | `test_trace_stop_wait` |
+| 5 | `TRACE_STOPPED` 的 `sys_trace(T_STOP)` 先于置位 | `trace.c:263` 先于 `266` | `TraceStop::stop` | `test_trace_stop_replies_waiting_tracer_with_payload` |
 | 6 | `W_STOPCODE` 的 `0x7f` 截断 | `wait.h: W_STOPCODE` | `WaitCode::stop` | `test_w_stopcode` |
 
 ---

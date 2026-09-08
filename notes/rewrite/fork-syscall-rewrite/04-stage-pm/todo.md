@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1-3（Fix #43）/V3-P1-1（Fix #44）/V3-P1-2（Fix #45，批次 H）/V3-P1-4（Fix #46，D-29 登记）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（P1-3 #43 / P1-1 #44 / P1-2 #45 批次H / P1-4 #46 D-29 / P1-5 #47 文档对账 0 MISS）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -455,13 +455,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #46，方案 b：fail-closed）：数据路径改 `Err(MiscError::Nosys)`（诚实失败优于假数据——RS 拿到 ENOSYS 是明确信号，拿到全零表是静默投递），`[DEFERRED: D-29]` 契约登记（真实数据路径 = PM 表的 C-ABI 序列化镜像 wire + 批次 G 接线，挂 edge E7）；`test_getsysinfo_perm_size` 的 Ok 断言改 `Nosys`。方案 a（立即真实拷出）被否：Rust 类型化表没有 C 布局字节视图，真路径 = E7 级 wire 工作，本轮无从达成真话。
 - **验证**：`grep -n "dummy" os/servers/pm/src/misc.rs` 零命中；misc 测试 13 passed。
 
-#### V3-P1-5 文档 §5 测试声称与代码大面积失同步（Gate E 违约，一次文档对账批次）
+#### V3-P1-5 文档 §5 测试声称与代码大面积失同步（✅ 已修复 2026-09-09，Fix #47）
 
-- **优先级**：P1（测试名对账门是任何 cmd 不可裁剪的通用强制门；Gate D 第 1 项口径下"§5 声称的测试 fn 缺失"即 P0，按文档批次统一处理）
-- **类型**：文档-代码失同步（虚构声称 14 + 改名漂移 31 + crate 归属错位 14 + 行号过期若干）
-- **证据**：§12.1.5 全表（每名带 doc:line 与 grep 结论；代表性名字已本会话二次 grep 复现）
-- **建议**：一次纯文档批次，逐篇 §5 刷新：每个虚构名二选一——"文档错"（删除/改名）或"测试缺"（若该测试确实应存在，转 todo-fix 补测试；12:592 的三个 wire roundtrip 名属 E7 前置产物，改写为 forward-reference 并注明）；crate 归属错位的 14 个名补注 minix-types 路径；顺带清理 07:384 行号过期、01 文档 C 锚点整体偏移、init.rs:3 头注释范围错。
-- **验证**：重跑 Gate E 全量对账（0 虚构 / 0 漂移 / 归属全对）。
+- **原状态**：21 篇文档声称 324 个测试名，完全虚构 14、改名漂移 31、crate 归属错位 14、行号过期若干（全表见 §12.1.5 与 2026-09-09 版本历史）。
+- **修复**（Fix #47，纯文档批次）：12 篇文档共 51 处改名（旧名 → 经 grep 验证的实际名）；真幻影名按性质处置——12 的三个 wire roundtrip 名改写为 forward-reference（E7 前置产物，不再以测试名声称）、13 的 `can_resume()/is_delayed()` 谓词族未建成（§4.2 代码示例改写为实际实现 + §5.2 两行删除）、14/19 的两个无载体声称改写为诚实注记；05/06 的 §5 头部补 crate 归属注记；07 的 :763 行号过期修正。01 文档 C 锚点偏移与 init.rs:3 头注释（V3-P3-6 范围）随后续批次。
+- **验证**：Gate E 全量对账重跑——**TOTAL MISS: 0**（反引号包裹的测试名 100% grep 命中，搜索根 = servers/pm + minix-types + minix-sys + kernel）。
 
 #### V3-P2-1 VFS 回复尾部的 `restart_signals` 端口 no-op，注释前提失真（V2 的 24 处收敛漏网）
 

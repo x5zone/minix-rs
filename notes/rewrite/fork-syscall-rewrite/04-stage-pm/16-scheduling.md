@@ -372,8 +372,8 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 
 ### 5.2 `mproc/mproc.rs`（`nice/scheduler` 二元）
 
-- `test_nice_scheduler_default`：`nice 0` + `scheduler Endpoint::NONE` 默认
-- `test_sched_init_fills_scheduler`：`sched_init` 回填 `SCHED`（`schedule.c:43`）
+- `test_nice_from_queue_default_queues`：`nice 0` + `scheduler Endpoint::NONE` 默认
+- `test_sched_init_only_init`：`sched_init` 回填 `SCHED`（`schedule.c:43`）
 
 ### 5.3 `minix-types`（常量）
 

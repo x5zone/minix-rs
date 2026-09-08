@@ -359,9 +359,9 @@ pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot
 | # | 不变量 | C 锚点 | Rust 表达 | 检测 |
 |---|--------|--------|-----------|------|
 | 1 | `PARTIAL_EXEC` 哨兵 | `exec.c:120` 置位→`173` 清零→`161` `SIGKILL` 分叉 | `ExecState::Partial` | `test_partial_exec_sentinel` |
-| 2 | `TAINTED` 二重 | `exec.c:103-109` | `tainted=true` 双重 `allow&&allow || eff!=real` | `test_tainted_double` |
+| 2 | `TAINTED` 二重 | `exec.c:103-109` | `tainted=true` 双重 `allow&&allow || eff!=real` | `test_do_newexec_tainted_double` |
 | 3 | `catch` 重置而 `ignore` 保留 | `exec.c:178-184` | `reset_caught_for_exec` | `test_exec_restart_resets_caught` |
-| 4 | `tracer` 信号先于 `sys_exec` | `exec.c:189-194` 先于 `197` | `TracerSig::signal_for_exec` 先于 `KernelExec::exec` | `test_tracer_signal_before_exec` |
+| 4 | `tracer` 信号先于 `sys_exec` | `exec.c:189-194` 先于 `197` | `TracerSig::signal_for_exec` 先于 `KernelExec::exec` | `test_tracer_signal` |
 | 5 | `frame` 的 `stack_high - frame_len` | `exec.c:116-117` | `FrameRegion::base` | `test_frame_region` |
 | 6 | `allow_setuid && args.allow_setuid` 双重 | `exec.c:91/103` | `ExecCreds::allow` 双重 | `test_allow_setuid_double` |
 
@@ -385,9 +385,9 @@ pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot
 
 ### 5.2 `mproc/mproc.rs` 与 `mproc/signal.rs`（状态机扩展）
 
-- `test_frame_region_base`：`FrameRegion::base` 的 `high - len`（`116-117`）
-- `test_exec_state_idle_partial`：`ExecState::Idle/Partial` 枚举哨兵（`120/173`）
-- `test_reset_caught_for_exec`：`reset_caught_for_exec` 的 `for sn if caught→DFL`（`178-184`）
+- `test_frame_region`：`FrameRegion::base` 的 `high - len`（`116-117`）
+- `test_partial_exec_sentinel`：`ExecState::Idle/Partial` 枚举哨兵（`120/173`）
+- `test_exec_restart_resets_caught`：`reset_caught_for_exec` 的 `for sn if caught→DFL`（`178-184`）
 
 ### 5.3 `minix-types`（常量）
 

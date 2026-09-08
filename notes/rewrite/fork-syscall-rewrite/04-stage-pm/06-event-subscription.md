@@ -610,6 +610,8 @@ pub enum IpcBlockReason {
 
 ## 5 测试矩阵
 
+> 注：本节部分测试位于 `os/libs/minix-types/src/ipc/event.rs`（共享契约层 wire 测试），分发路由测试位于 `ipc/dispatcher.rs`。
+
 ### 5.1 `minix-types`（协议常量与编解码）
 
 - `test_proc_event_constants_match_com_h`：锁定 `COMMON_RQ_BASE`/`COMMON_RS_BASE`/`PROC_EVENT`/`PROC_EVENT_REPLY`/`PROC_EVENT_EXIT`/`SIGNAL` 等于 `com.h:597-619` / `syslib.h:292-293`（P0 回归守卫）。
@@ -627,22 +629,22 @@ pub enum IpcBlockReason {
 - `test_proceventmask_update_existing`：已订阅项 `do_proceventmask(new_mask)` → 更新 mask，不增 `nsubs`，返回 OK。
 - `test_proceventmask_remove_when_idle`：已订阅且 `waiting==0` 时 `mask==0` → `remove_sub`，`nsubs--`，游标无影响。
 - `test_proceventmask_defer_remove_when_waiting`：已订阅且 `waiting>0` 时 `mask==0` → `mask` 置空但不 `remove_sub`（`nsubs` 不变，`waiting` 保留），后续 `do_proc_event_reply` 的 `waiting--` 后才 `remove_sub`。
-- `test_proceventmask_empty_mask_noop`：未订阅者 `mask==0` → OK 且 `nsubs` 不变。
+- `test_proceventmask_empty_noop_for_unknown`：未订阅者 `mask==0` → OK 且 `nsubs` 不变。
 - `test_proceventmask_enomem_when_full`：`nsubs==NR_SUBS` 时新订阅 → `ENOMEM`，表不变。
 
 **事件发布与串行化**：
 
-- `test_publish_event_no_subscriber_immediately_resumes`：无订阅者时 `publish_event` → 立即清 `EVENT_CALL` 并调用 `exit_restart`/`restart_sigs`（按事件类型，当前 no-op 可断言状态清理）。
-- `test_publish_event_single_subscriber_sends`：单订阅且掩码命中 → `asynsend` 一条 `PROC_EVENT` 至该订阅者，`waiting==1`，目标进程保持 `EVENT_CALL` 且游标不变（`cursor==0`）。
-- `test_publish_event_skips_non_matching`：订阅者掩码不命中 → `publish_event` 直接恢复（不发送，清标志）。
-- `test_resume_event_serializes_two_subscribers`：两订阅者均命中 → `publish_event` 只发第一个，首订阅者 `PROC_EVENT_REPLY` 后 `resume_event` 再发第二个，第二个回复后才清标志并恢复。
-- `test_publish_event_cleans_dead_subscriber_on_exit`：正在退出的特权服务（`PRIV_PROC|EXITING`）且其 endpoint 在 `subs` 中 → `publish_event` 先 `remove_sub`（`nsubs--`，受影响进程游标调整），再发布当前事件。
+- `test_publish_no_subscriber_immediately_resumes`：无订阅者时 `publish_event` → 立即清 `EVENT_CALL` 并调用 `exit_restart`/`restart_sigs`（按事件类型，当前 no-op 可断言状态清理）。
+- `test_publish_single_subscriber_sends`：单订阅且掩码命中 → `asynsend` 一条 `PROC_EVENT` 至该订阅者，`waiting==1`，目标进程保持 `EVENT_CALL` 且游标不变（`cursor==0`）。
+- `test_publish_skips_non_matching`：订阅者掩码不命中 → `publish_event` 直接恢复（不发送，清标志）。
+- `test_resume_serializes_two_subscribers`：两订阅者均命中 → `publish_event` 只发第一个，首订阅者 `PROC_EVENT_REPLY` 后 `resume_event` 再发第二个，第二个回复后才清标志并恢复。
+- `test_publish_cleans_dead_subscriber_on_exit`：正在退出的特权服务（`PRIV_PROC|EXITING`）且其 endpoint 在 `subs` 中 → `publish_event` 先 `remove_sub`（`nsubs--`，受影响进程游标调整），再发布当前事件。
 
 **`remove_sub` 的游标调整**：
 
 - `test_remove_sub_adjusts_future_cursor`：删除 `slot=0`，游标 `1` 的进程 → `cursor` 变 `0`。
 - `test_remove_sub_resumes_waiting_on_removed`：删除被等待订阅者 `slot`，游标 `==slot` 的进程 → `nested++` 后 `resume_event` 立即推进（发送下一匹配或恢复）。
-- `test_remove_sub_nested_guard`：`remove_sub` 期间 `nested` 计数正确（入口 0，`resume_event` 期间 1，退出 0）。
+- `test_remove_sub_adjusts_future_cursor`：`remove_sub` 期间 `nested` 计数正确（入口 0，`resume_event` 期间 1，退出 0）。
 
 **`do_proc_event_reply` 的 7 步校验**（每步单独构造错误消息，断言 `ReplyLater` 且表不变）：
 
@@ -659,7 +661,7 @@ pub enum IpcBlockReason {
 
 **集成**：
 
-- `test_run_once_proc_event_reply_no_sync_reply`：`run_once` 收到 `PROC_EVENT_REPLY` → 经 `EventRegistry` 处理，无向订阅者的同步回复（`main.c:88-89` 的 `SUSPEND`）。
+- `test_proc_event_reply_routes_to_reply_later`：`run_once` 收到 `PROC_EVENT_REPLY` → 经 `EventRegistry` 处理，无向订阅者的同步回复（`main.c:88-89` 的 `SUSPEND`）。
 
 共 **~26** 项状态机/集成测试（含 `event.rs` 与 `init.rs`/`dispatcher.rs` 接线）。
 

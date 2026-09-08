@@ -337,17 +337,7 @@ os/servers/pm/src/
 
 ### 4.2 `mproc/block.rs`：阻塞三元与守卫
 
-```rust
-impl BlockState {
-    pub fn can_resume(&self, lifecycle: &Lifecycle) -> bool {
-        !self.is_vfs_blocked() && !self.is_event_blocked() && !lifecycle.is_exiting()
-    }
-    pub fn is_delayed(&self) -> bool { matches!(self.ipc_blocked, Some(DelayedSignal)) }
-    pub fn clear_stopped_and_unpaused(&mut self) { self.stopped = false; self.unpaused = false; }
-}
-```
-
-`VFS|EVENT|EXITING→return`（`279-280`）收敛为 `can_resume` 一处谓词，`288` 双清收敛为 `clear_stopped_and_unpaused` 一处方法（UNPAUSED 只随 PROC_STOPPED 清）。
+实际代码以直接字段操作表达同等谓词（`try_resume_proc` 内联 `is_vfs_blocked() || is_event_blocked() || is_exiting()`，signal_flow.rs:158-163；恢复时逐一清 `stopped`/`unpaused`，:170-171）。文档初稿描述的 `can_resume()`/`is_delayed()`/`clear_stopped_and_unpaused()` 谓词/方法未曾建成——§5.2 对应的两条测试声称已随本注记删除（Gate E 对账，V3-P1-5）。
 
 ### 4.3 `mproc/signal.rs`：`pending & !mask` 迭代
 
@@ -438,8 +428,6 @@ pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn Kernel
 
 ### 5.2 `mproc/block.rs` 与 `mproc/signal.rs`（状态机扩展）
 
-- `test_block_can_resume_guard`：`can_resume` 的 `VFS|EVENT|EXITING` 守卫（`279-280`）
-- `test_block_delayed_isolated`：`DelayedSignal` 与 `stopped/unpaused` 互斥（`237/353`）
 - `test_next_unblocked_smallest`：`next_unblocked` 最小 `signo` 优先（`664` 顺序）
 - `test_take_pending_clears_both`：`take_pending` 双清 `pending/ksigpending`（`668-669`）
 

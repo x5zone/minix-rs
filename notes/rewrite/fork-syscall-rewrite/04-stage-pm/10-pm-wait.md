@@ -326,13 +326,13 @@ Rust 改写遵循"显式扫描器 + `WaitState` 同生同灭 + `Lifecycle` 互�
 
 ### 5.2 `wait.rs`（`do_wait4` 三环与 `WNOHANG`/`ECHILD`）
 
-- `test_wait4_trace_zombie`：`TRACE_ZOMBIE`→`tell_tracer`+`SUSPEND`（`TRACE_ZOMBIE→ZOMBIE` 转换）
+- `test_wait4_trace_stopped_reports_lowest_signal_and_consumes_bit`：`TRACE_ZOMBIE`→`tell_tracer`+`SUSPEND`（`TRACE_ZOMBIE→ZOMBIE` 转换）
 - `test_wait4_zombie`：`ZOMBIE`→`tell_parent`+`SUSPEND`（`W_EXITCODE` + `TOLD_PARENT`）
 - `test_wait4_wnohang`：`children>0` 且 `WNOHANG → 0` 同步返
 - `test_wait4_echild`：`children==0` → `ECHILD`
 - `test_wait4_suspend`：`children>0` 且 `!WNOHANG` → `WAITING` 置位 + `SUSPEND`
 - `test_wait_target_from_pidarg`：`0→Group(-procgrp)` 归一化
-- `test_tell_parent_rusage`：`sys_datacopy` 失败→`return false` 不 `TOLD_PARENT`
+- `test_tell_parent_delivers_rusage_via_datacopy`：`sys_datacopy` 失败→`return false` 不 `TOLD_PARENT`
 - `test_cleanup_releases_slot`：`TOLD_PARENT→cleanup` 的 `procs_in_use--`
 
 共 **8** 项，与 doc 矩阵一一对应；`cargo test -p minix-pm --lib` 截至 2026-09-03 为 **172 passed**（含 `mproc/wait.rs` 4 + `wait.rs` 1 基线内），本章新增 6 项后将至 **178/108**。
