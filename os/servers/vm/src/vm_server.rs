@@ -1282,8 +1282,18 @@ impl VmServer {
         if let Some(c) = callnr(m_type) {
             // C: acl_check(&vmproc[caller_slot], c)
             let table = VmProcTable::get_global();
-            if let Some(proc) = table.get_active(caller_slot)
-                && proc.acl_check(c as u32).is_err() {
+            // V13-P2-3: `get_active` returns None once the caller is EXITING
+            // (or otherwise not active). The old `if let Some(..) && check`
+            // shape made that state skip the gate entirely — fail-open, at
+            // odds with the default-deny policy this module otherwise
+            // enforces ([ARCH: A-11]). An unresolvable caller is now denied
+            // exactly like a checked-and-refused one: the gate has no skip
+            // lane.
+            let acl_denied = match table.get_active(caller_slot) {
+                Some(proc) => proc.acl_check(c as u32).is_err(),
+                None => true,
+            };
+            if acl_denied {
                     // FIX (VMA-1): Previously `let _ = (c, source);` silently
                     // dropped the ACL denial event, making production
                     // misbehaviour unobservable. Now we record the denial
@@ -2167,6 +2177,55 @@ mod tests {
             assert_eq!(sent[0].0, caller_ep, "reply goes to the caller");
             // InfoStats encodes as OK → errno 0 (C: do_info VMIW_STATS → OK).
             assert_eq!(sent[0].1.m_type, 0, "InfoStats reply errno must be OK(0)");
+
+            reset_boot_slots();
+            unsafe { table.reset_slot(caller_slot); }
+        });
+    }
+
+    /// V13-P2-3: an EXITING caller is refused at the ACL gate with ENOSYS.
+    /// `get_active` returns None for IN_USE+EXITING, and the old
+    /// `if let Some(..) && check` shape treated that as "skip the check" —
+    /// fail-open, contradicting the default-deny policy ([ARCH: A-11]).
+    /// The observable contract now: one ENOSYS reply, handler never runs.
+    #[test]
+    fn test_run_once_exiting_caller_denied_enosys() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Caller at slot 66 already past VM_WILLEXIT: IN_USE + EXITING,
+            // so `get_active` yields None at the gate.
+            let table = VmProcTable::get_global();
+            let caller_slot = UserSlot::new(66);
+            unsafe { table.reset_slot(caller_slot); }
+            let empty = table.get_empty(caller_slot).unwrap();
+            let caller_ep = Endpoint::from_generation_slot(1, 66);
+            let exiting = empty.activate(caller_ep).mark_exiting();
+            drop(exiting);
+
+            let mut msg = Message::default();
+            msg.m_source = caller_ep;
+            msg.m_type = minix_types::VM_INFO as i32;
+            handle.queue_receive(msg, IpcStatus::default());
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+
+            let sent = handle.sent();
+            assert_eq!(sent.len(), 1, "denied caller still gets the C-shaped ENOSYS reply");
+            assert_eq!(sent[0].0, caller_ep, "reply goes to the caller");
+            assert_eq!(sent[0].1.m_type, minix_types::ENOSYS as i32,
+                "EXITING caller must be denied (ENOSYS), not waved through");
 
             reset_boot_slots();
             unsafe { table.reset_slot(caller_slot); }

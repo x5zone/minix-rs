@@ -508,19 +508,23 @@ pub(crate) fn copy_acl_from(&mut self, parent: &ActiveProc<'_>)    // vmproc_han
 
 ### 4.4 消费方接线：分发门禁 / boot 授权 / RS_SET_PRIV / fork
 
-**分发门禁**（`vm_server.rs:562-587`）——主循环优先级 4（普通 VM 调用）：
+**分发门禁**（`vm_server.rs`，主循环优先级 4）——普通 VM 调用的唯一闸门：
 
 ```rust
 // C: acl_check(&vmproc[caller_slot], c)
-if let Some(proc) = table.get_active(caller_slot) {
-    if proc.acl_check(c as u32).is_err() {
-        // 审计通道（VMA-1）：test/vm_acl_audit 下 eprintln!，release 编译剔除
-        return DispatchAction::Reply(VmReply::Error(VmError::NotImplemented));
-    }
+let acl_denied = match table.get_active(caller_slot) {
+    Some(proc) => proc.acl_check(c as u32).is_err(),
+    None => true,   // V13-P2-3: 无跳过通道——槽位不可解析即拒绝
+};
+if acl_denied {
+    // 审计通道（VMA-1）：test/vm_acl_audit 下 eprintln!，release 编译剔除
+    return DispatchAction::Reply(VmReply::Error(VmError::NotImplemented));
 }
 ```
 
-拒绝路径回复 `NotImplemented`（→ `ENOSYS`），精确复刻 C 的行为（`main.c:145` 初始化 `result = ENOSYS`，拒绝路径不覆盖——见 §2.3 的"注意回复 errno"）；`AclState::acl_check` 内部仍返回 `Err(PermissionDenied)`（= C `acl_check` 的 `EPERM`），仅作为门禁判定用。审计通道（`vm_server.rs:570-583`）是 checklist VMA-1 修复：拒绝事件不再被静默丢弃，`--features vm_acl_audit` 时输出 `[VM ACL] denied: ...`。
+拒绝路径回复 `NotImplemented`（→ `ENOSYS`），精确复刻 C 的行为（`main.c:145` 初始化 `result = ENOSYS`，拒绝路径不覆盖——见 §2.3 的"注意回复 errno"）；`AclState::acl_check` 内部仍返回 `Err(PermissionDenied)`（= C `acl_check` 的 `EPERM`），仅作为门禁判定用。审计通道是 checklist VMA-1 修复：拒绝事件不再被静默丢弃，`--features vm_acl_audit` 时输出 `[VM ACL] denied: ...`。
+
+**None 即拒绝（V13-P2-3 修复，2026-09-09）**：`get_active` 对 `IN_USE + EXITING` 返回 `None`（table 的类型态视图不含退出中的进程）。此前的 `if let Some(..) && check` 写法让这个状态**整条跳过**校验直达 handler——一个 fail-open 闸口，与本模块其余部分的 default-deny 策略（[ARCH: A-11]）自相矛盾。C 侧没有这个形状（`vmproc` 槽永远存在，退出中的进程落 NO_ACL → allow-all），所以修复前后对"退出中调用者"的可观察行为都是"放行 vs 拒绝"的实质分叉；修复后 Rust 统一为拒绝，与自身策略一致。行为由 `test_run_once_exiting_caller_denied_enosys` 定格。
 
 **boot 服务授权**（`vm_server.rs:621-634`，`rs_handshake`）——对应 C 的 `map_service` 循环（`main.c:755-768`）：
 

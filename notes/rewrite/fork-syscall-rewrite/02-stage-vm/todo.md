@@ -176,11 +176,11 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 - **修改方案**：`RprocEntry.call_mask: u32 → u64`（随 E-RSWIRE 解码落地一并做，避免先写错再改）；`from_bits_truncate` 的 `as u64` 随之消失。**验证**：E-RSWIRE 翻转 pin 测试时补"高位调用号（如 VM_RS_PREPARE=+48）授权后可过闸"的用例。
 - **edge 联动**：edge_todo.md E-RSWIRE"解锁后工作"第 3 步已增补此要求（2026-09-09）。
 
-### V13-P2-3（P2 防御缺口）ACL 闸 fail-open：caller 槽非 active 时整个检查被跳过
+### ✅ V13-P2-3（P2 防御缺口）ACL 闸 fail-open：caller 槽非 active 时整个检查被跳过——已修复 2026-09-09（§18.9 Fix #66）
 
 - **证据**：vm_server.rs:1268-1271——`if let Some(proc) = table.get_active(caller_slot) && proc.acl_check(c as u32).is_err() { …拒绝… }`。`get_active` 对 IN_USE+EXITING 等状态返回 None（vmproc/table.rs:224-235）→ ACL 检查整体跳过、调用直达 handler。
 - **C 对照**：C 的 vmproc 槽永远存在（未注册进程落 NO_ACL → allow-all，acl.c:44-54 自注 "for now"），所以 C 没有"跳过检查"这个状态；Rust 已显式选择 default-deny（acl.rs:97-112，[ARCH: A-11]），闸门形状却保留了 fail-open 分支——策略与机制不自洽。当前实际风险与 C 的 NO_ACL 放行等价（非放权漏洞），但方向应统一。
-- **修改方案**：改显式三分——`match table.get_active(caller_slot) { None => 拒绝（ENOSYS+audit）, Some(p) => p.acl_check(c) }`。**验证**：EXITING 调用者发 VM_INFO → 回 ENOSYS 的新测试。
+- **修复**：见 §18.9 Fix #66。
 
 ### V13-P2-4（P2 设计登记）MAKE_VM 恒拒：有意收缩未登记，防被当 bug"修复"
 
@@ -324,6 +324,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Verified**: 三矩阵 **491/508/491 passed**；`cargo clippy -p minix-vm --lib` servers/vm 自身 0 警告
 - **Docs**: 16-pagefault.md §3.3 重写（复用前提的合取语义 + 活循环因果链）+ §5 测试表刷新；17-cow-mechanism.md §1.5 Linux 对照更新 + §5 测试表刷新；18-vm-fork.md §5 测试表行更新
 - **边界**：慢路仍不做 clearend 尾页清零（G-V12-11 维持开口，C mem_file.c:73-79 的 clearend 分支在该条一并设计）；本门不影响 anon 的 Handled 快路（那在 `AnonymousMemory::ev_pagefault` 内部，与 Fix #60 测试 `test_cow_fast_path_flips_pte_writable_without_recopy` 覆盖的路径相同）
+
+### ✅ Fix #66: V13-P2-3 — ACL 闸"None 即拒绝"（EXITING 调用者不再跳过校验）
+
+- **问题**：分发闸 `if let Some(proc) = table.get_active(..) && check` 的 let-chain 形状让"槽位非 active"（IN_USE+EXITING 等）直接跳过 ACL 校验直达 handler——与模块自身的 default-deny 策略（[ARCH: A-11]）不自洽的 fail-open 缺口。
+- **设计**：显式三分——`match get_active { Some(p) => check.is_err(), None => true }`，不可解析即按已拒绝处理（同一条审计 + ENOSYS 回复路径）。Linux 参照：LSM 钩子对无法解析凭证的主体默认拒绝，不存在"查无此人即放行"的旁路。
+- **Files**: `vm_server.rs`（闸门 match 化）
+- **测试（新增 1）**：`test_run_once_exiting_caller_denied_enosys`——EXITING 调用者发 VM_INFO → 恰好一条 ENOSYS 回复、handler 未执行
+- **Verified**: `cargo test -p minix-vm --lib` → **499 passed / 0 failed**；clippy servers/vm 0 警告
+- **Docs**: 04-acl.md §4.4 门禁代码块更新 + "None 即拒绝"设计说明段
 
 ---
 
