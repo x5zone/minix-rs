@@ -153,8 +153,8 @@ Rust 改写不是照抄 `select.c` 的表与旗，而是吸收 Linux/Redox 的�
 ### D3 过滤状态机
 
 - **C**：`select_filter` 三段（快路→置位→忙判，`select.c:409-457`）。
-- **Rust**：`filter_step() -> FilterOutcome::{ReadyNone, Suspend, Query}` 纯函数（`os/servers/vfs/src/select.rs:176,202`）。
-- **为什么**：过滤是"这次要不要打扰驱动"的知识；三出口对应剪枝/挂起/投递，调用点各走各路。替代方案（布尔返回值）被否决：三出口非二值，布尔装不下。
+- **Rust**：`filter_step() -> FilterOutcome::{ReadyNone, Suspend, Query}` 纯函数（`os/servers/vfs/src/select.rs:176,202`）；`Query` 携带完整的发送期义务四字段——`set_update`（新置 UPDATE）、`clear_update`（发送前清 UPDATE，`select.c:517`）、`set_busy`（发送成功后置 BUSY，`select.c:522`）与 `set_block`（新监视位），义务在数据里而非调用方记忆里。
+- **为什么**：过滤是"这次要不要打扰驱动"的知识；三出口对应剪枝/挂起/投递，调用点各走各路。替代方案（布尔返回值）被否决：三出口非二值，布尔装不下。`Query` 只给 `rops` 的更早版本被否决：C 的发送序是"清 UPDATE → 发送 → 成功后置 BUSY"三步义务（`select.c:509-522`，socket 对位 `:525-538`），义务留在调用方记忆里会在 BUSY 期间残留 UPDATE，翻转 `reply1_step` 的 ops 清零规则。
 
 ### D4 超时三态
 

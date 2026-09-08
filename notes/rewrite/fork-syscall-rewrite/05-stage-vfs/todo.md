@@ -64,7 +64,7 @@
 - P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。
 - P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。
 - ✅ P1-3 已修复 2026-09-09（§10 Fix #8）：`PmHandler::fetch_group_list` 数据搬运口（`sys_datacopy_wrapper` 接缝，默认 fail-closed `ENOSYS`，通电挂 P1-2/E1）；`SETGROUPS` 臂补 `NGROUPS_MAX → EINVAL` 门（C 为 panic，fail-closed 偏差与 10-pm-protocol.md D4 的 EFAULT 决策同向）+ `group_no==0` 直清 + 正数路径经栈缓冲送真实列表。`PmError::NotImplemented` 变体新增。测试 +3（ENOSYS 预通电态/超限拒绝/零组直清）。
-- P1-4 复核 ✅：select.rs:191-198 `Query { rops, set_update, set_block }` 仍无 clear_update 义务字段。
+- ✅ P1-4 已修复 2026-09-09（§10 Fix #9）：`FilterOutcome::Query` 增 `clear_update`/`set_busy` 义务字段（select.c:517 清 UPDATE 在发送前、:522 置 BUSY 在成功后，socket 对位 :525-538），`filter_step` 恒置 true——义务进数据而非调用方记忆；23-select.md D3 同步并登记"只给 rops"的否决理由。
 - ✅ P1-5 已修复 2026-09-09（§10 Fix #7）：`need_lock: bool` → `FilpLockMode { Opcl, None, ReadWrite }`——`Opcl` 过 `CLOSED` 门（close(2) 特权）、`None` 探测仍拒（C 的门覆盖一切非 `OPCL`，原 bool=false 比 C 宽的缺口闭合）、`ReadWrite` 拒 `CLOSED` 且取锁（filedes.c:186-193）。测试升级为三态矩阵。
 
 ### P2-1～P2-6 / P3-1 / P3-2（R1 存档 §4/§5）
@@ -332,3 +332,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`PmHandler::fetch_group_list` 作为 `sys_datacopy_wrapper`（misc.c:752）的接缝口，**默认实现 fail-closed `ENOSYS`**（模式 60 诚实契约：通电挂 P1-2/edge E1，不算 DEFERRED 充数——语义入口、门与数据流已全部就位，唯余 transport）；臂内 `ngroups > NGROUPS_MAX → TooManyGroups(EINVAL)`（C panic misc.c:748-750 → fail-closed Err，与 10 号文档 D4 的 EFAULT 决策同向并登记）、`group_no==0` 免拷贝直清（`setgroups(0)` 合法语义）、正数路径 `fetch → 栈缓冲 → handle_setgroups`。`PmError::NotImplemented(ENOSYS)` 变体新增（对齐 minix-types ToErrno 的 D1/D2 方向）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**（338→341：ENOSYS 预通电态且 fproc 不动 / 超限 EINVAL / 零组直清三测试）。
 - **边界**：`fetch_group_list` 的生产实现（真实 sys_datacopy）随 P1-2 接线矩阵第一束（内核 IPC 原语）落地，届时拷贝失败映射 EFAULT；10-pm-protocol.md D4 已登记完整决策链。
+
+### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
+
+- **File**：`os/servers/vfs/src/select.rs`（Query 变体 + filter_step 构造 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/23-select.md`（D3）。
+- **Before**：`Query { rops, set_update, set_block }` 只编码"置"侧义务；C 的发送序三步（select.c:517 清 UPDATE → cdev/sdev_select → :522 置 BUSY + `dmap/smap_sel_busy`）中"清"侧完全留在调用方记忆——照字段字面执行的消费者会在 BUSY 期间残留 UPDATE，翻转 `reply1_step` 的 ops 清零规则（select.rs:360）。
+- **After**：`Query` 增 `clear_update: bool` 与 `set_busy: bool`（`filter_step` 恒置 true，附 C 行号锚点）——义务从隐性契约变为随决策输出的数据；`reply1_step`/`reply2` 不变（它们消费的是应答侧状态）。测试矩阵扩断言两新字段。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**；`grep FilterOutcome::Query` 全 crate 仅 select.rs（无外部消费者需迁移）。
+- **边界**：Query 的真正消费者（发送 + dmap busy 置位 + SUSPEND）随 P1-2 接线矩阵落地；届时以本义务字段驱动 flag 转换，勿再手写。

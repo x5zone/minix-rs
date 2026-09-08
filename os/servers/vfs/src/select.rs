@@ -187,12 +187,24 @@ pub enum FilterOutcome {
     ReadyNone,
     /// A query is already in flight (`return SUSPEND`).
     Suspend,
-    /// Send a fresh query: new operations plus flag updates to apply.
+    /// Send a fresh query: new operations plus the flag obligations to apply.
+    ///
+    /// The C sequence around the send (`select.c:509-522`, mirrored for
+    /// sockets at :525-538) is three obligations, encoded here so the
+    /// consumer cannot "forget" one:
+    /// clear `FSF_UPDATE` *before* the send, then on success raise
+    /// `dmap/smap_sel_busy` and set `FSF_BUSY` (+ the blocking watches).
     Query {
         /// Operations to send the driver (includes `NOTIFY` when blocking).
         rops: SelOps,
         /// `FSF_UPDATE` is newly set (caller sets it).
         set_update: bool,
+        /// `FSF_UPDATE` must be cleared *before* the send
+        /// (`select.c:517` `f->filp_select_flags &= ~FSF_UPDATE`).
+        clear_update: bool,
+        /// `FSF_BUSY` must be set after a successful send
+        /// (`select.c:522` `f->filp_select_flags |= FSF_BUSY`).
+        set_busy: bool,
         /// Newly set blocking bits (`FSF_RD/WR/ERR_BLOCK` subset).
         set_block: SelOps,
     },
@@ -248,6 +260,8 @@ pub fn filter_step(flags: FsfFlags, rops: SelOps, block: bool) -> FilterOutcome 
     FilterOutcome::Query {
         rops: out,
         set_update: true,
+        clear_update: true,
+        set_busy: true,
         set_block,
     }
 }
@@ -836,10 +850,16 @@ mod tests {
             FilterOutcome::Query {
                 rops,
                 set_update,
+                clear_update,
+                set_busy,
                 set_block,
             } => {
                 assert!(rops.contains(SelOps::NOTIFY | SelOps::RD));
                 assert!(set_update);
+                // The send-time obligations are explicit data (`select.c:517/:522`):
+                // clear UPDATE before the send, set BUSY after it succeeds.
+                assert!(clear_update);
+                assert!(set_busy);
                 assert_eq!(set_block, SelOps::RD);
             }
             other => panic!("expected query, got {other:?}"),
