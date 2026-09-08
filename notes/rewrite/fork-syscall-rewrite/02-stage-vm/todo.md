@@ -284,14 +284,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - [✅] Step 0 预检 / Step -0.5 工具辅助 / Step 0.7 staleness（12/12 复核）/ Gate A / 调用号对账（=Gate B 覆盖缺口半边）/ wire+ACL 双对账 / PTE-TLB 生命周期深查（=Step 2 语义偏移半边）/ Rule Discovery / 收敛评估
 - 本轮为本 stage 第八轮：新发现 weighted = 1×10 + 6×3 + 1×1 = 29（P1 一项为新失效模式族），远超停止规则阈值，继续开放登记；执行走 todo-fix（一次一条），P0 清零前提维持（当前 open 无 P0）。
 
-### 18.8 建议的推进顺序
+### 18.8 建议的推进顺序（2026-09-09 campaign 第一批收尾后更新）
 
 1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）；~~**V12-P1-1**（分配器低内存边界 + 审计）~~ ✅（§18.9 Fix #65）——**通电前语义修正批全部闭环**；
-2. V13-P2-1(a)(b) 文档/注释批（不变量登记 + ARCH 偏差行 + 死内核面注释）——纯文档，可先行；
-3. V12-P2 批按 V12 存档原顺序（4→8→9→5→6→3→1→2→7），V13-P2-3（ACL 闸形状）与 P2-4（MAKE_VM 登记）插入 P2-5 前后；
-4. V13-P2-2 / P2-5 / P2-6 随 edge E-RSWIRE 批次执行（勿提前单做，wire 定稿一次对齐）；
-5. V13-P3-1 + G-V12-11..13 + V12-P3 批（机会主义）；
-6. edge 侧并行：E-VMTLB 随 01-stage-kernel SMP 工作窗；E5 通电冒烟维持 V12 增补的"缺页故障完整回路"验收面（PTE 回路已有 SimPaging 断言，QEMU 冒烟待 E1/E2）。
+2. ~~**V13-P2-1(a)(b)**（TLB 不变量登记 + 死内核面注释）~~ ✅（§18.9 Fix #69，(c) 挂 edge）；
+3. ~~**V13-P2-3**（ACL 闸 None 即拒绝）~~ ✅（Fix #66）；~~**V13-P2-4**（MAKE_VM 锚定已登记偏差 + 扫描勘误）~~ ✅（Fix #68）；~~**V13-P3-1(1)**（伪造 fault 源 audit）~~ ✅（Fix #67）；
+4. **待执行批**：V12-P2 批（P2-4 死状态三分 → P2-8 注释漂移 → P2-9 region 两处 → P2-5 双路径收敛 → P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig），每条独立 todo-fix 周期；
+5. 文档批：G-V12-11（clearend，含 V13-P1-1 慢路的 clearend 分支设计）、G-V12-12（00/99 骨架 + design 快照）、G-V12-13（checklist 系统性刷新）；V12-P3-1/2 机会主义；
+6. edge 侧（单线程执行 edge_todo.md）：E-VMTLB（新）、E-RSWIRE 批（V13-P2-2/5/6 + E-VMMOCK 余件）、E-VFSWIRE（P3-1(2) 的死进程路径对账）、E1/E2 通电件、E5 冒烟（含 V12 增补的故障完整回路验收面）。
 
 ---
 
