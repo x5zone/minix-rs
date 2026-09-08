@@ -114,9 +114,9 @@ V12 原表（重校后逐项处置见 §18.9 Fix #70）：
 
 V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准确**（pt_new ENOMEM 确在 do_fork，fork.c:70-71，无需改）。修复明细见 §18.9 Fix #71。
 
-### V12-P2-9（P2）region 两处：find_overlap 线性扫 + 零长区间静默替换
+### ✅ V12-P2-9（P2）region 两处：find_overlap 线性扫 + 零长区间静默替换——已修复 2026-09-09（§18.9 Fix #72）
 
-复核 ✅（文件已迁 region_map.rs，重锚点）：`find_overlap`（region_map.rs:92-102）仍自 BTreeMap 首端 `range(..end)` 线性扫（仅 `r.vaddr >= end` 提前断），与 insert 注释"只查两个最近邻居"（:179-180）不符；零长区间（length==0 → overlaps 恒 false）在同一 vaddr 的 insert 仍走 :184 `BTreeMap::insert` 静默替换旧 region。方案（`next_back()` 邻居判定 + insert 入口拒绝 length==0）见 V12 存档。
+复核 ✅（文件已迁 region_map.rs）：`find_overlap` 自 BTreeMap 首端线性扫 + 零长 insert 静默替换均确认存在。修复见 §18.9 Fix #72。
 
 ### G-V12-11（P2）页缓存域两笔语义债（范围注记扩充）
 
@@ -289,7 +289,7 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）；~~**V12-P1-1**（分配器低内存边界 + 审计）~~ ✅（§18.9 Fix #65）——**通电前语义修正批全部闭环**；
 2. ~~**V13-P2-1(a)(b)**（TLB 不变量登记 + 死内核面注释）~~ ✅（§18.9 Fix #69，(c) 挂 edge）；
 3. ~~**V13-P2-3**（ACL 闸 None 即拒绝）~~ ✅（Fix #66）；~~**V13-P2-4**（MAKE_VM 锚定已登记偏差 + 扫描勘误）~~ ✅（Fix #68）；~~**V13-P3-1(1)**（伪造 fault 源 audit）~~ ✅（Fix #67）；
-4. **待执行批**：~~V12-P2-4 死状态三分~~ ✅（§18.9 Fix #70）；余：P2-8 注释漂移 → P2-9 region 两处 → P2-5 双路径收敛 → P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig，每条独立 todo-fix 周期；
+4. **待执行批**：~~P2-4 死状态三分~~ ✅（Fix #70）；~~P2-8 注释漂移~~ ✅（Fix #71）；~~P2-9 region 两处~~ ✅（Fix #72）；余：P2-5 双路径收敛 → P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig，每条独立 todo-fix 周期；
 5. 文档批：G-V12-11（clearend，含 V13-P1-1 慢路的 clearend 分支设计）、G-V12-12（00/99 骨架 + design 快照）、G-V12-13（checklist 系统性刷新）；V12-P3-1/2 机会主义；
 6. edge 侧（单线程执行 edge_todo.md）：E-VMTLB（新）、E-RSWIRE 批（V13-P2-2/5/6 + E-VMMOCK 余件）、E-VFSWIRE（P3-1(2) 的死进程路径对账）、E1/E2 通电件、E5 冒烟（含 V12 增补的故障完整回路验收面）。
 
@@ -386,6 +386,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `ipc/dispatcher.rs`（7 处注释）、`16-pagefault.md`（1 行）
 - **测试**：无新增（注释/文档）；`cargo test -p minix-vm --lib` → 498 passed 回归
 - **Docs**: 16-pagefault.md §3.6 第 5 行
+
+### ✅ Fix #72: V12-P2-9 — `find_overlap` 邻居判定 + 零长 insert 拒绝
+
+- **问题**：(a) `find_overlap` 自 BTreeMap 首端 `range(..end)` 线性扫到尾（最坏 O(n)），与 `insert` 注释"只查两个最近邻居"自相矛盾；(b) 零长 region 的 span 为空 → overlaps 恒 false → 绕过重叠守卫直达 `BTreeMap::insert`，同 vaddr 时**静默替换**既有 region（未请求的销毁）。
+- **设计**：(a) 前驱探测（`range(..=start).next_back()`，其跨度可能越过 start）+ 区间内首键探测（`range(start..end).next()`）——O(log n)，与注释声明一致；(b) `insert` 入口拒绝 `length == 0`（返回 `Err(region)`，与重叠拒绝同通道）。
+- **Files**: `region/region_map.rs`（find_overlap 重写 + insert 守卫）
+- **测试（新增 2）**：`test_find_overlap_predecessor_straddle`（8 个低位 region + 高位跨越者，查询起点落在跨越者腹内——线性扫与邻居探测在正确性上等价、在探测路径上区分）；`test_insert_zero_length_rejected`（拒绝 + 原区域存活）。首版测试两次断言失败均为**测试自身十六进制算术错误**（0x100_0000 + 0x1_0000 = 0x101_0000），代码无误——修正的是测试。
+- **Verified**: 三矩阵 **500/518/500 passed**（+2）；clippy servers/vm 0 警告
+- **Docs**: 本条即判定记录（13-region-mapping 的 §3.2 已随 Fix #70 两态化更新，find_overlap 行为属内部实现细化）
 
 ---
 
