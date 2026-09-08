@@ -110,9 +110,9 @@ V12 原表（重校后逐项处置见 §18.9 Fix #70）：
 
 维持（`windows(2)` 事后验证 + `PageAllocFlags::CONTIG` 未用 + :803-806 注释与 :811-813 行为矛盾）。方案见 V12 存档 §17.2。
 
-### V12-P2-8（P2）文档-代码同步批（注释 C 锚点漂移）
+### ✅ V12-P2-8（P2）文档-代码同步批（注释 C 锚点漂移）——已修复 2026-09-09（§18.9 Fix #71）
 
-复核 ✅（重锚点）：dispatcher.rs:466/:470 一带注释仍引 `mem_cache.c:99-101`/`:107`（实际 :108-110/:116）；fork.rs "do_fork.c panics" 文件名错（实为 fork.c:91-104）；16-pagefault.md §3.6 缺页计数行已过时（vm_server.rs:1445 一带已接线）。逐条修法见 V12 存档。
+V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准确**（pt_new ENOMEM 确在 do_fork，fork.c:70-71，无需改）。修复明细见 §18.9 Fix #71。
 
 ### V12-P2-9（P2）region 两处：find_overlap 线性扫 + 零长区间静默替换
 
@@ -374,6 +374,18 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `minix-types/src/ipc/vm.rs`、`vm_server.rs`、`global.rs`、`query.rs`、`region/page_state.rs`、`region/vir_region.rs`、`vmproc/vmproc_handle.rs`、`vmproc/table.rs`、`vmproc/vmproc.rs`、`memtype.rs`（测试）
 - **Verified**: 三矩阵 **498/516/498 passed**；`cargo test -p minix-types` → 192 passed；clippy servers/vm 0 警告
 - **Docs**: 13-region-mapping.md（§3.2 两态化 + §3.6 行 + §4 + §5 测试行）、24-page-cache.md（§3.7 重写 + 结构图 + backlog 行）、26-vm-queries.md（§4.4 代码块）、06-page-allocator.md（头部注记）
+
+### ✅ Fix #71: V12-P2-8 — 注释 C 锚点漂移批（五处修正 + 一处复核免修）
+
+- **修正**（全部先 sed 验证 C 实际行号再改，fix-guard）：
+  1. dispatcher.rs mapcache 文档注释：对齐检查 `:99-101` → **:108-110**；EINVAL `:102-103` → **:116**；map_page_region `:128-134` → **:131-134**。
+  2. dispatcher.rs mapcache 函数体三处内联注释：同上三锚 + 逐页循环 `:136-168` → **:144-167**。
+  3. dispatcher.rs 测试注释 `mem_cache.c:107` → **:116**。
+  4. 16-pagefault.md §3.6 第 5 行：缺页计数"生产路径未调用"已过时——`inc_major_fault`/`inc_minor_fault` 在 vm_server.rs 生产接线（G-V12-6 批次），状态 ⚠️缺口 → ✅。
+- **复核免修**：fork.rs `PageTableInitFailed` 注释 "ENOMEM from pt_new() in do_fork()"——C fork.c:70-71 确认函数与行为均准确（V12 原判"文件名错"指向的旧文本已不存在）。
+- **Files**: `ipc/dispatcher.rs`（7 处注释）、`16-pagefault.md`（1 行）
+- **测试**：无新增（注释/文档）；`cargo test -p minix-vm --lib` → 498 passed 回归
+- **Docs**: 16-pagefault.md §3.6 第 5 行
 
 ---
 

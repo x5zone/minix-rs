@@ -431,12 +431,12 @@ impl MessageDispatcher {
     ///
     /// # C semantics
     ///
-    /// 1. Validate alignment of `dev_off`/`ino_off` → EFAULT (mem_cache.c:99-101).
+    /// 1. Validate alignment of `dev_off`/`ino_off` → EFAULT (mem_cache.c:108-110).
     /// 2. `vm_isokendpt(msg->m_source)` → get caller.
-    /// 3. `bytes < VM_PAGE_SIZE` → EINVAL (mem_cache.c:102-103).
+    /// 3. `bytes < VM_PAGE_SIZE` → EINVAL (mem_cache.c:116).
     /// 4. `map_page_region(caller, VM_MMAPBASE, VM_MMAPTOP, bytes,
     ///    VR_ANON|VR_WRITABLE, 0, &mem_type_cache)` → allocate a fresh
-    ///    cache-memtype region (mem_cache.c:128-134).
+    ///    cache-memtype region (mem_cache.c:131-134).
     /// 5. Per page: `find_cached_page_bydev(dev, dev_off+offset, ino,
     ///    ino_off+offset, 1)` — **always the bydev lookup**, with the ino
     ///    info used for the lazy `update_inohash`. Miss or `VMSF_ONCE`
@@ -462,12 +462,12 @@ impl MessageDispatcher {
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         const PAGE_SIZE: u64 = 4096;
 
-        // Step 1: alignment (C: mem_cache.c:99-101 → EFAULT).
+        // Step 1: alignment (C: mem_cache.c:108-110 → EFAULT).
         if !request.dev_offset.is_multiple_of(PAGE_SIZE) || !request.ino_offset.is_multiple_of(PAGE_SIZE) {
             return VmReply::Error(VmError::InvalidAddress);
         }
 
-        // Step 2: bytes < VM_PAGE_SIZE → EINVAL (C: mem_cache.c:107).
+        // Step 2: bytes < VM_PAGE_SIZE → EINVAL (C: mem_cache.c:116).
         // Ordering note: C checks vm_isokendpt first and panics on a bogus
         // source; Rust validates the request before resolving the caller
         // (fail-closed), so a malformed request is rejected even when the
@@ -477,7 +477,7 @@ impl MessageDispatcher {
             return VmReply::Error(VmError::InvalidParam);
         }
 
-        // Step 3: caller endpoint (C: vm_isokendpt, mem_cache.c:105-106).
+        // Step 3: caller endpoint (C: vm_isokendpt, mem_cache.c:113-114).
         let caller_slot = match table.vm_isokendpt(caller) {
             Ok(slot) => slot,
             Err(_) => return VmReply::Error(VmError::InvalidProcess),
@@ -506,7 +506,7 @@ impl MessageDispatcher {
         );
 
         // Step 5: per page — bydev lookup, link the cached frame, roll back
-        // the whole region on miss / one-shot (C: mem_cache.c:136-168).
+        // the whole region on miss / one-shot (C: mem_cache.c:144-167).
         for page_offset in (0..bytes).step_by(PAGE_SIZE as usize) {
             let cache_offset = request.dev_offset + page_offset;
             let cache_ino_offset = request.ino_offset + page_offset;
@@ -2501,7 +2501,7 @@ mod tests {
             block: 0,
         };
         let mut cache = _default_cache();
-        // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:107).
+        // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:116).
         match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),

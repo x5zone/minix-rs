@@ -407,7 +407,7 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 | 2 | wire format：`m_source` + `m1_i1`/`m1_i2` | `decode_message`：`m_source` + `m_vm_pagefault`（64 位 ARCH） | ✅ 已实现（本轮修复） |
 | 3 | SIGSEGV + `VMCTL_CLEAR_PAGEFAULT` 恢复进程 | `gateway.sys_kill`（SIGSEGV）+ `gateway.sys_vmctl_clear_pagefault` 已接线（vm_server.rs，G-V12-6/Fix #60 批次）；E2 前失败走 audit + 计数（V9-P1-1），不再静默丢弃 | ✅ 已实现（通电挂 E1/E2） |
 | 4 | `pf_errstr` 诊断日志 | no_std 无 printf；错误以 `CowError`/`VmReply::Error(AccessViolation)` 传递 | ⚠️ 简化 |
-| 5 | major/minor 缺页计数（:135-138） | 字段存在（vmproc.rs:55-56）+ `inc_minor_fault`/`inc_major_fault` 方法（vmproc_handle.rs:300-307），生产路径未调用（仅测试） | ⚠️ 缺口 |
+| 5 | major/minor 缺页计数（:135-138） | 字段 + `inc_minor_fault`/`inc_major_fault` 已在生产路径接线（vm_server.rs，G-V12-6 批次：Suspended→major、Handled/MappedNewPage/CowResolved→minor） | ✅ 已实现 |
 | 6 | `do_memory`/`handle_memory_start/step/final/continue` 异步状态机 | 未实现；`fork.rs::handle_memory_once` 仅同步子集 | ⚠️ DEFERRED |
 | 7 | `map_pf` 的 `writable` 短路（region.c:711-713） | `MemType::writable` 存在（memtype.rs:20-24），由 memtype 判定 | ✅ 已实现（判定位置在 memtype） |
 | 8 | `pt_clearmapcache()` 成功后调用 | Rust 无 mapcache 生产实现（24 范围） | ⚠️ 随 24 |
