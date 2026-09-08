@@ -478,3 +478,151 @@ impl IpcApi for MockKernelApi {
         Ok(())
     }
 }
+
+// ── Shared boot fixtures（R40：夹具族上移，shell 域测试随 handler 同模块）──────
+
+use crate::boot::{BootTables, KernelApi, RinitState};
+use crate::process_table::RProcTable;
+use crate::service_slot::RFlags;
+use crate::{RsServer, ServerState};
+
+/// A server with a completed boot: table + one in-use VFS service with
+/// pid 700, plus an exited child (pid 700's own child bookkeeping is the
+/// sigchld target).
+pub(crate) fn booted() -> RsServer {
+    booted_with(alloc::boxed::Box::new(crate::boot::UnimplementedKernelApi))
+}
+
+/// Same fixture with an injectable kernel seam (E-10: the waitpid drain
+/// and the second-init panic need a mock / a consumed boot machine).
+pub(crate) fn booted_with(kernel: alloc::boxed::Box<dyn KernelApi>) -> RsServer {
+    let mut server = RsServer::with_kernel(BootTables::placeholder(), kernel);
+    let mut table = RProcTable::new();
+    let id = table.alloc_slot().unwrap();
+    {
+        let s = table.get_mut(id);
+        s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+        s.pub_.endpoint = Endpoint::VFS;
+        s.pid = Some(700);
+    }
+    server.state = Some(ServerState {
+        tables: BootTables::placeholder(),
+        machine: Machine::default(),
+        rinit: RinitState::default(),
+        table,
+        shutting_down: false,
+        system_hz: 60,
+        nr_uncaught_init_srvs: 0,
+        update: crate::live_update::UpdateState::default(),
+    });
+    server
+}
+
+/// A booted server whose VFS slot carries the given label (system
+/// privilege excluded) and whose safecopy seam serves the given payload
+/// — the 14 wiring tests' fixture.
+pub(crate) fn booted_vfs_labeled(label: &'static [u8], payload: &'static [u8]) -> RsServer {
+    let mut mock = crate::testutil::MockKernelApi::new(60);
+    mock.payload = Some(payload.to_vec());
+    mock.ticks = 500;
+    // create_service's VM, exec and fork faces succeed (13 label arms
+    // clone through them); the boot-level default is fail-closed.
+    mock.vm_ok = true;
+    mock.execve_ok = true;
+    mock.fork_pid = Some(701);
+    mock.child_endpoint = Some(Endpoint::MEM);
+    booted_vfs_kernel(alloc::boxed::Box::new(mock), label)
+}
+
+/// [`booted_vfs_labeled`]'s table setup with an injected kernel seam —
+/// for tests that need seam-level failure injection (R37).
+pub(crate) fn booted_vfs_kernel(
+    kernel: alloc::boxed::Box<dyn KernelApi>,
+    label: &'static [u8],
+) -> RsServer {
+    let mut server = booted_with(kernel);
+    {
+        let state = server.state.as_mut().unwrap();
+        state
+            .table
+            .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
+        let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
+        s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+        s.pub_.in_use = true;
+        s.pub_.endpoint = Endpoint::VFS;
+        s.pub_.label = Label::from_bytes(label);
+        // A launch command: create_service's preconditions
+        // (manager.c:540-560) require SF_USE_COPY or a command.
+        s.cmd[..8].copy_from_slice(b"/bin/vfs");
+    }
+    server
+}
+
+/// Schedules a two-entry chain (slot 0 = VFS, slot 1 = PM) and walks it
+/// to `curr = entry 0` with `RS_UPDATING` armed — the state a batch
+/// RS_UPDATE leaves behind while the first service is preparing. Both
+/// slots get a cloned replica (`new_rp`), which start_update requires
+/// (update.c:631).
+pub(crate) fn two_entry_chain(server: &mut RsServer) {
+    let id_pm = {
+        let table = &mut server.state.as_mut().unwrap().table;
+        let pid = table.alloc_slot().unwrap();
+        let s = table.get_mut(pid);
+        s.flags = RFlags::IN_USE | RFlags::ACTIVE;
+        s.pub_.in_use = true;
+        s.pub_.endpoint = Endpoint::PM;
+        s.cmd[..7].copy_from_slice(b"/bin/pm");
+        pid
+    };
+    let vfs = crate::service_slot::SlotId::new(0);
+    let replica_vfs =
+        crate::service_create::clone_slot(&mut server.state.as_mut().unwrap().table, vfs).unwrap();
+    let replica_pm =
+        crate::service_create::clone_slot(&mut server.state.as_mut().unwrap().table, id_pm)
+            .unwrap();
+    {
+        let table = &mut server.state.as_mut().unwrap().table;
+        table.get_mut(vfs).new_rp = Some(replica_vfs);
+        table.get_mut(id_pm).new_rp = Some(replica_pm);
+    }
+    let state = server.state.as_mut().unwrap();
+    state
+        .update
+        .chain
+        .add(crate::live_update::UpdateEntry::new(vfs, Endpoint::VFS));
+    state
+        .update
+        .chain
+        .add(crate::live_update::UpdateEntry::new(id_pm, Endpoint::PM));
+    let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+    let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+    let mut noop_abort = |_: i32| {};
+    let mut noop_end = |_: i32| {};
+    state
+        .update
+        .start_update_prepare(
+            &mut state.table,
+            true,
+            true,
+            &mut noop_abort,
+            &mut noop_end,
+            &mut crate::live_update::PrepareEffects {
+                request_prepare: &mut noop_req,
+                vm_prepare: &mut noop_vm,
+            },
+        )
+        .expect("prepare schedules the first entry");
+}
+
+/// An RS_INIT envelope from the VFS service with the given result.
+/// Union-field *writes* are safe (bit stores); the tagged *read* goes
+/// through `Message::rs_init_result` (minix-types, E-12 decode).
+pub(crate) fn rs_init_envelope(result: i32) -> minix_types::Message {
+    let mut m = minix_types::Message {
+        m_source: Endpoint::VFS,
+        m_type: minix_types::RS_INIT,
+        m_u: Default::default(),
+    };
+    m.m_u.m_rs_init.result = result;
+    m
+}

@@ -360,7 +360,9 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
     standing 分类数）。
   - 归属：工具配置，随任意轮捎带。
 
-- **R40（P3-组织）— shell 模块测试归属与拆分初衷错位**
+- **R40（P3-组织）— shell 模块测试归属与拆分初衷错位** 🔶 12/16 号域已随迁（2026-09-09，
+  §22.7 Fix #95：6 个测试 + 夹具族上移 testutil）；13/14 号域测试待其 handler 触碰时随迁
+  （testutil 夹具已就绪，迁移路径已铺平）
   - 现状：Fix #86 拆分时"结构体与全部测试"留在 lib.rs（2378 行，其中测试约 1300 行）——
     shell_request.rs（1789 行）与 shell_update.rs 的 handler 测试全部在 lib.rs
     （`grep -c "#\[test\]" shell_request.rs` = 0）。模块边界=文档域的拆分初衷在测试侧
@@ -369,7 +371,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
     方案 b——专项迁移轮（机械但扰动大）。推荐 a；本条记录预期，防"测试在哪"的查找成本。
   - 归属：观察项，随 R35/R36 修复轮顺带迁移对应测试。
 
-- **R41（P3-观察）— `mem::take(&mut state.update)` 别名墙舞蹈**
+- **R41（P3-观察，维持记录不动作）— `mem::take(&mut state.update)` 别名墙舞蹈**
   - 现状：do_update 的 prepare 段（shell_request.rs:827-881）为绕开"abort/end 闭包无法
     捕获 state.update 与 table"的借用墙，`mem::take` 取出 UpdateState 再放回。功能正确、
     有注释（A-2 别名墙），但 take/restore 是易漏配对的手工模式（漏 restore 即状态丢失）。
@@ -378,7 +380,7 @@ D 类可观测性 5 + 既有 2）；唯一新判定 = `rs_strerror`（D 类吸�
     monitor 模式先例 Fix #24）。记录不改。
   - 归属：19 接线期再评估。
 
-- **R42（P3-防误修记录）— `is_idle` 调用方计算 + 空表恒真已核实忠实**
+- **R42（P3-防误修记录，无动作）— `is_idle` 调用方计算 + 空表恒真已核实忠实**
   - 现状：do_update 备 prepare 前 `state.table.iter_in_use().all(|(_, s)| s.flags.is_idle())`
     （shell_request.rs:826）作为 `start_update_prepare` 的入参——C 的 `rs_is_idle()`
     （utility.c:424-438）是逐 IN_USE 行查 `RS_SRV_IS_IDLE`；Rust 把扫描移到调用方是
@@ -543,3 +545,36 @@ E-MINSYS-HYGIENE 一句话条目）。
   name-match 154（90.1%）**；剩余 17 个 ⚠️ 逐名核对全部落在 §4 B/C/D standing
   分类（C 类 5 + B/D 类 12），零假阳性。`cargo test -p minix-rs -p minix-types`
   333/189 passed（本轮零代码改动）；clippy/fmt/T7 全绿。
+
+### ✅ Fix #95 — R40（P3）12/16 号域测试随迁 + 夹具族上移 testutil
+
+- **File**：`os/servers/rs/src/testutil.rs`（+148：`booted`/`booted_with`/
+  `booted_vfs_labeled`/`booted_vfs_kernel`/`two_entry_chain`/`rs_init_envelope`
+  六件夹具以 `pub(crate)` 上移共享）、`os/servers/rs/src/shell_update.rs`
+  （新增 `#[cfg(test)] mod tests`：do_init_ready ×2 + do_upd_ready_shell ×4
+  随 handler 同模块——R35/R36/R37 三轮触碰的正是这些 handler，R40 方案 a 的
+  渐进随迁）、`os/servers/rs/src/lib.rs`（测试模块改经 testutil import 使用
+  夹具；2257 行）
+- **After**：`grep -c "#\[test\]" shell_update.rs` = 6、lib.rs 残留 0；13/14 号域
+  测试（shell_request.rs 的 handler 群）维持 lib.rs 现状，待其 handler 触碰轮
+  按同路径随迁（夹具已在 testutil，零前置）。既有测试侧告警（state_data.rs
+  hex 分组 / lib.rs `let mut img` / process_table.rs if-let，`--tests` 模式下
+  可见）非本轮触碰引入，记录为既有。
+- **Verified**：`cargo test -p minix-rs` = **333 passed**（数量零变化——纯迁移）；
+  clippy（含 `--tests`）触碰文件零告警；fmt 干净；T7 PASS。
+
+## §22 收敛终态（2026-09-09 快照）
+
+- **stage 内可实施 TODO 全部消化**：R35 ✅（Fix #91）/ R36 ✅（Fix #92）/
+  R37 ✅（Fix #93）/ R38+R39 ✅（Fix #94）/ R40 🔶（12/16 域随迁完成，
+  13/14 域按方案 a 渐进）/ R41、R42 维持记录（观察项，非可实施 TODO，
+  触发条件见 §6.2 条目）。
+- **测试基线**：327 → **333 passed**（minix-rs，净增 6）；minix-types 189；
+  clippy（lib + tests 触碰文件）/ fmt / T7 全绿；覆盖率 Doc 100% /
+  name-match 90.1%，17 个 ⚠️ 全部落在 standing 分类。
+- **遗留（全部有主，非本 stage 单独可做）**：E-1（RS 自升级，18 号接线轮）、
+  E-11/E9（生产传输 + trap 层，19 号主线，见 edge_todo.md）、A-3/R31 残余
+  （诊断面，08-stage-is）、13/14 号域测试渐进随迁（R40 余半）。
+- **Rule Discovery 追记（Fix #91-95 实战确认）**：①「deferred 标记指向已收工的
+  工期」——R36 修复即例证（16 号落地后注释未复核）；②「纯决策函数的输入急切
+  求值」——R35 修复采用 peek/walk 共享目标规则，两轮修复后全 crate 无第三处。

@@ -786,39 +786,14 @@ mod signal_handler_tests {
     use super::*;
     use crate::process_table::RProcTable;
     use crate::service_slot::RFlags;
+    use crate::testutil::{
+        booted, booted_vfs_labeled, booted_with, rs_init_envelope, two_entry_chain,
+    };
     use minix_types::{Endpoint, SIGNAL_CHILD, SIGNAL_TERMINATE};
 
-    /// A server with a completed boot: table + one in-use VFS service with
-    /// pid 700, plus an exited child (pid 700's own child bookkeeping is the
-    /// sigchld target).
-    fn booted() -> RsServer {
-        booted_with(alloc::boxed::Box::new(crate::boot::UnimplementedKernelApi))
-    }
-
-    /// Same fixture with an injectable kernel seam (E-10: the waitpid drain
-    /// and the second-init panic need a mock / a consumed boot machine).
-    fn booted_with(kernel: alloc::boxed::Box<dyn KernelApi>) -> RsServer {
-        let mut server = RsServer::with_kernel(crate::boot::BootTables::placeholder(), kernel);
-        let mut table = RProcTable::new();
-        let id = table.alloc_slot().unwrap();
-        {
-            let s = table.get_mut(id);
-            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
-            s.pub_.endpoint = Endpoint::VFS;
-            s.pid = Some(700);
-        }
-        server.state = Some(crate::ServerState {
-            tables: crate::boot::BootTables::placeholder(),
-            machine: crate::boot::Machine::default(),
-            rinit: crate::boot::RinitState::default(),
-            table,
-            shutting_down: false,
-            system_hz: 60,
-            nr_uncaught_init_srvs: 0,
-            update: crate::live_update::UpdateState::default(),
-        });
-        server
-    }
+    // Fixtures `booted`/`booted_with`/`booted_vfs_labeled`/`booted_vfs_kernel`/
+    // `two_entry_chain`/`rs_init_envelope` live in `crate::testutil` (R40 —
+    // shared with the shell modules' own test mods).
 
     #[test]
     fn test_signal_chld_frees_exited_child_slot() {
@@ -945,19 +920,6 @@ mod signal_handler_tests {
         let _ = server.run();
     }
 
-    /// An RS_INIT envelope from the VFS service with the given result.
-    /// Union-field *writes* are safe (bit stores); the tagged *read* goes
-    /// through `Message::rs_init_result` (minix-types, E-12 decode).
-    fn rs_init_envelope(result: i32) -> minix_types::Message {
-        let mut m = minix_types::Message {
-            m_source: Endpoint::VFS,
-            m_type: minix_types::RS_INIT,
-            m_u: Default::default(),
-        };
-        m.m_u.m_rs_init.result = result;
-        m
-    }
-
     #[test]
     fn test_run_init_ready_fresh_done_clears_initializing() {
         // 12 wiring: RS_INIT(result=OK) from an initializing service →
@@ -990,46 +952,6 @@ mod signal_handler_tests {
             .get(crate::service_slot::SlotId::new(0));
         assert!(!s.flags.contains(RFlags::INITIALIZING), "fresh init done");
         assert_eq!(s.check_tm, 0);
-    }
-
-    #[test]
-    fn test_do_init_ready_failure_crashes_and_records_init_err() {
-        // 12 wiring: request.c:488-497 — a failed init crashes the service
-        // and records `r_init_err`; the reply is suppressed (EDONTREPLY).
-        let mut server = booted_with(alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(
-            60,
-        )));
-        {
-            let state = server.state.as_mut().unwrap();
-            state
-                .table
-                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
-            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
-            s.flags = RFlags::IN_USE | RFlags::ACTIVE | RFlags::INITIALIZING;
-            s.pub_.in_use = true;
-            s.pub_.endpoint = Endpoint::VFS;
-            s.pid = Some(700);
-        }
-        let r = server.do_init_ready(&rs_init_envelope(7)).unwrap();
-        assert_eq!(r, minix_types::EDONTREPLY);
-        let s = server
-            .state
-            .as_ref()
-            .unwrap()
-            .table
-            .get(crate::service_slot::SlotId::new(0));
-        assert_eq!(s.init_err, 7, "r_init_err records the failure");
-    }
-
-    #[test]
-    fn test_do_init_ready_unexpected_is_einval() {
-        // 12 wiring: request.c:477-483 — an init-ready from a slot that was
-        // never asked to initialize → EINVAL.
-        let mut server = booted_with(alloc::boxed::Box::new(crate::testutil::MockKernelApi::new(
-            60,
-        )));
-        let r = server.do_init_ready(&rs_init_envelope(0)).unwrap_err();
-        assert_eq!(r, Errno::EINVAL);
     }
 
     #[test]
@@ -1755,46 +1677,6 @@ mod signal_handler_tests {
         assert_eq!(server.do_up(&m), Err(Errno::EFAULT));
     }
 
-    /// A booted server whose VFS slot carries the given label (system
-    /// privilege excluded) and whose safecopy seam serves the given payload
-    /// — the 14 wiring tests' fixture.
-    fn booted_vfs_labeled(label: &'static [u8], payload: &'static [u8]) -> RsServer {
-        let mut mock = crate::testutil::MockKernelApi::new(60);
-        mock.payload = Some(payload.to_vec());
-        mock.ticks = 500;
-        // create_service's VM, exec and fork faces succeed (13 label arms
-        // clone through them); the boot-level default is fail-closed.
-        mock.vm_ok = true;
-        mock.execve_ok = true;
-        mock.fork_pid = Some(701);
-        mock.child_endpoint = Some(Endpoint::MEM);
-        booted_vfs_kernel(alloc::boxed::Box::new(mock), label)
-    }
-
-    /// [`booted_vfs_labeled`]'s table setup with an injected kernel seam —
-    /// for tests that need seam-level failure injection (R37).
-    fn booted_vfs_kernel(
-        kernel: alloc::boxed::Box<dyn KernelApi>,
-        label: &'static [u8],
-    ) -> RsServer {
-        let mut server = booted_with(kernel);
-        {
-            let state = server.state.as_mut().unwrap();
-            state
-                .table
-                .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
-            let s = state.table.get_mut(crate::service_slot::SlotId::new(0));
-            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
-            s.pub_.in_use = true;
-            s.pub_.endpoint = Endpoint::VFS;
-            s.pub_.label = crate::service_slot::Label::from_bytes(label);
-            // A launch command: create_service's preconditions
-            // (manager.c:540-560) require SF_USE_COPY or a command.
-            s.cmd[..8].copy_from_slice(b"/bin/vfs");
-        }
-        server
-    }
-
     #[test]
     fn test_do_lookup_resolves_label_into_reply_payload() {
         // 14 wiring: RS_LOOKUP — the length gate (request.c:1151-1157), the
@@ -2211,283 +2093,6 @@ mod signal_handler_tests {
     }
 
     #[test]
-    fn test_do_upd_ready_shell_gates_and_updates() {
-        // 16 wiring: RS_LU_PREPARE (request.c:890-938) — the chain gate
-        // (sender == curr entry, not initializing, request.c:903-910), the
-        // PREPARE_DONE mutation (request.c:911, R24), and the outcome
-        // dispatch: single-entry chain → start_update → EDONTREPLY
-        // (request.c:934-935); a wrong sender → EINVAL; a prepare failure →
-        // end_update(RS_REPLY) (request.c:917-922).
-        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
-        let mut m = minix_types::Message {
-            m_source: Endpoint::VFS,
-            m_type: minix_types::RS_LU_PREPARE,
-            m_u: Default::default(),
-        };
-
-        // Gate fail: no scheduled chain at all → EINVAL (request.c:910).
-        assert_eq!(server.do_upd_ready_shell(&m), Err(Errno::EINVAL));
-
-        // Schedule a one-entry chain and walk it (the UPD_START flow does
-        // this) — curr points at the VFS slot and the update is UPDATING.
-        {
-            let state = server.state.as_mut().unwrap();
-            let id = crate::service_slot::SlotId::new(0);
-            state
-                .update
-                .chain
-                .add(crate::live_update::UpdateEntry::new(id, Endpoint::VFS));
-            let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
-            let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
-            let mut noop_abort = |_: i32| {};
-            let mut noop_end = |_: i32| {};
-            state
-                .update
-                .start_update_prepare(
-                    &mut state.table,
-                    true,
-                    true,
-                    &mut noop_abort,
-                    &mut noop_end,
-                    &mut crate::live_update::PrepareEffects {
-                        request_prepare: &mut noop_req,
-                        vm_prepare: &mut noop_vm,
-                    },
-                )
-                .expect("prepare schedules the single entry");
-            // The scheduling phase creates the new instance (C
-            // `rp->r_new_rp` — update.c:631 requires it at start time).
-            let replica =
-                crate::service_create::clone_slot(&mut state.table, id).expect("clone the replica");
-            state.table.get_mut(id).new_rp = Some(replica);
-        }
-
-        // A different sender than the curr entry → gate fail → EINVAL.
-        let mut wrong = m;
-        wrong.m_source = Endpoint::PM;
-        assert_eq!(server.do_upd_ready_shell(&wrong), Err(Errno::EINVAL));
-
-        // The curr service reports readiness → start_update runs, the slot
-        // carries PREPARE_DONE, and the reply is deferred (request.c:934-935).
-        assert_eq!(server.do_upd_ready_shell(&m), Ok(minix_types::EDONTREPLY));
-        let s = server
-            .state
-            .as_ref()
-            .unwrap()
-            .table
-            .get(crate::service_slot::SlotId::new(0));
-        assert!(
-            s.flags.contains(RFlags::PREPARE_DONE),
-            "PREPARE_DONE fires before the result check (R24)"
-        );
-
-        // A prepare failure ends the update (request.c:917-922) — on a fresh
-        // scheduled instance, reporting a nonzero result runs
-        // end_update(RS_REPLY): the old version is replied to and keeps
-        // running, so the reply is deferred (EDONTREPLY) and the update
-        // leaves the UPDATING state.
-        let mut server2 = booted_vfs_labeled(b"vfs", b"vfs");
-        {
-            let state = server2.state.as_mut().unwrap();
-            let id = crate::service_slot::SlotId::new(0);
-            state
-                .update
-                .chain
-                .add(crate::live_update::UpdateEntry::new(id, Endpoint::VFS));
-            let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
-            let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
-            let mut noop_abort = |_: i32| {};
-            let mut noop_end = |_: i32| {};
-            state
-                .update
-                .start_update_prepare(
-                    &mut state.table,
-                    true,
-                    true,
-                    &mut noop_abort,
-                    &mut noop_end,
-                    &mut crate::live_update::PrepareEffects {
-                        request_prepare: &mut noop_req,
-                        vm_prepare: &mut noop_vm,
-                    },
-                )
-                .expect("reschedule");
-            let replica =
-                crate::service_create::clone_slot(&mut state.table, id).expect("clone the replica");
-            state.table.get_mut(id).new_rp = Some(replica);
-        }
-        let mut fail = m;
-        fail.m_u.m_rs_update.result = 5; // prepare failure
-        assert_eq!(
-            server2.do_upd_ready_shell(&fail),
-            Ok(minix_types::EDONTREPLY),
-            "end_update defers the reply to the old instance"
-        );
-        assert!(
-            !server2
-                .state
-                .as_ref()
-                .unwrap()
-                .update
-                .flags
-                .contains(crate::live_update::RupdateFlags::UPDATING),
-            "the failed update is no longer updating"
-        );
-    }
-
-    /// Schedules a two-entry chain (slot 0 = VFS, slot 1 = PM) and walks it
-    /// to `curr = entry 0` with `RS_UPDATING` armed — the state a batch
-    /// RS_UPDATE leaves behind while the first service is preparing. Both
-    /// slots get a cloned replica (`new_rp`), which start_update requires
-    /// (update.c:631).
-    fn two_entry_chain(server: &mut RsServer) {
-        let mut table = &mut server.state.as_mut().unwrap().table;
-        let id_pm = {
-            let pid = table.alloc_slot().unwrap();
-            let s = table.get_mut(pid);
-            s.flags = RFlags::IN_USE | RFlags::ACTIVE;
-            s.pub_.in_use = true;
-            s.pub_.endpoint = Endpoint::PM;
-            s.cmd[..7].copy_from_slice(b"/bin/pm");
-            pid
-        };
-        let vfs = crate::service_slot::SlotId::new(0);
-        let replica_vfs = crate::service_create::clone_slot(table, vfs).unwrap();
-        let replica_pm = crate::service_create::clone_slot(table, id_pm).unwrap();
-        table.get_mut(vfs).new_rp = Some(replica_vfs);
-        table.get_mut(id_pm).new_rp = Some(replica_pm);
-        let state = server.state.as_mut().unwrap();
-        state
-            .update
-            .chain
-            .add(crate::live_update::UpdateEntry::new(vfs, Endpoint::VFS));
-        state
-            .update
-            .chain
-            .add(crate::live_update::UpdateEntry::new(id_pm, Endpoint::PM));
-        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
-        let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
-        let mut noop_abort = |_: i32| {};
-        let mut noop_end = |_: i32| {};
-        state
-            .update
-            .start_update_prepare(
-                &mut state.table,
-                true,
-                true,
-                &mut noop_abort,
-                &mut noop_end,
-                &mut crate::live_update::PrepareEffects {
-                    request_prepare: &mut noop_req,
-                    vm_prepare: &mut noop_vm,
-                },
-            )
-            .expect("prepare schedules the first entry");
-    }
-
-    #[test]
-    fn test_do_upd_ready_gate_failure_leaves_chain_untouched() {
-        // R35 negative: a gate rejection must not advance the chain. C
-        // returns EINVAL before touching rupdate state (request.c:903-910);
-        // an eager walk here would move `curr` to the second entry and arm
-        // RS_UPDATING with no cleanup, letting a later forged report pass
-        // the gate against the wrong service.
-        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
-        two_entry_chain(&mut server);
-        let before = {
-            let state = server.state.as_ref().unwrap();
-            (state.update.chain.curr(), state.update.flags)
-        };
-
-        // Wrong sender: curr expects VFS, PM reports → EINVAL.
-        let mut wrong = minix_types::Message {
-            m_source: Endpoint::PM,
-            m_type: minix_types::RS_LU_PREPARE,
-            m_u: Default::default(),
-        };
-        assert_eq!(server.do_upd_ready_shell(&wrong), Err(Errno::EINVAL));
-        wrong.m_source = Endpoint::VFS;
-        // Right sender but the update is initializing → also gated.
-        server
-            .state
-            .as_mut()
-            .unwrap()
-            .update
-            .flags
-            .insert(crate::live_update::RupdateFlags::INITIALIZING);
-        assert_eq!(server.do_upd_ready_shell(&wrong), Err(Errno::EINVAL));
-
-        let state = server.state.as_ref().unwrap();
-        assert_eq!(
-            state.update.chain.curr(),
-            before.0,
-            "gate failures leave curr pointing at the reporting entry"
-        );
-        assert!(
-            state
-                .update
-                .flags
-                .contains(crate::live_update::RupdateFlags::INITIALIZING),
-            "the gate flag survives: no end_update ran to clear it"
-        );
-        let after_flags = state.update.flags & !crate::live_update::RupdateFlags::INITIALIZING;
-        assert_eq!(
-            after_flags, before.1,
-            "no phase flag changed beyond the test's own INITIALIZING write"
-        );
-    }
-
-    #[test]
-    fn test_do_upd_ready_walks_two_entry_chain_to_start_update() {
-        // R35: the NextPrepare arm runs the real walk after the decision —
-        // `curr` advances to the second entry (which receives the prepare
-        // request via the 19 seam), and the second report drives start_update.
-        let mut server = booted_vfs_labeled(b"vfs", b"vfs");
-        two_entry_chain(&mut server);
-        let mut ready_vfs = minix_types::Message {
-            m_source: Endpoint::VFS,
-            m_type: minix_types::RS_LU_PREPARE,
-            m_u: Default::default(),
-        };
-
-        // First report → walk dispatches entry 1, reply deferred.
-        assert_eq!(
-            server.do_upd_ready_shell(&ready_vfs),
-            Ok(minix_types::EDONTREPLY)
-        );
-        {
-            let state = server.state.as_ref().unwrap();
-            assert_eq!(state.update.chain.curr(), Some(1), "the walk advanced");
-            let vfs_slot = state.update.chain.get(0).slot;
-            assert!(
-                state
-                    .table
-                    .get(vfs_slot)
-                    .flags
-                    .contains(RFlags::PREPARE_DONE),
-                "PREPARE_DONE belongs to the reporter (request.c:911)"
-            );
-        }
-
-        // Second report → exhausted chain (peek None) → start_update.
-        ready_vfs.m_source = Endpoint::PM;
-        assert_eq!(
-            server.do_upd_ready_shell(&ready_vfs),
-            Ok(minix_types::EDONTREPLY)
-        );
-        let state = server.state.as_ref().unwrap();
-        let pm_slot = state.update.chain.get(1).slot;
-        assert!(
-            state
-                .table
-                .get(pm_slot)
-                .flags
-                .contains(RFlags::PREPARE_DONE),
-            "the second reporter carries PREPARE_DONE too"
-        );
-    }
-
-    #[test]
     fn test_do_period_update_timeout_rolls_back() {
         // R36: while updating (not initializing), a tick past the current
         // preparer's deadline ends the update with EINTR/RS_CANCEL
@@ -2558,41 +2163,6 @@ mod signal_handler_tests {
         assert!(
             server4.state.as_ref().unwrap().update.chain.len() > 0,
             "the initializing phase has no prepare deadline"
-        );
-    }
-
-    #[test]
-    fn test_clock_seam_failure_propagates_instead_of_poisoning() {
-        // R37 policy lock: get_ticks is a kernel seam that CAN fail (C's
-        // getticks cannot — it reads the kerninfo page, getuptime.c:9-23).
-        // Handlers propagate the failure (`?`) instead of degrading
-        // timestamps to 0: poisoned prepare_tm/alive_tm would fake timeouts
-        // and crash healthy services. On the PrepareFailed rollback arm the
-        // propagation leaves the update armed — convergence is the
-        // do_period watchdog's job (R36 arm), which still sees intact
-        // prepare_tm/maxtime.
-        let mut mock = crate::testutil::MockKernelApi::new(60);
-        mock.fail_calls = alloc::vec![crate::testutil::Call::GetTicks];
-        let mut server = booted_vfs_kernel(alloc::boxed::Box::new(mock), b"vfs");
-        two_entry_chain(&mut server);
-        let mut fail = minix_types::Message {
-            m_source: Endpoint::VFS,
-            m_type: minix_types::RS_LU_PREPARE,
-            m_u: Default::default(),
-        };
-        fail.m_u.m_rs_update.result = 5; // prepare failure → rollback arm
-
-        // The clock read fails → the handler surfaces the seam error
-        // instead of rolling back with tick-0 poisoned timestamps.
-        assert!(
-            server.do_upd_ready_shell(&fail).is_err(),
-            "clock seam failure must propagate, not degrade to tick 0"
-        );
-        let state = server.state.as_ref().unwrap();
-        assert_eq!(
-            state.update.chain.len(),
-            2,
-            "rollback deferred: the update stays armed for the do_period watchdog"
         );
     }
 
