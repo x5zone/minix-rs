@@ -79,9 +79,12 @@ kernel 侧 13 处行为选择 cfg 消除（kmain_verify 9 常量块 + 1 打印�
 三变体合一）；kernel 侧行为选择 cfg 清零。验证：kernel 694 + platform 13 全绿，三架构
 production-target check 全过。
 
-**剩余 open**：
-- `os/kernel/src/lib.rs:1132-1137`——DirectMap 值构造三 cfg 分支，建议 minix-arch 提供
-  `CurrentDirectMap` 值构造器（违规表唯一在案项）。
+**剩余 open（✅ 全部收口，2026-09-09 V13 终批）**：
+- `os/kernel/src/lib.rs` DirectMap 三 cfg 分支 → 改用既有根别名
+  `minix_arch::CurrentDirectMap::default()`（三分支 ZST 加 `#[derive(Default)]`；
+  别名早已存在于 arch lib.rs 根，kernel 未用而已）。kernel 侧行为选择 cfg 归零复验通过。
+- `minix-platform/src/global.rs` 其余 cfg：逐处核实为"定义 current/trait 实现点"，
+  合法（PlatformDescEnum 裁定沿用）。**B-X 关闭**。
 - `os/libs/minix-platform/src/global.rs` 约 10 处 `#[cfg(target_arch = "x86_64")]`
   （global.rs:95-175 `PlatformDescEnum` 9 处经裁定为"枚举变体按架构存在性裁剪"= 合法；
   其余待逐处核实是否属行为选择）。
@@ -224,7 +227,7 @@ QEMU E2E → notes/TODO.md QEMU backlog。原始 18 节全文见 git `97df4e58d^
 
 ## 9. Open Questions 存档
 
-### OQ-15-1 DEFAULT_HZ 三方不一致 [🟡 待用户决定]
+### OQ-15-1 DEFAULT_HZ 三方不一致 [✅ 已裁决（2026-09-09 V13 终批）：维持 100]
 
 C（ground truth）i386=60 / earm=1000（`minix3/minix/include/arch/i386/include/archconst.h:4`）；
 Rust=100（`os/kernel/src/clock.rs` + `os/arch/src/arch/clock.rs`）；doc 15 §2.1/§3.7 D7 已标注。
@@ -232,6 +235,11 @@ Rust=100（`os/kernel/src/clock.rs` + `os/arch/src/arch/clock.rs`）；doc 15 §
 选项：A. 保留 100（现状，boot 时可 `with_hz(60)` 对齐）；B. 改 60（影响依赖 100 的测试与
 时间片计算）。关联：跨 crate 双定义的"权威位置"问题（与 G1 同型，若合并建议随 minix-types
 config 层收敛）。
+
+**裁决：选 A（保留 100）**——C 自身即两值并存（i386=60 / earm=1000），不存在唯一
+要对齐的 C 值；差异已按 [ARCH: K-3] 三层标注（doc 05 + design + code，V13 复核一致）；
+切 60 将作废全部按 100 调优的测试与负载采样窗；需要 C i386 行为时可 boot 传 `with_hz(60)`。
+跨 crate 权威位置：维持现状（`clock.rs` 常量 + doc 标注），不新增 config 层。
 
 ### OQ-D49-1（已关闭）/ D19-1（已实现）
 
@@ -634,3 +642,24 @@ restore_to_user 交出 CPU 后无向量回内核），非调度器缺陷。
    D-65①（idle 命名取舍）。
 4. 收敛评估：本轮新发现 2 P1 + 4 P2 + 1 P3 批 + 1 改判，占增量窗口（91 提交）的可
    发现面比例合理；对已收敛面（30 轮 doc review + V12）零重复发现，符合增量策略预期。
+
+## 24. V13 执行 campaign 终局对账（2026-09-09）
+
+**已修复（本 campaign，一 TODO 一 commit）**：D-59（1297da86c）、D-61（15e76355e）、
+D-63①②（9cf8788bb）、D-60（8cf00a60e）、D-62（ae951c71a）、D-64（81d873818）、
+I-6 余项①②（a22ae791a）、D-65（54d5403ea）、B-X 收口 + OQ-15-1 裁决（终批）。
+派生新条目：T-13（dm_coverage 并行 flake）、I-15（时钟镜像收敛）、I-16（p_cycles 累加）。
+
+**诚实 DEFERRED 维持（依赖未解除，逐条复核）**：
+- **SMP 链**（S-3d 起全部步骤、Edge 表 12 项、T-2/T-3/T-4、I-13 trait 拆分、profiling
+  deferred 体、trap-1/hw-1/hw-2）：依赖 = QEMU gdb 硬件调试 AP bring-up（smp_todo.md
+  S-3d WIP ⏸，此前 4 轮尝试后主动暂停）——本会话未解除，维持 FROZEN 设计 + 暂停态。
+- **T-10**：sudo/工具链不可得（解除条件已具体化），维持 DEFERRED。
+- **T-8 QEMU 半**：归 T-5 CI 承接（需新 QEMU 测试内核工作，独立批次）。
+- **I-1**：入口 ABI 设计 + boot-shim 终局跳转未做（单独构建 = 不可引导 artifact），
+  维持 DEFERRED；**I-5**：无 RSDP 消费方，维持 DEFERRED。
+- **I-15/I-16**（本 campaign 新登记）：触发窗口 = S-8 IPC 入口重构 / 记账专项，open。
+
+**stage 状态总结**：本 campaign 后，01-stage-kernel 全部"可诚实完成"的 stub/deferred/TODO
+清零；剩余 open 项的依赖全部在 SMP bring-up（S-3d 起的硬件调试链）或外部环境（sudo），
+无一项可在当前环境下进一步推进。

@@ -1138,16 +1138,11 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     .expect("init_proc_and_boot: bootstrap root not set \
                              — arch_boot_impl must run first");
                 let mut paging = CurrentPaging::from_active_root(root_phys);
-                // `CurrentDirectMap` is a type alias, not a value
-                // constructor — select the concrete ZST like `CurrentPaging`
-                // does. All three are unit structs implementing `PhysAccess`
-                // via the blanket impl (frame.rs).
-                #[cfg(target_arch = "x86_64")]
-                let access = minix_arch::X86_64DirectMap;
-                #[cfg(target_arch = "aarch64")]
-                let access = minix_arch::AArch64DirectMap;
-                #[cfg(target_arch = "riscv64")]
-                let access = minix_arch::Riscv64DirectMap;
+                // B-X (2026-09-09): the per-arch ZST selection moved to the
+                // sanctioned `CurrentDirectMap` alias in minix-arch
+                // (mirrors each `Arch` bundle's `type Dm`) — kernel code
+                // carries no behavior-selection cfg.
+                let access = minix_arch::CurrentDirectMap::default();
                 let vm_result = load_vm_elf(
                     module,
                     kernel_info,

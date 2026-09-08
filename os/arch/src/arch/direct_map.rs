@@ -74,6 +74,7 @@ pub trait DirectMapArch {
 /// translations that do not follow DM semantics (`VA = DM base + PA`).
 /// `0xFFFF_8080_0000_0000` is PML4[257], a slot the bootstrap root never
 /// touches outside DM establishment (07-paging_init_design §6.1).
+#[derive(Default)]
 pub struct X86_64DirectMap;
 
 impl DirectMapArch for X86_64DirectMap {
@@ -108,6 +109,7 @@ const _: () = assert!(
 /// admissibility precondition (`07-paging_init_design` §6.1).
 ///
 /// See `07-cross-space-init.md` §4.1 for the address-space layout table.
+#[derive(Default)]
 pub struct AArch64DirectMap;
 
 impl DirectMapArch for AArch64DirectMap {
@@ -139,6 +141,7 @@ const _: () = assert!(
 /// `0x0000_0010_0000_0000` (64GB offset in the user low half).
 ///
 /// See `07-cross-space-init.md` §4.1 for the address-space layout table.
+#[derive(Default)]
 pub struct Riscv64DirectMap;
 
 impl DirectMapArch for Riscv64DirectMap {
