@@ -852,7 +852,7 @@ fn dispatch_exit(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::p
 ///      fallback).
 ///   5. **Apply scheduling parameters**: `sched::sched_proc(target, SchedParams)`
 ///      updates priority / quantum / cpu / niced on the target process.
-///      Errors are translated to errno via `sched_proc_error_to_errno`.
+///      Errors are translated to errno via `ToErrno` (D2).
 ///
 /// # Historical note
 ///
@@ -950,7 +950,7 @@ fn dispatch_schedule(
         crate::sched::SchedParams { priority: priority_opt, quantum: quantum_opt, cpu: cpu_opt, niced },
     ) {
         Ok(()) => KcallResult::Ok(0),
-        Err(e) => KcallResult::Ok(crate::sched::sched_proc_error_to_errno(e)),
+        Err(e) => KcallResult::Ok(e.to_errno().to_i32()), // D2: ToErrno
     }
 }
 

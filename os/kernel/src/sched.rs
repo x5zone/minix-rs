@@ -444,11 +444,14 @@ pub enum SchedProcError {
     BadCpu,
 }
 
-/// Convert a `SchedProcError` to a Linux-style errno value.
-pub fn sched_proc_error_to_errno(err: SchedProcError) -> i32 {
-    match err {
-        SchedProcError::InvalidArgument => 22, // EINVAL
-        SchedProcError::BadCpu => 42,          // EBADCPU (Linux)
+impl minix_types::ToErrno for SchedProcError {
+    fn to_errno(&self) -> minix_types::Errno {
+        // D2: 映射逻辑归属错误类型自身（替代手写 sched_proc_error_to_errno
+        // 自由函数的裸魔法数 22/42 写法）。
+        match self {
+            SchedProcError::InvalidArgument => minix_types::Errno::EINVAL,
+            SchedProcError::BadCpu => minix_types::Errno::EBADCPU,
+        }
     }
 }
 
@@ -664,8 +667,20 @@ mod tests {
 
     #[test]
     fn test_sched_proc_error_to_errno() {
-        assert_eq!(sched_proc_error_to_errno(SchedProcError::InvalidArgument), 22);
-        assert_eq!(sched_proc_error_to_errno(SchedProcError::BadCpu), 42); // EBADCPU = 42（errno.h）
+        // D2: ToErrno trait 断言（以 errno 常量对照，非魔法数）。
+        use minix_types::ToErrno as _;
+        assert_eq!(
+            SchedProcError::InvalidArgument.to_errno().to_i32(),
+            crate::errno::EINVAL
+        );
+        assert_eq!(
+            SchedProcError::BadCpu.to_errno().to_i32(),
+            crate::errno::EBADCPU
+        );
+        assert_eq!(
+            SchedProcError::BadCpu.to_errno().to_i32(),
+            crate::errno::EBADCPU // = 217（errno.h:213）
+        );
     }
 
     /// D-52 (C system.c:671-698): the NO_QUANTUM toggle around a queued

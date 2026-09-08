@@ -25,7 +25,7 @@
 | 🟢 设计 no-op（有 rationale，非缺口） | **1 项** | D-30 swap_memreq（misc.rs:1807 注释 + doc 25；与 W-6 ClearMapCache 同类，见 §7.2/§7.6） |
 | ✅ 已修复（2026-09-06，第六批：剩余可实现项清零） | **12 项** | **D-8** kernel_call wrapper（TOCTOU + SIGSEGV）+ **D-14** 设计 no-op（W-7 连带）+ **D-15** CLOCK 通知 + **D-20** vm_enqueue_and_notify_vm + **D-24/D-25** 设计 no-op + **D-33** read_tsc 熵采样 [ARCH] + **D-34** mmap 镜像设计 no-op + ****D-35** 远程 IPI 接线 + **D-44** vm_suspend(DeliverMsg) 路由 + **D-46** 软件半环 + **D-52** sched_proc 完全对齐 C + **D-58** boot 掩码方案 B。累计 12 commits |
 | 📌 保持 DEFERRED（已核实依赖仍成立） | **15 项** | 见 §7.1 表（SMP/VM/IPC/scheduler wiring 依赖 + RS 联调）；**D-58（2026-09-05 新增）：boot 能力模板 sendto 掩码自位残留（OQ-D49-1 裁决为独立 TODO 暂时 defer）** + §18.5 cause_sig 收尾 backlog；其中 D-35 本地路径已实现（SMP IPI pending）、D-38 ① 仍 DEFERRED（SMP 异常路径）、~~D-38 ④ 已于 2026-09-07 S-1 核实解决（resume BKL 已覆盖，见 Edge 表行）~~、~~D-43/D-45 已于 2026-09-05 实施完成，移入上方第五批行~~、D-14/D-15/I-2/I-6 已核实更新、**D-52（2026-08-31 新增）：sched_proc 裸 set/clear 对齐 C RTS_SET/RTS_UNSET 语义决策（deferred 到 11-scheduling-primitives review）**（~~D-57 已于 2026-09-05 实施完成，移入上方第二批"已修复"行~~；~~D-53 已于 2026-09-04 实施完成，移入"已修复"行~~；~~D-6/D-11 已于 2026-09-05 实施完成，移入上方 2026-09-05 行~~；~~D-13 已于 2026-09-05 实施完成，移入上方第三批"已修复"行~~；~~D-49 已于 2026-09-05 实施完成，移入上方第四批"已修复"行~~） |
-| ✅ 基本解决（2026-09-09 终局 sweep 对账） | **余 2 项** | ~~A1（Phase 2）~~/~~A2（Phase 2）~~/~~B1（Phase 2 transfer）~~/~~C1（kernel dispatch 拆分）~~/~~E1（e6e5d72dd）~~/~~G1（33d0e887c）~~/~~M1（345597ca0）~~/~~R1（cd0f73cb5）~~ 已处理；余 D1 errno newtype + D2 ToErrno trait（同批，见 §3 D1——I-10 指定 D1 先行） |
+| ✅ 全部解决（2026-09-09 D1/D2 落地后终局对账） | **0 项** | ~~A1/A2/B1/C1/D2/E1/G1/M1/R1~~（各 Phase 落地，见 §22.2 打勾行 commit）+ ~~D1~~（2026-09-09 落地：单一来源 + Errno newtype + ToErrno，见 §3 D1 解决记录）——**架构建议清零**；D2 即 D1 同批的 ToErrno trait 部分 |
 | ✅ 已修复（doc 准确性问题，2026-08-18 GPT 评论评审） | **5 项** | §20.6 FIX-06-GPT-1/1b（§3.9 + §3.1 "唯一组合"措辞降级）+ FIX-06-GPT-2/2b（§3.8 + §3.1 "BSS"表述修正）+ FIX-06-GPT-2c（§3.15 决策表"BSS 段零运行时开销"修正） |
 | ✅ 已修复（代码落地 + 测试通过，2026-09-05，第五批） | **2 项** | **D-43 + D-45** `process_misc_flags` 信号路由收尾（signal module 依赖已由 2026-09-05 前几批解除）：`SC_TRACE` → `cause_signal(SIGTRAP)`（proc.c:392-398）+ delivermsg `Segfault` → `cause_signal(SIGSEGV)`（proc.c:271-278，路由落消费侧、`delivermsg` 保持 FIX-20 无表访问契约；WARNING printf 以 `#[cfg(not(test))]` EarlyConsole 保留）；两处均不 `break`、落入可运行性复查 = C proc.c:413 语义。设计决策三方案对比 + Linux/Redox 对照见 doc 10 §3.3（新增）；doc 10 §4.5 差异表 row 11/12 更新 + row 13（D-44 vm_suspend，保持 DEFERRED，阻塞 D-20）；doc 12 §4.6 对齐表更新；doc 19 头部状态句修正 + §4.7 表加 2 行。新增 5 测试（proc_table.rs），`cargo test -p minix-kernel` → **669 passed, 0 failed, 6 ignored**，clippy 对 proc_table.rs 零告警。详 §7.1 D-43/D-45 行 |
 | ✅ 已修复（代码落地 + 测试通过，2026-09-05，第四批） | **1 项 + 1 P0 顺带** | **D-49** `set_sendto_bit` 运行时路径全链落地（`PrivTable::set_sendto_bit`/`unset_sendto_bit`/`fill_sendto_mask`/`update_priv` + `IpcMask::set_bit/unset_bit/has_bit` + `TrapMask::allows_more_than_receive`；接线 SET_SYS 默认掩码 / UPDATE_SYS / `dispatch_update` 掩码继承三处；`update_from_request` 拆分为私有 `apply_fields_from_request` + 命名错误 `PrivUpdateError`，D3 方向）；**顺带 P0**：SET_SYS 成功后 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298——新 dispatch 测试 `test_dispatch_privctl_set_sys_fills_guarded_default_mask` 首跑即暴露）。新增 8 测试（kpriv 7 + dispatch 1）；doc 22 §4.6/§4.6.1/§4.7 + doc 25 §4 同步；boot 模板路径残留差异（自位；预授权经回归论证不可观察）记录于 doc 22 §4.6.1 + 已裁决为独立 TODO **D-58** 暂时 defer（2026-09-05，原始记录见文末 OQ-D49-1）。`cargo test -p minix-kernel --lib` → 664 passed, 0 failed, 6 ignored。详 §7.1 D-49 行 |
@@ -342,6 +342,22 @@ helper 体逐字保留含 C 锚点注释），4 函数全部低于 250 行；sta
 本项目已有 14 个局部枚举，比 Redox 的全局 Error 更贴近 C 语义，只需统一"到 errno 的映射通道"。
 
 **范围**：全 kernel 26 处直接 `Err(EXXX)` + 14 个枚举的映射通道；属设计决策，先 OQ 确认再做。
+
+**解决记录（2026-09-09，D1+D2 同批落地；其中单一来源半已由先行工作完成）**：
+- **D1 单一来源（先行完成，本次核验）**：kernel/src/errno.rs 现为 `pub use minix_types::types::*` 再导出
+  （文件头注明 D1；kernel 侧 115 常量定义已删除，minix-types 138 常量为唯一权威）。§0.1 双源实证过时。
+- **D1 newtype（先行在位，本次核验）**：`Errno(i32)` newtype + 关联常量 + `to_i32()`/`from_i32()`
+  在 minix-types types/errno.rs:182（A-12 RS 首消费）。
+- **D2 ToErrno trait（本次落地）**：trait 定义于 types/errno.rs 末尾；impl 三处——
+  `SchedProcError`（kernel/sched.rs，替换手写 `sched_proc_error_to_errno` 的裸魔法数 22/42 为
+  `Errno::EINVAL`/`Errno::EBADCPU`）、`PmError` 与 `KernelError`（minix-types ipc/{pm,kernel}.rs，
+  委托既有固有 to_errno）。两个调用点（syscall.rs:953 / syscall_process.rs:705）迁移为
+  `e.to_errno().to_i32()`；手写映射函数删除。
+- **范围收窄说明**：登记的"14 个映射函数"实测仅剩 sched 1 处 kernel 侧手写（其余已在
+  各自枚举上以固有 to_errno 方法存在——ipc-server/vfs/input/vm 等服务器 crate 的同型方法
+  可后续批量 impl ToErrno，属 stage 外延；minix-types 内 PmError/KernelError 本次已覆盖示范）。
+- 验证：minix-types 192（+3 trait 委托/EBADCPU 测试）/ kernel sched 40 全绿（含改写后的
+  EINVAL/EBADCPU 常量断言）+ kernel 729+3 全绿 + clippy 零新警告；doc 13 §6.5 改进方向注同步。
 
 ### D2. errno 映射 trait 统一 [P2]
 
@@ -2842,7 +2858,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ⬜ S-13 收尾 sweep（Edge Items 表迁移、doc 16 状态刷新、smp_todo 封存）
 
 **Phase 4 — 剩余架构重构（§1）**
-- ⬜ D1 [P1] errno newtype 单一来源（=I-8）+ D2 [P2] ToErrno trait 统一 14 个映射函数（同批）
+- ✅ D1 [P1] errno newtype 单一来源（=I-8）+ D2 [P2] ToErrno trait 统一 14 个映射函数（同批）→ **落地（2026-09-09）：单一来源已由先行工作完成（errno.rs 再导出，核验）；ToErrno trait + SchedProcError/PmError/KernelError 三 impl + 2 调用点迁移（魔法数 22/42 → Errno 常量）；手写映射函数删除；范围收窄说明（"14 个"实测仅 1 处 kernel 侧手写，服务器 crate 同型方法可后续批量 impl）。types 192 / kernel 729+3 全绿；详见 §3 D1 解决记录**
 - ✅ G1 [P1] ProcNr 双定义上移 minix-types → **newtype + impl 迁至 `types/proc_nr.rs`（含 5 单元测试），arch 删 `= i32` 别名改 `pub use`，kernel re-export（~600 使用点零 diff），边界拆包 3 处归零 + arch 21 处测试点包 newtype；types 189 / arch 220 / kernel 693+2 全绿（2026-09-08，详见 §5 G1 解决记录）**
 - ✅ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch` → **落地为全关联类型组合（17 族覆盖全部 20 个 Current* 别名；supertrait 形式因 Paging 句柄语义不可实现，见 §5 解决记录）+ `CurrentArch` 单点 cfg 锚点 + MockArch 矩阵镜像；TypeId 逐族 pin 测试 3 个；四条真实 target 编译路径零错误；不做调用点迁移（OQ 并存裁决）（2026-09-08）**
 - ✅ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）→ **核实闭合：前提过时（CTOS）——PageFlags 语义位图（paging.rs:28）+ 三架构私有翻译层 + kernel 全消费点语义化早已落地，目标已达成；关联常量形式经反查被否决（弱于现状的封装强度），详见 §5 解决记录（2026-09-08）**

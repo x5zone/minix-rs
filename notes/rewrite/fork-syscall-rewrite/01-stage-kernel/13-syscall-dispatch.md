@@ -915,7 +915,7 @@ C 在 `kernel_call` 中设置 `kbill_kcall = caller` 标记当前正在处理 ke
 
 ### 6.5 errno newtype（P2，改进方向）
 
-当前 `const EBADREQUEST: i32 = 212;` 等裸常量（syscall.rs:2540-2542）仍是模式 16（裸整数表达语义）。改进方向：引入 `errno` newtype 或合并到 `KcallResult` 变体。
+errno 常量已统一权威位置（D1 单一来源：kernel/src/errno.rs 再导出 minix_types::types::*，本行原引的 kernel 侧裸常量定义已不存在）；`Errno` newtype + `ToErrno` trait 已在 minix-types 落地（D2，2026-09-09，types/errno.rs），`reply_code()` 已把 BadCall 映射到 `EBADREQUEST`（syscall.rs:222）。改进方向剩余部分：`KcallResult::Ok(i32)` 内部的裸 i32 语义维持（系统调用返回值本身是 i32，见 todo §3 D1 范围注）。
 
 ---
 

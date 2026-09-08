@@ -494,6 +494,55 @@ impl core::fmt::Display for Errno {
     }
 }
 
+
+/// D2 (todo §3): unified "error type → errno" mapping channel.
+///
+/// Each crate's local error enum implements this trait so the mapping
+/// logic lives on the error type itself, replacing scattered hand-written
+/// `xxx_error_to_errno` free functions. Consumers convert via
+/// `err.to_errno().to_i32()` when a raw `i32` reply is needed.
+///
+/// The inherent `to_errno(&self) -> i32` methods that already exist on
+/// some enums keep working (compat); new trait impls delegate to them.
+pub trait ToErrno {
+    fn to_errno(&self) -> Errno;
+}
+
+#[cfg(test)]
+mod to_errno_trait_tests {
+    use super::*;
+
+    // PmError / KernelError 的 trait 委托与既有固有方法一致性测试。
+    #[test]
+    fn test_to_errno_trait_delegates_for_pm_error() {
+        use crate::ipc::PmError;
+        fn assert_te<T: ToErrno>(e: &T, want: Errno) {
+            assert_eq!(e.to_errno(), want);
+        }
+        assert_te(&PmError::ProcTableFull, Errno::EAGAIN);
+        assert_te(&PmError::OutOfMemory, Errno::ENOMEM);
+        assert_te(&PmError::InvalidEndpoint, Errno::ESRCH);
+        assert_te(&PmError::NotImplemented, Errno::ENOSYS);
+    }
+
+    #[test]
+    fn test_to_errno_trait_delegates_for_kernel_error() {
+        use crate::ipc::KernelError;
+        fn assert_te<T: ToErrno>(e: &T, want: Errno) {
+            assert_eq!(e.to_errno(), want);
+        }
+        assert_te(&KernelError::SlotInUse, Errno::EINVAL);
+        assert_te(&KernelError::InternalError, Errno::EIO);
+        assert_te(&KernelError::NotImplemented, Errno::ENOSYS);
+    }
+
+    #[test]
+    fn test_to_errno_ebadcpu_associated_const() {
+        // SchedProcError::BadCpu 的映射目标（kernel 侧 impl 使用）。
+        assert_eq!(Errno::EBADCPU.to_i32(), EBADCPU);
+        assert_eq!(EBADCPU, 217);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

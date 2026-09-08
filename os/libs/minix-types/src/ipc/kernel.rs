@@ -46,6 +46,12 @@ pub enum KernelError {
     NotImplemented,
 }
 
+impl crate::types::ToErrno for KernelError {
+    fn to_errno(&self) -> crate::types::Errno {
+        crate::types::Errno::from_i32(self.to_errno())
+    }
+}
+
 impl KernelError {
     /// Converts error to errno value.
     pub fn to_errno(&self) -> i32 {

@@ -51,6 +51,12 @@ pub enum PmError {
     NotImplemented,
 }
 
+impl crate::types::ToErrno for PmError {
+    fn to_errno(&self) -> crate::types::Errno {
+        crate::types::Errno::from_i32(self.to_errno())
+    }
+}
+
 impl PmError {
     /// Converts error to errno value.
     pub fn to_errno(&self) -> i32 {

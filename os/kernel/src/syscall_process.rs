@@ -702,7 +702,7 @@ pub fn dispatch_schedctl(
             }
             Err(e) => {
                 // Propagate the errno from sched_proc (EINVAL / EBADCPU).
-                return KcallResult::Ok(crate::sched::sched_proc_error_to_errno(e));
+                return KcallResult::Ok(e.to_errno().to_i32()); // D2: ToErrno
             }
         }
     } else {
