@@ -741,6 +741,29 @@ T6 switch_to_user               (lib.rs:2757, 完整五阶段调度循环；
 - 本 session 完成的 D8 实施（dm_coverage + VmBootHandoff + 测试完备性）不依赖此结构调整——本次回归 review 已对 07-cross-space-init.md 单独完成行号/隐藏文件夹/§4.1 签名补全，**与 I-14 解耦**
 - 本文件（todo.md）的 §0.1 计数需待 I-14 修复会话完成后回写（届时本条目从"📌"升"✅"或新拆条目）
 
+**解决记录（2026-09-09，B 层完成——按 §7.4.1 关联建议"建议按 B 层走"执行）**：
+
+1. **核销确认（三项已在先期重写中消解，rg 实证）**：doc 06 `apply_boot_cpu_contexts` 0 残留；
+   doc 08/10 "占位 stub" 0 残留；doc 08:33 的原始 "时序并不正确" TODO 自注已被重写清除
+   （现 :30-34 为干净的 T5/T6 关键不变量段）。
+2. **doc 08 T8/T9（审计项"文档虚构"）——已被更优方案消解**：08:25-27/156/170/175 现以
+   C-Rust 映射表如实交代（system_init → `enum Syscall + match`（D1）；add_memmap →
+   memmap.rs 已实现、调用点在 init_post_and_memory，lib.rs:517 一带）——优于原计划的
+   "改写为规划中"。
+3. **doc 09 前置修正（B 层）**：`前置: 08 + 10（switch_to_user 调度循环启动、VM 进程被
+   调度后才发起 SYS_VMCTL 协商）`——原"前置 08（VM 已开始运行）"的时序缺口闭合。
+4. **doc 16 前置修正（B 层）**：保留概念前置 11/14/15，新增时序注——SMP 状态引导
+   （lib.rs:582 `with_ncpus(topology)`）在 kmain Phase F 早段、先于 bsp_finish_booting；
+   AP 握手与跨 CPU 调度属 Phase F 后（S-3d/S-4）。
+5. **新鲜时序锚点（2026-09-09 实读，取代 2026-09-04 快照）**：kmain=lib.rs:383；
+   Phase A.5 platform=448；Phase B init_protection=458 / init_clock=459；Phase C
+   init_proc_and_boot=463；Phase D init_post_and_memory=489；Phase E system_init=
+   注释段（enum match 取代，无函数）；Phase F add_memmap=517 一带 + SMP_STATE=582
+   （with_ncpus，已非旧记录的 T2 早期位置——代码演进）+ bsp_finish_booting fn=1773/
+   call=588；switch_to_user fn=2583。
+6. **C 层（全量重编号）不做**：06/08/09/10 的核心内容经多轮重写已与实序对齐，剩余
+   错位仅前置声明级（本次 B 层已修）；重编号的错位引入风险 > 收益。
+
 ### 7.4.2 [I-13] InterruptController trait：C-Rust 不对称 + `Send + Sync` 真实动机
 
 > 来源：doc 05 §3.3 review 顺带发现（2026-08-15，user-question driven）——C 源行为细节揭示 Rust trait 把两类**语义不同**的动作塞进了同一抽象。

@@ -2,7 +2,7 @@
 
 > **分类**: Kernel IPC 协议
 > **源码**: `minix3/minix/kernel/system/do_vmctl.c`, `minix3/minix/kernel/arch/i386/arch_do_vmctl.c`
-> **前置**: 08（bsp_finish_booting 完成，VM 已开始运行）
+> **前置**: 08（bsp_finish_booting 完成）+ 10（switch_to_user 调度循环启动——VM 进程被调度执行后才会发起 SYS_VMCTL 协商，本协议的内核侧 `dispatch_vmctl` 在该循环内被调用）
 > **C 总行数**: ~230 行
 
 ---

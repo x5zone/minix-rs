@@ -4,7 +4,8 @@
 > **C 源码**: `minix3/minix/kernel/smp.c` (204 行), `minix3/minix/kernel/smp.h`, `minix3/minix/kernel/cpulocals.h`, `minix3/minix/kernel/proc.h`
 > **Rust 实现**: `os/kernel/src/smp.rs` (1439 行), `os/kernel/src/proc_table.rs` (SMP 相关), `os/kernel/src/sched.rs`
 > **覆盖**: BKL (Big Kernel Lock)、per-CPU 数据、IPI 跨 CPU 调度、CPU 亲和性、AP 启动握手、跨架构硬件抽象
-> **前置**: [11-scheduling-primitives.md](11-scheduling-primitives.md), [14-exception-interrupt.md](14-exception-interrupt.md), [15-clock-timer.md](15-clock-timer.md)
+> **前置**: [11-scheduling-primitives.md](11-scheduling-primitives.md), [14-exception-interrupt.md](14-exception-interrupt.md), [15-clock-timer.md](15-clock-timer.md)（概念前置：BKL/IPI 语义与异常、时钟互操作）。
+> **时序注**: SMP 状态引导（`SMP_STATE = with_ncpus(topology)`，lib.rs:582）在 kmain Phase F 早段、先于 bsp_finish_booting——早于 14/15 的大部分运行期交汇点；AP 启动握手与跨 CPU 调度属 Phase F 之后（S-3d/S-4，见 todo §22.2）。
 
 ---
 
