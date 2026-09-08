@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1（#48）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1（#48）+ V2-P2-7/P2-8（#49）+ V3-P2-2（#50）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -459,13 +459,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #48）：`restart_signals` 委托 `signal_flow::restart_sigs`（复用事件域 `PmEventServices` 的 RestartServices 全实现——struct 升 `pub(crate)` + `new` 构造器，借结构与 publish_event 同型）。+2 单测（挂起 SIGKILL 经尾部重查终止 / 未停止态 Noop 信号保留）。
 - **验证**：`grep -n "尚未建模挂起信号" os/servers/pm/src/ipc/vfs.rs` 零命中；基线 373 lib passed。
 
-#### V3-P2-2 sig_proc 的 PRIV_PROC `!ksig` 分支静默丢弃（C 一律 sys_kill 内核转发）
+#### V3-P2-2 sig_proc 的 PRIV_PROC `!ksig` 分支静默丢弃（✅ 已修复 2026-09-09，Fix #50）
 
-- **优先级**：P2；**类型**：语义缺失（V2-P2-4/Fix #33 的同族第二站点）
-- **文件**：`os/servers/pm/src/signal.rs:260-264`；C `signal.c:456-462`
-- **问题**：C 对系统进程的 !ksig 信号**一律** `sys_kill(rmp->mp_endpoint, signo)`（注释：让内核选择正确的信号管理器，若 PM 是管理器信号会回来再实际处理）。Fix #33 只修了 check_sig 广播里对 RS 的调用点；sig_proc 本体的这一分支仍是 `let _ = (target, signo); return Ok(())`——任何 ksig=false 的投递打到系统进程（如 SIGHUP 组广播命中系统进程、SIGCHLD 到系统父进程）都静默丢失。`kern.sys_kill` 能力已备（KernelGateway）。
-- **建议**：一行修复 `kern.sys_kill(proc.endpoint(), signo)`（忽略返回值，C 不检查）；补单测（mock 网关捕获）。
-- **验证**：`grep -n "let _ = (target, signo)" os/servers/pm/src/signal.rs` 零命中。
+- **原状态**：C 对系统进程的 !ksig 信号一律 `sys_kill` 内核回环（signal.c:456-462）；Rust 分支静默丢弃——Fix #33 只修了 check_sig 广播对 RS 的调用点，sig_proc 本体仍 no-op。
+- **修复**（Fix #50）：一行 `kern.sys_kill(endpoint, signo)`（返回值 C 不检查）；+1 单测（SigSendRecorder 扩展 kills 记录，断言 sys_kill 转发且不误触 sys_sigsend）。
+- **验证**：基线 378 lib passed。
 
 #### V3-P2-3 sched_start_user 调度器端点硬编码 + 缺 KERNEL/NONE 守卫（批次 F 前置）
 

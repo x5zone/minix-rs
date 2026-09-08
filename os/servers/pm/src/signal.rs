@@ -308,8 +308,11 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             return Ok(());
         }
         if !ksig {
-            // Forward to kernel signal manager
-            let _ = (target, signo);
+            // C signal.c:456-462：系统信号一律经内核回环——让内核选择正确
+            // 的信号管理器；若 PM 就是管理器，信号会回到 PM 再实际处置。
+            // 返回值 C 不检查。V3-P2-2 之前此分支静默丢弃（Fix #33 只修了
+            // check_sig 广播对 RS 的调用点，sig_proc 本体仍是 no-op）。
+            let _ = kern.sys_kill(table.procs[target.get()].endpoint(), signo);
             return Ok(());
         }
         if is_stacktrace(signo) {
@@ -1038,9 +1041,13 @@ mod tests {
     struct SigSendRecorder {
         calls: Vec<(minix_types::Endpoint, u32, u64)>,
         reply_err: Option<i32>,
+        kills: Vec<(minix_types::Endpoint, i32)>,
     }
     impl crate::exit::KernelGateway for SigSendRecorder {
-        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
+            self.kills.push((ep, sig));
+            Ok(())
+        }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
         fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
@@ -1078,7 +1085,7 @@ mod tests {
         table.procs[5].resources.signals.actions[sig as usize - 1].sa_mask = 1u64 << (17 - 1);
         table.procs[5].resources.signals.sigreturn_addr = minix_types::VirBytes(0x7000);
         table.procs[5].resources.signals.pending = 1u64 << (sig - 1);
-        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None };
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None, kills: Vec::new() };
         let mut t = crate::ipc::TestIpcTransport::default();
 
         let res = sig_send(&mut table, UserSlot::new(5), sig, &mut kern, &mut t);
@@ -1109,7 +1116,7 @@ mod tests {
         table.procs[5].state.block.stopped = true;
         table.procs[5].resources.signals.caught = 1u64 << (sig - 1);
         table.procs[5].resources.signals.actions[sig as usize - 1].sa_handler = 0xCAFEBABE;
-        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: Some(-minix_types::EFAULT) };
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: Some(-minix_types::EFAULT), kills: Vec::new() };
         let mut t = crate::ipc::TestIpcTransport::default();
         let res = sig_send(&mut table, UserSlot::new(5), sig, &mut kern, &mut t);
         assert!(res.is_err(), "EFAULT must be a graceful FALSE");
@@ -1121,7 +1128,7 @@ mod tests {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, false);
         table.procs[5].state.wait.waiting = true;
-        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None };
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None, kills: Vec::new() };
         let mut t = crate::ipc::TestIpcTransport::default();
         let ready = unpause(&mut table, UserSlot::new(5), &mut kern, &mut t);
         assert!(ready);
@@ -1134,7 +1141,7 @@ mod tests {
     fn test_unpause_running_defers_to_vfs() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5, 42, 42, false);
-        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None };
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None, kills: Vec::new() };
         let mut t = crate::ipc::TestIpcTransport::default();
         let ready = unpause(&mut table, UserSlot::new(5), &mut kern, &mut t);
         assert!(!ready);
@@ -1142,6 +1149,21 @@ mod tests {
         assert_eq!(t.sent().len(), 1, "VFS_PM_UNPAUSE must be requested");
         assert_eq!(t.sent()[0].0, Endpoint::VFS);
         assert_eq!(t.sent()[0].1.m_type, minix_types::VFS_PM_UNPAUSE);
+    }
+
+    /// V3-P2-2 回归锚点：PRIV_PROC !ksig → sys_kill 内核回环（C
+    /// signal.c:456-462"let kernel pick the right signal manager"）。
+    #[test]
+    fn test_sig_proc_priv_proc_ksig_false_forwards_to_kernel() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, true); // 系统进程
+        let mut kern = SigSendRecorder { calls: Vec::new(), reply_err: None, kills: Vec::new() };
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let res = sig_proc(&mut table, UserSlot::new(5), SIGHUP, false, false, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert_eq!(kern.calls.len(), 0, "ksig=false must not use sys_sigsend");
+        // C 同型转发：sys_kill(endpoint, SIGHUP)（signal.c:462）。
+        assert_eq!(kern.kills, vec![(table.procs[5].identity.endpoint, SIGHUP)]);
     }
 
     #[test]
