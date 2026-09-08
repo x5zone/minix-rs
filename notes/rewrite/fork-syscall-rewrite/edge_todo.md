@@ -325,3 +325,27 @@
 **解锁**：VM 生产依赖面的单一真相；arch 命名与语义一致。无 E1/E2 依赖，可独立先行。
 
 > **进度（2026-09-08，建议 (1) 完成）**：`os/servers/vm/Cargo.toml` 已补 `default-features = false`，三 feature 矩阵回归零差异（490/507/490 passed）——VM 生产代码无 mock 项依赖，收口无行为影响。**余件**：建议 (2) arch 侧 `mock` 更名（涉 kernel/boot-shim 引用同步）与 (3) G-V12-5 行闭单回写（待 (2) 一并完成）。依据记录：02-stage-vm/todo.md §17.9 Fix #62。
+
+---
+
+## E-MINSYS-HYGIENE minix-sys clippy 卫生项 5 条（03-stage-rs §22 扫描登记，2026-09-09，低优先）
+
+**问题**：`cargo clippy` 全链仅存的 crate 本体告警集中在 minix-sys（5 条）：`misc.rs:219/:220`
+与 `rmib.rs:85` collapsible-if（3 处可合并 let 链）、`syscall.rs:308` doc 注释后空行、
+`rmib.rs:127` `MountTable` 缺 `Default` impl（已有 `const fn new()`）。另有 minix-types
+1 条既有 known（`ipc/vm.rs:667` `VmReply` large-size-difference）与 workspace profile
+声明 4 条（kernel/boot-shim 的非根 profile，属 Cargo.toml 归位）。
+
+**为何 edge**：minix-sys 是全 stage 共享的用户态 syscall 层（edge 判定①类共享基建），
+且其主要增量工作（E1 trap 层、E2 SYS_* wrapper）尚未发生——卫生清理与功能改动会触碰
+同文件，分散做必然产生冲突窗口，合并到 E1/E2 的工作轮顺带清零即可。rs crate 本体
+clippy 已零告警（03-stage-rs/todo.md §6.0 基线），本条不影响任何 stage 的正确性。
+
+**建议**：E1 或 E2 动工的首轮，`cargo clippy --fix -p minix-sys` + 手工核对 3 处
+collapsible-if 的合并语义（`checked_mul`/`checked_div` 链合并不改变短路行为，但需逐处
+确认可读性）+ `MountTable` 补 `impl Default`（委托 `new()`）+ profile 声明上移
+workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零（依赖宏展开的
+误报除外）。
+
+**解锁**：全 workspace clippy 零告警的 CI 门禁前提（当前"触碰文件零告警"纪律是逐轮
+人工维持的，机械清零后可升级为全局门）。无前置依赖，但刻意等 E1/E2 避免冲突。
