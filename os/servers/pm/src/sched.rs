@@ -196,18 +196,29 @@ pub fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserS
     results
 }
 
-/// `sched_start_user` (`schedule.c:55-84` D2).
+/// `sched_start_user` (`schedule.c:55-84` D2)。
+///
+/// `ep` 形参 = 目标进程**继承自父进程**的调度器 endpoint（C 的调用点
+/// main.c:371-373 先守卫 KERNEL/NONE，再把 `rmp->mp_scheduler` 传入）；
+/// KERNEL/NONE 表示父进程无用户态调度器，C 直接跳过（main.c:370-371）。
+/// V3-P2-3 之前硬编码 `SCHED_PROC_NR` 且无守卫——父调度器非 SCHED 时
+/// 语义分叉。成功后 `resources.scheduler` 回写实际调度器（C 的出参语义）。
 pub fn sched_start_user(table: &mut ProcTable, ep: Endpoint, rmp_slot: UserSlot, sched: &mut dyn SchedCtl) -> Result<(), SchedError> {
+    let scheduler = table.procs[rmp_slot.get()].resources.scheduler;
+    // C main.c:370-371：KERNEL/NONE 无用户态调度器可继承，直接跳过。
+    if scheduler == Endpoint::KERNEL || scheduler == Endpoint::NONE {
+        return Ok(());
+    }
     let nice = table.procs[rmp_slot.get()].resources.nice;
     let mapping = NiceMapping::default();
     let maxprio = mapping.to_queue(nice).map_err(|_| SchedError::Inval)? as i32;
     let parent_slot = table.procs[rmp_slot.get()].parent();
     let inherit_from = inherit_parent_precise(table, parent_slot);
-    let res = sched.inherit(SCHED_PROC_NR, ep, inherit_from, maxprio as u32);
+    let res = sched.inherit(scheduler, ep, inherit_from, maxprio as u32);
     if res != 0 {
         return Err(SchedError::Inval);
     }
-    table.procs[rmp_slot.get()].resources.scheduler = Endpoint::SCHED;
+    table.procs[rmp_slot.get()].resources.scheduler = scheduler;
     Ok(())
 }
 
@@ -314,10 +325,10 @@ mod tests {
         fn inherit(&mut self, _: Endpoint, _: Endpoint, _: Endpoint, _: u32) -> i32 { 1 }
         fn set_nice(&mut self, _: Endpoint, _: Endpoint, _: u32) -> i32 { 1 }
     }
-    struct CaptureSched { pub last_maxprio: Option<u32>, pub last_parent: Option<Endpoint> }
+    struct CaptureSched { pub last_sched: Option<Endpoint>, pub last_maxprio: Option<u32>, pub last_parent: Option<Endpoint> }
     impl SchedCtl for CaptureSched {
-        fn start(&mut self, _sched: Endpoint, _schedulee: Endpoint, _parent: Endpoint, _maxprio: i32, _quantum: i32, _cpu: i32) -> i32 { self.last_maxprio = Some(_maxprio as u32); 0 }
-        fn inherit(&mut self, _sched: Endpoint, _schedulee: Endpoint, parent: Endpoint, maxprio: u32) -> i32 { self.last_parent = Some(parent); self.last_maxprio = Some(maxprio); 0 }
+        fn start(&mut self, sched: Endpoint, _schedulee: Endpoint, _parent: Endpoint, maxprio: i32, _quantum: i32, _cpu: i32) -> i32 { self.last_sched = Some(sched); self.last_maxprio = Some(maxprio as u32); 0 }
+        fn inherit(&mut self, sched: Endpoint, _schedulee: Endpoint, parent: Endpoint, maxprio: u32) -> i32 { self.last_sched = Some(sched); self.last_parent = Some(parent); self.last_maxprio = Some(maxprio); 0 }
         fn set_nice(&mut self, _sched: Endpoint, _schedulee: Endpoint, maxprio: u32) -> i32 { self.last_maxprio = Some(maxprio); 0 }
     }
 
@@ -381,9 +392,31 @@ mod tests {
         table.procs[5].state.guardianship = crate::mproc::Guardianship::Normal { parent: UserSlot::new(2) };
         // Need INIT slot for inherit
         mk_proc(&mut table, 11, 0, Endpoint::SCHED, false);
-        let mut c = CaptureSched { last_maxprio: None, last_parent: None };
+        let mut c = CaptureSched { last_sched: None, last_maxprio: None, last_parent: None };
         sched_start_user(&mut table, Endpoint::from_generation_slot(1,5), UserSlot::new(5), &mut c).unwrap();
         assert_eq!(c.last_parent, Some(Endpoint::INIT));
+        // V3-P2-3：调度器 endpoint = 继承值（slot 5 的 mp_scheduler = SCHED）。
+        assert_eq!(c.last_sched, Some(Endpoint::SCHED));
+    }
+
+    /// V3-P2-3 回归锚点：scheduler=NONE → C main.c:370-371 直接跳过
+    ///（不调内核、不回写）；scheduler=非 SCHED → 按继承值转发（旧代码
+    /// 硬编码 SCHED_PROC_NR 且无守卫）。
+    #[test]
+    fn test_sched_start_user_skips_none_and_inherits_scheduler() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 0, Endpoint::NONE, false);
+        let mut c = CaptureSched { last_sched: None, last_maxprio: None, last_parent: None };
+        sched_start_user(&mut table, Endpoint::from_generation_slot(1,5), UserSlot::new(5), &mut c).unwrap();
+        assert_eq!(c.last_sched, None, "NONE scheduler must skip the kernel call");
+        assert_eq!(table.procs[5].resources.scheduler, Endpoint::NONE);
+
+        // 父的调度器为自定义 endpoint → inherit 按继承值转发。
+        let custom = Endpoint::from_generation_slot(3, 30);
+        table.procs[5].resources.scheduler = custom;
+        sched_start_user(&mut table, Endpoint::from_generation_slot(1,5), UserSlot::new(5), &mut c).unwrap();
+        assert_eq!(c.last_sched, Some(custom));
+        assert_eq!(table.procs[5].resources.scheduler, custom);
     }
 
     #[test]
@@ -454,7 +487,7 @@ mod tests {
         mk_proc(&mut table, 0, 0, Endpoint::SCHED, false);
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(0,0)); // root
         mk_proc(&mut table, 5, 0, Endpoint::SCHED, false);
-        let mut s = CaptureSched { last_maxprio: None, last_parent: None };
+        let mut s = CaptureSched { last_sched: None, last_maxprio: None, last_parent: None };
         do_getsetpriority(&mut table, UserSlot::new(0), PRIO_PROCESS, 5, 10, false, &mut s).unwrap();
         assert_eq!(table.procs[5].resources.nice, 10);
         // maxprio should be queue for nice 10

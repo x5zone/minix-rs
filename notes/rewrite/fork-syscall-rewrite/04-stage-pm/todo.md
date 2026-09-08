@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1（#48）+ V2-P2-7/P2-8（#49）+ V3-P2-2（#50）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2（#48/#50）+ V2-P2-7/P2-8（#49）+ V3-P2-3（#51）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -465,13 +465,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #50）：一行 `kern.sys_kill(endpoint, signo)`（返回值 C 不检查）；+1 单测（SigSendRecorder 扩展 kills 记录，断言 sys_kill 转发且不误触 sys_sigsend）。
 - **验证**：基线 378 lib passed。
 
-#### V3-P2-3 sched_start_user 调度器端点硬编码 + 缺 KERNEL/NONE 守卫（批次 F 前置）
+#### V3-P2-3 sched_start_user 调度器端点硬编码 + 缺 KERNEL/NONE 守卫（✅ 已修复 2026-09-09，Fix #51）
 
-- **优先级**：P2（A-8 落地前不可达，但语义分叉应在逻辑层先修，避免接线时固化）
-- **文件**：`os/servers/pm/src/sched.rs:200-212`；C `schedule.c:55-84` + `main.c:371-373`
-- **问题**：C 的调用点先守卫 `mp_scheduler` 非 KERNEL/NONE（main.c:371-372），再把 `rmp->mp_scheduler`（父进程的调度器）作为 `ep` 形参传 `sched_start`——语义是**继承父的调度器**。Rust 硬编码 `SCHED_PROC_NR` 且函数内无守卫；形参 `ep` 被改义为 schedulee。同族：`sched_init` 的两个 C assert（schedule.c:34/36）在 Rust 仅是注释（sched.rs:181-185）。
-- **建议**：签名改收 scheduler 端点（或从 `resources.scheduler` 读父值），补 KERNEL/NONE 守卫返回 Err（与 D-05 的 unimplemented 呼应）；assert 落地为 `assert_eq!`（测试环境 INIT 恒满足）。
-- **验证**：单测：父 scheduler=SCHED → 继承 SCHED；父=KERNEL → 守卫分支。
+- **原状态**：C 按调用点守卫（main.c:370-371）后把 `rmp->mp_scheduler`（继承自父）传给 `sched_start`；Rust 硬编码 `SCHED_PROC_NR` 且无守卫。
+- **修复**（Fix #51）：函数改读目标进程的 `resources.scheduler` 作调度器端点；KERNEL/NONE 按 C 直接跳过（Ok，不调内核不回写）；成功后回写继承值（C 出参语义）。+1 单测（NONE 跳过 / 自定义调度器按继承值转发）；CaptureSched 扩展 last_sched 记录。sched_init 的 assert 注释化保持（其两个断言依赖 boot 时序唯一性，init_scheduling 的测试环境已覆盖）。
+- **验证**：sched 测试全绿；基线 379 lib passed。
 
 #### V3-P2-4 do_getepinfo 两处语义偏差（批次 A/G 前置）
 
