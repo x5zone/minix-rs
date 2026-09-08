@@ -87,8 +87,13 @@ impl ProcessTable {
         let idle_idx = (proc_nr::IDLE.0 as isize + NR_TASKS as isize) as usize;
         procs[idle_idx].p_endpoint = Endpoint::from_generation_slot(0, proc_nr::IDLE.0);
         procs[idle_idx].p_rts_flags = crate::proc::RtsFlags::with_raw_bits(PROC_STOP_BITS);
+        // D-65①: name = "idle0" — C `set_idle_name(name, cpu)` writes
+        // "idle" + the decimal CPU number (proc.c:66-90), and the boot
+        // image loop calls it with `i` (proc.c:157); single-CPU BSP is
+        // "idle0". GET_PROC exports this name verbatim, so the C spelling
+        // is the externally observable contract.
         procs[idle_idx].p_name = ProcName::from_array([
-            b'I', b'D', b'L', b'E', 0, 0, 0, 0,
+            b'i', b'd', b'l', b'e', b'0', 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
         ]);
 
@@ -1296,12 +1301,14 @@ mod tests {
 
     #[test]
     fn test_process_table_const_init_idle_name() {
-        // IDLE slot's name must be "IDLE" (set via const fn from_array).
+        // IDLE slot's name must be "idle0" (D-65①: C `set_idle_name`
+        // parity — "idle" + the decimal CPU number, proc.c:66-90; the
+        // const fn from_array sets it).
         let table = crate::test_helpers::test_proc_table();
         let idle = table.get(proc_nr::IDLE).unwrap();
         let name_bytes = idle.p_name.as_bytes();
-        assert_eq!(&name_bytes[..4], b"IDLE", "IDLE proc name must be 'IDLE'");
-        assert!(name_bytes[4..].iter().all(|&b| b == 0), "trailing bytes must be zero");
+        assert_eq!(&name_bytes[..5], b"idle0", "IDLE proc name must be 'idle0'");
+        assert!(name_bytes[5..].iter().all(|&b| b == 0), "trailing bytes must be zero");
     }
 
     #[test]

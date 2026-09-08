@@ -590,7 +590,7 @@ restore_to_user 交出 CPU 后无向量回内核），非调度器缺陷。
   属记账面专项（建议与 I-15 时钟镜像收敛同窗口做）。
 - **③ 维持**：S-8 落地后端到端验证（原依赖不变）。
 
-### 23.4 新发现 P3（D-65 轻微项批）
+### 23.4 新发现 P3（D-65 轻微项批） — ✅ 已处置（2026-09-09：①③ 落地，② 维持登记，④ 误报纠正）
 
 ① idle 命名：C `proc.c:66-90` set_idle_name 产出 "idle<n>"，Rust 硬编码 "IDLE"
 （`os/kernel/src/proc_table.rs:85-88`，测试 :1298 钉住）——诊断输出漂移，取舍登记
@@ -600,6 +600,19 @@ restore_to_user 交出 CPU 后无向量回内核），非调度器缺陷。
 一致、design 快照层（25-design.v1.md）未回写一行；④ `os/kernel/src/debug.rs:302/:313`
 两个 `#[ignore]` 实为测试基建缺口（mock logger 未初始化）而非硬件依赖，可初始化后转
 常规测试。
+
+**✅ 处置记录（2026-09-09）**：
+- **① idle 命名对齐 C**：`"IDLE"` → `"idle0"`（C `set_idle_name(name, cpu)` =
+  "idle"+十进制 CPU 号，proc.c:66-90；GET_PROC 外部可观察，Ground Truth 链强制）。
+  const 声明与 pin 测试同步（`[..5] == b"idle0"`）。
+- **② env_get 旋钮通道**：维持登记（设计演进方向非缺口，需 boot 参数改内核策略时立项）。
+- **③ krandom D-33 design 层回写**：`.design/25-design.v1.md` 追加 D33 补记，
+  [ARCH: deviation] 三层一致达成（.design 不入库，本地生效）。
+- **④ 纠正（V13 扫描代理误报）**：debug.rs 两个 `#[ignore]` 是**真硬件依赖**——
+  hosted x86_64 经 plat cfg 选真 COM1 控制台，无 iopl 的 port I/O 即 SIGSEGV
+  （实测确认，与 T-11/stacktrace 同类），并非"mock logger 未初始化"；已恢复 ignore
+  并改写为准确理由。教训：ignore 理由注释的错误比 ignore 本身更误导。
+- 验证：kernel 731/0/8 全绿。
 
 ### 23.5 Rule Discovery（Step 5.7）
 

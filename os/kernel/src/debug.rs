@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized logger for MockEarlyConsole::write_byte"]
+    #[ignore = "hosted x86_64 selects the real COM1 console (port I/O without iopl → SIGSEGV); run under QEMU — same class as stacktrace tests"]
     fn test_write_rts_flags_single() {
         write_rts_flags(RtsFlagsBits::SENDING.bits());
     }
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized logger for MockEarlyConsole::write_byte"]
+    #[ignore = "hosted x86_64 selects the real COM1 console (port I/O without iopl → SIGSEGV); run under QEMU — same class as stacktrace tests"]
     fn test_write_misc_flags_single() {
         write_misc_flags(MiscFlagsBits::REPLY_PEND.bits());
     }
