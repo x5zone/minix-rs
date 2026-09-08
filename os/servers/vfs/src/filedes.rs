@@ -15,6 +15,7 @@ use minix_types::{Endpoint, Mode, UserSlot};
 
 use crate::filp::{FILP_CLOSED, FilpId, FilpTable};
 use crate::fproc::{FProc, OPEN_MAX};
+use crate::vnode::{VnodeId, VnodeTable};
 
 /// `Fd` — typed file descriptor `0..255` (u8 bound makes `256` unrepresentable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -195,31 +196,30 @@ pub fn invalidate_filp(filp_table: &mut FilpTable, id: FilpId) {
     }
 }
 
-/// `invalidate_filp_by_endpt` — `filedes.c:298` `v_fs_e==proc_e → CLOSED`.
+/// `invalidate_filp_by_endpt` — `filedes.c:298-306`
+/// `filp_count != 0 && filp_vno != NULL && filp_vno->v_fs_e == proc_e → CLOSED`.
 ///
-/// Returns count of invalidated `filp`s.  `v_fs_e` is approximated by
-/// `filp.vnode` presence + endpoint match via `vnode` lookup — for test we
-/// treat every non-closed `filp` with `vnode.is_some()` as matching if
-/// `proc_e` equals a synthetic `Endpoint::from_generation_slot(0, proc_e.get())`.
-/// Simplified: invalidate all with `vnode.is_some()` when called.
-pub fn invalidate_by_endpoint(filp_table: &mut FilpTable, _proc_e: Endpoint) -> usize {
+/// The vnode table supplies the `v_fs_e` probe (C dereferences
+/// `f->filp_vno->v_fs_e` directly; Rust keeps the tables separate, so the
+/// probe is an explicit parameter).  A dying FS must invalidate only the
+/// filps that belong to it — not the whole table.  Returns the number of
+/// filps matching the predicate (C returns void; the count is an audit aid).
+pub fn invalidate_by_endpoint(
+    filp_table: &mut FilpTable,
+    vnode_table: &VnodeTable,
+    proc_e: Endpoint,
+) -> usize {
     let mut cnt = 0;
     for i in 0..filp_table.len() {
         let id = FilpId(i);
         if let Some(f) = filp_table.get(id) {
-            if f.count != 0 && f.vnode.is_some() && f.mode != FILP_CLOSED {
-                // In real code: `f->filp_vno->v_fs_e == proc_e` check
-                // Here we invalidate all non-closed for test determinism
-                cnt += 1;
-            }
-        }
-    }
-    // Second pass to actually invalidate
-    for i in 0..filp_table.len() {
-        let id = FilpId(i);
-        if let Some(f) = filp_table.get(id) {
-            if f.count != 0 && f.vnode.is_some() && f.mode != FILP_CLOSED {
+            let matches = f.count != 0
+                && f.vnode
+                    .and_then(|v| vnode_table.get(VnodeId(v)))
+                    .map_or(false, |vn| vn.fs == proc_e);
+            if matches {
                 invalidate_filp(filp_table, id);
+                cnt += 1;
             }
         }
     }
@@ -430,17 +430,32 @@ mod tests {
 
     #[test]
     fn test_invalidate_by_endpt() {
+        // C: only filps whose vnode's `v_fs_e` equals the dying endpoint are
+        // invalidated (filedes.c:298-306) — other filesystems stay untouched.
         let mut tbl = FilpTable::new();
+        let mut vtbl = VnodeTable::new();
         let fid1 = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid1);
         let fid2 = tbl.alloc_filp(0o644).unwrap();
         tbl.inc_count(fid2);
+        let fid3 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid3);
         tbl.get_mut(fid1).unwrap().vnode = Some(1);
         tbl.get_mut(fid2).unwrap().vnode = Some(2);
-        let n = invalidate_by_endpoint(&mut tbl, Endpoint::from_generation_slot(0, 5));
-        assert_eq!(n, 2);
+        tbl.get_mut(fid3).unwrap().vnode = Some(2);
+        vtbl.get_mut(VnodeId(1)).unwrap().fs = Endpoint::from_generation_slot(0, 5);
+        vtbl.get_mut(VnodeId(2)).unwrap().fs = Endpoint::from_generation_slot(0, 6);
+        // Dying FS endpoint 5: only fid1 (through vnode 1) is invalidated.
+        let n = invalidate_by_endpoint(&mut tbl, &vtbl, Endpoint::from_generation_slot(0, 5));
+        assert_eq!(n, 1);
         assert_eq!(tbl.get(fid1).unwrap().mode, FILP_CLOSED);
+        assert_ne!(tbl.get(fid2).unwrap().mode, FILP_CLOSED);
+        assert_ne!(tbl.get(fid3).unwrap().mode, FILP_CLOSED);
+        // Dying FS endpoint 6: fid2 and fid3 share vnode 2.
+        let n = invalidate_by_endpoint(&mut tbl, &vtbl, Endpoint::from_generation_slot(0, 6));
+        assert_eq!(n, 2);
         assert_eq!(tbl.get(fid2).unwrap().mode, FILP_CLOSED);
+        assert_eq!(tbl.get(fid3).unwrap().mode, FILP_CLOSED);
     }
 
     #[test]

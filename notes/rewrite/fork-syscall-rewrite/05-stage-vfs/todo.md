@@ -56,7 +56,7 @@
 
 - ✅ P0-1 已修复 2026-09-09（§10 Fix #3）：filedes.rs:175 的 `Inval` 早退删除；**修复时修正首轮前提**——C 的 `get_filp2` 门（filedes.c:186-188）只对非 `OPCL` 访问返回 EIO（"disallow all use except close(2)"），close(2) 走 `VNODE_OPCL` 应**穿过 CLOSED 继续关闭**，故正确行为是放行而非返回 EIO（首轮"B 方案 FdError::Closed→EIO"被否决，详见归档条目的修正注）。测试 `test_close_eio` → `test_close_after_invalidate_proceeds`。
 - ✅ P0-2 已修复 2026-09-09（§10 Fix #4）：`CopyKind::Close` 补 `filp_count > 1` 闸门——满足则 `dec_count` + 清 fd，否则 `EBADF`（filedes.c:636-646）；`copy_fd` 签名引入 `&mut FilpTable` 使计数操作可达；`From/To` 补 `inc_count`（filedes.c:652，count 配对是 Close 闸门的前提）。测试 `test_copy_close_last_reference_ebadf` 新增。修复期新登记 **R2-P0-2**（From/To 方向建模与 count 之外的 C 守门缺口）。
-- P0-3 复核 ✅：filedes.rs:200 `_proc_e: Endpoint` 仍未用，:207 "for test determinism" 注释原样。
+- ✅ P0-3 已修复 2026-09-09（§10 Fix #5）：`invalidate_by_endpoint` 引入 `&VnodeTable` 参数做 `v_fs_e` 探针——只失效属于该端点的 filp（filedes.c:298-306 逐字对应）；按 C 去掉 `mode != FILP_CLOSED` 排除（幂等重置合法）、双遍收敛单遍。测试改为三 filp 双端点矩阵（endpoint 5 失效 1 个、endpoint 6 失效 2 个、其余不动）。首轮"次选方案（Filp 冗余存 fs_endpoint）"否决：引入第二真相源。
 - **附加清点**（首轮 §7 建议的全文件清点，仍未执行）：filedes.rs"自认偏离"注释共 6 处——:168（may_suspend）/ :180（dec_count simplified）/ :199/:207（invalidate 全失效）/ :234（cred.is_super）/ :269（Close 分支 just clear）。修 P0 三连时逐一消除，不留"修了行为留了假注释"。
 
 ### P1-1～P1-5（架构级，R1 存档 §3）
@@ -299,3 +299,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：签名加 `filp_table: &mut FilpTable`；`Close` = `count > 1` → `dec_count` + 清 fd + `Ok(src_fd)`，否则 `EBADF` 且 fd 不动（filedes.c:636-646 逐字对应）；`From`/`To` 安装后 `inc_count`（filedes.c:652）。测试：`test_copy_close` 增断言 count 2→1；新增 `test_copy_close_last_reference_ebadf`（count==1 → `EBADF`、fd 保留）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **336 passed / 0 failed**（335→336）。
 - **边界与期发现**：From/To 方向建模与 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门缺口登记为 **R2-P0-2**（下一轮，与失效族同批）；14-filedes.md D5 原描述的 `cred: &Credentials` 签名与实现本就不符，已按现状改写并挂新条目指针。
+
+### ✅ Fix #5: P0-3 — invalidate_by_endpoint 装上 v_fs_e 端点匹配（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（invalidate_by_endpoint 重写 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D6/实现表）。
+- **Before**：参数名 `_proc_e` 未使用，函数失效**所有**非关闭且有 vnode 的 filp（注释自认 "for test determinism"）；双遍结构（一遍计数一遍失效）。
+- **After**：签名 `(filp_table, vnode_table: &VnodeTable, proc_e)`——`count != 0 && vnode 表探针 fs == proc_e → CLOSED`，单遍完成（filedes.c:298-306 逐字对应）；按 C 去掉 `mode != FILP_CLOSED` 排除（对已关闭 filp 重置幂等合法）。设计取舍：C 的 `f->filp_vno->v_fs_e` 二跳解引在表分离模型下变成显式 `&VnodeTable` 参数（单一事实源），否决首轮"次选：Filp 冗余存 fs_endpoint"——两个真相源会在 vnode 回收复用时失同步（与 P2-5 的 generation 教训同向）。对照：Linux superblock 死亡的 `invalidate_inodes` 同样按 sb 归属遍历，不冗余存归属字段。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **336 passed / 0 failed**；测试升级为三 filp × 双端点矩阵（endpoint 5 → 仅 fid1；endpoint 6 → fid2+fid3；其余 filp 不动）。
+- **边界**：C-3 的 by_char_major/by_sock_drv 是同族缺口（下一轮 Fix #6，复用本轮的"显式表参数"模式）；P2-5（`filp.vnode` 裸 `usize` → `VnodeId`）落地时本函数与测试同步改型。

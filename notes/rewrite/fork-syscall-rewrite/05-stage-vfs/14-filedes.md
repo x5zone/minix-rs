@@ -126,7 +126,7 @@ Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 
 ### D6 `invalidate_filp` 族的 `FILP_CLOSED` 传播与 `CLOEXEC` 位集
 
 - **C**：`invalidate_filp:254 mode=CLOSED` 的单写与 `FD_CLR` 的 `cloexec` 清除在 `close_fd:710` 的 `FD_CLR` 可观测。
-- **Rust**：`FProc::invalidate_by_endpoint(ep) -> usize` 的 `for(filp: vno→fs_e==ep → mode=CLOSED)` 计数返回与 `Bitmap::clear(fd)` 的 `FD_CLR` 使 `invalidate` 后 `get(Fd)→Io(EIO)` 的抑制在 `FProc::get_fd(fd, closed) → Err(Io)` 可测试。
+- **Rust**：`invalidate_by_endpoint(&mut FilpTable, &VnodeTable, ep) -> usize` 的 `for(filp: count!=0 && vnode→vnode_table.fs==ep → mode=CLOSED)` 计数返回（`v_fs_e` 探针经显式 vnode 表参数，非 Filp 冗余字段）；`Bitmap::clear(fd)` 的 `FD_CLR` 在 `close_fd` 可观测；失效后非 `OPCL` 访问的 `EIO` 属 `get_filp` 接缝（P1-5）。
 
 ### ARCH 决策总表
 
@@ -161,7 +161,7 @@ os/servers/vfs/src/
 | `close_fd` | `open.c:690` | `FProc::close_fd(fd, filp_table) -> Result<(),FdError>` | `BadFd→EBADF / CLOSED→EIO / NULL→Close / FD_CLR / close_filp` |
 | `do_copyfd` | `filedes.c:524` | `FProc::copy_fd(target, fd, kind, cred) -> Result<Fd,FdError>` | `super_user→EPERM / isokendpt→BadEndpoint / S_ISSOCK→EDEADLK / LowestFree→fd / count++` |
 | `invalidate_filp` | `filedes.c:250` | `Filp::invalidate()` | `mode=CLOSED` |
-| `invalidate_filp_by_endpt` | `filedes.c:298` | `FProcTable::invalidate_by_endpoint(ep) -> usize` | `v_fs_e==ep → CLOSED` 计数 |
+| `invalidate_filp_by_endpt` | `filedes.c:298` | `invalidate_by_endpoint(&mut FilpTable, &VnodeTable, ep) -> usize` | `v_fs_e==ep → CLOSED` 计数 |
 | `Fd` | `int fd` | `filedes.rs:Fd(u8)` | `TryFrom<usize> → Option<Fd>` 的 `EBADF` 早拒绝 |
 | `FdAllocPolicy` | `get_fd:121 for` | `trait FdAllocPolicy::allocate(table, start)->Option<usize>` | `LowestFree` vs `NextFit` 双实现 |
 
