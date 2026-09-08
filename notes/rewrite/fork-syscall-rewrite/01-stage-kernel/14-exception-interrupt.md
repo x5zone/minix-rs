@@ -256,6 +256,8 @@ Minix3 通过宏抽象中断控制器操作（`hw_intr.h`），支持 8259A PIC 
 
 8259A 的 `hw_intr_used` 为空：8259A 是固定 16 个 IRQ，无需动态配置路由；IOAPIC 需显式设置 IRQ 路由到哪个 CPU。这是**策略差异**（路由配置），Rust 通过 `InterruptController` trait 注入（§3.7）。
 
+> **Rust trait 语义差异（D-61，2026-09-09）**：C 的 `hw_intr_ack` 在 i386 上与 EOI 是同一个动作（8259/APIC 都没有独立的"取号"寄存器），上表 `hw_intr_ack = *_eoi` 是 C 事实。Rust 的 `InterruptController::ack` 语义是 **claim（取号）**——三架构中只有 GIC（读 `ICC_IAR1_EL1`）与 PLIC（读 claim）有真实动作，x86 是文档化 no-op；"完成"由 `eoi` 单独承担。因此 `IrqManager::dispatch`（`os/kernel/src/irq_manager.rs`）的控制器调用序列是 **ack（claim）→ mask → handler 链 → unmask → eoi（complete）**：claim 在最前，因为 `eoi` 写回的 INTID 必须来自本次 claim 的捕获（GIC IAR / PLIC claim），跳过 claim 会以复位值 0 完成中断——中断永不退役、反复重入。x86 若在 ack 位写 EOI（旧实现）则等价于 handler 前提前放行同级中断，同样是错的。C 侧不需要这个区分是因为 i386 没有带 claim 协议的控制器；GIC/PLIC 的语义由 trait 显式建模。
+
 ### 2.7 三架构差异表
 
 | 维度 | x86-64 | aarch64 | riscv64 |

@@ -665,7 +665,7 @@ Rust 版将 C 版 `cstart()` 的后三个调用（`init_clock()`、`intr_init()`
 
 - `init()`：初始化中断控制器，屏蔽所有 IRQ 线。x86-64 使用 8259A PIC（单核）或 IOAPIC（多核），aarch64 使用 GIC（Generic Interrupt Controller），riscv64 使用 PLIC（Platform-Level Interrupt Controller）。
 - `mask(irq)` / `unmask(irq)`：开关单个 IRQ 线。这是驱动程序注册中断时的核心操作——驱动先注册处理函数，再 `unmask` 启用该中断。
-- `ack(irq)` / `eoi(irq)`：中断响应的"握手"协议。CPU 收到中断后必须先 `ack`（acknowledge，告诉控制器"我收到了"），处理完后再 `eoi`（end-of-interrupt，告诉控制器"可以发下一个了"）。缺少这个握手会导致中断丢失或重复触发。
+- `ack(irq)` / `eoi(irq)`：中断响应的"握手"协议。CPU 收到中断后必须先 `ack`（acknowledge，告诉控制器"我收到了"），处理完后再 `eoi`（end-of-interrupt，告诉控制器"可以发下一个了"）。缺少这个握手会导致中断丢失或重复触发。两半的精确语义按架构不同：`ack` 是 **claim**（GIC 读 `ICC_IAR1_EL1` / PLIC 读 claim 寄存器，捕获的 INTID 供 `eoi` 写回；x86 无取号动作，是文档化 no-op），`eoi` 是 **complete**（x86 LAPIC EOI / GIC EOIR / PLIC complete）。分发序列必须 claim → mask → handler → unmask → complete（D-61，见 [14 §2.6](14-exception-interrupt.md) 的语义差异注）。
 - `mask_all()`：启动早期屏蔽所有 IRQ 线，确保在驱动注册处理函数之前不会有意外中断触发。
 
 **`EarlyConsole` 的抽象语义**：

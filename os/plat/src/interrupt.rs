@@ -121,7 +121,7 @@ pub enum IrqAction {
 /// | `unmask()`  | IOAPIC unmask bit    | GICD_ISENABLER     | PLIC enable=1      |
 /// |             |                      | (SPI) / GICR_      |                    |
 /// |             |                      | ISENABLER0 (PPI)   |                    |
-/// | `ack()`     | LAPIC EOI            | Read IAR (ACK)     | Read claim (ACK)   |
+/// | `ack()`     | No claim step (no-op)| Read IAR (ACK)     | Read claim (ACK)   |
 /// | `eoi()`     | LAPIC EOI write      | Write EOIR         | Write complete     |
 /// | `mask_all()`| IOAPIC mask all      | GICD_ICENABLER=all | PLIC threshold=max |
 ///
@@ -149,7 +149,19 @@ pub trait InterruptController: Sized + Send + Sync {
     /// Unmask (enable) an IRQ line.
     fn unmask(&mut self, irq: IrqVector);
 
-    /// Acknowledge receipt of an interrupt.
+    /// Acknowledge (claim) the interrupt, before any handler runs.
+    ///
+    /// This is the *claim* half of the acknowledge/complete protocol: on
+    /// GIC it reads `ICC_IAR1_EL1` (the read itself acknowledges the
+    /// interrupt and captures the INTID that `eoi` must write back), on
+    /// PLIC it reads the claim register, and on x86 APIC there is no claim
+    /// step (the LAPIC EOI is the completion only — the ack is a no-op).
+    /// `IrqManager::dispatch` calls this first, so implementations whose
+    /// `eoi` depends on captured state stay correct.
+    ///
+    /// D-61 (2026-09-09): the x86 implementation previously wrote the LAPIC
+    /// EOI here — that is the *completion*, not a claim, and dispatching it
+    /// early would have re-opened the interrupt before handling.
     fn ack(&mut self, irq: IrqVector);
 
     /// Signal end-of-interrupt processing.

@@ -224,7 +224,11 @@ impl InterruptController for X86_64InterruptController {
     }
 
     fn ack(&mut self, _irq: IrqVector) {
-        unsafe { self.lapic_eoi() };
+        // The x86 APIC has no claim step: unlike GIC (read ICC_IAR1_EL1)
+        // or PLIC (read claim), nothing must be read before the handler
+        // runs. The LAPIC EOI register is the *completion* only — writing
+        // it here (the pre-D-61 implementation) would send the EOI before
+        // the handler and re-open the interrupt early.
     }
 
     fn eoi(&mut self, _irq: IrqVector) {

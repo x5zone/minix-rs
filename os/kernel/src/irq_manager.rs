@@ -428,17 +428,27 @@ impl<IC: InterruptController> IrqManager<IC> {
 
     /// Dispatch an IRQ to all registered handlers.
     ///
-    /// Masks the IRQ, walks the handler chain, tracks active IDs,
-    /// and unmasks the IRQ when all handlers have completed.
-    /// Sends EOI after all handlers finish.
+    /// Acknowledges (claims) the interrupt, masks the IRQ, walks the
+    /// handler chain, tracks active IDs, and unmasks the IRQ when all
+    /// handlers have completed. Sends EOI after all handlers finish.
+    ///
+    /// The claim (`ack`) runs first because the GIC/PLC completion written
+    /// by `eoi` must match the INTID captured by the claim read: on GIC the
+    /// `ICC_IAR1_EL1` read both acknowledges the interrupt and captures
+    /// that INTID; on PLIC the claim read moves the interrupt to
+    /// in-progress. Skipping the claim left those captures at their reset
+    /// value 0, so `eoi` completed INTID 0 — the interrupt never retired
+    /// and refired (D-61). On x86 APIC the claim is a documented no-op
+    /// (there is no claim register; the EOI is the whole handshake).
     ///
     /// The `notifier` is injected into each handler's [`IrqHookContext`]
     /// so handlers can deliver hardware notifications to user space without
     /// touching global state directly.
     ///
-    /// C: `irq_handle()` — interrupt.c:116-140. C passes `hook` directly
-    /// to the handler; Rust passes an [`IrqHookContext`] that also carries
-    /// the notifier (D9 / §4.4).
+    /// C: `irq_handle()` — interrupt.c:116-140 (the claim lives in the asm
+    /// entry on C's i386 APIC path; the Rust `ack` is its trait-ized
+    /// form). C passes `hook` directly to the handler; Rust passes an
+    /// [`IrqHookContext`] that also carries the notifier (D9 / §4.4).
     pub fn dispatch(
         &mut self,
         irq: IrqVector,
@@ -448,6 +458,10 @@ impl<IC: InterruptController> IrqManager<IC> {
         if irq_idx >= NR_IRQ_VECTORS {
             return Err(IrqError::InvalidIrq);
         }
+
+        // Claim first (D-61): the completion written by `eoi` below must
+        // pair with the INTID this read captures (GIC IAR / PLIC claim).
+        self.controller.ack(irq);
 
         self.controller.mask(irq);
 
@@ -782,7 +796,12 @@ mod tests {
     struct MockController {
         mask_log: alloc::vec::Vec<IrqVector>,
         unmask_log: alloc::vec::Vec<IrqVector>,
+        ack_log: alloc::vec::Vec<IrqVector>,
         eoi_log: alloc::vec::Vec<IrqVector>,
+        /// Per-call record of every controller method invocation, in call
+        /// order — lets a test assert cross-method interleaving ("the
+        /// claim happened before the mask").
+        call_log: alloc::vec::Vec<(&'static str, IrqVector)>,
         all_masked: bool,
     }
 
@@ -791,7 +810,9 @@ mod tests {
             Self {
                 mask_log: alloc::vec::Vec::new(),
                 unmask_log: alloc::vec::Vec::new(),
+                ack_log: alloc::vec::Vec::new(),
                 eoi_log: alloc::vec::Vec::new(),
+                call_log: alloc::vec::Vec::new(),
                 all_masked: false,
             }
         }
@@ -805,15 +826,19 @@ mod tests {
             self.all_masked = true;
         }
         fn mask(&mut self, irq: IrqVector) {
+            self.call_log.push(("mask", irq));
             self.mask_log.push(irq);
         }
         fn unmask(&mut self, irq: IrqVector) {
+            self.call_log.push(("unmask", irq));
             self.unmask_log.push(irq);
         }
         fn ack(&mut self, irq: IrqVector) {
-            self.eoi_log.push(irq);
+            self.call_log.push(("ack", irq));
+            self.ack_log.push(irq);
         }
         fn eoi(&mut self, irq: IrqVector) {
+            self.call_log.push(("eoi", irq));
             self.eoi_log.push(irq);
         }
         fn mask_all(&mut self) {
@@ -861,6 +886,52 @@ mod tests {
         let result = mgr.dispatch(IrqVector::new(0), &mut notifier);
         assert!(result.is_ok());
         assert_eq!(mgr.controller.eoi_log.len(), 1);
+    }
+
+    #[test]
+    fn dispatch_claims_before_mask_and_completes_last() {
+        // D-61: dispatch must drive the acknowledge/complete protocol in
+        // the order the hardware requires — the claim (`ack`, the GIC IAR
+        // read / PLIC claim read whose captured INTID `eoi` writes back)
+        // happens before the line is masked and before any handler runs,
+        // and the completion (`eoi`) happens exactly once, after the
+        // handlers and the re-unmask (C parity: the asm entry claims, then
+        // `irq_handle` masks/handles/unmasks, then the asm tail sends
+        // EOI — interrupt.c:116-140). The pre-D-61 dispatch never called
+        // `ack`, so on aarch64/riscv64 the completion would have written
+        // the captured-reset value 0 and the interrupt would never retire.
+        let ctrl = MockController::new_mock();
+        let mut mgr = IrqManager::new(ctrl);
+        mgr.init();
+
+        mgr.register_hook(
+            IrqVector::new(3),
+            completed_handler,
+            Endpoint::KERNEL,
+            IrqNotifyId(0),
+            IrqPolicy::REENABLE,
+        )
+        .unwrap();
+
+        let mut notifier = MockNotifier::default();
+        mgr.dispatch(IrqVector::new(3), &mut notifier).unwrap();
+
+        let ctrl = &mgr.controller;
+        // Exactly one claim and one completion, on the dispatched vector.
+        assert_eq!(ctrl.ack_log, alloc::vec![IrqVector::new(3)]);
+        assert_eq!(ctrl.eoi_log, alloc::vec![IrqVector::new(3)]);
+        // Full cross-method sequence, including register_hook's own
+        // first-handler unmask (C interrupt.c:65 — the line is opened when
+        // the hook is installed, before any interrupt arrives):
+        //   register_hook: unmask
+        //   dispatch:      claim → mask → (handler) → unmask → complete
+        let seq: alloc::vec::Vec<&'static str> =
+            ctrl.call_log.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            seq,
+            alloc::vec!["unmask", "ack", "mask", "unmask", "eoi"],
+            "dispatch controller-call order must be claim, mask, unmask, complete"
+        );
     }
 
     #[test]

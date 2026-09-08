@@ -404,7 +404,7 @@ S-8 前不会触发）。S-8 trap 入口落地、首次开中断的瞬间：Phas
 
 `arch/src/arch/dm_coverage.rs` 的 `tests::driver` 子模块各测试共享 mock 全局注册表（`mock_dm_clear`/`mock_dm_leaves`），无锁。默认并行调度下 `test_establish_window_pa_limit` 与 `test_establish_skips_hole_and_offsets_va` 稳定失败（断言读到他人测试的叶项：期望 `min_pa=0x3000_0000` 实得 `0x1C000`）；`--test-threads=1` 下 10/10 全过。hosted 测试通常经 `os/.cargo/config.toml` 的 `RUST_TEST_THREADS=1` 单线程运行故未暴露（D-59 验证时从仓库根目录调用 cargo 漏读 config 才现形——调用目录教训已录 §12.1）。修法：mock 注册表加 `BKL_TEST_LOCK` 同型互斥（kernel misc.rs SPROF_TEST_LOCK 先例），或 driver 各测试用互不重叠的窗口基址。
 
-#### D-61 InterruptController：生产 dispatch 从不 ack，arm64/riscv64 eoi 将以 0 值完成中断 [P1]
+#### D-61 InterruptController：生产 dispatch 从不 ack，arm64/riscv64 eoi 将以 0 值完成中断 [P1] — ✅ 已修复（2026-09-09，V13 第二个 todo-fix）
 
 **问题**：
 1. **ack 全仓库无生产调用方**：`os/kernel/src/irq_manager.rs:442-507` 的 dispatch 只调
@@ -428,6 +428,28 @@ hook——这同时修正 mask/unmask 的 IRQ 号来源）；或 eoi 改为携�
 arm64 init/mask_all 补 GICR_ICENABLER0 处理（SGI/PPI 全屏蔽 + 按需 unmask PPI）。
 与 I-13 的 trait 拆分合并设计（ack 归 per-CPU Ack 面、mask/unmask 归 Router 面），
 **但修复不等待 trait 重构**——S-8 批次内先以现 trait 修正确性。
+
+**✅ 已修复（2026-09-09，claim/complete 语义方案落地）**：
+- **dispatch 接入 claim**（`os/kernel/src/irq_manager.rs`）：控制器调用序列定型为
+  **ack（claim）→ mask → handler 链 → unmask → eoi（complete）**——claim 在最前，因为
+  eoi 写回的 INTID 必须来自本次 claim 的捕获；C parity：claim 在 C i386 位于 asm 入口
+  （`irq_handle` 之前），EOI 在 asm 尾部。
+- **x86 ack 修正为文档化 no-op**：旧实现写 LAPIC EOI——把"完成"塞进"取号"，dispatch 头部
+  调用即提前放行同级中断；x86 无 claim 寄存器，EOI 是完整握手（trait 文档表与 trait 方法
+  doc 同步，`os/plat/src/interrupt.rs`）。
+- **arm64 mask_all 补 SGI/PPI**（`os/plat/src/arm64/interrupt.rs`）：GICD 只达 SPI（≥32），
+  追加 banked `GICR_ICENABLER0 = all`；`init_redistributor` 在 WAKER 唤醒后同样屏蔽
+  INTID 0-31（firmware 遗留的 timer PPI 使能态被清除，timer 由 D-59 链的 register_hook
+  unmask 按需打开）——"init 后全屏蔽"不变量对 SGI/PPI 成立。
+- **顺序钉住测试**：`dispatch_claims_before_mask_and_completes_last`（mock 增加跨方法
+  `call_log`，钉住完整序列 unmask[register]→ack→mask→unmask→eoi；mock 的 ack 不再
+  混入 eoi_log）。
+- 文档同步：doc 14 §2.6（C `hw_intr_ack=*_eoi` 是 i386 事实；Rust ack=claim 语义差异注）、
+  doc 05（ack/eoi 握手精确语义 + 分发序列）。
+- 验证：kernel 730 passed / 0 failed / 8 ignored；plat 3 passed；clippy 零新增；QEMU 全量
+  回归（aarch64 GICR init 写经实测）随 commit 记录。
+- **I-13 关系**：trait 拆分（Router + per-CPU Ack）仍待 S-6 per-CPU 基建；本条只修正确性，
+  现 trait 内完成，I-13 维持 open。
 
 ### 23.3 新发现 P2
 

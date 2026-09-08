@@ -117,6 +117,14 @@ impl AArch64InterruptController {
             while self.gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDREN_ASLEEP != 0 {
                 core::hint::spin_loop();
             }
+            // Disable the banked SGI/PPI block (INTID 0-31) as part of
+            // init: firmware may leave PPIs (e.g. the timer, INTID 30)
+            // enabled. Each line is re-enabled per-consumer — the timer
+            // via `IrqManager::register_hook`'s unmask, SGIs at IPI
+            // bring-up (S-7/S-10). This is the redistributor half of the
+            // "init masks everything" invariant (D-61; the SPI half is
+            // GICD_ICENABLER in `init_distributor`).
+            self.gicr_write32(GICR_ICENABLER0, 0xFFFF_FFFF);
         }
     }
 
@@ -213,6 +221,16 @@ impl InterruptController for AArch64InterruptController {
             unsafe {
                 self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF);
             }
+        }
+        // SGI (0-15) + PPI (16-31) live in the banked GICR_ICENABLER0 —
+        // GICD writes never reach them. Disabling them here (D-61) is what
+        // makes "init leaves every line masked" hold: PPIs such as the
+        // timer (INTID 30) otherwise keep their firmware-enabled state and
+        // can fire with no handler registered. The timer PPI is unmasked
+        // deliberately later, by `IrqManager::register_hook` under
+        // `minix_plat::TIMER_IRQ` (bsp_finish_booting Step 6).
+        unsafe {
+            self.gicr_write32(GICR_ICENABLER0, 0xFFFF_FFFF);
         }
     }
 }
