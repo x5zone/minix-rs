@@ -433,6 +433,8 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 
 SMP 侧的剩余缺口（其他 CPU 上**共享方**进程的陈旧翻译，C 用 `MF_FLUSH_TLB` + 调度点刷新覆盖）不在此闭合——登记为 edge E-VMTLB，随 01-stage-kernel 的 SMP 工作处置。
 
+对照：C 对这条不变量还有一套**动态强制**——`pt_writemap` 在 CONFIG_SMP 下用 `VMCTL_VMINHIBIT_SET/CLEAR` 包裹每次写批次（pagetable.c:799-815/:928-934，源码自带 FIXME 承认应在包装层做），写前停目标进程、写后恢复。单核编译下整段消失。两套策略（C 的运行时停等 vs minix-rs 的结构性纪律）是同一不变量的两种实现；若 E-VMTLB 立项，VMINHIBIT 机制是其候选方案之一（08-pagetable-ops.md §1.10/差异表第 10 行已登记该执行模型差异）。
+
 ---
 
 ## 4. 实现详解

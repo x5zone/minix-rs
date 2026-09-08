@@ -63,9 +63,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 复核 ✅ 2026-09-09：`memtype.rs:34` 默认 `ev_delete` 为空实现；memtype.rs:1178 的非空 `ev_delete` 属于 **MappedFile**（清 fdref），SharedMemory 仍走默认空实现。全仓 `remaps` 写点仅 fork 复制（fork.rs:102）与递增（vmproc/table.rs:481 一带）。修复见 §18.9 Fix #64（落点设计变更：递减由删除漏斗承担而非 ev_delete，理由见 12-memtype.md §3.7）。
 
-### G-V12-9（P1-design-missing）VM inhibit 机制无实现
+### ✅ G-V12-9（原 P1-design-missing）VM inhibit 机制无实现——勘误闭单 2026-09-09（§18.9 Fix #77）
 
-复核 ✅ 2026-09-09：`rg "inhibit" os/servers/vm/src` 零命中（仅 boot.rs 的 RTS_BOOTINHIBIT 属另一机制）。处置：先在 25-rs-services.md 偏差表登记"inhibit 被同步模型吸收"，E9 后按需立项。
+复核 ✅（勘误）：登记时的 C 锚点不存在——main.c:196/:265-267 全文无 inhibit 门，全 C VM 源的 inhibit 只有 `pt_writemap` 内 CONFIG_SMP 门控的 `VMCTL_VMINHIBIT_SET/CLEAR` 包裹（pagetable.c:799-815/:928-934，每次 PTE 写批次的动态停等）。该机制 08-pagetable-ops.md（:380 + 差异表第 10 行）**早已登记**为执行模型差异；它与 16-pagefault.md §3.7 的结构化不变量互为同一保证的两种策略，E-VMTLB 立项时 VMINHIBIT 是候选方案。V12 提议的"25 偏差表新增行"不添加（前提不存在）。
 
 ### ✅ V12-P1-1（P1）三分配器对低内存约束行为不一致 + 后端选择不可观测——已修复 2026-09-09（§18.9 Fix #65）
 
@@ -428,6 +428,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `memtype.rs`（:7 import 处加判定注释，零行为变更）
 - **测试**：无新增；501/519/501 + clippy 0 警告回归
 - **边界**：`use crate::vmproc` 的 import 语句保留——它服务的是合法的签名依赖，非历史残留
+
+### ✅ Fix #77: G-V12-9 — inhibit 条目勘误闭单（C 锚点不存在，机制已由 08 登记）
+
+- **勘误**：登记锚点 main.c:196/:265-267 无 inhibit 门（全文 grep 证实）；全 C VM 源的 inhibit 仅 `pt_writemap` 的 CONFIG_SMP 动态停等包裹（pagetable.c:799-815/:928-934，自带 FIXME）。V12 把它误读为"main.c 主循环的 RS 更新服务门"，并提议在 25-rs-services.md 加偏差行——前提不存在，偏差行不添加。
+- **真实状态**：机制本体已由 08-pagetable-ops.md（§1.10 + 差异表第 10 行）登记为执行模型差异；与 16-pagefault.md §3.7 的结构化不变量互为两种实现策略（C 运行时停等 vs Rust 结构纪律），§3.7 已补互链。E-VMTLB 立项时 VMINHIBIT 为候选方案之一。
+- **Files**: `16-pagefault.md`（§3.7 补对照段）；todo 本条勘误
+- **测试**：无（文档）；501/519/501 回归
+- **Step 5.7 教训**：登记条目时锚点必须当场 sed 验证——G-V12-9 与 P2-6、P2-5 同为"复核阶段发现登记前提失真"的第三、四例，加固模式 83 锚点纪律的必要性
 
 ---
 
