@@ -182,11 +182,11 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 - **C 对照**：C 的 vmproc 槽永远存在（未注册进程落 NO_ACL → allow-all，acl.c:44-54 自注 "for now"），所以 C 没有"跳过检查"这个状态；Rust 已显式选择 default-deny（acl.rs:97-112，[ARCH: A-11]），闸门形状却保留了 fail-open 分支——策略与机制不自洽。当前实际风险与 C 的 NO_ACL 放行等价（非放权漏洞），但方向应统一。
 - **修复**：见 §18.9 Fix #66。
 
-### V13-P2-4（P2 设计登记）MAKE_VM 恒拒：有意收缩未登记，防被当 bug"修复"
+### ✅ V13-P2-4（P2 设计登记）MAKE_VM 恒拒：有意收缩未登记——已处置 2026-09-09（§18.9 Fix #68，含扫描勘误）
 
-- **证据**：C 有真实现——`rs_memctl_make_vm_instance`（minix3/minix/servers/vm/rs.c:218 定义、:375-376 分派；且 rs.c:370-373 显示单实例时 `map_pin_memory` 短路）。Rust 无条件 `Err(RsError::MakeVmFailed)`→EPERM（rs.rs:504-507，注释自述 "Not supported in current design"）。C 可能成功、Rust 恒 EPERM——可观察行为分叉。
-- **问题不在行为在登记**：这是多 VM 实例架构收缩的有意决策（V12 存档 §17.1.1 曾判 ARCH-EVOLVED），但**任何 todo/文档都没有把它登记为豁免项**——E-RSWIRE 通电后，第一个对照 C 行为的 reviewer 会把它当缺陷再查一遍。
-- **修改方案**：25-rs-services.md 偏差表补一行"MAKE_VM：多 VM 实例显式不支持（单实例设计），恒 EPERM"；本条即 todo 侧登记。**验证**：偏差表行存在 + rs.rs:504 注释指向该偏差行。
+- **证据**：C 有真实现——`rs_memctl_make_vm_instance`（minix3/minix/servers/vm/rs.c:218 定义；EPERM 仅在 `num_vm_instances == 2` 时返回，首个额外实例**会成功**）。Rust 无条件 `Err(RsError::MakeVmFailed)`→EPERM（rs.rs:504-507）。可观察行为分叉真实。
+- **勘误（fix-guard 复核）**：V13 扫描称"任何 todo/文档都没有登记"**不准确**——25-rs-services.md 已把 MAKE_VM 登记为 **A-8 缺口**（§3.9/:440/:477 差异表 ❌ 行）。真实残余只有两小件：rs.rs 的拒绝注释没有指向该偏差行（后人无从发现登记）、todo 侧无豁免条目。
+- **处置**：rs.rs:504 注释改为指向 25-rs-services.md §3.9/§3.10 + C 行号锚点（✅）；本条即 todo 侧登记（✅）。
 
 ### V13-P2-5（P2 权限链断裂，fail-closed 方向）RS_SET_PRIV 的 call_mask 硬编码 None
 
@@ -342,6 +342,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **测试**：无新增——test 构建下行为与原 debug_assert 完全一致（audit 通道在 test/no-feature 下编译剔除，无可断言面；诚实标注 UNVERIFIED-for-test，验证为 grep + clippy + 499 全绿回归）
 - **Verified**: `cargo test -p minix-vm --lib` → **499 passed / 0 failed**；clippy servers/vm 0 警告
 - **Docs**: 15-ipc-dispatch.md §1.5 增补 release 可观测性说明段
+
+### ✅ Fix #68: V13-P2-4 — MAKE_VM 拒绝注释锚定到已登记偏差（含扫描勘误）
+
+- **勘误**：V13 扫描称 MAKE_VM"无任何偏差登记"不准确——25-rs-services.md §3.9/§3.10 已登记为 A-8 缺口（scan 时未深查该文档的差异表，Step 1.0e 教训）。真实残余：rs.rs 拒绝注释无指向锚。
+- **Files**: `rs.rs`（MakeVmInstance 臂注释指向 25-rs-services.md §3.9/§3.10 + C rs.c:218 行为描述）
+- **测试**：无新增（纯注释变更）；`cargo test -p minix-vm --lib` → 499 passed 回归
+- **Verified**: clippy servers/vm 0 警告
+- **Docs**: 25-rs-services.md 已有登记，无需改动；本条 + todo V13-P2-4 条目勘误即登记闭环
 
 ---
 

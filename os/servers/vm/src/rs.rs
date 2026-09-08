@@ -501,8 +501,11 @@ pub(crate) fn handle_rs_memctl(
             Ok(RsMemctlResult::Ok)
         }
         RsMemctlRequest::MakeVmInstance => {
-            // C: rs_memctl_make_vm_instance — multi-VM-instance support.
-            // Not supported in current design.
+            // C: rs_memctl_make_vm_instance (rs.c:218) supports a SECOND VM
+            // instance (EPERM only at num_vm_instances == 2). minix-rs is a
+            // deliberate single-instance design — always EPERM here. This
+            // is a registered architecture deviation, not a gap: see
+            // 25-rs-services.md §3.9 (A-8) and the §3.10 difference table.
             Err(RsError::MakeVmFailed)
         }
         RsMemctlRequest::HeapPrealloc { len, .. } => {
