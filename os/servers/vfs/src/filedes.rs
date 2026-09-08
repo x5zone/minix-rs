@@ -13,9 +13,12 @@ use core::cell::Cell;
 
 use minix_types::{Endpoint, Mode, UserSlot};
 
+use crate::device_map::split_smap_dev;
 use crate::filp::{FILP_CLOSED, FilpId, FilpTable};
 use crate::fproc::{FProc, OPEN_MAX};
-use crate::vnode::{VnodeId, VnodeTable};
+use crate::mount::DevCodec;
+use crate::open::{S_IFCHR, S_IFMT, S_IFREG, S_IFSOCK};
+use crate::vnode::{Vnode, VnodeId, VnodeTable};
 
 /// `Fd` — typed file descriptor `0..255` (u8 bound makes `256` unrepresentable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -196,34 +199,74 @@ pub fn invalidate_filp(filp_table: &mut FilpTable, id: FilpId) {
     }
 }
 
-/// `invalidate_filp_by_endpt` — `filedes.c:298-306`
-/// `filp_count != 0 && filp_vno != NULL && filp_vno->v_fs_e == proc_e → CLOSED`.
-///
-/// The vnode table supplies the `v_fs_e` probe (C dereferences
-/// `f->filp_vno->v_fs_e` directly; Rust keeps the tables separate, so the
-/// probe is an explicit parameter).  A dying FS must invalidate only the
-/// filps that belong to it — not the whole table.  Returns the number of
-/// filps matching the predicate (C returns void; the count is an audit aid).
-pub fn invalidate_by_endpoint(
+/// Family scan shared by the `invalidate_filp_*` predicates — `filedes.c:250-306`:
+/// `filp_count != 0 && filp_vno != NULL && vnode predicate → FILP_CLOSED`.
+/// Returns the number of filps matching (C returns void; the count is an
+/// audit aid for tests and driver-death bookkeeping).
+fn invalidate_filps_where(
     filp_table: &mut FilpTable,
     vnode_table: &VnodeTable,
-    proc_e: Endpoint,
+    matches: impl Fn(&Vnode) -> bool,
 ) -> usize {
     let mut cnt = 0;
     for i in 0..filp_table.len() {
         let id = FilpId(i);
         if let Some(f) = filp_table.get(id) {
-            let matches = f.count != 0
+            let hit = f.count != 0
                 && f.vnode
                     .and_then(|v| vnode_table.get(VnodeId(v)))
-                    .map_or(false, |vn| vn.fs == proc_e);
-            if matches {
+                    .map_or(false, |vn| matches(vn));
+            if hit {
                 invalidate_filp(filp_table, id);
                 cnt += 1;
             }
         }
     }
     cnt
+}
+
+/// `invalidate_filp_by_endpt` — `filedes.c:298-306`
+/// `filp_count != 0 && filp_vno != NULL && filp_vno->v_fs_e == proc_e → CLOSED`.
+///
+/// The vnode table supplies the `v_fs_e` probe (C dereferences
+/// `f->filp_vno->v_fs_e` directly; Rust keeps the tables separate, so the
+/// probe is an explicit parameter).  A dying FS must invalidate only the
+/// filps that belong to it — not the whole table.
+pub fn invalidate_by_endpoint(
+    filp_table: &mut FilpTable,
+    vnode_table: &VnodeTable,
+    proc_e: Endpoint,
+) -> usize {
+    invalidate_filps_where(filp_table, vnode_table, |vn| vn.fs == proc_e)
+}
+
+/// `invalidate_filp_by_char_major` — `filedes.c:254-267`:
+/// char-special files on the dying driver's major —
+/// `S_ISCHR(v_mode) && major(v_sdev) == major → CLOSED`.
+pub fn invalidate_by_char_major(
+    filp_table: &mut FilpTable,
+    vnode_table: &VnodeTable,
+    major: u32,
+) -> usize {
+    invalidate_filps_where(filp_table, vnode_table, |vn| {
+        (vn.mode & S_IFMT) == S_IFCHR && DevCodec::major(vn.sdev) == major
+    })
+}
+
+/// `invalidate_filp_by_sock_drv` — `filedes.c:269-295`:
+/// sockets owned by the dying socket driver with smap number `num` —
+/// `S_ISSOCK(v_mode) && get_smap_by_dev(v_sdev).smap_num == num → CLOSED`.
+/// The smap row's liveness stays with the table owner (`split_smap_dev`
+/// decodes the device number only).
+pub fn invalidate_by_sock_drv(
+    filp_table: &mut FilpTable,
+    vnode_table: &VnodeTable,
+    num: u32,
+) -> usize {
+    invalidate_filps_where(filp_table, vnode_table, |vn| {
+        (vn.mode & S_IFMT) == S_IFSOCK
+            && split_smap_dev(vn.sdev).map_or(false, |(row, _)| row == num)
+    })
 }
 
 /// `do_copyfd` kind — `filedes.c:524` `COPYFD_FROM/TO/CLOSE`.
@@ -416,6 +459,69 @@ mod tests {
         // Cloexec copy: From clears CLOEXEC in our impl (flags&=~CLOEXEC)
         // So dst cloexec should not be set
         assert!(!dst.cloexec_set.get(0));
+    }
+
+    #[test]
+    fn test_invalidate_by_char_major() {
+        // C: only char-special filps on the dying driver's major die
+        // (filedes.c:254-267); other majors and non-char files survive.
+        let mut tbl = FilpTable::new();
+        let mut vtbl = VnodeTable::new();
+        // alloc→inc interleaved: `alloc_filp` does not reserve the slot
+        // (C's allocation site sets `filp_count = 1` inline, open.c:134).
+        let fid1 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid1);
+        let fid2 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid2);
+        let fid3 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid3);
+        tbl.get_mut(fid1).unwrap().vnode = Some(1);
+        tbl.get_mut(fid2).unwrap().vnode = Some(2);
+        tbl.get_mut(fid3).unwrap().vnode = Some(3);
+        vtbl.get_mut(VnodeId(1)).unwrap().mode = S_IFCHR | 0o600;
+        vtbl.get_mut(VnodeId(1)).unwrap().sdev = DevCodec::make(4, 0);
+        vtbl.get_mut(VnodeId(2)).unwrap().mode = S_IFCHR | 0o600;
+        vtbl.get_mut(VnodeId(2)).unwrap().sdev = DevCodec::make(5, 0);
+        vtbl.get_mut(VnodeId(3)).unwrap().mode = S_IFREG; // regular file
+        vtbl.get_mut(VnodeId(3)).unwrap().sdev = DevCodec::make(4, 0);
+        let n = invalidate_by_char_major(&mut tbl, &vtbl, 4);
+        assert_eq!(n, 1);
+        assert_eq!(tbl.get(fid1).unwrap().mode, FILP_CLOSED);
+        assert_ne!(tbl.get(fid2).unwrap().mode, FILP_CLOSED);
+        assert_ne!(tbl.get(fid3).unwrap().mode, FILP_CLOSED);
+    }
+
+    #[test]
+    fn test_invalidate_by_sock_drv() {
+        // C: only sockets owned by the dying socket driver (smap number)
+        // die (filedes.c:269-295); other numbers and non-sockets survive.
+        let mut tbl = FilpTable::new();
+        let mut vtbl = VnodeTable::new();
+        // alloc→inc interleaved: `alloc_filp` does not reserve the slot
+        // (C's allocation site sets `filp_count = 1` inline, open.c:134).
+        let fid1 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid1);
+        let fid2 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid2);
+        let fid3 = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid3);
+        tbl.get_mut(fid1).unwrap().vnode = Some(1);
+        tbl.get_mut(fid2).unwrap().vnode = Some(2);
+        tbl.get_mut(fid3).unwrap().vnode = Some(3);
+        vtbl.get_mut(VnodeId(1)).unwrap().mode = S_IFSOCK | 0o600;
+        vtbl.get_mut(VnodeId(1)).unwrap().sdev = crate::device_map::make_smap_dev(1, 7);
+        vtbl.get_mut(VnodeId(2)).unwrap().mode = S_IFSOCK | 0o600;
+        vtbl.get_mut(VnodeId(2)).unwrap().sdev = crate::device_map::make_smap_dev(2, 7);
+        vtbl.get_mut(VnodeId(3)).unwrap().mode = S_IFCHR | 0o600;
+        vtbl.get_mut(VnodeId(3)).unwrap().sdev = crate::device_map::make_smap_dev(1, 7);
+        let n = invalidate_by_sock_drv(&mut tbl, &vtbl, 1);
+        assert_eq!(n, 1);
+        assert_eq!(tbl.get(fid1).unwrap().mode, FILP_CLOSED);
+        assert_ne!(tbl.get(fid2).unwrap().mode, FILP_CLOSED);
+        assert_ne!(tbl.get(fid3).unwrap().mode, FILP_CLOSED);
+        let n = invalidate_by_sock_drv(&mut tbl, &vtbl, 2);
+        assert_eq!(n, 1);
+        assert_eq!(tbl.get(fid2).unwrap().mode, FILP_CLOSED);
     }
 
     #[test]

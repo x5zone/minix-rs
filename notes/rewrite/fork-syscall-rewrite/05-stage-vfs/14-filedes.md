@@ -162,6 +162,8 @@ os/servers/vfs/src/
 | `do_copyfd` | `filedes.c:524` | `FProc::copy_fd(target, fd, kind, cred) -> Result<Fd,FdError>` | `super_user→EPERM / isokendpt→BadEndpoint / S_ISSOCK→EDEADLK / LowestFree→fd / count++` |
 | `invalidate_filp` | `filedes.c:250` | `Filp::invalidate()` | `mode=CLOSED` |
 | `invalidate_filp_by_endpt` | `filedes.c:298` | `invalidate_by_endpoint(&mut FilpTable, &VnodeTable, ep) -> usize` | `v_fs_e==ep → CLOSED` 计数 |
+| `invalidate_filp_by_char_major` | `filedes.c:254` | `invalidate_by_char_major(&mut FilpTable, &VnodeTable, major) -> usize` | `S_ISCHR && major(v_sdev)==major → CLOSED` 计数 |
+| `invalidate_filp_by_sock_drv` | `filedes.c:269` | `invalidate_by_sock_drv(&mut FilpTable, &VnodeTable, num) -> usize` | `S_ISSOCK && smap_num==num → CLOSED` 计数 |
 | `Fd` | `int fd` | `filedes.rs:Fd(u8)` | `TryFrom<usize> → Option<Fd>` 的 `EBADF` 早拒绝 |
 | `FdAllocPolicy` | `get_fd:121 for` | `trait FdAllocPolicy::allocate(table, start)->Option<usize>` | `LowestFree` vs `NextFit` 双实现 |
 
@@ -194,7 +196,9 @@ os/servers/vfs/src/
 | `test_close_ok` | `open.c:690` | `close_fd→NULL + FD_CLR + count--` | `filedes.rs` |
 | `test_cloexec_copy` | `filedes.c:524` | `From→To→Cloexec` 的 `FD_SET` 位集 | `filedes.rs` |
 | `test_invalidate` | `filedes.c:250` | `invalidate→CLOSED` 单写 | `filedes.rs` |
-| `test_invalidate_by_endpt` | `filedes.c:298` | `fs_e==ep→CLOSED` 计数 `2` | `filedes.rs` |
+| `test_invalidate_by_endpt` | `filedes.c:298` | `fs_e==ep→CLOSED` 按端点计数（endpoint 5→1、6→2、他端点不动） | `filedes.rs` |
+| `test_invalidate_by_char_major` | `filedes.c:254` | `S_ISCHR && major==4` 命中；他 major 与 regular 文件不动 | `filedes.rs` |
+| `test_invalidate_by_sock_drv` | `filedes.c:269` | `S_ISSOCK && smap_num==1` 命中；num 2 与 char 设备不动 | `filedes.rs` |
 | `test_copy_from` | `filedes.c:579` | `COPYFD_FROM` 的 `S_ISSOCK→EDEADLK` 守门 | `filedes.rs` |
 | `test_copy_to` | `filedes.c:618` | `COPYFD_TO` 的 `LowestFree` 分配 `fd` | `filedes.rs` |
 | `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 fd` 回滚 | `filedes.rs` |

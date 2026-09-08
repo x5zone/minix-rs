@@ -48,7 +48,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（exec.rs 对 cloexec 零消费）、invalidate 失效族（by_char_major/by_sock_drv 仍零匹配）、vmnt 锁升降级（仍只有 try_lock/unlock，vmnt.rs:72/:90）、fetch_vmnt_paths、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event/panic_hook、有意省略表未建。
+逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（exec.rs 对 cloexec 零消费）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（仍只有 try_lock/unlock，vmnt.rs:72/:90）、fetch_vmnt_paths、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event/panic_hook、有意省略表未建。
 
 **C-5 漂移修正**：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实（该字段早于首轮存在）。缺口收窄为：**stadir.rs 的 `walk_plan`（stadir.rs:203 一带）与 getvfsstat 响应不产出路径**（`MountView` 仍只有 `in_use`/`canstat`）。修复时以本条为准，勿再扩表结构。
 
@@ -307,3 +307,12 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：签名 `(filp_table, vnode_table: &VnodeTable, proc_e)`——`count != 0 && vnode 表探针 fs == proc_e → CLOSED`，单遍完成（filedes.c:298-306 逐字对应）；按 C 去掉 `mode != FILP_CLOSED` 排除（对已关闭 filp 重置幂等合法）。设计取舍：C 的 `f->filp_vno->v_fs_e` 二跳解引在表分离模型下变成显式 `&VnodeTable` 参数（单一事实源），否决首轮"次选：Filp 冗余存 fs_endpoint"——两个真相源会在 vnode 回收复用时失同步（与 P2-5 的 generation 教训同向）。对照：Linux superblock 死亡的 `invalidate_inodes` 同样按 sb 归属遍历，不冗余存归属字段。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **336 passed / 0 failed**；测试升级为三 filp × 双端点矩阵（endpoint 5 → 仅 fid1；endpoint 6 → fid2+fid3；其余 filp 不动）。
 - **边界**：C-3 的 by_char_major/by_sock_drv 是同族缺口（下一轮 Fix #6，复用本轮的"显式表参数"模式）；P2-5（`filp.vnode` 裸 `usize` → `VnodeId`）落地时本函数与测试同步改型。
+
+### ✅ Fix #6: C-3 — invalidate_filp_by_char_major / by_sock_drv 补齐（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（家族助手 + 两新函数 + 两新测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（实现表/测试表）。
+- **Before**：`by_char_major`/`by_sock_drv` 全 crate 零匹配（首轮 C-3）；驱动死亡级联只有 by_endpoint 一条规则。
+- **After**：家族共享私有助手 `invalidate_filps_where`（`count != 0 && vnode 谓词 → CLOSED`，一个扫描三个谓词），`invalidate_by_endpoint` 重构复用（行为不变，Fix #5 的测试原样通过）；`invalidate_by_char_major` = `S_ISCHR && DevCodec::major(v_sdev) == major`（filedes.c:254-267），`invalidate_by_sock_drv` = `S_ISSOCK && split_smap_dev(v_sdev).num == num`（filedes.c:269-295；smap 行活性归表所有者，与 device_map 的注释契约一致）。
+- **测试踩坑与 C 锚点**：初版测试用元组连续 `alloc_filp` 后才 `inc_count`——`alloc_filp` 不预留槽位（C 的分配点 `open.c:134` 立即 `filp_count = 1`，Rust 延迟给调用方，get_fd 注释已声明），三次分配全落槽位 0。测试改为交错分配并在注释标注该契约；`alloc_filp` 的延迟置位语义保持现状（属 get_fd 组合层设计，不自作主张改签名），后续轮次若发现第三个踩坑点再评估立条。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**（336→338）。
+- **边界**：R2-P1-3（sdev_stop 驱动死亡级联——本族 + smap unmap + select 唤醒的触发序设计，下一步）；P2-5（`filp.vnode` 裸 usize 类型化时三函数同步改型）。
