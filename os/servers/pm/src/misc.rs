@@ -60,6 +60,9 @@ pub enum MiscError {
     Nosys,
     Fault,
     Busy,
+    /// 内核/VM 服务的原始负 errno（C 全程透传 `r`，misc.c:430-431/441-442；
+    /// V3-P2-6：不再折叠为 EINVAL）。
+    Kernel(i32),
 }
 
 impl MiscError {
@@ -73,6 +76,7 @@ impl MiscError {
             Self::Nosys => ENOSYS,
             Self::Fault => minix_types::EFAULT,
             Self::Busy => minix_types::EBUSY,
+            Self::Kernel(r) => r,
         }
     }
 }
@@ -457,7 +461,10 @@ pub fn do_getrusage(
 ) -> Result<UtimeStimePair, MiscError> {
     let ep = table.procs[caller.get()].endpoint();
     let (utime, stime) = match who {
-        RusageWho::Slf => ctl.sys_times(ep).map_err(|_| MiscError::Inval)?,
+        // C misc.c:430-431 透传内核返回值（V3-P2-6：seam 的错误原样
+        // 上抛，不再折叠 EINVAL；TimesVmCtl 生产实现的原始 errno 保留在
+        // MiscError::Kernel 载荷中）。
+        RusageWho::Slf => ctl.sys_times(ep)?,
         RusageWho::Children => {
             let p = &table.procs[caller.get()];
             (p.resources.child_utime, p.resources.child_stime)
@@ -465,7 +472,8 @@ pub fn do_getrusage(
     };
     let (u_sec, u_usec) = rusage_from_ticks(utime, hz);
     let (s_sec, s_usec) = rusage_from_ticks(stime, hz);
-    ctl.vm_rusage(ep, who).map_err(|_| MiscError::Inval)?;
+    // C misc.c:441-442 透传 vm_getrusage 返回值（V3-P2-6）。
+    ctl.vm_rusage(ep, who)?;
     // C would sys_datacopy rusage; we return the decomposed times for testability
     Ok(((u_sec, u_usec), (s_sec, s_usec)))
 }

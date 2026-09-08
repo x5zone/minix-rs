@@ -74,6 +74,9 @@ pub enum SchedError {
     Perm,
     Acces,
     NiceInval,
+    /// 内核/调度器服务的原始负 errno（C 全程透传 `r`，schedule.c:108；
+    /// V3-P2-6：不再折叠为 EINVAL）。
+    Kernel(i32),
 }
 
 impl SchedError {
@@ -84,6 +87,7 @@ impl SchedError {
             Self::Perm => EPERM,
             Self::Acces => EACCES,
             Self::NiceInval => EINVAL,
+            Self::Kernel(r) => r,
         }
     }
 }
@@ -216,7 +220,8 @@ pub fn sched_start_user(table: &mut ProcTable, ep: Endpoint, rmp_slot: UserSlot,
     let inherit_from = inherit_parent_precise(table, parent_slot);
     let res = sched.inherit(scheduler, ep, inherit_from, maxprio as u32);
     if res != 0 {
-        return Err(SchedError::Inval);
+        // C schedule.c:83 透传 rv（V3-P2-6：不折叠 EINVAL）。
+        return Err(SchedError::Kernel(res));
     }
     table.procs[rmp_slot.get()].resources.scheduler = scheduler;
     Ok(())
@@ -233,7 +238,8 @@ pub fn sched_nice(table: &mut ProcTable, rmp_slot: UserSlot, nice: i32, sched: &
     let ep = table.procs[rmp_slot.get()].endpoint();
     let res = sched.set_nice(scheduler, ep, maxprio);
     if res != 0 {
-        return Err(SchedError::Inval);
+        // C schedule.c:108 透传 rv（V3-P2-6）。
+        return Err(SchedError::Kernel(res));
     }
     Ok(())
 }

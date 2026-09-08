@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2（#48/#50）+ V2-P2-7/P2-8（#49）+ V3-P2-3（#51）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4（#48/#50/#51/#52）+ V2-P2-7/P2-8（#49）+ V3-P2-6（#44/#53）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -485,13 +485,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **建议**：随批次 G 的 wire 解码一次做齐：req 参数还原 + IOCGROUP 门 + 两个边界 + 顺序对齐 + sysuname 方向分支。
 - **验证**：分支矩阵测试（对照 C 每个错误码路径）。
 
-#### V3-P2-6 错误码折叠为 EINVAL 的横切模式（内核/服务真实 errno 被吞）
+#### V3-P2-6 错误码折叠为 EINVAL 的横切模式（✅ 已修复 2026-09-09，Fix #44/ #53）
 
-- **优先级**：P2；**类型**：错误保真（违反"错误类型必须映射 Minix3 errno 值"的保真面——映射本身合法，折叠丢信息）
-- **证据**（三文件同模式）：`sched.rs:207-209, 224-226`（sched.inherit/set_nice 失败→`SchedError::Inval`，C schedule.c:79/108 透传 rv）；`trace.rs:237-238, 256-258`（ctl.trace 非 OK→`TraceError::Inval`，C trace.c:246 透传 r）；`misc.rs:452, 460`（sys_times/vm_rusage 失败→`MiscError::Inval`，C misc.c:430-431/441-442 透传）
-- **问题**：三类错误枚举把底层真实 errno（如内核返回的 EPERM/EFAULT）折叠成统一 EINVAL。用户态观察到的 errno 与 C 不一致，且排障时丢失真实病因。
-- **建议**：一次小重构：三个错误枚举各加 `Raw(i32)` 载荷变体（或为透传型调用直接返回 `Result<i32, i32>`），`to_errno` 透传。涉及 sched.rs/trace.rs/misc.rs + 各自测试。
-- **验证**：mock 注入非 EINVAL 底层错误 → 用户态收到同值 errno。
+- **原状态**：sched（inherit/set_nice）、trace（sys_trace 透传）、misc（getrusage 的 sys_times/vm_rusage）三处把底层真实 errno 折叠为 EINVAL；C 全程透传 `r`。
+- **修复**：trace 已随 Fix #44（`TraceError::Kernel(i32)`）；本批（Fix #53）补 sched（`SchedError::Kernel(i32)`，inherit/set_nice 透传 C schedule.c:83/108 的 rv）与 misc（getrusage 的 seam 错误原样上抛不再 `map_err(|_| Inval)`，TimesVmCtl 生产实现的原始 errno 经 `MiscError::Kernel` 载荷保留）。同时 crate 级规约落 plan.md：**透传型调用的错误必须保真，只有 PM 自身判定才产生语义化枚举变体**。
+- **验证**：mock 注入非 EINVAL 底层错误 → 用户态收到同值 errno（sched/ming 的 Kernel 载荷测试随批次 F/C 的接线测试补强）。
 
 #### V3-P2-7 publish_event 的裸指针四路借用拆分可免（删 unsafe）
 
