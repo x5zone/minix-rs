@@ -203,9 +203,9 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 - **判定**：minix-rs 的两端（Rust 内核/libc 侧未来统一用 minix-types）自洽，**当下不是通信 bug**；错位意味着"按 C libc 语义写 minix-sys 消费方时会接错字段"——与 V12 已修的 vmmcp reply 同族风险，且丢掉了 C "一结构一 `_ASSERT_MSG_SIZE` 断言"的防线（12 个 VM payload 结构仅 MessVmmcpReply 有 56 字节断言，message.rs:3606）。
 - **修改方案**：按 `minix-types::ipc::rs_start`/`rprocpub` 的既有样式（Fix #81/#85 模板）为五结构补专属 wire struct + `size_of`/`offset_of` 断言；解码函数从 overlay 切到专属结构。顺带补齐其余 VM 结构缺失的 56 字节断言（D5）。**时点**：可与 E-RSWIRE/minix-sys 消费定稿同批（edge E-RSWIRE 增补第 3 点），纯单测可先行。
 
-### V13-P3-1（P3 观测与卫生批）
+### ✅ V13-P3-1（P3 观测与卫生批）之 1——已修复 2026-09-09（§18.9 Fix #67）；之 2 挂 E-VFSWIRE
 
-1. **VM_PAGEFAULT 伪造源检查仅 debug_assert**：C 对非内核来源的故障消息 release 也 printf（main.c:154-157，之后仍处理）；Rust 仅 `debug_assert!(rcv_sts.is_from_kernel())`（vm_server.rs:1245-1248 一带）→ release 下零观测。两侧都"不拒绝"（行为等价），差距只在可观测性——补一行 `audit_log!` 即平。
+1. **VM_PAGEFAULT 伪造源检查仅 debug_assert**：C 对非内核来源的故障消息 release 也 printf（main.c:154-157，之后仍处理）；Rust 仅 `debug_assert!(rcv_sts.is_from_kernel())`（vm_server.rs:1245-1248 一带）→ release 下零观测。~~修复：补一行 `audit_log!`~~ ✅ Fix #67。
 2. **exit 不清 vfs_queue 挂起请求**：`VfsRequestQueue` 无按 owner 取消 API（vfs_queue.rs 全部 pub fn 清单无 purge/cancel）；进程退出后其 FdIo/FdLookup 请求留队。VFS wire 未通（E-VFSWIRE）前无实际后果；wire 落地时 `handle_reply` 需要死进程路径兜底（对照 C do_vfs_reply 的 vm_isokendpt 检查）——挂 E-VFSWIRE 时点对账，暂不立项。
 
 ### 18.3 复核认定无缺口的面（防重复扫描，本轮已查）
@@ -333,6 +333,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **测试（新增 1）**：`test_run_once_exiting_caller_denied_enosys`——EXITING 调用者发 VM_INFO → 恰好一条 ENOSYS 回复、handler 未执行
 - **Verified**: `cargo test -p minix-vm --lib` → **499 passed / 0 failed**；clippy servers/vm 0 警告
 - **Docs**: 04-acl.md §4.4 门禁代码块更新 + "None 即拒绝"设计说明段
+
+### ✅ Fix #67: V13-P3-1(1) — 伪造 fault 源的 release 可观测性（audit 对齐 C 的 release printf）
+
+- **问题**：`debug_assert!(rcv_sts.is_from_kernel())` 在 release 下连条件带断言一起编译掉——伪造 fault 消息静默通过；C 的 release 保留 printf（main.c:154-157）后照常处理。行为面两侧等价（都容忍伪造），差距纯在可观测性。
+- **设计**：显式 `if !is_from_kernel()` 块——测试构建保持 debug_assert 硬失败语义，release 走 `audit_log!` 记 `[VM PF] faked pagefault source`。
+- **Files**: `vm_server.rs`（P3 分支改写）
+- **测试**：无新增——test 构建下行为与原 debug_assert 完全一致（audit 通道在 test/no-feature 下编译剔除，无可断言面；诚实标注 UNVERIFIED-for-test，验证为 grep + clippy + 499 全绿回归）
+- **Verified**: `cargo test -p minix-vm --lib` → **499 passed / 0 failed**；clippy servers/vm 0 警告
+- **Docs**: 15-ipc-dispatch.md §1.5 增补 release 可观测性说明段
 
 ---
 

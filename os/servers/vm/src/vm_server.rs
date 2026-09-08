@@ -1258,10 +1258,16 @@ impl VmServer {
 
         // Priority 3: VM_PAGEFAULT (main.c:153-164)
         if m_type == VM_PAGEFAULT {
-            debug_assert!(
-                rcv_sts.is_from_kernel(),
-                "faked VM_PAGEFAULT from {:?}", source
-            );
+            // V13-P3-1: C logs a faked pagefault in release too (printf,
+            // main.c:154-157) and then handles it regardless — both sides
+            // tolerate the forgery, C just stays observable. `debug_assert!`
+            // alone compiles the whole check away in release; evaluating the
+            // flag unconditionally keeps the audit line alive there without
+            // changing the (tolerant) behavior.
+            if !rcv_sts.is_from_kernel() {
+                debug_assert!(false, "faked VM_PAGEFAULT from {:?}", source);
+                audit_log!("[VM PF] faked pagefault source: {:?}", source);
+            }
             let reply = self.dispatch_pagefault(msg);
             // V9-P1-1: never silently drop a pagefault failure — the faulting
             // process stays suspended and would otherwise re-fault forever

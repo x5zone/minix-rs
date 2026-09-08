@@ -95,6 +95,8 @@ if (is_ipc_notify(rcv_sts)) {
 
 **Rust 对应（V10-P1-1）**：状态字解析收敛为 `IpcStatus` 方法——`is_notify()`（transport.rs:58，`(flags & 0x3F) == NOTIFY`）与 `is_from_kernel()`（transport.rs:69，`((flags >> 16) & 1) != 0`，`IPC_FLG_MSG_FROM_KERNEL` 位）。主循环在 endpoint 校验**之前**跳过通知（vm_server.rs:639），P3 分支用 `rcv_sts.is_from_kernel()` 做 `debug_assert`（vm_server.rs:813）。`flags` 的真实来源待 kernel IPC core（`KernelIpcTransport::receive` 填充）；默认 `IpcStatus::default()` 下两者恒 false。
 
+**release 可观测性（V13-P3-1，2026-09-09）**：单纯的 `debug_assert!` 在 release 下把整个检查连同条件一起编译掉——伪造消息静默通过，弱于 C（release 保留 printf 后照常处理）。现改为显式 `if !is_from_kernel()`：测试构建仍是硬失败（debug_assert 语义不变），release 走 `audit_log!` 记一行 `[VM PF] faked pagefault source`。两侧行为面不变（都不拒绝伪造消息），差距只在可观测性，现已对齐。
+
 ### 1.6 对照：Redox 与 Linux
 
 **Redox**：系统调用在**内核侧**用 `syscall` 分发表（`kernel/src/syscall/mod.rs`）按编号路由；服务端收到 `scheme` 消息后自己 `match` 请求类型。与 VM 相同的是"编号→处理函数"的映射思想；不同的是 Redox 的分发表在内核、VM 的在用户态服务内。
