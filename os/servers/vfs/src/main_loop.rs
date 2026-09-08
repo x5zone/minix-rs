@@ -125,7 +125,9 @@ pub enum NotifyKind {
 /// `TRNS_GET_ID` / `VFS_TRANSID` codec — canonical definition lives in
 /// `fs_comm.rs` (the protocol owner); re-exported here so the route layer
 /// and its tests share one contract (P2-6 convergence, `ARCH A-4`).
-pub use crate::fs_comm::{TestTransIdCodec, TransIdCodec, VfsTransIdCodec};
+pub use crate::fs_comm::{TransIdCodec, VfsTransIdCodec};
+#[cfg(test)]
+pub use crate::fs_comm::TestTransIdCodec;
 
 /// VFS startup phase.
 ///

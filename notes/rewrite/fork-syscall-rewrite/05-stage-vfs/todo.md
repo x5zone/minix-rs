@@ -71,7 +71,7 @@
 
 - P2-1 **数字漂移修正**：现为 **30 个 `pub enum *Error` + 30 个 `fn to_errno`**（首轮 20/29，全 crate grep 实测）；两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。方案已被本轮修订：否决"crate 级单一 VfsError"大收敛，改为接入 minix-types 的 `ToErrno` 通道——见 **R2-P2-1**。
 - P2-2 复核 ✅：call_table.rs 64 臂同构 match、`CallTable`:206、`NullResolver`:350 原样；本轮 R2-P1-2 给出它的终局（随绑定层落地删除）。
-- P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。
+- P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。**✅ 已修复** 2026-09-09（§10 Fix #17：11 个替身定义与 impl 全部 `#[cfg(test)]` 圈定，含 fcntl.rs:752 的 `ScriptedFcntl` 与 fs_comm 的 `TestTransIdCodec`——后者连带把 main_loop 的 re-export 拆为条件导出）。
 - P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。**✅ 已修复** 2026-09-09（§10 Fix #14：移 cfg(test) 更名 `NextFitDemo`，辩护注释的假语义一并修正——C 与 Linux 的 fd 分配都是 start 起最低空闲，不存在第二真实策略）。
 - ✅ P2-5 已修复 2026-09-09（§10 Fix #15）：`device_map` 全线 `Option<i32>` 端点 → `Option<Endpoint>`（DmapEntry/SmapEntry 字段、driver_match/get_by_endpt/unmap_by_endpt/map_driver/check_mapper/EndpointDirectory/smap_by_endpt/smap_endpt_by_dev/RegisterPlan、CTTY_ENDPT/RS_PROC_NR 常量）；`filp::find_by_vnode(usize) → VnodeId`。bdev/cdev 各自决策函数的 i32 参数为 wire 边界，保持并注明。
 - P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。**✅ 已修复** 2026-09-09（§10 Fix #13：收敛到 fs_comm 协议属主，main_loop re-export，-63 行重复）。
@@ -353,6 +353,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：模块头只列四个 C 来源文件名，未说各自落点；按 C `device.c` 索引的读者找不到 ioctl 决策三函数。
 - **After**：模块头增函数级 source map（dmap.c / smap.c / device.c / mapdriver 四行，各列对应 Rust 符号；device.c 行注明授权创建半属内核 IPC 束）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（注释级）。
+
+### ✅ Fix #17: P2-3 — 11 个测试替身移出生产编译单元（2026-09-09）
+
+- **File**：request.rs（MockFsClient）/ bdev.rs（ScriptedTransport）/ cdev.rs（NoTty）/ sdev.rs（ScriptedChannel、SilentChannel）/ socket.rs（EmptyTable、ScriptedAlloc、FailingAlloc）/ fs_comm.rs（MockTransport、TestTransIdCodec）/ fcntl.rs（ScriptedFcntl），共 21 个项（struct + impl 块）加 `#[cfg(test)]`；main_loop 的 re-export 拆为 `TestTransIdCodec` 条件导出。
+- **Before**：11 个替身以 `pub` 定义在各文件 `#[cfg(test)] mod tests` 之前的生产编译单元——no_std 生产库的公共 API 被测试脚手架污染。
+- **After**：逐项 `#[cfg(test)]` 圈定（保留源位置，不物理搬移——同文件 tests 经 `use super::*` 照常可见）；path.rs 的伪造抽象族不在本条（R2-P1-1 的重设计范围）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`cargo check` 无生产单元替身残留警告。
 
 ### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
 

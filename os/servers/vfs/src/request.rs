@@ -496,11 +496,13 @@ impl FsClient for BlockingFsClient {
 
 /// Mock client — records requests, injects `ERESTART` for `BRead` `Try`.
 #[derive(Debug, Default)]
+#[cfg(test)]
 pub struct MockFsClient {
     pub sent: Vec<(FsReq, GrantScope)>,
     pub inject_restart: bool,
 }
 
+#[cfg(test)]
 impl FsClient for MockFsClient {
     fn send(&mut self, req: FsReq, scope: GrantScope) -> Result<FsResp, FsError> {
         self.sent.push((req.clone(), scope));

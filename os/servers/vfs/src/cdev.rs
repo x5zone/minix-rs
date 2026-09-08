@@ -57,6 +57,7 @@ impl TtySource for FixedTty {
 /// Behaves differently from [`FixedTty`] (answer vs refusal), satisfying
 /// the "two behaviorally different impls" rule for traits.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct NoTty;
 
 impl TtySource for NoTty {

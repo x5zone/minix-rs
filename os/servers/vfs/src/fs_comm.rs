@@ -97,10 +97,12 @@ impl TransIdCodec for VfsTransIdCodec {
 
 /// Test codec with different base — `0xC00` vs `0xB00`.
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 pub struct TestTransIdCodec {
     pub base: u32,
 }
 
+#[cfg(test)]
 impl TransIdCodec for TestTransIdCodec {
     fn encode(&self, slot: usize) -> u32 {
         (self.base + 1) + slot as u32
@@ -435,12 +437,14 @@ impl FsTransport for BlockingTransport {
 
 /// Mock transport — records messages, never waits, for tests.
 #[derive(Debug, Default)]
+#[cfg(test)]
 pub struct MockTransport {
     pub sent_fs: Vec<(usize, SlotId)>,
     pub sent_drv: Vec<(Endpoint, SlotId)>,
     pub sent_vm: Vec<SlotId>,
 }
 
+#[cfg(test)]
 impl FsTransport for MockTransport {
     fn send_fs(
         &mut self,

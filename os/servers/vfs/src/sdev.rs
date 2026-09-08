@@ -228,11 +228,13 @@ pub trait SockChannel {
 
 /// Scripted channel: replays events in order (test double).
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct ScriptedChannel {
     script: &'static [ChannelEvent],
     at: usize,
 }
 
+#[cfg(test)]
 impl ScriptedChannel {
     /// New channel replaying `script`.
     pub fn new(script: &'static [ChannelEvent]) -> Self {
@@ -252,6 +254,7 @@ impl ScriptedChannel {
     }
 }
 
+#[cfg(test)]
 impl SockChannel for ScriptedChannel {
     fn roundtrip(&mut self, _expect: ReplyKind) -> Result<i32, SdevError> {
         match self.next() {
@@ -274,6 +277,7 @@ impl SockChannel for ScriptedChannel {
 /// programmable script), satisfying the "two behaviorally different
 /// impls" rule for traits.
 #[derive(Debug, Default, Clone, Copy)]
+#[cfg(test)]
 pub struct SilentChannel;
 
 impl SockChannel for SilentChannel {

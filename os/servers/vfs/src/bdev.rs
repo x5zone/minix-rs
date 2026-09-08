@@ -84,11 +84,13 @@ pub trait SendTransport {
 /// Each `send` consumes the next script entry; past the end it repeats
 /// the last one, so short scripts drive long retries deterministically.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct ScriptedTransport {
     script: &'static [SendOutcome],
     at: usize,
 }
 
+#[cfg(test)]
 impl ScriptedTransport {
     /// New transport replaying `script`.
     pub fn new(script: &'static [SendOutcome]) -> Self {
@@ -101,6 +103,7 @@ impl ScriptedTransport {
     }
 }
 
+#[cfg(test)]
 impl SendTransport for ScriptedTransport {
     fn send(&mut self) -> SendOutcome {
         let last = self.script.len().saturating_sub(1);

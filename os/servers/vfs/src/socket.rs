@@ -229,6 +229,7 @@ impl SockLookup for TableLookup {
 /// programmed answers), satisfying the "two behaviorally different impls"
 /// rule for traits.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct EmptyTable;
 
 impl SockLookup for EmptyTable {
@@ -282,6 +283,7 @@ pub trait FdAllocator {
 
 /// Scripted allocator (test double with programmed answers).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ScriptedAlloc {
     /// Programmed results, consumed in order.
     pub script: [Result<i32, SockError>; 8],
@@ -293,6 +295,7 @@ pub struct ScriptedAlloc {
     pub nlanded: usize,
 }
 
+#[cfg(test)]
 impl ScriptedAlloc {
     /// Landings hand out `fd` values from `first` upward.
     pub fn fds_from(first: i32) -> Self {
@@ -324,6 +327,7 @@ impl ScriptedAlloc {
     }
 }
 
+#[cfg(test)]
 impl FdAllocator for ScriptedAlloc {
     fn alloc(&mut self, spec: SockFdSpec) -> Result<i32, SockError> {
         if self.nlanded < self.landed.len() {
@@ -342,8 +346,10 @@ impl FdAllocator for ScriptedAlloc {
 /// programmed answers), satisfying the "two behaviorally different impls"
 /// rule for traits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct FailingAlloc(pub SockError);
 
+#[cfg(test)]
 impl FdAllocator for FailingAlloc {
     fn alloc(&mut self, _spec: SockFdSpec) -> Result<i32, SockError> {
         Err(self.0)

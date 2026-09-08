@@ -749,6 +749,7 @@ pub trait FcntlFs {
 
 /// Scripted FS (test double with programmed answers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ScriptedFcntl {
     /// Programmed `ftrunc` answer.
     pub ftrunc_out: Result<(), FcntlError>,
@@ -758,6 +759,7 @@ pub struct ScriptedFcntl {
     pub ncalls: u32,
 }
 
+#[cfg(test)]
 impl Default for ScriptedFcntl {
     fn default() -> Self {
         Self {
@@ -768,6 +770,7 @@ impl Default for ScriptedFcntl {
     }
 }
 
+#[cfg(test)]
 impl FcntlFs for ScriptedFcntl {
     fn ftrunc(
         &mut self,
