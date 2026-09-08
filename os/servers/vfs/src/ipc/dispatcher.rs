@@ -35,6 +35,9 @@ pub enum PmError {
     SlotInUse,
     TooManyGroups,
     NotBlocked,
+    /// A required kernel primitive is not wired yet — `ENOSYS` (fail-closed;
+    /// the wiring lands with the kernel IPC bundle, P1-2 / edge E1).
+    NotImplemented,
 }
 
 impl PmError {
@@ -46,6 +49,7 @@ impl PmError {
             Self::SlotInUse => minix_types::EBUSY,
             Self::TooManyGroups => minix_types::EINVAL,
             Self::NotBlocked => minix_types::EINVAL,
+            Self::NotImplemented => minix_types::ENOSYS,
         }
     }
 }
@@ -95,6 +99,21 @@ pub trait PmHandler {
         groups: &[Gid],
     ) -> Result<(), PmError>;
     fn handle_setsid(&mut self, endpoint: Endpoint) -> Result<(), PmError>;
+    /// `sys_datacopy_wrapper` seam (misc.c:752) — copy `ngroups` gids out of
+    /// `src`'s address space at `addr` into `out`.
+    ///
+    /// Default: fail-closed `ENOSYS`.  The production implementer arrives with
+    /// the kernel IPC primitives (P1-2 / edge E1); once wired, copy failures
+    /// map to `EFAULT` per the 10-pm-protocol.md design decision (C panics).
+    fn fetch_group_list(
+        &mut self,
+        _src: Endpoint,
+        _addr: u64,
+        _ngroups: usize,
+        _out: &mut [Gid],
+    ) -> Result<(), PmError> {
+        Err(PmError::NotImplemented)
+    }
 }
 
 /// Real handler — mutates the live `FProcTable` (and, when wired, `FilpTable` / `VnodeTable`).
@@ -122,12 +141,25 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 group_no,
                 group_addr,
             } => {
-                // In the real kernel the groups are copied via `sys_datacopy`;
-                // for the typed path we accept the count and treat `group_addr`
-                // as opaque (the `copy_fproc` path for `SRV_FORK` does the
-                // same).  Test callers pass a slice directly via `handle_setgroups`.
-                let _ = group_addr;
-                self.handle_setgroups(endpoint, group_no as usize, &[])?;
+                let ngroups = group_no as usize;
+                // C panics on oversize (misc.c:748-750, "too much data to
+                // copy"); the rewrite fails closed with `EINVAL` instead —
+                // same registered deviation as the datacopy failure path
+                // (10-pm-protocol.md D4).
+                if ngroups > crate::fproc::NGROUPS_MAX {
+                    return Err(PmError::TooManyGroups);
+                }
+                if ngroups > 0 {
+                    // `sys_datacopy_wrapper` (misc.c:752): the list lives in
+                    // PM's address space; the port is fail-closed `ENOSYS`
+                    // until the kernel IPC primitives land (P1-2 / edge E1).
+                    let mut buf = [0 as Gid; crate::fproc::NGROUPS_MAX];
+                    self.fetch_group_list(Endpoint::PM, group_addr, ngroups, &mut buf)?;
+                    self.handle_setgroups(endpoint, ngroups, &buf)?;
+                } else {
+                    // `setgroups(0, ...)` clears the list — no copy needed.
+                    self.handle_setgroups(endpoint, 0, &[])?;
+                }
                 Ok(VfsReply::SetGroups)
             }
             VfsCall::SetSid { endpoint } => {
@@ -738,6 +770,58 @@ mod tests {
         assert_eq!(fp.ngroups, 2);
         assert_eq!(fp.supplemental_groups[0], 10);
         assert_eq!(fp.supplemental_groups[1], 20);
+    }
+
+    #[test]
+    fn test_setgroups_datacopy_port_fail_closed_pre_e1() {
+        // C copies the list from PM's address space (misc.c:752).  Until the
+        // kernel IPC primitives land, the port fails closed with `ENOSYS`
+        // and the fproc keeps its previous credentials.
+        let mut table = create_test_table_with_parent();
+        let mut handler = VfsPmHandler { table: &mut table };
+        let err = handler
+            .handle(VfsCall::SetGroups {
+                endpoint: Endpoint::from_generation_slot(1, 0),
+                group_no: 2,
+                group_addr: 0x7000,
+            })
+            .unwrap_err();
+        assert_eq!(err, PmError::NotImplemented);
+        assert_eq!(err.to_errno(), minix_types::ENOSYS);
+        let fp = handler.table.get(UserSlot::new(0)).unwrap();
+        assert_eq!(fp.ngroups, 0);
+    }
+
+    #[test]
+    fn test_setgroups_over_max_fail_closed() {
+        // C panics ("too much data to copy", misc.c:748-750); the rewrite
+        // rejects with EINVAL before any copy attempt (10-pm-protocol.md D4).
+        let mut table = create_test_table_with_parent();
+        let mut handler = VfsPmHandler { table: &mut table };
+        let r = handler.handle(VfsCall::SetGroups {
+            endpoint: Endpoint::from_generation_slot(1, 0),
+            group_no: crate::fproc::NGROUPS_MAX as i32 + 1,
+            group_addr: 0x7000,
+        });
+        assert_eq!(r.unwrap_err(), PmError::TooManyGroups);
+    }
+
+    #[test]
+    fn test_setgroups_zero_clears_without_copy() {
+        let mut table = create_test_table_with_parent();
+        let mut handler = VfsPmHandler { table: &mut table };
+        let ep = Endpoint::from_generation_slot(1, 0);
+        handler.handle_setgroups(ep, 2, &[10, 20]).unwrap();
+        let reply = handler
+            .handle(VfsCall::SetGroups {
+                endpoint: ep,
+                group_no: 0,
+                group_addr: 0,
+            })
+            .unwrap();
+        assert!(matches!(reply, VfsReply::SetGroups));
+        let fp = handler.table.get(UserSlot::new(0)).unwrap();
+        assert_eq!(fp.ngroups, 0);
     }
 
     #[test]

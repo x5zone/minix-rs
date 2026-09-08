@@ -63,7 +63,7 @@
 
 - P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。
 - P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。
-- P1-3 复核 ✅：ipc/dispatcher.rs:129-130 `let _ = group_addr;` + 空切片调用原样。
+- ✅ P1-3 已修复 2026-09-09（§10 Fix #8）：`PmHandler::fetch_group_list` 数据搬运口（`sys_datacopy_wrapper` 接缝，默认 fail-closed `ENOSYS`，通电挂 P1-2/E1）；`SETGROUPS` 臂补 `NGROUPS_MAX → EINVAL` 门（C 为 panic，fail-closed 偏差与 10-pm-protocol.md D4 的 EFAULT 决策同向）+ `group_no==0` 直清 + 正数路径经栈缓冲送真实列表。`PmError::NotImplemented` 变体新增。测试 +3（ENOSYS 预通电态/超限拒绝/零组直清）。
 - P1-4 复核 ✅：select.rs:191-198 `Query { rops, set_update, set_block }` 仍无 clear_update 义务字段。
 - ✅ P1-5 已修复 2026-09-09（§10 Fix #7）：`need_lock: bool` → `FilpLockMode { Opcl, None, ReadWrite }`——`Opcl` 过 `CLOSED` 门（close(2) 特权）、`None` 探测仍拒（C 的门覆盖一切非 `OPCL`，原 bool=false 比 C 宽的缺口闭合）、`ReadWrite` 拒 `CLOSED` 且取锁（filedes.c:186-193）。测试升级为三态矩阵。
 
@@ -324,3 +324,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`FilpLockMode { Opcl, None, ReadWrite }`——门规则 `f.mode == FILP_CLOSED && !matches!(Opcl) → Closed(EIO)`（filedes.c:186-188 逐字对应，注释 "disallow all use except close(2)"）；锁规则 `Opcl|ReadWrite` 且 `locked_by` 已占 → `Busy`（filedes.c:191-193 `locktype != VNODE_NONE` → lock_filp）。设计取舍：`VNODE_READ`/`VNODE_WRITE` 在门与锁两个维度行为相同，合并为一个 `ReadWrite` 变体（不为枚举完整性造无行为差异的变体——Gate D 虚构第二实现的教训，§9.6）；P0-1 的 EIO 语义至此有了正式落点（非 `OPCL` 访问路径在 `get_filp` 处被拒，close 路径在 `close_fd` 直通）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**；`grep -rn "need_lock" os/servers/vfs/src` 仅余 stadir.rs 的无关同名决策函数。
 - **边界**：get_filp 生产消费者随 R2-P1-2 的分发绑定落地（read/write 臂以 `ReadWrite`、close 臂不经此函数）；04-filp-table.md 实现表与测试表已同步三态语义。
+
+### ✅ Fix #8: P1-3 — SETGROUPS 的数据搬运口与尺寸门（2026-09-09）
+
+- **File**：`os/servers/vfs/src/ipc/dispatcher.rs`（PmError/SetGroups 臂/trait 口/3 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/10-pm-protocol.md`（D4 落地说明）。
+- **Before**：`handle` 的 `SETGROUPS` 臂 `let _ = group_addr;` + 空切片调用——`handle_setgroups` 内置的短切片拒绝使一切 `ngroups>0` 的生产请求 `Err(TooManyGroups)`（fail-closed 但数据通路断，且 ENOSYS/EFAULT 语义不可见）。
+- **After**：`PmHandler::fetch_group_list` 作为 `sys_datacopy_wrapper`（misc.c:752）的接缝口，**默认实现 fail-closed `ENOSYS`**（模式 60 诚实契约：通电挂 P1-2/edge E1，不算 DEFERRED 充数——语义入口、门与数据流已全部就位，唯余 transport）；臂内 `ngroups > NGROUPS_MAX → TooManyGroups(EINVAL)`（C panic misc.c:748-750 → fail-closed Err，与 10 号文档 D4 的 EFAULT 决策同向并登记）、`group_no==0` 免拷贝直清（`setgroups(0)` 合法语义）、正数路径 `fetch → 栈缓冲 → handle_setgroups`。`PmError::NotImplemented(ENOSYS)` 变体新增（对齐 minix-types ToErrno 的 D1/D2 方向）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**（338→341：ENOSYS 预通电态且 fproc 不动 / 超限 EINVAL / 零组直清三测试）。
+- **边界**：`fetch_group_list` 的生产实现（真实 sys_datacopy）随 P1-2 接线矩阵第一束（内核 IPC 原语）落地，届时拷贝失败映射 EFAULT；10-pm-protocol.md D4 已登记完整决策链。

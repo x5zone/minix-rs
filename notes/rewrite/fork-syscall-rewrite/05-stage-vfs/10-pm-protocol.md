@@ -138,6 +138,7 @@ Rust 改写不是照抄 `misc.c:606` 的 `fproc[childno]=fproc[parentno]` 与 `w
 - **Rust**：`FProcTable::ok_endpoint(ep) -> Result<UserSlot, FprocError>` 的 `EDEADEPT→PM 侧 ESRCH` 映射（`03` 的 `FprocError::BadEndpoint.to_errno()`）+ `fn set_uid(fproc: &mut FProc, euid: Uid, ruid: Uid) -> Result<(), FprocError>` 的 `Uid` newtype 守门（`02` 的 `Uid(u32)` 使 `egid` 误传 `Uid` 处编译期失败）。
 - **为什么**：`okendpt` 的 `panic` 在 `PM` 控制面是“不可恢复”语义，Rust 以 `Result` 的 `Err(BadEndpoint)` 使 `service_pm` 的 `PM→REPLY` 路径可 `match Err → log::warn + return` 的 `continue`（不 `panic` 整个 VFS 服务，`RS` 的受控重启在 `VfsState` 聚合中可测试）。
 - **备选**：`unwrap_or_else(panic)` 的 `ok_endpoint` 保留；否决——`PM` 的 `VFS_PM_SETGROUPS` 的 `groups` 指针跨进程拷贝失败（`sys_datacopy`）应为 `EFAULT` 而非 `panic`。
+- **Rust 落地（P1-3）**：`PmHandler::fetch_group_list` 是 `sys_datacopy_wrapper` 的接缝口，默认 fail-closed `ENOSYS`（内核 IPC 原语落地前；接线后拷贝失败按本条映射 `EFAULT`）。`handle` 的 `SETGROUPS` 臂：`ngroups > NGROUPS_MAX → EINVAL`（C 为 panic，与本条 EFAULT 决策同向的 fail-closed 偏差）；`group_no==0` 免拷贝直清组表；正数路径经栈缓冲把真实组列表送入 `handle_setgroups`（`misc.c:752` 的 `sys_datacopy_wrapper(who_e, groups, SELF, sgroups, len)` 对应）。
 
 ### D5 `service_pm` 三调度：`PmHandler` trait 的 `Immediate vs Postponed vs Reboot`
 
