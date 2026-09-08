@@ -367,6 +367,28 @@ trait 细粒度保留（mock 组合不变）。
 
 **代价**：调用点迁移 ~50-100 处；**先 OQ 确认**（细粒度直呼 vs 聚合——两者可长期并存）。
 
+**解决记录（2026-09-08）**：聚合落地，形态与草图有一处经论证的偏差。
+- **形态偏差（P0 级设计事实）**：草图的 `trait Arch: … + Paging {}` supertrait 形式**不可实现**——`Paging`
+  是有状态句柄族（`Paging::from_active_root` 包装活跃页表根，`arch/paging.rs:152` 起），`ClockArch::new`
+  /`ArchInit::new` 构造 per-CPU 句柄，无法由 ZST 架构体伪造；且 supertrait 绑定会迫使每个静态 trait
+  在架构体上写转发 impl（第二分发层，与真实现体漂移风险）。落地改为**全关联类型组合**：
+  `trait Arch`（17 个关联类型，覆盖 crate 根全部 20 个 `Current*` 别名族——`CpuCtx` 同时绑定
+  `CpuContextArch + StacktraceArch` 因二者同实现体、`Fpu::State`/`CpuCtx::CpuContext` 派生
+  `CurrentFpuState`/`CurrentCpuContext`），分发仍走各族原实现体，零转发样板
+- **落地位置**：`os/arch/src/arch/current.rs`（trait + `X86_64Arch`/`AArch64Arch`/`Riscv64Arch`/`MockArch`
+  四个 bundle + `CurrentArch` 单点 cfg 锚点）；lib.rs 根导出 `pub use arch::current::{Arch, CurrentArch}`
+- **mock 矩阵精确镜像**：有 mock 的 12 族选 `Mock*`；无 mock 的 5 族（CpuCtx/Exception/Signal/Init/IrqGate，
+  硬件无触或纯数据变换）选宿主架构实现体——与既有别名逐族一致，`test_arch_families_match_current_alias_selections`
+  以 `TypeId` 等值逐族 pin 死（17 断言）+ 派生类型 2 断言 + trait 一致性 1 断言
+- **采用策略（OQ 裁决：长期并存）**：既有 `Current*` 别名保持分发机制不动，**不做 ~50-100 处调用点迁移**；
+  新代码（S-4/S-5 SMP 起步）优先用 `CurrentArch`。聚合的编译期完备性 = 新族不挂上 `Arch` 消费方即不可见
+- **外部先例核实**：register 声称"Redox `Arch` trait 同款"未经验证（Redox 以模块级 cfg 选择为主流的说法
+  常见但本次未核实源码，不作为依据）；本设计立足点为本 crate 的实际类型拓扑（句柄族 vs 静态族）+ Rust
+  关联类型组合惯例
+- **验证**：arch host mock 223 passed（+3 新测试）；四条真实编译路径零错误——host `--no-default-features`
+  / `x86_64-unknown-none` / `aarch64-unknown-uefi` / `riscv64gc-unknown-none-elf`；kernel 693+2 回归全绿；
+  clippy 零新警告
+
 ### F1. `pt_alloc` unsafe 论证模型错位 [P1] — ✅ 已解决（2026-08-14）
 
 **现状**：`arch/pt_alloc.rs:35-40` 用 **"single-threaded event loop model"** 论证
@@ -2737,7 +2759,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 **Phase 4 — 剩余架构重构（§1）**
 - ⬜ D1 [P1] errno newtype 单一来源（=I-8）+ D2 [P2] ToErrno trait 统一 14 个映射函数（同批）
 - ✅ G1 [P1] ProcNr 双定义上移 minix-types → **newtype + impl 迁至 `types/proc_nr.rs`（含 5 单元测试），arch 删 `= i32` 别名改 `pub use`，kernel re-export（~600 使用点零 diff），边界拆包 3 处归零 + arch 21 处测试点包 newtype；types 189 / arch 220 / kernel 693+2 全绿（2026-09-08，详见 §5 G1 解决记录）**
-- ⬜ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch`
+- ✅ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch` → **落地为全关联类型组合（17 族覆盖全部 20 个 Current* 别名；supertrait 形式因 Paging 句柄语义不可实现，见 §5 解决记录）+ `CurrentArch` 单点 cfg 锚点 + MockArch 矩阵镜像；TypeId 逐族 pin 测试 3 个；四条真实 target 编译路径零错误；不做调用点迁移（OQ 并存裁决）（2026-09-08）**
 - ⬜ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）
 - ⬜ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分
 - ⬜ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）

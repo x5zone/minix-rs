@@ -97,6 +97,7 @@ pub use boot::{
     VmLoadResult, VmLoadError, load_vm_elf,
 };
 pub use stacktrace::StacktraceArch;
+pub use arch::current::{Arch, CurrentArch};
 
 #[cfg(feature = "mock")]
 pub use paging::mock::MockPaging;

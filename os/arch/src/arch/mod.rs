@@ -28,6 +28,7 @@ pub mod timer_irq_gate;
 pub mod boot;
 pub mod stacktrace;
 pub mod tlb_arch;
+pub mod current;
 // proc_arch was removed in 06-proc-init-boot-proc.md; its responsibilities
 // are now split between `boot` (CpuContextArch + load_vm_elf) and
 // the kernel layer (KProcess::cpu_context field).
