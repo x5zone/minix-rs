@@ -27,6 +27,7 @@
 | P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2） |
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2） |
+| **P0** | **R2-P0-2** | `copy_fd` 的 From/To 方向建模偏离 C（kind 应决定方向）且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模（§9.2；Fix #4 已补 count 配对与 Close 闸门） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2） |
@@ -54,7 +55,7 @@
 ### P0-1 / P0-2 / P0-3（filedes.rs 三连，R1 存档 §2）
 
 - ✅ P0-1 已修复 2026-09-09（§10 Fix #3）：filedes.rs:175 的 `Inval` 早退删除；**修复时修正首轮前提**——C 的 `get_filp2` 门（filedes.c:186-188）只对非 `OPCL` 访问返回 EIO（"disallow all use except close(2)"），close(2) 走 `VNODE_OPCL` 应**穿过 CLOSED 继续关闭**，故正确行为是放行而非返回 EIO（首轮"B 方案 FdError::Closed→EIO"被否决，详见归档条目的修正注）。测试 `test_close_eio` → `test_close_after_invalidate_proceeds`。
-- P0-2 复核 ✅：filedes.rs:264-273 `CopyKind::Close` 仍无 `filp_count > 1` 闸门，:265 注释自认原文。
+- ✅ P0-2 已修复 2026-09-09（§10 Fix #4）：`CopyKind::Close` 补 `filp_count > 1` 闸门——满足则 `dec_count` + 清 fd，否则 `EBADF`（filedes.c:636-646）；`copy_fd` 签名引入 `&mut FilpTable` 使计数操作可达；`From/To` 补 `inc_count`（filedes.c:652，count 配对是 Close 闸门的前提）。测试 `test_copy_close_last_reference_ebadf` 新增。修复期新登记 **R2-P0-2**（From/To 方向建模与 count 之外的 C 守门缺口）。
 - P0-3 复核 ✅：filedes.rs:200 `_proc_e: Endpoint` 仍未用，:207 "for test determinism" 注释原样。
 - **附加清点**（首轮 §7 建议的全文件清点，仍未执行）：filedes.rs"自认偏离"注释共 6 处——:168（may_suspend）/ :180（dec_count simplified）/ :199/:207（invalidate 全失效）/ :234（cred.is_super）/ :269（Close 分支 just clear）。修 P0 三连时逐一消除，不留"修了行为留了假注释"。
 
@@ -111,6 +112,17 @@
   - B：REQ 常量整体迁 minix-types 共享契约（与 edge E-REQWIRE 合流）。结构更优但属跨 crate 收敛，按 edge 单线程执行；A 先行与 B 不冲突。
 - **验证**：`grep -rn "0x600" os/servers/vfs/src` 归零；新绝对值断言入测；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` 全绿；对端 protocol.rs 不动。
 - **边界**：与 P1-2（REQ 协议面）、edge E-REQWIRE 交叉；修 A 时勿动 FsReq 变体结构（那是 E-REQWIRE 范围）；同文件注释漂移顺带修 R2-P3-1（fix-guard 一次一条，分两批）。
+
+#### R2-P0-2（P0-design-deviation）`copy_fd` 的 From/To 方向建模偏离 C，EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门缺失
+
+- **Rust 现状**（Fix #4 后）：`From`/`To` 两分支行为仍相同——都从 `src` 读 filp、向 `dst` 分配（copy_fd，filedes.rs:237-290 一带），而 C 的方向由 `what` 决定：`COPYFD_FROM` 从**远端**读、写入**调用者**表（filedes.c:600-602 `rfp = fp` 重定向），`COPYFD_TO` 从**调用者**读、写入**远端**表（filedes.c:568 `get_filp2((what == COPYFD_TO) ? fp : rfp, ...)`）——即同一对 `(src, dst)` 参数在两种 kind 下语义应互换，当前不互换。count 配对已由 Fix #4 补上（`inc_count`/Close 闸门），但 `COPYFD_CLOEXEC` 剥离（filedes.c:600）、`S_ISSOCK` 自复制 `EDEADLK`（filedes.c:606-613）、`filp_ioctl_fp == rfp → EBADF`（filedes.c:582-585，VND IOCTL 死锁防护）均未建模（注释自认 DEFERRED）。
+- **C 行为**（Ground Truth）：filedes.c:524-650 如上；`COPYFD_CLOSE` 的注释明言"只用于撤销一次成功的 copy-to，且假定调用者自己仍持有引用"。
+- **后果与可达性**：接线后 UDS 的 fd 传递（SCM_RIGHTS 型）与 VND 的 fd 注入方向会接错——把 fd 复制到错误的进程表；VND IOCTL 自引用场景缺 EBADF 防护会死锁。
+- **修改方案**：
+  - **A（选定）**：签名按角色重排为 `copy_fd(caller: &mut FProc, remote: &mut FProc, fd: Fd, kind, ...)`，方向由 `kind` 决定（From：读 remote 写 caller；To：读 caller 写 remote），补齐 CLOEXEC 剥离、EDEADLK 决策件（`S_ISSOCK && smap_endpt == caller_endpoint`）、`filp_ioctl_fp` 探针。
+  - B：保留 src/dst 语义、文档声明"调用方按 kind 交换参数"。否决：把 C 的方向正确性外包给每个调用点的纪律，是埋雷。
+- **验证**：方向矩阵测试（From/To × 断言读侧不变、写侧获得 filp + count 增长）；EDEADLK 决策函数对 `S_ISSOCK` filp 返回 EDEADLK 的单测。
+- **边界**：Fix #4（count 配对已落地，本条完成后 COPYFD 族闭合）；14-filedes.md D5 已按本条登记改写；与 sdev/uds 的 `smap_by_endpt`（device_map.rs:496）联动。
 
 #### R2-P1-1（P1-design-wrong）path.rs 生产单元的 Gate D 虚构抽象族：伪造数据的 trait impl 与以测试类型命名的签名
 
@@ -244,7 +256,7 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 ### 9.8 建议的推进顺序（合并首轮 §8 修订）
 
 1. **R2-P0-1**（一处常量 + 锚点 + 绝对值断言，止血 wire）→ 顺带 **R2-P3-1** 注释（同文件分批）。
-2. **P0-1/P0-2/P0-3 + C-3 + R2-P1-3**：失效/死亡级联族一次设计（filedes.rs + sdev.rs 两文件，filedes 的 6 处自认偏离注释逐一消除）。
+2. **P0-1/P0-2/P0-3 + C-3 + R2-P1-3 + R2-P0-2**：失效/死亡级联族与 COPYFD 方向建模一次设计（filedes.rs + sdev.rs 两文件，filedes 的 6 处自认偏离注释逐一消除）。
 3. **R2-P1-1 + C-6**：path.rs 真实设计（删 Gate D 虚构抽象 + 跨 FS 往返循环落地 + PathFetcher 生产 impl 接 transport）。
 4. **P1-1 + R2-P1-2 + R2-P1-4**：分发收敛（route_message 唯一契约 + `dispatch_syscall` 穷举 64 臂 + `Route::Enosys` + RS 前缀真值化 + 删 CallTable/CallResolver/dispatch legacy + run_once 可注入入口，对标 PM 的 run_once_integration 测试形态）。
 5. **P1-3/P1-4/P1-5 + R2-P2-1**：语义洞修复与 ToErrno 通道接入。
@@ -279,3 +291,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：close_fd 无条件放行（EBADF 探针保留：fd 未开或 filp 槽失效仍拒），清 fd + cloexec + `dec_count`；EIO 语义归属 P1-5 的 `FilpLockMode` 接缝（`filp.rs` 已有 `Closed → EIO`）。测试 `test_close_eio`（断言 EINVAL）→ `test_close_after_invalidate_proceeds`（断言 Ok + fd 清空 + count 归零）；14-filedes.md 的标题、intro、§1.4、小结、D4、测试表同步（D4 原描述的 `allow_closed=true` 分支设计一并修正为"无条件放行"）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **335 passed / 0 failed**；`grep -n "Inval" os/servers/vfs/src/filedes.rs` 在 close_fd 无命中；文档 `mode==FILP_CLOSED→EIO` 仅存于描述 C 的 `get_filp2` 门处（合法）。
 - **边界**：P1-5（`FilpLockMode` 三态化是 EIO 语义的正式落点，下一步）、P0-2/P0-3（同文件，下一轮 fix-guard 各自读行）。
+
+### ✅ Fix #4: P0-2 — copy_fd 的 CLOSE 装上 count>1 闸门 + From/To 补 inc_count（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（copy_fd 签名与三分支 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D5/测试表）。
+- **Before**：`CopyKind::Close` 无条件清 fd（注释自认 "COPYFD_CLOSE expects count>1 to revert; we just clear"）；`From`/`To` 不做 `inc_count`（注释 "caller does"——但 count 配对是 Close 闸门的前提，调用方并不存在）；`copy_fd` 无 `FilpTable` 参数，计数操作根本不可达。
+- **After**：签名加 `filp_table: &mut FilpTable`；`Close` = `count > 1` → `dec_count` + 清 fd + `Ok(src_fd)`，否则 `EBADF` 且 fd 不动（filedes.c:636-646 逐字对应）；`From`/`To` 安装后 `inc_count`（filedes.c:652）。测试：`test_copy_close` 增断言 count 2→1；新增 `test_copy_close_last_reference_ebadf`（count==1 → `EBADF`、fd 保留）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **336 passed / 0 failed**（335→336）。
+- **边界与期发现**：From/To 方向建模与 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门缺口登记为 **R2-P0-2**（下一轮，与失效族同批）；14-filedes.md D5 原描述的 `cred: &Credentials` 签名与实现本就不符，已按现状改写并挂新条目指针。

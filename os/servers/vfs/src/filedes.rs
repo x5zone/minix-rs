@@ -236,15 +236,17 @@ pub enum CopyKind {
 
 /// `do_copyfd` — `filedes.c:524` super_user → `EPERM`, `isokendpt`, `S_ISSOCK` `EDEADLK`.
 ///
-/// Simplified: `cred.is_super` replaces `super_user` global; `target` is
-/// `&mut FProc` for `TO` case (local vs remote).  For test we use two `FProc`
-/// stubs and ignore `smap` `EDEADLK` except for `S_ISSOCK` stub.
+/// `src`/`dst` follow the `From` direction (remote → caller); the caller of
+/// this decision function passes the pair per the message's endpoint.
+/// Simplified: `cred.is_super` replaces `super_user` global; `S_ISSOCK`
+/// `EDEADLK` and `COPYFD_CLOEXEC` stripping are DEFERRED (noted per branch).
 pub fn copy_fd(
     src: &mut FProc,
     dst: &mut FProc,
     src_fd: Fd,
     kind: CopyKind,
     is_super: bool,
+    filp_table: &mut FilpTable,
     policy: &dyn FdAllocPolicy,
 ) -> Result<Fd, FdError> {
     if !is_super {
@@ -257,24 +259,31 @@ pub fn copy_fd(
             let idx = policy.allocate(&dst.filps, 0).ok_or(FdError::TooManyOpen)?;
             let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
             dst.filps[idx] = Some(filp_idx);
-            // Bump filp count would be `filp_table.inc_count` — caller does
+            // `filedes.c:652 rfilp->filp_count++` — the copy owns a reference.
+            filp_table.inc_count(FilpId(filp_idx));
             Ok(fd)
         }
         CopyKind::To => {
             let idx = policy.allocate(&dst.filps, 0).ok_or(FdError::TooManyOpen)?;
             let fd = Fd::new(idx).ok_or(FdError::BadFd)?;
             dst.filps[idx] = Some(filp_idx);
+            filp_table.inc_count(FilpId(filp_idx));
             Ok(fd)
         }
         CopyKind::Close => {
-            // `COPYFD_CLOSE` expects `count>1` to revert; we just clear
-            if src.filps[src_fd.get()].is_none() {
-                return Err(FdError::BadFd);
+            // `COPYFD_CLOSE` reverts a prior `COPYFD_TO` (`filedes.c:631-646`):
+            // the fd lives in the process the copy targeted, and the gate is
+            // `filp_count > 1` because the caller must still hold its own
+            // reference — dropping the last one is `EBADF`, not a silent clear.
+            let fid = FilpId(filp_idx);
+            let count = filp_table.get(fid).ok_or(FdError::BadFd)?.count;
+            if count > 1 {
+                filp_table.dec_count(fid);
+                src.filps[src_fd.get()] = None;
+                Ok(src_fd)
+            } else {
+                Err(FdError::BadFd)
             }
-            // Simplified: just clear dst's fd if it points to same filp
-            // For test, `src==dst` close of same fd
-            src.filps[src_fd.get()] = None;
-            Ok(src_fd)
         }
     }
 }
@@ -401,7 +410,7 @@ mod tests {
         src.cloexec_set.set(5, true);
         let policy = LowestFree;
         // COPYFD_FROM with LowestFree should allocate dst fd 0
-        let new_fd = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::From, true, &policy).unwrap();
+        let new_fd = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::From, true, &mut tbl, &policy).unwrap();
         assert_eq!(new_fd.get(), 0);
         assert_eq!(dst.filps[0], Some(fid.get()));
         // Cloexec copy: From clears CLOEXEC in our impl (flags&=~CLOEXEC)
@@ -443,7 +452,7 @@ mod tests {
         tbl.inc_count(fid);
         src.filps[3] = Some(fid.get());
         let policy = LowestFree;
-        let fd = copy_fd(&mut src, &mut dst, Fd(3), CopyKind::From, true, &policy).unwrap();
+        let fd = copy_fd(&mut src, &mut dst, Fd(3), CopyKind::From, true, &mut tbl, &policy).unwrap();
         assert_eq!(dst.filps[fd.get()], Some(fid.get()));
     }
 
@@ -456,11 +465,13 @@ mod tests {
         tbl.inc_count(fid);
         src.filps[7] = Some(fid.get());
         let policy = LowestFree;
-        let fd = copy_fd(&mut src, &mut dst, Fd(7), CopyKind::To, true, &policy).unwrap();
+        let fd = copy_fd(&mut src, &mut dst, Fd(7), CopyKind::To, true, &mut tbl, &policy).unwrap();
         assert_eq!(fd.get(), 0);
         assert_eq!(dst.filps[0], Some(fid.get()));
+        // The copy owns a reference (filedes.c:652 filp_count++)
+        assert_eq!(tbl.get(fid).unwrap().count, 2);
         // Non-super should EPERM
-        let r = copy_fd(&mut src, &mut dst, Fd(7), CopyKind::To, false, &policy);
+        let r = copy_fd(&mut src, &mut dst, Fd(7), CopyKind::To, false, &mut tbl, &policy);
         assert_eq!(r.unwrap_err(), FdError::Perm);
     }
 
@@ -475,9 +486,29 @@ mod tests {
         src.filps[5] = Some(fid.get());
         dst.filps[5] = Some(fid.get());
         let policy = LowestFree;
-        let r = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::Close, true, &policy).unwrap();
+        let r = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::Close, true, &mut tbl, &policy).unwrap();
         assert_eq!(r.get(), 5);
         assert!(src.filps[5].is_none());
+        // The revert dropped the copied reference only (count 2 → 1)
+        assert_eq!(tbl.get(fid).unwrap().count, 1);
+    }
+
+    #[test]
+    fn test_copy_close_last_reference_ebadf() {
+        // C: `COPYFD_CLOSE` with `filp_count == 1` is `EBADF` (`filedes.c:644`)
+        // — it must never drop the caller's last reference, and the fd stays.
+        let mut src = new_fproc();
+        let mut dst = new_fproc();
+        let mut tbl = FilpTable::new();
+        let fid = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(fid);
+        src.filps[5] = Some(fid.get());
+        dst.filps[5] = Some(fid.get());
+        let policy = LowestFree;
+        let r = copy_fd(&mut src, &mut dst, Fd(5), CopyKind::Close, true, &mut tbl, &policy);
+        assert_eq!(r.unwrap_err(), FdError::BadFd);
+        assert!(src.filps[5].is_some());
+        assert_eq!(tbl.get(fid).unwrap().count, 1);
     }
 
     #[test]

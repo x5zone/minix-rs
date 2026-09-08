@@ -120,7 +120,7 @@ Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 
 ### D5 `do_copyfd` 的 `FROM/TO/CLOSE` 与 `super_user` 守门显式
 
 - **C**：`do_copyfd:539 super_user→EPERM` 的 `SU_UID` 守门与 `isokendpt→EINVAL` 的三守门及 `COPYFD_FROM: S_ISSOCK && smap_endpt==who_e → EDEADLK` 的自复制 `EDEADLK`。
-- **Rust**：`CopyFdKind::From/To/Close` 的 `enum` + `fn copy_fd(&mut self, target: &mut FProc, fd: Fd, kind: CopyFdKind, cred: &Credentials) -> Result<Fd, FdError>` 的 `cred.is_super()→EPERM` 守门与 `target_slot.is_none()→BadEndpoint` 及 `S_ISSOCK→EDEADLK` 的 `SocketDev` 校验在 `CopyFdKind::From` 的 `is_uds_self` 分支可测试。
+- **Rust**：`copy_fd(&mut FProc, &mut FProc, Fd, CopyKind, is_super, &mut FilpTable, &dyn FdAllocPolicy) -> Result<Fd, FdError>` 的 `is_super→EPERM` 守门、`From/To` 安装后 `inc_count`（`filedes.c:652`）与 `Close` 的 `count>1→dec_count + 清 fd / 否则 EBADF`（`filedes.c:636-646`）可测试；`S_ISSOCK→EDEADLK` 守门、`COPYFD_CLOEXEC` 剥离与 From/To 方向按消息端点的建模挂 R2-P0-2。
 - **为什么**：`int what` 的 `COPYFD_FROM 0/TO 1/CLOSE 2` 裸整数在 Rust 以 `CopyFdKind` 枚举使 `what & COPYFD_FLAGS` 的 `CLOEXEC` 剥离在 `CopyFdKind::flags` 可观测。
 
 ### D6 `invalidate_filp` 族的 `FILP_CLOSED` 传播与 `CLOEXEC` 位集
@@ -197,7 +197,8 @@ os/servers/vfs/src/
 | `test_invalidate_by_endpt` | `filedes.c:298` | `fs_e==ep→CLOSED` 计数 `2` | `filedes.rs` |
 | `test_copy_from` | `filedes.c:579` | `COPYFD_FROM` 的 `S_ISSOCK→EDEADLK` 守门 | `filedes.rs` |
 | `test_copy_to` | `filedes.c:618` | `COPYFD_TO` 的 `LowestFree` 分配 `fd` | `filedes.rs` |
-| `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→NULL` 回滚 | `filedes.rs` |
+| `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 fd` 回滚 | `filedes.rs` |
+| `test_copy_close_last_reference_ebadf` | `filedes.c:644` | `count==1→EBADF` 且 fd 不清除 | `filedes.rs` |
 | `test_fd_alloc_policy_two_impls` | `filedes.c:121` | `FdAllocPolicy` trait `LowestFree vs NextFit` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
 
 测试策略：`Fd` 的 `u8` 上界以 `Fd(256)→BadFd` 的 `TryFrom` 早拒绝样本覆盖；`check_fds` 以 `available 2, nfds 3→EMFILE` 的 `nfds` 窗口样本覆盖；`get_fd` 以 `LowestFree(0)→0` 的 `start..256` 扫描样本覆盖；`close_fd` 以 `EBADF/CLOSED 放行/OK` 的三守门样本覆盖；`FdAllocPolicy` 以 `LowestFree(5→5) vs NextFit(5→10)` 的 `dyn` 行为差异样本覆盖。
