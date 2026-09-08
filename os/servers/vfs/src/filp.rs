@@ -107,6 +107,22 @@ impl Filp {
 }
 
 /// `filp[NR_FILPS]` table (`file.h:33`).
+/// `tll_access_t` gate for `get_filp2` (`filedes.c:162-203`) — the three
+/// behaviors callers can ask for, replacing a loose `bool`:
+///
+/// - `Opcl`（close(2) 专用）: the only mode that passes a `FILP_CLOSED` filp
+///   ("disallow all use except close(2)", `filedes.c:186-188`).
+/// - `None`（`VNODE_NONE` 探测）: no lock taken, but `FILP_CLOSED` still
+///   rejects — C's gate covers every `locktype != VNODE_OPCL`.
+/// - `ReadWrite`（`VNODE_READ`/`VNODE_WRITE` 数据访问）: rejects `FILP_CLOSED`
+///   and takes the filp lock; both C lock kinds share this gate behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilpLockMode {
+    Opcl,
+    None,
+    ReadWrite,
+}
+
 pub struct FilpTable {
     slots: Box<[Filp]>,
 }
@@ -169,8 +185,9 @@ impl FilpTable {
         Err(FilpError::FilpFull)
     }
 
-    /// `get_filp` privilege (`filedes.c:162-203`): `FILP_CLOSED` check.
-    pub fn get_filp(&mut self, id: FilpId, need_lock: bool) -> Result<FilpId, FilpError> {
+    /// `get_filp` privilege (`filedes.c:162-203`): the `FILP_CLOSED` gate and
+    /// the filp lock, typed as [`FilpLockMode`] instead of a loose `bool`.
+    pub fn get_filp(&mut self, id: FilpId, lock: FilpLockMode) -> Result<FilpId, FilpError> {
         let idx = id.get();
         if idx >= NR_FILPS {
             return Err(FilpError::BadFd);
@@ -179,14 +196,16 @@ impl FilpTable {
         if f.count == 0 {
             return Err(FilpError::BadFd);
         }
-        if f.mode == FILP_CLOSED && need_lock {
+        // `FILP_CLOSED → EIO` exempts only `VNODE_OPCL` — "disallow all use
+        // except close(2)" (filedes.c:186-188).  `VNODE_NONE` still rejects.
+        if f.mode == FILP_CLOSED && !matches!(lock, FilpLockMode::Opcl) {
             return Err(FilpError::Closed);
         }
-        if need_lock {
-            // Simulate try_lock: fail if already locked by other slot (single-threaded borrow).
-            if f.locked_by.is_some() {
-                return Err(FilpError::Busy);
-            }
+        // `locktype != VNODE_NONE` → `lock_filp` (filedes.c:191-193).
+        if matches!(lock, FilpLockMode::Opcl | FilpLockMode::ReadWrite)
+            && f.locked_by.is_some()
+        {
+            return Err(FilpError::Busy);
         }
         Ok(id)
     }
@@ -331,17 +350,38 @@ mod tests {
 
     #[test]
     fn test_get_filp_closed_privilege() {
+        // C: the `FILP_CLOSED → EIO` gate exempts only `VNODE_OPCL`
+        // (filedes.c:186-188); `VNODE_NONE` probes still reject.
         let mut table = FilpTable::new();
         let id = table.alloc_filp(FILP_CLOSED).unwrap();
         table.inc_count(id);
-        // FILP_CLOSED with need_lock true → EIO
-        assert_eq!(table.get_filp(id, true).unwrap_err(), FilpError::Closed);
-        // need_lock false → OK (close path)
-        assert_eq!(table.get_filp(id, false).unwrap(), id);
-        // Bad fd
+        // Closed filp: Opcl passes; None and ReadWrite get EIO.
+        assert_eq!(table.get_filp(id, FilpLockMode::Opcl).unwrap(), id);
         assert_eq!(
-            table.get_filp(FilpId(9999), true).unwrap_err(),
+            table.get_filp(id, FilpLockMode::None).unwrap_err(),
+            FilpError::Closed
+        );
+        assert_eq!(
+            table.get_filp(id, FilpLockMode::ReadWrite).unwrap_err(),
+            FilpError::Closed
+        );
+        // Bad fd rejects in every mode.
+        assert_eq!(
+            table.get_filp(FilpId(9999), FilpLockMode::Opcl).unwrap_err(),
             FilpError::BadFd
+        );
+        assert_eq!(
+            table.get_filp(FilpId(9999), FilpLockMode::ReadWrite).unwrap_err(),
+            FilpError::BadFd
+        );
+        // An open filp passes all three modes.
+        let open = table.alloc_filp(0o644).unwrap();
+        table.inc_count(open);
+        assert_eq!(table.get_filp(open, FilpLockMode::Opcl).unwrap(), open);
+        assert_eq!(table.get_filp(open, FilpLockMode::None).unwrap(), open);
+        assert_eq!(
+            table.get_filp(open, FilpLockMode::ReadWrite).unwrap(),
+            open
         );
     }
 

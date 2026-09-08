@@ -65,7 +65,7 @@
 - P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。
 - P1-3 复核 ✅：ipc/dispatcher.rs:129-130 `let _ = group_addr;` + 空切片调用原样。
 - P1-4 复核 ✅：select.rs:191-198 `Query { rops, set_update, set_block }` 仍无 clear_update 义务字段。
-- P1-5 复核 ✅：filp.rs:173 `get_filp(&mut self, id: FilpId, need_lock: bool)` 原样。
+- ✅ P1-5 已修复 2026-09-09（§10 Fix #7）：`need_lock: bool` → `FilpLockMode { Opcl, None, ReadWrite }`——`Opcl` 过 `CLOSED` 门（close(2) 特权）、`None` 探测仍拒（C 的门覆盖一切非 `OPCL`，原 bool=false 比 C 宽的缺口闭合）、`ReadWrite` 拒 `CLOSED` 且取锁（filedes.c:186-193）。测试升级为三态矩阵。
 
 ### P2-1～P2-6 / P3-1 / P3-2（R1 存档 §4/§5）
 
@@ -316,3 +316,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **测试踩坑与 C 锚点**：初版测试用元组连续 `alloc_filp` 后才 `inc_count`——`alloc_filp` 不预留槽位（C 的分配点 `open.c:134` 立即 `filp_count = 1`，Rust 延迟给调用方，get_fd 注释已声明），三次分配全落槽位 0。测试改为交错分配并在注释标注该契约；`alloc_filp` 的延迟置位语义保持现状（属 get_fd 组合层设计，不自作主张改签名），后续轮次若发现第三个踩坑点再评估立条。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**（336→338）。
 - **边界**：R2-P1-3（sdev_stop 驱动死亡级联——本族 + smap unmap + select 唤醒的触发序设计，下一步）；P2-5（`filp.vnode` 裸 usize 类型化时三函数同步改型）。
+
+### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filp.rs`（`FilpLockMode` 枚举 + get_filp 重写 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/04-filp-table.md`（实现表/测试表）。
+- **Before**：`get_filp(&mut self, id, need_lock: bool)`——`need_lock=false`（≈`VNODE_NONE`）不拒 `FILP_CLOSED`，比 C 宽；且 bool 无法表达"OPCL 过门但取锁、NONE 不取锁也不过门"的组合。
+- **After**：`FilpLockMode { Opcl, None, ReadWrite }`——门规则 `f.mode == FILP_CLOSED && !matches!(Opcl) → Closed(EIO)`（filedes.c:186-188 逐字对应，注释 "disallow all use except close(2)"）；锁规则 `Opcl|ReadWrite` 且 `locked_by` 已占 → `Busy`（filedes.c:191-193 `locktype != VNODE_NONE` → lock_filp）。设计取舍：`VNODE_READ`/`VNODE_WRITE` 在门与锁两个维度行为相同，合并为一个 `ReadWrite` 变体（不为枚举完整性造无行为差异的变体——Gate D 虚构第二实现的教训，§9.6）；P0-1 的 EIO 语义至此有了正式落点（非 `OPCL` 访问路径在 `get_filp` 处被拒，close 路径在 `close_fd` 直通）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**；`grep -rn "need_lock" os/servers/vfs/src` 仅余 stadir.rs 的无关同名决策函数。
+- **边界**：get_filp 生产消费者随 R2-P1-2 的分发绑定落地（read/write 臂以 `ReadWrite`、close 臂不经此函数）；04-filp-table.md 实现表与测试表已同步三态语义。

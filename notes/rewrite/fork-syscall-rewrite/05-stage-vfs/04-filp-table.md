@@ -161,7 +161,7 @@ os/servers/vfs/src/
 | `Filp` | `file.h:8` 全字段 | `filp.rs:Filp { count, mode, vnode, pos, select }` | `count==0` 空闲哨兵保留 |
 | `FilpTable: Box<[Filp]>` | `file.h:33` 1024 固定 | `filp.rs:FilpTable` | `new()` 由 `(0..NR_FILPS).map(|_| Filp::default()).collect()` 堆构造 |
 | `get_fd` 双扫描 | `filedes.c:88-150` | `FilpTable::alloc_fd` | `EMFILE` vs `ENFILE` 分化 |
-| `get_filp` 特权 | `filedes.c:162` | `FilpTable::get_filp` | `FILP_CLOSED → EIO` 除 `VNODE_OPCL` |
+| `get_filp` 特权 | `filedes.c:162` | `FilpTable::get_filp` + `FilpLockMode{Opcl,None,ReadWrite}` | `FILP_CLOSED → EIO` 除 `OPCL`；`None` 探测仍拒（三态取代 bool，P1-5） |
 | `find_filp` | `filedes.c:205` | `FilpTable::find_by_vnode` | `vp+bits` 共享检测 |
 | `FsfFlags` | `file.h:37` | `filp.rs:FsfFlags` | `bitflags 0x01/0x02/0x08/0x10/0x20/0x38` |
 
@@ -185,7 +185,7 @@ os/servers/vfs/src/
 |--------|-------------|------|------|
 | `test_init_filps_free` | `filedes.c:73-84` | `NR_FILPS` 全 `count==0` | `filp.rs:180` |
 | `test_get_fd_dual_scan` | `filedes.c:88-150` | `fd` 空位 + `filp` 空位双扫描，`EMFILE` vs `ENFILE` 分化 | `filp.rs:185` |
-| `test_get_filp_closed_privilege` | `filedes.c:189` | `FILP_CLOSED → EIO` 除 `OPCL` | `filp.rs:195` |
+| `test_get_filp_closed_privilege` | `filedes.c:189` | 三态矩阵：`Opcl` 过 `CLOSED`、`None`/`ReadWrite` 拒、`EBADF` 全模式、开放 filp 全过 | `filp.rs:195` |
 | `test_find_filp_shared` | `filedes.c:205-224` | `vp+bits` 共享检测 | `filp.rs:205` |
 | `test_refcount_inc_dec` | `filedes.c:435/496` | `count++` / `count-- → 0 put` | `filp.rs:213` |
 | `test_lock_filp` | `filedes.c:313` | `locked_by` 借用语义 | `filp.rs:222` |
