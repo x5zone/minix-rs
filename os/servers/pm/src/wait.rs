@@ -161,6 +161,9 @@ mod tests {
     /// wait.rs 测试用内核网关 mock（sys_times 恒零值；datacopy 恒 OK）。
     struct NoopKernelGateway;
     impl crate::exit::KernelGateway for NoopKernelGateway {
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -259,8 +262,7 @@ mod tests {
         table.procs[slot].state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(11),
             tracer: UserSlot::new(0),
-            trace_exit: false,
-            trace_options: crate::mproc::TraceOptions::empty(),
+                        trace_options: crate::mproc::TraceOptions::empty(),
         };
         table.procs[slot].state.trace.stopped = true;
         table.procs[slot].resources.signals.trace_mask = trace_mask;

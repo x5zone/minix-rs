@@ -199,6 +199,10 @@ pub union MessageUnion {
     pub m_lc_pm_wait4: MessLcPmWait4,
     /// PM: wait4 reply (PM → user). C: `mess_pm_lc_wait4` — ipc.h:1774-1779
     pub m_pm_lc_wait4: MessPmLcWait4,
+    /// PM: ptrace params (tracer → PM). C: `mess_lc_pm_ptrace` — ipc.h:492-501
+    pub m_lc_pm_ptrace: MessLcPmPtrace,
+    /// PM: ptrace reply (PM → tracer). C: `mess_pm_lc_ptrace` — ipc.h:1749-1757
+    pub m_pm_lc_ptrace: MessPmLcPtrace,
     /// PM: kill params (user → PM). C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) / 535 (sig) overlay
     pub m_lc_pm_kill: MessLcPmKill,
     /// PM: srv_kill params (RS → PM). C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885
@@ -2736,6 +2740,64 @@ impl Default for MessPmLcWait4 {
     }
 }
 
+/// PM: ptrace params (tracer → PM) — `mess_lc_pm_ptrace`.
+///
+/// C: ipc.h:492-501（LP64 布局，56 字节）：
+/// ```c
+/// typedef struct {
+///     pid_t pid;        /* offset 0 */
+///     int req;          /* offset 4，T_* 命令（sys/ptrace.h:226-250） */
+///     vir_bytes addr;   /* offset 8（LP64 为 8 字节） */
+///     long data;        /* offset 16，T_RESUME 等携带的信号号或透传读值 */
+///     uint8_t padding[];
+/// } mess_lc_pm_ptrace;
+/// ```
+/// C 头的 `padding[40]` 是 i386（ILP32，data 落在 offset 12）尺寸；
+/// 本仓统一按 LP64 钉偏移（rs_start 先例）：data 落在 offset 16，
+/// padding 取 32 使载荷恰为 `_ASSERT_MSG_SIZE` 的 56 字节。
+/// `do_trace` 的解码契约（trace.c:48/63/106 等）。`data` 为 C `long`
+///（有符号）：负值在 T_RESUME/T_DETACH 是合法入参（"无信号"），解码
+/// 后不得回绕成大正数。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MessLcPmPtrace {
+    /// Target pid. C: `pid_t pid` (payload offset 0).
+    pub pid: i32,
+    /// Trace request. C: `int req` (payload offset 4).
+    pub req: i32,
+    /// Trace address. C: `vir_bytes addr` (payload offset 8).
+    pub addr: u64,
+    /// Request data. C: `long data` (payload offset 16，有符号).
+    pub data: i64,
+    /// Padding to 56 bytes（LP64：字段占 24 字节，padding 32）.
+    pub _padding: [u8; 32],
+}
+
+/// PM: ptrace reply (PM → tracer) — `mess_pm_lc_ptrace`.
+///
+/// C: ipc.h:1749-1757：`{ long data; uint8_t padding[]; }`——LP64 下
+/// data 为 8 字节（offset 0），padding 取 48 使载荷为 56 字节
+///（C 头的 padding[52] 是 i386 尺寸）。
+/// `do_trace` 的 OK 回复把读值/0 写入 data（trace.c:59/92/110/133/164/
+/// 187/233/248），主循环 `reply(tracer, result)` 以 m_type 携带返回码。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessPmLcPtrace {
+    /// Reply data. C: `long data` (payload offset 0，有符号).
+    pub data: i64,
+    /// Padding to 56 bytes（LP64：data 占 8 字节，padding 48）.
+    pub _padding: [u8; 48],
+}
+
+impl Default for MessPmLcPtrace {
+    fn default() -> Self {
+        Self {
+            data: 0,
+            _padding: [0; 48],
+        }
+    }
+}
+
 /// PM: kill params (user → PM) — `mess_lc_pm_kill`.
 ///
 /// C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) overlay, used by `do_kill` via `m_lc_pm_sig` union overlay.
@@ -3595,6 +3657,27 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(reply.status, 0o200 | 6);
+    }
+
+    #[test]
+    fn test_pm_ptrace_message_layouts() {
+        // C: ipc.h:501/1757 `_ASSERT_MSG_SIZE`——请求与回复载荷均为 56 字节。
+        assert_eq!(size_of::<MessLcPmPtrace>(), 56);
+        assert_eq!(size_of::<MessPmLcPtrace>(), 56);
+        // 字段序固定 C 布局：请求 pid@0/req@4/addr@8/data@16；回复 data@0。
+        let req = MessLcPmPtrace {
+            pid: 42,
+            req: 9, // T_ATTACH
+            addr: 0x1000,
+            data: -1, // C long：负值合法（"无信号"）
+            ..Default::default()
+        };
+        assert_eq!(req.pid, 42);
+        assert_eq!(req.req, 9);
+        assert_eq!(req.addr, 0x1000);
+        assert_eq!(req.data, -1);
+        let reply = MessPmLcPtrace { data: 0xdeadbeef, ..Default::default() };
+        assert_eq!(reply.data, 0xdeadbeef);
     }
 
     #[test]

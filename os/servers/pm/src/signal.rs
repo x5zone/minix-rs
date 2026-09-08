@@ -240,15 +240,14 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // panic in C (407-409) — but for Rust we return Err
         return Err(KillError::NoSuchProcess);
     }
-    // TRACE first (411-422)
+    // TRACE 先行（411-422）：调试器信号先入 sigtrace 缓冲，未停止则
+    // trace_stop 停住——内核 sys_trace(T_STOP) 真停 + tracer 在 wait 时
+    // 收到 W_STOPCODE 回复。V3-P1-1 之前此分支直接置 stopped 标志，
+    // 内核与 tracer 均无感知。
     if trace && proc.state.guardianship.tracer().is_some() && signo != SIGKILL {
-        let t = proc.state.guardianship.tracer().unwrap();
-        let _ = t;
-        // In C: sigaddset(sigtrace) + trace_stop if not already TRACE_STOPPED
-        table.procs[target.get()].resources.signals.trace_mask |= 1u64 << (signo - 1);
+        table.procs[target.get()].resources.signals.trace_mask |= crate::init::sig_bit(signo);
         if !table.procs[target.get()].state.trace.stopped {
-            // trace_stop would set TRACE_STOPPED and stop via sys_trace
-            table.procs[target.get()].state.trace.stopped = true;
+            crate::trace::trace_stop(table, target, signo, kern, transport);
         }
         return Ok(());
     }
@@ -454,6 +453,9 @@ mod tests {
         pub sys: minix_types::Clock,
     }
     impl crate::exit::KernelGateway for TestKernel {
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -589,6 +591,9 @@ mod tests {
             killed: Option<(Endpoint, i32)>,
         }
         impl crate::exit::KernelGateway for RecordKill {
+            fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
             fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
             fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
                 self.killed = Some((ep, sig));
@@ -748,6 +753,9 @@ mod tests {
         }
     }
     impl crate::exit::KernelGateway for StopRecorder {
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn sys_delay_stop(&mut self, ep: minix_types::Endpoint) -> Result<(), i32> {
             self.calls.push(ep);
             if self.reply == 0 { Ok(()) } else { Err(self.reply) }

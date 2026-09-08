@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 轮登记完毕，尚未实施）：开放条目 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 接线批次 A-G + D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ **§12 V3 全部条目**。测试基线 **356 lib + 8 integration passed**（2026-09-09 实测）；clippy lib 出现 3 条 unused import 回退（V3-P2-9）。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1-3（Fix #43）/V3-P1-1（Fix #44）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **369 lib + 10 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -266,7 +266,7 @@ coverage 109/109 文档覆盖、102 Rust 名称匹配（93.6%）；测试名对�
 | 批次 | 调用号 | C handler | Rust 逻辑位置 | 前置条件 |
 |------|--------|-----------|--------------|----------|
 | A 凭证（13 个） | 4,5,6,9,10,12,13,15,16,29,30,31,32 | do_get/do_set（getset.c） | `credentials.rs:87/148` | wire 类型（`m_lc_pm_getuid` 族）；`CopyGroups` 生产实现（minix-sys `sys_datacopy`，E6）；`VfsForwarder` 生产实现。**V3 增补：do_getepinfo 两处语义偏差先修（V3-P2-4）** |
-| B 信号控制（6 个） | 8,20,21,22,23,24 | do_trace/do_sigaction/do_sigsuspend/do_sigpending/do_sigprocmask/do_sigreturn | `trace.rs`/`signal_handlers.rs` | wire 类型；`sys_sigreturn` wrapper（E6）；**V3 增补：批次 B 的 trace 部分必须先做 V3-P1-1 重构（常量 + 分支 + stub 清算），现状态不满足"逻辑已备"前提** |
+| B 信号控制（6 个） | 8,20,21,22,23,24 | do_trace/do_sigaction/do_sigsuspend/do_sigpending/do_sigprocmask/do_sigreturn | `trace.rs`/`signal_handlers.rs` | trace 半边**已完成**（V3-P1-1：常量 + 全分支 + PTRACE 臂接线 + sys_trace wrapper）；余 sigaction 族：wire 类型、`sys_sigreturn` wrapper（E6）、V2-P2-7/8 联动 |
 | C 时间（6 个） | 7,28,33,34,35,36 | do_stime/do_time/do_getres/do_gettime/do_settime/do_getrusage | `time.rs`/`misc.rs` | ClockSource 生产实现（GETUPTIME，E6）；`sys_settime`/`sys_stime`（E6）；rusage 拷出未接线见 V3-P2-6 前置 |
 | D 定时器（1 个） | 17 | do_itimer | `timer.rs:368` | `TimerCtl`/`VTimerCtl` 生产实现（E6）；`sys_datacopy`；CLOCK notify 时间戳来源修正（V3-P2-10） |
 | E exec（3 个） | 14,43,44 | do_exec/do_newexec/do_execrestart | `exec.rs` | caller 门已补（Fix #38）；wire 类型；`sys_exec` wrapper 与 kernel 对端（D-08 注）；D-16 契约（E7） |

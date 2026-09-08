@@ -221,6 +221,8 @@
 >
 > **进度（2026-09-09，V3 轮增补，来源 04-stage-pm/todo.md §12 V3-P1-2 / V3-P1-3）**：清单增两项。① **`sys_delay_stop`**——13-signal-flow 的 `KernelStop` 生产实现前置（`os/servers/pm/src/signal_flow.rs:115-140` `stop_proc` 的内核停止 seam）；04-stage-pm V3-P1-3（sig_proc 的 VFS_CALL 分支接真实 stop_proc）mock 层实施不受阻，生产语义完备依赖本项。② **内核 ksig 对端核实**——C 的内核→PM 信号回环入口是 SEF 拦截 SIGKSIG 通知后调 `process_ksig`（`minix3/minix/servers/pm/main.c:121` + `minix3/minix/lib/libsys/sef_signal.c:104-108`），C 的 process_ksig 内部走 sys_getksig/sys_endksig 内核信号队列循环；Rust 侧 `process_ksig`（`os/servers/pm/src/signal.rs:374`）现无生产调用者（04-stage-pm V3-P1-2，新接线批次 H）——需核实 os/kernel 是否已实现 getksig/endksig 或等价通知面；若无，wrapper 归本条、kernel 对端归 01-stage-kernel 工作流（双侧新建，同 SYS_GETMONPARAMS 先例）。
 
+> **进度（2026-09-09，V3-P1-1 切片）**：`sys_trace` wrapper 已落地（`os/libs/minix-sys/src/syscall.rs`：`sys_trace` + `SYS_TRACE_CALL = 5`，载荷 `m_lsys_krn_sys_trace` 布局（request@0/endpt@4/address@8/data@16，≠ m_m1），读值经同偏移写回；wire 断言测试 ×2）——kernel 对端 `dispatch_trace` 早已真实（`os/kernel/src/misc.rs:209`，非待核实项）；消费侧 04-stage-pm V3-P1-1（PTRACE 臂 + trace_stop）同轮闭环。**同轮新登记**：`sys_delay_stop`（见上①）之外再确认 kernel 侧无 SYS_TRACE 之外的 PM trace 依赖；`sys_datacopy` 语义（T_GETRANGE 的参数块取入）当前由 `KernelGateway::copy_from_user` 委托 sys_vircopy 承接（Fix #27 同型先例），独立 `sys_datacopy` wrapper 维持原清单判断。
+
 ---
 
 ## E7 minix-types PM 协议面系统化（= 04-stage-pm/todo.md P1-4 + P2-3 抽取）

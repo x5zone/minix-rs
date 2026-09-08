@@ -454,7 +454,7 @@ mod tests {
         proc.state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(10),
             tracer: UserSlot::new(5),
-            trace_exit: false,
+           
             trace_options: TraceOptions::empty(),
         };
         assert_eq!(proc.tracer(), Some(UserSlot::new(5)));

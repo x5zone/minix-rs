@@ -247,7 +247,7 @@ const FORK_INHERIT_FLAGS: crate::mproc::RemainingFlags = crate::mproc::Remaining
 /// 再按 `TO_TRACEFORK` 条件清除：仅当父进程 trace_flags **不含**
 /// `TO_TRACEFORK` 时，子进程的 tracer 才被置 NO_TRACER。Rust 侧父为
 /// `Traced` 且 `trace_options` 含 `TRACEFORK` → 子继承 `Traced`
-///（`trace_exit` 不继承——C 的 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`，
+///（`TRACE_EXIT` 不继承——C 的 `FORK_INHERIT_FLAGS` 不含该位，且 Rust 侧
 /// 新子进程的强制退出标记必须为否）；其余情形一律 `Normal`。
 fn inherit_guardianship(
     parent: &crate::mproc::Guardianship,
@@ -263,8 +263,7 @@ fn inherit_guardianship(
             crate::mproc::Guardianship::Traced {
                 parent: *parent,
                 tracer: *tracer,
-                trace_exit: false,
-                trace_options: *trace_options,
+                                trace_options: *trace_options,
             }
         }
         _ => crate::mproc::Guardianship::Normal {
@@ -404,6 +403,9 @@ mod tests {
         }
     }
     impl crate::exit::KernelGateway for TestKernelTimes {
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -591,8 +593,7 @@ mod tests {
         table.procs[parent].state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(0),
             tracer: UserSlot::new(tracer),
-            trace_exit: false,
-            trace_options: opts,
+                        trace_options: opts,
         };
     }
 
@@ -665,8 +666,7 @@ mod tests {
         table.procs[2].state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(0),
             tracer: UserSlot::new(7),
-            trace_exit: false,
-            trace_options: TraceOptions::TRACEFORK,
+                        trace_options: TraceOptions::TRACEFORK,
         };
 
         let mut transport = crate::ipc::TestIpcTransport::default();

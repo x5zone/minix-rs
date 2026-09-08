@@ -300,6 +300,47 @@ pub fn sys_times(
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_times })
 }
 
+/// C: SYS_TRACE 是内核调用 5（`kernel/src/syscall.rs` `Syscall::Trace`）。
+pub const SYS_TRACE_CALL: i32 = 5;
+
+/// C: `sys_trace(req, proc_ep, addr, datap)`（libsys `sys_trace.c:8-22`）——
+/// `_kernel_call(SYS_TRACE, &m)`：载荷 `mess_lsys_krn_sys_trace`
+///（request@0/endpt@4/address@8/data@16，布局与 `m_m1` **不同**——
+/// `m1.m1i1` 落在 request 上而不是 endpt，见 minix-types 的 IMPORTANT
+/// 注记；kernel `misc.rs msg_trace` 按该布局读取）。回复的读值由内核
+/// 写回 data 字段（`misc.rs write_trace_reply_data`，与请求 data 同偏移
+/// 16）。PM 的 ptrace 透传（trace.c:244-248）与 trace_stop 的 T_STOP
+///（trace.c:263）走此通道。
+pub fn sys_trace(
+    transport: &impl KernelCallTransport,
+    req: i32,
+    endpt: i32,
+    address: u64,
+    data: &mut i64,
+) -> Result<(), i32> {
+    let mut msg = Message {
+        m_type: SYS_TRACE_CALL,
+        ..Default::default()
+    };
+    {
+        // SAFETY: m_lsys_krn_sys_trace 是 SYS_TRACE 的文档化载荷布局
+        //（kernel/src/misc.rs msg_trace 读 request/endpt/address/data）。
+        let t = unsafe { &mut msg.m_u.m_lsys_krn_sys_trace };
+        t.request = req;
+        t.endpt = endpt;
+        t.address = address;
+        t.data = *data;
+    }
+    let r = perform_kernel_call(transport, SYS_TRACE_CALL, &mut msg, |_| {});
+    if r < 0 {
+        return Err(r);
+    }
+    // SAFETY: 内核把读值写回 data（write_trace_reply_data，同偏移 16，
+    // m_lsys_krn_sys_trace 与 m_krn_lsis_sys_trace 占同一内存）。
+    *data = unsafe { msg.m_u.m_lsys_krn_sys_trace }.data;
+    Ok(())
+}
+
 /// 虚地址复制（C: libsys `sys_vircopy`/`sys_datacopy` 家族，
 /// `kernel/src/syscall_copy.rs dispatch_vircopy` = `Syscall::Vircopy = 15`）。
 ///
@@ -509,6 +550,43 @@ mod tests {
         assert_eq!(cp.dst_endpt, 9);
         assert_eq!(cp.dst_addr, 0x7000);
         assert_eq!(cp.nr_bytes, 144);
+    }
+
+    #[test]
+    fn test_sys_trace_encodes_lsys_layout_and_decodes_read_value() {
+        // C: libsys sys_trace.c:8-22 — 载荷 mess_lsys_krn_sys_trace
+        //（request@0/endpt@4/address@8/data@16，**不同于 m_m1**：m1.m1i1
+        // 是 request 而非 endpt，kernel misc.rs msg_trace 按该布局读）；
+        // 回复的读值经同偏移 data 字段写回（write_trace_reply_data）。
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        unsafe { reply.m_u.m_lsys_krn_sys_trace.data = 0x55 };
+        canned.reply_message(reply);
+
+        let mut data: i64 = 0; // READ 类命令忽略入值
+        let r = sys_trace(&canned, 1 /* T_GETINS */, 7, 0x2000, &mut data);
+
+        assert_eq!(r, Ok(()));
+        assert_eq!(data, 0x55, "kernel read value must overwrite data");
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_TRACE_CALL);
+        assert_eq!(SYS_TRACE_CALL, 5, "kernel Syscall::Trace = 5");
+        let t = unsafe { &sent[0].m_u.m_lsys_krn_sys_trace };
+        assert_eq!(t.request, 1);
+        assert_eq!(t.endpt, 7);
+        assert_eq!(t.address, 0x2000);
+    }
+
+    #[test]
+    fn test_sys_trace_negative_errno_passthrough() {
+        // C: 返回值 = 内核回复（负 errno 原样透传，do_trace 不折叠）。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-1); // EPERM
+
+        let mut data: i64 = 0;
+        assert_eq!(sys_trace(&canned, 8 /* T_EXIT */, 7, 0, &mut data), Err(-1));
+        assert_eq!(canned.calls.get(), 1);
     }
 
     #[test]

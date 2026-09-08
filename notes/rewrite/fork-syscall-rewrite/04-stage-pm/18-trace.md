@@ -176,7 +176,7 @@ int do_trace(void)
     return(OK); // 165
 ```
 
-`162` 行 `trace_flags=data` 的 `TO_*` 位直接存（`TO_NOEXEC 0x1/ALTEXEC 0x2/TRACEFORK 0x1` 的 `TraceOptions` 一处结构，`A-12`）。
+`162` 行 `trace_flags=data` 的整字赋值：`TO_*` 选项位直接存（`TRACEFORK 0x1/ALTEXEC 0x2/NOEXEC 0x4`，`sys/ptrace.h:208-211`——本文件旧稿把 `TO_NOEXEC` 误写为 `0x1`，已勘误），`TRACE_EXIT` 状态位（`mproc.h:100` `0x8000`）在 Rust 归 `TraceState.exit_pending` 承载（`T_SETOPT` 整字赋值可触达它，`trace.rs` 的 T_SETOPT 臂同步该位，`A-12`）。
 
 ### 2.9 `T_GETRANGE/T_SETRANGE`（`trace.c:167-188`）
 
@@ -278,7 +278,7 @@ void trace_stop(register struct mproc *rmp, int signo)
 
 ### 2.14 消息与类型（`sys/ptrace.h:226` `T_OK 0` 等 `T_*` + `sys/wait.h: W_STOPCODE` + `sys/signal.h: _NSIG 64`）
 
-- `T_OK 0` (`PT_TRACE_ME`) / `T_ATTACH 9` (`PT_ATTACH`) / `T_STOP` 等 `T_*`（`ptrace.h:226-234` `T_OK/ATTACH/STOP/READB_INS/WRITEB_INS/EXIT/SETOPT/GETRANGE/SETRANGE/DETACH/RESUME/STEP/SYSCALL`，`sys/ptrace.h:226` `T_OK 0` 等）、`W_STOPCODE(signo)` (`wait.h: W_STOPCODE` 的 `((signo)<<8 | 0x7f)` 截断，`trace.c:273`）、`_NSIG 64`（`sys/signal.h:45`）、`TRACE_STOPPED 0x80`（`mproc.h:93`）、`TO_NOEXEC/ALTEXEC`（`sys/ptrace.h: TO_NOEXEC 0x1/ALTEXEC 0x2`）。
+- `T_OK 0` (`PT_TRACE_ME`) / `T_ATTACH 9` (`PT_ATTACH`) / `T_STOP` 等 `T_*`（`ptrace.h:226-234` `T_OK/ATTACH/STOP/READB_INS/WRITEB_INS/EXIT/SETOPT/GETRANGE/SETRANGE/DETACH/RESUME/STEP/SYSCALL`，`sys/ptrace.h:226` `T_OK 0` 等）、`W_STOPCODE(signo)` (`wait.h: W_STOPCODE` 的 `((signo)<<8 | 0x7f)` 截断，`trace.c:273`）、`_NSIG 64`（`sys/signal.h:45`）、`TRACE_STOPPED 0x80`（`mproc.h:93`）、`TO_TRACEFORK 0x1/ALTEXEC 0x2/NOEXEC 0x4`（`sys/ptrace.h:208-211`；本文件旧稿误写 `NOEXEC 0x1`，已勘误）。`T_*` 全集的数值以 `trace.rs::test_constants_match_c` 的全量断言为准（`T_STOP -1/T_STEP 104/T_DETACH 10` 等 19 项）。
 
 ### 2.15 不变式即契约
 
@@ -343,7 +343,7 @@ Rust 改写遵循“显式 `T_*` 枚举 + `may_attach` 一处谓词 + `TraceStat
 |---------|---------|-------------|
 | A-12 双监护外 `Traced` | `Guardianship::Traced` + `try_set_tracer`（D1） | `mproc/guardianship.rs` + 本文档 §3.1 + 计划 §4 |
 | A-2 位→枚举 | `T_*` 枚举（D1/D2） | `trace.rs` + 本文档 §3.1/3.2 + 计划 §4 |
-| A-3 全局→显式 | `TraceCtl::trace` 显式 `caller: UserSlot`（D1/D2） | `trace.rs` 注释 + 本文档 §3.1/3.2 + 计划 §4 |
+| A-3 全局→显式 | `do_trace` 显式 `caller: UserSlot` + `kern`/`transport` 参数（D1/D2；原 `TraceCtl` seam 已删——内核面收敛 `KernelGateway`，V3-P1-1） | `trace.rs` 注释 + 本文档 §3.1/3.2 + 计划 §4 |
 
 ---
 
@@ -356,7 +356,7 @@ os/servers/pm/src/
 ├── mproc/
 │   ├── trace.rs         — TraceState { stopped, exit_pending } + TraceFlags 已在 guardianship.rs 的 TraceOptions
 │   └── guardianship.rs  — Guardianship::try_set_tracer + set_trace_options + clear_tracer
-├── trace.rs             — do_trace(table, caller, req, &mut dyn TraceCtl) -> Result<ReplyIntent, TraceError>（T_* 全族 16 命令的 match 分派 + TraceStop 的 W_STOPCODE） + trace_stop(table, child, signo, &mut dyn TraceCtl, &mut dyn WaitReply)
+├── trace.rs             — do_trace(table, caller, req, kern, transport) -> Result<ReplyIntent, TraceError>（T_* 全族命令的 match 分派 + 落穿透传 + reply 载荷预填） + trace_stop(table, child, signo, kern, transport)
 └── ipc/
     └── mod.rs           — （无新增，trace 的 sys 调用经 trace.rs 的 trait 注入）
 ```
@@ -376,9 +376,11 @@ impl Guardianship {
 
 ```rust
 pub enum PtraceReq { Ok, Attach { pid }, Stop, ReadIns { pid, addr }, WriteIns { pid, addr, data }, Exit { pid, status }, SetOpt { pid, flags }, GetRange { pid, range }, SetRange { pid, range }, Detach { pid, sig }, Resume { pid, sig }, Step { pid, sig }, Syscall { pid, sig } }
-pub trait TraceCtl { fn trace(&mut self, req: i32, ep: Endpoint, addr: VirBytes, data: &mut u64) -> i32; fn vircopy(&mut self, from: Endpoint, from_addr, to: Endpoint, to_addr, size) -> i32; }
-pub fn do_trace(table: &mut ProcTable, caller: UserSlot, req: PtraceReq, ctl: &mut dyn TraceCtl) -> Result<ReplyIntent, TraceError>
-pub fn trace_stop(table: &mut ProcTable, child: UserSlot, signo: i32, ctl: &mut dyn TraceCtl, wait: &mut dyn WaitReply) // sys_trace(T_STOP) + TRACE_STOPPED + W_STOPCODE
+// TraceCtl 已删（V3-P1-1）：sys_trace/vircopy/datacopy 三内核能力收敛
+// KernelGateway（exit.rs），死亡方法 vircopy/datacopy 随之消灭。
+pub fn do_trace<T: IpcTransport + ?Sized>(table: &mut ProcTable, caller: UserSlot, req: PtraceReq, kern: &mut dyn KernelGateway, transport: &mut T) -> Result<ReplyIntent, TraceError>
+pub fn do_trace<T: IpcTransport + ?Sized>(table, caller, req, kern: &mut dyn KernelGateway, transport: &mut T) -> Result<ReplyIntent, TraceError> // TraceCtl 已删（死方法），内核面收敛 KernelGateway（V3-P1-1）
+pub fn trace_stop<T: IpcTransport + ?Sized>(table, child, signo, kern, transport) // sys_trace(T_STOP) + TRACE_STOPPED + W_STOPCODE 载荷直发
 ```
 
 ### 4.4 `os/libs/minix-types/src/ipc/trace.rs`（或 `pm.rs` 扩展）：`PtraceReq` 常量与 `TsSpace` 枚举
@@ -404,26 +406,35 @@ pub struct PtraceRange { pub space: TsSpace, pub addr: VirBytes, pub ptr: VirByt
 
 ## 5 测试矩阵
 
-> 基线：`cargo test -p minix-pm --lib` 截至 2026-09-03 为 **295 passed / 0 failed**（原 285 + 本档新增 ~10：`trace.rs` 8 + `mproc/trace.rs` 2）。结果见 `cargo test` 末段统计段（§2.4j 格式）。
+> 基线：`cargo test -p minix-pm` 截至 2026-09-09 为 **369 lib + 10 integration passed**（V3-P1-1 重写：`trace.rs` 测试从 7 扩到 16）。结果见 `cargo test` 末段统计段（§2.4j 格式）。
 
-### 5.1 `trace.rs`（`T_*` 全族与 `trace_stop`）
+### 5.1 `trace.rs`（`T_*` 全族与 `trace_stop`，V3-P1-1 重写）
 
-- `test_t_ok_ebusy`：`T_OK` 的 `EBUSY` 门（`trace.c:56`）
-- `test_t_attach_perm`：`T_ATTACH` 的 `SUPER_USER` 三重/`PRIV_PROC` 双向禁/`already traced→EBUSY`（`67-85`）
-- `test_t_exit_save`：`VFS|EVENT→save` vs `exit_proc`（`150-151`）
-- `test_t_detach_replay`：`sigtrace→check_sig` 全量（`197-201`）
-- `test_trace_stop_wait`：`sys_trace(T_STOP)` + `TRACE_STOPPED` + `W_STOPCODE` + `wait_test`（`263/266/273`）
+- `test_constants_match_c`：**全量** 19 常量逐值对账 `sys/ptrace.h:226-250`（旧稿同名测试只断言 2 个——测试名谎报已修正）
+- `test_w_stopcode`：`0x7f` 截断
+- `test_t_ok_sets_tracer_and_zero_payload`：`try_set_tracer` + `reply.data=0` + 二次 `EBUSY`（`56/58/59`）
+- `test_t_attach_sets_noexec_and_stops_child`：`TO_NOEXEC` 置位 + `sig_proc(SIGSTOP,TRUE)→trace_stop` 链（`88/90`）
+- `test_t_stop_is_einval`：未暴露命令（`99`）
+- `test_readb_ins_requires_root_not_tracer`：root 门在通用守卫**之前**（`102`）
+- `test_t_exit_defers_when_vfs_blocked_else_exits`：`VFS|EVENT→save` vs `exit_proc` 直达（`150-154`）
+- `test_t_setopt_sets_options_and_exit_flag`：整字赋值 + `TRACE_EXIT` 摘给 `exit_pending`（`162`）
+- `test_t_getrange_setrange_validate_and_direction`：`pr_size=0`/非法 space → `EINVAL`，vircopy 方向（`167-188`）
+- `test_t_detach_replays_sigtrace_and_falls_through_to_kernel`：重放 + 内核透传（`197-201/215→244`）
+- `test_t_resume_feigns_success_when_sigtrace_pending` / `test_t_resume_negative_data_is_einval`：假成功短路（`231-236`）与负 data（`220`）
+- `test_generic_guard_tracer_mismatch_is_esrch`：通用守卫（`140-143`）
+- `test_trace_stop_replies_waiting_tracer_with_payload` / `test_trace_stop_not_waiting_only_stops` / `test_trace_stop_kernel_failure_panics`：W_STOPCODE 载荷 + pid tag、无等待不回复、失败 panic（`263-274`）
 
-### 5.2 `mproc/trace.rs` 与 `mproc/guardianship.rs`（三元）
+### 5.2 `mproc/trace.rs` 与 `mproc/guardianship.rs`（状态）
 
-- `test_trace_state_default`：`TraceState { stopped, exit_pending }` 默认 `false`
-- `test_try_set_tracer`：`try_set_tracer` 的 `EBUSY` 门
+- `test_default_not_stopped`：`TraceState` 默认未停止
+- `test_default_is_normal` / `test_traced_state` / `test_trace_options`：`Guardianship` 三元（`trace_exit` 双份状态已删，V3-P1-1）
 
-### 5.3 `minix-types`（常量）
+### 5.3 `minix-types` 与 `minix-sys`（wire）
 
-- `test_constants_match_c`：锁定 `T_OK 0/T_ATTACH 9`（`ptrace.h:226`）、`W_STOPCODE` 的 `0x7f` 截断（`wait.h`）
+- `test_pm_ptrace_message_layouts`：`MessLcPmPtrace/MessPmLcPtrace` 56 字节 + LP64 偏移（`ipc.h:492-501/1749-1757`）
+- `test_sys_trace_encodes_lsys_layout_and_decodes_read_value` / `test_sys_trace_negative_errno_passthrough`：SYS_TRACE=5 的 `m_lsys_krn_sys_trace` 布局与读值回填（minix-sys，E6 切片）
 
-测试策略：`TraceCtl` 的 `trace/vircopy` 均 `TestTraceCtl` mock 可注入 `OK/EPERM/ESRCH` 与 `data` 回填；`W_STOPCODE` 的 `0x7f` 截断以 `WaitCode::stop` 纯函数验；`T_EXIT` 的 `VFS|EVENT` 分叉以 `ProcTable` 的 `VFS_CALL` 置位验。
+集成层：`ptrace_attach_runs_full_chain_and_replies_with_payload`（run_once 全链：T_ATTACH → stopped + NOEXEC + OK 载荷回复）。
 
 ---
 

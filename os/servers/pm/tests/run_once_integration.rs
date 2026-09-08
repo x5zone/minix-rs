@@ -35,6 +35,9 @@ impl minix_pm::exit::KernelGateway for MockKernelGateway {
     fn copy_to_user(&mut self, bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
     fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+    fn sys_trace(&mut self, _req: i32, _ep: Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: Endpoint, _src: u64, _dst_ep: Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
     fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
         Ok((self.user, self.sys))
     }
@@ -333,4 +336,39 @@ fn kill_termination_tells_vfs_exit() {
         "caller must receive success reply 0, sent={:?}",
         sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn ptrace_attach_runs_full_chain_and_replies_with_payload() {
+    // V3-P1-1：PM_PTRACE(8) → do_trace(T_ATTACH) 全链——权限门 → tracer
+    // 安装 + TO_NOEXEC（trace.c:88）→ sig_proc(SIGSTOP, TRUE)（trace.c:90，
+    // 经 sig_proc 的 TRACE 分支进 trace_stop：内核 T_STOP + stopped 置位）
+    // → OK 回复带 m_pm_lc_ptrace.data=0 载荷（trace.c:92）。
+    let mut srv = server();
+    let debugger_ep = seed_running(&mut srv, 5, 100);
+    let _target_ep = seed_running(&mut srv, 6, 200);
+
+    let mut msg = request(8, debugger_ep); // PM_PTRACE
+    msg.m_u.m_lc_pm_ptrace.pid = 200;
+    msg.m_u.m_lc_pm_ptrace.req = 9; // T_ATTACH
+    srv.transport_mut().queue_receive(msg, IpcStatus::default());
+    assert_eq!(srv.run_once(), RunStep::Handled);
+
+    let table = srv.table();
+    // tracer 安装 + TO_NOEXEC。
+    assert_eq!(table.procs[6].tracer(), Some(minix_types::UserSlot::new(5)));
+    assert!(table.procs[6].state.guardianship.trace_options().contains(
+        minix_pm::mproc::TraceOptions::NOEXEC
+    ));
+    // 子进程被 trace_stop 停住（mock 网关 T_STOP 成功）。
+    assert!(table.procs[6].state.trace.stopped);
+    assert_eq!(table.procs[6].resources.signals.trace_mask, 1u64 << (17 - 1));
+    // 回复：m_type = OK，载荷 data = 0。
+    let sent = srv.transport().sent();
+    let (_, reply) = sent
+        .iter()
+        .find(|(ep, m)| *ep == debugger_ep)
+        .expect("debugger must be replied");
+    assert_eq!(reply.m_type, 0);
+    assert_eq!(unsafe { reply.m_u.m_pm_lc_ptrace.data }, 0);
 }

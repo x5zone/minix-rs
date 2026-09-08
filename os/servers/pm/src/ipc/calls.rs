@@ -305,6 +305,21 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mask = ProcEventMask::from_bits_truncate(mask_bits);
             events.do_proceventmask_mut(caller, mask, table, transport, kern)
         }
+        // C: do_trace（trace.c:42-250）——ptrace 全命令面（V3-P1-1 接线，
+        // 批次 B 的 trace 半边）。守卫/权限错误同步回复 errno；OK 回复的
+        // data 载荷经 ipc.reply 预填（m_pm_lc_ptrace.data，C trace.c:59 等），
+        // 主循环 reply() 以 m_type 携带返回码整体发出。
+        PmCall::Ptrace => {
+            let (pid, preq, addr, data) = unsafe {
+                let pl = msg.m_u.m_lc_pm_ptrace;
+                (pl.pid, pl.req, pl.addr, pl.data)
+            };
+            let req = crate::trace::PtraceReq { req: preq, pid, addr, data };
+            match crate::trace::do_trace(table, caller, req, kern, transport) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -327,6 +342,9 @@ mod tests {
     #[derive(Default)]
     struct NoopKernel;
     impl crate::exit::KernelGateway for NoopKernel {
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }

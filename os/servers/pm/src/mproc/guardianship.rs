@@ -15,7 +15,6 @@ use bitflags::bitflags;
 /// # Minix3 Mapping
 /// - `mp_parent` → `Normal { parent }` or `Traced { parent, .. }`
 /// - `mp_tracer` → `Traced { tracer, .. }`
-/// - `TRACE_EXIT` → `Traced { trace_exit: true, .. }`
 /// - `mp_trace_flags` → `Traced { trace_options, .. }`
 /// - `NO_TRACER (-1)` → `Normal`
 #[derive(Debug, Clone)]
@@ -34,9 +33,9 @@ pub enum Guardianship {
         parent: UserSlot,
         /// Tracer process index.
         tracer: UserSlot,
-        /// TRACE_EXIT flag: tracer is forcing process exit.
-        trace_exit: bool,
-        /// Trace options (mp_trace_flags).
+        /// Trace options (mp_trace_flags 的 TO_* 选项位；TRACE_EXIT 状态位
+        /// 由 `TraceState.exit_pending` 承载——C 同一个字的两个语义在 Rust
+        /// 分列，写只读死的 `trace_exit` 双份状态已删（V3-P1-1）。
         trace_options: TraceOptions,
     },
 }
@@ -90,16 +89,6 @@ impl Guardianship {
         matches!(self, Self::Traced { .. })
     }
     
-    /// Gets TRACE_EXIT flag.
-    ///
-    /// Returns `false` if process is not being traced.
-    pub fn trace_exit(&self) -> bool {
-        match self {
-            Self::Normal { .. } => false,
-            Self::Traced { trace_exit, .. } => *trace_exit,
-        }
-    }
-
     /// Gets trace options.
     pub fn trace_options(&self) -> TraceOptions {
         match self {
@@ -126,7 +115,6 @@ impl Guardianship {
         *self = Self::Traced {
             parent: p,
             tracer: parent,
-            trace_exit: false,
             trace_options: TraceOptions::empty(),
         };
         Ok(())
@@ -157,7 +145,6 @@ mod tests {
         assert_eq!(g.parent(), UserSlot::new(5));
         assert!(!g.is_traced());
         assert!(g.tracer().is_none());
-        assert!(!g.trace_exit());
     }
     
     #[test]
@@ -165,24 +152,11 @@ mod tests {
         let g = Guardianship::Traced {
             parent: UserSlot::new(1),
             tracer: UserSlot::new(2),
-            trace_exit: false,
             trace_options: TraceOptions::empty(),
         };
         assert!(g.is_traced());
         assert_eq!(g.parent(), UserSlot::new(1));
         assert_eq!(g.tracer(), Some(UserSlot::new(2)));
-        assert!(!g.trace_exit());
-    }
-    
-    #[test]
-    fn test_trace_exit_flag() {
-        let g = Guardianship::Traced {
-            parent: UserSlot::new(1),
-            tracer: UserSlot::new(2),
-            trace_exit: true,
-            trace_options: TraceOptions::empty(),
-        };
-        assert!(g.trace_exit());
     }
     
     #[test]

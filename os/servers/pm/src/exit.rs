@@ -61,6 +61,33 @@ pub trait KernelGateway {
     /// 可接受）/ 其它负 errno = 失败（`stop_proc` 对失败 panic，C 同型）。
     /// 生产实现依赖 minix-sys wrapper（edge_todo.md E6 清单已登记）。
     fn sys_delay_stop(&mut self, ep: Endpoint) -> Result<(), i32>;
+
+    /// C: `sys_trace(req, proc_ep, addr, &data)`（libsys `sys_trace.c:8-22`）
+    /// ——内核 SYS_TRACE 通道：trace_stop 的 T_STOP（trace.c:263）、
+    /// do_trace 的命令透传（trace.c:244-248）与 READB/WRITEB_INS
+    ///（trace.c:106/129）。读值由内核写回 `data`。失败返回负 errno
+    ///（调用方按 C 透传，不折叠——V3-P2-6 规约）。
+    fn sys_trace(&mut self, req: i32, ep: Endpoint, addr: u64, data: &mut i64) -> Result<(), i32>;
+
+    /// C: `sys_vircopy(src_ep, src, dst_ep, dst, len)`（libsys
+    /// `sys_vircopy.c:8-16`）——跨进程虚地址复制，方向由调用方给定：
+    /// T_GETRANGE/T_SETRANGE 的被跟踪进程 ↔ 调试器缓冲区搬运
+    ///（trace.c:176-183）。与 [`Self::copy_to_user`] 的差异：本方法
+    /// 不隐含 SELF 端。
+    fn sys_vircopy(
+        &mut self,
+        src_ep: Endpoint,
+        src: u64,
+        dst_ep: Endpoint,
+        dst: u64,
+        len: u64,
+    ) -> Result<(), i32>;
+
+    /// C: `sys_datacopy(src_ep, src, SELF, dst, len)`（libsys
+    /// `sys_datacopy.c`；内核侧与 VIRCOPY 同型，Fix #27 先例）——把
+    /// `src_ep` 进程虚地址处的字节读入 PM 本地缓冲。T_GETRANGE 的
+    /// `ptrace_range` 参数块即经此通道取出（trace.c:169-171）。
+    fn copy_from_user(&mut self, src_ep: Endpoint, src: u64, bytes: &mut [u8]) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -138,6 +165,51 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
         // 对失败 panic（C signal.c:245 "sys_delay_stop failed" 同型），
         // 不伪造停止状态。
         Err(-minix_types::EIO)
+    }
+
+    fn sys_trace(&mut self, req: i32, ep: Endpoint, addr: u64, data: &mut i64) -> Result<(), i32> {
+        // SYS_TRACE 真实通道（kernel 对端 dispatch_trace 已实现；
+        // minix-sys sys_trace wrapper = E6 切片，2026-09-09 随 V3-P1-1 落地）。
+        minix_sys::syscall::sys_trace(&self.transport, req, ep.0, addr, data)
+    }
+
+    fn sys_vircopy(
+        &mut self,
+        src_ep: Endpoint,
+        src: u64,
+        dst_ep: Endpoint,
+        dst: u64,
+        len: u64,
+    ) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_vircopy(
+            &self.transport,
+            src_ep.0,
+            src,
+            dst_ep.0,
+            dst,
+            len,
+        );
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn copy_from_user(&mut self, src_ep: Endpoint, src: u64, bytes: &mut [u8]) -> Result<(), i32> {
+        let r = minix_sys::syscall::sys_vircopy(
+            &self.transport,
+            src_ep.0,
+            src,
+            minix_sys::syscall::SELF,
+            bytes.as_mut_ptr() as u64,
+            bytes.len() as u64,
+        );
+        if r < 0 {
+            Err(r)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -686,8 +758,7 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
                 crate::mproc::Guardianship::Traced { tracer, .. } => crate::mproc::Guardianship::Traced {
                     parent: UserSlot::new(11),
                     tracer,
-                    trace_exit: false,
-                    trace_options: crate::mproc::TraceOptions::empty(),
+                                        trace_options: crate::mproc::TraceOptions::empty(),
                 },
             };
             if child.state.block.ipc_blocked.is_some() {
@@ -794,6 +865,9 @@ mod tests {
         copied_bytes: Option<alloc::vec::Vec<u8>>,
     }
     impl KernelGateway for KillRecorder {
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+    fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+    fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
             self.killed = Some((ep, sig));
@@ -939,8 +1013,7 @@ mod tests {
         table.procs[5].state.guardianship = Guardianship::Traced {
             parent: UserSlot::new(1),
             tracer: UserSlot::new(2),
-            trace_exit: false,
-            trace_options: crate::mproc::TraceOptions::empty(),
+                        trace_options: crate::mproc::TraceOptions::empty(),
         };
         // tracer at 2 is NOT waiting → stays TraceZombie (wait_test false → return)
         table.procs[2].state.lifecycle = Lifecycle::Running;

@@ -389,7 +389,7 @@ mod tests {
     fn test_tracer_signal() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5);
-        table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_exit: false, trace_options: crate::mproc::TraceOptions::empty() };
+        table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_options: crate::mproc::TraceOptions::empty() };
         // TO_NOEXEC not set, so should send SIGTRAP (5)
         let mut svc = TestExecSvc::new();
         exec_restart(&mut table, UserSlot::new(5), 0, VirBytes(0x1000), VirBytes(0x7000), VirBytes(0), &mut svc);
@@ -410,7 +410,7 @@ mod tests {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5);
         // With tracer, allow_setuid false -> tainted should be via eff!=real
-        table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_exit: false, trace_options: crate::mproc::TraceOptions::empty() };
+        table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_options: crate::mproc::TraceOptions::empty() };
         table.procs[5].resources.privilege.credentials_mut().unwrap().user.effective = 2000; // eff != real (1000)
         let info = ExecInfo { allow_setuid: true, new_uid: 0, new_gid: 0, progname: [0;16], stack_high: VirBytes(0x8000), frame_len: 64 };
         let _ = do_newexec(&mut table, Endpoint::VFS, Endpoint::from_generation_slot(1,5), info).unwrap();
