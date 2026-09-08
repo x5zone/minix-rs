@@ -208,7 +208,7 @@ mod tests {
     fn kernel_task_uses_init_task_sstatus() {
         let ctx = Riscv64CpuContextArch::build_cpu_context(
             ProcKind::KernelTask,
-            -1,
+            ProcNr(-1),
             EntrySpec::KERNEL_TASK,
         );
         assert_eq!(ctx.sstatus, INIT_TASK_SSTATUS);
@@ -219,7 +219,7 @@ mod tests {
     fn user_process_uses_init_sstatus() {
         let ctx = Riscv64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::loaded(
                 VirBytes(0x1000),
                 VirBytes(0x4000_0000),
@@ -243,10 +243,10 @@ mod tests {
     #[test]
     fn inherit_fpu_state_copies_sstatus() {
         let parent = Riscv64CpuContextArch::build_cpu_context(
-            ProcKind::Vm, 8, EntrySpec::DEFERRED,
+            ProcKind::Vm, ProcNr(8), EntrySpec::DEFERRED,
         );
         let mut child = Riscv64CpuContextArch::build_cpu_context(
-            ProcKind::KernelTask, -1, EntrySpec::KERNEL_TASK,
+            ProcKind::KernelTask, ProcNr(-1), EntrySpec::KERNEL_TASK,
         );
         assert_ne!(child.sstatus, parent.sstatus, "precondition: differ");
         Riscv64CpuContextArch::inherit_fpu_state(&mut child, &parent);

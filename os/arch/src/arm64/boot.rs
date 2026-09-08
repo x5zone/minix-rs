@@ -208,7 +208,7 @@ mod tests {
     fn kernel_task_uses_init_task_psr() {
         let ctx = AArch64CpuContextArch::build_cpu_context(
             ProcKind::KernelTask,
-            -1,
+            ProcNr(-1),
             EntrySpec::KERNEL_TASK,
         );
         assert_eq!(ctx.psr, INIT_TASK_PSR);
@@ -219,7 +219,7 @@ mod tests {
     fn user_process_uses_init_psr_and_fpen_user() {
         let ctx = AArch64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::loaded(
                 VirBytes(0x1000),
                 VirBytes(0x4000_0000),
@@ -237,7 +237,7 @@ mod tests {
     fn all_user_kinds_get_fpen_user() {
         // Vm, RootService, UserService, UserProcess all map to user mode.
         for kind in [ProcKind::Vm, ProcKind::RootService, ProcKind::UserService, ProcKind::UserProcess] {
-            let ctx = AArch64CpuContextArch::build_cpu_context(kind, 0, EntrySpec::DEFERRED);
+            let ctx = AArch64CpuContextArch::build_cpu_context(kind, ProcNr(0), EntrySpec::DEFERRED);
             assert!(ctx.fpu_enable_el0, "{:?} must enable FP at EL0", kind);
         }
     }
@@ -252,10 +252,10 @@ mod tests {
     #[test]
     fn inherit_fpu_state_propagates_fpu_enable_el0() {
         let parent = AArch64CpuContextArch::build_cpu_context(
-            ProcKind::Vm, 8, EntrySpec::DEFERRED,
+            ProcKind::Vm, ProcNr(8), EntrySpec::DEFERRED,
         );
         let mut child = AArch64CpuContextArch::build_cpu_context(
-            ProcKind::KernelTask, -1, EntrySpec::KERNEL_TASK,
+            ProcKind::KernelTask, ProcNr(-1), EntrySpec::KERNEL_TASK,
         );
         assert!(parent.fpu_enable_el0, "precondition: parent has FP enabled");
         assert!(!child.fpu_enable_el0, "precondition: child (kernel task) has FP disabled");

@@ -4,6 +4,7 @@
 //! - `com`: System-level constants (MAX_NR_TASKS, NR_PROCS, etc.)
 //! - `pid`: Process ID, process index
 //! - `endpoint`: Endpoint identifier (core IPC concept)
+//! - `proc_nr`: Process number (kernel process table slot number)
 //! - `id`: User ID, Group ID
 //! - `clock`: Clock ticks, timestamp, file offset
 //! - `address`: Virtual/physical address types
@@ -24,6 +25,7 @@ mod endpoint;
 mod errno;
 mod id;
 mod pid;
+mod proc_nr;
 mod signal;
 mod sysctl;
 
@@ -38,5 +40,6 @@ pub use endpoint::*;
 pub use errno::*;
 pub use id::*;
 pub use pid::*;
+pub use proc_nr::*;
 pub use signal::*;
 pub use sysctl::*;

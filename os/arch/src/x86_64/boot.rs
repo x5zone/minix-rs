@@ -254,7 +254,7 @@ mod tests {
     fn kernel_task_uses_init_task_psw() {
         let ctx = X86_64CpuContextArch::build_cpu_context(
             ProcKind::KernelTask,
-            -1,
+            ProcNr(-1),
             EntrySpec::KERNEL_TASK,
         );
         assert_eq!(ctx.psw, INIT_TASK_PSW);
@@ -269,7 +269,7 @@ mod tests {
     fn user_process_uses_init_psw() {
         let ctx = X86_64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::loaded(
                 VirBytes(0x1000),
                 VirBytes(0x7fff_0000),
@@ -286,7 +286,7 @@ mod tests {
     fn enable_user_io_sets_iopl() {
         let mut ctx = X86_64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::KERNEL_TASK,
         );
         assert_eq!(ctx.psw & 0x3000, 0, "IOPL starts at 0");
@@ -306,7 +306,7 @@ mod tests {
     fn apply_to_trap_frame_copies_registers() {
         let ctx = X86_64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::loaded(
                 VirBytes(0xdead_beef),
                 VirBytes(0xcafe_f00d),
@@ -324,10 +324,10 @@ mod tests {
     #[test]
     fn inherit_fpu_state_propagates_lazy_user_policy() {
         let parent = X86_64CpuContextArch::build_cpu_context(
-            ProcKind::Vm, 8, EntrySpec::DEFERRED,
+            ProcKind::Vm, ProcNr(8), EntrySpec::DEFERRED,
         );
         let mut child = X86_64CpuContextArch::build_cpu_context(
-            ProcKind::KernelTask, -1, EntrySpec::KERNEL_TASK,
+            ProcKind::KernelTask, ProcNr(-1), EntrySpec::KERNEL_TASK,
         );
         // Precondition: child starts as KernelTask policy, parent is LazyUserInit.
         assert_ne!(child.fpu_policy, parent.fpu_policy, "precondition: differ");

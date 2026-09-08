@@ -286,8 +286,9 @@ PM: sys_clear(exit_endpt)
 - 如果保持 `pub type ProcNr = i32` 类型别名：编译期与裸 i32 等价——endpoint raw、errno、proc_nr 都能互相赋值，无防护，易引入"把 errno 当 proc_nr"类 bug。
 - 升级为 `#[repr(transparent)] pub struct ProcNr(pub i32)` newtype：与 Endpoint 对齐，编译期防止混淆；`repr(transparent)` 保证消息布局兼容。
 - 取舍：`ProcNr` 使用点遍布 `proc.rs`/`proc_table.rs`/`sched.rs`/`smp.rs`/`syscall_process.rs` 等多个模块，升级需同步修改所有使用点 + 补 `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` 转换。为提供编译期类型防护，已完成 newtype 升级。
+- 后续统一（G1，2026-09-08）：newtype 曾只存在于 kernel（`os/kernel/src/proc.rs`），而 arch crate 另有一份 `pub type ProcNr = i32` 别名，导致 `build_cpu_context` 边界上 kernel 侧被迫 `nr.0` 拆包（`os/kernel/src/lib.rs:939`/`:1223` 的道歉注释即此问题的症状）。修复把 newtype 上移 minix-types 作为共享单一来源（`os/libs/minix-types/src/types/proc_nr.rs:41`），arch 与 kernel 双侧 re-export 同一类型，边界拆包点归零。
 
-**实现**: `#[repr(transparent)] pub struct ProcNr(pub i32)`（os/kernel/src/proc.rs:30）+ `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` impl。`AtomicI32`（`p_nextready`）保持存储裸 `i32`（C ABI 兼容），访问点用 `.0` 取裸值或 `ProcNr(raw)` 构造。`NONE_PROC_NR: i32 = -1` 保持 `i32`（与 `AtomicI32` 哨兵对齐）。
+**实现**: `#[repr(transparent)] pub struct ProcNr(pub i32)` 权威定义在 minix-types（`os/libs/minix-types/src/types/proc_nr.rs:41`，含 `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` impl）；kernel `os/kernel/src/proc.rs:36` re-export 为 `crate::proc::ProcNr`，arch `os/arch/src/arch/boot.rs:42` re-export 为 trait 签名类型。`AtomicI32`（`p_nextready`）保持存储裸 `i32`（C ABI 兼容），访问点用 `.0` 取裸值或 `ProcNr(raw)` 构造。`NONE_PROC_NR: i32 = -1` 保持 `i32`（与 `AtomicI32` 哨兵对齐）。
 
 ---
 
@@ -447,7 +448,7 @@ pub fn dispatch_exec(
         );
         let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
             ProcKind::UserProcess,
-            target_nr.0,
+            target_nr,
             entry,
         );
         if let Some(rp) = proc_table.get_mut(target_nr) {

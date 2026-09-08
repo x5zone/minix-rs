@@ -369,7 +369,7 @@ impl SignalContext for X86_64SignalContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arch::boot::{CpuContextArch, EntrySpec, ProcKind};
+    use crate::arch::boot::{CpuContextArch, EntrySpec, ProcKind, ProcNr};
     use crate::arch::signal_context::SignalInfo;
     use crate::x86_64::boot::X86_64CpuContextArch;
 
@@ -387,7 +387,7 @@ mod tests {
     fn test_build_sigcontext_fills_from_ctx() {
         let ctx = X86_64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::loaded(
                 minix_types::VirBytes(0x1000),
                 minix_types::VirBytes(0x7fff_0000),
@@ -503,7 +503,7 @@ mod tests {
     fn test_roundtrip_build_then_restore() {
         let mut ctx = X86_64CpuContextArch::build_cpu_context(
             ProcKind::Vm,
-            8,
+            ProcNr(8),
             EntrySpec::loaded(
                 minix_types::VirBytes(0x1000),
                 minix_types::VirBytes(0x7fff_0000),

@@ -33,6 +33,11 @@
 //! 2. **Invariant Protection**: State transition logic is bound to complex internal service logic.
 //! 3. **Microkernel Principle**: Follows the "minimum knowledge" principle.
 
+// Test builds link std so test modules can use `format!` etc.
+// (workspace idiom: kernel/src/lib.rs:29, minix-elf/src/lib.rs:38).
+#[cfg(test)]
+extern crate std;
+
 pub mod ipc;
 pub mod types;
 

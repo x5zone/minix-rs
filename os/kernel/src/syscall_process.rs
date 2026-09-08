@@ -313,7 +313,7 @@ pub fn dispatch_exec(
         );
         let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
             ProcKind::UserProcess,
-            target_nr.0,
+            target_nr,
             entry,
         );
         if let Some(rp) = proc_table.get_mut(target_nr) {

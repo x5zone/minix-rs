@@ -36,14 +36,13 @@
 use minix_boot::{BootModule, KernelInfo};
 use minix_types::{PhysFrame, VirBytes};
 
+/// Shared single source for the process number (kernel and arch trait
+/// signatures use the same newtype). Re-exported so the historical
+/// `crate::arch::boot::ProcNr` / `minix_arch::ProcNr` paths keep resolving.
+pub use minix_types::ProcNr;
+
 use crate::paging::Paging;
 use crate::arch::frame::{PhysAccess, VmBootAllocator};
-
-/// Number-type for a process slot (kernel tasks have negative slots).
-///
-/// Re-exposed here so that downstream code can name the parameter type
-/// without reaching back into `minix-types`.
-pub type ProcNr = i32;
 
 /// Process role (OS concept — replaces the previous `is_kernel: bool`
 /// implicit + ad-hoc `is_vm` / `is_root_sys` branching).

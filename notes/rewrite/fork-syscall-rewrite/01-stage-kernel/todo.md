@@ -420,6 +420,25 @@ arch trait 签名改用共享 `ProcNr`；消除 `nr.0` 与双定义。符合 CLA
 **注意**：minix-types 是"协议类型"（服务间通信），ProcNr 是内核内部索引——需 OQ 确认归属
 （备选：新 `minix-kernel-types` crate，或 arch 依赖 kernel 的 `proc` 类型不可行——循环依赖）。
 
+**解决记录（2026-09-08）**：OQ 由用户裁决关闭——上移 minix-types。落地：
+- newtype + 全套 impl（`new`/`From`/`Neg`/`Add`/`Sub`/`Display`）从 `os/kernel/src/proc.rs` 原样迁至
+  `os/libs/minix-types/src/types/proc_nr.rs:41`（含 5 个单元测试）；与既有 `Endpoint`/`UserSlot`/`KernelSlot`
+  槽位家族同层（`types/endpoint.rs`）
+- arch `os/arch/src/arch/boot.rs` 删 `pub type ProcNr = i32` 别名，改 `pub use minix_types::ProcNr`（:42）——
+  `build_cpu_context` trait 签名（arch/boot.rs:167）类型字面不变、防护升级；`minix_arch::ProcNr` 路径不变
+- kernel `os/kernel/src/proc.rs:36` 改 re-export，`crate::proc::ProcNr` 全部 ~600 处使用点零 diff
+- 边界拆包归零：`lib.rs:939`/`:1223` 两处 `nr.0` + 道歉注释、`syscall_process.rs:316` `target_nr.0` 全部删除；
+  arch 三个架构 21 处测试调用点改传 `ProcNr(...)`。`lib.rs:2026` 的 `CURRENT_PTPROC_NR.store(nr.0)` 保留——
+  AtomicI32 互操作合法拆包（proc_nr.rs doc 明示契约）；boot 协议 `types/boot.rs:303 proc_nr: i32` 保持裸 i32（wire 字节）
+- C ground truth 细微差别如实记录：`proc_nr_t` 在 C 是 kernel 内部 typedef（`minix3/minix/kernel/type.h:9`），
+  但进程号常量族在共享 `com.h:59-78`；上移属 Rust 结构需要（消双定义）而非 C 镜像。Redox 先例：`ContextId`
+  newtype 定义于协议 crate `redox-syscall`，内核/用户态共享
+- 验证：`cargo test -p minix-types` 189 passed（含 5 新测试）/ `-p minix-arch` 220 passed / `-p minix-kernel`
+  693+2 passed，workspace check 无新错误（`test-smp-topo-riscv64`/`test-memmap-riscv64` 两个 E0432 为 HEAD
+  既有——已用 HEAD worktree 复现，QEMU target 门控问题，不在本项范围）；clippy 我方文件零新警告
+- 移交记录（不属本项顺手修）：`19-stage-integration/06-code.md:126/:165` 断言 "ProcNr … type aliases /
+  Kernel's ProcNr = i32" 已过时（且 :165 原本就误把别名归到 kernel 侧）——留该 stage 后续处理
+
 ### M1. test-kernel 配置模板化 [P2]
 
 **现状**：19 个 bootstrap test-kernels 各自维护 Cargo.toml；
@@ -2717,7 +2736,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 
 **Phase 4 — 剩余架构重构（§1）**
 - ⬜ D1 [P1] errno newtype 单一来源（=I-8）+ D2 [P2] ToErrno trait 统一 14 个映射函数（同批）
-- ⬜ G1 [P1] ProcNr 双定义上移 minix-types
+- ✅ G1 [P1] ProcNr 双定义上移 minix-types → **newtype + impl 迁至 `types/proc_nr.rs`（含 5 单元测试），arch 删 `= i32` 别名改 `pub use`，kernel re-export（~600 使用点零 diff），边界拆包 3 处归零 + arch 21 处测试点包 newtype；types 189 / arch 220 / kernel 693+2 全绿（2026-09-08，详见 §5 G1 解决记录）**
 - ⬜ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch`
 - ⬜ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）
 - ⬜ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分

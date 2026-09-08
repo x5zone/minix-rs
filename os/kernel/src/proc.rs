@@ -26,45 +26,14 @@ use minix_arch::{
 
 use crate::vm::{VmSuspendContext, VmSuspendType, VmCheckParams, VmSuspendState, VmCopyContext};
 
-/// Process number type (corresponds to C's `proc_nr_t`).
+/// Process number type (corresponds to C's `proc_nr_t` — kernel/type.h:9).
 ///
-/// Newtype wrapper providing type safety — prevents accidental mixing of
-/// process numbers with raw `i32` values. The inner `i32` is accessible via
-/// `.0` for `AtomicI32` interop (`p_nextready`) and array indexing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct ProcNr(pub i32);
-
-impl ProcNr {
-    /// Create a process number from a raw `i32`.
-    pub const fn new(val: i32) -> Self { ProcNr(val) }
-}
-
-impl From<i32> for ProcNr {
-    fn from(val: i32) -> Self { ProcNr(val) }
-}
-impl From<ProcNr> for i32 {
-    fn from(nr: ProcNr) -> Self { nr.0 }
-}
-
-impl core::ops::Neg for ProcNr {
-    type Output = ProcNr;
-    fn neg(self) -> ProcNr { ProcNr(-self.0) }
-}
-impl core::ops::Add for ProcNr {
-    type Output = ProcNr;
-    fn add(self, rhs: ProcNr) -> ProcNr { ProcNr(self.0 + rhs.0) }
-}
-impl core::ops::Sub for ProcNr {
-    type Output = ProcNr;
-    fn sub(self, rhs: ProcNr) -> ProcNr { ProcNr(self.0 - rhs.0) }
-}
-
-impl core::fmt::Display for ProcNr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+/// Canonical definition lives in `minix-types` (shared single source for the
+/// kernel and the arch trait signatures — the arch crate previously had a
+/// divergent `pub type ProcNr = i32` alias that defeated the newtype at the
+/// `build_cpu_context` boundary). Re-exported here so the crate-wide
+/// `crate::proc::ProcNr` paths stay stable.
+pub use minix_types::ProcNr;
 
 /// Sentinel value for "no process" in atomic queue pointers.
 /// Used by `p_nextready` (AtomicI32). `caller_q_head`/`caller_q_tail`/

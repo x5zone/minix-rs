@@ -936,7 +936,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         // sees these values.
         let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
             ProcKind::KernelTask,
-            nr.0, // arch trait takes a plain i32 (arch::boot::ProcNr = i32 alias)
+            nr,
             EntrySpec::KERNEL_TASK,
         );
         proc.set_boot_cpu_context(cpu_context);
@@ -1220,7 +1220,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
 
         let cpu_context = <CurrentCpuContextArch as CpuContextArch>::build_cpu_context(
             proc_kind,
-            nr.0, // arch trait takes a plain i32 (arch::boot::ProcNr = i32 alias)
+            nr,
             entry,
         );
         proc.set_boot_cpu_context(cpu_context);
