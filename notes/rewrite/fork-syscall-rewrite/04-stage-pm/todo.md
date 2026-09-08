@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1-3（Fix #43）/V3-P1-1（Fix #44）/V3-P1-2（Fix #45，批次 H）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1-3（Fix #43）/V3-P1-1（Fix #44）/V3-P1-2（Fix #45，批次 H）/V3-P1-4（Fix #46，D-29 登记）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -160,6 +160,7 @@ V3 增补一处同族实例：`dispatcher.rs:32` 本地定义 `PROC_EVENT_REPLY:
 | D-26 | ✅ 已修复（Fix #22，2026-09-06） | | | |
 | D-27 | ✅ 已修复（Fix #32，2026-09-08）：SIGHUP 会话组广播 | | | |
 | D-28 | ✅ 已修复（Fix #34，2026-09-08）：check_parent 的 SIGCHLD 投递 | | | |
+| D-29 | `misc.rs` do_getsysinfo 数据路径 | **2026-09-09 登记（Fix #46）**：权限门与 size 校验真实，数据拷出 fail-closed 返回 ENOSYS（V3-P1-4：旧代码拷 len 个零字节假数据，无契约）。真实数据路径 = PM 表的 C-ABI 序列化镜像 wire + 批次 G 接线 | 20-misc-queries.md | C-ABI 表镜像 wire 成员（edge E7）+ 批次 G |
 
 不属于 DEFERRED 但同源（plan.md §4 登记）：A-7 定时器抽象（部分收敛，Fix #39）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY、A-13 进程组/会话设计层。
 
@@ -448,14 +449,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **原状态**：C `signal.c:425-443` 在置 pending 后 `if (!(PROC_STOPPED|DELAY_CALL)) stop_proc(rmp, FALSE)`（防进程在 VFS 回复后、信号复查前再发起调用；PROC_STOPPED 兼作 restart_sigs 复查指示）；Rust 该处是永假死 if + "rely on 13's restart_sigs" 注释，且分支条件误用 `ipc_blocked.is_some()`（把 C 不含的 DELAY_CALL 也拦入）。kill 已接线，打在 fork 挂起进程上为可达路径。
 - **修复**（V3-P1-3 / Fix #43）：分支条件改 `is_vfs_blocked()||is_event_blocked()`；未停止时经 `GatewayStopBridge` 调 `signal_flow::stop_proc(MustStop)`（= C `stop_proc(rmp, FALSE)`，EBUSY 即 panic 同 C）。内核停止能力按 §12.3 规约进 `KernelGateway`（新增 `sys_delay_stop`，生产 `TrapKernelGateway` pre-E6 诚实回 `-EIO`，wrapper 挂 edge E6 已登记项）；桥接适配器避免全量形参穿线（sig_proc/check_sig 签名与 10 个调用点零变化）。C 守卫的 DELAY_CALL 半边在 `IpcBlockReason` 互斥建模下不可表示（注释声明）。+5 单测（StopRecorder）+1 集成测试 `kill_on_fork_suspended_child_stops_it_and_records_pending`；doc 11 §4.1/§5.2、doc 13 §4.4 同步。测试基线 356→**361 lib + 9 integration passed**。
 
-#### V3-P1-4 do_getsysinfo 数据路径假实现：拷出恒为零字节且无 DEFERRED 契约（批次 G 前置）
+#### V3-P1-4 do_getsysinfo 数据路径假实现：拷出恒为零字节且无 DEFERRED 契约（✅ 已修复 2026-09-09，Fix #46）
 
-- **优先级**：P1（不可达但契约违约；假成功家族第 3 例——P1-2/V2-P0-1 之后）
-- **类型**：假数据 stub 未登记（模式 60 违约）
-- **文件**：`os/servers/pm/src/misc.rs:333-336`；C `misc.c:142-143`
-- **问题**：权限门（effuid!=0→EPERM）与 size 精确匹配（EINVAL）都真实实现，唯独数据路径 `let _ = src; cpy.copy_to_user(&vec![0u8; len], dst)?` 恒拷 len 个零字节，注释自认 "In tests, we copy dummy bytes"。这是生产函数（非 `#[cfg(test)]`），无任何 DEFERRED 标记——`grep DEFERRED misc.rs` 零命中。批次 G 接线时若不修，RS 拿到的"进程表"是全零。
-- **建议**：登记 D-XX + 两案：(a) `SysInfoCtl` 扩展真实指针拷出（生产实现经 minix-sys safecopy，挂 E6 已列的 SYS_SAFECOPYFROM 族）；(b) wire 未就绪期间 fail-closed 返回 ENOSYS（诚实失败优于假数据）。推荐 (b) 先行、(a) 随批次 G。
-- **验证**：`grep -n "dummy\|vec!\[0u8" os/servers/pm/src/misc.rs` 零命中；接通后 RS 侧对表魔数/字段抽样断言。
+- **原状态**：权限门（`effuid!=0→EPERM`）与 size 精确匹配（`EINVAL`）都真实，数据路径 `let _ = src; cpy.copy_to_user(&vec![0u8; len], dst)?` 恒拷零字节（注释自认 "In tests, we copy dummy bytes"），生产代码无 DEFERRED 标记——假成功家族第 3 例。
+- **修复**（Fix #46，方案 b：fail-closed）：数据路径改 `Err(MiscError::Nosys)`（诚实失败优于假数据——RS 拿到 ENOSYS 是明确信号，拿到全零表是静默投递），`[DEFERRED: D-29]` 契约登记（真实数据路径 = PM 表的 C-ABI 序列化镜像 wire + 批次 G 接线，挂 edge E7）；`test_getsysinfo_perm_size` 的 Ok 断言改 `Nosys`。方案 a（立即真实拷出）被否：Rust 类型化表没有 C 布局字节视图，真路径 = E7 级 wire 工作，本轮无从达成真话。
+- **验证**：`grep -n "dummy" os/servers/pm/src/misc.rs` 零命中；misc 测试 13 passed。
 
 #### V3-P1-5 文档 §5 测试声称与代码大面积失同步（Gate E 违约，一次文档对账批次）
 

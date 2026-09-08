@@ -330,10 +330,14 @@ pub fn do_getsysinfo(
     if size != len {
         return Err(MiscError::Inval);
     }
-    let _ = src;
-    // In tests, we copy dummy bytes.
-    cpy.copy_to_user(&vec![0u8; len], dst)?;
-    Ok(())
+    // 数据路径 fail-closed（V3-P1-4）：C 拷出真实 mproc 表（misc.c:142-143），
+    // 但 PM 的表是 Rust 类型化结构，没有 C `struct mproc` 布局的字节视图——
+    // 旧代码在此拷出 `len` 个零字节（"dummy bytes"，无 DEFERRED 契约），
+    // 消费方（RS）会把全零表当真。真实路径需要 PM 表的 C-ABI 序列化镜像
+    // wire（批次 G 接线时一并落，挂 edge E7）。
+    // [DEFERRED: D-29] 阻塞依赖：C-ABI 表镜像 wire 成员（edge E7）。
+    let _ = (src, cpy, dst);
+    Err(MiscError::Nosys)
 }
 
 /// `do_getprocnr` (`misc.c:149-164`, D3).
@@ -596,7 +600,12 @@ mod tests {
         // super but size mismatch
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0));
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 99, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Inval);
-        assert!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 100, VirBytes(0x1000), &ctl, &mut cpy).is_ok());
+        // 权限/参数合法但数据路径未实现 → 诚实 ENOSYS（V3-P1-4：旧代码
+        // 在此拷出 len 个零字节并返回 Ok——假数据比失败更危险）。
+        assert_eq!(
+            do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 100, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(),
+            MiscError::Nosys
+        );
     }
 
     #[test]
