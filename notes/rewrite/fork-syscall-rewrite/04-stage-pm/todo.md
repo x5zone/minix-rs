@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/8（#48/#50/#51/#52/#53/#54）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1 全部（#43-#47）+ V3-P2-1/2/3/4/6/7/8（#48/#50/#51/#52/#53/#55/#54）+ V2-P2-7/P2-8（#49）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -491,13 +491,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**：trace 已随 Fix #44（`TraceError::Kernel(i32)`）；本批（Fix #53）补 sched（`SchedError::Kernel(i32)`，inherit/set_nice 透传 C schedule.c:83/108 的 rv）与 misc（getrusage 的 seam 错误原样上抛不再 `map_err(|_| Inval)`，TimesVmCtl 生产实现的原始 errno 经 `MiscError::Kernel` 载荷保留）。同时 crate 级规约落 plan.md：**透传型调用的错误必须保真，只有 PM 自身判定才产生语义化枚举变体**。
 - **验证**：mock 注入非 EINVAL 底层错误 → 用户态收到同值 errno（sched/ming 的 Kernel 载荷测试随批次 F/C 的接线测试补强）。
 
-#### V3-P2-7 publish_event 的裸指针四路借用拆分可免（删 unsafe）
+#### V3-P2-7 publish_event 的裸指针四路借用拆分可免（✅ 已修复 2026-09-09，Fix #55）
 
-- **优先级**：P2；**类型**：不必要的 unsafe（no_std 代码库应最小化 unsafe 面）
-- **文件**：`os/servers/pm/src/ipc/vfs.rs:502-510`
-- **问题**：用 `*mut` 拆分 `self` 的四个字段借用（table/transport/registry/kern）。Rust 的字段级重借用（`&mut self.table`、`&mut self.transport`……逐字段传参）即可满足借用检查器——四个 `&mut` 字段互不相交，`PmServices::new` 的构造方式（init.rs:406-412 从不相交字段构造）就是先例。同文件 `exec_restart`（vfs.rs:513-531）就是直接字段组合而未用 unsafe。
-- **建议**：改为按字段传参的自由函数或直接逐字段重借用；删 4 个裸指针与 unsafe 块。零行为变化。
-- **验证**：`grep -n "as \*mut" os/servers/pm/src/ipc/vfs.rs` 零命中；既有测试全绿。
+- **原状态**：`*mut` 拆分四个字段借用（vfs.rs:502-510 unsafe 块）——字段级重借用即可满足借用检查器。
+- **修复**（Fix #55）：改为方法语法 + 字段级重借用（`self.event_registry.publish_event(slot, self.table, &mut *self.transport, &mut *self.kern)`），unsafe 块与 4 个裸指针删除，零行为变化。
+- **验证**：`grep -c "as \*mut" os/servers/pm/src/ipc/vfs.rs` → 0；基线 379 lib passed。
 
 #### V3-P2-8 event 的 `do_proceventmask` 非 mut 变体带游标 bug 且以 pub 存活（✅ 已修复 2026-09-09，Fix #54）
 

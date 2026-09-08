@@ -499,15 +499,12 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
             "publish_event: caller event {:?} != inferred {:?} for slot {}",
             event, inferred, slot.get()
         );
-        // 通过 EventRegistry 发布（借用拆分：table / transport / registry 为不相交字段）
-        // 使用原始指针拆分以满足 borrow checker 对 &mut self 的不相交借用
-        let table_ptr = self.table as *mut ProcTable;
-        let transport_ptr = self.transport as *mut T;
-        let registry_ptr = self.event_registry as *mut crate::event::EventRegistry;
-        let kern_ptr = self.kern as *mut dyn crate::exit::KernelGateway;
-        unsafe {
-            (*registry_ptr).publish_event(slot, &mut *table_ptr, &mut *transport_ptr, &mut *kern_ptr);
-        }
+        // 通过 EventRegistry 发布（V3-P2-7：字段级重借用即可满足借用
+        // 检查器对不相交字段的要求——四个 `&mut` 字段互不相交，
+        // `PmServices::new` 的构造方式即是先例；此前的裸指针 unsafe 拆分
+        // 并无必要，no_std 代码库应最小化 unsafe 面）。
+        self.event_registry
+            .publish_event(slot, self.table, &mut *self.transport, &mut *self.kern);
     }
 
     fn exec_restart(&mut self, slot: UserSlot, args: ExecRestartArgs) {
