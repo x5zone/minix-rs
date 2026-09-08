@@ -74,27 +74,26 @@ impl PageState {
 /// Per-page mapping slot state machine.
 ///
 /// Replaces Minix3's `struct phys_region **physblocks` pointer array
-/// (NULL = unmapped) with an explicit three-state representation:
+/// (NULL = unmapped) with an explicit two-state representation:
 ///
-/// - `Empty`: no mapping and no reservation — the default state of every slot
-///   in a freshly created region.
-/// - `Reserved`: lazy placeholder — the slot is reserved for a mapping that
-///   will be materialized on demand (anonymous demand paging / CoW
-///   preallocation). Carries `offset` + `memtype` so the placeholder is
-///   self-describing, but has no backing frame yet (`pfn()` is `None`).
+/// - `Empty`: no mapping — the default state of every slot in a freshly
+///   created region.
 /// - `Mapped`: materialized mapping backed by a physical frame (`pfn`).
 ///
-/// The three states are explicit at the type level. The previous design
-/// encoded both `Empty` and `Reserved` as `pfn == PFN_NONE`, which made a
-/// lazy placeholder indistinguishable from an unmapped slot and caused
-/// `get_slot()` to hide reserved slots (todo P0-1, 13-region-mapping §3.6).
+/// The two states are explicit at the type level. The previous design
+/// encoded `Empty` as `pfn == PFN_NONE`, which made an unmapped slot
+/// indistinguishable from a `pfn`-less placeholder and caused `get_slot()`
+/// to hide slots it should have served (todo P0-1, 13-region-mapping §3.6).
+///
+/// V12-P2-4: a third `Reserved` state (lazy placeholder, ARCH A-13) was
+/// deleted — it never gained a production caller (demand paging shipped
+/// through `PagefaultResult::NeedNewPage` instead) and the dual query API
+/// (`get_slot` vs `get_slot_any`) existed only to route around it. Git
+/// history and 13-region-mapping.md keep the design if sparse mappings
+/// ever return.
 #[derive(Clone, Copy)]
 pub(crate) enum PageSlot {
     Empty,
-    Reserved {
-        offset: VirBytes,
-        memtype: Option<&'static dyn MemType>,
-    },
     Mapped {
         pfn: u32,
         offset: VirBytes,
@@ -106,7 +105,6 @@ impl PartialEq for PageSlot {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Empty, Self::Empty) => true,
-            (Self::Reserved { offset: a, .. }, Self::Reserved { offset: b, .. }) => a == b,
             (
                 Self::Mapped {
                     pfn: a_pfn,
@@ -136,27 +134,14 @@ impl PageSlot {
         }
     }
 
-    /// Construct a lazy placeholder slot (no backing frame yet).
-    ///
-    /// Consumed by `VirRegion::map_lazy()`: reserves the slot for a mapping
-    /// that will be materialized on demand, carrying the region's default
-    /// memtype so materialization knows which policy applies.
-    /// `#[allow(dead_code)]` (ARCH A-13): the lazy family has no production
-    /// caller yet — it is exercised by tests and reserved for the demand
-    /// paging / CoW preallocation path (todo P0-1).
-    #[allow(dead_code)]
-    pub fn reserved(offset: VirBytes, memtype: Option<&'static dyn MemType>) -> Self {
-        Self::Reserved { offset, memtype }
-    }
-
     /// The backing frame of a materialized slot, if any.
     ///
-    /// `None` for `Empty` and `Reserved` — the state machine guarantees a
-    /// frame exists only for `Mapped`.
+    /// `None` for `Empty` — the state machine guarantees a frame exists
+    /// only for `Mapped`.
     pub fn pfn(&self) -> Option<u32> {
         match self {
             Self::Mapped { pfn, .. } => Some(*pfn),
-            Self::Empty | Self::Reserved { .. } => None,
+            Self::Empty => None,
         }
     }
 
@@ -164,7 +149,7 @@ impl PageSlot {
     pub fn offset(&self) -> VirBytes {
         match self {
             Self::Empty => VirBytes(0),
-            Self::Reserved { offset, .. } | Self::Mapped { offset, .. } => *offset,
+            Self::Mapped { offset, .. } => *offset,
         }
     }
 
@@ -172,7 +157,7 @@ impl PageSlot {
     pub fn memtype(&self) -> Option<&'static dyn MemType> {
         match self {
             Self::Empty => None,
-            Self::Reserved { memtype, .. } | Self::Mapped { memtype, .. } => *memtype,
+            Self::Mapped { memtype, .. } => *memtype,
         }
     }
 
@@ -180,21 +165,10 @@ impl PageSlot {
         matches!(self, Self::Mapped { .. })
     }
 
-    #[allow(dead_code)] // ARCH A-13: lazy family, see `reserved()`.
-    pub fn is_reserved(&self) -> bool {
-        matches!(self, Self::Reserved { .. })
-    }
-
-    #[allow(dead_code)] // ARCH A-13: lazy family, used by `get_slot_any()`.
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Self::Empty)
-    }
-
-    /// Replace the memtype of a present slot (Mapped or Reserved); no-op on
-    /// `Empty`.
+    /// Replace the memtype of a present slot; no-op on `Empty`.
     pub fn set_memtype(&mut self, memtype: Option<&'static dyn MemType>) {
         match self {
-            Self::Mapped { memtype: mt, .. } | Self::Reserved { memtype: mt, .. } => *mt = memtype,
+            Self::Mapped { memtype: mt, .. } => *mt = memtype,
             Self::Empty => {}
         }
     }
@@ -204,11 +178,6 @@ impl core::fmt::Debug for PageSlot {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Empty => f.write_str("PageSlot::Empty"),
-            Self::Reserved { offset, memtype } => f
-                .debug_struct("PageSlot::Reserved")
-                .field("offset", offset)
-                .field("memtype", &memtype.map(|m| m.name()))
-                .finish(),
             Self::Mapped {
                 pfn,
                 offset,
@@ -322,16 +291,9 @@ mod tests {
         let slot = PageSlot::mapped(5, VirBytes(0x5000), None);
         assert_eq!(slot.pfn(), Some(5));
         assert!(slot.is_mapped());
-        assert!(!slot.is_reserved());
-
-        let reserved = PageSlot::reserved(VirBytes(0x1000), None);
-        assert!(reserved.is_reserved());
-        assert!(!reserved.is_mapped());
-        assert_eq!(reserved.pfn(), None);
-        assert_eq!(reserved.offset(), VirBytes(0x1000));
+        assert_eq!(slot.offset(), VirBytes(0x5000));
 
         let empty = PageSlot::Empty;
-        assert!(empty.is_empty());
         assert!(!empty.is_mapped());
         assert_eq!(empty.pfn(), None);
         assert_eq!(empty.offset(), VirBytes(0));

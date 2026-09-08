@@ -48,10 +48,9 @@ pub(crate) unsafe fn init(total_pages: usize) {
     }
 }
 
-// V10-P2-1: `total_pages()` has no production callers (the server reads
-// `page_alloc.total_pages()` directly); it exists for tests that assert
-// the boot accounting after `global::init()`.
-#[cfg(test)]
+// V12-P2-4: `total_pages()` is production again — the VMIW_STATS query
+// reads it (`vsi_total = total_pages`, utility.c:118), because the global
+// includes the boot-module extras that `page_alloc.total_pages()` lacks.
 pub(crate) fn total_pages() -> usize {
     // SAFETY: Single-threaded VM; TOTAL_PAGES is initialized before first read.
     unsafe { *TOTAL_PAGES.get() }

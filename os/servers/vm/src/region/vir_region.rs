@@ -8,10 +8,9 @@
 //! Option discriminant overhead (4+ bytes per slot) while preserving the
 //! same semantics: `slot.is_mapped()` replaces `slot.is_some()`.
 //!
-//! `PageSlot` is an explicit three-state machine (Empty / Reserved / Mapped):
-//! `Reserved` slots are lazy placeholders written by `map_lazy()` — visible
-//! to the reserved-inclusive `get_slot_any()`, hidden from the mapped-only
-//! `get_slot()`.
+//! `PageSlot` is an explicit two-state machine (Empty / Mapped); demand
+//! paging materializes slots at fault time via `PagefaultResult::NeedNewPage`
+//! (the former Reserved/lazy-placeholder state was deleted, V12-P2-4).
 
 use super::page_state::{PageFrames, PageSlot, PageFlags, PAGE_SIZE};
 use minix_types::{AssumeSyncCell, PhysBytes, VirBytes, UserSlot};
@@ -93,8 +92,7 @@ pub(crate) struct VirRegion {
     pub length: VirBytes,
     /// Per-page mapping slots. Uses `PageSlot::Empty` as the unmapped state
     /// instead of `Option<PageSlot>`, saving the Option discriminant per slot.
-    /// `PageSlot` is a three-state machine: Empty / Reserved (lazy
-    /// placeholder, written by `map_lazy()`) / Mapped (backed by a frame).
+    /// `PageSlot` is a two-state machine: Empty / Mapped (backed by a frame).
     pub physblocks: Vec<PageSlot>,
     pub flags: VrFlags,
     pub parent_slot: Option<UserSlot>,
@@ -253,34 +251,10 @@ impl VirRegion {
         None
     }
 
-    /// Reserve a lazy placeholder slot at `offset`.
-    ///
-    /// Writes a `PageSlot::Reserved` (no backing frame yet) so the mapping
-    /// can be materialized on demand (anonymous demand paging / CoW
-    /// preallocation). The reserved slot carries the region's default memtype
-    /// and is visible to the reserved-inclusive `get_slot_any()` query;
-    /// mapped-only queries (`get_slot`) keep filtering it out.
-    ///
-    /// [ARCH: A-13] minix-rs extension: Minix3 has no lazy-slot concept —
-    /// `map_region` always allocates frames up front. The reserved state
-    /// defers frame allocation to page-fault time without losing the slot's
-    /// offset/memtype identity (todo P0-1, 13-region-mapping §3.6).
-    /// `#[allow(dead_code)]`: no production caller yet — exercised by tests,
-    /// reserved for demand paging / CoW preallocation.
-    #[allow(dead_code)]
-    pub(crate) fn map_lazy(&mut self, offset: VirBytes) {
-        let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        if page_idx < self.physblocks.len() {
-            self.physblocks[page_idx] = PageSlot::reserved(offset, self.def_memtype);
-        }
-    }
-
     /// Look up the materialized slot at `offset`.
     ///
-    /// Mapped-only query: returns the slot only when it is backed by a frame
-    /// (`Mapped`). Lazy placeholders (`Reserved`) are hidden — page-fault and
-    /// CoW consumers treat them as unmapped. See `get_slot_any` for the
-    /// reserved-inclusive variant.
+    /// Returns the slot only when it is backed by a frame (`Mapped`);
+    /// `Empty` slots read as unmapped by page-fault and CoW consumers.
     pub(crate) fn get_slot(&self, offset: VirBytes) -> Option<&PageSlot> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
         self.physblocks.get(page_idx).filter(|s| s.is_mapped())
@@ -289,21 +263,6 @@ impl VirRegion {
     pub(crate) fn get_slot_mut(&mut self, offset: VirBytes) -> Option<&mut PageSlot> {
         let page_idx = (offset.0 / PAGE_SIZE) as usize;
         self.physblocks.get_mut(page_idx).filter(|s| s.is_mapped())
-    }
-
-    /// Reserved-inclusive lookup: any non-Empty slot at `offset` (mapped or
-    /// lazy placeholder). Consumers of lazy mappings use this to distinguish
-    /// "reserved but not yet materialized" from "never touched".
-    #[allow(dead_code)] // ARCH A-13: lazy family, see `map_lazy()`.
-    pub(crate) fn get_slot_any(&self, offset: VirBytes) -> Option<&PageSlot> {
-        let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        self.physblocks.get(page_idx).filter(|s| !s.is_empty())
-    }
-
-    #[allow(dead_code)] // ARCH A-13: lazy family, see `map_lazy()`.
-    pub(crate) fn get_slot_mut_any(&mut self, offset: VirBytes) -> Option<&mut PageSlot> {
-        let page_idx = (offset.0 / PAGE_SIZE) as usize;
-        self.physblocks.get_mut(page_idx).filter(|s| !s.is_empty())
     }
 
     pub(crate) fn needs_cow(&self, frames: &PageFrames, offset: VirBytes) -> bool {
@@ -616,23 +575,17 @@ mod tests {
     }
 
     #[test]
-    fn test_map_lazy() {
+    fn test_map_page_lifecycle() {
         let mut frames = make_frames(8);
         let mut alloc = TestAlloc { next: 0 };
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
         region.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
 
-        // 1. Reserve a lazy placeholder: visible to the reserved-inclusive
-        //    query, hidden from the mapped-only query.
-        region.map_lazy(VirBytes(0x1000));
+        // 1. Fresh slot reads as unmapped to every query.
         assert!(region.get_slot(VirBytes(0x1000)).is_none());
-        let slot = region.get_slot_any(VirBytes(0x1000)).unwrap();
-        assert!(slot.is_reserved());
-        assert!(!slot.is_mapped());
-        assert_eq!(slot.pfn(), None);
-        assert_eq!(slot.memtype().map(|m| m.name()), Some("anonymous memory"));
 
-        // 2. Materialize: reserved → backed page (full lazy chain).
+        // 2. Materialize: backed page (V12-P2-4: the lazy/Reserved detour
+        //    is gone — demand paging materializes via NeedNewPage).
         let pfn = alloc.alloc_pfn().unwrap();
         region.map_page(&mut frames, VirBytes(0x1000), pfn, &crate::memtype::MEM_TYPE_ANON);
         assert_eq!(frames.get(pfn).unwrap().refcount, 1);
@@ -640,10 +593,9 @@ mod tests {
         assert!(slot.is_mapped());
         assert_eq!(slot.pfn(), Some(pfn));
 
-        // 3. Unmap: back to Empty; both queries miss.
+        // 3. Unmap: back to Empty.
         region.unmap_page(&mut frames, VirBytes(0x1000));
         assert!(region.get_slot(VirBytes(0x1000)).is_none());
-        assert!(region.get_slot_any(VirBytes(0x1000)).is_none());
     }
 
     #[test]

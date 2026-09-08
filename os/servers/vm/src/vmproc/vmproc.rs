@@ -130,17 +130,11 @@ impl VmProc {
         self.vm_major_page_fault = 0;
     }
 
-    /// Debug invariant check (runtime assertion).
-    #[cfg(debug_assertions)]
-    #[allow(dead_code)] // V10-P2-1: no caller yet (candidate for table slot transitions)
-    pub(crate) fn check(&self) {
-        if self.vm_flags.contains(VmFlags::IN_USE) {
-            debug_assert!(
-                !self.vm_endpoint.is_none(),
-                "IN_USE but vm_endpoint is NONE"
-            );
-        }
-    }
+    // V12-P2-4: the former debug `check()` ("IN_USE ⇒ endpoint is not
+    // NONE") was deleted rather than wired — wiring it falsified the
+    // premise: `activate_relaxed` legitimately supports NONE-endpoint
+    // slots (fork/exec temporary slots), so the assertion does not state
+    // an invariant of this codebase.
 
     /// Explicitly clears process resources.
     ///

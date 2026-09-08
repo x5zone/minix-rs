@@ -83,9 +83,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 见上文 V10-P2-3 条（已含重锚点）。
 
-### V12-P2-4（P2）死状态/死链路批（重校锚点）
+### ✅ V12-P2-4（P2）死状态/死链路批（逐项"删/接线/标注"三分处置，对照 T19 先例）——已处置 2026-09-09（§18.9 Fix #70）
 
-复核 ✅ 2026-09-09，重校后锚点：
+V12 原表（重校后逐项处置见 §18.9 Fix #70）：
 | 锚点 | 内容 |
 |---|---|
 | global.rs:16/:47 | `TOTAL_PAGES` 写点仍仅 init，生产读者为零 |
@@ -289,7 +289,7 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 1. ~~**V13-P1-1**（CoW 快路加 is_page_writable 门 + SimPaging 断言）~~ ✅（§18.9 Fix #63）；~~**G-V12-7**（共享删除源 remaps 递减）~~ ✅（§18.9 Fix #64）；~~**V12-P1-1**（分配器低内存边界 + 审计）~~ ✅（§18.9 Fix #65）——**通电前语义修正批全部闭环**；
 2. ~~**V13-P2-1(a)(b)**（TLB 不变量登记 + 死内核面注释）~~ ✅（§18.9 Fix #69，(c) 挂 edge）；
 3. ~~**V13-P2-3**（ACL 闸 None 即拒绝）~~ ✅（Fix #66）；~~**V13-P2-4**（MAKE_VM 锚定已登记偏差 + 扫描勘误）~~ ✅（Fix #68）；~~**V13-P3-1(1)**（伪造 fault 源 audit）~~ ✅（Fix #67）；
-4. **待执行批**：V12-P2 批（P2-4 死状态三分 → P2-8 注释漂移 → P2-9 region 两处 → P2-5 双路径收敛 → P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig），每条独立 todo-fix 周期；
+4. **待执行批**：~~V12-P2-4 死状态三分~~ ✅（§18.9 Fix #70）；余：P2-8 注释漂移 → P2-9 region 两处 → P2-5 双路径收敛 → P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig，每条独立 todo-fix 周期；
 5. 文档批：G-V12-11（clearend，含 V13-P1-1 慢路的 clearend 分支设计）、G-V12-12（00/99 骨架 + design 快照）、G-V12-13（checklist 系统性刷新）；V12-P3-1/2 机会主义；
 6. edge 侧（单线程执行 edge_todo.md）：E-VMTLB（新）、E-RSWIRE 批（V13-P2-2/5/6 + E-VMMOCK 余件）、E-VFSWIRE（P3-1(2) 的死进程路径对账）、E1/E2 通电件、E5 冒烟（含 V12 增补的故障完整回路验收面）。
 
@@ -360,6 +360,20 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `16-pagefault.md`（§3.6 两行 + 新 §3.7）、`os/kernel/src/syscall.rs`（注释，零行为变更）
 - **测试**：无新增（注释/文档变更）；kernel 侧 `cargo check` 通过（注释不触编译面）+ VM 499 全绿回归
 - **边界**：(c) SMP 目标进程刷新（C MF_FLUSH_TLB，proc.c:345-347）维持 edge E-VMTLB；E-VMTLB 的"VM 自刷四处"引用即 08 §1.8 的已登记内容，无需重复
+
+### ✅ Fix #70: V12-P2-4 — 死状态/死链路批（七子项三分处置：三删二接线二标注/已达标）
+
+- **逐项处置**：
+  1. **TOTAL_PAGES** → **接线**（推翻 V12 的"删"建议）：C 的 `vsi_total = total_pages`（utility.c:118）读的是**含 boot 附加页的全局计数**，Rust 的 VMIW_STATS 此前读分配器总量（缺 boot extras）——`global::total_pages()` 去掉 `#[cfg(test)]` 重新投产，`query.rs` Stats 改读全局。26-vm-queries.md §4.4 同步。
+  2. **FILEMAP_ENABLED** → **已达标（标注态）**：setter 本就 `#[cfg(test)]`，静态量文档注释完整（C 的 env_parse 设定面属 boot 协议扩展，当前恒 1 = C 默认）。
+  3. **`VmReply::ExecNewmem`** → **删**：minix-types 变体 + `VmExecNewmemOut` 载荷 + vm_server 两编码臂（两侧都 ENOSYS 的死回复形态，T19 判定的残余）。
+  4. **spares 链** → **删**：`missing_spares` 字段/`mark_alloc_failure`/`missing_spares()`/run 循环与 handle_signal 钩子/`alloc_cycle`/`FREE_CACHE_BATCH`/对应测试。理由：spare-pool 机制被 A-1 结构性消除；"压力再解释"的预期生产者被 T30 内联回收取代，接线即双重回收。
+  5. **lazy 家族** → **删**：`PageSlot::Reserved` 态 + `map_lazy`/`get_slot_any`/`get_slot_mut_any`/`is_reserved`/`is_empty`/`reserved()` + `test_map_lazy`（改写为 `test_map_page_lifecycle`）。理由：P0-1 修复后从未有生产调用方，需求分页经 NeedNewPage 落地；双查询 API 只为绕开 Reserved 而存在。git 历史 + 13-region-mapping.md §3.2/§3.6/§4/§5 保留设计底稿。
+  6. **ExitingProc 四访问器** → **删**：`slot`/`endpoint`/`flags`/`regions`（exit 路径只需 `regions_mut` + `reap`）；两处测试改用 `get_exiting` 解析断言（语义等价：该视图仅对 IN_USE+EXITING 槽解析）。
+  7. **`VmProc::check`** → **删**（"接线"选项被实践证伪）：试接线到 `ActiveProc::new`/`ExitingProc::new` 后三个测试立即触发——`activate_relaxed` 合法支持 NONE-endpoint 槽（fork/exec 临时槽），"IN_USE ⇒ endpoint 非 NONE"不是本项目的不变量。删除并留注释说明。
+- **Files**: `minix-types/src/ipc/vm.rs`、`vm_server.rs`、`global.rs`、`query.rs`、`region/page_state.rs`、`region/vir_region.rs`、`vmproc/vmproc_handle.rs`、`vmproc/table.rs`、`vmproc/vmproc.rs`、`memtype.rs`（测试）
+- **Verified**: 三矩阵 **498/516/498 passed**；`cargo test -p minix-types` → 192 passed；clippy servers/vm 0 警告
+- **Docs**: 13-region-mapping.md（§3.2 两态化 + §3.6 行 + §4 + §5 测试行）、24-page-cache.md（§3.7 重写 + 结构图 + backlog 行）、26-vm-queries.md（§4.4 代码块）、06-page-allocator.md（头部注记）
 
 ---
 

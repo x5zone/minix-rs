@@ -299,7 +299,13 @@ pub(crate) fn handle_info(
             let stats = page_alloc.phys_alloc().memstats();
             Ok(InfoResult::Stats(StatsInfo {
                 page_size: PAGE_SIZE,
-                total_pages: page_alloc.total_pages() as u32,
+                // C: vsi_total = total_pages (utility.c:118) — the GLOBAL
+                // counter, which includes the boot-module extras added by
+                // `mem_add_total_pages` (main.c:485-495). The allocator's
+                // own total does not include those, so before V12-P2-4 the
+                // reported total drifted low by `boot_extra_pages` whenever
+                // boot images were accounted.
+                total_pages: crate::global::total_pages() as u32,
                 free_pages: stats.free_pages as u32,
                 largest_contiguous: stats.largest_free as u32,
                 // C: get_stats_info() — vsi_cached = cached_pages (cache.c:328-331)

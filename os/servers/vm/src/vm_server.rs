@@ -43,12 +43,6 @@ use minix_types::PhysBytes;
 #[cfg(test)]
 use minix_types::VirBytes;
 
-/// Cache-reclaim batch size for the main-loop `alloc_cycle` hook.
-///
-/// C: `alloc_mem` retries after `cache_freepages(1024)` on exhaustion
-/// (alloc.c:242-279); the same batch is used here.
-const FREE_CACHE_BATCH: usize = 1024;
-
 /// The memory subsystem state the server drives: the physical-page
 /// allocator, the frame table, the page cache, and the pending VFS request
 /// queue. These four live and die with the server and are needed together
@@ -147,28 +141,6 @@ impl VmContext {
 pub struct VmServer {
     pub(crate) ctx: VmContext,
     initialized: bool,
-    /// Allocation-pressure counter surfaced to the main loop.
-    ///
-    /// C: `missing_spares` (alloc.c:74) is the *reserve-queue deficit* —
-    /// incremented by `reservedqueue_alloc()` (alloc.c:216) when a spare page
-    /// is drawn and decremented by `reservedqueue_fillslot()` (alloc.c:142)
-    /// when a slot is refilled; the main loop calls `alloc_cycle()`
-    /// (alloc.c:227-237, main.c:118-119) to top the queues back up.
-    ///
-    /// Rust design: the Direct Map (`[ARCH: A-1]`) structurally eliminates the
-    /// spare queues (see 06-page-allocator.md §3.3), so this counter is
-    /// re-interpreted as *allocation-pressure accounting* — `mark_alloc_failure()`
-    /// records a page-allocation failure and the main loop's `alloc_cycle()`
-    /// hook is the replenishment opportunity (page-cache reclaim plugs in
-    /// there, DEFERRED to 24-page-cache). The C "deficit" semantics and the
-    /// Rust "pressure" semantics converge on the same observable contract:
-    /// `> 0` → the loop re-attempts memory replenishment on its next pass.
-    ///
-    /// A plain `u32` because the VM event loop is single-threaded (no
-    /// concurrent increments possible). `mark_alloc_failure()` /
-    /// `alloc_cycle()` are the only mutating access points, both
-    /// `&mut self`-only.
-    missing_spares: u32,
     /// Count of kernel pagefault messages whose handling failed.
     ///
     /// V9-P1-1 (todo): the main loop previously dropped the
@@ -292,7 +264,6 @@ impl VmServer {
         Self {
             ctx: VmContext::new(page_alloc, params.kernel_allocated, params.vm_allocated_bytes),
             initialized: false,
-            missing_spares: 0,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
             kernel_layout,
@@ -806,24 +777,6 @@ impl VmServer {
         }
     }
 
-    /// Records one page-allocation failure (pressure accounting, see the
-    /// `missing_spares` field docs for the C↔Rust mapping).
-    ///
-    /// Callers must invoke this when `VmPageAllocator::alloc_*()` returns
-    /// `None` so the main loop knows to schedule an `alloc_cycle` on its
-    /// next pass. Saturates at `u32::MAX` to avoid wraparound (the loop
-    /// only checks `> 0` and clears to 0, so saturation is safe).
-    ///
-    /// VM is single-threaded (`pub` is fine; no `&mut self` contention).
-    pub fn mark_alloc_failure(&mut self) {
-        self.missing_spares = self.missing_spares.saturating_add(1);
-    }
-
-    /// Returns the current allocation-pressure count (for tests/observability).
-    pub fn missing_spares(&self) -> u32 {
-        self.missing_spares
-    }
-
     /// Returns the count of failed kernel pagefault handlings (V9-P1-1).
     ///
     /// Every `VmReply::Error` produced while dispatching a `VM_PAGEFAULT`
@@ -875,9 +828,11 @@ impl VmServer {
         if signo == Self::SIGKMEM {
             self.do_memory();
         }
-        if self.missing_spares > 0 {
-            self.alloc_cycle();
-        }
+        // V12-P2-4: C's tail here also ran `alloc_cycle()` on a pending
+        // `missing_spares` deficit (main.c:118-119) — that chain is deleted
+        // (no producer; the spare-pool mechanism it served is structurally
+        // eliminated by the Direct Map, [ARCH: A-1], and allocation-time
+        // reclaim lives in `alloc_pfn_reclaiming` since V11/T30).
     }
 
     /// C: `do_memory()` (pagefaults.c:294-339) — drain the kernel's pending
@@ -963,38 +918,19 @@ impl VmServer {
         .is_ok()
     }
 
-    fn alloc_cycle(&mut self) {
-        debug_assert!(self.missing_spares > 0);
-        // C: main.c:118-119 — main-loop spare-pool replenishment hook (the
-        // C reserved-queue refill at alloc.c:157). Allocation-time reclaim
-        // (C alloc_mem's cache_freepages retry) lives in the funnel since
-        // V11/T30 (`alloc_page::alloc_pfn_reclaiming`); this hook stays for
-        // the spare-pool deficit (`missing_spares`) that the funnel does
-        // not see. 回收批次有界；若回收后压力仍在，下一次分配失败会重新
-        // 武装计数（每压力片段一次回收机会）。
-        if let Some(frames) = self.ctx.page_frames.as_mut() {
-            let _freed = self.ctx.page_cache.free_pages(FREE_CACHE_BATCH, frames, &mut self.ctx.page_alloc);
-        }
-        self.missing_spares = 0;
-    }
-
     /// Main event loop. Never returns (C: main.c:113-193).
     ///
     /// Per-iteration work lives in [`Self::run_once`] so tests can drive a
     /// single dispatch→reply round without spawning the infinite loop
-    /// (V10-P0-2). The loop owns the two things `run_once` cannot:
-    /// the allocation-pressure replenishment hook and the receive-failure
-    /// bound that prevents a busy-spin when the transport is broken.
+    /// (V10-P0-2). The loop owns the receive-failure bound that prevents a
+    /// busy-spin when the transport is broken. (C's per-iteration
+    /// `if(missing_spares > 0) alloc_cycle()` replenishment hook is deleted
+    /// with its chain — V12-P2-4.)
     pub fn run(&mut self) -> ! {
         assert!(self.initialized, "VmServer::run() called before init()");
 
         let mut consecutive_recv_failures: u32 = 0;
         loop {
-            // C: if(missing_spares > 0) alloc_cycle();
-            if self.missing_spares > 0 {
-                self.alloc_cycle();
-            }
-
             match self.run_once() {
                 RunStep::Handled => consecutive_recv_failures = 0,
                 RunStep::ReceiveFailed => {
@@ -1695,7 +1631,6 @@ fn reply_to_errno(reply: VmReply) -> i32 {
         VmReply::Exit => 0,
         VmReply::Willexit => 0,
         VmReply::Munmap => 0,
-        VmReply::ExecNewmem(_) => 0,
         VmReply::MapCache { .. } => 0,
         VmReply::VfsMmap(_) => 0,
         VmReply::GetPhys { .. } => 0,
@@ -1738,9 +1673,7 @@ fn encode_reply_data(reply: VmReply, msg: &mut Message) {
         VmReply::Brk(out) => out.encode(m1),
         VmReply::Mmap(out) => out.encode(m1),
         VmReply::MapPhys(out) => out.encode(m1),
-        VmReply::ExecNewmem(out) => out.encode(m1),
-        VmReply::MapCache { addr } => {
-            // C: msg->m_vmmcp_reply.addr = vr->vaddr (mem_cache.c:170);
+        VmReply::MapCache { addr } => {            // C: msg->m_vmmcp_reply.addr = vr->vaddr (mem_cache.c:170);
             // libminixfs reads it back in vm_map_cacheblock (libsys/vm_cache.c:47-54).
             // The addr field is u64 on the minix-rs x86_64 wire (edge
             // E-VMMCPWIRE): MMAP-window VAs are ≥4 GiB and a u32 would
@@ -2381,27 +2314,6 @@ mod tests {
                 MAX_CONSECUTIVE_RECV_FAILURES as u64,
                 "each consecutive failure must be counted before the panic"
             );
-        });
-    }
-
-    #[test]
-    fn test_missing_spares_pressure_counter() {
-        with_test_mock_base(|| {
-            let mut server = make_test_vm_server();
-            assert_eq!(server.missing_spares(), 0);
-
-            // Allocation failures arm the pressure counter; it saturates
-            // (no wraparound) and drives the main-loop replenishment hook.
-            server.mark_alloc_failure();
-            server.mark_alloc_failure();
-            assert_eq!(server.missing_spares(), 2);
-
-            // alloc_cycle() clears the counter so the next failure re-arms
-            // the hook — observable contract: > 0 → next loop pass
-            // re-attempts replenishment (allocation-time retry lives in
-            // the funnel, V11/T30).
-            server.alloc_cycle();
-            assert_eq!(server.missing_spares(), 0);
         });
     }
 

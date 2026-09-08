@@ -628,6 +628,11 @@ impl<'a> ActiveProc<'a> {
 ///
 /// Process is in use and exiting. Can only be reaped (cleaned up)
 /// to return the slot to empty state.
+///
+/// V12-P2-4: the four read accessors (`slot`/`endpoint`/`flags`/`regions`)
+/// were deleted — the exit path's entire need is `regions_mut()` (page
+/// release) plus `reap()`; nothing ever read the identity fields.
+/// Re-add on first use, not speculatively.
 pub(crate) struct ExitingProc<'a> {
     inner: &'a mut VmProc,
 }
@@ -637,33 +642,6 @@ impl<'a> ExitingProc<'a> {
         debug_assert!(inner.vm_flags.contains(VmFlags::IN_USE));
         debug_assert!(inner.vm_flags.contains(VmFlags::EXITING));
         Self { inner }
-    }
-
-    #[inline]
-    #[allow(dead_code)] // V10-P2-1: exit path reads via reap() internals; accessors unused
-    pub(crate) fn slot(&self) -> UserSlot {
-        self.inner.vm_slot
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn endpoint(&self) -> Endpoint {
-        self.inner.vm_endpoint
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn flags(&self) -> VmFlags {
-        self.inner.vm_flags
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn regions(&self) -> &RegionMap {
-        debug_assert!(self.inner.vm_regions_initialized, "vm_regions accessed after clear()");
-        // SAFETY: vm_regions_initialized is true (checked by debug_assert above).
-        // Single-threaded VM ensures no concurrent mutation.
-        unsafe { self.inner.vm_regions.assume_init_ref() }
     }
 
     /// Returns mutable reference to the memory regions of an exiting process.
@@ -843,11 +821,16 @@ mod tests {
 
     #[test]
     fn test_mark_exiting() {
-        let active = get_active_vmproc(UserSlot::new(14));
+        let slot = UserSlot::new(14);
+        let active = get_active_vmproc(slot);
         let exiting = active.mark_exiting();
+        drop(exiting);
 
-        assert!(exiting.flags().contains(VmFlags::EXITING));
-        assert!(exiting.flags().contains(VmFlags::IN_USE));
+        // `get_exiting` only yields a handle for slots that are both
+        // IN_USE and EXITING, so resolving the view re-asserts the flag
+        // pair the deleted `flags()` accessor used to read.
+        let table = super::super::table::VmProcTable::get_global();
+        assert!(table.get_exiting(slot).is_some());
     }
 
     #[test]

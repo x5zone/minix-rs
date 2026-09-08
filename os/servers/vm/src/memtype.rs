@@ -1760,7 +1760,7 @@ mod tests {
             Err(MemTypeError::NotSupported)
         );
 
-        let slot = PageSlot::reserved(VirBytes(0), Some(&MEM_TYPE_CONTIG_ANON));
+        let slot = PageSlot::Empty; // V12-P2-4: reserved() constructor deleted
         assert_eq!(
             MEM_TYPE_CONTIG_ANON.ev_reference(&mut make_frames_contig(), slot),
             Err(MemTypeError::NotSupported)

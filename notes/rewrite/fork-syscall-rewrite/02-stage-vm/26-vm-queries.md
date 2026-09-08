@@ -564,7 +564,10 @@ InfoQuery::Stats => {
     let stats = page_alloc.phys_alloc().memstats();      // C: memstats (alloc.c:348)
     Ok(InfoResult::Stats(StatsInfo {
         page_size: PAGE_SIZE as u64,                     // C: vsi_pagesize
-        total_pages: page_alloc.total_pages() as u32,    // C: total_pages
+        // V12-P2-4（2026-09-09）：C 的 vsi_total 读全局 total_pages
+        // （含 mem_add_total_pages 的 boot 附加页，utility.c:118）——
+        // 改读 global::total_pages()，先前读分配器总量会少计 boot 页。
+        total_pages: crate::global::total_pages() as u32,
         free_pages: stats.free_pages as u32,             // C: vsi_free
         largest_contiguous: stats.largest_free as u32,   // C: vsi_largest
         cached_pages,                                    // C: get_stats_info → vsi_cached

@@ -489,13 +489,6 @@ pub struct VmExecNewmemIn {
     pub pc: VirBytes,
 }
 
-/// VM → PM: exec newmem reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VmExecNewmemOut {
-    pub flags: i32,
-    pub stack_top: VirBytes,
-}
-
 // ---------------------------------------------------------------------------
 // VM_PROCCTL  (VFS/RS → VM)
 // ---------------------------------------------------------------------------
@@ -676,7 +669,6 @@ pub enum VmReply {
     Munmap,
     Exit,
     Willexit,
-    ExecNewmem(VmExecNewmemOut),
     Ok,
     Suspend,
     RsMemctlAddrLen {
@@ -940,14 +932,6 @@ impl DecodeFromM1 for VmExecNewmemIn {
             data_len: VirBytes(m1.m1i3 as u64),
             pc: VirBytes(m1.m1p3),
         }
-    }
-}
-
-impl EncodeToM1 for VmExecNewmemOut {
-    #[inline(always)]
-    fn encode(&self, m1: &mut MessageM1) {
-        m1.m1i3 = self.flags;
-        m1.m1p2 = self.stack_top.0;
     }
 }
 
@@ -1609,16 +1593,6 @@ mod tests {
         assert_eq!(req.data_addr.0, 0x4000);
         assert_eq!(req.data_len.0, 0x1000);
         assert_eq!(req.pc.0, 0x1000);
-    }
-
-    #[test]
-    fn test_vm_exec_newmem_out() {
-        let out = VmExecNewmemOut {
-            flags: 1,
-            stack_top: VirBytes(0x7FFF_0000),
-        };
-        assert_eq!(out.flags, 1);
-        assert_eq!(out.stack_top.0, 0x7FFF_0000);
     }
 
     #[test]

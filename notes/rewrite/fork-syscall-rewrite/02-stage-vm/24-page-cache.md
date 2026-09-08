@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 8 — 跨服务协作（页缓存：所有文件系统共享的磁盘块缓存中介）
 > **源码**: `minix3/minix/servers/vm/cache.c`（全 332 行：`lru_rm` :29-50 / `lru_add` :52-68 / `cache_lru_touch` :70-74 / `makehash` :76-84 / `cache_sanitycheck_internal` :86-143 / `rmhash_byino/bydev` :144-153 / `addcache_byino` :155-161 / `update_inohash` :163-174 / `find_cached_page_bydev` :177-196 / `find_cached_page_byino` :198-214 / `addcache` :216-257 / `rmcache` :259-286 / `cache_freepages` :288-307 / `clear_cache_bydev` :312-325 / `get_stats_info` :328-331）+ `minix3/minix/servers/vm/cache.h`（`struct cached_page` :2-21）+ `minix3/minix/servers/vm/mem_cache.c`（全 324 行：`mem_type_cache` :39-49 / `cache_pt_flags` :51-57 / `cache_reference` :60-63 / `cache_unreference` :65-68 / `cache_sanitycheck` :70-74 / `cache_writable` :76-81 / `cache_resize` :83-87 / `cache_lowshrink` :89-92 / `do_mapcache` :95-179 / `cache_pagefault` :181-193 / `do_setcache` :196-277 / `do_forgetcache` :283-309 / `do_clearcache` :315-324）+ 调用面（`mem_file.c`：`mappedfile_pagefault` 缓存命中/ONCE 分流 :104-138、`mappedfile_setfile` 预填 :210-240；`main.c`：CALLMAP :569-572；`alloc.c`：`alloc_mem` 耗尽后 `cache_freepages(clicks)` 重试 :260-262；`libminixfs/cache.c`：`ONE_SHOT` → `VMSF_ONCE` :565/:704）
-> **Rust 模块**: `os/servers/vm/src/page_cache.rs`（`VMC_NO_INODE` :42 / `VMSF_ONCE` :48 / `CachedPageRef` :56 / `CacheError` :65 / `CachedPage` :76 / `LruNode` :96 / `LruList` :102 / `PageCache` :201 / `addcache` :232 / `rmcache` :281 / `find_by_dev` :317 / `find_by_ino` :353 / `free_pages` :375 / `clear_by_dev` :406 / `total_cached` :421）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_mapcache` :482 / `unmap_region_pages` :573 / `dispatch_setcache` :607 / `dispatch_forgetcache` :714 / `dispatch_clearcache` :740）+ `os/servers/vm/src/memtype.rs`（`CacheMemory` :795 / `MappedFile` :919）+ `os/servers/vm/src/vm_server.rs`（`FREE_CACHE_BATCH` :41 / `alloc_cycle` :424 / 4 个 `handle_*cache` :1257-1278 / `MapCache` 回复编码 :1123）+ `os/servers/vm/src/region/page_state.rs`（`PageFlags::IN_CACHE` :30 / `PageFrames::addcache` :166 / `rmcache` :175）+ `os/libs/minix-types/src/ipc/message.rs`（`MessVmmcp` :1948 / `MessVmmcpReply` :2001 / 联合体成员 :154-157）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmCacheIn::decode_message` :1053）
+> **Rust 模块**: `os/servers/vm/src/page_cache.rs`（`VMC_NO_INODE` :42 / `VMSF_ONCE` :48 / `CachedPageRef` :56 / `CacheError` :65 / `CachedPage` :76 / `LruNode` :96 / `LruList` :102 / `PageCache` :201 / `addcache` :232 / `rmcache` :281 / `find_by_dev` :317 / `find_by_ino` :353 / `free_pages` :375 / `clear_by_dev` :406 / `total_cached` :421）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_mapcache` :482 / `unmap_region_pages` :573 / `dispatch_setcache` :607 / `dispatch_forgetcache` :714 / `dispatch_clearcache` :740）+ `os/servers/vm/src/memtype.rs`（`CacheMemory` :795 / `MappedFile` :919）+ `os/servers/vm/src/vm_server.rs`（4 个 `handle_*cache` / `MapCache` 回复编码——原 `FREE_CACHE_BATCH`/`alloc_cycle` 已删，V12-P2-4）+ `os/servers/vm/src/region/page_state.rs`（`PageFlags::IN_CACHE` :30 / `PageFrames::addcache` :166 / `rmcache` :175）+ `os/libs/minix-types/src/ipc/message.rs`（`MessVmmcp` :1948 / `MessVmmcpReply` :2001 / 联合体成员 :154-157）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmCacheIn::decode_message` :1053）
 > **前置**: `12-memtype.md`（memtype 回调体系）、`23-vfs-interaction.md`（VFS 异步对话、mappedfile 消费缓存命中）
 > **说明**: 本文档管 **VM 侧磁盘块页缓存**——`(dev, dev_offset)` 主键目录 + `(dev, ino, ino_offset)` 辅索引、精确 LRU、refcount 淘汰，以及四个缓存 IPC handler（mapcache/setcache/forgetcache/clearcache）。**不覆盖**：VFS 异步请求队列（23）、memtype 回调体系本体（12）、物理分配器（05/06）、主循环分发框架（15）。
 
@@ -90,7 +90,7 @@ cached_page { dev, dev_offset, ino, ino_offset, flags, page, LRU 指针, 哈希�
 
 ### 1.7 小结
 
-页缓存 = **双键目录**（`(dev,dev_offset)` 主键 + `(dev,ino,ino_offset)` 辅索引，同一节点两个入口）+ **精确 LRU**（O(1) touch/remove）+ **refcount 淘汰**（只淘汰未映射页，归零还页）+ **VMSF_ONCE 一次性语义** + **四个 IPC 服务**。Rust 侧对应：`PageCache`（目录 + LRU）、`dispatch_*cache`（四个 handler）、`CacheMemory`（映射 memtype）、`alloc_cycle`（回收接线）。
+页缓存 = **双键目录**（`(dev,dev_offset)` 主键 + `(dev,ino,ino_offset)` 辅索引，同一节点两个入口）+ **精确 LRU**（O(1) touch/remove）+ **refcount 淘汰**（只淘汰未映射页，归零还页）+ **VMSF_ONCE 一次性语义** + **四个 IPC 服务**。Rust 侧对应：`PageCache`（目录 + LRU）、`dispatch_*cache`（四个 handler）、`CacheMemory`（映射 memtype）；回收走分配路径的 `alloc_pfn_reclaiming`（原 `alloc_cycle` 主循环钩子已删，V12-P2-4，§3.7）。
 
 ---
 
@@ -311,7 +311,7 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 ### 3.7 D6：alloc_cycle 补充体（cache_freepages 接线）
 
 **C**: 主循环 `missing_spares>0 → alloc_cycle()`（main.c:118-119）；`alloc_mem` 耗尽时 `do { mem = alloc_pages(...); } while(mem == NO_MEM && cache_freepages(clicks) > 0)` 按请求页数 `clicks` 回收重试（alloc.c:260-262）。
-**Rust**: `VmServer::alloc_cycle`（vm_server.rs:424-432）补体落地（plan.md §7.3 DEFERRED）：`self.page_cache.free_pages(FREE_CACHE_BATCH=1024, frames, &mut self.page_alloc)`（vm_server.rs:430）——固定批次（**近似** C 的 `cache_freepages(clicks)`：C 在分配路径按请求量回收，Rust 主循环钩子与分配路径解耦（Direct Map 消除保留队列，ARCH A-1），故用固定预算 1024 近似）；回收后清压力计数，若回收不足由下一次分配失败重新武装（每压力片段一次回收机会）。**闭环**：分配失败 → `mark_alloc_failure` → 主循环 → `alloc_cycle` → 缓存回收 → 后续分配重试。对照 Linux 的"分配失败 → 回收 → 重试"路径；Redox 无回收直接返回错误。
+**Rust（V12-P2-4 更新，2026-09-09）**：`alloc_cycle` 主循环钩子及其配套链（`missing_spares` 字段 / `mark_alloc_failure` / `FREE_CACHE_BATCH`）**已删除**——该链自落地起无生产写入点（分配失败压力改由 `alloc_stats` 记账，V11/T18），且分配路径的回收重试早已由 T30 的 `alloc_pfn_reclaiming` 内联承接（C 的 `do { alloc_pages } while(NO_MEM && cache_freepages)` 语义），主循环二次回收属冗余。历史形态：`free_pages(1024, …)` 固定批次近似 C 的按请求量回收（Direct Map 消除保留队列，ARCH A-1）。现行闭环：分配失败 → `alloc_pfn_reclaiming` 内联回收重试 → 仍失败报 ENOMEM。对照 Linux 的"分配失败 → 回收 → 重试"路径（回收在分配路径内）；Redox 无回收直接返回错误。
 
 ### 3.8 D7：错误码映射与输入验证（对齐 C）
 
@@ -352,8 +352,7 @@ os/servers/vm/src/memtype.rs
   ├─ CacheMemory（:795）——cache 区域 memtype（PbCache 兜底 + 不可 resize）
   └─ MappedFile::ev_pagefault（:919+）——缺页缓存命中/ONCE 分流
 os/servers/vm/src/vm_server.rs
-  ├─ FREE_CACHE_BATCH（:41）——1024 页回收批次
-  ├─ alloc_cycle（:424）——压力回收接线
+  ├─ alloc_cycle——已删除（V12-P2-4：无生产写入点，回收归 alloc_pfn_reclaiming）
   └─ handle_mapcache/setcache/forgetcache/clearcache（:1257-1278）
 ```
 
@@ -401,7 +400,7 @@ os/servers/vm/src/vm_server.rs
 | 24-P0-4 | P0 | **缓存页永不归还**：旧 `remove` 只 `frames.rmcache` 不释放归零页（C cache.c:280-284 `free_mem`）→ `rmcache` 归零经 `PfnAllocator::free_pfn`（D3）；旧 `increase_refcount` 与 `map_page` 双重计数 → 删除（帧 refcount 权威） |
 | 24-P1-1 | P1 | **errno 映射**：mapcache `bytes<PAGE_SIZE` 用 InvalidProcess、forgetcache `pages==0` 用 InvalidAddress → 统一 `InvalidParam`（EINVAL，D7） |
 | 24-P1-2 | P1 | **anon 判断**：setcache 的 memtype 检查用名字字符串（`"anonymous"` 与实际 `"anonymous memory"` 不符）→ 静态指针比较（dispatcher.rs:672-676） |
-| 24-P1-3 | P1 | **alloc_cycle 补体**（plan.md §7.3 DEFERRED 落地）：`free_pages(1024)` 接线（vm_server.rs:424-432）+ `FREE_CACHE_BATCH` 常量 |
+| 24-P1-3 | P1 | ~~alloc_cycle 补体~~ → **已删除**（V12-P2-4，2026-09-09）：原 `free_pages(1024)` 接线无生产写入点，回收职责归 T30 的 `alloc_pfn_reclaiming` 内联重试 |
 | 24-P2-1 | P2 | checklist 缓存行同步（M-034/M-041/G-027/G-028/S-001/F-028~F-041）；F-039a `find_by_pfn` 移除标注 |
 | 24-P2-2 | P2 | 新增测试：page_cache 重写 10 个 + memtype ONCE 分流 1 个 + wire 解码 1 个；测试总数 406 → 407（minix-vm lib，净 +1；`test_map_lazy` pre-existing 失败保持）+ minix-types 85 → 86 |
 

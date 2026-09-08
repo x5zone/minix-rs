@@ -591,7 +591,9 @@ mod tests {
         let active = empty.activate(ep);
 
         let exiting = active.mark_exiting();
-        assert!(exiting.flags().contains(VmFlags::EXITING));
+        // `get_exiting` resolves only IN_USE+EXITING slots — this assert
+        // covers the flag pair the deleted `flags()` accessor read.
+        assert!(table.get_exiting(UserSlot::new(0)).is_some());
 
         let empty = unsafe { exiting.reap() };
         assert_eq!(empty.slot(), UserSlot::new(0));
