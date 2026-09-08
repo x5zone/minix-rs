@@ -280,6 +280,7 @@ impl SockChannel for ScriptedChannel {
 #[cfg(test)]
 pub struct SilentChannel;
 
+#[cfg(test)]
 impl SockChannel for SilentChannel {
     fn roundtrip(&mut self, _expect: ReplyKind) -> Result<i32, SdevError> {
         Err(SdevError::Io)

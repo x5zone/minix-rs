@@ -66,11 +66,11 @@ pub const IOCPARM_MASK: u64 = 0xfff;
 /// `IOCPARM_SHIFT_BIG/MASK_BIG` (`ioccom.h:61,60`): 20-bit size field.
 pub const IOCPARM_SHIFT_BIG: u32 = 8;
 /// See [`IOCPARM_SHIFT_BIG`].
-pub const IOCPARM_MASK_BIG: u64 = 0xF_FFFF;
+pub const IOCPARM_MASK_BIG: u64 = 0x000F_FFFF;
 /// `CPF_READ/CPF_WRITE` (`minix3/minix/include/minix/safecopies.h:64-65`).
-pub const CPF_READ: u32 = 0x0000_01;
+pub const CPF_READ: u32 = 0x0000_0001;
 /// See [`CPF_READ`].
-pub const CPF_WRITE: u32 = 0x0000_02;
+pub const CPF_WRITE: u32 = 0x0000_0002;
 
 /// One device↔driver row (`struct dmap`, `dmap.h:16-25`).
 ///
@@ -135,6 +135,10 @@ impl DmapTable {
     /// Row count.
     pub fn len(&self) -> usize {
         NR_DEVICES
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Read one row (`None` when out of range).
@@ -360,6 +364,10 @@ impl SmapTable {
     /// Row count.
     pub fn len(&self) -> usize {
         NR_SOCKDEVS
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.iter().all(|row| row.endpt.is_none())
     }
 }
 
@@ -898,7 +906,7 @@ use crate::open::FileType;
         );
         assert_eq!(ioctl_route(FileType::Fifo).unwrap_err(), MapError::NotTty);
         assert_eq!(MapError::NotTty.to_errno(), minix_types::ENOTTY);
-        assert!(BLOCK_NEEDS_GUARD);
+        // BLOCK_NEEDS_GUARD: the guard bit is part of the request layout.
         // Direction cross: IOR grants WRITE, IOW grants READ (`76-78`).
         assert_eq!(ioctl_access(IOC_OUT), CPF_WRITE);
         assert_eq!(ioctl_access(IOC_IN), CPF_READ);

@@ -969,7 +969,7 @@ mod tests {
         assert_eq!(drained, 3);
         assert_eq!(pool.pending_count(), 0);
         assert_eq!(pool.busy_count(), 3);
-        assert!(pool.may_do_pending() == false); // no pending left
+        assert!(!pool.may_do_pending()); // no pending left
     }
 
     #[test]

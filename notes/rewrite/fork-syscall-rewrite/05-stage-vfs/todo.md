@@ -75,7 +75,7 @@
 - P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。**✅ 已修复** 2026-09-09（§10 Fix #14：移 cfg(test) 更名 `NextFitDemo`，辩护注释的假语义一并修正——C 与 Linux 的 fd 分配都是 start 起最低空闲，不存在第二真实策略）。
 - ✅ P2-5 已修复 2026-09-09（§10 Fix #15）：`device_map` 全线 `Option<i32>` 端点 → `Option<Endpoint>`（DmapEntry/SmapEntry 字段、driver_match/get_by_endpt/unmap_by_endpt/map_driver/check_mapper/EndpointDirectory/smap_by_endpt/smap_endpt_by_dev/RegisterPlan、CTTY_ENDPT/RS_PROC_NR 常量）；`filp::find_by_vnode(usize) → VnodeId`。bdev/cdev 各自决策函数的 i32 参数为 wire 边界，保持并注明。
 - P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。**✅ 已修复** 2026-09-09（§10 Fix #13：收敛到 fs_comm 协议属主，main_loop re-export，-63 行重复）。
-- P3-1 复核 ✅：本轮 clippy 实测 40 条 warning 行（约 30 条落 vfs 自身），与首轮量级一致。
+- ✅ P3-1 已修复 2026-09-09（§10 Fix #18）：vfs 自身 clippy 归零（lib + tests 双构建），并补修 Fix #17 遗留的三个未门控 impl（非 test 构建断裂）。
 - P3-2 复核 ✅："有意省略表"仍未建立（99-global-concepts.md 零命中）；落点已随 R2-P2-2（99 改写）合并推进。
 
 ---
@@ -390,6 +390,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：`pub struct NextFit` 在生产编译单元，:70 的 trait 文档以 "O_DUPFD arg lower-bound variant" 辩护其真实语义——该辩护不成立：O_DUPFD 复用的是 `get_fd(start=arg)` 的同一 `LowestFree` 策略，并非第二种分配策略。
 - **After**：`#[cfg(test)] pub struct NextFitDemo`——对照实现限定测试；trait 文档如实声明"Minix3（filedes.c:121）与 Linux（`alloc_fd(start, end)`）都是 start 起最低空闲，不存在第二真实策略；trait 建模的是 `start` 参数化（O_DUPFD 的 arg），Demo 仅证多态"。落实 §9.6 Rule Discovery 规则草案（"无 C 来源第二实现 → 移 cfg(test) 或删除"）的首个适用案例。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`grep -rn "NextFit" os/servers/vfs/src` 仅 cfg(test) 域与文档注释命中。
+
+### ✅ Fix #18: P3-1 — vfs clippy 归零 + Fix #17 构建断裂补修（2026-09-09）
+
+- **File**：filedes.rs（map_or→is_some_and ×2、LowestFree/NextFitDemo 迭代器化）、main_loop.rs（嵌套 if 折叠 + doc quote 改写 + cast 移除）、call_table.rs（`VFS_BASE + 0` → `VFS_BASE`）、vnode.rs（let-chain 折叠 + unit 比较断言移除 + SmapTable 同型 is_empty 不适用）、vmnt.rs、device_map.rs（字面量分组 + 常量断言转注释 + SmapTable::is_empty）、fproc.rs（FprocLightTable Default）、fs_comm/dispatcher（多余 mut）、filp/path/request（未用导入与 bitflags doc 归位）、Cargo.toml（声明 `fproc_light` feature——ARCH A-7 占位的 cfg 有着落）。
+- **重要回归补修**：Fix #17 的 cfg(test) 圈定漏掉了三个 impl 块（cdev `TtySource for NoTty`、sdev `SockChannel for SilentChannel`、socket `SockLookup for EmptyTable`），导致 **`cargo build`（非 test）自 Fix #17 起断裂**——当时回归只跑了 `cargo test`（cfg test 激活掩盖断裂）。本条补齐三个 impl 的门控，`cargo check` 与 `cargo test` 双绿。教训入档：替身门控类修改的回归必须包含非 test 构建。
+- **死产夹具判定**：`AltFilpTable`/`AltFprocTable`/`AltTll`/`AltFs`(×2)/`AltVnodeTable`/`AltVmntTable` 七个 Gate D 死产测试夹具删除——"never constructed/never used" 实证死代码，属 §9.6 规则草案的收编范围（为何死：注释自认 Gate D 产物且零构造点；消除影响：无生产引用、无测试断言引用）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`cargo check` 与 `cargo clippy --lib --tests` 对 servers/vfs 的警告计数归零（minix-sys/minix-types 的 5+1 条不在本 stage 范围）。
 
 ### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
 

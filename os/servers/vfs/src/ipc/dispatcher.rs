@@ -886,7 +886,7 @@ mod tests {
         assert!(err.is_err());
         // Polymorphic dispatch via trait object
         let mut table2 = create_test_table_with_parent();
-        let mut handlers: Vec<Box<dyn PmHandler>> = vec![
+        let handlers: Vec<Box<dyn PmHandler>> = vec![
             Box::new(VfsPmHandler { table: &mut table2 }),
             Box::new(MockPmHandler),
         ];

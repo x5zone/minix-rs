@@ -232,6 +232,7 @@ impl SockLookup for TableLookup {
 #[cfg(test)]
 pub struct EmptyTable;
 
+#[cfg(test)]
 impl SockLookup for EmptyTable {
     fn lookup(&self, _fd: i32) -> Result<SockTarget, SockError> {
         Err(SockError::BadFd)

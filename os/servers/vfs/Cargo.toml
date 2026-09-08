@@ -9,6 +9,10 @@ license.workspace = true
 name = "minix-vfs"
 path = "src/main.rs"
 
+[features]
+# ARCH A-7 defer: `fproc_light` projection (misc.c:75-96) lands with MIB pull.
+fproc_light = []
+
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }

@@ -89,8 +89,8 @@ pub enum DispatchResult {
 
 /// Eight-way dispatch route — the priority chain of `main:80-138`.
 ///
-/// Order matters: `FsReply` (transid) > `Pm` > `Notify` > `TaskIgnored`
-/// > `Bdev`/`Cdev`/`Sdev` > `Syscall`.  The variant order in this enum
+/// Order matters: `FsReply` (transid), then `Pm`, `Notify`, `TaskIgnored`,
+/// then the device replies, then `Syscall`.  The variant order in this enum
 /// matches the C `if/else if` short-circuit order so that
 /// `route_message` can `match` exhaustively.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,13 +520,12 @@ impl VfsState {
 
         // 1. FS reply via transid — `TRNS_GET_ID` + `IS_VFS_FS_TRANSID`.
         let transid_raw = m_type & 0xFFFF;
-        if codec.is_fs_transid(transid_raw) {
-            if let Some(slot) = codec.decode(transid_raw) {
-                return Route::FsReply {
-                    transid: transid_raw,
-                    worker_slot: slot,
-                };
-            }
+        // `decode` 自带 `is_fs_transid` 守门——两层条件在此合并为一层。
+        if let Some(slot) = codec.decode(transid_raw) {
+            return Route::FsReply {
+                transid: transid_raw,
+                worker_slot: slot,
+            };
         }
 
         // 2. PM control — `who_e == PM_PROC_NR`.
@@ -1099,7 +1098,7 @@ mod tests {
         let codec = VfsTransIdCodec;
         let raw_transid = codec.encode(2); // 0xB03
         let msg = Message {
-            m_type: (0x1234 << 16) as i32 | raw_transid as i32,
+            m_type: 0x1234 << 16 | raw_transid as i32,
             m_source: Endpoint::MFS,
             ..Message::default()
         };

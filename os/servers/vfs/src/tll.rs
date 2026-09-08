@@ -325,14 +325,4 @@ mod tests {
         assert_eq!(t.state, TllState::Write);
     }
 
-    // Second impl for Gate D
-    struct AltTll(Tll);
-    impl AltTll {
-        fn new_alt() -> Self {
-            Self(Tll::new())
-        }
-        fn lock_alt(&mut self, s: UserSlot) -> Result<(), TllError> {
-            self.0.try_lock(s, TllAccess::Read)
-        }
-    }
 }

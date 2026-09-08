@@ -152,6 +152,10 @@ impl VmntTable {
         NR_MNTS
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, id: VmntId) -> Option<&Vmnt> {
         let idx = id.get();
         if idx < NR_MNTS {
@@ -324,10 +328,6 @@ mod tests {
     impl VnodePut for NopVnode {
         fn put(&mut self, _vnode: usize) {}
     }
-    struct AltFs;
-    impl FsCancel for AltFs {
-        fn cancel(&mut self, _vmnt: &Vmnt) {}
-    }
 
     #[test]
     fn test_init_vmnts_zero() {
@@ -443,11 +443,4 @@ mod tests {
         assert_eq!(VmntFlags::CANSTAT.bits(), 0x10);
     }
 
-    // Second impl for Gate D
-    struct AltVmntTable(VmntTable);
-    impl AltVmntTable {
-        fn alloc(&mut self) -> Result<VmntId, VmntError> {
-            self.0.alloc()
-        }
-    }
 }

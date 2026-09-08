@@ -10,7 +10,7 @@
 //!
 //! `ARCH A-2` (enum vs function pointer) and `ARCH A-8` (64-bit) in one place.
 
-use minix_types::{Endpoint, Message};
+use minix_types::Endpoint;
 
 /// `FS_BASE 0xA00` — `com.h:589` ("Requests sent by VFS to filesystem").
 ///
@@ -62,8 +62,8 @@ pub const REQ_GETDENTS: u32 = FS_BASE + 31;
 pub const REQ_PEEK: u32 = FS_BASE + 32;
 pub const REQ_BPEEK: u32 = FS_BASE + 33;
 
-/// `RES_*` flags — `vfsif.h:20-23`, mirrored in `vmnt.m_fs_flags`.
 bitflags::bitflags! {
+    /// `RES_*` flags — `vfsif.h:20-23`, mirrored in `vmnt.m_fs_flags`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct FsFlags: u32 {
         const THREADED = 0x01;
@@ -430,8 +430,7 @@ pub enum FsResp {
     Size(usize),
 }
 
-/// `FsFlags` already defined above; re-use for `check_64bit`.
-
+// `FsFlags` already defined above; re-use for `check_64bit`.
 /// `FsError` — maps to Minix errno for `req_*` wrappers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsError {
@@ -506,13 +505,14 @@ pub struct MockFsClient {
 impl FsClient for MockFsClient {
     fn send(&mut self, req: FsReq, scope: GrantScope) -> Result<FsResp, FsError> {
         self.sent.push((req.clone(), scope));
-        if self.inject_restart && scope == GrantScope::Try {
-            if matches!(
+        if self.inject_restart
+            && scope == GrantScope::Try
+            && matches!(
                 req,
                 FsReq::BRead { .. } | FsReq::Read { .. } | FsReq::GetDents { .. }
-            ) {
-                return Err(FsError::GrantFaulted);
-            }
+            )
+        {
+            return Err(FsError::GrantFaulted);
         }
         // Same canned responses as blocking, but records scope
         match req {

@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn test_drv_ctty() {
         let mut t = BlockingTransport;
-        let mut global = GlobalComm::new();
+        let global = GlobalComm::new();
         let r = t.send_drv(Endpoint::from_generation_slot(0, 5), 0, &Message::default());
         // Non-CTTY should succeed
         assert!(r.is_ok());

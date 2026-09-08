@@ -89,12 +89,10 @@ pub struct LowestFree;
 
 impl FdAllocPolicy for LowestFree {
     fn allocate(&self, table: &[Option<usize>], start: usize) -> Option<usize> {
-        for i in start..OPEN_MAX {
-            if table[i].is_none() {
-                return Some(i);
-            }
-        }
-        None
+        table[start..OPEN_MAX]
+            .iter()
+            .position(|slot| slot.is_none())
+            .map(|offset| start + offset)
     }
 }
 
@@ -124,19 +122,19 @@ impl FdAllocPolicy for NextFitDemo {
         let base = self.next.get() % OPEN_MAX;
         // Try base..OPEN_MAX then 0..base, but respect caller's start as lower bound
         let scan_start = core::cmp::max(base, start);
-        for i in scan_start..OPEN_MAX {
-            if table[i].is_none() {
+        let find = |range: std::ops::Range<usize>| -> Option<usize> {
+            let offset = table[range.clone()]
+                .iter()
+                .position(|slot| slot.is_none())?;
+            Some(offset + range.start)
+        };
+        match find(scan_start..OPEN_MAX).or_else(|| find(start..scan_start)) {
+            Some(i) => {
                 self.next.set((i + 1) % OPEN_MAX);
-                return Some(i);
+                Some(i)
             }
+            None => None,
         }
-        for i in start..scan_start {
-            if table[i].is_none() {
-                self.next.set((i + 1) % OPEN_MAX);
-                return Some(i);
-            }
-        }
-        None
     }
 }
 
@@ -229,7 +227,7 @@ fn invalidate_filps_where(
             let hit = f.count != 0
                 && f.vnode
                     .and_then(|v| vnode_table.get(VnodeId(v)))
-                    .map_or(false, |vn| matches(vn));
+                    .is_some_and(&matches);
             if hit {
                 invalidate_filp(filp_table, id);
                 cnt += 1;
@@ -279,7 +277,7 @@ pub fn invalidate_by_sock_drv(
 ) -> usize {
     invalidate_filps_where(filp_table, vnode_table, |vn| {
         (vn.mode & S_IFMT) == S_IFSOCK
-            && split_smap_dev(vn.sdev).map_or(false, |(row, _)| row == num)
+            && split_smap_dev(vn.sdev).is_some_and(|(row, _)| row == num)
     })
 }
 
@@ -357,7 +355,7 @@ pub fn copy_fd(
                 .get(fid)
                 .and_then(|f| f.vnode)
                 .and_then(|v| ctx.vnode_table.get(VnodeId(v)))
-                .map_or(false, |vn| {
+                .is_some_and(|vn| {
                     (vn.mode & S_IFMT) == S_IFSOCK
                         && smap_endpt_by_dev(ctx.smap_table, vn.sdev)
                             == Some(ctx.caller_endpoint)

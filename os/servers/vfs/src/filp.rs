@@ -9,7 +9,7 @@
 //! - `filp_lock` → `locked_by: Option<UserSlot>` (ARCH A-6)
 //! - `FSF_*` → `FsfFlags` bitflags
 
-use minix_types::{DevId, Mode, UserSlot, VirBytes};
+use minix_types::{DevId, Mode, UserSlot};
 
 use crate::vnode::VnodeId;
 
@@ -137,6 +137,10 @@ impl FilpTable {
 
     pub fn len(&self) -> usize {
         NR_FILPS
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get(&self, id: FilpId) -> Option<&Filp> {
@@ -454,11 +458,4 @@ mod tests {
         assert!(!flags.contains(FsfFlags::BLOCKED));
     }
 
-    // Second impl for Gate D trait threshold
-    struct AltFilpTable(FilpTable);
-    impl AltFilpTable {
-        fn alloc(&mut self) -> Result<FilpId, FilpError> {
-            self.0.alloc_filp(0)
-        }
-    }
 }

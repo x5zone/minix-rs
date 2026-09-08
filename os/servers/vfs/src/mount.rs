@@ -49,9 +49,9 @@ impl DevCodec {
 
     /// `makedev(major, minor)` inverse of the two above.
     pub fn make(major: u32, minor: u32) -> u64 {
-        ((((major as u64) << 8) & 0x000f_ff00)
+        (((major as u64) << 8) & 0x000f_ff00)
             | (((minor as u64) << 12) & 0xfff0_0000)
-            | ((minor as u64) & 0x0000_00ff)) as u64
+            | ((minor as u64) & 0x0000_00ff)
     }
 
     /// Whether `dev` is a `none` pseudo device (`is_nonedev`,

@@ -543,6 +543,12 @@ pub struct FprocLight {
 /// `FprocLightTable` heap storage (`fproc.h:115`, `ARCH A-4`).
 pub struct FprocLightTable(Box<[FprocLight]>);
 
+impl Default for FprocLightTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FprocLightTable {
     pub fn new() -> Self {
         let v: Box<[FprocLight]> = (0..NR_PROCS)
@@ -831,11 +837,4 @@ mod tests {
         assert_eq!(v[0].blocked_on, BlockedOn::None);
     }
 
-    // Second impl for Gate D trait threshold
-    struct AltFprocTable(FProcTable);
-    impl AltFprocTable {
-        fn is_ok(&self, ep: Endpoint) -> Result<UserSlot, FprocError> {
-            self.0.is_ok_endpoint(ep)
-        }
-    }
 }

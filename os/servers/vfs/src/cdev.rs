@@ -60,6 +60,7 @@ impl TtySource for FixedTty {
 #[cfg(test)]
 pub struct NoTty;
 
+#[cfg(test)]
 impl TtySource for NoTty {
     fn controlling_tty(&self) -> Option<u64> {
         None

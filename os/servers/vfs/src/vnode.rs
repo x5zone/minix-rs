@@ -177,6 +177,10 @@ impl VnodeTable {
         NR_VNODES
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn get(&self, id: VnodeId) -> Option<&Vnode> {
         let idx = id.get();
         if idx < NR_VNODES {
@@ -310,10 +314,10 @@ impl VnodeTable {
     }
 
     pub fn clean_if_needed(&mut self, id: VnodeId, fs_ctl: &mut dyn FsCtl) {
-        if let Some(v) = self.get(id) {
-            if v.fs_count > 256 {
-                self.clean_refs(id, fs_ctl);
-            }
+        if let Some(v) = self.get(id)
+            && v.fs_count > 256
+        {
+            self.clean_refs(id, fs_ctl);
         }
     }
 }
@@ -355,12 +359,6 @@ mod tests {
 
     struct NopFs;
     impl FsCtl for NopFs {
-        fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> {
-            Ok(())
-        }
-    }
-    struct AltFs;
-    impl FsCtl for AltFs {
         fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> {
             Ok(())
         }
@@ -482,17 +480,10 @@ mod tests {
         table.unlock(id);
         assert!(!table.is_locked(id));
         assert!(table.lock(id, VnodeAccess::Write).is_ok());
-        assert!(table.unlock(id) == ());
+        table.unlock(id);
         // upgrade
         table.lock(id, VnodeAccess::Read).unwrap();
         assert!(table.upgrade(id).is_ok());
     }
 
-    // Second impl for Gate D
-    struct AltVnodeTable(VnodeTable);
-    impl AltVnodeTable {
-        fn alloc(&mut self) -> Result<VnodeId, VnodeError> {
-            self.0.alloc()
-        }
-    }
 }

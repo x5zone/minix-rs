@@ -26,7 +26,7 @@ pub const NR_VFS_CALLS: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum VfsCallNum {
-    Read = VFS_BASE + 0,
+    Read = VFS_BASE,
     Write = VFS_BASE + 1,
     Lseek = VFS_BASE + 2,
     Open = VFS_BASE + 3,

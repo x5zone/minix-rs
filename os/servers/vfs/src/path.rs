@@ -7,7 +7,7 @@
 //!
 //! `ARCH A-10` (DO_POSIX) is `const DO_POSIX: bool = false`.
 
-use minix_types::{Endpoint, Message};
+use minix_types::Endpoint;
 
 /// `PATH_MAX 1024` — `limits.h`.
 pub const PATH_MAX: usize = 1024;
@@ -21,8 +21,8 @@ pub const SYMLOOP_MAX: usize = 16;
 /// (`append "."`).
 pub const DO_POSIX: bool = false;
 
-/// `PATH_*` flags — `vfsif.h:12`.
 bitflags::bitflags! {
+    /// `PATH_*` flags — `vfsif.h:12`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct LookupFlags: u32 {
         const NOFLAGS = 0x00;
