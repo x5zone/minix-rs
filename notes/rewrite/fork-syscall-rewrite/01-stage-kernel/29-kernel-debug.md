@@ -345,6 +345,16 @@ pub fn print_proc(proc: &KProcess) {
 
 ### 5.3 后续测试建议
 
+> **T-11 解决记录（2026-09-08）**：`runqueues_ok_cpu` 集成测试落地于 `os/kernel/tests/boot_integration.rs`
+> （1 正例 host 全平台通过 + 3 破坏性负例 `#[ignore]`）。正例覆盖五项不变量的成立面（head/tail 配对、
+> tail→next 空、runnable、优先级匹配、无重复）；负例（死进程在队列 / runnable 未入队 / 无效 CPU）
+> 在宿主 x86_64 上不可运行——**失败诊断经 `CurrentEarlyConsole` 输出，而 plat/lib.rs:59 的 mock 臂
+> 显式排除 x86_64**，宿主上是真 COM1（`out` 特权指令 → SIGSEGV，探针测试实证），沿用 debug.rs
+> 单测的 `#[ignore]` 惯例并注明 QEMU 解除路径。实现注记：①`Scheduler::enqueue_queue_tail` 只更新
+> 队列数组，`p_nextready` 链须显式回填（`sched_enqueue` Phase 2 职责）；②`ProcessTable::new()` 值语义
+> 会撑爆测试线程栈——集成测试须 `Box` + `Box::leak`（占用槽 KProcess Drop 守卫要求表与内核同寿）。
+
+
 - `runqueues_ok_cpu` 需要构造 `SmpState` + `ProcessTable` mock，当前未集成到单元测试；建议在 boot_integration 中添加 sanity check 集成测试
 
 ---

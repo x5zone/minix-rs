@@ -196,3 +196,115 @@ fn init_proc_and_boot_test() {
 
     println!("── init_proc_and_boot_test PASSED ──");
 }
+
+/// T-11（doc 29 §5.3）：runqueues_ok_cpu 调度队列不变量集成验证——
+/// 构造 SmpState + ProcessTable，验证正例（队列入队后五项不变量成立）。
+///
+/// 破坏性用例（死进程在队列 / runnable 未入队 / 无效 CPU）在宿主 x86_64 上
+/// 不可运行：runqueues_ok_cpu 的失败诊断经 `CurrentEarlyConsole` 输出，而
+/// plat/lib.rs:59 的 mock 臂显式排除 x86_64——宿主上是真 COM1（`out` 特权
+/// 指令 → SIGSEGV，探针测试已实证）。三个负例以 #[ignore] 保留，QEMU 环境
+/// 下可移除 ignore 运行。
+///
+/// 实现注记：直接用 `Scheduler::enqueue_queue_tail` 只更新队列数组，
+/// `p_nextready` 链必须显式回填（`ProcessTable::sched_enqueue` 的 Phase 2
+/// 职责）——漏链会让首元素即触发 "last element not tail" 诊断。
+#[test]
+fn runqueues_ok_cpu_positive_invariants_hold() {
+    use minix_kernel::debug::runqueues_ok_cpu;
+    use minix_kernel::proc::{priority, CpuId, ProcNr};
+    use minix_kernel::proc_table::ProcessTable;
+    use minix_kernel::smp::SmpState;
+
+    let mut table = Box::new(ProcessTable::new());
+    let mut smp = SmpState::new_single_cpu();
+    for nr in [ProcNr(0), ProcNr(1)] {
+        let p = table.get_mut(nr).unwrap();
+        p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+        p.p_sched.priority
+            .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
+        smp.cpu_local_mut(CpuId::BSP).unwrap()
+            .scheduler.enqueue_queue_tail(nr, priority::USER_Q as usize);
+    }
+    // 显式链接 nr0 → nr1（enqueue_queue_tail 不回填 p_nextready）。
+    table.get_mut(ProcNr(0)).unwrap().p_nextready
+        .store(1, core::sync::atomic::Ordering::Release);
+    // nr1 为 tail：p_nextready 保持 NONE_PROC_NR。
+
+    // 占用槽的 KProcess Drop 守卫要求显式销毁；进程表在内核中与内核同寿——
+    // 集成测试以 Box::leak 模拟（避免析构期守卫 panic）。
+    let table = Box::leak(table);
+
+    assert!(runqueues_ok_cpu(&smp, table, CpuId::BSP),
+        "链接正确的双进程队列必须通过全部五项不变量检查");
+}
+
+/// 破坏不变量 3：队列中进程被标 SLOT_FREE（死进程在队列）→ 必须检测。
+#[test]
+#[ignore = "失败诊断经 CurrentEarlyConsole 输出——宿主 x86_64 上是真 COM1（plat/lib.rs:59 mock 臂排除 x86_64），SIGSEGV；QEMU 下移除本 ignore"]
+fn runqueues_ok_cpu_detects_dead_proc_on_queue() {
+    use minix_kernel::debug::runqueues_ok_cpu;
+    use minix_kernel::proc::{priority, CpuId, ProcNr};
+    use minix_kernel::proc_table::ProcessTable;
+    use minix_kernel::smp::SmpState;
+
+    let mut table = Box::new(ProcessTable::new());
+    let mut smp = SmpState::new_single_cpu();
+    for nr in [ProcNr(0), ProcNr(1)] {
+        let p = table.get_mut(nr).unwrap();
+        p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+        p.p_sched.priority
+            .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
+        smp.cpu_local_mut(CpuId::BSP).unwrap()
+            .scheduler.enqueue_queue_tail(nr, priority::USER_Q as usize);
+    }
+    table.get_mut(ProcNr(0)).unwrap().p_nextready
+        .store(1, core::sync::atomic::Ordering::Release);
+    let table = Box::leak(table);
+
+    table.get_mut(ProcNr(1)).unwrap()
+        .p_rts_flags.set(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+    assert!(!runqueues_ok_cpu(&smp, table, CpuId::BSP),
+        "队列中的死进程必须被检测");
+}
+
+/// 破坏不变量 5：runnable 进程未入队 → 必须检测。
+#[test]
+#[ignore = "同上：失败诊断在宿主 x86_64 触发真 COM1 SIGSEGV；QEMU 下移除本 ignore"]
+fn runqueues_ok_cpu_detects_runnable_not_queued() {
+    use minix_kernel::debug::runqueues_ok_cpu;
+    use minix_kernel::proc::{priority, CpuId, ProcNr};
+    use minix_kernel::proc_table::ProcessTable;
+    use minix_kernel::smp::SmpState;
+
+    let mut table = Box::new(ProcessTable::new());
+    let mut smp = SmpState::new_single_cpu();
+    for nr in [ProcNr(0), ProcNr(1)] {
+        let p = table.get_mut(nr).unwrap();
+        p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
+        p.p_sched.priority
+            .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
+    }
+    // 仅 nr0 入队；nr1 runnable 但不在任何队列。
+    smp.cpu_local_mut(CpuId::BSP).unwrap()
+        .scheduler.enqueue_queue_tail(ProcNr(0), priority::USER_Q as usize);
+    let table = Box::leak(table);
+
+    assert!(!runqueues_ok_cpu(&smp, table, CpuId::BSP),
+        "runnable 但未入队的进程必须被检测");
+}
+
+/// 防御分支：无效 CPU（超出 MAX_CPUS）→ false。
+#[test]
+#[ignore = "同上：invalid CPU 分支也经 Console 诊断输出；QEMU 下移除本 ignore"]
+fn runqueues_ok_cpu_rejects_invalid_cpu() {
+    use minix_kernel::debug::runqueues_ok_cpu;
+    use minix_kernel::proc::CpuId;
+    use minix_kernel::proc_table::ProcessTable;
+    use minix_kernel::smp::SmpState;
+
+    let smp = SmpState::new_single_cpu();
+    let table = Box::leak(Box::new(ProcessTable::new()));
+    assert!(!runqueues_ok_cpu(&smp, table, CpuId::new_unchecked(63)),
+        "超出 MAX_CPUS 的 CPU 必须返回 false");
+}
