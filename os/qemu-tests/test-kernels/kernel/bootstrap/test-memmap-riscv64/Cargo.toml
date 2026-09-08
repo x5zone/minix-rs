@@ -8,12 +8,7 @@ minix-arch = { workspace = true, default-features = false }
 minix-plat = { workspace = true }
 minix-types = { workspace = true }
 minix-boot = { workspace = true }
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
+boot-shim = { workspace = true, features = ["uefi"] }
 
 [[bin]]
 name = "test-memmap-riscv64"

@@ -67,10 +67,26 @@ The `run_qemu.sh` script captures serial output and checks for the PASS marker.
 
 ## Adding a New Test
 
+Test-kernel `Cargo.toml` files are generated from a single template — do not
+hand-edit them (changes belong in `tools/gen-test-kernel.sh` so all kernels
+evolve together). To add a new test:
+
 ```bash
-cp -r test-kernels/kernel/bootstrap/hello-boot test-kernels/kernel/bootstrap/test-my-thing
-# edit test-kernels/kernel/bootstrap/test-my-thing/src/main.rs
-# add to run_all.sh
+# 1. Create the directory with a templated Cargo.toml
+tools/gen-test-kernel.sh --new test-my-thing x86_64            # UEFI family
+tools/gen-test-kernel.sh --new test-my-thing x86_64 --qemu-test   # + kernel qemu_test feature
+tools/gen-test-kernel.sh --new test-my-thing riscv64           # OpenSBI family
+#    extra flags: --no-kernel --no-arch --with-platform --uefi-no-alloc
+
+# 2. src/main.rs is the test scenario itself (not configuration) — copy the
+#    closest sibling test-kernel's src/main.rs as the starting point
+cp test-kernels/kernel/bootstrap/hello-boot/src/main.rs    test-kernels/kernel/bootstrap/test-my-thing/src/main.rs
+
+# 3. Register the crate path in os/Cargo.toml [workspace] members
+# 4. Wire a QEMU run step in run_all.sh
+
+# Verify the generated config matches the template:
+tools/gen-test-kernel.sh --check   # exits 1 with a diff on drift
 ```
 
 ## Current Status

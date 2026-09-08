@@ -11,16 +11,10 @@ minix-boot = { workspace = true }
 minix-kernel = { workspace = true, default-features = false }
 boot-shim = { workspace = true, default-features = false, features = ["opensbi"] }
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-
 [[bin]]
 name = "test-paging-enable-riscv64"
 path = "src/main.rs"
 # Bare-metal firmware binary: never compile a host test harness
 # (host `cargo test` would link std → duplicate panic_impl /
-# global_allocator conflicts with uefi).
+# global_allocator conflicts with the custom allocator).
 test = false

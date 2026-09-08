@@ -493,6 +493,26 @@ arch trait 签名改用共享 `ProcNr`；消除 `nr.0` 与双定义。符合 CLA
 （`tools/gen-test-kernel.sh`：按 target 生成 bin 配置）+ 文档声明"新增 test-kernel 的模板步骤"。
 验收：新增一个 test-kernel 只需 1 个新目录 + 1 次脚本调用。
 
+**解决记录（2026-09-08）**：
+- `tools/gen-test-kernel.sh` 三模式落地：`--new`（按架构家族模板生成 Cargo.toml；main.rs 是测试场景
+  逻辑非配置，指引复制最近邻 kernel 作起点——这是诚实的边界而非功能缺失）、`--apply`（从现存文件
+  探测 8 个布尔标志后规范化再生成：依赖顺序统一、`[[bin]]` 注释统一）、`--check`（漂移检测，退出码
+  可作 review/CI 门）
+- 现状实测（23 个 kernel，非登记时的 19）：配置方差 = 两个家族（uefi：x86/aarch64；opensbi：riscv64）
+  × 8 个独立开关（uefi_alloc/opensbi/qemu_test/with_platform/no_kernel/no_arch/uefi_no_alloc/no_shim）。
+  `test-smp-topo-riscv64` 无 boot-shim 依赖（QEMU `-kernel` 直载）——boot-shim 是独立开关而非家族属性
+- **附带修正（行为中性）**：删除 23 份文件中的 `[profile.dev/release] panic = "abort"` 死配置——全部
+  kernel 都是 os workspace 成员且经根 manifest 构建（run_all.sh:51-63 `--manifest-path $OS_ROOT`），
+  cargo 明确警告"成员 profile 被忽略"；根 Cargo.toml 无 profile 段，故删除零行为变化 + 消除每次构建
+  的 25 条 warning。保留 uefi "global_allocator" 刻意不启用 feature 的约束注释（模板化为中性措辞，
+  不绑定具体分配器名）
+- 否决方案记录：每架构聚合 crate（多 `[[bin]]`）——同 crate feature unification 会把
+  `test-proc-init` 刻意无 alloc 的 uefi 依赖与其他 kernel 的 alloc 版本合并，破坏既有约束，硬伤否决
+- 验证：`--apply` 后 `--check` PASS；三家族 + 各变体 6 kernel 真实 target 构建 0 error
+  （hello-boot/hello-boot-aarch64/hello-boot-riscv64/test-higher-half/test-memmap/test-smp-topo）；
+  文档同步 qemu-tests/README.md "Adding a New Test" 章节改为模板工作流
+- 过程修正：脚本初版 `grep -q && VAR=1` 在 `set -e` 下短路失败导致中途退出（bash 惯用坑），加 `|| true`
+
 ## 6. Redox OS 对照（2026-08-14 调研完成）
 
 > 调研对象：redox-os/kernel master（rmm 0.6 重写后），重点对照与建议的关联。
@@ -2804,7 +2824,7 @@ RS/PM/VFS 联调 E5 系）或已有 edge 条目覆盖，或 stage 内可闭合�
 - ✅ E1 [P1] 16 细粒度 arch trait 聚合 `Arch` supertrait + `CurrentArch` → **落地为全关联类型组合（17 族覆盖全部 20 个 Current* 别名；supertrait 形式因 Paging 句柄语义不可实现，见 §5 解决记录）+ `CurrentArch` 单点 cfg 锚点 + MockArch 矩阵镜像；TypeId 逐族 pin 测试 3 个；四条真实 target 编译路径零错误；不做调用点迁移（OQ 并存裁决）（2026-09-08）**
 - ✅ R1 [P2] PTE 位 → Paging trait 关联常量（Redox rmm ENTRY_FLAG_* 式）→ **核实闭合：前提过时（CTOS）——PageFlags 语义位图（paging.rs:28）+ 三架构私有翻译层 + kernel 全消费点语义化早已落地，目标已达成；关联常量形式经反查被否决（弱于现状的封装强度），详见 §5 解决记录（2026-09-08）**
 - ✅ C1 [P2] 5 个 250-550 行 dispatch 大函数语义拆分 → **4 函数落地（getinfo 468→35 / privctl 446→111 / vmctl 349→157 / trace 294→139；statectl 复测 62 行已不 qualify）——每臂 verbatim 提取 helper + C 锚点注释保留；693+2 测试全绿 + 46 处文档行号锚点同步（6 个 doc）；详见 §2 C1 解决记录（2026-09-08）**
-- ⬜ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）
+- ✅ M1 [P2] test-kernel Cargo.toml 模板生成（tools/gen-test-kernel.sh 方向）→ **三模式脚本落地（--new/--apply/--check）+ 23 文件规范化（删死 profile 块、依赖顺序统一）+ README 模板工作流；--check PASS + 6 kernel 三家族真实构建 0 error（2026-09-08，详见 §2 M1 解决记录）**
 
 **Phase 5 — 主线后功能缺口**
 - ⬜ U-1 update 私有槽交换保全 s_alarm_timer（对齐 C do_update.c:292；含 alarm 链归属语义分析）
