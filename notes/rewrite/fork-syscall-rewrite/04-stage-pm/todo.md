@@ -471,13 +471,11 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #51）：函数改读目标进程的 `resources.scheduler` 作调度器端点；KERNEL/NONE 按 C 直接跳过（Ok，不调内核不回写）；成功后回写继承值（C 出参语义）。+1 单测（NONE 跳过 / 自定义调度器按继承值转发）；CaptureSched 扩展 last_sched 记录。sched_init 的 assert 注释化保持（其两个断言依赖 boot 时序唯一性，init_scheduling 的测试环境已覆盖）。
 - **验证**：sched 测试全绿；基线 379 lib passed。
 
-#### V3-P2-4 do_getepinfo 两处语义偏差（批次 A/G 前置）
+#### V3-P2-4 do_getepinfo 两处语义偏差（✅ (a) 已修复 2026-09-09，Fix #52；(b) 随批次 A/G，D-30 登记）
 
-- **优先级**：P2；**类型**：语义偏移 + 拷出未接线
-- **文件**：`os/servers/pm/src/misc.rs:362-378`；C `misc.c:169-193`
-- **问题**：(a) 回复的 `ngroups` 字段 C 填**全量** `mp_ngroups`、截断只影响拷贝数（misc.c:184-186）；Rust 先截断再填（misc.rs:362-365,378）——调用方（RS 的 getepinfo 消费者）失去真实组数，无法区分"只有 8 组"与"有 20 组但缓冲只有 8"。(b) groups 到用户缓冲的 sys_datacopy 未接线（`_cpy` 形参未用，misc.rs:357），EFAULT 类错误无透传路径。
-- **建议**：`EpInfo.ngroups` 改填全量值；groups 拷出随批次 A 的 wire/`CopyGroups` 生产实现一并落（`_cpy` 启用 + 错误透传）。
-- **验证**：单测：目标 20 组 + 调用方缓冲 8 → ngroups=20、拷出 8 组。
+- **原状态**：回复 `ngroups` 先截断再填（C 填全量 `mp_ngroups`，截断只影响拷贝数，misc.c:184）；groups 拷出未接线（`_cpy` 未用，EFAULT 无透传）。
+- **修复**（Fix #52）：`EpInfo.ngroups` 改填全量值，拷出数单独截断（copy_len = min）；`[DEFERRED: D-30]` 登记 groups 拷出与 EFAULT 透传（批次 A/G 的 wire + CopyGroups 生产实现，edge E7）；测试补全量/截断两断言。
+- **验证**：`test_getepinfo_trunc` 扩展后全绿；基线 379 lib passed。
 
 #### V3-P2-5 do_svrctl / do_sysuname 分支细节五处偏离（扩展 V2-P3-4(b)，批次 G 前置）
 

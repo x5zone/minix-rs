@@ -137,7 +137,8 @@ pub trait CopyToUser {
     fn copy_from_user(&mut self, src: VirBytes, dst: &mut [u8]) -> Result<(), MiscError>;
 }
 
-/// `EpInfo` (`misc.c:180-192`, D3) — `return pid` payload + groups truncation.
+/// `EpInfo` (`misc.c:180-192`, D3) — `return pid` payload；`ngroups` 为
+/// 全量组数（C misc.c:184），`groups` 为按调用方缓冲截断后的拷出内容。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpInfo {
     pub pid: Pid,
@@ -363,23 +364,26 @@ pub fn do_getepinfo(
     let slot = table.pm_isokendpt(ep).map_err(|_| MiscError::Srch)?;
     let rmp = &table.procs[slot.get()];
     let creds = rmp.resources.privilege.credentials().ok_or(MiscError::Inval)?;
-    let mut ngroups = creds.ngroups;
-    if ngroups > caller_ngroups {
-        ngroups = caller_ngroups;
-    }
-    let groups = if ngroups > 0 {
-        creds.supplemental_groups[..ngroups].to_vec()
+    // C misc.c:184：回复载荷的 ngroups 填**全量** mp_ngroups——截断只影响
+    // 拷贝数，调用方（RS）有权知道真实组数（区分"只有 N 组"与"有更多但
+    // 缓冲不足"）。V3-P2-4 之前先截断再填，语义退化。
+    let ngroups_full = creds.ngroups;
+    let copy_len = ngroups_full.min(caller_ngroups);
+    let groups = if copy_len > 0 {
+        creds.supplemental_groups[..copy_len].to_vec()
     } else {
         Vec::new()
     };
-    // C would sys_datacopy groups; we return truncated Vec
+    // [DEFERRED: D-30] groups 经 sys_datacopy 拷出到调用方缓冲 + EFAULT
+    // 透传（misc.c:187-190）——随批次 A/G 的 wire 与 CopyGroups 生产实现
+    // 落地（挂 edge E7）；当前以截断 Vec 表达拷出内容。
     Ok(EpInfo {
         pid: rmp.identity.id.pid,
         uid: creds.user.real,
         euid: creds.user.effective,
         gid: creds.group.real,
         egid: creds.group.effective,
-        ngroups,
+        ngroups: ngroups_full,
         groups,
     })
 }
@@ -634,11 +638,15 @@ mod tests {
             c
         });
         let mut cpy = NopCopy;
-        // caller buffer 2 groups → truncated to 2
+        // caller buffer 2 groups：ngroups 报全量 3（C misc.c:184），拷出截断 2。
         let info = do_getepinfo(&table, table.procs[1].endpoint(), 2, &mut cpy).unwrap();
-        assert_eq!(info.ngroups, 2);
+        assert_eq!(info.ngroups, 3, "reply ngroups = full mp_ngroups (C misc.c:184)");
         assert_eq!(info.groups, vec![10,20]);
         assert_eq!(info.pid, 101);
+        // 缓冲充足时全量拷出。
+        let info = do_getepinfo(&table, table.procs[1].endpoint(), 16, &mut cpy).unwrap();
+        assert_eq!(info.ngroups, 3);
+        assert_eq!(info.groups, vec![10,20,30]);
         // invalid endpoint
         assert_eq!(do_getepinfo(&table, Endpoint::from_generation_slot(9, 9), 16, &mut cpy).unwrap_err(), MiscError::Srch);
     }
