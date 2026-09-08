@@ -192,6 +192,9 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     /// 内核定时器出口（CLOCK notify → `expire_timers`，14-itimer.md；
     /// 生产 `TrapTimerCtl` pre-E6 fail-closed，测试注入脚本化实现）。
     timer: Box<dyn crate::timer::TimerCtl>,
+    /// 虚拟计时器出口（SIGVTALRM/SIGPROF 重挂，14-itimer.md；SIGKSIG
+    /// 拉取经 process_ksig 消费；生产 `TrapVTimerCtl` pre-E6 诚实 `-EIO`）。
+    vtimer: Box<dyn crate::timer::VTimerCtl>,
     /// `init()` 是否已完成（run() 前置断言）。
     initialized: bool,
     /// 内核中止标志（C: `glo.h:26` `abort_flag`；由 do_reboot 写入，归 20-misc-queries.md）。
@@ -229,16 +232,24 @@ impl<T: IpcTransport> PmServer<T> {
         transport: T,
         kern: Box<dyn crate::exit::KernelGateway>,
     ) -> Self {
-        Self::with_timer_ctl(params, transport, kern, Box::new(crate::timer::TrapTimerCtl))
+        Self::with_timer_ctl(
+            params,
+            transport,
+            kern,
+            Box::new(crate::timer::TrapTimerCtl),
+            Box::new(crate::timer::TrapVTimerCtl),
+        )
     }
 
     /// 显式指定内核网关与定时器出口构造（测试注入脚本化实现；
     /// 真实通电挂 edge E1/E6）。
+    #[allow(clippy::too_many_arguments)]
     pub fn with_timer_ctl(
         params: BootParams,
         transport: T,
         kern: Box<dyn crate::exit::KernelGateway>,
         timer: Box<dyn crate::timer::TimerCtl>,
+        vtimer: Box<dyn crate::timer::VTimerCtl>,
     ) -> Self {
         Self {
             // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
@@ -249,6 +260,7 @@ impl<T: IpcTransport> PmServer<T> {
             transport,
             kern,
             timer,
+            vtimer,
             initialized: false,
             // 内核中止标志初始为 0（无中止）；do_reboot 在 20-misc-queries.md 写入。
             abort_flag: 0,
@@ -373,6 +385,25 @@ impl<T: IpcTransport> PmServer<T> {
                     &mut self.table,
                     now,
                     self.timer.as_mut(),
+                    self.kern.as_mut(),
+                    &mut self.transport,
+                );
+            }
+            // C sef_signal.c:104-108（main.c:121 的信号管理器注册）：内核
+            // 以 SYSTEM 源通知送达 `m_notify.sigset` 位图，SIGKSIG（74）
+            // 位 = "信号管理器有积累的内核信号待拉取"。V3-P1-2 之前本
+            // 分支只认 CLOCK，SIGKSIG 通知被静默丢弃，process_ksig 无
+            // 生产调用者，内核信号回环断路。
+            //
+            // [ARCH] 触发判定按 Rust 内核的实际行为：SigSet(u64) 装不下
+            // 位 73（SIGKSIG-1）——kernel syscall_signal.rs:88-94 已声明
+            // 该限制（位图位丢失，SYSTEM 通知本身即唤醒），SigSet 拓宽到
+            // 128 位是跨层 wire 变更（edge E6 登记）。PM 据此以 SYSTEM
+            // 源通知触发拉取循环，位图语义待拓宽后恢复。
+            if msg.m_source == Endpoint::SYSTEM {
+                crate::signal::process_sigmgr_signals(
+                    &mut self.table,
+                    self.vtimer.as_mut(),
                     self.kern.as_mut(),
                     &mut self.transport,
                 );
@@ -900,6 +931,7 @@ mod tests {
             TestIpcTransport::new(),
             Box::new(crate::exit::TrapKernelGateway::new(minix_sys::syscall::DirectKernelCallTransport)),
             Box::new(StubTimer),
+            Box::new(crate::timer::TrapVTimerCtl),
         );
         let mut msg = Message::default();
         msg.m_type = 0x1000;

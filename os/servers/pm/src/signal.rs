@@ -25,6 +25,13 @@ pub const SIGSTOP: i32 = 17;
 /// Hangup（`sys/sys/signal.h:52`）——会话首领死亡时向其进程组广播
 ///（`check_sig(-procgrp, SIGHUP)`，forkexit.c:412）。
 pub const SIGHUP: i32 = 1;
+/// 内核信号：SIGSNDELAY（`sys/sys/signal.h:264`，值 70——早前
+/// `sys_delay_stop` 的 EBUSY 延迟结束，可恢复当初搁置的信号处置）。
+/// 旧代码误写 42 并自注 "Actually SIGSNDELAY is 41?"——从未命中过。
+pub const SIGSNDELAY: i32 = 70;
+/// 内核信号：SIGKSIG（`sys/sys/signal.h:274`，值 74）——内核为信号
+/// 管理器积累了待处理信号（SIGS 范围内的位图经 `sys_getksig` 拉取）。
+pub const SIGKSIG: i32 = 74;
 
 /// Kill error, maps to `errno`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +211,20 @@ fn can_signal(table: &ProcTable, caller: UserSlot, target: UserSlot) -> bool {
         // In C, `mp_effuid` for PRIV_PROC is still 0, so true
         // For Rust, Kernel privilege is considered superuser
         table.procs[caller.get()].is_kernel_process() || table.procs[target.get()].is_kernel_process()
+    }
+}
+
+/// 把 [`sig_proc`]（trace=FALSE 的重投形态）适配为 [`crate::signal_flow::
+/// SignalDeliver`] 注入口——check_pending/handle_sigsn_delay 的投递尾巴
+///（C 直接调模块级函数，Rust 以桥接保持注入可测性）。
+struct SigProcDeliver<'a, T: crate::ipc::IpcTransport + ?Sized> {
+    kern: &'a mut dyn crate::exit::KernelGateway,
+    transport: &'a mut T,
+}
+
+impl<T: crate::ipc::IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for SigProcDeliver<'_, T> {
+    fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
+        let _ = sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
 }
 
@@ -431,16 +452,83 @@ pub fn process_ksig(
         2 | 3 | 28 | 29 => 0, // INT, QUIT, WINCH, INFO → group broadcast
         _ => pid,
     };
-    check_sig(table, UserSlot::new(0), target_pid, signo, true, kern, transport)?;
-    // SIGSNDELAY handling (344-369) — simplified
-    if signo == 42 && table.procs[slot].state.block.ipc_blocked.is_some() {
-        // SIGSNDELAY == 42? Actually SIGSNDELAY is 41? Use placeholder 42
-        let _ = slot;
+    // check_sig 的返回值 C 不检查（signal.c:337 语句调用）——对
+    // SIGSNDELAY(70) 这类超出 _NSIG 的内核信号，check_sig 的越界门
+    // 返回 EINVAL 属预期；旧代码用 `?` 传播导致 SIGSNDELAY 尾部死路。
+    let _ = check_sig(table, UserSlot::new(0), target_pid, signo, true, kern, transport);
+    // SIGSNDELAY（C signal.c:344-369）：更早的 stop_proc 因进程在途
+    // 发送而 EBUSY，内核在发送完成后投递 SIGSNDELAY——恢复当初搁置
+    // 的处置（清 DELAY_CALL → VFS|EVENT 在途则 stop_proc，否则
+    // check_pending）。13 的 handle_sigsn_delay 是该段的全语义移植。
+    if signo == SIGSNDELAY {
+        // 与 13 的 handle_sigsn_delay 同语义（signal_flow.rs:76-110）；
+        // 在此顺序内联是因为 stop 桥与投递桥不同时借用 kern。
+        let delayed = matches!(
+            table.procs[slot].state.block.ipc_blocked,
+            Some(crate::mproc::IpcBlockReason::DelayedSignal)
+        );
+        if delayed {
+            // 清 DELAY_CALL（351）+ assert 未停止（353）。
+            table.procs[slot].state.block.ipc_blocked = None;
+            assert!(
+                !table.procs[slot].state.block.stopped,
+                "SIGSNDELAY: DELAY without PROC_STOPPED"
+            );
+            // VFS|EVENT 在途 → stop_proc(MustStop)，等 VFS 回复后再查（359-363）。
+            if table.procs[slot].state.block.is_vfs_blocked()
+                || table.procs[slot].state.block.is_event_blocked()
+            {
+                let mut stop_bridge = GatewayStopBridge(&mut *kern);
+                let _ = crate::signal_flow::stop_proc(
+                    table,
+                    UserSlot::new(slot),
+                    crate::signal_flow::MayDelay::MustStop,
+                    &mut stop_bridge,
+                );
+                return Ok(());
+            }
+            // 尽可能多处置常规信号（366）。
+            let mut deliver = SigProcDeliver { kern: &mut *kern, transport: &mut *transport };
+            let _ = crate::signal_flow::check_pending(table, UserSlot::new(slot), &mut deliver);
+        }
     }
     if table.procs[slot].state.lifecycle.is_exiting() {
         return Err(KillError::InvalidEndpoint);
     }
     Ok(())
+}
+
+/// C `process_sigmgr_signals`（`sef_signal.c:27-63`）：SIGKSIG 通知到达
+/// 后的拉取循环——内核为信号管理器积累了待处理内核信号时，逐个取回
+/// （`sys_getksig`，取回即消费 RTS_SIGNALED）、逐信号确认（`sys_endksig`）
+/// 并驱动 `process_ksig` 处置，直到内核报告无更多。取回失败 C panic
+///（"SEF: sys_getksig failed"）；单个信号的目标已消亡（EDEADEPT）则
+/// 继续循环（C 同）。
+pub fn process_sigmgr_signals(
+    table: &mut ProcTable,
+    vctl: &mut dyn crate::timer::VTimerCtl,
+    kern: &mut dyn crate::exit::KernelGateway,
+    transport: &mut dyn crate::ipc::IpcTransport,
+) {
+    loop {
+        let found = kern
+            .get_ksig()
+            .unwrap_or_else(|r| panic!("SEF: sys_getksig failed: {}", r));
+        let (target, set) = match found {
+            Some(pair) => pair,
+            None => break,
+        };
+        // SIGS_LAST = SIGSNDELAY(70) 超出 u64 位图（kernel syscall_signal.rs:
+        // 88-94 的 SigSet(u64) 已知限制）——位图内可表达的只有 1..=64。
+        for signo in 1..=64 {
+            if set >> (signo - 1) & 1 != 0 {
+                if let Err(r) = kern.end_ksig(target, signo) {
+                    panic!("sys_endksig failed: {}", r);
+                }
+                let _ = process_ksig(table, target, signo, vctl, kern, transport);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -453,6 +541,8 @@ mod tests {
         pub sys: minix_types::Clock,
     }
     impl crate::exit::KernelGateway for TestKernel {
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+    fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
     fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
@@ -591,6 +681,8 @@ mod tests {
             killed: Option<(Endpoint, i32)>,
         }
         impl crate::exit::KernelGateway for RecordKill {
+            fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+    fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
             fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
     fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
@@ -726,6 +818,92 @@ mod tests {
         assert_eq!(res.unwrap_err(), KillError::InvalidEndpoint);
     }
 
+    // ---- 内核信号拉取循环（todo.md V3-P1-2 回归锚点，批次 H）----
+
+    /// 脚本化 get_ksig 的内核网关 mock：`ksig_script` 逐次出队，空则
+    /// None（= 内核侧无更多）；记录 end_ksig 确认序列。
+    struct KsigRecorder {
+        ksig_script: Vec<Option<(minix_types::Endpoint, u64)>>,
+        endksig_calls: Vec<(minix_types::Endpoint, i32)>,
+    }
+    impl crate::exit::KernelGateway for KsigRecorder {
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+        fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+        fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> {
+            Ok(if self.ksig_script.is_empty() { None } else { self.ksig_script.remove(0) })
+        }
+        fn end_ksig(&mut self, ep: minix_types::Endpoint, sig: i32) -> Result<(), i32> {
+            self.endksig_calls.push((ep, sig));
+            Ok(())
+        }
+    }
+
+    /// C sef_signal.c:27-63：SIGKSIG 到达后的拉取循环——getksig 取回
+    /// （endpt, set），逐信号 endksig 确认 + process_ksig 处置，endpt
+    /// NONE 终止。SIGTERM(15) 经 process_ksig → check_sig(ksig=TRUE) →
+    /// 未捕获未忽略 → 终止链。
+    #[test]
+    fn test_process_sigmgr_signals_drains_and_delivers() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let target_ep = table.procs[5].identity.endpoint;
+        let mut kern = KsigRecorder {
+            ksig_script: vec![
+                Some((target_ep, 1u64 << (SIGTERM - 1))),
+                None,
+            ],
+            endksig_calls: Vec::new(),
+        };
+        let mut novt = NopVTimer;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        process_sigmgr_signals(&mut table, &mut novt, &mut kern, &mut t);
+        // 逐信号确认消费（C：sys_endksig 先于 process_ksig）。
+        assert_eq!(kern.endksig_calls, vec![(target_ep, SIGTERM)]);
+        // SIGTERM 默认处置终止：进程走完整 exit 链到僵尸。
+        assert!(
+            matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }),
+            "SIGTERM ksig must terminate the clean process, got {:?}",
+            table.procs[5].state.lifecycle
+        );
+    }
+
+    /// C signal.c:344-369：SIGSNDELAY 到达时清 DELAY_CALL 并恢复搁置的
+    /// 处置——常规信号重查（此处验证 DELAY_CALL 清除与 pending 投递）。
+    #[test]
+    fn test_process_ksig_sigsn_delay_resumes_check_pending() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        table.procs[5].state.block.ipc_blocked = Some(crate::mproc::IpcBlockReason::DelayedSignal);
+        // 搁置期间积累的未阻塞信号。
+        table.procs[5].resources.signals.pending = 1u64 << (SIGTERM - 1);
+        let mut kern = KsigRecorder { ksig_script: Vec::new(), endksig_calls: Vec::new() };
+        let mut novt = NopVTimer;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let target_ep = table.procs[5].identity.endpoint;
+        let res = process_ksig(&mut table, target_ep, SIGSNDELAY, &mut novt, &mut kern, &mut t);
+        assert!(res.is_ok());
+        // DELAY_CALL 必须清（C signal.c:351）；exit_proc 的 tell_vfs 随后
+        // 以 VFS_CALL 占位（exit.rs step 8），不能断言整个 ipc_blocked 为空。
+        assert!(
+            !matches!(
+                table.procs[5].state.block.ipc_blocked,
+                Some(crate::mproc::IpcBlockReason::DelayedSignal)
+            ),
+            "DELAY_CALL must clear, got {:?}",
+            table.procs[5].state.block.ipc_blocked
+        );
+        // SIGTERM 已处置（终止链）。
+        assert!(table.procs[5].state.lifecycle.is_exiting() || matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. }));
+    }
+
     #[test]
     fn test_sig_proc_ignored() {
         let mut table = ProcTable::new();
@@ -753,6 +931,8 @@ mod tests {
         }
     }
     impl crate::exit::KernelGateway for StopRecorder {
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+    fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
     fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }

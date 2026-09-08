@@ -223,6 +223,8 @@
 
 > **进度（2026-09-09，V3-P1-1 切片）**：`sys_trace` wrapper 已落地（`os/libs/minix-sys/src/syscall.rs`：`sys_trace` + `SYS_TRACE_CALL = 5`，载荷 `m_lsys_krn_sys_trace` 布局（request@0/endpt@4/address@8/data@16，≠ m_m1），读值经同偏移写回；wire 断言测试 ×2）——kernel 对端 `dispatch_trace` 早已真实（`os/kernel/src/misc.rs:209`，非待核实项）；消费侧 04-stage-pm V3-P1-1（PTRACE 臂 + trace_stop）同轮闭环。**同轮新登记**：`sys_delay_stop`（见上①）之外再确认 kernel 侧无 SYS_TRACE 之外的 PM trace 依赖；`sys_datacopy` 语义（T_GETRANGE 的参数块取入）当前由 `KernelGateway::copy_from_user` 委托 sys_vircopy 承接（Fix #27 同型先例），独立 `sys_datacopy` wrapper 维持原清单判断。
 
+> **进度（2026-09-09，V3-P1-2 切片）**：`sys_getksig`（SYS_GETKSIG=7）/`sys_endksig`（SYS_ENDKSIG=8）wrapper 已落地（wire 断言测试 ×2）——kernel 对端 `dispatch_getksig`/`dispatch_endksig` 早已真实（`os/kernel/src/syscall_signal.rs:393/475`），原"②内核 ksig 对端核实"结论：**getksig/endksig 已存在，缺的只是 wrapper**（本切片闭环）。消费侧 04-stage-pm V3-P1-2（SYSTEM notify 触发 + `process_sigmgr_signals` 拉取循环）同轮落地。**新增跨层登记（SigSet 128 位拓宽）**：Rust `SigSet(u64)` 装不下内核信号位 70/73/74（SIGSNDELAY/SIGKSIGSM/SIGKSIG，kernel `syscall_signal.rs:88-94` 已自声明"widening tracked separately"）——影响 GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG 消息字段 + PM 镜像，属于共享契约层 wire 变更，需单独立项（建议挂本条目或 E7 追加判定）；PM 侧 batch H 的触发判定已按"SYSTEM 通知即拉取"适配并注释声明。
+
 ---
 
 ## E7 minix-types PM 协议面系统化（= 04-stage-pm/todo.md P1-4 + P2-3 抽取）

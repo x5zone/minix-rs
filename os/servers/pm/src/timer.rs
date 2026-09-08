@@ -165,6 +165,17 @@ pub trait VTimerCtl {
     fn vtimer(&mut self, ep: Endpoint, which: ItimerWhich, set: Option<Clock>, get: Option<&mut Clock>) -> i32;
 }
 
+/// 生产占位（pre-E6）：`sys_vtimer` wrapper 未落地（edge E6 清单）——
+/// 任何调用以 `-EIO` 失败。C 的 `check_vtimer`（alarm.c:239）不检查
+/// 重挂返回值，失败无不可恢复后果，故此处诚实失败而非 panic。
+pub struct TrapVTimerCtl;
+
+impl VTimerCtl for TrapVTimerCtl {
+    fn vtimer(&mut self, _ep: Endpoint, _which: ItimerWhich, _set: Option<Clock>, _get: Option<&mut Clock>) -> i32 {
+        -minix_types::EIO
+    }
+}
+
 /// Real timer trait (`set_timer/cancel_timer`, `alarm.c:305/308` D6).
 pub trait TimerCtl {
     fn set(&mut self, ep: Endpoint, ticks: Clock);
@@ -467,6 +478,8 @@ mod tests {
     #[derive(Default)]
     struct TestKern;
     impl crate::exit::KernelGateway for TestKern {
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+    fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
     fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }

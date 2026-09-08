@@ -300,6 +300,8 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 `do_kill`/`check_sig` 逆序扫描 + `sig_proc` 9 链 + `sig_proc_exit` + `process_ksig` 双检 + `SIGVTALRM` 重启 + `SIGSNDELAY` 恢复。
 
+**内核信号入口（批次 H，V3-P1-2）**：`run_once` 的通知分支识别 SYSTEM 源通知（C 经 SEF 拦截 SIGKSIG，main.c:121 + sef_signal.c:104-108）后驱动 `process_sigmgr_signals` 拉取循环——`sys_getksig` 取回（endpt + 位图）→ `sys_endksig` 逐信号确认 → `process_ksig` 处置，直到内核报告无更多。触发判定按 Rust 内核实际行为：`SigSet(u64)` 装不下 SIGKSIG 位 73（kernel syscall_signal.rs:88-94 已声明，SigSet 拓宽为跨层 wire 变更挂 edge E6），SYSTEM 通知本身即"有积累"的唯一载体。同轮修复 `process_ksig` 两处：check_sig 返回值改按 C 不检查（SIGSNDELAY=70 超出 _NSIG，旧 `?` 传播使尾部死路）；SIGSNDELAY 值从误写的 42 改为真值 70，尾部接 `handle_sigsn_delay` 同语义（清 DELAY_CALL → VFS|EVENT 在途 stop_proc，否则 check_pending）。
+
 `VFS|EVENT` 挂起分支（C `signal.c:425-444`）已按 C 全语义落地：置 `pending`/`kernel_pending` 位后，未停止的进程经 `stop_proc(MustStop)` 停住（C 的 `stop_proc(rmp, FALSE)`，内核 `EBUSY` 即 panic）。内核停止能力经 `KernelGateway::sys_delay_stop`（exit.rs，生产实现 pre-E6 诚实回 `-EIO`）+ `GatewayStopBridge` 适配到 13 的 `KernelStop` seam——sig_proc 签名与全部调用点零变化。分支条件按 C 用 `VFS_CALL|EVENT_CALL` 两个 flag（`is_vfs_blocked()||is_event_blocked()`），不含 C 也不含的 `DELAY_CALL`。
 
 ### 4.2 `os/servers/pm/src/mproc/signal.rs`

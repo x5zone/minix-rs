@@ -135,6 +135,7 @@ int main(void)
 |-----------|------|---------|
 | `sef_receive_status(ANY, &m_in, &ipc_status)` | main.c:61 | 04 |
 | `is_ipc_notify`：CLOCK → `expire_timers` | main.c:65-71 | 14 |
+| `is_ipc_notify`：SYSTEM 源（SIGKSIG）→ 内核信号拉取循环 | sef_signal.c:104-108（`sef_setcb_signal_manager(process_ksig)`，main.c:121） | 11 |
 | `pm_isokendpt(who_e, &who_p)` 验证 caller | main.c:75-77 | 03 |
 | EXITING 进程的延迟调用直接丢弃 | main.c:80-82 | 04/09 |
 | `IS_VFS_PM_RS` → `handle_vfs_reply()` | main.c:84-87 | 05 |

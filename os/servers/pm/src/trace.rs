@@ -463,6 +463,7 @@ mod tests {
             Self { traces: Vec::new(), trace_reply: Ok(0), vircopy_calls: Vec::new(), range_block: None }
         }
     }
+
     impl crate::exit::KernelGateway for MockKernel {
         fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
@@ -485,6 +486,8 @@ mod tests {
             Ok(())
         }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn copy_from_user(&mut self, _src_ep: Endpoint, _src: u64, bytes: &mut [u8]) -> Result<(), i32> {
             match &self.range_block {
                 Some(pr) => {

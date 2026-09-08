@@ -88,6 +88,17 @@ pub trait KernelGateway {
     /// `src_ep` 进程虚地址处的字节读入 PM 本地缓冲。T_GETRANGE 的
     /// `ptrace_range` 参数块即经此通道取出（trace.c:169-171）。
     fn copy_from_user(&mut self, src_ep: Endpoint, src: u64, bytes: &mut [u8]) -> Result<(), i32>;
+
+    /// C: `sys_getksig(&target, &set)`（libsys `sys_getksig.c:8-30`）——
+    /// 取回一个有待处理内核信号的进程（endpoint + 位图）；`None` =
+    /// 内核侧无更多待处理信号（C：endpt == NONE）。取回即消费内核的
+    /// RTS_SIGNALED。SIGKSIG 拉取循环（sef_signal.c:27-63）的取半边。
+    fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32>;
+
+    /// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endksig.c:8-20`）
+    /// ——确认消费一个内核信号（清 SIG_PENDING）。调用方必须是目标
+    /// 进程的信号管理器（否则 EPERM）。拉取循环的确认半边。
+    fn end_ksig(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -210,6 +221,20 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
         } else {
             Ok(())
         }
+    }
+
+    fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32> {
+        // SYS_GETKSIG 真实通道（kernel dispatch_getksig，syscall_signal.rs:393）。
+        let (endpt, map) = minix_sys::syscall::sys_getksig(&self.transport)?;
+        if endpt == Endpoint::NONE.0 {
+            Ok(None)
+        } else {
+            Ok(Some((Endpoint(endpt), map)))
+        }
+    }
+
+    fn end_ksig(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32> {
+        minix_sys::syscall::sys_endksig(&self.transport, ep.0, sig)
     }
 }
 
@@ -865,6 +890,8 @@ mod tests {
         copied_bytes: Option<alloc::vec::Vec<u8>>,
     }
     impl KernelGateway for KillRecorder {
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+    fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
     fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }

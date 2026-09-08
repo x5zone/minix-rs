@@ -26,9 +26,18 @@ use minix_types::{Endpoint, Message};
 struct MockKernelGateway {
     pub user: minix_types::Clock,
     pub sys: minix_types::Clock,
+    pub ksig_script: Vec<Option<(i32, u64)>>,
+    pub endksig_calls: Vec<(i32, i32)>,
 }
 
 impl minix_pm::exit::KernelGateway for MockKernelGateway {
+    fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> {
+        Ok(match self.ksig_script.remove(0) {
+            Some((ep, mask)) => Some((Endpoint(ep), mask)),
+            None => None,
+        })
+    }
+    fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
     fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
     fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
@@ -48,7 +57,7 @@ fn server() -> minix_pm::init::PmServer<TestIpcTransport> {
     minix_pm::init::PmServer::with_kernel_gateway(
         BootParams::placeholder(),
         TestIpcTransport::new(),
-        Box::new(MockKernelGateway { user: 0, sys: 0 }),
+        Box::new(MockKernelGateway { user: 0, sys: 0, ksig_script: Vec::new(), endksig_calls: Vec::new() }),
     )
 }
 
@@ -371,4 +380,50 @@ fn ptrace_attach_runs_full_chain_and_replies_with_payload() {
         .expect("debugger must be replied");
     assert_eq!(reply.m_type, 0);
     assert_eq!(unsafe { reply.m_u.m_pm_lc_ptrace.data }, 0);
+}
+
+#[test]
+fn kernel_sigksig_notify_drains_pending_kernel_signals() {
+    // V3-P1-2：内核以 SYSTEM 源 notify 送达 sigset 位图（SIGKSIG 位，
+    // sef_signal.c:104-108）→ run_once 通知分支驱动拉取循环 →
+    // getksig/endksig 逐信号确认 → process_ksig 处置（SIGTERM 终止）。
+    // 此前 notify 分支只认 CLOCK，SIGKSIG 被静默丢弃。
+    // 脚本化：第一次 getksig 返回 (target, SIGTERM 位)，其后 None。
+    // 目标进程的 endpoint 在 seed 之后才知道——先按槽位算出（seed 的
+    // endpoint = from_generation_slot(1, slot)，确定性）。
+    let target_ep = Endpoint::from_generation_slot(1, 5);
+    let mut srv = minix_pm::init::PmServer::with_kernel_gateway(
+        BootParams::placeholder(),
+        TestIpcTransport::new(),
+        Box::new(MockKernelGateway {
+            user: 0,
+            sys: 0,
+            ksig_script: vec![
+                Some((target_ep.0, 1u64 << (15 - 1))),
+                None,
+            ],
+            endksig_calls: Vec::new(),
+        }),
+    );
+    let _ = seed_running(&mut srv, 5, 42);
+
+    // 内核通知：SYSTEM 源即拉取触发（SigSet(u64) 装不下 SIGKSIG 位 73，
+    // kernel syscall_signal.rs:88-94 已声明该限制——SYSTEM 通知本身即
+    // "有积累"的唯一载体，PM 按 SYSTEM 源触发）。
+    let mut notify = Message::default();
+    notify.m_source = Endpoint::SYSTEM;
+    srv.transport_mut()
+        .queue_receive(notify, IpcStatus { flags: 4 });
+    assert_eq!(srv.run_once(), RunStep::Handled);
+
+    // 拉取生效：目标进程被 SIGTERM 终止（默认处置）。
+    let table = srv.table();
+    assert!(
+        matches!(
+            table.procs[5].state.lifecycle,
+            minix_pm::mproc::Lifecycle::Zombie { .. } | minix_pm::mproc::Lifecycle::TraceZombie { .. }
+        ),
+        "drained SIGTERM must terminate, got {:?}",
+        table.procs[5].state.lifecycle
+    );
 }

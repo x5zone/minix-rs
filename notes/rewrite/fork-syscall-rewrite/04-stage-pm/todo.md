@@ -7,7 +7,7 @@
 > 范围：`os/servers/pm/src/` 全部 Rust 代码（37 文件，约 16,349 行），以及 `os/libs/minix-types/`、`os/libs/minix-sys/` 中与 PM 相关的类型边界。
 > 定位：本文档是查漏补缺清单与架构改进建议清单，**不同于** `draft/`（旧 fork 主线素材，已停止维护）与 `plan.md` §7（文档 review 记录）。
 > 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
-> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1-3（Fix #43）/V3-P1-1（Fix #44）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **369 lib + 10 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
+> 状态（2026-09-09，V3 实施中）：已闭环 V3-P1-3（Fix #43）/V3-P1-1（Fix #44）/V3-P1-2（Fix #45，批次 H）；开放 = P1-3/P1-4/P2-3/P2-6（第 1 轮遗留）+ V2-P2-7/V2-P2-8 + §11.1.1 批次 A/C/E/F/G（B 的 trace 半边完成）+ D-01/D-02/D-05/D-12/D-16/D-17（跨阶段）+ §12 其余 V3 条目。测试基线 **371 lib + 11 integration passed**；clippy lib 3 条 unused import 回退待 V3-P2-9。
 
 ---
 
@@ -272,7 +272,7 @@ coverage 109/109 文档覆盖、102 Rust 名称匹配（93.6%）；测试名对�
 | E exec（3 个） | 14,43,44 | do_exec/do_newexec/do_execrestart | `exec.rs` | caller 门已补（Fix #38）；wire 类型；`sys_exec` wrapper 与 kernel 对端（D-08 注）；D-16 契约（E7） |
 | F 调度（2 个） | 26,27 | do_getsetpriority | `sched.rs:247` | SCHED 客户端（D-12/A-8）；`SEND_PRIORITY`/`SEND_TIME_SLICE`（E7）；**V3 增补：`sched_start_user` 端点语义先修（V3-P2-3）** |
 | G 杂项（9 个） | 18,19,25,37,38,39,45,46,47 | do_[gs]etmcontext/do_sysuname/do_reboot/do_svrctl/do_sprofile/do_getepinfo/do_getprocnr/do_getsysinfo | `misc.rs` | wire 类型；`sys_[gs]etmcontext`/`sys_sprof`（E6）；**V3 增补：getsysinfo 假数据（V3-P1-4）、svrctl 分支细节（V3-P2-5）、sysuname req 分支必须在接线前修** |
-| **H 内核信号入口（V3 新增）** | —（通知面，非调用号） | process_ksig 经 SIGKSIG（main.c:121 + sef_signal.c:104-108） | `signal.rs:374`（现无生产调用者） | 内核 ksig 对端核实（E6 增补）；notify 分支识别内核源；getksig/endksig 语义 vs kernel_pending 表内建模的设计决策 |
+| **H 内核信号入口（V3 新增，✅ 已完成）** | —（通知面，非调用号） | process_ksig 经 SIGKSIG（main.c:121 + sef_signal.c:104-108） | `signal.rs::process_sigmgr_signals` | V3-P1-2 闭环（Fix #45）：SYSTEM notify 触发 + getksig/endksig wrapper（E6 切片）+ SIGSNDELAY/SIGKSIG 常量修复；SigSet(u64) 128 位拓宽挂 edge E6 |
 
 #### 11.1.2 C 函数面第二轮对账（utility/getset/time/mcontext/profile/alarm 逐函数）
 
@@ -433,14 +433,15 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
   5. 契约层：trace.rs 全部 "for test" 注释清除或升级为 `[DEFERRED: D-XX]`；18-trace.md 同步（TO_NOEXEC 位值 + D1 抽象的消费现状）。
 - **验证**：全量常量断言测试 + do_trace 分支矩阵测试（对照 C 每个返回路径）+ 接线后集成测试。
 
-#### V3-P1-2 内核信号（SIGKSIG）主循环入口缺失：process_ksig 无生产调用者（新接线批次 H）
+#### V3-P1-2 内核信号（SIGKSIG）主循环入口缺失：process_ksig 无生产调用者（✅ 已修复 2026-09-09，Fix #45）
 
-- **优先级**：P1（结构性：内核→PM 信号回环的唯一入口不存在，且 V2 两轮批次表均未登记）
-- **类型**：接线缺口 + 登记缺失
-- **文件**：`os/servers/pm/src/init.rs:367-381`（notify 分支只认 CLOCK，其余通知静默丢弃）；`os/servers/pm/src/signal.rs:374`（process_ksig 仅测试调用）；C 侧 `main.c:121` + `minix3/minix/lib/libsys/sef_signal.c:104-108`
-- **问题**：C 把 `process_ksig` 注册为 SEF 信号管理回调，SEF 在 receive 路径拦截 SIGKSIG/SIGKSIGSM 通知后调用它——内核信号是主循环输入面的一部分。Rust 的 `kernel_pending` 数据面已贯通（signal.rs:243-244 写、signal_flow.rs:239/247 读），但没有入口驱动：post-E1 通电后内核 ksig 通知会被 notify 分支吞掉，进程信号永久滞留。
-- **建议**：(a) 设计决策一次：C 的 process_ksig 走 `sys_getksig`/`sys_endksig` 内核信号队列循环；Rust 已用表内 `kernel_pending` 位图建模——入口应读表驱动 process_ksig 循环，还是在入口改走内核队列（需要 kernel 对端）？两案对比后落 `[ARCH]` 标注（若选表内驱动则不加内核调用，若选队列则 E6 增 wrapper）。(b) notify 分支增加内核源判定 → 驱动 process_ksig。(c) §11.1.1 批次表增 H 行（已增）；kernel 对端现状核实登记 E6。
-- **验证**：mock 内核通知 → process_ksig 被驱动 → SIGKILL 类 ksig 终止链走到 exit_proc；非 CLOCK/非内核通知仍被丢弃。
+- **原状态**：C 把 `process_ksig` 注册为 SEF 信号管理回调（main.c:121；sef_signal.c:104-108 拦截 SIGKSIG），是内核→PM 信号回环的唯一入口；Rust notify 分支只认 CLOCK（init.rs:367-381），`process_ksig` 全仓只有测试调用者，且批次表均未登记。连带发现 `process_ksig` 两处死路：check_sig 的 EINVAL 被 `?` 传播（C 忽略返回值，SIGSNDELAY=70 超出 _NSIG 必触发）；SIGSNDELAY 值误写 42（真值 70，signal.h:264），尾部"恢复搁置处置"从未可达。
+- **修复**（Fix #45）——**方案 a（选定）：C 同构的"通知-拉取"两段式**。方案 b（PM 表内 kernel_pending 扫描）被否：内核起源信号进不了 PM 表，权威状态在内核 priv 表；方案 c（等通电）被否：kernel 对端 getksig/endksig 已真实（syscall_signal.rs:393/475），无依赖可主张。落地：
+  1. minix-sys（E6 切片）：`sys_getksig`（SYS_GETKSIG=7，回复 `m_sigcalls.{endpt,map}`）/`sys_endksig`（SYS_ENDKSIG=8）+ wire 测试 ×2。
+  2. `KernelGateway` +`get_ksig`/`end_ksig`（Trap 委托真实 wrapper；`Endpoint::NONE` → None）。
+  3. signal.rs：`SIGSNDELAY=70`/`SIGKSIG=74` 常量；`process_ksig` 的 check_sig 改 C 同型忽略返回值 + SIGSNDELAY 尾部接真实语义（清 DELAY_CALL → VFS|EVENT 在途 stop_proc(MustStop)，否则 check_pending）；新增 `process_sigmgr_signals` 拉取循环（getksig → 逐信号 endksig+process_ksig → NONE 终止，getksig 失败 panic 同 C "SEF: sys_getksig failed"）。
+  4. init.rs：`PmServer.vtimer` 字段（`TrapVTimerCtl` pre-E6 `-EIO` 占位）+ notify 分支 SYSTEM 源触发拉取。**[ARCH] 触发判定适配**：`SigSet(u64)` 装不下位 73（kernel syscall_signal.rs:88-94 自声明，拓宽为跨层 wire 变更挂 edge E6），SYSTEM 通知本身即"有积累"的唯一载体，按 SYSTEM 源触发。
+- **验证**：单测 +2（拉取循环交付 SIGTERM 终止、SIGSNDELAY 恢复 DELAY_CALL 搁置的处置）；集成 `kernel_sigksig_notify_drains_pending_kernel_signals`（SYSTEM notify → drain → 终止）；minix-sys 125 passed（+2 wire）。基线 **371 lib + 11 integration passed**。
 
 #### V3-P1-3 sig_proc 的 VFS_CALL/EVENT_CALL 分支缺 stop_proc 调用（✅ 已修复 2026-09-09）
 

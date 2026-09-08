@@ -300,6 +300,52 @@ pub fn sys_times(
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_times })
 }
 
+/// C: SYS_GETKSIG 是内核调用 7（`kernel/src/syscall.rs` `Syscall::Getksig`）。
+pub const SYS_GETKSIG_CALL: i32 = 7;
+/// C: SYS_ENDKSIG 是内核调用 8（`kernel/src/syscall.rs` `Syscall::Endksig`）。
+pub const SYS_ENDKSIG_CALL: i32 = 8;
+
+/// C: `sys_getksig(proc_nr_e, &sigset)`（libsys `sys_getksig.c:8-30`）——
+/// 取回一个有待处理内核信号的进程及其信号位图；无待处理时 `endpt`
+/// 为 `Endpoint::NONE`。回复载荷 `m_sigcalls.{endpt, map}`。取回即消费：
+/// 内核同时清除该进程的 RTS_SIGNALED 与 p_pending（后续 endksig 逐信号
+/// 清 SIG_PENDING）。PM 的 SIGKSIG 拉取循环（sef_signal.c:27-63）驱动。
+pub fn sys_getksig(transport: &impl KernelCallTransport) -> Result<(i32, u64), i32> {
+    let mut msg = Message {
+        m_type: SYS_GETKSIG_CALL,
+        ..Default::default()
+    };
+    let r = perform_kernel_call(transport, SYS_GETKSIG_CALL, &mut msg, |_| {});
+    if r < 0 {
+        return Err(r);
+    }
+    // SAFETY: 内核以 m_sigcalls 覆写回复载荷（syscall_signal.rs:440-447）。
+    let sc = unsafe { msg.m_u.m_sigcalls };
+    Ok((sc.endpt, sc.map))
+}
+
+/// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endksig.c:8-20`）——
+/// 确认消费一个内核信号（载荷 `m_sigcalls.{endpt, sig}`），内核清
+/// SIG_PENDING 位。调用方必须是目标进程的信号管理器（否则 EPERM）。
+pub fn sys_endksig(transport: &impl KernelCallTransport, endpt: i32, sig: i32) -> Result<(), i32> {
+    let mut msg = Message {
+        m_type: SYS_ENDKSIG_CALL,
+        ..Default::default()
+    };
+    {
+        // SAFETY: m_sigcalls 是 GETKSIG/ENDKSIG 的文档化载荷布局
+        //（kernel/src/syscall_signal.rs msg_sigcalls 读 endpt/sig）。
+        let sc = unsafe { &mut msg.m_u.m_sigcalls };
+        sc.endpt = endpt;
+        sc.sig = sig;
+    }
+    let r = perform_kernel_call(transport, SYS_ENDKSIG_CALL, &mut msg, |_| {});
+    if r < 0 {
+        return Err(r);
+    }
+    Ok(())
+}
+
 /// C: SYS_TRACE 是内核调用 5（`kernel/src/syscall.rs` `Syscall::Trace`）。
 pub const SYS_TRACE_CALL: i32 = 5;
 
@@ -511,7 +557,7 @@ mod tests {
     fn test_sys_times_encodes_endpt_and_decodes_reply() {
         // C: libsys sys_times.c:8-24 — 请求 m_lsys_krn_sys_times.endpt；
         // 回复 m_krn_lsys_sys_times（user/system 等四值）。
-        use minix_types::MessKrnLsysSysTimes;
+        use minix_types::{MessKrnLsysSysTimes, MessSigcalls};
         let mut canned = CannedKernelCallTransport::new();
         let mut reply = Message::default();
         reply.m_type = 0;
@@ -576,6 +622,50 @@ mod tests {
         assert_eq!(t.request, 1);
         assert_eq!(t.endpt, 7);
         assert_eq!(t.address, 0x2000);
+    }
+
+    #[test]
+    fn test_sys_getksig_decodes_endpt_and_map() {
+        // C: do_getksig.c:31-32 — 回复 m_sigcalls.{endpt, map}；endpt NONE
+        // 表示内核侧无更多待处理（PM 拉取循环的终止条件）。
+        use minix_types::MessSigcalls;
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        unsafe {
+            reply.m_u.m_sigcalls = MessSigcalls {
+                map: 1u64 << (15 - 1),
+                endpt: 42,
+                sig: 0,
+                sigctx: 0,
+                _padding: [0u8; 32],
+            };
+        }
+        canned.reply_message(reply);
+
+        let (endpt, map) = sys_getksig(&canned).expect("OK reply decodes");
+
+        assert_eq!(endpt, 42);
+        assert_eq!(map, 1u64 << 14);
+        assert_eq!(SYS_GETKSIG_CALL, 7, "kernel Syscall::Getksig = 7");
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_GETKSIG_CALL);
+    }
+
+    #[test]
+    fn test_sys_endksig_encodes_endpt_and_sig() {
+        // C: do_endksig.c — 载荷 m_sigcalls.{endpt, sig}；调用方必须是
+        // 目标进程的信号管理器（否则内核 EPERM，负 errno 透传）。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-1); // EPERM
+
+        assert_eq!(sys_endksig(&canned, 42, 15), Err(-1));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, SYS_ENDKSIG_CALL);
+        assert_eq!(SYS_ENDKSIG_CALL, 8, "kernel Syscall::Endksig = 8");
+        let sc = unsafe { &sent[0].m_u.m_sigcalls };
+        assert_eq!(sc.endpt, 42);
+        assert_eq!(sc.sig, 15);
     }
 
     #[test]
