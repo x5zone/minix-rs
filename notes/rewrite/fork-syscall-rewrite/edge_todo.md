@@ -5,6 +5,7 @@
 > 2026-09-06 增补：03-stage-rs 的 §18.10 E-11 生产接线面登记为 E9（KernelApi 五域面真实传输，E-2 拆分后的接线形态）。
 > 2026-09-08 增补：02-stage-vm V12 轮（02-stage-vm/todo.md §17）登记 E-VMMCPWIRE（vmmcp wire 字宽必现截断）与 E-VMMOCK（G-V12-5 余件：minix-arch default features 收口），并在 E5 增补"缺页故障完整回路"验收面。
 > 2026-09-09 增补：02-stage-vm V13 轮（02-stage-vm/todo.md §18）登记 E-VMTLB（kernel 侧目标进程 TLB 刷新机制缺失，真 SMP 正确性前提），并在 E-RSWIRE 增补 VM 侧三项落地要求（call_mask u64、RS_SET_PRIV 真掩码、五消息结构专属 wire struct）。
+> 2026-09-09 增补：05-stage-vfs 第二轮架构审查（05-stage-vfs/todo.md §9）登记 E-REQWIRE（REQ_* VFS↔FS 共享契约双侧独立定义，含 FS_BASE 基址已分叉的事实），并在 E-VFSWIRE 增补 VFS 侧接收半要求与绝对值断言纪律。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -115,6 +116,8 @@
 3. 测试：Canned transport 上断言 VFS_VMCALL 字段逐项正确。
 
 **依赖**：E1（trap 层）落地后发送才真实可达；vfs 侧 do_vm_call 消息面定稿（09/13-stage 工作流）后定 wire。
+
+> **2026-09-09 增补（05-stage-vfs R2 轮）**：VFS 侧接收半现状——`VmVfsReq::from_raw` 决策原语已有（os/servers/vfs/src/misc.rs:262-281，101=FdLookup/102=FdClose/103=FdIo）与 `VM_VFS_REPLY=0xC1E`（misc.rs:305 一带），**消息级解码仍未建**（do_vm_call 的 union 字段映射，C vfs.c:60-104）。wire 定稿追加一条纪律：m_type 与字段的**绝对值**必须以 C 源断言（教训：vfs 侧 request.rs:15 把 REQ 基址写成 0x600 而 C com.h:589 为 0xA00，两侧偏移对齐掩盖基址分叉——详见 05-stage-vfs/todo.md §9.2 R2-P0-1）。
 
 ---
 
@@ -379,3 +382,22 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **解锁后工作**：(1) kernel 进程结构补 MF_FLUSH_TLB 等价标志 + 调度点刷新（对照 proc.c:345-347）；(2) 与 switch_address_space 的同根跳过优化对账（刷新标志必须在比较之前生效）；(3) 同步评估 C VM 侧四处 `sys_vmctl(SELF, VMCTL_FLUSHTLB)`（pagetable.c:119/255/319/430，宿主 pt_assert[SANITY]/vm_freepages×2/vm_pagelock[MEMPROTECT]）——它们依附 C 的"进程内存别名映射进 VM 地址空间"模型，minix-rs 的 direct map 下翻译恒定、VM 自刷不需要（该 ARCH 偏差在 02-stage-vm/todo.md §18.2 V13-P2-1(b) 登记）；(4) E5 若含 SMP 配置，冒烟须覆盖"fork 后父子并发写 CoW 页"。
 
 **依赖**：无 E1/E2 硬依赖（机制可先行 + 单测），但验收（E5 SMP 冒烟）前置 E1/E2；与 01-stage-kernel 的 SMP 工作窗（smp_gpt 系列设计迭代）协同排期。
+
+---
+
+## E-REQWIRE REQ_* VFS↔FS 消息契约双侧独立定义（05-stage-vfs R2 轮登记，2026-09-09）
+
+**问题**：VFS 侧与 FS 驱动侧对同一 REQ 协议各自独立定义，之间无任何编译期或测试期联动：
+
+- VFS 侧：`os/servers/vfs/src/request.rs:15` `FS_BASE=0x600`（**错值**，C 为 0xA00，止血见 05-stage-vfs/todo.md §9.2 R2-P0-1）+ `enum FsReq` 32 变体（request.rs:122）+ `m_type()` 编码（:318）。
+- FS 侧：`os/libs/minix-fs/src/protocol.rs:25` `FS_BASE=0xA00`（正确）+ `enum RequestNumber`（:58）+ `TransactionId`（:226）；mfs 经 `use minix_fs::protocol::RequestNumber` 消费（os/fs/mfs/src/table.rs:12），pfs 同样引用 minix-fs。
+- `os/servers/vfs/Cargo.toml` 不依赖 minix-fs（grep 零命中）；两侧数值当前纯靠人工对齐——偏移对齐（26=Lookup 两侧一致）掩盖了基址分叉，R2-P0-1 就是该模式的第一个实际事故。transid 侧机制相容（VFS fs_comm.rs:30-56 的 0xB00/0xB01 与 minix-fs TransactionId 的 `(type<<16)|id` 打包），但 id 语义未联动约束。
+
+**为何 edge**：edge 判定①共享契约/基础设施层——minix-fs 是 FS 驱动族（mfs/pfs 已消费）的共享 crate，REQ wire 是 VFS 与全部 FS 驱动的双向契约；收敛动作落在单个 stage 之外。
+
+**解锁后工作**：
+1. 方案 A（推荐）：REQ face 迁 minix-types（先例：PM↔VFS 面 `minix-types/src/ipc/vfs.rs`）——`FS_BASE`/`REQ_*` 常量、请求/响应类型化编码收一处；vfs 与 minix-fs（可 re-export）共消本地定义；沿用 rs_start_t 先例的 offset_of 布局见证 + 编译期断言。
+2. 方案 B（最低限度）：保留双侧定义 + 全量对账测试——断言 `FsReq::m_type()` 与 `RequestNumber` 逐项相等、`FS_BASE` 相等、transid 打包一致。
+3. 附带：request.rs:120 的 "33 variants" 计数注释随迁移/对账修正（05-stage-vfs todo R2-P3-1）。
+
+**依赖**：无硬前置（方案 B 的对账测试立即可写）；执行顺序与 05-stage-vfs R2-P0-1 协调——先在 VFS 侧止血基址，再做本条结构收敛。验收挂钩 E5：VFS↔mfs 第一条真实 REQ 往返（REQ_READSUPER）即本条验收面。

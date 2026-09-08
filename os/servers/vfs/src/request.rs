@@ -3,16 +3,21 @@
 //! `request.c` hides three repetitions: `grant` construction / `fs_sendrec`
 //! / `revoke` / `ERESTART → vm_handlemem → retry(0)` and `RES_64BIT` early
 //! `EINVAL` and `m_source → res->fs_e` back-fill.  This module makes each
-//! repetition a type: `FsReq` (33 variants, `FS_BASE 0x600` prefix), `FsResp`
+//! repetition a type: `FsReq` (33 variants, `FS_BASE 0xA00` prefix), `FsResp`
 //! (`NodeDetails` 7 fields vs `LookupRes` 9 fields), `GrantScope` (`Try` vs
-//! `NoTry`), `FsFlags` (`RES_64BIT`守门).  `REQ_GETNODE 0x601` is dead.
+//! `NoTry`), `FsFlags` (`RES_64BIT`守门).  `REQ_GETNODE 0xA01` is dead.
 //!
 //! `ARCH A-2` (enum vs function pointer) and `ARCH A-8` (64-bit) in one place.
 
 use minix_types::{Endpoint, Message};
 
-/// `FS_BASE 0x600` — `vfsif.h:40`.
-pub const FS_BASE: u32 = 0x600;
+/// `FS_BASE 0xA00` — `com.h:589` ("Requests sent by VFS to filesystem").
+///
+/// The absolute value is the wire contract with FS drivers: `vfsif.h:41-73`
+/// only references it (`REQ_GETNODE (FS_BASE + 1)` ...), and the FS side
+/// (`minix-fs` `protocol.rs`) dispatches on `0xA00`.  Pinned against
+/// regression by `test_fs_wire_values_match_c_absolute`.
+pub const FS_BASE: u32 = 0xA00;
 /// `NREQS 34` — `vfsif.h:75` (includes dead `GETNODE`).
 pub const NREQS: usize = 34;
 
@@ -551,11 +556,29 @@ mod tests {
     }
 
     #[test]
+    fn test_fs_wire_values_match_c_absolute() {
+        // C: com.h:589 `#define FS_BASE 0xA00`.  The absolute values are the
+        // wire contract — offsets alone cannot catch a wrong base (the FS
+        // side dispatches on 0xA00-derived types).
+        assert_eq!(FS_BASE, 0xA00);
+        assert_eq!(REQ_GETNODE, 0xA01); // dead, number still pinned
+        assert_eq!(REQ_READ, 0xA13);
+        assert_eq!(REQ_LOOKUP, 0xA1A);
+        assert_eq!(REQ_BPEEK, 0xA21);
+        // Regression guard: the pre-fix 0x600 base must never come back.
+        assert!(!is_fs_rq(0x600));
+        assert!(!is_fs_rq(0x61A));
+        // Distinct from the device RS namespaces (com.h:919/963/1038).
+        assert_ne!(FS_BASE & !0x7f, 0x480); // CDEV_RS_BASE
+        assert_ne!(FS_BASE & !0x7f, 0x580); // BDEV_RS_BASE
+    }
+
+    #[test]
     fn test_nreqs_getnode_dead() {
         assert_eq!(REQ_GETNODE, FS_BASE + 1);
         assert!(!FsReq::is_known(REQ_GETNODE));
         assert!(FsReq::is_known(REQ_BREAD));
-        assert!(!FsReq::is_known(0x601)); // dead
+        assert!(!FsReq::is_known(0xA01)); // dead
         assert_eq!(NREQS, 34);
     }
 

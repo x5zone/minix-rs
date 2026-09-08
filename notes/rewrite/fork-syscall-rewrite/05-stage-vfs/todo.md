@@ -1,0 +1,264 @@
+# 05-stage-vfs Rust 实现架构级 Review TODO
+
+> 来源：2026-09-06 架构级代码审查（先查漏补缺，后整体/分层架构审视；非逐函数 review）。
+> 范围：`os/servers/vfs/` 全部 Rust 代码（33 个文件约 23000 行，与 05-stage-vfs 文档对应）；`os/fs/` 八个文件系统驱动 crate 与 `minix-types`/`minix-sys` 仅做接口对账。
+> 方法：覆盖率穷举（`tools/coverage-extract/coverage-extract.py` + `vfs-semantic-map.json`）→ P0 横切正确性扫描 → 四层架构审视（整体 → 模块边界 → 类型设计 → 函数/测试面），对照 Redox scheme 模型与 Rust/OS 社区实践。每条事实断言附 `file:line` 锚点。
+> 定位：本文档是查漏清单与架构改进建议，**不同于** `plan.md`（文档重组计划）与 `draft/`（旧 fork 主线素材存档）。修复遵循 fix-guard（每轮读目标行 ±5 行、一次修一条、修后验证）。
+> **历史归档**：第一轮全卷（§0～§8 + 附录 A/B，2026-09-06）→ [`archive/todo-R1-archive-2026-09-09.md`](archive/todo-R1-archive-2026-09-09.md)。首轮 26 条全部 open，逐条复核结论见本文 §1。
+> 状态（2026-09-09，R2 轮 = 第二轮，见 §9）：**首轮后复扫**。四条工作线——① 存量 26 条逐条 staleness 复核（24 条锚点原样维持，C-5/P2-1/P2-4 三处漂移修正）；② Gate A 覆盖穷举重跑（415/93.3%/63.1% 与首轮完全一致）+ 补扫首轮未下钻的面（device.c/gcov.c、sdev 逐函数对位、64 调用号三层矩阵、VFS↔mfs 协议双侧对账）；③ 执行绑定层与抽象质量深查——发现 **REQ 消息基址 0x600 ≠ C/minix-fs 0xA00 的 wire 级 P0** 与 path.rs 生产单元的 Gate D 虚构抽象族；④ Redox 对照增补（cancellation 已成 redox-scheme crate 一级 API）。本轮新发现：**1 项 P0 + 4 项 P1 + 3 项 P2 + 2 项 P3**（R2-P1-4 系修复期 fix-guard grep 新登记），跨 stage 一条新登记 edge（E-REQWIRE）+ 一条增补（E-VFSWIRE）。修复进度见 §9.9。本轮扫描未修改生产代码，修复自 §9.9 起。
+
+---
+
+## 0. 审查结论速览
+
+### 0.1 历史轮次一览
+
+| 轮次 | 代表条目 | 状态 |
+|------|---------|------|
+| 第一轮 R1（2026-09-06） | C-1～C-10 缺口表 + P0×3 + P1×5 + P2×6 + P3×2 | 全部 open（正文见 R1 存档；复核见 §1） |
+| **第二轮 R2（2026-09-09）** | **R2-P0-1 + R2-P1-1..3 + R2-P2-1..3 + R2-P3-1..2** | **open（§9）** |
+
+### 0.2 R2 轮速览（本轮新增）
+
+| 级别 | 条目 | 一句话 |
+|------|------|--------|
+| **P0** | **R2-P0-1** | REQ 消息基址 `FS_BASE=0x600` 与 C（com.h:589）/minix-fs（0xA00）不符——VFS↔FS wire 绝对值错误，注释的 C 锚点系伪造（§9.2；**✅ 已修复** 2026-09-09，§9.9 Fix #1） |
+| P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：`DirectFetcher::fetch` 伪造返回 `"a".repeat`、`eat_path` 签名吃 `TestFproc`、`StrictResolver` 恒返回 vnode 99（§9.2） |
+| P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2） |
+| P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2） |
+| P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2） |
+| P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案，否决单一 VfsError 大收敛）（§9.2） |
+| P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
+| P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2） |
+| P3 | R2-P3-1 | request.rs 计数注释漂移：注释称 33 变体实际 32（§9.2） |
+| P3 | R2-P3-2 | device_map.rs 四源合一（dmap+smap+device.c ioctl 决策+mapdriver）的职责注记（§9.2） |
+| edge | E-REQWIRE（新） | REQ_* VFS↔FS 共享契约双侧独立定义（vfs request.rs vs minix-fs protocol.rs）——收敛 minix-types 或建全量对账测试 |
+| edge | E-VFSWIRE 增补 | VFS 侧 `VmVfsReq` 消息级解码未建；wire 定稿须以 C 绝对值断言（FS_BASE 0x600 教训） |
+
+验证命令（2026-09-09 实测基线，与首轮 334 passed 一致，无回归；本轮零代码修改）：
+- `cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib`：**334 passed / 0 failed**
+- `cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib`：40 条 warning 行，其中约 30 条落在 servers/vfs 自身文件（与首轮"59 行级告警中 21 条 profile 噪音"量级一致）
+
+---
+
+## 1. 存量 open 条目（首轮 26 条，2026-09-09 逐条复核）
+
+> 复核方法（Step 0.7 staleness check）：每条 grep 现状 + 重读关键行；前置事实——`git log -- os/servers/vfs/` 最后一次提交为 2026-09-05（首轮之前），`git status --short os/servers/vfs/` 为空，即首轮后 VFS 代码零改动。结论：**24 条锚点原样维持；C-5、P2-1、P2-4 三处漂移修正如下；0 条失效**。条目正文与判定过程见 R1 存档。
+
+### C-1～C-10（缺口表，R1 存档 §1）
+
+逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（exec.rs 对 cloexec 零消费）、invalidate 失效族（by_char_major/by_sock_drv 仍零匹配）、vmnt 锁升降级（仍只有 try_lock/unlock，vmnt.rs:72/:90）、fetch_vmnt_paths、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event/panic_hook、有意省略表未建。
+
+**C-5 漂移修正**：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实（该字段早于首轮存在）。缺口收窄为：**stadir.rs 的 `walk_plan`（stadir.rs:203 一带）与 getvfsstat 响应不产出路径**（`MountView` 仍只有 `in_use`/`canstat`）。修复时以本条为准，勿再扩表结构。
+
+### P0-1 / P0-2 / P0-3（filedes.rs 三连，R1 存档 §2）
+
+- P0-1 复核 ✅：filedes.rs:175 `return Err(FdError::Inval); // EIO mapped to Inval for test` 原样；filp.rs 的 `Closed => EIO` 映射仍并存（层间矛盾维持）。
+- P0-2 复核 ✅：filedes.rs:264-273 `CopyKind::Close` 仍无 `filp_count > 1` 闸门，:265 注释自认原文。
+- P0-3 复核 ✅：filedes.rs:200 `_proc_e: Endpoint` 仍未用，:207 "for test determinism" 注释原样。
+- **附加清点**（首轮 §7 建议的全文件清点，仍未执行）：filedes.rs"自认偏离"注释共 6 处——:168（may_suspend）/ :180（dec_count simplified）/ :199/:207（invalidate 全失效）/ :234（cred.is_super）/ :269（Close 分支 just clear）。修 P0 三连时逐一消除，不留"修了行为留了假注释"。
+
+### P1-1～P1-5（架构级，R1 存档 §3）
+
+- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。
+- P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。
+- P1-3 复核 ✅：ipc/dispatcher.rs:129-130 `let _ = group_addr;` + 空切片调用原样。
+- P1-4 复核 ✅：select.rs:191-198 `Query { rops, set_update, set_block }` 仍无 clear_update 义务字段。
+- P1-5 复核 ✅：filp.rs:173 `get_filp(&mut self, id: FilpId, need_lock: bool)` 原样。
+
+### P2-1～P2-6 / P3-1 / P3-2（R1 存档 §4/§5）
+
+- P2-1 **数字漂移修正**：现为 **30 个 `pub enum *Error` + 30 个 `fn to_errno`**（首轮 20/29，全 crate grep 实测）；两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。方案已被本轮修订：否决"crate 级单一 VfsError"大收敛，改为接入 minix-types 的 `ToErrno` 通道——见 **R2-P2-1**。
+- P2-2 复核 ✅：call_table.rs 64 臂同构 match、`CallTable`:206、`NullResolver`:350 原样；本轮 R2-P1-2 给出它的终局（随绑定层落地删除）。
+- P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。
+- P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。
+- P2-5 复核 ✅：device_map.rs:152 裸 `i32`、filp.rs:195 裸 `usize` 原样。
+- P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。
+- P3-1 复核 ✅：本轮 clippy 实测 40 条 warning 行（约 30 条落 vfs 自身），与首轮量级一致。
+- P3-2 复核 ✅："有意省略表"仍未建立（99-global-concepts.md 零命中）；落点已随 R2-P2-2（99 改写）合并推进。
+
+---
+
+## 9. 第二轮（R2 轮，2026-09-09）：存量复核 + 协议面下钻 + 执行绑定层与抽象质量深查
+
+### 9.0 Step 0 预检与 Gate A（证据摘录）
+
+- **Step 0 硬阻断预检**：`.design/` 四类快照计数 = outline 31 / outline-review 31 / design 31 / design-final 0（本 stage 无 design-final 属正常，coverage-check 判据为前三类）；`tools/design-coverage-check.sh fork-syscall-rewrite --stage 05-stage-vfs` 首跑报 00-vfs-overview 与 99-global-concepts 三件套缺失（CRITICAL），已按 **Step 0.3 嵌入生成 6 份 v1 快照**（`.design/00|99-{outline,outline-review,design}.v1.md`，含"正文仍为骨架"的诚实声明），复跑输出 **ALL DOCS COMPLETE（33/33）**。
+- **Gate A 覆盖穷举重跑**：`coverage-extract.py vfs ... --semantic-map tools/coverage-extract/vfs-semantic-map.json --output .review/claude/vfs/scans/SYMBOLS-r2.md` → 415 C 符号 / doc 387（93.3%）/ Rust name-match 262（63.1%），与首轮完全一致（与"首轮后零代码改动"互为佐证）。
+- 基线命令与输出见 §0.2。
+
+### 9.1 查漏结论（存量 26 条之外的新增缺口判定）
+
+首轮缺口表之外，本轮对四个未下钻的面补扫，结论：
+
+1. **device.c（95 行）——首轮未列缺口是对的，但理由要修正**：决策层全部有对应——`ioctl_route`（device_map.rs:575，对 do_ioctl 的块/字符/socket/ENOTTY 四分流，device.c:34-54）、`ioctl_access`（:590）与 `ioctl_size`（:603，对 make_ioctl_grant 的 IOR/IOW 方向与缓冲大小解码，device.c:76-82）；缺的只是 `cpf_grant_magic` 授权创建与真实驱动往返（属 P1-2 内核 IPC 束），不新立条目。
+2. **gcov.c（73 行）——一条小缺口**：misc.rs 的 gcov 决策组四门齐（`gcov_label_gate` :555、`gcov_endpt_ok` :566、`gcov_grant_outcome` :575、`gcov_target` :593），独缺 C gcov.c:31 的 `super_user` 特权门 → 新立 **R2-P2-3**。
+3. **sdev.c（1114 行）↔ sdev.rs（838 行）逐函数对位**：25 个 C 函数中 24 个有决策/编码半对应（多为合并建模，如 `SdevOp` 枚举吸收 bind/connect/listen/accept 族），唯一 ❌ 是 **`sdev_stop`（sdev.c:912）驱动死亡级联** → 新立 **R2-P1-3**。其余差距是执行半（真实传输/等待/复活），归 P1-2 矩阵，不重复登记。
+4. **64 个 VFS 调用号三层矩阵**：C handler（table.c:18-82）↔ 枚举/路由臂（call_table.rs:28-93 + main_loop.rs:622-631）64/64 齐；决策函数层 62 个 ✅、2 个 ⚠️（GcovFlush 缺特权门 → R2-P2-3；Mapdriver 只有 dmap 标签决策无重启执行 → P1-2 束）+ Socketpath 文档 pending（C-7 已登记）。**但发现系统性断点：路由臂与决策函数之间不存在绑定 match** → 新立 **R2-P1-2**。
+5. **VFS↔mfs 协议双侧对账**：REQ_* 消息在 VFS 侧（request.rs:15/:25-57，FS_BASE=0x600）与 FS 侧（os/libs/minix-fs/src/protocol.rs:25，FS_BASE=0xA00）**独立定义、无编译期或测试期联动**；且 VFS 侧基址与 C 不符 → 新立 **R2-P0-1**（数值面，stage 内修）+ **edge E-REQWIRE**（结构面，跨 crate 收敛）。mfs 现状：37 状态标记 = 12 Live + 25 Pending，`fs_lookup` 仍 Pending（table.rs:57），P1-2 结论维持。
+6. **VFS 对内核调用依赖**：`sys_hz`/`sys_safecopy*`/`sys_datacopy*`/`sys_getregs` 等在 src 内全部为注释级 defer（main_loop.rs:393-400、select.rs:24、path.rs:171/:205、coredump.rs:20、ipc/dispatcher.rs:125），全部可归 P1-2"内核 IPC 原语束"，无束外新依赖。
+
+### 9.2 本轮新条目
+
+#### ✅ R2-P0-1（P0-code-bug）REQ 消息基址 `FS_BASE=0x600` 与 C/minix-fs 的 `0xA00` 不符——wire 绝对值错误，C 锚点系伪造——已修复 2026-09-09（§9.9 Fix #1）
+
+- **Rust 现状**：`pub const FS_BASE: u32 = 0x600;`（os/servers/vfs/src/request.rs:15），注释自称 "`FS_BASE 0x600` — `vfsif.h:40`"；全部 REQ_* 常量（request.rs:25-57）与 `is_fs_rq`（:20-22，`(raw & !0xff) == FS_BASE`）以 0x600 为基。request.rs:854-856 的测试断言 `msg_type == REQ_LOOKUP` 且 `is_fs_rq` 通过——**测试与错误常量自洽**，属"测试自身正确性"问题。
+- **C 行为**（Ground Truth）：FS_BASE 定义在 `minix3/minix/include/minix/com.h:589` = **0xA00**（注释"Requests sent by VFS to filesystem"）；REQ_* 定义在 `minix3/minix/include/minix/vfsif.h:41-73`（该文件**不含** FS_BASE 定义，:40 亦非——Rust 注释的锚点与数值双双失实）。REQ_LOOKUP 绝对值 = 0xA00+26 = **0xA1A**。
+- **对端证据**：`os/libs/minix-fs/src/protocol.rs:25` `pub const FS_BASE: i32 = 0xA00;`（注释带正确 C 锚点 com.h:589）；mfs 经 `minix_fs::protocol::RequestNumber` 分发（os/fs/mfs/src/table.rs:12）。两侧偏移对齐（26=Lookup）掩盖了基址分歧。
+- **后果与可达性**：当前不可达（run() mock、无真实传输）；接线后 VFS 发出的每个 REQ 消息（0x600+n）都不会被按 C 常量实现的 FS 服务器识别，FS 通信全断；反向亦然。同型先例：edge T32（VM 侧 transid clean_type 拒真消息，Fix #52）、E-VMMCPWIRE（vmmcp 字宽截断）——wire 常量必须与 C 绝对值对齐，项目已两度付学费。
+- **修改方案**（≥2 候选）：
+  - **A（选定）**：request.rs:15 改 `0xA00`，注释锚点改 com.h:589；测试升级为 C 绝对值断言（`assert_eq!(REQ_LOOKUP, 0xA1A)` 型），杜绝再次自洽式回归。一处常量 + 注释 + 测试，立即止血。
+  - B：REQ 常量整体迁 minix-types 共享契约（与 edge E-REQWIRE 合流）。结构更优但属跨 crate 收敛，按 edge 单线程执行；A 先行与 B 不冲突。
+- **验证**：`grep -rn "0x600" os/servers/vfs/src` 归零；新绝对值断言入测；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` 全绿；对端 protocol.rs 不动。
+- **边界**：与 P1-2（REQ 协议面）、edge E-REQWIRE 交叉；修 A 时勿动 FsReq 变体结构（那是 E-REQWIRE 范围）；同文件注释漂移顺带修 R2-P3-1（fix-guard 一次一条，分两批）。
+
+#### R2-P1-1（P1-design-wrong）path.rs 生产单元的 Gate D 虚构抽象族：伪造数据的 trait impl 与以测试类型命名的签名
+
+- **Rust 现状**（全部位于 `#[cfg(test)]`（path.rs:300 起）之外的生产单元）：
+  - `PathFetcher`（path.rs:172-175）的生产 impl `DirectFetcher::fetch` 返回 `Ok("a".repeat(len - 1))`（path.rs:186）、`SafecopyFetcher::fetch` 返回 `"b".repeat(...)`（:207，注释自认 "always succeed for test"）——**生产编译单元内伪造用户路径数据**。
+  - `PathResolver` trait（:250-253）的 `eat_path` 签名直接吃 `TestFproc` 类型（:255-260，pub 于生产单元）；`StrictResolver::advance` 恒返回 vnode 99、`PermissiveResolver` 恒返回 42（:271/:288）。
+  - `SlashHandler` trait（:221-223）注释自认 "Gate D requires 2 behaviourally different impls"。
+- **C 行为**：path.c 的 advance/eat_path/last_dir/get_name/canonical_path 是操作 vnode/vmnt 表与 REQ_LOOKUP 往返的实函数（path.c:384/:146/:594/:648）；C 无 resolver/slash-handler 抽象。
+- **后果与可达性**：与首轮 P2-3 的替身不同，这批类型名字不带 Mock/Scripted、**伪装成生产抽象**，且 fetch 伪造数据——C-6 接线若误选 DirectFetcher 作生产 fetcher（trait 多 impl 编译不报错），用户路径静默变成 "aaa…"。同族先例：P2-4（NextFit）、P2-2（NullResolver），系统性结论见 §9.6。
+- **修改方案**：
+  - **A（选定）**：C-6 重设计时删除 `PathResolver` 与 `SlashHandler`——advance/eat_path/last_dir/get_name/canonical_path 以实函数实现（吃 `&VfsState` 表 + FsComm + transport）；`PathFetcher` 保留 seam（Direct/Safecopy 是 C 的 cpf_grant 语义二分，真实存在），但生产 impl 走 transport 的 sys_safecopy 等价物，现伪造 impl 移入 cfg(test) 并更名（如 `FakeFetcher`）；`TestFproc` 并入测试模块。
+  - B：仅把伪造 impl 移 cfg(test)、保留全部 trait。否决：为 Gate D 保留无生产语义的空壳抽象是模式 80（为 mock 预建抽象）。
+- **验证**：`grep -n "Gate D" os/servers/vfs/src/path.rs` 归零；`repeat(` 只出现在 cfg(test) 内；C-6 落地后的路径往返集成测试（含跨挂载 EnterMount/LeaveMount 转移）。
+- **边界**：C-6（同文件、同次设计）、P2-3（替身批处理）、R2-P1-2（决策函数签名是 64 臂绑定的前置）；一次打开 path.rs 设计到位。
+
+#### R2-P1-2（P1-design-missing）执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match
+
+- **Rust 现状**：`VfsCallNum` 64 变体齐全（call_table.rs:28-93），`route_message` 把解析成功的调用号统一送 `Route::Syscall{call}`（main_loop.rs:622-631）；但全 crate 不存在 `VfsCallNum → 决策函数` 的分发 match（`VfsCallNum::` 的消费只有枚举定义、from_raw/try_from_raw 与 CallTable 装配）；worker.rs:51 `WorkerFunc::DoWork` 是唯一 syscall 执行臂占位（注释 "Normal syscall path (do_work, table.c:call_vec)" 无实现）。`CallTable::new` 把 64 个全部装配为 `Some`（call_table.rs:217-282），制造"已实现"外观——lookup 全 Some ≠ 能执行。
+- **C 行为**：table.c:18-82 `call_vec` 64 项函数指针，`do_work` 经 `(*call_vec[call_index])()` 直达 handler——C 的绑定即表本身。
+- **后果与可达性**：首轮 P1-1 说"两套分发契约"，本轮下钻一层：即使 `route_message` 胜出，它到 64 个决策函数之间仍是断的。`CallTable` 的 `Option<VfsCallNum>` 数组信息量等于 `from_raw`（P2-2 已判冗余），其存在掩盖绑定缺失。
+- **修改方案**：
+  - **A（选定）**：接线时落单一 `dispatch_syscall(state: &mut VfsState, call: VfsCallNum, msg: &Message) -> SyscallResult` 的**穷举 match**（64 臂直达各模块决策函数，无通配臂）；`CallTable`/`CallResolver`/`NullResolver` 随之删除（Gate D 双实现由穷举 match + 测试替身函数满足）；route_message 的 Read 占位符（P1-1）同点收敛为 `Route::Enosys`。C 函数指针表在 Rust 的自然对应就是穷举 match（ARCH A-2 完成态）。
+  - B：保留 CallTable 作"合法性预检"、match 只处理 Some 分支。否决：预检与穷举 match 重复，两层机制表达一件事。
+- **验证**：`grep -rn "struct CallTable" os/servers/vfs/src` 归零；match 无 `_` 通配臂（编译期穷举）；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` 全绿。
+- **边界**：P1-1（同点收敛）、P2-2（本条闭合它）、R2-P1-1（path 决策函数签名前置）；`SyscallResult`/`Route` 类型设计本身保留（首轮 §7 已肯定）。
+
+#### R2-P1-3（P1-design-missing）`sdev_stop` 驱动死亡级联缺失：socket 驱动死亡时被挂起进程永久悬挂
+
+- **Rust 现状**：sdev.c 25 函数对位中唯一 ❌。Rust 侧 `ChannelEvent::Dead`（sdev.rs:217）只是测试脚本事件；select 维度的死亡唤醒有 `unsuspend_hit`（select.rs:719），sdev 维度（挂起在 SDEV_CANCEL/读写/accept 上的 slot）无级联；上游触发点 `smap_by_endpt`/`unmap_by_endpt`（device_map.rs:496 一带）本身也未接线。
+- **C 行为**：sdev.c:912 `sdev_stop`——驱动死亡时遍历挂起 socket 请求，回 EIO 并复活；与 C-3 的 `invalidate_filp_by_char_major`/`by_sock_drv`（filedes.c:260/:277）同属"驱动死亡级联"族。
+- **后果与可达性**：接线后 socket 驱动崩溃 → 所有挂起在 socket 系统调用上的进程永久悬挂（无超时、无唤醒）。Redox 同题教训（daemon 死后请求悬死）见 R1 存档 §6.3。
+- **修改方案**：
+  - **A（选定）**：并入 C-3 + P0-3 的"失效族"一次设计——按 C 语义建统一的 `driver_death_cascade(endpoint)`：filedes 失效（by_char_major/by_sock_drv）+ sdev stop（挂起 slot 回 EIO 复活）+ select 唤醒三面共享同一触发事件，入口挂 dmap/smap unmap。
+  - B：只补 sdev_stop 单函数。否决：死亡级联三面共享触发序，分开设计必然漂移。
+- **验证**：驱动死亡注入测试（ScriptedChannel 发 Dead 事件 → 断言挂起 slot 收 EIO 并复活、select 维度同步唤醒）。
+- **边界**：C-3、P0-3、P1-2 接线矩阵；与 select.rs `unsuspend_hit` 语义对齐，勿两处各写一份唤醒。
+
+#### R2-P1-4（P1-design-wrong）route_message 的 BDEV/CDEV/SDEV RS 前缀判定使用自认虚构值——通电后驱动回复全部失路由
+
+- **Rust 现状**：`is_bdev_rs`/`is_cdev_rs`/`is_sdev_rs`（main_loop.rs:547-559）用 `(raw & 0xFF00) == 0x500/0x600/0x700` 判定，:548-551 注释自认 "the exact base values are not needed for the routing priority test — we model them as distinct high-byte prefixes"；测试 main_loop.rs:1212/:1218 按假值断言（"matches is_bdev_rs stub"）。
+- **C 行为**（Ground Truth）：`CDEV_RS_BASE 0x480`（com.h:919）、`BDEV_RS_BASE 0x580`（com.h:963）、`SDEV_RS_BASE 0x1980`（com.h:1038），掩码为 `~0x7f` 而非 `0xFF00`（com.h:922-923 等 `IS_*_RS(type) (((type) & ~0x7f) == *_RS_BASE)`）。
+- **后果与可达性**：`route_message` 是 P1-1 选定的唯一生产契约（§9.8 第 4 步），E1 通电后真实的 `CDEV_REPLY`（0x480 起）不会命中 Cdev 臂、`BDEV_REPLY`（0x580 起）不会命中 Bdev 臂——设备回复全部失路由；当前仅测试自洽不可达。发现渠道：R2-P0-1 修复时的 fix-guard 残留 grep。
+- **修改方案**：
+  - **A（选定）**：三判定改真值——`(raw & !0x7f) == 0x580/0x480/0x1980`，测试用真 CDEV_REPLY/BDEV_REPLY 消息断言路由臂（与 R2-P1-2 分发收敛同轮做，route_message 转正时一并落）。
+  - B：保留教学占位 + DEFERRED 标注。否决：route_message 已被选为唯一契约，契约上的占位判定就是错误契约。
+- **验证**：真值消息（如 `m_type = BDEV_RS_BASE + BDEV_REPLY`）路由到 Bdev 臂；`grep -n "0x700\|0x500" os/servers/vfs/src/main_loop.rs` 在路由判定处归零。
+- **边界**：R2-P1-2（同轮）、P1-1；与 request.rs 的 FS_BASE 无数值冲突（0xA00 & !0x7f = 0xA00，与三个 RS 基址互异）。
+
+#### R2-P2-1（P2）ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的方案修订）
+
+- **Rust 现状**：`pub enum *Error` 30 个、固有 `fn to_errno` 30 个（P2-1 复核更新后的数字）；minix-types 已落 `ToErrno` trait（`os/libs/minix-types/src/types/errno.rs:507`，返回 `Errno` newtype；PmError/KernelError 已 impl——commit 893386cd8 "D1/D2 落地"）；os/servers/vfs 对 `ToErrno` **零匹配**。两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。
+- **方案修订**（取代 R1 存档 §4 P2-1 的"crate 级单一 VfsError"首选）：02-stage-vm 同题判定先例（edge T8，Fix #27）= 不做大收敛、"From 集中表即最优"。VFS 对应动作：① 30 个枚举逐一 `impl ToErrno`（新 trait 方法委托既有固有方法，机械）；② 消费端统一 `ToErrno::to_errno(&e).to_i32()`；③ filp.rs 的 `FdError` 改名或并入 `FilpError`，消除重名。
+- **验证**：`grep -rn "impl ToErrno" os/servers/vfs/src | wc -l` ≥ 30；`grep -rn "enum FdError" os/servers/vfs/src | wc -l` = 1。
+- **边界**：P0-1（`FdError::Closed` 新变体直接落在这套通道上）、P1-5（`FilpLockMode` 三态化同文件先行）。
+
+#### R2-P2-2（P2 doc）00/99 骨架文档待按快照契约改写
+
+- **现状**：`00-vfs-overview.md` 22 行（:3 状态 pending 最小骨架）、`99-global-concepts.md` 骨架；本轮 Step 0.3 已生成 `.design/00|99-{outline,outline-review,design}.v1.md` 六份目标契约（含"正文仍为骨架"诚实声明）。02-stage-vm 同型条目 G-V12-13 先例。
+- **改写要求**：00 按快照 Ch1-Ch7 展开启动主线叙事（mthread→A-1 的"演进而非退化"论证须带 R1 存档 §6.5/6.7 的 Redox 事实锚点）；99 定稿时一并落 P3-2/C-10 的"有意省略表"与引用计数双层不变量（filp_count ↔ v_ref_count ↔ v_fs_count——它是 C-3/P0-3 失效族的正确性基础）。正文改写后快照升 v2 复审。
+- **验证**：plan.md §6 实施路线两行"骨架"状态翻转；coverage-check 复跑仍 ALL PASS。
+
+#### R2-P2-3（P2）`do_gcov_flush` 缺 super_user 特权门
+
+- **Rust 现状**：misc.rs gcov 决策组四门齐——`gcov_label_gate`（:555，顺带修复并注释了 gcov.c:39-44 的 labellen==0 越界 bug）、`gcov_endpt_ok`（:566）、`gcov_grant_outcome`（:575）、`gcov_target`（:593）；独缺 C gcov.c:31 的 `super_user` → EPERM 门。
+- **C 行为**：gcov.c:10-73 `do_gcov_flush` 第一步特权检查。
+- **后果与可达性**：接线后非 root 进程可触发 gcov flush（信息面/干扰面）。
+- **修改方案**：**A（选定）**——加 `gcov_privilege_gate(caller) -> Result<(), GcovError>` 决策函数（照 protect.rs `in_group` 的决策模式，测试直调）；B——并入调度层统一特权检查。否决 B：C 是 per-call 门，位置语义要保真。
+- **验证**：非特权 caller 决策函数返回 EPERM 的单测；`grep -n "super_user\|EPERM" os/servers/vfs/src/misc.rs` 命中新函数。
+
+#### R2-P3-1（P3）request.rs 计数注释漂移
+
+模块头（request.rs:6）与 `FsReq` 定义处（:120）注释称 "33 variants / 33 live variants"，实际 32 变体（本枚举 awk 计数）；`NREQS=34`（:17）对照 C `minix3/minix/include/minix/vfsif.h:75`（NREQS 34，含死 REQ_GETNODE）正确。随 R2-P0-1 同文件分两批顺带修。
+
+#### R2-P3-2（P3）device_map.rs 四源合一的职责注记
+
+device_map.rs（906 行）聚合 dmap.c（:69-230）、smap.c（:307-560）、device.c 的 ioctl 决策（:561-613）、mapdriver 服务分类（:276-305）四个 C 来源。聚合不违反语义，但 ioctl 决策的家与 C 的 device.c 文件错位，按 C 索引找不到。方案：拆 `device.rs`（ioctl_route/ioctl_access/ioctl_size 三函数）或模块头加"来源映射注记"。P2-5 类型化落地时顺带定夺，不单开一轮。
+
+### 9.3 复核认定无缺口的面（防重复扫描）
+
+1. device.c 决策层完整（§9.1 第 1 条）——后续轮次勿再登记 device.c 缺口；其执行半归 P1-2。
+2. 64 调用号：枚举/路由/决策三层 64/64/62+2⚠️（§9.1 第 4 条）；无空决策函数；唯一结构性断点 = R2-P1-2。
+3. 12 个 VFS_PM 请求覆盖维持（ipc/dispatcher.rs），唯一语义洞仍是 P1-3。
+4. FsReq 32 变体**名字面**与 C REQ_* 对齐维持（绝对值问题 = R2-P0-1，结构收敛 = E-REQWIRE）。
+5. 内核调用依赖全部归 P1-2 束，无束外新依赖（§9.1 第 6 条）。
+6. 首轮正面评价维持：worker.rs 的 ARCH A-1 论证（Linux workqueue/Redox async/seL4 对照，worker.rs:1-33）、fs_comm GlobalComm 窗口、pipe.rs 的 SuspCount/WakePlan 分解、select.rs 决策纯化、socket.rs BuildStep/compensate。
+
+### 9.4 Redox/Linux 对照增补（更新 R1 存档 §6）
+
+1. **cancellation 升格为 crate API**：redox-scheme 现把 `CallerCtx` 与 `CancellationRequest` 作为一级 API 类型（docs.rs/redox-scheme，2026-09-09 查证；crate 2024 edition、持续更新）。R1 §6.3 的"取消是后补教训"由此获得 API 层佐证——P1-2 与 R2-P1-3 的关闭条件必须含"调用者先死"分支（在途 slot 取消），不止"对端驱动死亡"。
+2. **Linux 跨挂载单点收口**（[外部参照] fs/namei.c 的 follow_automount/step_into 机制，不给行号）：跨挂载切换收在路径行走的一处状态转移。C-6 设计对照：`LookupRes::EnterMount/LeaveMount`（path.rs:120-127）已是正确方向——REQ_LOOKUP 循环实现时跨挂载判断只允许出现在这一处状态转移，勿散落多处。
+
+### 9.5 edge 增补指针
+
+- **E-REQWIRE（新登记）**：REQ_* VFS↔FS 共享契约双侧独立定义（vfs `request.rs` FS_BASE=0x600 错值 + 32 变体枚举 ↔ minix-fs `protocol.rs` 0xA00 + `RequestNumber`）——收敛方案 A：REQ face 迁 minix-types（PM face 先例 `ipc/vfs.rs`），VFS 与 minix-fs 共消本地常量；方案 B：最低限度全量对账测试（`FsReq::m_type()` ↔ `RequestNumber` 逐项相等）。R2-P0-1 的常量止血不依赖本条。正文见 edge_todo.md。
+- **E-VFSWIRE（增补）**：VFS 侧 `VmVfsReq` 仅有决策原语（misc.rs:262-281），消息级解码未建；wire 定稿时以 C 绝对值断言（R2-P0-1 教训）；VM 侧发送半状态不变（vfs_queue.rs:142 注释仍挂本条）。
+
+### 9.6 Rule Discovery（Step 5.7）
+
+**✅ 发现新模式**：**Gate D 双实现压力产物（虚构第二实现族）**。
+
+- 案例累积 4 组：`NextFit`（filedes.rs:91，R1-P2-4）、`NullResolver`（call_table.rs:350，R1-P2-2）、`StrictResolver`/`PermissiveResolver`+`TestFproc`（path.rs:262-298，本轮 R2-P1-1）、`SlashHandler`+`TestTransIdCodec`（path.rs:221、fs_comm.rs:100，本轮）。
+- 共同特征：trait 文档注释自认 "Gate D requires/satisfies ≥2 behaviourally different impls"；第二 impl 无 C 来源或伪造行为；位于生产编译单元。
+- 严重度：P2（普通冗余）～P1（伪装成生产抽象且有伪造数据 impl 时，如 R2-P1-1）。
+- 归类建议：作为 review-patterns 模式 80/81（为 mock 预建抽象/生产 mock 态）的具名子型登记，或新立模式 84。
+- 规则草案：Gate D 的"trait ≥2 行为不同 impl"必须以 C 语义真实存在的行为差异为准；检查清单新增机械检法 `grep -rn "Gate D" os/servers/*/src`——命中的 trait 逐个复查第二 impl 的 C 来源，无来源 → 移 cfg(test) 或删除。规则文件修订留待规则维护会话，本轮先以本条登记。
+
+### 9.7 gate-evidence 与收敛评估
+
+```
+gate-evidence-Step0:
+$ ls notes/rewrite/fork-syscall-rewrite/05-stage-vfs/.design/*-outline.v*.md | wc -l   → 31
+$ ls .../*-outline-review.v*.md | wc -l  → 31
+$ ls .../*-design.v*.md | wc -l          → 31
+$ ls .../*-design-final.v*.md | wc -l    → 0（本 stage 无此件，判据为前三类）
+$ tools/design-coverage-check.sh fork-syscall-rewrite --stage 05-stage-vfs
+  首跑：00/99 三件套缺失 CRITICAL → Step 0.3 生成 6 份 v1 快照 → 复跑：ALL DOCS COMPLETE (33/33)
+gate-evidence-A:
+$ python3 tools/coverage-extract/coverage-extract.py vfs notes/rewrite/fork-syscall-rewrite/05-stage-vfs \
+    --rust-dir os --c-dir minix3/minix/servers/vfs \
+    --semantic-map tools/coverage-extract/vfs-semantic-map.json \
+    --output .review/claude/vfs/scans/SYMBOLS-r2.md
+  Total C symbols: 415 / Doc covered: 387 (93.3%) / Rust covered: 262 (63.1%)  ← 与首轮完全一致
+gate-evidence-baseline:
+$ cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib    → 334 passed / 0 failed
+$ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warning 行（约 30 条落 servers/vfs）
+```
+
+- staleness 通道：26 条逐条 grep/sed（并行探查 agent 执行 + 主会话对承重锚点抽验：P0-1/P1-1 的 filedes/main_loop 锚点、path.rs 全文、FS_BASE 三方链条均主会话亲验）。
+- **收敛评估**：本轮为 VFS 第 2 轮。新发现加权（P0×10 + P1×3 + P2×1 = 10+12+3 = 25，R2-P1-4 为修复期新登记），相对首轮（3 P0 + 5 P1 + 6 P2 = 30+15+6 = 51）约 49%，远超"新发现 <20% 停止"阈值；且首轮后尚无修复轮。**不触发收敛停止，继续轮次有充分空间**。
+
+### 9.8 建议的推进顺序（合并首轮 §8 修订）
+
+1. **R2-P0-1**（一处常量 + 锚点 + 绝对值断言，止血 wire）→ 顺带 **R2-P3-1** 注释（同文件分批）。
+2. **P0-1/P0-2/P0-3 + C-3 + R2-P1-3**：失效/死亡级联族一次设计（filedes.rs + sdev.rs 两文件，filedes 的 6 处自认偏离注释逐一消除）。
+3. **R2-P1-1 + C-6**：path.rs 真实设计（删 Gate D 虚构抽象 + 跨 FS 往返循环落地 + PathFetcher 生产 impl 接 transport）。
+4. **P1-1 + R2-P1-2 + R2-P1-4**：分发收敛（route_message 唯一契约 + `dispatch_syscall` 穷举 64 臂 + `Route::Enosys` + RS 前缀真值化 + 删 CallTable/CallResolver/dispatch legacy + run_once 可注入入口，对标 PM 的 run_once_integration 测试形态）。
+5. **P1-3/P1-4/P1-5 + R2-P2-1**：语义洞修复与 ToErrno 通道接入。
+6. **P2-2/P2-3/P2-5/P2-6 + P3-1 + R2-P3-2**：机械清理批；**R2-P2-2**（00/99 改写，落省略表）。
+7. **edge 单线程执行**：E-REQWIRE（REQ 契约收敛 minix-types 或对账测试）→ 随 E1 通电后 E-VFSWIRE 定稿。
+
+---
+
+## 10. 修复记录（Fix #N campaign，一次一条，修前 fix-guard、修后回归 review）
+
+### ✅ Fix #1: R2-P0-1 — REQ 消息基址 0x600→0xA00 对齐 C/minix-fs（2026-09-09）
+
+- **File**：`os/servers/vfs/src/request.rs`（:6 模块注释 / :14-19 FS_BASE 常量与文档 / 测试区）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/12-request-wrappers.md`（13 处数值与锚点）。
+- **Before**：`pub const FS_BASE: u32 = 0x600;`，注释锚 `vfsif.h:40`（该行是注释行，非定义；FS_BASE 实定义于 com.h:589=0xA00）；测试以 0x600 自洽断言（request.rs 原 ：854-856 一带）；`test_nreqs_getnode_dead` 用错值 0x601；12-request-wrappers.md 十余处 0x601/0x60B/0x621/0x600 及 `vfsif.h:40` 伪锚点。
+- **After**：`FS_BASE = 0xA00`，注释锚 `com.h:589` 并注明 vfsif.h 仅引用、FS 侧（minix-fs protocol.rs）按 0xA00 分发；新增 `test_fs_wire_values_match_c_absolute`（绝对值 pin：REQ_GETNODE=0xA01/REQ_READ=0xA13/REQ_LOOKUP=0xA1A/REQ_BPEEK=0xA21 + 0x600 旧基址回归拒绝 + 与 CDEV_RS/BDEV_RS 命名空间互异）；文档全部数值与锚点同步为 0xA 系。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **335 passed / 0 failed**（334→335，+1 新测试）；`grep -rn "0x600" os/servers/vfs/src` 仅余回归守卫断言（request.rs:568-569）与已登记的 is_cdev_rs 占位（main_loop.rs:555/:1218，新条目 R2-P1-4）；文档 grep 0x6 系旧值零残留。
+- **回归 review**：测试名对账——12-request-wrappers.md §5 测试表已增补新测试行；fix-guard 残留清查牵出 R2-P1-4（RS 前缀虚构值），已登记不顺手修。

@@ -1,6 +1,6 @@
 # 12 — `request.c` 的 `REQ_*` 包装：`cpf_grant` 的 `ERESTART` 重试与 `node_details/lookup_res` 的类型化响应
 
-本文讲清 `request.c` 如何在 `FS_BASE 0x600` 的 `IS_FS_RQ` 前缀、`NREQS 34` 的 `REQ_BREAD 0x60B` ~ `REQ_BPEEK 0x621` 的 33 有效请求、`REQ_GETNODE 0x601` 的 `Should be removed` 死常量、`EENTERMOUNT -301` 的挂载点穿越、`RES_THREADED/HASPEEK/64BIT` 的 FS 能力位、`cpf_grant_direct/magic` 的 `CPF_READ/WRITE/TRY` 三标志与 `GRANT_FAULTED→ERESTART` 的重放、`vm_vfs_procctl_handlemem` 的 `CPF_TRY→0` 二阶段、以及 `node_details {fs_e,ino,fmode,fsize,uid,gid,dev}` 与 `lookup_res {+char_processed,symloop}` 的响应结构的约束下，以 `req_breadwrite_actual` 的 `grant→fs_sendrec→revoke→ERESTART→vm_handlemem→retry` 与 `req_lookup` 的 `PATH_GET_UCRED` 分支及 `req_stat` 的 `stat grant` 复用建立 `VFS → FS` 的 `Message` 构造/投递/回收/重放的闭环，并以 `req_bpeek/req_inhibread/req_flush` 的无 `grant` 直通与 `req_readsuper` 的 `RES_64BIT` 守门为能力协商提供可观测分流。
+本文讲清 `request.c` 如何在 `FS_BASE 0xA00` 的 `IS_FS_RQ` 前缀、`NREQS 34` 的 `REQ_BREAD 0xA0B` ~ `REQ_BPEEK 0xA21` 的 33 有效请求、`REQ_GETNODE 0xA01` 的 `Should be removed` 死常量、`EENTERMOUNT -301` 的挂载点穿越、`RES_THREADED/HASPEEK/64BIT` 的 FS 能力位、`cpf_grant_direct/magic` 的 `CPF_READ/WRITE/TRY` 三标志与 `GRANT_FAULTED→ERESTART` 的重放、`vm_vfs_procctl_handlemem` 的 `CPF_TRY→0` 二阶段、以及 `node_details {fs_e,ino,fmode,fsize,uid,gid,dev}` 与 `lookup_res {+char_processed,symloop}` 的响应结构的约束下，以 `req_breadwrite_actual` 的 `grant→fs_sendrec→revoke→ERESTART→vm_handlemem→retry` 与 `req_lookup` 的 `PATH_GET_UCRED` 分支及 `req_stat` 的 `stat grant` 复用建立 `VFS → FS` 的 `Message` 构造/投递/回收/重放的闭环，并以 `req_bpeek/req_inhibread/req_flush` 的无 `grant` 直通与 `req_readsuper` 的 `RES_64BIT` 守门为能力协商提供可观测分流。
 
 前置阅读：`11-fs-comm.md`（`GlobalComm::sendmsg` 的 `c_max_reqs` 窗口与 `TransId` 编码及 `FsTransport::send_fs` 的 `CALLBACK` 抑制）、`06-vmnt-table.md`（`Vmnt.m_fs_flags: RES_*` 的能力位）、`04-filp-table.md`（`Filp` 的 `filp_vno` 与 `vm_vfs_procctl_handlemem` 的 `02-stage-vm` 交叉）、`05-vnode-table.md`（`vnode_clean_refs` 的 `v_fs_count` 阈值与 `put_vnode` 的 `req_putnode` 对端）。
 
@@ -31,9 +31,9 @@
 
 `request.c` 以 `req_*` 将三重复收敛为**一处构造/投递/回收/重放的闭环**。`ERESTART` 的 `vm_vfs_procctl_handlemem` 重试（`11` 的 `NULL vmp` 直通）使 `grant` 的 `TRY` 语义在包装内可观测，而非散落在 15/16 的调用方。
 
-### 1.2 协议面的编码：`FS_BASE 0x600` 与 `NREQS 34`
+### 1.2 协议面的编码：`FS_BASE 0xA00` 与 `NREQS 34`
 
-`vfsif.h:41 REQ_GETNODE (FS_BASE+1)` 的 `Should be removed` 注释使 `NREQS 34` 的 `FS_BASE+1..+33` 中仅 33 有效，`request.c` 全文件无 `req_getnode` 包装印证死常量。`vfsif.h:77 IS_FS_RQ(type) ((type&~0xff)==FS_BASE)` 的 `~0xff` 前缀使 `REQ_BREAD 0x60B` 与 `VFS 0x100` 的 `call_vec` 前缀（`09` 的 `VFS_CALL` 0x100）及 `VFS_PM 0x900` 前缀（`10` 的 `PM` 0x900）及 `VFS_TRANSID 0xB00` 事务前缀（`11` 的 `TRANSACTION_BASE`）在 `m_type` 域内不重叠，`11` 的 `TRNS_ADD_ID` 高位编码在此前缀上叠加 `transid` 而不冲突。
+`vfsif.h:41 REQ_GETNODE (FS_BASE+1)` 的 `Should be removed` 注释使 `NREQS 34` 的 `FS_BASE+1..+33` 中仅 33 有效，`request.c` 全文件无 `req_getnode` 包装印证死常量。`vfsif.h:77 IS_FS_RQ(type) ((type&~0xff)==FS_BASE)` 的 `~0xff` 前缀使 `REQ_BREAD 0xA0B` 与 `VFS 0x100` 的 `call_vec` 前缀（`09` 的 `VFS_CALL` 0x100）及 `VFS_PM 0x900` 前缀（`10` 的 `PM` 0x900）及 `VFS_TRANSID 0xB00` 事务前缀（`11` 的 `TRANSACTION_BASE`）在 `m_type` 域内不重叠，`11` 的 `TRNS_ADD_ID` 高位编码在此前缀上叠加 `transid` 而不冲突。
 
 ### 1.3 响应的类型化：`node_details` 与 `lookup_res`
 
@@ -57,7 +57,7 @@
 
 ### 1.7 小结
 
-`request.c` 是 `VFS → FS` 的类型化信封：`FS_BASE 0x600` 的 `&~0xff` 前缀使 33 请求在 `m_type` 域内可区分，`node_details/lookup_res` 的 7/9 字段使 `OK` 与 `EENTERMOUNT` 的响应可区分，`cpf_grant_direct/magic` 的 `CPF_TRY` 使 `ERESTART` 的 `vm_handlemem` 二阶段可区分，`RES_64BIT` 的 `INT_MAX` 守门使 32 位截断在 `VFS` 侧可早拒绝。下一节以 `request.c:30-1213` 全文与 `vfsif.h:41-73` 的 33 `REQ_*` 为主线逐段核对。
+`request.c` 是 `VFS → FS` 的类型化信封：`FS_BASE 0xA00` 的 `&~0xff` 前缀使 33 请求在 `m_type` 域内可区分，`node_details/lookup_res` 的 7/9 字段使 `OK` 与 `EENTERMOUNT` 的响应可区分，`cpf_grant_direct/magic` 的 `CPF_TRY` 使 `ERESTART` 的 `vm_handlemem` 二阶段可区分，`RES_64BIT` 的 `INT_MAX` 守门使 32 位截断在 `VFS` 侧可早拒绝。下一节以 `request.c:30-1213` 全文与 `vfsif.h:41-73` 的 33 `REQ_*` 为主线逐段核对。
 
 ---
 
@@ -112,7 +112,7 @@ Rust 改写不是照抄 `request.c:38` 的 `cpf_grant_magic` 与 `51 fs_sendrec`
 ### D1 `REQ_*` 类型化：`FsReq` 枚举的 `FS_BASE` 前缀守门
 
 - **C**：`m_type=REQ_CREATE + m.m_vfs_fs_create.inode/mode` 的散落 `m_vfs_fs_*` 联合体字段（`request.c:190`）在 `request.c` 33 函数内以 `m_type` 赋值与 `fs_sendrec` 散落。
-- **Rust**：`FsReq` 的 33 变体 `enum`（`BRead{fs_e,dev,pos,nbytes,user{endpoint,addr}} / BWrite / BPeek / Chmod{ino,mode} / Chown{ino,uid,gid} / Create{dir,mode,uid,gid,path} / Flush{dev} / StatVfs{grant} / FTrunc{ino,start,end} / GetDents{ino,pos,buf,size,direct} / InhibRead{ino} / Link{dir,linked} / Lookup{dir,root,uid,gid,path,flags} / Mkdir{dir,mode,uid,gid,path} / Mknod{dir,mode,uid,gid,dev,path} / Mountpoint{ino} / NewNode{uid,gid,mode,dev} / NewDriver{dev,label} / PutNode{ino,count} / RdLink{ino,buf,len} / ReadSuper{label,dev,ro,isroot} / Read{ino,pos,nbytes,user} / Write{ino,pos,nbytes,user} / Peek{ino,pos,nbytes} / Rename{old_dir,old_name,new_dir,new_name} / Rmdir{dir,path} / SLink{dir,path,uid,gid,target} / Stat{ino,buf} / Sync / Unlink{dir,path} / Unmount / Utime{ino,actime,modtime}`）+ `FsReq::m_type()` 的 `IS_FS_RQ(&~0xff==FS_BASE)` 前缀守门（`&~0xff==0x600`）+ `FsResp` 的 `NodeDetails{fs_e,ino,fmode,fsize,uid,gid,dev}` 与 `LookupRes{+char_processed,symloop}` 二响应类型化。
+- **Rust**：`FsReq` 的 33 变体 `enum`（`BRead{fs_e,dev,pos,nbytes,user{endpoint,addr}} / BWrite / BPeek / Chmod{ino,mode} / Chown{ino,uid,gid} / Create{dir,mode,uid,gid,path} / Flush{dev} / StatVfs{grant} / FTrunc{ino,start,end} / GetDents{ino,pos,buf,size,direct} / InhibRead{ino} / Link{dir,linked} / Lookup{dir,root,uid,gid,path,flags} / Mkdir{dir,mode,uid,gid,path} / Mknod{dir,mode,uid,gid,dev,path} / Mountpoint{ino} / NewNode{uid,gid,mode,dev} / NewDriver{dev,label} / PutNode{ino,count} / RdLink{ino,buf,len} / ReadSuper{label,dev,ro,isroot} / Read{ino,pos,nbytes,user} / Write{ino,pos,nbytes,user} / Peek{ino,pos,nbytes} / Rename{old_dir,old_name,new_dir,new_name} / Rmdir{dir,path} / SLink{dir,path,uid,gid,target} / Stat{ino,buf} / Sync / Unlink{dir,path} / Unmount / Utime{ino,actime,modtime}`）+ `FsReq::m_type()` 的 `IS_FS_RQ(&~0xff==FS_BASE)` 前缀守门（`&~0xff==0xA00`）+ `FsResp` 的 `NodeDetails{fs_e,ino,fmode,fsize,uid,gid,dev}` 与 `LookupRes{+char_processed,symloop}` 二响应类型化。
 - **为什么**：`m_vfs_fs_create` 的 `grant` 在 `REQ_CREATE` 专属与 `REQ_LOOKUP` 的 `grant_path+grant_ucred` 双 `grant` 的 `m_vfs_fs_*` 联合体重用在 C 以宏字段名隐式，Rust 以 `Create{path: String}` vs `Lookup{path:String, ucred: Option<VfsUCred>}` 的字段名显式使 `grant` 数目错配编译期失败。
 - **备选**：保留 `Message` 直填；否决——`REQ_CREATE` 的 `mode` 与 `REQ_CHMOD` 的 `rmode` 的 `mode` 重名在 `Message` 联合体中易错拷。
 
@@ -170,9 +170,9 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `FS_BASE 0x600` | `vfsif.h:40` | `request.rs:FS_BASE:u32=0x600` | `IS_FS_RQ &~0xff==0x600` 前缀守门 |
-| `NREQS 34` | `vfsif.h:75` | `NREQS:usize=34` | `REQ_BPEEK 0x621` 上界 |
-| `REQ_GETNODE 0x601` | `vfsif.h:41` | `request.rs:FsReq` 无 `GetNode` 变体 | `decode(0x601)→Err(Unknown)` 死常量排除 |
+| `FS_BASE 0xA00` | `com.h:589`（`vfsif.h` 仅引用） | `request.rs:FS_BASE:u32=0xA00` | `IS_FS_RQ &~0xff==0xA00` 前缀守门 |
+| `NREQS 34` | `vfsif.h:75` | `NREQS:usize=34` | `REQ_BPEEK 0xA21` 上界 |
+| `REQ_GETNODE 0xA01` | `vfsif.h:41` | `request.rs:FsReq` 无 `GetNode` 变体 | `decode(0xA01)→Err(Unknown)` 死常量排除 |
 | `node_details` | `request.h:12` | `request.rs:NodeDetails{fs_e,ino,fmode,fsize,uid,gid,dev}` | `REQ_NEWNODE/CREATE` 的 7 字段响应 |
 | `lookup_res` | `request.h:25` | `LookupRes{+char_processed,symloop}` | `EENTERMOUNT` 的 `offset/symloop` 回带 |
 | `req_breadwrite` | `request.c:30` | `FsClient::breadwrite(fs_e,dev,pos,nbytes,user, rw)` | `grant→send_fs→revoke→ERESTART→vm_handlemem→retry(0)` |
@@ -184,7 +184,7 @@ os/servers/vfs/src/
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 前缀不重叠 `IS_FS_RQ & IS_VFS_CALL & IS_VFS_PM_RQ==∅` | `FsReq::is_fs_rq` | `&~0xff==0x600` vs `0x100` vs `0x900` | `vfsif.h:77` vs `callnr.h:70` vs `com.h:516` |
+| 前缀不重叠 `IS_FS_RQ & IS_VFS_CALL & IS_VFS_PM_RQ==∅` | `FsReq::is_fs_rq` | `&~0xff==0xA00` vs `0x100` vs `0x900` | `vfsif.h:77` vs `callnr.h:70` vs `com.h:516` |
 | 死常量无包装 `GETNODE→Unknown` | `FsReq::decode` | `FS_BASE+1 → Err(Unknown)` | `vfsif.h:41` 注释 |
 | grant 配对 `grant→revoke` | `GrantScope` | `Drop` 的 `revoke()` | `request.c:53` |
 | ERESTART 二阶段 `TRY→0` | `FsClient::breadwrite` | `if(ERESTART){ vm_handlemem→retry(0) }` | `request.c:73` |
@@ -200,8 +200,9 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_fs_base_prefix` | `vfsif.h:77` | `IS_FS_RQ(0x60B)==true, 0x100==false` 的前缀不重叠 | `request.rs` |
-| `test_nreqs_getnode_dead` | `vfsif.h:41` | `GETNODE 0x601 → Unknown` 死常量排除 | `request.rs` |
+| `test_fs_base_prefix` | `vfsif.h:77` | `IS_FS_RQ(0xA0B)==true, 0x100==false` 的前缀不重叠 | `request.rs` |
+| `test_fs_wire_values_match_c_absolute` | `com.h:589` | `FS_BASE==0xA00` 与 `REQ_LOOKUP==0xA1A` 的绝对值 pin + `0x600` 旧基址回归拒绝 | `request.rs` |
+| `test_nreqs_getnode_dead` | `vfsif.h:41` | `GETNODE 0xA01 → Unknown` 死常量排除 | `request.rs` |
 | `test_node_details` | `request.h:12` | `NodeDetails 7 字段` 的 `fs_e` 回带 | `request.rs` |
 | `test_lookup_res` | `request.h:25` | `LookupRes 9 字段` 的 `EENTERMOUNT` 分支 | `request.rs` |
 | `test_breadwrite_grant` | `request.c:38` | `grant CPF_WRITE\|TRY → revoke` 的 `GrantScope` 配对 | `request.rs` |
@@ -220,7 +221,7 @@ os/servers/vfs/src/
 | `test_fs_req_two_impls` | `request.c:30` | `FsClient` trait `Blocking vs Mock` 的 `sent_fs.len 0 vs 1` 差异 | `request.rs` |
 | `test_grant_two_impls` | `request.c:38` | `GrantScope` 的 `Try vs NoTry` 的 `CPF_TRY` 位差异 | `request.rs` |
 
-测试策略：`FS_BASE` 前缀以 `IS_FS_RQ(REQ_BREAD true) vs VFS_READ false` 的不重叠样本覆盖；`GETNODE` 死常量以 `decode(0x601)→Unknown` 的 `Err` 样本覆盖；`node_details` 以 `fs_e` 回带样本覆盖；`breadwrite` 以 `grant Try→ERESTART→vm_handlemem→retry` 的二阶段样本覆盖；`lookup` 以 `ngroups 0→1 grant vs 2→2 grant` 的 `Option` 分化样本覆盖；`FS_CLIENT` 与 `GRANT` 的双 trait 以 `Blocking vs Mock` 的 `sent_fs` 差异与 `Try 0x01 vs NoTry 0x00` 的位差异样本覆盖。
+测试策略：`FS_BASE` 前缀以 `IS_FS_RQ(REQ_BREAD true) vs VFS_READ false` 的不重叠样本覆盖；`GETNODE` 死常量以 `decode(0xA01)→Unknown` 的 `Err` 样本覆盖；`node_details` 以 `fs_e` 回带样本覆盖；`breadwrite` 以 `grant Try→ERESTART→vm_handlemem→retry` 的二阶段样本覆盖；`lookup` 以 `ngroups 0→1 grant vs 2→2 grant` 的 `Option` 分化样本覆盖；`FS_CLIENT` 与 `GRANT` 的双 trait 以 `Blocking vs Mock` 的 `sent_fs` 差异与 `Try 0x01 vs NoTry 0x00` 的位差异样本覆盖。
 
 ---
 
@@ -245,7 +246,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/request.c:30-1213`（`req_breadwrite_actual:30` 的 `grant→fs_sendrec→revoke→ERESTART` 闭环、`424 req_lookup` 的 `PATH_GET_UCRED` 分支、`288 req_getdents_actual` 的 `RES_64BIT` 守门、`834 req_readwrite_actual` 的 `read/write` 包装、`902 req_peek` 的 `grant=-1` 直通）、`minix3/minix/include/minix/vfsif.h:41-73`（`REQ_GETNODE 0x601` 死常量与 `REQ_BREAD 0x60B` ~ `REQ_BPEEK 0x621` 的 33 有效请求及 `TRNS_GET/ADD/DEL` 的 `&0xFFFF/<<16/>>16`）、`minix3/minix/servers/vfs/request.h:12/25`（`node_details 7 字段` 与 `lookup_res 9 字段` 的 `char_processed/symloop` 回带）
+- C 源：`minix3/minix/servers/vfs/request.c:30-1213`（`req_breadwrite_actual:30` 的 `grant→fs_sendrec→revoke→ERESTART` 闭环、`424 req_lookup` 的 `PATH_GET_UCRED` 分支、`288 req_getdents_actual` 的 `RES_64BIT` 守门、`834 req_readwrite_actual` 的 `read/write` 包装、`902 req_peek` 的 `grant=-1` 直通）、`minix3/minix/include/minix/vfsif.h:41-73`（`REQ_GETNODE 0xA01` 死常量与 `REQ_BREAD 0xA0B` ~ `REQ_BPEEK 0xA21` 的 33 有效请求及 `TRNS_GET/ADD/DEL` 的 `&0xFFFF/<<16/>>16`）、`minix3/minix/servers/vfs/request.h:12/25`（`node_details 7 字段` 与 `lookup_res 9 字段` 的 `char_processed/symloop` 回带）
 - 阶段文档：`11-fs-comm.md`（`GlobalComm::sendmsg` 的 `c_max_reqs` 窗口与 `TransId` 编码）、`06-vmnt-table.md`（`Vmnt.m_fs_flags: RES_*` 的能力位）、`13-path-lookup.md`（`lookup` 的 `EENTERMOUNT` 消费）、`99-global-concepts.md`（`FS_BASE/NREQS/TRNS` 术语与 `GrantId`）
 - Rust 实现：`os/servers/vfs/src/request.rs:1`（`FsReq(33)/FsResp(NodeDetails/LookupRes)/FsFlags/GrantScope` + `FsClient` trait (Blocking vs Mock + Try vs NoTry)）、`os/servers/vfs/src/fs_comm.rs:1`（`GlobalComm` 的 `sendmsg` 对端与 `TransId` 编码）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（`cpf_grant_magic/direct` 的 `safecopy` 原语）
