@@ -2014,4 +2014,97 @@ mod tests {
         let hook_id = unsafe { msg.m_u.m_lsys_krn_sys_irqctl.hook_id };
         assert_eq!(hook_id, 1, "hook_id must be written to the dedicated irqctl field");
     }
+
+    // ── T-9: RMPOLICY / ENABLE / DISABLE owner 校验（doc 20 §5.2 缺口）──
+
+    /// SETPOLICY 安装 hook 后：RMPOLICY 非 owner → EPERM；owner → OK 且槽位
+    /// 清空（do_irqctl.c:111-120）；空槽再删 → EINVAL。
+    #[test]
+    fn test_dispatch_irqctl_rmpolicy_owner_check_and_removes() {
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = crate::test_helpers::test_priv_table();
+
+        // owner (ep 100) 安装 hook → 1-based id = 1
+        let mut owner = KProcess::new(ProcNr(0), Endpoint(100));
+        owner.priv_id = Some(0);
+        let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(OK));
+        assert_eq!(irq_mgr.hook_owner(0), Some(Endpoint(100)));
+
+        // 非 owner (ep 200) 删除 → EPERM（do_irqctl.c:113 owner 校验）
+        let mut intruder = KProcess::new(ProcNr(1), Endpoint(200));
+        intruder.priv_id = Some(0);
+        let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut intruder, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(EPERM));
+        assert_eq!(irq_mgr.hook_owner(0), Some(Endpoint(100)), "EPERM 后槽位不动");
+
+        // owner 删除 → OK 且槽位清空
+        let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(OK));
+        assert_eq!(irq_mgr.hook_owner(0), None, "删除后槽位必须清空");
+
+        // 空槽再删 → EINVAL（do_irqctl.c:111-114 hook 未占用）
+        let mut msg = build_irqctl_msg(IrqctlRequest::RmPolicy as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(EINVAL));
+    }
+
+    /// ENABLE：hook_id 无效 → EINVAL；非 owner → EPERM；owner → OK
+    /// （do_irqctl.c:31-32 owner 校验 + enable_irq 调用 IC unmask 路径）。
+    #[test]
+    fn test_dispatch_irqctl_enable_owner_check() {
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = crate::test_helpers::test_priv_table();
+        let mut owner = KProcess::new(ProcNr(0), Endpoint(100));
+        owner.priv_id = Some(0);
+        let mut intruder = KProcess::new(ProcNr(1), Endpoint(200));
+        intruder.priv_id = Some(0);
+
+        // 安装 hook 1（owner）
+        let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(OK));
+
+        // hook_id = 0（< 1）→ EINVAL
+        let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 0);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(EINVAL));
+
+        // 非 owner ENABLE → EPERM
+        let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut intruder, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(EPERM));
+
+        // owner ENABLE → OK
+        let mut msg = build_irqctl_msg(IrqctlRequest::Enable as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(OK));
+    }
+
+    /// DISABLE：非 owner → EPERM；owner → OK（do_irqctl.c:31-32 owner 校验 +
+    /// disable_irq 调用 IC mask 路径）。
+    #[test]
+    fn test_dispatch_irqctl_disable_owner_check() {
+        let mut irq_mgr = IrqManager::new(MockIrqController);
+        let priv_table = crate::test_helpers::test_priv_table();
+        let mut owner = KProcess::new(ProcNr(0), Endpoint(100));
+        owner.priv_id = Some(0);
+        let mut intruder = KProcess::new(ProcNr(1), Endpoint(200));
+        intruder.priv_id = Some(0);
+
+        let mut msg = build_irqctl_msg(IrqctlRequest::SetPolicy as i32, 5, 0, 0);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(OK));
+
+        let mut msg = build_irqctl_msg(IrqctlRequest::Disable as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut intruder, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(EPERM));
+
+        let mut msg = build_irqctl_msg(IrqctlRequest::Disable as i32, 5, 0, 1);
+        assert_eq!(dispatch_irqctl(&mut owner, &mut msg, &mut irq_mgr, &priv_table),
+            KcallResult::Ok(OK));
+    }
 }

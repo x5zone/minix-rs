@@ -745,8 +745,8 @@ pub type CurrentArchSyscall = X86_64Syscall;
 | 测试函数 | 验证行为 | 实际状态 |
 |---------|---------|---------|
 | `test_dispatch_irqctl_setpolicy_full` | SETPOLICY 完整路径：权限→查重→安装→返回 hook_id | ✅ 已覆盖（`test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field`，本地 `IrqManager<MockController>`） |
-| `test_dispatch_irqctl_rmpolicy_owner_check` | RMPOLICY owner 校验 + 删除 | ⚠️ 缺口（RMPOLICY 分支无专用测试） |
-| `test_dispatch_irqctl_enable_disable` | ENABLE/DISABLE owner 校验 + 调用 IC | ⚠️ 缺口（ENABLE/DISABLE 分支无专用测试） |
+| `test_dispatch_irqctl_rmpolicy_owner_check` | RMPOLICY owner 校验 + 删除 | ✅ 已覆盖（2026-09-08，T-9：`test_dispatch_irqctl_rmpolicy_owner_check_and_removes`——非 owner EPERM / owner OK+槽清空 / 空槽 EINVAL） |
+| `test_dispatch_irqctl_enable_disable` | ENABLE/DISABLE owner 校验 + 调用 IC | ✅ 已覆盖（2026-09-08，T-9：`test_dispatch_irqctl_enable_owner_check` + `test_dispatch_irqctl_disable_owner_check`——hook_id<1 EINVAL / 非 owner EPERM / owner OK） |
 | `test_dispatch_vdevio_batch_io` | 批量 I/O 端到端：拷入→权限→执行→拷回 | ⚠️ 缺口（vdevio 无任何测试；拷入/拷回走 `data_copy_vmcheck`，需 QEMU 页表环境） |
 | `test_dispatch_vdevio_alignment_panic` | word/long 未对齐 panic | ❌ 已消除（Rust 返回 EPERM 非 panic，§4.9——`#[should_panic]` 会测错行为） |
 | `test_dispatch_sdevio_safe_grant` | safe 变体 verify_grant 映射 | ⚠️ 部分覆盖（`test_sdevio_safe_path_no_grant_table_returns_eperm` 只测 no-grant-table 拒绝路径；SAFE 成功路径需 QEMU） |
