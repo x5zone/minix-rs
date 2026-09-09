@@ -230,6 +230,7 @@ os/libs/minix-types/src/ipc/
 | `test_nice_regrades_and_rolls_back_on_failure` | `schedule.c:254-292` | 两个数一起改；下发失败快照写回（回滚半） | `os/servers/sched/src/server.rs:840` |
 | `test_nice_refuses_strangers_and_bad_ceilings` | `schedule.c:262-276` | 陌生人 EPERM、越界 EINVAL，表未动 | `os/servers/sched/src/server.rs:871` |
 | `test_kernel_noquantum_demotes_and_never_replies` | `main.c:68-77` 加 `schedule.c:87-107` | 内核通知降一级、失败也不回滚、永不回复（不回滚半） | `os/servers/sched/src/server.rs:900` |
+| `test_invalid_spender_noquantum_stays_silent` | `schedule.c:92-96` 加 `main.c:76` | 内核旗标但来源无效（越界/负号）：门内拒之、门外全静默——连错误码都不回 | `os/servers/sched/src/server.rs:1079` |
 | `test_noquantum_floor_still_fans_out` | `schedule.c:99-103` | 谷底不降但就地下发照做 | `os/servers/sched/src/server.rs:931` |
 | `test_forged_noquantum_answers_eperm` | `main.c:78-83` | 伪造的通知以 EPERM 回件，表未动 | `os/servers/sched/src/server.rs:953` |
 | `test_clock_notification_rebalances_and_rearms` | `main.c:44-55` 加 `schedule.c:353-369` | 时钟通知升一级、LOCAL 下发、再设闹钟、不回复 | `os/servers/sched/src/server.rs:978` |

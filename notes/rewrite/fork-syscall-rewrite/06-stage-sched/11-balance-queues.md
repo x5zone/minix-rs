@@ -157,7 +157,7 @@ os/servers/sched/src/
 ## 5 测试要点
 
 > 基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。
-> 下面 6 个测试是本章直接覆盖的（第 6 个随主循环落地加入，见 02 篇 D7）。
+> 下面 7 个测试是本章直接覆盖的（第 6 个随主循环落地加入见 02 篇 D7，第 7 个是 V2-P3-1 的多进程回升补强）。
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
@@ -166,14 +166,15 @@ os/servers/sched/src/
 | `test_restore_one_level` | `schedule.c:360-361` | 超上限返回高一级（含底边单步） | `balancer.rs` |
 | `test_at_ceiling_rests` | `schedule.c:360` | 到上限就停 + 没降过也停 | `balancer.rs` |
 | `test_gradual_return` | `schedule.c:360-361` | 连调收敛到上限（防振荡的形状） | `balancer.rs` |
-| `test_init_scheduling_arms_bell` | `schedule.c:334-342` | 装配层：闹钟按 5×频率布下（100→500）、失败向上抛、`balancer` 就位 | `os/servers/sched/src/server.rs:623` |
+| `test_init_scheduling_arms_bell` | `schedule.c:334-342` | 装配层：闹钟按 5×频率布下（100→500）、失败向上抛、`balancer` 就位 | `os/servers/sched/src/server.rs:628` |
+| `test_clock_rebalances_multiple_slots_in_order` | `schedule.c:353-365` | 多进程同轮各升一级、到上限的整段跳过（`if` 守护全body）、只给动了的通知、永不回复 | `os/servers/sched/src/server.rs:1100` |
 
 测试策略：超时时间用乘法三个例子（正常/零/溢出）锁死；恢复判断用停止条件（到上限停）和步幅（单步）锁死；防振荡用连调收敛（渐渐回去的形状）锁死。
 
 ### 5.1 测试统计
 
 - 基线以 `cargo test -p minix-sched --lib` 实际输出为准（2026-09-06 主循环落地后为 79 passed；落地前 59）
-- 本节列出与本模块直接相关的 6 个（子集）
+- 本节列出与本模块直接相关的 7 个（子集）
 - 完整测试清单：`rg "fn test_" os/servers/sched/src/balancer.rs os/servers/sched/src/server.rs`
 
 ---

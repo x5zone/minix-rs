@@ -1074,4 +1074,60 @@ mod tests {
         let ipc = MockIpc::default(); // every turn fails
         s.run(&ipc, &mut kernel);
     }
+
+    #[test]
+    fn test_invalid_spender_noquantum_stays_silent() {
+        // C 92-96 + main.c 76: a kernel-flagged NO_QUANTUM naming a
+        // source that fails the door earns the errno internally and no
+        // reply at all — the loop's `continue` is the whole observable.
+        // (Out-of-range endpoint and a negative task slot refuse on
+        // different verdicts; silence is the shared outcome.)
+        let mut s = server(1);
+        let mut kernel = MockKernel::default();
+        let ipc = MockIpc::default();
+        ipc.deliver(noquantum_message(9999), status_kernel());
+        s.run_once(&ipc, &mut kernel);
+        assert!(ipc.sent.borrow().is_empty(), "no reply, not even an error");
+        assert_eq!(kernel.schedule_calls.borrow().len(), 0, "no fan-out");
+        let ipc = MockIpc::default();
+        ipc.deliver(noquantum_message(-4), status_kernel());
+        s.run_once(&ipc, &mut kernel);
+        assert!(ipc.sent.borrow().is_empty());
+        assert_eq!(kernel.schedule_calls.borrow().len(), 0);
+    }
+
+    #[test]
+    fn test_clock_rebalances_multiple_slots_in_order() {
+        // C 353-365: the walk visits every live slot low-to-high; each
+        // demoted process steps exactly one rung and fans out, a slot
+        // already at its ceiling is skipped entirely (the `if` guards
+        // the whole body), and nothing is answered.
+        let mut s = server(1);
+        let mut kernel = MockKernel::new(1, 0);
+        s.init_scheduling(&mut kernel).expect("bell armed");
+        let spent_a = 30usize;
+        let spent_b = 40usize;
+        let rested = 50usize;
+        for (index, max, cur) in [(spent_a, 5u8, 8u8), (spent_b, 6, 7), (rested, 9, 9)] {
+            s.procs[index] = SchedProc {
+                endpoint: Endpoint(index as i32),
+                parent: Endpoint::RS,
+                state: SlotState::InUse,
+                max_priority: Priority::new(max).expect("max < 16"),
+                priority: Priority::new(cur).expect("cur < 16"),
+                time_slice_ms: 100,
+                cpu: CpuId(0),
+            };
+        }
+        let ipc = MockIpc::default();
+        let mut clock = blank(0);
+        clock.m_source = Endpoint::CLOCK;
+        ipc.deliver(clock, status_notify());
+        s.run_once(&ipc, &mut kernel);
+        assert_eq!(s.procs[spent_a].priority.get(), 7, "one rung up");
+        assert_eq!(s.procs[spent_b].priority.get(), 6, "one rung up");
+        assert_eq!(s.procs[rested].priority.get(), 9, "at ceiling: rest");
+        assert_eq!(kernel.schedule_calls.borrow().len(), 2, "movers only");
+        assert!(ipc.sent.borrow().is_empty());
+    }
 }

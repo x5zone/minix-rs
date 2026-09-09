@@ -21,7 +21,7 @@
 | P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | open |
 | P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
 | P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | ✅ 已修复 2026-09-09（Fix #8） |
-| P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | open |
+| P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | ✅ 已修复 2026-09-09（Fix #10） |
 | P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | ✅ 已修复 2026-09-09（Fix #9） |
 | P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
 | P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | open |
@@ -94,7 +94,7 @@
 **建议**：一次 todo-fix 批次做完四个（fix-guard 逐条），删后跑 `cargo test -p minix-sched` 对照 §0 基线 79 passed（删除纯死代码，基线应不动）。
 **验证**：`rg -n "is_valid_quantum|USER_QUANTUM|is_available|IN_USE" os/servers/sched/src/ --type rust` 修后应零生产命中。
 
-### V2-P3-1 测试补强两小件
+### V2-P3-1 测试补强两小件 ✅ 已修复 2026-09-09（Fix #10，见 §9）
 
 **问题**：(a) NO_QUANTUM 带内核旗标但 `m_source` 无效（越界如 9999、或负值 task endpoint）的分支无测试——C 走 `sched_isokendpt` 失败返回 EBADEPT、主循环 `continue` 不回件（schedule.c:92-95 + main.c:76），Rust 走 `Probe` 的 OutOfRange/Task 判决 + `admit` 拒绝 + 静默（server.rs:496-499），现有 `test_kernel_noquantum_demotes_and_never_replies` 只测合法 CHILD；(b) `balance_queues` 多进程回升的遍历序（按槽位 0..NR_PROCS）与「只回升到 ceiling 不越过」（schedule.c:360）只有单进程测试（`test_clock_notification_rebalances_and_rearms`），多进程同轮各升一级、到 ceiling 停的场景未钉。
 
@@ -295,3 +295,11 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **Files**：`table.rs`（OccupiedSlot + from_probe）、`server.rs`（探针方法 + 四臂重写）、`scheduling/{start,stop,nice,noquantum}.rs`（签名 + 测试夹具）。
 **测试**：`cargo test -p minix-sched` 79 passed / 0 failed；clippy 本体 0 告警。
 **Docs**：02 篇（server.rs 全部行锚 +5 重校）、04 篇（table.rs 行锚 + OccupiedSlot 归属）、06 篇（D4 plan_inherit 形状）、07 篇（D 门序并入 plan_stop）、08 篇（两 admit 签名）——共五篇结构性更新 + 全部行锚重校。
+
+
+### ✅ Fix #10: V2-P3-1 — 测试补强两小件
+
+**(a) `test_invalid_spender_noquantum_stays_silent`**（server.rs:1079）：内核旗标但 `m_source` 无效（越界 9999 / 负值 task endpoint -4）的 NO_QUANTUM——门内各得其码（OutOfRange/Task），门外全静默：不回件（连错误码都不回，main.c:76 的 continue 是唯一可观察面）、不降级、不下发。补上八条语义第 2 条的边界半。
+**(b) `test_clock_rebalances_multiple_slots_in_order`**（server.rs:1100）：三个在册进程（两个降过、一个已在上限）同轮回升——各升一级且只升一级、到上限的整段跳过（C 的 `if` 守护全 body：没动的连下发都没有）、两次 LOCAL 下发、零回件。补上八条语义第 7 条的多进程半。
+**测试**：`cargo test -p minix-sched` **81 passed** / 0 failed（79 → 81）；clippy 本体 0 告警。
+**Docs**：02 篇 §5 增 (a) 行、11 篇 §5 增 (b) 行（锚点 server.rs:1079/:1100 实测）。
