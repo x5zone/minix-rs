@@ -49,7 +49,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（✅ lookup 循环核心已落地，§10 Fix #35；包装层 eat_path/last_dir/get_name/canonical_path 随 W7 入口落地）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略）、有意省略表（✅ 已落 99-global-concepts.md，§10 Fix #28）。
+逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（✅ 全闭合：lookup 循环核心 Fix #35 + 包装层 advance/eat_path/last_dir/get_name/canonical_path Fix #36；三个对话接缝待 W1 transport 通电）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略）、有意省略表（✅ 已落 99-global-concepts.md，§10 Fix #28）。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -530,3 +530,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`lookup(start_fs, start_ino, start_dev, resolve, rd, uid, gid, mounts, req_lookup)`——每轮把 `(fs_e, dir_ino, root_ino)` 交给 `req_lookup` 接缝（W7 接线时接 `FsReq::Lookup`+`FsClient`；测试用脚本应答），三类特殊码裁决：EENTERMOUNT 找 `mounted_on == (ino, fs_e)` 行切根（找不到 EIO 加固为 NoEnt）；ELEAVEMOUNT 找当前 fs 行 + `..` 伪路径守卫（C panic 加固为 ENOENT）；ESYMLINK 从 `fp_rd` 重启。`symloop` 累计越界 ELOOP；chroot 边界（同 dev 才生效）每轮重算。**设计要点**：`mounts: &[MountedFs]` 身份快照——C 读共享内存 `vmnt[]`，单线程事件循环下循环内等价（快照每轮 lookup 前重建，W7 接线时入档）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **352 passed / 0 failed**（346→352：六场景——单 FS 一轮中/进挂载切根/爬出+挂载点落定/伪路径 ENOENT/符号链接死循环 ELOOP/空路径 ENOENT）。
 - **记录顺序说明**：本记录按提交时间追加于 §10 末尾；§10 此前的记录已按编号重排（Fix #1–#34），后续记录同样按提交时间追加并以标题编号检索。
+
+### ✅ Fix #36: R2-P1-1 后半（W7 尾）— advance/eat_path/last_dir/get_name/canonical_path 全部实函数化（2026-09-10）
+
+- **File**：`os/servers/vfs/src/path.rs`（`LastDirSplit`/`last_dir_split`/`advance`/`eat_path`/`last_dir`/`get_name`/`canonical_path` + 七测试；`MountedFs` 增 `dev` 字段；`open.rs` 补 `S_IFLNK`；`PathError` 增 `BadF`）、`os/servers/vfs/src/open.rs`（S_IFLNK 常量）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/13-path-lookup.md`（实现表五行翻正 + C-6/W7 尾闭合说明）。
+- **Before**：C-6 核心循环（Fix #35）之外，`advance`（vnode 缓存层）、`eat_path`（起点选择）、`last_dir`（拆分 + 末组件 rdlink 重试）、`get_name`（dirent 扫描）、`canonical_path`（rdlink 展开 + `..` 爬升拼路径）五个 C 函数无实函数化。
+- **After**（C path.c 逐函数对应）：① `last_dir_split`——尾斜杠剥离（len>1 才去）+ `strrchr` 切分 + 组件 `NAME_MAX` 门（ENAMETOOLONG）；② `advance`——lookup 循环 + vnode 缓存（find_by_ino 命中 `fs_count++`/dup，未命中 alloc 填充七字段含 `v_dev`）；③ `eat_path`——首字符选 rd/wd 起点；④ `last_dir`——拆分 + 目录缓存 + 末组件 rdlink 重试（symloop 限时 ELOOP，相对链接以已解析目录重启、绝对链接回根——`path.c:289-303` 的 loop_start 语义）；⑤ `get_name`——按 inode 的 dirent 扫描（非 dir EBADF、流尽 ENOENT）；⑥ `canonical_path`——last_dir + rdlink 展开 + `..` 爬升逐级 `get_name` 前插 + fs 根跨出挂载点 + 真根到顶。`MountedFs` 增 `dev`（`m_dev` → `v_dev` 的 C 语义补齐——首轮缓存填充漏写导致下游 dev 边界失效的根因一并修正）。`S_IFLNK` 常量入 open.rs 与同族并列。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **355 passed / 0 failed**（346→355：canonical 爬升、rdlink 重试、ELOOP、get_name 分批扫描/EBADF/流尽、leave-mount 守卫等新断言）；`cargo check` + clippy 对 servers/vfs 归零。
+- **记录顺序说明**：Fix #35/#36 记录按提交时间追加于 §10 末尾，以标题编号检索。

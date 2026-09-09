@@ -178,16 +178,16 @@ os/servers/vfs/src/
 | `lookup` | `path.h:4` | `path.rs:Lookup { path: String, flags: LookupFlags, vmnt_lock: LockKind, vnode_lock: LockKind, vmnt: Option<VmntId>, vnode: Option<VnodeId>, symloop: u8 }` | `lookup_init` 的 `None` 初始化 |
 | `lookup_init` | `path.c:574` | `Lookup::new(path, flags) -> Result<Self, PathError>` | `path→String, flags, vmnt/vnode=None, symloop=0` |
 | `lookup`（循环核心） | `path.c:384-546` | `path.rs:lookup(start_fs, start_ino, start_dev, resolve, rd, uid, gid, mounts, req_lookup)` | EENTERMOUNT/ELEAVEMOUNT/ESYMLINK 三特殊码循环：路径推进 → symloop 累计越界 ELOOP → 起点切换（进=找 mounted_on 行、出=`..` 守卫+挂载点 vnode、链接=rd 重启）→ 降级锁记录 |
-| `advance` | `path.c:40` | 待 W7 实函数化（`PathResolver` 虚构抽象已删；循环核心 `lookup` 已落地） | `get_free→lookup→find/dup→downgrade` 两相 |
-| `eat_path` | `path.c:133` | 待 W7 实函数化 | `/→rd vs 非/→wd` 起点 |
-| `last_dir` | `path.c:145` | 待 W7 实函数化 | `strrchr('/')` 切分 + `symlink→rdlink` 循环 |
+| `advance` | `path.c:36-127` | `path.rs:advance(start, resolve, rd, uid, gid, mounts, vnode_table, req_lookup)` | lookup 循环 + vnode 缓存（find_by_ino 命中 dup / 未命中 alloc 填充） |
+| `eat_path` | `path.c:131-141` | `path.rs:eat_path(resolve, rd, wd, ...)` | `/→rd vs 非/→wd` 起点 |
+| `last_dir` | `path.c:145-380` | `path.rs:last_dir(..., rdlink)` | 拆分 + 目录缓存 + 末组件 rdlink 重试（symloop 限时） |
 | `lookup` | `path.c:384` | `Lookup::resolve(fs, vmnt, cred) -> Result<LookupRes, LookupError>` | `req_lookup→EENTER/ELEAVE/SYMLINK→memmove→symloop→ELOOP` |
 | `copy_path` | `utility.c:24` | `PathFetcher::copy(path, len) -> Result<String, PathError>` | `len>PATH_MAX→TooLong` |
 | `fetch_name` | `utility.c:60` | `PathFetcher::fetch(addr, len) -> Result<String, PathError>` | `safecopy→String` + `PATH_MAX` 截断 |
 | `canonical_path` | `path.c:648` | 待 W7 实函数化 | `last_dir→rdlink→..` 爬升 |
 
-**C-6 核心闭合（2026-09-09，Fix #35）**：`lookup` 跨 FS 往返循环以纯决策落地——`req_lookup` 闭包即 REQ_LOOKUP 对话接缝（W7 接线时接 `FsReq::Lookup`+`FsClient`），`mounts: &[MountedFs]` 为 vmnt/vnode 两表的身份快照（单线程下循环内等价共享内存读）。三类特殊码的裁决：EENTERMOUNT 找 `mounted_on == (ino, fs_e)` 行切根；ELEAVEMOUNT 找 `fs == 当前` 行 + `..` 伪路径守卫（C 是 panic，加固为 ENOENT）；ESYMLINK 从 `fp_rd` 重启。`eat_path`/`last_dir`/`get_name`/`canonical_path` 的包装层随 W7 入口需要落地。
-| `get_name` | `path.c:593` | 待 W7 实函数化 | `req_getdents` 循环的 `dirent` 解析 |
+**C-6/W7 尾全闭合（2026-09-10，Fix #35/#36）**：`lookup` 跨 FS 往返循环 + `advance`（vnode 缓存层：find_by_ino 命中 dup / 未命中 alloc 填充）+ `eat_path`（起点选择）+ `last_dir`（拆分 + 目录缓存 + 末组件 rdlink 重试，symloop 限时）+ `get_name`（非 dir `EBADF`、流尽 `ENOENT`）+ `canonical_path`（rdlink 展开重试 + `..` 爬升 + `get_name` 前插 + fs 根跨出）。`req_lookup`/`rdlink`/`getdents` 三个对话接缝在 W1 transport 落地后接真实 FS 回路。
+| `get_name` | `path.c:594-646` | `path.rs:get_name(dir_mode, dir_fs, dir_ino, entry_ino, getdents)` | 非 dir `EBADF` + 流尽 `ENOENT` |
 
 ### 4.3 不变量
 

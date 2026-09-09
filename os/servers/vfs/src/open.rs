@@ -36,6 +36,8 @@ pub const S_IFBLK: Mode = 0o060000;
 /// See [`S_IFMT`].
 pub const S_IFIFO: Mode = 0o010000;
 /// See [`S_IFMT`].
+pub const S_IFLNK: Mode = 0o120000;
+/// See [`S_IFMT`].
 pub const S_IFSOCK: Mode = 0o140000;
 
 /// `O_ACCMODE` mask (`minix3/sys/sys/fcntl.h:67`): bottom two bits.
