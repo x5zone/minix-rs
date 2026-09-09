@@ -22,7 +22,7 @@
 
 ### 1.1 为什么路径解析是“所有名字类调用的前置”
 
-`open/read/write` 的 `fd` 操作、`link/unlink/rename` 的目录项操作、`chdir/stat` 的元数据操作、`mount` 的 `m_mounted_on` 绑定、`socket` 的 `do_socketpath` 创建——**全部以路径名作为入口**。`lookup` 将 `"/usr/bin/sh"` 的字符串翻译为 `vnode` 的 `fs_e+ino` 对，是 `14~31` 的 18 个系统调用的**前置依赖**（plan §3.2 的“每篇回答它在 `sef_cb_init_fresh / handle_work` 的哪个位置”使 `13` 的 `eat_path` 在 `14` 的 `get_fd` 之前可观测）。
+`open/read/write` 的 `fd` 操作、`link/unlink/rename` 的目录项操作、`chdir/stat` 的元数据操作、`mount` 的 `m_mounted_on` 绑定、`socket` 的 `do_socketpath` 创建——**全部以路径名作为入口**。（`do_socketpath` 的入口三门——`super_user → EPERM`、路径长 `1..PATH_MAX → EINVAL`、`SPATH_CHECK/CREATE` 分类——已在 `socket.rs` 的 `spath_action`/`spath_path_ok` 落地，路径行走本身仍归本篇。）`lookup` 将 `"/usr/bin/sh"` 的字符串翻译为 `vnode` 的 `fs_e+ino` 对，是 `14~31` 的 18 个系统调用的**前置依赖**（plan §3.2 的“每篇回答它在 `sef_cb_init_fresh / handle_work` 的哪个位置”使 `13` 的 `eat_path` 在 `14` 的 `get_fd` 之前可观测）。
 
 此“前置”与 Redox 的 `Scheme::open(path)` 的 `resolve_path→lookup` 前置及 Linux 的 `path_openat` 的 `link_path_walk` 前置同型：VFS 的 `advance` 的 `get_free_vnode→lookup→find_vnode` 两相在 `Redox` 以 `SchemeId::resolve(path)→Arc<Vnode>` 的 `find` 命中可观测。
 

@@ -48,7 +48,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
+逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -447,3 +447,10 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：重启触发链无建模——`misc.rs:19` 仅 scope note 声明归 10；`unmount_all` 的 `verify_empty`/`sweep_passes` 判定件闲置无调用方。
 - **After**：`RebootStep` 八步枚举 + `REBOOT_SEQUENCE` 常量（misc.c:510-572 逐行对应：Sync → 免挂载源 free → Sync → 非强制卸载 → 全体 free → Sync → 强制卸载 → `NotifyPm` 屏障）+ 两轮 pass 谓词（`free_pass1_eligible`：非挂载源才释放——文件服务器存活以完成卸载；`free_pass2_eligible`：全体）。执行循环（fproc 扫描 + `free_proc(0)` 级联 + unmount 扫描）归 10 号执行面接线；mount.rs 的 `sweep_passes`/`verify_empty` 由 `UnmountAll` 步消费。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **350 passed / 0 failed**（349→350：`test_reboot_sequence_shape`——序列形状 + 三屏障 + 两轮谓词）。
+
+### ✅ Fix #25: C-7 — mount_pfs canned-mount 计划 + do_socketpath 入口三门（2026-09-09）
+
+- **File**：`os/servers/vfs/src/mount.rs`（`PfsMountPlan`/`pfs_mount_plan` + 测试）、`os/servers/vfs/src/socket.rs`（`SpathAction`/`spath_action`/`spath_path_ok` + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/18-mount.md`（§2.7 落地）、`13-path-lookup.md`（入口门归属注）。
+- **Before**：mount_pfs（mount.c:391-425）与 do_socketpath（path.c:803-836）仅以 DEFERRED 注释存在（归 18/13）。
+- **After**：① `PfsMountPlan`——罐装挂载的固定身份（伪设备 + 槽位 + `"pfs"/"pipe"/"none"` 三标签），`fs_e = PFS_PROC_NR`/`m_fs_flags = 0` 由身份蕴含；`req_readsuper` 确认往返属执行半（C 失败仅 printf、挂载照旧，决策层无失败臂）。② `do_socketpath` 入口三门——`spath_action`（SPATH_CHECK/CREATE 分类，syslib.h:278-279）、`spath_path_ok`（路径长 `1..PATH_MAX`，path.c:836）；super_user 门与 `copy_fd` 的 `is_super` 同型（调用方携带）。**边界**：路径行走归 13/C-6；确认往返归 P1-2。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **352 passed / 0 failed**（350→352：`test_spath_entry_gates`、`test_pfs_mount_plan`）。

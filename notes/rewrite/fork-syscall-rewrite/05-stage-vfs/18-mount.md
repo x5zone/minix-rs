@@ -92,6 +92,8 @@ PFS 是拆除唯一的例外：它没有根节点可清（`530-535` 的条件）
 
 取伪设备（`404-405`，无则 panic——启动不变式）→ 取槽（`407-408`，无则 panic）→ 占位（`410`）→ 填槽五字段（`412-417`：设备、端点 `PFS_PROC_NR`、标志清零、`"pfs"`/`"pipe"`/`"none"` 三标签）→ `req_readsuper` 握手（`420`，失败只打印——PFS 缺席不阻断启动）。
 
+**Rust canned-mount 计划（C-7 闭合）**：`PfsMountPlan{dev, vmnt_slot, label:"pfs", mount_path:"pipe", mount_dev:"none"}` + `pfs_mount_plan(dev, vmnt_slot)`（`os/servers/vfs/src/mount.rs`）——`fs_e = PFS_PROC_NR`/`m_fs_flags = 0` 由固定身份蕴含；`req_readsuper` 确认往返属 FS 通信执行半（P1-2），C 对其失败仅 printf、挂载照旧，决策层无失败臂。
+
 ### 2.8 `do_umount/unmount` 拆除机（`mount.c:430-546`）
 
 `do_umount`：超管门（`447`）→ 取名解设备（`450-453`，`allow_mountpt=TRUE`）→ `unmount`（`455`）→ 标签 overlong 截断（`460-461`）→ 回传标签（`462-463`，供调用者停服）。`unmount`：按设备定位槽（`480-485`，双挂 panic——挂载门保证不可能），无槽 `EINVAL`（`488`），加 `EXCL`（`490`）→ 忙检查（`494-504`：引用和>1、有锁超 1、vmnt 有等待，三者任一 `EBUSY`）→ 清统计（`507`）→ 清根引用（`510`）→ 放挂载点（`512-515`）→ 限流 1（`517-519`）→ 调 FS 卸载（`522-524`，失败打印忽略）→ 还伪设备号（`526`）→ 回传标签（`528`）→ 清根节点（`530-535`，PFS 跳过）→ 释槽（`536`）→ 解锁（`538`）→ 加 `bsf` 改道回根并投递（`541-543`）。

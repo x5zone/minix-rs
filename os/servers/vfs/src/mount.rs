@@ -428,6 +428,42 @@ pub fn plan_unmount(is_pseudo: bool, has_root_node: bool) -> UnmountPlan {
     }
 }
 
+/// The canned Pipe-FS mount (`mount_pfs`, `mount.c:391-425`).
+///
+/// PFS is treated as a regular filesystem "to a certain extent": it gets a
+/// vmnt entry (for locking) and receives a mount request (to keep the
+/// fsdriver library happy), but on a `NO_DEV`-range pseudo device with a
+/// fixed identity.  The `req_readsuper` acknowledgment round-trip is FS
+/// communication (wiring, P1-2); C tolerates its failure with a printf and
+/// the mount stands — no failure arm exists at the decision layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PfsMountPlan {
+    /// `find_free_nonedev()` — pseudo device from the `NO_DEV` range.
+    pub dev: u64,
+    /// `get_free_vmnt()` — the claimed slot.
+    pub vmnt_slot: u8,
+    /// `m_label = "pfs"` (`mount.c:409`).
+    pub label: &'static str,
+    /// `m_mount_path = "pipe"` (`mount.c:410`).
+    pub mount_path: &'static str,
+    /// `m_mount_dev = "none"` (`mount.c:411`).
+    pub mount_dev: &'static str,
+}
+
+/// Plan the canned PFS mount (`mount.c:391-411`).
+///
+/// `fs_e = PFS_PROC_NR` and `m_fs_flags = 0` are implied by the fixed
+/// identity; the acknowledgment outcome only ever touches `m_fs_flags`.
+pub fn pfs_mount_plan(dev: u64, vmnt_slot: u8) -> PfsMountPlan {
+    PfsMountPlan {
+        dev,
+        vmnt_slot,
+        label: "pfs",
+        mount_path: "pipe",
+        mount_dev: "none",
+    }
+}
+
 /// Force-shutdown residue check (`unmount_all`, `mount.c:578-585`).
 ///
 /// Any still-mounted slot is a shutdown bug (C panics); here it is a
@@ -732,3 +768,15 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn test_pfs_mount_plan() {
+        // The canned identity (`mount.c:391-425`): pseudo device + fixed
+        // triple; `fs_e = PFS_PROC_NR`/`m_fs_flags = 0` are implied.
+        let plan = pfs_mount_plan(crate::mount::NO_DEV + 1, 3);
+        assert_eq!(plan.dev, crate::mount::NO_DEV + 1);
+        assert_eq!(plan.vmnt_slot, 3);
+        assert_eq!(plan.label, "pfs");
+        assert_eq!(plan.mount_path, "pipe");
+        assert_eq!(plan.mount_dev, "none");
+    }

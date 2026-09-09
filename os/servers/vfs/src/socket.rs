@@ -34,6 +34,39 @@
 use crate::sdev::{SHUT_RD, SHUT_RDWR, SHUT_WR};
 
 /// `SOCK_CLOEXEC` (`minix3/sys/sys/socket.h:113`): close-on-exec at birth.
+// ─────────────────────────────────────────────────────────────────────────────
+// `do_socketpath` entry gates (`path.c:803-836`) — the walk itself stays
+// with 13-path-lookup (C-6); only the three doors decide here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `SPATH_CHECK`/`SPATH_CREATE` (`minix3/minix/include/minix/syslib.h:278-279`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpathAction {
+    /// Check the caller's access to an existing socket file.
+    Check,
+    /// Create the socket file on behalf of the user process.
+    Create,
+}
+
+/// `what` field → action (`syslib.h:278-279`); unknown values are `EINVAL`.
+pub fn spath_action(what: i32) -> Result<SpathAction, SockError> {
+    match what {
+        0 => Ok(SpathAction::Check),
+        1 => Ok(SpathAction::Create),
+        _ => Err(SockError::Inval),
+    }
+}
+
+/// Path-length door (`path.c:836`): `1 <= len < PATH_MAX` — typically not
+/// NUL-terminated on the wire.  Super-user gate rides with the caller
+/// (`path.c:824` `!super_user → EPERM`), as in `copy_fd`'s `is_super`.
+pub fn spath_path_ok(pathlen: usize) -> Result<(), SockError> {
+    if pathlen < 1 || pathlen >= crate::path::PATH_MAX {
+        return Err(SockError::Inval);
+    }
+    Ok(())
+}
+
 pub const SOCK_CLOEXEC: u32 = 0x1000_0000;
 /// `SOCK_NONBLOCK` (`socket.h:114`): non-blocking I/O at birth.
 pub const SOCK_NONBLOCK: u32 = 0x2000_0000;
@@ -844,3 +877,16 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn test_spath_entry_gates() {
+        // `what` classification (`syslib.h:278-279`); wild values EINVAL.
+        assert_eq!(spath_action(0), Ok(SpathAction::Check));
+        assert_eq!(spath_action(1), Ok(SpathAction::Create));
+        assert_eq!(spath_action(2), Err(SockError::Inval));
+        // Path length door (`path.c:836`): 1 <= len < PATH_MAX.
+        assert!(spath_path_ok(1).is_ok());
+        assert!(spath_path_ok(crate::path::PATH_MAX - 1).is_ok());
+        assert_eq!(spath_path_ok(0), Err(SockError::Inval));
+        assert_eq!(spath_path_ok(crate::path::PATH_MAX), Err(SockError::Inval));
+    }
