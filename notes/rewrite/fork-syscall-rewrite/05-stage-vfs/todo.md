@@ -48,7 +48,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（exec.rs 对 cloexec 零消费）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（仍只有 try_lock/unlock，vmnt.rs:72/:90）、fetch_vmnt_paths、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event/panic_hook、有意省略表未建。
+逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -433,3 +433,10 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **判定反转（Ground Truth 链）**：首轮把 `fetch_vmnt_paths` 登记为核心缺口；修复前 fix-guard 核实——该函数定义于 vmnt.c:246、声明悬空于 proto.h:371、**全树零调用**，是 C 死代码；C 的行为真相是 `fill_statvfs` 尾部三名字拷贝（stadir.c:283-285，`f_fstypename ← m_fstype` / `f_mntonname ← m_mount_path` / `f_mntfromname ← m_mount_dev`），getvfsstat 按存储值直报路径、无规范化步骤。移植死函数即 translate 死代码——判定为有意省略，入省略台账（C-10/P3-2 落地时收编）。
 - **After**：`MountNames { fstype, mnton, mntfrom }` + `mount_names(fstype, mnton, mntfrom)` 承载三拷贝决策（调用方从 `Vmnt` 的三个 String 字段直取）；`Vmnt` 表结构不动（首轮"勿再扩表"结论维持）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **348 passed / 0 failed**（347→348：`test_mount_names_block`）。
+
+### ✅ Fix #23: C-9 — ds_event 决策组补齐 + panic_hook 有意省略判定（2026-09-09）
+
+- **File**：`os/servers/vfs/src/misc.rs`（`DsDriverKind`/`classify_ds_key`/`DS_DRIVER_UP`/`DsUpTarget`/`ds_event_action` + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/31-misc-queries.md`（实现清单）。
+- **Before**：DS 驱动上线事件仅在 main_loop.rs:395 以 DEFERRED 注释存在；panic 钩子无建模说明。
+- **After**：`classify_ds_key`（三前缀分类，余者跳过——misc.c:958-968）+ `DS_DRIVER_UP`（ds.h:32）门 + `ds_event_action` 分派（misc.c:976-982：块/字符 → `dmap_endpt_up(owner, is_blk)`，socket → `smap_endpt_up(owner)`）。**边界归属**：`dmap_endpt_up` 的恢复状态机 = 19 号既有 `recover_step`；`smap_endpt_up` 的体 = 14 号 `invalidate_filp_by_sock_drv` 级联（Fix #6/R2-P1-3 已备）——本条只补 DS 事件自身的分类/门/分派，真实 DS 订阅（`ds_check` 循环）挂 P1-2 接线矩阵。**panic_hook 判有意省略**：ARCH A-1 消灭 mthread 后无线程栈可打印（misc.c:989-993 的唯一内容），入省略台账。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **349 passed / 0 failed**（347→349：`test_ds_event_classification`）。
