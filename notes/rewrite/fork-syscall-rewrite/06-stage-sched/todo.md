@@ -26,7 +26,7 @@
 | P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
 | P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | open |
 | P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | open |
-| P3 | P3-4 | lib.rs glob 再导出无人用 | open |
+| P3 | P3-4 | lib.rs glob 再导出无人用 | ✅ 已修复 2026-09-09（Fix #6） |
 | P3 | P3-5 | 11 篇补 Redox 演进参照（V2 增补：RR→DWRR→EEVDF 两级） | open |
 
 **闭环账**（第一轮 → 现在）：P1-1（主循环）/ P1-2（SchedServer 单一所有者，[ARCH S-11]）/ P1-3（IpcTransport + KernelApi 双 trait 接缝）✅ 2026-09-06 修复（测试基线 59 → 79，Fix #1~#4，全文见 archive §9；真实通电挂 edge E8）。
@@ -149,9 +149,9 @@ noquantum_trust 行闭单（主循环接线，server.rs:244 消费）；is_valid
 
 V2 复跑 `tools/design-coverage-check.sh` 确认：00/99 各缺 outline、outline-review、design 共六个文件。归文档排期，不阻断代码审查。
 
-### P3-4 lib.rs 唯一的 glob 再导出没有被使用 —— 维持 open
+### P3-4 lib.rs 唯一的 glob 再导出没有被使用 —— ✅ 已修复 2026-09-09（Fix #6，见 §9）
 
-V2 复核：lib.rs:37 `pub use sef::*;` 仍在；main.rs 的装配走全路径（main.rs:18-21），无使用者。建议不变：删除，调用方统一全路径。
+V2 复核：lib.rs:37 `pub use sef::*;` 仍在；main.rs 的装配走全路径（main.rs:18-21），无使用者。已删除，调用方统一全路径。
 
 ### P3-5 11 篇可补 Redox 演进参照 —— 维持 open + V2 增补事实
 
@@ -262,3 +262,10 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **Docs**：05 篇（D1/D4/ARCH 表/§4.2 符号表/§5 测试表——`USER_QUANTUM` 的 Rust 归属改写为 PM/RS 客户端持有 + 校验谓词删除的理由）、10 篇（D2/D3/ARCH 表/§4.2/§5——`is_available` 行删除，真过滤即 `pick` 的模式匹配）、03 篇（D2/§4.2/§5——IN_USE 常量删除、位值并入文档注释）。全部行锚按删后行号重校（rg/sed 实测 8/8 命中）。
 
 **边界**：`noquantum_trust` 行闭单（server.rs:244 已消费）；start.rs:132 注释中的 `USER_QUANTUM` 指称 PM 侧常量（pm/src/sched.rs:27 仍存在），注释语义仍真，留待 Fix #7 一并重写该段。
+
+### ✅ Fix #6: P3-4 — lib.rs 唯一的 glob 再导出删除
+
+**问题**：lib.rs:37 的 `pub use sef::*;` 是全 crate 唯一的 glob 再导出，无任何使用者（全仓 `use minix_sched::` 消费点仅 main.rs，且全走全路径）——规则之外的单点，留着就会繁殖（与 P2-3 同型）。
+**Files**：`os/servers/sched/src/lib.rs`（删 2 行）。
+**Verified**：`cargo test -p minix-sched` 79 passed；全仓 grep 无 `minix_sched::` 短路径消费。
+**Docs**：无文档引用该 glob（05 篇 :88 的 `pub use` 指 schedproc 的 NR_SCHED_QUEUES 转引，另一回事，仍有效）。
