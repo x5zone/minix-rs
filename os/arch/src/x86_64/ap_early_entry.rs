@@ -13,9 +13,9 @@
 //! # Scratch page layout (linear, written by the BSP)
 //!
 //! ```text
-//! 0x9000 BOOT_MAGIC_SENT u64          0x9008 ApBootstrap record (40B)
-//! 0x9030 GDT descriptor (limit 0x27)  0x9032 GDT base u64 (0x9110)
-//! 0x9100 GDT table (5 × 8 B)
+//! 0x6000 BOOT_MAGIC_SENT u64          0x6008 ApBootstrap record (40B)
+//! 0x6030 GDT descriptor (limit 0x27)  0x6032 GDT base u64 (0x6110)
+//! 0x6110 GDT table (5 × 8 B)
 //! ```
 //!
 //! # Convergence
@@ -33,11 +33,17 @@ use crate::X86_64DirectMap;
 
 /// SIPI start address (vector 0x08) — also the ladder blob's install
 /// address.
-pub const AP_STARTUP_PA: u64 = 0x8000;
+pub const AP_STARTUP_PA: u64 = 0x5000;
+
+/// Bring-up diagnostic: the ladder writes a stage byte here after each
+/// mode transition (values 0xA1..0xA7, 0 = no progress). The BSP clears
+/// it before `boot_ap` and reads it on timeout — the dead stage is then
+/// directly observable from the BSP (S-3d).
+pub const AP_STAGE_MARK: u32 = 0x6F00;
 /// SIPI vector field value.
-pub const AP_STARTUP_VECTOR: u32 = 0x08;
+pub const AP_STARTUP_VECTOR: u32 = 0x05;
 /// Fixed linear address of the ladder's scratch page (BSP-written).
-pub const SCRATCH_LIN: u32 = 0x9000;
+pub const SCRATCH_LIN: u32 = 0x6000;
 
 // Scratch offsets (from SCRATCH_LIN).
 pub const S_MAGIC: usize = 0x000;
@@ -53,18 +59,17 @@ const GDT_CODE64: u64 = 0x00AF_9A00_0000_0000; // 4K gran, L=1
 const GDT_DATA32: u64 = 0x00CF_9200_0000_FFFF; // 4K gran, writable
 const GDT_LIMIT: u16 = 0x0027; // 5 entries × 8 − 1
 
-// The GDT descriptor bytes as they sit at linear 0x9030:
-// limit 0x0027 (LE) + base 0x9110 (LE, 8 bytes).
+// The GDT descriptor bytes as they sit at linear 0x6030:
+// limit 0x0027 (LE) + base 0x6110 (LE, 8 bytes).
 const GDT_DESC_BYTES: [u8; 10] =
-    [0x27, 0x00, 0x10, 0x91, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-
-// Far-jump immediates as machine bytes.
-// 16-bit: EA off16(0x8040) sel16(0x0010); 32-bit: EA off32(0x8080_80C0
-// == run 0x80C0) sel16(0x0018).
-const L16_FJ_BYTES: [u8; 5] = [0xEA, 0x40, 0x80, 0x10, 0x00];
+    [0x27, 0x00, 0x10, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
 core::arch::global_asm!(
     ".section .ap_early_entry, \"ax\"",
+    // Run-linear base of the installed blob — label-derived far-jump
+    // offsets are section-relative and must add this base to become the
+    // run-linear targets the AP needs (S-3d root cause, 2026-09-09).
+    ".set AP_BASE, 0x5000",
     ".globl ap_early_entry_start",
     ".globl ap_early_entry_code",
     ".globl ap_early_entry_end",
@@ -75,16 +80,24 @@ core::arch::global_asm!(
     "  xor ax, ax",
     "  mov ds, ax",
     "  mov ss, ax",
-    // lgdt m16&32 [0x9030] — the descriptor in the scratch page.
+    // Stage 0xA1: real-mode entry + segments up.
+    "  mov byte ptr [0x6F00], 0xA1",
+    // lgdt m16&32 [0x6030] — the descriptor in the scratch page.
     "  .byte 0x66, 0x0F, 0x01, 0x15",
-    "  .word 0x9030",
+    "  .word 0x6030",
     // Protected mode (paging still off — linear = PA).
     "  mov eax, cr0",
     "  or eax, 1",
     "  mov cr0, eax",
-    // Far jump: 16-bit EA form (off16 sel16) → CODE32 @ run 0x8040.
+    // Stage 0xA2: protected mode on (fetch still 16-bit until the far jump).
+    "  mov byte ptr [0x6F00], 0xA2",
+    // Far jump: 16-bit EA form (off16 sel16) → CODE32. The offset is
+    // assembler-resolved from the same-section label difference (= the
+    // run-linear offset, since the blob installs at AP_STARTUP_PA) —
+    // hand-written immediates desynced from the real layout and landed the
+    // AP inside the FJ32 operand bytes (the S-3d root cause, fixed 2026-09-09).
     "  .byte 0xEA",
-    "  .word 0x8040",
+    "  .word (ap_protected - ap_early_entry_start) + AP_BASE",
     "  .word 0x0010",
     // ── 32-bit protected mode (identity: linear = PA) ──
     ".code32",
@@ -92,10 +105,12 @@ core::arch::global_asm!(
     "  mov ax, 0x0020",
     "  mov ds, ax",
     "  mov ss, ax",
+    // Stage 0xA3: protected entry reached.
+    "  mov byte ptr [0x6F00], 0xA3\n  mov dx, 0x3f8\n  mov al, 0xA3\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA3\n  out dx, al",
     // Root page table → CR3 (record field @ scratch+0x18; fill_bootstrap
     // asserts root <4GiB — the 32-bit mov cr3 writes bits 31:0 only,
     // §3.2 invariant).
-    "  mov eax, dword ptr [0x00909018]",
+    "  mov eax, dword ptr [0x00606018]",
     "  mov cr3, eax",
     // PAE (long-mode prerequisite).
     "  mov eax, cr4",
@@ -111,22 +126,29 @@ core::arch::global_asm!(
     "  mov eax, cr0",
     "  or eax, 0x80000000",
     "  mov cr0, eax",
-    // Far jump: 32-bit EA form (off32 sel16) → CODE64 @ run 0x80C0.
+    // Stage 0xA4: long mode on (fetch continues at the far jump).
+    "  mov byte ptr [0x6F00], 0xA4\n  mov dx, 0x3f8\n  mov al, 0xA4\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA4\n  out dx, al",
+    // Far jump: 32-bit EA form (off32 sel16) → CODE64 (label-derived, same
+    // rationale as the 16-bit far jump above).
     "  .byte 0xEA",
-    "  .long 0x000080C0",
+    "  .long (ap_long_low - ap_early_entry_start) + AP_BASE",
     "  .word 0x0018",
     // ── 64-bit long mode, low identity region ──
     ".code64",
     "ap_long_low:",
+    // Stage 0xA5: long-mode entry reached.
+    "  mov byte ptr [0x6F00], 0xA5\n  mov dx, 0x3f8\n  mov al, 0xA5\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA5\n  out dx, al",
     // Per-AP kernel stack (record field stack @ scratch+0x24 → linear
     // 0x9024). Absolute 32-bit addressing reaches the installed copy
     // through the identity mapping — rip-relative would reach the
     // ORIGINAL blob (link-time VAs), not the copy.
-    "  mov rsp, qword ptr [0x00909024]",
+    "  mov rsp, qword ptr [0x00606024]",
     // Rust entry: RCX = bootstrap PA (MS x64 first argument).
-    "  mov ecx, 0x8000",
+    "  mov ecx, 0x5000",
     // Rust entry VA (record field @ scratch+0x28 → linear 0x9028).
-    "  mov rax, qword ptr [0x00909028]",
+    "  mov rax, qword ptr [0x00606028]",
+    // Stage 0xA6: record consumed, entering the Rust tail.
+    "  mov byte ptr [0x6F00], 0xA6\n  mov dx, 0x3f8\n  mov al, 0xA6\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA6\n  out dx, al",
     "  jmp rax",
     // Blob end marker (for image_bytes length calculation).
     "ap_early_entry_end:",
@@ -227,6 +249,13 @@ pub unsafe fn fill_bootstrap(scratch_lin: u32, record: &ApBootstrap) {
 /// Must only be entered by the AP ladder (MMU on, identity root active,
 /// running on the per-AP kernel stack).
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
+    // Stage 0xA7: Rust entry reached (S-3d diagnostic).
+    unsafe {
+        core::ptr::write_volatile(
+            X86_64DirectMap::kernel_phys_to_virt(PhysBytes(AP_STAGE_MARK as u64)).0 as *mut u8,
+            0xA7,
+        );
+    }
     let va = X86_64DirectMap::kernel_phys_to_virt(PhysBytes(SCRATCH_LIN as u64)).0 as usize
         + S_RECORD as usize;
     let (magic, record) = unsafe {
@@ -252,8 +281,11 @@ mod tests {
 
     #[test]
     fn test_placement_constants_within_low_identity() {
-        assert_eq!(AP_STARTUP_PA, 0x8000);
-        assert_eq!(AP_STARTUP_VECTOR, 0x08);
+        // S-3d (2026-09-09): vector page moved to 0x05 — PA 0x8000 is
+        // OVMF's own AP park/jump-table area under QEMU (monitor `xp`
+        // evidence, see smp_todo S-3d).
+        assert_eq!(AP_STARTUP_PA, 0x5000);
+        assert_eq!(AP_STARTUP_VECTOR, 0x05);
         assert!(AP_STARTUP_PA < 0x10_0000);
     }
 
@@ -261,7 +293,7 @@ mod tests {
     fn test_scratch_layout_offsets_frozen() {
         // The ladder's absolute immediates are compiled against these
         // offsets — they are the build↔run contract.
-        assert_eq!(SCRATCH_LIN, 0x9000);
+        assert_eq!(SCRATCH_LIN, 0x6000);
         assert_eq!(S_MAGIC, 0);
         assert_eq!(S_RECORD, 8);
         assert_eq!(S_GDT_DESC, 0x30);
@@ -279,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_gdt_desc_bytes_frozen() {
-        assert_eq!(GDT_DESC_BYTES, [0x27, 0x00, 0x10, 0x91, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(GDT_DESC_BYTES, [0x27, 0x00, 0x10, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]
@@ -339,6 +371,57 @@ mod tests {
             u64::from_le_bytes(scratch[S_GDT_DESC + 2..S_GDT_DESC + 10].try_into().unwrap()),
             (SCRATCH_LIN as usize + S_GDT_TABLE) as u64
         );
+    }
+
+    #[test]
+    fn test_far_jump_targets_hit_real_instruction_boundaries() {
+        // S-3d root-cause pin (2026-09-09): the ladder's two far jumps
+        // used hand-written offsets that had desynced from the emitted
+        // layout — the AP landed inside the FJ32 operand bytes and
+        // executed garbage. The assembler now derives both offsets from
+        // labels + AP_BASE; this test walks every `EA` opcode in the
+        // installed image, computes each candidate's in-blob offset
+        // (target − AP_BASE) and asserts it lands on the expected opcode
+        // signature of the next stage (protected entry `mov ax, imm16`;
+        // long entry `mov rsp, [abs]`).
+        const BASE: usize = AP_STARTUP_PA as usize;
+        let blob = image_bytes();
+        let mut fj16 = false;
+        let mut fj32 = false;
+        for (i, b) in blob.iter().enumerate() {
+            if *b != 0xEA {
+                continue;
+            }
+            // 16-bit form candidate: EA off16 sel16 — off16 = blob offset
+            // of `ap_protected`, decoded from the two bytes after EA.
+            if i + 5 <= blob.len() {
+                let t16 = u16::from_le_bytes(blob[i + 1..i + 3].try_into().unwrap()) as usize;
+                if t16 > BASE && t16 - BASE < blob.len() && blob[t16 - BASE..t16 - BASE + 2] == [0x66, 0xB8] {
+                    let sel16 = u16::from_le_bytes(blob[i + 3..i + 5].try_into().unwrap());
+                    if sel16 == 0x0010 {
+                        fj16 = true;
+                    }
+                }
+            }
+            // 32-bit form candidate: EA off32 sel16 — off32 = blob offset
+            // of `ap_long_low`.
+            if i + 7 <= blob.len() {
+                let t32 = u32::from_le_bytes(blob[i + 1..i + 5].try_into().unwrap()) as usize;
+                // FJ32's first target instruction is the 0xA5 stage mark
+                // write (`mov byte [abs], imm8` via SIB-abs), which
+                // precedes `mov rsp, [abs]`.
+                if t32 > BASE && t32 - BASE + 3 <= blob.len() && blob[t32 - BASE..t32 - BASE + 3] == [0xC6, 0x04, 0x25] {
+                    let sel16 = u16::from_le_bytes(blob[i + 5..i + 7].try_into().unwrap());
+                    if sel16 == 0x0018 {
+                        fj32 = true;
+                    }
+                }
+            }
+        }
+        assert!(fj16, "FJ16 must target the protected-mode entry (mov ax, imm16) in-blob");
+        assert!(fj32, "FJ32 must target the long-mode entry (0xA5 stage mark) in-blob");
+        // The blob must end exactly at the final `jmp rax`.
+        assert_eq!(&blob[blob.len() - 2..], &[0xFF, 0xE0]);
     }
 
     fn record_fixture() -> ApBootstrap {

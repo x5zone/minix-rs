@@ -663,3 +663,30 @@ I-6 余项①②（a22ae791a）、D-65（54d5403ea）、B-X 收口 + OQ-15-1 裁
 **stage 状态总结**：本 campaign 后，01-stage-kernel 全部"可诚实完成"的 stub/deferred/TODO
 清零；剩余 open 项的依赖全部在 SMP bring-up（S-3d 起的硬件调试链）或外部环境（sudo），
 无一项可在当前环境下进一步推进。
+
+## 25. S-3d 续诊（2026-09-09 第二会话：三修复 + 环境级根因 + 下一步）
+
+**真实修复（已入库，见 smp_todo.md S-3d V13 续诊记录）**：
+1. **FJ16/FJ32 远跳偏移脱钩修复**：手写 0x8040/0x80C0 与实际布局脱节（AP 落进 FJ32
+   操作数字节执行垃圾——S-3d 卡死的直接原因之一），改汇编期 label 差值 + AP_BASE
+   推导，hosted 签名契约测试（`test_far_jump_targets_hit_real_instruction_boundaries`）
+   钉住"目标落点=下一阶段首指令"。
+2. **SDM 强制延时补齐**：INIT→SIPI 10ms / SIPI 间 200µs（`tsc_delay`，C arch_smp.c
+   udelay parity）——消除 0x0000/0xA2 随机（SIPI 在 INIT 未完成时被丢弃）。
+3. **级标诊断设施**：梯子逐级写 AP_STAGE_MARK + #UD 收集器（IVT[6]→handler 记录
+   故障 CS:IP）+ 串口级标——本轮全部定位证据的手段即来源于此，S-4/S-5 调试沿用。
+
+**环境级根因（monitor `xp` 实证，修正此前"lgdt 0x67 编码"旧猜测）**：
+- 本 QEMU+OVMF(TCG) 组合的 MpInitLib 将 AP 停放跳表/循环置于 **PA 0x8000-0x91xx**
+  （每页头 3 字节页号痕迹 + `jmp 82:xx` 跳表 + CS=0x82 停放循环），与 vector 0x08
+  选页（PA 0x8000）及 scratch（0x9000）全面冲突；
+- 存在 **2/3 号 #UD 游走核**，持续执行/清零低内存（blob 安装后被清零实证）——
+  低内存 trampoline 在该引导路径下不可靠。
+- 已搬迁 blob/scratch/marks 至 vector 0x05（PA 0x5000/0x6000/0x6F00）并复核
+  GDT/record 内容正确落盘，但游走核踩踏仍在——**属 OVMF+TCG 环境级问题**。
+
+**下一步（S-3d 解除的明确路径）**：测试内核改 **multiboot 直启**（QEMU `-kernel`，
+绕开 OVMF：AP 天然 wait-for-SIPI、无固件 AP 干扰、无 UEFI 依赖），multiboot 入口
+桩 + 复用 kernel 库，随后 S-3d 在干净环境一次跑通，顺路成为 S-8（asm trap 入口）
+的裸机测试基建。
+

@@ -147,6 +147,34 @@ fn wait_icr_idle() {
     }
 }
 
+/// Spin until the TSC advances by at least `ticks`.
+///
+/// S-3d (2026-09-09): the INIT-SIPI sequence previously had NO timed
+/// waits — ICR-idle spins only prove the ICR accepted the write, not that
+/// the target AP finished processing the INIT. A SIPI sent while the INIT
+/// is still pending is discarded (SDM Vol 3A §8.4.4), which made AP
+/// bring-up nondeterministic (the AP sometimes slept through both SIPIs).
+/// C waits `udelay(10000)` after INIT and `udelay(200)` between SIPIs
+/// (arch_smp.c). The thresholds are lower bounds: 50M ticks is ≥10 ms for
+/// any host TSC ≥ 5 GHz and 1M ticks ≥200 µs under the same bound;
+/// over-waiting is harmless (two IPIs, one boot).
+fn tsc_delay(ticks: u64) {
+    let t0: u64;
+    unsafe {
+        core::arch::asm!("rdtsc", out("rax") t0, out("rdx") _, options(nomem, nostack));
+    }
+    loop {
+        let now: u64;
+        unsafe {
+            core::arch::asm!("rdtsc", out("rax") now, out("rdx") _, options(nomem, nostack));
+        }
+        if now.wrapping_sub(t0) >= ticks {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 impl SmpArch for X86_64SmpArch {
     fn send_sched_ipi(cpu: u32) {
         // C: arch_send_smp_schedule_ipi(cpu) — arch/i386/smp.c:65
@@ -267,9 +295,12 @@ impl SmpArch for X86_64SmpArch {
         }
 
         // Step 2: Wait for INIT delivery.
-        // Intel SDM recommends 10ms; we spin-wait on ICR delivery status
-        // instead of using a timer, which is simpler in early boot.
+        // SDM Vol 3A §8.4.4 mandates ≥10ms between the INIT and the first
+        // SIPI (C: udelay(10000) — arch_smp.c). ICR-idle alone only means
+        // the ICR accepted the write; a SIPI sent while the target AP is
+        // still processing the INIT is discarded. See `tsc_delay`.
         wait_icr_idle();
+        tsc_delay(50_000_000);
 
         // Step 3: Send first SIPI
         let icr_sipi = sipi_vector
@@ -281,6 +312,8 @@ impl SmpArch for X86_64SmpArch {
             lapic_write(LAPIC_ICR_LOW, icr_sipi);
         }
         wait_icr_idle();
+        // C: udelay(200) between the two SIPIs (arch_smp.c).
+        tsc_delay(1_000_000);
 
         // Step 4: Send second SIPI (recommended for reliability).
         unsafe {
