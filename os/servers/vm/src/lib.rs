@@ -43,6 +43,13 @@ macro_rules! audit_log {
     };
 }
 
+/// Audit emission (V12-P3-2①): `--features vm_acl_audit` routes events to
+/// the no_std sink (`audit::emit`; output pending VM ↔ syslog IPC).
+///
+/// Release observability WITHOUT the feature is carried by the VmContext
+/// counters instead — `pagefault_errors` (V9-P1-1) and `dropped_messages`
+/// (V10-P0-2) — both surfaced through VM_INFO; allocation failures via
+/// `alloc_failures` (V11/T18). See 24/26 for the query wiring.
 #[cfg(all(not(test), feature = "vm_acl_audit"))]
 macro_rules! audit_log {
     ($($arg:tt)*) => {
@@ -50,6 +57,8 @@ macro_rules! audit_log {
     };
 }
 
+/// No-op build: events that matter carry counters (see the feature variant's
+/// doc comment); pure-diagnostics events are release-invisible by design.
 #[cfg(not(any(test, feature = "vm_acl_audit")))]
 macro_rules! audit_log {
     ($($arg:tt)*) => {};

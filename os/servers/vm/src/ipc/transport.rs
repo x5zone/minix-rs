@@ -46,7 +46,7 @@ use minix_sys::ipc::IpcTransport as _;
 /// `is_from_kernel()` (pagefault audit branch); further `IPC_STATUS_*`
 /// bits join as consumers appear.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct IpcStatus {
+pub(crate) struct IpcStatus {
     /// Raw status bits from the kernel. See Minix3 `ipc.h` `IPC_STATUS_*`.
     pub flags: u32,
 }
@@ -76,7 +76,7 @@ impl IpcStatus {
 
 /// Errors that can occur during IPC transport operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IpcError {
+pub(crate) enum IpcError {
     /// The transport is not connected (test mode) or kernel IPC is
     /// not yet implemented (production mode, before kernel IPC core lands).
     Unimplemented,
@@ -116,7 +116,7 @@ impl core::fmt::Display for IpcError {
 ///    real (trap-backed, V11/T9) impl otherwise. Two distinct
 ///    implementations (kernel vs. test) justify the trait abstraction
 ///    per the "trait quality" guideline.
-pub trait IpcTransport {
+pub(crate) trait IpcTransport {
     /// Receive an IPC message from any source. Mirrors C
     /// `sef_receive_status(ANY, &msg, &rcv_sts)`.
     fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError>;
@@ -146,7 +146,7 @@ pub trait IpcTransport {
 /// answers `EIO`, which flows through `IpcError::Kernel` into the main
 /// loop's dropped-message accounting — the failure mode is observable,
 /// graceful, and identical to a slow/broken kernel link.
-pub struct KernelIpcTransport {
+pub(crate) struct KernelIpcTransport {
     /// Tracks whether the transport has been initialized. The C side
     /// does this implicitly via SEF startup; we expose it explicitly
     /// so tests can assert against it.
@@ -221,7 +221,7 @@ impl IpcTransport for KernelIpcTransport {
 /// `receive`/`send` through the trait object while the test queues
 /// messages and inspects replies through the handle.
 #[cfg(test)]
-pub struct TestIpcTransport {
+pub(crate) struct TestIpcTransport {
     shared: alloc::rc::Rc<TestTransportShared>,
 }
 
@@ -275,7 +275,7 @@ struct TestTransportShared {
 /// the recorded replies afterwards exercises the real main-loop path.
 #[derive(Clone)]
 #[cfg(test)]
-pub struct TestTransportHandle {
+pub(crate) struct TestTransportHandle {
     shared: alloc::rc::Rc<TestTransportShared>,
 }
 

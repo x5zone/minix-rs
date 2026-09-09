@@ -131,9 +131,13 @@ V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准
 
 维持：系统性刷新 = 一轮完整 coverage 复核工作量，另立批次。本轮 Gate A 重跑结果（371 符号 / doc 92.5%）可直接作为刷新输入。
 
-### V12-P3-1（P3）Redox 对照增强集 / V12-P3-2（P3）可观测性与卫生批
+### ✅ V12-P3-2（P3）可观测性与卫生批——③①已处置 2026-09-09（§18.9 Fix #81）；②复核免修；④维持
 
-维持（零帧批量预映射、Provider 五分类参照、audit release 剔除的计数器核对、memtype 6 个 pub fn 缺 `///`、6 类型 pub 收窄 pub(crate)、bitmap lastscan）。原文见 V12 存档 §17.2。
+- **③ transport pub 收窄**：✅ 六类型（IpcStatus/IpcError/IpcTransport/KernelIpcTransport/TestIpcTransport/TestTransportHandle）`pub → pub(crate)`——lib.rs 本就无再导出，全 crate 内消费。
+- **① audit 宏注释**：✅ 双宏各加文档——release 可观测性由 VmContext 计数器承载（pagefault_errors/dropped_messages/alloc_failures）。
+- **② memtype 6 pub fn 文档**：复核已达标（免修）。
+- **④ bitmap lastscan**：维持登记（优化提示，非缺陷）。
+**P3-1（Redox 对照增强集）维持登记**：零帧批量预映射/Provider 五分类/find_free 双索引均为增强候选，需独立设计决策，不适于 campaign 内顺手做。
 
 ---
 
@@ -463,6 +467,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **测试（新增 1）**：`test_mapped_file_tail_page_private_copy_with_clearend`——2 页区域 + clearend=100：非尾读直链缓存帧、尾读得私有 ANON 新帧、cache 条目存活。字节级清零在 host 无法断言（桩 no-op），诚实标注 target 验证。
 - **Verified**: 三矩阵 **503/521/503 passed**（+1）；clippy servers/vm 0 警告
 - **边界**：24-page-cache.md §3.6 第 6 行（ONCE 往返差）维持登记（第 1 笔，E-VFSWIRE 批次）；尾页已私有化后二次写不再触发清零（PTE 已 RW，无故障）——与 C 的 phys != MAP_NONE 早退一致
+
+### ✅ Fix #81: V12-P3-2 — 卫生批（transport pub 收窄 + audit 宏文档）
+
+- **③** `ipc/transport.rs` 六类型 `pub → pub(crate)`（lib.rs 无再导出、消费全在 crate 内——公开面是过宽的残留）。
+- **①** lib.rs 双 audit_log! 宏加文档：feature 版指向 no_std sink，no-op 版显式声明 release 可观测性由 VmContext 计数器（pagefault_errors/dropped_messages/alloc_failures）承载——V12 问句"计数器面是否足够"的答复：足够（VM_INFO 可达）。
+- **② 免修**：memtype pub fn 文档抽查已达标；**④ 维持**：bitmap lastscan 优化登记；**P3-1 维持**：Redox 增强集需独立设计决策。
+- **Files**: `lib.rs`、`ipc/transport.rs`
+- **测试**: 无新增；503 passed + clippy 0 警告回归
 
 ---
 
