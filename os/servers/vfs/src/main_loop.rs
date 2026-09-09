@@ -32,7 +32,6 @@
 //!   minix-rs models this as a single-threaded event loop with request-slot
 //!   state machines (ARCH A-1, see 01-vfs-init-main.md §3.4).
 
-use crate::call_table::CallTable;
 use crate::device_map::{DmapTable, SmapTable};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;
@@ -300,8 +299,6 @@ pub struct VfsState {
     pub lock_table: LockTable,
     /// Worker thread pool.
     pub worker_pool: WorkerPool,
-    /// Syscall dispatch table.
-    pub call_table: CallTable,
     /// Revive counter (number of blocked processes revived).
     pub reviving: usize,
     /// Current message.
@@ -336,7 +333,6 @@ impl VfsState {
             smap_table: SmapTable::new(),
             lock_table: LockTable::new(),
             worker_pool: WorkerPool::new(),
-            call_table: CallTable::new(),
             reviving: 0,
             current_message: Message::default(),
             current_fp_slot: None,
@@ -1383,22 +1379,15 @@ mod tests {
     }
 
     #[test]
-    fn test_call_resolver_trait_two_impls() {
-        use crate::call_table::{CallResolver, CallTable, NullResolver, VFS_BASE, VfsCallNum};
-        let table = CallTable::new();
-        let null = NullResolver;
-        // Same raw, different behavior
-        let raw = VfsCallNum::Open as u32;
-        assert_eq!(table.resolve(raw), Some(VfsCallNum::Open));
-        assert_eq!(null.resolve(raw), None);
-        assert!(CallResolver::is_valid(&table, raw));
-        assert!(!CallResolver::is_valid(&null, raw));
-        // Invalid raw both None, but trait objects show polymorphism
-        let resolvers: Vec<Box<dyn CallResolver>> =
-            vec![Box::new(CallTable::new()), Box::new(NullResolver)];
-        assert_eq!(resolvers[0].resolve(raw), Some(VfsCallNum::Open));
-        assert_eq!(resolvers[1].resolve(raw), None);
-        let _ = VFS_BASE; // use constant
+    fn test_callnum_from_raw_single_truth() {
+        // P2-2: `CallTable`/`CallResolver` are gone — `from_raw` is the one
+        // resolution truth, and unknown numbers stay unknown.
+        use crate::call_table::{VFS_BASE, VfsCallNum};
+        assert_eq!(
+            VfsCallNum::from_raw(VFS_BASE + (VfsCallNum::Open as u32 - VFS_BASE)),
+            Some(VfsCallNum::Open)
+        );
+        assert_eq!(VfsCallNum::from_raw(VFS_BASE + 200), None);
     }
 }
 

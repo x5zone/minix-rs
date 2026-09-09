@@ -49,7 +49,7 @@ VFS 的主循环（`main.c:68-139` `while(TRUE) { yield; send_work; get_work; di
 
 Minix3 的 `table.c:17` 的 `int (*const call_vec[NR_VFS_CALLS])(void) = { CALL(VFS_OPEN)=do_open, … }` 以 `CALL(n)=[n-VFS_BASE]` 的指定初始化将 64 调用号映射到 handler，调用点 `call_vec[call_index]` 的 `index <64 && !=NULL ? call : ENOSYS` 在 `do_work:283` 的 `switch` 外实现 `O(1)` 分发。问题有三：`int(*)(void)` 的 `void` 使 `m_in/m_out` 经全局 `err_code/m_in` 隐式传递；`NULL` 的哨兵在 `Enable syscall stats` 的 `calls_stats` 埋点中需 `!=NULL` 守门；`VFS_RMDIR→do_unlink` 的别名（`table.c:36` `CALL(VFS_RMDIR)=do_unlink`）在 C 中无类型区分。
 
-`ARCH A-2` 的 minix-rs 演进是 `VfsCallNum` 的 64 变体枚举 + `CallTable::dispatch` 的 `match` 穷尽：`VFS_BASE+0x00..0x3F` 的 64 变体在 `call_table.rs:28` 的 `repr(u32)` 枚举中显式，`from_raw(raw)->Option<VfsCallNum>` 的 `raw-VFS_BASE` 检查替代 `call_index<64`，`dispatch(call)->Result` 的 `match` 使 `VFS_RMDIR` 的别名在语义层可区分（`Rmdir` 变体可独立匹配）而非复用 `do_unlink` 的函数指针别名。
+`ARCH A-2` 的 minix-rs 演进是 `VfsCallNum` 的 64 变体枚举 + `from_raw` 单真相解析（`CallTable`/`CallResolver` 已删，P2-2；绑定 match 即 W3 的 `dispatch_syscall`）：`VFS_BASE+0x00..0x3F` 的 64 变体在 `call_table.rs:28` 的 `repr(u32)` 枚举中显式，`from_raw(raw)->Option<VfsCallNum>` 的 `raw-VFS_BASE` 检查替代 `call_index<64`，`dispatch(call)->Result` 的 `match` 使 `VFS_RMDIR` 的别名在语义层可区分（`Rmdir` 变体可独立匹配）而非复用 `do_unlink` 的函数指针别名。
 
 ### 1.4 回复的双路径：`reply` 的 `ipc_sendnb` 与 `SUSPEND` 的延迟
 
@@ -134,7 +134,7 @@ Rust 改写不是照抄 `main.c:80` 的 `transid = TRNS_GET_ID(m_in.m_type)` 与
 ### D2 函数指针表 → 类型化枚举分发（ARCH A-2）
 
 - **C**：`int(*call_vec[64])(void)` 的 64 函数指针 + `CALL(VFS_RMDIR)=do_unlink` 别名复用（`table.c:36`）。
-- **Rust**：`VfsCallNum` 的 64 变体 `enum`（`call_table.rs:28` `repr(u32)`，`VFS_BASE+0x00..0x3F`）+ `CallTable { handlers: [Option<VfsCallNum>;64] }` 的 `lookup(raw)->Option<VfsCallNum>` + `CallResolver` trait 的 `resolve(raw)->Option<VfsCallNum>` + `TransIdCodec` trait 的 `encode/decode/is_fs_transid`；`CallResolver` 的 `CallTable`（查表）与 `NullResolver`（永 `None`）双实现在 `call_table.rs:339/350` 行为不同（`VFS_OPEN → Some(Open) vs None`）；`TransIdCodec` 的 `VfsTransIdCodec`（`base 0xB00`）与 `TestTransIdCodec { base: 0xC00 }` 在 `main_loop.rs:85` 行为不同（`0xB01 → Vfs true / Test false`）；`Rmdir` 与 `Unlink` 的别名在语义层分 `Rmdir` 变体独立，handler 内 `match` 可 `Rmdir => do_unlink()` 复用但调用点可区分。
+- **Rust**：`VfsCallNum` 的 64 变体 `enum`（`call_table.rs:28` `repr(u32)`，`VFS_BASE+0x00..0x3F`）+ `from_raw(raw)->Option<VfsCallNum>` 单真相解析（P2-2：`CallTable`/`CallResolver`/`NullResolver` 已删——查表信息量与 `from_raw` 全等，绑定由 W3 的穷举 `dispatch_syscall` match 承担）+ `TransIdCodec` trait 的 `encode/decode/is_fs_transid`（唯一定义在 fs_comm，P2-6）；`TransIdCodec` 的 `VfsTransIdCodec`（`base 0xB00`）与 `TestTransIdCodec { base: 0xC00 }` 在 `main_loop.rs:85` 行为不同（`0xB01 → Vfs true / Test false`）；`Rmdir` 与 `Unlink` 的别名在语义层分 `Rmdir` 变体独立，handler 内 `match` 可 `Rmdir => do_unlink()` 复用但调用点可区分。
 - **为什么**：`NULL` 的哨兵在 Rust 以 `Option` 的 `None→ENOSYS` 显式，`call_index<64` 的边界在 Rust 以 `raw.checked_sub(VFS_BASE) → index → Option` 的 `Result` 显式；`calls_stats` 的埋点在 Rust 以 `#[cfg(feature="syscall_stats")]` 的 `AtomicUsize` 计数显式；`resolve` 的 trait 抽象使 08 的 `Revived` 优先与 09 的 `FsReply` 路由的 `call_vec` 查询在测试中可 `NullResolver` 的拒绝样本覆盖。
 - **备选**：保留 `fn()` 指针表；否决——`void` 的隐式 `m_in` 依赖在 `CallResolver::resolve` 的 `&self` 显式上下文替代。
 
@@ -166,7 +166,7 @@ Rust 改写不是照抄 `main.c:80` 的 `transid = TRNS_GET_ID(m_in.m_type)` 与
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-2 函数指针表 → 枚举分发 | `CallTable` + `VfsCallNum` + `CallResolver`(`CallTable` vs `NullResolver`) + `TransIdCodec`(`Vfs` 0xB00 vs `Test` 0xC00) | `call_table.rs:CallResolver` + `main_loop.rs:TransIdCodec` + 本文档 D2 + 09 正文 1.3 |
+| A-2 函数指针表 → 枚举分发 | `VfsCallNum` + `from_raw` 单真相（`CallTable`/`CallResolver` 已删，P2-2）+ `TransIdCodec`(`Vfs` 0xB00 vs `Test` 0xC00，唯一定义 fs_comm) | `call_table.rs:VfsCallNum` + `fs_comm.rs:TransIdCodec` + 本文档 D2 + 09 正文 1.3 |
 | A-4 全局 → VfsState 聚合 | `VfsState { reviving, current_message, current_fp_slot }` | `main_loop.rs:VfsState` + 本文档 D5 + 09 正文 1.5 |
 | A-5 SUSPEND→ReplyIntent | `ReplyIntent::ReplyLater` + `reviving` 往返 | `main_loop.rs:ReplyIntent` + 本文档 D4 + 09 正文 1.4 |
 | A-8 64 位 | `VFS_BASE 0x100` 的 `u32` 枚举 | `call_table.rs:VfsCallNum` + 本文档 D2 + 09 正文 2.2 |
@@ -180,7 +180,7 @@ Rust 改写不是照抄 `main.c:80` 的 `transid = TRNS_GET_ID(m_in.m_type)` 与
 ```
 os/servers/vfs/src/
 ├── main_loop.rs        — VfsState{ fproc_table, worker_pool, call_table, reviving, current_message, current_fp_slot, boot_phase… } + Route/TransIdCodec(Vfs 0xB00 vs Test 0xC00)/reply/unblock/poll_next
-├── call_table.rs       — VfsCallNum(64)/CallTable[64]/CallResolver(CallTable vs NullResolver)
+├── call_table.rs       — VfsCallNum(64)/from_raw 单真相（CallTable 已删，P2-2）
 ├── worker.rs           — WorkerPool 的 may_do_pending 与 w_fp 互证（08）
 └── fproc.rs            — FpFlags::REVIVED 与 BlockedOn::Pipe/Flock 互证（02）
 ```

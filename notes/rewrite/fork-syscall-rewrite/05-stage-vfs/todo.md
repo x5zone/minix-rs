@@ -61,7 +61,7 @@
 
 ### P1-1～P1-5（架构级，R1 存档 §3）
 
-- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。**部分闭合** 2026-09-09（§10 Fix #27）：Read 占位符已由 `Route::Enosys` 取代（P1-1 的占位符子项闭合）；RS 前缀真值化见 R2-P1-4。
+- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。**部分闭合** 2026-09-09（§10 Fix #27）：Read 占位符已由 `Route::Enosys` 取代（占位符子项闭合）；RS 前缀真值化见 R2-P1-4。剩余余件（legacy `dispatch()` 删除 + `run_once` 替换）随 W3 执行面一并落地——dispatch 的门语义（pending 标记/去重）先行迁入 W3 的入口函数再删除。
 - P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。 **✅ 矩阵已落定** 2026-09-09（§10 Fix #29）：接线顺序九步（W1-W9）落 plan.md §8，每步带依赖与关闭条件；§9.8 的推进顺序与之对齐。剩余为各步执行（分布在大件与 edge 条目）。
 - ✅ P1-3 已修复 2026-09-09（§10 Fix #8）：`PmHandler::fetch_group_list` 数据搬运口（`sys_datacopy_wrapper` 接缝，默认 fail-closed `ENOSYS`，通电挂 P1-2/E1）；`SETGROUPS` 臂补 `NGROUPS_MAX → EINVAL` 门（C 为 panic，fail-closed 偏差与 10-pm-protocol.md D4 的 EFAULT 决策同向）+ `group_no==0` 直清 + 正数路径经栈缓冲送真实列表。`PmError::NotImplemented` 变体新增。测试 +3（ENOSYS 预通电态/超限拒绝/零组直清）。
 - ✅ P1-4 已修复 2026-09-09（§10 Fix #9）：`FilterOutcome::Query` 增 `clear_update`/`set_busy` 义务字段（select.c:517 清 UPDATE 在发送前、:522 置 BUSY 在成功后，socket 对位 :525-538），`filter_step` 恒置 true——义务进数据而非调用方记忆；23-select.md D3 同步并登记"只给 rops"的否决理由。
@@ -70,7 +70,7 @@
 ### P2-1～P2-6 / P3-1 / P3-2（R1 存档 §4/§5）
 
 - P2-1 **数字漂移修正**：现为 **30 个 `pub enum *Error` + 30 个 `fn to_errno`**（首轮 20/29，全 crate grep 实测）；两同名 `FdError` 仍在（filp.rs:263、filedes.rs:45）。方案已被本轮修订：否决"crate 级单一 VfsError"大收敛，改为接入 minix-types 的 `ToErrno` 通道——见 **R2-P2-1**。**✅ 已修复** 2026-09-09（§10 Fix #19）。
-- P2-2 复核 ✅：call_table.rs 64 臂同构 match、`CallTable`:206、`NullResolver`:350 原样；本轮 R2-P1-2 给出它的终局（随绑定层落地删除）。
+- ✅ P2-2 已修复 2026-09-09（§10 Fix #31）：`CallTable`/`CallResolver`/`NullResolver` 三件套删除（-158 行），`VfsCallNum::from_raw` 为唯一解析真相；绑定 match 归 W3。
 - P2-3 复核 ✅：9 个测试替身全部仍在 `#[cfg(test)]` 之前的生产单元（request.rs:492/bdev.rs:87/cdev.rs:60/sdev.rs:230/:276/socket.rs:232/:285/:345/fs_comm.rs:438，各文件 cfg(test) 起点在 :539/:321/:311/:599/:627/:493）。path.rs 的同族问题更严重，单列 R2-P1-1。**✅ 已修复** 2026-09-09（§10 Fix #17：11 个替身定义与 impl 全部 `#[cfg(test)]` 圈定，含 fcntl.rs:752 的 `ScriptedFcntl` 与 fs_comm 的 `TestTransIdCodec`——后者连带把 main_loop 的 re-export 拆为条件导出）。
 - P2-4 **锚点漂移修正**：`NextFit` 现于 filedes.rs:91（首轮 :93），:70 新增 "O_DUPFD arg lower-bound variant" 辩护注释——仍无 C 来源，判定不变（Gate D 虚构第二实现，同族累积见 §9.6 Rule Discovery）。**✅ 已修复** 2026-09-09（§10 Fix #14：移 cfg(test) 更名 `NextFitDemo`，辩护注释的假语义一并修正——C 与 Linux 的 fd 分配都是 start 起最低空闲，不存在第二真实策略）。
 - ✅ P2-5 已修复 2026-09-09（§10 Fix #15）：`device_map` 全线 `Option<i32>` 端点 → `Option<Endpoint>`（DmapEntry/SmapEntry 字段、driver_match/get_by_endpt/unmap_by_endpt/map_driver/check_mapper/EndpointDirectory/smap_by_endpt/smap_endpt_by_dev/RegisterPlan、CTTY_ENDPT/RS_PROC_NR 常量）；`filp::find_by_vnode(usize) → VnodeId`。bdev/cdev 各自决策函数的 i32 参数为 wire 边界，保持并注明。
@@ -461,6 +461,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：四条依赖束（内核 IPC/SEF/根挂载/path 循环）散落在 23 处 DEFERRED 与 mfs 侧 Pending 中，无统一收敛视图——接线顺序错误会导致"先接挂载而后 SEF，重启即挂"。
 - **After**：九步接线矩阵（W1 内核 IPC → W2 VfsState 组合完备 → W3 dispatch 绑定 → W4 SEF → W5 dmap/smap+DS → W6 根挂载 → W7 path 循环 → W8 死亡级联编排 → W9 mfs lookup），每步带依赖项、关闭条件与已备决策件清单；矩阵收敛判定 = getvfsstat 真实回路。本条闭合 P1-2 的"无统一收敛视图"诉求；各步执行分布在大件（R2-P1-1/R2-P1-2）与 edge 条目。
 - **Verified**：纯文档；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **354 passed / 0 failed**（无代码变化）。
+
+### ✅ Fix #31: P2-2 — CallTable/CallResolver/NullResolver 三件套删除（2026-09-09）
+
+- **File**：`os/servers/vfs/src/call_table.rs`（-158 行：三件套定义 + 四个 CallTable 测试）、`os/servers/vfs/src/main_loop.rs`（VfsState 字段/构造/导入 + resolver 测试重写为 `test_callnum_from_raw_single_truth`）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/09-main-loop.md`（A-2 描述/ARCH 表/模块图四处）。
+- **Before**：`CallTable`（64 槽 `Option<VfsCallNum>` 数组，全 Some 制造"已实现"假象）+ `CallResolver` trait + `NullResolver`（Gate D 双实现产物）——三层机制表达一个范围检查，信息量与 `from_raw` 全等。
+- **After**：`VfsCallNum::from_raw` 为唯一解析真相；四个 CallTable 测试删除（其断言对象已不存在），resolver 测试重写为单真相断言；绑定由 W3 的穷举 `dispatch_syscall` match 承担。**勘察修正**：W3 的真实粒度是"每调用处理器组合层"（各模块为细粒度决策函数，缺 C `do_xxx` 的编排体 + Message 解码）——已记入 R2-P1-2 边界，W3 按此粒度执行。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **350 passed / 0 failed**（354−4 个失效对象测试；`grep -rn "CallTable" os/servers/vfs/src` 仅余历史注释）。
 
 ### ✅ Fix #30: R2-P1-2（W2 前半）— VfsState 组合完备：七表聚合（2026-09-09）
 
