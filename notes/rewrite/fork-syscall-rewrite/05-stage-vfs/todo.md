@@ -48,7 +48,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
+逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -440,3 +440,10 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：DS 驱动上线事件仅在 main_loop.rs:395 以 DEFERRED 注释存在；panic 钩子无建模说明。
 - **After**：`classify_ds_key`（三前缀分类，余者跳过——misc.c:958-968）+ `DS_DRIVER_UP`（ds.h:32）门 + `ds_event_action` 分派（misc.c:976-982：块/字符 → `dmap_endpt_up(owner, is_blk)`，socket → `smap_endpt_up(owner)`）。**边界归属**：`dmap_endpt_up` 的恢复状态机 = 19 号既有 `recover_step`；`smap_endpt_up` 的体 = 14 号 `invalidate_filp_by_sock_drv` 级联（Fix #6/R2-P1-3 已备）——本条只补 DS 事件自身的分类/门/分派，真实 DS 订阅（`ds_check` 循环）挂 P1-2 接线矩阵。**panic_hook 判有意省略**：ARCH A-1 消灭 mthread 后无线程栈可打印（misc.c:989-993 的唯一内容），入省略台账。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **349 passed / 0 failed**（347→349：`test_ds_event_classification`）。
+
+### ✅ Fix #24: C-8 — pm_reboot 八步重启序列决策（2026-09-09）
+
+- **File**：`os/servers/vfs/src/misc.rs`（`RebootStep`/`REBOOT_SEQUENCE`/两轮 pass 谓词 + 测试；模块 scope note 同步）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/10-pm-protocol.md`（pm_reboot 行落地说明）。
+- **Before**：重启触发链无建模——`misc.rs:19` 仅 scope note 声明归 10；`unmount_all` 的 `verify_empty`/`sweep_passes` 判定件闲置无调用方。
+- **After**：`RebootStep` 八步枚举 + `REBOOT_SEQUENCE` 常量（misc.c:510-572 逐行对应：Sync → 免挂载源 free → Sync → 非强制卸载 → 全体 free → Sync → 强制卸载 → `NotifyPm` 屏障）+ 两轮 pass 谓词（`free_pass1_eligible`：非挂载源才释放——文件服务器存活以完成卸载；`free_pass2_eligible`：全体）。执行循环（fproc 扫描 + `free_proc(0)` 级联 + unmount 扫描）归 10 号执行面接线；mount.rs 的 `sweep_passes`/`verify_empty` 由 `UnmountAll` 步消费。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **350 passed / 0 failed**（349→350：`test_reboot_sequence_shape`——序列形状 + 三屏障 + 两轮谓词）。

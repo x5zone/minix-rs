@@ -16,9 +16,12 @@
 //! - `GcovTarget` + label/endpt/grant gates type the probe
 //! - `MiscFs` types the FS dialogue (`ScriptedMisc` vs `RefusingMisc`)
 //!
-//! Scope note: PM-side execution (`pm_reboot`/`free_proc`, 10) and DS
-//! dispatch (`ds_event`, 09+19) stay out; table locks (`lock_vmnt`,
-//! 06), fd allocation (`get_fd`, 14), path walking (`eat_path`, 13),
+//! Scope note: the reboot *sequence* (`REBOOT_SEQUENCE`/pass predicates)
+//! and the DS *decisions* (`classify_ds_key`/`ds_event_action`) decide
+//! here; their execution — `free_proc` cascades, `dmap/smap_endpt_up`,
+//! the `ds_check` drain loop — stays with 10/09+19 wiring.  Table locks
+//! (`lock_vmnt`, 06), fd allocation (`get_fd`, 14), path walking
+//! (`eat_path`, 13),
 //! permission verdicts (`forbidden`/`read_only`, 29), FS envelopes
 //! (`req_sync`/`req_utime`, 12), and message packing (09/ipc) stay out.
 //! This module only decides: gates, sweeps, answers, and dialogue.
@@ -666,6 +669,52 @@ pub fn ds_event_action(kind: DsDriverKind, value: u32) -> Option<DsUpTarget> {
     }
 }
 
+/// One step of the VFS reboot sequence (`pm_reboot`, `misc.c:510-572`).
+///
+/// The sequence exists to peel the tree from the leaves: normal processes
+/// first (they hold no mounts), then a non-forced unmount sweep, then file
+/// servers, then the forced sweep.  Each `Sync` is a barrier that lets
+/// dirty data reach its volume before the next demolition stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebootStep {
+    /// `do_sync()` (`:514/:534/:552`).
+    Sync,
+    /// Free pass 1 — live processes that are NOT mount sources
+    /// (`find_vmnt(endpoint) == NULL`, `:517-531`).
+    FreeNonMountSources,
+    /// `unmount_all(0)` — non-forced (`:533`).
+    UnmountAll,
+    /// Free pass 2 — every live endpoint, file servers included (`:535-549`).
+    FreeAll,
+    /// `unmount_all(1)` — forced (`:551`).
+    UnmountAllForced,
+    /// `VFS_PM_REBOOT_REPLY` to `PM_PROC_NR` — the sync barrier (`:555-568`).
+    NotifyPm,
+}
+
+/// The reboot sequence, in order (`pm_reboot`, `misc.c:510-572`).
+pub const REBOOT_SEQUENCE: [RebootStep; 8] = [
+    RebootStep::Sync,
+    RebootStep::FreeNonMountSources,
+    RebootStep::Sync,
+    RebootStep::UnmountAll,
+    RebootStep::FreeAll,
+    RebootStep::Sync,
+    RebootStep::UnmountAllForced,
+    RebootStep::NotifyPm,
+];
+
+/// Round-1 free eligibility (`misc.c:525`): a live endpoint that is not a
+/// mount source.  File servers survive this pass so they can unmount.
+pub fn free_pass1_eligible(endpoint_live: bool, is_mount_source: bool) -> bool {
+    endpoint_live && !is_mount_source
+}
+
+/// Round-2 free eligibility (`misc.c:540`): any live endpoint.
+pub fn free_pass2_eligible(endpoint_live: bool) -> bool {
+    endpoint_live
+}
+
 /// The obsolete verdict (`do_getrusage:998-1006`).
 ///
 /// PM owns rusage now; VFS answers `OK` until the call is removed
@@ -1143,4 +1192,29 @@ mod tests {
         );
         // Non-up values skip (`misc.c:976-977`).
         assert_eq!(ds_event_action(DsDriverKind::Blk, 0), None);
+    }
+
+    #[test]
+    fn test_reboot_sequence_shape() {
+        // The demolition order (`misc.c:510-572`): sync → leaf processes →
+        // sync → non-forced sweep → servers → forced sweep → reply.
+        assert_eq!(REBOOT_SEQUENCE.len(), 8);
+        assert_eq!(REBOOT_SEQUENCE[0], RebootStep::Sync);
+        assert_eq!(REBOOT_SEQUENCE[1], RebootStep::FreeNonMountSources);
+        assert_eq!(REBOOT_SEQUENCE[3], RebootStep::UnmountAll);
+        assert_eq!(REBOOT_SEQUENCE[4], RebootStep::FreeAll);
+        assert_eq!(REBOOT_SEQUENCE[5], RebootStep::Sync);
+        assert_eq!(REBOOT_SEQUENCE[6], RebootStep::UnmountAllForced);
+        assert_eq!(REBOOT_SEQUENCE[7], RebootStep::NotifyPm);
+        // Three sync barriers (`:514/:534/:552`).
+        assert_eq!(
+            REBOOT_SEQUENCE.iter().filter(|s| **s == RebootStep::Sync).count(),
+            3
+        );
+        // Pass predicates: mount sources survive round 1, fall in round 2.
+        assert!(!free_pass1_eligible(true, true));
+        assert!(free_pass1_eligible(true, false));
+        assert!(!free_pass1_eligible(false, false));
+        assert!(free_pass2_eligible(true));
+        assert!(!free_pass2_eligible(false));
     }

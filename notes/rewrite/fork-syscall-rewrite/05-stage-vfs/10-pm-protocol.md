@@ -104,6 +104,7 @@ Minix3 的 `PM` 是 `mproc` 的权威（`../04-stage-pm/00-pm-overview.md`），
 ### 2.7 `pm_reboot/pm_dumpcore` 的 `do_sync` 与 `free_proc` 循环
 
 `pm_reboot:503 do_sync + for(i 0..NR: lock_proc(rfp); endpoint!=NONE&&find_vmnt==NULL → worker_set_proc→free_proc(0)→restore; unlock) + do_sync + unmount_all(0) + for(i … endpoint!=NONE → free_proc(0)) + do_sync + unmount_all(1) + ipc_send(PM,REBOOT_REPLY)` 的 `FREE` vs `EXITING` 双轮释放；`pm_dumpcore:903 if(is_blocked→unpause) + snprintf(core.%d) + common_open(O_WRONLY|CREAT|TRUNC) + sys_datacopy(PM→VFS proc_name) + get_filp(write)→write_elf_core_file→unlock→free_proc(EXITING)` 的 `core` 解挂与 `EXITING` 释放（`26-coredump.md` 的 `write_elf_core_file` 调用点）。
+- **Rust 重启序列落地（C-8 闭合）**：`RebootStep` 八步枚举 + `REBOOT_SEQUENCE`（`misc.rs`）——Sync×3 屏障 + 两轮 free（第一轮仅非挂载源 `free_pass1_eligible`，第二轮全体 `free_pass2_eligible`）+ `UnmountAll`/`UnmountAllForced`（挂接 mount.rs 的 `sweep_passes`/`verify_empty`）+ `NotifyPm` 同步屏障；`free_proc(0)` 级联与 unmount 扫描循环归 10 号执行面接线。
 
 ---
 
