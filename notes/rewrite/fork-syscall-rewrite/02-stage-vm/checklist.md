@@ -214,7 +214,7 @@
 | # | C 变量 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
 | G-001 | `vmproc[]` | glo.h:20 | 进程表 (1024 槽位) | `VM_PROC_TABLE: [AssumeSyncCell<VmProc>; VM_PROC_COUNT]` | 已实现 (vmproc/table.rs) |
-| G-002 | `enable_filemap` | glo.h:22 | 文件映射开关 | `GLOBAL.enable_filemap` | 已实现 (global.rs) |
+| G-002 | `enable_filemap` | glo.h:22 | 文件映射开关 | `FILEMAP_ENABLED`（mmap.rs:137，AtomicBool；setter 为 cfg(test)，C 的 env_parse 设定面属 boot 协议扩展——V12-P2-4②标注态） | 已实现（mmap.rs，2026-09-09 修正路径） |
 | G-003 | `kernel_boot_info` | glo.h:25 | 启动信息 | `VmServer.boot_procs`（`BootParams`，全局 `BOOT_INFO` 已删，V9-P3-1） | 已实现 (vm_server.rs) |
 | G-004 | `nocheck/incheck/sc_lastline` | glo.h:28-30 | 健全检查控制 | 跳过 (cfg 控制) | 跳过 |
 | G-005 | `sc_lastfile` | glo.h:31 | 健全检查位置 | 跳过 | 跳过 |
@@ -232,7 +232,7 @@
 | # | C 变量 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
 | G-014 | `__vm_init_fresh` | main.c:64 | 首次启动标志 | `VmServer::init_fresh` | 已实现 (vm_server.rs) |
-| G-015 | `rprocpub` | main.c:63 | RS 进程表 (static) | 集成在 `vm_server.rs::VmServer` | 已实现 + **TODO `ipc_call_rs_init()` 3 阶段合约文档**: 1) `mess_rs_init` send→RS; 2) receive `mess_rs_init_reply`; 3) `sys_safecopyfrom` 拷出 rproctab. 3 条 DEFERRED 依赖 (IpcTransport/kernel IPC core, sys_safecopyfrom/safecopy, endpoint→proc_nr/proc-table lookup). 当前返 `Ok(RprocTab::empty())` 保持 rs_handshake 非 panic |
+| G-015 | `rprocpub` | main.c:63 | RS 进程表 (static) | `RprocTab`（vm_server.rs；wire 面 `minix-types::ipc::rprocpub` 已落地 Fix #85/#89） | ✅ wire 已落地；VM 侧解码挂 E-RSWIRE（原"返回 empty() 假成功"已被 fail-closed 取代，Fix #34） |
 
 ### 2.3 alloc.c
 
@@ -651,42 +651,42 @@
 
 ---
 
-## 6. IPC Handler 覆盖 (25 个)
+## 6. IPC Handler 覆盖（V12-P2-1/G-V12-13 整表重写，2026-09-09）
 
-| # | IPC 调用 | C 函数 | Rust 实现 | 状态 |
-|---|----------|--------|-----------|------|
-| I-001 | VM_FORK | fork.c:32 | `vm_server::handle_fork` | 已实现 (sys_fork 返回合成 Endpoint) |
-| I-002 | VM_BRK | break.c:44 | `vm_server::handle_brk` | 已实现 |
-| I-003 | VM_MMAP | mmap.c:200 | `vm_server::handle_mmap` | 已实现 |
-| I-004 | VM_MUNMAP | mmap.c:512 | `munmap::handle_munmap` | 已实现 |
-| I-005 | VM_MAP_PHYS | mmap.c:310 | `vm_server::handle_map_phys` | 已实现 |
-| I-006 | VM_UNMAP_PHYS | mmap.c:310 (反向) | `munmap::unmap_phys` | 已实现 |
-| I-007 | VM_EXIT | exit.c:60 | `vm_server::handle_exit` | 已实现 |
-| I-008 | VM_WILLEXIT | exit.c:100 | `vm_server::handle_willexit` | 已实现 |
-| I-009 | VM_PAGEFAULT | pagefaults.c:240 | `vm_server::dispatch_pagefault` | 已实现 |
-| I-010 | VM_REMAP | mmap.c:366 | `dispatch_remap` | ✅ **已完整实现 (2026-06-16)**: 完整 do_remap 语义 — endpoint 验证、源 region 查找/匹配、目标地址槽查找、VR_SHARED region 创建 + VrParam::Shared 设置 + remaps 递增。新增 `find_region_snapshot` + `increment_region_remaps` 跨进程安全访问。4 个测试覆盖 |
-| I-011 | VM_REMAP_RO | mmap.c:366 | `dispatch_remap_ro` | ✅ **已完整实现 (2026-06-16)**: 复用 `dispatch_remap_impl(readonly=true)`，强制 VR_SHARED 不带 VR_WRITABLE。与 VM_REMAP 共享实现 |
-| I-012 | VM_SHM_UNMAP | (mmap.c) | `dispatch_shm_unmap` | ✅ **已 wired (2026-06-14)**: 函数早已存在 (dispatcher.rs:132) 但此前被 catch-all 截走，本次接入 `dispatch_by_number` 分支 (`forwhom=m1i1, addr=m1p1`) |
-| I-013 | VM_GETPHYS | mmap.c:438 | `vm_server::handle_get_phys` | 已实现 |
-| I-014 | VM_GETREF | mmap.c:463 | `vm_server::handle_get_refcount` | 已实现 |
-| I-015 | VM_SETCACHE | mem_cache.c:196 | `dispatch_setcache` | **NotImplemented** (依赖 slab) |
-| I-016 | VM_MAPCACHEPAGE | mem_cache.c:95 | `dispatch_mapcache` | **NotImplemented** (依赖 slab) |
-| I-017 | VM_FORGETCACHEPAGE | mem_cache.c:283 | `dispatch_forgetcache` | 已实现 (dispatcher.rs:231) |
-| I-018 | VM_CLEARCACHE | mem_cache.c:315 | `dispatch_clearcache` | 已实现 (dispatcher.rs:241) |
-| I-019 | VM_PROCCTL | exit.c:117 | `dispatch_procctl` | ✅ **已完整实现 (2026-06-16)**: VMPPARAM_CLEAR (free_proc+pt_new+pt_bind) + VMPPARAM_HANDLEMEM (handle_memory_once 同步路径); RS/VFS 权限检查; 未知 param→EINVAL; caller endpoint 传入; 5 个测试覆盖 |
-| I-020 | VM_VFS_MMAP | mmap.c:135 | `dispatch_vfs_mmap` | 已实现 (mmap.rs:273) |
-| I-021 | VM_VFS_REPLY | vfs.c:109 | `dispatch_vfs_reply` | ✅ Done (2026-06-16) — 完整实现: reqid>0 校验 + VfsReply 构造(req_id/result/fd/dev/size_pages) + VfsRequestQueue::handle_reply + 延迟回调(DispatchResult) + VmReply::Suspend; 3 个测试覆盖 |
-| I-022 | VM_RS_SET_PRIV | rs.c:34 | `rs::handle_rs_set_priv` | 已实现 |
-| I-023 | VM_RS_PREPARE | rs.c:71 | `rs::handle_rs_prepare` | ✅ 已实现 (V11/T12) |
-| I-024 | VM_RS_UPDATE | rs.c:150 | `rs::handle_rs_update` | ✅ 已实现 (V11/T13；通电→E2) |
-| I-025 | VM_RS_MEMCTL | rs.c:349 | `rs::handle_rs_memctl` | 已实现 |
-| I-026 | VM_ADDDMA | (新增) | `dispatch_adddma` | **NotImplemented** |
-| I-027 | VM_DELDMA | (新增) | `dispatch_deldma` | **NotImplemented** |
-| I-028 | VM_GETDMA | (新增) | `dispatch_getdma` | **NotImplemented** |
-| I-029 | VM_INFO | utility.c:100 | `query::handle_info` | 已实现 |
-| I-030 | VM_GETRUSAGE | utility.c:426 | `query::handle_getrusage` | 已实现 (C 的 getrusage 只设 maxrss/minflt/majflt, 不设 text/data/stack) |
+> **证据口径**：本表按 `dispatcher.rs` 的 `build_callmap()`（26 项注册，镜像 C main.c:543-575）+ 三条特殊路径 + 4 项双侧故意不注册重写。2026-06-12 旧表的 `handle_*` 包装函数已被 V10-P2-1 删除（现役入口 `MessageDispatcher::dispatch_*`）；cache 四 handler 于 P2-1 Phase B 迁 `ipc/cache_handlers.rs`。守护测试 `test_callmap_registration_matches_c`。总体覆盖：**26/26 注册对齐 C + 4/4 双侧同为 ENOSYS**（V13 调用号审计，todo.md §18.1）。
 
-**IPC 覆盖小结**: 25/30 已实现, 5/30 NotImplemented (17% 缺口率)。未实现项: I-023/I-024 (RS live update), I-026/I-027/I-028 (DMA)。VFS transid 路由已接入 dispatch_procctl (S-13 已修复)。
+| # | IPC 调用 | C 函数 | Rust handler（现役） | 状态 |
+|---|----------|--------|---------------------|------|
+| I-001 | VM_FORK | fork.c:32 | `dispatch_fork`（dispatcher.rs，逻辑 fork.rs；eager-CoW 相挂 E-FORKMSG） | ✅ 已实现（通电→E1/E2） |
+| I-002 | VM_BRK | break.c:44 | `dispatch_brk`（brk.rs） | ✅ 已实现 |
+| I-003 | VM_MMAP | mmap.c:200 | `dispatch_mmap`（mmap.rs） | ✅ 已实现 |
+| I-004 | VM_MUNMAP | mmap.c:512 | `dispatch_munmap`（munmap.rs，PTE 生命周期 Fix #70 批已验证闭合） | ✅ 已实现 |
+| I-005 | VM_MAP_PHYS | mmap.c:310 | `dispatch_map_phys`（map_phys.rs） | ✅ 已实现 |
+| I-006 | VM_UNMAP_PHYS | mmap.c:310（反向） | `dispatch_unmap_phys`（munmap.rs） | ✅ 已实现 |
+| I-007 | VM_EXIT | exit.c:60 | `dispatch_exit`（exit.rs；含 free_process_phys 共享释放 Fix #70） | ✅ 已实现 |
+| I-008 | VM_WILLEXIT | exit.c:100 | `dispatch_willexit`（exit.rs） | ✅ 已实现 |
+| I-009 | VM_PAGEFAULT | pagefaults.c:240 | `dispatch_pagefault`（vm_server.rs，特殊路径 P3；PTE 写入 Fix #60 + 可写性门 V13-P1-1） | ✅ 已实现（通电→E1/E2） |
+| I-010 | VM_REMAP | mmap.c:366 | `dispatch_remap`（dispatcher.rs） | ✅ 已实现 |
+| I-011 | VM_REMAP_RO | mmap.c:366 | `dispatch_remap_ro` | ✅ 已实现 |
+| I-012 | VM_SHM_UNMAP | mmap.c:512（变体） | `dispatch_shm_unmap`（munmap.rs；源 remaps 递减 Fix #64） | ✅ 已实现 |
+| I-013 | VM_GETPHYS | mmap.c:438 | `dispatch_get_phys`（query.rs） | ✅ 已实现 |
+| I-014 | VM_GETREF | mmap.c:463 | `dispatch_get_refcount`（query.rs；`1+remaps` 随 Fix #64 自动回落） | ✅ 已实现 |
+| I-015 | VM_SETCACHE | mem_cache.c:196 | `dispatch_setcache`（**ipc/cache_handlers.rs**，P2-1 Phase B 迁入） | ✅ 已实现（旧表 "NotImplemented 依赖 slab" 已失效） |
+| I-016 | VM_MAPCACHEPAGE | mem_cache.c:95 | `dispatch_mapcache`（**ipc/cache_handlers.rs**；含 clearend 尾页私有拷贝 Fix #80 + 回滚对称测试 Fix #74） | ✅ 已实现（旧表条目已失效） |
+| I-017 | VM_FORGETCACHEPAGE | mem_cache.c:283 | `dispatch_forgetcache`（**ipc/cache_handlers.rs**） | ✅ 已实现 |
+| I-018 | VM_CLEARCACHE | mem_cache.c:315 | `dispatch_clearcache`（**ipc/cache_handlers.rs**） | ✅ 已实现 |
+| I-019 | VM_PROCCTL | exit.c:117 | `dispatch_procctl`（exit.rs：CLEAR/HANDLEMEM；文件后备分支挂 doc 23） | ✅ 已实现（file 分支 ENOSYS，登记项） |
+| I-020 | VM_VFS_MMAP | mmap.c:135 | `dispatch_vfs_mmap`（mmap.rs） | ✅ 已实现 |
+| I-021 | VM_VFS_REPLY | vfs.c:109 | `dispatch_vfs_reply`（vfs_queue 回调） | ✅ 已实现 |
+| I-022 | VM_RS_SET_PRIV | rs.c:34 | `dispatch_rs_set_priv`（rs.rs；真掩码传递挂 E-RSWIRE/E2） | ✅ 已实现（掩码 fail-closed，V13-P2-5） |
+| I-023 | VM_RS_PREPARE | rs.c:71 | `dispatch_rs_prepare`（rs.rs，V11/T12） | ✅ 已实现（通电→E2） |
+| I-024 | VM_RS_UPDATE | rs.c:150 | `dispatch_rs_update`（rs.rs，V11/T13） | ✅ 已实现（通电→E2） |
+| I-025 | VM_RS_MEMCTL | rs.c:349 | `dispatch_rs_memctl`（rs.rs；MAKE_VM 恒拒 = 已登记偏差 Fix #68） | ✅ 已实现（单实例偏差登记） |
+| I-029 | VM_INFO | utility.c:100 | `dispatch_info`（query.rs；total_pages 全局接线 Fix #70） | ✅ 已实现 |
+| I-030 | VM_GETRUSAGE | utility.c:426 | `dispatch_getrusage`（query.rs） | ✅ 已实现（children 路径两侧同为零，C 自注 TODO） |
+| — | VM_EXEC_NEWMEM / VM_ADDDMA / VM_DELDMA / VM_GETDMA | —（C 亦无 handler） | **故意不注册**（T19/Fix #25 判定；双侧可观察行为同为 ENOSYS） | ✅ parity（勿接线） |
+| — | RS_INIT | main.c:149（特殊路径） | `rs_handshake`（fail-closed 至 E-RSWIRE，pin 测试定格） | 🔄 E-RSWIRE |
+| — | VFS transid | main.c:143（特殊路径） | `handle_vfs_transid`（发送半挂 E-VFSWIRE） | 🔄 E-VFSWIRE |
 
 ---
 
