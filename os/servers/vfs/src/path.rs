@@ -144,6 +144,154 @@ pub struct NodeDetails {
     pub dev: u64,
 }
 
+/// 挂载行的循环视图（`vmnt[]` 快照字段，调用方从 VmntTable+VnodeTable 构建）。
+///
+/// C 在循环内直接读共享内存 `vmnt[]`/`->v_mounted_on->`；Rust 表分离后以
+/// 身份快照传入——单线程事件循环下循环内无并发改动，快照等价（W7 接线时
+/// 每轮 lookup 前重建一次）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountedFs {
+    /// `m_fs_e`——该挂载分区的 FS 端点。
+    pub fs: Endpoint,
+    /// 根 vnode 身份（`m_root_node`）：`(ino, dev)`。
+    pub root: (u64, u64),
+    /// 挂载点 vnode 身份（`m_mounted_on`）：`(ino, fs_e, dev)`；`None` = 空行。
+    pub mounted_on: Option<(u64, Endpoint, u64)>,
+}
+
+/// 进程根目录锚（`fp_rd`）——chroot 边界与符号链接重启点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootDir {
+    /// `v_inode_nr`。
+    pub ino: u64,
+    /// `v_fs_e`。
+    pub fs: Endpoint,
+    /// `v_dev`。
+    pub dev: u64,
+}
+
+/// `lookup`（`path.c:384-546`）——跨 FS 往返解析循环。
+///
+/// 每轮把 `(fs_e, dir_ino, root_ino)` 交给 `req_lookup` 让 FS 尽可能多地
+/// 解析剩余路径；FS 以 [`LookupRes`] 回答四类结果——`Ok` 直接落定，三类
+/// 特殊码（进挂载/出挂载/符号链接）推进路径后切换起点再来一轮。循环只做
+/// 裁决：vmnt 的锁升降是执行面（tll），本轮记录"当前作用于哪个挂载行"。
+///
+/// `req_lookup` 闭包即 REQ_LOOKUP 对话的接缝（W7 接线时接 `FsReq::Lookup`
+/// + `FsClient`；测试用脚本应答）。
+pub fn lookup(
+    start_fs: Endpoint,
+    start_ino: u64,
+    start_dev: u64,
+    resolve: &mut Lookup,
+    rd: RootDir,
+    uid: u32,
+    gid: u32,
+    mounts: &[MountedFs],
+    req_lookup: &mut dyn FnMut(Endpoint, u64, u64, &mut Lookup) -> Result<LookupRes, PathError>,
+) -> Result<NodeDetails, PathError> {
+    // 空路径（`path.c:400-404`）。
+    if resolve.path.is_empty() {
+        return Err(PathError::NoEnt);
+    }
+    let mut fs_e = start_fs;
+    let mut dir_ino = start_ino;
+    // chroot 边界：根与起点同分区才生效（`path.c:416-420`）。
+    let mut root_ino = if rd.dev == start_dev { rd.ino } else { 0 };
+    let mut symloop: u32 = 0;
+
+    loop {
+        let mut res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
+        // 特殊码循环（`path.c:446-543`）：路径推进 + symloop 累计 + 起点切换。
+        while matches!(
+            res,
+            LookupRes::EnterMount { .. }
+                | LookupRes::LeaveMount { .. }
+                | LookupRes::Symlink { .. }
+        ) {
+            let (offset, symloop_delta) = match res {
+                LookupRes::EnterMount { offset, symloop, .. }
+                | LookupRes::LeaveMount { offset, symloop, .. }
+                | LookupRes::Symlink { offset, symloop } => (offset, symloop),
+                LookupRes::Ok { .. } => unreachable!(),
+            };
+            // 推进路径（`path.c:450-453` 的 memmove）。
+            resolve.consume_prefix(offset as usize);
+            // symloop 累计并检查（`path.c:455-461`）。
+            symloop += u32::from(symloop_delta);
+            if symloop > SYMLOOP_MAX as u32 {
+                return Err(PathError::Loop);
+            }
+            match res {
+                // 符号链接：从进程根重启（`path.c:465-468`）。
+                LookupRes::Symlink { .. } => {
+                    dir_ino = rd.ino;
+                    fs_e = rd.fs;
+                    root_ino = if rd.dev == rd.dev { rd.ino } else { 0 };
+                }
+                // 进挂载点：找 mounted_on == (ino, fs_e) 的挂载行，
+                // 起点切到其根 vnode（`path.c:470-484`）。
+                LookupRes::EnterMount { ino, .. } => {
+                    match mounts.iter().find(|m| {
+                        m.mounted_on
+                            .map_or(false, |(mino, mfs, _)| mino == ino && mfs == fs_e)
+                    }) {
+                        Some(m) => {
+                            dir_ino = m.root.0;
+                            fs_e = m.fs;
+                            root_ino = if rd.dev == m.root.1 { rd.ino } else { 0 };
+                        }
+                        None => return Err(PathError::NoEnt), // C: EIO，根节点丢失
+                    }
+                }
+                // 出挂载点：路径必须以 `..` 开头（`path.c:496-521` 的
+                // bogus-path 守卫），起点切到挂载点自身 vnode。
+                LookupRes::LeaveMount { .. } => {
+                    match mounts.iter().find(|m| m.fs == fs_e) {
+                        Some(m) => {
+                            if !resolve.path.starts_with("..") {
+                                return Err(PathError::NoEnt);
+                            }
+                            let rest = &resolve.path[2..];
+                            if !rest.is_empty() && !rest.starts_with('/') {
+                                return Err(PathError::NoEnt);
+                            }
+                            match m.mounted_on {
+                                Some((mino, mfs, mdev)) => {
+                                    dir_ino = mino;
+                                    fs_e = mfs;
+                                    root_ino = if rd.dev == mdev { rd.ino } else { 0 };
+                                }
+                                None => return Err(PathError::NoEnt),
+                            }
+                        }
+                        None => return Err(PathError::NoEnt), // C: panic，加固为 Err
+                    }
+                }
+                LookupRes::Ok { .. } => unreachable!(),
+            }
+            // 下一轮 REQ_LOOKUP（`path.c:537-541`）。
+            res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
+        }
+        // `Ok`：七字段结果——fs_e/uid/gid 由本轮上下文回填（C 的 res 三字段
+        // 即 VFS 发出的值，`path.c:548-554`）。
+        match res {
+            LookupRes::Ok { ino, mode, size, dev } => {
+                return Ok(NodeDetails {
+                    fs_e,
+                    ino,
+                    mode,
+                    size,
+                    uid,
+                    gid,
+                    dev,
+                });
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 /// Path errors — map to Minix errno.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathError {
@@ -397,3 +545,157 @@ mod tests {
         assert!(fetchers[1].fetch(0, 0).is_err());
     }
 }
+
+    #[test]
+    fn test_lookup_single_fs() {
+        // 一轮即中：FS 直接给出最终节点（`path.c:548-554` 七字段回填）。
+        let parent = Endpoint::from_generation_slot(0, 10);
+        let mounts = [MountedFs {
+            fs: parent,
+            root: (1, 100),
+            mounted_on: None,
+        }];
+        let mut calls = 0;
+        let mut req = |fs: Endpoint, dir: u64, _root: u64, _lk: &mut Lookup| {
+            calls += 1;
+            assert_eq!(fs, parent);
+            assert_eq!(dir, 1);
+            Ok(LookupRes::Ok { ino: 42, mode: 0o100644, size: 7, dev: 100 })
+        };
+        let mut lk = Lookup::new("/a/b".to_string(), LookupFlags::NOFLAGS).unwrap();
+        let nd = lookup(
+            parent, 1, 100, &mut lk,
+            RootDir { ino: 1, fs: parent, dev: 100 },
+            1000, 100, &mounts, &mut req,
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(nd.ino, 42);
+        assert_eq!(nd.fs_e, parent);
+        assert_eq!(nd.uid, 1000);
+    }
+
+    #[test]
+    fn test_lookup_enter_mount() {
+        // `/mnt` 是挂载点：FS1 报 EENTERMOUNT → 起点切到 FS2 根 → FS2 完成。
+        let parent = Endpoint::from_generation_slot(0, 10);
+        let child = Endpoint::from_generation_slot(0, 11);
+        let mounts = [
+            MountedFs { fs: parent, root: (1, 100), mounted_on: None },
+            MountedFs {
+                fs: child,
+                root: (2, 101),
+                mounted_on: Some((9, parent, 100)),
+            },
+        ];
+        let mut lk = Lookup::new("/mnt/data".to_string(), LookupFlags::NOFLAGS).unwrap();
+        let mut req = |fs: Endpoint, dir: u64, _root: u64, lk: &mut Lookup| {
+            if fs == parent {
+                assert_eq!(dir, 1);
+                // 消耗 "/mnt/"，剩 "data"（`path.c:450-453`）。
+                Ok(LookupRes::EnterMount { ino: 9, offset: 5, symloop: 0 })
+            } else {
+                assert_eq!(dir, 2);
+                Ok(LookupRes::Ok { ino: 77, mode: 0o040755, size: 3, dev: 101 })
+            }
+        };
+        let nd = lookup(
+            parent, 1, 100, &mut lk,
+            RootDir { ino: 1, fs: parent, dev: 100 },
+            0, 0, &mounts, &mut req,
+        )
+        .unwrap();
+        assert_eq!(nd.ino, 77);
+        assert_eq!(nd.fs_e, child);
+        assert_eq!(nd.fs_e, child);
+        assert_eq!(lk.path, "data");
+    }
+
+    #[test]
+    fn test_lookup_leave_mount_bogus_guard() {
+        // 爬出挂载点后剩余路径必须以 `..` 开头（`path.c:515-521`）。
+        let parent = Endpoint::from_generation_slot(0, 10);
+        let child = Endpoint::from_generation_slot(0, 11);
+        let mounts = [MountedFs {
+            fs: child,
+            root: (2, 101),
+            mounted_on: Some((9, parent, 100)),
+        }];
+        let mut lk = Lookup::new("/../hidden".to_string(), LookupFlags::NOFLAGS).unwrap();
+        let mut req = |fs: Endpoint, dir: u64, _root: u64, _lk: &mut Lookup| {
+            if fs == child {
+                // 消耗 "/"，剩 "../hidden"——合法的爬出形态。
+                Ok(LookupRes::LeaveMount { offset: 1, symloop: 0 })
+            } else {
+                // 爬出后落在父分区的挂载点 vnode 上（ino 9）。
+                assert_eq!(dir, 9);
+                Ok(LookupRes::Ok { ino: 55, mode: 0o100644, size: 1, dev: 100 })
+            }
+        };
+        let nd = lookup(
+            child, 2, 101, &mut lk,
+            RootDir { ino: 1, fs: parent, dev: 100 },
+            0, 0, &mounts, &mut req,
+        )
+        .unwrap();
+        assert_eq!(nd.ino, 55);
+        assert_eq!(nd.fs_e, parent);
+    }
+
+    #[test]
+    fn test_lookup_leave_mount_bogus_rejected() {
+        // 非 `..` 的剩余路径是子 FS 喂的伪路径（`path.c:519-521` → ENOENT）。
+        let parent = Endpoint::from_generation_slot(0, 10);
+        let child = Endpoint::from_generation_slot(0, 11);
+        let mounts = [MountedFs {
+            fs: child,
+            root: (2, 101),
+            mounted_on: Some((9, parent, 100)),
+        }];
+        let mut lk = Lookup::new("/etc/passwd".to_string(), LookupFlags::NOFLAGS).unwrap();
+        let mut req = |_fs: Endpoint, _dir: u64, _root: u64, _lk: &mut Lookup| {
+            Ok(LookupRes::LeaveMount { offset: 1, symloop: 0 })
+        };
+        let r = lookup(
+            child, 2, 101, &mut lk,
+            RootDir { ino: 1, fs: parent, dev: 100 },
+            0, 0, &mounts, &mut req,
+        );
+        assert_eq!(r.unwrap_err(), PathError::NoEnt);
+    }
+
+    #[test]
+    fn test_lookup_symlink_loop_e_loop() {
+        // FS 每轮都报符号链接且不推进——17 轮后 ELOOP（`path.c:455-461`）。
+        let parent = Endpoint::from_generation_slot(0, 10);
+        let mounts = [MountedFs { fs: parent, root: (1, 100), mounted_on: None }];
+        let mut lk = Lookup::new("/loop".to_string(), LookupFlags::NOFLAGS).unwrap();
+        let mut rounds = 0;
+        let mut req = |_fs: Endpoint, _dir: u64, _root: u64, _lk: &mut Lookup| {
+            rounds += 1;
+            Ok(LookupRes::Symlink { offset: 0, symloop: 1 })
+        };
+        let r = lookup(
+            parent, 1, 100, &mut lk,
+            RootDir { ino: 1, fs: parent, dev: 100 },
+            0, 0, &mounts, &mut req,
+        );
+        assert_eq!(r.unwrap_err(), PathError::Loop);
+        assert_eq!(rounds, 17); // symloop 累计到 17 > 16 才越界
+    }
+
+    #[test]
+    fn test_lookup_empty_path_enoent() {
+        let parent = Endpoint::from_generation_slot(0, 10);
+        let mounts: [MountedFs; 0] = [];
+        let mut lk = Lookup::new(String::new(), LookupFlags::NOFLAGS).unwrap();
+        let mut req = |_fs: Endpoint, _dir: u64, _root: u64, _lk: &mut Lookup| {
+            Err(PathError::NoEnt)
+        };
+        let r = lookup(
+            parent, 1, 100, &mut lk,
+            RootDir { ino: 1, fs: parent, dev: 100 },
+            0, 0, &mounts, &mut req,
+        );
+        assert_eq!(r.unwrap_err(), PathError::NoEnt);
+    }
