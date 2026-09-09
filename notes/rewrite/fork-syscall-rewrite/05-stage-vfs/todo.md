@@ -50,7 +50,7 @@
 
 逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（exec.rs 对 cloexec 零消费）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（仍只有 try_lock/unlock，vmnt.rs:72/:90）、fetch_vmnt_paths、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（DEFERRED 注释原样）、pm_reboot/unmount_all、ds_event/panic_hook、有意省略表未建。
 
-**C-5 漂移修正**：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实（该字段早于首轮存在）。缺口收窄为：**stadir.rs 的 `walk_plan`（stadir.rs:203 一带）与 getvfsstat 响应不产出路径**（`MountView` 仍只有 `in_use`/`canstat`）。修复时以本条为准，勿再扩表结构。
+**C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
 ### P0-1 / P0-2 / P0-3（filedes.rs 三连，R1 存档 §2）
 
@@ -317,6 +317,29 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**（336→338）。
 - **边界**：R2-P1-3（sdev_stop 驱动死亡级联——本族 + smap unmap + select 唤醒的触发序设计，下一步）；P2-5（`filp.vnode` 裸 usize 类型化时三函数同步改型）。
 
+### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filp.rs`（`FilpLockMode` 枚举 + get_filp 重写 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/04-filp-table.md`（实现表/测试表）。
+- **Before**：`get_filp(&mut self, id, need_lock: bool)`——`need_lock=false`（≈`VNODE_NONE`）不拒 `FILP_CLOSED`，比 C 宽；且 bool 无法表达"OPCL 过门但取锁、NONE 不取锁也不过门"的组合。
+- **After**：`FilpLockMode { Opcl, None, ReadWrite }`——门规则 `f.mode == FILP_CLOSED && !matches!(Opcl) → Closed(EIO)`（filedes.c:186-188 逐字对应，注释 "disallow all use except close(2)"）；锁规则 `Opcl|ReadWrite` 且 `locked_by` 已占 → `Busy`（filedes.c:191-193 `locktype != VNODE_NONE` → lock_filp）。设计取舍：`VNODE_READ`/`VNODE_WRITE` 在门与锁两个维度行为相同，合并为一个 `ReadWrite` 变体（不为枚举完整性造无行为差异的变体——Gate D 虚构第二实现的教训，§9.6）；P0-1 的 EIO 语义至此有了正式落点（非 `OPCL` 访问路径在 `get_filp` 处被拒，close 路径在 `close_fd` 直通）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**；`grep -rn "need_lock" os/servers/vfs/src` 仅余 stadir.rs 的无关同名决策函数。
+- **边界**：get_filp 生产消费者随 R2-P1-2 的分发绑定落地（read/write 臂以 `ReadWrite`、close 臂不经此函数）；04-filp-table.md 实现表与测试表已同步三态语义。
+
+### ✅ Fix #8: P1-3 — SETGROUPS 的数据搬运口与尺寸门（2026-09-09）
+
+- **File**：`os/servers/vfs/src/ipc/dispatcher.rs`（PmError/SetGroups 臂/trait 口/3 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/10-pm-protocol.md`（D4 落地说明）。
+- **Before**：`handle` 的 `SETGROUPS` 臂 `let _ = group_addr;` + 空切片调用——`handle_setgroups` 内置的短切片拒绝使一切 `ngroups>0` 的生产请求 `Err(TooManyGroups)`（fail-closed 但数据通路断，且 ENOSYS/EFAULT 语义不可见）。
+- **After**：`PmHandler::fetch_group_list` 作为 `sys_datacopy_wrapper`（misc.c:752）的接缝口，**默认实现 fail-closed `ENOSYS`**（模式 60 诚实契约：通电挂 P1-2/edge E1，不算 DEFERRED 充数——语义入口、门与数据流已全部就位，唯余 transport）；臂内 `ngroups > NGROUPS_MAX → TooManyGroups(EINVAL)`（C panic misc.c:748-750 → fail-closed Err，与 10 号文档 D4 的 EFAULT 决策同向并登记）、`group_no==0` 免拷贝直清（`setgroups(0)` 合法语义）、正数路径 `fetch → 栈缓冲 → handle_setgroups`。`PmError::NotImplemented(ENOSYS)` 变体新增（对齐 minix-types ToErrno 的 D1/D2 方向）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**（338→341：ENOSYS 预通电态且 fproc 不动 / 超限 EINVAL / 零组直清三测试）。
+- **边界**：`fetch_group_list` 的生产实现（真实 sys_datacopy）随 P1-2 接线矩阵第一束（内核 IPC 原语）落地，届时拷贝失败映射 EFAULT；10-pm-protocol.md D4 已登记完整决策链。
+
+### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
+
+- **File**：`os/servers/vfs/src/select.rs`（Query 变体 + filter_step 构造 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/23-select.md`（D3）。
+- **Before**：`Query { rops, set_update, set_block }` 只编码"置"侧义务；C 的发送序三步（select.c:517 清 UPDATE → cdev/sdev_select → :522 置 BUSY + `dmap/smap_sel_busy`）中"清"侧完全留在调用方记忆——照字段字面执行的消费者会在 BUSY 期间残留 UPDATE，翻转 `reply1_step` 的 ops 清零规则（select.rs:360）。
+- **After**：`Query` 增 `clear_update: bool` 与 `set_busy: bool`（`filter_step` 恒置 true，附 C 行号锚点）——义务从隐性契约变为随决策输出的数据；`reply1_step`/`reply2` 不变（它们消费的是应答侧状态）。测试矩阵扩断言两新字段。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**；`grep FilterOutcome::Query` 全 crate 仅 select.rs（无外部消费者需迁移）。
+- **边界**：Query 的真正消费者（发送 + dmap busy 置位 + SUSPEND）随 P1-2 接线矩阵落地；届时以本义务字段驱动 flag 转换，勿再手写。
 ### ✅ Fix #10: R2-P0-2 — copy_fd 方向建模 + 三守门齐装（2026-09-09）
 
 - **File**：`os/servers/vfs/src/filedes.rs`（`CopyFdCtx` + copy_fd 重写 + 测试群重写）、`os/servers/vfs/src/device_map.rs`（`smap_endpt_by_dev` 助手）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D5/测试表）。
@@ -340,6 +363,20 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`gcov_privilege_gate(is_super: bool) -> Result<(), MiscError>`（`Perm → EPERM`），五门之首；测试并入 `test_probe_and_obsolete`（super 过 / 非 root Perm）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（断言并入既有 gcov 测试，无新增 fn）。
 
+### ✅ Fix #13: P2-6 — TransIdCodec 收敛到 fs_comm 单一定义（2026-09-09）
+
+- **File**：`os/servers/vfs/src/main_loop.rs`（删 63 行重复定义 → `pub use` re-export）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/11-fs-comm.md`（三处引用同步）。
+- **Before**：`TransIdCodec` trait + `VfsTransIdCodec` + `TestTransIdCodec` 在 fs_comm.rs:76-117 与 main_loop.rs:130-180 双重定义，实现逻辑相同（0xB00 基），协议常量改动需改两处。
+- **After**：唯一定义在 fs_comm.rs（协议属主——`TransId`/`TRANSACTION_BASE` 的家），main_loop `pub use` re-export 供 route_message 泛型与测试消费（`ARCH A-4` 迁移标注）；11-fs-comm.md 的模块图/实现清单/测试表三处同步为"唯一定义 + re-export"。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（纯收敛，两侧测试原样通过）。
+
+### ✅ Fix #14: P2-4 — NextFit 移 cfg(test) 更名 NextFitDemo（2026-09-09）
+
+- **File**：`os/servers/vfs/src/filedes.rs`（定义/文档/trait 文档/测试 6 处）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D2/模块图/实现表/测试表/策略行 7 处）。
+- **Before**：`pub struct NextFit` 在生产编译单元，:70 的 trait 文档以 "O_DUPFD arg lower-bound variant" 辩护其真实语义——该辩护不成立：O_DUPFD 复用的是 `get_fd(start=arg)` 的同一 `LowestFree` 策略，并非第二种分配策略。
+- **After**：`#[cfg(test)] pub struct NextFitDemo`——对照实现限定测试；trait 文档如实声明"Minix3（filedes.c:121）与 Linux（`alloc_fd(start, end)`）都是 start 起最低空闲，不存在第二真实策略；trait 建模的是 `start` 参数化（O_DUPFD 的 arg），Demo 仅证多态"。落实 §9.6 Rule Discovery 规则草案（"无 C 来源第二实现 → 移 cfg(test) 或删除"）的首个适用案例。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`grep -rn "NextFit" os/servers/vfs/src` 仅 cfg(test) 域与文档注释命中。
+
 ### ✅ Fix #15: P2-5 — device_map/filp 的端点与 vnode 引用类型化（2026-09-09）
 
 - **File**：`os/servers/vfs/src/device_map.rs`（约 20 处签名/字段）、`os/servers/vfs/src/filp.rs`（find_by_vnode）、`os/servers/vfs/src/filedes.rs`、`os/servers/vfs/src/sdev.rs`（消费方）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/19-device-map.md`（字段表）。
@@ -361,36 +398,6 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：逐项 `#[cfg(test)]` 圈定（保留源位置，不物理搬移——同文件 tests 经 `use super::*` 照常可见）；path.rs 的伪造抽象族不在本条（R2-P1-1 的重设计范围）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`cargo check` 无生产单元替身残留警告。
 
-### ✅ Fix #7: P1-5 — get_filp 的 need_lock bool 三态化为 FilpLockMode（2026-09-09）
-
-- **File**：`os/servers/vfs/src/filp.rs`（`FilpLockMode` 枚举 + get_filp 重写 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/04-filp-table.md`（实现表/测试表）。
-- **Before**：`get_filp(&mut self, id, need_lock: bool)`——`need_lock=false`（≈`VNODE_NONE`）不拒 `FILP_CLOSED`，比 C 宽；且 bool 无法表达"OPCL 过门但取锁、NONE 不取锁也不过门"的组合。
-- **After**：`FilpLockMode { Opcl, None, ReadWrite }`——门规则 `f.mode == FILP_CLOSED && !matches!(Opcl) → Closed(EIO)`（filedes.c:186-188 逐字对应，注释 "disallow all use except close(2)"）；锁规则 `Opcl|ReadWrite` 且 `locked_by` 已占 → `Busy`（filedes.c:191-193 `locktype != VNODE_NONE` → lock_filp）。设计取舍：`VNODE_READ`/`VNODE_WRITE` 在门与锁两个维度行为相同，合并为一个 `ReadWrite` 变体（不为枚举完整性造无行为差异的变体——Gate D 虚构第二实现的教训，§9.6）；P0-1 的 EIO 语义至此有了正式落点（非 `OPCL` 访问路径在 `get_filp` 处被拒，close 路径在 `close_fd` 直通）。
-- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **338 passed / 0 failed**；`grep -rn "need_lock" os/servers/vfs/src` 仅余 stadir.rs 的无关同名决策函数。
-- **边界**：get_filp 生产消费者随 R2-P1-2 的分发绑定落地（read/write 臂以 `ReadWrite`、close 臂不经此函数）；04-filp-table.md 实现表与测试表已同步三态语义。
-
-### ✅ Fix #8: P1-3 — SETGROUPS 的数据搬运口与尺寸门（2026-09-09）
-
-- **File**：`os/servers/vfs/src/ipc/dispatcher.rs`（PmError/SetGroups 臂/trait 口/3 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/10-pm-protocol.md`（D4 落地说明）。
-- **Before**：`handle` 的 `SETGROUPS` 臂 `let _ = group_addr;` + 空切片调用——`handle_setgroups` 内置的短切片拒绝使一切 `ngroups>0` 的生产请求 `Err(TooManyGroups)`（fail-closed 但数据通路断，且 ENOSYS/EFAULT 语义不可见）。
-- **After**：`PmHandler::fetch_group_list` 作为 `sys_datacopy_wrapper`（misc.c:752）的接缝口，**默认实现 fail-closed `ENOSYS`**（模式 60 诚实契约：通电挂 P1-2/edge E1，不算 DEFERRED 充数——语义入口、门与数据流已全部就位，唯余 transport）；臂内 `ngroups > NGROUPS_MAX → TooManyGroups(EINVAL)`（C panic misc.c:748-750 → fail-closed Err，与 10 号文档 D4 的 EFAULT 决策同向并登记）、`group_no==0` 免拷贝直清（`setgroups(0)` 合法语义）、正数路径 `fetch → 栈缓冲 → handle_setgroups`。`PmError::NotImplemented(ENOSYS)` 变体新增（对齐 minix-types ToErrno 的 D1/D2 方向）。
-- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**（338→341：ENOSYS 预通电态且 fproc 不动 / 超限 EINVAL / 零组直清三测试）。
-- **边界**：`fetch_group_list` 的生产实现（真实 sys_datacopy）随 P1-2 接线矩阵第一束（内核 IPC 原语）落地，届时拷贝失败映射 EFAULT；10-pm-protocol.md D4 已登记完整决策链。
-
-### ✅ Fix #13: P2-6 — TransIdCodec 收敛到 fs_comm 单一定义（2026-09-09）
-
-- **File**：`os/servers/vfs/src/main_loop.rs`（删 63 行重复定义 → `pub use` re-export）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/11-fs-comm.md`（三处引用同步）。
-- **Before**：`TransIdCodec` trait + `VfsTransIdCodec` + `TestTransIdCodec` 在 fs_comm.rs:76-117 与 main_loop.rs:130-180 双重定义，实现逻辑相同（0xB00 基），协议常量改动需改两处。
-- **After**：唯一定义在 fs_comm.rs（协议属主——`TransId`/`TRANSACTION_BASE` 的家），main_loop `pub use` re-export 供 route_message 泛型与测试消费（`ARCH A-4` 迁移标注）；11-fs-comm.md 的模块图/实现清单/测试表三处同步为"唯一定义 + re-export"。
-- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**（纯收敛，两侧测试原样通过）。
-
-### ✅ Fix #14: P2-4 — NextFit 移 cfg(test) 更名 NextFitDemo（2026-09-09）
-
-- **File**：`os/servers/vfs/src/filedes.rs`（定义/文档/trait 文档/测试 6 处）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D2/模块图/实现表/测试表/策略行 7 处）。
-- **Before**：`pub struct NextFit` 在生产编译单元，:70 的 trait 文档以 "O_DUPFD arg lower-bound variant" 辩护其真实语义——该辩护不成立：O_DUPFD 复用的是 `get_fd(start=arg)` 的同一 `LowestFree` 策略，并非第二种分配策略。
-- **After**：`#[cfg(test)] pub struct NextFitDemo`——对照实现限定测试；trait 文档如实声明"Minix3（filedes.c:121）与 Linux（`alloc_fd(start, end)`）都是 start 起最低空闲，不存在第二真实策略；trait 建模的是 `start` 参数化（O_DUPFD 的 arg），Demo 仅证多态"。落实 §9.6 Rule Discovery 规则草案（"无 C 来源第二实现 → 移 cfg(test) 或删除"）的首个适用案例。
-- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **345 passed / 0 failed**；`grep -rn "NextFit" os/servers/vfs/src` 仅 cfg(test) 域与文档注释命中。
-
 ### ✅ Fix #18: P3-1 — vfs clippy 归零 + Fix #17 构建断裂补修（2026-09-09）
 
 - **File**：filedes.rs（map_or→is_some_and ×2、LowestFree/NextFitDemo 迭代器化）、main_loop.rs（嵌套 if 折叠 + doc quote 改写 + cast 移除）、call_table.rs（`VFS_BASE + 0` → `VFS_BASE`）、vnode.rs（let-chain 折叠 + unit 比较断言移除 + SmapTable 同型 is_empty 不适用）、vmnt.rs、device_map.rs（字面量分组 + 常量断言转注释 + SmapTable::is_empty）、fproc.rs（FprocLightTable Default）、fs_comm/dispatcher（多余 mut）、filp/path/request（未用导入与 bitflags doc 归位）、Cargo.toml（声明 `fproc_light` feature——ARCH A-7 占位的 cfg 有着落）。
@@ -406,13 +413,6 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Verified**：`grep -rn "impl minix_types::ToErrno" os/servers/vfs/src | wc -l` = **30**；`grep -rn "enum FdError" | wc -l` = **1**；`cargo test` = **345 passed / 0 failed**。
 - **边界**：固有 `to_errno(self) -> i32` 保留（ToErrno 文档声明的兼容通道）；消费端随各模块后续触改逐步切 `ToErrno::to_errno(&e).to_i32()`，不做一次性全量重写（VM 侧 T8 判定先例：映射点唯一即可，调用形态不强制）。
 
-### ✅ Fix #21: C-2 — exec 收尾的 clo_exec 扫描补齐（2026-09-09）
-
-- **File**：`os/servers/vfs/src/exec.rs`（`clo_exec` + 测试 + 模块 scope note 修正）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/25-exec.md`（D7）。
-- **Before**：`fproc.cloexec_set` 只有存储位图，exec.rs 十一阶段流水线无收尾扫描——接线后 exec 会向新程序泄漏 CLOEXEC fd。
-- **After**：`clo_exec(rfp, filp_table)`——`0..OPEN_MAX` 逐 fd 查 `cloexec_set`，命中即 `close_fd`（C 以 `(void)` 忽略关闭错误：扫描必须跑完、失败不回滚，exec.c:721-731 逐字对应）。模块 scope note 的"fd-table execution stays with 14"修正为"close_fd 原语归 14，exec 尾扫描归本篇"——C 的 clo_exec 本就在 exec.c。
-- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **347 passed / 0 failed**（346→347：`test_clo_exec_tail_scan`——非 CLOEXEC 幸存、CLOEXEC 关闭、引用释放）。
-
 ### ✅ Fix #20: C-4 — VmntLock 补 downgrade/upgrade（2026-09-09）
 
 - **File**：`os/servers/vfs/src/vmnt.rs`（VmntLock 两方法 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/06-vmnt-table.md`（§2.5 落地说明）。
@@ -420,10 +420,16 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`downgrade`（Write→Read(1)，Unlocked 幂等——同 tll 对自由锁的 no-op）与 `upgrade`（Read(1)→Write；多读者 `Busy`——C 的写侧永等在此硬化为拒绝并登记；已 Write 幂等 ok，同 tll.rs 契约）。测试矩阵：降级后共享加入、双读者拒绝晋升、单读者晋升、幂等。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**（345→346）。
 
-### ✅ Fix #9: P1-4 — FilterOutcome::Query 编码清 UPDATE/置 BUSY 义务（2026-09-09）
+### ✅ Fix #21: C-2 — exec 收尾的 clo_exec 扫描补齐（2026-09-09）
 
-- **File**：`os/servers/vfs/src/select.rs`（Query 变体 + filter_step 构造 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/23-select.md`（D3）。
-- **Before**：`Query { rops, set_update, set_block }` 只编码"置"侧义务；C 的发送序三步（select.c:517 清 UPDATE → cdev/sdev_select → :522 置 BUSY + `dmap/smap_sel_busy`）中"清"侧完全留在调用方记忆——照字段字面执行的消费者会在 BUSY 期间残留 UPDATE，翻转 `reply1_step` 的 ops 清零规则（select.rs:360）。
-- **After**：`Query` 增 `clear_update: bool` 与 `set_busy: bool`（`filter_step` 恒置 true，附 C 行号锚点）——义务从隐性契约变为随决策输出的数据；`reply1_step`/`reply2` 不变（它们消费的是应答侧状态）。测试矩阵扩断言两新字段。
-- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **341 passed / 0 failed**；`grep FilterOutcome::Query` 全 crate 仅 select.rs（无外部消费者需迁移）。
-- **边界**：Query 的真正消费者（发送 + dmap busy 置位 + SUSPEND）随 P1-2 接线矩阵落地；届时以本义务字段驱动 flag 转换，勿再手写。
+- **File**：`os/servers/vfs/src/exec.rs`（`clo_exec` + 测试 + 模块 scope note 修正）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/25-exec.md`（D7）。
+- **Before**：`fproc.cloexec_set` 只有存储位图，exec.rs 十一阶段流水线无收尾扫描——接线后 exec 会向新程序泄漏 CLOEXEC fd。
+- **After**：`clo_exec(rfp, filp_table)`——`0..OPEN_MAX` 逐 fd 查 `cloexec_set`，命中即 `close_fd`（C 以 `(void)` 忽略关闭错误：扫描必须跑完、失败不回滚，exec.c:721-731 逐字对应）。模块 scope note 的"fd-table execution stays with 14"修正为"close_fd 原语归 14，exec 尾扫描归本篇"——C 的 clo_exec 本就在 exec.c。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **347 passed / 0 failed**（346→347：`test_clo_exec_tail_scan`——非 CLOEXEC 幸存、CLOEXEC 关闭、引用释放）。
+
+### ✅ Fix #22: C-5 — getvfsstat 名字三拷贝 + fetch_vmnt_paths 死代码判定反转（2026-09-09）
+
+- **File**：`os/servers/vfs/src/stadir.rs`（`MountNames`/`mount_names` + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/28-stadir.md`（实现说明）、归档 C-5 条目（修正注）。
+- **判定反转（Ground Truth 链）**：首轮把 `fetch_vmnt_paths` 登记为核心缺口；修复前 fix-guard 核实——该函数定义于 vmnt.c:246、声明悬空于 proto.h:371、**全树零调用**，是 C 死代码；C 的行为真相是 `fill_statvfs` 尾部三名字拷贝（stadir.c:283-285，`f_fstypename ← m_fstype` / `f_mntonname ← m_mount_path` / `f_mntfromname ← m_mount_dev`），getvfsstat 按存储值直报路径、无规范化步骤。移植死函数即 translate 死代码——判定为有意省略，入省略台账（C-10/P3-2 落地时收编）。
+- **After**：`MountNames { fstype, mnton, mntfrom }` + `mount_names(fstype, mnton, mntfrom)` 承载三拷贝决策（调用方从 `Vmnt` 的三个 String 字段直取）；`Vmnt` 表结构不动（首轮"勿再扩表"结论维持）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **348 passed / 0 failed**（347→348：`test_mount_names_block`）。
