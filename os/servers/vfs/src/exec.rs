@@ -38,7 +38,6 @@ pub const DEFAULT_STACK_LIMIT: u64 = 4 * 1024 * 1024;
 pub use crate::fproc::PROC_NAME_LEN;
 use crate::fproc::{FProc, OPEN_MAX};
 use crate::filedes::close_fd;
-use minix_types::Bitmap;
 /// `PROT_WRITE` (`minix3/sys/sys/mman.h:64`).
 pub const PROT_WRITE: u32 = 0x02;
 /// `MVM_WRITABLE` (`minix3/minix/include/minix/vm.h:34`).
@@ -541,10 +540,10 @@ pub fn plan_cleanup(has_newfilp: bool, vmfd: i32, vmfd_used: bool) -> CleanupPla
 /// must run to completion — so do we.
 pub fn clo_exec(rfp: &mut FProc, filp_table: &mut crate::filp::FilpTable) {
     for i in 0..OPEN_MAX {
-        if rfp.cloexec_set.get(i) {
-            if let Some(fd) = crate::filedes::Fd::new(i) {
-                let _ = close_fd(rfp, fd, filp_table);
-            }
+        if rfp.cloexec_set.get(i)
+            && let Some(fd) = crate::filedes::Fd::new(i)
+        {
+            let _ = close_fd(rfp, fd, filp_table);
         }
     }
 }

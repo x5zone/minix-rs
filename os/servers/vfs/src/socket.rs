@@ -33,7 +33,6 @@
 
 use crate::sdev::{SHUT_RD, SHUT_RDWR, SHUT_WR};
 
-/// `SOCK_CLOEXEC` (`minix3/sys/sys/socket.h:113`): close-on-exec at birth.
 // ─────────────────────────────────────────────────────────────────────────────
 // `do_socketpath` entry gates (`path.c:803-836`) — the walk itself stays
 // with 13-path-lookup (C-6); only the three doors decide here.
@@ -61,7 +60,7 @@ pub fn spath_action(what: i32) -> Result<SpathAction, SockError> {
 /// NUL-terminated on the wire.  Super-user gate rides with the caller
 /// (`path.c:824` `!super_user → EPERM`), as in `copy_fd`'s `is_super`.
 pub fn spath_path_ok(pathlen: usize) -> Result<(), SockError> {
-    if pathlen < 1 || pathlen >= crate::path::PATH_MAX {
+    if !(1..crate::path::PATH_MAX).contains(&pathlen) {
         return Err(SockError::Inval);
     }
     Ok(())

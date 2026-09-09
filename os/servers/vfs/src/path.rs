@@ -178,18 +178,32 @@ pub struct RootDir {
 /// 裁决：vmnt 的锁升降是执行面（tll），本轮记录"当前作用于哪个挂载行"。
 ///
 /// `req_lookup` 闭包即 REQ_LOOKUP 对话的接缝（W7 接线时接 `FsReq::Lookup`
-/// + `FsClient`；测试用脚本应答）。
+/// 与 `FsClient`；测试用脚本应答）。
+///
+/// `lookup` 的起点身份（`start_node` 的三字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LookupStart {
+    /// `v_fs_e`。
+    pub fs: Endpoint,
+    /// `v_inode_nr`。
+    pub ino: u64,
+    /// `v_dev`。
+    pub dev: u64,
+}
+
+/// REQ_LOOKUP 对话接缝——一轮"FS 尽可能多解析"的往返。
+pub type ReqLookup<'a> = &'a mut dyn FnMut(Endpoint, u64, u64, &mut Lookup) -> Result<LookupRes, PathError>;
+
 pub fn lookup(
-    start_fs: Endpoint,
-    start_ino: u64,
-    start_dev: u64,
+    start: LookupStart,
     resolve: &mut Lookup,
     rd: RootDir,
     uid: u32,
     gid: u32,
     mounts: &[MountedFs],
-    req_lookup: &mut dyn FnMut(Endpoint, u64, u64, &mut Lookup) -> Result<LookupRes, PathError>,
+    req_lookup: ReqLookup<'_>,
 ) -> Result<NodeDetails, PathError> {
+    let LookupStart { fs: start_fs, ino: start_ino, dev: start_dev } = start;
     // 空路径（`path.c:400-404`）。
     if resolve.path.is_empty() {
         return Err(PathError::NoEnt);
@@ -200,15 +214,14 @@ pub fn lookup(
     let mut root_ino = if rd.dev == start_dev { rd.ino } else { 0 };
     let mut symloop: u32 = 0;
 
-    loop {
-        let mut res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
-        // 特殊码循环（`path.c:446-543`）：路径推进 + symloop 累计 + 起点切换。
-        while matches!(
-            res,
-            LookupRes::EnterMount { .. }
-                | LookupRes::LeaveMount { .. }
-                | LookupRes::Symlink { .. }
-        ) {
+    let mut res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
+    // 特殊码循环（`path.c:446-543`）：路径推进 + symloop 累计 + 起点切换。
+    while matches!(
+        res,
+        LookupRes::EnterMount { .. }
+            | LookupRes::LeaveMount { .. }
+            | LookupRes::Symlink { .. }
+    ) {
             let (offset, symloop_delta) = match res {
                 LookupRes::EnterMount { offset, symloop, .. }
                 | LookupRes::LeaveMount { offset, symloop, .. }
@@ -227,14 +240,15 @@ pub fn lookup(
                 LookupRes::Symlink { .. } => {
                     dir_ino = rd.ino;
                     fs_e = rd.fs;
-                    root_ino = if rd.dev == rd.dev { rd.ino } else { 0 };
+                    // C 中 dir_vp==fp_rd 恒真（`path.c:465-468`），根条件必然满足。
+                    root_ino = rd.ino;
                 }
                 // 进挂载点：找 mounted_on == (ino, fs_e) 的挂载行，
                 // 起点切到其根 vnode（`path.c:470-484`）。
                 LookupRes::EnterMount { ino, .. } => {
                     match mounts.iter().find(|m| {
                         m.mounted_on
-                            .map_or(false, |(mino, mfs, _)| mino == ino && mfs == fs_e)
+                            .is_some_and(|(mino, mfs, _)| mino == ino && mfs == fs_e)
                     }) {
                         Some(m) => {
                             dir_ino = m.root.0;
@@ -253,7 +267,7 @@ pub fn lookup(
                                 return Err(PathError::NoEnt);
                             }
                             let rest = &resolve.path[2..];
-                            if !rest.is_empty() && !rest.starts_with('/') {
+                            if !(rest.is_empty() || rest.starts_with('/')) {
                                 return Err(PathError::NoEnt);
                             }
                             match m.mounted_on {
@@ -270,25 +284,22 @@ pub fn lookup(
                 }
                 LookupRes::Ok { .. } => unreachable!(),
             }
-            // 下一轮 REQ_LOOKUP（`path.c:537-541`）。
-            res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
-        }
-        // `Ok`：七字段结果——fs_e/uid/gid 由本轮上下文回填（C 的 res 三字段
-        // 即 VFS 发出的值，`path.c:548-554`）。
-        match res {
-            LookupRes::Ok { ino, mode, size, dev } => {
-                return Ok(NodeDetails {
-                    fs_e,
-                    ino,
-                    mode,
-                    size,
-                    uid,
-                    gid,
-                    dev,
-                });
-            }
-            _ => unreachable!(),
-        }
+        // 下一轮 REQ_LOOKUP（`path.c:537-541`）。
+        res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
+    }
+    // `Ok`：七字段结果——fs_e/uid/gid 由本轮上下文回填（C 的 res 三字段
+    // 即 VFS 发出的值，`path.c:548-554`）。
+    match res {
+        LookupRes::Ok { ino, mode, size, dev } => Ok(NodeDetails {
+            fs_e,
+            ino,
+            mode,
+            size,
+            uid,
+            gid,
+            dev,
+        }),
+        _ => Err(PathError::NoEnt),
     }
 }
 
@@ -564,7 +575,8 @@ mod tests {
         };
         let mut lk = Lookup::new("/a/b".to_string(), LookupFlags::NOFLAGS).unwrap();
         let nd = lookup(
-            parent, 1, 100, &mut lk,
+            LookupStart { fs: parent, ino: 1, dev: 100 },
+            &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
             1000, 100, &mounts, &mut req,
         )
@@ -600,7 +612,8 @@ mod tests {
             }
         };
         let nd = lookup(
-            parent, 1, 100, &mut lk,
+            LookupStart { fs: parent, ino: 1, dev: 100 },
+            &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
             0, 0, &mounts, &mut req,
         )
@@ -633,7 +646,8 @@ mod tests {
             }
         };
         let nd = lookup(
-            child, 2, 101, &mut lk,
+            LookupStart { fs: child, ino: 2, dev: 101 },
+            &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
             0, 0, &mounts, &mut req,
         )
@@ -657,7 +671,8 @@ mod tests {
             Ok(LookupRes::LeaveMount { offset: 1, symloop: 0 })
         };
         let r = lookup(
-            child, 2, 101, &mut lk,
+            LookupStart { fs: child, ino: 2, dev: 101 },
+            &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
             0, 0, &mounts, &mut req,
         );
@@ -676,7 +691,8 @@ mod tests {
             Ok(LookupRes::Symlink { offset: 0, symloop: 1 })
         };
         let r = lookup(
-            parent, 1, 100, &mut lk,
+            LookupStart { fs: parent, ino: 1, dev: 100 },
+            &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
             0, 0, &mounts, &mut req,
         );
@@ -693,7 +709,8 @@ mod tests {
             Err(PathError::NoEnt)
         };
         let r = lookup(
-            parent, 1, 100, &mut lk,
+            LookupStart { fs: parent, ino: 1, dev: 100 },
+            &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
             0, 0, &mounts, &mut req,
         );
