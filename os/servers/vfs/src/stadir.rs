@@ -166,6 +166,35 @@ pub fn fs_identity(dev: u64) -> FsIds {
     }
 }
 
+/// The three name strings `fill_statvfs` copies into the statvfs buffer
+/// (`stadir.c:283-285`): `f_fstypename ← m_fstype`,
+/// `f_mntonname ← m_mount_path`, `f_mntfromname ← m_mount_dev`.
+///
+/// Note on `fetch_vmnt_paths` (`vmnt.c:246-288`): the C helper that
+/// canonicalized `m_mount_path` before this copy is **dead code** in the
+/// tree — defined and declared (`proto.h:371`) but never called — so the
+/// behavioral truth is that `getvfsstat` reports the mount path as stored.
+/// The rewrite reports it as stored too (and records the omission in the
+/// intentional-omissions ledger rather than porting dead code).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MountNames {
+    /// `f_fstypename` (`stadir.c:283`).
+    pub fstype: String,
+    /// `f_mntonname` (`stadir.c:284`).
+    pub mnton: String,
+    /// `f_mntfromname` (`stadir.c:285`).
+    pub mntfrom: String,
+}
+
+/// Name block from the mount row's three string fields.
+pub fn mount_names(fstype: &str, mnton: &str, mntfrom: &str) -> MountNames {
+    MountNames {
+        fstype: fstype.to_string(),
+        mnton: mnton.to_string(),
+        mntfrom: mntfrom.to_string(),
+    }
+}
+
 /// One mount's tally eligibility (`do_getvfsstat:388,407`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MountView {
@@ -495,3 +524,14 @@ mod tests {
         assert_eq!((VMNT_READONLY, VMNT_CANSTAT), (0o01, 0o20));
     }
 }
+
+    #[test]
+    fn test_mount_names_block() {
+        // The three name copies land in the buffer as stored
+        // (`stadir.c:283-285`); no canonicalization pass exists.
+        let names = mount_names("mfs", "/mnt/data", "disk0");
+        assert_eq!(names.fstype, "mfs");
+        assert_eq!(names.mnton, "/mnt/data");
+        assert_eq!(names.mntfrom, "disk0");
+        assert_eq!(MountNames::default(), mount_names("", "", ""));
+    }

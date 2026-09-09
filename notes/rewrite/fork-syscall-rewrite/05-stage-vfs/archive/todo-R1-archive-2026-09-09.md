@@ -48,6 +48,8 @@
 | C-3 | `invalidate_filp_by_char_major` / `invalidate_filp_by_sock_drv` | filedes.c:260 / :277 | 核心 | 驱动死亡时按字符主设备号/socket 驱动失效 filp 的两个扫描；Rust 仅有单条规则 `invalidate_filp`（filedes.rs:187）与弱化的 by_endpoint（见 P0-3）。dmap/smap unmap 级联（device_map.rs `unmap_by_endpt`/`smap_by_endpt`）落地时必需 |
 | C-4 | `downgrade_vmnt_lock` / `upgrade_vmnt_lock` | vmnt.c:221 / :237 | 核心 | `VmntLock` 只有 `try_lock`/`unlock`（vmnt.rs:72/:90）；对比 tll.rs 与 vnode.rs 都有 `downgrade`/`upgrade`。unmount 与跨挂载操作需要 |
 | C-5 | `fetch_vmnt_paths` | vmnt.c:246 | 核心 | `do_getvfsstat` 要返回每个挂载点的根路径与挂载路径；`vmnt.rs` 的 `Vmnt` 无路径字段，stadir.rs 的 `walk_plan`（stadir.rs，`do_getvfsstat:351-413` 锚）不含路径产出 |
+
+> **修正（2026-09-09，Fix #22）**：本条判定反转。① `fetch_vmnt_paths` 在 C 树中是**死代码**——定义 `vmnt.c:246`、声明 `proto.h:371`，全树零调用；C 的行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（`stadir.c:284`），无规范化步骤，故该函数**有意不移植**（入省略台账）。② `Vmnt` 实有 `mount_path/mount_dev/fstype` 三字段（`vmnt.rs:111-113`），真正的缺口是 `fill_statvfs` 的三名字拷贝——已补 `MountNames`/`mount_names`（stadir.rs）。以下原文保留存档。
 | C-6 | `lookup` 跨 FS 往返循环 / `last_dir` / `get_name` / `canonical_path` | path.c:384 / :146 / :594 / :648 | 核心，依赖 IPC | 状态与结构已建（`path::Lookup`/`LookupRes`/`check_symloop`/`consume_prefix`），但 REQ_LOOKUP 往返推进循环未落地；`last_dir`/`get_name`/`canonical_path` 目前仅存在于 path.rs 测试演示（如 path.rs:383 附近）。归入 P1-2 矩阵 |
 | C-7 | `mount_pfs` / `do_socketpath` | mount.c:391 / path.c:803 | IPC 依赖，有标注 | main_loop.rs:431 与 socket.rs:23 已注明 DEFERRED 归 18/13。合法 DEFERRED，收敛进 P1-2 |
 | C-8 | `pm_reboot` / `unmount_all` | misc.c:504 / mount.c:552 | 核心 | 重启前全量卸载序（`unmount_all` 的 `verify_empty`/`sweep_passes` 决策件已在 mount.rs，但重启触发链无）。misc.rs:19 scope note 声明归 10，需关闭条件 |

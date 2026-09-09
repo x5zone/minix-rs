@@ -135,6 +135,7 @@ Rust 改写不是照抄 `stadir.c` 的打开 vnode 与填充流程，而是吸�
 
 - **C**：十七字段回填 + 实时缓存分流 + 只读叠加 + 文件系统标识（`197-289`）。
 - **Rust**：`fill_plan()` + `apply_readonly_overlay()` + `fs_identity()`（`os/servers/vfs/src/stadir.rs:127,135,145,151,161`）。
+- **Rust 名字三拷贝（C-5 闭合）**：`MountNames{fstype, mnton, mntfrom}` + `mount_names()`（`os/servers/vfs/src/stadir.rs`）对应 `stadir.c:283-285` 的 `f_fstypename ← m_fstype` / `f_mntonname ← m_mount_path` / `f_mntfromname ← m_mount_dev`。`fetch_vmnt_paths`（`vmnt.c:246-288`）经全树核实为 **C 死代码**（`proto.h:371` 悬空声明、零调用）——行为真相是 getvfsstat 按存储值直接上报挂载路径，重写同样直报并把该函数记入有意省略台账，而非移植死代码。
 - **为什么**：实时查询失败即 EIO、缓存先零填再复制，分两路处理；只读标志叠加单独列出。十七字段逐一建模被否决：字段搬运无判定逻辑，注释"整体复制"即可（26-D6 同源惯例）。
 
 ### D6 getvfsstat 遍历
