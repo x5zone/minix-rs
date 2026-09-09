@@ -1,23 +1,58 @@
 # 99-global-concepts: VFS 全局概念
 
-> **状态**: pending（最小骨架，待改写）
+> **状态**: 已按 99-outline.v1 契约改写（2026-09-09，R2-P2-2；快照见 `.design/99-*.v1.md`）；有意省略表已先行落地（Fix #28）
 > **定位**: 全局概念（阶段收尾）
-> **源码**: `const.h`、`glo.h`、`type.h`、`fs.h`、`proto.h`、`utility.c:142-186`（sys_datacopy_wrapper）、minix 外部头
-> **Rust 模块**: `minix-types`、`os/servers/vfs/src/call_table.rs` 常量
-> **draft 素材**: `draft/09-globals-const.md` + `draft/99-global-concepts.md`（素材）
+> **源码**: `const.h`、`glo.h`、`type.h`、`fs.h`、`proto.h`、`utility.c:142-186`、`minix3/sys/sys/syslimits.h`
+> **Rust 模块**: `minix-types`、`os/servers/vfs/src/call_table.rs` 常量、各表文件的容量常量
+> **draft 素材**: `draft/09-globals-const.md` + `draft/99-global-concepts.md`
 
-## 核心点
+## 1 概念：常量不是数字，是资源上限与协议边界
 
-- 常量表：NR_FILPS/NR_VNODES/NR_MNTS/NR_WTHREADS/NR_LOCKS/NR_SOCKDEVS、FP_BLOCKED_ON_*、SYMLOOP、CTTY_ENDPT
-- 全局状态：fp/susp_count/reviving/sending/verbose/m_in/self/workers/err_code/bsf_lock
-- 引用计数模型：filp_count / v_ref_count / v_fs_count 双层不变量（draft/99 素材）
-- endpoint/transid 术语、who_p/who_e/call_nr 宏
-- sys_datacopy_wrapper：跨文档数据拷贝工具
-- 64 位类型映射（A-8）、LOCK_DEBUG cfg（A-9）
+### 1.1 容量常量族——每个数字都是一次资源分配决策
 
-## 边界
+| 常量 | 值 | C 锚点 | 为什么是这个值 |
+|------|-----|--------|---------------|
+| `NR_FILPS` | 1024 | const.h:5 | filp 全局共享池：系统内同时打开的文件描述（跨进程共享）上限。1024 = 每进程 256 fd × 典型共享率的安全余量 |
+| `NR_VNODES` | 1024 | const.h:8 | vnode 池：系统内活跃 inode 缓存上限，与 filp 同量级但独立计数（一个 vnode 可被多个 filp 引用） |
+| `NR_MNTS` | 16 | const.h:7 | 挂载表槽位。**R2-P1-5 勘误**：vmnt.rs 曾误为 8（容量减半），Fix #33 归一为 16 |
+| `NR_WTHREADS` | 9 | const.h:9 | worker 并发上限：同时挂起的 FS/驱动对话数。C 是 9 条真线程；Rust 是 9 个请求槽（ARCH A-1），数字保留是为了语义对齐而非技术必需 |
+| `NR_LOCKS` | 8 | const.h:6 | POSIX 记录锁表槽位 |
+| `NR_SOCKDEVS` | 8 | const.h:10 | socket 驱动表（smap）行数 |
+| `NR_NONEDEVS` | `= NR_MNTS` | const.h:12 | 伪设备位图宽度——PFS 这类"无真实设备"的挂载从此分配 |
+| `OPEN_MAX` | 255 | syslimits.h:38 | 每进程 fd 上限：fd 0..254，255 本身不可用。Rust `fproc.rs:41` 同值；`Fd(u8)` 的新类型边界即此 |
+| `NGROUPS_MAX` | 16 | syslimits.h:59 | 补充组数上限；`fproc.rs` 的 `supplemental_groups: [Gid; 16]` 定长数组由此 |
 
-- 一切机制细节不覆盖（01~31）
+这些常量的 Rust 归属遵循"归属即依赖方向"：协议常量（errno、endpoint、消息布局）入 `minix-types`；VFS 私有容量（`NR_FILPS` 等）入各表文件；跨端复用走 re-export（如 stadir 的 `pub use crate::vmnt::NR_MNTS`，Fix #33 消灭了 8/16 双值分叉）。
+
+### 1.2 阻塞原因枚举——"进程在等谁"的类型化
+
+C 用 `fp_blocked_on` 整数 + `fp_u` 联合体（fproc.h:30-61）表达进程挂在什么上：`FP_BLOCKED_ON_NONE/PIPE/POPEN/FLOCK/SELECT/CDEV/SDEV`。Rust 以 `BlockedOn` 标签枚举承载（fproc.rs:94）——判别器与载荷绑定，读 pipe 参数时编译期不可能拿到 socket 参数（ARCH A-3）。驱动死亡级联（`unsuspend_by_endpt`）正是按这个枚举分流：CDEV → 复活回 EIO，SDEV → `sdev_stop`。
+
+### 1.3 协议边界常量——四个互不重叠的名字空间
+
+`m_type` 域内四段前缀互不重叠：`VFS_BASE 0x100`（call_vec 系统调用，callnr.h）、`FS_BASE 0xA00`（VFS→FS 的 REQ_*，com.h:589——**绝对值是 wire 契约**，R2-P0-1 的 0x600 勘误即此）、`VFS_PM_RQ_BASE 0x900`（PM 控制面，com.h:512）、`VFS_TRANSACTION_BASE 0xB00`（transid 高位编码，com.h:909-911）。判别宏都是"`& ~掩码` == 基址"形态：`IS_FS_RQ` 用 `~0xff`，设备 RS 三族用 `~0x7f`（com.h:919/:963/:1038，基址 0x480/0x580/0x1980）。
+
+## 2 全局状态：glo.h 的每个变量谁写谁读
+
+C 的 `glo.h` 散装全局在 Rust 按"归属即依赖"拆进 `VfsState`（ARCH A-4）：`fp`（当前进程上下文）→ `current_fp_slot`；`reviving`（复活计数）→ `VfsState.reviving`；`sending`（排队等待数）→ `GlobalComm.sending`；`workers` → `WorkerPool`；`verbose` → 启动参数；`err_code` → 决策函数的 `Result` 错误值；`bsf_lock`（阻塞系统调用自旋锁）→ 槽状态机取代。`m_in`（当前消息）→ `current_message`。
+
+## 3 引用计数双层不变量——失效族的正确性基础
+
+三个计数各管一层：`filp_count`（file.h:5，>0 即占用）管 filp 槽的生死；`v_ref_count`（vnode.h:13）管 vnode 内存引用；`v_fs_count`（vnode.h:14）管 FS 侧 inode 引用。不变量：`filp_count` 是 `v_ref_count` 的贡献者之一，`v_fs_count` 只有在 `v_ref_count` 归零后才按阈值释放。失效族（驱动死亡→invalidate→close）的每一步都由这三个计数守卫——改错一层即泄漏或悬垂（首轮 C-3/P0-3 与 Fix #22 的 `fetch_vmnt_paths` 判定都依赖此口径）。
+
+## 4 术语与跨地址空间拷贝
+
+`endpoint`（进程身份，`minix_types::Endpoint`）与 `transid`（`VFS_TRANSID 0xB01 + slot`，`fs_comm.rs:30-69` 的 `TransId`）是两条消息定位机制：endpoint 找进程，transid 在高 16 位找 worker 槽。`who_p`/`who_e`/`call_nr` 三个 C 宏分别是槽号/端点/调用号的当前上下文读取。`sys_datacopy_wrapper`（utility.c:142-186）是 VFS 代理的跨地址空间拷贝：PM 发来的组列表（misc.c:752）、exec 的路径（exec.c）都经它落地；Rust 侧决策口是 `PmHandler::fetch_group_list`（fail-closed ENOSYS 待 W1）。
+
+类型映射（A-8）：`dev_t → DevId(u64)`、`mode_t → Mode(u32)`、`uid_t/gid_t → Uid/Gid(u32)`、`vir_bytes → VirBytes`；`LOCK_DEBUG` 调试 cfg（A-9）未移植（其断言对象——真锁——已被借用模型取代，见有意省略表）。
+
+## 5 测试要点
+
+不变量类测试的落点：引用计数配平在 `filp.rs`/`vnode.rs` 的 inc/dec 测试；容量 fail-closed 在各表边界测试；`m_type` 前缀互斥在 `call_table.rs:440`（`VFS_BASE` vs `TRANSACTION_BASE`）与 `request.rs` 的 `test_fs_wire_values_match_c_absolute`。
+
+## 6 过渡与 7 参见
+
+本篇是横向索引：02~07 的表结构、10 的 PM 协议术语、12 的 REQ 常量都以本篇为术语基准。详见各篇；有意省略的 C 符号见下方台账。
 
 ## 有意省略表（intentional omissions）
 
