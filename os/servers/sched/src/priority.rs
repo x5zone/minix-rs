@@ -43,21 +43,20 @@ pub const MIN_USER_Q: u8 = 15;
 /// Integer division truncates, exactly as in C.
 pub const USER_Q: u8 = (MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q;
 
-/// Default scheduling quantum in milliseconds (`config.h:74`).
-///
-/// The name carries no unit in C; the unit is nailed down here by the
-/// wire it feeds: [`DEFAULT_USER_TIME_SLICE`] runs straight into the
-/// kernel's `p_quantum_size_ms` (`system.c:683`), so both are ms.
-/// [ARCH S-6] (plan.md): the draft's "ticks" reading (R-4) is retired.
-pub const USER_QUANTUM: u32 = 200;
-
 /// Default time slice for a fresh user process, in ms
 /// (`schedule.c:41`).
 ///
-/// Numerically equal to [`USER_QUANTUM`] but semantically distinct: one
-/// is the config-file default quantum, the other the code default for a
-/// slot that never received a quantum. They coincide today; the two
-/// names keep the two provenances from merging.
+/// C also carries a `USER_QUANTUM` with the same number
+/// (`config.h:74`): the config-level default a *client* sends when it
+/// does not name a quantum. That constant's consumers are PM and RS,
+/// so its Rust homes are their crates (`os/servers/pm/src/sched.rs:27`,
+/// `os/servers/rs/src/sched.rs:24`) — SCHED never reads a default
+/// quantum off the wire, it only seeds the birth value for its own
+/// table. Same number, different road; keeping the two names apart
+/// keeps the two provenances from merging.
+/// [ARCH S-6] (plan.md): the unit is milliseconds, straight into the
+/// kernel's `p_quantum_size_ms` (`system.c:683`); the draft's "ticks"
+/// reading (R-4) is retired.
 pub const DEFAULT_USER_TIME_SLICE: u32 = 200;
 
 /// "Use the default CPU" sentinel (`config.h:77`).
@@ -171,16 +170,6 @@ impl Nice {
     }
 }
 
-/// Whether a quantum value the kernel would accept (`system.c:648-649`).
-///
-/// The kernel refuses `quantum < 1` (`EINVAL`); SCHED's START branch
-/// stores whatever the message carries (`schedule.c:196`) and lets the
-/// kernel judge at fan-out. The predicate lives here so the rule has
-/// one home; the refusal itself stays at the gate (09).
-pub const fn is_valid_quantum(quantum_ms: u32) -> bool {
-    quantum_ms >= 1
-}
-
 /// Whether a slot counts as a system process (`schedule.c:44`).
 ///
 /// Parentage, not privilege: a process borne of RS (`RS_PROC_NR`,
@@ -223,15 +212,13 @@ mod tests {
     }
 
     #[test]
-    fn test_quantum_defaults() {
-        // Two names, one number (`config.h:74`, `schedule.c:41`); both ms
-        // (S-6: straight into `p_quantum_size_ms`).
-        assert_eq!(USER_QUANTUM, 200);
+    fn test_default_time_slice() {
+        // The birth value (`schedule.c:41`), in ms (S-6: straight into
+        // `p_quantum_size_ms`). The client-side default (`USER_QUANTUM`,
+        // `config.h:74`) lives in PM and RS, not here — SCHED stores
+        // whatever the message carries and never judges it (06; the
+        // kernel's own gate is `system.c:648-649`).
         assert_eq!(DEFAULT_USER_TIME_SLICE, 200);
-        // The kernel's gate (`system.c:648-649`): 0 refuses, 1 passes.
-        assert!(!is_valid_quantum(0));
-        assert!(is_valid_quantum(1));
-        assert!(is_valid_quantum(200));
     }
 
     #[test]

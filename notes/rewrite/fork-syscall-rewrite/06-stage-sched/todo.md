@@ -1,295 +1,264 @@
 # 06-stage-sched Rust 实现架构级 Review TODO
 
-> 来源：2026-09-06 架构级代码审查（查漏补缺 + 整体分层审视，非逐函数审查）。
-> 范围：一等对象 `os/servers/sched/src/` 全部 Rust 代码（19 个文件，2848 行，crate 名 `minix-sched`）；内核契约面为辅（`os/kernel/src/proc_table.rs` 的调度包装与通知、`os/kernel/src/syscall.rs` 的 Schedule/Schedctl 入口、`os/kernel/src/sched.rs`、`os/libs/minix-types` 的消息与常量）。
-> 方法：三向覆盖矩阵（Minix3 C 源 ↔ 14 篇文档 ↔ Rust 实现）先行查漏补缺，再按「整体 → crate 结构 → 模块 → 类型与函数」四层审视，对照 Redox 实现、操作系统理论、Rust 社区惯例给出多方案建议。
-> 定位：本文档是本阶段第一份架构改进建议与覆盖缺口清单。06-stage-sched 此前没有 todo.md；本文档不复写 `plan.md`（文档重组计划，2026-08-16 生效），两者各管一头。
-> 状态（2026-09-06 第二次更新）：**P1-1 / P1-2 / P1-3 已修复**（2026-09-06 主循环落地，见 §9 修复记录；测试基线 59 → 79 passed，minix-sched 本体 clippy 0 告警，生产二进制可构建）。P2-1（init-BSP 语义修正，建议下一迭代最先领取）与 P2-2 ~ P3-5 为待处理条目，按 §8 推进顺序逐项领取（todo-fix / cmd-05），修复时文档与代码一并改。第一轮审查完成于 2026-09-06（共 12 条：P1 三条、P2 四条、P3 五条，P0 为零），本轮仅审查未修代码。
+> 来源：2026-09-06 第一轮架构级审查（archive/todo-round1-archive-2026-09-06.md，全文存档，含 Fix #1~#4 修复记录）+ 2026-09-09 第二轮（V2 轮，本文档主体）。
+> 范围：一等对象 `os/servers/sched/src/` 全部 Rust 代码（19 文件，约 4400 行，crate 名 `minix-sched`，79 测试）；内核契约面与客户端面为辅（发现按 edge 判定规则登记 `../edge_todo.md`）。
+> 方法：V2 轮 = cmd-04 第二遍。先查漏补缺（C 符号 ↔ 14 篇文档 ↔ Rust 三向矩阵复建 + 第一轮最大缺口「主循环」落地后的八条执行侧语义逐条对测试），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核实）/OS 理论/Rust 社区惯例。本轮只审查未修代码。
+> 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档只留双向指针（§5）。
+> 状态（2026-09-09，V2 轮）：**服务本体收敛——P0 为零，stage 内新发现 1 条 P2 + 2 条 P3；真正的缺口全部在缝上**（内核接缝三件：niced 断环、PREEMPTIBLE 近似、SMP 三件套，已登记 edge 四条目 + E5 一增补）。第一轮遗留 9 条 open 经逐条 grep 复核全部维持（P3-1 的 noquantum_trust 行因主循环接线而闭单，其余升格或维持）。
 
 ---
 
 ## 0. 审查结论速览
 
-一句话总结：纯函数层的重写质量很高——C 的门序、错误码、消息线序在 59 个测试里逐一锁定，全部通过；真正的缺口不在「已写的代码」，而在「还没接上的代码」：主循环、状态所有者、传输接缝三件事缺位，服务器目前无法运行。另有四处语义与归属层面的改进点、五项卫生项。
+一句话总结：主循环落地后，服务器的判定层、组合层、传输接缝三层形状已经稳定，八条执行侧语义各有点名测试钉住——服务本体这一轮几乎没有新账。V2 轮的产出在边界上：沿着 NO_QUANTUM 和 SYS_SCHEDULE 两条 wire 钻进内核对端，发现 C 依赖两个 Rust 内核从未实现的语义（SYS_SCHEDULE 消息的 niced 字段被 `let niced = false` 丢弃；PREEMPTIBLE 特权标志被 `priority != 0` 近似替代），前者的修复注释还引用了一个 C 树里不存在的调用（SYS_NICE）。这三件事都不属于本 stage 的生产代码，按 edge 规则登记，SCHED 侧零改动。
 
-| 级别 | 条目 | 一句话 |
-|------|------|--------|
-| P0 | （无） | 第一轮未发现正确性级缺陷，自检说明见 §2 |
-| P1 | P1-1 | 主循环与组合层缺失（**✅ 已修复** 2026-09-06，见 §9） |
-| P1 | P1-2 | 组合层「状态所有者」未设计（**✅ 已修复** 2026-09-06，见 §9） |
-| P1 | P1-3 | 内核传输接缝无抽象（**✅ 已修复** 2026-09-06，见 §9；真实通电挂 edge E8） |
-| P2 | P2-1 | init 临时值「长期作用于 BSP」的语义误读（注释与 06 篇共两处），会误导主循环实现 |
-| P2 | P2-2 | 14 篇（RS 交互）的 Rust 实现归属未声明（跨 crate 分布） |
-| P2 | P2-3 | `SUSPEND` 常量本地定义，与 com.h 常量一律走 minix-types 的镜像原则不一致 |
-| P2 | P2-4 | `SchedProc.cpu` 裸 `u32`，与同结构内 `Priority` 的类型纪律不一致 |
-| P3 | P3-1 | 五个预留未接线符号的盘点（主循环落地后必须接线，否则删） |
-| P3 | P3-2 | 文档第 5 节测试表两处 minix-types 侧行锚点漂移 |
-| P3 | P3-3 | 00 与 99 两篇缺 `.design/` 快照（预检脚本实测） |
-| P3 | P3-4 | `lib.rs` 唯一的 glob 再导出没有被任何调用方使用 |
-| P3 | P3-5 | 11 篇可补 Redox 权重轮转（DWRR）演进参照，接上已有的策略演进预留 |
+| 级别 | 条目 | 一句话 | 状态 |
+|------|------|--------|------|
+| P0 | （无） | 本轮零发现，核对依据见 §4.0 | — |
+| P1 | （stage 内无） | 本轮 P1 级发现全部是内核生产代码 → edge | §5 |
+| P2 | V2-P2-1 | 预留符号清算批次（升格自 P3-1：清算时点已到） | ✅ 已修复 2026-09-09（Fix #5） |
+| P2 | P2-1 | init 临时值 BSP 语义误读（**V2 复核：加重**——Rust 注释也描述了不存在的规则） | open |
+| P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | open |
+| P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
+| P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | open |
+| P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | open |
+| P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | open |
+| P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
+| P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | open |
+| P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | open |
+| P3 | P3-4 | lib.rs glob 再导出无人用 | open |
+| P3 | P3-5 | 11 篇补 Redox 演进参照（V2 增补：RR→DWRR→EEVDF 两级） | open |
 
-验证命令基线（2026-09-06 实测，后续修复轮以此为对照）：
-- `cargo test -p minix-sched`：**59 passed / 0 failed**（库目标；二进制目标 0 个测试）
-- `cargo clippy -p minix-sched --all-targets`：minix-sched 本体 **0 条告警**（workspace 级尚有依赖 crate 的历史告警，不属本阶段）
-- `tools/design-coverage-check.sh fork-syscall-rewrite --stage 06-stage-sched`：01~14 三种快照齐备；00、99 各缺三个快照（见 P3-3）
-- 测试名对账（Gate E 抽查 + 全量核对）：14 篇文档第 5 节声称的测试函数在代码中全部存在；两处 minix-types 侧行号锚点过期（见 P3-2）
+**闭环账**（第一轮 → 现在）：P1-1（主循环）/ P1-2（SchedServer 单一所有者，[ARCH S-11]）/ P1-3（IpcTransport + KernelApi 双 trait 接缝）✅ 2026-09-06 修复（测试基线 59 → 79，Fix #1~#4，全文见 archive §9；真实通电挂 edge E8）。
+
+验证命令基线（2026-09-09 实测，后续修复轮以此为对照）：
+- `cargo test -p minix-sched`：**79 passed / 0 failed**
+- `cargo clippy -p minix-sched --all-targets`：本体 **0 条告警**（全链 12 条告警全部来自依赖 crate minix-sys/minix-types + workspace profile，已登记 edge E-MINSYS-HYGIENE，不属本阶段）
+- `tools/design-coverage-check.sh fork-syscall-rewrite --stage 06-stage-sched`：00、99 各缺三快照（维持 P3-3）
+- Gate E：02 篇 §5 的 server.rs 锚点抽验 3/3 对齐（`test_kernel_noquantum_demotes_and_never_replies`:895、`test_noquantum_floor_still_fans_out`:926、`test_forged_noquantum_answers_eperm`:948——Fix #4 文档同步有效）；01/02 篇的 minix-types 侧 2 处行锚仍漂移（P3-2 维持）
 
 ---
 
-## 1. 覆盖矩阵：C 源 ↔ 文档 ↔ Rust（查漏补缺主产出）
+## 1. 覆盖矩阵 V2：查漏补缺结论
 
-### 1.1 三向映射表
+### 1.1 服务本体：13 篇映射全部闭合
 
-判定分三档：**已实现**（C 概念有对应的 Rust 模块与测试）、**判定层已实现**（决策逻辑在、执行动作留给调用方——这是本 crate 的既定分工，见各模块文档头）、**缺口**（无 Rust 形态，指向具体条目）。
+第一轮矩阵的唯一「缺口」行（main 主循环 → P1-1）已修复。V2 轮对 `minix3/minix/servers/sched/` 四个 C 文件（main.c 137 行、schedule.c 369 行、utility.c 74 行、schedproc.h 39 行）逐符号重对：main/reply/sef_local_startup/sef_cb_init_fresh/do_start_scheduling/do_stop_scheduling/do_noquantum/do_nice/schedule_process/pick_cpu/init_scheduling/balance_queues/no_sys/sched_isokendpt/sched_isemtyendpt/accept_message/struct schedproc——17 个符号全部有 Rust 对应物，判定三档不变（已实现 / 判定层已实现 / 缺口），缺口为零。三个 C 原文 quirks（`accept_message` 用 endpoint 与 proc-nr 常量直接比较、`is_system_proc` 同型、MAX_USER_Q == TASK_Q）均已如实镜像并有测试锁定。
 
-| C 概念（锚点） | 文档 | Rust | 判定 |
+### 1.2 八条执行侧语义：逐条对测试（V2 核心复核项）
+
+第一轮 §1.2 列出的八条「判定层管不到」的行为，Fix #3/#4 声称全部钉住——本轮逐条核验测试名与测试体，**8/8 成立**：
+
+| # | 语义（C 锚） | 钉住测试（server.rs） | 核验 |
 |---|---|---|---|
-| `main()` 主循环：收件、分流、回件（`servers/sched/main.c:22-96`） | 01 + 02 | `main.rs:12-43`，循环体是 `empty_loop` 占位（`main.rs:40-41`） | **缺口** → P1-1 |
-| SEF 启动：fresh 与 restart 两种注册、读机器信息（`main.c:111-136`） | 01 | `sef.rs:19-58`、`main.rs:16-32` | 已实现；但 `sys_getmachine` 传输用硬编码 mock 顶替（`main.rs:28-31`），归入 P1-1/P1-3 |
-| 消息面：五种编号、通知先于调用、SUSPEND 不回复、未知编号拒收（`main.c:35-96`、`utility.c:18-23`） | 02 | `dispatch.rs` 全模块 | 已实现（判定层） |
-| `struct schedproc` 七个字段，第八字段 cpu_mask 结构性删除（`schedproc.h:23-40`） | 03 | `schedproc.rs:65-101` | 已实现 |
-| 槽位四道判断与镜像门（`utility.c:29-56`）、发送者白名单（`utility.c:61-74`） | 04 | `table.rs`、`valid.rs` | 已实现 |
-| 队列常量表、毫秒时间片、nice 折算、系统进程判断、niced 谓词（`config.h:66-77`、`pm/utility.c:91-101`、`schedule.c:41-44,319`） | 05 | `priority.rs` | 已实现 |
-| `do_start_scheduling`：双信同一门、三种出生值、EBADCPU 重试环（`schedule.c:140-249`） | 06 | `scheduling/start.rs` | 判定层已实现；`sys_schedctl` 接管调用与重试环的执行侧随主循环（P1-1） |
-| `do_stop_scheduling`：两道门、台账扣减、清占用（`schedule.c:112-135`） | 07 | `scheduling/stop.rs` | 判定层已实现；执行侧随主循环（P1-1） |
-| `do_noquantum` 降一级、`do_nice` 改上限带回滚（`schedule.c:87-107,254-292`） | 08 | `scheduling/noquantum.rs`、`scheduling/nice.rs` | 判定层已实现；下发执行侧随主循环（P1-1） |
-| `schedule_process` 按掩码下发、-1 保持哨兵（`schedule.c:297-328`） | 09 | `kernel_api/schedule.rs` | 已实现（打包层）；`sys_schedule` 发送随 P1-3 |
-| `pick_cpu` 三条规则与 `cpu_proc[]` 台账（`schedule.c:37-81`） | 10 | `cpu.rs` | 选择层已实现；台账持有者未定（P1-2） |
-| `init_scheduling` 五秒闹钟、`balance_queues` 逐轮回升（`schedule.c:334-369`） | 11 | `balancer.rs` | 数值层已实现；`sys_setalarm` 布防与表遍历执行侧随主循环（P1-1） |
-| `do_schedctl` 注册/接管契约（`kernel/system/do_schedctl.c:7-46`）；NO_QUANTUM 通知负载（`ipc/message.rs:1057-1075` 七个统计字段） | 12 | `kernel_api/schedctl.rs` | 已实现（打包层）；通知接收与解码随主循环（P1-1） |
-| PM 侧行程：三路分发、START 四字段、INHERIT 三字段（`lib/libsys/sched_start.c:11-97`、`sched_stop.c:9-29`） | 13 | `client.rs` | 已实现（镜像层） |
-| RS 侧行程：RS 先申请再生（`rs/manager.c:461`、`rs/request.c:342`） | 14 | 服务端视角由 `valid.rs:14-21` 覆盖（RS 是放行发送者）；客户端实现位于 `os/servers/rs/src/request.rs:9` 等，属 03-stage-rs 域 | **归属未声明** → P2-2 |
+| 1 | 回件失败只丢一次（main.c:101-106） | `test_reply_failure_does_not_kill_the_loop` | ✓ |
+| 2 | 内核 NO_QUANTUM 永不回件（main.c:70-77） | `test_kernel_noquantum_demotes_and_never_replies` | ✓ |
+| 3 | 伪造 NO_QUANTUM 回 EPERM（main.c:78-83） | `test_forged_noquantum_answers_eperm` | ✓ |
+| 4 | CLOCK 才整理、其余通知静默（main.c:44-55） | `test_clock_notification_rebalances_and_rearms` + `test_other_notification_passes_in_silence` | ✓ |
+| 5 | NO_QUANTUM 不回滚、NICE 回滚（schedule.c:99-105 对 284-288） | 上条 2 的失败半 + `test_nice_regrades_and_rolls_back_on_failure` | ✓ |
+| 6 | START 失败残留占用（schedule.c:223 先于 233-237） | `test_start_fanout_failure_leaves_slot_occupied` | ✓ |
+| 7 | 平衡遍历 fire-and-forget（schedule.c:358-364） | `test_clock_notification_rebalances_and_rearms`（fanout 结果不检） | ✓ |
+| 8 | START 成功回件写 scheduler=SCHED（schedule.c:246） | `test_start_from_pm_happy_path` | ✓ |
 
-结论：14 篇文档对应的 C 概念全部有文档承载；Rust 侧 13 篇有对应模块，唯一悬空的是第 14 篇的跨 crate 归属（P2-2）与所有「执行侧」动作的共同前置（P1-1）。查漏补缺没有发现「C 有、文档与 Rust 双双漏掉」的概念——唯一接近的是 `schedule.c:319` 的 niced 计算与 `schedule.c:348-352` 的「策略将来会换」注释，前者已实现（`priority.rs:202-204`），后者已被 `balancer.rs:33-36` 的架构预留（S-9）显式接住。
+### 1.3 缝上缺口（V2 真正的查漏产出，全部已登记 edge）
 
-### 1.2 执行侧语义清单（主循环落地时必须逐项锁定）
+沿两条 wire 钻到内核对端后的三个行为级发现 + 一个常量收敛项。C ground truth 与 Rust 两侧锚点、修法、依赖见 `../edge_todo.md`：
 
-这八条是 C 主循环与各处理器里「判定层管不到」的行为。它们目前没有任何测试承载——主循环（P1-1）落地时，每一条都应有一个对应的测试用例锁住，防止实现时凭直觉走样：
+| 缝 | C 行为 | Rust 内核现状 | edge 条目 |
+|---|---|---|---|
+| SYS_SCHEDULE 的 niced 字段 | do_schedule.c:27 读线 → sched_proc 写 MF_NICED（system.c:692-694） | syscall.rs:923 `let niced = false;` 丢弃；注释引用的 "SYS_NICE" 在 C 树不存在 | E-SCHEDNICED |
+| PREEMPTIBLE 特权标志 | proc.c:1895（通知门）+ proc.c:1638（抢占门）读 priv 旗标 | proc_table.rs:766/:674 用 `priority != 0` 近似；sched.rs:233 的"正确助手"同为近似且未接线 | E-PREEMPTFLAG |
+| SCHED 下发的 cpu 字段 | system.c:650-654 EBADCPU 校验 + :673-677 跨 CPU 迁移 | 校验是桩（sched.rs:355-360）、迁移未接线、每核队列恒 BSP（proc_table.rs:573-586） | E-SCHEDSMP |
+| SYS_* 调用号常量 | com.h:210-262 一族 | kernel 枚举与 SCHED 镜像各自表达，minix-types 缺位 | E-MINTYPES-SYS |
 
-1. 回件失败只告警、不崩溃、不重试（`main.c:101-106`）。
-2. 内核来源的 NO_QUANTUM：处理成功与失败都不回件，失败只打印（`main.c:68-77`）。
-3. 伪造的 NO_QUANTUM：以 EPERM 回件（`main.c:78-83`）；「来源是内核」的判据是消息标志位 `IPC_FLG_MSG_FROM_KERNEL`（`ipcconst.h:28`），判定函数已在 `dispatch.rs:86-88`。
-4. CLOCK 通知触发队列回升，其余通知一律静默，所有通知永不回件（`main.c:44-55`）。
-5. NO_QUANTUM 的下发失败**不回滚**已写入的降级、照实返回错误（`schedule.c:99-105`）；而 NICE 的下发失败**要回滚**（`schedule.c:284-288`）。两条对称结构的处理不对称，这是 C 的真实语义，不是笔误。
-6. START 路径上 `sys_schedctl` 失败时槽位尚未标记占用、直接返回（`schedule.c:218-222`）；而随后的下发失败时槽位**已**标记占用并残留（`schedule.c:223` 先置、`schedule.c:227-237` 后败）。失败残留是 C 的既有行为。
-7. 队列回升的表遍历是「发了就不管」：逐个下发、忽略返回值（`schedule.c:358-364`）。
-8. START 成功后，回件消息的 scheduler 字段改写为本服务器编号（`schedule.c:246`；回件负载定义在 `ipc/message.rs:1187`）。
+其中 E-PREEMPTFLAG 有可观察后果：MAX_USER_Q == TASK_Q == 0，SCHED 接管的进程经 START/NICE 合法可达队列 0，此后 quantum 耗尽走「内核调度者续量」分支——SCHED 永远收不到 NO_QUANTUM，MLFQ 的降级臂对它失效。单核现状即可达，非 SMP 专属。
 
 ---
 
-## 2. P0：真实缺陷（本轮为零）
+## 2. V2 轮新条目
 
-第一轮审查未发现正确性级缺陷。这不是「没查到」而是有核对依据的：判定层的每个处理器与 C 的门序逐一对照过（start.rs 的三道门次序对照 `schedule.c:150-166`，nice.rs 对照 `schedule.c:262-276`，table.rs 的四道判断对照 `utility.c:31-40`），错误码值有断言锁定（`table.rs:117` 的 `(EBADEPT, EINVAL, EDEADEPT) == (216, 22, 215)`），消息线序有断言锁定（`schedctl.rs:209-216`、`client.rs:265-278`）。已按收敛规则做漏检自检：随机重验了三个语义点——NICE 回滚、NO_QUANTUM 不回滚（见 §1.2 第 5 条）、START 失败残留（第 6 条）——三者 Rust 侧的表述与 C 原文一致，未发现新问题。
+### V2-P2-1 预留符号清算批次：四个符号到达既定清算时点（升格自 P3-1）✅ 已修复 2026-09-09（Fix #5，见 §9）
 
-需要说明：主循环缺失（P1-1）意味着「外部可观察行为」整体尚未达成，但这属于阶段进行中的完成度缺口而非已写代码的错误，按本项目的分级惯例记 P1 而非 P0。
+**问题**：第一轮 P3-1 为五个「仅测试引用」的预留符号定了共同标准——「P1-1 落地后仍无生产调用者，即按死代码消除流程逐项删」。主循环已于 2026-09-06 落地，V2 轮逐一 grep 复核生产调用者：
 
----
+| 符号 | 锚点 | V2 复核 | 处置 |
+|---|---|---|---|
+| `noquantum_trust` | dispatch.rs:86 | **已有生产调用者**（server.rs:244 经 server.rs:27 消费） | ✅ 闭单（第一轮「保留」判定兑现） |
+| `is_valid_quantum` | priority.rs:180 | 仍仅测试引用（priority.rs:232-234） | **删**：C 的时间片校验在内核（system.c:648-649），SCHED 原样存储 |
+| `USER_QUANTUM` | priority.rs:52 | 生产代码仅注释提及（start.rs:132），无真消费 | **删或移 PM crate**（05 篇已论证它与 DEFAULT_USER_TIME_SLICE 来源之别） |
+| `is_available` | cpu.rs:47 | 仍仅测试引用；`pick` 的循环体直接模式匹配 `Option`（cpu.rs:85-88） | **内联删**（或留作 pick 注释） |
+| `IN_USE` | schedproc.rs:23 | 仍仅测试断言（:134）；占用语义已由 `SlotState` 完整表达 | **删**，留一行注释（schedproc.rs:19-22 的说明已是好载体） |
 
-## 3. P1：架构级问题（建议尽快规划）
+**影响**：五个符号四个确认死代码——dead code 显式子轮的既定标准已触发而未执行，每多留一轮就多一分「这是接口预留还是遗忘」的评审记忆成本。
 
-### P1-1 主循环与组合层缺失：服务器不可运行
+**建议**：一次 todo-fix 批次做完四个（fix-guard 逐条），删后跑 `cargo test -p minix-sched` 对照 §0 基线 79 passed（删除纯死代码，基线应不动）。
+**验证**：`rg -n "is_valid_quantum|USER_QUANTUM|is_available|IN_USE" os/servers/sched/src/ --type rust` 修后应零生产命中。
 
-**问题**：`main.rs:40-41` 的主循环是空转占位（注释自述「等 02 篇落地循环体」）。C 的主循环形状——收一条消息、先分辨通知与调用、通知里只认时钟、调用里认五种编号、除 SUSPEND 外一律回件（`main.c:35-96`）——在 Rust 侧没有任何实现。现有 11 个模块全部是纯判定或纯打包函数，彼此之间没有一根线连起来：`dispatch::classify` 的输出没有人消费，`scheduling::start::plan_start` 的产出没有人写入表，`balancer::rebalance_one` 的判定没有人驱动遍历。
+### V2-P3-1 测试补强两小件
 
-**影响**：这个阶段的所有价值都押在「判定层正确」上，但判定层无法自证——§1.2 的八条执行侧语义没有测试承载，59 个测试全部是单元级。服务器不可运行，也意味着后续任何阶段（PM 联调、RS 联调）都无法以它为对端。
+**问题**：(a) NO_QUANTUM 带内核旗标但 `m_source` 无效（越界如 9999、或负值 task endpoint）的分支无测试——C 走 `sched_isokendpt` 失败返回 EBADEPT、主循环 `continue` 不回件（schedule.c:92-95 + main.c:76），Rust 走 `Probe` 的 OutOfRange/Task 判决 + `admit` 拒绝 + 静默（server.rs:496-499），现有 `test_kernel_noquantum_demotes_and_never_replies` 只测合法 CHILD；(b) `balance_queues` 多进程回升的遍历序（按槽位 0..NR_PROCS）与「只回升到 ceiling 不越过」（schedule.c:360）只有单进程测试（`test_clock_notification_rebalances_and_rearms`），多进程同轮各升一级、到 ceiling 停的场景未钉。
 
-**建议**：
-1. **首选**：在库内实现一个 `run_loop`（或等价的逐步驱动函数），以传输 trait 注入依赖（见 P1-3）；`main.rs` 只做真实传输的装配。C 的循环体只有六十行（`main.c:35-96`），Rust 侧的对应物不该更复杂：分类（`dispatch::classify`）→ 按类型进各臂（`scheduling::*` 的判定 + 自己写表）→ 结算回件（`dispatch::settle`）。
-2. **次选**：不写无限循环，改写「单步函数」`step(&mut state, event) -> Option<Reply>`，真实循环只是 `while` 壳。单步化让 §1.2 的八条语义都能用表驱动测试锁定，比「起真循环、发真消息」的集成测试成本低一个数量级，也符合本 crate「单线程事件循环、纯函数无共享状态」的既有文档头承诺（如 `scheduling/start.rs:13`）。
-3. 两条路线都应把 §1.2 的八条作为验收清单逐条对测试；文档侧的落点是 02 篇（`main.rs:35-39` 的注释已把循环体归属指到 02 篇）。
+**建议**：两测试各一，表驱动；随任何触碰 server.rs 的轮次顺带，不单独立项排队。
+**验证**：新增测试名在 02 篇 §5 表同步登记（Gate E 对账）。
 
-### P1-2 组合层「状态所有者」未设计
+### V2-P3-2 Probe 的越界 dummy 值改为类型表达
 
-**问题**：C 侧的状态是四个文件级全局：进程表 `schedproc[NR_PROCS]`（`schedproc.h:36`，NR_PROCS 为 256，Rust 侧常量在 `minix-types/src/types/com.rs:38`）、CPU 负载台账 `cpu_proc[]`（`schedule.c:46`）、机器信息 `machine`（`main.c:17`）、平衡周期 `balance_timeout`（`schedule.c:16`）。Rust 侧这四块状态全部「留给了调用方」（各模块文档头反复声明表由调用方持有，如 `table.rs:7-10`），但调用方不存在，四块状态由谁持有、怎么组织，没有任何设计落点。
-
-**影响**：主循环（P1-1）落地时如果没有单一所有者，状态会散落在 `main.rs` 的局部变量里，借用检查会推着实现走向「把四块状态拆成参数逐层传递」的形态。02-stage-vm 的同型教训记在其 todo.md 的 P2-3：为绕借用检查拆出四元组访问器，最终成为结构性债务。
-
-**建议**：
-1. **首选**：单一 `Sched` 结构体持有四块状态（表、台账、平衡器、机器拓扑），主循环每轮 `step(&mut sched, transport)`。单线程事件循环里一个 `&mut Sched` 走天下：无锁、无内部可变性、表与台账的交叉读写（START 要同时改两者，`schedule.c:223-231`）天然免拆借用。这与各模块「纯函数、无共享状态」的既有承诺方向一致——状态集中在所有者，函数保持纯。
-2. **次选**：按 C 的领域边界拆两个持有者（进程表一个、机器与台账一个），保持与 C 全局的一一对应，方便逐行对照。
-3. 这是架构级决策：落地时应按项目规范标注 `[ARCH: ...]` 并保持文档、设计、代码三处一致。设计落点建议 02 篇扩展或新增一篇（由用户决定，本文档不自动建文档）。
-
-### P1-3 内核传输接缝无抽象：只打包、不发送
-
-**问题**：`kernel_api` 两个子模块的职责自述是「打包与前置校验，发送留在调用方」（`schedctl.rs:8-14`、`schedule.rs:10-15`）。但「发送」这一侧没有任何抽象：接收消息、判定内核来源标志位（`ipcconst.h:28`）、`sys_getmachine`、`sys_schedctl`、`sys_schedule`、`sys_setalarm`、回件——七个传输动作既没有 trait 也没有实现。`main.rs:28-31` 目前用硬编码的一核机器信息顶替 `sys_getmachine`，即是一处症状。
-
-**影响**：P1-1 的主循环无论写成什么形状，只要传输没有接缝，循环逻辑就无法在没有真内核的环境下测试；§1.2 的八条语义将只能靠人眼审。02-stage-vm 有同型前车：其 todo.md 的 P1-3 记录了「IPC 传输生产路径不可运行且不可测」，后来不得不专项补课。
-
-**建议**：
-1. **首选**：在 `kernel_api` 下新增 `transport` 模块，定义一个最小 trait，七个方法对应七个传输动作，错误一律返回 Minix3 errno 的 `i32`（与全 crate 的错误纪律一致）。库内逻辑只依赖 trait；二进制装配真实实现（走 `minix-sys`，该依赖已在 `Cargo.toml` 声明）；测试装配内存 mock。SCHED 的传输面就这么大，自建小 trait 的成本远低于返工。
-2. **次选**：仿照内核侧 `IpcEngine` 的抽象风格（`os/kernel/src/proc_table.rs:722-730` 的 `notify_scheduler` 用法）。不推荐作首选：那是内核借用车道的形状，用户态单线程服务器用不上它的借用结构，照搬会引入不适配的复杂度。
-3. 对照 Redox：用户态服务通过 libredox 的系统调用层与内核往来，那一层正是可替换接缝（来源：[Redox Book — Scheduling](https://doc.redox-os.org/book/scheduling.html) 与 [redox-os/kernel](https://github.com/redox-os/kernel) 仓库结构）。形状一致：策略逻辑依赖窄接口，传输实现可换。
+**问题**：`Probe::read` 对越界 endpoint 构造 dummy 字段（server.rs:120-130：`Priority::new(0).expect(...)`、`index: 0`），依赖注释约定「dummies when out of range; unread in that case」（server.rs:91-92）——门判决已拒绝所以值不被消费，但类型上「可读的行」与「编造的行」不可区分，未来消费方若跳过门判决直接读 Probe 字段，编译器不会拦。
+**建议**：首选，`row: Option<RowValues>`（判决通过才 `Some`，消费方 `let Some(row) = ... else return` 自然强制先过门）；次选，维持现状但在 Probe 文档头把「unread」升级为显式不变量 + debug_assert。
+**验证**：`cargo test -p minix-sched` 基线不动；`rg -n "probe\." os/servers/sched/src/server.rs` 逐消费点核对先门后读。
 
 ---
 
-## 4. P2：结构性改进
+## 3. 存量 open 条目（V2 staleness 复核结论）
 
-### P2-1 init 临时值「长期作用于 BSP」的语义误读
+> 原文全文见 archive（第一轮 §4/§5）；此处保留条目主旨 + V2 复核注记，不重写历史结论。
 
-**问题**：`scheduling/start.rs:133-135` 的注释与 06 篇（`06-start-scheduling.md:31`、`:89`）共同声称：init 自父分支里的临时值「真正起作用的只有 CPU（BSP，`schedule.c:184`），数字部分都会被覆盖」。但对照 C 原文，这个说法不成立：`do_start_scheduling` 在接管调用之后**无条件**调用 `pick_cpu`（`schedule.c:226`），而 init 的父进程是它自己、不是 RS，不满足系统进程判断（`schedule.c:44`），所以在多核机器上 init 走的是「负载最低的非 BSP 核」选择（`schedule.c:67-76`），BSP 只是托底（`schedule.c:65-66`）；单核机器上 `pick_cpu` 自己就会选 BSP（`schedule.c:54-57`）。两条路合起来：`schedule.c:184` 的 BSP 赋值在任何路径上都会被覆盖，init 的临时值——包括 CPU——最终作用是零。
+### P2-1 init 临时值「长期作用于 BSP」的语义误读 —— V2 复核：**加重，三重失真**
 
-**影响**：今天没有行为偏差（出生计划 `Seed` 根本不携带 cpu 字段，`start.rs:74-85`），所以不是 P0。但这是一颗定时雷：主循环（P1-1）落地时，实现者若按注释写「自父出生的种子固定落 BSP」，就会与 C 漂移——C 的 init 在多核机器上完全可能落在别核。
+- start.rs:133-135 注释仍声称「The lasting init effect is the CPU (machine.bsp_id, 184, SMP builds only): the caller keeps a self-parented seed on the BSP (10 consumes this rule)」；06 篇 :31 同款表述仍在。
+- **V2 新发现（加重）**：注释声称的「caller keeps a self-parented seed on the BSP」这条规则**在 Rust 代码中也不存在**——server.rs:383-384 用 `is_system_proc(seed.parent)` 计算（init 自父、parent=INIT≠RS → false），cpu.rs `pick` 只有两条 BSP 规则（processors_count<=1 与 is_system），没有 self-parented 分支。即注释同时误读了 C（schedule.c:226 无条件 pick_cpu 覆盖一切临时值，包括 184 的 BSP 赋值）和误描述了自己的代码。
+- 修复面从「两处表述」扩为：start.rs 注释 + 06 篇两处 + 核查 10 篇是否复述了该「规则」。
+- **验证**：`rg -n "lasting|self-parented" os/servers/sched/src/scheduling/start.rs os/servers/sched/src/cpu.rs` + `rg -n "真正起作用|BSP" 06-start-scheduling.md 10-pick-cpu-smp.md`。
 
-**建议**：
-1. **首选**：修正两处表述为「init 的临时值（数字与 CPU）全部被后续步骤覆盖，最终 CPU 一律由 `pick_cpu` 决定（`schedule.c:226`），init 没有任何特例残留」，并顺带补一句多核路径的行为。Ground Truth 链是 C 源 > 文档 > 代码，`schedule.c:226` 的无条件覆盖是原文事实。
-2. **次选**：若想保留「BSP 起步」的叙述（毕竟单核下结果等价），必须显式限定为「单核机器上的巧合等价，多核下 init 与普通进程同样参与负载选择」。
-**验证**：`rg -n "lasting" os/servers/sched/src/scheduling/start.rs`；`rg -n "真正起作用" notes/rewrite/fork-syscall-rewrite/06-stage-sched/06-start-scheduling.md`。
+### P2-2 14 篇（RS 交互）的 Rust 实现归属未声明 —— 维持 open（部分推进）
 
-### P2-2 14 篇（RS 交互）的 Rust 实现归属未声明
+- V2 复核：14 篇已有「分工声明」块（:7-11，文档主权指向 03-stage-rs 两篇），但 P2-2 要的 **Rust 实现归属三层声明**（服务端视角 valid.rs / 契约镜像 client.rs / 行为主体 os/servers/rs）未落——client.rs 模块头（:1-15）自述「PM-facing half」，没有「本模块是契约镜像、不区分 PM 与 RS」一句；lib.rs 模块索引（:21）对 client 的描述也未提 14 篇。
+- 修法维持第一轮首选：14 篇补归属段 + client.rs 模块头补一句；次选（99 篇导航表集中登记）仍可。
 
-**问题**：14 篇描述的行为主体是 RS（重生服务器）：先申请、再生成、取消失败按位置分两种处理（对应 `rs/manager.c:461`、`rs/request.c:342`）。这个行为主体不在本 crate——`lib.rs:22-32` 的模块清单里没有第 14 篇的对应物；RS 侧的客户端实现实际存在于 `os/servers/rs/src/request.rs:9`（注释中列有 `sched_stop`）等文件，属于 03-stage-rs 的领域。本 crate 里与第 14 篇相关的只有服务端视角：RS 是放行发送者之一（`valid.rs:14-21`，对应 C 的 `utility.c:64-73`）。
+### P2-3 SUSPEND 常量本地定义 —— 维持 open
 
-**影响**：后续任何一轮覆盖率审查都会把「14 篇没有 Rust 模块」误判为覆盖缺口；反过来，RS 侧行为出回归时，责任归属也会含糊。文档-代码同步的双向闭环断在阶段边界上。
+- V2 复核：dispatch.rs:21 `pub const SUSPEND: i32 = -998;` 仍在；同型新增一处——transport.rs:41/:45 的 SYS_SCHEDULE/SYS_SCHEDCTL 本地镜像（有注释、有 wire 断言钉值，第一轮 Fix #1 已注明「minix-types 暂缺」）。
+- **V2 修法更新**：与 edge E-MINTYPES-SYS 合并执行——minix-types 一次补两族常量（SUSPEND + SYS_* 调用号），dispatch.rs/transport.rs 改消费，避免同一个 crate 跑两遍常量收敛。
 
-**建议**：
-1. **首选**：14 篇补一段「实现归属」声明，写清三层：服务端视角在 `valid.rs`（本阶段）、契约镜像在 `client.rs`（PM 与 RS 共用同一 libsys 客户端契约，`sched_start.c`/`sched_stop.c` 不分 caller）、行为主体在 `os/servers/rs/`（03-stage-rs），并给出具体文件锚点。同时在 `client.rs` 的模块文档头补一句「本模块是契约镜像，不区分 PM 与 RS」。
-2. **次选**：在 99-global-concepts 的导航表加一行跨阶段归属说明，集中登记所有「文档在本阶段、实现对端在别阶段」的条目（第 14 篇是首个，未必是最后一个）。
+### P2-4 `SchedProc.cpu` 的裸类型 —— 维持 open
 
-### P2-3 `SUSPEND` 常量的归属与镜像原则不一致
+- V2 复核：schedproc.rs:93 `pub cpu: u32` 仍在；且主循环落地后裸 u32 的流转面扩大——`Probe.cpu`（server.rs:95）、`SlotValues.cpu`（schedule.rs:70）、`Fanout.cpu: Option<u32>`（schedule.rs:91）、`CpuLoad = Option<u32>`（cpu.rs:37）、`release.cpu`（stop.rs:42）——CpuId newtype 的落点从第一轮估计的 2 处扩为全链 6 处签名。内核侧先例不变（os/kernel/src/proc.rs:471 `CpuId(u32)`）。
+- 修法维持第一轮首选：`CpuId(u32)` newtype，由 `cpu::pick` 产出、全链消费；构造不做拓扑校验（与 S-3/S-4 的既定分工一致）。
 
-**问题**：`dispatch.rs:16-21` 在本 crate 本地定义 `SUSPEND: i32 = -998`，注释给出的理由是「VFS 在自己的 crate 也定义了同一个值；不为一个数引依赖」。但 C 的 ground truth 里 `SUSPEND` 是 com.h 的全局常量（`minix3/minix/include/minix/com.h:1151`，已核验原文），而本 crate 通过 minix-types 镜像了 com.h 的全部 SCHEDULING 系常量（`minix-types/src/types/com.rs:85-96`）。同为 com.h 常量，一种走共享镜像、一种走各处手抄——同一个 crate 里出现了两套归属标准。
+### P3-1 预留未接线符号盘点 —— ✅ 全部闭单
 
-**影响**：数值漂移的风险目前被测试锁死（`dispatch.rs:168` 断言 `SUSPEND == -998`），所以不是正确性问题；真正的成本是规则被例外蛀空：下一个服务器还会再抄一份，每个抄写点都是一个独立的对账对象。
+noquantum_trust 行闭单（主循环接线，server.rs:244 消费）；is_valid_quantum / USER_QUANTUM / is_available / IN_USE 四行随 Fix #5 删除（2026-09-09，见 §9）。本条目闭环。
 
-**建议**：
-1. **首选**：把 `SUSPEND` 移入 minix-types 的 com 模块（紧邻 SCHEDULING 系常量），`dispatch.rs` 改为再导出；VFS 侧的同名定义后续跟进（不在本阶段动，登记即可）。
-2. **次选**：保留本地定义，但把注释里的理由从「避免依赖」改为明说的「镜像规则例外」，并登记到 99-global-concepts 的常量表，让例外有账可查。
+### P3-2 文档第 5 节测试表两处 minix-types 行锚漂移 —— 维持 open（两半均仍漂移）
 
-### P2-4 `SchedProc.cpu` 的裸类型与同结构的类型纪律不一致
+- 02 篇 :221 仍声称 `test_sched_message_layouts` 在 message.rs:2477，实测 :3698；
+- 01 篇 :179 仍声称 `test_sched_messages` 在 com.rs:223，实测 :312。
+- 修复归属不变（style-fix 或 full-review 锚点纪律门随手修）；02 篇 §5 的 server.rs 侧锚点经 Fix #4 同步已对齐（抽验 3/3），漂移只剩 minix-types 侧两处。
 
-**问题**：`SchedProc` 里 `Priority` 是带范围构造的 newtype（`schedproc.rs:46-63`），线上值 `CpuChoice` 与 `Nice` 也有类型（`priority.rs:86-172`），唯独 `cpu` 是裸 `u32`（`schedproc.rs:93`），CPU 台账同样是裸 `Option<u32>`（`cpu.rs:37`）。cpu 值的合法性（小于机器核数）完全依赖运行期 `pick` 的逻辑保证，类型系统里不可见。
+### P3-3 00 与 99 两篇缺 .design/ 快照 —— 维持 open
 
-**影响**：行为风险很低——SCHED 不做核亲和（cpu_mask 已按 S-3 结构性删除，`schedproc.rs:66-73`），cpu 的唯一生产者是 `cpu::pick`。成本是可读性与评审记忆：同一个结构里「哪个字段有构造保障」需要逐个记。
+V2 复跑 `tools/design-coverage-check.sh` 确认：00/99 各缺 outline、outline-review、design 共六个文件。归文档排期，不阻断代码审查。
 
-**建议**：
-1. **首选**：引入 `CpuId(u32)` newtype，由 `cpu::pick` 返回、`SchedProc.cpu` 与台账共用；内核侧已有同名先例（`os/kernel/src/proc.rs:471` 的 `CpuId(u32)`），两侧术语一致。构造不做拓扑校验（保持纯函数、避免把机器信息塞进表结构），类型的价值在签名可见，不在运行期检查。
-2. **次选**：维持裸 `u32`，在字段注释里写明「范围由 pick 保证、构造不校验」的理由，把隐式约定显式化。
+### P3-4 lib.rs 唯一的 glob 再导出没有被使用 —— 维持 open
 
----
+V2 复核：lib.rs:37 `pub use sef::*;` 仍在；main.rs 的装配走全路径（main.rs:18-21），无使用者。建议不变：删除，调用方统一全路径。
 
-## 5. P3：卫生与观察
+### P3-5 11 篇可补 Redox 演进参照 —— 维持 open + V2 增补事实
 
-### P3-1 预留未接线符号盘点（死代码显式子轮）
-
-全 crate 无 `#[allow(dead_code)]`、无 `todo!`/`unimplemented!`（grep 实测零命中）——状态很干净。但有一批「判定层 API」当前生产路径零调用、仅测试引用，它们是主循环（P1-1）的接口预留。逐项判定如下，共同标准：**P1-1 落地后仍无生产调用者，即按死代码消除流程逐项删**（本轮不动）：
-
-| 符号 | 锚点 | 判定 |
-|---|---|---|
-| `noquantum_trust` | `dispatch.rs:86-88` | 保留：伪造 NO_QUANTUM 的门（`main.c:70-77`），主循环必接 |
-| `is_valid_quantum` | `priority.rs:180-182` | 倾向删：C 的时间片校验在内核（`system.c:648-649`，原文「小于 1 且不等于 -1 拒绝」已核验），SCHED 侧不校验、原样存储（`schedule.c:196`、`start.rs:148`）；若主循环也用不上，一个无人到访的「唯一的家」不是家 |
-| `USER_QUANTUM` | `priority.rs:52` | 待定：语义上属于 PM 侧的起步默认（05 篇已论证它与 `DEFAULT_USER_TIME_SLICE` 来源之别，`priority.rs:54-61`）；若 13 篇镜像路径与本 crate 都用不上，删或移 PM crate |
-| `is_available` | `cpu.rs:47-49` | 倾向内联或删：`pick` 的循环体没有用它（`cpu.rs:80-92` 直接对 `Option` 模式匹配），仅测试引用 |
-| `IN_USE` | `schedproc.rs:23` | 候选删：注释自称「给 C 读者的便签」，占用语义已由 `SlotState` 完整替代（`schedproc.rs:29-35`）；留一行注释即可，不必留常量 |
-
-### P3-2 文档第 5 节测试表两处 minix-types 侧行锚点漂移
-
-- 02 篇（`02-sched-message-surface.md:191`）声称 `test_sched_message_layouts` 位于 `os/libs/minix-types/src/ipc/message.rs:2477`，实测在 `message.rs:3248`。
-- 01 篇（`01-sched-init-main.md:177`）声称 `test_sched_messages` 位于 `os/libs/minix-types/src/types/com.rs:223`，实测在 `com.rs:312`。
-
-测试本体存在、断言有效（Gate E 的名称对账全部通过），漂移的只是行号锚。建议随下次触碰对应文档时顺手修（归属 style-fix 或 full-review 的锚点纪律门），不单独立项。
-
-### P3-3 00 与 99 两篇缺 `.design/` 快照
-
-`tools/design-coverage-check.sh fork-syscall-rewrite --stage 06-stage-sched` 实测：01~14 三种快照齐备；`00-sched-overview` 与 `99-global-concepts` 各缺 outline、outline-review、design 共六个文件（脚本判定 H.1 + H.6 FAIL）。两篇在 `plan.md` 与各自正文里定位为「pending 最小骨架」。按流程这属于 Step 0.3 嵌入生成的范围、不阻断审查，此处登记以保证 Gate H 证据链完整；是否补齐由文档排期决定。
-
-### P3-4 `lib.rs` 唯一的 glob 再导出没有被使用
-
-`lib.rs:34` 的 `pub use sef::*;` 是全 crate 唯一的 glob 再导出，其余十个模块一律走全路径。而实际的二进制入口引用的也是全路径（`main.rs:17` 的 `use minix_sched::sef::{MachineInfo, init_fresh}`）——这行 glob 没有任何使用者。建议直接删除，调用方统一全路径；或写明保留理由。无理由的例外与 P2-3 是同一种形态：规则之外的单点，留着就会繁殖。
-
-### P3-5 11 篇可补 Redox 权重轮转（DWRR）演进参照
-
-`balancer.rs:33-36` 的架构预留（S-9）已经承诺：「第二个平衡策略到来时，以 trait 形式到达，不提前一天」。Redox 恰好提供了一个现成的下一代策略参照：其内核调度正在从简单轮转迁移到按权重的亏欠轮转（Deficit Weighted Round Robin，按核组织优先级队列），官方报道见 [RSoC 2026: A new CPU scheduler for Redox](https://www.redox-os.org/news/rsoc-dwrr/)（Phoronix 的独立报道见 [Redox OS New CPU Scheduler](https://www.phoronix.com/news/Redox-OS-New-CPU-Sched)）。建议在 11 篇的展望处补一句对照（不展开实现），让未来接 S-9 trait 的人有现成的路标。属文档增强，可选。
+V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for Redox](https://www.redox-os.org/news/rsoc-dwrr/)；[Phoronix 报道](https://www.phoronix.com/news/Redox-OS-New-CPU-Sched)）已非终点——Redox 随后以 [RSoC 2026: EEVDF for Redox](https://www.redox-os.org/news/rsoc-eevdf/) 把 DWRR 换成了 EEVDF（Linux 6.6 同款算法）。11 篇补参照时直接写两级演进（简单轮转 → DWRR → EEVDF）：S-9 预留的「第二个策略」路标现成两枚，且第二枚比第一枚更新。增补不改变条目性质（文档增强，可选）。
 
 ---
 
-## 6. 对照参考：Redox / 操作系统理论 / Rust 社区
+## 4. 架构分层深审结论（V2，五层）
 
-**Redox（联网核实）**：Redox 的调度机制全程在内核：历史上的简单轮转（[Redox Book — Scheduling](https://doc.redox-os.org/book/scheduling.html)；[context/switch.rs](https://github.com/redox-os/kernel/blob/master/src/context/switch.rs)），正在演进为按权重的亏欠轮转（[RSoC 2026 公告](https://www.redox-os.org/news/rsoc-dwrr/)）。Minix3 走的是另一条路：机制留内核（队列、记账、抢占，属 01-stage-kernel），策略上移用户态服务器（本 crate）。两条路线的分界正是 S-9 预留的那个策略接缝——对 SCHED 的直接启示是：策略层保持可替换（P3-5 的参照系），机制契约面（12 篇）保持稳定不动。
+### 4.0 P0 自检
 
-**操作系统理论**：本调度器的策略是教科书式多级反馈队列的「降快升慢」形态——时间片耗尽降一级（`schedule.c:99-101`），每五秒回升一级、升到上限即停（`schedule.c:353-364`）。Rust 侧把两个方向做成了对称的纯函数（`noquantum.rs:52-55` 的 `demote` 与 `balancer.rs:73-81` 的 `rebalance_one`），这个形状值得保持：将来换策略（S-9）时，替换的只是判定，形状不动。C 源注释自己说「这个默认策略很快会换」（`schedule.c:348-352`），S-9 正是对这句话的兑现承诺。
+本轮对四个处理臂的门序与 C 逐一重对（start.rs:106-125 `admit` 对照 schedule.c:150-166、nice.rs:53-72 对照 254-292、noquantum.rs:38-43 对照 92-96、stop.rs:53-61 对照 118-125），错误码有断言锁定（table.rs:117 的 (216, 22, 215)），消息线序有断言锁定（schedctl.rs:209-216、client.rs:265-278）。上一轮最大的悬案已裁决：`do_noquantum` 用 `m_source` 定位耗尽者（server.rs:496）**是 C 忠实的**——C 的 notify_scheduler 以进程名义发送（proc.c:1874 `m_no_quantum.m_source = p->p_endpoint` + FROM_KERNEL 旗标），Rust 内核对端同型（proc_table.rs:873-898，IpcEngine::send 以 caller endpoint 覆写 m_source）；消息体的七个 accounting 字段 C 侧也从不读，Rust 忽略它们不是缺口。按收敛规则做漏检自检：随机重验三处——START 失败残留（§1.2 #6）、fanout_local 不重 pick 的偏离论证（C 的重选会私改 rmp->cpu 且账目漂移，Rust 的「一次选择一次记账」自洽，10 D3 成立）、balancer 的 `current > max` 才回升（schedule.c:360 同式）——三者无新问题。
 
-**Rust 社区**：错误处理符合项目纪律——没有 `Box<dyn Error>`，所有错误是 Minix3 errno 的 `i32`，且映射有单一出口（`table.rs:38-45` 的 `SlotVerdict::errno`）。类型层面 newtype 与枚举用得克制而到位（`Priority` 的范围构造、`CpuChoice` 消灭 -1 哨兵、`Nice` 把范围检查前移到构造）。主循环落地前最后一块基础设施是传输注入（P1-3）——端口与适配器形状，这也是 no_std 用户态服务 crate 的通行做法：逻辑依赖窄接口，真实传输在二进制装配。
+### 4.1 L0 组合层
 
----
+`SchedServer` 单一所有者（表 + 台账 + 拓扑 + 平衡器四块状态，[ARCH S-11]）+ `run_once`/`run` 薄壳 + 双 trait 接缝，形状与第一轮设计一致且落地质量高：装配线与 C 启动序逐拍对齐（main.rs:31-56）；64 轮接收失败上限是已注明的诚实偏离（VM V10-P0-2 先例）；台账的运行期 `processors_count > 1` 门对应 C 的 `CONFIG_SMP` 编译期门（server.rs:386-388/:436-438），**语义每机等价**（非 SMP 构建的 cpu_proc[] 不参与 pick，schedule.c:78-80），唯一分叉是「SMP 构建但单核」时 C 记账而 Rust 不记——纯内部状态、不可观察，此处登记为等价性说明，不立项。一个跨服务器观察（不动手）：VM（KernelGateway + IPC transport）、RS（五域 supertrait）、SCHED（IpcTransport + KernelApi）、PM（KernelIpcTransport）四台服务器四种 seam 形状——各按需成立，但 E1 trap 层落地后若出现第四个消费者，值得评估一次「用户态服务器传输基建」上移（届时挂 edge，本轮只留字据）。
 
-## 7. 边界外观察：内核契约面（为辅，建议转记 01-stage-kernel/todo.md）
+### 4.2 L1 服务器内部
 
-以下三条属于内核侧（01-stage-kernel 文档域），本文档只记录现象与锚点，不做修复规划；是否转记由用户决定：
+门（admit）→ 计划（plan）→ 执行（caller 半）三层在四臂间同构，信任不对称用签名表达（noquantum 的 arm 不收 sender 参数，noquantum.rs:7-13）是本轮确认的最佳设计。`Current` 的 Copy 即快照（nice.rs:33-45）、`Seed` 不含占用位（写表是 caller 半）、`classify_fanout` 把重试环收敛为 `Done/CpuDead` 两态——三处类型设计都值得保持。新发现仅 V2-P3-2（Probe dummy 值）一条微观项。
 
-1. `SYS_NICE` 未接线（`os/kernel/src/syscall.rs:905` 注释自述），`sched_proc` 的 niced 参数因此恒为 false。nice 链路（PM → `SCHEDULING_SET_NICE` → `do_nice` → 下发的 niced 位）在内核侧断最后一环。
-2. 每核运行队列是 TODO（`os/kernel/src/proc_table.rs:487,496`）：`sched_for_cpu` 恒返 BSP 队列。SCHED 下发的 cpu 字段因此暂无实际效果——单核下与 C 的非 SMP 构建语义等价（`schedule.c:78-80`），不构成行为错误，但多核落地前它是硬前提。
-3. `sched_proc` 的 CPU 校验是单机桩（`os/kernel/src/sched.rs:270,300,355`），`EBADCPU` 不会触发——06 篇的重试环（`start.rs:197-203`）在当前内核上不可达，属内核 SMP 依赖，非本 crate 缺陷。
+### 4.3 L2 内核接缝
 
----
+本轮深挖的主战场，产出即 §1.3 的三个 edge 条目（E-SCHEDNICED / E-PREEMPTFLAG / E-SCHEDSMP）。正面确认两处卓越实现：R-16-fix（priority 截断提权修复，syscall.rs:936-949 校验全 C 范围再窄化）与 D-52（scheduler-aware rts_set/rts_unset，sched.rs:328-333，排队进程参数更新先出队后入队）。另有两处内核侧字据留档（不立项，随对应 edge 轮顺带）：(a) sched.rs:286-294 的 SchedParams 文档把 niced 归因于「SYS_NICE (PM → kernel via SYS_SCHEDULE)」——后半句对（do_schedule.c:27 正是走 SYS_SCHEDULE），调用名 SYS_NICE 不存在，该注释随 E-SCHEDNICED 一并修正；(b) C 的 sched_proc 允许 priority=16 越过校验（system.c:644 `priority > NR_SCHED_QUEUES` 对 16 为假，入队即数组越界——被 SCHED 服务器侧的门挡住从未触发），Rust 的 sched_proc 以 `v > MIN_USER_Q` 拒绝 16，比 C 严——属「Rust 修复了 C 源码 bug 但无 MINIX3 BUG 标注」（模式 78），可在 kernel 侧触碰该函数时补一行标注。
 
-## 8. 建议的推进顺序
+### 4.4 L3 wire 层
 
-1. **P2-1**（init 临时值语义修正，注释与 06 篇两处）——先修认知再写代码：它直接决定主循环里 init 分支怎么写，且是全部条目里成本最低的一个。
-2. **P1-2 + P1-3**（状态所有者设计 + 传输接缝）——两项一起定：产出一篇组合层设计（落点由用户决定），标注 `[ARCH: ...]` 三处一致。
-3. **P1-1**（主循环 + §1.2 八条语义逐条测试）——依赖第 2 步的形状决定。
-4. **P2-3 / P2-4 / P3-1 / P3-4**（结构小项）——随主循环落地顺手按清单处理；P3-1 的五个符号以「落地后仍有生产调用者」为存留标准。
-5. **P2-2 / P3-2 / P3-3 / P3-5**（文档项）——随下一次触碰对应文档时执行，不单独排队。
+`Fanout`/`ChangeMask`/`KEEP` 哨兵消除（schedule.rs:49-54「两侧同意的 -1 有一个家」）与 `MachineInfoBuf` 的 repr(C) 逐字段对齐是模式 16/17 的教科书执行。常量镜像的两处例外（SUSPEND、SYS_* 调用号）已有注释与钉值测试，收敛方案并入 P2-3 + E-MINTYPES-SYS。`MessKrnLsysSchedule` 七字段布局与 C `mess_krn_lsys_schedule`（ipc.h:272 断言）一致；`is_notify` 谓词寄居 transport.rs 是 minix-sys 缺口的诚实补位（注释已声明）。
 
-每次修复遵循 fix-guard（修前读目标行前后五行、grep 确认现状、一次只修一条、修后 grep 验证并记录状态），修完跑 `cargo test -p minix-sched` 对照 §0 基线。
+### 4.5 L4 测试架构（轻量五维）
+
+79 测试的构成：server.rs 20（八条语义 + 边界路径）、判定层单测 59。冗余度可接受（SlotVerdict errno 映射被四臂各自 assert 是「各臂独立钉门序」的有意重复）；无虚构（全部测试有 C 锚点注释）；mock 保真度良好（MockIpc 脚本化收发 + MockKernel 五调用账本，空脚本即 EIO 的失败路径零成本驱动）。缺口即 V2-P3-1 两小件；更上层的联调缺口（PM↔SCHED 全链）挂 E5(e)。
 
 ---
 
-## 9. 修复记录（2026-09-06，迭代一：P1-1 + P1-2 + P1-3 合并执行）
+## 5. 边界条目双向指针（唯一入口：../edge_todo.md）
 
-一次 todo-fix 领取三条：P1-1（主循环）的两个前置（P1-2 状态所有者、P1-3 传输接缝）按 §8 的依赖关系一并定案——这正是 §8 第 2、3 步的合并，对齐 04-stage-pm campaign 的批次先例（其 todo.md 的 T5→T6→T9 模式）。P2-1 及其余条目未动。
+| edge 条目 | 来源 | 一句话 | 06 侧关联 |
+|---|---|---|---|
+| E-SCHEDNICED | 本轮 §1.3 | kernel 丢弃 SYS_SCHEDULE 的 niced 字段，注释引用不存在的 SYS_NICE | 12 篇契约 niced 半 |
+| E-PREEMPTFLAG | 本轮 §1.3 | PREEMPTIBLE 用 priority!=0 近似，队列 0 进程永不通知调度者 | 08/12 篇 NO_QUANTUM 链 |
+| E-SCHEDSMP | 第一轮 §7 升级 | cpu 下发链三环断（每核队列/EBADCPU/迁移） | 06 篇重试环、10 篇 pick |
+| E-MINTYPES-SYS | 本轮 §4.4 | SYS_* 调用号常量三处各自表达 | P2-3 合并修 |
+| E5 增补 (e) | 本轮 §4.5 | PM↔SCHED 联调验收面（START/INHERIT/NO_QUANTUM 回环） | E8 的联调出口 |
+| E8（已有） | 第一轮 P1-3 抽取 | SCHED SYS_* 内核调用真实通电 | 传输接缝的生产半 |
 
-### Fix #1 传输接缝（P1-3）：`os/servers/sched/src/kernel_api/transport.rs`（新文件）
+---
 
-**设计对比**（三案）：
-1. **双 trait（已实施）**：`IpcTransport`（收/发）+ `KernelApi`（get_machine/get_hz/schedctl/schedule/setalarm），错误一律 errno `i32`。对照：VM 双 trait（`os/servers/vm/src/ipc/transport.rs:120` 的策略 trait + KernelGateway）、RS 单 `KernelApi`（`os/servers/rs/src/boot.rs:69`，全量定义 + 生产 DEFERRED）、Linux 的 `file_operations` 按子系统分表、Redox 单一 libredox 边界。选双 trait 的理由：C 本就走两条通道（`ipc_send` 与 `sys_*`），两半的 mock 形状不同（消息线要脚本化收发、内核线要参数账本），合一则每个测试写两半。
-2. 单 trait 七方法（否决）：接口宽度不随 mock 形状走。
-3. 复用内核侧 `IpcEngine` 借用风格（否决）：内核借用车道对用户态单线程服务器是错配（第一轮审查 P1-3 建议次选的结论维持）。
+## 6. 对照参考 V2
 
-**要点**：
-- 真实端按最终形态委托 minix-sys（`DirectTrapTransport` + `perform_kernel_call`，`syscall.rs:201` 的 ENOTREADY 重试环即 C `_kernel_call` 原文），E1 落地前回 `EIO`——诚实契约（模式 60；VM campaign T9 先例）。
-- `sys_getmachine` 兑现 GETMINFO 指针契约：`MachineInfoBuf` 与 C `struct machine`（`type.h:122-131`）逐字段同布局（`#[repr(C)]`），内核 safecopy 写入（`os/kernel/src/misc.rs:1038-1050` 对端）。
-- `is_notify`（C `com.h:92` 的 Rust 对应物）落在本模块——minix-sys 只有调用号常量没有谓词（`ipc.rs:53,155`）。
-- `SYS_SCHEDULE = 0x600+3`、`SYS_SCHEDCTL = 0x600+54` 常量镜像（C `com.h:210,262`；内核 `syscall.rs:69,114` 同值）——minix-types 暂缺，镜像注明「裁判持真相，镜子记值」（`schedctl.rs:27` 先例）。
+**Redox（联网核实，2026-09-09）**：调度全程在内核且两年两级跳——简单轮转 → 按权重的亏欠轮转 DWRR（[RSoC 2026 公告](https://www.redox-os.org/news/rsoc-dwrr/)，重载下约 1.5 倍吞吐）→ EEVDF（[RSoC 2026: EEVDF for Redox](https://www.redox-os.org/news/rsoc-eevdf/)，Linux 6.6 同款「最早合格虚拟截止期优先」）。对 SCHED 的启示不变且更强：Minix3 的双层模型（机制留内核、策略上移用户态）里，策略可替换性的价值被 Redox 的快速迭代反向验证——S-9 预留的 trait 接缝（balancer.rs:33-36）等「第二个策略」真的到来再落，路标现成两枚（DWRR/EEVDF，11 篇补参照时两级都写）。
 
-### Fix #2 状态所有者（P1-2）：`os/servers/sched/src/server.rs` 的 `SchedServer`
+**OS 理论**：降快升慢的 MLFQ 形状（demote/rebalance_one 对称纯函数）V2 复核维持「值得保持」；本轮新增的负面教材是 E-PREEMPTFLAG——把「是否参与协作式调度」这类**能力/特权**问题用**当前优先级**这个状态变量来近似，状态一变（进程合法登顶队列 0）语义就静默改变，这是 OS 设计里「身份 vs 状态」的经典分野（capability 与 dynamic priority 不可互替）。
 
-**设计对比**（两案）：
-1. **单一所有者（已实施）**：`SchedServer` 折进四块状态（表 `[SchedProc; 256]`、台账 `[CpuLoad; 32]`、`MachineTopology`、`Option<Balancer>`），单线程事件循环一个 `&mut` 走全轮。出生路径一口气同写表与台账（`schedule.c:223-231`），借用不拆。`[ARCH S-11]` 三处一致：plan.md ARCH 表 S-11 行 + 02 篇 D8 + `server.rs` 模块注释。
-2. 双持有者对应 C 两文件（否决）：C 的全局分文件是历史产物，不是领域边界（02-stage-vm P2-3 的四元组教训引以为戒）。
+**Rust 社区**：四臂的纯函数门 + 类型化判决（SlotVerdict/Fanout/Seed）与 no_std 单所有权事件循环是社区惯法的正面执行；本轮确认的两处反例都在内核侧（E-SCHEDNICED 的注释引用虚构实体；sched.rs:229-236 助手文档与实现脱钩）——注释声称的语义必须在代码中可指认，是本轮沉淀为规则候选的教训（§7 Rule Discovery 1）。
 
-**要点**：台账初值 `Some(0)` 对齐 C 静态数组零初始化（每核存活、零负载；`None` 是判死 10 D2，不是未探测）。`MAX_CPUS = 32` 对齐内核上限（`os/kernel/src/smp.rs:61`）。
+---
 
-### Fix #3 主循环（P1-1）：`server.rs` 的 `run_once`/`run` + `main.rs` 装配
+## 7. Rule Discovery（Step 5.7）与 Gate 证据
 
-**设计对比**（两案）：
-1. **`run_once` + `run` 薄壳（已实施）**：一轮收分回一个函数，`run` 只加「永远」与失败上限；todo.md §1.2 八条执行侧语义逐轮可测。对照 VM 范本（`os/servers/vm/src/vm_server.rs` 的 `run`/`run_once` + `MAX_CONSECUTIVE_RECV_FAILURES = 64`）。
-2. 直译 `while (TRUE)`（否决）：无限循环不可测，八条语义无处落测试。
+**规则候选（本轮新发现，待沉淀）**：
+1. **模式 85 候选「注释声称的规则与实现脱钩」**：start.rs:133-135 注释声称一条代码里不存在的 pick 规则（P2-1 加重的根源）；检查命令：对注释中的规则式声明（keeps/consumes/rule/规则/约定）逐一在声称的目标处 grep 验证存在性。是模式 77（注释行号漂移）的语义版姊妹。
+2. **「近似守卫必须标注近似」**：当 C 语义依赖特权标志/能力位而 Rust 用粗粒度代理（如 priority != 0 代 PREEMPTIBLE）时，必须显式标注「近似 + 分叉场景」，禁止把近似写成对齐（sched.rs:231 文档声称 priv 旗标、实现读优先级）。
+3. **「边界外观察必须有去向」**：第一轮 §7 三条观察无一登记 edge，本轮复核才发现其中两条是行为级缺口——架构审查 todo 的「边界外观察」节要么登记 edge 条目，要么写明「维持观察的理由 + 复查轮次」，否则观察即丢失。
 
-**八条语义的落点**（每条一个点名测试，见 Fix #4）：
-1. 回件失败只丢一次，循环继续（`main.c:101-106`）——`run_once` 尾部忽略 `send` 的 `Err`（打印无日志设施，注释注明该诊断省略）；
-2. 内核 NO_QUANTUM 成功失败都不回件（`main.c:70-77`）——信任门臂提前返回 `Step::Handled`；
-3. 伪造 NO_QUANTUM 以 EPERM 回件（`main.c:78-83`）——`settle(EPERM)` 走正常回复规则；
-4. 通知永不回复、CLOCK 才整理（`main.c:44-55`）——`is_notify` 分流在分发之前；
-5. NO_QUANTUM 不回滚、NICE 回滚（`schedule.c:99-105` 对 `284-288`）——`do_noquantum` 直接返回错误码，`do_nice` 失败写回快照；
-6. START 失败残留（`schedule.c:223` 先于 `233-237`）——`do_start` 按序：门 → `schedctl` 接管（失败槽未动）→ 置占用 → pick → EBADCPU 重试环（`mark_dead` + 台账随行）→ 下发失败返回错误码但槽已占用；
-7. 平衡遍历 fire-and-forget（`schedule.c:358-364`）——`balance_queues` 忽略下发结果；再设闹钟失败向上抛（`schedule.c:367-368` C 原地 panic，库层返回 `Err`、二进制层 panic——01 篇 D2 约定）；
-8. START 成功回件写回 `scheduler = SCHED_PROC_NR`（`schedule.c:246`）——`payload_mut` 写 `MessSchedLsysSchedulingStart.scheduler`。
+**Gate 证据（V2 轮实测）**：
+- Gate E：02 篇 §5 server.rs 锚点抽验 3/3（:895/:926/:948）；01/02 篇 minix-types 侧 2 处漂移维持（P3-2）；八条语义测试名对账 8/8（§1.2）。
+- 锚点纪律：本轮新增条目的关键锚点全部 rg/sed 实测——server.rs:496（m_source）、start.rs:133（lasting 注释）、syscall.rs:923（niced=false）、sched.rs:233（is_preemptible）、proc_table.rs:766/:674（优先级近似）、proc_table.rs:573-586（sched_for_cpu）、transport.rs:41/:45（SYS_* 镜像）、02篇:221/01篇:179（行锚漂移）。
+- design-coverage-check：00/99 缺 6 快照（P3-3 维持）。
+- 测试基线：`cargo test -p minix-sched` 79 passed / 0 failed；clippy 本体 0 告警（scan-only，无代码改动）。
 
-**诚实偏离（两处，均已注明）**：
-- 接收失败不立即 panic，连续 64 轮才终止（C `main.c:39-40` 第一条失败即崩）：E1 前每次必败、失败路径可测；VM V10-P0-2 同例。
-- `fanout_local` 不再每次重 pick_cpu（C `schedule.c:302` 每次下发前重选）：LOCAL 掩码下 CPU 不上线，重选只重复记账（10 D3 配对语义）；C 的重选是意外不是契约。
+**收敛评估**：本轮新发现 stage 内 0 P0 / 0 P1 / 1 P2（升格）/ 2 P3，edge 4 条目 + 1 增补；第一轮遗留 9 条 open 全部经 grep 复核（无一虚账）。内核接缝三个行为级发现均为第一轮未见——新发现占比健康，但服务本体已两轮无 P0/P1，边际明显递减，且剩余大头（SMP、trap 层）依赖 01-stage-kernel 工作窗。建议：下一轮触发条件定为「E1/E8 通电后」或「01-stage SMP 落地后」的验证轮，而非时间驱动的例行轮。
 
-**装配（`main.rs`）**：删 `empty_loop` 与硬编码 `MachineInfo` mock（旧 `main.rs:28-31,40-41`）；装配线 = 真实双端 → `get_machine`（败即 panic，对齐 C `main.c:131`）→ `SchedServer::new` → `init_scheduling`（败即 panic，对齐 `schedule.c:340-341`）→ `run`。
+---
 
-### Fix #4 测试：`server.rs` 20 个 + transport mock（`kernel_api/transport.rs` 的 `mock` 模块）
+## 8. 建议推进顺序
 
-`MockIpc`（脚本化收发 + 发送记录 + 可设失败）与 `MockKernel`（五调用参数账本 + 按序错误脚本），20 个测试覆盖：八条语义各一（部分一测两半，如 noquantum 的成功与失败半）、START/INHERIT/STOP/NICE 快乐路径与拒绝路径、EBADCPU 重试环、闹钟布防与再布防、野编号 ENOSYS、接收失败计数、64 上限 panic（`#[should_panic]`）。基线 59 → **79 passed / 0 failed**；`cargo clippy -p minix-sched --all-targets` 本体 0 告警；`cargo build -p minix-sched` 生产二进制通过；workspace `cargo check` 的 2 条错误为存量基线（`test-memmap-riscv64`，stash 前后同现，非本次引入）。
+1. **P2-1**（注释三重失真修正：start.rs + 06 篇 + 核查 10 篇）——仍是认知地雷，成本最低。
+2. **V2-P2-1**（四符号清算批次，一次 todo-fix）。
+3. **P2-3 + E-MINTYPES-SYS**（minix-types 一次补 SUSPEND + SYS_* 两族常量，两侧消费改接线）。
+4. **edge E-PREEMPTFLAG / E-SCHEDNICED**（行为级两件，随 edge_todo 单线程队列领取；前者优先——有真实的策略旁路后果）。
+5. **P2-4**（CpuId newtype 全链）。
+6. **V2-P3-1 / V2-P3-2**（随任何触碰 server.rs 的轮次顺带）。
+7. **P2-2 / P3-2 / P3-4 / P3-5**（文档项，随对应文档触碰时执行）。
+8. **E-SCHEDSMP / E5(e) / E8**（挂 01-stage SMP 与 E1 工作窗，SCHED 侧零改动）。
 
-### 文档同步清单
+每次修复遵循 fix-guard（修前读目标行 ±5、grep 确认现状、一次一条、修后 grep 验证并记录），修完跑 `cargo test -p minix-sched` 对照 §0 基线（79 passed）。
 
-- `02-sched-message-surface.md`：D7（一轮一步）/ D8（单一所有者）/ D9（两线分接）三节 + ARCH 表 S-11 行 + §4.1 模块树 + §4.2 符号表四行 + §4.3 不变量四行 + §5 测试表 19 行 + §5.1 统计（4 → 23 个）+ §7 参见。
-- `01-sched-init-main.md`：D4 刷新（「主循环只留骨架」→「二进制层只装配不决策」）+ §4.1 模块树 + §4.2 符号表行。
-- `11-balance-queues.md` / `12-kernel-interface.md`：模块树中「主循环对端」从 `dispatch.rs` 改指 `server.rs`，补 `transport.rs` 行。
-- `plan.md`：ARCH 表追加 S-11 行（组合层单一所有者，状态已实现）。
-- `.design/02-design.v1.md`：追加 D7-D9 快照 + 不变量四行；`.design/01-design.v1.md`：追加 D4 刷新快照。
-- `edge_todo.md`：新增 E8（minix-sys SCHED 侧 SYS_* wrapper + 真实通电挂 E1）。
+---
+
+## 9. V2 执行轮修复记录（2026-09-09 起，一次一个 TODO，每条一个提交）
+
+### ✅ Fix #5: V2-P2-1 — 四符号清算（删 is_valid_quantum / USER_QUANTUM / is_available / IN_USE）
+
+**问题**：主循环落地后四个预留符号仍零生产调用者（V2 复核确认），按第一轮 P3-1 既定标准到达清算时点。
+
+**设计对比**（USER_QUANTUM 的去留，三案）：
+1. **直接删（已实施）**：grep 发现 PM/RS 各自已持有 `USER_QUANTUM`（`os/servers/pm/src/sched.rs:27`、`os/servers/rs/src/sched.rs:24`）——C 的消费方本来就是客户端（PM 的 init 申请、RS 的服务默认配额），SCHED 从不读默认配额。删 SCHED 副本比第一轮设想的"移 PM"更干净：目标 crate 里早就有了。
+2. 移入 PM crate（否决）：PM/RS 已有定义，再移就是制造第三份。
+3. 保留并注释（否决）：零生产调用者的常量是评审记忆税。
+
+**Files**：`os/servers/sched/src/priority.rs`（删 `USER_QUANTUM` + `is_valid_quantum`，`DEFAULT_USER_TIME_SLICE` 文档改讲"两边持有"的故事；`test_quantum_defaults` → `test_default_time_slice`）、`os/servers/sched/src/cpu.rs`（删 `is_available`；恒真宏的分析知识保留在 10 篇 §1 与 `pick` 的 None 跳过里）、`os/servers/sched/src/schedproc.rs`（删 `IN_USE` 常量，位值 0x00001 并入 `SlotState` 文档注释）。
+
+**测试**：删 5 行断言（全属被删符号的自证），`test_default_time_slice` 保留出生初值断言。79 passed / 0 failed（基线不动，纯死代码删除）。
+
+**Verified**：`rg "is_valid_quantum|USER_QUANTUM|is_available|\bIN_USE\b" os/servers/sched/src/` 生产代码零命中；clippy 本体 0 告警。
+
+**Docs**：05 篇（D1/D4/ARCH 表/§4.2 符号表/§5 测试表——`USER_QUANTUM` 的 Rust 归属改写为 PM/RS 客户端持有 + 校验谓词删除的理由）、10 篇（D2/D3/ARCH 表/§4.2/§5——`is_available` 行删除，真过滤即 `pick` 的模式匹配）、03 篇（D2/§4.2/§5——IN_USE 常量删除、位值并入文档注释）。全部行锚按删后行号重校（rg/sed 实测 8/8 命中）。
+
+**边界**：`noquantum_trust` 行闭单（server.rs:244 已消费）；start.rs:132 注释中的 `USER_QUANTUM` 指称 PM 侧常量（pm/src/sched.rs:27 仍存在），注释语义仍真，留待 Fix #7 一并重写该段。

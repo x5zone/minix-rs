@@ -36,18 +36,6 @@ pub struct MachineTopology {
 /// nothing. [ARCH S-4] (plan.md).
 pub type CpuLoad = Option<u32>;
 
-/// Whether a CPU may take work (`schedule.c:39`).
-///
-/// C's macro reads `(cpu_proc[c] >= 0)` — over `unsigned`, unconditionally
-/// true: the `continue` it guards never fires, and the dead are really
-/// filtered by the load comparison below (a `UINT_MAX` load never wins
-/// `cpu_load > cpu_proc[c]`). The Rust form says what C means: present
-/// counts work, gone slots don't. Same choices on every input, without
-/// the tautology.
-pub const fn is_available(load: CpuLoad) -> bool {
-    load.is_some()
-}
-
 /// Choose a CPU (`pick_cpu`, `schedule.c:48-78`).
 ///
 /// Three rules in C order, first match wins:
@@ -179,8 +167,6 @@ mod tests {
         let four = topo(4, 0);
         assert_eq!(pick(false, &four, &[Some(5), None, Some(1), Some(2)]), 2);
         assert_eq!(pick(false, &four, &[None, None, None, None]), 0);
-        assert!(is_available(Some(3)));
-        assert!(!is_available(None));
     }
 
     #[test]

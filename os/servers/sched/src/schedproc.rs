@@ -16,16 +16,12 @@ use minix_types::Endpoint;
 /// here, because `Priority::new` needs it and nothing else does.
 pub const NR_SCHED_QUEUES: u8 = 16;
 
-/// `IN_USE` (`schedproc.h:39`): the historical bit value.
-///
-/// Kept as a note for C readers; the body is [`SlotState`]. The table is
-/// the only flag in the whole struct — one flag, one meaning.
-pub const IN_USE: u32 = 0x00001;
-
 /// Slot occupancy (`flags` + `IN_USE`, `schedproc.h:26,39`).
 ///
-/// C keeps an `unsigned flags` for a single bit; the type closes the
-/// question the spare bits ask ("what else could set them?"): nothing.
+/// C keeps an `unsigned flags` whose single bit `IN_USE` is `0x00001`
+/// (`schedproc.h:39`) — the only flag in the whole struct. The enum
+/// closes the question the spare bits ask ("what else could set
+/// them?"): nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotState {
     /// Slot free. C: `!(flags & IN_USE)`.
@@ -131,7 +127,6 @@ mod tests {
             }
             .is_used()
         );
-        assert_eq!(IN_USE, 0x00001);
     }
 
     #[test]

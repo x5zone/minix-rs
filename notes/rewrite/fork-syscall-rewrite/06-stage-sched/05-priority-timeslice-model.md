@@ -85,13 +85,13 @@ Rust 改写不是把七个宏和一个公式照抄过来，而是参考 Linux �
 ### D1 常量集中成表
 
 - **C**：七个宏散在 `config.h:66-77` 和 `schedule.c:41` 两处（`USER_Q` 是个派生宏）。
-- **Rust**：`TASK_Q/MAX_USER_Q/MIN_USER_Q/USER_QUANTUM/DEFAULT_USER_TIME_SLICE/USER_DEFAULT_CPU/PRIO_MIN/PRIO_MAX`（`os/servers/sched/src/priority.rs:26-74`）+ `USER_Q` 派生表达式（`priority.rs:44`，`(MIN - MAX) / 2 + MAX`，和 C 同形）+ `NR_SCHED_QUEUES` 从 03 转引（`priority.rs:23`，`pub use` 自 03——值只有一份，只是两条路都能拿到，不是两份定义）。
-- **为什么**：定义只有一份（§1.1）；派生表达式保留原形（值跟着边界走，改队列数则默认值自动跟着变）；数值相同的两个常量分开命名（`USER_QUANTUM` 和 `DEFAULT_USER_TIME_SLICE` 各有各的位置，见 §1.4）。备选方案（把 `USER_Q` 写死成 7）被否决了：写死之后改队列数，默认值不会跟着变，约定就断了。
+- **Rust**：`TASK_Q/MAX_USER_Q/MIN_USER_Q/DEFAULT_USER_TIME_SLICE/USER_DEFAULT_CPU/PRIO_MIN/PRIO_MAX`（`os/servers/sched/src/priority.rs:26-73`）+ `USER_Q` 派生表达式（`priority.rs:44`，`(MIN - MAX) / 2 + MAX`，和 C 同形）+ `NR_SCHED_QUEUES` 从 03 转引（`priority.rs:23`，`pub use` 自 03——值只有一份，只是两条路都能拿到，不是两份定义）。
+- **为什么**：定义只有一份（§1.1）；派生表达式保留原形（值跟着边界走，改队列数则默认值自动跟着变）；数值相同的两个常量分开持有（C 的 `USER_QUANTUM` 消费方是 PM 和 RS 这两个客户端，它的 Rust 定义住在它们各自的 crate 里——`os/servers/pm/src/sched.rs:27`、`os/servers/rs/src/sched.rs:24`——SCHED 只持自己要用的出生初值，见 D4）。备选方案（把 `USER_Q` 写死成 7）被否决了：写死之后改队列数，默认值不会跟着变，约定就断了。
 
 ### D2 nice 值做成新类型
 
 - **C**：`nice_to_priority(int nice, unsigned *new_q)`（`pm/utility.c:91`：输出参数 + `EINVAL` + 死钳位）。
-- **Rust**：`Nice(i32)` + `new(i32) -> Option`（`priority.rs:128,133`，超出范围就返回 `None`）+ `to_priority() -> Option<Priority>`（`priority.rs:160`，纯公式，没有输出参数；死钳位省略了，公式后面附了证明）。
+- **Rust**：`Nice(i32)` + `new(i32) -> Option`（`priority.rs:127,132`，超出范围就返回 `None`）+ `to_priority() -> Option<Priority>`（`priority.rs:159`，纯公式，没有输出参数；死钳位省略了，公式后面附了证明）。
 - **为什么**：范围检查收进构造函数（`Nice` 一定能换算，换算本身不会再失败）；C 的输出参数加 errno 改成 `Option`（`None` 在 PM 那边翻译成 `EINVAL`，那是 `04-stage-pm/16` 的事——错误在边界处理，不在公式里）；死钳位省略并给出证明（合法 nice 值一定落在范围内，证明写在注释里）。备选方案（直译成 `fn nice_to_priority(i32) -> Result<Priority, Errno>`）被否决了：换算和报错混在一起，换算结果就没法复用（调用者想"先检查范围、后换算"就没有入口了）。
 
 ### D3 系统进程判断做成谓词函数
@@ -103,28 +103,28 @@ Rust 改写不是把七个宏和一个公式照抄过来，而是参考 Linux �
 ### D4 时间片只定名字，不管类型
 
 - **C**：`unsigned time_slice`（单位毫秒，S-6）+ `USER_QUANTUM`/`DEFAULT_USER_TIME_SLICE`（同值双名）。
-- **Rust**：`time_slice_ms: u32`（03 已经定了，本篇沿用）+ 两个常量（`priority.rs:52,61`）+ `is_valid_quantum(u32) -> bool`（`priority.rs:180`，`>= 1` 的判断；检查在 09，谓词在这里——规则只有一份）。
-- **为什么**：名字里带单位（旧文档曾经误写成 ticks，名字不带单位以后还会错）；不定成 `Duration` 类型（03 的 D4 已经定了：线上的值就是毫秒数，再包一层反而增加拆装成本）；存和验分离（SCHED 只管存不管验，验是内核的事——谓词放在这里供 09 在下发前自查，各得其所）。备选方案（新建 `TimeSliceMs` 类型）被否决了：03 已经定了 `u32` 字段，两种类型并存就是两份定义。
+- **Rust**：`time_slice_ms: u32`（03 已经定了，本篇沿用）+ `DEFAULT_USER_TIME_SLICE`（`priority.rs:60`；C 的 `USER_QUANTUM` 不在本 crate——它的消费方是 PM/RS 客户端，两边各持一份）。时间片校验不做：C 的校验在内核（`system.c:648-649`），SCHED 原样存储、内核在下发时拒绝（06/09），这里不留谓词——一个没有任何生产调用者的"唯一的家"不是家。
+- **为什么**：名字里带单位（旧文档曾经误写成 ticks，名字不带单位以后还会错）；不定成 `Duration` 类型（03 的 D4 已经定了：线上的值就是毫秒数，再包一层反而增加拆装成本）；存和验分离（SCHED 只管存不管验，验是内核的事）。备选方案（新建 `TimeSliceMs` 类型）被否决了：03 已经定了 `u32` 字段，两种类型并存就是两份定义。
 
 ### D5 哨兵值做成枚举
 
 - **C**：`USER_DEFAULT_CPU=-1`（`config.h:77`：`-1` 表示默认，注释还写着"或者不变"）。
-- **Rust**：`CpuChoice::{Default, Cpu(u32)}`（`priority.rs:86`）+ `from_raw(i32) -> Option`（`priority.rs:101`，`-1` 认作默认，`>= 0` 认作 CPU 号，其他全返回 `None`）+ `USER_DEFAULT_CPU` 保留原始值（`priority.rs:68`，读原始消息的人用）。
+- **Rust**：`CpuChoice::{Default, Cpu(u32)}`（`priority.rs:85`）+ `from_raw(i32) -> Option`（`priority.rs:101`，`-1` 认作默认，`>= 0` 认作 CPU 号，其他全返回 `None`）+ `USER_DEFAULT_CPU` 保留原始值（`priority.rs:68`，读原始消息的人用）。
 - **为什么**：哨兵值收进类型（`-1` 不是 CPU 号，`u32` 又表示非负——硬塞进一个 `i32` 就等于把"负数是什么意思"这个问题藏起来了）；`from_raw` 对应内核的 CPU 检查（`system.c:652`，`-1` 以下全拒绝——检查在 09，形状在这里）。备选方案（直接用 `Option<u32>`）被否决了：`None` 说不清是"用默认"还是"保持不变"（C 注释里有两个意思：默认**或**不变——枚举以后可以加 `Keep` 变体，`Option` 加不了，形状上留了余地）。
 
 ### D6 niced 标记跟着上限走
 
 - **C**：`niced = (rmp->max_priority > USER_Q)`（`schedule.c:319`：跟着 `sys_schedule` 发下去的备注）。
-- **Rust**：`is_niced(max_priority: Priority) -> bool`（`priority.rs:202`，`get() > USER_Q`）。
+- **Rust**：`is_niced(max_priority: Priority) -> bool`（`priority.rs:191`，`get() > USER_Q`）。
 - **为什么**：公式只读上限（当前位置上下浮动不影响它——降到底但上限还在中间队列以上的，标记照样打）；谓词放在定义这边（下发在 09，公式在这里——一份定义两处用）。备选方案（09 里面内联这个表达式）被否决了：公式散开就是两处各写一遍，以后改了一处忘了另一处；这个标记不是 ARCH（纯复述，没有行为变化）。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| S-6 时间片单位（毫秒约定） | 双名常量 + `is_valid_quantum` + `time_slice_ms`（03 已定） | `priority.rs:52,61,180` + 本文档 D4 + plan §7.3/S-6 行 |
-| S-4 CPU 表达（哨兵值类型化，选 CPU 那边） | `CpuChoice` + `from_raw` | `priority.rs:86,101` + 本文档 D5 + 10 用之（负载计数归 10） |
-| S-2 优先级类型 | 复用 03 的 `Priority`（本篇不另起） | `priority.rs:160,202` + 03 D3（同形异处，用了就不重复） |
+| S-6 时间片单位（毫秒约定） | `DEFAULT_USER_TIME_SLICE` + `time_slice_ms`（03 已定） | `priority.rs:60` + 本文档 D4 + plan §7.3/S-6 行 |
+| S-4 CPU 表达（哨兵值类型化，选 CPU 那边） | `CpuChoice` + `from_raw` | `priority.rs:85,100` + 本文档 D5 + 10 用之（负载计数归 10） |
+| S-2 优先级类型 | 复用 03 的 `Priority`（本篇不另起） | `priority.rs:159,191` + 03 D3（同形异处，用了就不重复） |
 
 ---
 
@@ -149,12 +149,12 @@ os/libs/minix-types/src/types/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 队列常量表 | `config.h:66-77` | `priority.rs:23-68` | 七个名字加一个派生表达式 |
-| 时间片命名 | `schedule.c:41` + `config.h:74` | `priority.rs:52,61,180` | 同值双名加检查谓词 |
-| nice 换算 | `pm/utility.c:91-101` | `priority.rs:128,133,160` | 范围收进构造，换算不返回错误 |
-| 系统进程判断 | `schedule.c:44` | `priority.rs:191` | 只看直接父进程 |
-| CPU 选择 | `config.h:77` | `priority.rs:86,101,114` | 哨兵值收进类型 |
-| niced 标记 | `schedule.c:319` | `priority.rs:202` | 上限超过中间队列就打标 |
+| 队列常量表 | `config.h:66-77` | `priority.rs:23-73` | 七个名字加一个派生表达式 |
+| 时间片命名 | `schedule.c:41` + `config.h:74` | `priority.rs:60` | 出生初值在本 crate；配额默认住 PM/RS 客户端 |
+| nice 换算 | `pm/utility.c:91-101` | `priority.rs:127,132,160` | 范围收进构造，换算不返回错误 |
+| 系统进程判断 | `schedule.c:44` | `priority.rs:180` | 只看直接父进程 |
+| CPU 选择 | `config.h:77` | `priority.rs:85,100,113` | 哨兵值收进类型 |
+| niced 标记 | `schedule.c:319` | `priority.rs:191` | 上限超过中间队列就打标 |
 
 ### 4.3 不变量
 
@@ -173,13 +173,13 @@ os/libs/minix-types/src/types/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_queue_table` | `config.h:66-72` | 七个名字全锁定 + 派生表达式自证 + 最高队列同值 | `priority.rs:211` |
-| `test_quantum_defaults` | `config.h:74`、`schedule.c:41`、`system.c:648` | 同值双名 + 检查谓词 0 拒绝 1 通过 | `priority.rs:226` |
-| `test_nice_bounds` | `resource.h:43-44`、`pm/utility.c:93` | 范围内接收 + 范围外拒绝 | `priority.rs:238` |
-| `test_nice_mapping` | `pm/utility.c:95-96` | 低中高三点锁定 + 相邻共享 + nice 0 落中间 | `priority.rs:249` |
-| `test_system_proc` | `schedule.c:44`、`com.h:61` | RS 的儿子真 + 其他全假（只看一代） | `priority.rs:266` |
-| `test_cpu_choice` | `config.h:77`、`system.c:652` | `-1` 认默认 + 非负认 CPU + 更小的负数拒绝 | `priority.rs:279` |
-| `test_niced_flag` | `schedule.c:319` | 中间及以下不清 + 超过中间打标 | `priority.rs:292` |
+| `test_queue_table` | `config.h:66-72` | 七个名字全锁定 + 派生表达式自证 + 最高队列同值 | `priority.rs:200` |
+| `test_default_time_slice` | `schedule.c:41` | 出生初值锁定（客户端默认 `USER_QUANTUM` 住 PM/RS，不在此测） | `priority.rs:215` |
+| `test_nice_bounds` | `resource.h:43-44`、`pm/utility.c:93` | 范围内接收 + 范围外拒绝 | `priority.rs:225` |
+| `test_nice_mapping` | `pm/utility.c:95-96` | 低中高三点锁定 + 相邻共享 + nice 0 落中间 | `priority.rs:236` |
+| `test_system_proc` | `schedule.c:44`、`com.h:61` | RS 的儿子真 + 其他全假（只看一代） | `priority.rs:253` |
+| `test_cpu_choice` | `config.h:77`、`system.c:652` | `-1` 认默认 + 非负认 CPU + 更小的负数拒绝 | `priority.rs:266` |
+| `test_niced_flag` | `schedule.c:319` | 中间及以下不清 + 超过中间打标 | `priority.rs:279` |
 
 测试策略：常量表用全量断言加派生自证锁定（值和公式双保险）；换算用低中高三点加共享例子锁定；边界用临界值（0 拒绝、1 通过、`-2` 拒绝）锁定；系统进程用 RS 真加 PM/INIT/SCHED/随机号假锁定；标记用中间值边界（7 不清、8 打标）锁定。
 
