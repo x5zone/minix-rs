@@ -89,6 +89,58 @@ pub enum DispatchResult {
 
 /// Eight-way dispatch route — the priority chain of `main:80-138`.
 ///
+/// SEF live-update target states (`minix3/minix/include/minix/sef.h:213-217`),
+/// the subset VFS's three LU callbacks distinguish.  `init_restart` is not
+/// modeled: VFS restarts stateless, so RS re-runs `init_fresh` (design D1,
+/// 01-vfs-init-main.md §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LuState {
+    /// `SEF_LU_STATE_NULL` — no update in progress (the rollback target).
+    Null,
+    /// `SEF_LU_STATE_REQUEST_FREE`.
+    RequestFree,
+    /// `SEF_LU_STATE_PROTOCOL_FREE`.
+    ProtocolFree,
+    /// `WORK_FREE`/`EVAL` and everything else — VFS refuses to prepare.
+    Other,
+}
+
+/// `sef_cb_lu_prepare` (`main.c:303-322`): may we enter `state`?
+///
+/// Only request-free/protocol-free are preparable, and only when every
+/// request slot is idle; anything else answers `ENOTREADY`.  C then runs
+/// `worker_cleanup()` — under ARCH A-1 the slots are data, so "cleanup" is
+/// exactly the idle state the gate just verified, and the rollback
+/// re-creation (`sef_cb_lu_state_changed`, `main.c:325-340`) is a no-op by
+/// construction.
+pub fn lu_prepare(all_idle: bool, state: LuState) -> Result<(), UnblockError> {
+    match state {
+        LuState::RequestFree | LuState::ProtocolFree => {
+            if all_idle {
+                Ok(())
+            } else {
+                Err(UnblockError::NotReady)
+            }
+        }
+        LuState::Null | LuState::Other => Err(UnblockError::NotReady),
+    }
+}
+
+/// `sef_cb_lu_state_changed` (`main.c:325-340`): does a failed update back
+/// to `Null` require re-creating the workers?  C answers yes when leaving a
+/// request-free state; ARCH A-1 makes the re-creation itself a no-op (slots
+/// are data), so this predicate only documents the C branch.
+pub fn lu_rollback_needs_workers(old: LuState, now: LuState) -> bool {
+    matches!(old, LuState::RequestFree | LuState::ProtocolFree)
+        && now == LuState::Null
+}
+
+/// `sef_cb_init_lu` (`main.c:343-358`): does the new instance re-create
+/// workers after the state transfer?  Same ARCH A-1 no-op as above.
+pub fn init_lu_needs_workers(prepare_state: LuState) -> bool {
+    matches!(prepare_state, LuState::RequestFree | LuState::ProtocolFree)
+}
+
 /// Order matters: `FsReply` (transid), then `Pm`, `Notify`, `TaskIgnored`,
 /// then the device replies, then `Syscall`.  The variant order in this enum
 /// matches the C `if/else if` short-circuit order so that
@@ -185,6 +237,9 @@ pub enum UnblockError {
     NotBlocked,
     UnknownBlockedOn(u8),
     SlotFree,
+    /// SEF live-update cannot enter the requested state right now —
+    /// `ENOTREADY` (`main.c:312/321` break-then-return).
+    NotReady,
 }
 
 impl minix_types::ToErrno for UnblockError {
@@ -199,6 +254,7 @@ impl UnblockError {
             Self::NotBlocked => minix_types::EINVAL,
             Self::UnknownBlockedOn(_) => minix_types::EINVAL,
             Self::SlotFree => minix_types::ESRCH,
+            Self::NotReady => minix_types::ENOTREADY,
         }
     }
 }
@@ -396,6 +452,12 @@ impl VfsState {
     /// on re-enable is 08/09 territory.
     pub fn set_accept_requests(&mut self, accept: bool) {
         self.accept_requests = accept;
+    }
+
+    /// `sef_cb_lu_prepare` against this instance's slot pool
+    /// (`main.c:303-322`; `all_idle` is the `worker_idle()` analogue).
+    pub fn lu_prepare(&mut self, state: LuState) -> Result<(), UnblockError> {
+        lu_prepare(self.worker_pool.all_idle(), state)
     }
 
     /// Marks a request pending (worker.c:169-178).
@@ -1322,3 +1384,34 @@ mod tests {
         let _ = VFS_BASE; // use constant
     }
 }
+
+    #[test]
+    fn test_lu_prepare_matrix() {
+        // Idle pool + request-free/protocol-free → ready (`main.c:308-317`).
+        assert_eq!(lu_prepare(true, LuState::RequestFree), Ok(()));
+        assert_eq!(lu_prepare(true, LuState::ProtocolFree), Ok(()));
+        // Busy pool blocks the update (`main.c:310-312`).
+        assert_eq!(
+            lu_prepare(false, LuState::RequestFree),
+            Err(UnblockError::NotReady)
+        );
+        // Other states refuse (`main.c:320-321`).
+        assert_eq!(lu_prepare(true, LuState::Other), Err(UnblockError::NotReady));
+        assert_eq!(lu_prepare(true, LuState::Null), Err(UnblockError::NotReady));
+        // Rollback: leaving a request-free state back to Null re-creates
+        // workers in C (`main.c:330-339`); ARCH A-1 makes it a no-op.
+        assert!(lu_rollback_needs_workers(
+            LuState::RequestFree,
+            LuState::Null
+        ));
+        assert!(!lu_rollback_needs_workers(LuState::Null, LuState::Null));
+        assert!(!lu_rollback_needs_workers(
+            LuState::RequestFree,
+            LuState::RequestFree
+        ));
+        // New-instance init (`main.c:349-356`).
+        assert!(init_lu_needs_workers(LuState::ProtocolFree));
+        assert!(!init_lu_needs_workers(LuState::Other));
+        // ENOTREADY is the C answer (`:321`).
+        assert_eq!(UnblockError::NotReady.to_errno(), minix_types::ENOTREADY);
+    }

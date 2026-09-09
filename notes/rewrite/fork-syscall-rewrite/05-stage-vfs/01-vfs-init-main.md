@@ -310,6 +310,7 @@ void lock_proc(struct fproc *rfp)
 
 - **C**：`sef_local_startup()` 注册 5 回调 + `sef_startup()` 状态机（sef.c），按启动类型分发到 `sef_cb_init_fresh`。
 - **Rust**：`VfsState::init_fresh()` 直接承载启动链（等价 `sef_cb_init_fresh` 的函数体）；`run()` 内先 `VfsState::new()` 再 `init_fresh()`。与 02-stage-vm 的 D4（`rs_handshake` 直连）同型：**保留协议语义、去掉 setcb 注册 + startup 状态机**。
+- **Rust LU 生命周期落地（C-1 闭合）**：`LuState`（NULL/RequestFree/ProtocolFree/Other，`sef.h:213-217` 子集）+ `lu_prepare(all_idle, state)`（仅 request-free/protocol-free 可备且要求全槽空闲，余者 `ENOTREADY`，`main.c:303-322`）+ `lu_rollback_needs_workers`/`init_lu_needs_workers`（`main.c:325-358` 的 C 分支判定；ARCH A-1 下槽位即数据，重建工人按构造为空操作）。`init_restart` 不建模：VFS 无状态重启，RS 重跑 `init_fresh`（D1 同源）。RS 侧行交互挂 P1-2/edge E9。
 - **理由**：启动框架的"注册 → 状态机 → 回调"间接层，在单进程单入口下没有信息增益；直接调用让启动链可审计、可测试。VFS 没有 VM 那样的 is_first_time 门控——fresh/LU/restart 三路径中只有 fresh 被实现。
 - **DEFERRED（fail-closed）**：`sef_cb_lu_prepare`/`sef_cb_lu_state_changed`/`sef_cb_init_lu`（main.c:303-373）与 `SEF_CB_INIT_RESTART_STATEFUL` 均未实现——live update / restart 是独立特性，不假装支持；`init_fresh` 用 `assert!(!initialized)` 禁止二次初始化（与 PM 侧 `PmServer` 同款契约）。
 - **行为契约**：`finish_init()` 前必须完成握手（`assert!(boot_phase == InitTables)`），`run()` 前必须 `init_fresh()`。

@@ -48,7 +48,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（minix-sef 仍 5 行）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
+逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -454,3 +454,10 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：mount_pfs（mount.c:391-425）与 do_socketpath（path.c:803-836）仅以 DEFERRED 注释存在（归 18/13）。
 - **After**：① `PfsMountPlan`——罐装挂载的固定身份（伪设备 + 槽位 + `"pfs"/"pipe"/"none"` 三标签），`fs_e = PFS_PROC_NR`/`m_fs_flags = 0` 由身份蕴含；`req_readsuper` 确认往返属执行半（C 失败仅 printf、挂载照旧，决策层无失败臂）。② `do_socketpath` 入口三门——`spath_action`（SPATH_CHECK/CREATE 分类，syslib.h:278-279）、`spath_path_ok`（路径长 `1..PATH_MAX`，path.c:836）；super_user 门与 `copy_fd` 的 `is_super` 同型（调用方携带）。**边界**：路径行走归 13/C-6；确认往返归 P1-2。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **352 passed / 0 failed**（350→352：`test_spath_entry_gates`、`test_pfs_mount_plan`）。
+
+### ✅ Fix #26: C-1 — SEF LU 三回调决策组落地（2026-09-09）
+
+- **File**：`os/servers/vfs/src/main_loop.rs`（`LuState`/`lu_prepare`/`lu_rollback_needs_workers`/`init_lu_needs_workers`/`VfsState::lu_prepare` + `UnblockError::NotReady` + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/01-vfs-init-main.md`（D1 落地说明）。
+- **Before**：SEF 生命周期整体缺失——`init_fresh` 只覆盖 fresh，LU 三回调（`sef_cb_lu_prepare`/`sef_cb_lu_state_changed`/`sef_cb_init_lu`，main.c:303-358）无任何建模。
+- **After**：`lu_prepare(all_idle, state)`——仅 request-free/protocol-free 可备且要求全槽空闲（`worker_idle()` 的槽模型对应物 = 既有 `WorkerPool::all_idle`），余者 `ENOTREADY`（`UnblockError::NotReady` 新变体）；`lu_rollback_needs_workers`/`init_lu_needs_workers` 编码 C 的两处 `worker_init` 分支。**ARCH A-1 关键判定**：槽位是数据不是线程——C 的 `worker_cleanup()`/`worker_init()` 在槽模型下按构造为空操作，两个 bool 谓词只为记录 C 分支。`init_restart` 不建模：VFS 无状态重启 ≡ `init_fresh`（D1 同源，01 号文档已注明）。RS 侧行交互挂 P1-2/edge E9。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **353 passed / 0 failed**（352→353：`test_lu_prepare_matrix`）。
