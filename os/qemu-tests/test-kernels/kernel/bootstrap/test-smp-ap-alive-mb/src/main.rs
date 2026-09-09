@@ -108,7 +108,9 @@ core::arch::global_asm!(
     ".long 0x1BADB002",
     ".long 0x00010003",          // 位0 页对齐模块 + 位1 mem_info + 位16 AOUT kludge
     ".long -(0x1BADB002 + 0x00010003)",
-    ".long 0x100000",            // header_addr（.mbh 的物理地址 = 1MB 起点）
+    ".long 0x101000",            // header_addr：.mbh 的运行地址 = load_addr + 头的文件偏移 0x1000
+                                 // （QEMU 以 seek = 头文件偏移 − (header_addr − load_addr) 装载；
+                                 //  写成 = load_addr 会使整幅镜像 +0x1000 错位——S-3d mb 变体的最后一个根因）
     ".long 0x100000",            // load_addr（文件首字节装载于此）
     ".long mb_load_end",         // load_end_addr（文件背书内容终点）
     ".long mb_bss_end",          // bss_end_addr（[load_end, bss_end) 清零）
@@ -235,6 +237,7 @@ core::arch::global_asm!(
 /// 真正的 64 位测试体。
 #[unsafe(no_mangle)]
 extern "C" fn rust_main64() -> ! {
+    early_console::write_str("R64-START\n");
     early_console::write_str("### test_smp_ap_alive-mb (x86_64): S-3d via multiboot\n");
 
     // 开 LAPIC（spurious = enable + vector 0xFF）。
