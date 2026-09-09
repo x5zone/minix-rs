@@ -33,7 +33,12 @@
 //!   state machines (ARCH A-1, see 01-vfs-init-main.md §3.4).
 
 use crate::call_table::CallTable;
+use crate::device_map::{DmapTable, SmapTable};
+use crate::fcntl::LockTable;
+use crate::filp::FilpTable;
 use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
+use crate::vnode::VnodeTable;
+use crate::vmnt::VmntTable;
 use crate::worker::WorkerPool;
 use minix_types::{Endpoint, Gid, Message, Uid, UserSlot, VfsPmInit, VfsPmInitError};
 
@@ -281,6 +286,18 @@ pub enum PollResult {
 pub struct VfsState {
     /// Process table.
     pub fproc_table: FProcTable,
+    /// Open-descriptor pool (`filp[1024]`, `file.h:33`).
+    pub filp_table: FilpTable,
+    /// Vnode table (`vnode[]`, `vnode.h`).
+    pub vnode_table: VnodeTable,
+    /// Mount table (`vmnt[8]`, `vmnt.h`).
+    pub vmnt_table: VmntTable,
+    /// Device↔driver table (`dmap[NR_DEVICES]`, `dmap.h`).
+    pub dmap_table: DmapTable,
+    /// Socket-driver table (`smap[NR_SOCKDEVS]`, `smap.h`).
+    pub smap_table: SmapTable,
+    /// POSIX record-lock table (`file_lock[NR_LOCKS]`, `fcntl.h`).
+    pub lock_table: LockTable,
     /// Worker thread pool.
     pub worker_pool: WorkerPool,
     /// Syscall dispatch table.
@@ -312,6 +329,12 @@ impl VfsState {
     pub fn new() -> Self {
         Self {
             fproc_table: FProcTable::new(),
+            filp_table: FilpTable::new(),
+            vnode_table: VnodeTable::new(),
+            vmnt_table: VmntTable::new(),
+            dmap_table: DmapTable::new(),
+            smap_table: SmapTable::new(),
+            lock_table: LockTable::new(),
             worker_pool: WorkerPool::new(),
             call_table: CallTable::new(),
             reviving: 0,

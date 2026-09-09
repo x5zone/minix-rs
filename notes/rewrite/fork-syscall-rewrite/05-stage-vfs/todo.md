@@ -24,7 +24,7 @@
 |------|------|--------|
 | **P0** | **R2-P0-1** | REQ 消息基址 `FS_BASE=0x600` 与 C（com.h:589）/minix-fs（0xA00）不符——VFS↔FS wire 绝对值错误，注释的 C 锚点系伪造（§9.2；**✅ 已修复** 2026-09-09，§9.9 Fix #1） |
 | P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：`DirectFetcher::fetch` 伪造返回 `"a".repeat`、`eat_path` 签名吃 `TestFproc`、`StrictResolver` 恒返回 vnode 99（§9.2） |
-| P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2） |
+| P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2；**W2 VfsState 组合已闭合** 2026-09-09，§10 Fix #30；W3 绑定待做） |
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #27） |
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
@@ -461,6 +461,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：四条依赖束（内核 IPC/SEF/根挂载/path 循环）散落在 23 处 DEFERRED 与 mfs 侧 Pending 中，无统一收敛视图——接线顺序错误会导致"先接挂载而后 SEF，重启即挂"。
 - **After**：九步接线矩阵（W1 内核 IPC → W2 VfsState 组合完备 → W3 dispatch 绑定 → W4 SEF → W5 dmap/smap+DS → W6 根挂载 → W7 path 循环 → W8 死亡级联编排 → W9 mfs lookup），每步带依赖项、关闭条件与已备决策件清单；矩阵收敛判定 = getvfsstat 真实回路。本条闭合 P1-2 的"无统一收敛视图"诉求；各步执行分布在大件（R2-P1-1/R2-P1-2）与 edge 条目。
 - **Verified**：纯文档；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **354 passed / 0 failed**（无代码变化）。
+
+### ✅ Fix #30: R2-P1-2（W2 前半）— VfsState 组合完备：七表聚合（2026-09-09）
+
+- **File**：`os/servers/vfs/src/main_loop.rs`（VfsState 七字段 + new() 构造 + 导入）。
+- **Before**：`VfsState` 只有 `fproc_table`/`worker_pool`/`call_table`——filp/vnode/vmnt/dmap/smap/lock 六张 C 全局表（glo.h/file.h/vnode.h/vmnt.h/dmap.h/smap.h/fcntl.h）悬在各模块，任何 dispatch 臂都无法触达决策函数所需状态。
+- **After**：`VfsState` 聚合七表（`filp_table`/`vnode_table`/`vmnt_table`/`dmap_table`/`smap_table`/`lock_table` + 原 `fproc_table`），`new()` 统一构造——ARCH A-4（glo.h 全局 → VfsState 聚合）的组合完备态。这是接线矩阵 **W2** 的关闭（"各表随 `VfsState::new()` 构造"）；W3（`dispatch_syscall` 绑定 + `run_once`）随后。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **354 passed / 0 failed**（纯组合，零行为变化）。
 
 ### ✅ Fix #26: C-1 — SEF LU 三回调决策组落地（2026-09-09）
 
