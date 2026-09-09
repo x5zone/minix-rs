@@ -14,6 +14,7 @@
 //! with their arms (06~08). What travels is `Fanout`; what judges it is
 //! the kernel.
 
+use crate::cpu::CpuId;
 use crate::priority::is_niced;
 use bitflags::bitflags;
 use minix_types::Endpoint;
@@ -67,7 +68,7 @@ pub struct SlotValues {
     /// Its share in ms. C: `rmp->time_slice` — schedule.c:310.
     pub time_slice_ms: u32,
     /// Its CPU. C: `rmp->cpu` — schedule.c:315.
-    pub cpu: u32,
+    pub cpu: CpuId,
     /// Its ceiling (for the niced note). C: `rmp->max_priority` — 319.
     pub max_priority: crate::schedproc::Priority,
 }
@@ -89,7 +90,7 @@ pub struct Fanout {
     /// The share in ms, if carried. C: `new_quantum` — schedule.c:309-312.
     pub quantum_ms: Option<u32>,
     /// The CPU, if carried. C: `new_cpu` — schedule.c:314-317.
-    pub cpu: Option<u32>,
+    pub cpu: Option<CpuId>,
     /// Whether the ceiling sits below the default queue. C: `niced` —
     /// schedule.c:319. Always carried, never kept: the note rides every
     /// call, even the keep-everything one.
@@ -142,7 +143,7 @@ impl Fanout {
     /// Render the CPU for the wire.
     pub const fn wire_cpu(self) -> i32 {
         match self.cpu {
-            Some(cpu) => cpu as i32,
+            Some(cpu) => cpu.0 as i32,
             None => KEEP,
         }
     }
@@ -165,7 +166,7 @@ mod tests {
             endpoint: Endpoint(20),
             priority: Priority::new(9).expect("9 < 16"),
             time_slice_ms: 200,
-            cpu: 1,
+            cpu: CpuId(1),
             max_priority: Priority::new(7).expect("7 < 16"),
         }
     }
@@ -195,7 +196,7 @@ mod tests {
         assert_eq!(out.endpoint, Endpoint(20));
         assert_eq!(out.priority, Some(9));
         assert_eq!(out.quantum_ms, Some(200));
-        assert_eq!(out.cpu, Some(1));
+        assert_eq!(out.cpu, Some(CpuId(1)));
         // Ceiling 7 == USER_Q: not above, so not niced.
         assert!(!out.niced);
         assert_eq!(KEEP, -1);
@@ -213,7 +214,7 @@ mod tests {
         let out = aggregate(ChangeMask::MIGRATE, &slot());
         assert_eq!(out.priority, None);
         assert_eq!(out.quantum_ms, None);
-        assert_eq!(out.cpu, Some(1));
+        assert_eq!(out.cpu, Some(CpuId(1)));
         // Nothing flagged: everything keeps — a shape the code never
         // sends, but the mask allows naming.
         let out = aggregate(ChangeMask::empty(), &slot());

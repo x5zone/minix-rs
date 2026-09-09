@@ -23,7 +23,7 @@
 //! wire answers; a successful START names SCHED in the reply.
 
 use crate::balancer::{rebalance_one, Balancer};
-use crate::cpu::{add_load, mark_dead, pick, release_load, CpuLoad, MachineTopology};
+use crate::cpu::{add_load, mark_dead, pick, release_load, CpuId, CpuLoad, MachineTopology};
 use crate::dispatch::{no_sys_verdict, noquantum_trust, settle, DispatchVerdict, SchedMsg};
 use crate::kernel_api::schedule::{aggregate, ChangeMask, SlotValues};
 use crate::kernel_api::schedctl::SchedctlCall;
@@ -92,7 +92,7 @@ struct Probe {
     priority: Priority,
     max_priority: Priority,
     time_slice_ms: u32,
-    cpu: u32,
+    cpu: CpuId,
 }
 
 impl Probe {
@@ -126,7 +126,7 @@ impl Probe {
                 priority: Priority::new(0).expect("0 < 16"),
                 max_priority: Priority::new(0).expect("0 < 16"),
                 time_slice_ms: 0,
-                cpu: 0,
+                cpu: CpuId(0),
             }
         }
     }
@@ -165,7 +165,7 @@ impl SchedServer {
                 max_priority: Priority::new(0).expect("0 < 16"),
                 priority: Priority::new(0).expect("0 < 16"),
                 time_slice_ms: 0,
-                cpu: 0,
+                cpu: CpuId(0),
             }),
             // Zero-initialized like C's static array (schedule.c:46): every
             // CPU alive with no load. `None` is the mark of a branded-dead
@@ -374,7 +374,7 @@ impl SchedServer {
             max_priority: seed.max_priority,
             priority: seed.priority,
             time_slice_ms: seed.time_slice_ms,
-            cpu: 0,
+            cpu: CpuId(0),
         };
 
         // C 226-231: pick, fan out, and let dead CPUs circle the ring. The
@@ -384,14 +384,14 @@ impl SchedServer {
         let mut chosen = pick(is_system, &self.topo, &self.loads);
         let rv = loop {
             if self.topo.processors_count > 1 {
-                add_load(&mut self.loads, chosen as usize);
+                add_load(&mut self.loads, chosen);
             }
             self.procs[index].cpu = chosen;
             let fanout = aggregate(ChangeMask::ALL, &self.row_values(index));
             match start::classify_fanout(code(kernel.schedule(&fanout))) {
                 start::Fanout::CpuDead => {
                     // C 229-230: brand it, never try it again.
-                    mark_dead(&mut self.loads, chosen as usize);
+                    mark_dead(&mut self.loads, chosen);
                     chosen = pick(is_system, &self.topo, &self.loads);
                     // (A one-CPU world short-circuits back to the same seat
                     // — exactly C's non-SMP ring, where EBADCPU cannot
@@ -434,7 +434,7 @@ impl SchedServer {
         // the gate reads the topology (07's contract: the Release still
         // names the CPU, the gate has one reader).
         if self.topo.processors_count > 1 {
-            release_load(&mut self.loads, release.cpu as usize);
+            release_load(&mut self.loads, release.cpu);
         }
         self.procs[probe.index].state = SlotState::Free; // C 132
         0
@@ -692,7 +692,7 @@ mod tests {
             max_priority: Priority::new(7).expect("7 < 16"),
             priority: Priority::new(9).expect("9 < 16"),
             time_slice_ms: 150,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default();
@@ -785,7 +785,7 @@ mod tests {
         // non-BSP index wins), branded dead, and seat 2 carried the retry.
         assert_eq!(s.loads[1], None, "seat 1 was branded dead");
         assert_eq!(s.loads[2], Some(1), "seat 2 carries the booking");
-        assert_eq!(s.procs[CHILD as usize].cpu, 2);
+        assert_eq!(s.procs[CHILD as usize].cpu, CpuId(2));
         assert_eq!(ipc.sent.borrow()[0].1.m_type, 0);
     }
 
@@ -801,7 +801,7 @@ mod tests {
             max_priority: Priority::new(5).expect("5 < 16"),
             priority: Priority::new(5).expect("5 < 16"),
             time_slice_ms: 100,
-            cpu: 2,
+            cpu: CpuId(2),
         };
         s.loads[2] = Some(3);
         let mut kernel = MockKernel::default();
@@ -843,7 +843,7 @@ mod tests {
             max_priority: Priority::new(7).expect("7 < 16"),
             priority: Priority::new(9).expect("9 < 16"),
             time_slice_ms: 100,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default();
@@ -873,7 +873,7 @@ mod tests {
             max_priority: Priority::new(7).expect("7 < 16"),
             priority: Priority::new(9).expect("9 < 16"),
             time_slice_ms: 100,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default();
@@ -904,7 +904,7 @@ mod tests {
             max_priority: Priority::new(5).expect("5 < 16"),
             priority: Priority::new(5).expect("5 < 16"),
             time_slice_ms: 100,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default();
@@ -934,7 +934,7 @@ mod tests {
             max_priority: Priority::new(5).expect("5 < 16"),
             priority: Priority::new(15).expect("15 < 16"),
             time_slice_ms: 100,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default();
@@ -956,7 +956,7 @@ mod tests {
             max_priority: Priority::new(5).expect("5 < 16"),
             priority: Priority::new(5).expect("5 < 16"),
             time_slice_ms: 100,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::default();
         let ipc = MockIpc::default();
@@ -981,7 +981,7 @@ mod tests {
             max_priority: Priority::new(8).expect("8 < 16"),
             priority: Priority::new(10).expect("10 < 16"),
             time_slice_ms: 100,
-            cpu: 0,
+            cpu: CpuId(0),
         };
         let mut kernel = MockKernel::new(1, 0);
         let ipc = MockIpc::default();

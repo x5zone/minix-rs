@@ -92,7 +92,7 @@ Rust 改写不照抄八字段结构体，而是参考 Linux 的调度实体和�
 ### D1 身份字段直接透传
 
 - **C**：`endpoint_t endpoint/parent`（`schedproc.h:24-25`）。
-- **Rust**：`SchedProc{endpoint: Endpoint, parent: Endpoint}`（`os/servers/sched/src/schedproc.rs:71`），端点类型直接用 minix-types 的。
+- **Rust**：`SchedProc{endpoint: Endpoint, parent: Endpoint}`（`os/servers/sched/src/schedproc.rs:72`），端点类型直接用 minix-types 的。
 - **为什么**：身份字段在各服务里语义相同；端点类型是跨服务共用的。备选方案（sched 自己定义一套端点类型）被否决：两处真源早晚对不上。
 
 ### D2 标记做成枚举
@@ -107,11 +107,11 @@ Rust 改写不照抄八字段结构体，而是参考 Linux 的调度实体和�
 - **Rust**：`Priority(u8)` 加 `new/get`（`os/servers/sched/src/schedproc.rs:42,47,56`），边界是 `NR_SCHED_QUEUES=16`（`os/servers/sched/src/schedproc.rs:17`）；形状和内核 `proc.rs` 的 `Priority` 相同，但各服务用各自己的。
 - **为什么**：优先级有边界（接管时 `>=16` 进 `EINVAL`，见第 06 篇）；`u8` 自带非负；各服务用各自己的类型（和 02 篇 D4 同一个道理）。备选方案（复用内核的 `Priority`）被否决：跨服务依赖方向反了。
 
-### D4 时间片写明单位
+### D4 时间片写明单位，CPU 用新类型
 
 - **C**：`unsigned time_slice`（`schedproc.h:31`，毫秒）加 `unsigned cpu`（`schedproc.h:32`）。
-- **Rust**：`time_slice_ms: u32`（名字里带单位，S-6）加 `cpu: u32`（`os/servers/sched/src/schedproc.rs:71`）。
-- **为什么**：把单位写进名字（旧文档曾经误写成 ticks，R-4 的教训）；`u32` 对应 `unsigned`。备选方案（包一层 `Duration` 新类型）被否决：线上传的就是毫秒数，再包一层只是增加拆装成本（单位体系在第 05 篇统一）。
+- **Rust**：`time_slice_ms: u32`（名字里带单位，S-6）加 `cpu: CpuId`（`os/servers/sched/src/schedproc.rs:72`——10 篇引入的新类型，内核 `proc.rs` 的 `CpuId` 同形，两侧一个词表；合法性由唯一生产者 `pick` 保证，构造不校验）。
+- **为什么**：把单位写进名字（旧文档曾经误写成 ticks，R-4 的教训）；`u32` 对应 `unsigned`，但 CPU 和"随便一个无符号数"不是一回事——同结构里 `Priority` 有构造保障而 `cpu` 没有，读者得逐字段记哪个数可信；`CpuId` 把这个差别写进签名。备选方案（包一层 `Duration` 新类型）被否决：线上传的就是毫秒数，再包一层只是增加拆装成本（单位体系在第 05 篇统一）；`cpu` 保持裸 `u32` 加注释也曾是备选，V2-P2-4 轮否决——注释管不住签名。
 
 ### D5 去掉死字段
 
@@ -124,8 +124,8 @@ Rust 改写不照抄八字段结构体，而是参考 Linux 的调度实体和�
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
 | S-2 优先级类型（裸 unsigned 改新类型） | `Priority(u8)` 边界 16 | `os/servers/sched/src/schedproc.rs:46` + 本文档 D3 + §1.4 |
-| S-3 死字段消除（不要 cpu_mask） | 没有这个字段，加注释说明 | `os/servers/sched/src/schedproc.rs:71` + 本文档 D5 + §1.6 |
-| S-6 时间片单位（毫秒立约） | `time_slice_ms` 名字带单位 | `os/servers/sched/src/schedproc.rs:71` + 本文档 D4 + §1.5 |
+| S-3 死字段消除（不要 cpu_mask） | 没有这个字段，加注释说明 | `os/servers/sched/src/schedproc.rs:72` + 本文档 D5 + §1.6 |
+| S-6 时间片单位（毫秒立约） | `time_slice_ms` 名字带单位 | `os/servers/sched/src/schedproc.rs:72` + 本文档 D4 + §1.5 |
 
 ---
 
@@ -147,10 +147,10 @@ os/servers/sched/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 身份 | `schedproc.h:24-25` | `os/servers/sched/src/schedproc.rs:71` | 端点透传 |
+| 身份 | `schedproc.h:24-25` | `os/servers/sched/src/schedproc.rs:72` | 端点透传 |
 | 标记 | `schedproc.h:26,39` | `os/servers/sched/src/schedproc.rs:26,94` | 一个标记一种含义 |
 | 优先级 | `schedproc.h:29-30` | `os/servers/sched/src/schedproc.rs:17,42,47,56` | 带边界的新类型 |
-| 时间片和 CPU | `schedproc.h:31-32` | `os/servers/sched/src/schedproc.rs:71` | 名字带单位 |
+| 时间片和 CPU | `schedproc.h:31-32` | `os/servers/sched/src/schedproc.rs:72` | 名字带单位 |
 | 死字段 | `schedproc.h:33-35` | （没有，加注释说明） | S-3 消除 |
 
 ### 4.3 不变量
@@ -172,8 +172,8 @@ os/servers/sched/src/
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
 | `test_names_and_flag` | `schedproc.h:24-26,39` | 身份透传加标记两种含义 | `os/servers/sched/src/schedproc.rs:116` |
-| `test_priority_bound` | `config.h:66` | 边界内收下、边界外拒绝（15 收、16 拒、255 拒） | `os/servers/sched/src/schedproc.rs:133` |
-| `test_slice_and_cpu` | `schedproc.h:31-32` | 毫秒名字加当前 CPU | `os/servers/sched/src/schedproc.rs:143` |
+| `test_priority_bound` | `config.h:66` | 边界内收下、边界外拒绝（15 收、16 拒、255 拒） | `os/servers/sched/src/schedproc.rs:139` |
+| `test_slice_and_cpu` | `schedproc.h:31-32` | 毫秒名字加当前 CPU | `os/servers/sched/src/schedproc.rs:149` |
 
 测试策略：身份用端点值透传锁定；标记用两种含义锁定；优先级用边界三点（15 收、16 拒、255 拒）锁定；时间片和 CPU 用名字和值锁定；死字段用"结构里没有"收尾（读代码验证，不需要运行时断言）。
 

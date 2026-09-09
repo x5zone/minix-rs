@@ -28,6 +28,19 @@ pub struct MachineTopology {
     pub bsp_id: u32,
 }
 
+/// Which CPU a record lives on (`schedproc.h:32`, the `cpu` field).
+///
+/// A `u32` newtype, the same shape the kernel uses for the same idea
+/// (`os/kernel/src/proc.rs` `CpuId`) — two crates, one vocabulary. The
+/// constructor checks nothing on purpose: a legal `CpuId` is below the
+/// topology's count, and that guarantee is `pick`'s job (the only
+/// producer); the type's value is at the signatures, where a bare
+/// `u32` forced every reader to re-ask "is this a CPU, a count, or a
+/// queue?". [ARCH S-4] kin: bare integers that carry meaning become
+/// types (the load counter's sentinel went the same way, `CpuLoad`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuId(pub u32);
+
 /// One CPU's load: present with a count, or gone (`schedule.c:37-46`).
 ///
 /// C keeps `unsigned cpu_proc[]` with a `-1` sentinel (`CPU_DEAD`, `37`)
@@ -54,14 +67,14 @@ pub type CpuLoad = Option<u32>;
 /// function total instead of panicking on a broken caller. An empty view
 /// yields CPU 0 by the same clamp (documented, unreachable in practice:
 /// callers always pass the real table).
-pub fn pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> u32 {
+pub fn pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> CpuId {
     // The only seat, clamped into the view (see above).
     let bsp = topo.bsp_id.min(loads.len().saturating_sub(1) as u32);
     if topo.processors_count <= 1 {
-        return bsp;
+        return CpuId(bsp);
     }
     if is_system {
-        return bsp;
+        return CpuId(bsp);
     }
     let mut best = bsp;
     let mut best_load = u32::MAX;
@@ -78,15 +91,15 @@ pub fn pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> u32 {
             best = cpu;
         }
     }
-    best
+    CpuId(best)
 }
 
 /// Brand a CPU dead (`schedule.c:229`, the retry ring's mark).
 ///
 /// C writes `CPU_DEAD` (`-1`); the brand reads `None` here. The ring
 /// itself (06 D6) decides *when*; this verb only performs the mark.
-pub fn mark_dead(loads: &mut [CpuLoad], cpu: usize) {
-    if let Some(slot) = loads.get_mut(cpu) {
+pub fn mark_dead(loads: &mut [CpuLoad], cpu: CpuId) {
+    if let Some(slot) = loads.get_mut(cpu.0 as usize) {
         *slot = None;
     }
 }
@@ -97,8 +110,8 @@ pub fn mark_dead(loads: &mut [CpuLoad], cpu: usize) {
 /// this equals C's `++` exactly; on a double booking it holds at the
 /// ceiling instead of wrapping the books into nonsense. Same answers
 /// where it matters, no corruption where it doesn't.
-pub fn add_load(loads: &mut [CpuLoad], cpu: usize) {
-    if let Some(Some(count)) = loads.get_mut(cpu) {
+pub fn add_load(loads: &mut [CpuLoad], cpu: CpuId) {
+    if let Some(Some(count)) = loads.get_mut(cpu.0 as usize) {
         *count = count.saturating_add(1);
     }
 }
@@ -109,8 +122,8 @@ pub fn add_load(loads: &mut [CpuLoad], cpu: usize) {
 /// exactly; a double release holds at zero instead of wrapping to
 /// `UINT_MAX` — which C would then read as "dead, never pick" (the
 /// load comparison, §D2). The wrap is C's accident, not its contract.
-pub fn release_load(loads: &mut [CpuLoad], cpu: usize) {
-    if let Some(Some(count)) = loads.get_mut(cpu) {
+pub fn release_load(loads: &mut [CpuLoad], cpu: CpuId) {
+    if let Some(Some(count)) = loads.get_mut(cpu.0 as usize) {
         *count = count.saturating_sub(1);
     }
 }
@@ -131,9 +144,9 @@ mod tests {
         // One CPU in the world: it, regardless of system-ness or books
         // (`54-57`; the non-SMP `cpu = 0` is this rule with bsp 0).
         let one = topo(1, 0);
-        assert_eq!(pick(false, &one, &[Some(9)]), 0);
-        assert_eq!(pick(true, &one, &[Some(9)]), 0);
-        assert_eq!(pick(false, &one, &[None]), 0);
+        assert_eq!(pick(false, &one, &[Some(9)]), CpuId(0));
+        assert_eq!(pick(true, &one, &[Some(9)]), CpuId(0));
+        assert_eq!(pick(false, &one, &[None]), CpuId(0));
     }
 
     #[test]
@@ -142,21 +155,30 @@ mod tests {
         // seats elsewhere — birthplace over balance.
         let four = topo(4, 0);
         let loads = [Some(9), Some(0), Some(0), Some(0)];
-        assert_eq!(pick(true, &four, &loads), 0);
+        assert_eq!(pick(true, &four, &loads), CpuId(0));
         // A non-zero BSP is honored too.
         let shifted = topo(4, 2);
-        assert_eq!(pick(true, &shifted, &loads), 2);
+        assert_eq!(pick(true, &shifted, &loads), CpuId(2));
     }
 
     #[test]
     fn test_least_loaded() {
         // Users take the least-loaded available non-BSP seat (`65-76`).
         let four = topo(4, 0);
-        assert_eq!(pick(false, &four, &[Some(5), Some(3), Some(1), Some(2)]), 2);
+        assert_eq!(
+            pick(false, &four, &[Some(5), Some(3), Some(1), Some(2)]),
+            CpuId(2)
+        );
         // Ties keep the lowest index (the strict `>` at `68`).
-        assert_eq!(pick(false, &four, &[Some(5), Some(1), Some(1), Some(2)]), 1);
+        assert_eq!(
+            pick(false, &four, &[Some(5), Some(1), Some(1), Some(2)]),
+            CpuId(1)
+        );
         // The BSP never displaces, even when lightest.
-        assert_eq!(pick(false, &four, &[Some(0), Some(5), Some(5), Some(5)]), 1);
+        assert_eq!(
+            pick(false, &four, &[Some(0), Some(5), Some(5), Some(5)]),
+            CpuId(1)
+        );
     }
 
     #[test]
@@ -165,8 +187,11 @@ mod tests {
         // BSP holds — even dead, exactly as C falls back (`65`), leaving
         // the liveness verdict to the kernel's ring (06 D6).
         let four = topo(4, 0);
-        assert_eq!(pick(false, &four, &[Some(5), None, Some(1), Some(2)]), 2);
-        assert_eq!(pick(false, &four, &[None, None, None, None]), 0);
+        assert_eq!(
+            pick(false, &four, &[Some(5), None, Some(1), Some(2)]),
+            CpuId(2)
+        );
+        assert_eq!(pick(false, &four, &[None, None, None, None]), CpuId(0));
     }
 
     #[test]
@@ -175,23 +200,23 @@ mod tests {
         // (`77` / `130`); off the path they saturate instead of
         // wrapping the books into nonsense.
         let mut loads = [Some(1), Some(0)];
-        add_load(&mut loads, 1);
+        add_load(&mut loads, CpuId(1));
         assert_eq!(loads, [Some(1), Some(1)]);
-        release_load(&mut loads, 0);
+        release_load(&mut loads, CpuId(0));
         assert_eq!(loads, [Some(0), Some(1)]);
         // A double release holds at zero (C would wrap to UINT_MAX —
         // which its own comparison would then read as dead).
-        release_load(&mut loads, 0);
+        release_load(&mut loads, CpuId(0));
         assert_eq!(loads[0], Some(0));
         // The retry ring's brand (`229`): gone, and skipped after.
-        mark_dead(&mut loads, 1);
+        mark_dead(&mut loads, CpuId(1));
         assert_eq!(loads[1], None);
         let four = topo(2, 0);
-        assert_eq!(pick(false, &four, &loads), 0);
+        assert_eq!(pick(false, &four, &loads), CpuId(0));
         // Out-of-range seats are ignored, never panicking.
-        mark_dead(&mut loads, 99);
-        add_load(&mut loads, 99);
-        release_load(&mut loads, 99);
+        mark_dead(&mut loads, CpuId(99));
+        add_load(&mut loads, CpuId(99));
+        release_load(&mut loads, CpuId(99));
         assert_eq!(loads, [Some(0), None]);
     }
 }

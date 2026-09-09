@@ -102,7 +102,7 @@ Rust 改写不是把 C 函数逐行翻译，而是在参考 Linux 的检查加�
 ### D2 保持位用 `None` 表示
 
 - **C**：没选中的填 `-1`（`307/312/317`），内核看到 `-1` 就跳过（`680-688`）。
-- **Rust**：`Fanout{priority: Option<u8>, quantum_ms: Option<u32>, cpu: Option<u32>}`（`schedule.rs:83`：`None` 就是保持）+ `KEEP = -1`（`schedule.rs:54`：线上值只在这里定义一次）+ `wire_*()`（`schedule.rs:121-151`：`None` 转成 `KEEP`）。
+- **Rust**：`Fanout{priority: Option<u8>, quantum_ms: Option<u32>, cpu: Option<CpuId>}`（`schedule.rs:85`：`None` 就是保持）+ `KEEP = -1`（`schedule.rs:55`：线上值只在这里定义一次）+ `wire_*()`（`schedule.rs:123-153`：`None` 转成 `KEEP`）。
 - **为什么**："保持"本质上是"没有值"，`Option` 把这个意思直接写进了类型；C 的 `-1` 哨兵还得解释"负数是什么意思"（和 05 的 D5 是同一个道理）。内核的 `SchedParams` 也是同样的三个 `Option` 加一个 `niced: bool`，两个 crate 在线上形状一致（03 的 D3 提过这种"同形"做法）。备选方案（直接传 `i32` 的 `-1`）被否决了：哨兵进类型就是模式 17 的问题。
 
 ### D3 `niced` 的判断复用 05 的谓词

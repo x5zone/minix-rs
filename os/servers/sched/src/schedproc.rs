@@ -7,6 +7,7 @@
 //! caps, and placement. Table management (04), the model behind the
 //! numbers (05), and handler writes (06~08) stay out.
 
+use crate::cpu::CpuId;
 use minix_types::Endpoint;
 
 /// `NR_SCHED_QUEUES` (`minix3/minix/include/minix/config.h:66`): sixteen
@@ -86,7 +87,12 @@ pub struct SchedProc {
     /// [ARCH S-6] (plan.md).
     pub time_slice_ms: u32,
     /// Which CPU it runs on. C: `unsigned cpu` — schedproc.h:32.
-    pub cpu: u32,
+    ///
+    /// The same newtype the choice produces (10): a legal value is
+    /// below the topology's count, guaranteed by `pick` being the only
+    /// producer — the type carries that promise where a bare `u32`
+    /// made every reader re-ask.
+    pub cpu: CpuId,
 }
 
 impl SchedProc {
@@ -108,7 +114,7 @@ mod tests {
             max_priority: Priority::new(10).expect("10 < 16"),
             priority: Priority::new(12).expect("12 < 16"),
             time_slice_ms: 200,
-            cpu: 0,
+            cpu: CpuId(0),
         }
     }
 
@@ -144,7 +150,7 @@ mod tests {
         // Slice is milliseconds (S-6); cpu is the current home.
         let proc_ = sample();
         assert_eq!(proc_.time_slice_ms, 200);
-        assert_eq!(proc_.cpu, 0);
+        assert_eq!(proc_.cpu, CpuId(0));
         // The eighth C field (cpu_mask) has no Rust shape: S-3
         // elimination is structural, verified by reading the struct
         // above — absence leaves nothing to assert at runtime.

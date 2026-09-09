@@ -13,6 +13,7 @@
 //!
 //! Single-threaded event loop: pure functions, no shared state.
 
+use crate::cpu::CpuId;
 use crate::table::SlotVerdict;
 use minix_types::{EPERM, Endpoint};
 
@@ -39,7 +40,7 @@ pub struct Release {
     /// Whose slot empties. C: `rmp` at schedule.c:128.
     pub endpoint: Endpoint,
     /// Which CPU loses one load unit. C: `rmp->cpu` at schedule.c:130.
-    pub cpu: u32,
+    pub cpu: CpuId,
 }
 
 /// Check the sender, then the slot (`118-125`).
@@ -73,7 +74,7 @@ pub fn plan_stop(
     sender_ok: bool,
     slot: SlotVerdict,
     req: &Request,
-    cpu: u32,
+    cpu: CpuId,
 ) -> Result<Release, i32> {
     admit(sender_ok, slot)?;
     Ok(Release {
@@ -93,32 +94,32 @@ mod tests {
         let req = Request { child: Endpoint(20) };
         let live = SlotVerdict::Occupied;
         // Strangers refuse first, even naming a live slot (`118-119`).
-        assert_eq!(plan_stop(false, live, &req, 0), Err(EPERM));
+        assert_eq!(plan_stop(false, live, &req, CpuId(0)), Err(EPERM));
         // Dead slots refuse next, even from PM (`121-125`).
         assert_eq!(
-            plan_stop(true, SlotVerdict::Dead, &req, 0),
+            plan_stop(true, SlotVerdict::Dead, &req, CpuId(0)),
             Err(EDEADEPT)
         );
         assert_eq!(
-            plan_stop(true, SlotVerdict::Task, &req, 0),
+            plan_stop(true, SlotVerdict::Task, &req, CpuId(0)),
             Err(EBADEPT)
         );
         assert_eq!(
-            plan_stop(true, SlotVerdict::OutOfRange, &req, 0),
+            plan_stop(true, SlotVerdict::OutOfRange, &req, CpuId(0)),
             Err(EINVAL)
         );
         // A live slot passes (`126` falls through to release).
-        assert!(plan_stop(true, live, &req, 0).is_ok());
+        assert!(plan_stop(true, live, &req, CpuId(0)).is_ok());
     }
 
     #[test]
     fn test_release_shape() {
         // Two releases ride one answer: who empties, which CPU sheds.
         let req = Request { child: Endpoint(20) };
-        let release = plan_stop(true, SlotVerdict::Occupied, &req, 3)
+        let release = plan_stop(true, SlotVerdict::Occupied, &req, CpuId(3))
             .expect("valid STOP");
         assert_eq!(release.endpoint, Endpoint(20));
-        assert_eq!(release.cpu, 3);
+        assert_eq!(release.cpu, CpuId(3));
     }
 
     #[test]
@@ -128,7 +129,7 @@ mod tests {
         // asks nothing about parentage.
         for child in [Endpoint::INIT, Endpoint::RS, Endpoint(20), Endpoint(100)] {
             let req = Request { child };
-            let release = plan_stop(true, SlotVerdict::Occupied, &req, 0)
+            let release = plan_stop(true, SlotVerdict::Occupied, &req, CpuId(0))
                 .expect("every slot releases");
             assert_eq!(release.endpoint, child);
         }
@@ -148,8 +149,8 @@ mod tests {
         let req = Request {
             child: Endpoint(slot),
         };
-        let release = plan_stop(true, live, &req, 1).expect("live releases");
-        assert_eq!(release.cpu, 1);
+        let release = plan_stop(true, live, &req, CpuId(1)).expect("live releases");
+        assert_eq!(release.cpu, CpuId(1));
         // Death: the slot reads free again — the caller's clear (`132`)
         // restores exactly what the vacant door checks.
         assert!(check_vacant(slot, len, false).is_ok());

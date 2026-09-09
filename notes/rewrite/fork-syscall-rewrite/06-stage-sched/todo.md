@@ -20,7 +20,7 @@
 | P2 | P2-1 | init 临时值 BSP 语义误读（V2 复核：加重——Rust 注释也描述了不存在的规则） | ✅ 已修复 2026-09-09（Fix #7） |
 | P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | open |
 | P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
-| P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | open |
+| P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | ✅ 已修复 2026-09-09（Fix #8） |
 | P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | open |
 | P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | open |
 | P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
@@ -132,7 +132,7 @@
 - V2 复核：dispatch.rs:21 `pub const SUSPEND: i32 = -998;` 仍在；同型新增一处——transport.rs:41/:45 的 SYS_SCHEDULE/SYS_SCHEDCTL 本地镜像（有注释、有 wire 断言钉值，第一轮 Fix #1 已注明「minix-types 暂缺」）。
 - **V2 修法更新**：与 edge E-MINTYPES-SYS 合并执行——minix-types 一次补两族常量（SUSPEND + SYS_* 调用号），dispatch.rs/transport.rs 改消费，避免同一个 crate 跑两遍常量收敛。
 
-### P2-4 `SchedProc.cpu` 的裸类型 —— 维持 open
+### P2-4 `SchedProc.cpu` 的裸类型 —— ✅ 已修复 2026-09-09（Fix #8，见 §9）
 
 - V2 复核：schedproc.rs:93 `pub cpu: u32` 仍在；且主循环落地后裸 u32 的流转面扩大——`Probe.cpu`（server.rs:95）、`SlotValues.cpu`（schedule.rs:70）、`Fanout.cpu: Option<u32>`（schedule.rs:91）、`CpuLoad = Option<u32>`（cpu.rs:37）、`release.cpu`（stop.rs:42）——CpuId newtype 的落点从第一轮估计的 2 处扩为全链 6 处签名。内核侧先例不变（os/kernel/src/proc.rs:471 `CpuId(u32)`）。
 - 修法维持第一轮首选：`CpuId(u32)` newtype，由 `cpu::pick` 产出、全链消费；构造不做拓扑校验（与 S-3/S-4 的既定分工一致）。
@@ -278,3 +278,11 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **设计要点**：修正方向 = 让注释与 C 的 `226` 和 Rust 的实际行为同时对齐，并顺带指出 **C 源自己的注释（177-183）已经过时**（写于无条件重选之前）——这正是当初误读的源头，值得在两篇文档里点名，防止下一个读者再被 C 注释带偏。方案对比：只修 Rust 注释留文档旧话（否决：注释与文档互相矛盾更糟）；顺带改 C 源注释（禁止——minix3/ 是 ground truth，不可修改）。
 **Files**：`os/servers/sched/src/scheduling/start.rs`（plan_start 文档注释 + test_start_birth 测试注释）、`06-start-scheduling.md`（§1.3 重写 + §2.3 加交叉引用）、`10-pick-cpu-smp.md`（§1.1 删悬挂引用 + 补"只有系统进程这一条"的澄清）。
 **Verified**：`cargo test -p minix-sched` 79 passed（注释级改动）；`rg "lasting init effect|self-parented seed|新建进程暂时固定|真正起作用的只有 CPU"` 生产代码与文档零命中（todo.md 的问题描述除外）。
+
+### ✅ Fix #8: P2-4 — CpuId newtype 全链接线
+
+**问题**：`SchedProc.cpu: u32` 是七字段结构里唯一的裸整数——同结构里 `Priority` 有构造保障而 `cpu` 没有，读者得逐字段记哪个数可信；主循环落地后裸 u32 的流转面扩为 6 处签名（Probe/SlotValues/Fanout/CpuLoad/release/表字段）。
+**设计对比**（三案）：1. `CpuId(u32)` newtype（已实施）——cpu.rs 定义（CPU 域的类型住 CPU 模块）、`pick` 是唯一生产者（合法性"小于拓扑核数"由它保证，构造不校验，避免把机器信息塞进纯函数）、全链消费；内核 `proc.rs` 的 `CpuId` 同形先例，两侧一个词表。2. 保持 u32 加注释（否决：注释管不住签名，V2 复核已把流转面数清）。3. 构造时校验拓扑（否决：`new` 需要 `&MachineTopology`，纯函数全被污染；台账动词还得返回错误，而越界下标本来就静默忽略）。
+**Files**：`cpu.rs`（`CpuId` 定义 + pick/三个台账动词签名 + 测试）、`schedproc.rs`（字段）、`kernel_api/schedule.rs`（SlotValues/Fanout/wire_cpu + 测试）、`scheduling/stop.rs`（Release/plan_stop + 测试）、`server.rs`（Probe/装配/do_start/do_stop + 测试）。线上的 `MessLsysKrnSchedule.cpu` 保持 `i32`（wire 是 C ABI，`wire_cpu` 一处渲染）。
+**测试**：`cargo test -p minix-sched` 79 passed / 0 failed；clippy 本体 0 告警。全部断言改 `CpuId(n)` 形式（类型即文档）。
+**Docs**：03 篇 D4 改写（"时间片写明单位，CPU 用新类型"+ 为什么补"注释管不住签名"）、07 篇 :116、09 篇 :105、10 篇 D1/D3；六篇文档全部行锚按改后行号重校（cpu.rs 整体 +13、start.rs +7、schedproc.rs +6、schedule.rs +2、stop.rs +1）。
