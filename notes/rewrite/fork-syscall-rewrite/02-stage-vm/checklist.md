@@ -301,6 +301,8 @@
 
 ## 4. 函数覆盖 (按源文件)
 
+> **Phase 3 刷新（2026-09-09，G-V12-13）**：本表 173 行可脚本验证行已逐行 grep 双侧核对，28 行硬过时（主符号零命中）全部按下表修正——类型为"归属修正/改名"（Rust 实名与 C 名不同或分属其他 crate）、"PFN/语义内联"（pb.c 与 vm_addrok 类被模型消除）、"同步子集/DEFERRED"（异步状态机族）。修正后每行的 Rust 名均经 grep 实证存在；**其余 145 行主符号全部命中现状代码，未改动**。
+
 ### 4.1 acl.c (5 函数)
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
@@ -309,15 +311,15 @@
 | F-002 | `acl_check` | acl.c:37 | ACL 检查 | `AclState::acl_check(&self, endpoint, call)` (acl.rs) | 已实现; C-11 安全修复: `Uninitialized` 限制为 DEFAULT 权限; P1-10 已修复: 签名取 `Endpoint` 而非 `&ActiveProc` |
 | F-003 | `acl_set` | acl.c:70 | 设置 ACL | `VmProc::set_acl` (vmproc_handle.rs) | 已实现 |
 | F-004 | `acl_fork` | acl.c:110 | 派生 ACL | `VmProc::acl_fork` (vmproc_handle.rs) | 已实现 |
-| F-005 | `acl_clear` | acl.c:120 | 清除 ACL | `VmProc::clear_acl` | 已实现 |
+| F-005 | `acl_clear` | acl.c:120 | 清除 ACL | 清除折叠进 `VmProc::clear`/`reap`（acl.rs 生命周期尾部，V12-P2-4 批确认） | ✅ 已实现（归属修正 2026-09-09） |
 
 ### 4.2 alloc.c (20 函数)
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
 | F-006 | `reservedqueue_new` | alloc.c:100 | 建保留队列 | `ReservedPages::new` | 已实现 (alloc_page.rs) |
-| F-007 | `reservedqueue_fillslot` | alloc.c:137 | 填队列槽 (static) | `ReservedPages::fill_slot` | 已实现 (私有) |
-| F-008 | `reservedqueue_addslot` | alloc.c:149 | 增槽 (static) | `ReservedPages::add_slot` | 已实现 (私有) |
+| F-007 | `reservedqueue_fillslot` | alloc.c:137 | 填队列槽 (static) | 无对应——reservedqueue 机制被 Direct Map 结构性消除（[ARCH A-1]，同 F-158/159） | 架构演进（2026-09-09 判定） |
+| F-008 | `reservedqueue_addslot` | alloc.c:149 | 增槽 (static) | 无对应（同 F-007，[ARCH A-1]） | 架构演进（2026-09-09 判定） |
 | F-009 | `reservedqueue_add` | alloc.c:179 | 加入队列 | `ReservedPages::add` | 已实现 (alloc_page.rs) |
 | F-010 | `reservedqueue_fill` | alloc.c:191 | 填充队列 (static) | `ReservedPages::fill` | 已实现 (私有) |
 | F-011 | `reservedqueue_alloc` | alloc.c:206 | 队列分配 | `ReservedPages::alloc` | 已实现 (alloc_page.rs) |
@@ -331,7 +333,7 @@
 | F-019 | `alloc_pages` | alloc.c:404 | 分配页 (static) | 私有辅助 | 已实现 (内部) |
 | F-019a | `find_bit` | (新增) | 按位查找 free run | `BitmapAllocator::find_bit` | ✅ **已文档化+测试**: doc 注释明确 O(chunks_with_used_bits) — 严格优于 Minix3 alloc.c:175-192 的 O(n). 3 个优化路径 (last-found hint / BMI BLSR+TZCNT / 位图反转) 写入 doc 但不实现. 3 个单元测试覆盖 backward scan + run-length 累加 + used-bit skip. 27 bitmap_alloc tests pass |
 | F-020 | `free_pages` | alloc.c:465 | 释放页 (static) | 私有辅助 | 已实现 (内部) |
-| F-021 | `printmemstats` | alloc.c:486 | 打印内存统计 | `MemStats::display` | 已实现 |
+| F-021 | `printmemstats` | alloc.c:486 | 打印内存统计 | 无对应——C printmemstats 零调用点（V12 §17.1.1 DEBUG 判定） | 判定：DEBUG/零调用（2026-09-09） |
 | F-022 | `usedpages_reset` | alloc.c:501 | 重置已用表 | `alloc_stats::reset` | 已实现 (alloc_stats.rs) |
 | F-023 | `usedpages_add_f` | alloc.c:509 | 记录已用页 | `alloc_stats::record_alloc` | 已实现 |
 | F-024 | `sanitycheck_queues` | alloc.c:76 | 队列检查 (static) | 跳过 (cfg 控制) | 跳过 |
@@ -396,14 +398,14 @@
 |---|--------|---------|------|-----------|------|
 | F-054 | `is_first_time` | main.c:79 | 是否首启 (static) | `VmServer::init_fresh` | 已实现 |
 | F-055 | `main` | main.c:93 | 主函数 | `main::main` (main.rs) | 已实现 |
-| F-056 | `sef_cb_lu_state_changed` | main.c:196 | LU 状态变化 (static) | `VmServer::on_lu_state_changed` | **未实现 (NotImplemented)** |
+| F-056 | `sef_cb_lu_state_changed` | main.c:196 | LU 状态变化 (static) | 无独立对应——SEF LU 状态回调未建模；LU 语义折叠进同步 RS update（V11/T13），SEF 机制挂 edge | 部分实现（登记 2026-09-09） |
 | F-057 | `sef_local_startup` | main.c:219 | SEF 本地启动 (static) | `VmServer::local_startup` | 已实现 |
 | F-058 | `sef_cb_init_fresh` | main.c:241 | SEF 全新初始化 (static) | `VmServer::init_fresh` | 已实现 |
 | F-059 | `init_proc` | main.c:262 | 初始化进程 (static) | `VmServer::init_proc` | 已实现 |
 | F-060 | `libexec_copy_physcopy` | main.c:294 | libexec 物理复制 (static) | `VmServer::libexec_copy` | 已实现 |
 | F-061 | `boot_alloc` | main.c:305 | 启动分配 (static) | `BumpBuf` (heap_arena.rs) | 已实现 |
-| F-062 | `libexec_alloc_vm_prealloc` | main.c:317 | libexec 预分配 (static) | `VmServer::libexec_prealloc` | 已实现 |
-| F-063 | `libexec_alloc_vm_ondemand` | main.c:324 | libexec 按需 (static) | `VmServer::libexec_ondemand` | 已实现 |
+| F-062 | `libexec_alloc_vm_prealloc` | main.c:317 | libexec 预分配 (static) | 内联于 `exec_bootproc` 的 ELF 段装载（vm_server.rs:672 注释锚：C libexec_alloc_vm_prealloc → map_page_region） | ✅ 已实现（归属修正 2026-09-09） |
+| F-063 | `libexec_alloc_vm_ondemand` | main.c:324 | libexec 按需 (static) | 内联于 `exec_bootproc` 的 ELF walk（vm_server.rs:645；需求分配由缺页路径承接） | ✅ 已实现（归属修正 2026-09-09） |
 | F-064 | `exec_bootproc` | main.c:331 | 执行启动进程 (static) | `VmServer::exec_bootproc` (vm_server.rs, V11/T14) | ✅ 已实现 (2026-09-07): ELF 装载 + sys_exec wire；栈帧挂 E-BOOTFRAME |
 | F-065 | `do_procctl_notrans` | main.c:419 | 无事务 procctl (static) | 跳过 (走 dispatcher) | 跳过 |
 | F-066 | `init_vm` | main.c:428 | VM 初始化 | `VmServer::init` (vm_server.rs:140) | 已实现 |
@@ -435,7 +437,7 @@
 | F-087 | `anon_contig_reference/unreference/sanitycheck/writable/split` | mem_anon_contig.c:103-127 | 其他回调 (static) | 对应 ev_* 方法 | 已实现 |
 | F-088 | `mem_type_directphys` | mem_directphys.c:28 | 直映射类型表 | `DirectPhysical` + `MEM_TYPE_DIRECT` (memtype.rs:693) | 已实现 |
 | F-089 | `phys_pt_flags/unreference/pagefault/writable` | mem_directphys.c:37-69 | 回调 (static) | `DirectPhysical::ev_*` | 已实现 |
-| F-090 | `phys_setphys` | mem_directphys.c:69 | 设置物理地址 | `DirectPhysical::ev_setphys` | 已实现 |
+| F-090 | `phys_setphys` | mem_directphys.c:69 | 设置物理地址 | `VrParam::Direct { phys }` 直设（map_phys.rs:96，dispatch_map_phys 消费）——setphys 语义被 VrParam 承载 | ✅ 已实现（归属修正 2026-09-09） |
 | F-091 | `mem_type_cache` | mem_cache.c:39 | 缓存类型表 | `CacheMemory` + `MEM_TYPE_CACHE` (memtype.rs:696) | 已实现 |
 | F-092-F-099 | cache_* (10 callbacks) | mem_cache.c:51-95 | 缓存回调 (static) | `CacheMemory::ev_*` | 已实现 |
 | F-100 | `do_mapcache` | mem_cache.c:95 | 映射缓存 | `dispatch_mapcache` (dispatcher.rs:438) | ✅ 已修复 (2026-06-16): 完整实现 C do_mapcache 语义 — 对齐验证 + endpoint 验证 + mmap 区分配 VirRegion(MEM_TYPE_CACHE) + 逐页 PageCache 查找 + map_page 直接映射 + 失败中途 unmap 清理 + 返回 vaddr; VmError::NotFound(ENOENT) 新增; 4 个测试覆盖 |
@@ -445,7 +447,7 @@
 | F-104 | `do_clearcache` | mem_cache.c:315 | 清缓存 | `dispatch_clearcache` | ✅ **已实现 (2026-06-16)**: 调用 `cache.clear_by_dev(dev, frames)` 与 C `clear_cache_bydev(dev)` 语义对齐. C 无输入验证, Rust 亦无 |
 | F-105 | `mem_type_mappedfile` | mem_file.c:30 | 文件映射类型表 | `MappedFile` + `MEM_TYPE_MAPPED_FILE` (memtype.rs:919/:1133) | 已实现（2026-08-16 行号修正） |
 | F-106-F-117 | mappedfile_* (12 callbacks) | mem_file.c:43-280 | 文件映射回调 (static) | `MappedFile::ev_*` | 已实现 (ev_copy/split 简化) |
-| F-118 | `mappedfile_setfile` | mem_file.c:191 | 设置文件 | `MappedFile::ev_setfile` | 已实现 |
+| F-118 | `mappedfile_setfile` | mem_file.c:191 | 设置文件 | 内联于 mmap.rs:448（注释锚：C mappedfile_setfile, mem_file.c:191） | ✅ 已实现（归属修正 2026-09-09） |
 | F-119 | `mem_type_shared` | mem_shared.c:28 | 共享类型表 | `SharedMemory` + `MEM_TYPE_SHARED` (memtype.rs:694) | 已实现 |
 | F-120-F-130 | shared_* (11 callbacks) | mem_shared.c:41-207 | 共享回调 (static) | `SharedMemory::ev_*` | ✅ 已修复 (2026-06-16): ev_pagefault 完整实现 (getsrc→vm_isokendpt→map_lookup→源页映射→PFN共享); 签名增加 &VmProcTable + &mut PfnAllocator; MemTypeError 新增 InvalidProcess/InvalidAddress; 3 个测试覆盖。⚠️ 复检 (2026-09-08 V12 轮): `shared_delete` (mem_shared.c:110-123) 的"源区域 remaps 递减"半边缺失 → G-V12-7。✅ **闭单 (2026-09-09, Fix #64)**：`release_shared_remap` 漏斗助手落地（递减逻辑因借用安全住删除漏斗而非 ev_delete，12-memtype.md §3.7），region id 计数器配套 |
 | F-131 | `shared_setsource` | mem_shared.c:167 | 设置源 | dispatcher remap 路径 (dispatcher.rs:1443-1467 设 `VrParam::Shared` + `increment_region_remaps`) | ✅ 已实现 (复检 2026-09-08: 非 stub——VM_REMAP 完整接线，见 I-010；C 的 ev_setsource 语义内联在 remap) |
@@ -473,7 +475,7 @@
 |---|--------|---------|------|-----------|------|
 | F-144 | `pf_errstr` | pagefaults.c:59 | 错误字符串 | `PageFaultError::description` | 已实现 |
 | F-145 | `handle_pagefault` | pagefaults.c:76 | 处理缺页 (static) | `cow_exec_pf::handle_pagefault` (cow_exec_pf.rs:16) + `vm_server::dispatch_pagefault` (vm_server.rs:336) | 已实现 |
-| F-146 | `pf_cont` | pagefaults.c:161 | 缺页续作 (static) | `cow_exec_pf::pagefault_continue` | 已实现 |
+| F-146 | `pf_cont` | pagefaults.c:161 | 缺页续作 (static) | `mappedfile_pf_cont`（cow_exec_pf.rs，VfsRequest.callback 挂载）——pf_cont 的文件域等价物 | ✅ 已实现（归属修正 2026-09-09；send 半挂 E-VFSWIRE） |
 | F-147 | `handle_memory_continue` | pagefaults.c:170 | 内存续作 (static) | `cow_exec_pf::memory_continue` | 已实现 |
 | F-148 | `handle_memory_final` | pagefaults.c:198 | 内存收尾 (static) | `cow_exec_pf::memory_final` | 已实现 |
 | F-149 | `do_pagefaults` | pagefaults.c:240 | 缺页入口 | `vm_server::dispatch_pagefault` | 已实现 |
@@ -496,20 +498,20 @@
 | F-161 | `vm_allocpages` | pagetable.c:333 | 分配多页 | `VmPageAllocator::alloc_pages` | 已实现 (alloc_page.rs) |
 | F-162 | `vm_allocpage` | pagetable.c:395 | 分配单页 | `VmPageAllocator::alloc_pfn` | 已实现 |
 | F-163 | `vm_pagelock` | pagetable.c:403 | 锁定页 | `PageFlags::LOCKED` | 跳过 (无 Rust 映射) |
-| F-164 | `vm_addrok` | pagetable.c:440 | 地址合法 | `PageTable::is_valid_address` | 已实现 (arch crate) |
+| F-164 | `vm_addrok` | pagetable.c:440 | 地址合法 | 无独立 fn——地址校验内联于 get_slot/is_mapped 查询与 dispatch 层 InvalidAddress 防御 | ✅ 语义内联（2026-09-09 判定） |
 | F-165 | `pt_ptalloc` | pagetable.c:494 | 分配页表 (static) | `PageTable::alloc_pt_page` | 已实现 (arch crate) |
-| F-166 | `pt_ptalloc_in_range` | pagetable.c:545 | 范围内分配页表 | `PageTable::alloc_pt_page_in_range` | 已实现 (arch crate) |
+| F-166 | `pt_ptalloc_in_range` | pagetable.c:545 | 范围内分配页表 | 无独立 fn——范围预分配内联于 `map_in_range`/`walk_alloc`（arch paging） | ✅ 语义内联（2026-09-09 判定） |
 | F-167 | `pt_map_in_range` | pagetable.c:631 | 范围内映射 | `PageTable::map_in_range` | 已实现 (arch crate) |
 | F-168 | `pt_ptmap` | pagetable.c:685 | 页表映射 | `PageTable::map_kernel` | 已实现 (arch crate) |
 | F-169 | `pt_clearmapcache` | pagetable.c:751 | 清映射缓存 | **设计差异：Direct Map 下消除** — Rust 使用 kernel direct map 直接访问页目录, 无需缓存 PDE, 此操作无意义 |
 | F-170 | `pt_writable` | pagetable.c:761 | 可写判定 | `PageTable::is_writable` | 已实现 (arch crate) |
 | F-171 | `pt_writemap` | pagetable.c:784 | 写入映射 | `PageTable::writemap` | 已实现 (arch crate) |
-| F-172 | `pt_checkrange` | pagetable.c:943 | 范围检查 | `PageTable::check_range` | 已实现 (arch crate) |
+| F-172 | `pt_checkrange` | pagetable.c:943 | 范围检查 | 无独立 fn——范围校验内联于 find_slot/unmap 边界检查 | ✅ 语义内联（2026-09-09 判定） |
 | F-173 | `pt_new` | pagetable.c:990 | 新建页表 | `PageTable::new` | 已实现 (arch crate) |
 | F-174 | `freepde` | pagetable.c:1028 | 分配 PDE (static) | i386 freepdes 临时窗口/登记册机制，64 位 DM 下被替代（08 §2.11） | 结构性消除 |
 | F-175 | `pt_allocate_kernel_mapped_pagetables` | pagetable.c:1035 | 分配内核页表 | `pagedir_mappings` 登记册被 DM 访问替代（08 §2.11） | 结构性消除 |
-| F-176 | `pt_copy` | pagetable.c:1069 | 复制页表 (static) | `clone_range`（paging.rs:453，08 §3.5 D5） | 已实现 |
-| F-177 | `pt_init` | pagetable.c:1088 | 页表初始化 | 语义三通道分解：`establish_boot_dm`（kernel dm_coverage.rs:66）+ `VmSelfPageTable::adopt`（vm_self_map.rs:95）+ `VmCtlParam::SetAddrSpace`（syscall.rs:2003）（08 §3.3） | 结构性分解 |
+| F-176 | `pt_copy` | pagetable.c:1069 | 复制页表 (static) | `clone_range`（**os/arch**/src/arch/paging.rs:453，注释自锚 pt_copy） | ✅ 已实现（归属修正 2026-09-09；原行漏 arch crate 前缀） |
+| F-177 | `pt_init` | pagetable.c:1088 | 页表初始化 | `establish_boot_dm`（os/kernel/src dm_coverage，3 处）+ `VmServer::init_global_state` 内核映射 | ✅ 已实现（归属修正 2026-09-09；原行漏 kernel crate 前缀） |
 | F-178 | `pt_bind` | pagetable.c:1358 | 绑定页表 | 无独立 bind API——根登记走 `VmCtlParam::SetAddrSpace`（syscall.rs:2003），VM 自身根经 `VmSelfPageTable::adopt`（vm_self_map.rs:95） | 结构性消除（08 §3.3 D7 裁决） |
 | F-179 | `pt_free` | pagetable.c:1427 | 释放页表 | `ActiveProc::free_page_table` (vmproc_handle.rs:411) | 已实现 |
 | F-180 | `pt_mapkernel` | pagetable.c:1442 | 映射内核 | `PageTable::map_kernel` | 已实现 (arch crate) |
@@ -519,11 +521,11 @@
 
 | # | C 函数 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
-| F-182 | `pb_new` | pb.c:32 | 新建物理块 | `PhysFrames::new_block` | 已实现 (page_state.rs) |
+| F-182 | `pb_new` | pb.c:32 | 新建物理块 | PFN 模型内联：`VirRegion::map_page` 直建槽 + PageFrames refcount++（pb.c 语义被类型消除，05 篇 D 系列） | ✅ 已实现（归属修正 2026-09-09） |
 | F-183 | `pb_free` | pb.c:54 | 释放物理块 | `PhysFrames::free_block` | 已实现 |
 | F-184 | `pb_link` | pb.c:61 | 链接物理块 | `VirRegion::map_page` (mapped to PageSlot) | 已实现 (vir_region.rs) |
-| F-185 | `pb_reference` | pb.c:73 | 引用物理块 | `PhysFrames::add_ref` | 已实现 |
-| F-186 | `pb_unreferenced` | pb.c:96 | 解除引用 | `PhysFrames::release_ref` | 已实现 |
+| F-185 | `pb_reference` | pb.c:73 | 引用物理块 | PFN 模型内联：`map_page`/`addcache` 的 refcount 增量 | ✅ 已实现（归属修正 2026-09-09） |
+| F-186 | `pb_unreferenced` | pb.c:96 | 解除引用 | PFN 模型内联：`unmap_page` refcount-- 并返回待办 `(pfn, memtype)` 供调用方 ev_unreference + free | ✅ 已实现（归属修正 2026-09-09） |
 | F-187 | `mem_cow` | pb.c:136 | 写时复制 | `cow_exec_pf::cow_resolve` (cow_exec_pf.rs:68) | 已实现 |
 
 ### 4.14 region.c (40 函数)
@@ -551,18 +553,18 @@
 | F-206 | `map_lookup` | region.c:616 | 查映射 | `RegionMap::find` | 已实现 (region_map.rs:54) |
 | F-207 | `vrallocflags` | region.c:645 | 分配标志 | `VrFlags::to_alloc_flags` | 已实现 |
 | F-208 | `map_pf` | region.c:664 | 缺页 | `cow_exec_pf::handle_pagefault` | 已实现 |
-| F-209 | `map_handle_memory` | region.c:756 | 内存处理 | `cow_exec_pf::memory_handle` | 已实现 |
+| F-209 | `map_handle_memory` | region.c:756 | 内存处理 | 同步子集 `fork::handle_memory_once`（异步状态机未实现——16-pagefault.md §3.6 第 6 行登记） | 部分实现（同步子集；2026-09-09 归属修正） |
 | F-210 | `map_pin_memory` | region.c:779 | 钉住内存 | `region::map_pin_memory` (region/mod.rs:107) | ✅ Done (2026-06-16) — 两阶段收集+handle_memory_once(wrflag=true); PinMemoryError::PageNotMapped; 2 个测试覆盖 |
 | F-211 | `map_copy_region` | region.c:802 | 复制区 | `VirRegion::clone` / `fork_region` | 已实现 (fork.rs) |
-| F-212 | `copy_abs2region` | region.c:860 | 物理到区 | `VirRegion::copy_from_phys` | 已实现 (mappedfile_copy) |
+| F-212 | `copy_abs2region` | region.c:860 | 物理到区 | 内联于 `exec_bootproc` 的 ELF 段装载（direct map 逐段拷贝，vm_server.rs:645 起） | ✅ 已实现（归属修正 2026-09-09） |
 | F-213 | `map_writept` | region.c:906 | 写页表 | `VmProc::write_page_table_mappings` (vmproc_handle.rs:391) | 已实现 |
 | F-214 | `map_proc_copy` | region.c:933 | 复制进程区 | `VmProc::fork_regions` (fork.rs) | 已实现 |
-| F-215 | `map_proc_copy_range` | region.c:944 | 范围复制 | `VmProc::fork_regions_range` | 已实现 |
-| F-216 | `map_region_extend_upto_v` | region.c:1002 | 扩展到地址 | `VirRegion::extend_to` | 已实现 (brk.rs) |
+| F-215 | `map_proc_copy_range` | region.c:944 | 范围复制 | 无独立 fn——`fork_regions` 全量复制 + 范围语义由调用方（munmap/rs 分支）组合 | 部分实现（登记 2026-09-09） |
+| F-216 | `map_region_extend_upto_v` | region.c:1002 | 扩展到地址 | `VirRegion::extend`（增量式；brk.rs:106/:109 消费）——C 的 extend_upto_v 为到地址式 | ✅ 已实现（归属修正 2026-09-09；到地址/增量差异注明） |
 | F-217 | `map_unmap_region` | region.c:1065 | 解除区 | `munmap::unmap_range` (munmap.rs:90) | 已实现 |
 | F-218 | `split_region` | region.c:1150 | 分割区 (static) | `VirRegion::split` | 已实现 (vir_region.rs) |
 | F-219 | `map_unmap_range` | region.c:1222 | 解除范围 | `munmap::unmap_range` | 已实现 |
-| F-220 | `map_region_lookup_type` | region.c:1303 | 按类型查 | `RegionMap::find_by_type` | 已实现 |
+| F-220 | `map_region_lookup_type` | region.c:1303 | 按类型查 | 无实现——`RegionMap::find_by_type` 不存在（rs.rs:242 DEFERRED，25 范围；V13 审计同判） | ⚠️ DEFERRED（维持） |
 | F-221 | `map_get_phys` | region.c:1323 | 取物理地址 | `query::handle_get_phys` (query.rs) | 已实现 |
 | F-222 | `map_get_ref` | region.c:1343 | 取引用数 | `query::handle_get_refcount` (query.rs) | 已实现 |
 | F-223 | `get_usage_info_kernel` | region.c:1357 | 内核使用信息 | `UsageSources.kernel_bytes`（vm_server.rs:813-826，query.rs Usage 特判） | 已实现 (query.rs) |
@@ -578,7 +580,7 @@
 | F-228 | `do_rs_set_priv` | rs.c:34 | 设权限 | `rs::handle_rs_set_priv` (rs.rs:133) | 已实现 |
 | F-229 | `do_rs_prepare` | rs.c:71 | 准备 LU | `rs::handle_rs_prepare` (rs.rs:130) | ✅ 部分实现 (2026-06-16): endpoint 验证 + map_pin_memory(src+dst); real_brk/map_proc_dyn_data DEFERRED |
 | F-230 | `do_rs_update` | rs.c:150 | 更新 LU | `rs::handle_rs_update` (rs.rs:212) | ✅ 部分实现 (2026-06-16): endpoint 验证 + RsUpdateFlags(ROLLBACK/NOMMAP) + PREALLOC_MAP 检查; sys_update/swap_proc_slot/swap_proc_dyn_data DEFERRED |
-| F-231 | `rs_memctl_make_vm_instance` | rs.c:218 | 创建 VM 实例 (static) | `rs::memctl_make_instance` | 已实现 (rs.rs) |
+| F-231 | `rs_memctl_make_vm_instance` | rs.c:218 | 创建 VM 实例 (static) | `RsMemctlRequest::MakeVmInstance` 臂（rs.rs:503，恒拒 EPERM——已登记偏差 Fix #68/A-8） | ✅ 已实现（恒拒偏差，归属修正 2026-09-09） |
 | F-232 | `rs_memctl_heap_prealloc` | rs.c:281 | 堆预分配 (static) | `rs::memctl_heap_prealloc` | 已实现 |
 | F-233 | `rs_memctl_map_prealloc` | rs.c:300 | 映射预分配 (static) | `rs::memctl_map_prealloc` | 已实现 |
 | F-234 | `rs_memctl_get_prealloc_map` | rs.c:329 | 取预分配映射 (static) | `rs::memctl_get_prealloc` | 已实现 |
@@ -609,14 +611,14 @@
 | F-247 | `vm_isokendpt` | utility.c:84 | 端点合法 | `Endpoint::is_valid` + `VmServer::vm_isokendpt` | ✅ **已实现 + From<EndpointError> impls 已完成**: `vmproc::table` 公开 re-export `EndpointError` enum; 7 个调用模块 (munmap/query/rs/mmap/brk/map_phys/exit) 全部实现 `impl From<EndpointError> for XxxError { fn from(_: EndpointError) -> Self { XxxError::ProcessNotFound } }`; 调用点统一为 `table.vm_isokendpt(endpoint)?` 风格 (Rust `?` 操作符)。保留分层决策: `QueryError::to_errno_for_rusage()` 仍是上下文相关 (getrusage vs 其他查询), `From<QueryError> for VmError` 处理常规路径。`query_rusage_error_to_vm_error` 仍由 dispatcher 调用 (该映射是 ESRCH vs EINVAL, 无法用 From 表达)。 |
 | F-248 | `do_info` | utility.c:100 | 信息 | `query::handle_info` (query.rs) | **已修复 (2026-06-15)**: UsageInfo 与 C 的 `vm_usage_info` 对齐 (total/common/shared/virtual_total/mvirtual), 移除了不存在的 text/data/stack 字段. `shared` 按 C 逻辑计算 (refcount>1 + VR_SHARED flag), 不再按 `def_memtype.name()` 匹配. `handle_info` 新增 `frames: &PageFrames` 参数以查询 per-page refcount. |
 | F-249 | `swap_proc_slot` | utility.c:188 | 交换进程槽 | `ActiveProc::swap_proc_slot` (vmproc_handle.rs:613) | 已实现 — **SAFETY 注释已补全 (2026-06-14)**: 4 大不变性 (distinct pointers / bitwise swap safety / no concurrent access / no hardware in-flight) + 显式 C 源引用 + 逐字段类型分析 + `debug_assert_ne!` 防御性 guard + 测试 `test_swap_proc_slot_preserves_identities` |
-| F-250 | `transfer_mmap_regions` | utility.c:227 | 转移映射区 (static) | `ActiveProc::transfer_regions` | 已实现 |
-| F-251 | `map_proc_dyn_data` | utility.c:283 | 复制动态数据 | `VmProc::copy_dyn_data` | 已实现 |
-| F-252 | `swap_proc_dyn_data` | utility.c:312 | 交换动态数据 | `VmProc::swap_dyn_data` | 已实现 |
+| F-250 | `transfer_mmap_regions` | utility.c:227 | 转移映射区 (static) | `rs::map_proc_dyn_data`（rs.rs:270，T12 落地）——mmap regions 的 CoW 迁移 | ✅ 已实现（归属修正 2026-09-09） |
+| F-251 | `map_proc_dyn_data` | utility.c:283 | 复制动态数据 | `rs::map_proc_dyn_data`（rs.rs:270，V11/T12）——PREPARE 步骤 5 | ✅ 已实现（归属修正 2026-09-09） |
+| F-252 | `swap_proc_dyn_data` | utility.c:312 | 交换动态数据 | UPDATE 流内联：`VmProcTable::swap_slots`（table.rs:151）+ `map_proc_dyn_data` 组合（rs.rs:312-313 注释锚，T13） | ✅ 已实现（归属修正 2026-09-09） |
 | F-253 | `mmap` | utility.c:361 | mmap libc 替换 | `mmap::handle_mmap` (mmap.rs) | 已实现 |
 | F-254 | `munmap` | utility.c:376 | munmap libc 替换 | `munmap::handle_munmap` | 已实现 |
 | F-255 | `_brk` | utility.c:385 | brk libc 替换 | `brk::handle_brk` | 已实现 |
 | F-256 | `do_getrusage` | utility.c:426 | 取 rusage | `query::handle_getrusage` | 已实现 (部分) |
-| F-257 | `adjust_proc_refs` | utility.c:477 | 调整引用 | `VmProc::adjust_refs` | 已实现 |
+| F-257 | `adjust_proc_refs` | utility.c:477 | 调整引用 | 类型消除：`parent_slot: Option<UserSlot>` + `increment/decrement_region_remaps`（25 篇 §3.10 第 5 行；Fix #64 递减半） | ✅ 已实现（归属修正 2026-09-09） |
 
 ### 4.18 vfs.c (3 函数)
 
