@@ -127,11 +127,14 @@ V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准
 
 复核 ✅ 2026-09-09：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm` 复跑，00-vm-overview 与 99-global-concepts 仍三件套全缺（CRITICAL），其余 26 篇全 PASS。处置同 V12 存档（补 Step 0.3 快照或宣布完成计划）。
 
-### 🔄 G-V12-13（P2 doc）checklist.md 系统性刷新——Phase 1/2 完成（89f7eac1f + cea9abead，2026-09-09）
+### ✅ G-V12-13（P2 doc）checklist.md 系统性刷新——Phase 1/2/3/4 完成（89f7eac1f + cea9abead + bcae8a9d9 + 本轮，2026-09-09）✅ 闭环
 
-- **Phase 1**：横幅刷新（2026-09-09 证据口径）+ §0 系统化替代口径 + 七行直接证据修正。
-- **Phase 2（cea9abead）**：§6 IPC handler 表**整表重写**（按 build_callmap 26 项注册 + 4 项双侧不注册 + 3 条特殊路径，V13 调用号审计口径）——修正了最严重的过时行（I-015/I-016 "NotImplemented 依赖 slab" 实已完整实现；I-001~008 的 handle_* 包装已删；I-026~028 的 dispatch_adddma 等函数不存在，实为双侧不注册）；§2 修正 G-002 路径错与 G-015 假成功陈旧。
-- **剩余**：§4 函数表（259 行 F-条目，最大分册——建议脚本化逐行 grep 双侧验证）+ §3/§5 抽查。
+- **Phase 1**：横幅 + §0 系统化替代口径 + 七行直接证据修正。
+- **Phase 2**：§6 IPC 表整表重写（26+4+3 证据口径）+ §2 过时行修正。
+- **Phase 3**：§4 函数表 173 行脚本化 grep 对账，28 行硬过时修正（归属/PFN 内联/同步子集三分）；其余 145 行主符号全部命中现状代码。
+- **Phase 4（本轮）**：§3 结构体表抽查通过（S-013/S-015 的 PFN 删除登记与 Fix #70 一致）；§5 memtype 矩阵**重导出**（脚本解析 impl 块真实覆写集：6 类 × 18 方法位，未覆写全部属 C-NULL parity 或能力位默认——旧表"7 stubs"口径作废）。§7 设计差异表、§8 历史编号说明维持。
+- **结论**：G-V12-13 闭环。checklist 的现状口径 = 横幅（2026-09-09）+ 六张重写/注记表 + 175 项语义判定（todo §17.1）。后续任何行级再漂移由常规 review 的锚点纪律承接，不再单列批次。
+
 ### ✅ V12-P3-2（P3）可观测性与卫生批——③①已处置 2026-09-09（§18.9 Fix #81）；②复核免修；④维持
 
 - **③ transport pub 收窄**：✅ 六类型（IpcStatus/IpcError/IpcTransport/KernelIpcTransport/TestIpcTransport/TestTransportHandle）`pub → pub(crate)`——lib.rs 本就无再导出，全 crate 内消费。

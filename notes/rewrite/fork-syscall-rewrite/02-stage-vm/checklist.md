@@ -639,17 +639,20 @@
 
 ---
 
-## 5. memtype 回调覆盖 (6 类 × 15 回调 = 90)
+## 5. memtype 回调覆盖（G-V12-13 重导出，2026-09-09）
 
-| MemType | 实例 | 已实现 ev_* | Stub (TODO) | 实现率 |
-|---------|------|------------|------------|--------|
-| AnonymousMemory | MEM_TYPE_ANON | 14/15 | 0 | 93% |
-| DirectPhysical | MEM_TYPE_DIRECT | 14/15 | 0 | 93% |
-| ContiguousAnonymous | MEM_TYPE_CONTIG_ANON | 15/15 | 0 | 100% |
-| CacheMemory | MEM_TYPE_CACHE | 13/15 | ev_pagefault, ev_resize (有限) | 87% |
-| MappedFile | MEM_TYPE_MAPPED_FILE | 14/15 | ev_copy (简化) | 93% |
-| SharedMemory | MEM_TYPE_SHARED | 13/15 | ev_pagefault (fail-closed) | 87% |
-| **合计** | **6** | **83/90** | **7** | **92%** |
+> **口径更正**：旧表"6×15=90、7 stubs"把 **C-NULL 回调的正确默认实现**误计为待办。现役 trait（memtype.rs）共 19 个方法（`name` + 18 回调/能力位），未覆写分三类：① C 侧本为 NULL 的回调（默认实现正确建模 NULL，如 shared/direct 的 ev_new/ev_resize）；② 能力查询位（supports_*，默认 false = C 的 NULL 判空语义）；③ 真正的 DEFERRED 行为（各类型下仅零星）。权威判定见 12-memtype.md §3.4–3.6。下表为脚本重导出的**真实覆写矩阵**（memtype.rs impl 块逐块解析，`name` 身份方法不计）：
+
+| MemType | 覆写/18 | 未覆写（走默认） | 默认性质 |
+|---------|---------|------------------|----------|
+| AnonymousMemory | 13 | ev_copy, ev_delete, ev_new, ev_reference, ev_resize, ev_sanitycheck, pt_flags | ①+②（C anon 族本就无这些钩子或为空） |
+| DirectPhysical | 8 | ev_delete, ev_low_shrink, ev_new, ev_reference, ev_resize, ev_sanitycheck, ref_count, region_id, supports_low_shrink, supports_ref_count, supports_region_id, supports_split | ①+② |
+| ContiguousAnonymous | 12 | ev_delete, ev_low_shrink, ev_sanitycheck, ref_count, region_id, supports_low_shrink, supports_ref_count, supports_region_id | ①+② |
+| CacheMemory | 8 | ev_copy, ev_delete, ev_new, ev_reference, ev_sanitycheck, ev_split, pt_flags, ref_count, region_id, supports_ref_count, supports_region_id, supports_split | ①+② |
+| MappedFile | 9 | ev_new, ev_reference, ev_resize, ev_sanitycheck, pt_flags, ref_count, region_id, supports_ref_count, supports_region_id | ①+② |
+| SharedMemory | 12 | ev_delete, ev_new, ev_reference, ev_resize, ev_sanitycheck, pt_flags, supports_low_shrink, supports_split | ①+② |
+
+**要点**：全部"未覆写"均属 ①②类（C-NULL parity 或能力位默认）——没有一条是"该实现而未实现"的行为存根。跨类型的关键行为差异（MappedFile 尾页 clearend 私有拷贝、SharedMemory 源递减走删除漏斗、CacheMemory 契约 fail-closed 化）分别由 Fix #80、Fix #64、T28 落地并在 12-memtype.md/24-page-cache.md 有对应节。
 
 ---
 
