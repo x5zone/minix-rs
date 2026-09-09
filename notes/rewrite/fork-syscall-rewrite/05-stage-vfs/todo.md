@@ -48,7 +48,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略入台账）、有意省略表未建。
+逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略）、有意省略表（✅ 已落 99-global-concepts.md，§10 Fix #28）。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -76,7 +76,7 @@
 - ✅ P2-5 已修复 2026-09-09（§10 Fix #15）：`device_map` 全线 `Option<i32>` 端点 → `Option<Endpoint>`（DmapEntry/SmapEntry 字段、driver_match/get_by_endpt/unmap_by_endpt/map_driver/check_mapper/EndpointDirectory/smap_by_endpt/smap_endpt_by_dev/RegisterPlan、CTTY_ENDPT/RS_PROC_NR 常量）；`filp::find_by_vnode(usize) → VnodeId`。bdev/cdev 各自决策函数的 i32 参数为 wire 边界，保持并注明。
 - P2-6 复核 ✅：`trait TransIdCodec` 双定义仍在（fs_comm.rs:76 与 main_loop.rs:130）。**✅ 已修复** 2026-09-09（§10 Fix #13：收敛到 fs_comm 协议属主，main_loop re-export，-63 行重复）。
 - ✅ P3-1 已修复 2026-09-09（§10 Fix #18）：vfs 自身 clippy 归零（lib + tests 双构建），并补修 Fix #17 遗留的三个未门控 impl（非 test 构建断裂）。
-- P3-2 复核 ✅："有意省略表"仍未建立（99-global-concepts.md 零命中）；落点已随 R2-P2-2（99 改写）合并推进。
+- ✅ P3-2 已落地 2026-09-09（§10 Fix #28）："有意省略表"落 99-global-concepts.md（进程锁族/死锁断言族/select 清理族 + 第二轮三笔追加）。
 
 ---
 
