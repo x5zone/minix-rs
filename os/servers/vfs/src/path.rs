@@ -187,6 +187,7 @@ pub trait PathFetcher {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DirectFetcher;
 
+#[cfg(test)]
 impl PathFetcher for DirectFetcher {
     fn fetch(&self, _addr: u64, len: usize) -> Result<String, PathError> {
         if len == 0 || len > PATH_MAX {
@@ -207,6 +208,7 @@ impl PathFetcher for DirectFetcher {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SafecopyFetcher;
 
+#[cfg(test)]
 impl PathFetcher for SafecopyFetcher {
     fn fetch(&self, _addr: u64, len: usize) -> Result<String, PathError> {
         if len == 0 || len > PATH_MAX {
