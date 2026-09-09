@@ -129,10 +129,17 @@ fn admit(sender_ok: bool, child: SlotVerdict, maxprio: i32) -> Result<Priority, 
 /// The init provisional values (`USER_Q` / `DEFAULT_USER_TIME_SLICE`,
 /// `174-175`) are overwritten unconditionally by the START branch
 /// (`195-196`), so the net birth equals a direct START for every input —
-/// including init itself (PM sends `USER_Q`/`USER_QUANTUM`, the same
-/// numbers by a different road). The lasting init effect is the CPU
-/// (`machine.bsp_id`, `184`, SMP builds only): the caller keeps a
-/// self-parented seed on the BSP (10 consumes this rule).
+/// including init itself (PM sends `USER_Q` and the same 200 from its
+/// own side, `os/servers/pm/src/sched.rs:27`). Nothing of the init
+/// special case survives, the CPU included: C re-picks unconditionally
+/// after the switch (`226`), so the provisional BSP assignment (`184`)
+/// is overwritten too — on a multi-core machine init, whose parent is
+/// itself and not RS, fails `is_system_proc` and joins the load-based
+/// selection like any other process; on a single-CPU machine `pick`
+/// returns the BSP anyway and the two writes merely agree by
+/// coincidence. C's own comment at `177-183` ("all are started on the
+/// BSP... hasn't changed that yet") predates the unconditional re-pick
+/// and is stale in C's source — `226` is the truth, not that comment.
 /// `quantum` stores raw (`196`): whatever the message carries, even
 /// nonsense — the kernel judges at fan-out (09). The wrapping cast
 /// mirrors C's unsigned store; legit clients assert `quantum > 0`
@@ -269,8 +276,10 @@ mod tests {
         assert_eq!(seed.priority.get(), 5);
         assert_eq!(seed.time_slice_ms, 100);
         // Init rides START too: provisional USER_Q/DEFAULT are overwritten
-        // (`174-175` then `195-196`), so the net birth is a plain START —
-        // and the self-parent shape survives for the caller's BSP rule.
+        // (`174-175` then `195-196`), so the net birth is a plain START.
+        // The self-parent shape only marks the endpoint — it carries no
+        // scheduling rule of its own (the caller re-picks the CPU
+        // unconditionally, C `226`).
         let init = start_req(Endpoint::INIT, Endpoint::INIT, 7, 200);
         let seed = plan_start(true, SlotVerdict::Occupied, &init).expect("init START");
         assert_eq!(seed.endpoint, seed.parent);

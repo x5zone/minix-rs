@@ -17,7 +17,7 @@
 | P0 | （无） | 本轮零发现，核对依据见 §4.0 | — |
 | P1 | （stage 内无） | 本轮 P1 级发现全部是内核生产代码 → edge | §5 |
 | P2 | V2-P2-1 | 预留符号清算批次（升格自 P3-1：清算时点已到） | ✅ 已修复 2026-09-09（Fix #5） |
-| P2 | P2-1 | init 临时值 BSP 语义误读（**V2 复核：加重**——Rust 注释也描述了不存在的规则） | open |
+| P2 | P2-1 | init 临时值 BSP 语义误读（V2 复核：加重——Rust 注释也描述了不存在的规则） | ✅ 已修复 2026-09-09（Fix #7） |
 | P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | open |
 | P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
 | P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | open |
@@ -113,7 +113,9 @@
 
 > 原文全文见 archive（第一轮 §4/§5）；此处保留条目主旨 + V2 复核注记，不重写历史结论。
 
-### P2-1 init 临时值「长期作用于 BSP」的语义误读 —— V2 复核：**加重，三重失真**
+### P2-1 init 临时值「长期作用于 BSP」的语义误读 —— ✅ 已修复 2026-09-09（Fix #7，见 §9）
+
+**V2 复核结论（修复前存档）**：三重失真——(1) start.rs 注释声称 C 的 184 赋值长期生效（实际 schedule.c:226 无条件 pick_cpu 覆盖一切）；(2) 注释声称 caller 会把自父种子留在 BSP（实际 cpu.rs pick 无此规则）；(3) 06 篇 :31 同款表述 + 10 篇 :22 引用一条 06 不存在的主张。
 
 - start.rs:133-135 注释仍声称「The lasting init effect is the CPU (machine.bsp_id, 184, SMP builds only): the caller keeps a self-parented seed on the BSP (10 consumes this rule)」；06 篇 :31 同款表述仍在。
 - **V2 新发现（加重）**：注释声称的「caller keeps a self-parented seed on the BSP」这条规则**在 Rust 代码中也不存在**——server.rs:383-384 用 `is_system_proc(seed.parent)` 计算（init 自父、parent=INIT≠RS → false），cpu.rs `pick` 只有两条 BSP 规则（processors_count<=1 与 is_system），没有 self-parented 分支。即注释同时误读了 C（schedule.c:226 无条件 pick_cpu 覆盖一切临时值，包括 184 的 BSP 赋值）和误描述了自己的代码。
@@ -269,3 +271,10 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **Files**：`os/servers/sched/src/lib.rs`（删 2 行）。
 **Verified**：`cargo test -p minix-sched` 79 passed；全仓 grep 无 `minix_sched::` 短路径消费。
 **Docs**：无文档引用该 glob（05 篇 :88 的 `pub use` 指 schedproc 的 NR_SCHED_QUEUES 转引，另一回事，仍有效）。
+
+### ✅ Fix #7: P2-1 — init/BSP 注释失真修正（四处代码注释 + 两篇文档）
+
+**问题**：`plan_start` 文档注释声称「init 的长期效果是 CPU（184 的 BSP 赋值），caller 会把自父种子留在 BSP（10 消费这条规则）」——C 真相是 schedule.c:226 无条件 `pick_cpu` 覆盖一切临时值（含 184）；Rust 真相是 `pick` 根本没有自父规则（server.rs:383 走 `is_system_proc`，init 为假走负载选择）。同一失真还存在于 start.rs 测试注释（"self-parent shape survives for the caller's BSP rule"）、06 篇 :31（"临时值真正起作用的只有 CPU"）与 :89、10 篇 :22（交叉引用 06 一条不存在的"新建进程暂时固定"主张）。
+**设计要点**：修正方向 = 让注释与 C 的 `226` 和 Rust 的实际行为同时对齐，并顺带指出 **C 源自己的注释（177-183）已经过时**（写于无条件重选之前）——这正是当初误读的源头，值得在两篇文档里点名，防止下一个读者再被 C 注释带偏。方案对比：只修 Rust 注释留文档旧话（否决：注释与文档互相矛盾更糟）；顺带改 C 源注释（禁止——minix3/ 是 ground truth，不可修改）。
+**Files**：`os/servers/sched/src/scheduling/start.rs`（plan_start 文档注释 + test_start_birth 测试注释）、`06-start-scheduling.md`（§1.3 重写 + §2.3 加交叉引用）、`10-pick-cpu-smp.md`（§1.1 删悬挂引用 + 补"只有系统进程这一条"的澄清）。
+**Verified**：`cargo test -p minix-sched` 79 passed（注释级改动）；`rg "lasting init effect|self-parented seed|新建进程暂时固定|真正起作用的只有 CPU"` 生产代码与文档零命中（todo.md 的问题描述除外）。
