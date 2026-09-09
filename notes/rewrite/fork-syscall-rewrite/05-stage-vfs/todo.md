@@ -62,7 +62,7 @@
 ### P1-1～P1-5（架构级，R1 存档 §3）
 
 - P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。**部分闭合** 2026-09-09（§10 Fix #27）：Read 占位符已由 `Route::Enosys` 取代（P1-1 的占位符子项闭合）；RS 前缀真值化见 R2-P1-4。
-- P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。
+- P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。 **✅ 矩阵已落定** 2026-09-09（§10 Fix #29）：接线顺序九步（W1-W9）落 plan.md §8，每步带依赖与关闭条件；§9.8 的推进顺序与之对齐。剩余为各步执行（分布在大件与 edge 条目）。
 - ✅ P1-3 已修复 2026-09-09（§10 Fix #8）：`PmHandler::fetch_group_list` 数据搬运口（`sys_datacopy_wrapper` 接缝，默认 fail-closed `ENOSYS`，通电挂 P1-2/E1）；`SETGROUPS` 臂补 `NGROUPS_MAX → EINVAL` 门（C 为 panic，fail-closed 偏差与 10-pm-protocol.md D4 的 EFAULT 决策同向）+ `group_no==0` 直清 + 正数路径经栈缓冲送真实列表。`PmError::NotImplemented` 变体新增。测试 +3（ENOSYS 预通电态/超限拒绝/零组直清）。
 - ✅ P1-4 已修复 2026-09-09（§10 Fix #9）：`FilterOutcome::Query` 增 `clear_update`/`set_busy` 义务字段（select.c:517 清 UPDATE 在发送前、:522 置 BUSY 在成功后，socket 对位 :525-538），`filter_step` 恒置 true——义务进数据而非调用方记忆；23-select.md D3 同步并登记"只给 rops"的否决理由。
 - ✅ P1-5 已修复 2026-09-09（§10 Fix #7）：`need_lock: bool` → `FilpLockMode { Opcl, None, ReadWrite }`——`Opcl` 过 `CLOSED` 门（close(2) 特权）、`None` 探测仍拒（C 的门覆盖一切非 `OPCL`，原 bool=false 比 C 宽的缺口闭合）、`ReadWrite` 拒 `CLOSED` 且取锁（filedes.c:186-193）。测试升级为三态矩阵。
@@ -454,6 +454,13 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：mount_pfs（mount.c:391-425）与 do_socketpath（path.c:803-836）仅以 DEFERRED 注释存在（归 18/13）。
 - **After**：① `PfsMountPlan`——罐装挂载的固定身份（伪设备 + 槽位 + `"pfs"/"pipe"/"none"` 三标签），`fs_e = PFS_PROC_NR`/`m_fs_flags = 0` 由身份蕴含；`req_readsuper` 确认往返属执行半（C 失败仅 printf、挂载照旧，决策层无失败臂）。② `do_socketpath` 入口三门——`spath_action`（SPATH_CHECK/CREATE 分类，syslib.h:278-279）、`spath_path_ok`（路径长 `1..PATH_MAX`，path.c:836）；super_user 门与 `copy_fd` 的 `is_super` 同型（调用方携带）。**边界**：路径行走归 13/C-6；确认往返归 P1-2。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **352 passed / 0 failed**（350→352：`test_spath_entry_gates`、`test_pfs_mount_plan`）。
+
+### ✅ Fix #29: P1-2 — 接线顺序矩阵落 plan.md §8（2026-09-09）
+
+- **File**：`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/plan.md`（新增 §8 接线顺序，原 §8 参见顺移 §9）。
+- **Before**：四条依赖束（内核 IPC/SEF/根挂载/path 循环）散落在 23 处 DEFERRED 与 mfs 侧 Pending 中，无统一收敛视图——接线顺序错误会导致"先接挂载而后 SEF，重启即挂"。
+- **After**：九步接线矩阵（W1 内核 IPC → W2 VfsState 组合完备 → W3 dispatch 绑定 → W4 SEF → W5 dmap/smap+DS → W6 根挂载 → W7 path 循环 → W8 死亡级联编排 → W9 mfs lookup），每步带依赖项、关闭条件与已备决策件清单；矩阵收敛判定 = getvfsstat 真实回路。本条闭合 P1-2 的"无统一收敛视图"诉求；各步执行分布在大件（R2-P1-1/R2-P1-2）与 edge 条目。
+- **Verified**：纯文档；`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **354 passed / 0 failed**（无代码变化）。
 
 ### ✅ Fix #26: C-1 — SEF LU 三回调决策组落地（2026-09-09）
 

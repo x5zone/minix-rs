@@ -520,7 +520,25 @@ enum ReplyIntent { Reply(i32), ReplyLater, NoReply }
 
 ---
 
-## 8. 参见
+## 8. 接线顺序（wiring order，P1-2 收敛视图，2026-09-09 落定）
+
+VFS 从"语义库"到"可运行服务器"的全部剩余工作按依赖序排列如下。每项给**关闭条件**——哪条 C 函数拥有真实消息回路测试。次序不可乱：先接挂载而后 SEF，重启即挂；先接路径而后 IPC，查询即挂。
+
+| 序 | 工作项 | 依赖 | 关闭条件 | 已备决策件 |
+|---|--------|------|---------|-----------|
+| W1 | 内核 IPC 原语：trap 桥 + `IpcTransport`/`sys_safecopy*`/`sys_datacopy` 真实实现 | **edge E1/E2**（01-stage-kernel） | `ds_check` 式真实端到端一条 | `PathFetcher` seam、`fetch_group_list` 口 |
+| W2 | VfsState 组合完备：`filp_table`/`vnode_table`/`vmnt_table`/`fs_comm`/设备表入 `VfsState` | 无（纯组合） | 各表随 `VfsState::new()` 构造、`run_once` 可触达 | 表类型全部就绪（R2-P1-2 前半） |
+| W3 | `dispatch_syscall` 穷举 64 臂 + `run_once` 可注入入口 + 删 `CallTable`/`CallResolver`/legacy `dispatch` | W2 | 每臂可达决策函数或显式 `ENOSYS`；`Route::Enosys` 消费 | `route_message` 八级 + RS 真值（Fix #27） |
+| W4 | SEF 生命周期接线：RS 的 LU/restart 消息驱动 `lu_prepare`/`init_lu` | W1；**edge E9**（RS 侧行） | RS 触发 LU 的冒烟测试 | `LuState`/`lu_prepare`（Fix #26） |
+| W5 | dmap/smap 初始化 + DS 订阅：`init_dmap`/`init_smap`/`ds_subscribe` + `ds_check` 排空循环 | W1 | `ds_event` 决策（Fix #23）驱动 `dmap_endpt_up` 的真实回路 | `classify_ds_key`/`ds_event_action`、`recover_step` |
+| W6 | 根挂载链：`mount_pfs`（`PfsMountPlan`）+ `mount_fs` 执行件（`req_readsuper` 往返） | W1+W5 | 根挂载真实往返（`mount.c:501-527` 对应） | `PfsMountPlan`（Fix #25）、mount 判定件 |
+| W7 | path 跨 FS 往返循环（**R2-P1-1+C-6**：删虚构抽象 + `advance`/`eat_path` 实函数化 + `REQ_LOOKUP` 回路） | W1+W2+W6 | 跨挂载 EnterMount/LeaveMount 的路径解析集成测试 | `Lookup`/`LookupRes`/`consume_prefix`（path.rs 既有结构） |
+| W8 | 驱动死亡级联编排：fproc 扫描循环按 `classify_driver_waiter` 分派 filedes 失效/sdev 停尸/select 唤醒 | W1+W5+W7 | 驱动死亡注入测试（Slot 收 EIO 并复活） | 三面决策函数齐（Fix #5/#6/#11） |
+| W9 | mfs 侧 `fs_lookup` 等 25 项 Pending 落地（15-stage-fs 协调，REQ 契约见 **edge E-REQWIRE**） | W1 + E-REQWIRE | `REQ_LOOKUP` 经 mfs 真实应答 | minix-fs protocol 0xA00 侧已对齐（R2-P0-1） |
+
+接线完成的判定（整个矩阵收敛）：`getvfsstat` 经真实 PFS+mfs 回路返回含路径的挂载表（stadir.c:283-285 的三名字 + W6/W7/W9 串联）。
+
+## 9. 参见
 
 - `draft/` — 旧主线全部素材（README 索引 + 21 篇旧文档 + 6 篇早期素材）
 - `../01-stage-kernel/00-kernel-overview.md` — 讲述结构参照（阶段划分/组织原则/过渡章节）
