@@ -101,7 +101,7 @@ Rust 改写不是照抄 `misc.c:79-83` 的 `__arraycount+NULL` 双守卫，而�
 
 ### 1.8 小结
 
-1. **为什么间接**——`uts_tbl` 兼容旧 `field` 的 `NULL` 哨兵 + `__arraycount` 越界双守卫。
+1. **为什么间接**——`uts_tbl` 兼容旧 `field` 的 `NULL` 哨兵 + `__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 越界双守卫。
 2. **为什么 `effuid==0` + 精确匹配**——`SI_PROC_TAB` 全表泄露需 `Perm` 门 + `size==len` 精确非截断。
 3. **为什么双向解析**——`getprocnr` 的 `RS` 专属 `pid→endpoint` 与 `getepinfo` 的 `pm_isokendpt→pid/groups` 双向对偶，`ngroups` 有界截断。
 4. **为什么定序**——`abort→power→kill→stop→reboot→SUSPEND` 永不回复的 `reboot` 定序（`check_sig(-1)` 广播 + `sys_stop(INIT)` 保留）。
@@ -135,7 +135,7 @@ int do_sysuname(void)
 }
 ```
 
-`79` 行 `__arraycount` 越界与 `82-83` `NULL` 哨兵双 `EINVAL` 守卫使旧 `field` 映射在兼容层显式，`88-89` 的 `len` 截断非 `EINVAL`（`getsysinfo:139-140` 的 `size!=len→EINVAL` 精确非截断 vs `sysuname:89` 的 `n>len→n=len` 截断——`uname` 的 `value[65]` 固定 vs `getsysinfo` 的全表精确）。
+`79` 行 `__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 越界与 `82-83` `NULL` 哨兵双 `EINVAL` 守卫使旧 `field` 映射在兼容层显式，`88-89` 的 `len` 截断非 `EINVAL`（`getsysinfo:139-140` 的 `size!=len→EINVAL` 精确非截断 vs `sysuname:89` 的 `n>len→n=len` 截断——`uname` 的 `value[65]` 固定 vs `getsysinfo` 的全表精确）。
 
 ### 2.2 `do_getsysinfo`（`misc.c:108-144`）
 
@@ -333,7 +333,7 @@ void set_rusage_times(struct rusage * r_usage, clock_t user_time, clock_t sys_ti
 
 | 类别 | 检测 | 触发 | 严重度 |
 |------|------|------|--------|
-| `uts_tbl` 的 `NULL` 哨兵 + `__arraycount` 越界 | `misc.c:79-83` `field>=8→EINVAL` + `NULL→EINVAL` | 非支持 `field` → `EINVAL` | 可恢复 `EINVAL` |
+| `uts_tbl` 的 `NULL` 哨兵 + `__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 越界 | `misc.c:79-83` `field>=8→EINVAL` + `NULL→EINVAL` | 非支持 `field` → `EINVAL` | 可恢复 `EINVAL` |
 | `getsysinfo` 的 `effuid==0` + `size` 精确 | `misc.c:116-122/139-140` `effuid!=0→EPERM` + `size!=len→EINVAL` | `effuid!=0→EPERM` / `size` 精确非截断 | 可恢复 `EPERM/EINVAL` |
 | `getprocnr` 的 `RS` 专属 | `misc.c:154-157` `who_e!=RS→EPERM` | `non-RS→EPERM` | 可恢复 `EPERM` |
 | `getepinfo` 的 `return pid` 非 `OK` | `misc.c:192` `return pid` | `getepinfo` 的 `return pid` 载荷 | 不变量 |
@@ -351,8 +351,8 @@ Rust 改写遵循“`UtsField` 枚举穷尽 + `SysInfoWhat` 精确 + `EpInfo` �
 ### D1：`uts_tbl` 间接收敛到 `UtsField` 枚举（ARCH A-11）
 
 - **C**：`misc.c:46-60` `uts_tbl[8]` 的 4 `NULL` 哨兵 + `79-83` 双 `EINVAL` + `88-92` `len` 截断 `sys_datacopy`。
-- **Rust**：`enum UtsField { SysName=0, Nodename=1, Release=2, Version=3, Machine=4 }` + `fn uts_field(field: usize) -> Option<&'static str>`（`__arraycount` 在 Rust 以 `UTS_TBL.len()=8` 边界，`NULL→None→Err(Inval)`，`UTS_VAL` 单一真相的 `machine:"x86_64"` 非 `i386`，`A-11`） + `fn do_sysuname(field: usize, user_buf: VirBytes, len: usize, cpy: &mut dyn CopyToUser) -> Result<usize, UnameError>`。
-- **为什么**：`C` 的 `uts_tbl` 9 槽位 4 `NULL` 在 64 位下 `i386` 分支需重定义为 `x86_64`，Rust 以 `UtsField` 枚举穷尽 `field` 的 `__arraycount` 边界，`NULL` 哨兵在 `Option` 一处显式，`len` 截断与 `getsysinfo` 的 `size` 精确对偶（`uname` 截断 vs `getsysinfo` 精确）。
+- **Rust**：`enum UtsField { SysName=0, Nodename=1, Release=2, Version=3, Machine=4 }` + `fn uts_field(field: usize) -> Option<&'static str>`（`__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 在 Rust 以 `UTS_TBL.len()=8` 边界，`NULL→None→Err(Inval)`，`UTS_VAL` 单一真相的 `machine:"x86_64"` 非 `i386`，`A-11`） + `fn do_sysuname(field: usize, user_buf: VirBytes, len: usize, cpy: &mut dyn CopyToUser) -> Result<usize, UnameError>`。
+- **为什么**：`C` 的 `uts_tbl` 9 槽位 4 `NULL` 在 64 位下 `i386` 分支需重定义为 `x86_64`，Rust 以 `UtsField` 枚举穷尽 `field` 的 `__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 边界，`NULL` 哨兵在 `Option` 一处显式，`len` 截断与 `getsysinfo` 的 `size` 精确对偶（`uname` 截断 vs `getsysinfo` 精确）。
 
 ### D2：`do_getsysinfo` 的 `SI_PROC_TAB` 全表收敛到 `SysInfoCtl` trait（ARCH A-11）
 
@@ -414,6 +414,10 @@ os/servers/pm/src/
 
 ### 4.2 `misc.rs`：杂项分派
 
+### 4.2 `misc.rs`：杂项分派
+
+> **`do_svrctl`/`do_sysuname` 逻辑面现状（V3-P2-5，2026-09-09）**：`do_svrctl` 已按 C `misc.c:291-395` 全语义实现——`req` 形参化后补齐 IOCGROUP ∈ {'P','M'} 门（`ioc_group` 复刻 `ioccom.h:68` 算术）、四命令分派（`PMGETPARAM`/`PMSETPARAM`/`OPMGETPARAM`/`OPMSETPARAM` 以 `const fn ioc` 复刻 `_IOC` 算术，命令码逐位断言）、未知 req `EINVAL`、GET key 64 字节边界、keylen==0 全表 E2BIG 判据（`sizeof monitor_params` = 1024 全长，非实际串长）、SET 的 ENOSPC 先于边界。`do_sysuname` 补 `req` 形参方向门（`misc.c:89-96`）。用户缓冲拷贝（sysgetenv 取入/复制/EFAULT）仍属 wire 面（批次 G）。
+
 ```rust
 pub const PM_SYSUNAME: i32 = 25; pub const PM_GETSYSINFO: i32 = 47; /* ... SPROF 39 等 */
 pub enum UtsField { SysName=0, Nodename, Release, Version, Machine } + TryFrom<usize>
@@ -434,7 +438,7 @@ pub fn do_svrctl(store: &mut ParamStore, req: SvrctlReq, cpy: &mut dyn CopySvrct
 pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, hz: Clock, ctl: &mut dyn TimesVmCtl, cpy: &mut dyn CopyToUser) -> Result<(), MiscError>
 ```
 
-- `uts_field`：`__arraycount` 越界 + `NULL→None` 双守卫与 `misc.c:79-83` 同双 `EINVAL`。
+- `uts_field`：`__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 越界 + `NULL→None` 双守卫与 `misc.c:79-83` 同双 `EINVAL`。
 - `do_getsysinfo`：`is_superuser→Perm` + `what` 分派 `ProcTab→proc_tab` + `size!=len→Inval` + `copy` 的 `SELF→who_e` 直通。
 - `do_reboot`：`is_superuser→Perm` + `set_abort(how)` + `try_power_off()` 尝试 + `broadcast_kill(-1)` + `stop_init()` + `tell_reboot()` + `ReplyIntent::ReplyLater` 永不回复。
 

@@ -215,11 +215,14 @@ impl ParamStore {
         Self { local: Vec::new(), monitor }
     }
     pub fn set(&mut self, key: String, val: String) -> Result<(), MiscError> {
-        if key.is_empty() || val.is_empty() || key.len() >= 30 || val.len() >= 30 {
-            return Err(MiscError::Inval);
-        }
+        // C misc.c:327 → 328-334：ENOSPC（表满）先于 keylen/vallen 边界——
+        // 双条件并存时错误码不同（V3-P2-5 修正与 C 相反的检查顺序）。
         if self.local.len() >= MAX_LOCAL_PARAMS {
             return Err(MiscError::Nospc);
+        }
+        // C 328-334：keylen/vallen ∈ (0, 30)（name[30]/value[30] 边界）。
+        if key.is_empty() || val.is_empty() || key.len() >= 30 || val.len() >= 30 {
+            return Err(MiscError::Inval);
         }
         self.local.push((key, val));
         Ok(())
@@ -279,12 +282,17 @@ pub(crate) fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> 
 /// `do_sysuname` (`misc.c:72-100`, D1).
 pub fn do_sysuname(
     field: usize,
+    req: i32,
     len: usize,
     caller_ep: Endpoint,
     cpy: &mut dyn CopyToUser,
 ) -> Result<usize, MiscError> {
     let s = uts_field(field)?;
-    // req==0 only (misc.c:85-96)
+    // C misc.c:85-96 default 分支：仅实现 req==0（拷出），req!=0 → EINVAL
+    //（V3-P2-5 补——旧签名无 req 形参，该分支无处产生）。
+    if req != 0 {
+        return Err(MiscError::Inval);
+    }
     let n = s.len() + 1;
     let to_copy = if n > len { len } else { n };
     if to_copy == 0 {
@@ -416,26 +424,86 @@ pub fn do_reboot(
 pub fn do_svrctl_set(store: &mut ParamStore, key: String, val: String) -> Result<(), MiscError> {
     store.set(key, val)
 }
-pub fn do_svrctl_get(store: &ParamStore, key: Option<String>, vallen: usize) -> Result<String, MiscError> {
-    let val = match key {
-        None => store.monitor.clone(), // keylen==0 → whole table
-        Some(k) => store.get(&k).ok_or(MiscError::Srch)?,
+pub fn do_svrctl_get(store: &ParamStore, key: Option<String>, _keylen: usize, vallen: usize) -> Result<String, MiscError> {
+    // C misc.c:359：GET key 的 search_key[64] 边界 → EINVAL（V3-P2-5 补）。
+    if let Some(k) = &key
+        && (k.is_empty() || k.len() > 64)
+    {
+        return Err(MiscError::Inval);
+    }
+    let (val, needed) = match key {
+        // C 352-354：keylen==0 → 全表，val_len = sizeof(monitor_params)
+        //（MULTIBOOT_PARAM_BUF_SIZE = 1024，minix/param.h:28 与 multiboot.h:240）
+        // —— E2BIG 判据用缓冲全长而非实际串长（V3-P2-5 修正）。
+        None => {
+            // C 352-354：keylen==0 → val_len = sizeof(monitor_params)
+            //（无条件取缓冲全长 1024，NUL 尾随区域一并计入——这是 C 的
+            // 全表快照语义，非"实际串长"）。
+            let full = store.monitor.clone();
+            let needed = crate::init::MULTIBOOT_PARAM_BUF_SIZE;
+            (full, needed)
+        }
+        Some(k) => {
+            let v = store.get(&k).ok_or(MiscError::Srch)?;
+            let needed = v.len() + 1;
+            (v, needed)
+        }
     };
-    let needed = val.len() + 1;
+    // C 376-378：val_len > sysgetenv.vallen → E2BIG。
     if needed > vallen {
         return Err(MiscError::Big);
     }
     Ok(val)
 }
 
-/// `do_svrctl` (`misc.c:291-395`, D5) — dispatch wrapper (name-match for coverage).
-pub fn do_svrctl(store: &mut ParamStore, is_set: bool, key: Option<String>, val: Option<String>, vallen: usize) -> Result<Option<String>, MiscError> {
-    if is_set {
-        let k = key.ok_or(MiscError::Inval)?;
-        let v = val.ok_or(MiscError::Inval)?;
-        do_svrctl_set(store, k, v).map(|_| None)
-    } else {
-        do_svrctl_get(store, key, vallen).map(Some)
+/// C `_IOC(inout, group, num, len)`（`sys/ioccom.h:84-90`，x86-64
+/// `sizeof(struct sysgetenv)` = 32：两个指针 + 两个 size_t）。
+const fn ioc(inout: u32, group: u8, num: u32, len: u32) -> i32 {
+    (inout | ((len & 0xfff) << 16) | ((group as u32) << 8) | num) as i32
+}
+
+const IOC_INOUT: u32 = 0xC000_0000;
+const IOC_IN: u32 = 0x8000_0000;
+const IOC_OUT: u32 = 0x4000_0000;
+const SIZEOF_SYSGETENV: u32 = 32; // char *key + char *val + size_t keylen + size_t vallen
+
+/// `PMGETPARAM`（`sys/svrctl.h:16` `_IOWR('P', 0, sysgetenv)`）。
+pub const PMGETPARAM: i32 = ioc(IOC_INOUT, b'P', 0, SIZEOF_SYSGETENV);
+/// `PMSETPARAM`（`sys/svrctl.h:17` `_IOW('P', 1, sysgetenv)`）。
+pub const PMSETPARAM: i32 = ioc(IOC_IN, b'P', 1, SIZEOF_SYSGETENV);
+/// `OPMGETPARAM`（`sys/svrctl.h:19` `_IOW('M', 5, sysgetenv)`，旧口径）。
+pub const OPMGETPARAM: i32 = ioc(IOC_OUT, b'M', 5, SIZEOF_SYSGETENV);
+/// `OPMSETPARAM`（`sys/svrctl.h:20` `_IOR('M', 7, sysgetenv)`，旧口径）。
+pub const OPMSETPARAM: i32 = ioc(IOC_OUT, b'M', 7, SIZEOF_SYSGETENV);
+
+/// C `IOCGROUP(x)`（`sys/ioccom.h:68`）。
+const fn ioc_group(x: i32) -> u8 {
+    (((x as u32) >> 8) & 0xff) as u8
+}
+
+/// `do_svrctl` (`misc.c:291-395`, D5)。
+///
+/// `req` 形参化（V3-P2-5）：IOCGROUP 门（'P'/'M'，misc.c:307-309）→ 四命令
+/// 分派（309-395）→ 未知 req `EINVAL`（392-393）。旧签名的 `is_set: bool`
+/// 丢弃了 req——非法 req 无法拒绝。用户缓冲拷贝（sysgetenv/复制/EFAULT）
+/// 仍属 wire 面（批次 G），此处逻辑面以形参直传。
+pub fn do_svrctl(store: &mut ParamStore, req: i32, key: Option<String>, val: Option<String>, vallen: usize) -> Result<Option<String>, MiscError> {
+    // C 307-309：IOCGROUP ∈ {'P','M'} 门。
+    let group = ioc_group(req);
+    if group != b'P' && group != b'M' {
+        return Err(MiscError::Inval);
+    }
+    match req {
+        req if req == PMSETPARAM || req == OPMSETPARAM => {
+            let k = key.ok_or(MiscError::Inval)?;
+            let v = val.ok_or(MiscError::Inval)?;
+            do_svrctl_set(store, k, v).map(|_| None)
+        }
+        req if req == PMGETPARAM || req == OPMGETPARAM => {
+            let keylen = key.as_ref().map_or(0, |k| k.len());
+            do_svrctl_get(store, key, keylen, vallen).map(Some)
+        }
+        _ => Err(MiscError::Inval), // C 392-393 未知 req
     }
 }
 
@@ -682,12 +750,72 @@ mod tests {
         assert!(do_svrctl_set(&mut store, "b".to_string(), "2".to_string()).is_ok());
         assert_eq!(do_svrctl_set(&mut store, "c".to_string(), "3".to_string()).unwrap_err(), MiscError::Nospc);
         // get → Esrch if missing
-        assert_eq!(do_svrctl_get(&store, Some("nope".to_string()), 100).unwrap_err(), MiscError::Srch);
+        assert_eq!(do_svrctl_get(&store, Some("nope".to_string()), 4, 100).unwrap_err(), MiscError::Srch);
         // E2BIG if vallen too small
-        assert_eq!(do_svrctl_get(&store, Some("a".to_string()), 1).unwrap_err(), MiscError::Big);
-        // keylen==0 → whole table
-        let whole = do_svrctl_get(&store, None, 4096).unwrap();
+        assert_eq!(do_svrctl_get(&store, Some("a".to_string()), 1, 1).unwrap_err(), MiscError::Big);
+        // keylen==0 → whole table（缓冲 4096 > 1024 全长 → 不触发 E2BIG）
+        let whole = do_svrctl_get(&store, None, 0, 4096).unwrap();
         assert!(whole.contains("foo=bar"));
+        // V3-P2-5：全表 E2BIG 判据用 monitor 缓冲全长（C 352-354）——
+        // vallen < 1024 即 E2BIG，即使实际串只有 8 字节。
+        assert_eq!(do_svrctl_get(&store, None, 0, 512).unwrap_err(), MiscError::Big);
+        // V3-P2-5：GET key 64 字节边界（C 359）。
+        let long_key = "k".repeat(65);
+        assert_eq!(do_svrctl_get(&store, Some(long_key), 65, 100).unwrap_err(), MiscError::Inval);
+        // V3-P2-5：ENOSPC 先于边界（C 327→328）——表满时连超长 key 也报 ENOSPC。
+        assert_eq!(
+            do_svrctl_set(&mut store, "k".repeat(64), "v".repeat(64)).unwrap_err(),
+            MiscError::Nospc
+        );
+    }
+
+    // ---- do_svrctl 的 req 门控与四命令分派（V3-P2-5 回归锚点）----
+
+    #[test]
+    fn test_svrctl_req_gate_and_dispatch() {
+        let mut store = ParamStore::new(String::new());
+        // IOCGROUP 门：非 'P'/'M' 组 → EINVAL（C misc.c:307-309）。
+        assert_eq!(
+            do_svrctl(&mut store, ioc(IOC_IN, b'F', 1, 32), Some("k".into()), Some("v".into()), 0).unwrap_err(),
+            MiscError::Inval
+        );
+        // 四命令分派：PMSETPARAM 写入 → PMGETPARAM 读回；OPM 旧口径同语义。
+        assert_eq!(
+            do_svrctl(&mut store, PMSETPARAM, Some("k".into()), Some("v".into()), 2).unwrap(),
+            None
+        );
+        assert_eq!(
+            do_svrctl(&mut store, PMGETPARAM, Some("k".into()), None, 2).unwrap(),
+            Some("v".to_string())
+        );
+        assert_eq!(
+            do_svrctl(&mut store, OPMGETPARAM, Some("k".into()), None, 2).unwrap(),
+            Some("v".to_string())
+        );
+        // 命令码与 C _IOC 算术逐位一致（i386/earm 双 arch 的 LP64 尺寸口径）。
+        assert_eq!(PMGETPARAM, 0xC020_5000u32 as i32);
+        assert_eq!(PMSETPARAM, 0x8020_5001u32 as i32);
+        assert_eq!(OPMGETPARAM, 0x4020_4D05u32 as i32);
+        assert_eq!(OPMSETPARAM, 0x4020_4D07u32 as i32);
+        // 未知 req（组对但命令号未定义）→ EINVAL（C 392-393）。
+        assert_eq!(
+            do_svrctl(&mut store, PMGETPARAM + 0x100, None, None, 0).unwrap_err(),
+            MiscError::Inval
+        );
+    }
+
+    #[test]
+    fn test_sysuname_req_direction_gate() {
+        // V3-P2-5：do_sysuname 的 req 方向分支（C misc.c:89-96 default →
+        // EINVAL）——旧签名无 req 形参，该分支无处产生。
+        let mut table = ProcTable::new();
+        mk_running(&mut table, 0, 1000);
+        let mut cpy = NopCopy;
+        assert!(do_sysuname(0, 0, 100, Endpoint::PM, &mut cpy).is_ok());
+        assert_eq!(
+            do_sysuname(0, 1, 100, Endpoint::PM, &mut cpy).unwrap_err(),
+            MiscError::Inval
+        );
     }
 
     #[test]

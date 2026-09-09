@@ -477,13 +477,12 @@ C main.c 实函数清单：main(48-109)/sef_local_startup(114-126)/sef_cb_init_f
 - **修复**（Fix #52）：`EpInfo.ngroups` 改填全量值，拷出数单独截断（copy_len = min）；`[DEFERRED: D-30]` 登记 groups 拷出与 EFAULT 透传（批次 A/G 的 wire + CopyGroups 生产实现，edge E7）；测试补全量/截断两断言。
 - **验证**：`test_getepinfo_trunc` 扩展后全绿；基线 379 lib passed。
 
-#### V3-P2-5 do_svrctl / do_sysuname 分支细节五处偏离（扩展 V2-P3-4(b)，批次 G 前置）
+#### V3-P2-5 do_svrctl / do_sysuname 分支细节五处偏离（✅ 逻辑面已修复 2026-09-09，Fix #59；EFAULT/用户指针拷贝仍属批次 G wire 面）
 
-- **优先级**：P2；**类型**：语义偏移
-- **文件**：`os/servers/pm/src/misc.rs:404-428, 213-218, 275-304`；C `misc.c:291-395, 72-100`
-- **问题**：(a) IOCGROUP ∈ {'P','M'} 门与未知 req→EINVAL 缺失（Rust 以 `is_set: bool` 替代四 req 判别，V2-P3-4(b) 已登记）；(b) GET 的 key 长度上界 `keylen > 64 → EINVAL`（misc.c:316,359）缺失；(c) keylen==0 全表时 C 的 val_len 取 `sizeof(monitor_params)` 全缓冲长（misc.c:352-354）触发 E2BIG，Rust 用实际串长+1（misc.rs:409,412-414）——缓冲不足时两侧判定不同；(d) SET 的 ENOSPC 与 30 边界检查顺序与 C 相反（misc.c:327→328-334 vs misc.rs:213-218），双条件并存时错误码不同；(e) do_sysuname 无 `req` 方向分支（req!=0→EINVAL 无处产生，misc.c:85-96）且用户目的地址用 placeholder（misc.rs:300，EFAULT 无载体）。
-- **建议**：随批次 G 的 wire 解码一次做齐：req 参数还原 + IOCGROUP 门 + 两个边界 + 顺序对齐 + sysuname 方向分支。
-- **验证**：分支矩阵测试（对照 C 每个错误码路径）。
+- **原状态**：五处偏离——(a) IOCGROUP 门与未知 req EINVAL 缺失（is_set: bool 丢弃 req）；(b) GET key 64 字节边界缺失；(c) keylen==0 全表 E2BIG 判据用实际串长而非缓冲全长；(d) SET 的 ENOSPC/边界顺序与 C 相反；(e) do_sysuname 无 req 方向分支。
+- **修复**（Fix #59，逻辑面）：`do_svrctl` 改 `req: i32` 形参——`ioc` const fn 复刻 `_IOC` 算术（sizeof(sysgetenv)=32 LP64）+ `ioc_group` 复刻 `ioccom.h:68`，四命令码 `PMGETPARAM/PMSETPARAM/OPMGETPARAM/OPMSETPARAM` 逐位断言；IOCGROUP 门、未知 req EINVAL、GET key 64 边界、keylen==0 全表 E2BIG 判据（MULTIBOOT_PARAM_BUF_SIZE=1024 全长）、SET ENOSPC 先序，全部对齐 C。`do_sysuname` 补 req 方向门（misc.c:89-96）。+2 新测试 + 既有 svrctl 测试扩展（全表 E2BIG/64 边界/ENOSPC 先序）。
+- **仍开放（批次 G wire 面）**：sysgetenv 结构的用户拷入与 EFAULT 透传（misc.c:322-323,336-343）——依赖 wire 成员与 CopyGroups/safecopy 生产实现（edge E7），维持登记。
+- **验证**：+2 测试（req 门控与分派、sysuname 方向门）+ 既有测试扩展；基线 **381 lib + 11 integration passed**，clippy lib 0。
 
 #### V3-P2-6 错误码折叠为 EINVAL 的横切模式（✅ 已修复 2026-09-09，Fix #44/ #53）
 
