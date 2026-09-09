@@ -71,9 +71,9 @@ x86_64 与 riscv64 destroy 回收已完成（E4 主体）。余件：(a) aarch64
 
 复核 ✅ 2026-09-09：`buddy_alloc.rs:261-266` 顶层 `pop_free` 仍不检查 `max_page`；`choose_allocator_type` 与 `relocate` 仍无审计日志。修复见 §18.9 Fix #65。
 
-### V12-P2-1（P2）模块边界：cache 业务内联在 dispatcher + reply 编码住在 vm_server
+### ✅ V12-P2-1（P2）模块边界：cache 业务内联在 dispatcher + reply 编码住在 vm_server——已重构 2026-09-09（§18.9 Fix #78）
 
-复核 ✅（重锚点）：`dispatch_mapcache`/`dispatch_setcache` 现于 dispatcher.rs:459/:580（约 250 行 mem_cache.c 业务内联）；reply 编码 `reply_to_errno`/`encode_reply_data` 仍在 vm_server.rs（约 190 行线格式代码）。方案（cache 四操作下沉 page_cache.rs、reply 编码迁 ipc/）见 V12 存档。
+两段纯移动重构完成：reply 编码三件（VmReplyForIpc/reply_to_errno/encode_reply_data + 3 测试）迁 `ipc/encode.rs`；cache 四 handler + `unmap_region_pages` 迁 `ipc/cache_handlers.rs`（固有 impl，CALLMAP/测试零改动）。dispatcher 2610→2376 行。**设计偏离说明**：V12 提议"下沉 page_cache.rs"未采纳——handler 消费整个 VmContext，放数据结构模块会倒置分层（page_cache → vm_server），ipc/ 与 dispatcher 同向无反转；C 把 do_mapcache 放 mem_cache.c 依赖的是全局数组，Rust 模块边界必须尊重所有权。明细见 §18.9 Fix #78。
 
 ### ✅ V12-P2-2（P2）`memtype` 反向依赖 `vmproc`——判定闭合（C-parity，维持现状）2026-09-09（§18.9 Fix #76）
 
@@ -436,6 +436,14 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **Files**: `16-pagefault.md`（§3.7 补对照段）；todo 本条勘误
 - **测试**：无（文档）；501/519/501 回归
 - **Step 5.7 教训**：登记条目时锚点必须当场 sed 验证——G-V12-9 与 P2-6、P2-5 同为"复核阶段发现登记前提失真"的第三、四例，加固模式 83 锚点纪律的必要性
+
+### ✅ Fix #78: V12-P2-1 — 模块边界两段纯移动重构（encode.rs + cache_handlers.rs）
+
+- **Phase A（e86d52e85）**：`VmReplyForIpc` + `reply_to_errno` + `encode_reply_data`（含 3 个测试）→ **`ipc/encode.rs`**（337 行）——纯线格式代码归 ipc 域；vm_server.rs 2944 行（-210）。
+- **Phase B（77b0edb2f）**：`dispatch_mapcache/setcache/forgetcache/clearcache` + `unmap_region_pages` → **`ipc/cache_handlers.rs`**（312 行，`impl MessageDispatcher` 固有块）——dispatcher.rs 2610→2376（-234，达 V12 验证线 ≥200）；CALLMAP 与既有测试经固有方法解析零改动。
+- **设计偏离（对照 V12 提议）**：未采纳"下沉 page_cache.rs"——四 handler 消费整个 `VmContext`，迁入数据结构模块将倒置分层（page_cache → vm_server）；选 `ipc/cache_handlers.rs` 与 dispatcher 同向依赖，模块文档已记录该取舍与 C 归属（mem_cache.c）的对照。
+- **Verified**: 三矩阵 501/519/501 全绿；clippy servers/vm 0 警告；`wc -l` 验证行数
+- **Docs**: 24-page-cache.md 头部/结构图更新新路径；15-ipc-dispatch.md 头部加迁移注记（行号锚点标注为迁移前时点）；checklist 归 G-V12-13 批
 
 ---
 
