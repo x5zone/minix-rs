@@ -805,6 +805,16 @@ PA == VMA（kludge seek 补偿正确）✓；GDT 静态内容 ✓。
 （当前二进制，FF 循环中）核对 GDT 页运行期内容；以及 `xp /8bx 0x1001B8`
 核对 mb64 代码页。若 GDT 页被游走核/其他 DMA 类活动改写，则转向
 「先把 2/3 号 CPU INIT 复位再装跳板」的时序方案。
+**→ 第四轮（同日）**：改 header_addr=load_addr（seek 0，PA=VMA 精确）后，新症状 =
+**rust_main64 的 R64-START 未打印即 panic，且 panic 的 location.file() 指向 0xFF 填充区
+（无限 FF 打印，19MB）**。逐字节分析确认：far jump（EA 0x1001B8 sel 8）、mb64 代码、
+GDT 静态内容在产物中全部正确。**剩余谜团**：mb64 段内（F 级标后）的 wild execution
+以坏 PanicInfo 跳入 panic handler；串口有第二写者交错字节（0x80 08 40 08 A3 00 00 00，
+来源未定——multiboot 环境下 CPU1 应为 wait-for-SIPI 静默）。**下次续起**：① rust_main64
+内每步加最早打印（write_str 前后差分）定位 panic 语句；② 检查 .rodata 在 kludge 装载
+下的位置（mb_load_end 覆盖验证——rodata 若被 [load_end,bss_end) 清零覆盖，字符串即
+0xFF——**本轮 0xFF 风暴的最优解释**：panic 位置字符串被清零覆盖，应把 mb_load_end
+对齐全文件背书内容后复测）；③ 排查 -smp 2 下 CPU1 是否真的静默（monitor `info cpus`）。
 **→ 排除实验（同轮）**：header_addr/mb.ld 基址改回 0x100000 组合后症状**完全不变**
 （同卡 mb64 段、同 FF 风暴）——死亡点对装载基址**不变式**，排除"整幅镜像错位"假设，
 收窄至 far jump（EA / CS=0x08 装载 / 64 位入口）本身。已验证：mb_gdt 内容正确
