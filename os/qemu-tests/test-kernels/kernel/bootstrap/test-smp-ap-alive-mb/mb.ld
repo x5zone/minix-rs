@@ -6,7 +6,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x101000;   /* = load_addr + 头的文件偏移（VMA == 运行 PA） */
+    . = 0x100000;   /* .mbh 在文件 0x1000 → 运行 PA 0x100000（kludge seek 补偿） */
 
     .mbh : { KEEP(*(.multiboot_header)) }
 

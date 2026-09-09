@@ -108,7 +108,7 @@ core::arch::global_asm!(
     ".long 0x1BADB002",
     ".long 0x00010003",          // 位0 页对齐模块 + 位1 mem_info + 位16 AOUT kludge
     ".long -(0x1BADB002 + 0x00010003)",
-    ".long 0x101000",            // header_addr：.mbh 的运行地址 = load_addr + 头的文件偏移 0x1000
+    ".long 0x100000",            // header_addr：.mbh 的运行地址（kludge seek 补偿后 = 0x100000）
                                  // （QEMU 以 seek = 头文件偏移 − (header_addr − load_addr) 装载；
                                  //  写成 = load_addr 会使整幅镜像 +0x1000 错位——S-3d mb 变体的最后一个根因）
     ".long 0x100000",            // load_addr（文件首字节装载于此）
