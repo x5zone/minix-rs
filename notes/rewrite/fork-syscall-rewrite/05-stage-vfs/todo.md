@@ -30,7 +30,7 @@
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
 | P1 | R2-P1-5 | `NR_MNTS` 双定义且值分叉：vmnt.rs=8（错）vs stadir.rs=16（C const.h:7 真值）——挂载表容量减半 + 违反单一真相源（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #33） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #19） |
-| P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
+| P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #34） |
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #12） |
 | P3 | R2-P3-1 | request.rs 计数注释漂移：33 常量 = 32 活 + 1 死，FsReq 32 变体与活类型双射（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #2） |
 | P3 | R2-P3-2 | device_map.rs 四源合一（dmap+smap+device.c ioctl 决策+mapdriver）的职责注记（§9.2） |
@@ -179,7 +179,7 @@
 - **验证**：`grep -rn "impl ToErrno" os/servers/vfs/src | wc -l` ≥ 30；`grep -rn "enum FdError" os/servers/vfs/src | wc -l` = 1。
 - **边界**：P0-1（`FdError::Closed` 新变体直接落在这套通道上）、P1-5（`FilpLockMode` 三态化同文件先行）。
 
-#### R2-P2-2（P2 doc）00/99 骨架文档待按快照契约改写
+#### ✅ R2-P2-2（P2 doc）00/99 骨架文档待按快照契约改写——已修复 2026-09-09（§10 Fix #34）
 
 - **现状**：`00-vfs-overview.md` 22 行（:3 状态 pending 最小骨架）、`99-global-concepts.md` 骨架；本轮 Step 0.3 已生成 `.design/00|99-{outline,outline-review,design}.v1.md` 六份目标契约（含"正文仍为骨架"诚实声明）。02-stage-vm 同型条目 G-V12-13 先例。
 - **改写要求**：00 按快照 Ch1-Ch7 展开启动主线叙事（mthread→A-1 的"演进而非退化"论证须带 R1 存档 §6.5/6.7 的 Redox 事实锚点）；99 定稿时一并落 P3-2/C-10 的"有意省略表"与引用计数双层不变量（filp_count ↔ v_ref_count ↔ v_fs_count——它是 C-3/P0-3 失效族的正确性基础）。正文改写后快照升 v2 复审。
@@ -513,3 +513,11 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**；`grep -rn "NR_MNTS: usize" os/servers/vfs/src` 唯一。
 - **发现渠道**：R2-P2-2 改写 99 号"每个容量常量给机制依据"时的逐常量核查——文档写作即审查。
 - **回归补修（同日）**：Fix #17 的同类回归在 Fix #32 重演——gate 了 struct 未 gate impl 块，`cargo check`（非 test）断裂两处；已补 `#[cfg(test)]` 于两个 `impl PathFetcher` 块。**教训升级为硬性纪律：凡 cfg 门控类修改，回归必须同时跑 `cargo check`（生产构建）与 `cargo test`，二者缺一即视为未验证。**
+
+
+### ✅ Fix #34: R2-P2-2 — 00/99 骨架文档按快照契约改写（2026-09-09）
+
+- **File**：`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/00-vfs-overview.md`（22 行骨架 → 85 行七节全篇）、`99-global-concepts.md`（骨架 → 96 行，含既有省略表整合）。
+- **Before**：两篇均 22 行 pending 骨架（plan.md §6 标"骨架"）。
+- **After**：00 按 `.design/00-outline.v1` 契约展开七节——VFS 定位（mthread→A-1 演进论证带 Redox 事实锚点）、启动主线图（main.c:54-138 各站锚点）、服务面三数字（64+12+33）、C 33 文件分组地图、Rust 模块地图、双阅读路径；99 按契约展开——容量常量族逐个给机制依据（核查中当场逮到 NR_MNTS 8/16 分叉，Fix #33 顺承）、`m_type` 四名字空间、阻塞枚举类型化、glo.h 归属、引用计数双层不变量、`sys_datacopy_wrapper`、A-8/A-9；省略表整合为正文一节。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**（纯文档）；`tools/design-coverage-check.sh` ALL PASS 维持；快照可升 v2 复审。
