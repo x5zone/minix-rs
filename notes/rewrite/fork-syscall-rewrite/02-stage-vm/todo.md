@@ -299,7 +299,7 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 2. ~~**V13-P2-1(a)(b)**（TLB 不变量登记 + 死内核面注释）~~ ✅（§18.9 Fix #69，(c) 挂 edge）；
 3. ~~**V13-P2-3**（ACL 闸 None 即拒绝）~~ ✅（Fix #66）；~~**V13-P2-4**（MAKE_VM 锚定已登记偏差 + 扫描勘误）~~ ✅（Fix #68）；~~**V13-P3-1(1)**（伪造 fault 源 audit）~~ ✅（Fix #67）；
 4. **待执行批**：~~P2-4 死状态三分~~ ✅（Fix #70）；~~P2-8 注释漂移~~ ✅（Fix #71）；~~P2-9 region 两处~~ ✅（Fix #72）；~~P2-5 双路径收敛~~ ✅（Fix #73，判定收窄）；余：P2-6 mapcache 回滚序 → P2-3 错误残余 → P2-1 cache 下沉 → P2-2 memtype 解耦 → P2-7 contig，每条独立 todo-fix 周期；
-5. 文档批：G-V12-11（clearend，含 V13-P1-1 慢路的 clearend 分支设计）、G-V12-12（00/99 骨架 + design 快照）、G-V12-13（checklist 系统性刷新）；V12-P3-1/2 机会主义；
+5. ~~文档批~~ ✅：~~G-V12-11 clearend~~（Fix #80）、~~G-V12-12 00/99~~（28/28 PASS）、~~G-V12-13 checklist~~（四阶段）；V12-P3-1（Redox 对照增强）维持登记——需独立设计决策；
 6. edge 侧（单线程执行 edge_todo.md）：E-VMTLB（新）、E-RSWIRE 批（V13-P2-2/5/6 + E-VMMOCK 余件）、E-VFSWIRE（P3-1(2) 的死进程路径对账）、E1/E2 通电件、E5 冒烟（含 V12 增补的故障完整回路验收面）。
 
 ---
