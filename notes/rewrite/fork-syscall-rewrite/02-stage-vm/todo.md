@@ -123,9 +123,9 @@ V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准
 - **第 1 笔（ONCE 条目统一走 NeedVfsIo）**：已作为偏差登记（24-page-cache.md §3.6 第 6 行）——端状态等价、差一次 IPC 往返，维持登记不修（消费语义依赖 transport，E-VFSWIRE 批次）。
 - **第 2 笔（clearend 清零未建模）**：✅ 修复——MappedFile 命中分支对尾页（roundup(offset+clearend) ≥ length）走内联 `cow_block(…, clearend)` 等价物：私有 anon 拷贝 + 尾部清零（`copy_page_and_zero_tail`），非尾写维持 NeedCow、非尾读维持直链。C 对照 mem_file.c:131-134/:73-79。明细见 §18.9 Fix #80。
 
-### G-V12-12（P2 doc）00/99 骨架文档 + design 快照缺失
+### ✅ G-V12-12（P2 doc）00/99 骨架文档 + design 快照缺失——已闭环 2026-09-09（本轮）
 
-复核 ✅ 2026-09-09：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm` 复跑，00-vm-overview 与 99-global-concepts 仍三件套全缺（CRITICAL），其余 26 篇全 PASS。处置同 V12 存档（补 Step 0.3 快照或宣布完成计划）。
+两篇骨架改写为全文（00-vm-overview 100 行：概念/源码地图/阅读路线/实施现状/接缝注入；99-global-concepts 74 行：调用号族/旗标族/哨兵类型化/glo 显式化，全部对账表形态）；design 快照六件套（00/99 × outline/outline-review/design v1）按 Step 0.3 从 C 源与现状代码独立推导落地。**design-coverage-check 复跑：28/28 全部 PASS（H.1/H.6 消除）**。形态对齐 pm 工作流（f3f6c456e）。
 
 ### ✅ G-V12-13（P2 doc）checklist.md 系统性刷新——Phase 1/2/3/4 完成（89f7eac1f + cea9abead + bcae8a9d9 + 本轮，2026-09-09）✅ 闭环
 
