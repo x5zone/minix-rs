@@ -608,6 +608,64 @@ pub fn gcov_target(is_self: bool) -> GcovTarget {
     }
 }
 
+/// `DS_DRIVER_UP` (`minix3/minix/include/minix/ds.h:32`).
+pub const DS_DRIVER_UP: u32 = 1;
+
+/// DS key prefix classification (`ds_event`, `misc.c:958-968`).
+///
+/// Only the three driver-up prefixes matter; every other key is skipped
+/// (`continue` in C).  `None` = not our business.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsDriverKind {
+    /// `drv.blk.` — block driver up.
+    Blk,
+    /// `drv.chr.` — character driver up.
+    Chr,
+    /// `drv.sck.` — socket driver up.
+    Sck,
+}
+
+pub fn classify_ds_key(key: &str) -> Option<DsDriverKind> {
+    if key.starts_with("drv.blk.") {
+        Some(DsDriverKind::Blk)
+    } else if key.starts_with("drv.chr.") {
+        Some(DsDriverKind::Chr)
+    } else if key.starts_with("drv.sck.") {
+        Some(DsDriverKind::Sck)
+    } else {
+        None
+    }
+}
+
+/// What a driver-up announcement dispatches to (`misc.c:978-982`).
+///
+/// - Block/character keys go to `dmap_endpt_up(owner, is_blk)` — its
+///   recovery state machine is `recover_step` (19-device-map).
+/// - Socket keys go to `smap_endpt_up(owner)` — whose body is the
+///   `invalidate_filp_by_sock_drv` death/up cascade (14-filedes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsUpTarget {
+    /// `dmap_endpt_up(owner, is_blk)`.
+    Dmap { is_blk: bool },
+    /// `smap_endpt_up(owner)`.
+    Smap,
+}
+
+/// Pure dispatch decision for one DS event (`misc.c:976-982`).
+///
+/// `value != DS_DRIVER_UP` skips (`continue` in C); `owner` is the
+/// endpoint the DS announcement carries.
+pub fn ds_event_action(kind: DsDriverKind, value: u32) -> Option<DsUpTarget> {
+    if value != DS_DRIVER_UP {
+        return None;
+    }
+    match kind {
+        DsDriverKind::Blk => Some(DsUpTarget::Dmap { is_blk: true }),
+        DsDriverKind::Chr => Some(DsUpTarget::Dmap { is_blk: false }),
+        DsDriverKind::Sck => Some(DsUpTarget::Smap),
+    }
+}
+
 /// The obsolete verdict (`do_getrusage:998-1006`).
 ///
 /// PM owns rusage now; VFS answers `OK` until the call is removed
@@ -1061,3 +1119,28 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    fn test_ds_event_classification() {
+        // Prefix gates (`misc.c:958-968`): the three driver families.
+        assert_eq!(classify_ds_key("drv.blk.0"), Some(DsDriverKind::Blk));
+        assert_eq!(classify_ds_key("drv.chr.4"), Some(DsDriverKind::Chr));
+        assert_eq!(classify_ds_key("drv.sck.1"), Some(DsDriverKind::Sck));
+        assert_eq!(classify_ds_key("drv.net.0"), None);
+        assert_eq!(classify_ds_key("random"), None);
+        // Up-gate + dispatch target (`misc.c:976-982`).
+        assert_eq!(
+            ds_event_action(DsDriverKind::Blk, DS_DRIVER_UP),
+            Some(DsUpTarget::Dmap { is_blk: true })
+        );
+        assert_eq!(
+            ds_event_action(DsDriverKind::Chr, DS_DRIVER_UP),
+            Some(DsUpTarget::Dmap { is_blk: false })
+        );
+        assert_eq!(
+            ds_event_action(DsDriverKind::Sck, DS_DRIVER_UP),
+            Some(DsUpTarget::Smap)
+        );
+        // Non-up values skip (`misc.c:976-977`).
+        assert_eq!(ds_event_action(DsDriverKind::Blk, 0), None);
+    }

@@ -146,7 +146,8 @@ Rust 改写不是照抄 `misc.c` 的开关与指针表，而是吸收 Linux/Redo
 ### D7 杂项三则与 FS 对话
 
 - **C**：gcov 五项检查（`31/39/46/50/54`）+ 本地远端分流（`59-68`）+ 释放授权（`70`）/ getrusage 废弃调用固定返回（`1000-1005`）/ panic_hook 打印（`989-993`）/ `req_sync` 下发不等待 + `req_utime` 问答。
-- **Rust**：`gcov_privilege_gate()`（`misc.rs:553`，root 门——非 root `EPERM` 先于一切检查）+ `gcov_label_gate()`（`misc.rs:565`，空标签拒绝——MINIX3 BUG 修复，见下）+ `gcov_endpt_ok()`（`576`）+ `gcov_grant_outcome()`（`585`）+ `GcovTarget/gcov_target()`（`595,603`）+ `getrusage_verdict()`（`605`，恒 `OK`）+ panic_hook 无符号 + `MiscFs{sync_fs, utime}`（`614`，`ScriptedMisc` 记录调用应答 vs `RefusingMisc` 固定拒绝）+ `MiscVerdict::{Done, Suspend}`（`688`）+ `MiscError` 九变体（`701`）。
+- **Rust**：`gcov_privilege_gate()`（`misc.rs:553`，root 门——非 root `EPERM` 先于一切检查）+ `gcov_label_gate()`（`misc.rs:565`，空标签拒绝——MINIX3 BUG 修复，见下）+ `gcov_endpt_ok()`（`576`）+ `gcov_grant_outcome()`（`585`）+ `GcovTarget/gcov_target()`（`595,603`）+ `getrusage_verdict()`（`605`，恒 `OK`）+ panic_hook 无符号 + `MiscFs{sync_fs, utime}`（`614`，`ScriptedMisc` 记录调用应答 vs `RefusingMisc` 固定拒绝）+ `MiscVerdict::{Done, Suspend}`（`688`）+ `MiscError` 九变体（`701`）+ **ds_event 决策组（C-9 闭合）**：`classify_ds_key()`（`drv.blk./drv.chr./drv.sck.` 三前缀分类，余者跳过）+ `DS_DRIVER_UP` 门 + `ds_event_action()` 分派（块/字符 → `Dmap{is_blk}`，恢复状态机 = 19 号 `recover_step`；socket → `Smap`，其体 = 14 号 `invalidate_filp_by_sock_drv` 级联）；`panic_hook` 为有意省略（ARCH A-1 消灭 mthread 后无线程栈可打印，登记省略台账）。
+- **Rust ds_event 落地（C-9 闭合）**：`classify_ds_key()`（`drv.blk./drv.chr./drv.sck.` 三前缀分类，余者跳过）+ `DS_DRIVER_UP` 门 + `ds_event_action()` 分派（块/字符 → `dmap_endpt_up(owner, is_blk)`，其恢复状态机即 19 号的 `recover_step`；socket → `smap_endpt_up(owner)`，其体即 14 号的 `invalidate_filp_by_sock_drv` 级联）。`panic_hook`（`misc.c:989-993`）为 **有意省略**：ARCH A-1 消灭 mthread 后无线程栈可打印，登记省略台账。
 - **为什么**：废弃也有前置条件（删除前保持兼容）；下发不等待是 D3 同源；空标签拒绝是**内存安全修复**：C `39` 放行空标签致 `44` 之 `label[len-1]` 越界（MINIX3 BUG 标注，模式 78）；gcov 全 trait 化（grant/taskcall/revoke）被否决：授权与释放是外层执行，判定层只做检查与分流。
 
 ### ARCH 决策总表
