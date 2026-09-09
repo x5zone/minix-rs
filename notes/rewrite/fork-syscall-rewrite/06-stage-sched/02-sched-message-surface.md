@@ -218,7 +218,7 @@ os/libs/minix-types/src/ipc/
 | `test_five_letters` | `main.c:57-87` + `com.h:801-807` | 五种编号识别加未知拒收，INHERIT 和 START 是两个不同的变体 | `os/servers/sched/src/dispatch.rs:124` |
 | `test_notify_first` | `main.c:44-55` | 调用进分发，时钟通知整理、其他通知忽略 | `os/servers/sched/src/dispatch.rs:147` |
 | `test_seal_and_settle` | `main.c:68-96` + `utility.c:18-23` | 标记校验加挂起回复加拒收 | `os/servers/sched/src/dispatch.rs:157` |
-| `test_sched_message_layouts` | `ipc.h:1428-1912` | 四个结构体 56 字节加字段值 | `os/libs/minix-types/src/ipc/message.rs:2477` |
+| `test_sched_message_layouts` | `ipc.h:1428-1912` | 四个结构体 56 字节加字段值 | `os/libs/minix-types/src/ipc/message.rs:3698` |
 | `test_start_from_pm_happy_path` | `main.c:57-87` + `schedule.c:140-249` | 一轮全链：分发、三门、接管、出生、全字段下发、回复写回调度者 | `os/servers/sched/src/server.rs:651` |
 | `test_inherit_copies_parent_state` | `schedule.c:199-211` | 继承父进程的当前位置与时间片，上限用消息的 | `os/servers/sched/src/server.rs:688` |
 | `test_start_refusals_touch_nothing` | `schedule.c:150-166` | 陌生人 EPERM、占用 EDEADEPT、越界 EINVAL，接管与出生都不发生 | `os/servers/sched/src/server.rs:715` |

@@ -24,7 +24,7 @@
 | P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | ✅ 已修复 2026-09-09（Fix #10） |
 | P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | ✅ 已修复 2026-09-09（Fix #9） |
 | P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
-| P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | open |
+| P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | ✅ 已修复 2026-09-09（Fix #12） |
 | P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | open |
 | P3 | P3-4 | lib.rs glob 再导出无人用 | ✅ 已修复 2026-09-09（Fix #6） |
 | P3 | P3-5 | 11 篇补 Redox 演进参照（V2 增补：RR→DWRR→EEVDF 两级） | open |
@@ -141,7 +141,7 @@
 
 noquantum_trust 行闭单（主循环接线，server.rs:244 消费）；is_valid_quantum / USER_QUANTUM / is_available / IN_USE 四行随 Fix #5 删除（2026-09-09，见 §9）。本条目闭环。
 
-### P3-2 文档第 5 节测试表两处 minix-types 行锚漂移 —— 维持 open（两半均仍漂移）
+### P3-2 文档第 5 节测试表两处 minix-types 行锚漂移 —— ✅ 已修复 2026-09-09（Fix #12，见 §9）
 
 - 02 篇 :221 仍声称 `test_sched_message_layouts` 在 message.rs:2477，实测 :3698；
 - 01 篇 :179 仍声称 `test_sched_messages` 在 com.rs:223，实测 :312。
@@ -309,3 +309,7 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **问题**：14 篇只有文档主权分工声明，Rust 实现归属未声明——覆盖率审查会误判「14 篇没有 sched 侧模块」为缺口，RS 侧行为回归时责任含糊。
 **修复**：(1) 14 篇「实现归属」段——行为主体 `os/servers/rs/src/sched.rs`（03-stage-rs 域）/ 契约镜像 `client.rs`（本 crate，PM 与 RS 共用）/ 服务端视角 `valid.rs`（本 crate，RS 是放行发送者）三层各给锚点；(2) `client.rs` 模块头补「镜像服务所有 libsys caller，库不分 caller：PM 的 fork INHERIT 与 RS 的系统进程 START 走同两封信」；(3) `lib.rs` 模块索引 client 行补 14 篇指针。顺带修正 14 篇 §4.2 的 rs/sched.rs 行锚（149,161,173 → 147,159,174，rg 实测）。
 **Verified**：Gate E 抽验——14 篇声称的 RS 侧符号（`sched_decision`:119、`StopSite`:147、`on_stop_result`:174）与 3 个取消测试（test_stop_ok_continues 等）在 `os/servers/rs/src/sched.rs` 全部真实存在；`cargo test -p minix-sched` 81 passed（注释级改动）。
+
+
+### ✅ Fix #12: P3-2 — 两处 minix-types 行锚修正
+01 篇 :177 `test_sched_messages` com.rs:223 → **312**；02 篇 :221 `test_sched_message_layouts` message.rs:2477 → **3698**。两处均 rg 实测后落笔；测试本体存在、断言有效（第一轮已核），漂移的只是行号。

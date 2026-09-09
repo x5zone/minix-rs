@@ -174,7 +174,7 @@ os/libs/minix-types/src/types/
 | `test_init_kinds` | `main.c:114-115` + `sef.h:85` | 两种启动方式互相区分 | `os/servers/sched/src/sef.rs:65` |
 | `test_machine_walks_in_token_walks_out` | `main.c:126-136` | 机器信息进、令牌带着同样的信息出 | `os/servers/sched/src/sef.rs:72` |
 | `test_single_cpu_boot` | `type.h:123` | 单 CPU 是合法配置 | `os/servers/sched/src/sef.rs:85` |
-| `test_sched_messages` | `com.h:801-807` | 五个消息号取值正确 | `os/libs/minix-types/src/types/com.rs:223` |
+| `test_sched_messages` | `com.h:801-807` | 五个消息号取值正确 | `os/libs/minix-types/src/types/com.rs:312` |
 
 测试策略：启动方式用"两个变体互相不等"锁定；机器信息用"进去什么出来什么"锁定（含单 CPU 边界）；消息号用五个取值的全枚举锁定（BASE 加四个偏移）。
 
