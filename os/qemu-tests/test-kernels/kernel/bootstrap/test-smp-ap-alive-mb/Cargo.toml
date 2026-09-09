@@ -1,0 +1,20 @@
+[package]
+name = "test-smp-ap-alive-mb"
+version = "0.1.0"
+edition = "2024"
+
+# Multiboot 直启变体（S-3d，2026-09-10）：QEMU -kernel 加载，绕开 OVMF。
+# 动机：OVMF(TCG) 的 MpInitLib 把 AP 停放/跳表区放在 PA 0x8000-0x91xx 且存在
+# #UD 游走核（见 smp_todo.md S-3d V13 续诊），低内存 trampoline 在该引导路径下
+# 不可靠；multiboot 路径下 AP 天然 wait-for-SIPI、无固件 AP 干扰。
+# 目标：x86_64-unknown-none（ELF，QEMU multiboot 加载），链接于 1MB。
+
+[dependencies]
+minix-arch = { workspace = true, default-features = false }
+minix-plat = { workspace = true }
+minix-types = { workspace = true }
+
+[[bin]]
+name = "test-smp-ap-alive-mb"
+path = "src/main.rs"
+test = false
