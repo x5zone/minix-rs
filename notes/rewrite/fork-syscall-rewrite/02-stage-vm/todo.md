@@ -127,10 +127,11 @@ V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准
 
 复核 ✅ 2026-09-09：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm` 复跑，00-vm-overview 与 99-global-concepts 仍三件套全缺（CRITICAL），其余 26 篇全 PASS。处置同 V12 存档（补 Step 0.3 快照或宣布完成计划）。
 
-### 🔄 G-V12-13（P2 doc）checklist.md 系统性刷新——第一阶段完成 2026-09-09（89f7eac1f）
+### 🔄 G-V12-13（P2 doc）checklist.md 系统性刷新——Phase 1/2 完成（89f7eac1f + cea9abead，2026-09-09）
 
-- **已完成**：横幅刷新（2026-09-09 证据口径：机器重跑 92.5%、175 项判定分布、Fix #63–#81 后 REAL-GAP=0、三矩阵 503/521/503）；§0 总览加"系统化替代口径"注记；七行直接证据修正（M-003/M-004 COMPILE-FLAG、M-007 CONTIG 零消费、G-012 接线确认、G-016/F-012 链删除、F-120-F-130 shared_delete 闭单）。
-- **剩余**：六张分册表的逐行重写（~300 行条目 × 逐一 grep 双侧验证）——建议独占 session，按宏/全局/结构/函数/memtype 回调/IPC handler 六类分批。
+- **Phase 1**：横幅刷新（2026-09-09 证据口径）+ §0 系统化替代口径 + 七行直接证据修正。
+- **Phase 2（cea9abead）**：§6 IPC handler 表**整表重写**（按 build_callmap 26 项注册 + 4 项双侧不注册 + 3 条特殊路径，V13 调用号审计口径）——修正了最严重的过时行（I-015/I-016 "NotImplemented 依赖 slab" 实已完整实现；I-001~008 的 handle_* 包装已删；I-026~028 的 dispatch_adddma 等函数不存在，实为双侧不注册）；§2 修正 G-002 路径错与 G-015 假成功陈旧。
+- **剩余**：§4 函数表（259 行 F-条目，最大分册——建议脚本化逐行 grep 双侧验证）+ §3/§5 抽查。
 ### ✅ V12-P3-2（P3）可观测性与卫生批——③①已处置 2026-09-09（§18.9 Fix #81）；②复核免修；④维持
 
 - **③ transport pub 收窄**：✅ 六类型（IpcStatus/IpcError/IpcTransport/KernelIpcTransport/TestIpcTransport/TestTransportHandle）`pub → pub(crate)`——lib.rs 本就无再导出，全 crate 内消费。
