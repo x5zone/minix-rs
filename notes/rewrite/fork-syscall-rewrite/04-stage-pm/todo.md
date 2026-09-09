@@ -114,7 +114,9 @@ V3 增补一处同族实例：`dispatcher.rs:32` 本地定义 `PROC_EVENT_REPLY:
 
 ### P2-4 glob re-export（✅ 已修复，Fix #18）
 ### P2-5 stub 注释契约化（✅ 已修复，Fix #19；V3 发现一处漏网：`ipc/vfs.rs:533-540`，见 V3-P2-1）
-### P2-6 文档 00/99 最小骨架 + `.design/` 快照缺失（开放，维持 plan.md §6.2 排序）
+### P2-6 文档 00/99 最小骨架 + `.design/` 快照缺失（✅ 已修复 2026-09-09，Fix #60）
+
+00/99 两篇按 Step 0.3 全流程改写完成：`.design/` 六个快照（outline/outline-review/design × 00/99，v1）生成；`00-pm-overview.md` 改写为导航文档（PM 四重权威/模块分层/实施现状/22 篇导航）；`99-global-concepts.md` 改写为常量词汇表（常量语义半径/endpoint 代际编码/三集合/全局七件套/47 调用号索引，全部带 C 行号锚点）。`design-coverage-check.sh` → **ALL DOCS COMPLETE (24/24)**；plan.md §6.1 状态表同步。**Gate H.6/H.1 消除**。
 ### P2-7 ESCRIPT 排除登记（✅ 已修复，Fix #20）
 
 ---
