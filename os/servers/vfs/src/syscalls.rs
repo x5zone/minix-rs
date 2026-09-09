@@ -16,7 +16,6 @@ use crate::open::{seek_pos, S_IFMT, S_IFIFO, Whence};
 use crate::main_loop::VfsState;
 
 use crate::vnode::VnodeId;
-use minix_types::Endpoint;
 
 /// `do_work`（`main.c:283-294`）的绑定层——穷举 64 臂，无通配。
 ///
@@ -51,7 +50,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Lseek => {
             // lc_vfs_lseek（ipc.h:725-731）：off_t offset @0、int fd @8、
             // int whence @12。`actual_lseek` 的纯算术决策（open.rs seek_pos）。
-            let offset = (i64::from(m7.m7i2) << 32) | i64::from(m7.m7i1 as i32);
+            let offset = (i64::from(m7.m7i2) << 32) | i64::from(m7.m7i1);
             let fd = match Fd::new(m7.m7i3.max(0) as usize) {
                 Some(fd) => fd,
                 None => return SyscallResult::Error(minix_types::EBADF),
