@@ -28,6 +28,7 @@
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #27） |
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
+| P1 | R2-P1-5 | `NR_MNTS` 双定义且值分叉：vmnt.rs=8（错）vs stadir.rs=16（C const.h:7 真值）——挂载表容量减半 + 违反单一真相源（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #33） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #19） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #12） |
@@ -183,6 +184,13 @@
 - **现状**：`00-vfs-overview.md` 22 行（:3 状态 pending 最小骨架）、`99-global-concepts.md` 骨架；本轮 Step 0.3 已生成 `.design/00|99-{outline,outline-review,design}.v1.md` 六份目标契约（含"正文仍为骨架"诚实声明）。02-stage-vm 同型条目 G-V12-13 先例。
 - **改写要求**：00 按快照 Ch1-Ch7 展开启动主线叙事（mthread→A-1 的"演进而非退化"论证须带 R1 存档 §6.5/6.7 的 Redox 事实锚点）；99 定稿时一并落 P3-2/C-10 的"有意省略表"与引用计数双层不变量（filp_count ↔ v_ref_count ↔ v_fs_count——它是 C-3/P0-3 失效族的正确性基础）。正文改写后快照升 v2 复审。
 - **验证**：plan.md §6 实施路线两行"骨架"状态翻转；coverage-check 复跑仍 ALL PASS。
+
+#### ✅ R2-P1-5（P1-design-deviation）`NR_MNTS` 双定义且值分叉——已修复 2026-09-09（§10 Fix #33）
+
+- **Rust 现状（修复前）**：`vmnt.rs:14` `NR_MNTS: usize = 8`（错）与 `stadir.rs:39` `NR_MNTS: usize = 16`（对）——同名常量、同 crate、两个值；`fs_comm.rs:6` 文档亦沿袭 8。C 真值：`const.h:7` `#define NR_MNTS 16`（`NR_NONEDEVS = NR_MNTS` 同源）。
+- **后果与可达性**：挂载表容量减半（第 9 个挂载点在 C 可成功、Rust 报表满）；`GlobalComm` 窗口数组随错值分配。发现渠道：R2-P2-2 改写 99 号"容量常量必须给机制依据"时的 fix-guard 核查。
+- **修改方案**：A（选定）——vmnt.rs 归一为 16 + C 锚点；stadir.rs 改 `pub use crate::vmnt::NR_MNTS` 消除双定义；`fs_comm` 文档同步。B——stadir 保留自有常量 + 对账测试。否决 B：同名同义常量双定义本身即缺陷（对照 P2-6 TransIdCodec 的收敛判据）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**；`grep -rn "NR_MNTS: usize" os/servers/vfs/src` 唯一。
 
 #### ✅ R2-P2-3（P2）`do_gcov_flush` 缺 super_user 特权门——已修复 2026-09-09（§10 Fix #12）
 
@@ -496,4 +504,12 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：生产单元内 `DirectFetcher::fetch` 伪造返回 `"a".repeat(len-1)`、`PathResolver::eat_path` 签名吃 `TestFproc`、`StrictResolver::advance` 恒返回 vnode 99、`SlashHandler` 注释自认 Gate D 产物。
 - **After**：七项虚构抽象整体删除；`PathFetcher` seam 保留（Direct/Safecopy 是 C 的 cpf_grant 语义二分），两个伪造 impl `#[cfg(test)]` 圈定并在文档注明生产 impl 随 W1 transport 落地；历史尾斜杠语义由 `Lookup::normalize_trailing_slash` 直接承载。**前半闭合**：生产单元零虚构抽象；**后半（真实 advance/eat_path/last_dir/get_name/canonical_path + REQ_LOOKUP 循环）随 W7**，13 号文档实现表已标注各函数 W7 待落地。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**（354−8 个虚构对象测试）；`grep -c "PathResolver\|SlashHandler\|TestFproc\|StrictResolver\|PermissiveResolver" path.rs` = **0**。
+
+### ✅ Fix #33: R2-P1-5 — NR_MNTS 双定义归一（8 分叉 → 16 单真相，2026-09-09）
+
+- **File**：`os/servers/vfs/src/vmnt.rs`（NR_MNTS 8→16 + const.h:7 锚点 + `VmntTable::len` 测试改断言常量）、`os/servers/vfs/src/stadir.rs`（自有定义改 `pub use crate::vmnt::NR_MNTS`）、`os/servers/vfs/src/fs_comm.rs`（模块头 8→16）。
+- **Before**：同名常量双定义值分叉——vmnt.rs=8 / stadir.rs=16（C const.h:7=16）；挂载表容量减半，GlobalComm 窗口随错值。
+- **After**：单真相在 vmnt.rs=16（C 对齐），stadir re-export；`VmntTable::len` 测试改断言 `NR_MNTS` 常量而非魔数。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**；`grep -rn "NR_MNTS: usize" os/servers/vfs/src` 唯一。
+- **发现渠道**：R2-P2-2 改写 99 号"每个容量常量给机制依据"时的逐常量核查——文档写作即审查。
 - **回归补修（同日）**：Fix #17 的同类回归在 Fix #32 重演——gate 了 struct 未 gate impl 块，`cargo check`（非 test）断裂两处；已补 `#[cfg(test)]` 于两个 `impl PathFetcher` 块。**教训升级为硬性纪律：凡 cfg 门控类修改，回归必须同时跑 `cargo check`（生产构建）与 `cargo test`，二者缺一即视为未验证。**

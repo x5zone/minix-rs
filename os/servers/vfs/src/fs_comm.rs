@@ -3,7 +3,7 @@
 //! Corresponds to Minix3's `comm.c` (244 lines) + `type.h:comm_t` +
 //! `com.h:909 VFS_TRANSID` + `vfsif.h:79 TRNS_*`.
 //!
-//! The VFS multiplexes 9 worker slots onto `NR_MNTS 8` mount windows.  Each
+//! The VFS multiplexes 9 worker slots onto `NR_MNTS 16` mount windows (`const.h:7`).  Each
 //! mount has `c_max_reqs` (FS-declared concurrency, `MFS=1`), `c_cur_reqs`
 //! (in-flight), and `c_req_queue` (waiters via `w_next`).  The global
 //! `sending` counts queued waiters; `send_work` sweeps `vmnt[8]` when

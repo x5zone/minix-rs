@@ -35,8 +35,9 @@ pub const ST_NOWAIT: u64 = 2;
 pub const VMNT_READONLY: u32 = 0o01;
 /// `VMNT_CANSTAT` (`vmnt.h:28`, octal): counted in the tally.
 pub const VMNT_CANSTAT: u32 = 0o20;
-/// `NR_MNTS` (`minix3/minix/servers/vfs/const.h:7`): mount-table slots.
-pub const NR_MNTS: usize = 16;
+/// `NR_MNTS` (`const.h:7`) — single truth lives in `vmnt.rs` (P2-2 同型的
+/// 单真相收敛；曾与本表 16 并存一个 8 的分叉定义，Fix #33 统一).
+pub use crate::vmnt::NR_MNTS;
 
 /// The nine directory/status calls (header lists eight; `do_fchdir`'s
 /// body at `stadir.c:32` makes nine — the enumeration follows the

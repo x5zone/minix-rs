@@ -10,8 +10,8 @@
 
 use minix_types::{DevId, Endpoint, NO_DEV};
 
-/// `NR_MNTS` (`const.h:NR_MNTS` 8).
-pub const NR_MNTS: usize = 8;
+/// `NR_MNTS` — C `const.h:7` `#define NR_MNTS 16`（首轮误记 8，与 stadir.rs 的 16 分叉，Fix #33 统一） (`const.h:NR_MNTS` 8).
+pub const NR_MNTS: usize = 16;
 
 /// `VmntId` — index into `VmntTable::slots`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -370,7 +370,7 @@ mod tests {
             assert_eq!(v.dev, NO_DEV);
             assert!(!v.lock.is_locked());
         }
-        assert_eq!(table.len(), 8);
+        assert_eq!(table.len(), NR_MNTS);
     }
 
     #[test]
