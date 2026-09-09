@@ -81,16 +81,6 @@ pub enum PmMessageType {
 ///
 /// New code should prefer [`Route`] which encodes the eight-way priority.
 /// Kept for compatibility with 01-vfs-init-main's mock dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchResult {
-    /// Processed, continue loop.
-    Continue,
-    /// Need to spawn worker thread.
-    SpawnWorker,
-    /// Ignored message.
-    Ignored,
-}
-
 /// Eight-way dispatch route — the priority chain of `main:80-138`.
 ///
 /// SEF live-update target states (`minix3/minix/include/minix/sef.h:213-217`),
@@ -506,36 +496,6 @@ impl VfsState {
         self.current_endpoint() == Endpoint::PM
     }
 
-    /// Dispatches message.
-    ///
-    /// Corresponds to Minix3's message dispatch logic in `main()` (main.c:68-118).
-    /// The five-way split (FS reply / PM / notification / device reply / syscall)
-    /// is detailed in 09-main-loop; this method covers the routing skeleton and
-    /// the `worker_allow` gate.
-    pub fn dispatch(&mut self) -> DispatchResult {
-        let source = self.current_endpoint();
-
-        // main.c:76-77 — PM 消息走 service_pm（归 10）。
-        if source == Endpoint::PM {
-            return DispatchResult::Continue;
-        }
-
-        // main.c:79-98 — 通知与内核 task 消息（归 09）。
-        let Some(slot) = source.to_user_slot() else {
-            return DispatchResult::Ignored;
-        };
-
-        self.current_fp_slot = Some(slot);
-
-        // worker_allow(FALSE) 门控（main.c:503/525）：挂起请求标 pending。
-        if !self.accept_requests {
-            self.mark_request_pending(slot);
-            return DispatchResult::Continue;
-        }
-
-        DispatchResult::SpawnWorker
-    }
-
     /// Handles PM fork message.
     ///
     /// Corresponds to Minix3's `VFS_PM_FORK` branch in `service_pm()`.
@@ -653,6 +613,31 @@ impl VfsState {
             Some(call) => Route::Syscall { call },
             None => Route::Enosys { raw: m_type },
         }
+    }
+
+    /// `run_once`——主循环单轮入口：接收消息 → 路由 → 门控 → 分发。
+    ///
+    /// 门语义（legacy dispatch 迁入）：`accept_requests == false` 时用户
+    /// 请求标 `FP_PENDING` 并计数（去重），不处理；`Pm` 控制面短路的
+    /// 优先序由 `route_message` 保持。
+    pub fn run_once<C: TransIdCodec>(&mut self, msg: &Message, codec: &C) -> Route {
+        self.current_message = *msg;
+        self.current_fp_slot = msg.m_source.to_user_slot();
+        let route = self.route_message(msg, codec);
+        match route {
+            Route::Syscall { call } => {
+                if self.accept_requests {
+                    let _ = crate::syscalls::dispatch_syscall(self, call);
+                } else if let Some(slot) = self.current_fp_slot {
+                    self.mark_request_pending(slot);
+                }
+            }
+            Route::Enosys { .. } => {
+                // 真实回复 ENOSYS 的发送侧挂 W1 transport；决策面已定。
+            }
+            _ => {}
+        }
+        route
     }
 
     /// `get_work:590` reviving fast-path — if `reviving>0` find first
@@ -838,12 +823,15 @@ pub fn run() -> ! {
 
         // Message dispatch logic
         // Currently mock, just showing dispatch framework
-        let _ = state.dispatch();
+        let codec = VfsTransIdCodec;
+        let msg = state.current_message;
+        let _route = state.run_once(&msg, &codec);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::call_table::VfsCallNum;
     use super::*;
     use minix_types::{Endpoint, VFS_PM_INIT};
 
@@ -997,48 +985,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_gated_marks_pending() {
-        let mut state = VfsState::new();
-        state.init_fresh();
-
-        // worker_allow(FALSE)（main.c:503）。
-        state.set_accept_requests(false);
-        let ep = Endpoint::from_generation_slot(0, 5);
-        state.current_message.m_source = ep;
-
-        let result = state.dispatch();
-        assert_eq!(result, DispatchResult::Continue);
-        assert_eq!(state.pending, 1);
-        let fp = state.fproc_table.get(UserSlot::new(5)).unwrap();
-        assert!(fp.flags.contains(FpFlags::PENDING));
-        assert_eq!(state.current_fp_slot, Some(UserSlot::new(5)));
-    }
-
-    #[test]
-    fn test_dispatch_gated_dedups_pending() {
-        let mut state = VfsState::new();
-        state.init_fresh();
-        state.set_accept_requests(false);
-        state.current_message.m_source = Endpoint::from_generation_slot(0, 5);
-
-        state.dispatch();
-        state.dispatch();
-        assert_eq!(state.pending, 1);
-    }
-
-    #[test]
-    fn test_dispatch_accepts_when_open() {
-        let mut state = VfsState::new();
-        state.init_fresh();
-        let ep = Endpoint::from_generation_slot(0, 5);
-        state.current_message.m_source = ep;
-        let result = state.dispatch();
-        assert_eq!(result, DispatchResult::SpawnWorker);
-        assert_eq!(state.current_fp_slot, Some(UserSlot::new(5)));
-        assert_eq!(state.pending, 0);
-    }
-
-    #[test]
     fn test_vfs_state_is_from_pm() {
         let mut state = VfsState::new();
         state.current_message.m_source = Endpoint::PM;
@@ -1046,32 +992,6 @@ mod tests {
 
         state.current_message.m_source = Endpoint::VM;
         assert!(!state.is_from_pm());
-    }
-
-    #[test]
-    fn test_vfs_state_dispatch_from_pm() {
-        let mut state = VfsState::new();
-        state.current_message.m_source = Endpoint::PM;
-        let result = state.dispatch();
-        assert_eq!(result, DispatchResult::Continue);
-    }
-
-    #[test]
-    fn test_vfs_state_dispatch_from_user() {
-        let mut state = VfsState::new();
-        let ep = Endpoint::from_generation_slot(0, 5);
-        state.current_message.m_source = ep;
-        let result = state.dispatch();
-        assert_eq!(result, DispatchResult::SpawnWorker);
-        assert_eq!(state.current_fp_slot, Some(UserSlot::new(5)));
-    }
-
-    #[test]
-    fn test_vfs_state_dispatch_from_kernel() {
-        let mut state = VfsState::new();
-        state.current_message.m_source = Endpoint::KERNEL;
-        let result = state.dispatch();
-        assert_eq!(result, DispatchResult::Ignored);
     }
 
     #[test]
@@ -1118,13 +1038,6 @@ mod tests {
     fn test_pm_message_type() {
         assert_eq!(PmMessageType::Fork, PmMessageType::Fork);
         assert_eq!(PmMessageType::Unknown(99), PmMessageType::Unknown(99));
-    }
-
-    #[test]
-    fn test_dispatch_result() {
-        assert_eq!(DispatchResult::Continue, DispatchResult::Continue);
-        assert_eq!(DispatchResult::SpawnWorker, DispatchResult::SpawnWorker);
-        assert_eq!(DispatchResult::Ignored, DispatchResult::Ignored);
     }
 
     #[test]
@@ -1445,3 +1358,89 @@ mod tests {
         assert!(!VfsState::is_bdev_rs(crate::call_table::VfsCallNum::Open as u32));
         assert!(!VfsState::is_cdev_rs(0xA00)); // FS_REQ namespace (com.h:589)
     }
+
+#[cfg(test)]
+mod run_once_tests {
+    use super::*;
+    use crate::call_table::VfsCallNum;
+    use minix_types::{Endpoint, Message, MessageM7, MessageUnion};
+
+    #[test]
+    fn test_run_once_gated_marks_pending() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        state.set_accept_requests(false);
+        let codec = VfsTransIdCodec;
+        let msg = Message {
+            m_source: Endpoint::from_generation_slot(0, 5),
+            m_type: VfsCallNum::Open as i32,
+            ..Message::default()
+        };
+        let route = state.run_once(&msg, &codec);
+        assert!(matches!(route, Route::Syscall { .. }));
+        assert_eq!(state.pending, 1);
+        let fp = state.fproc_table.get(UserSlot::new(5)).unwrap();
+        assert!(fp.flags.contains(FpFlags::PENDING));
+        assert_eq!(state.current_fp_slot, Some(UserSlot::new(5)));
+    }
+
+    #[test]
+    fn test_run_once_gated_dedups_pending() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        state.set_accept_requests(false);
+        let codec = VfsTransIdCodec;
+        let msg = Message {
+            m_source: Endpoint::from_generation_slot(0, 5),
+            m_type: VfsCallNum::Open as i32,
+            ..Message::default()
+        };
+        state.run_once(&msg, &codec);
+        state.run_once(&msg, &codec);
+        assert_eq!(state.pending, 1);
+    }
+
+    #[test]
+    fn test_run_once_accepts_when_open() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let codec = VfsTransIdCodec;
+        let msg = Message {
+            m_source: Endpoint::from_generation_slot(0, 5),
+            m_type: VfsCallNum::Open as i32,
+            ..Message::default()
+        };
+        let route = state.run_once(&msg, &codec);
+        assert!(matches!(route, Route::Syscall { .. }));
+        assert_eq!(state.pending, 0);
+    }
+
+    #[test]
+    fn test_run_once_enosys_for_unknown() {
+        // 未知调用号 → Enosys 路由（main.c:283-294 的 ENOSYS 语义）。
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let codec = VfsTransIdCodec;
+        let msg = Message {
+            m_source: Endpoint::from_generation_slot(0, 5),
+            m_type: (VfsCallNum::Open as i32) + 200,
+            ..Message::default()
+        };
+        let route = state.run_once(&msg, &codec);
+        assert!(matches!(route, Route::Enosys { .. }));
+    }
+
+    #[test]
+    fn test_run_once_pm_short_circuit() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let codec = VfsTransIdCodec;
+        let msg = Message {
+            m_source: Endpoint::PM,
+            m_type: VfsCallNum::Open as i32,
+            ..Message::default()
+        };
+        let route = state.run_once(&msg, &codec);
+        assert!(matches!(route, Route::Pm));
+    }
+}

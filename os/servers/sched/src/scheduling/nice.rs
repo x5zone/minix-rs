@@ -51,11 +51,11 @@ pub struct Current {
 /// (`266-271`), illegal ceilings last (`275-276`). On passage the
 /// ceiling AND the probed slot ride back together — the caller needs
 /// both for the write, and neither exists before the doors pass.
-pub fn admit<'a>(
+pub fn admit(
     sender_ok: bool,
-    slot: &'a Result<OccupiedSlot, SlotVerdict>,
+    slot: &Result<OccupiedSlot, SlotVerdict>,
     maxprio: i32,
-) -> Result<(Priority, &'a OccupiedSlot), i32> {
+) -> Result<(Priority, &OccupiedSlot), i32> {
     if !sender_ok {
         return Err(EPERM);
     }
