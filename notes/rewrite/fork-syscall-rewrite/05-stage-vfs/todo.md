@@ -49,7 +49,7 @@
 
 ### C-1～C-10（缺口表，R1 存档 §1）
 
-逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（REQ_LOOKUP 于 request.rs:50 在 src 内无 request.rs 之外消费者）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略）、有意省略表（✅ 已落 99-global-concepts.md，§10 Fix #28）。
+逐条复核 ✅ 维持开口：SEF（✅ LU 三回调决策组已补，§10 Fix #26；RS 侧行交互挂 P1-2/E9；init_restart ≡ init_fresh 已文档化）、clo_exec（✅ 已补，§10 Fix #21）、invalidate 失效族（✅ by_char_major/by_sock_drv 已补，§10 Fix #6；by_endpoint 已修，Fix #5）、vmnt 锁升降级（✅ 已补，§10 Fix #20）、fetch_vmnt_paths（✅ 判定反转：C 死代码有意省略，Fix #22）、path 循环（✅ lookup 循环核心已落地，§10 Fix #35；包装层 eat_path/last_dir/get_name/canonical_path 随 W7 入口落地）、mount_pfs/do_socketpath（✅ canned-mount 计划与入口三门已补，§10 Fix #25；确认往返与路径行走挂 P1-2/C-6）、pm_reboot/unmount_all（✅ 八步序列决策已补，§10 Fix #24；执行循环归 10 号接线）、ds_event（✅ 分类/门/分派已补，§10 Fix #23；panic_hook 判有意省略）、有意省略表（✅ 已落 99-global-concepts.md，§10 Fix #28）。
 
 **C-5 漂移修正 + ✅ 已修复** 2026-09-09（§10 Fix #22）：`Vmnt` 已有 `mount_path: String` 字段（os/servers/vfs/src/vmnt.rs:111，对应 C vmnt.h:17 `m_mount_path`）——首轮"Vmnt 无路径字段"表述失实。修复时判定再度反转：**`fetch_vmnt_paths` 在 C 树中是死代码**（定义 vmnt.c:246、声明 proto.h:371、全树零调用）——C 行为真相是 `fill_statvfs` 直接拷 `m_mount_path`（stadir.c:284），故该函数有意不移植（入省略台账）；真正缺口是 `fill_statvfs` 的三名字拷贝，已补 `MountNames`/`mount_names`（stadir.rs，stadir.c:283-285 对应）。
 
@@ -521,3 +521,12 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：两篇均 22 行 pending 骨架（plan.md §6 标"骨架"）。
 - **After**：00 按 `.design/00-outline.v1` 契约展开七节——VFS 定位（mthread→A-1 演进论证带 Redox 事实锚点）、启动主线图（main.c:54-138 各站锚点）、服务面三数字（64+12+33）、C 33 文件分组地图、Rust 模块地图、双阅读路径；99 按契约展开——容量常量族逐个给机制依据（核查中当场逮到 NR_MNTS 8/16 分叉，Fix #33 顺承）、`m_type` 四名字空间、阻塞枚举类型化、glo.h 归属、引用计数双层不变量、`sys_datacopy_wrapper`、A-8/A-9；省略表整合为正文一节。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**（纯文档）；`tools/design-coverage-check.sh` ALL PASS 维持；快照可升 v2 复审。
+
+
+### ✅ Fix #35: C-6 核心 — lookup 跨 FS 往返循环实函数化（2026-09-09）
+
+- **File**：`os/servers/vfs/src/path.rs`（`MountedFs`/`RootDir` 视图 + `lookup` 主循环 + 六场景测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/13-path-lookup.md`（实现表 + C-6 闭合说明）。
+- **Before**：REQ_LOOKUP 往返推进循环未落地——`Lookup`/`LookupRes`/`consume_prefix` 结构齐但无循环。
+- **After**：`lookup(start_fs, start_ino, start_dev, resolve, rd, uid, gid, mounts, req_lookup)`——每轮把 `(fs_e, dir_ino, root_ino)` 交给 `req_lookup` 接缝（W7 接线时接 `FsReq::Lookup`+`FsClient`；测试用脚本应答），三类特殊码裁决：EENTERMOUNT 找 `mounted_on == (ino, fs_e)` 行切根（找不到 EIO 加固为 NoEnt）；ELEAVEMOUNT 找当前 fs 行 + `..` 伪路径守卫（C panic 加固为 ENOENT）；ESYMLINK 从 `fp_rd` 重启。`symloop` 累计越界 ELOOP；chroot 边界（同 dev 才生效）每轮重算。**设计要点**：`mounts: &[MountedFs]` 身份快照——C 读共享内存 `vmnt[]`，单线程事件循环下循环内等价（快照每轮 lookup 前重建，W7 接线时入档）。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **352 passed / 0 failed**（346→352：六场景——单 FS 一轮中/进挂载切根/爬出+挂载点落定/伪路径 ENOENT/符号链接死循环 ELOOP/空路径 ENOENT）。
+- **记录顺序说明**：本记录按提交时间追加于 §10 末尾；§10 此前的记录已按编号重排（Fix #1–#34），后续记录同样按提交时间追加并以标题编号检索。
