@@ -17,6 +17,41 @@ pub(crate) const PAGE_SIZE: u64 = 4096;
 pub(crate) trait PfnAllocator {
     fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError>;
     fn free_pfn(&mut self, pfn: u32);
+
+    /// Allocate `count` physically **contiguous** pages and return the
+    /// first PFN. The real allocator (VmPageAllocator) overrides this with
+    /// a single multi-page request — its backends return contiguous runs
+    /// by construction (bitmap scans a run, buddy hands out a block,
+    /// segment-tree first-fits a range), so contiguity is guaranteed, not
+    /// verified (V12-P2-7).
+    ///
+    /// The default is the allocate-verify-rollback fallback for trivial
+    /// allocators (test stubs that hand out bare PFNs): request pages one
+    /// by one, check consecutiveness, and roll everything back on a gap or
+    /// shortage. C-parity note: C needs none of this — `alloc_mem(pages, …)`
+    /// is contiguous natively, which is exactly what the override restores.
+    fn alloc_contiguous(&mut self, count: u32) -> Result<u32, PfnAllocError> {
+        let first = self.alloc_pfn()?;
+        let mut pfns = alloc::vec![first];
+        for _ in 1..count {
+            match self.alloc_pfn() {
+                Ok(pfn) => pfns.push(pfn),
+                Err(_) => {
+                    for &pfn in &pfns {
+                        self.free_pfn(pfn);
+                    }
+                    return Err(PfnAllocError::OutOfMemory);
+                }
+            }
+        }
+        if !pfns.windows(2).all(|w| w[1] == w[0] + 1) {
+            for &pfn in &pfns {
+                self.free_pfn(pfn);
+            }
+            return Err(PfnAllocError::OutOfMemory);
+        }
+        Ok(first)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

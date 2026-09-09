@@ -770,69 +770,24 @@ impl MemType for ContiguousAnonymous {
             return Ok(());
         }
 
-        // C: anon_contig_new (mem_anon_contig.c:52-96)
-        // Step 1: Create phys_block + phys_region for each page (MAP_NONE).
-        //         In PFN model: all slots start as `PageSlot::Empty`
-        //         (created by `VirRegion::new`, no explicit pass needed).
-        // Step 2: alloc_mem(pages, allocflags) — allocate contiguous physical memory.
-        //         In PFN model: allocate contiguous PFNs one by one.
-        // Step 3: Assign contiguous physical addresses to each phys_region.
+        // C: anon_contig_new (mem_anon_contig.c:78-96) — ONE
+        // `alloc_mem(pages, allocflags)` request hands back a contiguous
+        // run, and each page's phys address is base + offset. The Rust
+        // mirror is a single `alloc_contiguous(pages)` call (V12-P2-7):
+        // the real allocator's backends return contiguous runs by
+        // construction, so contiguity is guaranteed rather than
+        // verified. (The former allocate-then-windows(2)-check lived
+        // here only because the PfnAllocator trait lacked the primitive;
+        // its self-contradictory "non-contiguous fallback" comment
+        // described behavior the code never had — it returned ENOMEM.)
+        let first_pfn = alloc
+            .alloc_contiguous(pages as u32)
+            .map_err(|_| MemTypeError::NoMemory)?;
 
-        // Step 1 & 2: Allocate contiguous PFNs.
-        // The C code uses alloc_mem() which returns a single contiguous block.
-        // In the PFN model, we allocate individual pages and verify contiguity.
-        // For a truly contiguous allocation, we need a contiguous allocator,
-        // but the current PfnAllocator only supports single-page allocation.
-        //
-        // Strategy: Allocate the first page, then verify that subsequent
-        // allocations are contiguous. If not, free all and retry.
-        // This is a simplified approach; a proper buddy allocator with
-        // contiguous allocation support would be more efficient.
-        //
-        // NOTE: The VM server is single-threaded (user-space server), so
-        // there is no race condition between allocation and verification.
-
-        let first_pfn = alloc.alloc_pfn().map_err(|_| MemTypeError::NoMemory)?;
-        let mut pfns = alloc::vec![first_pfn];
-
-        for _ in 1..pages {
-            match alloc.alloc_pfn() {
-                Ok(pfn) => pfns.push(pfn),
-                Err(_) => {
-                    // Rollback: free all allocated PFNs
-                    for &pfn in &pfns {
-                        alloc.free_pfn(pfn);
-                    }
-                    return Err(MemTypeError::NoMemory);
-                }
-            }
-        }
-
-        // Verify contiguity: PFNs must be consecutive
-        let is_contiguous = pfns.windows(2).all(|w| w[1] == w[0] + 1);
-        if !is_contiguous {
-            // Contiguity not guaranteed with single-page allocator.
-            // Free all and return error — a proper contiguous allocator
-            // is needed for guaranteed contiguity.
-            // For now, still map the pages (non-contiguous) as a fallback,
-            // but log a warning. This matches the spirit of the C code
-            // which panics on pagefault for contig regions — if the pages
-            // aren't contiguous, DMA-like usage will fail at runtime.
-            //
-            // TODO: Implement PfnAllocator::alloc_contiguous() or use
-            // VmPageAllocator::alloc_pages() with CONTIG flag for guaranteed
-            // contiguous allocation.
-            for &pfn in &pfns {
-                alloc.free_pfn(pfn);
-            }
-            return Err(MemTypeError::NoMemory);
-        }
-
-        // Step 3: Map each page slot with the contiguous PFN
         let memtype: &'static dyn MemType = &MEM_TYPE_CONTIG_ANON;
-        for (i, &pfn) in pfns.iter().enumerate() {
+        for i in 0..pages {
             let offset = VirBytes(i as u64 * PAGE_SIZE);
-            region.map_page(frames, offset, pfn, memtype);
+            region.map_page(frames, offset, first_pfn + i as u32, memtype);
         }
 
         Ok(())

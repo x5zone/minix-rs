@@ -142,6 +142,16 @@ impl PfnAllocator for VmPageAllocator {
         let phys = AlignedPhysBytes::new(pfn as u64 * PAGE_SIZE);
         self.free_page(phys);
     }
+
+    /// V12-P2-7: one multi-page request through the funnel — the backends
+    /// hand out contiguous runs natively, and the funnel's reclaim-retry
+    /// (V11/T30) comes along for free. Replaces ContiguousAnonymous's
+    /// allocate-verify-rollback dance.
+    fn alloc_contiguous(&mut self, count: u32) -> Result<u32, PfnAllocError> {
+        self.alloc_phys(count as usize, PageAllocFlags::empty())
+            .map(|phys| (phys.as_u64() / PAGE_SIZE) as u32)
+            .map_err(|_| PfnAllocError::OutOfMemory)
+    }
 }
 
 /// C `alloc_mem` (alloc.c:242-270) — the allocation funnel with
@@ -331,6 +341,44 @@ mod tests {
         let adjusted_regions = [BootMemRegion { base: adjusted_base, size: adjusted_size }];
 
         PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
+    }
+
+    /// V12-P2-7: the alloc_contiguous override issues ONE multi-page
+    /// request through the funnel. Contiguity within each run is the
+    /// backend's construction guarantee (bitmap scans a run, buddy hands
+    /// out a block, segment-tree first-fits a range) — this test pins the
+    /// observable contract instead: runs are disjoint, and a freed run is
+    /// satisfiable again whole. (The bitmap is high-first, so run bases
+    /// descend; don't assert adjacency between runs.)
+    #[test]
+    fn test_alloc_contiguous_override_returns_consecutive_run() {
+        with_alloc_mock_base(|| {
+            let mut alloc = VmPageAllocator::new(make_test_phys_alloc(256));
+
+            let base = alloc.alloc_contiguous(4).expect("4-page run available");
+            let second = alloc.alloc_contiguous(2).expect("second run available");
+
+            // Runs must be disjoint allocations.
+            assert!(
+                second + 2 <= base || base + 4 <= second,
+                "runs overlap: first={base}, second={second}"
+            );
+
+            // Return the first run whole — one free_pages call, matching
+            // the allocation's event granularity (the stats count events,
+            // so page-granular free_pfn ×4 after a 4-click alloc would
+            // underflow active_allocations — a pre-existing accounting
+            // asymmetry this test surfaced, noted in todo Fix #79).
+            alloc.free_pages(
+                crate::phys_mem::AlignedPhysBytes::new(base as u64 * PAGE_SIZE as u64),
+                4,
+            );
+            let again = alloc.alloc_contiguous(4).expect("freed run reusable");
+            assert!(
+                again + 4 <= second || second + 2 <= again,
+                "re-request must not overlap the live second run"
+            );
+        });
     }
 
     #[test]

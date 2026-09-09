@@ -106,9 +106,9 @@ V12 原表（重校后逐项处置见 §18.9 Fix #70）：
 
 复核 ✅：V12 的前提不成立——C 的 do_mapcache 在 miss 时**同样** `map_unmap_region` 整区回滚（mem_cache.c:155-157），两侧顺序同构（区域先建 → 逐页链接 → 失败回滚）。Rust 的"表外组装、提交时插入"回滚面反而更小。真实价值 = V12 建议的中途失败注入测试，已补（`test_dispatch_mapcache_mid_failure_rolls_back_refcounts`，refcount 对称性定格）。勘误与差异表见 24-page-cache.md §3.6 第 10 行、§18.9 Fix #74。
 
-### V12-P2-7（P2）`ContiguousAnonymous::ev_new` 质量债
+### ✅ V12-P2-7（P2）`ContiguousAnonymous::ev_new` 质量债——已修复 2026-09-09（§18.9 Fix #79）
 
-维持（`windows(2)` 事后验证 + `PageAllocFlags::CONTIG` 未用 + :803-806 注释与 :811-813 行为矛盾）。方案见 V12 存档 §17.2。
+`PfnAllocator::alloc_contiguous(count)` 落地（默认实现 = 原逐页验证回滚，`VmPageAllocator` 覆写 = 单次 `alloc_phys(count)` 漏斗请求），`ev_new` 改单调用，windows(2) 验证与自相矛盾注释删除。测试还挖出 `active_allocations` 的**事件/页粒度记账不对称**（多页 alloc 后页粒度 free 会下溢——预先存在，非本次引入）。明细见 §18.9 Fix #79。
 
 ### ✅ V12-P2-8（P2）文档-代码同步批（注释 C 锚点漂移）——已修复 2026-09-09（§18.9 Fix #71）
 
@@ -444,6 +444,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **设计偏离（对照 V12 提议）**：未采纳"下沉 page_cache.rs"——四 handler 消费整个 `VmContext`，迁入数据结构模块将倒置分层（page_cache → vm_server）；选 `ipc/cache_handlers.rs` 与 dispatcher 同向依赖，模块文档已记录该取舍与 C 归属（mem_cache.c）的对照。
 - **Verified**: 三矩阵 501/519/501 全绿；clippy servers/vm 0 警告；`wc -l` 验证行数
 - **Docs**: 24-page-cache.md 头部/结构图更新新路径；15-ipc-dispatch.md 头部加迁移注记（行号锚点标注为迁移前时点）；checklist 归 G-V12-13 批
+
+### ✅ Fix #79: V12-P2-7 — `PfnAllocator::alloc_contiguous` + `ev_new` 单调用化（质量债清偿）
+
+- **问题**：`ContiguousAnonymous::ev_new` 逐页分配后 `windows(2)` 事后验证连续性 + 失败回滚，注释声称"非连续 fallback"实际返回 ENOMEM（自相矛盾）；根因是 `PfnAllocator` trait 缺多页分配原语，而三个后端的 `alloc_mem(count, …)` 本就返回连续 run（bitmap 扫 run、buddy 整块、segtree first-fit）——C 的 `alloc_mem(pages, allocflags)`（mem_anon_contig.c:79）同理。
+- **设计（方案对比）**：A（选定）——trait 加 `alloc_contiguous(count)` **带默认实现**（逐页+验证+回滚，即原语义），`VmPageAllocator` 覆写为单次 `alloc_phys(count)` 漏斗请求（回收重试 V11/T30 免费随之），20 个测试桩实现零改动。B（否决）——必选方法：破坏 20 个测试实现。C（否决）——`PageAllocFlags::CONTIG` 旗标路线：C 的 PAF_CONTIG（vm.h:23）定义后零消费（alloc.c/region.c 均不检查），两侧连续性都来自原生多页分配，旗标属集合 parity 不引入语义。
+- **Files**: `region/page_state.rs`（trait 默认实现）、`alloc_page.rs`（VmPageAllocator 覆写 + 新测试）、`memtype.rs`（ev_new 重写，删 windows(2)/TODO/矛盾注释）
+- **测试（新增 1 + 既有 2 转轨）**：`test_alloc_contiguous_override_returns_consecutive_run`（真实 bitmap 分配器：run 分离 + 整 run 释放后可复得——**顺带挖出 `active_allocations` 事件/页粒度记账不对称**：多页 alloc 后页粒度 free_pfn 会下溢 debug_assert，预先存在、非本次引入，登记待后续处置）；`test_contig_ev_new_preallocates_consecutive_pfns`/`rolls_back_on_gap` 经 trait 默认实现转轨零改动通过
+- **Verified**: 三矩阵 **502/520/502 passed**（+1）；clippy servers/vm 0 警告
+- **边界**：contig 域的 fork 仍不支持（ev_reference 拒绝，V12/13 已登记）；记账不对称修复若需要，属 alloc_stats/alloc_page 的独立小条目
 
 ---
 
