@@ -373,6 +373,51 @@ impl From<CowCoreError> for CowError {
     }
 }
 
+/// Copy `src_pfn` into `dst_pfn` and zero the last `zero_len` bytes of the
+/// destination page — the Rust `cow_block(…, clearend)` tail (mem_file.c:
+/// 73-79, G-V12-11): a file's final partial page must never expose the
+/// cache's stale bytes past EOF, so the private copy is created first and
+/// the tail is scrubbed second.
+///
+/// # SAFETY (target builds)
+/// See `copy_page_content`; the zeroing writes `[dst + PAGE_SIZE -
+/// zero_len, dst + PAGE_SIZE)` via the direct map. Callers guarantee
+/// `zero_len <= PAGE_SIZE`; a zero `zero_len` skips the memset entirely.
+#[cfg(not(test))]
+pub(crate) fn copy_page_and_zero_tail(
+    frames: &PageFrames,
+    src_pfn: u32,
+    dst_pfn: u32,
+    zero_len: u64,
+) {
+    copy_page_content(frames, src_pfn, dst_pfn);
+    if zero_len == 0 {
+        return;
+    }
+    let zero_len = zero_len.min(PAGE_SIZE) as usize;
+    let dst_phys = AlignedPhysBytes::new_unchecked(frames.pfn_to_phys(dst_pfn).0);
+    let tail_ptr = unsafe { (vm_phys_to_virt(dst_phys).0 as *mut u8).add(PAGE_SIZE as usize - zero_len) };
+    // SAFETY: the tail range lies inside the destination page (zero_len is
+    // clamped to PAGE_SIZE above) and is exclusive to this fresh private
+    // copy — no other reference exists.
+    unsafe {
+        core::ptr::write_bytes(tail_ptr, 0, zero_len);
+    }
+}
+
+/// Host-test stub: memory content is not observable without a real Direct
+/// Map, so the copy/zero body is a no-op here (same split as
+/// `copy_page_content`). Structural outcomes (private PFN, ANON retype)
+/// remain assertable; byte-level zeroing verifies on target builds only.
+#[cfg(test)]
+pub(crate) fn copy_page_and_zero_tail(
+    _frames: &PageFrames,
+    _src_pfn: u32,
+    _dst_pfn: u32,
+    _zero_len: u64,
+) {
+}
+
 #[cfg(not(test))]
 fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
     debug_assert_ne!(src_pfn, dst_pfn, "copy_page_content: src and dst PFN must differ");

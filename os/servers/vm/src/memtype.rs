@@ -983,7 +983,7 @@ impl MemType for MappedFile {
         offset: VirBytes,
         write: bool,
         _table: &VmProcTable,
-        _alloc: &mut dyn PfnAllocator,
+        alloc: &mut dyn PfnAllocator,
         cache: &mut PageCache,
     ) -> Result<PagefaultResult, MemTypeError> {
         if let crate::region::VrParam::File { inited, .. } = &region.param
@@ -1034,28 +1034,48 @@ impl MemType for MappedFile {
 
                 match cached {
                     Some(cp) if !cp.once => {
-                        // C: pb_link(ph, cp->page, ph->offset, region)
-                        // (mem_file.c:123) — the PFN model maps the cached
-                        // frame into the slot; `map_page` bumps the frame
-                        // refcount (the mapping's reference, on top of the
-                        // cache's own from addcache). No separate cache
-                        // entry refcount exists — the frame refcount is
-                        // authoritative (24-page-cache D1/D3).
-                        let pfn = cp.pfn;
-                        region.map_page(frames, offset, pfn, &MEM_TYPE_MAPPED_FILE);
-
-                        // C mem_file.c:124-138: if the faulted page is the last
-                        // (partially-mapped) page of the region, or the access
-                        // is a write, run cow_block — copy the shared cached page
-                        // into a private anon page (clearend zeroing is not yet
-                        // modeled; doc 24 §3.5 差异清单).
+                        // C mem_file.c:124-138: link the cached frame, then
+                        // branch on (tail page ‖ write):
+                        //   * tail page (roundup(offset+clearend) ≥ length):
+                        //     `cow_block(…, clearend)` — copy the cached
+                        //     frame into a PRIVATE anon page and zero the
+                        //     `clearend` bytes past EOF; the cache's stale
+                        //     tail must never become visible (G-V12-11:
+                        //     clearend zeroing modeled as of 2026-09-09).
+                        //   * write on a non-tail page: `cow_block(…, 0)` —
+                        //     private copy without zeroing.
+                        //   * read on a non-tail page: the link alone, OK.
                         let last_partial = {
                             let page_end = (offset.0 + clearend as u64).div_ceil(PAGE_SIZE) * PAGE_SIZE;
                             page_end >= region.length.0
                         };
-                        if write || last_partial {
+                        if last_partial {
+                            // Inline `cow_block(…, clearend)`: private copy of
+                            // the cached frame (memtype retypes to anon with
+                            // the map below), tail scrubbed. The cache entry
+                            // itself stays (C never rmcache's a clearend tail
+                            // either — only VMSF_ONCE entries are dropped).
+                            let new_pfn = alloc
+                                .alloc_pfn()
+                                .map_err(|_| MemTypeError::NoMemory)?;
+                            crate::cow_exec_pf::copy_page_and_zero_tail(
+                                frames, cp.pfn, new_pfn, clearend as u64,
+                            );
+                            region.map_page(frames, offset, new_pfn, &MEM_TYPE_ANON);
+                            Ok(PagefaultResult::Handled)
+                        } else if write {
+                            // C: cow_block(…, 0) — the shared cow path copies
+                            // and retypes to anon (cow_resolve_core).
                             Ok(PagefaultResult::NeedCow)
                         } else {
+                            // C: pb_link(ph, cp->page, ph->offset, region)
+                            // (mem_file.c:123) — the PFN model maps the cached
+                            // frame into the slot; `map_page` bumps the frame
+                            // refcount (the mapping's reference, on top of the
+                            // cache's own from addcache). No separate cache
+                            // entry refcount exists — the frame refcount is
+                            // authoritative (24-page-cache D1/D3).
+                            region.map_page(frames, offset, cp.pfn, &MEM_TYPE_MAPPED_FILE);
                             Ok(PagefaultResult::Handled)
                         }
                     }
@@ -1291,6 +1311,80 @@ mod tests {
             minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
         );
         assert_eq!(result, Ok(PagefaultResult::NeedNewPage));
+    }
+
+    /// G-V12-11: the region's LAST page (when `clearend > 0`) never serves
+    /// the file tail from the shared cache frame — C `cow_block(…,
+    /// clearend)` (mem_file.c:131-134, zeroing at :73-79) copies the cached
+    /// frame into a private anon page and scrubs the bytes past EOF. A
+    /// non-tail read still links the cache frame directly, and the cache
+    /// entry itself survives (C only rmcache's VMSF_ONCE entries).
+    ///
+    /// Structural outcomes are asserted here; byte-level zeroing verifies
+    /// on target builds (the host stub of `copy_page_and_zero_tail` is a
+    /// no-op, same split as `copy_page_content`).
+    #[test]
+    fn test_mapped_file_tail_page_private_copy_with_clearend() {
+        use crate::region::PfnAllocError;
+
+        struct TestAlloc { next: u32 }
+        impl PfnAllocator for TestAlloc {
+            fn alloc_pfn(&mut self) -> Result<u32, PfnAllocError> {
+                let pfn = self.next; self.next += 1; Ok(pfn)
+            }
+            fn free_pfn(&mut self, _pfn: u32) {}
+        }
+
+        let table = VmProcTable::get_global();
+        let mut frames = PageFrames::new(minix_types::PhysBytes(4096 * 16));
+        // next starts at 2: pfns 0/1 are the cache frames seeded below.
+        let mut alloc = TestAlloc { next: 2 };
+        let mut cache = PageCache::new();
+
+        let fdref_id = crate::fdref::FdRefTable::get_global().create(7, 1, 100);
+        let mut region = crate::region::VirRegion::new(
+            minix_types::VirBytes(0x1000),
+            minix_types::VirBytes(0x2000), // two pages
+            crate::region::VrFlags::empty(),
+        );
+        region.def_memtype = Some(&MEM_TYPE_MAPPED_FILE);
+        region.param = crate::region::VrParam::File {
+            inited: true,
+            fdref_id: Some(fdref_id),
+            offset: 0,
+            clearend: 100, // file ends 100 bytes into the last page
+        };
+
+        // Cache entries for both pages (pfn 0 and 1, cache's own refs).
+        cache.addcache(1, 0, Some(100), 0, false, 0, &mut frames).unwrap();
+        cache.addcache(1, 0x1000, Some(100), 0x1000, false, 1, &mut frames).unwrap();
+
+        // Page 0 (non-tail) read → direct link of the cache frame.
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::Handled));
+        let slot = region.get_slot(minix_types::VirBytes(0)).unwrap();
+        assert_eq!(slot.pfn(), Some(0), "non-tail read links the cache frame");
+        assert!(slot.is_mapped());
+
+        // Page 1 (tail) read → PRIVATE anon copy, never the cache frame.
+        let result = MEM_TYPE_MAPPED_FILE.ev_pagefault(
+            Endpoint(1), &mut region, &mut frames,
+            minix_types::VirBytes(0x1000), false, table, &mut alloc, &mut cache,
+        );
+        assert_eq!(result, Ok(PagefaultResult::Handled));
+        let slot = region.get_slot(minix_types::VirBytes(0x1000)).unwrap();
+        assert_eq!(slot.pfn(), Some(2), "tail page must be a fresh private copy");
+        assert_eq!(
+            slot.memtype().map(|m| m.name()),
+            Some(MEM_TYPE_ANON.name()),
+            "tail copy retypes to anon (C cow_block: memtype → anon)"
+        );
+
+        // The cache entry for the tail page survives (C keeps it too).
+        assert!(cache.find_by_dev(1, 0x1000, Some(100), 0x1000, false).is_some());
     }
 
     #[test]

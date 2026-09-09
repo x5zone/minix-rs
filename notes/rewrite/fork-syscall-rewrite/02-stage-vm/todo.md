@@ -118,9 +118,10 @@ V12 原表三处 + 复核补充两处；fork.rs "do_fork.c" 一项复核**已准
 
 复核 ✅（文件已迁 region_map.rs）：`find_overlap` 自 BTreeMap 首端线性扫 + 零长 insert 静默替换均确认存在。修复见 §18.9 Fix #72。
 
-### G-V12-11（P2）页缓存域两笔语义债（范围注记扩充）
+### ✅ G-V12-11（P2）页缓存域两笔语义债——已闭环 2026-09-09（§18.9 Fix #80）
 
-复核 ✅（重锚点）：`memtype.rs:1081` 注释仍自认 "clearend zeroing is not yet modeled"；ONCE 条件统一走 NeedVfsIo 多一次 VFS 往返维持。**V13 轮范围扩充**：C 的 clearend 清零不只发生在缓存链接路径——`cow_block` 对文件页 CoW 时同样清尾页（mem_file.c:73-79），即本债同样覆盖 CoW 路径（V13-P1-1 修复时需一并考虑 clearend 分支）。原文见 V12 存档 §17.1.2。
+- **第 1 笔（ONCE 条目统一走 NeedVfsIo）**：已作为偏差登记（24-page-cache.md §3.6 第 6 行）——端状态等价、差一次 IPC 往返，维持登记不修（消费语义依赖 transport，E-VFSWIRE 批次）。
+- **第 2 笔（clearend 清零未建模）**：✅ 修复——MappedFile 命中分支对尾页（roundup(offset+clearend) ≥ length）走内联 `cow_block(…, clearend)` 等价物：私有 anon 拷贝 + 尾部清零（`copy_page_and_zero_tail`），非尾写维持 NeedCow、非尾读维持直链。C 对照 mem_file.c:131-134/:73-79。明细见 §18.9 Fix #80。
 
 ### G-V12-12（P2 doc）00/99 骨架文档 + design 快照缺失
 
@@ -453,6 +454,15 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - **测试（新增 1 + 既有 2 转轨）**：`test_alloc_contiguous_override_returns_consecutive_run`（真实 bitmap 分配器：run 分离 + 整 run 释放后可复得——**顺带挖出 `active_allocations` 事件/页粒度记账不对称**：多页 alloc 后页粒度 free_pfn 会下溢 debug_assert，预先存在、非本次引入，登记待后续处置）；`test_contig_ev_new_preallocates_consecutive_pfns`/`rolls_back_on_gap` 经 trait 默认实现转轨零改动通过
 - **Verified**: 三矩阵 **502/520/502 passed**（+1）；clippy servers/vm 0 警告
 - **边界**：contig 域的 fork 仍不支持（ev_reference 拒绝，V12/13 已登记）；记账不对称修复若需要，属 alloc_stats/alloc_page 的独立小条目
+
+### ✅ Fix #80: G-V12-11(2) — clearend 尾页清零建模（MappedFile 命中分支内联 cow_block）
+
+- **问题**：文件尾页（`roundup(offset+clearend) ≥ length`）在 C 里经 `cow_block(…, clearend)`（mem_file.c:131-134）拷成私有 anon 页并清零 EOF 之后的 `clearend` 字节（:73-79）——缓存的陈旧尾部绝不能暴露给进程。Rust 此前对尾页返回 NeedCow（拷贝但不清零），EOF 后的陈旧字节会出现在进程的私有页里。
+- **设计**：MappedFile 命中分支三分重构（对齐 C 的分支序）：尾页 → **内联**私有拷贝 + `copy_page_and_zero_tail`（分配私页 → 拷贝 → 清零尾部 → 以 ANON 挂载 → Handled，镜像 C 在 memtype 回调内联 cow_block 的结构，clearend 语义留在知道它的 memtype 层，而非塞进通用 cow_resolve_core）；非尾写 → NeedCow（原样）；非尾读 → 直链（原样）。
+- **Files**: `cow_exec_pf.rs`（`copy_page_and_zero_tail` 双 cfg 变体：target 走 direct map 写零，host 桩 no-op——与 copy_page_content 同分split）、`memtype.rs`（命中分支三分 + `_alloc` 参数启用）
+- **测试（新增 1）**：`test_mapped_file_tail_page_private_copy_with_clearend`——2 页区域 + clearend=100：非尾读直链缓存帧、尾读得私有 ANON 新帧、cache 条目存活。字节级清零在 host 无法断言（桩 no-op），诚实标注 target 验证。
+- **Verified**: 三矩阵 **503/521/503 passed**（+1）；clippy servers/vm 0 警告
+- **边界**：24-page-cache.md §3.6 第 6 行（ONCE 往返差）维持登记（第 1 笔，E-VFSWIRE 批次）；尾页已私有化后二次写不再触发清零（PTE 已 RW，无故障）——与 C 的 phys != MAP_NONE 早退一致
 
 ---
 
