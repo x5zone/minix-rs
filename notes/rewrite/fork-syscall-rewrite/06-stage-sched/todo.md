@@ -5,6 +5,7 @@
 > 方法：V2 轮 = cmd-04 第二遍。先查漏补缺（C 符号 ↔ 14 篇文档 ↔ Rust 三向矩阵复建 + 第一轮最大缺口「主循环」落地后的八条执行侧语义逐条对测试），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核实）/OS 理论/Rust 社区惯例。本轮只审查未修代码。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档只留双向指针（§5）。
 > 状态（2026-09-09，V2 轮）：**服务本体收敛——P0 为零，stage 内新发现 1 条 P2 + 2 条 P3；真正的缺口全部在缝上**（内核接缝三件：niced 断环、PREEMPTIBLE 近似、SMP 三件套，已登记 edge 四条目 + E5 一增补）。第一轮遗留 9 条 open 经逐条 grep 复核全部维持（P3-1 的 noquantum_trust 行因主循环接线而闭单，其余升格或维持）。
+> 状态（2026-09-09，V2 执行轮 = Fix #5~#14）：**stage 内全部可行动 TODO 已闭环**（10 条修复 + 1 条挂 edge），测试基线 79 → **81 passed**，clippy 本体 0 告警，全文档 244 个活锚点扫描在位，design-coverage Gate H.1/H.6 缺失归零。唯一遗留 P2-3 挂 edge E-MINTYPES-SYS（minix-types 共享基建收敛，按 edge 判定①单线程执行）。git 竞态事故一次（nice.rs 修改被并行 vfs 工作流的 amend 卷走，内容已入库、归属不纯，见 §9 末尾注记）。
 
 ---
 
@@ -19,7 +20,7 @@
 | P2 | V2-P2-1 | 预留符号清算批次（升格自 P3-1：清算时点已到） | ✅ 已修复 2026-09-09（Fix #5） |
 | P2 | P2-1 | init 临时值 BSP 语义误读（V2 复核：加重——Rust 注释也描述了不存在的规则） | ✅ 已修复 2026-09-09（Fix #7） |
 | P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | ✅ 已修复 2026-09-09（Fix #11） |
-| P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
+| P2 | P2-3 | SUSPEND 常量本地定义（与 E-MINTYPES-SYS 合并修） | ⏸ 挂 edge（minix-types 属共享基建，edge 判定①） |
 | P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | ✅ 已修复 2026-09-09（Fix #8） |
 | P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | ✅ 已修复 2026-09-09（Fix #10） |
 | P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | ✅ 已修复 2026-09-09（Fix #9） |
@@ -127,7 +128,7 @@
 - V2 复核：14 篇已有「分工声明」块（:7-11，文档主权指向 03-stage-rs 两篇），但 P2-2 要的 **Rust 实现归属三层声明**（服务端视角 valid.rs / 契约镜像 client.rs / 行为主体 os/servers/rs）未落——client.rs 模块头（:1-15）自述「PM-facing half」，没有「本模块是契约镜像、不区分 PM 与 RS」一句；lib.rs 模块索引（:21）对 client 的描述也未提 14 篇。
 - 修法维持第一轮首选：14 篇补归属段 + client.rs 模块头补一句；次选（99 篇导航表集中登记）仍可。
 
-### P2-3 SUSPEND 常量本地定义 —— 维持 open
+### P2-3 SUSPEND 常量本地定义 —— ⏸ 挂 edge E-MINTYPES-SYS（依赖未解除，非 DEFERRED 充数）
 
 - V2 复核：dispatch.rs:21 `pub const SUSPEND: i32 = -998;` 仍在；同型新增一处——transport.rs:41/:45 的 SYS_SCHEDULE/SYS_SCHEDCTL 本地镜像（有注释、有 wire 断言钉值，第一轮 Fix #1 已注明「minix-types 暂缺」）。
 - **V2 修法更新**：与 edge E-MINTYPES-SYS 合并执行——minix-types 一次补两族常量（SUSPEND + SYS_* 调用号），dispatch.rs/transport.rs 改消费，避免同一个 crate 跑两遍常量收敛。
@@ -229,18 +230,18 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 
 ---
 
-## 8. 建议推进顺序
+## 8. 建议推进顺序（V2 执行轮后更新）
 
-1. **P2-1**（注释三重失真修正：start.rs + 06 篇 + 核查 10 篇）——仍是认知地雷，成本最低。
-2. **V2-P2-1**（四符号清算批次，一次 todo-fix）。
-3. **P2-3 + E-MINTYPES-SYS**（minix-types 一次补 SUSPEND + SYS_* 两族常量，两侧消费改接线）。
-4. **edge E-PREEMPTFLAG / E-SCHEDNICED**（行为级两件，随 edge_todo 单线程队列领取；前者优先——有真实的策略旁路后果）。
-5. **P2-4**（CpuId newtype 全链）。
-6. **V2-P3-1 / V2-P3-2**（随任何触碰 server.rs 的轮次顺带）。
-7. **P2-2 / P3-2 / P3-4 / P3-5**（文档项，随对应文档触碰时执行）。
-8. **E-SCHEDSMP / E5(e) / E8**（挂 01-stage SMP 与 E1 工作窗，SCHED 侧零改动）。
+**已完成（2026-09-09）**：V2-P2-1（Fix #5）、P3-4（#6）、P2-1（#7）、P2-4（#8）、V2-P3-2（#9）、V2-P3-1（#10）、P2-2（#11）、P3-2（#12）、P3-5（#13）、P3-3（#14）——§0 表全部闭环。
 
-每次修复遵循 fix-guard（修前读目标行 ±5、grep 确认现状、一次一条、修后 grep 验证并记录），修完跑 `cargo test -p minix-sched` 对照 §0 基线（79 passed）。
+**剩余项与领取条件**：
+1. **edge E-PREEMPTFLAG / E-SCHEDNICED**（行为级两件，价值最高；随 edge_todo 单线程队列领取，前者优先——有真实的策略旁路后果）。
+2. **P2-3 + E-MINTYPES-SYS**（minix-types 一次补 SUSPEND + SYS_* 两族常量——挂 edge，等收敛轮）。
+3. **E-SCHEDSMP / E5(e) / E8**（挂 01-stage SMP 与 E1 工作窗，SCHED 侧零改动）。
+4. **00/99 正文改写**（plan.md §6.1 排期；快照六件套已就位，改写后复验 outline ↔ 正文一致性）。
+5. **下一轮架构审查触发条件**：E1/E8 通电后，或 01-stage SMP 落地后（验证轮，非时间驱动例行轮）。
+
+每次修复遵循 fix-guard（修前读目标行 ±5、grep 确认现状、一次一条、修后 grep 验证并记录），修完跑 `cargo test -p minix-sched` 对照 §0 基线（当前 **81 passed**）。
 
 ---
 
@@ -322,3 +323,27 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 ### ✅ Fix #14: P3-3 — 00/99 .design/ 快照六件套生成
 **内容**：`.design/{00,99}-{outline,outline-review,design}.v1.md` 六文件，按既有三件套格式（Step 0.3 嵌入生成）。outline 描述目标结构（00：双层模型/启动主线/生涯导航/ARCH 总表导读；99：镜像原则/队列常量/消息错误码/边界总表），自审 verdict 诚实标注骨架期差距与复验时点，design 契约登记 stage 级形状（00：crate 双目标/三层结构/类型纪律/错误纪律）与共享约定层规则（99：镜像原则 + 例外账 + 类型归属二分）。
 **Verified**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 06-stage-sched` → Missing outline (H.6) 0 / Missing outline-review (H.6) 0 / Missing design (H.1) 0，**ALL DOCS COMPLETE**。
+
+
+---
+
+## 10. V2 执行轮总记（2026-09-09）
+
+一轮 todo-fix 连续领取十条（Fix #5~#14），每条独立提交、独立回归：
+
+| Fix | 条目 | 提交 | 要点 |
+|-----|------|------|------|
+| #5 | V2-P2-1 四符号清算 | f3469a02c | USER_QUANTUM 的消费方在 PM/RS（两 crate 各有定义），删 SCHED 副本比"移 PM"更忠实 |
+| #6 | P3-4 glob 删除 | 922224c3a | 唯一 glob 再导出零使用者 |
+| #7 | P2-1 注释三重失真 | 4d5dc3a2b | C 226 无条件重选才是真相；C 自身注释 177-183 已过时（点名防再误读） |
+| #8 | P2-4 CpuId 全链 | 06536d139 | pick 唯一生产者、内核同形、六处签名收类型 |
+| #9 | V2-P3-2 探针事实化 | 9e6976b70 | Probe 删除、OccupiedSlot 事实包、四臂收 facts-or-refusal、零 expect |
+| #10 | V2-P3-1 测试补强 | dae5d948f 前身 c33fb1587 | 79 → 81 passed |
+| #11 | P2-2 归属声明 | bc1ce07fb | 14 篇三层归属 + client.rs/lib.rs 头同步 |
+| #12 | P3-2 行锚 | d0d825c88 | com.rs 312 / message.rs 3698（rg 实测） |
+| #13 | P3-5 Redox 参照 | a1053d661 | RR→DWRR→EEVDF 两级 + S-9 路标 |
+| #14 | P3-3 快照六件套 | 713079ff4 | Gate H.1/H.6 缺失归零（.design 按约定不入库） |
+
+**基线**：`cargo test -p minix-sched` **81 passed / 0 failed**；clippy 本体 0 告警；全文档 244 个活锚点（todo.md 历史锚点除外）越界/空行扫描全过；design-coverage ALL DOCS COMPLETE。
+
+**git 竞态事故注记（诚实记录）**：Fix #10 的收尾 amend 撞上并行 vfs 工作流的提交推进——`nice.rs` 的 elided-lifetime 修改被 amend 进了对方的 vfs 提交（dae5d948f）。尝试 reset 修复时 HEAD 再次前移（7e5e98e2），判定活跃竞态下历史重写风险大于收益，**放弃修复**：内容已正确入库（clippy 告警确实清零），仅提交归属不纯。教训沉淀：并行工作流共用一个分支时，禁用 `git commit --amend`，一律 `git commit -- <paths>` 路径限定提交（本轮后半段已改用，无再发）。
