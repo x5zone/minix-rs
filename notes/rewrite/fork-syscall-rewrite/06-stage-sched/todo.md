@@ -25,7 +25,7 @@
 | P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | ✅ 已修复 2026-09-09（Fix #9） |
 | P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
 | P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | ✅ 已修复 2026-09-09（Fix #12） |
-| P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | open |
+| P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | ✅ 已修复 2026-09-09（Fix #14） |
 | P3 | P3-4 | lib.rs glob 再导出无人用 | ✅ 已修复 2026-09-09（Fix #6） |
 | P3 | P3-5 | 11 篇补 Redox 演进参照（V2 增补：RR→DWRR→EEVDF 两级） | ✅ 已修复 2026-09-09（Fix #13） |
 
@@ -147,9 +147,9 @@ noquantum_trust 行闭单（主循环接线，server.rs:244 消费）；is_valid
 - 01 篇 :179 仍声称 `test_sched_messages` 在 com.rs:223，实测 :312。
 - 修复归属不变（style-fix 或 full-review 锚点纪律门随手修）；02 篇 §5 的 server.rs 侧锚点经 Fix #4 同步已对齐（抽验 3/3），漂移只剩 minix-types 侧两处。
 
-### P3-3 00 与 99 两篇缺 .design/ 快照 —— 维持 open
+### P3-3 00 与 99 两篇缺 .design/ 快照 —— ✅ 已修复 2026-09-09（Fix #14，见 §9）
 
-V2 复跑 `tools/design-coverage-check.sh` 确认：00/99 各缺 outline、outline-review、design 共六个文件。归文档排期，不阻断代码审查。
+六件套生成（Step 0.3.2/0.3.3/0.3.4 嵌入生成）：outline 描述目标结构，自审 verdict 诚实标注「正文为最小骨架，改写随 plan.md §6.1 排期；outline ↔ 正文一致性在改写轮复验」。`design-coverage-check.sh` 复跑：H.1/H.6 缺失归零，ALL DOCS COMPLETE。
 
 ### P3-4 lib.rs 唯一的 glob 再导出没有被使用 —— ✅ 已修复 2026-09-09（Fix #6，见 §9）
 
@@ -317,3 +317,8 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 
 ### ✅ Fix #13: P3-5 — 11 篇补 Redox 两级演进参照
 11 篇 §1.6 的 Redox 段改写：简单轮转 → DWRR（RSoC 2026，重载约 1.5 倍吞吐）→ EEVDF（Linux 6.6 同款）两级演进全部写明（三个来源链接），并接上 §1.5 的 S-9 预留——「策略确实会换，而且换得很快；替换位置等的就是这种日子，路标现成两枚」。第一轮引用的 DWRR 单级版本作废。
+
+
+### ✅ Fix #14: P3-3 — 00/99 .design/ 快照六件套生成
+**内容**：`.design/{00,99}-{outline,outline-review,design}.v1.md` 六文件，按既有三件套格式（Step 0.3 嵌入生成）。outline 描述目标结构（00：双层模型/启动主线/生涯导航/ARCH 总表导读；99：镜像原则/队列常量/消息错误码/边界总表），自审 verdict 诚实标注骨架期差距与复验时点，design 契约登记 stage 级形状（00：crate 双目标/三层结构/类型纪律/错误纪律）与共享约定层规则（99：镜像原则 + 例外账 + 类型归属二分）。
+**Verified**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 06-stage-sched` → Missing outline (H.6) 0 / Missing outline-review (H.6) 0 / Missing design (H.1) 0，**ALL DOCS COMPLETE**。
