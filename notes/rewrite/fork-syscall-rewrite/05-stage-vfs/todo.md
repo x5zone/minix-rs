@@ -26,7 +26,7 @@
 | P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：`DirectFetcher::fetch` 伪造返回 `"a".repeat`、`eat_path` 签名吃 `TestFproc`、`StrictResolver` 恒返回 vnode 99（§9.2） |
 | P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2） |
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
-| P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2） |
+| P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #27） |
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
 | P2 | R2-P2-1 | ToErrno 统一映射通道未接入：30 个错误枚举 0 个 impl（P2-1 的修订方案）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #19） |
 | P2 | R2-P2-2 | 00/99 骨架文档待按快照契约改写（本轮 Step 0.3 已生成 6 份 v1 快照）（§9.2） |
@@ -61,7 +61,7 @@
 
 ### P1-1～P1-5（架构级，R1 存档 §3）
 
-- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。
+- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。**部分闭合** 2026-09-09（§10 Fix #27）：Read 占位符已由 `Route::Enosys` 取代（P1-1 的占位符子项闭合）；RS 前缀真值化见 R2-P1-4。
 - P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。
 - ✅ P1-3 已修复 2026-09-09（§10 Fix #8）：`PmHandler::fetch_group_list` 数据搬运口（`sys_datacopy_wrapper` 接缝，默认 fail-closed `ENOSYS`，通电挂 P1-2/E1）；`SETGROUPS` 臂补 `NGROUPS_MAX → EINVAL` 门（C 为 panic，fail-closed 偏差与 10-pm-protocol.md D4 的 EFAULT 决策同向）+ `group_no==0` 直清 + 正数路径经栈缓冲送真实列表。`PmError::NotImplemented` 变体新增。测试 +3（ENOSYS 预通电态/超限拒绝/零组直清）。
 - ✅ P1-4 已修复 2026-09-09（§10 Fix #9）：`FilterOutcome::Query` 增 `clear_update`/`set_busy` 义务字段（select.c:517 清 UPDATE 在发送前、:522 置 BUSY 在成功后，socket 对位 :525-538），`filter_step` 恒置 true——义务进数据而非调用方记忆；23-select.md D3 同步并登记"只给 rops"的否决理由。
@@ -160,7 +160,7 @@
 - **验证**：驱动死亡注入测试（ScriptedChannel 发 Dead 事件 → 断言挂起 slot 收 EIO 并复活、select 维度同步唤醒）。
 - **边界**：C-3、P0-3、P1-2 接线矩阵；与 select.rs `unsuspend_hit` 语义对齐，勿两处各写一份唤醒。
 
-#### R2-P1-4（P1-design-wrong）route_message 的 BDEV/CDEV/SDEV RS 前缀判定使用自认虚构值——通电后驱动回复全部失路由
+#### ✅ R2-P1-4（P1-design-wrong）route_message 的 BDEV/CDEV/SDEV RS 前缀判定使用自认虚构值——已修复 2026-09-09（§10 Fix #27）
 
 - **Rust 现状**：`is_bdev_rs`/`is_cdev_rs`/`is_sdev_rs`（main_loop.rs:547-559）用 `(raw & 0xFF00) == 0x500/0x600/0x700` 判定，:548-551 注释自认 "the exact base values are not needed for the routing priority test — we model them as distinct high-byte prefixes"；测试 main_loop.rs:1212/:1218 按假值断言（"matches is_bdev_rs stub"）。
 - **C 行为**（Ground Truth）：`CDEV_RS_BASE 0x480`（com.h:919）、`BDEV_RS_BASE 0x580`（com.h:963）、`SDEV_RS_BASE 0x1980`（com.h:1038），掩码为 `~0x7f` 而非 `0xFF00`（com.h:922-923 等 `IS_*_RS(type) (((type) & ~0x7f) == *_RS_BASE)`）。
@@ -461,3 +461,10 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：SEF 生命周期整体缺失——`init_fresh` 只覆盖 fresh，LU 三回调（`sef_cb_lu_prepare`/`sef_cb_lu_state_changed`/`sef_cb_init_lu`，main.c:303-358）无任何建模。
 - **After**：`lu_prepare(all_idle, state)`——仅 request-free/protocol-free 可备且要求全槽空闲（`worker_idle()` 的槽模型对应物 = 既有 `WorkerPool::all_idle`），余者 `ENOTREADY`（`UnblockError::NotReady` 新变体）；`lu_rollback_needs_workers`/`init_lu_needs_workers` 编码 C 的两处 `worker_init` 分支。**ARCH A-1 关键判定**：槽位是数据不是线程——C 的 `worker_cleanup()`/`worker_init()` 在槽模型下按构造为空操作，两个 bool 谓词只为记录 C 分支。`init_restart` 不建模：VFS 无状态重启 ≡ `init_fresh`（D1 同源，01 号文档已注明）。RS 侧行交互挂 P1-2/edge E9。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **353 passed / 0 failed**（352→353：`test_lu_prepare_matrix`）。
+
+### ✅ Fix #27: R2-P1-4 — RS 前缀真值化 + Route::Enosys 占位符移除（2026-09-09）
+
+- **File**：`os/servers/vfs/src/main_loop.rs`（三 RS 谓词 + Route 枚举 + 回退臂 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/09-main-loop.md`（Route 变体清单）。
+- **Before**：`is_bdev_rs`/`is_cdev_rs`/`is_sdev_rs` 用 `(raw & 0xFF00) == 0x500/0x600/0x700`（注释自认占位）；`route_message` 对未解析调用号以 `VfsCallNum::Read` 占位（P1-1 的静默错误执行点）。
+- **After**：三谓词改 C 真值 `(raw & !0x7f) == 0x580/0x480/0x1980`（com.h:963-964/919-920/1038）；测试以真 `BDEV_REPLY`(0x580)/`CDEV_REPLY`(0x480)/`SDEV_REPLY`(0x1980) 断言路由；`Route::Enosys { raw }` 承接未解析调用号（main.c:283-294 的 C 语义）。09 号文档 §2.3 本就记载正确的 C 语义（`&~0x7f` 匹配）——文档对、代码错，本条使代码归位。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **354 passed / 0 failed**（353→354：`test_route_enosys_and_rs_truth`——Enosys 路由 + RS 三基址 + 命名空间不碰撞）。

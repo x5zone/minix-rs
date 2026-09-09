@@ -128,7 +128,7 @@ Rust 改写不是照抄 `main.c:80` 的 `transid = TRNS_GET_ID(m_in.m_type)` 与
 ### D1 八路优先显式：`Route` 枚举的优先级路由
 
 - **C**：`if/else if` 的隐式优先级链（80-135），`reviving` 在 `get_work:590` 内而非 `main`，`TRNS_GET_ID` 的 `0xFFFF` 掩码在 `main:80` 局部。
-- **Rust**：`Route` 枚举（`Revived { slot } / FsReply { wp } / Pm / Notify { source } / TaskIgnored / Bdev / Cdev / Sdev / Syscall { call }`）+ `VfsState::route_message(&Message) -> Route` 的 `match` 穷尽；`get_work` 的 `reviving` 优先在 `VfsState::poll_next() -> PollResult` 的 `if reviving>0 { find REVIVED→Unblock → Queued } else { receive }` 显式，使 `main` 的 `while let PollResult::Ready(msg) = poll_next() { route → handle }` 的优先级可审计。
+- **Rust**：`Route` 枚举（`FsReply { transid, worker_slot } / Pm / Notify { source, call_nr } / TaskIgnored / Bdev / Cdev / Sdev / Syscall { call } / Enosys { raw }`）+ `VfsState::route_message(&Message, codec) -> Route` 的 `match` 穷尽；RS 三谓词用 C 真值 `&!0x7f == 0x580/0x480/0x1980`（`com.h:963-964/919-920/1038`，R2-P1-4 闭合）；`Enosys` 承接未解析调用号（`main.c:283-294`），占位 Read 路由已移除；`get_work` 的 `reviving` 优先在 `VfsState::poll_next() -> PollResult` 的 `if reviving>0 { find REVIVED→Unblock → Queued } else { receive }` 显式，使 `main` 的 `while let PollResult::Ready(msg) = poll_next() { route → handle }` 的优先级可审计。
 - **为什么**：`if/else if` 的顺序依赖在 Rust 以枚举的 `priority()` 排序函数显式，`reviving` 的 `return unblock` 的 `FALSE→continue` 在 Rust 以 `PollResult::Revived` 的非消息分支显式。
 
 ### D2 函数指针表 → 类型化枚举分发（ARCH A-2）

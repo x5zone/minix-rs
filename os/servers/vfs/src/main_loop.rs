@@ -163,6 +163,10 @@ pub enum Route {
     Sdev,
     /// Normal syscall: `handle_work(do_work)` → `call_vec` dispatch.
     Syscall { call: crate::call_table::VfsCallNum },
+    /// Unresolvable raw past the `VFS_BASE` gate — C answers `ENOSYS`
+    /// (`main.c:283-294`, `call_index >= NR_VFS_CALLS`).  Never a silent
+    /// stand-in for a real call.
+    Enosys { raw: u32 },
 }
 
 /// Notify source inside [`Route::Notify`].
@@ -557,17 +561,13 @@ impl VfsState {
     ///
     /// `com.h:923/967/1041` `IS_BDEV/CDEV/SDEV_RS`.
     pub fn is_bdev_rs(raw: u32) -> bool {
-        // `BDEV_RS_BASE` etc are masked with `~0x7f`; the exact base values
-        // are not needed for the routing priority test — we model them as
-        // distinct high-byte prefixes for testability.  Real decode would use
-        // the constants from `minix_types`.
-        (raw & 0xFF00) == 0x500
+        (raw & !0x7f) == 0x580 // `BDEV_RS_BASE` (com.h:963-964)
     }
     pub fn is_cdev_rs(raw: u32) -> bool {
-        (raw & 0xFF00) == 0x600
+        (raw & !0x7f) == 0x480 // `CDEV_RS_BASE` (com.h:919-920)
     }
     pub fn is_sdev_rs(raw: u32) -> bool {
-        (raw & 0xFF00) == 0x700
+        (raw & !0x7f) == 0x1980 // `SDEV_RS_BASE` (com.h:1038)
     }
 
     /// Whether `raw` is a `NOTIFY` (`com.h:93` `(a-NOTIFY)<0x100`).
@@ -627,18 +627,12 @@ impl VfsState {
             return Route::Sdev;
         }
 
-        // 8. Normal syscall — `handle_work(do_work)` → `call_vec`.
-        // Try to resolve the call number; unresolved still routes to Syscall
-        // (handler will return ENOSYS).
-        if let Some(call) = crate::call_table::VfsCallNum::from_raw(m_type) {
-            Route::Syscall { call }
-        } else {
-            // Unknown raw that passed VFS_BASE check? Map to a sentinel.
-            // For testability we still route to Syscall with a default.
-            // Real dispatch will ENOSYS.  Use Read as placeholder.
-            Route::Syscall {
-                call: crate::call_table::VfsCallNum::Read,
-            }
+        // 8. Normal syscall — `handle_work(do_work)` → `call_vec`.  An
+        // unresolvable call number answers `ENOSYS` (main.c:283-294); it
+        // must never masquerade as a real call.
+        match crate::call_table::VfsCallNum::from_raw(m_type) {
+            Some(call) => Route::Syscall { call },
+            None => Route::Enosys { raw: m_type },
         }
     }
 
@@ -1220,19 +1214,19 @@ mod tests {
         let state = VfsState::new();
         let codec = VfsTransIdCodec;
         let bdev = Message {
-            m_type: 0x500, // matches is_bdev_rs stub (0x500 prefix)
+            m_type: 0x580, // BDEV_RS_BASE + BDEV_REPLY (com.h:963-964)
             m_source: Endpoint::from_generation_slot(0, 5),
             ..Message::default()
         };
         assert_eq!(state.route_message(&bdev, &codec), Route::Bdev);
         let cdev = Message {
-            m_type: 0x600,
+            m_type: 0x480, // CDEV_RS_BASE + CDEV_REPLY (com.h:919-920)
             m_source: Endpoint::from_generation_slot(0, 5),
             ..Message::default()
         };
         assert_eq!(state.route_message(&cdev, &codec), Route::Cdev);
         let sdev = Message {
-            m_type: 0x700,
+            m_type: 0x1980, // SDEV_RS_BASE + SDEV_REPLY (com.h:1038)
             m_source: Endpoint::from_generation_slot(0, 5),
             ..Message::default()
         };
@@ -1414,4 +1408,28 @@ mod tests {
         assert!(!init_lu_needs_workers(LuState::Other));
         // ENOTREADY is the C answer (`:321`).
         assert_eq!(UnblockError::NotReady.to_errno(), minix_types::ENOTREADY);
+    }
+
+    #[test]
+    fn test_route_enosys_and_rs_truth() {
+        let state = VfsState::new();
+        let codec = VfsTransIdCodec;
+        // An unknown raw past VFS_BASE answers ENOSYS — never a Read stand-in
+        // (`main.c:283-294`; P1-1 placeholder removed).
+        let msg = Message {
+            m_type: (crate::call_table::VFS_BASE + 200) as i32,
+            m_source: Endpoint::from_generation_slot(1, 2),
+            ..Message::default()
+        };
+        assert_eq!(
+            state.route_message(&msg, &codec),
+            Route::Enosys { raw: (crate::call_table::VFS_BASE + 200) as u32 }
+        );
+        // RS reply prefixes at the real C bases (`com.h:919/:963/:1038`).
+        assert!(VfsState::is_bdev_rs(0x580));
+        assert!(VfsState::is_cdev_rs(0x480));
+        assert!(VfsState::is_sdev_rs(0x1980));
+        // The bases must not collide with the syscall namespace.
+        assert!(!VfsState::is_bdev_rs(crate::call_table::VfsCallNum::Open as u32));
+        assert!(!VfsState::is_cdev_rs(0xA00)); // FS_REQ namespace (com.h:589)
     }
