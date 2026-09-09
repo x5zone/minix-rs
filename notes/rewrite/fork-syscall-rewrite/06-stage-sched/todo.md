@@ -27,7 +27,7 @@
 | P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | ✅ 已修复 2026-09-09（Fix #12） |
 | P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | open |
 | P3 | P3-4 | lib.rs glob 再导出无人用 | ✅ 已修复 2026-09-09（Fix #6） |
-| P3 | P3-5 | 11 篇补 Redox 演进参照（V2 增补：RR→DWRR→EEVDF 两级） | open |
+| P3 | P3-5 | 11 篇补 Redox 演进参照（V2 增补：RR→DWRR→EEVDF 两级） | ✅ 已修复 2026-09-09（Fix #13） |
 
 **闭环账**（第一轮 → 现在）：P1-1（主循环）/ P1-2（SchedServer 单一所有者，[ARCH S-11]）/ P1-3（IpcTransport + KernelApi 双 trait 接缝）✅ 2026-09-06 修复（测试基线 59 → 79，Fix #1~#4，全文见 archive §9；真实通电挂 edge E8）。
 
@@ -155,7 +155,7 @@ V2 复跑 `tools/design-coverage-check.sh` 确认：00/99 各缺 outline、outli
 
 V2 复核：lib.rs:37 `pub use sef::*;` 仍在；main.rs 的装配走全路径（main.rs:18-21），无使用者。已删除，调用方统一全路径。
 
-### P3-5 11 篇可补 Redox 演进参照 —— 维持 open + V2 增补事实
+### P3-5 11 篇可补 Redox 演进参照 —— ✅ 已修复 2026-09-09（Fix #13，见 §9）
 
 V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for Redox](https://www.redox-os.org/news/rsoc-dwrr/)；[Phoronix 报道](https://www.phoronix.com/news/Redox-OS-New-CPU-Sched)）已非终点——Redox 随后以 [RSoC 2026: EEVDF for Redox](https://www.redox-os.org/news/rsoc-eevdf/) 把 DWRR 换成了 EEVDF（Linux 6.6 同款算法）。11 篇补参照时直接写两级演进（简单轮转 → DWRR → EEVDF）：S-9 预留的「第二个策略」路标现成两枚，且第二枚比第一枚更新。增补不改变条目性质（文档增强，可选）。
 
@@ -313,3 +313,7 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 
 ### ✅ Fix #12: P3-2 — 两处 minix-types 行锚修正
 01 篇 :177 `test_sched_messages` com.rs:223 → **312**；02 篇 :221 `test_sched_message_layouts` message.rs:2477 → **3698**。两处均 rg 实测后落笔；测试本体存在、断言有效（第一轮已核），漂移的只是行号。
+
+
+### ✅ Fix #13: P3-5 — 11 篇补 Redox 两级演进参照
+11 篇 §1.6 的 Redox 段改写：简单轮转 → DWRR（RSoC 2026，重载约 1.5 倍吞吐）→ EEVDF（Linux 6.6 同款）两级演进全部写明（三个来源链接），并接上 §1.5 的 S-9 预留——「策略确实会换，而且换得很快；替换位置等的就是这种日子，路标现成两枚」。第一轮引用的 DWRR 单级版本作废。
