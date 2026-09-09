@@ -31,7 +31,7 @@ use crate::kernel_api::transport::{is_notify, IpcTransport, KernelApi};
 use crate::priority::is_system_proc;
 use crate::schedproc::{Priority, SchedProc, SlotState};
 use crate::scheduling::{nice, noquantum, start, stop};
-use crate::table::{check_occupied, check_vacant};
+use crate::table::{OccupiedSlot, SlotVerdict, check_occupied, check_vacant};
 use crate::valid::{accept, sender_from};
 use minix_types::{
     Endpoint, Message, NR_PROCS, EPERM, SCHEDULING_INHERIT, SCHEDULING_SET_NICE, SCHEDULING_START,
@@ -73,63 +73,6 @@ pub enum Step {
     /// The receive failed; the message was lost. [`SchedServer::run`]
     /// counts these.
     ReceiveFailed,
-}
-
-/// A slot's table row, read raw: the facts both doors judge.
-///
-/// The doors (table.rs) own the verdicts; this probe only guards the
-/// indexing (a slot past the table has no row to read — its booleans read
-/// `false`, and the door refuses before any field is consumed).
-struct Probe {
-    /// The door verdict for an *occupied* claim (INHERIT's parent, STOP,
-    /// NICE, NO_QUANTUM).
-    occupied: crate::table::SlotVerdict,
-    /// The door verdict for a *vacant* claim (START's child).
-    vacant: crate::table::SlotVerdict,
-    /// Row index, valid only when the verdicts say `Occupied`/`Dead`-in-range.
-    index: usize,
-    /// Row fields (dummies when out of range; unread in that case).
-    priority: Priority,
-    max_priority: Priority,
-    time_slice_ms: u32,
-    cpu: CpuId,
-}
-
-impl Probe {
-    fn read(table: &[SchedProc; NR_PROCS], endpoint: Endpoint) -> Self {
-        let slot = endpoint.slot();
-        let in_range = slot >= 0 && (slot as usize) < NR_PROCS;
-        let (endpoint_match, in_use) = if in_range {
-            let row = &table[slot as usize];
-            (row.endpoint == endpoint, row.is_used())
-        } else {
-            (false, false)
-        };
-        let occupied = check_occupied(slot, NR_PROCS, endpoint_match, in_use);
-        let vacant = check_vacant(slot, NR_PROCS, in_use);
-        if in_range {
-            let row = &table[slot as usize];
-            Self {
-                occupied,
-                vacant,
-                index: slot as usize,
-                priority: row.priority,
-                max_priority: row.max_priority,
-                time_slice_ms: row.time_slice_ms,
-                cpu: row.cpu,
-            }
-        } else {
-            Self {
-                occupied,
-                vacant,
-                index: 0,
-                priority: Priority::new(0).expect("0 < 16"),
-                max_priority: Priority::new(0).expect("0 < 16"),
-                time_slice_ms: 0,
-                cpu: CpuId(0),
-            }
-        }
-    }
 }
 
 /// SCHED's whole world: the table, the ledger, the machine, the bell.
@@ -296,6 +239,45 @@ impl SchedServer {
         kernel.setalarm(balancer.timeout_ticks())
     }
 
+    /// An occupied-slot probe (`sched_isokendpt`, `utility.c:29-41`):
+    /// the door, and — on passage — where the slot sits and what it
+    /// holds. The `Err` half carries the verdict so an arm can answer
+    /// the C errno; the `Ok` half makes the facts unforgeable (a
+    /// refused target has no row to read, not even dummies).
+    fn probe_occupied(&self, endpoint: Endpoint) -> Result<OccupiedSlot, SlotVerdict> {
+        let slot = endpoint.slot();
+        let in_range = slot >= 0 && (slot as usize) < NR_PROCS;
+        let (name_match, in_use) = if in_range {
+            let row = &self.procs[slot as usize];
+            (row.endpoint == endpoint, row.is_used())
+        } else {
+            (false, false)
+        };
+        match check_occupied(slot, NR_PROCS, name_match, in_use) {
+            SlotVerdict::Occupied => Ok(OccupiedSlot {
+                index: slot as usize,
+                row: self.procs[slot as usize],
+            }),
+            verdict => Err(verdict),
+        }
+    }
+
+    /// A vacant-slot probe (`sched_isemtyendpt`, `utility.c:46-56`):
+    /// the door, and — on passage — the slot index a birth will write.
+    fn probe_vacant(&self, endpoint: Endpoint) -> Result<usize, SlotVerdict> {
+        let slot = endpoint.slot();
+        let in_range = slot >= 0 && (slot as usize) < NR_PROCS;
+        let in_use = if in_range {
+            self.procs[slot as usize].is_used()
+        } else {
+            false
+        };
+        match check_vacant(slot, NR_PROCS, in_use) {
+            SlotVerdict::Occupied => Ok(slot as usize),
+            verdict => Err(verdict),
+        }
+    }
+
     /// The takeover arm's caller half (C: `do_start_scheduling`,
     /// `schedule.c:140-249`).
     ///
@@ -339,20 +321,26 @@ impl SchedServer {
             quantum,
         };
         let sender_ok = accept(sender_from(sender)); // C 150-152
-        let child_probe = Probe::read(&self.procs, child);
+        // The vacant door first (`154-157`): the birth slot rides out of
+        // the probe only on passage.
+        let child_probe = self.probe_vacant(child);
+        let child_verdict = SlotVerdict::from_probe(&child_probe);
         let seed = if inherit {
-            // C 199-211: the parent must itself be scheduled; a
-            // self-parented INHERIT reads `Dead` here because the child's
-            // slot is still unflagged (C fills 160-163 but flags 223 come
-            // after the switch — the ordering is the proof, 06 D4).
-            let parent_probe = Probe::read(&self.procs, parent);
-            let parent_state = start::ParentState {
-                priority: parent_probe.priority,
-                time_slice_ms: parent_probe.time_slice_ms,
-            };
-            start::plan_inherit(sender_ok, child_probe.vacant, parent_probe.occupied, &request, &parent_state)
+            // C 199-211: the parent must itself be scheduled; the parent
+            // probe hands over the inherited fields only when its door
+            // passed — a self-parented INHERIT reads `Err(Dead)` here
+            // because the child's slot is still unflagged (C fills
+            // 160-163 but flags 223 come after the switch — the ordering
+            // is the proof, 06 D4).
+            let parent = self
+                .probe_occupied(parent)
+                .map(|slot| start::ParentState {
+                    priority: slot.row.priority,
+                    time_slice_ms: slot.row.time_slice_ms,
+                });
+            start::plan_inherit(sender_ok, child_verdict, &parent, &request)
         } else {
-            start::plan_start(sender_ok, child_probe.vacant, &request)
+            start::plan_start(sender_ok, child_verdict, &request)
         };
         let seed = match seed {
             Ok(seed) => seed,
@@ -366,7 +354,13 @@ impl SchedServer {
         }
 
         // C 223 (+160-163): the slot becomes SCHED's, occupied from here on.
-        let index = child_probe.index;
+        // The write address is the vacant door's own passage — plan and
+        // schedctl above refused everything else, so the probe cannot be
+        // `Err` here; if it ever were, the door's verdict is the answer.
+        let index = match child_probe {
+            Ok(index) => index,
+            Err(verdict) => return verdict.errno(),
+        };
         self.procs[index] = SchedProc {
             endpoint: seed.endpoint,
             parent: seed.parent,
@@ -425,10 +419,17 @@ impl SchedServer {
             });
         let request = stop::Request { child };
         let sender_ok = accept(sender_from(sender)); // C 118-119
-        let probe = Probe::read(&self.procs, child);
-        let release = match stop::plan_stop(sender_ok, probe.occupied, &request, probe.cpu) {
+        let target = self.probe_occupied(child);
+        let release = match stop::plan_stop(sender_ok, &target, &request) {
             Ok(release) => release,
             Err(code) => return code,
+        };
+        // The write address rides out of the probe — the door passed
+        // above (plan_stop refused every refusal), so the verdict left
+        // would be the door's own answer.
+        let slot = match target {
+            Ok(slot) => slot,
+            Err(verdict) => return verdict.errno(),
         };
         // C 129-131: the ledger sheds one unit — under CONFIG_SMP only, so
         // the gate reads the topology (07's contract: the Release still
@@ -436,7 +437,7 @@ impl SchedServer {
         if self.topo.processors_count > 1 {
             release_load(&mut self.loads, release.cpu);
         }
-        self.procs[probe.index].state = SlotState::Free; // C 132
+        self.procs[slot.index].state = SlotState::Free; // C 132
         0
     }
 
@@ -462,27 +463,30 @@ impl SchedServer {
             maxprio: maxprio as i32,
         };
         let sender_ok = accept(sender_from(sender)); // C 262-263
-        let probe = Probe::read(&self.procs, child);
+        let target = self.probe_occupied(child);
         // C 278-279: the snapshot is the rollback — `Current` is `Copy`,
-        // keeping is snapshotting (08's contract).
-        let current = nice::Current {
-            priority: probe.priority,
-            max_priority: probe.max_priority,
-        };
-        let ceiling = match nice::admit(sender_ok, probe.occupied, request.maxprio) {
-            Ok(ceiling) => ceiling,
+        // keeping is snapshotting (08's contract). C takes the old values
+        // after the ceiling check too; the probed slot rides out of
+        // `admit` together with the ceiling, so the snapshot reads only
+        // what the doors blessed.
+        let (ceiling, slot) = match nice::admit(sender_ok, &target, request.maxprio) {
+            Ok(pair) => pair,
             Err(code) => return code,
         };
+        let current = nice::Current {
+            priority: slot.row.priority,
+            max_priority: slot.row.max_priority,
+        };
         let after = nice::regrade(ceiling); // C 282: both numbers, one move
-        self.procs[probe.index].priority = after.priority;
-        self.procs[probe.index].max_priority = after.max_priority;
-        let rv = self.fanout_local(probe.index, kernel); // C 284
+        self.procs[slot.index].priority = after.priority;
+        self.procs[slot.index].max_priority = after.max_priority;
+        let rv = self.fanout_local(slot.index, kernel); // C 284
         if rv != 0 {
             // C 285-288: the kernel refused — write the snapshot back.
             // (NO_QUANTUM does NOT roll back; the asymmetry is C's real
             // semantics, todo.md §1.2 #5.)
-            self.procs[probe.index].priority = current.priority;
-            self.procs[probe.index].max_priority = current.max_priority;
+            self.procs[slot.index].priority = current.priority;
+            self.procs[slot.index].max_priority = current.max_priority;
         }
         rv
     }
@@ -494,19 +498,20 @@ impl SchedServer {
         // no endpoint at all, and the sender whitelist does not apply (the
         // seal was checked one level up, main.c:70-71).
         let source = message.m_source;
-        let probe = Probe::read(&self.procs, source);
-        if let Err(code) = noquantum::admit(probe.occupied) {
-            return code; // C 92-96
-        }
+        let target = self.probe_occupied(source);
+        let slot = match noquantum::admit(&target) {
+            Ok(slot) => slot,
+            Err(code) => return code, // C 92-96
+        };
         // C 99-101: one step down unless already at the floor. `demote`'s
         // `None` is the constants-drifted defensive arm — falling back to
         // "no change" keeps the fan-out below well-defined.
-        let new_priority = noquantum::demote(probe.priority).unwrap_or(probe.priority);
-        self.procs[probe.index].priority = new_priority;
+        let new_priority = noquantum::demote(slot.row.priority).unwrap_or(slot.row.priority);
+        self.procs[slot.index].priority = new_priority;
         // C 103-105: fan out and hand the answer straight back — a failure
         // does NOT roll the demotion back (the spent slot stays sunk; NICE
         // is the one that rolls back).
-        self.fanout_local(probe.index, kernel)
+        self.fanout_local(slot.index, kernel)
     }
 
     /// The in-place fan-out (C: `schedule_process_local`,

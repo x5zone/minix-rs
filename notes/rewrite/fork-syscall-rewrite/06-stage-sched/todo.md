@@ -22,7 +22,7 @@
 | P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
 | P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | ✅ 已修复 2026-09-09（Fix #8） |
 | P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | open |
-| P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | open |
+| P3 | V2-P3-2 | Probe 越界 dummy 值改类型表达 | ✅ 已修复 2026-09-09（Fix #9） |
 | P3 | P3-1 | 预留未接线符号盘点（noquantum_trust 行闭单，余项升格 V2-P2-1） | ✅ 全部闭单（四符号随 Fix #5 删除） |
 | P3 | P3-2 | 两处 minix-types 行锚漂移（V2 复核：两半均仍漂移） | open |
 | P3 | P3-3 | 00/99 缺 .design/ 快照（V2 复跑确认） | open |
@@ -101,7 +101,7 @@
 **建议**：两测试各一，表驱动；随任何触碰 server.rs 的轮次顺带，不单独立项排队。
 **验证**：新增测试名在 02 篇 §5 表同步登记（Gate E 对账）。
 
-### V2-P3-2 Probe 的越界 dummy 值改为类型表达
+### V2-P3-2 Probe 的越界 dummy 值改为类型表达 ✅ 已修复 2026-09-09（Fix #9，见 §9）
 
 **问题**：`Probe::read` 对越界 endpoint 构造 dummy 字段（server.rs:120-130：`Priority::new(0).expect(...)`、`index: 0`），依赖注释约定「dummies when out of range; unread in that case」（server.rs:91-92）——门判决已拒绝所以值不被消费，但类型上「可读的行」与「编造的行」不可区分，未来消费方若跳过门判决直接读 Probe 字段，编译器不会拦。
 **建议**：首选，`row: Option<RowValues>`（判决通过才 `Some`，消费方 `let Some(row) = ... else return` 自然强制先过门）；次选，维持现状但在 Probe 文档头把「unread」升级为显式不变量 + debug_assert。
@@ -286,3 +286,12 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **Files**：`cpu.rs`（`CpuId` 定义 + pick/三个台账动词签名 + 测试）、`schedproc.rs`（字段）、`kernel_api/schedule.rs`（SlotValues/Fanout/wire_cpu + 测试）、`scheduling/stop.rs`（Release/plan_stop + 测试）、`server.rs`（Probe/装配/do_start/do_stop + 测试）。线上的 `MessLsysKrnSchedule.cpu` 保持 `i32`（wire 是 C ABI，`wire_cpu` 一处渲染）。
 **测试**：`cargo test -p minix-sched` 79 passed / 0 failed；clippy 本体 0 告警。全部断言改 `CpuId(n)` 形式（类型即文档）。
 **Docs**：03 篇 D4 改写（"时间片写明单位，CPU 用新类型"+ 为什么补"注释管不住签名"）、07 篇 :116、09 篇 :105、10 篇 D1/D3；六篇文档全部行锚按改后行号重校（cpu.rs 整体 +13、start.rs +7、schedproc.rs +6、schedule.rs +2、stop.rs +1）。
+
+
+### ✅ Fix #9: V2-P3-2 — Probe 删除，探针事实化（facts-or-refusal）
+
+**问题**：`Probe::read` 对越界 endpoint 构造 dummy 字段（`Priority::new(0).expect`、`index: 0`），依赖注释约定「unread in that case」——类型上「可读的行」与「编造的行」不可区分。
+**设计对比**（三案）：1. `row: Option<RowValues>`（todo 首选的保守版）——消费方仍可解包出错的分支。2. **探针事实化（已实施）**：`table.rs` 新增 `OccupiedSlot { index, row }`（占用门通过后的「事实包」）与 `SlotVerdict::from_probe`；`SchedServer` 的 `Probe` 整体删除，换成 `probe_occupied(ep) -> Result<OccupiedSlot, SlotVerdict>` 与 `probe_vacant(ep) -> Result<usize, SlotVerdict>`——这其实是把 C `sched_isokendpt` 「验证并交出行号」的语义直接类型化：拒绝的探针不带任何事实，哑数据在构造上不可能。四个臂改为收 `&Result<事实, SlotVerdict>`（plan_stop 收占用门探针、nice admit 返回 `(ceiling, &OccupiedSlot)`、noquantum admit 返回 `&OccupiedSlot`、plan_inherit 收 `&Result<ParentState, SlotVerdict>`，调用侧 `.map` 只触碰 Ok 半）。3. 维持现状 + debug_assert（否决：断言拦不住类型上的可读）。净收益：零 expect/unreachable、`do_nice` 快照移到门后（反而更贴 C 的语句序 278-279 在检查之后）、`stop::admit` 并入 `plan_stop` 门序、`ParentState` 保留但改为探针映射产物。
+**Files**：`table.rs`（OccupiedSlot + from_probe）、`server.rs`（探针方法 + 四臂重写）、`scheduling/{start,stop,nice,noquantum}.rs`（签名 + 测试夹具）。
+**测试**：`cargo test -p minix-sched` 79 passed / 0 failed；clippy 本体 0 告警。
+**Docs**：02 篇（server.rs 全部行锚 +5 重校）、04 篇（table.rs 行锚 + OccupiedSlot 归属）、06 篇（D4 plan_inherit 形状）、07 篇（D 门序并入 plan_stop）、08 篇（两 admit 签名）——共五篇结构性更新 + 全部行锚重校。

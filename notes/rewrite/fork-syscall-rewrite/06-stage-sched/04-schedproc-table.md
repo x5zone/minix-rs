@@ -82,13 +82,13 @@ Rust 改写不照抄三个函数和 switch 写法，而是参考 Linux 的槽位
 ### D2 查已用槽做成枚举
 
 - **C**：四道判断、三种拒绝（`utility.c:31-40`）。
-- **Rust**：`SlotVerdict::{Occupied, Task, OutOfRange, Dead}` 加 `check_occupied()`（`os/servers/sched/src/table.rs:16,53`）；门禁收两个布尔值，读表归调用方。
+- **Rust**：`SlotVerdict::{Occupied, Task, OutOfRange, Dead}` 加 `check_occupied()`（`os/servers/sched/src/table.rs:16,70`）；门禁收两个布尔值，读表归调用方。
 - **为什么**：判断顺序就是优先级（C 的顺序不能换）；名字对不上和空槽同码不同因，枚举把原因分开；读表归调用方（门禁是判断，读是执行）。备选方案（门禁收整张表引用）被否决：判断和执行分离。
 
 ### D3 查空槽镜像对称
 
 - **C**：`sched_isemtyendpt`（`utility.c:46-56`，最后一道判断反转）。
-- **Rust**：`check_vacant()`（`os/servers/sched/src/table.rs:71`；不查名字——空槽没有名字可对）。
+- **Rust**：`check_vacant()`（`os/servers/sched/src/table.rs:88`；不查名字——空槽没有名字可对）。
 - **为什么**：查空和查占对偶；空槽不验名字。备选方案（查空查占合一个函数加布尔参数）被否决：两个门两个名字，合一个就把名字丢了。
 
 ### D4 白名单三个取值
@@ -131,8 +131,8 @@ os/libs/minix-types/src/types/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 查已用槽 | `utility.c:29-41` | `os/servers/sched/src/table.rs:16,29,38,53` | 穷举加一处错误码 |
-| 查空槽 | `utility.c:46-56` | `os/servers/sched/src/table.rs:71` | 最后一道判断反转 |
+| 查已用槽 | `utility.c:29-41` | `os/servers/sched/src/table.rs:16,33,38,70` | 穷举加一处错误码 |
+| 查空槽 | `utility.c:46-56` | `os/servers/sched/src/table.rs:88` | 最后一道判断反转 |
 | 白名单 | `utility.c:61-74` | `os/servers/sched/src/valid.rs:14,28,42` | 名字即身份 |
 | 错误码值 | `errno.h:64,211-212` | `os/libs/minix-types/src/types/errno.rs` 的 EBADEPT 加 `os/servers/sched/src/table.rs:38` | 跨服务权威 |
 
@@ -153,8 +153,8 @@ os/libs/minix-types/src/types/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_occupied_door` | `utility.c:29-41` | 四道判断加顺序优先加码值 | `os/servers/sched/src/table.rs:89` |
-| `test_vacant_mirror` | `utility.c:46-56` | 三道判断加镜像加互斥 | `os/servers/sched/src/table.rs:121` |
+| `test_occupied_door` | `utility.c:29-41` | 四道判断加顺序优先加码值 | `os/servers/sched/src/table.rs:109` |
+| `test_vacant_mirror` | `utility.c:46-56` | 三道判断加镜像加互斥 | `os/servers/sched/src/table.rs:141` |
 | `test_names` | `com.h:59-61` | PM/RS 名字加其余全 Other | `os/servers/sched/src/valid.rs:51` |
 | `test_closed_list` | `utility.c:61-74` | 两个名字放行、其他拒绝 | `os/servers/sched/src/valid.rs:63` |
 

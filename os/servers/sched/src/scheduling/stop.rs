@@ -14,7 +14,7 @@
 //! Single-threaded event loop: pure functions, no shared state.
 
 use crate::cpu::CpuId;
-use crate::table::SlotVerdict;
+use crate::table::{OccupiedSlot, SlotVerdict};
 use minix_types::{EPERM, Endpoint};
 
 /// A release request: the message body (`ipc.h:1440-1444`).
@@ -43,80 +43,90 @@ pub struct Release {
     pub cpu: CpuId,
 }
 
-/// Check the sender, then the slot (`118-125`).
+/// Plan a release (`112-134`).
 ///
 /// The door order is diagnosis, shared with the START arm (06 D2): a
 /// stranger's letter earns `EPERM` even naming a live slot (`118-119`),
 /// and a dead slot earns its verdict even from PM (`121-125`). The
-/// mirror runs one step shorter — STOP verifies *occupancy* (`isokendpt`),
-/// where START verifies *vacancy* (`isemtyendpt`, `154`): release checks
-/// presence, birth checks absence.
-pub fn admit(sender_ok: bool, slot: SlotVerdict) -> Result<(), i32> {
-    if !sender_ok {
-        return Err(EPERM);
-    }
-    if !slot.is_ok() {
-        return Err(slot.errno());
-    }
-    Ok(())
-}
-
-/// Plan a release (`112-134`).
+/// mirror runs one step shorter than the birth — STOP verifies
+/// *occupancy* (`isokendpt`), where START verifies *vacancy*
+/// (`isemtyendpt`, `154`): release checks presence, birth checks
+/// absence. The probe rides in as facts-or-refusal — a refused target
+/// carries no CPU to release, so the `Release` can only be built from
+/// a slot the door blessed.
 ///
 /// Past the door there is nothing to decide: no ceiling, no branch, no
-/// retry ring — the slot empties and one CPU sheds a unit. `cpu` arrives
-/// from the caller, who read it off the slot after the verdict passed
-/// (table reads stay caller-side, 04 D2). The SMP gate stays caller-side
-/// too: C debits only under `CONFIG_SMP` (`129-131`), so on a single CPU
-/// the caller skips the debit — the `Release` still names the CPU, so the
-/// rule has one home and the gate one reader (10 consumes this).
+/// retry ring — the slot empties and one CPU sheds a unit. The SMP gate
+/// stays caller-side: C debits only under `CONFIG_SMP` (`129-131`), so
+/// on a single CPU the caller skips the debit — the `Release` still
+/// names the CPU, so the rule has one home and the gate one reader (10
+/// consumes this).
 pub fn plan_stop(
     sender_ok: bool,
-    slot: SlotVerdict,
+    target: &Result<OccupiedSlot, SlotVerdict>,
     req: &Request,
-    cpu: CpuId,
 ) -> Result<Release, i32> {
-    admit(sender_ok, slot)?;
+    if !sender_ok {
+        return Err(EPERM); // C 118-119
+    }
+    let slot = target.as_ref().map_err(|v| v.errno())?; // C 121-125
     Ok(Release {
         endpoint: req.child,
-        cpu,
+        cpu: slot.row.cpu,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schedproc::{Priority, SlotState};
     use crate::table::{check_occupied, check_vacant};
     use minix_types::{EBADEPT, EDEADEPT, EINVAL};
+
+    /// A probed live slot on CPU n (the fixture only pins what the arm
+    /// reads: the CPU the release names).
+    fn live(cpu: CpuId) -> Result<OccupiedSlot, SlotVerdict> {
+        Ok(OccupiedSlot {
+            index: 20,
+            row: crate::schedproc::SchedProc {
+                endpoint: Endpoint(20),
+                parent: Endpoint(0),
+                state: SlotState::InUse,
+                max_priority: Priority::new(5).expect("5 < 16"),
+                priority: Priority::new(5).expect("5 < 16"),
+                time_slice_ms: 100,
+                cpu,
+            },
+        })
+    }
 
     #[test]
     fn test_doors_in_order() {
         let req = Request { child: Endpoint(20) };
-        let live = SlotVerdict::Occupied;
         // Strangers refuse first, even naming a live slot (`118-119`).
-        assert_eq!(plan_stop(false, live, &req, CpuId(0)), Err(EPERM));
+        assert_eq!(plan_stop(false, &live(CpuId(0)), &req), Err(EPERM));
         // Dead slots refuse next, even from PM (`121-125`).
         assert_eq!(
-            plan_stop(true, SlotVerdict::Dead, &req, CpuId(0)),
+            plan_stop(true, &Err(SlotVerdict::Dead), &req),
             Err(EDEADEPT)
         );
         assert_eq!(
-            plan_stop(true, SlotVerdict::Task, &req, CpuId(0)),
+            plan_stop(true, &Err(SlotVerdict::Task), &req),
             Err(EBADEPT)
         );
         assert_eq!(
-            plan_stop(true, SlotVerdict::OutOfRange, &req, CpuId(0)),
+            plan_stop(true, &Err(SlotVerdict::OutOfRange), &req),
             Err(EINVAL)
         );
         // A live slot passes (`126` falls through to release).
-        assert!(plan_stop(true, live, &req, CpuId(0)).is_ok());
+        assert!(plan_stop(true, &live(CpuId(0)), &req).is_ok());
     }
 
     #[test]
     fn test_release_shape() {
         // Two releases ride one answer: who empties, which CPU sheds.
         let req = Request { child: Endpoint(20) };
-        let release = plan_stop(true, SlotVerdict::Occupied, &req, CpuId(3))
+        let release = plan_stop(true, &live(CpuId(3)), &req)
             .expect("valid STOP");
         assert_eq!(release.endpoint, Endpoint(20));
         assert_eq!(release.cpu, CpuId(3));
@@ -129,7 +139,7 @@ mod tests {
         // asks nothing about parentage.
         for child in [Endpoint::INIT, Endpoint::RS, Endpoint(20), Endpoint(100)] {
             let req = Request { child };
-            let release = plan_stop(true, SlotVerdict::Occupied, &req, CpuId(0))
+            let release = plan_stop(true, &live(CpuId(0)), &req)
                 .expect("every slot releases");
             assert_eq!(release.endpoint, child);
         }
@@ -145,11 +155,10 @@ mod tests {
         // Birth: vacant claim passes (`utility.c:46-56` mirror logic).
         assert!(check_vacant(slot, len, false).is_ok());
         // Life: occupied claim passes (`utility.c:29-41`).
-        let live = check_occupied(slot, len, true, true);
         let req = Request {
             child: Endpoint(slot),
         };
-        let release = plan_stop(true, live, &req, CpuId(1)).expect("live releases");
+        let release = plan_stop(true, &live(CpuId(1)), &req).expect("live releases");
         assert_eq!(release.cpu, CpuId(1));
         // Death: the slot reads free again — the caller's clear (`132`)
         // restores exactly what the vacant door checks.

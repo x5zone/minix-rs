@@ -86,9 +86,10 @@ pub struct Seed {
 
 /// A parent's readable state, for the INHERIT branch (`207-208`).
 ///
-/// The caller reads the parent slot after its verdict passes; only the
-/// two inherited fields travel — the arm never sees the parent's table
-/// row.
+/// The caller maps its parent probe into these two inherited fields —
+/// the mapping touches only the passed half of the probe, so a refused
+/// parent produces no state at all (`Err` rides through). The arm never
+/// sees the parent's table row, only what inheritance needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParentState {
     /// Where the parent runs now. C: `schedproc[parent_nr_n].priority`.
@@ -159,30 +160,29 @@ pub fn plan_start(sender_ok: bool, child: SlotVerdict, req: &Request) -> Result<
 /// Plan an INHERIT birth (`199-211`).
 ///
 /// Past the shared door, the parent must itself be scheduled (`203-206`):
-/// a vacant or mismatched parent earns its verdict, and the birth never
-/// happens. A self-parented INHERIT needs no special case — the parent
-/// slot *is* the child slot, still unflagged (`flags = IN_USE` lands at
-/// `223`, after the switch), so the caller's parent verdict reads `Dead`
-/// and the refusal matches C exactly. Values then copy from the parent
-/// (`207-208`): the child opens where the parent runs, with the parent's
-/// share — fork opens as continuation, not as novelty.
+/// the parent probe rides in as facts-or-refusal, and a refused parent
+/// becomes its errno here — a vacant or mismatched parent refuses, and
+/// the birth never happens. A self-parented INHERIT needs no special
+/// case — the parent probe *is* the child slot, still unflagged
+/// (`flags = IN_USE` lands at `223`, after the switch), so the parent's
+/// probe reads `Err(Dead)` and the refusal matches C exactly. Values
+/// then copy from the parent (`207-208`): the child opens where the
+/// parent runs, with the parent's share — fork opens as continuation,
+/// not as novelty.
 pub fn plan_inherit(
     sender_ok: bool,
     child: SlotVerdict,
-    parent: SlotVerdict,
+    parent: &Result<ParentState, SlotVerdict>,
     req: &Request,
-    parent_state: &ParentState,
 ) -> Result<Seed, i32> {
     let ceiling = admit(sender_ok, child, req.maxprio)?;
-    if !parent.is_ok() {
-        return Err(parent.errno());
-    }
+    let state = parent.as_ref().map_err(|v| v.errno())?;
     Ok(Seed {
         endpoint: req.child,
         parent: req.parent,
         max_priority: ceiling,
-        priority: parent_state.priority,
-        time_slice_ms: parent_state.time_slice_ms,
+        priority: state.priority,
+        time_slice_ms: state.time_slice_ms,
     })
 }
 
@@ -293,37 +293,27 @@ mod tests {
             priority: Priority::new(9).expect("9 < 16"),
             time_slice_ms: 150,
         };
+        let parent_ok = Ok(parent_state);
+        let parent_dead: Result<ParentState, SlotVerdict> = Err(SlotVerdict::Dead);
         let req = inherit_req(Endpoint(21), Endpoint(12), 7);
         // The child opens where the parent runs, with the parent's share;
         // the ceiling stays the message's (`162` + `207-208`).
-        let seed = plan_inherit(
-            true,
-            SlotVerdict::Occupied,
-            SlotVerdict::Occupied,
-            &req,
-            &parent_state,
-        )
-        .expect("valid INHERIT");
+        let seed = plan_inherit(true, SlotVerdict::Occupied, &parent_ok, &req)
+            .expect("valid INHERIT");
         assert_eq!(seed.max_priority.get(), 7);
         assert_eq!(seed.priority.get(), 9);
         assert_eq!(seed.time_slice_ms, 150);
         // A dead parent refuses; the birth never happens (`203-206`).
         assert_eq!(
-            plan_inherit(true, SlotVerdict::Occupied, SlotVerdict::Dead, &req, &parent_state),
+            plan_inherit(true, SlotVerdict::Occupied, &parent_dead, &req),
             Err(EDEADEPT)
         );
-        // A self-parented INHERIT refuses the same way: the parent slot is
-        // the (still unflagged) child slot, so its verdict reads Dead —
+        // A self-parented INHERIT refuses the same way: the parent probe
+        // is the (still unflagged) child slot, so it reads `Err(Dead)` —
         // no special case needed (`171` + `223` ordering does it).
         let self_req = inherit_req(Endpoint(22), Endpoint(22), 7);
         assert_eq!(
-            plan_inherit(
-                true,
-                SlotVerdict::Occupied,
-                SlotVerdict::Dead,
-                &self_req,
-                &parent_state
-            ),
+            plan_inherit(true, SlotVerdict::Occupied, &parent_dead, &self_req),
             Err(EDEADEPT)
         );
     }

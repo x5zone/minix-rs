@@ -107,7 +107,7 @@ Rust 改写不是把一个函数五步照抄过来，而是参考 Linux 的脱�
 ### D2 检查顺序照抄
 
 - **C**：白名单 → 验占用（`118-125`，顺序不能换）。
-- **Rust**：`admit(sender_ok, slot)`（`stop.rs:53`：`EPERM` → 表检查码的顺序直译，和 06 的 `admit` 同形——两个臂检查顺序一样是刻意对称）。
+- **Rust**：门序收在 `plan_stop` 的前两步（`stop.rs:64`：`EPERM` → 表检查码——探针以 facts-or-refusal 传入，`&Result<OccupiedSlot, SlotVerdict>`，拒绝的探针不带 CPU，门过了才有事实）。
 - **为什么**：顺序就是诊断信息（06 的 D2 同理）；管线同形（两个臂同一个顺序同一套码——对称写进代码，不只写在表里，见 §1.5）。备选方案（释放臂自己另写一套检查顺序）被否决了：两套顺序就是两种诊断（同一种诊断写两遍，早晚写岔）。
 
 ### D3 释放的两样东西
@@ -152,8 +152,8 @@ os/servers/sched/src/
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
 | 消息的形状 | `ipc.h:1440-1444` | `stop.rs:25` | 单字段只问是谁 |
-| 检查顺序 | `schedule.c:118-125` | `stop.rs:53` | 先发送者后槽位 |
-| 释放的形状 | `schedule.c:128-132` | `stop.rs:38,72` | 两项释放归调用者 |
+| 检查顺序 | `schedule.c:118-125` | `stop.rs:64` | 先发送者后槽位 |
+| 释放的形状 | `schedule.c:128-132` | `stop.rs:39,64` | 两项释放归调用者 |
 | 登记释放对照 | `schedule.c:112-137` vs `140-252` | `start.rs` + `stop.rs` 同形 | 对称写进代码 |
 
 ### 4.3 不变量
@@ -172,10 +172,10 @@ os/servers/sched/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_doors_in_order` | `schedule.c:118-125` | 发送者压槽位 + 四种码（EPERM/EDEADEPT/EBADEPT/EINVAL） | `stop.rs:92` |
-| `test_release_shape` | `schedule.c:128-132` | 两项释放同载（谁腾出来、哪个 CPU 减负载） | `stop.rs:115` |
-| `test_no_special_slots` | `schedule.c:112-134`（全程无判断） | 四种端点都释放（INIT/RS/随机号） | `stop.rs:125` |
-| `test_start_stop_roundtrip` | `schedule.c:223` vs `132` + `utility.c:29-56` | 登记释放互锁（空→占→空） | `stop.rs:138` |
+| `test_doors_in_order` | `schedule.c:118-125` | 发送者压槽位 + 四种码（EPERM/EDEADEPT/EBADEPT/EINVAL） | `stop.rs:104` |
+| `test_release_shape` | `schedule.c:128-132` | 两项释放同载（谁腾出来、哪个 CPU 减负载） | `stop.rs:126` |
+| `test_no_special_slots` | `schedule.c:112-134`（全程无判断） | 四种端点都释放（INIT/RS/随机号） | `stop.rs:136` |
+| `test_start_stop_roundtrip` | `schedule.c:223` vs `132` + `utility.c:29-56` | 登记释放互锁（空→占→空） | `stop.rs:149` |
 
 测试策略：检查用顺序覆盖（发送者坏但槽位好照样 `EPERM`）锁定；释放在端点和 CPU 号双返回上锁定；无特例用全端点（INIT/RS/用户/随机号都释放）锁定；对称用往返（真检查互锁）锁定。
 

@@ -16,7 +16,7 @@
 
 use crate::priority::MIN_USER_Q;
 use crate::schedproc::Priority;
-use crate::table::SlotVerdict;
+use crate::table::{OccupiedSlot, SlotVerdict};
 use minix_types::Endpoint;
 
 /// A spent-quantum report: who ran dry (`m_source`, `schedule.c:92`).
@@ -34,12 +34,11 @@ pub struct Request {
 /// No sender verdict arrives — the arm never learned the sender's name,
 /// so it cannot judge it. The caller proves the kernel's seal *before*
 /// calling (dispatch, 02); here only the slot is judged, and a dead one
-/// earns its verdict. Forged letters die at the loop's gate, never here.
-pub fn admit(slot: SlotVerdict) -> Result<(), i32> {
-    if !slot.is_ok() {
-        return Err(slot.errno());
-    }
-    Ok(())
+/// earns its verdict. Forgery defence lives at the loop's gate, never
+/// here. On passage the probed slot rides back — the demotion needs the
+/// row's current queue, the caller needs the row's index to write.
+pub fn admit(slot: &Result<OccupiedSlot, SlotVerdict>) -> Result<&OccupiedSlot, i32> {
+    slot.as_ref().map_err(|v| v.errno())
 }
 
 /// Demote one queue (`99-101`).
@@ -57,18 +56,34 @@ pub fn demote(current: Priority) -> Option<Priority> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::CpuId;
+    use crate::schedproc::{SchedProc, SlotState};
     use minix_types::{EBADEPT, EDEADEPT, EINVAL};
+
+    fn live() -> Result<OccupiedSlot, SlotVerdict> {
+        Ok(OccupiedSlot {
+            index: 20,
+            row: SchedProc {
+                endpoint: Endpoint(20),
+                parent: Endpoint(0),
+                state: SlotState::InUse,
+                max_priority: Priority::new(5).expect("5 < 16"),
+                priority: Priority::new(5).expect("5 < 16"),
+                time_slice_ms: 100,
+                cpu: CpuId(0),
+            },
+        })
+    }
 
     #[test]
     fn test_door_without_sender() {
-        let live = SlotVerdict::Occupied;
         // The arm takes no sender: dead slots refuse, live pass (`92-96`).
         // Forgery defence lives one level up (main.c:68-84), not here —
         // the signature itself is the trust model.
-        assert!(admit(live).is_ok());
-        assert_eq!(admit(SlotVerdict::Dead), Err(EDEADEPT));
-        assert_eq!(admit(SlotVerdict::Task), Err(EBADEPT));
-        assert_eq!(admit(SlotVerdict::OutOfRange), Err(EINVAL));
+        assert!(admit(&live()).is_ok());
+        assert_eq!(admit(&Err(SlotVerdict::Dead)), Err(EDEADEPT));
+        assert_eq!(admit(&Err(SlotVerdict::Task)), Err(EBADEPT));
+        assert_eq!(admit(&Err(SlotVerdict::OutOfRange)), Err(EINVAL));
     }
 
     #[test]

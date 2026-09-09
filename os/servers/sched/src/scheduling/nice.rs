@@ -14,7 +14,7 @@
 
 use crate::priority::NR_SCHED_QUEUES;
 use crate::schedproc::Priority;
-use crate::table::SlotVerdict;
+use crate::table::{OccupiedSlot, SlotVerdict};
 use minix_types::{EINVAL, EPERM, Endpoint};
 
 /// A regrade request: who, and how high (`ipc.h:1822-1827`).
@@ -48,15 +48,18 @@ pub struct Current {
 ///
 /// The door order is diagnosis, shared with both sibling arms (06 D2,
 /// 07 D2): strangers refuse first (`262-263`), dead slots next
-/// (`266-271`), illegal ceilings last (`275-276`). Returns the ceiling
-/// on passage so the write below needs no second check.
-pub fn admit(sender_ok: bool, slot: SlotVerdict, maxprio: i32) -> Result<Priority, i32> {
+/// (`266-271`), illegal ceilings last (`275-276`). On passage the
+/// ceiling AND the probed slot ride back together — the caller needs
+/// both for the write, and neither exists before the doors pass.
+pub fn admit<'a>(
+    sender_ok: bool,
+    slot: &'a Result<OccupiedSlot, SlotVerdict>,
+    maxprio: i32,
+) -> Result<(Priority, &'a OccupiedSlot), i32> {
     if !sender_ok {
         return Err(EPERM);
     }
-    if !slot.is_ok() {
-        return Err(slot.errno());
-    }
+    let slot = slot.as_ref().map_err(|v| v.errno())?;
     // Same two-way refusal as the START arm (06 D3): C compares the
     // unsigned slot (`276`); negatives refuse directly here — same
     // observable answer, no wrap trick.
@@ -66,7 +69,7 @@ pub fn admit(sender_ok: bool, slot: SlotVerdict, maxprio: i32) -> Result<Priorit
     // Guarded 0..16 by the check above; the narrowing cast cannot
     // truncate, and `Priority::new` cannot refuse.
     match Priority::new(maxprio as u8) {
-        Some(ceiling) => Ok(ceiling),
+        Some(ceiling) => Ok((ceiling, slot)),
         None => Err(EINVAL),
     }
 }
@@ -87,25 +90,45 @@ pub const fn regrade(ceiling: Priority) -> Current {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::CpuId;
+    use crate::schedproc::{SchedProc, SlotState};
     use minix_types::{EBADEPT, EDEADEPT};
+
+    /// A probed live slot (`index 20`, ceiling 7, current 9).
+    fn live() -> Result<OccupiedSlot, SlotVerdict> {
+        Ok(OccupiedSlot {
+            index: 20,
+            row: SchedProc {
+                endpoint: Endpoint(20),
+                parent: Endpoint(0),
+                state: SlotState::InUse,
+                max_priority: Priority::new(7).expect("7 < 16"),
+                priority: Priority::new(9).expect("9 < 16"),
+                time_slice_ms: 100,
+                cpu: CpuId(0),
+            },
+        })
+    }
 
     #[test]
     fn test_doors_in_order() {
-        let live = SlotVerdict::Occupied;
         // Strangers refuse first, even with a live slot and a legal
         // ceiling (`262-263`).
-        assert_eq!(admit(false, live, 7), Err(EPERM));
+        assert_eq!(admit(false, &live(), 7), Err(EPERM));
         // Dead slots refuse next, even with a legal ceiling (`266-271`).
-        assert_eq!(admit(true, SlotVerdict::Dead, 7), Err(EDEADEPT));
-        assert_eq!(admit(true, SlotVerdict::Task, 7), Err(EBADEPT));
+        assert_eq!(admit(true, &Err(SlotVerdict::Dead), 7), Err(EDEADEPT));
+        assert_eq!(admit(true, &Err(SlotVerdict::Task), 7), Err(EBADEPT));
         // Illegal ceilings refuse last (`275-276`): 16, far past,
         // negative — the START arm's two-way refusal, same observable
         // answers (06 D3).
         for bad in [16, 99, -1] {
-            assert_eq!(admit(true, live, bad), Err(EINVAL), "max {bad}");
+            assert_eq!(admit(true, &live(), bad), Err(EINVAL), "max {bad}");
         }
-        // The top of the band passes.
-        assert!(admit(true, live, 15).is_ok());
+        // The top of the band passes — ceiling and slot ride together.
+        let target = live();
+        let (ceiling, slot) = admit(true, &target, 15).expect("legal regrade");
+        assert_eq!(ceiling.get(), 15);
+        assert_eq!(slot.index, 20);
     }
 
     #[test]

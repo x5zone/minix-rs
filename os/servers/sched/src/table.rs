@@ -9,6 +9,7 @@
 //! the caller, who holds the table; slot arithmetic reuses
 //! `Endpoint::slot` (02 already depends on it for dispatch).
 
+use crate::schedproc::SchedProc;
 use minix_types::{EBADEPT, EDEADEPT, EINVAL};
 
 /// What a slot lookup earns (`sched_isokendpt`, `utility.c:29-41`).
@@ -43,6 +44,25 @@ impl SlotVerdict {
             Self::Dead => EDEADEPT,
         }
     }
+
+    /// A probe's verdict: passage reads `Occupied`, whatever the door
+    /// (both the occupied and the vacant door answer passage with this
+    /// one variant — the arms judge doors, the probe carries facts).
+    pub fn from_probe<T>(probe: &Result<T, Self>) -> Self {
+        probe.as_ref().map(|_| Self::Occupied).unwrap_or_else(|v| *v)
+    }
+}
+
+/// A slot that passed the occupied door: where it sits, and what it
+/// holds. The row travels with the verdict's passage — a refused probe
+/// carries no facts at all, so nothing downstream can read a value the
+/// door never blessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OccupiedSlot {
+    /// Table position (`0..NR_PROCS`), the caller's write address.
+    pub index: usize,
+    /// The row as it stood at the door.
+    pub row: SchedProc,
 }
 
 /// Judge an occupied-slot claim (`sched_isokendpt`, `utility.c:29-41`).
