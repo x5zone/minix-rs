@@ -5,7 +5,9 @@
 > 范围: 24 个 .c 文件 + 多个 .h + arch/ 子目录
 > 验证依据: `minix3/minix/servers/vm/` (C 源) ↔ `os/servers/vm/src/` (Rust 实现)
 
-> **⚠️ 复检横幅（2026-09-08，V12 轮）**：本表数字停留在 2026-06-12 基线，早于 V9–V11 审查修复与 T1–T36 收尾 campaign 的大面积落地，**下文各"实现率"数字已失效，不能作为现状引用**。机器重跑（coverage-extract.py，2026-09-08）：371 个 C 符号、文档覆盖 91.9%；175 项逐一语义判定见 `todo.md` §17.1（COVERED 103 / ARCH-EVOLVED 32 / DEBUG-ONLY 27 / COMPILE-FLAG 4 / OBSOLETE 8 / REAL-GAP 1，唯一函数级真缺口 `shared_delete` 为 G-V12-7）。按 175 项判定逐类重写本表六张分册的系统性刷新已登记为 todo.md G-V12-13，本轮仅修正有直接证据的个别行。
+> **⚠️ 复检横幅（2026-09-09，V13 轮 + 收尾 campaign）**：本表逐行数字停留在 2026-06-12 基线，**下文各"实现率"数字已失效，不能作为现状引用**；逐行系统性刷新仍登记为 todo.md G-V12-13（剩余）。机器重跑（coverage-extract.py，2026-09-09）：371 个 C 符号、文档覆盖 **92.5%**；175 项逐一语义判定见 `todo.md` §17.1（COVERED 103 / ARCH-EVOLVED 32 / DEBUG-ONLY 27 / COMPILE-FLAG 4 / OBSOLETE 8 / REAL-GAP 1）。
+>
+> **收尾 campaign 状态（Fix #63–#81，2026-09-09）**：唯一函数级真缺口 `shared_delete`（G-V12-7）已修复（Fix #64）；测试基线三矩阵 **503/521/503 passed**、servers/vm clippy 0 警告。本日刷新的行（有直接证据）：M-003/M-004（COMPILE-FLAG 判定）、M-007（CONTIG 两侧零消费）、G-012（total_pages 接线确认）、G-016/F-012（missing_spares/alloc_cycle 链删除）、F-120-F-130（shared_delete 修复闭单）。**其余行为 2026-06-12 原文，未经本轮验证，引用需自行 grep 复核。**
 
 ## 0. 覆盖度总览
 
@@ -21,6 +23,8 @@
 | **总体** | **~430** | **252** | **178** | **~59%** |
 
 > **注意**: "未实现" 不等于 "bug" — 许多未实现项是**有意省略** (如 `SANITYCHECKS`/`CACHE_SANITY` 调试宏)、**设计差异** (BTreeMap 替代 AVL 树)、或**阶段性未完成** (详见每项 Reason 列)。
+>
+> **上表的系统化替代口径（2026-09-09）**：逐行百分数已失效，现状以两个证据源为准——① 175 项 C 符号逐一语义判定（todo.md §17.1，V12/V13 两轮：COVERED 103 / ARCH-EVOLVED 32 / DEBUG-ONLY 27 / COMPILE-FLAG 4 / OBSOLETE 8 / REAL-GAP 1→**0**，唯一真缺口 G-V12-7 已修 Fix #64）；② 测试基线三矩阵 **503/521/503 passed**。G-V12-13 的剩余工作 = 按 175 项判定逐类重写下面六张分册表（本表 2026-06-12 的行仅作历史对照）。
 
 ---
 
@@ -32,11 +36,11 @@
 |---|------|---------|------|-----------|------|
 | M-001 | `SANITYCHECKS` | vm.h:8 | 健全检查开关 | 改 `#[cfg(feature = "sanity_checks")]` 替代 | 未实现 (改 cfg) |
 | M-002 | `CACHE_SANITY` | vm.h:9 | 缓存检查开关 | `#[cfg(feature = "cache_sanity")]` | 未实现 |
-| M-003 | `VMSTATS` | vm.h:10 | 统计开关 | 改 `#[cfg(feature = "vm_stats")]` | 未实现 |
-| M-004 | `MEMPROTECT` | vm.h:13 | slab 内存保护 | `slab` 模块未实现 | 跳过 (依赖 slab) |
+| M-003 | `VMSTATS` | vm.h:10 | 统计开关 | Rust 无条件实现统计（语义更优，V12 判定 COMPILE-FLAG-N/A） | 判定：无条件覆盖 |
+| M-004 | `MEMPROTECT` | vm.h:13 | slab 内存保护 | 唯一调用者在 slaballoc.c:45/52 的 `#if MEMPROTECT=0` 内（编译期即死，V12 判定 COMPILE-FLAG-N/A） | 判定：编译期不适用 |
 | M-005 | `JUNKFREE` | vm.h:14 | 释放填充垃圾 | 未实现 | 设计决策 (Rust Drop 自动) |
 | M-006 | `PAF_CLEAR` | vm.h:22 | 清零标志 | `PageAllocFlags::ZERO` | 已实现 |
-| M-007 | `PAF_CONTIG` | vm.h:23 | 物理连续 | `PageAllocFlags::CONTIGUOUS` | 已实现 |
+| M-007 | `PAF_CONTIG` | vm.h:23 | 物理连续 | `PageAllocFlags::CONTIG` 已定义；**两侧零消费**（C alloc.c/region.c 均不检查，V12-P2-7 判定：连续性来自原生多页分配） | 已定义（集合 parity，无语义消费） |
 | M-008 | `PAF_ALIGN64K` | vm.h:24 | 64K 对齐 | `PageAllocFlags::ALIGN_64K` | 已实现 |
 | M-009 | `PAF_LOWER16MB` | vm.h:25 | 16M 以下 | `PageAllocFlags::LOW_16M` | 已实现 |
 | M-010 | `PAF_LOWER1MB` | vm.h:26 | 1M 以下 | `PageAllocFlags::LOW_1M` | 已实现 |
@@ -220,7 +224,7 @@
 | G-009 | `mem_type_cache` | glo.h:40 | 缓存类型 | `MEM_TYPE_CACHE` | 已实现 (memtype.rs:696) |
 | G-010 | `mem_type_mappedfile` | glo.h:41 | 文件映射 | `MEM_TYPE_MAPPED_FILE` | 已实现 (memtype.rs:697) |
 | G-011 | `mem_type_shared` | glo.h:42 | 共享类型 | `MEM_TYPE_SHARED` | 已实现 (memtype.rs:694) |
-| G-012 | `total_pages` | glo.h:45 | 总页数 | `TOTAL_PAGES` | 已实现 (global.rs) |
+| G-012 | `total_pages` | glo.h:45 | 总页数 | `TOTAL_PAGES`（global.rs，含 boot 附加页；V12-P2-4/Fix #70 起 VMIW_STATS 改读此全局——utility.c:118 parity） | 已实现 + 接线确认（2026-09-09） |
 | G-013 | `num_vm_instances` | glo.h:46 | VM 实例数 | `VM_INSTANCE_COUNT` | 已实现 (global.rs) |
 
 ### 2.2 main.c
@@ -234,7 +238,7 @@
 
 | # | C 变量 | 文件:行 | 描述 | Rust 实现 | 状态 |
 |---|--------|---------|------|-----------|------|
-| G-016 | `missing_spares` | alloc.c:74 | 缺失备用页数 | `alloc_stats.missing` | 已实现 (alloc_stats.rs) |
+| G-016 | `missing_spares` | alloc.c:74 | 缺失备用页数 | **已删除**（V12-P2-4/Fix #70：spare-pool 机制被 Direct Map 结构性消除 [ARCH A-1]；分配失败记账归 alloc_stats，回收归 alloc_pfn_reclaiming） | 删除登记（2026-09-09） |
 | G-017 | `free_pages_bitmap` | alloc.c:35 | 空闲页位图 | `BitmapAllocator::bitmap` | 已实现 (bitmap_alloc.rs) |
 | G-018 | `free_page_cache/free_page_cache_size` | alloc.c:37-38 | 空闲页缓存 | `PageCache::cache` | 已实现 (page_cache.rs) |
 
@@ -317,7 +321,7 @@
 | F-009 | `reservedqueue_add` | alloc.c:179 | 加入队列 | `ReservedPages::add` | 已实现 (alloc_page.rs) |
 | F-010 | `reservedqueue_fill` | alloc.c:191 | 填充队列 (static) | `ReservedPages::fill` | 已实现 (私有) |
 | F-011 | `reservedqueue_alloc` | alloc.c:206 | 队列分配 | `ReservedPages::alloc` | 已实现 (alloc_page.rs) |
-| F-012 | `alloc_cycle` | alloc.c:227 | 分配循环 | `VmServer::alloc_cycle` + `missing_spares` 压力计数 | 已实现（主循环接线，补充体 DEFERRED 归 24；06-page-allocator.md §3.3/§4.3） |
+| F-012 | `alloc_cycle` | alloc.c:227 | 分配循环 | **已删除**（V12-P2-4/Fix #70：无生产写入点；回收职责归 T30 的 `alloc_pfn_reclaiming` 内联重试，24-page-cache.md §3.7 有删除记录） | 删除登记（2026-09-09） |
 | F-013 | `alloc_mem` | alloc.c:242 | 分配内存 | `PhysAllocator::alloc_pages` | 已实现 (phys_mem/*) |
 | F-014 | `mem_add_total_pages` | alloc.c:281 | 加总页数 | `VmPageAllocator::add_total_pages` | 已实现 |
 | F-015 | `free_mem` | alloc.c:289 | 释放内存 | `PhysAllocator::free_pages` | 已实现 (phys_mem/*) |
@@ -443,7 +447,7 @@
 | F-106-F-117 | mappedfile_* (12 callbacks) | mem_file.c:43-280 | 文件映射回调 (static) | `MappedFile::ev_*` | 已实现 (ev_copy/split 简化) |
 | F-118 | `mappedfile_setfile` | mem_file.c:191 | 设置文件 | `MappedFile::ev_setfile` | 已实现 |
 | F-119 | `mem_type_shared` | mem_shared.c:28 | 共享类型表 | `SharedMemory` + `MEM_TYPE_SHARED` (memtype.rs:694) | 已实现 |
-| F-120-F-130 | shared_* (11 callbacks) | mem_shared.c:41-207 | 共享回调 (static) | `SharedMemory::ev_*` | ✅ 已修复 (2026-06-16): ev_pagefault 完整实现 (getsrc→vm_isokendpt→map_lookup→源页映射→PFN共享); 签名增加 &VmProcTable + &mut PfnAllocator; MemTypeError 新增 InvalidProcess/InvalidAddress; 3 个测试覆盖。⚠️ 复检 (2026-09-08 V12 轮): 其中 `shared_delete` (mem_shared.c:110-123) 的"源区域 remaps 递减"半边缺失——`SharedMemory` 未覆写 `ev_delete`，remaps 只增不减 → 登记 todo.md **G-V12-7** |
+| F-120-F-130 | shared_* (11 callbacks) | mem_shared.c:41-207 | 共享回调 (static) | `SharedMemory::ev_*` | ✅ 已修复 (2026-06-16): ev_pagefault 完整实现 (getsrc→vm_isokendpt→map_lookup→源页映射→PFN共享); 签名增加 &VmProcTable + &mut PfnAllocator; MemTypeError 新增 InvalidProcess/InvalidAddress; 3 个测试覆盖。⚠️ 复检 (2026-09-08 V12 轮): `shared_delete` (mem_shared.c:110-123) 的"源区域 remaps 递减"半边缺失 → G-V12-7。✅ **闭单 (2026-09-09, Fix #64)**：`release_shared_remap` 漏斗助手落地（递减逻辑因借用安全住删除漏斗而非 ev_delete，12-memtype.md §3.7），region id 计数器配套 |
 | F-131 | `shared_setsource` | mem_shared.c:167 | 设置源 | dispatcher remap 路径 (dispatcher.rs:1443-1467 设 `VrParam::Shared` + `increment_region_remaps`) | ✅ 已实现 (复检 2026-09-08: 非 stub——VM_REMAP 完整接线，见 I-010；C 的 ev_setsource 语义内联在 remap) |
 
 ### 4.10 mmap.c (12 函数)
