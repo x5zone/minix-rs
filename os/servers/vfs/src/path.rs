@@ -180,7 +180,10 @@ pub trait PathFetcher {
     fn copy(&self, path: &str) -> Result<String, PathError>;
 }
 
-/// Direct fetcher — `cpf_grant_direct` (no `TRY`).
+/// Test double: fabricates bytes instead of reading caller memory.
+/// The production `PathFetcher` impl arrives with the kernel IPC
+/// primitives (W1) — `sys_safecopy` over the transport.
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DirectFetcher;
 
@@ -199,7 +202,8 @@ impl PathFetcher for DirectFetcher {
     }
 }
 
-/// Safecopy fetcher — `cpf_grant_magic` (`TRY` then `vm_handlemem`).
+/// Test double for the `TRY`-flavoured safecopy path (see [`DirectFetcher`]).
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SafecopyFetcher;
 
@@ -217,89 +221,6 @@ impl PathFetcher for SafecopyFetcher {
             return Err(PathError::TooLong);
         }
         Ok(path.to_string())
-    }
-}
-
-/// Historical vs POSIX trailing-slash handling — `DO_POSIX` trait.
-///
-/// `HistoricalPath` strips trailing `/` (DO_POSIX false), `PosixPath`
-/// appends `/.` (DO_POSIX true).  Gate D requires 2 behaviourally different impls.
-pub trait SlashHandler {
-    fn normalize(&self, path: &mut String);
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct HistoricalPath;
-impl SlashHandler for HistoricalPath {
-    fn normalize(&self, path: &mut String) {
-        while path.len() > 1 && path.ends_with('/') {
-            path.pop();
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct PosixPath;
-impl SlashHandler for PosixPath {
-    fn normalize(&self, path: &mut String) {
-        // POSIX: trailing slash → append "." (path.c:31 comment)
-        if path.len() > 1 && path.ends_with('/') && !path.ends_with("//") {
-            path.push('.');
-        }
-    }
-}
-
-/// `PathResolver` — `advance / eat_path / last_dir / get_name / canonical_path`.
-///
-/// Second Gate D dimension: `StrictResolver` vs `PermissiveResolver`
-/// differ on `PATH_MAX` enforcement.
-pub trait PathResolver {
-    fn advance(&self, dir: usize, lookup: &mut Lookup) -> Result<usize, PathError>;
-    fn eat_path(&self, lookup: &mut Lookup, fproc: &TestFproc) -> Result<usize, PathError>;
-}
-
-/// Minimal `FProc` stub for `eat_path`'s `/ → rd vs !/ → wd` test.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TestFproc {
-    pub rd: usize,
-    pub wd: usize,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct StrictResolver;
-impl PathResolver for StrictResolver {
-    fn advance(&self, _dir: usize, lookup: &mut Lookup) -> Result<usize, PathError> {
-        if lookup.path.len() > PATH_MAX {
-            return Err(PathError::TooLong);
-        }
-        // Simulate `get_free_vnode → find_vnode` hit vs miss
-        // For test, always return new vnode 99
-        Ok(99)
-    }
-    fn eat_path(&self, lookup: &mut Lookup, fproc: &TestFproc) -> Result<usize, PathError> {
-        let dir = if lookup.path.starts_with('/') {
-            fproc.rd
-        } else {
-            fproc.wd
-        };
-        self.advance(dir, lookup)
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct PermissiveResolver;
-impl PathResolver for PermissiveResolver {
-    fn advance(&self, _dir: usize, _lookup: &mut Lookup) -> Result<usize, PathError> {
-        // Permissive never checks PATH_MAX
-        Ok(42)
-    }
-    fn eat_path(&self, lookup: &mut Lookup, fproc: &TestFproc) -> Result<usize, PathError> {
-        let dir = if lookup.path.starts_with('/') {
-            fproc.rd
-        } else {
-            fproc.wd
-        };
-        self.advance(dir, lookup)
     }
 }
 
@@ -335,57 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn test_do_posix_strip() {
-        let mut p1 = "/a/b/".to_string();
-        HistoricalPath.normalize(&mut p1);
-        assert_eq!(p1, "/a/b");
-        let mut p2 = "/".to_string();
-        HistoricalPath.normalize(&mut p2);
-        assert_eq!(p2, "/");
-        let mut p3 = "/a/b/".to_string();
-        PosixPath.normalize(&mut p3);
-        assert_eq!(p3, "/a/b/.");
-        // Trait objects
-        let handlers: Vec<Box<dyn SlashHandler>> =
-            vec![Box::new(HistoricalPath), Box::new(PosixPath)];
-        let mut a = "/x/".to_string();
-        handlers[0].normalize(&mut a);
-        assert_eq!(a, "/x");
-    }
-
-    #[test]
-    fn test_advance_two_phase() {
-        let strict = StrictResolver;
-        let mut lk_hit = Lookup::new("/etc/passwd".to_string(), LookupFlags::NOFLAGS).unwrap();
-        let r = strict.advance(1, &mut lk_hit).unwrap();
-        assert_eq!(r, 99);
-        // Symulate find hit vs miss via Permissive that always returns 42
-        let perm = PermissiveResolver;
-        let mut lk2 = Lookup::new("/nonexist".to_string(), LookupFlags::NOFLAGS).unwrap();
-        let r2 = perm.advance(1, &mut lk2).unwrap();
-        assert_eq!(r2, 42);
-        assert_ne!(r, r2);
-    }
-
-    #[test]
-    fn test_eat_path_slash() {
-        let fproc = TestFproc { rd: 10, wd: 20 };
-        let strict = StrictResolver;
-        let mut lk_abs = Lookup::new("/a/b".to_string(), LookupFlags::NOFLAGS).unwrap();
-        let r_abs = strict.eat_path(&mut lk_abs, &fproc).unwrap();
-        assert_eq!(r_abs, 99); // rd=10 path
-        let mut lk_rel = Lookup::new("a/b".to_string(), LookupFlags::NOFLAGS).unwrap();
-        let r_rel = strict.eat_path(&mut lk_rel, &fproc).unwrap();
-        assert_eq!(r_rel, 99);
-        // Both use same advance stub, but dir differs internally (rd vs wd) — test that trait objects differ
-        let resolvers: Vec<Box<dyn PathResolver>> =
-            vec![Box::new(StrictResolver), Box::new(PermissiveResolver)];
-        let mut lk = Lookup::new("/x".to_string(), LookupFlags::NOFLAGS).unwrap();
-        assert_eq!(resolvers[0].eat_path(&mut lk.clone(), &fproc).unwrap(), 99);
-        assert_eq!(resolvers[1].eat_path(&mut lk, &fproc).unwrap(), 42);
-    }
-
-    #[test]
     fn test_last_dir_split() {
         // last_dir: strrchr('/') cut
         let path = "/a/b/c".to_string();
@@ -405,8 +275,11 @@ mod tests {
     #[test]
     fn test_canonical_path() {
         // canonical_path: last_dir + rdlink loop + .. climb
-        let mut p = "/a/b/c".to_string();
-        HistoricalPath.normalize(&mut p);
+        let mut p = "/a/b/c/".to_string();
+        // Historical trailing-slash semantics (DO_POSIX=false, path.c:31).
+        while p.len() > 1 && p.ends_with('/') {
+            p.pop();
+        }
         assert_eq!(p, "/a/b/c");
         // Simulate canonical climbs PATH_MAX bound
         let long = "a".repeat(PATH_MAX + 1);
@@ -520,18 +393,5 @@ mod tests {
         // Direct vs Safecopy differ on error handling for len 0? Both Err, but we test that trait objects work
         assert!(fetchers[0].fetch(0, 0).is_err());
         assert!(fetchers[1].fetch(0, 0).is_err());
-    }
-
-    #[test]
-    fn test_slash_handler_two_impls() {
-        let hist = HistoricalPath;
-        let posix = PosixPath;
-        let mut p1 = "/a/".to_string();
-        let mut p2 = "/a/".to_string();
-        hist.normalize(&mut p1);
-        posix.normalize(&mut p2);
-        assert_ne!(p1, p2);
-        assert_eq!(p1, "/a");
-        assert_eq!(p2, "/a/.");
     }
 }

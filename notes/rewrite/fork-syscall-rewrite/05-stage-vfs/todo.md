@@ -23,7 +23,7 @@
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
 | **P0** | **R2-P0-1** | REQ 消息基址 `FS_BASE=0x600` 与 C（com.h:589）/minix-fs（0xA00）不符——VFS↔FS wire 绝对值错误，注释的 C 锚点系伪造（§9.2；**✅ 已修复** 2026-09-09，§9.9 Fix #1） |
-| P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：`DirectFetcher::fetch` 伪造返回 `"a".repeat`、`eat_path` 签名吃 `TestFproc`、`StrictResolver` 恒返回 vnode 99（§9.2） |
+| P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：伪造数据 impl 与以测试类型命名的签名（§9.2；**✅ 前半已修复** 2026-09-09，§10 Fix #32——虚构抽象删除/伪造 impl 入 cfg(test)；真实 advance/eat_path 族随 W7/C-6 落地） |
 | P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2；**W2 VfsState 组合已闭合** 2026-09-09，§10 Fix #30；W3 绑定待做） |
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #27） |
@@ -124,7 +124,7 @@
 - **验证**：方向矩阵测试（From/To × 断言读侧不变、写侧获得 filp + count 增长）；EDEADLK 决策函数对 `S_ISSOCK` filp 返回 EDEADLK 的单测。
 - **边界**：Fix #4（count 配对已落地，本条完成后 COPYFD 族闭合）；14-filedes.md D5 已按本条登记改写；与 sdev/uds 的 `smap_by_endpt`（device_map.rs:496）联动。
 
-#### R2-P1-1（P1-design-wrong）path.rs 生产单元的 Gate D 虚构抽象族：伪造数据的 trait impl 与以测试类型命名的签名
+#### ✅ R2-P1-1（P1-design-wrong）path.rs 生产单元的 Gate D 虚构抽象族——前半已修复 2026-09-09（§10 Fix #32：虚构抽象删除 + 伪造 impl 入 cfg(test)；真实 advance/eat_path 族随 W7/C-6 落地）
 
 - **Rust 现状**（全部位于 `#[cfg(test)]`（path.rs:300 起）之外的生产单元）：
   - `PathFetcher`（path.rs:172-175）的生产 impl `DirectFetcher::fetch` 返回 `Ok("a".repeat(len - 1))`（path.rs:186）、`SafecopyFetcher::fetch` 返回 `"b".repeat(...)`（:207，注释自认 "always succeed for test"）——**生产编译单元内伪造用户路径数据**。
@@ -489,3 +489,10 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **Before**：`is_bdev_rs`/`is_cdev_rs`/`is_sdev_rs` 用 `(raw & 0xFF00) == 0x500/0x600/0x700`（注释自认占位）；`route_message` 对未解析调用号以 `VfsCallNum::Read` 占位（P1-1 的静默错误执行点）。
 - **After**：三谓词改 C 真值 `(raw & !0x7f) == 0x580/0x480/0x1980`（com.h:963-964/919-920/1038）；测试以真 `BDEV_REPLY`(0x580)/`CDEV_REPLY`(0x480)/`SDEV_REPLY`(0x1980) 断言路由；`Route::Enosys { raw }` 承接未解析调用号（main.c:283-294 的 C 语义）。09 号文档 §2.3 本就记载正确的 C 语义（`&~0x7f` 匹配）——文档对、代码错，本条使代码归位。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **354 passed / 0 failed**（353→354：`test_route_enosys_and_rs_truth`——Enosys 路由 + RS 三基址 + 命名空间不碰撞）。
+
+### ✅ Fix #32: R2-P1-1（前半）— path.rs 虚构抽象删除 + 伪造 impl 入 cfg(test)（2026-09-09）
+
+- **File**：`os/servers/vfs/src/path.rs`（删 SlashHandler/HistoricalPath/PosixPath/PathResolver/StrictResolver/PermissiveResolver/TestFproc 七项生产单元虚构；DirectFetcher/SafecopyFetcher 门入 cfg(test)；四个引用它们的测试删除、两处改写为真实语义）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/13-path-lookup.md`（D 描述/实现表六处）。
+- **Before**：生产单元内 `DirectFetcher::fetch` 伪造返回 `"a".repeat(len-1)`、`PathResolver::eat_path` 签名吃 `TestFproc`、`StrictResolver::advance` 恒返回 vnode 99、`SlashHandler` 注释自认 Gate D 产物。
+- **After**：七项虚构抽象整体删除；`PathFetcher` seam 保留（Direct/Safecopy 是 C 的 cpf_grant 语义二分），两个伪造 impl `#[cfg(test)]` 圈定并在文档注明生产 impl 随 W1 transport 落地；历史尾斜杠语义由 `Lookup::normalize_trailing_slash` 直接承载。**前半闭合**：生产单元零虚构抽象；**后半（真实 advance/eat_path/last_dir/get_name/canonical_path + REQ_LOOKUP 循环）随 W7**，13 号文档实现表已标注各函数 W7 待落地。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **346 passed / 0 failed**（354−8 个虚构对象测试）；`grep -c "PathResolver\|SlashHandler\|TestFproc\|StrictResolver\|PermissiveResolver" path.rs` = **0**。

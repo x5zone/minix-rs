@@ -136,7 +136,7 @@ Rust 改写不是照抄 `path.c:40` 的 `advance` 与 `lookup` 的 `while(EENTER
 ### D5 路径拷贝的 `sys_safecopy` 显式与 `DO_POSIX` 常量
 
 - **C**：`utility.c:24 copy_path→strlen→PATH_MAX→ENAMETOOLONG` 与 `60 fetch_name→safecopy` 的 `who_e` 透传。
-- **Rust**：`PathFetcher` trait 的 `fetch(path_addr: VirAddr, len: usize) -> Result<String, PathError>` + `DirectFetcher`（`grant_direct`）与 `SafecopyFetcher`（`sys_safecopy`）双实现；`DO_POSIX_PATHNAME_RES: bool = false` 的 `const` 使 `last_dir` 的 `while(len>1 && path.ends_with('/')) { pop }` 的尾斜杠忽略在 `HistoricalPath` vs `PosixPath` 的 `strip_trailing_slash` 可测试。
+- **Rust**：`PathFetcher` trait 的 `fetch(path_addr: VirAddr, len: usize) -> Result<String, PathError>` + `DirectFetcher`/`SafecopyFetcher` 为 cfg(test) 伪造对照（生产 impl 随 W1 transport 落地）；`DO_POSIX_PATHNAME_RES: bool = false` 的尾斜杠忽略由 `Lookup::normalize_trailing_slash` 直接承载（`SlashHandler`/`PathResolver`/`StrictResolver`/`PermissiveResolver`/`TestFproc` 等 Gate D 虚构抽象已删，R2-P1-1 前半）。
 - **为什么**：`DO_POSIX 0` 的历史行为在 Rust 以 `const DO_POSIX: bool` 的 `if DO_POSIX { append_dot } else { strip }` 显式，使 `A-10` 的架构演进在代码注释三处一致标注（`const` + doc D5 + 设计§6 表）。
 
 ### D6 响应类型化：`LookupRes` 的 `Ok vs EnterMount vs Symlink` 枚举
@@ -177,14 +177,14 @@ os/servers/vfs/src/
 | `PATH_MAX 1024` | `limits.h` | `path.rs:PATH_MAX: usize = 1024` | `Lookup::new(path) len>PATH_MAX→TooLong` |
 | `lookup` | `path.h:4` | `path.rs:Lookup { path: String, flags: LookupFlags, vmnt_lock: LockKind, vnode_lock: LockKind, vmnt: Option<VmntId>, vnode: Option<VnodeId>, symloop: u8 }` | `lookup_init` 的 `None` 初始化 |
 | `lookup_init` | `path.c:574` | `Lookup::new(path, flags) -> Result<Self, PathError>` | `path→String, flags, vmnt/vnode=None, symloop=0` |
-| `advance` | `path.c:40` | `PathResolver::advance(dir, lookup) -> Result<VnodeId, PathError>` | `get_free→lookup→find/dup→downgrade` 两相 |
-| `eat_path` | `path.c:133` | `PathResolver::eat_path(lookup, fproc) -> Result<VnodeId, PathError>` | `/→rd vs 非/→wd` 起点 |
-| `last_dir` | `path.c:145` | `PathResolver::last_dir(lookup, fproc) -> Result<(VnodeId, String), PathError>` | `strrchr('/')` 切分 + `symlink→rdlink` 循环 |
+| `advance` | `path.c:40` | 待 W7 实函数化（`PathResolver` 虚构抽象已删） | `get_free→lookup→find/dup→downgrade` 两相 |
+| `eat_path` | `path.c:133` | 待 W7 实函数化 | `/→rd vs 非/→wd` 起点 |
+| `last_dir` | `path.c:145` | 待 W7 实函数化 | `strrchr('/')` 切分 + `symlink→rdlink` 循环 |
 | `lookup` | `path.c:384` | `Lookup::resolve(fs, vmnt, cred) -> Result<LookupRes, LookupError>` | `req_lookup→EENTER/ELEAVE/SYMLINK→memmove→symloop→ELOOP` |
 | `copy_path` | `utility.c:24` | `PathFetcher::copy(path, len) -> Result<String, PathError>` | `len>PATH_MAX→TooLong` |
 | `fetch_name` | `utility.c:60` | `PathFetcher::fetch(addr, len) -> Result<String, PathError>` | `safecopy→String` + `PATH_MAX` 截断 |
-| `canonical_path` | `path.c:648` | `PathResolver::canonical(path, fproc) -> Result<String, PathError>` | `last_dir→rdlink→..` 爬升 |
-| `get_name` | `path.c:593` | `PathResolver::get_name(dir, entry) -> Result<String, PathError>` | `req_getdents` 循环的 `dirent` 解析 |
+| `canonical_path` | `path.c:648` | 待 W7 实函数化 | `last_dir→rdlink→..` 爬升 |
+| `get_name` | `path.c:593` | 待 W7 实函数化 | `req_getdents` 循环的 `dirent` 解析 |
 
 ### 4.3 不变量
 
