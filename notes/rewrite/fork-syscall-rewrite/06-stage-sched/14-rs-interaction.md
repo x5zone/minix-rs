@@ -6,6 +6,8 @@
 
 分工声明：RS 槽配置的细节（`r_*` 4 个值的来源、system.conf 怎么装载）归 `../03-stage-rs/08-rs-slot-config.md`，Live Update 全流程（`update_service`/`clone_slot` 怎么迁）归 `../03-stage-rs/16-rs-live-update.md`，那两篇是主权文档。本文只取申请点 `type.h:92-95` 和取消两处（`manager.c:461`、`request.c:342`），配置的来源本文只引用，不重复。
 
+实现归属（Rust 侧三层，先说清再读正文）：行为主体在 `os/servers/rs/src/sched.rs`（`sched_decision`/`on_stop_result`，03-stage-rs 域，本文 D0/D1 的落点）；契约镜像在 `os/servers/sched/src/client.rs`（本 crate——`sched_start`/`sched_stop` 的客户端形状 PM 与 RS 共用，libsys 不分 caller）；服务端视角在 `os/servers/sched/src/valid.rs`（本 crate——RS 是放行发送者之一）。后续任何覆盖率审查把"14 篇没有 sched 侧模块"误判为缺口时，以本段为准。
+
 > 本章不讲什么：
 > - RS 槽配置细节（`r_*` 4 个值的来源、system.conf 怎么装载）——见 `../03-stage-rs/08-rs-slot-config.md`（本文只取引入点 `type.h:92-95`）
 > - Live Update 全流程（`update_service`/`clone_slot` 怎么迁）——见 `../03-stage-rs/16-rs-live-update.md`（本文只取取消的两处）
@@ -157,7 +159,7 @@ os/libs/minix-types/src/
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
 | 申请的判断 | `utility.c:364-382` | `os/servers/rs/src/sched.rs:119` 既有（`sched_decision`） | 双断言直达 |
-| 取消的处理 | `manager.c:461` + `request.c:342` | `os/servers/rs/src/sched.rs:149,161,173` 新增（`on_stop_result`） | 同样的错、不同的处理 |
+| 取消的处理 | `manager.c:461` + `request.c:342` | `os/servers/rs/src/sched.rs:147,159,174` 新增（`on_stop_result`） | 同样的错、不同的处理 |
 | 生源的号 | `com.h:61` | `Endpoint::RS` 一源（复用） | 三处用一源 |
 
 ### 4.3 不变量

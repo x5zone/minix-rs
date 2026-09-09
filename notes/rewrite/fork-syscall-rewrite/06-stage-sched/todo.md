@@ -18,7 +18,7 @@
 | P1 | （stage 内无） | 本轮 P1 级发现全部是内核生产代码 → edge | §5 |
 | P2 | V2-P2-1 | 预留符号清算批次（升格自 P3-1：清算时点已到） | ✅ 已修复 2026-09-09（Fix #5） |
 | P2 | P2-1 | init 临时值 BSP 语义误读（V2 复核：加重——Rust 注释也描述了不存在的规则） | ✅ 已修复 2026-09-09（Fix #7） |
-| P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | open |
+| P2 | P2-2 | 14 篇 Rust 实现归属未声明（部分推进：文档分工声明已落） | ✅ 已修复 2026-09-09（Fix #11） |
 | P2 | P2-3 | SUSPEND 常量本地定义（V2 附注：与 E-MINTYPES-SYS 合并修） | open |
 | P2 | P2-4 | `SchedProc.cpu` 裸 u32（V2 附注：落点扩为全链 5 处签名） | ✅ 已修复 2026-09-09（Fix #8） |
 | P3 | V2-P3-1 | 测试补强两小件（无效 spender 静默分支 / 多进程回升序） | ✅ 已修复 2026-09-09（Fix #10） |
@@ -122,7 +122,7 @@
 - 修复面从「两处表述」扩为：start.rs 注释 + 06 篇两处 + 核查 10 篇是否复述了该「规则」。
 - **验证**：`rg -n "lasting|self-parented" os/servers/sched/src/scheduling/start.rs os/servers/sched/src/cpu.rs` + `rg -n "真正起作用|BSP" 06-start-scheduling.md 10-pick-cpu-smp.md`。
 
-### P2-2 14 篇（RS 交互）的 Rust 实现归属未声明 —— 维持 open（部分推进）
+### P2-2 14 篇（RS 交互）的 Rust 实现归属未声明 —— ✅ 已修复 2026-09-09（Fix #11，见 §9）
 
 - V2 复核：14 篇已有「分工声明」块（:7-11，文档主权指向 03-stage-rs 两篇），但 P2-2 要的 **Rust 实现归属三层声明**（服务端视角 valid.rs / 契约镜像 client.rs / 行为主体 os/servers/rs）未落——client.rs 模块头（:1-15）自述「PM-facing half」，没有「本模块是契约镜像、不区分 PM 与 RS」一句；lib.rs 模块索引（:21）对 client 的描述也未提 14 篇。
 - 修法维持第一轮首选：14 篇补归属段 + client.rs 模块头补一句；次选（99 篇导航表集中登记）仍可。
@@ -303,3 +303,9 @@ V2 联网复核：第一轮引用的 DWRR（[RSoC 2026: A new CPU scheduler for 
 **(b) `test_clock_rebalances_multiple_slots_in_order`**（server.rs:1100）：三个在册进程（两个降过、一个已在上限）同轮回升——各升一级且只升一级、到上限的整段跳过（C 的 `if` 守护全 body：没动的连下发都没有）、两次 LOCAL 下发、零回件。补上八条语义第 7 条的多进程半。
 **测试**：`cargo test -p minix-sched` **81 passed** / 0 failed（79 → 81）；clippy 本体 0 告警。
 **Docs**：02 篇 §5 增 (a) 行、11 篇 §5 增 (b) 行（锚点 server.rs:1079/:1100 实测）。
+
+
+### ✅ Fix #11: P2-2 — 14 篇 Rust 实现归属三层声明落位
+**问题**：14 篇只有文档主权分工声明，Rust 实现归属未声明——覆盖率审查会误判「14 篇没有 sched 侧模块」为缺口，RS 侧行为回归时责任含糊。
+**修复**：(1) 14 篇「实现归属」段——行为主体 `os/servers/rs/src/sched.rs`（03-stage-rs 域）/ 契约镜像 `client.rs`（本 crate，PM 与 RS 共用）/ 服务端视角 `valid.rs`（本 crate，RS 是放行发送者）三层各给锚点；(2) `client.rs` 模块头补「镜像服务所有 libsys caller，库不分 caller：PM 的 fork INHERIT 与 RS 的系统进程 START 走同两封信」；(3) `lib.rs` 模块索引 client 行补 14 篇指针。顺带修正 14 篇 §4.2 的 rs/sched.rs 行锚（149,161,173 → 147,159,174，rg 实测）。
+**Verified**：Gate E 抽验——14 篇声称的 RS 侧符号（`sched_decision`:119、`StopSite`:147、`on_stop_result`:174）与 3 个取消测试（test_stop_ok_continues 等）在 `os/servers/rs/src/sched.rs` 全部真实存在；`cargo test -p minix-sched` 81 passed（注释级改动）。

@@ -1,8 +1,11 @@
 //! SCHED's mirror of the client contract: who asks, what rides, who rules.
 //!
-//! Mirrors the PM-facing half of the contract (`minix3/minix/lib/libsys/
+//! Mirrors the libsys client contract (`minix3/minix/lib/libsys/
 //! sched_start.c:11-97`, `sched_stop.c:9-29`): the three scheduler shapes,
-//! the START/INHERIT payloads, and the reply readback. 13-pm-interaction.md.
+//! the START/INHERIT payloads, and the reply readback. 13-pm-interaction.md
+//! and 14-rs-interaction.md own the two stories — the mirror serves both,
+//! because the library does not distinguish callers: PM's fork INHERIT and
+//! RS's system-process START ride the same two letters.
 //!
 //! The module owns the routing and the packing, nothing else: which shape
 //! takes which road, what each letter carries, and whose name the reply
