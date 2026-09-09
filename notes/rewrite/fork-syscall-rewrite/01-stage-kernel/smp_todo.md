@@ -779,7 +779,22 @@ trampoline 方案在此引导路径下不可靠——下一步 = 测试内核改
 全部工作（级标 ABCDabcdefg）**；64 位 Rust 的 panic handler 已被执行（说明 64 位调用链
 通了），但 panic 的 location.file() 打印 0xFF 填充（指针坏）且串口有 0x10/0xA3 混入——
 剩余问题 = 这一个 panic 的成因（首选排查：rust_main64 入口到首条 write_str 之间；怀疑
-栈/重定位细节），下一次会话从「给 ap_entry/rust_main64 加最早打印」续起。**第二轮进展（2026-09-08）**：①16 位段 far-jump 操作数宽度修正（EA 无 66 前缀时读 off16+sel16，原 .long 注入使 selector=0 → null selector #GP——旧日志的 v=0d@0x19 即此）；②lgdt disp 形式修正；③**blob 布局手工冻结**（code16@0 / GDT 描述符@0x30 / code32@0x40 / code64@0xC0 / GDT 表@0x110 / MAGIC@0x140 / 记录@0x148——全部 .org 边界 + Rust 常量镜像 + hosted 测试钉住）；④新增 hosted 测试（镜像 cli 首字节/GDT 描述符字节/记录布局镜像）。**第三轮进展（同日）**：梯子加入分段 trace 诊断（每级写线性 0x8200+i，BSP 超时 dump）后出现两种互斥症状——轮次 A：trace=[1,2,3,4,0…]（AP 走完 16 位与 far jump，未达 32 位入口——far jump 目标 0x8040 与 ap_protected 实际位置漂移，已用 .org 0x40/0x0C0 冻结修复）；轮次 B（.org 修复后）：trace 全零 + AP 无声（INIT/SIPI 交付层本身待证——引出 QEMU gdb 单步需求）。**下一步 = QEMU gdb（-s -S）单步真实执行路径**
+栈/重定位细节），下一次会话从「给 ap_entry/rust_main64 加最早打印」续起。
+**→ 续查一轮（同日第三会话，逐指令级标 + ELF 段核验）**：
+- ELF 段核验：5 个 LOAD 段 Offset == VirtAddr − 0x100000 精确一致；
+  QEMU kludge seek = 头文件偏移 −(header_addr − load_addr) = 0x1000 − 0x1000 = 0
+  → PA == VMA 恒等成立（header_addr=0x101000/mb.ld 基址 0x101000 的组合正确）。
+- 逐指令级标实测（串口）：`ABCDabcdefg` 全部打出——**cr3 装载、rdmsr、wrmsr、
+  CR0.PG 开启、PG 后首次取指全部成功**；死亡点推进到 mb64 段内（F 级标 0x46 未打），
+  随后 panic handler 以坏 location（file() 读出 0xFF 填充）执行，且串口有第二写者
+  交错（0x80 08 40 08 A3 00…，疑似 wild execution 踩入 panic 通路）。
+- -d int 日志零 v=（无 CPU 异常）→ 死亡非异常而是**静默跑飞**（远跳落点或 64 位
+  早期指令与真实装载偏移仍有细微错位）。
+- **下次续起清单**：① nm/反汇编核对当前产物里 far jump 的 off32 与 mb64 实址；
+  ② 给 mb64 段内每条指令插级标（F 拆成三条）；③ 若 mb64 落点错，检查 .mbh 的
+  VMA（mb.ld 基址 0x101000 下 .mbh 在 0x101000，而 kludge 把头放在 load_addr
+  0x100000——**头自身的 VMA≠PA 差 0x1000 可能就是残余错位的来源**，候选修法：
+  mb.ld 基址回 0x100000 但 .mbh 单独 VMA 0x1000，或 header_addr 回 0x100000）。**第二轮进展（2026-09-08）**：①16 位段 far-jump 操作数宽度修正（EA 无 66 前缀时读 off16+sel16，原 .long 注入使 selector=0 → null selector #GP——旧日志的 v=0d@0x19 即此）；②lgdt disp 形式修正；③**blob 布局手工冻结**（code16@0 / GDT 描述符@0x30 / code32@0x40 / code64@0xC0 / GDT 表@0x110 / MAGIC@0x140 / 记录@0x148——全部 .org 边界 + Rust 常量镜像 + hosted 测试钉住）；④新增 hosted 测试（镜像 cli 首字节/GDT 描述符字节/记录布局镜像）。**第三轮进展（同日）**：梯子加入分段 trace 诊断（每级写线性 0x8200+i，BSP 超时 dump）后出现两种互斥症状——轮次 A：trace=[1,2,3,4,0…]（AP 走完 16 位与 far jump，未达 32 位入口——far jump 目标 0x8040 与 ap_protected 实际位置漂移，已用 .org 0x40/0x0C0 冻结修复）；轮次 B（.org 修复后）：trace 全零 + AP 无声（INIT/SIPI 交付层本身待证——引出 QEMU gdb 单步需求）。**下一步 = QEMU gdb（-s -S）单步真实执行路径**
 **第四轮进展（2026-09-08）**：alive 测试内核简化重写（去除 trace 诊断、用固定 0x9000 scratch + `install_at(0x8000)` + `ap_entry` 发布 boot_ack）。**当前状态**：build ✓ 但 QEMU 运行仍超时（AP 未发布 ack）——需要 QEMU gdb（-s -S）在 AP 的 16 位入口 0x8000 设断点，确认 INIT-SIPI 后 AP 是否开始取指，以及 16→32→64 每级是否走通。候选根因：①INIT-SIPI 未送达目标 APIC；②16 位代码段的 lgdt 或 far-jump 编码仍然有误；③UEFI identity map 的 NX 位阻止了低位执行。：①16 位段 far-jump 操作数宽度修正（EA 后应读 off16+sel16，原 .long 注入使 sel=0 → null selector #GP——旧日志的 v=0d@0x19 即此）；②lgdt disp16 形式修正；③**blob 布局手工冻结**（C trampoline.S 同款：code16@0、GDT 描述符@0x30、code32@0x40、code64@0xC0、GDT 表@0x110、MAGIC@0x140、记录@0x148——全部数字常量 + `test_ladder_offsets_frozen`/`test_image_starts_with_cli_and_layout_markers` 钉住）；④新增 hosted 测试（镜像 cli 首字节/GDT 描述符字节/记录布局镜像）。**当前 QEMU 状态**：SIPI 已发出（ICR 状态 idle、ESR=0）但 AP 仍未达 Rust 入口（marker=0）且无 v= 异常日志——下一步 QEMU gdb（-s -S）单步真实执行路径
 | S-4 | init_ap 真实现（D-39） | §3.3：x86 per-CPU GDT/TSS/ltr/GS_BASE/lidt + **per-CPU MSR 重编程**（STAR/LSTAR/SFMASK/EFER.SCE 每核必写 + GS_BASE 两变体，防"四核起来只有 CPU0 能 syscall"）+ **时钟基线核对**（x86 PIT 全局无 per-AP 工作，arm/riscv per-CPU 比较器可配，§3.3）；arm VBAR/TTBR/GICR；riscv satp（**SSIE 能力准备、置位推迟到 S-10**——v7 #2：若 S-4
 置 SSIE 而 stvec 未装，IPI 到达即入无向量路径）；**lidt/VBAR/stvec = per-CPU attach 到 S-8 产出的完整共享表**（v8 #1 定位：S-8 是
