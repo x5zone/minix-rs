@@ -47,6 +47,7 @@ pub mod sdev;
 pub mod select;
 pub mod socket;
 pub mod stadir;
+pub mod syscalls;
 pub mod tll;
 pub mod vmnt;
 pub mod vnode;

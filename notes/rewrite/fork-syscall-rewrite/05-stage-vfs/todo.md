@@ -24,7 +24,7 @@
 |------|------|--------|
 | **P0** | **R2-P0-1** | REQ 消息基址 `FS_BASE=0x600` 与 C（com.h:589）/minix-fs（0xA00）不符——VFS↔FS wire 绝对值错误，注释的 C 锚点系伪造（§9.2；**✅ 已修复** 2026-09-09，§9.9 Fix #1） |
 | P1 | R2-P1-1 | path.rs 生产单元的 Gate D 虚构抽象族：伪造数据 impl 与以测试类型命名的签名（§9.2；**✅ 已全部修复** 2026-09-09/10，§10 Fix #32 + Fix #36——虚构抽象删除 + advance/eat_path/last_dir/get_name/canonical_path 全实函数化并配测试矩阵） |
-| P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match；`CallTable` 全 Some 制造"已实现"假象（§9.2；**W2 VfsState 组合已闭合** 2026-09-09，§10 Fix #30；W3 绑定待做） |
+| P1 | R2-P1-2 | 执行绑定层缺失：64 个路由臂与决策函数之间不存在任何 match（§9.2；**✅ 骨架+首梯队已修复** 2026-09-10，§10 Fix #37——`syscalls.rs` 穷举 64 臂 + Close/Lseek/Umask/Getrusage 表本地处理器 + FS 对话臂诚实 Nosys；`run_once` 与 legacy `dispatch()` 删除为收尾余件） |
 | P1 | R2-P1-3 | `sdev_stop` 驱动死亡级联缺失（sdev.c:912）：socket 驱动死亡时挂起进程永久悬挂（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #11——sdev 侧停尸决策闭合，编排归 P1-2） |
 | P1 | R2-P1-4 | route_message 的 BDEV/CDEV/SDEV RS 前缀判定用自认虚构值（0x500/0x600/0x700 + 0xFF00 掩码），C 真值为 `~0x7f` + 0x580/0x480/0x1980（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #27） |
 | **P0** | **R2-P0-2** ✅ | `copy_fd` 的 From/To 方向建模偏离 C 且 EDEADLK/CLOEXEC/`filp_ioctl_fp` 守门未建模——已修复 2026-09-09（§10 Fix #10：`CopyFdCtx` 注入 + kind 决定方向 + 三守门齐） |
@@ -62,7 +62,7 @@
 
 ### P1-1～P1-5（架构级，R1 存档 §3）
 
-- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。**部分闭合** 2026-09-09（§10 Fix #27）：Read 占位符已由 `Route::Enosys` 取代（占位符子项闭合）；RS 前缀真值化见 R2-P1-4。剩余余件（legacy `dispatch()` 删除 + `run_once` 替换）随 W3 执行面一并落地——dispatch 的门语义（pending 标记/去重）先行迁入 W3 的入口函数再删除。
+- P1-1 复核 ✅：run()（main_loop.rs:788 起）:786 "Currently a mock implementation"；dispatch()（:480）legacy 三路；:627 "Real dispatch will ENOSYS. Use Read as placeholder"；`route_message` 消费方仍只有 main_loop.rs 自身与测试。本轮下钻出新条目 R2-P1-2（绑定层），两者同点收敛。**部分闭合** 2026-09-09（§10 Fix #27）：Read 占位符已由 `Route::Enosys` 取代（占位符子项闭合）；RS 前缀真值化见 R2-P1-4。剩余余件（legacy `dispatch()` 删除 + `run_once` 替换）随 W3 执行面一并落地——dispatch 的门语义（pending 标记/去重）先行迁入 W3 的入口函数再删除。**W3 骨架已闭合**（Fix #37，见 §10）：`syscalls.rs` 穷举 64 臂 + Close/Lseek/Umask/Getrusage 表本地处理器。
 - P1-2 复核 ✅（数字微漂）：DEFERRED 束原样；mfs 侧状态标记现为 37 个 = 12 Live（5 LiveInCrate + 7 LiveViaBlockTransfer）+ 25 PendingDocument（首轮口径 8 Live/23 Pending——mfs 不在 vfs 目录，确有演进），`fs_lookup` 仍 Pending（os/fs/mfs/src/table.rs:57）。"真瓶颈在 mfs 侧"结论维持。 **✅ 矩阵已落定** 2026-09-09（§10 Fix #29）：接线顺序九步（W1-W9）落 plan.md §8，每步带依赖与关闭条件；§9.8 的推进顺序与之对齐。剩余为各步执行（分布在大件与 edge 条目）。
 - ✅ P1-3 已修复 2026-09-09（§10 Fix #8）：`PmHandler::fetch_group_list` 数据搬运口（`sys_datacopy_wrapper` 接缝，默认 fail-closed `ENOSYS`，通电挂 P1-2/E1）；`SETGROUPS` 臂补 `NGROUPS_MAX → EINVAL` 门（C 为 panic，fail-closed 偏差与 10-pm-protocol.md D4 的 EFAULT 决策同向）+ `group_no==0` 直清 + 正数路径经栈缓冲送真实列表。`PmError::NotImplemented` 变体新增。测试 +3（ENOSYS 预通电态/超限拒绝/零组直清）。
 - ✅ P1-4 已修复 2026-09-09（§10 Fix #9）：`FilterOutcome::Query` 增 `clear_update`/`set_busy` 义务字段（select.c:517 清 UPDATE 在发送前、:522 置 BUSY 在成功后，socket 对位 :525-538），`filter_step` 恒置 true——义务进数据而非调用方记忆；23-select.md D3 同步并登记"只给 rops"的否决理由。
@@ -530,6 +530,14 @@ $ cargo clippy --manifest-path os/Cargo.toml -p minix-vfs --lib  → 40 条 warn
 - **After**：`lookup(start_fs, start_ino, start_dev, resolve, rd, uid, gid, mounts, req_lookup)`——每轮把 `(fs_e, dir_ino, root_ino)` 交给 `req_lookup` 接缝（W7 接线时接 `FsReq::Lookup`+`FsClient`；测试用脚本应答），三类特殊码裁决：EENTERMOUNT 找 `mounted_on == (ino, fs_e)` 行切根（找不到 EIO 加固为 NoEnt）；ELEAVEMOUNT 找当前 fs 行 + `..` 伪路径守卫（C panic 加固为 ENOENT）；ESYMLINK 从 `fp_rd` 重启。`symloop` 累计越界 ELOOP；chroot 边界（同 dev 才生效）每轮重算。**设计要点**：`mounts: &[MountedFs]` 身份快照——C 读共享内存 `vmnt[]`，单线程事件循环下循环内等价（快照每轮 lookup 前重建，W7 接线时入档）。
 - **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **352 passed / 0 failed**（346→352：六场景——单 FS 一轮中/进挂载切根/爬出+挂载点落定/伪路径 ENOENT/符号链接死循环 ELOOP/空路径 ENOENT）。
 - **记录顺序说明**：本记录按提交时间追加于 §10 末尾；§10 此前的记录已按编号重排（Fix #1–#34），后续记录同样按提交时间追加并以标题编号检索。
+
+### ✅ Fix #37: R2-P1-2（W3 骨架）— syscalls.rs 穷举 64 臂绑定 + 表本地首梯队处理器（2026-09-10）
+
+- **File**：`os/servers/vfs/src/syscalls.rs`（新模块：`dispatch_syscall` + 64 穷举臂 + Close/Lseek/Umask/Getrusage 四处理器 + 五测试）、`os/servers/vfs/src/lib.rs`（模块注册）。
+- **Before**：64 个路由臂与决策函数之间不存在任何 match（R2-P1-2）——`CallTable` 删除后（Fix #31）解析真相归 `from_raw`，但绑定仍缺。
+- **After**：`dispatch_syscall(state, call) -> SyscallResult` 穷举 64 臂无通配——表本地四处理器直接执行：**Close**（`close_fd`：fd 解码自 `lc_vfs_close.fd @0`）、**Lseek**（`off_t` 由 m7i1|m7i2 拼回 + `seek_pos` 算术 + vnode size/FIFO 守门）、**Umask**（`& 0777` 交换旧值，protect.c:186-190）、**Getrusage**（废弃调用恒 OK）。FS/驱动对话族（56 臂）诚实 `Nosys`——W1 transport 通电后经 fs_comm 窗口逐臂接入（plan.md §8 W3 尾注），模式 60 诚实契约。
+- **Verified**：`cargo test --manifest-path os/Cargo.toml -p minix-vfs --lib` = **360 passed / 0 failed**（355→360：close 释放 fd / umask 交换 / lseek SEEK_SET / FS 对话臂 Nosys / 64 臂穷举 smoke）。
+- **余件**：`run_once` 可注入入口 + legacy `dispatch()` 删除（门语义迁入）——下一 Fix；64 臂的 FS 对话处理器随 W1 通电逐臂补全（plan.md §8 W3 尾注登记）。
 
 ### ✅ Fix #36: R2-P1-1 后半（W7 尾）— advance/eat_path/last_dir/get_name/canonical_path 全部实函数化（2026-09-10）
 
