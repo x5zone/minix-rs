@@ -166,22 +166,21 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
     ///
     /// C: `map_unmap_fkeys(map)` — `minix3/minix/servers/is/dmp.c:44-68`.
     /// The key set derives from the hooks table (03 owns it) instead of the
-    /// interim 02 list. Failure is non-fatal (C warns, dmp.c:63-65): the
-    /// error is swallowed after recording that no registration is
-    /// outstanding.
-    fn request_fkey_map(&mut self, map: bool) -> Result<i32, Errno> {
+    /// interim 02 list. The C function is void and this one stays void:
+    /// registration failure never fails the boot — it warns through the
+    /// diagnostic channel (C: dmp.c:63-65, routed as
+    /// [`SefTransport::warn_fkey_ctl`]; the 02 caller-warns invariant) and
+    /// `fkey_mapped` is left recording that no registration is outstanding.
+    fn request_fkey_map(&mut self, map: bool) {
         let mut keys = [FkeyId::F1; 16];
         for (slot, hook) in keys.iter_mut().zip(HOOKS.iter()) {
             *slot = hook.key;
         }
         match map_unmap_keys(&mut self.fkey, map, &keys) {
-            Ok(()) => {
-                self.fkey_mapped = map;
-                Ok(OK)
-            }
-            Err(_) => {
+            Ok(()) => self.fkey_mapped = map,
+            Err(e) => {
+                self.transport.warn_fkey_ctl(e.status);
                 self.fkey_mapped = false;
-                Ok(OK)
             }
         }
     }
@@ -198,8 +197,9 @@ impl<T: SefTransport, F: FkeyCtlTransport> SefCallbacks for IsServer<T, F> {
         _init_type: SefInitType,
         _info: &SefInitInfo,
     ) -> Result<i32, Errno> {
-        // 02: register the fkey observer set at TTY (best-effort, C-void).
-        let _ = self.request_fkey_map(true);
+        // 02: register the fkey observer set at TTY (best-effort, C-void —
+        // dmp.c:63-65 warns instead of failing the boot).
+        self.request_fkey_map(true);
         Ok(OK)
     }
 
@@ -213,7 +213,7 @@ impl<T: SefTransport, F: FkeyCtlTransport> SefCallbacks for IsServer<T, F> {
         }
         // 02 seam: release the TTY observer registration. Best-effort:
         // shutdown proceeds even if the release fails (C calls it void).
-        let _ = self.request_fkey_map(false);
+        self.request_fkey_map(false);
         self.fkey_mapped = false;
         LifecycleAction::Shutdown
     }
@@ -235,6 +235,7 @@ mod tests {
         pub sends: Vec<(Endpoint, i32)>,
         pub warnings: Vec<(i32, Endpoint)>,
         pub event_warnings: Vec<i32>,
+        pub ctl_warnings: Vec<i32>,
         pub fail_receive: bool,
         pub fail_send: bool,
     }
@@ -247,6 +248,7 @@ mod tests {
                 sends: Vec::new(),
                 warnings: Vec::new(),
                 event_warnings: Vec::new(),
+                ctl_warnings: Vec::new(),
                 fail_receive: false,
                 fail_send: false,
             }
@@ -287,20 +289,26 @@ mod tests {
         fn warn_fkey_events(&mut self, status: i32) {
             self.event_warnings.push(status);
         }
+
+        fn warn_fkey_ctl(&mut self, status: i32) {
+            self.ctl_warnings.push(status);
+        }
     }
 
     const FKEY_NOTIFY: i32 = 0x1000;
 
     /// Accommodating fkey double: records MAP/UNMAP calls, always OK.
-    /// EVENTS answers from a scripted triple (03).
+    /// EVENTS answers from a scripted triple (03). `map_status` scripts a
+    /// MAP rejection (status + full leftovers) for the failure path.
     struct FakeFkey {
         pub calls: Vec<(bool, u32, u32)>,
         pub events_answer: (i32, u32, u32),
+        pub map_status: i32,
     }
 
     impl FakeFkey {
         fn new() -> Self {
-            Self { calls: Vec::new(), events_answer: (OK, 0, 0) }
+            Self { calls: Vec::new(), events_answer: (OK, 0, 0), map_status: OK }
         }
     }
 
@@ -310,6 +318,9 @@ mod tests {
                 return self.events_answer;
             }
             self.calls.push((req == FkeyReq::Map, fkeys, sfkeys));
+            if req == FkeyReq::Map && self.map_status != OK {
+                return (self.map_status, fkeys, sfkeys);
+            }
             (OK, 0, 0)
         }
     }
@@ -405,6 +416,20 @@ mod tests {
         assert!(s.fkey_mapped);
         assert_eq!(s.fkey.calls.len(), 1);
         assert!(s.fkey.calls[0].0, "MAP=true");
+    }
+
+    #[test]
+    fn test_fkey_map_failure_warns_and_boot_survives() {
+        // C: registration failure is non-fatal — dmp.c:63-65 prints
+        // "IS: warning, fkey_ctl failed" and sef_cb_init_fresh still returns
+        // OK (02-is-fkey-contract.md §4.3 caller-warns invariant).
+        let mut fk = FakeFkey::new();
+        fk.map_status = minix_types::EPERM;
+        let mut s = IsServer::new(FakeTransport::new(Vec::new()), fk);
+        assert_eq!(s.startup(), Ok(OK));
+        assert_eq!(s.transport.ctl_warnings, [minix_types::EPERM]);
+        assert!(!s.fkey_mapped, "no registration outstanding");
+        assert_eq!(s.fkey.calls.len(), 1, "exactly one MAP attempt");
     }
 
     #[test]

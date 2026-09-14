@@ -115,6 +115,12 @@ pub trait SefTransport {
     /// channel as [`SefTransport::warn_illegal`] ([ARCH: A-6]); split into
     /// its own method so each C call site stays greppable (03).
     fn warn_fkey_events(&mut self, status: i32);
+    /// Emit the fkey_ctl (MAP/UNMAP) failure warning. C: `printf("IS:
+    /// warning, fkey_ctl failed: %d\n", s)` — dmp.c:63-65. Same diagnostic
+    /// channel as [`SefTransport::warn_illegal`] ([ARCH: A-6]); its own
+    /// method keeps the third C printf call site greppable (the 02
+    /// caller-warns invariant, 02-is-fkey-contract.md §4.3).
+    fn warn_fkey_ctl(&mut self, status: i32);
 }
 
 /// Fail-closed transport until the `minix-sef`/`minix-sys` wiring lands.
@@ -143,6 +149,10 @@ impl SefTransport for UnimplementedTransport {
     }
 
     fn warn_fkey_events(&mut self, _status: i32) {
+        panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
+    }
+
+    fn warn_fkey_ctl(&mut self, _status: i32) {
         panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
     }
 }

@@ -517,6 +517,11 @@ C 用 `_ENDPOINT_P` 正是此因；② `is_notify` 保留旧形式（com.h:93）
 `tty_fkey::map_unmap_keys` 填实（见 `02-is-fkey-contract.md` §4），签名不变。
 > **03 更新**：`handle_fkey_pressed` 亦已填实（EVENTS 拉取 + 表分派 + 恒
 > `EDONTREPLY`，见 `03-is-dump-dispatch.md` §4）；本段的"03 仍 ENOSYS"已过时。
+> **V1 审查轮更新（2026-09-15）**：`request_fkey_map` 改为 void 签名——C 的
+> `map_unmap_fkeys` 本身就是 void（dmp.c:44-68），ENOSYS 桩时代的 `Result`
+> 外壳在填实后已无 `Err` 可返，类型不再说谎；失败路径改为经
+> `SefTransport::warn_fkey_ctl` 告警（dmp.c:63-65 那条 printf 的通道化，
+> 02 §4.3"调用方告警"不变量自此有代码兑现），失败臂测试 T14 钉住。
 
 ### 3.4 D4：告警走 log 抽象（A-6 保守）
 
@@ -584,7 +589,7 @@ pub const SIGTERM: i32 = 15;
 pub enum SefInitType { Fresh, Lu, Restart }
 pub struct SefInitInfo { pub endpoint: i32, pub old_endpoint: i32 }
 pub trait SefCallbacks { fn init_fresh(...) -> ...; /* 后三缺省 */ }
-pub trait SefTransport { fn receive(...); fn send(...); fn startup(...); fn warn_illegal(...); /* 03 起 + warn_fkey_events(...)，见 03 §4 */ }
+pub trait SefTransport { fn receive(...); fn send(...); fn startup(...); fn warn_illegal(...); /* 03 起 + warn_fkey_events(...)，见 03 §4；V1 起 + warn_fkey_ctl(...)，dmp.c:63-65 通道化 */ }
 pub enum LifecycleAction { Continue, Shutdown }
 
 // lib.rs（02 起双泛型：F 为 FKEY 传输，见 02-is-fkey-contract.md §4）
@@ -645,6 +650,7 @@ transport 层持有，库内无 `IS_PROC_NR` 常量——全树零定义，§2.1
 | T11b | `step` 遇 Suppress（非 TTY notify） | send 零调用 + 告警零次（C default 分支静默，§2.3） |
 | T12 | transport receive 错误 | `#[should_panic]`（§2.9 不可恢复语义；send 侧 panic 防御性保留但经 step 不可达——两臂恒抑制，03 起单测锁定） |
 | T13 | `startup` | transport.startup 恰一次 + init_fresh OK（boot 锚点可达） |
+| T14 | MAP 失败（TTY 拒绝） | `warn_fkey_ctl` 恰一次 + `startup` 仍 `Ok(OK)` + 无注册在案（dmp.c:63-65 通道化，V1 轮） |
 
 ### 5.3 测试统计（截至 2026-09-04）
 
