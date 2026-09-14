@@ -45,17 +45,15 @@ const MAX_LOOP: usize = PROC_TABLE_SIZE + 16;
 /// Returns `true` if all invariants hold, `false` otherwise.
 /// On failure, prints a diagnostic message to the early console.
 pub fn runqueues_ok_cpu(
-    smp_state: &SmpState,
+    _smp_state: &SmpState,
     proc_table: &ProcessTable,
-    cpu: CpuId,
+    _cpu: CpuId,
 ) -> bool {
-    let scheduler = match smp_state.cpu_local(cpu) {
-        Some(cl) => &cl.scheduler,
-        None => {
-            Console::write_str("runqueues_ok: invalid CPU\n");
-            return false;
-        }
-    };
+    // S-6.3 sched-1: the ready queues are SHARED (ProcessTable::sched) and
+    // BKL-serialized — the frozen §3.5.3 decision. The per-CPU parameter is
+    // retained for signature stability; every CPU checks the same queue, so
+    // the check runs once against the shared scheduler.
+    let scheduler = proc_table.scheduler();
 
     // C: debug.c:25-28 — clear p_found for all processes.
     // We use a local bitset instead of a per-process field to avoid

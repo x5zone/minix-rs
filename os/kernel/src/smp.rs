@@ -119,18 +119,17 @@ pub use minix_arch::SmpArch;
 ///
 /// Design decision D2: fixed-size array element, no_std compatible.
 ///
-/// # Per-CPU scheduler queues
+/// # Scheduler queues (S-6.3 sched-1 decision: shared + BKL)
 ///
-/// C's `__cpu_local_vars` holds `run_q_head[NR_SCHED_QUEUES]` and
-/// `run_q_tail[NR_SCHED_QUEUES]` for **per-CPU ready queues** (cpulocals.h:58-59).
-/// This Rust port mirrors that design: each `CpuLocal` owns a `Scheduler`
-/// containing those queue arrays.
-///
-/// In the current single-CPU configuration, `ProcessTable::sched` serves as
-/// the BSP scheduler and `CpuLocal::scheduler` is initialized but unused.
-/// When `CONFIG_SMP=ncpus > 1` lands, `ProcessTable::sched` will be removed
-/// and all scheduling will dispatch through `CpuLocal::scheduler` via the
-/// current CPU's index (see `ProcessTable::sched_for_cpu()`).
+/// The ready queues are **shared** (`ProcessTable::sched`), serialized by
+/// the BKL — the frozen §3.5.3 decision, aligned with C's *effective*
+/// semantics: under the BKL one CPU at a time touches the queues, so the
+/// per-CPU `run_q_head[]`/`run_q_tail[]` arrays in C's `__cpu_local_vars`
+/// (cpulocals.h:58-59) behave as one global queue in practice. (Linux's
+/// per-CPU runqueues are a load-balancing optimization orthogonal to the
+/// Minix3 BKL model.) The per-CPU part of scheduling is exactly
+/// `proc_ptr` — [`CpuLocal::set_running`], already in place;
+/// `ProcessTable::sched_for_cpu()` documents the seam.
 ///
 /// C: cpulocals.h — `struct __cpu_local_vars`
 #[derive(Debug)]
@@ -162,14 +161,6 @@ pub struct CpuLocal {
     pub fpu_presence: bool,
     /// FPU owner process. C: `fpu_owner`
     pub fpu_owner: Option<ProcNr>,
-    /// Per-CPU scheduler (ready queues). C: `run_q_head[]` / `run_q_tail[]`
-    /// in cpulocals.h:58-59.
-    ///
-    /// In single-CPU builds this is initialized but not used directly;
-    /// `ProcessTable::sched` serves as the BSP scheduler. When SMP lands,
-    /// all scheduling dispatches through this field via
-    /// `ProcessTable::sched_for_cpu()`.
-    pub scheduler: Scheduler,
 }
 
 impl CpuLocal {
@@ -190,7 +181,6 @@ impl CpuLocal {
             pagefault_handled: false,
             fpu_presence: false,
             fpu_owner: None,
-            scheduler: Scheduler::new(),
         }
     }
 

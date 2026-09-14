@@ -571,8 +571,13 @@ impl ProcessTable {
     /// * `cpu_id` — CPU index (0 = BSP). Out-of-range values default to
     ///   CPU 0 (BSP fallback).
     pub fn sched_for_cpu(&self, cpu_id: CpuId) -> &Scheduler {
-        let _ = cpu_id; // Suppress unused warning; will be used in SMP migration
-        // TODO (SMP): return &smp_state.cpu_locals[cpu_id.index()].scheduler;
+        // S-6.3 sched-1 (frozen §3.5.3 decision, aligned with C's effective
+        // semantics): the ready queues are SHARED and BKL-serialized — under
+        // the BKL one CPU at a time mutates them, so per-CPU queues would
+        // behave as one queue anyway. `cpu_id` is retained for signature
+        // stability; per-CPU scheduling state is exactly `CpuLocal.proc_ptr`
+        // (set_running), never the queues.
+        let _ = cpu_id;
         &self.sched
     }
 
@@ -580,8 +585,8 @@ impl ProcessTable {
     ///
     /// See [`sched_for_cpu`](Self::sched_for_cpu) for design rationale.
     pub fn sched_for_cpu_mut(&mut self, cpu_id: CpuId) -> &mut Scheduler {
+        // See `sched_for_cpu` — shared queues + BKL (S-6.3, frozen §3.5.3).
         let _ = cpu_id;
-        // TODO (SMP): return &mut smp_state.cpu_locals[cpu_id.index()].scheduler;
         &mut self.sched
     }
 
