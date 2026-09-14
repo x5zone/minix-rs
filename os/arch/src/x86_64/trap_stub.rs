@@ -630,6 +630,25 @@ mod tests {
     use super::*;
 
     #[test]
+    #[should_panic]
+    fn test_unregistered_dispatch_panics() {
+        // S-12 T-3: the load-safety ordering contract — dispatching through
+        // the entry gate before `register_dispatchers` must panic loudly,
+        // never silently misroute. (Hosted test: the registration static
+        // starts unfrozen in every fresh test binary.)
+        let mut frame = TrapFrame {
+            rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
+            r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            vector: 0, errcode: 0, rip: 0, cs: 0, rflags: 0, rsp: 0, ss: 0,
+        };
+        // SAFETY: the thunk only reads the registration state and (on the
+        // registered path) forwards; unregistered it panics before use.
+        unsafe {
+            crate::x86_64::trap_stub::x86_trap_dispatch(&mut frame);
+        }
+    }
+
+    #[test]
     fn test_gs_area_layout_frozen() {
         // The asm reads gs:0x0 / gs:0x8; gs_cpu_id reads gs:0x10.
         assert_eq!(offset_of!(GsArea, kernel_stack_top), GS_SLOT_KERNEL_STACK as usize);
