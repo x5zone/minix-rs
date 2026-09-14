@@ -533,6 +533,11 @@ C 的 `printf("IS: warning, ...")`（§2.4）经 libc stdio 到 log 驱动。min
 行为契约保留——**非法请求必留一条可观测告警**，不静默。`[ARCH: A-6]` 标在
 本节 + design D4 + 代码注释三处；通道落地前 transport fake 把告警记入内存
 `Vec` 供单测断言（"告警发生过"可测，不依赖真实驱动）。
+> **V1 审查轮更新（2026-09-15）**：A-6 通道形状定型——
+> `SefTransport::diag_out() -> &mut dyn core::fmt::Write`。C 的 printf 写进
+> 服务进程 stdout（libc stdio → log 驱动），no_std 无 stdio，通道归传输缝：
+> dump 体经它渲染（04 §3 D2 V1 注记），三条 warn_* 方法保持独立（C 调用点
+> 各自可 grep）；生产实现随 minix-sef/minix-sys 接线落地（edge E-ISWIRE）。
 
 ### 3.5 D5：生命周期语义与错误面
 

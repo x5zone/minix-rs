@@ -124,7 +124,8 @@ dst, 0,0,0)`）是 IS 实际使用的拼写。
 （:129）、`GET_IRQACTIDS`（:133）、`GET_IMAGE`（:174）、`GET_KINFO`（:197）、
 `GET_MACHINE`（:201）、`GET_PRIVTAB`（:261）、`GET_PROCTAB`（:265/328/368、
 dmp_vm.c:83）。注意缺席者：`GET_KENV`——`kenv_dmp` 读的是 kinfo+machine
-（:197/:201），从未调 `sys_getkenv`（Rust `GetRequest` 故无 Kenv 变体，§3 D2）。
+（:197/:201），从未调 `sys_getkenv`（V1 定型后无 `get_kenv` 方法可调，
+§3 D2 V1 注记；初版 `GetRequest` 无 Kenv 变体同理）。
 
 ### 2.2 sys_diagctl_stacktrace：请馆长批注（栈回溯）
 
@@ -301,6 +302,22 @@ STACKTRACE（码不参数化，调点无选择）；`KerninfoTransport`（A-3 �
 子集要细缝）与裸 `i32` 传请求（`GetRequest`/`SiWhat` 枚举限域：IS 未用的
 GET_KENV、MIB 面的 SI_CALL_STATS 等编译期拒绝）。
 
+> **V1 审查轮更新（2026-09-15，数据出口定型）**：初版 trait 只回状态码——
+> `sys_getinfo(req) -> i32` 拿不到任何数据，而 C 语义是"数据拷到调用方"
+> （§2.1 `endpt = SELF`、§2.4 `sys_datacopy`）。审查坐实这是 run_dump 填体
+> 的前置缺口（todo V1-P1-2），定型为**类型化出参**：每个 C `sys_get*` 速记
+> 宏 1:1 变成一个带出参切片的方法（`sys_getproctab(dst)` ↔
+> `get_proctab(out: &mut [KProcSnap])`，slice 长度即调用方声明的容量），
+> `GetRequest` 枚举被方法本身取代——只用来选方法的枚举没有存在价值，
+> "IS 未用的请求编译期拒绝"从枚举限域升级为结构性不可表达（GET_KENV/
+> GET_MACHINE 无方法可调）。`SiWhat`/`getsysinfo_call`/`IS_GETSYSINFO_CALLS`
+> 降格为生产 transport 的 wire 编码助手（合同与测试保留）。编排器侧新增
+> `Acquires` 超特质（五 trait blanket 打包，RS `KernelApi` 五域先例）：
+> `IsServer` 是唯一五通道都说话的组件，dump 体仍是只吃"已取快照 + 游标 +
+> 诊断 sink"的自由函数，细缝决策不变。A-6 诊断输出通道同期定型：
+> `SefTransport::diag_out() -> &mut dyn core::fmt::Write`（printf 的
+> no_std 对应物，见 01 §3 D4 V1 注记）。
+
 ### 3.3 D3：A-3 kerninfo 抽象（§2.3 三处之二）
 
 内容见 §2.3 演进设计。`KerninfoTransport::kmmessages_available` 为新通道
@@ -334,23 +351,43 @@ traits 返回 Minix 码原样：05~10 按 C 惯用 `!= OK` 判定；转 `Result`
 
 ```text
 os/libs/minix-types/src/ipc/sysinfo.rs — GET/SI/DIAGCTL/SYS/PM/VFS 常量 + 单测（D1）
-os/servers/is/src/acquire.rs           — GetRequest/SiWhat/5 trait/Unimplemented + fake（D2-D6）
-os/servers/is/src/lib.rs               — pub mod acquire + 重导出
+os/servers/is/src/acquire.rs           — SiWhat/IS_GETSYSINFO_CALLS/getsysinfo_call 助手 + 5 类型化 trait + Acquires 超特质 + Unimplemented + fake（D2-D6，V1 轮定型）
+os/servers/is/src/lib.rs               — pub mod acquire + 重导出 + IsServer<T, F, A: Acquires>
 ```
 
-### 4.2 关键签名（与 §3 一致，Gate D-5 依据）
+### 4.2 关键签名（与 §3 一致，Gate D-5 依据；V1 轮按数据出口定型重写）
 
 ```rust
-// acquire.rs
-pub enum GetRequest { Kinfo, Image, Proctab, Monparams, Irqhooks, Irqactids, Privtab, Machine, Reserved(i32) }
-pub enum SiWhat { ProcTab, DmapTab, ProcPubTab, DataStore }
+// acquire.rs（wire 助手）
+pub enum SiWhat { ProcTab, DmapTab, ProcPubTab, DataStore }          // 生产 transport 的 what 编码用
 pub const IS_GETSYSINFO_CALLS: &[(Endpoint, SiWhat)];   // 6 对（RS 双拉含内）
-pub trait SysGetinfoTransport { fn sys_getinfo(&mut self, req: GetRequest) -> i32; }
-pub trait DiagctlTransport { fn stacktrace(&mut self, proc: Endpoint) -> i32; }
-pub trait KerninfoTransport { fn kmmessages_available(&mut self) -> bool; }  // [ARCH: A-3]
-pub trait GetSysinfoTransport { fn getsysinfo(&mut self, who: Endpoint, what: SiWhat, len: usize) -> i32; }
-pub trait VmInfoTransport { fn stats(&mut self) -> i32; fn usage(&mut self, who: Endpoint) -> i32; fn region(&mut self, who: Endpoint, count: i32, next: u64) -> (i32, u64, i32); }
 pub const fn getsysinfo_call(who: Endpoint) -> i32;   // PM/VFS/RS/DS → callnr，else ENOSYS
+
+// acquire.rs（五通道缝：类型化出参，C 速记宏 1:1）
+pub trait SysGetinfoTransport {
+    fn get_kinfo(&mut self, out: &mut KinfoSnap) -> i32;                 // sys_getkinfo（dmp_kernel.c:197）
+    fn get_image(&mut self, out: &mut [BootImageSnap]) -> i32;           // sys_getimage（:174）
+    fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32;             // sys_getproctab（:265/328/368、dmp_vm.c:83）
+    fn get_monparams(&mut self, out: &mut [u8]) -> i32;                  // sys_getmonparams（:101）
+    fn get_irqhooks(&mut self, out: &mut [IrqHookSnap]) -> i32;          // sys_getirqhooks（:129）
+    fn get_irqactids(&mut self, out: &mut [i32]) -> i32;                 // sys_getirqactids（:133）
+    fn get_privtab(&mut self, out: &mut [KPrivSnap]) -> i32;             // sys_getprivtab（:261）
+}
+pub trait DiagctlTransport { fn stacktrace(&mut self, proc: Endpoint) -> i32; }  // 无出参：trace 打进内核日志
+pub trait KerninfoTransport { fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32; }  // [ARCH: A-3]
+pub trait GetSysinfoTransport {
+    fn pm_proc_tab(&mut self, out: &mut [MProcSnap]) -> i32;             // dmp_pm.c:47/82
+    fn vfs_proc_tab(&mut self, out: &mut [FProcSnap]) -> i32;            // dmp_fs.c:31
+    fn vfs_dmap_tab(&mut self, out: &mut [DmapSnap]) -> i32;             // dmp_fs.c:71
+    fn rs_tables(&mut self, pub_out: &mut [RprocpubSnap], priv_out: &mut [RprocSnap]) -> i32;  // dmp_rs.c:33-34 双拉一体
+    fn ds_data_store(&mut self, out: &mut [DsEntrySnap]) -> i32;         // dmp_ds.c:15
+}
+pub trait VmInfoTransport {
+    fn vm_stats(&mut self, out: &mut VmStatsSnap) -> i32;                // dmp_vm.c:66
+    fn vm_usage(&mut self, who: Endpoint, out: &mut VmUsageSnap) -> i32; // dmp_vm.c:110
+    fn vm_region(&mut self, who: Endpoint, out: &mut [VmRegionSnap], next: u64) -> (i32, u64, i32);  // :94/131
+}
+pub trait Acquires: SysGetinfoTransport + DiagctlTransport + KerninfoTransport + GetSysinfoTransport + VmInfoTransport {}  // blanket impl；IsServer<T, F, A: Acquires>
 ```
 
 常量权威位置（§2.4g）：GET/SI/DIAGCTL/SYS/PM/VFS 唯一定义于
@@ -358,10 +395,15 @@ pub const fn getsysinfo_call(who: Endpoint) -> i32;   // PM/VFS/RS/DS → callnr
 
 ### 4.3 关键不变量
 
-1. `GetRequest` 恰为 IS 用 8 项 + 透传（KENV 缺席有注释）。
-2. 调用对表显式（`IS_GETSYSINFO_CALLS` 六对；RS 双拉陷阱已命名，无单 owner 方法）。
+1. **每个取数方法带类型化出参**：出参 slice 是调用方内存（C `endpt = SELF`
+   /`sys_datacopy` 的 Rust 形状），slice 长度即调用方声明的容量；IS 永不
+   发的请求（GET_KENV/GET_MACHINE）无方法可调——结构性拒绝（V1 定型，
+   取代初版 `GetRequest` 枚举限域）。
+2. 调用对表显式（`IS_GETSYSINFO_CALLS` 六对；RS 双拉陷阱已命名，RS 双表
+   收敛为全有或全无的一个方法）。
 3. `getsysinfo_call` 未知 who → ENOSYS（getsysinfo.c:14-24）。
-4. region 三元组写回（vm_info.c:39-58）。
+4. `vm_region` 三元组写回，`out.len()` 即 capacity，返回的 count ≤ capacity
+   （vm_info.c:39-58）。
 5. Unimplemented 全 panic（fail-closed）；acquire 永不 panic（§2.6）。
 
 ---
@@ -370,16 +412,16 @@ pub const fn getsysinfo_call(who: Endpoint) -> i32;   // PM/VFS/RS/DS → callnr
 
 | # | 场景 | 期望 | C 依据 |
 |---|---|---|---|
-| T1 | GET 全表码值（含缺号注释） | 逐值 | com.h:315-345 |
+| T1 | GET 速记宏 ↔ 类型化方法 1:1（7 方法，KENV/MACHINE 无方法） | 结构性（签名即对账） | syslib.h:175-187 |
 | T2 | SI 7 值 + DIAGCTL 4 值 + SYS 两码 + PM/VFS callnr | 逐值 | sysinfo.h/callnr.h |
-| T3 | GetRequest 码映射 + Reserved 透传 + KENV 缺席 | — | syslib.h:175-187 |
-| T4 | SiWhat 码 + 调用对表（含 RS 双拉陷阱） | — | dmp_rs.c:33-34 |
-| T5 | who→callnr 四映射 + TTY/VM → ENOSYS | — | getsysinfo.c:14-24 |
-| T6 | 五通道 OK/ERR 双路（ERR 回流不 panic） | — | §2.6 |
-| T7 | region 三元组写回 | — | vm_info.c:39-58 |
+| T3 | SiWhat 码 + 调用对表（含 RS 双拉陷阱） | — | dmp_rs.c:33-34 |
+| T4 | who→callnr 四映射 + TTY/VM → ENOSYS | — | getsysinfo.c:14-24 |
+| T5 | 五通道 OK/ERR 双路（ERR 回流不 panic；ERR 时出参不被改写） | — | §2.6 |
+| T6 | OK 取数填出参（proctab/monparams 实填断言） | — | §2.1/§2.4 拷贝语义 |
+| T7 | region 三元组写回 + count 夹到 capacity | — | vm_info.c:39-58 |
 | T8 | Unimplemented 全 panic（A-3 含） | `#[should_panic]` | fail-closed |
 
-### 5.3 测试统计（截至 2026-09-04）
+### 5.3 测试统计（截至 2026-09-04；V1 轮定型后基线见 todo.md §0）
 
 - `cargo test -p minix-is`：**47 passed, 0 failed**（`acquire` 新增 6）。
 - `cargo test -p minix-types`：**122 passed, 0 failed**（`sysinfo` 新增 3）。

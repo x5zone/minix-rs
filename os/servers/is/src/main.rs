@@ -14,13 +14,13 @@ fn main() {
     // library directly).
     #[cfg(not(test))]
     {
-        use minix_is::{IsServer, UnimplementedFkeyCtl, sef::UnimplementedTransport};
+        use minix_is::{IsServer, UnimplementedAcquires, UnimplementedFkeyCtl, sef::UnimplementedTransport};
 
         // Production transports (sef_receive/ipc_send/_taskcall wiring) land
         // with the minix-sef/minix-sys implementation (01-is-init-main.md
         // §3 D2 + 02-is-fkey-contract.md §3 D3, forward references). Until
         // then, fail closed instead of running a loop that can never receive.
-        let mut server = IsServer::new(UnimplementedTransport, UnimplementedFkeyCtl);
+        let mut server = IsServer::new(UnimplementedTransport, UnimplementedFkeyCtl, UnimplementedAcquires);
 
         // C: sef_local_startup() + boot anchor — main.c:40-41,94-102.
         // Boot failure is fatal (C panics on startup paths); do not enter

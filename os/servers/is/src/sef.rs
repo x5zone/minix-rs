@@ -10,6 +10,7 @@
 //! consumes. Production wiring is a forward reference (see
 //! [`UnimplementedTransport`]).
 
+use core::fmt;
 use minix_types::{Endpoint, Errno, Message};
 
 /// Termination signal. C: `SIGTERM 15` — `minix3/sys/sys/signal.h:67`.
@@ -121,6 +122,13 @@ pub trait SefTransport {
     /// method keeps the third C printf call site greppable (the 02
     /// caller-warns invariant, 02-is-fkey-contract.md §4.3).
     fn warn_fkey_ctl(&mut self, status: i32);
+    /// The diagnostic output channel ([ARCH: A-6]). C's `printf` writes to
+    /// the service's stdout (libc stdio → log driver, etc/usr/rc:290); a
+    /// no_std process has no stdio, so the channel is part of the transport
+    /// wiring: a [`core::fmt::Write`] sink the dump bodies render through.
+    /// The production implementation lands with the minix-sef/minix-sys
+    /// wiring (kernel diag channel or log-driver IPC — plan §4 A-6).
+    fn diag_out(&mut self) -> &mut dyn fmt::Write;
 }
 
 /// Fail-closed transport until the `minix-sef`/`minix-sys` wiring lands.
@@ -153,6 +161,10 @@ impl SefTransport for UnimplementedTransport {
     }
 
     fn warn_fkey_ctl(&mut self, _status: i32) {
+        panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
+    }
+
+    fn diag_out(&mut self) -> &mut dyn fmt::Write {
         panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
     }
 }

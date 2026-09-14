@@ -25,7 +25,7 @@ pub mod state;
 pub mod tty_fkey;
 
 pub use acquire::{
-    DiagctlTransport, GetRequest, GetSysinfoTransport, KerninfoTransport, SiWhat,
+    Acquires, DiagctlTransport, GetSysinfoTransport, KerninfoTransport, SiWhat,
     SysGetinfoTransport, UnimplementedAcquires, VmInfoTransport, getsysinfo_call,
 };
 pub use dispatch::{
@@ -57,16 +57,25 @@ use minix_types::{EDONTREPLY, Errno, OK};
 /// No `IS_PROC_NR` constant exists here on purpose (A-9): Minix3 defines
 /// none — the endpoint is allocated by RS at load time and injected through
 /// the transport, never named.
-pub struct IsServer<T: SefTransport, F: FkeyCtlTransport> {
+///
+/// The third parameter bundles the five data-acquisition channels
+/// ([`Acquires`]): the orchestrator is the only component talking to all
+/// of them, while individual dump bodies stay free functions over
+/// already-fetched snapshots (04 §3 D2 fine seams preserved).
+pub struct IsServer<T: SefTransport, F: FkeyCtlTransport, A: Acquires> {
     state: IsServerState,
     transport: T,
     fkey: F,
+    // Read starting with the 05~10 execution pass; until those arms land
+    // run_dump has no fetch to route (forward reference, not dead weight).
+    #[allow(dead_code)]
+    acquires: A,
 }
 
-impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
+impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     /// Creates the server over injected transports (tests / wiring).
-    pub fn new(transport: T, fkey: F) -> Self {
-        Self { state: IsServerState::new(), transport, fkey }
+    pub fn new(transport: T, fkey: F, acquires: A) -> Self {
+        Self { state: IsServerState::new(), transport, fkey, acquires }
     }
 
     /// Runs SEF startup and the fresh-boot init (the boot anchor).
@@ -127,11 +136,12 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
         }
     }
 
-    /// Executes one matched dump (03 seam filled by 05~10).
+    /// Executes one matched dump.
     ///
-    /// C dump bodies return void (dmp.c) — there is no error to propagate,
-    /// so this is intentionally an empty dispatch point until 05~10 land
-    /// their `DumpId` arms here.
+    /// C dump bodies return void (dmp.c) — there is no error to propagate.
+    /// Each arm fetches its snapshots through [`IsServer::acquires`], grabs
+    /// the diagnostic sink ([`SefTransport::diag_out`], A-6) and renders;
+    /// the arms land with the 05~10 execution pass (run_dump bodies todo).
     fn run_dump(&mut self, _dump: DumpId) {}
 
     /// Handles a TTY function-key notification.
@@ -175,7 +185,7 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
     }
 }
 
-impl<T: SefTransport, F: FkeyCtlTransport> SefCallbacks for IsServer<T, F> {
+impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> SefCallbacks for IsServer<T, F, A> {
     /// C: `sef_cb_init_fresh` — main.c:94-102 (`map_unmap_fkeys(TRUE)`).
     /// `[ARCH: A-10]` STATELESS: Lu/Restart share this body by default.
     /// `map_unmap_fkeys` is void in C: registration failure never fails
@@ -211,6 +221,7 @@ impl<T: SefTransport, F: FkeyCtlTransport> SefCallbacks for IsServer<T, F> {
 mod tests {
     use super::*;
     use minix_types::{Endpoint, Message};
+    use std::string::String;
     use std::vec::Vec;
 
     /// Fake transport: scripted inbox, recorded sends/warnings.
@@ -224,6 +235,8 @@ mod tests {
         pub warnings: Vec<(i32, Endpoint)>,
         pub event_warnings: Vec<i32>,
         pub ctl_warnings: Vec<i32>,
+        /// A-6 diagnostic sink: everything written through `diag_out`.
+        pub written: String,
         pub fail_receive: bool,
         pub fail_send: bool,
     }
@@ -237,6 +250,7 @@ mod tests {
                 warnings: Vec::new(),
                 event_warnings: Vec::new(),
                 ctl_warnings: Vec::new(),
+                written: String::new(),
                 fail_receive: false,
                 fail_send: false,
             }
@@ -281,6 +295,10 @@ mod tests {
         fn warn_fkey_ctl(&mut self, status: i32) {
             self.ctl_warnings.push(status);
         }
+
+        fn diag_out(&mut self) -> &mut dyn core::fmt::Write {
+            &mut self.written
+        }
     }
 
     const FKEY_NOTIFY: i32 = 0x1000;
@@ -313,8 +331,8 @@ mod tests {
         }
     }
 
-    fn server(script: Vec<Option<(Endpoint, i32)>>) -> IsServer<FakeTransport, FakeFkey> {
-        IsServer::new(FakeTransport::new(script), FakeFkey::new())
+    fn server(script: Vec<Option<(Endpoint, i32)>>) -> IsServer<FakeTransport, FakeFkey, UnimplementedAcquires> {
+        IsServer::new(FakeTransport::new(script), FakeFkey::new(), UnimplementedAcquires)
     }
 
     #[test]
@@ -323,7 +341,7 @@ mod tests {
         // (dmp.c:83-99) → reply gate suppresses (main.c:66).
         let mut fk = FakeFkey::new();
         fk.events_answer = (OK, 1 << 1, 0); // F1 pressed
-        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk);
+        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk, UnimplementedAcquires);
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.sends.is_empty(), "EDONTREPLY suppresses the reply");
         assert!(s.transport.warnings.is_empty());
@@ -335,7 +353,7 @@ mod tests {
         // C: s < 0 → warn, then dispatch anyway (dmp.c:84-87).
         let mut fk = FakeFkey::new();
         fk.events_answer = (-5, 0, 0);
-        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk);
+        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk, UnimplementedAcquires);
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert_eq!(s.transport.event_warnings, [-5]);
         assert!(s.transport.sends.is_empty());
@@ -374,6 +392,7 @@ mod tests {
         let mut s = IsServer::new(
             FakeTransport { fail_receive: true, ..FakeTransport::new(Vec::new()) },
             FakeFkey::new(),
+            UnimplementedAcquires,
         );
         let _ = s.step();
     }
@@ -389,6 +408,7 @@ mod tests {
                 ..FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))]))
             },
             FakeFkey::new(),
+            UnimplementedAcquires,
         );
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.sends.is_empty());
@@ -412,7 +432,7 @@ mod tests {
         // OK (02-is-fkey-contract.md §4.3 caller-warns invariant).
         let mut fk = FakeFkey::new();
         fk.map_status = minix_types::EPERM;
-        let mut s = IsServer::new(FakeTransport::new(Vec::new()), fk);
+        let mut s = IsServer::new(FakeTransport::new(Vec::new()), fk, UnimplementedAcquires);
         assert_eq!(s.startup(), Ok(OK));
         assert_eq!(s.transport.ctl_warnings, [minix_types::EPERM]);
         assert_eq!(s.fkey.calls.len(), 1, "exactly one MAP attempt");
@@ -432,5 +452,14 @@ mod tests {
         // UNMAP request reaching the fkey transport.
         assert_eq!(s.fkey.calls.len(), 1, "exactly one release attempt");
         assert!(!s.fkey.calls[0].0, "UNMAP, not MAP");
+    }
+
+    #[test]
+    fn test_diag_out_sink_receives_writes() {
+        // A-6: the dump output channel is the transport's fmt::Write sink;
+        // bodies render through it (05~10 execution pass).
+        let mut s = server(Vec::new());
+        write!(s.transport.diag_out(), "IS: warning, fkey_ctl failed: {}", -1).unwrap();
+        assert_eq!(s.transport.written, "IS: warning, fkey_ctl failed: -1");
     }
 }

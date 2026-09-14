@@ -5,7 +5,7 @@
 > 方法：先查漏补缺（Gate A coverage-extract + 「C 符号 ↔ 13 篇文档 ↔ Rust 文件」三向矩阵 + 常量对账），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核实）/OS 理论/Rust 社区惯例。本轮只审查未修代码，修复走后续 todo-fix 单条执行。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档只留双向指针（§4）。
 > 状态（2026-09-14，V1 轮）：审查完成，P0 为零。stage 内新发现 2 条 P1 + 2 条 P2 + 5 条 P3；结构性缺口全部在缝上（生产 transport 接线、producer 布局对齐、A-3 通道、启动链——登记 edge 四条目）。本 crate 的分类器、快照、编码器、游标、格式常量、测试各层形状稳定，与 13 篇文档契约的对账一致性好；两项 P1 分别是「文档不变量被代码违反」与「取数接缝撑不起执行面」，均可在不推翻现有设计的前提下收敛。
-> 状态（2026-09-15，修复轮开启）：**Fix #1 已闭环**（V1-P1-1 + V1-P3-2 同批，§8），测试基线 86 → **87 passed**，clippy 本体 0 告警。按 §7 顺序逐条推进，每条一个提交。
+> 状态（2026-09-15，修复轮开启）：**Fix #1~#5 已闭环**（V1-P1-1+P3-2 同批、V1-P2-1、V1-P2-2、V1-P3-1、V1-P1-2 接缝定型，§8），测试基线 86 → **88 passed**，clippy 本体 0 告警。接缝定型派生执行面条目 V1-P1-3（run_dump 16 体填实，待办）。按 §7 顺序逐条推进，每条一个提交。
 
 ---
 
@@ -17,7 +17,8 @@
 |------|------|--------|------|
 | P0 | （无） | 三向矩阵无缺口，排除项核对通过（两处未标注除外，见 P3-3） | — |
 | P1 | V1-P1-1 | fkey 注册失败告警被吞（违反 02 §4.3 不变量 2 + 偏离 C dmp.c:63-65） | ✅ 已修复 2026-09-15（Fix #1，§8） |
-| P1 | V1-P1-2 | 取数五通道 trait 无数据出口——run_dump 填体的前置设计缺口（含 A-6 输出通道选型） | 开放 |
+| P1 | V1-P1-2 | 取数五通道 trait 无数据出口——run_dump 填体的前置设计缺口（含 A-6 输出通道选型） | ✅ 已修复 2026-09-15（Fix #5，§8；执行面拆出 V1-P1-3） |
+| P1 | V1-P1-3 | run_dump 16 体填实（05~10 执行面：取数→渲染，从 V1-P1-2 派生） | 开放（Fix #5 派生） |
 | P2 | V1-P2-1 | `minix-sys` 死依赖（声明但全 crate 零引用） | ✅ 已修复 2026-09-15（Fix #2，§8） |
 | P2 | V1-P2-2 | `fkey_mapped` 与 `state.call_nr` 只写不读（死状态，C 无对应物） | ✅ 已修复 2026-09-15（Fix #3，§8） |
 | P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | ✅ 已修复 2026-09-15（Fix #4，§8） |
@@ -79,11 +80,16 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**（多方案）：① 首选：`SefTransport` 增设 `warn_fkey_ctl(&mut self, status: i32)`（与 03 篇为 dmp.c:84-86 开的 `warn_fkey_events` 同型、同属 A-6 诊断通道；分方法保持 C 调用点可 grep 的既有体例），`Err` 臂调用后照旧返回 `Ok(OK)`（C 的 void 语义保留）。② 次选：复用 `warn_illegal` 通道——否决：C 的两条告警格式串不同（`fkey_ctl failed` vs `illegal request`），合并会让日志无法按调用点区分。③ 最省：给 `Err` 臂加注释声明「告警延后至 A-6」——否决：`warn_fkey_events` 已经为同类告警开了通道，同一批 printf 只处理一半没有理由。
 **验证**：修后 `rg -n "warn_fkey_ctl" os/servers/is/src/` 应命中 trait 声明 + `request_fkey_map` Err 臂 + fake 实现 ≥3 处；新增「MAP 失败 → 恰一次告警 + 仍 Ok」单测（现 `FakeFkey` 恒 OK，`lib.rs:182-185` 失败臂当前零测试覆盖，一并补）。
 
-### V1-P1-2 取数五通道 trait 无数据出口：run_dump 填体的前置设计缺口
+### V1-P1-2 取数五通道 trait 无数据出口：run_dump 填体的前置设计缺口 ✅ 已修复 2026-09-15（Fix #5，见 §8；执行面拆出 V1-P1-3）
 **问题**：五个取数通道的 trait 签名全部只回状态码、不携带数据：`fn sys_getinfo(&mut self, req: GetRequest) -> i32`（`os/servers/is/src/acquire.rs:106-108`）、`fn getsysinfo(&mut self, who: Endpoint, what: SiWhat, len: usize) -> i32`（:145-147，有长度参数没有目的地参数）、`VmInfoTransport` 的 `stats/usage/region` 三个方法均无快照出参（:172-176）、`KerninfoTransport` 只有 `kmessages_available() -> bool`（:131-134）。C 语义是「数据拷到调用方」：`sys_getinfo` 的 `endpt = SELF`（04 篇 §2.1「内核永远存到调用方」）、`getsysinfo` 服务侧 `sys_datacopy(SELF → who_e)`（04 篇 §2.4）。04 篇声明的签名与此一致（`04-is-data-acquisition.md:348`），即文档与代码自洽，但这套签名表达不了「把表给我」——05~10 的 dump 体要消费 `KProcSnap`/`MProcSnap` 等快照时，从任何 trait 都拿不到数据。
 **影响**：这是 A-6 之外 `run_dump` 填体的第二道前置：16 个 dump 体全部无法实现；届时五个 trait 签名必然返工，连带 `FakeAcquires`（acquire.rs:277-338）与全部相关单测。现在不定型，填体时就是无设计依据的被动改动——与用户警告的「不慎重就会设计不好或沦为 translate」正对的正是这类缝。
 **建议**（多方案，与 A-6 输出通道同批定型）：① 首选：快照类型化出参——按域扩方法，如 `SysGetinfoTransport` 增 `fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32`、`GetSysinfoTransport` 的 `len: usize` 升格为 `out: &mut [MProcSnap]` 等；理由：A-4 快照本就是 wire 契约提案（#[repr(C)]），kernel/PM 的 producer 直接往调用方缓冲填充，与 C 的拷贝语义同构，且保留「长度精确匹配」契约（slice 长度即 len）。② 次选：裸字节缓冲 `out: &mut [u8]`——更贴近 C 指针语义，但把布局解释推回 dump 层，丢掉类型安全，等于在 Rust 里复刻 C 的 void*（translate 味，模式 16）。③ 否决：返回 owned `Vec<Snap>`——crate 现为零分配设计（无 `extern crate alloc`，lib.rs:1，V1-P3-4 有注），为 dump 面引入 alloc 依赖得不偿失。同批必须定案的相邻决策：A-6 输出通道选型（见 §3 L2 与 §5 对照参考：倾向 `core::fmt::Write` 形 sink trait，dump 体用 `write!` 直写，格式串常量已逐字就位）。
 **验证**：设计落档后 `rg -n "&mut \[KProcSnap\]|&mut \[MProcSnap\]|&mut \[DsEntrySnap\]" os/servers/is/src/acquire.rs` 应逐域命中；`cargo test -p minix-is` 基线 86 passed 不回退（fake 同步升级后旧断言存活）。
+
+### V1-P1-3 run_dump 16 体填实（05~10 执行面）——V1-P1-2 派生的开放条目
+**问题**：接缝定型后（Fix #5），`run_dump`（lib.rs，现为空体）的 16 个 `DumpId` 臂背后没有执行体——C 侧 dmp.c/dmp_kernel.c/dmp_pm.c/dmp_fs.c/dmp_rs.c/dmp_ds.c/dmp_vm.c 的 printf 渲染面（约 700 行）在 Rust 侧零对应。这是各篇"体延后（A-6）"决策的兑现轮。
+**建议**：每臂 = 取数（经 `Acquires` 类型化方法，`!= OK` 即告警续走）→ 调该域自由渲染函数（入参：诊断 sink + 快照 + 该域游标实例）→ `write!` 直写；游标实例收拢为 `IsServer` 的分域状态结构（C 各 `static prev_i`/`oldrp` 的实例化对应物）；格式串常量已逐字锁定直接复用。C 的 `%-8.8s`/`%10s`/`%08x` 等格式规格逐条映射 Rust `write!` 的宽度/精度/对齐语法，行为以渲染输出与 C 格式串语义对拍为验收。分域推进：kernel 8 体 → pm+vfs 4 体 → rs+ds+vm+mapping 4 体。
+**验证**：每域落地后 `cargo test -p minix-is` 对照基线；各体至少一条渲染输出断言（fake 取数 + fake sink）；文档 05~10 各篇 §3 末"体延后"决策注记翻转。
 
 ### V1-P2-1 `minix-sys` 死依赖 ✅ 已修复 2026-09-15（Fix #2，见 §8）
 **问题**：`os/servers/is/Cargo.toml:14` 声明 `minix-sys = { workspace = true }`，但全 crate `rg "minix_sys" os/servers/is/` 零命中（实测）——生产接线尚未开始（main.rs:19-23 用 fail-closed 占位），依赖先挂上了。
@@ -235,3 +241,11 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **测试**：`cargo test -p minix-is` **87 passed / 0 failed**（基线不动——行为等价重构，多匹配表序无 break 由既有 `test_step_tty_notify_dispatches_and_suppresses` 与 dispatch 层 T2 钉住）；clippy 本体 0 告警。
 **Verified**：`rg -n "; 16\]" os/servers/is/src/lib.rs` 零命中（16 只活在 dispatch.rs 的 HOOKS 类型标注与 C 对账测试里）。
 **Docs**：无需同步——03 篇 §4.2 的 `HOOKS: &[Hook; 16]` 类型标注未变（单一权威仍在），被删的字面量无文档锚。
+
+### ✅ Fix #5: V1-P1-2 — 取数接缝定型（类型化数据出口 + A-6 诊断 sink + Acquires 超特质）
+
+**设计对比**（三设计点，摘要——全文见条目）：A-6 输出通道首选 `SefTransport::diag_out() -> &mut dyn core::fmt::Write`（C 的 printf 走 libc stdio→log 驱动，本就是传输接线；no_std 无 stdio；Redox 的进程诊断同样走进程既有 debug 接线而非独立服务面），否决独立 DiagOut trait 第三个泛型参数（一个方法的 trait 换泛型传染）与 log 式全局宏（所有权模型相性差）；数据出口首选**按 C 速记宏 1:1 的类型化出参方法**（`sys_getproctab(dst)` ↔ `get_proctab(out: &mut [KProcSnap])`，slice 长度即容量声明），`GetRequest` 枚举被方法取代（只选方法的枚举无事可做；IS 未发的请求结构性不可表达），否决裸 `&mut [u8]`（void* 复刻，translate）与 owned Vec（引入 alloc）；编排器侧首选 `Acquires` 超特质 blanket 打包（RS `KernelApi` 五域先例），`IsServer` 升三泛型，dump 体仍是只吃"快照 + 游标 + sink"的自由函数，04 §3 D2 细缝决策不破坏。RS 双拉（dmp_rs.c:33-34 全有或全无）收敛为 `rs_tables` 单方法双出参。
+**Files**：`os/servers/is/src/acquire.rs`（五 trait 重写为类型化出参；`GetRequest` 删除；`SiWhat`/`getsysinfo_call`/`IS_GETSYSINFO_CALLS` 降格为 wire 助手；`Acquires` 超特质 + blanket impl；Unimplemented/fake 全量同步，fake 改为 OK 时实填出参）、`os/servers/is/src/sef.rs`（`diag_out` 声明 + fail-closed 臂）、`os/servers/is/src/lib.rs`（`IsServer<T, F, A: Acquires>` 三泛型 + 重导出更新 + sink 测试；`acquires` 字段带 forward-reference 注记的临时 `#[allow(dead_code)]`，V1-P1-3 落地时移除）、`os/servers/is/src/main.rs`（三参构造）。
+**测试**：新增 `test_diag_out_sink_receives_writes`（A-6 通道写穿断言）+ acquire 侧 `test_monparams_outlet_writes`/出参实填与 ERR 不改写出参断言；基线 87 → **88 passed / 0 failed**；clippy 本体 0 告警。
+**Verified**：`rg -n "GetRequest" os/servers/is/src/` 零命中；`rg -n "&mut \[KProcSnap\]" os/servers/is/src/acquire.rs` 命中（类型化出参在位）；`cargo test -p minix-is` 88 passed。
+**Docs**：04 篇 §3 D2 增 V1 定型注记 + §4.1/§4.2/§4.3 全量重写（类型化签名 + 新不变量）+ §5 测试表 T1/T3/T5/T6 重排；01 篇 §3 D4 增 A-6 通道定型注记。05~10 篇的"体延后"翻转归 V1-P1-3。
