@@ -73,6 +73,23 @@ fn fail(msg: &str) -> ! {
     early_console::write_str("### FAIL: ");
     early_console::write_str(msg);
     early_console::write_str("\n");
+    // S-3d 诊断：AP 视角的 GDTR 回读（阶梯 sgdt 写入 0x6F40/0x6F48）。
+    early_console::write_str("### AP GDTR pre: 0x");
+    let mut buf = [0u8; 6];
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = unsafe { core::ptr::read_volatile((0x6F40 + i) as *const u8) };
+    }
+    for b in buf {
+        early_console::write_hex(b as u64);
+    }
+    early_console::write_str("\n### AP GDTR post: 0x");
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = unsafe { core::ptr::read_volatile((0x6F48 + i) as *const u8) };
+    }
+    for b in buf {
+        early_console::write_hex(b as u64);
+    }
+    early_console::write_str("\n");
     let stage = unsafe { core::ptr::read_volatile(0x6F00 as *const u8) };
     let ip = unsafe { core::ptr::read_volatile(0x6F04 as *const u16) };
     let cs = unsafe { core::ptr::read_volatile(0x6F06 as *const u16) };

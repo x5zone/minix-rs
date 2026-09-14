@@ -82,9 +82,12 @@ core::arch::global_asm!(
     "  mov ss, ax",
     // Stage 0xA1: real-mode entry + segments up.
     "  mov byte ptr [0x6F00], 0xA1",
+    // S-3d 诊断：sgdt 回读（AP 视角的 GDTR 原始值与 lgdt 后的装载值）。
+    "  sgdt [0x6F40]",
     // lgdt m16&32 [0x6030] — the descriptor in the scratch page.
     "  .byte 0x66, 0x0F, 0x01, 0x15",
     "  .word 0x6030",
+    "  sgdt [0x6F48]",
     // Protected mode (paging still off — linear = PA).
     "  mov eax, cr0",
     "  or eax, 1",
