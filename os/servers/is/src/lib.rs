@@ -148,17 +148,10 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
         if status < 0 {
             self.transport.warn_fkey_events(status);
         }
-        // Fixed-size match buffer (no alloc; ≤16 hooks). `DumpId: Copy`
-        // sidesteps the borrow of `self` across dispatch and execution.
-        let mut matched = [DumpId::Proctab; 16];
-        let mut n = 0usize;
-        dispatch_each(fkeys, sfkeys, |hook| {
-            matched[n] = hook.dump;
-            n += 1;
-        });
-        for dump in matched.iter().take(n) {
-            self.run_dump(*dump);
-        }
+        // C executes hooks[h].function() inside the matching loop (dmp.c:
+        // 93-94) — no intermediate collection; each match runs in table
+        // order with no break.
+        dispatch_each(fkeys, sfkeys, |hook| self.run_dump(hook.dump));
         EDONTREPLY
     }
 
@@ -171,10 +164,11 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
     /// diagnostic channel (C: dmp.c:63-65, routed as
     /// [`SefTransport::warn_fkey_ctl`]; the 02 caller-warns invariant).
     fn request_fkey_map(&mut self, map: bool) {
-        let mut keys = [FkeyId::F1; 16];
-        for (slot, hook) in keys.iter_mut().zip(HOOKS.iter()) {
-            *slot = hook.key;
-        }
+        // The registered set is the hooks table itself (02 §2.6 "注册集合 =
+        // 转储能力集合"): derive the key list by `map`, so the array length
+        // travels with HOOKS' type and a table edit can never leave prefill
+        // residue behind.
+        let keys = HOOKS.map(|hook| hook.key);
         if let Err(e) = map_unmap_keys(&mut self.fkey, map, &keys) {
             self.transport.warn_fkey_ctl(e.status);
         }

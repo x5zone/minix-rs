@@ -20,7 +20,7 @@
 | P1 | V1-P1-2 | 取数五通道 trait 无数据出口——run_dump 填体的前置设计缺口（含 A-6 输出通道选型） | 开放 |
 | P2 | V1-P2-1 | `minix-sys` 死依赖（声明但全 crate 零引用） | ✅ 已修复 2026-09-15（Fix #2，§8） |
 | P2 | V1-P2-2 | `fkey_mapped` 与 `state.call_nr` 只写不读（死状态，C 无对应物） | ✅ 已修复 2026-09-15（Fix #3，§8） |
-| P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | 开放 |
+| P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | ✅ 已修复 2026-09-15（Fix #4，§8） |
 | P3 | V1-P3-2 | `request_fkey_map` 返回 `Result` 但两臂皆 `Ok`（01 时代 ENOSYS 桩的类型遗迹；随 P1-1 同批修） | ✅ 已修复 2026-09-15（Fix #1，§8） |
 | P3 | V1-P3-3 | 00/99 篇 pending + `.design/` 三快照缺失（Gate H.1/H.6 FAIL×2）；99 收口时补 `DIAG_BUF_SIZE`/`_SYSTEM` 排除标注 | 开放 |
 | P3 | V1-P3-4 | 01 篇 §4.1 声称 `extern crate alloc` 与实际不符（代码零分配、无 alloc） | 开放 |
@@ -97,7 +97,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**：首选：删除两处（`fkey_mapped` 连带 lib.rs:71/:179/:183/:217 与测试 :405/:420 的断言改为断言 `fkey.calls` 的调用记录——`test_signal_term_requests_shutdown` 改查 FakeFkey 收到过 UNMAP 请求，行为等价且更贴 C 锚点）。次选：若想保留注册可见性，让 `step`/`signal_handler` 消费它（如 TERM 时 `if self.fkey_mapped` 才发 unmap）——否决：这是无 C 依据的行为发明，01 篇 §2.8 的 C 语义是无条件 unmap。
 **验证**：修后 `rg -n "fkey_mapped" os/servers/is/src/` 零命中；`rg -n "pub call_nr" os/servers/is/src/state.rs` 删除后 `IsServerState` 仅剩 inbox/reply_buf/caller 三个有读方的字段；86 passed 基线保持。
 
-### V1-P3-1 两个栈数组的 16 长度隐式耦合
+### V1-P3-1 两个栈数组的 16 长度隐式耦合 ✅ 已修复 2026-09-15（Fix #4，见 §8）
 **问题**：`handle_fkey_pressed` 用 `let mut matched = [DumpId::Proctab; 16]` + 手工计数承接分派（`os/servers/is/src/lib.rs:151-158`），`request_fkey_map` 用 `let mut keys = [FkeyId::F1; 16]` 预填后 zip HOOKS（:173-176）。两处的 16 都来自「HOOKS 恰好 16 项」（dispatch.rs:127）这一事实，但没有任何编译期检查：HOOKS 缩到 15 项时 `request_fkey_map` 会静默多注册一个 F1（预填残留），扩到 17 项时 `matched[n]` 越界 panic。
 **影响**：当前正确，但耦合靠人记；hooks 表是「注册集合 = 转储能力集合」的心脏（02 篇 §2.6），改表时的静默漂移最危险。
 **建议**：首选：`request_fkey_map` 改用 `let keys: [FkeyId; 16] = HOOKS.map(|h| h.key);`（`tty_fkey.rs:365` 的测试里已有同款先例，无预填、无 zip、长度由类型携带）；`matched` 处加 `const _: () = assert!(HOOKS.len() <= 16);` 把耦合变成编译期断言。次选：`matched` 改为遍历内直接 `self.run_dump(hook.dump)`——否决：闭包借 `self` 与 `dispatch_each` 的访问者签名冲突，绕开要么引入 alloc 要么 unsafe，不值。
@@ -227,3 +227,11 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **测试**：`cargo test -p minix-is` **87 passed / 0 failed**（基线不动——纯删除 + 断言迁移）；clippy 本体 0 告警。
 **Verified**：`rg -n "fkey_mapped" os/servers/is/src/` 零命中；`rg -n "call_nr" os/servers/is/src/state.rs` 仅剩文档注释里的 C 对照说明；`self.state.caller` 保留（回复门 lib.rs 有读方，非死状态——编辑中曾误删其写入点，回归 diff 复核时发现并当场修正，在此诚实记录）。
 **Docs**：01 篇 §3 D1 结构体代码块删 `call_nr` 行 + 增 V1 轮更新注记；§4.2 IsServerState 签名行同步。
+
+### ✅ Fix #4: V1-P3-1 — 16 长度隐式耦合消除（keys 位派生化，matched 位整体消除）
+
+**设计对比**（matched 位三案）：① 整段消除中间缓冲，访问闭包内直接 `self.run_dump(hook.dump)`（已实施）——C 本来就是在匹配循环里直接调 `hooks[h].function()`（dmp.c:93-94），两阶段"先收集再执行"是 Rust 侧发明的幽灵结构；`dispatch_each` 不持有 self，闭包独占捕获 `&mut self` 借用成立，越界 panic 在构造上不可能。② `[DumpId::Proctab; HOOKS.len()]` 保长度耦合（否决：保留了 C 没有的两阶段结构，只修了长度不修形状）。③ const assert（否决：断言只在编译期检查容量，prefill/手工计数的脆弱模式还在）。keys 位两案：① `HOOKS.map(|hook| hook.key)`（已实施，长度随 HOOKS 类型走，prefill F1 残留在构造上不可能；tty_fkey.rs 测试先例）② 保留 prefill+zip 加 const assert（否决：断言挡不住缩短表时的静默残留模式本身）。
+**Files**：`os/servers/is/src/lib.rs`（`handle_fkey_pressed` 删 matched 缓冲；`request_fkey_map` 改 HOOKS 派生键表）。
+**测试**：`cargo test -p minix-is` **87 passed / 0 failed**（基线不动——行为等价重构，多匹配表序无 break 由既有 `test_step_tty_notify_dispatches_and_suppresses` 与 dispatch 层 T2 钉住）；clippy 本体 0 告警。
+**Verified**：`rg -n "; 16\]" os/servers/is/src/lib.rs` 零命中（16 只活在 dispatch.rs 的 HOOKS 类型标注与 C 对账测试里）。
+**Docs**：无需同步——03 篇 §4.2 的 `HOOKS: &[Hook; 16]` 类型标注未变（单一权威仍在），被删的字面量无文档锚。
