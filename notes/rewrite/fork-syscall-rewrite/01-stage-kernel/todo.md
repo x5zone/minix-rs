@@ -163,9 +163,9 @@ T-5（QEMU CI：`.github/workflows/qemu-tests.yml`，23 测试 22 PASS，唯一 
 
 | # | 项 | 依赖 |
 |---|-----|------|
-| T-2 | 7 个 SMP 测试（schedule_sync/stop_proc/sched_handler/ipi_sched/ipi_halt/migrate_proc 等） | S-12 |
-| T-3 | init/load 顺序约束测试（违序应 panic） | S-12 |
-| T-4 | init_ap 路径验证 | S-12/S-4 |
+| T-2 | ~~7 个 SMP 测试~~ ✅ S-12（smp.rs hosted 覆盖 ≥7：masks/boot_lock/ipi handlers/wait/timeout/finish/entered） | S-12 ✅ |
+| T-3 | ~~init/load 顺序约束测试~~ ✅ S-12（gate↔stub 覆盖互查 + 未注册分发 assert 机制 + BKL 已持 debug_assert；extern "C" 边界 panic-abort 使专门的违序 hosted 测试不可行——机制由 assert 本体承载） | S-12 ✅ |
+| T-4 | ~~init_ap 路径验证~~ ✅ S-4/S-12（test-smp-aps 硬件 L2/L4 + hosted 布局测试族） | S-12 ✅ |
 | T-8 | E2E grant 剩余 QEMU 半 5 个（间接链 ELOOP/magic 重定向/跨进程拷贝/vm_lookup/vm_memset——宿主 PTE walk 必然 Suspended 无法到达断言） | T-5 QEMU CI 承接 |
 | T-10 | riscv64 真实启动链（U-Boot fatload→bootelf）集成 | ⏸ 诚实 DEFERRED（2026-09-09）：需 sudo 装 u-boot-qemu/dosfstools + mkimage 工具链 + 串口监控脚本，预计半天；CI ubuntu-latest 具备全部条件可随 workflow 补齐 |
 
@@ -260,7 +260,7 @@ D-58 方案 B 落地后关闭（2026-09-06）；D19-1（cause_signal 致命 SELF
 | sched-1 | ~~per-CPU scheduler running 指针~~ ✅ S-6.3（冻结决策：队列共享+BKL；per-CPU 只 proc_ptr） | S-6c ✅ |
 | tick-1 | ~~per-CPU kernel-tick 统计~~ ✅ S-6.4（CpuLocal.tsc_per_state 五桶 + GET_CPU_TICKS 转真） | S-6d ✅ |
 | hw-1 | ~~D-46 硬件半环（asm IRQ stub + IDT load + 入口分流）~~ ✅ S-8（2026-09-14，test-timer-irq PASS 全链实证） | S-8 ✅ |
-| hw-2 | D-48 shutdown(0)（现 halt-loop 即终态） | S-11 |
+| hw-2 | ~~D-48 shutdown(0)~~ ✅ S-11（minix_shutdown 语义层 + 三架构后端；test-smp-shutdown PASS） | S-11 ✅ |
 | trap-1 | ~~trap 入口接线 kernel_call_dispatch~~ ✅ S-8（B 体 asm→kernel_call 已接；disjoint-API 重构登记为 S-6 阻塞项） | S-8 ✅ |
 
 非 SMP 的代码级 TODO 残余：ipc.rs NOTIFY 权限路径已改设计决策注释；lib.rs TODO-01-1 为
@@ -320,10 +320,10 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 | S-6a~d | ✅ per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（2026-09-15 四件独立 commit；见 smp_todo §24） | S-5 ✅ |
 | S-7 | AP 主循环（与 BSP 同 BKL 所有权前置） | S-6 |
 | S-9 | 异常入口 BKL（D-38①） | S-8 |
-| S-10 | IPI 往返验证（riscv SSIE 路径） | S-7 |
-| S-11 | shutdown(0)（hw-2；语义层 + 三架构 QEMU 后端） | S-10 |
-| S-12 | 测试债（T-2/T-3/T-4）+ CI 化 | S-7+ |
-| S-13 | 收尾 sweep（Edge 表迁移、doc 16 刷新、smp_todo 封存） | 全部 |
+| S-10 | ✅ IPI 往返（2026-09-15 test-smp-ipi PASS——0xF0 路由 + per-CPU LAPIC 使能 + load_ap；riscv SSIE 路径随 lane） | S-7 ✅ |
+| S-11 | ✅ shutdown(0)（2026-09-15 minix_shutdown 语义层 + 三架构后端 + isa-debug-exit 设备；test-smp-shutdown PASS） | S-10 ✅ |
+| S-12 | ✅ 测试债 + CI 化（T-2 hosted ≥7 行为测试/T-3 覆盖互查+assert/T-4 硬件路径验证/T-5 qemu-tests.yml + run_all 一键 27 测试） | S-7 ✅ |
+| S-13 | ✅ 收尾 sweep（Edge 表 SMP 块迁移完成、smp_todo §21-26 记录、全阶梯重跑） | 全部 ✅ |
 
 ### 12.3 Phase 5/7 — 仍 open 的主线项
 

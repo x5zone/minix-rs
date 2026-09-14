@@ -1888,3 +1888,30 @@ SMP 四件 + proc-init 复跑全 PASS**。
 
 **S-11 收官（x86 L7；arm/riscv L7 随 lane）→ S-12（测试债 + CI 化）
 解锁。**
+
+---
+
+## 26. S-12/S-13 收尾记录（2026-09-15）：测试债清点 + 全阶梯终局重跑 + 封存
+
+**S-12 测试债 + CI 化清点**：
+- **T-2（七个 SMP 行为测试）**：smp.rs hosted 已覆盖 ≥7——双位图完成语义
+  （含 v4 #3 假通过防护）、BOOT_LOCK 重入、ap_finish_booting 发布、
+  sched_handler/IPI 处理（含 IDLE 不抢占）、wait_for_aps 单核、启动超时
+  常量、ptproc 隔离。
+- **T-3（init/load 顺序约束）**：gate↔stub 覆盖互查测试 + 未注册分发
+  assert 机制 + BKL 已持 debug_assert。注：专门的"违序 hosted 测试"不可行
+  ——extern "C" 边界 panic 会 abort 测试进程（实证），机制由 assert 本体
+  承载。
+- **T-4（init_ap 路径验证）**：test-smp-aps 硬件 L2/L4（四核在线 + 逐核
+  entered）+ hosted 布局测试族（描述符/GS/IST/选择子）。
+- **T-5（QEMU 进 CI）**：`.github/workflows/qemu-tests.yml` 已存在；
+  run_all.sh 为一键入口，现为 27 测试（新增 test-smp-aps / test-smp-ipi /
+  test-smp-shutdown）。
+
+**S-13 sweep**：todo.md Edge Items 表 SMP 块全部迁移（hw-1/hw-2/trap-1/
+D-38①/D-39/D-40/D-41/sched-1/tick-1 ✅）；§6 全阶梯终局重跑（见 §25/§26
+回归行）。本文件自 S-0 起的全部步骤至此收官——**封存**。
+
+**SMP 主线终态**：S-0..S-6 + S-7 + S-8..S-11 全 ✅（S-2b/S-3 系含历史
+spike）。剩余 open 项均在 Edge 表（I-6 调度循环真实化、I-9 裸指针治理、
+E-DSWIRE 等）或 arm/riscv64 各自 lane（§3.3/§8 风险表），不阻塞本文件。
