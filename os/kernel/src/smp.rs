@@ -168,6 +168,9 @@ pub struct CpuLocal {
     /// for GET_CPU_TICKS. Tick-1 (S-6.4): was implicitly global-zero —
     /// `getinfo_cpu_ticks` returned zeros.
     pub tsc_per_state: [u64; crate::misc::MINIX_CPUSTATES],
+    /// S-7 L5: this CPU has entered the shared scheduling loop (set once at
+    /// `scheduler_loop` entry; the L5 test reads it per-CPU from the BSP).
+    pub sched_loop_entered: bool,
 }
 
 impl CpuLocal {
@@ -189,6 +192,7 @@ impl CpuLocal {
             fpu_presence: false,
             fpu_owner: None,
             tsc_per_state: [0; crate::misc::MINIX_CPUSTATES],
+            sched_loop_entered: false,
         }
     }
 
@@ -1040,9 +1044,14 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
         }
     }
     ap_finish_booting(logical_id);
-    loop {
-        core::arch::asm!("hlt", options(nomem, nostack));
-    }
+
+    // S-7: enter the shared scheduling loop. §3.6 precondition — the AP
+    // acquires the BKL exactly like the BSP does before its loop (C: the AP
+    // enters main()'s loop holding the BKL acquired in its init path).
+    // The loop never returns (diverges into the idle halt on this CPU until
+    // IPI/interrupt-driven work arrives, S-10+).
+    crate::smp::bkl_lock().transfer();
+    crate::scheduler_loop(crate::proc::CpuId::new_unchecked(logical_id));
 }
 
 // ── CPU identity table (D-53: 08-system-init-boot-finish.md §4.6) ──

@@ -214,6 +214,31 @@ fn main() -> Status {
     }
     early_console::write_str("  boot_ack == online == expected (all APs online)\n");
 
+    // S-7 L5: every AP entered the shared scheduling loop (per-CPU flag set
+    // at `scheduler_loop` entry); the BSP did not (it runs this test body
+    // instead). Serial-visible per-CPU activity marker.
+    let mut aps_in_loop = true;
+    for cpu in 0..topo.nr_cpus as u32 {
+        let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
+            .cpu_local(minix_kernel::proc::CpuId::new_unchecked(cpu))
+            .map(|l| l.sched_loop_entered)
+            .unwrap_or(false);
+        let is_ap = cpu != 0;
+        early_console::write_str("  cpu ");
+        early_console::write_hex(cpu as u64);
+        early_console::write_str(" in_loop: ");
+        early_console::write_hex(entered as u64);
+        early_console::write_str("\n");
+        if is_ap && !entered {
+            aps_in_loop = false;
+        }
+    }
+    if !aps_in_loop {
+        early_console::write_str("  FAIL: an AP did not enter the scheduling loop\n");
+        fail();
+    }
+    early_console::write_str("  all APs entered the scheduling loop\n");
+
     early_console::write_str("### TEST_RESULT: PASS test-smp-aps ###\n");
     loop { unsafe { asm!("cli", options(nomem, nostack)); } }
 }

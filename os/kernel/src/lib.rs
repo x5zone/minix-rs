@@ -2303,14 +2303,14 @@ fn pick_and_bill(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
     priv_table: &crate::kpriv::PrivTable,
+    cpu: crate::proc::CpuId,
 ) -> Option<crate::proc::ProcNr> {
     let picked = table.scheduler().pick_proc(table.procs_slice())?;
 
     // C: proc.c:1808-1809 — `if (priv(rp)->s_flags & BILLABLE)
     // get_cpulocal_var(bill_ptr) = rp;`
     if is_billable(table, priv_table, picked) {
-        let bsp = smp.bsp_cpu_id();
-        if let Some(local) = smp.cpu_local_mut(bsp) {
+        if let Some(local) = smp.cpu_local_mut(cpu) {
             local.bill_ptr = Some(picked);
         }
     }
@@ -2411,29 +2411,29 @@ fn idle(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
     priv_table: &crate::kpriv::PrivTable,
+    cpu: crate::proc::CpuId,
 ) {
     use crate::proc::proc_nr;
     use minix_arch::SmpArch;
 
-    let bsp = smp.bsp_cpu_id();
     let idle_nr = smp
-        .cpu_local(bsp)
+        .cpu_local(cpu)
         .map(|l| l.idle_proc)
         .unwrap_or(proc_nr::IDLE);
 
     // 1. proc_ptr = idle_proc (C:185).
-    if let Some(local) = smp.cpu_local_mut(bsp) {
+    if let Some(local) = smp.cpu_local_mut(cpu) {
         local.proc_ptr = Some(idle_nr);
     }
     // bill_ptr = idle_proc if BILLABLE (C:186-187).
     if is_billable(table, priv_table, idle_nr)
-        && let Some(local) = smp.cpu_local_mut(bsp)
+        && let Some(local) = smp.cpu_local_mut(cpu)
     {
         local.bill_ptr = Some(idle_nr);
     }
 
     // 2./3. SMP-only steps omitted (see doc comment); cpu_is_idle = 1.
-    if let Some(local) = smp.cpu_local_mut(bsp) {
+    if let Some(local) = smp.cpu_local_mut(cpu) {
         local.cpu_is_idle = true;
     }
     restart_local_timer();
@@ -2453,6 +2453,11 @@ fn idle(
         .get_mut(proc_nr::KERNEL)
         .expect("idle: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
+    // S-6.4 tick-1 (C arch_clock.c:340): the KERNEL pseudo-process's delta
+    // lands in the CP_INTR bucket (endpoint < 0, not IDLE).
+    if tsc_delta > 0 {
+        smp.account_tsc_per_state(crate::current_cpu_id(), crate::clock::CP_INTR, tsc_delta);
+    }
     // C: arch_clock.c:232 — `p->p_cycles += tmp` for the KERNEL branch.
     if tsc_delta > 0 {
         table
@@ -2460,6 +2465,11 @@ fn idle(
             .expect("idle: KERNEL pseudo-process slot must exist")
             .p_cycles
             .add_cycles(tsc_delta);
+    }
+    // S-6.4 tick-1 (C arch_clock.c:340): same CP_INTR bucketing for the
+    // idle-step KERNEL pseudo-process accounting.
+    if tsc_delta > 0 {
+        smp.account_tsc_per_state(crate::current_cpu_id(), crate::clock::CP_INTR, tsc_delta);
     }
     // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
     // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
@@ -2754,25 +2764,46 @@ fn finish_and_restore(
 /// the boot-unchecked accessors with `BklSection`-witnessed ones.
 #[allow(dead_code)] // reachable only from the divergent boot path / asm entry
 fn switch_to_user() -> ! {
+    // C main.c:73 — bsp_finish_booting tails into switch_to_user with the
+    // BKL held. S-7: the loop body is the shared `scheduler_loop`; the BSP
+    // flavor only names its own CPU (seed + loop are per-CPU now).
+    let cpu = unsafe { crate::smp_state_boot_unchecked() }.bsp_cpu_id();
+    scheduler_loop(cpu)
+}
+
+/// The scheduling loop — shared by the BSP (switch_to_user) and, since S-7,
+/// every AP (the kernel-registered AP tail enters here after ap_finish_
+/// booting). §3.6: the entering CPU satisfies the same BKL-ownership
+/// precondition as the BSP (kernel runs with the BKL held; the guard is
+/// witnessed below); acquire/release/yield inside the loop reuse the
+/// existing paths unchanged.
+///
+/// C: smp.c AP main loop parity — init_ap → ap_boot_finished → the same
+/// `main()` loop body as the BSP.
+pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
     use crate::proc::proc_nr;
 
-    // A1: the BKL is held on entry (boot: bsp_finish_booting step 8.5;
-    // trap re-entry: dispatch paths). `assume_held` turns that convention
-    // into a debug-asserted witness; everything below consumes
-    // `*_with(&section)` accessors, so a lost lock panics instead of
-    // silently corrupting the tables. When the trap entry (S-8) threads
-    // real `bkl_lock_section()` witnesses, this root takes the parameter.
+    // A1: the BKL is held on entry (boot: acquired before smp_init per
+    // C main.c:149; AP: acquired in smp_ap_tail after ap_finish_booting).
+    // `assume_held` turns that convention into a debug-asserted witness;
+    // everything below consumes `*_with(&section)` accessors, so a lost
+    // lock panics instead of silently corrupting the tables.
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let table = crate::proc_table_with(&section);
     let smp = crate::smp_state_with(&section);
     let priv_table = crate::priv_table_with(&section);
-    let bsp = smp.bsp_cpu_id();
+
+    // S-7 L5 observability: record that this CPU entered the loop (the L5
+    // assertion reads these flags from the BSP after smp_init).
+    if let Some(local) = smp.cpu_local_mut(cpu) {
+        local.sched_loop_entered = true;
+    }
 
     // Seed proc_ptr = IDLE (C: main.c:54 — bsp_finish_booting step 2's
     // per-CPU half; the accounting half lives in `set_bill_to_idle`).
     // IDLE is never queued (RTS_PROC_STOP), so the first pass falls
     // through to the pick path — the same first-dispatch behavior as C.
-    if let Some(local) = smp.cpu_local_mut(bsp) {
+    if let Some(local) = smp.cpu_local_mut(cpu) {
         local.proc_ptr = Some(proc_nr::IDLE);
     }
 
@@ -2781,7 +2812,7 @@ fn switch_to_user() -> ! {
         // C: proc.c:309-349. `current` is the per-CPU proc_ptr snapshot;
         // None (or a non-runnable process) routes into the pick path.
         let mut current: Option<crate::proc::ProcNr> = smp
-            .cpu_local(bsp)
+            .cpu_local(cpu)
             .and_then(|l| l.proc_ptr);
 
         // C: proc.c:314 — `if (proc_is_runnable(p)) goto check_misc_flags;`
@@ -2799,14 +2830,14 @@ fn switch_to_user() -> ! {
             }
             // C: proc.c:338-340 — `while (!(p = pick_proc())) idle();`
             let picked = loop {
-                if let Some(p) = pick_and_bill(table, smp, priv_table) {
+                if let Some(p) = pick_and_bill(table, smp, priv_table, cpu) {
                     break p;
                 }
-                idle(&section, table, smp, priv_table);
+                idle(&section, table, smp, priv_table, cpu);
             };
             // C: proc.c:343 — `get_cpulocal_var(proc_ptr) = p;`
             current = Some(picked);
-            if let Some(local) = smp.cpu_local_mut(bsp) {
+            if let Some(local) = smp.cpu_local_mut(cpu) {
                 local.proc_ptr = Some(picked);
             }
             // C: proc.c:349 — switch_address_space(p).
@@ -3623,7 +3654,7 @@ mod tests {
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
         table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
 
-        let picked = super::pick_and_bill(&mut table, &mut smp, &priv_table);
+        let picked = super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP);
 
         assert_eq!(picked, Some(ProcNr(0)));
         let bsp = smp.bsp_cpu_id();
