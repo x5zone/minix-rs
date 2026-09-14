@@ -69,13 +69,13 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
 
             // POSIX 记录锁释放（C `close_fd:700-713`）：关闭文件的 vnode 上
             // 属于本进程的锁全部释放并触发 lock_revive。
-            if let Some(vid) = filp_vid {
-                if let Some(v) = state.vnode_table.get(vid) {
-                    let key = crate::fcntl::VnodeKey { fs: v.fs, ino: v.ino };
-                    let pid = fp_pid as u32;
-                    let _released = state.lock_table.release_for(key, pid);
-                    // lock_revive 的复活广播归 17 号（select/lock 等待者）。
-                }
+            if let Some(vid) = filp_vid
+                && let Some(v) = state.vnode_table.get(vid)
+            {
+                let key = crate::fcntl::VnodeKey { fs: v.fs, ino: v.ino };
+                let pid = fp_pid as u32;
+                let _released = state.lock_table.release_for(key, pid);
+                // lock_revive 的复活广播归 17 号（select/lock 等待者）。
             }
 
             SyscallResult::Ok(0)
