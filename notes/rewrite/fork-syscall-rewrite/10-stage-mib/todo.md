@@ -15,7 +15,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | 级别 | 条目 | 一句话 | 状态 |
 |---|---|---|---|
 | P1-1 | 主循环装配与传输 seam | MibServer + 双/三 trait + run_once，对齐 DS/SCHED 先例；含 UserSpaceTransport 上移再评估结论 | ⬜ |
-| P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | ⬜ |
+| P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | 🔄 半程 2026-09-15（竞技场+四线 build 已提交 44d31f1e6；walker 执行器 WIP，余量清单见条目） |
 | P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ✅ 2026-09-15（`minix-types::sysctl_abi`，4 结构 + 4 断言测试，196 passed） |
 | P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ✅ 2026-09-15（`transport.rs` 双 trait + `Oldp`/`Newp`/`RelayRequest`/`RelayGrant`/`auth::ask`，126 passed） |
 | P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
@@ -84,6 +84,8 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 **建议**：竞技场选型决策（P2-4）先行；walker 按判定/执行切分消费 `tree/dispatch.rs` 现有 verdict——每轮 `lookup`（`tree/lookup.rs:81 find`）→ 可见性（`auth.rs:73 can_see`）→ `judge_level` → 执行动作（descend/remote call/handler/readwrite），终态用 `terminal_code`/`EISDIR_EMPTY` 查表。`mib_find` 的生产消费方同步从 0 转正。挂载链表补 `EndptSlot.nodes` 头字段与摘链/头插执行（remote.c:189-191/:257-275）。`TreeCounts` 从纯累加器转为 server 持有的真实计数器（minix.mib.* 统计子树的数据源）。
 
 **验证**：walker 集成测试走通 C tree.c 的全部终态（ENOENT/ENOTDIR/EISDIR/EPERM/CallFunc/Readwrite/Remote 三去向）；`cargo test -p minix-mib` 新增 ≥8 个 walker 用例。
+
+**进度 🔄（2026-09-15，半程提交 44d31f1e6）**：已完成——`tree/arena.rs` 的 `MibTree`（Slot 统一结点、静态窗口寻址、动态 ChildMap、children_of id 序遍历、upgrade 版本爬链）+ 四个子树 `build()`（镜像 C mib_*_init 四线，Kind→flags/size/value 逐行对照 C 表）+ `build_int_value` 解析表（CONFIG_MAX_CPUS=1/OS_REV/NR_PROCS/ARG_MAX/NGROUPS_MAX/_POSIX_VERSION 已锚定；**NR_VNODES 全树无定义 → 读 EOPNOTSUPP [待裁决]**）+ `MibServices` 补 `remote_call` 动词（P1-4 形状修订）。**余量（执行轮继续）**：walker.rs 执行器（工作区 WIP，未注册进 lib.rs）——分发循环与 meta/readwrite 骨架已写，剩：① remote 臂的两个设计决策（(a) SELF 端点表示——relay 的 name grant 覆盖服务器自身内存，`RelayRequest.caller` 需要 SELF 值而 minix-types Endpoint 是固定服务枚举；(b) `Request` 需携带调用方 namep 坐标供 name tail grant，或裁决为 grant SELF 侧缓冲）；② create EEXIST 回显的 serialize 接线；③ lib.rs 注册 + ≥8 集成测试；④ Slot 补 mount peer 端点存储（挂载臂 P1-1 消费）。
 
 ### P1-3 A-4 交换格式布局裁决与锚定：wire 契约整层空白（stage 内决策 + 契约面落地）
 
