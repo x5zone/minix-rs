@@ -112,7 +112,7 @@
 
 Redox/业界对照（类比）：把"结点类型"做成枚举而非位掩码直译，是 Redox 式的 tutul（scheme 节点用 Rust 枚举区分文件/目录/挂载的同款思路在概念层成立）——但本篇不引具体 Redox 符号（02 同款诚实：类比止于形状，无 API 断言）。真正可验证的对照在 repo 内：DS 的 `DsCall` 枚举（07-stage-ds/01 D1）与本篇 D1/D2 同构——"非法状态不可表达"在本 repo 已是既定风格。
 
-替代方案及否决：union 直译（`union NodeVal { csize: u32, eid: u32, ... }` + `unsafe` 读写）——否决，Rust 的 `union` 读写全 `unsafe`，而§1.4 的教训恰恰是"读错格"；`ChildWindow`/`RemotePack` 不相交建模把 C 用注释表达的东西（`:150-156`）变成编译器检查。arena（静态表/动态链表本体）同样否决现在建模——04/05/08 各拥有一块，03 只判不管（verdict-first 延续 01/02）。
+替代方案及否决：union 直译（`union NodeVal { csize: u32, eid: u32, ... }` + `unsafe` 读写）——否决，Rust 的 `union` 读写全 `unsafe`，而§1.4 的教训恰恰是"读错格"；`ChildWindow`/`RemotePack` 不相交建模把 C 用注释表达的东西（`:150-156`）变成编译器检查。arena（静态表/动态链表本体）同样否决现在建模——04/05/08 各拥有一块，03 只判不管（verdict-first 延续 01/02）。**P2-3 落记（2026-09-15）**：竞技场的类型层已落 `tree/arena.rs`——动态子节点容器裁决为 `BTreeMap`（C 排序链表的 O(n) 搜索是为省静态数组时代的分配，Rust 有 alloc 后不值得直译；`ChildMap`/`NodeId`/`Dynode` 与裁决全文见该模块文档），树的活体与 walker 归 todo.md P1-2。
 
 ---
 

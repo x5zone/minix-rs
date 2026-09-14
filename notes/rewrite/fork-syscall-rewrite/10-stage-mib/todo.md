@@ -21,7 +21,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
 | P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ✅ 2026-09-15（`create_csize_ok` + `staged_vers_ok`，108 passed） |
 | P2-2 | handler 结果与判定入参结构化 | `map_sysctl_reply` 平行参数通道 → 枚举；`judge_level` 九参 → 事实结构体 | ✅ 2026-09-15（`SysctlOutcome` + `LevelFacts`，`too_many_arguments` allow 已删） |
-| P2-3 | 动态子节点容器选型 | C 排序链表 → BTreeMap / 排序 Vec 的裁决 | ⬜ |
+| P2-3 | 动态子节点容器选型 | C 排序链表 → BTreeMap / 排序 Vec 的裁决 | ✅ 2026-09-15（`tree/arena.rs`：ChildMap/Dynode/NodeId + 三方案对比，116 passed） |
 | P2-4 | A-3 内存策略落地 | slab + 字节预算池（推荐）vs bumpalo vs 裸全局分配器 | ✅ 2026-09-15（`heap::MibBudget` 记账预算，5 测试，113 passed） |
 | P3-1 | 文档账目同步批次 | README/plan 失真行、02 篇行号漂移、arena 承诺时点四处统一、00/99 成文 | ✅ 2026-09-15（五项全闭环） |
 | P3-2 | 死依赖与卫生指针 | mib crate 的 minix-sys 死依赖转正时机；rmib 卫生项归 edge | ⬜ |
@@ -147,6 +147,8 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 **建议**：**方案 A（推荐）**`BTreeMap<i32, NodeId>`——有序迭代免费（CTL_QUERY 按 id 序输出，11 篇执行半需要）、查找/插入/删除 O(log n)、与 `scan()` 的有序假设天然对齐（scan 保留纯判定，walker 用 range 查询适配）。**方案 B**排序 `Vec<(i32, NodeId)>` + `insert_at`——缓存友好、省每节点分配，但 create 的 O(n) 搬移与删除的 O(n) 压缩在节点数大时劣化，且 `insert_at` 索引在并发无虞的单线程下并无优势。**方案 C（否决）**直译链表——translate 防线（模式 16）：C 选链表是为了在静态数组上省分配，Rust 有 alloc，直译只继承缺点。节点规模依据：`MAX_REMOTE_CHILDREN=4096`（node.rs:76）量级下 BTreeMap 足够。
 
 **验证**：选型写进 `tree/mod.rs` 模块文档 + [ARCH] 三处一致标注（对照点 mib.h 链表字段、design 03/08 篇、代码注释）。
+
+**复核 ✅（2026-09-15，本条目闭环）**：`tree/arena.rs` 落竞技场类型层——`NodeId(u32)`（句柄索引替代 C 裸指针，跨 slab 扩容安全）、`ChildMap = BTreeMap<i32, NodeId>`（三方案对比 + translate 否决理由在模块文档 = [ARCH] 代码侧；03 篇 §4.4 与 08 篇 D 行 = design 侧；C 对照点 mib.h 链表字段 + tree.c:69-78 早停查找已注明）、`Dynode`/`DynValue`（OWNDATA/OWNDESC 三段独立所有权；预算结算归树不实现 Drop 的不变量已注明）。3 个测试：id 序迭代（CTL_QUERY 契约）、`scan` 的 `insert_at` 语义在 map 上复现、_dynode 部件独立组合矩阵。116 passed。`tree/mod.rs` 补 `staged_vers_ok` re-export 遗漏（P2-1 卫生）。
 
 ### P2-4 A-3 内存策略落地（stage 内，P1-2 前置）
 

@@ -1,13 +1,15 @@
-//! MIB object tree: node shape verdicts.
+//! MIB object tree: node shape verdicts and the arena's type layer.
 //!
 //! 03 owns the vocabulary (`flag`) and the shape invariants (`node`);
 //! 04 owns the static wiring (`static_tree`, `init`); 05 the lookup;
-//! 08 the dynamic lifecycle (`dynamic`, `version`). The tables themselves
-//! (static arrays, dynamic lists, mount storage) land with 04's
-//! follow-up/08/12 beside this module.
+//! 08 the dynamic lifecycle (`dynamic`, `version`). `arena` holds the
+//! arena's *types* — node ids, the dynamic-children container, dynode
+//! shapes — with the container ruling attached; the live tree and the
+//! walker that serves it land with todo.md P1-2.
 //!
 //! 03-mib-node-model.md + 04/05/08 companions.
 
+pub mod arena;
 pub mod dispatch;
 pub mod dynamic;
 pub mod flag;
@@ -47,4 +49,5 @@ pub use node::{
     linked_ver, version_matches,
 };
 pub use static_tree::{RootSpec, TOP_SLOTS, TopSlot, slot_flags, top_slot};
-pub use version::{create_ver_ok, next_root_ver};
+pub use version::{create_ver_ok, next_root_ver, staged_vers_ok};
+pub use arena::{ChildMap, DynValue, Dynode, NodeId};
