@@ -158,6 +158,21 @@ impl DeviceTree {
         Ok(DeviceId(id))
     }
 
+    /// Return the most recently allocated id to the allocator (07's
+    /// failure unwind, DM-P1-1). Valid only while `id` is still the
+    /// newest allocation: the single-threaded event loop guarantees
+    /// nothing can allocate in between a handler's `alloc_id` and its
+    /// failing step (crate docs). Without this, one failed ADD — a
+    /// driver retrying a duplicate registration, for instance — would
+    /// strand a hole in the dense id space and `insert`'s `id == len`
+    /// check would reject every later ADD forever.
+    pub(crate) fn rollback_id(&mut self, id: DeviceId) {
+        debug_assert_eq!(self.next_id, id.0 + 1, "rollback of a non-newest id");
+        if self.next_id == id.0 + 1 {
+            self.next_id = id.0;
+        }
+    }
+
     /// Link a fully-formed device under `parent` (07 builds the object;
     /// the linking itself is tree mechanics, hence here).
     /// The device's `id`/`parent` are authoritative: mismatches are

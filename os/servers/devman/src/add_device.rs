@@ -33,6 +33,42 @@ use crate::wire::{EntryType, ParsedDevice};
 /// `budget` threads C's `len` parameter into path generation (04):
 /// bare callers pass `DEVMAN_STRING_LEN`, event lines pass `- 11` —
 /// here always the event line, so `DEVMAN_STRING_LEN - 11`.
+/// Undo a failed ADD that already passed `alloc_id`: release cookies
+/// registered by the successfully-staged attributes, delete the staged
+/// framework subtree (recursive — children first, inode.rs `delete` —
+/// and every staged node still has refcount 0, so each slot reaps at
+/// once), and hand the id back to the allocator (DM-P1-1). The publish
+/// point of an ADD is `insert` below; everything before it must leave
+/// zero residue, or one failed registration — a driver retrying a
+/// duplicate, the everyday case — would strand a hole in the dense id
+/// space and wedge every later ADD (`insert`'s `id == len` check).
+/// C has no counterpart to unwind: its `add_inode` results go
+/// unchecked (device.c:373-375), so a failure there corrupts instead.
+fn unwind_staged(
+    fw: &mut InodeTree,
+    tree: &mut DeviceTree,
+    id: DeviceId,
+    dir_ino: Option<crate::vtreefs::Ino>,
+    staged: Option<&Device>,
+    e: minix_types::Errno,
+) -> minix_types::Errno {
+    if let Some(d) = staged {
+        for cookie in d
+            .attrs
+            .iter()
+            .filter_map(|a| a.binding.as_ref().and_then(|b| b.cookie))
+        {
+            // Best effort: the table entry is a tombstone-to-be either way.
+            let _ = crate::files::with_files(|s| s.unregister(cookie));
+        }
+    }
+    if let Some(dir) = dir_ino {
+        let _ = fw.delete(dir);
+    }
+    tree.rollback_id(id);
+    e
+}
+
 pub fn do_add(
     tree: &mut DeviceTree,
     fw: &mut InodeTree,
@@ -52,6 +88,8 @@ pub fn do_add(
     if parsed.name.bytes().any(|b| b.is_ascii_whitespace()) {
         return Err(Errno::EINVAL);
     }
+    // Everything between this alloc and `insert` is fallible prep; any
+    // failure takes the full unwind below (publish point = insert).
     let id = tree.alloc_id()?;
     let mut dev = Device {
         id,
@@ -72,14 +110,16 @@ pub fn do_add(
         attrs: alloc::vec::Vec::new(),
     };
     // C: add_inode(parent dir, wire name, dir stat) (device.c:373-375).
-    let dir_ino = fw
-        .add(
-            parent_ino,
-            &parsed.name,
-            crate::device_tree::default_dir_stat(),
-            0,
-        )
-        .map_err(|_| Errno::ENOMEM)?;
+    let dir_ino = match fw.add(
+        parent_ino,
+        &parsed.name,
+        crate::device_tree::default_dir_stat(),
+        0,
+    ) {
+        Ok(ino) => ino,
+        // Directory never materialized: only the id needs returning.
+        Err(_) => return Err(unwind_staged(fw, tree, id, None, None, Errno::ENOMEM)),
+    };
     dev.binding = Some(crate::structs::FileBinding {
         ino: dir_ino,
         cookie: None,
@@ -90,7 +130,9 @@ pub fn do_add(
         if e.ty != EntryType::Static {
             continue;
         }
-        add_static(fw, &mut dev, &e.name, &e.data)?;
+        if let Err(err) = add_static(fw, &mut dev, &e.name, &e.data) {
+            return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), err));
+        }
     }
     // C: snprintf(id) + add_static_info(dev, "devman_id") (device.c:392-393).
     let mut id_text = String::new();
@@ -98,8 +140,17 @@ pub fn do_add(
         use core::fmt::Write as _;
         let _ = core::write!(id_text, "{}", id.0);
     }
-    add_static(fw, &mut dev, "devman_id", &id_text)?;
-    tree.insert(parent, dev)?;
+    if let Err(err) = add_static(fw, &mut dev, "devman_id", &id_text) {
+        return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), err));
+    }
+    if let Err(err) = tree.insert(parent, dev) {
+        // Unreachable by construction: the parent was verified above and
+        // the id is dense (rollback_id's no-interleave argument). `dev` —
+        // and with it the staged cookies — has already moved into
+        // `insert`, so the cookie half of the unwind cannot run here;
+        // the framework half still must.
+        return Err(unwind_staged(fw, tree, id, Some(dir_ino), None, err));
+    }
     // C: INSERT_HEAD then get(parent) (device.c:395-397) — member ref,
     // balancing del_device's put(parent). Kept: DEL survival of parents
     // with live children depends on the count (08 §2.4).
@@ -141,14 +192,21 @@ fn add_static(
         kind: FileKind::Static(StaticFile { text }),
     })?;
     let dir_ino = dev.binding.ok_or(Errno::ENODEV)?.ino;
-    let ino = fw
-        .add(
-            dir_ino,
-            name,
-            crate::device_tree::default_file_stat(),
-            cookie,
-        )
-        .map_err(|_| Errno::ENOMEM)?;
+    let ino = match fw.add(
+        dir_ino,
+        name,
+        crate::device_tree::default_file_stat(),
+        cookie,
+    ) {
+        Ok(ino) => ino,
+        // Release the just-registered cookie before unwinding: the
+        // device's attr list does not know it yet, so the DM-P1-1
+        // unwind at the caller cannot see it.
+        Err(_) => {
+            let _ = crate::files::with_files(|s| s.unregister(cookie));
+            return Err(Errno::ENOMEM);
+        }
+    };
     let mut attr = Attribute {
         name: String::from(name),
         data: String::from(data),
@@ -305,5 +363,78 @@ mod tests {
         );
         assert!(events.is_empty());
         assert_eq!(tree.device_count(), 1); // root only: nothing linked
+    }
+
+    /// Wire for two entries sharing one name: the second `fw.add` hits
+    /// EEXIST inside `add_static` — the everyday failing ADD (driver
+    /// retry / misbehaving client), used here to reach the unwind path.
+    fn wire_dup_attr() -> Vec<u8> {
+        let mut buf = alloc::vec![0u8; 16 + 2 * 16];
+        buf[0..4].copy_from_slice(&2i32.to_le_bytes());
+        buf[4..8].copy_from_slice(&0i32.to_le_bytes()); // parent = root
+        let mut s = Vec::new();
+        let mut push = |t: &str| -> u32 {
+            let o = (buf.len() + s.len()) as u32;
+            s.extend_from_slice(t.as_bytes());
+            s.push(0);
+            o
+        };
+        let no = push("usb");
+        let a1n = push("dev_type");
+        let a1d = push("USB_DEV");
+        let a2n = push("dev_type");
+        let a2d = push("HUB");
+        buf[8..12].copy_from_slice(&no.to_le_bytes());
+        for (i, (n, d)) in [(a1n, a1d), (a2n, a2d)].iter().enumerate() {
+            let base = 16 + i * 16;
+            buf[base..base + 4].copy_from_slice(&0u32.to_le_bytes()); // STATIC
+            buf[base + 4..base + 8].copy_from_slice(&n.to_le_bytes());
+            buf[base + 8..base + 12].copy_from_slice(&d.to_le_bytes());
+        }
+        buf.extend_from_slice(&s);
+        buf
+    }
+
+    #[test]
+    fn add_failure_unwinds_and_retry_succeeds() {
+        // DM-P1-1: a failing ADD leaves zero residue — staged dir deleted,
+        // cookies released, id returned, parent refcount untouched — so the
+        // driver's retry succeeds with the same id the failed attempt had.
+        // C has no counterpart: add_inode results go unchecked
+        // (device.c:373-375) and no failure path exists to unwind.
+        let (mut tree, mut fw) = harness();
+        let (_, bad) = parse_device(&wire_dup_attr()).unwrap();
+        let mut events = Vec::new();
+        assert_eq!(
+            do_add(
+                &mut tree,
+                &mut fw,
+                DeviceId::ROOT,
+                &bad,
+                Endpoint(9),
+                &mut |ev| events.push(ev),
+            ),
+            Err(minix_types::Errno::ENOMEM)
+        );
+        assert!(events.is_empty());
+        // No orphan subtree under devices/, no member ref taken.
+        let devices_ino = tree.get(DeviceId::ROOT).unwrap().binding.unwrap().ino;
+        assert_eq!(fw.lookup(devices_ino, "usb"), Err(minix_types::Errno::ENOENT));
+        assert_eq!(tree.get(DeviceId::ROOT).unwrap().refcount, 0);
+        // The retry — the whole point of the unwind — succeeds with id 1.
+        let (_, retry) = parse_device(&wire_usb()).unwrap();
+        let id = do_add(
+            &mut tree,
+            &mut fw,
+            DeviceId::ROOT,
+            &retry,
+            Endpoint(9),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(id, DeviceId(1));
+        // Root membership is deliberately not counted (get_device's root
+        // immunity, del_device.rs — C device.c:462-463 `dev == &root_dev`).
+        assert_eq!(tree.get(DeviceId::ROOT).unwrap().refcount, 0);
     }
 }

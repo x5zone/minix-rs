@@ -113,13 +113,13 @@ devmand 用 `%s` 劈事件行（13 §2.1）——名含 ASCII 空白则路径静
 ### 4.1 模块结构
 
 ```
-os/servers/devman/src/add_device.rs — do_add + add_static（+3 测试）
+os/servers/devman/src/add_device.rs — do_add + unwind_staged + add_static（+5 测试）
 ```
 
 ### 4.2 关键不变量
 
 1. `do_add` 成功 ⟺ 树里有设备 + 框架里有目录 + 属性文件数 == STATIC 条目数 + 1（devman_id）+ 事件恰 1。
-2. 失败路径：认领期（parent 缺失/解析失败）三无残留（各 `?` 早返在任何落子之前）；落户期后失败理论上留框架残留（`fw.add` 成功、后继失败）——但后继（属性注册/事件行）对合法输入不可失败（路径 ≤111 恒进 128，算术见 04 §2.4），残留分支不可达（注释声明"与 C 同无回滚"；C 在同处直接 `panic`，Rust 的 `Err` 已是更体面的死法）。
+2. 失败路径分两段，分界线是**发布点**（`insert`）：认领期（parent 缺失/名字空白）在任何落子之前，`?` 早返零残留；认领期之后、发布点之前的一切失败——目录落户、属性注册、devman_id、甚至 `insert` 自身——走统一回滚 `unwind_staged`：递归删除暂存的框架子树（此刻每个节点引用数都是 0，个个当场回收）、注销已挂账的文件表 cookie、把刚分配的 id 还给分配器（`rollback_id`）。**发布点前零残留**是本篇的核心不变量：一次失败的 ADD（驱动重试同名注册是家常便饭）不能在密集 id 空间里凿一个洞，否则 `insert` 的 `id == len` 检查从此永假，整个服务器拒绝一切后续注册。C 没有这条路径可谈——`add_inode` 的返回值从不检查（device.c:373-375），失败即损坏；Rust 的回滚是把 A-7 的"错误传播"补全到"错误善后"。id 归还的合法性靠单线程事件循环背书：`alloc_id` 与失败点之间不可能有并发分配插进来，还回来的永远是最新那一个。
 3. `refcount == 1` 出生（C :364 同值）。
 
 ### 4.3 与 C 的差异说明
@@ -131,6 +131,7 @@ os/servers/devman/src/add_device.rs — do_add + add_static（+3 测试）
 | parent-NULL 分支 | 删除 | 类型不可能 |
 | handler 返回 int（恒 0） | `Result<DeviceId>` | A-7 |
 | malloc 失败 panic/不检查 | ENOMEM 传播 | A-7 |
+| 落户期失败即损坏（add_inode 无检查） | 发布点前统一回滚（子树删除 + cookie 注销 + id 归还） | 安全硬化（A-7 补全，DM-P1-1） |
 | 事件行超长溢出 | ENAMETOOLONG | 安全硬化 |
 | 名字含 ASCII 空白 | EINVAL（认领期，零副作用） | 新行为（OQ-3 决议：错配比失败更坏） |
 | DYNAMIC 静默跳过 | `continue` + 单测锁定 | 沿用（A-6） |
@@ -145,8 +146,9 @@ os/servers/devman/src/add_device.rs — do_add + add_static（+3 测试）
 | `add_bad_parent_is_enodev` | ENODEV + 零事件 | §2.1 第三错 |
 | `add_skips_dynamic_silently` | 仅 devman_id + 事件 1 + 无错 | §2.3 A-6 |
 | `add_whitespace_name_is_einval` | 空白名 EINVAL + 零事件 + 树仅根 | §3.5 OQ-3 |
+| `add_failure_unwinds_and_retry_succeeds` | 重复属性名触发落户失败：ENOMEM 回复 + 零事件 + 无孤儿目录 + 根引用 0 + id 归还 + 重试同 id 成功 | §4.2 不变量 2（DM-P1-1） |
 
-截至 2026-09-04：`cargo test -p minix-devman` **78 passed / 0 failed**（59 + 07 的 4 + 08 的 4 + 09 的 6——07~09 同批落地 + OQ-3 追补 1，计数见 09 §5汇总）。
+截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（78 + DM-P1-1 回归测试 1）。
 
 ---
 
