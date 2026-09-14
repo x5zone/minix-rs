@@ -1826,3 +1826,20 @@ doc 08 附录 A 落档启动位次表。
 
 **S-5 全步收官 ✅；S-6（per-CPU 化四件套，D-40/D-41/sched-1/tick-1，每件
 独立 commit）解锁。**
+
+---
+
+## 24. S-6 完成记录（2026-09-14/15）：per-CPU 化四件套（四个独立 commit）
+
+| 件 | 提交 | 内容 |
+|----|------|------|
+| D-40 ptproc per-CPU | S-6.1 | `CURRENT_PTPROC_NR` 全局原子退役 → `CpuLocal.ptproc`；身份锚 `current_cpu_id()`（x86: gs:0x10，program_gs 区域；BSP 的 GS 在 init_protection 内按拓扑 match 编程）；AP 尾补 arch_post_init parity（init_ap 后自装 ptproc=VM）；sentinel 退役 + per-CPU 隔离测试 |
+| D-41 PLATFORM 冻结 | S-6.2 | minix-types 新增 `Frozen<T>`（freeze 一次 Release / 读者 Acquire / 共享不可变 &T；无分配器依赖）；PLATFORM 迁出 AssumeSyncCell——其"任何时刻无并发访问"前提被四核上线证伪；API 形状即协议 |
+| sched-1 队列语义 | S-6.3 | 冻结 §3.5.3 决策落档：ready queue **共享 + BKL**（C 有效语义：BKL 下 per-CPU 队列表现为全局队列；Linux per-CPU runqueue 是负载均衡优化，与 BKL 模型正交）；per-CPU 调度状态 = proc_ptr；CpuLocal.scheduler 初始化未用死字段删除；debug::runqueues_ok 改查共享队列 |
+| tick-1 per-state 统计 | S-6.4 | `CpuLocal.tsc_per_state[5]`（CP_USER/NICE/SYS/INTR/IDLE，sys/sys/sched.h 序）；classify_cpu_state（endpoint/priv/NICED 三层分类，C arch_clock.c:314-340 parity）；两个 context_stop 等价位点接线；getinfo_cpu_ticks 从全零假实现转真（tsc_per_state / tsc_per_tick） |
+
+**回归（每件独立验证）**：kernel 736→738 hosted 全绿（新增 per-CPU 隔离/
+分类/累积测试）；test-smp-aps 四核 L4 每件提交后复跑 PASS。
+
+**S-6 收官 ✅；S-7（AP 主循环——smp_ap_tail 的 park 位替换为调度循环，
+BKL 前置条件已满足）解锁。**

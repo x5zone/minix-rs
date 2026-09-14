@@ -136,8 +136,8 @@ D-14（SIGKMESS 随 W-7 演进不可达）、D-24（VMSTYPE_MAP C 本身无此�
 | D-37 | `boot_lock`（smp.c:28） | 随 D-36 |
 | D-38① | exception_dispatcher::handle 需 bkl_lock（②③④ 已闭合：lib.rs 两处 + 2026-09-07 S-1 核实 resume 路径已覆盖） | S-9 |
 | D-39 | ~~x86_64 `init_ap` panic 占位~~ ✅ S-4（2026-09-14 真实现：AP 侧装载 + GS/MSR；16 字节 TSS 描述符布局 bug 同步修复——见 smp_todo §22） | S-4 ✅ |
-| D-40 | ptproc per-CPU（现由 `CURRENT_PTPROC_NR` 全局单核承担） | S-6a |
-| D-41 | `PLATFORM` AssumeSyncCell SMP 替换（Mutex/Atomic） | S-6b |
+| D-40 | ~~ptproc per-CPU（现由 `CURRENT_PTPROC_NR` 全局单核承担）~~ ✅ S-6.1（全局原子退役 → CpuLocal.ptproc；身份锚 gs:0x10） | S-6a ✅ |
+| D-41 | ~~`PLATFORM` AssumeSyncCell SMP 替换~~ ✅ S-6.2（Frozen<T> 冻结原语，minix-types；PLATFORM 已迁移） | S-6b ✅ |
 
 ### 7.2 WONTFIX 设计排除清单（有 rationale，非缺口，防重查）
 
@@ -255,10 +255,10 @@ D-58 方案 B 落地后关闭（2026-09-06）；D19-1（cause_signal 致命 SELF
 | D-37 | boot_lock | 随 D-36 |
 | D-38① | exception_dispatcher BKL | S-9 |
 | D-39 | x86_64 init_ap panic 占位 | S-4 |
-| D-40 | ptproc per-CPU（CpuLocal） | S-6a |
-| D-41 | PLATFORM SMP 容器语义 | S-6b |
-| sched-1 | per-CPU scheduler running 指针 | S-6c |
-| tick-1 | per-CPU kernel-tick 统计 | S-6d |
+| D-40 | ~~ptproc per-CPU（CpuLocal）~~ ✅ S-6.1 | S-6a ✅ |
+| D-41 | ~~PLATFORM SMP 容器语义~~ ✅ S-6.2（Frozen<T>） | S-6b ✅ |
+| sched-1 | ~~per-CPU scheduler running 指针~~ ✅ S-6.3（冻结决策：队列共享+BKL；per-CPU 只 proc_ptr） | S-6c ✅ |
+| tick-1 | ~~per-CPU kernel-tick 统计~~ ✅ S-6.4（CpuLocal.tsc_per_state 五桶 + GET_CPU_TICKS 转真） | S-6d ✅ |
 | hw-1 | ~~D-46 硬件半环（asm IRQ stub + IDT load + 入口分流）~~ ✅ S-8（2026-09-14，test-timer-irq PASS 全链实证） | S-8 ✅ |
 | hw-2 | D-48 shutdown(0)（现 halt-loop 即终态） | S-11 |
 | trap-1 | ~~trap 入口接线 kernel_call_dispatch~~ ✅ S-8（B 体 asm→kernel_call 已接；disjoint-API 重构登记为 S-6 阻塞项） | S-8 ✅ |
@@ -317,7 +317,7 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 | S-8 | ✅ asm trap stub + SYSCALL 入口（2026-09-14 收官——A/B 路径 + Win64 ABI/ISA override/LVT 屏蔽三真 bug + test-timer-irq PASS；见 smp_todo.md §21 完成记录） | S-3d ✅ |
 | S-4 | ✅ init_ap 真实现（2026-09-14——16 字节 TSS 描述符入 GDT + IST 栈 + GS 双 MSR + per-CPU SYSCALL MSR + L2 读回 PASS；x86 PIT 全局无 per-AP 时钟工作；见 smp_todo §22） | S-8 ✅（D-39 ✅） |
 | S-5 | ✅ smp_init 编排 + boot_lock（2026-09-15 全步收官——内核层 + 硬件 L4 四核全在线；含 PROTECTION/TRAP_ENTRY 驻留生命周期修复与三真 bug；见 smp_todo §23） | S-4 ✅ |
-| S-6a~d | per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（D-40/D-41/sched-1/tick-1） | S-5 |
+| S-6a~d | ✅ per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（2026-09-15 四件独立 commit；见 smp_todo §24） | S-5 ✅ |
 | S-7 | AP 主循环（与 BSP 同 BKL 所有权前置） | S-6 |
 | S-9 | 异常入口 BKL（D-38①） | S-8 |
 | S-10 | IPI 往返验证（riscv SSIE 路径） | S-7 |
