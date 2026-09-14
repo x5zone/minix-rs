@@ -61,14 +61,12 @@ pub struct IsServer<T: SefTransport, F: FkeyCtlTransport> {
     state: IsServerState,
     transport: T,
     fkey: F,
-    /// Observer registration outstanding at TTY (02).
-    fkey_mapped: bool,
 }
 
 impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
     /// Creates the server over injected transports (tests / wiring).
     pub fn new(transport: T, fkey: F) -> Self {
-        Self { state: IsServerState::new(), transport, fkey, fkey_mapped: false }
+        Self { state: IsServerState::new(), transport, fkey }
     }
 
     /// Runs SEF startup and the fresh-boot init (the boot anchor).
@@ -87,12 +85,14 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
     pub fn step(&mut self) -> LifecycleAction {
         // C: get_work() — main.c:46,121-130. Receive failure is fatal
         // (main.c:126-127 `panic`), so transport errors panic here too.
+        // The sender/type travel as locals into classify (C writes globals
+        // main.c:126-129; call_nr has no vestigial state copy — the V1
+        // review removed it as write-only).
         let (caller, call_nr) = match self.transport.receive(&mut self.state.inbox) {
             Ok(pair) => pair,
             Err(status) => panic!("sef_receive failed!: {status}"),
         };
         self.state.caller = caller;
-        self.state.call_nr = call_nr;
 
         let result = match classify(call_nr, caller) {
             DispatchAction::HandleFkey => self.handle_fkey_pressed(),
@@ -169,19 +169,14 @@ impl<T: SefTransport, F: FkeyCtlTransport> IsServer<T, F> {
     /// interim 02 list. The C function is void and this one stays void:
     /// registration failure never fails the boot — it warns through the
     /// diagnostic channel (C: dmp.c:63-65, routed as
-    /// [`SefTransport::warn_fkey_ctl`]; the 02 caller-warns invariant) and
-    /// `fkey_mapped` is left recording that no registration is outstanding.
+    /// [`SefTransport::warn_fkey_ctl`]; the 02 caller-warns invariant).
     fn request_fkey_map(&mut self, map: bool) {
         let mut keys = [FkeyId::F1; 16];
         for (slot, hook) in keys.iter_mut().zip(HOOKS.iter()) {
             *slot = hook.key;
         }
-        match map_unmap_keys(&mut self.fkey, map, &keys) {
-            Ok(()) => self.fkey_mapped = map,
-            Err(e) => {
-                self.transport.warn_fkey_ctl(e.status);
-                self.fkey_mapped = false;
-            }
+        if let Err(e) = map_unmap_keys(&mut self.fkey, map, &keys) {
+            self.transport.warn_fkey_ctl(e.status);
         }
     }
 }
@@ -214,7 +209,6 @@ impl<T: SefTransport, F: FkeyCtlTransport> SefCallbacks for IsServer<T, F> {
         // 02 seam: release the TTY observer registration. Best-effort:
         // shutdown proceeds even if the release fails (C calls it void).
         self.request_fkey_map(false);
-        self.fkey_mapped = false;
         LifecycleAction::Shutdown
     }
 }
@@ -413,7 +407,6 @@ mod tests {
         let mut s = server(Vec::new());
         assert_eq!(s.startup(), Ok(OK));
         assert_eq!(s.transport.startups, 1);
-        assert!(s.fkey_mapped);
         assert_eq!(s.fkey.calls.len(), 1);
         assert!(s.fkey.calls[0].0, "MAP=true");
     }
@@ -428,7 +421,6 @@ mod tests {
         let mut s = IsServer::new(FakeTransport::new(Vec::new()), fk);
         assert_eq!(s.startup(), Ok(OK));
         assert_eq!(s.transport.ctl_warnings, [minix_types::EPERM]);
-        assert!(!s.fkey_mapped, "no registration outstanding");
         assert_eq!(s.fkey.calls.len(), 1, "exactly one MAP attempt");
     }
 
@@ -442,6 +434,9 @@ mod tests {
     fn test_signal_term_requests_shutdown() {
         let mut s = server(Vec::new());
         assert_eq!(s.signal_handler(SIGTERM), LifecycleAction::Shutdown);
-        assert!(!s.fkey_mapped);
+        // C: TERM unmaps before exiting (main.c:113) — observable as the
+        // UNMAP request reaching the fkey transport.
+        assert_eq!(s.fkey.calls.len(), 1, "exactly one release attempt");
+        assert!(!s.fkey.calls[0].0, "UNMAP, not MAP");
     }
 }

@@ -19,7 +19,7 @@
 | P1 | V1-P1-1 | fkey 注册失败告警被吞（违反 02 §4.3 不变量 2 + 偏离 C dmp.c:63-65） | ✅ 已修复 2026-09-15（Fix #1，§8） |
 | P1 | V1-P1-2 | 取数五通道 trait 无数据出口——run_dump 填体的前置设计缺口（含 A-6 输出通道选型） | 开放 |
 | P2 | V1-P2-1 | `minix-sys` 死依赖（声明但全 crate 零引用） | ✅ 已修复 2026-09-15（Fix #2，§8） |
-| P2 | V1-P2-2 | `fkey_mapped` 与 `state.call_nr` 只写不读（死状态，C 无对应物） | 开放 |
+| P2 | V1-P2-2 | `fkey_mapped` 与 `state.call_nr` 只写不读（死状态，C 无对应物） | ✅ 已修复 2026-09-15（Fix #3，§8） |
 | P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | 开放 |
 | P3 | V1-P3-2 | `request_fkey_map` 返回 `Result` 但两臂皆 `Ok`（01 时代 ENOSYS 桩的类型遗迹；随 P1-1 同批修） | ✅ 已修复 2026-09-15（Fix #1，§8） |
 | P3 | V1-P3-3 | 00/99 篇 pending + `.design/` 三快照缺失（Gate H.1/H.6 FAIL×2）；99 收口时补 `DIAG_BUF_SIZE`/`_SYSTEM` 排除标注 | 开放 |
@@ -91,7 +91,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**：删除该行，E-ISWIRE 接线时按实际消费再加回（fix-guard 单条修复，删后 `cargo test -p minix-is` 对照基线 86 passed）。否决「保留作 forward reference 锚」：forward reference 由 main.rs:19-23 注释承担，依赖清单不该表达意图。
 **验证**：修后 `rg -n "minix-sys" os/servers/is/Cargo.toml` 零命中；`cargo test -p minix-is` 86 passed。
 
-### V1-P2-2 只写不读的两个状态位：`fkey_mapped` 与 `state.call_nr`
+### V1-P2-2 只写不读的两个状态位：`fkey_mapped` 与 `state.call_nr` ✅ 已修复 2026-09-15（Fix #3，见 §8）
 **问题**：`IsServer.fkey_mapped`（`os/servers/is/src/lib.rs:65`）生产代码只写不读（:179/:183/:217 三处写，读仅测试 :405/:420）；`IsServerState.call_nr`（`os/servers/is/src/state.rs:30`）同病（lib.rs:95 写入后，:97/:105 分类用的都是局部变量）。C 没有这两个状态的对应物——C 的 `callnr` 全局就是被主循环读的，Rust 侧分类改用局部量后，state 字段成了遗迹；`fkey_mapped` 则是 C 全然没有的 Rust 发明（01 篇 §2.8 的「先 unmap 后 exit」顺序由 `signal_handler` 的语句序保证，不需要标志位）。
 **影响**：读代码的人会以为存在「注册在案」的语义消费（例如防止重复注册或 shutdown 判断），实际没有任何行为依赖——死状态比没有状态更误导。
 **建议**：首选：删除两处（`fkey_mapped` 连带 lib.rs:71/:179/:183/:217 与测试 :405/:420 的断言改为断言 `fkey.calls` 的调用记录——`test_signal_term_requests_shutdown` 改查 FakeFkey 收到过 UNMAP 请求，行为等价且更贴 C 锚点）。次选：若想保留注册可见性，让 `step`/`signal_handler` 消费它（如 TERM 时 `if self.fkey_mapped` 才发 unmap）——否决：这是无 C 依据的行为发明，01 篇 §2.8 的 C 语义是无条件 unmap。
@@ -219,3 +219,11 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **测试**：`cargo test -p minix-is` **87 passed / 0 failed**（基线不动）；`os/Cargo.lock` 中 minix-is 依赖表已只剩 minix-types（实测一致）。
 **Verified**：`rg -n "minix-sys = " os/servers/is/Cargo.toml` 零命中；src/ 内 `minix_sys::` 代码引用本就为零（注释里的 forward reference 保留）。
 **Docs**：无需正文同步——05~10 篇「producer 对齐待办」讲的是布局契约，与该依赖无涉；E-ISWIRE 的解锁后工作已写明「按实际消费加回」。
+
+### ✅ Fix #3: V1-P2-2 — 删除只写不读的 `fkey_mapped` 与 `state.call_nr`
+
+**设计对比**：首选全删（读代码的人会以为存在"注册在案"的语义消费，死状态比没有状态更误导；C 无对应物）；否决让 `step`/`signal_handler` 消费标志位（如 TERM 时有注册才 unmap）——这是无 C 依据的行为发明，01 §2.8 的 C 语义是无条件 unmap。TERM 测试的可观察面改为断言 UNMAP 请求到达 fkey transport（比标志位更贴 C 锚点 main.c:113）。
+**Files**：`os/servers/is/src/lib.rs`（删字段 + 三处写点；startup/TERM/failure 三测试改为断言 transport 调用记录）、`os/servers/is/src/state.rs`（删 `call_nr` 字段 + 模块文档说明第四个 C 全局为何无对应物 + 测试改断言 inbox/reply_buf 初值）。
+**测试**：`cargo test -p minix-is` **87 passed / 0 failed**（基线不动——纯删除 + 断言迁移）；clippy 本体 0 告警。
+**Verified**：`rg -n "fkey_mapped" os/servers/is/src/` 零命中；`rg -n "call_nr" os/servers/is/src/state.rs` 仅剩文档注释里的 C 对照说明；`self.state.caller` 保留（回复门 lib.rs 有读方，非死状态——编辑中曾误删其写入点，回归 diff 复核时发现并当场修正，在此诚实记录）。
+**Docs**：01 篇 §3 D1 结构体代码块删 `call_nr` 行 + 增 V1 轮更新注记；§4.2 IsServerState 签名行同步。

@@ -13,9 +13,11 @@ use minix_types::{Endpoint, Message};
 
 /// The IS server's complete mutable state.
 ///
-/// C: `m_in`/`m_out`/`who_e`/`callnr` — main.c:14-17. Single-threaded
-/// event loop (user-space server model): `!Send` is correct, no
-/// `Rc`/`RefCell` needed — nothing is shared.
+/// C: `m_in`/`m_out`/`who_e` — main.c:15-17 (the fourth global `callnr`
+/// has no counterpart here: the rewrite passes the received type as a
+/// local straight into the classifier, so a state field would be
+/// write-only). Single-threaded event loop (user-space server model):
+/// `!Send` is correct, no `Rc`/`RefCell` needed — nothing is shared.
 #[derive(Debug, Default)]
 pub struct IsServerState {
     /// Inbox. C: `m_in` — main.c:15.
@@ -26,9 +28,6 @@ pub struct IsServerState {
     /// Sender of the message currently being handled.
     /// C: `who_e` — main.c:17.
     pub caller: Endpoint,
-    /// Type of the message currently being handled.
-    /// C: `callnr` — main.c:17.
-    pub call_nr: i32,
 }
 
 impl IsServerState {
@@ -45,7 +44,8 @@ mod tests {
     #[test]
     fn test_state_starts_blank() {
         let s = IsServerState::new();
-        assert_eq!(s.call_nr, 0);
         assert_eq!(s.caller, Endpoint::default());
+        assert_eq!(s.inbox.m_type, 0);
+        assert_eq!(s.reply_buf.m_type, 0);
     }
 }

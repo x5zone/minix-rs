@@ -429,9 +429,12 @@ pub struct IsServerState {
     pub inbox: Message,
     pub reply_buf: Message,
     pub caller: Endpoint,
-    pub call_nr: i32,
 }
 ```
+
+> **V1 审查轮更新（2026-09-15）**：结构体没有 `call_nr` 字段——C 的第四个
+> 全局 `callnr` 由主循环读，Rust 侧分类直接消费 `receive` 返回的局部量，
+> 落进结构体只会是只写不读的死状态（审查 V1-P2-2 删除）。
 
 `get_work`/`reply` 变成 `&mut self` 方法。选择的理由：IS 单线程，无共享，
 `Rc/RefCell` 是多余的运行时成本，`static mut` 是不可证的 unsafe——plain
@@ -573,7 +576,7 @@ os/servers/is/src/
 
 ```rust
 // state.rs
-pub struct IsServerState { pub inbox: Message, pub reply_buf: Message, pub caller: Endpoint, pub call_nr: i32 }
+pub struct IsServerState { pub inbox: Message, pub reply_buf: Message, pub caller: Endpoint }
 impl IsServerState { pub fn new() -> Self; }
 
 // dispatch.rs
