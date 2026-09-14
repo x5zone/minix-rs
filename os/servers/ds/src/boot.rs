@@ -88,7 +88,7 @@ fn copy_label(lane: &mut [u8; DS_MAX_KEYLEN], label: &[u8; RS_LABEL_LEN]) {
 ///
 /// The notify ring (`update_subscribers(dsp, 1)`, `store.c:246`) is NOT
 /// rung here: the ring lives in 10 and is not yet built — the hook stands
-/// documented (§4.3) instead of wired hollow (D5).
+/// documented (06-ds-boot-mapping.md D4) instead of wired hollow (D5).
 pub fn map_service(
     store: &mut DsStore,
     label: &[u8; RS_LABEL_LEN],

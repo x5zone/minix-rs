@@ -3,7 +3,7 @@
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
 > **范围**: `notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
 > **目标**: 以 **DS server 启动顺序为主线**定义 DS 全部文档；发布/订阅数据流为次主线；最终覆盖 Minix3 DS server（`servers/ds/`，2 个 .c，811 行）+ 协议面（`com.h`/`ipc.h`/`ds.h`/`sysinfo.h`）+ 客户端契约（`libsys/ds.c`，219 行）全部语义，支撑 DS server 的彻底 Rust 重写
-> **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` 与 `03-stage-rs/`（同流程先例）、`minix3/minix/servers/ds/`（ground truth）、`os/servers/ds/`（Rust 实现，当前为 stub）
+> **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` 与 `03-stage-rs/`（同流程先例）、`minix3/minix/servers/ds/`（ground truth）、`os/servers/ds/`（Rust 实现，判定层 18 文件已成形——2026-09-15 状态，见 07-stage-ds/todo.md）
 
 ---
 
@@ -162,7 +162,7 @@ DS 的全部工作本质是**发布/订阅数据流**。次主线以"一条数�
 
 ### 3.5 测试基线
 
-> `os/servers/ds/` 当前为 stub（`lib.rs: pub fn init() {}`，`main.rs: minix_ds::init(); loop {}`）。`cargo check -p minix-ds` 通过（2026-08-16，0 errors / 28 pre-existing warnings 来自 `minix-sys` 依赖），**无任何测试**。每篇文档 §测试 的"测试总数"声明以此为基线。
+> 2026-09-15 复测基线（2026-08-16 的"stub、无任何测试"描述已过时）：`os/servers/ds/` 判定层 18 文件约 3600 行，`cargo test -p minix-ds` **99 passed / 0 failed**，clippy 本体 0 条，fmt 0 diff（07-stage-ds/todo.md §0 为权威口径）。每篇文档 §测试 的"测试总数"声明以此为对照。
 
 ---
 
@@ -172,16 +172,16 @@ DS 的全部工作本质是**发布/订阅数据流**。次主线以"一条数�
 
 | # | ARCH 项 | Minix3 现状 | minix-rs 演进 | 涉及新文档 | 状态 |
 |---|---------|------------|--------------|-----------|------|
-| A-1 | **DS 消息类型** | `mess_ds_req`/`mess_ds_reply`/`union ds_val`（`ipc.h`，字段全 32 位，56 字节 payload 内可容纳，布局无歧义） | `minix-types` **尚无 DsReq/DsReply 类型**，需新增（消息字段全 i32/u32，64 位下布局兼容） | 02 | **缺口**：minix-types 新增类型 |
-| A-2 | **正则引擎** | POSIX `regcomp`/`regexec`（`store.c:456-534`，`REG_EXTENDED` + `^...$` 锚定） | Rust `no_std` 无 POSIX regex：决策（a）`regex` crate（alloc feature）；（b）自研最小匹配器（仅需完整锚定匹配）；（c）defer | 10 | **待决策**（行为契约：锚定语义必须保留） |
+| A-1 | **DS 消息类型** | `mess_ds_req`/`mess_ds_reply`/`union ds_val`（`ipc.h`，字段全 32 位，56 字节 payload 内可容纳，布局无歧义） | **已解决**（2026-09-15 复核）：`MessDsReq`/`MessDsReply` 在 `minix-types/src/ipc/message.rs`（repr(C) + 56B 断言），常量与 `DsFlags` 在 `types/com.rs`。余部：`SI_DATA_STORE`/`NOTIFY_MESSAGE` 两常量 → edge E-MINTYPES-SYS | 02 | 已解决（余部挂 E-MINTYPES-SYS） |
+| A-2 | **正则引擎** | POSIX `regcomp`/`regexec`（`store.c:456-534`，`REG_EXTENDED` + `^...$` 锚定） | **已解决**（2026-09-15，方案 b）：自研锚定 ERE 引擎 `pattern.rs::EreMatcher`（零分配回溯 + 步数预算，全匹配语义内建锚定；`check` 对齐 `regcomp` 拒绝面） | 10 | 已解决（`[ARCH A-2]` 三处标注在 pattern.rs/subscription.rs/10 篇） |
 | A-3 | **动态内存** | `malloc`/`free`（STR/MEM 数据缓冲，`store.c:330-350,608-609`） | `no_std` 分配策略：全局分配器或专用 `DsAllocator`（cap 上限，`ds_store` 内联缓冲 or 堆） | 07/09/03 | 待设计 |
-| A-4 | **静态数组表** | `ds_store[NR_DS_KEYS]`/`ds_subs[NR_DS_SUBS]` 静态数组 + 线性扫描 | Rust 类型化表：`[Option<DataEntry>; NR_DS_KEYS]`（或 free-list 索引），`EntryIndex<Data>` newtype 索引 | 03/04 | 待设计 |
-| A-5 | **订阅位图** | `bitchunk_t old_subs[BITMAP_CHUNKS(NR_DS_KEYS)]`（`store.h`，`SET_BIT`/`UNSET_BIT`/`GET_BIT`） | `minix-types::bitmap`（已存在）固定容量位图；`NR_DS_KEYS=128` → 2×u64 | 03/10 | 可复用 |
+| A-4 | **静态数组表** | `ds_store[NR_DS_KEYS]`/`ds_subs[NR_DS_SUBS]` 静态数组 + 线性扫描 | **已解决**：`DsStore`/`DsSubs` = `[Option<_>; N]` + `EntrySlot`/`SubSlot` newtype 索引（`store.rs`/`subscription.rs`/`slots.rs`） | 03/04 | 已解决 |
+| A-5 | **订阅位图** | `bitchunk_t old_subs[BITMAP_CHUNKS(NR_DS_KEYS)]`（`store.h`，`SET_BIT`/`UNSET_BIT`/`GET_BIT`） | **已解决**：`minix-types::Bitmap` 复用（`subscription.rs`，`NR_DS_KEYS=128` → 2×u64） | 03/10 | 已解决 |
 | A-6 | **SEF / Live Update 状态转移** | `sef_llvm_ds_st_init()` → weak `_magic_ds_st_init`（`libmagicrt/magic_ds.c`）：magic 插桩**直接遍历 DS 静态内存**（`ds_store`/`ds_subs`），`dsi_u` union 按类型分派转移（U32/LABEL identity、STR/MEM 类型转换）；`sef_setcb_init_restart(SEF_CB_INIT_RESTART_STATEFUL)` 重启保留状态 | minix-rs 无 LLVM magic 插桩：状态转移改为**显式序列化/反序列化**（参照 `03-stage-rs` 的 `state_data.rs`/`sef.rs`）；STATEFUL 重启语义 = 数据结构不重置 | 01/06/12 | **缺口**：需显式转移设计（先例见 RS） |
 | A-7 | **死 API 排除契约** | `do_snapshot`（proto.h:16，**无定义**）；`DS_SNAPSHOT`（com.h:505，主循环无 case → default EINVAL）；`ds_publish_map`/`ds_snapshot_map`/`ds_retrieve_map`/`ds_delete_map`（ds.h:53-58，**无实现**）；`DSF_PRIV_SNAPSHOT`（=0x004，别名 DSF_PRIV_OVERWRITE，无使用） | 不实现，标注排除 + 语义契约（若未来需要 snapshot，需重开设计） | 01/02/12 | 排除（grep 实证，见 §5.4） |
-| A-8 | **客户端库归属** | `libsys/ds.c` 全部 `ds_*` API（`_taskcall(DS_PROC_NR, ...)` + grant） | `minix-sys` 新增 DS 客户端模块（当前 `minix-sys` 是 stub，`sendrec`/`notify` 为 `todo!()`）；或先交付纯函数层（消息构造/解析） | 12 | 待实施（依赖 IPC 落地） |
+| A-8 | **客户端库归属** | `libsys/ds.c` 全部 `ds_*` API（`_taskcall(DS_PROC_NR, ...)` + grant） | 服务器侧契约镜像已就位（`ds/src/client.rs`：grant 尺寸/钉尾/flags 组装/CheckReply）；**minix-sys 仍缺 ds.rs 传输半**（minix-sys 本体已非 stub，13 模块 6284 行；ds crate 的 minix-sys 依赖现为零引用死依赖） | 12 | 待实施 → **edge E-DSWIRE**（2026-09-15） |
 | A-9 | **错误码** | errno 全集：`EPERM`/`EINVAL`/`ESRCH`/`ENOENT`/`EEXIST`/`EAGAIN`/`ENOMEM`/`EDONTREPLY`（+ `EFATAL` panic 路径） | `minix_types::Errno`（已存在，含 `EDONTREPLY`），禁止自创错误码 | 各 handler 篇 + 99 | 已具备 |
-| A-10 | **SI_DATA_STORE 布局 ABI** | `do_getsysinfo` 原样拷贝 `ds_store`（`sizeof(struct data_store)*NR_DS_KEYS`，x86-64 = 192B×128）；**IS `dmp_ds.c` 按 `store.h` 布局直接解释**（`servers/is/dmp_ds.c`，`getsysinfo(DS_PROC_NR, SI_DATA_STORE, ...)`） | Rust 侧若保持 `#[repr(C)]` 等价布局则可兼容 IS 不变；否则**声明 ARCH 偏离 + IS 侧同步改造**（`dmp_ds.c` 是 debug 输出，可随 IS 重写演进） | 03/11 | **待决策**（兼容 vs 偏离，两方案都要三处一致标注） |
+| A-10 | **SI_DATA_STORE 布局 ABI** | `do_getsysinfo` 原样拷贝 `ds_store`（`sizeof(struct data_store)*NR_DS_KEYS`，x86-64 = 192B×128）；**IS `dmp_ds.c` 按 `store.h` 布局直接解释**（`servers/is/dmp_ds.c`，`getsysinfo(DS_PROC_NR, SI_DATA_STORE, ...)`） | **已解决（兼容案）**：`DataEntry` `#[repr(C)]` + 192B + key/owner/body 三偏移断言（`store.rs` test_entry_layout），IS 消费者契约不变 | 03/11 | 已解决（兼容案） |
 
 ---
 
@@ -329,4 +329,4 @@ sed -n '44,64p' minix3/minix/kernel/table.c + sed -n '196,205p;255,270p' minix3/
 - `../02-stage-vm/plan.md` 与 `../03-stage-rs/plan.md` — 同流程先例（03-stage-rs 亦为从零定义文档集）
 - `minix3/minix/servers/ds/` — C 源码（ground truth）
 - `minix3/minix/lib/libsys/ds.c` — 客户端契约（libsys）
-- `os/servers/ds/` — Rust 实现（当前 stub）
+- `os/servers/ds/` — Rust 实现（判定层已成形，transport 接线中）

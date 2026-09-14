@@ -20,12 +20,12 @@
 | P1 | P1-3 | **删除通知半丢失**：apply_delete 绕过通知环且不产出补发素材，C 的删除唤醒契约断 | ✅ 已修复 2026-09-15（Fix #3，见 §9） |
 | P1 | P1-4 | **transport + handler 粘合 + grant/datacopy/notify 接线**（stage 内 seam，通电挂 E-DSWIRE） | open |
 | P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | ✅ 已修复 2026-09-15（Fix #4，见 §9） |
-| P2 | P2-1 | plan.md staleness 批次（A-1 已解决、A-8 半过时、§3.5 基线失真） | open |
+| P2 | P2-1 | plan.md staleness 批次（A-1 已解决、A-8 半过时、§3.5 基线失真） | ✅ 已修复 2026-09-15（Fix #6，见 §9） |
 | P2 | P2-2 | A-3 堆策略决策（随 P1-4(c) transport 设计一并定） | open |
 | P2 | P2-3 | A-6 SEF/Live-Update 显式状态迁移设计 | open |
 | P3 | P3-1 | 卫生批次：fmt 22 处（13 文件）+ clippy 2 条 + entry_matches 死参数 | ✅ 已修复 2026-09-15（Fix #2 死参数 + Fix #5，见 §9） |
 | P3 | P3-2 | C 源 bug 标注（模式 78）：label 级联不 free 堆，Rust 超集修复未标注 | ✅ 已修复 2026-09-15（Fix #3 顺带，见 §9） |
-| P3 | P3-3 | boot.rs:90 的「§4.3」引用漂移（06 篇钩子实际在 D4） | open |
+| P3 | P3-3 | boot.rs:90 的「§4.3」引用漂移（06 篇钩子实际在 D4） | ✅ 已修复 2026-09-15（Fix #6，见 §9） |
 
 验证命令基线（2026-09-14 实测，后续修复轮以此为对照）：
 - `cargo test -p minix-ds`：**81 passed / 0 failed**（源码声明 89 个 `#[test]`，差额 8 = 孤儿 retrieve.rs，P1-1 证据）
@@ -302,4 +302,14 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 
 - **File**: 13 文件 fmt 应用（22 处 diff → 0）+ `slots.rs:51/:81` 生命周期省略（`get<'a>` → `get`）
 - **Verified**: `cargo fmt --check -p minix-ds` **0 diff**；`cargo clippy -p minix-ds --all-targets` DS 侧 **0 条**；99 passed 基线不动。entry_matches 死参数已随 Fix #2 完成，本条目三件全闭。
+
+### ✅ Fix #6: P2-1 + P3-3 — plan.md staleness 入档批 + boot.rs 引用漂移（2026-09-15）
+
+- **File**: `notes/rewrite/fork-syscall-rewrite/07-stage-ds/plan.md`（§对照、§3.5、§4 A-1/A-2/A-4/A-5/A-8/A-10 六行、§8）+ `os/servers/ds/src/boot.rs:91`
+- **Before/After**：
+  - §3.5 基线「当前为 stub……无任何测试」→ 2026-09-15 复测口径（18 文件 / 99 passed / clippy 0 / fmt 0，权威指针指 todo §0）；
+  - A-1 → **已解决**（message.rs 镜像 + com.rs 常量；余部 SI_DATA_STORE/NOTIFY_MESSAGE 挂 E-MINTYPES-SYS）；A-2 → **已解决**（方案 b：`pattern.rs::EreMatcher`，[ARCH] 三处）；A-4/A-5 → **已解决**（Option 表 + newtype 槽 / Bitmap 复用）；A-8 → 描述修正（minix-sys 非 stub、缺 ds.rs、死依赖）+ 归属改 **edge E-DSWIRE**；A-10 → **已解决（兼容案）**；§对照与 §8 的「当前 stub」字样清除；
+  - A-3（待设计 → P2-2）与 A-6（缺口 → P2-3）维持 open，处置指针已在本 todo §2；
+  - boot.rs:91 的「§4.3」→「06-ds-boot-mapping.md D4」（P3-3）。
+- **Verified**: `rg -n "当前为 stub|尚无 DsReq" plan.md` 零命中；`rg -n "§4.3" os/servers/ds/src/boot.rs` 零命中；99 passed（注释级改动）。
 
