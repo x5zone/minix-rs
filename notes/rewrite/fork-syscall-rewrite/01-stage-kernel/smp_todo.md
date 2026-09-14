@@ -815,6 +815,18 @@ GDT 静态内容在产物中全部正确。**剩余谜团**：mb64 段内（F �
 下的位置（mb_load_end 覆盖验证——rodata 若被 [load_end,bss_end) 清零覆盖，字符串即
 0xFF——**本轮 0xFF 风暴的最优解释**：panic 位置字符串被清零覆盖，应把 mb_load_end
 对齐全文件背书内容后复测）；③ 排查 -smp 2 下 CPU1 是否真的静默（monitor `info cpus`）。
+**→ 第五轮（决定性突破）**：`-d int` 抓到 **AP 的完整异常现场**——
+`v=0d e=0010` #GP，**CS=0500 base 0x5000（我们的向量页！）EIP=0x21**，EAX=1，
+CR0=0x11（实模式 ✓）、SS/DS=0 ✓——**CPU1 已被 INIT-SIPI 唤醒并在 PA 0x5000
+执行阶梯 blob**：SIPI 交付、向量页选址、实模式进入全部机制性工作 ✓✓✓
+（此前 4 轮 OVMF 路线的"AP 无反应"彻底解决——multiboot 直启路线判断正确）。
+**剩余 = 一个 #GP(0x10)**：EIP 0x21 = 阶梯内 lgdt/FJ16 后沿，错误码 0x10 =
+阶梯 GDT 的 code32 描述符（GDT+0x10）引用失败——即 AP 视角的 GDT（GDTR 由
+0x6030 的 desc 装载，base 应为 0x6110）内容错误或未生效。**下次续起**：
+① 16 位反汇编 built blob @0x5000-0x5040 核对指令流与 EIP 0x21 对应关系；
+② 阶梯内加「GDTR 回读」（lgdt 前 sgdt 到串口/memory，验证 0x6030 的 desc
+  内容从 AP 视角可读）；③ 核对 fill_bootstrap 的 desc/table 写入值与
+  0x6110-0x6137 的运行期内容（BSP 侧 write_hex 回读）。
 **→ 排除实验（同轮）**：header_addr/mb.ld 基址改回 0x100000 组合后症状**完全不变**
 （同卡 mb64 段、同 FF 风暴）——死亡点对装载基址**不变式**，排除"整幅镜像错位"假设，
 收窄至 far jump（EA / CS=0x08 装载 / 64 位入口）本身。已验证：mb_gdt 内容正确

@@ -131,7 +131,7 @@ core::arch::global_asm!(
     ".code32",
     ".globl _start",
     "_start:",
-    "  cli\n  mov dx, 0x3f8\n  mov al, 0x41\n  out dx, al",
+    "  cli\n  mov byte ptr [0x6F00], 0x81",
     "  mov esp, offset mb_stack_top",
     // 恒等页表：PML4[0]=PDPT|3；PDPT[0..4]=PD0..3|0x83；
     // 每个 PD 512 项 2MB 页（低 dword = 基址|0x83，高 dword 已清零）。
@@ -181,12 +181,18 @@ core::arch::global_asm!(
     "  mov [edi], eax",
     "  add eax, 0x200000",
     "  add edi, 8",
-    "  loop 4b\n  mov dx, 0x3f8\n  mov al, 0x42\n  out dx, al",
+    "  loop 4b\n  mov byte ptr [0x6F01], 0x82",
     // GDT（含 64 位码段）→ PAE → EFER.LME → PG → 远跳 64 位。
-    "  lgdt [mb_gdt_desc]\n  mov dx, 0x3f8\n  mov al, 0x43\n  out dx, al",
+    "  lgdt [mb_gdt_desc]\n  mov byte ptr [0x6F02], 0x83",
     "  mov eax, cr4",
     "  or eax, 0x20",
-    "  mov cr4, eax\n  mov dx, 0x3f8\n  mov al, 0x44\n  out dx, al",
+    "  mov cr4, eax\n  mov byte ptr [0x6F03], 0x84",
+    "  mov eax, offset MB_PML4",
+    "  mov cr3, eax",
+    "  mov ecx, 0xC0000080",
+    "  rdmsr",
+    "  or eax, 0x100",
+    "  wrmsr",
     "  mov eax, offset MB_PML4",
     "  mov cr3, eax",
     "  mov ecx, 0xC0000080",
@@ -194,27 +200,8 @@ core::arch::global_asm!(
     "  or eax, 0x100",
     "  wrmsr",
     "  mov eax, cr0",
-    "  or eax, 0x80000000",
-    "  mov eax, offset MB_PML4",
-    "  mov dx, 0x3f8\n  mov al, 0x61\n  out dx, al",
-    "  mov cr3, eax",
-    "  mov dx, 0x3f8\n  mov al, 0x62\n  out dx, al",
-    "  mov ecx, 0xC0000080",
-    "  mov dx, 0x3f8\n  mov al, 0x63\n  out dx, al",
-    "  rdmsr",
-    "  mov dx, 0x3f8\n  mov al, 0x64\n  out dx, al",
-    "  or eax, 0x100",
-    "  wrmsr",
-    "  mov dx, 0x3f8\n  mov al, 0x65\n  out dx, al",
-    "  mov eax, cr0",
-    "  mov dx, 0x3f8\n  mov al, 0x66\n  out dx, al",
     "  or eax, 0x80000000",
     "  mov cr0, eax",
-    "  mov dx, 0x3f8\n  mov al, 0x67\n  out dx, al",
-    // PG 前回读：PML4[0] / PDPT[0] / PD0[0] 的低 3 字节（诊断 S-3d）。
-    "  mov al, [MB_PML4]\n  mov dx, 0x3f8\n  out dx, al\n  mov al, [MB_PML4+1]\n  out dx, al\n  mov al, [MB_PML4+2]\n  out dx, al",
-    "  mov al, [MB_PDPT]\n  mov dx, 0x3f8\n  out dx, al\n  mov al, [MB_PDPT+1]\n  out dx, al\n  mov al, [MB_PDPT+2]\n  out dx, al",
-    "  mov al, [MB_PD0]\n  mov dx, 0x3f8\n  out dx, al\n  mov al, [MB_PD0+1]\n  out dx, al\n  mov al, [MB_PD0+2]\n  out dx, al",
     "  .byte 0xEA",
     "  .long mb64",
     "  .word 0x08",
@@ -262,11 +249,15 @@ extern "C" fn rust_main64() -> ! {
         kernel_stack_top_va: (core::ptr::addr_of!(AP_STACK) as usize as u64) + 0x10000,
         rust_entry_va: ap_entry as u64,
     };
+    early_console::write_str("STEP4\n");
     unsafe { minix_arch::x86_64::ap_early_entry::fill_bootstrap(0x6000, &record); }
+    early_console::write_str("STEP5\n");
 
-    // 清级标，发 INIT-SIPI（SDM 延时在 boot_ap 内，tsc_delay）。
+    // 清级标，发 INIT-SIPI。
     unsafe { core::ptr::write_volatile(0x6F00 as *mut u8, 0); }
+    early_console::write_str("STEP6\n");
     <X86_64SmpArch as SmpArch>::boot_ap(1, 0x5000);
+    early_console::write_str("STEP7 (SIPI sent)\n");
 
     // 观察握手。
     let mut spins: u64 = 0;
