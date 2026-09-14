@@ -3668,7 +3668,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
 
-        assert_eq!(super::pick_and_bill(&mut table, &mut smp, &priv_table), None,
+        assert_eq!(super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP), None,
             "empty queues → None (caller falls into idle)");
     }
 
@@ -3758,7 +3758,7 @@ mod tests {
         let bsp = smp.bsp_cpu_id();
 
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        super::idle(&section, &mut table, &mut smp, &priv_table);
+        super::idle(&section, &mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP);
 
         let local = smp.cpu_local(bsp).unwrap();
         assert_eq!(local.proc_ptr, Some(proc_nr::IDLE),

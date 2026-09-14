@@ -88,6 +88,16 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     }
 
     // Exception / user soft-int gate → arch-generic dispatcher.
+    //
+    // S-9 (D-38①) — BKL ownership at the exception entry: the trap path
+    // INHERITS the interrupted context's BKL ownership (C parity: trap
+    // handlers run with the BKL owned by the interrupted context; trap.c
+    // takes no lock — acquiring here would deadlock on the non-reentrant
+    // CAS lock for the normal kernel-origin case). `assume_held` turns that
+    // invariant into a debug-asserted witness; the user-origin acquire
+    // (C: trap entry BKL_LOCK from ring 3) becomes reachable with S-6/S-7
+    // user frames and threads its own witness then.
+    let _section = unsafe { crate::smp::BklSection::assume_held() };
     let mut exc = exception_frame_of(frame);
     let is_user = X86_64ExceptionFrame::is_user_mode(&exc);
     let outcome = ExceptionDispatcher::<X86_64ExceptionFrame>::handle(
@@ -245,6 +255,23 @@ mod tests {
         );
         assert!(X86_64ExceptionFrame::is_user_mode(&exc));
         assert!(X86_64ExceptionFrame::is_write_fault(&exc));
+    }
+
+    #[test]
+    fn spurious_vector_dispatch_completes() {
+        // S-9 (D-38①): the LAPIC spurious vector (0xFF) returns WITHOUT
+        // dispatching and without panicking — exercises the full entry path
+        // (asm→thunk contract aside, the body's early-return arm) hosted,
+        // including the BKL witness acquisition.
+        let mut frame = TrapFrame {
+            rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
+            r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            vector: 0xFF,
+            errcode: 0,
+            rip: 0, cs: 0x08, rflags: 0, rsp: 0, ss: 0,
+        };
+        // SAFETY: hosted test body; the frame is a local.
+        unsafe { x86_trap_dispatch_body(&mut frame) };
     }
 
     #[test]
