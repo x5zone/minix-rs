@@ -1605,3 +1605,16 @@ BSP 侧超时打印 0x6F40/0x6F48 的 12 字节。**判读**：lgdt 前 GDTR 若
 若 lgdt 后 GDTR ≠ {0x27, 0x6110} → lgdt 编码/路径错。**另注**：本会话已给
 rust_main64 加 STEP1-7 差分 + R64-START 最早打印 + panic handler 改行号打印
 （file() 坏指针已绕开），BOOT_ACK 握手验证基础设施就绪。
+
+**→ 第九轮（GDT 回读实测定案 + 精确病灶）**：BSP 侧串口回读（identity VA=PA ✓
+单 CPU 无竞态）实证：
+- **desc@0x6030 的 base 字段 = 0x00000000（应为 0x6110）**——GDTR.base = 0 →
+  far jump 的 CS 0x10 装载读取 PA 0x10（multiboot PHDR 字节，not-present）→
+  **#GP(0x10) ✓✓✓ 全链闭合**。
+- C32 回读（读错到 0x6130 = data 表项）显示 data 表项内容正确在位 ✓。
+- **fill_bootstrap 的 desc base 字节写入（write_volatile u8 ×8 @0x6032-39）
+  未生效或被清**——而同函数的 limit u16 写（0x6030）生效 ✓。**下次续起
+  （第一优先）**：① 读 fill_bootstrap 当前实现的 base 字节写入代码（fix-guard
+  读 ±5 行）——**疑点：写入地址偏移或 u16/u8 交错覆盖**；② 修后 AP 阶梯应
+  直接通过 FJ16 进 32/64 位，AP-alive 转绿；③ 同步修 smp_todo 的
+  C32@6120 回读地址笔误（0x6110+0x20 → 应为 0x6110+0x10）。
