@@ -18,7 +18,7 @@
 | P0 | （无） | 三向矩阵无缺口，排除项核对通过（两处未标注除外，见 P3-3） | — |
 | P1 | V1-P1-1 | fkey 注册失败告警被吞（违反 02 §4.3 不变量 2 + 偏离 C dmp.c:63-65） | ✅ 已修复 2026-09-15（Fix #1，§8） |
 | P1 | V1-P1-2 | 取数五通道 trait 无数据出口——run_dump 填体的前置设计缺口（含 A-6 输出通道选型） | 开放 |
-| P2 | V1-P2-1 | `minix-sys` 死依赖（声明但全 crate 零引用） | 开放 |
+| P2 | V1-P2-1 | `minix-sys` 死依赖（声明但全 crate 零引用） | ✅ 已修复 2026-09-15（Fix #2，§8） |
 | P2 | V1-P2-2 | `fkey_mapped` 与 `state.call_nr` 只写不读（死状态，C 无对应物） | 开放 |
 | P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | 开放 |
 | P3 | V1-P3-2 | `request_fkey_map` 返回 `Result` 但两臂皆 `Ok`（01 时代 ENOSYS 桩的类型遗迹；随 P1-1 同批修） | ✅ 已修复 2026-09-15（Fix #1，§8） |
@@ -85,7 +85,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**（多方案，与 A-6 输出通道同批定型）：① 首选：快照类型化出参——按域扩方法，如 `SysGetinfoTransport` 增 `fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32`、`GetSysinfoTransport` 的 `len: usize` 升格为 `out: &mut [MProcSnap]` 等；理由：A-4 快照本就是 wire 契约提案（#[repr(C)]），kernel/PM 的 producer 直接往调用方缓冲填充，与 C 的拷贝语义同构，且保留「长度精确匹配」契约（slice 长度即 len）。② 次选：裸字节缓冲 `out: &mut [u8]`——更贴近 C 指针语义，但把布局解释推回 dump 层，丢掉类型安全，等于在 Rust 里复刻 C 的 void*（translate 味，模式 16）。③ 否决：返回 owned `Vec<Snap>`——crate 现为零分配设计（无 `extern crate alloc`，lib.rs:1，V1-P3-4 有注），为 dump 面引入 alloc 依赖得不偿失。同批必须定案的相邻决策：A-6 输出通道选型（见 §3 L2 与 §5 对照参考：倾向 `core::fmt::Write` 形 sink trait，dump 体用 `write!` 直写，格式串常量已逐字就位）。
 **验证**：设计落档后 `rg -n "&mut \[KProcSnap\]|&mut \[MProcSnap\]|&mut \[DsEntrySnap\]" os/servers/is/src/acquire.rs` 应逐域命中；`cargo test -p minix-is` 基线 86 passed 不回退（fake 同步升级后旧断言存活）。
 
-### V1-P2-1 `minix-sys` 死依赖
+### V1-P2-1 `minix-sys` 死依赖 ✅ 已修复 2026-09-15（Fix #2，见 §8）
 **问题**：`os/servers/is/Cargo.toml:14` 声明 `minix-sys = { workspace = true }`，但全 crate `rg "minix_sys" os/servers/is/` 零命中（实测）——生产接线尚未开始（main.rs:19-23 用 fail-closed 占位），依赖先挂上了。
 **影响**：构建图多一条假边；读者会误以为 IS 已消费 minix-sys 的某些面（恰与「接线 pending」的真实状态相反）。
 **建议**：删除该行，E-ISWIRE 接线时按实际消费再加回（fix-guard 单条修复，删后 `cargo test -p minix-is` 对照基线 86 passed）。否决「保留作 forward reference 锚」：forward reference 由 main.rs:19-23 注释承担，依赖清单不该表达意图。
@@ -211,3 +211,11 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **Verified**：`rg -n "warn_fkey_ctl" os/servers/is/src/` 命中 trait 声明 + fail-closed 臂 + fake 实现 + Err 臂 4 处；`rg -n "Result<i32, Errno>" os/servers/is/src/lib.rs` 仅剩 `startup`/`init_fresh`（SEF 契约，正确保留）。
 
 **Docs**：01 篇 §3 D3 增 V1 轮更新注记（签名演进史补全）+ §4.2 SefTransport 签名行补 `warn_fkey_ctl` + §5.2 增 T14 行（Gate E 对账）。02 篇 §4.3 不量 2 无需改动——文档本来就是对的那半，这次是代码追上文档。
+
+### ✅ Fix #2: V1-P2-1 — minix-sys 死依赖删除
+
+**设计对比**：首选删除 + Cargo.toml 留一行 forward-reference 注释（意图由注释表达，依赖清单只表达事实）；否决保留作「接线锚」（main.rs:19-23 的注释已承担 forward-reference 职责，依赖清单不该表达意图——条目原文的否决理由）。
+**Files**：`os/servers/is/Cargo.toml`（删 `minix-sys = { workspace = true }`，留注释指向 E-ISWIRE）。
+**测试**：`cargo test -p minix-is` **87 passed / 0 failed**（基线不动）；`os/Cargo.lock` 中 minix-is 依赖表已只剩 minix-types（实测一致）。
+**Verified**：`rg -n "minix-sys = " os/servers/is/Cargo.toml` 零命中；src/ 内 `minix_sys::` 代码引用本就为零（注释里的 forward reference 保留）。
+**Docs**：无需正文同步——05~10 篇「producer 对齐待办」讲的是布局契约，与该依赖无涉；E-ISWIRE 的解锁后工作已写明「按实际消费加回」。

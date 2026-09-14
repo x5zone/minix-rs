@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 minix-types = { workspace = true }
-minix-sys = { workspace = true }
+# minix-sys 接线是 forward reference（E-ISWIRE）：生产 transport 落地时按实际
+# 消费加回，不预先挂死依赖（08-stage-is/todo.md V1-P2-1）。
 
 [lib]
 name = "minix_is"
