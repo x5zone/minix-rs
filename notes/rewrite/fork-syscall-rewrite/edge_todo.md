@@ -9,6 +9,7 @@
 > 2026-09-09 增补：06-stage-sched 第二轮架构审查（06-stage-sched/todo.md V2 §5）登记 E-SCHEDNICED / E-PREEMPTFLAG / E-SCHEDSMP / E-MINTYPES-SYS 四条，并在 E5 增补 (e) PM↔SCHED 联调验收面。
 > 2026-09-14 增补：07-stage-ds 首轮架构审查（07-stage-ds/todo.md）登记 E-DSWIRE（minix-sys DS 客户端模块缺失 + DS 服务器 transport 通电 + 联调零覆盖，三缺一注册），并在 E-MINTYPES-SYS 增补 DS 段两件（SI_DATA_STORE / NOTIFY_MESSAGE 常量）、E5 增补 (f) DS 发布/订阅联调验收面。
 > 2026-09-15 增补：10-stage-mib 首轮架构审查（10-stage-mib/todo.md §5）登记 E-RMIBWIRE（minix-sys rmib 客户端协议半整缺）、E-MIBPROD（MIB 快照 vs kernel/PM/VFS producer 布局对账）、E-MIBGRANT（kernel grant.rs 端点常量与 C 不符）三条，并增补 E-DSWIRE（mib_get_label 消费方）、E-ISWIRE（mib 为 minix-sef 第二消费方）、E5（(g) MIB/sysctl 联调验收面）、E-MINTYPES-SYS（DS 段现状更新）、E-MINSYS-HYGIENE（锚点复核）。
+> 2026-09-15 增补：11-stage-devman 首轮架构审查（11-stage-devman/todo.md §6）登记 E-DMWIRE（devman 生产接线四缺：server transport + 请求分类器 + 装配半 + client/RS 侧生产传输）与 E-DMCLIENT（minix-devman-client 孤儿 crate 处置，涉 16-stage-drivers）两条，并增补 E-REQWIRE（devman 为 VTreeFS wire 第三消费方）、E-ISWIRE（devman 为 minix-sef 第三消费方）、E-DSWIRE（devman 客户端 init 的 DS label 查询消费方）、E5（(h) devman 生命周期联调验收面）。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -210,6 +211,8 @@
 > **验收面增补（2026-09-14，07-stage-ds 首轮架构审查）**：(f) **DS 发布/订阅链**——C 的行为契约在 minix3/minix/tests/ds/（dstest.c 178 行：publish/retrieve/delete/getsysinfo 全类型往返；subs.c 91 行：subscribe/check/notify 回环），Rust 侧零承接。冒烟三链：(1) RS boot 映射后 `ds_retrieve_label_endpt` 可解析服务端点；(2) 客户端 A `ds_publish_u32` → 客户端 B `ds_check` 收到通知并取回键名与类型（ipc_notify 回环）；(3) label 级联删除（RS 删 label → 同名主条目与订阅全清，store.c:613-636）。前置 E-DSWIRE；A-2 regex 引擎落地后追加元字符 pattern 订阅用例（VFS 同款 `drv\.[bc]..\..*`，main.c:441）。
 
 > **验收面增补（2026-09-15，10-stage-mib 首轮架构审查）**：(g) **MIB/sysctl 链**——冒烟四链：(1) MIB_SYSCTL 往返（sysctl(2) 调用方 → MIB 解码 → 树查找 → 数据返回，含 ENOMEM 部分拷贝 + 完整长度回写语义 main.c:341-356）；(2) rmibtest 契约（minix3/minix/tests/rmibtest/rmibtest.c：8 个远端注册拒绝场景 :126-177、遮蔽注册顺序 :183-201、handler 函数偏转 :79-85）；(3) 远程子树 ERESTART 续走（服务死亡 → mib_down → 本地续走，remote.c:455-459 + tree.c:1410-1416）；(4) minix.mib.* 统计子树读数一致（TreeCounts 计数与真实节点数对账）。前置：10-stage-mib/todo.md P1-1/P1-2（stage 内执行半）+ E1 + E-RMIBWIRE。
+
+> **验收面增补（2026-09-15，11-stage-devman 首轮架构审查）**：(h) **devman 设备生命周期链**——冒烟四链：(1) VFS mount devman 后 `devices`/`events` 可见（懒建树触发，11-stage-devman/todo.md DM-P1-3）；(2) 驱动进程 `devman_add_device`（minix-sys 客户端）→ devman 树出现目录与 `devman_id` 文件 → 读 `events` 文件两读排空到 ADD 行；(3) RS publish → DEVMAN_BIND 转发给设备 owner → 驱动 `handle_msg` 回调 → 回 RS OK（C manager.c:840-851 全链）；(4) UNBIND + DEL → REMOVE 事件 + 树内消失 + 父设备引用级联回收。对照 C 行为契约 minix3/minix/commands/devmand/main.c 的属性匹配 DSL（13 篇）可用 usb 设备属性样例覆盖。前置：E-DMWIRE + E-REQWIRE（VTreeFS wire 面）+ E1。
 
 ---
 
@@ -413,6 +416,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **依赖**：无硬前置（方案 B 的对账测试立即可写）；执行顺序与 05-stage-vfs R2-P0-1 协调——先在 VFS 侧止血基址，再做本条结构收敛。验收挂钩 E5：VFS↔mfs 第一条真实 REQ 往返（REQ_READSUPER）即本条验收面。
 
+> **增补（2026-09-15，11-stage-devman 首轮架构审查）**：devman 是本契约的**第三消费方**——其内联 VTreeFS（os/servers/devman/src/vtreefs/mod.rs:50-56）自注"生产分类器（raw IPC → Request）需要 VFS 侧 wire 布局（fsdriver_data、REQ_* 字段宏），lands with the IPC transport"，dirent/stat 的 wire 编码同样声明"属传输层"（mod.rs:41-42/:198）。该传输层就是本条的 REQ_* 契约域：REQ 收敛到 minix-types（方案 A）后，devman 的分类器与 dirent/stat 编码直接消费同一权威，不再自建。登记于 E-DMWIRE 第 2 缺，wire 权威以本条裁决为准。
+
 ---
 
 ## E-SCHEDNICED kernel 侧 SYS_SCHEDULE 丢弃线上 niced 字段（06-stage-sched V2 轮登记，2026-09-09）
@@ -513,6 +518,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 >
 > **增补（2026-09-15，10-stage-mib 首轮架构审查）**：新增消费方——MIB 服务器的 `mib_get_label`（C remote.c:88 `ds_retrieve_label_name`）是远程子树注册的第一步；os/servers/mib/src/remote.rs:204-209 目前只有 label 界判定（ENAMETOOLONG），DS 查询执行半随本条 minix-sys ds.rs 落地后接线（10-stage-mib/todo.md P1-1 的 `MibServices` seam 消费）。
 
+> **增补（2026-09-15，11-stage-devman 首轮架构审查）**：新增消费方——devman 驱动侧客户端的 `init`（minix-sys/src/devman_client.rs:135-137，注入闭包形式）与 RS 侧 `RsTransport::devman_endpoint`（os/servers/devman/src/rs_contract.rs:24-26）都依赖 `ds_retrieve_label_endpt("devman")`（C generic.c:193 / manager.c:841/898）；两处的生产接线随本条 minix-sys ds.rs 落地（E-DMWIRE 第 4 缺消费）。
+
 ---
 
 ## E-ISWIRE IS 生产 transport 接线：minix-sef/minix-sys 替换 fail-closed 占位（08-stage-is V1 轮登记，2026-09-14）
@@ -529,6 +536,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **解锁**：E-ISBOOT；08-stage-is/todo.md V1-P2-1 的复原。
 
 > **增补（2026-09-15，10-stage-mib 首轮架构审查）**：minix-sef 的第二消费方浮出——os/servers/mib/src/sef.rs:13-14 声称 SEF transport 留在 minix-sef，但 mib crate 的 Cargo.toml 未声明该依赖；MIB 侧 `sef_startup`/`sef_receive_status` 接线（10-stage-mib/todo.md P1-1 的 `MibIpc`，含 status 字的 notify 检测——与 DS 的 call-number 猜测路径不同）随本条 (1) 一并做。
+
+> **增补（2026-09-15，11-stage-devman 首轮架构审查）**：minix-sef 的**第三消费方**是 devman——`SefHooks` trait（os/servers/devman/src/hooks.rs:268-271：init_server/on_signal）与 `SefLifecycle` 枚举（:257-263）目前只有测试替身实现（hooks.rs:336-365），生产实现被 STATE.md OQ-1 挡在 minix-sef 门前（hooks.rs:255 自注 "minix-sef is currently a stub"）。C 参照是 vtreefs.c:54-59 的三注册 + sef_local_startup（devman 侧经 libvtreefs 间接消费 libsys/sef）。devman 侧 `SefHooks` 生产 impl 随本条 (1) 一并做；若 minix-sef 长期不到场，11-stage-devman/todo.md DM-P1-2 的分派面统一将连带评估该 trait 的去留（模式 80：无生产实现者的占位抽象）。
 
 ---
 
@@ -626,3 +635,44 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：无。可独立先行，小时级。
 **解锁**：E-MIBPROD 的 grant 链正确性；10-stage-mib/todo.md P1-4（relay 执行半）通电前提。
+
+---
+
+## E-DMWIRE devman 生产接线四缺：server transport、请求分类器、装配半、client/RS 侧生产传输（11-stage-devman 首轮架构审查登记，2026-09-15）
+
+**问题**：devman 语义面 84 个测试全部跑在注入 seam 上（78 server + 6 client），生产执行半整层缺席，四个落点分属不同域：
+
+1. **server 侧生产 transport 不存在**（edge 判定①+③复合）。`main.rs:35-37` 是自旋停车（注释自认 "still `todo!()` — calling it would panic, so park"）；`VTreeFs::run`（os/servers/devman/src/vtreefs/mod.rs:322）与 `Server::handle_other`（server.rs:91）两条分派面的生产传输半都空——`Transport` 只有 VecTransport 测试实现（STATE.md P1-1T），生产 impl 需要 minix-sys 的 receive/send 面（E1 前置）。
+2. **请求分类器（raw IPC → `Request`/`DevmanMsg`）不存在**（edge 判定①）。VFS 面的 `Request` 分类需要 FS 驱动协议 wire（REQ_* 字段宏、fsdriver dirent/stat 编码）——该 wire 归 E-REQWIRE 契约域，devman 是消费方；DEVMAN 面的 ADD 还需要 `sys_safecopyfrom` grant 拷贝（C device.c:239-240，add_device.rs:7-9 注释自认"transport business"），内核对端与 wrapper 归 E2 家族。
+3. **装配半不存在**（stage 内与 edge 的接缝）。`Server::new` 之后到事件循环之间的装配线（SEF 启动 → mount → 建树 → 循环 → OutAction 执行）没有任何代码承载；其结构定案在 11-stage-devman/todo.md DM-P1-2（双分派面统一）/DM-P1-3（启动序列裁决），stage 内实施不属本条，本条只管"真实通电"。
+4. **client 与 RS 侧生产传输**（edge 判定①+②）。`ClientTransport` 的 grant/sendrec 生产 impl（C：cpf_grant_direct + ipc_sendrec，generic.c:112-122）需要 minix-sys 的 grant wrapper 与 E1；`RsTransport` 的生产 impl（C：ds_retrieve_label_endpt + ipc_sendrec，manager.c:841-849）需要 minix-sys ds.rs（E-DSWIRE）+ E1，落点在 RS stage（os/servers/rs/src/publish.rs:39-70 的 devman 臂目前只有决策半）。
+
+**影响**：devman 不能出生（停车自白）；驱动侧 `add_device`/`del_device`/`handle_msg`（minix-sys/src/devman_client.rs:144/:189/:224）全部只能跑 FakeTransport；RS 的 publish/unpublish devman 臂无法端到端验证。
+
+**为何 edge**：① minix-sys 传输/grant/DS wrapper 是共享基建（E1/E-DSWIRE 域）；② RS 侧生产代码归 03-stage-rs；③ 与 VFS 的 wire 契约归 E-REQWIRE。devman stage 内的装配与 seam 实施（DM-P1-2/P1-3）不属本条。
+
+**建议**（执行序，沿 DS 先例 E-DSWIRE 的两段式）：
+- 先 stage 内：11-stage-devman/todo.md DM-P1-2 定死 `Server::run` 单分派面 + Reply 错误通道形状，DM-P1-3 定死懒启动序列——传输实现者据此写生产 `Transport`（否则两套分派面的歧义会被带进传输层）。
+- 后 edge：minix-sys 侧补 IPC receive/send 与 grant 拷贝 wrapper（E1 通电即活）；devman 侧写生产 `Transport`（classify raw message → Request / DevmanMsg）+ `main.rs` 装配替换停车循环 + `ClientTransport`/`RsTransport` 生产 impl；RS 侧 publish.rs 的 devman 臂接 `RsTransport` 生产端。
+- minix-devman-client crate 的处置（删或收编）归 E-DMCLIENT，不阻塞本条。
+
+**依赖**：E1（trap 层）；VFS wire 面 E-REQWIRE；DS 查询 E-DSWIRE；grant 拷贝 wrapper 归 E2 家族（SYS_SAFECOPY* 同款先例）。
+**解锁**：E5(h) devman 生命周期联调；STATE.md backlog P1-6/P1-1T/P1-10/P1-12 全部关单；12-gpio-devman 的驱动注册链真实化。
+
+---
+
+## E-DMCLIENT minix-devman-client 孤儿 crate 处置：与 minix-sys 客户端职责重叠（11-stage-devman 首轮架构审查登记，2026-09-15）
+
+**问题**：`os/libs/minix-devman-client/`（3 文件 395 行，6 测试）在仓库里没有消费者：workspace 成员注册（os/Cargo.toml:194）之外，无任何 Cargo.toml 依赖它，无任何 .rs 引用其符号（grep 全仓实测）。它声称的职责是"驱动侧设备记账 + USB 跟踪 + 序列化尺寸"（device.rs:1-8、usb.rs:1-8），但 doc 10/11 钦定的正式实现在 `minix-sys/src/devman_client.rs`（encode_device 字节兼容 serialize_dev + ClientTransport + handle_msg）与 `usb_model.rs`（UsbDevice/属性生成/add_usb/remove_usb）——两侧存在概念级重叠（device.rs `Registry`/`DeviceRecord` vs devman_client `ClientDevice`；usb.rs `UsbDevice`/`UsbTracker` vs usb_model `UsbDevice`；device.rs `serialized_size` vs encode_device 整体编码），且孤儿侧功能是子集（无 wire 编码、无 IPC）。唯一的外部引用是 16-stage-drivers 的评审文档 `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/12-gpio-devman.md:200` 把它列为测试目标（`cargo test -p minix-driver-gpio -p minix-devman-client --lib`），但 gpio 驱动 crate（os/drivers/system/gpio）的 Cargo.toml 并不依赖它——连带 gpio 的 lib.rs:5-6 文档注释字面写的"see the `minix-devman` crate"指向的是 **server crate 的包名**（驱动依赖服务器 crate 是分层违例），实际意图应是 minix-sys 的 devman_client 模块；引用关系三方（孤儿 crate、server 包名、正式客户端模块）纠缠不清。
+
+**影响**：第二真相源存活——未来驱动作者搜"devman client"会先撞到孤儿 crate，按它记账（handle 复用语义与 devman 服务端的 dev_id 单调不复用**直接矛盾**：device.rs:101-111 的 `add` 复用已删 handle，而服务端 device_tree.rs:155 的 id 永不复用），写出的驱动注册逻辑与真实协议不符。
+
+**为何 edge**：处置决策涉 16-stage-drivers（12-gpio-devman 的测试引用与 gpio 注释清理）；crate 本体在共享 libs/ 目录（edge 判定①②交界）。
+
+**建议**：
+- **方案 A（推荐）**：删除孤儿 crate（`os/libs/minix-devman-client/` 目录 + os/Cargo.toml:194 成员行），16-stage-drivers 的 12-gpio-devman.md:200 命令去掉 `-p minix-devman-client`，gpio lib.rs:6 注释改指 `minix-sys::devman_client`。理由：doc 10/11 已钦定 minix-sys 为客户端唯一实现，孤儿侧无消费者、语义有偏差（handle 复用 vs dev_id 单调）、其"未来给 gpio 用"的假想需求应由正式客户端承接。
+- **方案 B**：保留并转正为 gpio 的记账层（gpio 声明依赖、文档更新）。仅当 16-stage-drivers 明确要"纯记账、不带 wire"的分层时成立；届时必须先修 handle 复用语义（改为 dev_id 单调对齐服务端）。
+- 两侧共同动作：gpio lib.rs:6 的指代注释必须澄清（无论 A/B）。
+
+**依赖**：无。
+**解锁**：E-DMWIRE 的 client 侧实现者不再有两套 API 可选；16-stage-drivers 的驱动注册链设计定案。
