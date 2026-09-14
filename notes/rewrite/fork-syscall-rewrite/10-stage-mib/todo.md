@@ -75,6 +75,14 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 
 **验证**：`cargo test -p minix-mib` 基线 107 → 新增 run_once 装配测试（notify 臂、三信臂、default 双态、回信规则各 ≥1）；`MibCall::from_raw`/`triage`/`should_reply` 从测试消费转为生产消费（grep 调用方非零）。
 
+**状态 🔄（2026-09-15，未开工——上一轮预算耗尽于 P1-2，见该条记录）**：P1-2 已闭环（136 passed），本条是下一个执行目标。**开工跑道（直接可执行，勿重新勘察）**：
+1. 新建 `server.rs`：`MibIpc` trait（`receive_status`/`send_nb`/`send_rec`——MIB 读的是 status 字，notify 判定精确，与 DS 的 call-number 猜测不同）+ `MibServer`（tree/budget/endpts 32 槽/`roots: Vec<NodeId>` 链头）+ `run_once`（triage → 三信臂 → `should_reply` 回信）。
+2. 消息解码：MIB_SYSCTL 臂经 01 的六道门（check_namelen/classify/pair×2）+ 长名 fetch（kernel.datacopy_from）→ `walker::sysctl`；回复经 `map_sysctl_reply` + `SysctlReply::encode`（minix-types mib.rs 已有）写 Message `m_mib_lc_sysctl` 臂。REGISTER/DEREGISTER 臂经 `MountRequest::decode_register/decode_deregister`。
+3. register 臂执行序（C remote.c:197-233）：register_gate（SENDREC→ENOSYS；>8 静默 EDONTREPLY）→ DS label（svc.ds_retrieve_label，失败 EDONTREPLY :217-218）→ label_fits → locate_slot（复用 remote.rs 判定）→ mount（path walk：path_node_ok 逐层 + check_target + reserve/place 临时或盖章节点 + Slot.roots 链头插入）。
+4. main.rs：组装 SysTransport（EIO 诚实桩）+ SysIpc（EIO 诚实桩），`MibServer::new` → 循环；连续 receive 失败上限沿用 DS 的 64 次纪律。死依赖（Cargo.toml minix-sys）此轮转正，P3-2 半闭。
+5. 测试：notify 臂/三信臂/default 双态/回信规则/register 拒绝三态（gate、EDONTREPLY、label 失败）/register 成功（脚本 DS 应答）各 ≥1。
+**边界提醒**：mount 的 full surgery（temp 节点创建、covered 节点恢复）如一轮装不下，可按 08 篇声明把 temp-node 恢复半挂在 P1-5 后——但 stamp 盖章 + roots 链头 + dereg 摘链必须本轮闭环，否则 deregister 臂是假的。
+
 ### P1-2 树竞技场与执行 walker：兑现 04/13/15 的 arena 承诺（stage 内）
 
 **问题**：`tree/dispatch.rs:6` 自述"the walker (10's follow-up with the arena) executes the verdicts"，但 walker 不存在：`LevelVerdict`/`judge_level`/`resolve_shape`/`judge_remote_result` 生产调用方为零（grep 仅定义处与 `tree/mod.rs:22` 再导出）。全 crate 7 处 follow-up 标记（query.rs:5、tree/lookup.rs:4、tree/init.rs:89、tree/dispatch.rs:6、tree/mod.rs:7、data/readwrite.rs:7、tree/dynamic.rs:7）。竞技场本体同样缺席：`tree/node.rs:5-7` 声明"real nodes land in 04/05/08"，实际 `RootSpec`（static_tree.rs:116）只是规格、`TreeCounts` 只是纯累加器、文档承诺的兑现时点在 04/08/13/15 四篇里说法不一（04:82 与 08:82 说"13 首表落地时建"、13:112 说"15 统一建"、15:136-138 说"15 之后的独立后续任务"——15 篇同时宣布"可以统一建了"）。`remote.rs:22-28` 的 `EndptSlot` 缺 C 的 `nodes` 链头字段（remote.c:31-35），挂载点链表无建模。
