@@ -510,10 +510,13 @@ misc.rs:2219-2222 自述）。修法：迁 globals.rs 或按 A2 反例条款论�
   不属"A2 收尾"边界。本批落地：4 个 Atomic 迁 globals.rs + 写侧 Release 双写/读侧
   Acquire/两源差 ≤1 tick 的契约写入 clock.rs 与 doc 15（C 单源 `kclockinfo` 差异如实
   记录）；收敛重构作为独立条目跟进（见下）。
-- 🆕 **I-15（本条派生，open）**：时钟镜像收敛单源——删除 CLOCK_UPTIME/REALTIME/
-  BOOTTIME 镜像，`get_*` 改 `&BklSection` 签名读 `ClockState`，穿透 `IpcEngine`
-  `build_notify_message`/`mini_notify` 链。触发时机：IPC 引擎重构窗口（S-8 trap 入口
-  改造会重塑 IPC 入口，届时一并做）。
+- 🆕 **I-15（open，触发评估更新 2026-09-15）**：时钟镜像收敛单源——删除
+  CLOCK_UPTIME/REALTIME/BOOTTIME 镜像，`get_*` 改 `&BklSection` 签名读
+  `ClockState`，穿透 `IpcEngine` `build_notify_message`/`mini_notify` 链。
+  **触发评估**：S-8 落地但保持 IPC 入口签名不变（trap 分流体→kernel_call 形状
+  未变），原定触发窗（"S-8 重塑 IPC 入口"）实际未开——真正窗口是 IpcEngine
+  签名改造（build_notify_message/mini_notify_core 加 section 参数，波及
+  ipc/signal/clock/irq_manager/proc_table 六处调用链）。维持 open。
 - 验证：kernel 730/0/8 全绿；clippy 零新增；doc 15/25 声称同步（SPROF 访问描述、
   镜像契约）。
 
@@ -600,7 +603,9 @@ restore_to_user 交出 CPU 后无向量回内核），非调度器缺陷。
   3 个 hosted 测试（累加/零 delta no-op/隔离）。FPU-exit 位点（proc.c:1956）
   与 context_stop_idle 的 TSC-delta 记账随用户帧/校准 lane（见 smp_todo §24
   deadline 注）。验证：kernel 742 hosted 全绿；test-smp-aps 硬件 PASS。
-- **③ 维持**：S-8 落地后端到端验证（原依赖不变）。
+- **③ ✅ 已闭合（2026-09-15，S-7/S-10 证据）**：调度循环多轮端到端行为已由
+    test-smp-aps（四核 entered + PIT 驱动多轮 idle/pick 循环）与 test-smp-ipi
+    （IPI 中断打断 idle halt→处理→返回循环）实证。I-6 全条闭合。
 
 ### 23.4 新发现 P3（D-65 轻微项批） — ✅ 已处置（2026-09-09：①③ 落地，② 维持登记，④ 误报纠正）
 
