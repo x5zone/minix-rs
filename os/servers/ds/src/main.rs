@@ -14,17 +14,24 @@ fn main() {
     // library directly).
     #[cfg(not(test))]
     {
-        // C: env_setargs + sef_local_startup() — main.c:38-39. The two init
-        // names are `DsInitKind::{Fresh, RestartStateful}` plus the
-        // `LiveUpdateHook::DsStateTransfer` promise (sef.rs); the fresh
-        // body and the transfer body land in 06, transport in the shell.
-        //
-        // C: main loop — main.c:42-86, owned by dispatch.rs: receive →
-        // triage → dispatch → reply lives there, not here.
-        //
-        // Spinning is intentional until the loop lands: a registry that
-        // cannot receive yet must not pretend otherwise.
-        #[allow(clippy::empty_loop)]
-        loop {}
+        use minix_ds::server::{DsKernel, DsServer, SysIpc, SysKernel};
+        use minix_sys::ipc::DirectTrapTransport;
+
+        // C: env_setargs + sef_local_startup() — main.c:38-39. The fresh
+        // anchor (`sef_cb_init_fresh`, store.c:254-282) resets both tables
+        // and shadows the RS boot table; the rproctab *decode* (raw
+        // `rprocpub` bytes → `BootService` list) is pinned at edge
+        // E-RSWIRE, so the fresh run starts from the reset state — the
+        // exact state `sef_cb_init_fresh` itself occupies after its reset
+        // half, before the shadow loop.
+        let mut server = DsServer::new();
+        let mut ipc = SysIpc::new(DirectTrapTransport);
+        let mut kernel = SysKernel;
+
+        // C: main loop — main.c:42-86, owned by server.rs: receive →
+        // triage → dispatch → reply, forever; a broken transport dies at
+        // the documented 64-turn bound (server.rs, the SCHED-shared
+        // deviation from C's panic-on-first-failure).
+        server.run(&mut ipc, &mut kernel);
     }
 }

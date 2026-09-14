@@ -68,6 +68,7 @@ size 的**精确匹配**值得多说一句：短了会截断镜像（IS 读到�
 | D1 | 镜像长变算式 | `sizeof(ds_store)` 用时现算（`:662,668`） | `image_bytes() = size_of::<DataEntry>() * NR_DS_KEYS`（`getsysinfo.rs`） | 长是布局与容量的函数，不是魔法数；表变布局变，镜像自动跟 |
 | D2 | 查询号本地定 | `SI_DATA_STORE` 在 `sysinfo.h:13` | `SI_DATA_STORE = 5`（`getsysinfo.rs`，引 C 行） | `minix-types` 暂无 sysinfo 模块（A-1 余部）；值引源注释，不自创 |
 | D3 |  verdict 纯化 | 门 + 拷贝一锅 | `plan_getsysinfo(what, size)` 回镜像长 | 拷贝是传输（02），"让不让拷、拷多少" 是 verdict；verdict 纯可测 |
+| D4 | 镜像逐字段渲染 | `sys_datacopy` 原样搬 `ds_store` 内存 | 传输层渲染进 `server.rs` 的 `image` 暂存（[ARCH A-10/11]）：flags + key + owner + 4 填充 + union 24 字节逐字段拷贝，填充与 union 非活动字节渲染为规范零 | C 的镜像带陈旧内存（删条目只清 flags，堆内容残留）；IS `dmp_ds` 只读活字段，规范零是可观察面上的诚实超集——union 非活动臂在 Rust 里本就不可读 |
 
 ---
 

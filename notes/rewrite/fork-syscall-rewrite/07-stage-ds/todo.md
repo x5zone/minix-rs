@@ -18,10 +18,10 @@
 | P1 | P1-1 | **retrieve.rs 孤儿模块**：lib.rs 未声明，268 行 + 8 测试从未编译 | ✅ 已修复 2026-09-15（Fix #1，见 §9） |
 | P1 | P1-2 | **类型预门缺 DSF_MASK_TYPE 掩码**：IN_USE 公共位使门恒真，跨类型误置位/误通知 | ✅ 已修复 2026-09-15（Fix #2，见 §9） |
 | P1 | P1-3 | **删除通知半丢失**：apply_delete 绕过通知环且不产出补发素材，C 的删除唤醒契约断 | ✅ 已修复 2026-09-15（Fix #3，见 §9） |
-| P1 | P1-4 | **transport + handler 粘合 + grant/datacopy/notify 接线**（stage 内 seam，通电挂 E-DSWIRE） | open |
+| P1 | P1-4 | **transport + handler 粘合 + grant/datacopy/notify 接线**（stage 内 seam，通电挂 E-DSWIRE） | ✅ 已修复 2026-09-15（Fix #7，见 §9；真实通电仍挂 E-DSWIRE） |
 | P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | ✅ 已修复 2026-09-15（Fix #4，见 §9） |
 | P2 | P2-1 | plan.md staleness 批次（A-1 已解决、A-8 半过时、§3.5 基线失真） | ✅ 已修复 2026-09-15（Fix #6，见 §9） |
-| P2 | P2-2 | A-3 堆策略决策（随 P1-4(c) transport 设计一并定） | open |
+| P2 | P2-2 | A-3 堆策略决策（随 P1-4(c) transport 设计一并定） | ✅ 已决策并实现 2026-09-15（Fix #7 顺带，见 §9） |
 | P2 | P2-3 | A-6 SEF/Live-Update 显式状态迁移设计 | open |
 | P3 | P3-1 | 卫生批次：fmt 22 处（13 文件）+ clippy 2 条 + entry_matches 死参数 | ✅ 已修复 2026-09-15（Fix #2 死参数 + Fix #5，见 §9） |
 | P3 | P3-2 | C 源 bug 标注（模式 78）：label 级联不 free 堆，Rust 超集修复未标注 | ✅ 已修复 2026-09-15（Fix #3 顺带，见 §9） |
@@ -164,7 +164,7 @@
 |---|---|---|---|
 | A-1 消息类型 | 缺口（:88、:175） | **大半已解决**：MessDsReq/MessDsReply（message.rs:1448/:1481，56B 断言 :3746）+ 调用号（com.rs:118-133）+ DsFlags（com.rs:191-232）。余部 = SI_DATA_STORE（getsysinfo.rs:27 本地）与 NOTIFY_MESSAGE（dispatch.rs:94-96 硬编码）→ **E-MINTYPES-SYS 增补** | P2-1 入档 |
 | A-2 正则引擎 | 待决策（:176） | **升级 P1-5**：真实客户端 pattern 全含元字符（VFS main.c:441 等），BadPattern 现状阻塞主场景 | P1-5 |
-| A-3 动态内存 | 待设计（:177） | 未动（MemBody 形状已定 store.rs:24-33；delete 交还路径已备成 C 超集） | P2-2 |
+| A-3 动态内存 | 待设计（:177） | **已决策**：固定池 `heap.rs::DsPool`（32×256B，首适，ENOMEM 码位对齐 C），[ARCH A-3] 三处一致 | ✅ P2-2 闭环（随 Fix #7） |
 | A-4 静态数组表 | 待设计（:178） | **已解决**：DsStore/DsSubs = `[Option<_>; N]` + EntrySlot/SubSlot newtype（store.rs:83、subscription.rs:66、slots.rs） | 入档（随 P2-1） |
 | A-5 订阅位图 | 可复用（:179） | **已解决**：minix-types Bitmap 复用（subscription.rs:42） | 入档 |
 | A-6 SEF/LU 状态迁移 | 缺口（:180） | 未动（sef.rs:33-37 仅命名承诺；RS state_data.rs 先例可循） | P2-3 |
@@ -302,6 +302,16 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 
 - **File**: 13 文件 fmt 应用（22 处 diff → 0）+ `slots.rs:51/:81` 生命周期省略（`get<'a>` → `get`）
 - **Verified**: `cargo fmt --check -p minix-ds` **0 diff**；`cargo clippy -p minix-ds --all-targets` DS 侧 **0 条**；99 passed 基线不动。entry_matches 死参数已随 Fix #2 完成，本条目三件全闭。
+
+### ✅ Fix #7: P1-4 + P2-2 — transport 六子面 campaign + A-3 堆决策（2026-09-15）
+
+**A-3 决策**（P2-2，随 (c) 面同轮定案）：**专用固定池**（`heap.rs::DsPool`，32 槽 × 256B，首适发放，`release` 回收）胜出——delete 侧的「交还描述符」与池回收天然对接、内存预算显式（对照 C 的 `malloc` 语义：池耗尽回 `ENOMEM`，**码位与 C 对齐，差异只在何时触顶**，`[ARCH A-3]` 三处标注在 heap.rs/07 篇/todo §3）。全局分配器方案（B）被否决：整 crate 生产构建零分配，为一个功能开口子要慎重。
+
+- **File**：`server.rs`（新增，双 seam + 七臂 + run/run_once，约 700 行含测试）、`heap.rs`（新增）、`main.rs`（真实装配重写）、`os/libs/minix-types/src/ipc/message.rs`（MessageUnion 补 `m_ds_req`/`m_ds_reply` 两臂——IS 轮同款先例，归 E-DSWIRE 登记）、`lib.rs`
+- **六子面对账**：(a) run_once 逐拍 main.c:42-88（notify 拒绝/野号 EINVAL、`should_reply` 结算、64 轮失败上限 = SCHED 共享偏离）；(b) `ferry_key`（bounds → grant 拷 → 尾钉 store.c:178，服务器半尾钉归位）；(c) STR/MEM 堆提交（C 331-357 的 reuse/grow/copy-fail 三路，含「C 先 free 后 malloc 失败悬挂」「跨臂覆盖读陈旧 reallen」两处 MINIX3 BUG 标注）；(d) retrieve/check/retrieve_label 三回拷（check 的「拷贝失败不消费」序保持）；(e) 通知发送（ring 统一 `apply_update` + `ipc_notify` 逐个；initial scan 唤源；删除唤醒接 Fix #3）；(f) getsysinfo 整表 datacopy（image 逐字段渲染，[ARCH A-10/11] 规范零声明）+ `init_fresh`（reset + shadow + 批量环，rproctab 字节解码挂 E-RSWIRE）。
+- **设计演进**（防 translate 的实证）：arm_publish 首版用 `as_mut()` 改写席位——**Create 路径席位是 `None`，发布静默落空**，被自写的 E2E 回环测试当场拦截（`test_publish_check_roundtrip_through_transport`）；重写为 take-modify-put。另修「跨臂覆盖读陈旧 reallen」「失败路悬挂」两处 C bug 超集（均标注）。
+- **测试**：+8 个 E2E（publish→notify→check 三信回环 / retrieve 回信臂 / delete 唤醒 / getsysinfo 整表含首槽断言 / notify+野号 EINVAL / INITIAL 唤源 / 失败上限 panic / 池往返耗尽超宽）。
+- **Verified**：`cargo test -p minix-ds` **109 passed**（99 → 109）；minix-types 192 passed；clippy DS 侧 0；fmt 0。
 
 ### ✅ Fix #6: P2-1 + P3-3 — plan.md staleness 入档批 + boot.rs 引用漂移（2026-09-15）
 

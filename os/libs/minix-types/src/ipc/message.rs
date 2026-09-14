@@ -77,6 +77,10 @@ pub union MessageUnion {
     pub m_rs_update: MessRsUpdate,
     /// Sysinfo table export (GETSYSINFO family) — C ipc.h:2529.
     pub m_lsys_getsysinfo: MessLsysGetsysinfo,
+    /// Data Store request (client → DS). C: `m_ds_req` — ipc.h:107.
+    pub m_ds_req: MessDsReq,
+    /// Data Store reply (DS → client). C: `m_ds_reply` — ipc.h:100.
+    pub m_ds_reply: MessDsReply,
     /// Fault injection (RS → service): COMMON_REQ_FI_CTL — C ipc.h:2536.
     pub m_lsys_fi_ctl: MessLsysFiCtl,
     /// Kernel: SYS_MEMSET.

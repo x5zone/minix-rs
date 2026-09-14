@@ -158,3 +158,10 @@ os/servers/ds/src/
 - 阶段文档：`00-ds-overview.md`（总览）、`02-ds-message-contract.md`（下一站，协议面）
 - Rust 实现：`os/servers/ds/src/dispatch.rs`、`os/servers/ds/src/sef.rs`
 - 对端：`../01-stage-kernel/12-ipc-core.md`（`sef_receive` / `ipc_send` 原语）
+
+
+---
+
+## 附：Rust 接线状态（2026-09-15）
+
+主循环的装配已落地：`server.rs` 的 `DsServer::run_once` 按 §1.3 的三拍走（receive → `dispatch::triage` → 七臂分派 → `should_reply` 结算），传输经 `DsIpc`（receive/send/notify，真实端委托 minix-sys `IpcTransport`，通电挂 edge E1）与 `DsKernel`（safecopy/datacopy 三拷贝动词，真实端待 minix-sys SYS_SAFECOPY*/SYS_DATACOPY 包装，挂 edge E2/E-DSWIRE）双接缝表达；`main.rs` 是唯一装配点。判定层与执行半的分界沿用全篇的"frontier"记法——接缝两侧各自可测（mock 传输 + mock 内核），真实通电的验收面在 edge E5(f)。

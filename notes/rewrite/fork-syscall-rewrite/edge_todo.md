@@ -6,6 +6,8 @@
 > 2026-09-08 增补：02-stage-vm V12 轮（02-stage-vm/todo.md §17）登记 E-VMMCPWIRE（vmmcp wire 字宽必现截断）与 E-VMMOCK（G-V12-5 余件：minix-arch default features 收口），并在 E5 增补"缺页故障完整回路"验收面。
 > 2026-09-09 增补：02-stage-vm V13 轮（02-stage-vm/todo.md §18）登记 E-VMTLB（kernel 侧目标进程 TLB 刷新机制缺失，真 SMP 正确性前提），并在 E-RSWIRE 增补 VM 侧三项落地要求（call_mask u64、RS_SET_PRIV 真掩码、五消息结构专属 wire struct）。
 > 2026-09-09 增补：05-stage-vfs 第二轮架构审查（05-stage-vfs/todo.md §9）登记 E-REQWIRE（REQ_* VFS↔FS 共享契约双侧独立定义，含 FS_BASE 基址已分叉的事实），并在 E-VFSWIRE 增补 VFS 侧接收半要求与绝对值断言纪律。
+> 2026-09-09 增补：06-stage-sched 第二轮架构审查（06-stage-sched/todo.md V2 §5）登记 E-SCHEDNICED / E-PREEMPTFLAG / E-SCHEDSMP / E-MINTYPES-SYS 四条，并在 E5 增补 (e) PM↔SCHED 联调验收面。
+> 2026-09-14 增补：07-stage-ds 首轮架构审查（07-stage-ds/todo.md）登记 E-DSWIRE（minix-sys DS 客户端模块缺失 + DS 服务器 transport 通电 + 联调零覆盖，三缺一注册），并在 E-MINTYPES-SYS 增补 DS 段两件（SI_DATA_STORE / NOTIFY_MESSAGE 常量）、E5 增补 (f) DS 发布/订阅联调验收面。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -201,6 +203,10 @@
 **建议**：在 E1/E2 落地后建联调包：(a) PM↔VM fork 全链路（恢复/重写旧测试，改走 minix-sys 消息层而非 crate 内类型——旧失效原因正是 `pub(crate)` 边界收紧）；(b) VM↔VFS fdclose 往返；(c) RS live-update 全链路（RS_PREPARE → UPDATE → resume）；(d) QEMU VM paging 冒烟（boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap 测试页 → 串口结果，复用 `os/qemu-tests/` 基建）。
 
 > **验收面增补（2026-09-08，02-stage-vm V12 轮）**：(d) 冒烟必须覆盖**缺页故障完整回路**——进程触发缺页 → 内核 VM_PAGEFAULT 送达 VM → VM 解析（CoW 拷贝或新页分配）→ **VM 写进程硬件 PTE**（G-V12-8，当前缺失的最后一环）→ 内核清 RTS_PAGEFAULT 恢复进程 → 指令重执行不再故障。没有 PTE 写入的通电冒烟会以"同一地址反复缺页活锁"的形式失败，这正是该回路必须成为 (d) 的显式断言项的原因。
+
+> **验收面增补（2026-09-09，06-stage-sched V2 轮）**：(e) **PM↔SCHED 调度链**——sched 服务器是全仓唯一"每个行为都依赖他方主动来电"的服务（PM 的 START/INHERIT/STOP/SET_NICE、内核的 NO_QUANTUM、自身的 5 秒平衡闹钟），端到端零覆盖。冒烟三链：init 的 START（PM 发 SCHEDULING_START → SCHED `sys_schedctl` 接管 → `sys_schedule` 下发 → 内核实调）；fork 子进程的 INHERIT（优先级/时间片从父槽继承，06 篇）；一条 NO_QUANTUM 回环（内核 notify_scheduler → SCHED 降一级 → `sys_schedule` 回写）。前置 E1 + E8；E-PREEMPTFLAG/E-SCHEDNICED 修不修都应在冒烟中显式观察——未修时优先级 ≥1 的进程可跑通全链，恰可作"断环分界"用例（队列 0 进程验证 NO_QUANTUM 缺失）。
+
+> **验收面增补（2026-09-14，07-stage-ds 首轮架构审查）**：(f) **DS 发布/订阅链**——C 的行为契约在 minix3/minix/tests/ds/（dstest.c 178 行：publish/retrieve/delete/getsysinfo 全类型往返；subs.c 91 行：subscribe/check/notify 回环），Rust 侧零承接。冒烟三链：(1) RS boot 映射后 `ds_retrieve_label_endpt` 可解析服务端点；(2) 客户端 A `ds_publish_u32` → 客户端 B `ds_check` 收到通知并取回键名与类型（ipc_notify 回环）；(3) label 级联删除（RS 删 label → 同名主条目与订阅全清，store.c:613-636）。前置 E-DSWIRE；A-2 regex 引擎落地后追加元字符 pattern 订阅用例（VFS 同款 `drv\.[bc]..\..*`，main.c:441）。
 
 ---
 
@@ -401,3 +407,159 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 3. 附带：request.rs:120 的 "33 variants" 计数注释随迁移/对账修正（05-stage-vfs todo R2-P3-1）。
 
 **依赖**：无硬前置（方案 B 的对账测试立即可写）；执行顺序与 05-stage-vfs R2-P0-1 协调——先在 VFS 侧止血基址，再做本条结构收敛。验收挂钩 E5：VFS↔mfs 第一条真实 REQ 往返（REQ_READSUPER）即本条验收面。
+
+---
+
+## E-SCHEDNICED kernel 侧 SYS_SCHEDULE 丢弃线上 niced 字段（06-stage-sched V2 轮登记，2026-09-09）
+
+**问题**：C 的 do_schedule 从 SYS_SCHEDULE 消息读 niced（`niced = !!(m_ptr->m_lsys_krn_schedule.niced)`，minix3/minix/kernel/system/do_schedule.c:27），sched_proc 据此写 MF_NICED（system.c:692-694）；该标志在时钟中断的 CPU 记账分类中消费（minix3/minix/kernel/arch/i386/arch_clock.c:318 `else if (p->p_misc_flags & MF_NICED) counter = CP_NICE`）。Rust 内核的 dispatch_schedule 读出线上 niced 后丢弃、硬编码 false（os/kernel/src/syscall.rs:923 `let niced = false;`），注释把理由归于"SYS_NICE is not yet wired up"——但 **SYS_NICE 在 C 树中不存在**（rg 全树仅 system.h:12 的 2005 年变更日志提到 nice(2) kernel call），C 的真实数据源就是 SYS_SCHEDULE 消息本身。SCHED 服务器每次 fanout 都诚实发送 niced（os/servers/sched/src/kernel_api/schedule.rs:152-154 `wire_niced`，值取 `is_niced(max_priority)`，同 C schedule.c:319 公式）；kernel 侧 sched_proc 的落盘机制已备（os/kernel/src/sched.rs:413-423 Step 8 写 `MiscFlagsBits::NICED`，测试 sched.rs:649-657）——断环只在 dispatch_schedule 一行。另有下半：Rust 的 clock.rs 记账没有 CP_NICE/CP_USER/CP_SYS 分类（rg "niced" os/kernel/src/clock.rs 零命中），即使传值也无人消费——修复是"接线 + 消费端评估"两半。
+
+**影响**：niced 进程的 CPU 记账归入 CP_USER 而非 CP_NICE（utilization/cpuavg 统计失真）；无调度行为影响（C 的 MF_NICED 不参与抢占与队列决策）。
+
+**为何 edge**：kernel 生产代码（01-stage-kernel 域，edge 判定②）；SCHED 侧 wire 半已正确、零改动。
+
+**解锁后工作**：
+1. dispatch_schedule 改 `let niced = sched.niced != 0;` 传入 sched_proc（os/kernel/src/syscall.rs:923），删除"SYS_NICE"注释、改引 do_schedule.c:27（连带修正 sched.rs:286-294 SchedParams 文档里对 "SYS_NICE" 的同款虚构引用）；
+2. 评估 clock.rs 记账是否补 CP_NICE 分类（对照 i386 arch_clock.c:315-319 的 counter 选择链）；若 Rust 记账面尚无此分类，先登记不实现——MF_NICED 位本身先正确落盘；
+3. 测试：dispatch_schedule 收 niced=1 的 SYS_SCHEDULE → 目标进程 NICED 位置位（sched_proc 半已有测试，缺 dispatch 半的翻转）。
+
+**依赖**：无 E1/E2 依赖（纯内核侧行为 + 单测可验）。
+**解锁**：12 篇契约（06-stage-sched）的 niced 半闭环；06-stage-sched/todo.md P2-3 指针表的对应行。
+
+---
+
+## E-PREEMPTFLAG PREEMPTIBLE 特权标志缺失——priority != 0 近似当成了语义（06-stage-sched V2 轮登记，2026-09-09）
+
+**问题**：C 有两处调度决策以特权标志 PREEMPTIBLE 为门：(1) quantum 耗尽只对"用户调度 + PREEMPTIBLE"进程通知调度者（minix3/minix/kernel/proc.c:1895 `if (!proc_kernel_scheduler(p) && priv(p)->s_flags & PREEMPTIBLE)`）；(2) enqueue 抢占只对 PREEMPTIBLE 的当前进程生效（proc.c:1638）。Rust 内核两处都以 `priority != 0` 近似（os/kernel/src/proc_table.rs:766 `let pre = p.get_priority().get() != 0;`；:674（enqueue Phase 3 元组第三元素的 `cur.get_priority().get() != 0`））；连 sched.rs:233 的 `is_preemptible` 助手——文档声称"C: priv(p)->s_flags & PREEMPTIBLE"——实现也是同一优先级近似，且 `#[allow(dead_code)]` 未接线。近似与 C 语义的分叉点：MAX_USER_Q == TASK_Q == 0（minix3 config.h:67-68，用户进程可合法登顶队列 0），SCHED 接管的进程经 START/NICE 可达 priority 0（os/servers/sched/src/scheduling/start.rs:116 的门放行 0..15）——此后 quantum 耗尽走"内核调度者续量"分支，**SCHED 永远收不到 NO_QUANTUM，该进程被无限续量**，MLFQ 的降级臂与平衡回升臂对它双双失效；C 下它仍走 notify_scheduler。
+
+**影响**：priority-0 的 SCHED 接管进程脱离用户态调度策略（不降级、无需回升——它从未降过）；enqueue 抢占对 priority-0 的当前进程永不发生（同因）。单核现状即可达，非 SMP 专属。
+
+**为何 edge**：kernel 生产代码（01-stage-kernel 域，edge 判定②）；PRIV_TABLE 的标志位归 kernel 域。
+
+**解锁后工作**：
+1. priv 表补 PREEMPTIBLE 位（对照 C 的 USER_PRIV 模板：用户进程默认置位、内核任务缺省；落点 os/kernel/src/priv_table.rs + 进程初始化路径）；
+2. `is_preemptible` 改读特权标志（os/kernel/src/sched.rs:233），接线到 sched_proc_no_time（proc_table.rs:766 替换优先级近似）与 sched_enqueue Phase 3（:674）；
+3. 文档修正：sched.rs:231 的声称与实现对齐（消除"文档说 priv、代码读优先级"的漂移）；
+4. 测试：priority-0 + 用户调度 → proc_no_time 走通知分支（现测试 test_proc_no_time_user_scheduled_preemptible 用 USER_Q=7，未覆盖 0）；enqueue 抢占对非 PREEMPTIBLE 当前进程的抑制。
+
+**依赖**：无 E1/E2 依赖（特权位 + 单测可先行）。
+**解锁**：SCHED 的 NO_QUANTUM 契约对所有优先级成立；E5(e) 冒烟的"断环分界"用例转正。
+
+---
+
+## E-SCHEDSMP SCHED cpu 下发链的 SMP 三件套缺口（01-stage-kernel SMP 工作窗，06-stage-sched V2 轮升级登记，2026-09-09）
+
+**问题**：06-stage-sched 第一轮 todo 的"边界外观察"第 2/3 条（观察无去向即丢失的实例），本轮升级登记。SCHED 服务器的 CPU 选择与下发（10/09 篇）在内核侧断三环：
+1. 每核运行队列不存在——`sched_for_cpu`/`sched_for_cpu_mut` 恒返 BSP 队列（os/kernel/src/proc_table.rs:573-586，TODO 自注）；SCHED 下发的 cpu 字段被 dispatch_schedule 存入 p_sched.cpu（sched.rs:407-411）但 pick/enqueue 不按它分发；
+2. EBADCPU 不可达——sched_proc 的 CPU 校验是桩（os/kernel/src/sched.rs:355-360 `let _ = params.cpu;`；C: system.c:650-654 的 cpu_is_ready 检查），SCHED 服务器侧的 EBADCPU 重试环（os/servers/sched/src/server.rs:391-399，C schedule.c:227-231）在当前内核上永不触发；
+3. 跨 CPU 迁移未接线——sched.rs:308-315 文档声称"dispatch_schedule calls schedule_migrate_proc when the CPU changes"，但 dispatch_schedule 无该调用（C: system.c:673-677 `p->p_cpu != cpuid && cpu != -1 && cpu != p->p_cpu → smp_schedule_migrate_proc`）；schedule_migrate_proc 本体已实现（os/kernel/src/smp.rs:699）。
+
+**影响**：单核下全部不可观察（cpu 恒 0、单队列恒正确）；多核落地时 SCHED 的负载均衡与死核规避（pick_cpu/balance 的全部产出）对内核无效。
+
+**为何 edge**：kernel 生产代码（01-stage-kernel 域，edge 判定②），且与 01-stage SMP 工作窗（smp_gpt 系列设计迭代）协同排期。
+
+**解锁后工作**：随 01-stage-kernel SMP 落地一并——(1) per-CPU Scheduler 入 CpuLocal，sched_for_cpu 按 cpu_id 分发；(2) sched_proc 补 cpu_is_ready 校验（EBADCPU）与迁移调用（对照 system.c:650-654 / :673-677）；(3) SCHED 侧零改动（重试环已按最终形态写好并有测试 `test_start_retries_after_dead_cpu` 钉住）；(4) 联调验收挂 E5(e)。
+
+**依赖**：01-stage-kernel SMP 工作窗；E5(e) 验收。
+**解锁**：06 篇重试环与 10 篇 pick 的生产语义；S-11 组合层在全拓扑下的行为完备。
+
+---
+
+## E-MINTYPES-SYS SYS_* kernel-call 调用号常量 minix-types 缺位（06-stage-sched V2 轮登记，2026-09-09，低优先）
+
+**问题**：kernel-call 调用号（C com.h:210-262 一族）目前多处各自表达：minix-types 无 SYS_* 常量（grep 零命中）；SCHED 服务器本地镜像两个（os/servers/sched/src/kernel_api/transport.rs:41 `SYS_SCHEDULE = 0x600 + 3`、:45 `SYS_SCHEDCTL = 0x600 + 54`，注释自述 "minix-types' absence"）；kernel 侧以枚举成员相对 KERNEL_CALL 表达（os/kernel/src/syscall.rs:69 `Schedule = 3`、:114 `Schedctl = 54`）。minix-sys 的 SYS_* wrapper 家族（E2/E6/E8）落地时还会再添消费方。与 06-stage-sched/todo.md P2-3（SUSPEND 本地定义）同型：com.h 常量一个走共享镜像、一个各处手抄。
+
+**影响**：数值当前有 wire 断言测试钉住，无漂移事故；成本是每新增一个 SYS_* 消费 crate 就多一份手抄对账对象。
+
+**为何 edge**：minix-types 是共享契约层（edge 判定①）；收敛动作跨 kernel/sched/未来 crate。
+
+**建议**：minix-types 补 SYS_* 调用号常量模块（对照 com.h:210-262 全族，先例：types/com.rs 的 SCHEDULING 系常量镜像），kernel 枚举与 SCHED 镜像改消费 + 删本地定义；与 P2-3 的 SUSPEND 上移合并为一轮 minix-types 常量收敛。
+
+> **增补（2026-09-14，07-stage-ds 首轮架构审查）**：DS 段两件同型并入本轮收敛——(a) `SI_DATA_STORE = 5`（sysinfo.h:13）现本地定义于 os/servers/ds/src/getsysinfo.rs:27，11 篇 D2 自注「minix-types 暂无 sysinfo 模块（A-1 余部）」；(b) `NOTIFY_MESSAGE = 0x1000`（com.h:92，is_notify 的常量基）现硬编码于 os/servers/ds/src/dispatch.rs:94-96 的 is_notify 实现。DS 侧消费面（getsysinfo.rs / dispatch.rs）随 minix-types 落地改走共享常量并删本地定义。
+
+**依赖**：无。
+**解锁**：06-stage-sched/todo.md P2-3；E2/E6/E8 wrapper 的常量消费面。
+
+---
+
+## E-DSWIRE DS 传输面三缺：minix-sys 客户端模块、服务器 transport 通电、联调零覆盖（07-stage-ds 首轮架构审查登记，2026-09-14）
+
+**问题**：DS 判定层（plan/apply/verdict，os/servers/ds 18 文件 3572 行、81 个在跑测试）已成形，但执行半整层缺席，三个落点分属不同域：
+
+1. **minix-sys 无 DS 客户端模块**（edge 判定①）。C 的 libsys/ds.c（minix3/minix/lib/libsys/ds.c，219 行，18 个 API：ds_publish_u32/str/mem/label、ds_retrieve_u32/str/mem/label_name/label_endpt、ds_delete_u32/str/mem/label、ds_subscribe、ds_check，加上 do_invoke_ds 的 grant 生命周期 ds.c:7-33）是**全体 DS 消费方的公共入口**（RS manager.c:513,800、VFS main.c:441 + misc.c:960-985、input.c:665、storage/filter main.c:385、i2c.c:452、IS dmp_ds.c）。minix-sys 现有 13 个模块 6284 行（vm/vfs/rs/pm/socket 等）但**无 ds.rs**（ls os/libs/minix-sys/src/ 实测）。plan.md:182 的 A-8 描述已过时（"minix-sys 是 stub，sendrec/notify 为 todo!()"——现 grep todo!/unimplemented 零命中）。服务器侧契约镜像已就位（os/servers/ds/src/client.rs：key_grant 尺寸/方向 ds.c:13-19、terminate 钉尾 ds.c:84/:155、flags 组装、CheckReply 回信复用 ds.c:209-219），缺的只是 minix-sys 的传输半。附带：os/servers/ds/Cargo.toml 声明了 minix-sys 依赖但 src 零引用（grep 零命中，死依赖——A-8 落地时转正或删除）。
+2. **DS 服务器 transport 未通电**（edge 判定②+①复合）。main.rs:27-28 是空转 loop；C 主循环（main.c:45-88：get_work → is_notify 拒绝 → 七路分派 → reply/EDONTREPLY）的收发装配、get_key_name 的 sys_safecopyfrom（store.c:167-172）、do_getsysinfo 的 sys_datacopy 整表搬运（store.c:672-675）、update_subscribers 的 ipc_notify 发送（store.c:222）、sef_cb_init_fresh 的 rproctab grant 拉取（store.c:267-269）——Rust 侧全部只有判定半（dispatch::triage、plan_*/apply_*），缺 seam trait + 装配线（SCHED 先例：IpcTransport + KernelApi 双 trait + MockIpc/MockKernel，os/servers/sched/src/server.rs）。其中 sef_receive/send 的用户态 wrapper 归 minix-sys（E1/E2 面），safecopy/datacopy 的内核对端归 kernel（E2 家族）——两处对端就绪前，DS 侧以 seam + mock 达到「逻辑完备」，真实通电挂本条。
+3. **联调零覆盖**（edge 判定③）。C 的行为契约 minix3/minix/tests/ds/（dstest.c 178 行 + subs.c 91 行）无 Rust 承接 → E5(f)。
+
+**影响**：服务器不能服务（空转自白，main.rs:25-26 注释「must not pretend otherwise」）；全部消费方无客户端库可用；与 A-2 叠加时 VFS 同款订阅场景（main.c:441）双缺同根。
+
+**为何 edge**：① minix-sys DS 模块是 VFS/PM/RS/驱动/IS 全体消费方的共享契约层；② safecopy/datacopy/notify 的内核对端是 01-stage-kernel 生产代码；③ 多进程联调。DS stage 内生产代码（seam trait、装配线、mock 测试）不属本条——留 07-stage-ds/todo.md P1-4。
+
+**建议**（执行序）：
+- 方案 A（推荐，沿 SCHED 先例）：07-stage 先落 transport seam（IpcTransport 形 trait + 脚本化 mock 测试，stage 内 P1-4）；随后 minix-sys 补 ds.rs（消息构造 + `_taskcall` + grant 生命周期，复用 client.rs 三契约）；E1/E2 通电后接真实传输收尾本条。
+- 方案 B（否决）：minix-sys ds.rs 只做纯函数消息层、传输无限期留置——Rust 侧消费方（VFS/IS 重写）仍无法编译，违背「各 stage 可独立完整实现」。
+- 传输基建上移评估（06-stage-sched/todo.md V2 §4.1 预留的触发点）：DS 将成为第 4 个用户态服务器 seam 消费者；本轮判定**暂不上移**（四台服务器的 seam 形状各异且 DS 面最窄，纯 receive/send + safecopy），等 E1 trap 层落定后随本条执行时再评估一次公共 UserSpaceTransport 抽取。
+
+**依赖**：seam + mock 阶段无依赖；真实传输前置 E1/E2。
+**解锁**：07-stage-ds/todo.md P1-4 执行半；E5(f) 联调；A-2 regex 决策的端到端验证面；minix-sys 死依赖处置（ds crate Cargo.toml）。
+
+> **进度（2026-09-15，07-stage-ds 执行轮）**：DS 侧 seam 已落地（`server.rs` 双 trait + 七臂 + run/run_once，`heap.rs` A-3 固定池），真实端 `SysIpc` 委托 minix-sys `IpcTransport`（E1 通电即活）、`SysKernel` 三拷贝动词 EIO 诚实桩（等 minix-sys 补 SYS_SAFECOPY*/SYS_DATACOPY 包装）；minix-types MessageUnion 已补 `m_ds_req`/`m_ds_reply` 两臂（IS 轮同款先例）。ds crate 的 minix-sys 死依赖已转正（server.rs 真实端消费）。**剩余**：minix-sys ds.rs 客户端模块（libsys/ds.c 18 API）、E1/E2 通电、E5(f) 联调。
+
+---
+
+## E-ISWIRE IS 生产 transport 接线：minix-sef/minix-sys 替换 fail-closed 占位（08-stage-is V1 轮登记，2026-09-14）
+
+**问题**：IS 的生产传输面全部未接——`os/servers/is/src/main.rs:17-23` 用 `IsServer::new(UnimplementedTransport, UnimplementedFkeyCtl)` fail-closed（运行即 panic，注释自述接线 pending）；`SefTransport` 的 `startup/receive/send`（os/servers/is/src/sef.rs:128-139）与 `FkeyCtlTransport`（os/servers/is/src/tty_fkey.rs:178-182）只有 panic 占位实现。依赖侧：`os/libs/minix-sef` 是 5 行占位 crate（`sef_startup`/`sef_receive` 的 ping 透明拦截逻辑——A-11 的 `sef.c:208-214` 语义——无着落）；`minix-sys` 的 `_taskcall` 属 E2/E6 wrapper 家族。
+
+**影响**：IS 无法出生（main 直接 panic）；86 个单测全部跑在 fake 上，生产语义零验证。
+
+**为何 edge**：minix-sef/minix-sys 是共享基建（edge 判定①）；SEF ping 拦截与 `_taskcall` 由多个 server 共享，IS 只是首个深度消费方。
+
+**解锁后工作**：(1) minix-sef 实装 `sef_startup`/`sef_receive`（含 SEF_PING_REQUEST_TYPE 拦截应答，对照 `minix3/minix/lib/libsys/sef.c:150,208-214` + `sef_ping.c:21`）；(2) minix-sys `_taskcall` 可用（依赖 E1/E2）；(3) 写 `SefTransport`/`FkeyCtlTransport` 生产 impl 并替换 main.rs 占位（IS 侧是 stage 内生产代码，随本条目一并做）；(4) 重跑 `cargo test -p minix-is` 基线对照 86 passed + 复原 V1-P2-1 删掉的 minix-sys 依赖。
+
+**依赖**：E1（trap 层）、E2（SYS_* wrapper）。
+**解锁**：E-ISBOOT；08-stage-is/todo.md V1-P2-1 的复原。
+
+---
+
+## E-ISPROD GETSYSINFO/GET_*/VM_INFO producer 布局与 IS 快照对齐（08-stage-is V1 轮登记，2026-09-14）
+
+**问题**：IS 六组 `#[repr(C)]` 快照（`KProcSnap`/`KPrivSnap`/`MProcSnap`/`FProcSnap`/`DmapSnap`/`RprocpubSnap`/`RprocSnap`/`DsEntrySnap`/`Vm*Snap`，A-4 wire 契约提案）与现存 producer 是双源，其中 kernel 侧已坐实二进制不兼容：kernel `ProcInfoStruct`（os/kernel/src/misc.rs:371 起，GET_PROCTAB 生产布局：p_nr 打头、时间字段 u64、含 p_misc_flags/p_cpu/p_cpu_time_left/p_cycles/p_pending）与 IS `KProcSnap`（os/servers/is/src/dump_kernel.rs:28：p_rts_flags 打头、时间字段 i32、无上述五字段）字段序、字段集、类型三重不一致。PM/VFS/RS 的 `do_getsysinfo` 生产侧布局同样待对账（IS 侧 6 个 TODO(P1) 注释：dump_pm.rs:13、dump_vfs.rs:13、dump_rs.rs:13、dump_ds.rs:13、dump_vm.rs:12、dump_kernel.rs:16）；DS 生产侧已有模块（os/servers/ds/src/lib.rs:70）。附带一处常量双源：os/servers/vfs/src/misc.rs:66 本地定义 `SI_PROC_TAB: u32 = 2`，与 minix-types 权威（i32）重复。
+
+**影响**：`run_dump` 填体（08-stage-is/todo.md V1-P1-2）后，IS 按 `KProcSnap` 解释 producer 拷来的字节会全盘错位——这是行为级事故而不只是卫生问题。
+
+**为何 edge**：对端 stage 的生产代码（edge 判定②）：kernel `do_getinfo` 的输出布局、PM/VFS/RS/DS 的 `do_getsysinfo` payload、VM 的 `vm_info` 三结构都归各自 stage 所有权。
+
+**解锁后工作**：(1) 先裁决快照权威：上收 minix-types 单一权威（kernel `ProcInfoStruct` 迁入 + IS 删 `KProcSnap` 改 import）vs 各 crate `#[repr(C)]` 对齐约定 + wire 断言测试互钉（两案需在 02-stage-vm/04-stage-pm/05-stage-vfs/03-stage-rs/07-stage-ds 各 todo 留同步指针）；(2) kernel GET_PROCTAB/GET_KINFO/GET_IMAGE/GET_PRIVTAB/GET_IRQHOOKS/GET_IRQACTIDS/GET_MONPARAMS/GET_MACHINE 八臂布局对齐；(3) PM/VFS/RS/DS/VM 五 producer 逐一对齐 + 删 VFS 本地 SI_PROC_TAB；(4) 双侧补布局断言测试（`size_of` + 字段偏移，minix-types tty.rs:103 的 `_ASSERT_MSG_SIZE` 先例）。
+
+**依赖**：无硬依赖（裁决可先行）；实施建议在 E-ISWIRE 之后（有真实 IPC 才能端到端断言）。
+**解锁**：08-stage-is/todo.md V1-P1-2 的实施半（设计半不依赖本条）。
+
+---
+
+## E-ISKMESS A-3 的 GET_KMESSAGES 等价通道：kernel 侧新子请求（08-stage-is V1 轮登记，2026-09-14）
+
+**问题**：C 的 `kmessages_dmp` 经 `.usermapped` 直读内核消息环形缓冲（`get_minix_kerninfo()->kmessages`，dmp_kernel.c:71）；minix-rs 64 位不移植 `.usermapped`（01-stage-kernel/28-usermapped-data.md 既定），04 篇 A-3 设计定为「新增 `GET_KMESSAGES` 等价 `sys_getinfo` 子请求（kernel 拷贝环形缓冲）」。现状：kernel 侧无该子请求、minix-types 无 GET_KMESSAGES 常量（grep 实测双零命中）；IS 侧 `KerninfoTransport::kmessages_available` fail-closed panic（os/servers/is/src/acquire.rs:195-199）。消费面已备好：`KmessagesSnap`/`kmess_start`/`KMESS_BUF_SIZE`（dump_kernel.rs:99-110/264-272）。
+
+**影响**：F7（内核消息转储）永远不可用；acquire.rs 的 fail-closed 是 86 测试里唯一锁住「通道缺失」的活 panic 点。
+
+**为何 edge**：kernel `do_getinfo` 新增子请求是 kernel 生产代码（判定②），minix-types 增常量是共享契约（判定①）。
+
+**解锁后工作**：(1) minix-types `ipc::sysinfo` 增 `GET_KMESSAGES` 常量（值需对照 kernel com.h GET_* 未用号段裁决，缺号注释体例同 04 篇 §2.1）；(2) kernel `do_getinfo`（os/kernel/src/misc.rs）增臂：拷贝 kmessages 环形缓冲到调用方（布局含 km_next/km_size + 缓冲体，对照 05 篇 §4.1 快照）；(3) IS `KerninfoTransport` 填实（建议签名扩为数据出口形态，与 08-stage-is/todo.md V1-P1-2 的方案①同型）；(4) F7 链路单测。
+
+**依赖**：E2（`_kernel_call` wrapper）；与 E-KERNINFO（kerninfo 共享家族）交叉引用——按 04 篇既定决策走 sys_getinfo 子请求，不依赖 MINIX_KERNINFO 映射机制。
+**解锁**：08-stage-is DumpId::Kmessages 臂。
+
+---
+
+## E-ISBOOT IS 启动链与端到端联调：条件启动 + RS 动态加载 + TTY 观察者（08-stage-is V1 轮登记，2026-09-14）
+
+**问题**：全仓库零消费方引用 minix-is（`rg -rln "minix_is|minix-is" os` 实测仅 crate 自身与 Cargo.lock）——IS 没有任何启动路径。C 侧完整链是三件：rc 条件启动（`etc/rc.minix:117` `up -n is -period 5HZ`，仅 `sysenv debug_fkeys != 0`）、RS 运行时加载 + 动态分配 endpoint（A-9，无 IS_PROC_NR）、TTY 侧 fkey 观察者（`drivers/tty` keyboard.c，02 篇 §2.7/§2.8 契约）。minix-rs 侧三件均无着落：rc/system.conf 等价物不存在、RS 动态加载服务的能力归 03-stage-rs campaign、TTY crate 未 staging。
+
+**影响**：IS 的外部行为（唯一的存在理由）零验证；86 个单测只覆盖库内语义。
+
+**为何 edge**：多进程联调（判定③）+ 对方 stage 生产代码（RS 加载面、TTY 观察者面，判定②）。
+
+**解锁后工作**：(1) E5 联调包内立 IS 用例：起 IS → 模拟 TTY notify → F-key 位图 → dump 输出断言；(2) RS 动态加载 IS 的注册面（依赖 03-stage-rs campaign 的 service 加载能力）；(3) rc/system.conf 等价物的 debug_fkeys 条件启动语义（归集成配置层，随 E5 定载体）；(4) TTY crate 落地后补 `do_fkey_ctl` 真实对端（现 FakeTty 镜像退役）。
+
+**依赖**：E5（端到端联调包）、E-ISWIRE、03-stage-rs 动态加载；TTY 观察者面依赖 TTY staging（无条目，遥领）。
+**解锁**：IS 外部行为验收（A-11 的 `-period 5HZ` 存活 ping 端到端）。

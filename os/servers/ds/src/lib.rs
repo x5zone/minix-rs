@@ -62,6 +62,14 @@
 //!
 //! - [`getsysinfo`] — the image verdict: which query, how many bytes.
 //! - [`client`] — grant sizing, NUL discipline, flag assembly.
+//!
+//! The loop and its seams live beside them, documented in
+//! `notes/rewrite/fork-syscall-rewrite/07-stage-ds/01-ds-init-main.md`:
+//!
+//! - [`heap`] — the STR/MEM buffer pool (A-3: fixed slots, ENOMEM at
+//!   exhaustion, descriptors handed back on delete).
+//! - [`server`] — the assembly: receive → triage → seven arms → reply,
+//!   over the [`server::DsIpc`] and [`server::DsKernel`] seams.
 
 pub mod auth;
 pub mod boot;
@@ -70,12 +78,14 @@ pub mod client;
 pub mod delete;
 pub mod dispatch;
 pub mod getsysinfo;
+pub mod heap;
 pub mod identity;
 pub mod notify;
 pub mod pattern;
 pub mod publish;
 pub mod retrieve;
 pub mod sef;
+pub mod server;
 pub mod slots;
 pub mod store;
 pub mod subscribe;

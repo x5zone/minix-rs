@@ -57,7 +57,9 @@ pub fn apply_update(
     let mut stats = SweepStats::default();
     let target = match entry.get(store) {
         Some(e) => e,
-        None => return stats,
+        None => {
+            return stats;
+        }
     };
     // Copy the lanes C's loop reads repeatedly: the entry may be
     // cleared by the caller right after, but the sweep sees C order.
