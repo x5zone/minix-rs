@@ -49,8 +49,10 @@
 //! Subscription life lives beside them, documented in
 //! `notes/rewrite/fork-syscall-rewrite/07-stage-ds/10-ds-subscribe-check.md`:
 //!
-//! - [`subscribe`] — the subscribe verdict and seat write, behind a
-//!   matcher trait (literals exact; meta-characters await A-2).
+//! - [`subscribe`] — the subscribe verdict and seat write, matched by the
+//!   anchored ERE engine ([ARCH A-2] — C's `regcomp("^…$")` + `regexec`).
+//! - [`pattern`] — the match engine: anchored POSIX ERE, full match,
+//!   no allocation.
 //! - [`notify`] — the sweep: whom a change wakes, and whom it skips.
 //! - [`check`] — the check verdict: oldest pending update first.
 //!
@@ -70,6 +72,7 @@ pub mod dispatch;
 pub mod getsysinfo;
 pub mod identity;
 pub mod notify;
+pub mod pattern;
 pub mod publish;
 pub mod retrieve;
 pub mod sef;

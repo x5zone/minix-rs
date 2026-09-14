@@ -14,7 +14,7 @@
 
 ### 1.2 本章不讲什么
 
-- 正则引擎的完整实现——A-2 未决，本篇只定 trait 和默认的字面引擎（§1.5）。
+- 正则引擎的逐字节行为对账细节——引擎本体（[ARCH A-2]，锚定 POSIX ERE）住在 `pattern.rs`，本篇讲它怎么被订阅链消费（§1.5、§4.2）。
 - 客户端 `ds_subscribe` / `ds_check` 的包装——那是 12 的事。
 - 发布和删除本身——那是 07/09 的事（本篇只讲它们调通知环的那一下）。
 
@@ -47,7 +47,7 @@ check_auth(条目, 订阅者, PRIV_SUBSCRIBE)   ← 门：条目设了订阅门�
   && regexec(订阅正则, 条目键) == 0          ← 式：键名合模式
 ```
 
-字面模式（无元字符）在 C 的 `^…$` 锚定下 ≡ 精确相等——默认的 `LiteralMatcher` 判的正是这个，结论与 C 逐字节一致。含元字符的模式需要完整引擎（A-2）：`needs_full_engine` 能检出它们，检出即 `BadPattern`（`EINVAL`）——**判不了就拒，不断言自己会**。引擎到了插进同一个 trait，表结构不动（03 D7 的源文栏就是干这个的）。
+C 的匹配 = `regcomp("^" + pattern + "$", REG_EXTENDED)` + `regexec`（`:487-498`、`:186-193`）。Rust 的 [`EreMatcher`]（`pattern.rs`，[ARCH A-2]）按同样的锚定语义做全匹配：字面模式逐字节相等，元字符（`.` `*` `+` `?` `[类]`、分组、`|`、转义、`^`/`$` 断言）与 POSIX ERE 同判；编译不过的模式（悬空量词、失衡分组、未闭合类）走 `BadPattern`（`EINVAL`）——与 C 的 `regcomp` 失败同码同位。表结构不动（03 D7 的源文栏就是干这个的）。
 
 ### 1.6 唤醒环（`update_subscribers`，`:198-224`）
 
@@ -89,7 +89,7 @@ check_auth(条目, 订阅者, PRIV_SUBSCRIBE)   ← 门：条目设了订阅门�
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 匹配变 trait | `regex_t` + `regexec` 直调 | `PatternMatcher` trait + `LiteralMatcher` + `needs_full_engine`（`subscribe.rs`） | 完整引擎（A-2）未到；trait 让"字面精确"先落地且结论与 C 一致，引擎到了只加实现不改表 |
+| D1 | 匹配变无分配引擎 | `regex_t` + `regexec` 直调 | `pattern.rs` 的 `EreMatcher`（锚定 POSIX ERE，回溯 + 步数预算，零分配）（[ARCH A-2]） | C 存编译态、Rust 存源文（03 D7），匹配期现解析——80 字节 lane 上的代价是噪声，换来零 `regfree` 生命周期与零分配器依赖；字面/元字符与 C 同判，编译错误同码（`EINVAL`）。曾经的 trait 接缝随引擎落地拆除（单实现 trait 是装饰，`sef.rs` D1 同例） |
 | D2 | 喊搬分离 | 置位 + `ipc_notify` 内联 | `notify.rs` 回端点数组 + 统计，发送归传输 | 置位是状态（可测），发送是 IO（不可测）——分开，前者全测 |
 | D3 | 死席跳过 | `panic`（`:213`、`:137` 经由） | `skipped_stale` 计数（`notify.rs`） | §1.6：可用性高于崩溃；偏离声明两处（本文 + 代码） |
 | D4 | 阅分判清两步 | 查 + 拷 + 清一锅 | `plan_check`（verdict）+ `apply_check`（清位）（`check.rs`） | 拷失败不消费（`:575` 在拷后）——判和清分开，调用方"拷成了才清"才写得出来 |
@@ -103,9 +103,9 @@ check_auth(条目, 订阅者, PRIV_SUBSCRIBE)   ← 门：条目设了订阅门�
 
 ```
 os/servers/ds/src/
-├── subscribe.rs — 本篇前半：SubscribeReject / PatternMatcher / LiteralMatcher /
-│                   needs_full_engine / SubscribeArgs / plan_subscribe /
+├── subscribe.rs — 本篇前半：SubscribeReject / SubscribeArgs / plan_subscribe /
 │                   apply_subscribe / entry_matches
+├── pattern.rs   — 本篇的引擎：EreMatcher（锚定 ERE，A-2）+ 表驱动测试
 ├── notify.rs    — 本篇中段：SweepStats / apply_update / initial_scan
 └── check.rs     — 本篇后半：CheckReject / CheckHit / plan_check / apply_check
 ```
@@ -145,7 +145,9 @@ os/servers/ds/src/
 | 登记 | `test_overwrite_frees_old_seat_first` | `:476` | 带修饰释旧占新 |
 | 登记 | `test_empty_mask_means_all_types` | `:501-503` | 空掩码即全类型 |
 | 匹配 | `test_literal_engine_matches_exactly` | `:190-193` | 字面精确等价 |
-| 匹配 | `test_meta_patterns_need_full_engine` | A-2 | 元字符可检出 |
+| 匹配 | `pattern.rs`：`test_real_client_patterns_match` | A-2 + VFS `main.c:441` 等 | 四个真实订阅 pattern 逐一命中/不命中 |
+| 匹配 | `pattern.rs`：`test_check_rejects_compile_errors` | `:493-498` | `regcomp` 拒绝面 → `BadPattern` |
+| 匹配 | `pattern.rs`：字面/量词/类/分组/锚点/预算六件 | `:186-193` | ERE 语法面与 C 同判 |
 | 匹配 | `test_entry_matches_type_gate_masks_in_use` | `:210` | 掩码门：两侧先掩 `DSF_MASK_TYPE` 再判交，IN_USE 公共位不穿透 |
 | 唤醒 | `test_publish_wakes_matching_subscriber` | `:198-224` | 中者置位+唤醒 |
 | 唤醒 | `test_delete_clears_bit_and_still_wakes` | `:217-222` | 清位仍唤醒 |

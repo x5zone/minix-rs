@@ -16,13 +16,12 @@
 //! Single-threaded event loop: verdicts are pure; the apply step takes
 //! `&mut` tables from the caller, no shared state.
 
-use minix_types::{DSF_MASK_TYPE, EINVAL, EPERM, ESRCH, Endpoint, DsFlags};
+use minix_types::{DSF_MASK_TYPE, DsFlags, EINVAL, EPERM, ESRCH, Endpoint};
 
 use crate::notify::apply_update;
 use crate::publish::check_key_len;
 use crate::slots::{EntrySlot, key_eq, lookup_entry};
 use crate::store::{DsStore, MemBody, NR_DS_KEYS};
-use crate::subscribe::PatternMatcher;
 use crate::subscription::{DsSubs, NR_DS_SUBS};
 
 /// Why a delete is refused (`do_delete` error paths, store.c:593-638).
@@ -88,9 +87,7 @@ pub fn plan_delete(
     }
     let ty = flags.intersection(DsFlags::from_bits_truncate(DSF_MASK_TYPE));
     let slot = lookup_entry(store, key, ty).ok_or(DeleteReject::NotFound)?;
-    let entry = slot
-        .get(store)
-        .expect("lookup hit always seats an entry");
+    let entry = slot.get(store).expect("lookup hit always seats an entry");
     if !key_eq(&entry.owner, source) {
         return Err(DeleteReject::Forbidden);
     }
@@ -148,11 +145,10 @@ pub struct DeleteEffect {
 /// global allocator yet (A-3). Each buffer is copied into `heap_out`
 /// (caller-provided scratch, one slot per entry seat) for the owner to
 /// release; `effect.heap_buffers` counts them.
-pub fn apply_delete<M: PatternMatcher>(
+pub fn apply_delete(
     store: &mut DsStore,
     subs: &mut DsSubs,
     plan: DeletePlan,
-    engine: &M,
     wake: &mut dyn FnMut(Endpoint),
     heap_out: &mut [Option<MemBody>; NR_DS_KEYS],
 ) -> DeleteEffect {
@@ -195,17 +191,25 @@ pub fn apply_delete<M: PatternMatcher>(
                 continue;
             }
             let slot = EntrySlot::from_index(index).expect("index within table");
-            let stats = apply_update(store, subs, slot, false, engine, &mut sweep_out);
+            let stats = apply_update(store, subs, slot, false, &mut sweep_out);
             for endpoint in sweep_out.iter().take(stats.notified) {
                 wake(*endpoint);
             }
             effect.notified += stats.notified;
-            take_heap_buffer(store[index].as_ref().expect("victim seats a body"), heap_out, &mut effect);
+            take_heap_buffer(
+                store[index].as_ref().expect("victim seats a body"),
+                heap_out,
+                &mut effect,
+            );
             store[index] = None;
             effect.cleared_entries += 1;
         }
     } else if store[plan.slot.index()]
-        .map(|entry| entry.flags.intersects(DsFlags::TYPE_STR | DsFlags::TYPE_MEM))
+        .map(|entry| {
+            entry
+                .flags
+                .intersects(DsFlags::TYPE_STR | DsFlags::TYPE_MEM)
+        })
         .unwrap_or(false)
     {
         // STR/MEM: hand the buffer back (C: `free(data)`, :635).
@@ -217,7 +221,7 @@ pub fn apply_delete<M: PatternMatcher>(
     // The victim itself: sweep (C: `update_subscribers(dsp, 0)` at :642),
     // then the seat clears (:645).
     if store[plan.slot.index()].is_some() {
-        let stats = apply_update(store, subs, plan.slot, false, engine, &mut sweep_out);
+        let stats = apply_update(store, subs, plan.slot, false, &mut sweep_out);
         for endpoint in sweep_out.iter().take(stats.notified) {
             wake(*endpoint);
         }
@@ -249,7 +253,6 @@ fn take_heap_buffer(
 mod tests {
     use super::*;
     use crate::store::{DataBody, DataEntry};
-    use crate::subscribe::LiteralMatcher;
     use crate::subscription::{NR_DS_SUBS, Subscription};
     use minix_types::{DS_MAX_KEYLEN, DsFlags};
 
@@ -299,8 +302,7 @@ mod tests {
         let mut store = store;
         let mut subs: DsSubs = [None; NR_DS_SUBS];
         let mut heap = empty_heap();
-        let engine = LiteralMatcher;
-        let effect = apply_delete(&mut store, &mut subs, plan, &engine, &mut |_| {}, &mut heap);
+        let effect = apply_delete(&mut store, &mut subs, plan, &mut |_| {}, &mut heap);
         assert_eq!(effect.cleared_entries, 1);
         assert_eq!(effect.heap_buffers, 0);
         assert_eq!(effect.notified, 0);
@@ -362,8 +364,7 @@ mod tests {
             .expect("rs owns the label");
         assert!(plan.cascade_label);
         let mut heap = empty_heap();
-        let engine = LiteralMatcher;
-        let effect = apply_delete(&mut store, &mut subs, plan, &engine, &mut |_| {}, &mut heap);
+        let effect = apply_delete(&mut store, &mut subs, plan, &mut |_| {}, &mut heap);
         assert_eq!(effect.cleared_subs, 1);
         // Victim label + owned entry.
         assert_eq!(effect.cleared_entries, 2);
@@ -402,10 +403,14 @@ mod tests {
         let plan = plan_delete(&store, b"svc", 4, DsFlags::TYPE_LABEL, Some(b"rs"))
             .expect("rs owns the label");
         let mut heap = empty_heap();
-        let engine = LiteralMatcher;
         let mut woken: Vec<Endpoint> = Vec::new();
-        let effect =
-            apply_delete(&mut store, &mut subs, plan, &engine, &mut |ep| woken.push(ep), &mut heap);
+        let effect = apply_delete(
+            &mut store,
+            &mut subs,
+            plan,
+            &mut |ep| woken.push(ep),
+            &mut heap,
+        );
         // Exactly one wake: subscriber vfs(9) on the cascade victim cfg.
         assert_eq!(woken, vec![Endpoint(9)]);
         assert_eq!(effect.notified, 1);

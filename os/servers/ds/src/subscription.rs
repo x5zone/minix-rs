@@ -33,10 +33,9 @@ pub struct Subscription {
     /// C adds at subscribe time, `store.c:487-493`).
     ///
     /// C stores the *compiled* formula (`regex_t`); Rust stores the
-    /// source text and compiles per engine behind [`crate::subscribe`]'s
-    /// `PatternMatcher` trait. A literal pattern behaves exactly like
-    /// C's anchored match; meta-characters need a full engine (A-2),
-    /// which reads this same lane — no shape change on arrival.
+    /// source text and compiles per match through
+    /// [`crate::pattern::EreMatcher`] (A-2) — full-match semantics, so
+    /// the lane carries exactly what C's `^…$` anchoring would state.
     pub pattern: [u8; DS_MAX_KEYLEN],
     /// Already-told map, one bit per entry. C: `old_subs` — store.h:35.
     pub old_subs: Bitmap,

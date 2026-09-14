@@ -96,7 +96,7 @@ IS 用 `getsysinfo(DS, SI_DATA_STORE, buf, sizeof)` 取镜像（`:15`），逐�
 | D4 | 位图复用 | `bitchunk_t old_subs[]` | `minix-types::Bitmap` 128 位（A-5） | 位运算有一源，不手写第二遍；容量随表（`Bitmap::new(128)`） |
 | D5 | 堆指针只定宽度 | `void *data` + `malloc/free` | `MemBody { data: *mut u8, length, reallen }` + 所有权约（分配/释放在 07/09，A-3） | 镜像只要求指针占 8 字节，不要求现在就有分配器；`Vec<u8>` 会引入"堆谁建"的未决问题 |
 | D6 | 布局等价锁死（A-10） | 192 字节天然成立 | `#[repr(C)]` + `size_of == 192` 断言 + 三偏移锁 | 偏离的代价是 IS 静默误读——不断言等于裸奔 |
-| D7 | 正则式 deferred（A-2） | `regex_t` 槽内 | 存源文 `pattern` 栏（`subscription.rs`），引擎走 trait（10） | 编译后的正则没有 `no_std` 现成实现；臆造一个占位布局等于伪造契约。不如存源文，引擎到了即插 |
+| D7 | 正则式存源文（A-2） | `regex_t` 槽内 | 存源文 `pattern` 栏（`subscription.rs`），匹配期经 `EreMatcher` 现解析（`pattern.rs`，10） | 编译后的正则没有 `no_std` 现成实现；存源文让订阅表零引擎生命周期（无 `regfree` 对应物），引擎按全匹配语义现解析——源文栏即 C 锚定语义的完整陈述 |
 
 ---
 

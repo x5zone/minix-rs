@@ -24,7 +24,7 @@ use minix_types::Endpoint;
 use crate::identity::resolve_endpoint;
 use crate::slots::EntrySlot;
 use crate::store::DsStore;
-use crate::subscribe::{PatternMatcher, entry_matches};
+use crate::subscribe::entry_matches;
 use crate::subscription::{DsSubs, NR_DS_SUBS, Subscription};
 
 /// What one sweep did.
@@ -47,12 +47,11 @@ pub struct SweepStats {
 ///
 /// `out` is caller scratch with one lane per subscription seat; only
 /// the first `stats.notified` lanes are written.
-pub fn apply_update<M: PatternMatcher>(
+pub fn apply_update(
     store: &DsStore,
     subs: &mut DsSubs,
     entry: EntrySlot,
     set: bool,
-    engine: &M,
     out: &mut [Endpoint; NR_DS_SUBS],
 ) -> SweepStats {
     let mut stats = SweepStats::default();
@@ -77,7 +76,7 @@ pub fn apply_update<M: PatternMatcher>(
                 continue;
             }
         };
-        if !entry_matches(&target_copy, Some(&sub.owner), engine, sub) {
+        if !entry_matches(&target_copy, Some(&sub.owner), sub) {
             continue;
         }
         if let Some(live) = seat {
@@ -98,13 +97,12 @@ pub fn apply_update<M: PatternMatcher>(
 /// whether the source should be woken once (`match_found` at :526):
 /// `Some(source)` appends nothing to `out` — the caller wakes the
 /// source directly.
-pub fn initial_scan<M: PatternMatcher>(
+pub fn initial_scan(
     store: &DsStore,
     subs: &mut DsSubs,
     sub: crate::slots::SubSlot,
     source: Endpoint,
     subscriber_name: &[u8],
-    engine: &M,
 ) -> Option<Endpoint> {
     let snapshot: Subscription = match subs[sub.index()] {
         Some(seat) if !seat.is_vacant() => seat,
@@ -116,7 +114,7 @@ pub fn initial_scan<M: PatternMatcher>(
         if entry.is_vacant() {
             continue;
         }
-        if !entry_matches(entry, Some(subscriber_name), engine, &snapshot) {
+        if !entry_matches(entry, Some(subscriber_name), &snapshot) {
             continue;
         }
         if let Some(live) = subs[sub.index()].as_mut() {
@@ -124,18 +122,13 @@ pub fn initial_scan<M: PatternMatcher>(
         }
         found = true;
     }
-    if found {
-        Some(source)
-    } else {
-        None
-    }
+    if found { Some(source) } else { None }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::{DataBody, DataEntry, NR_DS_KEYS};
-    use crate::subscribe::LiteralMatcher;
     use minix_types::{DS_MAX_KEYLEN, DsFlags};
 
     fn label_entry(key: &[u8], ep: u32) -> DataEntry {
@@ -185,10 +178,9 @@ mod tests {
         let mut subs: DsSubs = [None; NR_DS_SUBS];
         subs[0] = Some(sub_for(b"vfs", b"clk"));
         subs[1] = Some(sub_for(b"pm", b"rst"));
-        let engine = LiteralMatcher;
         let mut out = [Endpoint(0); NR_DS_SUBS];
         let slot = EntrySlot::from_index(3).unwrap();
-        let stats = apply_update(&store, &mut subs, slot, true, &engine, &mut out);
+        let stats = apply_update(&store, &mut subs, slot, true, &mut out);
         assert_eq!(stats.notified, 1);
         assert_eq!(out[0], Endpoint(9));
         assert!(subs[0].as_ref().unwrap().old_subs.get(3));
@@ -203,10 +195,9 @@ mod tests {
         let mut sub = sub_for(b"vfs", b"clk");
         sub.old_subs.set(3, true);
         subs[0] = Some(sub);
-        let engine = LiteralMatcher;
         let mut out = [Endpoint(0); NR_DS_SUBS];
         let slot = EntrySlot::from_index(3).unwrap();
-        let stats = apply_update(&store, &mut subs, slot, false, &engine, &mut out);
+        let stats = apply_update(&store, &mut subs, slot, false, &mut out);
         assert_eq!(stats.notified, 1);
         assert!(!subs[0].as_ref().unwrap().old_subs.get(3));
     }
@@ -218,10 +209,9 @@ mod tests {
         let store = wired_store();
         let mut subs: DsSubs = [None; NR_DS_SUBS];
         subs[0] = Some(sub_for(b"ghost", b"clk"));
-        let engine = LiteralMatcher;
         let mut out = [Endpoint(0); NR_DS_SUBS];
         let slot = EntrySlot::from_index(3).unwrap();
-        let stats = apply_update(&store, &mut subs, slot, true, &engine, &mut out);
+        let stats = apply_update(&store, &mut subs, slot, true, &mut out);
         assert_eq!(stats.notified, 0);
         assert_eq!(stats.skipped_stale, 1);
     }
@@ -231,9 +221,8 @@ mod tests {
         let store = wired_store();
         let mut subs: DsSubs = [None; NR_DS_SUBS];
         subs[5] = Some(sub_for(b"pm", b"clk"));
-        let engine = LiteralMatcher;
         let slot = crate::slots::SubSlot::from_index(5).unwrap();
-        let wake = initial_scan(&store, &mut subs, slot, Endpoint(4), b"pm", &engine);
+        let wake = initial_scan(&store, &mut subs, slot, Endpoint(4), b"pm");
         assert_eq!(wake, Some(Endpoint(4)));
         assert!(subs[5].as_ref().unwrap().old_subs.get(3));
     }
@@ -243,9 +232,8 @@ mod tests {
         let store = wired_store();
         let mut subs: DsSubs = [None; NR_DS_SUBS];
         subs[5] = Some(sub_for(b"pm", b"zzz"));
-        let engine = LiteralMatcher;
         let slot = crate::slots::SubSlot::from_index(5).unwrap();
-        let wake = initial_scan(&store, &mut subs, slot, Endpoint(4), b"pm", &engine);
+        let wake = initial_scan(&store, &mut subs, slot, Endpoint(4), b"pm");
         assert_eq!(wake, None);
     }
 }

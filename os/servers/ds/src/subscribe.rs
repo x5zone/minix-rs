@@ -6,16 +6,17 @@
 //! The module owns the verdict and the seat write, nothing else: owner
 //! resolution is tendered, the overwrite rule, seat taking, pattern
 //! storage, the type mask, and the optional immediate scan. Matching
-//! itself is a trait (`PatternMatcher`): the default engine covers
-//! literal patterns exactly (C anchors `^…$`, so literals are exact
-//! matches); meta-characters await the full engine (A-2), which plugs
-//! into the same trait without reshaping any table.
+//! itself lives in [`crate::pattern`] — the anchored ERE engine
+//! ([ARCH A-2]) mirrors C's `regcomp("^…$", REG_EXTENDED)` + `regexec`
+//! pair, so literal and meta-character patterns both decide exactly as
+//! C does.
 //!
 //! Single-threaded event loop: verdicts are pure; the apply step takes
 //! `&mut` tables from the caller, no shared state.
 
-use minix_types::{DSF_MASK_TYPE, DS_MAX_KEYLEN, EAGAIN, EEXIST, EINVAL, ESRCH, DsFlags};
+use minix_types::{DS_MAX_KEYLEN, DSF_MASK_TYPE, DsFlags, EAGAIN, EEXIST, EINVAL, ESRCH};
 
+use crate::pattern::EreMatcher;
 use crate::publish::check_key_len;
 use crate::slots::{SubSlot, alloc_sub_slot, free_sub_slot, lookup_sub};
 use crate::subscription::{DsSubs, Subscription};
@@ -41,8 +42,10 @@ pub enum SubscribeReject {
     BadKey,
     /// The pattern does not compile. C: `EINVAL` — store.c:493-498.
     ///
-    /// Raised by the engine for meta-character patterns the default
-    /// matcher cannot decide. Literal patterns never refuse here.
+    /// Raised by [`EreMatcher::check`] for patterns the anchored ERE
+    /// grammar refuses (stray quantifier, unbalanced group, unterminated
+    /// class, trailing escape, quantified anchor) — the same roads
+    /// `regcomp` declines in C.
     BadPattern,
 }
 
@@ -56,58 +59,6 @@ impl SubscribeReject {
             Self::BadKey | Self::BadPattern => EINVAL,
         }
     }
-}
-
-/// Decides whether a stored pattern matches an entry key.
-///
-/// C compiles `^pattern$` with `REG_EXTENDED` and runs `regexec`
-/// (store.c:487-498, 190-193). The trait keeps that seam: engines are
-/// interchangeable, tables never care which one judged.
-///
-/// Both sides are NUL-padded lanes; engines compare up to the first
-/// NUL on each side (the `strcmp` stop rule, 04).
-pub trait PatternMatcher {
-    /// Judge `pattern` against `key`.
-    fn matches(&self, pattern: &[u8; DS_MAX_KEYLEN], key: &[u8; DS_MAX_KEYLEN]) -> bool;
-
-    /// Compile-check `pattern`: `Ok` means subscribable.
-    ///
-    /// The default accepts every lane (literals always compile in C
-    /// too); engines with a smaller language refuse what they cannot
-    /// decide, surfacing as `BadPattern`.
-    fn check(&self, _pattern: &[u8; DS_MAX_KEYLEN]) -> Result<(), SubscribeReject> {
-        Ok(())
-    }
-}
-
-/// The literal engine: exact match, nothing more.
-///
-/// C anchors every pattern (`^…$`), so a pattern without
-/// meta-characters matches exactly one key — byte for byte. This
-/// engine decides exactly that case, with identical outcomes to C.
-/// Patterns containing meta-characters are *not* decided here (see
-/// [`DeferredEngine`]): guessing at regex semantics would invent
-/// behavior C never stated.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LiteralMatcher;
-
-impl PatternMatcher for LiteralMatcher {
-    fn matches(&self, pattern: &[u8; DS_MAX_KEYLEN], key: &[u8; DS_MAX_KEYLEN]) -> bool {
-        crate::slots::key_eq(pattern, key)
-    }
-}
-
-/// Marker for patterns the literal engine must not decide.
-///
-/// A pattern containing regex meta-characters (`. * [ ] ( ) | + ? ^ $
-/// `\`) needs the full engine (A-2). This helper detects them so the
-/// caller can refuse with `BadPattern` instead of mis-matching:
-/// C would compile and match; we honestly cannot — yet.
-pub fn needs_full_engine(pattern: &[u8; DS_MAX_KEYLEN]) -> bool {
-    let len = pattern.iter().position(|&b| b == 0).unwrap_or(pattern.len());
-    pattern[..len]
-        .iter()
-        .any(|&b| matches!(b, b'.' | b'*' | b'[' | b']' | b'(' | b')' | b'|' | b'+' | b'?' | b'^' | b'$' | b'\\'))
 }
 
 /// Where a subscribe lands (seat plus scan wish, store.c:470-511).
@@ -128,7 +79,7 @@ pub struct SubscribePlan {
 /// (clippy::too_many_arguments) — and they travel together through
 /// every caller, so they read better as one named bundle than as a
 /// positional run.
-pub struct SubscribeArgs<'a, M: PatternMatcher> {
+pub struct SubscribeArgs<'a> {
     /// Already-resolved caller name (`None` = nameless, 05).
     pub owner: Option<&'a [u8]>,
     /// Ferried pattern text.
@@ -141,8 +92,6 @@ pub struct SubscribeArgs<'a, M: PatternMatcher> {
     pub overwrite: bool,
     /// `INITIAL` ornament: scan now, notify on match.
     pub initial: bool,
-    /// The match engine behind the verdict.
-    pub engine: &'a M,
 }
 
 /// Decide a subscribe (`do_subscribe` verdict, store.c:466-508).
@@ -151,9 +100,9 @@ pub struct SubscribeArgs<'a, M: PatternMatcher> {
 /// needs overwrite (else `Exists`) and is freed first; a full house
 /// refuses; the key bounds refuse; the engine compile-checks; the mask
 /// and scan wish are recorded.
-pub fn plan_subscribe<M: PatternMatcher>(
+pub fn plan_subscribe(
     subs: &DsSubs,
-    args: SubscribeArgs<'_, M>,
+    args: SubscribeArgs<'_>,
 ) -> Result<(SubscribePlan, Option<SubSlot>), SubscribeReject> {
     let owner = args.owner.ok_or(SubscribeReject::UnknownSource)?;
     let freed = match lookup_sub(subs, owner) {
@@ -170,7 +119,7 @@ pub fn plan_subscribe<M: PatternMatcher>(
     let mut pattern = [0u8; DS_MAX_KEYLEN];
     let copy_len = args.key.len().min(DS_MAX_KEYLEN - 1);
     pattern[..copy_len].copy_from_slice(&args.key[..copy_len]);
-    args.engine.check(&pattern)?;
+    EreMatcher.check(&pattern)?;
     let mask_bits = args
         .flags
         .intersection(DsFlags::from_bits_truncate(DSF_MASK_TYPE));
@@ -225,10 +174,9 @@ pub fn apply_subscribe(
 /// at :210): the entry's subscribe gate must admit the subscriber, the two
 /// type arms must meet, and the pattern must match the entry key.
 /// `subscriber` is the subscriber endpoint's already-resolved name.
-pub fn entry_matches<M: PatternMatcher>(
+pub fn entry_matches(
     entry: &crate::store::DataEntry,
     subscriber: Option<&[u8]>,
-    engine: &M,
     sub: &Subscription,
 ) -> bool {
     if !crate::auth::check_auth(entry, subscriber, DsFlags::PRIV_SUBSCRIBE) {
@@ -246,7 +194,7 @@ pub fn entry_matches<M: PatternMatcher>(
     {
         return false;
     }
-    engine.matches(&sub.pattern, &entry.key)
+    EreMatcher.matches(&sub.pattern, &entry.key)
 }
 
 #[cfg(test)]
@@ -259,15 +207,14 @@ mod tests {
         [None; NR_DS_SUBS]
     }
 
-    fn args<'a, M: PatternMatcher>(
+    fn args<'a>(
         owner: Option<&'a [u8]>,
         key: &'a [u8],
         key_len: usize,
         flags: DsFlags,
         overwrite: bool,
         initial: bool,
-        engine: &'a M,
-    ) -> SubscribeArgs<'a, M> {
+    ) -> SubscribeArgs<'a> {
         SubscribeArgs {
             owner,
             key,
@@ -275,25 +222,15 @@ mod tests {
             flags,
             overwrite,
             initial,
-            engine,
         }
     }
 
     #[test]
     fn test_first_subscribe_takes_seat_zero() {
         let subs = test_subs();
-        let engine = LiteralMatcher;
         let (plan, freed) = plan_subscribe(
             &subs,
-            args(
-                Some(b"vfs"),
-                b"disk.*",
-                7,
-                DsFlags::TYPE_U32,
-                false,
-                false,
-                &engine,
-            ),
+            args(Some(b"vfs"), b"disk.*", 7, DsFlags::TYPE_U32, false, false),
         )
         .expect("first subscribe must land");
         assert_eq!(plan.slot.index(), 0);
@@ -304,18 +241,9 @@ mod tests {
     #[test]
     fn test_second_subscribe_without_overwrite_refuses() {
         let mut subs = test_subs();
-        let engine = LiteralMatcher;
         let (plan, freed) = plan_subscribe(
             &subs,
-            args(
-                Some(b"vfs"),
-                b"a",
-                2,
-                DsFlags::TYPE_U32,
-                false,
-                false,
-                &engine,
-            ),
+            args(Some(b"vfs"), b"a", 2, DsFlags::TYPE_U32, false, false),
         )
         .unwrap();
         let mut pattern = [0u8; DS_MAX_KEYLEN];
@@ -324,15 +252,7 @@ mod tests {
         assert_eq!(
             plan_subscribe(
                 &subs,
-                args(
-                    Some(b"vfs"),
-                    b"b",
-                    2,
-                    DsFlags::TYPE_U32,
-                    false,
-                    false,
-                    &engine
-                ),
+                args(Some(b"vfs"), b"b", 2, DsFlags::TYPE_U32, false, false)
             ),
             Err(SubscribeReject::Exists)
         );
@@ -341,18 +261,9 @@ mod tests {
     #[test]
     fn test_overwrite_frees_old_seat_first() {
         let mut subs = test_subs();
-        let engine = LiteralMatcher;
         let (plan, freed) = plan_subscribe(
             &subs,
-            args(
-                Some(b"vfs"),
-                b"a",
-                2,
-                DsFlags::TYPE_U32,
-                false,
-                false,
-                &engine,
-            ),
+            args(Some(b"vfs"), b"a", 2, DsFlags::TYPE_U32, false, false),
         )
         .unwrap();
         let mut pattern = [0u8; DS_MAX_KEYLEN];
@@ -360,15 +271,7 @@ mod tests {
         apply_subscribe(&mut subs, b"vfs", &pattern, plan, freed);
         let (plan2, freed2) = plan_subscribe(
             &subs,
-            args(
-                Some(b"vfs"),
-                b"b",
-                2,
-                DsFlags::TYPE_U32,
-                true,
-                false,
-                &engine,
-            ),
+            args(Some(b"vfs"), b"b", 2, DsFlags::TYPE_U32, true, false),
         )
         .expect("overwrite must land");
         assert_eq!(freed2.map(|s| s.index()), Some(0));
@@ -379,58 +282,62 @@ mod tests {
     fn test_empty_mask_means_all_types() {
         // No type arm named → full mask (store.c:501-503).
         let subs = test_subs();
-        let engine = LiteralMatcher;
         let (plan, _) = plan_subscribe(
             &subs,
-            args(
-                Some(b"vfs"),
-                b"ab",
-                3,
-                DsFlags::empty(),
-                false,
-                false,
-                &engine,
-            ),
+            args(Some(b"vfs"), b"ab", 3, DsFlags::empty(), false, false),
         )
         .unwrap();
+        assert_eq!(plan.type_mask, DsFlags::from_bits_truncate(DSF_MASK_TYPE));
+    }
+
+    #[test]
+    fn test_engine_compile_gates_subscribe() {
+        // A pattern regcomp would refuse lands as BadPattern (store.c:493-498
+        // through EreMatcher::check, A-2); a meta-character pattern C
+        // compiles fine is subscribable now.
+        let subs = test_subs();
         assert_eq!(
-            plan.type_mask,
-            DsFlags::from_bits_truncate(DSF_MASK_TYPE)
+            plan_subscribe(
+                &subs,
+                args(Some(b"vfs"), b"a**", 3, DsFlags::TYPE_U32, false, false)
+            ),
+            Err(SubscribeReject::BadPattern)
+        );
+        assert!(
+            plan_subscribe(
+                &subs,
+                args(
+                    Some(b"vfs"),
+                    b"drv\\.[bc]..\\..*",
+                    15,
+                    DsFlags::TYPE_U32,
+                    false,
+                    false
+                )
+            )
+            .is_ok()
         );
     }
 
     #[test]
-    fn test_literal_engine_matches_exactly() {
-        let engine = LiteralMatcher;
+    fn test_engine_matches_literals_exactly() {
+        // A literal pattern is C's anchored literal: one key, byte for byte
+        // (anchored full match: one key, byte for byte — engine parity).
         let mut pattern = [0u8; DS_MAX_KEYLEN];
         pattern[..3].copy_from_slice(b"vfs");
         let mut key = [0u8; DS_MAX_KEYLEN];
         key[..3].copy_from_slice(b"vfs");
-        assert!(engine.matches(&pattern, &key));
+        assert!(EreMatcher.matches(&pattern, &key));
         key[..4].copy_from_slice(b"vfs0");
-        assert!(!engine.matches(&pattern, &key));
-    }
-
-    #[test]
-    fn test_meta_patterns_need_full_engine() {
-        let mut pattern = [0u8; DS_MAX_KEYLEN];
-        pattern[..6].copy_from_slice(b"disk.*");
-        assert!(needs_full_engine(&pattern));
-        pattern = [0u8; DS_MAX_KEYLEN];
-        pattern[..4].copy_from_slice(b"disk");
-        assert!(!needs_full_engine(&pattern));
+        assert!(!EreMatcher.matches(&pattern, &key));
     }
 
     #[test]
     fn test_nameless_source_is_esrch() {
         let subs = test_subs();
-        let engine = LiteralMatcher;
         assert_eq!(
-            plan_subscribe(
-                &subs,
-                args(None, b"ab", 3, DsFlags::TYPE_U32, false, false, &engine)
-            )
-            .map(|_| ()),
+            plan_subscribe(&subs, args(None, b"ab", 3, DsFlags::TYPE_U32, false, false))
+                .map(|_| ()),
             Err(SubscribeReject::UnknownSource)
         );
     }
@@ -438,7 +345,6 @@ mod tests {
     #[test]
     fn test_entry_matches_gates() {
         // Entry/subscriber fixtures for the match verdict.
-        let engine = LiteralMatcher;
         let mut entry = DataEntry {
             flags: DsFlags::IN_USE | DsFlags::TYPE_U32,
             key: [0u8; DS_MAX_KEYLEN],
@@ -449,11 +355,11 @@ mod tests {
         let mut sub = Subscription::vacant();
         sub.flags = DsFlags::IN_USE | DsFlags::TYPE_U32;
         sub.pattern[..3].copy_from_slice(b"clk");
-        assert!(entry_matches(&entry, Some(b"vfs"), &engine, &sub));
+        assert!(entry_matches(&entry, Some(b"vfs"), &sub));
         // Wrong pattern: no match.
         sub.pattern = [0u8; DS_MAX_KEYLEN];
         sub.pattern[..3].copy_from_slice(b"rst");
-        assert!(!entry_matches(&entry, Some(b"vfs"), &engine, &sub));
+        assert!(!entry_matches(&entry, Some(b"vfs"), &sub));
     }
 
     #[test]
@@ -463,7 +369,6 @@ mod tests {
         // IN_USE, so the raw intersection never refuses — the type bits must
         // be isolated first. A U32 entry and a STR subscription with the
         // same key text are strangers (P1-2 regression lock).
-        let engine = LiteralMatcher;
         let mut entry = DataEntry {
             flags: DsFlags::IN_USE | DsFlags::TYPE_U32,
             key: [0u8; DS_MAX_KEYLEN],
@@ -474,10 +379,10 @@ mod tests {
         let mut sub = Subscription::vacant();
         sub.flags = DsFlags::IN_USE | DsFlags::TYPE_STR;
         sub.pattern[..3].copy_from_slice(b"clk");
-        assert!(!entry_matches(&entry, Some(b"vfs"), &engine, &sub));
+        assert!(!entry_matches(&entry, Some(b"vfs"), &sub));
         // Same arms meet: flipping the entry's arm to STR lets it through.
         entry.flags = DsFlags::IN_USE | DsFlags::TYPE_STR;
-        assert!(entry_matches(&entry, Some(b"vfs"), &engine, &sub));
+        assert!(entry_matches(&entry, Some(b"vfs"), &sub));
     }
 
     #[test]
