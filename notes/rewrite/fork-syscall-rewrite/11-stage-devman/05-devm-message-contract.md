@@ -118,6 +118,8 @@ ADD/DEL 请求相（grant 二字）/ BIND 请求相（endpoint + device_id）/ �
 
 C 的正确性依赖"记得写 break"（人记性），Rust 的 `match` 穷尽且无贯穿（编译器记性）——fall-through 类 bug 在类型层面**不可表达**。`dispatch` 全覆盖 `i32`（通配 `_` 收未知）。`devman_message_hook`（hooks.rs；01 的 `main` 注册的三个钩子之一）即 `dispatch(m_type)` + 按臂转交——05 落地时 01 §3.6 预告的"替换为单 handler 分派"已经兑现：各臂在 07-09 落地前为忽略占位（注释指向 owner），`Ignored` 臂永久忽略。01 doc 无需改字（它写的是"05 落地时替换"，现在就是落地；01 scan 的前向引用记录同步闭合，见 05 scan 交叉项）。
 
+**路由与载荷的成婚（DM-P2-2）**：`dispatch` 只回答"谁管这条消息"，载荷词仍以裸参数穿行。`DevmanMsg::classify(m_type, body, word2, word3) -> Option<DevmanMsg>` 把相位表的"这个字现在是什么"在解码一步内答完——`Add` 携 grant 拷贝字节、`Bind`/`Unbind` 携 `(DEVICE_ID, ENDPOINT)`、`Del` 携设备号；`Ignored` 型（未知码、`REPLY`、五个 A-6 声明未用码）解码为 `None`，服务器对 `None` 的应答是单个 Nothing（不运行、不回复，§3.1 的 fail-closed 原样上移到类型层）。装配面 `handle_other` 的签名自此只见 `Endpoint` 与 `DevmanMsg`，裸 `m4` 词在 DEVMAN 流量上无调用点。
+
 ### 3.3 EPERM 不回：用测试锁"无发送"（message.rs `check_rs`）
 
 `check_rs` 返 `Err(EPERM)`；09 的调用规约是"Err 即 stamp 后静默返回"。单测断言两层：错误码是 EPERM **且**无发送动作（测试替身 Transport 记录发送列表，空）。"且"字是重点——只断言错误码的测试放过了"误发回复"的回归。
@@ -134,7 +136,7 @@ C 的 `do_reply` 只改两字，grant id/size 残留仍在消息里发回（发�
 
 ```
 os/servers/devman/src/ipc/
-  message.rs  — 相位视图（grant_id/grant_size/request_endpoint/device_id/result）+ apply_reply（= apply_reply_with_id(None) 特例）+ check_rs（+4 测试）
+  message.rs  — 相位视图（grant_id/grant_size/request_endpoint/device_id/result）+ apply_reply（= apply_reply_with_id(None) 特例）+ check_rs + DevmanMsg::classify（+5 测试）
   dispatch.rs — Handler 五变体 + dispatch()（+2 测试）
   minix-types/src/types/com.rs — DEVMAN 数字块 + RS_PROC_NR（+1 测试 test_devman_messages）
 ```
@@ -175,7 +177,7 @@ os/servers/devman/src/ipc/
 | `four_messages_route_singly` | 一对一 | A-3 |
 | `unknown_is_ignored_without_reply` | 5×A-6 + REPLY + 垃圾值全 Ignored | §2.6 |
 
-截至 2026-09-04：`cargo test -p minix-devman` **59 passed / 0 failed**（45 + 本篇 5：message 3 + dispatch 2；com.rs 另 +1 在 minix-types 139 total）。`cargo clippy` 0 警告（devman 部分）。
+截至 2026-09-15：`cargo test -p minix-devman` **83 passed / 0 failed**（本篇 message 5 + dispatch 2；全 crate 计数随批次增长，见 07 §5）。`cargo clippy` 0 警告（devman 部分）。
 
 ---
 

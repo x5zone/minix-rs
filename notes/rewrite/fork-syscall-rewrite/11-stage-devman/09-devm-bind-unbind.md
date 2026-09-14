@@ -24,7 +24,7 @@
 RS publish_service（12）
   │ devman_id != 0 → ds 查 label → DEVMAN_BIND(device_id, endpoint)
   ▼
-devman handle_other → dispatch → Bind（05）
+devman classify（05，内走 dispatch）→ handle_other → Bind 臂
   │ check_rs：非 RS → Dropped（无声，05 §2.4）
   │ find 缺席 → Reply ENODEV
   ▼
@@ -79,7 +79,7 @@ C 的 `do_bind` 内含 `sendrec`（阻塞等驱动），Rust 拆 `do_bind`（门
 
 ### 3.3 装配：`Server` 有主状态机（09 §4）
 
-`Server { vtreefs, devices, events_cookie }` + `handle_other` 六分支（dispatch 结果直连 07/08/本篇 halves + 05 原语）。`OutAction` 三变体是传输契约（Reply/Forward/Nothing）。单例未建（main 仍 park，传输阶段接线——P1-6 不变；装配 100% 可测，无需全局）。
+`Server { vtreefs, devices, events_cookie }` + `handle_other(source, Option<DevmanMsg>)`——消息先经 05 的 `DevmanMsg::classify` 解码成类型化载荷（DM-P2-2），`None`（Ignored 型）应答单个 Nothing，四臂直连 07/08/本篇 halves + 05 原语。`OutAction` 三变体是传输契约（Reply/Forward/Nothing）。单例未建（main 仍 park，传输阶段接线——P1-6 不变；装配 100% 可测，无需全局）。
 
 ---
 

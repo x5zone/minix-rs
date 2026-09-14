@@ -20,7 +20,7 @@ devman 的现状是"语义库完备、服务器未出生、出生时会有三处
 | DM-P1-4 | 事件行预算记账对齐 + 半登记状态 | 预算未扣 "ADD "/"REMOVE " 前缀；事件失败留已入树无事件的设备 | ✅ 2026-09-15（ADD_STRING/REMOVE_STRING/EVENT_ID_SUFFIX_LEN 常量 + generate_child_path 预发布构行；§2 DM-P1-4 Fix #2） |
 | DM-P1-5 | 文件表下沉，消灭全局 static | files.rs 唯一 unsafe 的 AssumeSyncCell 静态 + cookie 双表 → 内容挂 inode | ⬜ |
 | DM-P2-1 | ADD 回复的 DEVICE_ID 无出口 | apply_reply 只写 RESULT 且清零其余字；C 回复是 RESULT+DEVICE_ID 双字 | ✅ 2026-09-15（apply_reply_with_id(msg, res, Option\<i32\>) 原语化；§3 DM-P2-1 Fix #3） |
-| DM-P2-2 | handle_other 位置参数类型化 | word2/word3 裸参数 → DevmanMsg 枚举（协议入类型系统） | ⬜ |
+| DM-P2-2 | handle_other 位置参数类型化 | word2/word3 裸参数 → DevmanMsg 枚举（协议入类型系统） | ✅ 2026-09-15（DevmanMsg::classify 解码 + handle_other(source, Option\<DevmanMsg\>)；§3 DM-P2-2 Fix #4） |
 | DM-P3-1 | 死代码批次 | Attribute.data / Device.info / init / find_device / set_static_text 等 | ⬜ |
 | DM-P3-2 | 测试与卫生批次 | wire 构造 helper 四份复制；is_dir 重复；parse_device 双返回 | ⬜ |
 | DM-P3-3 | 每读分配 Buf + 吞错为 EOF | event_queue 每次读新建 4097 字节缓冲；ENOMEM 静默变 EOF | ⬜ |

@@ -18,8 +18,7 @@ use crate::del_device::do_del;
 use crate::device_tree::{default_file_stat, DeviceTree};
 use crate::files::{register_file, EventFile, FileEntry};
 use crate::hooks::{FsHooks, ServerConfig};
-use crate::ipc::dispatch;
-use crate::ipc::Handler;
+use crate::ipc::DevmanMsg;
 use crate::structs::{DeviceId, Event};
 use crate::vtreefs::VTreeFs;
 use crate::wire::parse_device;
@@ -84,21 +83,20 @@ impl Server {
         });
     }
 
-    /// One non-filesystem message through dispatch (05) to its handler
-    /// (07/08/09). `body` is the already-copied grant payload for ADD
-    /// (transport owns the safecopy, 05 §2.2); BIND/UNBIND carry
-    /// `(device_id, endpoint)` as words (05 §1.1 phase table).
-    pub fn handle_other(
-        &mut self,
-        m_type: i32,
-        source: Endpoint,
-        body: &[u8],
-        word2: i32,
-        word3: Endpoint,
-    ) -> Vec<OutAction> {
-        match dispatch(m_type) {
-            Handler::Add => {
-                let parsed = match parse_device(body) {
+    /// One non-filesystem message through its typed decode (05) to its
+    /// handler (07/08/09). `msg` arrives pre-classified
+    /// ([`DevmanMsg::classify`] marries the routing enum to the payload
+    /// words — the phase table's "which word means what" question is
+    /// answered before this signature, not inside it); `None` — the
+    /// Ignored types, 05 §2.6 — sends nothing.
+    pub fn handle_other(&mut self, source: Endpoint, msg: Option<DevmanMsg>) -> Vec<OutAction> {
+        let msg = match msg {
+            Some(m) => m,
+            None => return alloc::vec![OutAction::Nothing],
+        };
+        match msg {
+            DevmanMsg::Add { body } => {
+                let parsed = match parse_device(&body) {
                     Ok((_, p)) => p,
                     Err(_) => {
                         return alloc::vec![OutAction::Reply {
@@ -125,16 +123,15 @@ impl Server {
                     outcome,
                 }]
             }
-            Handler::Del => {
-                let id = DeviceId(word2 as u32);
+            DevmanMsg::Del { device } => {
                 let mut sunk = Vec::new();
                 let outcome = do_del(
                     &mut self.devices,
                     self.vtreefs.tree_mut(),
-                    id,
+                    device,
                     &mut |ev| sunk.push(ev),
                 )
-                .map(|_| id);
+                .map(|_| device);
                 for ev in sunk {
                     self.push_event(ev);
                 }
@@ -143,29 +140,30 @@ impl Server {
                     outcome,
                 }]
             }
-            Handler::Bind => match do_bind(&self.devices, source, DeviceId(word2 as u32), word3) {
-                Action::Forward { owner, device, endpoint, .. } => {
-                    alloc::vec![OutAction::Forward { owner, bind: true, device, endpoint }]
+            DevmanMsg::Bind { device, driver } => {
+                match do_bind(&self.devices, source, device, driver) {
+                    Action::Forward { owner, device, endpoint, .. } => {
+                        alloc::vec![OutAction::Forward { owner, bind: true, device, endpoint }]
+                    }
+                    Action::Reply(outcome) => alloc::vec![OutAction::Reply {
+                        dest: source,
+                        outcome: outcome.map(|_| device),
+                    }],
+                    Action::Dropped => alloc::vec![OutAction::Nothing],
                 }
-                Action::Reply(outcome) => alloc::vec![OutAction::Reply {
-                    dest: source,
-                    outcome: outcome.map(|_| DeviceId(word2 as u32)),
-                }],
-                Action::Dropped => alloc::vec![OutAction::Nothing],
-            },
-            Handler::Unbind => {
-                match do_unbind(&self.devices, source, DeviceId(word2 as u32), word3) {
+            }
+            DevmanMsg::Unbind { device, driver } => {
+                match do_unbind(&self.devices, source, device, driver) {
                     Action::Forward { owner, device, endpoint, .. } => {
                         alloc::vec![OutAction::Forward { owner, bind: false, device, endpoint }]
                     }
                     Action::Reply(outcome) => alloc::vec![OutAction::Reply {
                         dest: source,
-                        outcome: outcome.map(|_| DeviceId(word2 as u32)),
+                        outcome: outcome.map(|_| device),
                     }],
                     Action::Dropped => alloc::vec![OutAction::Nothing],
                 }
             }
-            Handler::Ignored => alloc::vec![OutAction::Nothing],
         }
     }
 
@@ -246,26 +244,35 @@ mod tests {
         // 09 §1.3 binding path, executable: ADD → BIND → UNBIND → DEL.
         let mut srv = server();
         // ADD (driver endpoint 9).
-        let acts = srv.handle_other(DEVMAN_ADD_DEV, Endpoint(9), &wire_usb(), 0, Endpoint(0));
+        let acts = srv.handle_other(
+            Endpoint(9),
+            DevmanMsg::classify(DEVMAN_ADD_DEV, &wire_usb(), 0, Endpoint(0)),
+        );
         let id = match acts[..] {
             [OutAction::Reply { dest: Endpoint(9), outcome: Ok(id) }] => id,
             ref other => panic!("ADD failed: {other:?}"),
         };
         assert_eq!(id, DeviceId(1));
         // BIND (RS only): forward to the owner.
-        let acts = srv.handle_other(DEVMAN_BIND, RS_PROC_NR, &[], id.0 as i32, Endpoint(4));
+        let acts =
+            srv.handle_other(RS_PROC_NR, DevmanMsg::classify(DEVMAN_BIND, &[], id.0 as i32, Endpoint(4)));
         match acts[..] {
             [OutAction::Forward { owner: Endpoint(9), bind: true, .. }] => {}
             ref other => panic!("BIND failed: {other:?}"),
         }
         // Non-RS bind: nothing.
-        let acts = srv.handle_other(DEVMAN_BIND, Endpoint(9), &[], id.0 as i32, Endpoint(4));
+        let acts =
+            srv.handle_other(Endpoint(9), DevmanMsg::classify(DEVMAN_BIND, &[], id.0 as i32, Endpoint(4)));
         assert_eq!(acts, alloc::vec![OutAction::Nothing]);
         // UNBIND → forward; driver OK tested at bind.rs level.
-        let acts = srv.handle_other(DEVMAN_UNBIND, RS_PROC_NR, &[], id.0 as i32, Endpoint(4));
+        let acts = srv.handle_other(
+            RS_PROC_NR,
+            DevmanMsg::classify(DEVMAN_UNBIND, &[], id.0 as i32, Endpoint(4)),
+        );
         assert!(matches!(acts[..], [OutAction::Forward { bind: false, .. }]));
         // DEL → reply Ok + REMOVE queued (queue asserted at 06 level).
-        let acts = srv.handle_other(DEVMAN_DEL_DEV, Endpoint(9), &[], id.0 as i32, Endpoint(0));
+        let acts =
+            srv.handle_other(Endpoint(9), DevmanMsg::classify(DEVMAN_DEL_DEV, &[], id.0 as i32, Endpoint(0)));
         assert!(matches!(
             acts[..],
             [OutAction::Reply { outcome: Ok(_), .. }]
@@ -275,9 +282,11 @@ mod tests {
 
     #[test]
     fn unknown_is_nothing() {
-        // 05 §2.6: unmatched → run nothing, reply nothing.
+        // 05 §2.6: unmatched → run nothing, reply nothing. classify maps
+        // the A-6 codes (0x1202 = ADD_BUS) to None; the server answers
+        // None with a single Nothing.
         let mut srv = server();
-        let acts = srv.handle_other(0x1202, Endpoint(9), &[], 0, Endpoint(0));
+        let acts = srv.handle_other(Endpoint(9), DevmanMsg::classify(0x1202, &[], 0, Endpoint(0)));
         assert_eq!(acts, alloc::vec![OutAction::Nothing]);
     }
 }
