@@ -87,7 +87,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**（多方案，与 A-6 输出通道同批定型）：① 首选：快照类型化出参——按域扩方法，如 `SysGetinfoTransport` 增 `fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32`、`GetSysinfoTransport` 的 `len: usize` 升格为 `out: &mut [MProcSnap]` 等；理由：A-4 快照本就是 wire 契约提案（#[repr(C)]），kernel/PM 的 producer 直接往调用方缓冲填充，与 C 的拷贝语义同构，且保留「长度精确匹配」契约（slice 长度即 len）。② 次选：裸字节缓冲 `out: &mut [u8]`——更贴近 C 指针语义，但把布局解释推回 dump 层，丢掉类型安全，等于在 Rust 里复刻 C 的 void*（translate 味，模式 16）。③ 否决：返回 owned `Vec<Snap>`——crate 现为零分配设计（无 `extern crate alloc`，lib.rs:1，V1-P3-4 有注），为 dump 面引入 alloc 依赖得不偿失。同批必须定案的相邻决策：A-6 输出通道选型（见 §3 L2 与 §5 对照参考：倾向 `core::fmt::Write` 形 sink trait，dump 体用 `write!` 直写，格式串常量已逐字就位）。
 **验证**：设计落档后 `rg -n "&mut \[KProcSnap\]|&mut \[MProcSnap\]|&mut \[DsEntrySnap\]" os/servers/is/src/acquire.rs` 应逐域命中；`cargo test -p minix-is` 基线 86 passed 不回退（fake 同步升级后旧断言存活）。
 
-### V1-P1-3 run_dump 16 体填实（05~10 执行面）——V1-P1-2 派生的开放条目 ✅ 已修复 2026-09-15（Fix #6，见 §8）
+### V1-P1-3 run_dump 16 体填实（05~10 执行面）——V1-P1-2 派生 ✅ 已修复 2026-09-15（Fix #6，见 §8）
 **问题**：接缝定型后（Fix #5），`run_dump`（lib.rs，现为空体）的 16 个 `DumpId` 臂背后没有执行体——C 侧 dmp.c/dmp_kernel.c/dmp_pm.c/dmp_fs.c/dmp_rs.c/dmp_ds.c/dmp_vm.c 的 printf 渲染面（约 700 行）在 Rust 侧零对应。这是各篇"体延后（A-6）"决策的兑现轮。
 **建议**：每臂 = 取数（经 `Acquires` 类型化方法，`!= OK` 即告警续走）→ 调该域自由渲染函数（入参：诊断 sink + 快照 + 该域游标实例）→ `write!` 直写；游标实例收拢为 `IsServer` 的分域状态结构（C 各 `static prev_i`/`oldrp` 的实例化对应物）；格式串常量已逐字锁定直接复用。C 的 `%-8.8s`/`%10s`/`%08x` 等格式规格逐条映射 Rust `write!` 的宽度/精度/对齐语法，行为以渲染输出与 C 格式串语义对拍为验收。分域推进：kernel 8 体 → pm+vfs 4 体 → rs+ds+vm+mapping 4 体。
 **验证**：每域落地后 `cargo test -p minix-is` 对照基线；各体至少一条渲染输出断言（fake 取数 + fake sink）；文档 05~10 各篇 §3 末"体延后"决策注记翻转。
