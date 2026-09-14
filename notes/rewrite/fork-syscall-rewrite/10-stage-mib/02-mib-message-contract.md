@@ -155,7 +155,7 @@ MINIX3 扩展（`minix/sysctl.h`）：`CTL_MINIX 32`（`:17`，躲开 NetBSD 未
 | D4 | 版本与上限编译期钉死 | `#error` 守卫 + 运行时 `SYSCTL_VERS` 宏 | `SYSCTL_VERSION` 常量（`sysctl.rs`）+ `const _: () = assert!(CTL_MAXID <= CTL_MINIX)`（`sysctl.rs:74`，对 `minix/sysctl.h:19-21`）+ `sysctl_vers/type/flags` 三个 `const fn` | C 用预处理器看门，Rust 用编译期断言看门——门的位置变了，看门这件事没变 |
 | D5 | 三个重命名位保留 NetBSD 原名 | `mib.h` 内部 `#define PARENT ROOT` 等 | `sysctl.rs` 只收 `ROOT/ALIAS/MMAP` 原名（`sysctl.rs:188,196,198`），重命名语义留给 03 的 `tree::flag` | 重命名是 MIB 内部契约（`mib.h` 注释：可随时改，不破坏任何东西）——放进全服务共享的 `minix-types` 等于把内部事广播成 ABI |
 
-替代方案及否决：把 `sysctlnode`/`sysctldesc` 也做成 `#[repr(C)]` Rust 结构——否决，因为指针 lane 在 64 位是 8 字节而 `__sysc_pad` 随 `_LP64` 变化，且交换发生在 11（枚举/描述序列化）；11 落地时按 VERS_1 逐字段序列化（`mib_copyout_node/desc` 的行为），比现在定一个"看着对"的结构更诚实。`minix_proc_*` 同理留给 20（A-5 一并决策）。
+替代方案及否决：把 `sysctlnode`/`sysctldesc` 也做成 `#[repr(C)]` Rust 结构——本篇曾否决（理由：指针 lane 宽度随数据模型变，且交换发生在 11），**P1-3 改判（todo.md，2026-09-15）**：细读 C 头后前提不成立——`__sysc_pad`（sysctl.h:1367-1373）本就把每个指针包进 `uint64_t` 联合，两数据模型逐偏移一致（sysctlnode 恒 96 字节），"看着对"的担忧被 `offset_of!` 断言替代；结构已落 `minix-types::sysctl_abi`，执行体组装字节改为消费该结构（防逐字段手排散装漂移）。`minix_proc_*` 同轮升级为 offset 级锚定（A-5）。
 
 ---
 

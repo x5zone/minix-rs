@@ -28,6 +28,7 @@ mod pid;
 mod proc_nr;
 mod signal;
 mod sysctl;
+mod sysctl_abi;
 
 pub use address::*;
 pub use bitmap::*;
@@ -43,3 +44,4 @@ pub use pid::*;
 pub use proc_nr::*;
 pub use signal::*;
 pub use sysctl::*;
+pub use sysctl_abi::*;

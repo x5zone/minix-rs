@@ -7,19 +7,21 @@
 //!
 //! 11-mib-query-describe.md.
 
-use minix_types::{CTLTYPE_NODE, SYSCTL_TYPEMASK};
+use minix_types::{CTLTYPE_NODE, SYSCTL_TYPEMASK, SysctlDesc};
 
 use super::auth::CallAuth;
 
 /// Header size of the exchange description: three lanes.
 ///
 /// C: `offsetof(struct sysctldesc, descr_str)` — sys/sys/sysctl.h:1456
-/// (`num` + `ver` + `len`, 4 bytes each).
-pub const DESC_HEADER: u64 = 12;
+/// (`num` + `ver` + `len`, 4 bytes each). Derived from the pinned ABI
+/// struct (A-4, `minix-types::sysctl_abi`) rather than hand-copied, so
+/// the verdict math cannot drift from the wire shape.
+pub const DESC_HEADER: u64 = core::mem::offset_of!(SysctlDesc, descr_str) as u64;
 
 /// Alignment of packed descriptions. C: 4 (`sizeof(int32_t)`,
 /// `__sysc_desc_roundup`, sys/sys/sysctl.h:1449).
-pub const DESC_ALIGN: u64 = 4;
+pub const DESC_ALIGN: u64 = core::mem::align_of::<SysctlDesc>() as u64;
 
 /// Description payload length: terminator included, empty if none.
 ///

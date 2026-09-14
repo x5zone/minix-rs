@@ -16,7 +16,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 |---|---|---|---|
 | P1-1 | 主循环装配与传输 seam | MibServer + 双/三 trait + run_once，对齐 DS/SCHED 先例；含 UserSpaceTransport 上移再评估结论 | ⬜ |
 | P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | ⬜ |
-| P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ⬜ |
+| P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ✅ 2026-09-15（`minix-types::sysctl_abi`，4 结构 + 4 断言测试，196 passed） |
 | P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ⬜ |
 | P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
 | P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ✅ 2026-09-15（`create_csize_ok` + `staged_vers_ok`，108 passed） |
@@ -97,6 +97,8 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 - 附带裁决：A-5 的 `MinixProcList/Data` 补 offset 断言升级为全锚定。
 
 **验证**：minix-types 新增布局断言测试（手排十六进制锚定，风格同 `test_mib_wire_layouts` message.rs:3784）；`MinixProcList`/`Data` 的 offset 断言对照 C minix/sysctl.h:61-86。
+
+**复核 ✅（2026-09-15，本条目闭环）**：核心四结构落 `minix-types/src/types/sysctl_abi.rs`——`SysctlNode`（96B，union `SysctlNodeUn` + child/data 两臂，`__sysc_pad` 的跨模型稳定性在模块文档显式论证：ILP32/LP64 逐偏移一致是 C 头自己的设计目标）、`SysctlDesc`（16B，头 12B）、`KinfoLwp`（128B）、`KinfoProc2`（680B，growth-only 尾部契约记录在案）+ `KI_*` 常量与 `KiSigset`；4 个断言测试把逐偏移布局钉死（手算表与 `offset_of!` 编译器实测一致）。附带：(a) `MinixProcList`/`MinixProcData` 升级 offset 级锚定（A-5 收口）；(b) `describe.rs` 的 `DESC_HEADER`/`DESC_ALIGN` 从手写常量改为从 `SysctlDesc` 派生（消灭双真相源）；(c) 02 篇 D-否决行显式改判（前提不成立：`__sysc_pad` 已保证模型稳定），17/18 篇补 P1-3 指针；plan.md A-4 行 →"已兑现（核心），尾随结构（clockinfo/loadavg/uvmexp_sysctl/kinfo_drivers/ps_strings）随各自 handler 首消费时钉"。minix-types 196 passed（+4），minix-mib 108 passed。
 
 ### P1-4 拷贝/授权执行半：io 层类型化 + 内核动词接线（stage 内）
 

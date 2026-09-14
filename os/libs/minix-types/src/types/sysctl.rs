@@ -864,9 +864,26 @@ mod tests {
             (MPDF_SYSTEM, MPDF_ZOMBIE, MPDF_RUNNABLE, MPDF_STOPPED),
             (0x01, 0x02, 0x04, 0x08)
         );
-        // Layouts ProcFS reads field by field (minix/sysctl.h:62-84).
+        // Layouts ProcFS reads field by field (minix/sysctl.h:62-84):
+        // sizes plus every field offset, so a reordered field breaks
+        // the build instead of ProcFS.
         assert_eq!(core::mem::size_of::<MinixProcList>(), 16);
+        assert_eq!(core::mem::offset_of!(MinixProcList, mpl_flags), 0);
+        assert_eq!(core::mem::offset_of!(MinixProcList, mpl_pid), 4);
+        assert_eq!(core::mem::offset_of!(MinixProcList, mpl_uid), 8);
+        assert_eq!(core::mem::offset_of!(MinixProcList, mpl_gid), 12);
         assert_eq!(core::mem::size_of::<MinixProcData>(), 72);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_endpoint), 0);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_flags), 4);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_blocked_on), 8);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_priority), 12);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_user_time), 16);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_sys_time), 20);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_cycles), 24);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_kipc_cycles), 32);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_kcall_cycles), 40);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_nice), 48);
+        assert_eq!(core::mem::offset_of!(MinixProcData, mpd_name), 52);
     }
 
     #[test]
