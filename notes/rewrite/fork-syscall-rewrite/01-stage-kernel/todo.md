@@ -510,13 +510,16 @@ misc.rs:2219-2222 自述）。修法：迁 globals.rs 或按 A2 反例条款论�
   不属"A2 收尾"边界。本批落地：4 个 Atomic 迁 globals.rs + 写侧 Release 双写/读侧
   Acquire/两源差 ≤1 tick 的契约写入 clock.rs 与 doc 15（C 单源 `kclockinfo` 差异如实
   记录）；收敛重构作为独立条目跟进（见下）。
-- 🆕 **I-15（open，触发评估更新 2026-09-15）**：时钟镜像收敛单源——删除
-  CLOCK_UPTIME/REALTIME/BOOTTIME 镜像，`get_*` 改 `&BklSection` 签名读
-  `ClockState`，穿透 `IpcEngine` `build_notify_message`/`mini_notify` 链。
-  **触发评估**：S-8 落地但保持 IPC 入口签名不变（trap 分流体→kernel_call 形状
-  未变），原定触发窗（"S-8 重塑 IPC 入口"）实际未开——真正窗口是 IpcEngine
-  签名改造（build_notify_message/mini_notify_core 加 section 参数，波及
-  ipc/signal/clock/irq_manager/proc_table 六处调用链）。维持 open。
+- ✅ **I-15（已闭合，2026-09-15，code-excellence 轮）**：三个镜像原子
+  （CLOCK_UPTIME/REALTIME/BOOTTIME）删除，ClockState 为唯一源。实现与原设想的
+  section 穿透不同：①tick/时间系统路径（smp_init deadline、build_notify_
+  message、proc_table.get_monotonic、syscall_clock GET_TIME）改 `clock_state_
+  boot_unchecked().uptime()` 直读——生产调用方持 BKL 直读无竞态，hosted 测试
+  单线程同享该性质，避免 ~15 处 rts_set/notify 调用链的 section 级联；
+  ②notify 链 timestamp 由 build_notify_message 内部直读（签名不变）。
+  消费方 grep 归零。语义与 D-62 的"单源"目标一致，机制选择见该条与
+  clock.rs get_* 文档。验证：kernel 742 hosted 全绿；test-smp-aps/proc-init/
+  shutdown 硬件 PASS。
 - 验证：kernel 730/0/8 全绿；clippy 零新增；doc 15/25 声称同步（SPROF 访问描述、
   镜像契约）。
 

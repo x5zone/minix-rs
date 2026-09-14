@@ -57,7 +57,7 @@ use crate::proc::{CpuId, KProcess, MiscFlagsBits};
 // mirror exists so lock-free readers need no `&ClockState` threading.
 // Full convergence (threading `&BklSection` through `IpcEngine`) is
 // registered as a follow-up refactor in todo.md D-62.
-use crate::globals::{CLOCK_BOOTTIME, CLOCK_REALTIME, CLOCK_UPTIME, TSC_PER_MS};
+use crate::globals::TSC_PER_MS;
 
 /// Default TSC frequency assumption: 1 GHz (1M cycles/ms).
 /// Used as fallback when calibration has not yet run.
@@ -67,24 +67,27 @@ const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
 ///
 /// C: `get_monotonic()` — clock.c:203 (`return kclockinfo.uptime`).
 /// Safe to call from any context (BKL or not) — only reads an atomic.
-pub fn get_monotonic() -> u64 {
-    CLOCK_UPTIME.load(Ordering::Acquire)
+/// I-15 (S-6.2 收敛轮): single source — read `ClockState.uptime` under the
+/// BKL witness. The lock-free atomic mirrors (CLOCK_UPTIME/REALTIME/
+/// BOOTTIME) are deleted; C is single-source (`kclockinfo`, clock.c:189).
+pub fn get_monotonic(_section: &crate::smp::BklSection<'_>) -> u64 {
+    crate::clock_state_with(_section).uptime()
 }
 
 /// Get wall-clock ticks since boot.
 ///
 /// C: `get_realtime()` — clock.c:178 (`return kclockinfo.realtime`).
 /// Safe to call from any context — only reads an atomic.
-pub fn get_realtime() -> u64 {
-    CLOCK_REALTIME.load(Ordering::Acquire)
+pub fn get_realtime(_section: &crate::smp::BklSection<'_>) -> u64 {
+    crate::clock_state_with(_section).realtime()
 }
 
 /// Get boot time in seconds since UNIX epoch.
 ///
 /// C: `get_boottime()` — clock.c:220 (`return kclockinfo.boottime`).
 /// Safe to call from any context — only reads an atomic.
-pub fn get_boottime() -> u64 {
-    CLOCK_BOOTTIME.load(Ordering::Acquire)
+pub fn get_boottime(_section: &crate::smp::BklSection<'_>) -> u64 {
+    crate::clock_state_with(_section).boottime()
 }
 
 /// Convert milliseconds to CPU time cycles.
@@ -1022,7 +1025,6 @@ impl ClockState {
     pub fn set_boottime(&mut self, new_boottime: u64) {
         if !self.is_bsp { return; }
         self.boottime = new_boottime;
-        CLOCK_BOOTTIME.store(new_boottime, Ordering::Release);
     }
 
     /// Set wall-clock time in ticks (BSP only).
@@ -1030,7 +1032,6 @@ impl ClockState {
     pub fn set_realtime(&mut self, new_realtime: u64) {
         if !self.is_bsp { return; }
         self.realtime = new_realtime;
-        CLOCK_REALTIME.store(new_realtime, Ordering::Release);
     }
 
     /// Set adjtime delta for time adjustment (BSP only).
@@ -1170,15 +1171,12 @@ impl ClockState {
         //    D8: runtime branch on self.is_bsp.
         if self.is_bsp {
             self.uptime += 1;
-            CLOCK_UPTIME.store(self.uptime, Ordering::Release);
-
             if self.adjtime_delta != 0 && (self.uptime & 0x1) != 0 {
                 self.realtime += if self.adjtime_delta > 0 { 2 } else { 0 };
                 self.adjtime_delta += if self.adjtime_delta > 0 { -1 } else { 1 };
             } else {
                 self.realtime += 1;
             }
-            CLOCK_REALTIME.store(self.realtime, Ordering::Release);
         }
 
         // 2. Time accounting: charge current process for user time.
@@ -2196,20 +2194,15 @@ mod tests {
     fn test_set_boottime() {
         let mut clock = make_bsp_clock();
         clock.set_boottime(1700000000);
+        // I-15 单源：镜像原子已删除，读本地 ClockState 字段。
         assert_eq!(clock.boottime(), 1700000000);
-        assert_eq!(get_boottime(), 1700000000);
     }
 
     #[test]
     fn test_set_realtime() {
         let mut clock = make_bsp_clock();
         clock.set_realtime(12345);
-        // Only assert local field — the global `CLOCK_REALTIME` atomic is
-        // also updated by `set_realtime`, but other tests calling
-        // `tick_bsp` in parallel mutate the same global, making
-        // `get_realtime()` racy here. The global sync path is exercised
-        // by `tick_bsp` tests (they verify `clock.realtime()` after
-        // ticking, and the global is updated in the same call).
+        // I-15 单源：直接断言本地字段（镜像原子已删除，无跨测试竞态）。
         assert_eq!(clock.realtime(), 12345);
     }
 

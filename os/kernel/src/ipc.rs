@@ -1899,16 +1899,16 @@ fn build_notify_message(
     dst_idx: usize,
     src: NotifySource,
 ) {
-    use crate::clock::get_monotonic;
-
     // C: memset(m_ptr, 0, ...) — zero the entire message.
     procs[dst_idx].p_delivermsg = Message::default();
     // C: m_type = NOTIFY_MESSAGE — com.h:90.
     procs[dst_idx].p_delivermsg.m_type = NOTIFY_MESSAGE;
 
     // Fill m_notify payload. Safe because MessNotify is Copy + zeroable.
-    // C: m_notify.timestamp = get_monotonic()
-    let timestamp = get_monotonic();
+    // C: m_notify.timestamp = get_monotonic() — I-15: single source, read
+    // ClockState directly (the atomic mirrors are deleted). Dispatch-path
+    // callers hold the BKL; hosted notify tests are single-threaded.
+    let timestamp = unsafe { crate::clock_state_boot_unchecked() }.uptime();
     let mut interrupts = 0u64;
     let mut sigset = 0u64;
 

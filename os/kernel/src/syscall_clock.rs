@@ -139,13 +139,15 @@ pub fn dispatch_times(
         (0, 0)
     };
 
-    // C: do_times.c:40-42 — always fill these fields
+    // C: do_times.c:40-42 — always fill these fields.
+    // I-15 单源直读 ClockState（生产持 BKL；hosted 测试单线程）。
+    let clock = unsafe { crate::clock_state_boot_unchecked() };
     let reply = MessKrnLsysSysTimes {
-        boot_ticks: clock::get_monotonic(),
-        real_ticks: clock::get_realtime(),
+        boot_ticks: clock.uptime(),
+        real_ticks: clock.realtime(),
         user_time,
         system_time: sys_time,
-        boot_time: clock::get_boottime(),
+        boot_time: clock.boottime(),
         _padding: [0u8; 16],
     };
 

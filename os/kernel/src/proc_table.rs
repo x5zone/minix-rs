@@ -1267,7 +1267,9 @@ fn read_tsc() -> u64 {
 /// Get monotonic uptime via clock subsystem.
 /// C: `get_monotonic()` — clock.c:202.
 fn get_monotonic() -> u64 {
-    clock::get_monotonic()
+    // I-15 单源：直读 ClockState（镜像原子已删除）。生产调用方持 BKL；
+    // hosted 测试单线程——直读无竞态。
+    unsafe { crate::clock_state_boot_unchecked() }.uptime()
 }
 
 /// Convert ms to CPU time cycles via clock subsystem.

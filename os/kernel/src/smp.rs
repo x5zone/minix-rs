@@ -999,10 +999,14 @@ pub fn smp_init() {
             // C's LAPIC one-shot per arch_clock.c:131-141 is the long-term
             // mechanism, tracked in smp_todo §24). A late ack still counts:
             // the masks read the atomic bitmap, not this timeout decision.
-            let up0 = crate::clock::get_monotonic();
+            let section = unsafe { crate::smp::BklSection::assume_held() };
+            let up0 = crate::clock::get_monotonic(&section);
             let tsc0 = crate::clock::read_tsc();
             while !smp.observe_boot_ack(logical) {
-                let uptime_elapsed = crate::clock::get_monotonic() >= up0 + 500;
+                let uptime_elapsed = {
+                    let section = unsafe { crate::smp::BklSection::assume_held() };
+                    crate::clock::get_monotonic(&section)
+                } >= up0 + 500;
                 let tsc_elapsed = crate::clock::read_tsc()
                     .wrapping_sub(tsc0)
                     > 20_000_000_000u64;
