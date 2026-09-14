@@ -857,7 +857,7 @@ IF=0 门控，S-10 才开启**（阶段不变量：S-8 后不存在空 vector/�
 只差投递开关）；若阻塞则 AP 暂无本地 tick
 并登记限制：AP 上 quantum 递减停摆，L5 idle 测试不受影响）；`ap_early_entry` 扩展为
 init_ap → 主循环，**尾部自报 `online_mask` 位**（v3 #1 双状态拆分，§3.2）。**GS_BASE/swapgs 不变量（v3 #11 回应，源码核实）**：当前代码零 `swapgs` 使用者（kernel + x86 arch 全 grep 无命中）——首个 swapgs 是 S-8 的入口 stub；S-4 在任何入口路径存在之前写好 `IA32_GS_BASE`/`IA32_KERNEL_GS_BASE` 两 MSR，依赖顺序天然成立，S-8 设计时复核"CPL 判定后才 swapgs" | arch 三架构 init_ap + per-AP 栈来源定案 + **BSP-only vs per-CPU 归属清单**（含 TSS/栈/MSR 全量盘点，交付于本步） | L2 扩展：AP 内执行 Rust fn、读回 per-CPU 标识 + **online 位观察（init_ap 后）** | 16-smp §4.14 行更新；protection 模块文档 |
-| S-5 | smp_init 编排 + boot_lock（D-36 下半 + D-37） | §3.4：kernel 层编排（拓扑 `hw_id` 传参 + boot_ap + wait_for_aps 复刻 BKL 舞蹈）；**per-AP 串行握手 + bounded 超时**（对齐 C arch_smp.c:124-141：AP 置 boot_ack 位 = 消费证明，BSP 观察后代置 CpuFlags.READY；超时语义 = bounded per-AP startup timeout，**常数按架构归 SmpArch**——x86 5 秒是 C i386 的 LAPIC one-shot 语义，arm/riscv 无 C 对应物（Minix3 SMP 仅 i386），取同量级设计值，计时机制 arch 自备）；**锁序表**（boot_lock/BKL/调度锁，以 C 源码实测为准，含"boot_lock 是否可删"论证）；CPU 状态机落地（§3.4，含 BSP 位 match `hw_id==bsp_id` 求逻辑号） | kernel `smp_init` + boot_lock（或其删除论证）+ 握手超时 | L4：`test-smp-aps` 三架构 `boot_ack_mask == expected_cpu_mask && online_mask == expected_cpu_mask` PASS（生产 wait 仍为 `online == boot_ack`——v7 #8 与 §3.4 对齐） | 16-smp §4.14 两行转 ✅；doc 08 boot 序列补 smp_init 位次（main.c:311） |
+| S-5 | **🔶 内核层已完成（2026-09-14，见 §23 记录；hosted 736 绿 + UEFI 复跑 PASS）；硬件 L4（test-smp-aps 多 AP）+ kmain 布线待续** | §3.4：kernel 层编排（拓扑 `hw_id` 传参 + boot_ap + wait_for_aps 复刻 BKL 舞蹈）；**per-AP 串行握手 + bounded 超时**（对齐 C arch_smp.c:124-141：AP 置 boot_ack 位 = 消费证明，BSP 观察后代置 CpuFlags.READY；超时语义 = bounded per-AP startup timeout，**常数按架构归 SmpArch**——x86 5 秒是 C i386 的 LAPIC one-shot 语义，arm/riscv 无 C 对应物（Minix3 SMP 仅 i386），取同量级设计值，计时机制 arch 自备）；**锁序表**（boot_lock/BKL/调度锁，以 C 源码实测为准，含"boot_lock 是否可删"论证）；CPU 状态机落地（§3.4，含 BSP 位 match `hw_id==bsp_id` 求逻辑号） | kernel `smp_init` + boot_lock（或其删除论证）+ 握手超时 | L4：`test-smp-aps` 三架构 `boot_ack_mask == expected_cpu_mask && online_mask == expected_cpu_mask` PASS（生产 wait 仍为 `online == boot_ack`——v7 #8 与 §3.4 对齐） | 16-smp §4.14 两行转 ✅；doc 08 boot 序列补 smp_init 位次（main.c:311） |
 | S-6 | per-CPU 化四件套（D-40/D-41/sched-1/tick-1） | §3.5，**每件独立迭代独立 commit**；D-41 冻结语义按 §3.9 一次性发布规则 | 4 个 commit 逐个验证 | 每件：hosted 测试 + UEFI 构建 + L3 不回归 | 16-smp §D8；doc 04 §3.3（D-41）；doc 11（sched-1） |
 | S-7 | AP 主循环 | §3.6：**AP 首次进调度循环时满足与 BSP 相同的 BKL 所有权前置条件**，此后获取/释放/让出复用既有路径；循环体复用 BSP 代码。**安全性声明（v2 外评 #7 回应 + v3 #10 三架构化，源码证据）**：当前代码不可能进 user mode——调度循环是 placeholder（todo I-6：`lib.rs` `loop { spin_loop() }`，bill_ptr 联动未接线）+ boot image 只有内核任务 ASYNCM/IDLE/CLOCK/SYSTEM/KERNEL 无用户进程（lib.rs:922）+ **三架构均无可达异常/IRQ 路径**（v8 #1 最终阶段不变量：**向量基址有效 + handler 完整（S-8 基建 + S-4 per-CPU attach）+ 中断投递关闭**——x86 IDT 有效 + IF=0；arm VBAR 有效 + DAIF 屏蔽；riscv stvec 有效 + `sstatus.SIE`/`sie`/SSIE 关闭。S-8 后任何架构都不再存在空 vector/空 handler 阶段，S-8~S-10 只差投递开关；无未屏蔽 IRQ 源前提不变——IO APIC RTE 初始化即 mask（plat interrupt.rs:124），LAPIC LVT timer 无 unmask 代码（arch_init.rs））——故 S-7 是"bring-up 测试安全"；**生产安全的 user entry/syscall 依赖 S-8**，16-smp 写明 | AP loop 接线 | L5：`test-smp-sched`——AP 走调度循环、串口可见 per-CPU 活动标记（测试内核维持无用户进程） | 16-smp §4.13 接入点表更新；doc 10（switch_to_user AP 侧衔接） |
 | S-8（**✅ 已完成（2026-09-14，见文末完成记录；test-timer-irq PASS + 全量 24 PASS）**；v8 #1 定位：BSP 公共陷阱基建，固定在 S-4 之前） | asm trap stub + 入口分流（hw-1/trap-1/D-46 硬件半环） | §3.7：范围已收窄（§2.3-2）——**IDT 路径与 SYSCALL 路径分开建模**：A. IDT stub（按向量归一错误码、保存上下文）→ 异常/IRQ 分流；B. LSTAR 指向的 SYSCALL 入口本体（SWAPGS + 用户 RSP 保存 + trapframe）→ `kernel_call_dispatch`。**向量基址与真 handler 本步一起安装**（x86 `set_handler` + `load()` BSP 侧执行；arm/riscv 同构 BSP `load`）。**职责边界
@@ -1759,3 +1759,45 @@ MSR 重写 → gs:0x10 读回 == **1**——该值经 AP 自己的 GS_BASE MSR �
 等全部复跑）。
 
 **S-4 收官，D-39 关闭；S-5（smp_init 编排 + boot_lock）解锁。**
+
+---
+
+## 23. S-5 内核层完成记录（2026-09-14 第五会话）：双位图 + boot_lock + 编排 + AP 尾门
+
+**交付（kernel 736 hosted 全绿；test-timer-irq/test-proc-init UEFI 复跑 PASS）**：
+
+- **online_mask 双位图**（§3.4 v3 #1）：`ap_cpus_booted` 计数器退役——位图一次
+  断言数量/身份/重复/缺席（"CPU1 报两次 + CPU3 没报"不再能冒充成功）。
+  生产完成条件 = `online == boot_ack`（v7 #8）；零待等时立即完成 = C 忠实
+  （READY 计 0 → expected 0 → 立即返回，降级继续）。v4 #3 健康层
+  （masks == expected_cpu_mask）归 L4 测试断言，不进生产语义。
+- **boot_lock**（arch_smp.c:227）：CAS 自旋 + RAII guard。保留立场 per v4 #4
+  （AP 即竞争者，删除论证作废）；锁序表以代码注释落档——BSP:
+  BKL→boot_lock→释放→wait 放 BKL→自旋→复得；AP: boot_lock→(BKL，S-7)；
+  定性 per v6 #5：阶段交接约束，非全局锁序反转炸弹。
+- **ap_finish_booting**：boot_lock 下 publish_online（Release/Acquire 对齐
+  §3.9 表）；C ap_finish_booting 的完整 init 工作随 S-6/S-7 落。
+- **smp_init 串行编排**：BSP 逻辑号按 `hw_id == bsp_id` match（不假设槽 0）
+  → seed 双掩码（BSP 生而 acked+online）→ 阶梯安装一次 → 逐 AP 串行：
+  CR3 读当前真相根（新 arch 助手 `current_cr3_pa`，§3.2 <4GiB 不变式由
+  fill_bootstrap 断言兜底）→ fill_bootstrap → INIT/SIPI → bounded ack 等
+  （`SmpArch::STARTUP_TIMEOUT_MS` 默认 5000，C arch_smp.c:131-141 LAPIC
+  one-shot parity；超时 WARNING "didn't boot" 跳过）→ READY 代置
+  （BSP 代置，非 AP 自置——arch_smp.c:137 parity）→ wait_for_aps BKL 舞蹈。
+- **AP 尾门**（arch ap_early_entry）：`register_ap_tail`——内核策略/arch 机制
+  切分，同 trap 分流门模式；未注册时 AP 汇合点 park（S-3d 行为不变）。
+  S-5 尾 = init_ap（经全局 PROTECTION）+ SYSCALL MSR 重写 + finish 握手 +
+  park（S-7 以调度循环替换 park）。
+- **同期潜伏修复（生命周期）**：`init_protection` 的 protection/trap 实例原为
+  栈局部，`load()` 后 drop——lgdt/lidt 指向被复用的栈内存，违反两个 arch
+  trait 自己写明的 "kept in a static/global" 契约。改为 `PROTECTION`/
+  `TRAP_ENTRY` 全局驻留（BklProtected 名册新增两 arch 类型，审计注记：
+  load 前一次性写 + set_kernel_stack BKL 下），`with_protection`/
+  `with_trap_entry` 访问器。
+
+**待续（下会话开头，第一优先）**：硬件 L4 `test-smp-aps`（多 AP 内核测试，
+`boot_ack_mask == expected && online == expected`）+ kmain 布线——布线前置
+验证：fill_bootstrap 的 <4GiB 根约束在 UEFI 采用根下是否成立（若不成立需
+低 4GiB 恒等根方案）；AP 尾 init_ap 依赖 PROTECTION 已驻留（已满足）。
+
+**S-5 内核层收官；硬件 L4 后 S-6（per-CPU 化四件套）解锁。**
