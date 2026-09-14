@@ -214,3 +214,43 @@ mod tests {
         assert_eq!(page_shift(0, 32), None);
     }
 }
+
+// ── Arena wiring (P1-2) ──
+//
+// C 的 `mib_vm_init` 等价物：loadavg/uvmexp2 两个函数门 + maxslp/uspace。
+// uvmexp2 的 payload 宽度（`sizeof(struct uvmexp_sysctl)`）在 minix3
+// 头树里没有可引用的定义——尺寸暂记 0 并标注 [待验证]，随 P1-5 表拉取
+// 执行时一并钉。
+
+pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
+    use crate::tree::arena::{FuncKey, NodeId};
+    use minix_types::{CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLFLAG_READWRITE, CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_STRUCT};
+    const RO: u32 = CTLFLAG_READONLY | CTLFLAG_PERMANENT;
+    for e in VM_ENTRIES.iter() {
+        match &e.kind {
+            VmKind::Func(f) => {
+                let (flags, size) = match f {
+                    // C vm.c:122 `sizeof(struct loadavg)`；LP64
+                    // self-consistent 布局 = 24（int×3 + pad + long）。
+                    VmFunc::Loadavg => (CTLTYPE_STRUCT | RO, 24),
+                    // C vm.c:127 `sizeof(struct uvmexp_sysctl)` [待验证]。
+                    VmFunc::Uvmexp2 => (CTLTYPE_STRUCT | RO, 0),
+                };
+                let n = t.push_child(parent, e.name, e.id, flags);
+                t.slot_mut(n).func = Some(FuncKey::Vm(*f));
+                t.slot_mut(n).size = size;
+            }
+            VmKind::ConstInt(v) => {
+                let n = t.push_child(
+                    parent,
+                    e.name,
+                    e.id,
+                    CTLTYPE_INT | minix_types::CTLFLAG_IMMEDIATE | RO,
+                );
+                t.slot_mut(n).imm = Some(*v as i64);
+                t.slot_mut(n).size = 4;
+            }
+        }
+    }
+    let _ = NodeId(0);
+}

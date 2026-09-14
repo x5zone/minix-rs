@@ -79,6 +79,17 @@ pub trait MibServices {
     /// C: `vm_info_stats`/`vm_info_usage` — vm.c:30-50 一带.
     fn vm_info(&mut self, what: i32, buf: &mut [u8]) -> Result<(), i32>;
 
+    /// Relay a remote subtree call to its owning service (12).
+    /// C: `ipc_sendrec(peer, &m_mib_lsys_call)` — remote.c:422-436;
+    /// the reply's `status` rides back via the same message
+    /// (`mess_lsys_mib_reply`, :461-464).
+    fn remote_call(
+        &mut self,
+        peer: Endpoint,
+        call: crate::io::relay::RemoteCall,
+        reply: &mut crate::io::relay::RemoteReplyWire,
+    ) -> Result<(), i32>;
+
     /// Pull PM boot parameters (13's boottime). C: `svrctl(PMGETPARAM)`.
     fn pm_getparam(&mut self, param: i32, buf: &mut [u8]) -> Result<(), i32>;
 }
@@ -144,6 +155,15 @@ impl MibServices for SysTransport {
     }
 
     fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
+        Err(EIO)
+    }
+
+    fn remote_call(
+        &mut self,
+        _peer: Endpoint,
+        _call: crate::io::relay::RemoteCall,
+        _reply: &mut crate::io::relay::RemoteReplyWire,
+    ) -> Result<(), i32> {
         Err(EIO)
     }
 
@@ -287,6 +307,15 @@ pub(crate) mod recording {
         }
 
         fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
+            Err(minix_types::EIO)
+        }
+
+        fn remote_call(
+            &mut self,
+            _peer: Endpoint,
+            _call: crate::io::relay::RemoteCall,
+            _reply: &mut crate::io::relay::RemoteReplyWire,
+        ) -> Result<(), i32> {
             Err(minix_types::EIO)
         }
 

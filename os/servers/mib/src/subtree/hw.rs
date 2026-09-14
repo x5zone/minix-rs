@@ -216,3 +216,53 @@ mod tests {
         assert!(!is_narrow_door(8));
     }
 }
+
+// ── Arena wiring (P1-2) ──
+//
+// C 的 `mib_hw_init` 等价物（hw.c:132-139 挂表）。
+
+pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
+    use crate::tree::arena::{FuncKey, NodeId};
+    use minix_types::{
+        CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLFLAG_UNSIGNED, CTLTYPE_INT, CTLTYPE_QUAD,
+        CTLTYPE_STRING, CTLTYPE_STRUCT,
+    };
+    const RO: u32 = CTLFLAG_READONLY | CTLFLAG_PERMANENT;
+    for e in HW_ENTRIES.iter() {
+        match &e.kind {
+            HwKind::ConstStr(text) => {
+                let n = t.push_child(parent, e.name, e.id, CTLTYPE_STRING | RO);
+                t.slot_mut(n).const_str = Some(text);
+                t.slot_mut(n).size = text.len() as u64 + 1;
+            }
+            HwKind::ConstInt(v) => {
+                let n = t.push_child(parent, e.name, e.id, CTLTYPE_INT | RO);
+                t.slot_mut(n).imm = Some(*v as i64);
+                t.slot_mut(n).size = 4;
+            }
+            HwKind::BuildInt(nm) => {
+                let n = t.push_child(parent, e.name, e.id, CTLTYPE_INT | RO);
+                t.slot_mut(n).size = 4;
+                if let Some(v) = crate::tree::arena::build_int_value(nm) {
+                    t.slot_mut(n).imm = Some(v);
+                }
+            }
+            HwKind::Func(f) => {
+                // C hw.c:106-127 —— physmem/usermem 是一函数两门：宽度
+                // 随门（id）而非函数，窄门 INT|UNSIGNED 4B，宽门 QUAD 8B。
+                let (flags, size) = match (f, e.id) {
+                    (HwFunc::Physmem, HW_PHYSMEM) => (CTLTYPE_INT | CTLFLAG_UNSIGNED | RO, 4),
+                    (HwFunc::Physmem, HW_PHYSMEM64) => (CTLTYPE_QUAD | RO, 8),
+                    (HwFunc::Usermem, HW_USERMEM) => (CTLTYPE_INT | CTLFLAG_UNSIGNED | RO, 4),
+                    (HwFunc::Usermem, HW_USERMEM64) => (CTLTYPE_QUAD | RO, 8),
+                    (HwFunc::Ncpuonline, _) => (CTLTYPE_INT | RO, 4),
+                    // The table only pairs each func with its own doors.
+                    _ => (CTLTYPE_INT | RO, 4),
+                };
+                let n = t.push_child(parent, e.name, e.id, flags);
+                t.slot_mut(n).func = Some(FuncKey::Hw(*f));
+                t.slot_mut(n).size = size;
+            }
+        }
+    }
+}

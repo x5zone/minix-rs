@@ -278,3 +278,111 @@ mod tests {
         );
     }
 }
+
+// ── Arena wiring (P1-2) ──
+//
+// C 的 `mib_minix_init` 等价物（minix.c:74-78 挂三表；LWIP 有意缺席，
+// 由 RMIB 运行时挂载）。
+
+pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
+    use alloc::boxed::Box;
+    use crate::tree::arena::{FuncKey, NodeId, StatKey};
+    use minix_types::{
+        CTLFLAG_HIDDEN, CTLFLAG_IMMEDIATE, CTLFLAG_PERMANENT, CTLFLAG_PRIVATE, CTLFLAG_READONLY,
+        CTLFLAG_READWRITE, CTLFLAG_UNSIGNED, CTLTYPE_BOOL, CTLTYPE_INT, CTLTYPE_NODE,
+        CTLTYPE_QUAD, CTLTYPE_STRING, CTLTYPE_STRUCT, MINIX_MIB, MINIX_PROC, MINIX_TEST,
+    };
+    const RO: u32 = CTLFLAG_READONLY | CTLFLAG_PERMANENT;
+    const RW: u32 = CTLFLAG_READWRITE | CTLFLAG_PERMANENT;
+
+    for (id, name) in MINIX_SLOT_IDS.iter() {
+        let slot = if *id == MINIX_TEST {
+            MinixSlot::Test
+        } else if *id == MINIX_MIB {
+            MinixSlot::Mib
+        } else {
+            MinixSlot::Proc
+        };
+        let top = match slot {
+            // C minix.c:68-70 `MIB_NODE(_P | _RW | CTLFLAG_HIDDEN, …)`。
+            MinixSlot::Test => {
+                if !MINIX_TEST_SUBTREE {
+                    continue;
+                }
+                t.push_child(parent, name, *id, CTLTYPE_NODE | RW | CTLFLAG_HIDDEN)
+            }
+            MinixSlot::Mib => t.push_child(parent, name, *id, CTLTYPE_NODE | RO),
+            MinixSlot::Proc => t.push_child(parent, name, *id, CTLTYPE_NODE | RO),
+        };
+        match slot {
+            MinixSlot::Test => {
+                for te in TEST_ENTRIES.iter() {
+                    // 逐行对照 minix.c:19-43 的宏（test87 钉值表）。
+                    let (flags, size) = match &te.kind {
+                        TestKind::HexInt(_) => {
+                            (CTLTYPE_INT | CTLFLAG_IMMEDIATE | RO, 4)
+                        }
+                        TestKind::Bool => (CTLTYPE_BOOL | CTLFLAG_IMMEDIATE | RW, 1),
+                        TestKind::Quad => (CTLTYPE_QUAD | CTLFLAG_IMMEDIATE | RW, 8),
+                        TestKind::TestString => (CTLTYPE_STRING | RW, 16),
+                        TestKind::TestStruct => (CTLTYPE_STRUCT | RW, 12),
+                        TestKind::PrivateInt(_) => (
+                            CTLTYPE_INT | CTLFLAG_IMMEDIATE | CTLFLAG_PRIVATE | RW,
+                            4,
+                        ),
+                        TestKind::AnywriteInt => (
+                            CTLTYPE_INT | CTLFLAG_IMMEDIATE | RW | minix_types::CTLFLAG_ANYWRITE,
+                            4,
+                        ),
+                        TestKind::DoomedInt(_) => {
+                            (CTLTYPE_INT | CTLFLAG_IMMEDIATE | CTLFLAG_READONLY, 4)
+                        }
+                        TestKind::SecretTable => (CTLTYPE_NODE | CTLFLAG_PRIVATE | RO, 0),
+                        TestKind::PermanentInt(_) => (CTLTYPE_INT | CTLFLAG_IMMEDIATE | RO, 4),
+                    };
+                    let n = t.push_child(top, te.name, te.id, flags);
+                    let s = t.slot_mut(n);
+                    match &te.kind {
+                        TestKind::HexInt(v)
+                        | TestKind::PrivateInt(v)
+                        | TestKind::DoomedInt(v)
+                        | TestKind::PermanentInt(v) => s.imm = Some(*v as i64),
+                        TestKind::Bool | TestKind::Quad | TestKind::AnywriteInt => s.imm = Some(0),
+                        TestKind::TestString => s.data = Some(Box::from(&b""[..])),
+                        TestKind::TestStruct => s.data = Some(Box::from(&[0u8; 12][..])),
+                        TestKind::SecretTable => {}
+                    }
+                    s.size = size;
+                }
+            }
+            MinixSlot::Mib => {
+                // 自统计镜像：三个 INTPTR 门读活计数器（读时结算）。
+                for (i, (sid, sname)) in MIB_STAT_IDS.iter().enumerate() {
+                    let n = t.push_child(top, sname, *sid, CTLTYPE_INT | RO);
+                    t.slot_mut(n).size = 4;
+                    t.slot_mut(n).stat = Some(StatKey::Stat(match i {
+                        0 => MibStat::Nodes,
+                        1 => MibStat::Objects,
+                        _ => MibStat::Remotes,
+                    }));
+                }
+            }
+            MinixSlot::Proc => {
+                for (pid, pname) in PROC_DOOR_IDS.iter() {
+                    let door = if *pid == minix_types::PROC_DATA {
+                        ProcDoor::Data
+                    } else {
+                        ProcDoor::List
+                    };
+                    let (flags, fkey) = match door {
+                        // C minix.c:59-66：list 是 STRUCT 门，data 是 NODE 门。
+                        ProcDoor::List => (CTLTYPE_STRUCT | RO, ProcDoor::List),
+                        ProcDoor::Data => (CTLTYPE_NODE | RO, ProcDoor::Data),
+                    };
+                    let n = t.push_child(top, pname, *pid, flags);
+                    t.slot_mut(n).func = Some(FuncKey::ProcDoor(fkey));
+                }
+            }
+        }
+    }
+}

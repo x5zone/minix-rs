@@ -242,3 +242,29 @@ mod tests {
         assert_eq!(req.open(&mut t2), Err(RELAY_FAIL));
     }
 }
+
+// ── The remote-call bundle (12's execution half) ──
+//
+// `RelayedCall`（minix-types，wire 包装视图）携带三个 grant id 与转发
+// 参数；`RemoteReplyWire` 承接应答。Send 本身是 `MibServices::remote_call`
+// 的体（P1-4 形状修订：这一动词初版漏列，walker 落地时补全并记录）。
+
+use alloc::vec::Vec;
+use minix_types::MessMibLsysCall;
+
+/// One relayed call, ready to send: the wire message with the three
+/// grant ids already stamped.
+#[derive(Debug, Clone)]
+pub struct RemoteCall {
+    /// The wire lanes (12 lanes, ipc.h:1554-1569).
+    pub wire: MessMibLsysCall,
+}
+
+/// The reply carrier: `req_id` + `status` lanes the service fills.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RemoteReplyWire {
+    /// Answered request id (always the reserved 0 today).
+    pub req_id: u32,
+    /// Service status — may be `ERESTART`.
+    pub status: i32,
+}

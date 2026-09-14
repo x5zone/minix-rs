@@ -534,3 +534,114 @@ mod tests {
         assert!(!pty_alias_needed(false, false));
     }
 }
+
+// ── Arena wiring (P1-2) ──
+//
+// C 的 `mib_kern_init`（kern.c:496-506 挂表）在本侧的等价物：把 45 个
+// 填充槽按 Kind 映射成竞技场结点。access/type/size 逐一对照 C 表行。
+
+pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
+    use crate::tree::arena::{FuncKey, NodeId};
+    use minix_types::{
+        CTLFLAG_IMMEDIATE, CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLFLAG_READWRITE,
+        CTLFLAG_UNSIGNED, CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_STRING, CTLTYPE_STRUCT,
+    };
+    // MIB reassigns three NetBSD bits internally (03); the verify gate
+    // is one of them.
+    use crate::tree::flag::CTLFLAG_VERIFY;
+    const RO: u32 = CTLFLAG_READONLY | CTLFLAG_PERMANENT;
+    const RW: u32 = CTLFLAG_READWRITE | CTLFLAG_PERMANENT;
+
+    /// Function payload shape: (type flags, size) — C `MIB_FUNC(f, s, …)`
+    /// rows kern.c:320-495.
+    const fn func_shape(f: KernFunc) -> (u32, u64) {
+        match f {
+            KernFunc::Clockrate => (CTLTYPE_STRUCT | RO, 20),
+            KernFunc::Profiling => (CTLTYPE_NODE | RO, 0),
+            KernFunc::HardclockTicks => (CTLTYPE_INT | CTLFLAG_UNSIGNED | RO, 4),
+            KernFunc::RootDevice => (CTLTYPE_STRING | RO, 0),
+            KernFunc::Ccpu => (CTLTYPE_INT | RO, 4),
+            KernFunc::CpTime => (CTLTYPE_NODE | RO, 0),
+            KernFunc::Consdev => (CTLTYPE_STRUCT | RO, 4),
+            KernFunc::Drivers => (CTLTYPE_STRUCT | RO, 0),
+            KernFunc::Boottime => (CTLTYPE_STRUCT | RO, 16),
+            KernFunc::IpcInfo => (CTLTYPE_NODE | RO, 0),
+            KernFunc::Proc2 | KernFunc::ProcArgs | KernFunc::Lwp => (CTLTYPE_NODE | RO, 0),
+        }
+    }
+
+    for e in KERN_ENTRIES.iter() {
+        match &e.kind {
+            KernKind::ConstInt(v) => {
+                let n = t.push_child(
+                    parent,
+                    e.name,
+                    e.id,
+                    CTLTYPE_INT | CTLFLAG_IMMEDIATE | RO,
+                );
+                t.slot_mut(n).imm = Some(*v as i64);
+                t.slot_mut(n).size = 4;
+            }
+            KernKind::BuildInt(nm) => {
+                let n = t.push_child(
+                    parent,
+                    e.name,
+                    e.id,
+                    CTLTYPE_INT | CTLFLAG_IMMEDIATE | RO,
+                );
+                t.slot_mut(n).size = 4;
+                if let Some(v) = crate::tree::arena::build_int_value(nm) {
+                    t.slot_mut(n).imm = Some(v);
+                }
+                // Unresolved names keep `imm = None` — reads refuse
+                // EOPNOTSUPP rather than invent a value ([待裁决]).
+            }
+            KernKind::ConstStr(text) => {
+                let n = t.push_child(parent, e.name, e.id, CTLTYPE_STRING | RO);
+                t.slot_mut(n).const_str = Some(text);
+                t.slot_mut(n).size = text.len() as u64 + 1;
+            }
+            KernKind::VarStr => {
+                // C: `static char hostname[MAXHOSTNAMELEN]` — kern.c:12;
+                // NetBSD MAXHOSTNAMELEN = 256.
+                let n = t.push_child(parent, e.name, e.id, CTLTYPE_STRING | RW);
+                t.slot_mut(n).data = Some(Box::from(&b""[..]));
+                t.slot_mut(n).size = 256;
+            }
+            KernKind::VarInt => {
+                let n = t.push_child(
+                    parent,
+                    e.name,
+                    e.id,
+                    CTLTYPE_INT | CTLFLAG_IMMEDIATE | RW,
+                );
+                t.slot_mut(n).imm = Some(0);
+                t.slot_mut(n).size = 4;
+            }
+            KernKind::VerifyInt { init, verify } => {
+                let n = t.push_child(
+                    parent,
+                    e.name,
+                    e.id,
+                    CTLTYPE_INT | CTLFLAG_IMMEDIATE | CTLFLAG_VERIFY | RW,
+                );
+                t.slot_mut(n).imm = Some(*init as i64);
+                t.slot_mut(n).size = 4;
+                t.slot_mut(n).verify = Some(*verify);
+            }
+            KernKind::Func(f) => {
+                let (flags, size) = func_shape(*f);
+                let n = t.push_child(parent, e.name, e.id, flags);
+                t.slot_mut(n).func = Some(FuncKey::Kern(*f));
+                t.slot_mut(n).size = size;
+            }
+            KernKind::IpcTable => {
+                // The mock subtree seat: a bare NODE the IPC service
+                // covers by remote mount when it runs (kern.c:492, 12).
+                t.push_child(parent, e.name, e.id, CTLTYPE_NODE | RO);
+            }
+        }
+    }
+    // Keep the ids used by the type ascriptions below stable.
+    let _ = NodeId(0);
+}
