@@ -518,13 +518,120 @@ pub fn install_idt_handlers(entry: &mut X86_64TrapEntry) {
             handler,
             user_accessible(vector),
         );
+        // C gate_table_exceptions parity: NMI and #DF run on dedicated IST
+        // stacks (IST1/IST2, programmed into the per-CPU TSS by S-4) — a
+        // gate with IST≠0 must not have it flattened by set_handler.
+        match vector {
+            2 => entry.set_gate_ist(2, 1),
+            8 => entry.set_gate_ist(8, 2),
+            _ => {}
+        }
         i += 1;
+    }
+}
+
+// ── Per-CPU GS area + SYSCALL MSR reprogramming (S-4 §3.3) ──
+
+/// Per-CPU GS area read by the entry stubs. Layout is the frozen build↔run
+/// contract with `x86_syscall_entry` (offsets pinned by
+/// `test_gs_area_layout_frozen`); `gs_cpu_id` extends it for per-CPU
+/// identity readback (S-4 L2 acceptance).
+#[repr(C, align(16))]
+pub struct GsArea {
+    /// Kernel stack top the SYSCALL entry switches to (GS_SLOT_KERNEL_STACK).
+    pub kernel_stack_top: u64,
+    /// Scratch slot where the entry parks the user RSP (GS_SLOT_USER_RSP).
+    pub user_rsp: u64,
+    /// This CPU's logical id (S-4 L2: AP self-identity readback).
+    pub cpu_id: u64,
+}
+
+const GS_AREA_CPU_ID: u64 = 0x10;
+
+/// One area per CPU slot (arch-owned static: fixed addresses, zero-heap —
+/// §3.3 "per-CPU statics" decision). S-6's per-CPU migration may repoint
+/// GS_BASE at richer per-CPU blocks; the first three fields' offsets are
+/// frozen by the asm.
+static mut GS_AREAS: [GsArea; 8] = [const { GsArea {
+    kernel_stack_top: 0,
+    user_rsp: 0,
+    cpu_id: 0,
+} }; 8];
+
+/// IA32_GS_BASE / IA32_KERNEL_GS_BASE (SDM Vol. 4 §2.2 — the swapgs pair).
+const MSR_IA32_GS_BASE: u32 = 0xC000_0101;
+const MSR_IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
+
+/// Program CPU `cpu_id`'s GS area (kernel stack top + identity) and write
+/// BOTH GS_BASE MSR variants to its address.
+///
+/// Runs on the AP itself (per-CPU MSRs are per-CPU state — only this CPU's
+/// MSRs are touched). IA32_KERNEL_GS_BASE gets the same pointer until user
+/// mode exists (S-6/S-7): `swapgs` has nothing to swap, and the stub reads
+/// the kernel view at entry.
+pub fn program_gs(cpu_id: u32, kernel_stack_top: VirBytes) {
+    // SAFETY: the GS area for this cpu is written before the CPU's own
+    // MSRs point at it and before any entry path can run on this CPU
+    // (no CPL3 code before S-6/S-7) — single-writer by ordering.
+    unsafe {
+        let area = &mut GS_AREAS[cpu_id as usize];
+        area.kernel_stack_top = kernel_stack_top.get();
+        area.user_rsp = 0;
+        area.cpu_id = cpu_id as u64;
+        let base = core::ptr::addr_of!(*area) as u64;
+        crate::x86_64::trap_entry::wrmsr(MSR_IA32_GS_BASE, base);
+        crate::x86_64::trap_entry::wrmsr(MSR_IA32_KERNEL_GS_BASE, base);
+    }
+}
+
+/// Read this CPU's logical id from its GS area (`gs:0x10`).
+///
+/// S-4 L2 acceptance helper: the AP proves its per-CPU identity by reading
+/// back what `program_gs` wrote — the value travels through the CPU's own
+/// GS_BASE MSR, so a match means the MSR + area wiring works on that CPU.
+pub fn gs_cpu_id() -> u64 {
+    let id: u64;
+    // SAFETY: GS_BASE points at this CPU's GsArea after program_gs; before
+    // that, GS base is 0 and gs_cpu_id is only called from the AP tail that
+    // ran program_gs (documented caller contract).
+    unsafe { core::arch::asm!("mov {}, gs:[{off}]", out(reg) id, off = const GS_AREA_CPU_ID, options(nomem, nostack)); }
+    id
+}
+
+/// Write the four SYSCALL MSRs for the CURRENT CPU (STAR/LSTAR/SFMASK +
+/// EFER.SCE) — the per-CPU reprogramming half of S-4 §3.3: values the BSP
+/// wrote via `configure_syscall` do not propagate to APs, and an AP without
+/// them faults on its first `syscall`.
+///
+/// The OS-facing entry remains `TrapEntryArch::configure_syscall` (BSP);
+/// the AP wiring calls this directly.
+pub fn write_syscall_msrs(entry_point: VirBytes) {
+    // SAFETY: same MSR sequence as configure_syscall — architecturally
+    // defined SYSCALL configuration, executed at CPL0.
+    use crate::x86_64::trap_entry::{MSR_EFER, MSR_LSTAR, MSR_SFMASK, MSR_STAR, EFER_SCE, SFMASK_CLEAR_IF};
+    unsafe {
+        let star = (crate::x86_64::protection::KERN_CS_SELECTOR as u64) << 32
+                 | (crate::x86_64::protection::USER_CS_SELECTOR as u64) << 48;
+        crate::x86_64::trap_entry::wrmsr(MSR_STAR, star);
+        crate::x86_64::trap_entry::wrmsr(MSR_LSTAR, entry_point.get());
+        crate::x86_64::trap_entry::wrmsr(MSR_SFMASK, SFMASK_CLEAR_IF);
+        let efer = crate::x86_64::trap_entry::rdmsr(MSR_EFER);
+        crate::x86_64::trap_entry::wrmsr(MSR_EFER, efer | EFER_SCE);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_gs_area_layout_frozen() {
+        // The asm reads gs:0x0 / gs:0x8; gs_cpu_id reads gs:0x10.
+        assert_eq!(offset_of!(GsArea, kernel_stack_top), GS_SLOT_KERNEL_STACK as usize);
+        assert_eq!(offset_of!(GsArea, user_rsp), GS_SLOT_USER_RSP as usize);
+        assert_eq!(offset_of!(GsArea, cpu_id), GS_AREA_CPU_ID as usize);
+    }
+
 
     #[test]
     fn test_trap_frame_layout_frozen() {

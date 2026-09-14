@@ -54,6 +54,14 @@ const GDT_USER_CS_INDEX: usize = 3;
 const GDT_USER_DS_INDEX: usize = 4;
 const GDT_TSS_FIRST_INDEX: usize = 5;
 
+/// GDT slots per TSS descriptor. Long mode (unlike C's i386) uses 16-byte
+/// TSS descriptors — two consecutive GDT entries. Selector for CPU `i` =
+/// `(GDT_TSS_FIRST_INDEX + i * GDT_SLOTS_PER_TSS) * 8`.
+/// [ARCH: long-mode TSS descriptor size] C protect.c builds 8-byte (32-bit)
+/// TSS descriptors; the x86-64 port's ISA requires 16 bytes (SDM Vol. 3A
+/// §7.2.3 — upper dword holds base[63:32]).
+const GDT_SLOTS_PER_TSS: usize = 2;
+
 pub(crate) const KERN_CS_SELECTOR: u16 = (GDT_KERN_CS_INDEX * 8) as u16;
 pub(crate) const KERN_DS_SELECTOR: u16 = (GDT_KERN_DS_INDEX * 8) as u16;
 pub(crate) const USER_CS_SELECTOR: u16 = ((GDT_USER_CS_INDEX * 8) | 3) as u16;
@@ -62,7 +70,7 @@ pub(crate) const USER_DS_SELECTOR: u16 = ((GDT_USER_DS_INDEX * 8) | 3) as u16;
 
 const MAX_CPUS: usize = 8;
 
-const GDT_ENTRIES: usize = GDT_TSS_FIRST_INDEX + MAX_CPUS;
+const GDT_ENTRIES: usize = GDT_TSS_FIRST_INDEX + MAX_CPUS * GDT_SLOTS_PER_TSS;
 
 const TSS64_SIZE: usize = 104;
 
@@ -156,7 +164,6 @@ fn make_tss_desc64(tss_addr: u64, limit: u16, dpl: u8) -> [u64; 2] {
 pub struct X86_64Protection {
     gdt: [u64; GDT_ENTRIES],
     tss: [Tss64; MAX_CPUS],
-    tss_desc_high: [u64; MAX_CPUS],
     cpu_count: u32,
     /// CPU ID passed to `init()`. `load()` uses this to select the correct
     /// TSS descriptor for the boot CPU instead of hardcoding BSP (cpu 0).
@@ -216,33 +223,73 @@ impl X86_64Protection {
         // reserved area.
         let usable_top = kernel_stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
         self.tss[idx].sp0 = usable_top;
-
-        // Store the CPU id at the top of the reserved area, matching C:
-        // *((reg_t *)(sp0 + sizeof(reg_t))) = cpu
-        // This is read by the assembly trap entry to determine which CPU's
-        // stack is in use.
-        // SAFETY: kernel_stack_top is a valid, aligned virtual address at the
-        // top of the boot CPU's stack. We write only within the reserved area
-        // and run single-threaded during boot before concurrent access is
-        // possible. Skipped in unit tests because the addresses are mock values.
-        #[cfg(not(test))]
-        unsafe {
-            let cpu_id_slot = (usable_top + core::mem::size_of::<u64>() as u64) as *mut u64;
-            cpu_id_slot.write(cpu_id as u64);
-        }
+        // No cpu-id stamp here: init() calls this for every slot in a loop
+        // (descriptors are address-stable), and stamping would write the
+        // same reserved-top address MAX_CPUS times. The stamp belongs to
+        // the assignment points — init() for BSP, set_kernel_stack for APs.
 
         // iobase = 0x8000 disables I/O permission bitmap per Intel SDM Vol. 3A §7.7:
         // "If the I/O Map Base Address ≥ TSS limit, no I/O permission map exists."
         // C (i386): iobase = sizeof(struct tss_s) = 104 (no I/O bitmap in 32-bit).
         // 64-bit TSS uses 0x8000 for consistency — any value >= TSS limit works.
 
+        // IST1 (NMI) / IST2 (#DF): per-CPU dedicated stacks — the shared IDT's
+        // gates for vectors 2/8 carry ist=1/2 (C gate_table_exceptions
+        // parity), and a gate with IST≠0 reads TSS.ist[ist-1] at delivery.
+        // Without these, the first NMI/#DF would switch to a null stack and
+        // triple-fault.
+        self.tss[idx].ist[0] = ist_stack_top(0, idx);
+        self.tss[idx].ist[1] = ist_stack_top(1, idx);
+
         let tss_addr = &self.tss[idx] as *const Tss64 as u64;
         let desc = make_tss_desc64(tss_addr, TSS64_SIZE as u16 - 1, 0);
 
-        let gdt_idx = GDT_TSS_FIRST_INDEX + idx;
+        // BOTH halves go into the GDT image — long-mode TSS descriptors are
+        // 16 bytes (two consecutive entries). The pre-S-4 code kept the high
+        // dword in a separate array that `load()` never exposed, so `ltr`
+        // read base[63:32]=0 and any ring crossing would have died on a
+        // garbage TSS (latent: nothing crossed rings before S-4).
+        let gdt_idx = GDT_TSS_FIRST_INDEX + idx * GDT_SLOTS_PER_TSS;
         self.gdt[gdt_idx] = desc[0];
-        self.tss_desc_high[idx] = desc[1];
+        self.gdt[gdt_idx + 1] = desc[1];
     }
+
+    /// Task-register selector for `cpu_id` (long-mode selector math: the
+    /// descriptor starts at GDT slot `GDT_TSS_FIRST_INDEX + i*2`).
+    fn tss_selector(cpu_id: u32) -> u16 {
+        ((GDT_TSS_FIRST_INDEX + cpu_id as usize * GDT_SLOTS_PER_TSS) * 8) as u16
+    }
+}
+
+/// Stamp the CPU id into the reserved top of a CPU's kernel stack
+/// (C: `*((reg_t *)(sp0 + sizeof(reg_t))) = cpu` — protect.c:173-181; read
+/// by the assembly trap entry to identify the CPU in use). Called only when
+/// a specific CPU's stack is assigned — init() stamps the BSP slot,
+/// `set_kernel_stack` stamps the AP slot before its SIPI — never in a loop
+/// over slots, which would write one address MAX_CPUS times.
+///
+/// Skipped under cfg(test): the addresses are mock values there.
+fn stamp_cpu_id(usable_top: u64, cpu_id: u32) {
+    #[cfg(not(test))]
+    unsafe {
+        let cpu_id_slot = (usable_top + core::mem::size_of::<u64>() as u64) as *mut u64;
+        cpu_id_slot.write_volatile(cpu_id as u64);
+    }
+    #[cfg(test)]
+    let _ = (usable_top, cpu_id);
+}
+
+/// Per-CPU IST stacks (S-4 §3.3): static, fixed-address, zero-heap —
+/// `IST_STACKS[slot][cpu]`, top = base + size. Slot 0 serves IST1 (NMI),
+/// slot 1 serves IST2 (#DF), matching the shared IDT's gate ist fields.
+const IST_STACK_SIZE: usize = 0x2000; // 8 KiB per stack
+static mut IST_STACKS: [[[u8; IST_STACK_SIZE]; MAX_CPUS]; 2] =
+    [[[0; IST_STACK_SIZE]; MAX_CPUS]; 2];
+
+fn ist_stack_top(slot: usize, cpu_id: usize) -> u64 {
+    // SAFETY: address-only computation on a static array; no dereference.
+    let base = unsafe { core::ptr::addr_of!(IST_STACKS[slot][cpu_id]) as *const u8 as usize };
+    (base + IST_STACK_SIZE) as u64
 }
 
 impl ProtectionArch for X86_64Protection {
@@ -269,13 +316,24 @@ impl ProtectionArch for X86_64Protection {
         let mut prot = Self {
             gdt: [0u64; GDT_ENTRIES],
             tss: [Tss64::zeroed(); MAX_CPUS],
-            tss_desc_high: [0u64; MAX_CPUS],
             cpu_count: 0,
             boot_cpu_id: cpu_id,
         };
 
         prot.fill_flat_segments();
-        prot.setup_tss_for_cpu(cpu_id, kernel_stack_top);
+        // Build the TSS descriptors for EVERY CPU slot now: the `tss` array
+        // lives inside this instance at fixed addresses, so the descriptors
+        // never need rebuilding — `set_kernel_stack` only rewrites sp0, and
+        // an AP's `init_ap` can then be a pure load (no writes, no races).
+        for slot in 0..MAX_CPUS as u32 {
+            prot.setup_tss_for_cpu(slot, kernel_stack_top);
+        }
+        // BSP's sp0 gets the real stack top + the cpu-id stamp; other slots
+        // keep the placeholder until their `set_kernel_stack` runs during
+        // SMP bring-up (S-5) — which stamps them.
+        let bsp_usable = kernel_stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
+        prot.tss[cpu_id as usize].sp0 = bsp_usable;
+        stamp_cpu_id(bsp_usable, cpu_id);
         prot.cpu_count = cpu_id + 1;
 
         prot
@@ -284,10 +342,59 @@ impl ProtectionArch for X86_64Protection {
     fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes) {
         let idx = cpu_id as usize;
         assert!(idx < MAX_CPUS, "cpu_id {} exceeds MAX_CPUS {}", cpu_id, MAX_CPUS);
-        self.tss[idx].sp0 = stack_top.get();
+        let usable_top = stack_top.get() - X86_64_STACK_TOP_RESERVED as u64;
+        self.tss[idx].sp0 = usable_top;
+        stamp_cpu_id(usable_top, cpu_id);
     }
 
     fn load(&self) {
+        self.load_with_tss(self.boot_cpu_id);
+    }
+
+    /// AP-side per-CPU protection bring-up (S-4, D-39 closed).
+    ///
+    /// Runs ON the AP after the early ladder. The shared instance's GDT
+    /// already carries this CPU's 16-byte TSS descriptor (built by `init()`
+    /// at a stable address), and the BSP wrote `sp0` via `set_kernel_stack`
+    /// before the SIPI — so this is a pure load:
+    /// lgdt (per-CPU GDT image, C "no global GDT sync" semantics) →
+    /// ltr this CPU's TSS → reload data segments → program the arch GS area
+    /// and both GS_BASE MSR variants (the S-8 SYSCALL entry reads its kernel
+    /// stack top from `gs:0x0`; §3.3 per-CPU MSR contract).
+    ///
+    /// The per-CPU SYSCALL MSRs (STAR/LSTAR/SFMASK/EFER.SCE) are written by
+    /// the caller through `trap_stub::write_syscall_msrs` — they belong to
+    /// the trap layer, not this trait.
+    ///
+    /// C: tss_init(cpu, stack) + prot_load_selectors() — mpx.S AP path.
+    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
+        assert!(
+            (cpu_id as usize) < MAX_CPUS,
+            "init_ap: cpu_id {} exceeds MAX_CPUS {}",
+            cpu_id,
+            MAX_CPUS
+        );
+        assert!(
+            self.gdt[GDT_TSS_FIRST_INDEX + cpu_id as usize * GDT_SLOTS_PER_TSS] != 0,
+            "init_ap: TSS descriptor for cpu {} not built (init() must run first)",
+            cpu_id
+        );
+        // Load order matters: `load_with_tss`'s segment-reload step does
+        // `mov gs, 0` — which (unlike most segments) zeroes the GS BASE on
+        // x86-64 — so the GS area programming MUST come after it or the
+        // wrmsr'd base is silently clobbered (first L2 run: gs:0x10 read
+        // IVT bytes at base 0).
+        self.load_with_tss(cpu_id);
+        // Arch GS area + both MSR variants. IA32_KERNEL_GS_BASE gets the same
+        // pointer: no user mode exists before S-6/S-7, so swapgs has nothing
+        // to swap yet — the invariant is documented at the stub.
+        crate::x86_64::trap_stub::program_gs(cpu_id, kernel_stack_top);
+    }
+}
+
+impl X86_64Protection {
+    /// Shared load sequence: lgdt + reload CS/DS/ES/SS + ltr(cpu).
+    fn load_with_tss(&self, cpu_id: u32) {
         let gdtr = DescTablePtr {
             limit: (core::mem::size_of_val(&self.gdt) - 1) as u16,
             base: self.gdt.as_ptr() as u64,
@@ -343,10 +450,10 @@ impl ProtectionArch for X86_64Protection {
                 options(nostack, preserves_flags)
             );
 
-            // 5. Load Task Register (TR) with the boot CPU's TSS selector.
-            //    SAFETY: GDT_TSS_FIRST_INDEX + boot_cpu_id points to a valid
-            //    64-bit TSS descriptor set up by setup_tss_for_cpu().
-            let tr_sel: u16 = ((GDT_TSS_FIRST_INDEX + self.boot_cpu_id as usize) * 8) as u16;
+            // 5. Load Task Register (TR) with the target CPU's TSS selector.
+            //    SAFETY: the descriptor for `cpu_id` was built by init() at a
+            //    stable address and is present in this GDT image.
+            let tr_sel: u16 = Self::tss_selector(cpu_id);
             core::arch::asm!(
                 "ltr {0:x}",
                 in(reg) tr_sel,
@@ -360,17 +467,6 @@ impl ProtectionArch for X86_64Protection {
         }
     }
 
-    // AP initialization is not yet implemented for x86-64. The trait requires
-    // the method, but SMP bringup is out of scope for the current milestone.
-    // When called, panic immediately instead of silently doing nothing —
-    // an AP with an unloaded TSS would triple-fault on its first exception.
-    // C: tss_init(cpu, stack) + prot_load_selectors() — called from mpx.S
-    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        panic!(
-            "init_ap({}) not implemented for x86-64; cannot set up TSS/selector for stack_top={:?}",
-            cpu_id, kernel_stack_top
-        );
-    }
 }
 
 #[cfg(test)]
@@ -480,9 +576,12 @@ mod tests {
         );
 
         prot.set_kernel_stack(0, VirBytes::new(0xA000));
+        // S-4 consistency fix: set_kernel_stack applies the same reserved-area
+        // subtraction as init()/C tss_init — sp0 must point BELOW the reserved
+        // top (the old code stored the raw top, contradicting init's layout).
         assert_eq!(
             unsafe { core::ptr::read_unaligned(sp0_ptr) },
-            0xA000,
+            0xA000 - X86_64_STACK_TOP_RESERVED as u64,
             "sp0 should be updated to the caller-supplied usable top"
         );
     }
@@ -552,15 +651,63 @@ mod tests {
 
     #[test]
     fn init_creates_tss_descriptor_in_gdt() {
+        // S-4: long-mode TSS descriptors are 16 bytes — BOTH halves live in
+        // the GDT image (the pre-S-4 code kept the high dword in a separate
+        // array `load()` never exposed, so ltr read base[63:32]=0).
         let prot = X86_64Protection::init(0, VirBytes::new(0x8000));
-        // TSS descriptor occupies GDT entries 5 (low) and tss_desc_high[0] (high)
-        let tss_low = prot.gdt[GDT_TSS_FIRST_INDEX];
-        let tss_high = prot.tss_desc_high[0];
-        // Access byte in low descriptor must have present bit and TSS type
-        let access = ((tss_low >> 40) & 0xFF) as u8;
-        assert_eq!(access & 0x89, 0x89, "TSS descriptor: present + 64-bit TSS type");
-        // High descriptor contains upper 32 bits of TSS address
-        assert_ne!(tss_high | tss_low, 0, "TSS descriptor must be non-null");
+        for cpu in 0..MAX_CPUS {
+            let slot = GDT_TSS_FIRST_INDEX + cpu * GDT_SLOTS_PER_TSS;
+            let tss_low = prot.gdt[slot];
+            let tss_high = prot.gdt[slot + 1];
+            // Access byte in the low descriptor: present + 64-bit TSS type.
+            let access = ((tss_low >> 40) & 0xFF) as u8;
+            assert_eq!(access & 0x89, 0x89, "TSS cpu {cpu}: present + 64-bit TSS type");
+            // The high half carries base[63:32]; the struct lives in this
+            // test's image (nonzero high bits on any address ≥ 4 GiB and on
+            // higher-half kernels) and must be non-null overall.
+            assert_ne!(tss_high | tss_low, 0, "TSS cpu {cpu}: descriptor non-null");
+            // Selector math: the TR selector for this CPU must point at the
+            // descriptor's low half.
+            assert_eq!(
+                X86_64Protection::tss_selector(cpu as u32),
+                (slot * 8) as u16,
+                "TSS cpu {cpu}: selector must address the descriptor slot"
+            );
+        }
+    }
+
+    #[test]
+    fn tss_descriptor_high_half_carries_base_above_4gib() {
+        // Regression pin for the S-4 layout fix: the descriptor's upper dword
+        // (GDT slot +1) must carry base[63:32] of the TSS — a higher-half
+        // address has nonzero base[63:32] (0xFFFF_8000), which the old
+        // tss_desc_high-side-array layout lost.
+        let prot = X86_64Protection::init(0, VirBytes::new(0xFFFF_8000_0020_0000));
+        let tss_addr = core::ptr::addr_of!(prot.tss[0]) as u64;
+        if tss_addr >> 32 == 0 {
+            return; // low-memory test build: high half legitimately 0
+        }
+        let slot = GDT_TSS_FIRST_INDEX;
+        let tss_high = prot.gdt[slot + 1];
+        assert_eq!(
+            (tss_high & 0xFFFF_FFFF) as u64,
+            tss_addr >> 32,
+            "descriptor high dword must carry base[63:32]"
+        );
+    }
+
+    #[test]
+    fn init_stamps_bsp_cpu_id_on_stack_top() {
+        // C protect.c:173-181 parity — the stamp lives at sp0 + sizeof(reg_t).
+        // cfg(test) skips the real write; this pins the sp0 arithmetic.
+        let prot = X86_64Protection::init(0, VirBytes::new(0x8000));
+        // tss is #[repr(C, packed)] — read through addr_of! (unaligned field).
+        let sp0 = unsafe { core::ptr::addr_of!(prot.tss[0].sp0).read_unaligned() };
+        assert_eq!(
+            sp0,
+            0x8000 - X86_64_STACK_TOP_RESERVED as u64,
+            "BSP sp0 = stack_top - reserved"
+        );
     }
 
     #[test]

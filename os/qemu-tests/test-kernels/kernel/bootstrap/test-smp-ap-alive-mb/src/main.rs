@@ -17,8 +17,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use minix_arch::arch::ap_early_entry::ApBootstrap;
 use minix_arch::smp::SmpArch;
 use minix_arch::x86_64::ap_early_entry::install_at;
+use minix_arch::x86_64::protection::X86_64Protection;
+use minix_arch::ProtectionArch;
 use minix_arch::x86_64::smp::X86_64SmpArch;
 use minix_plat::x86_64::early_console;
+use minix_types::VirBytes;
 
 // ── 跳板页表（32 位入口填写；.bss 由加载器清零）──
 // CR3 装载要求 4KB 对齐（bits 11:0 保留，非对齐即 #GP——S-3d 跳板首障）。
@@ -43,9 +46,21 @@ pub static mut MB_PD3: PageTable = PageTable { entries: [0; 512] };
 #[repr(align(16))]
 struct ApStack(pub [u8; 0x10000]);
 static mut AP_STACK: ApStack = ApStack([0u8; 0x10000]);
+/// AP 栈顶（BSP 算好经此传给 AP——bootstrap record 的同值旁路）。
+static AP_STACK_TOP: AtomicU64 = AtomicU64::new(0);
 
 /// Bit n set == AP logical_id n reached the Rust entry.
 static BOOT_ACK: AtomicU64 = AtomicU64::new(0);
+
+/// Shared per-CPU protection instance (S-4): the BSP builds it (all 8 TSS
+/// descriptors at stable addresses), stamps the AP slot via
+/// set_kernel_stack before the SIPI, and the AP runs `init_ap` on its own
+/// core — lgdt the shared GDT image, ltr its own TSS, program its GS MSRs.
+static mut PROTECTION: Option<X86_64Protection> = None;
+
+/// AP side-effect channel: the value `ap_cpu_id_readback()` returned on the
+/// AP (gs:0x10 travels through that CPU's own GS_BASE MSR).
+static AP_CPU_ID_READBACK: AtomicU64 = AtomicU64::new(0);
 
 // 本测试零堆；此空分配器仅为满足依赖链的 alloc 符号需求（永不调用，
 // 调用即空指针——若未来真出现分配，链接期后的首次分配会立刻暴露）。
@@ -62,6 +77,24 @@ static ALLOCATOR: NullAlloc = NullAlloc;
 
 unsafe extern "C" fn ap_entry(_bootstrap_pa: usize) -> ! {
     early_console::write_str("### AP IN RUST (ladder complete)\n");
+
+    // S-4 L2 extension: per-CPU protection bring-up on THIS core —
+    // lgdt/ltr the shared GDT (cpu 1's 16-byte TSS descriptor), program the
+    // GS area + both GS_BASE MSRs, re-write the per-CPU SYSCALL MSRs (the
+    // BSP's MSR writes do not propagate — §3.3), then prove the identity:
+    // gs:0x10 must read back the value program_gs stored for cpu 1.
+    let ap_stack_top = AP_STACK_TOP.load(Ordering::Acquire);
+    unsafe {
+        let prot = &*core::ptr::addr_of!(PROTECTION);
+        if let Some(prot) = prot {
+            prot.init_ap(1, VirBytes::new(ap_stack_top));
+        }
+    }
+    minix_arch::ap_write_syscall_msrs(minix_arch::syscall_entry_va());
+    let readback = minix_arch::ap_cpu_id_readback();
+    AP_CPU_ID_READBACK.store(readback, Ordering::Release);
+    early_console::write_str("### AP cpu_id readback done\n");
+
     BOOT_ACK.fetch_or(1 << 1, Ordering::Release);
     loop {
         asm!("cli", options(nomem, nostack));
@@ -236,6 +269,24 @@ extern "C" fn rust_main64() -> ! {
     // 跳板恒等页表根（<4GB，AP 阶梯的 CR3 直接可用）。
     let root = core::ptr::addr_of!(MB_PML4) as u64;
 
+    // S-4 L2：构建共享 protection 实例（全部 8 个 TSS 描述符地址即此定格），
+    // 并在 SIPI 前用 set_kernel_stack 给 AP 槽写 sp0 + cpu-id 戳。
+    // BSP 槽的占位栈顶（本测试的 BSP 继续用跳板 GDT，sp0 值仅满足布局）；
+    // 不能取 asm 标号 mb_stack_top（不在 Rust 符号表），用 AP_STACK 页代替。
+    let bsp_stack_top = core::ptr::addr_of!(AP_STACK) as usize as u64 + 0x8000;
+    let ap_stack_top = core::ptr::addr_of!(AP_STACK) as usize as u64 + 0x10000;
+    AP_STACK_TOP.store(ap_stack_top, Ordering::Release);
+    unsafe {
+        let prot = X86_64Protection::init(0, VirBytes::new(bsp_stack_top));
+        *core::ptr::addr_of_mut!(PROTECTION) = Some(prot);
+        // SAFETY: single-threaded boot phase — the AP has not been woken.
+        let prot = &mut *core::ptr::addr_of_mut!(PROTECTION);
+        if let Some(prot) = prot {
+            prot.set_kernel_stack(1, VirBytes::new(ap_stack_top));
+        }
+    }
+    early_console::write_str("STEP3.5\n");
+
     // 安装阶梯 blob @0x5000，填充 bootstrap @0x6000。
     unsafe { install_at(0x5000) };
 
@@ -283,6 +334,16 @@ extern "C" fn rust_main64() -> ! {
         core::hint::spin_loop();
     }
 
+    // S-4 L2 判定：AP 的 GS cpu_id 读回必须 == 1（该值经 AP 自己的
+    // GS_BASE MSR 才可见——读回成功即 per-CPU MSR/GS 布线在该核成立）。
+    let readback = AP_CPU_ID_READBACK.load(Ordering::Acquire);
+    early_console::write_str("### AP cpu_id readback = ");
+    early_console::write_hex(readback);
+    early_console::write_str("\n");
+    if readback != 1 {
+        early_console::write_str("### FAIL: AP cpu_id readback != 1\n");
+        loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+    }
     early_console::write_str("### TEST_RESULT: PASS test-smp-ap-alive-mb ###\n");
     loop { unsafe { asm!("cli", options(nomem, nostack)); } }
 }

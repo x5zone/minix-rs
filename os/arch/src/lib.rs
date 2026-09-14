@@ -310,6 +310,34 @@ pub fn register_trap_dispatchers(
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
 pub use x86_64::trap_stub::TrapFrame;
 
+/// S-4 per-CPU bring-up helpers (§3.3 per-CPU MSR contract). No-ops on the
+/// mock/other-arch branches; on x86-64 these write the CURRENT CPU's MSRs —
+/// the AP wiring calls them from the AP itself.
+#[cfg(feature = "mock")]
+pub fn ap_write_syscall_msrs(_entry: minix_types::VirBytes) {}
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub fn ap_write_syscall_msrs(entry: minix_types::VirBytes) {
+    crate::x86_64::trap_stub::write_syscall_msrs(entry);
+}
+#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+pub fn ap_write_syscall_msrs(_entry: minix_types::VirBytes) {}
+
+/// Read this CPU's per-CPU identity (x86-64: `gs:0x10` written by
+/// `program_gs`; other archs return 0 — their identity path is per-CPU
+/// register based and lands with their own S-4 lanes).
+#[cfg(feature = "mock")]
+pub fn ap_cpu_id_readback() -> u64 {
+    0
+}
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub fn ap_cpu_id_readback() -> u64 {
+    crate::x86_64::trap_stub::gs_cpu_id()
+}
+#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+pub fn ap_cpu_id_readback() -> u64 {
+    0
+}
+
 // ── CurrentClockArch type aliases ──
 #[cfg(feature = "mock")]
 pub type CurrentClockArch = MockClockArch;

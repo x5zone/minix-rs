@@ -53,17 +53,17 @@ const GATE_PRESENT: u8 = 0x80;       // Gate descriptor present bit
 
 // MSR addresses for SYSCALL/SYSRET configuration
 // AMD64 Architecture Programmer's Manual Vol. 2 §4.1.5
-const MSR_STAR: u32 = 0xC0000081;    // SYSRET/SYSCALL CS and SS
-const MSR_LSTAR: u32 = 0xC0000082;   // SYSCALL entry point (RIP)
-const MSR_SFMASK: u32 = 0xC0000084;  // SYSCALL RFLAGS mask
-const MSR_EFER: u32 = 0xC0000080;    // Extended Feature Enable Register
+pub(crate) const MSR_STAR: u32 = 0xC0000081;    // SYSRET/SYSCALL CS and SS
+pub(crate) const MSR_LSTAR: u32 = 0xC0000082;   // SYSCALL entry point (RIP)
+pub(crate) const MSR_SFMASK: u32 = 0xC0000084;  // SYSCALL RFLAGS mask
+pub(crate) const MSR_EFER: u32 = 0xC0000080;    // Extended Feature Enable Register
 
 // EFER bit definitions
-const EFER_SCE: u64 = 0x1;           // System Call Enable (bit 0)
+pub(crate) const EFER_SCE: u64 = 0x1;           // System Call Enable (bit 0)
 
 // SFMASK: bits set in this mask are cleared in RFLAGS on SYSCALL.
 // 0x200 = bit 9 = IF (Interrupt Flag) — SYSCALL clears IF by default.
-const SFMASK_CLEAR_IF: u64 = 0x200;
+pub(crate) const SFMASK_CLEAR_IF: u64 = 0x200;
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -134,6 +134,16 @@ impl X86_64TrapEntry {
         );
     }
 
+    /// Set only the IST field of an existing gate (0-7).
+    ///
+    /// S-4: `set_handler` writes IST=0; the two C-parity exceptions that run
+    /// on dedicated stacks — NMI (vector 2, IST1) and #DF (vector 8, IST2) —
+    /// get their IST re-applied after stub installation, now that S-4's
+    /// per-CPU TSS programs the IST arrays.
+    pub(crate) fn set_gate_ist(&mut self, vector: u8, ist: u8) {
+        self.idt[vector as usize].ist = ist & 0x7;
+    }
+
     /// Whether `vector` carries a present gate in this table.
     ///
     /// S-8 load-safety half of the "no empty vector" stage invariant: the
@@ -152,7 +162,7 @@ impl X86_64TrapEntry {
 /// - Writing to certain MSRs can change CPU behavior (e.g., enabling
 ///   features, changing entry points). The caller must ensure the
 ///   write is appropriate for the current CPU state.
-unsafe fn wrmsr(msr: u32, value: u64) { unsafe {
+pub(crate) unsafe fn wrmsr(msr: u32, value: u64) { unsafe {
     let low = value as u32;
     let high = (value >> 32) as u32;
     core::arch::asm!(
@@ -170,7 +180,7 @@ unsafe fn wrmsr(msr: u32, value: u64) { unsafe {
 ///
 /// - `msr` must be a valid MSR index for the current CPU.
 ///   Reading an invalid MSR raises a #GP exception.
-unsafe fn rdmsr(msr: u32) -> u64 { unsafe {
+pub(crate) unsafe fn rdmsr(msr: u32) -> u64 { unsafe {
     let low: u32;
     let high: u32;
     core::arch::asm!(
