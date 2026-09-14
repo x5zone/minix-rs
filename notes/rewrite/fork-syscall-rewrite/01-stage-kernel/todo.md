@@ -316,7 +316,7 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 |------|------|------|
 | S-8 | ✅ asm trap stub + SYSCALL 入口（2026-09-14 收官——A/B 路径 + Win64 ABI/ISA override/LVT 屏蔽三真 bug + test-timer-irq PASS；见 smp_todo.md §21 完成记录） | S-3d ✅ |
 | S-4 | ✅ init_ap 真实现（2026-09-14——16 字节 TSS 描述符入 GDT + IST 栈 + GS 双 MSR + per-CPU SYSCALL MSR + L2 读回 PASS；x86 PIT 全局无 per-AP 时钟工作；见 smp_todo §22） | S-8 ✅（D-39 ✅） |
-| S-5 | smp_init 编排 + boot_lock（D-36 下半 + D-37） | S-4 |
+| S-5 | ✅ smp_init 编排 + boot_lock（2026-09-15 全步收官——内核层 + 硬件 L4 四核全在线；含 PROTECTION/TRAP_ENTRY 驻留生命周期修复与三真 bug；见 smp_todo §23） | S-4 ✅ |
 | S-6a~d | per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（D-40/D-41/sched-1/tick-1） | S-5 |
 | S-7 | AP 主循环（与 BSP 同 BKL 所有权前置） | S-6 |
 | S-9 | 异常入口 BKL（D-38①） | S-8 |

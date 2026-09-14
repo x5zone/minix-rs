@@ -990,3 +990,30 @@ fn switch_to_user() -> ! {
 - C 头文件：`minix3/minix/include/arch/i386/include/archtypes.h:39-46` — struct cpu_info
 - Rust：`os/arch/src/arch/cpu_identity.rs` + `os/kernel/src/smp.rs` — CPU 身份探测与 CPU_INFO 表（todo D-53）
 - C 头文件：`minix3/minix/include/minix/com.h:207-270` — SYS_* 定义
+
+---
+
+## 附录 A. smp_init 的启动位次（S-5，2026-09-14）
+
+C `main.c:306-314`（CONFIG_SMP 分支）：memmap/bootstrap 装配完成后、
+`bsp_finish_booting()` 之前调用 `smp_init()`——C 注释明示"smp_init 返回即
+失败，转单核收尾"；本项目同构：`smp_init` 内嵌逐 AP 有界超时跳过 + 容忍
+缺核的 wait 语义（§3.4 双位图），返回后必然落入 `bsp_finish_booting`。
+
+Rust kmain 顺序（S-5 布线）：
+
+```
+Phase A   paging（arch_boot_impl，采用根 <2GiB——DM-admissible 上限）
+Phase B   init_protection（PROTECTION/TRAP_ENTRY 全局驻留——S-5 生命周期修复）
+          init_clock_and_interrupts
+Phase C   init_proc_and_boot
+Phase D   init_smp_state（拓扑装配，D-36）
+C main.c:149  bkl_lock()（一次取锁；wait_for_aps 的舞蹈在此之上往返）
+C main.c:311  smp::smp_init()（串行逐 AP + wait_for_aps；返回时 BKL 仍持有）
+main.c:73    bsp_finish_booting（Step 8.5 的取锁已删除——重复取锁即死锁）
+```
+
+**BKL 契约**：BKL 在 smp_init 之前取得一次（C main.c:149 parity）；
+`wait_for_aps` 的 UNLOCK→等待→LOCK 往返净效果不变；`bsp_finish_booting`
+以 debug_assert 钉住"已持有"（取代原 Step 8.5 的重复取锁——非重入 CAS 锁
+二次取即死锁，L4 调试中实证）。
