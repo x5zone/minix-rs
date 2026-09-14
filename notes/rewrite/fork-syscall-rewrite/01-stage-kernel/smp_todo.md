@@ -761,7 +761,7 @@ publication 规则（各 per-CPU 迁移项不再各自决定）：
   send_ipi EID 改 0x735049/FID 0（现 a7=0/a6=3 实为 SetTimer，见 §3.3）；②arm PSCI
   CPU_ON 换 0xC4000003（现 0x84000003 为 SMC32 截断位宽，见 §3.1）；③x86 `boot_ap`
   补 ICR 前置 `mfence`（C arch_smp.c:130 先例，现缺失——bootstrap 发布 fence，见 §3.9）；**首项核验：三架构恒等映射覆盖范围 vs stub/bootstrap 落点**（§3.2 闭环第 3 条） | 两架构 stub 模块 | hosted 无回归 + 构建门 + 恒等覆盖核验记录 | 16-smp §补两架构入口 | → **完成记录（2026-09-08）**：三修复全落地（①riscv legacy EID 0/FID 3 → IPI 扩展 0x735049/0——legacy 形态被现代 OpenSBI 废弃，ecall 静默 NOT_SUPPORTED；②arm PSCI CPU_ON SMC32→SMC64 0xC4000003，防 >4GiB entry 截断，context_id 改传 bootstrap 指针；③x86 boot_ap ICR 前补 mfence）；a2 语义勘误（opaque cookie 非 priv）；两架构 stub 骨架模块（义务清单+契约，实体随 S-4）；恒等覆盖核验静态完成（stub/记录在内核镜像内，BSP 根双映射）；arch 217 全绿 + 三目标构建门全过（16-smp §10）
-| S-3d | AP alive 验证 | S-3 终点 = `ap_early_entry` 执行 `boot_ack_mask.fetch_or(1<<logical_id, Release)` 后 park（**只置握手位，不碰 online**——v3 #1 双状态拆分；`boot_ack_mask` 字段随本步引入 SmpState） | 测试内核 `test-smp-ap-alive` | L2：单 AP 跨完模式梯子，BSP 观察到 boot_ack 位已置（x86 为主件；arm/riscv 同测） | 16-smp §5.1 加行 | → **🔶 进行中（2026-09-08，WIP commit）**：SmpState.boot_ack_mask + publish/observe 方法与单元测试已落地；test-smp-ap-alive 内核已建（LAPIC 使能/镜像安装/记录填充/boot_ap INIT-SIPI/有界观测）。**当前症状**：INIT 与 SIPI 均已发出（ICR 状态 idle、ESR=0 无错误），但 AP 未到达 Rust 入口（marker=0）且无三重故障复位——嫌疑集中在梯子 16 位段内 lgdt 的 modrm 编码（raw 字节缺 0x67 地址尺寸前缀，16 位模式 rm=101 为 disp16）与 16→32 far-jump 的操作数宽度；下一步 = QEMU gdb 会话（-s -S 单步 AP 真实执行路径）。；**⏸ 暂停（2026-09-08）：AP bring-up 需 QEMU gdb 专注调试，切先做 Phase 4/5 可并行项，回归时从此处续** |；**→ V13 续诊（2026-09-09，Claude 会话）**：三处真实修复入库——①FJ16/FJ32 远跳
+| S-3d | AP alive 验证 | S-3 终点 = `ap_early_entry` 执行 `boot_ack_mask.fetch_or(1<<logical_id, Release)` 后 park（**只置握手位，不碰 online**——v3 #1 双状态拆分；`boot_ack_mask` 字段随本步引入 SmpState） | 测试内核 `test-smp-ap-alive` | L2：单 AP 跨完模式梯子，BSP 观察到 boot_ack 位已置（x86 为主件；arm/riscv 同测） | 16-smp §5.1 加行 | → **✅ 已完成（2026-09-14，test-smp-ap-alive-mb PASS、中断日志 0 异常——第十~十二轮定案：lgdt 16 位寻址 modrm 0x15=[DI] 读 IVT、0x16=disp16 修复 + 阶梯尾部三处绝对读字面量笔误；详见下方第九~十二轮记录；历史症状归档如下）**：SmpState.boot_ack_mask + publish/observe 方法与单元测试已落地；test-smp-ap-alive 内核已建（LAPIC 使能/镜像安装/记录填充/boot_ap INIT-SIPI/有界观测）。**当前症状**：INIT 与 SIPI 均已发出（ICR 状态 idle、ESR=0 无错误），但 AP 未到达 Rust 入口（marker=0）且无三重故障复位——嫌疑集中在梯子 16 位段内 lgdt 的 modrm 编码（raw 字节缺 0x67 地址尺寸前缀，16 位模式 rm=101 为 disp16）与 16→32 far-jump 的操作数宽度；下一步 = QEMU gdb 会话（-s -S 单步 AP 真实执行路径）。；**⏸ 暂停（2026-09-08）：AP bring-up 需 QEMU gdb 专注调试，切先做 Phase 4/5 可并行项，回归时从此处续** |；**→ V13 续诊（2026-09-09，Claude 会话）**：三处真实修复入库——①FJ16/FJ32 远跳
 手写偏移（0x8040/0x80C0）与实际布局脱钩 → 改汇编期 label 差值 + AP_BASE 推导（ap_early_entry.rs，
 hosted 签名测试钉住）；②补 SDM 强制的 INIT→SIPI 10ms / SIPI 间 200µs 延时（tsc_delay，C
 arch_smp.c udelay parity）——修复了 0x0000/0xA2 随机；③向左探测出**真正的环境根因**：
@@ -1618,3 +1618,36 @@ rust_main64 加 STEP1-7 差分 + R64-START 最早打印 + panic handler 改行�
   读 ±5 行）——**疑点：写入地址偏移或 u16/u8 交错覆盖**；② 修后 AP 阶梯应
   直接通过 FJ16 进 32/64 位，AP-alive 转绿；③ 同步修 smp_todo 的
   C32@6120 回读地址笔误（0x6110+0x20 → 应为 0x6110+0x10）。
+
+**→ 第十轮（干净重建 + 反汇编定案，九轮结论改判，2026-09-14 第四会话）**：
+WSL 崩溃后强制重编 minix-arch（cargo clean -p minix-arch --target
+x86_64-unknown-none）并**先反汇编再运行**：fill_bootstrap 产物存储序列逐条
+正确（movw $0x27,0x6030；movb $0x10/$0x61 @0x6032/33；5 表项 @0x6110-0x6137）
+——**九轮"base 字节写入未生效"改判为 WSL 崩溃留下的陈旧构建产物，fill 代码
+自始无缺陷**。QEMU 实跑亦证：STEP5 回读 desc = 27 00 10 61 00 00 ✓、code32
+表项 = 0x00CF9A000000FFFF ✓（九轮清单③ C32 回读地址笔误同轮修正：0x6130→0x6120）。
+**决定性证据来自 `-d int` 故障转储首次给出的 AP 视角 GDTR = {base 0xFF53F000,
+limit 0xFF53}**——字节序列 53 FF 00 F0 53 FF 恰为 **IVT 零号向量（F000:FF53）
+的内容**：阶梯 lgdt 实际从 **[DI=0]** 装载，从未读过 [0x6030]。根因：手写 LGDT
+的 modrm 0x15（mod=00 reg=/2 rm=101）沿用 32 位寻址形态，而 **16 位寻址
+rm=101 = [DI]，直接 [disp16] 必须 rm=110（mod=00）**——gas 自产的
+`sgdt [0x6F40]`（modrm 0x06）一直正确，唯独手写字节错。第七轮已见同一垃圾
+GDTR（当时记为 {0xFF53FF53, 0xFF53}，存在字节序误读）却归因"内存可见性"，
+实为同一病灶。连带修复（同一汇编块字节级审计）：阶梯尾部三个记录字段绝对读
+带重复"60"字面量（0x00606018/24/28 ← 0x9000 时代手误 0x00909018/24/28 被
+find-replace 搬迁带过来），应为 0x6018/0x6020/0x6028；其中 **stack 读 +4 与
+offset_of! 钉死的字段偏移（record+0x18 = scratch+0x20）矛盾**，阶梯注释
+"scratch+0x24"同错——AP 从未到达尾部故从未引爆。新增回归测试
+`test_ladder_absolute_reads_match_record_layout`：钉 LGDT 6 字节（含 0x15
+反例）、CR3 moffs、stack/entry 的 48 8B \<modrm\> 25 + 绝对地址、
+RCX=AP_STARTUP_PA——阶梯与记录布局不再可能漂移。
+**→ 第十一/十二轮（S-3d 转绿 ✅）**：LGDT modrm 0x15→0x16 修复后
+**`TEST_RESULT: PASS test-smp-ap-alive-mb`——中断日志 0 异常**（AP 一次爬完
+16→PE→32→CR3/PAE/LME/PG→64→`ap_early_entry` Rust 汇合点，BOOT_ACK 握手位被
+BSP 观察到）。脚手架清理（sgdt 回读、dx-serial 突发串口级标移除——后者是
+BSP/AP 串口乱码来源；内存级标 AP_STAGE_MARK 0xA1..A7 保留为 S-4+ bring-up
+诊断；fail() 只读级标），清理后第十二轮复跑仍 PASS。hosted 回归：minix-arch
+225 测试全绿。mb 变体运行方式：`cargo build --release -p test-smp-ap-alive-mb
+--target x86_64-unknown-none` + `qemu-system-x86_64 -smp 2 -accel tcg -kernel
+…/test-smp-ap-alive-mb -serial file:… -display none -no-reboot`。
+**S-3d 收官，S-8（asm trap stub + SYSCALL 入口）解锁。**
