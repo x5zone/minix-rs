@@ -308,9 +308,9 @@ dispatch_profile 覆盖（nmi 臂 W-4），watchdog.c 全族 W-1，usermapped_da
 
 S-0/S-1/S-2/S-2b/S-3a ✅；**S-3b ✅（2026-09-08，commit e41929cf2——本表原 ⬜ 为陈旧状态，
 smp_todo.md §5 为准）**；S-3c ✅（PSCI 0xC4000003 / riscv IPI EID 0x735049 / x86 mfence 三真
-bug 修复）；**S-3d 🔶 WIP ⏸ 暂停**：INIT/SIPI 已发出但 AP 未达 Rust 入口（marker=0、无复位、
-ESR=0），嫌疑 16 位段 lgdt modrm 编码缺 0x67 前缀与 far-jump 操作数宽度，待 QEMU gdb 单步
-（诊断记录见 smp_todo.md §5 S-3d 行）。
+bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-mb PASS、-d int 0 异常——
+真因 lgdt 16 位寻址 modrm 0x15=[DI] 读 IVT 垃圾，修复为 0x16=disp16，另修阶梯尾部三处
+记录字段绝对读字面量笔误；见 smp_todo.md 第十~十二轮记录 + 本文件 §25 终局段）。**
 
 | 步骤 | 内容 | 依赖 |
 |------|------|------|
@@ -689,4 +689,26 @@ I-6 余项①②（a22ae791a）、D-65（54d5403ea）、B-X 收口 + OQ-15-1 裁
 绕开 OVMF：AP 天然 wait-for-SIPI、无固件 AP 干扰、无 UEFI 依赖），multiboot 入口
 桩 + 复用 kernel 库，随后 S-3d 在干净环境一次跑通，顺路成为 S-8（asm trap 入口）
 的裸机测试基建。
+
+**终局（2026-09-14 第四会话，第十~十二轮，详见 smp_todo.md 同名记录）**：mb 直启
+内核在第十轮以"先反汇编产物、再运行"的方法排除构建变量后，九轮"fill base 字节
+写入未生效"改判为 **WSL 崩溃留下的陈旧 rlib**（干净重建后 fill 序列逐条正确，
+desc 回读 27 00 10 61 ✓）；十轮谜团真凶由 `-d int` 故障转储首次给出的 AP 视角
+GDTR={0xFF53F000, 0xFF53}=**IVT[0] 字节（F000:FF53）**钉死——手写 LGDT 的
+modrm 0x15 沿用 32 位寻址形态（rm=101=disp），16 位寻址下 rm=101=[DI]，lgdt 实际
+从 [DI=0] 装载；修复为 0x16（rm=110 mod=00=[disp16]）。连带修复阶梯尾部三处记录
+字段绝对读的重复"60"字面量（含 stack 读 +4 与 offset_of! 钉死偏移矛盾——AP 从未
+到达尾部故未引爆），并新增
+`test_ladder_absolute_reads_match_record_layout` 钉死全部绝对读字节契约。修复后
+**`TEST_RESULT: PASS test-smp-ap-alive-mb`、中断日志 0 异常**（AP 一次爬完
+16→PE→32→CR3/PAE/LME/PG→64→`ap_early_entry`，BOOT_ACK 观察 ✓），minix-arch
+225 hosted 测试全绿。修复 commit aa73eeb5f。**SMP 链自 S-8 起解锁**（S-8 asm
+trap stub + SYSCALL 入口 → S-4→S-13 与 Edge 表 12 项顺次解冻）。
+
+**全量回归（同日）**：run_all.sh 600s 截断统计 **19 PASS / 0 FAIL**——x86 9 项
+全绿，其中 **canonical OVMF 路线 `test-smp-ap-alive` 亦首次 PASS**（此前"游走核
+踩踏低内存"应为本测试三重故障后被 QEMU 复位的 AP 的次生现象，非固件环境问题；
+smp_todo §25 环境级根因段相应降级为历史假说）；aarch64 全绿；riscv64 前 3 项绿
+（截断段与本修复无关——x86 阶梯不参与 arm/riscv 构建）。CI 计数的 23 测试至此
+应全绿，T-5 记录待 CI 复跑刷新。
 
