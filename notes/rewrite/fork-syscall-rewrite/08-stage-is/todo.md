@@ -25,7 +25,7 @@
 | P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | ✅ 已修复 2026-09-15（Fix #4，§8） |
 | P3 | V1-P3-2 | `request_fkey_map` 返回 `Result` 但两臂皆 `Ok`（01 时代 ENOSYS 桩的类型遗迹；随 P1-1 同批修） | ✅ 已修复 2026-09-15（Fix #1，§8） |
 | P3 | V1-P3-3 | 00/99 篇 pending + `.design/` 三快照缺失（Gate H.1/H.6 FAIL×2）；99 收口时补 `DIAG_BUF_SIZE`/`_SYSTEM` 排除标注 | 开放 |
-| P3 | V1-P3-4 | 01 篇 §4.1 声称 `extern crate alloc` 与实际不符（代码零分配、无 alloc） | 开放 |
+| P3 | V1-P3-4 | 01 篇 §4.1 声称 `extern crate alloc` 与实际不符（代码零分配、无 alloc） | ✅ 已修复 2026-09-15（Fix #7，§8） |
 | P3 | V1-P3-5 | 五个分页游标类型并存（审查结论：维持，理由与观察记录见条目） | 维持（记录） |
 | edge | E-ISWIRE | 生产 transport 接线（minix-sef/minix-sys）→ §4 | 登记于 ../edge_todo.md |
 | edge | E-ISPROD | GETSYSINFO/GET_* producer 布局与 IS 快照对齐（含 kernel `ProcInfoStruct` 双源冲突）→ §4 | 登记于 ../edge_todo.md |
@@ -122,7 +122,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**：随 99 篇改写轮一次做完：① 00/99 按 plan §6 路线成文（99 收口时把 §1.2 常量对账表直接吸收为正文）；② 成文时按 Step 0.3 补三快照（sched 先例：06-stage-sched todo P3-3 → Fix #14 同款）；③ plan §5.4 排除表补 `DIAG_BUF_SIZE`、`_SYSTEM` 两行（依据：`rg -rn "diag_buf" minix3/minix` 仅 glo.h 声明，与同表已排除的死 extern 同族；`_SYSTEM` 是 C 头文件包含协议宏，无运行时语义）。
 **验证**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 08-stage-is` 全 PASS；重跑 Gate A「完全缺口」归零。
 
-### V1-P3-4 文档声称 `extern crate alloc` 与实际不符
+### V1-P3-4 文档声称 `extern crate alloc` 与实际不符 ✅ 已修复 2026-09-15（Fix #7，见 §8）
 **问题**：01 篇 §4.1 写「`lib.rs` 头部与 RS 对齐（`#![cfg_attr(not(test), no_std)]` + `extern crate alloc`，`os/servers/rs/src/lib.rs:1-29` 同款）」（`01-is-init-main.md:563`），但实际 `os/servers/is/src/lib.rs` 没有 `extern crate alloc`（grep 实测零命中），全 crate 零分配（全部定长栈数组）。
 **影响**：文档描述了一个不存在的依赖事实；后续按文档接线的人可能引入不必要的 alloc。
 **建议**：修文档：该句改为「no_std 门同款，且本 crate 无 `extern crate alloc`——全部逻辑零分配（03 篇 §3.3「回调式零分配」的实现面兑现）」。否决反向修代码（补 alloc）：现状更优，V1-P1-2 方案③ 的否决理由也依赖这一点。
@@ -259,3 +259,8 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **测试**：基线 88 → **106 passed / 0 failed**（kernel +13、pm +2、vfs +3、rs +1、ds +1、mapping +1、sink 1 等；每体至少一条渲染输出断言，proctab 含 --more-- 断点续跑验证）；clippy 本体 0 告警；`#[allow(dead_code)]`（acquires 字段）已随接线移除。
 **Verified**：`rg -n "fn run_dump" -A2 os/servers/is/src/lib.rs` 全臂在位；`rg -n "fn render_" os/servers/is/src/ | wc -l` = 16；TODO(P1) 注释保留（producer 对齐仍归 edge E-ISPROD）。
 **Docs**：03/05/06/07/08/09/10 各篇 §3 末增"V1 执行轮更新"注记（体延后翻转 + 契约修订逐条点名）；04 篇 V1 注记已于 Fix #5 落。
+
+### ✅ Fix #7: V1-P3-4 — 01 篇 alloc 声称与实际对齐
+**Files**：`01-is-init-main.md` §4.1（"RS 同款 + extern crate alloc"改为"no_std 门同款，但无 alloc——零分配是有意偏离"）。
+**Verified**：`rg -n "extern crate alloc" 01-is-init-main.md` 仅剩否定句语境；`rg -n "extern crate alloc" os/servers/is/src/` 零命中（事实侧不变）。
+**Docs**：即本修复。否决反向修代码（补 alloc）：零分配是更优状态，V1-P1-2 方案③的否决理由依赖它。

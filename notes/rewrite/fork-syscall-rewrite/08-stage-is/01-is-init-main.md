@@ -572,10 +572,11 @@ os/servers/is/src/
 └── main.rs      — 二进制接线（RS 同款 test 门）
 ```
 
-`lib.rs` 头部与 RS 对齐（`#![cfg_attr(not(test), no_std)]` +
-`extern crate alloc`，`os/servers/rs/src/lib.rs:1-29` 同款），模块文档写清
-"单线程事件循环，`!Send` 合理，无跨 CPU 共享"（执行模型声明，review-core
-强制）。
+`lib.rs` 头部与 RS 对齐 `#![cfg_attr(not(test), no_std)]`
+（`os/servers/rs/src/lib.rs` 同款），但**没有** `extern crate alloc`——
+本 crate 全部逻辑零分配（03 §3.3"回调式零分配"的实现面兑现），这是对 RS
+先例的一个有意偏离。模块文档写清"单线程事件循环，`!Send` 合理，无跨 CPU
+共享"（执行模型声明，review-core 强制）。
 
 ### 4.2 关键签名（与 §3 设计决策一致，Gate D-5 依据）
 
