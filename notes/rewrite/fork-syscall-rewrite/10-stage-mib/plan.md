@@ -3,7 +3,7 @@
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
 > **范围**: `notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
 > **目标**: 以 **MIB server 启动顺序为主线**定义 MIB 全部文档；`sysctl(2)` 调用旅程为次主线；最终覆盖 Minix3 MIB server（`servers/mib/`，8 个 .c，4990 行）+ 协议面（`com.h`/`ipc.h`/`sysctl.h` 两层）+ 客户端契约（`libc` sysctl(3) 系列 + `libsys/rmib.c`）+ 外部消费者（ProcFS/IPC/LWIP/UDS）全部语义，支撑 MIB server 的彻底 Rust 重写
-> **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/`/`07-stage-ds/`（同流程先例）、`minix3/minix/servers/mib/`（ground truth）、`os/servers/mib/`（Rust 实现，当前为 stub）
+> **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/`/`07-stage-ds/`（同流程先例）、`minix3/minix/servers/mib/`（ground truth）、`os/servers/mib/`（Rust 实现：判定层 7187 行已落地，执行半待建，见 todo.md）
 
 ---
 
@@ -107,7 +107,7 @@ MIB 的全部工作本质是把 `sysctl(2)` 名字解析到对象树节点并读
 |------|------|------|---------|--------|-----------|-----------|------|
 | 0 总览 | 00 | `00-mib-overview.md` | MIB 是什么、启动主线图、sysctl 次主线、文档导航 | `servers/mib/` 全部 | `os/servers/mib/` 全部 | `draft/README.md` | **重写**为导航 |
 | 1 启动入口 | 01 | `01-mib-init-main.md` | `main`/`mib_startup`/`mib_sysctl` 消息解码/主循环骨架/notify 拒绝/EDONTREPLY/ENOMEM 语义 | `main.c:277-383,415-492` | `main.rs`、`lib.rs` | `draft/README.md` | **新增**（从零） |
-| 2 协议面 | 02 | `02-mib-message-contract.md` | MIB call numbers（com.h）、6 种消息结构（ipc.h）、`sysctlnode`/`sysctldesc` 交换格式（sysctl.h）、版本/类型/标志宏、errno 特殊语义 | `com.h:613-622,1026-1028`、`ipc.h`、`sys/sysctl.h`、`minix/sysctl.h` | `minix-types`（**缺 mib.rs 消息类型，A-1**） | 无 | **新增**：所有 handler 篇的前置协议文档 |
+| 2 协议面 | 02 | `02-mib-message-contract.md` | MIB call numbers（com.h）、6 种消息结构（ipc.h）、`sysctlnode`/`sysctldesc` 交换格式（sysctl.h）、版本/类型/标志宏、errno 特殊语义 | `com.h:613-622,1026-1028`、`ipc.h`、`sys/sysctl.h`、`minix/sysctl.h` | `minix-types`（**A-1 已兑现：`ipc/mib.rs` 校验视图 + `message.rs` 六载荷 56 字节断言 + `types/com.rs` 号段**） | 无 | **新增**：所有 handler 篇的前置协议文档 |
 | 3 树模型与查找 | 03 | `03-mib-node-model.md` | `struct mib_node`/`struct mib_dynode` 全字段、4 类节点（PARENT×REMOTE 矩阵）、CTLTYPE/CTLFLAG 标志系统、计数（nodes/objects/remotes）、scratch 缓冲 | `mib.h:110-280` | `tree/node.rs`、`tree/flag.rs` | 无 | **新增** |
 | 3 | 04 | `04-mib-static-tree-init.md` | `mib_root` + 7 个顶层节点表、`MIB_*` 静态初始化宏、`mib_init` 回调、`mib_tree_init`/`mib_tree_recurse`、版本初始化 | `main.c:36-64,384-413`、`tree.c:1476-1536`、`mib.h` 宏 | `tree/static_tree.rs`、`tree/init.rs` | 无 | **新增** |
 | 3 | 05 | `05-mib-tree-lookup.md` | `mib_find`：静态数组 O(1)（`IS_STATIC_ID` + flags≠0）+ 动态链表 O(n)（按 id 排序，可提前终止） | `tree.c:34-88` | `tree/lookup.rs` | 无 | **新增** |
@@ -204,7 +204,7 @@ MIB 的全部工作本质是把 `sysctl(2)` 名字解析到对象树节点并读
 
 ### 3.5 测试基线
 
-> `os/servers/mib/` 当前为 stub（`lib.rs: pub fn init() {}`，`main.rs: minix_mib::init(); loop {}`）。`cargo check -p minix-mib` 通过（2026-08-16，0 errors / 28 pre-existing warnings 来自 `minix-sys` 依赖），**无任何测试**。每篇文档 §测试 的"测试总数"声明以此为基线。C 侧行为契约以 `minix3/minix/tests/test87.c`（3662 行，root 运行）为主、`minix3/minix/tests/rmibtest/rmibtest.c`（267 行）与 `minix3/tests/kernel/t_sysctl.c`（74 行）为辅，各 handler 篇据此声明"测试要点"。
+> **测试基线（2026-09-15 更新）**：`os/servers/mib/` 判定层 7187 行，`cargo test -p minix-mib --lib` 107 passed / 0 failed；执行半（IPC 壳 / walker / transport / arena）待建，缺口与推进见 todo.md。各篇文档 §测试 的"测试总数"为写作时点快照（94 → 101 → 107，随阶段推进增长）。C 侧行为契约以 `minix3/minix/tests/test87.c`（3662 行，root 运行）为主、`minix3/minix/tests/rmibtest/rmibtest.c`（267 行）与 `minix3/tests/kernel/t_sysctl.c`（74 行）为辅，各 handler 篇据此声明"测试要点"。
 
 ---
 
@@ -382,7 +382,7 @@ MIB 的全部工作本质是把 `sysctl(2)` 名字解析到对象树节点并读
 
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
-| 00 | pending | — | 新建导航 |
+| 00 | reviewed（2026-09-15） | 2026-09-15 | 成文：总览导航 + 启动主线图 + sysctl/远程双次主线 + 设计原则（P3-1） |
 | 01 | reviewed（2026-09-04） | 2026-09-04 | 新建（dispatch.rs verdict 层 9 tests + com.rs MIB 号段，scan CONVERGED） |
 | 02 | reviewed（2026-09-04） | 2026-09-04 | 新建协议面（A-1 兑现，13 tests，scan CONVERGED） |
 | 03 | reviewed（2026-09-04） | 2026-09-04 | 新建（A-2 兑现，9 tests，scan CONVERGED） |
@@ -405,7 +405,7 @@ MIB 的全部工作本质是把 `sysctl(2)` 名字解析到对象树节点并读
 | 20 | reviewed（2026-09-05） | 2026-09-05 | 新建文档+Rust minix_proc.rs（3测试+排布值表；快照v1嵌入生成） |
 | 21 | reviewed（2026-09-05） | 2026-09-05 | 新建外部契约文档（不实现；快照v1嵌入生成） |
 | 22 | reviewed（2026-09-05） | 2026-09-05 | 新建文档+Rust rmib.rs（minix-sys，3测试；快照v1嵌入生成） |
-| 99 | pending | — | 新建全局概念 |
+| 99 | reviewed（2026-09-15） | 2026-09-15 | 成文：常量/错误码/跨服务引用收口，全部锚点当场核实（P3-1） |
 
 ---
 
@@ -464,4 +464,4 @@ rg -n "user_sysctl|CTL_USER" minix3/lib/libc/gen/sysctl.c | head -3   # CTL_USER
 - `minix3/minix/servers/mib/` — C 源码（ground truth）
 - `minix3/sys/sys/sysctl.h` + `minix3/minix/include/minix/sysctl.h` + `com.h` + `ipc.h` — 协议面
 - `minix3/minix/lib/libsys/rmib.c` + `minix3/lib/libc/gen/sysctl.c` — 客户端契约
-- `os/servers/mib/` — Rust 实现（当前 stub）
+- `os/servers/mib/` — Rust 实现（判定层 7187 行已落地；执行半待建，见 todo.md）

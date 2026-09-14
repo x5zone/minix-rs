@@ -79,7 +79,7 @@
 | D4 | 差量变结构 | 全局 `--` 散写 | `RemoveDelta{free_desc,free_dynode,csize_dec,objects_dec}`（`dynamic.rs:274,287`） | `clen/nodes--` 恒成立不值得建模（调用者照做）；**条件成立**的四项才值得（动态/描述拥有与否四组合，测试全覆盖） |
 | D5 | 版本递增变函数 | `+1` + 跳零散写 | `next_root_ver`（`version.rs:15`，wrapping+跳零）+ `create_ver_ok`（`:26`） | u32 回绕跳零是"写一次忘一次"的典型（`:440-441` 两行）；函数+回绕测试钉死 |
 
-替代方案及否决：arena 一步到位（Vec/BTree 真表 + 指针手术）——否决，静态 arena 在 13 首表落地，本篇 verdict 先行（verdict-first 延续；`scan` 的切片签名在 arena 落地时换容器不换语义）。
+替代方案及否决：arena 一步到位（Vec/BTree 真表 + 指针手术）——否决，静态 arena 于执行轮统一建（单一真值见 15 §4.4：todo.md P1-2），本篇 verdict 先行（verdict-first 延续；`scan` 的切片签名在 arena 落地时换容器不换语义）。
 
 ---
 

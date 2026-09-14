@@ -1,6 +1,6 @@
 # 10-stage-mib — MIB 文档目录
 
-> **状态**: 骨架就绪（plan.md 定稿 2026-08-16；各 doc 为最小骨架，待按 plan.md 改写）
+> **状态**: 22 篇概念文档已 reviewed（plan.md §6.1，2026-09-04/05）；Rust 判定层已落地（`os/servers/mib/`，7187 行 / 107 tests），执行半与竞技场待建——缺口与推进见 todo.md（2026-09-15 首轮架构审查）
 > **主线**: MIB server 启动顺序（mib_init 子树注册 → tree_init → remote_init → 主循环 dispatch）；`sysctl(2)` 调用旅程为次主线
 > **Ground truth**: `minix3/minix/servers/mib/`（8 个 .c，4990 行）
 

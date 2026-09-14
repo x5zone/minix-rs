@@ -79,7 +79,7 @@ C 语言的静态表分两阶段：编译期用 `MIB_ENODE` 先布置七个空�
 | D3 | 点名 verdict 化 | 循环里计数/链父/递归混写 | `judge_child`（`init.rs:75`：空/计数/计数+递归）+ `fold_static`（`:91`：纯折叠，返 `(live, needs_recurse)`） | 链父指针是 arena 效果（待 04 后续：静态 arena 落地时），verdict 先行——verdict-first 延续 01/02/03；`check_parent`（`:116`）把入口断言变成 `bool` |
 | D4 | 根变规格 | `MIB_NODE(_RW, table, "", "")` 一行 | `RootSpec::spec()`（`static_tree.rs:123`：可写恒真） | 根的"可写、无名、内部"三属性里只有可写影响行为（init 可种顶层）；无名/内部是注释级事实，doc 写清即可，不值得类型 |
 
-替代方案及否决：静态 arena（把七槽 + 子表一次性建成真正的树，含父指针）——否决，子表内容在 13/14/15，arena 等 13 落第一棵子树时再建，本篇只钉槽位与点名 verdict（verdict-first 同 01 D-否决）。
+替代方案及否决：静态 arena（把七槽 + 子表一次性建成真正的树，含父指针）——否决，子表内容在 13/14/15，arena 于执行轮统一建（兑现点单一真值见 15 §4.4：todo.md P1-2），本篇只钉槽位与点名 verdict（verdict-first 同 01 D-否决）。
 
 ---
 
@@ -118,7 +118,7 @@ os/servers/mib/src/tree/
 
 ### 4.4 与 C 的差异说明（模式 72 CSSCM）
 
-C 两截（空架子+后填）vs Rust 一步（D1）：文件组织/语言能力差异，语义零差。点名循环 vs verdict+折叠：效果（链父指针写、mib_nodes 全局++）待静态 arena，verdict 先行——已知缺口，arena 在 13 首表落地时建（04 后续工作声明，非遗漏）。
+C 两截（空架子+后填）vs Rust 一步（D1）：文件组织/语言能力差异，语义零差。点名循环 vs verdict+折叠：效果（链父指针写、mib_nodes 全局++）待静态 arena，verdict 先行——已知缺口，arena 于执行轮统一建（单一真值见 15 §4.4：todo.md P1-2；04 后续工作声明，非遗漏）。
 
 ---
 

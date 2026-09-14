@@ -149,7 +149,7 @@ MINIX3 扩展（`minix/sysctl.h`）：`CTL_MINIX 32`（`:17`，躲开 NetBSD 未
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 线格式原样 32 位 | 32 位 C 结构体（lane 全 4 字节） | 6 个 `#[repr(C)]` 结构，`vir_bytes`/`size_t` 取 `u32`，各 56 字节（`message.rs:2595,2618,2655,2679,2725,2760`） | 56 字节预算塞不下 64 位地址 + `name[8]`；发送者（libc/libsys）今天就是 32 位 C。 stealth 加宽会一次性失配所有发送者——64 位用户态是 A-4 的显式 ABI 决策，不是本篇能顺手做的 |
+| D1 | 线格式原样 32 位 | 32 位 C 结构体（lane 全 4 字节） | 6 个 `#[repr(C)]` 结构，`vir_bytes`/`size_t` 取 `u32`，各 56 字节（`message.rs:3014,3037,3074,3098,3144,3179`） | 56 字节预算塞不下 64 位地址 + `name[8]`；发送者（libc/libsys）今天就是 32 位 C。 stealth 加宽会一次性失配所有发送者——64 位用户态是 A-4 的显式 ABI 决策，不是本篇能顺手做的 |
 | D2 | 语义/线分离 | `mib_sysctl` 里判断与拷贝混写 | `message.rs` 只管形状（`size_of==56` 钉死），`ipc/mib.rs` 只管 verdict（`SysctlRequest::decode` 等，`mib.rs:77`），映射（01 `map_sysctl_reply`）只判一次 | 照 `vm.rs` In/Out + `decode_message` 先例（`VmBrkIn` 从专用 union 臂解，不走 M1）；`SysctlReply` 只打包不映射——映射判两次必分叉（模式 59 的反面） |
 | D3 | 单向约束进类型 | 注释 + `return EDONTREPLY` 散写 | `MountRequest::decode_register` 越界回 `Err(EDONTREPLY)`（`mib.rs:171`，`remote.c:221-224`）；`decode_deregister` 只读 `root_id`（`mib.rs:190`，`remote.c:303`） | C 的"静默丢弃"是最容易被"好心改成报错"的语义——把它写进返回类型，改的人必须先改签名 |
 | D4 | 版本与上限编译期钉死 | `#error` 守卫 + 运行时 `SYSCTL_VERS` 宏 | `SYSCTL_VERSION` 常量（`sysctl.rs`）+ `const _: () = assert!(CTL_MAXID <= CTL_MINIX)`（`sysctl.rs:74`，对 `minix/sysctl.h:19-21`）+ `sysctl_vers/type/flags` 三个 `const fn` | C 用预处理器看门，Rust 用编译期断言看门——门的位置变了，看门这件事没变 |
@@ -182,11 +182,11 @@ os/libs/minix-types/src/
 | 类型/版本/掩码 | `sysctl.h:92-103,130-153` | `sysctl.rs:524,532,551`（`sysctl_type/flags/vers` const fn） | 取值逻辑与 C 宏同式 |
 | 标志全集 | `sysctl.h:108-125` | `sysctl.rs:481,512`（含 `SYSCTL_USERFLAGS`） | 原名保留；`USERFLAGS` 组合值同 C |
 | 元标识符 | `sysctl.h:158-164` | `sysctl.rs:562` 起 | 七个负数 |
-| 6 种线结构 | `ipc.h:424-433,1373-1389,1548-1580` | `message.rs:2595,2618,2655,2679,2725,2760` + union 臂 `:198-208` | `size_of==56` 全钉 |
+| 6 种线结构 | `ipc.h:424-433,1373-1389,1548-1580` | `message.rs:3014,3037,3074,3098,3144,3179` + union 臂 `:218-228` | `size_of==56` 全钉 |
 | 请求 verdict | `main.c:302-340` | `mib.rs:77`（`SysctlRequest::decode`） | 长度/取道/配对，与 01 同判 |
 | 回复打包 | `ipc.h:1548-1552` | `mib.rs:130`（`SysctlReply::encode`） | 只打包，不映射 |
 | 挂载 verdict | `remote.c:221-224,303` | `mib.rs:171,190` | 越界静默丢；卸载只读 root |
-| 回信路由 | `remote.c:359-364,461-464` | `mib.rs:211,222`（`RemoteReply::decode` + `is_reserved_zero`） | 0 回显，非 0 拒（verdict 在 12 `check_reply`） |
+| 回信路由 | `remote.c:359-364,461-464` | `mib.rs:218,226`（`RemoteReply::decode` + `is_reserved_zero`） | 0 回显，非 0 拒（verdict 在 12 `check_reply`） |
 
 ### 4.3 不变量
 

@@ -8,6 +8,7 @@
 > 2026-09-09 增补：05-stage-vfs 第二轮架构审查（05-stage-vfs/todo.md §9）登记 E-REQWIRE（REQ_* VFS↔FS 共享契约双侧独立定义，含 FS_BASE 基址已分叉的事实），并在 E-VFSWIRE 增补 VFS 侧接收半要求与绝对值断言纪律。
 > 2026-09-09 增补：06-stage-sched 第二轮架构审查（06-stage-sched/todo.md V2 §5）登记 E-SCHEDNICED / E-PREEMPTFLAG / E-SCHEDSMP / E-MINTYPES-SYS 四条，并在 E5 增补 (e) PM↔SCHED 联调验收面。
 > 2026-09-14 增补：07-stage-ds 首轮架构审查（07-stage-ds/todo.md）登记 E-DSWIRE（minix-sys DS 客户端模块缺失 + DS 服务器 transport 通电 + 联调零覆盖，三缺一注册），并在 E-MINTYPES-SYS 增补 DS 段两件（SI_DATA_STORE / NOTIFY_MESSAGE 常量）、E5 增补 (f) DS 发布/订阅联调验收面。
+> 2026-09-15 增补：10-stage-mib 首轮架构审查（10-stage-mib/todo.md §5）登记 E-RMIBWIRE（minix-sys rmib 客户端协议半整缺）、E-MIBPROD（MIB 快照 vs kernel/PM/VFS producer 布局对账）、E-MIBGRANT（kernel grant.rs 端点常量与 C 不符）三条，并增补 E-DSWIRE（mib_get_label 消费方）、E-ISWIRE（mib 为 minix-sef 第二消费方）、E5（(g) MIB/sysctl 联调验收面）、E-MINTYPES-SYS（DS 段现状更新）、E-MINSYS-HYGIENE（锚点复核）。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -208,6 +209,8 @@
 
 > **验收面增补（2026-09-14，07-stage-ds 首轮架构审查）**：(f) **DS 发布/订阅链**——C 的行为契约在 minix3/minix/tests/ds/（dstest.c 178 行：publish/retrieve/delete/getsysinfo 全类型往返；subs.c 91 行：subscribe/check/notify 回环），Rust 侧零承接。冒烟三链：(1) RS boot 映射后 `ds_retrieve_label_endpt` 可解析服务端点；(2) 客户端 A `ds_publish_u32` → 客户端 B `ds_check` 收到通知并取回键名与类型（ipc_notify 回环）；(3) label 级联删除（RS 删 label → 同名主条目与订阅全清，store.c:613-636）。前置 E-DSWIRE；A-2 regex 引擎落地后追加元字符 pattern 订阅用例（VFS 同款 `drv\.[bc]..\..*`，main.c:441）。
 
+> **验收面增补（2026-09-15，10-stage-mib 首轮架构审查）**：(g) **MIB/sysctl 链**——冒烟四链：(1) MIB_SYSCTL 往返（sysctl(2) 调用方 → MIB 解码 → 树查找 → 数据返回，含 ENOMEM 部分拷贝 + 完整长度回写语义 main.c:341-356）；(2) rmibtest 契约（minix3/minix/tests/rmibtest/rmibtest.c：8 个远端注册拒绝场景 :126-177、遮蔽注册顺序 :183-201、handler 函数偏转 :79-85）；(3) 远程子树 ERESTART 续走（服务死亡 → mib_down → 本地续走，remote.c:455-459 + tree.c:1410-1416）；(4) minix.mib.* 统计子树读数一致（TreeCounts 计数与真实节点数对账）。前置：10-stage-mib/todo.md P1-1/P1-2（stage 内执行半）+ E1 + E-RMIBWIRE。
+
 ---
 
 ## E6 minix-sys PM 所需 SYS_* wrapper 扩充（= 04-stage-pm/todo.md §9 抽取）
@@ -373,6 +376,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **解锁**：全 workspace clippy 零告警的 CI 门禁前提（当前"触碰文件零告警"纪律是逐轮
 人工维持的，机械清零后可升级为全局门）。无前置依赖，但刻意等 E1/E2 避免冲突。
 
+> **复核（2026-09-15，10-stage-mib 首轮架构审查）**：锚点仍有效——`cargo clippy -p minix-sys` 实测 5 条告警（rmib.rs collapsible-if 与 `MountTable` 缺 `Default` 的建议均仍在）；本轮无新增卫生项，条目维持原判。
+
 ---
 
 ## E-VMTLB kernel 侧目标进程 TLB 刷新机制缺失（02-stage-vm V13 轮登记，2026-09-09）
@@ -476,6 +481,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **建议**：minix-types 补 SYS_* 调用号常量模块（对照 com.h:210-262 全族，先例：types/com.rs 的 SCHEDULING 系常量镜像），kernel 枚举与 SCHED 镜像改消费 + 删本地定义；与 P2-3 的 SUSPEND 上移合并为一轮 minix-types 常量收敛。
 
 > **增补（2026-09-14，07-stage-ds 首轮架构审查）**：DS 段两件同型并入本轮收敛——(a) `SI_DATA_STORE = 5`（sysinfo.h:13）现本地定义于 os/servers/ds/src/getsysinfo.rs:27，11 篇 D2 自注「minix-types 暂无 sysinfo 模块（A-1 余部）」；(b) `NOTIFY_MESSAGE = 0x1000`（com.h:92，is_notify 的常量基）现硬编码于 os/servers/ds/src/dispatch.rs:94-96 的 is_notify 实现。DS 侧消费面（getsysinfo.rs / dispatch.rs）随 minix-types 落地改走共享常量并删本地定义。
+>
+> **现状更新（2026-09-15，10-stage-mib 首轮架构审查复核）**：(a) **半解**——minix-types 已建 sysinfo 模块并有 `SI_DATA_STORE`（os/libs/minix-types/src/ipc/sysinfo.rs:137-138），但 ds 侧本地定义仍在（getsysinfo.rs:26-27）且 server.rs:1058 消费的是本地常量，切换未做；(b) **维持**——minix-types 仍无 `NOTIFY_MESSAGE` 常量（仅 ipc/notify.rs:28 文档注释提及），ds dispatch.rs:94-96 仍内联 `0x1000`。
 
 **依赖**：无。
 **解锁**：06-stage-sched/todo.md P2-3；E2/E6/E8 wrapper 的常量消费面。
@@ -503,6 +510,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **解锁**：07-stage-ds/todo.md P1-4 执行半；E5(f) 联调；A-2 regex 决策的端到端验证面；minix-sys 死依赖处置（ds crate Cargo.toml）。
 
 > **进度（2026-09-15，07-stage-ds 执行轮）**：DS 侧 seam 已落地（`server.rs` 双 trait + 七臂 + run/run_once，`heap.rs` A-3 固定池），真实端 `SysIpc` 委托 minix-sys `IpcTransport`（E1 通电即活）、`SysKernel` 三拷贝动词 EIO 诚实桩（等 minix-sys 补 SYS_SAFECOPY*/SYS_DATACOPY 包装）；minix-types MessageUnion 已补 `m_ds_req`/`m_ds_reply` 两臂（IS 轮同款先例）。ds crate 的 minix-sys 死依赖已转正（server.rs 真实端消费）。**剩余**：minix-sys ds.rs 客户端模块（libsys/ds.c 18 API）、E1/E2 通电、E5(f) 联调。
+>
+> **增补（2026-09-15，10-stage-mib 首轮架构审查）**：新增消费方——MIB 服务器的 `mib_get_label`（C remote.c:88 `ds_retrieve_label_name`）是远程子树注册的第一步；os/servers/mib/src/remote.rs:204-209 目前只有 label 界判定（ENAMETOOLONG），DS 查询执行半随本条 minix-sys ds.rs 落地后接线（10-stage-mib/todo.md P1-1 的 `MibServices` seam 消费）。
 
 ---
 
@@ -518,6 +527,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **依赖**：E1（trap 层）、E2（SYS_* wrapper）。
 **解锁**：E-ISBOOT；08-stage-is/todo.md V1-P2-1 的复原。
+
+> **增补（2026-09-15，10-stage-mib 首轮架构审查）**：minix-sef 的第二消费方浮出——os/servers/mib/src/sef.rs:13-14 声称 SEF transport 留在 minix-sef，但 mib crate 的 Cargo.toml 未声明该依赖；MIB 侧 `sef_startup`/`sef_receive_status` 接线（10-stage-mib/todo.md P1-1 的 `MibIpc`，含 status 字的 notify 检测——与 DS 的 call-number 猜测路径不同）随本条 (1) 一并做。
 
 ---
 
@@ -563,3 +574,55 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **依赖**：E5（端到端联调包）、E-ISWIRE、03-stage-rs 动态加载；TTY 观察者面依赖 TTY staging（无条目，遥领）。
 **解锁**：IS 外部行为验收（A-11 的 `-period 5HZ` 存活 ping 端到端）。
+
+---
+
+## E-RMIBWIRE minix-sys rmib 客户端协议半整缺（10-stage-mib 首轮架构审查登记，2026-09-15）
+
+**问题**：`os/libs/minix-sys/src/rmib.rs`（259 行）只有簿记半——常量（RMIB_MAX_SUBTREES/STACKBUF/FLAG_AUTH，rmib.rs:24-44）、稀疏查找判定（:70-107）、`MountTable` 槽占用位（:116-179）；`MountTable` 仅 `used: [bool; 16]`，缺 C 槽三元组的另外两半（挂载路径 `rno_name[CTL_SHORTNAME]` + 根节点 `rno_node`，rmib.c:53-57）。C `libsys/rmib.c`（1089 行）的协议半整缺，分四组：(a) 注册/注销/重注册——`rmib_register`/`rmib_deregister`/`rmib_reregister`/`rmib_send_reg`（rmib.c:888-980,862-882，`asynsend3(MIB_PROC_NR, AMF_NOREPLY)` 驱动，注册失败 panic :881）；(b) 请求处理——`rmib_process`（:1036-1089，来源门禁 :1044 + COMMON_MIB_INFO/CALL 分派 + REPLY 回信 :1082-1084）、`rmib_call` 下行遍历（:678-824）、`rmib_query`/`rmib_describe`（:267-380/:414-475）、打包层 `rmib_copyout_node`（剥 CTLFLAG_SPARSE :209-214）与 `rmib_copyout_desc`（:324-380）；(c) grant 拷贝族——`rmib_copyout`/`rmib_vcopyout`/`rmib_copyin`/`rmib_readwrite`（:94-188,652-669，sys_safecopyto/sys_safecopyfrom/sys_vsafecopy）；(d) 纯函数层三件理论可先行但未提供——`rmib_inrange`/`rmib_getoldlen`/`rmib_getptr`（:64-87,:482-509）。消费方：C 侧 ipc（main.c:91/:112/:249）、lwip（mibtree.c:56/:61/:66 + bpfdev.c:136 + rtsock.c:102 + lwip.c:348）、uds（stat.c:174/:185 + uds.c:1408）；Rust 侧 os/servers/ipc-server 死依赖 minix-sys 且文档声称复用 `MountTable` 但代码零引用（`ipc-server/src/mib_tree.rs:16` 注释声称、:18 实际 import 仅 minix-types；13-stage-ipc/03 篇 §2.5/§3 D4/§4.1 三处同款失真，需 13-stage 侧同步修正）。
+
+**影响**：13-stage-ipc 的 kern.ipc 远程注册、17-stage-net 的 lwip/uds 子树注册与转发应答全部无客户端库可用；MIB 服务器侧远程子树挂载（10-stage-mib 12 篇）无对端；E5(g) 的 rmibtest 契约链无承载。
+
+**为何 edge**：edge 判定①——minix-sys 是全体 RMIB 消费方（ipc/lwip/uds/未来驱动）的共享契约层；客户端与服务器的 COMMON_MIB_* 消息构造两侧目前各自为政（客户端 rmib.rs 甚至未 import 这些常量，服务器 remote.rs 用布尔参数替代消息类型判定 remote.rs:179-187），收敛必须落在共享层。
+
+**建议**：
+- 方案 A（推荐）：rmib.rs 就地扩协议半，两层推进——纯函数层先行（rmib_call 下行遍历/rmib_query/rmib_describe 的判定可单测，sysctlnode 打包复用 10-stage-mib/todo.md P1-3 的布局锚定产物；`MountTable` 扩为三元组槽，客户端树由各服务自持、槽存路径 + 根索引）；传输半（asynsend3/sendrec wrapper + grant 拷贝）挂 E1/E2 通电。CannedTransport 回放测试对齐 E2/E6 先例。
+- 方案 B（否决）：各消费服务自建注册/应答逻辑——C 把 rmib.c 做成公共库正是因为三个服务共用同一协议，复制 ×3 违背单一真值，且 13/17 两个 stage 并行实现必然漂移。
+
+**依赖**：E1（asynsend3/sendrec wrapper 真实通电）；10-stage-mib/todo.md P1-3（sysctlnode/sysctldesc 布局锚定先行）。纯函数层无硬依赖。
+**解锁**：13-stage-ipc 03 篇接线及其文档失真修正；17-stage-net lwip/uds 注册面；10-stage-mib 12 篇的远程挂载对端；E5(g) 联调。
+
+---
+
+## E-MIBPROD MIB 快照消费面 vs kernel/PM/VFS producer 布局对账（10-stage-mib 首轮架构审查登记，2026-09-15）
+
+**问题**：MIB 的进程信息五篇（16~20）消费三张跨服务快照（proc_tab/mproc_tab/fproc_tab，C proc.c:34-38），producer 与 consumer 双侧现状错位：
+(a) kernel 侧 GET_PROCTAB/GET_PRIVTAB 已实现 chunked 整表拷贝（os/kernel/src/misc.rs:894/:934，`ProcInfoStruct` 布局 misc.rs:371 起，与 E-ISPROD 对 IS 的警告同源）；MIB 侧快照结构未定（P1-3 裁决前无法对账）。
+(b) PM 侧 getsysinfo 的 SI_PROC_TAB 数据路径 fail-closed ENOSYS（04-stage-pm todo D-29 已知），SI_PROCLIGHT_TAB 无 producer。
+(c) VFS 侧 fproc_tab producer 无着落。
+(d) 服务查询面对端未建/未核实：auth 的 `getnuid`（PM，main.c:265-268）、CTL_VM 子树的 `vm_info_stats`/`vm_info_usage`（VM，vm.c 依赖）、`svrctl(PMGETPARAM)`（PM）；DS label 查询归 E-DSWIRE。
+C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（tabs_valid=FALSE 不再重试）+ magic 校验（PMAGIC/MP_MAGIC）——Rust 判定半已备（os/servers/mib/src/proc/tables.rs:35-73），执行半缺（stage 内 P1-5）。
+
+**影响**：P1-5 表拉取执行半无数据源；通电后若双侧布局未对账，MIB 按猜测布局解释 producer 字节 = E-ISPROD 对 IS 警告的同型行为级事故（字段序/字段集/宽度三重错位）。
+
+**为何 edge**：edge 判定②（kernel/PM/VFS 的生产代码归各自 stage）+①（快照布局权威裁决跨 stage，与 E-ISPROD 的裁决是同一次决策）。
+
+**建议**：布局权威裁决与 E-ISPROD 合并一次做（方案 A 上收 minix-types 单一权威 repr(C) 结构 vs 方案 B 各 crate repr(C) + 跨 crate 布局断言互钉——沿用 E-ISPROD 已列两案，不另立第三案）；PM/VFS producer 缺位由本条跟踪、在 04/05 各自 todo 的对应条目闭合后划账。MIB 侧消费结构随 10-stage-mib/todo.md P1-3 裁决产出。
+
+**依赖**：10-stage-mib/todo.md P1-3（布局裁决先行）；无 E1 硬依赖（布局断言测试可先行）。
+**解锁**：10-stage-mib/todo.md P1-5（表拉取执行半）；E5(g) 的进程信息用例；E-ISPROD 的裁决复用。
+
+---
+
+## E-MIBGRANT kernel grant.rs magic-grant 门端点常量与 C 不符（10-stage-mib 首轮架构审查登记，2026-09-15）
+
+**问题**：`os/kernel/src/grant.rs:293` `const VFS_PROC_NR: i32 = 4`、`:295` `const MIB_PROC_NR: i32 = 8`，而 C com.h:59-78 的权威值是 VFS=1、MIB=7（MIB_PROC_NR 见 com.h:66）。两值自首次提交（e1d2c4977）即如此，非中途改动；全仓其余各处一律 C 原值（minix-types `types/endpoint.rs:61-72`、kernel `proc.rs:68-118` proc_nr 模块、pm/vm/vfs/ds/sched/ipc-server 各侧）——单点偏差，非系统性重编号。消费点 `grant.rs:546` 的 magic grant 门 `granter.0 != VFS_PROC_NR && granter.0 != MIB_PROC_NR`（对照 C do_safecopy.c:221 同一判断用 VFS=1/MIB=7）：现行值把 SCHED(4) 与 VM(8) 的 grant 误放行、真正的 VFS(1)/MIB(7) grant 被拒。文件内无测试钉这两个值。
+
+**影响**：magic grant 语义反转——VFS/MIB 的 magic grant 会被拒（MIB 的 remote relay 三 grant 通电后必然失败，阻塞 10-stage-mib/todo.md P1-4），SCHED/VM 的普通 grant 反而获得豁免待遇（安全面松动）。
+
+**为何 edge**：kernel 生产代码（edge 判定②），修复落点 os/kernel/src/grant.rs；MIB stage 不代修。
+
+**建议**：两常量删除硬编码改用 `minix_types::Endpoint::VFS.get()`/`Endpoint::MIB.get()`（单一真值，endpoint.rs 已有）；补门测试（VFS/MIB endpoint 的 grant 通过、SCHED/VM 不通过）钉死。
+
+**依赖**：无。可独立先行，小时级。
+**解锁**：E-MIBPROD 的 grant 链正确性；10-stage-mib/todo.md P1-4（relay 执行半）通电前提。
