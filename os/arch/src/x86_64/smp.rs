@@ -60,7 +60,7 @@ const ICR_DELIVERY_PENDING: u32 = 0x0000_1000;
 /// C: `SCHED_IPI` — arch/i386/smp.h
 /// Vector 0xF0 is in the range 0x20-0xFF (usable for user-defined interrupts
 /// in x86-64; vectors 0x00-0x1F are reserved for exceptions).
-const SCHED_IPI_VECTOR: u32 = 0xF0;
+pub const SCHED_IPI_VECTOR: u32 = 0xF0;
 
 /// x86-64 SMP backend using the Local APIC.
 ///

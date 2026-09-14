@@ -68,6 +68,27 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         return;
     }
 
+    // S-10: scheduler IPI (C SMP_SCHED_IPI_VECTOR) → the target CPU's own
+    // sched_handler_full (loads flags, applies STOP/SAVE_CTX/VM_INHIBIT,
+    // clears pending — the schedule_sync waiter's completion signal).
+    // BKL: try-or-inherit (depth-1 emulation of C's counting lock — the AP
+    // may be in its idle window with the BKL released, or interrupted while
+    // the kernel held it).
+    if vector == minix_arch::x86_64::smp::SCHED_IPI_VECTOR as u8 {
+        let acquired = crate::smp::bkl_try_lock();
+        {
+            let section = unsafe { crate::smp::BklSection::assume_held() };
+            let table = crate::proc_table_with(&section);
+            let smp = crate::smp_state_with(&section);
+            let cpu = crate::current_cpu_id();
+            smp.sched_handler_full(table, cpu);
+        }
+        if acquired {
+            crate::smp::bkl_unlock();
+        }
+        return;
+    }
+
     if let Some(irq) = minix_arch::x86_64::trap_stub::irq_of_vector(vector) {
         // D-46 hardware half-loop: ack → mask → hook chain → unmask → eoi,
         // under the interrupted context's BKL (C: IRQ handlers run with the

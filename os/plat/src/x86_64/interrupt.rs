@@ -221,6 +221,29 @@ impl X86_64InterruptController {
         lapic_read(self.lapic_base, LAPIC_REG_ID) >> 24
     }}
 
+    /// Enable THIS CPU's LAPIC — the per-CPU half of `init_lapic` (S-10).
+    ///
+    /// The LAPIC is disabled after INIT (SDM Vol. 3 §10.4.3 / §10.9), so an
+    /// AP woken by INIT+SIPI boots with a deaf LAPIC: it cannot receive any
+    /// IPI until it enables its own unit. C performs the same per-CPU
+    /// enable in the AP's init path (apic.c apic_init parity: IA32_APIC_BASE
+    /// enable + spurious vector + LVT masking). LVT entries are masked here
+    /// exactly as the BSP's init does — firmware state must not leak.
+    ///
+    /// # Safety
+    ///
+    /// Must run ON the target CPU during its bring-up, before any IPI is
+    /// sent to it; single-writer by bring-up ordering.
+    pub unsafe fn enable_current_cpu_lapic() { unsafe {
+        let apic_base = wrmsr_msr_read(MSR_IA32_APIC_BASE);
+        wrmsr_msr_write(MSR_IA32_APIC_BASE, apic_base | IA32_APIC_BASE_EN);
+        let lapic_base = (apic_base & IA32_APIC_BASE_ADDR_MASK) as usize;
+        lapic_write(lapic_base, LAPIC_REG_SVR, LAPIC_SPURIOUS_VECTOR as u32 | LAPIC_SVR_ENABLE);
+        for lvt in [LAPIC_REG_LVT_TIMER, LAPIC_REG_LVT_LINT0, LAPIC_REG_LVT_LINT1, LAPIC_REG_LVT_ERROR] {
+            lapic_write(lapic_base, lvt, LAPIC_LVT_MASK);
+        }
+    }}
+
     /// Read IOAPIC version register.
     ///
     /// # Safety

@@ -883,8 +883,18 @@ pub(crate) static BOOT_LOCK: BootLock = BootLock::new();
 ///
 /// Runs ON the AP. Publishes `online_mask` (Release) under the boot_lock;
 /// the BSP's `wait_for_aps` observes it with Acquire.
+/// C `ap_finish_booting` (arch_smp.c:222-224) — the AP's finish handshake
+/// with the EXACT C lock order: boot_lock → BKL_LOCK → publish (`ap_cpus_
+/// booted` parity) → boot_lock unlock. The BKL STAYS HELD on return: the AP
+/// carries it into the scheduling loop, which makes the BSP's `wait_for_aps`
+/// deterministic — its re-acquire blocks until this AP's first idle window,
+/// i.e. until after the loop-entry marker is set (no straggler race; the L5
+/// entered-flag assertion relies on this ordering).
 pub fn ap_finish_booting(logical_id: u32) {
-    let _guard = BOOT_LOCK.lock();
+    let _boot = BOOT_LOCK.lock();
+    // BKL acquired here (C BKL_LOCK inside the boot_lock critical section);
+    // transferred so it stays held into the caller's scheduling loop.
+    crate::smp::bkl_lock().transfer();
     // SAFETY: the AP runs after init_proc_and_boot assembled the state; the
     // publication itself is a single atomic OR (Release).
     let smp = unsafe { crate::smp_state_boot_unchecked() };
@@ -976,11 +986,27 @@ pub fn smp_init() {
 
             // Bounded per-AP ack wait (C arch_smp.c:131-141 parity). The AP
             // publishes boot_ack (Release) from the ladder's Rust entry.
-            let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
-            let deadline = crate::clock::read_tsc()
-                + u64::from(CurrentSmpArch::STARTUP_TIMEOUT_MS) * tsc_per_ms.max(1);
+            // TSC-rate floor: calibration (set_tsc_per_ms) is not wired yet —
+            // the raw global reads 0, which would make this timeout 5000 raw
+            // ticks (≈2µs) and expire before a healthy AP can wake (observed
+            // flake: "CPU 1 didn't boot in time"). Any real x86-64 TSC runs
+            // ≥ 1 MHz, so flooring the rate at 1e6 cycles/ms yields a ≥5s
+            // window; once boot calibration lands, the measured rate wins.
+            // Deadline (§3.4 "bounded per-AP startup timeout", mechanism
+            // arch-owned): dual clock — 500 uptime ticks (5 s wall when the
+            // PIT flows; the test driver arms it pre-smp_init) OR a 2e10
+            // raw-TSC backstop (production path where uptime is frozen —
+            // C's LAPIC one-shot per arch_clock.c:131-141 is the long-term
+            // mechanism, tracked in smp_todo §24). A late ack still counts:
+            // the masks read the atomic bitmap, not this timeout decision.
+            let up0 = crate::clock::get_monotonic();
+            let tsc0 = crate::clock::read_tsc();
             while !smp.observe_boot_ack(logical) {
-                if crate::clock::read_tsc() >= deadline {
+                let uptime_elapsed = crate::clock::get_monotonic() >= up0 + 500;
+                let tsc_elapsed = crate::clock::read_tsc()
+                    .wrapping_sub(tsc0)
+                    > 20_000_000_000u64;
+                if uptime_elapsed || tsc_elapsed {
                     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
                     Console::write_str("WARNING: CPU ");
                     Console::write_hex(hw_id);
@@ -1033,7 +1059,19 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
     // Ack FIRST (C ap_cpu_ready parity): "finished reading the bootstrap
     // record" — everything the ladder needed is in locals now.
     unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
+    // S-10: the AP's LAPIC is disabled after INIT — enable it before
+    // anything can address this CPU with an IPI (C apic_init parity).
+    minix_arch::ap_enable_lapic();
     crate::with_protection(|prot| prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va)));
+    // S-10: per-CPU IDT attach — IDTR is per-CPU state; without this lidt
+    // the AP still points at the firmware's IDT and the first interrupt
+    // (the 0xF0 IPI) enters firmware gates (observed: schedule_sync hangs,
+    // AP never processes the vector). The table is the S-8 shared image —
+    // one lidt per CPU gives the complete trap path (§3.3).
+    {
+        use minix_arch::TrapEntryArch;
+        crate::with_trap_entry(|trap| trap.load_ap());
+    }
     minix_arch::ap_write_syscall_msrs(minix_arch::syscall_entry_va());
     // C arch_post_init parity (protect.c:372): each CPU installs VM as its
     // own ptproc (D-40: per-CPU CpuLocal slot; the global atomic is gone).
@@ -1043,14 +1081,11 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
             local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
         }
     }
+    // C ap_finish_booting parity: boot_lock → BKL (held into the loop) →
+    // online self-report. S-7: enter the shared scheduling loop with the
+    // BKL held (§3.6 precondition). Diverges into the idle halt on this
+    // CPU until IPI/interrupt-driven work arrives (S-10+).
     ap_finish_booting(logical_id);
-
-    // S-7: enter the shared scheduling loop. §3.6 precondition — the AP
-    // acquires the BKL exactly like the BSP does before its loop (C: the AP
-    // enters main()'s loop holding the BKL acquired in its init path).
-    // The loop never returns (diverges into the idle halt on this CPU until
-    // IPI/interrupt-driven work arrives, S-10+).
-    crate::smp::bkl_lock().transfer();
     crate::scheduler_loop(crate::proc::CpuId::new_unchecked(logical_id));
 }
 
@@ -1398,6 +1433,18 @@ pub fn smp_state_with<'a, 'b>(
 ///    `Drop` (RAII), `BklGuard::transfer()` + explicit `bkl_unlock()`, or
 ///    `BklGuard::release()`. Do NOT mix explicit `bkl_unlock()` with
 ///    RAII drop on the same guard (double unlock).
+/// Non-blocking BKL acquisition — S-10's interrupt-context emulation of
+/// C's reentrant per-process BKL: an IRQ handler that fires while the BKL
+/// is FREE takes ownership (and must release before returning); one that
+/// fires while the interrupted context holds it INHERITS ownership (no
+/// action, C counting-lock depth-1 parity). Returns `true` when the caller
+/// acquired it (and owes the release).
+pub fn bkl_try_lock() -> bool {
+    BKL_LOCKED
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+}
+
 pub fn bkl_lock() -> BklGuard {
     // We always do the CAS loop rather than gating on a `cfg(smp_enabled)`
     // flag because (a) the kernel does not currently expose such a flag

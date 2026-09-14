@@ -247,6 +247,10 @@ impl TrapEntryArch for X86_64TrapEntry {
         // without the gate, a spurious interrupt would triple-fault.
         entry.set_gate(0xFF, 0, 0, 0, false);
 
+        // Inter-processor interrupt: scheduler (S-10). C: SMP_SCHED_IPI
+        // vector gate in apic_idt_init (arch_clock.c/apic.c).
+        entry.set_gate(0xF0, 0, 0, 0, false);
+
         entry
     }
 

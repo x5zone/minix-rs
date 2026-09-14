@@ -215,11 +215,20 @@ impl IrqNotify for KernelNotifier {
 ///   The caller should panic.
 pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
     let mut notifier = KernelNotifier;
-    // A1 chain root: the trap entry path holds the BKL (S-9 will lock it
-    // explicitly and thread a real witness). Debug builds assert the lock.
+    // A1 chain root + S-10: the trap entry path either ALREADY holds the BKL
+    // (interrupted-context inheritance — the timer-inside-kernel case) or
+    // arrives during the idle halt window where the loop RELEASED it. C
+    // models this with a reentrant counting lock; the non-reentrant CAS
+    // lock emulates depth-1 with try-or-inherit: acquire if free (release
+    // before returning), inherit otherwise.
+    let acquired = crate::smp::bkl_try_lock();
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let mgr = crate::irq_manager_with(&section);
-    mgr.dispatch(irq, &mut notifier)
+    let result = mgr.dispatch(irq, &mut notifier);
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+    result
 }
 
 /// An IRQ hook slot in the global hook pool.

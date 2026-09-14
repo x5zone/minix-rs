@@ -46,7 +46,7 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
-for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps; do
+for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi; do
     echo "--- x86_64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
@@ -78,6 +78,7 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     run_test "test-smp-topo"           x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-topo.efi"
     run_test "test-timer-irq"          x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-timer-irq.efi"
     run_test "test-smp-aps"            x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-aps.efi"
+    run_test "test-smp-ipi"            x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-ipi.efi"
     # S-3d landed 2026-09-14 (both the OVMF variant and the multiboot
     # variant pass); the env-var skip remains as a CI escape hatch.
     if [ "${QEMU_TESTS_SKIP_AP_ALIVE:-0}" != "1" ]; then

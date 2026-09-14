@@ -322,6 +322,20 @@ pub fn ap_write_syscall_msrs(entry: minix_types::VirBytes) {
 #[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn ap_write_syscall_msrs(_entry: minix_types::VirBytes) {}
 
+/// Enable THIS CPU's LAPIC (S-10: the AP-side per-CPU half of controller
+/// init — the LAPIC is disabled after INIT and deaf to IPIs until enabled).
+/// No-op on mock/other-arch branches.
+#[cfg(feature = "mock")]
+pub fn ap_enable_lapic() {}
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub fn ap_enable_lapic() {
+    // SAFETY: the AP enables its own LAPIC during bring-up, before any IPI
+    // can target it (see the plat function's safety contract).
+    unsafe { minix_plat::x86_64::interrupt::X86_64InterruptController::enable_current_cpu_lapic(); }
+}
+#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+pub fn ap_enable_lapic() {}
+
 /// Read this CPU's per-CPU identity (x86-64: `gs:0x10` written by
 /// `program_gs`; other archs return 0 — their identity path is per-CPU
 /// register based and lands with their own S-4 lanes).
