@@ -5,6 +5,7 @@
 > 方法：先查漏补缺（C 22+4 符号 ↔ 13 篇文档 ↔ Rust 三向矩阵，coverage-extract 全量化重跑），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核验情况见 §6，诚实标注）/OS 理论/Rust 社区惯例。设计基线 = 13 篇文档 + plan.md §5.3/§4（A-1..A-10）。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档只留双向指针（§5）。文档改写进度仍由 plan.md §6.1 承载。
 > 状态（2026-09-14）：**判定层质量高、执行半整层缺席、三个行为级真发现**——stage 内新登记 5 条 P1 + 3 条 P2 + 3 条 P3，P0 为零；edge 新登记 E-DSWIRE 一条 + 两处增补。最大单一发现是 retrieve.rs 整个模块是孤儿文件（8 个测试从未编译运行）；其次是订阅匹配的类型预门缺掩码（C 语义被 IN_USE 公共位击穿）与删除通知半丢失。plan.md 的 A-1/A-8 与 §3.5 测试基线已过时（§3 逐条复核）。
+> 状态（2026-09-15，执行轮 Fix #1~#8）：**stage 内全部条目闭环**——5 P1 + 3 P2 + 3 P3 全修复，测试 81 → **111 passed**，clippy 本体 0，fmt 0。新增 `pattern.rs`（锚定 ERE 引擎，A-2 落地）与 `server.rs`/`heap.rs`（transport 六子面 + A-3 固定池，[ARCH A-3]）。真实通电仍挂 edge E-DSWIRE/E1/E2/E-RSWIRE（seam + mock 已使逻辑完备）；00/99 正文改写与 13 篇 pending 的按篇 review 仍归 plan.md §6.1 排期。
 
 ---
 
@@ -50,12 +51,12 @@
 | check_sub_match / update_subscribers（:186-224） | 10 | **判定半已实现带 P1-2 缺陷**；发送半缺口（→ P1-4(e)） |
 | map_service / sef_cb_init_fresh（:229-282） | 06 | **判定半已实现**（boot.rs，通知环留钩 D4）；rproctab 拉取缺口（→ P1-4(f)） |
 | do_publish（:287-378） | 07 | **判定半已实现**（publish.rs 六拒两落法）；堆+grant+通知缺口（→ P1-4(c)/P2-2） |
-| do_retrieve / do_retrieve_label（:383-454） | 08 | **已实现但未编译**（retrieve.rs 孤儿，→ P1-1）；拷贝缺口 → P1-4(d) |
-| do_subscribe（:456-534） | 10 | **判定半已实现带 P1-5 偏离**（LiteralMatcher + BadPattern vs regexec） |
+| do_retrieve / do_retrieve_label（:383-454） | 08 | **已实现且已接线**（P1-1 修复后入编译）；回拷已接（P1-4d） |
+| do_subscribe（:456-534） | 10 | **已实现**（P1-2 掩码门修复 + P1-5 ERE 引擎落地，元字符与 C 同判） |
 | do_check（:536-578） | 10 | **已实现**（check.rs，plan/apply 拆分保「拷贝成功才消费」序 :575） |
-| do_delete（:583-651） | 09 | **判定半已实现带 P1-3 缺陷**（通知半丢失）；堆交还是 C 超集（P3-2） |
+| do_delete（:583-651） | 09 | **已实现**（P1-3 修复：先环后清 + wake 回调；堆交还是 C 超集并已标注 P3-2） |
 | do_getsysinfo（:653-678） | 11 | **判定半已实现**；sys_datacopy 缺口（→ P1-4(f)） |
-| main 循环骨架 + sef_local_startup（main.c:28-104） | 01 | **判定半已实现**（dispatch.rs/sef.rs）；transport 全缺口（→ P1-4） |
+| main 循环骨架 + sef_local_startup（main.c:28-104） | 01 | **已实现**（server.rs 双 seam 装配 + run_once；真实通电挂 E-DSWIRE） |
 | libsys/ds.c 18 API（ds.c:7-219） | 12 | **契约镜像已实现**（client.rs 三契约）；minix-sys 传输半缺口（→ **E-DSWIRE**） |
 | DS_SNAPSHOT / do_snapshot / map 系死 API | 02/12 A-7 | **排除**（两侧一致：dispatch.rs:19-21 死号拒认，com.rs 无常量） |
 
@@ -243,14 +244,16 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 
 ---
 
-## 8. 建议推进顺序
+## 8. 建议推进顺序（执行轮已完成 ✅ 2026-09-15）
 
-1. **P1-1 retrieve.rs 接线**（成本最低收益最大：一行声明 + 89 测试点亮 + 08 篇锚点复验）。
-2. **P1-2 类型门掩码 + P1-3 删除通知**（两个行为级 bug，各带新增测试；P3-1 的死参数与 P3-2 标注顺带）。
-3. **P1-5 A-2 regex 决策与实现**（可独立先行；解锁 E5(f) 元字符用例与 VFS 同款场景）。
-4. **P1-4 transport 六子面**（最大 campaign，方案 A；与 E-DSWIRE 的 minix-sys ds.rs 协同排期，(c) 子面与 P2-2 堆决策同轮）。
-5. **P2-1 plan.md 入档批 + P3-3 引用漂移**（轻量，随任意一轮顺带亦可）。
-6. **P2-3 A-6 SEF 迁移设计**（落点在 06 篇改写轮）。
+1. ✅ **P1-1 retrieve.rs 接线**（Fix #1：一行声明 + 89 测试点亮 + 08 篇锚点复验）。
+2. ✅ **P1-2 类型门掩码 + P1-3 删除通知**（Fix #2/#3：各带回归测试；P3-1 死参数与 P3-2 标注顺带）。
+3. ✅ **P1-5 A-2 regex 引擎**（Fix #4：pattern.rs 落地；真实客户端 pattern 全对账）。
+4. ✅ **P1-4 transport 六子面**（Fix #7：seam + mock 逻辑完备；真实通电挂 E-DSWIRE，(c) 与 P2-2 同轮定案）。
+5. ✅ **P2-1 plan.md 入档批 + P3-3 引用漂移**（Fix #6）。
+6. ✅ **P2-3 A-6 SEF 迁移**（Fix #8：export/import + 往返测试）。
+
+剩余事项全部在边界外：**E-DSWIRE**（minix-sys ds.rs + 通电）、**E-MINTYPES-SYS**（SI_DATA_STORE/NOTIFY_MESSAGE 常量收敛）、**E5(f)**（联调）、**E1/E2**（trap 层与 SYS wrapper）。
 
 每次修复遵循 fix-guard（修前读目标行 ±5、grep 确认现状、一次一条、修后 grep 验证并记录），修完跑 `cargo test -p minix-ds` 对照 §0 基线（当前 **81 passed**；P1-1 后应 89）。
 
