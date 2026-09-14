@@ -552,9 +552,9 @@ ExceptionDispatcher::handle_page_fault
 | do_irqctl.c:154 `get_randomness(&krandom, hook->irq)` | ✅ `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm | 无缺口（语义对齐） | C i386/earm 也是 no-op；实际熵采集在用户态 `random` 驱动。`KernelNotifier` 未显式调用 stub（无副作用）。详见 §4.4 + [25-misc-unported.md §4.7](25-misc-unported.md)。 |
 | do_irqctl.c:160-161 `isokendpt` + `panic` | ✅ `unwrap_or_else(\|\| panic!)` 语义对齐 | 无缺口（形式差异） | Rust 用 `iter().find` 替代 `isokendpt` 宏；额外显式校验 `priv_id`/`priv_table`（C 隐含假设）。详见 §4.4 缺口表。 |
 
-### 4.8 Return path（TrapReturnArch，待落地）
+### 4.8 Return path（TrapReturnArch；asm 侧已随 S-8 落地）
 
-本文档覆盖异常/中断的**进入**路径（`ExceptionArch` 解析 frame + `ExceptionDispatcher` 分流 + `IrqManager` dispatch）。**返回用户态**路径（`iretq`/`eret`/`sret` + GP 寄存器恢复）由 `TrapReturnArch` trait 抽象，trait 定义与 asm 实现待 doc 10 `switch_to_user` 完整调度循环落地时加入 `os/arch/src/arch/trap_return.rs`。
+本文档覆盖异常/中断的**进入**路径（`ExceptionArch` 解析 frame + `ExceptionDispatcher` 分流 + `IrqManager` dispatch）。**返回用户态**路径（`iretq`/`eret`/`sret` + GP 寄存器恢复）由 `TrapReturnArch` trait 抽象，trait 定义在 `os/arch/src/arch/trap_return.rs`（x86_64 `X86_64TrapReturn` 已实现 iretq 形态）。S-8（2026-09-14）落地的 asm 入口（`os/arch/src/x86_64/trap_stub.rs`）使返回路径的**同环（内核态）半环真实生效**：分流体返回后 common stub 恢复 GPR、丢弃 vector/errcode 槽并以 `iretq` 返回——`iretq` 按 CS.CPL 自选弹栈深度，同环轻路径与用户全帧共用同一条出口（C mpx.S TEST_INT_IN_KERNEL 两态语义合一）。用户帧的**重调度出口**（trap 后切换进程而非返回）归 `switch_to_user` 接线（S-6/S-7）。
 
 评估结论与拟议签名见 [03-kmain-cstart.md §4.3 TrapReturnArch 评估结论](03-kmain-cstart.md#trapreturnarch-评估结论)。本文档不重复展开，仅声明 trait 边界归属：`TrapReturnArch: ExceptionArch`（supertrait 复用 `Self::Frame`），新增 `type RegisterFile` 表示 GP 寄存器保存区（C: `p_reg`）。
 

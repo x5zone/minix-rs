@@ -903,7 +903,11 @@ C 的 `kernel_call(m_user, caller)` 是 trap 入口的 wrapper，负责 `copy_ms
 - TOCTOU 防护：copy_msg_from_user 将用户消息拷入内核栈副本，dispatch/finish 全程操作内核副本
 - 复制失败 → `cause_signal(SIGSEGV)`（同 D-45/D-43 信号闭环）
 - 成功 → `kernel_call_dispatch` + `kernel_call_finish`
-- 生产 trap 入口尚未接线（D-42 已完成但 asm trap entry 属 D-42 范畴），wrapper 自身可测且有测试
+- 生产 trap 入口已接线（2026-09-14 S-8：LSTAR 指向内核自己的 `x86_syscall_entry`
+  asm 入口——swapgs/GS 槽切内核栈/同构 TrapFrame → `kernel_call`；用户消息指针
+  ABI = RDI，x86-64 为新移植端口，C 32 位寄存器选择不迁移）。wrapper 的
+  caller-in-table 别名在入口体中以 SAFETY 注释裸指针分裂表达（C 真实语义），
+  disjoint-API 重构登记为 S-6 阻塞项（见 smp_todo.md S-8 完成记录）
 
 ### 6.4 kbill_kcall 内核计费（✅ 已实现，2026-09-06 D-9）
 

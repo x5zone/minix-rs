@@ -860,7 +860,7 @@ init_ap → 主循环，**尾部自报 `online_mask` 位**（v3 #1 双状态拆�
 | S-5 | smp_init 编排 + boot_lock（D-36 下半 + D-37） | §3.4：kernel 层编排（拓扑 `hw_id` 传参 + boot_ap + wait_for_aps 复刻 BKL 舞蹈）；**per-AP 串行握手 + bounded 超时**（对齐 C arch_smp.c:124-141：AP 置 boot_ack 位 = 消费证明，BSP 观察后代置 CpuFlags.READY；超时语义 = bounded per-AP startup timeout，**常数按架构归 SmpArch**——x86 5 秒是 C i386 的 LAPIC one-shot 语义，arm/riscv 无 C 对应物（Minix3 SMP 仅 i386），取同量级设计值，计时机制 arch 自备）；**锁序表**（boot_lock/BKL/调度锁，以 C 源码实测为准，含"boot_lock 是否可删"论证）；CPU 状态机落地（§3.4，含 BSP 位 match `hw_id==bsp_id` 求逻辑号） | kernel `smp_init` + boot_lock（或其删除论证）+ 握手超时 | L4：`test-smp-aps` 三架构 `boot_ack_mask == expected_cpu_mask && online_mask == expected_cpu_mask` PASS（生产 wait 仍为 `online == boot_ack`——v7 #8 与 §3.4 对齐） | 16-smp §4.14 两行转 ✅；doc 08 boot 序列补 smp_init 位次（main.c:311） |
 | S-6 | per-CPU 化四件套（D-40/D-41/sched-1/tick-1） | §3.5，**每件独立迭代独立 commit**；D-41 冻结语义按 §3.9 一次性发布规则 | 4 个 commit 逐个验证 | 每件：hosted 测试 + UEFI 构建 + L3 不回归 | 16-smp §D8；doc 04 §3.3（D-41）；doc 11（sched-1） |
 | S-7 | AP 主循环 | §3.6：**AP 首次进调度循环时满足与 BSP 相同的 BKL 所有权前置条件**，此后获取/释放/让出复用既有路径；循环体复用 BSP 代码。**安全性声明（v2 外评 #7 回应 + v3 #10 三架构化，源码证据）**：当前代码不可能进 user mode——调度循环是 placeholder（todo I-6：`lib.rs` `loop { spin_loop() }`，bill_ptr 联动未接线）+ boot image 只有内核任务 ASYNCM/IDLE/CLOCK/SYSTEM/KERNEL 无用户进程（lib.rs:922）+ **三架构均无可达异常/IRQ 路径**（v8 #1 最终阶段不变量：**向量基址有效 + handler 完整（S-8 基建 + S-4 per-CPU attach）+ 中断投递关闭**——x86 IDT 有效 + IF=0；arm VBAR 有效 + DAIF 屏蔽；riscv stvec 有效 + `sstatus.SIE`/`sie`/SSIE 关闭。S-8 后任何架构都不再存在空 vector/空 handler 阶段，S-8~S-10 只差投递开关；无未屏蔽 IRQ 源前提不变——IO APIC RTE 初始化即 mask（plat interrupt.rs:124），LAPIC LVT timer 无 unmask 代码（arch_init.rs））——故 S-7 是"bring-up 测试安全"；**生产安全的 user entry/syscall 依赖 S-8**，16-smp 写明 | AP loop 接线 | L5：`test-smp-sched`——AP 走调度循环、串口可见 per-CPU 活动标记（测试内核维持无用户进程） | 16-smp §4.13 接入点表更新；doc 10（switch_to_user AP 侧衔接） |
-| S-8（**v8 #1 定位：BSP 公共陷阱基建，固定在 S-4 之前**） | asm trap stub + 入口分流（hw-1/trap-1/D-46 硬件半环） | §3.7：范围已收窄（§2.3-2）——**IDT 路径与 SYSCALL 路径分开建模**：A. IDT stub（按向量归一错误码、保存上下文）→ 异常/IRQ 分流；B. LSTAR 指向的 SYSCALL 入口本体（SWAPGS + 用户 RSP 保存 + trapframe）→ `kernel_call_dispatch`。**向量基址与真 handler 本步一起安装**（x86 `set_handler` + `load()` BSP 侧执行；arm/riscv 同构 BSP `load`）。**职责边界
+| S-8（**✅ 已完成（2026-09-14，见文末完成记录；test-timer-irq PASS + 全量 24 PASS）**；v8 #1 定位：BSP 公共陷阱基建，固定在 S-4 之前） | asm trap stub + 入口分流（hw-1/trap-1/D-46 硬件半环） | §3.7：范围已收窄（§2.3-2）——**IDT 路径与 SYSCALL 路径分开建模**：A. IDT stub（按向量归一错误码、保存上下文）→ 异常/IRQ 分流；B. LSTAR 指向的 SYSCALL 入口本体（SWAPGS + 用户 RSP 保存 + trapframe）→ `kernel_call_dispatch`。**向量基址与真 handler 本步一起安装**（x86 `set_handler` + `load()` BSP 侧执行；arm/riscv 同构 BSP `load`）。**职责边界
   （v8 #1 定稿，替换 v7 的"前移"表述）**：S-8 = **BSP 侧公共陷阱基建**——asm stub 本体
   + 共享 handler 表填满 + BSP load，产出"每个 CPU 的 per-CPU load（`lidt`/VBAR/stvec）
   一执行即得完整 trap 路径"的公共资产；**AP 投递在本步不开启也无须开启**（AP 尚不存在
@@ -1651,3 +1651,67 @@ BSP/AP 串口乱码来源；内存级标 AP_STAGE_MARK 0xA1..A7 保留为 S-4+ b
 --target x86_64-unknown-none` + `qemu-system-x86_64 -smp 2 -accel tcg -kernel
 …/test-smp-ap-alive-mb -serial file:… -display none -no-reboot`。
 **S-3d 收官，S-8（asm trap stub + SYSCALL 入口）解锁。**
+
+---
+
+## 21. S-8 完成记录（2026-09-14 第五会话）：asm trap stub + SYSCALL 入口 + test-timer-irq PASS
+
+**交付（三提交：arch trap_stub 模块 / kernel 分流体接线 / 收官三修复+测试）**：
+
+- **A 路径（IDT）**：`os/arch/src/x86_64/trap_stub.rs`——TRAPSTUB 宏 ×39（38 个
+  常规向量 + LAPIC spurious 0xFF），错误码归一（CPU 仅对 8/10-14/17 压错误码，
+  SDM §6.3.1 分类钉进测试；16 位/64 位共同布局），common 存全 GPR 成
+  `TrapFrame`（15 GPR + vector + errcode + CPU 尾），`iretq` 按 CS.CPL 自选弹栈
+  深度——C mpx.S TEST_INT_IN_KERNEL 两态语义由此合一（同环轻路径/用户全帧）。
+- **B 路径（LSTAR）**：`x86_syscall_entry`——swapgs（v3 #11：CPL 判定即 ABI
+  事实，SYSCALL 只来自 CPL3）→ GS 槽（0x0 内核栈顶/0x8 用户 RSP，S-4 编程 MSR
+  前不可达——无 CPL3 代码）→ 同构 TrapFrame → `x86_syscall_dispatch` →
+  sysretq（rcx/r11 复用为 rip/rflags，SYSCALL ABI 本不保留）。
+- **架构边界**：asm call 的 Rust 分流体归 kernel（BKL/IrqManager 策略层），arch
+  内注册门转发（thunk + AtomicPtr），arch 单独链接自足，未注册即 panic。
+- **kernel 侧**：`trap_dispatch.rs`——IRQ → `IrqManager::dispatch`（D-46 硬件
+  半环；BKL 运行在被中断上下文之下，C 同；D-38① 显式 witness 归 S-9）；异常 →
+  `ExceptionDispatcher`（KernelPanic 带帧诊断；其余 outcome 在 S-6/S-7 per-CPU
+  上下文就位前为不可达告警）；syscall 体 proc_ptr 锚读 → `kernel_call`
+  （trap-1）→ 回码写 frame.rax（RDI = 用户消息指针 ABI，新端口定义）。B 链
+  caller-in-table 别名以 SAFETY 注释裸指针分裂表达（C 真实语义），disjoint-API
+  重构登记为 S-6 阻塞项。
+- **init_protection 升级**：install_trap_stubs + configure_syscall(syscall_
+  entry_va) + register_trap_dispatchers + trap.load()——C idt_reload parity；
+  KernelInfo.syscall_entry 降级为参考元数据（boot-shim 填的 kern_virt_base
+  从此不会进 LSTAR）。附带：init() 补 0xFF spurious 门；set_handler 统一中断门
+  （IF 自动清）兑现"kernel IF=0"阶段不变量。
+- **L3 验收 `test-timer-irq`（run_all 注册）**：按 kmain 原序回放生产初始化
+  （paging → protection → S-8 trap → clock/intr → proc table + smp state →
+  boot_init_timer）→ BKL 持有 + sti → **uptime 1..5 PASS——PIT→IOAPIC pin2
+  (vector 0x50)→stub→IrqManager→clock_irq_handler 全链真实到达**。为此抽取
+  三个生产相位供 test 复用而非复刻：`boot_init_timer`（Step 6 三步序，D-59
+  不变）、`init_smp_state`（Phase D 拓扑装配，D-36）、init_clock_and_interrupts
+  转 pub。
+
+**调试三发现（每项独立真 bug）**：
+1. **Win64 ABI**：x86_64-unknown-uefi 目标的 extern "C" = Win64，第一参数在
+   RCX 不在 RDI（kmain naked_asm 早有记载）——stub 按 SysV 传参时分流体读
+   RCX=0 当帧指针 → 地址 0 零页 → 全零帧（帧原始转储 + IOAPIC RTE 直读联合
+   定位）。修：帧指针同写 RDI+RCX + 32B 影子空间。
+2. **ISA override**：PIT IRQ0 接 IOAPIC pin 2（cascade IRQ2 反接 pin 0）——
+   只开 RTE0 时定时器线仍屏蔽。`isa_irq_to_pin` 映射，全部 RTE 访问经此换算。
+3. **LVT 未屏蔽**：init_lapic 只设 SVR，OVMF 把 LINT0 留在 ExtINT——sti 后
+   PIC 残留中断直入 LAPIC。补 Timer/LINT0/LINT1/Error 四条屏蔽（C apic.c
+   init parity）。附带同轮修复：IOAPIC RTE 从不编程 delivery vector（QEMU
+   复位 vector=0，unmask 会把 IRQ0 送到 #DE 门）——RTE 初始化按 C VECTOR(irq)
+   映射编程 + mask。
+
+**arm64/riscv64 stub 盘点结论（S-8 交付物）**：两架构用单一固定异常向量
+（VBAR_EL1 表/stvec Direct），set_handler 已是文档化 no-op；但 `load()` 引用的
+`exc_vector_table`（arm64）/`trap_vector`（riscv64）**只有 extern 声明、无任何
+global_asm 定义**——当前仅靠无人调用 load()（死代码消除掩盖未定义符号）而未
+引爆，是 S-4 arm64/riscv64 lanes 的链接地雷；已写入 arch lib.rs 门面注释与
+本记录。
+
+**回归**：test-timer-irq PASS；全量 run_all 24 PASS / 0 FAIL（test-proc-init
+同步对齐 S-8 序列后仍 PASS，消灭最后一个空 handler IDT live 状态）；kernel
+733 / arch 232 / plat 3 hosted 全绿。
+
+**S-8 收官，S-4（init_ap per-CPU）解锁；D-46 硬件半环、D-38① 的 S-9 部分、
+hw-1/trap-1 的 asm 半环全部落地。**

@@ -259,9 +259,9 @@ D-58 方案 B 落地后关闭（2026-09-06）；D19-1（cause_signal 致命 SELF
 | D-41 | PLATFORM SMP 容器语义 | S-6b |
 | sched-1 | per-CPU scheduler running 指针 | S-6c |
 | tick-1 | per-CPU kernel-tick 统计 | S-6d |
-| hw-1 | D-46 硬件半环（asm IRQ stub + IDT load + 入口分流） | S-8 |
+| hw-1 | ~~D-46 硬件半环（asm IRQ stub + IDT load + 入口分流）~~ ✅ S-8（2026-09-14，test-timer-irq PASS 全链实证） | S-8 ✅ |
 | hw-2 | D-48 shutdown(0)（现 halt-loop 即终态） | S-11 |
-| trap-1 | trap 入口接线 kernel_call_dispatch（D-8 wrapper 已实现可测，asm 层缺） | S-8 |
+| trap-1 | ~~trap 入口接线 kernel_call_dispatch~~ ✅ S-8（B 体 asm→kernel_call 已接；disjoint-API 重构登记为 S-6 阻塞项） | S-8 ✅ |
 
 非 SMP 的代码级 TODO 残余：ipc.rs NOTIFY 权限路径已改设计决策注释；lib.rs TODO-01-1 为
 boot-shim 历史项已有 doc。
@@ -314,7 +314,7 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 
 | 步骤 | 内容 | 依赖 |
 |------|------|------|
-| S-8 | asm trap stub + SYSCALL 入口（BSP 公共陷阱基建；解锁 D-46 硬件半环/trap-1/profiling 接线） | S-3d |
+| S-8 | ✅ asm trap stub + SYSCALL 入口（2026-09-14 收官——A/B 路径 + Win64 ABI/ISA override/LVT 屏蔽三真 bug + test-timer-irq PASS；见 smp_todo.md §21 完成记录） | S-3d ✅ |
 | S-4 | init_ap 真实现（per-CPU GDT/TSS/GS_BASE/lidt + MSR 重编程 + LAPIC local timer） | S-8（D-39） |
 | S-5 | smp_init 编排 + boot_lock（D-36 下半 + D-37） | S-4 |
 | S-6a~d | per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（D-40/D-41/sched-1/tick-1） | S-5 |
