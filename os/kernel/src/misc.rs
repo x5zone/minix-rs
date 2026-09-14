@@ -555,8 +555,9 @@ impl Default for PrivInfoStruct {
 }
 
 /// Number of per-state CPU tick counters.
-/// C: `#define MINIX_CPUSTATES 5` — const.h:176
-const MINIX_CPUSTATES: usize = 5;
+/// C: `#define MINIX_CPUSTATES 5` — const.h:176. pub(crate): CpuLocal's
+/// `tsc_per_state` (tick-1) is sized by it.
+pub(crate) const MINIX_CPUSTATES: usize = 5;
 
 // ── C-compatible IRQ hook struct (GET_IRQHOOKS) ──
 
@@ -1072,10 +1073,29 @@ fn getinfo_cpu_ticks(caller: &mut KProcess, val_len2_e: i32, val_ptr: u64, val_l
     if cpu >= 256 {
         return KcallResult::Ok(EINVAL);
     }
-    // C: get_cpu_ticks(cpu, ticks) — per-state tick counter.
-    // Rust does not yet expose per-CPU tick accounting; return zeros
-    // (the array is zero-initialized) until get_cpu_ticks is wired.
-    let ticks: [u64; MINIX_CPUSTATES] = [0; MINIX_CPUSTATES];
+    // C: get_cpu_ticks(cpu, ticks) (arch_clock.c:433) — ticks[i] =
+    // tsc_per_state[cpu][i] / tsc_per_tick[cpu]. S-6.4 tick-1: the Rust
+    // per-CPU accumulator lives in `CpuLocal.tsc_per_state`; the divisor
+    // derives from the calibrated TSC rate (TSC_PER_MS cycles/ms) and the
+    // configured HZ: cycles-per-tick = TSC_PER_MS * 1000 / HZ.
+    let smp = unsafe { crate::try_smp_state() };
+    let mut ticks: [u64; MINIX_CPUSTATES] = [0; MINIX_CPUSTATES];
+    if let Some(smp) = smp {
+        if (cpu as usize) < crate::smp::MAX_CPUS {
+            let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
+            let tsc_per_tick = u64::from(crate::clock::DEFAULT_HZ)
+                .checked_mul(tsc_per_ms)
+                .map(|per_sec| per_sec / 1000)
+                .unwrap_or(0);
+            if let Some(local) = smp.cpu_local(crate::proc::CpuId::new_unchecked(cpu)) {
+                for (i, slot) in ticks.iter_mut().enumerate() {
+                    if tsc_per_tick > 0 {
+                        *slot = local.tsc_per_state[i] / tsc_per_tick;
+                    }
+                }
+            }
+        }
+    }
     copy_struct_to_caller(caller, &ticks, val_ptr, val_len)
 }
 

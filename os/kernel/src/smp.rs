@@ -161,6 +161,13 @@ pub struct CpuLocal {
     pub fpu_presence: bool,
     /// FPU owner process. C: `fpu_owner`
     pub fpu_owner: Option<ProcNr>,
+    /// Per-CPU TSC accumulation per CPU state (USER/NICE/SYS/INTR/IDLE).
+    /// C: `tsc_per_state[CONFIG_MAX_CPUS][CPUSTATES]` (arch_clock.c:43) —
+    /// context_stop adds the just-consumed TSC delta into the state bucket
+    /// (arch_clock.c:340), and `get_cpu_ticks` divides by `tsc_per_tick`
+    /// for GET_CPU_TICKS. Tick-1 (S-6.4): was implicitly global-zero —
+    /// `getinfo_cpu_ticks` returned zeros.
+    pub tsc_per_state: [u64; crate::misc::MINIX_CPUSTATES],
 }
 
 impl CpuLocal {
@@ -181,6 +188,7 @@ impl CpuLocal {
             pagefault_handled: false,
             fpu_presence: false,
             fpu_owner: None,
+            tsc_per_state: [0; crate::misc::MINIX_CPUSTATES],
         }
     }
 
@@ -470,6 +478,16 @@ impl SmpState {
     /// BSP side: has `logical_id` completed init_ap?
     pub fn observe_online(&self, logical_id: u32) -> bool {
         self.online_mask.load(Ordering::Acquire) & (1u64 << logical_id) != 0
+    }
+
+    /// C arch_clock.c:340 parity — accumulate `delta` TSC cycles into
+    /// `cpu`'s per-state bucket. Called from the context_stop equivalents
+    /// (finish_and_restore step 2 / idle step 4) with the caller-classified
+    /// state; BKL held (plain index arithmetic under the lock).
+    pub(crate) fn account_tsc_per_state(&mut self, cpu: CpuId, counter: usize, delta: u64) {
+        if let Some(local) = self.cpu_local_mut(cpu) {
+            local.tsc_per_state[counter] = local.tsc_per_state[counter].wrapping_add(delta);
+        }
     }
 
     /// Raw mask snapshots (SmpInit orchestration + tests).

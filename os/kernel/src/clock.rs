@@ -436,6 +436,50 @@ pub(crate) fn decrement_quantum_in(
 /// advance — consumers skip a zero delta. The delta is returned even on
 /// the kernel/idle-task exempt path (endpoint < 0): C's kbill block is
 /// the common tail of context_stop, outside the quantum branches.
+// ── Per-state CPU tick accounting (S-6.4 tick-1) ──
+//
+// C: sys/sys/sched.h — CP_USER=0, CP_NICE=1, CP_SYS=2, CP_INTR=3, CP_IDLE=4;
+// CPUSTATES=5. context_stop (arch_clock.c:314-340) classifies the just-
+// consumed TSC delta by the process's endpoint/privilege/NICED state and
+// accumulates into `tsc_per_state[cpu][counter]`; `get_cpu_ticks`
+// (arch_clock.c:433) divides by `tsc_per_tick[cpu]` for GET_CPU_TICKS.
+
+pub(crate) const CP_USER: usize = 0;
+pub(crate) const CP_NICE: usize = 1;
+pub(crate) const CP_SYS: usize = 2;
+pub(crate) const CP_INTR: usize = 3;
+pub(crate) const CP_IDLE: usize = 4;
+pub(crate) const CP_CPUSTATES: usize = 5;
+
+/// Classify the state bucket for `current`'s consumed TSC delta.
+///
+/// C: context_stop (arch_clock.c:314-340):
+/// - endpoint < 0 (kernel tasks): IDLE → CP_IDLE, others → CP_INTR (the
+///   "interrupts" counter covers the kernel);
+/// - endpoint ≥ 0: non-USER privilege → CP_SYS ("system" counter covers
+///   system processes), MF_NICED → CP_NICE, else CP_USER.
+pub(crate) fn classify_cpu_state(
+    current: &crate::proc::KProcess,
+    priv_table: &crate::kpriv::PrivTable,
+) -> usize {
+    use crate::kpriv::USER_PRIV_ID;
+    use crate::proc::proc_nr;
+
+    if current.p_endpoint.get() < 0 {
+        if current.p_nr == proc_nr::IDLE {
+            CP_IDLE
+        } else {
+            CP_INTR
+        }
+    } else if current.priv_id != Some(USER_PRIV_ID) {
+        CP_SYS
+    } else if current.p_misc_flags.is_set(crate::proc::MiscFlagsBits::NICED) {
+        CP_NICE
+    } else {
+        CP_USER
+    }
+}
+
 pub(crate) fn decrement_quantum_in_with_delta(
     smp: &mut crate::smp::SmpState,
     current_proc: &mut KProcess,
@@ -1480,6 +1524,66 @@ mod clock_irq_handler_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_classify_cpu_state_buckets() {
+        // C context_stop (arch_clock.c:314-340) classification table.
+        use crate::kpriv::USER_PRIV_ID;
+        use crate::proc::proc_nr;
+
+        let mut table = crate::test_helpers::test_priv_table();
+        // Kernel task (endpoint < 0, not IDLE) → CP_INTR.
+        let clock_proc = crate::proc::KProcess::new(
+            proc_nr::CLOCK,
+            minix_types::Endpoint::from_generation_slot(0, proc_nr::CLOCK.0),
+        );
+        assert_eq!(classify_cpu_state(&clock_proc, &mut table), CP_INTR);
+
+        // IDLE → CP_IDLE.
+        let idle = crate::proc::KProcess::new(
+            proc_nr::IDLE,
+            minix_types::Endpoint::from_generation_slot(0, proc_nr::IDLE.0),
+        );
+        assert_eq!(classify_cpu_state(&idle, &mut table), CP_IDLE);
+
+        // User privilege + not NICED → CP_USER.
+        let mut user = crate::proc::KProcess::new(
+            crate::proc::ProcNr(0),
+            minix_types::Endpoint::from_generation_slot(0, 0),
+        );
+        user.priv_id = Some(USER_PRIV_ID);
+        assert_eq!(classify_cpu_state(&user, &mut table), CP_USER);
+
+        // System privilege → CP_SYS.
+        let mut sys = crate::proc::KProcess::new(
+            crate::proc::ProcNr(0),
+            minix_types::Endpoint::from_generation_slot(0, 0),
+        );
+        sys.priv_id = Some(0);
+        assert_eq!(classify_cpu_state(&sys, &mut table), CP_SYS);
+    }
+
+    #[test]
+    fn test_account_tsc_per_state_is_per_cpu() {
+        // The accumulator lands in the named CPU's slot only (C:
+        // tsc_per_state[cpu][counter] += delta — arch_clock.c:340).
+        let smp = crate::smp::SmpState::with_ncpus(2, crate::proc::CpuId::BSP);
+        let mut smp = smp;
+        smp.account_tsc_per_state(crate::proc::CpuId::BSP, CP_INTR, 500);
+        smp.account_tsc_per_state(crate::proc::CpuId::BSP, CP_INTR, 250);
+        assert_eq!(
+            smp.cpu_local(crate::proc::CpuId::BSP).unwrap().tsc_per_state[CP_INTR],
+            750
+        );
+        assert!(
+            smp.cpu_local(crate::proc::CpuId::new_unchecked(1))
+                .unwrap()
+                .tsc_per_state
+                .iter()
+                .all(|&v| v == 0),
+            "the other CPU's buckets must stay untouched"
+        );
+    }
     use super::*;
     use crate::kpriv::PrivTable;
     use crate::proc::KProcess;
