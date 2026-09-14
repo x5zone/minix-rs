@@ -1528,3 +1528,19 @@ blocker 证据 + FDT 复现 tripwire，非空转）✓；虚构（测试名/断�
 4. **COFF 段名 8 字符截断**（`.ap_earl`）——段身份靠字符串表，无功能影响。
 
 **结论**：方案 A（`global_asm!`）成立，**无需回退 .S**。内存序契约（§3.9 boot_ack Release 语义）已随 `ApBootstrap` 文档落入 ABI 层，S-3b/S-3d 按此实现。
+
+**→ 重大自我纠错（第五轮续）**：monitor 输出的"+3/+13 位移""0x10 运行"等全部观察
+**为解析伪影**——xp 输出每行带地址回显（如 `0000000000006030: 0x60 0x60 ...`），
+我的正则 `0x([0-9a-f]{2})` 把地址行内的 "0x60" 等当成了数据字节（同理 "0x108000:"
+的 "0x10"）。真实数据需先剥离地址回显再解。**GDT 页运行期内容的真值尚未读取**，
+#GP(0x10) 的成因仍未定。**下次续起（干净协议）**：① QEMU monitor `xp /40bx 0x6030`
+的输出仅取 `: ` 之后的部分（或改用 `-d int,cpu_reset` + `-d in_asm` 定位 AP 的
+#GP 精确指令——上轮 -d int 日志零 v= 疑为 -D 路径/标志问题，需复核）；② **先复核
+一个更简单的候选**——阶梯 lgdt 读 desc 用 DS:0x6030（DS=0 ✓）、far jump 的 CS load
+读 GDT 用 GDTR.base=0x6110 ✓，两者都成立的前提下，**#GP(0x10) 的 error code =
+selector 0x10 本身 → 极可能是「GDT+0x10 的 code32 表项在 AP 视角读到全 0」=
+0x6110-0x6137 未被 fill 生效或被清——用 BSP 侧 write_hex 回读 0x6110-0x6137
+（fill 后立即）+ AP 侧 #GP 前的 xp 双向比对；③ 亦需复核 -smp 2 下 CPU1 的
+monitor `cpu 1; info registers`（上轮 `cpu 0` 的 CS base 0x80 CF9A 现场疑似
+multiboot 装载器 32 位平坦段——即远跳根本未执行，CPU0 仍在装载器 CS 上的
+另一种可能，与"R64-START 未打"吻合）**。
