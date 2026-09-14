@@ -5,7 +5,7 @@
 > 方法：先查漏补缺（Gate A coverage-extract + 「C 符号 ↔ 13 篇文档 ↔ Rust 文件」三向矩阵 + 常量对账），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核实）/OS 理论/Rust 社区惯例。本轮只审查未修代码，修复走后续 todo-fix 单条执行。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档只留双向指针（§4）。
 > 状态（2026-09-14，V1 轮）：审查完成，P0 为零。stage 内新发现 2 条 P1 + 2 条 P2 + 5 条 P3；结构性缺口全部在缝上（生产 transport 接线、producer 布局对齐、A-3 通道、启动链——登记 edge 四条目）。本 crate 的分类器、快照、编码器、游标、格式常量、测试各层形状稳定，与 13 篇文档契约的对账一致性好；两项 P1 分别是「文档不变量被代码违反」与「取数接缝撑不起执行面」，均可在不推翻现有设计的前提下收敛。
-> 状态（2026-09-15，修复轮）：**Fix #1~#6 已闭环**（含 V1-P1-2 接缝定型与 V1-P1-3 run_dump 16 体、V1-P1-4 expand_newlines 修复，§8），测试基线 86 → **106 passed**，clippy 本体 0 告警。stage 内仅剩 V1-P3-3/V1-P3-4 两个文档批条目。按 §7 顺序逐条推进，每条一个提交。
+> 状态（2026-09-15，修复轮完成）：**Fix #1~#8 全部闭环**，V1 轮 10 条 stage 内条目全部处置完毕（8 修复 + P3-5 维持记录），测试基线 86 → **106 passed**，clippy 本体 0 告警，Gate H.1/H.6 归零（ALL DOCS COMPLETE）。edge 四条目（E-ISWIRE/E-ISPROD/E-ISKMESS/E-ISBOOT）留在 `../edge_todo.md` 单线程队列。
 
 ---
 
@@ -24,7 +24,7 @@
 | P2 | V1-P2-2 | `fkey_mapped` 与 `state.call_nr` 只写不读（死状态，C 无对应物） | ✅ 已修复 2026-09-15（Fix #3，§8） |
 | P3 | V1-P3-1 | 16 长度隐式耦合（`matched`/`keys` 两个栈数组靠 HOOKS.len()==16 才正确） | ✅ 已修复 2026-09-15（Fix #4，§8） |
 | P3 | V1-P3-2 | `request_fkey_map` 返回 `Result` 但两臂皆 `Ok`（01 时代 ENOSYS 桩的类型遗迹；随 P1-1 同批修） | ✅ 已修复 2026-09-15（Fix #1，§8） |
-| P3 | V1-P3-3 | 00/99 篇 pending + `.design/` 三快照缺失（Gate H.1/H.6 FAIL×2）；99 收口时补 `DIAG_BUF_SIZE`/`_SYSTEM` 排除标注 | 开放 |
+| P3 | V1-P3-3 | 00/99 篇 pending + `.design/` 三快照缺失（Gate H.1/H.6 FAIL×2）；99 收口时补 `DIAG_BUF_SIZE`/`_SYSTEM` 排除标注 | ✅ 已修复 2026-09-15（Fix #8，§8） |
 | P3 | V1-P3-4 | 01 篇 §4.1 声称 `extern crate alloc` 与实际不符（代码零分配、无 alloc） | ✅ 已修复 2026-09-15（Fix #7，§8） |
 | P3 | V1-P3-5 | 五个分页游标类型并存（审查结论：维持，理由与观察记录见条目） | 维持（记录） |
 | edge | E-ISWIRE | 生产 transport 接线（minix-sef/minix-sys）→ §4 | 登记于 ../edge_todo.md |
@@ -116,7 +116,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **建议**：与 V1-P1-1 同一个 todo-fix 批次处理（fix-guard 一次一条、但同一函数的两处病变同批最省重读成本）：P1-1 落地后该函数对外语义仍是 C void（注册失败不影响 boot），故首选把签名改为 `-> Result<i32, Errno>` 保留但让 `Err` 臂真正传播 `Errno`（`init_fresh` 侧 `let _` 显式降级，注释引 dmp.c:63-65）——或者更诚实：改返回 `()`，告警即出口。两案在实施时按 02 篇签名锚（`01-is-init-main.md:594` 声明 `startup -> Result` 不受影响）择一并同步文档。
 **验证**：`rg -n "fn request_fkey_map" os/servers/is/src/lib.rs` 签名与最终行为一致；文档 01 §4.2 签名行同步。
 
-### V1-P3-3 00/99 篇骨架与 `.design/` 快照缺失 + 排除表两处漏标
+### V1-P3-3 00/99 篇骨架与 `.design/` 快照缺失 + 排除表两处漏标 ✅ 已修复 2026-09-15（Fix #8，见 §8）
 **问题**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 08-stage-is` 实测 00/99 各缺 outline/outline-review/design 三快照（H.1+H.6 FAIL×2）；两篇正文也是 pending 最小骨架（各 20 行左右）。同时 Gate A 的 30 个 C 符号里仅有的两个「无文档无 Rust」缺口——`DIAG_BUF_SIZE`（glo.h:6）与 `_SYSTEM`（inc.h:7）——属于排除项，但 plan §5.4 排除表只列了 `diag_buf` 等 5 个死 extern，没列这两个。
 **影响**：Gate H 对 00/99 判 FAIL（模式 69 PSMD 风险面）；99 篇收口后 Gate A 才能拿到 30/30 的干净对账。
 **建议**：随 99 篇改写轮一次做完：① 00/99 按 plan §6 路线成文（99 收口时把 §1.2 常量对账表直接吸收为正文）；② 成文时按 Step 0.3 补三快照（sched 先例：06-stage-sched todo P3-3 → Fix #14 同款）；③ plan §5.4 排除表补 `DIAG_BUF_SIZE`、`_SYSTEM` 两行（依据：`rg -rn "diag_buf" minix3/minix` 仅 glo.h 声明，与同表已排除的死 extern 同族；`_SYSTEM` 是 C 头文件包含协议宏，无运行时语义）。
@@ -264,3 +264,8 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **Files**：`01-is-init-main.md` §4.1（"RS 同款 + extern crate alloc"改为"no_std 门同款，但无 alloc——零分配是有意偏离"）。
 **Verified**：`rg -n "extern crate alloc" 01-is-init-main.md` 仅剩否定句语境；`rg -n "extern crate alloc" os/servers/is/src/` 零命中（事实侧不变）。
 **Docs**：即本修复。否决反向修代码（补 alloc）：零分配是更优状态，V1-P1-2 方案③的否决理由依赖它。
+
+### ✅ Fix #8: V1-P3-3 — 00/99 成文 + 快照六件套 + plan §5.4 排除表补漏
+**Files**：`00-is-overview.md`（成文：聚合器定义/启动主线/无 boot_image 语义/执行模型/导航表）、`99-is-global-concepts.md`（成文：常量权威位置 9 族对账/错误码/执行模型/排除项/跨服务引用）、`plan.md` §5.4（补 `_SYSTEM`、`DIAG_BUF_SIZE` 两行排除）、`.design/{00,99}-{outline,outline-review,design}.v1.md` 六件套（Step 0.3 嵌入生成）。
+**Verified**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 08-stage-is` → **ALL DOCS COMPLETE**（H.1/H.6 缺失归零）；Gate A 的两个"完全缺口"符号已有排除归属。
+**Docs**：即本修复；99 篇常量权威表直接吸收 todo §1.2 对账表。
