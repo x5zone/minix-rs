@@ -2463,24 +2463,8 @@ fn idle(
         .get_mut(proc_nr::KERNEL)
         .expect("idle: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
-    // S-6.4 tick-1 (C arch_clock.c:340): the KERNEL pseudo-process's delta
-    // lands in the CP_INTR bucket (endpoint < 0, not IDLE).
-    if tsc_delta > 0 {
-        smp.account_tsc_per_state(crate::current_cpu_id(), crate::clock::CP_INTR, tsc_delta);
-    }
-    // C: arch_clock.c:232 — `p->p_cycles += tmp` for the KERNEL branch.
-    if tsc_delta > 0 {
-        table
-            .get_mut(proc_nr::KERNEL)
-            .expect("idle: KERNEL pseudo-process slot must exist")
-            .p_cycles
-            .add_cycles(tsc_delta);
-    }
-    // S-6.4 tick-1 (C arch_clock.c:340): same CP_INTR bucketing for the
-    // idle-step KERNEL pseudo-process accounting.
-    if tsc_delta > 0 {
-        smp.account_tsc_per_state(crate::current_cpu_id(), crate::clock::CP_INTR, tsc_delta);
-    }
+    // S-6.4/I-16: shared context_stop KERNEL-branch accounting.
+    account_kernel_stop(table, smp, tsc_delta);
     // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
     // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
     if tsc_delta > 0 {
@@ -2613,6 +2597,31 @@ fn switch_address_space(
 /// address space was switched in `switch_address_space` before the misc/
 /// quantum stages; the BKL was released in step 2 — the exact precondition
 /// list of `TrapReturnArch::restore_to_user`.
+/// The context_stop KERNEL-branch accounting shared by both C:440/C:208
+/// call-site equivalents (finish_and_restore step 2 / idle step 4): the
+/// pseudo-process's TSC delta lands in the CP_INTR per-state bucket
+/// (arch_clock.c:340) and in its `p_cycles` (arch_clock.c:232/250).
+///
+/// I-16 closure note: before this helper the per-state bucket was
+/// double-counted at the idle site (two tick-1 edits stacked) and the
+/// finish_and_restore site accumulated neither — `p_cycles` for KERNEL was
+/// single-sourced and GET_PROC's KERNEL row under-reported.
+fn account_kernel_stop(
+    table: &mut crate::proc_table::ProcessTable,
+    smp: &mut crate::smp::SmpState,
+    tsc_delta: u64,
+) {
+    if tsc_delta == 0 {
+        return;
+    }
+    smp.account_tsc_per_state(crate::current_cpu_id(), crate::clock::CP_INTR, tsc_delta);
+    table
+        .get_mut(crate::proc::proc_nr::KERNEL)
+        .expect("KERNEL pseudo-process slot must exist")
+        .p_cycles
+        .add_cycles(tsc_delta);
+}
+
 fn finish_and_restore(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
@@ -2647,6 +2656,10 @@ fn finish_and_restore(
         .get_mut(crate::proc::proc_nr::KERNEL)
         .expect("finish_and_restore: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
+    // S-6.4/I-16: shared context_stop KERNEL-branch accounting (C:440 site —
+    // the pre-S-6.4 code here missed BOTH the per-state bucket and the
+    // p_cycles accumulation that the idle site had).
+    account_kernel_stop(table, smp, tsc_delta);
     // D-9 (C arch_clock.c:279-281) — consume kbill_kcall with the same
     // whole-delta context_stop uses; must run before the BKL release
     // below (see consume_kbill_kcall doc).
@@ -3371,6 +3384,46 @@ mod tests {
     /// Fresh kernel: `current_ptproc_nr()` returns `None` because
     /// `init_post_and_memory` has not run yet. This matches C behavior
     /// where `ptproc` is uninitialized until `arch_post_init()`.
+    #[test]
+    #[test]
+    fn test_account_kernel_stop_accumulates_p_cycles() {
+        // I-16: the helper is the single KERNEL-branch accounting point —
+        // both context_stop equivalents route through it; the delta lands
+        // in KERNEL.p_cycles (GET_PROC observable) and the CP_INTR bucket.
+        fresh_ptproc_state();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut smp = crate::smp::SmpState::with_ncpus(1, crate::proc::CpuId::BSP);
+        super::account_kernel_stop(&mut table, &mut smp, 1000);
+        super::account_kernel_stop(&mut table, &mut smp, 250);
+        let cycles = table
+            .get(crate::proc::proc_nr::KERNEL)
+            .unwrap()
+            .p_cycles
+            .total
+            .load(core::sync::atomic::Ordering::Acquire);
+        assert_eq!(cycles, 1250, "both deltas accumulate into KERNEL.p_cycles");
+        assert_eq!(
+            smp.cpu_local(crate::proc::CpuId::BSP).unwrap().tsc_per_state[crate::clock::CP_INTR],
+            1250,
+            "CP_INTR bucket mirrors the same delta"
+        );
+    }
+
+    #[test]
+    fn test_account_kernel_stop_zero_delta_is_noop() {
+        fresh_ptproc_state();
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut smp = crate::smp::SmpState::with_ncpus(1, crate::proc::CpuId::BSP);
+        super::account_kernel_stop(&mut table, &mut smp, 0);
+        let cycles = table
+            .get(crate::proc::proc_nr::KERNEL)
+            .unwrap()
+            .p_cycles
+            .total
+            .load(core::sync::atomic::Ordering::Acquire);
+        assert_eq!(cycles, 0, "zero delta must not touch the counters");
+    }
+
     #[test]
     fn test_ptproc_unset_returns_none_before_init() {
         fresh_ptproc_state();

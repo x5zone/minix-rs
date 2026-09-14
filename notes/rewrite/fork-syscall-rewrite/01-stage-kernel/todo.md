@@ -590,12 +590,16 @@ restore_to_user 交出 CPU 后无向量回内核），非调度器缺陷。
   set_bill_to_idle / pick_and_bill / idle）。原语不再无条件写 bill_ptr，
   新增反例测试 `test_cpu_local_set_running_does_not_bill`（原测试断言的正是
   要消除的行为，已同步改写）。
-- 🆕 **I-16（本条派生，open，P2）**：**p_cycles.total 全库无累加点**——
-  `CyclesStats::add_cycles`（proc.rs:733）在生产代码零调用方，GET_PROC/SCHEDCTL
-  导出的 p_cycles 恒 0；C 的 context_stop 一般分支（arch_clock.c:245-250）在每次
-  上下文切换/时钟路径累积 `p->p_cycles += tmp`。修法需在 Rust 的切换链
-  （finish_and_restore / pick 循环）找 C context_stop 调用点全集一一对应，
-  属记账面专项（建议与 I-15 时钟镜像收敛同窗口做）。
+- ✅ **I-16（已闭合，2026-09-15，code-excellence 轮）**：盘点 C 调用点全集后发现
+  记账目标只有 KERNEL/idle 伪进程（C 的四个 context_stop 位点全部传 KERNEL 或
+  idle_proc，用户进程的 p_cycles 在 C 中同样不经 context_stop）——Rust 侧此前的
+  真缺口是：①finish_and_restore step 2（C:440 对应位）漏接 p_cycles 与 per-state
+  两路记账；②idle 位点 CP_INTR 入桶代码重复出现两次（tick-1 两次编辑叠加，per-state
+  通胀 ×2）。修复：提取共享帮手 `account_kernel_stop`（CP_INTR 入桶 + KERNEL
+  p_cycles 累加，两处 context_stop 等价位点共用），双记账去重 + 漏接补齐；
+  3 个 hosted 测试（累加/零 delta no-op/隔离）。FPU-exit 位点（proc.c:1956）
+  与 context_stop_idle 的 TSC-delta 记账随用户帧/校准 lane（见 smp_todo §24
+  deadline 注）。验证：kernel 742 hosted 全绿；test-smp-aps 硬件 PASS。
 - **③ 维持**：S-8 落地后端到端验证（原依赖不变）。
 
 ### 23.4 新发现 P3（D-65 轻微项批） — ✅ 已处置（2026-09-09：①③ 落地，② 维持登记，④ 误报纠正）
