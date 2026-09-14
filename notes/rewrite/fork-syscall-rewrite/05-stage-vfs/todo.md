@@ -34,7 +34,7 @@
 | P2 | R2-P2-3 | `do_gcov_flush` 缺 super_user 特权门（gcov.c:31；misc.rs 决策组四门齐、独缺此门）（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #12） |
 | P3 | R2-P3-1 | request.rs 计数注释漂移：33 常量 = 32 活 + 1 死，FsReq 32 变体与活类型双射（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #2） |
 | P3 | R2-P3-2 | device_map.rs 四源合一的职责注记（§9.2；**✅ 已修复** 2026-09-09，§10 Fix #16） |
-| edge | E-REQWIRE（新） | REQ_* VFS↔FS 共享契约双侧独立定义（vfs request.rs vs minix-fs protocol.rs）——收敛 minix-types 或建全量对账测试 |
+| edge | E-REQWIRE（新） | REQ_* VFS↔FS 共享契约双侧独立定义——**✅ 方案 B VFS 侧完成**（`test_reqwire_all_33_align_c_ipc_h` 全量 33 常量绝对值对账；minix-fs 侧待补） |
 | edge | E-VFSWIRE 增补 | VFS 侧 `VmVfsReq` 消息级解码未建；wire 定稿须以 C 绝对值断言（FS_BASE 0x600 教训） |
 
 验证命令（2026-09-09 实测基线，与首轮 334 passed 一致，无回归；本轮零代码修改）：
