@@ -2,6 +2,7 @@
 
 pub mod early_console;
 pub mod interrupt;
+pub mod shutdown;
 
 pub use early_console::Riscv64EarlyConsole;
 pub use interrupt::Riscv64InterruptController;

@@ -3,6 +3,7 @@
 pub mod early_console;
 pub mod interrupt;
 pub mod port_io;
+pub mod shutdown;
 
 pub use early_console::X86_64EarlyConsole;
 pub use interrupt::X86_64InterruptController;

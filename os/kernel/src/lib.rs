@@ -635,6 +635,14 @@ pub fn init_smp_state() {
             crate::proc::CpuId::new_unchecked(topo.bsp_id),
         ));
     }
+    // D-40 (S-6.1): the BSP's ptproc slot = VM (C: arch_post_init
+    // `get_cpulocal_var(ptproc) = vm` — protect.c:372; each AP installs its
+    // own in smp_ap_tail). The SMP state must exist before the slot can be
+    // written — hence this install lives in Phase D, not Phase C.
+    let smp_state = unsafe { crate::smp_state_boot_unchecked() };
+    if let Some(local) = smp_state.cpu_local_mut(smp_state.bsp_cpu_id()) {
+        local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
+    }
 }
 
 /// Minimal kmain for QEMU integration tests (feature = "qemu_test").
@@ -1460,7 +1468,9 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     // Direct Map), so it survives Direct Map (07-cross-space-init.md §1.4, P9-4).
     //
     // SAFETY: BKL is held during boot, only this CPU accesses the global.
-    set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+    // S-6.1 D-40: the slot lives in CpuLocal — installed for the BSP in
+    // `init_smp_state` (the SMP state must exist first; C: arch_post_init
+    // per-CPU parity).
 
     // Step 3: Assert the VM Direct Map base is configured.
     //
@@ -3872,4 +3882,20 @@ mod tests {
 
         super::switch_to_user();
     }
+}
+
+/// Semantic shutdown entry — C `minix_shutdown(status)` (utility.c; called
+/// with 0 at main.c's normal end, hw-2). §3.8 two-layer rule: this is the
+/// SEMANTIC layer (banner + backend dispatch); the MECHANISM is the arch
+/// backend (`plat::shutdown_qemu` — QEMU test finisher per architecture).
+/// The real-hardware backends (ACPI S5 / PSCI SYSTEM_OFF / SBI SRST) plug
+/// into the same seam when their lanes land.
+///
+/// `!`: shutdown does not return (C: NOT_REACHABLE after the backend).
+pub fn minix_shutdown(status: u32) -> ! {
+    use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+    Console::write_str("MINIX-RS: shutting down (status ");
+    Console::write_hex(status as u64);
+    Console::write_str(")\n");
+    minix_plat::shutdown_qemu(status)
 }

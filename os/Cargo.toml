@@ -54,6 +54,7 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-smp-shutdown",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb",

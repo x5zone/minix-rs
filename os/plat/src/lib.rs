@@ -104,3 +104,25 @@ pub type CurrentEarlyConsole = crate::riscv64::early_console::Riscv64EarlyConsol
 pub type CurrentPortIo = MockPortIo;
 #[cfg(target_arch = "x86_64")]
 pub type CurrentPortIo = crate::x86_64::port_io::X86_64PortIo;
+
+// ── S-11: QEMU test shutdown backends (§3.8) ──
+//
+// `shutdown_qemu(status)` terminates the test VM: x86-64 isa-debug-exit
+// (exit code (status<<1)|1 — always odd; run_qemu's shutdown test special-
+// cases rc==1 by its serial marker), aarch64 semihosting SYS_EXIT (exit 0),
+// riscv64 sifive_test FINISHER_PASS (exit 0). Requires the corresponding
+// QEMU option/device (isa-debug-exit device / -semihosting / none for
+// sifive_test). The real-hardware backends (ACPI S5 / PSCI SYSTEM_OFF /
+// SBI SRST) are separate later lanes — §3.8's two-layer rule.
+#[cfg(target_arch = "x86_64")]
+pub fn shutdown_qemu(status: u32) -> ! {
+    crate::x86_64::shutdown::qemu_exit(status)
+}
+#[cfg(target_arch = "aarch64")]
+pub fn shutdown_qemu(status: u32) -> ! {
+    crate::arm64::shutdown::qemu_exit(status)
+}
+#[cfg(target_arch = "riscv64")]
+pub fn shutdown_qemu(status: u32) -> ! {
+    crate::riscv64::shutdown::qemu_exit(status)
+}
