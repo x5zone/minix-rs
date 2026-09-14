@@ -22,7 +22,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ✅ 2026-09-15（`create_csize_ok` + `staged_vers_ok`，108 passed） |
 | P2-2 | handler 结果与判定入参结构化 | `map_sysctl_reply` 平行参数通道 → 枚举；`judge_level` 九参 → 事实结构体 | ✅ 2026-09-15（`SysctlOutcome` + `LevelFacts`，`too_many_arguments` allow 已删） |
 | P2-3 | 动态子节点容器选型 | C 排序链表 → BTreeMap / 排序 Vec 的裁决 | ⬜ |
-| P2-4 | A-3 内存策略落地 | slab + 字节预算池（推荐）vs bumpalo vs 裸全局分配器 | ⬜ |
+| P2-4 | A-3 内存策略落地 | slab + 字节预算池（推荐）vs bumpalo vs 裸全局分配器 | ✅ 2026-09-15（`heap::MibBudget` 记账预算，5 测试，113 passed） |
 | P3-1 | 文档账目同步批次 | README/plan 失真行、02 篇行号漂移、arena 承诺时点四处统一、00/99 成文 | ✅ 2026-09-15（五项全闭环） |
 | P3-2 | 死依赖与卫生指针 | mib crate 的 minix-sys 死依赖转正时机；rmib 卫生项归 edge | ⬜ |
 
@@ -155,6 +155,8 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 **建议**：**方案 A（推荐）**`extern crate alloc` + slab `Vec<Node>`（`NodeId(u32)` 索引）+ **字节预算池**（data/desc 缓冲，DS `DsPool` 先例 `os/servers/ds/src/heap.rs`）——预算耗尽即 C 的"分配失败报 EINVAL"，语义逐条对得上，服务自持上限不依赖全局分配器行为。**方案 B**bumpalo——重启整体复位确实优雅贴合"重启丢动态"，但树内交错增删（create/destroy 长期共存）与 bump 只增不减的模型冲突，只适合阶段作用域，否决为主竞技场方案。**方案 C**裸全局分配器无上限——无法兑现"失败报 EINVAL"的预算语义，否决。OWNDATA/OWNDESC 所有权用 Rust 所有权建模（drop 释放 + `TreeCounts::object_removed` 接线），`RemoveDelta`（dynamic.rs:274-294）已备差量语义。
 
 **验证**：`extern crate alloc` + 预算池单元测试（耗尽→EINVAL 路径、释放→预算回收）；重启路径（`MibInitKind::RestartLossy`，sef.rs:24-32）清空竞技场的测试。
+
+**复核 ✅（2026-09-15，本条目闭环）**：`heap.rs`（`MibBudget` + `MIB_HEAP_BUDGET=256 KiB`）落地——记账式预算（claim 先于分配、`alloc_buf`/`free_buf` 以缓冲长度为账目、`free_buf` 消费所有权使双重释放不可表示、`reset()` 承接 RestartLossy），耗尽返回 `BudgetExhausted` 由调用方按 C 规则映射（EINVAL 通行 / ENOMEM 仅临时挂载点）。5 个测试含"巨大 claim 不回绕""拒绝不残留半笔账"两个边界。`lib.rs` 接 `extern crate alloc`（置于内部文档注释之后——E0753 教训）。开发中抓到并修正一处自伤 bug：`Vec::with_capacity(n).into_boxed_slice()` 产出空盒（Vec len 初始为 0），改 `vec![0u8; n]`。113 passed；clippy 5 条既有项。
 
 ### P3-1 文档账目同步批次（doc，机械修复）
 

@@ -10,6 +10,7 @@
 //! - [`dispatch`] — the three letters, the two refusals, the reply rule,
 //!   and the sysctl decode verdicts (which path, what the reply carries).
 //! - [`sef`] — the two init names and what each promises about state.
+//! - [`heap`] — the A-3 byte budget behind every dynamic allocation.
 //! - [`tree`] — the node vocabulary and shape invariants (what a node is).
 //! - [`io`] — copy and relay verdicts (what moves, who may touch it).
 //! - [`auth`] — the cached superuser verdict and the permission gates.
@@ -24,10 +25,15 @@
 //!
 //! Single-threaded event loop: pure verdict functions, no shared state.
 
+// The A-3 budget pool (heap.rs) and the arena built on it (P1-2) need
+// the allocation core types; the budget itself keeps usage bounded.
+extern crate alloc;
+
 pub mod auth;
 pub mod data;
 pub mod describe;
 pub mod dispatch;
+pub mod heap;
 pub mod io;
 pub mod proc;
 pub mod query;
