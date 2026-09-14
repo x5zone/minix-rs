@@ -135,7 +135,7 @@ D-14（SIGKMESS 随 W-7 演进不可达）、D-24（VMSTYPE_MAP C 本身无此�
 | D-36 | `smp_init`（ACPI/MADT 表解析 + `SmpArch::boot_ap`） | S-4/S-5 |
 | D-37 | `boot_lock`（smp.c:28） | 随 D-36 |
 | D-38① | exception_dispatcher::handle 需 bkl_lock（②③④ 已闭合：lib.rs 两处 + 2026-09-07 S-1 核实 resume 路径已覆盖） | S-9 |
-| D-39 | x86_64 `init_ap` panic 占位（protection.rs） | S-4（故意 panic：AP 无 TSS 即 triple-fault） |
+| D-39 | ~~x86_64 `init_ap` panic 占位~~ ✅ S-4（2026-09-14 真实现：AP 侧装载 + GS/MSR；16 字节 TSS 描述符布局 bug 同步修复——见 smp_todo §22） | S-4 ✅ |
 | D-40 | ptproc per-CPU（现由 `CURRENT_PTPROC_NR` 全局单核承担） | S-6a |
 | D-41 | `PLATFORM` AssumeSyncCell SMP 替换（Mutex/Atomic） | S-6b |
 
@@ -315,7 +315,7 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 | 步骤 | 内容 | 依赖 |
 |------|------|------|
 | S-8 | ✅ asm trap stub + SYSCALL 入口（2026-09-14 收官——A/B 路径 + Win64 ABI/ISA override/LVT 屏蔽三真 bug + test-timer-irq PASS；见 smp_todo.md §21 完成记录） | S-3d ✅ |
-| S-4 | init_ap 真实现（per-CPU GDT/TSS/GS_BASE/lidt + MSR 重编程 + LAPIC local timer） | S-8（D-39） |
+| S-4 | ✅ init_ap 真实现（2026-09-14——16 字节 TSS 描述符入 GDT + IST 栈 + GS 双 MSR + per-CPU SYSCALL MSR + L2 读回 PASS；x86 PIT 全局无 per-AP 时钟工作；见 smp_todo §22） | S-8 ✅（D-39 ✅） |
 | S-5 | smp_init 编排 + boot_lock（D-36 下半 + D-37） | S-4 |
 | S-6a~d | per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（D-40/D-41/sched-1/tick-1） | S-5 |
 | S-7 | AP 主循环（与 BSP 同 BKL 所有权前置） | S-6 |

@@ -845,7 +845,7 @@ CR0=0x80000076（PE=0 与 PG=1 并存的非法态——疑似 QEMU SMM/复位路
 之前是否发生 CR3 重载导致 GDT 读走错；③ QEMU multiboot 装载器的 GDT/CS 语义
 （hw/i386/multiboot.c 的 mb_gdt 数组）对照。**第二轮进展（2026-09-08）**：①16 位段 far-jump 操作数宽度修正（EA 无 66 前缀时读 off16+sel16，原 .long 注入使 selector=0 → null selector #GP——旧日志的 v=0d@0x19 即此）；②lgdt disp 形式修正；③**blob 布局手工冻结**（code16@0 / GDT 描述符@0x30 / code32@0x40 / code64@0xC0 / GDT 表@0x110 / MAGIC@0x140 / 记录@0x148——全部 .org 边界 + Rust 常量镜像 + hosted 测试钉住）；④新增 hosted 测试（镜像 cli 首字节/GDT 描述符字节/记录布局镜像）。**第三轮进展（同日）**：梯子加入分段 trace 诊断（每级写线性 0x8200+i，BSP 超时 dump）后出现两种互斥症状——轮次 A：trace=[1,2,3,4,0…]（AP 走完 16 位与 far jump，未达 32 位入口——far jump 目标 0x8040 与 ap_protected 实际位置漂移，已用 .org 0x40/0x0C0 冻结修复）；轮次 B（.org 修复后）：trace 全零 + AP 无声（INIT/SIPI 交付层本身待证——引出 QEMU gdb 单步需求）。**下一步 = QEMU gdb（-s -S）单步真实执行路径**
 **第四轮进展（2026-09-08）**：alive 测试内核简化重写（去除 trace 诊断、用固定 0x9000 scratch + `install_at(0x8000)` + `ap_entry` 发布 boot_ack）。**当前状态**：build ✓ 但 QEMU 运行仍超时（AP 未发布 ack）——需要 QEMU gdb（-s -S）在 AP 的 16 位入口 0x8000 设断点，确认 INIT-SIPI 后 AP 是否开始取指，以及 16→32→64 每级是否走通。候选根因：①INIT-SIPI 未送达目标 APIC；②16 位代码段的 lgdt 或 far-jump 编码仍然有误；③UEFI identity map 的 NX 位阻止了低位执行。：①16 位段 far-jump 操作数宽度修正（EA 后应读 off16+sel16，原 .long 注入使 sel=0 → null selector #GP——旧日志的 v=0d@0x19 即此）；②lgdt disp16 形式修正；③**blob 布局手工冻结**（C trampoline.S 同款：code16@0、GDT 描述符@0x30、code32@0x40、code64@0xC0、GDT 表@0x110、MAGIC@0x140、记录@0x148——全部数字常量 + `test_ladder_offsets_frozen`/`test_image_starts_with_cli_and_layout_markers` 钉住）；④新增 hosted 测试（镜像 cli 首字节/GDT 描述符字节/记录布局镜像）。**当前 QEMU 状态**：SIPI 已发出（ICR 状态 idle、ESR=0）但 AP 仍未达 Rust 入口（marker=0）且无 v= 异常日志——下一步 QEMU gdb（-s -S）单步真实执行路径
-| S-4 | init_ap 真实现（D-39） | §3.3：x86 per-CPU GDT/TSS/ltr/GS_BASE/lidt + **per-CPU MSR 重编程**（STAR/LSTAR/SFMASK/EFER.SCE 每核必写 + GS_BASE 两变体，防"四核起来只有 CPU0 能 syscall"）+ **时钟基线核对**（x86 PIT 全局无 per-AP 工作，arm/riscv per-CPU 比较器可配，§3.3）；arm VBAR/TTBR/GICR；riscv satp（**SSIE 能力准备、置位推迟到 S-10**——v7 #2：若 S-4
+| S-4 | ✅ **已完成（2026-09-14，见 §22 完成记录；L2 读回 PASS）** | §3.3：x86 per-CPU GDT/TSS/ltr/GS_BASE/lidt + **per-CPU MSR 重编程**（STAR/LSTAR/SFMASK/EFER.SCE 每核必写 + GS_BASE 两变体，防"四核起来只有 CPU0 能 syscall"）+ **时钟基线核对**（x86 PIT 全局无 per-AP 工作，arm/riscv per-CPU 比较器可配，§3.3）；arm VBAR/TTBR/GICR；riscv satp（**SSIE 能力准备、置位推迟到 S-10**——v7 #2：若 S-4
 置 SSIE 而 stvec 未装，IPI 到达即入无向量路径）；**lidt/VBAR/stvec = per-CPU attach 到 S-8 产出的完整共享表**（v8 #1 定位：S-8 是
 BSP 公共陷阱基建、固定在本步之前——AP 侧只做 per-CPU load，一执行即得完整 trap 路径，
 对齐 C `ap_finish_booting` 在 IDT 完整后才执行的事实）；**新增
@@ -1715,3 +1715,47 @@ global_asm 定义**——当前仅靠无人调用 load()（死代码消除掩盖
 
 **S-8 收官，S-4（init_ap per-CPU）解锁；D-46 硬件半环、D-38① 的 S-9 部分、
 hw-1/trap-1 的 asm 半环全部落地。**
+
+---
+
+## 22. S-4 完成记录（2026-09-14 第五会话）：init_ap 真实现 + 16 字节 TSS 描述符修复 + L2 读回 PASS
+
+**潜伏真 bug（S-4 揭出并修复）**：长模式 TSS 描述符是 **16 字节 = 两个连续 GDT
+槽**，旧代码只把低半写入 GDT、高半存在独立数组 `tss_desc_high`——`load()` 的
+GDTR 只指向 `gdt` 数组，高半从未进表；`ltr` 读到 base[63:32]=0，高半内核下
+首次 ring 切换（中断进 sp0）即死于垃圾 TSS。潜伏原因：S-4 之前不存在任何
+特权级切换。选择子算术同步修正（槽位 ×2）。
+`[ARCH: long-mode TSS descriptor size]`——C protect.c 为 i386 的 8 字节
+描述符，x86-64 移植按 ISA 演进（SDM Vol. 3A §7.2.3）。
+
+**实现（§3.3 逐项）**：
+- **init() 预建全部 MAX_CPUS 的 TSS 描述符**（`tss` 数组地址定格 → 描述符
+  无需重建）——`init_ap` 因此是 AP 侧**纯装载**：lgdt 共享 GDT + ltr 本核
+  TSS + 段重载，&self 无写无竞态（C "no global GDT sync" 语义）。
+- **cpu-id 戳移位**：戳（C protect.c:173-181 parity）从 setup 移到赋值点
+  （init() 盖 BSP 槽 / set_kernel_stack 盖 AP 槽）——循环里戳会把同一地址
+  写 MAX_CPUS 次。
+- **IST 栈**：per-CPU 静态 IST1(NMI)/IST2(#DF) 写入 tss.ist；
+  install_idt_handlers 对 vector 2/8 重放 IST 字段（set_handler 统一写 0
+  会抹掉）。
+- **GS 区域 + 双 MSR**（trap_stub）：`GsArea{kernel_stack_top, user_rsp,
+  cpu_id}` 布局冻结钉测试（S-8 stub 的 gs:0x0/gs:0x8 契约不变）；
+  `program_gs` 写区域 + IA32_GS_BASE/KERNEL_GS_BASE 双 MSR。
+  **顺序敏感**：load_with_tss 的 `mov gs, 0` 会清 GS base（首跑 gs:0x10
+  读回 IVT 字节实锤）——program_gs 必须在段重载之后。
+- **per-CPU SYSCALL MSR**：`write_syscall_msrs`（STAR/LSTAR/SFMASK/
+  EFER.SCE——§3.3 防"四核起来只有 CPU0 能 syscall"）；门面
+  ap_write_syscall_msrs / ap_cpu_id_readback（mock/其他架构 no-op）。
+- **set_kernel_stack 语义统一**：保留区扣减（旧实现存原始栈顶，与 init/C
+  tss_init 矛盾）。
+
+**L2 验收（test-smp-ap-alive-mb 扩展，PASS，-d int 0 异常）**：BSP 建共享
+protection 实例 + set_kernel_stack(1) → AP 内 init_ap(1)（lgdt/ltr/GS）+
+MSR 重写 → gs:0x10 读回 == **1**——该值经 AP 自己的 GS_BASE MSR 才可见，
+读回成立即 per-CPU 布线在该核成立。
+
+**回归**：arch 235 / kernel 733 hosted 全绿；全量 QEMU 回归
+（GDT 布局变更波及全部 x86 测试，test-protection/timer-irq/proc-init
+等全部复跑）。
+
+**S-4 收官，D-39 关闭；S-5（smp_init 编排 + boot_lock）解锁。**
