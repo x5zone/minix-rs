@@ -169,13 +169,16 @@ fn main() -> Status {
     let info = minix_kernel::arch_boot_impl::<X86_64Paging>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled\n");
 
+    // Phase A.5: platform discovery FIRST (kmain order) — init_protection
+    // reads the topology to program the BSP's GS area.
+    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+
     // 3. Production Phase B: protection + trap entry (fills the
     // PROTECTION/TRAP_ENTRY globals — the AP tail's init_ap consumes them).
     minix_kernel::init_protection(&result.kernel_info);
     early_console::write_str("  protection + IDT live (production phase)\n");
 
     // 4. Clock + interrupt controller (kmain Phase B order).
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
     minix_kernel::init_clock_and_interrupts();
     early_console::write_str("  clock + controller initialized\n");
 

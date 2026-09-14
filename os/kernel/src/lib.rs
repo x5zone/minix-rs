@@ -815,6 +815,9 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // S-6.1 (D-40 identity anchor): program the BSP's GS area so
     // `current_cpu_id()` works on the BSP too. The BSP's logical id comes
     // from the topology match (MADT/DTB order does not guarantee slot 0).
+    // Ordering contract: kmain runs `init_from_kinfo` (Phase A.5) before
+    // this phase — the topology read below panics otherwise (Frozen::get
+    // before freeze).
     #[cfg(target_arch = "x86_64")]
     {
         let topo = minix_platform::platform_desc().cpu_topology();

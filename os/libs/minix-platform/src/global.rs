@@ -10,7 +10,7 @@
 //!    a `&'static dyn PlatformDesc` — read-only, no synchronization needed.
 
 use minix_boot::KernelInfo;
-use minix_types::AssumeSyncCell;
+use minix_types::Frozen;
 
 use crate::desc::PlatformDesc;
 use crate::kind::parse_by_kind;
@@ -22,26 +22,33 @@ use crate::qemu_virt::QemuVirtDesc;
 
 /// Global platform context — owns the descriptor.
 ///
-/// Stored in kernel BSS as a `static`. Written once at T2.5 (single-threaded,
-/// BKL held, IRQs off), read-only thereafter.
+/// Stored in kernel BSS as a `static`. Frozen once at T2.5 (single-threaded,
+/// BKL held, IRQs off), read-only thereafter — **on every CPU**: S-6.2 (D-41)
+/// APs read `platform_desc()` concurrently with the BSP, and the D-36-era
+/// `AssumeSyncCell` ("single-threaded `UnsafeCell` with manual `Sync`")
+/// promised more than the AP world delivers — its safety proof shape
+/// ("no concurrent access, ever") became false the moment APs went online.
 ///
-/// We use [`AssumeSyncCell`] from `minix-types` — the project's shared
-/// primitive for "single-threaded `UnsafeCell` with manual `Sync` impl".
-/// This is the same pattern VM server, heap arena, vmproc table use.
+/// We use [`Frozen`] from `minix-types` — the project's boot-frozen cell
+/// (`freeze` once with `Release`; every reader `Acquire`s; the value is then
+/// shared immutable `&T`). The D-41 design note preferred the "frozen"
+/// argument over locks: C's globals are boot-write-once/read-only by
+/// convention with no mechanism; the Rust rewrite makes that convention a
+/// checked protocol instead of an assumption.
 ///
-/// # Why `AssumeSyncCell` and not `Mutex`/`static mut`?
+/// # Why `Frozen` and not `Mutex`/`OnceLock`/`static mut`?
 ///
-/// - `static mut` requires `unsafe` at every access and provides no extra
-///   safety — and Rust 2024 further tightens the rules.
-/// - `Mutex`/`spin::Mutex` would add runtime overhead unnecessary here
-///   (boot-only mutation, read-only runtime).
-/// - `OnceLock` requires an allocator or `std`, both unavailable in `no_std`.
+/// - `static mut` needs `unsafe` at every access and gives no extra safety.
+/// - A lock would serialize reads that are immutable — pure overhead, and
+///   the wrong semantics (there is nothing to protect after freeze).
+/// - `OnceLock` requires `std`/allocator, unavailable in `no_std` boot.
 ///
 /// # Safety invariant
 ///
-/// `init()` / `init_from_kinfo()` must be called exactly once, before any
-/// CPU reads via `platform_desc()`. After init, the cell is never mutated.
-static PLATFORM: AssumeSyncCell<Option<PlatformContext>> = AssumeSyncCell::new(None);
+/// `init()` / `init_from_kinfo()` freeze the cell exactly once, before any
+/// CPU reads via `platform_desc()` — and strictly before `smp_init` wakes
+/// the first AP (kmain order), so the freeze happens-before every reader.
+static PLATFORM: Frozen<PlatformContext> = Frozen::new();
 
 /// Platform context — owns the descriptor.
 ///
@@ -183,11 +190,10 @@ impl PlatformDesc for PlatformDescEnum {
 /// After this call, all CPUs access the context read-only via
 /// [`platform_desc`].
 pub unsafe fn init(desc: PlatformDescEnum) {
-    // SAFETY: caller guarantees single-threaded boot context (BKL held,
-    // IRQs off, no other CPU running). This is the only write to PLATFORM.
-    unsafe {
-        *PLATFORM.get() = Some(PlatformContext { desc });
-    }
+    // The single freeze of PLATFORM (Release). Caller guarantees boot-phase
+    // single-threaded context; readers wake strictly later (kmain order:
+    // init_from_kinfo → … → smp_init wakes APs).
+    PLATFORM.freeze(PlatformContext { desc });
 }
 
 /// Initialize the global platform context from `KernelInfo`.
@@ -268,11 +274,7 @@ pub fn platform_desc() -> &'static dyn PlatformDesc {
     // SAFETY: after `init()` completes (single-threaded boot), the cell is
     // never mutated again. All CPUs read the `&'static` reference safely.
     // The returned reference is `&'static` because `PLATFORM` is a static.
-    unsafe {
-        (*PLATFORM.get())
-            .as_ref()
-            .expect("platform_desc() called before init_from_kinfo()")
-    }
+    PLATFORM.get()
 }
 
 #[cfg(test)]
