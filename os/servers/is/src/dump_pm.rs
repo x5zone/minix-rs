@@ -151,6 +151,104 @@ pub const fn alarm_left(alarm_on: bool, exp: u32, uptime: u32) -> Option<u32> {
     }
 }
 
+/// C: `ALARM_ON 0x10` — mproc.h:89 (sigaction alarm gate, dmp_pm.c:100).
+pub const ALARM_ON: u32 = 0x10;
+
+// ── render (V1-P1-3 execution face) ───────────────────────────────
+
+use crate::PCStr;
+use core::fmt;
+
+/// `mproc_dmp` row loop (dmp_pm.c:55-72): skip `pid == 0` except PM's own
+/// slot, `++n > 22` breaks (23rd candidate, not printed), `--more--\r`
+/// on break, wrap to 0 on exhaustion.
+pub fn render_mproc(
+    out: &mut dyn fmt::Write,
+    tab: &[MProcSnap],
+    cur: &mut PmCursor,
+) -> fmt::Result {
+    out.write_str(MPROC_TITLE)?;
+    out.write_str(MPROC_COLUMNS)?;
+    let mut exhausted = true;
+    for (i, mp) in tab.iter().enumerate() {
+        match cur.push(mp.mp_pid, i) {
+            PmAction::Skip => continue,
+            PmAction::More => {
+                out.write_str(MORE_CR)?;
+                exhausted = false;
+                break;
+            }
+            PmAction::Emit => {}
+        }
+        let parent_pid = tab
+            .get(mp.mp_parent as usize)
+            .map(|p| p.mp_pid)
+            .unwrap_or(0); // C reads mproc[parent] unguarded; a bad parent
+                           // index is a producer bug — render 0 instead of
+                           // panicking (deliberate hardening, documented).
+        write!(
+            out,
+            "{:<8.8} {:4}{:4}{:4}  {:5} {:5} {:5}  ",
+            PCStr(&mp.mp_name),
+            i as i32,
+            mp.mp_parent,
+            mp.mp_tracer,
+            mp.mp_pid,
+            parent_pid,
+            mp.mp_procgrp
+        )?;
+        write!(
+            out,
+            "{:2}({:2})  {:2}({:2})   ",
+            mp.mp_realuid as i32,
+            mp.mp_effuid as i32,
+            mp.mp_realgid as i32,
+            mp.mp_effgid as i32
+        )?;
+        writeln!(out, " {:3}  {}  ", mp.mp_nice, PCStr(&pm_flags_str(mp.mp_flags)))?;
+    }
+    cur.finish(exhausted);
+    Ok(())
+}
+
+/// `sigaction_dmp` (dmp_pm.c:74-110): same table + alarm countdown against
+/// `uptime` (C `getticks()`).
+pub fn render_sigaction(
+    out: &mut dyn fmt::Write,
+    tab: &[MProcSnap],
+    cur: &mut PmCursor,
+    uptime: u32,
+) -> fmt::Result {
+    out.write_str(SIGACTION_TITLE)?;
+    out.write_str(SIGACTION_COLUMNS)?;
+    let mut exhausted = true;
+    for (i, mp) in tab.iter().enumerate() {
+        match cur.push(mp.mp_pid, i) {
+            PmAction::Skip => continue,
+            PmAction::More => {
+                out.write_str(MORE_CR)?;
+                exhausted = false;
+                break;
+            }
+            PmAction::Emit => {}
+        }
+        write!(out, "{:<8.8}  {:3}  ", PCStr(&mp.mp_name), i as i32)?;
+        write!(
+            out,
+            " {:08x} {:08x} {:08x} ",
+            mp.mp_ignore0, mp.mp_catch0, mp.mp_sigmask0
+        )?;
+        write!(out, "{:08x}  ", mp.mp_sigpending0)?;
+        match alarm_left(mp.mp_flags & ALARM_ON != 0, mp.mp_timer_exp, uptime) {
+            Some(left) => write!(out, "{:8}", left)?,
+            None => out.write_str("       -")?,
+        }
+        out.write_str("\n")?;
+    }
+    cur.finish(exhausted);
+    Ok(())
+}
+
 /// C: `"Process manager (PM) process table dump\n"` — dmp_pm.c:52.
 pub const MPROC_TITLE: &str = "Process manager (PM) process table dump\n";
 /// C: dmp_pm.c:53.
@@ -168,6 +266,12 @@ pub const MORE_CR: &str = "--more--\r";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mp(pid: i32, name: &[u8]) -> MProcSnap {
+        let mut n = [0u8; 16];
+        n[..name.len()].copy_from_slice(name);
+        MProcSnap { mp_pid: pid, mp_name: n, mp_procgrp: 1, mp_nice: 0, ..Default::default() }
+    }
 
     #[test]
     fn test_flags_full_and_zero() {
@@ -234,5 +338,51 @@ mod tests {
         assert!(MPROC_COLUMNS.starts_with("-process- -nr-pnr-tnr-"));
         assert!(SIGACTION_COLUMNS.contains("--ignore- --catch- --block-"));
         assert_eq!(MORE_CR, "--more--\r");
+    }
+
+    #[test]
+    fn test_render_mproc_row_and_pagination() {
+        // C: dmp_pm.c:55-72 — %8.8s name, %4d slot/parent/tracer triplet,
+        // the parent's PID resolved through the table, %2d(%2d) uid/gid,
+        // %3d nice + 11-char flag code; pid-0 rows skipped except slot 0.
+        let mut tab = [MProcSnap::default(); 4];
+        tab[0] = mp(0, b"pm");
+        tab[1] = mp(1, b"init");
+        tab[2] = mp(0, b"");
+        tab[3] = mp(2, b"sh");
+        tab[3].mp_parent = 1;
+        let mut out = String::new();
+        let mut cur = PmCursor::new();
+        render_mproc(&mut out, &tab, &mut cur).unwrap();
+        // Header + 3 rows (slot 2 skipped) + trailing blank from the last \n.
+        assert_eq!(out.matches('\n').count(), 5, "title + columns + 3 rows");
+        // Name column (%8.8s) + slot triplet (%4d ×3).
+                // Segments (from the C printfs): %8.8s name + %4d triplet, the
+        // parent's PID resolved through the table, %2d(%2d) uid/gid,
+        // %3d nice + the 11-char flag code.
+        assert!(out.contains("pm          0   0   0      0     0     1"), "PM row (pid 0, own slot kept)");
+        assert!(out.contains("init        1   0   0      1     0     1"), "init row");
+        assert!(out.contains("sh          3   1   0      2     1     1"), "sh row: parent 1 → parent pid 1");
+        assert!(out.contains("   0( 0)   0( 0)      0  -----------  "), "uid/gid + nice + flags");
+        assert!(!out.contains("--more--"), "exhausted table wraps without the marker");
+        assert_eq!(cur.next(), 0, "exhaustion wraps to 0");
+    }
+
+    #[test]
+    fn test_render_sigaction_alarm_columns() {
+        // C: dmp_pm.c:93-104 — four %08x bitmaps + the alarm countdown
+        // (exp - uptime) or the dash placeholder.
+        let mut tab = [MProcSnap::default(); 1];
+        tab[0] = mp(1, b"clock");
+        tab[0].mp_flags = ALARM_ON;
+        tab[0].mp_timer_exp = 1100;
+        let mut out = String::new();
+        render_sigaction(&mut out, &tab, &mut PmCursor::new(), 1000).unwrap();
+        assert!(out.contains("clock       0   00000000 00000000 00000000 00000000       100\n"),
+            "ALARM_ON shows exp - uptime (1100-1000)");
+        let mut out2 = String::new();
+        tab[0].mp_flags = 0;
+        render_sigaction(&mut out2, &tab, &mut PmCursor::new(), 1000).unwrap();
+        assert!(out2.contains("       -\n"), "no alarm prints the dash placeholder");
     }
 }

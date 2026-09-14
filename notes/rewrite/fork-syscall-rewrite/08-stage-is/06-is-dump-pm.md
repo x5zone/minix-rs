@@ -116,6 +116,8 @@ C 的 64 位 TODO 原样继承，不解决（注释存证）。
 
 4 标题/列头常量；`run_dump` Mproc/Sigaction 臂续空。
 
+> **V1 执行轮更新（2026-09-15）**：`render_mproc`/`render_sigaction` 已实现（dump_pm.rs），`run_dump` 两臂接线；D5"体延后"翻转。配套：`ALARM_ON` 常量落地、uptime 经新增 `ClockTransport::uptime`（getticks 语义）。
+
 ---
 
 ## 4. 实现详解

@@ -9,6 +9,7 @@
 //! the `do_fkey_pressed` matching loop (dmp.c:89-95), `key_name`
 //! (dmp.c:103-117), `mapping_dmp` layout (dmp.c:118-132).
 
+use core::fmt;
 use minix_types::{EDONTREPLY, Endpoint};
 
 use crate::tty_fkey::FkeyId;
@@ -207,11 +208,43 @@ pub const fn key_name(key: FkeyId) -> &'static str {
 
 /// `mapping_dmp` title line. C: `printf("Function key mappings ...")` — dmp.c:123.
 pub const MAPPING_TITLE: &str = "Function key mappings for debug dumps in IS server.";
+/// `mapping_dmp` rule line. C: two printf calls printing 37 + 36 dashes and
+/// a final `\n` — dmp.c:125-126 (73 dashes total).
+pub const MAPPING_RULE: &str = "-------------------------------------------------------------------------\n";
 /// `mapping_dmp` column header. C: `printf("        Key   Description\n")` — dmp.c:124.
 pub const MAPPING_COLUMNS: &str = "        Key   Description";
 
+/// `mapping_dmp` (dmp.c:118-132): the dump's self-introduction — the hooks
+/// table printed with itself as the data.
+pub fn render_mapping(out: &mut dyn fmt::Write) -> fmt::Result {
+    writeln!(out, "{}", MAPPING_TITLE)?;
+    writeln!(out, "{}", MAPPING_COLUMNS)?;
+    out.write_str(MAPPING_RULE)?;
+    for hook in HOOKS {
+        writeln!(out, " {:>10}.  {}", key_name(hook.key), hook.name)?;
+    }
+    out.write_str("\n")
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::tty_fkey::FkeyId;
+
+    #[test]
+    fn test_render_mapping_lists_all_hooks() {
+        // C: dmp.c:118-132 — title, column header, rule, one row per hook,
+        // trailing blank.
+        let mut out = String::new();
+        render_mapping(&mut out).unwrap();
+        let lines: Vec<&str> = out.split('\n').collect();
+        assert_eq!(lines[0], MAPPING_TITLE);
+        assert_eq!(lines[1], MAPPING_COLUMNS);
+        assert_eq!(lines[2], MAPPING_RULE.trim_end_matches('\n'));
+        assert!(lines[18].starts_with("   Shift+F9.  Processes with stack traces"));
+        assert_eq!(lines[19], "");
+    }
+
+
     use super::*;
 
     fn tty_gen0() -> Endpoint {

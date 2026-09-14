@@ -204,6 +204,18 @@ pub trait VmInfoTransport {
     ) -> (i32, u64, i32);
 }
 
+/// Kernel clock channel.
+///
+/// C: `getticks()` — `minix3/minix/lib/libsys/getticks.c` reads
+/// `kerninfo->kclockinfo->uptime` (ticks since boot, wraps on overflow).
+/// minix-rs has no usermapped page (A-3); the production transport routes
+/// the equivalent kernel call (SYS_TIMES family). Consumer: 06
+/// (sigaction's alarm countdown, dmp_pm.c:78/101-102).
+pub trait ClockTransport {
+    /// Ticks since boot. C: `getticks()` — getticks.c:8-12.
+    fn uptime(&mut self) -> u32;
+}
+
 /// The five channels bundled for the orchestrator.
 ///
 /// The per-channel traits stay fine-grained (04 §3 D2: each dump domain
@@ -211,11 +223,25 @@ pub trait VmInfoTransport {
 /// all of them — holds one value behind this supertrait (RS `KernelApi`
 /// five-domain precedent, 03-stage-rs). Dump bodies never take this
 /// bundle: they are free functions over already-fetched snapshots.
-pub trait Acquires: SysGetinfoTransport + DiagctlTransport + KerninfoTransport + GetSysinfoTransport + VmInfoTransport {}
+pub trait Acquires:
+    SysGetinfoTransport
+    + DiagctlTransport
+    + KerninfoTransport
+    + GetSysinfoTransport
+    + VmInfoTransport
+    + ClockTransport
+{
+}
 
 impl<T> Acquires for T where
-    T: SysGetinfoTransport + DiagctlTransport + KerninfoTransport + GetSysinfoTransport + VmInfoTransport
-{}
+    T: SysGetinfoTransport
+        + DiagctlTransport
+        + KerninfoTransport
+        + GetSysinfoTransport
+        + VmInfoTransport
+        + ClockTransport
+{
+}
 
 /// Fail-closed bundle until the `minix-sys`/kernel wiring lands
 /// (01 `UnimplementedTransport` pattern).
@@ -290,6 +316,12 @@ impl GetSysinfoTransport for UnimplementedAcquires {
     }
 }
 
+impl ClockTransport for UnimplementedAcquires {
+    fn uptime(&mut self) -> u32 {
+        panic!("IS acquire: clock wiring pending (06 sigaction uptime; edge E-ISWIRE)");
+    }
+}
+
 impl VmInfoTransport for UnimplementedAcquires {
     fn vm_stats(&mut self, _out: &mut VmStatsSnap) -> i32 {
         panic!("IS acquire: vm_info wiring pending (04-is-data-acquisition.md §3 D2)");
@@ -309,8 +341,235 @@ impl VmInfoTransport for UnimplementedAcquires {
     }
 }
 
+/// Shared test double for orchestrator-level tests (lib.rs): fills
+/// outlets with recognisable values when the scripted status is OK, so
+/// dump-body tests assert rendered content, not just statuses.
+#[cfg(test)]
+pub(crate) mod fake {
+    use super::*;
+    use minix_types::OK;
+
+/// Scriptable fake for all five channels: fills outputs with
+/// recognisable values when the scripted status is OK, so body tests
+/// can assert on rendered content, not just statuses.
+pub(crate) struct FakeAcquires {
+    pub(crate) getinfo_status: i32,
+    pub(crate) diag_status: i32,
+    pub(crate) kmessages_status: i32,
+    pub(crate) getsys_status: i32,
+    pub(crate) vm_status: i32,
+    pub(crate) region_answer: (i32, u64, i32),
+    pub(crate) uptime_ticks: u32,
+    pub(crate) seen: Vec<&'static str>,
+}
+
+impl FakeAcquires {
+    pub(crate) fn ok() -> Self {
+        Self {
+            getinfo_status: OK,
+            diag_status: OK,
+            kmessages_status: OK,
+            getsys_status: OK,
+            vm_status: OK,
+            region_answer: (OK, 0, 3),
+            uptime_ticks: 1000,
+            seen: Vec::new(),
+        }
+    }
+
+}
+
+impl SysGetinfoTransport for FakeAcquires {
+    fn get_kinfo(&mut self, out: &mut KinfoSnap) -> i32 {
+        self.seen.push("kinfo");
+        if self.getinfo_status == OK {
+            *out = KinfoSnap::default();
+        }
+        self.getinfo_status
+    }
+
+    fn get_image(&mut self, out: &mut [BootImageSnap]) -> i32 {
+        self.seen.push("image");
+        if self.getinfo_status == OK {
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = BootImageSnap { proc_nr: i as i32, ..Default::default() };
+            }
+        }
+        self.getinfo_status
+    }
+
+    fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32 {
+        self.seen.push("proctab");
+        if self.getinfo_status == OK {
+            for (i, slot) in out.iter_mut().enumerate() {
+                slot.p_nr = i as i32;
+            }
+        }
+        self.getinfo_status
+    }
+
+    fn get_monparams(&mut self, out: &mut [u8]) -> i32 {
+        self.seen.push("monparams");
+        if self.getinfo_status == OK && out.len() >= 3 {
+            out[..3].copy_from_slice(b"ab\n");
+        }
+        self.getinfo_status
+    }
+
+    fn get_irqhooks(&mut self, out: &mut [IrqHookSnap]) -> i32 {
+        self.seen.push("irqhooks");
+        if self.getinfo_status == OK {
+            for slot in out.iter_mut() {
+                *slot = IrqHookSnap::default();
+            }
+        }
+        self.getinfo_status
+    }
+
+    fn get_irqactids(&mut self, out: &mut [i32]) -> i32 {
+        self.seen.push("irqactids");
+        if self.getinfo_status == OK {
+            for slot in out.iter_mut() {
+                *slot = 0;
+            }
+        }
+        self.getinfo_status
+    }
+
+    fn get_privtab(&mut self, out: &mut [KPrivSnap]) -> i32 {
+        self.seen.push("privtab");
+        if self.getinfo_status == OK {
+            for slot in out.iter_mut() {
+                *slot = KPrivSnap::default();
+            }
+        }
+        self.getinfo_status
+    }
+}
+
+impl DiagctlTransport for FakeAcquires {
+    fn stacktrace(&mut self, _proc: Endpoint) -> i32 {
+        self.seen.push("stacktrace");
+        self.diag_status
+    }
+}
+
+impl KerninfoTransport for FakeAcquires {
+    fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
+        self.seen.push("kmessages");
+        if self.kmessages_status == OK {
+            *meta = KmessagesSnap { km_next: 0, km_size: 0 };
+            for b in ring.iter_mut() {
+                *b = 0;
+            }
+        }
+        self.kmessages_status
+    }
+}
+
+impl GetSysinfoTransport for FakeAcquires {
+    fn pm_proc_tab(&mut self, out: &mut [MProcSnap]) -> i32 {
+        self.seen.push("pm_proc_tab");
+        if self.getsys_status == OK {
+            for (i, slot) in out.iter_mut().enumerate() {
+                slot.mp_pid = i as i32;
+            }
+        }
+        self.getsys_status
+    }
+
+    fn vfs_proc_tab(&mut self, out: &mut [FProcSnap]) -> i32 {
+        self.seen.push("vfs_proc_tab");
+        if self.getsys_status == OK {
+            for (i, slot) in out.iter_mut().enumerate() {
+                slot.fp_pid = i as i32;
+            }
+        }
+        self.getsys_status
+    }
+
+    fn vfs_dmap_tab(&mut self, out: &mut [DmapSnap]) -> i32 {
+        self.seen.push("vfs_dmap_tab");
+        if self.getsys_status == OK {
+            for slot in out.iter_mut() {
+                *slot = DmapSnap::default();
+            }
+        }
+        self.getsys_status
+    }
+
+    fn rs_tables(
+        &mut self,
+        pub_out: &mut [RprocpubSnap],
+        priv_out: &mut [RprocSnap],
+    ) -> i32 {
+        self.seen.push("rs_tables");
+        if self.getsys_status == OK {
+            for slot in pub_out.iter_mut() {
+                *slot = RprocpubSnap::default();
+            }
+            for slot in priv_out.iter_mut() {
+                *slot = RprocSnap::default();
+            }
+        }
+        self.getsys_status
+    }
+
+    fn ds_data_store(&mut self, out: &mut [DsEntrySnap]) -> i32 {
+        self.seen.push("ds_data_store");
+        if self.getsys_status == OK {
+            for slot in out.iter_mut() {
+                *slot = DsEntrySnap::default();
+            }
+        }
+        self.getsys_status
+    }
+}
+
+impl crate::acquire::ClockTransport for FakeAcquires {
+    fn uptime(&mut self) -> u32 {
+        self.seen.push("uptime");
+        self.uptime_ticks
+    }
+}
+
+impl VmInfoTransport for FakeAcquires {
+    fn vm_stats(&mut self, out: &mut VmStatsSnap) -> i32 {
+        self.seen.push("vm_stats");
+        if self.vm_status == OK {
+            *out = VmStatsSnap::default();
+        }
+        self.vm_status
+    }
+
+    fn vm_usage(&mut self, _who: Endpoint, out: &mut VmUsageSnap) -> i32 {
+        self.seen.push("vm_usage");
+        if self.vm_status == OK {
+            *out = VmUsageSnap::default();
+        }
+        self.vm_status
+    }
+
+    fn vm_region(
+        &mut self,
+        _who: Endpoint,
+        out: &mut [VmRegionSnap],
+        _next: u64,
+    ) -> (i32, u64, i32) {
+        self.seen.push("vm_region");
+        if self.region_answer.0 == OK {
+            for slot in out.iter_mut() {
+                *slot = VmRegionSnap::default();
+            }
+        }
+        let count = self.region_answer.2.min(out.len() as i32);
+        (self.region_answer.0, self.region_answer.1, count)
+    }
+}
+}
 #[cfg(test)]
 mod tests {
+    use super::fake::FakeAcquires;
     use super::*;
     use minix_types::{DIAGCTL_CODE_STACKTRACE, OK};
 
@@ -337,219 +596,6 @@ mod tests {
         assert_eq!(getsysinfo_call(Endpoint::DS), DS_GETSYSINFO);
         assert_eq!(getsysinfo_call(Endpoint::TTY), minix_types::ENOSYS);
         assert_eq!(getsysinfo_call(Endpoint::VM), minix_types::ENOSYS);
-    }
-
-    /// Scriptable fake for all five channels: fills outputs with
-    /// recognisable values when the scripted status is OK, so body tests
-    /// can assert on rendered content, not just statuses.
-    struct FakeAcquires {
-        getinfo_status: i32,
-        diag_status: i32,
-        kmessages_status: i32,
-        getsys_status: i32,
-        vm_status: i32,
-        region_answer: (i32, u64, i32),
-        pub seen: Vec<&'static str>,
-    }
-
-    impl FakeAcquires {
-        fn ok() -> Self {
-            Self {
-                getinfo_status: OK,
-                diag_status: OK,
-                kmessages_status: OK,
-                getsys_status: OK,
-                vm_status: OK,
-                region_answer: (OK, 0, 3),
-                seen: Vec::new(),
-            }
-        }
-
-        fn fill(channel: &str, ok: i32) -> i32 {
-            let _ = (channel, ok);
-            OK
-        }
-    }
-
-    impl SysGetinfoTransport for FakeAcquires {
-        fn get_kinfo(&mut self, out: &mut KinfoSnap) -> i32 {
-            self.seen.push("kinfo");
-            if self.getinfo_status == OK {
-                *out = KinfoSnap::default();
-            }
-            self.getinfo_status
-        }
-
-        fn get_image(&mut self, out: &mut [BootImageSnap]) -> i32 {
-            self.seen.push("image");
-            if self.getinfo_status == OK {
-                for (i, slot) in out.iter_mut().enumerate() {
-                    *slot = BootImageSnap { proc_nr: i as i32, ..Default::default() };
-                }
-            }
-            self.getinfo_status
-        }
-
-        fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32 {
-            self.seen.push("proctab");
-            if self.getinfo_status == OK {
-                for (i, slot) in out.iter_mut().enumerate() {
-                    slot.p_nr = i as i32;
-                }
-            }
-            self.getinfo_status
-        }
-
-        fn get_monparams(&mut self, out: &mut [u8]) -> i32 {
-            self.seen.push("monparams");
-            if self.getinfo_status == OK && out.len() >= 3 {
-                out[..3].copy_from_slice(b"ab\n");
-            }
-            self.getinfo_status
-        }
-
-        fn get_irqhooks(&mut self, out: &mut [IrqHookSnap]) -> i32 {
-            self.seen.push("irqhooks");
-            if self.getinfo_status == OK {
-                for slot in out.iter_mut() {
-                    *slot = IrqHookSnap::default();
-                }
-            }
-            self.getinfo_status
-        }
-
-        fn get_irqactids(&mut self, out: &mut [i32]) -> i32 {
-            self.seen.push("irqactids");
-            if self.getinfo_status == OK {
-                for slot in out.iter_mut() {
-                    *slot = 0;
-                }
-            }
-            self.getinfo_status
-        }
-
-        fn get_privtab(&mut self, out: &mut [KPrivSnap]) -> i32 {
-            self.seen.push("privtab");
-            if self.getinfo_status == OK {
-                for slot in out.iter_mut() {
-                    *slot = KPrivSnap::default();
-                }
-            }
-            self.getinfo_status
-        }
-    }
-
-    impl DiagctlTransport for FakeAcquires {
-        fn stacktrace(&mut self, _proc: Endpoint) -> i32 {
-            self.seen.push("stacktrace");
-            self.diag_status
-        }
-    }
-
-    impl KerninfoTransport for FakeAcquires {
-        fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
-            self.seen.push("kmessages");
-            if self.kmessages_status == OK {
-                *meta = KmessagesSnap { km_next: 0, km_size: 0 };
-                for b in ring.iter_mut() {
-                    *b = 0;
-                }
-            }
-            self.kmessages_status
-        }
-    }
-
-    impl GetSysinfoTransport for FakeAcquires {
-        fn pm_proc_tab(&mut self, out: &mut [MProcSnap]) -> i32 {
-            self.seen.push("pm_proc_tab");
-            if self.getsys_status == OK {
-                for (i, slot) in out.iter_mut().enumerate() {
-                    slot.mp_pid = i as i32;
-                }
-            }
-            self.getsys_status
-        }
-
-        fn vfs_proc_tab(&mut self, out: &mut [FProcSnap]) -> i32 {
-            self.seen.push("vfs_proc_tab");
-            if self.getsys_status == OK {
-                for (i, slot) in out.iter_mut().enumerate() {
-                    slot.fp_pid = i as i32;
-                }
-            }
-            self.getsys_status
-        }
-
-        fn vfs_dmap_tab(&mut self, out: &mut [DmapSnap]) -> i32 {
-            self.seen.push("vfs_dmap_tab");
-            if self.getsys_status == OK {
-                for slot in out.iter_mut() {
-                    *slot = DmapSnap::default();
-                }
-            }
-            self.getsys_status
-        }
-
-        fn rs_tables(
-            &mut self,
-            pub_out: &mut [RprocpubSnap],
-            priv_out: &mut [RprocSnap],
-        ) -> i32 {
-            self.seen.push("rs_tables");
-            if self.getsys_status == OK {
-                for slot in pub_out.iter_mut() {
-                    *slot = RprocpubSnap::default();
-                }
-                for slot in priv_out.iter_mut() {
-                    *slot = RprocSnap::default();
-                }
-            }
-            self.getsys_status
-        }
-
-        fn ds_data_store(&mut self, out: &mut [DsEntrySnap]) -> i32 {
-            self.seen.push("ds_data_store");
-            if self.getsys_status == OK {
-                for slot in out.iter_mut() {
-                    *slot = DsEntrySnap::default();
-                }
-            }
-            self.getsys_status
-        }
-    }
-
-    impl VmInfoTransport for FakeAcquires {
-        fn vm_stats(&mut self, out: &mut VmStatsSnap) -> i32 {
-            self.seen.push("vm_stats");
-            if self.vm_status == OK {
-                *out = VmStatsSnap::default();
-            }
-            self.vm_status
-        }
-
-        fn vm_usage(&mut self, _who: Endpoint, out: &mut VmUsageSnap) -> i32 {
-            self.seen.push("vm_usage");
-            if self.vm_status == OK {
-                *out = VmUsageSnap::default();
-            }
-            self.vm_status
-        }
-
-        fn vm_region(
-            &mut self,
-            _who: Endpoint,
-            out: &mut [VmRegionSnap],
-            _next: u64,
-        ) -> (i32, u64, i32) {
-            self.seen.push("vm_region");
-            if self.region_answer.0 == OK {
-                for slot in out.iter_mut() {
-                    *slot = VmRegionSnap::default();
-                }
-            }
-            let count = self.region_answer.2.min(out.len() as i32);
-            (self.region_answer.0, self.region_answer.1, count)
-        }
     }
 
     #[test]
@@ -608,6 +654,5 @@ mod tests {
         // C: com.h:413. The stacktrace method fixes the code internally;
         // the constant stays imported so the wire value is asserted once.
         assert_eq!(DIAGCTL_CODE_STACKTRACE, 2);
-        let _ = FakeAcquires::fill("unused helper", OK);
     }
 }

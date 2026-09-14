@@ -207,6 +207,200 @@ pub const VM_WIPE_LINE: &str = "        \n";
 /// a named constant so the defense stays greppable.
 pub const VM_INTERNAL_ERROR: &str = "IS: internal error\n";
 
+// ── render (V1-P1-3 execution face) ───────────────────────────────
+
+use crate::acquire::VmInfoTransport;
+use crate::dump_kernel::{KProcSnap, NR_TASKS, RTS_SLOT_FREE};
+use crate::PCStr;
+use core::fmt;
+use minix_types::{Endpoint, OK};
+
+/// C: `printf("--more--\r")` — dmp_vm.c:144.
+pub const MORE_CR_VM: &str = "--more--\r";
+
+/// Writes one region line. C: `print_region` tail — dmp_vm.c:38-49
+/// (`"  %08lx-%08lx %c%c%c (%lu kB)\n"`).
+fn write_region_line(out: &mut dyn fmt::Write, vri: &VmRegionSnap) -> fmt::Result {
+    let [r, w, x] = prot_chars(vri.vri_prot);
+    writeln!(
+        out,
+        "  {:08x}-{:08x} {}{}{} ({})",
+        vri.vri_addr,
+        vri.vri_addr + vri.vri_length,
+        r as char,
+        w as char,
+        x as char,
+        vri.vri_length / 1024
+    )
+}
+
+/// Writes the contiguous-repeat line. C: dmp_vm.c:29-33.
+fn write_repeat_line(out: &mut dyn fmt::Write, count: u32) -> fmt::Result {
+    writeln!(out, "  (contiguously repeated {} more times)", count)
+}
+
+/// Drives the fold for one region (`None` = end of list). C's
+/// `print_region` flushes the repeat count and prints the current region
+/// in the same call; [`FoldState`] is single-step, so the caller loops
+/// (documented contract — doc 10 §3 D2).
+fn feed_region(
+    out: &mut dyn fmt::Write,
+    fold: &mut FoldState,
+    vri: Option<&VmRegionSnap>,
+    n: &mut u32,
+) -> fmt::Result {
+    loop {
+        match fold.push(vri) {
+            FoldAction::Buffered => return Ok(()),
+            FoldAction::FlushEnd => return Ok(()),
+            FoldAction::FlushRepeat(c) => {
+                write_repeat_line(out, c)?;
+                *n += 1;
+            }
+            FoldAction::FlushRegion => {
+                if let Some(v) = vri {
+                    write_region_line(out, v)?;
+                    *n += 1;
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// `vm_dmp` (dmp_vm.c:54-157). The one body that cannot be fetch-then-
+/// render: region batches are pulled per process mid-loop, so this render
+/// holds the transport. State = proctab copy + [`FoldState`] +
+/// [`BatchCursor`], all carried across key presses like the C statics.
+pub fn render_vm(
+    out: &mut dyn fmt::Write,
+    tab: &[KProcSnap],
+    acq: &mut dyn VmInfoTransport,
+    fold: &mut FoldState,
+    cur: &mut BatchCursor,
+) -> fmt::Result {
+    let mut n: u32 = 0;
+
+    // First press opens with the system stats screen (dmp_vm.c:56-80).
+    if !cur.first_screen_done() {
+        let mut vsi = VmStatsSnap::default();
+        let r = acq.vm_stats(&mut vsi);
+        if r != OK {
+            writeln!(out, "IS: warning: couldn't talk to VM: {r}")?;
+            return Ok(());
+        }
+        let page_k = (vsi.vsi_pagesize / 1024) as u64;
+        writeln!(
+            out,
+            "Total {} kB, free {} kB, largest free {} kB, cached {} kB",
+            vsi.vsi_total * page_k,
+            vsi.vsi_free * page_k,
+            vsi.vsi_largest * page_k,
+            vsi.vsi_cached * page_k
+        )?;
+        n += 1;
+        writeln!(out)?;
+        n += 1;
+        cur.prev_i += 1;
+    }
+
+    let mut vri = [VmRegionSnap::default(); VM_LINES as usize];
+
+    let mut i = cur.prev_i;
+    while (i as usize) < tab.len() && n < VM_LINES {
+        if (i as usize) < NR_TASKS as usize || tab[i as usize].p_rts_flags == RTS_SLOT_FREE {
+            i += 1;
+            cur.prev_base = 0;
+            continue;
+        }
+        let p = &tab[i as usize];
+        let first = cur.is_first_batch();
+
+        // Region batch #1 for this process (dmp_vm.c:92-94).
+        let cap = (VM_LINES as usize) - if first { 0 } else { 1 };
+        let (r, next, count) = acq.vm_region(Endpoint(p.p_endpoint), &mut vri[..cap], cur.prev_base);
+        if r < 0 {
+            writeln!(out, "Process {} ({}): error {}", p.p_endpoint, PCStr(&p.p_name), r)?;
+            n += 1;
+            i += 1;
+            cur.prev_base = 0;
+            continue;
+        }
+        cur.prev_base = next;
+        let mut r = count;
+
+        // The whole first batch (header + rows) must fit on the screen;
+        // otherwise restart this process on the next page (dmp_vm.c:96-100).
+        if first {
+            if n + 1 + r as u32 > VM_LINES {
+                cur.prev_base = 0;
+                break;
+            }
+            let mut vui = VmUsageSnap::default();
+            let r2 = acq.vm_usage(Endpoint(p.p_endpoint), &mut vui);
+            if r2 != OK {
+                writeln!(out, "Process {} ({}): error {}", p.p_endpoint, PCStr(&p.p_name), r2)?;
+                n += 1;
+                i += 1;
+                cur.prev_base = 0;
+                continue;
+            }
+            writeln!(
+                out,
+                "Process {} ({}): total {} kB, common {} kB, shared {} kB",
+                p.p_endpoint,
+                PCStr(&p.p_name),
+                vui.vui_total / 1024,
+                vui.vui_common / 1024,
+                vui.vui_shared / 1024
+            )?;
+            n += 1;
+        }
+
+        // Region batches until the screen fills (dmp_vm.c:118-138).
+        while r > 0 {
+            for v in vri.iter().take(r as usize) {
+                feed_region(out, fold, Some(v), &mut n)?;
+            }
+            if VM_LINES as i32 - n as i32 - 1 <= 0 {
+                break;
+            }
+            let cap = (VM_LINES as i32 - n as i32 - 1).max(0) as usize;
+            let (st, next, count) = acq.vm_region(Endpoint(p.p_endpoint), &mut vri[..cap], cur.prev_base);
+            if st < 0 {
+                writeln!(out, "Process {} ({}): error {}", p.p_endpoint, PCStr(&p.p_name), st)?;
+                n += 1;
+                break;
+            }
+            cur.prev_base = next;
+            r = count;
+        }
+        feed_region(out, fold, None, &mut n)?;
+
+        if n > VM_LINES {
+            writeln!(out, "{}", VM_INTERNAL_ERROR)?;
+        }
+        if n == VM_LINES {
+            break;
+        }
+
+        // May wipe the "--more--" from below (dmp_vm.c:136-137).
+        out.write_str(VM_WIPE_LINE)?;
+        n += 1;
+        i += 1;
+        cur.prev_base = 0;
+    }
+
+    if i as usize >= tab.len() {
+        cur.prev_i = -1;
+        cur.prev_base = 0;
+    } else {
+        out.write_str(MORE_CR_VM)?;
+    }
+    cur.prev_i = i;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

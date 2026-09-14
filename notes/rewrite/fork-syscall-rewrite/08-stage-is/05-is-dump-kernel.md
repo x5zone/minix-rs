@@ -237,6 +237,8 @@ C 越界赌注不继承：`out` 满即停（注释存证为 deliberate hardening
 8 体待输出通道；`run_dump` 续空；本篇交付格式常量 12 项（8 标题/列头 +
 MORE/UNUSED/REENABLE/SIZE）逐字锁定。
 
+> **V1 执行轮更新（2026-09-15）**：八个体已实现——`render_proctab`/`render_privileges`/`render_procstack`/`render_image`/`render_irqtab`/`render_kenv`/`render_kmessages`/`render_monparams`（dump_kernel.rs），`run_dump` 八臂接线；D7 的"体延后"自此翻转。配套：`KPrivSnap` 增 `s_ipc_to`/`s_k_call_mask` 位图字（privileges 列打印需要，A-4 契约随之扩展）、新增表长常量（NR_BOOT_PROCS=17、NR_SYS_CALLS=58、USER_PRIV_ID=16 等）、PCStr 字节串 Display（lib.rs）。
+
 ---
 
 ## 4. 实现详解

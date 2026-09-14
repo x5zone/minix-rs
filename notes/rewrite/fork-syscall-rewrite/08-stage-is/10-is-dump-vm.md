@@ -126,6 +126,8 @@ fits_first_batch`（容量预检含 `prev_base = 0` 重置副作用——C 同�
 
 5 常量词；`run_dump` Vm 臂续空。
 
+> **V1 执行轮更新（2026-09-15）**：`render_vm` 已实现（dump_vm.rs），D5"体延后"翻转。VM 体是唯一"渲染中取数"形态（region 批在循环内经 `VmInfoTransport` 拉取——C 同构），其余域保持"先取后渲"。
+
 ---
 
 ## 4. 实现详解

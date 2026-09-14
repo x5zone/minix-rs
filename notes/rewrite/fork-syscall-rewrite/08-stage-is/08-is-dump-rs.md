@@ -80,6 +80,8 @@ const.h:18）**不进快照**（输出层直读源缓冲，§3 D1）。`[ARCH: A
 
 `rproc_in_use` + 格式常量逐字；`run_dump` Rproc 臂续空（A-6）。
 
+> **V1 执行轮更新（2026-09-15）**：`render_rproc` 已实现，D3"体延后"翻转。契约修订：`RprocSnap` 增 `r_args[512]`（dmp_rs.c:64 尾列 `%s` 打的就是命令串——原"不进快照"决策与执行面冲突，A-4 契约扩展）；新增 `RsCursor`（IN_USE 跳过形态，第四游标）；接线暴露 `push` 的 bool 二义（跳过 vs 满页不可区分），rs 侧以调用方先过滤 IN_USE 解决。
+
 ---
 
 ## 4. 实现详解

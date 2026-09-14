@@ -101,6 +101,8 @@ fproc `<=0` 无例外（06 对照）；`VfsCursor` 独立新类型（06 已 CONV
 
 5 标题/列头/nil 常量；`run_dump` Fproc/Dtab 臂续空。
 
+> **V1 执行轮更新（2026-09-15）**：`render_fproc`/`render_dtab` 已实现，D5"体延后"翻转。契约随执行面修订：`FProcSnap` 增 `nfds`（producer 侧计数，D2 的 count_fds 随之删除）与 `fp_cdev_endpt`；`VfsCursor::push` 的 bool 返回值无法区分"跳过"与"满页"（接线时暴露），改为三态 `VfsAction`；新增 `major_of`/`minor_of`（dev_t 拆分）。vfs 域测试 +3。
+
 ---
 
 ## 4. 实现详解

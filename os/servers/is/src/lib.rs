@@ -25,14 +25,19 @@ pub mod state;
 pub mod tty_fkey;
 
 pub use acquire::{
-    Acquires, DiagctlTransport, GetSysinfoTransport, KerninfoTransport, SiWhat,
+    Acquires, ClockTransport, DiagctlTransport, GetSysinfoTransport, KerninfoTransport, SiWhat,
     SysGetinfoTransport, UnimplementedAcquires, VmInfoTransport, getsysinfo_call,
 };
 pub use dispatch::{
-    DispatchAction, DumpId, Hook, HOOKS, MAPPING_COLUMNS, MAPPING_TITLE, classify, dispatch_each,
-    is_notify_call, is_reply_suppressed, key_name, pressed,
+    DispatchAction, DumpId, Hook, HOOKS, MAPPING_COLUMNS, MAPPING_RULE, MAPPING_TITLE, classify,
+    dispatch_each, is_notify_call, is_reply_suppressed, key_name, pressed, render_mapping,
 };
+pub use dump_ds::{DsCursor, render_data_store};
 pub use dump_kernel::{PageAction, PageCursor};
+pub use dump_pm::{PmAction, PmCursor, render_mproc, render_sigaction};
+pub use dump_rs::{RsCursor, render_rproc};
+pub use dump_vfs::{VfsCursor, render_dtab, render_fproc};
+pub use dump_vm::{BatchCursor, FoldState, render_vm};
 pub use sef::{
     LifecycleAction, SefCallbacks, SefInitInfo, SefInitType, SefTransport, SIGTERM,
     UnimplementedTransport,
@@ -43,7 +48,64 @@ pub use tty_fkey::{
     pull_events,
 };
 
+use core::fmt;
+use core::fmt::Write as _;
 use minix_types::{EDONTREPLY, Errno, OK};
+
+/// A NUL-terminated C byte string rendered through format specs.
+///
+/// Dump rows print process/table names with C semantics: the `%s` family
+/// (`%-7.7s`, `%8s`, `%.6s`) carries width, precision (truncate) and
+/// alignment. Bytes render 1:1 as chars (ASCII names unchanged; stray high
+/// bytes become U+0080..U+00FF instead of failing UTF-8), so character
+/// counts match C's byte counts and column widths hold. Alignment defaults
+/// to right like C's `%s`; `Left` comes from the `-` flag.
+pub struct PCStr<'a>(pub &'a [u8]);
+
+impl fmt::Display for PCStr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let end = self.0.iter().position(|&b| b == 0).unwrap_or(self.0.len());
+        let mut len = end;
+        if let Some(p) = f.precision() {
+            len = len.min(p);
+        }
+        let align_left = f.align() == Some(fmt::Alignment::Left);
+        let pad = f.width().unwrap_or(0).saturating_sub(len);
+        if !align_left {
+            for _ in 0..pad {
+                f.write_char(' ')?;
+            }
+        }
+        for &b in &self.0[..len] {
+            f.write_char(b as char)?;
+        }
+        if align_left {
+            for _ in 0..pad {
+                f.write_char(' ')?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Per-dump pagination cursors (the C statics, instanced).
+///
+/// C: `oldrp` per dump (dmp_kernel.c:256/324/364) — one cursor instance per
+/// dump so a mid-table `--more--` breakpoint survives across key presses.
+/// Peer-server cursors join as their domains land (06~10 execution pass).
+#[derive(Debug, Default)]
+struct DumpState {
+    privileges: PageCursor,
+    proctab: PageCursor,
+    procstack: PageCursor,
+    pm_table: PmCursor,
+    sigaction: PmCursor,
+    vfs: VfsCursor,
+    rs: RsCursor,
+    ds: DsCursor,
+    vm_batch: BatchCursor,
+    vm_fold: FoldState,
+}
 
 /// The IS server orchestrator.
 ///
@@ -66,16 +128,21 @@ pub struct IsServer<T: SefTransport, F: FkeyCtlTransport, A: Acquires> {
     state: IsServerState,
     transport: T,
     fkey: F,
-    // Read starting with the 05~10 execution pass; until those arms land
-    // run_dump has no fetch to route (forward reference, not dead weight).
-    #[allow(dead_code)]
     acquires: A,
+    /// Pagination cursors surviving across key presses (C statics).
+    dump_state: DumpState,
 }
 
 impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     /// Creates the server over injected transports (tests / wiring).
     pub fn new(transport: T, fkey: F, acquires: A) -> Self {
-        Self { state: IsServerState::new(), transport, fkey, acquires }
+        Self {
+            state: IsServerState::new(),
+            transport,
+            fkey,
+            acquires,
+            dump_state: DumpState::default(),
+        }
     }
 
     /// Runs SEF startup and the fresh-boot init (the boot anchor).
@@ -139,10 +206,224 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     /// Executes one matched dump.
     ///
     /// C dump bodies return void (dmp.c) — there is no error to propagate.
-    /// Each arm fetches its snapshots through [`IsServer::acquires`], grabs
-    /// the diagnostic sink ([`SefTransport::diag_out`], A-6) and renders;
-    /// the arms land with the 05~10 execution pass (run_dump bodies todo).
-    fn run_dump(&mut self, _dump: DumpId) {}
+    /// Each arm fetches fresh snapshots through [`IsServer::acquires`] and
+    /// renders through the diagnostic sink ([`SefTransport::diag_out`],
+    /// A-6); fetch failure warns and returns (04 §2.6 — C printf strings
+    /// kept verbatim). Stack buffers size to the C tables the transport
+    /// must fill (261-entry proc table ≈ 15 KB worst arm — a wiring-time
+    /// footprint note for E-ISWIRE, C keeps the same tables in BSS).
+    fn run_dump(&mut self, dump: DumpId) {
+        use dump_ds::DsEntrySnap;
+        use dump_kernel::{
+            BootImageSnap, IrqHookSnap, KProcSnap, KPrivSnap, KinfoSnap, KmessagesSnap,
+            MULTIBOOT_PARAM_BUF, NR_BOOT_PROCS, NR_IRQ_HOOKS, PROC_TABLE_LEN,
+            render_image, render_irqtab, render_kenv, render_kmessages, render_monparams,
+            render_privileges, render_proctab, render_procstack,
+        };
+        use dump_pm::MProcSnap;
+        use dump_rs::{RprocSnap, RprocpubSnap};
+        use dump_vfs::{DmapSnap, FProcSnap, NR_DEVICES};
+        let out = self.transport.diag_out();
+        match dump {
+            DumpId::Proctab => {
+                let mut tab = [KProcSnap::default(); PROC_TABLE_LEN];
+                let r = self.acquires.get_proctab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of process table: {r}"
+                    );
+                    return;
+                }
+                let _ = render_proctab(out, &tab, &mut self.dump_state.proctab);
+            }
+            DumpId::Procstack => {
+                let mut tab = [KProcSnap::default(); PROC_TABLE_LEN];
+                let r = self.acquires.get_proctab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of process table: {r}"
+                    );
+                    return;
+                }
+                let _ = render_procstack(
+                    out,
+                    &tab,
+                    &mut self.dump_state.procstack,
+                    &mut self.acquires,
+                );
+            }
+            DumpId::Privileges => {
+                let mut privs = [KPrivSnap::default(); dump_kernel::NR_SYS_PROCS];
+                let r = self.acquires.get_privtab(&mut privs);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of system privileges table: {r}"
+                    );
+                    return;
+                }
+                let mut tab = [KProcSnap::default(); PROC_TABLE_LEN];
+                let r = self.acquires.get_proctab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of process table: {r}"
+                    );
+                    return;
+                }
+                let _ = render_privileges(
+                    out,
+                    &privs,
+                    &tab,
+                    &mut self.dump_state.privileges,
+                );
+            }
+            DumpId::Image => {
+                let mut image = [BootImageSnap::default(); NR_BOOT_PROCS];
+                let r = self.acquires.get_image(&mut image);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of image table: {r}"
+                    );
+                    return;
+                }
+                let _ = render_image(out, &image);
+            }
+            DumpId::Irqtab => {
+                let mut hooks = [IrqHookSnap::default(); NR_IRQ_HOOKS];
+                let r = self.acquires.get_irqhooks(&mut hooks);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of irq hooks: {r}"
+                    );
+                    return;
+                }
+                let mut actids = [0i32; NR_IRQ_HOOKS];
+                let r = self.acquires.get_irqactids(&mut actids);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of irq mask: {r}"
+                    );
+                    return;
+                }
+                let _ = render_irqtab(out, &hooks, &actids);
+            }
+            DumpId::Kmessages => {
+                let mut meta = KmessagesSnap::default();
+                let mut ring = [0u8; dump_kernel::KMESS_BUF_SIZE as usize];
+                let r = self.acquires.kmessages(&mut meta, &mut ring);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of kernel messages: {r}"
+                    );
+                    return;
+                }
+                let _ = render_kmessages(out, &meta, &ring);
+            }
+            DumpId::Monparams => {
+                let mut blob = [0u8; MULTIBOOT_PARAM_BUF];
+                let r = self.acquires.get_monparams(&mut blob);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of monitor params: {r}"
+                    );
+                    return;
+                }
+                let _ = render_monparams(out, &blob);
+            }
+            DumpId::Kenv => {
+                let mut kinfo = KinfoSnap::default();
+                let r = self.acquires.get_kinfo(&mut kinfo);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of kernel info struct: {r}"
+                    );
+                    return;
+                }
+                let _ = render_kenv(out, &kinfo);
+            }
+            DumpId::Mproc | DumpId::Sigaction => {
+                let mut tab = [MProcSnap::default(); dump_kernel::NR_PROCS as usize];
+                let r = self.acquires.pm_proc_tab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(out, "Error obtaining table from PM. Perhaps recompile IS?");
+                    return;
+                }
+                if dump == DumpId::Mproc {
+                    let _ = render_mproc(out, &tab, &mut self.dump_state.pm_table);
+                } else {
+                    let uptime = self.acquires.uptime();
+                    let _ = render_sigaction(out, &tab, &mut self.dump_state.sigaction, uptime);
+                }
+            }
+            DumpId::Fproc => {
+                let mut tab = [FProcSnap::default(); dump_kernel::NR_PROCS as usize];
+                let r = self.acquires.vfs_proc_tab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(out, "Error obtaining table from VFS. Perhaps recompile IS?");
+                    return;
+                }
+                let _ = render_fproc(out, &tab, &mut self.dump_state.vfs);
+            }
+            DumpId::Dtab => {
+                let mut tab = [DmapSnap::default(); NR_DEVICES];
+                let r = self.acquires.vfs_dmap_tab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(out, "Error obtaining table from VFS. Perhaps recompile IS?");
+                    return;
+                }
+                let _ = render_dtab(out, &tab);
+            }
+            DumpId::Rproc => {
+                let mut pubt = [RprocpubSnap::default(); dump_rs::RS_TABLE_LEN];
+                let mut privt = [RprocSnap::default(); dump_rs::RS_TABLE_LEN];
+                let r = self.acquires.rs_tables(&mut pubt, &mut privt);
+                if r != OK {
+                    let _ = writeln!(out, "Error obtaining table from RS. Perhaps recompile IS?");
+                    return;
+                }
+                let _ = render_rproc(out, &pubt, &privt, &mut self.dump_state.rs);
+            }
+            DumpId::DataStore => {
+                let mut tab = [DsEntrySnap::default(); dump_ds::NR_DS_KEYS];
+                let r = self.acquires.ds_data_store(&mut tab);
+                if r != OK {
+                    let _ = writeln!(out, "Error obtaining table from DS. Perhaps recompile IS?");
+                    return;
+                }
+                let _ = render_data_store(out, &tab, &mut self.dump_state.ds);
+            }
+            DumpId::Vm => {
+                let mut tab = [KProcSnap::default(); dump_kernel::PROC_TABLE_LEN];
+                let r = self.acquires.get_proctab(&mut tab);
+                if r != OK {
+                    let _ = writeln!(
+                        out,
+                        "IS: warning: couldn't get copy of process table: {r}"
+                    );
+                    return;
+                }
+                let _ = render_vm(
+                    out,
+                    &tab,
+                    &mut self.acquires,
+                    &mut self.dump_state.vm_fold,
+                    &mut self.dump_state.vm_batch,
+                );
+            }
+            DumpId::Mapping => {
+                let _ = render_mapping(out);
+            }
+        }
+    }
 
     /// Handles a TTY function-key notification.
     ///
@@ -219,6 +500,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> SefCallbacks for IsServe
 
 #[cfg(test)]
 mod tests {
+    use super::acquire::fake::FakeAcquires;
     use super::*;
     use minix_types::{Endpoint, Message};
     use std::string::String;
@@ -331,8 +613,8 @@ mod tests {
         }
     }
 
-    fn server(script: Vec<Option<(Endpoint, i32)>>) -> IsServer<FakeTransport, FakeFkey, UnimplementedAcquires> {
-        IsServer::new(FakeTransport::new(script), FakeFkey::new(), UnimplementedAcquires)
+    fn server(script: Vec<Option<(Endpoint, i32)>>) -> IsServer<FakeTransport, FakeFkey, FakeAcquires> {
+        IsServer::new(FakeTransport::new(script), FakeFkey::new(), FakeAcquires::ok())
     }
 
     #[test]
@@ -341,7 +623,7 @@ mod tests {
         // (dmp.c:83-99) → reply gate suppresses (main.c:66).
         let mut fk = FakeFkey::new();
         fk.events_answer = (OK, 1 << 1, 0); // F1 pressed
-        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk, UnimplementedAcquires);
+        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk, FakeAcquires::ok());
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.sends.is_empty(), "EDONTREPLY suppresses the reply");
         assert!(s.transport.warnings.is_empty());
@@ -353,7 +635,7 @@ mod tests {
         // C: s < 0 → warn, then dispatch anyway (dmp.c:84-87).
         let mut fk = FakeFkey::new();
         fk.events_answer = (-5, 0, 0);
-        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk, UnimplementedAcquires);
+        let mut s = IsServer::new(FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))])), fk, FakeAcquires::ok());
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert_eq!(s.transport.event_warnings, [-5]);
         assert!(s.transport.sends.is_empty());
@@ -392,7 +674,7 @@ mod tests {
         let mut s = IsServer::new(
             FakeTransport { fail_receive: true, ..FakeTransport::new(Vec::new()) },
             FakeFkey::new(),
-            UnimplementedAcquires,
+            FakeAcquires::ok(),
         );
         let _ = s.step();
     }
@@ -408,7 +690,7 @@ mod tests {
                 ..FakeTransport::new(Vec::from([Some((Endpoint::TTY, FKEY_NOTIFY))]))
             },
             FakeFkey::new(),
-            UnimplementedAcquires,
+            FakeAcquires::ok(),
         );
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.sends.is_empty());
@@ -432,7 +714,7 @@ mod tests {
         // OK (02-is-fkey-contract.md §4.3 caller-warns invariant).
         let mut fk = FakeFkey::new();
         fk.map_status = minix_types::EPERM;
-        let mut s = IsServer::new(FakeTransport::new(Vec::new()), fk, UnimplementedAcquires);
+        let mut s = IsServer::new(FakeTransport::new(Vec::new()), fk, FakeAcquires::ok());
         assert_eq!(s.startup(), Ok(OK));
         assert_eq!(s.transport.ctl_warnings, [minix_types::EPERM]);
         assert_eq!(s.fkey.calls.len(), 1, "exactly one MAP attempt");

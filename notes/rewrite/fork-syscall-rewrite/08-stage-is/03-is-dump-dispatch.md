@@ -313,6 +313,8 @@ fn run_dump(&mut self, _dump: DumpId);       // 空体（05~10 填体）
 - 01 §3 D3/§4.2/§5 T10-T12 → handle 填实后的行为（抑制无 send、send panic 不可达）已同步。
 - 01 快照 v1 为首轮历史记录，不改（03 scan 记录增量方法 `warn_fkey_events`）。
 
+> **V1 执行轮更新（2026-09-15）**：`render_mapping` 已实现（dispatch.rs），新增规则线常量 `MAPPING_RULE`（dmp.c:125-126 的 73 连字符，原常量表缺此行），`run_dump` Mapping 臂接线。
+
 ---
 
 ## 5. 测试要点

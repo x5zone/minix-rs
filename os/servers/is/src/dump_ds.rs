@@ -164,9 +164,103 @@ pub const DS_TITLE: &str = "Data store contents:\n";
 pub const DS_COLUMNS: &str =
     "-slot- -----------key----------- -----owner----- ---type--- ----value---\n";
 
+// ── render (V1-P1-3 execution face) ───────────────────────────────
+
+use crate::PCStr;
+use core::fmt;
+
+/// `data_store_dmp` (dmp_ds.c:9-51): ring-paged inventory — skip unused
+/// slots, print the scalar face per type, abort replay-style on an unknown
+/// type. STR deviation (`// MINIX3 BUG:`): C's `%12s` prints
+/// `p->u.mem.data` — a pointer that only means something inside the DS
+/// process, so the copied table makes C print a dangling address; the
+/// rewrite prints the scalar word instead (pattern 78, documented here and
+/// in 09 §2.2).
+pub fn render_data_store(
+    out: &mut dyn fmt::Write,
+    tab: &[DsEntrySnap],
+    cur: &mut DsCursor,
+) -> fmt::Result {
+    out.write_str(DS_TITLE)?;
+    out.write_str(DS_COLUMNS)?;
+    let mut exhausted = true;
+    let mut aborted = false;
+    for (i, e) in tab.iter().enumerate() {
+        let used = !ds_skipped(e.flags);
+        if !cur.push(used) {
+            exhausted = false;
+            break;
+        }
+        if !used {
+            continue;
+        }
+        write!(
+            out,
+            "{:>6} {:<25} {:<15} ",
+            i as i32,
+            PCStr(&e.key),
+            PCStr(&e.owner)
+        )?;
+        match DsValKind::decode(e.flags) {
+            Some(kind) => match kind {
+                DsValKind::U32 | DsValKind::Label => {
+                    writeln!(out, "{:<10} {:>12}", kind.word(), e.scalar)?;
+                }
+                // MINIX3 BUG: dmp_ds.c:37 `%12s` of a foreign pointer.
+                DsValKind::Str | DsValKind::Mem => {
+                    writeln!(out, "{:<10} {:>12}", kind.word(), e.scalar)?;
+                }
+            },
+            None => {
+                aborted = true;
+                break;
+            }
+        }
+        cur.step_index(i);
+    }
+    cur.finish(exhausted, aborted);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_render_data_store_rows_and_abort() {
+        // C: dmp_ds.c:24-50 — four-typed rows; unknown type aborts with the
+        // cursor replaying (MINIX3 BUG: the STR column prints the scalar,
+        // see render_data_store).
+        let mut tab = [DsEntrySnap::default(); 4];
+        tab[0].flags = 0x010; // unused (no IN_USE) → skipped
+        tab[1].flags = 0x011; // U32
+        tab[1].key = key(b"answer");
+        tab[1].scalar = 42;
+        tab[1].owner = owner(b"pm");
+        tab[2].flags = 0x041; // MEM
+        tab[2].key = key(b"blob");
+        tab[2].scalar = 4096;
+        tab[3].flags = 0x201; // unknown type 0x200 → abort
+        tab[3].key = key(b"junk");
+        let mut out = String::new();
+        let mut cur = DsCursor::new();
+        render_data_store(&mut out, &tab, &mut cur).unwrap();
+        assert!(out.contains(
+            "     2 blob                                      MEM                4096\n"
+        ));
+        assert!(out.contains("     3 junk"), "partial slot line prints before the abort");
+        assert!(cur.aborted() && cur.next() == 3, "abort keeps prev_i for replay");
+    }
+
+    fn key(k: &[u8]) -> [u8; DS_MAX_KEYLEN] {
+        let mut n = [0u8; DS_MAX_KEYLEN];
+        n[..k.len()].copy_from_slice(k);
+        n
+    }
+
+    fn owner(o: &[u8]) -> [u8; DS_MAX_KEYLEN] {
+        key(o)
+    }
 
     #[test]
     fn test_kind_decode_and_words() {

@@ -38,7 +38,20 @@ pub struct FProcSnap {
     pub fp_flags: u32,
     /// C: `fp_blocked_on` (fproc.h:29).
     pub fp_blocked_on: i32,
+    /// Open-descriptor count. C counts `fp_filp[j] != NULL` over
+    /// `OPEN_MAX` slots (dmp_fs.c:44-47) — pointer arrays carry no meaning
+    /// in the snapshot, so the producer computes the count and ships the
+    /// number (A-4 wire-contract deviation, documented in 07 §3 D2).
+    /// (V1-P1-3: field added with the execution face.)
+    pub nfds: u32,
+    /// C: `fp_cdev.endpt` (fproc.h:33 area) — the blocked-on-CDEV endpoint
+    /// column (dmp_fs.c:64); meaningless unless `fp_blocked_on` is CDEV.
+    pub fp_cdev_endpt: i32,
 }
+
+use crate::PCStr;
+use core::fmt;
+use minix_types::Endpoint;
 
 /// Max open files per process. C: `OPEN_MAX 255` — sys/syslimits.h:38.
 pub const OPEN_MAX_FD: usize = 255;
@@ -105,21 +118,79 @@ pub const fn blocked_endpoint(on: BlockedOn, cdev_endpt: i32) -> Option<i32> {
     }
 }
 
-/// Counts open file descriptors.
-///
-/// C: the `for (j...) if (fp_filp[j] != NULL) nfds++` loop — dmp_fs.c:45-47.
-/// Slice version (callers pass the occupancy window; full width is
-/// `OPEN_MAX_FD`).
-pub fn count_fds(slots_used: &[bool]) -> u32 {
-    let mut n = 0u32;
-    let mut i = 0;
-    while i < slots_used.len() {
-        if slots_used[i] {
-            n += 1;
+/// Device number decomposition, Minix3/Linux-compatible `dev_t` layout:
+/// `major(x) = ((x & 0x000fff00) >> 8)`, `minor(x) = ((x & 0xfff00000) >> 12)
+/// | (x & 0xff)` (tools/compat/compat_defs.h:1254-1261 mirrors the OS
+/// encoding; fproc_dmp prints `major(fp_tty)`/`minor(fp_tty)`).
+pub const fn major_of(dev: i32) -> i32 {
+    (((dev as u32) & 0x000f_ff00) >> 8) as i32
+}
+
+/// See [`major_of`].
+pub const fn minor_of(dev: i32) -> i32 {
+    (((dev as u32) & 0xfff0_0000) >> 12 | (dev as u32) & 0xff) as i32
+}
+
+/// `fproc_dmp` row loop (dmp_fs.c:42-69): skip `pid <= 0`, `++n > 22`
+/// breaks, the CDEV endpoint column otherwise prints ` nil`.
+pub fn render_fproc(
+    out: &mut dyn fmt::Write,
+    tab: &[FProcSnap],
+    cur: &mut VfsCursor,
+) -> fmt::Result {
+    out.write_str(FPROC_TITLE)?;
+    out.write_str(FPROC_COLUMNS)?;
+    let mut exhausted = true;
+    for (i, fp) in tab.iter().enumerate() {
+        match cur.push(fp.fp_pid, i) {
+            VfsAction::Skip => continue,
+            VfsAction::More => {
+                exhausted = false;
+                break;
+            }
+            VfsAction::Emit => {}
         }
-        i += 1;
+        let on = BlockedOn::decode(fp.fp_blocked_on);
+        let ldr = u32::from(fp.fp_flags & FP_SESLDR != 0);
+        let rev = u32::from(fp.fp_flags & FP_REVIVED != 0);
+        write!(
+            out,
+            "{:3}  {:4}  {}/{}  0x{:05x} {:2} ({:2}) {:2} ({:2}) {:3} {:3} {:3} {:3} ",
+            i as i32,
+            fp.fp_pid,
+            major_of(fp.fp_tty),
+            minor_of(fp.fp_tty),
+            fp.fp_umask,
+            fp.fp_realuid as i32,
+            fp.fp_effuid as i32,
+            fp.fp_realgid as i32,
+            fp.fp_effgid as i32,
+            ldr,
+            fp.nfds,
+            fp.fp_blocked_on,
+            rev
+        )?;
+        match on.and_then(|on| blocked_endpoint(on, fp.fp_cdev_endpt)) {
+            Some(ep) => writeln!(out, "{:4}", ep)?,
+            None => out.write_str(NIL_ENDPOINT)?,
+        }
     }
-    n
+    cur.finish(exhausted);
+    Ok(())
+}
+
+/// `dtab_dmp` (dmp_fs.c:66-83): one sparse screen over the device map —
+/// `NONE` slots skipped, no pagination.
+pub fn render_dtab(out: &mut dyn fmt::Write, dmaps: &[DmapSnap]) -> fmt::Result {
+    out.write_str(DMAP_TITLE)?;
+    out.write_str(DMAP_COLUMNS)?;
+    for (i, d) in dmaps.iter().enumerate() {
+        if dmap_skipped(d.dmap_driver, NONE_ENDPOINT) {
+            continue;
+        }
+        writeln!(out, "{:>13} {:5} {:10}", PCStr(&d.dmap_label), i as i32, d.dmap_driver)?;
+    }
+    Ok(())
 }
 
 /// Whether an fproc row is skipped.
@@ -149,6 +220,19 @@ pub const fn dmap_skipped(driver: i32, none: i32) -> bool {
     driver == none
 }
 
+/// One fproc pagination step. C: dmp_fs.c:42-47 (`continue` on skip, the
+/// `++n > 22` break). Three states — a `bool` could not tell "skipped,
+/// keep going" from "screen full, stop" (V1-P1-3 fix).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfsAction {
+    /// pid <= 0: skipped, uncounted, loop continues.
+    Skip,
+    /// Row printed.
+    Emit,
+    /// 23rd candidate: stop, `--more--\r`, resume here next round.
+    More,
+}
+
 /// VFS page cursor: isomorphic to 06's `PmCursor` (22-bound, `\r`, wrap).
 /// A fresh type (not an alias): 06 is CONVERGED and its `Pm`-prefixed name
 /// would lie here. Logic intentionally duplicated, noted here.
@@ -168,16 +252,16 @@ impl VfsCursor {
     }
 
     /// C: `if (fp->fp_pid <= 0) continue; if (++n > 22) break;` — dmp_fs.c:43-44.
-    pub const fn push(&mut self, pid: i32, idx: usize) -> bool {
+    pub const fn push(&mut self, pid: i32, idx: usize) -> VfsAction {
         if fproc_skipped(pid) {
-            return false; // skipped, uncounted
+            return VfsAction::Skip;
         }
         self.n += 1;
         if self.n > 22 {
             self.next = idx;
-            return false; // break: row NOT printed
+            return VfsAction::More;
         }
-        true // printed
+        VfsAction::Emit
     }
 
     /// C: `if (i >= NR_PROCS) i = 0; else printf("--more--\r"); prev_i = i;`
@@ -199,16 +283,94 @@ pub const DMAP_TITLE: &str = "File System (FS) device <-> driver mappings\n";
 pub const DMAP_COLUMNS: &str = "    Label     Major Driver ept\n------------- ----- ----------\n";
 /// C: `" nil\n"` non-cdev branch — dmp_fs.c:63.
 pub const NIL_ENDPOINT: &str = " nil\n";
+/// C: `NONE` endpoint — endpoint.h:55 (`dmap_driver == NONE` skip).
+pub const NONE_ENDPOINT: i32 = Endpoint::NONE.get();
+/// C: `NR_DEVICES 135` — dmap.h:82 (the dmap table fetch capacity).
+pub const NR_DEVICES: usize = 135;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn fproc_row(slot: usize, pid: i32, tty: i32, blocked_on: i32, nfds: u32) -> FProcSnap {
+        FProcSnap {
+            fp_pid: pid,
+            fp_tty: tty,
+            fp_umask: 0o022,
+            fp_realuid: 1000,
+            fp_effuid: 1000,
+            fp_realgid: 100,
+            fp_effgid: 100,
+            fp_flags: FP_SESLDR | FP_REVIVED,
+            fp_blocked_on: blocked_on,
+            nfds,
+            fp_cdev_endpt: 7,
+        }
+        .at(slot)
+    }
+
+    impl FProcSnap {
+        fn at(self, _slot: usize) -> Self {
+            self
+        }
+    }
+
     #[test]
-    fn test_count_fds() {
-        // C: dmp_fs.c:45-47.
-        assert_eq!(count_fds(&[]), 0);
-        assert_eq!(count_fds(&[false, true, false, true]), 2);
+    fn test_render_fproc_row_and_skip() {
+        // C: dmp_fs.c:42-69 — %3d slot, %2d/%d tty split, 0x%05x umask,
+        // ldr/nfds/blocked/revived columns, CDEV endpoint vs ` nil`.
+        let tab = [
+            fproc_row(0, 0, 0x400, 0, 0),          // skipped: pid <= 0
+            fproc_row(1, 1, 0x400, BlockedOn::Cdev.code(), 3),
+            fproc_row(2, 2, 0x400, BlockedOn::Pipe.code(), 1),
+        ];
+        let mut out = String::new();
+        let mut cur = VfsCursor::new();
+        render_fproc(&mut out, &tab, &mut cur).unwrap();
+        // Slot 1: cdev blocked → the endpoint prints in the last column.
+        assert!(out.contains(
+            "  1     1  4/0  0x00012 1000 (1000) 100 (100)   1   3   5   1    7\n"
+        ));
+        // Slot 2: not cdev → ` nil`.
+        assert!(out.contains(
+            "  2     2  4/0  0x00012 1000 (1000) 100 (100)   1   1   1   1  nil\n"
+        ));
+        // Slot 0 (pid 0) skipped: title + columns + 2 rows only.
+        assert_eq!(out.matches('\n').count(), 4);
+    }
+
+    #[test]
+    fn test_render_dtab_rows() {
+        // C: dmp_fs.c:73-82 — %13s label, %5d major, %10d driver ept; NONE
+        // slots skipped; no pagination (sparse single screen).
+        let mut dmaps = [DmapSnap::default(); 4];
+        dmaps[0].dmap_driver = NONE_ENDPOINT;
+        dmaps[1].dmap_label = name16(b"cd");
+        dmaps[1].dmap_driver = 3;
+        dmaps[2].dmap_label = name16(b"floppy");
+        dmaps[2].dmap_driver = 2;
+        dmaps[3].dmap_driver = NONE_ENDPOINT;
+        let mut out = String::new();
+        render_dtab(&mut out, &dmaps).unwrap();
+        assert!(out.contains("           cd     1          3\n"));
+        assert!(out.contains("       floppy     2          2\n"));
+        assert!(!out.contains("  0 "), "empty slots skipped");
+    }
+
+
+
+    fn name16(name: &[u8]) -> [u8; 16] {
+        let mut n = [0u8; 16];
+        n[..name.len()].copy_from_slice(name);
+        n
+    }
+
+    #[test]
+    fn test_major_minor_split() {
+        // Minix3/Linux-compatible dev_t (compat_defs.h:1254-1261):
+        // console = major 4, minor 0 → dev 0x400.
+        assert_eq!((major_of(0x400), minor_of(0x400)), (4, 0));
+        assert_eq!((major_of(0x302), minor_of(0x302)), (3, 2));
         assert_eq!(OPEN_MAX_FD, 255);
     }
 
@@ -243,11 +405,11 @@ mod tests {
     fn test_vfs_cursor_pages_like_pm() {
         let mut c = VfsCursor::new();
         for i in 0..22 {
-            assert!(c.push(1, i));
+            assert_eq!(c.push(1, i), VfsAction::Emit);
         }
-        assert!(!c.push(1, 22));
+        assert_eq!(c.push(1, 22), VfsAction::More);
         assert_eq!(c.next(), 22);
-        assert!(!c.push(0, 23)); // skipped rows don't count or break
+        assert_eq!(c.push(0, 23), VfsAction::Skip, "skipped rows don't count or break");
         c.finish(true);
         assert_eq!(c.next(), 0);
     }
