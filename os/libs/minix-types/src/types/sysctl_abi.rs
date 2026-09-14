@@ -416,10 +416,53 @@ pub struct KinfoProc2 {
     pub p_vm_msize: i64,
 }
 
+
+// ── Handler payload structs (A-4 trailing items, pinned at first
+//    consumption — the walker's scalar function handlers are that
+//    first consumer) ──
+
+/// Kernel clock rates. C: `struct clockinfo` — sys/sys/sysctl.h:206-212
+/// (five `int`s; data-model stable).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clockinfo {
+    /// Ticks per second. C: `hz`.
+    pub hz: i32,
+    /// Microseconds per tick. C: `tick`.
+    pub tick: i32,
+    /// Microseconds of tick adjustment. C: `tickadj`.
+    pub tickadj: i32,
+    /// Statistics clock frequency. C: `stathz`.
+    pub stathz: i32,
+    /// Profiling clock frequency. C: `profhz`.
+    pub profhz: i32,
+}
+
+/// Broken-down time. C: `struct timeval` — `long tv_sec/tv_usec`, so
+/// this record is LP64 (8+8); the i386 reference build packs it in 8.
+/// Pinned as part of the self-consistent-64-bit A-4 decision.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeval {
+    /// Seconds. C: `tv_sec`.
+    pub tv_sec: i64,
+    /// Microseconds. C: `tv_usec`.
+    pub tv_usec: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::mem::{align_of, offset_of, size_of};
+
+    /// Handler payload pins (A-4 trailing items).
+    #[test]
+    fn test_payload_layouts() {
+        assert_eq!(size_of::<Clockinfo>(), 20);
+        assert_eq!(offset_of!(Clockinfo, profhz), 16);
+        assert_eq!(size_of::<Timeval>(), 16);
+        assert_eq!(offset_of!(Timeval, tv_usec), 8);
+    }
 
     /// The exchange face is 96 bytes in *both* C data models (the
     /// `__sysc_pad` design goal) — the Rust transcription must agree

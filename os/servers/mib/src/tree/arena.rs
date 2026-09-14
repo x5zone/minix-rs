@@ -181,6 +181,7 @@ mod tests {
 
 use minix_types::{
     CTLFLAG_PERMANENT, CTLFLAG_READWRITE, CTLTYPE_NODE, CTL_HW, CTL_KERN, CTL_MINIX, CTL_VM,
+    Endpoint,
 };
 
 use crate::subtree::hw::HW_ENTRIES;
@@ -263,6 +264,11 @@ pub struct Slot {
     pub desc: Option<Box<[u8]>>,
     /// Budget charge owed by a dynamic node (A-3; settled at remove).
     pub charge: usize,
+    /// Mount state: the owning service's endpoint (REMOTE nodes only;
+    /// written by the mount arm, P1-1). C: `endpts[eid].endpt`.
+    pub peer: Option<Endpoint>,
+    /// Mount state: the service's remote root id. C: `endpts[].rootid`.
+    pub mount_root: Option<u32>,
 }
 
 /// The arena: a node slab, the root handle, and the live counters.
@@ -357,6 +363,8 @@ impl MibTree {
             stat: None,
             desc: None,
             charge: 0,
+            peer: None,
+            mount_root: None,
         });
         NodeId(idx)
     }
