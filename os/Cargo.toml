@@ -51,6 +51,7 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-proc-init",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb",

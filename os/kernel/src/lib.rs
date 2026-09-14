@@ -592,6 +592,24 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // (16-smp.md). Single-CPU QEMU/-smp1 configs get the same
     // behavior as before (nr_cpus=1).
     //
+    init_smp_state();
+    // SAFETY: boot is single-threaded before BKL exists.
+    unsafe {
+        let smp_state = crate::smp_state_boot_unchecked();
+        let proc_table = crate::proc_table_boot_unchecked();
+        bsp_finish_booting(proc_table, smp_state)
+    }
+}
+
+/// Assemble the global SMP state from the platform topology — single file
+/// kmain Phase D block (D-36: topology from MADT/DTB, BSP marked READY,
+/// APs join later), extracted so the S-8 L3 bring-up test driver
+/// (`test-timer-irq`) replays the production phase in the production order.
+///
+/// C: the BSP-only SMP state assembly in main()/bsp_finish_booting's
+/// callers (arch_smp.c bsp_cpu_init parity).
+pub fn init_smp_state() {
+    use minix_platform::{platform_desc, PlatformDesc};
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
         let topo = platform_desc().cpu_topology();
@@ -599,9 +617,6 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
             topo.nr_cpus.max(1),
             crate::proc::CpuId::new_unchecked(topo.bsp_id),
         ));
-        let smp_state = crate::smp_state_boot_unchecked();
-        let proc_table = crate::proc_table_boot_unchecked();
-        bsp_finish_booting(proc_table, smp_state)
     }
 }
 
@@ -819,7 +834,14 @@ fn init_protection(kernel_info: &KernelInfo) {
 ///    `TimerIrqGate::enable_timer_irq` at Step 6, the IPI gate to the SMP
 ///    bring-up S-7/S-10).
 #[cfg(not(feature = "mock"))]
-fn init_clock_and_interrupts() {
+/// Initialize clock software state, the interrupt controller (every line
+/// masked), and arch-init. C: init_clock() + intr_init(0) + arch_init().
+///
+/// `pub` since S-8 (2026-09-14): a production boot phase (kmain Phase B)
+/// that the L3 bring-up test driver (`test-timer-irq`) calls in the same
+/// kmain order — the test must exercise the production sequence, not a
+/// re-implementation of it.
+pub fn init_clock_and_interrupts() {
     use minix_arch::{
         ArchInit,
         CurrentArchInit,

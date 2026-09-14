@@ -320,9 +320,16 @@ core::arch::global_asm!(
     "  push rcx",
     "  push rbx",
     "  push rax",
-    "  mov rdi, rsp", // arg0: &TrapFrame (SysV)
+    // Hand the frame to the dispatcher in BOTH first-argument registers:
+    // SysV (hosted target) reads RDI, Win64 (x86_64-unknown-uefi!) reads
+    // RCX — the codebase builds for both (cf. kmain's naked_asm register
+    // rearrangement in kernel/src/lib.rs). RDI/RCX are saved GPRs here;
+    // the pops restore them after the call.
+    "  mov rdi, rsp",
+    "  mov rcx, rsp",
     "  mov rbp, rsp", // keep frame base across the ABI alignment dance
     "  and rsp, -16",
+    "  sub rsp, 32",  // Win64 shadow space (SysV callees ignore it)
     "  call x86_trap_dispatch",
     "  mov rsp, rbp",
     "  pop rax",
@@ -375,8 +382,10 @@ core::arch::global_asm!(
     "  push rbx",
     "  push rax",
     "  mov rdi, rsp",
+    "  mov rcx, rsp", // Win64 first argument (see the trap-path comment)
     "  mov rbp, rsp",
     "  and rsp, -16",
+    "  sub rsp, 32",  // Win64 shadow space
     "  call x86_syscall_dispatch",
     "  mov rsp, rbp",
     "  pop rax", // syscall return value written by the dispatcher

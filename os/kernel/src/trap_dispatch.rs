@@ -100,12 +100,32 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     );
 
     match outcome {
-        ExceptionOutcome::KernelPanic(v) => panic!(
-            "kernel exception vector {} at rip {:#x} errcode {:#x}",
-            v.get(),
-            frame.rip,
-            frame.errcode
-        ),
+        ExceptionOutcome::KernelPanic(v) => {
+            // Console diagnostics before dying: the panic handler cannot
+            // render the formatted message (no fmt on early console).
+            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            Console::write_str("trap: vector ");
+            Console::write_hex(v.get() as u64);
+            Console::write_str(" err ");
+            Console::write_hex(frame.errcode);
+            Console::write_str(" rip ");
+            Console::write_hex(frame.rip);
+            Console::write_str(" cs ");
+            Console::write_hex(frame.cs);
+            Console::write_str(" rflags ");
+            Console::write_hex(frame.rflags);
+            Console::write_str(" rsp ");
+            Console::write_hex(frame.rsp);
+            Console::write_str(" ss ");
+            Console::write_hex(frame.ss);
+            Console::write_str("\n");
+            panic!(
+                "kernel exception vector {} at rip {:#x} errcode {:#x}",
+                v.get(),
+                frame.rip,
+                frame.errcode
+            );
+        }
         other => panic!(
             "trap_dispatch: user-origin outcome {other:?} needs per-CPU process \
              context (S-6/S-7); reached at vector {vector:#04x} rip {:#x} — \

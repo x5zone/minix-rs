@@ -45,6 +45,13 @@ const IA32_APIC_BASE_ADDR_MASK: u64 = 0xFFFF_F000;
 const LAPIC_REG_ID: usize = 0x020;
 const LAPIC_REG_EOI: usize = 0x0B0;
 const LAPIC_REG_SVR: usize = 0x0F0;
+/// LVT (Local Vector Table) register offsets — Intel SDM Vol. 3 §10.5.
+const LAPIC_REG_LVT_TIMER: usize = 0x320;
+const LAPIC_REG_LVT_LINT0: usize = 0x350;
+const LAPIC_REG_LVT_LINT1: usize = 0x360;
+const LAPIC_REG_LVT_ERROR: usize = 0x370;
+/// LVT bit 16: mask — the entry delivers nothing while set.
+const LAPIC_LVT_MASK: u32 = 1 << 16;
 /// Bit 8 of SVR: APIC software enable.
 const LAPIC_SVR_ENABLE: u32 = 1 << 8;
 
@@ -55,6 +62,9 @@ const IOAPIC_REG_IOWIN: usize = 0x10;
 const IOAPIC_REG_VER: u32 = 0x01;
 /// First redirection entry (low half).
 const IOAPIC_REG_REDTBL_BASE: u32 = 0x10;
+/// IOAPIC redirection-entry count on the QEMU pc machine (and the classic
+/// 82093): 24 inputs, 16 ISA + 8 PCI-level.
+const IOAPIC_NUM_PINS: u8 = 24;
 /// Bit 16 of redirection entry low: interrupt mask.
 const IOAPIC_REDTBL_MASK: u32 = 1 << 16;
 
@@ -125,15 +135,23 @@ impl X86_64InterruptController {
         }
         wrmsr_msr_write(MSR_IA32_APIC_BASE, apic_base | IA32_APIC_BASE_EN);
         lapic_write(self.lapic_base, LAPIC_REG_SVR, LAPIC_SPURIOUS_VECTOR as u32 | LAPIC_SVR_ENABLE);
-    }}
-
-    unsafe fn init_ioapic(&mut self) { unsafe {
-        for irq in 0..NR_IRQ_VECTORS as u8 {
-            self.ioap_set_route_and_mask(irq);
+        // Mask every LVT entry (C apic.c init parity: all LVTs masked until
+        // their owner opens them — the LAPIC timer gate is S-3c/D-59
+        // territory; the LINT lines must not inherit firmware state). OVMF
+        // leaves LINT0 in ExtINT mode routing the 8259 PIC into the LAPIC,
+        // so an unmasked LINT0 delivers leftover PIC vectors after `sti`.
+        for lvt in [LAPIC_REG_LVT_TIMER, LAPIC_REG_LVT_LINT0, LAPIC_REG_LVT_LINT1, LAPIC_REG_LVT_ERROR] {
+            lapic_write(self.lapic_base, lvt, LAPIC_LVT_MASK);
         }
     }}
 
-    /// Program redirection entry `irq` with its C-parity delivery vector and
+    unsafe fn init_ioapic(&mut self) { unsafe {
+        for pin in 0..IOAPIC_NUM_PINS {
+            self.ioapic_route_and_mask(pin);
+        }
+    }}
+
+    /// Program redirection entry `pin` with its C-parity delivery vector and
     /// keep the line masked.
     ///
     /// S-8 (2026-09-14): QEMU/hardware reset leaves every RTE with vector 0
@@ -142,27 +160,50 @@ impl X86_64InterruptController {
     /// so a line unmasked without a programmed vector would deliver to IDT
     /// vector 0 (#DE) — the timer interrupt would hit the divide-error gate.
     /// C programs the same mapping when the APIC is initialized
-    /// (apic.c RTE setup, VECTOR(irq) = 0x50+irq / 0x70+irq-8); lines ≥ 16
+    /// (apic.c RTE setup, VECTOR(irq) = 0x50+irq / 0x70+irq-8). Pins ≥ 16
     /// (QEMU's extra IOAPIC inputs) stay masked with the reset vector 0 —
     /// no handler exists for them and nothing unmasks them.
-    unsafe fn ioap_set_route_and_mask(&mut self, irq: u8) { unsafe {
+    unsafe fn ioapic_route_and_mask(&mut self, pin: u8) { unsafe {
+        // Inverse of isa_irq_to_pin: which kernel IRQ line this pin carries.
+        let irq = match pin {
+            0 => Some(2u8), // ISA cascade enters the IOAPIC at pin 0
+            2 => Some(0u8), // ISA IRQ0 (PIT) enters at pin 2
+            i @ 1..=15 => Some(i),
+            _ => None,      // PCI-level pins: no kernel IRQ number, masked
+        };
         let vector = match irq {
-            0..=7 => IRQ0_VECTOR + irq,
-            8..=15 => IRQ0_VECTOR + 0x20 + (irq - 8),
+            Some(i @ 0..=7) => IRQ0_VECTOR + i,
+            Some(i @ 8..=15) => IRQ0_VECTOR + 0x20 + (i - 8),
             _ => 0, // masked, never delivered
         };
         let entry = (vector as u64) | (IOAPIC_REDTBL_MASK as u64);
-        ioapic_write_redtbl(self.ioapic_base, irq, entry);
+        ioapic_write_redtbl(self.ioapic_base, pin, entry);
     }}
 
+    /// ISA IRQ number → IOAPIC input pin — the classic ISA override present
+    /// on the pc machine and real chipsets alike: the PIT (ISA IRQ0) enters
+    /// the IOAPIC at pin 2, and the slave-cascade (ISA IRQ2) at pin 0;
+    /// every other line is identity. The kernel addresses lines by ISA IRQ
+    /// number (C: CLOCK_IRQ=0; IrqVector), the IOAPIC RTEs by pin — every
+    /// RTE access must go through this map or the timer line stays masked
+    /// while RTE 0 is (wrongly) opened.
+    const fn isa_irq_to_pin(irq: u8) -> u8 {
+        match irq {
+            0 => 2,
+            2 => 0,
+            other => other,
+        }
+    }
+
     unsafe fn ioapic_set_mask(&mut self, irq: u8, mask: bool) { unsafe {
-        let mut entry = ioapic_read_redtbl(self.ioapic_base, irq);
+        let pin = Self::isa_irq_to_pin(irq);
+        let mut entry = ioapic_read_redtbl(self.ioapic_base, pin);
         if mask {
             entry |= IOAPIC_REDTBL_MASK as u64;
         } else {
             entry &= !(IOAPIC_REDTBL_MASK as u64);
         }
-        ioapic_write_redtbl(self.ioapic_base, irq, entry);
+        ioapic_write_redtbl(self.ioapic_base, pin, entry);
     }}
 
     unsafe fn lapic_eoi(&mut self) { unsafe {

@@ -217,8 +217,17 @@ fn main() -> Status {
     // 3. Phase B: protection only (no clock/interrupt needed for proc table init)
     let prot = CurrentProtection::init(0, info.kern_stack_top);
     prot.load();
+    // S-8 (2026-09-14): the IDT may only go live with real handlers in
+    // every present gate (the no-empty-gate stage invariant) — install the
+    // arch stubs + kernel dispatch bodies, point LSTAR at the kernel's own
+    // SYSCALL asm entry, then load.
     let mut trap = CurrentTrapEntry::init();
-    trap.configure_syscall(info.syscall_entry);
+    minix_arch::install_trap_stubs(&mut trap);
+    minix_arch::register_trap_dispatchers(
+        minix_kernel::trap_dispatch::x86_trap_dispatch_body,
+        minix_kernel::trap_dispatch::x86_syscall_dispatch_body,
+    );
+    trap.configure_syscall(minix_arch::syscall_entry_va());
     trap.load();
     early_console::write_str("  protection loaded\n");
 

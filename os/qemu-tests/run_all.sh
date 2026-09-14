@@ -46,7 +46,7 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
-for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive; do
+for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq; do
     echo "--- x86_64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
@@ -76,8 +76,9 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     run_test "test-protection"         x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-protection.efi"
     run_test "test-proc-init"          x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-proc-init.efi"
     run_test "test-smp-topo"           x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-topo.efi"
-    # S-3d WIP: AP not reaching the Rust entry yet (marker=0, see smp_todo §5
-    # S-3d). Skip in CI via QEMU_TESTS_SKIP_AP_ALIVE=1 until S-3d lands.
+    run_test "test-timer-irq"          x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-timer-irq.efi"
+    # S-3d landed 2026-09-14 (both the OVMF variant and the multiboot
+    # variant pass); the env-var skip remains as a CI escape hatch.
     if [ "${QEMU_TESTS_SKIP_AP_ALIVE:-0}" != "1" ]; then
         run_test "test-smp-ap-alive"   x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-ap-alive.efi"
     fi
