@@ -83,7 +83,7 @@ pub mod stacktrace;
 pub mod globals;
 
 use globals::{
-    CLOCK_STATE, CURRENT_PTPROC_NR, CURRENT_ROOT_PHYS,
+    CLOCK_STATE, CURRENT_ROOT_PHYS,
     IPC_FILTER_POOL, IRQ_MANAGER, KBILL_KCALL, KERNEL_INFO, KERNEL_MAY_ALLOC,
     PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
     ROOT_PHYS_UNSET,
@@ -811,6 +811,18 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
     store_protection(prot);
     with_protection(|prot| prot.load());
+
+    // S-6.1 (D-40 identity anchor): program the BSP's GS area so
+    // `current_cpu_id()` works on the BSP too. The BSP's logical id comes
+    // from the topology match (MADT/DTB order does not guarantee slot 0).
+    #[cfg(target_arch = "x86_64")]
+    {
+        let topo = minix_platform::platform_desc().cpu_topology();
+        let bsp_logical = (0..topo.nr_cpus as usize)
+            .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+            .unwrap_or(0) as u32;
+        minix_arch::x86_64::trap_stub::program_gs(bsp_logical, kernel_info.kern_stack_top);
+    }
 
     // Step 2: Prepare the trap entry table metadata.
     // x86-64: IDT metadata + SYSCALL MSR; aarch64: VBAR_EL1 metadata;
@@ -2116,49 +2128,62 @@ pub fn set_vm_running(v: bool) {
 }
 
 
-/// Sentinel value indicating `CURRENT_PTPROC_NR` has not been initialized.
-/// Distinct from any valid proc-nr (user procs ≥ 0, kernel tasks in
-/// `-NR_TASKS..=-1`).
-const PTPROC_UNSET: i32 = i32::MIN;
+/// D-40 (S-6.1): the ptproc proc-nr moved from the `CURRENT_PTPROC_NR`
+/// global atomic to the `CpuLocal.ptproc` field — C is per-CPU
+/// (`get_cpulocal_var(ptproc)`, protect.c:372); the global was a
+/// single-CPU-era simplification. Each CPU's own slot is written by its own
+/// bring-up path (BSP: `init_proc_and_boot`; AP: `smp_ap_tail`), and read
+/// back on the same CPU, so plain non-atomic access under the BKL contract
+/// suffices.
+///
+/// Identity anchor: `current_cpu_id()` (x86-64: `gs:0x10`, programmed by
+/// `program_gs` in init_protection per CPU; mock/hosted: BSP).
 
-/// Read the proc-nr of the current ptproc.
+/// The logical id of the CPU executing this code.
 ///
-/// Returns `None` if ptproc has not been set yet (before
-/// `init_post_and_memory` runs).
-///
-/// # Concurrency
-///
-/// Caller must hold the BKL to observe a consistent value. Without the
-/// BKL, the value may be stale — but stale reads are safe because the
-/// only consequence is skipping a CR3 reload, which the next context
-/// switch will correct.
-pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {
-    let v = CURRENT_PTPROC_NR.load(Ordering::Acquire);
-    if v == PTPROC_UNSET {
-        None
-    } else {
-        Some(crate::proc::ProcNr(v))
-    }
+/// x86-64: the per-CPU GS area (`gs:0x10`), programmed by `program_gs` —
+/// the BSP's area is filled in `init_protection` (from the topology match),
+/// each AP's in its `init_ap`. Mock/hosted builds return BSP (CpuId 0) —
+/// single-CPU semantics, matching the mock's whole-world view.
+pub fn current_cpu_id() -> crate::proc::CpuId {
+    let id = minix_arch::ap_cpu_id_readback();
+    crate::proc::CpuId::new_unchecked(id as u32)
 }
 
-/// Set the current ptproc proc-nr.
+/// Read THIS CPU's ptproc proc-nr.
 ///
-/// Called once during `init_post_and_memory` to record that VM is now the
-/// page-table process. C: `get_cpulocal_var(ptproc) = vm` in
-/// `arch_post_init()` — protect.c:372 (x86) / protect.c:99 (ARM).
-///
-/// (C also installs the arch-level ptproc state here, but that layer has no
-/// Rust counterpart — it recorded `virt_root` for the createpde temporary
-/// window, superseded by Direct Map. Only the setcr3-reload tracking needs
-/// a Rust equivalent, which this function provides.)
+/// Returns `None` if ptproc has not been set yet on this CPU (before the
+/// CPU's bring-up path installs VM — C: before `arch_post_init()`).
 ///
 /// # Concurrency
 ///
-/// BKL must be held by the caller. `Release` ordering ensures the value
-/// is visible to other CPUs after the boot-time ptproc installation is
-/// complete.
+/// Caller must hold the BKL (same contract as the other CpuLocal accessors).
+/// Stale reads (no BKL) are safe — the only consequence is skipping a CR3
+/// reload, which the next context switch corrects.
+pub fn current_ptproc_nr() -> Option<crate::proc::ProcNr> {
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = current_cpu_id();
+    smp.cpu_local(cpu).and_then(|l| l.ptproc)
+}
+
+/// Set THIS CPU's ptproc proc-nr.
+///
+/// Called by the CPU's own bring-up path: BSP in `init_proc_and_boot`
+/// (C: `get_cpulocal_var(ptproc) = vm` — protect.c:372), each AP in its
+/// tail. (The arch-level ptproc state C also installs here has no Rust
+/// counterpart — it recorded `virt_root` for the createpde temporary
+/// window, superseded by Direct Map.)
+///
+/// # Concurrency
+///
+/// BKL must be held (or boot-phase single-threaded). The CPU writes only
+/// its own slot.
 pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
-    CURRENT_PTPROC_NR.store(nr.0, Ordering::Release);
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = current_cpu_id();
+    if let Some(local) = smp.cpu_local_mut(cpu) {
+        local.ptproc = Some(nr);
+    }
 }
 
 // ── Bootstrap page-table root tracking ──────────────────────────────────────
@@ -3288,10 +3313,15 @@ mod tests {
 
     // ── ptproc tracking tests (P9-4: SetAddrSpace write_cr3 support) ──
 
-    /// Reset `CURRENT_PTPROC_NR` to the unset sentinel.
-    /// Helper for ptproc tests so they don't leak state across each other.
-    fn reset_ptproc_for_test() {
-        CURRENT_PTPROC_NR.store(PTPROC_UNSET, Ordering::Release);
+    /// Install a fresh two-CPU global SmpState for ptproc tests (D-40: the
+    /// accessors are per-CPU CpuLocal reads/writes now — the test drives the
+    /// BSP slot, which `current_cpu_id()` names on hosted builds).
+    fn fresh_ptproc_state() {
+        // SAFETY: single-threaded test (workspace forces --test-threads=1).
+        unsafe {
+            *crate::globals::SMP_STATE.get() =
+                Some(crate::smp::SmpState::with_ncpus(2, crate::proc::CpuId::BSP));
+        }
     }
 
     /// Fresh kernel: `current_ptproc_nr()` returns `None` because
@@ -3299,22 +3329,33 @@ mod tests {
     /// where `ptproc` is uninitialized until `arch_post_init()`.
     #[test]
     fn test_ptproc_unset_returns_none_before_init() {
-        reset_ptproc_for_test();
+        fresh_ptproc_state();
         assert_eq!(current_ptproc_nr(), None,
             "ptproc must be None before init_post_and_memory runs");
     }
 
     /// After `set_current_ptproc_nr(VM_PROC_NR)`, `current_ptproc_nr()`
     /// returns `Some(VM_PROC_NR)`. This mirrors C's
-    /// `get_cpulocal_var(ptproc) = vm` in `arch_post_init()`.
+    /// `get_cpulocal_var(ptproc) = vm` in `arch_post_init()` (D-40: per-CPU
+    /// CpuLocal slot, BSP's here).
     #[test]
     fn test_ptproc_set_returns_vm_proc_nr() {
-        reset_ptproc_for_test();
+        fresh_ptproc_state();
         set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
         assert_eq!(current_ptproc_nr(), Some(crate::proc::proc_nr::VM_PROC_NR),
             "ptproc must be VM_PROC_NR after init_post_and_memory");
-        // Cleanup.
-        reset_ptproc_for_test();
+    }
+
+    /// D-40: the write lands in THIS CPU's CpuLocal slot only — a second
+    /// CPU's slot stays untouched (C: `get_cpulocal_var(ptproc)` is
+    /// per-CPU; the global atomic leaked the write across CPUs).
+    #[test]
+    fn test_ptproc_set_is_per_cpu() {
+        fresh_ptproc_state();
+        set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        let ap_slot = smp.cpu_local(crate::proc::CpuId::new_unchecked(1)).unwrap();
+        assert!(ap_slot.ptproc.is_none(), "AP slot must not see the BSP's ptproc write");
     }
 
     /// `set_current_ptproc_nr` is idempotent: setting twice to the same
@@ -3323,11 +3364,10 @@ mod tests {
     /// accidental state corruption.)
     #[test]
     fn test_ptproc_set_is_idempotent() {
-        reset_ptproc_for_test();
+        fresh_ptproc_state();
         set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
         set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
         assert_eq!(current_ptproc_nr(), Some(crate::proc::proc_nr::VM_PROC_NR));
-        reset_ptproc_for_test();
     }
 
     /// The `SetAddrSpace` handler's ptproc comparison uses `ProcNr` equality.
@@ -3335,7 +3375,7 @@ mod tests {
     /// the branch condition that triggers `TlbArch::set_active_root`.
     #[test]
     fn test_ptproc_comparison_branch_condition() {
-        reset_ptproc_for_test();
+        fresh_ptproc_state();
         set_current_ptproc_nr(crate::proc::proc_nr::VM_PROC_NR);
         // Simulate the SetAddrSpace branch:
         //   if current_ptproc_nr() == Some(target.p_nr) { set_active_root(...) }
@@ -3348,21 +3388,6 @@ mod tests {
         let should_not_reload = current_ptproc_nr() == Some(other_p_nr);
         assert!(!should_not_reload,
             "SetAddrSpace on non-ptproc must NOT trigger set_active_root");
-        reset_ptproc_for_test();
-    }
-
-    /// Verify the `PTPROC_UNSET` sentinel is distinct from all valid
-    /// proc-nrs that could be passed to `set_current_ptproc_nr`.
-    /// VM_PROC_NR is a small positive integer; PTPROC_UNSET = i32::MIN.
-    #[test]
-    fn test_ptproc_sentinel_distinct_from_valid_proc_nrs() {
-        assert_ne!(PTPROC_UNSET, crate::proc::proc_nr::VM_PROC_NR.0,
-            "PTPROC_UNSET must not collide with VM_PROC_NR");
-        assert_eq!(PTPROC_UNSET, i32::MIN,
-            "PTPROC_UNSET must be i32::MIN (sentinel value)");
-        // Also distinct from kernel task proc-nrs (small negatives like -1, -5).
-        assert_ne!(PTPROC_UNSET, -1,
-            "PTPROC_UNSET must not collide with kernel task proc-nr -1");
     }
 
     // ── Bootstrap root tracking tests (P9-5: VM ELF loading at boot) ──
@@ -3626,6 +3651,7 @@ mod tests {
         // C: klib.S:610-612 — p_cr3 == 0 → return; the kernel mapping
         // stays active and neither the root nor ptproc changes.
         reset_root_mirrors_for_test();
+        fresh_ptproc_state();
         let table = crate::test_helpers::test_proc_table();
 
         super::switch_address_space(&table, proc_nr::KERNEL);
@@ -3640,6 +3666,7 @@ mod tests {
     fn test_switch_address_space_installs_root_and_tracks_ptproc() {
         // C: klib.S:621-624 — write the root, then record ptproc.
         reset_root_mirrors_for_test();
+        fresh_ptproc_state();
         let mut table = crate::test_helpers::test_proc_table();
         let root = minix_types::PhysBytes(0x5000); // page-aligned, non-zero
         table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = root;

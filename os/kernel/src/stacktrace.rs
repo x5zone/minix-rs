@@ -38,7 +38,7 @@
 //! Caller must hold the Big Kernel Lock. The BKL guarantees no concurrent
 //! mutation of `cpu_context` (read here) or the kernel stack of the
 //! target process while we walk it. For SMP deployment this same rule
-//! applies; the per-CPU `CURRENT_PTPROC_NR` (kernel/smp.rs) also blocks
+//! applies; the per-CPU `CpuLocal.ptproc` (kernel/smp.rs, D-40) also blocks
 //! stale direct-map writes during cross-CPU stack walks.
 
 use core::cell::Cell;

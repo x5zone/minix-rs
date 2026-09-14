@@ -2383,7 +2383,7 @@ fn vmctl_boot_inhibit_clear(
 /// Rust implements all 5 steps:
 ///   - Steps 1-2: data layer (p_seg.phys_root / virt_root).
 ///   - Step 3: `TlbArch::set_active_root` when target is current ptproc
-///     (tracked by `CURRENT_PTPROC_NR` global, initialized in
+///     (tracked by the per-CPU `CpuLocal.ptproc` slot (D-40), initialized in
 ///     `init_post_and_memory`). The arch impls write CR3/TTBR0/satp.
 ///   - Step 4: no-op on 64-bit (paging enabled at boot via
 ///     `Paging::enable`).

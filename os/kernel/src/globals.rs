@@ -318,7 +318,7 @@ pub(crate) static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqMana
 /// marker's process `p_cycles.kcall`, then the marker clears (C
 /// arch_clock.c:279-281 — the whole-delta attribution is C's own coarse
 /// estimate, faithfully kept). SMP: a single global mirrors
-/// `CURRENT_PTPROC_NR` (todo D-40) — migrate to `CpuLocal` when per-CPU
+
 /// lands.
 pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
 
@@ -407,7 +407,7 @@ pub(crate) static VM_RUNNING: AtomicBool = AtomicBool::new(false);
 /// The value stored is a `ProcNr.0` (i32). `i32::MIN` (sentinel) means
 /// "no ptproc set yet" — distinct from any valid proc-nr (which are
 /// non-negative for user processes and small negative for kernel tasks).
-pub(crate) static CURRENT_PTPROC_NR: AtomicI32 = AtomicI32::new(i32::MIN);
+
 
 /// Sentinel for "no root page table installed yet" (A2: moved with the
 /// static it sentinels — every reader/writer of CURRENT_ROOT_PHYS pairs

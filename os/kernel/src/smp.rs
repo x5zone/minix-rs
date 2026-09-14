@@ -1023,6 +1023,14 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
     unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
     crate::with_protection(|prot| prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va)));
     minix_arch::ap_write_syscall_msrs(minix_arch::syscall_entry_va());
+    // C arch_post_init parity (protect.c:372): each CPU installs VM as its
+    // own ptproc (D-40: per-CPU CpuLocal slot; the global atomic is gone).
+    {
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        if let Some(local) = smp.cpu_local_mut(crate::proc::CpuId::new_unchecked(logical_id)) {
+            local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
+        }
+    }
     ap_finish_booting(logical_id);
     loop {
         core::arch::asm!("hlt", options(nomem, nostack));
