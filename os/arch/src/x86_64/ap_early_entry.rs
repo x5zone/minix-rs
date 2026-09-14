@@ -82,12 +82,13 @@ core::arch::global_asm!(
     "  mov ss, ax",
     // Stage 0xA1: real-mode entry + segments up.
     "  mov byte ptr [0x6F00], 0xA1",
-    // S-3d 诊断：sgdt 回读（AP 视角的 GDTR 原始值与 lgdt 后的装载值）。
-    "  sgdt [0x6F40]",
-    // lgdt m16&32 [0x6030] — the descriptor in the scratch page.
-    "  .byte 0x66, 0x0F, 0x01, 0x15",
+    // lgdt m16&32 [0x6030] — the descriptor in the scratch page. Modrm
+    // 0x16 (mod=00 reg=/2 rm=110): in 16-bit addressing rm=101 is [DI],
+    // only rm=110 with mod=00 is [disp16] — the 32-bit-form modrm 0x15
+    // silently fetched from [DI=0] = the IVT, loading
+    // GDTR={0xFF53, 0xFF53F000} (S-3d round 10 root cause of #GP(0x10)).
+    "  .byte 0x66, 0x0F, 0x01, 0x16",
     "  .word 0x6030",
-    "  sgdt [0x6F48]",
     // Protected mode (paging still off — linear = PA).
     "  mov eax, cr0",
     "  or eax, 1",
@@ -109,11 +110,11 @@ core::arch::global_asm!(
     "  mov ds, ax",
     "  mov ss, ax",
     // Stage 0xA3: protected entry reached.
-    "  mov byte ptr [0x6F00], 0xA3\n  mov dx, 0x3f8\n  mov al, 0xA3\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA3\n  out dx, al",
-    // Root page table → CR3 (record field @ scratch+0x18; fill_bootstrap
-    // asserts root <4GiB — the 32-bit mov cr3 writes bits 31:0 only,
-    // §3.2 invariant).
-    "  mov eax, dword ptr [0x00606018]",
+    "  mov byte ptr [0x6F00], 0xA3",
+    // Root page table → CR3 (record field @ scratch+0x18 = 0x6018;
+    // fill_bootstrap asserts root <4GiB — the 32-bit mov cr3 writes
+    // bits 31:0 only, §3.2 invariant).
+    "  mov eax, dword ptr [0x00006018]",
     "  mov cr3, eax",
     // PAE (long-mode prerequisite).
     "  mov eax, cr4",
@@ -130,7 +131,7 @@ core::arch::global_asm!(
     "  or eax, 0x80000000",
     "  mov cr0, eax",
     // Stage 0xA4: long mode on (fetch continues at the far jump).
-    "  mov byte ptr [0x6F00], 0xA4\n  mov dx, 0x3f8\n  mov al, 0xA4\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA4\n  out dx, al",
+    "  mov byte ptr [0x6F00], 0xA4",
     // Far jump: 32-bit EA form (off32 sel16) → CODE64 (label-derived, same
     // rationale as the 16-bit far jump above).
     "  .byte 0xEA",
@@ -140,18 +141,19 @@ core::arch::global_asm!(
     ".code64",
     "ap_long_low:",
     // Stage 0xA5: long-mode entry reached.
-    "  mov byte ptr [0x6F00], 0xA5\n  mov dx, 0x3f8\n  mov al, 0xA5\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA5\n  out dx, al",
-    // Per-AP kernel stack (record field stack @ scratch+0x24 → linear
-    // 0x9024). Absolute 32-bit addressing reaches the installed copy
+    "  mov byte ptr [0x6F00], 0xA5",
+    // Per-AP kernel stack (record field stack @ scratch+0x20 → linear
+    // 0x6020; offset_of! pins kernel_stack_top_va at record+0x18).
+    // Absolute 32-bit addressing reaches the installed copy
     // through the identity mapping — rip-relative would reach the
     // ORIGINAL blob (link-time VAs), not the copy.
-    "  mov rsp, qword ptr [0x00606024]",
+    "  mov rsp, qword ptr [0x00006020]",
     // Rust entry: RCX = bootstrap PA (MS x64 first argument).
     "  mov ecx, 0x5000",
-    // Rust entry VA (record field @ scratch+0x28 → linear 0x9028).
-    "  mov rax, qword ptr [0x00606028]",
+    // Rust entry VA (record field @ scratch+0x28 → linear 0x6028).
+    "  mov rax, qword ptr [0x00006028]",
     // Stage 0xA6: record consumed, entering the Rust tail.
-    "  mov byte ptr [0x6F00], 0xA6\n  mov dx, 0x3f8\n  mov al, 0xA6\n  out 0x80, al\n  mov dx, 0x3f8\n  mov al, 0xA6\n  out dx, al",
+    "  mov byte ptr [0x6F00], 0xA6",
     "  jmp rax",
     // Blob end marker (for image_bytes length calculation).
     "ap_early_entry_end:",
@@ -425,6 +427,58 @@ mod tests {
         assert!(fj32, "FJ32 must target the long-mode entry (0xA5 stage mark) in-blob");
         // The blob must end exactly at the final `jmp rax`.
         assert_eq!(&blob[blob.len() - 2..], &[0xFF, 0xE0]);
+    }
+
+    #[test]
+    fn test_ladder_absolute_reads_match_record_layout() {
+        // S-3d round 10 (2026-09-14): three byte-level ladder defects that
+        // hosted tests could not see because the AP never got past the
+        // LGDT — ① the LGDT modrm used the 32-bit addressing form (rm=101
+        // = [DI] in 16-bit mode, descriptor fetched from the IVT at
+        // [DI=0] → GDTR={0xFF53, 0xFF53F000}); ② the three record-field
+        // reads carried a duplicated scratch-page nibble pair (0x00606018
+        // instead of 0x6018 — a 0x9000-era typo carried over by the
+        // find-replace relocation); ③ the stack read used scratch+0x24
+        // but offset_of! pins kernel_stack_top_va at scratch+0x20. This
+        // test pins the frozen bytes so ladder and layout cannot drift.
+        const BASE: usize = SCRATCH_LIN as usize;
+        let blob = image_bytes();
+        let contains = |pat: &[u8]| blob.windows(pat.len()).any(|w| w == pat);
+
+        // ① LGDT m16&32 [SCRATCH+S_GDT_DESC]: 66 0F 01 /2, modrm 0x16
+        //    (mod=00 reg=010 rm=110 = [disp16] in 16-bit addressing).
+        let mut lgdt_ok = [0u8; 6];
+        lgdt_ok[..4].copy_from_slice(&[0x66, 0x0F, 0x01, 0x16]);
+        lgdt_ok[4..].copy_from_slice(&((BASE + S_GDT_DESC) as u16).to_le_bytes());
+        assert!(contains(&lgdt_ok), "LGDT must use 16-bit [disp16] modrm 0x16");
+        let mut lgdt_bad = [0u8; 6];
+        lgdt_bad[..4].copy_from_slice(&[0x66, 0x0F, 0x01, 0x15]);
+        lgdt_bad[4..].copy_from_slice(&((BASE + S_GDT_DESC) as u16).to_le_bytes());
+        assert!(!contains(&lgdt_bad), "32-bit-form modrm 0x15 = [DI] in 16-bit mode");
+
+        // ② CR3 read = 32-bit moffs at record+0x10 → scratch+0x18.
+        let mut cr3 = [0u8; 5];
+        cr3[0] = 0xA1;
+        cr3[1..].copy_from_slice(&((BASE + S_RECORD + 0x10) as u32).to_le_bytes());
+        assert!(contains(&cr3), "CR3 read must target page_table_root_pa @ scratch+0x18");
+
+        // ③ stack/entry reads = 64-bit mov r64, [moffs64] (48 8B <modrm>
+        //    25, reg field = destination register) at record+0x18 / +0x20
+        //    → scratch+0x20 (reg=100 rsp → modrm 0x24) / +0x28 (reg=000
+        //    rax → modrm 0x04).
+        for (field_off, modrm, what) in
+            [(0x18usize, 0x24u8, "stack"), (0x20usize, 0x04u8, "entry")]
+        {
+            let mut pat = [0u8; 8];
+            pat[..4].copy_from_slice(&[0x48, 0x8B, modrm, 0x25]);
+            pat[4..].copy_from_slice(&((BASE + S_RECORD + field_off) as u32).to_le_bytes());
+            assert!(contains(&pat), "{what} read must target record+{field_off:#x}");
+        }
+        // The hand-loaded bootstrap PA must equal AP_STARTUP_PA (B9 = mov ecx, imm32).
+        let mut rcx = [0u8; 5];
+        rcx[0] = 0xB9;
+        rcx[1..].copy_from_slice(&(AP_STARTUP_PA as u32).to_le_bytes());
+        assert!(contains(&rcx), "RCX must carry AP_STARTUP_PA into ap_early_entry");
     }
 
     fn record_fixture() -> ApBootstrap {

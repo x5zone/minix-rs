@@ -73,30 +73,11 @@ fn fail(msg: &str) -> ! {
     early_console::write_str("### FAIL: ");
     early_console::write_str(msg);
     early_console::write_str("\n");
-    // S-3d 诊断：AP 视角的 GDTR 回读（阶梯 sgdt 写入 0x6F40/0x6F48）。
-    early_console::write_str("### AP GDTR pre: 0x");
-    let mut buf = [0u8; 6];
-    for (i, b) in buf.iter_mut().enumerate() {
-        *b = unsafe { core::ptr::read_volatile((0x6F40 + i) as *const u8) };
-    }
-    for b in buf {
-        early_console::write_hex(b as u64);
-    }
-    early_console::write_str("\n### AP GDTR post: 0x");
-    for (i, b) in buf.iter_mut().enumerate() {
-        *b = unsafe { core::ptr::read_volatile((0x6F48 + i) as *const u8) };
-    }
-    for b in buf {
-        early_console::write_hex(b as u64);
-    }
-    early_console::write_str("\n");
+    // S-3d 诊断：AP 最后到达的阶梯级标（0 = 连 SIPI 都没响应；
+    // 0xA1..0xA7 = 模式梯子进度，见 AP_STAGE_MARK 文档）。
     let stage = unsafe { core::ptr::read_volatile(0x6F00 as *const u8) };
-    let ip = unsafe { core::ptr::read_volatile(0x6F04 as *const u16) };
-    let cs = unsafe { core::ptr::read_volatile(0x6F06 as *const u16) };
     early_console::write_str("### AP stage: 0x");
     early_console::write_hex(stage as u64);
-    early_console::write_str(" #UD at CS:IP = 0x");
-    early_console::write_hex(((cs as u64) << 16) | ip as u64);
     early_console::write_str("\n");
     loop { unsafe { asm!("cli", options(nomem, nostack)); } }
 }
@@ -277,7 +258,9 @@ extern "C" fn rust_main64() -> ! {
         early_console::write_str(" ");
     }
     early_console::write_str("\nGDT C32@6120: ");
-    for off in 0x20..0x28 {
+    // code32 表项 = GDT base 0x6110 + selector 0x10 = 0x6120（九轮清单③：
+    // 原来误读 0x6130 = data 表项，把 data 内容当成 code32 误判"正确在位"）。
+    for off in 0x10..0x18 {
         let b = unsafe { core::ptr::read_volatile((0x6110 + off) as *const u8) };
         early_console::write_hex(b as u64);
         early_console::write_str(" ");
