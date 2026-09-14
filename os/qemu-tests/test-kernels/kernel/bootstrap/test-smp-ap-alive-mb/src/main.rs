@@ -86,11 +86,10 @@ fn fail(msg: &str) -> ! {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    early_console::write_str("### PANIC ###\n");
+    early_console::write_str("### PANIC\n");
+    // 不读 loc.file()（S-3d：字符串指针可能坏 → FF 风暴），只打行号。
     if let Some(loc) = info.location() {
-        early_console::write_str("### at ");
-        early_console::write_str(loc.file());
-        early_console::write_str(":");
+        early_console::write_str("### PANIC line: ");
         early_console::write_hex(loc.line() as u64);
         early_console::write_str("\n");
     }
@@ -239,12 +238,15 @@ core::arch::global_asm!(
 extern "C" fn rust_main64() -> ! {
     early_console::write_str("R64-START\n");
     early_console::write_str("### test_smp_ap_alive-mb (x86_64): S-3d via multiboot\n");
+    early_console::write_str("STEP1\n");
 
     // 开 LAPIC（spurious = enable + vector 0xFF）。
+    early_console::write_str("STEP2\n");
     unsafe {
         let spur = (0xFEE0_0000_usize + 0xF0_usize) as *mut u32;
         spur.write_volatile(0x1FF);
     }
+    early_console::write_str("STEP3\n");
 
     // 跳板恒等页表根（<4GB，AP 阶梯的 CR3 直接可用）。
     let root = core::ptr::addr_of!(MB_PML4) as u64;
