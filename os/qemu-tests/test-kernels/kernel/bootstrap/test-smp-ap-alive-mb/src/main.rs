@@ -252,6 +252,20 @@ extern "C" fn rust_main64() -> ! {
     early_console::write_str("STEP4\n");
     unsafe { minix_arch::x86_64::ap_early_entry::fill_bootstrap(0x6000, &record); }
     early_console::write_str("STEP5\n");
+    // S-3d 诊断：GDT 页回读（desc@0x6030 的 6 字节 + code32 表项@0x6120 的 8 字节）。
+    early_console::write_str("GDT DESC@6030: ");
+    for off in 0x30..0x36 {
+        let b = unsafe { core::ptr::read_volatile((0x6000 + off) as *const u8) };
+        early_console::write_hex(b as u64);
+        early_console::write_str(" ");
+    }
+    early_console::write_str("\nGDT C32@6120: ");
+    for off in 0x20..0x28 {
+        let b = unsafe { core::ptr::read_volatile((0x6110 + off) as *const u8) };
+        early_console::write_hex(b as u64);
+        early_console::write_str(" ");
+    }
+    early_console::write_str("\n");
 
     // 清级标，发 INIT-SIPI。
     unsafe { core::ptr::write_volatile(0x6F00 as *mut u8, 0); }

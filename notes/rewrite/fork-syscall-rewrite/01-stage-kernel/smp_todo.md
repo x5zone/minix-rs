@@ -1587,3 +1587,21 @@ multiboot 装载器 32 位平坦段——即远跳根本未执行，CPU0 仍在�
   本身有 preliminary 问题）；② 阶梯 lgdt **之后**加 `sgdt [0x6F48]` 回读对比
   （验证 lgdt 的读取/装载）；③ 若 GDTR 正确而 FJ16 仍 #GP(0x10)，则 dump
   GDT+0x10 的 8 字节（AP 视角）对比 BSP 写入值。
+
+**→ 第八轮（sgdt 回读诊断已编码待跑）**：分析确认 **AP 的 #GP(0x10) = 阶梯 lgdt
+装载了垃圾 GDTR**（-d int 现场实证 GDTR = {0xFF53F000, 0xFF53}——从 AP 视角读
+PA 0x6030 得到的是 flash/SeaBIOS 相位的字节，非 BSP 写的 desc）。**已编码待跑
+（ap_early_entry.rs 阶梯 M1 与 lgdt 之间插入 sgdt 回读）**：
+```
+"  mov byte ptr [0x6F00], 0xA1",
++ "  sgdt [0x6F40]",            // AP 视角的 GDTR 原始值（lgdt 前）
+"  .byte 0x66, 0x0F, 0x01, 0x15",
+"  .word 0x6030",
++ "  mov byte ptr [0x6F00], 0xA2",   // lgdt 后级标（原 a2 位置前移）
++ "  sgdt [0x6F48]",            // lgdt 后的 GDTR（验证装载）
+```
+BSP 侧超时打印 0x6F40/0x6F48 的 12 字节。**判读**：lgdt 前 GDTR 若非
+{0x27, 0x6110} → PA 0x6030 的内容在 AP 读取时≠BSP 写入（内存可见性/时序）；
+若 lgdt 后 GDTR ≠ {0x27, 0x6110} → lgdt 编码/路径错。**另注**：本会话已给
+rust_main64 加 STEP1-7 差分 + R64-START 最早打印 + panic handler 改行号打印
+（file() 坏指针已绕开），BOOT_ACK 握手验证基础设施就绪。
