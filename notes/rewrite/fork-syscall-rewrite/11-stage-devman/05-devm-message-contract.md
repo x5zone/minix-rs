@@ -73,6 +73,8 @@ static void do_reply(message *msg, int res)
 
 改的是**收到的那条消息**（`m_source` 不动，所以知道回给谁；`DEVICE_ID` 字由调用方事先填好——ADD 成功路径在 `do_reply` 前写 `msg->DEVMAN_DEVICE_ID = dev->dev_id`，device.c:268）。发送用 `ipc_send`（**异步**，发完不管——C 从不对回复 `sendrec`；回复的回复不存在）。Rust 的 `apply_reply` 原地改（`m_source` 不动）+ 清零其余字（C 留请求残留字，Rust 清零——残留是信息泄漏面，§3.4 取舍）。
 
+C 的"先填后戳"是**隐式契约**——调用方记得填 `DEVICE_ID`，`do_reply` 才不擦掉它。Rust 初版的 `apply_reply` 重建整个 union，把这条隐式契约结构性破坏了（调用方无处可填，ADD 回复只剩 RESULT 单字——首轮架构审查 DM-P2-1）。修正后原语是 `apply_reply_with_id(msg, res, device_id: Option<i32>)`：`Some(id)` 复刻 ADD 的双字回复（`m4_l1`=结果、`m4_l2`=新设备号，C device.c:270 → :213-219 的字节），`None` 覆盖 DEL/BIND/UNBIND（C 原样回传请求残留字，Rust 置零——取舍同上）；`apply_reply(msg, res)` 退化为 `None` 特例，既有调用点零改动。单测 `add_reply_carries_device_id_dual_word` 锁双字与清零两侧。
+
 注意 `do_reply` 是 `static`（device.c 私有），bind.c 不用它（自写 `m_type=REPLY + ipc_send(RS)`，bind.c:47-48/101-102——行为同，形式散；Rust 统一调 `apply_reply`，09 会收敛这两处）。
 
 ### 2.4 RS-only 门：EPERM 写了，但不回（bind.c:11-19, 60-68）
@@ -132,7 +134,7 @@ C 的 `do_reply` 只改两字，grant id/size 残留仍在消息里发回（发�
 
 ```
 os/servers/devman/src/ipc/
-  message.rs  — 相位视图（grant_id/grant_size/request_endpoint/device_id/result）+ apply_reply + check_rs（+3 测试）
+  message.rs  — 相位视图（grant_id/grant_size/request_endpoint/device_id/result）+ apply_reply（= apply_reply_with_id(None) 特例）+ check_rs（+4 测试）
   dispatch.rs — Handler 五变体 + dispatch()（+2 测试）
   minix-types/src/types/com.rs — DEVMAN 数字块 + RS_PROC_NR（+1 测试 test_devman_messages）
 ```

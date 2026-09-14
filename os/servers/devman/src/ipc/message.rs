@@ -62,6 +62,18 @@ pub fn result(msg: &Message) -> i32 {
 /// The actual send is transport business (`ipc_send`, async — C never
 /// `sendrec`s a reply); 07–09 call this then hand the message out.
 pub fn apply_reply(msg: &mut Message, res: i32) {
+    apply_reply_with_id(msg, res, None);
+}
+
+/// C: `do_reply` with the ADD-success DEVICE_ID fill. C splits the stamp
+/// in two: the caller writes `msg->DEVMAN_DEVICE_ID` (= m4_l2) *before*
+/// `do_reply` sets `DEVMAN_RESULT` (= m4_l1) and sends (device.c:270 →
+/// :213-219) — the ADD reply is a two-word answer (result + new id).
+/// Rust makes that implicit pre-fill an explicit parameter instead:
+/// `Some(id)` reproduces the C bytes on the ADD path, `None` covers
+/// DEL/BIND/UNBIND where C ships the request's stale m4 words back and
+/// Rust zeroes them (hygienic equivalent, 05 §3.4).
+pub fn apply_reply_with_id(msg: &mut Message, res: i32, device_id: Option<i32>) {
     msg.m_type = DEVMAN_REPLY;
     // SAFETY: union *construction* is safe Rust (only reads are unsafe);
     // all other words are zeroed (C leaves stale request words behind —
@@ -69,6 +81,7 @@ pub fn apply_reply(msg: &mut Message, res: i32) {
     msg.m_u = minix_types::MessageUnion {
         m_m4: MessageM4 {
             m4l1: res as i64,
+            m4l2: device_id.map(i64::from).unwrap_or(0),
             ..MessageM4::default()
         },
     };
@@ -139,5 +152,25 @@ mod tests {
         assert_eq!(check_rs(RS_PROC_NR), Ok(()));
         assert_eq!(check_rs(Endpoint(7)), Err(Errno::EPERM));
         assert_eq!(check_rs(Endpoint(0)), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn add_reply_carries_device_id_dual_word() {
+        // DM-P2-1: the ADD reply is a two-word answer — RESULT (m4_l1)
+        // plus the new DEVICE_ID (m4_l2), C device.c:270 → :213-219. The
+        // explicit parameter replaces C's implicit pre-fill; the None
+        // path keeps the zeroing hygiene (05 §3.4).
+        let mut rep = request(DEVMAN_ADD_DEV, 11, 256, 0);
+        apply_reply_with_id(&mut rep, 0, Some(7));
+        assert_eq!(rep.m_type, DEVMAN_REPLY);
+        assert_eq!(result(&rep), 0);
+        assert_eq!(rep.m_source, Endpoint(7)); // untouched, like C
+        assert_eq!(unsafe { rep.m_u.m_m4 }.m4l2, 7);
+        // DEL/BIND/UNBIND replies carry no id: m4_l2 zeroes (C ships the
+        // request's stale word back — documented divergence, 05 §3.4).
+        let mut plain = request(DEVMAN_DEL_DEV, 3, 9, 0);
+        apply_reply(&mut plain, 0);
+        assert_eq!(result(&plain), 0);
+        assert_eq!(unsafe { plain.m_u.m_m4 }.m4l2, 0);
     }
 }
