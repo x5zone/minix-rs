@@ -133,7 +133,7 @@ MIB 在 boot 映像里排在 TTY 之后、VM 之前（`kernel/table.c:60` 登记
 | D4 | 回信规则变纯函数 | `if (r != EDONTREPLY) send` 内联（`:482`） | `should_reply(result: i32) -> bool`（`dispatch.rs:116`） | 与 DS 同款 verdict 层：规则一句话，值得一个名字；循环体以后长什么样都不影响它 |
 | D5 | 解码六步只留 verdict，效果全部交出 | 一个函数里混着 `sys_datacopy`、handler 调用和纯判断 | `check_namelen` / `classify_name` / `pair_oldp` / `pair_newp` / `map_sysctl_reply` 五个纯函数（`dispatch.rs:126,153,175,197,217`）；长名字拷贝与 handler 调用移交 06/10 的 trait | C 把"判哪条路"和"走这条路"焊在一起；Rust 只判不走——判是纯逻辑可单测，走要等 IPC/拷贝落地；`classify_name` 对越界输入取 `Copy` 臂而不 panic：判错路最多多拷一次，trap 则全盘皆输 |
 | D6 | 启动注册变类型，同体不同命显式化 | 两次 `sef_setcb_*` 挂同一 `mib_init`，差异只在注释（`:419-425`） | `MibInitKind::{Fresh, RestartLossy}`（`sef.rs:24`） | C 的差异藏在注释里，注释会撒谎，类型不会；`RestartLossy` 把"动态叶子全丢、调用者负责重建"写进名字，08/12 的重建义务从这里就能 grep 到 |
-| D7 | 收尾换算变纯函数 | 四行 `if/else` 内联（`:368-377`） | `map_sysctl_reply(result, oldaddr, oldlen, reslen) -> (code, out_oldlen)`（`dispatch.rs:217`） | `ENOMEM` 在这里是"信封太小"不是"内存不够"（§1.4）；函数签名把"长度永远照给"变成类型保证：返回二元组里第二个分量无条件是完整长度 |
+| D7 | 收尾换算变纯函数，handler 结果类型化 | 四行 `if/else` 内联（`:368-377`）；`call_reslen` 是调用结构体里的旁路通道 | `SysctlOutcome{Done, Err{code,reslen}}` + `map_sysctl_reply(outcome, oldaddr, oldlen) -> (code, out_oldlen)`（`dispatch.rs`） | `ENOMEM` 在这里是"信封太小"不是"内存不够"（§1.4）；C 的旁路通道只能靠约定"reslen 只随错误出现"，Rust 把这条约定做成枚举——成功变体里写不出 reslen，EEXIST 的节点回显（`tree.c:652-664`）在类型里有名有姓；返回二元组第二分量无条件是完整长度的保证不变 |
 
 微内核对照（类比，非移植依据）：单线程收信循环是 MINIX/Redox/seL4 用户态服务器的共同默认形状，本篇的 `triage`/`should_reply` 对应"分类—执行—应答"三段里的第一段和第三段；Redox 的 scheme 命名空间按路径分发请求，MIB 按整数名字分发——都是"名字→处理者"的查表，只是 MIB 的名字是整数数组（`CTL_MAXNAME=12` 个 `int`），这是 NetBSD sysctl 遗产（02 细讲）。对照的结论只有一个：循环骨架不值得发明，保持三段式，把心智花在"六道门"上。
 

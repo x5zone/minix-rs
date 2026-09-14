@@ -85,38 +85,61 @@ pub enum LevelVerdict {
     Descend,
 }
 
+/// The per-level shape facts the walker reads off the node.
+///
+/// C: `tree.c:1384-1470` reads these fields straight off `struct
+/// mib_node` mid-loop. Nine positional parameters invited transposed
+/// bools that no compiler catches, so the facts travel as one named
+/// value; `auth` stays a separate parameter — it is the *caller's*
+/// credential, not the node's shape.
+/// `[ARCH: ...]` struct-of-facts replaces C's inline field reads; the
+/// ordering and outcomes are unchanged. 10-mib-dispatch.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelFacts {
+    /// Data type without PARENT semantics: the leaf test
+    /// (`is_leaf_flags`, :1425).
+    pub is_leaf: bool,
+    /// REMOTE flag set — relay, not local (:1404).
+    pub remote: bool,
+    /// PARENT read *before* a remote call (:1405-1406 snapshot — the
+    /// node may be gone when the call returns).
+    pub can_restart: bool,
+    /// Function pointer present (non-leaf without PARENT, :1430).
+    pub has_func: bool,
+    /// VERIFY bit on a leaf (:1426-1427).
+    pub has_verify: bool,
+    /// Name components left *after* this one.
+    pub remaining: u32,
+    /// The caller supplied new data (the write path is in play).
+    pub has_new: bool,
+    /// The node's flag word (the write bars read it, 07).
+    pub node_flags: u32,
+}
+
 /// Judge one resolved child.
 ///
-/// Inputs are precomputed shape facts (the walker reads them off the
-/// node; `has_func_ptr` is "func/verify pointer set" as appropriate).
-/// Write bars reuse 07's [`check_write`] — same two bars, one
-/// implementation (`:1446-1458` ≡ 07's contract).
-#[allow(clippy::too_many_arguments)]
-pub const fn judge_level(
-    is_leaf: bool,
-    remote: bool,
-    can_restart: bool,
-    has_func: bool,
-    has_verify: bool,
-    remaining: u32,
-    has_new: bool,
-    node_flags: u32,
-    auth: CallAuth,
-) -> LevelVerdict {
-    if remote {
-        return LevelVerdict::RemoteCall { can_restart };
+/// Ordered exactly as C judges the level: remote (:1404), leaf/name
+/// exhaustion (:1437), write bars (:1446-1458 — 07's `check_write`,
+/// same two bars, one implementation), then terminal action. Inputs
+/// arrive as one [`LevelFacts`] value; see its doc for why.
+pub const fn judge_level(facts: LevelFacts, auth: CallAuth) -> LevelVerdict {
+    if facts.remote {
+        return LevelVerdict::RemoteCall { can_restart: facts.can_restart };
     }
-    if is_leaf && remaining > 0 {
+    if facts.is_leaf && facts.remaining > 0 {
         return LevelVerdict::LeafOverflow;
     }
-    if (is_leaf || has_func) && has_new && check_write(node_flags, true, auth).is_err() {
+    if (facts.is_leaf || facts.has_func)
+        && facts.has_new
+        && check_write(facts.node_flags, true, auth).is_err()
+    {
         return LevelVerdict::WriteDenied;
     }
-    if has_func {
+    if facts.has_func {
         return LevelVerdict::CallFunc;
     }
-    if is_leaf {
-        return LevelVerdict::Readwrite { verify: has_verify };
+    if facts.is_leaf {
+        return LevelVerdict::Readwrite { verify: facts.has_verify };
     }
     LevelVerdict::Descend
 }
@@ -237,74 +260,82 @@ mod tests {
         assert_eq!(resolve_shape(false, false, false, true), (true, false));
     }
 
+    /// A bare level: a plain RW leaf with `remaining` components left.
+    /// Individual cases override the named fields they care about —
+    /// transposed booleans are unrepresentable by construction.
+    fn facts(is_leaf: bool, remaining: u32) -> LevelFacts {
+        LevelFacts {
+            is_leaf,
+            remote: false,
+            can_restart: false,
+            has_func: false,
+            has_verify: false,
+            remaining,
+            has_new: false,
+            node_flags: 0,
+        }
+    }
+
     #[test]
     fn test_judge_level_terminals() {
         let rw = CTLFLAG_READWRITE;
         // Leaf with name left: ENOTDIR (:1437-1438).
         assert_eq!(
-            judge_level(
-                true,
-                false,
-                false,
-                false,
-                false,
-                2,
-                false,
-                rw,
-                CallAuth::Yes
-            ),
+            judge_level(LevelFacts { node_flags: rw, ..facts(true, 2) }, CallAuth::Yes),
             LevelVerdict::LeafOverflow
         );
         // Write bars deny (07 contract, :1446-1458).
         assert_eq!(
-            judge_level(true, false, false, false, false, 0, true, 0, CallAuth::Yes),
+            judge_level(LevelFacts { has_new: true, ..facts(true, 0) }, CallAuth::Yes),
             LevelVerdict::WriteDenied
         );
         assert_eq!(
-            judge_level(true, false, false, false, false, 0, true, rw, CallAuth::No),
+            judge_level(
+                LevelFacts { has_new: true, node_flags: rw, ..facts(true, 0) },
+                CallAuth::No
+            ),
             LevelVerdict::WriteDenied
         );
         // Func landing calls out (:1461-1462).
         assert_eq!(
-            judge_level(true, false, false, true, false, 0, false, rw, CallAuth::No),
+            judge_level(
+                LevelFacts { has_func: true, node_flags: rw, ..facts(true, 0) },
+                CallAuth::No
+            ),
             LevelVerdict::CallFunc
         );
         // Plain leaf reads/writes, verify flag carried (:1465-1467).
         assert_eq!(
-            judge_level(true, false, false, false, true, 0, false, rw, CallAuth::No),
+            judge_level(
+                LevelFacts { has_verify: true, node_flags: rw, ..facts(true, 0) },
+                CallAuth::No
+            ),
             LevelVerdict::Readwrite { verify: true }
         );
         // Plain parent descends (:1469-1470).
         assert_eq!(
             judge_level(
-                false,
-                false,
-                false,
-                false,
-                false,
-                3,
-                false,
-                rw,
+                LevelFacts { node_flags: rw, ..facts(false, 3) },
                 CallAuth::No
             ),
             LevelVerdict::Descend
         );
         // Remote short-circuits before shape (:1404).
         assert_eq!(
-            judge_level(false, true, true, false, false, 3, false, rw, CallAuth::No),
+            judge_level(
+                LevelFacts { remote: true, can_restart: true, node_flags: rw, ..facts(false, 3) },
+                CallAuth::No
+            ),
             LevelVerdict::RemoteCall { can_restart: true }
         );
         // ANYWRITE waives the uid bar (07).
         assert_eq!(
             judge_level(
-                true,
-                false,
-                false,
-                false,
-                false,
-                0,
-                true,
-                rw | CTLFLAG_ANYWRITE,
+                LevelFacts {
+                    has_new: true,
+                    node_flags: rw | CTLFLAG_ANYWRITE,
+                    ..facts(true, 0)
+                },
                 CallAuth::No
             ),
             LevelVerdict::Readwrite { verify: false }

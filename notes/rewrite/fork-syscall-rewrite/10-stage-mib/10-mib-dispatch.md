@@ -91,7 +91,7 @@ sysctl 次主线路径图（plan §1.3，本篇为家）：
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
 | D1 | 元 switch 变函数 | `switch` 内联 + 散 `return` | `judge_meta(id, remaining)`（`dispatch.rs:42`）+ `MetaOp`（`:25`） | "末位"规则（`:1365`）与"余皆不支持"（`:1377-1380`）值得独立测试（含 `-99 → EOPNOTSUPP`） |
-| D2 | 每层判决独立为函数 | 循环体内联九项判断 | `judge_level`（`dispatch.rs:95`）+ `LevelVerdict` 八种结果（`:63`） | 循环本体是走查效果（后续竞技场实现），判决是纯逻辑；是否可本地重启的标志先记录（`:1405-1406`）并编码进 `RemoteCall{can_restart}` 字段——确保调用前快照不丢失 |
+| D2 | 每层判决独立为函数，九项输入聚合成一个事实值 | 循环体内联九项判断 | `LevelFacts`（节点形状八字段）+ `judge_level(facts, auth)`（`tree/dispatch.rs`）+ `LevelVerdict` 八种结果 | 循环本体是走查效果（后续竞技场实现），判决是纯逻辑；九个裸参数里相邻 bool 换位编译器无感，具名结构体让"转置"不可表示；`auth` 留独立参数（是调用方凭证不是节点形状）；是否可本地重启的标志先记录（`:1405-1406`）并编码进 `RemoteCall{can_restart}` 字段——确保调用前快照不丢失 |
 | D3 | 形状变函数 | 三目内联（`:1425-1431`） | `resolve_shape`（`dispatch.rs:131`）返 `(has_func, has_verify)` | 叶/非叶双关（`:1430` 省字节）是最易误读的三行；函数+测试钉死"verify 优先"与"无 PARENT 即函数" |
 | D4 | 远端调用结果的去向独立为枚举 | 条件分支内联（`:1410-1411`） | `judge_remote_result`（`dispatch.rs:167`）+ `RemoteOutcome::{Return, RestartLocal}` | 三种去向（原样返回、返回未找到需本地无可重启、本地续走）是 12 的核心契约，值得独立命名；重启标记参数化使测试不依赖具体错误码常量 |
 | D5 | 终止情形的错误码映射独立为函数 | 多处直接返回错误码散写 | `terminal_code`（`dispatch.rs:183`）→ `Option`（动作类判决本身无错误码） | 写入权限的错误码复用 07 的常量（同值不重复断言）；走查器查表不重复判决 |

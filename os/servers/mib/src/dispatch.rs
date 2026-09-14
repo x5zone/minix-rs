@@ -17,7 +17,7 @@
 //! *which* path the loop takes and *what* the reply carries.
 
 use minix_types::{
-    EDONTREPLY, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGISTER, MIB_SYSCTL, OK,
+    EDONTREPLY, EEXIST, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGISTER, MIB_SYSCTL, OK,
 };
 
 /// Largest sysctl name the loop accepts, in components.
@@ -202,33 +202,71 @@ pub const fn pair_newp(newaddr: u64, newlen: u64) -> NewpPresence {
     }
 }
 
+/// What a handler produced, before the reply is shaped.
+///
+/// C speaks two channels: the handler returns one `ssize_t` (a length,
+/// or a negative errno), and error-time extras travel out of band — the
+/// handler stashes a `call_reslen` into the call struct via
+/// `mib_setoldlen` (`main.c:147-152`), which only EEXIST's node echo
+/// ever fills today (`tree.c:652-664`). Two parallel channels invite
+/// half-pairings: a reslen nobody reads on success, an EEXIST that
+/// loses its echo. The verdict layer therefore names the pairing —
+/// reslen rides *only* on errors, as one value.
+/// `[ARCH: ...]` C's mutable call-struct side channel becomes an enum
+/// variant; the wire behavior (`main.c:368-377`) is unchanged.
+/// 01-mib-init-main.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysctlOutcome {
+    /// Handler succeeded; the payload is the full result length.
+    Done(u64),
+    /// Handler failed; `reslen` is the staged error-time length (zero
+    /// for every error except EEXIST's node echo).
+    Err {
+        /// The errno the caller hears.
+        code: i32,
+        /// The staged `call_reslen` (usually zero, `memset(&m_out)`).
+        reslen: u64,
+    },
+}
+
+impl SysctlOutcome {
+    /// An error with no staged length (the common case).
+    pub const fn err(code: i32) -> Self {
+        Self::Err { code, reslen: 0 }
+    }
+
+    /// An error carrying the staged length (EEXIST's node echo).
+    pub const fn err_with_len(code: i32, reslen: u64) -> Self {
+        Self::Err { code, reslen }
+    }
+}
+
 /// Map a handler outcome to the reply (`main.c:368-377`).
 ///
 /// Returns `(reply_code, out_oldlen)` for `m_mib_lc_sysctl.oldlen`
 /// (ipc.h:1551). Two arms, both NetBSD-inherited:
 ///
-/// - `r >= 0`: `r` is the full result length. It is always reported —
+/// - `Done(r)`: `r` is the full result length. It is always reported —
 ///   even when it did not fit — and when the sink was given but too
-///   small, success degrades to `ENOMEM` (`:371-374`). Partial bytes plus
-///   the full length: the caller learns *how much to retry with*.
-/// - `r < 0`: a real error. Whatever `call_reslen` the handler staged
-///   (via `mib_setoldlen`, `:147-152` — today only node-create
-///   collisions, `EEXIST` plus the existing node) rides along (`:376`).
+///   small, success degrades to `ENOMEM` (`:371-374`). Partial bytes
+///   plus the full length: the caller learns *how much to retry with*.
+/// - `Err`: a real error. Whatever `reslen` the handler staged (today
+///   only node-create collisions, `EEXIST` plus the existing node)
+///   rides along (`:376`).
 pub const fn map_sysctl_reply(
-    handler_result: i64,
+    outcome: SysctlOutcome,
     oldaddr: u64,
     oldlen: u64,
-    error_reslen: u64,
 ) -> (i32, u64) {
-    if handler_result >= 0 {
-        let full = handler_result as u64;
-        if oldaddr != 0 && oldlen < full {
-            (ENOMEM, full)
-        } else {
-            (OK, full)
+    match outcome {
+        SysctlOutcome::Done(full) => {
+            if oldaddr != 0 && oldlen < full {
+                (ENOMEM, full)
+            } else {
+                (OK, full)
+            }
         }
-    } else {
-        (handler_result as i32, error_reslen)
+        SysctlOutcome::Err { code, reslen } => (code, reslen),
     }
 }
 
@@ -316,14 +354,19 @@ mod tests {
 
     #[test]
     fn test_map_sysctl_reply_overflow_becomes_enomem() {
-        // Success fits: OK + full length (`368-374`).
-        assert_eq!(map_sysctl_reply(4, 0x1000, 64, 0), (OK, 4));
+        // Success fits: OK + full length (:368-374).
+        assert_eq!(map_sysctl_reply(SysctlOutcome::Done(4), 0x1000, 64), (OK, 4));
         // Success overflows the sink: partial bytes + full length + ENOMEM.
-        assert_eq!(map_sysctl_reply(64, 0x1000, 4, 0), (ENOMEM, 64));
+        assert_eq!(map_sysctl_reply(SysctlOutcome::Done(64), 0x1000, 4), (ENOMEM, 64));
         // No sink: length reported, no complaint (`oldaddr == 0` skips).
-        assert_eq!(map_sysctl_reply(64, 0, 0, 0), (OK, 64));
-        // Error: staged reslen rides along (`375-376`, EEXIST path).
-        assert_eq!(map_sysctl_reply(-17, 0x1000, 64, 20), (-17, 20));
+        assert_eq!(map_sysctl_reply(SysctlOutcome::Done(64), 0, 0), (OK, 64));
+        // Error: staged reslen rides along (:375-376, EEXIST path).
+        assert_eq!(
+            map_sysctl_reply(SysctlOutcome::err_with_len(EEXIST, 20), 0x1000, 64),
+            (EEXIST, 20)
+        );
+        // Error without a staged length reports zero (`memset(&m_out)`).
+        assert_eq!(map_sysctl_reply(SysctlOutcome::err(EINVAL), 0x1000, 64), (EINVAL, 0));
     }
 
     /// `MIB_BASE + 3`: first number past the three letters (com.h:1030).
