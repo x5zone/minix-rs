@@ -38,14 +38,47 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 Some(slot) => slot,
                 None => return SyscallResult::Error(minix_types::EINVAL),
             };
+
+            // 预取锁释放所需身份（C `close_fd:702` 的 `vp = rfilp->filp_vno`）。
+            let (filp_vid, fp_pid) = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let filp_idx = match fp.filps[fd.get()] {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let pid = fp.pid;
+                let vid = state
+                    .filp_table
+                    .get(crate::filp::FilpId(filp_idx))
+                    .and_then(|f| f.vnode)
+                    .map(crate::vnode::VnodeId);
+                (vid, pid)
+            };
+
             let fp = match state.fproc_table.get_mut(fp_slot) {
                 Some(fp) => fp,
                 None => return SyscallResult::Error(minix_types::EINVAL),
             };
             match close_fd(fp, fd, &mut state.filp_table) {
-                Ok(()) => SyscallResult::Ok(0),
-                Err(e) => SyscallResult::Error(e.to_errno()),
+                Ok(()) => {}
+                Err(e) => return SyscallResult::Error(e.to_errno()),
             }
+
+            // POSIX 记录锁释放（C `close_fd:700-713`）：关闭文件的 vnode 上
+            // 属于本进程的锁全部释放并触发 lock_revive。
+            if let Some(vid) = filp_vid {
+                if let Some(v) = state.vnode_table.get(vid) {
+                    let key = crate::fcntl::VnodeKey { fs: v.fs, ino: v.ino };
+                    let pid = fp_pid as u32;
+                    let _released = state.lock_table.release_for(key, pid);
+                    // lock_revive 的复活广播归 17 号（select/lock 等待者）。
+                }
+            }
+
+            SyscallResult::Ok(0)
         }
         VfsCallNum::Lseek => {
             // lc_vfs_lseek（ipc.h:725-731）：off_t offset @0、int fd @8、
@@ -313,4 +346,63 @@ mod tests {
             let _ = dispatch_syscall(&mut state, call);
         }
     }
+    #[test]
+    fn test_dispatch_close_releases_locks() {
+        // C `close_fd:700-713`：关闭文件时释放该进程在该 vnode 上的记录锁。
+        let mut state = seeded(100);
+        let slot = minix_types::UserSlot::new(0);
+        let pid: u32 = 100;
+
+        // 填充 vnode 表：ino 5 = 被关文件
+        {
+            let v = state.vnode_table.get_mut(VnodeId(0)).unwrap();
+            v.fs = Endpoint::from_generation_slot(0, 10);
+            v.ino = 5;
+            v.mode = 0o100644;
+            v.dev = 100;
+        }
+        // 填充 filp：fd 3 → vnode 0
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state.filp_table.inc_count(fid);
+        {
+            let f = state.filp_table.get_mut(fid).unwrap();
+            f.vnode = Some(0);
+        }
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.filps[3] = Some(fid.get());
+        }
+        // 加锁：pid 100 在 vnode (fs 10, ino 5) 上持有记录锁
+        let key = crate::fcntl::VnodeKey { fs: Endpoint::from_generation_slot(0, 10), ino: 5 };
+        state.lock_table.release_for(key, pid); // 清空测试残留
+        // 直接操纵 lock_table 加锁（模拟 fcntl F_SETLK 已生效）
+        {
+            let fl = crate::fcntl::FileLock {
+                lock_type: crate::fcntl::LockType::Write,
+                pid,
+                vnode: key,
+                first: 0,
+                last: 100,
+            };
+            state.lock_table.slots[0] = Some(fl);
+            state.lock_table.nr += 1;
+        }
+        assert_eq!(state.lock_table.nr, 1);
+
+        // Close fd 3 → 锁应被释放
+        let fd = Fd::new(3).unwrap();
+        state.current_message = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Close as i32,
+            m_u: MessageUnion {
+                m_m7: MessageM7 { m7i1: 3, ..Default::default() },
+            },
+        };
+        let r = dispatch_syscall(&mut state, VfsCallNum::Close);
+        assert_eq!(r, SyscallResult::Ok(0));
+        assert!(state.fproc_table.get(slot).unwrap().filps[3].is_none());
+        assert_eq!(state.lock_table.nr, 0);
+        assert!(state.lock_table.slots[0].is_none());
+    }
+
 }
