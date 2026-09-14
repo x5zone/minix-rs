@@ -584,6 +584,40 @@ mod tests {
     }
 
     #[test]
+    fn test_reqwire_all_33_align_c_ipc_h() {
+        // E-REQWIRE 方案 B：全量 33 常量对账（C ipc.h REQ_GETNODE..REQ_BPEEK）。
+        // 绝对值 = 0xA00 + 偏移；FS 侧 minix-fs protocol.rs 同值。
+        let expected: [(u32, u32); 33] = [
+            (1, 0xA01), (2, 0xA02), (3, 0xA03), (4, 0xA04),
+            (5, 0xA05), (6, 0xA06), (7, 0xA07), (8, 0xA08),
+            (9, 0xA09), (10, 0xA0A), (11, 0xA0B), (12, 0xA0C),
+            (13, 0xA0D), (14, 0xA0E), (15, 0xA0F), (16, 0xA10),
+            (17, 0xA11), (18, 0xA12), (19, 0xA13), (20, 0xA14),
+            (21, 0xA15), (22, 0xA16), (23, 0xA17), (24, 0xA18),
+            (25, 0xA19), (26, 0xA1A), (27, 0xA1B), (28, 0xA1C),
+            (29, 0xA1D), (30, 0xA1E), (31, 0xA1F), (32, 0xA20),
+            (33, 0xA21),
+        ];
+        let consts = [
+            REQ_GETNODE, REQ_PUTNODE, REQ_SLINK, REQ_FTRUNC,
+            REQ_CHOWN, REQ_CHMOD, REQ_INHIBREAD, REQ_STAT,
+            REQ_UTIME, REQ_STATVFS, REQ_BREAD, REQ_BWRITE,
+            REQ_UNLINK, REQ_RMDIR, REQ_UNMOUNT, REQ_SYNC,
+            REQ_NEW_DRIVER, REQ_FLUSH, REQ_READ, REQ_WRITE,
+            REQ_MKNOD, REQ_MKDIR, REQ_CREATE, REQ_LINK,
+            REQ_RENAME, REQ_LOOKUP, REQ_MOUNTPOINT, REQ_READSUPER,
+            REQ_NEWNODE, REQ_RDLINK, REQ_GETDENTS, REQ_PEEK,
+            REQ_BPEEK,
+        ];
+        assert_eq!(consts.len(), 33);
+        for (i, &val) in consts.iter().enumerate() {
+            assert_eq!(val, expected[i].1, "REQ index {} mismatch", i + 1);
+        }
+        // 死常量 GETNODE 也在表内但不应被 dispatch。
+        assert!(!FsReq::is_known(REQ_GETNODE));
+    }
+
+    #[test]
     fn test_nreqs_getnode_dead() {
         assert_eq!(REQ_GETNODE, FS_BASE + 1);
         assert!(!FsReq::is_known(REQ_GETNODE));
