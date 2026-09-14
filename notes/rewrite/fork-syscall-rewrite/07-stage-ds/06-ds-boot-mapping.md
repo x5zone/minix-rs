@@ -78,6 +78,7 @@ DS 首次启动只做三件事：
 | D3 | 拷贝显式定界 | `strcpy` 三处（`:240,242`） | `copy_label` 三止（NUL / 16 / 79）+ `RS_OWNER_LANE` 常量 | `strcpy` 信任源端有界（RS 表），显式三止让信任变契约；label 上界 16 来自 `RS_MAX_LABEL_LEN`，不是 80——用错界会把服务名截错地方 |
 | D4 | 通知环留钩不定空线 | `map_service` 末尾调 `update_subscribers`（`:246`） | `map_service` **不调**，钩子文档化（`boot.rs` D5） | 通知环（10）在实现顺序上还没落地；调一个空函数等于撒谎，留钩子加文档等于诚实。接线时在 `apply_boot_map` 之后统一扫一轮，语义等价（启动时订阅表恒空，首轮本就是空转） |
 | D5 | 传输层剥离 | `sys_safecopyfrom` 内联（`:269`） | `apply_boot_map` 收 `&[BootService]` 切片 | grant 拷贝是传输（02/12），"逐个登记"是业务；切片把"我拿到表了"和"我怎么拿到的"分开，业务可纯测 |
+| D6 | 状态迁移显式化（A-6） | `sef_llvm_ds_st_init` 魔法插桩原地遍历静态内存 | `sef.rs::export_state`/`import_state`：条目表按 C 192B 规范布局（宽臂 data 栏在途写**池槽号**，导入侧重钉指针）、订阅表版本化记录（"DSS1"）、池字节随行 | minix-rs 无 LLVM magic；malloc 堆在 C 靠魔法做指针转换，Rust 的池把"字节随行 + 槽号重钉"写进类型——迁移后检索同一字节，订阅 pending 位不丢（2026-09-15 落地，`sef.rs` state_tests 往返锁定） |
 
 ---
 

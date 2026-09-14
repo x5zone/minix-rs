@@ -418,7 +418,7 @@ impl DsServer {
                     return r;
                 }
                 // C 420: the moved length rides `m_ds_reply.val_len`.
-                unsafe { message.m_u.m_ds_reply.val_len = len as i32 }
+                message.m_u.m_ds_reply.val_len = len as i32
             }
         }
         OK

@@ -22,7 +22,7 @@
 | P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | ✅ 已修复 2026-09-15（Fix #4，见 §9） |
 | P2 | P2-1 | plan.md staleness 批次（A-1 已解决、A-8 半过时、§3.5 基线失真） | ✅ 已修复 2026-09-15（Fix #6，见 §9） |
 | P2 | P2-2 | A-3 堆策略决策（随 P1-4(c) transport 设计一并定） | ✅ 已决策并实现 2026-09-15（Fix #7 顺带，见 §9） |
-| P2 | P2-3 | A-6 SEF/Live-Update 显式状态迁移设计 | open |
+| P2 | P2-3 | A-6 SEF/Live-Update 显式状态迁移设计 | ✅ 已修复 2026-09-15（Fix #8，见 §9） |
 | P3 | P3-1 | 卫生批次：fmt 22 处（13 文件）+ clippy 2 条 + entry_matches 死参数 | ✅ 已修复 2026-09-15（Fix #2 死参数 + Fix #5，见 §9） |
 | P3 | P3-2 | C 源 bug 标注（模式 78）：label 级联不 free 堆，Rust 超集修复未标注 | ✅ 已修复 2026-09-15（Fix #3 顺带，见 §9） |
 | P3 | P3-3 | boot.rs:90 的「§4.3」引用漂移（06 篇钩子实际在 D4） | ✅ 已修复 2026-09-15（Fix #6，见 §9） |
@@ -312,6 +312,14 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 - **设计演进**（防 translate 的实证）：arm_publish 首版用 `as_mut()` 改写席位——**Create 路径席位是 `None`，发布静默落空**，被自写的 E2E 回环测试当场拦截（`test_publish_check_roundtrip_through_transport`）；重写为 take-modify-put。另修「跨臂覆盖读陈旧 reallen」「失败路悬挂」两处 C bug 超集（均标注）。
 - **测试**：+8 个 E2E（publish→notify→check 三信回环 / retrieve 回信臂 / delete 唤醒 / getsysinfo 整表含首槽断言 / notify+野号 EINVAL / INITIAL 唤源 / 失败上限 panic / 池往返耗尽超宽）。
 - **Verified**：`cargo test -p minix-ds` **109 passed**（99 → 109）；minix-types 192 passed；clippy DS 侧 0；fmt 0。
+
+### ✅ Fix #8: P2-3 — A-6 状态迁移显式化落地（2026-09-15，先于 §9 序号的插入记录见下）
+
+**设计对比**（todo §2 P2-3 A/B 两案）：显式序列化（方案 A）落地并加宽——不只是两张表，**池字节随行 + 描述符槽号重钉**（C 的魔法靠 `dsi_u` 类型分派转换指针；Rust 在途格式让 data 栏携带池槽号，导入侧 `ptr_for_slot` 重钉——等价且无裸地址跨 incarnations）。
+
+- **File**：`sef.rs`（StateImage + export_state/import_state + 2 个往返测试，约 200 行）
+- **要点**：条目表按 C 192B 规范布局序列化（与 getsysinfo 镜像同一纪律）；订阅表版本化记录（"DSS1" 魔数 + 计数 + flags/owner/pattern/told-map 128 位）；池耗尽/越界槽号/坏魔数 → 整体拒绝（半恢复的注册中心比全新的更糟）。
+- **Verified**：往返测试锁定「检索同一字节 + pending 位不丢 + 池重钉」；坏镜像拒绝 ×2；`cargo test -p minix-ds` **111 passed**。
 
 ### ✅ Fix #6: P2-1 + P3-3 — plan.md staleness 入档批 + boot.rs 引用漂移（2026-09-15）
 

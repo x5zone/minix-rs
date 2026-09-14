@@ -96,6 +96,26 @@ impl DsPool {
         ))
     }
 
+    /// Rebuild a pool from transferred bytes and a liveness map: free
+    /// slots stack so the lowest pops first, matching [`DsPool::new`]'s
+    /// discipline (state transfer, A-6).
+    pub fn restore(bytes: &[u8; POOL_SLOTS * POOL_SLOT], live: &[bool; POOL_SLOTS]) -> Self {
+        let mut free = [0u8; POOL_SLOTS];
+        let mut free_len = 0usize;
+        for slot in (0..POOL_SLOTS).rev() {
+            if !live[slot] {
+                free[free_len] = slot as u8;
+                free_len += 1;
+            }
+        }
+        Self {
+            buf: *bytes,
+            free,
+            free_len,
+            live: *live,
+        }
+    }
+
     /// Retire a buffer descriptor (delete/overwrite teardown). The slot
     /// must be live: releasing through a stale descriptor is a caller
     /// ordering bug — `assert`, mirroring `free_sub_slot`'s discipline.
@@ -125,9 +145,27 @@ impl DsPool {
         slot * POOL_SLOT
     }
 
+    /// The pool's whole backing bytes (state transfer, A-6).
+    pub fn bytes(&self) -> &[u8; POOL_SLOTS * POOL_SLOT] {
+        &self.buf
+    }
+
+    /// Per-slot liveness (state transfer, A-6).
+    pub fn live_map(&self) -> &[bool; POOL_SLOTS] {
+        &self.live
+    }
+
+    /// A writable pointer to one slot (state-transfer re-stamping: the
+    /// caller owns liveness bookkeeping).
+    pub fn ptr_for_slot(&mut self, slot: usize) -> *mut u8 {
+        // SAFETY: slot < POOL_SLOTS by the caller's contract; the add
+        // stays inside this pool's allocation.
+        unsafe { self.buf.as_mut_ptr().add(slot * POOL_SLOT) }
+    }
+
     /// Which slot a descriptor points at (pointer distance to the pool
-    /// base, in slots).
-    fn slot_of(&self, body: &MemBody) -> usize {
+    /// base, in slots). Public for the state transfer's re-stamping.
+    pub fn slot_of(&self, body: &MemBody) -> usize {
         // SAFETY: `data` was stamped by `alloc` as `buf.as_mut_ptr() +
         // slot * POOL_SLOT` and is only handed back to this pool; the
         // offset math recovers the slot without dereferencing.
