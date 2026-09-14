@@ -29,7 +29,7 @@ pub mod riscv64;
 
 // ── Re-export board-level platform abstractions from minix-plat ──
 pub use minix_plat::{
-    EarlyConsole, InterruptController, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
+    EarlyConsole, InterruptRouter, PerCpuInterruptUnit, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
     NR_IRQ_VECTORS, NR_IRQ_HOOKS, CurrentInterruptController, CurrentEarlyConsole,
 };
 

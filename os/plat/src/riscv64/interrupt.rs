@@ -15,7 +15,7 @@
 
 use minix_platform::arch::riscv64::PlicDesc;
 
-use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
+use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_VECTORS};
 
 /// PLIC register offsets.
 const PLIC_PRIORITY: usize = 0x0000;
@@ -81,7 +81,7 @@ impl Riscv64InterruptController {
     }
 }
 
-impl InterruptController for Riscv64InterruptController {
+impl InterruptRouter for Riscv64InterruptController {
     fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
         let plic = desc.as_any()
             .downcast_ref::<PlicDesc>()
@@ -136,21 +136,6 @@ impl InterruptController for Riscv64InterruptController {
         }
     }
 
-    fn ack(&mut self, _irq: IrqVector) {
-        let claimed: u32;
-        unsafe {
-            claimed = self.plic_read32(Self::claim_offset(self.context));
-        }
-        self.last_claimed = claimed;
-    }
-
-    fn eoi(&mut self, _irq: IrqVector) {
-        // Write the interrupt ID to the complete register.
-        // PLIC_COMPLETE shares the same offset as PLIC_CLAIM (write = complete).
-        unsafe {
-            self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, self.last_claimed);
-        }
-    }
 
     fn mask_all(&mut self) {
         for word in 0..(self.nr_irqs + 31) / 32 {
@@ -200,5 +185,23 @@ mod tests {
         // moves off 0, the trap-entry mapping (scause SupervisorTimer →
         // vector) and the PLIC special case must move with it.
         assert_eq!(TIMER_IRQ.get(), 0);
+    }
+}
+
+impl PerCpuInterruptUnit for Riscv64InterruptController {
+    fn claim(&mut self) {
+        // SAFETY: PLIC claim-register read on the interrupting CPU; the
+        // read claims the interrupt and captures its ID for `complete`.
+        unsafe {
+            self.last_claimed = self.plic_read32(Self::claim_offset(self.context));
+        }
+    }
+
+    fn complete(&mut self) {
+        // SAFETY: write the captured ID to the complete register (PLIC_
+        // COMPLETE shares the claim offset; write = complete).
+        unsafe {
+            self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, self.last_claimed);
+        }
     }
 }

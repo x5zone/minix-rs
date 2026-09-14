@@ -126,7 +126,20 @@ pub enum IrqAction {
 /// | `mask_all()`| IOAPIC mask all      | GICD_ICENABLER=all | PLIC threshold=max |
 ///
 /// C: hw_intr_mask/unmask/ack — hw_intr.h:22-24/45-47
-pub trait InterruptController: Sized + Send + Sync {
+/// Global routing plane — owns IRQ-line enable/disable state (BSP-owned,
+/// BKL-serialized, lives in the global `IrqManager`).
+///
+/// I-13 (S-12 code-excellence, 2026-09-15): this trait was split out of the
+/// old monolithic `InterruptController` along the semantic seam that its own
+/// implementations already exhibited — all six `ack`/`eoi` impls across the
+/// three architectures ignored the `irq` parameter, while `mask`/`unmask`
+/// genuinely route lines. Routing is *global* state (one routing table per
+/// machine); the claim/complete pair moved to
+/// [`PerCpuInterruptUnit`].
+///
+/// C: intr_init + hw_intr enable/disable ops (kernel/interrupt.h driver
+/// table).
+pub trait InterruptRouter: Sized + Send + Sync {
     /// Create an instance from an interrupt controller descriptor.
     ///
     /// Stores the hardware base addresses from the descriptor into instance
@@ -140,7 +153,7 @@ pub trait InterruptController: Sized + Send + Sync {
     /// `ApicDesc`). Upper layers guarantee the correct type is passed.
     fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self;
 
-    /// Initialize the interrupt controller.
+    /// Initialize the interrupt controller (all lines masked afterwards).
     fn init(&mut self);
 
     /// Mask (disable) an IRQ line.
@@ -149,26 +162,41 @@ pub trait InterruptController: Sized + Send + Sync {
     /// Unmask (enable) an IRQ line.
     fn unmask(&mut self, irq: IrqVector);
 
-    /// Acknowledge (claim) the interrupt, before any handler runs.
-    ///
-    /// This is the *claim* half of the acknowledge/complete protocol: on
-    /// GIC it reads `ICC_IAR1_EL1` (the read itself acknowledges the
-    /// interrupt and captures the INTID that `eoi` must write back), on
-    /// PLIC it reads the claim register, and on x86 APIC there is no claim
-    /// step (the LAPIC EOI is the completion only — the ack is a no-op).
-    /// `IrqManager::dispatch` calls this first, so implementations whose
-    /// `eoi` depends on captured state stay correct.
-    ///
-    /// D-61 (2026-09-09): the x86 implementation previously wrote the LAPIC
-    /// EOI here — that is the *completion*, not a claim, and dispatching it
-    /// early would have re-opened the interrupt before handling.
-    fn ack(&mut self, irq: IrqVector);
-
-    /// Signal end-of-interrupt processing.
-    fn eoi(&mut self, irq: IrqVector);
-
     /// Mask all IRQ lines.
     fn mask_all(&mut self);
+}
+
+/// Per-CPU interrupt unit — the claim/complete half of the protocol
+/// (I-13 split; called on the interrupting CPU).
+///
+/// The captured identity (GIC IAR / PLIC claim) is *per-CPU* state: two
+/// CPUs claiming simultaneously must never share it. The current single
+/// instance lives in the global `IrqManager` and is safe because the BKL
+/// serializes every dispatch; when per-CPU dispatch lands (S-6 CpuLocal
+/// migration), instances move to `CpuLocal` and this trait's ownership
+/// follows — recorded as OQ-13a.
+///
+/// C: the claim/complete ops of the arch APIC/GIC/PLIC driver.
+pub trait PerCpuInterruptUnit: Send {
+    /// Acknowledge (claim) the interrupt, before any handler runs.
+    ///
+    /// x86 APIC: no claim step (no-op — the LAPIC EOI is the completion
+    /// only). GIC: reads `ICC_IAR1_EL1` (the read itself acknowledges and
+    /// captures the INTID that `complete` writes back). PLIC: reads the
+    /// claim register. D-61 (2026-09-09): the x86 implementation
+    /// previously wrote the LAPIC EOI here — that is the *completion*,
+    /// not a claim, and dispatching it early would have re-opened the
+    /// interrupt before handling.
+    ///
+    /// OQ-13a: GIC/PLIC lanes will evolve this to
+    /// `claim(&mut self) -> IrqVector` (the read returns the INTID for
+    /// intid-driven dispatch); the x86-first flow is gate-driven, so the
+    /// capture stays internal for now.
+    fn claim(&mut self);
+
+    /// Signal end-of-interrupt processing (write back the captured
+    /// identity; x86: the global LAPIC EOI).
+    fn complete(&mut self);
 }
 
 /// Maximum number of IRQ vectors.

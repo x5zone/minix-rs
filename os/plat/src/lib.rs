@@ -37,7 +37,7 @@ pub mod riscv64;
 // ── Re-exports ──
 pub use early_console::EarlyConsole;
 pub use interrupt::{
-    InterruptController, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
+    InterruptRouter, PerCpuInterruptUnit, IrqVector, IrqId, IrqNotifyId, IrqPolicy, IrqAction,
     NR_IRQ_VECTORS, NR_IRQ_HOOKS,
 };
 pub use port_io::PortIo;

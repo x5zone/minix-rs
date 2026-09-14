@@ -15,7 +15,7 @@
 
 use minix_platform::arch::aarch64::Gicv3Desc;
 
-use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
+use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_VECTORS};
 
 /// The boot clock source's IRQ vector: the EL1 non-secure physical timer
 /// (CNTP — the bank that `CNTP_CTL_EL0` controls at EL1) is PPI INTID 30.
@@ -140,7 +140,7 @@ impl AArch64InterruptController {
     }
 }
 
-impl InterruptController for AArch64InterruptController {
+impl InterruptRouter for AArch64InterruptController {
     fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
         let gicv3 = desc.as_any()
             .downcast_ref::<Gicv3Desc>()
@@ -201,19 +201,6 @@ impl InterruptController for AArch64InterruptController {
         }
     }
 
-    fn ack(&mut self, _irq: IrqVector) {
-        let iar: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar);
-        }
-        self.last_iar = (iar as u32) & 0x00FF_FFFF;
-    }
-
-    fn eoi(&mut self, _irq: IrqVector) {
-        unsafe {
-            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) self.last_iar as u64);
-        }
-    }
 
     fn mask_all(&mut self) {
         for irq in (32..self.nr_irqs).step_by(32) {
@@ -271,5 +258,24 @@ mod tests {
         // controller-side gate goes through GICR (PPI path), not GICD.
         assert_eq!(TIMER_IRQ.get(), 30);
         assert!(TIMER_IRQ.get() < 32);
+    }
+}
+
+impl PerCpuInterruptUnit for AArch64InterruptController {
+    fn claim(&mut self) {
+        let iar: u64;
+        // SAFETY: GIC system-register read on the interrupting CPU; the
+        // read itself acknowledges and captures the INTID for `complete`.
+        unsafe {
+            core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar);
+        }
+        self.last_iar = (iar as u32) & 0x00FF_FFFF;
+    }
+
+    fn complete(&mut self) {
+        // SAFETY: write back the captured IAR (see claim).
+        unsafe {
+            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) self.last_iar as u64);
+        }
     }
 }

@@ -7,7 +7,7 @@
 //!
 //! - **Not a trait** (§3.7): Logic is identical across all architectures.
 //!   The only architecture dependency (mask/unmask/eoi) is injected via
-//!   `IC: InterruptController`.
+//!   `IC: InterruptRouter + PerCpuInterruptUnit`.
 //! - **Index-based linked list** (§3.6): Replaces C's pointer-based list
 //!   with `Option<usize>` indices into a fixed-size pool.
 //! - **IrqAction enum** (§3.6): Replaces C's int return convention.
@@ -24,7 +24,7 @@
 //! as a generic parameter.
 
 use minix_plat::{
-    InterruptController, IrqAction, IrqId, IrqPolicy, IrqVector, IrqNotifyId,
+    InterruptRouter, PerCpuInterruptUnit, IrqAction, IrqId, IrqPolicy, IrqVector, IrqNotifyId,
     NR_IRQ_HOOKS, NR_IRQ_VECTORS,
 };
 use minix_types::Endpoint;
@@ -257,7 +257,7 @@ pub enum IrqError {
 /// Uses a fixed-size hook pool and per-vector chain heads.
 ///
 /// C: interrupt.c — put_irq_handler(), rm_irq_handler(), irq_handle()
-pub struct IrqManager<IC: InterruptController> {
+pub struct IrqManager<IC: InterruptRouter + PerCpuInterruptUnit> {
     hooks: [Option<IrqHookSlot>; NR_IRQ_HOOKS],
     handlers: [Option<usize>; NR_IRQ_VECTORS],
     actids: [IrqIdBitmap; NR_IRQ_VECTORS],
@@ -267,7 +267,7 @@ pub struct IrqManager<IC: InterruptController> {
 
 const NONE_HOOK: Option<IrqHookSlot> = None;
 
-impl<IC: InterruptController> IrqManager<IC> {
+impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
     pub fn new(controller: IC) -> Self {
         Self {
             hooks: [NONE_HOOK; NR_IRQ_HOOKS],
@@ -470,7 +470,7 @@ impl<IC: InterruptController> IrqManager<IC> {
 
         // Claim first (D-61): the completion written by `eoi` below must
         // pair with the INTID this read captures (GIC IAR / PLIC claim).
-        self.controller.ack(irq);
+        self.controller.claim();
 
         self.controller.mask(irq);
 
@@ -524,7 +524,7 @@ impl<IC: InterruptController> IrqManager<IC> {
             self.controller.unmask(irq);
         }
 
-        self.controller.eoi(irq);
+        self.controller.complete();
 
         Ok(())
     }
@@ -800,7 +800,7 @@ fn generic_notify_handler(ctx: &mut IrqHookContext) -> IrqAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_plat::InterruptController;
+    use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
 
     struct MockController {
         mask_log: alloc::vec::Vec<IrqVector>,
@@ -827,7 +827,7 @@ mod tests {
         }
     }
 
-    impl InterruptController for MockController {
+    impl InterruptRouter for MockController {
         fn new(_desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
             Self::new_mock()
         }
@@ -842,16 +842,23 @@ mod tests {
             self.call_log.push(("unmask", irq));
             self.unmask_log.push(irq);
         }
-        fn ack(&mut self, irq: IrqVector) {
-            self.call_log.push(("ack", irq));
-            self.ack_log.push(irq);
-        }
-        fn eoi(&mut self, irq: IrqVector) {
-            self.call_log.push(("eoi", irq));
-            self.eoi_log.push(irq);
-        }
         fn mask_all(&mut self) {
             self.all_masked = true;
+        }
+    }
+
+    impl PerCpuInterruptUnit for MockController {
+        fn claim(&mut self) {
+            // The dispatched vector is not an argument anymore (I-13: the
+            // claim is per-CPU state, x86 has none) — log with a zero
+            // vector; the ordering assertion below keys on the call NAME
+            // and the mask/unmask vectors.
+            self.call_log.push(("claim", IrqVector::new(0)));
+            self.ack_log.push(IrqVector::new(0));
+        }
+        fn complete(&mut self) {
+            self.call_log.push(("complete", IrqVector::new(0)));
+            self.eoi_log.push(IrqVector::new(0));
         }
     }
 
@@ -926,9 +933,11 @@ mod tests {
         mgr.dispatch(IrqVector::new(3), &mut notifier).unwrap();
 
         let ctrl = &mgr.controller;
-        // Exactly one claim and one completion, on the dispatched vector.
-        assert_eq!(ctrl.ack_log, alloc::vec![IrqVector::new(3)]);
-        assert_eq!(ctrl.eoi_log, alloc::vec![IrqVector::new(3)]);
+        // Exactly one claim and one completion (I-13: claim/complete are
+        // per-CPU ops without a vector argument — the dispatched vector is
+        // asserted via the mask/unmask log entries below).
+        assert_eq!(ctrl.ack_log.len(), 1, "exactly one claim");
+        assert_eq!(ctrl.eoi_log.len(), 1, "exactly one completion");
         // Full cross-method sequence, including register_hook's own
         // first-handler unmask (C interrupt.c:65 — the line is opened when
         // the hook is installed, before any interrupt arrives):
@@ -938,7 +947,7 @@ mod tests {
             ctrl.call_log.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             seq,
-            alloc::vec!["unmask", "ack", "mask", "unmask", "eoi"],
+            alloc::vec!["unmask", "claim", "mask", "unmask", "complete"],
             "dispatch controller-call order must be claim, mask, unmask, complete"
         );
     }

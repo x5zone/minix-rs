@@ -6,13 +6,14 @@
 
 use minix_platform::InterruptControllerDesc;
 
-use crate::interrupt::{InterruptController, IrqVector};
+use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector};
 use crate::early_console::EarlyConsole;
 use crate::port_io::PortIo;
 
 /// Mock interrupt controller for testing.
 ///
-/// Implements `InterruptController` by recording operations in logs
+/// Implements `InterruptRouter` + `PerCpuInterruptUnit` by recording
+/// operations in logs
 /// (via `log::debug!`) instead of touching real hardware.
 ///
 /// # Instance-based design
@@ -21,7 +22,7 @@ use crate::port_io::PortIo;
 /// does not care about the specific hardware parameters).
 pub struct MockInterruptController;
 
-impl InterruptController for MockInterruptController {
+impl InterruptRouter for MockInterruptController {
     fn new(_desc: &dyn InterruptControllerDesc) -> Self {
         Self
     }
@@ -38,16 +39,18 @@ impl InterruptController for MockInterruptController {
         log::debug!("mock InterruptController::unmask({})", irq.get());
     }
 
-    fn ack(&mut self, irq: IrqVector) {
-        log::debug!("mock InterruptController::ack({})", irq.get());
-    }
-
-    fn eoi(&mut self, irq: IrqVector) {
-        log::debug!("mock InterruptController::eoi({})", irq.get());
-    }
-
     fn mask_all(&mut self) {
         log::debug!("mock InterruptController::mask_all()");
+    }
+}
+
+impl PerCpuInterruptUnit for MockInterruptController {
+    fn claim(&mut self) {
+        log::debug!("mock PerCpuInterruptUnit::claim()");
+    }
+
+    fn complete(&mut self) {
+        log::debug!("mock PerCpuInterruptUnit::complete()");
     }
 }
 

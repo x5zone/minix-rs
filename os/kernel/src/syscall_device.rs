@@ -21,7 +21,7 @@ use crate::capability::ProcessCapability;
 use crate::kpriv::{KPriv, PrivTable};
 use crate::proc::KProcess;
 use crate::syscall::{KcallResult, Syscall};
-use minix_plat::InterruptController;
+use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
 
 // ── Minix3 error codes ──
 // Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
@@ -238,7 +238,7 @@ pub use minix_plat::PortIo;
 /// **Note**: The `IrqManager` parameter is required for hook operations.
 /// The `PrivTable` parameter is required for CHECK_IRQ permission checks.
 /// Both are passed from `kernel_call_dispatch` via the syscall dispatch layer.
-pub fn dispatch_irqctl<IC: InterruptController>(
+pub fn dispatch_irqctl<IC: InterruptRouter + PerCpuInterruptUnit>(
     caller: &mut KProcess,
     msg: &mut Message,
     irq_mgr: &mut IrqManager<IC>,
@@ -1897,17 +1897,22 @@ mod tests {
     /// `unmask` (a no-op here) when the first hook is installed.
     struct MockIrqController;
 
-    impl InterruptController for MockIrqController {
+    impl InterruptRouter for MockIrqController {
         fn new(_desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
             MockIrqController
         }
         fn init(&mut self) {}
         fn mask(&mut self, _irq: IrqVector) {}
         fn unmask(&mut self, _irq: IrqVector) {}
-        fn ack(&mut self, _irq: IrqVector) {}
-        fn eoi(&mut self, _irq: IrqVector) {}
         fn mask_all(&mut self) {}
     }
+
+    impl PerCpuInterruptUnit for MockIrqController {
+        fn claim(&mut self) {}
+        fn complete(&mut self) {}
+    }
+
+
 
     /// Build a SYS_IRQCTL message using the dedicated struct (not M1).
     fn build_irqctl_msg(request: i32, vector: i32, policy: i32, hook_id: i32) -> Message {

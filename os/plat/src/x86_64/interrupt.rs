@@ -15,7 +15,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use minix_platform::arch::x86_64::ApicDesc;
 
-use crate::interrupt::{InterruptController, IrqVector, NR_IRQ_VECTORS};
+use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_VECTORS};
 
 /// x86-64 IRQ-to-IDT vector offset.
 ///
@@ -281,7 +281,7 @@ unsafe fn wrmsr_msr_write(msr: u32, value: u64) { unsafe {
     );
 }}
 
-impl InterruptController for X86_64InterruptController {
+impl InterruptRouter for X86_64InterruptController {
     fn new(desc: &dyn minix_platform::InterruptControllerDesc) -> Self {
         let apic = desc.as_any()
             .downcast_ref::<ApicDesc>()
@@ -309,17 +309,6 @@ impl InterruptController for X86_64InterruptController {
         unsafe { self.ioapic_set_mask(irq.get(), false) };
     }
 
-    fn ack(&mut self, _irq: IrqVector) {
-        // The x86 APIC has no claim step: unlike GIC (read ICC_IAR1_EL1)
-        // or PLIC (read claim), nothing must be read before the handler
-        // runs. The LAPIC EOI register is the *completion* only — writing
-        // it here (the pre-D-61 implementation) would send the EOI before
-        // the handler and re-open the interrupt early.
-    }
-
-    fn eoi(&mut self, _irq: IrqVector) {
-        unsafe { self.lapic_eoi() };
-    }
 
     fn mask_all(&mut self) {
         for irq in 0..self.nr_irq_vectors as u8 {
@@ -365,5 +354,19 @@ mod tests {
         // if the clock source ever moves to the LAPIC timer, this pin must
         // be revisited together with TimerIrqGate's x86 semantics.
         assert_eq!(TIMER_IRQ.get(), 0);
+    }
+}
+
+impl PerCpuInterruptUnit for X86_64InterruptController {
+    fn claim(&mut self) {
+        // The x86 APIC has no claim step: unlike GIC (read ICC_IAR1_EL1)
+        // or PLIC (read claim), nothing must be read before the handler
+        // runs. The LAPIC EOI register is the *completion* only — writing
+        // it here (the pre-D-61 implementation) would send the EOI before
+        // the handler and re-open the interrupt early.
+    }
+
+    fn complete(&mut self) {
+        unsafe { self.lapic_eoi() };
     }
 }

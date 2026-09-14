@@ -963,7 +963,7 @@ pub fn init_clock_and_interrupts() {
         CurrentArchInit,
     };
     use crate::clock::ClockState;
-    use minix_plat::{InterruptController, CurrentInterruptController};
+    use minix_plat::{InterruptRouter, CurrentInterruptController};
     use minix_platform::{platform_desc, PlatformDesc};
 
     // Obtain the platform descriptor (initialized earlier from KernelInfo).
@@ -1811,7 +1811,7 @@ pub(crate) unsafe fn init_irq_manager_for_test() { unsafe {
 /// `#[cfg(target_arch)]` arms for behavior selection.
 #[cfg(test)]
 fn new_test_interrupt_controller() -> minix_plat::CurrentInterruptController {
-    use minix_plat::InterruptController;
+    use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
     minix_plat::CurrentInterruptController::new(&minix_platform::test_support::unit_test_irq_desc())
 }
 /// Get a reference to the global SMP state.
