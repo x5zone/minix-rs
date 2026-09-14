@@ -261,8 +261,10 @@ pub struct KinfoProc2 {
     pub p_ppid: i32,
     /// Session id. C: `p_sid`.
     pub p_sid: i32,
-    /// Process group id. C: `p__pgid` (proc.h hijacks `p_pgid`).
-    pub p__pgid: i32,
+    /// Process group id. C spells it `p__pgid` (double underscore) only
+    /// because `<sys/proc.h>` hijacks `p_pgid`; Rust has no such
+    /// collision, so the field takes the clean name.
+    pub p_pgid: i32,
     /// TTY process group id. C: `p_tpgid`.
     pub p_tpgid: i32,
     /// Effective user id. C: `p_uid`.

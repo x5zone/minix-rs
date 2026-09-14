@@ -582,9 +582,6 @@ pub const SZOMB: i32 = 5;
 /// Almost a zombie. C: `SDEAD 6` — sys/proc.h:345.
 pub const SDEAD: i32 = 6;
 
-/// Attachable group slots per process. C: `KI_NGROUPS 16` — sysctl.h:464.
-pub const KI_NGROUPS: usize = 16;
-
 /// Default niceness offset. C: `NZERO 20` — syslimits.h:93.
 pub const NZERO: i32 = 20;
 
@@ -717,6 +714,8 @@ pub const CTL_DESCRIBE: i32 = -7;
 #[cfg(test)]
 mod tests {
     use super::*;
+    // KI_NGROUPS lives in the A-4 ABI module (sysctl_abi) now.
+    use crate::types::sysctl_abi::KI_NGROUPS;
 
     #[test]
     fn test_top_level_ids() {
