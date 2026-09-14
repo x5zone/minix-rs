@@ -593,6 +593,23 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // behavior as before (nr_cpus=1).
     //
     init_smp_state();
+
+    // C main.c:149 parity — the BKL is acquired ONCE, early in main, before
+    // smp_start_aps: the AP bring-up path (wait_for_aps) does its
+    // UNLOCK→wait→LOCK dance against this acquisition, and every AP that
+    // enters the kernel expects the held-BKL convention. The guard leaks
+    // deliberately (transfer) — the BKL stays held until switch_to_user
+    // releases it.
+    crate::smp::bkl_lock().transfer();
+
+    // C main.c:311 parity — full SMP bring-up (smp_start_aps + wait_for_APs
+    // inside). C: "if smp_init() returns it means that it failed and we try
+    // to finish single CPU booting" — our smp_init embeds the same degrade-
+    // and-continue semantics (per-AP timeout skip + tolerant wait), so
+    // falling through to bsp_finish_booting is the C-shaped flow. Returns
+    // with the BKL held (wait_for_aps re-acquired it after the dance).
+    crate::smp::smp_init();
+
     // SAFETY: boot is single-threaded before BKL exists.
     unsafe {
         let smp_state = crate::smp_state_boot_unchecked();
@@ -774,7 +791,11 @@ fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
 ///
 /// C: prot_init() — protect.c:321 (x86) / protect.c:77 (ARM)
 #[cfg(not(feature = "mock"))]
-fn init_protection(kernel_info: &KernelInfo) {
+/// Protection + trap-entry bring-up — C prot_init/idt_init parity (kmain
+/// Phase B). `pub` since S-5: production phase reused verbatim by the L4
+/// bring-up test driver (`test-smp-aps`) — the AP tail's init_ap consumes
+/// the PROTECTION global this function fills.
+pub fn init_protection(kernel_info: &KernelInfo) {
     use minix_arch::{ProtectionArch, TrapEntryArch, CurrentProtection, CurrentTrapEntry};
 
     // Step 1: Initialize protection structures.
@@ -2054,18 +2075,14 @@ fn bsp_finish_booting(
     // Rust: AtomicBool store.
     KERNEL_MAY_ALLOC.store(false, Ordering::Release);
 
-    // Step 8.5: Acquire BKL (Big Kernel Lock)
-    // C: BKL_LOCK() — main.c:149 (called early in main(), before bsp_finish_booting)
-    // In C, the BKL is acquired once during boot and released only in
-    // switch_to_user() / IPC wait paths. On single-CPU, the BKL is always
-    // held while in kernel mode. On SMP, it serializes kernel entry points.
-    //
-    // R-05/B1: the guard is RAII (Drop releases BKL); `transfer()` hands
-    // ownership to the ambient held-BKL scope so the lock stays held across
-    // the call to switch_to_user(), which will release it before entering
-    // the idle loop. Binding the guard to a variable and letting it drop at
-    // end of scope would release the BKL too early.
-    smp::bkl_lock().transfer();
+    // Step 8.5: BKL held (S-5 realignment).
+    // C: BKL_LOCK() — main.c:149, early in main(). The acquisition moved to
+    // kmain before smp_init (this function's only caller): wait_for_aps's
+    // UNLOCK→wait→LOCK dance ends with the BKL held, so re-acquiring here
+    // (the pre-S-5 single-CPU arrangement) would deadlock the non-reentrant
+    // CAS lock. Debug-pinned so a future second caller cannot skip the
+    // acquisition silently.
+    debug_assert!(smp::bkl_is_locked(), "bsp_finish_booting requires the BKL (kmain acquires it before smp_init)");
 
     // Step 9: switch_to_user() — never returns
     // C: switch_to_user(); NOT_REACHABLE;

@@ -925,8 +925,14 @@ pub fn smp_init() {
         // SAFETY: low-identity RAM reserved for AP bring-up (S-3b contract).
         unsafe { install_at(minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize) };
 
-        // boot_lock critical section (C arch_smp.c:227-247).
-        let _boot = BOOT_LOCK.lock();
+        // boot_lock critical section (C arch_smp.c:227-247). The guard's
+        // scope is THIS INNER BLOCK: released after the last SIPI, before
+        // wait_for_aps — an outer-scope binding would hold boot_lock through
+        // the wait and deadlock every AP in ap_finish_booting (observed in
+        // the first L4 run: all three APs spinning in BOOT_LOCK while the
+        // BSP spun on online != boot_ack).
+        {
+            let _boot = BOOT_LOCK.lock();
 
         for logical in 0..topo.nr_cpus as u32 {
             if logical == bsp_logical {
@@ -951,7 +957,10 @@ pub fn smp_init() {
             };
             // SAFETY: scratch page is identity RAM reserved for AP bring-up.
             unsafe { fill_bootstrap(SCRATCH_LIN, &record) };
-            <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, AP_STARTUP_VECTOR as usize);
+            // Trait contract: `entry` is the trampoline PHYSICAL address
+            // (x86 derives vector = entry >> 12 internally) — the S-3d
+            // relocation moved it to 0x5000 (vector 0x05).
+            <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize);
 
             // Bounded per-AP ack wait (C arch_smp.c:131-141 parity). The AP
             // publishes boot_ack (Release) from the ladder's Rust entry.
@@ -973,7 +982,7 @@ pub fn smp_init() {
                 smp.cpu_set_flag(crate::proc::CpuId::new_unchecked(logical), CpuFlags::READY);
             }
         }
-        // boot_lock released here (guard drop) — C arch_smp.c:247.
+        } // inner block ends — boot_lock released here (guard drop), C arch_smp.c:247
 
         smp.wait_for_aps::<CurrentSmpArch>();
     }
@@ -1009,6 +1018,9 @@ fn ap_kernel_stack_top(logical_id: u32) -> u64 {
 #[cfg(target_arch = "x86_64")]
 unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_va: u64) -> ! {
     use minix_arch::ProtectionArch;
+    // Ack FIRST (C ap_cpu_ready parity): "finished reading the bootstrap
+    // record" — everything the ladder needed is in locals now.
+    unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
     crate::with_protection(|prot| prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va)));
     minix_arch::ap_write_syscall_msrs(minix_arch::syscall_entry_va());
     ap_finish_booting(logical_id);

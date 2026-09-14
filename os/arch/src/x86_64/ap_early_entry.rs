@@ -271,20 +271,24 @@ pub unsafe fn fill_bootstrap(scratch_lin: u32, record: &ApBootstrap) {
 /// Must only be entered by the AP ladder (MMU on, identity root active,
 /// running on the per-AP kernel stack).
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
-    // Stage 0xA7: Rust entry reached (S-3d diagnostic).
+    // Stage 0xA7 + record reads go through the IDENTITY map (VA = PA): the
+    // AP runs on the adopted bootstrap root, which maps low RAM identity but
+    // NOT the kernel DM window — the DM conversion here produced a #PF →
+    // triple fault the moment the production tail first ran on hardware
+    // (S-5 L4: CR2=0xffff8080_00006f00). The ladder's own marks (A1..A6)
+    // already write through the identity map; this is the same channel.
+    // S-7 switches the AP to the full kernel environment, where the DM
+    // conversion becomes the right tool.
     unsafe {
-        core::ptr::write_volatile(
-            X86_64DirectMap::kernel_phys_to_virt(PhysBytes(AP_STAGE_MARK as u64)).0 as *mut u8,
-            0xA7,
-        );
+        core::ptr::write_volatile(AP_STAGE_MARK as *mut u8, 0xA7);
     }
-    let va = X86_64DirectMap::kernel_phys_to_virt(PhysBytes(SCRATCH_LIN as u64)).0 as usize
-        + S_RECORD as usize;
-    let (magic, record) = unsafe {
-        (
-            core::ptr::read_volatile(va as *const u64),
-            core::ptr::read_volatile(va as *const ApBootstrap),
-        )
+    // Magic lives at S_MAGIC (+0); the record follows at S_RECORD (+8).
+    // (The pre-S-5 code read the magic at +8 — the record's first field —
+    // and asserted against BOOT_MAGIC_SENT; the DM-window #PF above always
+    // fired first, so this off-by-slot bug never executed.)
+    let magic = unsafe { core::ptr::read_volatile((SCRATCH_LIN as usize + S_MAGIC) as *const u64) };
+    let record = unsafe {
+        core::ptr::read_volatile((SCRATCH_LIN as usize + S_RECORD) as *const ApBootstrap)
     };
     assert_eq!(magic, BOOT_MAGIC_SENT, "AP entered with unpublished bootstrap record");
     // §3.9: everything needed after this point lives in locals — the
