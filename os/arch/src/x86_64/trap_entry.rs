@@ -133,6 +133,15 @@ impl X86_64TrapEntry {
             is_trap,
         );
     }
+
+    /// Whether `vector` carries a present gate in this table.
+    ///
+    /// S-8 load-safety half of the "no empty vector" stage invariant: the
+    /// stub installer cross-checks its coverage against this before the
+    /// table may go live via `load()`.
+    pub fn gate_present(&self, vector: u8) -> bool {
+        self.idt[vector as usize].p_dpl_type & GATE_PRESENT != 0
+    }
 }
 
 /// Write a 64-bit value to a Model-Specific Register.
@@ -222,6 +231,11 @@ impl TrapEntryArch for X86_64TrapEntry {
             entry.set_gate(0x50 + irq, 0, 0, 0, false); // master PIC
             entry.set_gate(0x70 + irq, 0, 0, 0, false); // slave PIC
         }
+
+        // LAPIC spurious interrupt (vector 0xFF). C registers a dedicated
+        // handler for it in APIC mode (apic.c apic_spurious_interrupt);
+        // without the gate, a spurious interrupt would triple-fault.
+        entry.set_gate(0xFF, 0, 0, 0, false);
 
         entry
     }

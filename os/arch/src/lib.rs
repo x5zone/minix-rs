@@ -236,6 +236,80 @@ pub type CurrentTrapEntry = crate::arm64::trap_entry::AArch64TrapEntry;
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 
+// ── S-8 trap-stub facade (smp_todo.md §3.7) ──
+//
+// `install_trap_stubs` writes the arch's real asm entry addresses into every
+// gate of the table; `syscall_entry_va` reports the SYSCALL entry address for
+// `TrapEntryArch::configure_syscall` (x86-64 LSTAR). Together they turn
+// `TrapEntryArch::load()` from "deferred" into a safe call: after both run,
+// no gate has an empty handler (the S-8 stage invariant).
+//
+// aarch64/riscv64 stub inventory (S-8 deliverable, 2026-09-14): both archs
+// use a single fixed asm vector (VBAR_EL1 table / stvec direct mode), where
+// `set_handler` is already a documented no-op — there is nothing to install
+// per-vector. The inventory also found that their `load()` paths reference
+// asm symbols that are declared but never defined
+// (`exc_vector_table` / `trap_vector`; zero `global_asm!` in either module)
+// — currently masked only by dead-code elimination because no caller
+// invokes `load()`. Their stub bodies stay part of their own bring-up
+// lanes (S-4 arm64/riscv64); recorded in smp_todo.md S-8.
+#[cfg(feature = "mock")]
+pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub fn install_trap_stubs(entry: &mut CurrentTrapEntry) {
+    crate::x86_64::trap_stub::install_idt_handlers(entry);
+}
+#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
+
+/// SYSCALL entry address for `TrapEntryArch::configure_syscall`.
+///
+/// x86-64: the LSTAR asm entry (`x86_syscall_entry`). aarch64/riscv64: 0 —
+/// their SYSCALL (SVC/ecall) shares the exception vector, so
+/// `configure_syscall` is a no-op and the value is unused (C parity: the
+/// kernel sources the entry from its own asm label, protect.c:189-205 —
+/// not from the boot-provided `KernelInfo.syscall_entry`, which is
+/// reference-only metadata).
+#[cfg(feature = "mock")]
+pub fn syscall_entry_va() -> minix_types::VirBytes {
+    minix_types::VirBytes::new(0)
+}
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub fn syscall_entry_va() -> minix_types::VirBytes {
+    crate::x86_64::trap_stub::syscall_entry_va()
+}
+#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+pub fn syscall_entry_va() -> minix_types::VirBytes {
+    minix_types::VirBytes::new(0)
+}
+
+/// Register the kernel-side trap/syscall dispatch bodies with the x86-64
+/// entry stubs (see `x86_64::trap_stub` for the gate rationale). Must run
+/// before `TrapEntryArch::load()`; a no-op on the mock/other-arch branches
+/// where the stubs do not exist.
+#[cfg(feature = "mock")]
+pub fn register_trap_dispatchers(
+    _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+    _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+) {
+}
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub fn register_trap_dispatchers(
+    trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+    syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+) {
+    crate::x86_64::trap_stub::register_dispatchers(trap, syscall);
+}
+#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+pub fn register_trap_dispatchers(
+    _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+    _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+) {
+}
+
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub use x86_64::trap_stub::TrapFrame;
+
 // ── CurrentClockArch type aliases ──
 #[cfg(feature = "mock")]
 pub type CurrentClockArch = MockClockArch;
