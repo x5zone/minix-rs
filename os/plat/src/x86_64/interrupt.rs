@@ -129,8 +129,30 @@ impl X86_64InterruptController {
 
     unsafe fn init_ioapic(&mut self) { unsafe {
         for irq in 0..NR_IRQ_VECTORS as u8 {
-            self.ioapic_set_mask(irq, true);
+            self.ioap_set_route_and_mask(irq);
         }
+    }}
+
+    /// Program redirection entry `irq` with its C-parity delivery vector and
+    /// keep the line masked.
+    ///
+    /// S-8 (2026-09-14): QEMU/hardware reset leaves every RTE with vector 0
+    /// and the mask bit set. The first-handler unmask rule
+    /// (`IrqManager::register_hook` → `unmask`) only toggles the mask bit,
+    /// so a line unmasked without a programmed vector would deliver to IDT
+    /// vector 0 (#DE) — the timer interrupt would hit the divide-error gate.
+    /// C programs the same mapping when the APIC is initialized
+    /// (apic.c RTE setup, VECTOR(irq) = 0x50+irq / 0x70+irq-8); lines ≥ 16
+    /// (QEMU's extra IOAPIC inputs) stay masked with the reset vector 0 —
+    /// no handler exists for them and nothing unmasks them.
+    unsafe fn ioap_set_route_and_mask(&mut self, irq: u8) { unsafe {
+        let vector = match irq {
+            0..=7 => IRQ0_VECTOR + irq,
+            8..=15 => IRQ0_VECTOR + 0x20 + (irq - 8),
+            _ => 0, // masked, never delivered
+        };
+        let entry = (vector as u64) | (IOAPIC_REDTBL_MASK as u64);
+        ioapic_write_redtbl(self.ioapic_base, irq, entry);
     }}
 
     unsafe fn ioapic_set_mask(&mut self, irq: u8, mask: bool) { unsafe {

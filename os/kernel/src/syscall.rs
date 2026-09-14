@@ -216,7 +216,7 @@ impl KcallResult {
     /// C `kernel_call_finish` else-branch handles all non-VMSUSPEND cases
     /// uniformly (clear saved_msg + optional reply + release BKL).
     /// `VmSuspend` is excluded — it has its own dedicated path.
-    fn reply_code(&self) -> Option<i32> {
+    pub(crate) fn reply_code(&self) -> Option<i32> {
         match self {
             KcallResult::Ok(ret) => Some(*ret),
             KcallResult::BadCall => Some(EBADREQUEST),

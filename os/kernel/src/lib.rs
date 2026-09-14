@@ -60,6 +60,7 @@ pub mod dm_coverage;
 pub mod vm_handoff;
 
 pub mod irq_manager;
+pub mod trap_dispatch;
 pub mod syscall;
 pub mod memmap;
 pub mod ipc;
@@ -775,8 +776,24 @@ fn init_protection(kernel_info: &KernelInfo) {
     //     in a later boot phase after real handlers are installed via set_handler().
     // C: SYSCALL MSR setup — protect.c:189-205
     let mut trap = CurrentTrapEntry::init();
-    trap.configure_syscall(kernel_info.syscall_entry());
-    // Do NOT call trap.load() here — handler addresses are still 0.
+
+    // S-8 (2026-09-14): the entry stubs exist — install their addresses into
+    // every gate (C: idt_init() fills real entry addresses, protect.c:245-268),
+    // point LSTAR at the kernel's own SYSCALL asm entry (C parity: tss_init
+    // uses the asm label, protect.c:189-205 — KernelInfo.syscall_entry is
+    // reference-only boot metadata), register the kernel-side dispatch bodies
+    // with the arch entry gate, and only then make the table live
+    // (C: idt_reload(), protect.c:268). Stage invariant from here on: no
+    // empty-vector / empty-handler gate, kernel runs IF=0 except at
+    // explicitly controlled sti points (all gates are interrupt gates).
+    use minix_arch::{install_trap_stubs, syscall_entry_va, register_trap_dispatchers};
+    install_trap_stubs(&mut trap);
+    trap.configure_syscall(syscall_entry_va());
+    register_trap_dispatchers(
+        trap_dispatch::x86_trap_dispatch_body,
+        trap_dispatch::x86_syscall_dispatch_body,
+    );
+    trap.load();
 }
 
 /// Initialize clock and interrupt controller.
@@ -1769,6 +1786,74 @@ pub(crate) fn ipc_filter_pool_with(_section: &crate::smp::BklSection<'_>) -> &'s
 /// `proc_table` is the `ProcessTable` built by `init_proc_and_boot` and
 /// threaded through Phase D→F. Step 2 (bill_ptr/proc_ptr=IDLE) and
 /// step 4 (RTS_PROC_STOP unset) operate on it.
+/// Program the boot clock source, register the clock IRQ hook, and open the
+/// timer gate — the C `boot_cpu_init_timer(system_hz)` three-part sequence
+/// (clock.c:294), extracted from `bsp_finish_booting` Step 6 so the S-8 L3
+/// bring-up test (`test-timer-irq`) reuses the production wiring verbatim.
+///
+/// Order contract (D-59, 2026-09-09 — the reason this is one function):
+/// program the source, register the handler, open the gate. Reordering any
+/// two steps leaves a live, unhandled interrupt source across boot.
+///
+/// C: boot_cpu_init_timer — clock.c:294 (init_local_timer +
+///    register_local_timer_handler); intr_init/apic gates.
+pub fn boot_init_timer() {
+    // Step 6: boot_cpu_init_timer(system_hz)
+    // C: boot_cpu_init_timer(system_hz) — clock.c:294, called from
+    // bsp_finish_booting (main.c:73). Since D-59 (2026-09-09) this is the
+    // ONLY place the boot clock source's hardware is touched, and it
+    // mirrors the C three-part sequence exactly:
+    //   (a) program the source — C `init_local_timer(freq)`:
+    //       PIT divisor on x86_64, CNTP_CVAL (gate kept closed,
+    //       CNTP_CTL_EL0 = Enable=0/IMASK=1) on aarch64, mtimecmp
+    //       (gate `sie.STIE` untouched) on riscv64.
+    //   (b) register the handler — C `register_local_timer_handler`
+    //       → `put_irq_handler` (arch_clock.c:190); the Rust
+    //       `IrqManager::register_hook` carries the same first-handler
+    //       unmask rule (interrupt.c:65), which opens the controller-side
+    //       delivery gate (IOAPIC IRQ 0 line / GICR_ISENABLER0 bit 30 /
+    //       no PLIC line for the local timer) under `minix_plat::TIMER_IRQ`.
+    //   (c) open the module-local gate — the analog of the C APIC path's
+    //       gate handling inside `init_local_timer`; on aarch64 it sets
+    //       CNTP_CTL_EL0 = Enable=1/IMASK=0, on riscv64 it sets
+    //       `sie.STIE`, and on x86_64 it is a documented no-op (the PIT
+    //       has no module-local gate; `[ARCH: gate-semantics]`).
+    // Before D-59, (a) ran early in Phase B with (c) folded into it — a
+    // live, unhandled timer across the whole boot.
+    //
+    // Instance-based design (04-platform-discovery.md §3.4): construct a
+    // transient clock arch instance from the global platform descriptor
+    // and call `init_timer` on it.
+    use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
+    use minix_platform::{platform_desc, PlatformDesc};
+    use minix_types::Endpoint;
+    let pd = platform_desc();
+    let mut clock_arch = CurrentClockArch::new(pd.timer());
+    clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
+
+    // D-46 (Step 1.5.7 landed, 2026-09-06 — software half): register the
+    // clock IRQ hook with the global IrqManager. The handler
+    // (`clock::clock_irq_handler`) advances the software clock and
+    // delivers expired alarm notifications from the CLOCK source.
+    // Hardware half (x86_64 asm IRQ stubs + IDT load + entry routing)
+    // remains deferred — see todo.md D-46.
+    let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
+    // A1: boot context — no BKL, no IRQs yet; boot_unchecked accessor.
+    unsafe { crate::irq_manager_boot_unchecked() }
+        .register_hook(
+            minix_plat::TIMER_IRQ,
+            crate::clock::clock_irq_handler,
+            clock_ep,
+            minix_plat::IrqNotifyId(0),
+            minix_plat::IrqPolicy::REENABLE,
+        )
+        .expect("register clock IRQ hook: no free slots in IRQ_MANAGER");
+    // (c) — gates last, handler already registered (see the Step 6 header
+    // for the per-architecture semantics of this call).
+    <CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq();
+}
+
+
 #[cfg(not(feature = "mock"))]
 fn bsp_finish_booting(
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -1849,59 +1934,11 @@ fn bsp_finish_booting(
     // `tsc_ctr_switch` on the first context switch. This matches the
     // deferred-but-functional behavior: the BSP gets a clean TSC baseline.
 
-    // Step 6: boot_cpu_init_timer(system_hz)
-    // C: boot_cpu_init_timer(system_hz) — clock.c:294, called from
-    // bsp_finish_booting (main.c:73). Since D-59 (2026-09-09) this is the
-    // ONLY place the boot clock source's hardware is touched, and it
-    // mirrors the C three-part sequence exactly:
-    //   (a) program the source — C `init_local_timer(freq)`:
-    //       PIT divisor on x86_64, CNTP_CVAL (gate kept closed,
-    //       CNTP_CTL_EL0 = Enable=0/IMASK=1) on aarch64, mtimecmp
-    //       (gate `sie.STIE` untouched) on riscv64.
-    //   (b) register the handler — C `register_local_timer_handler`
-    //       → `put_irq_handler` (arch_clock.c:190); the Rust
-    //       `IrqManager::register_hook` carries the same first-handler
-    //       unmask rule (interrupt.c:65), which opens the controller-side
-    //       delivery gate (IOAPIC IRQ 0 line / GICR_ISENABLER0 bit 30 /
-    //       no PLIC line for the local timer) under `minix_plat::TIMER_IRQ`.
-    //   (c) open the module-local gate — the analog of the C APIC path's
-    //       gate handling inside `init_local_timer`; on aarch64 it sets
-    //       CNTP_CTL_EL0 = Enable=1/IMASK=0, on riscv64 it sets
-    //       `sie.STIE`, and on x86_64 it is a documented no-op (the PIT
-    //       has no module-local gate; `[ARCH: gate-semantics]`).
-    // Before D-59, (a) ran early in Phase B with (c) folded into it — a
-    // live, unhandled timer across the whole boot.
-    //
-    // Instance-based design (04-platform-discovery.md §3.4): construct a
-    // transient clock arch instance from the global platform descriptor
-    // and call `init_timer` on it.
-    use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
-    use minix_platform::{platform_desc, PlatformDesc};
-    use minix_types::Endpoint;
-    let pd = platform_desc();
-    let mut clock_arch = CurrentClockArch::new(pd.timer());
-    clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
-
-    // D-46 (Step 1.5.7 landed, 2026-09-06 — software half): register the
-    // clock IRQ hook with the global IrqManager. The handler
-    // (`clock::clock_irq_handler`) advances the software clock and
-    // delivers expired alarm notifications from the CLOCK source.
-    // Hardware half (x86_64 asm IRQ stubs + IDT load + entry routing)
-    // remains deferred — see todo.md D-46.
-    let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
-    // A1: boot context — no BKL, no IRQs yet; boot_unchecked accessor.
-    unsafe { crate::irq_manager_boot_unchecked() }
-        .register_hook(
-            minix_plat::TIMER_IRQ,
-            crate::clock::clock_irq_handler,
-            clock_ep,
-            minix_plat::IrqNotifyId(0),
-            minix_plat::IrqPolicy::REENABLE,
-        )
-        .expect("register clock IRQ hook: no free slots in IRQ_MANAGER");
-    // (c) — gates last, handler already registered (see the Step 6 header
-    // for the per-architecture semantics of this call).
-    <CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq();
+    // S-8 (2026-09-14): the three-part sequence moved to the standalone
+    // `boot_init_timer` (same order, D-59 contract intact) so the
+    // test-timer-irq bring-up kernel reuses the production wiring instead
+    // of duplicating it.
+    boot_init_timer();
 
     // Step 7: fpu_init() — set BSP FPU presence.
     // C: fpu_init() — arch-specific (arch_system.c, i386/earm).
