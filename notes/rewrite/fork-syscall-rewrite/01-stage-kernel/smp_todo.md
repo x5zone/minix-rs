@@ -1544,3 +1544,27 @@ selector 0x10 本身 → 极可能是「GDT+0x10 的 code32 表项在 AP 视角�
 monitor `cpu 1; info registers`（上轮 `cpu 0` 的 CS base 0x80 CF9A 现场疑似
 multiboot 装载器 32 位平坦段——即远跳根本未执行，CPU0 仍在装载器 CS 上的
 另一种可能，与"R64-START 未打"吻合）**。
+
+**→ 第六轮（monitor 抓复位循环现场，本轮最完整数据）**：
+- 去掉 -no-reboot 后 QEMU 在 AP 三重故障时**复位重跑**（非退出），monitor 可随时采样。
+- **CPU1 = SeaBIOS 停放态**：CS=0x08 attrs CF9B（SeaBIOS 32 位段）、EIP=0xFD0A9、
+  **HLT=1**、GDT=0xF61E0/0x37——**AP 被 SeaBIOS 停放在 32 位 HLT 循环，不在
+  wait-for-SIPI**；我们的 INIT/SIPI 仍可唤醒（INIT 穿透 HLT）。
+- **复位循环周期内 GDT 页 @PA 0x1025A0 内容核验（修正解析伪影后）**：code16/
+  code32/code64/data 四表项全部在位且正确——**fill_bootstrap 的写入生效 ✓**。
+- desc@0x6030 = [27 00 | 10 61 00 00] ✓ 正确。
+- **CPU0 现场两说**：一次抓到 CS=0x08 base **0x80** attrs CF9A（32 位段、base≠0，
+  非我们的 code64）+ CR3=0x108061 + EFER=0x500——**疑似 QEMU multiboot 装载器
+  option ROM 的 CS 残留**（pc-bios/optionrom/multiboot.S 的 GDT/跳转语义待对照，
+  源码已存 /tmp/multiboot_rom.S）；另一次抓到 CPU1=wanderer（CS base 0x5000
+  实模式 EIP 0x21 #GP(0x10)——**AP 执行阶梯到达 FJ16/32 位入口边界**）。
+- **收敛判断**：两条 CPU0 现场互相矛盾（一条 32 位段缓存 base 0x80 + CR3=ours、
+  一条实模式游走）→ 疑似 **QEMU TCG + -kernel multiboot 的 INIT-SIPI 对
+  SeaBIOS 停放 AP 的唤醒路径存在已知怪癖**（SeaBIOS 停放的 AP 在 32 位 HLT 循环
+  等**SMI/专用 mailbox**，对裸 INIT-SIPI 的响应在部分 QEMU/SeaBIOS 组合下不按
+  SDM 处理）。**下次续起**：① 对照 /tmp/multiboot_rom.S 的 prot_jump 与 GDT
+  （CS=0x08 base 0 的 32 位段 + prot_mode 入口——**装载器自己以 CS=0x08 跳入
+  prot_mode，我们的 lgdt/far jump 重用 sel 0x08 与其段缓存/TLB 的交互**）；
+  ② 试 -cpu max（启用 PDPE1GB 等）与 -M q35；③ 或测试内核改用 SeaBIOS 停放
+  协议（先写 mailbox 再 INIT-SIPI）——S-3d 的 mb 变体在标准硬件/Grub 路径下
+  预期无此问题，QEMU+OVMF/SeaBIOS 特性所致。
