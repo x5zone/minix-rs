@@ -1568,3 +1568,22 @@ multiboot 装载器 32 位平坦段——即远跳根本未执行，CPU0 仍在�
   ② 试 -cpu max（启用 PDPE1GB 等）与 -M q35；③ 或测试内核改用 SeaBIOS 停放
   协议（先写 mailbox 再 INIT-SIPI）——S-3d 的 mb 变体在标准硬件/Grub 路径下
   预期无此问题，QEMU+OVMF/SeaBIOS 特性所致。
+
+**→ 第七轮（BSP 侧 GDT 回读串口诊断，关键澄清）**：
+- BSP 在 fill 后回读 desc@0x6030 = **27 00 | 10 61 00 00 = {limit 0x27, base 0x6110} ✓✓✓
+  正确落盘**；0x6130 附近 = data 表项 ✓。**此前"base = 0"误读为 write_hex 每字节 16 位
+  输出格式的误判**——GDT 内存内容全部正确。
+- **AP 的 -d int 现场实证**：AP 的 #GP(0x10) dump 中 **GDTR = {base 0xFF53FF53,
+  limit 0xFF53} = 垃圾**——AP 的 lgdt 从 DS:0x6030 读到的不是 BSP 写的内容。
+- **收敛后的最小假设集**：① **SIPI 向量页重叠**：AP 从 CS base 0x5000 开始执行，
+  IP=0 ✓，但**阶梯前 0x30 字节的 lgdt 读 DS:0x6030——AP 的 DS=0 ✓ PA 0x6030 ✓
+  同一 RAM——除非 QEMU TCG 的 AP 启动瞬间存在内存可见性延迟**（TCG 不应有）；
+  ② **QEMU multiboot 装载器 option ROM 的 CS=0x08 段缓存（base 0x80）**：我们的
+  far jump EA mb64 0x08 重用 sel 0x08——**QEMU 装载器的 GDTR 仍是活动 GDTR（我们的
+  lgdt 后被……不，GDTR=0x102598 是我们的）**——即 CPU0 现场的 GDT=0x102598 ✓ 我们的；
+  ③ **AP 的 lgdt %gs:GS_GDT_DESC 式相对寻址**（option ROM 用 GS 段）不适用于我们。
+- **下次续起（最快闭合）**：① 阶梯 lgdt **之前**加 `sgdt [0x6F40]` + BSP 侧
+  write_hex 打印（验证 AP 视角的 GDTR 原始值——若已是垃圾则 QEMU AP 启动状态
+  本身有 preliminary 问题）；② 阶梯 lgdt **之后**加 `sgdt [0x6F48]` 回读对比
+  （验证 lgdt 的读取/装载）；③ 若 GDTR 正确而 FJ16 仍 #GP(0x10)，则 dump
+  GDT+0x10 的 8 字节（AP 视角）对比 BSP 写入值。
