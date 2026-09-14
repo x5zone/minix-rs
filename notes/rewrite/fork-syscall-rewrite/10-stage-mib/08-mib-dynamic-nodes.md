@@ -101,6 +101,7 @@ os/servers/mib/src/tree/
 |------|------|-----------|------|
 | 名字体统 | `:247-266` | `dynamic.rs:26` | 符号风；`None` 即败 |
 | 扫描 | `:277-359` | `dynamic.rs:50,81` | 三 outcome；双遍名查 |
+| 父槽位上限 | `:517-519` | `dynamic.rs`（`create_csize_ok`，`i32::MAX` 为界） | [ARCH] 容器 u32、界随 int id 空间 |
 | 标志白名单 | `:552-554` | `dynamic.rs:140` | USERFLAGS+UNSIGNED 外全拒 |
 | RW 消毒 | `:575-576` | `dynamic.rs:149` | 有位即全掩码 |
 | 立即拥有组合 | `:556-572,623-624` | `dynamic.rs:165` | NODE 禁双；叶禁矛盾 |
@@ -110,6 +111,7 @@ os/servers/mib/src/tree/
 | 删除差量 | `:793-829` | `dynamic.rs:274,287` | 条件四项 |
 | 版本递增 | `:439-448` | `version.rs:15` | 回绕跳零 |
 | 建版本规则 | `:544-546` | `version.rs:26` | 父或根或零 |
+| 请求版本门 | `:537-538`（query 同型 `:194-195`） | `version.rs`（`staged_vers_ok`） | 11 篇同规则共一条实现 |
 
 ### 4.3 不变量
 
@@ -129,7 +131,7 @@ os/servers/mib/src/tree/
 
 ## 5 测试要点
 
-> 基线：`cargo test -p minix-mib --lib`，本篇 10 个测试（8 dynamic + 2 version）。
+> 基线：`cargo test -p minix-mib --lib`，本篇 11 个测试（8 dynamic + 3 version）。
 
 | 测试名 | 覆盖 C 位置 | 行为 | 文件 |
 |--------|-------------|------|------|
@@ -143,6 +145,7 @@ os/servers/mib/src/tree/
 | `test_remove_deltas` | `:793-829` | 四组合差量 | `dynamic.rs` |
 | `test_next_root_ver_skips_zero` | `:439-441` | 递增/回绕/零基 | `version.rs` |
 | `test_create_ver_ok` | `:544-546` | 零/父/根/他 | `version.rs` |
+| `test_staged_vers_ok` | `:194-195,:537-538` | VERS_1 过/他版拒/零版拒 | `version.rs` |
 
 ### 5.1 测试统计（截至 2026-09-05）
 

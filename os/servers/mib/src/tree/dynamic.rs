@@ -132,6 +132,20 @@ pub fn scan(
     ScanOutcome::Free { id, insert_at }
 }
 
+/// Whether the parent has room for one more child slot.
+///
+/// C: `node_csize == INT_MAX → EINVAL` — tree.c:517-519, a guard the C
+/// comments themselves call "entirely theoretical". The bound is the
+/// *id space*, not the container: child ids are C `int`, so a parent
+/// claiming `INT_MAX` slots could not name its next child.
+/// `[ARCH: ...]` Rust keeps `csize` in a `u32` container (03) but keeps
+/// C's bound — refusing at `i32::MAX` preserves the observable contract
+/// ("no parent ever grows past the int id space") without inventing a
+/// wider one.
+pub const fn create_csize_ok(parent_csize: u32) -> bool {
+    parent_csize != i32::MAX as u32
+}
+
 /// Whether create flags are user-settable.
 ///
 /// C: `SYSCTL_FLAGS & ~(USERFLAGS | UNSIGNED)` must be zero —
@@ -374,6 +388,10 @@ mod tests {
         assert!(valid_create_flags(CTLFLAG_READWRITE));
         assert!(valid_create_flags(CTLFLAG_UNSIGNED));
         assert!(!valid_create_flags(minix_types::CTLFLAG_ROOT));
+        // The theoretical csize bound: the id space is C `int` (:517-519).
+        assert!(!create_csize_ok(i32::MAX as u32));
+        assert!(create_csize_ok(i32::MAX as u32 - 1));
+        assert!(create_csize_ok(0));
         // RW sanitize fills the mask (:575-576).
         assert_eq!(sanitize_rw(0x10), CTLFLAG_READWRITE);
         assert_eq!(sanitize_rw(0), 0);

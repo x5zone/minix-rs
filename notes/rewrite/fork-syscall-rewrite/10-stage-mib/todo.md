@@ -19,7 +19,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ⬜ |
 | P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ⬜ |
 | P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
-| P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ⬜ |
+| P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ✅ 2026-09-15（`create_csize_ok` + `staged_vers_ok`，108 passed） |
 | P2-2 | handler 结果与判定入参结构化 | `map_sysctl_reply` 平行参数通道 → 枚举；`judge_level` 九参 → 事实结构体 | ⬜ |
 | P2-3 | 动态子节点容器选型 | C 排序链表 → BTreeMap / 排序 Vec 的裁决 | ⬜ |
 | P2-4 | A-3 内存策略落地 | slab + 字节预算池（推荐）vs bumpalo vs 裸全局分配器 | ⬜ |

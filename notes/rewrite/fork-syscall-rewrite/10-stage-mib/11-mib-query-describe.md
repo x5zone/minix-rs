@@ -104,6 +104,7 @@ os/servers/mib/src/
 | scratch 断言 | `:943` | `describe.rs:57` | MAXDESCLEN 封顶故断言 |
 | 设置六杠 | `:994-1031` | `describe.rs:71,88` | 顺序六拒 |
 | 描述可见 | `:934-935` | `describe.rs:129` | 07 复用；零长非错 |
+| 请求版本门（拷入侧） | `:194-195` | `version.rs`（`staged_vers_ok`，与 08 create `:537-538` 共一条实现） | 请求不说法语版本即拒，字段一个不读 |
 
 ### 4.3 不变量
 
@@ -123,12 +124,13 @@ os/servers/mib/src/
 
 ## 5 测试要点
 
-> 基线：`cargo test -p minix-mib --lib` + `cargo test -p minix-types --lib`，本篇 8 个测试（5 query + 2 describe + 1 常量）。
+> 基线：`cargo test -p minix-mib --lib` + `cargo test -p minix-types --lib`，本篇 8 个测试（5 query + 2 describe + 1 常量）+ 1 个共享门测试（`test_staged_vers_ok`，落 `version.rs`，08/11 共用）。
 
 | 测试名 | 覆盖 C 位置 | 行为 | 文件 |
 |--------|-------------|------|------|
 | `test_export_flags_strips_internal` | `:102-108` | 去三位/版本字节/私有位保留 | `query.rs` |
 | `test_query_ver_ok` | `:201-204` | 零/父/根/他 | `query.rs` |
+| `test_staged_vers_ok` | `:194-195`（08 篇 `:537-538` 同型） | VERS_1 过/他版拒/零版拒 | `version.rs` |
 | `test_report_size` | `:112,135-137` | NODE 报交换宽/叶报实宽 | `query.rs` |
 | `test_expose_immediate` | `:121-132` | 立即+可见四组合 | `query.rs` |
 | `test_child_window_and_marker` | `:157-168` | 远端/真爹/函数/叶子 + 标记值 | `query.rs` |
