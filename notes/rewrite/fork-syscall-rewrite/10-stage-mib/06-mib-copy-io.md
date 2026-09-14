@@ -127,6 +127,8 @@ grant 常量（`CPF_READ=1`/`CPF_WRITE=2`）住 `minix-types` `id.rs`（`GrantId
 
 ---
 
+> **P1-4 补记（2026-09-15）**：执行半已落——`Oldp`/`Newp`（C `struct mib_oldp`/`mib_newp` 的类型化转写，字段名对齐）与动词方法 `copyout`/`copyin`/`copyin_str`（消费 `transport::MibKernel` 拷贝动词）；relay 半落 `RelayRequest::open`/`RelayGrant::close`（`cpf_grant_magic`/`cpf_revoke`，失败恒 `RELAY_FAIL`）；`RelayRegion.grant` 的 `Some(0)` 占位升级为 `present: bool`（占位 id 退役）。本篇的"执行 → transport"移交行就此闭环，真实通电挂 edge E1/E2。
+
 ## 5 测试要点
 
 > 基线：`cargo test -p minix-mib --lib`，本篇 7 个测试（4 copy + 3 relay）。

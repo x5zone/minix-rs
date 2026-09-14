@@ -11,6 +11,8 @@
 //!   and the sysctl decode verdicts (which path, what the reply carries).
 //! - [`sef`] — the two init names and what each promises about state.
 //! - [`heap`] — the A-3 byte budget behind every dynamic allocation.
+//! - [`transport`] — the two seams (kernel verbs, peer verbs) and the
+//!   fail-closed real end.
 //! - [`tree`] — the node vocabulary and shape invariants (what a node is).
 //! - [`io`] — copy and relay verdicts (what moves, who may touch it).
 //! - [`auth`] — the cached superuser verdict and the permission gates.
@@ -40,6 +42,7 @@ pub mod query;
 pub mod remote;
 pub mod sef;
 pub mod subtree;
+pub mod transport;
 pub mod tree;
 
 /// Published entry point kept for the binary shell (`main.rs`).

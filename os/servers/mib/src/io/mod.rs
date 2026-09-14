@@ -12,4 +12,4 @@ pub use copy::{
     CopySpan, PAGE_SIZE, check_copyin, copyout_span, get_new_len, get_old_len, in_range,
     next_chunk, nul_size,
 };
-pub use relay::{GRANT_INVALID, RELAY_FAIL, RelayDir, RelayRegion, grant_valid};
+pub use relay::{GRANT_INVALID, RELAY_FAIL, RelayDir, RelayGrant, RelayRegion, RelayRequest, grant_valid};

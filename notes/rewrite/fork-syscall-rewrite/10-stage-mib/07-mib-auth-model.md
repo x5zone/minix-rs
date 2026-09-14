@@ -118,6 +118,8 @@ os/servers/mib/src/
 
 ---
 
+> **P1-4 补记（2026-09-15）**：PM 往返的执行半已落——`auth::ask(svc, call_endpt)` 驱动 `MibServices::getnuid` 并把答案喂给 `CallAuth::resolve`（PM 不可达时 fail-closed 到 `No`）；缓存语义（一次一问、问了即粘）不变，调用点在 walker（todo.md P1-2）。
+
 ## 5 测试要点
 
 > 基线：`cargo test -p minix-mib --lib`，本篇 4 个测试。

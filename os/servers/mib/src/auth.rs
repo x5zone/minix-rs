@@ -11,7 +11,9 @@
 //!
 //! 07-mib-auth-model.md.
 
-use minix_types::{CTLFLAG_ANYWRITE, CTLFLAG_PRIVATE, CTLFLAG_READWRITE, EPERM};
+use minix_types::{CTLFLAG_ANYWRITE, CTLFLAG_PRIVATE, CTLFLAG_READWRITE, EPERM, Endpoint};
+
+use crate::transport::MibServices;
 
 /// Superuser uid. C: `SUPER_USER` — minix/const.h:44.
 pub const SUPER_USER: u32 = 0;
@@ -62,6 +64,19 @@ impl CallAuth {
     pub const fn is_authed(self) -> bool {
         matches!(self, Self::Yes)
     }
+}
+
+/// Ask PM once and resolve a fresh cache from the answer (execution half).
+///
+/// C: the `getnuid(call_endpt)` round trip inside `mib_authed` —
+/// main.c:265-268. A failed round trip resolves to `No`: an unreachable
+/// PM must never widen permissions (fail-closed discipline). The cache
+/// semantics stay in [`CallAuth::resolve`] — the walker calls this when
+/// its cache reads `Unknown`, and `resolve`'s stickiness keeps PM to
+/// one question per call.
+pub fn ask(svc: &mut impl MibServices, call_endpt: Endpoint) -> CallAuth {
+    let superuser = svc.getnuid(call_endpt) == Ok(SUPER_USER);
+    CallAuth::Unknown.resolve(superuser)
 }
 
 /// Whether the caller may see the node at all.
@@ -139,6 +154,28 @@ mod tests {
         assert!(!CallAuth::No.is_authed());
         assert!(!CallAuth::Unknown.is_authed());
         assert_eq!(SUPER_USER, 0);
+    }
+
+    #[test]
+    fn test_ask_resolves_fail_closed() {
+        use crate::transport::recording::Recorder;
+        use minix_types::Endpoint;
+
+        // Superuser uid (0) resolves Yes, anything else No — and the
+        // question lands on PM exactly once (main.c:265-268).
+        let mut svc = Recorder::default();
+        svc.uids = vec![Ok(SUPER_USER)];
+        assert_eq!(ask(&mut svc, Endpoint::PM), CallAuth::Yes);
+        assert_eq!(svc.calls.borrow().len(), 1);
+
+        let mut svc = Recorder::default();
+        svc.uids = vec![Ok(41)];
+        assert_eq!(ask(&mut svc, Endpoint::PM), CallAuth::No);
+
+        // A dead PM narrows, never widens.
+        let mut svc = Recorder::default();
+        svc.uids = vec![Err(minix_types::EIO)];
+        assert_eq!(ask(&mut svc, Endpoint::PM), CallAuth::No);
     }
 
     #[test]

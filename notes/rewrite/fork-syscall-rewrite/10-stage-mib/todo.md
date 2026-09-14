@@ -17,7 +17,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | P1-1 | 主循环装配与传输 seam | MibServer + 双/三 trait + run_once，对齐 DS/SCHED 先例；含 UserSpaceTransport 上移再评估结论 | ⬜ |
 | P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | ⬜ |
 | P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ✅ 2026-09-15（`minix-types::sysctl_abi`，4 结构 + 4 断言测试，196 passed） |
-| P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ⬜ |
+| P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ✅ 2026-09-15（`transport.rs` 双 trait + `Oldp`/`Newp`/`RelayRequest`/`RelayGrant`/`auth::ask`，126 passed） |
 | P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
 | P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ✅ 2026-09-15（`create_csize_ok` + `staged_vers_ok`，108 passed） |
 | P2-2 | handler 结果与判定入参结构化 | `map_sysctl_reply` 平行参数通道 → 枚举；`judge_level` 九参 → 事实结构体 | ✅ 2026-09-15（`SysctlOutcome` + `LevelFacts`，`too_many_arguments` allow 已删） |
@@ -109,6 +109,8 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 **建议**：把 `Oldp`/`Newp` 建为 io 层类型（`endpt + base + len + cursor`，方法化 `in_range/copyout_span/check_copyin/relay_*`，现有自由函数改为方法体），grant 槽位作为字段持有真身——这是 C 不透明体的 Rust 等价物而非 translate（C 用全局 struct + 指针，Rust 用值语义 + 所有权，外部行为不变）。kernel 动词 trait 归 P1-1 的 `MibKernel`。auth 执行半：`CallAuth::resolve` 接 `MibServices::getnuid`，缓存语义保持（每 call 一次）。
 
 **验证**：mock transport 上的 copyout/copyin 往返测试；relay 的三 grant 创建/逆撤顺序断言（对照 remote.c:396-413 的后授先撤）；错误传输码上浮路径。
+
+**复核 ✅（2026-09-15，本条目闭环）**：(1) **`transport.rs` 双 seam 最终形态**（沿 SCHED/E8"接缝按最终形态写好"纪律，P1-1/P1-5 消费不扩展）——`MibKernel`（datacopy 双向/grant_magic/grant_revoke/getproctab/getticks/hz）+ `MibServices`（getnuid/getsysinfo/ds_retrieve_label/vm_info/pm_getparam）；`SysTransport` 真实端全 `-EIO` 诚实桩（E1/E2 通电即换体，DS SysKernel 先例）；`recording::Recorder` 录制 mock 供动词序列断言。(2) **`io/copy.rs`**：`Oldp`/`Newp` 类型化（C 字段名对齐，不可变 sink + 绝对偏移 = C 原形），动词方法 `copyout`（钳制+全长报告+错误上浮）/`copyin`（精确匹配+零长短路）/`copyin_str`（逐页块+NUL 扫描+耗尽 EINVAL），纯数学保留为自由 const fn。(3) **`io/relay.rs`**：`RelayRegion.grant` 的 `Some(0)` 占位退役（改 `present: bool`——占位 id 是"把假 grant 送下游"的邀请），`RelayRequest::open`/`RelayGrant::close`（open 失败恒 `RELAY_FAIL`，close 消费所有权使双重 revoke 不可表示）。(4) **`auth.rs`**：`ask` 执行半（PM 往返，失败 fail-closed `No`）。18 个新测试含 grant 开/撤动词序列、EIO 上浮、跨 chunk NUL 扫描（4090+910 两块场景）。126 passed；clippy 回基线。文档同步：06/07 篇各加 P1-4 补记。
 
 ### P1-5 进程表拉取执行半：tables 纯半接线（stage 内，对端挂 E-MIBPROD）
 

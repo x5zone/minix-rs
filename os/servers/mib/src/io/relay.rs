@@ -1,14 +1,17 @@
 //! Relay verdicts: who may read/write whose bytes, and how failures speak.
 //!
 //! Mirrors the pure halves of `mib_relay_oldp` / `mib_relay_newp`
-//! (`main.c:204-252`). Grant *creation* (`cpf_grant_magic`) is an effect
-//! owned by the transport (A-12); this module judges direction, presence,
-//! and the failure code — creation failure must never speak `ENOMEM`
-//! (`:208`, `:236`: "must not be ENOMEM").
+//! (`main.c:204-252`) plus the grant half itself: [`RelayRequest::open`]
+//! drives `cpf_grant_magic` and [`RelayGrant::close`] drives `cpf_revoke`
+//! over the kernel transport. Creation failure must never speak `ENOMEM`
+//! (`:208`, `:236`: "must not be ENOMEM") — [`RELAY_FAIL`] is the only
+//! error the open half speaks.
 //!
 //! 06-mib-copy-io.md.
 
-use minix_types::{CPF_READ, CPF_WRITE, EINVAL, GrantId};
+use minix_types::{CPF_READ, CPF_WRITE, EINVAL, Endpoint, GrantId};
+
+use crate::transport::MibKernel;
 
 /// Invalid grant: no region behind it. C: `GRANT_INVALID` — safecopies.h:52.
 pub const GRANT_INVALID: GrantId = -1;
@@ -44,13 +47,13 @@ impl RelayDir {
 
 /// A relayed region: present with a length, or absent.
 ///
-/// `None` grant = `GRANT_INVALID` (matches the `Option::None` convention
-/// at `minix-types` `GrantId`). Presence is judged here; the grant id
-/// itself is filled by the transport at relay time (12).
+/// Presence is judged here; the grant *id* is a transport product and
+/// lives in [`RelayGrant`] — a placeholder id in this struct would be
+/// an invitation to send a fake grant downstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayRegion {
-    /// Grant when present. C: `*grantp` (`GRANT_INVALID` when shut).
-    pub grant: Option<GrantId>,
+    /// Whether the region is open at all. C: `GRANT_VALID(*grantp)`.
+    pub present: bool,
     /// Region length (0 when shut). C: `*lenp`.
     pub len: u64,
 }
@@ -58,16 +61,16 @@ pub struct RelayRegion {
 impl RelayRegion {
     /// Judge an old-data region for relay (`main.c:210-227`).
     ///
-    /// Shut sinks relay as invalid + zero (`:221-224`); open ones relay
+    /// Shut sinks relay absent + zero (`:221-224`); open ones relay
     /// their length with a write grant to be created (`:215-220`).
     pub const fn relay_old(sink: Option<(u32, u64)>) -> Self {
         match sink {
             None => Self {
-                grant: None,
+                present: false,
                 len: 0,
             },
             Some((_, len)) => Self {
-                grant: Some(0),
+                present: true,
                 len,
             },
         }
@@ -78,14 +81,63 @@ impl RelayRegion {
     pub const fn relay_new(data: Option<(u32, u64)>) -> Self {
         match data {
             None => Self {
-                grant: None,
+                present: false,
                 len: 0,
             },
             Some((_, len)) => Self {
-                grant: Some(0),
+                present: true,
                 len,
             },
         }
+    }
+}
+
+/// One grant to open: whose memory, which span, which way.
+///
+/// Built from a judged [`RelayRegion`] plus the coordinates the verdict
+/// layer deliberately does not carry (the caller's endpoint and base
+/// address); `open` is the only road to a live [`RelayGrant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayRequest {
+    /// The caller whose memory the service may touch. C: `endpoint`.
+    pub caller: Endpoint,
+    /// Region base in the caller's space. C: `oldp->oldp_addr` 一带.
+    pub addr: u64,
+    /// Region length. C: `*lenp`.
+    pub len: u64,
+    /// Which way the service may move the bytes.
+    pub dir: RelayDir,
+}
+
+impl RelayRequest {
+    /// Create the magic grant.
+    ///
+    /// C: `cpf_grant_magic(endpoint, addr, len, flags)` — main.c:216-217
+    /// (old/write), :241-242 (new/read). Any failure — including an
+    /// invalid id the transport somehow returns — speaks [`RELAY_FAIL`]
+    /// (:218-219, :242-243: "must not be ENOMEM").
+    pub fn open(&self, t: &mut impl MibKernel) -> Result<RelayGrant, i32> {
+        match t.grant_magic(self.caller, self.addr, self.len, self.dir) {
+            Ok(id) if grant_valid(id) => Ok(RelayGrant { id }),
+            _ => Err(RELAY_FAIL),
+        }
+    }
+}
+
+/// A live relay grant. `close` consumes it — a grant cannot be revoked
+/// twice through this road.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayGrant {
+    /// The live grant id. C: `*grantp` after a valid `cpf_grant_magic`.
+    pub id: GrantId,
+}
+
+impl RelayGrant {
+    /// Retire the grant. C: `cpf_revoke` — remote.c:441-446 revokes all
+    /// three in reverse creation order; the sequencing belongs to the
+    /// caller (walker), the verb belongs here.
+    pub fn close(self, t: &mut impl MibKernel) {
+        t.grant_revoke(self.id);
     }
 }
 
@@ -118,25 +170,75 @@ mod tests {
 
     #[test]
     fn test_relay_presence() {
-        // Shut regions relay invalid + zero (main.c:221-224,246-249).
+        // Shut regions relay absent + zero (main.c:221-224,246-249).
         assert_eq!(
             RelayRegion::relay_old(None),
             RelayRegion {
-                grant: None,
+                present: false,
                 len: 0
             }
         );
         assert_eq!(
             RelayRegion::relay_new(None),
             RelayRegion {
-                grant: None,
+                present: false,
                 len: 0
             }
         );
         // Open regions relay their length; the id comes from transport.
         assert_eq!(RelayRegion::relay_old(Some((0x1000, 64))).len, 64);
+        assert!(RelayRegion::relay_old(Some((0x1000, 64))).present);
         assert_eq!(RelayRegion::relay_new(Some((0x3000, 9))).len, 9);
         // Creation failure speaks EINVAL, never ENOMEM (main.c:208,236).
         assert_eq!(RELAY_FAIL, EINVAL);
+    }
+
+    #[test]
+    fn test_grant_open_close_records_verbs() {
+        use crate::transport::recording::{Call, Recorder};
+        use minix_types::Endpoint;
+
+        let mut t = Recorder::default();
+        t.grants = vec![Ok(7), Ok(8), Ok(9)];
+        let old = RelayRequest {
+            caller: Endpoint::PM,
+            addr: 0x1000,
+            len: 64,
+            dir: RelayDir::Write,
+        };
+        let g = old.open(&mut t).unwrap();
+        assert_eq!(g.id, 7);
+        g.close(&mut t);
+        // The verb pair lands in order: create then revoke.
+        assert_eq!(
+            t.calls.borrow().len(),
+            2,
+            "grant_magic + revoke recorded"
+        );
+        assert!(matches!(
+            t.calls.borrow()[0],
+            Call::GrantMagic(Endpoint::PM, 0x1000, 64, RelayDir::Write)
+        ));
+        assert!(matches!(t.calls.borrow()[1], Call::Revoke(7)));
+    }
+
+    #[test]
+    fn test_grant_open_failure_speaks_relay_fail() {
+        use crate::transport::recording::Recorder;
+        use minix_types::Endpoint;
+
+        let mut t = Recorder::default();
+        t.fail = true; // grant_magic fails
+        let req = RelayRequest {
+            caller: Endpoint::PM,
+            addr: 0x1000,
+            len: 64,
+            dir: RelayDir::Read,
+        };
+        // Any open failure — transport errno or invalid id — is EINVAL.
+        assert_eq!(req.open(&mut t), Err(RELAY_FAIL));
+        let mut t2 = Recorder::default();
+        t2.grants = vec![Ok(-1)]; // an invalid id counts as failure too
+        assert_eq!(req.open(&mut t2), Err(RELAY_FAIL));
     }
 }
