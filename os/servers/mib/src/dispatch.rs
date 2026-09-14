@@ -16,9 +16,7 @@
 //! the copy/dispatch traits owned by 06/10; this module only decides
 //! *which* path the loop takes and *what* the reply carries.
 
-use minix_types::{
-    EDONTREPLY, EEXIST, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGISTER, MIB_SYSCTL, OK,
-};
+use minix_types::{EDONTREPLY, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGISTER, MIB_SYSCTL, OK};
 
 /// Largest sysctl name the loop accepts, in components.
 ///
@@ -273,6 +271,7 @@ pub const fn map_sysctl_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::EEXIST;
 
     #[test]
     fn test_call_numbers_cover_all_three() {
