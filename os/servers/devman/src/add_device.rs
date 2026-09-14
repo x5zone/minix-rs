@@ -14,7 +14,10 @@ use minix_types::Endpoint;
 
 use crate::device_tree::DeviceTree;
 use crate::files::{register_file, FileEntry, FileKind, StaticFile};
-use crate::structs::{Attribute, Device, DeviceId, DeviceState, Event, DEVMAN_STRING_LEN};
+use crate::structs::{
+    Attribute, Device, DeviceId, DeviceState, Event, ADD_STRING, DEVMAN_STRING_LEN,
+    EVENT_ID_SUFFIX_LEN,
+};
 use crate::vtreefs::InodeTree;
 use crate::wire::{EntryType, ParsedDevice};
 
@@ -143,6 +146,36 @@ pub fn do_add(
     if let Err(err) = add_static(fw, &mut dev, "devman_id", &id_text) {
         return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), err));
     }
+    // C: devman_device_add_event(dev) (device.c:276) — "ADD " + path +
+    // " 0x%08x". Built BEFORE the publish point so an over-long path
+    // fails through the same zero-residue unwind as any other prep step
+    // (DM-P1-4; C links the child first and panics on overrun,
+    // device.c:93-95). The budget deducts prefix + suffix exactly like
+    // C, where the prefix already sits in the buffer during the check
+    // (device.c:89-91): path ≤ 112, line ≤ 127 = data[128] minus NUL.
+    let path = match tree.generate_child_path(
+        fw,
+        parent,
+        &parsed.name,
+        DEVMAN_STRING_LEN - EVENT_ID_SUFFIX_LEN - ADD_STRING.len(),
+    ) {
+        Ok(p) => p,
+        Err(e) => return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), e)),
+    };
+    let mut line = String::from(ADD_STRING);
+    line.push_str(&path);
+    {
+        use core::fmt::Write as _;
+        let _ = core::write!(line, " 0x{:08x}", id.0);
+    }
+    // Over-long lines are ENAMETOOLONG, never truncated (03 §3.5; C
+    // would overflow event->data — hardening, 07 §3.4). Unreachable
+    // while the budget math above holds (line ≤ 127); kept as the belt
+    // to that suspenders, routed through the same unwind.
+    let event = match Event::new(&line) {
+        Ok(ev) => ev,
+        Err(e) => return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), e)),
+    };
     if let Err(err) = tree.insert(parent, dev) {
         // Unreachable by construction: the parent was verified above and
         // the id is dense (rollback_id's no-interleave argument). `dev` —
@@ -155,18 +188,9 @@ pub fn do_add(
     // balancing del_device's put(parent). Kept: DEL survival of parents
     // with live children depends on the count (08 §2.4).
     crate::del_device::get_device(tree, parent);
-    // C: devman_device_add_event(dev) (device.c:276) — "ADD " + path
-    // (117 budget) + " 0x%08x" (device.c:75-102).
-    let path = tree.generate_path(fw, id, DEVMAN_STRING_LEN - 11)?;
-    let mut line = String::from("ADD ");
-    line.push_str(&path);
-    {
-        use core::fmt::Write as _;
-        let _ = core::write!(line, " 0x{:08x}", id.0);
-    }
-    // Over-long lines are ENAMETOOLONG, never truncated (03 §3.5; C
-    // would overflow event->data — hardening, 07 §3.4).
-    on_event(Event::new(&line)?);
+    // C queues the event after the child is linked (device.c:276 follows
+    // add_child); the line itself was built above, pre-publish.
+    on_event(event);
     Ok(id)
 }
 
@@ -393,6 +417,85 @@ mod tests {
         }
         buf.extend_from_slice(&s);
         buf
+    }
+
+    /// Wire for a device with an arbitrary name and no attributes.
+    fn wire_named(name: &str) -> Vec<u8> {
+        let mut buf = alloc::vec![0u8; 16];
+        buf[0..4].copy_from_slice(&0i32.to_le_bytes());
+        buf[4..8].copy_from_slice(&0i32.to_le_bytes());
+        let mut s = Vec::new();
+        let mut push = |t: &str| -> u32 {
+            let o = (buf.len() + s.len()) as u32;
+            s.extend_from_slice(t.as_bytes());
+            s.push(0);
+            o
+        };
+        let no = push(name);
+        buf[8..12].copy_from_slice(&no.to_le_bytes());
+        buf.extend_from_slice(&s);
+        buf
+    }
+
+    #[test]
+    fn add_event_budget_matches_c_boundary() {
+        // DM-P1-4: the path budget deducts the "ADD " prefix and the id
+        // suffix exactly like C (device.c:89-91 — the prefix already sits
+        // in the buffer when the check runs). Under "./devices/" a name
+        // of 101 chars gives path 112 and a line of exactly 127, the last
+        // one C could emit; 102 chars overrun and fail pre-publish with
+        // zero residue (C panics at the same boundary, device.c:93-95).
+        let name101 = alloc::string::String::from_utf8(alloc::vec![b'd'; 101]).unwrap();
+        let name102 = alloc::string::String::from_utf8(alloc::vec![b'e'; 102]).unwrap();
+
+        let (mut tree, mut fw) = harness();
+        let (_, ok) = parse_device(&wire_named(&name101)).unwrap();
+        let mut events = Vec::new();
+        do_add(
+            &mut tree,
+            &mut fw,
+            DeviceId::ROOT,
+            &ok,
+            Endpoint(9),
+            &mut |ev| events.push(ev),
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].text().len(), 127);
+        assert!(events[0].text().starts_with("ADD ./devices/dddd"));
+
+        // Over-long: fails during prep — never inserted, nothing queued.
+        let (_, bad) = parse_device(&wire_named(&name102)).unwrap();
+        let mut overrun = Vec::new();
+        assert_eq!(
+            do_add(
+                &mut tree,
+                &mut fw,
+                DeviceId::ROOT,
+                &bad,
+                Endpoint(9),
+                &mut |ev| overrun.push(ev),
+            ),
+            Err(minix_types::Errno::ENOMEM)
+        );
+        assert!(overrun.is_empty());
+        let devices_ino = tree.get(DeviceId::ROOT).unwrap().binding.unwrap().ino;
+        assert_eq!(
+            fw.lookup(devices_ino, &name102),
+            Err(minix_types::Errno::ENOENT)
+        );
+        // Retry with a short name still works (id space intact, DM-P1-1).
+        let (_, retry) = parse_device(&wire_named("small")).unwrap();
+        let id = do_add(
+            &mut tree,
+            &mut fw,
+            DeviceId::ROOT,
+            &retry,
+            Endpoint(9),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(id, DeviceId(2));
     }
 
     #[test]

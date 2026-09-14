@@ -51,7 +51,7 @@ if (!res) {
 do_reply(msg, res);
 ```
 
-REMOVE 先行（§1 论证）；`== BOUND` 才转 ZOMBIE（UNBOUND 不转——条件单向，`del_bound_goes_zombie_first` 与 `del_unbound_…` 双测锁两边）；`put` 收尾（可能当场回收，§2.4）；`do_reply` 恒执行（成功回 0——注意：即使转了 ZOMBIE 也回 OK，删除"受理"成功不等于"回收"完成，调用方只关心前者）。
+REMOVE 先行（§1 论证）；`== BOUND` 才转 ZOMBIE（UNBOUND 不转——条件单向，`del_bound_goes_zombie_first` 与 `del_unbound_…` 双测锁两边）；`put` 收尾（可能当场回收，§2.4）；`do_reply` 恒执行（成功回 0——注意：即使转了 ZOMBIE 也回 OK，删除"受理"成功不等于"回收"完成，调用方只关心前者）。REMOVE 行的预算扣 `"REMOVE "` 前缀与 id 尾缀（路径上限 109，C 的 buf 里前缀已占位——04 §2.4），超预算在**任何状态变更之前**以 ENOMEM 失败、设备原样留下（`del_event_budget_matches_c_boundary` 锁边界；C 同边界处是 `panic`，进程死了自然"设备留下"）。
 
 ### 2.3 计数器：get/put 四行不对称（device.c:460-480）
 
@@ -144,9 +144,10 @@ os/servers/devman/src/del_device.rs — do_del + get/put/del_device（+4 测试�
 | `del_unbound_removes_and_emits` | 墓碑 + 失踪 + REMOVE 精确行 | §2.2/§2.4 |
 | `del_bound_goes_zombie_first` | ZOMBIE 暂留 + 放引用后回收 | §1/§2.2 |
 | `del_parent_with_live_child_survives` | 父广播不回收 + 子删级联回收父 | §2.4 成员账（07 §3.2） |
+| `del_event_budget_matches_c_boundary` | 98 字符名 REMOVE 行恰 127；99：ENOMEM + 设备原样留下 | §2.2 预算（DM-P1-4） |
 | `get_put_root_and_null_are_noops` | 根/失踪守卫 | §2.3 |
 
-截至 2026-09-04：`cargo test -p minix-devman` **72 passed / 0 failed**（59 + 07 的 3 + 本篇 4 + 09 的 6）。
+截至 2026-09-15：`cargo test -p minix-devman` **81 passed / 0 failed**（本篇 6 条；全 crate 计数随批次增长，各篇分布见各自 §5）。
 
 ---
 

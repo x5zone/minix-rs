@@ -121,9 +121,19 @@ pub fn do_del(
 ) -> Result<(), Errno> {
     // C: dev == NULL → printf + ENODEV, no event (device.c:434-438).
     let state = tree.get(id).ok_or(Errno::ENODEV)?.state;
-    // C: remove_event BEFORE the state change (device.c:441).
-    let path = tree.generate_path(fw, id, crate::structs::DEVMAN_STRING_LEN - 11)?;
-    let mut line = String::from("REMOVE ");
+    // C: remove_event BEFORE the state change (device.c:441). Budget
+    // deducts the REMOVE prefix exactly like C, where it already sits
+    // in the buffer during the check (device.c:122-124): path ≤ 109,
+    // line ≤ 127. A failure here changes nothing — the device is still
+    // ahead of every mutation (C panics at the same boundary instead).
+    let path = tree.generate_path(
+        fw,
+        id,
+        crate::structs::DEVMAN_STRING_LEN
+            - crate::structs::EVENT_ID_SUFFIX_LEN
+            - crate::structs::REMOVE_STRING.len(),
+    )?;
+    let mut line = String::from(crate::structs::REMOVE_STRING);
     line.push_str(&path);
     {
         use core::fmt::Write as _;
@@ -267,6 +277,33 @@ mod tests {
         assert!(tree.get(zero).is_none());
         assert!(tree.get(usb).is_none());
         assert_eq!(events3.len(), 1);
+    }
+
+    #[test]
+    fn del_event_budget_matches_c_boundary() {
+        // DM-P1-4: REMOVE deducts its 7-char prefix — path ≤ 109 (C
+        // device.c:122-124, prefix already in buf), i.e. names up to 98
+        // chars under ./devices/. Over-long → ENOMEM before any mutation:
+        // the device survives untouched (C panics at the same boundary).
+        let name98 = alloc::string::String::from_utf8(alloc::vec![b'r'; 98]).unwrap();
+        let name99 = alloc::string::String::from_utf8(alloc::vec![b's'; 99]).unwrap();
+        let (mut tree, mut fw) = harness();
+        let id98 = add(&mut tree, &mut fw, &name98);
+        let id99 = add(&mut tree, &mut fw, &name99);
+        // 98: REMOVE line exactly 127 — the last one C could emit.
+        let mut events = Vec::new();
+        do_del(&mut tree, &mut fw, id98, &mut |ev| events.push(ev)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].text().len(), 127);
+        assert!(events[0].text().starts_with("REMOVE ./devices/rrrr"));
+        // 99: fails pre-mutation, device stays.
+        let mut overrun = Vec::new();
+        assert_eq!(
+            do_del(&mut tree, &mut fw, id99, &mut |ev| overrun.push(ev)),
+            Err(Errno::ENOMEM)
+        );
+        assert!(overrun.is_empty());
+        assert!(tree.get(id99).is_some());
     }
 
     #[test]

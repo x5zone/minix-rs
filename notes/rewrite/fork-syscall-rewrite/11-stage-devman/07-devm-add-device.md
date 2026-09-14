@@ -80,7 +80,7 @@ do_reply(msg, res);   /* res == OK（safecopy 留下的，§2.1） */
 return 0;
 ```
 
-UNBOUND（新生）、owner（发送方端点——09 转发就找它）、DEVICE_ID 回填（`m4_l2` 复用，05 §1.1）、事件（"ADD " + 117 预算路径 + id 尾缀，04 §2.4/06 §2.3）、回复 OK。`return 0` 恒（handler 返回值无人读——proto.h 声明 `int` 纯属 C 习惯，Rust 用 `Result`，A-7）。
+UNBOUND（新生）、owner（发送方端点——09 转发就找它）、DEVICE_ID 回填（`m4_l2` 复用，05 §1.1）、事件（"ADD " + 路径 + id 尾缀；预算按 C 扣前缀，ADD 侧路径上限 112——04 §2.4/06 §2.3）、回复 OK。`return 0` 恒（handler 返回值无人读——proto.h 声明 `int` 纯属 C 习惯，Rust 用 `Result`，A-7）。
 
 ---
 
@@ -100,7 +100,9 @@ parent-NULL（`DeviceId` 非空）、`add_inode` 返回检查保留（框架 fal
 
 ### 3.4 截断两策：静态预截断 vs 事件严拒（03 §3.5 的答案揭晓）
 
-静态文本超长 → 预截断 127（C 同字节输出，调用点无感）；事件行超长 → `ENAMETOOLONG`（事件行是协议行，截断即 corrupt，宁可失败——C 会溢出 `char[128]`，硬化）。同是超长，一截一拒，理由各写进注释（"为什么不同"比"怎么做"重要，教学性要求）。
+静态文本超长 → 预截断 127（C 同字节输出，调用点无感）；事件行超长 → `ENAMETOOLONG`（事件行是协议行，截断即 corrupt，宁可失败——C 会溢出 `char[128]`，硬化）。同是超长，一截一拒，理由各写进注释（"为什么不同"比"怎么做"重要，教学性要求）。DM-P1-4 之后这条拒绝分支在结构上不可达：事件行预算按 C 扣掉前缀与尾缀（路径上限 ADD 112），行长恒 ≤127，`Event::new` 的上限检查退化为保险丝——保险丝仍在，只是正常供电时它不该烧（`add_event_budget_matches_c_boundary` 用 101/102 字符名把边界钉在 C 的位置）。
+
+事件行的**构造时点**也与 C 分了工：C 在子设备完全挂链后才拼行、超预算即 `panic`（device.c:93-95）；Rust 把拼行提到发布点（`insert`）之前，超预算走与落户失败同一套 `unwind_staged` 零残留回滚——失败方式从"进程死亡"变成"这单生意没做成，树干干净净"，成功/失败分界与 C 逐字节一致。
 
 ### 3.5 名字空格拒绝（OQ-3 决议，用户批准的新行为）
 
@@ -147,8 +149,9 @@ os/servers/devman/src/add_device.rs — do_add + unwind_staged + add_static（+5
 | `add_skips_dynamic_silently` | 仅 devman_id + 事件 1 + 无错 | §2.3 A-6 |
 | `add_whitespace_name_is_einval` | 空白名 EINVAL + 零事件 + 树仅根 | §3.5 OQ-3 |
 | `add_failure_unwinds_and_retry_succeeds` | 重复属性名触发落户失败：ENOMEM 回复 + 零事件 + 无孤儿目录 + 根引用 0 + id 归还 + 重试同 id 成功 | §4.2 不变量 2（DM-P1-1） |
+| `add_event_budget_matches_c_boundary` | 101 字符名：行恰 127 收；102：ENOMEM + 零事件 + 无孤儿 + 重试连续 | §3.4/§4.2（DM-P1-4） |
 
-截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（78 + DM-P1-1 回归测试 1）。
+截至 2026-09-15：`cargo test -p minix-devman` **81 passed / 0 failed**（79 + DM-P1-4 边界测试 1，08 侧另有 1）。
 
 ---
 

@@ -243,6 +243,32 @@ impl DeviceTree {
         Ok(())
     }
 
+    /// The path a device named `name` under `parent` will have once
+    /// inserted — [`Self::generate_path`] for a not-yet-published device.
+    /// 07 builds the ADD event line *before* the publish point (DM-P1-4;
+    /// C builds it after the child is fully linked and `panic`s on
+    /// overrun, device.c:93-95), so it needs the path from the parent
+    /// chain plus the pending name. Same recursion, same per-level
+    /// budget as `generate_path`/`generate_into`; the name is the final
+    /// level under exactly C's check (`buf + name + sep + 1 > len`,
+    /// device.c:61).
+    pub fn generate_child_path(
+        &self,
+        framework: &InodeTree,
+        parent: DeviceId,
+        name: &str,
+        budget: usize,
+    ) -> Result<String, Errno> {
+        let mut buf = String::new();
+        self.generate_into(framework, parent, budget, &mut buf)?;
+        if buf.len() + name.len() + 1 + 1 > budget {
+            return Err(Errno::ENOMEM);
+        }
+        buf.push_str(name);
+        buf.push('/');
+        Ok(buf)
+    }
+
     /// Test/support: live device count.
     pub fn device_count(&self) -> usize {
         self.devices.len()

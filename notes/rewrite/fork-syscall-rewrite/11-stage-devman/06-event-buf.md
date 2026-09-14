@@ -42,7 +42,7 @@ C 侧四函数 `buf_init` / `buf_printf` / `buf_append` / `buf_result` 逐一对
 
 本篇触及的 C 结构为 `devman_event` / `devman_event_inode` / `devman_inode` / `devman_device`（全字段见 03；`devman_dev` 系客户端结构，见 03 §2.7，归 10），常量 `BUF_SIZE`（见 01）与 `ADD_STRING`（事件行前缀，见 03 §2.3）。
 
-生产者（`devman_device_add_event` :75-102、`remove_event` :108-136）：`malloc` 事件（失败 `panic`——注意 :84 的串写的是对面的函数名（add 里写 remove），抄错了一处，行为无影响；:117 的 remove 写对了）→ `memset` 清零 → `strncpy(ADD_STRING)` → `generate_path(…, 128-11)`（-11 实证，04 §2.4）→ `snprintf(" 0x%08x")` 拼尾缀 → **`TAILQ_INSERT_HEAD`** 入队。
+生产者（`devman_device_add_event` :75-102、`remove_event` :108-136）：`malloc` 事件（失败 `panic`——注意 :84 的串写的是对面的函数名（add 里写 remove），抄错了一处，行为无影响；:117 的 remove 写对了）→ `memset` 清零 → `strncpy(ADD_STRING)` → `generate_path(…, 128-11)`（-11 实证，04 §2.4；**前缀已在 buf 里占预算**——ADD 扣 4 字节、REMOVE 扣 7 字节，两方向路径上限 112/109，DM-P1-4）→ `snprintf(" 0x%08x")` 拼尾缀 → **`TAILQ_INSERT_HEAD`** 入队。
 
 消费者（`devman_event_read`）取 **`TAILQ_LAST`**。HEAD 进、LAST 出——**FIFO**（新来的在头，最老的在尾；读走最老的）。方向读反（以为栈）是本节唯一的坑，单测 `fifo_oldest_first` 锁顺序。
 
@@ -168,7 +168,7 @@ os/servers/devman/src/
 
 ## 6. 过渡
 
-读半边通了：缓冲漏斗、队列 FIFO、两步 drain、`\n` 有无、分发 wiring。下一站 07 走完全流程——收 ADD（05 原语）→ grant 拷入（05 §2.2）→ wire 解码（03）→ 种树（04 `insert` + 框架 `add`）→ 发事件（本篇 `push`，行格式 `"ADD " + 路径(117预算) + " 0x%08x"`）→ 回复（05 `apply_reply`）。07 会第一次调通本篇的全部生产接口；读 07 时若忘记事件行谁拼的，回看 §2.3 的生产者三段式（malloc→snprintf→HEAD）。
+读半边通了：缓冲漏斗、队列 FIFO、两步 drain、`\n` 有无、分发 wiring。下一站 07 走完全流程——收 ADD（05 原语）→ grant 拷入（05 §2.2）→ wire 解码（03）→ 种树（04 `insert` + 框架 `add`）→ 发事件（本篇 `push`，行格式 `"ADD " + 路径(扣前缀预算，ADD 上限 112) + " 0x%08x"`，04 §2.4）→ 回复（05 `apply_reply`）。07 会第一次调通本篇的全部生产接口；读 07 时若忘记事件行谁拼的，回看 §2.3 的生产者三段式（malloc→snprintf→HEAD）。
 
 ---
 

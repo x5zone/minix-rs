@@ -20,6 +20,19 @@ use minix_types::{Endpoint, Errno};
 /// (bytes, NUL included on the wire).
 pub const DEVMAN_STRING_LEN: usize = 128;
 
+/// C: `ADD_STRING "ADD "` / `REMOVE_STRING "REMOVE "` (`devman.h:44-45`) —
+/// event-line prefixes. Their lengths eat into the path budget: C passes
+/// `DEVMAN_STRING_LEN - 11` with the prefix *already in the buffer* when
+/// `devman_generate_path` runs its check (device.c:89-91/:122-124), so the
+/// effective path cap differs per direction — ADD 112, REMOVE 109.
+pub const ADD_STRING: &str = "ADD ";
+pub const REMOVE_STRING: &str = "REMOVE ";
+
+/// C: event id suffix `" 0x%08x"` — 11 chars (`char buf[12]`, device.c:78
+/// `/* this fits the device ID */`/:98). The `- 11` in every event-line
+/// budget is this reservation.
+pub const EVENT_ID_SUFFIX_LEN: usize = 11;
+
 /// C: `DEVMAN_DEVICE_UNBOUND/BOUND/ZOMBIE 0/1/2` (`devman.h:89-91`,
 /// `#define`d mid-struct — file scope, applies everywhere).
 /// Values locked by `state_values_match_c`.

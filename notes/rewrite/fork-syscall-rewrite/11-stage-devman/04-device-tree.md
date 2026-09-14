@@ -123,6 +123,10 @@ devman_generate_path(char* buf, int len, struct devman_device *dev)
 
  预算公式：`len(buf)+len(name)+len("/")+1 > budget → ENOMEM`（+1 是 NUL 位，与 BUF_SIZE 的 +1 同款思维，01 §2.1）。`budget` 即 C 的 `len` 形参：裸路径传 128，事件行传 `128-11`（device.c:92/119 两处生产者实证——11 是尾缀 `" 0x%08x"` 的长度：空格 + `0x` + 8 hex，`char buf[12]` 装它，device.c:78/105）。Rust 签名保留 `budget` 参数（与 C 同形，不固定 128——固定了反而在 117~127 路径段产生分歧，审查中纠正，见 04 scan P0-1）。
 
+**预算里的前缀账（DM-P1-4 纠正）**：C 的调用方把 `"ADD "`/`"REMOVE "` 先 `strncpy` 进 buf **再**调 `generate_path`（device.c:89-91/:122-124）——预算检查的 `len(buf)` 把前缀算了进去。所以同一个 `128-11`，两个方向的有效路径上限不同：ADD 扣 4 字节前缀得 112，REMOVE 扣 7 字节得 109，最终行都恰好封顶 127+NUL。Rust 初版按裸路径传 `128-11`，等于比 C 多放行 4~7 字节、多出来的部分在 `Event::new` 才被拒——成功/失败分界与 C 错位。修正后调用方显式扣减：`DEVMAN_STRING_LEN - EVENT_ID_SUFFIX_LEN - ADD_STRING.len()`（113）与 `… - REMOVE_STRING.len()`（110），边界与 C 逐字节对齐（`add_event_budget_matches_c_boundary` / `del_event_budget_matches_c_boundary` 双测锁两侧）。
+
+**未发布设备的路径**：事件行在 ADD 的发布点（`insert`）之前构造（07 §4.2），此时设备还不在树里，`generate_path(id)` 无从查起。`generate_child_path(parent, name, budget)` 补了这个形状——父链递归与 `generate_path` 完全同款，待挂的名字作为最后一级走同一条预算检查。REMOVE 侧设备尚在，继续用 `generate_path(id)`。
+
 注意名字来源：`get_inode_name(dev->inode.inode)`——**框架 inode 名**，不是 `dev->name`（wire 名，07 填）。两者正常一致（07 建目录时用 wire 名），但类型上是两个来源——Rust 的 `generate_path` 同样读框架树（`framework.name(ino)`），保持"路径即文件树位置"的语义（万一 wire 名与目录名分叉，路径跟文件走——与 C 逐行一致）。
 
 ---

@@ -17,7 +17,7 @@ devman 的现状是"语义库完备、服务器未出生、出生时会有三处
 | DM-P1-1 | ADD 失败路径泄漏设备 id | 一次重名/池满 ADD 后，后续所有 ADD 永久 EINVAL（正确性缺陷，登记不修） | ✅ 2026-09-15（发布点前统一回滚 `unwind_staged` + `rollback_id`；§2 DM-P1-1 Fix #1） |
 | DM-P1-2 | 双分派面统一 + Reply 错误通道 | run/message_hook 空臂 vs handle_other 两套真相源；Reply 枚举吞错误 | ⬜ |
 | DM-P1-3 | 启动序列裁决 | Server::new 急切建树 vs C 懒 mount 触发；FirstGuard/InitCtx 成死置 | ⬜ |
-| DM-P1-4 | 事件行预算记账对齐 + 半登记状态 | 预算未扣 "ADD "/"REMOVE " 前缀；事件失败留已入树无事件的设备 | ⬜ |
+| DM-P1-4 | 事件行预算记账对齐 + 半登记状态 | 预算未扣 "ADD "/"REMOVE " 前缀；事件失败留已入树无事件的设备 | ✅ 2026-09-15（ADD_STRING/REMOVE_STRING/EVENT_ID_SUFFIX_LEN 常量 + generate_child_path 预发布构行；§2 DM-P1-4 Fix #2） |
 | DM-P1-5 | 文件表下沉，消灭全局 static | files.rs 唯一 unsafe 的 AssumeSyncCell 静态 + cookie 双表 → 内容挂 inode | ⬜ |
 | DM-P2-1 | ADD 回复的 DEVICE_ID 无出口 | apply_reply 只写 RESULT 且清零其余字；C 回复是 RESULT+DEVICE_ID 双字 | ⬜ |
 | DM-P2-2 | handle_other 位置参数类型化 | word2/word3 裸参数 → DevmanMsg 枚举（协议入类型系统） | ⬜ |
