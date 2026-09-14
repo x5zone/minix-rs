@@ -236,6 +236,8 @@ IS 的全部工作本质是"功能键 → 转储输出"。次主线以一次 F-k
 | `IS_PROC_NR` | **不存在**（全树无定义），IS endpoint 动态分配（A-9） | `rg -rn "IS_PROC_NR" minix3/minix` 无命中 |
 | `Makefile`（CPPFLAGS include 路径） | 构建/链接脚本，非语义 | WONTFIX |
 | `inc.h` 包含面 | 无独立语义，并入 01 | 组织原则 |
+| `_SYSTEM`（inc.h:7） | **排除**：C 头文件包含协议宏（构建期），无运行时语义 | V1 Gate A 补标（2026-09-15） |
+| `DIAG_BUF_SIZE`（glo.h:6） | **排除**：服务于同文件 `diag_buf` 死 extern（本表上列），全树无真实消费 | `rg -rn "diag_buf" minix3/minix` 仅声明行 |
 | `drivers/tty` 其余部分（tty.c 主循环、键盘扫描） | **不属 IS 语义**：仅 fkey 观察者/通知面属 02 协议契约；TTY 实现细节归 TTY 自身（未 staging） | 范围声明 |
 
 ---
