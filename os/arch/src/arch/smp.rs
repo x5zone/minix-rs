@@ -44,6 +44,13 @@
 /// - `ipi_ack()` — smp.c:58,198
 /// - AP boot protocol — arch/i386/smp.c
 pub trait SmpArch {
+    /// Bounded per-AP startup timeout in milliseconds (S-5 §3.4).
+    ///
+    /// x86_64: 5000 — C `arch_smp.c:131-141` LAPIC one-shot parity ("CPU
+    /// didn't boot" warning + skip; boot continues). aarch64/riscv64 have no
+    /// C counterpart (Minix3 SMP is i386-only) — same-magnitude design value.
+    const STARTUP_TIMEOUT_MS: u64 = 5000;
+
     /// Send a schedule IPI to the target CPU.
     ///
     /// C: `arch_send_smp_schedule_ipi(cpu)` — smp.c:65

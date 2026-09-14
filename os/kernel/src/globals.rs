@@ -153,6 +153,20 @@ mod bkl_protected {
         u8,
     }
 
+    // S-5 (2026-09-14): the live GDT/TSS and IDT images (protection.rs /
+    // trap_entry.rs). Mutation surface: written once by init_protection
+    // BEFORE the first lgdt/lidt; afterwards only set_kernel_stack
+    // (sp0 + stamp), which runs under the BKL — same contract as the other
+    // boot-phase tables. Keeping them in SyncUnsafeCell honors the arch
+    // traits' load() lifetime contract (tables must outlive being loaded)
+    // without leaking them into public API. x86-64 only: aarch64/riscv64
+    // protection is register state with no table image.
+    #[cfg(target_arch = "x86_64")]
+    bkl_protected_impls! {
+        minix_arch::x86_64::protection::X86_64Protection,
+        minix_arch::x86_64::trap_entry::X86_64TrapEntry,
+    }
+
     // Generic composite impls — derive BklProtected from the inner type.
     // These allow `SyncUnsafeCell<Option<T>>` and `SyncUnsafeCell<[T; N]>`
     // without listing every instantiation.

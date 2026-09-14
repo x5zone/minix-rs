@@ -780,8 +780,16 @@ fn init_protection(kernel_info: &KernelInfo) {
     // Step 1: Initialize protection structures.
     // x86-64: GDT + TSS; aarch64: SP_EL1; riscv64: sscratch
     // C: tss_init(0, &k_boot_stktop) — protect.c:338
+    // S-5 lifetime fix (2026-09-14): the instance moves into the PROTECTION
+    // global BEFORE load() — the trait's load() contract requires the tables
+    // to stay put for as long as they are loaded ("kept in a static/global
+    // location"), and a stack local dropped here would leave lgdt/lidt
+    // pointing at reused stack memory. The global also gives the AP tail
+    // (smp_init's registered continuation) access to init_ap without a
+    // second instance.
     let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
-    prot.load();
+    store_protection(prot);
+    with_protection(|prot| prot.load());
 
     // Step 2: Prepare the trap entry table metadata.
     // x86-64: IDT metadata + SYSCALL MSR; aarch64: VBAR_EL1 metadata;
@@ -808,7 +816,71 @@ fn init_protection(kernel_info: &KernelInfo) {
         trap_dispatch::x86_trap_dispatch_body,
         trap_dispatch::x86_syscall_dispatch_body,
     );
-    trap.load();
+    store_trap_entry(trap);
+    with_trap_entry(|trap| trap.load());
+}
+
+/// The live protection instance (GDT/TSS image) — 驻留 static, per the
+/// `ProtectionArch::load` lifetime contract. `None` before init_protection.
+#[cfg(target_arch = "x86_64")]
+pub(crate) static PROTECTION: SyncUnsafeCell<Option<minix_arch::x86_64::protection::X86_64Protection>> =
+    SyncUnsafeCell::new(None);
+
+/// The live trap-entry instance (IDT image) — same lifetime contract via
+/// `TrapEntryArch::load`.
+#[cfg(target_arch = "x86_64")]
+pub(crate) static TRAP_ENTRY: SyncUnsafeCell<Option<minix_arch::x86_64::trap_entry::X86_64TrapEntry>> =
+    SyncUnsafeCell::new(None);
+
+/// Move `prot` into the global (before its first `load`).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn store_protection(prot: minix_arch::x86_64::protection::X86_64Protection) {
+    // SAFETY: boot is single-threaded; no loads reference the global yet.
+    unsafe { *PROTECTION.get() = Some(prot) }
+}
+
+/// Move `trap` into the global (before its first `load`).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn store_trap_entry(trap: minix_arch::x86_64::trap_entry::X86_64TrapEntry) {
+    // SAFETY: boot is single-threaded; no loads reference the global yet.
+    unsafe { *TRAP_ENTRY.get() = Some(trap) }
+}
+
+/// Run `f` with the live protection instance (BKL-serialized callers).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn with_protection<R>(
+    f: impl FnOnce(&minix_arch::x86_64::protection::X86_64Protection) -> R,
+) -> R {
+    let p = unsafe { (*PROTECTION.get()).as_ref() }
+        .expect("PROTECTION not initialized — init_protection must run first");
+    f(p)
+}
+
+/// Run `f` with the live trap-entry instance (BKL-serialized callers).
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn with_trap_entry<R>(
+    f: impl FnOnce(&mut minix_arch::x86_64::trap_entry::X86_64TrapEntry) -> R,
+) -> R {
+    let t = unsafe { (*TRAP_ENTRY.get()).as_mut() }
+        .expect("TRAP_ENTRY not initialized — init_protection must run first");
+    f(t)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn store_protection(prot: CurrentProtection) {
+    let _ = prot; // aarch64/riscv64: register-state protection, nothing to keep
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn store_trap_entry(trap: CurrentTrapEntry) {
+    let _ = trap;
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn with_protection<R>(f: impl FnOnce(&CurrentProtection) -> R) -> R {
+    f(&CurrentProtection::init(0, minix_types::VirBytes::new(0)))
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> R {
+    f(&mut CurrentTrapEntry::init())
 }
 
 /// Initialize clock and interrupt controller.

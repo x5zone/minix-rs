@@ -179,6 +179,18 @@ unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: Pt
     asm!("invlpg [{}]", in(reg) vaddr_for_flush, options(nostack, preserves_flags));
 }}
 
+/// Read the current page-table root physical address (CR3, address bits
+/// cleared). S-5: the AP bootstrap record's `page_table_root_pa` must be the
+/// root the BSP is actually translating with — reading CR3 at orchestration
+/// time is the ground truth (the adopted root lives in kernel boot state,
+/// not in a form arch can name).
+pub fn current_cr3_pa() -> u64 {
+    let v: u64;
+    // SAFETY: CR3 read is a plain register read at CPL0.
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) v, options(nomem, nostack)) };
+    v & 0x000F_FFFF_FFFF_F000
+}
+
 pub struct X86_64Paging {
     root_paddr: u64,
     /// PTE access channel pinned at construction (see [`PteChannel`]).

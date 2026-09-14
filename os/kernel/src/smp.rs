@@ -347,8 +347,10 @@ pub struct SmpState {
     cpu_locals: [CpuLocal; MAX_CPUS],
     /// IPI scheduling data. C: `sched_ipi_data[CONFIG_MAX_CPUS]`
     sched_ipi_data: [SchedIpiData; MAX_CPUS],
-    /// Number of APs that have finished booting. C: `ap_cpus_booted`
-    ap_cpus_booted: AtomicU32,
+    /// S-5 (§3.4 double-bitmap): BSP bit + every AP that finished init_ap
+    /// (C `ap_cpus_booted` counter retired — a bitmap pins identity,
+    /// duplicates and absences at once, §3.4 v3 #1). Bit index = logical id.
+    online_mask: AtomicU64,
     /// AP handshake bitmap (S-3d): bit n set == AP with logical_id n has
     /// finished reading the bootstrap record and published its ack
     /// (Release). BSP observes with Acquire. **Distinct from online** —
@@ -382,7 +384,7 @@ impl SmpState {
             cpus: [const { CpuState::new() }; MAX_CPUS],
             cpu_locals: [const { CpuLocal::new() }; MAX_CPUS],
             sched_ipi_data: [const { SchedIpiData::new() }; MAX_CPUS],
-            ap_cpus_booted: AtomicU32::new(0),
+            online_mask: AtomicU64::new(0),
             boot_ack_mask: AtomicU64::new(0),
         };
         state.cpus[0].set_flag(CpuFlags::BSP | CpuFlags::READY);
@@ -398,7 +400,7 @@ impl SmpState {
             cpus: [const { CpuState::new() }; MAX_CPUS],
             cpu_locals: [const { CpuLocal::new() }; MAX_CPUS],
             sched_ipi_data: [const { SchedIpiData::new() }; MAX_CPUS],
-            ap_cpus_booted: AtomicU32::new(0),
+            online_mask: AtomicU64::new(0),
             boot_ack_mask: AtomicU64::new(0),
         };
         state.cpus[bsp_cpu_id.index()].set_flag(CpuFlags::BSP | CpuFlags::READY);
@@ -466,16 +468,48 @@ impl SmpState {
         &self.sched_ipi_data[cpu.index()]
     }
 
-    /// Record that an AP has finished booting. C: `ap_boot_finished(cpu)`
-    pub fn ap_boot_finished(&self) {
-        self.ap_cpus_booted.fetch_add(1, Ordering::AcqRel);
+    /// AP self-report: init_ap finished on `logical_id` (C `ap_boot_finished`
+    /// parity, bitmap form — §3.4 v3 #1: the counter could not distinguish
+    /// "CPU1 reported twice + CPU3 never" from "all reported"; the bitmap
+    /// asserts quantity, identity, duplication and absence in one compare).
+    /// Published with Release; the BSP observes with Acquire (§3.9).
+    pub fn publish_online(&self, logical_id: u32) {
+        self.online_mask.fetch_or(1u64 << logical_id, Ordering::Release);
+    }
+
+    /// BSP side: has `logical_id` completed init_ap?
+    pub fn observe_online(&self, logical_id: u32) -> bool {
+        self.online_mask.load(Ordering::Acquire) & (1u64 << logical_id) != 0
+    }
+
+    /// Raw mask snapshots (SmpInit orchestration + tests).
+    pub fn online_mask_value(&self) -> u64 {
+        self.online_mask.load(Ordering::Acquire)
+    }
+
+    pub fn boot_ack_mask_value(&self) -> u64 {
+        self.boot_ack_mask.load(Ordering::Acquire)
+    }
+
+    /// BSP-side seeding: set the BSP bit in BOTH masks before any AP is
+    /// woken (§3.4 mask rules — the BSP is born acked and online). The
+    /// BSP's logical id comes from matching `hw_id == bsp_id` in the
+    /// topology (MADT/DTB order does not guarantee slot 0 — never assume).
+    pub fn seed_bsp_masks(&self, bsp_logical_id: u32) {
+        let bit = 1u64 << bsp_logical_id;
+        self.boot_ack_mask.fetch_or(bit, Ordering::Release);
+        self.online_mask.fetch_or(bit, Ordering::Release);
     }
 
     /// Check if all APs have finished booting.
     /// C: `ap_cpus_booted != (n - 1)` in `wait_for_APs_to_finish_booting()`
     pub fn all_aps_booted(&self) -> bool {
-        let expected = self.ncpus.saturating_sub(1);
-        self.ap_cpus_booted.load(Ordering::Acquire) == expected
+        // S-5 (§3.4 v7 #8): production completion = every ACKed AP finished
+        // init_ap (`online == boot_ack`). Deliberately tolerant of a FAILED
+        // AP that never acked — C parity (wait_for_APs waits for
+        // `ap_cpus_booted == n-1` over READY CPUs only). Tests additionally
+        // assert `== expected_cpu_mask` for health (v4 #3).
+        self.online_mask.load(Ordering::Acquire) == self.boot_ack_mask.load(Ordering::Acquire)
     }
 
     /// Handle IPI scheduling on the current CPU.
@@ -758,10 +792,12 @@ impl SmpState {
         // C: smp.c:44
         bkl_unlock();
 
-        // Wait for APs
+        // Wait for APs — S-5 bitmap semantics (§3.4): every AP that acked
+        // must finish init_ap. `pause()` is the C arch_pause parity.
         // C: smp.c:45-46
-        let expected = n.saturating_sub(1);
-        while self.ap_cpus_booted.load(Ordering::Acquire) != expected {
+        while self.online_mask.load(Ordering::Acquire)
+            != self.boot_ack_mask.load(Ordering::Acquire)
+        {
             A::pause();
         }
 
@@ -775,6 +811,209 @@ impl SmpState {
 impl Default for SmpState {
     fn default() -> Self {
         Self::new_single_cpu()
+    }
+}
+
+// ── S-5: boot_lock + AP finish handshake + smp_init orchestration ──
+//
+// Lock-order facts (§3.4 — a staged startup protocol, NOT a global lock-order
+// rule; v6 #5):
+//   BSP : BKL(held since boot) → boot_lock → release boot_lock → (wait_for_aps)
+//         release BKL → spin → re-acquire BKL.
+//   AP  : boot_lock → (BKL, in later init steps — S-7).
+// Deadlock freedom is phase-based: the BSP releases boot_lock (C
+// arch_smp.c:247) before any AP can take it, and releases the BKL
+// (wait_for_APs, smp.c:44) before APs need the BKL.
+
+/// C `boot_lock` (arch_smp.c:227) — protects the AP bring-up critical
+/// section. Retained per §3.4 v4 #4: the AP itself is a contender
+/// (arch_smp.c:222-224 takes it in ap_finish_booting), so the old
+/// "single caller, no contention" deletion argument is void. Whether a
+/// smaller primitive suffices is a post-SMP optimization review.
+pub(crate) struct BootLock(AtomicBool);
+
+impl BootLock {
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// C: spinlock_lock(&boot_lock).
+    pub fn lock(&self) -> BootLockGuard<'_> {
+        while self
+            .0
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            <minix_arch::CurrentSmpArch as SmpArch>::pause();
+        }
+        BootLockGuard { lock: self }
+    }
+}
+
+/// RAII guard — Drop releases (C spinlock_unlock parity).
+pub(crate) struct BootLockGuard<'a> {
+    lock: &'a BootLock,
+}
+
+impl Drop for BootLockGuard<'_> {
+    fn drop(&mut self) {
+        self.lock.0.store(false, Ordering::Release);
+    }
+}
+
+/// The boot_lock singleton. Boot-phase only: the BSP takes it in `smp_init`,
+/// each AP in [`ap_finish_booting`].
+pub(crate) static BOOT_LOCK: BootLock = BootLock::new();
+
+/// AP-side finish handshake — C `ap_finish_booting` (arch_smp.c:222 parity,
+/// S-5 scope: boot_lock + online self-report; the fuller per-CPU init work
+/// that C also does inside this critical section arrives with S-6/S-7).
+///
+/// Runs ON the AP. Publishes `online_mask` (Release) under the boot_lock;
+/// the BSP's `wait_for_aps` observes it with Acquire.
+pub fn ap_finish_booting(logical_id: u32) {
+    let _guard = BOOT_LOCK.lock();
+    // SAFETY: the AP runs after init_proc_and_boot assembled the state; the
+    // publication itself is a single atomic OR (Release).
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    smp.publish_online(logical_id);
+}
+
+/// BSP-side SMP bring-up orchestration — C `smp_start_aps` (arch_smp.c:100)
+/// + `wait_for_APs` (smp.c:30), §3.4 serial per-AP handshake:
+/// per AP — mark BOOTING → install bootstrap → INIT/SIPI → bounded ack wait
+/// (`SmpArch::STARTUP_TIMEOUT_MS`, C arch_smp.c:131-141 LAPIC one-shot
+/// parity) → READY 代置 (BSP sets CpuFlags.READY after observing the ack —
+/// NOT the AP) or WARNING + skip (C "CPU didn't boot" parity — the failed
+/// AP is skipped, boot continues).
+///
+/// Then the BKL dance of `wait_for_aps`: release BKL so APs can enter the
+/// kernel, wait `online == boot_ack`, re-acquire.
+///
+/// Boot-phase caller (before the scheduler exists); x86-64 lane wired
+/// (install_at/fill_bootstrap/INIT-SIPI), other architectures' bring-up
+/// lanes land with their own S-4 records.
+pub fn smp_init() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use minix_arch::smp::SmpArch as _;
+        use minix_arch::{
+            x86_64::ap_early_entry::{
+                fill_bootstrap, install_at, AP_STARTUP_VECTOR, SCRATCH_LIN,
+            },
+            CurrentSmpArch, ProtectionArch, SmpArch,
+        };
+        use minix_arch::arch::ap_early_entry::ApBootstrap;
+        use minix_platform::{platform_desc, PlatformDesc};
+
+        // Register the kernel AP tail BEFORE waking anyone: the ladder's Rust
+        // convergence calls it with the bootstrap record fields. S-5 tail =
+        // S-4 per-CPU protection (init_ap) + the finish handshake; S-7
+        // extends it with the scheduler loop.
+        minix_arch::x86_64::ap_early_entry::register_ap_tail(smp_ap_tail);
+
+        let topo = platform_desc().cpu_topology();
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+
+        // BSP logical id: match hw_id == bsp_id — never assume slot 0 (§3.4).
+        let bsp_logical = (0..topo.nr_cpus as usize)
+            .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+            .expect("smp_init: BSP hw_id not found in topology") as u32;
+        smp.seed_bsp_masks(bsp_logical);
+
+        // Trampoline + ladder install once (single-image serial reuse).
+        // SAFETY: low-identity RAM reserved for AP bring-up (S-3b contract).
+        unsafe { install_at(minix_arch::x86_64::ap_early_entry::AP_STARTUP_PA as usize) };
+
+        // boot_lock critical section (C arch_smp.c:227-247).
+        let _boot = BOOT_LOCK.lock();
+
+        for logical in 0..topo.nr_cpus as u32 {
+            if logical == bsp_logical {
+                continue;
+            }
+            let hw_id = topo.cpus[logical as usize].hw_id;
+            // Per-AP kernel stack: static per-CPU arrays (§3.3 decision —
+            // no_std predictable). S-6's CpuLocal migration may move this.
+            let stack_top = ap_kernel_stack_top(logical);
+
+            // CpuFlags.READY 代置 happens on ack; the send itself marks the
+            // attempt (§3.4 state machine: DISCOVERED → BOOTING).
+            let record = ApBootstrap {
+                logical_id: logical,
+                _pad: 0,
+                hw_id,
+                // The root the BSP is translating with RIGHT NOW (CR3 ground
+                // truth) — §3.2 invariant: <4 GiB, asserted by fill_bootstrap.
+                page_table_root_pa: minix_arch::x86_64::paging::current_cr3_pa(),
+                kernel_stack_top_va: stack_top,
+                rust_entry_va: minix_arch::x86_64::ap_early_entry::ap_early_entry as u64,
+            };
+            // SAFETY: scratch page is identity RAM reserved for AP bring-up.
+            unsafe { fill_bootstrap(SCRATCH_LIN, &record) };
+            <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, AP_STARTUP_VECTOR as usize);
+
+            // Bounded per-AP ack wait (C arch_smp.c:131-141 parity). The AP
+            // publishes boot_ack (Release) from the ladder's Rust entry.
+            let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
+            let deadline = crate::clock::read_tsc()
+                + u64::from(CurrentSmpArch::STARTUP_TIMEOUT_MS) * tsc_per_ms.max(1);
+            while !smp.observe_boot_ack(logical) {
+                if crate::clock::read_tsc() >= deadline {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+                    Console::write_str("WARNING: CPU ");
+                    Console::write_hex(hw_id);
+                    Console::write_str(" didn't boot in time — skipping\n");
+                    break;
+                }
+                <CurrentSmpArch as SmpArch>::pause();
+            }
+            if smp.observe_boot_ack(logical) {
+                // BSP 代置 READY (C arch_smp.c:137 cpu_set_flag parity).
+                smp.cpu_set_flag(crate::proc::CpuId::new_unchecked(logical), CpuFlags::READY);
+            }
+        }
+        // boot_lock released here (guard drop) — C arch_smp.c:247.
+
+        smp.wait_for_aps::<CurrentSmpArch>();
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // aarch64/riscv64 lanes: the bring-up preconditions (early-entry
+        // image, per-CPU init_ap) are not wired yet — see the S-8/S-4 stub
+        // inventory in this file's history. Bringing them up is those
+        // lanes' own step; warning instead of silently succeeding.
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+        Console::write_str("WARNING: smp_init not wired for this architecture\n");
+    }
+}
+
+/// Per-AP kernel stack top (static per-CPU arrays — §3.3 no_std decision).
+#[cfg(target_arch = "x86_64")]
+const AP_KERNEL_STACK_SIZE: usize = 0x4000;
+#[cfg(target_arch = "x86_64")]
+static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; 8] = [[0; AP_KERNEL_STACK_SIZE]; 8];
+
+#[cfg(target_arch = "x86_64")]
+fn ap_kernel_stack_top(logical_id: u32) -> u64 {
+    // SAFETY: address-only computation; no dereference.
+    let base =
+        unsafe { core::ptr::addr_of!(AP_KERNEL_STACKS[logical_id as usize]) as *const u8 as usize };
+    (base + AP_KERNEL_STACK_SIZE) as u64
+}
+
+/// The kernel-registered AP tail (S-5 scope): S-4 per-CPU protection on this
+/// core, then the finish handshake, then park (S-7 replaces the park with
+/// the scheduler loop).
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_va: u64) -> ! {
+    use minix_arch::ProtectionArch;
+    crate::with_protection(|prot| prot.init_ap(logical_id, minix_types::VirBytes::new(kernel_stack_top_va)));
+    minix_arch::ap_write_syscall_msrs(minix_arch::syscall_entry_va());
+    ap_finish_booting(logical_id);
+    loop {
+        core::arch::asm!("hlt", options(nomem, nostack));
     }
 }
 
@@ -1321,18 +1560,27 @@ mod tests {
     }
 
     #[test]
-    fn test_ap_boot_counting() {
+    fn test_online_mask_completion() {
+        // S-5 §3.4: production completion = online == boot_ack (v7 #8).
+        // Degenerate case first: only the BSP seeded → nothing outstanding →
+        // completes immediately. C-faithful: wait_for_APs with zero READY
+        // APs waits for ap_cpus_booted == 0 and returns at once (降级继续).
         let smp = SmpState::with_ncpus(4, CpuId::BSP);
-        assert!(!smp.all_aps_booted());
+        smp.seed_bsp_masks(0);
+        assert!(smp.all_aps_booted(), "BSP-only: nothing to wait for");
 
-        smp.ap_boot_finished();
-        assert!(!smp.all_aps_booted());
+        // AP1 acks (boot_ack set) but has not finished init_ap (no online):
+        // the production wait MUST NOT complete — v4 #3's fake-pass guard.
+        smp.publish_boot_ack(1);
+        assert!(!smp.all_aps_booted(), "acked AP still in init_ap");
 
-        smp.ap_boot_finished();
-        assert!(!smp.all_aps_booted());
+        smp.publish_online(1);
+        assert!(smp.all_aps_booted(), "AP1 online == AP1 ack → complete");
 
-        smp.ap_boot_finished();
-        assert!(smp.all_aps_booted());
+        // Duplicate publish is idempotent (bitmap, unlike the old counter:
+        // "CPU1 reported twice + CPU3 never" cannot masquerade as success).
+        smp.publish_online(1);
+        assert_eq!(smp.online_mask_value(), 0b11);
     }
 
     #[test]
@@ -1682,6 +1930,7 @@ mod tests {
         // Single-CPU config: wait_for_APs should return immediately
         // (expected = 0, ap_cpus_booted = 0).
         let smp = SmpState::new_single_cpu();
+        smp.seed_bsp_masks(0);
         // Acquire BKL first (wait_for_APs releases and reacquires).
         // R-05: BklGuard is RAII — guard.release() at end releases BKL.
         let guard = bkl_lock();
@@ -1689,6 +1938,45 @@ mod tests {
         // BKL should be reacquired after wait.
         assert!(bkl_is_locked());
         guard.release();
+    }
+
+    #[test]
+    fn test_boot_lock_sequential_reentry() {
+        // Hosted tests are single-threaded (--test-threads=1): the meaningful
+        // assertion here is acquire → release → acquire (Drop releases), not
+        // concurrent contention (that is the AP-vs-BSP hardware dance).
+        let first = BOOT_LOCK.lock();
+        drop(first);
+        let second = BOOT_LOCK.lock();
+        drop(second);
+    }
+
+    #[test]
+    fn test_ap_finish_booting_publishes_online() {
+        // C ap_finish_booting parity: the AP's online bit appears under the
+        // boot_lock; the BSP observes it via the bitmap. ap_finish_booting
+        // publishes into the GLOBAL state (the AP's production view), so the
+        // test installs its instance there first — same pattern as the
+        // clock tests' setup_globals.
+        let smp = SmpState::with_ncpus(2, CpuId::BSP);
+        // SAFETY: single-threaded test (workspace forces --test-threads=1).
+        unsafe { *crate::globals::SMP_STATE.get() = Some(smp) };
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        smp.seed_bsp_masks(0);
+        smp.publish_boot_ack(1);
+        assert!(!smp.observe_online(1));
+
+        ap_finish_booting(1);
+
+        assert!(smp.observe_online(1));
+        assert!(smp.all_aps_booted());
+    }
+
+    #[test]
+    fn test_startup_timeout_constant_is_five_seconds() {
+        // C arch_smp.c:131-141 LAPIC one-shot parity (5s), inherited from the
+        // trait default by every architecture.
+        assert_eq!(MockSmpArch::STARTUP_TIMEOUT_MS, 5000);
     }
 
 

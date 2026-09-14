@@ -26,8 +26,25 @@
 
 use crate::arch::ap_early_entry::{ApBootstrap, BOOT_MAGIC_SENT};
 use crate::DirectMapArch;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use minix_types::PhysBytes;
 use crate::X86_64DirectMap;
+
+// ── S-5: AP tail gate ──
+//
+// The ladder's Rust convergence hands off to a kernel-registered tail (the
+// kernel owns the per-CPU bring-up policy — same split as the trap
+// dispatcher gate). Before registration the AP parks, which keeps the
+// bring-up ordering safe: no tail can run before the kernel installed one.
+type ApTailFn = unsafe extern "C" fn(logical_id: u32, hw_id: u64, kernel_stack_top_va: u64) -> !;
+static AP_TAIL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Register the kernel-side AP tail. Must run before the first INIT/SIPI
+/// (`smp_init` does); an unregistered tail parks the AP at the convergence
+/// point (S-3d behavior).
+pub fn register_ap_tail(f: ApTailFn) {
+    AP_TAIL.store(f as *mut (), Ordering::Release);
+}
 
 // ── Frozen constants (build ↔ run contract) ──
 
@@ -272,12 +289,17 @@ pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
     assert_eq!(magic, BOOT_MAGIC_SENT, "AP entered with unpublished bootstrap record");
     // §3.9: everything needed after this point lives in locals — the
     // record belongs back to the BSP the moment boot_ack publishes (S-3d).
-    let _ = record;
-    // S-4 (init_ap: per-CPU GDT/TSS/MSR/LAPIC) and S-7 (scheduler loop)
-    // extend this tail; until then the AP parks with interrupts off.
-    loop {
-        unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+    let tail = AP_TAIL.load(Ordering::Acquire);
+    if tail.is_null() {
+        // Unregistered (bare ladder tests): park with interrupts off.
+        loop {
+            unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+        }
     }
+    // Tail divergence — the kernel continuation owns the CPU from here
+    // (S-5: init_ap + finish handshake; S-7: scheduler loop).
+    let f = unsafe { core::mem::transmute::<*mut (), ApTailFn>(tail) };
+    unsafe { f(record.logical_id, record.hw_id, record.kernel_stack_top_va) }
 }
 
 #[cfg(test)]
