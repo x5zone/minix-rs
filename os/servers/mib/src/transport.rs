@@ -199,13 +199,20 @@ pub(crate) mod recording {
     }
 
     /// The recording transport. `fail` makes the copy/grant verbs fail
-    /// (error-path tests); `uids`/`grants` are consumed FIFO.
+    /// (error-path tests); `uids`/`grants` are consumed FIFO;
+    /// `canned_from` feeds `datacopy_from` byte by byte; `written`
+    /// captures every `datacopy_to` payload so sinks can be asserted;
+    /// `remote_status` is what `remote_call` reports.
     #[derive(Default)]
     pub struct Recorder {
         pub calls: RefCell<Vec<Call>>,
         pub fail: bool,
         pub uids: Vec<Result<u32, i32>>,
         pub grants: Vec<Result<GrantId, i32>>,
+        pub canned_from: Vec<u8>,
+        pub from_off: usize,
+        pub written: RefCell<Vec<u8>>,
+        pub remote_status: i32,
     }
 
     impl Recorder {
@@ -238,11 +245,17 @@ pub(crate) mod recording {
             if self.fail {
                 return Err(minix_types::EIO);
             }
+            let end = (self.from_off + buf.len()).min(self.canned_from.len());
+            let take = end - self.from_off;
+            buf[..take].copy_from_slice(&self.canned_from[self.from_off..end]);
+            buf[take..].fill(0);
+            self.from_off += take;
             Ok(())
         }
 
         fn datacopy_to(&mut self, dest: Endpoint, dest_addr: u64, buf: &[u8]) -> Result<(), i32> {
             self.log(Call::DatacopyTo(dest, dest_addr, buf.len()));
+            self.written.borrow_mut().extend_from_slice(buf);
             if self.fail {
                 return Err(minix_types::EIO);
             }
@@ -260,9 +273,20 @@ pub(crate) mod recording {
             if self.fail {
                 return Err(minix_types::EINVAL);
             }
-            match self.grants.remove(0) {
-                Ok(id) => Ok(id),
-                Err(code) => Err(code),
+            // Seeded tests consume FIFO; unseeded tests get a
+            // synthetic live grant id.
+            match self.grants.first() {
+                Some(Ok(id)) => {
+                    let id = *id;
+                    self.grants.remove(0);
+                    Ok(id)
+                }
+                Some(Err(code)) => {
+                    let code = *code;
+                    self.grants.remove(0);
+                    Err(code)
+                }
+                None => Ok(41),
             }
         }
 
@@ -314,9 +338,11 @@ pub(crate) mod recording {
             &mut self,
             _peer: Endpoint,
             _call: crate::io::relay::RemoteCall,
-            _reply: &mut crate::io::relay::RemoteReplyWire,
+            reply: &mut crate::io::relay::RemoteReplyWire,
         ) -> Result<(), i32> {
-            Err(minix_types::EIO)
+            reply.req_id = 0;
+            reply.status = self.remote_status;
+            Ok(())
         }
 
         fn pm_getparam(&mut self, _param: i32, _buf: &mut [u8]) -> Result<(), i32> {

@@ -307,15 +307,17 @@ mod tests {
     fn test_newp_copyin_str_finds_nul_across_chunks() {
         // Base 6 bytes before a page edge: the first chunk is page-
         // clamped to 4090, so a 5000-byte scratch spans two chunks
-        // (4090 + 910) and the NUL lives in the second one.
+        // (4090 + 910) and the NUL lives in the second one. The
+        // transport delivers the caller's bytes via `canned_from`.
         let src = Newp {
             endpt: CALLER,
             addr: 4096 - 6,
             len: 0, // C never checks the region length here; buf bounds it
         };
         let mut t = Recorder::default();
-        let mut scratch = vec![b'x'; 5000];
-        scratch[4090 + 5] = 0; // NUL inside the second chunk
+        t.canned_from = vec![b'x'; 4095];
+        t.canned_from.push(0); // NUL inside the second chunk
+        let mut scratch = vec![0u8; 5000];
         let n = src.copyin_str(&mut t, &mut scratch).unwrap();
         assert_eq!(n, 4090 + 5 + 1);
         assert_eq!(t.calls.borrow().len(), 2);
@@ -329,8 +331,10 @@ mod tests {
             len: 0,
         };
         let mut t = Recorder::default();
-        // No NUL anywhere in the scratch: buffer spent → EINVAL (:418-419).
-        let mut scratch = [b'x'; 6];
+        t.canned_from = vec![b'x'; 6];
+        // No NUL anywhere in the delivered bytes: buffer spent → EINVAL
+        // (:418-419).
+        let mut scratch = [0u8; 6];
         assert_eq!(src.copyin_str(&mut t, &mut scratch), Err(EINVAL));
     }
 

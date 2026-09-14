@@ -9,6 +9,8 @@
 //!
 //! 13-mib-subtree-kern.md.
 
+use alloc::boxed::Box;
+
 use minix_types::{
     EINVAL, KERN_ARGMAX, KERN_BOOTTIME, KERN_CCPU, KERN_CLOCKRATE, KERN_CONSDEV, KERN_CP_TIME,
     KERN_DOMAINNAME, KERN_DRIVERS, KERN_DUMP_ON_PANIC, KERN_FORKFSLEEP, KERN_FSCALE, KERN_FSYNC,
@@ -570,10 +572,13 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
         }
     }
 
+    // C 数组按 id 索引：长度 = 最大初始化下标 + 1（kern.c:332-498）。
+    let csize = KERN_ENTRIES.iter().map(|e| e.id).max().unwrap() as u32 + 1;
+    t.reserve(parent, csize);
     for e in KERN_ENTRIES.iter() {
         match &e.kind {
             KernKind::ConstInt(v) => {
-                let n = t.push_child(
+                let n = t.place(
                     parent,
                     e.name,
                     e.id,
@@ -583,7 +588,7 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 t.slot_mut(n).size = 4;
             }
             KernKind::BuildInt(nm) => {
-                let n = t.push_child(
+                let n = t.place(
                     parent,
                     e.name,
                     e.id,
@@ -597,19 +602,21 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 // EOPNOTSUPP rather than invent a value ([待裁决]).
             }
             KernKind::ConstStr(text) => {
-                let n = t.push_child(parent, e.name, e.id, CTLTYPE_STRING | RO);
+                let n = t.place(
+                    parent, e.name, e.id, CTLTYPE_STRING | RO);
                 t.slot_mut(n).const_str = Some(text);
                 t.slot_mut(n).size = text.len() as u64 + 1;
             }
             KernKind::VarStr => {
                 // C: `static char hostname[MAXHOSTNAMELEN]` — kern.c:12;
                 // NetBSD MAXHOSTNAMELEN = 256.
-                let n = t.push_child(parent, e.name, e.id, CTLTYPE_STRING | RW);
+                let n = t.place(
+                    parent, e.name, e.id, CTLTYPE_STRING | RW);
                 t.slot_mut(n).data = Some(Box::from(&b""[..]));
                 t.slot_mut(n).size = 256;
             }
             KernKind::VarInt => {
-                let n = t.push_child(
+                let n = t.place(
                     parent,
                     e.name,
                     e.id,
@@ -619,7 +626,7 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 t.slot_mut(n).size = 4;
             }
             KernKind::VerifyInt { init, verify } => {
-                let n = t.push_child(
+                let n = t.place(
                     parent,
                     e.name,
                     e.id,
@@ -631,14 +638,16 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
             }
             KernKind::Func(f) => {
                 let (flags, size) = func_shape(*f);
-                let n = t.push_child(parent, e.name, e.id, flags);
+                let n = t.place(
+                    parent, e.name, e.id, flags);
                 t.slot_mut(n).func = Some(FuncKey::Kern(*f));
                 t.slot_mut(n).size = size;
             }
             KernKind::IpcTable => {
                 // The mock subtree seat: a bare NODE the IPC service
                 // covers by remote mount when it runs (kern.c:492, 12).
-                t.push_child(parent, e.name, e.id, CTLTYPE_NODE | RO);
+                t.place(
+                    parent, e.name, e.id, CTLTYPE_NODE | RO);
             }
         }
     }

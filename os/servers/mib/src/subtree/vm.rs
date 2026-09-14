@@ -224,8 +224,10 @@ mod tests {
 
 pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
     use crate::tree::arena::{FuncKey, NodeId};
-    use minix_types::{CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLFLAG_READWRITE, CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_STRUCT};
+    use minix_types::{CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLTYPE_INT, CTLTYPE_STRUCT};
     const RO: u32 = CTLFLAG_READONLY | CTLFLAG_PERMANENT;
+    let csize = VM_ENTRIES.iter().map(|e| e.id).max().unwrap() as u32 + 1;
+    t.reserve(parent, csize);
     for e in VM_ENTRIES.iter() {
         match &e.kind {
             VmKind::Func(f) => {
@@ -236,12 +238,12 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                     // C vm.c:127 `sizeof(struct uvmexp_sysctl)` [待验证]。
                     VmFunc::Uvmexp2 => (CTLTYPE_STRUCT | RO, 0),
                 };
-                let n = t.push_child(parent, e.name, e.id, flags);
+                let n = t.place(parent, e.name, e.id, flags);
                 t.slot_mut(n).func = Some(FuncKey::Vm(*f));
                 t.slot_mut(n).size = size;
             }
             VmKind::ConstInt(v) => {
-                let n = t.push_child(
+                let n = t.place(
                     parent,
                     e.name,
                     e.id,

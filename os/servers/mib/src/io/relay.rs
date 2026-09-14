@@ -249,7 +249,6 @@ mod tests {
 // 参数；`RemoteReplyWire` 承接应答。Send 本身是 `MibServices::remote_call`
 // 的体（P1-4 形状修订：这一动词初版漏列，walker 落地时补全并记录）。
 
-use alloc::vec::Vec;
 use minix_types::MessMibLsysCall;
 
 /// One relayed call, ready to send: the wire message with the three

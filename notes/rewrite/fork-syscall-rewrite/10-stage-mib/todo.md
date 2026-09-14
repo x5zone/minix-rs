@@ -15,7 +15,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | 级别 | 条目 | 一句话 | 状态 |
 |---|---|---|---|
 | P1-1 | 主循环装配与传输 seam | MibServer + 双/三 trait + run_once，对齐 DS/SCHED 先例；含 UserSpaceTransport 上移再评估结论 | ⬜ |
-| P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | 🔄 半程 2026-09-15（竞技场+四线 build 已提交 44d31f1e6；walker 执行器 WIP，余量清单见条目） |
+| P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | ✅ 2026-09-15（`MibTree` + 四线 build + walker 执行器 + 10 集成测试，136 passed） |
 | P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ✅ 2026-09-15（`minix-types::sysctl_abi`，4 结构 + 4 断言测试，196 passed） |
 | P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ✅ 2026-09-15（`transport.rs` 双 trait + `Oldp`/`Newp`/`RelayRequest`/`RelayGrant`/`auth::ask`，126 passed） |
 | P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
@@ -85,7 +85,7 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 
 **验证**：walker 集成测试走通 C tree.c 的全部终态（ENOENT/ENOTDIR/EISDIR/EPERM/CallFunc/Readwrite/Remote 三去向）；`cargo test -p minix-mib` 新增 ≥8 个 walker 用例。
 
-**进度 🔄（2026-09-15，半程提交 44d31f1e6）**：已完成——`tree/arena.rs` 的 `MibTree`（Slot 统一结点、静态窗口寻址、动态 ChildMap、children_of id 序遍历、upgrade 版本爬链）+ 四个子树 `build()`（镜像 C mib_*_init 四线，Kind→flags/size/value 逐行对照 C 表）+ `build_int_value` 解析表（CONFIG_MAX_CPUS=1/OS_REV/NR_PROCS/ARG_MAX/NGROUPS_MAX/_POSIX_VERSION 已锚定；**NR_VNODES 全树无定义 → 读 EOPNOTSUPP [待裁决]**）+ `MibServices` 补 `remote_call` 动词（P1-4 形状修订）。**余量（执行轮继续）**：walker.rs 执行器（工作区 WIP，未注册进 lib.rs）——分发循环与 meta/readwrite 骨架已写，剩：① remote 臂的两个设计决策（(a) SELF 端点表示——relay 的 name grant 覆盖服务器自身内存，`RelayRequest.caller` 需要 SELF 值而 minix-types Endpoint 是固定服务枚举；(b) `Request` 需携带调用方 namep 坐标供 name tail grant，或裁决为 grant SELF 侧缓冲）；② create EEXIST 回显的 serialize 接线；③ lib.rs 注册 + ≥8 集成测试；④ Slot 补 mount peer 端点存储（挂载臂 P1-1 消费）。**已解锁的设计点（本轮沉淀，勿重推导）**：(a) `Endpoint` 是 `repr(transparent)` newtype 且有 `Endpoint::SELF`——relay 的 name grant 覆盖 SELF 内存（`tail.as_ptr() as u64`），peer 端点经 `Endpoint(raw)` 构造、存 `Slot.peer`（字段已加）；(b) MibCtx 的借用编排用**字段级拆借用**（`let MibCtx { tree, budget, kernel, svc, .. } = &mut *ctx;`）——kernel/svc 同时可变可用，relay 三开的顺序撤销无需闭包。walker.rs WIP 已含 query/create/destroy/describe/readwrite 骨架与 serialize_node 实现（minix.c:90-173 的 LE 序列化 + 指针 lane 归零 [ARCH]），remote 臂骨架待按 (a)(b) 重写。
+**进度（2026-09-15）**：① 竞技场半程提交 44d31f1e6——`MibTree`（Slot 统一结点、动态 ChildMap、children_of id 序遍历、upgrade 爬链）+ 四子树 `build()`（镜像 C mib_*_init 四线）+ `build_int_value`（NR_VNODES 无定义 → 读 EOPNOTSUPP [待裁决]）+ `MibServices.remote_call` 动词（P1-4 形状修订）。② **执行半闭环（本轮）**：`walker.rs` 落地——分发循环（find→can_see→judge_level→动作）全终态接线；meta 四 op；Readwrite（stage 两半 + verify + bool 消毒 + buf 钳制）；func registry（hardclock_ticks/clockrate/profiling 实连，跨服务拉取型 handler 经 services 诚实 EIO 挂 P1-5）；remote 臂（三 grant C 序 open + 逆序 revoke + `judge_remote_result` 三去向 + `mib_down` 等价去章）。**开发中修掉的两个自伤**：静态窗口基址公式多加 id（gap0 占首位）；`counts.node_added()` 纯函数返回值被丢弃（三处改回写）。**一个关键布局修正**：静态表按 id 索引（`[CTL_KERN]`），窗口必须先 `reserve(max_id+1)` 再 `place` 就位——惰性 push 会被子树生长侵占父窗口（root 的 33 槽被 kern 子树覆盖的事故即此），`reserve/place` 模型消解。**设计决策落地**：SELF 端点（`Endpoint::SELF` repr(transparent)）+ MibCtx 字段级拆借用（kernel/svc 同时可变）。10 个 walker 集成测试覆盖全终态：ENOENT/ENOTDIR/EISDIR/EPERM/QUERY/CREATE→DESTROY 往返/CallFunc/REMOTE 三去向/HIDDEN 仍可分发。136 passed。
 
 ### P1-3 A-4 交换格式布局裁决与锚定：wire 契约整层空白（stage 内决策 + 契约面落地）
 

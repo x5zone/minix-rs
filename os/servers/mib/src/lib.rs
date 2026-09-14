@@ -43,6 +43,7 @@ pub mod remote;
 pub mod sef;
 pub mod subtree;
 pub mod transport;
+pub mod walker;
 pub mod tree;
 
 /// Published entry point kept for the binary shell (`main.rs`).

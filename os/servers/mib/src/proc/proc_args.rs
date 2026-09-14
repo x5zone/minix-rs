@@ -11,7 +11,7 @@
 //! 19-mib-proc-args.md.
 
 use minix_types::{
-    EINVAL, EOPNOTSUPP, ESRCH, KERN_PROC_ARGV, KERN_PROC_ENV, KERN_PROC_NARGV, KERN_PROC_NENV,
+    EINVAL, EOPNOTSUPP, KERN_PROC_ARGV, KERN_PROC_ENV, KERN_PROC_NARGV, KERN_PROC_NENV,
 };
 
 /// Which of the four argument requests this is.
@@ -179,6 +179,7 @@ pub const fn cap_fragment(off: u64, olen: u64, bytes: u64, oldlen: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::ESRCH;
 
     #[test]
     fn test_req_decode() {

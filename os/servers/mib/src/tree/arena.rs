@@ -31,6 +31,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use super::node::ChildWindow;
 
@@ -180,17 +181,12 @@ mod tests {
 // 只提供统一的结点原语。
 
 use minix_types::{
-    CTLFLAG_PERMANENT, CTLFLAG_READWRITE, CTLTYPE_NODE, CTL_HW, CTL_KERN, CTL_MINIX, CTL_VM,
-    Endpoint,
+    CTLFLAG_PERMANENT, CTLFLAG_READWRITE, CTLTYPE_NODE, CTL_KERN, CTL_MINIX, CTL_VM, Endpoint,
 };
 
-use crate::subtree::hw::HW_ENTRIES;
 use super::static_tree::{TOP_SLOTS, slot_flags};
-use crate::subtree::kern::{KERN_ENTRIES, KernFunc, KernVerify};
-use crate::subtree::minix::{
-    MIB_STAT_IDS, MINIX_SLOT_IDS, PROC_DOOR_IDS, TEST_ENTRIES, MibStat, ProcDoor,
-};
-use crate::subtree::vm::VM_ENTRIES;
+use crate::subtree::kern::{KernFunc, KernVerify};
+use crate::subtree::minix::{MibStat, ProcDoor};
 use crate::subtree::{hw::HwFunc, vm::VmFunc};
 
 /// Function dispatch key: which subtree's handler owns this node.
@@ -237,8 +233,6 @@ pub struct Slot {
     pub clen: u32,
     /// Slab index of the first static child (`u32::MAX` = none).
     pub child_base: u32,
-    /// Number of static children (`[child_base, child_base+static_len)`).
-    pub static_len: u32,
     /// Dynamic children by id. C: the sorted dynode chain.
     pub children: ChildMap,
     /// Parent handle. C: `node_parent`.
@@ -309,7 +303,9 @@ pub(crate) fn build_int_value(name: &str) -> Option<i64> {
 impl MibTree {
     /// Build the static tree exactly as `mib_init` wires it
     /// (main.c:384-413): root, seven tops, then the four subtree
-    /// tables in `WIRE_ORDER` — kern, vm, hw, minix.
+    /// tables in `WIRE_ORDER` — kern, vm, hw, minix. Windows are
+    /// reserved up front (C's static arrays are sized by their highest
+    /// initialized index) and entries placed at their id positions.
     pub fn init() -> Self {
         let mut t = MibTree {
             slots: Vec::new(),
@@ -324,9 +320,12 @@ impl MibTree {
         );
         t.slots[root.0 as usize].ver = super::node::ROOT_VER;
         t.counts = super::node::TreeCounts::baseline();
+        // Root window: the C table spans ids 0..=32 (`[CTL_MINIX] = …`
+        // is the highest row) — 33 slots with holes.
+        t.reserve(root, (CTL_MINIX + 1) as u32);
         for top in TOP_SLOTS.iter() {
             let flags = slot_flags(*top) | CTLTYPE_NODE;
-            let top_id = t.push_child(root, top.name, top.id, flags);
+            let top_id = t.place(root, top.name, top.id, flags);
             match top.id {
                 CTL_KERN => crate::subtree::kern::build(&mut t, top_id),
                 CTL_VM => crate::subtree::vm::build(&mut t, top_id),
@@ -351,7 +350,6 @@ impl MibTree {
             csize: 0,
             clen: 0,
             child_base: u32::MAX,
-            static_len: 0,
             children: ChildMap::new(),
             parent: None,
             imm: None,
@@ -369,18 +367,42 @@ impl MibTree {
         NodeId(idx)
     }
 
-    /// Append a static node under `parent` (contiguous window order).
-    pub(crate) fn push_child(&mut self, parent: NodeId, name: &str, id: i32, flags: u32) -> NodeId {
-        let node = self.push(name, id, flags);
-        let p = &mut self.slots[parent.0 as usize];
-        if p.child_base == u32::MAX {
-            p.child_base = node.0;
+    /// Reserve a child window of `csize` slots under `parent` (C's
+    /// static-array sizing: the array spans `[0, max_id]`, so length =
+    /// max initialized index + 1).
+    pub(crate) fn reserve(&mut self, parent: NodeId, csize: u32) {
+        let base = self.slots.len() as u32;
+        for _ in 0..csize {
+            self.push("", 0, 0);
         }
-        p.static_len += 1;
-        p.csize += 1;
+        let p = &mut self.slots[parent.0 as usize];
+        p.child_base = base;
+        p.csize = csize;
+    }
+
+    /// Place a static child into a reserved window slot.
+    ///
+    /// C: one `MIB_*` row overwriting its array position. The slot was
+    /// reserved empty; this fills identity/flags and links the parent.
+    pub(crate) fn place(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        id: i32,
+        flags: u32,
+    ) -> NodeId {
+        let p = self.slot(parent);
+        let node = NodeId(p.child_base + id as u32);
+        {
+            let s = self.slot_mut(node);
+            s.name = Box::from(name.as_bytes());
+            s.id = id;
+            s.flags = flags;
+            s.parent = Some(parent);
+        }
+        let p = self.slot_mut(parent);
         p.clen += 1;
-        self.slots[node.0 as usize].parent = Some(parent);
-        self.counts.node_added();
+        self.counts = self.counts.node_added();
         node
     }
 
@@ -404,12 +426,9 @@ impl MibTree {
     pub fn child(&self, parent: NodeId, id: i32) -> Option<NodeId> {
         let p = self.slot(parent);
         if super::node::is_static_id(p.csize, id) && p.child_base != u32::MAX {
-            let off = id as u32;
-            if (off as usize) < p.static_len as usize {
-                let c = NodeId(p.child_base + off);
-                if self.slot(c).flags != 0 {
-                    return Some(c);
-                }
+            let c = NodeId(p.child_base + id as u32);
+            if self.slot(c).flags != 0 {
+                return Some(c);
             }
             return None;
         }
@@ -422,7 +441,7 @@ impl MibTree {
         let p = self.slot(parent);
         let mut out = Vec::new();
         if p.child_base != u32::MAX {
-            for i in 0..p.static_len {
+            for i in 0..p.csize {
                 let c = NodeId(p.child_base + i);
                 if self.slot(c).flags != 0 {
                     out.push(c);
@@ -446,5 +465,102 @@ impl MibTree {
                 None => break,
             }
         }
+    }
+}
+
+// ── Dynamic lifecycle primitives ──
+
+impl MibTree {
+    /// Allocate and link a dynamic node (create's allocation+link half;
+    /// the budget charge is the caller's — it knows name + data totals).
+    ///
+    /// C: `mib_add` — tree.c:451-481. Freed slab slots are reused before
+    /// the vector grows. `[ARCH: ...]` a static parent's `csize` keeps
+    /// its static-window meaning (dynamic children live in the map
+    /// beyond the window); C bumps `csize` alongside `clen`, which only
+    /// makes sense for dynamic parents — mirrored here by growing
+    /// `csize` only when the parent itself is dynamic.
+    pub(crate) fn create_dynode(
+        &mut self,
+        parent: NodeId,
+        id: i32,
+        _insert_at: usize,
+        name: &[u8],
+        flags: u32,
+        data: Option<Box<[u8]>>,
+    ) -> NodeId {
+        let node = match self.free.pop() {
+            Some(i) => {
+                let s = &mut self.slots[i as usize];
+                s.name = Box::from(name);
+                s.id = id;
+                s.flags = flags;
+                s.ver = super::node::ROOT_VER;
+                s.data = data;
+                s.charge = 0;
+                NodeId(i)
+            }
+            None => {
+                let idx = self.slots.len() as u32;
+                self.slots.push(Slot {
+                    name: Box::from(name),
+                    id,
+                    flags,
+                    ver: super::node::ROOT_VER,
+                    csize: 0,
+                    clen: 0,
+                    child_base: u32::MAX,
+                    children: ChildMap::new(),
+                    parent: Some(parent),
+                    imm: None,
+                    data,
+                    const_str: None,
+                    size: 0,
+                    func: None,
+                    verify: None,
+                    stat: None,
+                    desc: None,
+                    charge: 0,
+                    peer: None,
+                    mount_root: None,
+                });
+                NodeId(idx)
+            }
+        };
+        {
+            let s = &mut self.slots[node.0 as usize];
+            s.parent = Some(parent);
+        }
+        let p = &mut self.slots[parent.0 as usize];
+        p.children.insert(id, node);
+        p.clen += 1;
+        if p.child_base == u32::MAX {
+            // A dynamic parent's capacity IS its child count (C csize++).
+            p.csize += 1;
+        }
+        self.counts = self.counts.node_added();
+        node
+    }
+
+    /// Unlink a dynamic node and return its slab slot to the freelist.
+    /// The caller settles the budget ledger with the node's recorded
+    /// charge before/after calling this (remove paths are the only
+    /// release sites, so accounting cannot drift).
+    pub(crate) fn remove_dynode(&mut self, parent: NodeId, node: NodeId) {
+        let id = self.slot(node).id;
+        self.slot_mut(parent).children.remove(&id);
+        {
+            let p = self.slot_mut(parent);
+            p.clen = p.clen.saturating_sub(1);
+            if p.child_base == u32::MAX {
+                p.csize = p.csize.saturating_sub(1);
+            }
+        }
+        // Clearing the flags is what makes an in-window slot look empty
+        // to `mib_find` (C zeroes the node, tree.c:793-832).
+        self.slot_mut(node).flags = 0;
+        self.slot_mut(node).children = ChildMap::new();
+        self.free.push(node.0);
+        self.counts = self.counts.node_removed();
     }
 }

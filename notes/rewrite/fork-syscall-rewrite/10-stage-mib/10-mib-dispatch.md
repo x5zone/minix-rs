@@ -142,6 +142,8 @@ os/servers/mib/src/tree/
 
 ---
 
+> **P1-2 补记（2026-09-15）**：执行半已落——`walker.rs` 的 `sysctl()` 就是 `mib_dispatch` 的执行体：每轮 find（05）→ 可见性（07）→ `judge_level` → 动作分发；meta 四 op（QUERY/CREATE/DESTROY/DESCRIBE）、Readwrite、CallFunc（registry）、RemoteCall 三去向全部接线；`LevelFacts` 聚合九项输入，结构体形状让"转置"不可表示（P2-2）。本篇的"循环本体是走查效果"声明就此闭环。
+
 ## 5 测试要点
 
 > 基线：`cargo test -p minix-mib --lib`，本篇 5 个测试。

@@ -286,15 +286,17 @@ mod tests {
 
 pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
     use alloc::boxed::Box;
-    use crate::tree::arena::{FuncKey, NodeId, StatKey};
+    use crate::tree::arena::{FuncKey, StatKey};
     use minix_types::{
         CTLFLAG_HIDDEN, CTLFLAG_IMMEDIATE, CTLFLAG_PERMANENT, CTLFLAG_PRIVATE, CTLFLAG_READONLY,
-        CTLFLAG_READWRITE, CTLFLAG_UNSIGNED, CTLTYPE_BOOL, CTLTYPE_INT, CTLTYPE_NODE,
-        CTLTYPE_QUAD, CTLTYPE_STRING, CTLTYPE_STRUCT, MINIX_MIB, MINIX_PROC, MINIX_TEST,
+        CTLFLAG_READWRITE, CTLTYPE_BOOL, CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_QUAD, CTLTYPE_STRING,
+        CTLTYPE_STRUCT, MINIX_MIB, MINIX_TEST,
     };
     const RO: u32 = CTLFLAG_READONLY | CTLFLAG_PERMANENT;
     const RW: u32 = CTLFLAG_READWRITE | CTLFLAG_PERMANENT;
 
+    let csize = MINIX_SLOT_IDS.iter().map(|(id, _)| *id).max().unwrap() as u32 + 1;
+    t.reserve(parent, csize);
     for (id, name) in MINIX_SLOT_IDS.iter() {
         let slot = if *id == MINIX_TEST {
             MinixSlot::Test
@@ -309,13 +311,15 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 if !MINIX_TEST_SUBTREE {
                     continue;
                 }
-                t.push_child(parent, name, *id, CTLTYPE_NODE | RW | CTLFLAG_HIDDEN)
+                t.place(parent, name, *id, CTLTYPE_NODE | RW | CTLFLAG_HIDDEN)
             }
-            MinixSlot::Mib => t.push_child(parent, name, *id, CTLTYPE_NODE | RO),
-            MinixSlot::Proc => t.push_child(parent, name, *id, CTLTYPE_NODE | RO),
+            MinixSlot::Mib => t.place(parent, name, *id, CTLTYPE_NODE | RO),
+            MinixSlot::Proc => t.place(parent, name, *id, CTLTYPE_NODE | RO),
         };
         match slot {
             MinixSlot::Test => {
+                let test_csize = TEST_ENTRIES.iter().map(|e| e.id).max().unwrap() as u32 + 1;
+                t.reserve(top, test_csize);
                 for te in TEST_ENTRIES.iter() {
                     // 逐行对照 minix.c:19-43 的宏（test87 钉值表）。
                     let (flags, size) = match &te.kind {
@@ -340,7 +344,7 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                         TestKind::SecretTable => (CTLTYPE_NODE | CTLFLAG_PRIVATE | RO, 0),
                         TestKind::PermanentInt(_) => (CTLTYPE_INT | CTLFLAG_IMMEDIATE | RO, 4),
                     };
-                    let n = t.push_child(top, te.name, te.id, flags);
+                    let n = t.place(top, te.name, te.id, flags);
                     let s = t.slot_mut(n);
                     match &te.kind {
                         TestKind::HexInt(v)
@@ -357,8 +361,10 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
             }
             MinixSlot::Mib => {
                 // 自统计镜像：三个 INTPTR 门读活计数器（读时结算）。
+                let stat_csize = MIB_STAT_IDS.iter().map(|(sid, _)| *sid).max().unwrap() as u32 + 1;
+                t.reserve(top, stat_csize);
                 for (i, (sid, sname)) in MIB_STAT_IDS.iter().enumerate() {
-                    let n = t.push_child(top, sname, *sid, CTLTYPE_INT | RO);
+                    let n = t.place(top, sname, *sid, CTLTYPE_INT | RO);
                     t.slot_mut(n).size = 4;
                     t.slot_mut(n).stat = Some(StatKey::Stat(match i {
                         0 => MibStat::Nodes,
@@ -368,6 +374,8 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                 }
             }
             MinixSlot::Proc => {
+                let door_csize = PROC_DOOR_IDS.iter().map(|(pid, _)| *pid).max().unwrap() as u32 + 1;
+                t.reserve(top, door_csize);
                 for (pid, pname) in PROC_DOOR_IDS.iter() {
                     let door = if *pid == minix_types::PROC_DATA {
                         ProcDoor::Data
@@ -379,7 +387,7 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                         ProcDoor::List => (CTLTYPE_STRUCT | RO, ProcDoor::List),
                         ProcDoor::Data => (CTLTYPE_NODE | RO, ProcDoor::Data),
                     };
-                    let n = t.push_child(top, pname, *pid, flags);
+                    let n = t.place(top, pname, *pid, flags);
                     t.slot_mut(n).func = Some(FuncKey::ProcDoor(fkey));
                 }
             }
