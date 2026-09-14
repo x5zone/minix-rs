@@ -71,6 +71,7 @@ pub mod getsysinfo;
 pub mod identity;
 pub mod notify;
 pub mod publish;
+pub mod retrieve;
 pub mod sef;
 pub mod slots;
 pub mod store;
