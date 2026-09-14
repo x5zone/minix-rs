@@ -16,7 +16,7 @@
 |------|------|--------|------|
 | P0 | （无） | 判定层四臂门序与 C 逐一重对，零 P0；核对依据见 §4.0 | — |
 | P1 | P1-1 | **retrieve.rs 孤儿模块**：lib.rs 未声明，268 行 + 8 测试从未编译 | ✅ 已修复 2026-09-15（Fix #1，见 §9） |
-| P1 | P1-2 | **类型预门缺 DSF_MASK_TYPE 掩码**：IN_USE 公共位使门恒真，跨类型误置位/误通知 | open |
+| P1 | P1-2 | **类型预门缺 DSF_MASK_TYPE 掩码**：IN_USE 公共位使门恒真，跨类型误置位/误通知 | ✅ 已修复 2026-09-15（Fix #2，见 §9） |
 | P1 | P1-3 | **删除通知半丢失**：apply_delete 绕过通知环且不产出补发素材，C 的删除唤醒契约断 | open |
 | P1 | P1-4 | **transport + handler 粘合 + grant/datacopy/notify 接线**（stage 内 seam，通电挂 E-DSWIRE） | open |
 | P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | open |
@@ -266,3 +266,12 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 - **Before**: `pub mod publish;` 直接连 `pub mod sef;`（15 个 `pub mod`，retrieve 缺席）
 - **After**: 插入 `pub mod retrieve;`（16 个，与导览注释 lib.rs:45-46 及文件集一致）
 - **Verified**: `cargo test -p minix-ds` **81 → 89 passed**（8 个孤儿测试点亮，零失败）；`rg -c "pub mod" lib.rs` = 16；Gate E——08 篇 §5 测试表 8/8 与 retrieve.rs:180-262 实有对齐，符号级锚（RetrieveReject:28 / RetrieveHit:57 / truncated_len:76 / plan_retrieve:95 / plan_retrieve_label:143）rg 实测全命中，08 篇无行号引用无需修正。
+
+### ✅ Fix #2: P1-2 + P3-1(部分) — entry_matches 掩码门 + 死参数瘦身（2026-09-15）
+
+- **File**: `os/servers/ds/src/subscribe.rs:223-250`（entry_matches 本体）、`notify.rs`（apply_update / initial_scan 两调用点）
+- **Before**: `if !entry.flags.intersects(sub.flags) { return false; }` + 死参数 `store: &DsStore`（`let _ = store;` 压掉）与 `_entry_index: usize`
+- **After**: 三门序（auth → 类型掩码门 → 式匹配），类型门改 `entry.flags.intersection(sub.flags).intersection(DsFlags::from_bits_truncate(DSF_MASK_TYPE)).is_empty()` 拒绝——与 publish.rs:131 取类型臂的既有惯法同式；签名瘦身为四参，`DsStore` import 随之删除
+- **测试**：新增 `test_entry_matches_type_gate_masks_in_use`（U32 条目 × STR 订阅同键名不匹配；翻转臂后匹配——IN_USE 公共位不穿透的回归锁），10 篇 §5 表登记（Gate E）
+- **Verified**: `cargo test -p minix-ds` **90 passed**；`cargo clippy -p minix-ds --all-targets` DS 侧 0 条；`rg -n "intersects\(sub.flags\)|_entry_index" os/servers/ds/src/` 零命中。
+

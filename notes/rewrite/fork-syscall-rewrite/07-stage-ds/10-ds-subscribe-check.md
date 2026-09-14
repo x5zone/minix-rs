@@ -146,6 +146,7 @@ os/servers/ds/src/
 | 登记 | `test_empty_mask_means_all_types` | `:501-503` | 空掩码即全类型 |
 | 匹配 | `test_literal_engine_matches_exactly` | `:190-193` | 字面精确等价 |
 | 匹配 | `test_meta_patterns_need_full_engine` | A-2 | 元字符可检出 |
+| 匹配 | `test_entry_matches_type_gate_masks_in_use` | `:210` | 掩码门：两侧先掩 `DSF_MASK_TYPE` 再判交，IN_USE 公共位不穿透 |
 | 唤醒 | `test_publish_wakes_matching_subscriber` | `:198-224` | 中者置位+唤醒 |
 | 唤醒 | `test_delete_clears_bit_and_still_wakes` | `:217-222` | 清位仍唤醒 |
 | 唤醒 | `test_stale_owner_skips_without_panic` | `:213` 偏离 | 死席跳过计数 |

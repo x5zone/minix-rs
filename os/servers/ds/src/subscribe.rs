@@ -18,7 +18,6 @@ use minix_types::{DSF_MASK_TYPE, DS_MAX_KEYLEN, EAGAIN, EEXIST, EINVAL, ESRCH, D
 
 use crate::publish::check_key_len;
 use crate::slots::{SubSlot, alloc_sub_slot, free_sub_slot, lookup_sub};
-use crate::store::DsStore;
 use crate::subscription::{DsSubs, Subscription};
 
 /// Why a subscribe is refused (`do_subscribe` error paths).
@@ -222,33 +221,38 @@ pub fn apply_subscribe(
 
 /// Match one entry against one subscriber (`check_sub_match`).
 ///
-/// Both gates, in C order (store.c:190-193): the entry's subscribe
-/// gate must admit the subscriber endpoint, and the pattern must
-/// match the entry key. `subscriber` is the subscriber endpoint's
-/// already-resolved name.
+/// Three gates, in C order (store.c:190-193 with the sweep's own type gate
+/// at :210): the entry's subscribe gate must admit the subscriber, the two
+/// type arms must meet, and the pattern must match the entry key.
+/// `subscriber` is the subscriber endpoint's already-resolved name.
 pub fn entry_matches<M: PatternMatcher>(
     entry: &crate::store::DataEntry,
     subscriber: Option<&[u8]>,
     engine: &M,
     sub: &Subscription,
-    store: &DsStore,
-    _entry_index: usize,
 ) -> bool {
     if !crate::auth::check_auth(entry, subscriber, DsFlags::PRIV_SUBSCRIBE) {
         return false;
     }
-    // Type pre-gate, as the sweep does (:210): disjoint arms never meet.
-    if !entry.flags.intersects(sub.flags) {
+    // Type pre-gate. C masks BOTH sides to the type bits before testing the
+    // intersection (`ds_subs[i].flags & dsp->flags & DSF_MASK_TYPE`,
+    // store.c:210) — a raw intersection would always pass on the shared
+    // IN_USE bit (both live seats carry it), so the mask is load-bearing.
+    if entry
+        .flags
+        .intersection(sub.flags)
+        .intersection(DsFlags::from_bits_truncate(DSF_MASK_TYPE))
+        .is_empty()
+    {
         return false;
     }
-    let _ = store;
     engine.matches(&sub.pattern, &entry.key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{DataBody, DataEntry, NR_DS_KEYS};
+    use crate::store::{DataBody, DataEntry};
     use crate::subscription::NR_DS_SUBS;
 
     fn test_subs() -> DsSubs {
@@ -434,7 +438,6 @@ mod tests {
     #[test]
     fn test_entry_matches_gates() {
         // Entry/subscriber fixtures for the match verdict.
-        let store: DsStore = [None; NR_DS_KEYS];
         let engine = LiteralMatcher;
         let mut entry = DataEntry {
             flags: DsFlags::IN_USE | DsFlags::TYPE_U32,
@@ -446,11 +449,35 @@ mod tests {
         let mut sub = Subscription::vacant();
         sub.flags = DsFlags::IN_USE | DsFlags::TYPE_U32;
         sub.pattern[..3].copy_from_slice(b"clk");
-        assert!(entry_matches(&entry, Some(b"vfs"), &engine, &sub, &store, 0));
+        assert!(entry_matches(&entry, Some(b"vfs"), &engine, &sub));
         // Wrong pattern: no match.
         sub.pattern = [0u8; DS_MAX_KEYLEN];
         sub.pattern[..3].copy_from_slice(b"rst");
-        assert!(!entry_matches(&entry, Some(b"vfs"), &engine, &sub, &store, 0));
+        assert!(!entry_matches(&entry, Some(b"vfs"), &engine, &sub));
+    }
+
+    #[test]
+    fn test_entry_matches_type_gate_masks_in_use() {
+        // C masks BOTH sides to DSF_MASK_TYPE before the intersection
+        // (store.c:210): a live entry and a live subscription always share
+        // IN_USE, so the raw intersection never refuses — the type bits must
+        // be isolated first. A U32 entry and a STR subscription with the
+        // same key text are strangers (P1-2 regression lock).
+        let engine = LiteralMatcher;
+        let mut entry = DataEntry {
+            flags: DsFlags::IN_USE | DsFlags::TYPE_U32,
+            key: [0u8; DS_MAX_KEYLEN],
+            owner: [0u8; DS_MAX_KEYLEN],
+            body: DataBody { u32: 1 },
+        };
+        entry.key[..3].copy_from_slice(b"clk");
+        let mut sub = Subscription::vacant();
+        sub.flags = DsFlags::IN_USE | DsFlags::TYPE_STR;
+        sub.pattern[..3].copy_from_slice(b"clk");
+        assert!(!entry_matches(&entry, Some(b"vfs"), &engine, &sub));
+        // Same arms meet: flipping the entry's arm to STR lets it through.
+        entry.flags = DsFlags::IN_USE | DsFlags::TYPE_STR;
+        assert!(entry_matches(&entry, Some(b"vfs"), &engine, &sub));
     }
 
     #[test]

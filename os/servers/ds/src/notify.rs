@@ -77,14 +77,7 @@ pub fn apply_update<M: PatternMatcher>(
                 continue;
             }
         };
-        if !entry_matches(
-            &target_copy,
-            Some(&sub.owner),
-            engine,
-            sub,
-            store,
-            entry.index(),
-        ) {
+        if !entry_matches(&target_copy, Some(&sub.owner), engine, sub) {
             continue;
         }
         if let Some(live) = seat {
@@ -123,7 +116,7 @@ pub fn initial_scan<M: PatternMatcher>(
         if entry.is_vacant() {
             continue;
         }
-        if !entry_matches(entry, Some(subscriber_name), engine, &snapshot, store, index) {
+        if !entry_matches(entry, Some(subscriber_name), engine, &snapshot) {
             continue;
         }
         if let Some(live) = subs[sub.index()].as_mut() {
