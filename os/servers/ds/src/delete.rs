@@ -6,18 +6,24 @@
 //! The module owns the verdict and the table edit, nothing else: key
 //! bounds, lookup, the owner check, the per-type teardown, and the
 //! label cascade. Heap release (A-3) and grant transport (02/12) stay
-//! out: byte-range buffers are handed back to the caller for release,
-//! and subscriber notification rides the sweep in `notify.rs` (10).
+//! out: byte-range buffers are handed back to the caller for release.
+//! Subscriber notification stays in the family: each victim is swept
+//! through `notify.rs`'s `apply_update` *before* its seat clears
+//! (C's notify-then-clear order, store.c:628/:642), and the wake
+//! endpoints surface through the `wake` callback — the store never
+//! sends them itself (10's transport frontier).
 //!
 //! Single-threaded event loop: verdicts are pure; the apply step takes
 //! `&mut` tables from the caller, no shared state.
 
-use minix_types::{DSF_MASK_TYPE, EINVAL, EPERM, ESRCH, DsFlags};
+use minix_types::{DSF_MASK_TYPE, EINVAL, EPERM, ESRCH, Endpoint, DsFlags};
 
+use crate::notify::apply_update;
 use crate::publish::check_key_len;
 use crate::slots::{EntrySlot, key_eq, lookup_entry};
 use crate::store::{DsStore, MemBody, NR_DS_KEYS};
-use crate::subscription::DsSubs;
+use crate::subscribe::PatternMatcher;
+use crate::subscription::{DsSubs, NR_DS_SUBS};
 
 /// Why a delete is refused (`do_delete` error paths, store.c:593-638).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,43 +125,51 @@ pub struct DeleteEffect {
     pub cleared_subs: usize,
     /// Byte-range buffers handed back for release (A-3).
     pub heap_buffers: usize,
+    /// Subscriber wakes surfaced through `wake` across all victim sweeps
+    /// (one per matching subscriber per victim, exactly C's
+    /// `update_subscribers(…, 0)` count, store.c:628/:642).
+    pub notified: usize,
 }
 
 /// Carry out a planned delete (`do_delete` teardown, store.c:609-648).
 ///
 /// Clears the target seat; for labels, first clears every subscription
-/// owned by the label name (:616-621) and every entry owned by it
-/// (:624-631). Stale notify bits for cleared indices are wiped from all
-/// subscriber maps — observationally identical to C's per-victim
-/// `update_subscribers(…, 0)`, since only matching subscribers ever
-/// hold the bit.
+/// owned by the label name (:616-621) and then every entry owned by it
+/// (:624-631). For **every** victim — cascade entries and the target
+/// alike — the subscriber sweep runs *before* the seat clears
+/// (`apply_update(…, set = false)`): C interleaves the same way
+/// (:628 `update_subscribers` before `flags = 0`; :642 before :645),
+/// because the match verdict needs the victim's type and key, which a
+/// cleared seat no longer offers. The sweep both clears matching
+/// subscribers' told-bits and hands each of their endpoints to `wake`;
+/// the store never sends the notifications itself (10's transport).
 ///
 /// Byte-range buffers (`STR`/`MEM`) are *not* freed here: there is no
 /// global allocator yet (A-3). Each buffer is copied into `heap_out`
 /// (caller-provided scratch, one slot per entry seat) for the owner to
 /// release; `effect.heap_buffers` counts them.
-///
-/// Notification (`ipc_notify`, 10) stays out: the caller runs the sweep
-/// in `notify.rs` with the cleared indices.
-pub fn apply_delete(
+pub fn apply_delete<M: PatternMatcher>(
     store: &mut DsStore,
     subs: &mut DsSubs,
     plan: DeletePlan,
+    engine: &M,
+    wake: &mut dyn FnMut(Endpoint),
     heap_out: &mut [Option<MemBody>; NR_DS_KEYS],
 ) -> DeleteEffect {
     let mut effect = DeleteEffect {
         cleared_entries: 0,
         cleared_subs: 0,
         heap_buffers: 0,
+        notified: 0,
     };
     // Read the victim's lanes before clearing: the cascade keys on them.
-    let (victim_key, victim_owner, victim_is_wide) = match store[plan.slot.index()] {
-        Some(entry) => {
-            let wide = entry.flags.intersects(DsFlags::TYPE_STR | DsFlags::TYPE_MEM);
-            (entry.key, entry.owner, wide)
-        }
+    let victim_key = match store[plan.slot.index()] {
+        Some(entry) => entry.key,
         None => return effect,
     };
+    // Caller scratch for one sweep's wake list (`apply_update` writes the
+    // first `stats.notified` lanes).
+    let mut sweep_out = [Endpoint(0); NR_DS_SUBS];
 
     if plan.cascade_label {
         // Subscriptions owned by the label name go first (:616-621).
@@ -170,34 +184,47 @@ pub fn apply_delete(
                 effect.cleared_subs += 1;
             }
         }
-        // Entries owned by the label name follow (:624-631).
-        for (index, seat) in store.iter_mut().enumerate() {
-            if let Some(entry) = seat
-                && !entry.is_vacant()
-                && key_eq(&entry.owner, &victim_key)
-            {
-                take_heap_buffer(entry, heap_out, &mut effect);
-                *seat = None;
-                effect.cleared_entries += 1;
-                clear_notify_bit(subs, index);
+        // Entries owned by the label name follow (:624-631): sweep, then
+        // clear, per victim.
+        // MINIX3 BUG: C leaks these victims' heap buffers (it only runs
+        // `update_subscribers` + `flags = 0` at store.c:624-631, no
+        // `free`); handing the descriptors back is a deliberate superset.
+        for index in 0..NR_DS_KEYS {
+            let owned = matches!(&store[index], Some(entry) if !entry.is_vacant() && key_eq(&entry.owner, &victim_key));
+            if !owned {
+                continue;
             }
+            let slot = EntrySlot::from_index(index).expect("index within table");
+            let stats = apply_update(store, subs, slot, false, engine, &mut sweep_out);
+            for endpoint in sweep_out.iter().take(stats.notified) {
+                wake(*endpoint);
+            }
+            effect.notified += stats.notified;
+            take_heap_buffer(store[index].as_ref().expect("victim seats a body"), heap_out, &mut effect);
+            store[index] = None;
+            effect.cleared_entries += 1;
         }
-    } else if victim_is_wide {
+    } else if store[plan.slot.index()]
+        .map(|entry| entry.flags.intersects(DsFlags::TYPE_STR | DsFlags::TYPE_MEM))
+        .unwrap_or(false)
+    {
         // STR/MEM: hand the buffer back (C: `free(data)`, :635).
         if let Some(entry) = store[plan.slot.index()] {
             take_heap_buffer(&entry, heap_out, &mut effect);
         }
     }
 
-    // The victim itself: notify bits wiped, seat cleared
-    // (C: `update_subscribers(dsp, 0)` at :642, `flags = 0` at :645).
-    clear_notify_bit(subs, plan.slot.index());
+    // The victim itself: sweep (C: `update_subscribers(dsp, 0)` at :642),
+    // then the seat clears (:645).
     if store[plan.slot.index()].is_some() {
+        let stats = apply_update(store, subs, plan.slot, false, engine, &mut sweep_out);
+        for endpoint in sweep_out.iter().take(stats.notified) {
+            wake(*endpoint);
+        }
+        effect.notified += stats.notified;
         store[plan.slot.index()] = None;
         effect.cleared_entries += 1;
     }
-    // Silence unused binding when neither cascade nor wide applied.
-    let _ = victim_owner;
     effect
 }
 
@@ -218,23 +245,24 @@ fn take_heap_buffer(
     effect.heap_buffers += 1;
 }
 
-/// Wipe one entry index from every subscriber's told-map.
-fn clear_notify_bit(subs: &mut DsSubs, index: usize) {
-    for seat in subs.iter_mut() {
-        if let Some(sub) = seat
-            && !sub.is_vacant()
-        {
-            sub.old_subs.set(index, false);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::{DataBody, DataEntry};
+    use crate::subscribe::LiteralMatcher;
     use crate::subscription::{NR_DS_SUBS, Subscription};
     use minix_types::{DS_MAX_KEYLEN, DsFlags};
+
+    fn label_seat(key: &[u8], ep: u32) -> DataEntry {
+        let mut entry = DataEntry {
+            flags: DsFlags::IN_USE | DsFlags::TYPE_LABEL,
+            key: [0u8; DS_MAX_KEYLEN],
+            owner: [0u8; DS_MAX_KEYLEN],
+            body: DataBody { u32: ep },
+        };
+        entry.key[..key.len()].copy_from_slice(key);
+        entry
+    }
 
     fn owned_entry(key: &[u8], owner: &[u8], flags: DsFlags) -> DataEntry {
         let mut entry = DataEntry {
@@ -271,9 +299,11 @@ mod tests {
         let mut store = store;
         let mut subs: DsSubs = [None; NR_DS_SUBS];
         let mut heap = empty_heap();
-        let effect = apply_delete(&mut store, &mut subs, plan, &mut heap);
+        let engine = LiteralMatcher;
+        let effect = apply_delete(&mut store, &mut subs, plan, &engine, &mut |_| {}, &mut heap);
         assert_eq!(effect.cleared_entries, 1);
         assert_eq!(effect.heap_buffers, 0);
+        assert_eq!(effect.notified, 0);
         assert!(store[0].is_none());
     }
 
@@ -332,12 +362,60 @@ mod tests {
             .expect("rs owns the label");
         assert!(plan.cascade_label);
         let mut heap = empty_heap();
-        let effect = apply_delete(&mut store, &mut subs, plan, &mut heap);
+        let engine = LiteralMatcher;
+        let effect = apply_delete(&mut store, &mut subs, plan, &engine, &mut |_| {}, &mut heap);
         assert_eq!(effect.cleared_subs, 1);
         // Victim label + owned entry.
         assert_eq!(effect.cleared_entries, 2);
         assert!(store[0].is_none() && store[1].is_none());
         assert!(subs[0].is_none());
+    }
+
+    #[test]
+    fn test_label_delete_wakes_matching_subscriber_before_clear() {
+        // The notify-then-clear order (store.c:628/:642 before the flags
+        // wipe): the cascade victim "cfg" (owned by label "svc") is swept
+        // while its seat still holds type and key, so the matching
+        // subscriber is woken and its told-bit cleared. A seat cleared
+        // first would have nothing to match against.
+        let mut store: DsStore = [None; NR_DS_KEYS];
+        store[0] = Some(label_seat(b"rs", 2));
+        store[1] = Some(label_seat(b"vfs", 9));
+        // The "svc" label is RS-registered (map_service sets owner "rs",
+        // store.c:242) — the delete's owner verdict keys on it.
+        let mut svc_label = label_seat(b"svc", 3);
+        svc_label.owner[..2].copy_from_slice(b"rs");
+        store[2] = Some(svc_label);
+        store[3] = Some(owned_entry(
+            b"cfg",
+            b"svc",
+            DsFlags::IN_USE | DsFlags::TYPE_U32,
+        ));
+        let mut subs: DsSubs = [None; NR_DS_SUBS];
+        let mut sub = Subscription::vacant();
+        sub.flags = DsFlags::IN_USE | DsFlags::TYPE_U32;
+        sub.owner[..3].copy_from_slice(b"vfs");
+        sub.pattern[..3].copy_from_slice(b"cfg");
+        sub.old_subs.set(3, true);
+        subs[0] = Some(sub);
+
+        let plan = plan_delete(&store, b"svc", 4, DsFlags::TYPE_LABEL, Some(b"rs"))
+            .expect("rs owns the label");
+        let mut heap = empty_heap();
+        let engine = LiteralMatcher;
+        let mut woken: Vec<Endpoint> = Vec::new();
+        let effect =
+            apply_delete(&mut store, &mut subs, plan, &engine, &mut |ep| woken.push(ep), &mut heap);
+        // Exactly one wake: subscriber vfs(9) on the cascade victim cfg.
+        assert_eq!(woken, vec![Endpoint(9)]);
+        assert_eq!(effect.notified, 1);
+        // The told-bit cleared through the sweep (set = false), the seat
+        // cleared after it.
+        assert!(!subs[0].as_ref().unwrap().old_subs.get(3));
+        assert!(store[3].is_none() && store[2].is_none());
+        assert_eq!(effect.cleared_entries, 2);
+        // The label's own sweep finds no subscriber keyed "svc" — the
+        // pattern gate, not the type gate, declines it.
     }
 
     #[test]

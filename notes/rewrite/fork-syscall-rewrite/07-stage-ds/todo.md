@@ -17,14 +17,14 @@
 | P0 | （无） | 判定层四臂门序与 C 逐一重对，零 P0；核对依据见 §4.0 | — |
 | P1 | P1-1 | **retrieve.rs 孤儿模块**：lib.rs 未声明，268 行 + 8 测试从未编译 | ✅ 已修复 2026-09-15（Fix #1，见 §9） |
 | P1 | P1-2 | **类型预门缺 DSF_MASK_TYPE 掩码**：IN_USE 公共位使门恒真，跨类型误置位/误通知 | ✅ 已修复 2026-09-15（Fix #2，见 §9） |
-| P1 | P1-3 | **删除通知半丢失**：apply_delete 绕过通知环且不产出补发素材，C 的删除唤醒契约断 | open |
+| P1 | P1-3 | **删除通知半丢失**：apply_delete 绕过通知环且不产出补发素材，C 的删除唤醒契约断 | ✅ 已修复 2026-09-15（Fix #3，见 §9） |
 | P1 | P1-4 | **transport + handler 粘合 + grant/datacopy/notify 接线**（stage 内 seam，通电挂 E-DSWIRE） | open |
 | P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | open |
 | P2 | P2-1 | plan.md staleness 批次（A-1 已解决、A-8 半过时、§3.5 基线失真） | open |
 | P2 | P2-2 | A-3 堆策略决策（随 P1-4(c) transport 设计一并定） | open |
 | P2 | P2-3 | A-6 SEF/Live-Update 显式状态迁移设计 | open |
 | P3 | P3-1 | 卫生批次：fmt 22 处（13 文件）+ clippy 2 条 + entry_matches 死参数 | open |
-| P3 | P3-3 | C 源 bug 标注（模式 78）：label 级联不 free 堆，Rust 超集修复未标注 | open |
+| P3 | P3-2 | C 源 bug 标注（模式 78）：label 级联不 free 堆，Rust 超集修复未标注 | ✅ 已修复 2026-09-15（Fix #3 顺带，见 §9） |
 | P3 | P3-3 | boot.rs:90 的「§4.3」引用漂移（06 篇钩子实际在 D4） | open |
 
 验证命令基线（2026-09-14 实测，后续修复轮以此为对照）：
@@ -274,4 +274,17 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 - **After**: 三门序（auth → 类型掩码门 → 式匹配），类型门改 `entry.flags.intersection(sub.flags).intersection(DsFlags::from_bits_truncate(DSF_MASK_TYPE)).is_empty()` 拒绝——与 publish.rs:131 取类型臂的既有惯法同式；签名瘦身为四参，`DsStore` import 随之删除
 - **测试**：新增 `test_entry_matches_type_gate_masks_in_use`（U32 条目 × STR 订阅同键名不匹配；翻转臂后匹配——IN_USE 公共位不穿透的回归锁），10 篇 §5 表登记（Gate E）
 - **Verified**: `cargo test -p minix-ds` **90 passed**；`cargo clippy -p minix-ds --all-targets` DS 侧 0 条；`rg -n "intersects\(sub.flags\)|_entry_index" os/servers/ds/src/` 零命中。
+
+### ✅ Fix #3: P1-3 + P3-2 — 删除通知半回归 + 级联泄漏标注（2026-09-15）
+
+- **File**: `os/servers/ds/src/delete.rs`（模块文档、DeleteEffect、apply_delete 本体、测试区）
+- **Before**: apply_delete 用 `clear_notify_bit` 全表盲清被清下标、零唤醒记录；DeleteEffect 只有三个计数；「observationally identical」声明只覆盖位半
+- **After**（方案对比见 todo §2 P1-3——数组缓冲案 vs **回调汇出席**，取后者：无容量截断语义、传输半直接插 ipc_notify、测试插收集器）：
+  - apply_delete 增 `engine: &M` 与 `wake: &mut dyn FnMut(Endpoint)` 参数；每个受害者（级联条目 + 目标）**先 `apply_update(…, set=false)` 后清席**——store.c:628/:642 的「先环后旗」落到 apply 层，环读的正是还没清的受害者；
+  - 位半与通知半同出 `apply_update` 一个来源，`clear_notify_bit` 全表盲清删除（死代码消除：位只在匹配时置，盲清的第二真相源已无存在理由）；
+  - DeleteEffect 增 `notified` 计数（= C 的逐受害者唤醒次数）；
+  - 级联循环补 MINIX3 BUG 标注（C store.c:624-631 不 free 堆体，Rust 交还是超集——P3-2/模式 78）。
+- **测试**：新增 `test_label_delete_wakes_matching_subscriber_before_clear`（三 label + 级联受害者 cfg + 订阅者 vfs(9) pattern "cfg"——断言唤醒恰一次、位清、席后清）；既有两处 apply_delete 调用点同步签名。
+- **Docs**：09 篇 D4 重写（等价声明改为「位半 + 通知半同出 apply_update」）、§4.2 删执行行、§5 测试表 6→7 行登记。
+- **Verified**: `cargo test -p minix-ds` **91 passed**；clippy DS 侧 0；`rg -n "clear_notify_bit|observationally identical" os/servers/ds/src/` 零命中。
 

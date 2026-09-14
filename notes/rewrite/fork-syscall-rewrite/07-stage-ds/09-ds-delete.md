@@ -72,7 +72,7 @@
 | D1 | 主人制直写 | `strcmp(owner, source)`（`:606`） | `plan_delete` 内 `key_eq(owner, source)`，不用 `check_auth` | 删不用门是语义（不是疏忽），复用 `check_auth` 会把"门没设可删"这种错语义带进来；`key_eq` 复用 NUL 止规则（04 D4） |
 | D2 | 级联变计划位 | `switch` 内联（`:613-636`） | `DeletePlan { slot, cascade_label }`（`delete.rs`） | verdict 定"要不要级联"，apply 定"怎么级联"——调用方（测试/上层）对级联可见、可断言 |
 | D3 | 堆交还 | `free(data)`（`:635`） | `apply_delete(…, heap_out)` 回填 + 计数 | 无分配器（A-3）不硬释；交还可数，不丢不漏 |
-| D4 | 清位等价化 | 逐受害者 `update_subscribers(…,0)`（`:628,642`） | `clear_notify_bit` 直清下标 | 位只在匹配时置（10），直清该下标全表 == 逐个匹配清的效果；省掉 verdict 依赖，删模块不碰匹配引擎 |
+| D4 | 通知先于清席 | 逐受害者 `update_subscribers(…,0)`（`:628,642`——清位**且** `ipc_notify`，`:222`） | 每个受害者先经 `apply_update(…, false)` 扫一遍（清匹配位 + 收集端点），席位随后才清；端点经 `wake` 回调交调用方发送 | 环要读受害者的类型和键定「谁匹配」，席清了就没得读（:64 的「先环后旗」落到 apply 层）；位半与通知半都由 `apply_update` 一个来源承接，不再有「全表盲清」的第二真相源 |
 
 ---
 
@@ -95,7 +95,7 @@ os/servers/ds/src/
 | 五拒 | `store.c:593-638` | `delete.rs`（`DeleteReject`） | 源/键/空/主/型→errno |
 | 落法 | `store.c:602-636` | `delete.rs`（`DeletePlan`） | 槽位 + 级联位 |
 | 删 verdict | `store.c:593-638` | `delete.rs`（`plan_delete`） | 五步（C 序）：源→键→查→主→型 |
-| 删执行 | `store.c:609-648` | `delete.rs`（`apply_delete`） | 级联（先订后条）→ 堆交还 → 环位清 → 旗清 |
+| 删执行 | `store.c:609-648` | `delete.rs`（`apply_delete`） | 级联（先订后条）→ 堆交还 → 逐受害者**先环后清**（`apply_update(set=false)` + `wake` 回调）→ 目标席清 |
 
 ### 4.3 不变量
 
@@ -110,7 +110,7 @@ os/servers/ds/src/
 
 ## 5 测试要点
 
-> 基线：`cargo test -p minix-ds --lib`，本篇 5 个测试。
+> 基线：`cargo test -p minix-ds --lib`，本篇 7 个测试。
 
 | 测试名 | 覆盖 C 位置 | 行为 |
 |--------|-------------|------|
@@ -119,6 +119,7 @@ os/servers/ds/src/
 | `test_nameless_source_is_eperm` | `:593-595` | 无名 `EPERM` |
 | `test_missing_entry_is_esrch` | `:602` | 查无 `ESRCH` |
 | `test_label_delete_cascades` | `:613-636` | 签删带走同名订阅 + 同主条目 |
+| `test_label_delete_wakes_matching_subscriber_before_clear` | `:628,642` + `:222` | 先环后清：级联受害者扫出匹配订阅者并唤醒（`wake` 回调收端点）、位清、席后清 |
 | `test_errno_mapping` | 全章 | 五拒→errno |
 
 ---
