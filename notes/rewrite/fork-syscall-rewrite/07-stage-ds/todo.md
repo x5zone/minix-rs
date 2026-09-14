@@ -19,11 +19,11 @@
 | P1 | P1-2 | **类型预门缺 DSF_MASK_TYPE 掩码**：IN_USE 公共位使门恒真，跨类型误置位/误通知 | ✅ 已修复 2026-09-15（Fix #2，见 §9） |
 | P1 | P1-3 | **删除通知半丢失**：apply_delete 绕过通知环且不产出补发素材，C 的删除唤醒契约断 | ✅ 已修复 2026-09-15（Fix #3，见 §9） |
 | P1 | P1-4 | **transport + handler 粘合 + grant/datacopy/notify 接线**（stage 内 seam，通电挂 E-DSWIRE） | open |
-| P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | open |
+| P1 | P1-5 | **A-2 regex 引擎决策**：BadPattern 拒绝与 C 行为分歧，真实客户端 pattern 全含元字符 | ✅ 已修复 2026-09-15（Fix #4，见 §9） |
 | P2 | P2-1 | plan.md staleness 批次（A-1 已解决、A-8 半过时、§3.5 基线失真） | open |
 | P2 | P2-2 | A-3 堆策略决策（随 P1-4(c) transport 设计一并定） | open |
 | P2 | P2-3 | A-6 SEF/Live-Update 显式状态迁移设计 | open |
-| P3 | P3-1 | 卫生批次：fmt 22 处（13 文件）+ clippy 2 条 + entry_matches 死参数 | open |
+| P3 | P3-1 | 卫生批次：fmt 22 处（13 文件）+ clippy 2 条 + entry_matches 死参数 | ✅ 已修复 2026-09-15（Fix #2 死参数 + Fix #5，见 §9） |
 | P3 | P3-2 | C 源 bug 标注（模式 78）：label 级联不 free 堆，Rust 超集修复未标注 | ✅ 已修复 2026-09-15（Fix #3 顺带，见 §9） |
 | P3 | P3-3 | boot.rs:90 的「§4.3」引用漂移（06 篇钩子实际在 D4） | open |
 
@@ -287,4 +287,19 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 - **测试**：新增 `test_label_delete_wakes_matching_subscriber_before_clear`（三 label + 级联受害者 cfg + 订阅者 vfs(9) pattern "cfg"——断言唤醒恰一次、位清、席后清）；既有两处 apply_delete 调用点同步签名。
 - **Docs**：09 篇 D4 重写（等价声明改为「位半 + 通知半同出 apply_update」）、§4.2 删执行行、§5 测试表 6→7 行登记。
 - **Verified**: `cargo test -p minix-ds` **91 passed**；clippy DS 侧 0；`rg -n "clear_notify_bit|observationally identical" os/servers/ds/src/` 零命中。
+
+### ✅ Fix #4: P1-5 — A-2 锚定 ERE 引擎落地（2026-09-15）
+
+**设计对比**（todo §2 P1-5 的 A/B/C 三案，执行 A 并加一个演进）：自研最小锚定 ERE 匹配器（方案 A）落地；执行中的一个设计进化——**`PatternMatcher` trait 与 `LiteralMatcher`、`needs_full_engine` 整体删除**，引擎用具体类型 `EreMatcher`：引擎补齐后 trait 只剩单实现（Gate D 单实现即 P1），且纯函数无 mock 需求（非 IO seam），正是 `sef.rs` D1「单实现 trait 是装饰」先例的适用场景；泛型参数（`apply_update<M>`/`SubscribeArgs<'a, M>` 等）随之全部退场，签名更短。
+
+- **File**: `os/servers/ds/src/pattern.rs`（新增，509 行含测试）+ `subscribe.rs`/`notify.rs`/`delete.rs`/`lib.rs`/`subscription.rs` 接线
+- **实现**：回溯匹配器——NUL 止 lane 内容（`strcmp` 止规则）上的全匹配（C 的 `^…$` 锚定语义内建于「全匹配」）；语法面 = 字面/`.`/`*`/`+`/`?`/`[类]`（取补、区间、首 `]` 字面）/分组/`|`/转义/`^`/`$` 断言；`check()` 即 `regcomp`（结构校验：悬空量词、失衡分组、未闭合类、尾转义、锚上量词 → `BadPattern`）；步数预算（20_000）防病态回溯；**零分配**（crate 生产构建无分配器，`core::cell::Cell` 步数计账）。已知角落如实声明（模块文档）：`{m,n}` 区间按字面 `{`（glibc 对病态区间同退）、零宽重复仅经零宽臂匹配——真实订阅 pattern 远离这些角落。
+- **测试**：pattern.rs 9 个表驱动测试——**四个真实客户端 pattern 全对账**（VFS `drv\.[bc]..\..*`、input `drv\.inp\..*`、filter `drv\.blk\..*`，正反例齐）、字面=旧 LiteralMatcher 契约、量词/类/分组/锚点/转义、`check` 拒绝面、步数预算终止；subscribe.rs 增引擎编译门测试（`a**` → BadPattern、真实 pattern 可订阅）与字面等价测试（`test_meta_patterns_need_full_engine` 随删除退役）。
+- **Docs**：10 篇（§1.2 边界、§1.5 匹配语义段重写、D1 改「无分配引擎」、§4.1 模块树、§5 表三行登记）、03 篇 D7（源文栏 + EreMatcher 现解析）、lib.rs 模块导览（pattern 行）、subscription.rs pattern 栏注释。
+- **Verified**: `cargo test -p minix-ds` **99 passed**（91 → 99）；`rg -n "PatternMatcher|LiteralMatcher|needs_full_engine" os/servers/ds/src/` 仅存一处历史注释（已改写）；修复过程中引擎自身 3 处 bug 被自家测试拦截（首位 `]` 成员、`a.*b` 对 `axxby` 期望写错、残留字节下标）——测试先行的红利。
+
+### ✅ Fix #5: P3-1 — 卫生批次：fmt 全量 + clippy 归零（2026-09-15）
+
+- **File**: 13 文件 fmt 应用（22 处 diff → 0）+ `slots.rs:51/:81` 生命周期省略（`get<'a>` → `get`）
+- **Verified**: `cargo fmt --check -p minix-ds` **0 diff**；`cargo clippy -p minix-ds --all-targets` DS 侧 **0 条**；99 passed 基线不动。entry_matches 死参数已随 Fix #2 完成，本条目三件全闭。
 

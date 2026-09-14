@@ -33,7 +33,9 @@ pub fn check_auth(entry: &DataEntry, caller: Option<&[u8]>, perm: DsFlags) -> bo
     if !entry.flags.intersects(perm) {
         return true;
     }
-    caller.map(|name| key_eq(&entry.owner, name)).unwrap_or(false)
+    caller
+        .map(|name| key_eq(&entry.owner, name))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -63,7 +65,11 @@ mod tests {
             ..entry
         };
         assert!(check_auth(&plain, None, DsFlags::PRIV_RETRIEVE));
-        assert!(check_auth(&plain, Some(b"intruder"), DsFlags::PRIV_OVERWRITE));
+        assert!(check_auth(
+            &plain,
+            Some(b"intruder"),
+            DsFlags::PRIV_OVERWRITE
+        ));
     }
 
     #[test]

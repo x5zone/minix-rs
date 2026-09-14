@@ -12,7 +12,7 @@
 //! Single-threaded event loop: verdicts are pure; the apply step takes
 //! `&mut` tables from the caller, no shared state.
 
-use minix_types::{ENOENT, ESRCH, DsFlags};
+use minix_types::{DsFlags, ENOENT, ESRCH};
 
 use crate::identity::resolve_endpoint;
 use crate::slots::{EntrySlot, SubSlot, lookup_sub};
@@ -87,10 +87,7 @@ impl CheckHit {
 /// *lowest* set bit — updates are consumed oldest-first, and two
 /// subscribers never share a map, so one consumer's read never
 /// starves another's.
-pub fn plan_check(
-    subs: &DsSubs,
-    owner: Option<&[u8]>,
-) -> Result<CheckHit, CheckReject> {
+pub fn plan_check(subs: &DsSubs, owner: Option<&[u8]>) -> Result<CheckHit, CheckReject> {
     let owner = owner.ok_or(CheckReject::UnknownSource)?;
     let sub = lookup_sub(subs, owner).ok_or(CheckReject::NoSubscription)?;
     let seat = sub.get(subs).expect("lookup hit always seats a sub");
@@ -148,10 +145,7 @@ mod tests {
         let hit = plan_check(&subs, Some(b"vfs")).expect("second update pending");
         assert_eq!(hit.entry.index(), 9);
         apply_check(&mut subs, hit);
-        assert_eq!(
-            plan_check(&subs, Some(b"vfs")),
-            Err(CheckReject::NoUpdate)
-        );
+        assert_eq!(plan_check(&subs, Some(b"vfs")), Err(CheckReject::NoUpdate));
     }
 
     #[test]

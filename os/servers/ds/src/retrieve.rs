@@ -12,7 +12,7 @@
 //! Single-threaded event loop: pure functions over caller-held tables, no
 //! shared state.
 
-use minix_types::{DSF_MASK_TYPE, EINVAL, EPERM, ESRCH, DsFlags};
+use minix_types::{DSF_MASK_TYPE, DsFlags, EINVAL, EPERM, ESRCH};
 
 use crate::auth::check_auth;
 use crate::publish::check_key_len;
@@ -105,9 +105,7 @@ pub fn plan_retrieve(
     }
     let ty = flags.intersection(DsFlags::from_bits_truncate(DSF_MASK_TYPE));
     let slot = lookup_entry(store, key, ty).ok_or(RetrieveReject::NotFound)?;
-    let entry = slot
-        .get(store)
-        .expect("lookup hit always seats an entry");
+    let entry = slot.get(store).expect("lookup hit always seats an entry");
     if !check_auth(entry, caller, DsFlags::PRIV_RETRIEVE) {
         return Err(RetrieveReject::Forbidden);
     }
@@ -140,10 +138,7 @@ pub fn plan_retrieve(
 /// the number lane, so this never touches names. No permission gate —
 /// C checks none here either. The key bytes (with terminator,
 /// `strlen + 1` at :442-444) move through the caller's key grant.
-pub fn plan_retrieve_label(
-    store: &DsStore,
-    endpoint: u32,
-) -> Result<EntrySlot, RetrieveReject> {
+pub fn plan_retrieve_label(store: &DsStore, endpoint: u32) -> Result<EntrySlot, RetrieveReject> {
     lookup_label_entry(store, endpoint).ok_or(RetrieveReject::NotFound)
 }
 
@@ -180,15 +175,8 @@ mod tests {
     fn test_open_entry_reads_back() {
         // Plain entry: any named caller reads the number (store.c:405).
         let store = test_store();
-        let (_, hit) = plan_retrieve(
-            &store,
-            b"res",
-            4,
-            DsFlags::TYPE_U32,
-            Some(b"pm"),
-            0,
-        )
-        .expect("open entry must read");
+        let (_, hit) = plan_retrieve(&store, b"res", 4, DsFlags::TYPE_U32, Some(b"pm"), 0)
+            .expect("open entry must read");
         assert_eq!(hit, RetrieveHit::Number(7));
     }
 
@@ -201,15 +189,7 @@ mod tests {
             plan_retrieve(&store, b"priv", 5, DsFlags::TYPE_U32, Some(b"pm"), 0),
             Err(RetrieveReject::Forbidden)
         );
-        assert!(plan_retrieve(
-            &store,
-            b"priv",
-            5,
-            DsFlags::TYPE_U32,
-            Some(b"vfs"),
-            0
-        )
-        .is_ok());
+        assert!(plan_retrieve(&store, b"priv", 5, DsFlags::TYPE_U32, Some(b"vfs"), 0).is_ok());
     }
 
     #[test]

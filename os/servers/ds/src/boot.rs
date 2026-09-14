@@ -199,7 +199,10 @@ mod tests {
                 body: DataBody { u32: 0 },
             });
         }
-        assert_eq!(map_service(&mut store, &label16(b"x"), Endpoint(9)), Err(ENOMEM));
+        assert_eq!(
+            map_service(&mut store, &label16(b"x"), Endpoint(9)),
+            Err(ENOMEM)
+        );
     }
 
     #[test]

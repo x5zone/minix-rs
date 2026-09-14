@@ -84,7 +84,10 @@ mod tests {
 
     #[test]
     fn test_exact_size_passes() {
-        assert_eq!(plan_getsysinfo(SI_DATA_STORE, image_bytes()), Ok(image_bytes()));
+        assert_eq!(
+            plan_getsysinfo(SI_DATA_STORE, image_bytes()),
+            Ok(image_bytes())
+        );
     }
 
     #[test]

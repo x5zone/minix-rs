@@ -28,7 +28,7 @@
 //! Single-threaded event loop: pure functions, no shared state. All
 //! helpers are `no_std`-clean (no allocation, no syscalls).
 
-use minix_types::{DS_CHECK, DS_RETRIEVE_LABEL, DS_MAX_KEYLEN, DsFlags};
+use minix_types::{DS_CHECK, DS_MAX_KEYLEN, DS_RETRIEVE_LABEL, DsFlags};
 
 /// Which way a grant leans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,10 +147,7 @@ mod tests {
     fn test_check_and_label_lend_roomy_writable_grant() {
         // CHECK / RETRIEVE_LABEL receive: 80 bytes, writable (ds.c:13-16).
         assert_eq!(key_grant(DS_CHECK, 3), (80, GrantDirection::Write));
-        assert_eq!(
-            key_grant(DS_RETRIEVE_LABEL, 3),
-            (80, GrantDirection::Write)
-        );
+        assert_eq!(key_grant(DS_RETRIEVE_LABEL, 3), (80, GrantDirection::Write));
     }
 
     #[test]

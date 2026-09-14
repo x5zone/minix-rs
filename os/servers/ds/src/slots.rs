@@ -48,7 +48,7 @@ impl EntrySlot {
     }
 
     /// Read the seated entry; a vacant seat reads `None`.
-    pub fn get<'a>(self, store: &'a DsStore) -> Option<&'a crate::store::DataEntry> {
+    pub fn get(self, store: &DsStore) -> Option<&crate::store::DataEntry> {
         store.get(self.index)?.as_ref()
     }
 }
@@ -78,7 +78,7 @@ impl SubSlot {
     }
 
     /// Read the seated subscriber; a vacant seat reads `None`.
-    pub fn get<'a>(self, subs: &'a DsSubs) -> Option<&'a crate::subscription::Subscription> {
+    pub fn get(self, subs: &DsSubs) -> Option<&crate::subscription::Subscription> {
         subs.get(self.index)?.as_ref()
     }
 }
@@ -102,8 +102,7 @@ pub fn alloc_entry_slot(store: &DsStore) -> Option<EntrySlot> {
 /// Same motion as [`alloc_entry_slot`], over the wider table (256 seats).
 /// A full house reads `None` (C: `NULL`, `store.c:37`).
 pub fn alloc_sub_slot(subs: &DsSubs) -> Option<SubSlot> {
-    subs
-        .iter()
+    subs.iter()
         .position(|seat| seat.is_none())
         .map(|index| SubSlot { index })
 }

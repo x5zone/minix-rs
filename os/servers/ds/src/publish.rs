@@ -18,7 +18,7 @@
 //! Single-threaded event loop: pure functions over caller-held tables, no
 //! shared state.
 
-use minix_types::{DSF_MASK_TYPE, DsFlags, EEXIST, EINVAL, ENOMEM, EPERM, DS_MAX_KEYLEN};
+use minix_types::{DS_MAX_KEYLEN, DSF_MASK_TYPE, DsFlags, EEXIST, EINVAL, ENOMEM, EPERM};
 
 use crate::auth::check_auth;
 use crate::slots::{EntrySlot, alloc_entry_slot, lookup_entry, lookup_label_entry};
@@ -147,9 +147,7 @@ pub fn plan_publish(
             if !flags.intersects(DsFlags::OVERWRITE) {
                 return Err(PublishReject::Exists);
             }
-            let entry = slot
-                .get(store)
-                .expect("lookup hit always seats a body");
+            let entry = slot.get(store).expect("lookup hit always seats a body");
             // The overwrite gate is judged here, through 05's instrument:
             // the commit half must not re-decide (D3/D5).
             if !check_auth(entry, source, DsFlags::PRIV_OVERWRITE) {
