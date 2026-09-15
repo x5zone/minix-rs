@@ -140,6 +140,7 @@ pub(crate) fn enqueue_fdio(
             write,
             caller_endpoint: proc_endpoint,
         }),
+        sent: false,
     };
     // C: vfs_request failure → ENOMEM (mem_file.c:151)
     vfs_queue.request(req).map_err(|_| CowError::NoMemory)?;
