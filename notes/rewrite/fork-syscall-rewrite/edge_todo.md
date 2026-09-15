@@ -114,6 +114,8 @@
 
 **依赖**：~~完整 Minix3 C 源码参照（或补全本树头文件）~~（已解除，同 E-RSSTART）；无 E1/E2 依赖（解码可纯单测）。
 
+> **进度（2026-09-16，✅ VM 侧半闭环，commit 403e47022）**：第 3 步 + V13 三增补全落地——(3) gateway 新增 `sys_safecopyfrom`（minix-sys E2 wrapper 已在，堆缓冲指针即 VM 用户地址）+ `ipc_call_rs_init` 真实体：整表一次 safecopy（17×420B，granter=RS，main.c:244-247）+ `decode_rproc_pub` 逐条解码 + `IS_RPUB_BOOT_USR`=（endpoint==INIT，rs.h:188）；钉子测试翻转为正负两路——正路断言整表拷贝线面（RS, gid, offset 0, 7140B）与 VFS 槽 System ACL 落位，负路 safecopy 失败仍丢弃计数不回复。(a) `call_mask` u32→u64（wire 本是 2×u32 合并 u64，截断丢 +32..+48 授权位；消费点 cast 撤销）。(b) RS_SET_PRIV 真掩码——m2l1 非零时按 rs.c:45-58 拷 2 bitchunk 小端合并为 u64 mask，空缓冲+sys 目标 EINVAL（rs.c:55-57）；C `sys_datacopy` 由 `SYS_VIRCOPY` 同义承载（内核只有一条 copy 臂，flat 地址空间无 data/vir 分歧）。(c) 五消息 wire 结构落 minix-types ipc/vm.rs（getphys/getref/info/rusage/update，56B LP64 见证 ×5）+ MessageUnion 五臂；VM 四处解码切类型化臂——修正三处 overlay 错位（getphys addr 16→8、getref addr 16→8、rusage children 4→16；update 的 overlay 恰与 C wire 重合）。**余项**：`map_service` 的 C 语义（main.c:249-255）现以 ACL 落位承载，GET_NICE/标签类元数据消费归 E9 RS 五域切片；rs_handshake 对 decode 失败映射 InvalidParam（C 是 panic——fail-fast 语义差异记 E9 复核）。**验证**：minix-vm 505 / minix-types 242 全绿；clippy 与干净 HEAD 13=13。
+
 ---
 
 ## E-BOOTFRAME boot 初始栈帧 ABI（T14 余件：minix_stack_params/fill 复刻）
