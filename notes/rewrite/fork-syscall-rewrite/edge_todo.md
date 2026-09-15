@@ -201,6 +201,8 @@
 
 **解锁**：04-stage-pm/todo.md P1-1（每臂解码）/ P1-4 / P2-3 的实施前提；未来 libc/commands 侧 PM 调用发起方的常量消费。
 
+> **进度（2026-09-16，🔄 B 批信号控制闭环）**：`ipc/pm.rs` 新增 B 批调用号 ×6（PM_SIGACTION 20/SIGSUSPEND 21/SIGPENDING 22/SIGPROCMASK 23/SIGRETURN 24/KILL 11，callnr.h:24/:33-37 绝对值 pin）与两个 wire 结构——`MessLcPmSig` 56B（pid/nr/act/oact/ret，SIGACTION 与 KILL 共用，signal.c:48-84）+ `MessLcPmSigset` 56B（how/_pad/ctx/set，SIGPROCMASK·SIGSUSPEND·SIGPENDING 共用，signal.c:119-152；LP64 padding 32→24 吸收 vir_bytes 8 字节对齐）。布局见证 ×2。**F 批归属修正**：`SEND_PRIORITY`/`SEND_TIME_SLICE` 为 PM 内部常量（pm/const.h:19-20，仅 PM→SCHED 的 flags 语义），不属 minix-types 共享层——E7 原文「F 批常量补齐」改判为 04-stage-pm 域内工作。**剩余**：C 时间 6→D itimer 1→E exec 3→G 杂项 9 的 wire 结构逐批推进（按 04 §11.1.1 批次表）；message.rs 拆分时机维持 E7 全族落地前。
+
 > **进度（2026-09-16，🔄 A 批凭证片闭环）**：`ipc/pm.rs` 新增 A 批凭证调用号 ×15（PM_GETPID 4..PM_REBOOT 37，callnr.h:17-52 绝对值 pin 测试）与三个 wire 结构（`MessLcPmSetid`（SETUID/SETGID 同布局共用）、`MessLcPmGetsid`、`MessLcPmGroups`（LP64 ptr@8、padding 48→40），56 字节布局见证 ×3）。PM_BASE=0 的 A 批调用号本就无偏移基，与 com.rs 既有语义一致。**剩余**：B 信号控制 6→C 时间 6→D itimer→E exec 3（`m_lexec_pm_exec_new`/`m_rs_pm_exec_restart`）→F 调度 2（SEND_PRIORITY/SEND_TIME_SLICE 常量补齐）→G 杂项 9——按 04-stage-pm/todo.md §11.1.1 接线批次表逐批推进；(3) PmRequest/PmResponse 死代码处置（E7 设计决策：A 批 wire 落地后其去留已可判定——两者是零使用死代码，删除）与调用号收敛（PmCall 枚举上移）待 OQ 确认归属。**验证**：minix-types 212 passed；clippy 1 条 known。
 
 > **进度（2026-09-06）**：首个切片已落地——`MessPmLcWait4 { status }` + `m_pm_lc_wait4` arm（`message.rs`，56 字节断言 `test_pm_wait4_message_layouts`），wait4 回复载荷契约（04-stage-pm/todo.md D-26/Fix #22）闭环；其余 wire 族照本切片的风格推进。
