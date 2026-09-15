@@ -737,6 +737,89 @@ pub fn sys_setalarm(
     Ok((arm.time_left, arm.uptime))
 }
 
+// ── E9 切片 1:RS SysApi 面所需的 SYS_* 命名包装 ──
+// 六个调用对齐 servers/rs/src/boot.rs 的 SysApi 九方法中尚缺的六项
+// (kill/update/setalarm 已有)。全部经 perform_kernel_call,Canned
+// 回放可测;真实传输 = real-trap 构建下的 SYSCALL 腿。
+
+/// SYS_GETINFO · GET_MACHINE(12):取机器信息(处理器数 + BSP id)。
+/// C: `sys_getinfo(GET_MACHINE, ...)`;kernel `getinfo_machine` 经
+/// `copy_struct_to_caller` 拷 `MachineStruct`。`out` 至少要容纳内核
+/// 侧结构(内核按 min(len) 截断拷贝)。
+pub fn sys_get_machine(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
+    sys_getinfo_into(transport, minix_types::GET_MACHINE, out, minix_types::Endpoint::NONE.0)
+}
+
+/// SYS_GETINFO · GET_HZ(18):取系统时钟频率(i32)。C: do_getinfo.c:81-84。
+pub fn sys_get_hz(transport: &impl KernelCallTransport) -> Result<i32, i32> {
+    let mut buf = [0u8; 4];
+    sys_getinfo_into(transport, minix_types::GET_HZ, &mut buf, minix_types::Endpoint::NONE.0)?;
+    Ok(i32::from_le_bytes(buf))
+}
+
+/// SYS_GETINFO · GET_PRIV(17):读目标进程的特权结构快照。
+/// 目标端点经 `val_len2_e` 域传递(kernel getinfo_priv:925-929)。
+pub fn sys_get_priv(transport: &impl KernelCallTransport, endpt: i32, out: &mut [u8]) -> Result<(), i32> {
+    sys_getinfo_into(transport, minix_types::GET_PRIV, out, endpt)
+}
+
+/// GETINFO 通用承载:填充 `m_lsys_krn_sys_getinfo` 并执行。
+/// `endpt` 落 `val_len2_e`(kernel getinfo_priv 以此读目标端点;
+/// 无端点语义的子请求传 NONE,内核忽略)。
+pub fn sys_getinfo_into(
+    transport: &impl KernelCallTransport,
+    request: i32,
+    out: &mut [u8],
+    endpt: i32,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_getinfo 是 GETINFO 的文档化载荷
+        //(kernel/src/misc.rs msg_getinfo:269-279——勿用 m1 覆盖)。
+        let gi = unsafe { &mut msg.m_u.m_lsys_krn_sys_getinfo };
+        gi.request = request;
+        gi.endpt = endpt;
+        gi.val_ptr = out.as_mut_ptr() as u64;
+        gi.val_len = out.len() as i32;
+        gi.val_len2_e = endpt;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_GETINFO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_PRIVCTL:特权控制(allow/disallow/set_sys/set_user/...)。
+/// M1 载荷:m1i1=request,m1i2=endpt,m1p1=arg_ptr(用户态特权结构
+/// 指针,无则为 0)。C: mess_lsys_krn_sys_privctl,do_privctl.c:47-51。
+pub fn sys_privctl(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+    request: i32,
+    arg_ptr: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: M1 覆盖(privctl 载荷与 m1 同形,syscall.rs:1354-1358)。
+        let m1 = unsafe { &mut msg.m_u.m_m1 };
+        m1.m1i1 = request;
+        m1.m1i2 = endpt;
+        m1.m1p1 = arg_ptr;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_PRIVCTL, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_DIAGCTL · STACKTRACE(2):请求目标进程的栈回溯打印。
+/// C: main.c:681-683(RS 信号管理器的 stacktrace-signal 分支)。
+pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32) -> Result<(), i32> {
+    sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, target as u64, 0)
+}
+
 /// SYS_SIGRETURN：信号处理返回，恢复目标进程的被信号上下文（C: libsys
 /// `sys_sigreturn`——`m_sigcalls.endpt/sigctx`；kernel
 /// `dispatch_sigreturn`）。
@@ -1539,3 +1622,98 @@ mod tests {
         assert_eq!(r, Ok(()));
     }
 }
+
+    /// E9 切片 1:GETINFO 承载——请求域/缓冲指针/长度/端点域逐项
+    /// 落 m_lsys_krn_sys_getinfo,内核应答 OK。
+    #[test]
+    fn test_sys_getinfo_into_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let mut out = [0u8; 16];
+        let r = sys_getinfo_into(&canned, minix_types::GET_MACHINE, &mut out, minix_types::Endpoint::NONE.0);
+        assert!(r.is_ok());
+        // 出站消息断言(CannedKernelCallTransport 记录 sent)。
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        // SAFETY: 断言读回 m_lsys_krn_sys_getinfo 臂。
+        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_MACHINE);
+        assert_eq!(gi.val_ptr, out.as_ptr() as u64);
+        assert_eq!(gi.val_len, 16);
+    }
+
+    /// E9 切片 1:GET_HZ 走 4 字节缓冲并以 LE 解回 i32。
+    #[test]
+    fn test_sys_get_hz_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let hz = sys_get_hz(&canned).unwrap();
+        assert_eq!(hz, 0, "hosted canned reply zeros the buffer");
+        let sent = canned.sent.borrow();
+        // SAFETY: 断言读回 request 域。
+        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_HZ);
+        assert_eq!(gi.val_len, 4);
+    }
+
+    /// E9 切片 1:GET_PRIV 的目标端点落 val_len2_e 域
+    /// (kernel getinfo_priv:925-929 以此解析目标)。
+    #[test]
+    fn test_sys_get_priv_endpt_in_val_len2_e() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let mut out = [0u8; 64];
+        sys_get_priv(&canned, 9, &mut out).unwrap();
+        let sent = canned.sent.borrow();
+        // SAFETY: 断言读回 getinfo 臂。
+        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_PRIV);
+        assert_eq!(gi.val_len2_e, 9);
+    }
+
+    /// E9 切片 1:PRIVCTL 的 M1 载荷(request/endpt/arg_ptr)。
+    #[test]
+    fn test_sys_privctl_m1_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        sys_privctl(&canned, 9, 1 /* SYS_PRIV_ALLOW */, 0).unwrap();
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        // SAFETY: 断言读回 M1 臂。
+        let m1 = unsafe { sent[0].m_u.m_m1 };
+        assert_eq!(m1.m1i1, 1);
+        assert_eq!(m1.m1i2, 9);
+        assert_eq!(m1.m1p1, 0);
+    }
+
+    /// E9 切片 1:TIMES 应答臂回填(RS get_ticks 消费 boot_ticks)。
+    #[test]
+    fn test_sys_times_reply_arm() {
+        let mut canned = CannedKernelCallTransport::new();
+        // 内核形状应答:OK(0) + 同臂回填五域。
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY: 构造应答臂。
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_times };
+        arm.boot_ticks = 777;
+        canned.reply_message(reply);
+        let times = sys_times(&canned, minix_types::Endpoint::SELF.0).unwrap();
+        assert_eq!(times.boot_ticks, 777);
+        // 请求 endpt 域 = SELF。
+        let sent = canned.sent.borrow();
+        // SAFETY: 断言读回 times 请求臂。
+        let req = unsafe { sent[0].m_u.m_lsys_krn_sys_times };
+        assert_eq!(req.endpt, minix_types::Endpoint::SELF.0);
+    }
+
+    /// E9 切片 1:STACKTRACE 诊断码(2) + 目标端点。
+    #[test]
+    fn test_sys_diagctl_stacktrace_code_and_target() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        sys_diagctl_stacktrace(&canned, 9).unwrap();
+        let sent = canned.sent.borrow();
+        // SAFETY: 断言读回 diagctl 臂。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
+        assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
+    }
