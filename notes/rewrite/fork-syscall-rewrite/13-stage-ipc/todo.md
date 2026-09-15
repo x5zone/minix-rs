@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 9 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 8 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -31,7 +31,7 @@
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数（**✅ 已完成** 2026-09-16，见 §2 修复记录；ShmTable Box 约定随 P1-1） |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试（**✅ 已完成** 2026-09-16） |
-| T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试（**✅ 已完成** 2026-09-16）；IPC-T-3 `tests/` 集成目录被注释声称但不存在（**✅ 已完成** 2026-09-16）；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
+| T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试（**✅ 已完成** 2026-09-16）；IPC-T-3 `tests/` 集成目录被注释声称但不存在（**✅ 已完成** 2026-09-16）；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试（**✅ 已完成** 2026-09-16） |
 | D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时 |
 | D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成 |
 | D | IPC-D-3 | plan.md:185 A-7 锚点漂移：sem.c:713-722 → 实际 :726-739 |
@@ -223,9 +223,11 @@
 
 与 IPC-P1-6 联动：修复时必须同时补 `sweep` 在 `count: Some(0)` + SHM_DEST 下存活的回归测试（现测试只覆盖 1/4/None 三种输入，`refcount.rs:144-206`）。
 
-### IPC-T-5 `run()` 的连续失败 panic 路径无测试
+### IPC-T-5 `run()` 的连续失败 panic 路径无测试【✅ 已完成 2026-09-16】
 
 `run` 在 32 次连续接收失败后 panic（`server.rs:157`、`:232-247`），是事件循环唯一的自保机制，无测试。补法：`fail_next_receives` 设 32 后 `catch_unwind` 驱动 `run`（`run_requires_init` 已有同款 catch_unwind 先例，`server.rs:612-615`）。若觉得在测试里数 32 次太脆，把 `MAX_CONSECUTIVE_RECV_FAILURES` 提为可在测试模块引用的常量即可（已是 `const`，直接用）。
+
+**修复记录（2026-09-16）**：测试 `run_panics_after_sustained_receive_failures` 落地——`fail_next_receives` 预置满额（直接引用常量 `MAX_CONSECUTIVE_RECV_FAILURES`，无数 magic），`catch_unwind` 断言 `run` 终止且丢弃计数恰等于上限。验证：`cargo test -p minix-ipc-server` = 单元 **94** + 集成 **4** = 98 passed / 0 failed。
 
 ---
 

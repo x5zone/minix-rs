@@ -654,6 +654,26 @@ mod tests {
     }
 
     #[test]
+    fn run_panics_after_sustained_receive_failures() {
+        // The failure bound is the loop's only self-protection: sustained
+        // transport breakage stops the server instead of spinning forever
+        // ([ARCH: IPC-01-01]; IPC-T-5).
+        let mut transport = TestTransport::new();
+        transport.fail_next_receives = MAX_CONSECUTIVE_RECV_FAILURES as usize;
+        let server = IpcServer::new(transport, StubHandler);
+        server.init();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            server.run();
+        }));
+        assert!(result.is_err(), "sustained failure must stop the loop");
+        // Every failed round counted one drop; the bound fired on the last.
+        assert_eq!(
+            server.dropped_messages(),
+            MAX_CONSECUTIVE_RECV_FAILURES as u64
+        );
+    }
+
+    #[test]
     fn semget_request_decodes_through_loop() {
         // Wire-level spot check: a real semget payload survives the trip
         // from message bytes to the handler's view (guards the transport
