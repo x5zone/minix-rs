@@ -221,13 +221,12 @@ impl VTreeFs {
         // root always exists).
         let _ = self.tree.reference(root);
         // C: `if (vtreefs_hooks->init_hook != NULL) vtreefs_hooks->init_hook()`
-        // (mount.c:24-25). Reuses 01's `fire_init` with a fresh context:
-        // the tree build itself is 04's `devman_init_devices`, marked via
-        // `InitCtx::request_init` (01 §2.2).
-        {
-            let mut ctx = crate::hooks::InitCtx::new();
-            self.hooks.fire_init(&mut ctx);
-        }
+        // (mount.c:24-25) — the library calls back into the service to let
+        // it build its tree. devman-rs has no callback: vtreefs is inlined
+        // into the devman crate (A-1), so the service-side init is a
+        // direct guarded call by `Server` on mount success (DM-P1-3;
+        // `Server::ensure_devices`, whose `Option<DeviceTree>` is C's
+        // `static int first` value-typed).
         Ok(root)
     }
 
@@ -459,15 +458,8 @@ mod tests {
         }
     }
 
-    static INIT_N: AtomicUsize = AtomicUsize::new(0);
-
-    fn hook_init_count(_ctx: &mut crate::hooks::InitCtx) {
-        INIT_N.fetch_add(1, Ordering::SeqCst);
-    }
-
     fn hooks_with_read(f: ReadHookFn) -> FsHooks {
         FsHooks {
-            init_hook: None,
             read_hook: Some(f),
         }
     }
@@ -480,18 +472,17 @@ mod tests {
     }
 
     #[test]
-    fn mount_fires_init_hook() {
-        // C: init_hook called on every mount (mount.c:24-25); the
-        // once-guard is devman's (01 FirstGuard), not the framework's.
-        INIT_N.store(0, Ordering::SeqCst);
+    fn mount_succeeds_twice_and_unmounts() {
+        // C: fs_mount refs the root per mount (mount.c:21) and runs
+        // unconditionally (both mounts Ok). devman-rs fires no init hook
+        // here — service-side init is `Server::ensure_devices`'s guarded
+        // direct call (DM-P1-3 collapse note on `mount`).
         let hooks = FsHooks {
-            init_hook: Some(hook_init_count),
             read_hook: None,
         };
         let mut fs = VTreeFs::new(&cfg(64), hooks).unwrap();
         assert_eq!(fs.mount(false).unwrap(), Ino(1));
         assert_eq!(fs.mount(false).unwrap(), Ino(1));
-        assert_eq!(INIT_N.load(Ordering::SeqCst), 2);
         fs.unmount();
     }
 

@@ -45,34 +45,55 @@ pub enum OutAction {
 }
 
 /// Owned devman server: framework + device tree + events-file cookie.
-/// (The file table itself stays in 06's process store; the cookie is
-/// the handle — same split as 04's `binding`.)
+/// The device tree is built **lazily** on the first successful mount
+/// (C main.c:36-43 `static int first` → `devman_init_devices`); until
+/// then `devices` is `None` and the `Option` itself is the once-guard
+/// (DM-P1-3). The file table stays in 06's process store; the cookie is
+/// the handle — same split as 04's `binding`.
 pub struct Server {
     vtreefs: VTreeFs,
-    devices: DeviceTree,
-    events_cookie: usize,
+    devices: Option<DeviceTree>,
+    events_cookie: Option<usize>,
 }
 
 impl Server {
-    /// C: `main` + `run_vtreefs` init half + `devman_init_devices` —
-    /// framework, device tree, and the events file registration.
+    /// C: `main` + `run_vtreefs` init half — framework only. The device
+    /// tree and events file appear at first mount (`ensure_devices`),
+    /// exactly where C's `init_hook` runs (mount.c:24-25).
     pub fn new(config: &ServerConfig, hooks: FsHooks) -> Result<Self, Errno> {
-        let mut vtreefs = VTreeFs::new(config, hooks)?;
-        let devices = DeviceTree::new(vtreefs.tree_mut(), default_file_stat())?;
+        let vtreefs = VTreeFs::new(config, hooks)?;
+        Ok(Server {
+            vtreefs,
+            devices: None,
+            events_cookie: None,
+        })
+    }
+
+    /// Build the device tree + events file once, on the first successful
+    /// mount (C main.c:36-43: `if (first) devman_init_devices(); first = 0;`).
+    /// The `Option::is_none` check is the guard — nothing can interleave
+    /// (single-threaded event loop), so exactly one build ever happens.
+    /// Failure propagates as the mount's error (A-7: C `panic`s in the
+    /// same spot, vtreefs.c init sequence).
+    fn ensure_devices(&mut self) -> Result<(), Errno> {
+        if self.devices.is_some() {
+            return Ok(());
+        }
+        let devices = DeviceTree::new(self.vtreefs.tree_mut(), default_file_stat())?;
         let cookie = register_file(FileEntry {
             kind: crate::files::FileKind::Events(EventFile {
                 queue: crate::event_queue::EventQueue::new(),
             }),
         })?;
-        Ok(Server {
-            vtreefs,
-            devices,
-            events_cookie: cookie,
-        })
+        self.devices = Some(devices);
+        self.events_cookie = Some(cookie);
+        Ok(())
     }
 
-    fn push_event(&self, ev: Event) {
-        let cookie = self.events_cookie;
+    fn push_event(&mut self, ev: Event) {
+        let Some(cookie) = self.events_cookie else {
+            return; // pre-init: no events file exists to receive anything
+        };
         crate::files::with_files(|s| {
             let queue = s.get_mut(cookie).and_then(|entry| match &mut entry.kind {
                 crate::files::FileKind::Events(f) => Some(&mut f.queue),
@@ -91,9 +112,23 @@ impl Server {
     /// answered before this signature, not inside it); `None` — the
     /// Ignored types, 05 §2.6 — sends nothing.
     pub fn handle_other(&mut self, source: Endpoint, msg: Option<DevmanMsg>) -> Vec<OutAction> {
-        let msg = match msg {
-            Some(m) => m,
-            None => return alloc::vec![OutAction::Nothing],
+        let Some(msg) = msg else {
+            return alloc::vec![OutAction::Nothing];
+        };
+        // Pre-init traffic: the device database does not exist before the
+        // first mount (DM-P1-3). Unreachable in practice — VFS mounts
+        // devman before any driver can reach it — and fail-closed where C
+        // would walk an uninitialized BSS `root_dev`.
+        let Some(devices) = self.devices.as_mut() else {
+            return match msg {
+                DevmanMsg::Add { .. } | DevmanMsg::Del { .. } | DevmanMsg::Bind { .. }
+                | DevmanMsg::Unbind { .. } => {
+                    alloc::vec![OutAction::Reply {
+                        dest: source,
+                        outcome: Err(Errno::ENODEV),
+                    }]
+                }
+            };
         };
         match msg {
             DevmanMsg::Add { body } => {
@@ -109,7 +144,7 @@ impl Server {
                 let parent = parsed.parent;
                 let mut sunk = Vec::new();
                 let outcome = do_add(
-                    &mut self.devices,
+                    devices,
                     self.vtreefs.tree_mut(),
                     parent,
                     &parsed,
@@ -127,7 +162,7 @@ impl Server {
             DevmanMsg::Del { device } => {
                 let mut sunk = Vec::new();
                 let outcome = do_del(
-                    &mut self.devices,
+                    devices,
                     self.vtreefs.tree_mut(),
                     device,
                     &mut |ev| sunk.push(ev),
@@ -142,7 +177,7 @@ impl Server {
                 }]
             }
             DevmanMsg::Bind { device, driver } => {
-                match do_bind(&self.devices, source, device, driver) {
+                match do_bind(devices, source, device, driver) {
                     Action::Forward { owner, device, endpoint, .. } => {
                         alloc::vec![OutAction::Forward { owner, bind: true, device, endpoint }]
                     }
@@ -154,7 +189,7 @@ impl Server {
                 }
             }
             DevmanMsg::Unbind { device, driver } => {
-                match do_unbind(&self.devices, source, device, driver) {
+                match do_unbind(devices, source, device, driver) {
                     Action::Forward { owner, device, endpoint, .. } => {
                         alloc::vec![OutAction::Forward { owner, bind: false, device, endpoint }]
                     }
@@ -175,7 +210,12 @@ impl Server {
         device: DeviceId,
         driver: Result<(), Errno>,
     ) -> OutAction {
-        let outcome = on_bind_response(&mut self.devices, device, driver);
+        let Some(devices) = self.devices.as_mut() else {
+            // Unreachable: forwards only exist post-init (handle_other's
+            // pre-init guard answers before any forward is produced).
+            return OutAction::Nothing;
+        };
+        let outcome = on_bind_response(devices, device, driver);
         OutAction::Reply {
             dest: minix_types::RS_PROC_NR,
             outcome: outcome.map(|_| device),
@@ -188,8 +228,11 @@ impl Server {
         device: DeviceId,
         driver: Result<(), Errno>,
     ) -> OutAction {
+        let Some(devices) = self.devices.as_mut() else {
+            return OutAction::Nothing; // same unreachability as answer_bind
+        };
         let outcome = on_unbind_response(
-            &mut self.devices,
+            devices,
             self.vtreefs.tree_mut(),
             device,
             driver,
@@ -200,9 +243,10 @@ impl Server {
         }
     }
 
-    /// Test/support inspection.
-    pub fn devices(&self) -> &DeviceTree {
-        &self.devices
+    /// Inspection: the device tree, if the first mount has happened
+    /// (lazy init, DM-P1-3).
+    pub fn devices(&self) -> Option<&DeviceTree> {
+        self.devices.as_ref()
     }
 
     /// The server's single dispatch loop (C `fsdriver_task` shape,
@@ -230,7 +274,12 @@ impl Server {
     /// mount/lookup/readdir errors as `Ino(0)`/empty lists).
     fn process_fs(&mut self, req: Request) -> Reply {
         match req {
-            Request::Mount { is_root } => Reply::Mounted(self.vtreefs.mount(is_root)),
+            Request::Mount { is_root } => {
+                let mounted = self.vtreefs.mount(is_root);
+                // C: fs_mount calls init_hook on success (mount.c:24-25);
+                // the guarded tree build is devman's hook body (main.c:36-43).
+                Reply::Mounted(mounted.and_then(|ino| self.ensure_devices().map(|_| ino)))
+            }
             Request::Unmount => {
                 self.vtreefs.unmount();
                 Reply::Unmounted
@@ -334,9 +383,20 @@ mod tests {
     use crate::vtreefs::{Incoming, Ino, Request, Reply, VecTransport};
     use minix_types::{DEVMAN_ADD_DEV, DEVMAN_BIND, DEVMAN_DEL_DEV, DEVMAN_REPLY, DEVMAN_UNBIND, Errno, RS_PROC_NR};
 
+    /// A mounted server: lazy init (DM-P1-3) needs the first mount before
+    /// the device database exists, so handler tests drive one mount first.
     fn server() -> Server {
         let cfg = ServerConfig::devman_default(crate::hooks::RootStat::devman_root());
-        Server::new(&cfg, FsHooks::empty()).unwrap()
+        let mut srv = Server::new(&cfg, FsHooks::empty()).unwrap();
+        mount(&mut srv);
+        srv
+    }
+
+    fn mount(srv: &mut Server) {
+        let mut t =
+            VecTransport::new(alloc::vec![Incoming::Fs(Request::Mount { is_root: false })]);
+        srv.run(&mut t);
+        assert!(matches!(t.replies[..], [Reply::Mounted(Ok(_))]));
     }
 
     fn wire_usb() -> Vec<u8> {
@@ -399,7 +459,7 @@ mod tests {
             acts[..],
             [OutAction::Reply { outcome: Ok(_), .. }]
         ));
-        assert!(srv.devices().get(id).is_none());
+        assert!(srv.devices().unwrap().get(id).is_none());
     }
 
     #[test]
@@ -410,6 +470,78 @@ mod tests {
         let mut srv = server();
         let acts = srv.handle_other(Endpoint(9), DevmanMsg::classify(0x1202, &[], 0, Endpoint(0)));
         assert_eq!(acts, alloc::vec![OutAction::Nothing]);
+    }
+
+    #[test]
+    fn lazy_init_devices_appear_at_first_mount() {
+        // DM-P1-3: pre-mount the device database does not exist — lookup
+        // of `devices` misses (the inode appears only when init runs at
+        // mount, C main.c:36-43 via mount.c:24-25) and DEVMAN traffic
+        // fails closed with ENODEV instead of walking an uninitialized
+        // tree. After the mount everything works; a second mount does
+        // NOT re-init (ids keep counting — C's `static int first`).
+        let cfg = ServerConfig::devman_default(crate::hooks::RootStat::devman_root());
+        let mut srv = Server::new(&cfg, FsHooks::empty()).unwrap();
+        assert!(srv.devices().is_none());
+
+        let mut t = VecTransport::new(alloc::vec![Incoming::Fs(Request::Lookup {
+            dir: Ino(1),
+            name: String::from("devices"),
+        })]);
+        srv.run(&mut t);
+        assert_eq!(t.replies, alloc::vec![Reply::Found(Err(Errno::ENOENT))]);
+
+        let acts = srv.handle_other(
+            Endpoint(9),
+            DevmanMsg::classify(DEVMAN_ADD_DEV, &wire_usb(), 0, Endpoint(0)),
+        );
+        assert!(matches!(
+            acts[..],
+            [OutAction::Reply {
+                outcome: Err(Errno::ENODEV),
+                ..
+            }]
+        ));
+
+        mount(&mut srv);
+        assert!(srv.devices().is_some());
+        let acts = srv.handle_other(
+            Endpoint(9),
+            DevmanMsg::classify(DEVMAN_ADD_DEV, &wire_usb(), 0, Endpoint(0)),
+        );
+        assert!(matches!(
+            acts[..],
+            [OutAction::Reply {
+                outcome: Ok(_),
+                ..
+            }]
+        ));
+
+        // Remove the device, mount again, re-add: the id continues from
+        // where the counter was (2), proving the second mount did not
+        // rebuild the tree (a re-init would hand out 1 again).
+        let acts = srv.handle_other(
+            Endpoint(9),
+            DevmanMsg::classify(DEVMAN_DEL_DEV, &[], 1, Endpoint(0)),
+        );
+        assert!(matches!(
+            acts[..],
+            [OutAction::Reply {
+                outcome: Ok(_),
+                ..
+            }]
+        ));
+        mount(&mut srv);
+        let acts = srv.handle_other(
+            Endpoint(9),
+            DevmanMsg::classify(DEVMAN_ADD_DEV, &wire_usb(), 0, Endpoint(0)),
+        );
+        match acts[..] {
+            [OutAction::Reply {
+                outcome: Ok(id), ..
+            }] => assert_eq!(id, DeviceId(2), "second mount must not re-init"),
+            ref other => panic!("re-add failed: {other:?}"),
+        }
     }
 
     #[test]
@@ -488,7 +620,7 @@ mod tests {
         assert_eq!(rep.m_type, DEVMAN_REPLY);
         assert_eq!(unsafe { rep.m_u.m_m4 }.m4l1, 0);
         assert_eq!(
-            srv.devices().get(DeviceId(1)).unwrap().state,
+            srv.devices().unwrap().get(DeviceId(1)).unwrap().state,
             DeviceState::Bound
         );
     }
@@ -512,7 +644,7 @@ mod tests {
         let (_, rep) = &t.sent[0];
         assert_eq!(unsafe { rep.m_u.m_m4 }.m4l1, 5);
         assert_eq!(
-            srv.devices().get(DeviceId(1)).unwrap().state,
+            srv.devices().unwrap().get(DeviceId(1)).unwrap().state,
             DeviceState::Unbound
         );
     }

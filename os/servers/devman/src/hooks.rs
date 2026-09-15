@@ -26,33 +26,6 @@ pub const NO_DEV: i32 = 0;
 
 // ── Hook function types ──
 
-/// Context handed to the init hook (mount-triggered, see `FirstGuard`).
-pub struct InitCtx {
-    init_requested: bool,
-}
-impl InitCtx {
-    pub fn new() -> Self {
-        InitCtx {
-            init_requested: false,
-        }
-    }
-
-    /// Mark that device-tree init was requested (04 implements the tree).
-    pub fn request_init(&mut self) {
-        self.init_requested = true;
-    }
-
-    pub fn init_requested(&self) -> bool {
-        self.init_requested
-    }
-}
-
-impl Default for InitCtx {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// C: `read_hook` signature (`vtreefs.h:29-30`), minus the unused inode ptr.
 /// Returns bytes filled, 0 on EOF, negative errno on error.
 pub type ReadHookFn =
@@ -60,46 +33,33 @@ pub type ReadHookFn =
 
 // ── FsHooks ──
 
-/// C: `struct fs_hooks` (`vtreefs.h:24-44`, 13 slots).
-/// Only the slots devman wires are modeled here; the remaining 10 slots
-/// (lookup/getdents/write/...) belong to 02's framework module.
+/// C: `struct fs_hooks` (`vtreefs.h:24-44`, 13 slots). C's `main` fills
+/// three (init/read/message, main.c:78-80); Rust models **one**.
 ///
-/// C's `main` registers **three** hooks (main.c:78-80); Rust models two
-/// and routes DEVMAN messages through `Server::run`'s Devman arm instead
-/// of a `message_hook` — one dispatch truth for the whole server, where
-/// C had a second switch inside the hook (DM-P1-2). Same messages, same
-/// handling, no side door.
+/// - `message_hook` retired in DM-P1-2: DEVMAN messages dispatch through
+///   `Server::run`'s Devman arm — one loop, no side door.
+/// - `init_hook` retired in DM-P1-3: the C callback exists because
+///   libvtreefs is a *library* that cannot know devman; with vtreefs
+///   inlined into the devman crate (decision A-1) that boundary is gone,
+///   so mount-time init is a direct guarded call (`Server::ensure_devices`,
+///   whose `Option<DeviceTree>` *is* C's `static int first`).
 pub struct FsHooks {
-    /// C: `main.c:78` `hooks.init_hook = init_hook`.
-    pub init_hook: Option<fn(&mut InitCtx)>,
     /// C: `main.c:79` `hooks.read_hook = read_hook`.
     pub read_hook: Option<ReadHookFn>,
 }
 
 impl FsHooks {
     /// C: `main.c:70-80` — zeroed table with the devman hooks filled
-    /// (init + read; the C message_hook's job lives in `Server::run`).
+    /// (read; the C init/message hooks' jobs live in `Server`).
     pub fn devman_default() -> Self {
         FsHooks {
-            init_hook: Some(devman_init_hook),
             read_hook: Some(devman_read_hook),
         }
     }
 
-    /// All-`None`: missing hook = safe default (no-op / EOF).
-    /// Mirrors the Redox `Scheme` "unimplemented = ENOSYS" idea.
+    /// No read hook = every read is EOF (C: `file.c` returns 0).
     pub fn empty() -> Self {
-        FsHooks {
-            init_hook: None,
-            read_hook: None,
-        }
-    }
-
-    /// C: `mount.c:24-25` `if (vtreefs_hooks->init_hook != NULL)`.
-    pub fn fire_init(&self, ctx: &mut InitCtx) {
-        if let Some(f) = self.init_hook {
-            f(ctx);
-        }
+        FsHooks { read_hook: None }
     }
 
     /// Default when no read hook: EOF (C: `file.c` returns 0).
@@ -118,11 +78,6 @@ impl FsHooks {
 }
 
 // ── Default hook bodies (wiring only; business logic in 04/05/06) ──
-
-/// C: `main.c:36-43` — guarded init entry; tree building itself is 04.
-pub fn devman_init_hook(ctx: &mut InitCtx) {
-    ctx.request_init();
-}
 
 /// C: `main.c:60-67` — dispatch via per-inode `read_fn`.
 /// 06 wires the real dispatch: the cookie selects the file in the
@@ -193,36 +148,6 @@ impl ServerConfig {
     }
 }
 
-// ── FirstGuard ──
-
-/// C: `main.c:37` `static int first` — run-once guard for `init_hook`.
-/// Single-threaded event loop: plain `bool` suffices (no `AtomicBool`;
-/// same argument as VM `global.rs` BSS state).
-pub struct FirstGuard(bool);
-
-impl FirstGuard {
-    /// Fresh guard: the next `enter()` returns `true`.
-    pub const fn new() -> Self {
-        FirstGuard(true)
-    }
-
-    /// Returns `true` at most once; caller runs `devman_init_devices` (04).
-    pub fn enter(&mut self) -> bool {
-        if self.0 {
-            self.0 = false;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl Default for FirstGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // ── SEF lifecycle ──
 
 /// C: `vtreefs.c:54-59` — the three SEF registrations + startup, in order.
@@ -249,14 +174,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_guard_fires_once() {
-        let mut g = FirstGuard::new();
-        assert!(g.enter());
-        assert!(!g.enter());
-        assert!(!g.enter());
-    }
-
-    #[test]
     fn root_stat_matches_c_main() {
         // C: main.c:82-86. Literal values (not `NO_DEV` self-reference):
         // C: const.h:132 `#define NO_DEV ((dev_t) 0)` — value is 0.
@@ -279,29 +196,12 @@ mod tests {
 
     #[test]
     fn hooks_none_is_safe_default() {
+        // No read hook = EOF; init/message hooks live in `Server` now
+        // (DM-P1-3 collapse note on `FsHooks`).
         let h = FsHooks::empty();
-        let mut ctx = InitCtx::new();
-        h.fire_init(&mut ctx);
-        assert!(!ctx.init_requested());
         let mut buf = [0u8; 8];
         assert_eq!(h.fire_read(&mut buf, 8, 0, 0), 0);
-    }
-
-    #[test]
-    fn init_hook_wires_to_first_guard() {
-        // Guarded init: hook fires, but the tree build runs only once.
-        let h = FsHooks::devman_default();
-        let mut guard = FirstGuard::new();
-        let mut builds = 0;
-        for _ in 0..3 {
-            let mut ctx = InitCtx::new();
-            h.fire_init(&mut ctx);
-            assert!(ctx.init_requested());
-            if guard.enter() {
-                builds += 1;
-            }
-        }
-        assert_eq!(builds, 1);
+        assert!(h.read_hook.is_none());
     }
 
     /// Test double #1 (behavior: records lifecycle, always succeeds).

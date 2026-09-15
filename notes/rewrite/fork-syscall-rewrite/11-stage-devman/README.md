@@ -28,7 +28,7 @@
 
 | 模块 | 来源篇 | 测试 |
 |---|---|---|
-| `hooks.rs`（FsHooks/RootStat/ServerConfig/FirstGuard/SEF） | 01 | 7 |
+| `hooks.rs`（FsHooks/RootStat/ServerConfig/SEF） | 01 | 2 |
 | `vtreefs/`（inode 树 + 服务器 + 传输） | 02 | 24 |
 | `structs.rs` + `wire.rs`（形状 + 解析） | 03 | 7 |
 | `device_tree.rs`（双树 + 寻路） | 04 | 7 |

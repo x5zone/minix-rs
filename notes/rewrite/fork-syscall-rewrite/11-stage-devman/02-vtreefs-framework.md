@@ -24,7 +24,7 @@ devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这
 
 ### 1.3 延迟初始化：树在 mount 时才出生
 
-01 §2.7 已钉死触发链：`fs_mount` 调 `init_hook`，`init_hook` 建树。但框架侧还有另一半故事：`init_server`（`vtreefs.c:16-33`）在 SEF fresh 路径里先分配好 inode 池和 I/O 缓冲（失败就 `panic`，活不下去），`fs_mount` 只负责"引用根 + 调钩子"。也就是说框架分两步走：**先活（分配资源）**，**再营业（mount 后建业务树）**。Rust 侧这两步对应 `VTreeFs::new`（分配，失败 `Err(ENOMEM)`）与 `mount`（营业），[ARCH:A-7] 的第二次实例（第一次是 01 的 `SefHooks`）。
+01 §2.7 已钉死触发链：C 的 `fs_mount` 调 `init_hook`，`init_hook` 建树（Rust 侧该回调坍缩为 `Server::ensure_devices` 守卫直调，DM-P1-3）。但框架侧还有另一半故事：`init_server`（`vtreefs.c:16-33`）在 SEF fresh 路径里先分配好 inode 池和 I/O 缓冲（失败就 `panic`，活不下去），`fs_mount` 只负责"引用根 + 调钩子"。也就是说框架分两步走：**先活（分配资源）**，**再营业（mount 后建业务树）**。Rust 侧这两步对应 `VTreeFs::new`（分配，失败 `Err(ENOMEM)`）与 `mount` + `Server::ensure_devices`（营业），[ARCH:A-7] 的第二次实例（第一次是 01 的 `SefHooks`）。
 
 ### 1.4 边界声明
 
@@ -43,7 +43,7 @@ devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这
 
 | 槽 | 签名行 | devman | 说明 |
 |---|---|---|---|
-| `init_hook` | :25 | ✅ 注册 | mount 时调一次（01 §2.2） |
+| `init_hook` | :25 | ✅ 注册（C） | mount 时调一次；Rust 无此钩——`Server::ensure_devices` 守卫直调（DM-P1-3） |
 | `cleanup_hook` | :26 | NULL | unmount 时调；devman 从不注册，框架的 `if != NULL` 对 devman 恒假 |
 | `lookup_hook` | :27-28 | NULL | lookup 前的"刷新"回调；devman 无刷新语义 |
 | `getdents_hook` | :29 | NULL | getdents 前的"刷新"回调；同上 |
@@ -247,7 +247,7 @@ os/servers/devman/src/vtreefs/
 | `root_delete_and_ino_zero_are_einval` | 删根/ino 0 EINVAL | §2.4/§2.6 |
 | `lookup_dots_and_notdir` | ./.. / 根.. ENOENT / 文件下 ENOTDIR | §2.7 |
 | `mount_rejects_root` | root mount EINVAL | §2.9 |
-| `mount_fires_init_hook` | 每次 mount 都调（框架忠实，guard 归 01） | §2.9 |
+| `mount_succeeds_twice_and_unmounts` | 两次 mount 均 Ok + unmount（init 触发归 Server，DM-P1-3） | §2.9 |
 | `read_bad_ino_and_dir_are_einval` | 未知/目录 EINVAL | §2.5 步骤 1-2 |
 | `read_no_hook_and_deleted_are_eof` | 无 hook/已删 → 空 | §2.5 步骤 3 |
 | `read_full_single_chunk` | 8 字节全对 | §2.5 循环 |

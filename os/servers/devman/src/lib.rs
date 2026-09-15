@@ -35,7 +35,7 @@ pub mod structs;
 pub mod vtreefs;
 pub mod wire;
 
-pub use hooks::{FirstGuard, FsHooks, RootStat, SefLifecycle, ServerConfig};
+pub use hooks::{FsHooks, RootStat, SefLifecycle, ServerConfig};
 
 /// Crate-level init entry (called by `main.rs`; real init runs on mount).
 pub fn init() {}

@@ -120,7 +120,7 @@ static void init_hook(void) {
 
 `static int first` 是"只执行一次"守卫。为什么需要守卫？因为 `init_hook` 的调用方是 `fs_mount`（§2.7），而 mount 理论上可以发生多次（卸载后重挂）。devman 的设备树是进程级单例——重挂时树已经在了，重建会泄漏旧树。守卫保证 `devman_init_devices()`（04 详述：创建 `root_dev` + `devices/` + `events/`）只跑一次。
 
-Rust 侧把这个隐式协议显式化为 `FirstGuard`（§3.2/§4.2）：状态机只有两个状态，`enter()` 至多返回一次 true。C 的 `int` 可取 2^32 个值但只用两个，Rust 用 `bool` 新类型收窄。
+Rust 侧把这个隐式协议显式化（§3.2/§4.2）：状态机只有两个状态——初版是 `FirstGuard(bool)`，DM-P1-3 后由 `Server` 的 `Option<DeviceTree>` 直接承载（`None` ↔ 未初始化）。C 的 `int` 可取 2^32 个值但只用两个，Rust 用类型收窄。
 
 ### 2.3 `read_hook`：一句话的分发器（main.c:60-67）
 
@@ -276,35 +276,30 @@ devman **不在 boot_image**（`minix3/minix/kernel/table.c:44-64` 无 devman �
 
 ### 3.1 钩子表：13 个 NULL 槽 → 3 个 `Option` 字段
 
-C 的 `struct fs_hooks` 有 13 个函数指针槽，devman 填 3 个、其余靠 `memset` 置 NULL。Rust 的 `FsHooks`（`hooks.rs`）只建模 devman 用的 3 个中的 2 个——`message_hook` 没有对应字段，DEVMAN 消息由 `Server::run` 的 Devman 臂直接分派（见下）：
+C 的 `struct fs_hooks` 有 13 个函数指针槽，devman 填 3 个、其余靠 `memset` 置 NULL。Rust 的 `FsHooks`（`hooks.rs`）只保留 **1 个**：`read_hook`（`main.c:79`）。`message_hook` 退役于 DM-P1-2（DEVMAN 消息由 `Server::run` 的 Devman 臂直接分派），`init_hook` 退役于 DM-P1-3（挂载期初始化由 `Server::ensure_devices` 守卫直调，§3.2）：
 
 ```rust
 pub struct FsHooks {
-    pub init_hook: Option<fn(&mut InitCtx)>,
     pub read_hook: Option<ReadHookFn>,
 }
 ```
 
 四个取舍：
 
-1. **为什么是 `Option` 而不是 NULL**：`None` 在类型层面就是"未注册"，调用点 `if let Some(f) = hooks.init_hook` 与 mount.c:24 的 NULL 检查语义相同，但编译器强制你处理 `None` 分支——C 忘记检查就野指针，Rust 忘记处理就编译不过。
+1. **为什么是 `Option` 而不是 NULL**：`None` 在类型层面就是"未注册"，调用点 `if let Some(f) = hooks.read_hook` 与框架对 NULL 槽的检查语义相同，但编译器强制你处理 `None` 分支——C 忘记检查就野指针，Rust 忘记处理就编译不过。
 2. **为什么是 `fn` 而不是 `Fn` trait 对象**：C 函数指针无捕获，`fn` 类型与之对等；单线程事件循环不需要 `Send`。06 若需要带状态的 read 闭包再评估 `Box<dyn Fn>`，本篇不预支复杂度（YAGNI）。
-3. **为什么只有 2 个字段而不是 13 个**：plan §3.4 边界——其余 10 个槽是 02 的职责，在 `vtreefs` 框架模块内补全。本篇建 13 字段的结构体会造成两个"全表"定义，违反事实唯一性。
-4. **`message_hook` 为什么消失了（DM-P1-2）**：C 需要它，是因为 `fsdriver_task` 只认文件请求，设备消息必须有个旁路入口——于是 C 在框架循环里留了一个 hook 钩子，钩子里再放一个 switch（main.c:46-58，那个出名的无 break 级联）。Rust 统一后只有 `Server::run` 一个循环、一个 match：FS 请求走 `Request` 臂，DEVMAN 消息走 `DevmanMsg` 臂——旁路和钩子都不需要了。同样的消息、同样的处理、少一个第二真相源（05 §3.2 的单分派在装配层兑现）。
+3. **为什么只有 1 个字段而不是 13 个**：plan §3.4 边界——其余 10 个槽是 02 的职责，在 `vtreefs` 框架模块内补全。本篇建 13 字段的结构体会造成两个"全表"定义，违反事实唯一性。
+4. **另外两个钩子为什么消失了**：`message_hook`（DM-P1-2）——C 需要它，是因为 `fsdriver_task` 只认文件请求，设备消息必须有个旁路入口，钩子里再放一个 switch（main.c:46-58，那个出名的无 break 级联）；Rust 统一后只有 `Server::run` 一个循环、一个 match，旁路和钩子都不需要了。`init_hook`（DM-P1-3）——C 需要它，是因为 libvtreefs 是库、不认识 devman；A-1 内联后库与服务之间的边界消失，回调坍缩为直接调用。同样的行为、少两个第二真相源。
 
 对照 Redox：`redox_scheme::Scheme` trait 对未实现的方法返回 `ENOSYS` 默认实现；此处 `None` 的默认行为是 init 无操作 / read 返回 EOF / message 忽略——"缺失=安全默认值"的思想一致，只是机制不同（trait 默认方法 vs Option 分支）。
 
 对照 VM（`os/servers/vm/src/lib.rs:13-22` 单线程文档）：本 crate 同样假设单线程，`FsHooks` 是 `!Sync` 也没关系——它只活在 devman 主线程里。
 
-### 3.2 `FirstGuard`：`static int` → 显式状态机
+### 3.2 懒初始化守卫：`static int first` → `Option<DeviceTree>`
 
-C 的 `static int first` 藏在函数体内，测试无法观察、重置无法表达。Rust 的 `FirstGuard(bool)` 把它变成可构造、可测试的值：
+C 的 `static int first` 守着 `devman_init_devices`：首个 mount 触发 `init_hook`，守卫保证树只建一次。Rust 初版把它翻成 `FirstGuard(bool)` 独立类型；DM-P1-3 之后连这个类型也不需要了——`Server` 的 `devices: Option<DeviceTree>` **本身就是守卫**：`None` 是"还没建"（等价 `first == 1`），建树后 `Some` 永不复位（等价 `first = 0`），unmount/remount 不动它——与 C 的 `static` 语义逐位对应。`ensure_devices()` 在首个成功 mount 后调用，初始化失败（ENOMEM）作为 mount 应答的错误上抛（A-7：C 同处 panic）。
 
-```rust
-pub struct FirstGuard(bool);
-```
-
-单线程所以 `bool` 足够——不需要 `AtomicBool`（那是给 SMP kernel 准备的，devman 是用户态单线程，CLAUDE.md 执行模型节）。VM 的 `global.rs` 对 BSS 单线程状态也是同样论证。
+曾经配合 `init_hook` + `InitCtx::request_init` 的回调链（框架 mount 时调钩子、钩子置旗、装配读旗）随旗子一并退役：C 需要回调，是因为 libvtreefs 是**库**、不认识 devman；A-1 把 vtreefs 内联进 devman crate 之后库与服务之间的边界消失了，回调坍缩为直接调用，旗子成了没人读的死状态——这正是 FirstGuard 曾被观察为"死置"的根因（首轮架构审查 DM-P1-3）。单线程所以 `bool`/`Option` 都不需要 Atomic（用户态服务器执行模型，CLAUDE.md 执行模型节；VM 的 `global.rs` 对 BSS 单线程状态同款论证）。
 
 ### 3.3 `RootStat`：五行赋值 → 一次构造
 
@@ -353,7 +348,7 @@ C 的三行 `sef_setcb_*` 注册在 Rust 侧表达为启动序列契约（`SefLi
 ```
 os/servers/devman/src/
   lib.rs    — #![no_std] + 模块声明 + 单线程模型文档（仿 vm/src/lib.rs:1-29）
-  hooks.rs  — FsHooks / RootStat / ServerConfig / FirstGuard / SefLifecycle / SefHooks（本篇全部）
+  hooks.rs  — FsHooks（单 read 钩）/ RootStat / ServerConfig / SefLifecycle / SefHooks（本篇全部）
   main.rs   — 二进制入口：组装默认 hooks + root_stat + config，调用 run 桩
 ```
 
@@ -363,7 +358,7 @@ os/servers/devman/src/
 
 1. `run` 之前 hooks 已全部注册（`main` 的构造顺序保证，无"先跑后填"的中间态）。
 2. `RootStat::devman_root()` 与 main.c:82-86 逐字段相等（单测锁定，改 C 值必改单测）。
-3. `FirstGuard::enter()` 至多返回一次 `true`（单测循环 3 次断言）。
+3. 建树至多发生一次：`devices` 从 `None` 翻 `Some` 后不复位（单测 `lazy_init_devices_appears_at_first_mount` 断言二次 mount 后 id 续号——server.rs）。
 4. `ServerConfig::devman_default()` 的 `nr_inodes = 1024`、`buf_size = 4097` 与 main.c:89、devman.h:39 相等（单测锁定）。
 
 ### 4.3 与 C 步骤的差异说明
@@ -372,7 +367,7 @@ os/servers/devman/src/
 |---|---|---|
 | `memset` 清零 13 槽 | 结构体字面量 + `None` | 设计决策（类型系统消除整块清零） |
 | 六全局变量中转参数 | `ServerConfig` 显式传参 | 架构演进 A-1-相关 |
-| `static int first` | `FirstGuard` 显式状态 | 设计决策（可测试性） |
+| `static int first` + `init_hook` 回调 | `Server::ensure_devices` 守卫直调（`Option<DeviceTree>` 承载一次性语义） | 设计决策（A-1 内联使回调边界消失，DM-P1-3） |
 | `panic("init_inodes failed")` | `Result<(), Errno>` 传播 | 架构演进 A-7（显式错误） |
 | message 四 handler 贯穿 | 本篇桩"忽略"，05 实现单分派 | 已知缺口→05（注释指向 A-3） |
 | 10 个未用 hooks 槽 NULL | 本篇不建模，02 补全 | 分工（非缺口） |
@@ -389,11 +384,10 @@ os/servers/devman/src/
 | `root_stat_matches_c_main` | mode/uid/gid/size/dev 五字段等于 C 值（`dev` 字面量 `0`，`const.h:132`，非自引用常量） | §4.2-2 |
 | `server_config_defaults_match_c` | nr_inodes=1024，buf_size=4097 | §4.2-4 |
 | `hooks_none_is_safe_default` | 全 `None` 时 init/read/message 默认行为安全（无操作/EOF/忽略） | §3.1 默认语义 |
-| `init_hook_wires_to_first_guard` | 注册的 init_hook 经 `FirstGuard` 只触发一次底层 init | §2.2 守卫语义 |
 | `sef_ok_records_lifecycle_sequence` | `OkSef` 记录 Fresh→Signal 序列，非 TERM 信号忽略（对偶 C `got_signal`） | §3.5 序列契约 |
 | `sef_failing_returns_enomem` | `FailingSef::init_server` 返回 `Err(ENOMEM)` 且不 panic | §3.5 [ARCH:A-7] |
 
-截至 2026-09-04：`cargo test -p minix-devman` **7 passed / 0 failed**（本篇子集；完整统计每篇末段累积更新，review-doc-skill §2.4j）。`cargo clippy -p minix-devman --all-targets` 0 警告（`FirstGuard: Default` 已补，workspace profile 提示除外）。
+截至 2026-09-15：`cargo test -p minix-devman` **84 passed / 0 failed**（本篇 hooks 2 条；完整统计每篇末段累积更新，review-doc-skill §2.4j）。`cargo clippy -p minix-devman --all-targets` 0 警告（workspace profile 提示除外）。
 
 ---
 

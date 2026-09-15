@@ -17,7 +17,7 @@ devman 维护**两棵**树，别混成一棵：
 
 两棵树用 `binding.ino` 缝合：每个 `Device` 记住自己在框架树里的编号。C 用裸指针（`devman_inode.inode` 指向框架 `inode`），Rust 用 `Ino` 句柄——指针会悬空（删节点后），句柄只会查无（`find` 返 `None`），这是 02 §3.3 同款"句柄代替指针"的第二次应用。
 
-出生只有一次：`init_hook`（mount 触发，01 §2.2）调 `devman_init_devices`，建根 + 顶层两文件。01 的 `FirstGuard` 保证只生一次——框架每 mount 调一次钩子，守卫把重复出生拦掉。两篇的分工：01 管"只一次"，本篇管"生什么"。
+出生只有一次：首个成功 mount 触发 `Server::ensure_devices`（C 是 `init_hook` 调 `devman_init_devices`，mount.c:24-25 + main.c:36-43），建根 + 顶层两文件。一次性守卫是 `Server` 的 `devices: Option<DeviceTree>`——`None` 翻 `Some` 后不复位，unmount/remount 不重建（DM-P1-3；C 的 `static int first` 同语义，初版 `FirstGuard(bool)` 已被它吸收）。两篇的分工不变：01 管"只一次"，本篇管"生什么"。
 
 ### 1.1 边界声明
 
