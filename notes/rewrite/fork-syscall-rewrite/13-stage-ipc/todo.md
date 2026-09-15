@@ -27,7 +27,7 @@
 | P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |
 | P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91） |
 | P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界 |
-| P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了 |
+| P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数 |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试 |
@@ -145,7 +145,7 @@
 
 **建议**：架构维持，不立修复条目；本条本身就是 IPC-P1-1 方案 A 的设计依据。唯一配套动作：IPC-P1-1 落地时在 `server.rs` 模块头把"判定在模块、效果在服务层"的分工升格为显式注释。
 
-### IPC-P2-2 transport trait 的双名冲突与 send 语义保真
+### IPC-P2-2 transport trait 的双名冲突与 send 语义保真【✅ 已完成 2026-09-16】
 
 **是什么**：两个问题。其一，workspace 里有两个同名 `IpcTransport`：`os/servers/ipc-server/src/server.rs:74`（2 方法：`receive`/`send`，事件循环的 seam）与 `os/libs/minix-sys/src/ipc.rs:496-515`（7 方法：send/receive/sendrec/notify/sendnb/senda/query，对应 C `_ipc.S` 全家）。同名不同形，读代码的人（和 AI）很容易混淆哪个是哪个。其二，保真度：C 主循环的调用回信走 `ipc_sendnb`（main.c:273），进程事件回信走 `asynsend3(AMF_NOREPLY)`（main.c:207-208）——**两个不同的内核调用**。Rust 的单一 `send` 方法（文档写"C: ipc_sendnb"，`server.rs:77`）表达不了这个差别；将来 DirectTrapTransport 接线时，进程事件路径会被错接成 sendnb。
 
@@ -156,6 +156,8 @@
 - **方案 C（否决）：维持单 send，差异丢给实现注释**。保真度问题原样留给接线轮，正是本条要消掉的雷。
 
 **建议**：方案 A，在服务层接线前做（晚做一天，测试 transport 就多一天接错形状的风险）。进程事件路径（`server.rs:280-299`）改调 `send_async`。
+
+**修复记录（2026-09-16，方案 A 落地）**：`server.rs` 的本地 trait 改名 `EventLoopTransport`（trait 文档写明改名缘由：minix-sys 七方法 `IpcTransport` 与 VM 服务器私有同名 trait 已占用该名字）；`send` 拆为 `send_reply`（ipc_sendnb，main.c:273，dispatch/unknown 回信路径）与 `send_async`（asynsend3(AMF_NOREPLY)，main.c:207-208，进程事件回执路径），两个内核调用不可互换的映射义务写进 trait 文档；测试替身 `TestTransport` 两动词同实现（共享 `push_outbound`），语义差异由生产实现承担。lib.rs 再导出与 doc 01（D6 决策行 + §4.2 函数清单）同步——D6 行顺带修正了旧文"Redox 方案服务同款"的类比措辞为虚拟内存服务先例。验证：`cargo test -p minix-ipc-server` = 82 passed / 0 failed；clippy 本 crate 零告警；旧名残留仅 trait 文档中解释改名缘由的一处。
 
 ### IPC-P2-3 死代码消除：常量再导出、恒真函数、双名常量【✅ 已完成 2026-09-16】
 

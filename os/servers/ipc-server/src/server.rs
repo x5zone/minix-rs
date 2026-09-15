@@ -64,18 +64,34 @@ impl IpcStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportError;
 
-/// Message transport between the server and the kernel.
+/// Transport seam of the event loop: kernel-facing message I/O.
 ///
-/// Production: `sef_receive_status` / `ipc_sendnb`. Tests: an in-memory
-/// queue (see `TestTransport` in the test module). Failures surface as
-/// [`TransportError`] and are only counted (a broken transport is not
-/// diagnosable from inside the loop; see the consecutive-failure bound
-/// in `run`).
-pub trait IpcTransport {
+/// Named for the seam it serves — the single-threaded event loop — and
+/// deliberately not `IpcTransport`: that name is already taken by the
+/// seven-method syscall wrapper trait in `minix-sys` (and used, crate
+/// privately, by the VM server), and three same-shaped names would only
+/// confuse.
+///
+/// Production: `sef_receive_status` / `ipc_sendnb` / `asynsend3`. Tests:
+/// an in-memory queue (see `TestTransport` in the test module). Failures
+/// surface as [`TransportError`] and are only counted (a broken transport
+/// is not diagnosable from inside the loop; see the consecutive-failure
+/// bound in `run`).
+///
+/// The two send verbs mirror the two kernel calls C uses, which are not
+/// interchangeable: dispatch and unknown-call replies go out as
+/// non-blocking sends (`ipc_sendnb` — main.c:273), while the process-event
+/// acknowledgement is an asynchronous send (`asynsend3` with `AMF_NOREPLY`
+/// — main.c:207-208). The production implementation must map each verb to
+/// its own kernel call; the test double implements both alike.
+pub trait EventLoopTransport {
     /// Wait for the next message (C: `sef_receive_status(ANY, …)`).
     fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError>;
-    /// Send a reply (C: `ipc_sendnb`).
-    fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
+    /// Send a reply, non-blocking (C: `ipc_sendnb` — main.c:273).
+    fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
+    /// Send an asynchronous acknowledgement (C: `asynsend3(AMF_NOREPLY)` —
+    /// main.c:207-208).
+    fn send_async(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
 }
 
 // ============================================================================
@@ -161,7 +177,7 @@ const MAX_CONSECUTIVE_RECV_FAILURES: u32 = 32;
 /// Type parameters inject the transport and the business logic so tests can
 /// drive the loop without a kernel (VM-server pattern: `run_once` owns one
 /// iteration, `run` owns the infinite loop plus the failure bound).
-pub struct IpcServer<T: IpcTransport, H: CallHandler> {
+pub struct IpcServer<T: EventLoopTransport, H: CallHandler> {
     transport: RefCell<Box<T>>,
     handler: RefCell<H>,
     /// Set by `init` (C: `sef_local_startup` + `sef_startup` — main.c:224).
@@ -177,7 +193,7 @@ pub struct IpcServer<T: IpcTransport, H: CallHandler> {
     completed_cycles: Cell<u64>,
 }
 
-impl<T: IpcTransport, H: CallHandler> IpcServer<T, H> {
+impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
     /// Build a server around a transport and a handler. Not ready until
     /// [`Self::init`] (mirrors C: constructing state, then `sef_startup`).
     pub fn new(transport: T, handler: H) -> Self {
@@ -279,9 +295,10 @@ impl<T: IpcTransport, H: CallHandler> IpcServer<T, H> {
             }
             Incoming::ProcEvent => {
                 // C: got_proc_event + continue — main.c:241-245. The echo
-                // reply is main.c's own code (:207): rebuild it here rather
-                // than inside the 09 handler. The `continue` skips the
-                // end-of-cycle hook (:279).
+                // reply is main.c's own code (:207), sent asynchronously
+                // (asynsend3, :207-208): rebuild it here rather than inside
+                // the 09 handler. The `continue` skips the end-of-cycle
+                // hook (:279).
                 let event = ProcEventIn::decode_message(&msg);
                 let reply_type = self.handler.borrow_mut().handle_proc_event(event);
                 let mut reply = msg;
@@ -289,7 +306,7 @@ impl<T: IpcTransport, H: CallHandler> IpcServer<T, H> {
                 if self
                     .transport
                     .borrow_mut()
-                    .send(msg.m_source, &reply)
+                    .send_async(msg.m_source, &reply)
                     .is_err()
                 {
                     // C: printf + continue — main.c:208-209. Send failure
@@ -315,7 +332,7 @@ impl<T: IpcTransport, H: CallHandler> IpcServer<T, H> {
                     if self
                         .transport
                         .borrow_mut()
-                        .send(msg.m_source, &reply)
+                        .send_reply(msg.m_source, &reply)
                         .is_err()
                     {
                         // C: printf("IPC: send error") + continue — :274-275.
@@ -334,7 +351,7 @@ impl<T: IpcTransport, H: CallHandler> IpcServer<T, H> {
                 if self
                     .transport
                     .borrow_mut()
-                    .send(msg.m_source, &reply)
+                    .send_reply(msg.m_source, &reply)
                     .is_err()
                 {
                     self.note_dropped();
@@ -390,9 +407,18 @@ mod tests {
         fn push(&mut self, msg: Message, status: IpcStatus) {
             self.arrivals.push((msg, status));
         }
+
+        /// Common body of both send verbs: record the outbound message.
+        fn push_outbound(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
+            if self.fail_sends {
+                return Err(TransportError);
+            }
+            self.replies.push((dest, *msg));
+            Ok(())
+        }
     }
 
-    impl IpcTransport for TestTransport {
+    impl EventLoopTransport for TestTransport {
         fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError> {
             if self.fail_next_receives > 0 {
                 self.fail_next_receives -= 1;
@@ -401,12 +427,15 @@ mod tests {
             self.arrivals.pop().ok_or(TransportError)
         }
 
-        fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
-            if self.fail_sends {
-                return Err(TransportError);
-            }
-            self.replies.push((dest, *msg));
-            Ok(())
+        // One body for both verbs: the test double records every outbound
+        // message; the sendnb/asynsend3 distinction only matters at the
+        // production boundary.
+        fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
+            self.push_outbound(dest, msg)
+        }
+
+        fn send_async(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
+            self.push_outbound(dest, msg)
         }
     }
 

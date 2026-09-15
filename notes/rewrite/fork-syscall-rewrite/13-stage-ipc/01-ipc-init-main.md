@@ -153,7 +153,7 @@
 | D3 | 未知编号变成纯函数 | 越界或者空槽返回"功能未实现"内联在循环里面（第 257 行到第 261 行） | `unknown_call_result() -> i32` 返回 `ENOSYS`（`dispatch.rs`） | 规则一句话，值得一个名字；以后调用编号空间变化只改一处 |
 | D4 | 回信规则变成纯函数 | `if (r != SUSPEND)` 内联（第 264 行） | `should_reply(result: i32) -> bool`（`dispatch.rs`） | 与管理信息库服务的 `should_reply` 同款判决层：规则与循环体解耦，循环体以后长什么样都不影响它；挂起标记的语义由测试钉住 |
 | D5 | 循环体拆成单步函数 | 死循环里面混着接收、分发、回信、收尾 | `run_once` 处理一轮（`server.rs`），`run` 只负责无限循环与收尾钩子 | 虚拟内存服务同款拆分：测试可以一次驱动一轮，不用启动无限循环；接收失败计数与连续失败上限放在 `run` 里面 |
-| D6 | 传输层抽象成特征 | 直接调用 `sef_receive_status` 与 `ipc_sendnb` | `IpcTransport` 特征（`server.rs`）：`receive` 与 `send` 两个方法，生产实现与测试替身各一个 | 收发原语依赖内核落地之前，业务逻辑可先测；虚拟内存服务的 `IpcTransport` 同款做法；Redox 的方案服务同样把传输与业务分开 |
+| D6 | 传输层抽象成特征 | 直接调用 `sef_receive_status` 与 `ipc_sendnb` | `EventLoopTransport` 特征（`server.rs`）：`receive` 与 `send_reply`/`send_async` 三个方法，生产实现与测试替身各一个 | 收发原语依赖内核落地之前，业务逻辑可先测；虚拟内存服务的同款"传输与业务分开"思路；两个发送动词各对一门内核调用（`ipc_sendnb` 对 `asynsend3`，不可互换），特征改名避开 minix-sys 的同名特征 |
 | D7 | 接收失败只计数不终止（架构演进） | 接收失败直接终止服务（第 229 行 `panic`） | 接收失败计数加一并继续循环，连续失败达到上限才终止（`server.rs`，标注 `[ARCH: IPC-01-01]`） | 用户态服务器不应该因为一次传输抖动就退出；虚拟内存服务同款演进（连续失败上限后终止，避免无限空转消耗处理器）；行为差异在文档与代码注释两处一致标注 |
 
 微内核对照（类比，不是移植依据）：单线程收取消息的循环是 Minix3、Redox、seL4 用户态服务器的共同默认形状，本篇的"分类、分发、应答"三段对应 Redox 方案服务的"解析请求、分发到文件系统操作、写回响应"三段；Redox 按路径字符串分发，进程间通信服务器按整数编号分发——都是"名字到处理者"的查表，只是这里的名字是连续整数，所以可以用减法得到下标。对照的结论只有一个：循环骨架不值得发明，保持三段式，把心智花在"五类到达与挂起语义"上面。
@@ -186,7 +186,7 @@ os/servers/ipc-server/src/
 
 **事件循环**（`server.rs`）：
 
-- `IpcTransport` 特征：`receive() -> Result<(Message, IpcStatus), ()>` 与 `send(dest: Endpoint, msg: &Message) -> Result<(), ()>`。生产实现对接内核收发原语（待内核落地），测试替身用队列预置消息。
+- `EventLoopTransport` 特征：`receive() -> Result<(Message, IpcStatus), TransportError>`、`send_reply(dest, msg)`（`ipc_sendnb` 语义，调用回信）与 `send_async(dest, msg)`（`asynsend3` 语义，进程事件回执）。生产实现对接内核收发原语（待内核落地），测试替身用队列预置消息、两个发送动词同实现。
 - `IpcServer` 结构：持有传输层句柄、已初始化标志、丢弃计数。单线程事件循环，不需要锁（与虚拟内存服务同款 single-threaded 模型，`RefCell` 合理）。
 - `run_once() -> RunStep`：处理一轮（接收、分类、分流或者分发、回信判决）。测试直接调用它，一次驱动一轮。
 - `run() -> !`：无限循环调用 `run_once`，连续接收失败达到上限（32 次）则终止，避免传输损坏时无限空转。
