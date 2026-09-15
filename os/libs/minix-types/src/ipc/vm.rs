@@ -1110,8 +1110,9 @@ impl VmCacheIn {
     /// the C wire format (`mess_vmmcp`, ipc.h:2383-2393) as sent by
     /// `vm_cachecall` (libsys/vm_cache.c:8-43): `dev` (u64 @ 0),
     /// `dev_offset` (i64 @ 8), `ino_offset` (i64 @ 16), `ino` (u64 @ 24),
-    /// `block` (u32 @ 32), `flags_ptr` (u32 @ 36), `pages` (u8 @ 40),
-    /// `flags` (u8 @ 41).
+    /// `block` (u64 @ 32 — E-VMMCPWIRE 余件:`void *` 按 x86_64 加宽,
+    /// u32 在 MMAP 窗口地址上恒截断高位), `flags_ptr` (u64 @ 40),
+    /// `pages` (u8 @ 48), `flags` (u8 @ 49).
     ///
     /// Do NOT decode from `MessageM1` — same wire-format family as
     /// 23-P0-1 / 22-P0-1 / 21-P1-1 / 19-P1-1 / 16-P0-1 (the old M1 decode
@@ -1133,7 +1134,7 @@ impl VmCacheIn {
             ino: v.ino,
             pages: v.pages as u32,
             flags: v.flags as u32,
-            block: v.block as u64,
+            block: v.block,
         }
     }
 }

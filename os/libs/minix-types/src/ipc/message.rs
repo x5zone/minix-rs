@@ -2620,17 +2620,19 @@ pub struct MessVmmcp {
     /// C: `mess_vmmcp.ino` (payload offset 24)
     pub ino: u64,
     /// User-space block address (setcache only). C: `mess_vmmcp.block`
-    /// (payload offset 32, 32-bit pointer on i386)
-    pub block: u32,
+    /// (payload offset 32). E-VMMCPWIRE 余件:`void *` 在 x86_64 wire 上
+    /// 是 8 字节——cache block VA 落在 MMAP 窗口(≥ 2^32),u32 会恒截断
+    /// 高 32 位(与 reply.addr 同类必现 bug,宽存同批修正)。
+    pub block: u64,
     /// Flags pointer (unused by VM handlers). C: `mess_vmmcp.flags_ptr`
-    /// (payload offset 36, 32-bit pointer on i386)
-    pub flags_ptr: u32,
-    /// Number of pages. C: `mess_vmmcp.pages` (payload offset 40)
+    /// (payload offset 40;指针域按 x86_64 加宽)。
+    pub flags_ptr: u64,
+    /// Number of pages. C: `mess_vmmcp.pages` (payload offset 48)
     pub pages: u8,
-    /// Flags (`VMSF_ONCE`). C: `mess_vmmcp.flags` (payload offset 41)
+    /// Flags (`VMSF_ONCE`). C: `mess_vmmcp.flags` (payload offset 49)
     pub flags: u8,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 14],
+    pub _padding: [u8; 6],
 }
 
 /// Cache-block map reply payload (VM → VFS) for `VM_MAPCACHEPAGE`.
@@ -3814,6 +3816,38 @@ mod tests {
     }
 
     #[test]
+    fn test_vmmcp_request_64bit_block_addr() {
+        // E-VMMCPWIRE 余件(宽度对账扫描):`mess_vmmcp.block` 在 C 是
+        // `void *`——x86_64 wire 上必须 8 字节。cache block VA 落在
+        // MMAP 窗口(基址 0x1_0000_0000,≥4 GiB),u32 会恒截断高 32 位
+        // (与 reply.addr 同类;consumer:cache_handlers.rs 以 block 构造
+        // VirBytes 后做 region 查找,截断即查无此区域)。
+        assert_eq!(size_of::<MessVmmcp>(), 56);
+        let call = MessVmmcp {
+            dev: 0x2_0000,
+            dev_offset: 0x10_0000,
+            ino_offset: 0x20_0000,
+            ino: 0x30_0000,
+            block: 0x0000_0002_8000_0000, // MMAP 窗口内(>4 GiB)
+            flags_ptr: 0x0000_0001_0000_0010,
+            pages: 2,
+            flags: 1,
+            _padding: [0; 6],
+        };
+        assert_eq!(call.block, 0x0000_0002_8000_0000, "block 高位保全");
+        assert_eq!(call.flags_ptr, 0x0000_0001_0000_0010);
+        // 布局:指针加宽后 pages/flags 移至 48/49,padding 6 → 总 56。
+        assert_eq!(
+            core::mem::offset_of!(MessVmmcp, pages),
+            48
+        );
+        assert_eq!(
+            core::mem::offset_of!(MessVmmcp, flags),
+            49
+        );
+    }
+
+#[test]
     fn test_vmmcp_reply_layout_64bit_addr() {
         // C: ipc.h `mess_vmmcp_reply` — 56-byte payload. The i386 C layout
         // (void* = 4) cannot carry the minix-rs x86_64 MMAP-window VAs
