@@ -68,16 +68,17 @@ pub use framework::{
     ReplyDecision,
 };
 pub use handlers::{
-    CancelVerdict, IoctlVerdict, ReadVerdict, SelectOutcome, apply_cancel, apply_close,
-    apply_open, apply_select_record, decide_cancel, decide_close, decide_ioctl, decide_open,
-    decide_read, decide_select, led_mask_from_kio_bits, park_read,
+    CancelVerdict, CancelledRead, IoctlVerdict, ReadVerdict, SelectOutcome, apply_cancel,
+    apply_close, apply_open, apply_select_record, cancel_parked_read, decide_cancel,
+    decide_close, decide_ioctl, decide_open, decide_read, decide_select, led_mask_from_kio_bits,
+    park_read,
 };
 pub use init::{HandlerSlot, InitStep, StartupRegistration};
 pub use key_codes::KeyCode;
 pub use produce::{
-    DropReason, EventIntake, ForwardedEvent, WakeDirective, apply_wake_answered,
-    apply_wake_notified, decide_wake, enqueue, forward_to_terminal, multiplexer_for, route_event,
-    stored_event,
+    DropReason, EventIntake, ForwardedEvent, WakeAction, WakeDirective, apply_wake_answered,
+    apply_wake_notified, complete_answered_reader, decide_wake, enqueue, forward_to_terminal,
+    multiplexer_for, route_event, stored_event, wake_on_event,
 };
 pub use setleds::{LightTarget, apply_light_save, plan_light_targets, remembered_lights};
 pub use structs::{DeviceIndex, EVENT_BYTES, InputDevice, InputTable, Minor};

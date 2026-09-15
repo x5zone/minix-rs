@@ -263,6 +263,47 @@ pub fn apply_cancel(device: &mut InputDevice) {
     device.suspended = false;
 }
 
+/// The answer a matched cancel produces: EINTR to the original read.
+///
+/// Captured before the unpark; the reply value it stands for is
+/// [`InputError::Interrupted`] — that variant exists to travel here, as
+/// the completion of the parked read (C: `input_cancel` returns `EINTR`,
+/// `input.c:294`, and the framework sends it under the cancel's request
+/// id, which equals the read's own: `chardriver.c:255-261`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancelledRead {
+    /// Who parked the read (the reply destination).
+    pub caller: Endpoint,
+    /// The request id the answer must echo.
+    pub request_id: u32,
+}
+
+/// Decides and applies a cancel in one step, producing the reader's answer.
+///
+/// C: `input_cancel` (`input.c:282-298`) composed with the framework's
+/// reply rule. A matched cancel unparks the read and yields the answer
+/// contact — the dispatcher completes it with `InputError::Interrupted`.
+/// An unmatched cancel yields nothing: the framework answers "no reply"
+/// (`EDONTREPLY`, `input.c:297`), because a mismatched id means the read
+/// this cancel speaks of is already gone and nobody waits for an answer.
+pub fn cancel_parked_read(
+    device: &mut InputDevice,
+    caller: Endpoint,
+    request_id: u32,
+) -> Option<CancelledRead> {
+    match decide_cancel(device, caller, request_id) {
+        CancelVerdict::Ignore => None,
+        CancelVerdict::InterruptReader => {
+            let interrupted = CancelledRead {
+                caller: device.caller,
+                request_id: device.request_id,
+            };
+            apply_cancel(device);
+            Some(interrupted)
+        }
+    }
+}
+
 // ── Select (document 08) ──
 
 /// A select answer: which operations are ready now, and whether to record
@@ -401,6 +442,31 @@ mod tests {
         assert!(!device.suspended);
         assert!(!device.has_selector());
         assert_eq!(device.caller, Endpoint::NONE);
+    }
+
+    #[test]
+    fn test_cancel_match_yields_eintr_answer_and_unparks() {
+        // C: input.c:290-295 — triple match unparks; the framework turns the
+        // EINTR return into the original read's completion
+        // (chardriver.c:255-261, one reply under the shared request id).
+        let mut device = keyboard();
+        park_read(&mut device, Endpoint(7), 11, 13);
+        let answered = cancel_parked_read(&mut device, Endpoint(7), 13).unwrap();
+        assert_eq!(answered.caller, Endpoint(7));
+        assert_eq!(answered.request_id, 13);
+        assert!(!device.suspended);
+        // The value the answer carries is the Interrupted error, wired to EINTR.
+        assert_eq!(InputError::Interrupted.to_errno(), minix_types::EINTR);
+    }
+
+    #[test]
+    fn test_cancel_mismatch_yields_no_answer() {
+        // C: input.c:297 — EDONTREPLY: nobody to answer, nothing changed.
+        let mut device = keyboard();
+        park_read(&mut device, Endpoint(7), 11, 13);
+        assert!(cancel_parked_read(&mut device, Endpoint(8), 13).is_none());
+        assert!(cancel_parked_read(&mut device, Endpoint(7), 14).is_none());
+        assert!(device.suspended);
     }
 
     #[test]

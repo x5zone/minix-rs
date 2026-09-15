@@ -154,7 +154,7 @@ input_select(devminor_t minor, unsigned int ops, endpoint_t endpt)
 | 符号 | 源码位置 | 本文档位置 | Rust 对应（handlers.rs） |
 |------|---------|-----------|--------------------------|
 | `input_ioctl` | input.c:241-277 | 2.1 节 | `decide_ioctl` + `led_mask_from_kio_bits` |
-| `input_cancel` | input.c:282-298 | 2.2 节 | `decide_cancel` + `apply_cancel` |
+| `input_cancel` | input.c:282-298 | 2.2 节 | `decide_cancel` + `apply_cancel` + `cancel_parked_read`（组合，2026-09-15） |
 | `input_select` | input.c:303-326 | 2.3 节 | `decide_select` + `apply_select_record` |
 | 灯位翻译 | input.c:262-268 | 2.1 节 | `led_mask_from_kio_bits` |
 | 灯结构与控制号 | kbdio.h/ttycom.h | 第 05 篇 2.6 节 | `minix-types`（本篇引用，不重复） |
@@ -206,9 +206,9 @@ pub enum IoctlVerdict {
 
 路由只认 `KIOCSLEDS`（`minix-types` 的常量，第 05 篇），营业检查先行（与读同序）。翻译函数三行位映射，未知位忽略（1.2 节）。注意 `SetLeds` 变体不带掩码字段——掩码是翻译函数的产物，不是路由的产物：路由的结论只回答"去哪"，不携带"用什么去"，携带尚未算出的数据会让调用者误以为数据有效。单元变体加独立翻译函数，数据只在算出来的地方出现。
 
-### 4.2 取消：`CancelVerdict`、`decide_cancel`、`apply_cancel`（对应决策 3.2）
+### 4.2 取消：`CancelVerdict`、`decide_cancel`、`apply_cancel` 与组合 `cancel_parked_read`（对应决策 3.2）
 
-判断三重匹配（挂着、调用者等、编号等，端点比较用内部整数，不比较结构体——端点相等就是整数相等，语义透明），执行只复位标志（注释写明与关闭修正的不对称原则，第 06 篇 3.3 节：联系方式不可达，不清）。
+判断三重匹配（挂着、调用者等、编号等，端点比较用内部整数，不比较结构体——端点相等就是整数相等，语义透明），执行只复位标志（注释写明与关闭修正的不对称原则，第 06 篇 3.3 节：联系方式不可达，不清）。两者之上有一层组合 `cancel_parked_read`：匹配则先把联系方式（调用者加编号）抓出来交给调用方，再复位标志——抓出来的那份联系方式就是"对原来的读回答打断"的信封，回信值固定是 `InputError::Interrupted`（这个错误变体正是为此而生：C 的 `input_cancel` 返回 `EINTR`，前台把它用取消的请求编号原样发回，而取消与被取消的读共用同一个编号，`chardriver.c:255-261`）；不匹配则什么都不产生（分发层对应前台的"不回信"）。取消路径没有任何授权拷贝，所以组合可以一步完成——这与会拷贝的唤醒路径（第 09 篇的两段式）不同。
 
 ### 4.3 查询：`SelectOutcome`、`decide_select`、`apply_select_record`（对应决策 3.3、3.4、3.5）
 
@@ -229,20 +229,22 @@ pub enum IoctlVerdict {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/handlers.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 48 个）。
+> 测试代码在 `os/servers/input/src/handlers.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 77 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
 | `test_ioctl_routes_setleds_only` | 只认调灯号，不营业拒，不认识拒 | input.c:251-276 |
 | `test_led_mask_bits_match_c` | 三位映射、组合、全零、未知位忽略 | input.c:262-268 |
 | `test_cancel_matches_exactly_or_ignores` | 三重匹配叫醒，错身份错编号无挂起皆忽略 | input.c:290-297 |
+| `test_cancel_match_yields_eintr_answer_and_unparks` | 组合产出打断信封（调用者加编号），复位挂起，回信值接 EINTR | input.c:290-295 + chardriver.c:255-261 |
+| `test_cancel_mismatch_yields_no_answer` | 不匹配什么都不产生，挂起原样 | input.c:297 |
 | `test_select_reports_ready_data_and_errors` | 空无记名、空预约记名、有货就绪、挂起就绪、不营业就绪 | input.c:314-321 |
 | `test_select_write_always_ready` | 写永远就绪，错误方向永远无 | input.c:323（与无分支） |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
-- `cargo test -p minix-input`：**48 个通过，0 个失败**。
-- 其中与本篇直接相关的 5 个（上表）；其余分属第 01 篇（5 个）、第 02 篇（8 个）、第 03 篇（6 个）、第 04 篇（8 个）、第 06 篇（4 个加共用 1 个）、第 07 篇（9 个加共用 1 个）与错误码模块（2 个）。
+- `cargo test -p minix-input`：**77 个通过，0 个失败**。
+- 其中与本篇直接相关的 7 个（上表）；其余分属第 01 篇（5 个）、第 02 篇（8 个）、第 03 篇（6 个）、第 04 篇（8 个）、第 06 篇（4 个，另与第 07 篇共用 1 个）、第 07 篇（12 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）与错误码模块（2 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/handlers.rs`
 
 ---

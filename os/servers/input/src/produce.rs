@@ -13,7 +13,9 @@
 //!
 //! Corresponding document: `09-input-event-processing.md`.
 
+use crate::error::InputError;
 use crate::event::InputEvent;
+use crate::eventbuf::{ByteCount, EventCount, ReadCopyPlan, commit_read_copy, plan_read_copy};
 use crate::structs::{
     DeviceIndex, InputDevice, InputTable, KEYBOARD_FIRST_MINOR, KEYBOARD_MINOR_COUNT,
     KEYBOARD_MULTIPLEXER_INDEX, MOUSE_MULTIPLEXER_INDEX, Minor,
@@ -258,6 +260,119 @@ pub fn apply_wake_notified(device: &mut InputDevice) {
     device.selector = Endpoint::NONE;
 }
 
+// ── The runtime heart: file one event, answer whoever waits ──
+
+/// What one fresh event set in motion, contact details included.
+///
+/// The composed answer side of `input_process`: everything after the queue
+/// edit, with the reply payload ready for the transport. Reader and
+/// selector never both fire — the reader takes the event, the selector
+/// waits for the next one (C checks `suspended` first, `input.c:361`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeAction {
+    /// The parked reader takes the event: perform the plan's one-event
+    /// copy through the transport, then finish with
+    /// [`complete_answered_reader`].
+    AnswerReader {
+        /// Who parked the read.
+        caller: Endpoint,
+        /// The request id the answer must echo.
+        request_id: u32,
+        /// The one-event copy the reader is answered with (`event_count
+        /// = 1`, `input.c:362`): segments to transport, bytes for the
+        /// reply. The queue is **not** advanced yet — see
+        /// [`complete_answered_reader`].
+        plan: ReadCopyPlan,
+    },
+    /// A recorded selector was told "readable", and forgotten.
+    NotifySelector {
+        /// Who asked to be told.
+        selector: Endpoint,
+        /// The minor the notification concerns.
+        minor: Minor,
+    },
+    /// The one-event plan itself failed. Unreachable through the public
+    /// flow (the queue just grew, so one event is always buffered) — kept
+    /// because C answers the error instead of crashing (architecture
+    /// evolution A-11): the reader is already unparked, its answer is the
+    /// error.
+    AnswerReaderFailed {
+        /// Who parked the read.
+        caller: Endpoint,
+        /// The request id the answer must echo.
+        request_id: u32,
+        /// Why the plan failed.
+        error: InputError,
+    },
+    /// Nobody waited; the event just sits in the queue.
+    Nobody,
+}
+
+/// Files one event and answers whoever waits.
+///
+/// C: `input_process` (`input.c:332-371`) as one composition — the enqueue
+/// (`input.c:347-355`), then the answer decision (`input.c:357-369`). The
+/// reader branch plans the **exactly one** event copy (`event_count = 1`,
+/// `input.c:362`) and hands it back with the contact details; the queue
+/// keeps the event until the transport has actually moved it, because C
+/// only advances after a successful copy (`input.c:153-154`) — a failed
+/// copy leaves the event buffered, its reader still answered, with the
+/// error as the answer value. The selector branch reports "readable" and
+/// forgets the waiter right away (`input.c:367-369` — a plain reply send,
+/// no transfer to fail).
+pub fn wake_on_event(device: &mut InputDevice, event: InputEvent) -> WakeAction {
+    enqueue(device, event);
+    match decide_wake(device) {
+        WakeDirective::AnswerReader {
+            caller,
+            request_id,
+        } => match plan_read_copy(device, EventCount(1)) {
+            Ok(plan) => WakeAction::AnswerReader {
+                caller,
+                request_id,
+                plan,
+            },
+            // Unreachable on the wake path (the queue just grew, so one
+            // event is always buffered), but C answers the error instead
+            // of crashing (A-11); carry it as a failed transport round.
+            Err(error) => {
+                apply_wake_answered(device);
+                WakeAction::AnswerReaderFailed { caller, request_id, error }
+            }
+        },
+        WakeDirective::NotifySelector { selector, minor } => {
+            apply_wake_notified(device);
+            WakeAction::NotifySelector { selector, minor }
+        }
+        WakeDirective::Nobody => WakeAction::Nobody,
+    }
+}
+
+/// Finishes an answered reader after the transport attempt.
+///
+/// C: `input.c:361-365` in order — copy (the transport's part, reported
+/// here as `transported`), reply with the outcome, unpark. The unpark runs
+/// **unconditionally**: C clears `suspended` after the reply whether the
+/// copy moved bytes or returned an error, so a failed transport still ends
+/// the suspended wait — the events stay buffered for the next reader, and
+/// this one walks away with the error.
+pub fn complete_answered_reader(
+    device: &mut InputDevice,
+    plan: ReadCopyPlan,
+    transported: Result<(), InputError>,
+) -> Result<ByteCount, InputError> {
+    let outcome = match transported {
+        Ok(()) => {
+            let bytes = plan.bytes;
+            commit_read_copy(device, plan);
+            Ok(bytes)
+        }
+        Err(error) => Err(error),
+    };
+    apply_wake_answered(device);
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +552,147 @@ mod tests {
         apply_wake_notified(device);
         assert!(!device.has_selector());
         assert_eq!(decide_wake(device), WakeDirective::Nobody);
+    }
+
+    #[test]
+    fn test_wake_on_event_answers_reader_with_exactly_one_event() {
+        // C: input.c:357-365 — the reader's answer plans event_count = 1;
+        // the queue keeps the event until the transport has moved it.
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        park_read_helper(device, Endpoint(7), 13);
+        device.count = 2;
+        device.tail = 10;
+        device.events[10].code = 100;
+        device.events[11].code = 101;
+        // A third event arrives; the reader is answered with the oldest.
+        let action = wake_on_event(device, stored_event(1, 7, 102, 1, 0));
+        let plan = match action {
+            WakeAction::AnswerReader {
+                caller,
+                request_id,
+                plan,
+            } => {
+                assert_eq!((caller, request_id), (Endpoint(7), 13));
+                plan
+            }
+            _ => panic!("expected AnswerReader"),
+        };
+        assert_eq!(plan.plan.event_total(), 1);
+        // Nothing committed yet (input.c:153-154 runs only after a
+        // successful transport copy), nobody unparked yet.
+        assert_eq!(device.count, 3);
+        assert!(device.suspended);
+        // The transport moves the single oldest event; the completion then
+        // commits and unparks (input.c:362-365).
+        let outcome = complete_answered_reader(device, plan, Ok(()));
+        assert_eq!(outcome, Ok(ByteCount(20)));
+        assert_eq!((device.tail, device.count), (11, 2));
+        assert!(!device.suspended);
+        assert_eq!(device.events[11].code, 101);
+        assert_eq!(device.events[12].code, 102);
+    }
+
+    #[test]
+    fn test_wake_on_event_reader_takes_event_from_empty_queue() {
+        // C: input.c:182-193 parks on empty; input.c:361-364 hands the
+        // first arrival straight over — the queue empties on completion.
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        park_read_helper(device, Endpoint(7), 13);
+        let action = wake_on_event(device, stored_event(1, 7, 55, 1, 0));
+        let plan = match action {
+            WakeAction::AnswerReader { plan, .. } => plan,
+            _ => panic!("expected AnswerReader"),
+        };
+        assert_eq!(device.count, 1);
+        let outcome = complete_answered_reader(device, plan, Ok(()));
+        assert_eq!(outcome, Ok(ByteCount(20)));
+        assert!(!device.suspended);
+        assert!(device.is_buffer_empty());
+    }
+
+    #[test]
+    fn test_wake_completion_failure_keeps_events_and_unparks() {
+        // C: input.c:144-151 (failed copy: queue untouched) + input.c:365
+        // (unpark runs unconditionally) — the reader walks away with the
+        // error, the event stays for the next one.
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        park_read_helper(device, Endpoint(7), 13);
+        let action = wake_on_event(device, stored_event(1, 7, 55, 1, 0));
+        let plan = match action {
+            WakeAction::AnswerReader { plan, .. } => plan,
+            _ => panic!("expected AnswerReader"),
+        };
+        let outcome = complete_answered_reader(device, plan, Err(InputError::InputOutput));
+        assert_eq!(outcome, Err(InputError::InputOutput));
+        assert!(!device.suspended);
+        assert_eq!((device.tail, device.count), (0, 1));
+        assert_eq!(device.events[0].code, 55);
+    }
+
+    #[test]
+    fn test_wake_on_event_selector_notified_and_forgotten() {
+        // C: input.c:366-369 — no reader: the selector hears "readable" once.
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        device.selector = Endpoint(9);
+        let action = wake_on_event(device, stored_event(1, 7, 55, 1, 0));
+        assert_eq!(
+            action,
+            WakeAction::NotifySelector {
+                selector: Endpoint(9),
+                minor: device.minor,
+            }
+        );
+        assert!(!device.has_selector());
+        assert_eq!(device.count, 1);
+    }
+
+    #[test]
+    fn test_wake_on_event_nobody_just_files() {
+        // C: input.c:347-355 with no waiter — the event waits in the queue.
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        let action = wake_on_event(device, stored_event(1, 7, 55, 1, 0));
+        assert_eq!(action, WakeAction::Nobody);
+        assert_eq!(device.count, 1);
+    }
+
+    #[test]
+    fn test_wake_on_event_full_buffer_reader_still_gets_one() {
+        // C: input.c:338-346 (overflow drops oldest) + input.c:361-364
+        // (reader takes the oldest survivor of the drop) — together the
+        // reader sees the freshest events, never a starved queue.
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        park_read_helper(device, Endpoint(7), 13);
+        for code in 0..32u16 {
+            enqueue(device, stored_event(1, 7, code as i32, 1, 0));
+        }
+        assert!(device.is_buffer_full());
+        let action = wake_on_event(device, stored_event(1, 7, 999, 1, 0));
+        let plan = match action {
+            WakeAction::AnswerReader { plan, .. } => plan,
+            _ => panic!("expected AnswerReader"),
+        };
+        // Overflow already applied (tail moved past code 0), nothing committed.
+        assert_eq!(device.count, 32);
+        let outcome = complete_answered_reader(device, plan, Ok(()));
+        assert_eq!(outcome, Ok(ByteCount(20)));
+        // 32 full, overflow drops code 0, the reader takes code 1: 31 left,
+        // the oldest survivor now is code 2.
+        assert_eq!(device.count, 31);
+        assert_eq!(device.events[device.tail as usize].code, 2);
+    }
+
+    /// Parks a reader the way `park_read` does (test helper; keeps the
+    /// wake tests readable without importing handlers here).
+    fn park_read_helper(device: &mut InputDevice, caller: Endpoint, request_id: u32) {
+        device.suspended = true;
+        device.caller = caller;
+        device.grant = 11;
+        device.request_id = request_id;
     }
 }

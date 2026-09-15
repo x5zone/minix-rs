@@ -237,7 +237,7 @@ pub enum WakeDirective {
 }
 ```
 
-判断只读标志（挂起优先），执行只改标志（叫醒复位挂起、通知擦掉名字）。拷贝一个事件与两封回答走传输层（07 篇的拷贝、02 篇的通道），判断执行分离保证"拷贝失败不撕纸条"（传输先成功才调 apply，第 07 篇 4.4 节的插入点纪律）。
+判断只读标志（挂起优先），执行只改标志（叫醒复位挂起、通知擦掉名字）。在判断与执行之上，本篇还提供整条运行链的组合：`wake_on_event` 把入队、判断、规划装进一步，挂起分支交出 `WakeAction::AnswerReader`——携带联系方式与恰好一个事件的拷贝规划（队列此刻不动，因为 C 只在拷贝成功后推进，`input.c:153-154`）；传输完成后再调 `complete_answered_reader` 收尾，它按 C 的次序做完剩下三件事——提交队列、按字节回信（失败则以错误回信）、无条件复位挂起（`input.c:365`：拷贝失败的读者同样离开挂起状态，事件留给下一个读者）。选择者分支没有授权拷贝，通知加擦名一步完成。组合把"拷贝恰好一个事件"这条最核心的运行时契约从三步散件变成有名字、有类型、有测试的函数（第 07 篇 4.4 节的插入点纪律在此兑现）。
 
 ### 4.4 转交：`ForwardedEvent` 与 `forward_to_terminal`（对应 1.4 节）
 
@@ -258,7 +258,7 @@ pub enum WakeDirective {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/produce.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 66 个）。
+> 测试代码在 `os/servers/input/src/produce.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 77 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -269,11 +269,17 @@ pub enum WakeDirective {
 | `test_forward_copies_lanes` | 五字段原样复制 | input.c:412-417 |
 | `test_enqueue_appends_and_reports_overflow` | 追加、满 32、溢出踩旧、位置回绕 | input.c:338-355 |
 | `test_wake_prefers_reader_over_selector` | 无人、选择者、挂起优先、撕纸条擦名 | input.c:361-370 |
+| `test_wake_on_event_answers_reader_with_exactly_one_event` | 组合：入队加规划、恰好一个事件、完成才推进 | input.c:357-365 |
+| `test_wake_on_event_reader_takes_event_from_empty_queue` | 空队列首事件直送读者，完成即清空 | input.c:182-193 + 361-364 |
+| `test_wake_completion_failure_keeps_events_and_unparks` | 拷贝失败：队列不动、读者照走、回信带错 | input.c:144-151 + 365 |
+| `test_wake_on_event_selector_notified_and_forgotten` | 组合：选择者被通知一次即忘 | input.c:366-369 |
+| `test_wake_on_event_nobody_just_files` | 组合：无人等待，事件留队列 | input.c:347-355 |
+| `test_wake_on_event_full_buffer_reader_still_gets_one` | 满队溢出踩旧后读者仍恰得一个 | input.c:338-346 + 361-364 |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
-- `cargo test -p minix-input`：**66 个通过，0 个失败**。
-- 其中与本篇直接相关的 7 个（上表）；其余分属第 01 篇（5 个）、第 02 篇（8 个）、第 03 篇（6 个）、第 04 篇（8 个）、第 06 篇（4 个加共用 1 个）、第 07 篇（9 个加共用 1 个）、第 08 篇（5 个）、第 10 篇（4 个）、第 11 篇（7 个）与错误码模块（2 个）。
+- `cargo test -p minix-input`：**77 个通过，0 个失败**。
+- 其中与本篇直接相关的 13 个（上表）；其余分属第 01 篇（5 个）、第 02 篇（8 个）、第 03 篇（6 个）、第 04 篇（8 个）、第 06 篇（4 个，另与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 10 篇（4 个）、第 11 篇（7 个）与错误码模块（2 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/produce.rs`
 
 ---
