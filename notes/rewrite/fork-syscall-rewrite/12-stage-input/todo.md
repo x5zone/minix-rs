@@ -31,7 +31,7 @@
 | P3 | IN-P3-2 | 边界测试族缺口（极限回绕、槽位耗尽、selector 覆盖、单侧断连等） |
 | P3 | IN-P3-3 | wire 测试盲区（`tty_up_msg` 拒收、KIOCSLEDS 截断、保留槽、通知携带消息号）（✅ 2026-09-15，见 §2） |
 | P3 | IN-D3 | close 全清偏离未按三层术语标注 `[ARCH: ...]`（doc + design + code 三处一致）（✅ 2026-09-15，见 §3） |
-| P3 | IN-D4 | 语义映射表只覆盖 01-12 篇；14 篇契约文档与 16-stage 实现文档互不回指 |
+| P3 | IN-D4 | 语义映射表只覆盖 01-12 篇；14 篇契约文档与 16-stage 实现文档互不回指（✅ 2026-09-15，见 §3） |
 | edge | E-INWIRE | input 服务器生产传输接线四缺（挂 minix-sef 落地方式决策 + 联调挂靠 E5） |
 | edge | E-CDRCONV | chardriver 框架双实现收敛（A-1 收口）+ minix-chardriver `CDEV_REPLY_BASE = 0x500` 错值 |
 | edge | E-TTYEVENT | `TTY_INPUT_UP` / `TTY_INPUT_EVENT` 消费侧零实现（16-stage 06-tty-driver 范围） |
@@ -170,9 +170,11 @@ Rust 的 `apply_close` 在关闭时额外清理挂起读者与 selector（handle
 
 **修复记录（2026-09-15，标签 `[ARCH: close-cleanup]`，三处一致）**：代码（`apply_close` 文档注释首段）、文档 06 §3.2（标题与正文）、`.design/06-design.v1.md` §1.2 统一挂 `[ARCH: close-cleanup]` 标签并互相指认；文档 06 §3.2 同时把"三处标注齐全"的表述改为如实列出三处位置（原表述把"差异表本节"算一处、漏了 design 快照）。行为零改动。
 
-### IN-D4 语义映射表与文档互引缺口
+### IN-D4 语义映射表与文档互引缺口【✅ 已完成 2026-09-15】
 
 `tools/coverage-extract/input-semantic-map.json` 自述只覆盖文档 01-12（文件头 `_note`），13（TTY 契约）与 14（pckbd 契约）未入表——两篇是外部契约篇，映射表应覆盖其契约符号面（`do_input`、`TTY_INPUT_EVENT` 消费字段、`pckbd_init` 的 flags 生成等），否则覆盖度检查对这两篇恒报缺失或恒豁免，两失。另：14 篇自称"Rust 模块： 无"（14-pckbd-driver.md:6）而 `os/drivers/hid/pckbd`（892 行）已存在且由 16-stage 的 13-pckbd-driver.md 承载——两篇互不回指，读者无从知道契约篇与实现篇的分工。处置：映射表补 13/14 契约符号；14 篇 frontmatter 或 §1 补一行"实现篇见 ../../16-stage-drivers/13-pckbd-driver.md"。
+
+**修复记录（2026-09-15）**：映射表补 20 个条目——文档 13 契约符号 `kbd_do_input`（空表：消费侧属 16-stage，挂 edge E-TTYEVENT）、`tty_keyboard_setleds`（映射到分发器的 `terminal_setleds`）；文档 14 契约符号映射到 pckbd crate 的既有策略核（`kbd_process→ScancodeState`、`kbdaux_process→MouseAssembler`、`pckbd_leds→translate_leds+LedOutbox` 等）与纯硬件半的诚实空表（`scan_keyboard`/`kbd_watchdog`/`kbc_*`，驱动阶段落地项）。文件头 `_note` 更新覆盖声明并写明"空表=诚实零，不是遗漏"。14 篇 frontmatter 的"Rust 模块： 无"补契约篇/实现篇回指。JSON 经解析校验合法。
 
 ---
 

@@ -1,6 +1,6 @@
 {
  "_comment": "C->Rust semantic map (input module). Used by coverage-extract.py --semantic-map.",
- "_note": "Covers documents 01-11 (init through driver connect). Document 12 (client library) maps libinputdriver symbols below.",
+ "_note": "Covers documents 01-12 plus (2026-09-15, 12-stage-input/todo.md IN-D4) the contract symbols of documents 13 (TTY consumer) and 14 (pckbd usage surface). Empty lists are honest zeros: the counterpart belongs to another stage (16-stage-drivers) and is tracked via edge E-TTYEVENT / E-PCKBDREG, not missing here by oversight.",
  "main": [
   "main"
  ],
@@ -408,5 +408,40 @@
   "DRIVER_KEY_PREFIX",
   "driver_label",
   "announce_key"
- ]
+ ],
+ "kbd_do_input": [],
+ "tty_keyboard_set_leds": [
+  "terminal_setleds"
+ ],
+ "kbd_process": [
+  "ScancodeState"
+ ],
+ "kbdaux_process": [
+  "MouseAssembler"
+ ],
+ "pckbd_leds": [
+  "translate_leds",
+  "LedOutbox"
+ ],
+ "pckbd_intr": [
+  "ScancodeState",
+  "MouseAssembler"
+ ],
+ "pckbd_init": [
+  "InputBridge",
+  "announce_flags"
+ ],
+ "kbd_send": [
+  "LedOutbox"
+ ],
+ "set_leds": [
+  "LedOutbox"
+ ],
+ "pckbd_alarm": [],
+ "scan_keyboard": [],
+ "kbd_watchdog": [],
+ "kb_wait": [],
+ "kbc_read": [],
+ "kbc_cmd0": [],
+ "kbc_cmd1": []
 }
