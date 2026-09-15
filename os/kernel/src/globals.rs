@@ -146,6 +146,7 @@ mod bkl_protected {
         crate::proc::ProcNr,
         crate::clock::ClockState,
         crate::misc::SprofInfo,
+        crate::kmess::KmessRing,
 
         // Primitive element type for buffer arrays (`[u8; N]` via the
         // composite impl below) — a plain byte has no mutation surface of
