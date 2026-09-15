@@ -322,6 +322,20 @@ pub fn apply_set(
     Ok(())
 }
 
+/// Apply `IPC_RMID`: mark the segment destroy-on-last-detach.
+///
+/// C: shm.c:330-336 — the ownership check has already run ([`authorize`]);
+/// this sets `SHM_DEST` on the permission mode. The caller must run a
+/// reference-count sweep round immediately afterwards: C calls
+/// `update_refcount_and_destroy()` unconditionally (:335-336), so an
+/// unattached marked segment dies now and an attached one when its count
+/// reaches zero. The mark is never cleared — destruction frees the slot.
+pub fn mark_destroy(table: &mut ShmTable, index: usize) -> Result<(), ShmError> {
+    let seg = table.get_mut(index).ok_or(ShmError::Invalid)?;
+    seg.perm.mode |= minix_types::SHM_DEST;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +457,37 @@ mod tests {
             "SHM_ALLOC survives, lanes swapped, draft noise dropped"
         );
         assert_eq!(seg.change_time, 555);
+    }
+
+    #[test]
+    fn mark_destroy_sets_pending_bit() {
+        // C: shm.c:330-336 — RMID sets SHM_DEST; the slot survives the
+        // mark, only the sweep frees it (IPC-P1-4).
+        let mut table = one_segment();
+        mark_destroy(&mut table, 0).unwrap();
+        let seg = table.get(0).unwrap();
+        assert_eq!(
+            seg.perm.mode,
+            minix_types::SHM_ALLOC as u32 | minix_types::SHM_DEST as u32 | 0o600
+        );
+        assert_eq!(table.live_count(), 1);
+    }
+
+    #[test]
+    fn mark_then_sweep_destroys_unattached() {
+        // C: shm.c:334-336 — RMID on an unattached segment dies in the
+        // immediate sweep round (:335-336), not at some later cycle end.
+        let mut table = one_segment();
+        mark_destroy(&mut table, 0).unwrap();
+        let plan = crate::shm::refcount::sweep(
+            &mut table,
+            &[crate::shm::refcount::RefQuery {
+                slot: 0,
+                count: Some(1),
+            }],
+        );
+        assert_eq!(plan.freed, [0]);
+        assert!(table.is_empty());
     }
 
     #[test]

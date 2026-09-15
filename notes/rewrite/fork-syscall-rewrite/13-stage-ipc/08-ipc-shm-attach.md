@@ -156,6 +156,7 @@ os/servers/ipc-server/src/shm/
 - `ShmctlCommand` 枚举：六个变体（删除、改属性、查状态、按槽查状态、概要、聚合），`from_raw(i32) -> Option`。
 - `authorize(cmd, perm, caller) -> Result<(), ShmError>`：状态查询读位、删除改属性身份、信息放行（调 04 决策）。
 - `apply_set(table, index, options, now) -> Result<(), ShmError>`：改属性命令的落账（第 322 行到第 327 行，与 05 篇同款三换一刷），草稿见 04 篇 `SetOptions`。
+- `mark_destroy(table, index) -> Result<(), ShmError>`：删除命令的落账（第 334 行）——置 `SHM_DEST` 位；调用方必须紧跟着跑一轮引用计数清拍（C 在第 335 行到第 336 行无条件立即清拍），未挂接的段当场销毁、挂接中的等计数归零；标记永不清除，销毁即释放槽位。
 
 **引用计数**（`refcount.rs`）：
 
@@ -185,6 +186,8 @@ os/servers/ipc-server/src/shm/
 | `detach_missing_is_ok` | `attach.rs` 测试模块（服务层语义注记） | 找不到回成功（第 236 行到第 241 行） |
 | `shmctl_commands_roundtrip` | `attach.rs` 测试模块 | 六个命令双向转换与未知拒绝（第 283 行/第 367 行） |
 | `apply_set_keeps_alloc_bit` | `attach.rs` 测试模块 | 改属性落账：属主换、`SHM_ALLOC` 活、草稿噪声位丢弃（第 322 行到第 327 行，IPC-P1-3） |
+| `mark_destroy_sets_pending_bit` | `attach.rs` 测试模块 | 删除标记就位、槽位存活（第 330 行到第 334 行，IPC-P1-4） |
+| `mark_then_sweep_destroys_unattached` | `attach.rs` 测试模块 | 标记后立即清拍销毁未挂接段（第 334 行到第 336 行，IPC-P1-4） |
 | `sweep_destroys_at_zero` | `refcount.rs` 测试模块 | 零挂接加标记则销毁（第 189 行到第 196 行） |
 | `sweep_skips_unknown` | `refcount.rs` 测试模块 | 问不到跳过不销毁（第 183 行到第 186 行） |
 | `sweep_keeps_attached` | `refcount.rs` 测试模块 | 有挂接不销毁只记数（第 187 行） |
