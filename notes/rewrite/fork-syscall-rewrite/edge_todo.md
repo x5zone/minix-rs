@@ -42,6 +42,8 @@
 - **未落地**：① IDT handler 地址为占位 0——"后续 boot 阶段 `set_handler()` + `load()`"的阶段尚未存在（kernel/src/lib.rs `init_protection` 注释自证）；② **trap 桥不存在**：捕获用户寄存器 → 保存用户上下文到 KProcess → 定位当前进程 → 从用户内存拷贝消息 → 调用 `dispatch_ipc_entry`/`kernel_call_dispatch` 的入口 asm/Rust 胶水（`dispatch_ipc_entry` 生产调用方为零，仅测试）；③ `switch_to_user` 仅存在于文档引用（sched.rs §3.3），无实现——内核从不返回用户态。
 - **推论**：用户侧 trap asm 的寄存器/clobber 约定（C i386 先例：eax=端点/ebx=消息指针/ecx=IPC 调用号/int $33——本树 libc 仅 arm+i386 变体，无 amd64 参照）**无法对齐一个尚未设计的内核桥**。按反 guess 纪律（E-RSWIRE 先例），用户侧实现须待 01-stage-kernel 落地 trap 桥设计（入口 stub + 寄存器约定 + 用户上下文布局）后再动。
 
+> **进度（2026-09-16，🔄 设计文档落稿待评审，01-stage-kernel/18-trap-bridge-design.md）**：Step 1 约束穷举 + Step 2 方案对比完成，四项裁决待批——①入口选 int 33 门（已配 DPL3 trap gate，trap_entry.rs:291；SYSCALL 腿不动）；②寄存器约定选 C i386 拓 64 位（RAX=端点/RBX=消息指针/RCX=调用号，RDX=SENDA 表指针；errno 走 RAX、status 走已裁决的保存 RBX 通道）；③保存区选"一律入 CpuContext、出口只有调度循环"（用户态真值单点，阻塞成平凡情形；SYSCALL 腿的 TrapFrame 直返模型不推广）；④用户 trap 体落 minix-sys arch_trap.rs，minix-rt DirectTrapSource 桩随之翻活。落地切片 5 步（asm stub→出口合一→trap 体→minix-rt→通电）。**stale-premise 修正**：原文"switch_to_user 无实现"已过期——lib.rs:2828 起为活代码，SYSCALL 腿（trap_dispatch.rs:179）也在跑；真正欠的是 int-33 腿。**按评审门规则停在此处，待批准后进实现。**
+
 **影响**：不变——全部用户态服务器的 IPC/kernel-call 真实通电挂本条；且本条真实前置是 **01-stage-kernel 的 trap 桥 + switch_to_user**（该 stage 的 V12 工作流进行中）。
 
 **建议（更新后的执行序）**：
