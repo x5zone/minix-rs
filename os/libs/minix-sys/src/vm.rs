@@ -30,7 +30,7 @@
 //! Pure wrappers over the transport trait: no shared state, no
 //! synchronization questions.
 
-use crate::ipc::IpcTransport;
+use crate::ipc::{IpcTransport, TrapStatus};
 use crate::syscall::{perform_syscall, perform_taskcall};
 use minix_types::{Endpoint, Errno, Message, PhysBytes, VirBytes};
 
@@ -164,15 +164,15 @@ impl MapRequest {
 ///
 /// C: `minix_mmap_for` (`minix3/minix/lib/libc/sys/mmap.c:21-47`): clear a
 /// message, fill the seven mapping fields, add the third-party flag when
-/// mapping for someone else, and run the protocol. A failed call reports the
-/// mapped-failed sentinel in C; this version reports `None` instead of a
-/// sentinel pointer, so callers cannot mistake failure for address minus one.
+/// mapping for someone else, and run the protocol. A failed call is an
+/// `Err` carrying the errno — C's mapped-failed sentinel never crosses
+/// this interface, so a caller cannot mistake failure for an address.
 /// The reply carries the chosen address.
 pub fn mmap_via(
     transport: &impl IpcTransport,
     caller: Endpoint,
     request: MapRequest,
-) -> Result<Option<VirBytes>, Errno> {
+) -> Result<VirBytes, Errno> {
     let mut message = cleared_message();
     let packed = MapPayload {
         offset: request.offset,
@@ -197,7 +197,7 @@ pub fn mmap_via(
     // SAFETY: the reply payload is 56 readable bytes; the chosen address
     // sits at the return-address lane (last eight bytes before padding).
     let chosen = unsafe { message.m_u.raw[40..48].as_ptr().cast::<u64>().read() };
-    Ok(Some(VirBytes(chosen)))
+    Ok(VirBytes(chosen))
 }
 
 /// Unmaps a memory range.
@@ -300,8 +300,8 @@ pub fn exit_address_space_via(transport: &impl IpcTransport, endpoint: Endpoint)
 ///
 /// C: `vm_remap` (`mmap.c:88-108`): destination, source, both addresses, and
 /// size travel in fixed lanes; the reply carries the destination address. A
-/// failed call reports the mapped-failed sentinel in C and `None` here, like
-/// [`mmap_via`].
+/// failed call is an `Err` carrying the errno; C's mapped-failed sentinel
+/// never crosses this interface.
 pub fn remap_via(
     transport: &impl IpcTransport,
     call: i32,
@@ -310,7 +310,7 @@ pub fn remap_via(
     destination_address: VirBytes,
     source_address: VirBytes,
     size: VirBytes,
-) -> Result<Option<VirBytes>, Errno> {
+) -> Result<VirBytes, Errno> {
     let mut message = cleared_message();
     // SAFETY: five plain 64-bit lanes at bytes 0..40; exact bytes below.
     unsafe {
@@ -323,20 +323,20 @@ pub fn remap_via(
     perform_syscall(transport, vm_endpoint(), call, &mut message)?;
     // SAFETY: the reply carries the destination address at byte zero.
     let placed = unsafe { message.m_u.raw[..8].as_ptr().cast::<u64>().read() };
-    Ok(Some(VirBytes(placed)))
+    Ok(VirBytes(placed))
 }
 
 /// Translates a virtual address to a physical address.
 ///
 /// C: `vm_getphys` (`mmap.c:143-156`): endpoint plus address in, physical
-/// address out; failure reports zero, which is also a valid physical
-/// address, so this version reports `None` on failure instead of overloading
-/// zero.
+/// address out. Failure is an `Err` carrying the errno; C's zero sentinel
+/// never crosses this interface, so a zero in the reply is always a
+/// genuine physical address.
 pub fn physical_address_via(
     transport: &impl IpcTransport,
     endpoint: Endpoint,
     address: VirBytes,
-) -> Result<Option<PhysBytes>, Errno> {
+) -> Result<PhysBytes, Errno> {
     let mut message = cleared_message();
     // SAFETY: endpoint at bytes 0..4, address at bytes 8..16.
     unsafe {
@@ -346,18 +346,20 @@ pub fn physical_address_via(
     perform_syscall(transport, vm_endpoint(), VM_CALL_GET_PHYSICAL, &mut message)?;
     // SAFETY: the reply carries the physical address at byte zero.
     let physical = unsafe { message.m_u.raw[..8].as_ptr().cast::<u64>().read() };
-    Ok(Some(PhysBytes(physical)))
+    Ok(PhysBytes(physical))
 }
 
 /// Reads a page reference count.
 ///
-/// C: `vm_getrefcount` (`mmap.c:158-171`): failure reports all-ones, which is
-/// also a conceivable count, so this version reports `None` on failure.
+/// C: `vm_getrefcount` (`mmap.c:158-171`): endpoint plus address in, one
+/// byte of count out. Failure is an `Err` carrying the errno; C's
+/// all-ones sentinel never crosses this interface, so the returned count
+/// is always the server's genuine answer.
 pub fn reference_count_via(
     transport: &impl IpcTransport,
     endpoint: Endpoint,
     address: VirBytes,
-) -> Result<Option<u8>, Errno> {
+) -> Result<u8, Errno> {
     let mut message = cleared_message();
     // SAFETY: same two-field layout as the physical query above.
     unsafe {
@@ -367,7 +369,7 @@ pub fn reference_count_via(
     perform_syscall(transport, vm_endpoint(), VM_CALL_GET_REFERENCE, &mut message)?;
     // SAFETY: the reply carries the count in its first byte.
     let count = unsafe { message.m_u.raw[0] };
-    Ok(Some(count))
+    Ok(count)
 }
 
 /// Maps physical memory for a target process (server-side call).
@@ -500,7 +502,21 @@ mod tests {
         }
         transport.reply_sendrec(Ok(reply));
         let result = mmap_via(&transport, Endpoint(5), request_for(5)).unwrap();
-        assert_eq!(result, Some(VirBytes(0x8000)));
+        assert_eq!(result, VirBytes(0x8000));
+    }
+
+    #[test]
+    fn test_failed_syscall_propagates_errno() {
+        // The C wrappers return MAP_FAILED / zero / all-ones on a failed
+        // round trip (mmap.c:44-47 and friends); here the failure is the
+        // `Err` lane, and the sentinel never appears. Transport errors
+        // carry the NEGATED errno, matching the C trap convention where
+        // the status lands in the (negative) message type field.
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Err(TrapStatus(-minix_types::EINVAL)));
+        let result = mmap_via(&transport, Endpoint(5), request_for(5));
+        assert_eq!(result, Err(Errno::from_i32(minix_types::EINVAL)));
+        assert_eq!(transport.sendrec_calls.get(), 1);
     }
 
     #[test]
@@ -569,7 +585,7 @@ mod tests {
             VirBytes(4096),
         )
         .unwrap();
-        assert_eq!(result, Some(VirBytes(0x9000)));
+        assert_eq!(result, VirBytes(0x9000));
     }
 
     #[test]
@@ -583,7 +599,7 @@ mod tests {
         transport.reply_sendrec(Ok(reply));
         assert_eq!(
             physical_address_via(&transport, Endpoint(5), VirBytes(0x8000)),
-            Ok(Some(PhysBytes(0x1_0000)))
+            Ok(PhysBytes(0x1_0000))
         );
     }
 
@@ -598,7 +614,7 @@ mod tests {
         transport.reply_sendrec(Ok(reply));
         assert_eq!(
             reference_count_via(&transport, Endpoint(5), VirBytes(0x8000)),
-            Ok(Some(3))
+            Ok(3)
         );
     }
 

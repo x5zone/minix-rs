@@ -203,8 +203,8 @@ pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
 /// Memory mapping.
 ///
 /// Maps memory for the caller itself (the third-party flag stays clear).
-/// A failed call reports `None` instead of the mapped-failed sentinel, so
-/// callers cannot mistake failure for address minus one.
+/// A failed call is an `Err` carrying the errno; C's mapped-failed sentinel
+/// never crosses this interface.
 pub fn mmap(
     addr: *mut u8,
     len: usize,
@@ -227,7 +227,7 @@ pub fn mmap(
     // always passes SELF. Third-party mappings use `vm::mmap_via` directly
     // with an explicit beneficiary.
     let placed = vm::mmap_via(&ipc::DirectTrapTransport, Endpoint(0), request)?;
-    Ok(placed.map(|address| address.0 as *mut u8).unwrap_or(core::ptr::null_mut()))
+    Ok(placed.0 as *mut u8)
 }
 
 /// Error number — single shared ABI type.

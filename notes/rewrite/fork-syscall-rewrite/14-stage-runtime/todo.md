@@ -22,7 +22,7 @@
 | P1 | V1-P1-3 | misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送（§3.2） |
 | P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |
 | P1 | V1-P1-5 | 99 篇（全局概念/布局权威）pending 是多个已登记缺口的共同解锁前置（09 open 路径布局、VM_REMAP 布局对齐都在等它）（§3.2） |
-| P2 | V1-P2-1 | 查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`（§3.2） |
+| P2 | V1-P2-1 | ~~查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`~~（**✅ 已修复** 2026-09-16，Fix #6，见 §3.2 修复记录） |
 | P2 | V1-P2-2 | wire 打包双体系：minix-types 的类型化布局与 minix-sys 的本地裸字节打包并存，`cleared_message`/`write_payload` 在三个文件各复制一份；VM_REMAP 两处状态标注不一致（§3.2，跨层部分挂 edge E-MINTYPES-RUNTIME） |
 | P2 | V1-P2-3 | 注释锚点失实批：9 处（虚构的 `lib/crtso`、过时的 exit 桩注释、反的依赖方向、Redox "linker crate" 误引等）（§3.2） |
 | P3 | V1-P3-1 | 测试浅化批：大块分配测试未验证页边界、panic 阶梯只验长度不验中间序（§3.2） |
@@ -205,9 +205,15 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 
 99 篇（全局概念：endpoint/generation、message 布局、服务号常量）pending，直接阻塞三处已登记工作：09 篇 open 路径布局（64 位 40 字节内联裁决，`09-vfs-syscalls.md:72/:123`）、V1-P2-2 的 wire 单点权威收敛、08 篇"消息体布局集中归档移交第 99 篇"（`08-pm-syscalls.md:84`）。建议与 00 篇（总览，20 行骨架）同批改写；改写时以 §2 矩阵为输入，把各篇"移交 99"的悬空项一次性收口。plan.md §6.1 的"00~13、99 pending（2026-08-16）"状态行同步刷新（01~13 实际已于 2026-09-05 全部收敛，`.review/codex/runtime/STATE.md`）。
 
-#### V1-P2-1（P2）查询族死 `None` 签名：`Option` 永远是 `Some`
+#### V1-P2-1（P2）查询族死 `None` 签名：`Option` 永远是 `Some`——✅ 已修复 2026-09-16（Fix #6）
 
 `os/libs/minix-sys/src/vm.rs` 四个 wrapper 的签名是 `Result<Option<T>, Errno>` 且 docstring 声称失败报 `None`（mmap_via :171、remap_via :305、physical_address_via :335、reference_count_via :356——docstring 原话"A failed call reports … None"），但函数体只有 `Err`（perform_syscall 失败）与 `Ok(Some(...))` 两条路径，`None` 不可达。C 真值（`minix3/minix/lib/libc/sys/mmap.c`）：失败全部走 `_syscall` 返回值非 OK（mmap.c:44-47/:103-107/:150-153/:166-169），哨兵 MAP_FAILED/0/-1 只出现在 C 的返回值约定层，不在载荷里。10 篇文档声称"有无表示消除三个哨兵"（`10-vm-syscalls.md:62`）——方向正确，但收窄没做完。**建议**：签名改 `Result<T, Errno>`，docstring 同步；`mmap_via` 的 `Option` 包裹一并解除。**否决方案**：实现哨兵检测（读回复地址是否 -1）——否决理由：C 的失败协议就在 m_type，载荷哨兵是返回值层的表达，检测载荷反而引入 C 没有的第二失败通道。
+
+**修复记录（Fix #6，2026-09-16）**：按建议落地——
+- **Files**：`os/libs/minix-sys/src/vm.rs` 四 wrapper 签名 `Result<Option<T>, Errno>` → `Result<T, Errno>`（mmap_via/remap_via/physical_address_via/reference_count_via），docstring 的"失败报 None"表述改为"失败走 Err，C 哨兵不过此接口"；零参便捷封装 `minix-sys/src/lib.rs::mmap` 的 `.map().unwrap_or(null)` 解包简化为直接取值（同处文档表述同步）。
+- **测试**：四个断言去除 `Some` 包裹；新增 `test_failed_syscall_propagates_errno`（脚本传输注入协议失败，断言 errno 原样到达调用者、哨兵值不出现）——该测试的编写过程还锁定了 transport 错误携带**负值** errno 的 C 陷阱约定（正值会被 `m_type < 0` 判定误吞为成功，已写入测试注释）。minix-sys 167 → 168 passed。
+- **Docs**：10 篇 §1 概念两处（哨兵模型改为结果类型表述，补"C 的失败判定本在协议返回值"的机制说明）、§3.2 整节改写（"用结果通道消除三个哨兵"，如实记载双层签名弯路与收窄理由——接口上每个变体必须有真实路径可达）、§5 测试表 13 → 14 + 统计刷新（168）。
+- **边界**：minix-types 的 `VmMmapOut`/`VmReply` 等服务端语义层不受影响；失败载荷哨兵检测（否决方案）不再考虑。
 
 #### V1-P2-2（P2，跨层部分挂 edge E-MINTYPES-RUNTIME）wire 打包双体系与 helper 三重复
 
