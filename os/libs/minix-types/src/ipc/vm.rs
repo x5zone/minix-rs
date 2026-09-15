@@ -1634,3 +1634,137 @@ mod tests {
         assert_eq!(VmError::AccessViolation.to_errno(), EACCES);
     }
 }
+
+// ── E-RSWIRE V13c:五消息专属 wire 结构(C ipc.h 锚点;LP64 判例——
+// 指针/尺寸域 4→8、padding 等比收缩、总长保持 56)──
+
+/// getphys 请求载荷(C: `mess_lc_vm_getphys` — ipc.h:928-934)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcVmGetphys {
+    /// 目标进程端点。C: `endpoint_t endpt`。
+    pub endpt: i32,
+    /// 查询地址。C: `void *addr`(LP64 @8)。
+    pub addr: u64,
+    /// 回传地址出参。C: `void *ret_addr`。
+    pub ret_addr: u64,
+    /// LP64:域合计 24,padding 由 44 缩至 32,总 56。
+    pub _padding: [u8; 32],
+}
+
+/// getref 请求载荷(C: `mess_lsys_vm_getref` — ipc.h:1487-1492)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysVmGetref {
+    /// 目标进程端点。C: `endpoint_t endpt`。
+    pub endpt: i32,
+    /// 查询地址。C: `void *addr`。
+    pub addr: u64,
+    /// 引用计数出参。C: `int retc`。
+    pub retc: i32,
+    /// LP64:24 字节域后 padding 32,总 56。
+    pub _padding: [u8; 32],
+}
+
+/// info 请求载荷(C: `mess_lsys_vm_info` — ipc.h:1494-1502)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysVmInfo {
+    /// 查询类别(VMIW_*)。C: `int what`。
+    pub what: i32,
+    /// 目标端点。C: `endpoint_t ep`。
+    pub ep: i32,
+    /// region 枚举条数。C: `int count`。
+    pub count: i32,
+    /// LP64:三个 int 后 4 字节对齐垫。C: padding(隐式)。
+    pub _pad: u32,
+    /// 用户缓冲指针。C: `void *ptr`。
+    pub ptr: u64,
+    /// 枚举游标。C: `vir_bytes next`。
+    pub next: u64,
+    /// LP64:32 字节域后 padding 24,总 56。
+    pub _padding: [u8; 24],
+}
+
+/// rusage 请求载荷(C: `mess_lsys_vm_rusage` — ipc.h:1513-1520)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysVmRusage {
+    /// 目标进程端点。C: `endpoint_t endpt`。
+    pub endpt: i32,
+    /// rusage 缓冲地址。C: `vir_bytes addr`。
+    pub addr: u64,
+    /// 是否含子进程累计。C: `int children`。
+    pub children: i32,
+    /// LP64:24 字节域后 padding 32,总 56。
+    pub _padding: [u8; 32],
+}
+
+/// update 请求载荷(C: `mess_lsys_vm_update` — ipc.h:1527-1534)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysVmUpdate {
+    /// 源实例端点。C: `endpoint_t src`。
+    pub src: i32,
+    /// 目标实例端点。C: `endpoint_t dst`。
+    pub dst: i32,
+    /// 更新标志。C: `int flags`。
+    pub flags: i32,
+    /// 无指针域,LP64 padding 与 i386 同为 44,总 56。
+    pub _padding: [u8; 44],
+}
+
+#[cfg(test)]
+mod vm_wire_struct_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// 布局见证:getphys 56B,endpt@0/addr@8/ret_addr@16(ipc.h:928-934)。
+    #[test]
+    fn test_mess_lc_vm_getphys_layout() {
+        assert_eq!(size_of::<MessLcVmGetphys>(), 56);
+        assert_eq!(offset_of!(MessLcVmGetphys, endpt), 0);
+        assert_eq!(offset_of!(MessLcVmGetphys, addr), 8);
+        assert_eq!(offset_of!(MessLcVmGetphys, ret_addr), 16);
+    }
+
+    /// 布局见证:getref 56B,endpt@0/addr@8/retc@16(ipc.h:1487-1492)。
+    #[test]
+    fn test_mess_lsys_vm_getref_layout() {
+        assert_eq!(size_of::<MessLsysVmGetref>(), 56);
+        assert_eq!(offset_of!(MessLsysVmGetref, endpt), 0);
+        assert_eq!(offset_of!(MessLsysVmGetref, addr), 8);
+        assert_eq!(offset_of!(MessLsysVmGetref, retc), 16);
+    }
+
+    /// 布局见证:info 56B,what@0/ep@4/count@8/ptr@16/next@24
+    /// (ipc.h:1494-1502)。
+    #[test]
+    fn test_mess_lsys_vm_info_layout() {
+        assert_eq!(size_of::<MessLsysVmInfo>(), 56);
+        assert_eq!(offset_of!(MessLsysVmInfo, what), 0);
+        assert_eq!(offset_of!(MessLsysVmInfo, ep), 4);
+        assert_eq!(offset_of!(MessLsysVmInfo, count), 8);
+        assert_eq!(offset_of!(MessLsysVmInfo, ptr), 16);
+        assert_eq!(offset_of!(MessLsysVmInfo, next), 24);
+    }
+
+    /// 布局见证:rusage 56B,endpt@0/addr@8/children@16
+    /// (ipc.h:1513-1520)。
+    #[test]
+    fn test_mess_lsys_vm_rusage_layout() {
+        assert_eq!(size_of::<MessLsysVmRusage>(), 56);
+        assert_eq!(offset_of!(MessLsysVmRusage, endpt), 0);
+        assert_eq!(offset_of!(MessLsysVmRusage, addr), 8);
+        assert_eq!(offset_of!(MessLsysVmRusage, children), 16);
+    }
+
+    /// 布局见证:update 56B,src@0/dst@4/flags@8(ipc.h:1527-1534)。
+    #[test]
+    fn test_mess_lsys_vm_update_layout() {
+        assert_eq!(size_of::<MessLsysVmUpdate>(), 56);
+        assert_eq!(offset_of!(MessLsysVmUpdate, src), 0);
+        assert_eq!(offset_of!(MessLsysVmUpdate, dst), 4);
+        assert_eq!(offset_of!(MessLsysVmUpdate, flags), 8);
+    }
+}

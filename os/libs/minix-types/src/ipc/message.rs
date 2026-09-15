@@ -4,6 +4,10 @@
 
 use crate::types::Endpoint;
 use crate::types::GrantId;
+// E-RSWIRE V13c: the five VM message arms reuse the wire structs defined
+// in [`crate::ipc::vm`] — one definition, two consumers (VM dispatcher and
+// the union layout here).
+use super::vm::{MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRusage, MessLsysVmUpdate};
 
 /// Message payload size (bytes).
 ///
@@ -177,6 +181,16 @@ pub union MessageUnion {
     pub m_vm_vfs_mmap: MessVmVfsMmap,
     /// Physical memory mapping (driver → VM). C: `message.m_lsys_vm_map_phys` — ipc.h:1504
     pub m_lsys_vm_map_phys: MessLsysVmMapPhys,
+    /// getphys query (driver → VM). C: `message.m_lc_vm_getphys` — ipc.h:928.
+    pub m_lc_vm_getphys: MessLcVmGetphys,
+    /// getref query (driver → VM). C: `message.m_lsys_vm_getref` — ipc.h:1487.
+    pub m_lsys_vm_getref: MessLsysVmGetref,
+    /// info query (process → VM). C: `message.m_lsys_vm_info` — ipc.h:1494.
+    pub m_lsys_vm_info: MessLsysVmInfo,
+    /// rusage query (process → VM). C: `message.m_lsys_vm_rusage` — ipc.h:1513.
+    pub m_lsys_vm_rusage: MessLsysVmRusage,
+    /// live-update handoff (RS → VM). C: `message.m_lsys_vm_update` — ipc.h:1527.
+    pub m_lsys_vm_update: MessLsysVmUpdate,
     /// Remap shared region (driver → VM). C: `message.m_lsys_vm_vmremap` — ipc.h:1537
     pub m_lsys_vm_vmremap: MessLsysVmVmremap,
     /// Unmap physical mapping (driver → VM). C: `message.m_lsys_vm_unmap_phys` — ipc.h:1521

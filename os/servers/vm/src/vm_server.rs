@@ -1383,7 +1383,7 @@ impl VmServer {
         // 1. Fetch the rproctab through the RS grant carried by RS_INIT.
         // C (main.c:246): sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, 0,
         // rprocpub, sizeof(rprocpub)) — RS is the granter, not SELF.
-        let rproctab = ipc_call_rs_init(init.rproctab_gid)?;
+        let rproctab = ipc_call_rs_init(self, init.rproctab_gid)?;
 
         // 2. Register ACL for each boot service
         // C: for(i=0; i<NR_BOOT_PROCS; i++) if(rprocpub[i].in_use) map_service(&rprocpub[i]);
@@ -1394,7 +1394,7 @@ impl VmServer {
             let mut proc = table.get_active(slot)
                 .ok_or(VmError::InvalidProcess)?;
             let is_sys = !entry.is_user;
-            let mask = Some(crate::acl::AclMask::from_bits_truncate(entry.call_mask as u64));
+            let mask = Some(crate::acl::AclMask::from_bits_truncate(entry.call_mask));
             // C: acl_set(&vmproc[proc_nr], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))
             proc.set_acl(crate::acl::AclState::acl_set(is_sys, mask));
         }
@@ -1594,26 +1594,42 @@ fn transid_strip(m_type: u32) -> u32 {
 /// C: `minix/com.h:909` — `#define VFS_TRANSACTION_BASE 0xB00`
 const VFS_TRANSACTION_BASE: u32 = 0xB00;
 
-fn ipc_call_rs_init(_rproctab_gid: i32) -> Result<RprocTab, VmError> {
+fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab, VmError> {
     // C contract (ground truth: main.c:137-155 + main.c:237-260 + sef_init.c:193):
     //   1. RS *sends* RS_INIT to VM — main.c:149 gates on
     //      `msg.m_source == RS_PROC_NR`; VM never sends RS_INIT itself.
     //   2. The message carries mess_rs_init.rproctab_gid — a grant RS holds
     //      on its public process table (m_rs_init, ipc.h:1858-1867).
-    //   3. VM's init callback copies the table with
+    //   3. VM's init callback copies the whole table in one safecopy —
     //      sys_safecopyfrom(RS_PROC_NR, gid, 0, rprocpub, sizeof(rprocpub))
-    //      — the granter is RS_PROC_NR, **not SELF** (main.c:246).
+    //      — the granter is RS_PROC_NR, **not SELF** (main.c:244-247), and
+    //      `rprocpub` is `struct rprocpub[NR_BOOT_PROCS]`.
     //   4. map_service(&rprocpub[i]) per in_use entry — the ACL loop in
-    //      `rs_handshake`.
-    //
-    // Step 3's byte decode is **E-RSWIRE** (edge_todo.md): `struct rprocpub`'s
-    // byte ABI cannot be pinned from the minix3 subtree in this repository
-    // (devmajor_t / bitchunk_t / struct rs_pci are referenced but not defined
-    // here), and the layout is an RS↔VM shared contract. Until E-RSWIRE
-    // lands this returns NotImplemented — an honest known-unimplemented —
-    // replacing the previous fabricated `Ok(RprocTab::empty())`, which made
-    // every handshake silently register zero ACLs while looking successful.
-    Err(VmError::NotImplemented)
+    //      `rs_handshake` (main.c:249-255).
+    const ENTRIES: usize = minix_types::NR_BOOT_PROCS;
+    const ENTRY_SIZE: usize = minix_types::ipc::rprocpub_off::SIZE;
+    let mut buf = alloc::vec![0u8; ENTRIES * ENTRY_SIZE];
+    {
+        let mut gateway = server.ctx.gateway.borrow_mut();
+        gateway
+            .sys_safecopyfrom(Endpoint::RS, rproctab_gid, 0, &mut buf)
+            .map_err(|_| VmError::InvalidEndpoint)?;
+    }
+    let mut tab = RprocTab::EMPTY;
+    for (i, entry) in tab.entries.iter_mut().enumerate() {
+        let img = &buf[i * ENTRY_SIZE..(i + 1) * ENTRY_SIZE];
+        let w = minix_types::ipc::decode_rproc_pub(img)
+            .map_err(|_| VmError::InvalidParam)?;
+        let endpoint = Endpoint(w.endpoint);
+        // C rs.h:188 — IS_RPUB_BOOT_USR(rpub) is (endpoint == INIT_PROC_NR).
+        *entry = RprocEntry {
+            in_use: w.in_use != 0,
+            endpoint,
+            call_mask: w.vm_call_mask,
+            is_user: endpoint == Endpoint::INIT,
+        };
+    }
+    Ok(tab)
 }
 
 // C: com.h:60-61 — VFS_PROC_NR = 1, RS_PROC_NR = 2.
@@ -1651,7 +1667,10 @@ fn callnr(m_type: u32) -> Option<usize> {
 struct RprocEntry {
     in_use: bool,
     endpoint: Endpoint,
-    call_mask: u32,
+    /// V13a: full wire width — the rprocpub wire carries 2×u32 chunks
+    /// combined into u64 (rprocpub.rs), and truncating to u32 would drop
+    /// the authorization bits for VM calls +32..+48.
+    call_mask: u64,
     is_user: bool,
 }
 
@@ -1668,18 +1687,16 @@ impl RprocEntry {
     };
 }
 
+/// C: `struct rprocpub rprocpub[NR_BOOT_PROCS]` (glo.h) — the table the
+/// RS_INIT grant carries and `sef_cb_init_fresh` walks (main.c:249-255).
 struct RprocTab {
-    entries: [RprocEntry; 32],
+    entries: [RprocEntry; minix_types::NR_BOOT_PROCS],
 }
 
 impl RprocTab {
-    // V11/T9 step 3: unreachable until E-RSWIRE — see RprocEntry::EMPTY.
-    #[allow(dead_code)]
-    const fn empty() -> Self {
-        Self {
-            entries: [RprocEntry::EMPTY; 32],
-        }
-    }
+    const EMPTY: Self = Self {
+        entries: [RprocEntry::EMPTY; minix_types::NR_BOOT_PROCS],
+    };
 }
 
 impl core::ops::Deref for RprocTab {
@@ -2883,12 +2900,13 @@ mod tests {
 
     /// V11/T23 (V11-P2-5): pins the reply-encode failure invariant that
     /// `run_once`'s Reply arm relies on (vm_server.rs:745-752) — a Reply
-    /// V11/T9 step 3: an RS_INIT from RS carries the rproctab grant; the
-    /// handshake fails closed until E-RSWIRE (the rproctab byte decode is
-    /// pending) — no panic (the previous `.expect`), the message is dropped
-    /// and counted, and nothing is sent to RS. Flip when E-RSWIRE lands.
+    /// E-RSWIRE flip: an RS_INIT from RS now runs the real handshake —
+    /// the rproctab grant is copied through `sys_safecopyfrom`, decoded,
+    /// and in_use services get their ACLs. This test seeds the mock
+    /// gateway with one genuine VFS rprocpub image and asserts the full
+    /// path (C: sef_cb_init_fresh, main.c:237-260).
     #[test]
-    fn test_run_once_rs_init_fails_closed_until_erswire() {
+    fn test_run_once_rs_init_handshake_copies_and_maps_service() {
         with_test_mock_base(|| {
             reset_boot_slots();
 
@@ -2901,6 +2919,41 @@ mod tests {
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
             server.init();
+
+            // Register RS as a live caller (slot 2 ↔ RS_PROC_NR; run_once
+            // drops messages from unregistered senders before the
+            // handshake runs). C: RS is a boot-image process, so its slot
+            // is active by construction (main.c:497-520).
+            let rs_table = VmProcTable::get_global();
+            let rs_slot = UserSlot::new(2);
+            unsafe { rs_table.reset_slot(rs_slot); }
+            let rs_empty = rs_table.get_empty(rs_slot).unwrap();
+            let mut rs_proc = rs_empty.activate(Endpoint::RS);
+            rs_proc.init_page_table().expect("rs pt");
+            rs_proc.init_regions();
+
+            // Recording gateway seeded with a real VFS entry image.
+            let mock = alloc::rc::Rc::new(core::cell::RefCell::new(
+                crate::kernel_gateway::MockGateway::new(),
+            ));
+            server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(SharedMockGateway(alloc::rc::Rc::clone(&mock)))
+                    as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
+            ));
+            // rs_handshake looks services up by endpoint — VFS's slot must
+            // be active before the RS_INIT arrives (C: VFS is a boot-image
+            // process, main.c:497-520).
+            let vfs_slot = UserSlot::new(Endpoint::VFS.0 as usize);
+            unsafe { rs_table.reset_slot(vfs_slot); }
+            let vfs_empty = rs_table.get_empty(vfs_slot).unwrap();
+            let mut vfs_pre = vfs_empty.activate(Endpoint::VFS);
+            vfs_pre.init_page_table().expect("vfs pt");
+            vfs_pre.init_regions();
+
+            let entry_size = minix_types::ipc::rprocpub_off::SIZE;
+            let table_bytes = minix_types::NR_BOOT_PROCS * entry_size;
+            *mock.borrow_mut().safecopy_payload.borrow_mut() =
+                vfs_rprocpub_entry_image();
 
             // RS_INIT from RS_PROC_NR, carrying grant 7 (C main.c:149 shape).
             let mut msg = Message::default();
@@ -2917,25 +2970,138 @@ mod tests {
 
             let step = server.run_once();
             assert_eq!(step, RunStep::Handled);
-            // Fail-closed: no reply to RS (NoReply), drop counted, audit fired.
+
+            // One whole-table safecopy from RS, grant 7, offset 0.
+            let sc = mock.borrow().last_safecopy.get().expect("safecopy fired");
+            assert_eq!(sc, (Endpoint::RS.0, 7, 0, table_bytes));
+
+            // The decoded entry took effect: VFS's slot has an ACL.
+            let table = VmProcTable::get_global();
+            let vfs = table
+                .get_active(
+                    table
+                        .vm_isokendpt(Endpoint::VFS)
+                        .expect("VFS endpoint registered"),
+                )
+                .expect("VFS active");
+            let acl = vfs.acl();
+            assert!(
+                matches!(acl, crate::acl::AclState::System(_)),
+                "map_service equivalent gave VFS a System ACL, got {acl:?}"
+            );
+
+            // The in_use entry's 64-bit call mask survives the decode
+            // (V13a: chunks beyond bit 32 are authorization, not noise).
+            assert_eq!(vfs_rprocpub_call_mask(), 0x0000_0300_0000_00ff);
+
+            reset_boot_slots();
+        });
+    }
+
+    /// E-RSWIRE fail-closed half: when the kernel rejects the safecopy
+    /// (grant not mounted yet), the handshake errors — the message is
+    /// dropped and counted, nothing is sent to RS.
+    #[test]
+    fn test_run_once_rs_init_fails_closed_on_safecopy_error() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Mock with NO payload and a failing safecopy: swap in a
+            // gateway whose safecopy errors — reuse SharedMockGateway over
+            // a Mock with fork_reply poisoned? Simplest: a fresh mock whose
+            // safecopy returns Err via the dedicated failure flag.
+            struct FailingSafecopy;
+            impl crate::kernel_gateway::KernelGateway for FailingSafecopy {
+                fn sys_datacopy_from(
+                    &mut self,
+                    _: Endpoint,
+                    _: u64,
+                    _: &mut [u8],
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO))
+                }
+                fn sys_safecopyfrom(
+                    &mut self,
+                    _granter: Endpoint,
+                    _grant_id: i32,
+                    _offset: u64,
+                    _buf: &mut [u8],
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO))
+                }
+                fn sys_fork(&mut self, _: Endpoint, _: UserSlot)
+                    -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
+                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
+                fn sys_exec(&mut self, _: Endpoint, _: u64, _: u64, _: u64, _: u64)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
+                fn sys_update(&mut self, _: Endpoint, _: Endpoint, _: u32)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
+                fn sys_kill(&mut self, _: Endpoint, _: i32)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
+                fn sys_vmctl_memreq_get(&mut self)
+                    -> Result<Option<crate::kernel_gateway::KernelMemReq>, crate::kernel_gateway::GatewayError>
+                { Ok(None) }
+                fn sys_vmctl_memreq_reply(&mut self, _: Endpoint, _: bool)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Ok(()) }
+                fn sys_vmctl_clear_pagefault(&mut self, _: Endpoint)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Ok(()) }
+                fn diag_write(&mut self, _text: &str)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Ok(()) }
+            }
+            server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(FailingSafecopy)
+                    as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
+            ));
+
+            let mut msg = Message::default();
+            msg.m_source = Endpoint::RS;
+            msg.m_type = RS_INIT as i32;
+            // SAFETY: test constructs the message with m_rs_init active.
+            unsafe {
+                msg.m_u.m_rs_init = minix_types::ipc::MessRsInit {
+                    rproctab_gid: 7,
+                    ..Default::default()
+                };
+            }
+            handle.queue_receive(msg, IpcStatus::default());
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
             assert_eq!(handle.sent().len(), 0, "no reply to RS on failed handshake");
             assert_eq!(server.dropped_messages(), 1, "failed handshake must be counted");
 
-            // Cleanup: init() registered the VM boot instance (global
-            // counters); the sibling tests assert on those counters.
             reset_boot_slots();
         });
     }
 
     #[test]
-    fn test_rproctab_empty_32_slots_all_not_in_use() {
-        // D8: RprocTab is a 32-slot handshake stub — deliberately different
-        // from C's rprocpub[NR_SYS_PROCS]=64 and minix-rs NR_PROCS=256
-        // (doc §3.9); the stub shape only feeds the future handshake decode.
-        let tab = RprocTab::empty();
-        assert_eq!(tab.iter().count(), 32);
-        assert!(tab.iter().all(|e| !e.in_use));
-        assert_eq!(tab.iter().filter(|e| e.endpoint != Endpoint::NONE).count(), 0);
+    fn test_rproctab_shape_matches_c_table() {
+        // C: `struct rprocpub rprocpub[NR_BOOT_PROCS]` (glo.h) — the table
+        // the RS_INIT grant carries. The stub's 32-slot shape is gone; the
+        // real table right-sizes to the same entry count the safecopy
+        // copies (main.c:244-247), and the RprocEntry::EMPTY initializer
+        // yields all-not-in-use rows.
+        let tab = RprocTab::EMPTY;
+        assert_eq!(minix_types::NR_BOOT_PROCS, 17);
+        assert_eq!(tab.entries.len(), minix_types::NR_BOOT_PROCS);
+        assert!(tab.entries.iter().all(|e| !e.in_use));
+        assert_eq!(tab.entries.iter().filter(|e| e.endpoint != Endpoint::NONE).count(), 0);
     }
 
     #[test]
@@ -2945,6 +3111,29 @@ mod tests {
         assert_eq!(e.endpoint, Endpoint::NONE);
         assert_eq!(e.call_mask, 0);
         assert!(!e.is_user);
+    }
+
+    /// Builds one genuine VFS rprocpub wire image (in_use, endpoint=VFS,
+    /// 64-bit call_mask 0x300_0000_00ff) for the handshake test — same
+    /// offsets the decode-witness test in minix-types pins.
+    fn vfs_rprocpub_entry_image() -> alloc::vec::Vec<u8> {
+        use minix_types::ipc::rprocpub_off;
+        let mut img = alloc::vec![0u8; rprocpub_off::SIZE];
+        let put32 = |img: &mut [u8], o: usize, v: u32| {
+            img[o..o + 4].copy_from_slice(&v.to_le_bytes())
+        };
+        img[0..2].copy_from_slice(&1i16.to_le_bytes()); // in_use
+        put32(&mut img, rprocpub_off::ENDPOINT, Endpoint::VFS.0 as u32);
+        img[rprocpub_off::LABEL..rprocpub_off::LABEL + 4].copy_from_slice(b"vfs\0");
+        put32(&mut img, rprocpub_off::VM_CALL_MASK, 0x0000_00ff);
+        put32(&mut img, rprocpub_off::VM_CALL_MASK + 4, 0x0000_0300);
+        img
+    }
+
+    fn vfs_rprocpub_call_mask() -> u64 {
+        let img = vfs_rprocpub_entry_image();
+        let w = minix_types::ipc::decode_rproc_pub(&img).expect("decode");
+        w.vm_call_mask
     }
     // ── V11/T29: SIGKMEM signal seam + do_memory drain loop ──────────
 
@@ -3144,6 +3333,25 @@ mod tests {
     struct SharedMockGateway(alloc::rc::Rc<core::cell::RefCell<crate::kernel_gateway::MockGateway>>);
 
     impl crate::kernel_gateway::KernelGateway for SharedMockGateway {
+        fn sys_datacopy_from(
+            &mut self,
+            src: Endpoint,
+            src_addr: u64,
+            buf: &mut [u8],
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
+            self.0.borrow_mut().sys_datacopy_from(src, src_addr, buf)
+        }
+        fn sys_safecopyfrom(
+            &mut self,
+            granter: Endpoint,
+            grant_id: i32,
+            offset: u64,
+            buf: &mut [u8],
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
+            self.0
+                .borrow_mut()
+                .sys_safecopyfrom(granter, grant_id, offset, buf)
+        }
         fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
             -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
         {

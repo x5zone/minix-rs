@@ -784,18 +784,21 @@ fn call_shm_unmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_get_phys(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // C: utility.c — get_phys uses m1_i1=target, m1_p1=vaddr.
-    let m1 = unsafe { &msg.m_u.m_m1 };
-    let target = Endpoint(m1.m1i1);
-    let addr = VirBytes(m1.m1p1);
+    // C: `mess_lc_vm_getphys` — endpt@0, addr@8, ret_addr@16 (ipc.h:928-934;
+    // the m1 overlay put addr at m1p1@16, off by one slot on LP64).
+    let gp = unsafe { &msg.m_u.m_lc_vm_getphys };
+    let target = Endpoint(gp.endpt);
+    let addr = VirBytes(gp.addr);
+    let _ = gp.ret_addr;
     MessageDispatcher::dispatch_get_phys(ctx, target, addr).into()
 }
 
 fn call_get_refcount(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // C: utility.c — get_ref uses m1_i1=target, m1_p1=vaddr.
-    let m1 = unsafe { &msg.m_u.m_m1 };
-    let target = Endpoint(m1.m1i1);
-    let addr = VirBytes(m1.m1p1);
+    // C: `mess_lsys_vm_getref` — endpt@0, addr@8 (ipc.h:1487-1492).
+    let gr = unsafe { &msg.m_u.m_lsys_vm_getref };
+    let target = Endpoint(gr.endpt);
+    let addr = VirBytes(gr.addr);
+    let _ = gr.retc;
     MessageDispatcher::dispatch_get_refcount(ctx, target, addr).into()
 }
 
@@ -805,11 +808,42 @@ fn call_rs_set_priv(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
     let m2 = unsafe { &msg.m_u.m_m2 };
     let target = Endpoint(m2.m2i1);
     let is_sys_proc = m2.m2i2 != 0;
-    // call_mask is passed via sys_datacopy in C; we can't do that
-    // from M2 alone. RS must pass the mask inline or via shared memory.
-    // For now, pass None (will use default ACL for user, empty for sys).
-    let mask = None;
-    MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, mask, is_sys_proc).into()
+    let buf_ptr = m2.m2l1 as u64;
+
+    // C rs.c:45-58 — a non-null buffer means the caller carries the call
+    // mask: copy `VM_CALL_MASK_SIZE` bitchunks from the caller's buffer
+    // (sys_datacopy) and hand the decoded mask to acl_set. A null buffer
+    // with a system target is rejected ("sys procs don't share").
+    //
+    // VM_CALL_MASK_SIZE = BITMAP_CHUNKS(49) = 2 bitchunks (u32) — the two
+    // chunks combine little-endian into the u64 mask (same chunk order as
+    // the rprocpub vm_call_mask wire).
+    if buf_ptr != 0 {
+        // C com.h:769-770 — NR_VM_CALLS = 49, BITMAP_CHUNKS(49) = 2.
+        const MASK_BYTES: usize = 2 * 4;
+        let mut mask_buf = [0u8; MASK_BYTES];
+        {
+            let mut gateway = ctx.gateway.borrow_mut();
+            // Kernel-side copy failure maps to EINVAL — C's do_rs_set_priv
+            // propagates the sys_datacopy errno directly (`return r`).
+            let copied = gateway.sys_datacopy_from(msg.m_source, buf_ptr, &mut mask_buf);
+            if copied.is_err() {
+                return VmReply::Error(VmError::InvalidParam).into();
+            }
+        }
+        let lo = u32::from_le_bytes(mask_buf[0..4].try_into().unwrap()) as u64;
+        let hi = u32::from_le_bytes(mask_buf[4..8].try_into().unwrap()) as u64;
+        let mask = Some(crate::acl::AclMask::from_bits_truncate(lo | (hi << 32)));
+        MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, mask, is_sys_proc)
+            .into()
+    } else {
+        if is_sys_proc {
+            // C rs.c:55-57 — "sys procs don't share!"
+            return VmReply::Error(VmError::InvalidParam).into();
+        }
+        MessageDispatcher::dispatch_rs_set_priv(ctx, msg.m_source, target, None, is_sys_proc)
+            .into()
+    }
 }
 
 fn call_info(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
@@ -839,11 +873,12 @@ fn call_info(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_rs_update(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // C: rs.c:150 — m_lsys_vm_update maps to M2: m2i1=src, m2i2=dst, m2i3=flags.
-    let m2 = unsafe { &msg.m_u.m_m2 };
-    let src = Endpoint(m2.m2i1);
-    let dst = Endpoint(m2.m2i2);
-    let flags = m2.m2i3 as u32;
+    // C: rs.c:150 — `mess_lsys_vm_update` src@0/dst@4/flags@8
+    // (ipc.h:1527-1534; coincides with the m2 overlay layout).
+    let up = unsafe { &msg.m_u.m_lsys_vm_update };
+    let src = Endpoint(up.src);
+    let dst = Endpoint(up.dst);
+    let flags = up.flags as u32;
     MessageDispatcher::dispatch_rs_update(ctx, src, dst, flags).into()
 }
 
@@ -875,10 +910,12 @@ fn call_vfs_mmap(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_getrusage(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // C: utility.c:426 — m_lsys_vm_rusage: m2i1=target, m2i2=children.
-    let m2 = unsafe { &msg.m_u.m_m2 };
-    let target = Endpoint(m2.m2i1);
-    let children = m2.m2i2 != 0;
+    // C: `mess_lsys_vm_rusage` — endpt@0, addr@8, children@16
+    // (ipc.h:1513-1520; the m2 overlay read children from @4).
+    let ru = unsafe { &msg.m_u.m_lsys_vm_rusage };
+    let target = Endpoint(ru.endpt);
+    let children = ru.children != 0;
+    let _ = ru.addr;
     MessageDispatcher::dispatch_getrusage(ctx, msg.m_source, target, children).into()
 }
 

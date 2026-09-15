@@ -111,6 +111,32 @@ pub(crate) trait KernelGateway {
     /// flags (SYS_UPD_ROLLBACK bit). Reply: OK(0) or negative errno.
     fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
         -> Result<(), GatewayError>;
+    /// Copy `buf.len()` bytes from the granter's grant `grant_id` (at
+    /// `offset` within the grant) into `buf` — VM's own address space, so
+    /// the buffer address rides the wire. C: `sys_safecopyfrom` (libsys)
+    /// → kernel `dispatch_safecopy_from`, `m_lsys_kern_safecopy` wire,
+    /// Ok(0) on success and no reply out-params.
+    ///
+    /// E-RSWIRE: the RS_INIT handshake copies the rproctab through this
+    /// (main.c:244-247, granter = RS_PROC_NR).
+    fn sys_safecopyfrom(
+        &mut self,
+        granter: Endpoint,
+        grant_id: i32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<(), GatewayError>;
+    /// Copy `buf.len()` bytes from `src`'s address space at `src_addr`
+    /// into `buf` (VM's own address space). C: `sys_datacopy` — in this
+    /// rewrite the kernel's single copy arm `SYS_VIRCOPY` carries the
+    /// same endpoint-to-endpoint semantics (flat address spaces; C
+    /// datacopy's segment nuance has no LP64 counterpart).
+    fn sys_datacopy_from(
+        &mut self,
+        src: Endpoint,
+        src_addr: u64,
+        buf: &mut [u8],
+    ) -> Result<(), GatewayError>;
 
     /// Write a diagnostic string through SYS_DIAGCTL code 1 (C:
     /// do_diagctl.c:28-44 — the kernel data_copy's up to DIAGBUFSIZE=128
@@ -292,6 +318,51 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         minix_sys::syscall::sys_update(&self.transport, src.get(), dst.get(), flags as i32)
             .map_err(GatewayError::Kernel)
     }
+
+    fn sys_safecopyfrom(
+        &mut self,
+        granter: Endpoint,
+        grant_id: i32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<(), GatewayError> {
+        // E-RSWIRE: consume the minix-sys wrapper (kernel
+        // dispatch_safecopy_from reads m_lsys_kern_safecopy; Ok(0) reply,
+        // no out-params). The destination is VM's own user address — for a
+        // heap slice, its data-pointer address.
+        minix_sys::syscall::sys_safecopyfrom(
+            &self.transport,
+            granter.0,
+            grant_id,
+            offset,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        )
+        .map_err(GatewayError::Kernel)
+    }
+
+    fn sys_datacopy_from(
+        &mut self,
+        src: Endpoint,
+        src_addr: u64,
+        buf: &mut [u8],
+    ) -> Result<(), GatewayError> {
+        // C sys_datacopy → SYS_VIRCOPY transport (see trait doc); dst is
+        // SELF, replaced by the caller's endpoint inside the kernel.
+        let r = minix_sys::syscall::sys_vircopy(
+            &self.transport,
+            src.0,
+            src_addr,
+            Endpoint::SELF.0,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        );
+        if r < 0 {
+            Err(GatewayError::Kernel(r))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// SYS_VMCTL kernel-call number (kernel/src/syscall.rs:105 `Syscall::Vmctl = 43`).
@@ -324,6 +395,12 @@ pub(crate) struct MockGateway {
     pub update_reply: Cell<i32>,
     /// Last (src, dst, flags) seen by `sys_update` (V11/T13).
     pub last_update: Cell<Option<(Endpoint, Endpoint, u32)>>,
+    /// Last `sys_safecopyfrom` seen: (granter, grant_id, offset, len)
+    /// (E-RSWIRE).
+    pub last_safecopy: Cell<Option<(i32, i32, u64, usize)>>,
+    /// Bytes the next `sys_safecopyfrom` copies into the caller's buffer
+    /// (simulates the kernel writing grant content).
+    pub safecopy_payload: RefCell<alloc::vec::Vec<u8>>,
     /// Pending kernel memory requests for `sys_vmctl_memreq_get` (V11/T29).
     pub pending_memreqs: RefCell<alloc::collections::VecDeque<KernelMemReq>>,
     /// (target, ok) pairs recorded by `sys_vmctl_memreq_reply` (V11/T29).
@@ -352,12 +429,42 @@ impl MockGateway {
             memreq_error: Cell::new(0),
             kills: RefCell::new(alloc::vec::Vec::new()),
             clear_pagefaults: RefCell::new(alloc::vec::Vec::new()),
+            last_safecopy: Cell::new(None),
+            safecopy_payload: RefCell::new(alloc::vec::Vec::new()),
         }
     }
 }
 
 #[cfg(test)]
 impl KernelGateway for MockGateway {
+    fn sys_safecopyfrom(
+        &mut self,
+        granter: Endpoint,
+        grant_id: i32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<(), GatewayError> {
+        self.last_safecopy
+            .set(Some((granter.0, grant_id, offset, buf.len())));
+        let src = self.safecopy_payload.borrow();
+        let n = src.len().min(buf.len());
+        buf[..n].copy_from_slice(&src[..n]);
+        Ok(())
+    }
+
+    fn sys_datacopy_from(
+        &mut self,
+        src: Endpoint,
+        src_addr: u64,
+        buf: &mut [u8],
+    ) -> Result<(), GatewayError> {
+        let _ = (src, src_addr);
+        let payload = self.safecopy_payload.borrow();
+        let n = payload.len().min(buf.len());
+        buf[..n].copy_from_slice(&payload[..n]);
+        Ok(())
+    }
+
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
         -> Result<(Endpoint, Option<u64>), GatewayError>
     {
@@ -426,6 +533,7 @@ impl KernelGateway for MockGateway {
             Ok(())
         }
     }
+
 }
 
 
