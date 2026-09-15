@@ -185,7 +185,7 @@ I-11（BIOS legacy 范围声明非缺口）、I-12（RAII 拒绝维持，B1 承�
 | I-6 | `bill_ptr` 完整联动 + 真实调度主循环 | ⬜ open：调度循环仍为 placeholder（`os/kernel/src/lib.rs` kmain Phase 末段 `loop { spin_loop() }` 一带，V13 复核见 §23）；bill_ptr 调度期联动未接线。安全窗口在 S-7/S-10 后 |
 | I-13 | ~~`InterruptController` trait 拆分~~ ✅ 已闭合（2026-09-15，code-excellence 轮）：拆为 `InterruptRouter`（new/init/mask/unmask/mask_all，全局路由面）+ `PerCpuInterruptUnit`（claim/complete，去死参 irq，per-CPU 语义），IrqManager 约束 IC: Router + PerCpuUnit；GIC/PLIC 的 `claim → IrqVector` 返回值演进记 OQ-13a（随 per-CPU 分发 lane） | ✅ |
 | I-7 / I-9 / I-10 | MF_REPLY_PEND typestate / NonNull / PrivId newtype | ✅ 评估闭合（2026-09-08）：均维持现状——typestate 增益在持久化边界消失；`s_stack_guard` 是地址值无 deref 目标、filter 链本体未实现（虚构抽象不建）；PrivId newtype 需改 81 处构造点且无混用 bug 史例，**跟进顺序：D1 先例建立后批量评估**（若未来评估，从 I-10 重启） |
-| I-2 | `release[]`/`version[]` + MINIX_KERNINFO | 🔀 移交 edge_todo.md `E-KERNINFO`（2026-09-07）：消费方在用户态，共享契约面在 minix-types/minix-sys |
+| I-2 | `release[]`/`version[]` + MINIX_KERNINFO | ✅ 内核臂闭环（2026-09-16，edge E-KERNINFO，commit 207e30644）：minix-types kerninfo wire（88B MinixKerninfo/KuserInfo + OS_* 常量）+ `IpcCall::KernInfo=6` dispatch 臂（未发布→EBADCALL/已发布→二次返回通道 RBX + OK）+ `set_secondary_ipc_return`（C arch_system.c:184-186 等价物）；页映射初始化与用户态消费挂 E1 通电 | ✅ |
 
 ### 7.5 文档条目 ↔ 架构建议关联（保留防重查）
 
