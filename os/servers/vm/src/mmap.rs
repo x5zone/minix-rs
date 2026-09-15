@@ -373,7 +373,8 @@ pub(crate) fn handle_mmap(
             length: aligned_len.0,
             callback: Some(mmap_file_cont),
             state: Some(VfsRequestState::FdLookup { mmap: *request }),
-        };
+        
+            sent: false,};
         // C: vfs_request failure → ENXIO (mmap.c:266-268)
         vfs_queue.request(vreq).map_err(|_| MmapError::FileMapDisabled)?;
         Ok(MmapResult::Suspended)
@@ -466,7 +467,8 @@ fn mmap_file(
             length: 0,
             callback: None,
             state: None,
-        };
+        
+            sent: false,};
         let _ = vfs_queue.request(vreq);
     }
     region.param = VrParam::File {

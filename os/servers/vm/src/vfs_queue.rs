@@ -69,6 +69,11 @@ pub(crate) struct VfsRequest {
     pub(crate) length: u64,
     pub(crate) callback: Option<VfsCallbackFn>,
     pub(crate) state: Option<VfsRequestState>,
+    /// E-VFSWIRE: the active request's VFS_VMCALL has been handed to the
+    /// transport. A failed send clears it again (retry next drain round) —
+    /// pre-E1 the transport always fails, so behavior matches the
+    /// historical "never sent" state with no regression.
+    pub(crate) sent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +139,59 @@ impl VfsRequestQueue {
     fn activate(&mut self) {
         if let Some(req) = self.queued.pop_front() {
             self.active = Some(req);
+        }
+    }
+
+    /// Build the `VFS_VMCALL` wire message for the active request and mark
+    /// it sent (E-VFSWIRE). Returns `None` when nothing is active or the
+    /// active request was already sent — the caller (drain step) sends it
+    /// to VFS and, on transport failure, calls [`Self::mark_send_failed`]
+    /// so the next round retries.
+    ///
+    /// C: `vfs_request` builds the message (vfs.c:83-90) and `activate()`
+    /// sends it once (`vfs.c:51` asynsend3); the reply is keyed by req_id.
+    pub(crate) fn take_pending_vfs_call(&mut self) -> Option<minix_types::Message> {
+        let req = self.active.as_mut()?;
+        if req.sent {
+            return None;
+        }
+        req.sent = true;
+        let opcode = match req.request_type {
+            VfsRequestType::FdLookup => minix_types::VMVFSREQ_FDLOOKUP,
+            VfsRequestType::FdClose => minix_types::VMVFSREQ_FDCLOSE,
+            VfsRequestType::FdIo => minix_types::VMVFSREQ_FDIO,
+        };
+        // C: vfs.c:83-90 — m_type + the six mess_10 fields.
+        let mut msg = minix_types::Message {
+            m_type: minix_types::VFS_VMCALL,
+            ..Default::default()
+        };
+        // Note: writing a union arm needs no `unsafe` when the arm itself
+        // is a plain-old-data struct with no drop/niche — the Message union
+        // here derives Copy, so assignment is a plain byte store. The VFS
+        // decoder reads the same arm symmetrically (E-VFSWIRE).
+        {
+            msg.m_u.m_vm_vfs_call = minix_types::ipc::MessVmVfsCall {
+                offset: req.offset,
+                req: opcode,
+                fd: req.fd,
+                req_id: req.req_id as i32,
+                endpoint: req.caller_endpoint.0,
+                _l1: 0,
+                _l2: 0,
+                length: req.length as u32,
+                _padding: [0; 20],
+            };
+        }
+        Some(msg)
+    }
+
+    /// Clear the sent mark after a transport failure — the request stays
+    /// active and the next drain round retries (design: 无回归, pre-E1
+    /// the send always failed).
+    pub(crate) fn mark_send_failed(&mut self) {
+        if let Some(req) = self.active.as_mut() {
+            req.sent = false;
         }
     }
 
@@ -217,6 +275,7 @@ mod tests {
             length: 4096,
             callback: None,
             state: None,
+            sent: false,
         };
 
         queue.request(req).unwrap();
@@ -237,6 +296,7 @@ mod tests {
             length: 0,
             callback: None,
             state: None,
+            sent: false,
         };
         let req2 = VfsRequest {
             request_type: VfsRequestType::FdIo,
@@ -247,6 +307,7 @@ mod tests {
             length: 4096,
             callback: None,
             state: None,
+            sent: false,
         };
 
         queue.request(req1).unwrap();
@@ -272,6 +333,7 @@ mod tests {
             length: 0,
             callback: None,
             state: None,
+            sent: false,
         };
         let req2 = VfsRequest {
             request_type: VfsRequestType::FdIo,
@@ -282,6 +344,7 @@ mod tests {
             length: 4096,
             callback: None,
             state: None,
+            sent: false,
         };
 
         queue.request(req1).unwrap();

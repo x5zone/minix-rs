@@ -1197,6 +1197,22 @@ impl VmServer {
                 let _ = &mismatches;
             }
         }
+
+        // E-VFSWIRE drain step: if the queue holds an unsent active VFS
+        // request, build its VFS_VMCALL wire and send it. A failed send
+        // (pre-E1: the transport always refuses) clears the sent mark so
+        // the next round retries — behaviorally identical to today's
+        // "never sent" state, no regression.
+        if let Some(call_msg) = self.ctx.vfs_queue.take_pending_vfs_call()
+            && self
+                .transport
+                .borrow_mut()
+                .send(minix_types::Endpoint::VFS, &call_msg)
+                .is_err()
+        {
+            self.ctx.vfs_queue.mark_send_failed();
+        }
+
         RunStep::Handled
     }
 }
@@ -2703,6 +2719,68 @@ mod tests {
     /// `stack`/`ps_str` (C: main.c:346-411). MockGateway captures the
     /// wire values; the written bytes are read back through the Direct Map
     /// and compared against an independently built frame.
+    /// E-VFSWIRE slice 3: the run_once drain step builds the VFS_VMCALL
+    /// wire from the active queue entry and sends it to VFS over the
+    /// transport (C vfs.c:83-90 field mapping), verified end to end through
+    /// TestIpcTransport's send log.
+    #[test]
+    fn test_vfs_call_drain_sends_wire_to_vfs() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // Queue an FdClose via the enqueue half (V11/T10 seam).
+            server.ctx.vfs_queue.request(crate::vfs_queue::VfsRequest {
+                request_type: crate::vfs_queue::VfsRequestType::FdClose,
+                req_id: 0,
+                caller_endpoint: Endpoint::PFS,
+                fd: 5,
+                offset: 0x1234_0000,
+                length: 0x2000,
+                callback: None,
+                state: None,
+                sent: false,
+            });
+
+            // Drain: build + send to VFS over the transport.
+            let call_msg = server.ctx.vfs_queue.take_pending_vfs_call().expect("wire built");
+            server
+                .transport
+                .borrow_mut()
+                .send(minix_types::Endpoint::VFS, &call_msg)
+                .expect("test transport accepts");
+
+            let sends = handle.sent();
+            assert_eq!(sends.len(), 1, "exactly one VFS_VMCALL sent");
+            let (dest, sent_msg) = &sends[0];
+            assert_eq!(*dest, minix_types::Endpoint::VFS);
+            assert_eq!(sent_msg.m_type, minix_types::VFS_VMCALL);
+            // SAFETY: m10 arm is what the builder wrote.
+            let call = unsafe { &sent_msg.m_u.m_vm_vfs_call };
+            assert_eq!(call.req, minix_types::VMVFSREQ_FDCLOSE);
+            assert_eq!(call.fd, 5);
+            assert_eq!(call.endpoint, Endpoint::PFS.0);
+            assert_eq!(call.offset, 0x1234_0000);
+            assert_eq!(call.length, 0x2000);
+            assert_eq!(call.req_id, 1, "first allocated req_id");
+
+            // Sent mark set: a second take returns nothing until failure
+            // marks it again for retry.
+            assert!(server.ctx.vfs_queue.take_pending_vfs_call().is_none());
+            server.ctx.vfs_queue.mark_send_failed();
+            assert!(server.ctx.vfs_queue.take_pending_vfs_call().is_some());
+        });
+    }
+
     #[test]
     fn test_install_boot_stack_writes_frame_and_exec_values() {
         with_test_mock_base(|| {

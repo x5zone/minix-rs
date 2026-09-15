@@ -74,7 +74,8 @@ pub(crate) fn free_region_pages(
                 length: 0,
                 callback: None,
                 state: None,
-            };
+            
+                sent: false,};
             if vfs_queue.request(vreq).is_err() {
                 // Queue full → the close is lost and the fd leaks in VFS.
                 // Fail-closed drop + audit (C panics on SLABALLOC failure;

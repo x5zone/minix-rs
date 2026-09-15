@@ -271,6 +271,43 @@ pub enum VmVfsReq {
     FdIo,
 }
 
+/// `do_vm_call` 的消息级解码产物(C misc.c:387-392:六个 wire 域 +
+/// opcode 分派)。E-VFSWIRE:字节解释来自共享 wire 结构
+/// `minix_types::MessVmVfsCall`,不再各自为政。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmVfsCall {
+    /// 请求类别(FDLOOKUP/FDCLOSE/FDIO)。
+    pub req: VmVfsReq,
+    /// 参照进程内的 fd。C: `int req_fd = VFS_VMCALL_FD`。
+    pub fd: i32,
+    /// VM 侧请求号——应答必须携带同一值。C: `u32_t req_id`。
+    pub req_id: u32,
+    /// 被引用进程端点。C: `endpoint_t ep`。
+    pub endpoint: i32,
+    /// 分页 I/O 偏移。C: `u64_t offset`。
+    pub offset: u64,
+    /// 传输长度。C: `u32_t length`。
+    pub length: u32,
+}
+
+/// 解码一条 `VFS_VMCALL` 消息(`m_type` 不符或 opcode 未知 → `None`,
+/// 调用方按错误应答)。
+pub fn decode_vm_call(msg: &minix_types::Message) -> Option<VmVfsCall> {
+    if msg.m_type != minix_types::VFS_VMCALL {
+        return None;
+    }
+    let m10 = unsafe { &msg.m_u.m_vm_vfs_call };
+    let req = VmVfsReq::from_raw(m10.req as u32)?;
+    Some(VmVfsCall {
+        req,
+        fd: m10.fd,
+        req_id: m10.req_id as u32,
+        endpoint: m10.endpoint,
+        offset: m10.offset,
+        length: m10.length,
+    })
+}
+
 impl VmVfsReq {
     /// Decode the wire request; anything else panics in C (`475`), so it
     /// refuses here (`None`, the caller answers the error).
@@ -304,8 +341,9 @@ pub fn vm_lookup_gate(found: bool) -> Result<(), MiscError> {
     Ok(())
 }
 
-/// `VM_VFS_REPLY` (`com.h:707`): `VM_RQ_BASE 0xC00 + 30`.
-pub const VM_VFS_REPLY: u32 = 0xC1E;
+/// `VM_VFS_REPLY` (`com.h:707`): `VM_RQ_BASE 0xC00 + 30`. E-VFSWIRE 纪律:
+/// 绝对值单点断言在 minix-types(`VM_RQ_BASE + 30`),此处 re-export。
+pub const VM_VFS_REPLY: u32 = minix_types::VM_VFS_REPLY;
 
 /// `svrctl` group (`svrctl.h:23-24`, `_IOW/_IOWR('F', ...)`).
 pub const SVRCTL_GROUP: u8 = b'F';
@@ -985,6 +1023,51 @@ mod tests {
         assert_eq!(VmVfsReq::from_raw(102), Some(VmVfsReq::FdClose));
         assert_eq!(VmVfsReq::from_raw(103), Some(VmVfsReq::FdIo));
         assert_eq!(VmVfsReq::from_raw(0), None);
+    }
+
+    /// E-VFSWIRE: VM 构造(同 minix-types 布局见证的字节)经
+    /// `decode_vm_call` 解出六域——VM 发送半与 VFS 接收半的
+    /// 闭环契约 witness。
+    #[test]
+    fn test_decode_vm_call_round_trip() {
+        let mut msg = minix_types::Message::default();
+        msg.m_type = minix_types::VFS_VMCALL;
+        // SAFETY: test writes the m10 arm the decoder reads.
+        unsafe {
+            msg.m_u.m_vm_vfs_call = minix_types::ipc::MessVmVfsCall {
+                offset: 0x4000,
+                req: minix_types::VMVFSREQ_FDIO,
+                fd: 3,
+                req_id: 9,
+                endpoint: 6,
+                _l1: 0,
+                _l2: 0,
+                length: 8192,
+                _padding: [0; 20],
+            };
+        }
+        let call = decode_vm_call(&msg).expect("vm call decodes");
+        assert_eq!(call.req, VmVfsReq::FdIo);
+        assert_eq!(call.fd, 3);
+        assert_eq!(call.req_id, 9);
+        assert_eq!(call.endpoint, 6);
+        assert_eq!(call.offset, 0x4000);
+        assert_eq!(call.length, 8192);
+
+        // 非 VFS_VMCALL m_type 与未知 opcode 都拒绝。
+        let mut other = msg;
+        other.m_type = 295;
+        assert!(decode_vm_call(&other).is_none());
+        let mut bad_req = msg;
+        // SAFETY: same arm as above.
+        unsafe {
+            bad_req.m_u.m_vm_vfs_call.req = 200;
+        }
+        assert!(decode_vm_call(&bad_req).is_none());
+    }
+
+    #[test]
+    fn test_vm_word_source_and_lookup_gates() {
         assert_eq!(VmVfsReq::from_raw(104), None);
         // Words come from VM only (`402-403`).
         assert!(vm_call_source_ok(true).is_ok());

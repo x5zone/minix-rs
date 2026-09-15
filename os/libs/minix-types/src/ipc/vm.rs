@@ -1768,3 +1768,82 @@ mod vm_wire_struct_tests {
         assert_eq!(offset_of!(MessLsysVmUpdate, flags), 8);
     }
 }
+
+// ── E-VFSWIRE:VFS_VMCALL 家族绝对值(VM → VFS 页请求)──
+
+/// `VFS_VMCALL` 调用号:`VFS_BASE(0x100) + 38` = 294(callnr.h:68/:110)。
+/// VM 向 VFS 发起的页请求(FDLOOKUP/FDCLOSE/FDIO)走此 m_type;
+/// VFS 以 `VM_VFS_REPLY`(0xC1E)应答,便于区分请求与应答
+/// (vfs misc.c:57-60)。
+pub const VFS_VMCALL: i32 = 294;
+
+/// 请求 opcode:借用 fd 到 VM 表(`do_vm_call:414` 分派)。
+/// C: `VMVFSREQ_FDLOOKUP` — com.h:702。
+pub const VMVFSREQ_FDLOOKUP: i32 = 101;
+/// 请求 opcode:关闭借用的 fd。C: `VMVFSREQ_FDCLOSE` — com.h:703。
+pub const VMVFSREQ_FDCLOSE: i32 = 102;
+/// 请求 opcode:寻位 + 分页 I/O 探测。C: `VMVFSREQ_FDIO` — com.h:704。
+pub const VMVFSREQ_FDIO: i32 = 103;
+
+#[cfg(test)]
+mod vfs_call_wire_tests {
+    use super::*;
+    use crate::ipc::message::MessVmVfsCall;
+    use core::mem::{offset_of, size_of};
+
+    /// 绝对值 pin:调用号与 opcode(E-VFSWIRE 纪律——m_type 与字段
+    /// 绝对值必须以 C 源断言;R2-P0-1 基址分叉教训)。
+    #[test]
+    fn test_vfs_call_absolute_values() {
+        assert_eq!(VFS_VMCALL, 0x100 + 38); // callnr.h:68/:110
+        assert_eq!(VFS_VMCALL, 294);
+        assert_eq!(VMVFSREQ_FDLOOKUP, 101); // com.h:702
+        assert_eq!(VMVFSREQ_FDCLOSE, 102); // com.h:703
+        assert_eq!(VMVFSREQ_FDIO, 103); // com.h:704
+        assert_eq!(VM_VFS_REPLY, VM_RQ_BASE + 30); // com.h:707
+        assert_eq!(VM_VFS_REPLY, 0xC1E);
+    }
+
+    /// 布局见证:MessVmVfsCall 56 字节,m10 六域位
+    /// (offset@0/req@8/fd@12/req_id@16/endpoint@20/length@32)。
+    #[test]
+    fn test_mess_vm_vfs_call_layout() {
+        assert_eq!(size_of::<MessVmVfsCall>(), 56);
+        assert_eq!(offset_of!(MessVmVfsCall, offset), 0);
+        assert_eq!(offset_of!(MessVmVfsCall, req), 8);
+        assert_eq!(offset_of!(MessVmVfsCall, fd), 12);
+        assert_eq!(offset_of!(MessVmVfsCall, req_id), 16);
+        assert_eq!(offset_of!(MessVmVfsCall, endpoint), 20);
+        assert_eq!(offset_of!(MessVmVfsCall, length), 32);
+    }
+
+    /// vfs.c:83-90 的字节级复刻:同一构造在 C 与 Rust 产生相同
+    /// payload 字节(req_id 作为唯一例证域,offset 走 u64 槽)。
+    #[test]
+    fn test_vfs_call_wire_matches_c_construction() {
+        let call = MessVmVfsCall {
+            offset: 0x0000_1234_5678_9abc,
+            req: VMVFSREQ_FDIO,
+            fd: 7,
+            req_id: 0x2a,
+            endpoint: 4,
+            _l1: 0,
+            _l2: 0,
+            length: 4096,
+            _padding: [0; 20],
+        };
+        let bytes: [u8; 56] = unsafe {
+            // SAFETY(test): plain value read-back of a repr(C) value.
+            core::mem::transmute(call)
+        };
+        // m10_ull1 little-endian @0.
+        assert_eq!(bytes[0..8], 0x0000_1234_5678_9abcu64.to_le_bytes());
+        // m10_i1..i4 little-endian @8/12/16/20.
+        assert_eq!(bytes[8..12], 103u32.to_le_bytes());
+        assert_eq!(bytes[12..16], 7u32.to_le_bytes());
+        assert_eq!(bytes[16..20], 0x2au32.to_le_bytes());
+        assert_eq!(bytes[20..24], 4u32.to_le_bytes());
+        // m10_l3 @32.
+        assert_eq!(bytes[32..36], 4096u32.to_le_bytes());
+    }
+}

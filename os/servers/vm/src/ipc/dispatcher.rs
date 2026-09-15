@@ -1578,7 +1578,8 @@ mod tests {
                 write: false,
                 caller_endpoint: Endpoint(7),
             }),
-        }).unwrap();
+        
+            sent: false,}).unwrap();
         let active_id = ctx.vfs_queue.active_req_id().unwrap();
 
         let req = VmVfsReplyIn {

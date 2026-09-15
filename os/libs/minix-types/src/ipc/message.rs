@@ -203,6 +203,9 @@ pub union MessageUnion {
     /// VFS call completion payload (VFS → VM). C: `message.m_m10` for
     /// VM_VFS_REPLY — `mess_10` layout (ipc.h:86-92, com.h:708-714).
     pub m_vm_vfs_reply: MessVmVfsReply,
+    /// VFS_VMCALL request (VM → VFS). C: `message.m_m10` for VFS_VMCALL —
+    /// `mess_10` layout (ipc.h:84-92, com.h:694-699).
+    pub m_vm_vfs_call: MessVmVfsCall,
     /// Cache-block request payload (VFS → VM). C: `message.m_m2` for
     /// VM_MAPCACHEPAGE / VM_SETCACHEPAGE / VM_FORGETCACHEPAGE /
     /// VM_CLEARCACHE — `mess_vmmcp` layout (ipc.h:2383-2393).
@@ -2533,6 +2536,47 @@ pub struct MessVmVfsReply {
     pub fd: u32,
     /// File size in pages. C: `VMV_SIZE_PAGES` = `m10_l3` (payload offset 32)
     pub size_pages: u32,
+    /// Padding to 56 bytes (C: union payload size).
+    pub _padding: [u8; 20],
+}
+
+/// VFS call request payload (VM → VFS) for `VFS_VMCALL`.
+///
+/// C: `message.m_m10` — `mess_10` (ipc.h:84-92) with the com.h:694-699
+/// field macros. Six semantic fields ride the mess_10 slots:
+/// `VFS_VMCALL_OFFSET`=`m10_ull1`, `REQ`/`FD`/`REQID`/`ENDPOINT`=
+/// `m10_i1..i4`, `VFS_VMCALL_LENGTH`=`m10_l3`.
+///
+/// Field positions follow the established `MessVmVfsReply` treatment of
+/// the mess_10 family: the C i386 payload has 4-byte longs, so the `l`
+/// slots are kept as 32-bit positions (24/28/32) — `m10_l1`/`m10_l2` are
+/// unused padding here. VM builds this (C `vfs_request`, vfs.c:83-90);
+/// VFS decodes it (`do_vm_call`, misc.c:387-392).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct MessVmVfsCall {
+    /// File offset for the paged I/O. C: `VFS_VMCALL_OFFSET` =
+    /// `m10_ull1` (payload offset 0).
+    pub offset: u64,
+    /// Request opcode: `VMVFSREQ_FDLOOKUP`/`FDCLOSE`/`FDIO` (101/102/103).
+    /// C: `VFS_VMCALL_REQ` = `m10_i1` (payload offset 8).
+    pub req: i32,
+    /// File descriptor in the referenced process. C: `VFS_VMCALL_FD` =
+    /// `m10_i2` (payload offset 12).
+    pub fd: i32,
+    /// Request id — VM keys the reply. C: `VFS_VMCALL_REQID` = `m10_i3`
+    /// (payload offset 16).
+    pub req_id: i32,
+    /// Referenced process endpoint. C: `VFS_VMCALL_ENDPOINT` = `m10_i4`
+    /// (payload offset 20).
+    pub endpoint: i32,
+    /// Unused slot. C: `m10_l1` (payload offset 24).
+    pub _l1: u32,
+    /// Unused slot. C: `m10_l2` (payload offset 28).
+    pub _l2: u32,
+    /// Transfer length. C: `VFS_VMCALL_LENGTH` = `m10_l3`
+    /// (payload offset 32).
+    pub length: u32,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 20],
 }

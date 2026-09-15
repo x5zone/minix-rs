@@ -177,7 +177,8 @@ fn free_process_phys(
                 length: 0,
                 callback: None,
                 state: None,
-            };
+            
+                sent: false,};
             if vfs_queue.request(vreq).is_err() {
                 audit_log!(
                     "[VM VFS] fdclose queue full — fd {} close dropped (fd leak)",
