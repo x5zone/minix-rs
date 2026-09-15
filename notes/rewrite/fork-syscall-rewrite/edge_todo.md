@@ -332,6 +332,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **复核（2026-09-15，现状更新）**：「grep 零命中」已失效——`MiscFlagsBits::FLUSH_TLB` 已定义（proc.rs:181/:206 别名）且被 `vmctl_vminhibit_set` 设置（syscall.rs:2327），但全内核无消费者（dispatch/restore 路径不读该标志；lib.rs:2582-2584 自注 single-CPU parity 省略；vmctl_vminhibit_clear 注释 :2336 自述 "stale TLB fill not yet implemented"）。同根跳过优化本体已迁至 lib.rs:2534-2555（:2550-2552）。剩余工作不变：调度点消费（刷新先于同根比较）+ 设置点对账 + 单测。
 
+> **进度（2026-09-15，✅ 机制半闭环；SMP 拓扑验收仍挂 E5）**：C 机制三件套全数落地——(1) **pick 点判定**（C proc.c:345-347）：scheduler_loop 在 proc_ptr 记录之后、switch_address_space 之前（C 同序，因后者会改写 ptproc）计算 `tlb_must_refresh = picked.needs_tlb_refresh(current_ptproc_nr())`，新 KProcess 方法钉住"旗标置位 **且** 是本 CPU ptproc"的双半判据；(2) **switch_to_user 消费**（C proc.c:458-464）：finish_and_restore step 5 由"CONFIG_SMP-only 省略"改为实装——`consume_flush_tlb_flag` 助手（闭包注入 flush 动词，宿主可测旗标生命周期，proc_cr3 注入同型）在旗标置位且常驻时执行 `TlbArch::flush_all()`（C refresh_tlb 等价物，arch 已有），旗标无条件清除；(3) **设置点**：vmctl_vminhibit_set 本地路径已设旗标（先在），对账完成。**裁决记录**：C 的旗标设置与消费整体 `#if CONFIG_SMP`，C 单核构建根本不设此位；Rust 的 vmctl 设置是无条件的（先在事实），若消费侧继续缺席，旗标将成为只增不清的死位——故消费无条件实装，与 C-SMP 行为一致；对用户代码语义透明（TLB 刷新只改变缓存哪些翻译，不改变翻译的值），不构成外部行为偏差。**余件**：(a) SMP IPI 路径（schedule_vminhibit）的旗标设置完备性 + 真拓扑验证归 E5 SMP 冒烟（"fork 后父子并发写 CoW 页"用例）；(b) C VM 侧四处 `sys_vmctl(SELF, VMCTL_FLUSHTLB)` 的评估——按 02-stage-vm §18.2 V13-P2-1(b) 既定 ARCH 偏差（direct map 下翻译恒定、VM 自刷不需要）不移植，已登记。验证：`cargo test -p minix-kernel --lib` 751 passed（新增 ×4：判定两半 ×3 场景 + 消费生命周期 ×3 场景）；clippy 44=44 零新增；既有 finish_and_restore 三测试穿参 `false` 保持宿主安全。
+
 ---
 
 ## E-REQWIRE REQ_* VFS↔FS 消息契约双侧独立定义（05-stage-vfs R2 轮登记，2026-09-09）

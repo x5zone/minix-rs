@@ -2579,9 +2579,13 @@ fn switch_address_space(
 /// 4. Clear `MF_CONTEXT_SET` (C:451): the context was just materialized
 ///    for dispatch; a kernel entry before the next dispatch must save
 ///    state afresh.
-/// 5. SMP `MF_FLUSH_TLB` refresh (C:458-464) is `CONFIG_SMP`-only —
-///    omitted, single-CPU parity (the switch in `switch_address_space`
-///    already flushed the local TLB).
+/// 5. `MF_FLUSH_TLB` consume (C:458-464): when the pick point found the
+///    process's translations resident on this CPU and flagged stale, flush
+///    the local TLB; the flag clears either way. C gates the flag itself on
+///    `CONFIG_SMP` (do_vmctl.c:134 sets it only there); the Rust build sets
+///    it on the local vminhibit path unconditionally, so the consume runs
+///    unconditionally too — a TLB flush is semantically transparent to user
+///    code (it changes which translations are cached, never their values).
 /// 6. `restart_local_timer()` (C:466) — no-op on auto-reloading clock
 ///    sources (see the helper's doc comment).
 /// 7. Rebuild the trap frame from the process's `cpu_context` and restore.
@@ -2622,16 +2626,40 @@ fn account_kernel_stop(
         .add_cycles(tsc_delta);
 }
 
+/// Consume `MF_FLUSH_TLB` at the switch-to-user boundary.
+///
+/// C: proc.c:459-463 — the flag means "this process's translations may be
+/// stale"; at dispatch it is consumed: when the pick point determined the
+/// translations are resident on this CPU (`must_refresh`), the TLB is
+/// flushed; the flag clears either way (another CPU holding the process as
+/// its ptproc refreshes when it next schedules it). The flush verb is
+/// injected so host tests can exercise the flag lifecycle without touching
+/// the MMU (same pattern as the `proc_cr3` closure injection in
+/// `data_copy_vmcheck`).
+fn consume_flush_tlb_flag(
+    p: &mut crate::proc::KProcess,
+    must_refresh: bool,
+    flush: impl FnOnce(),
+) {
+    if p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::FLUSH_TLB) {
+        if must_refresh {
+            flush();
+        }
+        p.p_misc_flags.clear(crate::proc::MiscFlagsBits::FLUSH_TLB);
+    }
+}
+
 fn finish_and_restore(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
     picked: crate::proc::ProcNr,
+    tlb_must_refresh: bool,
     section: &crate::smp::BklSection<'_>,
 ) -> ! {
     use core::sync::atomic::Ordering;
     use minix_arch::{
         CpuContextArch, CurrentCpuContextArch, CurrentFpuArch,
-        CurrentTrapReturnArch, FpuArch, TrapReturnArch,
+        CurrentTlbArch, CurrentTrapReturnArch, FpuArch, TlbArch, TrapReturnArch,
     };
 
     // C:438 — debug_assert(p->p_cpu_time_left). After the quantum stage
@@ -2686,7 +2714,17 @@ fn finish_and_restore(
         p.p_misc_flags.clear(crate::proc::MiscFlagsBits::CONTEXT_SET);
     }
 
-    // 5. (SMP TLB refresh — CONFIG_SMP-only in C, omitted.)
+    // 5. MF_FLUSH_TLB consume — C:458-464: when the pick point found the
+    // process's translations resident on this CPU and flagged stale, flush
+    // the local TLB; the flag clears either way.
+    if let Some(p) = table.get_mut(picked) {
+        consume_flush_tlb_flag(p, tlb_must_refresh, || {
+            // SAFETY: paging is enabled (kernel code is executing, about to
+            // return to user mode); the flush is CPU-local — C refresh_tlb
+            // (earm cpufunc.h:162-168; i386 write_cr3(read_cr3())).
+            unsafe { CurrentTlbArch::flush_all() };
+        });
+    }
     // 6. restart_local_timer — no-op on auto-reloading sources.
     restart_local_timer();
 
@@ -2846,6 +2884,8 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             .is_none_or(|nr| {
                 !table.get(nr).is_some_and(|p| p.is_runnable())
             });
+        // C: proc.c:306 — `tlb_must_refresh` is schedule()-local.
+        let mut tlb_must_refresh = false;
         if need_pick {
             // not_runnable_pick_new — C: proc.c:321-330.
             if let Some(cur) = current {
@@ -2863,6 +2903,14 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             if let Some(local) = smp.cpu_local_mut(cpu) {
                 local.proc_ptr = Some(picked);
             }
+            // C: proc.c:345-347 — if the picked process carries MF_FLUSH_TLB
+            // and IS this CPU's ptproc, its translations are resident here
+            // and possibly stale: switch_to_user must refresh the TLB even
+            // when the root looks unchanged. Computed BEFORE
+            // switch_address_space, which may retarget ptproc (C's order).
+            tlb_must_refresh = table
+                .get(picked)
+                .is_some_and(|p| p.needs_tlb_refresh(crate::current_ptproc_nr()));
             // C: proc.c:349 — switch_address_space(p).
             switch_address_space(table, picked);
         }
@@ -2887,7 +2935,7 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
         }
 
         // ── Stage 5: finish + restore (never returns) ──
-        finish_and_restore(table, smp, picked, &section);
+        finish_and_restore(table, smp, picked, tlb_must_refresh, &section);
     }
 }
 
@@ -3855,7 +3903,7 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::IntHard;
 
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), &section);
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), false, &section);
     }
 
     #[test]
@@ -3877,7 +3925,7 @@ mod tests {
         // trap_style intentionally left NoEntry.
 
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), &section);
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), false, &section);
     }
 
     #[test]
@@ -3898,7 +3946,58 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().trap_style = TrapStyle::Syscall;
 
         let section = unsafe { crate::smp::BklSection::assume_held() };
-        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), &section);
+        super::finish_and_restore(&mut table, &mut smp, ProcNr(0), false, &section);
+    }
+
+    // ── E-VMTLB（edge_todo.md）：MF_FLUSH_TLB 的 pick 点判定与 switch_to_user 消费 ──
+
+    /// C: proc.c:345-347 — 判定两半缺一不可:旗标置位且被选进程就是本 CPU
+    /// 的 ptproc(翻译常驻)才需要刷新;旗标在但 ptproc 是别的进程,刷新归
+    /// 那个 CPU 的调度点。
+    #[test]
+    fn test_needs_tlb_refresh_requires_flag_and_ptproc() {
+        let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
+        p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
+
+        assert!(p.needs_tlb_refresh(Some(ProcNr(3))), "旗标 + ptproc 匹配 → 刷新");
+        assert!(!p.needs_tlb_refresh(Some(ProcNr(4))), "旗标在但 ptproc 是别的进程 → 本 CPU 不刷");
+        assert!(!p.needs_tlb_refresh(None), "无 ptproc 记录 → 不刷");
+
+        p.p_misc_flags.clear(crate::proc::MiscFlagsBits::FLUSH_TLB);
+        assert!(!p.needs_tlb_refresh(Some(ProcNr(3))), "无旗标 → 不刷");
+    }
+
+    #[test]
+    fn test_consume_flush_tlb_flag_flushes_and_clears() {
+        // C: proc.c:459-463 — 旗标在 + pick 点判定常驻 → 刷新执行,旗标清除。
+        let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
+        p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
+        let mut flushed = false;
+        super::consume_flush_tlb_flag(&mut p, true, || flushed = true);
+        assert!(flushed);
+        assert!(!p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::FLUSH_TLB));
+    }
+
+    #[test]
+    fn test_consume_flush_tlb_flag_clears_without_flush() {
+        // 旗标在但翻译不常驻本 CPU:这里跳过刷新(ptproc CPU 在自己的调度点
+        // 刷),旗标仍然清除——两个 CPU 各消费一次是 C 语义的一部分。
+        let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
+        p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
+        let mut flushed = false;
+        super::consume_flush_tlb_flag(&mut p, false, || flushed = true);
+        assert!(!flushed);
+        assert!(!p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::FLUSH_TLB));
+    }
+
+    #[test]
+    fn test_consume_flush_tlb_flag_noop_when_unset() {
+        // 无旗标:既不刷新也不写旗标(C 的 if 只在 MF_FLUSH_TLB 置位时进入)。
+        let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
+        let mut flushed = false;
+        super::consume_flush_tlb_flag(&mut p, true, || flushed = true);
+        assert!(!flushed);
+        assert!(!p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::FLUSH_TLB));
     }
 
     #[test]

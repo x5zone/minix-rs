@@ -1042,6 +1042,18 @@ impl KProcess {
     pub(crate) fn slot_is_occupied(&self) -> bool {
         !self.p_rts_flags.get().contains(RtsFlagsBits::SLOT_FREE)
     }
+
+    /// Whether this picked process's translations are resident on the
+    /// current CPU **and** flagged stale.
+    ///
+    /// C: proc.c:345-347 — `if (p->p_misc_flags & MF_FLUSH_TLB &&
+    /// get_cpulocal_var(ptproc) == p) tlb_must_refresh = 1`. Both halves
+    /// matter: the flag says "translations may be stale somewhere"; only
+    /// being the CPU's `ptproc` makes them stale *here*, so only that
+    /// combination forces a refresh at the switch-to-user boundary.
+    pub(crate) fn needs_tlb_refresh(&self, current_ptproc: Option<ProcNr>) -> bool {
+        self.p_misc_flags.is_set(MiscFlagsBits::FLUSH_TLB) && current_ptproc == Some(self.p_nr)
+    }
 }
 
 impl Drop for KProcess {
