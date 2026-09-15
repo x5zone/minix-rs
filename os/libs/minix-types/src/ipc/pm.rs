@@ -231,3 +231,99 @@ mod credential_wire_tests {
         assert_eq!(offset_of!(MessLcPmGroups, ptr), 8);
     }
 }
+
+// ── E7 B 批:信号控制调用号与 wire 结构(callnr.h:20-24 + ipc.h)──
+
+/// C: `PM_SIGACTION` — callnr.h:33.
+pub const PM_SIGACTION: i32 = 20;
+/// C: `PM_SIGSUSPEND` — callnr.h:34.
+pub const PM_SIGSUSPEND: i32 = 21;
+/// C: `PM_SIGPENDING` — callnr.h:35.
+pub const PM_SIGPENDING: i32 = 22;
+/// C: `PM_SIGPROCMASK` — callnr.h:36.
+pub const PM_SIGPROCMASK: i32 = 23;
+/// C: `PM_SIGRETURN` — callnr.h:37.
+pub const PM_SIGRETURN: i32 = 24;
+/// C: `PM_KILL` — callnr.h:24(KILL 与 SIGACTION 共用 `mess_lc_pm_sig`)。
+pub const PM_KILL: i32 = 11;
+
+/// SIGACTION/KILL 请求载荷(C: `mess_lc_pm_sig` — ipc.h:528-540)。
+///
+/// 字段族:`pid`(目标进程,0=自身)、`nr`(信号号)、`act`/`oact`
+/// (`struct sigaction` 的用户态指针,signal.c:48-84)、`ret`
+/// (sigreturn 恢复桩,signal.c:84)。LP64 与 i386 同布局(全 4 字节
+/// 字段在前,指针 8 字节对齐自动落在 8/16/24)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmSig {
+    /// 目标进程 pid。C: `pid_t pid`。
+    pub pid: i32,
+    /// 信号号。C: `int nr`。
+    pub nr: i32,
+    /// `struct sigaction *` 用户态指针。C: `vir_bytes act`。
+    pub act: u64,
+    /// 旧 action 出参指针。C: `vir_bytes oact`。
+    pub oact: u64,
+    /// sigreturn 恢复桩。C: `vir_bytes ret`。
+    pub ret: u64,
+    /// Padding to 56 bytes (C: union payload size)。
+    pub _padding: [u8; 24],
+}
+
+/// SIGPROCMASK/SIGSUSPEND 请求载荷(C: `mess_lc_pm_sigset` — ipc.h:543-549)。
+///
+/// `set` 是 C `sigset_t`(sigtypes.h:59-62:`u32 bits[4]`,16 字节)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmSigset {
+    /// SIG_BLOCK/UNBLOCK/SETMASK/INQUIRE。C: `int how`。
+    pub how: i32,
+    /// Padding to offset 8 (LP64 `vir_bytes` 对齐;i386 无此 pad)。
+    pub _pad: [u8; 4],
+    /// 恢复桩指针。C: `vir_bytes ctx`。
+    pub ctx: u64,
+    /// 信号掩码。C: `sigset_t set`(16 字节)。
+    pub set: [u32; 4],
+    /// Padding to 56 bytes (LP64: C i386 的 32 → 24)。
+    pub _padding: [u8; 24],
+}
+
+#[cfg(test)]
+mod sig_wire_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// C 绝对值 pin:B 批信号控制调用号(callnr.h:33-37 + :24)。
+    #[test]
+    fn test_pm_signal_call_numbers_match_c() {
+        assert_eq!(PM_SIGACTION, 20); // callnr.h:33
+        assert_eq!(PM_SIGSUSPEND, 21); // callnr.h:34
+        assert_eq!(PM_SIGPENDING, 22); // callnr.h:35
+        assert_eq!(PM_SIGPROCMASK, 23); // callnr.h:36
+        assert_eq!(PM_SIGRETURN, 24); // callnr.h:37
+        assert_eq!(PM_KILL, 11); // callnr.h:24
+    }
+
+    /// 布局见证:MessLcPmSig 56 字节(mess_lc_pm_sig — ipc.h:528-540),
+    /// 指针域 LP64 落 8/16/24。
+    #[test]
+    fn test_mess_lc_pm_sig_layout() {
+        assert_eq!(size_of::<MessLcPmSig>(), 56);
+        assert_eq!(offset_of!(MessLcPmSig, pid), 0);
+        assert_eq!(offset_of!(MessLcPmSig, nr), 4);
+        assert_eq!(offset_of!(MessLcPmSig, act), 8);
+        assert_eq!(offset_of!(MessLcPmSig, oact), 16);
+        assert_eq!(offset_of!(MessLcPmSig, ret), 24);
+        assert_eq!(offset_of!(MessLcPmSig, _padding), 32);
+    }
+
+    /// 布局见证:MessLcPmSigset 56 字节(how/ctx/set/padding)。
+    #[test]
+    fn test_mess_lc_pm_sigset_layout() {
+        assert_eq!(size_of::<MessLcPmSigset>(), 56);
+        assert_eq!(offset_of!(MessLcPmSigset, how), 0);
+        assert_eq!(offset_of!(MessLcPmSigset, ctx), 8);
+        assert_eq!(offset_of!(MessLcPmSigset, set), 16);
+        assert_eq!(offset_of!(MessLcPmSigset, _padding), 32);
+    }
+}
