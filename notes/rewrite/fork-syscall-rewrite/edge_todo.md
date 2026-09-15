@@ -574,6 +574,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：E1（asynsend3/sendrec wrapper 真实通电）；10-stage-mib/todo.md P1-3（sysctlnode/sysctldesc 布局锚定先行）。纯函数层无硬依赖。
 **解锁**：13-stage-ipc 03 篇接线及其文档失真修正；17-stage-net lwip/uds 注册面；10-stage-mib 12 篇的远程挂载对端；E5(g) 联调。
 
+> **进度（2026-09-15，🔄 纯函数基础层 1/2 闭环）**：sysctl 协议常量地基 + rmib.rs 拷出原语落地——(1) `minix-types::sysctl_abi` 补缺失常量并消与 `types::sysctl` 的双定义（执行中发现该文件已有全家族常量，当场去重——双 glob 歧义即 E-REQWIRE 退役的双真相模式）；(2) `minix-sys::rmib` 新增 `RmibOldp`/`RmibNewp`/`RmibCall`/`RmibNode`（C rmib_oldp/newp/call/rmib_node 形状，rmib.c:24-31 + rmib.h:22-90）+ `rmib_inrange`/`rmib_getoldlen`/`rmib_copyout`（钳制三态：全量/尾部截断/窗口外不动，rmib.c:97-126）/`rmib_copyout_node`（版本戳+SPARSE 剥离+immediate 分派+PRIVATE 可见性门+NODE 特则 csize/clen/NODE_FN，rmib.c:200-260）/`rmib_copyout_desc`（PRIVATE 跳过返回 0，rmib.c:355-364）/`rmib_lookup`——拷出动词闭包注入，wire 语义宿主全测。(3) **余项 2/2（下轮继续，同条目）**：`rmib_call` 下行遍历（rmib.c:678-824）与 `rmib_register`/`rmib_deregister`/`rmib_reregister`（rmib.c:862-994，asynsend3 半）+ `MountTable` 槽扩展（名称+根引用）——遍历与注册簿记一次性对齐 C 560 行遍历为宜。**验证**：minix-sys 149 passed（+5 纯函数测试）；clippy 本体零告警。
+
 > **复核（2026-09-15，前置解除）**：10-stage-mib P1-3 已闭环（minix-types::sysctl_abi：SysctlNode 96B/SysctlDesc 16B/KinfoLwp 128B/KinfoProc2 680B，offset_of 钉死，196 passed）——纯函数层的 sysctlnode 打包锚定已就绪，可立即开工；P1-4（transport 双 trait seam）亦已闭环（126 passed）。本条现状核实：rmib.rs 仍簿记半（无 rmib_register/rmib_process/rmib_call），MountTable 仅 `used: [bool; 16]`；传输半仍挂 E1。
 
 ---
