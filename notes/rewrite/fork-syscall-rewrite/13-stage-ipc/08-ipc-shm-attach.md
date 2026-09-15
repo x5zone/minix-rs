@@ -155,6 +155,7 @@ os/servers/ipc-server/src/shm/
 - `find_by_phys(table, phys: u64) -> Option<usize>`：扫到高水位、跳空槽、物理快照相等即命中。
 - `ShmctlCommand` 枚举：六个变体（删除、改属性、查状态、按槽查状态、概要、聚合），`from_raw(i32) -> Option`。
 - `authorize(cmd, perm, caller) -> Result<(), ShmError>`：状态查询读位、删除改属性身份、信息放行（调 04 决策）。
+- `apply_set(table, index, options, now) -> Result<(), ShmError>`：改属性命令的落账（第 322 行到第 327 行，与 05 篇同款三换一刷），草稿见 04 篇 `SetOptions`。
 
 **引用计数**（`refcount.rs`）：
 
@@ -183,6 +184,7 @@ os/servers/ipc-server/src/shm/
 | `find_by_phys_matches` | `attach.rs` 测试模块 | 物理认亲命中与跳空槽（第 221 行到第 235 行） |
 | `detach_missing_is_ok` | `attach.rs` 测试模块（服务层语义注记） | 找不到回成功（第 236 行到第 241 行） |
 | `shmctl_commands_roundtrip` | `attach.rs` 测试模块 | 六个命令双向转换与未知拒绝（第 283 行/第 367 行） |
+| `apply_set_keeps_alloc_bit` | `attach.rs` 测试模块 | 改属性落账：属主换、`SHM_ALLOC` 活、草稿噪声位丢弃（第 322 行到第 327 行，IPC-P1-3） |
 | `sweep_destroys_at_zero` | `refcount.rs` 测试模块 | 零挂接加标记则销毁（第 189 行到第 196 行） |
 | `sweep_skips_unknown` | `refcount.rs` 测试模块 | 问不到跳过不销毁（第 183 行到第 186 行） |
 | `sweep_keeps_attached` | `refcount.rs` 测试模块 | 有挂接不销毁只记数（第 187 行） |

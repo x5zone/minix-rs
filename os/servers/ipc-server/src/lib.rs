@@ -31,7 +31,9 @@ pub use mib_tree::{
     InfoRoute, KERN_IPC_TABLE, KERN_SYSVIPC, KERN_SYSVIPC_SEM, KERN_SYSVIPC_SEM_INFO,
     KERN_SYSVIPC_SHM, KERN_SYSVIPC_SHM_INFO, KernIpcChild, MOUNT_PATH, route_info_query,
 };
-pub use perms::{AccessVerdict, Identity, IpcPerm, IpcPermSysctl, check_perm, is_owner_or_root};
+pub use perms::{
+    AccessVerdict, Identity, IpcPerm, IpcPermSysctl, SetOptions, check_perm, is_owner_or_root,
+};
 pub use server::{
     CallHandler, EventLoopTransport, IpcServer, IpcStatus, StubHandler, TransportError,
 };

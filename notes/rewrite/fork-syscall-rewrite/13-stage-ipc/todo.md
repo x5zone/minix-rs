@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 4 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2），余 16 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 5 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3），余 15 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -22,7 +22,7 @@
 |---|---|---|
 | P1 | IPC-P1-1 | 服务层组装根缺失：`CallHandler` 只有 `StubHandler`，七个调用无真入口；薄序列器方案 + 服务层必须回答的边界契约清单 |
 | P1 | IPC-P1-2 | do_semop 检查顺序分歧：C（sem.c:693 注释、:704/:709/:731）与 doc 06 都规定权限先于越界/撤销，`validate_ops`/`authorize_ops` 的拆分把顺序弄反（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
-| P1 | IPC-P1-3 | IPC_SET 应用逻辑缺失（sem+shm 两处）：C 改 uid/gid/权限位+ctime（sem.c:550-559、shm.c:314-328），Rust 只有授权检查没有落账函数 |
+| P1 | IPC-P1-3 | IPC_SET 应用逻辑缺失（sem+shm 两处）：C 改 uid/gid/权限位+ctime（sem.c:550-559、shm.c:314-328），Rust 只有授权检查没有落账函数（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-4 | shm 的 IPC_RMID 标记逻辑缺失：C 置 SHM_DEST 并立即尝试销毁（shm.c:334-336），Rust 的 sweep 只读标记不置标记 |
 | P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |
 | P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91）（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
@@ -81,7 +81,7 @@
 
 **修复记录（2026-09-16，方案 A 落地）**：`validate_ops` 签名改为 `(ops, set_count, perm, caller)`（doc 06 §4:169 的处方原形），内部按 C 序三段扫描——掩码（sem.c:697-706）→ check_perm（:704，sem.c:690-693 注释的缘由写进函数文档）→ 越界（:709-717）→ 撤销（:729-739）；`authorize_ops` 与 `need_mask` 删除（授权已并入 validate，零外部调用者）。测试：原两个 validate 测试补权限参数，新增 `validate_perm_precedes_num_and_undo`（无权限+越界 → EACCES、无权限+SEM_UNDO → EACCES、root 过门后后置检查仍生效）。doc 06 §4.2 函数清单与 §5.1 测试表同步。验证：`cargo test -p minix-ipc-server` = **84 passed / 0 failed**（83+1）。
 
-### IPC-P1-3 IPC_SET 的应用逻辑缺失（sem 与 shm 两处）
+### IPC-P1-3 IPC_SET 的应用逻辑缺失（sem 与 shm 两处）【✅ 已完成 2026-09-16】
 
 **是什么**：semctl(IPC_SET) 在 C 里做四件事：所有者身份检查（sem.c:523-529）→ 拷回描述符草稿（:551-553）→ 改 uid/gid、权限位按 `~ACCESSPERMS` 掩膜替换、刷新 ctime（:554-559）。shmctl(IPC_SET) 同构（shm.c:314-328）。Rust 侧：授权检查有（`SemctlAccess::CheckOwner`，`perms.rs:204`；`ctl.rs:126-131` 执行），命令解码有（`ctl.rs:68`、`attach.rs:96`），但**改字段的函数不存在**——`ctl.rs` 只有 `write_value`/`write_all` 两个设值函数，`attach.rs` 连设值函数都没有。grep 全 crate 确认生产代码没有任何地方给 `perm.uid`/`perm.gid`/`perm.mode` 做过 IPC_SET 式赋值（唯一例外是 sweep 测试里手工塞 `SHM_DEST` 标记，`refcount.rs:139`/`:228`）。doc 05:119 与 doc 08:101 都已写明这四步——文档对，代码缺。
 
@@ -93,6 +93,8 @@
 - **方案 B（否决）：服务层直接改 `set.perm` 字段**。字段公开可改（`pub perm`），技术上可行，但同样的掩膜替换要写两遍（sem/shm），且绕开了"效果值返回"以外的状态变更都进判定层的惯例。
 
 **建议**：方案 A；与 IPC-P1-4 同批实现（同是 shmctl/semctl 的变更命令），测试各补"IPC_SET 后 cuid 不变、SEM_ALLOC 保留、ctime 刷新"。
+
+**修复记录（2026-09-16，方案 A 落地，草稿类型上移共享）**：新增 `perms::SetOptions{uid, gid, mode}`（sem/shm 权限面同构，共享一个草稿类型胜过两个一模一样的本地类型；字节拷贝留边界的注记写入类型文档，wire 布局仍属 E-IPCWIRE 第 8 项）；`ctl.rs::apply_set` 与 `attach.rs::apply_set` 各自落账——uid/gid outright 替换、mode 在 `ACCESSPERMS` 掩膜下替换（`SEM_ALLOC`/`SHM_DEST` 存活）、ctime 刷新、创建者字段不碰（C sem.c:554-559、shm.c:322-327）。测试 `apply_set_keeps_status_bits` / `apply_set_keeps_alloc_bit` 各验四断言（属主换、创建者留、状态位活、草稿噪声位 0o1000 丢弃）。lib.rs 再导出 `SetOptions`；doc 05 §4.2/§5.1、doc 08 §4.2/§5.1 同步。验证：`cargo test -p minix-ipc-server` = **86 passed / 0 failed**（84+2）。
 
 ### IPC-P1-4 shm 的 IPC_RMID 标记逻辑缺失
 

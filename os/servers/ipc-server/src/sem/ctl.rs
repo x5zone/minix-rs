@@ -10,14 +10,15 @@
 use alloc::vec::Vec;
 
 use minix_types::{
-    GETALL, GETNCNT, GETPID, GETVAL, GETZCNT, IPC_INFO, IPC_RMID, IPC_SET, IPC_STAT, IPC_W,
-    SEM_INFO, SEM_STAT, SEMMNI, SEMMSL, SEMVMX, SETALL, SETVAL,
+    ACCESSPERMS, GETALL, GETNCNT, GETPID, GETVAL, GETZCNT, IPC_INFO, IPC_RMID, IPC_SET, IPC_STAT,
+    IPC_W, SEM_INFO, SEM_STAT, SEMMNI, SEMMSL, SEMVMX, SETALL, SETVAL,
 };
 
 use super::SemError;
 use super::table::{SemaphoreTable, encode_id};
 use crate::perms::{
-    Identity, IpcPermSysctl, SemctlAccess, check_perm, is_owner_or_root, resolve_semctl_mask,
+    Identity, IpcPermSysctl, SemctlAccess, SetOptions, check_perm, is_owner_or_root,
+    resolve_semctl_mask,
 };
 
 // ============================================================================
@@ -230,6 +231,28 @@ pub fn write_value(
     }
     let set = table.get_mut(index).expect("checked live above");
     set.sems[num as usize].value = value as u16;
+    set.change_time = now;
+    Ok(())
+}
+
+/// Apply `IPC_SET`: replace owner and permission bits, stamp the change time.
+///
+/// C: sem.c:554-559 — uid and gid are replaced outright; the mode is
+/// masked (`&= ~ACCESSPERMS`, then `|= draft & ACCESSPERMS`) so status
+/// bits outside the permission lanes (`SEM_ALLOC`) survive untouched; and
+/// `sem_ctime` is refreshed. The creator fields (`cuid`/`cgid`) are NOT
+/// touched.
+pub fn apply_set(
+    table: &mut SemaphoreTable,
+    index: usize,
+    options: SetOptions,
+    now: u64,
+) -> Result<(), SemError> {
+    let set = table.get_mut(index).ok_or(SemError::Invalid)?;
+    set.perm.uid = options.uid;
+    set.perm.gid = options.gid;
+    set.perm.mode &= !ACCESSPERMS;
+    set.perm.mode |= options.mode & ACCESSPERMS;
     set.change_time = now;
     Ok(())
 }
@@ -474,6 +497,30 @@ mod tests {
             authorize(&set.perm, caller(), SemctlCommand::Remove),
             Ok(())
         );
+    }
+
+    #[test]
+    fn apply_set_keeps_status_bits() {
+        // C: sem.c:554-559 — owner replaced, permission lanes swapped under
+        // the status bits, ctime refreshed, cuid untouched (IPC-P1-3). The
+        // draft's non-permission bit (0o1000, IPC_CREAT) must be dropped.
+        let mut table = one_set();
+        let cuid = table.get(0).unwrap().perm.creator_uid;
+        let options = SetOptions {
+            uid: 300,
+            gid: 400,
+            mode: 0o1000 | 0o440,
+        };
+        apply_set(&mut table, 0, options, 444).unwrap();
+        let set = table.get(0).unwrap();
+        assert_eq!((set.perm.uid, set.perm.gid), (300, 400));
+        assert_eq!(set.perm.creator_uid, cuid, "creator fields untouched");
+        assert_eq!(
+            set.perm.mode,
+            minix_types::SEM_ALLOC | 0o440,
+            "SEM_ALLOC survives, lanes swapped, draft noise dropped"
+        );
+        assert_eq!(set.change_time, 444);
     }
 
     #[test]

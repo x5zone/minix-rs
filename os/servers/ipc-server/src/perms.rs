@@ -97,6 +97,24 @@ impl IpcPermSysctl {
     }
 }
 
+/// The three fields an `IPC_SET` may change: the perm half of the
+/// caller's descriptor draft.
+///
+/// C copies in a whole `semid_ds`/`shmid_ds` and keeps exactly these
+/// (sem.c:554-559, shm.c:322-327). The byte copy stays at the boundary
+/// (the wire layout lands with E-IPCWIRE); this struct is what survives
+/// it, shared by the semaphore and shared-memory apply paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetOptions {
+    /// New owning user. C: the draft's `uid`.
+    pub uid: u32,
+    /// New owning group. C: the draft's `gid`.
+    pub gid: u32,
+    /// New permission bits (values outside the nine lanes are dropped by
+    /// the apply functions' `ACCESSPERMS` mask).
+    pub mode: u32,
+}
+
 // ============================================================================
 // Judgement
 // ============================================================================

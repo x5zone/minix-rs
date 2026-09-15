@@ -185,6 +185,7 @@ os/servers/ipc-server/src/sem/
 **控制**（`ctl.rs`）：
 
 - `SemctlCommand` 枚举：十三个变体，`from_raw(u32) -> Option`。
+- `apply_set(table, index, options, now) -> Result<(), SemError>`：改属性命令的落账（第 554 行到第 559 行）——属主 outright 替换、权限九位在 `ACCESSPERMS` 掩膜下替换（`SEM_ALLOC` 状态位安然无恙）、改属性时间刷新、创建者字段不碰；草稿三字段（属主、属组、权限位）见 04 篇的 `SetOptions`，字节拷贝留在边界。
 - `apply(table, cmd, args, identity) -> Result<CtlReply, SemError>`：2.5 节的找集合、查权限（调 04 决策）、执行三段。
 - `fill_info(cmd) -> SemInfo`：2.6 节的概要与明细差异。
 - `assemble_mib_info(table) -> (SemInfo, Vec<SemIdView>)`：2.6 节的恒定十项数组。
@@ -214,6 +215,7 @@ os/servers/ipc-server/src/sem/
 | `subscribe_effect_edges` | `table.rs` 测试模块 | 首集订阅、末集退订（第 148 行/第 280 行） |
 | `command_roundtrip` | `ctl.rs` 测试模块 | 十三个命令双向转换与未知拒绝（第 491 行/第 643 行） |
 | `ctl_get_set_roundtrip` | `ctl.rs` 测试模块 | 取值设值往返与超范围拒绝（第 581 行到第 642 行） |
+| `apply_set_keeps_status_bits` | `ctl.rs` 测试模块 | 改属性落账：属主换、创建者留、状态位活、草稿噪声位丢弃（第 554 行到第 559 行，IPC-P1-3） |
 | `ctl_rmid_removes` | `ctl.rs` 测试模块 | 删除命令走身份检查（第 524 行到第 529 行；删除本体见表模块） |
 | `ctl_info_differs` | `ctl.rs` 测试模块 | 概要与明细差异（第 445 行到第 462 行） |
 | `mib_array_always_ten` | `ctl.rs` 测试模块 | 信息数组恒定十项（第 824 行到第 834 行） |

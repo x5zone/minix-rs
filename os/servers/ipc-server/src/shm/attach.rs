@@ -12,12 +12,15 @@
 use alloc::vec::Vec;
 
 use minix_types::{
-    IPC_INFO, IPC_R, IPC_RMID, IPC_SET, IPC_STAT, SHM_INFO, SHM_RND, SHM_STAT, SHMMNI,
+    ACCESSPERMS, IPC_INFO, IPC_R, IPC_RMID, IPC_SET, IPC_STAT, SHM_INFO, SHM_RND, SHM_STAT,
+    SHMMNI,
 };
 
 use super::ShmError;
 use super::segment::ShmTable;
-use crate::perms::{Identity, IpcPermSysctl, ShmctlAccess, check_perm, is_owner_or_root};
+use crate::perms::{
+    Identity, IpcPermSysctl, SetOptions, ShmctlAccess, check_perm, is_owner_or_root,
+};
 
 // ============================================================================
 // Address alignment
@@ -299,6 +302,26 @@ pub fn highest_slot_reply(table: &ShmTable) -> i32 {
     }
 }
 
+/// Apply `IPC_SET`: replace owner and permission bits, stamp the change time.
+///
+/// C: shm.c:322-327 — the same three-field replacement as the semaphore
+/// twin (uid/gid outright, permission lanes under the `ACCESSPERMS` mask
+/// so `SHM_ALLOC`/`SHM_DEST` survive), with `shm_ctime` refreshed.
+pub fn apply_set(
+    table: &mut ShmTable,
+    index: usize,
+    options: SetOptions,
+    now: u64,
+) -> Result<(), ShmError> {
+    let seg = table.get_mut(index).ok_or(ShmError::Invalid)?;
+    seg.perm.uid = options.uid;
+    seg.perm.gid = options.gid;
+    seg.perm.mode &= !ACCESSPERMS;
+    seg.perm.mode |= options.mode & ACCESSPERMS;
+    seg.change_time = now;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +421,28 @@ mod tests {
             Err(ShmError::Ownership)
         );
         assert_eq!(authorize(&seg.perm, stranger, ShmctlCommand::Info), Ok(()));
+    }
+
+    #[test]
+    fn apply_set_keeps_alloc_bit() {
+        // C: shm.c:322-327 — owner replaced, permission lanes swapped under
+        // the status bits, ctime refreshed (IPC-P1-3). The draft's
+        // non-permission bit (0o1000) must be dropped.
+        let mut table = one_segment();
+        let options = SetOptions {
+            uid: 300,
+            gid: 400,
+            mode: 0o1000 | 0o440,
+        };
+        apply_set(&mut table, 0, options, 555).unwrap();
+        let seg = table.get(0).unwrap();
+        assert_eq!((seg.perm.uid, seg.perm.gid), (300, 400));
+        assert_eq!(
+            seg.perm.mode,
+            minix_types::SHM_ALLOC as u32 | 0o440,
+            "SHM_ALLOC survives, lanes swapped, draft noise dropped"
+        );
+        assert_eq!(seg.change_time, 555);
     }
 
     #[test]
