@@ -328,7 +328,7 @@ pub enum DriverIncoming {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/libs/minix-sys/src/inputdriver.rs` 的测试模块。运行方法：`cargo test -p minix-sys`（全 crate 通过，当前 22 个）。
+> 测试代码在 `os/libs/minix-sys/src/inputdriver.rs` 的测试模块。运行方法：`cargo test -p minix-sys`（全 crate 通过，当前 149 个，2026-09-15 实测）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -341,8 +341,8 @@ pub enum DriverIncoming {
 
 ### 5.1 测试统计（截至 2026-09-05）
 
-- `cargo test -p minix-sys`：**22 个通过，0 个失败**。
-- 其中与本篇直接相关的 6 个（上表）；其余 16 个为既有测试（回归无破坏）。
+- `cargo test -p minix-sys`：**149 个通过，0 个失败**（2026-09-15）。
+- 其中与本篇直接相关的 6 个（上表）；其余 143 个为其他模块测试（回归无破坏）。
 - 完整测试清单：`rg "#\[test\]" os/libs/minix-sys/src/inputdriver.rs`
 
 ---

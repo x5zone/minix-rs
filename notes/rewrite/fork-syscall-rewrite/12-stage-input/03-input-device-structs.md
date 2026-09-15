@@ -269,7 +269,7 @@ pub fn fresh() -> Self  // 对应 input_init 第 652-662 行的清表循环
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/structs.rs` 的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 28 个测试，全部通过）。
+> 测试代码在 `os/servers/input/src/structs.rs` 的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 86 个测试，全部通过）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -282,8 +282,8 @@ pub fn fresh() -> Self  // 对应 input_init 第 652-662 行的清表循环
 
 ### 5.1 测试统计（截至 2026-09-04）
 
-- `cargo test -p minix-input`：**29 个通过，0 个失败**。
-- 其中与本篇直接相关的 6 个（上表）；其余分属第 01 篇（5 个）、第 02 篇（8 个）、第 04 篇（8 个）与错误码模块（2 个）。
+- `cargo test -p minix-input`：**86 个通过，0 个失败**（2026-09-15）。
+- 其中与本篇直接相关的 8 个（结构 6 个加错误码映射 2 个，`error.rs` 归本篇 frontmatter）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（14 个：框架 8 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/`
 
 ---

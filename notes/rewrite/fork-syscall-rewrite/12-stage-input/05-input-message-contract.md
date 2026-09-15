@@ -349,12 +349,13 @@ pub const fn needs_no_reply(message_type: i32) -> bool { ... }  // com.h:886 的
 | `test_setleds_roundtrip` | 置灯往返，他类型不误解 | input.c:212-215 |
 | `test_event_reports_roundtrip` | 上报与转交往返互不串 | ipc.h 载荷形状 |
 | `test_tty_up_carries_no_payload` | 宣告只有类型号 | input.c:672-677 |
+| `test_driver_key_prefix_matches_both_sides` | 发布键前缀与第 12 篇客户端逐字一致 | inputdriver.c:32（drv.inp. 前缀对称） |
 | `test_input_wire_layouts`（message.rs） | 四载荷 56 字节，字段顺序 | ipc.h `_ASSERT_MSG_SIZE` |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
-- `cargo test -p minix-types`：**152 个通过，0 个失败**。
-- 其中与本篇直接相关的 11 个（上表：`input.rs` 10 个 + `message.rs` 1 个）；其余 141 个为既有测试（回归无破坏）。
+- `cargo test -p minix-types`：**220 个通过，0 个失败**（2026-09-15）。
+- 其中与本篇直接相关的 11 个（上表：`input.rs` 10 个 + `message.rs` 1 个；另有 2026-09-15 迁入的 `input_event.rs`/`key_codes.rs` 8 个，归第 04 篇）；其余 201 个为既有测试（回归无破坏）。
 - 完整测试清单：`rg "#\[test\]" os/libs/minix-types/src/ipc/input.rs os/libs/minix-types/src/ipc/message.rs`
 
 ---
