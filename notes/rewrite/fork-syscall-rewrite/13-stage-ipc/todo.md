@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 13 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 12 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -29,7 +29,7 @@
 | P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界 |
 | P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
-| P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数 |
+| P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数（**✅ 已完成** 2026-09-16，见 §2 修复记录；ShmTable Box 约定随 P1-1） |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试 |
 | T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试；IPC-T-3 `tests/` 集成目录被注释声称但不存在；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
 | D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时 |
@@ -184,7 +184,7 @@
 
 **修复记录（2026-09-16，方案 A 落地）**：删除 11 处零使用常量定义（DENIED/SUPPRESSED/AGAIN/SUPPRESSED_WAKE/WRITE_MASK/READ_MASK/WRITE_BIT 两处/READ_BIT/CONTROL_BIT/READ_WRITE）及同族死常量 SIGNAL_BIT（events.rs，登记时未枚举、同类别一并删）；删恒真 `needs_cancel()` 与 `ack_type()`（回执统一走 `dispatch::proc_event_reply_type`，冗余测试 `ack_is_reply_type` 一并删除——其断言已被 dispatch 的 `should_reply_suspend_suppresses` 覆盖）；`write_all`/`write_value` 返回 `Result<bool>` → `Result<()>`，"成功即需重试"写进函数文档。顺带清理 6 个文件的未用导入（EAGAIN/EACCES/NO_REPLY/IPC_M/IPC_W/PROC_EVENT_REPLY/PROC_EVENT_SIGNAL）。文档同步：doc 09 D4 决策行改指 dispatch、§4.1 模块注记更新、§4.2 删两函数并新增"为何删"段落（防补回）。验证：`cargo test -p minix-ipc-server` = **82 passed / 0 failed**（83−1，删冗余测试）；clippy 本 crate 零告警（依赖 minix-types 余 1 条既有告警，与本条无关）；死代码 grep 零残留。
 
-### IPC-P3-1 小项集合（不阻塞接线，顺手轮处理）
+### IPC-P3-1 小项集合（不阻塞接线，顺手轮处理）【✅ 已完成 2026-09-16】
 
 四项，各两行以内：
 
@@ -192,6 +192,8 @@
 2. **`ShmTable::new()` 的 90KB 值拷贝**（`segment.rs:110-123`）：`[ShmSlot; 1024]` 内联在结构体里，`new()` 按值返回要走栈/拷贝；服务层应 `Box::new(ShmTable::new())` 持有（C 的 `shm_list` 是静态全局，等价物是堆上长期驻留而非栈上临时）。放服务层接线约定里，不必改表本身。
 3. **`migrate_block` 的两次克隆**（`waiter.rs:148-156`）：为了绕借用先 `clone()` 整个 waiter 再改计数。`Waiter` 含 `Vec<SemOp>`，克隆是堆分配；可以只提取 `(num, op)` 两个标量再改。频率低（每次重试的卡点迁移），记为净化项不阻塞。
 4. **`classify` 的 is_notify 冗余参数**（`server.rs:273`）：调用点传字面 `false`（通知在 :269-271 已提前返回），参数只为纯函数测试存在。`server.rs:274-279` 的注释已解释，属已知取舍——若 IPC-P2-2 方案 A 落地，顺手把该分支的"Unreachable"注释更新为指向新的枚举臂。
+
+**修复记录（2026-09-16）**：第 1 项——`IpcServer.transport` 去 Box（`RefCell<T>` 直持有，`new()` 不再堆分配；生产类型 DirectTrapTransport 与测试类型皆小，Box 只添间接）；第 3 项——`migrate_block` 去两次整 waiter 克隆：`bump_count` 改收 `SemOp`（Copy 小值），park/complete_slot/migrate_block 三个调用点同步，迁移处补 `debug_assert_eq!(waiter.blocked_on, from)` 钉住前置；第 4 项——核实 `Incoming::Notify` 分支注释在 IPC-P2-2 后仍准确（该分支与枚举未因改名变化），无需改动。第 2 项（`ShmTable` 由服务层 Box 持有）属服务层接线约定，随 IPC-P1-1 落地（见其修复记录）。验证：`cargo test -p minix-ipc-server` = **90 passed / 0 failed**；clippy 本 crate 零告警。
 
 ---
 

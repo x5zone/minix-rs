@@ -178,7 +178,7 @@ const MAX_CONSECUTIVE_RECV_FAILURES: u32 = 32;
 /// drive the loop without a kernel (VM-server pattern: `run_once` owns one
 /// iteration, `run` owns the infinite loop plus the failure bound).
 pub struct IpcServer<T: EventLoopTransport, H: CallHandler> {
-    transport: RefCell<Box<T>>,
+    transport: RefCell<T>,
     handler: RefCell<H>,
     /// Set by `init` (C: `sef_local_startup` + `sef_startup` — main.c:224).
     /// `run` refuses to start before it, catching wiring mistakes in tests.
@@ -198,7 +198,7 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
     /// [`Self::init`] (mirrors C: constructing state, then `sef_startup`).
     pub fn new(transport: T, handler: H) -> Self {
         Self {
-            transport: RefCell::new(Box::new(transport)),
+            transport: RefCell::new(transport),
             handler: RefCell::new(handler),
             initialized: Cell::new(false),
             dropped_messages: Cell::new(0),

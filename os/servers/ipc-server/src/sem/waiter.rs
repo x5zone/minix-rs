@@ -98,7 +98,7 @@ impl WaiterTable {
             self.slots[slot].is_none(),
             "endpoint slot already parked (single-suspension invariant)"
         );
-        bump_count(set, &waiter, 1);
+        bump_count(set, waiter.ops[waiter.blocked_on], 1);
         self.slots[slot] = Some(waiter);
         self.queues[set_index].push_back(slot);
     }
@@ -132,7 +132,7 @@ impl WaiterTable {
     /// and `op.rs::retry`).
     pub fn complete_slot(&mut self, slot: usize, set: &mut SemSet) -> Endpoint {
         let waiter = self.slots[slot].take().expect("queued slot occupied");
-        bump_count(set, &waiter, -1);
+        bump_count(set, waiter.ops[waiter.blocked_on], -1);
         let queue = &mut self.queues[waiter.set_index];
         let position = queue
             .iter()
@@ -146,12 +146,10 @@ impl WaiterTable {
     /// point (C: `check_set` migration — sem.c:408-420).
     pub fn migrate_block(&mut self, slot: usize, set: &mut SemSet, from: usize, to: usize) {
         let waiter = self.slots[slot].as_mut().expect("queued slot occupied");
-        let mut old = waiter.clone();
-        old.blocked_on = from;
-        bump_count(set, &old, -1);
+        debug_assert_eq!(waiter.blocked_on, from, "migrate from the recorded point");
+        bump_count(set, waiter.ops[from], -1);
         waiter.blocked_on = to;
-        let moved = waiter.clone();
-        bump_count(set, &moved, 1);
+        bump_count(set, waiter.ops[to], 1);
     }
 
     /// Drain one set's queue: free every slot, one `EIDRM` wake-up each, in
@@ -206,18 +204,19 @@ impl WaiterTable {
     }
 }
 
-/// Bump the blocked semaphore's suspension count up or down by one.
+/// Bump the suspension count of the semaphore named by one blocking
+/// operation up or down by one.
 ///
 /// C: `inc_susp_count` / `dec_susp_count` (sem.c:163-200): non-zero
 /// blocking operations count toward increase-waiters, zero operations
-/// toward zero-waiters. Saturating in release, asserted in debug (C
-/// asserts the `u16` bounds both ways).
-fn bump_count(set: &mut SemSet, waiter: &Waiter, delta: i32) {
-    let op = &waiter.ops[waiter.blocked_on];
-    let counter = if op.op != 0 {
-        &mut set.sems[op.num as usize].raise_waiters
+/// toward zero-waiters. Takes the operation by value (`SemOp` is a small
+/// `Copy`) so callers never clone a waiter to move its count. Saturating
+/// in release, asserted in debug (C asserts the `u16` bounds both ways).
+fn bump_count(set: &mut SemSet, item: SemOp, delta: i32) {
+    let counter = if item.op != 0 {
+        &mut set.sems[item.num as usize].raise_waiters
     } else {
-        &mut set.sems[op.num as usize].zero_waiters
+        &mut set.sems[item.num as usize].zero_waiters
     };
     if delta > 0 {
         debug_assert!(*counter < u16::MAX);
