@@ -42,6 +42,9 @@ use minix_arch::paging::PageFlags;
 #[cfg(not(feature = "mock"))]
 use minix_arch::arch::frame::PhysAccess;
 use minix_arch::{DirectMapArch, ReturnSequence, TrapStyle, pt_alloc};
+// E1 slice 5: QEMU test kernels build a user context directly and must
+// record the full-context return style (`test-user-trap`).
+pub use minix_arch::TrapStyle as PublicTrapStyle;
 
 /// End of identity-mapped region during boot (4 GB).
 /// C: pg_identity() maps 1024 × 4MB = 4GB (I386_BIG_PAGE_SIZE × 1024).
@@ -2824,8 +2827,12 @@ fn finish_and_restore(
 /// require. This is the same access pattern the boot path
 /// (`bsp_finish_booting`) uses; per-CPU dispatch under SMP will replace
 /// the boot-unchecked accessors with `BklSection`-witnessed ones.
+/// Boot tail: enter the scheduling loop and restore the first runnable
+/// process to user mode. Public for QEMU test kernels, which boot the
+/// production phases and then hand the CPU to user mode exactly like the
+/// production `kmain` tail does (C main.c:73 `bsp_finish_booting`).
 #[allow(dead_code)] // reachable only from the divergent boot path / asm entry
-fn switch_to_user() -> ! {
+pub fn switch_to_user() -> ! {
     // C main.c:73 — bsp_finish_booting tails into switch_to_user with the
     // BKL held. S-7: the loop body is the shared `scheduler_loop`; the BSP
     // flavor only names its own CPU (seed + loop are per-CPU now).

@@ -238,6 +238,16 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         &mut *(core::ptr::addr_of_mut!(table.procs_slice_mut()[cur_idx]))
     };
 
+    // Pre-decode: unknown call numbers exit before the BKL is taken —
+    // dispatch_ipc_entry's own decode-fail return path also skips the BKL
+    // (EBADCALL without acquiring), so kernel_call_finish must not run.
+    // C: proc.c:602-606 — do_ipc's default branch, same effect.
+    let call_nr = frame.rcx as i32;
+    if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
+        frame.rax = crate::errno::EBADCALL as i64 as u64;
+        return;
+    }
+
     // Register extraction (design decision 2).
     let call_nr = frame.rcx as i32;
     let r1 = frame.rax; // src/dst endpoint, or SENDA count
