@@ -15,7 +15,7 @@
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
 | **P0** | **V1-P0-1** | ~~panic 诊断 hook 注册表分裂：kernel 写 `minix_types` 注册表，minix-rt 的 panic handler 读的是自己 crate 内的重复注册表——hook 永不命中~~（**✅ 已修复** 2026-09-16，Fix #1，见 §3.1 修复记录） |
-| **P0** | **V1-P0-2** | 10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族（vm_info/vm_procctl/vm_cache/vm_getrusage），Rust 零实现且无登记（§3.1） |
+| **P0** | **V1-P0-2** | 🔄 10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族（**文档半已完成** 2026-09-16，Fix #7：§2.5 余量清单落盘；**wrapper 半见 Fix #8/#9**）（§3.1） |
 | **P0** | **V1-P0-3** | ~~`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）~~（**✅ 已修复** 2026-09-16，Fix #3，见 §3.1 修复记录） |
 | P1 | V1-P1-1 | 🔄 诞生链整体缺口（**第一步已完成** 2026-09-16，Fix #4：start.rs 整模块删除 + 02/03 篇同步；**第二步挂 E1 切片 5 通电**）：真实 `_start` 只做分配器初始化→main→exit，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
@@ -101,7 +101,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Verified**：`grep -rn "PANIC_DIAGNOSTIC_HOOK\|minix_rt::set_panic_diagnostic" os/libs/minix-rt/ os/commands/ os/servers/` 零命中；kernel 注册点（kernel/src/lib.rs:1638）未动。
 - **Docs**：07 篇从未记载 hook 注册表（D-48 晚于其定稿），无需同步；lib.rs 代码注释已在本次重写。
 
-#### V1-P0-2（P0-design-missing）10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族
+#### V1-P0-2（P0-design-missing）10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族——🔄 文档半已修复 2026-09-16（Fix #7），wrapper 半见 Fix #8/#9
 
 **契约**：plan.md §5.1（plan.md:229）将 `vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c` 明确映射到 10 篇（"VM 客户端库·用户态 ABI 子集"）。**文档现状**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md` 对 cache/info/procctl/rusage/willexit/unmap_phys 的 grep 为**零命中**（2026-09-16 实测）——四文件族连同 `VM_VFS_MMAP`、`VM_WILLEXIT` 均未进入文档清单，也无"有意排除"声明。**实现现状**：wire 半在 minix-types 已备（`VmProcctlIn` `minix-types/src/ipc/vm.rs:512`、`MessLsysVmInfo` :1673、`MessLsysVmRusage` :1693、`VM_GETRUSAGE` :132——VM 服务器分发端已在消费部分结构）；minix-sys 侧有常量无 wrapper（`vm.rs:49/:55/:67/:71`），cache 族（`com.h:682-691` 的 +26/27/28/29）连常量都无。
 
@@ -113,6 +113,11 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 
 **验证**：10 篇补节后 `grep -c "vm_cache\|vm_getrusage\|vm_info\|vm_procctl" 10-vm-syscalls.md` ≥ 4；wrapper 落地时各带 CannedTransport 回放测试（E2 先例）。
 **边界**：cache 族与 E-IPCWIRE 第 5 项（VM_CALL_SHARED_UNMAP wrapper）同在 vm.rs 落地，执行时同批勿分两次打开。
+
+**修复记录（Fix #7，2026-09-16）**：文档半落地——
+- **Files**：10 篇新增 §2.5"客户端库余量清单（阶段计划契约对账）"：七行清单表（vm_info 三函数 / vm_procctl 两公开 / vm_cache 四公开 / vm_getrusage / vm_willexit / vm_unmap_phys / minix_vfs_mmap），每行带 C 定义行锚点、调用号偏移、消费方与排期归属；三层现状盘点（wire 半备好的 info/procctl/rusage 三族、连常量都无的 cache 族与 willexit、封装半 9/N）；排除项重申（三件归集成、SHM_UNMAP 归 E-IPCWIRE、REMAP_RO 待 E-MINTYPES-RUNTIME）。
+- **验证**：`grep -c` 实测 5 行命中（判定门槛 ≥ 4，达标；初记 18 为误写，特此勘误）；全部 C 锚点逐文件 grep 实证（vm_info.c:10/:24/:39、vm_procctl.c:10/:28/:33、vm_cache.c:15/:47/:59/:68/:77、vm_getrusage.c:7、vm_exit.c:25、vm_map_phys.c:33、mmap.c:49）。
+- **边界**：wrapper 半（Fix #8/#9）落地后回填本条；10 篇其余章节不动。
 
 #### V1-P0-3（P0-fact）`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ` 矛盾，且整段是零消费方的平行实现——✅ 已修复 2026-09-16（Fix #3）
 

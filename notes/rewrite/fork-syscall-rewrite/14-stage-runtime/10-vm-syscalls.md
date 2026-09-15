@@ -47,6 +47,22 @@
 
 打开 `minix3/minix/lib/libsys/vm_fork.c` 文件的第 10 行到第 24 行，地址空间创建走服务端协议：填端点和槽号，调完从回复读孩子端点。退出函数同形，只带端点。物理映射函数填目标、物理地址、长度，回复 carrying 虚拟地址，此外还维护一份本地特殊内存登记，这份登记属于服务端集成，不管客户端封装的事，边界在阶段计划里写明。调用号清单：退出加 0，创建加 1，边界加 2，预告退出加 5，映射加 10，解除加 17，物理映射加 15，物理解除加 16，重映射加 33，只读重映射加 44，共享解除加 34，查物理加 35，查引用加 36，查信息加 40，进程控制加 45。特权设置、热更新、内存控制三个调用归集成阶段，本组只列编号不封装。
 
+### 2.5 客户端库余量清单（阶段计划契约对账）
+
+阶段计划的覆盖契约（plan.md 第 5.1 节）把四个客户端库文件映射到本篇：`vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c`。这些文件连同散落在已讲文件里的三个函数，共同构成本组的"余量清单"——它们属于本组的覆盖范围，实现按消费方的推进排期。逐文件清单如下，全部以 grep 实证过：
+
+| C 文件 | C 函数（锚点为文件内定义行） | 调用号（`com.h`） | 消费方与排期归属 |
+|--------|------------------------------|-------------------|------------------|
+| `vm_info.c` | `vm_info_stats`（:10）、`vm_info_usage`（:24）、`vm_info_region`（:39） | `VM_INFO`（基址加 40） | 内存状态查询，命令面（top 类工具）与 RS 消费 |
+| `vm_procctl.c` | `vm_procctl_clear`（:28）、`vm_procctl_handlemem`（:33；`vm_procctl`（:10）为其静态核心） | `VM_PROCCTL`（基址加 45） | 进程控制，RS 与调试面消费 |
+| `vm_cache.c` | `vm_map_cacheblock`（:47）、`vm_set_cacheblock`（:59）、`vm_forget_cacheblock`（:68）、`vm_clear_cache`（:77；`vm_cachecall`（:15）为静态核心） | `VM_MAPCACHEPAGE`（加 26）、`VM_SETCACHEPAGE`（加 27）、`VM_FORGETCACHEPAGE`（加 28）、`VM_CLEARCACHE`（加 29） | 文件系统块缓存的映射客户端，文件系统阶段联调的前置 |
+| `vm_getrusage.c` | `vm_getrusage`（:7） | `VM_GETRUSAGE`（基址加 47） | 资源统计，命令面（time 类工具）消费 |
+| `vm_exit.c`（内） | `vm_willexit`（:25） | `VM_WILLEXIT`（基址加 5） | 退出预告，重生服务活更新路径消费 |
+| `vm_map_phys.c`（内） | `vm_unmap_phys`（:33） | `VM_UNMAP_PHYS`（基址加 16） | 物理映射的解除，驱动与服务器消费 |
+| `mmap.c`（内） | `minix_vfs_mmap`（:49） | `VM_VFS_MMAP`（基址加 46） | 文件系统替进程映射，文件系统阶段消费 |
+
+三层现状（2026 年 09 月 16 日盘点）：wire 半在共享类型库已备好的有信息、进程控制、资源统计三族（`MessLsysVmInfo`、`VmProcctlIn`、`MessLsysVmRusage` 及调用号常量，见 `minix-types/src/ipc/vm.rs`）；缓存族与预告退出的 wire 半和调用号常量都还没有；封装半只有前文讲过的九个，余量全部待补。有意排除的三件维持原判：特权设置、热更新、内存控制归集成阶段；共享解除的封装已由 edge 条目 E-IPCWIRE 认领；只读重映射待布局单点权威定稿（edge 条目 E-MINTYPES-RUNTIME）后定稿。
+
 ---
 
 ## 3 Rust 设计决策：为什么是请求类型加哨兵消除加缓存短路
