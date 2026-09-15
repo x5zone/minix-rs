@@ -255,6 +255,8 @@
 4. `SchedApi` 面：KERNEL 分支走 SYS_SCHEDCTL（E8 已列对端），SCHED 分支走 SCHEDULING_* 消息（依赖 06-stage-sched 服务器）。
 全部落定后逐条回写 03-stage-rs/todo.md §18.10 E-11 与 A5 路线图第 6 步。
 
+> **进度（2026-09-16，🔄 切片 1 SysApi 面闭环，commit cbb7b9571）**：SysApi 九方法所需 minix-sys 包装齐备——kill/update/setalarm 三个 E2/E6 已有；本轮补六个：`sys_get_machine`/`sys_get_hz`/`sys_get_priv`（GETINFO 通用承载 `sys_getinfo_into` 逐域填 `m_lsys_krn_sys_getinfo`，GET_PRIV 的目标端点走 `val_len2_e` 域——kernel getinfo_priv:925-929）+ `sys_privctl`（M1 request/endpt/arg_ptr）+ `sys_diagctl_stacktrace`（DIAGCTL_CODE_STACKTRACE=2）。`sys_times` 发现已有同语义实现（E6 已落），get_ticks 直接消费，不重复造。六个 Canned 回放测试逐域断言出站线面与应答臂回填（minix-sys 161 全绿）。**余项**：PmApi（PM_SRV_FORK/GETEPINFO wire——与 04-stage-pm 对端协同）、VmApi（VM_RS_MEM_*——挂 02-stage-vm T12/T13）、SchedApi（SYS_SCHEDCTL——E8 对端）三分域仍开放；RS 侧 UnimplementedKernelApi 换装成真实现属 03-stage-rs 域内工作（stage 内），与本 edge 条目的 minix-sys 契约面切割。
+
 **解锁**：03-stage-rs 19 号主线通电；E-1 自升级；E5(c) 联调链。
 
 ---
