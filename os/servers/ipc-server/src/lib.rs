@@ -35,5 +35,5 @@ pub use perms::{
     AccessVerdict, Identity, IpcPerm, IpcPermSysctl, SetOptions, check_perm, is_owner_or_root,
 };
 pub use server::{
-    CallHandler, EventLoopTransport, IpcServer, IpcStatus, StubHandler, TransportError,
+    CallHandler, EventLoopTransport, IpcServer, IpcStatus, RunStep, StubHandler, TransportError,
 };

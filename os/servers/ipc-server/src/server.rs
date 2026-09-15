@@ -222,6 +222,15 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
         self.initialized.get()
     }
 
+    /// Take the transport and handler back.
+    ///
+    /// Tests inspect the recorded traffic after driving a few rounds;
+    /// nothing borrows the cells at the call site (single-threaded loop,
+    /// borrows end with each method call).
+    pub fn into_parts(self) -> (T, H) {
+        (self.transport.into_inner(), self.handler.into_inner())
+    }
+
     /// Messages dropped at the loop boundary so far.
     pub fn dropped_messages(&self) -> u64 {
         self.dropped_messages.get()

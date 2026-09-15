@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 10 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 9 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -31,7 +31,7 @@
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数（**✅ 已完成** 2026-09-16，见 §2 修复记录；ShmTable Box 约定随 P1-1） |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试（**✅ 已完成** 2026-09-16） |
-| T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试（**✅ 已完成** 2026-09-16）；IPC-T-3 `tests/` 集成目录被注释声称但不存在；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
+| T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试（**✅ 已完成** 2026-09-16）；IPC-T-3 `tests/` 集成目录被注释声称但不存在（**✅ 已完成** 2026-09-16）；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
 | D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时 |
 | D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成 |
 | D | IPC-D-3 | plan.md:185 A-7 锚点漂移：sem.c:713-722 → 实际 :726-739 |
@@ -213,10 +213,12 @@
 
 **修复记录（2026-09-16）**：`table.rs` 补 `next_seq_wraps_at_fifteen_bits`（0→1、0x7ffe→0x7fff、0x7fff→0 三点）；`segment.rs` 的同型函数是独立定义，补单点环绕断言（注释说明为何重复）。验证：`cargo test -p minix-ipc-server` = **93 passed / 0 failed**（91+2）。
 
-### IPC-T-3 `tests/` 集成目录被声称但不存在
+### IPC-T-3 `tests/` 集成目录被声称但不存在【✅ 已完成 2026-09-16】
 
 `server.rs:251-253` 说 `run_once` 是 pub"so integration tests in `tests/` can drive whole scenarios"，`RunStep` 的文档（:142-144）同款说法——但 `os/servers/ipc-server/tests/` 目录不存在。要么补一个最小集成测试（scripted transport 驱动 `run_once` 走 semget→semop→进程事件全链，StubHandler 换 RecordingHandler），要么改注释。推荐前者：服务层接线（IPC-P1-1）恰好需要这个驱动面。
 
+
+**修复记录（2026-09-16，前者落地）**：新建 `tests/integration.rs`（4 个场景，全走公共 API：semget 请求往返含 send_reply 动词断言、SUSPEND 无出站、进程事件回执走 send_async 动词——IPC-P2-2 的双动词区分在公共面钉住、传输耗尽计 ReceiveFailed）。配套三件：`IpcServer::into_parts` 公共访问器（消费归还 transport/handler 供测试检查记录流量）、lib.rs 补 `RunStep` 再导出、Cargo.toml 补 `[dev-dependencies] minix-types`（集成测试是独立 crate，只能用包 lib + dev-deps）。**顺带移除零引用死依赖 minix-sys**（E-RMIBWIRE 早已登记其死；并行线程 E1 在途改动令其暂时不可编译，本 crate 因此恢复独立可建；P1-1 接 MIB 客户端时恢复）。验证：单元 93 + 集成 4 = **97 passed / 0 failed**。
 ### IPC-T-4 sweep 的 rc==0 边界无测试【✅ 已完成 2026-09-16，随 IPC-P1-6 闭合】
 
 与 IPC-P1-6 联动：修复时必须同时补 `sweep` 在 `count: Some(0)` + SHM_DEST 下存活的回归测试（现测试只覆盖 1/4/None 三种输入，`refcount.rs:144-206`）。
