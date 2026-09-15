@@ -1737,6 +1737,27 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
 // determine the delivery type (SEND, NOTIFY, SENDA, etc.) and whether the
 // message originated from the kernel.
 
+/// Write an IPC return code into a process's saved user context (RAX).
+///
+/// C: the kernel-side completion path sets the woken caller's return value
+/// before marking it runnable — a blocked RECEIVE completes with OK when a
+/// sender delivers (proc.c:969 wake site), and a blocked SEND completes
+/// with OK when a receiver picks the message up (proc.c:1097 wake site).
+/// E1 slice 2: the Rust engine's wake sites now do the same; without it a
+/// resumed caller observes whatever RAX held at trap entry.
+///
+/// The register write goes through the PTRACE-style `write_user_register`
+/// contract — offset 80 is `gp_regs[0]` = RAX on x86-64 (the documented
+/// register map in the arch impl).
+pub fn set_ipc_return_code(proc: &mut KProcess, code: i64) {
+    use minix_arch::CpuContextArch as _;
+    let _ = <CurrentCpuContextArch as CpuContextArch>::write_user_register(
+        &mut proc.cpu_context,
+        80,
+        code as u64,
+    );
+}
+
 /// Add a call type to the process's IPC status register.
 ///
 /// C: `IPC_STATUS_ADD_CALL(p, call)` — ipc.h:45-46

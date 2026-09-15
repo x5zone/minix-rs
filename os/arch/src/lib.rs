@@ -281,34 +281,46 @@ pub fn syscall_entry_va() -> minix_types::VirBytes {
 
 /// Persist an interrupted user register file into the per-process saved
 /// context (E1 trap bridge — design decision 3: single user-state truth).
-/// Mock/other-arch branches are no-ops: hosted tests drive the dispatch
-/// bodies with synthetic frames and contexts, and the arm64/riscv64 trap
-/// bridges are their own bring-up lanes.
-#[cfg(feature = "runtime-window")]
-pub fn save_frame_to_context(_frame: &x86_64::trap_stub::TrapFrame, _ctx: &mut CurrentCpuContext) {}
-#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
+/// Pure register-file copying (no IDT/MSR hardware), so the x86-64
+/// implementation stays live under `runtime-window` — hosted integration
+/// tests exercise the E1 arm against the real context layout; only gate
+/// *registration* is mocked there.
+#[cfg(target_arch = "x86_64")]
 pub fn save_frame_to_context(
     frame: &x86_64::trap_stub::TrapFrame,
     ctx: &mut CurrentCpuContext,
 ) {
     crate::x86_64::trap_stub::save_frame_to_context(frame, ctx);
 }
+#[cfg(not(target_arch = "x86_64"))]
+pub fn save_frame_to_context(_frame: &(), _ctx: &mut CurrentCpuContext) {}
 
 /// Pull the IPC status register from a process's saved context into the
 /// outgoing trap frame (E1: the stub's iretq must restore the up-to-date
 /// RBX — delivery paths OR status into the saved context, which the entry
-/// save happened before). x86-64: RBX. Mock/other-arch: no-op.
-#[cfg(feature = "runtime-window")]
-pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut x86_64::trap_stub::TrapFrame) {}
-#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
+/// save happened before). x86-64: RBX. Other archs: no-op.
+#[cfg(target_arch = "x86_64")]
 pub fn sync_status_register_to_frame(
     ctx: &CurrentCpuContext,
     frame: &mut x86_64::trap_stub::TrapFrame,
 ) {
-    frame.rbx = ctx.rbx;
+    crate::x86_64::trap_stub::sync_status_register_to_frame(ctx, frame);
 }
-#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(not(target_arch = "x86_64"))]
 pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut x86_64::trap_stub::TrapFrame) {}
+
+/// Read back the saved RAX of a process's saved user context (E1 slice 2
+/// test seam — the write side is kernel `set_ipc_return_code`, which goes
+/// through `write_user_register` offset 80; the register file itself is
+/// arch-private). Mock/other-arch: 0.
+#[cfg(target_arch = "x86_64")]
+pub fn ipc_return_code(ctx: &CurrentCpuContext) -> u64 {
+    crate::x86_64::trap_stub::ipc_return_code(ctx)
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn ipc_return_code(_ctx: &CurrentCpuContext) -> u64 {
+    0
+}
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn save_frame_to_context(_frame: &(), _ctx: &mut CurrentCpuContext) {}
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]

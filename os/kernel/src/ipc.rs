@@ -967,6 +967,9 @@ impl<'a> IpcEngine<'a> {
             crate::proc::ipc_status_add_call(&mut self.procs[dst_idx], delivered_call);
             // C: `RTS_UNSET(dst, RTS_RECEIVING)` — wake up target.
             self.procs[dst_idx].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
+            // E1 slice 2: the woken receiver's RECEIVE completes with OK
+            // (same completion-path return-code rule as the sender wake).
+            crate::proc::set_ipc_return_code(&mut self.procs[dst_idx], OK as i64);
             return IpcOutcome::Delivered;
             }
         }
@@ -1095,6 +1098,10 @@ impl<'a> IpcEngine<'a> {
             self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
             // Wake up the sender. C: `RTS_UNSET(sender, RTS_SENDING)`.
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
+            // E1 slice 2: the woken sender's syscall completes with OK —
+            // write its return code into the saved context RAX (C sets the
+            // return at the completion path, not at trap entry).
+            crate::proc::set_ipc_return_code(&mut self.procs[sender_idx], OK as i64);
             // C: clear `SENDING_FROM_KERNEL` if it was set.
             self.procs[sender_idx].p_misc_flags.clear(MiscFlagsBits::SENDING_FROM_KERNEL);
             // C: proc.c:1070-1071 — determine call type and add to IPC status.
@@ -2630,6 +2637,33 @@ mod tests {
         let b_idx = nr_to_idx(ProcNr(-3)).unwrap();
         assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
         assert!(!engine.procs[b_idx].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+    }
+
+    /// E1 slice 2: when a send completes a blocked receiver, the woken
+    /// caller's saved-context RAX must carry the syscall return code (OK).
+    /// C: the completion path sets the return before marking runnable —
+    /// without this a resumed caller observes stale trap-entry RAX.
+    #[test]
+    fn test_send_to_blocked_receiver_writes_ok_return_code() {
+        let mut pt = crate::test_helpers::test_proc_table();
+        {
+            let a = pt.get_mut(ProcNr(-4)).unwrap();
+            a.p_rts_flags = RtsFlags::new();
+        }
+        {
+            let b = pt.get_mut(ProcNr(-3)).unwrap();
+            b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
+            b.p_getfrom_e = Endpoint::ANY;
+        }
+        let b_endpoint = pt.get(ProcNr(-3)).unwrap().p_endpoint;
+        let procs = pt.procs_slice_mut();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
+        let result = engine.notify(ProcNr(-4), b_endpoint);
+        assert!(result.is_delivered(), "notify should deliver");
+        let b_idx = nr_to_idx(ProcNr(-3)).unwrap();
+        let code = minix_arch::ipc_return_code(&engine.procs[b_idx].cpu_context);
+        assert_eq!(code as i32, OK, "woken receiver must see return code OK");
     }
 
     #[test]

@@ -533,6 +533,21 @@ pub fn save_frame_to_context(frame: &TrapFrame, ctx: &mut super::boot::X86_64Cpu
     ctx.ss = frame.ss;
 }
 
+/// Pull the IPC status register from a saved context into the outgoing
+/// trap frame (E1: the stub's iretq must restore the up-to-date RBX).
+pub fn sync_status_register_to_frame(
+    ctx: &super::boot::X86_64CpuContext,
+    frame: &mut TrapFrame,
+) {
+    frame.rbx = ctx.rbx;
+}
+
+/// Read back the saved RAX (E1 slice 2 test seam — kernel-side callers
+/// cannot reach the arch-private register file).
+pub fn ipc_return_code(ctx: &super::boot::X86_64CpuContext) -> u64 {
+    ctx.gp_regs[0]
+}
+
 pub fn syscall_entry_va() -> VirBytes {
     // SAFETY: address-only symbol read.
     VirBytes::new(unsafe { &x86_syscall_entry as *const u8 as usize } as u64)
