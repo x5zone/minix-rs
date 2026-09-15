@@ -126,7 +126,7 @@ os/servers/devman/src/
 | `run_bind_forward_roundtrip` | 循环内 BIND：构转发 → sendrec → answer → RS 回 0 → BOUND | DM-P1-2 + §2.1 |
 | `run_bind_forward_driver_error_reaches_rs` | 驱动拒绑：态不变 + RS 听到驱动 errno | DM-P1-2 + §2.2 |
 
-截至 2026-09-15：`cargo test -p minix-devman` **85 passed / 0 failed**（本篇 bind 4 + server 6）。`cargo clippy` devman 部分 0 警告。
+截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（本篇 bind 4 + server 7）。`cargo clippy` devman 部分 0 警告。
 
 ---
 

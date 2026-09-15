@@ -229,34 +229,15 @@ mod tests {
         (tree, fw)
     }
 
-    /// Hand-built wire buffer (mirrors 03's encoder layout).
     fn wire_usb() -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; 16 + 16];
-        buf[0..4].copy_from_slice(&1i32.to_le_bytes()); // count
-        buf[4..8].copy_from_slice(&0i32.to_le_bytes()); // parent = root
-        let mut s = Vec::new();
-        let mut push = |t: &str| -> u32 {
-            let o = (buf.len() + s.len()) as u32;
-            s.extend_from_slice(t.as_bytes());
-            s.push(0);
-            o
-        };
-        let no = push("usb");
-        let an = push("dev_type");
-        let ad = push("USB_DEV");
-        buf[8..12].copy_from_slice(&no.to_le_bytes());
-        buf[16..20].copy_from_slice(&0u32.to_le_bytes()); // STATIC
-        buf[20..24].copy_from_slice(&an.to_le_bytes());
-        buf[24..28].copy_from_slice(&ad.to_le_bytes());
-        buf.extend_from_slice(&s);
-        buf
+        crate::wire::testutil::serialize("usb", 0, &[("dev_type", "USB_DEV")])
     }
 
     #[test]
     fn add_full_flow() {
         // do_add_device + add_child observable contract (device.c:223-397).
         let (mut tree, mut fw) = harness();
-        let (_, parsed) = parse_device(&wire_usb()).unwrap();
+        let parsed = parse_device(&wire_usb()).unwrap();
         let mut events = Vec::new();
         let id = do_add(
             &mut tree,
@@ -289,7 +270,7 @@ mod tests {
     #[test]
     fn add_bad_parent_is_enodev() {        // C: _find_dev NULL → ENODEV (device.c:246-251).
         let (mut tree, mut fw) = harness();
-        let (_, parsed) = parse_device(&wire_usb()).unwrap();
+        let parsed = parse_device(&wire_usb()).unwrap();
         let mut events = Vec::new();
         assert_eq!(
             do_add(
@@ -311,7 +292,7 @@ mod tests {
         let (mut tree, mut fw) = harness();
         let mut buf = wire_usb();
         buf[16..20].copy_from_slice(&1u32.to_le_bytes()); // DYNAMIC
-        let (_, parsed) = parse_device(&buf).unwrap();
+        let parsed = parse_device(&buf).unwrap();
         let mut events = Vec::new();
         let id = do_add(
             &mut tree,
@@ -338,7 +319,7 @@ mod tests {
         // Rewrite the name string in place ("usb" → "u b").
         let name_off = u32::from_le_bytes(buf[8..12].try_into().unwrap()) as usize;
         buf[name_off + 1] = b' ';
-        let (_, parsed) = parse_device(&buf).unwrap();
+        let parsed = parse_device(&buf).unwrap();
         assert_eq!(parsed.name, "u b");
         let mut events = Vec::new();
         assert_eq!(
@@ -360,48 +341,12 @@ mod tests {
     /// EEXIST inside `add_static` — the everyday failing ADD (driver
     /// retry / misbehaving client), used here to reach the unwind path.
     fn wire_dup_attr() -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; 16 + 2 * 16];
-        buf[0..4].copy_from_slice(&2i32.to_le_bytes());
-        buf[4..8].copy_from_slice(&0i32.to_le_bytes()); // parent = root
-        let mut s = Vec::new();
-        let mut push = |t: &str| -> u32 {
-            let o = (buf.len() + s.len()) as u32;
-            s.extend_from_slice(t.as_bytes());
-            s.push(0);
-            o
-        };
-        let no = push("usb");
-        let a1n = push("dev_type");
-        let a1d = push("USB_DEV");
-        let a2n = push("dev_type");
-        let a2d = push("HUB");
-        buf[8..12].copy_from_slice(&no.to_le_bytes());
-        for (i, (n, d)) in [(a1n, a1d), (a2n, a2d)].iter().enumerate() {
-            let base = 16 + i * 16;
-            buf[base..base + 4].copy_from_slice(&0u32.to_le_bytes()); // STATIC
-            buf[base + 4..base + 8].copy_from_slice(&n.to_le_bytes());
-            buf[base + 8..base + 12].copy_from_slice(&d.to_le_bytes());
-        }
-        buf.extend_from_slice(&s);
-        buf
+        crate::wire::testutil::serialize("usb", 0, &[("dev_type", "USB_DEV"), ("dev_type", "HUB")])
     }
 
     /// Wire for a device with an arbitrary name and no attributes.
     fn wire_named(name: &str) -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; 16];
-        buf[0..4].copy_from_slice(&0i32.to_le_bytes());
-        buf[4..8].copy_from_slice(&0i32.to_le_bytes());
-        let mut s = Vec::new();
-        let mut push = |t: &str| -> u32 {
-            let o = (buf.len() + s.len()) as u32;
-            s.extend_from_slice(t.as_bytes());
-            s.push(0);
-            o
-        };
-        let no = push(name);
-        buf[8..12].copy_from_slice(&no.to_le_bytes());
-        buf.extend_from_slice(&s);
-        buf
+        crate::wire::testutil::wire_one(name)
     }
 
     #[test]
@@ -416,7 +361,7 @@ mod tests {
         let name102 = alloc::string::String::from_utf8(alloc::vec![b'e'; 102]).unwrap();
 
         let (mut tree, mut fw) = harness();
-        let (_, ok) = parse_device(&wire_named(&name101)).unwrap();
+        let ok = parse_device(&wire_named(&name101)).unwrap();
         let mut events = Vec::new();
         do_add(
             &mut tree,
@@ -432,7 +377,7 @@ mod tests {
         assert!(events[0].text().starts_with("ADD ./devices/dddd"));
 
         // Over-long: fails during prep — never inserted, nothing queued.
-        let (_, bad) = parse_device(&wire_named(&name102)).unwrap();
+        let bad = parse_device(&wire_named(&name102)).unwrap();
         let mut overrun = Vec::new();
         assert_eq!(
             do_add(
@@ -452,7 +397,7 @@ mod tests {
             Err(minix_types::Errno::ENOENT)
         );
         // Retry with a short name still works (id space intact, DM-P1-1).
-        let (_, retry) = parse_device(&wire_named("small")).unwrap();
+        let retry = parse_device(&wire_named("small")).unwrap();
         let id = do_add(
             &mut tree,
             &mut fw,
@@ -475,7 +420,7 @@ mod tests {
         // unchecked (device.c:373-375) and no failure path exists to
         // unwind.
         let (mut tree, mut fw) = harness();
-        let (_, bad) = parse_device(&wire_dup_attr()).unwrap();
+        let bad = parse_device(&wire_dup_attr()).unwrap();
         let mut events = Vec::new();
         assert_eq!(
             do_add(
@@ -494,7 +439,7 @@ mod tests {
         assert_eq!(fw.lookup(devices_ino, "usb"), Err(minix_types::Errno::ENOENT));
         assert_eq!(tree.get(DeviceId::ROOT).unwrap().refcount, 0);
         // The retry — the whole point of the unwind — succeeds with id 1.
-        let (_, retry) = parse_device(&wire_usb()).unwrap();
+        let retry = parse_device(&wire_usb()).unwrap();
         let id = do_add(
             &mut tree,
             &mut fw,

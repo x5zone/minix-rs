@@ -152,25 +152,10 @@ mod tests {
         (tree, fw)
     }
 
-    fn wire_one(name: &str) -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; 16];
-        buf[0..4].copy_from_slice(&0i32.to_le_bytes());
-        buf[4..8].copy_from_slice(&0i32.to_le_bytes());
-        let mut s = Vec::new();
-        let mut push = |t: &str| -> u32 {
-            let o = (buf.len() + s.len()) as u32;
-            s.extend_from_slice(t.as_bytes());
-            s.push(0);
-            o
-        };
-        let no = push(name);
-        buf[8..12].copy_from_slice(&no.to_le_bytes());
-        buf.extend_from_slice(&s);
-        buf
-    }
+    use crate::wire::testutil::wire_one;
 
     fn add(tree: &mut DeviceTree, fw: &mut InodeTree, name: &str) -> DeviceId {
-        let (_, parsed) = parse_device(&wire_one(name)).unwrap();
+        let parsed = parse_device(&wire_one(name)).unwrap();
         let mut events = Vec::new();
         do_add(
             tree,
@@ -236,7 +221,7 @@ mod tests {
         let (mut tree, mut fw) = harness();
         let usb = add(&mut tree, &mut fw, "usb");
         // Add a grandchild directly (second level).
-        let (_, parsed) = parse_device(&wire_one("zero")).unwrap();
+        let parsed = parse_device(&wire_one("zero")).unwrap();
         let mut events = Vec::new();
         let zero = {
             use crate::add_device::do_add;

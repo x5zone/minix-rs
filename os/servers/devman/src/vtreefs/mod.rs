@@ -33,6 +33,7 @@ use crate::buf::Buf;
 use crate::event_queue::EventQueue;
 use crate::hooks::{ServerConfig, S_IFDIR};
 pub use inode::{InodeContent, InodeStat, InodeTree, Ino, NAME_MAX_LEN, PNAME_MAX_LEN, S_IFMT, S_IFREG};
+use inode::is_dir;
 
 pub mod inode;
 
@@ -350,14 +351,10 @@ impl VTreeFs {
 // the production transport is still the only missing piece for `main`
 // (P1-6, narrowed to transport wiring).]
 
-// `inode::Inode` exposes its own accessors; these two predicates keep the
-// mode checks at the call sites expressive.
+// `Inode` exposes its own accessors; this predicate keeps the mode check
+// at the call site expressive (the dir twin lives in `inode`, shared).
 fn is_reg(mode: u32) -> bool {
     mode & S_IFMT == S_IFREG
-}
-
-fn is_dir(mode: u32) -> bool {
-    mode & S_IFMT == S_IFDIR
 }
 
 #[cfg(test)]

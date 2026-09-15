@@ -151,7 +151,7 @@ os/servers/devman/src/add_device.rs — do_add + unwind_staged + add_static（+5
 | `add_failure_unwinds_and_retry_succeeds` | 重复属性名触发落户失败：EEXIST 回复 + 零事件 + 无孤儿目录 + 根引用 0 + id 归还 + 重试同 id 成功 | §4.2 不变量 2（DM-P1-1） |
 | `add_event_budget_matches_c_boundary` | 101 字符名：行恰 127 收；102：ENOMEM + 零事件 + 无孤儿 + 重试连续 | §3.4/§4.2（DM-P1-4） |
 
-截至 2026-09-15：`cargo test -p minix-devman` **81 passed / 0 failed**（79 + DM-P1-4 边界测试 1，08 侧另有 1）。
+截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（本篇 6 条；全 crate 计数见 README 表）。
 
 ---
 

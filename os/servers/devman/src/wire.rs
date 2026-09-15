@@ -104,10 +104,12 @@ fn read_cstr(buf: &[u8], off: u32) -> Result<String, WireError> {
 }
 
 /// Decode one serialized device (see module docs for layout).
-/// `parent` comes back as raw `i32` (validated to `DeviceId` by 07,
-/// which owns id allocation); negative counts, out-of-range offsets,
-/// and unterminated strings are all `WireError`.
-pub fn parse_device(buf: &[u8]) -> Result<(i32, ParsedDevice), WireError> {
+/// Negative counts, out-of-range offsets, and unterminated strings are
+/// all `WireError`. The parent id rides inside [`ParsedDevice`] — the
+/// former `(i32, ParsedDevice)` tuple echoed the raw wire word next to
+/// the typed copy of itself, and the only production caller threw the
+/// raw half away (DM-P3-2).
+pub fn parse_device(buf: &[u8]) -> Result<ParsedDevice, WireError> {
     if buf.len() < WIRE_HEADER_LEN {
         return Err(WireError::Truncated);
     }
@@ -141,14 +143,55 @@ pub fn parse_device(buf: &[u8]) -> Result<(i32, ParsedDevice), WireError> {
             req_nr,
         });
     }
-    Ok((
-        parent_raw,
-        ParsedDevice {
-            parent: DeviceId(parent_raw as u32),
-            name,
-            entries,
-        },
-    ))
+    Ok(ParsedDevice {
+        parent: DeviceId(parent_raw as u32),
+        name,
+        entries,
+    })
+}
+
+/// Shared wire builders for the handler tests (server/add/del/bind all
+/// hand-roll the same `serialize_dev` shape — one constructor here ends
+/// the copies, DM-P3-2). Byte layout is the encode half of
+/// [`parse_device`]: header + STATIC entries + strings.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use super::{WIRE_ENTRY_LEN, WIRE_HEADER_LEN};
+    use alloc::vec::Vec;
+
+    /// Serialize a named device with STATIC attributes, parent id given.
+    pub(crate) fn serialize(name: &str, parent: i32, attrs: &[(&str, &str)]) -> Vec<u8> {
+        let count = attrs.len();
+        let mut buf = alloc::vec![0u8; WIRE_HEADER_LEN + count * WIRE_ENTRY_LEN];
+        let mut strings = Vec::new();
+        let mut push = |t: &str| -> u32 {
+            let off = (WIRE_HEADER_LEN + count * WIRE_ENTRY_LEN + strings.len()) as u32;
+            strings.extend_from_slice(t.as_bytes());
+            strings.push(0);
+            off
+        };
+        let name_off = push(name);
+        let mut eoffs = Vec::new();
+        for (n, d) in attrs {
+            eoffs.push((push(n), push(d)));
+        }
+        buf[0..4].copy_from_slice(&(count as i32).to_le_bytes());
+        buf[4..8].copy_from_slice(&parent.to_le_bytes());
+        buf[8..12].copy_from_slice(&name_off.to_le_bytes());
+        for (i, (no, dob)) in eoffs.iter().enumerate() {
+            let base = WIRE_HEADER_LEN + i * WIRE_ENTRY_LEN;
+            buf[base..base + 4].copy_from_slice(&0u32.to_le_bytes()); // STATIC
+            buf[base + 4..base + 8].copy_from_slice(&no.to_le_bytes());
+            buf[base + 8..base + 12].copy_from_slice(&dob.to_le_bytes());
+        }
+        buf.extend_from_slice(&strings);
+        buf
+    }
+
+    /// Zero-attribute device (the DEL/bind-path staple).
+    pub(crate) fn wire_one(name: &str) -> Vec<u8> {
+        serialize(name, 0, &[])
+    }
 }
 
 #[cfg(test)]
@@ -157,10 +200,10 @@ mod tests {
     use alloc::vec;
 
     /// Build a wire buffer in the exact `serialize_dev` layout.
-    fn encode(name: &str, entries: &[(&str, &str)]) -> Vec<u8> {
+    fn encode(name: &str, parent: i32, entries: &[(&str, &str)]) -> Vec<u8> {
         let mut buf = vec![0u8; WIRE_HEADER_LEN + entries.len() * WIRE_ENTRY_LEN];
         buf[0..4].copy_from_slice(&(entries.len() as i32).to_le_bytes());
-        buf[4..8].copy_from_slice(&1i32.to_le_bytes()); // parent_dev_id
+        buf[4..8].copy_from_slice(&parent.to_le_bytes()); // parent_dev_id
         let mut strings = Vec::new();
         let mut push = |s: &str| -> u32 {
             let off = (buf.len() + strings.len()) as u32;
@@ -197,9 +240,9 @@ mod tests {
 
     #[test]
     fn roundtrip_mirrors_serialize_dev() {
-        let buf = encode("usb", &[("dev_type", "USB_DEV"), ("idVendor", "1234")]);
-        let (parent, dev) = parse_device(&buf).unwrap();
-        assert_eq!(parent, 1);
+        let buf = encode("usb", 1, &[("dev_type", "USB_DEV"), ("idVendor", "1234")]);
+        let dev = parse_device(&buf).unwrap();
+        assert_eq!(dev.parent, DeviceId(1));
         assert_eq!(dev.name, "usb");
         assert_eq!(dev.entries.len(), 2);
         assert_eq!(dev.entries[0].ty, EntryType::Static);
@@ -213,15 +256,15 @@ mod tests {
         assert_eq!(parse_device(&[]), Err(WireError::Truncated));
         assert_eq!(parse_device(&[0u8; 8]), Err(WireError::Truncated));
         // Negative count.
-        let mut bad = encode("x", &[]);
+        let mut bad = encode("x", 1, &[]);
         bad[0..4].copy_from_slice(&(-1i32).to_le_bytes());
         assert_eq!(parse_device(&bad), Err(WireError::BadCount));
         // Name offset past the end.
-        let mut bad2 = encode("x", &[]);
+        let mut bad2 = encode("x", 1, &[]);
         bad2[8..12].copy_from_slice(&9999u32.to_le_bytes());
         assert_eq!(parse_device(&bad2), Err(WireError::BadOffset));
         // Declared entry missing.
-        let mut bad3 = encode("x", &[]);
+        let mut bad3 = encode("x", 1, &[]);
         bad3[0..4].copy_from_slice(&3i32.to_le_bytes());
         assert_eq!(parse_device(&bad3), Err(WireError::Truncated));
     }
@@ -229,9 +272,9 @@ mod tests {
     #[test]
     fn dynamic_type_preserved_for_07() {
         // A-6: DYNAMIC is not rejected here; 07 defers it.
-        let mut buf = encode("x", &[("a", "b")]);
+        let mut buf = encode("x", 0, &[("a", "b")]);
         buf[WIRE_HEADER_LEN..WIRE_HEADER_LEN + 4].copy_from_slice(&1u32.to_le_bytes());
-        let (_, dev) = parse_device(&buf).unwrap();
+        let dev = parse_device(&buf).unwrap();
         assert_eq!(dev.entries[0].ty, EntryType::Dynamic);
     }
 }

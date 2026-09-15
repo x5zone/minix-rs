@@ -177,7 +177,7 @@ Server::run（统一循环）→ Devman 臂 → classify → handle_other → 05
 | `four_messages_route_singly` | 一对一 | A-3 |
 | `unknown_is_ignored_without_reply` | 5×A-6 + REPLY + 垃圾值全 Ignored | §2.6 |
 
-截至 2026-09-15：`cargo test -p minix-devman` **83 passed / 0 failed**（本篇 message 5 + dispatch 2；全 crate 计数随批次增长，见 07 §5）。`cargo clippy` 0 警告（devman 部分）。
+截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（本篇 message 5 + dispatch 2；全 crate 计数随批次增长，见 README 表）。`cargo clippy` 0 警告（devman 部分）。
 
 ---
 

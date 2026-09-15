@@ -147,7 +147,7 @@ os/servers/devman/src/del_device.rs — do_del + get/put/del_device（+4 测试�
 | `del_event_budget_matches_c_boundary` | 98 字符名 REMOVE 行恰 127；99：ENOMEM + 设备原样留下 | §2.2 预算（DM-P1-4） |
 | `get_put_root_and_null_are_noops` | 根/失踪守卫 | §2.3 |
 
-截至 2026-09-15：`cargo test -p minix-devman` **81 passed / 0 failed**（本篇 6 条；全 crate 计数随批次增长，各篇分布见各自 §5）。
+截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（本篇 6 条；全 crate 计数见 README 表）。
 
 ---
 

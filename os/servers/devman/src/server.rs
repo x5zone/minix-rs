@@ -126,7 +126,7 @@ impl Server {
         match msg {
             DevmanMsg::Add { body } => {
                 let parsed = match parse_device(&body) {
-                    Ok((_, p)) => p,
+                    Ok(p) => p,
                     Err(_) => {
                         return alloc::vec![OutAction::Reply {
                             dest: source,
@@ -393,25 +393,7 @@ mod tests {
     }
 
     fn wire_usb() -> Vec<u8> {
-        let mut buf = alloc::vec![0u8; 16 + 16];
-        buf[0..4].copy_from_slice(&1i32.to_le_bytes());
-        buf[4..8].copy_from_slice(&0i32.to_le_bytes());
-        let mut s = Vec::new();
-        let mut push = |t: &str| -> u32 {
-            let o = (buf.len() + s.len()) as u32;
-            s.extend_from_slice(t.as_bytes());
-            s.push(0);
-            o
-        };
-        let no = push("usb");
-        let an = push("dev_type");
-        let ad = push("USB_DEV");
-        buf[8..12].copy_from_slice(&no.to_le_bytes());
-        buf[16..20].copy_from_slice(&0u32.to_le_bytes());
-        buf[20..24].copy_from_slice(&an.to_le_bytes());
-        buf[24..28].copy_from_slice(&ad.to_le_bytes());
-        buf.extend_from_slice(&s);
-        buf
+        crate::wire::testutil::serialize("usb", 0, &[("dev_type", "USB_DEV")])
     }
 
     #[test]

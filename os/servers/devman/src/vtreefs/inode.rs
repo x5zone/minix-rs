@@ -40,7 +40,9 @@ pub const NAME_MAX_LEN: usize = 511;
 pub const S_IFMT: u32 = 0o170_000;
 pub const S_IFREG: u32 = 0o100_000;
 
-fn is_dir(mode: u32) -> bool {
+/// Directory-bit check shared with the framework loop (02): `add_inode`
+/// gates new children on it, `lookup` on ENOTDIR, `readdir` reports it.
+pub(super) fn is_dir(mode: u32) -> bool {
     mode & S_IFMT == S_IFDIR
 }
 

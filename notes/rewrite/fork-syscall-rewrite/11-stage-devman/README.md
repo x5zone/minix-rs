@@ -28,13 +28,13 @@
 
 | 模块 | 来源篇 | 测试 |
 |---|---|---|
-| `hooks.rs`（FsHooks/RootStat/ServerConfig/SEF） | 01 | 2 |
-| `vtreefs/`（inode 树 + 服务器 + 传输） | 02 | 24 |
+| `hooks.rs`（RootStat/ServerConfig/SEF；钩子表已退役） | 01 | 4 |
+| `vtreefs/`（inode 树含 `InodeContent` + 逐操作语义 + 传输类型） | 02 | 20 |
 | `structs.rs` + `wire.rs`（形状 + 解析） | 03 | 7 |
 | `device_tree.rs`（双树 + 寻路） | 04 | 7 |
-| `ipc/`（相位视图 + 单分派） | 05 | 5 |
+| `ipc/`（相位视图 + `DevmanMsg` + 单分派） | 05 | 7 |
 | `buf.rs` + `event_queue.rs`（缓冲/队列；分发经 `InodeContent`） | 06 | 7 |
-| `add_device.rs` / `del_device.rs` / `bind.rs` + `server.rs` | 07/08/09 | 3 + 5 + 6 |
+| `add_device.rs` / `del_device.rs` / `bind.rs` + `server.rs`（统一循环） | 07/08/09 | 6 + 6 + 4 + 7 |
 | `rs_contract.rs`（RS 握手决策） | 12 | 4 |
 | minix-sys `devman_client.rs` + `usb_model.rs` | 10/11 | 7 + 5 |
 | minix-types com.rs DEVMAN 块 + Errno assoc | 05/02/07/08 | 1 + 5（assoc 无独立测试，值测试覆盖） |

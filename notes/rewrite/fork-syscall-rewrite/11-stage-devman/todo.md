@@ -4,7 +4,7 @@
 > **范围**：一等对象 `os/servers/devman/src/`（18 文件 4694 行，78 个单元测试）；客户端面 `os/libs/minix-devman-client/`（3 文件 395 行，6 个测试）与 `os/libs/minix-sys/src/devman_client.rs`（423 行）+ `usb_model.rs`（437 行，12 个测试）；C ground truth `minix3/minix/servers/devman/`（4 .c + devman.h/devinfo.h 共 1013 行）与 `minix3/minix/lib/libdevman/`（generic.c 275 行 + usb.c 301 行）。libvtreefs 使用面（1642 行）经文档引用核对，未逐行重审（上轮 CONVERGED 覆盖）。
 > **方法**：三向对账（C ↔ 15 篇文档 ↔ Rust，缺生产件与缺语义分档）→ 四层深审（整体组合 → 模块边界 → trait seam → 函数与数据结构，每层回答"如果今天重写会怎么设计"）→ 对照 Redox（用户态驱动 + scheme + pcid，联网核验 2026-09-15）/ Linux 驱动核心（sysfs 属性 + uevent + udev）/ Rust 社区惯例，每项改进给出至少两个候选方案。
 > **定位**：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档 §6 只留双向指针。
-> **状态（2026-09-15）**：首轮 scan-only 完成。**定性结论**：语义面质量高——四条 DEVMAN 消息、事件队列、输出缓冲、设备树、引用计数级联、RS 握手、客户端序列化逐项对得上 C，且修复了 C 的 switch 无 break 级联缺陷（`[ARCH:A-3]`，dispatch.rs:1-13）；缺口集中在两处——**生产执行半整层缺席**（传输、装配、wire 编码，与 STATE.md 既有 backlog 一致），以及**失败路径的三处新缺陷**（错误处理引入了 C 不存在的中间状态）。**定量**：P1 × 5（其中 DM-P1-1 是正确性缺陷登记，按 code-excellence 边界不修，交 todo-fix）、P2 × 2、P3 × 3；edge 新登记 2 条（E-DMWIRE、E-DMCLIENT）、增补 4 处。
+> **状态（2026-09-15）**：首轮 scan-only 完成；**同日执行轮收官，DM-P1-1..5 / DM-P2-1..2 / DM-P3-1..3 十条全部闭环（详见 §0 表逐条 ✅ 与各条目进度注）**。执行前定性：语义面质量高——四条 DEVMAN 消息、事件队列、输出缓冲、设备树、引用计数级联、RS 握手、客户端序列化逐项对得上 C，且修复了 C 的 switch 无 break 级联缺陷（`[ARCH:A-3]`，dispatch.rs:1-13）；缺口曾集中在两处——生产执行半整层缺席（传输、装配、wire 编码，挂 `../edge_todo.md` E-DMWIRE 等 edge 条目，不在 stage 内消化），以及失败路径的三处新缺陷（已修）。**执行后定量**：79 passed / 0 failed（基线 78，净 +1——hook 机制测试随机制退役、内容/循环/回滚等价测试承接）；clippy 零警告；crate 内 unsafe 归零；净删除约 600 行。edge 新登记 2 条（E-DMWIRE、E-DMCLIENT）、增补 4 处，仍 open（单线程执行，前置 E1）。
 
 ---
 
@@ -22,7 +22,7 @@ devman 的现状是"语义库完备、服务器未出生、出生时会有三处
 | DM-P2-1 | ADD 回复的 DEVICE_ID 无出口 | apply_reply 只写 RESULT 且清零其余字；C 回复是 RESULT+DEVICE_ID 双字 | ✅ 2026-09-15（apply_reply_with_id(msg, res, Option\<i32\>) 原语化；§3 DM-P2-1 Fix #3） |
 | DM-P2-2 | handle_other 位置参数类型化 | word2/word3 裸参数 → DevmanMsg 枚举（协议入类型系统） | ✅ 2026-09-15（DevmanMsg::classify 解码 + handle_other(source, Option\<DevmanMsg\>)；§3 DM-P2-2 Fix #4） |
 | DM-P3-1 | 死代码批次 | Attribute.data / Device.info / init / find_device / set_static_text 等 | ✅ 2026-09-15（set_static_text/devman_message_hook 已随 P1-5/P1-2 退役；本批删 Device.info/Attribute.data/init/find_device/unsupported(OQ-1 取 AI 倾向)；§3 DM-P3-1 Fix #9） |
-| DM-P3-2 | 测试与卫生批次 | wire 构造 helper 四份复制；is_dir 重复；parse_device 双返回 | ⬜ |
+| DM-P3-2 | 测试与卫生批次 | wire 构造 helper 四份复制；is_dir 重复；parse_device 双返回 | ✅ 2026-09-15（wire::testutil::serialize 收一处；is_dir 归 inode 单点；parse_device 单值返回；§3 DM-P3-2 Fix #10） |
 | DM-P3-3 | 每读分配 Buf + 吞错为 EOF | event_queue 每次读新建 4097 字节缓冲；ENOMEM 静默变 EOF | ✅ 2026-09-15（按条目预声明随 DM-P1-5 收口：Buf 归 VTreeFs 持有复用，读路径无分配、无吞错；§3 DM-P3-3 Fix #8） |
 
 **基线命令（2026-09-15 实测）**：

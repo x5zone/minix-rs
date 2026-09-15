@@ -387,7 +387,7 @@ os/servers/devman/src/
 | `sef_ok_records_lifecycle_sequence` | `OkSef` 记录 Fresh→Signal 序列，非 TERM 信号忽略（对偶 C `got_signal`） | §3.5 序列契约 |
 | `sef_failing_returns_enomem` | `FailingSef::init_server` 返回 `Err(ENOMEM)` 且不 panic | §3.5 [ARCH:A-7] |
 
-截至 2026-09-15：`cargo test -p minix-devman` **84 passed / 0 failed**（本篇 hooks 2 条；完整统计每篇末段累积更新，review-doc-skill §2.4j）。`cargo clippy -p minix-devman --all-targets` 0 警告（workspace profile 提示除外）。
+截至 2026-09-15：`cargo test -p minix-devman` **79 passed / 0 failed**（本篇 hooks 4 条；完整统计每篇末段累积更新，review-doc-skill §2.4j）。`cargo clippy -p minix-devman --all-targets` 0 警告（workspace profile 提示除外）。
 
 ---
 
