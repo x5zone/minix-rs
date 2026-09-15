@@ -1,7 +1,7 @@
 # 11-stage-devman Rust 实现架构级 Review TODO（第一轮）
 
 > **来源**：2026-09-15 code-excellence 首轮架构审查（用户指令：查漏补缺优先，再做架构深审；scan-only 轮，未改任何生产代码）。
-> **范围**：一等对象 `os/servers/devman/src/`（18 文件 4694 行，78 个单元测试）；客户端面 `os/libs/minix-devman-client/`（3 文件 395 行，6 个测试）与 `os/libs/minix-sys/src/devman_client.rs`（423 行）+ `usb_model.rs`（437 行，12 个测试）；C ground truth `minix3/minix/servers/devman/`（4 .c + devman.h/devinfo.h 共 1013 行）与 `minix3/minix/lib/libdevman/`（generic.c 275 行 + usb.c 301 行）。libvtreefs 使用面（1642 行）经文档引用核对，未逐行重审（上轮 CONVERGED 覆盖）。
+> **范围**：一等对象 `os/servers/devman/src/`（18 文件 4694 行，78 个单元测试）；客户端面 `os/libs/minix-sys/src/devman_client.rs`（423 行）+ `usb_model.rs`（437 行）——审查时点的 `minix-devman-client` 孤儿 crate（3 文件 395 行，6 个测试）已于 2026-09-15 按 edge E-DMCLIENT 方案 A 删除；C ground truth `minix3/minix/servers/devman/`（4 .c + devman.h/devinfo.h 共 1013 行）与 `minix3/minix/lib/libdevman/`（generic.c 275 行 + usb.c 301 行）。libvtreefs 使用面（1642 行）经文档引用核对，未逐行重审（上轮 CONVERGED 覆盖）。
 > **方法**：三向对账（C ↔ 15 篇文档 ↔ Rust，缺生产件与缺语义分档）→ 四层深审（整体组合 → 模块边界 → trait seam → 函数与数据结构，每层回答"如果今天重写会怎么设计"）→ 对照 Redox（用户态驱动 + scheme + pcid，联网核验 2026-09-15）/ Linux 驱动核心（sysfs 属性 + uevent + udev）/ Rust 社区惯例，每项改进给出至少两个候选方案。
 > **定位**：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档 §6 只留双向指针。
 > **状态（2026-09-15）**：首轮 scan-only 完成；**同日执行轮收官，DM-P1-1..5 / DM-P2-1..2 / DM-P3-1..3 十条全部闭环（详见 §0 表逐条 ✅ 与各条目进度注）**。执行前定性：语义面质量高——四条 DEVMAN 消息、事件队列、输出缓冲、设备树、引用计数级联、RS 握手、客户端序列化逐项对得上 C，且修复了 C 的 switch 无 break 级联缺陷（`[ARCH:A-3]`，dispatch.rs:1-13）；缺口曾集中在两处——生产执行半整层缺席（传输、装配、wire 编码，挂 `../edge_todo.md` E-DMWIRE 等 edge 条目，不在 stage 内消化），以及失败路径的三处新缺陷（已修）。**执行后定量**：79 passed / 0 failed（基线 78，净 +1——hook 机制测试随机制退役、内容/循环/回滚等价测试承接）；clippy 零警告；crate 内 unsafe 归零；净删除约 600 行。edge 新登记 2 条（E-DMWIRE、E-DMCLIENT）、增补 4 处，仍 open（单线程执行，前置 E1）。
@@ -25,14 +25,14 @@ devman 的现状是"语义库完备、服务器未出生、出生时会有三处
 | DM-P3-2 | 测试与卫生批次 | wire 构造 helper 四份复制；is_dir 重复；parse_device 双返回 | ✅ 2026-09-15（wire::testutil::serialize 收一处；is_dir 归 inode 单点；parse_device 单值返回；§3 DM-P3-2 Fix #10） |
 | DM-P3-3 | 每读分配 Buf + 吞错为 EOF | event_queue 每次读新建 4097 字节缓冲；ENOMEM 静默变 EOF | ✅ 2026-09-15（按条目预声明随 DM-P1-5 收口：Buf 归 VTreeFs 持有复用，读路径无分配、无吞错；§3 DM-P3-3 Fix #8） |
 
-**基线命令（2026-09-15 实测）**：
+**基线命令（2026-09-15 实测；minix-devman-client 两行是其删除前的历史记录——该 crate 已于同日按 edge E-DMCLIENT 方案 A 删除，客户端面收敛至 minix-sys）**：
 
 ```bash
 cargo test -p minix-devman          # test result: ok. 78 passed; 0 failed
-cargo test -p minix-devman-client   # test result: ok. 6 passed; 0 failed
+cargo test -p minix-devman-client   # （历史记录）test result: ok. 6 passed; 0 failed —— crate 已删除 2026-09-15
 cargo test -p minix-sys             # test result: ok. 125 passed; 0 failed（devman 相关 12）
 cargo test -p minix-types           # test result: ok. 197 passed; 0 failed
-cargo clippy -p minix-devman -p minix-devman-client   # 两 crate 0 警告
+cargo clippy -p minix-devman -p minix-devman-client   # （历史记录）两 crate 0 警告 —— client 已删除
 bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 11-stage-devman   # 15/15 PASS
 ```
 
@@ -185,7 +185,7 @@ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 11-stage-devman
 |---|---|---|---|
 | OQ-1 | `VTreeFs::unsupported` 去留（DM-P3-1 表） | 删：封闭枚举下无代码位置，函数是文档令牌 / 留：显式 ENOSYS 契约自述 | 倾向删，证据已足，随 DM-P3-1 批次由用户点头后执行 |
 
-（minix-devman-client 处置不设 OQ——它涉 16-stage-drivers 引用，已直接登记 `../edge_todo.md` E-DMCLIENT 走跨 stage 裁决。）
+（minix-devman-client 处置不设 OQ——它涉 16-stage-drivers 引用，已直接登记 `../edge_todo.md` E-DMCLIENT 走跨 stage 裁决。**✅ 已裁决并执行（2026-09-15）**：按方案 A 删除，客户端面收敛至 minix-sys 的 `devman_client`/`usb_model`，16 篇文档引用同步。）
 
 ---
 
@@ -196,7 +196,7 @@ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 11-stage-devman
 | edge 条目 | 类型 | 一句话 | 与本 todo 的关系 |
 |---|---|---|---|
 | E-DMWIRE | 新登记 | devman 生产接线四缺：server transport、请求分类器（VFS 面挂 E-REQWIRE）、装配半、client/RS 侧生产传输 | 承接 STATE.md P1-6/P1-1T/P1-10/P1-12；实施时消费 DM-P1-2/P1-3 的结构定案 |
-| E-DMCLIENT | 新登记 | `minix-devman-client` 孤儿 crate 处置（与 minix-sys::devman_client 职责重叠、零依赖、16-stage-drivers 文档引用） | DM-P3-1 的跨 stage 部分 |
+| E-DMCLIENT | 新登记，✅ 2026-09-15 执行 | `minix-devman-client` 孤儿 crate 处置（与 minix-sys::devman_client 职责重叠、零依赖、16-stage-drivers 文档引用）——按方案 A 删除，文档引用改指 minix-sys（edge_todo.md 闭单注记） | DM-P3-1 的跨 stage 部分 |
 | E-REQWIRE | 增补 | devman 是 VTreeFS dirent/stat/REQ_* wire 的第三消费方 | §1.2 "半处缺口"的归属地 |
 | E-ISWIRE | 增补 | devman SefHooks 是 minix-sef 第三消费方（OQ-1 承接） | §1.3 存量开口 |
 | E-DSWIRE | 增补 | devman 客户端 `init` 的 `ds_retrieve_label_endpt` 消费面 | minix-sys ds.rs 落地时的接线清单 |

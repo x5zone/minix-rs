@@ -640,3 +640,5 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **解锁**：E-DMWIRE 的 client 侧实现者不再有两套 API 可选；16-stage-drivers 的驱动注册链设计定案。
 
 > **复核（2026-09-15）**：现状与条目基本一致，两点修正——(1) 该 crate 已在 workspace 成员表（os/Cargo.toml:194，与条目记载一致），但仍零依赖者；(2) gpio lib.rs:4-6 注释引用的是 server crate 包名 `minix-devman`（引用对象本身就不该是任何 devman crate，应是 minix-sys 的 devman_client 模块）。方案 A 删除时四处一并清：crate 目录 + 成员行 + 12-gpio-devman.md:200 测试命令 + gpio 注释。
+
+> **进度（2026-09-15，✅ 闭单，方案 A 执行）**：(1) `os/libs/minix-devman-client/`（4 文件）git rm + workspace 成员行删除；(2) gpio lib.rs 文档注释改为指认 `minix-sys` 的 `devman_client`/`usb_model` 模块（消除指向 server crate 包名的分层违例失真）；(3) 12-gpio-devman.md 四处引用改指 minix-sys 两模块（模块行/测试命令/rg 清单/参见）+ 顶部改版注记（§3.4–3.6 等客户端叙事的 Rust 侧映射重排登记为 16-stage-drivers stage 内工作，C 分析仍有效）；(4) 11-stage-devman/todo.md 范围行/基线命令（历史记录保留并标注删除）/OQ 注/§6 指针行四处同步。**验证**：`cargo test -p minix-driver-gpio --lib` 8 passed、`cargo test -p minix-sys --lib` 125 passed（devman_client 7 + usb_model 5 承接原孤儿测试的语义面：注册/注销/序列化尺寸/接口绑定——第二真相源消除后由权威实现唯一承载）；全仓 grep `minix-devman-client` 仅剩历史记录与本条目闭单注记。**观察登记（不顺手修）**：doc 12 的 §1.4–1.6/§3.4–3.6 客户端教学叙事仍以孤儿 crate 的概念命名（Registry/DeviceRecord）展开，重排归 16-stage-drivers 工作流（doc 顶部改版注记已声明）。

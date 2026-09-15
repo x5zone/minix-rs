@@ -1,8 +1,10 @@
 # 12-gpio-devman：引脚驱动与设备注册库
 
+> **改版注记（2026-09-15，edge E-DMCLIENT 方案 A 执行）**：驱动侧客户端的权威实现收敛至 `minix-sys` crate——`src/devman_client.rs`（通用记录、注册与消息面）与 `src/usb_model.rs`（通用串行总线跟踪）；孤儿 crate `minix-devman-client` 已删除（零依赖者、handle 复用语义与服务端 dev_id 单调不复用矛盾）。本文 §1.4–1.6 / §2.4–2.5（C 分析，仍然有效）/ §3.4–3.6 的客户端叙事中，Rust 侧实现映射以 minix-sys 两模块为准，章节级重排归 16-stage-drivers 工作流。
+
 > **分类**：系统服务第 4 篇（引脚即文件，驱动侧注册）
 > **源码**：`minix3/minix/drivers/system/gpio/gpio.c`（二百九十行，引脚导出）、`minix3/minix/lib/libdevman/generic.c`（二百七十五 行，通用增删与序列化）、`minix3/minix/lib/libdevman/usb.c`（三百零一行，通用串行总线设备跟踪）、`minix3/minix/include/minix/devman.h`（注册接口声明）
-> **Rust 模块**：`os/drivers/system/gpio/src/pins.rs`（引脚认领与电平）、`os/drivers/system/gpio/src/files.rs`（导出命名与渲染）、`os/libs/minix-devman-client/src/device.rs`（通用记录与注册表）、`os/libs/minix-devman-client/src/usb.rs`（通用串行总线跟踪）
+> **Rust 模块**：`os/drivers/system/gpio/src/pins.rs`（引脚认领与电平）、`os/drivers/system/gpio/src/files.rs`（导出命名与渲染）、`os/libs/minix-sys/src/devman_client.rs`（驱动侧客户端：通用记录、注册与消息面）、`os/libs/minix-sys/src/usb_model.rs`（通用串行总线跟踪）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/11-pci-driver.md`（名单门禁思想）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/00-drivers-overview.md`（如已写；否则以计划为准）
 > **说明**：引脚驱动把板上的通用输入输出引脚变成文件：读文件看电平，读特制文件开关电平。设备注册库是驱动侧的户籍申报处：新设备来了登记，走了注销，通用串行总线设备还要跟踪接口绑定。本篇讲这两块：引脚的三件事（认领、读写、导出）与注册的两张表（通用记录、总线跟踪）。注意库名事实：计划写的注册库名已被设备管理服务占用，本库命名为设备注册客户端并在第 3.6 节说明理由。
 
@@ -194,11 +196,12 @@ Minix3 的引脚驱动就是门牌科。启动钩子按板型认领一批引脚�
 | 增删循环 | 增查删空 | 设备增删 |
 | 接口三十二上限 | 三十二过三十三拒 | 接口数组 |
 
-### 5.5 测试统计（截至 2026-09-05）
+### 5.5 测试统计（截至 2026-09-05；2026-09-15 随客户端收敛更新）
 
-- 本篇直接相关：十四个（引脚四个，文件四个，注册三个，跟踪三个），全部通过。
-- 复现命令：`cargo test -p minix-driver-gpio -p minix-devman-client --lib`（工作目录 `os/`）。
-- 完整测试清单：`rg "fn test_" os/drivers/system/gpio/src/ os/libs/minix-devman-client/src/`。
+- 引脚与导出：八个（引脚四个，文件四个），随 gpio crate，全部通过。
+- 驱动侧客户端：十二个（`devman_client` 七个，`usb_model` 五个），随 minix-sys crate。
+- 复现命令：`cargo test -p minix-driver-gpio --lib` 与 `cargo test -p minix-sys --lib`（工作目录 `os/`）。
+- 完整测试清单：`rg "fn test_" os/drivers/system/gpio/src/ os/libs/minix-sys/src/devman_client.rs os/libs/minix-sys/src/usb_model.rs`。
 
 ---
 
@@ -216,8 +219,8 @@ Minix3 的引脚驱动就是门牌科。启动钩子按板型认领一批引脚�
 - `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/system/gpio/src/pins.rs`：引脚认领与电平的实现。
 - `os/drivers/system/gpio/src/files.rs`：导出命名与渲染的实现。
-- `os/libs/minix-devman-client/src/device.rs`：通用记录与注册表的实现。
-- `os/libs/minix-devman-client/src/usb.rs`：总线跟踪的实现。
+- `os/libs/minix-sys/src/devman_client.rs`：驱动侧客户端（通用记录、注册与消息面）的实现。
+- `os/libs/minix-sys/src/usb_model.rs`：总线跟踪的实现。
 - `minix3/minix/drivers/system/gpio/gpio.c`：引脚导出的原始实现（二百九十行）。
 - `minix3/minix/lib/libdevman/generic.c`：通用增删的原始实现（二百七十五 行）。
 - `minix3/minix/lib/libdevman/usb.c`：总线跟踪的原始实现（三百零一行）。
