@@ -14,7 +14,7 @@
 //! Corresponding document: `09-input-event-processing.md`.
 
 use crate::error::InputError;
-use crate::event::InputEvent;
+use minix_types::InputEvent;
 use crate::eventbuf::{ByteCount, EventCount, ReadCopyPlan, commit_read_copy, plan_read_copy};
 use crate::structs::{
     DeviceIndex, InputDevice, InputTable, KEYBOARD_FIRST_MINOR, KEYBOARD_MINOR_COUNT,

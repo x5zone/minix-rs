@@ -12,6 +12,12 @@
 //! `0x00DE-0x00DF`, `0x00E8-0xFFFF`) have no constant here either:
 //! `KeyCode::is_defined` returns `false` for them, exactly matching the set
 //! the C header names.
+//!
+//! `[ARCH: New]` (2026-09-15, 12-stage-input/todo.md IN-P2-2): moved verbatim
+//! from `os/servers/input/src/key_codes.rs` — the codes are three-party
+//! vocabulary (driver, server, terminal), not server-internal data.
+//!
+//! Corresponding document: `04-input-event-format.md`.
 
 /// A keyboard-page event code as it appears on the wire (`code` field).
 ///

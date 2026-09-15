@@ -23,7 +23,7 @@
 //! (control/cancel/select).
 
 use crate::error::InputError;
-use crate::event::LedCode;
+use minix_types::LedCode;
 use crate::eventbuf::EventCount;
 use crate::framework::{SELECT_ERROR, SELECT_NOTIFY, SELECT_READ, SELECT_WRITE};
 use crate::structs::{EVENT_BYTES, InputDevice};

@@ -15,7 +15,7 @@
 //! Corresponding document: `03-input-device-structs.md`.
 
 use crate::error::InputError;
-use crate::event::InputEvent;
+use minix_types::InputEvent;
 use minix_types::{DS_MAX_KEYLEN, Endpoint};
 
 /// How many events one device buffer holds.

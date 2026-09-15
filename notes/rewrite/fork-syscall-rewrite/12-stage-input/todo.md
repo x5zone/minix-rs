@@ -23,7 +23,7 @@
 | P1 | IN-P1-2 | "唤醒时恰好拷一个事件"的组合缺失：C 最核心的运行时链路没有承载函数，也没有测试（✅ 2026-09-15，见 §1） |
 | P1 | IN-P1-3 | 拷贝失败不推进的挂钩点缺失：`serve_copy` 无条件推进队列指针，传输失败分支不存在（✅ 2026-09-15，见 §1） |
 | P2 | IN-P2-1 | `serve_copy` 返回单位分歧：Rust 返回事件数，C 返回字节数，签名层无提示（✅ 2026-09-15，见 §2） |
-| P2 | IN-P2-2 | 事件码词汇的 crate 归属：C 是共享头文件，Rust 锁在 server crate，驱动侧与 TTY 侧将来要么重复定义要么反向依赖 |
+| P2 | IN-P2-2 | 事件码词汇的 crate 归属：C 是共享头文件，Rust 锁在 server crate，驱动侧与 TTY 侧将来要么重复定义要么反向依赖（✅ 2026-09-15，见 §2） |
 | P2 | IN-P2-3 | 组合层设计未定：纯函数散件与"一条消息的完整效应"之间缺一层约定，传输落地前必须裁决（✅ 2026-09-15，见 §2） |
 | P2 | IN-D1 | 文档测试计数过时：01-04 篇称 28 个、06-08 篇称 48 个、12 篇称 22 个，实际 66 / 66 / 136 |
 | P2 | IN-D2 | 00 总览与 99 全局概念两篇文档仍处于 pending 状态 |
@@ -99,6 +99,10 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 - 方案二：维持事件数、在签名与文档双向加粗声明。零改动成本，但防线只有注释。
 
 **修复记录（2026-09-15，方案一落地，与 IN-P1-3 同一轮——同一函数契约无法分两次改）**：`EventCount`/`ByteCount` newtype 落在 eventbuf.rs；`decide_read` 的 `Serve` 变体携带 `EventCount`（钳制后的胃口），回信字节值由 `plan_read_copy` 规划期算好，分发层不再手工乘事件大小。`EVENT_BYTES` 常量从 handlers.rs 移到 structs.rs（与 `EVENT_BUFFER_SIZE` 同居的布局事实）。文档 07（§3.1/§4.1/§4.4/§5）同步。
+
+### IN-P2-2 事件码词汇的 crate 归属（归属迁移）【✅ 已完成 2026-09-15】
+
+**修复记录（2026-09-15，方案一落地，`[ARCH: New]` 三处一致）**：`event.rs`（事件格式与小枚举）与 `key_codes.rs`（215 键码，机械生成）整体迁入 `os/libs/minix-types/src/ipc/{input_event,key_codes}.rs`，逐字未动（值、测试名、生成器注释全部保留，8 个测试随迁）；输入服务经 `minix_input` 的 re-export 消费，crate 内 `crate::event`/`crate::key_codes` 引用路径全部改指 `minix_types`。随迁时删除了原 event.rs 的三个"声明式副本"常量（`DEVICE_TYPE_KEYBOARD/MOUSE`、`INVALID_INPUT_ID`）——`minix-types` 的 `INPUT_DEV_KBD/INPUT_DEV_MOUSE/INVALID_INPUT_ID` 本就是权威，迁移后第二轮副本失去存在理由（这正是单一权威收敛的意义：副本只会活一轮）。`[ARCH]` 标注三处：文档 04 frontmatter 与 §4（理由与位置）、`ipc/input_event.rs`/`ipc/key_codes.rs` 模块文档、两侧代码路径。pckbd 侧的本地重述清理归 edge E-PCKBDREG（16-stage 域）。验证：`cargo test -p minix-input` 86 通过、`-p minix-types` 220 通过（含随迁 8 个）、clippy 零告警。
 
 ### IN-P2-2 事件码词汇的 crate 归属
 

@@ -21,9 +21,10 @@
 //! - [`framework`] — the shared character-driver front door: message
 //!   classification, the restart gate, reply discipline (document 02).
 //! - [`structs`] — device slots, minor numbers, table indices (document 03).
-//! - [`event`] — the event wire format and code tables (document 04).
+//! - the event wire format and code tables live in `minix-types`
+//!   (`ipc::input_event` / `ipc::key_codes`, document 04) — shared with the
+//!   drivers and the terminal side.
 //! - [`error`] — failures with their Minix3 errno numbers.
-//! - [`key_codes`] — the 215 keyboard-page codes, mechanically derived.
 //! - [`eventbuf`] — ring-buffer copy geometry (document 07).
 //! - [`handlers`] — open/close/read/control/cancel/select decisions
 //!   (documents 06-08).
@@ -42,12 +43,10 @@ pub mod connect;
 pub mod dispatcher;
 pub mod effects;
 pub mod error;
-pub mod event;
 pub mod eventbuf;
 pub mod framework;
 pub mod handlers;
 pub mod init;
-pub mod key_codes;
 pub mod produce;
 pub mod setleds;
 pub mod structs;
@@ -60,9 +59,9 @@ pub use dispatcher::{Arrival, CdevCall, GrantCopy, Outcome, Server, complete_gra
     handle_arrival};
 pub use error::InputError;
 pub use effects::{Effect, ReplyValue};
-pub use event::{
-    ButtonCode, ConsumerCode, EventPage, GeneralDesktopCode, InputEvent, LedCode, PressState,
-    ValueMode,
+pub use minix_types::{
+    ButtonCode, ConsumerCode, EventPage, GeneralDesktopCode, InputEvent, KeyCode, LedCode,
+    PressState, ValueMode,
 };
 pub use eventbuf::{
     ByteCount, CopyPlan, EventCount, ReadCopyPlan, apply_copy, commit_read_copy, drain_ordered,
@@ -79,7 +78,6 @@ pub use handlers::{
     park_read,
 };
 pub use init::{HandlerSlot, InitStep, StartupRegistration};
-pub use key_codes::KeyCode;
 pub use produce::{
     DropReason, EventIntake, ForwardedEvent, WakeAction, WakeDirective, apply_wake_answered,
     apply_wake_notified, complete_answered_reader, decide_wake, enqueue, forward_to_terminal,

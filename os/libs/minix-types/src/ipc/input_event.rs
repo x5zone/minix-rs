@@ -1,4 +1,4 @@
-//! Input event wire format and event codes.
+//! Input event wire format and event codes — the shared vocabulary.
 //!
 //! C: `minix3/minix/include/minix/input.h` (333 lines). Every input driver in
 //! the system (keyboard, mouse, and any future driver) converts what its
@@ -7,40 +7,24 @@
 //! interprets the same format. This module owns the format definition, so a
 //! driver and a reader can never disagree about what a byte means.
 //!
-//! The keyboard-page code table (215 enumerators) lives in [`key_codes`]:
-//! it is mechanically derived from the C header, one constant per
-//! enumerator, with the values locked by test.
+//! The keyboard-page code table (215 enumerators) lives in
+//! [`crate::key_codes`]: it is mechanically derived from the C header, one
+//! constant per enumerator, with the values locked by test.
+//!
+//! `[ARCH: New]` (2026-09-15, 12-stage-input/todo.md IN-P2-2): the format and
+//! the code tables were first written crate-locally in
+//! `os/servers/input/src/{event,key_codes}.rs`; they moved here so all three
+//! consumers — the input server, the pckbd driver, and the terminal side —
+//! share one definition, matching the position of the shared C header.
+//! `DEVICE_TYPE_*` and `INVALID_INPUT_ID` were dropped from the moved set:
+//! this crate already holds their canonical copies (`INPUT_DEV_KBD`,
+//! `INPUT_DEV_MOUSE`, `INVALID_INPUT_ID` in [`crate::ipc::input`]).
 //!
 //! Corresponding document: `04-input-event-format.md`.
 
-/// Driver device-type bit: keyboard (`INPUT_DEV_KBD = 0x01`, `input.h:9`).
-///
-/// C: visible only under `_SYSTEM` — ordinary programs never see it. Drivers
-/// announce their kind with these bits (a combined keyboard-plus-pointer
-/// announces both; document 14), and the server matches announcements
-/// against them (document 11). Defined here because the header that names
-/// them is this module's ground truth; *used* in documents 11/12/14.
-///
-/// Authority (§2.4g): `minix_types::INPUT_DEV_KBD` is the shared canonical
-/// copy (document 05 owns the protocol numbers); this copy serves
-/// crate-local use. Change that copy first, then sync this one.
-pub const DEVICE_TYPE_KEYBOARD: u16 = 0x01;
 
-/// Driver device-type bit: mouse (`INPUT_DEV_MOUSE = 0x02`, `input.h:10`).
-///
-/// See [`DEVICE_TYPE_KEYBOARD`] for the contract (canonical shared copy:
-/// `minix_types::INPUT_DEV_MOUSE`).
-pub const DEVICE_TYPE_MOUSE: u16 = 0x02;
 
-/// "No device assigned yet" (`INVALID_INPUT_ID = -1`, `input.h:13`).
-///
-/// Negative so it can never collide with a real table index (all
-/// non-negative). The server hands this to drivers whose connect attempt
-/// found no slot, and drivers store it as "I have no device" (document 11).
-///
-/// Authority (§2.4g): canonical shared copy `minix_types::INVALID_INPUT_ID`;
-/// this copy serves crate-local use (see above).
-pub const INVALID_INPUT_ID: i32 = -1;
+
 
 /// One input event as read from an input device.
 ///
@@ -352,7 +336,8 @@ impl ConsumerCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::key_codes::KeyCode;
+    use crate::ipc::key_codes::KeyCode;
+    use crate::{INPUT_DEV_KBD, INPUT_DEV_MOUSE, INVALID_INPUT_ID};
     use core::mem::size_of;
 
     #[test]
@@ -417,9 +402,9 @@ mod tests {
     fn test_system_segment_constants_match_c() {
         // C: `input.h:6-15` (`_SYSTEM` only). The two type bits compose;
         // the invalid id is negative so it never collides with an index.
-        assert_eq!(DEVICE_TYPE_KEYBOARD, 0x01);
-        assert_eq!(DEVICE_TYPE_MOUSE, 0x02);
-        assert_eq!(DEVICE_TYPE_KEYBOARD | DEVICE_TYPE_MOUSE, 0x03);
+        assert_eq!(INPUT_DEV_KBD, 0x01);
+        assert_eq!(INPUT_DEV_MOUSE, 0x02);
+        assert_eq!(INPUT_DEV_KBD | INPUT_DEV_MOUSE, 0x03);
         assert_eq!(INVALID_INPUT_ID, -1);
     }
 

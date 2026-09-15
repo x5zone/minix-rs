@@ -3,7 +3,7 @@
 > **状态**: 已改写（2026-09-04，首版完整文档）
 > **定位**: 事件线上传输格式与全部事件码（阶段 2，协议面；第 03 篇队列的元素类型）
 > **源码**: `minix3/minix/include/minix/input.h`（333 行，全部；其中系统段第 6-15 行见 2.6 节）
-> **Rust 模块**: `os/servers/input/src/event.rs`（格式与小表）、`os/servers/input/src/key_codes.rs`（215 个键盘码，机械生成）
+> **Rust 模块**: `os/libs/minix-types/src/ipc/input_event.rs`（格式与小表）、`os/libs/minix-types/src/ipc/key_codes.rs`（215 个键盘码，机械生成）。`[ARCH: New]`（2026-09-15，12-stage-input/todo.md IN-P2-2）：两模块最初写在输入服务 crate 内，2026-09-15 迁入 `minix-types`——C 里这是三方共享头（驱动产生、服务器转发、终端消费），Rust 侧同为三方词汇，锁在服务器 crate 会逼驱动重复定义或反向依赖服务器；迁移后单一权威，输入服务经 re-export 消费，位置、值、测试逐字未变
 > **目标读者**: 想理解"驱动和服务之间、服务和读者之间用什么语言描述一次按键或鼠标移动"的读者。前置知识：第 03 篇（知道事件住在队列里）。不需要硬件知识——本章讲的恰恰是硬件细节被翻译成统一语言之后的样子。
 > **本章不讲什么**: 事件在消息里的封装（第 05 篇）；事件进队列、出队列、挤掉旧事件的规则（第 07、第 09 篇）；键盘扫描码到事件码的翻译（驱动一侧，第 14 篇）；事件码到字符的本地化映射（终端一侧，第 13 篇）。
 
@@ -70,7 +70,7 @@ struct input_event {
 };
 ```
 
-字段宽度值得细读：页和码是 16 位（页最多几十个，码最多几百个，16 位绰绰有余）；值是 32 位有符号（坐标和位移量可正可负，32 位装得下任何屏幕）；标志和来源是 16 位；保留是两个 32 位（时间戳需要 64 位）。总长度 2+2+4+2+2+8 = 20 字节，各字段自然对齐，无填充——在任何字节序和对齐规则下都一样长，这是它能当"线上传输格式"的物理基础。Rust 版本用 `repr(C)` 保证同样的布局，并用测试把总长度锁死为 20（`event.rs` 的 `test_event_layout_matches_c`）。
+字段宽度值得细读：页和码是 16 位（页最多几十个，码最多几百个，16 位绰绰有余）；值是 32 位有符号（坐标和位移量可正可负，32 位装得下任何屏幕）；标志和来源是 16 位；保留是两个 32 位（时间戳需要 64 位）。总长度 2+2+4+2+2+8 = 20 字节，各字段自然对齐，无填充——在任何字节序和对齐规则下都一样长，这是它能当"线上传输格式"的物理基础。Rust 版本用 `repr(C)` 保证同样的布局，并用测试把总长度锁死为 20（`ipc/input_event.rs` 的 `test_event_layout_matches_c`）。
 
 注释只解释了保留字段的未来用途（时间戳），其余字段的注释是"是什么"而不是"为什么"——"为什么"在文件头的三层责任注释里（1.1 节）。
 
@@ -149,15 +149,15 @@ enum {
 |------|---------|-----------|----------|
 | 系统段三名字 | input.h:6-15 | 2.6 节 | 共享权威在 05（`minix-types`），本模块同值复述供内部使用（注释有权威注记） |
 | 设计注释（三层责任） | input.h:17-22 | 1.1 节 | ——（思想无代码对应） |
-| 事件结构六字段 | input.h:25-32 | 2.1 节 | `event.rs` 的 `InputEvent` |
-| 五个事件页 | input.h:35-39 | 2.2 节 | `event.rs` 的 `EventPage` |
-| 按下松开值 | input.h:42-43 | 2.3 节 | `event.rs` 的 `PressState` |
-| 绝对相对标志 | input.h:46-47 | 2.3 节 | `event.rs` 的 `ValueMode` |
-| 通用桌面五码 | input.h:50-57 | 2.4 节 | `event.rs` 的 `GeneralDesktopCode` |
-| 键盘 215 码 | input.h:59-290 | 2.5 节 | `key_codes.rs` 的 `KeyCode`（机械生成） |
-| 指示灯三码 | input.h:292-296 | 2.7 节 | `event.rs` 的 `LedCode` |
-| 按键一码 | input.h:298-300 | 2.7 节 | `event.rs` 的 `ButtonCode` |
-| 消费类十九码 | input.h:302-331 | 2.7 节 | `event.rs` 的 `ConsumerCode` |
+| 事件结构六字段 | input.h:25-32 | 2.1 节 | `input_event.rs` 的 `InputEvent` |
+| 五个事件页 | input.h:35-39 | 2.2 节 | `input_event.rs` 的 `EventPage` |
+| 按下松开值 | input.h:42-43 | 2.3 节 | `input_event.rs` 的 `PressState` |
+| 绝对相对标志 | input.h:46-47 | 2.3 节 | `input_event.rs` 的 `ValueMode` |
+| 通用桌面五码 | input.h:50-57 | 2.4 节 | `input_event.rs` 的 `GeneralDesktopCode` |
+| 键盘 215 码 | input.h:59-290 | 2.5 节 | `ipc/key_codes.rs` 的 `KeyCode`（机械生成） |
+| 指示灯三码 | input.h:292-296 | 2.7 节 | `input_event.rs` 的 `LedCode` |
+| 按键一码 | input.h:298-300 | 2.7 节 | `input_event.rs` 的 `ButtonCode` |
+| 消费类十九码 | input.h:302-331 | 2.7 节 | `input_event.rs` 的 `ConsumerCode` |
 
 ---
 
@@ -195,7 +195,7 @@ C 的保留字段是两个 32 位，将来放时间戳。Rust 版本把它建模
 
 ## 4. 实现详解
 
-> 完整代码在 `os/servers/input/src/event.rs`（格式与小表）和 `os/servers/input/src/key_codes.rs`（键盘码表，机械生成）。本章按"结构、页与值、小码表、大码表、系统段常量"的顺序展开，每个小节标注对应的第 3 章决策。
+> 完整代码在 `os/libs/minix-types/src/ipc/input_event.rs`（格式与小表）和 `os/libs/minix-types/src/ipc/key_codes.rs`（键盘码表，机械生成）——`[ARCH: New]`（2026-09-15，IN-P2-2）：自输入服务 crate 迁入共享权威 `minix-types`，理由见 frontmatter 注记；本章路径均为迁移后位置。本章按"结构、页与值、小码表、大码表、系统段常量"的顺序展开，每个小节标注对应的第 3 章决策。
 
 ### 4.1 结构：`InputEvent`（对应 2.1 节、决策 3.4）
 
@@ -258,7 +258,7 @@ pub const INVALID_INPUT_ID: i32 = -1;        // 未分配设备编号
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/event.rs` 和 `os/servers/input/src/key_codes.rs` 的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 28 个测试，全部通过）。
+> 测试代码在 `os/libs/minix-types/src/ipc/input_event.rs` 和 `os/libs/minix-types/src/ipc/key_codes.rs` 的测试模块。运行方法：`cargo test -p minix-types`（2026-09-15 实测 220 个通过，含本篇随迁的 8 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -295,4 +295,4 @@ pub const INVALID_INPUT_ID: i32 = -1;        // 未分配设备编号
 - 第 14 篇 `14-pckbd-driver.md`：扫描码到事件码的翻译。
 - `minix3/minix/include/minix/input.h`：本篇全部 C 依据（333 行）。
 - `tools/gen-input-keycodes.py`：键盘码表的生成器。
-- `os/servers/input/src/event.rs`、`os/servers/input/src/key_codes.rs`：本篇全部 Rust 实现。
+- `os/libs/minix-types/src/ipc/input_event.rs`、`os/libs/minix-types/src/ipc/key_codes.rs`：本篇全部 Rust 实现（输入服务经 `minix_input` 的 re-export 消费）。

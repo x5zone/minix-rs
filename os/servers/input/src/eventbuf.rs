@@ -15,7 +15,7 @@
 //! Corresponding document: `07-input-read-suspend.md`.
 
 use crate::error::InputError;
-use crate::event::InputEvent;
+use minix_types::InputEvent;
 use crate::structs::{EVENT_BUFFER_SIZE, EVENT_BYTES, InputDevice};
 use alloc::vec::Vec;
 

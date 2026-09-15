@@ -5,6 +5,8 @@
 mod event;
 mod fs_driver;
 mod input;
+mod input_event;
+mod key_codes;
 mod ipc_error;
 mod ipc_server;
 mod kernel;
@@ -26,6 +28,8 @@ mod vm;
 pub use event::*;
 pub use fs_driver::*;
 pub use input::*;
+pub use input_event::*;
+pub use key_codes::*;
 pub use ipc_error::*;
 pub use ipc_server::*;
 pub use kernel::*;
