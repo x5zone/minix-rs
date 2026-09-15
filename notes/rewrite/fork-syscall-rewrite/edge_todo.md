@@ -10,6 +10,7 @@
 > 2026-09-14 增补：07-stage-ds 首轮架构审查（07-stage-ds/todo.md）登记 E-DSWIRE（minix-sys DS 客户端模块缺失 + DS 服务器 transport 通电 + 联调零覆盖，三缺一注册），并在 E-MINTYPES-SYS 增补 DS 段两件（SI_DATA_STORE / NOTIFY_MESSAGE 常量）、E5 增补 (f) DS 发布/订阅联调验收面。
 > 2026-09-15 增补：10-stage-mib 首轮架构审查（10-stage-mib/todo.md §5）登记 E-RMIBWIRE（minix-sys rmib 客户端协议半整缺）、E-MIBPROD（MIB 快照 vs kernel/PM/VFS producer 布局对账）、E-MIBGRANT（kernel grant.rs 端点常量与 C 不符）三条，并增补 E-DSWIRE（mib_get_label 消费方）、E-ISWIRE（mib 为 minix-sef 第二消费方）、E5（(g) MIB/sysctl 联调验收面）、E-MINTYPES-SYS（DS 段现状更新）、E-MINSYS-HYGIENE（锚点复核）。
 > 2026-09-15 增补：11-stage-devman 首轮架构审查（11-stage-devman/todo.md §6）登记 E-DMWIRE（devman 生产接线四缺：server transport + 请求分类器 + 装配半 + client/RS 侧生产传输）与 E-DMCLIENT（minix-devman-client 孤儿 crate 处置，涉 16-stage-drivers）两条，并增补 E-REQWIRE（devman 为 VTreeFS wire 第三消费方）、E-ISWIRE（devman 为 minix-sef 第三消费方）、E-DSWIRE（devman 客户端 init 的 DS label 查询消费方）、E5（(h) devman 生命周期联调验收面）。
+> 2026-09-16 增补：13-stage-ipc 首轮架构审查（13-stage-ipc/todo.md）登记 E-IPCWIRE（ipc-server 生产面接线八缺：trap 桥/SEF 层/sys_datacopy/proceventmask/VM_SHM_UNMAP/clock/getepinfo 窄 helper 七件 minix-sys 面 + minix-types 的 semid_ds/shmid_ds 布局面）。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -752,3 +753,29 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：第 3 项与 12-stage-input/todo.md IN-P2-2（键码词汇归属迁移）联动；其余无。
 **解锁**：E5 输入链的驱动半；pckbd 硬件落地时不再踩状态 3 与 ACK 条件两颗雷。
+
+---
+
+## E-IPCWIRE ipc-server 生产面接线八缺（13-stage-ipc 首轮架构审查登记，2026-09-16）
+
+**问题**：13-stage-ipc 的 Rust 判定层已完整（`os/servers/ipc-server/` 17 文件 4945 行，83 测试全过，见 13-stage-ipc/todo.md §0），但生产面八件全部缺席，ipc-server 至今无法对外提供任何一个 SysV IPC 调用（main.rs:27 直接 panic）。逐项锚点：
+
+1. **trap 桥（阻塞于 E1）**：`DirectTrapTransport` 的 `IpcTransport` 实现全方法返回 `Err(TrapStatus(EIO))`（`os/libs/minix-sys/src/ipc.rs:527-559`），注释自认"真实 trap 指令序列待 64 位 trap 接线落地（stage plan item A-6）"（ipc.rs:519-525）。
+2. **SEF 层整体缺失**：`sef_startup`/`sef_receive_status`/`sef_local_startup` 全仓库无实现（grep 零命中）；ipc-server 的 `IpcServer::init()` 只设一个 bool（`os/servers/ipc-server/src/server.rs:200-202`），C 的三条回调注册（main.c:124-134）无处落地。C 侧参照 `minix3/minix/servers/ipc/main.c:80-134`。
+3. **sys_datacopy 命名 wrapper**：C 语义 = SELF + sys_vircopy；`SELF` 常量已备（minix-sys/src/syscall.rs:254）、`sys_vircopy` 已备（syscall.rs:481-500），缺命名版本——semop 操作数组拷入、semctl/shmctl 缓冲拷出的边界动词（C sem.c:680、shm.c:308 等）无承载。
+4. **proceventmask 客户端 wrapper**：minix-sys 全模块 grep 零命中；消息构造器已备（`os/libs/minix-types/src/ipc/event.rs:168` 的 `proceventmask_msg`），taskcall 组装无人做——ipc-server `events.rs` 的 `SyncAction` 执行半缺位（C main.c:163-166 的订阅/退订调用）。
+5. **VM_CALL_SHARED_UNMAP wrapper**：常量已定义（minix-sys/src/vm.rs:62）无 wrapper；同族 `mmap_via`/`munmap_via`/`physical_address_via`/`reference_count_via` 先例（vm.rs:171/:207/:335/:356）——shm 侧 `SweepPlan::unmaps`（ipc-server refcount.rs:36-42）的执行动词。
+6. **时钟客户端**：ipc-server 全部 `now: u64` 为注入参数（sem/table.rs:219、shm/segment.rs:102 等），无 clock_time 来源（C utility 面 `clock_time(NULL)`，sem.c:138 等 5 处）。
+7. **getnuid/getngid/getnpid 窄 helper**：minix-sys 只提供全元组版 `endpoint_identities_via`（rs.rs:170），注释明说窄版未提供（rs.rs:167-169）；ipc-server `perms.rs:49-53` 声明的 Identity 查询半缺位（C utility.c:10-11、sem.c:720 的 getnpid）。
+8. **minix-types 补 `struct semid_ds`/`struct shmid_ds` 二进制布局**：IPC_STAT 拷出与 IPC_SET 拷入的 wire 契约（C `sys/sem.h`、`sys/shm.h` 布局，用户态 ipcs(1) 依赖），minix-types grep 零命中——E-REQWIRE/E-INWIRE 同款"wire 类型缺口"模式。无它则服务层无法搬运 stat/set 的结构体字节（13-stage-ipc/todo.md IPC-P1-1 边界契约）。
+
+**影响**：ipc-server 判定层 4945 行无法对外服务；13-stage-ipc/todo.md IPC-P1-1（服务层组装）的全部边界契约悬空；E5 的 IPC 联调验收面无前置。
+
+**为何 edge**：edge 判定①——minix-sys 的 trap 层与 SYS_*/VM_* wrapper 是全体用户态服务的共享契约层（E1/E2/E-DSWIRE/E-DMWIRE 同域），第 1-7 项归此；第 8 项落 minix-types 布局面（判定规则①原文点名"minix-types 布局"）；ipc-server 自身只是首个深度消费者。MIB 客户端不在本条——E-RMIBWIRE 的代码半已闭环（c7d2ea150）。
+
+**建议**：
+- 方案 A（推荐）：按 campaign 波次拆批——第 8 项（布局）无依赖，13-stage 服务层开工前即可落地（`offset_of` 钉死布局，10-stage-mib P1-3 先例：SysctlNode 96B 的做法）；第 3-7 项为纯 wrapper/组装，C 波（minix-sys 客户端库轮）与 E-DSWIRE/E-DMWIRE 同型批量处理，全部可用 CannedTransport 形状做宿主单测（E2/E6 先例）；第 1/2 项随 F 波 E1 trap 桥与通电族落地。
+- 方案 B（否决）：ipc-server 内自建这八件。wrapper 层重复 ×N 服务（与 E-RMIBWIRE 方案 B 同款否决理由：C 把这些做成 libsys 公共库正是因为多服务共用）；semid_ds/shmid_ds 布局放服务 crate 则 ipcs 兼容性契约散落，且未来 lwip/uds 等消费者各抄一份必然漂移。
+
+**依赖**：第 8 项无依赖；第 3-7 项无硬依赖（可宿主测试）；第 1/2 项依赖 E1（trap 桥）。
+**解锁**：13-stage-ipc/todo.md IPC-P1-1（服务层接线）全链；ipc-server main.rs 去 panic；E5 IPC 联调验收面前置。
