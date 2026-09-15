@@ -381,7 +381,7 @@ ioctl KIOCSLEDS（ttycom.h:174 + kbdio.h）→ input_ioctl（kio_leds_t → INPU
 
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
-| 00 | pending | — | 新建导航 |
+| 00 | 已改写 | 2026-09-15 | 导航补齐（IN-D2；按 Rust 实现现状更新主线图，.design 三件套同步生成） |
 | 01 | reviewed | 2026-09-04 | 新建（启动锚点；scan: .review/codex/fork-syscall-rewrite/scans/01-input-init-main/，CONVERGED） |
 | 02 | reviewed | 2026-09-04 | 新建（A-1 框架契约；scan: scans/02-chardriver-framework/，CONVERGED） |
 | 03 | reviewed | 2026-09-04 | 新建（A-3/A-7；scan: scans/03-input-device-structs/，CONVERGED） |
@@ -396,7 +396,7 @@ ioctl KIOCSLEDS（ttycom.h:174 + kbdio.h）→ input_ioctl（kio_leds_t → INPU
 | 12 | reviewed | 2026-09-05 | 新建（A-9；scan: scans/12-libinputdriver/，CONVERGED） |
 | 13 | reviewed | 2026-09-05 | 新建外部契约（scan: scans/13-tty-consumer/，CONVERGED） |
 | 14 | reviewed | 2026-09-05 | 新建外部契约（scan: scans/14-pckbd-driver/，CONVERGED） |
-| 99 | pending | — | 新建全局概念 |
+| 99 | 已改写 | 2026-09-15 | 全局概念补齐（IN-D2；数值权威逐一标注 minix-types，.design 三件套同步生成） |
 
 ---
 
