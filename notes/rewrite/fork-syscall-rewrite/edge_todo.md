@@ -14,51 +14,21 @@
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
 > 执行约定：一次一条；每条完成后在本文件标注状态与日期；涉及对应 stage 的条目同步回写其 todo.md（02-stage-vm 对应 V11 条目、04-stage-pm 对应 P/D 条目）。
+> 2026-09-15 清理 campaign：已闭单四项（§0 表、E3、E-RSSTART、E-VMMCPWIRE）迁入 [edge_todo_archive.md](./edge_todo_archive.md)；同日全条目三路 grep 对账，过期锚点与已闭合子句已在各条目以「复核(2026-09-15)」修正——执行每条前仍须按 fix-guard 重新读目标行核实，不依赖本文件锚点的时效性。
+> campaign 执行序（2026-09-15 批准）：依赖波次——A 内核正确性快修（E-MIBGRANT/E-PREEMPTFLAG/E-SCHEDNICED/E-VMTLB/E-DMCLIENT）→ B 共享契约收敛（E-MINTYPES-SYS/E-REQWIRE/E-MINTYPES-RS/E-FORKMSG）→ C minix-sys 客户端库（E2 / E-DSWIRE 余件+E-MINSYS-HYGIENE 同轮 / E6 / E-RMIBWIRE 纯函数层 / E-ISWIRE(1)）→ D 布局对账与 wire 系统化（E-ISPROD+E-MIBPROD / E7 / E-ISKMESS / E-KERNINFO）→ E VM 大件（E-BOOTFRAME / E-RSWIRE VM 侧 / E-VMMOCK 余件）→ F E1 trap 桥（设计先行，整条在本 campaign 做）与通电族（E8/E9/E-VFSWIRE/E-DSWIRE 通电/E-ISWIRE(2)(3)/E-DMWIRE/E5/收尾批）。每条一次一个，走 todo-fix 三段式（讲明白 → 多方案对比 Linux/Redox/OS 理论 → 实施）+ fix-guard + 文档-代码同步 + 测试 5 维自查 + 回归 review 后 commit；新发现的跨 stage 条目一律追加进本文件，不并发改各 stage 的 todo.md。
 
 ---
 
-## 0. 02-stage-vm 实施 campaign 顺序表（进度真相源）
+## 0. 已闭单条目(归档指针)
 
-对应 `02-stage-vm/todo.md` §14 的 V11 条目与本文件 edge 条目的依赖关系。VM 侧口径：依赖共享 trap 层的条目，VM 侧逻辑完备（seam + mock 测试）即标 ✅，真实通电挂对应 edge 条目（模式 60 诚实契约）。
+以下四项已闭单,完整原文(含判定过程)迁入 [edge_todo_archive.md](./edge_todo_archive.md),本文件不再保留正文:
 
-| 迭代 | 批次 | 内容 | 对应条目 | 状态 |
-|---|---|---|---|---|
-| T1 | 0 | 文档测试名 4 处 + §5.4 计数刷新 | V11-P2-6 | ✅ 2026-09-06（todo.md §15 Fix #19） |
-| T2 | 0 | 过时注释 4 处（X86_64Paging 已实现） | V11-P2-4 | ✅ 2026-09-06（todo.md §15 Fix #20） |
-| T3 | 0 | clippy 回归收敛 + 卫生批次 | V11-P2-3 + V11-P3-1 | ✅ 2026-09-06（todo.md §15 Fix #21；all-features 剩 :301 归 T4） |
-| T4 | 0 | 删 DefaultAllocator 双真相源 + 组合语义测试 | V11-P1-3 | ✅ 2026-09-06（todo.md §15 Fix #22） |
-| T5 | 1 | VmContext 第一步：parts_mut 消灭 | V11-P1-2（1/2） | ✅ 2026-09-06（todo.md §15 Fix #23） |
-| T6 | 1 | VmContext 第二步：dispatcher 收 &mut VmContext + fdref/table 收敛 | V11-P1-2（2/2） | ✅ 2026-09-06（todo.md §15 Fix #24；fdref 收敛归 T10） |
-| T7 | 1 | per-call codec 注册表 + dispatch 表驱动化 | V9-P2-1 + V9-P2-2 | ✅ 2026-09-06（todo.md §15 Fix #26） |
-| T8 | 1 | 错误枚举收敛 → **判定闭合：现有 From 集中表即最优** | V10-P2-3 + P2-2 | ✅ 2026-09-06（todo.md §15 Fix #27，WONTFIX 级设计判定） |
-| T9 | 2 | KernelIpcTransport VM 侧完备 + KernelGateway seam | V11-P1-1（通电→E1/E2） | 🔄 step1 ✅（Fix #28）step2 ✅（Fix #29）step3 ✅（Fix #34：grant 贯通 + 假成功消灭 + fail-closed；rproctab 字节解码→**E-RSWIRE**） |
-| T10 | 2 | VFS_FDCLOSE 发送 + region close 入队 | （V11-P1-1 建议 2 / P1-3 链） | 🔄 入队半 ✅（Fix #33）；发送半 → **E-VFSWIRE** |
-| T11 | 2 | fork.rs sys_fork 真实语义 | fork.rs stub（通电→E2） | ✅ 2026-09-07（stub 删除随 Fix #29；eager-CoW 相随 Fix #53；通电→E2+E-FORKMSG） |
-| T12 | 2 | RS_PREPARE map_proc_dyn_data | rs.rs:250 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #40） |
-| T13 | 2 | RS_UPDATE 步骤 5-7（VM 侧）+ 步骤 4 走 Gateway | rs.rs:328 DEFERRED（通电→E2） | ✅ 2026-09-06（todo.md §15 Fix #42） |
-| T14 | 2 | exec_bootproc（minix-elf + VM 映射 + Gateway.sys_exec） | vm_server.rs:385 DEFERRED（通电→E2） | 🔄 装载半+sys_exec wire ✅（Fix #41）；栈帧 ABI → **E-BOOTFRAME** |
-| T15 | 2 | audit 日志转发（Gateway.diagctl） | audit.rs:16（通电→E2） | ✅ 2026-09-06（todo.md §15 Fix #32） |
-| T16 | 2 | sanity_checks feature + usedpages 等价物 | V10-P2-1 sanity 行 + G-V11-2 | ✅ 2026-09-06（todo.md §15 Fix #38；usedpages 语义由 verify_refcounts 覆盖） |
-| T17 | 2 | bitmap cache_freepages 三步路径 → **判定闭合：语义已被双层覆盖，钩子删除** | bitmap_alloc.rs:347 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #31） |
-| T18 | 2 | alloc 失败计数接入 InfoStats（周期循环判定不采纳） | alloc_stats.rs:46 DEFERRED | ✅ 2026-09-06（todo.md §15 Fix #30） |
-| T19 | 2 | exec_newmem / DMA 三条 parity 处置（删 dead stub，不实现） | dispatcher.rs:820/:1223 | ✅ 2026-09-06（todo.md §15 Fix #25） |
-| T20 | 2 | 大匿名映射懒分配 → **判定闭合：demand paging 已是现状**（稀疏表示=证据门控优化） | V9-P3-2 | ✅ 2026-09-06（todo.md §15 Fix #35） |
-| T21 | 3 | 页表可注入化 + VM 内 SimPaging | V11-P2-1（QEMU 冒烟→E5） | ✅ 2026-09-06（todo.md §15 Fix #39） |
-| T22 | 3 | MemType / PhysAllocator 方法级补测 + buddy reserve 语义修正 | V11-P2-2 | ✅ 2026-09-06（todo.md §15 Fix #36） |
-| T23 | 3 | rs_handshake/init pin 测试 + run_once 分支补测 + CI 矩阵 | V11-P2-5 | ✅ 2026-09-06（todo.md §15 Fix #37；rs_init pin 已随 Fix #34） |
-| T24 | 4 | 残留标注清理 + parity/死代码判定批次 + 新缺口登记（G-V12-1..4） | todo.md §16 | ✅ 2026-09-07（todo.md §16 Fix #43 pre + Fix #44 清理批次；五篇文档同步） |
-| T25 | 4 | pt=None → SimPaging 翻转 ×6（munmap×4/brk×2） | V11-P2-1 收尾 | ✅ 2026-09-07（todo.md §16 Fix #45；mmap helper 连带修复） |
-| T26 | 4 | MOCK_BASE_MUTEX + extend_to_static_lifetime 归零（线程本地窗口） | V11-P1-2/V9-P2-4 验收锚点 | ✅ 2026-09-07（todo.md §16 Fix #46；新登记 G-V12-5 归 E3） |
-| T27 | 4 | dispatcher 4 函数 happy-path 补测 | G-V12-3 | ✅ 2026-09-07（todo.md §16 Fix #47；四矩阵 476/493/476/476） |
-| T28 | 5 | CacheMemory::ev_pagefault 缓存查找 + PbCache 接线 → **判定闭合：邮箱机制删除，契约 fail-closed 化** | G-V12-1 | ✅ 2026-09-07（todo.md §16 Fix #48） |
-| T29 | 5 | SIGKMEM 信号 seam + do_memory 排空循环（kernel 对端已落地；通电挂 E1） | G-V12-2 + G-V11-1 | ✅ 2026-09-07（todo.md §16 Fix #49；三矩阵 480/497/480） |
-| T30 | 5 | 分配漏斗回收-重试（alloc_pfn_reclaiming；C alloc_mem do-while 语义） | "24-page-cache" 停泊项 | ✅ 2026-09-07（todo.md §16 Fix #50；三矩阵 484/501/484） |
-| T31 | 5 | 缺页计数生产者接线 + InfoUsage 槽位判定（Getrusage 为出口，VM_INFO wire C-parity） | vmproc_handle.rs:305 | ✅ 2026-09-07（todo.md §16 Fix #51；新登记 G-V12-6） |
-| T32 | 6 | VFS transid 路径 C-parity 修复（真 bug：clean_type 门拒绝真实 transid 消息） | vm_server.rs:1227 | ✅ 2026-09-07（todo.md §16 Fix #52；三矩阵 486/503/486） |
-| T33 | 6 | fork eager CoW——VM 侧完成（借用两相 + msgaddr 经 gateway Option）；kernel 缺 msgaddr 出参 → **E-FORKMSG 登记** | T11 收尾 | ✅ 2026-09-07（todo.md §16 Fix #53；三矩阵 488/505/488） |
-| T34 | 6 | MemType 收敛设计 → **判定闭合：保留 trait（C vtable 直接对应物；Redox Provider 类比不成立）** | V9-P2-3 | ✅ 2026-09-07（todo.md §16 Fix #55） |
-| T35 | 7 | 剩余判定批次——注记批+失真批+per-backend 查询判定 ✅；余 heap-shrink 删除、G-V12-4 errno 直传（下轮，理由见 Fix #54） | todo.md §16 | 🔄 主体 ✅ 2026-09-07（todo.md §16 Fix #54） |
-| T36 | 7 | 收尾回归：todo/edge 对账 + checklist §8 刷新 + Gate E + 四矩阵全绿 | 收敛审计 | ✅ 2026-09-07（todo.md §16 Fix #56；campaign 完结——T24–T36 全部闭环） |
+| 条目 | 闭单性质 | 闭单日期 |
+|---|---|---|
+| §0 02-stage-vm campaign 顺序表(T1–T36) | 全部完成 | 2026-09-07 |
+| E3 VmBootHandoff 补 kernel text/data span | 完成 | 2026-09-08 |
+| E-RSSTART rs_start_t 字节 ABI + copy_rs_start 解码 | 改判关单(接线转入 03-stage-rs §21) | 2026-09-07 |
+| E-VMMCPWIRE vmmcp reply.addr 64 位化 | 完成(宽度对账余件转低优先扫描项) | 2026-09-08 |
 
 ---
 
@@ -92,11 +62,7 @@
 
 **解锁**：T11 / T13（步骤 4）/ T14 / T15 的真实通电。
 
----
-
-## E3 VmBootHandoff 补 kernel text/data span（= 02-stage-vm V11-P2-7）
-
-> **进度（2026-09-08，完成）**：`VmBootHandoff` 增 `kern_virt_base/kern_phys_base/kern_text_pages/kern_data_pages` 四字段（version 2 → 3；size 断言 ≤ 4096 仍通过）；kernel `build_vm_handoff` 从 `kern_virt_base()/kern_phys_base()/kern_size()` 填充（minix-rs 内核映像为单一连续 span——text_pages = 全映像页数，data_pages = 0）；VM `read_boot_params` 解析为 `BootParams.kernel_layout: Option<KernelLayout>`（handoff v≥3 → `kernel_layout()`，v≤2 → None）；`init_global_state` 消费——`Some` 用真值，`None`（pre-E3 handoff/宿主测试）保留 mock 常量 + 审计告警。minix-types 访问器测试 ×2（v3 报告 span / v2 None）。**P1-4 实质闭环**：真实硬件上 `init_page_table` 的内核映射来自 boot handoff 而非硬编码 mock。余件：riscv64 Sv39 的 `VM_BOOT_HANDOFF_VA`（0x1_0000_0000 < 2^38 ✓ 已兼容）。
+> **复核（2026-09-15）**：锚点更新——`perform_kernel_call` 现 :539（`KernelCallTransport` 区间基本未变）；minix-sys 现有 11 个 `sys_*` wrapper（kill/abort/times/sigsend/getksig/endksig/trace/runctl/resume/vircopy/clear），本条 VM 侧 6 类（fork/update/safecopyfrom/safecopyto/exec/diagctl）grep 零命中待建；minix-types `ipc/sysinfo.rs` 已有 SYS_GETINFO/SYS_DIAGCTL/SYS_SAFECOPYFROM/SYS_SAFECOPYTO 等常量可直接消费。
 
 ---
 
@@ -122,33 +88,6 @@
 **依赖**：E1（trap 层）落地后发送才真实可达；vfs 侧 do_vm_call 消息面定稿（09/13-stage 工作流）后定 wire。
 
 > **2026-09-09 增补（05-stage-vfs R2 轮）**：VFS 侧接收半现状——`VmVfsReq::from_raw` 决策原语已有（os/servers/vfs/src/misc.rs:262-281，101=FdLookup/102=FdClose/103=FdIo）与 `VM_VFS_REPLY=0xC1E`（misc.rs:305 一带），**消息级解码仍未建**（do_vm_call 的 union 字段映射，C vfs.c:60-104）。wire 定稿追加一条纪律：m_type 与字段的**绝对值**必须以 C 源断言（教训：vfs 侧 request.rs:15 把 REQ 基址写成 0x600 而 C com.h:589 为 0xA00，两侧偏移对齐掩盖基址分叉——详见 05-stage-vfs/todo.md §9.2 R2-P0-1）。
-
----
-
-## E-RSSTART rs_start_t 字节 ABI pinning + copy_rs_start 解码（03-stage-rs RS_UP/RS_EDIT 臂，2026-09-07 登记）
-
-> **改判（2026-09-07，用户批准并入 03-stage-rs campaign 后关单）**：阻塞前提
-> （"`bitchunk_t`/`uid_t` 在本树无 typedef，rs_start_t 字节 ABI 不可 pinning"）经独立
-> 核实**不成立**——minix3/ 是完整 NetBSD 式全树：`bitchunk_t = uint32_t`
-> （`minix3/sys/sys/types.h:124`，固定宽度、无架构依赖）、`uid_t = uint32_t`
-> （types.h:221 + ansi.h:46）、`struct rs_start` 完整（`minix3/minix/include/minix/rs.h:104-151`）。
-> 当初的 grep 只覆盖了 `minix3/minix/` 子树而漏掉 `minix3/sys/`。wire 解码面已落地
-> （`minix-types::ipc::rs_start`，Fix #81：偏移常量单点表 + repr(C) 布局见证 +
-> 39 个 offset_of 编译期断言 + x86-64 LP64 数据模型声明）；**RS_UP/RS_EDIT/
-> RS_UPDATE 三臂接线转入 03-stage-rs/todo.md §21 campaign 执行（R4-R6），本条目
-> 关单**。下文保留原文以存档判定过程；原文的"约 230 字节"与 ILP32 假设作废
-> （实际 `sizeof(struct rs_start)` = 920，LP64）。
-
-**问题**：RS 的 `RS_UP`（do_up，request.c:15-106）与 `RS_EDIT`（do_edit，request.c:298-385）第一步都是 `copy_rs_start`——把调用方内存里的完整 `struct rs_start`（rs.h:107-166，约 230 字节：rss_flags/rss_cmd/rss_uid/位图数组/irq·io·pci 表/rss_label/…）按 C ABI 整结构拷入 RS。该结构含 `bitchunk_t rss_system[SYS_CALL_MASK_SIZE]`、`bitchunk_t rss_vm[VM_CALL_MASK_SIZE]` 与 `uid_t rss_uid`，而 `bitchunk_t` 在本 minix3 子树**只有使用没有 typedef**（bitmap.h:12 引用 `sizeof(bitchunk_t)`，全树 grep 无定义），`uid_t` 亦属 sys/types.h 外部类型——字节偏移无法从本树 pinning，猜偏移违反 Ground Truth 链（同 E-RSWIRE 判据）。
-
-**影响**：13-rs-control-requests 的 `do_up`/`do_edit` 两臂停在缝上：权限/查槽/编排（create_service/edit_slot/run_service——决策与编排已全就绪，Fix #46-#52）就等这条解码；RS 侧其余 label 型控制臂（down/refresh/restart/clone/unclone/lookup/fi/getsysinfo/sysctl）已全部 live（Fix #71/#74/#75/#76），不依赖本条。
-
-**解锁后工作（约一个完整迭代）**：
-1. 从完整 Minix3 源码树 pin `bitchunk_t`/`uid_t` 尺寸 → 计算 `rs_start_t` 偏移表（逐字段断言测试锚定字节布局，风格同 E-RSWIRE 的 RprocpubWire）；
-2. minix-types 增 `RsStartWire`（repr(C)）+ `decode` + 偏移断言；
-3. rs 侧 `RsServer::do_up`/`do_edit` 接线：label 改取 rs_start 内的 rss_label，编排消费 `check_create_preconditions`/`create_service`/`edit_slot`/`run_service` 全链（sched_stop→edit_slot→privctl(UpdateSys)→sched_init 序列含 E-7 的类型化锚）。
-
-**依赖**：~~完整 Minix3 C 源码参照（或补全本树头文件中 `bitchunk_t`/`uid_t` 的定义链）~~（已解除——定义在树内）；无 E1/E2 依赖（解码纯单测可验证）。
 
 ---
 
@@ -197,6 +136,8 @@
 **跨 stage 文件**：`os/kernel/src/syscall_process.rs`（dispatch_fork 应答补 msgaddr——来源 `caller.p_delivermsg` 等价物）、`os/libs/minix-sys` 或 reply wire（KcallResult/`m_krn_lsys_sys_fork` 加字段）、`os/servers/vm/src/kernel_gateway.rs`（`sys_fork` 的 `None` 换真值，VM 侧零改动——消费代码已就位并有 mock 测试）。
 
 **解锁**：T33 的 eager-CoW 相在真实硬件上生效；E5(a) PM↔VM fork 联调的正确性前提（内核写应答不撞 CoW 死锁）。
+
+> **复核（2026-09-15）**：锚点更新——dispatch_fork 体 syscall_process.rs:133-215，应答仅 `KcallResult::Ok(child_endpoint.0)`（:214）；gateway kernel_gateway.rs:197-199 返回 `None`（注释自引本条）；fork.rs eager-CoW 门在 :364。另核实 minix-types 无 `m_krn_lsys_sys_fork` 成员——msgaddr 出参需在应答 wire 上新增字段，与本条「跨 stage 文件」第 2 项一致。
 
 ## E5 端到端联调测试包
 
@@ -305,6 +246,8 @@
 
 **依赖**：E1（trap 层）落地后才有用户态调用方；内核侧实现本身可先行（stage 内单测覆盖），但无消费方即无法验证可观察行为——按 todo-fix 规则保持 DEFERRED 登记，不假完成。
 
+> **复核（2026-09-15）**：锚点 +2——ipc.rs:1777（"not yet implemented"）与 :2063（钉子测试）。新增现状：minix-rt 已有用户侧脚手架（init.rs:108-116 `KerninfoSource` trait、:128-136 `DirectTrapSource` 的 `query_kerninfo` 为 Err(EIO) 桩、:145-149 CannedSource 测试源）——内核臂落地后该桩有现成接缝；RS 侧已建模 trap 掩码位（os/servers/rs/src/privilege.rs:152 `MINIX_KERNINFO = 1 << 6`）。
+
 ---
 
 ## E-MINTYPES-RS minix-types RS 消息层的三个可重构观察（2026-09-07 扫描登记，低优先）
@@ -329,19 +272,7 @@
 **解锁后工作**：三项互相独立，均为 minix-types 内部重构（接口不变、调用方零改动
 或纯 re-export 调整），各约 0.5 个迭代。无 E1/E2 依赖。
 
----
-
-## E-VMMCPWIRE vmmcp 消息族字段宽度修正：reply.addr u32 → 64 位（02-stage-vm V12 轮登记，2026-09-08）
-
-**问题**：minix-types 的 `MessVmmcpReply.addr` 是 `u32`（`os/libs/minix-types/src/ipc/message.rs:2512-2515`），而 C 的对应字段是 `void *addr`（`minix3/minix/include/minix/ipc.h:2395-2400`，x86_64 上 64 位；C 赋值 `msg->m_vmmcp_reply.addr = (void *) vr->vaddr`，mem_cache.c:170）。VM 侧编码随之截断：`reply.addr = addr.0 as u32`（`os/servers/vm/src/vm_server.rs:1704`），而 mapcache 的分配地址走 MMAP 窗口（`MMAP_BASE = 0x1_0000_0000`，`os/servers/vm/src/mmap.rs:204`）——**高 32 位恒非零，截断恒发生**，属必现 wire bug 而非边角。同簇疑点：`mmap.rs:373` 的 `length: aligned_len.0 as u32`（>4GB 映射静默截断），以及 `mess_vmmcp` 请求方向字段宽的逐字段核查。
-
-**为何 edge**：minix-types 消息布局是共享契约（edge 判定①类）——字段加宽是 wire ABI 变更，消费面（未来 minixfs/lib 的 vm_map_cacheblock 等价物，C 侧 libsys/vm_cache.c:47-54）尚未存在，现在改零成本、通电后改即破坏二进制契约。
-
-**建议**：(1) `MessVmmcpReply.addr: u32 → u64`（对齐 C `void *`），VM 编码去截断；(2) 对照 `mess_vmmcp`/`mess_vmmcp_reply` 原始结构逐字段核查请求/回复两个方向（含 `_ASSERT_MSG_SIZE` 对应的 56 字节 payload 断言）；(3) wire 回放测试断言大地址高位保全；(4) 顺手按"pattern 84 候选"（02-stage-vm/todo.md §17.6）对 VM 消息族做一次系统性字段宽度对账，同类问题一次清完。
-
-**解锁**：02-stage-vm/todo.md V12-P1-3（VM 侧半边）；E5(b) VFS 缓存协作链的正确性前提。
-
-> **进度（2026-09-08，✅ 闭单）**：建议 (1)(3) 已落地——`MessVmmcpReply.addr: u64`（`addr @0, flags @8, padding[47]`，56 字节保持），VM `encode_reply_data` 去截断，`VfsRequest.length` 同批拓宽 u64；测试 `test_vmmcp_reply_layout_64bit_addr`（minix-types）+ `test_encode_mapcache_reply_preserves_high_addr_bits`（vm_server）。依据记录：02-stage-vm/todo.md §17.9 Fix #59。**余件转入低优先**：建议 (4) 的 VM 消息族系统性字段宽度对账（pattern 84 候选）——`mess_vmmcp` 请求方向初查字段类型与 C 一致（dev/off/ino 皆 64 位 + block/flags_ptr 指针宽待 minix-sys 消费时定），留作后续扫描项，不阻塞通电。
+> **复核（2026-09-15）**：观察 1 的守卫仍在（ipc/message.rs:364-368）但 `RS_RQ_BASE` 已提取为共享常量（ipc/rs.rs:14），范围形状（BASE..=BASE+24 排除 RS_INIT/RS_LU_PREPARE）未变——脆弱性判定不变；观察 2 的文件现为 ipc/message.rs 3941 行（继续膨胀，拆分时机与 E7 批量新增协调）；观察 3 不变。
 
 ---
 
@@ -354,6 +285,8 @@
 **解锁**：VM 生产依赖面的单一真相；arch 命名与语义一致。无 E1/E2 依赖，可独立先行。
 
 > **进度（2026-09-08，建议 (1) 完成）**：`os/servers/vm/Cargo.toml` 已补 `default-features = false`，三 feature 矩阵回归零差异（490/507/490 passed）——VM 生产代码无 mock 项依赖，收口无行为影响。**余件**：建议 (2) arch 侧 `mock` 更名（涉 kernel/boot-shim 引用同步）与 (3) G-V12-5 行闭单回写（待 (2) 一并完成）。依据记录：02-stage-vm/todo.md §17.9 Fix #62。
+>
+> **复核（2026-09-15）**：G-V12-5 行已随 V12 归档迁至 02-stage-vm/archive/todo-V12-archive-2026-09-09.md:108（不在当前 todo.md）——余件 (3) 的回写落点改为该 archive 文件；mock 门控点实测约 119 处（集中在 os/arch/src/lib.rs 的三架构三元组），余件 (2) 是机械批量更名 + kernel/boot-shim 引用同步 + 三 feature 矩阵回归。
 
 ---
 
@@ -397,6 +330,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **依赖**：无 E1/E2 硬依赖（机制可先行 + 单测），但验收（E5 SMP 冒烟）前置 E1/E2；与 01-stage-kernel 的 SMP 工作窗（smp_gpt 系列设计迭代）协同排期。
 
+> **复核（2026-09-15，现状更新）**：「grep 零命中」已失效——`MiscFlagsBits::FLUSH_TLB` 已定义（proc.rs:181/:206 别名）且被 `vmctl_vminhibit_set` 设置（syscall.rs:2327），但全内核无消费者（dispatch/restore 路径不读该标志；lib.rs:2582-2584 自注 single-CPU parity 省略；vmctl_vminhibit_clear 注释 :2336 自述 "stale TLB fill not yet implemented"）。同根跳过优化本体已迁至 lib.rs:2534-2555（:2550-2552）。剩余工作不变：调度点消费（刷新先于同根比较）+ 设置点对账 + 单测。
+
 ---
 
 ## E-REQWIRE REQ_* VFS↔FS 消息契约双侧独立定义（05-stage-vfs R2 轮登记，2026-09-09）
@@ -415,6 +350,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 3. 附带：request.rs:120 的 "33 variants" 计数注释随迁移/对账修正（05-stage-vfs todo R2-P3-1）。
 
 **依赖**：无硬前置（方案 B 的对账测试立即可写）；执行顺序与 05-stage-vfs R2-P0-1 协调——先在 VFS 侧止血基址，再做本条结构收敛。验收挂钩 E5：VFS↔mfs 第一条真实 REQ 往返（REQ_READSUPER）即本条验收面。
+
+> **复核（2026-09-15，数值半已愈）**：R2-P0-1 已修（05-stage-vfs/todo.md §9.9 Fix #1，2026-09-09）——vfs request.rs:21 与 minix-fs protocol.rs:25 均 0xA00，两侧各有 C 绝对值 pin 测试（vfs `test_fs_wire_values_match_c_absolute` :569 / minix-fs protocol.rs:474-497）。剩余为**结构半**：仍无双侧逐项对账测试、vfs 不依赖 minix-fs、devman 第三消费方（见下方增补）待接；"33 variants" 注释与实际 32 变体的计数修正随迁移一并做。
 
 > **增补（2026-09-15，11-stage-devman 首轮架构审查）**：devman 是本契约的**第三消费方**——其内联 VTreeFS（os/servers/devman/src/vtreefs/mod.rs:50-56）自注"生产分类器（raw IPC → Request）需要 VFS 侧 wire 布局（fsdriver_data、REQ_* 字段宏），lands with the IPC transport"，dirent/stat 的 wire 编码同样声明"属传输层"（mod.rs:41-42/:198）。该传输层就是本条的 REQ_* 契约域：REQ 收敛到 minix-types（方案 A）后，devman 的分类器与 dirent/stat 编码直接消费同一权威，不再自建。登记于 E-DMWIRE 第 2 缺，wire 权威以本条裁决为准。
 
@@ -436,6 +373,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：无 E1/E2 依赖（纯内核侧行为 + 单测可验）。
 **解锁**：12 篇契约（06-stage-sched）的 niced 半闭环；06-stage-sched/todo.md P2-3 指针表的对应行。
 
+> **复核（2026-09-15，下半已闭合）**：clock.rs 记账半已落地——`CP_NICE`（clock.rs:451）、`classify_cpu_state` 读 `MiscFlagsBits::NICED` 归桶（:479，测试 :1527）、`sched_proc` 真实置/清 MF_NICED（sched.rs:418-421，测试 :649）。剩余仅上半接线：dispatch_schedule 的 `let niced = false;`（syscall.rs:923）与 `let _niced = sched.niced;`（:893）换真值；`classify_cpu_state` 尚无生产调用点（lib.rs 生产路径只记 CP_INTR）——接线时一并评估，不接则登记理由。sched.rs:286-294 的 "SYS_NICE" 虚构引用仍在。
+
 ---
 
 ## E-PREEMPTFLAG PREEMPTIBLE 特权标志缺失——priority != 0 近似当成了语义（06-stage-sched V2 轮登记，2026-09-09）
@@ -454,6 +393,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **依赖**：无 E1/E2 依赖（特权位 + 单测可先行）。
 **解锁**：SCHED 的 NO_QUANTUM 契约对所有优先级成立；E5(e) 冒烟的"断环分界"用例转正。
+
+> **复核（2026-09-15，前提已变）**：PREEMPTIBLE 位**已存在**——capability.rs:69-70（0x0000_0002，已入 SRV_F/USR_F 模板）+ kpriv.rs:164-173 的 `KPrivFlags::is_preemptible()`（`#[allow(dead_code)]`，注释自述 "scheduler preemption check not yet wired"）+ KPriv 包装（:491-495）。原「步骤 1 priv 表补位」作废；余下：两处优先级近似（proc_table.rs:679 enqueue Phase 3、:771 sched_proc_no_time，锚点从 674/766 漂移）改读特权标志、sched.rs:232-233 助手接线并修文档漂移、补 priority-0 + 用户调度用例与非 PREEMPTIBLE 抑制用例。
 
 ---
 
@@ -491,6 +432,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 **依赖**：无。
 **解锁**：06-stage-sched/todo.md P2-3；E2/E6/E8 wrapper 的常量消费面。
+
+> **复核（2026-09-15，主体半解）**：minix-types `ipc/sysinfo.rs` 已有 SYS_* 常量模块——SYS_GETINFO/SYS_DIAGCTL/SYS_SETALARM/SYS_TIMES/SYS_SAFECOPYFROM/SYS_SAFECOPYTO/SYS_VSAFECOPY/SYS_SETGRANT/SYS_EXIT/SYS_STATECTL/SYS_SAFEMEMSET（:17-59）+ SI_DATA_STORE（:138）。「minix-types 无 SYS_* 常量」主体判定作废，剩余收敛面：SYS_SCHEDULE/SYS_SCHEDCTL 等缺号对照 com.h:210-262 补齐；NOTIFY_MESSAGE 仍无常量（仅 ipc/notify.rs:28 注释提及）；四处本地定义/内联待切换删除——sched transport.rs:41/:45、ds getsysinfo.rs:27（server.rs:1058 消费本地常量）、ds dispatch.rs:95 内联 0x1000。
 
 ---
 
@@ -569,6 +512,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：E2（`_kernel_call` wrapper）；与 E-KERNINFO（kerninfo 共享家族）交叉引用——按 04 篇既定决策走 sys_getinfo 子请求，不依赖 MINIX_KERNINFO 映射机制。
 **解锁**：08-stage-is DumpId::Kmessages 臂。
 
+> **复核（2026-09-15）**：IS 侧锚点更新——fail-closed panic 现于 acquire.rs:289（should_panic 测试 :644-645）；kernel 侧与 minix-types 的 GET_KMESSAGES 仍双零命中（仅 syscall.rs:2591/2604-2609/3828 关于 kmess 缓冲已移除的注释）。
+
 ---
 
 ## E-ISBOOT IS 启动链与端到端联调：条件启动 + RS 动态加载 + TTY 观察者（08-stage-is V1 轮登记，2026-09-14）
@@ -601,6 +546,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：E1（asynsend3/sendrec wrapper 真实通电）；10-stage-mib/todo.md P1-3（sysctlnode/sysctldesc 布局锚定先行）。纯函数层无硬依赖。
 **解锁**：13-stage-ipc 03 篇接线及其文档失真修正；17-stage-net lwip/uds 注册面；10-stage-mib 12 篇的远程挂载对端；E5(g) 联调。
 
+> **复核（2026-09-15，前置解除）**：10-stage-mib P1-3 已闭环（minix-types::sysctl_abi：SysctlNode 96B/SysctlDesc 16B/KinfoLwp 128B/KinfoProc2 680B，offset_of 钉死，196 passed）——纯函数层的 sysctlnode 打包锚定已就绪，可立即开工；P1-4（transport 双 trait seam）亦已闭环（126 passed）。本条现状核实：rmib.rs 仍簿记半（无 rmib_register/rmib_process/rmib_call），MountTable 仅 `used: [bool; 16]`；传输半仍挂 E1。
+
 ---
 
 ## E-MIBPROD MIB 快照消费面 vs kernel/PM/VFS producer 布局对账（10-stage-mib 首轮架构审查登记，2026-09-15）
@@ -621,6 +568,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **依赖**：10-stage-mib/todo.md P1-3（布局裁决先行）；无 E1 硬依赖（布局断言测试可先行）。
 **解锁**：10-stage-mib/todo.md P1-5（表拉取执行半）；E5(g) 的进程信息用例；E-ISPROD 的裁决复用。
 
+> **复核（2026-09-15）**：10-stage-mib P1-3 已闭环，但产出范围是 **sysctl ABI**（minix-types::sysctl_abi 四结构）——proc_tab/mproc_tab/fproc_tab 的快照布局裁决仍开放，随 E-ISPROD 合并轮一并定；P1-4（transport seam）与 P1-5（Tables 拉取状态机，seam 半）亦已闭环——P1-5 的生产数据源仍随本条对账后接通。
+
 ---
 
 ## E-MIBGRANT kernel grant.rs magic-grant 门端点常量与 C 不符（10-stage-mib 首轮架构审查登记，2026-09-15）
@@ -635,6 +584,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：无。可独立先行，小时级。
 **解锁**：E-MIBPROD 的 grant 链正确性；10-stage-mib/todo.md P1-4（relay 执行半）通电前提。
+
+> **复核（2026-09-15，锚点确认 + 解锁行更新）**：常量在 grant.rs:292-295、门在 :546（分支起 :542），grant.rs 全部 8 个测试无一覆盖 MAGIC 分支——补测试空间确认；minix-types 权威值 endpoint.rs:62 `VFS = Endpoint(1)` / :68 `MIB = Endpoint(7)`，且 `granter` 参数类型即 `Endpoint`（grant.rs:355），门可直接比较；本仓 C 学习笔记 02-stage-vm/22-vm-exit.md:275 同证 VFS_PROC_NR=1。解锁行更新：P1-4 已于 2026-09-15 闭环 seam 半，本条仍是 relay 通电前提。
 
 ---
 
@@ -676,3 +627,5 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：无。
 **解锁**：E-DMWIRE 的 client 侧实现者不再有两套 API 可选；16-stage-drivers 的驱动注册链设计定案。
+
+> **复核（2026-09-15）**：现状与条目基本一致，两点修正——(1) 该 crate 已在 workspace 成员表（os/Cargo.toml:194，与条目记载一致），但仍零依赖者；(2) gpio lib.rs:4-6 注释引用的是 server crate 包名 `minix-devman`（引用对象本身就不该是任何 devman crate，应是 minix-sys 的 devman_client 模块）。方案 A 删除时四处一并清：crate 目录 + 成员行 + 12-gpio-devman.md:200 测试命令 + gpio 注释。
