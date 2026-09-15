@@ -25,7 +25,7 @@
 | P2 | V1-P2-1 | ~~查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`~~（**✅ 已修复** 2026-09-16，Fix #6，见 §3.2 修复记录） |
 | P2 | V1-P2-2 | wire 打包双体系：minix-types 的类型化布局与 minix-sys 的本地裸字节打包并存，`cleared_message`/`write_payload` 在三个文件各复制一份；VM_REMAP 两处状态标注不一致（§3.2，跨层部分挂 edge E-MINTYPES-RUNTIME） |
 | P2 | V1-P2-3 | ~~注释锚点失实批：10 处~~（**✅ 全部处置** 2026-09-16，Fix #1/#2/#4/#12，见 §3.2 修复记录） |
-| P3 | V1-P3-1 | 测试浅化批：大块分配测试未验证页边界、panic 阶梯只验长度不验中间序（§3.2） |
+| P3 | V1-P3-1 | ~~测试浅化批：大块分配测试未验证页边界、panic 阶梯只验长度不验中间序~~（**✅ 已修复** 2026-09-16，Fix #13，见 §3.2 修复记录） |
 | P3 | V1-P3-2 | GlobalAllocator 手写简化版 Once + 注释中英混用（§3.2） |
 | edge | E-MINTYPES-RUNTIME（新） | minix-types 布局单点权威收敛（Redox syscalls.toml 先例），99 篇定稿驱动 |
 | edge | E-MINSYS-SCOPE（新） | minix-sys 内六个域外 stage 客户端模块的 crate 内聚性处置 |
@@ -268,10 +268,14 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **逐项对账**：#1 crtso→Fix #12；#2 exit 桩注释→Fix #12；#3 依赖方向→Fix #1；#4 Redox linker crate→Fix #4；#5 "7 instructions"→随 start.rs 删除失效 + 02 篇已改（Fix #4）；#6 sentinel 检测叙述→随 start.rs 删除失效（Fix #4）；#7 malloc.c:383→Fix #12；#8 mmap 归因→Fix #12；#9 PanicPlan→Fix #2；#10 kuserinfo 偏差→Fix #12。
 - **测试**：minix-rt 46 passed；clippy 零新增。
 
-#### V1-P3-1（P3）测试浅化批
+#### V1-P3-1（P3）测试浅化批——✅ 已修复 2026-09-16（Fix #13；panic 阶梯项随 Fix #2 重构消失）
 
 三处名实不符或覆盖弱于命名（非错误，浅验证）：`alloc.rs:598` `test_big_allocation_spans_whole_pages` 只断言可写可释放，无页边界检查（改名或补对齐断言）；`diag.rs:512` panic 阶梯只断言长度 8 与首尾元素，中间错位不可发现（补全序断言）；`ipc.rs:810` `test_enqueue_marks_slot_valid_last` 在单线程测试中"VALID 最后写"不可观察，实际验证的是入队后状态（注释说明提交序由何种机制保证，或删除 "last" 措辞）。其余抽查（syscall 重试序列、路径打包边界四连、grant 的 ABA 守卫）均为扎实验证，测试分层形态与三层 crate 角色自洽（minix-sys 48% Canned 回放 / minix-types 17% 布局 pin / minix-rt 90% 纯函数语义）。
 
+**修复记录（Fix #13，2026-09-16）**：
+- **Files**：`os/libs/minix-rt/src/alloc.rs`（大块分配测试改用页对齐测试池——`#[repr(align(4096))]` 镜像全局池的真实对齐契约——并新增"起始地址页对齐"断言，原测试的普通数组池使该断言不可测；首次尝试直接加对齐断言被实测打回：普通数组池上大块起始偏移 1976，暴露对齐性取决于供给方基址而非分配器本身，据此改测试夹具而非硬凑断言）；`os/libs/minix-sys/src/ipc.rs`（SENDA 测试更名 `test_enqueue_leaves_slot_valid_with_notify` 并加注释：提交序由 `&mut self` 单写者构造保证，单线程测试观察的是入队后状态）。
+- **第三项**（panic 阶梯只验长度）：随 Fix #2 的 PanicStage 删除而消失，重构后的报告格式化测试断言完整形状。
+- **测试**：minix-rt 46 / minix-sys 185 全绿；clippy 零新增。
 #### V1-P3-2（P3）实现细节两小项
 
 `minix-rt/src/lib.rs:203-217` 手写 swap 票券版 Once——`core::sync::Once`（Rust 1.73 起进 core）可替，或保留但补一行"为何不用 Once"的理由注释（现有 SAFETY 注释只论证了正确性，没论证不用标准件的理由）。`os/libs/minix-sys/src/syscall.rs:190/:203/:211-217` 中文注释段与全英文正文混用，统一为英文（与 crate 其余部分一致）。

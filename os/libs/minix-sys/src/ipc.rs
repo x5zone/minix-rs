@@ -816,7 +816,12 @@ mod tests {
     }
 
     #[test]
-    fn test_enqueue_marks_slot_valid_last() {
+    // The name's "valid" refers to the post-condition (the slot reads back
+    // VALID|NOTIFY); the commit ORDER is guaranteed by construction — the
+    // queue takes `&mut self`, so a single writer makes every lane visible
+    // atomically to any later observer — and is not observable by a
+    // single-threaded test.
+    fn test_enqueue_leaves_slot_valid_with_notify() {
         let mut queue = AsyncSendQueue::<4>::new();
         queue
             .enqueue(Endpoint(7), test_message(42), AsyncSlotFlags::NOTIFY)

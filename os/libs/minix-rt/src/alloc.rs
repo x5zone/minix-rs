@@ -598,10 +598,25 @@ mod tests {
 
     #[test]
     fn test_big_allocation_spans_whole_pages() {
-        let mut pool = pool_buffer();
-        let mut allocator = test_allocator(&mut pool);
+        // The pool must be page-aligned for this test: the global pool is
+        // `#[repr(align(4096))]`, and a large block starts at the first
+        // page the supplier hands out — so with an aligned pool the block
+        // start is page-aligned too. A plain array would not mirror that
+        // contract.
+        #[repr(align(4096))]
+        struct AlignedPool([u8; 16384]);
+        let mut pool = AlignedPool([0u8; 16384]);
+        let mut allocator =
+            SlabAllocator::new(FixedPoolSupplier::new(&mut pool.0));
         let pointer = allocator.alloc(5000);
         assert!(!pointer.is_null());
+        // The block starts a whole two-page run: page-aligned by the
+        // supplier's page-boundary arithmetic, writable across both pages.
+        assert_eq!(
+            pointer as usize % PAGE_BYTES,
+            0,
+            "large allocation must start on a supplier page boundary"
+        );
         // SAFETY: 5000 bytes across two pages were just handed out.
         unsafe {
             core::ptr::write_bytes(pointer, 0xCD, 5000);
