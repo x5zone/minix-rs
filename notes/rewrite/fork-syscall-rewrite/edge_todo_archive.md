@@ -14,6 +14,8 @@
 | E-RSSTART rs_start_t 字节 ABI pinning + copy_rs_start 解码 | 改判关单(接线转入 03-stage-rs §21 campaign) | 2026-09-07 | 2026-09-15 |
 | E-VMMCPWIRE vmmcp 消息族 reply.addr u32 → 64 位 | 完成(余件转低优先扫描项) | 2026-09-08 | 2026-09-15 |
 
+> **余件闭环(2026-09-16,commit 349423f07)**:宽度对账扫描完成——(4) 系统性对账发现请求方向同类必现截断:`mess_vmmcp.block`(C `void *`)与 `flags_ptr`(C `u32_t *`)仍是 u32,x86_64 MMAP 窗口地址恒截断高位;已加宽为 u64(32/40),pages/flags 移 48/49,总 56 不变;decode 侧同型 struct 与注释同步;大地址高位保全回归测试落地。其余对账结论:MapPayload/MapPhys/m_vm_pagefault overlay 均 u64 无截断;PFN 类 `as u32` 为内部编号非 wire 域;VM_VFS_REPLY 的 ino u32 域为分页 I/O 专用(>4GiB 文件不在此通路),维持现状并已在 struct 注释记录。
+
 ---
 
 ## §0 02-stage-vm 实施 campaign 顺序表(进度真相源)
