@@ -71,9 +71,19 @@ pub trait MibServices {
     /// proc.c:90 (`SI_PROC_TAB`), :106 (`SI_PROCLIGHT_TAB`).
     fn getsysinfo(&mut self, target: Endpoint, what: i32, buf: &mut [u8]) -> Result<(), i32>;
 
-    /// Resolve a DS label to an endpoint (12's mount front door).
-    /// C: `ds_retrieve_label_name` — remote.c:88.
-    fn ds_retrieve_label(&mut self, label: &[u8]) -> Result<Endpoint, i32>;
+    /// Fetch a service's label name from DS by endpoint (register's
+    /// first step, 12). C: `ds_retrieve_label_name` — remote.c:88.
+    fn ds_retrieve_label_name(&mut self, who: Endpoint, buf: &mut [u8]) -> Result<usize, i32>;
+
+    /// Fetch a remote subtree root's name and description at mount
+    /// (12). C: `mib_remote_info` — remote.c:316-355 (two write
+    /// grants, one COMMON_MIB_INFO round trip).
+    fn remote_info(
+        &mut self,
+        peer: Endpoint,
+        name_buf: &mut [u8],
+        desc_buf: &mut [u8],
+    ) -> Result<(), i32>;
 
     /// Pull VM statistics (14's CTL_VM handlers).
     /// C: `vm_info_stats`/`vm_info_usage` — vm.c:30-50 一带.
@@ -102,6 +112,12 @@ pub trait MibServices {
 /// `minix-sys` call — call sites do not change.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SysTransport;
+
+/// The real peer-service end: every verb reports `-EIO` until the
+/// peer-message wrappers land (E2 family) — same honest posture as
+/// [`SysTransport`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SysServices;
 
 impl MibKernel for SysTransport {
     fn datacopy_from(&mut self, _src: Endpoint, _src_addr: u64, _buf: &mut [u8]) -> Result<(), i32> {
@@ -141,7 +157,7 @@ impl MibKernel for SysTransport {
     }
 }
 
-impl MibServices for SysTransport {
+impl MibServices for SysServices {
     fn getnuid(&mut self, _who: Endpoint) -> Result<u32, i32> {
         Err(EIO)
     }
@@ -150,7 +166,16 @@ impl MibServices for SysTransport {
         Err(EIO)
     }
 
-    fn ds_retrieve_label(&mut self, _label: &[u8]) -> Result<Endpoint, i32> {
+    fn ds_retrieve_label_name(&mut self, _who: Endpoint, _buf: &mut [u8]) -> Result<usize, i32> {
+        Err(EIO)
+    }
+
+    fn remote_info(
+        &mut self,
+        _peer: Endpoint,
+        _name_buf: &mut [u8],
+        _desc_buf: &mut [u8],
+    ) -> Result<(), i32> {
         Err(EIO)
     }
 
@@ -213,6 +238,11 @@ pub(crate) mod recording {
         pub from_off: usize,
         pub written: RefCell<Vec<u8>>,
         pub remote_status: i32,
+        /// Scripted DS label for `ds_retrieve_label_name` (None = DS
+        /// unreachable).
+        pub ds_label: Option<Vec<u8>>,
+        /// Scripted tick count for `getticks`.
+        pub getticks_result: Option<u64>,
     }
 
     impl Recorder {
@@ -303,7 +333,7 @@ pub(crate) mod recording {
         }
 
         fn getticks(&mut self) -> Result<u64, i32> {
-            Ok(7)
+            Ok(self.getticks_result.unwrap_or(7))
         }
 
         fn hz(&mut self) -> Result<u32, i32> {
@@ -314,7 +344,20 @@ pub(crate) mod recording {
     impl super::MibServices for Recorder {
         fn getnuid(&mut self, who: Endpoint) -> Result<u32, i32> {
             self.log(Call::Getnuid(who));
-            self.uids.remove(0)
+            // Unseeded tests answer superuser; seeded tests consume FIFO.
+            match self.uids.first() {
+                Some(Ok(uid)) => {
+                    let uid = *uid;
+                    self.uids.remove(0);
+                    Ok(uid)
+                }
+                Some(Err(code)) => {
+                    let code = *code;
+                    self.uids.remove(0);
+                    Err(code)
+                }
+                None => Ok(0),
+            }
         }
 
         fn getsysinfo(
@@ -326,12 +369,29 @@ pub(crate) mod recording {
             Err(minix_types::EIO)
         }
 
-        fn ds_retrieve_label(&mut self, _label: &[u8]) -> Result<Endpoint, i32> {
-            Err(minix_types::EIO)
+        fn ds_retrieve_label_name(&mut self, _who: Endpoint, buf: &mut [u8]) -> Result<usize, i32> {
+            match &self.ds_label {
+                Some(label) => {
+                    buf[..label.len()].copy_from_slice(label);
+                    Ok(label.len())
+                }
+                None => Err(minix_types::EIO),
+            }
         }
 
         fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
             Err(minix_types::EIO)
+        }
+
+        fn remote_info(
+            &mut self,
+            _peer: Endpoint,
+            name_buf: &mut [u8],
+            _desc_buf: &mut [u8],
+        ) -> Result<(), i32> {
+            let name = b"ipc";
+            name_buf[..name.len()].copy_from_slice(name);
+            Ok(())
         }
 
         fn remote_call(
@@ -370,8 +430,15 @@ mod tests {
         assert_eq!(t.getproctab(&mut buf), Err(EIO));
         assert_eq!(t.getticks(), Err(EIO));
         assert_eq!(t.hz(), Err(EIO));
-        assert_eq!(t.getnuid(Endpoint::PM), Err(EIO));
         // Revokes stay silent — there is nothing to revoke.
         t.grant_revoke(3);
+        // The service half fails closed just as honestly.
+        let mut services = SysServices;
+        let mut name_buf = [0u8; 8];
+        assert_eq!(services.getnuid(Endpoint::PM), Err(EIO));
+        assert_eq!(
+            services.remote_info(Endpoint::PM, &mut name_buf, &mut []),
+            Err(EIO)
+        );
     }
 }

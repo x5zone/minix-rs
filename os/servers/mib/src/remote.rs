@@ -13,18 +13,32 @@ use minix_types::{EDONTREPLY, ENAMETOOLONG, ENOSYS};
 
 /// Max remote services (endpoint table size).
 /// C: `MIB_ENDPTS (1U << MIB_EID_BITS)` — remote.c:25.
+use alloc::vec::Vec;
+
 pub const MIB_ENDPTS: usize = 32;
 
 /// Max service label size, NUL included. C: `MIB_LABEL_MAX` — remote.c:28.
 pub const MIB_LABEL_MAX: usize = 16;
 
 /// One endpoint-table row, as the verdicts see it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct EndptSlot {
     /// Occupant endpoint (`None` = `NONE`/free). C: `endpts[i].endpt`.
     pub endpt: Option<i32>,
     /// Registered label. C: `endpts[i].label` (only meaningful if occupied).
     pub label: Label,
+    /// Root nodes this service mounted, in mount order, with whether
+    /// each was a *fresh* placement (empty slot taken — removable
+    /// outright) versus an *obscured* existing node (only the stamp is
+    /// the service's; the original must survive unmount). The C `nodes`
+    /// chain, same iteration order, no unsafe aliasing.
+    pub roots: Vec<crate::tree::arena::MountRoot>,
+}
+
+impl Default for EndptSlot {
+    fn default() -> Self {
+        Self { endpt: None, label: Label::EMPTY, roots: Vec::new() }
+    }
 }
 
 /// Fixed 16-byte label (NUL-terminated C string on the wire).
@@ -32,6 +46,11 @@ pub struct EndptSlot {
 pub struct Label {
     /// Bytes including the terminator.
     pub bytes: [u8; MIB_LABEL_MAX],
+}
+
+impl Label {
+    /// The all-zero label: a free slot's occupant name.
+    pub const EMPTY: Label = Label { bytes: [0; MIB_LABEL_MAX] };
 }
 
 impl Label {
@@ -215,6 +234,7 @@ mod tests {
     fn slot(endpt: Option<i32>, name: &[u8]) -> EndptSlot {
         EndptSlot {
             endpt,
+            roots: Vec::new(),
             label: Label::from_bytes(name).unwrap(),
         }
     }

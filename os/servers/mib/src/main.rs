@@ -14,16 +14,21 @@ fn main() {
     // library directly).
     #[cfg(not(test))]
     {
-        // C: mib_startup() — main.c:440. The two init names are
-        // `MibInitKind::{Fresh, RestartLossy}` (sef.rs); the init body and
-        // the transport loop land in 04 and the IPC shell respectively.
-        //
-        // C: main loop — main.c:443-488, owned by dispatch.rs: receive →
-        // triage → run → reply lives there, not here.
-        //
-        // Spinning is intentional until the loop lands: a sysctl server
-        // that cannot receive yet must not pretend otherwise.
-        #[allow(clippy::empty_loop)]
-        loop {}
+        use minix_mib::server::{MibServer, Server, SysIpc};
+        use minix_mib::transport::{SysServices, SysTransport};
+
+        // C: mib_startup() — main.c:415-431. The fresh anchor builds the
+        // static tree (`MibTree::init`, arena.rs) and resets the remote
+        // slot table; the restart anchor rebuilds it (sef.rs).
+        let server = MibServer::new();
+        let ipc = SysIpc::default();
+        let kernel = SysTransport;
+        let services = SysServices;
+
+        // C: main loop — main.c:443-488: receive → triage → dispatch →
+        // reply, forever; a broken transport dies at the documented
+        // 64-turn bound (server.rs, the SCHED/DS-shared deviation from
+        // C's panic-on-first-failure).
+        Server::new(server, ipc, kernel, services).run();
     }
 }

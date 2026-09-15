@@ -87,7 +87,7 @@ pub const fn max_estimate(frame_len: u64, arg_max: u64, page_size: u64) -> u64 {
     } else {
         arg_max
     };
-    ((capped + page_size - 1) / page_size) * page_size
+    capped.div_ceil(page_size) * page_size
 }
 
 /// Page-copy budget for the string walk.
@@ -107,7 +107,7 @@ pub const fn copy_budget(arg_max: u64, page_size: u64) -> u64 {
 /// — proc.c:1040-1041. A null-page vector or a misaligned vector means
 /// "no strings", reported as an empty answer, not an error.
 pub const fn walk_can_start(vaddr: u64, page_size: u64, ptr_size: u64) -> bool {
-    vaddr / page_size != 0 && vaddr % ptr_size == 0
+    vaddr / page_size != 0 && vaddr.is_multiple_of(ptr_size)
 }
 
 /// Cap the caller's length to the estimate.

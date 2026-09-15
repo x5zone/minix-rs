@@ -204,6 +204,30 @@ pub enum FuncKey {
     ProcDoor(ProcDoor),
 }
 
+/// How a mount took its window slot — the unmount must undo exactly
+/// that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountKind {
+    /// The mount *placed* a node into an empty reserved window slot;
+    /// the unmark returns the slot to empty (flags zero).
+    InWindow,
+    /// The mount *obscured* an existing node; the unmount clears only
+    /// the stamp, restoring the original view.
+    Obscured,
+    /// The mount linked a dynamic child beyond the static window; the
+    /// unmount unlinks it from the parent's map.
+    Dynamic,
+}
+
+/// One mounted remote root, with how it took the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountRoot {
+    /// The covering node's handle.
+    pub node: NodeId,
+    /// How the mount took the window.
+    pub kind: MountKind,
+}
+
 /// Self-statistics mirror (minix.mib.* reads the live counters).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatKey {
@@ -562,5 +586,24 @@ impl MibTree {
         self.slot_mut(node).children = ChildMap::new();
         self.free.push(node.0);
         self.counts = self.counts.node_removed();
+    }
+}
+
+impl MibTree {
+    /// Unlink a dynamic child from its parent's map and free the slab
+    /// slot (the unmount road for Dynamic-kind mounts).
+    pub(crate) fn unlink_dynode(&mut self, parent: NodeId, node: NodeId) {
+        let id = self.slot(node).id;
+        self.slot_mut(parent).children.remove(&id);
+        {
+            let p = self.slot_mut(parent);
+            if p.child_base == u32::MAX {
+                p.csize = p.csize.saturating_sub(1);
+            }
+            p.clen = p.clen.saturating_sub(1);
+        }
+        self.slot_mut(node).flags = 0;
+        self.free.push(node.0);
+        self.counts.node_removed();
     }
 }

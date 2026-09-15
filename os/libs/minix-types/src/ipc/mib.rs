@@ -159,6 +159,13 @@ pub struct RegisterView {
     pub mib: [i32; 8],
     /// Mount-path length. C: `miblen`.
     pub miblen: u32,
+    /// Requested mount-head flags (NODE type + access + version).
+    /// C: `flags` — remote.c:180 (feeds `check_head`/`check_target`).
+    pub head_flags: u32,
+    /// Requested remote root child capacity. C: `csize`.
+    pub head_csize: u32,
+    /// Requested remote root live children. C: `clen`.
+    pub head_clen: u32,
 }
 
 impl MountRequest {
@@ -182,6 +189,9 @@ impl MountRequest {
             },
             mib: w.mib,
             miblen: w.miblen,
+            head_flags: w.flags,
+            head_csize: w.csize,
+            head_clen: w.clen,
         })
     }
 

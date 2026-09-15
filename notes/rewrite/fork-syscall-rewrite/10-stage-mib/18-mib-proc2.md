@@ -129,6 +129,8 @@ os/servers/mib/src/proc/
 
 ---
 
+> **P3-2 补记（2026-09-15，clippy 卫生）**：`match_row` 的 12 个标量参数聚合为 `ProcIdentity` 结构体（请求半 `req`/`arg` 与身份半分离——(uid, ruid)、(gid, rgid)、(tty, nodev, revoke) 三组在调用点极易转置），12/7 上限告警消除。
+
 ## 5 测试要点
 
 > 基线：`cargo test -p minix-mib --lib` 与 `cargo test -p minix-types --lib`，本篇八个测试（七个在第二套格式模块，一个在值表）。

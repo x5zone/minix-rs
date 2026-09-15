@@ -41,6 +41,7 @@ pub mod proc;
 pub mod query;
 pub mod remote;
 pub mod sef;
+pub mod server;
 pub mod subtree;
 pub mod transport;
 pub mod walker;

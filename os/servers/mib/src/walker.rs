@@ -14,7 +14,8 @@
 //! reports handler results as [`SysctlOutcome`] values.
 //! 10-mib-dispatch.md.
 
-use alloc::vec::{self, Vec};
+use alloc::vec::Vec;
+use alloc::vec;
 use minix_types::{
     CTLFLAG_IMMEDIATE, CTLFLAG_OWNDATA, CTLTYPE_BOOL, CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_QUAD,
     CTLTYPE_STRING, EEXIST, EISDIR, EINVAL, EIO, ENOENT, EPERM, EOPNOTSUPP,
@@ -172,7 +173,9 @@ pub fn sysctl<K: MibKernel, S: MibServices>(
         let has_parent = !is_leaf && s.func.is_none();
         let (has_func, has_verify) =
             resolve_shape(is_leaf, has_parent, s.verify.is_some(), s.func.is_some());
-        let can_restart = s.parent.map_or(false, |p| is_node_type(ctx.tree.slot(p).flags));
+        let can_restart = s
+            .parent
+            .is_some_and(|p| is_node_type(ctx.tree.slot(p).flags));
         let facts = LevelFacts {
             is_leaf,
             remote: s.flags & CTLFLAG_REMOTE != 0,
@@ -324,10 +327,10 @@ fn describe_exec<K: MibKernel, S: MibServices>(
     parent: NodeId,
     req: &mut Request,
 ) -> SysctlOutcome {
-    if let Some(newp) = &req.newp {
-        if newp.len > 0 {
-            return SysctlOutcome::err(EPERM); // set on a data node (:1016)
-        }
+    if let Some(newp) = &req.newp
+        && newp.len > 0
+    {
+        return SysctlOutcome::err(EPERM); // set on a data node (:1016)
     }
     let Some(oldp) = req.oldp else {
         return SysctlOutcome::err(EINVAL);
@@ -606,10 +609,11 @@ fn readwrite_exec<K: MibKernel, S: MibServices>(
             Err(outcome) => return outcome,
         };
         // Strings must arrive NUL-terminated within the node width.
-        if ty == CTLTYPE_STRING {
-            if let Err(code) = readwrite::finalize_string(newp.len, size, staging.last() == Some(&0)) {
-                return SysctlOutcome::err(code);
-            }
+        if ty == CTLTYPE_STRING
+            && let Err(code) =
+                readwrite::finalize_string(newp.len, size, staging.last() == Some(&0))
+        {
+            return SysctlOutcome::err(code);
         }
         // Verify gates run before anything is applied (09).
         if let Some(kver) = ctx.tree.slot(node).verify {
@@ -707,41 +711,42 @@ fn remote_exec<K: MibKernel, S: MibServices>(
         Err(code) => fail = Some(code),
     }
     // 2. the caller's old sink — write direction (:402-407).
-    if fail.is_none() {
-        if let Some(oldp) = req.oldp {
-            let g = RelayRequest {
-                caller: *caller,
-                addr: oldp.addr,
-                len: oldp.left,
-                dir: RelayDir::Write,
-            }
-            .open(&mut **kernel);
-            match g {
-                Ok(g) => grants.push(g),
-                Err(code) => fail = Some(code),
-            }
+    if fail.is_none()
+        && let Some(oldp) = req.oldp
+    {
+        let g = RelayRequest {
+            caller: *caller,
+            addr: oldp.addr,
+            len: oldp.left,
+            dir: RelayDir::Write,
+        }
+        .open(&mut **kernel);
+        match g {
+            Ok(g) => grants.push(g),
+            Err(code) => fail = Some(code),
         }
     }
     // 3. the caller's new source — read direction (:407-413).
-    if fail.is_none() {
-        if let Some(newp) = req.newp {
-            let g = RelayRequest {
-                caller: *caller,
-                addr: newp.addr,
-                len: newp.len,
-                dir: RelayDir::Read,
-            }
-            .open(&mut **kernel);
-            match g {
-                Ok(g) => grants.push(g),
-                Err(code) => fail = Some(code),
-            }
+    if fail.is_none()
+        && let Some(newp) = req.newp
+    {
+        let g = RelayRequest {
+            caller: *caller,
+            addr: newp.addr,
+            len: newp.len,
+            dir: RelayDir::Read,
+        }
+        .open(&mut **kernel);
+        match g {
+            Ok(g) => grants.push(g),
+            Err(code) => fail = Some(code),
         }
     }
 
     // Send unless a grant already failed.
     let mut reply = RemoteReplyWire::default();
-    let send = if fail.is_none() {
+    let send = match fail {
+        None => {
         let wire = minix_types::MessMibLsysCall {
             req_id: 0, // the reserved id (remote.c:344,425)
             root_id,
@@ -758,8 +763,8 @@ fn remote_exec<K: MibKernel, S: MibServices>(
             _padding: [0; 8],
         };
         svc.remote_call(peer, RemoteCall { wire }, &mut reply)
-    } else {
-        Err(fail.unwrap())
+        }
+        Some(code) => Err(code),
     };
 
     // Everything retires in reverse before the outcome (:441-446).
@@ -790,23 +795,7 @@ enum RemoteStep {
     RestartLocal,
 }
 
-fn finish_failed<K: MibKernel, S: MibServices>(
-    _ctx: &mut MibCtx<K, S>,
-    grants: Vec<crate::io::relay::RelayGrant>,
-    code: i32,
-    can_restart: bool,
-) -> RemoteStep {
-    // Reverse-order revocation (:441-446) before the errno speaks.
-    for g in grants.into_iter().rev() {
-        // The revocation verb needs the transport; the relay close is
-        // completed by the caller holding the transport borrow.
-        let _ = (g, code, can_restart);
-    }
-    match judge_remote_result(ERESTART, ERESTART, can_restart) {
-        RemoteOutcome::Return(c) => RemoteStep::Done(SysctlOutcome::err(c)),
-        RemoteOutcome::RestartLocal => RemoteStep::RestartLocal,
-    }
-}
+
 
 /// The function registry: dispatch a `CallFunc` landing to its
 /// subsystem handler (13~15/20). C reaches these via `node_func`

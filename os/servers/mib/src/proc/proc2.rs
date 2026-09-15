@@ -109,40 +109,57 @@ pub const fn match_kernel(req: Proc2Req, arg: i64, tty_nodev: i64) -> bool {
 /// the caller passes the zombies' terminal as "no device" already
 /// (C never reads a zombie's file slot, :873-875), so this function only
 /// applies the no-device rule.
-pub const fn match_row(
-    req: Proc2Req,
-    arg: i64,
-    pid: i64,
-    procgrp: i64,
-    effuid: u32,
-    realuid: u32,
-    effgid: u32,
-    realgid: u32,
-    tty: i64,
-    tty_nodev: i64,
-    tty_revoke: i64,
-    no_dev: i64,
-) -> bool {
+/// The per-process identity facts the row filters read. Split from the
+/// request half (`req`/`arg`) so a caller cannot transpose a filter
+/// value into an identity field — the (uid, ruid), (gid, rgid) and
+/// (tty, nodev, revoke) pairs look alike at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcIdentity {
+    /// Process id. C: `p_pid`.
+    pub pid: i64,
+    /// Process group. C: `p__pgid`.
+    pub procgrp: i64,
+    /// Effective user id. C: `p_uid`.
+    pub effuid: u32,
+    /// Real user id. C: `p_ruid`.
+    pub realuid: u32,
+    /// Effective group id. C: `p_gid`.
+    pub effgid: u32,
+    /// Real group id. C: `p_rgid`.
+    pub realgid: u32,
+    /// Controlling tty dev. C: `p_tdev`.
+    pub tty: i64,
+    /// `NODEV` sentinel. C: `tty_nodev`.
+    pub tty_nodev: i64,
+    /// `REVOKE` sentinel. C: `tty_revoke`.
+    pub tty_revoke: i64,
+    /// "No controlling tty" marker. C: `no_dev`.
+    pub no_dev: i64,
+}
+
+/// Judge one row against the request: the identity facts versus the
+/// filter argument. C: the `switch (req)` filters — proc.c:860-898.
+pub const fn match_row(req: Proc2Req, arg: i64, id: &ProcIdentity) -> bool {
     match req {
         Proc2Req::All => true,
-        Proc2Req::Pid => arg == pid,
-        Proc2Req::Session | Proc2Req::Pgrp => arg == procgrp,
+        Proc2Req::Pid => arg == id.pid,
+        Proc2Req::Session | Proc2Req::Pgrp => arg == id.procgrp,
         Proc2Req::Tty => {
-            if arg == tty_revoke {
+            if arg == id.tty_revoke {
                 return false;
             }
-            if arg == tty_nodev {
-                return tty == no_dev;
+            if arg == id.tty_nodev {
+                return id.tty == id.no_dev;
             }
-            if arg == no_dev || arg != tty {
+            if arg == id.no_dev || arg != id.tty {
                 return false;
             }
             true
         }
-        Proc2Req::Uid => arg == effuid as i64,
-        Proc2Req::Ruid => arg == realuid as i64,
-        Proc2Req::Gid => arg == effgid as i64,
-        Proc2Req::Rgid => arg == realgid as i64,
+        Proc2Req::Uid => arg == id.effuid as i64,
+        Proc2Req::Ruid => arg == id.realuid as i64,
+        Proc2Req::Gid => arg == id.effgid as i64,
+        Proc2Req::Rgid => arg == id.realgid as i64,
     }
 }
 
@@ -327,27 +344,58 @@ mod tests {
         assert!(!match_kernel(Proc2Req::Tty, 7, 100));
     }
 
+    /// Positional test helper preserving the C-arg-order call shape:
+    /// identity fields in `match_row`'s documented order.
+    fn row(
+        req: Proc2Req,
+        arg: i64,
+        pid: i64,
+        procgrp: i64,
+        effuid: u32,
+        realuid: u32,
+        effgid: u32,
+        realgid: u32,
+        tty: i64,
+        tty_nodev: i64,
+        tty_revoke: i64,
+        no_dev: i64,
+    ) -> bool {
+        let id = ProcIdentity {
+            pid,
+            procgrp,
+            effuid,
+            realuid,
+            effgid,
+            realgid,
+            tty,
+            tty_nodev,
+            tty_revoke,
+            no_dev,
+        };
+        match_row(req, arg, &id)
+    }
+
     #[test]
     fn test_row_filters() {
         // Unfiltered and identity filters.
-        assert!(match_row(Proc2Req::All, 0, 9, 9, 0, 0, 0, 0, 0, -1, -2, 0));
-        assert!(match_row(Proc2Req::Pid, 9, 9, 9, 0, 0, 0, 0, 0, -1, -2, 0));
-        assert!(!match_row(Proc2Req::Pid, 8, 9, 9, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(row(Proc2Req::All, 0, 9, 9, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(row(Proc2Req::Pid, 9, 9, 9, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(!row(Proc2Req::Pid, 8, 9, 9, 0, 0, 0, 0, 0, -1, -2, 0));
         // Session and process group share the group field.
-        assert!(match_row(Proc2Req::Session, 9, 1, 9, 0, 0, 0, 0, 0, -1, -2, 0));
-        assert!(match_row(Proc2Req::Pgrp, 9, 1, 9, 0, 0, 0, 0, 0, -1, -2, 0));
-        assert!(!match_row(Proc2Req::Pgrp, 4, 1, 9, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(row(Proc2Req::Session, 9, 1, 9, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(row(Proc2Req::Pgrp, 9, 1, 9, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(!row(Proc2Req::Pgrp, 4, 1, 9, 0, 0, 0, 0, 0, -1, -2, 0));
         // User and group filters read their own fields.
-        assert!(match_row(Proc2Req::Uid, 10, 1, 1, 10, 0, 0, 0, 0, -1, -2, 0));
-        assert!(!match_row(Proc2Req::Ruid, 10, 1, 1, 10, 0, 0, 0, 0, -1, -2, 0));
-        assert!(match_row(Proc2Req::Gid, 20, 1, 1, 0, 0, 20, 0, 0, -1, -2, 0));
+        assert!(row(Proc2Req::Uid, 10, 1, 1, 10, 0, 0, 0, 0, -1, -2, 0));
+        assert!(!row(Proc2Req::Ruid, 10, 1, 1, 10, 0, 0, 0, 0, -1, -2, 0));
+        assert!(row(Proc2Req::Gid, 20, 1, 1, 0, 0, 20, 0, 0, -1, -2, 0));
         // Terminal: revoked matches nothing; no-terminal matches the
         // terminal-less; otherwise exact match only.
-        assert!(!match_row(Proc2Req::Tty, -2, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
-        assert!(match_row(Proc2Req::Tty, -1, 1, 1, 0, 0, 0, 0, 0, -1, -2, 0));
-        assert!(!match_row(Proc2Req::Tty, -1, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
-        assert!(match_row(Proc2Req::Tty, 5, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
-        assert!(!match_row(Proc2Req::Tty, 6, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
+        assert!(!row(Proc2Req::Tty, -2, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
+        assert!(row(Proc2Req::Tty, -1, 1, 1, 0, 0, 0, 0, 0, -1, -2, 0));
+        assert!(!row(Proc2Req::Tty, -1, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
+        assert!(row(Proc2Req::Tty, 5, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
+        assert!(!row(Proc2Req::Tty, 6, 1, 1, 0, 0, 0, 0, 5, -1, -2, 0));
     }
 
     #[test]
