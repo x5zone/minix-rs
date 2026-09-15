@@ -25,7 +25,7 @@
 use crate::error::InputError;
 use minix_types::LedCode;
 use crate::eventbuf::EventCount;
-use crate::framework::{SELECT_ERROR, SELECT_NOTIFY, SELECT_READ, SELECT_WRITE};
+use crate::framework::{SELECT_NOTIFY, SELECT_READ, SELECT_WRITE};
 use crate::structs::{EVENT_BYTES, InputDevice};
 use minix_types::{Endpoint, KBD_LEDS_CAPS, KBD_LEDS_NUM, KBD_LEDS_SCROLL, KIOCSLEDS};
 
@@ -352,9 +352,8 @@ pub fn decide_select(device: &InputDevice, ops: i32) -> SelectOutcome {
         ready_ops |= SELECT_WRITE;
     }
     // SELECT_ERROR has no C branch (input.c:314-323 tests only RD and WR):
-    // error queries never report ready. Named so the omission reads as
-    // deliberate, not as an oversight.
-    let _ = SELECT_ERROR;
+    // error queries never report ready — the constant is deliberately not
+    // imported here, so the omission cannot be papered over by a binding.
     SelectOutcome {
         ready_ops,
         record_selector,
@@ -649,7 +648,7 @@ mod tests {
         assert_eq!(out.ready_ops & SELECT_WRITE, SELECT_WRITE);
         assert!(!out.record_selector);
         // Error queries alone never report ready (no C branch).
-        let out = decide_select(&device, SELECT_ERROR);
+        let out = decide_select(&device, crate::framework::SELECT_ERROR);
         assert_eq!(out.ready_ops, 0);
     }
 }

@@ -24,7 +24,7 @@ use crate::structs::{
     DeviceIndex, FIRST_KEYBOARD_INDEX, FIRST_MOUSE_INDEX, InputDevice, InputTable,
     LAST_KEYBOARD_INDEX, LAST_MOUSE_INDEX, Minor,
 };
-use minix_types::{DRIVER_KEY_PREFIX, Endpoint, INPUT_DEV_KBD, INPUT_DEV_MOUSE, INVALID_INPUT_ID};
+use minix_types::{DRIVER_KEY_PREFIX, Endpoint, INPUT_DEV_KBD, INPUT_DEV_MOUSE};
 
 // ── Arrival filter ──
 
@@ -243,12 +243,6 @@ pub fn disconnect_device(device: &mut InputDevice) -> DisconnectEffects {
     }
 }
 
-/// The invalid slot marker for configuration replies.
-///
-/// Re-exported at the use site for readability: allocation failure travels
-/// as this value (C `INVALID_INPUT_ID`, `input.c:443`), never as a bare -1.
-pub const NO_SLOT: i32 = INVALID_INPUT_ID;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,7 +328,6 @@ mod tests {
         let report = connect_driver(&mut table, true, false, Endpoint(3), b"kbd0");
         assert_eq!(report.keyboard_slot, None);
         assert_eq!(report.restore_lights, None);
-        assert_eq!(NO_SLOT, INVALID_INPUT_ID);
     }
 
     #[test]

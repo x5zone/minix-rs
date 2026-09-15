@@ -52,7 +52,7 @@ pub mod setleds;
 pub mod structs;
 
 pub use connect::{
-    ConnectReport, DisconnectEffects, NO_SLOT, alloc_id, connect_driver, disconnect_device,
+    ConnectReport, DisconnectEffects, alloc_id, connect_driver, disconnect_device,
     key_is_new_driver, labels_match, wants_from_typemask,
 };
 pub use dispatcher::{Arrival, CdevCall, GrantCopy, Outcome, Server, complete_grant_copy,
@@ -85,6 +85,3 @@ pub use produce::{
 };
 pub use setleds::{LightTarget, apply_light_save, plan_light_targets, remembered_lights};
 pub use structs::{DeviceIndex, EVENT_BYTES, InputDevice, InputTable, Minor};
-
-/// Crate-level init entry (called by `main.rs`; real init runs on startup).
-pub fn init() {}

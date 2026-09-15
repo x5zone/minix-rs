@@ -27,7 +27,7 @@
 | P2 | IN-P2-3 | 组合层设计未定：纯函数散件与"一条消息的完整效应"之间缺一层约定，传输落地前必须裁决（✅ 2026-09-15，见 §2） |
 | P2 | IN-D1 | 文档测试计数过时：01-04 篇称 28 个、06-08 篇称 48 个、12 篇称 22 个，实际 66 / 66 / 136（✅ 2026-09-15，见 §3） |
 | P2 | IN-D2 | 00 总览与 99 全局概念两篇文档仍处于 pending 状态（✅ 2026-09-15，见 §3） |
-| P3 | IN-P3-1 | 死代码与仅测试消费项清单（分"等通电""真死""上交裁决"三类） |
+| P3 | IN-P3-1 | 死代码与仅测试消费项清单（分"等通电""真死""上交裁决"三类）（✅ 2026-09-15，见 §2） |
 | P3 | IN-P3-2 | 边界测试族缺口（极限回绕、槽位耗尽、selector 覆盖、单侧断连等） |
 | P3 | IN-P3-3 | wire 测试盲区（`tty_up_msg` 拒收、KIOCSLEDS 截断、保留槽、通知携带消息号） |
 | P3 | IN-D3 | close 全清偏离未按三层术语标注 `[ARCH: ...]`（doc + design + code 三处一致） |
@@ -126,13 +126,15 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 
 **修复记录（2026-09-15，方案一落地）**：新增 `effects.rs` 模块——四种效应的统一出口词表：`ReplyTask`（普通任务回信，值分 `ReplyValue::Bytes`/`Code` 两单位）、`ReplySelect`（查询就绪通知）、`SendDriverAsync`（对驱动的发后不管：配置与灯令，`asynsend3 AMF_NOREPLY` 纪律）、`SendTerminalBlocking`（对终端的阻塞单向：事件转交与握手，阻塞理由同 `inputdriver.c:65-73`）。每条效应自带 minix-types 构造器装好的线上消息（m_source 留白由传输回填），构造函数一一对应 C 的发送点（input.c:231/:419/:514-523/:522/:672-677）。领域产出到效应的映射（`ConnectReport → input_conf`、`ForwardedEvent → tty_event`、`CancelledRead → reply_interrupted` 等）都是带 C 锚点的构造函数；唤醒路径保持 R2 的两段式领域 API（其回信在 `complete_answered_reader` 产出后果后由分发层装成 `ReplyTask`），不做强行归一。`Effect` 不派生相等比较（Message 含 union，填充域无语义），测试改为对解码后的载荷断言。文档 02 增补 §4.5 与 §5（效应六测试入表）。验证：`cargo test -p minix-input` 83 通过 0 失败；clippy 本 crate 零告警。
 
-### IN-P3-1 死代码与仅测试消费项（三类处置）
+### IN-P3-1 死代码与仅测试消费项（三类处置）【✅ 已完成 2026-09-15】
 
 前提事实：仓库内没有任何 crate 依赖 `minix-input`；下列各项的"消费者"判定来自全仓库 grep（2026-09-15）。按卓越度规则分三类，"真死"项消除前需说明影响，拿不准的标 OQ 上交，不擅自删。
 
 - **等通电（保留，通电后复核）**：`Cargo.toml` 声明的 `minix-sys` 依赖（src/ 当前零 `use`，但 IN-P1-1/E-INWIRE 落地后即成为真实边）；connect.rs / produce.rs / init.rs 的全部出口（驱动生命周期与事件路由是通电主路径）；`ConnectReport`（IN-P1-1 第 5 项会消费它）；main.rs 的空 `loop {}`（通电时删除）。
 - **真死（建议消除）**：lib.rs:83 的 `pub fn init(){}`——空函数，main.rs 不调它，全仓库零调用；handlers.rs:334 的 `let _ = SELECT_ERROR;`——用丢弃绑定消警告来表达"C 无此分支"，应改为注释或 `#[allow]` 加说明；event.rs 中 `GeneralDesktopCode`/`ButtonCode`/`ConsumerCode`/`EventPage`/`PressState`/`ValueMode` 六个枚举仅自身测试消费——若 IN-P2-2 迁移裁决为"迁 minix-types"，随迁移一并安置，不单独删。
 - **OQ 上交**：key_codes.rs 的 215 个键码常量生产消费者为零——它们是 IN-P2-2 迁移的主体，删与留随迁移裁决，不单独处置；`NO_SLOT`（connect.rs:228）仅自身测试引用——随 IN-P1-1 第 5 项落地复核。
+
+**修复记录（2026-09-15，三类各自落定）**：真死类——`lib.rs` 的 `pub fn init(){}` 删除（全仓库零调用），`handlers.rs` 的 `let _ = SELECT_ERROR;` 删除（改注释声明"该常量刻意不导入"，省得丢弃绑定给人留口子），`connect.rs` 的 `NO_SLOT` 别名连同等值断言删除（权威 `INVALID_INPUT_ID` 在 minix-types，别名只多一个名字）；等通电类——`Cargo.toml` 的 minix-sys 依赖、connect/produce/init 出口、main.rs 停车循环全部保留并在原地有注释指路（E-INWIRE 落地后复核）；OQ 类随前几轮自然消解——`ConnectReport` 已有消费者（`Effect::input_conf`，R3/R4）、`key_codes` 215 常量与 event.rs 六枚举已迁 minix-types 成为共享权威（R5，去留问题不复存在）。验证：86 测试全绿，clippy 零告警。
 
 ### IN-P3-2 边界测试族缺口
 
