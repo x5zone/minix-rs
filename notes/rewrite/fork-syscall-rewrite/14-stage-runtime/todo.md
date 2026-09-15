@@ -153,6 +153,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Docs**：02 篇三节改写——§3 重写为"Rust 现状与接线时的设计准则"（如实记载删除史实与理由，保留五条已验证设计准则供接线时对照）；§4 从错误表改为"失败去处"叙述（EntryError 类型已不存在）；§5 改为入口路径现状说明 + 接线时的测试重建骨架；§7 参见更新并修正"7 行指令"为"6 条指令"（顺带完成 V1-P2-3 第 5 项）。03 篇 §7 参见的 start.rs 行改指 lib.rs。§2.4 末尾删除引用已删枚举的句子。
 - **测试**：minix-rt 60 → 47 passed（start.rs 实际 13 个测试随模块删除；02 篇原记载 11 个，又一处既有漂移，已在篇内如实记载）；clippy minix-rt 零警告；no_std+panic-handler 形态编译通过；`grep start.rs` 在 minix-rt 与四篇文档中零残留。
 - **边界**：`initialize_runtime`（init.rs）保留至第二步接线时收编（死代码清单 #2 理由不变）；`ProcessStrings`（handoff.rs）保留（01 篇域模型，ps_strings 构造校验有测试锚定）；A-4 TLS 登记为接线时裁决项。
+- **溯源备注**：start.rs 文件删除的入库时间线——本线程 `git rm` 的暂存被并行线程的提交 f19ad8cfb（E1 切片 5 通电载体）一并卷入；本线程的 2d4a9e603 承载文档改写与 lib.rs 变更。内容无损，特此记录。
 
 #### V1-P1-2（P1-design-deviation）诊断双轨：模型层与生产 panic 路径互不相连，`PanicPlan` 是幻影类型名——✅ 已修复 2026-09-16（Fix #2）
 
@@ -182,7 +183,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 **验证**：`nanosleep_via` 带 CannedTransport 回放测试（断言 select 调用号 + 超时字段编码 + remaining 计算）。
 **边界**：与 VFS_SELECT 载荷布局（`09-vfs-syscalls.md:56` 列了 +30）同轮落地；不碰 E-RMIBWIRE 的 sysctl 轨道。
 
-#### V1-P1-4（P1-design-deviation）kerninfo MAGIC 失配：C 容错降级 vs Rust 拒绝启动——接线前必须裁决
+#### V1-P1-4（P1-design-deviation）kerninfo MAGIC 失配：C 容错降级 vs Rust 拒绝启动——接线前必须裁决——✅ 已裁决并落地 2026-09-16（Fix #5，对齐 C 容错）
 
 **现状锚点**：C 在 constructor 里校验失败就 `_minix_kerninfo = NULL` 继续运行（`minix3/minix/lib/libc/sys/init.c:22-26`，含原文注释"not fatal"语义）；Rust `initialize_runtime` 在 `os/libs/minix-rt/src/init.rs:238-245` 返回 `Err(Errno::ENOEXEC)`。当前不可达（`initialize_runtime` 无生产调用方，见 V1-P1-1），但 V1-P1-1 方案 A 第二步接线后即成可达行为。
 
@@ -191,6 +192,14 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - 方案 B（保留现状 + 登记 ARCH）：严格拒绝。仅在确认 minix-rs 世界里"无 kerninfo 的用户态二进制"不可能存在时可选，且必须三处一致标注 `[ARCH: 容错降级 → fail-fast]`（doc 03 + design + 代码）。
 **验证**：裁决后补 MAGIC 失配单测（现 init.rs 测试只测成功路径与校验函数本身）。
 **边界**：与 init.rs 的双重 MAGIC 校验（init.rs:238-245 先比对、:246-257 又经 `ValidatedKernInfo::new` 重复校验，第二次必然通过；:251-256 的 `NullPage` 分支不可达——`ValidatedKernInfo::new` 只返回 `BadMagic`，handoff.rs:150-157）同轮清理。
+
+**修复记录（Fix #5，2026-09-16）**：按方案 A 落地，且完成一轮类型重表达设计——
+- **裁决与设计**：C 的契约是"初始化没有致命失败，只有可诊断的状态"（`init.c:22-26` 两种异常都清零继续，默认表预装持续有效，`init.c:10-18`）。Rust 化的正解不是"Result 换个形状"而是承认**初始化必然产出状态**：`initialize_runtime` 改为直接返回 `RuntimeState`（删除 `InitError`/`InitOutcome` 二元组——Result 通道是 C 没有的控制流，属过度表达）；`RuntimeState.kerninfo` 从 `Option<ValidatedKernInfo>` 改为 `KerninfoAvailability` 三态枚举（`QueryFailed(i32)`/`BadMagic{found}`/`Available`）——C 的 NULL 全局把三种情形压成不可区分，Rust 枚举以一个变体的代价买回可诊断性。第二处语义修正：失败路径的表选择从"无表"改为"保持调用方后备表"（对齐 C 预装默认表持续有效，旧实现的 `IpcTableSelection::None` 是第二处不忠实）。
+- **双重校验与 NullPage 清理**：初始化只经 `ValidatedKernInfo::new` 校验一次（外层手工比对删除）；`new` 的错误类型从 `HandoffError` 收窄为专用 `MagicMismatch { found }`（按值头部只可能魔数失败，`NullPage` 属指针路径 `select_initial_stack_pointer`）——不可达分支从类型上消除而非 `unreachable!()`。
+- **Files**：`os/libs/minix-rt/src/init.rs`（状态模型重写、函数签名简化、测试 9 → 7：两条降级测试断言"状态 + 后备表存活"，删两条随类型消失的测试）；`os/libs/minix-rt/src/handoff.rs`（`MagicMismatch` 新类型 + `new` 签名收窄 + `HandoffError` 收缩为单变体 `NullPage`；测试一改一增）。
+- **测试**：minix-rt 46 passed；三 crate 46/167/248 全绿；clippy 零新增；no_std+panic-handler 编译通过。
+- **Docs**：03 篇 §4 重写（"初始化没有致命失败，只有可诊断的状态"，含 C 契约推理与错误号映射的去处）、§5 测试表 9 → 7 + 统计刷新；01 篇 §4 错误表（`HandoffError::BadMagic` 行改为 `MagicMismatch` 独立行 + 设计理由）、§5 计数 9 → 10；07 篇统计句刷新（46）。
+- **边界**：接线时（E1 切片 5 / V1-P1-1 第二步）`_start` 消费 `RuntimeState`，`is_ready()` 即 C 的 `_minix_kerninfo != NULL` 检查惯例；`negative_to_errno`/`errno_to_negative`（A-5 负值回传约定）不受影响。
 
 #### V1-P1-5（P1）99 篇改写是多个已登记缺口的共同解锁前置，应升格为排期项
 

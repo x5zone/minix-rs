@@ -33,7 +33,7 @@
 //! visible inputs and outputs) while preserving the exact Minix validation
 //! order and magic number semantics.
 
-use crate::handoff::{ValidatedKernInfo, KERNINFO_MAGIC, KIF_IPC_VECTORS};
+use crate::handoff::{ValidatedKernInfo, KIF_IPC_VECTORS};
 use minix_types::Errno;
 
 /// Address of the communication vector table installed at startup.
@@ -48,8 +48,8 @@ use minix_types::Errno;
 /// only the selection ("which table did initialization install") is modeled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcTableSelection {
-    /// No table is active yet (before initialization, or after a failure that
-    /// cleared the kernel information pointer).
+    /// No table is active yet (the state before initialization runs, or an
+    /// explicit caller choice in tests).
     None,
     /// The kernel-published table is active.
     KernelPublished,
@@ -57,42 +57,53 @@ pub enum IpcTableSelection {
     TestDouble,
 }
 
-/// Outcome of one runtime initialization run.
+/// How the kernel information page ended up in the runtime state.
+///
+/// This is the typed counterpart of C's `_minix_kerninfo` global
+/// (`init.c:6`): C collapses "the kernel refused the query" and "the magic
+/// is wrong" into one NULL pointer, and every consumer re-checks the
+/// pointer. The situations stay distinguishable here because the
+/// distinction costs one enum variant and buys a diagnosable state; none of
+/// them is fatal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InitOutcome {
-    /// Whether a genuine kernel information page is now available.
-    pub kerninfo_available: bool,
-    /// Which communication table was installed.
+pub enum KerninfoAvailability {
+    /// The kernel query itself reported failure (nonzero status from the
+    /// `ipc_minix_kerninfo` equivalent). C: `init.c:22-26` clears the
+    /// global and keeps running.
+    QueryFailed(i32),
+    /// The returned page carried the wrong magic number, so it was
+    /// discarded. C: same branch, same continue.
+    BadMagic {
+        /// Value actually present in the magic field.
+        found: u32,
+    },
+    /// The page is present and passed validation.
+    Available(ValidatedKernInfo),
+}
+
+/// Explicit runtime state produced by initialization.
+///
+/// The C version keeps two globals: `_minix_kerninfo` (the page pointer,
+/// `init.c:6`) and `_minix_ipcvecs` (the active vector table, defaulting to
+/// the direct-trap functions, `init.c:10-18`). This structure is the same
+/// information with ownership made visible: how the page ended up (present,
+/// refused by the kernel, or rejected by validation), and which table is
+/// active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeState {
+    /// How the kernel information page ended up.
+    pub kerninfo: KerninfoAvailability,
+    /// Which communication table is active.
     pub ipc_table: IpcTableSelection,
 }
 
-/// How initialization failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitError {
-    /// The kernel query itself reported failure (nonzero return from the
-    /// `ipc_minix_kerninfo` equivalent).
-    KerninfoQueryFailed(i32),
-    /// The returned page carried the wrong magic number, so it was discarded.
-    BadMagic {
-        /// Value actually present in the page.
-        found: u32,
-    },
-}
-
-impl InitError {
-    /// Maps the failure to the closest Minix3 error number.
+impl RuntimeState {
+    /// Reports whether a genuine kernel information page is available.
     ///
-    /// A failed kernel query means the communication layer is unreachable;
-    /// the closest input-output error is `EIO`. A wrong magic number means
-    /// the image is malformed; that is `ENOEXEC`. Both come from
-    /// `minix3/sys/sys/errno.h`.
-    pub const fn to_errno(self) -> Errno {
-        match self {
-            InitError::KerninfoQueryFailed(_) => {
-                Errno::from_i32(minix_types::EIO)
-            }
-            InitError::BadMagic { .. } => Errno::from_i32(minix_types::ENOEXEC),
-        }
+    /// This mirrors the C consumer-side check `_minix_kerninfo != NULL`
+    /// that guards every kerninfo-dependent service.
+    pub const fn is_ready(&self) -> bool {
+        matches!(self.kerninfo, KerninfoAvailability::Available(_))
     }
 }
 
@@ -173,51 +184,28 @@ impl KerninfoSource for CannedSource {
     }
 }
 
-/// Explicit runtime state produced by initialization.
+/// Runs the three initialization steps in the C order and yields the state.
 ///
-/// The C version keeps two globals: `_minix_kerninfo` (the page pointer,
-/// `init.c:6`) and `_minix_ipcvecs` (the active vector table, defaulting to
-/// the direct-trap functions, `init.c:10-18`). This structure is the same
-/// information with ownership made visible: either no page is available, or a
-/// validated page plus the resulting table selection is available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeState {
-    /// The validated page, or `None` when unavailable.
-    pub kerninfo: Option<ValidatedKernInfo>,
-    /// Which communication table is active.
-    pub ipc_table: IpcTableSelection,
-}
-
-impl RuntimeState {
-    /// Empty state before initialization runs.
-    pub const fn empty() -> Self {
-        RuntimeState {
-            kerninfo: None,
-            ipc_table: IpcTableSelection::None,
-        }
-    }
-
-    /// Reports whether later code may use kernel services.
-    pub const fn is_ready(self) -> bool {
-        self.kerninfo.is_some()
-    }
-}
-
-/// Runs the three initialization steps in the C order.
+/// Initialization never fails fatally — that is the C contract. The
+/// constructor `__minix_init` (`init.c:20-32`) answers a failed query or a
+/// wrong magic number by clearing `_minix_kerninfo` to NULL and letting the
+/// program continue with the default vector table it preinstalled
+/// (`init.c:10-18`). The function below carries the same information
+/// without hidden globals:
 ///
-/// 1. Query the source for the page header. A query failure clears the state
-///    and returns [`InitError::KerninfoQueryFailed`], matching the C branch
-///    that sets `_minix_kerninfo = NULL` when `ipc_minix_kerninfo` returns
-///    nonzero (`init.c:22-26`).
-/// 2. Validate the magic number. A mismatch clears the state and returns
-///    [`InitError::BadMagic`], matching the second half of the same C
-///    condition (`kerninfo_magic != KERNINFO_MAGIC`).
-/// 3. When the validated page advertises communication vectors (flag bit set
-///    and pointer non-null, `init.c:27-31`), select the kernel-published
-///    table; otherwise keep the test double or none that the caller passed
-///    in as the fallback. The C code copies the whole table struct
-///    (`_minix_ipcvecs = *info->minix_ipcvecs`); recording the selection is
-///    the equivalent decision without copying raw function pointers.
+/// 1. Query the source for the page header. A query failure records
+///    [`KerninfoAvailability::QueryFailed`] and keeps `fallback_table`
+///    active — the caller's standing table plays the role of C's
+///    preinstalled default.
+/// 2. Validate the magic number (once, through
+///    [`ValidatedKernInfo::new`]). A mismatch records
+///    [`KerninfoAvailability::BadMagic`] and likewise keeps the fallback.
+/// 3. When the validated page advertises communication vectors (flag bit
+///    set and pointer non-null, `init.c:27-31`), select the
+///    kernel-published table; otherwise keep the fallback. The C code
+///    copies the whole table struct (`_minix_ipcvecs =
+///    *info->minix_ipcvecs`); recording the selection is the equivalent
+///    decision without copying raw function pointers.
 ///
 /// The `fallback_table` parameter carries the table that was active before
 /// this run (normally the default direct-trap table). Passing it explicitly
@@ -225,34 +213,24 @@ impl RuntimeState {
 pub fn initialize_runtime(
     source: &impl KerninfoSource,
     fallback_table: IpcTableSelection,
-) -> (RuntimeState, Result<InitOutcome, InitError>) {
-    let header = match source.query_kerninfo() {
-        Ok(header) => header,
+) -> RuntimeState {
+    let validated = match source.query_kerninfo() {
+        Ok(header) => match ValidatedKernInfo::new(header) {
+            Ok(valid) => valid,
+            Err(mismatch) => {
+                return RuntimeState {
+                    kerninfo: KerninfoAvailability::BadMagic {
+                        found: mismatch.found,
+                    },
+                    ipc_table: fallback_table,
+                };
+            }
+        },
         Err(code) => {
-            return (
-                RuntimeState::empty(),
-                Err(InitError::KerninfoQueryFailed(code)),
-            );
-        }
-    };
-    if header.magic != KERNINFO_MAGIC {
-        return (
-            RuntimeState::empty(),
-            Err(InitError::BadMagic {
-                found: header.magic,
-            }),
-        );
-    }
-    let validated = match ValidatedKernInfo::new(header) {
-        Ok(valid) => valid,
-        Err(crate::handoff::HandoffError::BadMagic { found }) => {
-            return (RuntimeState::empty(), Err(InitError::BadMagic { found }));
-        }
-        Err(crate::handoff::HandoffError::NullPage) => {
-            return (
-                RuntimeState::empty(),
-                Err(InitError::BadMagic { found: header.magic }),
-            );
+            return RuntimeState {
+                kerninfo: KerninfoAvailability::QueryFailed(code),
+                ipc_table: fallback_table,
+            };
         }
     };
     let table = if validated.header().flags & KIF_IPC_VECTORS != 0
@@ -262,16 +240,10 @@ pub fn initialize_runtime(
     } else {
         fallback_table
     };
-    (
-        RuntimeState {
-            kerninfo: Some(validated),
-            ipc_table: table,
-        },
-        Ok(InitOutcome {
-            kerninfo_available: true,
-            ipc_table: table,
-        }),
-    )
+    RuntimeState {
+        kerninfo: KerninfoAvailability::Available(validated),
+        ipc_table: table,
+    }
 }
 
 /// Thread-local storage model for user-space programs.
@@ -355,12 +327,12 @@ mod tests {
         let source = CannedSource {
             result: Ok(header_with(KIF_IPC_VECTORS, 0x1000)),
         };
-        let (state, outcome) =
-            initialize_runtime(&source, IpcTableSelection::TestDouble);
-        let outcome = outcome.expect("initialization succeeds");
-        assert!(outcome.kerninfo_available);
-        assert_eq!(outcome.ipc_table, IpcTableSelection::KernelPublished);
+        let state = initialize_runtime(&source, IpcTableSelection::TestDouble);
         assert!(state.is_ready());
+        assert!(matches!(
+            state.kerninfo,
+            KerninfoAvailability::Available(_)
+        ));
         assert_eq!(state.ipc_table, IpcTableSelection::KernelPublished);
     }
 
@@ -369,11 +341,9 @@ mod tests {
         let source = CannedSource {
             result: Ok(header_with(0, 0)),
         };
-        let (state, outcome) =
-            initialize_runtime(&source, IpcTableSelection::TestDouble);
-        let outcome = outcome.expect("page itself is valid");
-        assert_eq!(outcome.ipc_table, IpcTableSelection::TestDouble);
+        let state = initialize_runtime(&source, IpcTableSelection::TestDouble);
         assert!(state.is_ready());
+        assert_eq!(state.ipc_table, IpcTableSelection::TestDouble);
     }
 
     #[test]
@@ -382,27 +352,28 @@ mod tests {
         let source = CannedSource {
             result: Ok(header_with(KIF_IPC_VECTORS, 0)),
         };
-        let (_, outcome) = initialize_runtime(&source, IpcTableSelection::TestDouble);
-        assert_eq!(
-            outcome.unwrap().ipc_table,
-            IpcTableSelection::TestDouble
-        );
+        let state = initialize_runtime(&source, IpcTableSelection::TestDouble);
+        assert_eq!(state.ipc_table, IpcTableSelection::TestDouble);
     }
 
     #[test]
-    fn test_query_failure_clears_state() {
+    fn test_query_failure_degrades_and_keeps_fallback_table() {
+        // C: init.c:22-26 — a failed query clears the page pointer and the
+        // program continues on the preinstalled default table. The fallback
+        // the caller passed in plays that role, so it survives the failure
+        // instead of collapsing to "no table".
         let source = CannedSource { result: Err(-5) };
-        let (state, outcome) = initialize_runtime(&source, IpcTableSelection::KernelPublished);
-        match outcome {
-            Err(InitError::KerninfoQueryFailed(code)) => assert_eq!(code, -5),
-            other => panic!("expected query failure, got {:?}", other),
-        }
+        let state = initialize_runtime(&source, IpcTableSelection::KernelPublished);
         assert!(!state.is_ready());
-        assert_eq!(state.ipc_table, IpcTableSelection::None);
+        assert_eq!(
+            state.kerninfo,
+            KerninfoAvailability::QueryFailed(-5)
+        );
+        assert_eq!(state.ipc_table, IpcTableSelection::KernelPublished);
     }
 
     #[test]
-    fn test_wrong_magic_discards_page() {
+    fn test_wrong_magic_degrades_and_keeps_fallback_table() {
         let source = CannedSource {
             result: Ok(KernInfoHeader {
                 magic: 0x0,
@@ -411,19 +382,24 @@ mod tests {
                 user_info_address: 0x2000,
             }),
         };
-        let (state, outcome) = initialize_runtime(&source, IpcTableSelection::KernelPublished);
-        match outcome {
-            Err(InitError::BadMagic { found }) => assert_eq!(found, 0x0),
-            other => panic!("expected bad magic, got {:?}", other),
-        }
+        let state = initialize_runtime(&source, IpcTableSelection::KernelPublished);
         assert!(!state.is_ready());
+        assert_eq!(
+            state.kerninfo,
+            KerninfoAvailability::BadMagic { found: 0x0 }
+        );
+        assert_eq!(state.ipc_table, IpcTableSelection::KernelPublished);
     }
 
     #[test]
     fn test_direct_trap_source_reports_unreachable_in_hosted_tests() {
         let source = DirectTrapSource;
-        let (_, outcome) = initialize_runtime(&source, IpcTableSelection::None);
-        assert!(matches!(outcome, Err(InitError::KerninfoQueryFailed(_))));
+        let state = initialize_runtime(&source, IpcTableSelection::None);
+        assert!(matches!(
+            state.kerninfo,
+            KerninfoAvailability::QueryFailed(_)
+        ));
+        assert!(!state.is_ready());
     }
 
     #[test]
@@ -434,22 +410,5 @@ mod tests {
         assert_eq!(negative_to_errno(raw), Some(error));
         assert_eq!(negative_to_errno(0), None);
         assert_eq!(negative_to_errno(5), None);
-    }
-
-    #[test]
-    fn test_init_errors_map_to_documented_errnos() {
-        assert_eq!(
-            InitError::KerninfoQueryFailed(-5).to_errno(),
-            Errno::from_i32(minix_types::EIO)
-        );
-        assert_eq!(
-            InitError::BadMagic { found: 0 }.to_errno(),
-            Errno::from_i32(minix_types::ENOEXEC)
-        );
-    }
-
-    #[test]
-    fn test_empty_state_is_not_ready() {
-        assert!(!RuntimeState::empty().is_ready());
     }
 }

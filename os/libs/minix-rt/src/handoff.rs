@@ -128,14 +128,14 @@ pub struct KernInfoHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidatedKernInfo(KernInfoHeader);
 
-/// Failure to validate the kernel information page.
+/// Failure to select the initial stack pointer from a page pointer.
+///
+/// The validation of a by-value header has its own single-purpose error
+/// ([`MagicMismatch`]): a header in hand can only fail the magic check.
+/// [`HandoffError`] covers the pointer-path failures, where the page
+/// address itself can be null.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoffError {
-    /// The magic number did not match [`KERNINFO_MAGIC`].
-    BadMagic {
-        /// Value actually present in the page.
-        found: u32,
-    },
     /// The page pointer itself was null.
     NullPage,
 }
@@ -143,25 +143,44 @@ pub enum HandoffError {
 impl HandoffError {
     /// Maps the failure to the closest Minix3 error number.
     ///
-    /// A corrupt handoff page means the program image or the kernel
+    /// A null handoff page means the program image or the kernel
     /// publishing step is broken; the closest executable-format error is
     /// `ENOEXEC` (value 8, `minix3/sys/sys/errno.h`). The mapping keeps the
     /// crate-wide rule that every error type converts to a Minix3 error
     /// number instead of inventing new codes.
     pub const fn to_errno(self) -> Errno {
         match self {
-            HandoffError::BadMagic { .. } | HandoffError::NullPage => {
-                Errno::from_i32(minix_types::ENOEXEC)
-            }
+            HandoffError::NullPage => Errno::from_i32(minix_types::ENOEXEC),
         }
+    }
+}
+
+/// The header carried the wrong magic number.
+///
+/// A by-value [`KernInfoHeader`] can fail validation in exactly one way:
+/// [`KERNINFO_MAGIC`] does not match. The value found in the magic field
+/// is carried for diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MagicMismatch {
+    /// Value actually present in the magic field.
+    pub found: u32,
+}
+
+impl MagicMismatch {
+    /// Maps the failure to the closest Minix3 error number.
+    ///
+    /// A wrong magic number means the image is malformed; that is
+    /// `ENOEXEC`, same rule as the pointer-path errors above.
+    pub const fn to_errno(self) -> Errno {
+        Errno::from_i32(minix_types::ENOEXEC)
     }
 }
 
 impl ValidatedKernInfo {
     /// Validates the magic number and wraps the header.
-    pub fn new(header: KernInfoHeader) -> Result<Self, HandoffError> {
+    pub fn new(header: KernInfoHeader) -> Result<Self, MagicMismatch> {
         if header.magic != KERNINFO_MAGIC {
-            return Err(HandoffError::BadMagic {
+            return Err(MagicMismatch {
                 found: header.magic,
             });
         }
@@ -321,7 +340,7 @@ mod tests {
             user_info_address: 0,
         };
         match ValidatedKernInfo::new(header) {
-            Err(HandoffError::BadMagic { found }) => assert_eq!(found, 0x12345678),
+            Err(MagicMismatch { found }) => assert_eq!(found, 0x12345678),
             other => panic!("expected BadMagic, got {:?}", other),
         }
     }
@@ -411,7 +430,16 @@ mod tests {
 
     #[test]
     fn test_handoff_error_maps_to_executable_format_errno() {
-        let error = HandoffError::BadMagic { found: 0 };
+        let error = HandoffError::NullPage;
+        assert_eq!(
+            error.to_errno(),
+            Errno::from_i32(minix_types::ENOEXEC)
+        );
+    }
+
+    #[test]
+    fn test_magic_mismatch_maps_to_executable_format_errno() {
+        let error = MagicMismatch { found: 0 };
         assert_eq!(
             error.to_errno(),
             Errno::from_i32(minix_types::ENOEXEC)
