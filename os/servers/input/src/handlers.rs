@@ -24,14 +24,10 @@
 
 use crate::error::InputError;
 use crate::event::LedCode;
-use crate::eventbuf::{apply_copy, plan_copy};
+use crate::eventbuf::EventCount;
 use crate::framework::{SELECT_ERROR, SELECT_NOTIFY, SELECT_READ, SELECT_WRITE};
-use crate::structs::InputDevice;
-use core::mem::size_of;
+use crate::structs::{EVENT_BYTES, InputDevice};
 use minix_types::{Endpoint, KBD_LEDS_CAPS, KBD_LEDS_NUM, KBD_LEDS_SCROLL, KIOCSLEDS};
-
-/// Wire size of one buffered event (20 bytes, see `event.rs`).
-pub const EVENT_BYTES: usize = size_of::<crate::event::InputEvent>();
 
 // ── Open / close (document 06) ──
 
@@ -113,8 +109,9 @@ pub fn apply_close(device: &mut InputDevice) {
 pub enum ReadVerdict {
     /// Copy `event_count` oldest events to the caller now.
     Serve {
-        /// How many events to move (≤ buffered, ≥ 1).
-        event_count: u32,
+        /// How many events to move (≤ buffered, ≥ 1). Typed so the queue
+        /// count (events) and the reply value (bytes) cannot be mixed.
+        event_count: EventCount,
     },
     /// Park the caller (`suspended` + contact details); the framework sends
     /// no reply now (`EDONTREPLY`), the wake-up answers later.
@@ -137,8 +134,8 @@ pub fn decide_read(device: &InputDevice, size_bytes: usize, nonblocking: bool) -
     if !device.is_active() || device.suspended {
         return ReadVerdict::Refuse(InputError::InputOutput);
     }
-    let event_count = (size_bytes / EVENT_BYTES) as u32;
-    if event_count == 0 {
+    let appetite = (size_bytes / EVENT_BYTES) as u32;
+    if appetite == 0 {
         return ReadVerdict::Refuse(InputError::InputOutput);
     }
     if device.is_buffer_empty() {
@@ -147,13 +144,13 @@ pub fn decide_read(device: &InputDevice, size_bytes: usize, nonblocking: bool) -
         }
         return ReadVerdict::Park;
     }
-    let clamped = if event_count > device.count {
+    let clamped = if appetite > device.count {
         device.count
     } else {
-        event_count
+        appetite
     };
     ReadVerdict::Serve {
-        event_count: clamped,
+        event_count: EventCount(clamped),
     }
 }
 
@@ -169,21 +166,6 @@ pub fn park_read(device: &mut InputDevice, caller: Endpoint, grant: i32, request
     device.caller = caller;
     device.grant = grant;
     device.request_id = request_id;
-}
-
-/// Serves a decided copy: plans the segments and advances the device.
-///
-/// Thin glue over `eventbuf.rs` for the read path: `decide_read` promised
-/// `event_count` (≤ buffered), the plan splits it, the advance fulfils it.
-/// Once the dispatcher lands, the two grant copies go between the plan and
-/// the advance (a failed copy must not advance); until then this function
-/// keeps the promise (`Serve`) and its fulfilment from drifting apart.
-pub fn serve_copy(device: &mut InputDevice, event_count: u32) -> Result<u32, InputError> {
-    let plan = plan_copy(device.tail, device.count, event_count)?;
-    // The transport copies `first_len` then `second_len` events through the
-    // grant here (future dispatcher); advance only afterwards.
-    apply_copy(device, &plan);
-    Ok(plan.event_total())
 }
 
 // ── Control (document 08) ──
@@ -428,11 +410,15 @@ mod tests {
         device.count = 3;
         assert_eq!(
             decide_read(&device, 10 * EVENT_BYTES, false),
-            ReadVerdict::Serve { event_count: 3 }
+            ReadVerdict::Serve {
+                event_count: EventCount(3)
+            }
         );
         assert_eq!(
             decide_read(&device, 2 * EVENT_BYTES, false),
-            ReadVerdict::Serve { event_count: 2 }
+            ReadVerdict::Serve {
+                event_count: EventCount(2)
+            }
         );
     }
 
@@ -478,14 +464,18 @@ mod tests {
     }
 
     #[test]
-    fn test_serve_copy_moves_and_advances() {
+    fn test_read_copy_plan_and_commit_match_c_answer() {
+        // C: input.c:144-156 — plan (read-only), transport, commit (by
+        // value), answer in bytes; over-asking is refused at the plan.
+        use crate::eventbuf::{ByteCount, commit_read_copy, plan_read_copy};
         let mut device = keyboard();
         device.tail = 30;
         device.count = 8;
-        let moved = serve_copy(&mut device, 5).unwrap();
-        assert_eq!(moved, 5);
+        let planned = plan_read_copy(&device, EventCount(5)).unwrap();
+        assert_eq!(planned.bytes, ByteCount(100)); // 5 events × 20 bytes
+        commit_read_copy(&mut device, planned);
         assert_eq!((device.tail, device.count), (3, 3));
-        assert!(serve_copy(&mut device, 4).is_err());
+        assert!(plan_read_copy(&device, EventCount(4)).is_err());
     }
 
     #[test]

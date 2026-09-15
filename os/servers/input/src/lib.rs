@@ -59,15 +59,18 @@ pub use event::{
     ButtonCode, ConsumerCode, EventPage, GeneralDesktopCode, InputEvent, LedCode, PressState,
     ValueMode,
 };
-pub use eventbuf::{CopyPlan, apply_copy, drain_ordered, plan_copy};
+pub use eventbuf::{
+    ByteCount, CopyPlan, EventCount, ReadCopyPlan, apply_copy, commit_read_copy, drain_ordered,
+    plan_copy, plan_read_copy,
+};
 pub use framework::{
     CharacterRequest, CharacterResponse, GateVerdict, Incoming, NotifySource, OpenDeviceSet,
     ReplyDecision,
 };
 pub use handlers::{
-    CancelVerdict, EVENT_BYTES, IoctlVerdict, ReadVerdict, SelectOutcome, apply_cancel,
-    apply_close, apply_open, apply_select_record, decide_cancel, decide_close, decide_ioctl,
-    decide_open, decide_read, decide_select, led_mask_from_kio_bits, park_read, serve_copy,
+    CancelVerdict, IoctlVerdict, ReadVerdict, SelectOutcome, apply_cancel, apply_close,
+    apply_open, apply_select_record, decide_cancel, decide_close, decide_ioctl, decide_open,
+    decide_read, decide_select, led_mask_from_kio_bits, park_read,
 };
 pub use init::{HandlerSlot, InitStep, StartupRegistration};
 pub use key_codes::KeyCode;
@@ -77,7 +80,7 @@ pub use produce::{
     stored_event,
 };
 pub use setleds::{LightTarget, apply_light_save, plan_light_targets, remembered_lights};
-pub use structs::{DeviceIndex, InputDevice, InputTable, Minor};
+pub use structs::{DeviceIndex, EVENT_BYTES, InputDevice, InputTable, Minor};
 
 /// Crate-level init entry (called by `main.rs`; real init runs on startup).
 pub fn init() {}

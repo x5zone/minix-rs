@@ -26,6 +26,14 @@ use minix_types::{DS_MAX_KEYLEN, Endpoint};
 /// event is overwritten, never the newest (document 09).
 pub const EVENT_BUFFER_SIZE: usize = 32;
 
+/// Wire size of one buffered event, in bytes.
+///
+/// C: `sizeof(struct input_event)` = 20 (`input.h:25-32`: two `u16`, one
+/// `i32`, two `u16`, one `u32[2]`). The read path divides a caller's buffer
+/// size by this to get its appetite in events (document 07); the copy path
+/// multiplies back for the byte answer (`input.c:156`).
+pub const EVENT_BYTES: usize = core::mem::size_of::<InputEvent>();
+
 /// How many device slots the server owns.
 ///
 /// C: `INPUT_DEV_MAX (1 + KBD_MINORS + 1 + MOUSE_MINORS)` = 10 (`input.h:26`):

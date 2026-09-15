@@ -16,7 +16,7 @@
 
 use crate::error::InputError;
 use crate::event::InputEvent;
-use crate::structs::{EVENT_BUFFER_SIZE, InputDevice};
+use crate::structs::{EVENT_BUFFER_SIZE, EVENT_BYTES, InputDevice};
 use alloc::vec::Vec;
 
 /// How one copy is split across the ring wrap.
@@ -91,6 +91,67 @@ pub fn plan_copy(tail: u32, count: u32, event_count: u32) -> Result<CopyPlan, In
 pub fn apply_copy(device: &mut InputDevice, plan: &CopyPlan) {
     device.tail = plan.new_tail;
     device.count = plan.new_count;
+}
+
+// ── The read path: plan, transport, commit ──
+
+/// How many events a request asks for or a plan moves.
+///
+/// C counts events in bare locals (`input.c:140-142`); the newtype keeps
+/// "events" and "bytes" from being mixed at call sites — the queue
+/// bookkeeping is in events (`input.c:153-154`), the read reply in bytes
+/// (`input.c:156`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventCount(pub u32);
+
+/// How many bytes a planned copy moves — the value a read reply carries.
+///
+/// C: `event_size * event_count` (`input.c:156`). Computed once at planning
+/// time so the dispatcher never multiplies by hand, and never answers an
+/// event count where the caller expects bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteCount(pub u32);
+
+/// One planned read copy: the ring geometry plus the reply value.
+///
+/// The plan is the whole future of one read's data movement; the transport
+/// performs the segments it describes, then hands the plan to
+/// [`commit_read_copy`] by value — a consumed plan cannot advance the queue
+/// twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadCopyPlan {
+    /// Segment geometry and post-state (events per segment, new tail/count).
+    pub plan: CopyPlan,
+    /// Reply value for a successful copy (`input.c:156`).
+    pub bytes: ByteCount,
+}
+
+/// Plans a read copy without touching the device.
+///
+/// Takes `&InputDevice` and returns the whole future — segments, post-state,
+/// byte answer — or an error. Planning being read-only is the structural
+/// form of C's "a failed copy must not advance" (`input.c:144-151`): a
+/// rejected plan leaves the device bit-identical, and the queue can only
+/// advance through [`commit_read_copy`], which demands a plan in hand.
+pub fn plan_read_copy(
+    device: &InputDevice,
+    request: EventCount,
+) -> Result<ReadCopyPlan, InputError> {
+    let plan = plan_copy(device.tail, device.count, request.0)?;
+    Ok(ReadCopyPlan {
+        bytes: ByteCount(plan.event_total() * EVENT_BYTES as u32),
+        plan,
+    })
+}
+
+/// Applies a planned copy after the transport reports both segments moved.
+///
+/// C: `input.c:153-154`. Consumes the plan: the only way the queue advances
+/// on the read path, usable exactly once. A failed transport copy never
+/// calls this, so the events stay buffered for a retry or a cancel (the
+/// producer side keeps filling regardless, document 09).
+pub fn commit_read_copy(device: &mut InputDevice, planned: ReadCopyPlan) {
+    apply_copy(device, &planned.plan);
 }
 
 /// Lists the buffered events oldest-first, without removing them.
@@ -182,6 +243,48 @@ mod tests {
         device.count = 8;
         let plan = plan_copy(30, 8, 5).unwrap();
         apply_copy(device, &plan);
+        assert_eq!((device.tail, device.count), (3, 3));
+    }
+
+    #[test]
+    fn test_plan_read_copy_reports_bytes_for_the_reply() {
+        // C: input.c:156 — the reply value is event_size * event_count,
+        // computed at planning time; planning itself is read-only.
+        use crate::structs::InputTable;
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[0];
+        device.tail = 30;
+        device.count = 8;
+        let planned = plan_read_copy(device, EventCount(5)).unwrap();
+        assert_eq!(planned.plan.event_total(), 5);
+        assert_eq!(planned.bytes, ByteCount(5 * EVENT_BYTES as u32));
+        assert_eq!((device.tail, device.count), (30, 8));
+    }
+
+    #[test]
+    fn test_rejected_plan_leaves_device_untouched() {
+        // C: input.c:144-151 — a failed copy must not advance. Structural
+        // form: a rejected plan returns Err, and advancing requires a plan.
+        use crate::structs::InputTable;
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[0];
+        device.tail = 7;
+        device.count = 2;
+        assert!(plan_read_copy(device, EventCount(3)).is_err());
+        assert_eq!((device.tail, device.count), (7, 2));
+    }
+
+    #[test]
+    fn test_commit_consumes_plan_and_advances_once() {
+        // C: input.c:153-154 — commit is the single advance, by value so a
+        // consumed plan cannot advance the queue twice.
+        use crate::structs::InputTable;
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[0];
+        device.tail = 30;
+        device.count = 8;
+        let planned = plan_read_copy(device, EventCount(5)).unwrap();
+        commit_read_copy(device, planned);
         assert_eq!((device.tail, device.count), (3, 3));
     }
 
