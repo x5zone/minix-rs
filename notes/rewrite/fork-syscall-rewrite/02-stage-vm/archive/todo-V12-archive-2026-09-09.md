@@ -105,7 +105,7 @@
 | G-V12-2 | ✅ T29（存档 Fix #49：SIGKMEM seam + do_memory 排空循环；通电挂 E1） |
 | G-V12-3 | ✅ T27（存档 Fix #47：dispatcher 四函数 happy-path 补测） |
 | G-V12-4 | **维持坍缩（开口）**：`RsError::UpdateKernelFailed` errno 直传的 wire 编码挂 E-RSWIRE / RS 工作流协同定案 |
-| G-V12-5 | **余件收口中**：`os/servers/vm/Cargo.toml` 依赖收口已随 Fix #62 完成（default-features = false，三矩阵零差异）；arch 侧 "mock" 更名余件仍在 edge E-VMMOCK |
+| G-V12-5 | ✅ 闭合（2026-09-16，edge E-VMMOCK，commit 750d0843d）：arch `mock` feature 更名 `runtime-window`（119 处 cfg 门控 + kernel 依赖引用同步；kernel umbrella `mock` 继续级联 minix-plat/mock 不变）；矩阵回归 arch 236/kernel 757/vm 505 全绿，boot-shim 零错误，arch --no-default-features 与更名前同为 37 错零回归。依赖收口半（Fix #62）已于 2026-09-08 完成 |
 | G-V12-6 | ✅（dispatch_pagefault 可写性闸落地：SIGSEGV 经 gateway.sys_kill + clear_pagefault） |
 
 ---
