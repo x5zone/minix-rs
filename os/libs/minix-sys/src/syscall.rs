@@ -674,14 +674,15 @@ pub fn sys_update(
     Ok(())
 }
 
-/// SYS_DIAGCTL：诊断控制（C: libsys `sys_diagctl`；kernel
-/// `dispatch_diagctl` 读 `m_lsys_krn_sys_diagctl` 的 code/buf/len——
-/// DIAG 码 1 时内核从调用方空间拷取至多 DIAGBUFSIZE 字节并打到控制台）。
+/// SYS_DIAGCTL：诊断控制（C: libsys `sys_diagctl(int code, char *arg1,
+/// int arg2)`——kernel `dispatch_diagctl` 按 code 分派：DIAG(1) 用
+/// buf/len 从调用方空间拷取至多 DIAGBUFSIZE 字节打到控制台；STACKTRACE(2)
+/// 用 `endpt` 字段指定目标进程）。
 pub fn sys_diagctl(
     transport: &impl KernelCallTransport,
     code: i32,
-    buf: u64,
-    len: u64,
+    arg1: u64,
+    arg2: i32,
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     {
@@ -689,10 +690,211 @@ pub fn sys_diagctl(
         //（kernel/src/syscall.rs dispatch_diagctl；C ipc.h）。
         let d = unsafe { &mut msg.m_u.m_lsys_krn_sys_diagctl };
         d.code = code;
-        d.buf = buf;
-        d.len = len;
+        if code == 1 {
+            d.buf = arg1;
+            d.len = arg2 as u64;
+        } else {
+            d.endpt = arg2;
+        }
     }
     let reply = perform_kernel_call(transport, minix_types::SYS_DIAGCTL, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_SETALARM：设置（或取消）闹钟并取回旧闹钟信息（C: libsys
+/// `sys_setalarm2`；kernel `dispatch_setalarm` 读/写
+/// `m_lsys_krn_sys_setalarm`——请求 exp_time/abs_time，应答 time_left/
+/// uptime 经同一臂回填）。成功返回 `(time_left, uptime)`。
+pub fn sys_setalarm(
+    transport: &impl KernelCallTransport,
+    exp_time: u64,
+    abs_time: bool,
+) -> Result<(u64, u64), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_setalarm 是 SETALARM 的文档化载荷布局
+        //（kernel/src/syscall_clock.rs dispatch_setalarm；C ipc.h）。
+        let a = unsafe { &mut msg.m_u.m_lsys_krn_sys_setalarm };
+        a.exp_time = exp_time;
+        a.abs_time = abs_time as i32;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SETALARM, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 应答由内核经同一臂回填（syscall_clock.rs:265）。
+    let arm = unsafe { msg.m_u.m_lsys_krn_sys_setalarm };
+    Ok((arm.time_left, arm.uptime))
+}
+
+/// SYS_SIGRETURN：信号处理返回，恢复目标进程的被信号上下文（C: libsys
+/// `sys_sigreturn`——`m_sigcalls.endpt/sigctx`；kernel
+/// `dispatch_sigreturn`）。
+pub fn sys_sigreturn(
+    transport: &impl KernelCallTransport,
+    proc_endpt: i32,
+    sig_ctx: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_sigcalls 是 SIGRETURN 的文档化载荷布局
+        //（kernel/src/syscall_signal.rs dispatch_sigreturn）。
+        let sc = unsafe { &mut msg.m_u.m_sigcalls };
+        sc.endpt = proc_endpt;
+        sc.sigctx = sig_ctx;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SIGRETURN, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_SPROF：统计式 profiling 控制（C: libsys `sys_sprof`——
+/// `m_lsys_krn_sys_sprof` 的 action/freq/intr_type/endpt/ctl_ptr/mem_ptr；
+/// kernel `dispatch_profile`）。
+pub fn sys_sprof(
+    transport: &impl KernelCallTransport,
+    action: i32,
+    freq: i32,
+    intr_type: i32,
+    endpt: i32,
+    ctl_ptr: u64,
+    mem_ptr: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_sprof 是 SPROF 的文档化载荷布局
+        //（kernel/src/misc.rs dispatch_profile；C ipc.h）。
+        let s = unsafe { &mut msg.m_u.m_lsys_krn_sys_sprof };
+        s.action = action;
+        s.freq = freq;
+        s.intr_type = intr_type;
+        s.endpt = endpt;
+        s.ctl_ptr = ctl_ptr;
+        s.mem_ptr = mem_ptr;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SPROF, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_SETTIME：设置实时钟或调整渐变（C: libsys `sys_settime`——
+/// `m_lsys_krn_sys_settime` 的 now/clock_id/sec/nsec；kernel
+/// `dispatch_settime`，CLOCK_REALTIME 之外 EINVAL）。
+pub fn sys_settime(
+    transport: &impl KernelCallTransport,
+    now: i32,
+    clock_id: i32,
+    sec: u64,
+    nsec: i64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_settime 是 SETTIME 的文档化载荷布局
+        //（kernel/src/syscall_clock.rs dispatch_settime）。
+        let t = unsafe { &mut msg.m_u.m_lsys_krn_sys_settime };
+        t.now = now;
+        t.clock_id = clock_id;
+        t.sec = sec;
+        t.nsec = nsec;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SETTIME, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_STIME：设置系统引导时间（C: libsys `sys_stime`——
+/// `m_lsys_krn_sys_stime.boot_time`；kernel `dispatch_stime`）。
+pub fn sys_stime(transport: &impl KernelCallTransport, boottime: u64) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_stime 是 STIME 的文档化载荷布局
+        //（kernel/src/syscall_clock.rs dispatch_stime）。
+        let t = unsafe { &mut msg.m_u.m_lsys_krn_sys_stime };
+        t.boot_time = boottime;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_STIME, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_VTIMER：设置/取回进程的虚拟或 profile 定时器（C: libsys
+/// `sys_vtimer`——kernel `dispatch_vtimer` 按 M2 读
+/// which/set/value/endpt，旧值经 `m_m2.m2l1` 回填）。
+///
+/// `new_val` 为 `Some` 时设置新值；应答携带旧值。
+pub fn sys_vtimer(
+    transport: &impl KernelCallTransport,
+    proc_endpt: i32,
+    which: i32,
+    new_val: Option<u64>,
+) -> Result<Option<u64>, i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: kernel dispatch_vtimer 按 M2 读 VT_WHICH/SET/VALUE/ENDPT
+        //（syscall_clock.rs:437-441；C do_vtimer.c:33-71）。
+        let m2 = unsafe { &mut msg.m_u.m_m2 };
+        m2.m2i1 = which;
+        m2.m2i2 = new_val.is_some() as i32;
+        m2.m2l1 = new_val.unwrap_or(0) as i64;
+        m2.m2l2 = proc_endpt as i64;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_VTIMER, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 旧值由内核写回 m_m2.m2l1（syscall_clock.rs:505-508）。
+    let old = unsafe { msg.m_u.m_m2.m2l1 } as u64;
+    Ok(Some(old))
+}
+
+/// SYS_GETMCONTEXT：取目标进程的机器上下文（`m_lsys_krn_sys_mcontext`
+/// 的 endpt/ctx_ptr；kernel `dispatch_getmcontext`）。
+pub fn sys_getmcontext(
+    transport: &impl KernelCallTransport,
+    proc_endpt: i32,
+    ctx_ptr: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_mcontext 是 GET/SETMCONTEXT 共用的载荷
+        //布局（kernel/src/syscall.rs dispatch_getmcontext）。
+        let mc = unsafe { &mut msg.m_u.m_lsys_krn_sys_mcontext };
+        mc.endpt = proc_endpt;
+        mc.ctx_ptr = ctx_ptr;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_GETMCONTEXT, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_SETMCONTEXT：设置目标进程的机器上下文（同
+/// [`sys_getmcontext`] 的载荷臂，kernel `dispatch_setmcontext`）。
+pub fn sys_setmcontext(
+    transport: &impl KernelCallTransport,
+    proc_endpt: i32,
+    ctx_ptr: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: 同 sys_getmcontext——GET/SET 共用 m_lsys_krn_sys_mcontext。
+        let mc = unsafe { &mut msg.m_u.m_lsys_krn_sys_mcontext };
+        mc.endpt = proc_endpt;
+        mc.ctx_ptr = ctx_ptr;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SETMCONTEXT, &mut msg, |_| {});
     if reply < 0 {
         return Err(reply);
     }
@@ -1203,5 +1405,130 @@ mod tests {
         // SAFETY(test):读回载荷臂核对逐字段。
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!((d.code, d.buf, d.len), (1, 0x4000, 32));
+    }
+
+    /// SYS_DIAGCTL STACKTRACE 形状:arg2 = 目标端点进 endpt 字段。
+    #[test]
+    fn test_sys_diagctl_stacktrace_encodes_endpt() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_diagctl(&canned, 2, 0, 9); // DIAGCTL_CODE_STACKTRACE, endpt 9
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        // SAFETY(test):读回载荷臂核对 endpt 字段。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
+        assert_eq!((d.code, d.endpt), (2, 9));
+    }
+
+    /// SYS_SETALARM 回放:请求 exp/abs + 应答臂 time_left/uptime。
+    #[test]
+    fn test_sys_setalarm_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造应答臂镜像内核回填(syscall_clock.rs:265)。
+        let arm = unsafe { &mut reply.m_u.m_lsys_krn_sys_setalarm };
+        arm.time_left = 500;
+        arm.uptime = 9000;
+        canned.reply_message(reply);
+
+        let r = sys_setalarm(&canned, 100, false);
+        assert_eq!(r, Ok((500, 9000)));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_SETALARM); // 0x618
+        // SAFETY(test):读回请求臂。
+        let a = unsafe { sent[0].m_u.m_lsys_krn_sys_setalarm };
+        assert_eq!((a.exp_time, a.abs_time), (100, 0));
+    }
+
+    /// SYS_SIGRETURN 回放:endpt/sigctx。
+    #[test]
+    fn test_sys_sigreturn_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_sigreturn(&canned, 7, 0x30_0000);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_SIGRETURN); // 0x60a
+        // SAFETY(test):读回载荷臂。
+        let sc = unsafe { sent[0].m_u.m_sigcalls };
+        assert_eq!((sc.endpt, sc.sigctx), (7, 0x30_0000));
+    }
+
+    /// SYS_SPROF 回放:六字段。
+    #[test]
+    fn test_sys_sprof_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_sprof(&canned, 0 /* start */, 4096, 1 /* NMI */, 5, 0x5000, 0x6000);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_SPROF); // 0x624
+        // SAFETY(test):读回载荷臂。
+        let s = unsafe { sent[0].m_u.m_lsys_krn_sys_sprof };
+        assert_eq!(
+            (s.action, s.freq, s.intr_type, s.endpt, s.ctl_ptr, s.mem_ptr),
+            (0, 4096, 1, 5, 0x5000, 0x6000)
+        );
+    }
+
+    /// SYS_SETTIME 回放:四字段。
+    #[test]
+    fn test_sys_settime_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_settime(&canned, 1 /* now */, 0 /* REALTIME */, 1_700_000_000, 500);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_SETTIME); // 0x628
+        // SAFETY(test):读回载荷臂。
+        let t = unsafe { sent[0].m_u.m_lsys_krn_sys_settime };
+        assert_eq!((t.now, t.clock_id, t.sec, t.nsec), (1, 0, 1_700_000_000, 500));
+    }
+
+    /// SYS_STIME 回放:boot_time。
+    #[test]
+    fn test_sys_stime_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_stime(&canned, 1_700_000_000);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_STIME); // 0x627
+        // SAFETY(test):读回载荷臂。
+        let t = unsafe { sent[0].m_u.m_lsys_krn_sys_stime };
+        assert_eq!(t.boot_time, 1_700_000_000);
+    }
+
+    /// SYS_VTIMER 回放:M2 形状(which/set/value/endpt)+ 旧值回读。
+    #[test]
+    fn test_sys_vtimer_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造旧值回写(kernel 写 m_m2.m2l1)。
+        reply.m_u.m_m2.m2l1 = 1234;
+        canned.reply_message(reply);
+
+        let r = sys_vtimer(&canned, 8, 1 /* VT_VIRTUAL */, Some(5000));
+        assert_eq!(r, Ok(Some(1234)));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_VTIMER); // 0x62d
+        // SAFETY(test):读回 M2 请求字段。
+        let m2 = unsafe { sent[0].m_u.m_m2 };
+        assert_eq!((m2.m2i1, m2.m2i2, m2.m2l1, m2.m2l2), (1, 1, 5000, 8));
+    }
+
+    /// SYS_GETMCONTEXT 回放:endpt/ctx_ptr(GET/SET 同臂异调用号)。
+    #[test]
+    fn test_sys_mcontext_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_getmcontext(&canned, 6, 0x40_0000);
+        assert_eq!(r, Ok(()));
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_setmcontext(&canned, 6, 0x40_0000);
+        assert_eq!(r, Ok(()));
     }
 }

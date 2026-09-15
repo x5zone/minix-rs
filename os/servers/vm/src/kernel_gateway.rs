@@ -183,7 +183,7 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
             &self.transport,
             1, // DIAGCTL_CODE_DIAG
             text.as_ptr() as u64,
-            text.len() as u64,
+            text.len() as i32,
         )
         .map_err(GatewayError::Kernel)
     }
