@@ -289,10 +289,21 @@ const NONE: i32 = -1;
 /// C: `ANY` — endpoint.h
 const ANY: i32 = -3;
 
-/// C: `VFS_PROC_NR` — used by magic grant check (do_safecopy.c:221)
-const VFS_PROC_NR: i32 = 4;
-/// C: `MIB_PROC_NR` — used by magic grant check (do_safecopy.c:221)
-const MIB_PROC_NR: i32 = 8;
+/// Only VFS and MIB may create magic grants.
+///
+/// C: do_safecopy.c:218-226 — hardcoded as `granter != VFS_PROC_NR &&
+/// granter != MIB_PROC_NR` (C leaves a TODO to make this a system.conf
+/// flag; the rewrite keeps the hardcoded policy). `Endpoint::VFS`/`MIB`
+/// are the com.h:60/:66 authority (`minix-types` single source — the
+/// same pattern as the kernel's errno re-export).
+///
+/// Extracted as a named predicate (C inlines it) so the policy is unit
+/// testable on the host: the full `verify_grant` path crosses the
+/// grant-table read (`data_copy_vmcheck`) before this check, which has
+/// no host-safe test route.
+fn may_create_magic_grant(granter: Endpoint) -> bool {
+    granter == Endpoint::VFS || granter == Endpoint::MIB
+}
 
 // ── Error codes ──
 // Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
@@ -543,7 +554,7 @@ pub fn verify_grant(
             let magic = grant_entry.cp_magic();
 
             // C: do_safecopy.c:221-226 — only VFS and MIB may create magic grants.
-            if granter.0 != VFS_PROC_NR && granter.0 != MIB_PROC_NR {
+            if !may_create_magic_grant(granter) {
                 return VerifyGrantOutcome::Err(EPERM);
             }
 
@@ -796,5 +807,34 @@ mod tests {
         );
         assert!(matches!(result, VerifyGrantOutcome::Err(ENOTREADY)),
             "临时授权表 grantee 不匹配必须返回 ENOTREADY，实际 {:?}", result);
+    }
+
+    // ── E-MIBGRANT（edge_todo.md）：magic grant 门端点权威 ──
+
+    /// C 绝对值 pin：`Endpoint::VFS`/`Endpoint::MIB` 必须等于 com.h 的
+    /// VFS_PROC_NR=1（com.h:60）/ MIB_PROC_NR=7（com.h:66）。历史上
+    /// grant.rs 曾手抄出 VFS=4/MIB=8（恰为 SCHED/VM 的槽号），magic
+    /// grant 门语义反转——此测试防止 minix-types 权威值漂移，也固定
+    /// 门谓词依赖的常量身份。
+    #[test]
+    fn test_magic_granter_endpoints_match_c_com_h() {
+        assert_eq!(Endpoint::VFS.get(), 1); // com.h:60
+        assert_eq!(Endpoint::MIB.get(), 7); // com.h:66
+    }
+
+    /// 门策略（do_safecopy.c:218-226）：仅 VFS/MIB 可建 magic grant。
+    /// 显式覆盖 SCHED(4)/VM(8)——旧错误常量恰好误放行的两个端点。
+    #[test]
+    fn test_may_create_magic_grant_vfs_mib_only() {
+        assert!(may_create_magic_grant(Endpoint::VFS));
+        assert!(may_create_magic_grant(Endpoint::MIB));
+
+        // 旧错误值 4/8 对应的端点（SCHED/VM）必须被拒。
+        assert!(!may_create_magic_grant(Endpoint::SCHED));
+        assert!(!may_create_magic_grant(Endpoint::VM));
+        // 其余权威端点与任意端点同样被拒。
+        assert!(!may_create_magic_grant(Endpoint::PM));
+        assert!(!may_create_magic_grant(Endpoint::RS));
+        assert!(!may_create_magic_grant(Endpoint(100)));
     }
 }

@@ -587,6 +587,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 > **复核（2026-09-15，锚点确认 + 解锁行更新）**：常量在 grant.rs:292-295、门在 :546（分支起 :542），grant.rs 全部 8 个测试无一覆盖 MAGIC 分支——补测试空间确认；minix-types 权威值 endpoint.rs:62 `VFS = Endpoint(1)` / :68 `MIB = Endpoint(7)`，且 `granter` 参数类型即 `Endpoint`（grant.rs:355），门可直接比较；本仓 C 学习笔记 02-stage-vm/22-vm-exit.md:275 同证 VFS_PROC_NR=1。解锁行更新：P1-4 已于 2026-09-15 闭环 seam 半，本条仍是 relay 通电前提。
 
+> **进度（2026-09-15，✅ 闭单）**：错误常量删除，门改走新谓词 `may_create_magic_grant(granter: Endpoint) -> bool`——直接消费 `Endpoint::VFS`/`Endpoint::MIB`（minix-types 单一真值，kernel errno.rs:19 re-export 同型先例）。方案对比：就地改值 1/7（否——保留第二真相源，恰是本次手抄漂移的事故根因模式）/ kernel proc.rs ProcNr 常量（否——ProcNr 与 Endpoint 语义不同，端点含代数位，类型混用是应避免的混淆）；Redox/Linux 对照：uapi 常量一处定义全树消费，minix-types 即本项目 uapi 等价物。谓词抽取理由：门在 `data_copy_vmcheck` 跨空间读取之后，全路径无宿主测试通路（proc_cr3 返回 None 即先行 EPERM）；C 的语义顺序（先读 grant 条目后判 MAGIC，do_safecopy.c:218-226）保持不变。测试 ×2：`test_magic_granter_endpoints_match_c_com_h`（C 绝对值 pin：VFS=1 com.h:60 / MIB=7 com.h:66）+ `test_may_create_magic_grant_vfs_mib_only`（VFS/MIB 过，SCHED(4)/VM(8)——旧错误值恰对应的两个端点——PM/RS/任意端点全拒）。验证：`cargo test -p minix-kernel --lib` 744 passed 0 failed；grant.rs clippy 零告警。回写：10-stage-mib/todo.md §5 指针表。
+
 ---
 
 ## E-DMWIRE devman 生产接线四缺：server transport、请求分类器、装配半、client/RS 侧生产传输（11-stage-devman 首轮架构审查登记，2026-09-15）

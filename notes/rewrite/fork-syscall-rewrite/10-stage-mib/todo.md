@@ -261,7 +261,7 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 |---|---|---|---|
 | E-RMIBWIRE（新登记） | 本轮 §2/P3-2、A-8 | minix-sys rmib 客户端协议半整缺（259 行簿记 vs C 1089 行），消费方 ipc-server 文档声称复用但零代码引用 | 22 篇执行半的对端 |
 | E-MIBPROD（新登记） | 本轮 P1-5、A-6 | MIB 快照消费 vs kernel/PM/VFS producer 布局对账（kernel GET_PROCTAB 已实现；PM/VFS getsysinfo 数据路径 fail-closed） | P1-5 的对端 |
-| E-MIBGRANT（新登记） | 本轮 §4/L2 采证 | kernel grant.rs:293/295 端点常量 VFS=4/MIB=8 与 C com.h（1/7）单点偏差，magic grant 门行为错误 | P1-4 relay 通电的正确性前提 |
+| E-MIBGRANT（新登记，✅ 2026-09-15 修复） | 本轮 §4/L2 采证 | kernel grant.rs:293/295 端点常量 VFS=4/MIB=8 与 C com.h（1/7）单点偏差，magic grant 门行为错误——已修：常量删除，门走 `may_create_magic_grant` 谓词消费 `Endpoint::VFS/MIB`（minix-types 单一真值），C 绝对值 pin + 门策略测试 ×2，744 passed | P1-4 relay 通电的正确性前提（依据：edge_todo.md E-MIBGRANT 闭单注记） |
 | E-DSWIRE（增补） | 本轮 P1-1 | mib_get_label 为 ds_retrieve_label_name 消费方 | remote.rs DS 查询执行半 |
 | E-ISWIRE（增补） | 本轮 P3-2 | mib 为 minix-sef 第二消费方（sef.rs:13-14 声称、Cargo 未声明） | P1-1 的 SEF 半 |
 | E5（增补 (g)） | 本轮 L4 | MIB 联调验收面：MIB_SYSCTL 往返 + rmibtest 注册/转发契约 + ERESTART 续走 | P1-1/P1-2 通电后 |
