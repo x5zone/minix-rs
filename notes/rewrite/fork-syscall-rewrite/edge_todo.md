@@ -444,6 +444,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **复核（2026-09-15，主体半解）**：minix-types `ipc/sysinfo.rs` 已有 SYS_* 常量模块——SYS_GETINFO/SYS_DIAGCTL/SYS_SETALARM/SYS_TIMES/SYS_SAFECOPYFROM/SYS_SAFECOPYTO/SYS_VSAFECOPY/SYS_SETGRANT/SYS_EXIT/SYS_STATECTL/SYS_SAFEMEMSET（:17-59）+ SI_DATA_STORE（:138）。「minix-types 无 SYS_* 常量」主体判定作废，剩余收敛面：SYS_SCHEDULE/SYS_SCHEDCTL 等缺号对照 com.h:210-262 补齐；NOTIFY_MESSAGE 仍无常量（仅 ipc/notify.rs:28 注释提及）；四处本地定义/内联待切换删除——sched transport.rs:41/:45、ds getsysinfo.rs:27（server.rs:1058 消费本地常量）、ds dispatch.rs:95 内联 0x1000。
 
+> **进度（2026-09-15，✅ 闭单）**：新建 `minix-types::ipc/kernel_call.rs` 作为 KERNEL_CALL 全族单一权威（com.h:204-269：KERNEL_CALL 基 + 46 个 SYS_* 常量含缺口注释 + NR_SYS_CALLS + SYS_BASIC_CALLS 自 sysinfo.rs 迁入；Linux uapi/Redox scheme-number 同型——一处定义全树消费），sysinfo.rs 改为词汇域纯模块（模块 doc 声明迁址，ipc glob re-export 保持 `minix_types::SYS_*` 路径不变）；NOTIFY_MESSAGE = 0x1000 落 ipc/notify.rs（com.h:90，无符号回绕判定的告诫随 doc）。四处本地定义全数切换删除：sched transport.rs 双镜像改 import、sched dispatch.rs 的 SUSPEND 本地定义删除（minix-types ipc_server.rs:76 既有权威 + com.h:1151 钉子，P2-3 就此闭环）、ds getsysinfo.rs 改 re-export（server.rs 消费点零改动）、ds dispatch.rs is_notify 改消费 NOTIFY_MESSAGE。新增 kernel 联动钉子：46 对枚举成员 ↔ 共享权威全量断言（枚举保留相对判别式为 kernel 内部惯用法，设计裁决记录于测试 doc）。验证：types 201 / rs 333 / sched 81 / ds 111 / kernel 752 / is 106 / mib 150 全 passed；clippy 基线持平（types 1、sys 5、ds 6 既有）。**附带修复（编译阻断，非邻近 TODO）**：mib.rs:376 测试构造缺 head_flags/head_csize/head_clen 三字段（分支上既有，干净 HEAD 复现，阻断 types 测试构建）——按 decode_register 透传语义补默认零值。**回写**：06-stage-sched/todo.md P2-3 + §2。
+
 ---
 
 ## E-DSWIRE DS 传输面三缺：minix-sys 客户端模块、服务器 transport 通电、联调零覆盖（07-stage-ds 首轮架构审查登记，2026-09-14）

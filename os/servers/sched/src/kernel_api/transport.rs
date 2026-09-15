@@ -30,19 +30,8 @@ use minix_sys::ipc::IpcTransport as SysIpcTransport;
 use minix_sys::syscall::{perform_kernel_call, DirectKernelCallTransport};
 use minix_types::{
     Endpoint, MessLsysKrnSchedule, MessLsysKrnSysGetinfo, MessLsysKrnSysSetalarm, Message,
-    MessageUnion, GET_HZ, GET_MACHINE, SYS_GETINFO, SYS_SETALARM,
+    MessageUnion, GET_HZ, GET_MACHINE, SYS_GETINFO, SYS_SCHEDCTL, SYS_SETALARM, SYS_SCHEDULE,
 };
-
-/// C: `SYS_SCHEDULE (KERNEL_CALL + 3)` — com.h:210. The kernel's dispatch
-/// table numbers it the same way (`os/kernel/src/syscall.rs:69`,
-/// `Schedule = 3`). The constant lives here in minix-types' absence — the
-/// judge holds the truth, this mirror notes the value (schedctl.rs:27's
-/// `SCHEDCTL_FLAG_KERNEL` precedent).
-pub const SYS_SCHEDULE: i32 = 0x600 + 3;
-
-/// C: `SYS_SCHEDCTL (KERNEL_CALL + 54)` — com.h:262; kernel
-/// `os/kernel/src/syscall.rs:114` (`Schedctl = 54`).
-pub const SYS_SCHEDCTL: i32 = 0x600 + 54;
 
 /// Whether a receive status names a notification (C: `is_ipc_notify`,
 /// com.h:92 — the call field equals `NOTIFY`; `CALL_NOTIFY` is 4,

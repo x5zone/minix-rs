@@ -3117,6 +3117,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_syscall_enum_tracks_minix_types_kernel_call_family() {
+        // E-MINTYPES-SYS: the dispatch enum keeps C's relative-to-KERNEL_CALL
+        // discriminants (internal idiom); the wire authority is minix-types'
+        // kernel_call family (com.h:208-269). Every member must land on its
+        // C number — the pin fires on the first drift on either side.
+        use minix_types::{
+            KERNEL_CALL, SYS_ABORT, SYS_CLEAR, SYS_DIAGCTL, SYS_EXEC, SYS_EXIT, SYS_FORK,
+            SYS_GETINFO, SYS_GETKSIG, SYS_GETMCONTEXT, SYS_IOPENABLE, SYS_IRQCTL, SYS_KILL,
+            SYS_MEMSET, SYS_PRIVCTL, SYS_PADCONF, SYS_READBIOS, SYS_RUNCTL, SYS_SAFECOPYFROM,
+            SYS_SAFECOPYTO, SYS_SAFEMEMSET, SYS_SCHEDULE, SYS_SDEVIO, SYS_SETALARM,
+            SYS_SETGRANT, SYS_SETMCONTEXT, SYS_SETTIME, SYS_SIGRETURN, SYS_SIGSEND, SYS_SPROF,
+            SYS_STATECTL, SYS_STIME, SYS_SCHEDCTL, SYS_TRACE, SYS_UMAP, SYS_UMAP_REMOTE,
+            SYS_UPDATE, SYS_VDEVIO, SYS_VIRCOPY, SYS_VMCTL, SYS_VTIMER, SYS_VUMAP, SYS_VSAFECOPY,
+            SYS_DEVIO, SYS_ENDKSIG, SYS_PHYSCOPY, SYS_TIMES,
+        };
+        let pairs: [(Syscall, i32); 46] = [
+            (Syscall::Fork, SYS_FORK),
+            (Syscall::Exec, SYS_EXEC),
+            (Syscall::Clear, SYS_CLEAR),
+            (Syscall::Schedule, SYS_SCHEDULE),
+            (Syscall::Privctl, SYS_PRIVCTL),
+            (Syscall::Trace, SYS_TRACE),
+            (Syscall::Kill, SYS_KILL),
+            (Syscall::Getksig, SYS_GETKSIG),
+            (Syscall::Endksig, SYS_ENDKSIG),
+            (Syscall::Sigsend, SYS_SIGSEND),
+            (Syscall::Sigreturn, SYS_SIGRETURN),
+            (Syscall::Memset, SYS_MEMSET),
+            (Syscall::Umap, SYS_UMAP),
+            (Syscall::Vircopy, SYS_VIRCOPY),
+            (Syscall::Physcopy, SYS_PHYSCOPY),
+            (Syscall::UmapRemote, SYS_UMAP_REMOTE),
+            (Syscall::Vumap, SYS_VUMAP),
+            (Syscall::Irqctl, SYS_IRQCTL),
+            (Syscall::Devio, SYS_DEVIO),
+            (Syscall::Sdevio, SYS_SDEVIO),
+            (Syscall::Vdevio, SYS_VDEVIO),
+            (Syscall::Setalarm, SYS_SETALARM),
+            (Syscall::Times, SYS_TIMES),
+            (Syscall::Getinfo, SYS_GETINFO),
+            (Syscall::Abort, SYS_ABORT),
+            (Syscall::Iopenable, SYS_IOPENABLE),
+            (Syscall::SafecopyFrom, SYS_SAFECOPYFROM),
+            (Syscall::SafecopyTo, SYS_SAFECOPYTO),
+            (Syscall::Vsafecopy, SYS_VSAFECOPY),
+            (Syscall::Setgrant, SYS_SETGRANT),
+            (Syscall::Readbios, SYS_READBIOS),
+            (Syscall::Sprof, SYS_SPROF),
+            (Syscall::Stime, SYS_STIME),
+            (Syscall::Settime, SYS_SETTIME),
+            (Syscall::Vmctl, SYS_VMCTL),
+            (Syscall::Diagctl, SYS_DIAGCTL),
+            (Syscall::Vtimer, SYS_VTIMER),
+            (Syscall::Runctl, SYS_RUNCTL),
+            (Syscall::Getmcontext, SYS_GETMCONTEXT),
+            (Syscall::Setmcontext, SYS_SETMCONTEXT),
+            (Syscall::Update, SYS_UPDATE),
+            (Syscall::Exit, SYS_EXIT),
+            (Syscall::Schedctl, SYS_SCHEDCTL),
+            (Syscall::Statectl, SYS_STATECTL),
+            (Syscall::Safememset, SYS_SAFEMEMSET),
+            (Syscall::Padconf, SYS_PADCONF),
+        ];
+        for (member, wire) in pairs {
+            assert_eq!(
+                KERNEL_CALL + member as i32,
+                wire,
+                "枚举成员 {member:?} 与共享权威 {wire:#x} 不符"
+            );
+        }
+    }
+
     // ── dispatch_privctl tests (FIX-25, Phase 5) ──────────────────────
 
     #[test]

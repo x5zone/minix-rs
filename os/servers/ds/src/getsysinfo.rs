@@ -24,7 +24,10 @@ use minix_types::EINVAL;
 use crate::store::{DataEntry, NR_DS_KEYS};
 
 /// The only accepted query. C: `SI_DATA_STORE` — sysinfo.h:13.
-pub const SI_DATA_STORE: i32 = 5;
+///
+/// E-MINTYPES-SYS: re-exported from minix-types (single authority) — the
+/// former local copy duplicated the family pattern it sits in.
+pub use minix_types::SI_DATA_STORE;
 
 /// Why a getsysinfo is refused (`do_getsysinfo` error paths).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

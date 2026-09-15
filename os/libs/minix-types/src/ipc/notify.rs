@@ -4,6 +4,16 @@
 
 use crate::ipc::message::MESSAGE_PAYLOAD_SIZE;
 
+/// Base of the notification band in `m_type` space.
+///
+/// C: `NOTIFY_MESSAGE` — `minix3/minix/include/minix/com.h:90`. The band
+/// `[NOTIFY_MESSAGE, NOTIFY_MESSAGE + 0x100)` sits just above the
+/// call-number space; C's `is_notify(a)` (`(unsigned)((a) -
+/// NOTIFY_MESSAGE) < 0x100`, com.h:93) tests membership with an unsigned
+/// wrap — consumers must keep that unsignedness (a signed compare reads
+/// every call number below the band as a notification).
+pub const NOTIFY_MESSAGE: i32 = 0x1000;
+
 /// Notification type.
 ///
 /// Identifies the kind of asynchronous notification sent to a process.
@@ -97,3 +107,15 @@ const _: () = assert!(
     core::mem::size_of::<MessNotify>() <= MESSAGE_PAYLOAD_SIZE,
     "MessNotify exceeds MESSAGE_PAYLOAD_SIZE"
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C 绝对值 pin:通知带基址(com.h:90)。is_notify 的无符号回绕判定
+    /// 依赖此值,漂移即把整段调用号误判为通知。
+    #[test]
+    fn test_notify_message_band_base_matches_c() {
+        assert_eq!(NOTIFY_MESSAGE, 0x1000); // com.h:90
+    }
+}

@@ -10,15 +10,8 @@
 
 use minix_types::{
     SCHEDULING_INHERIT, SCHEDULING_NO_QUANTUM, SCHEDULING_SET_NICE, SCHEDULING_START,
-    SCHEDULING_STOP,
+    SCHEDULING_STOP, SUSPEND,
 };
-
-/// `SUSPEND` (`minix3/minix/include/minix/com.h:1151`): the handler asks
-/// for a later reply, so the loop sends none now.
-///
-/// VFS types the same sentinel as `ReplyIntent` in its own crate; each
-/// server owns its verdict (no cross-crate dependency for one number).
-pub const SUSPEND: i32 = -998;
 
 /// The five letters (`main.c:57-87`, `com.h:801-807`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

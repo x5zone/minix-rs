@@ -380,6 +380,11 @@ mod tests {
                 },
                 mib: [4, 1, 0, 0, 0, 0, 0, 0],
                 miblen: 8,
+                // Wire defaults: the fixture's `..Default::default()` leaves
+                // flags/csize/clen at zero and decode passes them through.
+                head_flags: 0,
+                head_csize: 0,
+                head_clen: 0,
             }
         );
         // Past the bound: silent drop, one-way discipline (EDONTREPLY).

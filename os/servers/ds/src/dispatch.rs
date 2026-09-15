@@ -11,7 +11,7 @@
 
 use minix_types::{
     DS_CHECK, DS_DELETE, DS_GETSYSINFO, DS_PUBLISH, DS_RETRIEVE, DS_RETRIEVE_LABEL, DS_SUBSCRIBE,
-    EDONTREPLY,
+    EDONTREPLY, NOTIFY_MESSAGE,
 };
 
 /// The seven letters (`main.c:54-72`, `com.h:498-507`).
@@ -86,13 +86,15 @@ pub const fn triage(callnr: i32) -> Incoming {
 
 /// The legacy notify test (`com.h:90-93`).
 ///
-/// `(callnr - 0x1000) < 0x100`, **unsigned**: the notification band sits
-/// just above the call-number space. The unsigned cast is load-bearing —
-/// a signed comparison would misread every call number below the band
-/// (e.g. `0x800`) as a notification. Kept as a `const fn` so triage
-/// stays pure and testable without IPC.
+/// `(callnr - NOTIFY_MESSAGE) < 0x100`, **unsigned**: the notification
+/// band sits just above the call-number space. The unsigned cast is
+/// load-bearing — a signed comparison would misread every call number
+/// below the band (e.g. `0x800`) as a notification. Kept as a `const fn`
+/// so triage stays pure and testable without IPC. E-MINTYPES-SYS: the
+/// band base comes from minix-types (`NOTIFY_MESSAGE`, com.h:90) instead
+/// of an inline literal.
 pub const fn is_notify(callnr: i32) -> bool {
-    (callnr.wrapping_sub(0x1000) as u32) < 0x100
+    (callnr.wrapping_sub(NOTIFY_MESSAGE) as u32) < 0x100
 }
 
 /// Whether the loop answers (`main.c:82`).

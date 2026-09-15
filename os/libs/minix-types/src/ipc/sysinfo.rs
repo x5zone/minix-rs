@@ -4,71 +4,17 @@
 //! `SYS_GETINFO` sub-requests (`GET_*` — `minix3/minix/include/minix/com.h:
 //! 315-345`), cross-service table requests (`SI_*` — `minix3/minix/include/
 //! minix/sysinfo.h:11-17`), and `SYS_DIAGCTL` codes (`DIAGCTL_CODE_*` —
-//! com.h:412-415). Companion call numbers (`SYS_GETINFO`, `SYS_DIAGCTL`,
-//! `PM_GETSYSINFO`, `VFS_GETSYSINFO`) are included; the RS/DS/VM siblings
-//! already live in their own `ipc` modules (`RS_GETSYSINFO`,
+//! com.h:412-415). `PM_GETSYSINFO`/`VFS_GETSYSINFO` are included; the RS/DS/
+//! VM siblings already live in their own `ipc` modules (`RS_GETSYSINFO`,
 //! `DS_GETSYSINFO`, `VM_INFO`/`VMIW_*`) and are not duplicated here.
+//!
+//! The `SYS_*` kernel-call numbers moved to [`crate::ipc::kernel_call`]
+//! (E-MINTYPES-SYS: one authority for the whole `KERNEL_CALL` vector,
+//! com.h:204-267); the `ipc` glob re-export keeps every `minix_types::SYS_*`
+//! path working unchanged.
 //!
 //! Authority (§2.4g): single definition in minix-rs. `04-is-data-
 //! acquisition.md` §2 is the doc counterpart; 05~10 import from here.
-
-/// Kernel call number for sys_getinfo.
-/// C: `SYS_GETINFO (KERNEL_CALL + 26)` — com.h:236 (`KERNEL_CALL 0x600`, :205).
-pub const SYS_GETINFO: i32 = 0x600 + 26;
-
-/// Kernel call number for sys_diagctl.
-/// C: `SYS_DIAGCTL (KERNEL_CALL + 44)` — com.h:252.
-pub const SYS_DIAGCTL: i32 = 0x600 + 44;
-
-// ── Kernel call numbers used by RS's basic-call list ────────────────────────
-// C: com.h:234-265. RS composes `SYS_BASIC_CALLS` from these (com.h:275-278);
-// the missing siblings were added for edit_slot's RSS_SYS_BASIC_CALLS path
-// (R20b) so the list has one authority here instead of a local RS copy.
-
-/// C: `SYS_SETALARM (KERNEL_CALL + 24)` — com.h:234.
-pub const SYS_SETALARM: i32 = 0x600 + 24;
-
-/// C: `SYS_TIMES (KERNEL_CALL + 25)` — com.h:235.
-pub const SYS_TIMES: i32 = 0x600 + 25;
-
-/// C: `SYS_SAFECOPYFROM (KERNEL_CALL + 31)` — com.h:239.
-pub const SYS_SAFECOPYFROM: i32 = 0x600 + 31;
-
-/// C: `SYS_SAFECOPYTO (KERNEL_CALL + 32)` — com.h:240.
-pub const SYS_SAFECOPYTO: i32 = 0x600 + 32;
-
-/// C: `SYS_VSAFECOPY (KERNEL_CALL + 33)` — com.h:241.
-pub const SYS_VSAFECOPY: i32 = 0x600 + 33;
-
-/// C: `SYS_SETGRANT (KERNEL_CALL + 34)` — com.h:242.
-pub const SYS_SETGRANT: i32 = 0x600 + 34;
-
-/// C: `SYS_EXIT (KERNEL_CALL + 53)` — com.h:260.
-pub const SYS_EXIT: i32 = 0x600 + 53;
-
-/// C: `SYS_STATECTL (KERNEL_CALL + 55)` — com.h:263.
-pub const SYS_STATECTL: i32 = 0x600 + 55;
-
-/// C: `SYS_SAFEMEMSET (KERNEL_CALL + 56)` — com.h:265.
-pub const SYS_SAFEMEMSET: i32 = 0x600 + 56;
-
-/// The basic kernel-call set every system service gets on request.
-/// C: `SYS_BASIC_CALLS` — com.h:275-278 (NULL_C terminator added by the
-/// consumer, mirroring `int basic_kc[] = {SYS_BASIC_CALLS, NULL_C}`,
-/// manager.c:1470).
-pub const SYS_BASIC_CALLS: [i32; 11] = [
-    SYS_EXIT,
-    SYS_SAFECOPYFROM,
-    SYS_SAFECOPYTO,
-    SYS_VSAFECOPY,
-    SYS_GETINFO,
-    SYS_TIMES,
-    SYS_SETALARM,
-    SYS_SETGRANT,
-    SYS_DIAGCTL,
-    SYS_STATECTL,
-    SYS_SAFEMEMSET,
-];
 
 /// PM table request. C: `PM_GETSYSINFO (PM_BASE + 47)` — callnr.h:60.
 pub const PM_GETSYSINFO: i32 = 47;
@@ -158,6 +104,7 @@ pub const DIAGCTL_CODE_UNREGISTER: i32 = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::kernel_call::{SYS_DIAGCTL, SYS_GETINFO};
 
     #[test]
     fn test_get_table_values_and_gaps() {
