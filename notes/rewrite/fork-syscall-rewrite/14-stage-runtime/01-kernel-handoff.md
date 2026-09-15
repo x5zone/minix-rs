@@ -107,9 +107,9 @@ C 语言的 `minix_get_user_sp` 直接读写全局变量和指针，单元测试
 
 Redox 的做法和这个思路是一致的。Redox 的启动信息也来自内核发布的结构体，区别在于 Redox 把参数个数和指针直接放在初始栈上，而 Minix 传递的是一个描述结构的指针。两种做法在信息论上是等价的，都是把不定长的数据用指针加长度来描述。Rust 实现没有照搬 Redox 解析栈的代码，而是针对 Minix 的描述结构建模，这正是语义重写和逐行翻译的区别：保留外部行为，内部表达服从目标系统的类型习惯。
 
-### 3.4 用显式溢出报告代替回绕比较
+### 3.4 用填充期边界检查代替回绕标志
 
-C 语言的栈大小计算用加法之后的比较来发现回绕，这种写法依赖读者知道无符号整数回绕的语义，第一次读到的人很容易错过。Rust 实现用带溢出报告的加法，每次加法都返回结果和是否溢出两个信息，最后汇总成一个布尔字段。调用者看到溢出标志为真就拒绝构造栈镜像，不会拿到一个回绕后的小数字去分配内存。两种写法的数学含义完全相同，但是 Rust 版本把检查意图写在了类型里，而不是藏在比较运算符里。
+C 语言的栈尺寸函数带一个溢出标志指针：加法回绕时置位，调用方看到标志就直接拒绝（`main.c:395-397`）。Rust 实现把这个失败家族的处理搬到了更能抓住问题的地方——填充函数。`minix-sys` 的 `stack` 模块（`os/libs/minix-sys/src/stack.rs`，对应 C `stack_utils.c` 的完整语义，含按 LP64 裁定的 `STACK_MIN_SZ` 预算）在逐字节填充帧时校验边界：字符串或描述块会越过帧尾就报 `FrameTooSmall`，帧尺寸与缓冲长度不符就报 `SizeMismatch`。回绕算术算错的最终后果是"数据放不进帧"，填充期检查恰好在那里拦住它，而且不依赖调用方记得检查标志。栈镜像的尺寸与填充因此只有这一个家；本篇对应的 `handoff.rs` 只负责选择初始栈顶（见 3.3 节），不再重复实现任何尺寸算术。
 
 ### 3.5 用范围检查的构造器包装进程字符串描述结构
 
@@ -131,9 +131,9 @@ C 语言的进程字符串描述结构用有符号整数存放个数，理论上
 
 ---
 
-## 5 测试：31 个测试如何覆盖本模块的行为
+## 5 测试：9 个测试如何覆盖本模块的行为
 
-本模块的测试全部位于 `os/libs/minix-rt/src/handoff.rs` 文件底部的测试模块中，与实现代码在同一个文件里，运行命令是 `cargo test -p minix-rt --manifest-path os/Cargo.toml`。截至本文写作时，整个 `minix-rt` 包共有 31 个测试通过，其中归属本模块的有 11 个：
+本模块的测试全部位于 `os/libs/minix-rt/src/handoff.rs` 文件底部的测试模块中，与实现代码在同一个文件里，运行命令是 `cargo test -p minix-rt --manifest-path os/Cargo.toml`。截至 2026 年 09 月 16 日，整个 `minix-rt` 包共有 58 个测试通过，其中归属本模块的有 9 个：
 
 | 测试函数 | 验证的行为 | 对应的 C 语言依据 |
 |----------|-----------|-------------------|
@@ -144,12 +144,10 @@ C 语言的进程字符串描述结构用有符号整数存放个数，理论上
 | `test_stack_pointer_prefers_user_info_over_legacy` | 新位置可用时优先使用新位置 | `kernel_utils.c` 选择顺序 |
 | `test_stack_pointer_falls_back_to_legacy_value` | 标志位未设置时回退到老位置 | `kernel_utils.c` 回退分支 |
 | `test_missing_page_is_an_explicit_error` | 页面缺失时返回明确错误而不是崩溃 | `kernel_utils.c` 断言 |
-| `test_stack_size_counts_slots_and_string_bytes` | 栈大小等于最小值加槽位加字符串字节并对齐 | `stack_utils.c` 计算循环 |
-| `test_stack_size_overflow_is_reported_not_wrapped` | 超大输入标记溢出而不是回绕 | `stack_utils.c` 溢出检查 |
 | `test_process_strings_rejects_negative_counts` | 负数个数被拒绝 | `exec.h` 结构定义 |
 | `test_handoff_error_maps_to_executable_format_errno` | 错误映射到可执行文件格式错误号 | `errno.h` 错误号取值 |
 
-测试统计截至 2026 年 09 月 05 日：`cargo test -p minix-rt` 共 31 个测试通过，其中本模块 11 个，第 02 篇模块 11 个，第 03 篇模块 9 个。读者可以用 `rg "fn test_" os/libs/minix-rt/src/handoff.rs` 列出本模块的全部测试函数名，逐个核对。
+栈镜像尺寸与填充的测试（预算常量、启动路径逐字节、欠尺寸拒绝等）随实现住在 `os/libs/minix-sys/src/stack.rs`，见第 04 篇对传输测试的记述与该文件的测试模块。读者可以用 `rg "fn test_" os/libs/minix-rt/src/handoff.rs` 列出本模块的全部测试函数名，逐个核对。
 
 ---
 

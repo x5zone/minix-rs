@@ -24,9 +24,10 @@
 //!   field offset plus the field size, see `KUSERINFO_HAS_FIELD`), but the
 //!   rule lives in one tested function ([`user_info_has_field`]) instead of
 //!   being re-typed at every call site.
-//! - Stack size computation is a pure function ([`compute_stack_size`]) with
-//!   explicit overflow reporting, mirroring `minix_stack_params` without
-//!   copying its pointer arithmetic.
+//! - Stack image construction (sizing and filling) has a single home in the
+//!   system-call crate's `stack` module (`minix_sys::stack`, the consumer-
+//!   facing counterpart of `minix_stack_params` / `minix_stack_fill`); this
+//!   module only chooses the initial stack pointer.
 //!
 //! # Execution model
 //!
@@ -249,96 +250,6 @@ pub fn select_initial_stack_pointer(
     Ok(legacy_user_sp)
 }
 
-/// Counts the bytes needed for the initial stack image.
-///
-/// This is the pure, testable half of `minix_stack_params`
-/// (`minix3/minix/lib/libc/sys/stack_utils.c:76-114`): it adds the fixed
-/// minimum (room for the argument count, the two terminating null pointers,
-/// the auxiliary vectors, the executable name buffer, and the process string
-/// descriptor) plus one pointer slot and the string bytes for every argument
-/// and environment entry, then rounds the total up to the machine word size.
-///
-/// The C code detects size_t wrap-around with `if (*stack_size < n)`.
-/// This function uses checked arithmetic instead and reports the outcome
-/// explicitly: `overflow` is true when any addition wrapped, in which case
-/// the returned size is not usable and the caller must refuse to build the
-/// stack image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StackSizePlan {
-    /// Total image size in bytes, rounded up to word alignment.
-    pub total_bytes: usize,
-    /// Number of argument strings counted.
-    pub argument_count: usize,
-    /// Number of environment strings counted.
-    pub environment_count: usize,
-    /// True when an addition wrapped around; the size must not be used.
-    pub overflow: bool,
-}
-
-/// Fixed minimum stack image size.
-///
-/// C: `STACK_MIN_SZ` (`stack_utils.c:66-71`): space for the argument count,
-/// two null terminators, the auxiliary vectors (`PMEF_AUXVECTORS` entries),
-/// the executable name buffer (`PMEF_EXECNAMELEN1` bytes), and one process
-/// string descriptor. The exact auxiliary counts live in the executable
-/// format headers; this constant keeps their combined contribution plus the
-/// descriptor as one named value so the formula below reads as a whole.
-///
-/// The value is intentionally conservative and architecture neutral: the
-/// precise per-architecture padding is applied by the alignment step in
-/// [`compute_stack_size`].
-#[allow(clippy::manual_bits)]
-pub const STACK_MINIMUM_BYTES: usize =
-    size_of::<i32>() + 2 * size_of::<usize>() + 8 * size_of::<usize>() + 256 + 32;
-
-/// Computes the initial stack image size for the given argument and
-/// environment string lengths.
-///
-/// `argument_lengths` and `environment_lengths` carry the byte length of each
-/// string **including** its terminating zero byte, so the function never
-/// scans memory and never reads past a buffer. Each entry contributes one
-/// pointer slot plus its own bytes, exactly as the C loops add
-/// `sizeof(*p) + strlen(*p) + 1` per entry.
-pub fn compute_stack_size(
-    argument_lengths: &[usize],
-    environment_lengths: &[usize],
-) -> StackSizePlan {
-    let mut total = STACK_MINIMUM_BYTES;
-    let mut overflow = false;
-
-    let mut accumulate = |length: usize| {
-        let (after_slot, slot_wrapped) = total.overflowing_add(size_of::<usize>());
-        let (after_bytes, bytes_wrapped) = after_slot.overflowing_add(length);
-        overflow |= slot_wrapped | bytes_wrapped;
-        total = after_bytes;
-    };
-
-    for length in argument_lengths {
-        accumulate(*length);
-    }
-    for length in environment_lengths {
-        accumulate(*length);
-    }
-
-    let alignment = size_of::<usize>();
-    let remainder = total % alignment;
-    if remainder != 0 {
-        let (aligned, wrapped) = total.overflowing_add(alignment - remainder);
-        overflow |= wrapped;
-        total = aligned;
-    }
-    if total < STACK_MINIMUM_BYTES {
-        overflow = true;
-    }
-
-    StackSizePlan {
-        total_bytes: total,
-        argument_count: argument_lengths.len(),
-        environment_count: environment_lengths.len(),
-        overflow,
-    }
-}
-
 /// Process string descriptor: where the argument and environment strings live.
 ///
 /// C: `struct ps_strings` (`minix3/sys/sys/exec.h:111-116`) with the argument
@@ -487,25 +398,6 @@ mod tests {
             Err(HandoffError::NullPage) => {}
             other => panic!("expected NullPage, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_stack_size_counts_slots_and_string_bytes() {
-        // Two arguments ("hi\0" = 3 bytes, "there\0" = 6 bytes), no environment.
-        let plan = compute_stack_size(&[3, 6], &[]);
-        assert_eq!(plan.argument_count, 2);
-        assert_eq!(plan.environment_count, 0);
-        assert!(!plan.overflow);
-        let expected = STACK_MINIMUM_BYTES + 2 * size_of::<usize>() + 3 + 6;
-        let alignment = size_of::<usize>();
-        let aligned = expected.div_ceil(alignment) * alignment;
-        assert_eq!(plan.total_bytes, aligned);
-    }
-
-    #[test]
-    fn test_stack_size_overflow_is_reported_not_wrapped() {
-        let plan = compute_stack_size(&[usize::MAX], &[]);
-        assert!(plan.overflow);
     }
 
     #[test]

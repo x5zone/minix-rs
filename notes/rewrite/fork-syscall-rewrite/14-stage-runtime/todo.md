@@ -16,7 +16,7 @@
 |------|------|--------|
 | **P0** | **V1-P0-1** | ~~panic 诊断 hook 注册表分裂：kernel 写 `minix_types` 注册表，minix-rt 的 panic handler 读的是自己 crate 内的重复注册表——hook 永不命中~~（**✅ 已修复** 2026-09-16，Fix #1，见 §3.1 修复记录） |
 | **P0** | **V1-P0-2** | 10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族（vm_info/vm_procctl/vm_cache/vm_getrusage），Rust 零实现且无登记（§3.1） |
-| **P0** | **V1-P0-3** | `STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）（§3.1） |
+| **P0** | **V1-P0-3** | ~~`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）~~（**✅ 已修复** 2026-09-16，Fix #3，见 §3.1 修复记录） |
 | P1 | V1-P1-1 | 诞生链整体缺口：真实 `_start` 只做分配器初始化→main→exit；start.rs/init.rs 模块无生产调用方，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
 | P1 | V1-P1-3 | misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送（§3.2） |
@@ -114,7 +114,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 **验证**：10 篇补节后 `grep -c "vm_cache\|vm_getrusage\|vm_info\|vm_procctl" 10-vm-syscalls.md` ≥ 4；wrapper 落地时各带 CannedTransport 回放测试（E2 先例）。
 **边界**：cache 族与 E-IPCWIRE 第 5 项（VM_CALL_SHARED_UNMAP wrapper）同在 vm.rs 落地，执行时同批勿分两次打开。
 
-#### V1-P0-3（P0-fact）`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ` 矛盾，且整段是零消费方的平行实现
+#### V1-P0-3（P0-fact）`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ` 矛盾，且整段是零消费方的平行实现——✅ 已修复 2026-09-16（Fix #3）
 
 **Rust 现状**：`os/libs/minix-rt/src/handoff.rs:291-292` 定义 `STACK_MINIMUM_BYTES: usize = 372`（自称 conservative，handoff.rs:287-288），`compute_stack_size`（handoff.rs:302-330）以它为下界。**生产事实**：栈布局的生产实现是 `os/libs/minix-sys/src/stack.rs`（`STACK_MIN_SZ = 1400` LP64，stack.rs:56-60；消费方 `os/servers/vm/src/vm_server.rs:786/:791` boot exec 路径）——该实现是本轮扫描当日（2026-09-16，commit f459852ea）刚在 edge E-BOOTFRAME 落地并完成 STACK_MIN_SZ=1400 预算裁决的，权威性进一步增强。**C 真值**：`minix3/minix/lib/libc/sys/stack_utils.c:66-71` 的 `STACK_MIN_SZ` 至少含 `PMEF_AUXVECTORS=20`（com.h:356）× 16 字节 AuxInfo + `PMEF_EXECNAMELEN1=PATH_MAX=1024`（syslimits.h:64）的 exec 名 + ps_strings 24 字节——1364 字节级。372 连 auxv 表都放不下，"conservative"断言与事实相反。
 
@@ -125,6 +125,12 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - 方案 B（否决）：对齐常量为 1400 保留双实现。否决理由：两个 STACK_MIN 常量分属两个 crate 必然再漂移（本次 372 vs 1400 的分叉就是证据），且 VM 侧消费的是 minix-sys 版。
 **验证**：删除后 `cargo test -p minix-rt` 通过（59 → 58）；`grep -rn STACK_MINIMUM_BYTES os/` 零命中。
 **边界**：handoff.rs 其余（ValidatedKernInfo/字段探测）不受影响；01 篇文档若引用了该函数需同轮同步（执行时 grep 01-kernel-handoff.md 确认）。
+
+**修复记录（Fix #3，2026-09-16）**：按方案 A 落地——
+- **Files**：`os/libs/minix-rt/src/handoff.rs` 删除 `StackSizePlan` 结构体、`STACK_MINIMUM_BYTES` 常量、`compute_stack_size` 函数及其两条测试（约 100 行）；模块文档第 27 行区段改写为"栈镜像构建单点归 minix-sys 的 stack 模块，本模块只选初始栈顶"。
+- **Docs**：01 篇同步两处——§3.4 整节改写（原节讲的是被删函数的溢出标志设计；改写为"填充期边界检查代替回绕标志"，如实描述 minix-sys/stack.rs 的实际机制：`StackFillError::FrameTooSmall`/`SizeMismatch` 在填充期拦截 C 溢出标志家族的失败，锚点 stack.rs:86-96；不凭记忆断言其使用 checked-add）；§5 测试表 11 → 9（删两行），统计刷新（58 = 9 + 02 篇 11 + 03 篇 9 + 06 篇 14 + 入口 4 + 07 篇 14，日期 2026-09-16），补一句"尺寸与填充测试随实现住 stack.rs"。
+- **测试**：minix-rt 58 passed（60 → 58）；clippy 零新增；`grep -rn "STACK_MINIMUM_BYTES\|compute_stack_size\|StackSizePlan" os/` 零命中。
+- **边界**：删前已核实 minix-sys/stack.rs 的溢出处理方式（`StackFillError` 家族），01 篇新 §3.4 的每个断言都对照该文件原文；未动 02 篇（其测试清单不含栈尺寸项）。
 
 ### 3.2 P1/P2/P3
 
