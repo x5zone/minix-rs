@@ -12,7 +12,7 @@
 
 use alloc::vec::Vec;
 
-use minix_types::{IPC_NOWAIT, IPC_W, SEM_UNDO, SEMMSL, SEMOPM, SEMVMX};
+use minix_types::{IPC_NOWAIT, SEM_UNDO, SEMMSL, SEMOPM, SEMVMX};
 
 use super::SemError;
 use super::table::SemSet;

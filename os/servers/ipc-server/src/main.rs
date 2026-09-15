@@ -19,9 +19,11 @@ fn main() {
     // transport stub).
     #[cfg(not(test))]
     {
-        // Wiring list (lands with the kernel transport):
-        //   1. build the kernel transport,
-        //   2. `IpcServer::new(transport, StubHandler)` (05-08 replace the stub),
+        // Wiring list (lands with the kernel transport — E-IPCWIRE/E1):
+        //   1. build the production boundary (thin minix-sys wrappers over
+        //      `IpcBoundary`) and the kernel transport (`EventLoopTransport`
+        //      over real traps),
+        //   2. `IpcServer::new(transport, IpcService::new(boundary))`,
         //   3. `server.init()` (startup registration — main.c:223-224),
         //   4. `server.run()` (main loop — main.c:227-280).
         panic!("IPC server production transport not landed yet (see server.rs)");

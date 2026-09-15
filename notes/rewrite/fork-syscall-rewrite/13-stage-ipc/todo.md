@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 8 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），已完成 16 条，余 4 条（IPC-D-1/D-2/D-3/D-4）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -20,13 +20,13 @@
 
 | 级别 | 条目 | 一句话 |
 |---|---|---|
-| P1 | IPC-P1-1 | 服务层组装根缺失：`CallHandler` 只有 `StubHandler`，七个调用无真入口；薄序列器方案 + 服务层必须回答的边界契约清单 |
+| P1 | IPC-P1-1 | 服务层组装根缺失：`CallHandler` 只有 `StubHandler`，七个调用无真入口；薄序列器方案 + 服务层必须回答的边界契约清单（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-2 | do_semop 检查顺序分歧：C（sem.c:693 注释、:704/:709/:731）与 doc 06 都规定权限先于越界/撤销，`validate_ops`/`authorize_ops` 的拆分把顺序弄反（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-3 | IPC_SET 应用逻辑缺失（sem+shm 两处）：C 改 uid/gid/权限位+ctime（sem.c:550-559、shm.c:314-328），Rust 只有授权检查没有落账函数（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-4 | shm 的 IPC_RMID 标记逻辑缺失：C 置 SHM_DEST 并立即尝试销毁（shm.c:334-336），Rust 的 sweep 只读标记不置标记（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |（**✅ 已完成** 2026-09-16，见 §1 修复记录）
 | P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91）（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
-| P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界 |
+| P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界（**✅ 已完成** 2026-09-16，随 P1-1） |
 | P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数（**✅ 已完成** 2026-09-16，见 §2 修复记录；ShmTable Box 约定随 P1-1） |
@@ -36,7 +36,7 @@
 | D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成 |
 | D | IPC-D-3 | plan.md:185 A-7 锚点漂移：sem.c:713-722 → 实际 :726-739 |
 | D | IPC-D-4 | plan.md §6.1：00/99 篇 pending + 六篇缺 `.design/` 快照（Step 0 预检 FAIL 的既知状态） |
-| D | IPC-D-5 | 03 篇 §2.5/§3 D4/§4.1 的 MountTable 失真（E-RMIBWIRE 已登记，回指） |
+| D | IPC-D-5 | 03 篇 §2.5/§3 D4/§4.1 的 MountTable 失真（E-RMIBWIRE 已登记，回指）（**✅ 已完成** 2026-09-16，随 IPC-P1-1） |
 
 验证基线（2026-09-16）：`cargo test -p minix-ipc-server` = **83 passed / 0 failed**；`cargo clippy -p minix-ipc-server` 本 crate 零告警（依赖 minix-types 余 1 条 large_enum_variant 告警，ipc-server 侧同型问题已 `#[allow]` 并写明理由，`sem/table.rs:87`）。
 
@@ -44,7 +44,7 @@
 
 ## 1. 查漏补缺（P1）
 
-### IPC-P1-1 服务层组装根缺失：七个调用没有一个真入口
+### IPC-P1-1 服务层组装根缺失：七个调用没有一个真入口【✅ 已完成 2026-09-16】
 
 **是什么**：整个 crate 的判定层——`SemaphoreTable`/`SemSet`（`sem/table.rs`）、`WaiterTable`（`sem/waiter.rs`）、semctl 十三命令（`sem/ctl.rs`）、shm 段表与挂接（`shm/segment.rs`+`shm/attach.rs`）、清扫（`shm/refcount.rs`）、订阅开关（`events.rs`）、MIB 路由（`mib_tree.rs`）——都是等着被组装的零件，但组装它们的那个 struct 不存在。`CallHandler` 的唯一实现是 `StubHandler`（`server.rs:112-135`）：`handle_call` 一律回 ENOSYS，`handle_mib` 与 `on_cycle_end` 空体。C 侧的 `do_semget`/`do_semctl`/`do_semop`/`do_shmget`/`do_shmat`/`do_shmdt`/`do_shmctl` 七个入口（main.c:12-20 的 `call_vec` 表）在 Rust 侧没有对应物。`main.rs:20-28` 的二进制入口直接 panic，注释自认是"wiring list"。
 
@@ -64,6 +64,8 @@
 4. **时间来源**：所有 `now: u64` 是注入参数（`table.rs:219`、`segment.rs:102` 等），服务层接时钟（edge E-IPCWIRE 第 6 项）。
 5. **挂起回信**：`Wakeup.code == NO_REPLY`（EDONTREPLY）时不发送（`table.rs:134-137` 的文档已写明由发送方检查——这个检查就是服务层的）。
 6. **每轮收尾**：dispatch 路径末尾的 `on_cycle_end` 要发起全表 `vm_getrefcount` 轮询再喂给 `sweep`（`refcount.rs:66-73` 已写明查询在边界）。
+
+**修复记录（2026-09-16，方案 A 落地）**：新增 `service.rs`（约 1000 行含测试）——`IpcService<B: IpcBoundary>` 组装两张表、等待者表与订阅开关，`CallHandler` 七调用 + 进程事件 + MIB + 收尾钩子全接线。**设计定案**（深设计点，写入模块文档）：边界缝取单一 `IpcBoundary` trait（约 18 个动词：时钟、凭证、五组拷贝、订阅、唤醒、MIB、五个 VM 动词）而非按域拆多 trait 或效果枚举上抛——semop 唤醒须在 handler 内部发出（C complete_semop 就地 send），效果枚举无法表达，Redox scheme handler 的直改风格与 embedded HAL 的 trait 注入是参照系；`TestBoundary`（RefCell 记录效应）供测试，生产实现随 E-IPCWIRE。**连带修订**：`CallHandler::handle_call`/`handle_mib` 签名升级 `&Message` → `&mut Message`（C 就地写回 retid/ret/retaddr，wire 结构带回写字段——ipc_server.rs:271 注释为证）；`IpcServer::into_parts` 新增；ShmTable 服务层 Box 持有（P3-1 第 2 项闭合）；**IPC-P2-1 的分工注释落在 `server.rs` 模块头**；main.rs 接线清单改指 IpcService；**移除零引用死依赖 minix-sys**（迭代 T-3 中完成），MIB 协议胶水（rmib_process 调我们的两个装配器）因此挂到边界动词后，生产侧随依赖回归接通。测试 6 场景：semget 回写+订阅边沿（含中途删除不退订的修正）、semop 挂起→SETALL 唤醒→信号 EINTR 全链、IPC_SET 草稿应用、无凭证调用方边界拒绝、shm RMID 立即清拍销毁、MIB 访达。doc 01/05/06/03 同步（doc 03 三处失真 = **IPC-D-5 闭合**）。验证：单元 **100** + 集成 **4** = 104 passed / 0 failed；clippy 本 crate 零告警。
 
 ### IPC-P1-2 do_semop 入口检查顺序：权限被排到了越界/撤销之后【✅ 已完成 2026-09-16】
 
@@ -143,7 +145,7 @@
 
 ## 2. 架构与设计（P2/P3）
 
-### IPC-P2-1 判定/效果分离的整体评估：维持，边界已划对，别摇摆
+### IPC-P2-1 判定/效果分离的整体评估：维持，边界已划对，别摇摆【✅ 已完成 2026-09-16】
 
 **是什么**：本轮按"如果今天重写会怎么设计"逐层过了一遍，整体架构的结论是**维持现状**，把理由写下来，防止未来轮次在缺少论证的情况下反复推翻已经定过的架构决策。当前形状：单线程事件循环（`server.rs:5-9`）+ 判定纯函数化（效果以值返回）+ 两个 seam trait（transport/handler）注入。
 
@@ -249,7 +251,7 @@
 
 plan.md §6.1（:347-360）：01-10 全 reviewed（2026-09-05），00/99 pending；`tools/design-coverage-check.sh` 显示 00/07/08/09/10/99 六篇缺 `.design/` 三件套。这不是本轮新发现，登记为待办防漂移：00（总览）与 99（全局概念/常量收口）两篇按其余各篇流程补齐；99 篇尤其该在服务层接线前完成——IPC-P1-1 的边界契约清单（拷贝失败错误码、分配器模型）doc 06:106 已声明"记入 99"，99 不落地这些契约就悬空。
 
-### IPC-D-5 03 篇 MountTable 失真
+### IPC-D-5 03 篇 MountTable 失真【✅ 已完成 2026-09-16，随 IPC-P1-1 闭合】
 
 03 篇 §2.5/§3 D4/§4.1 三处声称复用 minix-sys 的 `MountTable` 而 crate 实际零引用（`mib_tree.rs:16` 注释声称、`:18` 实际 import 仅 minix-types；Cargo.toml 的 minix-sys 依赖因此是死依赖）。E-RMIBWIRE（edge_todo.md）已登记并给出修正方案，本条只回指不重复；服务层接 MIB 时（IPC-P1-1 的最后一步）一并处理——届时 minix-sys 依赖从死变活，失真自动消除。
 

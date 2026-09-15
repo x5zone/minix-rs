@@ -8,12 +8,14 @@
 //! VM server's single-threaded model (not kernel SMP: no `Arc`/`Mutex`).
 //! Document `01-ipc-init-main.md` §3 (decisions D5/D6/D7) and §4.
 //!
-//! Handlers for the seven calls (documents 05-08), process events (09),
-//! MIB requests (03), and the reference-count hook (08) are not landed
-//! yet; they arrive through [`CallHandler`]. The loop itself is complete
-//! and testable today via the stub and recording implementations below.
+//! Division of labour (IPC-P2-1): judgement lives in the decision modules
+//! (`sem/`, `shm/`, `perms.rs`, `events.rs`, `mib_tree.rs`), effects live
+//! at the edges (this loop's transport, the boundary in
+//! [`crate::service`]), and this loop only routes. The seven calls'
+//! business logic is [`crate::service::IpcService`]'s to sequence;
+//! [`StubHandler`] remains the stand-in for tests that only exercise the
+//! loop itself.
 
-use alloc::boxed::Box;
 use core::cell::{Cell, RefCell};
 
 use minix_types::{ENOSYS, Endpoint, IpcCall, Message, ProcEventIn};
@@ -105,18 +107,21 @@ pub trait EventLoopTransport {
 /// implementations exist: [`StubHandler`] (production placeholder until
 /// 05-09 land) and the recording test double in the test module.
 pub trait CallHandler {
-    /// Handle one of the seven calls. Returns the result code, or SUSPEND
-    /// when the caller stays blocked (document 06).
-    /// C: `call_vec[call_index](&m)` — main.c:259. Documents 05-08.
-    fn handle_call(&mut self, call: IpcCall, msg: &Message) -> i32;
+    /// Handle one of the seven calls. The handler writes its result
+    /// fields into the message in place (C handlers write `m->m_lc_*`
+    /// before returning — main.c:269-272 sends the same buffer back) and
+    /// returns the result code, or SUSPEND when the caller stays blocked
+    /// (document 06). C: `call_vec[call_index](&m)` — main.c:259.
+    fn handle_call(&mut self, call: IpcCall, msg: &mut Message) -> i32;
     /// Handle a process event. Returns the reply type to echo to PM.
     /// C: `got_proc_event` — main.c:191-210. Document 09.
     fn handle_proc_event(&mut self, event: ProcEventIn) -> i32;
-    /// Handle a MIB request. C: `rmib_process` — main.c:250. Document 03.
-    fn handle_mib(&mut self, msg: &Message);
-    /// End-of-cycle hook: refresh shared-memory reference counts and destroy
-    /// due segments. C: `update_refcount_and_destroy` — main.c:279.
-    /// Document 08.
+    /// Handle a MIB request in place (C: `rmib_process` replies from
+    /// inside the library call — main.c:250). Document 03.
+    fn handle_mib(&mut self, msg: &mut Message);
+    /// End-of-cycle hook: refresh shared-memory reference counts and
+    /// destroy due segments. C: `update_refcount_and_destroy` —
+    /// main.c:279. Document 08.
     fn on_cycle_end(&mut self);
 }
 
@@ -128,7 +133,7 @@ pub trait CallHandler {
 pub struct StubHandler;
 
 impl CallHandler for StubHandler {
-    fn handle_call(&mut self, _call: IpcCall, _msg: &Message) -> i32 {
+    fn handle_call(&mut self, _call: IpcCall, _msg: &mut Message) -> i32 {
         // Documents 05-08 land the seven handlers; until then ENOSYS
         // (the same code C returns for an empty table slot — main.c:261).
         ENOSYS
@@ -140,7 +145,7 @@ impl CallHandler for StubHandler {
         proc_event_reply_type()
     }
 
-    fn handle_mib(&mut self, _msg: &Message) {
+    fn handle_mib(&mut self, _msg: &mut Message) {
         // Document 03 lands subtree dispatch; rmib_process replies from
         // inside the library call, so there is nothing to return here.
     }
@@ -278,7 +283,7 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
     /// scenarios one round at a time without spawning the infinite loop.
     pub fn run_once(&self) -> RunStep {
         // C: sef_receive_status(ANY, &m, &ipc_status) — main.c:228.
-        let (msg, status) = match self.transport.borrow_mut().receive() {
+        let (mut msg, status) = match self.transport.borrow_mut().receive() {
             Ok(v) => v,
             Err(TransportError) => {
                 self.note_dropped();
@@ -327,11 +332,13 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
                 // C: rmib_process + continue — main.c:248-252. The library
                 // replies from inside the call; nothing to send here. The
                 // `continue` skips the end-of-cycle hook (:279).
-                self.handler.borrow_mut().handle_mib(&msg);
+                self.handler.borrow_mut().handle_mib(&mut msg);
             }
             Incoming::Dispatch(call) => {
-                // C: r = call_vec[call_index](&m) — main.c:259.
-                let result = self.handler.borrow_mut().handle_call(call, &msg);
+                // C: r = call_vec[call_index](&m) — main.c:259. The handler
+                // writes its result fields into the message in place; the
+                // reply reuses the request buffer (main.c:269-272).
+                let result = self.handler.borrow_mut().handle_call(call, &mut msg);
                 // C: if (r != SUSPEND) { m.m_type = r; ipc_sendnb(...); }
                 // — main.c:264-276. Other fields stay as the handler left
                 // them (the reply reuses the request buffer — main.c:269-272).
@@ -470,7 +477,7 @@ mod tests {
     }
 
     impl CallHandler for RecordingHandler {
-        fn handle_call(&mut self, call: IpcCall, _msg: &Message) -> i32 {
+        fn handle_call(&mut self, call: IpcCall, _msg: &mut Message) -> i32 {
             self.last_call = Some(call);
             self.call_result
         }
@@ -480,7 +487,7 @@ mod tests {
             proc_event_reply_type()
         }
 
-        fn handle_mib(&mut self, _msg: &Message) {
+        fn handle_mib(&mut self, _msg: &mut Message) {
             self.mibs += 1;
         }
 

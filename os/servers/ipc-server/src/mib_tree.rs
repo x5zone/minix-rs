@@ -13,7 +13,11 @@
 //!
 //! Only judgement lives here (which child, which branch). The information
 //! assembly (`get_sem_mib_info`, `get_shm_mib_info`) belongs to documents
-//! 05/08; the slot table is reused from `minix-sys` (`rmib::MountTable`).
+//! 05/08, wired through `assemble_mib_info` on each table; the MIB request
+//! protocol itself runs at the service boundary
+//! (`service::IpcBoundary::mib_process`), whose production implementation
+//! wraps the `minix-sys` rmib client (E-RMIBWIRE — the client half landed
+//! there in c7d2ea150).
 
 use minix_types::{CTL_KERN, EINVAL, EOPNOTSUPP};
 

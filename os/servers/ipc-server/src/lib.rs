@@ -22,6 +22,7 @@ pub mod mib_tree;
 pub mod perms;
 pub mod sem;
 pub mod server;
+pub mod service;
 pub mod shm;
 
 pub use dispatch::{Incoming, classify, proc_event_reply_type, should_reply, unknown_call_result};
@@ -37,3 +38,4 @@ pub use perms::{
 pub use server::{
     CallHandler, EventLoopTransport, IpcServer, IpcStatus, RunStep, StubHandler, TransportError,
 };
+pub use service::{Credentials, IpcBoundary, IpcService};

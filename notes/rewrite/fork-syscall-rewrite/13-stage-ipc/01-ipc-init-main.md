@@ -171,7 +171,10 @@ os/servers/ipc-server/src/
   lib.rs        — 裸环境开关与模块声明（生产构建无标准库，测试构建用系统分配器）
   main.rs       — 二进制入口：初始化后进入事件循环（永不返回）
   dispatch.rs   — 消息分类与分发判决（本篇 D2、D3、D4 的落地）
-  server.rs     — 事件循环骨架（本篇 D5、D6、D7 的落地）
+  server.rs     — 事件循环骨架（本篇 D5、D6、D7 的落地；CallHandler 特征在此定义，
+                  handle_call 收可变消息——C 的处理函数把回写字段写进原缓冲再回信）
+  service.rs    — 服务层：IpcService 组装 sem/shm/perms/events/mib_tree 全部判定模块，
+                  IpcBoundary 承载跨服务动词（时钟、凭证、拷贝、订阅、唤醒、虚拟内存）
   mib_tree.rs   — 管理信息库子树描述（03 的落地，本篇只引用接口）
 ```
 
