@@ -127,11 +127,36 @@ pub struct DirectTrapSource;
 
 impl KerninfoSource for DirectTrapSource {
     fn query_kerninfo(&self) -> Result<crate::handoff::KernInfoHeader, i32> {
-        // No kernel is present in the hosted test environment, so the query
-        // cannot succeed here. The real trap wiring will replace this body
-        // when the communication mechanism module lands; returning an error
-        // keeps the failure explicit instead of fabricating a page.
-        Err(minix_types::EIO)
+        // E1 slice 4: issue the real MINIX_KERNINFO query through the
+        // direct transport's vector-33 trap. The kernel hands back the
+        // user-mapped info page address through the secondary return
+        // register; the header fields are read from that page. Hosted
+        // test builds keep the explicit EIO — there is no kernel behind
+        // the trap there (the CannedSource is the test seam).
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            use minix_sys::ipc::{DirectTrapTransport, IpcTransport as _};
+            let page = DirectTrapTransport
+                .query_kerninfo_page()
+                .map_err(|status| status.0)?;
+            if page == 0 {
+                return Err(minix_types::EIO);
+            }
+            // SAFETY: the kernel published and user-mapped the page before
+            // returning its address (a mapping the boot handoff owns);
+            // the page is read-only from user mode.
+            let info = unsafe { &*(page as *const minix_types::MinixKerninfo) };
+            return Ok(crate::handoff::KernInfoHeader {
+                magic: info.kerninfo_magic,
+                flags: info.ki_flags,
+                ipc_vectors_address: info.minix_ipcvecs,
+                user_info_address: info.kuserinfo,
+            });
+        }
+        #[cfg(not(all(target_arch = "x86_64", feature = "real-trap")))]
+        {
+            Err(minix_types::EIO)
+        }
     }
 }
 

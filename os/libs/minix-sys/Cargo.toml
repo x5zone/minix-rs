@@ -9,5 +9,8 @@ license.workspace = true
 name = "minix_sys"
 path = "src/lib.rs"
 
+[features]
+real-trap = []
+
 [dependencies]
 minix-types = { workspace = true }

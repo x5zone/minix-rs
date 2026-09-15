@@ -141,8 +141,15 @@ pub trait KernelCallTransport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DirectKernelCallTransport;
 
+#[allow(unused_variables)]
 impl KernelCallTransport for DirectKernelCallTransport {
-    fn kernel_call(&self, _message: &mut Message) -> i32 {
+    fn kernel_call(&self, message: &mut Message) -> i32 {
+        // E1 slice 3: the real SYSCALL-leg trap (hosted builds keep -EIO).
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            return unsafe { crate::arch_trap::kernel_call_trap(message) };
+        }
+        #[allow(unreachable_code)]
         -minix_types::EIO
     }
 }

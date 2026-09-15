@@ -526,34 +526,129 @@ pub trait IpcTransport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DirectTrapTransport;
 
+// The real-trap branch consumes the parameters; the EIO fallback (default
+// hosted/test build) does not — per-method `let _ =` below would be noise,
+// so the impl carries the allow.
+#[allow(unused_variables)]
 impl IpcTransport for DirectTrapTransport {
-    fn send(&self, _destination: Endpoint, _message: &Message) -> Result<(), TrapStatus> {
+    fn send(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
+        // E1 slice 3: the real trap branch (hosted builds keep the -EIO
+        // fallback — `int` in a hosted process is not a kernel boundary).
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, _status) = unsafe {
+                crate::arch_trap::ipc_trap(
+                    crate::arch_trap::SEND_NR,
+                    destination.0 as usize,
+                    (message as *const Message) as usize,
+                )
+            };
+            return crate::arch_trap::errno_result(ret);
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
     fn receive(
         &self,
-        _source: Endpoint,
-        _message: &mut Message,
+        source: Endpoint,
+        message: &mut Message,
     ) -> Result<IpcStatus, TrapStatus> {
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, status) = unsafe {
+                crate::arch_trap::ipc_trap(
+                    crate::arch_trap::RECEIVE_NR,
+                    source.0 as usize,
+                    (message as *mut Message) as usize,
+                )
+            };
+            if ret == 0 {
+                return Ok(IpcStatus(status as u32));
+            }
+            return Err(TrapStatus(ret));
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
     fn sendrec(
         &self,
-        _destination: Endpoint,
-        _message: &mut Message,
+        destination: Endpoint,
+        message: &mut Message,
     ) -> Result<(), TrapStatus> {
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, _status) = unsafe {
+                crate::arch_trap::ipc_trap(
+                    crate::arch_trap::SENDREC_NR,
+                    destination.0 as usize,
+                    (message as *mut Message) as usize,
+                )
+            };
+            return crate::arch_trap::errno_result(ret);
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
-    fn notify(&self, _destination: Endpoint) -> Result<(), TrapStatus> {
+    fn notify(&self, destination: Endpoint) -> Result<(), TrapStatus> {
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, _status) = unsafe {
+                crate::arch_trap::ipc_trap(
+                    crate::arch_trap::NOTIFY_NR,
+                    destination.0 as usize,
+                    0,
+                )
+            };
+            return crate::arch_trap::errno_result(ret);
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
-    fn sendnb(&self, _destination: Endpoint, _message: &Message) -> Result<(), TrapStatus> {
+    fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, _status) = unsafe {
+                crate::arch_trap::ipc_trap(
+                    crate::arch_trap::SENDNB_NR,
+                    destination.0 as usize,
+                    (message as *const Message) as usize,
+                )
+            };
+            return crate::arch_trap::errno_result(ret);
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
-    fn senda(&self, _table: &[AsyncSlot]) -> Result<(), TrapStatus> {
+    fn senda(&self, table: &[AsyncSlot]) -> Result<(), TrapStatus> {
+        // C: `eax = count, ebx = table` (SENDA_ARGS) — count rides the
+        // endpoint register, the table pointer the message-pointer one.
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, _status) = unsafe {
+                crate::arch_trap::ipc_trap(
+                    crate::arch_trap::SENDA_NR,
+                    table.len(),
+                    table.as_ptr() as usize,
+                )
+            };
+            return crate::arch_trap::errno_result(ret);
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
     fn query_kerninfo_page(&self) -> Result<u64, TrapStatus> {
+        // MINIX_KERNINFO: the page address comes back through the
+        // secondary return register (RBX) — see set_secondary_ipc_return.
+        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, page) =
+                unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };
+            if ret == 0 {
+                return Ok(page as u64);
+            }
+            return Err(TrapStatus(ret));
+        }
+        #[allow(unreachable_code)]
         Err(TrapStatus(minix_types::EIO))
     }
 }

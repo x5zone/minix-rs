@@ -15,6 +15,9 @@ minix-types = { workspace = true }
 
 [features]
 default = ["std"]
+# E1 slice 4: re-exported gate — compiles the real kerninfo trap query.
+# Mirrors minix-sys's `real-trap`; only real boot-image builds enable it.
+real-trap = ["minix-sys/real-trap"]
 std = []
 # Opt-in `#[panic_handler]`. The handler must stay a single graph-wide
 # instance: a binary that provides its own (e.g. the qemu test-kernels,

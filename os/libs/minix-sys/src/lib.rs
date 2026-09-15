@@ -40,6 +40,9 @@ pub mod misc;
 /// Initial-stack frame construction (E-BOOTFRAME — `minix_stack_params`/
 /// `minix_stack_fill`, libc stack_utils.c).
 pub mod stack;
+/// User-side trap bodies (E1 slice 3 — the `int 0x21`/`syscall`
+/// instruction sequences behind the direct transports).
+pub mod arch_trap;
 /// Reincarnation server queries: lookup and endpoint questions (document 12).
 pub mod rs;
 /// User-space socket call policy: call list, flag handling, fallback rule
