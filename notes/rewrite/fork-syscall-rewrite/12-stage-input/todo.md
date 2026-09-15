@@ -30,7 +30,7 @@
 | P3 | IN-P3-1 | 死代码与仅测试消费项清单（分"等通电""真死""上交裁决"三类）（✅ 2026-09-15，见 §2） |
 | P3 | IN-P3-2 | 边界测试族缺口（极限回绕、槽位耗尽、selector 覆盖、单侧断连等） |
 | P3 | IN-P3-3 | wire 测试盲区（`tty_up_msg` 拒收、KIOCSLEDS 截断、保留槽、通知携带消息号）（✅ 2026-09-15，见 §2） |
-| P3 | IN-D3 | close 全清偏离未按三层术语标注 `[ARCH: ...]`（doc + design + code 三处一致） |
+| P3 | IN-D3 | close 全清偏离未按三层术语标注 `[ARCH: ...]`（doc + design + code 三处一致）（✅ 2026-09-15，见 §3） |
 | P3 | IN-D4 | 语义映射表只覆盖 01-12 篇；14 篇契约文档与 16-stage 实现文档互不回指 |
 | edge | E-INWIRE | input 服务器生产传输接线四缺（挂 minix-sef 落地方式决策 + 联调挂靠 E5） |
 | edge | E-CDRCONV | chardriver 框架双实现收敛（A-1 收口）+ minix-chardriver `CDEV_REPLY_BASE = 0x500` 错值 |
@@ -164,9 +164,11 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 
 **修复记录（2026-09-15，IN-P2-2 落地后撰写）**：00 篇以传达室比喻立"事件汇"概念，启动主线图按 Rust 现状两半划分（dispatcher 裁决就位、传输挂 E-INWIRE），事件旅程与驱动生命周期两条次主线带 C 行号，导航表 16 行逐一对应现文件；99 篇六张总表（消息号、事件格式与码、设备编号、错误码、endpoint/DS 键、全局状态与跨服务引用）每项标注权威文件与机制篇出处，CDEV_REPLY_BASE 错值显式注记。两篇均按 plan §3.6 补齐 .design 三件套（outline/outline-review/design，v1），plan.md §6.1 状态表同步为已改写。文风按 style-bible：Ch1 主语为机制，无开发文档味。
 
-### IN-D3 close 全清偏离缺三层一致标注
+### IN-D3 close 全清偏离缺三层一致标注【✅ 已完成 2026-09-15】
 
 Rust 的 `apply_close` 在关闭时额外清理挂起读者与 selector（handlers.rs:94-103），C 只清三项留下脏状态（input.c:120-122）——这是有意的 MINIX3 BUG 修复，注释与文档 06 都有论证（证据链 filedes.c:453 核实无误）。但按项目三层术语，这是改变外部可观察行为的架构演进，应按 `[ARCH: ...]` 格式在 doc + design + code 三处一致标注（现在代码只有 "MINIX3 BUG" 字样，无标准格式）。处置：补标注，不改行为。
+
+**修复记录（2026-09-15，标签 `[ARCH: close-cleanup]`，三处一致）**：代码（`apply_close` 文档注释首段）、文档 06 §3.2（标题与正文）、`.design/06-design.v1.md` §1.2 统一挂 `[ARCH: close-cleanup]` 标签并互相指认；文档 06 §3.2 同时把"三处标注齐全"的表述改为如实列出三处位置（原表述把"差异表本节"算一处、漏了 design 快照）。行为零改动。
 
 ### IN-D4 语义映射表与文档互引缺口
 

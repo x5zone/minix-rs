@@ -72,6 +72,10 @@ pub const fn decide_close(device: &InputDevice) -> Result<(), InputError> {
 /// Applies a granted close: releases the hold, empties the queue, and parks
 /// nothing.
 ///
+/// `[ARCH: close-cleanup]` — a deliberate, annotated deviation from Minix3
+/// (three-place annotation: this comment, document 06 §2.3/§3.2, and
+/// `.design/06-design.v1.md` §1.2).
+///
 /// C clears `opened`, `tail`, and `count` (`input.c:120-122`) — and stops
 /// there. Stopping there is a bug, fixed here (see below): a suspended read
 /// or a recorded selector left behind by a close outlives the reader that
