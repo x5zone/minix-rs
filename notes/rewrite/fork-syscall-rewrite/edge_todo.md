@@ -506,6 +506,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：E1（trap 层）、E2（SYS_* wrapper）。
 **解锁**：E-ISBOOT；08-stage-is/todo.md V1-P2-1 的复原。
 
+> **进度（2026-09-15，🔄 (1) 框架核 3/4 闭环）**：`minix-sef` 从 5 行占位实装为 SEF 接收循环库——`SefIpc` trait 注入 receive/notify 动词(生产 = minix-sys `IpcTransport`,E1 通电即活;宿主测试 = `CannedSefIpc` 脚本);`sef_receive_status`(C sef.c:149-260)实装:循环 receive → `is_ipc_notify`(CALL_NOTIFY 低 16 位)→ 按源分类——SYSTEM→`SefEvent::Signal` 上浮(服务器分派自己的 signal handler)、RS+`NOTIFY_MESSAGE`→ping 拦截(`sef_cb_ping_reply_pong` 回 pong 后 continue 吞掉,sef_ping.c:21-38)、普通消息返回 `Call`;协议常量 SEF_PING/SIGNAL/INIT_REQUEST_TYPE 对齐 sef.h:32/:122/:263。测试 ×4(ping 拦截吞掉+普通消息上浮/SYSTEM 信号/RS 非通知直通/错误直通)。**剩余**:(2)(3) `_taskcall` 与 IS/MIB/devman 三消费方的生产 impl 替换(依赖 E1/E2,本条目保持 open 至通电);LU/ST 拦截路径(C `INTERCEPT_SEF_LU_REQUESTS`/ST)依赖 LU/ST campaign,登记不实装。**验证**:minix-sef 4 passed;is/mib/devman/sys/types/kernel 全回归通过;clippy 基线持平。
+
 > **增补（2026-09-15，10-stage-mib 首轮架构审查）**：minix-sef 的第二消费方浮出——os/servers/mib/src/sef.rs:13-14 声称 SEF transport 留在 minix-sef，但 mib crate 的 Cargo.toml 未声明该依赖；MIB 侧 `sef_startup`/`sef_receive_status` 接线（10-stage-mib/todo.md P1-1 的 `MibIpc`，含 status 字的 notify 检测——与 DS 的 call-number 猜测路径不同）随本条 (1) 一并做。
 
 > **增补（2026-09-15，11-stage-devman 首轮架构审查）**：minix-sef 的**第三消费方**是 devman——`SefHooks` trait（os/servers/devman/src/hooks.rs:268-271：init_server/on_signal）与 `SefLifecycle` 枚举（:257-263）目前只有测试替身实现（hooks.rs:336-365），生产实现被 STATE.md OQ-1 挡在 minix-sef 门前（hooks.rs:255 自注 "minix-sef is currently a stub"）。C 参照是 vtreefs.c:54-59 的三注册 + sef_local_startup（devman 侧经 libvtreefs 间接消费 libsys/sef）。devman 侧 `SefHooks` 生产 impl 随本条 (1) 一并做；若 minix-sef 长期不到场，11-stage-devman/todo.md DM-P1-2 的分派面统一将连带评估该 trait 的去留（模式 80：无生产实现者的占位抽象）。
