@@ -137,6 +137,8 @@ os/servers/mib/src/proc/
 
 ---
 
+> **P1-5 补记（2026-09-15）**：拉取执行半已落——`proc/tables.rs` 的 `Tables::update(now, kernel, services, scratch×3)` 驱动 C `update_tables` 的三源拉取序（kernel → PM SI_PROC_TAB → VFS SI_PROCLIGHT_TAB），judge 节流 + 失败闩锁 + 快照拷贝全部接线；scratch 缓冲由 server 启动时按 producer 行数一次性分配。kinfo 行填充（17~20 的 fill 半）仍挂 E-MIBPROD（producer 布局对账），`getsysinfo` 数据路径的 PM/VFS 侧同样挂该 edge。
+
 ## 5 测试要点
 
 > 基线：`cargo test -p minix-mib --lib`，本篇三个测试。

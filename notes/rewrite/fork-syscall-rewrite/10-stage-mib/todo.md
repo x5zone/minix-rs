@@ -18,13 +18,13 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 | P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | ✅ 2026-09-15（`MibTree` + 四线 build + walker 执行器 + 10 集成测试，136 passed） |
 | P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ✅ 2026-09-15（`minix-types::sysctl_abi`，4 结构 + 4 断言测试，196 passed） |
 | P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ✅ 2026-09-15（`transport.rs` 双 trait + `Oldp`/`Newp`/`RelayRequest`/`RelayGrant`/`auth::ask`，126 passed） |
-| P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ⬜ |
+| P1-5 | 进程表拉取执行半 | tables.rs 纯半 + getproctab/getsysinfo 接线（对端挂 E-MIBPROD） | ✅ 2026-09-15（`Tables::update` 三源拉取 + 闩锁 + 快照拷贝，4 测试，150 passed） |
 | P2-1 | verdict 层三处 C 判定缺口 | create 溢出门、create 版本门、query 拷入版本门 | ✅ 2026-09-15（`create_csize_ok` + `staged_vers_ok`，108 passed） |
 | P2-2 | handler 结果与判定入参结构化 | `map_sysctl_reply` 平行参数通道 → 枚举；`judge_level` 九参 → 事实结构体 | ✅ 2026-09-15（`SysctlOutcome` + `LevelFacts`，`too_many_arguments` allow 已删） |
 | P2-3 | 动态子节点容器选型 | C 排序链表 → BTreeMap / 排序 Vec 的裁决 | ✅ 2026-09-15（`tree/arena.rs`：ChildMap/Dynode/NodeId + 三方案对比，116 passed） |
 | P2-4 | A-3 内存策略落地 | slab + 字节预算池（推荐）vs bumpalo vs 裸全局分配器 | ✅ 2026-09-15（`heap::MibBudget` 记账预算，5 测试，113 passed） |
 | P3-1 | 文档账目同步批次 | README/plan 失真行、02 篇行号漂移、arena 承诺时点四处统一、00/99 成文 | ✅ 2026-09-15（五项全闭环） |
-| P3-2 | 死依赖与卫生指针 | mib crate 的 minix-sys 死依赖转正时机；rmib 卫生项归 edge | ⬜ |
+| P3-2 | 死依赖与卫生指针 | mib crate 的 minix-sys 死依赖转正时机；rmib 卫生项归 edge | ✅ 2026-09-15（main.rs 组装即消费 minix-sys——死依赖转正；mib 本体 clippy 仅余 3 条既有 proc 域项） |
 
 **基线命令（2026-09-15 实测）**：
 

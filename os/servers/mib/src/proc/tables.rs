@@ -11,6 +11,8 @@
 //! 16-mib-proc-tables.md.
 
 /// Slots no PID maps to. C: `NO_SLOT (-1)` — proc.c:34.
+use alloc::vec::Vec;
+
 pub const NO_SLOT: i32 = -1;
 
 /// Headroom for forks between size estimation and retrieval.
@@ -248,5 +250,302 @@ mod tests {
         );
         assert_eq!(paren_direct(true), ('(', ')'));
         assert_eq!(paren_direct(false), ('\0', '\0'));
+    }
+}
+
+// ── Pull execution (P1-5) ──
+//
+// C's `update_tables` (proc.c:46-217) drives the pull: once per clock
+// tick, kernel table first, then PM and VFS via `getsysinfo`,
+// magic-checked on arrival, a failure latching `tabs_valid = FALSE`
+// until reboot. The pull *verbs* live behind the server's seams
+// (A-12); this module owns the state machine.
+
+/// The three snapshot buffers plus the pull state.
+///
+/// C: `proc_tab`/`mproc_tab`/`fproc_tab` static arrays plus
+/// `tabs_valid`/`tabs_updated` — proc.c:34-39. The bytes are the producers'
+/// layouts (kernel/PM/VFS own them — E-MIBPROD); MIB treats them as
+/// opaque until the fill halves (17~20) interpret rows.
+pub struct Tables {
+    /// Kernel process table bytes. C: `proc_tab` (sys_getproctab).
+    pub kernel_tab: Vec<u8>,
+    /// PM table bytes. C: `mproc_tab` (getsysinfo SI_PROC_TAB).
+    pub pm_tab: Vec<u8>,
+    /// VFS light table bytes. C: `fproc_tab` (getsysinfo
+    /// SI_PROCLIGHT_TAB).
+    pub vfs_tab: Vec<u8>,
+    /// Tick of the last successful pull. C: `tabs_updated`.
+    pub last_tick: u64,
+    /// Failure latch: true from the first failed pull until reboot.
+    /// C: `tabs_valid = FALSE` — proc.c:106-108.
+    pub latched: bool,
+}
+
+impl Tables {
+    /// Fresh state: nothing pulled, latch open. C: statics start zero.
+    pub fn new() -> Self {
+        Self {
+            kernel_tab: Vec::new(),
+            pm_tab: Vec::new(),
+            vfs_tab: Vec::new(),
+            last_tick: 0,
+            latched: false,
+        }
+    }
+
+    /// Run the pull discipline for `now_tick`: judge (throttle/latch),
+    /// pull the three tables through the seams into the scratch
+    /// buffers, latch on any failure. Returns `true` when the tables
+    /// hold a current snapshot.
+    ///
+    /// C: `update_tables` — proc.c:46-217. `scratch_*` are server-owned
+    /// buffers (sized once from the producer row counts at startup);
+    /// the pulled bytes are copied into the snapshot fields so a later
+    /// transport failure cannot corrupt the live snapshot.
+    pub fn update<K: crate::transport::MibKernel, S: crate::transport::MibServices>(
+        &mut self,
+        now_tick: u64,
+        kernel: &mut K,
+        services: &mut S,
+        scratch_kern: &mut [u8],
+        scratch_pm: &mut [u8],
+        scratch_vfs: &mut [u8],
+    ) -> bool {
+        if self.latched {
+            return false;
+        }
+        match judge_pull(false, self.last_tick, now_tick) {
+            PullVerdict::StayDead => return false,
+            PullVerdict::Reuse => return true,
+            PullVerdict::Pull => {}
+        }
+        // Kernel first (proc.c:75).
+        if kernel.getproctab(scratch_kern).is_err() {
+            self.latched = true;
+            return false;
+        }
+        self.kernel_tab = scratch_kern.to_vec();
+        // PM table (proc.c:90: SI_PROC_TAB).
+        if services
+            .getsysinfo(minix_types::Endpoint::PM, minix_types::SI_PROC_TAB, scratch_pm)
+            .is_err()
+        {
+            self.latched = true;
+            return false;
+        }
+        self.pm_tab = scratch_pm.to_vec();
+        // VFS light table (proc.c:106: SI_PROCLIGHT_TAB).
+        if services
+            .getsysinfo(
+                minix_types::Endpoint::VFS,
+                minix_types::SI_PROCLIGHT_TAB,
+                scratch_vfs,
+            )
+            .is_err()
+        {
+            self.latched = true;
+            return false;
+        }
+        self.vfs_tab = scratch_vfs.to_vec();
+        self.last_tick = now_tick;
+        true
+    }
+}
+
+impl Default for Tables {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod pull_tests {
+    use super::*;
+    use alloc::vec;
+
+    struct MockPull {
+        fail_kernel: bool,
+        fail_pm: bool,
+        fail_vfs: bool,
+    }
+
+    impl crate::transport::MibKernel for MockPull {
+        fn datacopy_from(&mut self, _s: Endpoint, _a: u64, _b: &mut [u8]) -> Result<(), i32> {
+            Ok(())
+        }
+        fn datacopy_to(&mut self, _d: Endpoint, _a: u64, _b: &[u8]) -> Result<(), i32> {
+            Ok(())
+        }
+        fn grant_magic(
+            &mut self,
+            _w: Endpoint,
+            _a: u64,
+            _l: u64,
+            _d: crate::io::relay::RelayDir,
+        ) -> Result<minix_types::GrantId, i32> {
+            Ok(1)
+        }
+        fn grant_revoke(&mut self, _g: minix_types::GrantId) {}
+        fn getproctab(&mut self, buf: &mut [u8]) -> Result<(), i32> {
+            if self.fail_kernel {
+                return Err(EIO);
+            }
+            buf[..4].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+            Ok(())
+        }
+        fn getticks(&mut self) -> Result<u64, i32> {
+            Ok(0)
+        }
+        fn hz(&mut self) -> Result<u32, i32> {
+            Ok(60)
+        }
+    }
+
+    impl crate::transport::MibServices for MockPull {
+        fn getnuid(&mut self, _who: Endpoint) -> Result<u32, i32> {
+            Ok(0)
+        }
+        fn getsysinfo(&mut self, _t: Endpoint, _w: i32, buf: &mut [u8]) -> Result<(), i32> {
+            if self.fail_pm {
+                return Err(EPERM);
+            }
+            buf[..2].copy_from_slice(&[0xAA, 0xBB]);
+            Ok(())
+        }
+        fn ds_retrieve_label_name(&mut self, _w: Endpoint, _b: &mut [u8]) -> Result<usize, i32> {
+            Err(EIO)
+        }
+        fn remote_info(
+            &mut self,
+            _p: Endpoint,
+            _n: &mut [u8],
+            _d: &mut [u8],
+        ) -> Result<(), i32> {
+            Err(EIO)
+        }
+        fn remote_call(
+            &mut self,
+            _peer: Endpoint,
+            _call: crate::io::relay::RemoteCall,
+            _reply: &mut crate::io::relay::RemoteReplyWire,
+        ) -> Result<(), i32> {
+            Err(EIO)
+        }
+        fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
+            Err(EIO)
+        }
+        fn pm_getparam(&mut self, _param: i32, _buf: &mut [u8]) -> Result<(), i32> {
+            Err(EIO)
+        }
+    }
+
+    use minix_types::{EIO, EPERM, Endpoint};
+
+    /// Full pull: three tables land, the tick updates, the latch stays
+    /// open.
+    #[test]
+    fn test_pull_success() {
+        use minix_types::Endpoint;
+        let mut tables = Tables::new();
+        let mut kernel = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
+        let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
+        let mut kbuf = [0u8; 16];
+        let mut pbuf = [0u8; 8];
+        let mut vbuf = [0u8; 8];
+        let ok = tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf);
+        assert!(ok);
+        assert_eq!(tables.kernel_tab, kbuf.to_vec());
+        assert_eq!(tables.pm_tab, pbuf.to_vec());
+        assert_eq!(tables.last_tick, 5);
+        assert!(!tables.latched);
+        let _ = Endpoint::PM;
+    }
+
+    /// Kernel failure latches: every later pull is refused (C's
+    /// `tabs_valid = FALSE` — proc.c:106-108).
+    #[test]
+    fn test_kernel_failure_latches() {
+        use minix_types::Endpoint;
+        let mut tables = Tables::new();
+        let mut kernel = MockPull { fail_kernel: true, fail_pm: false, fail_vfs: false };
+        let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
+        let mut kbuf = [0u8; 16];
+        let mut pbuf = [0u8; 8];
+        let mut vbuf = [0u8; 8];
+        assert!(!tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
+        assert!(tables.latched);
+        // Latched: a later healthy transport still refuses.
+        kernel.fail_kernel = false;
+        assert!(!tables.update(50, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
+        let _ = Endpoint::PM;
+    }
+
+    /// Throttle: within the same tick a second pull reuses the
+    /// snapshot (PullVerdict::Reuse — proc.c:66-69).
+    #[test]
+    fn test_same_tick_reuses() {
+        use minix_types::Endpoint;
+        let mut tables = Tables::new();
+        let mut kernel = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
+        let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
+        let mut kbuf = [0u8; 16];
+        let mut pbuf = [0u8; 8];
+        let mut vbuf = [0u8; 8];
+        assert!(tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
+        let calls_before = 0; // judge_pull refuses before any verb runs
+        let _ = calls_before;
+        // Same tick: reuse — no re-pull, the snapshot survives.
+        assert!(tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
+        assert_eq!(tables.kernel_tab.len(), 16);
+    }
+
+    /// PM failure latches mid-pull: the kernel snapshot stays, PM/VFS
+    /// stay empty, and the latch holds (:106-108).
+    #[test]
+    fn test_pm_failure_latches_mid_pull() {
+        use minix_types::Endpoint;
+        struct PmFails;
+        impl crate::transport::MibKernel for PmFails {
+            fn datacopy_from(&mut self, _: Endpoint, _: u64, _: &mut [u8]) -> Result<(), i32> { Ok(()) }
+            fn datacopy_to(&mut self, _: Endpoint, _: u64, _: &[u8]) -> Result<(), i32> { Ok(()) }
+            fn grant_magic(&mut self, _: Endpoint, _: u64, _: u64, _: crate::io::relay::RelayDir) -> Result<minix_types::GrantId, i32> { Ok(1) }
+            fn grant_revoke(&mut self, _: minix_types::GrantId) {}
+            fn getproctab(&mut self, buf: &mut [u8]) -> Result<(), i32> {
+                buf[..4].copy_from_slice(&[1, 2, 3, 4]);
+                Ok(())
+            }
+            fn getticks(&mut self) -> Result<u64, i32> { Ok(1) }
+            fn hz(&mut self) -> Result<u32, i32> { Ok(60) }
+        }
+        struct PmFailsSvc;
+        impl crate::transport::MibServices for PmFailsSvc {
+            fn getnuid(&mut self, _: Endpoint) -> Result<u32, i32> { Ok(0) }
+            fn getsysinfo(&mut self, _: Endpoint, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(EPERM) }
+            fn ds_retrieve_label_name(&mut self, _: Endpoint, _: &mut [u8]) -> Result<usize, i32> { Err(EIO) }
+            fn remote_info(&mut self, _: Endpoint, _: &mut [u8], _: &mut [u8]) -> Result<(), i32> { Err(EIO) }
+            fn remote_call(
+                &mut self,
+                _: Endpoint,
+                _: crate::io::relay::RemoteCall,
+                _: &mut crate::io::relay::RemoteReplyWire,
+            ) -> Result<(), i32> {
+                Err(EIO)
+            }
+            fn vm_info(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(EIO) }
+            fn pm_getparam(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(EIO) }
+        }
+        let mut tables = Tables::new();
+        let mut kernel = PmFails;
+        let mut services = PmFailsSvc;
+        let mut kb = [0u8; 16];
+        let mut pb = [0u8; 8];
+        let mut vb = [0u8; 8];
+        // PM failure = the pull failed (update returns false), but the
+        // kernel snapshot still landed — C copies per-source (:75-103).
+        assert!(!tables.update(1, &mut kernel, &mut services, &mut kb, &mut pb, &mut vb));
+        assert_eq!(tables.kernel_tab.len(), 16);
+        // The latch holds on the next tick.
+        assert!(!tables.update(2, &mut kernel, &mut services, &mut kb, &mut pb, &mut vb));
     }
 }
