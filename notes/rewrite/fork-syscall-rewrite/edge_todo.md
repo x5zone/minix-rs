@@ -11,6 +11,7 @@
 > 2026-09-15 增补：10-stage-mib 首轮架构审查（10-stage-mib/todo.md §5）登记 E-RMIBWIRE（minix-sys rmib 客户端协议半整缺）、E-MIBPROD（MIB 快照 vs kernel/PM/VFS producer 布局对账）、E-MIBGRANT（kernel grant.rs 端点常量与 C 不符）三条，并增补 E-DSWIRE（mib_get_label 消费方）、E-ISWIRE（mib 为 minix-sef 第二消费方）、E5（(g) MIB/sysctl 联调验收面）、E-MINTYPES-SYS（DS 段现状更新）、E-MINSYS-HYGIENE（锚点复核）。
 > 2026-09-15 增补：11-stage-devman 首轮架构审查（11-stage-devman/todo.md §6）登记 E-DMWIRE（devman 生产接线四缺：server transport + 请求分类器 + 装配半 + client/RS 侧生产传输）与 E-DMCLIENT（minix-devman-client 孤儿 crate 处置，涉 16-stage-drivers）两条，并增补 E-REQWIRE（devman 为 VTreeFS wire 第三消费方）、E-ISWIRE（devman 为 minix-sef 第三消费方）、E-DSWIRE（devman 客户端 init 的 DS label 查询消费方）、E5（(h) devman 生命周期联调验收面）。
 > 2026-09-16 增补：13-stage-ipc 首轮架构审查（13-stage-ipc/todo.md）登记 E-IPCWIRE（ipc-server 生产面接线八缺：trap 桥/SEF 层/sys_datacopy/proceventmask/VM_SHM_UNMAP/clock/getepinfo 窄 helper 七件 minix-sys 面 + minix-types 的 semid_ds/shmid_ds 布局面）。
+> 2026-09-16 增补：14-stage-runtime 首轮架构审查（14-stage-runtime/todo.md V1）登记 E-MINTYPES-RUNTIME（minix-types 布局单点权威收敛，99 篇定稿驱动）与 E-MINSYS-SCOPE（minix-sys 六个域外 stage 客户端模块的内聚性处置）两条，并在 E1 增补"首个 no_std minix-rt 二进制"通电验证面。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -45,6 +46,8 @@
 > **进度（2026-09-16，🔄 设计文档落稿待评审，01-stage-kernel/18-trap-bridge-design.md）**：Step 1 约束穷举 + Step 2 方案对比完成，四项裁决待批——①入口选 int 33 门（已配 DPL3 trap gate，trap_entry.rs:291；SYSCALL 腿不动）；②寄存器约定选 C i386 拓 64 位（RAX=端点/RBX=消息指针/RCX=调用号，RDX=SENDA 表指针；errno 走 RAX、status 走已裁决的保存 RBX 通道）；③保存区选"一律入 CpuContext、出口只有调度循环"（用户态真值单点，阻塞成平凡情形；SYSCALL 腿的 TrapFrame 直返模型不推广）；④用户 trap 体落 minix-sys arch_trap.rs，minix-rt DirectTrapSource 桩随之翻活。落地切片 5 步（asm stub→出口合一→trap 体→minix-rt→通电）。**stale-premise 修正**：原文"switch_to_user 无实现"已过期——lib.rs:2828 起为活代码，SYSCALL 腿（trap_dispatch.rs:179）也在跑；真正欠的是 int-33 腿。**按评审门规则停在此处，待批准后进实现。**
 
 > **进度（2026-09-16，🔄 切片 1-4 闭环，切片 5 通电挂 boot 链）**：设计经代评审批准（commit 60a92fed9——评审修正一处初稿 guess：SENDA 寄存器角色实为 C `SENDA_ARGS` 的 EAX=count/EBX=table 复用，无新寄存器）。**切片 1 内核臂**（b6571a458）：向量 33 从通用异常分派剥离（S-8 的 TRAPSTUB 33 门控早已在——E1 原文"asm 不存在"再次过期），新 `x86_ipc_dispatch_body`：入口持久化用户寄存器进 CpuContext → 抽取 RAX/RBX/RCX → 消息先拷贝后分派 → 应答码回 RAX + status 回 frame.rbx；arch 新增 `save_frame_to_context`（gp 索引顺序逐字段见证测试）。**切片 2 返回码回写**（e30674f0d）：引擎两处唤醒点（发送方完成阻塞 RECEIVE：proc.c:969 系；接收方取走阻塞 SEND：proc.c:1097 系）给被唤醒者保存上下文 RAX 写 OK——修复"恢复后读到陈旧 RAX"缺口；写入走 PTRACE 式 write_user_register(80)。**切片 3+4 用户侧**（e54846162）：minix-sys `arch_trap.rs`——int 0x21 体（RBX 为 LLVM 保留寄存器，按 cpu_identity.rs push/pop 先例）+ SYSCALL 腿 kernel-call 体；七个 transport 方法接真分支（receive 的 IpcStatus 取自 status 寄存器，kerninfo 页地址取自二次返回 RBX）；minix-rt `DirectTrapSource::query_kerninfo` 翻真。**门控裁决（实测教训）**：编译期无法区分"我们的内核"与"宿主 Linux"——真分支在 hosted 测试构建里实际执行了 `syscall` 且宿主应答 -ENOSYS——真分支收进显式 `real-trap` feature，仅真 boot image 构建开启。**切片 5 通电**：挂内核 boot 链到达用户态调度的进度（S-6/S-7 lane，01-stage-kernel 自有轨道）；机制面已全部就位，通电即 E8 SCHED 通电的同场验证项。**验证**：kernel 758 / arch 237 / minix-sys 155 / minix-rt 59 / minix-vm 505 全绿；clippy 对账零新增。
+
+> **增补（2026-09-16，14-stage-runtime V1 轮）**：切片 5 通电族的验收面增加"首个 no_std minix-rt 二进制"——minix-rt 的 `_start`/`#[panic_handler]`/`real-trap` 当前均无仓内构建启用（35 个命令消费方全部默认 std feature），机制面已备但从未真机执行。通电时应验证三件：入口寄存器接收（crt0.S 的 rdx/rcx/rbx 约定 → argv 可达）、kerninfo 直读链（DirectTrapSource::query_kerninfo 首次真机走通）、panic hook 真渲染——后者有一处通电前必须先修的缺陷：minix-rt 的 panic handler 读的是自己 crate 内的重复注册表（minix-rt/src/lib.rs:333 与 ：381-400），kernel 注册写入的是 minix-types 注册表（kernel/src/lib.rs:1638），hook 永不命中，详见 14-stage-runtime/todo.md V1-P0-1/V1-P1-1/V1-P1-4。
 
 **影响**：不变——全部用户态服务器的 IPC/kernel-call 真实通电挂本条；且本条真实前置是 **01-stage-kernel 的 trap 桥 + switch_to_user**（该 stage 的 V12 工作流进行中）。
 
@@ -797,3 +800,37 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：第 8 项无依赖；第 3-7 项无硬依赖（可宿主测试）；第 1/2 项依赖 E1（trap 桥）。
 **解锁**：13-stage-ipc/todo.md IPC-P1-1（服务层接线）全链；ipc-server main.rs 去 panic；E5 IPC 联调验收面前置。
+
+---
+
+## E-MINTYPES-RUNTIME minix-types 布局单点权威收敛（14-stage-runtime V1 轮登记，2026-09-16）
+
+**问题**：同一调用的 wire 契约存在两套表达。minix-types 走类型化路线（MessageUnion 具名 arm + 语义 In/Out 结构 + `DecodeFromM1`/`EncodeToM1` 编解码 trait，minix-types/src/ipc/vm.rs:820-833），但消费面窄：trait 方法调用全仓仅 4 处（vm 服务器 encode.rs:141-144 与 dispatcher.rs:720-734），VM 分发主路径实际走固有方法 `decode_message`。minix-sys 走本地路线：每个调用族在文件内定义 `#[repr(C)]` payload 后经裸字节打包写入（`pm.rs:91-108` 与 `vm.rs:96-110` 各自复制一份 `cleared_message`/`write_payload`，rs.rs:82 又是第三种 raw 直写），本地 payload 的布局断言薄弱（全仓约 321 条 size/offset 断言中 minix-sys 仅占 8 条）。已出现状态认知分叉实例：VM_REMAP 在 `minix-types/src/ipc/vm.rs:526-527` 区段标注 DEFERRED，而 `minix-sys/src/vm.rs:305-327` 已有该调用的客户端打包实现，且 `remap_via` 泛化 call 号可表达 VM_REMAP_RO。
+
+**影响**：同一布局两层各改各的漂移风险（VM_REMAP 分叉已是第一例）；99 篇（布局权威文档，现 pending）定稿时无单一权威可依；codec trait 若维持窄消费面将成为半弃抽象（模式 80 邻近形态）。
+
+**为何 edge**：判定①——minix-types 布局被约 125 个 crate 依赖，收敛方向影响全部服务；与 E-MINTYPES-SYS（kernel-call 常量单一权威，已闭单）同方向，与 E-IPCWIRE 第 8 项（semid_ds/shmid_ds 布局）、E-RSWIRE 五消息臂（403e47022）同域。
+
+**建议**：
+- 方案 A（推荐）：99 篇定稿时确立"布局单点归 minix-types、minix-sys 只做打包与传输"边界——minix-sys 本地 payload 逐族改为消费 minix-types 结构，或就地补齐 56 字节/字段偏移 pin 断言（vm.rs `test_map_payload_matches_c_field_order` 是现成样板）；`cleared_message`/`write_payload` 收敛为 minix-sys 单一内部 helper；codec trait 的去留（统一编解码入口 vs 删除保留固有方法）在同一裁决中定。Redox 先例：syscall 契约单源（design 仓 syscalls.toml）+ 单 crate 统一 data/number/error/flag 模块（github.com/redox-os/syscall）。
+- 方案 B（否决）：承认两层布局合法并存、仅文档标注。否决理由：VM_REMAP 的标注分叉证明标注会过期，双真相源必然再漂移。
+
+**依赖**：14-stage-runtime/todo.md V1-P1-5（99 篇改写）为前置；执行时与 E-IPCWIRE 第 8 项同轮（同为 minix-types 布局面）。
+**解锁**：09 篇 open 路径布局落地（40 字节内联的 64 位裁决）；14-stage-runtime/todo.md V1-P2-2 收敛；VM_REMAP_RO 客户端 wrapper 定稿。
+
+---
+
+## E-MINSYS-SCOPE minix-sys 内域外 stage 客户端模块的内聚性处置（14-stage-runtime V1 轮登记，2026-09-16）
+
+**问题**：minix-sys（14-stage-runtime 的实现 crate，域内对应文档 04~12）混装六个其它 stage 的客户端模块：ds.rs（303 行，07-stage-ds）、rmib.rs（1287 行，10-stage-mib）、devman_client.rs（423 行，11-stage-devman）、inputdriver.rs（512 行，12-stage-input）、usb_model.rs（437 行，16-stage-drivers）、socket.rs（146 行，17-stage-net），合计约 3108 行，占 crate 全量（9319 行）的三分之一。各模块无 feature 门控，任何消费者（60+ 个 Cargo.toml 依赖方）都编译全量。
+
+**影响**：crate 增长无界且所有权模糊——其它 stage 演进客户端协议时必须修改 14-stage 的 crate；域内 review 与域外 review 的边界只能靠临时约定维持（14-stage-runtime/todo.md V1 轮即按"域内深审/域外共享层扫描"切分）。
+
+**为何 edge**：判定①——minix-sys 是全体用户态的共享契约层；处置方案影响 07/10/11/12/16/17 六个 stage 的排期与编译面，单一 stage 无权裁决。
+
+**建议**：
+- 方案 A（推荐）：维持单 crate，域外模块收进 feature 门控（按 stage 分组 feature，默认全开保持现有 Cargo.toml 兼容），lib.rs 增加模块归属表（模块 → 所属 stage 文档 → 对应 edge 条目）。
+- 方案 B（否决，暂）：迁出为 per-stage 客户端 crate。否决理由：与 C libsys 单库先例相悖，拆分成本与 E-DSWIRE/E-DMWIRE/E-RMIBWIRE 等通电条目叠加；待方案 A 运行一个阶段后若单 crate 仍失控再复议。
+
+**依赖**：E-MINSYS-HYGIENE（同 crate 卫生轮，同场处置）；E-RMIBWIRE/E-DMWIRE/E-DSWIRE 执行时顺带评估各自模块的 feature 归置。
+**解锁**：14-stage 域内/域外 review 边界长期化；各 stage 客户端协议演进时的明确落点与编译面收敛。
