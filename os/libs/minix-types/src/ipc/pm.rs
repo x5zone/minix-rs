@@ -405,6 +405,74 @@ pub const PM_EXEC_NEW: i32 = 43;
 /// C: `PM_EXEC_RESTART` — callnr.h:57(PM_BASE + 44)。
 pub const PM_EXEC_RESTART: i32 = 44;
 
+// ── E9 PmApi 分域:RS 服务进程管理调用号与 wire ──
+
+/// `PM_SRV_FORK` — 为系统服务派生子进程(callnr.h:54,PM_BASE + 41)。
+/// RS 自升级链的入口(C manager.c:576 `srv_fork`)。
+pub const PM_SRV_FORK: i32 = 41;
+/// `PM_GETEPINFO` — 按端点取进程凭证(callnr.h:58,PM_BASE + 45)。
+pub const PM_GETEPINFO: i32 = 45;
+/// `PM_GETPROCNR` — 按 pid 反查端点(callnr.h:59,PM_BASE + 46)。
+pub const PM_GETPROCNR: i32 = 46;
+
+/// getepinfo 请求载荷(C: `mess_lsys_pm_getepinfo` — ipc.h:1398-1406)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MessLsysPmGetepinfo {
+    /// 目标进程端点。C: `endpoint_t endpt`。
+    pub endpt: i32,
+    /// LP64:vir_bytes 拓宽后的对齐垫。
+    pub _pad: u32,
+    /// groups 缓冲指针(0 = 不取组表)。C: `vir_bytes groups`。
+    pub groups: u64,
+    /// 缓冲容量(组数)。C: `int ngroups`。
+    pub ngroups: i32,
+    /// LP64 对齐垫。
+    pub _pad2: u32,
+    /// LP64:域合计 24,padding 由 44 缩至 32,总 56。
+    pub _padding: [u8; 32],
+}
+
+/// getepinfo 应答载荷(PM → 调用方。C: `mess_pm_lsys_getepinfo` —
+/// ipc.h:1788-1798,全 4 字节域,padding 36,总 56)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessPmLsysGetepinfo {
+    /// 真实 uid。C: `uid_t uid`。
+    pub uid: i32,
+    /// 有效 uid。C: `uid_t euid`。
+    pub euid: i32,
+    /// 真实 gid。C: `gid_t gid`。
+    pub gid: i32,
+    /// 有效 gid。C: `gid_t egid`。
+    pub egid: i32,
+    /// 组数(groups 缓冲非空时有效)。C: `int ngroups`。
+    pub ngroups: i32,
+    /// Padding to 56 bytes。
+    pub _padding: [u8; 36],
+}
+
+/// getprocnr 请求载荷(C: `mess_lsys_pm_getprocnr` — ipc.h:1407-1412)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysPmGetprocnr {
+    /// 进程 id。C: `pid_t pid`。
+    pub pid: i32,
+    /// Padding to 56 bytes。
+    pub _padding: [u8; 52],
+}
+
+/// getprocnr 应答载荷(PM → 调用方。C: `mess_pm_lsys_getprocnr` —
+/// ipc.h:1800-1805)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessPmLsysGetprocnr {
+    /// 进程端点。C: `endpoint_t endpt`。
+    pub endpt: i32,
+    /// Padding to 56 bytes。
+    pub _padding: [u8; 52],
+}
+
 /// itimer 请求载荷(C: `mess_lc_pm_itimer` — ipc.h:468-474)。
 ///
 /// `which`:ITIMER_REAL/ITIMER_VIRTUAL/ITIMER_PROF;`value`/`ovalue`
@@ -500,5 +568,41 @@ mod itimer_exec_wire_tests {
         assert_eq!(offset_of!(MessRsPmExecRestart, result), 4);
         assert_eq!(offset_of!(MessRsPmExecRestart, pc), 8);
         assert_eq!(offset_of!(MessRsPmExecRestart, ps_str), 16);
+    }
+}
+
+#[cfg(test)]
+mod pm_service_wire_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// 绝对值 pin:E9 PmApi 三调用号(callnr.h:54/:58/:59)。
+    #[test]
+    fn test_pm_service_call_numbers() {
+        assert_eq!(PM_SRV_FORK, 41);
+        assert_eq!(PM_GETEPINFO, 45);
+        assert_eq!(PM_GETPROCNR, 46);
+    }
+
+    /// 布局见证 ×4:getepinfo 请求/应答与 getprocnr 请求/应答
+    /// (LP64:getepinfo 请求 groups@8 对齐垫,总 56)。
+    #[test]
+    fn test_pm_service_wire_layouts() {
+        assert_eq!(size_of::<MessLsysPmGetepinfo>(), 56);
+        assert_eq!(offset_of!(MessLsysPmGetepinfo, endpt), 0);
+        assert_eq!(offset_of!(MessLsysPmGetepinfo, groups), 8);
+        assert_eq!(offset_of!(MessLsysPmGetepinfo, ngroups), 16);
+
+        assert_eq!(size_of::<MessPmLsysGetepinfo>(), 56);
+        assert_eq!(offset_of!(MessPmLsysGetepinfo, uid), 0);
+        assert_eq!(offset_of!(MessPmLsysGetepinfo, euid), 4);
+        assert_eq!(offset_of!(MessPmLsysGetepinfo, gid), 8);
+        assert_eq!(offset_of!(MessPmLsysGetepinfo, egid), 12);
+        assert_eq!(offset_of!(MessPmLsysGetepinfo, ngroups), 16);
+
+        assert_eq!(size_of::<MessLsysPmGetprocnr>(), 56);
+        assert_eq!(offset_of!(MessLsysPmGetprocnr, pid), 0);
+        assert_eq!(size_of::<MessPmLsysGetprocnr>(), 56);
+        assert_eq!(offset_of!(MessPmLsysGetprocnr, endpt), 0);
     }
 }

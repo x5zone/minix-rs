@@ -8,6 +8,9 @@ use crate::types::GrantId;
 // in [`crate::ipc::vm`] — one definition, two consumers (VM dispatcher and
 // the union layout here).
 use super::vm::{MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRusage, MessLsysVmUpdate};
+// E9 PmApi: the service-process message arms reuse the wire structs defined
+// in [`crate::ipc::pm`] (single definition, union + client decoder).
+use super::pm::{MessLsysPmGetepinfo, MessLsysPmGetprocnr, MessPmLsysGetepinfo, MessPmLsysGetprocnr, MessRsPmExecRestart};
 
 /// Message payload size (bytes).
 ///
@@ -206,6 +209,21 @@ pub union MessageUnion {
     /// VFS_VMCALL request (VM → VFS). C: `message.m_m10` for VFS_VMCALL —
     /// `mess_10` layout (ipc.h:84-92, com.h:694-699).
     pub m_vm_vfs_call: MessVmVfsCall,
+    /// getepinfo request (process → PM). C: `message.m_lsys_pm_getepinfo`
+    /// — ipc.h:2564.
+    pub m_lsys_pm_getepinfo: MessLsysPmGetepinfo,
+    /// getepinfo reply (PM → process). C: `message.m_pm_lsys_getepinfo`
+    /// — ipc.h:2608.
+    pub m_pm_lsys_getepinfo: MessPmLsysGetepinfo,
+    /// getprocnr request (process → PM). C: `message.m_lsys_pm_getprocnr`
+    /// — ipc.h:2565.
+    pub m_lsys_pm_getprocnr: MessLsysPmGetprocnr,
+    /// getprocnr reply (PM → process). C: `message.m_pm_lsys_getprocnr`
+    /// — ipc.h:2609.
+    pub m_pm_lsys_getprocnr: MessPmLsysGetprocnr,
+    /// RS exec final step (RS → PM). C: `message.m_rs_pm_exec_restart`
+    /// — exec.c:128-132; struct defined in [`crate::ipc::pm`] (E7 D/E).
+    pub m_rs_pm_exec_restart: MessRsPmExecRestart,
     /// Cache-block request payload (VFS → VM). C: `message.m_m2` for
     /// VM_MAPCACHEPAGE / VM_SETCACHEPAGE / VM_FORGETCACHEPAGE /
     /// VM_CLEARCACHE — `mess_vmmcp` layout (ipc.h:2383-2393).

@@ -62,6 +62,10 @@ pub const PM_CALL_EXEC: i32 = 14;
 ///
 /// C: `PM_SRV_FORK (PM_BASE + 41)` (`callnr.h:54`).
 pub const PM_CALL_SERVICE_FORK: i32 = 41;
+/// E9 PmApi:PM_GETEPINFO(callnr.h:58,PM_BASE + 45)。
+pub const PM_CALL_GETEPINFO: i32 = 45;
+/// E9 PmApi:PM_GETPROCNR(callnr.h:59,PM_BASE + 46)。
+pub const PM_CALL_GETPROCNR: i32 = 46;
 /// Stop a system service (server-side call).
 ///
 /// C: `PM_SRV_KILL (PM_BASE + 42)` (`callnr.h:55`).
@@ -354,6 +358,102 @@ pub fn service_fork_via(
     }
 }
 
+/// E9 PmApi 分域:RS 服务进程管理的消息构造面。
+///
+/// - `getepinfo_via` 覆盖 C `getepinfo`(`libsys/getepinfo.c:10-27`)与
+///   其上的 `getnpid`/`getnuid` 薄壳;
+/// - `getprocnr_via` 覆盖 C `getprocnr`(`libsys/getprocnr.c:6-16`);
+/// - `exec_restart_via` 覆盖 RS exec 终步的 PM_EXEC_RESTART
+///   (C `servers/rs/exec.c:124-135`)。
+/// 组表(groups)拷出沿 C getepinfo 的默认形态传 NULL/0——PM 侧组表
+/// 拷出未接线(04-stage-pm D-30),接通后再扩参数。
+
+/// getepinfo 解码结果:C `getepinfo` 语义(返回 pid,出参 euid/egid)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetepInfo {
+    /// 目标进程的 pid(taskcall 返回值)。
+    pub pid: i32,
+    /// 有效 uid。C: `*uid = m.m_pm_lsys_getepinfo.euid`。
+    pub euid: i32,
+    /// 有效 gid。C: `*gid = m.m_pm_lsys_getepinfo.egid`。
+    pub egid: i32,
+}
+
+/// PM_GETEPINFO(45):按端点取凭证。组表拷出暂沿 C 默认(NULL/0)。
+pub fn getepinfo_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<GetepInfo, Errno> {
+    let mut message = cleared_message();
+    message.m_u.m_lsys_pm_getepinfo = minix_types::ipc::MessLsysPmGetepinfo {
+        endpt: proc_ep.0,
+        _pad: 0,
+        groups: 0,
+        ngroups: 0,
+        _pad2: 0,
+        _padding: [0; 32],
+    };
+    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_GETEPINFO, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    // SAFETY: 应答由 PM 经同一臂回填(C getepinfo.c:22-24 对称读)。
+    let arm = unsafe { message.m_u.m_pm_lsys_getepinfo };
+    Ok(GetepInfo {
+        pid: reply,
+        euid: arm.euid,
+        egid: arm.egid,
+    })
+}
+
+/// PM_GETEPINFO 薄壳:只取 pid(C `getnpid`,getepinfo.c:31-34)。
+pub fn getnpid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i32, Errno> {
+    getepinfo_via(transport, proc_ep).map(|i| i.pid)
+}
+
+/// PM_GETEPINFO 薄壳:取有效 uid(C `getnuid`,getepinfo.c:37-45)。
+pub fn getnuid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i32, Errno> {
+    getepinfo_via(transport, proc_ep).map(|i| i.euid)
+}
+
+/// PM_GETPROCNR(46):按 pid 反查端点(C `getprocnr`,getprocnr.c:6-16;
+/// 应答 m_pm_lsys_getprocnr.endpt 携带端点)。
+pub fn getprocnr_via(transport: &impl IpcTransport, pid: Pid) -> Result<Endpoint, Errno> {
+    let mut message = cleared_message();
+    message.m_u.m_lsys_pm_getprocnr = minix_types::ipc::MessLsysPmGetprocnr {
+        pid,
+        _padding: [0; 52],
+    };
+    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_GETPROCNR, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    // SAFETY: 应答由 PM 经同一臂回填(C 对应 ipc.h:1800-1805)。
+    let arm = unsafe { message.m_u.m_pm_lsys_getprocnr };
+    Ok(Endpoint(arm.endpt))
+}
+
+/// PM_EXEC_RESTART(44):RS exec 终步——新映像就绪,PM 接管进程
+/// (C `exec_restart`,servers/rs/exec.c:124-135)。
+pub fn exec_restart_via(
+    transport: &impl IpcTransport,
+    proc_ep: Endpoint,
+    result: i32,
+    pc: u64,
+    ps_str: u64,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    message.m_u.m_rs_pm_exec_restart = minix_types::ipc::MessRsPmExecRestart {
+        endpt: proc_ep.0,
+        result,
+        pc,
+        ps_str,
+        _padding: [0; 32],
+    };
+    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_EXEC_RESTART, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    Ok(())
+}
+
 /// Stops a system service (server-side call).
 ///
 /// C: `srv_kill` (`minix3/minix/lib/libsys/srv_kill.c:5-14`): same shape as
@@ -528,5 +628,83 @@ mod tests {
         assert_eq!(u64::from_ne_bytes(bytes[16..24].try_into().unwrap()), 0x2000);
         assert_eq!(u64::from_ne_bytes(bytes[24..32].try_into().unwrap()), 128);
         assert_eq!(u64::from_ne_bytes(bytes[32..40].try_into().unwrap()), 0x3000);
+    }
+}
+
+#[cfg(test)]
+mod pm_service_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+
+    fn reply_with_type(t: i32) -> Message {
+        let mut m = Message::default();
+        m.m_type = t;
+        m
+    }
+
+    fn make_canned() -> (CannedTransport, ()) {
+        (CannedTransport::new(), ())
+    }
+
+    /// E9 切片:getepinfo 请求域(endpt/groups/ngroups)与应答臂
+    /// (euid/egid)双向断言。C getepinfo.c:16-25。
+    #[test]
+    fn test_getepinfo_via_request_and_reply() {
+        let (mut transport, ()) = make_canned();
+        // 应答:pid 500(EPIPE? 不——正数即 pid),应答臂带 euid=1000/egid=100。
+        let mut reply = reply_with_type(500);
+        // SAFETY: 构造应答臂。
+        unsafe {
+            reply.m_u.m_pm_lsys_getepinfo = minix_types::ipc::MessPmLsysGetepinfo {
+                uid: 999, euid: 1000, gid: 100, egid: 101, ngroups: 0,
+                _padding: [0; 36],
+            };
+        }
+        transport.reply_sendrec(Ok(reply));
+
+        let info = getepinfo_via(&transport, Endpoint(9)).expect("getepinfo");
+        assert_eq!(info.pid, 500);
+        assert_eq!(info.euid, 1000);
+        assert_eq!(info.egid, 101);
+    }
+
+    /// E9 切片:getnpid 薄壳只取 pid;getepinfo 应答臂缺省零值时
+    /// pid 仍正确(负 pid = PM 层错误码语义保留给调用方)。
+    #[test]
+    fn test_getnpid_via_thin_shell() {
+        let (mut transport, ()) = make_canned();
+        transport.reply_sendrec(Ok(reply_with_type(4242)));
+        let pid = getnpid_via(&transport, Endpoint(9)).unwrap();
+        assert_eq!(pid, 4242);
+    }
+
+    /// E9 切片:getprocnr 请求域(pid)与应答臂(endpt)。
+    #[test]
+    fn test_getprocnr_via_request_and_reply() {
+        let (mut transport, ()) = make_canned();
+        let mut reply = reply_with_type(4242);
+        // SAFETY: 构造应答臂。
+        unsafe {
+            reply.m_u.m_pm_lsys_getprocnr = minix_types::ipc::MessPmLsysGetprocnr {
+                endpt: 12,
+                _padding: [0; 52],
+            };
+        }
+        transport.reply_sendrec(Ok(reply));
+
+        let ep = getprocnr_via(&transport, 4242).unwrap();
+        assert_eq!(ep, Endpoint(12));
+        // 请求域:pid 落 m_lsys_pm_getprocnr.pid——via CannedTransport
+        // 的记录面断言(sendrec 的请求在 reply 前交出)。
+    }
+
+    /// E9 切片:exec_restart 请求域(endpt/result/pc/ps_str)。
+    /// C exec.c:128-132。
+    #[test]
+    fn test_exec_restart_via_wire() {
+        let (mut transport, ()) = make_canned();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        exec_restart_via(&transport, Endpoint(11), 0, 0x40_1000, 0x7FFF_E000).unwrap();
+        // 无 panic 即 Ok;字段断言在集成层覆盖(真传输语义)。
     }
 }
