@@ -408,6 +408,13 @@ mod tests {
     }
 
     #[test]
+    fn next_seq_wraps_at_fifteen_bits() {
+        // C: shm.c:109 — same fifteen-bit wrap as the semaphore twin;
+        // duplicated here because the definition is (IPC-T-2).
+        assert_eq!(next_seq(0x7fff), 0);
+    }
+
+    #[test]
     fn round_up_edges() {
         // C: shm.c:75-79 — zero rejected, pages exact, partial rounds up.
         assert_eq!(round_up(1), 4096);

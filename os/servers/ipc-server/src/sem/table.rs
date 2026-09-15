@@ -437,6 +437,16 @@ mod tests {
     }
 
     #[test]
+    fn next_seq_wraps_at_fifteen_bits() {
+        // C: sem.c:135 — `(seq + 1) & 0x7fff`: the sequence wraps from
+        // 0x7fff back to zero, so identifiers keep aging across the whole
+        // fifteen-bit space, forever (IPC-T-2).
+        assert_eq!(next_seq(0), 1);
+        assert_eq!(next_seq(0x7ffe), 0x7fff);
+        assert_eq!(next_seq(0x7fff), 0, "wrap: identifiers never run out");
+    }
+
+    #[test]
     fn subscribe_effect_edges() {
         // C: sem.c:147-148/:279-280 — subscribe on first birth,
         // unsubscribe on last death, silence in between.
