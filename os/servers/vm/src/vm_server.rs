@@ -251,6 +251,13 @@ impl VmServer {
         if !minix_arch::pt_alloc::is_registered() {
             minix_arch::pt_alloc::register(crate::alloc_page::vm_pt_alloc);
         }
+        // E4 余件:配对的归还钩子。注册后 `destroy()` 的
+        // free_child_tables + 根页回收才激活(未注册时退化为只清零根,
+        // 中间页表页随进程退出泄漏——C pt_free pagetable.c:1427-1437
+        // 的 Rust 对应物至此闭环)。
+        if !minix_arch::pt_alloc::is_free_registered() {
+            minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free);
+        }
 
         // Skip init_vm_self_pt() in test builds — tests use MockPaging
         // (in-memory mapping table, no page table to initialize), while the

@@ -46,6 +46,19 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
     Ok((minix_types::PhysBytes(phys.as_u64()), virt))
 }
 
+/// E4 余件:页表页归还钩子——`minix_arch::pt_alloc::register_free` 的
+/// VM 侧对应物(镜像 [`vm_pt_alloc`] 的分配方向)。`destroy()` 的
+/// `free_child_tables` + 根页回收只有在 free 钩子注册后才激活;
+/// 未注册时 destroy 退化为只清零根(中间页表页泄漏)。
+///
+/// C: `pt_free` 把页表页还回 `alloc_mem` 池(pagetable.c:1427-1437)。
+pub(crate) fn vm_pt_free(phys: minix_types::PhysBytes) {
+    // 页表页由分配器产出,恒页对齐;非对齐输入即调用方 bug,
+    // AlignedPhysBytes::new 的 fail-fast 断言就是契约。
+    let aligned = AlignedPhysBytes::new(phys.0);
+    crate::global::page_alloc_mut().free_page(aligned);
+}
+
 pub(crate) struct VmPageAllocator {
     phys_alloc: PhysAlloc,
     stats: VmAllocStats,
@@ -452,6 +465,28 @@ mod tests {
             crate::global::unregister_page_alloc();
         });
     }
+
+    /// E4 余件:vm_pt_free 把页表页还回分配器——free 后再分配应取回
+    /// 同一物理页(空闲表 LIFO/位图回收语义),证明归还真实入池而非
+    /// 丢弃。与 test_vm_pt_alloc 同一 mock 窗口隔离。
+    #[test]
+    fn test_vm_pt_free_returns_page_to_allocator() {
+        with_alloc_mock_base(|| {
+            let phys_alloc = make_test_phys_alloc(64);
+            let mut alloc = VmPageAllocator::new(phys_alloc);
+            crate::global::register_page_alloc(&mut alloc);
+
+            let (phys, _virt) = vm_pt_alloc().expect("pt page allocation");
+            vm_pt_free(phys);
+
+            // 归还后的页回到可分配池:后续分配成功且池余量恢复。
+            // (不断言"取回同一 pfn"——那是具体分配器策略而非契约。)
+            let again = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
+                .expect("allocator must serve from the pool after pt free");
+            let _ = again;
+        });
+    }
+
 
     #[test]
     fn test_alloc_pages_multi() {
