@@ -157,6 +157,8 @@ os/servers/ipc-server/src/shm/
 - `authorize(cmd, perm, caller) -> Result<(), ShmError>`：状态查询读位、删除改属性身份、信息放行（调 04 决策）。
 - `apply_set(table, index, options, now) -> Result<(), ShmError>`：改属性命令的落账（第 322 行到第 327 行，与 05 篇同款三换一刷），草稿见 04 篇 `SetOptions`。
 - `mark_destroy(table, index) -> Result<(), ShmError>`：删除命令的落账（第 334 行）——置 `SHM_DEST` 位；调用方必须紧跟着跑一轮引用计数清拍（C 在第 335 行到第 336 行无条件立即清拍），未挂接的段当场销毁、挂接中的等计数归零；标记永不清除，销毁即释放槽位。
+- `record_attach(table, index, pid, now) -> Result<(), ShmError>`：挂接成功的记账（第 164 行到第 165 行）——刷访问时间与最后进程，挂接数不碰（惰性）。
+- `record_detach(table, index, pid, now) -> Result<(), ShmError>`：脱离成功的记账（第 228 行到第 229 行）——刷的也是**访问时间**，不是脱离时间。这不是笔误更不许"修"：C 的脱离路径刷新的就是 `shm_atime`（`ipcs -p` 的 ATIME 列因此等于最后脱离时刻），本代码库拒绝这类顺手纠正（IPC-P1-5，怪癖即契约）。
 
 **引用计数**（`refcount.rs`）：
 
@@ -188,6 +190,8 @@ os/servers/ipc-server/src/shm/
 | `apply_set_keeps_alloc_bit` | `attach.rs` 测试模块 | 改属性落账：属主换、`SHM_ALLOC` 活、草稿噪声位丢弃（第 322 行到第 327 行，IPC-P1-3） |
 | `mark_destroy_sets_pending_bit` | `attach.rs` 测试模块 | 删除标记就位、槽位存活（第 330 行到第 334 行，IPC-P1-4） |
 | `mark_then_sweep_destroys_unattached` | `attach.rs` 测试模块 | 标记后立即清拍销毁未挂接段（第 334 行到第 336 行，IPC-P1-4） |
+| `record_attach_stamps_atime_and_pid` | `attach.rs` 测试模块 | 挂接记账：访问时间与最后进程刷新、挂接数惰性（第 164 行到第 165 行，IPC-P1-5） |
+| `record_detach_refreshes_atime_not_dtime` | `attach.rs` 测试模块 | 脱离记账刷的是访问时间——C 怪癖原样保留（第 228 行到第 229 行，IPC-P1-5） |
 | `sweep_destroys_at_zero` | `refcount.rs` 测试模块 | 零挂接加标记则销毁（第 189 行到第 196 行） |
 | `sweep_skips_unknown` | `refcount.rs` 测试模块 | 问不到跳过不销毁（第 183 行到第 186 行） |
 | `sweep_keeps_attached` | `refcount.rs` 测试模块 | 有挂接不销毁只记数（第 187 行） |

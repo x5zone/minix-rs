@@ -336,6 +336,45 @@ pub fn mark_destroy(table: &mut ShmTable, index: usize) -> Result<(), ShmError> 
     Ok(())
 }
 
+/// Record a successful attach: refresh the attach time and the last
+/// acting process.
+///
+/// C: shm.c:164-165 — `shm_atime` + `shm_lpid`, right after `vm_remap`
+/// succeeds; the attach count itself stays lazy (:166). The caller has
+/// already done the alignment, lookup, permission check, and remap.
+pub fn record_attach(
+    table: &mut ShmTable,
+    index: usize,
+    pid: i32,
+    now: u64,
+) -> Result<(), ShmError> {
+    let seg = table.get_mut(index).ok_or(ShmError::Invalid)?;
+    seg.attach_time = now;
+    seg.last_pid = pid;
+    Ok(())
+}
+
+/// Record a successful detach.
+///
+/// C: shm.c:228-229 — and read carefully: the refreshed field is
+/// `shm_atime`, NOT `shm_dtime`. That looks like a bug and is not one we
+/// are allowed to fix: the ground truth updates the *attach* timestamp on
+/// the detach path, and document 08 records it as-is (2.2 节). Rewriting
+/// it to `detach_time` would change observable behavior (`ipcs -p`'s
+/// ATIME column becomes DTIME) — a translate-adjacent "fix" this codebase
+/// declines (13-stage-ipc/todo.md IPC-P1-5).
+pub fn record_detach(
+    table: &mut ShmTable,
+    index: usize,
+    pid: i32,
+    now: u64,
+) -> Result<(), ShmError> {
+    let seg = table.get_mut(index).ok_or(ShmError::Invalid)?;
+    seg.attach_time = now;
+    seg.last_pid = pid;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +527,27 @@ mod tests {
         );
         assert_eq!(plan.freed, [0]);
         assert!(table.is_empty());
+    }
+
+    #[test]
+    fn record_attach_stamps_atime_and_pid() {
+        // C: shm.c:164-165 — atime + lpid after remap; attach count lazy.
+        let mut table = one_segment();
+        record_attach(&mut table, 0, 77, 999).unwrap();
+        let seg = table.get(0).unwrap();
+        assert_eq!((seg.attach_time, seg.last_pid), (999, 77));
+        assert_eq!(seg.attached, 0, "attach count stays lazy");
+    }
+
+    #[test]
+    fn record_detach_refreshes_atime_not_dtime() {
+        // C: shm.c:228-229 — the detach path refreshes shm_ATIME (the C
+        // quirk, kept on purpose; IPC-P1-5). detach_time is never written.
+        let mut table = one_segment();
+        record_detach(&mut table, 0, 88, 111).unwrap();
+        let seg = table.get(0).unwrap();
+        assert_eq!((seg.attach_time, seg.last_pid), (111, 88));
+        assert_eq!(seg.detach_time, 0, "dtime untouched — faithful to C");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 6 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4），余 14 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 13 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -24,7 +24,7 @@
 | P1 | IPC-P1-2 | do_semop 检查顺序分歧：C（sem.c:693 注释、:704/:709/:731）与 doc 06 都规定权限先于越界/撤销，`validate_ops`/`authorize_ops` 的拆分把顺序弄反（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-3 | IPC_SET 应用逻辑缺失（sem+shm 两处）：C 改 uid/gid/权限位+ctime（sem.c:550-559、shm.c:314-328），Rust 只有授权检查没有落账函数（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-4 | shm 的 IPC_RMID 标记逻辑缺失：C 置 SHM_DEST 并立即尝试销毁（shm.c:334-336），Rust 的 sweep 只读标记不置标记（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
-| P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |
+| P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |（**✅ 已完成** 2026-09-16，见 §1 修复记录）
 | P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91）（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界 |
 | P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
@@ -109,7 +109,7 @@
 
 **修复记录（2026-09-16，方案 A 落地，返回值简化）**：`attach.rs::mark_destroy(table, index) -> Result<(), ShmError>` 置 `SHM_DEST`（C shm.c:334）。相对方案 A 原文的 `MarkEffect` 返回值做了有意简化：C 在 :335-336 是**无条件**立即清拍，不存在"看情况跳过"的分支，区分无信息量——"调用方必须紧跟一轮 sweep"的立即性契约改写在函数文档里，与 `apply_set` 的 `Result<()>` 风格一致。测试两枚：`mark_destroy_sets_pending_bit`（标记就位、槽位存活）与 `mark_then_sweep_destroys_unattached`（标记+清拍链：未挂接段当场销毁；延迟半由既有 `sweep_destroys_at_zero` 覆盖）。doc 08 §4.2/§5.1 同步。验证：`cargo test -p minix-ipc-server` = **88 passed / 0 failed**（86+2）。
 
-### IPC-P1-5 shmat/shmdt 的落账函数缺失（含 C 的 atime 怪癖，必须保留）
+### IPC-P1-5 shmat/shmdt 的落账函数缺失（含 C 的 atime 怪癖，必须保留）【✅ 已完成 2026-09-16】
 
 **是什么**：C 的 do_shmat 在 vm_remap 成功后刷新 `shm_atime` 与 `shm_lpid`（shm.c:164-165，注释 :166 写明 nattch 惰性）；do_shmdt 命中后**也刷新 `shm_atime`** 与 lpid（shm.c:228-229）——按 POSIX 语义这里该是 `shm_dtime`，Minix3 写成了 atime，这是 ground truth 的既有怪癖。doc 08 如实记录了这两处（doc 08:64"记时间与进程"、:87"刷新访问时间与最后进程"），没有替 C 改错。Rust 侧：`ShmSegment` 有 `attach_time`/`detach_time`/`last_pid` 三个字段（`segment.rs:58-67`），但全 crate 没有任何函数给它们赋值——shmat/shmdt 的落账既没实现也没声明归属。地址对齐（`align_addr`，`attach.rs:35-43`）、物理查找（`find_by_phys`，`attach.rs:54-63`）、权限掩码（`attach_mask`）都齐了，断的正是"成功后的记录"这一步。
 
@@ -121,6 +121,8 @@
 - **方案 B（否决）：服务层直接改字段**。三个字段都是 pub，能写；但"detach 也刷 atime"这个反直觉写法散落在服务层接线代码里，没有注释锚点，下一个人一定会"修"它。
 
 **建议**：方案 A。测试：shmat 后 atime/lpid 刷新且 nattch 不动（惰性）；shmdt 后刷新的也是 atime 字段（这条回归测试守住 C 的现行为，注释引 shm.c:228-229）。
+
+**修复记录（2026-09-16，方案 A 落地）**：`attach.rs` 新增 `record_attach`（shm.c:164-165：刷 atime+lpid，挂接数惰性）与 `record_detach`（shm.c:228-229：刷的也是 **atime**）。后者函数文档用整段写明怪癖的来龙去脉与"不许修"的裁决（改 dtime 会让 `ipcs -p` 的 ATIME 列变成 DTIME——translate 式顺手纠正，本代码库拒绝）；detach_time 字段保留但生产路径不写（测试钉住恒零）。测试 `record_attach_stamps_atime_and_pid`、`record_detach_refreshes_atime_not_dtime`。doc 08 §4.2 补两函数条目（含怪癖告诫）、§5.1 补两行。验证：`cargo test -p minix-ipc-server` = **90 passed / 0 failed**（88+2）。
 
 ### IPC-P1-6 引用计数清拍的 rc==0 环绕分歧：C 保段、Rust 毁段【✅ 已完成 2026-09-16】
 
