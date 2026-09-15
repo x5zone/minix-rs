@@ -20,7 +20,8 @@ use crate::structs::Event;
 
 /// FIFO event queue: `push` = newest, `oldest`/`consume` = oldest-first.
 /// (C `TAILQ_INSERT_HEAD` + `TAILQ_LAST`: head ≡ back, last ≡ front.)
-#[derive(Default)]
+/// Derives ride on [`InodeContent`] (the queue hangs off an inode).
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct EventQueue {
     queue: VecDeque<Event>,
 }
@@ -50,15 +51,12 @@ impl EventQueue {
     }
 
     /// C: `devman_event_read` (device.c:142-168) — format the **oldest**
-    /// event through `Buf` (offset-aware); consume it **iff** the result
+    /// event through `buf` (offset-aware); consume it **iff** the result
     /// is empty while an event was present (`r == 0` removal, :160-164).
-    /// Empty queue → empty (EOF, nothing consumed).
-    pub fn read_oldest(
-        &mut self,
-        len: usize,
-        offset: usize,
-    ) -> Result<Vec<u8>, Errno> {
-        let mut buf = Buf::new()?;
+    /// Empty queue → empty (EOF, nothing consumed). `buf` is lent by the
+    /// caller (VTreeFs owns one and reuses it — C reuses its statics,
+    /// DM-P1-5/P3-3); infallible by construction.
+    pub fn read_oldest(&mut self, buf: &mut Buf, len: usize, offset: usize) -> Vec<u8> {
         buf.init(len, offset);
         let had = !self.queue.is_empty();
         // Oldest = front (push_back appends newest; C HEAD ≡ back).
@@ -69,17 +67,16 @@ impl EventQueue {
         if had && out.is_empty() {
             self.queue.pop_front();
         }
-        Ok(out)
+        out
     }
 
     /// C: `devman_static_info_read` (device.c:173-183) — the text plus a
     /// **newline** (`buf_printf("%s\n", …)`; event lines carry no `\n`).
-    /// Pure (no queue, no consumption).
-    pub fn read_static(text: &str, len: usize, offset: usize) -> Result<Vec<u8>, Errno> {
-        let mut buf = Buf::new()?;
+    /// Pure (no queue, no consumption), infallible.
+    pub fn read_static(buf: &mut Buf, text: &str, len: usize, offset: usize) -> Vec<u8> {
         buf.init(len, offset);
         buf.printf("%s\n", text);
-        Ok(buf.result().to_vec())
+        buf.result().to_vec()
     }
 }
 
@@ -91,6 +88,11 @@ mod tests {
         Event::new(s).unwrap()
     }
 
+    fn drain(q: &mut EventQueue, len: usize, offset: usize) -> Vec<u8> {
+        let mut buf = Buf::new().unwrap();
+        q.read_oldest(&mut buf, len, offset)
+    }
+
     #[test]
     fn fifo_oldest_first() {
         let mut q = EventQueue::new();
@@ -98,7 +100,7 @@ mod tests {
         q.push(ev("ADD ./devices/b/ 0x00000002")).unwrap();
         // Oldest out first (C TAILQ_LAST).
         assert_eq!(
-            q.read_oldest(128, 0).unwrap(),
+            drain(&mut q, 128, 0),
             b"ADD ./devices/a/ 0x00000001"
         );
         // Non-consuming read (r > 0): still there.
@@ -110,27 +112,22 @@ mod tests {
         // 06 §2.4: data read, then EOF read to ACK-consume.
         let mut q = EventQueue::new();
         q.push(ev("ADD ./devices/a/ 0x00000001")).unwrap();
-        let data = q.read_oldest(128, 0).unwrap();
+        let data = drain(&mut q, 128, 0);
         assert!(!data.is_empty());
         assert_eq!(q.len(), 1);
-        let ack = q.read_oldest(128, data.len()).unwrap();
+        let ack = drain(&mut q, 128, data.len());
         assert!(ack.is_empty());
         assert_eq!(q.len(), 0);
         // Empty queue reads empty, consumes nothing.
-        assert!(q.read_oldest(128, 0).unwrap().is_empty());
+        assert!(drain(&mut q, 128, 0).is_empty());
     }
 
     #[test]
     fn static_appends_newline() {
         // C: buf_printf("%s\n", n->data) (device.c:179).
-        assert_eq!(
-            EventQueue::read_static("USB_DEV", 64, 0).unwrap(),
-            b"USB_DEV\n"
-        );
+        let mut buf = Buf::new().unwrap();
+        assert_eq!(EventQueue::read_static(&mut buf, "USB_DEV", 64, 0), b"USB_DEV\n");
         // Offset applies the same skip funnel.
-        assert_eq!(
-            EventQueue::read_static("USB_DEV", 64, 4).unwrap(),
-            b"DEV\n"
-        );
+        assert_eq!(EventQueue::read_static(&mut buf, "USB_DEV", 64, 4), b"DEV\n");
     }
 }

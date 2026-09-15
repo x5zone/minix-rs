@@ -73,12 +73,31 @@ impl From<RootStat> for InodeStat {
     }
 }
 
+/// The payload a node carries — the Rust answer to C's
+/// `read_fn` + `void *data` pair (`devman_inode`, devman.h:75-80): C
+/// needs a function pointer plus an opaque cookie to emulate
+/// "each file knows its own content"; a closed enum expresses it
+/// directly, and the content dies with the node (no side table, no
+/// cookie bookkeeping — DM-P1-5).
+#[derive(Debug, PartialEq, Eq)]
+pub enum InodeContent {
+    /// A directory (no readable payload).
+    Dir,
+    /// A static-info file: fixed text; reads render `text + '\n'`
+    /// through the skip/cap funnel (06).
+    Static(String),
+    /// The events file: a FIFO queue with the two-read drain protocol
+    /// (06 §2.4).
+    Events(crate::event_queue::EventQueue),
+}
+
 /// One tree node.
 ///
 /// C: `struct inode` (`inode.h:29-56`) minus `i_index`/`i_indexed`
 /// (NO_INDEX-only, omitted), minus the hash links (replaced by a
 /// `BTreeMap`-free linear child scan — see [`InodeTree`] for why),
-/// minus `i_namebuf` (uniform `String`).
+/// minus `i_namebuf` (uniform `String`), minus `i_cbdata` (its only
+/// devman use was the cookie linkage this content field replaces).
 ///
 /// `Debug` supports `assert_eq!` on fallible constructors in tests.
 #[derive(Debug, PartialEq, Eq)]
@@ -89,7 +108,7 @@ pub struct Inode {
     stat: InodeStat,
     refcount: u32,
     deleted: bool,
-    cbdata: usize,
+    content: InodeContent,
 }
 
 impl Inode {
@@ -106,11 +125,6 @@ impl Inode {
     /// C: `node->i_flags & I_DELETED`.
     pub fn deleted(&self) -> bool {
         self.deleted
-    }
-
-    /// C: `node->i_cbdata`.
-    pub fn cbdata(&self) -> usize {
-        self.cbdata
     }
 
     /// C: `node->i_count` (test/debug visibility).
@@ -149,14 +163,14 @@ impl InodeTree {
             .map_err(|_| Errno::ENOMEM)?;
         nodes.push(Inode {
             // C: `&inode[0]`, parent NULL, count 0, flags 0,
-            // index NO_INDEX, stat copy, cbdata NULL (inode.c:86-96).
+            // index NO_INDEX, stat copy (inode.c:86-96).
             parent: None,
             children: Vec::new(),
             name: String::new(),
             stat: root_stat,
             refcount: 0,
             deleted: false,
-            cbdata: 0,
+            content: InodeContent::Dir,
         });
         let mut free = Vec::new();
         free.try_reserve(capacity as usize - 1)
@@ -220,14 +234,28 @@ impl InodeTree {
         Some(n.name.as_str())
     }
 
-    /// C: `get_inode_cbdata()` (inode.c:304-310).
-    pub fn cbdata(&self, ino: Ino) -> Option<usize> {
-        self.find(ino).map(|n| n.cbdata)
-    }
-
     /// C: `get_inode_stat()` (inode.c:380-387).
     pub fn stat(&self, ino: Ino) -> Option<InodeStat> {
         self.find(ino).map(|n| n.stat)
+    }
+
+    /// Readable payload of a node (DM-P1-5): `Static` text / `Events`
+    /// queue for files, `Dir` for directories. The read dispatch (02)
+    /// works on the node's own content — C reached it via `read_fn` +
+    /// `void *data` instead.
+    pub fn content(&self, ino: Ino) -> Option<&InodeContent> {
+        self.find(ino).map(|n| &n.content)
+    }
+
+    /// Mutable payload — the events queue's producer side (07/08 via
+    /// `Server::push_event`). Same occupancy discipline as
+    /// [`Self::reference`].
+    pub fn content_mut(&mut self, ino: Ino) -> Option<&mut InodeContent> {
+        let i = (ino.0.checked_sub(1)?) as usize;
+        if !self.occupied(i) {
+            return None;
+        }
+        self.nodes.get_mut(i).map(|n| &mut n.content)
     }
 
     /// C: `is_inode_deleted()` (inode.c:599-604).
@@ -361,7 +389,7 @@ impl InodeTree {
         parent: Ino,
         name: &str,
         stat: InodeStat,
-        cbdata: usize,
+        content: InodeContent,
     ) -> Result<Ino, Errno> {
         if name.len() > NAME_MAX_LEN {
             return Err(Errno::ENAMETOOLONG);
@@ -394,7 +422,7 @@ impl InodeTree {
                     stat,
                     refcount: 0,
                     deleted: true,
-                    cbdata: 0,
+                    content: InodeContent::Dir,
                 });
             }
         }
@@ -406,7 +434,7 @@ impl InodeTree {
         node.stat = stat;
         node.refcount = 0;
         node.deleted = false;
-        node.cbdata = cbdata;
+        node.content = content;
         self.nodes[p].children.push(i);
         Ok(Ino(i as u32 + 1))
     }
@@ -465,7 +493,7 @@ impl InodeTree {
         Self::unlink_from_parent_static(&mut self.nodes, i);
         self.nodes[i].children.clear();
         self.nodes[i].name.clear();
-        self.nodes[i].cbdata = 0;
+        self.nodes[i].content = InodeContent::Dir;
         if !self.free.contains(&i) {
             self.free.push(i);
         }
@@ -522,10 +550,12 @@ mod tests {
     #[test]
     fn add_lookup_roundtrip() {
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        let dev = t.add(Ino(1), "devices", dir_stat(), 0xA).unwrap();
+        let dev = t
+            .add(Ino(1), "devices", dir_stat(), InodeContent::Dir)
+            .unwrap();
         assert_eq!(t.lookup(Ino(1), "devices").unwrap(), dev);
         assert_eq!(t.name(dev).unwrap(), "devices");
-        assert_eq!(t.cbdata(dev).unwrap(), 0xA);
+        assert!(matches!(t.content(dev), Some(InodeContent::Dir)));
         assert_eq!(t.lookup(Ino(1), "nope"), Err(Errno::ENOENT));
     }
 
@@ -533,9 +563,9 @@ mod tests {
     fn add_duplicate_is_eexist() {
         // C: assert(get_inode_by_name(...) == NULL) (inode.c:200).
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        t.add(Ino(1), "devices", dir_stat(), 0).unwrap();
+        t.add(Ino(1), "devices", dir_stat(), InodeContent::Dir).unwrap();
         assert_eq!(
-            t.add(Ino(1), "devices", dir_stat(), 0),
+            t.add(Ino(1), "devices", dir_stat(), InodeContent::Dir),
             Err(Errno::EEXIST)
         );
     }
@@ -544,8 +574,8 @@ mod tests {
     fn add_under_file_is_einval() {
         // C: assert(S_ISDIR(parent->i_stat.mode)) (inode.c:194).
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        let f = t.add(Ino(1), "f", file_stat(), 0).unwrap();
-        assert_eq!(t.add(f, "x", file_stat(), 0), Err(Errno::EINVAL));
+        let f = t.add(Ino(1), "f", file_stat(), InodeContent::Static(String::new())).unwrap();
+        assert_eq!(t.add(f, "x", file_stat(), InodeContent::Static(String::new())), Err(Errno::EINVAL));
     }
 
     #[test]
@@ -553,8 +583,8 @@ mod tests {
         // C: "." stays, ".." goes up, root ".." is ENOENT (path.c:23-31);
         // non-dir parent is ENOTDIR (path.c:19-20).
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        let d = t.add(Ino(1), "devices", dir_stat(), 0).unwrap();
-        let f = t.add(Ino(1), "f", file_stat(), 0).unwrap();
+        let d = t.add(Ino(1), "devices", dir_stat(), InodeContent::Dir).unwrap();
+        let f = t.add(Ino(1), "f", file_stat(), InodeContent::Static(String::new())).unwrap();
         assert_eq!(t.lookup(d, ".").unwrap(), d);
         assert_eq!(t.lookup(d, "..").unwrap(), Ino(1));
         assert_eq!(t.lookup(Ino(1), ".."), Err(Errno::ENOENT));
@@ -567,12 +597,12 @@ mod tests {
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
         let long = alloc::string::String::from_utf8(alloc::vec![b'n'; 512]).unwrap();
         assert_eq!(
-            t.add(Ino(1), long.as_str(), file_stat(), 0),
+            t.add(Ino(1), long.as_str(), file_stat(), InodeContent::Static(String::new())),
             Err(Errno::ENAMETOOLONG)
         );
         // 511 itself is accepted.
         let edge = alloc::string::String::from_utf8(alloc::vec![b'n'; 511]).unwrap();
-        assert!(t.add(Ino(1), edge.as_str(), file_stat(), 0).is_ok());
+        assert!(t.add(Ino(1), edge.as_str(), file_stat(), InodeContent::Static(String::new())).is_ok());
     }
 
     #[test]
@@ -581,15 +611,15 @@ mod tests {
         // devman has none, so the pool is a hard cap (then assert).
         // Rust reports ENOMEM instead of aborting ([ARCH:A-7]).
         let mut t = InodeTree::new(2, dir_stat()).unwrap();
-        t.add(Ino(1), "a", dir_stat(), 0).unwrap();
-        assert_eq!(t.add(Ino(1), "b", dir_stat(), 0), Err(Errno::ENOMEM));
+        t.add(Ino(1), "a", dir_stat(), InodeContent::Dir).unwrap();
+        assert_eq!(t.add(Ino(1), "b", dir_stat(), InodeContent::Dir), Err(Errno::ENOMEM));
     }
 
     #[test]
     fn delete_recursive_and_reuses_slot() {
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        let d = t.add(Ino(1), "devices", dir_stat(), 0).unwrap();
-        let f = t.add(d, "dev_type", file_stat(), 0).unwrap();
+        let d = t.add(Ino(1), "devices", dir_stat(), InodeContent::Dir).unwrap();
+        let f = t.add(d, "dev_type", file_stat(), InodeContent::Static(String::new())).unwrap();
         t.delete(d).unwrap();
         // Child went with the parent (C inode.c:556-558, before the flag);
         // both slots returned to the pool (refcounts were 0).
@@ -599,7 +629,7 @@ mod tests {
         assert_eq!(t.lookup(d, "dev_type"), Err(Errno::EINVAL));
         assert_eq!(t.live_count(), 1);
         // Freed slots are reusable.
-        assert!(t.add(Ino(1), "events", dir_stat(), 0).is_ok());
+        assert!(t.add(Ino(1), "events", dir_stat(), InodeContent::Dir).is_ok());
     }
 
     #[test]
@@ -607,21 +637,21 @@ mod tests {
         // C: count > 0 keeps the node scheduled (inode.c:583-593);
         // release() at zero reaps it (inode.c:496-497).
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        let f = t.add(Ino(1), "f", file_stat(), 0).unwrap();
+        let f = t.add(Ino(1), "f", file_stat(), InodeContent::Static(String::new())).unwrap();
         t.reference(f).unwrap();
         t.delete(f).unwrap();
         assert!(t.is_deleted(f));
         assert_eq!(t.lookup(Ino(1), "f"), Err(Errno::ENOENT));
         t.release(f).unwrap();
         // Slot reusable after reap.
-        assert!(t.add(Ino(1), "g", file_stat(), 0).is_ok());
+        assert!(t.add(Ino(1), "g", file_stat(), InodeContent::Static(String::new())).is_ok());
     }
 
     #[test]
     fn release_underflow_is_einval() {
         // C: assert(node->i_count > 0) (inode.c:488).
         let mut t = InodeTree::new(8, dir_stat()).unwrap();
-        let f = t.add(Ino(1), "f", file_stat(), 0).unwrap();
+        let f = t.add(Ino(1), "f", file_stat(), InodeContent::Static(String::new())).unwrap();
         assert_eq!(t.release(f), Err(Errno::EINVAL));
     }
 

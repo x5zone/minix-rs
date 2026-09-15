@@ -110,12 +110,9 @@ impl Event {
 /// by tree position, not by list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileBinding {
-    /// 02-framework inode number of this file.
+    /// 02-framework inode number of this file/dir. The inode carries its
+    /// own content (`InodeContent`, DM-P1-5) — no side-table cookie.
     pub ino: crate::vtreefs::Ino,
-    /// 06-files cookie for static files (`None` for directories, which
-    /// have no `FileEntry`). Added for 08 (`del_device` unregisters);
-    /// 03 scan notes the additive extension.
-    pub cookie: Option<usize>,
 }
 
 /// C: `struct devman_device` (`devman.h:82-107`) — the server-side device

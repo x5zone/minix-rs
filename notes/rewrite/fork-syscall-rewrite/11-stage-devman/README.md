@@ -33,7 +33,7 @@
 | `structs.rs` + `wire.rs`（形状 + 解析） | 03 | 7 |
 | `device_tree.rs`（双树 + 寻路） | 04 | 7 |
 | `ipc/`（相位视图 + 单分派） | 05 | 5 |
-| `buf.rs` + `event_queue.rs` + `files.rs`（缓冲/队列/分发） | 06 | 9 |
+| `buf.rs` + `event_queue.rs`（缓冲/队列；分发经 `InodeContent`） | 06 | 7 |
 | `add_device.rs` / `del_device.rs` / `bind.rs` + `server.rs` | 07/08/09 | 3 + 5 + 6 |
 | `rs_contract.rs`（RS 握手决策） | 12 | 4 |
 | minix-sys `devman_client.rs` + `usb_model.rs` | 10/11 | 7 + 5 |

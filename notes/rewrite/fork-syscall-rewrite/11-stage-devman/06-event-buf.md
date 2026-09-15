@@ -2,7 +2,7 @@
 
 > **定位**：devman 的读半边。本篇回答：`buf.c` 的 skip 机制怎么 work、事件队列先进先出但读两次才算拿走、静态信息文件为什么多一个 `\n`、读 hook 怎么找到文件。只讲机制，事件内容谁生产（07/08）与谁消费（13）各归其篇。
 > **源码**：`minix3/minix/servers/devman/buf.c`（129 行，全部）+ `device.c:75-140`（事件入队两函数）+ `:142-183`（两读函数）。
-> **Rust 模块**：`os/servers/devman/src/buf.rs`（`Buf`）+ `src/event_queue.rs`（`EventQueue` + 两读函数）+ `src/files.rs`（`FileKind`/`FileStore`/分发）。
+> **Rust 模块**：`os/servers/devman/src/buf.rs`（`Buf`）+ `src/event_queue.rs`（`EventQueue` + 两读函数）+ `src/vtreefs/inode.rs` 的 `InodeContent`（内容挂节点，DM-P1-5）。
 > **前置依赖**：01（read_hook 调用点）、02（`read()` 分块循环调本篇函数）、03（`Event` 形状）、05（事件行尾缀预算 -11）。
 > **不覆盖（移交）**：事件生产业务（07/08 只调 `push`）、devmand 解析（13）、属性内容管理（07 调 `set_static_text`）。
 
@@ -100,18 +100,20 @@ C 用真 `vsnprintf`（全格式），Rust 手写两分支。等价论证：树�
 
 `push_back` = INSERT_HEAD（新在尾），`front` = TAILQ_LAST（老在头）——方向注释写死在类型上（`push` 文档 + `fifo_oldest_first` 单测双保险）。`malloc` 失败 panic → `try_reserve` → ENOMEM（A-7，队列满与内存竭同一码，调用方只认 ENOMEM）。
 
-### 3.4 分发：索引 cookie + 进程表（无裸指针、无 unsafe 别名）
+### 3.4 分发：内容挂节点（DM-P1-5 终态；cookie/进程表已退役）
 
-C 的 cookie 是裸指针（`&event_inode`/`&devman_inode`），Rust 用**下标**：`FileStore`（append-only `Vec`，下标永稳）+ 进程单例（`AssumeSyncCell<RefCell<…>>`，VM 同款单线程论证，见 06 scan 引用行）。未知 cookie → EOF（fail-closed；C 会解引用 NULL 炸——拒绝是硬化，单测锁 `c+9999 → 0`）。
+历史三层演进，值得完整记下：C 的 cookie 是**裸指针**（`&event_inode`/`&devman_inode`，read_hook 顺着 `devman_inode` 结构摸到 `read_fn` + `data`）；Rust 初版换成**下标**（`FileStore` append-only `Vec` + `AssumeSyncCell<RefCell<…>>` 进程单例，VM 同款单线程论证）——比裸指针可验证（未知 cookie → EOF fail-closed），但 crate 里唯一的 unsafe、以及"框架删除 inode 必须记得注销旁表"的成对纪律仍压在调用方身上；DM-P1-5 之后是第三层：**内容就是节点**——`InodeContent { Dir, Static(String), Events(EventQueue) }` 挂在 `Inode` 上，读路径一个 match（`VTreeFs::read` → `read_chunk`），文件删除即内容释放，`files.rs`/cookie/unsafe static 全链删除，唯一的"先注册才有效"巧合（events 队列恰是 0 号 cookie、events inode 恰是 cbdata 0）也被结构性消灭。
+
+对照三个参照系：Linux sysfs 的 attribute 内容就在节点上（show/store）；Redox scheme 的文件内容在 scheme 内部结构里；C 的 `read_fn`+`void*` 则是"没有代数类型"时代的标准替身——enum+match 就是它的 Rust 答案。
 
 `RefCell` 而非裸 `&mut`：hook 签名固定（01 形状）拿不到表引用，单例是唯一通道；`RefCell` 把"重入即 UB"降级为"重入即 panic"——而分发路径不重入（hook → Buf only），panic 分支不可达（注释 + 无测试覆盖此分支是**对的**：不可达分支不配测试，配注释）。
 
-`read_hook` 本体（hooks.rs）即 `dispatch_read` 转交——01 §2.3 预告的第二次兑现（第一次是 05 的分发）。01 doc 仍无需改字（"06 wires the real dispatch" 现在就是）。
+`read_hook` 本体已随 DM-P1-5 退役：读分发是 `VTreeFs::read` 对节点内容的 match（02 §4.3），`hooks.rs` 里不再有任何函数指针。01 的钩子表只剩历史意义（C 三个钩子全部各有归宿：message→Server::run、init→ensure_devices、read→InodeContent）。
 
 ### 3.5 07/13 的接口面（本篇是机制层）
 
 - 07/08 生产：`queue.push(Event::new(行)?)`（行构造归生产方，`Event::new` 卡 128——超长生产方截断并注释，06 不代劳，03 §3.5 同款诚实）。
-- 07 内容管理：`set_static_text(cookie, text)`（属性变了刷新文本；非静态 cookie → EINVAL）。
+- ~~07 内容管理：`set_static_text(cookie, text)`~~——该 API 无生产调用方（C 属性 add-only）且已随文件表退役（DM-P3-1）；属性内容在 `add_static` 一次成型。
 - 13 消费：读两次（数据 + EOF），格式见 §2.4/§2.5（`\n` 有无对照表放 13，06 只给字节）。
 
 ---
@@ -124,8 +126,7 @@ C 的 cookie 是裸指针（`&event_inode`/`&devman_inode`），Rust 用**下标
 os/servers/devman/src/
   buf.rs          — Buf（new/init/printf/append/result + 4 测试）
   event_queue.rs  — EventQueue（push/oldest/consume/read_oldest/read_static + 3 测试）
-  files.rs        — FileKind/EventFile/StaticFile/FileEntry/FileStore/单例/dispatch_read（+2 测试）
-  hooks.rs        — devman_read_hook 本体改为 dispatch_read 转交（01 桩兑现×2）
+  （files.rs 已删除——内容挂 inode，DM-P1-5；hooks.rs 的 read_hook 同批退役）
 ```
 
 ### 4.2 关键不变量
@@ -133,8 +134,8 @@ os/servers/devman/src/
 1. `Buf` 输出恒 ≤ `min(len, 4097)`（init 钳 + emit 钳双保险）。
 2. 队列 FIFO（push_back/front，单测锁顺序）。
 3. 有事件 + 空成绩 ⇔ 消费恰一次（`read_oldest` 内原子：格式化与 pop 同函数，无中间态）。
-4. 未知 cookie 读 EOF（fail-closed）。
-5. `dispatch_read` 永不 panic（`unwrap_or_default` 兜底 + copy 上限三取 min）。
+4. （cookie 机制随 DM-P1-5 退役——内容随节点生死，无未注册态可达。）
+5. 读路径无分配：`Buf` 由 `VTreeFs` 持有复用（C 同款静态缓冲习惯，DM-P3-3）。
 
 ### 4.3 与 C 的差异说明
 
@@ -142,7 +143,8 @@ os/servers/devman/src/
 |---|---|---|
 | 四静态量 | `Buf` 值类型 | 去全局（多实例安全） |
 | 真 vsnprintf | `%s`/`%%` 子集 | 等价子集（调用点全集论证） |
-| 裸指针 cookie | 下标 cookie + 进程表 | 可验证性（未知→EOF 硬化） |
+| 裸指针 cookie | 下标 cookie + 进程表（初版） | 可验证性（未知→EOF 硬化） |
+| 下标 cookie + 进程表（含 unsafe 单例） | 内容挂节点 `InodeContent`（无表无 cookie 无 unsafe） | 所有权一致性（DM-P1-5 终态） |
 | malloc 失败 panic（串错函数名） | ENOMEM | A-7（+ 顺手不继承串名 panic） |
 | 事件行无 `\n` / 静态有 `\n` | 原样（一无一有，单测双锁） | 沿用（不对称是契约） |
 

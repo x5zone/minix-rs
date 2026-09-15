@@ -18,12 +18,12 @@ devman 的现状是"语义库完备、服务器未出生、出生时会有三处
 | DM-P1-2 | 双分派面统一 + Reply 错误通道 | run/message_hook 空臂 vs handle_other 两套真相源；Reply 枚举吞错误 | ✅ 2026-09-15（Server::run 统一循环 + Incoming/错误载荷 Reply + message_hook 死链退役；§2 DM-P1-2 Fix #5） |
 | DM-P1-3 | 启动序列裁决 | Server::new 急切建树 vs C 懒 mount 触发；FirstGuard/InitCtx 成死置 | ✅ 2026-09-15（懒建树：`Option<DeviceTree>` 即守卫，ensure_devices 首挂触发；InitCtx/init_hook/FirstGuard 回调仪式随 A-1 退役；§2 DM-P1-3 Fix #6） |
 | DM-P1-4 | 事件行预算记账对齐 + 半登记状态 | 预算未扣 "ADD "/"REMOVE " 前缀；事件失败留已入树无事件的设备 | ✅ 2026-09-15（ADD_STRING/REMOVE_STRING/EVENT_ID_SUFFIX_LEN 常量 + generate_child_path 预发布构行；§2 DM-P1-4 Fix #2） |
-| DM-P1-5 | 文件表下沉，消灭全局 static | files.rs 唯一 unsafe 的 AssumeSyncCell 静态 + cookie 双表 → 内容挂 inode | ⬜ |
+| DM-P1-5 | 文件表下沉，消灭全局 static | files.rs 唯一 unsafe 的 AssumeSyncCell 静态 + cookie 双表 → 内容挂 inode | ✅ 2026-09-15（InodeContent 枚举挂节点；files.rs/cookie/unsafe/FsHooks/cbdata 全链退役；§2 DM-P1-5 Fix #7） |
 | DM-P2-1 | ADD 回复的 DEVICE_ID 无出口 | apply_reply 只写 RESULT 且清零其余字；C 回复是 RESULT+DEVICE_ID 双字 | ✅ 2026-09-15（apply_reply_with_id(msg, res, Option\<i32\>) 原语化；§3 DM-P2-1 Fix #3） |
 | DM-P2-2 | handle_other 位置参数类型化 | word2/word3 裸参数 → DevmanMsg 枚举（协议入类型系统） | ✅ 2026-09-15（DevmanMsg::classify 解码 + handle_other(source, Option\<DevmanMsg\>)；§3 DM-P2-2 Fix #4） |
 | DM-P3-1 | 死代码批次 | Attribute.data / Device.info / init / find_device / set_static_text 等 | ⬜ |
 | DM-P3-2 | 测试与卫生批次 | wire 构造 helper 四份复制；is_dir 重复；parse_device 双返回 | ⬜ |
-| DM-P3-3 | 每读分配 Buf + 吞错为 EOF | event_queue 每次读新建 4097 字节缓冲；ENOMEM 静默变 EOF | ⬜ |
+| DM-P3-3 | 每读分配 Buf + 吞错为 EOF | event_queue 每次读新建 4097 字节缓冲；ENOMEM 静默变 EOF | ✅ 2026-09-15（按条目预声明随 DM-P1-5 收口：Buf 归 VTreeFs 持有复用，读路径无分配、无吞错；§3 DM-P3-3 Fix #8） |
 
 **基线命令（2026-09-15 实测）**：
 

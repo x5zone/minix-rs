@@ -47,7 +47,7 @@ devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这
 | `cleanup_hook` | :26 | NULL | unmount 时调；devman 从不注册，框架的 `if != NULL` 对 devman 恒假 |
 | `lookup_hook` | :27-28 | NULL | lookup 前的"刷新"回调；devman 无刷新语义 |
 | `getdents_hook` | :29 | NULL | getdents 前的"刷新"回调；同上 |
-| `read_hook` | :30-32 | ✅ 注册 | 文件内容唯一来源（§2.5） |
+| `read_hook` | :30-32 | ✅ 注册（C） | 文件内容唯一来源；Rust 无此钩——内容在节点上（`InodeContent`，DM-P1-5） |
 | `write_hook` | :33-34 | NULL | 未注册时 `fs_write` 直接 `EACCES`（file.c:123）——注意与 read 的不对称：读缺省装空文件（EOF），写缺省直接拒绝 |
 | `trunc_hook` | :35 | NULL | 02 不实现（ENOSYS，§3.6） |
 | `mknod_hook` | :36-37 | NULL | 同上（设备节点由消息通道创建，不走文件创建） |
@@ -87,13 +87,13 @@ devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这
 
 1. `find_inode` 找不到 → `EINVAL`；
 2. 非 regular 文件 → `EINVAL`（目录不能这样读，想列目录走 getdents）；
-3. 已删或无 read_hook → 返回 0（装 EOF，file.c:62-64）；
-4. 分块循环：`chunk = min(剩余, bufsize)`，调 `read_hook(node, buf, chunk, pos, cbdata)`，`len > 0` 就 `copyout`；
+3. 已删或无内容 → 返回 0（装 EOF，file.c:62-64）；Rust 无 read_hook——"读谁"由节点自己的 `InodeContent` 回答（DM-P1-5）；
+4. 分块循环：`chunk = min(剩余, bufsize)`，从内容读一份填 buf（Rust `read_chunk`：Static 走 06 的 funnel，Events 走 06 的两读排空）；
 5. 错误处理（file.c:88-94）：出错但已产出 → 返回已产出数（部分结果）；一字节没产出就出错 → 返回该错误。`len < bufsize` 跳出（file.c:97-98，短读即 EOF 信号）。
 
 第 5 步是全文最微妙的语义：**错误不一定是错误**——读了 100 字节、第 101 个出错，调用者拿到的是"成功读了 100"，而不是错误码。Rust 的 `Result<Vec<u8>, Errno>` 照搬这条：`Ok(partial)` vs `Err(e)` 的分界就是 `out.is_empty()`（单测 `read_error_rules` 双分支锁定）。
 
-还有个 C 没说的安全假设：循环信任 `read_hook` 返回的 `len ≤ chunk`（超了就 `copyout` 越界读静态缓冲）。06 的实现会遵守，但框架不能替未来背书——Rust 在此设防：`len > chunk` 直接 `EIO`（§3.5 硬化说明，单测锁定）。
+还有个 C 没说的安全假设：循环信任 `read_hook` 返回的 `len ≤ chunk`（超了就 `copyout` 越界读静态缓冲）。06 的实现会遵守，但框架不能替未来背书——Rust 初版在此设防（`len > chunk` 直接 `EIO`）。DM-P1-5 后这条防御连同 read_hook 一起消失了：内容读取是 crate 内部的 enum 分派，`Buf` 的 cap 漏斗天然封顶，"不可信的外部钩子"这个前提不复存在。
 
 ### 2.6 编号：ino = 槽位 + 1，0 永远无效（inode.c:369-375）
 
@@ -275,5 +275,5 @@ os/servers/devman/src/vtreefs/
 - `03-devm-structs.md` — 节点荷载全字段（本篇 `cbdata` 背后的结构）
 - `04-device-tree.md` — 建树内容（本篇 `add` 的调用方）
 - `05-devm-message-contract.md` — `other()` 转交后的世界
-- `06-event-buf.md` — `read_hook` 的两种实现（本篇 `read` 的调用目标）
+- `06-event-buf.md` — 两种文件内容的读语义（本篇 `read_chunk` 的分派目标）
 - C 源：`minix3/minix/lib/libvtreefs/{vtreefs.c:16-110,table.c:6-24,inode.c:31-626,mount.c:10-56,file.c:46-295,path.c:9-59,stadir.c:9}`、`minix3/minix/include/minix/vtreefs.h:14,24-44`、`minix3/sys/sys/syslimits.h:57`

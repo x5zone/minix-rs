@@ -29,8 +29,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use minix_types::{Endpoint, Errno, Message};
 
-use crate::hooks::{FsHooks, ReadHookFn, ServerConfig, S_IFDIR};
-pub use inode::{InodeStat, InodeTree, Ino, NAME_MAX_LEN, PNAME_MAX_LEN, S_IFMT, S_IFREG};
+use crate::buf::Buf;
+use crate::event_queue::EventQueue;
+use crate::hooks::{ServerConfig, S_IFDIR};
+pub use inode::{InodeContent, InodeStat, InodeTree, Ino, NAME_MAX_LEN, PNAME_MAX_LEN, S_IFMT, S_IFREG};
 
 pub mod inode;
 
@@ -165,16 +167,19 @@ impl Transport for VecTransport {
     }
 }
 
-/// The VTreeFS server: inode tree + devman hooks + I/O buffer budget.
+/// The VTreeFS server: inode tree + reused I/O buffer.
 ///
-/// C: the six `run_vtreefs` globals (`vtreefs_hooks`, pool size, root stat,
-/// buffer size — vtreefs.c:97-102) as one owned value; the two zero args
-/// (`inode_extra`, `nr_indexed_entries`) stay omitted (01 §3.4).
+/// C: the six `run_vtreefs` globals (pool size, root stat, buffer size,
+/// hooks table — vtreefs.c:97-102) as one owned value; the two zero args
+/// (`inode_extra`, `nr_indexed_entries`) stay omitted (01 §3.4). The
+/// hooks table dissolved in DM-P1-2/P1-5: dispatch lives on `Server`,
+/// file content lives on the inodes — the last hook (`read_hook`) had
+/// nothing left to select that the node's own [`InodeContent`] doesn't
+/// already know.
 pub struct VTreeFs {
     tree: InodeTree,
-    hooks: FsHooks,
+    buf: Buf,
     buf_size: usize,
-    io_buf: Vec<u8>,
 }
 
 impl VTreeFs {
@@ -182,17 +187,13 @@ impl VTreeFs {
     /// `init_buf`, failures `panic` in C (vtreefs.c:16-33) → `Err(ENOMEM)`
     /// here ([ARCH:A-7], same evolution as 01's `SefHooks`).
     /// `init_extra` with size 0 is a no-op (devman passes 0, main.c:89).
-    pub fn new(config: &ServerConfig, hooks: FsHooks) -> Result<Self, Errno> {
+    pub fn new(config: &ServerConfig) -> Result<Self, Errno> {
         let tree = InodeTree::new(config.nr_inodes, config.root_stat.into())?;
-        let mut io_buf = Vec::new();
-        io_buf
-            .try_reserve(config.buf_size)
-            .map_err(|_| Errno::ENOMEM)?;
+        let buf = Buf::new()?;
         Ok(VTreeFs {
             tree,
-            hooks,
+            buf,
             buf_size: config.buf_size,
-            io_buf,
         })
     }
 
@@ -251,16 +252,16 @@ impl VTreeFs {
         self.tree.stat(ino).ok_or(Errno::EINVAL)
     }
 
-    /// C: `fs_read` (file.c:46-103), faithfully:
-    /// unknown inode → `EINVAL`; non-regular → `EINVAL`; deleted node or
-    /// no read hook → empty (EOF, file.c:62-64); then the chunk loop —
-    /// `chunk = min(remaining, bufsize)`, hook fills, `len > 0` appends,
-    /// error-after-partial returns the partial result (file.c:88-94),
-    /// short chunk ends the loop (file.c:97-98).
-    ///
-    /// One memory-safety hardening vs C: a hook returning `len > chunk`
-    /// would over-read C's buffer; here it is `EIO` (documented, 02 §4.3).
-    /// `pos` is `u64` (`off_t` is 64-bit); the hook takes `i64` like C.
+    /// C: `fs_read` (file.c:46-103): unknown inode → `EINVAL`; non-regular
+    /// → `EINVAL`; deleted node → empty (EOF, file.c:62-64); then the
+    /// chunk loop — `chunk = min(remaining, bufsize)`, short chunk ends
+    /// the loop (file.c:97-98). The "hook" being chunk-read is the node's
+    /// own [`InodeContent`] (DM-P1-5): C's `read_fn` cookie jump
+    /// (main.c:64-66 → `files::dispatch_read`) collapsed into a match.
+    /// Content readers are infallible and bounded (`Buf` caps at
+    /// `BUF_SIZE - 1`), so the C error paths (negative hook return /
+    /// over-long return → EIO hardening) have no residue here. `pos` is
+    /// `u64` (`off_t` is 64-bit).
     pub fn read(&mut self, ino: Ino, len: usize, pos: u64) -> Result<Vec<u8>, Errno> {
         let node = self.tree.find(ino).ok_or(Errno::EINVAL)?;
         if !is_reg(node.mode()) {
@@ -269,48 +270,38 @@ impl VTreeFs {
         if node.deleted() {
             return Ok(Vec::new());
         }
-        let hook: ReadHookFn = match self.hooks.read_hook {
-            Some(f) => f,
-            None => return Ok(Vec::new()),
-        };
-        let cbdata = node.cbdata();
-        // C reuses one static `buf`; reuse `io_buf` the same way.
-        self.io_buf.clear();
-        self.io_buf.resize(self.buf_size, 0);
+        match self.tree.content(ino) {
+            Some(InodeContent::Static(_)) | Some(InodeContent::Events(_)) => {}
+            // Directories are rejected by the is_reg gate above; a freed
+            // slot fails the `content` lookup. Either way: EOF.
+            _ => return Ok(Vec::new()),
+        }
         let mut out = Vec::new();
         let mut off = 0usize;
         let mut cur_pos = pos;
         while off < len {
             let chunk = (len - off).min(self.buf_size);
-            let got = hook(
-                &mut self.io_buf[..chunk],
-                chunk,
-                cur_pos as i64,
-                cbdata,
-            );
-            if got < 0 {
-                // C file.c:88-94: error after partial output returns
-                // the partial result; error first returns the error.
-                // Negative hook returns are raw errnos in C's negative
-                // kernel convention; minix-rs `Errno` uses the positive
-                // user-space convention (`Errno::to_i32`), so negate.
-                if out.is_empty() {
-                    return Err(Errno::from_i32(-got as i32));
-                }
-                return Ok(out);
-            }
-            let got = got as usize;
-            if got > chunk {
-                return Err(Errno::EIO);
-            }
-            out.extend_from_slice(&self.io_buf[..got]);
-            off += got;
-            cur_pos += got as u64;
-            if got < self.buf_size {
+            let got = self.read_chunk(ino, chunk, cur_pos);
+            out.extend_from_slice(&got);
+            off += got.len();
+            cur_pos += got.len() as u64;
+            if got.len() < self.buf_size {
                 break;
             }
         }
         Ok(out)
+    }
+
+    /// One chunk out of the node's own content, through the reused `buf`
+    /// (C reuses its statics; DM-P1-5/P3-3 — no per-read allocation).
+    fn read_chunk(&mut self, ino: Ino, chunk: usize, cur_pos: u64) -> Vec<u8> {
+        match self.tree.content_mut(ino) {
+            Some(InodeContent::Static(text)) => {
+                EventQueue::read_static(&mut self.buf, text, chunk, cur_pos as usize)
+            }
+            Some(InodeContent::Events(q)) => q.read_oldest(&mut self.buf, chunk, cur_pos as usize),
+            _ => Vec::new(),
+        }
     }
 
     /// C: `fs_getdents` traversal order (file.c:195-295) without the
@@ -382,8 +373,6 @@ mod tests {
     use super::*;
     use crate::hooks::{S_IFDIR, S_IRALL};
     use crate::RootStat;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     fn cfg(buf: usize) -> ServerConfig {
         ServerConfig {
             nr_inodes: 16,
@@ -412,62 +401,16 @@ mod tests {
         }
     }
 
-    fn plain_hooks() -> FsHooks {
-        FsHooks::empty()
-    }
-
-    /// Fill the whole chunk (models a well-behaved `read_fn`, 06).
-    fn hook_full(buf: &mut [u8], len: usize, _off: i64, _cb: usize) -> i64 {
-        for b in &mut buf[..len] {
-            *b = b'v';
-        }
-        len as i64
-    }
-
-    /// Short chunk (forces the `len < bufsize → break` path, file.c:97).
-    fn hook_short2(buf: &mut [u8], len: usize, _off: i64, _cb: usize) -> i64 {
-        let take = len.min(2);
-        for b in &mut buf[..take] {
-            *b = b's';
-        }
-        take as i64
-    }
-
-    /// Immediate error (C: negative errno return, file.c:88-94).
-    fn hook_err5(_buf: &mut [u8], _len: usize, _off: i64, _cb: usize) -> i64 {
-        -5 // EIO
-    }
-
-    /// Over-long return (would over-read C's static buf; Rust: EIO).
-    fn hook_over(_buf: &mut [u8], _len: usize, _off: i64, _cb: usize) -> i64 {
-        99
-    }
-
-    static PARTIAL_N: AtomicUsize = AtomicUsize::new(0);
-
-    /// First call yields 3 bytes, then errors (partial-result rule).
-    fn hook_partial(buf: &mut [u8], len: usize, _off: i64, _cb: usize) -> i64 {
-        if PARTIAL_N.fetch_add(1, Ordering::SeqCst) == 0 {
-            let take = len.min(3);
-            for b in &mut buf[..take] {
-                *b = b'p';
-            }
-            take as i64
-        } else {
-            -5
-        }
-    }
-
-    fn hooks_with_read(f: ReadHookFn) -> FsHooks {
-        FsHooks {
-            read_hook: Some(f),
-        }
+    /// A file node with static text content (the readable-file shape).
+    fn content_file(t: &mut InodeTree, name: &str, text: &str) -> Ino {
+        t.add(Ino(1), name, file_stat(), InodeContent::Static(String::from(text)))
+            .unwrap()
     }
 
     #[test]
     fn mount_rejects_root() {
         // C: REQ_ISROOT → EINVAL (mount.c:16-17).
-        let mut fs = VTreeFs::new(&cfg(64), plain_hooks()).unwrap();
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
         assert_eq!(fs.mount(true), Err(Errno::EINVAL));
     }
 
@@ -477,10 +420,7 @@ mod tests {
         // unconditionally (both mounts Ok). devman-rs fires no init hook
         // here — service-side init is `Server::ensure_devices`'s guarded
         // direct call (DM-P1-3 collapse note on `mount`).
-        let hooks = FsHooks {
-            read_hook: None,
-        };
-        let mut fs = VTreeFs::new(&cfg(64), hooks).unwrap();
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
         assert_eq!(fs.mount(false).unwrap(), Ino(1));
         assert_eq!(fs.mount(false).unwrap(), Ino(1));
         fs.unmount();
@@ -489,69 +429,77 @@ mod tests {
     #[test]
     fn read_bad_ino_and_dir_are_einval() {
         // C: find_inode NULL → EINVAL; !S_ISREG → EINVAL (file.c:55-60).
-        let mut fs = VTreeFs::new(&cfg(64), hooks_with_read(hook_full)).unwrap();
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
         assert_eq!(fs.read(Ino(99), 8, 0), Err(Errno::EINVAL));
         assert_eq!(fs.read(Ino(1), 8, 0), Err(Errno::EINVAL));
     }
 
     #[test]
-    fn read_no_hook_and_deleted_are_eof() {
-        // C: deleted node or NULL hook → 0 / EOF (file.c:62-64).
-        let mut fs = VTreeFs::new(&cfg(64), plain_hooks()).unwrap();
-        let f = fs.tree_mut().add(Ino(1), "e", file_stat(), 0).unwrap();
-        assert_eq!(fs.read(f, 8, 0).unwrap(), Vec::<u8>::new());
-        let mut fs2 = VTreeFs::new(&cfg(64), hooks_with_read(hook_full)).unwrap();
-        let g = fs2.tree_mut().add(Ino(1), "g", file_stat(), 0).unwrap();
-        fs2.tree_mut().reference(g).unwrap();
-        fs2.tree_mut().delete(g).unwrap();
-        assert_eq!(fs2.read(g, 8, 0).unwrap(), Vec::<u8>::new());
+    fn read_deleted_is_eof() {
+        // C: deleted node → 0 / EOF (file.c:62-64).
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
+        let g = content_file(&mut fs.tree_mut(), "g", "data");
+        fs.tree_mut().reference(g).unwrap();
+        fs.tree_mut().delete(g).unwrap();
+        assert_eq!(fs.read(g, 8, 0).unwrap(), Vec::<u8>::new());
     }
 
     #[test]
-    fn read_full_single_chunk() {
-        let mut fs = VTreeFs::new(&cfg(64), hooks_with_read(hook_full)).unwrap();
-        let f = fs.tree_mut().add(Ino(1), "f", file_stat(), 0).unwrap();
-        assert_eq!(fs.read(f, 8, 0).unwrap(), alloc::vec![b'v'; 8]);
+    fn read_static_content_renders_text_plus_newline() {
+        // Static content: `text + '\n'` through the skip/cap funnel (06).
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
+        let f = content_file(&mut fs.tree_mut(), "f", "hi");
+        assert_eq!(fs.read(f, 8, 0).unwrap(), b"hi\n".to_vec());
+        // Offset skip: the first produced byte is eaten.
+        assert_eq!(fs.read(f, 8, 1).unwrap(), b"i\n".to_vec());
+    }
+
+    #[test]
+    fn read_events_content_drains_two_reads() {
+        // Events content: data read, then EOF read consumes (06 §2.4).
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
+        let f = fs
+            .tree_mut()
+            .add(
+                Ino(1),
+                "events",
+                file_stat(),
+                InodeContent::Events(crate::event_queue::EventQueue::new()),
+            )
+            .unwrap();
+        if let Some(InodeContent::Events(q)) = fs.tree_mut().content_mut(f) {
+            q.push(crate::structs::Event::new("ADD ./devices/a/ 0x00000001").unwrap())
+                .unwrap();
+        }
+        assert_eq!(
+            fs.read(f, 128, 0).unwrap(),
+            b"ADD ./devices/a/ 0x00000001".to_vec()
+        );
+        // Non-consuming read (r > 0): still there.
+        assert_eq!(fs.read(f, 128, 0).unwrap().len(), 27);
+        // EOF read consumes.
+        assert_eq!(fs.read(f, 128, 27).unwrap(), Vec::<u8>::new());
+        assert_eq!(fs.read(f, 128, 0).unwrap(), Vec::<u8>::new());
     }
 
     #[test]
     fn read_multichunk_until_short() {
-        // buf 4, request 10: hook_short2 yields 2 per call → the
-        // `len < bufsize` break fires after the first chunk (file.c:97).
-        let mut fs = VTreeFs::new(&cfg(4), hooks_with_read(hook_short2)).unwrap();
-        let f = fs.tree_mut().add(Ino(1), "f", file_stat(), 0).unwrap();
-        assert_eq!(fs.read(f, 10, 0).unwrap(), alloc::vec![b's'; 2]);
-    }
-
-    #[test]
-    fn read_error_rules() {
-        // Immediate error → Err (C file.c:91-94, off == 0 branch).
-        let mut fs = VTreeFs::new(&cfg(64), hooks_with_read(hook_err5)).unwrap();
-        let f = fs.tree_mut().add(Ino(1), "f", file_stat(), 0).unwrap();
-        assert_eq!(fs.read(f, 8, 0), Err(Errno::EIO));
-        // Error after partial output → partial result (off > 0 branch).
-        PARTIAL_N.store(0, Ordering::SeqCst);
-        let mut fs2 = VTreeFs::new(&cfg(64), hooks_with_read(hook_partial)).unwrap();
-        let g = fs2.tree_mut().add(Ino(1), "g", file_stat(), 0).unwrap();
-        assert_eq!(fs2.read(g, 8, 0).unwrap(), alloc::vec![b'p'; 3]);
-    }
-
-    #[test]
-    fn read_overlong_hook_result_is_eio() {
-        // Hardening vs C (which would over-read its static buf).
-        let mut fs = VTreeFs::new(&cfg(4), hooks_with_read(hook_over)).unwrap();
-        let f = fs.tree_mut().add(Ino(1), "f", file_stat(), 0).unwrap();
-        assert_eq!(fs.read(f, 4, 0), Err(Errno::EIO));
+        // buf 4, Static longer than one chunk: the `len < bufsize` break
+        // fires only after a short chunk (file.c:97) — here after the
+        // second chunk carries the tail.
+        let mut fs = VTreeFs::new(&cfg(4)).unwrap();
+        let f = content_file(&mut fs.tree_mut(), "f", "ssssss");
+        assert_eq!(fs.read(f, 10, 0).unwrap(), b"ssssss\n".to_vec());
     }
 
     #[test]
     fn readdir_dot_dot_children() {
         // C order: ".", ".." (self for root), then live children
         // in tree order, deleted skipped (file.c:226-280).
-        let mut fs = VTreeFs::new(&cfg(64), plain_hooks()).unwrap();
-        let d = fs.tree_mut().add(Ino(1), "devices", dir_stat(), 0).unwrap();
-        let e = fs.tree_mut().add(Ino(1), "events", file_stat(), 0).unwrap();
-        fs.tree_mut().add(d, "dev_type", file_stat(), 0).unwrap();
+        let mut fs = VTreeFs::new(&cfg(64)).unwrap();
+        let d = fs.tree_mut().add(Ino(1), "devices", dir_stat(), InodeContent::Dir).unwrap();
+        let e = fs.tree_mut().add(Ino(1), "events", file_stat(), InodeContent::Static(String::new())).unwrap();
+        fs.tree_mut().add(d, "dev_type", file_stat(), InodeContent::Static(String::new())).unwrap();
         let names: Vec<String> = fs
             .readdir(Ino(1), 0)
             .unwrap()
@@ -592,7 +540,7 @@ mod tests {
     #[test]
     fn unsupported_is_enosys() {
         // Unwired mutating slots fail closed.
-        let fs = VTreeFs::new(&cfg(64), plain_hooks()).unwrap();
+        let fs = VTreeFs::new(&cfg(64)).unwrap();
         assert_eq!(fs.unsupported(), Err(Errno::ENOSYS));
     }
 }

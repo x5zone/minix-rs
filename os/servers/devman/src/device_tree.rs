@@ -13,8 +13,9 @@
 use alloc::string::String;
 use minix_types::Errno;
 
+use crate::event_queue::EventQueue;
 use crate::structs::{Device, DeviceId};
-use crate::vtreefs::{Ino, InodeStat, InodeTree};
+use crate::vtreefs::{Ino, InodeContent, InodeStat, InodeTree};
 
 /// C: `default_dir_stat` (device.c:18-24) — `S_IFDIR|0444, 0,0,0,NO_DEV`.
 pub fn default_dir_stat() -> InodeStat {
@@ -55,19 +56,27 @@ pub struct DeviceTree {
 }
 
 impl DeviceTree {
-    /// C: `devman_init_devices()` (device.c:187-207) — wire the event file
-    /// (framework-level; `read_fn` binding is 06's), init `root_dev`
+    /// C: `devman_init_devices()` (device.c:187-207) — init `root_dev`
     /// (id 0, no BSS ambiguity — see [`Device::root`]), add the `devices`
     /// directory + `events` file to the framework tree, init the lists.
-    /// `events_stat` should be [`default_file_stat`] (size 0x1000).
+    /// `events_stat` should be [`default_file_stat`] (size 0x1000). The
+    /// events queue rides on the inode itself (`InodeContent::Events`,
+    /// DM-P1-5) — C hangs it off a `devman_event_inode` struct reached
+    /// through the file's `read_fn` cookie.
     pub fn new(
         framework: &mut InodeTree,
         events_stat: InodeStat,
     ) -> Result<Self, Errno> {
-        let root_ino = framework.add(framework.root(), "devices", default_dir_stat(), 0)?;
-        framework.add(framework.root(), "events", events_stat, 0)?;
+        let root_ino =
+            framework.add(framework.root(), "devices", default_dir_stat(), InodeContent::Dir)?;
+        framework.add(
+            framework.root(),
+            "events",
+            events_stat,
+            InodeContent::Events(EventQueue::new()),
+        )?;
         let mut root = Device::root();
-        root.binding = Some(crate::structs::FileBinding { ino: root_ino, cookie: None });
+        root.binding = Some(crate::structs::FileBinding { ino: root_ino });
         Ok(DeviceTree {
             devices: alloc::vec![Some(root)],
             // C: static next_device_id = 1 (device.c:16); root took 0.
@@ -300,14 +309,14 @@ mod tests {
         let id = DeviceId(tree.device_count() as u32);
         assert_eq!(tree.alloc_id().unwrap(), id);
         let pino = tree.get(parent).unwrap().binding.unwrap().ino;
-        let ino = fw.add(pino, name, default_dir_stat(), 0).unwrap();
+        let ino = fw.add(pino, name, default_dir_stat(), InodeContent::Dir).unwrap();
         let dev = Device {
             id,
             name: Some(String::from(name)),
             refcount: 0,
             state: DeviceState::Unbound,
             owner: None,
-            binding: Some(crate::structs::FileBinding { ino, cookie: None }),
+            binding: Some(crate::structs::FileBinding { ino }),
             parent: Some(parent),
             info: None,
             children: alloc::vec::Vec::new(),

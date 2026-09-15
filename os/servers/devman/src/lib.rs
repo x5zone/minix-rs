@@ -26,7 +26,6 @@ pub mod buf;
 pub mod del_device;
 pub mod device_tree;
 pub mod event_queue;
-pub mod files;
 pub mod hooks;
 pub mod ipc;
 pub mod rs_contract;
@@ -35,7 +34,7 @@ pub mod structs;
 pub mod vtreefs;
 pub mod wire;
 
-pub use hooks::{FsHooks, RootStat, SefLifecycle, ServerConfig};
+pub use hooks::{RootStat, SefLifecycle, ServerConfig};
 
 /// Crate-level init entry (called by `main.rs`; real init runs on mount).
 pub fn init() {}

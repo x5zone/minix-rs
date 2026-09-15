@@ -26,72 +26,6 @@ pub const NO_DEV: i32 = 0;
 
 // ── Hook function types ──
 
-/// C: `read_hook` signature (`vtreefs.h:29-30`), minus the unused inode ptr.
-/// Returns bytes filled, 0 on EOF, negative errno on error.
-pub type ReadHookFn =
-    fn(buf: &mut [u8], len: usize, offset: i64, cbdata_addr: usize) -> i64;
-
-// ── FsHooks ──
-
-/// C: `struct fs_hooks` (`vtreefs.h:24-44`, 13 slots). C's `main` fills
-/// three (init/read/message, main.c:78-80); Rust models **one**.
-///
-/// - `message_hook` retired in DM-P1-2: DEVMAN messages dispatch through
-///   `Server::run`'s Devman arm — one loop, no side door.
-/// - `init_hook` retired in DM-P1-3: the C callback exists because
-///   libvtreefs is a *library* that cannot know devman; with vtreefs
-///   inlined into the devman crate (decision A-1) that boundary is gone,
-///   so mount-time init is a direct guarded call (`Server::ensure_devices`,
-///   whose `Option<DeviceTree>` *is* C's `static int first`).
-pub struct FsHooks {
-    /// C: `main.c:79` `hooks.read_hook = read_hook`.
-    pub read_hook: Option<ReadHookFn>,
-}
-
-impl FsHooks {
-    /// C: `main.c:70-80` — zeroed table with the devman hooks filled
-    /// (read; the C init/message hooks' jobs live in `Server`).
-    pub fn devman_default() -> Self {
-        FsHooks {
-            read_hook: Some(devman_read_hook),
-        }
-    }
-
-    /// No read hook = every read is EOF (C: `file.c` returns 0).
-    pub fn empty() -> Self {
-        FsHooks { read_hook: None }
-    }
-
-    /// Default when no read hook: EOF (C: `file.c` returns 0).
-    pub fn fire_read(
-        &self,
-        buf: &mut [u8],
-        len: usize,
-        offset: i64,
-        cbdata_addr: usize,
-    ) -> i64 {
-        match self.read_hook {
-            Some(f) => f(buf, len, offset, cbdata_addr),
-            None => 0,
-        }
-    }
-}
-
-// ── Default hook bodies (wiring only; business logic in 04/05/06) ──
-
-/// C: `main.c:60-67` — dispatch via per-inode `read_fn`.
-/// 06 wires the real dispatch: the cookie selects the file in the
-/// process table (`files::dispatch_read` — per-file strategy, same shape
-/// as C's `read_fn` indirection).
-pub fn devman_read_hook(
-    buf: &mut [u8],
-    len: usize,
-    offset: i64,
-    cbdata_addr: usize,
-) -> i64 {
-    crate::files::dispatch_read(buf, len, offset, cbdata_addr)
-}
-
 // ── RootStat ──
 
 /// C: `struct inode_stat` (`vtreefs.h:16-22`) as an immutable value.
@@ -192,16 +126,6 @@ mod tests {
         let c = ServerConfig::devman_default(RootStat::devman_root());
         assert_eq!(c.nr_inodes, 1024);
         assert_eq!(c.buf_size, 4097);
-    }
-
-    #[test]
-    fn hooks_none_is_safe_default() {
-        // No read hook = EOF; init/message hooks live in `Server` now
-        // (DM-P1-3 collapse note on `FsHooks`).
-        let h = FsHooks::empty();
-        let mut buf = [0u8; 8];
-        assert_eq!(h.fire_read(&mut buf, 8, 0, 0), 0);
-        assert!(h.read_hook.is_none());
     }
 
     /// Test double #1 (behavior: records lifecycle, always succeeds).

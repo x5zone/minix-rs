@@ -112,7 +112,7 @@ os/servers/devman/src/del_device.rs — do_del + get/put/del_device（+4 测试�
   02 vtreefs/inode.rs — 已有 delete（两阶段）复用，无改字
   03 structs.rs — Attribute.binding + FileBinding.cookie（08 前置扩展时已加）
   04 device_tree.rs — Vec<Option> 墓碑 + remove/unlink_child/两访问器
-  06 files.rs — Option 槽 + unregister + with_files pub(crate)
+  （06 files.rs 的 Option 槽/unregister 已随 DM-P1-5 退役——内容挂 inode，一次递归 delete 覆盖全子树）
 ```
 
 ### 4.2 引用配对表（review 对账用）

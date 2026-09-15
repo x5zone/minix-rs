@@ -13,12 +13,11 @@ use alloc::string::String;
 use minix_types::Endpoint;
 
 use crate::device_tree::DeviceTree;
-use crate::files::{register_file, FileEntry, FileKind, StaticFile};
 use crate::structs::{
     Attribute, Device, DeviceId, DeviceState, Event, ADD_STRING, DEVMAN_STRING_LEN,
     EVENT_ID_SUFFIX_LEN,
 };
-use crate::vtreefs::InodeTree;
+use crate::vtreefs::{InodeContent, InodeTree};
 use crate::wire::{EntryType, ParsedDevice};
 
 /// Build one device from a decoded ADD description and link it in.
@@ -36,35 +35,24 @@ use crate::wire::{EntryType, ParsedDevice};
 /// `budget` threads C's `len` parameter into path generation (04):
 /// bare callers pass `DEVMAN_STRING_LEN`, event lines pass `- 11` —
 /// here always the event line, so `DEVMAN_STRING_LEN - 11`.
-/// Undo a failed ADD that already passed `alloc_id`: release cookies
-/// registered by the successfully-staged attributes, delete the staged
+/// Undo a failed ADD that already passed `alloc_id`: delete the staged
 /// framework subtree (recursive — children first, inode.rs `delete` —
 /// and every staged node still has refcount 0, so each slot reaps at
-/// once), and hand the id back to the allocator (DM-P1-1). The publish
-/// point of an ADD is `insert` below; everything before it must leave
-/// zero residue, or one failed registration — a driver retrying a
-/// duplicate, the everyday case — would strand a hole in the dense id
-/// space and wedge every later ADD (`insert`'s `id == len` check).
-/// C has no counterpart to unwind: its `add_inode` results go
-/// unchecked (device.c:373-375), so a failure there corrupts instead.
+/// once, content dying with its node), and hand the id back to the
+/// allocator (DM-P1-1). The publish point of an ADD is `insert` below;
+/// everything before it must leave zero residue, or one failed
+/// registration — a driver retrying a duplicate, the everyday case —
+/// would strand a hole in the dense id space and wedge every later ADD
+/// (`insert`'s `id == len` check). C has no counterpart to unwind: its
+/// `add_inode` results go unchecked (device.c:373-375), so a failure
+/// there corrupts instead.
 fn unwind_staged(
     fw: &mut InodeTree,
     tree: &mut DeviceTree,
     id: DeviceId,
     dir_ino: Option<crate::vtreefs::Ino>,
-    staged: Option<&Device>,
     e: minix_types::Errno,
 ) -> minix_types::Errno {
-    if let Some(d) = staged {
-        for cookie in d
-            .attrs
-            .iter()
-            .filter_map(|a| a.binding.as_ref().and_then(|b| b.cookie))
-        {
-            // Best effort: the table entry is a tombstone-to-be either way.
-            let _ = crate::files::with_files(|s| s.unregister(cookie));
-        }
-    }
     if let Some(dir) = dir_ino {
         let _ = fw.delete(dir);
     }
@@ -117,16 +105,13 @@ pub fn do_add(
         parent_ino,
         &parsed.name,
         crate::device_tree::default_dir_stat(),
-        0,
+        InodeContent::Dir,
     ) {
         Ok(ino) => ino,
         // Directory never materialized: only the id needs returning.
-        Err(_) => return Err(unwind_staged(fw, tree, id, None, None, Errno::ENOMEM)),
+        Err(_) => return Err(unwind_staged(fw, tree, id, None, Errno::ENOMEM)),
     };
-    dev.binding = Some(crate::structs::FileBinding {
-        ino: dir_ino,
-        cookie: None,
-    });
+    dev.binding = Some(crate::structs::FileBinding { ino: dir_ino });
     // C: per-entry add_info loop (device.c:385-389). STATIC materializes;
     // DYNAMIC/DEVICE fall to -1, ignored (device.c:410-418).
     for e in &parsed.entries {
@@ -134,7 +119,7 @@ pub fn do_add(
             continue;
         }
         if let Err(err) = add_static(fw, &mut dev, &e.name, &e.data) {
-            return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), err));
+            return Err(unwind_staged(fw, tree, id, Some(dir_ino), err));
         }
     }
     // C: snprintf(id) + add_static_info(dev, "devman_id") (device.c:392-393).
@@ -144,7 +129,7 @@ pub fn do_add(
         let _ = core::write!(id_text, "{}", id.0);
     }
     if let Err(err) = add_static(fw, &mut dev, "devman_id", &id_text) {
-        return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), err));
+        return Err(unwind_staged(fw, tree, id, Some(dir_ino), err));
     }
     // C: devman_device_add_event(dev) (device.c:276) — "ADD " + path +
     // " 0x%08x". Built BEFORE the publish point so an over-long path
@@ -160,7 +145,7 @@ pub fn do_add(
         DEVMAN_STRING_LEN - EVENT_ID_SUFFIX_LEN - ADD_STRING.len(),
     ) {
         Ok(p) => p,
-        Err(e) => return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), e)),
+        Err(e) => return Err(unwind_staged(fw, tree, id, Some(dir_ino), e)),
     };
     let mut line = String::from(ADD_STRING);
     line.push_str(&path);
@@ -174,7 +159,7 @@ pub fn do_add(
     // to that suspenders, routed through the same unwind.
     let event = match Event::new(&line) {
         Ok(ev) => ev,
-        Err(e) => return Err(unwind_staged(fw, tree, id, Some(dir_ino), Some(&dev), e)),
+        Err(e) => return Err(unwind_staged(fw, tree, id, Some(dir_ino), e)),
     };
     if let Err(err) = tree.insert(parent, dev) {
         // Unreachable by construction: the parent was verified above and
@@ -182,7 +167,7 @@ pub fn do_add(
         // and with it the staged cookies — has already moved into
         // `insert`, so the cookie half of the unwind cannot run here;
         // the framework half still must.
-        return Err(unwind_staged(fw, tree, id, Some(dir_ino), None, err));
+        return Err(unwind_staged(fw, tree, id, Some(dir_ino), err));
     }
     // C: INSERT_HEAD then get(parent) (device.c:395-397) — member ref,
     // balancing del_device's put(parent). Kept: DEL survival of parents
@@ -194,12 +179,15 @@ pub fn do_add(
     Ok(id)
 }
 
-/// C: `devman_dev_add_static_info` (device.c:314-339) — framework file
-/// (`default_file_stat`) + `FileStore` text entry, linked into the
-/// device's `attrs`. C truncates over-long text at 127+NUL
-/// (`strncpy` + forced NUL, :322-324); Rust pre-truncates explicitly
-/// (same bytes, honest call — 07 §3.4) because `Event`-style rejection
-/// would break C-identical output for long attributes.
+/// C: `devman_dev_add_static_info` (device.c:314-339) — one framework
+/// file whose content is the (possibly truncated) text, linked into the
+/// device's `attrs`. C truncates over-long text at 127+NUL (`strncpy` +
+/// forced NUL, :322-324); Rust pre-truncates explicitly (same bytes,
+/// honest call — 07 §3.4) because `Event`-style rejection would break
+/// C-identical output for long attributes. The text lives on the inode
+/// (`InodeContent::Static`, DM-P1-5) — C kept it in a side struct
+/// reached through the `read_fn` cookie; the Attribute.data field keeps
+/// the full text for parity with what the driver sent.
 fn add_static(
     fw: &mut InodeTree,
     dev: &mut Device,
@@ -212,25 +200,13 @@ fn add_static(
     if text.len() >= DEVMAN_STRING_LEN {
         text.truncate(DEVMAN_STRING_LEN - 1);
     }
-    let cookie = register_file(FileEntry {
-        kind: FileKind::Static(StaticFile { text }),
-    })?;
     let dir_ino = dev.binding.ok_or(Errno::ENODEV)?.ino;
-    let ino = match fw.add(
+    let ino = fw.add(
         dir_ino,
         name,
         crate::device_tree::default_file_stat(),
-        cookie,
-    ) {
-        Ok(ino) => ino,
-        // Release the just-registered cookie before unwinding: the
-        // device's attr list does not know it yet, so the DM-P1-1
-        // unwind at the caller cannot see it.
-        Err(_) => {
-            let _ = crate::files::with_files(|s| s.unregister(cookie));
-            return Err(Errno::ENOMEM);
-        }
-    };
+        InodeContent::Static(text),
+    )?;
     let mut attr = Attribute {
         name: String::from(name),
         data: String::from(data),
@@ -240,10 +216,7 @@ fn add_static(
     // truncated copy; the file shows truncated — both retained, each
     // faithful to its reader: file readers see C bytes, attr readers
     // see full data. 07 §3.4 records the split.)
-    attr.binding = Some(crate::structs::FileBinding {
-        ino,
-        cookie: Some(cookie),
-    });
+    attr.binding = Some(crate::structs::FileBinding { ino });
     dev.attrs.push(attr);
     Ok(())
 }
@@ -501,10 +474,12 @@ mod tests {
     #[test]
     fn add_failure_unwinds_and_retry_succeeds() {
         // DM-P1-1: a failing ADD leaves zero residue — staged dir deleted,
-        // cookies released, id returned, parent refcount untouched — so the
-        // driver's retry succeeds with the same id the failed attempt had.
-        // C has no counterpart: add_inode results go unchecked
-        // (device.c:373-375) and no failure path exists to unwind.
+        // id returned, parent refcount untouched — so the driver's retry
+        // succeeds with the same id the failed attempt had. The duplicate
+        // attribute surfaces as EEXIST (fw.add's own verdict, honest
+        // propagation). C has no counterpart: add_inode results go
+        // unchecked (device.c:373-375) and no failure path exists to
+        // unwind.
         let (mut tree, mut fw) = harness();
         let (_, bad) = parse_device(&wire_dup_attr()).unwrap();
         let mut events = Vec::new();
@@ -517,7 +492,7 @@ mod tests {
                 Endpoint(9),
                 &mut |ev| events.push(ev),
             ),
-            Err(minix_types::Errno::ENOMEM)
+            Err(minix_types::Errno::EEXIST)
         );
         assert!(events.is_empty());
         // No orphan subtree under devices/, no member ref taken.

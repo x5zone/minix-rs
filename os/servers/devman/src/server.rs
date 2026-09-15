@@ -17,11 +17,10 @@ use crate::add_device::do_add;
 use crate::bind::{do_bind, do_unbind, on_bind_response, on_unbind_response, Action};
 use crate::del_device::do_del;
 use crate::device_tree::{default_file_stat, DeviceTree};
-use crate::files::{register_file, EventFile, FileEntry};
-use crate::hooks::{FsHooks, ServerConfig};
+use crate::hooks::ServerConfig;
 use crate::ipc::{apply_reply_with_id, result, DevmanMsg};
 use crate::structs::{DeviceId, Event};
-use crate::vtreefs::{Incoming, Request, Reply, Transport, VTreeFs};
+use crate::vtreefs::{Incoming, InodeContent, Ino, Request, Reply, Transport, VTreeFs};
 use crate::wire::parse_device;
 
 /// Transport-executable outcome of one message.
@@ -44,28 +43,28 @@ pub enum OutAction {
     Nothing,
 }
 
-/// Owned devman server: framework + device tree + events-file cookie.
+/// Owned devman server: framework + device tree + events inode.
 /// The device tree is built **lazily** on the first successful mount
 /// (C main.c:36-43 `static int first` → `devman_init_devices`); until
 /// then `devices` is `None` and the `Option` itself is the once-guard
-/// (DM-P1-3). The file table stays in 06's process store; the cookie is
-/// the handle — same split as 04's `binding`.
+/// (DM-P1-3). The events queue rides on its inode (`InodeContent::Events`,
+/// DM-P1-5); `events_ino` is the handle `push_event` writes through.
 pub struct Server {
     vtreefs: VTreeFs,
     devices: Option<DeviceTree>,
-    events_cookie: Option<usize>,
+    events_ino: Option<Ino>,
 }
 
 impl Server {
     /// C: `main` + `run_vtreefs` init half — framework only. The device
     /// tree and events file appear at first mount (`ensure_devices`),
     /// exactly where C's `init_hook` runs (mount.c:24-25).
-    pub fn new(config: &ServerConfig, hooks: FsHooks) -> Result<Self, Errno> {
-        let vtreefs = VTreeFs::new(config, hooks)?;
+    pub fn new(config: &ServerConfig) -> Result<Self, Errno> {
+        let vtreefs = VTreeFs::new(config)?;
         Ok(Server {
             vtreefs,
             devices: None,
-            events_cookie: None,
+            events_ino: None,
         })
     }
 
@@ -80,29 +79,23 @@ impl Server {
             return Ok(());
         }
         let devices = DeviceTree::new(self.vtreefs.tree_mut(), default_file_stat())?;
-        let cookie = register_file(FileEntry {
-            kind: crate::files::FileKind::Events(EventFile {
-                queue: crate::event_queue::EventQueue::new(),
-            }),
-        })?;
+        let events_ino = self
+            .vtreefs
+            .lookup(self.vtreefs.tree().root(), "events")?;
         self.devices = Some(devices);
-        self.events_cookie = Some(cookie);
+        self.events_ino = Some(events_ino);
         Ok(())
     }
 
+    /// Queue an ADD/REMOVE event line on the events inode's own content
+    /// (DM-P1-5: no side table, no cookie — the inode is the file).
     fn push_event(&mut self, ev: Event) {
-        let Some(cookie) = self.events_cookie else {
+        let Some(ino) = self.events_ino else {
             return; // pre-init: no events file exists to receive anything
         };
-        crate::files::with_files(|s| {
-            let queue = s.get_mut(cookie).and_then(|entry| match &mut entry.kind {
-                crate::files::FileKind::Events(f) => Some(&mut f.queue),
-                _ => None,
-            });
-            if let Some(q) = queue {
-                let _ = q.push(ev);
-            }
-        });
+        if let Some(InodeContent::Events(q)) = self.vtreefs.tree_mut().content_mut(ino) {
+            let _ = q.push(ev);
+        }
     }
 
     /// One non-filesystem message through its typed decode (05) to its
@@ -387,7 +380,7 @@ mod tests {
     /// the device database exists, so handler tests drive one mount first.
     fn server() -> Server {
         let cfg = ServerConfig::devman_default(crate::hooks::RootStat::devman_root());
-        let mut srv = Server::new(&cfg, FsHooks::empty()).unwrap();
+        let mut srv = Server::new(&cfg).unwrap();
         mount(&mut srv);
         srv
     }
@@ -481,7 +474,7 @@ mod tests {
         // tree. After the mount everything works; a second mount does
         // NOT re-init (ids keep counting — C's `static int first`).
         let cfg = ServerConfig::devman_default(crate::hooks::RootStat::devman_root());
-        let mut srv = Server::new(&cfg, FsHooks::empty()).unwrap();
+        let mut srv = Server::new(&cfg).unwrap();
         assert!(srv.devices().is_none());
 
         let mut t = VecTransport::new(alloc::vec![Incoming::Fs(Request::Lookup {

@@ -48,7 +48,7 @@ C 把三组塞进互相引用的三个头文件（server `devman.h`、server `de
 
 ### 2.2 文件三件套（devman.h:61-80）
 
-- `devman_inode`（:75-80）：`inode*`（框架节点，02 的 `Ino` 对应物）+ `read_fn`（函数指针，哪种文件怎么读，06 实现两种）+ `data`（私房数据，01 §2.3 的 cbdata 另一端）+ 链表链。
+- `devman_inode`（:75-80）：`inode*`（框架节点，02 的 `Ino` 对应物）+ `read_fn`（函数指针，哪种文件怎么读，06 实现两种）+ `data`（私房数据，01 §2.3 的 cbdata 另一端）+ 链表链。Rust 终态（DM-P1-5）：`read_fn`+`data` 二人组由 `InodeContent` 枚举取代——内容与节点同生共死，`FileBinding` 只剩 `ino` 一个字段。
 - `devman_static_info_inode`（:61-64）：`dev*` 回指 + `data[128]` 文本（属性文件内容，06 读它）。
 - `devman_event`（:66-69）+ `devman_event_inode`（:71-73）：`data[128]` 事件文本 + 队列头（队列操作全归 06，本篇只锁结构）。
 - `devman_read_fn` typedef（:53-54）：`(char*, size_t, off_t, void*) → ssize_t`——与 01 的 `ReadHookFn` 同形（buf/len/offset/cbdata→i64），01 的省略 inode 参数决策（01 §2.3/§4 已修）在此得到呼应：两种读函数都不需要 inode 指针。

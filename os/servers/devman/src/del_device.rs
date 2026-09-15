@@ -11,7 +11,6 @@ use alloc::string::String;
 use minix_types::Errno;
 
 use crate::device_tree::DeviceTree;
-use crate::files::with_files;
 use crate::structs::{DeviceId, DeviceState, Event};
 use crate::vtreefs::InodeTree;
 
@@ -80,25 +79,12 @@ pub fn del_device(
     }
     let dev = tree.get(id).ok_or(Errno::ENODEV)?;
     let parent = dev.parent.ok_or(Errno::EINVAL)?;
-    // Attribute files: framework delete + store unregister each.
-    // (Collect first: unregister mutates the store, not the tree —
-    // no aliasing, but keep the phases visibly separate like C.)
-    let attr_bindings: Vec<(crate::vtreefs::Ino, Option<usize>)> = dev
-        .attrs
-        .iter()
-        .filter_map(|a| a.binding.map(|b| (b.ino, b.cookie)))
-        .collect();
     let dir_ino = dev.binding.ok_or(Errno::EINVAL)?.ino;
-    for (ino, cookie) in attr_bindings {
-        // Framework delete failure on a half-torn tree would abort C
-        // (asserts); here continue best-effort is wrong — propagate.
-        // (In practice infallible: inos came from live adds.)
-        fw.delete(ino)?;
-        if let Some(c) = cookie {
-            with_files(|s| s.unregister(c))?;
-        }
-    }
-    // Device dir itself.
+    // One recursive delete covers the whole device subtree: attribute
+    // files are children of the dir, and with content on the inode
+    // (DM-P1-5) their text dies with them — no side-table unregister
+    // pass, no pair-discipline to maintain. (C deleted each attr inode
+    // individually, device.c:493-504 — same net effect, more steps.)
     fw.delete(dir_ino)?;
     // Unlink from parent + tombstone + put parent once (C :505-509).
     tree.unlink_child(parent, id)?;
@@ -149,8 +135,6 @@ pub fn do_del(
     put_device(tree, fw, id)?;
     Ok(())
 }
-
-use alloc::vec::Vec;
 
 #[cfg(test)]
 mod tests {
