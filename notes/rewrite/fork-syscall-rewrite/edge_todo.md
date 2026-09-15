@@ -312,6 +312,8 @@
 >
 > **复核（2026-09-15）**：G-V12-5 行已随 V12 归档迁至 02-stage-vm/archive/todo-V12-archive-2026-09-09.md:108（不在当前 todo.md）——余件 (3) 的回写落点改为该 archive 文件；mock 门控点实测约 119 处（集中在 os/arch/src/lib.rs 的三架构三元组），余件 (2) 是机械批量更名 + kernel/boot-shim 引用同步 + 三 feature 矩阵回归。
 
+> **进度（2026-09-16，✅ 余件全闭环，commit 750d0843d）**：(2) arch `mock` feature 更名 `runtime-window`——arch/Cargo.toml default/features 更名 + arch/src 15 文件 119 处 cfg 门控批量更名 + kernel/Cargo.toml 的 `minix-arch` 依赖引用同步；(3) G-V12-5 行在 V12 archive 文件闭单回写。**裁决记录**：kernel 自身 umbrella feature 仍名 `mock`（= minix-arch/runtime-window + minix-plat/mock 级联）——它表达的是 kernel 侧测试姿态（含 plat 半），不属 arch 更名面；kernel/src 三文件（smp/dm_coverage/lib）的 `cfg(feature = "mock")` 门的是该 umbrella，首轮误更名已回退（E0308 类型错位暴露：那些门在 kernel feature 语义下选 arch Mock* 类型）。**矩阵回归**：arch default 236 / kernel 757 / vm 505 全绿；boot-shim 零错误；arch --no-default-features 与干净 HEAD 同为 37 错（既有状态，零回归）；clippy 无新增。
+
 ---
 
 ## E-MINSYS-HYGIENE minix-sys clippy 卫生项 5 条（03-stage-rs §22 扫描登记，2026-09-09，低优先）
