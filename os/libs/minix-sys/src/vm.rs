@@ -30,7 +30,7 @@
 //! Pure wrappers over the transport trait: no shared state, no
 //! synchronization questions.
 
-use crate::ipc::{IpcTransport, TrapStatus};
+use crate::ipc::IpcTransport;
 use crate::syscall::{perform_syscall, perform_taskcall};
 use minix_types::{Endpoint, Errno, Message, PhysBytes, VirBytes};
 
@@ -400,10 +400,139 @@ pub fn map_physical_via(
     Ok(VirBytes(placed))
 }
 
+/// Process-control operation: clear the target's special memory registry.
+///
+/// C: `VMPPARAM_CLEAR` (`minix3/minix/include/minix/com.h:759`).
+pub const PROCESS_CONTROL_PARAM_CLEAR: i32 = 1;
+/// Process-control operation: handle a memory range on behalf of the target.
+///
+/// C: `VMPPARAM_HANDLEMEM` (`minix3/minix/include/minix/com.h:760`).
+pub const PROCESS_CONTROL_PARAM_HANDLE_MEM: i32 = 2;
+
+/// Announces that the caller is about to exit.
+///
+/// C: `vm_willexit` (`minix3/minix/lib/libsys/vm_exit.c:25-33`): one
+/// endpoint in the first message-int lane, server-side protocol, the raw
+/// reply decides the result. The wire lane is `VMWE_ENDPOINT` = `m1_i1`
+/// (`com.h:644`), the same lane the VM server decodes [`minix_types::
+/// VmWillexitIn`] from.
+pub fn will_exit_via(transport: &impl IpcTransport, endpoint: Endpoint) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    // SAFETY: one plain integer at byte zero (m1_i1 lane).
+    unsafe {
+        message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_WILL_EXIT, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    Ok(())
+}
+
+/// Unmaps a physical memory mapping previously created for a target.
+///
+/// C: `vm_unmap_phys` (`minix3/minix/lib/libsys/vm_map_phys.c:33-49`):
+/// endpoint and virtual address travel on the wire; the length is derived
+/// by the server from the region found at the address, so the C caller's
+/// `len` argument is dead on the wire and dropped here (the same
+/// dead-parameter rule as `minix_stack_params`' unread `path`). The wire
+/// lane is the dedicated `m_lsys_vm_unmap_phys` union member — `ep` at
+/// byte 0, `vaddr` at byte 4 as a 32-bit value, exactly what the VM server
+/// decodes ([`minix_types::VmUnmapPhysIn`] documents the wire). The C
+/// version additionally removes the region from its local special-memory
+/// registry; that registry belongs to the server-integration stage and is
+/// not part of this client wrapper.
+pub fn unmap_physical_via(
+    transport: &impl IpcTransport,
+    target: Endpoint,
+    vaddr: VirBytes,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    // SAFETY: ep at bytes 0..4, 32-bit vaddr at bytes 4..8 — the wire
+    // shape follows the 32-bit C sender, so a 64-bit address truncates
+    // exactly as the C library's own i386 builds do.
+    unsafe {
+        message.m_u.raw[..4].copy_from_slice(&target.0.to_ne_bytes());
+        message.m_u.raw[4..8].copy_from_slice(&(vaddr.0 as u32).to_ne_bytes());
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_UNMAP_PHYS, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    Ok(())
+}
+
+/// Core of the process-control family.
+///
+/// C: `vm_procctl` (`minix3/minix/lib/libsys/vm_procctl.c:10-26`): five
+/// fields in the `mess_9` lanes — operation, target, extra parameter,
+/// length, flags — mapped through the `VMPCTL_*` macros (`com.h:753-757`).
+/// The wire lanes are 32-bit (`long` on i386), matching the
+/// [`minix_types::MessLcVmProcctl`] overlay the VM server decodes.
+fn process_control_via(
+    transport: &impl IpcTransport,
+    endpoint: Endpoint,
+    param: i32,
+    m1: u32,
+    len: i32,
+    flags: i32,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    // SAFETY: the m9 lanes are 32-bit fields at offsets 16/20/24/28/32 of
+    // the payload (param/who/m1/len/flags), per the MessLcVmProcctl layout.
+    unsafe {
+        message.m_u.raw[16..20].copy_from_slice(&param.to_ne_bytes());
+        message.m_u.raw[20..24].copy_from_slice(&endpoint.0.to_ne_bytes());
+        message.m_u.raw[24..28].copy_from_slice(&m1.to_ne_bytes());
+        message.m_u.raw[28..32].copy_from_slice(&len.to_ne_bytes());
+        message.m_u.raw[32..36].copy_from_slice(&flags.to_ne_bytes());
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_PROCESS_CONTROL, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    Ok(())
+}
+
+/// Clears the target's special memory registry.
+///
+/// C: `vm_procctl_clear` (`vm_procctl.c:28-30`): the process-control core
+/// with [`PROCESS_CONTROL_PARAM_CLEAR`] and zeroed payload fields.
+pub fn process_control_clear_via(
+    transport: &impl IpcTransport,
+    endpoint: Endpoint,
+) -> Result<(), Errno> {
+    process_control_via(transport, endpoint, PROCESS_CONTROL_PARAM_CLEAR, 0, 0, 0)
+}
+
+/// Asks the server to handle a memory range on behalf of the target.
+///
+/// C: `vm_procctl_handlemem` (`vm_procctl.c:33-37`): the process-control
+/// core with [`PROCESS_CONTROL_PARAM_HANDLE_MEM`]; `m1` carries a
+/// caller-defined parameter and `flags` the write flag. The wire lanes for
+/// `m1` and the length are 32-bit, so both arguments are 32-bit here —
+/// the caller cannot build a request the wire cannot express.
+pub fn process_control_handlemem_via(
+    transport: &impl IpcTransport,
+    endpoint: Endpoint,
+    m1: u32,
+    len: i32,
+    write_flag: i32,
+) -> Result<(), Errno> {
+    process_control_via(
+        transport,
+        endpoint,
+        PROCESS_CONTROL_PARAM_HANDLE_MEM,
+        m1,
+        len,
+        write_flag,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::CannedTransport;
+    use crate::ipc::{CannedTransport, TrapStatus};
 
     fn reply_with_type(message_type: i32) -> Message {
         let mut message = Message::zeroed();
@@ -630,6 +759,86 @@ mod tests {
         assert_eq!(
             map_physical_via(&transport, Endpoint(6), PhysBytes(0xF0000), VirBytes(4096)),
             Ok(VirBytes(0xA000))
+        );
+    }
+
+    #[test]
+    fn test_will_exit_sends_endpoint_in_first_int_lane() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(will_exit_via(&transport, Endpoint(4)), Ok(()));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, vm_endpoint());
+        assert_eq!(sent[0].1.m_type, VM_CALL_WILL_EXIT);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[..4], &4i32.to_ne_bytes());
+    }
+
+    #[test]
+    fn test_unmap_physical_sends_endpoint_and_truncated_vaddr() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(
+            unmap_physical_via(&transport, Endpoint(7), VirBytes(0x1_0000_8000)),
+            Ok(())
+        );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VM_CALL_UNMAP_PHYS);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[..4], &7i32.to_ne_bytes());
+        // The wire lane is 32-bit (i386 sender shape): 0x1_0000_8000
+        // truncates to 0x8000, exactly as the C library's own truncation.
+        assert_eq!(&raw[4..8], &(0x1_0000_8000u64 as u32).to_ne_bytes());
+    }
+
+    #[test]
+    fn test_procctl_clear_sends_operation_and_zeroed_payload() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(
+            process_control_clear_via(&transport, Endpoint(3)),
+            Ok(())
+        );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VM_CALL_PROCESS_CONTROL);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        // mess_9 lanes: param @16, who @20, m1 @24, len @28, flags @32.
+        assert_eq!(&raw[16..20], &PROCESS_CONTROL_PARAM_CLEAR.to_ne_bytes());
+        assert_eq!(&raw[20..24], &3i32.to_ne_bytes());
+        assert_eq!(&raw[24..40], &[0u8; 16]);
+    }
+
+    #[test]
+    fn test_procctl_handlemem_sends_all_five_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(
+            process_control_handlemem_via(&transport, Endpoint(3), 0x2000, 128, 1),
+            Ok(())
+        );
+        let sent = transport.sent.borrow();
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[16..20], &PROCESS_CONTROL_PARAM_HANDLE_MEM.to_ne_bytes());
+        assert_eq!(&raw[20..24], &3i32.to_ne_bytes());
+        assert_eq!(&raw[24..28], &0x2000u32.to_ne_bytes());
+        assert_eq!(&raw[28..32], &128i32.to_ne_bytes());
+        assert_eq!(&raw[32..36], &1i32.to_ne_bytes());
+    }
+
+    #[test]
+    fn test_procctl_failure_propagates_errno() {
+        // vm_procctl's C callers check the raw result; the Err lane carries
+        // the negated errno (taskcall convention).
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Err(TrapStatus(-minix_types::EINVAL)));
+        assert_eq!(
+            process_control_clear_via(&transport, Endpoint(3)),
+            Err(Errno::from_i32(minix_types::EINVAL))
         );
     }
 }

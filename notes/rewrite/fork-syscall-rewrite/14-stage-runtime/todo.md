@@ -101,7 +101,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Verified**：`grep -rn "PANIC_DIAGNOSTIC_HOOK\|minix_rt::set_panic_diagnostic" os/libs/minix-rt/ os/commands/ os/servers/` 零命中；kernel 注册点（kernel/src/lib.rs:1638）未动。
 - **Docs**：07 篇从未记载 hook 注册表（D-48 晚于其定稿），无需同步；lib.rs 代码注释已在本次重写。
 
-#### V1-P0-2（P0-design-missing）10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族——🔄 文档半已修复 2026-09-16（Fix #7），wrapper 半见 Fix #8/#9
+#### V1-P0-2（P0-design-missing）10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族——🔄 文档半（Fix #7）+ wrapper 半（Fix #8）已落地 2026-09-16；余：cache 族（Fix #9）与 vm_info 暂缓（已论证）
 
 **契约**：plan.md §5.1（plan.md:229）将 `vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c` 明确映射到 10 篇（"VM 客户端库·用户态 ABI 子集"）。**文档现状**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md` 对 cache/info/procctl/rusage/willexit/unmap_phys 的 grep 为**零命中**（2026-09-16 实测）——四文件族连同 `VM_VFS_MMAP`、`VM_WILLEXIT` 均未进入文档清单，也无"有意排除"声明。**实现现状**：wire 半在 minix-types 已备（`VmProcctlIn` `minix-types/src/ipc/vm.rs:512`、`MessLsysVmInfo` :1673、`MessLsysVmRusage` :1693、`VM_GETRUSAGE` :132——VM 服务器分发端已在消费部分结构）；minix-sys 侧有常量无 wrapper（`vm.rs:49/:55/:67/:71`），cache 族（`com.h:682-691` 的 +26/27/28/29）连常量都无。
 
@@ -118,6 +118,14 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Files**：10 篇新增 §2.5"客户端库余量清单（阶段计划契约对账）"：七行清单表（vm_info 三函数 / vm_procctl 两公开 / vm_cache 四公开 / vm_getrusage / vm_willexit / vm_unmap_phys / minix_vfs_mmap），每行带 C 定义行锚点、调用号偏移、消费方与排期归属；三层现状盘点（wire 半备好的 info/procctl/rusage 三族、连常量都无的 cache 族与 willexit、封装半 9/N）；排除项重申（三件归集成、SHM_UNMAP 归 E-IPCWIRE、REMAP_RO 待 E-MINTYPES-RUNTIME）。
 - **验证**：`grep -c` 实测 5 行命中（判定门槛 ≥ 4，达标；初记 18 为误写，特此勘误）；全部 C 锚点逐文件 grep 实证（vm_info.c:10/:24/:39、vm_procctl.c:10/:28/:33、vm_cache.c:15/:47/:59/:68/:77、vm_getrusage.c:7、vm_exit.c:25、vm_map_phys.c:33、mmap.c:49）。
 - **边界**：wrapper 半（Fix #8/#9）落地后回填本条；10 篇其余章节不动。
+
+**修复记录（Fix #8，2026-09-16）**：wrapper 半第一批评审落地——
+- **范围裁决**：原计划"四 wrapper"中的 vm_info 三函数**暂缓**（DEFERRED，非充数，论证如下）：其 C 语义是"服务器经用户指针往调用者缓冲写结构"（`vm_info.c` 的 `ptr`/`next` 栏），需要缓冲语义、`VMIW_*` 常量与区域枚举迭代的设计定稿，且当前树内零消费方——先写就是 start.rs 式的投机设计（该模块正是因无消费方而漂移、被 Fix #4 删除）。已在 10 篇 §2.5 如实登记，消费方（top 类工具/RS）出现时优先落地。
+- **设计**：三个新封装消费 minix-types 既有 union 臂的钉死布局（`m_lc_vm_willexit` 的 m1_i1 栏、`m_lsys_vm_unmap_phys` 的 i386 形两栏、`m_lc_vm_procctl` 的 mess_9 五栏 @16/20/24/28/32），与 VM 服务器解码侧（`VmWillexitIn`/`VmUnmapPhysIn`/`MessLcVmProcctl` 的文档锚点）互为镜像。`unmap_physical_via` 不携带 C 版长度参数——该参数在线上是死栏（wire 无长度栏，服务器按地址查区），沿用 stack.rs 删除死参数的先例并在 docstring 论证；C 版的本地特殊内存登记清除归服务端集成（10 篇既有边界）。
+- **Files**：`os/libs/minix-sys/src/vm.rs`（+`will_exit_via`/`unmap_physical_via`/`process_control_clear_via`/`process_control_handlemem_via`/私有核心 `process_control_via`/两常量 `PROCESS_CONTROL_PARAM_CLEAR=1`/`HANDLE_MEM=2` pin com.h:759-760）；`os/libs/minix-sys/src/ipc.rs`（CannedTransport 增 `sent` 出站日志——补齐与 CannedKernelCallTransport 对等的出站断言能力，纯增量，构造函数全走 `new()` 无字面量构造方）。
+- **测试**：新增 5 个（willexit 首整数栏、unmap 物理的两栏含 32 位截断语义、procctl 清除的五栏形状、handlemem 五栏全值、失败传播）；minix-sys 168 → 173 passed；clippy 零新增（期间引入过一次未用导入，已当场修正）。
+- **Docs**：10 篇 §2.5 三层现状段刷新（三个封装落地 + vm_info 暂缓论证 + C 版长度死栏说明）。
+- **边界**：cache 族（Fix #9）落地时需新调用号常量与 wire 形状核对；E-IPCWIRE 第 5 项（SHM_UNMAP）不受影响。
 
 #### V1-P0-3（P0-fact）`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ` 矛盾，且整段是零消费方的平行实现——✅ 已修复 2026-09-16（Fix #3）
 

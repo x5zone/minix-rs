@@ -665,6 +665,11 @@ pub struct CannedTransport {
     pub sendrec_replies: Vec<Result<Message, TrapStatus>>,
     /// How many send-and-receive calls happened so far.
     pub sendrec_calls: core::cell::Cell<usize>,
+    /// Every send-and-receive request, in call order — destination plus
+    /// the message exactly as handed in, so tests can assert the outgoing
+    /// wire bytes (field lanes, call numbers) the same way the kernel-call
+    /// transport's `sent` log does.
+    pub sent: core::cell::RefCell<Vec<(Endpoint, Message)>>,
 }
 
 impl CannedTransport {
@@ -673,6 +678,7 @@ impl CannedTransport {
         CannedTransport {
             sendrec_replies: Vec::new(),
             sendrec_calls: core::cell::Cell::new(0),
+            sent: core::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -704,6 +710,9 @@ impl IpcTransport for CannedTransport {
         Ok(IpcStatus::from_call(CALL_SENDREC))
     }
     fn sendrec(&self, _destination: Endpoint, message: &mut Message) -> Result<(), TrapStatus> {
+        // Record the outgoing request before applying the scripted reply,
+        // like a real round trip observed on the wire.
+        self.sent.borrow_mut().push((_destination, *message));
         // Apply the scripted reply to the message, like a real round trip.
         match self.next_sendrec_reply() {
             Ok(reply) => {

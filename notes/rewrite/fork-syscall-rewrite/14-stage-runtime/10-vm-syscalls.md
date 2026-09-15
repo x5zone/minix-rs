@@ -61,7 +61,7 @@
 | `vm_map_phys.c`（内） | `vm_unmap_phys`（:33） | `VM_UNMAP_PHYS`（基址加 16） | 物理映射的解除，驱动与服务器消费 |
 | `mmap.c`（内） | `minix_vfs_mmap`（:49） | `VM_VFS_MMAP`（基址加 46） | 文件系统替进程映射，文件系统阶段消费 |
 
-三层现状（2026 年 09 月 16 日盘点）：wire 半在共享类型库已备好的有信息、进程控制、资源统计三族（`MessLsysVmInfo`、`VmProcctlIn`、`MessLsysVmRusage` 及调用号常量，见 `minix-types/src/ipc/vm.rs`）；缓存族与预告退出的 wire 半和调用号常量都还没有；封装半只有前文讲过的九个，余量全部待补。有意排除的三件维持原判：特权设置、热更新、内存控制归集成阶段；共享解除的封装已由 edge 条目 E-IPCWIRE 认领；只读重映射待布局单点权威定稿（edge 条目 E-MINTYPES-RUNTIME）后定稿。
+三层现状（2026 年 09 月 16 日盘点）：wire 半在共享类型库已备好的有信息、进程控制、资源统计三族（`MessLsysVmInfo`、`VmProcctlIn`、`MessLsysVmRusage` 及调用号常量，见 `minix-types/src/ipc/vm.rs`）；缓存族与预告退出的 wire 半和调用号常量都还没有。封装半：前文讲过的九个之外，预告退出、物理解除、进程控制两件（清除与内存处理，共用一个五栏核心）已落地（见 `vm.rs` 的 `will_exit_via`/`unmap_physical_via`/`process_control_clear_via`/`process_control_handlemem_via`，各自带出站字节断言与失败传播测试）——物理解除的封装不携带 C 版的长度参数，因为该参数在线上就是死栏（`mess_lsys_vm_unmap_phys` 只有两栏，服务器按地址查区），C 版本里的本地特殊内存登记清除照旧归服务端集成；信息族三函数的封装暂缓，理由有二：它们的语义是"服务器经指针往调用者缓冲里写结构"，需要缓冲语义与 `VMIW_*` 常量的设计定稿，而当前树内没有消费方，先写就是又一次投机设计。有意排除的三件维持原判：特权设置、热更新、内存控制归集成阶段；共享解除的封装已由 edge 条目 E-IPCWIRE 认领；只读重映射待布局单点权威定稿（edge 条目 E-MINTYPES-RUNTIME）后定稿。
 
 ---
 
