@@ -235,7 +235,11 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 
 `AnnounceEffect` 三个变体按 C 的执行顺序排列，`announce_effects` 返回同样顺序的数组——和第 01 篇的 `init_plan` 是同一个设计手法（顺序写成数据，见第 01 篇 3.1 节）。第 01 篇的 `announce_effects_for_init` 函数把两处连起来，测试断言它们永远一致：一处改了顺序，另一处必须跟上。
 
-### 4.5 与 C 的差异说明
+### 4.5 效应：判决之后发生什么（2026-09-15 增补）
+
+回信纪律回答"要不要回、怎么回"，但服务对外做的事不止回信：给驱动发配置和灯令、把没人接的事件转交终端。这些出口在 `os/servers/input/src/effects.rs` 收拢成一张四种动作的清单（`Effect`）——两封回信（普通任务回信、查询就绪通知，各自带 C 的消息类型）加两种单向发送（对驱动用 `asynsend3` 发后不管，对终端用阻塞 `ipc_send`，阻塞的理由与客户端库相同：背压加崩溃检测，`inputdriver.c:65-73`）。每条效应自带装配好的线上消息（第 05 篇的构造器），发送端点留白——回填发送方是传输层唯一知道的事。效应是数据不是调用：分发层（未来的主循环）逐条执行，测试逐条断言，不需要传输在场。这是"判决皆纯函数"纪律的最后一环：判决的产出最终也是纯数据。
+
+### 4.6 与 C 的差异说明
 
 | C 行为 | Rust 对应 | 差异分类 |
 |--------|----------|---------|
@@ -248,7 +252,7 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/framework.rs` 的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 28 个测试，全部通过）。
+> 测试代码在 `os/servers/input/src/framework.rs` 与 `os/servers/input/src/effects.rs`（4.5 节的效应模块，2026-09-15 增补）的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 83 个测试，全部通过）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -260,11 +264,17 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 | `test_decide_reply_matches_chardriver_reply` | 普通答复寄出、四种可赊三种不可赊、重起一律沉默 | chardriver.c:195-274 |
 | `test_answer_message_types_match_c` | 三种回信各走各的消息类型 | com.h:935-937，ipc.h:939-965 |
 | `test_announce_effects_follow_c_order` | 宣告三效果的顺序 | chardriver.c:99-124 |
+| `test_reply_values_encode_c_statuses` | 回信两单位：字节与状态码（ crate 正值 errno 约定） | chardriver.c:129-151 |
+| `test_reply_interrupted_targets_the_original_read` | 取消的 EINTR 回给原请求（同编号） | chardriver.c:255-261 |
+| `test_input_conf_carries_slots_and_reserved_invalids` | 配置效应带槽位与保留槽无效值 | input.c:514-523 |
+| `test_setleds_message_round_trips_the_mask` | 灯令效应掩码往返 | input.c:214-231 |
+| `test_tty_event_forward_maps_lanes_lane_for_lane` | 转交效应五字段逐车道复制 | input.c:408-421 |
+| `test_tty_up_is_a_payload_free_announcement` | 握手效应无载荷、来源留白 | input.c:672-677 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-15）
 
-- `cargo test -p minix-input`：**29 个通过，0 个失败**。
-- 其中与本篇直接相关的 8 个（上表）；其余分属第 01 篇（5 个）、第 03 篇（6 个）、第 04 篇（8 个）与错误码模块（2 个）。
+- `cargo test -p minix-input`：**83 个通过，0 个失败**。
+- 其中与本篇直接相关的 14 个（前 8 个属 framework.rs，后 6 个属 effects.rs）；其余分属第 01 篇（5 个）、第 03 篇（6 个）、第 04 篇（8 个）、第 06 篇（4 个，另与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）与错误码模块（2 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/`
 
 ---

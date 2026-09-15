@@ -24,7 +24,7 @@
 | P1 | IN-P1-3 | 拷贝失败不推进的挂钩点缺失：`serve_copy` 无条件推进队列指针，传输失败分支不存在（✅ 2026-09-15，见 §1） |
 | P2 | IN-P2-1 | `serve_copy` 返回单位分歧：Rust 返回事件数，C 返回字节数，签名层无提示（✅ 2026-09-15，见 §2） |
 | P2 | IN-P2-2 | 事件码词汇的 crate 归属：C 是共享头文件，Rust 锁在 server crate，驱动侧与 TTY 侧将来要么重复定义要么反向依赖 |
-| P2 | IN-P2-3 | 组合层设计未定：纯函数散件与"一条消息的完整效应"之间缺一层约定，传输落地前必须裁决 |
+| P2 | IN-P2-3 | 组合层设计未定：纯函数散件与"一条消息的完整效应"之间缺一层约定，传输落地前必须裁决（✅ 2026-09-15，见 §2） |
 | P2 | IN-D1 | 文档测试计数过时：01-04 篇称 28 个、06-08 篇称 48 个、12 篇称 22 个，实际 66 / 66 / 136 |
 | P2 | IN-D2 | 00 总览与 99 全局概念两篇文档仍处于 pending 状态 |
 | P3 | IN-P3-1 | 死代码与仅测试消费项清单（分"等通电""真死""上交裁决"三类） |
@@ -107,7 +107,7 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 - 方案二：维持 server crate 所有，驱动依赖 `minix_input` lib。层级倒置（驱动 → 服务器依赖），且 minix-input 是 bin+lib 双目标 crate，被驱动依赖会拖入无关编译单元。
 - 方案三：各 crate 自持一份。违背单一权威，现状的零散重述就是方案三的演化结果，应制止而非追认。
 
-### IN-P2-3 组合层设计未定（效应输出模式）
+### IN-P2-3 组合层设计未定（效应输出模式）【✅ 已完成 2026-09-15】
 
 **是什么**：这个 crate 的全部生产代码是 `decide_*`/`apply_*` 纯函数对，但"处理一条消息产生的全部对外效应"（回信、转发 TTY、向驱动发 LED 命令、唤醒 selector）没有统一的表达。谁在什么时机执行效应，是传输落地前必须裁决的接口契约——裁决晚了，主循环（IN-P1-1 第 1 项）就会把效应调用硬编码在自己身上，将来难以测试。
 
@@ -117,6 +117,8 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 - 方案三：C 式在主循环里直接写。与本 crate 风格冲突，不赘述。
 
 **与 Redox 的对照**：Redox 的 `inputd` 是单一 daemon 直接实现事件流整合与键盘布局（[2026-01 月报](https://www.redox-os.org/news/this-month-260131/)），没有决策/执行分离——它的规模（一个整合器）撑得住直接写；input 服务器的判决面（十个槽位、挂起读、选择器、LED 记忆、驱动生命周期）比它大，分离的收益为正。
+
+**修复记录（2026-09-15，方案一落地）**：新增 `effects.rs` 模块——四种效应的统一出口词表：`ReplyTask`（普通任务回信，值分 `ReplyValue::Bytes`/`Code` 两单位）、`ReplySelect`（查询就绪通知）、`SendDriverAsync`（对驱动的发后不管：配置与灯令，`asynsend3 AMF_NOREPLY` 纪律）、`SendTerminalBlocking`（对终端的阻塞单向：事件转交与握手，阻塞理由同 `inputdriver.c:65-73`）。每条效应自带 minix-types 构造器装好的线上消息（m_source 留白由传输回填），构造函数一一对应 C 的发送点（input.c:231/:419/:514-523/:522/:672-677）。领域产出到效应的映射（`ConnectReport → input_conf`、`ForwardedEvent → tty_event`、`CancelledRead → reply_interrupted` 等）都是带 C 锚点的构造函数；唤醒路径保持 R2 的两段式领域 API（其回信在 `complete_answered_reader` 产出后果后由分发层装成 `ReplyTask`），不做强行归一。`Effect` 不派生相等比较（Message 含 union，填充域无语义），测试改为对解码后的载荷断言。文档 02 增补 §4.5 与 §5（效应六测试入表）。验证：`cargo test -p minix-input` 83 通过 0 失败；clippy 本 crate 零告警。
 
 ### IN-P3-1 死代码与仅测试消费项（三类处置）
 

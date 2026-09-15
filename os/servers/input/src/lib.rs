@@ -39,6 +39,7 @@
 extern crate alloc;
 
 pub mod connect;
+pub mod effects;
 pub mod error;
 pub mod event;
 pub mod eventbuf;
@@ -55,6 +56,7 @@ pub use connect::{
     key_is_new_driver, wants_from_typemask,
 };
 pub use error::InputError;
+pub use effects::{Effect, ReplyValue};
 pub use event::{
     ButtonCode, ConsumerCode, EventPage, GeneralDesktopCode, InputEvent, LedCode, PressState,
     ValueMode,
