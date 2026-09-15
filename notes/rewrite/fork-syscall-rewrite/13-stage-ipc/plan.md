@@ -346,7 +346,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 
 | 编号 | 状态 | 首轮 review 日期 | 备注 |
 |------|------|-----------------|------|
-| 00 | pending | — | 新建导航 |
+| 00 | finalized | 2026-09-16 | 导航篇改写定稿（IPC-D-4）：总览 + 两条主线 + 文档地图 + Rust 现状 |
 | 01 | reviewed | 2026-09-05 | 新建主循环骨架（248 行 + dispatch/server 16 测试；review 内修 1 P0 收尾可达 + 1 P0 文档 + 1 P2；24 passed） |
 | 02 | reviewed | 2026-09-05 | 新建协议面（299 行 + types 11 测试 + 7 线布局；review 内修 1 P0 填充 + 1 P1 推测 + 1 P2；164 passed） |
 | 03 | reviewed | 2026-09-05 | 新建（213 行 + mib_tree 8 测试；review 内修 1 P1 编号重叠 + 1 P2；24 passed） |
@@ -357,7 +357,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 | 08 | reviewed | 2026-09-05 | 新建（挂接与引用计数；review 内修 1 P0 映射长度；83 passed） |
 | 09 | reviewed | 2026-09-05 | 新建（进程事件；review 内修 1 P2；83 passed） |
 | 10 | reviewed | 2026-09-05 | 新建（生命周期；review 内 0 issue；83 passed） |
-| 99 | pending | — | 新建全局概念 |
+| 99 | finalized | 2026-09-16 | 全局概念改写定稿（IPC-D-4）：五张常量表 + 错误码特殊语义 + 标识符编码 + 边界行为契约（IPC-P1-1 收口） |
 
 ---
 
