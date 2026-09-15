@@ -721,6 +721,27 @@ pub(crate) fn dispatch_ipc(
     use crate::ipc::{IpcEngine, IpcOutcome, IpcError, KernelUserCopy, SendFlags};
     use crate::errno::*;
     use minix_types::VirBytes;
+    use minix_arch::{CurrentCpuContextArch, CpuContextArch};
+
+    // ── MINIX_KERNINFO (6) ──
+    // C: proc.c:685-693 — the kernel info page is handed over through the
+    // secondary IPC return channel, not a message: check the page has been
+    // published to user space, store its address in the caller's saved
+    // context, return OK. No message buffer is read or written, and the
+    // endpoint/SENDA argument decode below does not apply.
+    if matches!(ipc_call, crate::ipc::IpcCall::KernInfo) {
+        let page = crate::globals::MINIX_KERNINFO_USER.load(core::sync::atomic::Ordering::Relaxed);
+        if page == crate::globals::KERNINFO_USER_UNSET {
+            // C: proc.c:687-689 — "It might not be initialized yet."
+            return KcallResult::Ok(EBADCALL);
+        }
+        let procs = proc_table.procs_slice_mut();
+        <CurrentCpuContextArch as CpuContextArch>::set_secondary_ipc_return(
+            &mut procs[caller_idx].cpu_context,
+            page,
+        );
+        return KcallResult::Ok(OK);
+    }
 
     // Read caller fields by index (avoiding split-borrow issue — the caller
     // lives inside `proc_table`, so we derive it by index and copy the
@@ -3002,6 +3023,7 @@ pub fn kernel_call_resume(
 mod tests {
     use super::*;
     use crate::proc::ProcNr;
+    use core::sync::atomic::Ordering;
 
     #[test]
     fn test_syscall_try_from_valid() {
@@ -3752,11 +3774,13 @@ mod tests {
         // Invalid IPC call numbers (0, 17, 255) must return EBADCALL(209)
         // without entering dispatch_ipc (and thus without acquiring BKL).
         // C: proc.c:602-606 — do_ipc default branch returns EBADCALL.
+        // (6 = MINIX_KERNINFO is a valid call now — see the kerninfo tests
+        // below; 7..15 remain unassigned gaps in ipcconst.h.)
         let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
 
-        for &bad_nr in &[0i32, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 100, 255] {
+        for &bad_nr in &[0i32, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 100, 255] {
             let mut msg = Message::default();
             msg.m_type = bad_nr;
             let result = dispatch_ipc_entry(
@@ -3772,6 +3796,69 @@ mod tests {
                 bad_nr
             );
         }
+    }
+
+    #[test]
+    fn test_dispatch_ipc_entry_kerninfo_unpublished_returns_ebadcall() {
+        // MINIX_KERNINFO (6) before the kernel info page is published to
+        // user space must return EBADCALL. C: proc.c:687-689 — "It might
+        // not be initialized yet": `minix_kerninfo_user == 0` → EBADCALL.
+        // The Rust sentinel (KERNINFO_USER_UNSET = 0) pairs with the same
+        // observable behavior.
+        let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut msg = Message::default();
+        msg.m_type = 6; // MINIX_KERNINFO — ipcconst.h:12
+
+        // Guard against cross-test leakage of the published address.
+        crate::globals::MINIX_KERNINFO_USER
+            .store(crate::globals::KERNINFO_USER_UNSET, Ordering::Relaxed);
+
+        let result = dispatch_ipc_entry(
+            &mut caller,
+            &mut msg,
+            &mut priv_table,
+            &mut proc_table,
+        );
+        assert_eq!(result, KcallResult::Ok(crate::errno::EBADCALL));
+
+        // dispatch_ipc_entry transfers BKL ownership out (see the SEND
+        // test above) — release it to keep later tests unpoisoned.
+        crate::smp::bkl_unlock();
+    }
+
+    #[test]
+    fn test_dispatch_ipc_entry_kerninfo_published_returns_ok() {
+        // With the page published, MINIX_KERNINFO returns OK and the
+        // page address goes out through the secondary IPC return channel.
+        // C: proc.c:690-692 — `arch_set_secondary_ipc_return(caller_ptr,
+        // minix_kerninfo_user); return OK;`. The register write itself
+        // (x86-64: saved RBX, whole-value assignment) is pinned at the
+        // arch layer — `test_set_secondary_ipc_return_assigns_rbx` in
+        // arch/src/x86_64/boot.rs; this test pins the dispatch decision
+        // and the OK outcome (no message is read or written either way).
+        let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut msg = Message::default();
+        msg.m_type = 6; // MINIX_KERNINFO — ipcconst.h:12
+
+        const PUBLISHED_PAGE: u64 = 0x0000_7000_2000;
+        crate::globals::MINIX_KERNINFO_USER.store(PUBLISHED_PAGE, Ordering::Relaxed);
+
+        let result = dispatch_ipc_entry(
+            &mut caller,
+            &mut msg,
+            &mut priv_table,
+            &mut proc_table,
+        );
+        assert_eq!(result, KcallResult::Ok(crate::errno::OK));
+
+        // Restore the unpublished sentinel so later tests see boot state.
+        crate::globals::MINIX_KERNINFO_USER
+            .store(crate::globals::KERNINFO_USER_UNSET, Ordering::Relaxed);
+        crate::smp::bkl_unlock();
     }
 
     #[test]

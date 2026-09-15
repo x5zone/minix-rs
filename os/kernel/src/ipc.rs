@@ -78,12 +78,14 @@ pub const fn ipc_status_flags(flags: u32) -> u64 {
 /// IPC primitive type. C: `call_nr` in `do_ipc()` — proc.c:599.
 ///
 /// Values align with `minix3/minix/include/minix/ipcconst.h:7-13`:
-/// `SEND=1, RECEIVE=2, SENDREC=3, NOTIFY=4, SENDNB=5, SENDA=16`.
+/// `SEND=1, RECEIVE=2, SENDREC=3, NOTIFY=4, SENDNB=5, MINIX_KERNINFO=6,
+/// SENDA=16`.
 ///
 /// `#[repr(u8)]` keeps the encoding compatible with C's `int call_nr` for
-/// the values currently defined (1..=16). The C enum also reserves
-/// `MINIX_KERNINFO=6` (kernel info query, not an IPC primitive) which is
-/// intentionally NOT modeled here — it is dispatched separately.
+/// the values currently defined (1..=16). `MINIX_KERNINFO` (6) is not an
+/// IPC primitive — C dispatches it inside the same `do_ipc` switch
+/// (proc.c:685-693) and returns the kernel info page address through the
+/// secondary IPC return channel instead of a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum IpcCall {
@@ -97,14 +99,19 @@ pub enum IpcCall {
     Notify = 4,
     /// Non-blocking send. C: `SENDNB=5` (ipcconst.h:11)
     SendNb = 5,
+    /// Kernel info page query. C: `MINIX_KERNINFO=6` (ipcconst.h:12,
+    /// handled at proc.c:685-693). Returns the user-mapped
+    /// `minix_kerninfo` page address via the secondary IPC return channel
+    /// (x86-64: saved RBX); the caller's message buffer is untouched.
+    KernInfo = 6,
     /// Batch async send. C: `SENDA=16` (ipcconst.h:13)
     SendA = 16,
 }
 
 impl IpcCall {
     /// Decode from raw `call_nr`. Returns `None` for invalid / unsupported
-    /// values (e.g. `MINIX_KERNINFO=6`). C: `do_ipc` default branch returns
-    /// `EBADCALL` — caller maps `None` to `IpcError::BadCall`.
+    /// values. C: `do_ipc` default branch returns `EBADCALL` — caller maps
+    /// `None` to `IpcError::BadCall`.
     pub fn from_raw(value: i32) -> Option<Self> {
         match value {
             1 => Some(Self::Send),
@@ -112,6 +119,7 @@ impl IpcCall {
             3 => Some(Self::SendRec),
             4 => Some(Self::Notify),
             5 => Some(Self::SendNb),
+            6 => Some(Self::KernInfo),
             16 => Some(Self::SendA),
             _ => None,
         }
@@ -1826,6 +1834,12 @@ impl<'a> IpcEngine<'a> {
                 // and retry semantics C-isomorphic (re-read on retry).
                 self.senda(caller_nr, table_ptr, count)
             }
+            // `MINIX_KERNINFO` never reaches the engine: `dispatch_ipc`
+            // (syscall.rs) handles it before engine construction, mirroring
+            // C where the arm sits in the same outer `do_ipc` switch but
+            // returns via the secondary IPC register instead of a message
+            // (proc.c:685-693). Defensive arm keeps the match exhaustive.
+            IpcCall::KernInfo => IpcOutcome::Error(IpcError::BadCall),
         }
     }
 }
@@ -2060,7 +2074,7 @@ mod tests {
     fn test_ipc_call_from_raw() {
         assert_eq!(IpcCall::from_raw(1), Some(IpcCall::Send));
         assert_eq!(IpcCall::from_raw(16), Some(IpcCall::SendA));
-        assert_eq!(IpcCall::from_raw(6), None); // MINIX_KERNINFO not modeled
+        assert_eq!(IpcCall::from_raw(6), Some(IpcCall::KernInfo)); // ipcconst.h:12
         assert_eq!(IpcCall::from_raw(99), None);
     }
 

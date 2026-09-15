@@ -417,6 +417,25 @@ pub(crate) const ROOT_PHYS_UNSET: u64 = u64::MAX;
 
 pub(crate) static CURRENT_ROOT_PHYS: AtomicU64 = AtomicU64::new(ROOT_PHYS_UNSET);
 
+/// Sentinel for "kerninfo page not published to user processes yet".
+///
+/// C leaves `minix_kerninfo_user` at 0 until arch paging init maps the
+/// kernel info page into every user address space (glo.h:33 declares it;
+/// `arch/i386/memory.c:913` is the only writer). `do_ipc`'s
+/// `MINIX_KERNINFO` arm treats 0 as EBADCALL (proc.c:687-689, "It might
+/// not be initialized yet"), so the sentinel is 0 itself — same value,
+/// same observable behavior.
+pub(crate) const KERNINFO_USER_UNSET: u64 = 0;
+
+/// User-mapped virtual address of the `minix_kerninfo` page (E-KERNINFO).
+///
+/// Written once by arch/boot init when the page gets its user mapping
+/// (lands with the E1 user-mode trap bridge); read on every
+/// `MINIX_KERNINFO` IPC call. `AtomicU64` for the same reason as
+/// `CURRENT_ROOT_PHYS`: plain write-once-read-many `u64` needs no
+/// `SyncUnsafeCell` wrapper.
+pub(crate) static MINIX_KERNINFO_USER: AtomicU64 = AtomicU64::new(KERNINFO_USER_UNSET);
+
 
 // ── V13 D-62（2026-09-09）收编的漏网静态 ──
 // A2 的"单一审计点"此前被 4 组静态打破（本体散在 krandom/smp/clock/misc）。

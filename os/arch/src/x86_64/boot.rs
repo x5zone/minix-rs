@@ -244,6 +244,14 @@ impl CpuContextArch for X86_64CpuContextArch {
         // after the first IPC delivery, it is repurposed for IPC status.
         ctx.rbx |= value;
     }
+
+    fn set_secondary_ipc_return(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `arch_set_secondary_ipc_return` — arch_system.c:184-186,
+        // i386 body `p->p_reg.bx = val`. Plain assignment (whole address,
+        // not a flag merge); restored to the user by the trap-return
+        // RBX load (trap_return.rs, step 3).
+        ctx.rbx = value;
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +288,27 @@ mod tests {
         assert_eq!(ctx.rip, 0x1000);
         assert_eq!(ctx.rsp, 0x7fff_0000);
         assert_eq!(ctx.rbx, 0x7ffe_ffe0);
+    }
+
+    #[test]
+    fn set_secondary_ipc_return_assigns_rbx() {
+        // C: arch_set_secondary_ipc_return — arch_system.c:184-186, i386
+        // body `p->p_reg.bx = val`. Whole-value assignment (used by the
+        // MINIX_KERNINFO arm, proc.c:691): a second call overwrites the
+        // first — an OR-merge would corrupt the address.
+        let mut ctx = X86_64CpuContextArch::build_cpu_context(
+            ProcKind::Vm,
+            ProcNr(8),
+            EntrySpec::loaded(
+                VirBytes(0x1000),
+                VirBytes(0x7fff_0000),
+                VirBytes(0x7ffe_ffe0),
+            ),
+        );
+        X86_64CpuContextArch::set_secondary_ipc_return(&mut ctx, 0x0000_7000_2000);
+        assert_eq!(ctx.rbx, 0x0000_7000_2000);
+        X86_64CpuContextArch::set_secondary_ipc_return(&mut ctx, 0x0000_7000_3000);
+        assert_eq!(ctx.rbx, 0x0000_7000_3000);
     }
 
     #[test]

@@ -253,6 +253,27 @@ pub trait CpuContextArch {
     fn or_ipc_status_reg(_ctx: &mut Self::CpuContext, _value: u64) {
         // default: no-op (overridden by each arch)
     }
+
+    /// Assign (not OR-merge) the secondary IPC return channel of a saved
+    /// user context.
+    ///
+    /// C: `arch_set_secondary_ipc_return(p, val)` —
+    /// `arch_system.c:184-186`, i386 body `p->p_reg.bx = val`. This is the
+    /// return path for `MINIX_KERNINFO` (proc.c:691): the kernel hands the
+    /// caller the user-mapped kernel info page address through a register
+    /// instead of a message. Plain assignment — unlike the OR-merged IPC
+    /// status above — because each call returns one whole address.
+    ///
+    /// The channel is the same register family as the IPC status register
+    /// (x86-64: RBX), mirroring C. No cross-use hazard: each use's consumer
+    /// is the library wrapper of its own call, which reads the register
+    /// before the process issues any further IPC — status after a delivery,
+    /// the info page address after a kerninfo query.
+    ///
+    /// Default: no-op (arch must override to enable `MINIX_KERNINFO`).
+    fn set_secondary_ipc_return(_ctx: &mut Self::CpuContext, _value: u64) {
+        // default: no-op (overridden by each arch)
+    }
 }
 
 /// Load a VM ELF binary into the bootstrap page table.

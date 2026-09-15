@@ -15,6 +15,8 @@
 //! - `diagnostic`: panic diagnostic hook registration (D-48, kernel ↔ minix-rt shared)
 //! - `grant`: grant wire layout (`cp_grant_t` family — kernel ↔ user-space
 //!   grant-table contract, E-DSWIRE)
+//! - `kerninfo`: `MINIX_KERNINFO` shared page ABI (`minix_kerninfo` /
+//!   `kuserinfo` + OS release constants, E-KERNINFO)
 
 mod address;
 mod bitmap;
@@ -27,6 +29,7 @@ mod endpoint;
 mod errno;
 mod grant;
 mod id;
+mod kerninfo;
 mod pid;
 mod proc_info;
 mod proc_nr;
@@ -45,6 +48,7 @@ pub use endpoint::*;
 pub use errno::*;
 pub use grant::*;
 pub use id::*;
+pub use kerninfo::*;
 pub use pid::*;
 pub use proc_info::*;
 pub use proc_nr::*;
