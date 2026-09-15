@@ -130,6 +130,11 @@ pub union MessageUnion {
     pub m_lsys_krn_sys_mcontext: MessLsysKrnSysMcontext,
     /// Kernel: SYS_EXEC.
     pub m_lsys_krn_sys_exec: MessLsysKrnSysExec,
+    /// Kernel: SYS_FORK request. C: `mess_lsys_krn_sys_fork` — ipc.h:1173-1177.
+    pub m_lsys_krn_sys_fork: MessLsysKrnSysFork,
+    /// Kernel: SYS_FORK reply (in-place over the request). C:
+    /// `mess_krn_lsys_sys_fork` — ipc.h:283-287.
+    pub m_krn_lsys_sys_fork: MessKrnLsysSysFork,
     /// Kernel: SYS_TIMES request.
     pub m_lsys_krn_sys_times: MessLsysKrnSysTimes,
     /// Kernel: SYS_TIMES reply.
@@ -1667,6 +1672,50 @@ pub struct MessLsysKrnSysExec {
     pub ps_str: u64,
     /// Padding to 56 bytes (C: union payload size).
     pub _padding: [u8; 16],
+}
+
+/// SYS_FORK request payload (caller → kernel).
+///
+/// C: `mess_lsys_krn_sys_fork` — `minix3/minix/include/minix/ipc.h:1173-1177`
+/// (`endpoint_t endpt; endpoint_t slot; uint32_t flags; uint8_t padding[44]`,
+/// `_ASSERT_MSG_SIZE` = 56). All fields are 4 bytes on both the i386
+/// original and the LP64 rewrite, so the layout carries over unchanged.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLsysKrnSysFork {
+    /// Parent process endpoint. C: `endpoint_t endpt`.
+    pub endpt: i32,
+    /// Child slot. C: `endpoint_t slot`.
+    pub slot: i32,
+    /// Fork flags (PFF_VMINHIBIT). C: `uint32_t flags`.
+    pub flags: u32,
+    /// Padding to 56 bytes. C: `padding[44]`.
+    pub _padding: [u8; 44],
+}
+
+/// SYS_FORK reply payload (kernel → caller, written in place over the
+/// request message before `kernel_call_finish` copies it back).
+///
+/// C: `mess_krn_lsys_sys_fork` — `minix3/minix/include/minix/ipc.h:283-287`
+/// (`endpoint_t endpt; vir_bytes msgaddr; uint8_t padding[48]`).
+/// `[ARCH: A-FORKWIRE]` LP64 adaptation of the C i386 layout: `msgaddr`
+/// (`vir_bytes`) widens 4 → 8 bytes, so the tail padding shrinks 48 → 40
+/// to stay inside the 56-byte payload (rs_start LP64 precedent); field
+/// order and semantics are unchanged. C anchors: `do_fork.c:111-112`
+/// writes `endpt`/`msgaddr` in place; `msgaddr` is the parent's
+/// `p_delivermsg_vir` (the buffer the reply is copied back over, which
+/// VM pre-faults eagerly — fork.c:100-108).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessKrnLsysSysFork {
+    /// Child process endpoint. C: `endpoint_t endpt`.
+    pub endpt: i32,
+    /// Auto-padding to offset 8 (`repr(C)`; C i386 has no gap).
+    pub _pad: [u8; 4],
+    /// Parent's deliver-message buffer address. C: `vir_bytes msgaddr`.
+    pub msgaddr: u64,
+    /// Padding to 56 bytes (LP64: 48 → 40, see struct doc).
+    pub _padding: [u8; 40],
 }
 
 /// SYS_GETKSIG / SYS_ENDKSIG / SYS_KILL / SYS_SIGSEND / SYS_SIGRETURN message payload.
@@ -3977,4 +4026,22 @@ fn test_is_rs_req_arm_covers_exactly_c_family() {
         );
     }
     assert!(!Message::is_rs_req_arm(crate::RS_FI + 1), "族外新号不在表内");
+}
+
+#[test]
+fn test_fork_request_reply_layouts() {
+    // E-FORKMSG:C ipc.h:1173-1177(请求)与 :283-287(应答)的 LP64 布局
+    // 见证。请求侧全 4 字节字段,与 i386 逐字节同布局;应答侧 msgaddr
+    // 加宽 8 字节、尾 padding 缩至 40([ARCH: A-FORKWIRE],rs_start 判例),
+    // 字段偏移由 repr(C) 派生并在此钉死。
+    assert_eq!(core::mem::size_of::<MessLsysKrnSysFork>(), 56);
+    assert_eq!(core::mem::size_of::<MessKrnLsysSysFork>(), 56);
+    assert_eq!(core::mem::offset_of!(MessLsysKrnSysFork, endpt), 0);
+    assert_eq!(core::mem::offset_of!(MessLsysKrnSysFork, slot), 4);
+    assert_eq!(core::mem::offset_of!(MessLsysKrnSysFork, flags), 8);
+    assert_eq!(core::mem::offset_of!(MessKrnLsysSysFork, endpt), 0);
+    assert_eq!(core::mem::offset_of!(MessKrnLsysSysFork, msgaddr), 8);
+    // 两者都必须装进 union payload。
+    assert!(core::mem::size_of::<MessLsysKrnSysFork>() <= MESSAGE_PAYLOAD_SIZE);
+    assert!(core::mem::size_of::<MessKrnLsysSysFork>() <= MESSAGE_PAYLOAD_SIZE);
 }

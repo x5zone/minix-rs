@@ -139,6 +139,8 @@
 
 > **复核（2026-09-15）**：锚点更新——dispatch_fork 体 syscall_process.rs:133-215，应答仅 `KcallResult::Ok(child_endpoint.0)`（:214）；gateway kernel_gateway.rs:197-199 返回 `None`（注释自引本条）；fork.rs eager-CoW 门在 :364。另核实 minix-types 无 `m_krn_lsys_sys_fork` 成员——msgaddr 出参需在应答 wire 上新增字段，与本条「跨 stage 文件」第 2 项一致。
 
+> **进度（2026-09-15，✅ 闭单）**：执行中把问题从「缺 msgaddr」修正为「应答 wire 双缺 + 误编码」——C 的应答 struct `mess_krn_lsys_sys_fork`（ipc.h:283-287）本就带 endpt+msgaddr 两出参、由 do_fork 原地写入（:111-112）后 finish 整消息拷回（system.c:81-86）；Rust 现状把 child endpoint 编码进 `KcallResult::Ok(...)` 会被 finish 写进 **m_type**（应答 m_type = 端点值而非 OK），即真实通电后 VM 把 m_type 当端点读是错的、C libc 兼容读法全落空——mock seam 掩盖了这一点。落地四件：(1) minix-types 新增请求/应答双 wire struct（`MessLsysKrnSysFork` ipc.h:1173-1177 i386/LP64 同布局；`MessKrnLsysSysFork` 应答侧 `[ARCH: A-FORKWIRE]` LP64 适配 msgaddr 4→8 字节、尾 padding 48→40，rs_start 判例）+ 两 union 臂 + size_of/offset_of 断言；(2) kernel `dispatch_fork` 签名 `&Message → &mut Message`（链路 kernel_call 起本就持有 &mut，唯一改签名的臂），请求解码从 M1 overlay 换专属臂（FIX-25 纪律），成功路径原地写 endpt/`caller.p_delivermsg_vir` 并返回 `Ok(0)`（C do_fork.c:135 返回 OK）；(3) VM `TrapKernelGateway::sys_fork` 从应答臂读出参返回 `Some(msgaddr)`（真实 eager-CoW 相由此激活——fork.rs 消费逻辑零改动）；(4) 测试翻转：kernel t12 主测试断言 Ok(0)+双出参（旧代码下失败）、VM pin 测试经 `reply_message` 整载荷脚本断言 `(Endpoint(77), Some(0x7000))`（旧代码下 None），错误路径测试构造统一换新臂。方案对比：KcallResult 扩展携带出参（否——自创协议，C libc 按 ipc.h 读 wire）；finish 特判回写（否——出参语义属 handler，C 亦然）。**验证**：kernel 752 / vm 503（三矩阵 503/503/522）/ types 205 全 passed；kernel/VM clippy 基线持平（44/0 本体）。eager-CoW 的真实生效仍需 E1/E2 通电（pre-E1 trap 桩 -EIO 先于 msgaddr 消费），端到端验收挂 E5(a)。
+
 ## E5 端到端联调测试包
 
 **问题**：VM 与其他服务器的协作当前零端到端覆盖——`os/tests/pm_vm_fork{,_test}.rs` 正文整体注释停用（自注 "DEPRECATED: permanently disabled"）；VFS fdclose、RS live-update、QEMU VM paging 冒烟均无。

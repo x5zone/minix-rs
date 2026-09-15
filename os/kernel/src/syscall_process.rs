@@ -127,20 +127,31 @@ fn msg_schedctl(msg: &Message) -> MessLsysKrnSchedctl {
 /// The child gets a new endpoint with incremented generation.
 /// The child's return register is set to 0 so it knows it's the child.
 ///
-/// Returns `Ok(child_endpoint_raw)` on success, where `child_endpoint_raw`
-/// is the raw i32 value of the child's new endpoint. The caller writes
-/// this into the reply message's `m_krn_lsys_sys_fork.endpt` field.
+/// E-FORKMSG: on success the reply fields are written **in place** into
+/// the request message (`m_krn_lsys_sys_fork.{endpt,msgaddr}` — C
+/// do_fork.c:111-112) and `Ok(0)` is returned, so `kernel_call_finish`
+/// copies the message back with `m_type = OK` and both out-params on
+/// board — exactly C's shape. `msgaddr` is the caller's
+/// `p_delivermsg_vir` (the buffer the reply itself is copied over; VM
+/// pre-faults it eagerly to avoid a CoW fault inside the reply copy —
+/// fork.c:100-108).
 pub fn dispatch_fork(
     caller: &mut KProcess,
-    msg: &Message,
+    msg: &mut Message,
     proc_table: &mut ProcessTable,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    let m1 = msg_m1(msg);
-    // C: do_fork.c:41,44-45 — extract parent endpoint and child slot
-    let parent_endpt_i = m1.m1i1; // m_lsys_krn_sys_fork.endpt
-    let child_slot: ProcNr = ProcNr(m1.m1i2); // m_lsys_krn_sys_fork.slot
-    let fork_flags = m1.m1i3 as u32; // m_lsys_krn_sys_fork.flags
+    // E-FORKMSG: the C fork wire has a dedicated request struct
+    // (`m_lsys_krn_sys_fork` — ipc.h:1173-1177, endpt/slot/flags); the
+    // former M1 overlay happened to align with its first three fields,
+    // but the dedicated arm is the contract (same discipline as
+    // dispatch_schedule's FIX-25 note).
+    msg.debug_check_m_type_any(&[Syscall::Fork as i32]);
+    // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
+    let fork_req = unsafe { msg.m_u.m_lsys_krn_sys_fork };
+    let parent_endpt_i = fork_req.endpt; // C: m_lsys_krn_sys_fork.endpt
+    let child_slot: ProcNr = ProcNr(fork_req.slot); // C: m_lsys_krn_sys_fork.slot
+    let fork_flags = fork_req.flags; // C: m_lsys_krn_sys_fork.flags
 
     // Validate parent endpoint
     // C: do_fork.c:41 — isokendpt(m_ptr->m_lsys_krn_sys_fork.endpt, &p_proc)
@@ -206,12 +217,23 @@ pub fn dispatch_fork(
     // RTS_UNSET(rpc, RTS_SIGNALED | RTS_SIG_PENDING | RTS_P_STOP)
     // Already handled by fork_from()
 
-    // Return child endpoint via KcallResult.
-    // C: do_fork.c:111 — m_ptr->m_krn_lsys_sys_fork.endpt = rpc->p_endpoint;
-    // The caller (kernel_call_dispatch) writes this into the reply message.
-    // We encode the child endpoint as the return value; the dispatch layer
-    // will store it in the appropriate message field.
-    KcallResult::Ok(child_endpoint.0)
+    // C: do_fork.c:111-112 — write the reply fields in place:
+    // `m_krn_lsys_sys_fork.endpt = rpc->p_endpoint` and
+    // `m_krn_lsys_sys_fork.msgaddr = rpp->p_delivermsg_vir`. C guarantees
+    // rpp == caller, so the deliver-message address is the caller's own.
+    // kernel_call_finish then stamps m_type = OK over this same message
+    // and copies it back — the user reads both out-params from the reply.
+    {
+        // SAFETY: arm selection is by this function's contract (SYS_FORK);
+        // the union arm is plain-old-data.
+        let reply_arm = unsafe { &mut msg.m_u.m_krn_lsys_sys_fork };
+        reply_arm.endpt = child_endpoint.0;
+        reply_arm.msgaddr = caller.p_delivermsg_vir.0;
+    }
+
+    // C: do_fork.c returns OK — the child endpoint rides in the reply
+    // struct above, not in the return value (do_fork.c:135).
+    KcallResult::Ok(0)
 }
 
 /// Dispatch SYS_EXEC.
@@ -1594,22 +1616,25 @@ mod tests {
     #[test]
     fn test_t12_fork_creates_child_with_new_endpoint() {
         // C do_fork.c:69-72 — 子 endpoint 代际 +1：gen0 slot3 → (1<<15)+3。
+        // E-FORKMSG:应答形状对齐 C do_fork.c:111-112 + :135 —— 返回 OK(0),
+        // endpt/msgaddr 原地写进 m_krn_lsys_sys_fork 应答臂(msgaddr 是
+        // 调用方的 p_delivermsg_vir)。
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
 
         let mut msg = Message::default();
-        msg.m_u.m_m1.m1i1 = 100; // 父 endpoint
-        msg.m_u.m_m1.m1i2 = 3;   // 子槽位
-        msg.m_u.m_m1.m1i3 = 0;   // flags
+        msg.m_u.m_lsys_krn_sys_fork.endpt = 100; // 父 endpoint
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3;    // 子槽位
+        msg.m_u.m_lsys_krn_sys_fork.flags = 0;   // flags
 
-        let result = dispatch_fork(&mut caller, &msg, &mut proc_table, &priv_table);
-        let child_ep = match result {
-            KcallResult::Ok(v) => v,
-            other => panic!("fork 应成功，实际 {:?}", other),
-        };
-        assert_eq!(child_ep, (1 << 15) + 3, "子 endpoint = (gen+1)<<15 | slot");
+        let result = dispatch_fork(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        assert_eq!(result, KcallResult::Ok(0), "C do_fork 返回 OK");
+        // SAFETY(测试):m_type 未变(SYS_FORK),读应答臂是构造的镜像。
+        let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
+        assert_eq!(reply_arm.endpt, (1 << 15) + 3, "应答臂 endpt = (gen+1)<<15 | slot");
+        assert_eq!(reply_arm.msgaddr, caller.p_delivermsg_vir.0, "应答臂 msgaddr = p_delivermsg_vir");
         let child = proc_table.get(ProcNr(3)).unwrap();
         assert_eq!(child.p_endpoint.0, (1 << 15) + 3);
         assert_eq!(child.p_nr, ProcNr(3));
@@ -1624,11 +1649,11 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
 
         let mut msg = Message::default();
-        msg.m_u.m_m1.m1i1 = 100;
-        msg.m_u.m_m1.m1i2 = 3;
-        msg.m_u.m_m1.m1i3 = 0;
+        msg.m_u.m_lsys_krn_sys_fork.endpt = 100;
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3;
+        msg.m_u.m_lsys_krn_sys_fork.flags = 0;
 
-        let result = dispatch_fork(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_fork(&mut caller, &mut msg, &mut proc_table, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1646,11 +1671,11 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
 
         let mut msg = Message::default();
-        msg.m_u.m_m1.m1i1 = 100;
-        msg.m_u.m_m1.m1i2 = 3;
-        msg.m_u.m_m1.m1i3 = 0;
+        msg.m_u.m_lsys_krn_sys_fork.endpt = 100;
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3;
+        msg.m_u.m_lsys_krn_sys_fork.flags = 0;
 
-        let result = dispatch_fork(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_fork(&mut caller, &mut msg, &mut proc_table, &priv_table);
         assert!(matches!(result, KcallResult::Ok(_)));
         let child = proc_table.get(ProcNr(3)).unwrap();
         assert_eq!(child.priv_id, Some(crate::kpriv::USER_PRIV_ID),

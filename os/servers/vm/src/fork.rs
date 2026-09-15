@@ -336,9 +336,10 @@ pub(crate) fn do_fork(
     // (`msgaddr`, the fifth output parameter, fork.c:90). minix-rs routes
     // the call through the gateway: kernel-call failure maps to a
     // fail-closed error reply (pre-E1 the trap stub answers -EIO while
-    // kernel state is untouched); the C msgaddr output has no reply field
-    // in the minix-rs kernel yet (edge E-FORKMSG), so the gateway hands
-    // back `None` for it and the eager-CoW phase below is skipped.
+    // kernel state is untouched); the kernel writes the msgaddr in place
+    // into the reply (E-FORKMSG, do_fork.c:112), and pre-E1 no real reply
+    // exists so the trap stub's -EIO error surfaces before any msgaddr
+    // could be consumed.
     let (child_endpoint, fork_msgaddr) = gateway
         .sys_fork(parent.endpoint(), child.slot())
         .map_err(VmForkError::KernelCall)?;
@@ -357,10 +358,9 @@ pub(crate) fn do_fork(
     // Dependency notes (V11/T33): the former "two live views cannot
     // coexist" blocker dissolved when the typestate API gained
     // `activate_relaxed` — `parent` and `child` are views of *different*
-    // slots and coexist here exactly as C's `vmp`/`vmc` do. The remaining
-    // dependency is the kernel reply field (edge E-FORKMSG); until it
-    // lands, `fork_msgaddr == None` skips the phase (the kernel never
-    // delivers a fork reply pre-E2 anyway).
+    // slots and coexist here exactly as C's `vmp`/`vmc` do. The kernel
+    // reply field landed with E-FORKMSG; a `None` msgaddr (now only
+    // possible from scripted mocks) still skips the phase.
     if let Some(msgaddr) = fork_msgaddr {
         let msg_len = VirBytes(core::mem::size_of::<minix_types::Message>() as u64);
 
@@ -557,8 +557,10 @@ mod tests {
 
     #[test]
     fn test_do_fork_without_msgaddr_skips_prefault() {
-        // Pre-E-FORKMSG shape: gateway hands back no msgaddr → the eager
-        // phase is skipped and both sides stay CoW-shared (refcount 2).
+        // C's msgaddr is a conditional input for the eager phase: when the
+        // gateway reports none (scripted; the real reply always carries it
+        // post-E-FORKMSG), the phase is skipped and both sides stay
+        // CoW-shared (refcount 2).
         let table = VmProcTable::get_global();
         let mut frames = make_frames(16);
         let mut alloc = TestAlloc { next: 5 };

@@ -80,10 +80,10 @@ pub(crate) trait KernelGateway {
     /// The second tuple element is C's fifth `sys_fork` output — the
     /// deliver-message buffer address (`msgaddr`, fork.c:90, sourced from
     /// `p_delivermsg_vir`) that do_fork eager-CoWs for parent and child
-    /// (fork.c:101-108). The minix-rs kernel reply does not carry it yet
-    /// (kernel dispatch_fork returns only the endpoint), so the trap
-    /// implementation answers `None` until edge E-FORKMSG grows the field;
-    /// tests script it to drive the eager-CoW path end to end.
+    /// (fork.c:101-108). E-FORKMSG: the kernel writes it in place into
+    /// the reply (`m_krn_lsys_sys_fork.msgaddr`, do_fork.c:112), so the
+    /// trap implementation returns `Some` from the reply arm; tests may
+    /// still script `None` to drive the skip path.
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
         -> Result<(Endpoint, Option<u64>), GatewayError>;
 
@@ -176,12 +176,13 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<(Endpoint, Option<u64>), GatewayError> {
         let mut msg = Message::default();
         {
-            // SAFETY: M1 fields are the documented SYS_FORK wire layout
-            // (kernel/src/syscall_process.rs:139-141 reads m1i1/m1i2/m1i3).
-            let m1 = unsafe { &mut msg.m_u.m_m1 };
-            m1.m1i1 = parent.0;
-            m1.m1i2 = child_slot.get() as i32;
-            m1.m1i3 = 0; // C: do_fork flags — none used by VM's fork path
+            // SAFETY: the dedicated SYS_FORK request arm is the documented
+            // wire (kernel/src/syscall_process.rs dispatch_fork reads
+            // `m_lsys_krn_sys_fork`; C ipc.h:1173-1177).
+            let req = unsafe { &mut msg.m_u.m_lsys_krn_sys_fork };
+            req.endpt = parent.0;
+            req.slot = child_slot.get() as i32;
+            req.flags = 0; // C: do_fork flags — none used by VM's fork path
         }
         // C: `_kernel_call(SYS_FORK, &m)` — ENOTREADY retry loop lives in
         // `perform_kernel_call` (kernel_call.c:7-21). The tick-delay
@@ -192,11 +193,15 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         if reply < 0 {
             return Err(GatewayError::Kernel(reply));
         }
-        // C: do_fork.c:111 — the child endpoint comes back in the reply's
-        // result slot (m_type), assigned by the kernel to the child slot.
-        // The C `msgaddr` output (fork.c:90) has no reply field yet — edge
-        // E-FORKMSG; `None` keeps do_fork's eager-CoW phase off.
-        Ok((Endpoint(reply), None))
+        // E-FORKMSG: the kernel writes the reply fields in place over the
+        // request message (C do_fork.c:111-112) and answers OK(0) — the
+        // child endpoint and the parent's deliver-message buffer address
+        // both come from the `m_krn_lsys_sys_fork` reply arm, and the
+        // msgaddr enables do_fork's eager-CoW phase (fork.c:100-108).
+        // SAFETY: the transport wrote the reply into this message; the
+        // arm is plain-old-data.
+        let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
+        Ok((Endpoint(reply_arm.endpt), Some(reply_arm.msgaddr)))
     }
 
     fn diag_write(&mut self, text: &str) -> Result<(), GatewayError> {
@@ -494,18 +499,27 @@ mod tests {
     use super::*;
     use minix_types::UserSlot;
 
-    /// V11/T9: the SYS_FORK wire — call number 0, reply m_type = child
-    /// endpoint (kernel syscall_process.rs:210-215 → reply_code()).
-    /// V11/T33: the msgaddr half of the tuple is `None` pre-E-FORKMSG
-    /// (the kernel reply carries no such field yet).
+    /// E-FORKMSG: the SYS_FORK wire — the request rides the dedicated
+    /// `m_lsys_krn_sys_fork` arm (endpt/slot/flags), the kernel answers
+    /// OK(0) with the reply fields written in place
+    /// (`m_krn_lsys_sys_fork.{endpt,msgaddr}`, C do_fork.c:111-112), and
+    /// the gateway returns both — the msgaddr enables do_fork's
+    /// eager-CoW phase (fork.c:100-108).
     #[test]
     fn test_trap_gateway_sys_fork_wire() {
         let mut canned = CannedKernelCallTransport::new();
-        canned.reply(77); // kernel answers: child endpoint = 77
+        // Kernel-shaped reply: OK(0) + in-place out-params.
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test): constructing the reply arm directly.
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_fork };
+        arm.endpt = 77;
+        arm.msgaddr = 0x7000;
+        canned.reply_message(reply);
         let mut g = TrapKernelGateway { transport: canned };
         let (ep, msgaddr) = g.sys_fork(Endpoint(10), UserSlot::new(3)).unwrap();
         assert_eq!(ep, Endpoint(77));
-        assert_eq!(msgaddr, None);
+        assert_eq!(msgaddr, Some(0x7000));
     }
 
     /// V11/T14: the SYS_EXEC wire — call number 1, `MessLsysKrnSysExec`

@@ -828,7 +828,7 @@ pub(crate) fn dispatch_ipc(
 // Functions that need ProcessTable or PrivTable receive them from
 // kernel_call_dispatch (threaded through since 2026-06-15).
 
-fn dispatch_fork(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult {
+fn dispatch_fork(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult {
     crate::syscall_process::dispatch_fork(caller, msg, proc_table, priv_table)
 }
 fn dispatch_exec(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_process::dispatch_exec(caller, msg, proc_table) }
