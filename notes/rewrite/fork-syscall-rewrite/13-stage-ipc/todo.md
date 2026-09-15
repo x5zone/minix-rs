@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），已完成 16 条，余 4 条（IPC-D-1/D-2/D-3/D-4）。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），已完成 19 条，余 1 条（IPC-D-4）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -32,9 +32,9 @@
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数（**✅ 已完成** 2026-09-16，见 §2 修复记录；ShmTable Box 约定随 P1-1） |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试（**✅ 已完成** 2026-09-16） |
 | T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试（**✅ 已完成** 2026-09-16）；IPC-T-3 `tests/` 集成目录被注释声称但不存在（**✅ 已完成** 2026-09-16）；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试（**✅ 已完成** 2026-09-16） |
-| D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时 |
-| D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成 |
-| D | IPC-D-3 | plan.md:185 A-7 锚点漂移：sem.c:713-722 → 实际 :726-739 |
+| D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时（**✅ 已完成** 2026-09-16，见 §4 修复记录） |
+| D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成（**✅ 已完成** 2026-09-16） |
+| D | IPC-D-3 | plan.md:185 A-7 锚点漂移：sem.c:713-722 → 实际 :726-739（**✅ 已完成** 2026-09-16；实际修至 :729-739） |
 | D | IPC-D-4 | plan.md §6.1：00/99 篇 pending + 六篇缺 `.design/` 快照（Step 0 预检 FAIL 的既知状态） |
 | D | IPC-D-5 | 03 篇 §2.5/§3 D4/§4.1 的 MountTable 失真（E-RMIBWIRE 已登记，回指）（**✅ 已完成** 2026-09-16，随 IPC-P1-1） |
 
@@ -235,17 +235,19 @@
 
 ## 4. 文档同步（IPC-D-x）
 
-### IPC-D-1 "空壳 stub" 表述过时
+### IPC-D-1 "空壳 stub" 表述过时【✅ 已完成 2026-09-16】
 
 `README.md:6`、`plan.md:6`、`plan.md:167`（§3.5）、`plan.md:410` 四处仍称 `os/servers/ipc-server/` 为"空壳 stub（lib.rs 仅 pub fn init() {}）"。现状：17 文件 4945 行、83 测试全过（基线见 §0）。修法：各处改为当前事实并注日期；`plan.md:167` 的"测试基线待建立"改为本轮数字。注意保留"handler 层未落地"的准确表述——过时的是"空壳"，不是"未完成"。
 
-### IPC-D-2 plan.md 风险表 A-1/A-5 状态失效
+### IPC-D-2 plan.md 风险表 A-1/A-5 状态失效【✅ 已完成 2026-09-16】
 
 `plan.md:17` 说"minix-types 尚无 IPC 消息类型"——七个 `MessLcIpc*` 结构在 `message.rs:3467-3711`、语义层在 `ipc/ipc_server.rs:44-566`，齐全。风险表 `A-5`（plan.md:185）状态"待实施"——minix-sys 侧 `sys_vircopy`（syscall.rs:481）、VM 三 wrapper（vm.rs:171/:207/:335/:356）、`endpoint_identities_via`（rs.rs:170）已落地，余项（trap 桥/SEF/proceventmask/clock 等）挂 E-IPCWIRE。修法：风险表加状态注记列或行内回指，不删历史（风险表是决策记录）。
 
-### IPC-D-3 A-7 锚点漂移
+### IPC-D-3 A-7 锚点漂移【✅ 已完成 2026-09-16】
 
 `plan.md:185` 引"sem.c:713-722"作 SEM_UNDO 契约锚点，实际该检查在 :729-739（`r = EINVAL` 在 :737，警告打印在 :733-735），C 文件本轮未变——是 plan 定稿时的行号就偏了。修法：改 :729-739，顺手把 doc 05/06 里同引号段的地方 grep 一遍（本轮 grep doc 06 用的是 :730-739，正确，不需动）。
+
+**修复记录（2026-09-16，D-1/D-2/D-3 同批）**：README.md:6 与 plan.md:6/:167/:410 的空壳表述全部更新为现状（判定层+服务层落地、单元 100+集成 4、生产接线挂 E-IPCWIRE；:167 保留历史日期并声明作废）；plan.md:17 追加 2026-09-16 解除注记（A-1 失效、A-5 部分完成）；A-7 锚点修正于 :187 风险行与 :309 契约表两处（:713-722 → :729-739，后者是本轮新发现的第二处同漂移）；:377 D-6 历史行补已执行注记。验证：grep 空壳 残留仅历史语境 2 处。
 
 ### IPC-D-4 00/99 篇 pending 与 .design 快照缺口
 

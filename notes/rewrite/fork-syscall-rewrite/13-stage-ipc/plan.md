@@ -3,7 +3,7 @@
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
 > **范围**: `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`
 > **目标**: 以 **IPC server 启动顺序为主线**定义 IPC 全部文档；SysV IPC 调用旅程为次主线；最终覆盖 Minix3 IPC server（`servers/ipc/`，4 个 .c，1690 行）全部语义，支撑 IPC server 的彻底 Rust 重写
-> **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` + `03-stage-rs/` + `10-stage-mib/`（同流程先例）、`minix3/minix/servers/ipc/`（ground truth）、`os/servers/ipc-server/`（Rust 实现，当前为空壳 stub）
+> **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` + `03-stage-rs/` + `10-stage-mib/`（同流程先例）、`minix3/minix/servers/ipc/`（ground truth）、`os/servers/ipc-server/`（Rust 实现：判定层 + 服务层已落地，2026-09-16 时点单元 100 + 集成 4 测试全过；生产传输接线挂 E-IPCWIRE）
 
 ---
 
@@ -14,7 +14,7 @@
 `13-stage-ipc/` 目录自 2026-08-14 补建以来仅有**占位 README**（已移入 `draft/`），没有任何正式文档。与它的服务语义不匹配：
 
 1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
-2. **语义复杂度中等但依赖面广**——`servers/ipc/` 共 1690 行 C（4 个 .c），但跨服务依赖 6 个方向：PM（进程事件）、VM（内存映射/引用计数）、MIB（远程子树注册）、RS（加载/SEF 生命周期）、kernel（sys_datacopy）、libc（调用方）；且 `os/libs/minix-types/` **尚无 IPC 消息类型**、`os/libs/minix-sys/` 仍是 stub，Rust 侧几乎全部待建。
+2. **语义复杂度中等但依赖面广**——`servers/ipc/` 共 1690 行 C（4 个 .c），但跨服务依赖 6 个方向：PM（进程事件）、VM（内存映射/引用计数）、MIB（远程子树注册）、RS（加载/SEF 生命周期）、kernel（sys_datacopy）、libc（调用方）；且 `os/libs/minix-types/` **尚无 IPC 消息类型**、`os/libs/minix-sys/` 仍是 stub，Rust 侧几乎全部待建（2026-09-16 注：这两条已解除——七个 `MessLcIpc*` 结构与语义层类型在 minix-types 落地，minix-sys 的 vircopy/VM/凭证 wrapper 落地；Rust 侧现状见 §3.5 与 todo.md）。
 3. **与 02-stage-vm 的差异**——02-stage-vm 有旧 fork 主线文档可迁移；13-stage-ipc **无旧文档可迁移**（只有占位 README）。因此本计划从零定义文档集，`draft/` 仅保留占位素材；覆盖契约（§5）是后续写作的**唯一权威基线**，必须一次到位（同 03-stage-rs / 10-stage-mib 先例）。
 
 ### 1.2 新主线：IPC server 启动顺序 + 运行时主循环
@@ -164,7 +164,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 
 ### 3.5 测试基线
 
-> 2026-08-16 现状：`os/servers/ipc-server/` 为空壳 stub（`lib.rs` 仅 `pub fn init() {}`，`main.rs` 为 `init(); loop {}`），无测试。各文档"测试要点"章在实现期对账；`cargo test -p minix-ipc-server` 基线待实现后建立（参照 `02-stage-vm/plan.md §3.5` 的先例：`cargo test -p minix-vm --lib` = 322 passed / 15 failed）。
+> 现状（2026-09-16 更新）：`os/servers/ipc-server/` 判定层（sem/shm/perms/events/lifecycle/mib_tree/dispatch/server）与服务层（`service.rs` 的 `IpcService` + `IpcBoundary`）已落地，`cargo test -p minix-ipc-server` = 单元 100 + 集成 4 全过（首轮架构审查时基线 83，经 todo.md 修复轮递增；历史基线声明的 2026-08-16 空壳状态已作废）。生产传输接线挂 E-IPCWIRE。
 
 ### 3.6 Review gate 要求
 
@@ -184,7 +184,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 | A-4 | **libc 依赖面替换** | `mmap`/`munmap`/`memset`（IPC 自身地址空间）、`malloc`/`free`（semop sops 拷贝、`SEMOPM` 上限）、`clock_time(NULL)`（ctime/otime/atime/dtime）、`printf`（警告/调试） | `no_std`：映射 → VM 服务原语（A-9）；分配 → 全局分配器/专用 `SemAllocator`（cap 上限）；时间 → 内核时钟服务（`sys_times`/时钟抽象）；打印 → 日志服务 | 05/06/07/08/10 | 待设计 |
 | A-5 | **minix-sys 依赖面（stub）** | `getnuid`/`getngid`/`getnpid`（`libsys/getepinfo.c`）、`proceventmask`、`sys_datacopy`、`ipc_sendnb`、`asynsend3`、`sef_*`（`sef_receive_status` 等）、`vm_remap`/`vm_unmap`/`vm_getphys`/`vm_getrefcount`（`libc/sys/mmap.c`） | `minix-sys` 当前为 stub（`todo!()`），全部待实现；按 `os/servers/` 既有服务先例（RS/VM）逐项落地，错误码映射 Minix3 errno | 01/04/05/06/07/08/09 | 待实施 |
 | A-6 | **RMIB 客户端归属** | `libsys/rmib.c` 客户端（`rmib_register`/`rmib_deregister`/`rmib_process`）供 IPC 注册 kern.ipc 子树（`asynsend3(MIB_PROC_NR)` + `COMMON_MIB_*` 请求） | 归属 `minix-sys`（rmib 模块）或复用 `10-stage-mib/22-mib-rmib-client.md` 契约（MIB plan A-8）；**IPC 是 rmib 客户端的首个落地消费者** | 03 | 待实施（依赖 10-stage-mib） |
-| A-7 | **SEM_UNDO 排除契约** | `do_semop` 对 `SEM_UNDO` 返回 EINVAL + 警告（`sem.c:713-722`）；`seminfo.semmnu/semume/semusz = 0`（TODO 注释） | minix-rs **保持同样契约**（SEM_UNDO → EINVAL），**不作为演进**（Minix3 本身就是"不支持"）；显式写入行为契约 | 05/06 | 契约（非演进） |
+| A-7 | **SEM_UNDO 排除契约** | `do_semop` 对 `SEM_UNDO` 返回 EINVAL + 警告（`sem.c:729-739`）；`seminfo.semmnu/semume/semusz = 0`（TODO 注释） | minix-rs **保持同样契约**（SEM_UNDO → EINVAL），**不作为演进**（Minix3 本身就是"不支持"）；显式写入行为契约 | 05/06 | 契约（非演进） |
 | A-8 | **死/未实现项排除契约** | `#if 0 list_shm_ds`（`shm.c:448-464`）；`kern_ipc_table` 中 KERN_SYSVIPC_SHMMAX/SHMMNI/SHMSEG/SHMMAXPGS/SHMUSEPHYS 槽位 "not yet supported"（`main.c:67-75`）；`KERN_SYSVIPC_MSG = 0`（无 SysV 消息队列）；`DEBUG_SEM` 调试宏；`verbose` 打印 | 不实现，标注排除 + 槽位保留语义（`KERN_SYSVIPC_MSG=0` 保持）；调试宏 → cfg 特性 | 03/05/06/07/08 | 排除（grep 实证，见 §5.5） |
 | A-9 | **VM 服务契约（跨 stage）** | `vm_remap`(VM_REMAP)/`vm_unmap`(VM_UNMAP)/`vm_getphys`(VM_GETPHYS)/`vm_getrefcount`(VM_GETREF) + `mmap`(VM_MMAP)/`munmap`(VM_MUNMAP)（`libc/sys/mmap.c` → VM_PROC_NR） | 与 02-stage-vm 重写后的 VM 消息面对齐（`minix-types/vm.rs` 已有 VM_REMAP/VM_GETPHYS/VM_GETREF 等）；映射原语在 `minix-sys` 封装；`ipc.conf` vm 特权面（REMAP/REMAP_RO/SHM_UNMAP/GETPHYS/GETREF）必须逐项落地 | 07/08 | 跨 stage 契约 |
 | A-10 | **单线程事件循环执行模型** | 主循环 `sef_receive_status(ANY)` 串行处理；`SUSPEND` 后由 `check_set`/`sem_process_event` 异步恢复（无并发） | 与 02-stage-vm 相同：单线程事件循环，`Rc`/`RefCell`/`!Send`/`!Sync` 合理；无内核级并发，不需要 `Arc`/`Mutex` | 01/06 | 参照先例 |
@@ -306,7 +306,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 | `list_shm_ds` | `shm.c:448-464`（`#if 0`） | 不实现（死代码） |
 | KERN_SYSVIPC_SHMMAX/SHMMNI/SHMSEG/SHMMAXPGS/SHMUSEPHYS 槽位 | `main.c:67-75`（"not yet supported"） | 不实现，槽位保留（访问返回对应错误） |
 | `KERN_SYSVIPC_MSG` | `main.c:54`（=0，无 SysV 消息队列） | 保持 0（Minix3 无消息队列支持） |
-| `SEM_UNDO` | `sem.c:713-722`（EINVAL + 警告）；`seminfo.semmnu/semume/semusz=0` | 保持同样契约（EINVAL），写入行为契约（A-7） |
+| `SEM_UNDO` | `sem.c:729-739`（EINVAL + 警告）；`seminfo.semmnu/semume/semusz=0` | 保持同样契约（EINVAL），写入行为契约（A-7） |
 | `DEBUG_SEM` 调试宏 | `sem.c:579-582,618-621,628-632` | 不实现（cfg 特性或省略） |
 | `verbose` 打印 | `main.c:6` | 可选 cfg（设计差异） |
 | `_sem_base`/`_shm_internal` 私有字段 | `sys/sem.h`、`sys/shm.h` | Rust 内部布局自由演进（不保留 C 布局） |
@@ -374,7 +374,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 | D-3 | `KERN_SYSVIPC_MSG=0`（无消息队列）与"not yet supported"槽位未区分——前者是 Minix3 既有语义，后者是未实现位 | P2 | §5.5 分开列项：MSG 保持 0；SHMMAX 等槽位保留 |
 | D-4 | 编号 02/03/04 与 05~08 的依赖序初版有前向引用风险（03 的 kern_ipc_info 分派需要 05/08 的 info 实现） | P2 | 03 边界声明"info 实现 → 05/08"，与 01 骨架 defer 模式一致（先例：10-stage-mib 01/10 defer） |
 | D-5 | ARCH 表初版 11 项过细（时间精度、printf 等单列），与先例粒度不一致 | P2 | 合并为 A-1~A-10（A-4 收 libc 面、A-5 收 minix-sys 面、A-8 收排除契约） |
-| D-6 | §3.5 测试基线缺失（IPC 无测试基线可对账） | P2 | 新增 §3.5：声明现状为空壳 stub + 参照 02-stage-vm 先例 |
+| D-6 | §3.5 测试基线缺失（IPC 无测试基线可对账） | P2 | 新增 §3.5：声明现状为空壳 stub + 参照 02-stage-vm 先例（已执行；现状段 2026-09-16 更新，见 §3.5） |
 
 ### 7.2 minix3 源码回归 review（2026-08-16）
 
@@ -407,4 +407,4 @@ rg -n 'rmib_register|rmib_process' minix3/minix/lib/libsys/rmib.c         # RMIB
 - `../10-stage-mib/22-mib-rmib-client.md` — RMIB 客户端契约（A-6 依赖）
 - `../00-master-plan/README.md` — 目录重排与新主线说明
 - `minix3/minix/servers/ipc/` — C 源码（ground truth）
-- `os/servers/ipc-server/` — Rust 实现（当前为空壳 stub）
+- `os/servers/ipc-server/` — Rust 实现（判定层 + 服务层已落地；生产传输接线挂 E-IPCWIRE）

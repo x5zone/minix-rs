@@ -3,7 +3,7 @@
 > **状态**: 骨架就绪（plan.md 定稿 2026-08-16；各 doc 为最小骨架，待按 plan.md 改写）
 > **主线**: IPC server 启动顺序（RS 加载 → SEF init → kern.ipc MIB 子树注册 → 主循环 dispatch）；SysV IPC 调用旅程为次主线
 > **Ground truth**: `minix3/minix/servers/ipc/`（4 个 .c，1690 行）
-> **Rust**: `os/servers/ipc-server/`（当前为空壳 stub）
+> **Rust**: `os/servers/ipc-server/`（判定层 + 服务层已落地，2026-09-16；生产传输接线挂 edge E-IPCWIRE）
 
 ## 概念边界
 
