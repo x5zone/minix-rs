@@ -166,60 +166,26 @@ pub(crate) struct TrapKernelGateway<T: KernelCallTransport> {
     pub(crate) transport: T,
 }
 
-/// C: SYS_FORK is kernel call number 0 in minix-rs
-/// (kernel/src/syscall.rs:66 `Syscall::Fork = 0`, decoded at :125).
-/// C spells it `KERNEL_CALL + 1`; the numeric convention of this codebase
-/// is the small non-negative kernel-call space decoded by `Syscall::try_from`.
-const SYS_FORK_CALL: i32 = 0;
-
 impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
     fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<(Endpoint, Option<u64>), GatewayError> {
-        let mut msg = Message::default();
-        {
-            // SAFETY: the dedicated SYS_FORK request arm is the documented
-            // wire (kernel/src/syscall_process.rs dispatch_fork reads
-            // `m_lsys_krn_sys_fork`; C ipc.h:1173-1177).
-            let req = unsafe { &mut msg.m_u.m_lsys_krn_sys_fork };
-            req.endpt = parent.0;
-            req.slot = child_slot.get() as i32;
-            req.flags = 0; // C: do_fork flags — none used by VM's fork path
-        }
-        // C: `_kernel_call(SYS_FORK, &m)` — ENOTREADY retry loop lives in
-        // `perform_kernel_call` (kernel_call.c:7-21). The tick-delay
-        // callback is a no-op until a user-space tickdelay primitive lands
-        // with E1; pre-E1 the transport answers -EIO immediately so the
-        // delay path is never exercised.
-        let reply = perform_kernel_call(&self.transport, SYS_FORK_CALL, &mut msg, |_| {});
-        if reply < 0 {
-            return Err(GatewayError::Kernel(reply));
-        }
-        // E-FORKMSG: the kernel writes the reply fields in place over the
-        // request message (C do_fork.c:111-112) and answers OK(0) — the
-        // child endpoint and the parent's deliver-message buffer address
-        // both come from the `m_krn_lsys_sys_fork` reply arm, and the
-        // msgaddr enables do_fork's eager-CoW phase (fork.c:100-108).
-        // SAFETY: the transport wrote the reply into this message; the
-        // arm is plain-old-data.
-        let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
-        Ok((Endpoint(reply_arm.endpt), Some(reply_arm.msgaddr)))
+        // E2: consume the minix-sys wrapper — the request arm construction
+        // and the E-FORKMSG reply-arm parsing (endpt + msgaddr, C
+        // do_fork.c:111-112) live in one place now.
+        minix_sys::syscall::sys_fork(&self.transport, parent.0, child_slot.get() as i32, 0)
+            .map(|(endpt, msgaddr)| (Endpoint(endpt), Some(msgaddr)))
+            .map_err(GatewayError::Kernel)
     }
 
     fn diag_write(&mut self, text: &str) -> Result<(), GatewayError> {
-        // m_type is written by perform_kernel_call (the call number).
-        let mut msg = Message::default();
-        {
-            // SAFETY: documented SYS_DIAGCTL wire — the kernel dispatch
-            // reads code/len/buf (kernel/src/syscall.rs:2285-2292).
-            let d = unsafe { &mut msg.m_u.m_lsys_krn_sys_diagctl };
-            d.code = 1; // DIAGCTL_CODE_DIAG
-            d.buf = text.as_ptr() as u64;
-            d.len = text.len() as u64;
-        }
-        let reply = perform_kernel_call(&self.transport, SYS_DIAGCTL_CALL, &mut msg, |_| {});
-        if reply < 0 {
-            return Err(GatewayError::Kernel(reply));
-        }
-        Ok(())
+        // E2: consume the minix-sys wrapper (DIAGCTL_CODE_DIAG = 1; the
+        // kernel copies the buffer out of this process's address space).
+        minix_sys::syscall::sys_diagctl(
+            &self.transport,
+            1, // DIAGCTL_CODE_DIAG
+            text.as_ptr() as u64,
+            text.len() as u64,
+        )
+        .map_err(GatewayError::Kernel)
     }
 
     fn sys_vmctl_memreq_get(&mut self)
@@ -312,46 +278,21 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         name_ptr: u64,
         ps_str: u64,
     ) -> Result<(), GatewayError> {
-        let mut msg = Message::default();
-        {
-            // SAFETY: documented SYS_EXEC wire — the kernel dispatch reads
-            // endpt/ip/stack/name/ps_str (kernel/src/syscall_process.rs:240).
-            let e = unsafe { &mut msg.m_u.m_lsys_krn_sys_exec };
-            e.endpt = endpt.get();
-            e.ip = ip;
-            e.stack = stack;
-            e.name = name_ptr;
-            e.ps_str = ps_str;
-        }
-        let reply = perform_kernel_call(&self.transport, SYS_EXEC_CALL, &mut msg, |_| {});
-        if reply < 0 {
-            return Err(GatewayError::Kernel(reply));
-        }
-        Ok(())
+        // E2: consume the minix-sys wrapper (documented SYS_EXEC wire —
+        // kernel dispatch_exec reads endpt/ip/stack/name/ps_str).
+        minix_sys::syscall::sys_exec(&self.transport, endpt.get(), ip, stack, name_ptr, ps_str)
+            .map_err(GatewayError::Kernel)
     }
 
     fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
         -> Result<(), GatewayError>
     {
-        let mut msg = Message::default();
-        {
-            // SAFETY: documented SYS_UPDATE wire — the kernel dispatch
-            // reads m1i1/m1i2/m1i3 (kernel/src/misc.rs dispatch_update).
-            let m1 = unsafe { &mut msg.m_u.m_m1 };
-            m1.m1i1 = src.get();
-            m1.m1i2 = dst.get();
-            m1.m1i3 = flags as i32;
-        }
-        let reply = perform_kernel_call(&self.transport, SYS_UPDATE_CALL, &mut msg, |_| {});
-        if reply < 0 {
-            return Err(GatewayError::Kernel(reply));
-        }
-        Ok(())
+        // E2: consume the minix-sys wrapper (SYS_UPDATE is M1 by C design —
+        // do_update.c:9-11; kernel dispatch_update reads m1i1/m1i2/m1i3).
+        minix_sys::syscall::sys_update(&self.transport, src.get(), dst.get(), flags as i32)
+            .map_err(GatewayError::Kernel)
     }
 }
-
-/// C: SYS_DIAGCTL is kernel call 44 (kernel/src/syscall.rs:106).
-const SYS_DIAGCTL_CALL: i32 = 44;
 
 /// SYS_VMCTL kernel-call number (kernel/src/syscall.rs:105 `Syscall::Vmctl = 43`).
 #[cfg(test)]
@@ -365,12 +306,6 @@ const VMCTL_MEMREQ_REPLY: i32 = 15;
 /// SVMCTL_PARAM sub-command: clear RTS_PAGEFAULT on the target
 /// (kernel/src/vm.rs VmCtlParam::ClearPageFault = 12; C VMCTL_CLEAR_PAGEFAULT).
 const VMCTL_CLEAR_PAGEFAULT: i32 = 12;
-/// C: SYS_UPDATE is kernel call 52 (kernel/src/syscall.rs:112 `Update = 52`).
-const SYS_UPDATE_CALL: i32 = 52;
-/// C: SYS_EXEC kernel call number — kernel/src/syscall.rs `Syscall::Exec`
-/// (decoded by `Syscall::try_from`; grep the enum for the current value).
-const SYS_EXEC_CALL: i32 = 1;
-
 #[cfg(test)]
 /// Scripted gateway for unit tests: records `sys_fork` inputs and answers
 /// either a configured endpoint (success) or a gateway error.

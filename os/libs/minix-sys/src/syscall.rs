@@ -521,6 +521,184 @@ pub fn sys_clear(
     perform_kernel_call(transport, SYS_CLEAR_CALL, &mut msg, |_| {})
 }
 
+// ── VM 侧 SYS_* wrappers（edge_todo.md E2：六个薄包装，CannedTransport
+// 回放测试）──
+//
+// 约定（同上方既有 wrapper 区）：
+// - m_type 由 `perform_kernel_call` 写入调用号；
+// - 请求载荷按 C 的 union 成员填写（kernel dispatch 侧的读取臂是
+//   契约锚点）；
+// - 返回值 = 内核回复 m_type（负 errno 或非负结果），不吞错。
+// 调用号常量消费 minix-types 的 kernel_call 权威（E-MINTYPES-SYS），
+// 不再本地定义。
+
+/// SYS_FORK：创建子进程（C: libsys `sys_fork` 语义；kernel
+/// `dispatch_fork`）。
+///
+/// 应答形状见 E-FORKMSG：内核返回 OK(0) 并把出参原地写进应答臂
+/// `m_krn_lsys_sys_fork`（ipc.h:283-287；do_fork.c:111-112）——
+/// `endpt` 是子进程端点，`msgaddr` 是父进程交付消息缓冲地址（VM 据此
+/// 做 eager-CoW，fork.c:100-108）。成功返回 `(child_endpt, msgaddr)`，
+/// 失败返回负 errno。
+pub fn sys_fork(
+    transport: &impl KernelCallTransport,
+    parent_endpt: i32,
+    child_slot: i32,
+    flags: u32,
+) -> Result<(i32, u64), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_fork 是 SYS_FORK 的文档化请求布局
+        //（kernel/src/syscall_process.rs dispatch_fork 读 endpt/slot/flags；
+        // C ipc.h:1173-1177）。
+        let req = unsafe { &mut msg.m_u.m_lsys_krn_sys_fork };
+        req.endpt = parent_endpt;
+        req.slot = child_slot;
+        req.flags = flags;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_FORK, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 应答由内核原地写入同一消息；臂为 plain-old-data。
+    let arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
+    Ok((arm.endpt, arm.msgaddr))
+}
+
+/// SYS_EXEC：重载目标进程映像（C: libsys `sys_exec`；kernel
+/// `dispatch_exec` 读 `m_lsys_krn_sys_exec`，成功返回 OK）。
+pub fn sys_exec(
+    transport: &impl KernelCallTransport,
+    endpt: i32,
+    ip: u64,
+    stack: u64,
+    name: u64,
+    ps_str: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_exec 是 SYS_EXEC 的文档化载荷布局
+        //（kernel/src/syscall_process.rs dispatch_exec；C ipc.h）。
+        let e = unsafe { &mut msg.m_u.m_lsys_krn_sys_exec };
+        e.endpt = endpt;
+        e.ip = ip;
+        e.stack = stack;
+        e.name = name;
+        e.ps_str = ps_str;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_EXEC, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_SAFECOPYFROM：经 grant 从授权方拷入调用方空间（C: libsys
+/// `sys_safecopyfrom`；kernel `dispatch_safecopy_from` 读
+/// `m_lsys_kern_safecopy`，成功返回 OK，无应答出参）。
+pub fn sys_safecopyfrom(
+    transport: &impl KernelCallTransport,
+    granter_endpt: i32,
+    grant_id: i32,
+    grant_offset: u64,
+    user_addr: u64,
+    bytes: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_kern_safecopy 是 SAFECOPYFROM/TO 共用的载荷布局
+        //（kernel/src/syscall_copy.rs:181；C ipc.h）。
+        let sc = unsafe { &mut msg.m_u.m_lsys_kern_safecopy };
+        sc.from_to = granter_endpt;
+        sc.grant_id = grant_id;
+        sc.offset = grant_offset;
+        sc.address = user_addr;
+        sc.bytes = bytes;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SAFECOPYFROM, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_SAFECOPYTO：经 grant 把调用方空间拷给授权方（方向与
+/// [`sys_safecopyfrom`] 相反，同一载荷臂，C: libsys `sys_safecopyto`）。
+pub fn sys_safecopyto(
+    transport: &impl KernelCallTransport,
+    granter_endpt: i32,
+    grant_id: i32,
+    grant_offset: u64,
+    user_addr: u64,
+    bytes: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: 同 sys_safecopyfrom——两者共用 m_lsys_kern_safecopy 臂。
+        let sc = unsafe { &mut msg.m_u.m_lsys_kern_safecopy };
+        sc.from_to = granter_endpt;
+        sc.grant_id = grant_id;
+        sc.offset = grant_offset;
+        sc.address = user_addr;
+        sc.bytes = bytes;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SAFECOPYTO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_UPDATE：RS live-update 的内核相（C: libsys `sys_update`；kernel
+/// `dispatch_update` 按 M1 读 src/dst/flags —— do_update.c:9-11 的 C
+/// 形状就是 M1，非误读，成功返回 OK）。
+pub fn sys_update(
+    transport: &impl KernelCallTransport,
+    src_endpt: i32,
+    dst_endpt: i32,
+    flags: i32,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_m1 是 SYS_UPDATE 的文档化载荷（kernel/src/misc.rs
+        // dispatch_update 读 m1i1/m1i2/m1i3；C do_update.c:9-11）。
+        let m1 = unsafe { &mut msg.m_u.m_m1 };
+        m1.m1i1 = src_endpt;
+        m1.m1i2 = dst_endpt;
+        m1.m1i3 = flags;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_UPDATE, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_DIAGCTL：诊断控制（C: libsys `sys_diagctl`；kernel
+/// `dispatch_diagctl` 读 `m_lsys_krn_sys_diagctl` 的 code/buf/len——
+/// DIAG 码 1 时内核从调用方空间拷取至多 DIAGBUFSIZE 字节并打到控制台）。
+pub fn sys_diagctl(
+    transport: &impl KernelCallTransport,
+    code: i32,
+    buf: u64,
+    len: u64,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_diagctl 是 SYS_DIAGCTL 的文档化载荷布局
+        //（kernel/src/syscall.rs dispatch_diagctl；C ipc.h）。
+        let d = unsafe { &mut msg.m_u.m_lsys_krn_sys_diagctl };
+        d.code = code;
+        d.buf = buf;
+        d.len = len;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DIAGCTL, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
 
 /// Performs a kernel call with "not ready" retries.
 ///
@@ -922,5 +1100,108 @@ mod tests {
         transport.reply_sendrec(Err(TrapStatus(-11)));
         let mut message = test_message(0);
         assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), -11);
+    }
+
+    // ── E2:VM 侧六个 SYS_* wrapper 的 CannedTransport 回放测试 ──
+
+    /// SYS_FORK 回放:请求臂逐字段 + 应答臂出参解析(E-FORKMSG 形状)。
+    #[test]
+    fn test_sys_fork_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造应答臂镜像内核 do_fork.c:111-112 的原地写。
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_fork };
+        arm.endpt = 32771;
+        arm.msgaddr = 0x7000;
+        canned.reply_message(reply);
+
+        let r = sys_fork(&canned, 10, 3, 0);
+        assert_eq!(r, Ok((32771, 0x7000)));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, minix_types::SYS_FORK); // 0x600
+        // SAFETY(test):读回请求臂核对逐字段。
+        let req = unsafe { sent[0].m_u.m_lsys_krn_sys_fork };
+        assert_eq!((req.endpt, req.slot, req.flags), (10, 3, 0));
+    }
+
+    /// SYS_FORK 错误直通(负 errno 不折叠)。
+    #[test]
+    fn test_sys_fork_negative_errno_passthrough() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-14); // EFAULT
+        assert_eq!(sys_fork(&canned, 10, 3, 0), Err(-14));
+        assert_eq!(canned.calls.get(), 1);
+    }
+
+    /// SYS_EXEC 回放:五个载荷字段 + OK。
+    #[test]
+    fn test_sys_exec_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_exec(&canned, 8, 0x1000, 0x9000, 0x8000, 0x7f00);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_EXEC); // 0x601
+        // SAFETY(test):读回请求臂核对逐字段。
+        let e = unsafe { sent[0].m_u.m_lsys_krn_sys_exec };
+        assert_eq!((e.endpt, e.ip, e.stack, e.name, e.ps_str), (8, 0x1000, 0x9000, 0x8000, 0x7f00));
+    }
+
+    /// SYS_SAFECOPYFROM 回放:grant 五元组 + OK(无应答出参)。
+    #[test]
+    fn test_sys_safecopyfrom_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_safecopyfrom(&canned, 4, 12, 0x40, 0x20_0000, 256);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_SAFECOPYFROM); // 0x61f
+        // SAFETY(test):读回请求臂核对逐字段。
+        let sc = unsafe { sent[0].m_u.m_lsys_kern_safecopy };
+        assert_eq!(
+            (sc.from_to, sc.grant_id, sc.offset, sc.address, sc.bytes),
+            (4, 12, 0x40, 0x20_0000, 256)
+        );
+    }
+
+    /// SYS_SAFECOPYTO 回放:同臂反向调用号。
+    #[test]
+    fn test_sys_safecopyto_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_safecopyto(&canned, 4, 12, 0x40, 0x20_0000, 256);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_SAFECOPYTO); // 0x620
+    }
+
+    /// SYS_UPDATE 回放:M1 三字段(C do_update.c:9-11 的真实形状)。
+    #[test]
+    fn test_sys_update_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_update(&canned, 2, 9, 1);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_UPDATE); // 0x634
+        // SAFETY(test):读回 M1 臂核对逐字段。
+        let m1 = unsafe { sent[0].m_u.m_m1 };
+        assert_eq!((m1.m1i1, m1.m1i2, m1.m1i3), (2, 9, 1));
+    }
+
+    /// SYS_DIAGCTL 回放:code/buf/len + OK。
+    #[test]
+    fn test_sys_diagctl_wire_roundtrip() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let r = sys_diagctl(&canned, 1, 0x4000, 32);
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_DIAGCTL); // 0x62c
+        // SAFETY(test):读回载荷臂核对逐字段。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
+        assert_eq!((d.code, d.buf, d.len), (1, 0x4000, 32));
     }
 }

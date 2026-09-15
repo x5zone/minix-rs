@@ -64,6 +64,8 @@
 
 > **复核（2026-09-15）**：锚点更新——`perform_kernel_call` 现 :539（`KernelCallTransport` 区间基本未变）；minix-sys 现有 11 个 `sys_*` wrapper（kill/abort/times/sigsend/getksig/endksig/trace/runctl/resume/vircopy/clear），本条 VM 侧 6 类（fork/update/safecopyfrom/safecopyto/exec/diagctl）grep 零命中待建；minix-types `ipc/sysinfo.rs` 已有 SYS_GETINFO/SYS_DIAGCTL/SYS_SAFECOPYFROM/SYS_SAFECOPYTO 等常量可直接消费。
 
+> **进度（2026-09-15，✅ 闭单）**：六个 wrapper 落地 `os/libs/minix-sys/src/syscall.rs`（沿既有 wrapper 约定区三条款：m_type 由 perform_kernel_call 写、载荷按 C union 成员填、负 errno 不吞）——`sys_fork`（E-FORKMSG 应答臂双出参 → `Result<(endpt, msgaddr), i32>`）、`sys_exec`（五载荷字段）、`sys_safecopyfrom`/`sys_safecopyto`（共用 `m_lsys_kern_safecopy` 臂五元组，无应答出参）、`sys_update`（M1 三字段——C do_update.c:9-11 的真实形状）、`sys_diagctl`（code/buf/len）。调用号常量**消费 minix-types::kernel_call 权威**（E-MINTYPES-SYS 产物，不添本地镜像）。CannedTransport 回放测试 ×7（六臂逐字段 wire + fork 错误直通）。**VM gateway 同轮切换**：sys_fork/diag_write/sys_exec/sys_update 四臂从内联 wire 改消费 wrapper（sys_kill 先例）——消除四份双真相源，四个死调用号常量（SYS_FORK_CALL 等）删除；SYS_VMCTL 三臂留在 gateway（VM 专用语义含应答臂解析，不在 E2 六类）。**解锁更新**：T11/T13/T14/T15 的通电面已备（pre-E1 trap 桩 -EIO 时 wrapper 诚实返回 Err，行为同今日）；safecopy wrapper 同时是 E-RSWIRE 第 3 步与 E-DSWIRE SysKernel 三拷贝桩的接续点。**验证**：minix-sys 132（+7）/ types 205 / kernel 752 / vm 503（all-features 522）全 passed；vm clippy 本体零告警。
+
 ---
 
 ## E4 pt_alloc free 注册 + 三架构 destroy 中间页回收（= 02-stage-vm V11-P2-8）
