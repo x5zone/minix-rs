@@ -29,7 +29,7 @@
 | P2 | IN-D2 | 00 总览与 99 全局概念两篇文档仍处于 pending 状态（✅ 2026-09-15，见 §3） |
 | P3 | IN-P3-1 | 死代码与仅测试消费项清单（分"等通电""真死""上交裁决"三类）（✅ 2026-09-15，见 §2） |
 | P3 | IN-P3-2 | 边界测试族缺口（极限回绕、槽位耗尽、selector 覆盖、单侧断连等） |
-| P3 | IN-P3-3 | wire 测试盲区（`tty_up_msg` 拒收、KIOCSLEDS 截断、保留槽、通知携带消息号） |
+| P3 | IN-P3-3 | wire 测试盲区（`tty_up_msg` 拒收、KIOCSLEDS 截断、保留槽、通知携带消息号）（✅ 2026-09-15，见 §2） |
 | P3 | IN-D3 | close 全清偏离未按三层术语标注 `[ARCH: ...]`（doc + design + code 三处一致） |
 | P3 | IN-D4 | 语义映射表只覆盖 01-12 篇；14 篇契约文档与 16-stage 实现文档互不回指 |
 | edge | E-INWIRE | input 服务器生产传输接线四缺（挂 minix-sef 落地方式决策 + 联调挂靠 E5） |
@@ -142,9 +142,11 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 
 **修复记录（2026-09-15，本轮 IN-P3-2 集中补齐 + IN-P1-1 落地时已随带 11 条）**：新增 12 条边界测试——eventbuf 极限回绕两条（tail 31 取 32 的 1+31 两段、tail 0 整环一次拷）加 drain 空计数；connect 鼠标窗耗尽不侵占键盘窗、断开未关槽跳过后下间接棒、断连单侧两场景、labels_match 的 strcmp 首截断四断言；framework 开门集合 256 溢出返回 false；handlers 第二查询者覆盖；produce 落位下标 31 再回绕、总机槽位自身事件进总机队列、前缀即整键的空标签、车道窄化与 C 隐式截断一致。各测试带 C 行号注释，两条在编写中纠正了错误前提（开门必须先于读过重启门；转交要求发送方是槽主——均为 C 的真实行为）。文档 02/07/08/09/11 测试表补行，九篇计数口径同步 86→98。验证：`cargo test -p minix-input` 98 通过 0 失败；clippy 零告警。
 
-### IN-P3-3 wire 测试盲区
+### IN-P3-3 wire 测试盲区【✅ 已完成 2026-09-15】
 
 `minix-types`/`minix-sys` 侧：`tty_up_msg` 被四个 `decode_*` 拒收（应返回 None）未测；`KIOCSLEDS` 的 size > 0xFFF 截断分支未测；`decode_conf` 只测了 rsvd1 非法、rsvd2 未测（input.rs:265-267）；通知携带 `INPUT_CONF` 消息号时的优先级（C 是"先判通知再判消息号"，inputdriver.c:144-163，现有测试只用了 `INPUT_EVENT` 作通知号，inputdriver.rs:331-348）。均为纯函数测试，补齐成本低。
+
+**修复记录（2026-09-15）**：`ipc/input.rs` 补三条——`test_tty_up_is_rejected_by_every_payload_decoder`（宣告消息被四个载荷解码器一致拒收）、`test_conf_roundtrip_with_reserved_lanes` 内补 rsvd2 损坏拒收断言（原只钉 rsvd1）、`test_kiocsleds_number_masks_the_size_field_like_ioccom`（用超限替代尺寸重演 `_IOW` 掩码构造，把"截断分支"从常量表达式变成可断言的性质）；`minix-sys/inputdriver.rs` 补 `test_notify_beats_message_number_like_c`（通知优先于消息号——inputdriver.c:144-163 的判定次序钉死，通知车道携带 INPUT_CONF 号时仍按发送方路由）。验证：`cargo test -p minix-types input::` 13 通过、`-p minix-sys inputdriver` 7 通过。注：全 crate 跑批时 `ipc/pm.rs` 两个 itimer 测试失败，经查该文件是并行 edge 工作线程的未提交修改（本轮未触碰），非本清单引入。
 
 ---
 

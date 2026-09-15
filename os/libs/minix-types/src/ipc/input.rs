@@ -482,8 +482,48 @@ mod tests {
             },
         };
         assert_eq!(decode_conf(&bad), None);
+        // Both reserved lanes are checked: rsvd2 corruption rejects too
+        // (the pre-migration tests only pinned rsvd1).
+        let bad2 = Message {
+            m_source: Endpoint::NONE,
+            m_type: INPUT_CONF,
+            m_u: MessageUnion {
+                m_input_linputdriver_input_conf: MessInputLinputdriverInputConf {
+                    kbd_id: 1,
+                    mouse_id: -1,
+                    rsvd1_id: -1,
+                    rsvd2_id: 0,
+                    _padding: [0; 40],
+                },
+            },
+        };
+        assert_eq!(decode_conf(&bad2), None);
         // Other types do not decode as configuration.
         assert_eq!(decode_conf(&setleds_msg(0)), None);
+    }
+
+    #[test]
+    fn test_tty_up_is_rejected_by_every_payload_decoder() {
+        // The announcement carries no payload struct in C (input.c:672-677
+        // zeroes the message and sets only the type), so none of the four
+        // payload decoders may mistake it for their own shape.
+        let msg = tty_up_msg();
+        assert_eq!(decode_conf(&msg), None);
+        assert_eq!(decode_setleds(&msg), None);
+        assert_eq!(decode_input_event(&msg), None);
+        assert_eq!(decode_tty_event(&msg), None);
+    }
+
+    #[test]
+    fn test_kiocsleds_number_masks_the_size_field_like_ioccom() {
+        // C: ioccom.h:87 builds _IOW with (sizeof & 0xFFF) << 16 — the mask
+        // is part of the construction, pinned here by rebuilding it from a
+        // deliberately oversized stand-in (0x1_004 & 0xFFF == 4).
+        let oversized = 0x1_004u32;
+        assert_eq!(
+            0x8000_0000 | ((oversized & 0xFFF) << 16) | ((b'k' as u32) << 8) | 2,
+            KIOCSLEDS
+        );
     }
 
     #[test]

@@ -347,6 +347,32 @@ pub const fn classify_incoming(
     }
 }
 
+#[cfg(test)]
+mod notify_priority_probe {
+    // C: inputdriver.c:144-163 — is_ipc_notify is checked BEFORE the
+    // message number, so a notification whose number lane happens to carry
+    // INPUT_CONF is still routed by sender, never as a Configure. Pinned
+    // here so the precedence cannot silently flip.
+    use super::*;
+
+    #[test]
+    fn test_notify_beats_message_number_like_c() {
+        assert_eq!(
+            classify_incoming(INPUT_CONF, true, NotifyKind::Other),
+            DriverIncoming::OtherNotify
+        );
+        assert_eq!(
+            classify_incoming(INPUT_CONF, true, NotifyKind::Hardware),
+            DriverIncoming::HardwareInterrupt
+        );
+        // And the message-number routing itself, for contrast.
+        assert_eq!(
+            classify_incoming(INPUT_CONF, false, NotifyKind::Other),
+            DriverIncoming::Configure
+        );
+    }
+}
+
 /// Whether the terminal handshake numbers belong to a different number
 /// family (a driver must never see them).
 ///
