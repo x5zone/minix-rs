@@ -96,6 +96,8 @@
 
 > **2026-09-09 增补（05-stage-vfs R2 轮）**：VFS 侧接收半现状——`VmVfsReq::from_raw` 决策原语已有（os/servers/vfs/src/misc.rs:262-281，101=FdLookup/102=FdClose/103=FdIo）与 `VM_VFS_REPLY=0xC1E`（misc.rs:305 一带），**消息级解码仍未建**（do_vm_call 的 union 字段映射，C vfs.c:60-104）。wire 定稿追加一条纪律：m_type 与字段的**绝对值**必须以 C 源断言（教训：vfs 侧 request.rs:15 把 REQ 基址写成 0x600 而 C com.h:589 为 0xA00，两侧偏移对齐掩盖基址分叉——详见 05-stage-vfs/todo.md §9.2 R2-P0-1）。
 
+
+> **进度（2026-09-16，✅ 三步全闭环，commit d136491ee）**：(wire 定稿) `MessVmVfsCall` 56B 落 minix-types message.rs——m10 六域域位 offset@0/req@8/fd@12/req_id@16/endpoint@20/length@32(与既有 MessVmVfsReply 同一 mess_10 处理：i386 long 域按 u32 位保持)+ MessageUnion 增 `m_vm_vfs_call` 臂；`VFS_VMCALL=294`(callnr.h:110,VFS_BASE 0x100+38)与 `VMVFSREQ_*=101/102/103`(com.h:702-704)绝对值 pin，`VM_VFS_REPLY` 单一权威在 minix-types(vfs misc.rs 改 re-export——双址消除)。**(1) VM take**：`VfsRequest` 增 `sent` 标记，`take_pending_vfs_call()` 从 active 构造线面（vfs.c:83-90 六域映射，req_id 沿用队列分配号）。**(2) 排水步**：run_once 末尾 take → transport.send(VFS_PROC_NR)；失败 `mark_send_failed()` 下轮重试——pre-E1 恒失败，行为与今日"永不发送"无回归。**(3) vfs 解码**：`decode_vm_call` 消息级六域解码 + `VmVfsReq` 分派（m_type 不符/opcode 未知 → None），解码往返 witness 测试。**测试**：绝对值 pin+布局+字节级 C 构造复刻 ×3、transport 级发送断言+重试标记、vfs 往返；types 245 / vm 506 / vfs 362 全绿；clippy 与基线 13=13。**通电**：与 E1 切片 5 同场——真 transport 激活后排水自动成为真实发送。
 ---
 
 ## E-RSWIRE rprocpub 字节 ABI pinning + rproctab 解码（T9 step3 的余件）
