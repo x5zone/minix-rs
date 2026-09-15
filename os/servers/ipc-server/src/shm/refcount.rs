@@ -21,7 +21,10 @@ use super::segment::ShmTable;
 /// service said.
 ///
 /// `count` is `None` when the region could not be found (C `rc == -1`,
-/// shm.c:183-186): warned about and skipped, never fatal.
+/// shm.c:183-186): warned about and skipped, never fatal. A zero answer
+/// is kept as-is and wraps in the conversion below — same u8 arithmetic
+/// as C (shm.c:187), where `rc - 1 == 255` means "cannot be zero
+/// attaches" and the segment survives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefQuery {
     /// Table slot the query was asked for.
@@ -88,7 +91,11 @@ pub fn sweep(table: &mut ShmTable, queries: &[RefQuery]) -> SweepPlan {
             continue;
         };
         let seg = table.get_mut(index).expect("sweep scans live slots");
-        seg.attached = u16::from(count.saturating_sub(1));
+        // u8 wrap on purpose: C computes `rc - 1` in u8 (shm.c:187), so a
+        // zero answer wraps to 255 — "not zero attaches" — and a DEST-marked
+        // segment survives. Saturating here would destroy a segment C keeps
+        // (13-stage-ipc/todo.md IPC-P1-6).
+        seg.attached = u16::from(count.wrapping_sub(1));
         if seg.attached == 0 && seg.perm.mode & minix_types::SHM_DEST != 0 {
             plan.unmaps.push(UnmapReq {
                 addr: seg.backing.local,
@@ -203,6 +210,23 @@ mod tests {
         );
         assert!(plan.freed.is_empty());
         assert_eq!(plain.get(0).unwrap().attached, 0);
+    }
+
+    #[test]
+    fn sweep_zero_refcount_wraps_alive() {
+        // C: shm.c:187 — `rc - 1` in u8 wraps: rc==0 becomes 255, so a
+        // DEST-marked segment survives a zero answer (IPC-P1-6/T-4).
+        let mut table = table_with(true);
+        let plan = sweep(
+            &mut table,
+            &[RefQuery {
+                slot: 0,
+                count: Some(0),
+            }],
+        );
+        assert!(plan.freed.is_empty() && plan.unmaps.is_empty());
+        assert_eq!(table.get(0).unwrap().attached, 255);
+        assert_eq!(table.live_count(), 1);
     }
 
     #[test]

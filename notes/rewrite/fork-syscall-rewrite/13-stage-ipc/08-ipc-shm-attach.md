@@ -158,10 +158,10 @@ os/servers/ipc-server/src/shm/
 
 **引用计数**（`refcount.rs`）：
 
-- `RefQuery { slot, count: Option<u8> }`：调用者查好的引用数（`None` 表示问不到，对应 255）。
+- `RefQuery { slot, count: Option<u8> }`：调用者查好的引用数（`None` 表示问不到，对应 255）；零值原样传入不在这里消化——换算沿用 C 的 u8 环绕，零减一得 255，等价于"不可能是零挂接"，段存活。
 - `UnmapReq { addr: u64, len: u64 }`：服务层要执行的解映射。
 - `SweepPlan { unmaps: Vec<UnmapReq>, freed: Vec<usize>, skipped: Vec<usize> }`：销毁名单、释放槽位、跳过槽位。
-- `sweep(table, queries) -> SweepPlan`：2.2 节的逐行对应（换算、销毁条件、跳过、水位收缩在本函数末尾）。
+- `sweep(table, queries) -> SweepPlan`：2.2 节的逐行对应（换算、销毁条件、跳过、水位收缩在本函数末尾）。换算一句要紧的话：挂接数是 `count.wrapping_sub(1)` 不是饱和减——C 的 `rc - 1` 在 u8 里回绕（第 187 行），零引用答案得 255 而不是零，带删除标记的段因此存活；这里若"顺手"改成饱和减法，销毁时机就和 C 分叉了。
 
 ### 4.3 关键不变量
 
@@ -186,6 +186,7 @@ os/servers/ipc-server/src/shm/
 | `sweep_destroys_at_zero` | `refcount.rs` 测试模块 | 零挂接加标记则销毁（第 189 行到第 196 行） |
 | `sweep_skips_unknown` | `refcount.rs` 测试模块 | 问不到跳过不销毁（第 183 行到第 186 行） |
 | `sweep_keeps_attached` | `refcount.rs` 测试模块 | 有挂接不销毁只记数（第 187 行） |
+| `sweep_zero_refcount_wraps_alive` | `refcount.rs` 测试模块 | 零引用回绕 255，带标记段存活（第 187 行，IPC-P1-6） |
 | `sweep_shrinks_mark` | `refcount.rs` 测试模块 | 尾部收缩水位（第 203 行到第 205 行） |
 | `mib_rows_always_full` | `attach.rs` 测试模块 | 信息数组恒等于上限（第 416 行到第 430 行） |
 

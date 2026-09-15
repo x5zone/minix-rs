@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 1 条（IPC-P2-3），余 19 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 3 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4），余 17 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -25,13 +25,13 @@
 | P1 | IPC-P1-3 | IPC_SET 应用逻辑缺失（sem+shm 两处）：C 改 uid/gid/权限位+ctime（sem.c:550-559、shm.c:314-328），Rust 只有授权检查没有落账函数 |
 | P1 | IPC-P1-4 | shm 的 IPC_RMID 标记逻辑缺失：C 置 SHM_DEST 并立即尝试销毁（shm.c:334-336），Rust 的 sweep 只读标记不置标记 |
 | P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |
-| P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91） |
+| P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91）（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界 |
 | P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数 |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试 |
-| T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试；IPC-T-3 `tests/` 集成目录被注释声称但不存在；IPC-T-4 sweep rc==0 边界无测试；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
+| T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试；IPC-T-3 `tests/` 集成目录被注释声称但不存在；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
 | D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时 |
 | D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成 |
 | D | IPC-D-3 | plan.md:185 A-7 锚点漂移：sem.c:713-722 → 实际 :726-739 |
@@ -116,7 +116,7 @@
 
 **建议**：方案 A。测试：shmat 后 atime/lpid 刷新且 nattch 不动（惰性）；shmdt 后刷新的也是 atime 字段（这条回归测试守住 C 的现行为，注释引 shm.c:228-229）。
 
-### IPC-P1-6 引用计数清拍的 rc==0 环绕分歧：C 保段、Rust 毁段
+### IPC-P1-6 引用计数清拍的 rc==0 环绕分歧：C 保段、Rust 毁段【✅ 已完成 2026-09-16】
 
 **是什么**：C 的 `update_refcount_and_destroy` 用 `u8_t rc` 接 `vm_getrefcount`，`nattch = rc - 1` 是 u8 运算（shm.c:187）。rc==0 时 `0 - 1` 回绕成 255——nattch 巨大，段绝不会被销毁。rc==255（即 `(u8_t)-1`）才是错误哨兵，走"找不到物理区，跳过"分支（shm.c:183-186）。Rust 的 `sweep` 里 `count` 是 `Option<u8>`（`refcount.rs:30`，None 对应哨兵，映射正确），但换算用 `count.saturating_sub(1)`（`refcount.rs:91`）：rc==0 时得到 0——一个带 SHM_DEST 的段会被当场销毁并 unmap。两种实现对外部分歧：C 把 rc==0 当"还有引用"处理，Rust 当"无人引用"处理。
 
@@ -128,6 +128,8 @@
 - **方案 B（演进候选，暂不用）：`count == 0` 显式归入 skipped**，语义注释"无法判定引用状态，保守跳过"。行为与 A 相同（段存活），但偏离了 C 的机制形状；若哪天做 [ARCH] 演进（比如换成显式计数，plan A-3 的候选），B 的语义更干净——现在不做，只在 todo 里留个名字。
 
 **建议**：方案 A；同批补测试 `sweep_zero_refcount_keeps_marked`（rc==0 + SHM_DEST → 存活，attached==255；见 IPC-T-4）。
+
+**修复记录（2026-09-16，方案 A 落地）**：`refcount.rs` 的换算改 `count.wrapping_sub(1)`（原 saturating），u8 回绕语义与 C shm.c:187 完全一致，契约缘由（零答案回绕 255 → 带标记段存活）钉在换算处与 `RefQuery` 文档两处；doc 08 §4.2 的 `RefQuery`/`sweep` 两条目补环绕契约与"顺手改饱和即分叉"的告诫，§5.1 测试表补新行。测试落地名 `sweep_zero_refcount_wraps_alive`（rc==0 + SHM_DEST → 存活、attached==255、槽位保留）。验证：`cargo test -p minix-ipc-server` = **83 passed / 0 failed**（82+1）。**IPC-T-4 随本条闭合**。
 
 ---
 
@@ -201,7 +203,7 @@
 
 `server.rs:251-253` 说 `run_once` 是 pub"so integration tests in `tests/` can drive whole scenarios"，`RunStep` 的文档（:142-144）同款说法——但 `os/servers/ipc-server/tests/` 目录不存在。要么补一个最小集成测试（scripted transport 驱动 `run_once` 走 semget→semop→进程事件全链，StubHandler 换 RecordingHandler），要么改注释。推荐前者：服务层接线（IPC-P1-1）恰好需要这个驱动面。
 
-### IPC-T-4 sweep 的 rc==0 边界无测试
+### IPC-T-4 sweep 的 rc==0 边界无测试【✅ 已完成 2026-09-16，随 IPC-P1-6 闭合】
 
 与 IPC-P1-6 联动：修复时必须同时补 `sweep` 在 `count: Some(0)` + SHM_DEST 下存活的回归测试（现测试只覆盖 1/4/None 三种输入，`refcount.rs:144-206`）。
 
