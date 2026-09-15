@@ -193,12 +193,12 @@ pub trait ClockArch: Sized + Send + Sync {
 
 /// Mock clock implementation — all operations are no-ops.
 ///
-/// Used when `feature = "mock"` is enabled (test mode). Timer operations
+/// Used when `feature = "runtime-window"` is enabled (test mode). Timer operations
 /// do nothing; `read_ticks` returns 0.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub struct MockClockArch;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 impl ClockArch for MockClockArch {
     fn new(_desc: &dyn minix_platform::TimerDesc) -> Self {
         Self

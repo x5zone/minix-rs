@@ -200,10 +200,10 @@ pub trait TrapEntryArch: Sized {
 ///
 /// All methods are no-ops. Allows tests to run `TrapEntryArch` code paths
 /// without touching real IDT/VBAR_EL1/stvec registers.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub struct MockTrapEntry;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 impl TrapEntryArch for MockTrapEntry {
     fn init() -> Self {
         Self

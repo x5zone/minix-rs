@@ -139,13 +139,13 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
         PteChannel::KernelDm => {
             X86_64DirectMap::kernel_phys_to_virt(PhysBytes(phys)).0 as *mut u64
         }
-        #[cfg(not(all(test, feature = "mock")))]
+        #[cfg(not(all(test, feature = "runtime-window")))]
         PteChannel::VmDm => X86_64DirectMap::vm_phys_to_virt(PhysBytes(phys)).0 as *mut u64,
         // V11/E4: in this crate's own test build (mock feature), the VM
         // window routes through MockDirectMap so tests can point it at
         // real leaked memory via `set_mock_vm_base` — mirroring the
         // VM-side test funnel. Production keeps the x86_64 constant base.
-        #[cfg(all(test, feature = "mock"))]
+        #[cfg(all(test, feature = "runtime-window"))]
         PteChannel::VmDm => {
             crate::arch::direct_map::MockDirectMap::vm_phys_to_virt(PhysBytes(phys)).0
                 as *mut u64

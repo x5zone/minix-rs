@@ -137,16 +137,16 @@ pub trait SmpArch {
     fn current_cpu() -> u32;
 }
 
-/// Mock `SmpArch` implementor for unit tests and `feature = "mock"` builds.
+/// Mock `SmpArch` implementor for unit tests and `feature = "runtime-window"` builds.
 ///
 /// All methods are no-ops — sufficient for testing SMP scheduling logic
 /// without real hardware. The kernel's test suite (`smp.rs` tests module)
 /// uses this type as the generic parameter `<A: SmpArch>`.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 #[derive(Debug, Clone, Copy)]
 pub struct MockSmpArch;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 impl SmpArch for MockSmpArch {
     fn send_sched_ipi(_cpu: u32) { /* no-op for test */ }
     fn halt_cpu() { /* no-op for test */ }
@@ -181,7 +181,7 @@ mod tests {
     }
 
     /// Verify MockSmpArch implements SmpArch.
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "runtime-window")]
     #[test]
     fn test_mock_smp_arch_impl() {
         MockSmpArch::send_sched_ipi(1);

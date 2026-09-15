@@ -184,10 +184,10 @@ impl Arch for Riscv64Arch {
 /// one (CPU context, exception frame, signal context, arch init, timer IRQ
 /// gate) select the host-arch implementor — exactly like the crate-root
 /// `Current*` aliases do under `mock`.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub struct MockArch;
 
-#[cfg(all(feature = "mock", target_arch = "x86_64"))]
+#[cfg(all(feature = "runtime-window", target_arch = "x86_64"))]
 impl Arch for MockArch {
     type CpuCtx = crate::x86_64::boot::X86_64CpuContextArch;
     type Exception = crate::x86_64::exception::X86_64ExceptionFrame;
@@ -208,7 +208,7 @@ impl Arch for MockArch {
     type DmCoverage = crate::arch::dm_coverage::mock::MockDmCoverage;
 }
 
-#[cfg(all(feature = "mock", target_arch = "aarch64"))]
+#[cfg(all(feature = "runtime-window", target_arch = "aarch64"))]
 impl Arch for MockArch {
     type CpuCtx = crate::arm64::boot::AArch64CpuContextArch;
     type Exception = crate::arm64::exception::AArch64ExceptionFrame;
@@ -229,7 +229,7 @@ impl Arch for MockArch {
     type DmCoverage = crate::arch::dm_coverage::mock::MockDmCoverage;
 }
 
-#[cfg(all(feature = "mock", target_arch = "riscv64"))]
+#[cfg(all(feature = "runtime-window", target_arch = "riscv64"))]
 impl Arch for MockArch {
     type CpuCtx = crate::riscv64::boot::Riscv64CpuContextArch;
     type Exception = crate::riscv64::exception::Riscv64ExceptionFrame;
@@ -254,13 +254,13 @@ impl Arch for MockArch {
 ///
 /// Under the `mock` feature (host tests) this is [`MockArch`]; real builds
 /// select by `target_arch`, mirroring the crate-root `Current*` aliases.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentArch = MockArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentArch = X86_64Arch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentArch = AArch64Arch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentArch = Riscv64Arch;
 
 #[cfg(test)]

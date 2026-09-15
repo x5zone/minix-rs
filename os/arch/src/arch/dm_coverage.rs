@@ -221,7 +221,7 @@ pub fn establish_dm_range<P: DmCoverageArch>(
 /// kernel boot path's two-source candidate assembly) can be tested for hole
 /// exclusion, window clipping, VA offsetting and page-size selection without
 /// hardware.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub mod mock {
     use super::{DmCoverageArch, PageFlags, PageTableError};
     use minix_types::{PhysBytes, VirBytes};
@@ -400,7 +400,7 @@ mod tests {
     // ── establish_dm_range driver tests (MockDmCoverage registry) ──
     // Gated on `mock` (not just `test`): they exercise the driver through
     // the registry-backed MockDmCoverage implementor.
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "runtime-window")]
     mod driver {
         use super::*;
 

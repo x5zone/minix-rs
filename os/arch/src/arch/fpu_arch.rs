@@ -149,7 +149,7 @@ impl MockFpuState {
 
 /// Mock FPU implementation — all operations are no-ops.
 ///
-/// Used when `feature = "mock"` is enabled (test mode). The mock
+/// Used when `feature = "runtime-window"` is enabled (test mode). The mock
 /// `State` is a zero-sized type, so `save`/`restore` are no-ops.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MockFpuArch;

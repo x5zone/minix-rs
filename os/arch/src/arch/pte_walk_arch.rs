@@ -86,12 +86,12 @@ pub trait PteWalkArch {
 ///
 /// On real architectures (`x86_64`, `aarch64`, `riscv64`), the
 /// architecture-specific `PteWalkArch` implementation is used instead,
-/// so this mock is only active when `feature = "mock"` is enabled AND
+/// so this mock is only active when `feature = "runtime-window"` is enabled AND
 /// the target architecture is not one of the three supported ones.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub struct MockPteWalk;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 impl PteWalkArch for MockPteWalk {
     fn walk(_root_paddr: PhysBytes, _vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
         None

@@ -165,10 +165,10 @@ pub trait ProtectionArch: Sized {
 ///
 /// All methods are no-ops. `PrivilegeLevel` uses `u8` to match x86-64's
 /// ring encoding (0=kernel, 3=user) for simplicity.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub struct MockProtection;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 impl ProtectionArch for MockProtection {
     type PrivilegeLevel = u8;
     const KERNEL_PRIVILEGE: u8 = 0;

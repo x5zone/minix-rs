@@ -284,7 +284,7 @@ pub struct MockMcontext;
 
 /// Mock signal context implementation — all operations are no-ops.
 ///
-/// Used when `feature = "mock"` is enabled (test mode). The mock types
+/// Used when `feature = "runtime-window"` is enabled (test mode). The mock types
 /// are zero-sized so there is no memory overhead.
 pub struct MockSignalContext;
 

@@ -533,7 +533,7 @@ pub fn map_kernel<P: Paging>(
 /// **Thread model**: Not concurrency-safe. The `mappings` field uses `BTreeMap`
 /// without locking, designed for single-threaded testing only (`#[cfg(test)]`).
 /// Multi-threaded tests require external synchronization.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub mod mock {
     use super::*;
     use crate::paging_ext::PagingWithId;

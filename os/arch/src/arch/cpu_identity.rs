@@ -114,12 +114,12 @@ pub trait CpuIdentityArch {
     fn identify_current_cpu() -> CpuIdentity;
 }
 
-// ── Mock (tests / `feature = "mock"` builds) ──
+// ── Mock (tests / `feature = "runtime-window"` builds) ──
 
 /// Mock identity probe: returns a value chosen by the test via
 /// [`set_mock_identity_raw`] instead of touching ISA registers, so
 /// kernel-layer tests run on the x86_64 host without executing `cpuid`.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub mod mock {
     use super::{CpuIdentity, CpuIdentityArch};
     use core::sync::atomic::{AtomicU64, Ordering};

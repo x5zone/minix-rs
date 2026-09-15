@@ -15,8 +15,8 @@ minix-platform = { path = "../libs/minix-platform" }
 bitflags = { workspace = true }
 
 [features]
-default = ["mock"]
-mock = []
+default = ["runtime-window"]
+runtime-window = []
 x86_64 = []
 arm64 = []
 riscv64 = []

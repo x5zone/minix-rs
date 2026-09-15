@@ -119,10 +119,10 @@ pub trait TrapReturnArch {
 /// on the host loud and diagnosable instead of silently corrupting the test
 /// process. Host tests never trigger it: they exercise the scheduling
 /// *stages* (pick, requeue, address-space switch, finish) individually.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub struct MockTrapReturn;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 impl TrapReturnArch for MockTrapReturn {
     // The mock build has no per-arch frame of its own; reuse the x86-64
     // frame/context types, which are plain data and compile on any host

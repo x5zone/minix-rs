@@ -18,10 +18,10 @@ minix-boot = { workspace = true }
 bitflags = { workspace = true }
 
 [dev-dependencies]
-minix-arch = { path = "../arch", features = ["mock"] }
+minix-arch = { path = "../arch", features = ["runtime-window"] }
 minix-plat = { path = "../plat", features = ["mock"] }
 
 [features]
 default = ["mock"]
-mock = ["minix-arch/mock", "minix-plat/mock"]
+mock = ["minix-arch/runtime-window", "minix-plat/mock"]
 qemu_test = []

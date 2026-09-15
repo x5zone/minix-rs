@@ -14,7 +14,7 @@
 //! 2. **Centralized implementation**: All traits are implemented within the arch crate
 //! 3. **Architecture-independent**: OS code depends only on traits, not on specific hardware
 
-#![cfg_attr(not(feature = "mock"), no_std)]
+#![cfg_attr(not(feature = "runtime-window"), no_std)]
 
 extern crate alloc;
 
@@ -33,7 +33,7 @@ pub use minix_plat::{
     NR_IRQ_VECTORS, NR_IRQ_HOOKS, CurrentInterruptController, CurrentEarlyConsole,
 };
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use minix_plat::{MockInterruptController, MockEarlyConsole};
 
 // ── Backward-compatible re-exports of CPU ISA modules ──
@@ -63,16 +63,16 @@ pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
 pub use arch::dm_coverage::{DmCoverageArch, DmRange, establish_dm_range};
 pub use pte_walk_arch::PteWalkArch;
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use pte_walk_arch::MockPteWalk;
 pub use protection::{ProtectionArch, Privilege, InterruptVector};
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use protection::MockProtection;
 pub use trap_entry::TrapEntryArch;
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use trap_entry::MockTrapEntry;
 pub use trap_return::TrapReturnArch;
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use trap_return::MockTrapReturn;
 pub use exception::{ExceptionArch, FaultContext, RecoveryPoint};
 pub use exception_dispatcher::{
@@ -80,7 +80,7 @@ pub use exception_dispatcher::{
 };
 pub use clock::{ClockArch, DEFAULT_HZ};
 pub use timer_irq_gate::TimerIrqGate;
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use clock::MockClockArch;
 pub use fpu_arch::{FpuArch, MockFpuArch, MockFpuState};
 pub use signal_context::{
@@ -99,10 +99,10 @@ pub use boot::{
 pub use stacktrace::StacktraceArch;
 pub use arch::current::{Arch, CurrentArch};
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use paging::mock::MockPaging;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use paging::mock::MockAsid;
 
 // ── CurrentPaging type alias ──
@@ -112,16 +112,16 @@ pub use paging::mock::MockAsid;
 // selecting the real `X86_64Paging` (which touches Direct Map memory and
 // would SIGSEGV outside QEMU). For the real kernel build (no `mock`
 // feature), select by `target_arch`.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentPaging = MockPaging;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentPaging = crate::x86_64::paging::X86_64Paging;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentPaging = crate::arm64::paging::AArch64Paging;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentPaging = crate::riscv64::paging::Riscv64Paging;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use direct_map::MockDirectMap;
 
 #[cfg(target_arch = "x86_64")]
@@ -131,13 +131,13 @@ pub use direct_map::AArch64DirectMap;
 #[cfg(target_arch = "riscv64")]
 pub use direct_map::Riscv64DirectMap;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentDirectMap = MockDirectMap;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentDirectMap = X86_64DirectMap;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentDirectMap = AArch64DirectMap;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentDirectMap = Riscv64DirectMap;
 
 // ── CurrentDmCoverage type alias ──
@@ -146,22 +146,22 @@ pub type CurrentDirectMap = Riscv64DirectMap;
 // coverage establishment on the bootstrap root). Like `CurrentPteWalk`, the
 // implementor is a ZST: the operation is static boot-time table surgery, not
 // a per-handle page-table service.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub use arch::dm_coverage::mock::MockDmCoverage;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub use x86_64::paging::X86_64DmCoverage;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub use arm64::paging::AArch64DmCoverage;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub use riscv64::paging::Riscv64DmCoverage;
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentDmCoverage = MockDmCoverage;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentDmCoverage = X86_64DmCoverage;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentDmCoverage = AArch64DmCoverage;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentDmCoverage = Riscv64DmCoverage;
 
 // ── CurrentPteWalk type aliases ──
@@ -171,13 +171,13 @@ pub type CurrentDmCoverage = Riscv64DmCoverage;
 // uses `CurrentPteWalk` as the generic type parameter, so no
 // `#[cfg(target_arch)]` leaks into kernel code (Phase 2 of the
 // TODO/DEFERRED completion plan).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentPteWalk = MockPteWalk;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentPteWalk = crate::x86_64::paging::X86_64PteWalk;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentPteWalk = crate::arm64::paging::AArch64PteWalk;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentPteWalk = crate::riscv64::paging::Riscv64PteWalk;
 
 // ── CurrentProtection type aliases ──
@@ -185,13 +185,13 @@ pub type CurrentPteWalk = crate::riscv64::paging::Riscv64PteWalk;
 // Mock branch prevents tests on x86_64 host from touching real GDT/TSS
 // registers (FIX-06: R-11). Matches the pattern used by CurrentPaging,
 // CurrentDirectMap, CurrentClockArch, etc.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentProtection = MockProtection;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentProtection = crate::x86_64::protection::X86_64Protection;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentProtection = crate::arm64::protection::AArch64Protection;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentProtection = crate::riscv64::protection::Riscv64Protection;
 
 // ── Bootstrap allocation bounds ──
@@ -227,13 +227,13 @@ pub const fn boot_dm_admissible_end() -> u64 {
 //
 // Mock branch prevents tests on x86_64 host from touching real IDT
 // registers (FIX-06: R-11).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentTrapEntry = MockTrapEntry;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentTrapEntry = crate::x86_64::trap_entry::X86_64TrapEntry;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentTrapEntry = crate::arm64::trap_entry::AArch64TrapEntry;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 
 // ── S-8 trap-stub facade (smp_todo.md §3.7) ──
@@ -253,13 +253,13 @@ pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 // — currently masked only by dead-code elimination because no caller
 // invokes `load()`. Their stub bodies stay part of their own bring-up
 // lanes (S-4 arm64/riscv64); recorded in smp_todo.md S-8.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn install_trap_stubs(entry: &mut CurrentTrapEntry) {
     crate::x86_64::trap_stub::install_idt_handlers(entry);
 }
-#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
 
 /// SYSCALL entry address for `TrapEntryArch::configure_syscall`.
@@ -270,15 +270,15 @@ pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
 /// kernel sources the entry from its own asm label, protect.c:189-205 —
 /// not from the boot-provided `KernelInfo.syscall_entry`, which is
 /// reference-only metadata).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub fn syscall_entry_va() -> minix_types::VirBytes {
     minix_types::VirBytes::new(0)
 }
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn syscall_entry_va() -> minix_types::VirBytes {
     crate::x86_64::trap_stub::syscall_entry_va()
 }
-#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn syscall_entry_va() -> minix_types::VirBytes {
     minix_types::VirBytes::new(0)
 }
@@ -287,79 +287,79 @@ pub fn syscall_entry_va() -> minix_types::VirBytes {
 /// entry stubs (see `x86_64::trap_stub` for the gate rationale). Must run
 /// before `TrapEntryArch::load()`; a no-op on the mock/other-arch branches
 /// where the stubs do not exist.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub fn register_trap_dispatchers(
     _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
     _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
 ) {
 }
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn register_trap_dispatchers(
     trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
     syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
 ) {
     crate::x86_64::trap_stub::register_dispatchers(trap, syscall);
 }
-#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn register_trap_dispatchers(
     _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
     _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
 ) {
 }
 
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub use x86_64::trap_stub::TrapFrame;
 
 /// S-4 per-CPU bring-up helpers (§3.3 per-CPU MSR contract). No-ops on the
 /// mock/other-arch branches; on x86-64 these write the CURRENT CPU's MSRs —
 /// the AP wiring calls them from the AP itself.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub fn ap_write_syscall_msrs(_entry: minix_types::VirBytes) {}
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn ap_write_syscall_msrs(entry: minix_types::VirBytes) {
     crate::x86_64::trap_stub::write_syscall_msrs(entry);
 }
-#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn ap_write_syscall_msrs(_entry: minix_types::VirBytes) {}
 
 /// Enable THIS CPU's LAPIC (S-10: the AP-side per-CPU half of controller
 /// init — the LAPIC is disabled after INIT and deaf to IPIs until enabled).
 /// No-op on mock/other-arch branches.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub fn ap_enable_lapic() {}
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn ap_enable_lapic() {
     // SAFETY: the AP enables its own LAPIC during bring-up, before any IPI
     // can target it (see the plat function's safety contract).
     unsafe { minix_plat::x86_64::interrupt::X86_64InterruptController::enable_current_cpu_lapic(); }
 }
-#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn ap_enable_lapic() {}
 
 /// Read this CPU's per-CPU identity (x86-64: `gs:0x10` written by
 /// `program_gs`; other archs return 0 — their identity path is per-CPU
 /// register based and lands with their own S-4 lanes).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub fn ap_cpu_id_readback() -> u64 {
     0
 }
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn ap_cpu_id_readback() -> u64 {
     crate::x86_64::trap_stub::gs_cpu_id()
 }
-#[cfg(all(not(feature = "mock"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn ap_cpu_id_readback() -> u64 {
     0
 }
 
 // ── CurrentClockArch type aliases ──
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentClockArch = MockClockArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentClockArch = crate::x86_64::clock::X86_64ClockArch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentClockArch = crate::arm64::clock::AArch64ClockArch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentClockArch = crate::riscv64::clock::Riscv64ClockArch;
 
 // ── CurrentCpuIdentity type aliases ──
@@ -367,13 +367,13 @@ pub type CurrentClockArch = crate::riscv64::clock::Riscv64ClockArch;
 // Selects the per-arch CPU identity probe at compile time (same mock-first
 // pattern as CurrentPaging/CurrentClockArch: tests run on the x86_64 host
 // and must not execute `cpuid`/`mrs`/`ecall`).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentCpuIdentity = arch::cpu_identity::mock::MockCpuIdentity;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentCpuIdentity = crate::x86_64::cpu_identity::X86_64CpuIdentity;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentCpuIdentity = crate::arm64::cpu_identity::AArch64CpuIdentity;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentCpuIdentity = crate::riscv64::cpu_identity::Riscv64CpuIdentity;
 
 
@@ -381,13 +381,13 @@ pub type CurrentCpuIdentity = crate::riscv64::cpu_identity::Riscv64CpuIdentity;
 //
 // Selects the architecture-specific `FpuArch` implementor at compile time.
 // When `mock` feature is enabled (tests), uses `MockFpuArch` (all no-ops).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentFpuArch = MockFpuArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentFpuArch = crate::x86_64::fpu::X86_64FpuArch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentFpuArch = crate::arm64::fpu::AArch64FpuArch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentFpuArch = crate::riscv64::fpu::Riscv64FpuArch;
 
 // ── CurrentFpuState type aliases ──
@@ -405,13 +405,13 @@ pub type CurrentFpuArch = crate::riscv64::fpu::Riscv64FpuArch;
 // - riscv64 (F/D):   264 bytes
 //
 // C: `p_seg.fpu_state[FPU_XFP_SIZE]` — kernel/proc.h
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentFpuState = MockFpuState;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentFpuState = crate::x86_64::fpu::X86_64FpuState;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentFpuState = crate::arm64::fpu::AArch64FpuState;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentFpuState = crate::riscv64::fpu::Riscv64FpuState;
 
 // ── CurrentSignalContext type aliases ──
@@ -485,13 +485,13 @@ pub type CurrentTrapFrame = crate::riscv64::exception::Riscv64ExceptionFrame;
 // The kernel's SMP module (`os/kernel/src/smp.rs`) uses `CurrentSmpArch`
 // as the generic type parameter, so no `#[cfg(target_arch)]` leaks into
 // kernel code (D7 in 16-smp.md).
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentSmpArch = crate::arch::smp::MockSmpArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentSmpArch = crate::x86_64::smp::X86_64SmpArch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentSmpArch = crate::arm64::smp::AArch64SmpArch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentSmpArch = crate::riscv64::smp::Riscv64SmpArch;
 
 // ── TlbArch re-exports + CurrentTlbArch type alias (FIX-24, Phase 5) ──
@@ -502,13 +502,13 @@ pub type CurrentSmpArch = crate::riscv64::smp::Riscv64SmpArch;
 // operates on the *current* CPU's TLB without a Paging instance.
 pub use tlb_arch::{TlbArch, MockTlbArch};
 
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentTlbArch = MockTlbArch;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentTlbArch = crate::x86_64::tlb::X86_64TlbArch;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentTlbArch = crate::arm64::tlb::AArch64TlbArch;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentTlbArch = crate::riscv64::tlb::Riscv64TlbArch;
 
 // ── CurrentTrapReturnArch type alias ──
@@ -517,13 +517,13 @@ pub type CurrentTlbArch = crate::riscv64::tlb::Riscv64TlbArch;
 // return-path twin of `CurrentTrapEntry`). Mock build uses `MockTrapReturn`
 // (panics on dispatch — see `arch/trap_return.rs`); tests exercise the
 // scheduling stages, never the real mode switch.
-#[cfg(feature = "mock")]
+#[cfg(feature = "runtime-window")]
 pub type CurrentTrapReturnArch = crate::arch::trap_return::MockTrapReturn;
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub type CurrentTrapReturnArch = crate::x86_64::trap_return::X86_64TrapReturn;
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub type CurrentTrapReturnArch = crate::arm64::trap_return::AArch64TrapReturn;
-#[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub type CurrentTrapReturnArch = crate::riscv64::trap_return::Riscv64TrapReturn;
 
 // ── CurrentStacktraceArch type aliases ──
