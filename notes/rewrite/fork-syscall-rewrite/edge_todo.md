@@ -76,6 +76,8 @@
 ## E4 pt_alloc free 注册 + 三架构 destroy 中间页回收（= 02-stage-vm V11-P2-8）
 
 > **进度（2026-09-08，x86_64 + riscv64 完成）**：riscv64 Sv39 三级树同款回收落地——`free_child_tables` 以 V 位 + 非 leaf（R|W|X=0）判定表页（leaf = 数据页，归 region/exit 路径），L0 的子即数据故 level ≥ 2 停止下探；`channel_to_ptr` 同款 cfg(test+mock) 路由。**验证方式差异**：riscv64 模块 `target_arch` 门控，宿主不编译、QEMU/harness 均无 std——实现经 `cargo check --target riscv64gc-unknown-none-elf --no-default-features --features riscv64` 编译验证（kernel 同款 shape，0 error），运行时验证归 QEMU（E5 族）；原 riscv64 宿主测试草稿因 no_std 目标无 std harness 已删。x86_64 部分此前已完成（宿主测试在位）。**余件：aarch64（arch/src 无独立 paging 文件，目标可用时处置）+ kernel/VM 侧 `register_free` 接线**（随 VM 进程退出路径完善时补）。
+
+> **余件闭环（2026-09-16，commit 75c88a123）**：VM 侧 `register_free` 接线落地——`alloc_page` 新增 `vm_pt_free`（镜像 `vm_pt_alloc` 的归还方向，归还 VM 页分配器），VmServer init 注册点补 `pt_alloc::register_free`（带 `is_free_registered` 重入守卫，与 register 对称）。注册后 `destroy()` 的 free_child_tables + 根页回收激活——此前未注册时 destroy 退化为只清零根，中间页表页随每次进程退出泄漏（C `pt_free` pagetable.c:1427-1437 的 Rust 对应物闭环）。kernel 侧不适用：本设计内核无常驻每进程页表（用户页表归 VM 域），boot 表常驻无 destroy 路径。aarch64 维持原注记（目标可用时处置）。**测试**：vm_pt_free 归还后分配器可再服务（不钉具体 pfn 策略——那是分配器变体的策略而非契约）；vm 507 全绿，clippy 基线 13=13。
 >
 > 原始问题描述（x86_64 部分已修复）：`pt_alloc.rs` 只有 `register/is_registered/alloc_pt_page`，没有 free；`x86_64/paging.rs` 的 `destroy` 只清零根 PML4——每次进程退出泄漏中间页表页（C `pt_free` pagetable.c:1427-1437 回收；Redox/Linux 同样回收）。
 
