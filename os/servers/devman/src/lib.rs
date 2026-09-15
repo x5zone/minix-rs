@@ -35,6 +35,3 @@ pub mod vtreefs;
 pub mod wire;
 
 pub use hooks::{RootStat, SefLifecycle, ServerConfig};
-
-/// Crate-level init entry (called by `main.rs`; real init runs on mount).
-pub fn init() {}

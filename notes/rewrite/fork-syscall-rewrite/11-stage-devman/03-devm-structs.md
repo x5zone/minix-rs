@@ -98,7 +98,7 @@ C 把三组塞进互相引用的三个头文件（server `devman.h`、server `de
 
 ### 3.1 三身份 → 三类型（§1 拆分落地）
 
-`Device`（树节点 + 文件绑定）/ `Attribute`（属性条目，两处 C 结构统一：lib 侧 `static_attribute` 与 server 侧 `static_info_inode` 都是名值对，文件绑定归 06）/ `wire::ParsedDevice`（解码结果）。`Event` 独立（队列归 06，文本归 03，长度守卫在此）。
+`Device`（树节点 + 文件绑定）/ `Attribute`（属性条目，两处 C 结构统一：lib 侧 `static_attribute` 与 server 侧 `static_info_inode` 都是名值对；DM-P1-5 后文本在 inode 的 `InodeContent::Static` 上，`Attribute` 只留名 + 文件绑定）/ `wire::ParsedDevice`（解码结果）。两处死字段由 DM-P3-1 判定删除：`Device.info`（C 的 `dev->info` 只写只 free 零读取，device.c:369/:515）与 `Attribute.data`（全仓无读者——"attr readers" 从不存在）。`Event` 独立（队列归 06，文本归 03，长度守卫在此）。
 
 ### 3.2 `DeviceState` 枚举 + 未知拒绝
 

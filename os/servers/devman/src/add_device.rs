@@ -96,7 +96,6 @@ pub fn do_add(
         owner: Some(source),
         binding: None,
         parent: Some(parent),
-        info: None,
         children: alloc::vec::Vec::new(),
         attrs: alloc::vec::Vec::new(),
     };
@@ -209,13 +208,8 @@ fn add_static(
     )?;
     let mut attr = Attribute {
         name: String::from(name),
-        data: String::from(data),
         binding: None,
     };
-    // Attribute text keeps the full data (C's st_inode.data is the
-    // truncated copy; the file shows truncated — both retained, each
-    // faithful to its reader: file readers see C bytes, attr readers
-    // see full data. 07 §3.4 records the split.)
     attr.binding = Some(crate::structs::FileBinding { ino });
     dev.attrs.push(attr);
     Ok(())

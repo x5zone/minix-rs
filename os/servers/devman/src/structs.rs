@@ -75,9 +75,8 @@ impl DeviceId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attribute {
     pub name: String,
-    pub data: String,
-    /// Framework/file binding of this attribute's file, set when 07
-    /// materializes it (08 needs it to unregister on delete).
+    /// Framework/file binding of this attribute's file (the text lives
+    /// on the inode as [`crate::vtreefs::InodeContent::Static`], DM-P1-5).
     /// Added for 07/08; 03 scan notes the additive extension.
     pub binding: Option<FileBinding>,
 }
@@ -138,7 +137,6 @@ pub struct Device {
     pub owner: Option<Endpoint>,
     pub binding: Option<FileBinding>,
     pub parent: Option<DeviceId>,
-    pub info: Option<crate::wire::ParsedDevice>,
     pub children: Vec<DeviceId>,
     pub attrs: Vec<Attribute>,
 }
@@ -156,7 +154,6 @@ impl Device {
             owner: None,
             binding: None,
             parent: None,
-            info: None,
             children: Vec::new(),
             attrs: Vec::new(),
         }
@@ -193,7 +190,6 @@ mod tests {
         assert_eq!(r.refcount, 0);
         assert_eq!(r.state, DeviceState::Unbound);
         assert_eq!(r.owner, None);
-        assert_eq!(r.info, None);
     }
 
     #[test]

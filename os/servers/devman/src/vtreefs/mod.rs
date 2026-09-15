@@ -339,14 +339,6 @@ impl VTreeFs {
         let _ = pos;
         Ok(out)
     }
-
-    /// Mutating ops devman never wires (write/trunc/mknod/…) — explicit
-    /// `ENOSYS`, mirroring the Redox `Scheme` default-method idea from
-    /// 01 §3.1. (C's own asymmetric defaults — read→EOF, write→EACCES —
-    /// only apply where devman actually registered hooks.)
-    pub fn unsupported(&self) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
-    }
 }
 
 // C's dispatch half: `fsdriver_task(&vtreefs_table)` (table.c:6-24, 17
@@ -536,11 +528,4 @@ mod tests {
     // `run_dispatches_script` tests moved with the loop itself —
     // `Server::run` in server.rs now owns loop-level coverage, FS and
     // DEVMAN alike.]
-
-    #[test]
-    fn unsupported_is_enosys() {
-        // Unwired mutating slots fail closed.
-        let fs = VTreeFs::new(&cfg(64)).unwrap();
-        assert_eq!(fs.unsupported(), Err(Errno::ENOSYS));
-    }
 }

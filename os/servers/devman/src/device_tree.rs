@@ -151,13 +151,6 @@ impl DeviceTree {
         None
     }
 
-    /// C: `devman_find_device()` (device.c:305-308) — find from root.
-    /// (Same as [`DeviceTree::find`]: the wrapper exists in C because the
-    /// recursion needs a cursor; here it is one method.)
-    pub fn find_device(&self, id: DeviceId) -> Option<DeviceId> {
-        self.find(id)
-    }
-
     /// Allocate the next device id.
     /// [ARCH:A-5] C increments unboundedly (`next_device_id++`, wraps
     /// undefined at `i32::MAX`); Rust reports `ENOMEM` at `u32::MAX`.
@@ -318,7 +311,6 @@ mod tests {
             owner: None,
             binding: Some(crate::structs::FileBinding { ino }),
             parent: Some(parent),
-            info: None,
             children: alloc::vec::Vec::new(),
             attrs: alloc::vec::Vec::new(),
         };
@@ -363,7 +355,6 @@ mod tests {
         assert_eq!(tree.find(a1), Some(a1));
         assert_eq!(tree.find(b), Some(b));
         assert_eq!(tree.find(DeviceId(99)), None);
-        assert_eq!(tree.find_device(a), Some(a));
         assert_eq!(tree.lookup_child(DeviceId::ROOT, "b"), Some(b));
     }
 
@@ -437,7 +428,6 @@ mod tests {
             owner: None,
             binding: None,
             parent: Some(DeviceId::ROOT),
-            info: None,
             children: alloc::vec::Vec::new(),
             attrs: alloc::vec::Vec::new(),
         };
