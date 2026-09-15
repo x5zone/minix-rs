@@ -527,6 +527,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：无硬依赖（裁决可先行）；实施建议在 E-ISWIRE 之后（有真实 IPC 才能端到端断言）。
 **解锁**：08-stage-is/todo.md V1-P1-2 的实施半（设计半不依赖本条）。
 
+> **进度（2026-09-16，🔄 proc-tab 面 1/2 闭环）**：快照权威裁决落地（方案 A）——`ProcInfoStruct` 上收 `minix-types::types::proc_info` 单一权威（repr(C) 104 字节布局见证 ×offset/size + 手写 Default 保留 p_priv_id=-1 哨兵），kernel `misc.rs` 改消费（`ProcInfoBuild` 扩展 trait 承载 KProcess 读取半，14 个消费点零改动），IS `dump_kernel.rs` 的 `KProcSnap` 删除改 import（字段三重错位自此消除：顺序/字段集/宽度以 kernel 生产者为准），`acquire.rs` seam 签名随迁，IS fixture 用 `..Default::default()` 适配。(3) 的 VFS 半：`SI_PROC_TAB`/`SI_DMAP_TAB`/`SI_CALL_STATS`/`SI_PROCLIGHT_TAB` 本地副本删除改 re-export（minix_types i32 权威，u32 消费视图显式 cast）。**余项（下轮继续，同条目）**：(2) kernel 八臂中的 GET_PRIVTAB（`PrivInfoStruct`）/GET_KINFO/GET_IMAGE/GET_IRQHOOKS/GET_IRQACTIDS/GET_MONPARAMS/GET_MACHINE 七臂布局同型对账（量级与 proc-tab 相当）；PM/VFS/RS/DS/VM 五 producer 对账（未建者由 E-MIBPROD 跟踪，建时直接消费 minix-types）；IS 侧 6 个 TODO(P1) 注释随 (2) 消。**验证**：types 210（+2）/kernel 752/is 106/vfs 360 全 passed；clippy kernel 回 44 基线、vfs 零告警。
+
 ---
 
 ## E-ISKMESS A-3 的 GET_KMESSAGES 等价通道：kernel 侧新子请求（08-stage-is V1 轮登记，2026-09-14）
@@ -599,6 +601,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：10-stage-mib/todo.md P1-3（布局裁决先行）；无 E1 硬依赖（布局断言测试可先行）。
 **解锁**：10-stage-mib/todo.md P1-5（表拉取执行半）；E5(g) 的进程信息用例；E-ISPROD 的裁决复用。
+
+> **进度（2026-09-16，裁决半落地）**：proc_tab 快照权威已随 E-ISPROD 裁决为 `minix-types::types::proc_info::ProcInfoStruct`（104 字节，kernel 生产者与 IS/MIB 消费者共用）；mib 消费面的 `proc_tab` 结构落位时直接 import 该权威，不再等独立裁决。mproc_tab/fproc_tab 的 PM/VFS producer 仍随各自 stage 跟踪。
 
 > **复核（2026-09-15）**：10-stage-mib P1-3 已闭环，但产出范围是 **sysctl ABI**（minix-types::sysctl_abi 四结构）——proc_tab/mproc_tab/fproc_tab 的快照布局裁决仍开放，随 E-ISPROD 合并轮一并定；P1-4（transport seam）与 P1-5（Tables 拉取状态机，seam 半）亦已闭环——P1-5 的生产数据源仍随本条对账后接通。
 
