@@ -101,8 +101,11 @@ pub struct UserInfo {
 /// description, kernel messages, load information) that user programs must
 /// not touch. This view keeps exactly the fields that belong to the
 /// user-space interface: the magic number, the flag word, and the two
-/// user-space pointers expressed as optional addresses (zero means absent,
-/// matching the C `NULL` checks in `init.c` and `kernel_utils.c`).
+/// user-space pointers expressed as optional addresses (zero means absent).
+/// DELIBERATE DIVERGENCE: C's `kernel_utils.c:52-54` dereferences the
+/// `kuserinfo` pointer without a null check — it trusts the kernel handoff
+/// unconditionally. This view makes the absence explicit instead, so a
+/// missing user-info page is a state, not a fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernInfoHeader {
     /// Must equal [`KERNINFO_MAGIC`]; any other value means the page is not

@@ -7,8 +7,10 @@
 //! through the virtual memory server, `sbrk` moves it relative to the current
 //! position (`minix3/minix/lib/libc/sys/brk.c` and `sbrk.c`). The NetBSD
 //! allocator on top mixes both strategies: small objects come from a
-//! page-described arena grown with `sbrk`, large objects come straight from
-//! memory mapping (`minix3/lib/libc/stdlib/malloc.c:317-388`).
+//! page-described arena grown with `sbrk`, and the memory mapping path
+//! serves the allocator's page directory
+//! (`minix3/lib/libc/stdlib/malloc.c:317-388` is the `sbrk` growth loop;
+//! the `MMAP` requests live at `malloc.c:448` and `malloc.c:559`).
 //!
 //! This module keeps the two-level shape but replaces both levels with owned
 //! Rust types:
@@ -35,7 +37,7 @@ use minix_types::Errno;
 /// One page holds this many bytes.
 ///
 /// The NetBSD allocator rounds its arena growth to page multiples (see
-/// `malloc.c:381`), and the virtual memory server maps whole pages. Four
+/// `malloc.c:383`), and the virtual memory server maps whole pages. Four
 /// kibibytes is the page granularity on 64-bit Intel hardware.
 pub const PAGE_BYTES: usize = 4096;
 

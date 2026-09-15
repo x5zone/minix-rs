@@ -106,7 +106,9 @@ pub fn init() {
 /// `commands/` crate). If `main` is missing, linking fails — there is
 /// no runtime fallback.
 ///
-/// C: equivalent of `crt0`'s `_start` in Minix3's `lib/crtso`.
+/// C: counterpart of crt0's `_start` (`minix3/lib/csu/arch/x86_64/crt0.S`
+/// entry, `crt0-common.c` `___start` body). The Rust version is minimal
+/// today; the full birth chain lands with the boot wiring (edge E1 slice 5).
 #[cfg(all(not(test), not(feature = "std")))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -121,9 +123,9 @@ pub extern "C" fn _start() -> ! {
 
     let exit_code = unsafe { main() };
 
-    // Delegate to minix-sys for the actual exit syscall. In the current
-    // stub state, `minix_sys::exit` loops forever; once the PM syscall
-    // path lands, it will send an `EXIT` message to PM and never return.
+    // Delegate to minix-sys: `exit` sends the PM_EXIT message and, if
+    // the process manager cannot be reached, spins — the C `_exit`-plus-
+    // abort ladder reduced to its last resort (see `minix_sys::pm`).
     minix_sys::exit(exit_code);
 }
 

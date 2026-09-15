@@ -24,7 +24,7 @@
 | P1 | V1-P1-5 | 99 篇（全局概念/布局权威）pending 是多个已登记缺口的共同解锁前置（09 open 路径布局、VM_REMAP 布局对齐都在等它）（§3.2） |
 | P2 | V1-P2-1 | ~~查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`~~（**✅ 已修复** 2026-09-16，Fix #6，见 §3.2 修复记录） |
 | P2 | V1-P2-2 | wire 打包双体系：minix-types 的类型化布局与 minix-sys 的本地裸字节打包并存，`cleared_message`/`write_payload` 在三个文件各复制一份；VM_REMAP 两处状态标注不一致（§3.2，跨层部分挂 edge E-MINTYPES-RUNTIME） |
-| P2 | V1-P2-3 | 注释锚点失实批：9 处（虚构的 `lib/crtso`、过时的 exit 桩注释、反的依赖方向、Redox "linker crate" 误引等）（§3.2） |
+| P2 | V1-P2-3 | ~~注释锚点失实批：10 处~~（**✅ 全部处置** 2026-09-16，Fix #1/#2/#4/#12，见 §3.2 修复记录） |
 | P3 | V1-P3-1 | 测试浅化批：大块分配测试未验证页边界、panic 阶梯只验长度不验中间序（§3.2） |
 | P3 | V1-P3-2 | GlobalAllocator 手写简化版 Once + 注释中英混用（§3.2） |
 | edge | E-MINTYPES-RUNTIME（新） | minix-types 布局单点权威收敛（Redox syscalls.toml 先例），99 篇定稿驱动 |
@@ -247,7 +247,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 
 同一调用的 wire 契约存在两套表达：minix-types 的类型化路线（union 具名 arm + 语义 In/Out 结构 + `DecodeFromM1`/`EncodeToM1` codec trait，消费面：VM 服务器 encode.rs:141-144 与 dispatcher.rs:720-734——但 VM 分发主路径实际走固有方法 `decode_message`，trait 消费仅 4 处）与 minix-sys 的本地路线（每个调用族本地 `#[repr(C)]` payload + 裸字节打包，`cleared_message`/`write_payload` 在 `pm.rs:91-108`/`vm.rs:96-110` 各复制一份，rs.rs:82 又一种 raw 直写）。实例：VM_REMAP 在 `minix-types/src/ipc/vm.rs:526-527` 区段标注 "DEFERRED"，而 minix-sys `vm.rs:305-327` 已有该调用的客户端打包实现（且 `remap_via` 泛化 call 号可表达 REMAP_RO）——两处对同一契约的状态认知不一致 [待验证：两者语义层不同（服务端解码类型 vs 客户端打包），执行时按 fix-guard 复核后再定级]。**建议**：crate 内部分——`cleared_message`/`write_payload` 收敛为 minix-sys 单一内部 helper，本地 payload 补 56 字节/偏移断言（§2.6）；跨 crate 部分——99 篇定稿时裁决"布局单点归 minix-types、minix-sys 只做打包与传输"的边界（Redox 先例：syscall 契约单源 syscalls.toml + 单 crate 统一 data 模块，§7），登记 edge E-MINTYPES-RUNTIME。
 
-#### V1-P2-3（P2）注释锚点失实批（文档-代码同步）
+#### V1-P2-3（P2）注释锚点失实批（文档-代码同步）——✅ 十处全部处置 2026-09-16（Fix #1/#2/#4/#12）
 
 逐条 grep 复核过的失实锚点，修复须走 fix-guard（读 ±5 行、一次一条）：
 | # | 位置 | 失实内容 | 事实 |
@@ -262,6 +262,11 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 | 8 | `minix-rt/src/alloc.rs:9-11` | "large objects come straight from memory mapping (malloc.c:317-388)" | 该区间是 sbrk 增长路径；MMAP 用于页目录（malloc.c:448/:559），非大对象直走 mmap |
 | 9 | `minix-rt/src/diag.rs:15` | `PanicPlan` 类型 | 不存在，实际是 `PanicStage`（并入 V1-P1-2 修复亦可） |
 | 10 | `minix-rt/src/handoff.rs:103-104` | "matching the C NULL checks in init.c and kernel_utils.c" | kernel_utils.c:52-54 对 kuserinfo 无空指针检查直接解引用——Rust 检查比 C 更严，应改为显式偏差声明 |
+
+**修复记录（Fix #12，2026-09-16）**：余下五处落地（前五处已随 Fix #1/#2/#4 处置）——
+- **Files**：`os/libs/minix-rt/src/lib.rs`（_start 文档注释的 crtso 虚构锚点改为 crt0.S + crt0-common.c 真锚点，并注明完整诞生链挂 E1 切片 5；_start 函数体内"exit loops forever（stub）"过时注释改为如实描述 PM_EXIT 消息路径与自旋兜底）；`os/libs/minix-rt/src/alloc.rs`（malloc.c:381 → 383 实测修正；模块文档的大对象归因改写——317-388 是 sbrk 增长循环，MMAP 请求在 448/559，原"大对象直走 mmap"表述失实）；`os/libs/minix-rt/src/handoff.rs`（kuserinfo 空指针检查从"matching the C NULL checks"失实声明改为 DELIBERATE DIVERGENCE 显式偏差——C kernel_utils.c:52-54 无检查直接解引用，Rust 显式化是加固决策）。
+- **逐项对账**：#1 crtso→Fix #12；#2 exit 桩注释→Fix #12；#3 依赖方向→Fix #1；#4 Redox linker crate→Fix #4；#5 "7 instructions"→随 start.rs 删除失效 + 02 篇已改（Fix #4）；#6 sentinel 检测叙述→随 start.rs 删除失效（Fix #4）；#7 malloc.c:383→Fix #12；#8 mmap 归因→Fix #12；#9 PanicPlan→Fix #2；#10 kuserinfo 偏差→Fix #12。
+- **测试**：minix-rt 46 passed；clippy 零新增。
 
 #### V1-P3-1（P3）测试浅化批
 
