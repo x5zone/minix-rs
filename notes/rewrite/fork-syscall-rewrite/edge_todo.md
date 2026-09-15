@@ -185,6 +185,8 @@
 
 > **进度（2026-09-09，V3-P1-2 切片）**：`sys_getksig`（SYS_GETKSIG=7）/`sys_endksig`（SYS_ENDKSIG=8）wrapper 已落地（wire 断言测试 ×2）——kernel 对端 `dispatch_getksig`/`dispatch_endksig` 早已真实（`os/kernel/src/syscall_signal.rs:393/475`），原"②内核 ksig 对端核实"结论：**getksig/endksig 已存在，缺的只是 wrapper**（本切片闭环）。消费侧 04-stage-pm V3-P1-2（SYSTEM notify 触发 + `process_sigmgr_signals` 拉取循环）同轮落地。**新增跨层登记（SigSet 128 位拓宽）**：Rust `SigSet(u64)` 装不下内核信号位 70/73/74（SIGSNDELAY/SIGKSIGSM/SIGKSIG，kernel `syscall_signal.rs:88-94` 已自声明"widening tracked separately"）——影响 GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG 消息字段 + PM 镜像，属于共享契约层 wire 变更，需单独立项（建议挂本条目或 E7 追加判定）；PM 侧 batch H 的触发判定已按"SYSTEM 通知即拉取"适配并注释声明。
 
+> **进度（2026-09-15，✅ 闭单）**：E2 轮将 wrapper 家族一次补齐九臂——`sys_setalarm`（应答臂 time_left/uptime 回读，syscall_clock.rs:265 同臂回填）、`sys_sigreturn`（m_sigcalls.endpt/sigctx）、`sys_sprof`（六字段）、`sys_settime`/`sys_stime`（wire 域 u64）、`sys_vtimer`（M2 形状 which/set/value/endpt，旧值 m2l1 回读 syscall_clock.rs:505-508）、`sys_getmcontext`/`sys_setmcontext`（同臂异调用号）、`sys_diagctl` 改 C 原型 `(code, arg1, arg2)`（STACKTRACE 用 endpt 字段；VM gateway 调用点同步）。回放测试 ×9（逐字段 wire + setalarm 应答臂 + vtimer 旧值 + stacktrace endpt）。**GETUPTIME 面如实登记**：C com.h:315-345 的 GET_* 家族无此号（minix-types 对账表同缺），PM 侧 `read_uptime_triple` 为宿主实现——需 C 对账轮裁决，不在本条。**GETMONPARAMS/GETIMAGE 双侧新建**与 **SigSet 128 位拓宽**维持独立项登记。**验证**：minix-sys 144（+9 回放）/ vm 503 全 passed；clippy 基线持平。**E6 全清单销账**：04-stage-pm 的"通电无门"项 wrapper 半全部就绪（GET_* 数据面仍挂 E-ISPROD 裁决）。
+
 ---
 
 ## E7 minix-types PM 协议面系统化（= 04-stage-pm/todo.md P1-4 + P2-3 抽取）
