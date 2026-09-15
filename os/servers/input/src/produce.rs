@@ -695,4 +695,58 @@ mod tests {
         device.grant = 11;
         device.request_id = request_id;
     }
+
+    #[test]
+    fn test_enqueue_lands_at_index_31_then_wraps() {
+        // C: input.c:347-355 — 落位公式在尾部边界的形态：下标 31 满员后再
+        // 来一个，踩掉最旧（tail 0→1）、新事件落位 0。
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[1];
+        device.count = 31;
+        enqueue(device, stored_event(1, 7, 31, 1, 0));
+        assert_eq!(device.count, 32);
+        assert_eq!(device.events[31].code, 31);
+        enqueue(device, stored_event(1, 7, 999, 1, 0));
+        assert_eq!((device.tail, device.count), (1, 32));
+        assert_eq!(device.events[0].code, 999);
+    }
+
+    #[test]
+    fn test_route_delivers_mux_slot_reports_to_mux_queues() {
+        // C: input.c:392-397 — 总机槽位自身的事件（id 0 / 5）进对应总机队列
+        // （投递看 opened，input.c:404-407；总机恒 active，故打开后永直达）。
+        let mut table = InputTable::fresh();
+        table.devices[0].owner = Endpoint(9);
+        table.devices[0].opened = true;
+        table.devices[5].owner = Endpoint(9);
+        table.devices[5].opened = true;
+        assert_eq!(
+            route_event(&table, 0, Endpoint(9)),
+            EventIntake::Deliver { target: DeviceIndex(0) }
+        );
+        assert_eq!(
+            route_event(&table, 5, Endpoint(9)),
+            EventIntake::Deliver { target: DeviceIndex(5) }
+        );
+    }
+
+    #[test]
+    fn test_key_is_new_driver_prefix_only_key_yields_empty_label() {
+        // （connect.rs 的到来过滤函数；在此处测其边界值。）
+        use crate::connect::key_is_new_driver;
+        // C: input.c:582 — 前缀即整键时标签为空串（与存储里的真实 label
+        // 必不匹配，随后被 label 校验静默忽略——空串不是错误）。
+        assert_eq!(key_is_new_driver("drv.inp."), Some(""));
+        assert_eq!(key_is_new_driver("drv.inp.pckbd"), Some("pckbd"));
+        assert_eq!(key_is_new_driver("other.key"), None);
+    }
+
+    #[test]
+    fn test_stored_event_narrows_lanes_like_c() {
+        // C: input.c:348-354 — 整型车道窄化为 16 位字段：页/码/标志的越界
+        // 输入按 C 的隐式截断处理（协议小量由保证方约束，见 3.5 节）。
+        let event = stored_event(1, 0x1_0007, 0x1_0042, -5, 0x1_0004);
+        assert_eq!((event.page, event.code, event.flags), (0x0007, 0x0042, 0x0004));
+        assert_eq!(event.value, -5);
+    }
 }

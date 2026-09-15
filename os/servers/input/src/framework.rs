@@ -602,4 +602,16 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_open_device_set_record_reports_overflow() {
+        // C: chardriver.c:85-94 — 登记簿满时 C 崩溃（丢登记比停机更危险）；
+        // Rust 按架构演进改报 false，由开门路径回答错误而不是服务陪葬。
+        let mut set = OpenDeviceSet::cleared();
+        for minor in 0..256i32 {
+            assert!(set.record(minor));
+        }
+        assert!(!set.record(256));
+        assert_eq!(set.len(), 256);
+    }
 }

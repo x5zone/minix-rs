@@ -295,4 +295,22 @@ mod tests {
         let codes: Vec<u16> = out.iter().map(|event| event.code).collect();
         assert_eq!(codes, [0, 1, 2, 3, 4]);
     }
+
+    #[test]
+    fn test_plan_copy_extreme_wrap_boundaries() {
+        // C: input.c:140-142 — 两个极限：tail 31 取 32 个（1+31 两段）、
+        // tail 0 取 32 个（整环一次拷）。
+        let plan = plan_copy(31, 32, 32).unwrap();
+        assert_eq!((plan.first_len, plan.second_len), (1, 31));
+        assert_eq!((plan.new_tail, plan.new_count), (31, 0));
+        let plan = plan_copy(0, 32, 32).unwrap();
+        assert_eq!((plan.first_len, plan.second_len), (32, 0));
+        assert_eq!((plan.new_tail, plan.new_count), (0, 0));
+    }
+
+    #[test]
+    fn test_drain_ordered_zero_count_is_empty() {
+        let events = [InputEvent::zero(); EVENT_BUFFER_SIZE];
+        assert!(drain_ordered(&events, 5, 0).is_empty());
+    }
 }

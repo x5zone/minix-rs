@@ -136,9 +136,11 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 
 **修复记录（2026-09-15，三类各自落定）**：真死类——`lib.rs` 的 `pub fn init(){}` 删除（全仓库零调用），`handlers.rs` 的 `let _ = SELECT_ERROR;` 删除（改注释声明"该常量刻意不导入"，省得丢弃绑定给人留口子），`connect.rs` 的 `NO_SLOT` 别名连同等值断言删除（权威 `INVALID_INPUT_ID` 在 minix-types，别名只多一个名字）；等通电类——`Cargo.toml` 的 minix-sys 依赖、connect/produce/init 出口、main.rs 停车循环全部保留并在原地有注释指路（E-INWIRE 落地后复核）；OQ 类随前几轮自然消解——`ConnectReport` 已有消费者（`Effect::input_conf`，R3/R4）、`key_codes` 215 常量与 event.rs 六枚举已迁 minix-types 成为共享权威（R5，去留问题不复存在）。验证：86 测试全绿，clippy 零告警。
 
-### IN-P3-2 边界测试族缺口
+### IN-P3-2 边界测试族缺口【✅ 已完成 2026-09-15】
 
-以下分支当前无测试（66 个测试未触达，2026-09-15 grep 核对）：`plan_copy` 的两个极限回绕（tail=31 取 32 个、tail=0 整环一次拷，eventbuf.rs:65）；鼠标槽位窗（槽 6-9）耗尽与"同牌复用 + opened 跳过"组合耗尽（connect.rs:58）；开门集合 256 溢出返回 false（framework.rs:279-286）；第二个 selector 挤掉第一个（handlers.rs:343-347）；断连的单侧场景（只有挂起读者、只有 selector，connect.rs:202-222）；入队落位下标 31 再回绕（produce.rs:157）；`route_event` 对 mux 槽位 id（0/5）、`stored_event` 越界截断、`set_label` 空名、`drain_ordered` 计数为零。建议随 IN-P1-1/IN-P1-2 的落地一并补齐（同一批函数的边界），不单独开轮。
+以下分支此前无测试（首轮 66 个测试未触达，2026-09-15 grep 核对）：`plan_copy` 的两个极限回绕（tail=31 取 32 个、tail=0 整环一次拷，eventbuf.rs:65）；鼠标槽位窗（槽 6-9）耗尽与"同牌复用 + opened 跳过"组合耗尽（connect.rs:58）；开门集合 256 溢出返回 false（framework.rs:279-286）；第二个 selector 挤掉第一个（handlers.rs:343-347）；断连的单侧场景（只有挂起读者、只有 selector，connect.rs:202-222）；入队落位下标 31 再回绕（produce.rs:157）；`route_event` 对 mux 槽位 id（0/5）、`stored_event` 越界截断、`set_label` 空名、`drain_ordered` 计数为零。建议随 IN-P1-1/IN-P1-2 的落地一并补齐（同一批函数的边界），不单独开轮。
+
+**修复记录（2026-09-15，本轮 IN-P3-2 集中补齐 + IN-P1-1 落地时已随带 11 条）**：新增 12 条边界测试——eventbuf 极限回绕两条（tail 31 取 32 的 1+31 两段、tail 0 整环一次拷）加 drain 空计数；connect 鼠标窗耗尽不侵占键盘窗、断开未关槽跳过后下间接棒、断连单侧两场景、labels_match 的 strcmp 首截断四断言；framework 开门集合 256 溢出返回 false；handlers 第二查询者覆盖；produce 落位下标 31 再回绕、总机槽位自身事件进总机队列、前缀即整键的空标签、车道窄化与 C 隐式截断一致。各测试带 C 行号注释，两条在编写中纠正了错误前提（开门必须先于读过重启门；转交要求发送方是槽主——均为 C 的真实行为）。文档 02/07/08/09/11 测试表补行，九篇计数口径同步 86→98。验证：`cargo test -p minix-input` 98 通过 0 失败；clippy 零告警。
 
 ### IN-P3-3 wire 测试盲区
 

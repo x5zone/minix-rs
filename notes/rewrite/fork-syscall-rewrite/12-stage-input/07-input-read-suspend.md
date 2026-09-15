@@ -234,7 +234,7 @@ pub struct CopyPlan {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/handlers.rs`（读四节）与 `os/servers/input/src/eventbuf.rs`（几何五节）的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 86 个）。
+> 测试代码在 `os/servers/input/src/handlers.rs`（读四节）与 `os/servers/input/src/eventbuf.rs`（几何五节）的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 98 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -246,6 +246,8 @@ pub struct CopyPlan {
 | `test_rejected_plan_leaves_device_untouched` | 拒绝的规划不碰设备 | input.c:144-151 |
 | `test_commit_consumes_plan_and_advances_once` | 推进按值消费规划，只推进一次 | input.c:153-154 |
 | `test_drain_ordered_reads_oldest_first_across_wrap` | 跨回绕按序读出 | 环顺序语义 |
+| `test_plan_copy_extreme_wrap_boundaries` | 两个极限回绕（1+31 两段、整环一次拷） | input.c:140-142 |
+| `test_drain_ordered_zero_count_is_empty` | 计数为零列出为空 | 环顺序语义 |
 | `test_read_serves_clamped_to_buffered` | 给钳制到存货（`EventCount` 类型） | input.c:195-196 |
 | `test_read_refusals_match_c` | 三拒（不营业/有挂起/胃口不足，含零） | input.c:172-179 |
 | `test_read_parks_or_refuses_when_empty` | 空则等、不等则拒、纸条四项 | input.c:182-193 |
@@ -255,7 +257,7 @@ pub struct CopyPlan {
 ### 5.1 测试统计（截至 2026-09-15）
 
 - `cargo test -p minix-input`：**86 个通过，0 个失败**（2026-09-15）。
-- 其中与本篇直接相关的 12 个（上表，`test_event_bytes_match_c` 与第 06 篇共用不计入）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（14 个：框架 8 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）。
+- 其中与本篇直接相关的 12 个（上表，`test_event_bytes_match_c` 与第 06 篇共用不计入）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（15 个：框架 9 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（14 个）、第 08 篇（8 个）、第 09 篇（17 个）、第 10 篇（4 个）、第 11 篇（11 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/handlers.rs os/servers/input/src/eventbuf.rs`
 
 ---

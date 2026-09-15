@@ -366,4 +366,62 @@ mod tests {
         assert_eq!(device.label_bytes(), b"kbd0");
         assert_eq!(device.leds, 0x6);
     }
+
+    #[test]
+    fn test_mouse_window_exhaustion_leaves_keyboard_window_intact() {
+        // C: input.c:435-454 — 两个窗口互不侵占：鼠标窗满后，同一驱动再要
+        // 鼠标得 INVALID，键盘窗仍能分配。
+        let mut table = InputTable::fresh();
+        for slot in FIRST_MOUSE_INDEX..=LAST_MOUSE_INDEX {
+            labelled(&mut table, slot, Endpoint(9), b"mouse");
+        }
+        let report = connect_driver(&mut table, true, true, Endpoint(3), b"combo");
+        assert_eq!(report.keyboard_slot, Some(DeviceIndex(1)));
+        assert_eq!(report.mouse_slot, None);
+        assert_eq!(report.restore_lights, Some((table.devices[1].minor, 0)));
+    }
+
+    #[test]
+    fn test_alloc_skips_disconnected_but_opened_slots() {
+        // C: input.c:450-453 — "断开但读者还开着"的槽不可分配（不可占走
+        // 读者的设备）；下一间空房接棒。
+        let mut table = InputTable::fresh();
+        table.devices[6].opened = true;
+        let report = connect_driver(&mut table, false, true, Endpoint(9), b"mouse");
+        assert_eq!(report.mouse_slot, Some(DeviceIndex(7)));
+    }
+
+    #[test]
+    fn test_disconnect_reader_only_and_selector_only() {
+        // C: input.c:540-550 — 断连的两个唤醒面各自独立：只有挂起读者、
+        // 只有选择者的单侧场景都必须各自正确。
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[6];
+        device.owner = Endpoint(9);
+        device.suspended = true;
+        device.caller = Endpoint(7);
+        device.request_id = 5;
+        let out = disconnect_device(device);
+        assert_eq!(out.answer_reader, Some((Endpoint(7), 5)));
+        assert_eq!(out.notify_selector, None);
+        assert_eq!(device.owner, Endpoint::NONE);
+
+        let mut table = InputTable::fresh();
+        let device = &mut table.devices[6];
+        device.owner = Endpoint(9);
+        device.selector = Endpoint(11);
+        let out = disconnect_device(device);
+        assert_eq!(out.answer_reader, None);
+        assert_eq!(out.notify_selector, Some((Endpoint(11), device.minor)));
+        assert_eq!(device.owner, Endpoint::NONE);
+    }
+
+    #[test]
+    fn test_labels_match_stops_at_first_nul_like_strcmp() {
+        // C: input.c:492 — strcmp 语义：首 NUL 截断比较，不符静默忽略。
+        assert!(labels_match(b"pckbd", b"pckbd"));
+        assert!(labels_match(b"pckbd\0junk", b"pckbd"));
+        assert!(!labels_match(b"pckbd", b"impostor"));
+        assert!(!labels_match(b"pckbd", b"pckbd0"));
+    }
 }

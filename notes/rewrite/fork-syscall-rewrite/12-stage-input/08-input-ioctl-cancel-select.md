@@ -229,7 +229,7 @@ pub enum IoctlVerdict {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/handlers.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 86 个）。
+> 测试代码在 `os/servers/input/src/handlers.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 98 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -238,13 +238,14 @@ pub enum IoctlVerdict {
 | `test_cancel_matches_exactly_or_ignores` | 三重匹配叫醒，错身份错编号无挂起皆忽略 | input.c:290-297 |
 | `test_cancel_match_yields_eintr_answer_and_unparks` | 组合产出打断信封（调用者加编号），复位挂起，回信值接 EINTR | input.c:290-295 + chardriver.c:255-261 |
 | `test_cancel_mismatch_yields_no_answer` | 不匹配什么都不产生，挂起原样 | input.c:297 |
+| `test_second_selector_overwrites_the_first` | 查询者覆盖：一设备至多一个 | input.c:320 |
 | `test_select_reports_ready_data_and_errors` | 空无记名、空预约记名、有货就绪、挂起就绪、不营业就绪 | input.c:314-321 |
 | `test_select_write_always_ready` | 写永远就绪，错误方向永远无 | input.c:323（与无分支） |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
 - `cargo test -p minix-input`：**86 个通过，0 个失败**（2026-09-15）。
-- 其中与本篇直接相关的 7 个（上表）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（14 个：框架 8 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）。
+- 其中与本篇直接相关的 7 个（上表）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（15 个：框架 9 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（14 个）、第 08 篇（8 个）、第 09 篇（17 个）、第 10 篇（4 个）、第 11 篇（11 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/handlers.rs`
 
 ---

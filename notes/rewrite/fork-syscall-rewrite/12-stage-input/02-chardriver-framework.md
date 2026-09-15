@@ -252,7 +252,7 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/framework.rs` 与 `os/servers/input/src/effects.rs`（4.5 节的效应模块，2026-09-15 增补）的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 86 个测试，全部通过）。
+> 测试代码在 `os/servers/input/src/framework.rs` 与 `os/servers/input/src/effects.rs`（4.5 节的效应模块，2026-09-15 增补）的测试模块。运行方法：`cargo test -p minix-input`（当前全 crate 共 98 个测试，全部通过）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -264,6 +264,7 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 | `test_decide_reply_matches_chardriver_reply` | 普通答复寄出、四种可赊三种不可赊、重起一律沉默 | chardriver.c:195-274 |
 | `test_answer_message_types_match_c` | 三种回信各走各的消息类型 | com.h:935-937，ipc.h:939-965 |
 | `test_announce_effects_follow_c_order` | 宣告三效果的顺序 | chardriver.c:99-124 |
+| `test_open_device_set_record_reports_overflow` | 登记簿 256 满返回 false（C 崩溃改报错） | chardriver.c:85-94 |
 | `test_reply_values_encode_c_statuses` | 回信两单位：字节与状态码（ crate 正值 errno 约定） | chardriver.c:129-151 |
 | `test_reply_interrupted_targets_the_original_read` | 取消的 EINTR 回给原请求（同编号） | chardriver.c:255-261 |
 | `test_input_conf_carries_slots_and_reserved_invalids` | 配置效应带槽位与保留槽无效值 | input.c:514-523 |

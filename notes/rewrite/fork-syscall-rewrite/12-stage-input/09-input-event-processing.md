@@ -258,7 +258,7 @@ pub enum WakeDirective {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/produce.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 86 个）。
+> 测试代码在 `os/servers/input/src/produce.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 98 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -275,11 +275,15 @@ pub enum WakeDirective {
 | `test_wake_on_event_selector_notified_and_forgotten` | 组合：选择者被通知一次即忘 | input.c:366-369 |
 | `test_wake_on_event_nobody_just_files` | 组合：无人等待，事件留队列 | input.c:347-355 |
 | `test_wake_on_event_full_buffer_reader_still_gets_one` | 满队溢出踩旧后读者仍恰得一个 | input.c:338-346 + 361-364 |
+| `test_enqueue_lands_at_index_31_then_wraps` | 落位下标 31 再回绕 | input.c:347-355 |
+| `test_route_delivers_mux_slot_reports_to_mux_queues` | 总机槽位自身的事件进总机队列 | input.c:392-397 + 404-407 |
+| `test_key_is_new_driver_prefix_only_key_yields_empty_label` | 前缀即整键：空标签不报错 | input.c:582 |
+| `test_stored_event_narrows_lanes_like_c` | 车道窄化与 C 隐式截断一致 | input.c:348-354 |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
 - `cargo test -p minix-input`：**86 个通过，0 个失败**（2026-09-15）。
-- 其中与本篇直接相关的 13 个（上表）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（14 个：框架 8 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）。
+- 其中与本篇直接相关的 13 个（上表）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（15 个：框架 9 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（14 个）、第 08 篇（8 个）、第 09 篇（17 个）、第 10 篇（4 个）、第 11 篇（11 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/produce.rs`
 
 ---

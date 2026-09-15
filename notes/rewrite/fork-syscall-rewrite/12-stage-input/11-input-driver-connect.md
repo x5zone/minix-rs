@@ -312,7 +312,7 @@ pub struct DisconnectEffects {
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/connect.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 86 个）。
+> 测试代码在 `os/servers/input/src/connect.rs` 的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 98 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
@@ -323,11 +323,15 @@ pub struct DisconnectEffects {
 | `test_connect_reports_slots_and_light_restore` | 双槽分配、灯光恢复、满房仍报告 | input.c:509-527 |
 | `test_typemask_decoding_matches_c` | 四种掩码组合 | input.c:509-512 |
 | `test_disconnect_wakes_and_frees` | 叫醒通知撕牌子，不动四项 | input.c:540-552 |
+| `test_mouse_window_exhaustion_leaves_keyboard_window_intact` | 鼠标窗耗尽不侵占键盘窗（组合耗尽） | input.c:435-454 |
+| `test_alloc_skips_disconnected_but_opened_slots` | 断开未关槽跳过后由下间空房接棒 | input.c:450-453 |
+| `test_disconnect_reader_only_and_selector_only` | 断连单侧场景：只有读者/只有选择者各自正确 | input.c:540-550 |
+| `test_labels_match_stops_at_first_nul_like_strcmp` | strcmp 首截断语义，不符静默忽略 | input.c:492-495 |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
 - `cargo test -p minix-input`：**86 个通过，0 个失败**（2026-09-15）。
-- 其中与本篇直接相关的 7 个（上表）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（14 个：框架 8 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（12 个）、第 08 篇（7 个）、第 09 篇（13 个）、第 10 篇（4 个）、第 11 篇（7 个）。
+- 其中与本篇直接相关的 7 个（上表）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（15 个：框架 9 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（14 个）、第 08 篇（8 个）、第 09 篇（17 个）、第 10 篇（4 个）、第 11 篇（11 个）。
 - 完整测试清单：`rg "#\[test\]" os/servers/input/src/connect.rs`
 
 ---
