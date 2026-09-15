@@ -2533,7 +2533,12 @@ fn dispatch_diagctl(
 
             match data_copy_vmcheck(caller, src, dst, len, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {
-                    // C: do_diagctl.c:38-42 — kputc each byte
+                    // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
+                    // the kmess ring is the C kputc accumulation half —
+                    // record here so the IS `kmessages_dmp` replay
+                    // (GET_KMESSAGES) has the same content the console
+                    // shows.
+                    crate::kmess::record_bytes(&diagbuf[..len]);
                     for &byte in &diagbuf[..len] {
                         Console::write_byte(byte);
                     }

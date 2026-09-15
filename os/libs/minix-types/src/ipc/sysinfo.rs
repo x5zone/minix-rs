@@ -38,7 +38,9 @@ pub const GET_MONPARAMS: i32 = 4;
 pub const GET_KENV: i32 = 5;
 /// C: `GET_IRQHOOKS 6` — com.h:322.
 pub const GET_IRQHOOKS: i32 = 6;
-// 7: unassigned upstream.
+// 7: E-ISKMESS A-3 决策的 `GET_KMESSAGES` 新臂(04 篇 §4.1;C 头未
+// 分配此孔,minix-rs 以孔 7 作内核消息环形缓冲快照的请求号)。
+pub const GET_KMESSAGES: i32 = 7;
 /// C: `GET_PRIVTAB 8` — com.h:323.
 pub const GET_PRIVTAB: i32 = 8;
 /// C: `GET_KADDRESSES 9` — com.h:324.

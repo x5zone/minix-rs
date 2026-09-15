@@ -70,6 +70,9 @@ pub enum GetInfoRequest {
     Randomness = 3,
     /// Boot monitor parameters. C: `GET_MONPARAMS = 4` (com.h:320)
     MonParams = 4,
+    /// Kernel message ring. C: com.h:315-345 未分配孔 7(E-ISKMESS A-3
+    /// 新臂——04 篇 §4.1,取未用孔;取号见 kmess.rs doc)。
+    KMessages = 7,
     /// IRQ hook table. C: `GET_IRQHOOKS = 6` (com.h:322)
     IrqHooks = 6,
     /// Kernel privilege table. C: `GET_PRIVTAB = 8` (com.h:323)
@@ -111,6 +114,7 @@ impl TryFrom<i32> for GetInfoRequest {
             3 => Ok(Self::Randomness),
             4 => Ok(Self::MonParams),
             6 => Ok(Self::IrqHooks),
+            7 => Ok(Self::KMessages),
             8 => Ok(Self::PrivTab),
             11 => Ok(Self::Proc),
             12 => Ok(Self::Machine),
@@ -720,6 +724,7 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
         GetInfoRequest::Randomness => getinfo_randomness(caller, val_ptr, val_len),
         GetInfoRequest::RandomnessBin => getinfo_randomness_bin(caller, val_len2_e, val_ptr, val_len),
         GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller, val_ptr, val_len),
+        GetInfoRequest::KMessages => crate::kmess::copy_snapshot_to_caller(caller, val_ptr, val_len),
         GetInfoRequest::Image => getinfo_image(caller, proc_table, val_ptr, val_len),
         GetInfoRequest::MonParams => getinfo_mon_params(),
     }
@@ -2668,8 +2673,8 @@ mod tests {
         assert_eq!(GetInfoRequest::try_from(15), Ok(GetInfoRequest::LoadInfo));
         assert_eq!(GetInfoRequest::try_from(19), Ok(GetInfoRequest::WhoAmI));
         assert_eq!(GetInfoRequest::try_from(25), Ok(GetInfoRequest::CpuTicks));
-        // Values not handled by C do_getinfo → Err (→ EINVAL in dispatch)
-        assert_eq!(GetInfoRequest::try_from(7), Err(()));   // undefined
+        // E-ISKMESS: 7 = GET_KMESSAGES(04 §4.1 新臂)→ Ok(KMessages)。
+        assert_eq!(GetInfoRequest::try_from(7), Ok(GetInfoRequest::KMessages));
         assert_eq!(GetInfoRequest::try_from(9), Err(()));   // GET_KADDRESSES (not handled)
         assert_eq!(GetInfoRequest::try_from(10), Err(()));  // GET_SCHEDINFO (not handled)
         assert_eq!(GetInfoRequest::try_from(99), Err(()));

@@ -73,6 +73,7 @@ pub mod syscall_device;
 pub mod syscall_clock;
 pub mod ipc_filter;
 pub mod cross_space;
+pub(crate) mod kmess;
 pub mod misc;
 pub mod debug;
 pub mod page_fault;
