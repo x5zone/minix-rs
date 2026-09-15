@@ -22,7 +22,12 @@ use minix_types::Errno;
 /// Every request number is `FS_BASE` plus a small index, so a raw message
 /// type carries both the operation and a transaction identifier (see
 /// [`TransactionId`]).
-pub const FS_BASE: i32 = 0xA00;
+///
+/// E-REQWIRE: re-exported from the shared authority
+/// (`minix_types::fs_driver`) — the FS side and the VFS side consume the
+/// same constants, so the pre-convergence split (VFS at `0x600`, FS at
+/// `0xA00`, offset alignment hiding it) cannot recur.
+pub use minix_types::FS_BASE;
 
 /// Endpoint number of the virtual file system service.
 ///
@@ -30,14 +35,17 @@ pub const FS_BASE: i32 = 0xA00;
 /// The dispatch rule in [`crate::driver`] only treats a message as a file
 /// system request when it arrives from this endpoint; anything else is handed
 /// to the server-specific `other` handler without a reply.
-pub const VFS_ENDPOINT: i32 = 1;
+///
+/// E-REQWIRE: derived from the shared endpoint authority instead of a
+/// local literal.
+pub const VFS_ENDPOINT: i32 = minix_types::Endpoint::VFS.get();
 
 /// Number of slots in the dispatch table, including the unused slot zero.
 ///
 /// C: `NREQS` (`minix3/minix/include/minix/vfsif.h:75`, value `34`).
 /// Request index zero is never used: the first request, `GetNode`, is index
 /// one, and the last request, `BlockPeek`, is index thirty-three.
-pub const REQUEST_TABLE_SIZE: usize = 34;
+pub use minix_types::NREQS as REQUEST_TABLE_SIZE;
 
 /// A file server request, identified by its index above [`FS_BASE`].
 ///
@@ -536,5 +544,59 @@ mod tests {
         // Spot check that errno constants used by dispatch exist.
         assert_eq!(ENOSYS, 78);
         assert_eq!(EINVAL, 22);
+    }
+
+    /// E-REQWIRE: every dispatch variant's full message type must equal the
+    /// corresponding shared constant (`minix_types::fs_driver`, the same
+    /// authority VFS encodes with). A drift on either side fails here
+    /// instead of on the wire.
+    #[test]
+    fn test_request_numbers_track_minix_types_fs_driver_family() {
+        use minix_types::{
+            REQ_BPEEK, REQ_BREAD, REQ_BWRITE, REQ_CHMOD, REQ_CHOWN, REQ_CREATE, REQ_FLUSH,
+            REQ_FTRUNC, REQ_GETDENTS, REQ_GETNODE, REQ_INHIBREAD, REQ_LINK, REQ_LOOKUP,
+            REQ_MKDIR, REQ_MKNOD, REQ_MOUNTPOINT, REQ_NEWNODE, REQ_NEW_DRIVER, REQ_PEEK,
+            REQ_PUTNODE, REQ_RDLINK, REQ_READ, REQ_READSUPER, REQ_RENAME, REQ_RMDIR, REQ_SLINK,
+            REQ_STAT, REQ_STATVFS, REQ_SYNC, REQ_UNLINK, REQ_UNMOUNT, REQ_UTIME, REQ_WRITE,
+        };
+        let pairs = [
+            (RequestNumber::GetNode, REQ_GETNODE),
+            (RequestNumber::PutNode, REQ_PUTNODE),
+            (RequestNumber::SymbolicLink, REQ_SLINK),
+            (RequestNumber::Truncate, REQ_FTRUNC),
+            (RequestNumber::ChangeOwner, REQ_CHOWN),
+            (RequestNumber::ChangeMode, REQ_CHMOD),
+            (RequestNumber::InhibitRead, REQ_INHIBREAD),
+            (RequestNumber::Stat, REQ_STAT),
+            (RequestNumber::UpdateTimes, REQ_UTIME),
+            (RequestNumber::StatVfs, REQ_STATVFS),
+            (RequestNumber::BlockRead, REQ_BREAD),
+            (RequestNumber::BlockWrite, REQ_BWRITE),
+            (RequestNumber::Unlink, REQ_UNLINK),
+            (RequestNumber::RemoveDir, REQ_RMDIR),
+            (RequestNumber::Unmount, REQ_UNMOUNT),
+            (RequestNumber::Sync, REQ_SYNC),
+            (RequestNumber::NewDriver, REQ_NEW_DRIVER),
+            (RequestNumber::Flush, REQ_FLUSH),
+            (RequestNumber::Read, REQ_READ),
+            (RequestNumber::Write, REQ_WRITE),
+            (RequestNumber::MakeNode, REQ_MKNOD),
+            (RequestNumber::MakeDir, REQ_MKDIR),
+            (RequestNumber::Create, REQ_CREATE),
+            (RequestNumber::Link, REQ_LINK),
+            (RequestNumber::Rename, REQ_RENAME),
+            (RequestNumber::Lookup, REQ_LOOKUP),
+            (RequestNumber::MountPoint, REQ_MOUNTPOINT),
+            (RequestNumber::ReadSuper, REQ_READSUPER),
+            (RequestNumber::NewNode, REQ_NEWNODE),
+            (RequestNumber::ReadLink, REQ_RDLINK),
+            (RequestNumber::GetDents, REQ_GETDENTS),
+            (RequestNumber::Peek, REQ_PEEK),
+            (RequestNumber::BlockPeek, REQ_BPEEK),
+        ];
+        assert_eq!(pairs.len(), 33);
+        for (request, wire) in pairs {
+            assert_eq!(request.message_type(), wire, "{request:?} 与共享权威不符");
+        }
     }
 }

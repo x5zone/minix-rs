@@ -9,58 +9,20 @@
 //! `NoTry`), `FsFlags` (`RES_64BIT`守门).  `REQ_GETNODE 0xA01` is dead.
 //!
 //! `ARCH A-2` (enum vs function pointer) and `ARCH A-8` (64-bit) in one place.
+//!
+//! E-REQWIRE: the `REQ_*` numbers themselves are no longer defined here —
+//! they moved to the shared authority `minix-types::fs_driver` (consumed by
+//! the FS-driver side too, so the two ends cannot drift; devman's VTreeFS is
+//! the registered third consumer). The C-absolute pin tests stay in this
+//! module: they guard what VFS actually puts on the wire.
 
-use minix_types::Endpoint;
-
-/// `FS_BASE 0xA00` — `com.h:589` ("Requests sent by VFS to filesystem").
-///
-/// The absolute value is the wire contract with FS drivers: `vfsif.h:41-73`
-/// only references it (`REQ_GETNODE (FS_BASE + 1)` ...), and the FS side
-/// (`minix-fs` `protocol.rs`) dispatches on `0xA00`.  Pinned against
-/// regression by `test_fs_wire_values_match_c_absolute`.
-pub const FS_BASE: u32 = 0xA00;
-/// `NREQS 34` — `vfsif.h:75` (includes dead `GETNODE`).
-pub const NREQS: usize = 34;
-
-/// `IS_FS_RQ(type) ((type & ~0xff)==FS_BASE)` — `vfsif.h:77`.
-pub const fn is_fs_rq(raw: u32) -> bool {
-    (raw & !0xff) == FS_BASE
-}
-
-/// `REQ_*` constants — `vfsif.h:41-73` (33 constants: 32 live + 1 dead).
-pub const REQ_GETNODE: u32 = FS_BASE + 1; // dead — Should be removed
-pub const REQ_PUTNODE: u32 = FS_BASE + 2;
-pub const REQ_SLINK: u32 = FS_BASE + 3;
-pub const REQ_FTRUNC: u32 = FS_BASE + 4;
-pub const REQ_CHOWN: u32 = FS_BASE + 5;
-pub const REQ_CHMOD: u32 = FS_BASE + 6;
-pub const REQ_INHIBREAD: u32 = FS_BASE + 7;
-pub const REQ_STAT: u32 = FS_BASE + 8;
-pub const REQ_UTIME: u32 = FS_BASE + 9;
-pub const REQ_STATVFS: u32 = FS_BASE + 10;
-pub const REQ_BREAD: u32 = FS_BASE + 11;
-pub const REQ_BWRITE: u32 = FS_BASE + 12;
-pub const REQ_UNLINK: u32 = FS_BASE + 13;
-pub const REQ_RMDIR: u32 = FS_BASE + 14;
-pub const REQ_UNMOUNT: u32 = FS_BASE + 15;
-pub const REQ_SYNC: u32 = FS_BASE + 16;
-pub const REQ_NEW_DRIVER: u32 = FS_BASE + 17;
-pub const REQ_FLUSH: u32 = FS_BASE + 18;
-pub const REQ_READ: u32 = FS_BASE + 19;
-pub const REQ_WRITE: u32 = FS_BASE + 20;
-pub const REQ_MKNOD: u32 = FS_BASE + 21;
-pub const REQ_MKDIR: u32 = FS_BASE + 22;
-pub const REQ_CREATE: u32 = FS_BASE + 23;
-pub const REQ_LINK: u32 = FS_BASE + 24;
-pub const REQ_RENAME: u32 = FS_BASE + 25;
-pub const REQ_LOOKUP: u32 = FS_BASE + 26;
-pub const REQ_MOUNTPOINT: u32 = FS_BASE + 27;
-pub const REQ_READSUPER: u32 = FS_BASE + 28;
-pub const REQ_NEWNODE: u32 = FS_BASE + 29;
-pub const REQ_RDLINK: u32 = FS_BASE + 30;
-pub const REQ_GETDENTS: u32 = FS_BASE + 31;
-pub const REQ_PEEK: u32 = FS_BASE + 32;
-pub const REQ_BPEEK: u32 = FS_BASE + 33;
+use minix_types::{
+    is_fs_rq, Endpoint, REQ_BREAD, REQ_BPEEK, REQ_BWRITE, REQ_CHMOD, REQ_CHOWN, REQ_CREATE,
+    REQ_FLUSH, REQ_FTRUNC, REQ_GETDENTS, REQ_GETNODE, REQ_INHIBREAD, REQ_LINK, REQ_LOOKUP,
+    REQ_MKDIR, REQ_MKNOD, REQ_MOUNTPOINT, REQ_NEWNODE, REQ_NEW_DRIVER, REQ_PEEK, REQ_PUTNODE,
+    REQ_RDLINK, REQ_READ, REQ_READSUPER, REQ_RENAME, REQ_RMDIR, REQ_SLINK, REQ_STAT,
+    REQ_STATVFS, REQ_SYNC, REQ_UNLINK, REQ_UNMOUNT, REQ_UTIME, REQ_WRITE,
+};
 
 bitflags::bitflags! {
     /// `RES_*` flags — `vfsif.h:20-23`, mirrored in `vmnt.m_fs_flags`.
@@ -322,7 +284,10 @@ pub enum FsReq {
 
 impl FsReq {
     /// `m_type` for this request (`FS_BASE + N`).
-    pub fn m_type(&self) -> u32 {
+    ///
+    /// E-REQWIRE: the wire domain is `i32` (`Message::m_type`), so the
+    /// signature follows the shared constants' canonical type.
+    pub fn m_type(&self) -> i32 {
         match self {
             Self::PutNode { .. } => REQ_PUTNODE,
             Self::SLink { .. } => REQ_SLINK,
@@ -359,8 +324,8 @@ impl FsReq {
         }
     }
 
-    /// Whether `raw` is a live `REQ_*` (excludes dead `GETNODE` `0x601`).
-    pub fn is_known(raw: u32) -> bool {
+    /// Whether `raw` is a live `REQ_*` (excludes dead `GETNODE` `0xA01`).
+    pub fn is_known(raw: i32) -> bool {
         if !is_fs_rq(raw) {
             return false;
         }
@@ -434,7 +399,7 @@ pub enum FsResp {
 /// `FsError` — maps to Minix errno for `req_*` wrappers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsError {
-    UnknownReq(u32),
+    UnknownReq(i32),
     InvalidOff,
     GrantFaulted, // `ERESTART` → `vm_handlemem` retry sentinel
     Io(i32),
@@ -554,7 +519,7 @@ impl GrantStrategy for MagicGrant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::Endpoint;
+    use minix_types::{Endpoint, FS_BASE, NREQS};
 
     #[test]
     fn test_fs_base_prefix() {
@@ -585,9 +550,10 @@ mod tests {
 
     #[test]
     fn test_reqwire_all_33_align_c_ipc_h() {
-        // E-REQWIRE 方案 B：全量 33 常量对账（C ipc.h REQ_GETNODE..REQ_BPEEK）。
-        // 绝对值 = 0xA00 + 偏移；FS 侧 minix-fs protocol.rs 同值。
-        let expected: [(u32, u32); 33] = [
+        // E-REQWIRE：全量 33 常量对账（C vfsif.h REQ_GETNODE..REQ_BPEEK）。
+        // 绝对值 = 0xA00 + 偏移；常量本体已收敛至 minix-types::fs_driver，
+        // 本表改为钉住 VFS 消费侧（编码进 m_type 的就是这些值）。
+        let expected: [(i32, i32); 33] = [
             (1, 0xA01), (2, 0xA02), (3, 0xA03), (4, 0xA04),
             (5, 0xA05), (6, 0xA06), (7, 0xA07), (8, 0xA08),
             (9, 0xA09), (10, 0xA0A), (11, 0xA0B), (12, 0xA0C),

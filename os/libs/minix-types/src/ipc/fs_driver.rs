@@ -1,0 +1,209 @@
+//! VFS→FS driver request numbers — the single Rust authority for C's
+//! `REQ_*` family (`minix3/minix/include/minix/vfsif.h:41-73`, base
+//! `FS_BASE` at `com.h:589`).
+//!
+//! Consumers: VFS builds requests with these numbers (`servers/vfs/
+//! src/request.rs`), every file-server driver dispatches on them
+//! (`minix-fs` `protocol.rs`, consumed by mfs/pfs), and devman's inline
+//! VTreeFS is the registered third consumer (edge E-DMWIRE/E-REQWIRE).
+//! One authority here means the sides cannot drift — the pre-convergence
+//! incident had VFS at base `0x600` against the FS side's `0xA00`, with
+//! offset alignment hiding the split until a wire break (05-stage-vfs
+//! R2-P0-1).
+//!
+//! Domain note: the canonical type is `i32`, matching `Message::m_type`.
+//! `IS_FS_RQ` (`vfsif.h:77`) and C's driver-side decoders bit-mask the
+//! raw `int`; the bit pattern of `0xA00..=0xAFF` is identical in both
+//! signednesses for the values in use.
+
+/// Base of the request-number space ("Requests sent by VFS to filesystem").
+/// C: `FS_BASE` — com.h:589.
+pub const FS_BASE: i32 = 0xA00;
+
+/// Dispatch-table slot count, including the unused slot zero.
+/// C: `NREQS` — vfsif.h:75 (includes dead `GETNODE`).
+pub const NREQS: usize = 34;
+
+/// C: `REQ_GETNODE (FS_BASE + 1)` — vfsif.h:42. Marked "Should be
+/// removed" upstream: no dispatch-table entry answers it. The number is
+/// pinned so the dead slot stays named, not forgotten.
+pub const REQ_GETNODE: i32 = FS_BASE + 1;
+
+/// C: `REQ_PUTNODE (FS_BASE + 2)` — vfsif.h:43.
+pub const REQ_PUTNODE: i32 = FS_BASE + 2;
+
+/// C: `REQ_SLINK (FS_BASE + 3)` — vfsif.h:44.
+pub const REQ_SLINK: i32 = FS_BASE + 3;
+
+/// C: `REQ_FTRUNC (FS_BASE + 4)` — vfsif.h:45.
+pub const REQ_FTRUNC: i32 = FS_BASE + 4;
+
+/// C: `REQ_CHOWN (FS_BASE + 5)` — vfsif.h:46.
+pub const REQ_CHOWN: i32 = FS_BASE + 5;
+
+/// C: `REQ_CHMOD (FS_BASE + 6)` — vfsif.h:47.
+pub const REQ_CHMOD: i32 = FS_BASE + 6;
+
+/// C: `REQ_INHIBREAD (FS_BASE + 7)` — vfsif.h:48.
+pub const REQ_INHIBREAD: i32 = FS_BASE + 7;
+
+/// C: `REQ_STAT (FS_BASE + 8)` — vfsif.h:49.
+pub const REQ_STAT: i32 = FS_BASE + 8;
+
+/// C: `REQ_UTIME (FS_BASE + 9)` — vfsif.h:50.
+pub const REQ_UTIME: i32 = FS_BASE + 9;
+
+/// C: `REQ_STATVFS (FS_BASE + 10)` — vfsif.h:51.
+pub const REQ_STATVFS: i32 = FS_BASE + 10;
+
+/// C: `REQ_BREAD (FS_BASE + 11)` — vfsif.h:52.
+pub const REQ_BREAD: i32 = FS_BASE + 11;
+
+/// C: `REQ_BWRITE (FS_BASE + 12)` — vfsif.h:53.
+pub const REQ_BWRITE: i32 = FS_BASE + 12;
+
+/// C: `REQ_UNLINK (FS_BASE + 13)` — vfsif.h:54.
+pub const REQ_UNLINK: i32 = FS_BASE + 13;
+
+/// C: `REQ_RMDIR (FS_BASE + 14)` — vfsif.h:55.
+pub const REQ_RMDIR: i32 = FS_BASE + 14;
+
+/// C: `REQ_UNMOUNT (FS_BASE + 15)` — vfsif.h:56.
+pub const REQ_UNMOUNT: i32 = FS_BASE + 15;
+
+/// C: `REQ_SYNC (FS_BASE + 16)` — vfsif.h:57.
+pub const REQ_SYNC: i32 = FS_BASE + 16;
+
+/// C: `REQ_NEW_DRIVER (FS_BASE + 17)` — vfsif.h:58.
+pub const REQ_NEW_DRIVER: i32 = FS_BASE + 17;
+
+/// C: `REQ_FLUSH (FS_BASE + 18)` — vfsif.h:59.
+pub const REQ_FLUSH: i32 = FS_BASE + 18;
+
+/// C: `REQ_READ (FS_BASE + 19)` — vfsif.h:60.
+pub const REQ_READ: i32 = FS_BASE + 19;
+
+/// C: `REQ_WRITE (FS_BASE + 20)` — vfsif.h:61.
+pub const REQ_WRITE: i32 = FS_BASE + 20;
+
+/// C: `REQ_MKNOD (FS_BASE + 21)` — vfsif.h:62.
+pub const REQ_MKNOD: i32 = FS_BASE + 21;
+
+/// C: `REQ_MKDIR (FS_BASE + 22)` — vfsif.h:63.
+pub const REQ_MKDIR: i32 = FS_BASE + 22;
+
+/// C: `REQ_CREATE (FS_BASE + 23)` — vfsif.h:64.
+pub const REQ_CREATE: i32 = FS_BASE + 23;
+
+/// C: `REQ_LINK (FS_BASE + 24)` — vfsif.h:65.
+pub const REQ_LINK: i32 = FS_BASE + 24;
+
+/// C: `REQ_RENAME (FS_BASE + 25)` — vfsif.h:66.
+pub const REQ_RENAME: i32 = FS_BASE + 25;
+
+/// C: `REQ_LOOKUP (FS_BASE + 26)` — vfsif.h:67.
+pub const REQ_LOOKUP: i32 = FS_BASE + 26;
+
+/// C: `REQ_MOUNTPOINT (FS_BASE + 27)` — vfsif.h:68.
+pub const REQ_MOUNTPOINT: i32 = FS_BASE + 27;
+
+/// C: `REQ_READSUPER (FS_BASE + 28)` — vfsif.h:69.
+pub const REQ_READSUPER: i32 = FS_BASE + 28;
+
+/// C: `REQ_NEWNODE (FS_BASE + 29)` — vfsif.h:70.
+pub const REQ_NEWNODE: i32 = FS_BASE + 29;
+
+/// C: `REQ_RDLINK (FS_BASE + 30)` — vfsif.h:71.
+pub const REQ_RDLINK: i32 = FS_BASE + 30;
+
+/// C: `REQ_GETDENTS (FS_BASE + 31)` — vfsif.h:72.
+pub const REQ_GETDENTS: i32 = FS_BASE + 31;
+
+/// C: `REQ_PEEK (FS_BASE + 32)` — vfsif.h:73.
+pub const REQ_PEEK: i32 = FS_BASE + 32;
+
+/// C: `REQ_BPEEK (FS_BASE + 33)` — vfsif.h:73 (shares the line with
+/// `REQ_PEEK` upstream).
+pub const REQ_BPEEK: i32 = FS_BASE + 33;
+
+/// C: `IS_FS_RQ(type) ((type & ~0xff) == FS_BASE)` — vfsif.h:77.
+pub const fn is_fs_rq(raw: i32) -> bool {
+    (raw & !0xff) == FS_BASE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C 绝对值全量 pin:33 个请求号逐一对照 vfsif.h:42-73 的字面偏移。
+    /// 基址错位(0x600 事故)或偏移错位都会在这里爆——单测偏移是不够的,
+    /// FS 侧按 0xA00 派生的绝对值分派。
+    #[test]
+    fn test_req_family_matches_c_absolute_values() {
+        assert_eq!(FS_BASE, 0xA00); // com.h:589
+        let expected: [(i32, i32); 33] = [
+            (1, 0xA01),
+            (2, 0xA02),
+            (3, 0xA03),
+            (4, 0xA04),
+            (5, 0xA05),
+            (6, 0xA06),
+            (7, 0xA07),
+            (8, 0xA08),
+            (9, 0xA09),
+            (10, 0xA0A),
+            (11, 0xA0B),
+            (12, 0xA0C),
+            (13, 0xA0D),
+            (14, 0xA0E),
+            (15, 0xA0F),
+            (16, 0xA10),
+            (17, 0xA11),
+            (18, 0xA12),
+            (19, 0xA13),
+            (20, 0xA14),
+            (21, 0xA15),
+            (22, 0xA16),
+            (23, 0xA17),
+            (24, 0xA18),
+            (25, 0xA19),
+            (26, 0xA1A),
+            (27, 0xA1B),
+            (28, 0xA1C),
+            (29, 0xA1D),
+            (30, 0xA1E),
+            (31, 0xA1F),
+            (32, 0xA20),
+            (33, 0xA21),
+        ];
+        let family = [
+            REQ_GETNODE, REQ_PUTNODE, REQ_SLINK, REQ_FTRUNC, REQ_CHOWN, REQ_CHMOD,
+            REQ_INHIBREAD, REQ_STAT, REQ_UTIME, REQ_STATVFS, REQ_BREAD, REQ_BWRITE, REQ_UNLINK,
+            REQ_RMDIR, REQ_UNMOUNT, REQ_SYNC, REQ_NEW_DRIVER, REQ_FLUSH, REQ_READ, REQ_WRITE,
+            REQ_MKNOD, REQ_MKDIR, REQ_CREATE, REQ_LINK, REQ_RENAME, REQ_LOOKUP, REQ_MOUNTPOINT,
+            REQ_READSUPER, REQ_NEWNODE, REQ_RDLINK, REQ_GETDENTS, REQ_PEEK, REQ_BPEEK,
+        ];
+        assert_eq!(family.len(), expected.len());
+        for (req, (index, absolute)) in family.iter().zip(expected.iter()) {
+            assert_eq!(*req, *absolute, "REQ 偏移 {index} 的绝对值漂移");
+            assert_eq!(req - FS_BASE, *index);
+        }
+    }
+
+    /// 槽位数与 `IS_FS_RQ` 门(vfsif.h:75/:77):带内识别、带外拒绝,
+    /// 包括 0x600(旧事故基址)与 0xB00(transid 带)。
+    #[test]
+    fn test_nreqs_and_is_fs_rq_gate() {
+        assert_eq!(NREQS, 34); // vfsif.h:75
+        assert!(is_fs_rq(FS_BASE));
+        assert!(is_fs_rq(REQ_BPEEK));
+        assert!(!is_fs_rq(FS_BASE - 1));
+        assert!(!is_fs_rq(FS_BASE + 0x100));
+        assert!(!is_fs_rq(0x600)); // 旧事故基址,永不再来
+        assert!(!is_fs_rq(0x61A));
+        assert!(!is_fs_rq(0xB00)); // transid 带
+        // 与设备 RS 命名空间(com.h:919/963/1038)保持区分。
+        assert_ne!(FS_BASE & !0x7f, 0x480); // CDEV_RS_BASE
+        assert_ne!(FS_BASE & !0x7f, 0x580); // BDEV_RS_BASE
+    }
+}

@@ -355,6 +355,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **复核（2026-09-15，数值半已愈）**：R2-P0-1 已修（05-stage-vfs/todo.md §9.9 Fix #1，2026-09-09）——vfs request.rs:21 与 minix-fs protocol.rs:25 均 0xA00，两侧各有 C 绝对值 pin 测试（vfs `test_fs_wire_values_match_c_absolute` :569 / minix-fs protocol.rs:474-497）。剩余为**结构半**：仍无双侧逐项对账测试、vfs 不依赖 minix-fs、devman 第三消费方（见下方增补）待接；"33 variants" 注释与实际 32 变体的计数修正随迁移一并做。
 
+> **进度（2026-09-15，✅ 闭单，方案 A 执行）**：新建 `minix-types::ipc/fs_driver.rs` 单一权威——FS_BASE（com.h:589）+ NREQS（vfsif.h:75）+ 33 个 REQ_*（vfsif.h:42-73，逐个带锚点）+ `is_fs_rq`（vfsif.h:77），wire 域统一 **i32**（Message::m_type 同域）；33 常量绝对值全量 pin 测试 + is_fs_rq 门测试（0x600 旧事故基址/0xB00 transid 带/设备 RS 命名空间区分）。两侧切换：(1) vfs request.rs 删 33+3 本地定义改 import；`m_type()`/`is_known`/`FsError::UnknownReq` 签名 u32→i32（wire 域统一，全部消费点在模块内）；33 对消费侧 pin 保留（防 VFS 编码接错常量）；(2) minix-fs protocol.rs：FS_BASE/NREQS 改 re-export（REQUEST_TABLE_SIZE 别名保留）、VFS_ENDPOINT 改派生 `Endpoint::VFS.get()`、新增 RequestNumber 33 对联动钉子（双侧任一漂移即编译期后首测即爆）。方案对比：方案 B 双侧对账测试（已被本方案吸收为消费侧 pin）；Redox/Linux 对照同 E-MINTYPES-SYS。**验证**：vfs 360 / minix-fs 90 / mfs 98 / pfs 12 / types 201 全 passed；vfs clippy 0 告警、types/minix-fs 基线持平。**devman 第三消费方**：落地时直接 import 本模块（E-DMWIRE 指针已声明以本条裁决为准）。**回写**：05-stage-vfs/todo.md §0 指针行。
+
 > **增补（2026-09-15，11-stage-devman 首轮架构审查）**：devman 是本契约的**第三消费方**——其内联 VTreeFS（os/servers/devman/src/vtreefs/mod.rs:50-56）自注"生产分类器（raw IPC → Request）需要 VFS 侧 wire 布局（fsdriver_data、REQ_* 字段宏），lands with the IPC transport"，dirent/stat 的 wire 编码同样声明"属传输层"（mod.rs:41-42/:198）。该传输层就是本条的 REQ_* 契约域：REQ 收敛到 minix-types（方案 A）后，devman 的分类器与 dirent/stat 编码直接消费同一权威，不再自建。登记于 E-DMWIRE 第 2 缺，wire 权威以本条裁决为准。
 
 ---

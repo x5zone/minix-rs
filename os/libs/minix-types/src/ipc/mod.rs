@@ -3,6 +3,7 @@
 //! Provides Minix3 IPC message structure definitions and protocol types.
 
 mod event;
+mod fs_driver;
 mod input;
 mod ipc_error;
 mod ipc_server;
@@ -23,6 +24,7 @@ mod vfs;
 mod vm;
 
 pub use event::*;
+pub use fs_driver::*;
 pub use input::*;
 pub use ipc_error::*;
 pub use ipc_server::*;
