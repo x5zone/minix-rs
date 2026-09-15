@@ -12,9 +12,14 @@
 //!    on terminator or when full, exactly like `kputc`.
 //! 2. Number formatting ([`format_decimal`]): convert integers without any
 //!    allocator, like `itoa`, but over the full 32-bit range.
-//! 3. Panic ladder ([`PanicPlan`] over a [`DiagnosticSink`]): print identity,
-//!    message, and stack-trace marker, run the hook, then walk the exit,
-//!    abort, suicide-jump, and hang steps in order, like `panic`.
+//! 3. Panic reporting ([`format_panic_report`] over a [`DiagnosticSink`]):
+//!    render the location and message into stack memory, then let the
+//!    caller emit through the registered hook or a sink. The full C ladder
+//!    (`panic.c:21-67`: identity, message, stack trace, hook, exit, abort,
+//!    suicide jump, hang) is walked by the panic handler as far as the
+//!    wired subsystems allow; the unwired rungs land with the kernel
+//!    diagnostic channel (architecture item A-8 step 2) and the process
+//!    manager exit path (step 3).
 //!
 //! The staged evolution for the real binary is: spin first (current state),
 //! then format into a stack buffer and emit through the sink, then route the
@@ -26,9 +31,8 @@
 //!
 //! All types are owned values without shared mutable state: the C version
 //! keeps its buffer and counter in static globals, while each test here owns
-//! a fresh [`DiagBuffer`]. The single global instance behind the panic
-//! handler is created once during startup under the same single-threaded
-//! contract as the rest of this crate.
+//! a fresh [`DiagBuffer`]. There is no hidden global instance — the panic
+//! handler works entirely on stack buffers and passes its own sink.
 
 /// Diagnostic buffer capacity in bytes.
 ///
@@ -303,51 +307,6 @@ impl<const CAPACITY: usize> DiagnosticSink for CaptureSink<CAPACITY> {
     }
 }
 
-/// Ordered stages of the panic ladder.
-///
-/// C: `panic` in `minix3/minix/lib/libsys/panic.c:21-67` walks these steps:
-/// print the process identity (or the lookup-failure note), print the
-/// message (or "no message"), print the stack-trace marker and trace, run
-/// the hook, try exiting with status 1, try aborting, try an invalid jump as
-/// suicide, and hang forever when everything fails. Each step is a fallback
-/// for the previous one failing — the ladder only descends while the
-/// situation keeps getting worse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanicStage {
-    /// Print who is panicking.
-    PrintIdentity,
-    /// Print the panic message.
-    PrintMessage,
-    /// Print the stack-trace marker and trace.
-    PrintStackTrace,
-    /// Run the panic hook.
-    RunHook,
-    /// Try exiting with status 1.
-    TryExit,
-    /// Try aborting via a signal to self.
-    TryAbort,
-    /// Try an invalid jump as suicide.
-    TrySuicideJump,
-    /// Hang forever.
-    Hang,
-}
-
-impl PanicStage {
-    /// Returns the full ladder in order.
-    pub const fn ordered() -> [PanicStage; 8] {
-        [
-            PanicStage::PrintIdentity,
-            PanicStage::PrintMessage,
-            PanicStage::PrintStackTrace,
-            PanicStage::RunHook,
-            PanicStage::TryExit,
-            PanicStage::TryAbort,
-            PanicStage::TrySuicideJump,
-            PanicStage::Hang,
-        ]
-    }
-}
-
 /// Formats the identity line of a panic report.
 ///
 /// C prints `name(endpoint): panic: ` when the identity lookup succeeds and
@@ -380,6 +339,60 @@ pub fn format_panic_identity(
         None => push(b"(sys_whoami failed): panic: "),
     }
     length
+}
+
+/// Renders the stage-1 panic report into the caller's buffer.
+///
+/// This is the single formatting home for the panic path: the handler in
+/// `lib.rs` calls this instead of keeping its own writer, so the formatting
+/// rules have one definition and tests reach them without a `PanicInfo`
+/// value (which has no test-facing constructor). The shape follows the Rust
+/// convention for panic locations — `file:line: ` prefix when a location is
+/// known, then the message, then one newline (C walks the same
+/// message-then-newline order at `panic.c:39-46`, prefixed there by the
+/// process identity from [`format_panic_identity`]).
+///
+/// The message is generic over [`core::fmt::Display`] because the handler
+/// hands over a `PanicMessage` while tests hand over `format_args!` values;
+/// both render through the same writer. The report is best-effort: bytes
+/// beyond the buffer are dropped silently, and the returned count is the
+/// number of bytes actually written (never more than the buffer length), so
+/// the caller can slice the buffer without a truncation check — a panic
+/// path has no useful response to "the message did not fit". Everything
+/// runs on the caller's stack buffer — no allocator, no syscalls.
+pub fn format_panic_report(
+    location: Option<(&str, u32)>,
+    message: impl core::fmt::Display,
+    output: &mut [u8],
+) -> usize {
+    /// Byte writer over caller memory; truncates silently when full.
+    struct ByteWriter<'a> {
+        buffer: &'a mut [u8],
+        length: usize,
+    }
+
+    impl core::fmt::Write for ByteWriter<'_> {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            for byte in text.bytes() {
+                if self.length < self.buffer.len() {
+                    self.buffer[self.length] = byte;
+                    self.length += 1;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut writer = ByteWriter {
+        buffer: output,
+        length: 0,
+    };
+    if let Some((file, line)) = location {
+        let _ = core::fmt::write(&mut writer, format_args!("{}:{}: ", file, line));
+    }
+    let _ = core::fmt::write(&mut writer, format_args!("{}", message));
+    let _ = core::fmt::write(&mut writer, format_args!("\n"));
+    writer.length
 }
 
 #[cfg(test)]
@@ -509,11 +522,22 @@ mod tests {
     }
 
     #[test]
-    fn test_panic_ladder_has_eight_ordered_stages() {
-        let stages = PanicStage::ordered();
-        assert_eq!(stages.len(), 8);
-        assert_eq!(stages[0], PanicStage::PrintIdentity);
-        assert_eq!(stages[7], PanicStage::Hang);
+    fn test_panic_report_renders_location_message_and_newline() {
+        let mut output = [0u8; 128];
+        let length = format_panic_report(Some(("src/main.rs", 7)), format_args!("bad thing {}", 42), &mut output);
+        assert_eq!(&output[..length], b"src/main.rs:7: bad thing 42\n");
+        let length = format_panic_report(None, format_args!("no location here"), &mut output);
+        assert_eq!(&output[..length], b"no location here\n");
+    }
+
+    #[test]
+    fn test_panic_report_truncates_silently_at_buffer_capacity() {
+        let mut output = [0u8; 8];
+        let length = format_panic_report(Some(("a-long-file.rs", 12)), format_args!("overflowing"), &mut output);
+        // "a-long-file.rs:12: overflowing\n" is 31 bytes; the 8-byte buffer
+        // keeps the first 8 and the count never exceeds the buffer length.
+        assert_eq!(length, 8);
+        assert_eq!(&output[..length], b"a-long-f");
     }
 
     #[test]

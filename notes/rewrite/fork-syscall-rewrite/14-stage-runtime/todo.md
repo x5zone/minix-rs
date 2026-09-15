@@ -18,7 +18,7 @@
 | **P0** | **V1-P0-2** | 10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族（vm_info/vm_procctl/vm_cache/vm_getrusage），Rust 零实现且无登记（§3.1） |
 | **P0** | **V1-P0-3** | `STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）（§3.1） |
 | P1 | V1-P1-1 | 诞生链整体缺口：真实 `_start` 只做分配器初始化→main→exit；start.rs/init.rs 模块无生产调用方，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
-| P1 | V1-P1-2 | 诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名（§3.2） |
+| P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
 | P1 | V1-P1-3 | misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送（§3.2） |
 | P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |
 | P1 | V1-P1-5 | 99 篇（全局概念/布局权威）pending 是多个已登记缺口的共同解锁前置（09 open 路径布局、VM_REMAP 布局对齐都在等它）（§3.2） |
@@ -141,7 +141,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 **验证**：第一步以 grep 证明死代码清除；第二步归 E1 切片 5 验收（首个 no_std 二进制真机跑通 argv 传递）。
 **边界**：与 V1-P0-3（同文件删除）、V1-P1-4（init.rs 分歧裁决）联动执行；A-4 TLS 在方案 A 中显式登记为"接线时决定是否引入"（relibc 的 errno 依赖 TLS，本仓 A-5 Result 语义已消除该需求，登记为 ARCH 差异而非遗漏）。
 
-#### V1-P1-2（P1-design-deviation）诊断双轨：模型层与生产 panic 路径互不相连，`PanicPlan` 是幻影类型名
+#### V1-P1-2（P1-design-deviation）诊断双轨：模型层与生产 panic 路径互不相连，`PanicPlan` 是幻影类型名——✅ 已修复 2026-09-16（Fix #2）
 
 **现状锚点**：diag.rs 提供了完整模型——`DiagBuffer`（kputc 缓冲语义逐条对应 C，`diag.rs:121-130` ≙ `kputc.c:22`）、`format_panic_identity`、`PanicStage` 八阶（diag.rs:316-348，对齐 `panic.c:34-66`）、`DiagnosticSink`。但生产 panic handler（`lib.rs:287-342`）自带 256 字节 `BufferWriter` 格式化，与 diag.rs 的任何机制零调用关系；panic 末段只有自旋（lib.rs:339-341），C 的 "no message" 分支、尾换行、stacktrace 标记、abort 阶梯（panic.c:43-66）无执行器。`os/libs/minix-rt/src/diag.rs:15` 引用的 `PanicPlan` 类型全仓不存在（实际类型叫 `PanicStage`）。另有已自认的附加行为 `write_and_flush`（diag.rs:133-137，C 无此步）。
 
@@ -150,6 +150,14 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - 方案 B（否决）：维持双轨，文档标注"模型层仅供教学"。否决理由：双轨即漂移温床（本次 `PanicPlan` 幻影就是第一例），且 07 篇描述的正是单一阶梯。
 **验证**：`grep -n PanicPlan os/libs/minix-rt/` 零命中；panic handler 与 DiagBuffer 合流后 `cargo test -p minix-rt` 全绿。
 **边界**：与 V1-P0-1 同在 panic 路径，建议同轮执行（hook 修复 + 单轨化一次完成，避免两次打开 lib.rs 尾部）。
+
+**修复记录（Fix #2，2026-09-16）**：按方案 A 变体落地（比原条目更进一步）——
+- **方案对比**：A 单一格式化之家——diag.rs 新增 `format_panic_report`（位置前缀+消息+换行 → 调用者缓冲），panic handler 收缩为"调格式化 → 交发送（hook 或 SpinSink）→ 打转"三步；PanicStage 无执行器枚举删除，梯子知识归模块文档（含完整 C 阶梯引用与 A-8 步骤归属）与 panic handler 阶段注释，待 A-8 步骤 2/3 有真执行器时再立枚举（YAGNI）。原条目文字"改用 DiagBuffer 承载"修正为"format_panic_report 承载"——深想后 DiagBuffer 是 2000 字节 kputc 缓冲，panic 栈上放它不如 256 字节专用缓冲，且截断语义不同（写刷尾便利 vs 静默截断），强合流反而是 translate。B 为八阶梯写占位执行器（否决，四阶依赖未接通通道，制造新无行为代码）；C 仅改 PanicPlan 名字（否决，双轨本体保留）。Redox relibc panic 与 Linux panic 打印均为单轨单出口，同构。
+- **实施中的契约修正（测试抓到）**：初版文档承诺"截断并报告全长"（照搬 format_decimal 语义），测试实测发现 ByteWriter 计数封顶于缓冲容量——深想后裁决：panic 路径是尽力而为输出，截断检测无可行动作（C 的 panic printf 同样无截断概念），正确契约为**静默截断、返回实写字节数（恒 ≤ 缓冲长度）**，文档与测试同步对齐。另 `info.message()` 实为 `PanicMessage` 非 `Arguments`（std 构建下 handler 被 cfg 掉故此前未暴露），消息参数改泛型 `impl Display`。
+- **Files**：`os/libs/minix-rt/src/diag.rs`（模块文档重写：消除 `PanicPlan` 幻影与"全局实例"虚构描述；删 `PanicStage` 枚举与 `ordered()`；新增 `format_panic_report`；测试一删两增）；`os/libs/minix-rt/src/lib.rs`（panic handler 删内联 BufferWriter 与手写 format_decimal 行号渲染，改调 diag::format_panic_report）。
+- **测试**：minix-rt 60 passed（13 → 14：删梯子八阶、增报告形状与静默截断两条）；三 crate 60/167/248 全绿；clippy minix-rt 零新增（工作区 7 条均为依赖 crate 既有/并行线程来源，Fix #1 已记录）。
+- **Docs**：07 篇 §3.3 重写（单一格式化之家 + 静默截断契约 + handler 三步形状）、§5 测试表更新（13 → 14，梯子八阶行替换为报告形状/截断两行，统计刷新至 2026-09-16）。§4 错误表中"未知控制码 | 调用者决定"为已登记分歧，维持不变。
+- **边界**：`format_panic_identity` 与 `write_and_flush` 保留（A-8 步骤 2 接通内核通道时的消费面，07 篇有记载）；`DiagCode::from_number` 返 None 为已登记分歧，不改。
 
 #### V1-P1-3（P1-design-missing）misc 发送半缺口：nanosleep 与 svrctl 只有判定半，select 组装跨篇无主
 

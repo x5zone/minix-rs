@@ -287,43 +287,16 @@ mod global_tests {
 #[cfg(all(not(test), not(feature = "std"), feature = "panic-handler"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    use core::fmt::Write as _;
-
-    /// Byte writer over a fixed buffer; truncates silently when full.
-    struct BufferWriter<'a> {
-        buffer: &'a mut [u8; 256],
-        length: usize,
-    }
-
-    impl core::fmt::Write for BufferWriter<'_> {
-        fn write_str(&mut self, text: &str) -> core::fmt::Result {
-            for byte in text.bytes() {
-                if self.length < self.buffer.len() {
-                    self.buffer[self.length] = byte;
-                    self.length += 1;
-                }
-            }
-            Ok(())
-        }
-    }
-
-    // Stage 1: format location plus message into a stack buffer. Stack
-    // memory only: no allocator, no syscalls, safe to run from any state.
+    // Stage 1 (C: panic.c:34-46, message-then-newline): format the location
+    // and message into stack memory through the crate's single formatting
+    // home (see `diag::format_panic_report`). Stack memory only: no
+    // allocator, no syscalls, safe to run from any state.
     let mut buffer = [0u8; 256];
-    let mut writer = BufferWriter {
-        buffer: &mut buffer,
-        length: 0,
-    };
-    if let Some(location) = info.location() {
-        let mut digits = [0u8; 12];
-        let digit_length = diag::format_decimal(location.line() as i32, &mut digits);
-        // The digit slice always fits: a line number renders in at most 11
-        // bytes and the scratch buffer holds 12.
-        let line_text = core::str::from_utf8(&digits[..digit_length]).unwrap_or("?");
-        let _ = write!(writer, "{}:{}: ", location.file(), line_text);
-    }
-    let _ = write!(writer, "{}\n", info.message());
-    let length = writer.length;
+    let length = diag::format_panic_report(
+        info.location().map(|location| (location.file(), location.line())),
+        info.message(),
+        &mut buffer,
+    );
     // Stage 2 (A-8 step 2): a registered diagnostic hook takes over ALL
     // rendering. The kernel hook (D-48) prints the C-panic format —
     // "kernel panic: " + message + "kernel on CPU %d: " + backtrace —
