@@ -327,3 +327,69 @@ mod sig_wire_tests {
         assert_eq!(offset_of!(MessLcPmSigset, _padding), 32);
     }
 }
+
+// ── E7 C 批:时间调用号与 wire 结构(callnr.h:19/40-43 + ipc.h:574-583)──
+//
+// 六个时间调用(STIME 7/GETTIMEOFDAY 28/CLOCK_GETRES 33/CLOCK_GETTIME 34/
+// CLOCK_SETTIME 35/GETRUSAGE 36)在 C 共用 `mess_lc_pm_time` 一臂,按
+// `clk_id` 与 `now` 分派(time.c:31/55/79)。
+
+/// C: `PM_STIME` — callnr.h:19(PM_BASE + 7)。
+pub const PM_STIME: i32 = 7;
+/// C: `PM_GETTIMEOFDAY` — callnr.h:43(PM_BASE + 28)。
+pub const PM_GETTIMEOFDAY: i32 = 28;
+/// C: `PM_CLOCK_GETRES` — callnr.h:48(PM_BASE + 33)。
+pub const PM_CLOCK_GETRES: i32 = 33;
+/// C: `PM_CLOCK_GETTIME` — callnr.h:49(PM_BASE + 34)。
+pub const PM_CLOCK_GETTIME: i32 = 34;
+/// C: `PM_CLOCK_SETTIME` — callnr.h:50(PM_BASE + 35)。
+pub const PM_CLOCK_SETTIME: i32 = 35;
+/// C: `PM_GETRUSAGE` — callnr.h:51(PM_BASE + 36)。
+pub const PM_GETRUSAGE: i32 = 36;
+
+/// 时间调用共用载荷(C: `mess_lc_pm_time` — ipc.h:574-583)。
+///
+/// LP64 布局:`time_t`/`long` 均为 8 字节,`_padding` 由 C i386 的 36
+/// 缩至 32 保持 56 字节 payload(A-3 判例,rs_start 先例)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmTime {
+    /// 秒。C: `time_t sec`。
+    pub sec: u64,
+    /// POSIX 时钟 id(CLOCK_REALTIME 等)。C: `clockid_t clk_id`。
+    pub clk_id: i32,
+    /// 0 = 渐变模式(adjtime),非 0 = 绝对设置。C: `int now`。
+    pub now: i32,
+    /// 纳秒部分。C: `long nsec`。
+    pub nsec: i64,
+    /// Padding to 56 bytes (LP64: C i386 的 36 → 32)。
+    pub _padding: [u8; 32],
+}
+
+#[cfg(test)]
+mod time_wire_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// C 绝对值 pin:C 批时间调用号(callnr.h:19/43/48-51)。
+    #[test]
+    fn test_pm_time_call_numbers_match_c() {
+        assert_eq!(PM_STIME, 7); // callnr.h:19
+        assert_eq!(PM_GETTIMEOFDAY, 28); // callnr.h:43
+        assert_eq!(PM_CLOCK_GETRES, 33); // callnr.h:48
+        assert_eq!(PM_CLOCK_GETTIME, 34); // callnr.h:49
+        assert_eq!(PM_CLOCK_SETTIME, 35); // callnr.h:50
+        assert_eq!(PM_GETRUSAGE, 36); // callnr.h:51
+    }
+
+    /// 布局见证:MessLcPmTime 56 字节;sec u64@0、clk_id@8、now@12、
+    /// nsec@16(LP64 time_t/long 均 8 字节,padding 36→32 保持 payload)。
+    #[test]
+    fn test_mess_lc_pm_time_layout() {
+        assert_eq!(size_of::<MessLcPmTime>(), 56);
+        assert_eq!(offset_of!(MessLcPmTime, sec), 0);
+        assert_eq!(offset_of!(MessLcPmTime, clk_id), 8);
+        assert_eq!(offset_of!(MessLcPmTime, now), 12);
+        assert_eq!(offset_of!(MessLcPmTime, nsec), 16);
+    }
+}
