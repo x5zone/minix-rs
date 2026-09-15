@@ -552,3 +552,48 @@ mod tests {
         assert_eq!(KI_NOCPU, u64::MAX);
     }
 }
+
+// ── sysctl(2) 协议补充（E-RMIBWIRE：RMIB 客户端打包层消费）──
+//
+// 全族常量（SYSCTL_VERSION/CTLTYPE_*/CTLFLAG_*/CTL_QUERY/CTL_DESCRIBE/
+// CTL_MAXNAME/CTL_SHORTNAME/SYSCTL_NAMELEN/SYSCTL_NODE_FN）已在
+// `types::sysctl` 定义并被 glob 导出——此处只补 MINIX 专属别名与
+// 缺失的辅助函数,不重复定义。
+
+/// MINIX 别名：稀疏节点标志（C: rmib.h:57 —— `CTLFLAG_SPARSE` 重载
+/// `CTLFLAG_ROOT`,仅库内部使用,不对 userland 暴露,rmib.c:208-214）。
+pub const CTLFLAG_SPARSE: u32 = crate::CTLFLAG_ROOT;
+
+#[cfg(test)]
+mod sysctl_constants_tests {
+    use super::*;
+    use crate::{
+        CTLTYPE_BOOL, CTLTYPE_INT, CTLTYPE_NODE, CTLTYPE_QUAD, CTLTYPE_STRUCT, CTLTYPE_STRING,
+        CTLFLAG_HIDDEN, CTLFLAG_IMMEDIATE, CTLFLAG_PRIVATE, CTLFLAG_SPARSE, SYSCTL_VERSION,
+        CTL_DESCRIBE, CTL_QUERY,
+    };
+    #[allow(unused_imports)]
+    use crate::{CTL_MAXNAME, CTL_SHORTNAME};
+
+    /// E-RMIBWIRE:常量绝对值对照 C 头(sys/sys/sysctl.h + minix rmib.h)。
+    /// rmib_copyout_node 的版本戳、SPARSE 剥离、immediate 分派都依赖
+    /// 这些数值,漂移即 wire 级错位。
+    #[test]
+    fn test_sysctl_protocol_constants_match_c() {
+        assert_eq!(SYSCTL_VERSION, 0x0100_0000); // sysctl.h:133
+        assert_eq!(crate::sysctl_type(0x0100_0002), 2); // TYPEMASK 0xf
+        assert_eq!(
+            (CTLTYPE_NODE, CTLTYPE_INT, CTLTYPE_STRING, CTLTYPE_QUAD, CTLTYPE_STRUCT, CTLTYPE_BOOL),
+            (1, 2, 3, 4, 5, 6)
+        );
+        assert_eq!(
+            (CTLFLAG_PRIVATE, CTLFLAG_IMMEDIATE, CTLFLAG_SPARSE, CTLFLAG_HIDDEN),
+            (crate::CTLFLAG_PRIVATE, crate::CTLFLAG_IMMEDIATE, crate::CTLFLAG_SPARSE, crate::CTLFLAG_HIDDEN)
+        );
+        assert_eq!(crate::sysctl_type(0x0100_0002), 2);
+        assert_eq!(
+            (CTL_QUERY, CTL_DESCRIBE, crate::CTL_MAXNAME as i64, crate::CTL_SHORTNAME as i64, crate::SYSCTL_NAMELEN),
+            (-2, -7, 12, 8, 32)
+        );
+    }
+}
