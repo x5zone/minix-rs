@@ -274,6 +274,11 @@
 
 > **复核（2026-09-15）**：观察 1 的守卫仍在（ipc/message.rs:364-368）但 `RS_RQ_BASE` 已提取为共享常量（ipc/rs.rs:14），范围形状（BASE..=BASE+24 排除 RS_INIT/RS_LU_PREPARE）未变——脆弱性判定不变；观察 2 的文件现为 ipc/message.rs 3941 行（继续膨胀，拆分时机与 E7 批量新增协调）；观察 3 不变。
 
+> **进度（2026-09-15，✅ 观察一/三闭环；观察二绑入 E7 执行轮）**：
+> **观察 1（守卫表驱动化）**：`is_rs_req_arm` 由数值范围改为显式成员表——13 个具名常量（RS_UP..RS_GETSYSINFO + RS_EDIT/SYSCTL/FI）逐项列名，新增 RS 调用号要么进表（可见的一行决策）要么不是 m_rs_req 消息；未分配孔洞（+10..+19）从"被范围误收"转为明确拒绝（无 C 常量命名即无消息可携带），完备性测试逐偏移钉住 0..=24 的归属（类型化臂/孔洞/成员三类）+ 族外拒绝。验证：`cargo test -p minix-types --lib` 204 passed。
+> **观察 3（COMMON 族归属）**：`SIGS_SIGNAL_RECEIVED`/`COMMON_REQ_FI_CTL` 从 ipc/rs.rs 迁至 ipc/event.rs（该模块已持有 COMMON_RQ_BASE/COMMON_RS_BASE 基址——COMMON 族的既成归属地），数值改由基址派生；rs.rs 改 `use super::event::COMMON_REQ_FI_CTL` 消费，外部路径 `minix_types::SIGS_SIGNAL_RECEIVED` 经 ipc glob 保持不变（RS crate lib.rs:776 消费点零改动）。minix-types clippy 回 1 条既有基线。
+> **观察 2（message.rs 拆分）**：按条目自身的时机指引（"挂在下一次大批消息臂新增前"），拆分绑入 **E7 执行轮首步**（Wave D-16）——E7 是下一个大批新增方，先拆后增即消除冲突窗口；单独提前拆只会在同一文件上制造两次大 diff。
+
 ---
 
 ## E-VMMOCK minix-arch default features 泄漏收口 + "mock" 命名澄清（02-stage-vm G-V12-5 余件，2026-09-08 登记）

@@ -61,15 +61,11 @@ pub mod sysctl {
 /// Subfunctions for `RS_FI`. C: `RS_FI_CRASH` — com.h:492.
 pub const RS_FI_CRASH: i32 = 1;
 
-/// Inject a fault into a service. C: `COMMON_REQ_FI_CTL` — com.h:607
-/// (`COMMON_RQ_BASE + 2`); RS sends it to the target service with the
-/// `m_lsys_fi_ctl` payload (`fi_service` — utility.c:69-77).
-pub const COMMON_REQ_FI_CTL: i32 = 0xE02;
-
-/// Forward a received signal to a service. C: `SIGS_SIGNAL_RECEIVED` —
-/// com.h:597 (`COMMON_RQ_BASE + 0`); RS's signal manager translates every
-/// non-termination signal into this message (main.c:699-701).
-pub const SIGS_SIGNAL_RECEIVED: i32 = 0xE00;
+// E-MINTYPES-RS:`COMMON_REQ_FI_CTL` 与 `SIGS_SIGNAL_RECEIVED` 是 COMMON 族
+// 常量,权威在 `super::event`(COMMON_RQ_BASE 的归属地)——本模块消费
+// COMMON_REQ_FI_CTL(fi 消息构造);SIGS_SIGNAL_RECEIVED 的外部路径经
+// ipc 的 glob re-export 保持不变。
+use super::event::COMMON_REQ_FI_CTL;
 
 // ── Typed payload views (ARCH A-2, semantic layer) ─────────────────────────
 

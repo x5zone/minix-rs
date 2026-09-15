@@ -20,6 +20,22 @@ pub const COMMON_RQ_BASE: i32 = 0xE00;
 /// `COMMON_RS_BASE` — `com.h:598`。
 pub const COMMON_RS_BASE: i32 = 0xE80;
 
+/// Forward a received signal to a service. C: `SIGS_SIGNAL_RECEIVED`
+/// (`COMMON_RQ_BASE+0`) — com.h:597; the signal manager translates every
+/// non-termination signal into this message (RS main.c:699-701).
+///
+/// E-MINTYPES-RS: homed here (this module owns the COMMON family base);
+/// `ipc::rs` previously held a copy.
+pub const SIGS_SIGNAL_RECEIVED: i32 = COMMON_RQ_BASE;
+
+/// Common fault-injection control request to all processes. C:
+/// `COMMON_REQ_FI_CTL` (`COMMON_RQ_BASE+2`) — com.h:607; RS sends it to
+/// the target service with the `m_lsys_fi_ctl` payload (fi_service —
+/// utility.c:69-77).
+///
+/// E-MINTYPES-RS: homed here; `ipc::rs` previously held a copy.
+pub const COMMON_REQ_FI_CTL: i32 = COMMON_RQ_BASE + 2;
+
 /// `PROC_EVENT` — PM → 订阅者的事件通知（`COMMON_RQ_BASE + 3`，`com.h:610`）。
 pub const PROC_EVENT: i32 = COMMON_RQ_BASE + 3;
 

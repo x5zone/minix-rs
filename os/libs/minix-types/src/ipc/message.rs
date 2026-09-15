@@ -360,11 +360,33 @@ impl Message {
     /// — do_sysctl reads `m_rs_req.subtype` (request.c:1184), do_fi reads
     /// `m_rs_req.addr`/`len` (request.c:1245-1246), do_lookup reads
     /// `m_rs_req.name_len`/`name` (request.c:1151-1156).
+    ///
+    /// E-MINTYPES-RS: membership is an explicit table of named constants,
+    /// not a numeric range — the range form silently misclassified any
+    /// future `RS_RQ_BASE + 25` (absent from the guard with no compile or
+    /// test signal). A new RS call number is now either added to the table
+    /// (a visible one-line decision recorded here) or it is not an
+    /// `m_rs_req` message. Unassigned gaps in com.h:463-492 (+10..+19)
+    /// are intentionally not members: no C constant names them, so no
+    /// message can legitimately carry them.
     #[inline]
     pub fn is_rs_req_arm(m_type: i32) -> bool {
-        (crate::RS_RQ_BASE..=crate::RS_RQ_BASE + 24).contains(&m_type)
-            && m_type != crate::RS_INIT
-            && m_type != crate::RS_LU_PREPARE
+        const RS_REQ_ARM_MEMBERS: [i32; 13] = [
+            crate::RS_UP,
+            crate::RS_DOWN,
+            crate::RS_REFRESH,
+            crate::RS_RESTART,
+            crate::RS_SHUTDOWN,
+            crate::RS_UPDATE,
+            crate::RS_CLONE,
+            crate::RS_UNCLONE,
+            crate::RS_LOOKUP,
+            crate::RS_GETSYSINFO,
+            crate::RS_EDIT,
+            crate::RS_SYSCTL,
+            crate::RS_FI,
+        ];
+        RS_REQ_ARM_MEMBERS.contains(&m_type)
     }
 
     /// The label-pointer/length pair RS_LOOKUP copies by
@@ -3938,4 +3960,21 @@ fn test_message_total_size_pinned() {
     // payload constant — pinning both facts keeps the distinction visible.
     assert_eq!(core::mem::size_of::<MessageUnion>(), 72);
     assert_eq!(MESSAGE_PAYLOAD_SIZE, 56);
+}
+
+#[test]
+fn test_is_rs_req_arm_covers_exactly_c_family() {
+    // E-MINTYPES-RS:C com.h:463-492 的 RS 族是 base+0..=+24,其中 +10..+19
+    // 上游未分配、+20/+21 是类型化臂(m_rs_init/m_rs_update)。表驱动守卫
+    // 必须精确覆盖其余 13 个成员,并拒绝类型化臂、未分配孔洞与族外号码。
+    for offset in 0..=24 {
+        let v = crate::RS_RQ_BASE + offset;
+        let is_member = !(10..=21).contains(&offset);
+        assert_eq!(
+            Message::is_rs_req_arm(v),
+            is_member,
+            "base+{offset}({v:#x}) 的臂归属判定错误"
+        );
+    }
+    assert!(!Message::is_rs_req_arm(crate::RS_FI + 1), "族外新号不在表内");
 }
