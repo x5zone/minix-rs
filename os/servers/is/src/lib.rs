@@ -215,7 +215,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     fn run_dump(&mut self, dump: DumpId) {
         use dump_ds::DsEntrySnap;
         use dump_kernel::{
-            BootImageSnap, IrqHookSnap, KProcSnap, KPrivSnap, KinfoSnap, KmessagesSnap,
+            BootImageSnap, IrqHookSnap, ProcInfoStruct, KPrivSnap, KinfoSnap, KmessagesSnap,
             MULTIBOOT_PARAM_BUF, NR_BOOT_PROCS, NR_IRQ_HOOKS, PROC_TABLE_LEN,
             render_image, render_irqtab, render_kenv, render_kmessages, render_monparams,
             render_privileges, render_proctab, render_procstack,
@@ -226,7 +226,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         let out = self.transport.diag_out();
         match dump {
             DumpId::Proctab => {
-                let mut tab = [KProcSnap::default(); PROC_TABLE_LEN];
+                let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
                     let _ = writeln!(
@@ -238,7 +238,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let _ = render_proctab(out, &tab, &mut self.dump_state.proctab);
             }
             DumpId::Procstack => {
-                let mut tab = [KProcSnap::default(); PROC_TABLE_LEN];
+                let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
                     let _ = writeln!(
@@ -264,7 +264,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                     );
                     return;
                 }
-                let mut tab = [KProcSnap::default(); PROC_TABLE_LEN];
+                let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
                     let _ = writeln!(
@@ -402,7 +402,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let _ = render_data_store(out, &tab, &mut self.dump_state.ds);
             }
             DumpId::Vm => {
-                let mut tab = [KProcSnap::default(); dump_kernel::PROC_TABLE_LEN];
+                let mut tab = [ProcInfoStruct::default(); dump_kernel::PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
                     let _ = writeln!(

@@ -14,6 +14,7 @@
 //! - **D2**: Return ENOSYS for unimplemented calls (matches C)
 //! - **D5**: TRACE deferred — debugging feature, not core
 
+use minix_types::ProcInfoStruct;
 use minix_types::{
     Message, MessageM4, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo,
     MessLsysKrnSysTrace, Endpoint, VirBytes,
@@ -368,67 +369,19 @@ impl From<CpuIdentity> for CpuInfoEntry {
     }
 }
 
-/// C-compatible process info structure exposed by GET_PROC / GET_PROCTAB.
+/// E-ISPROD:the GET_PROC/GET_PROCTAB snapshot layout
+/// (`ProcInfoStruct`) moved to `minix-types::types::proc_info` — one
+/// authority shared with the IS/MIB consumers; this module keeps only
+/// the `KProcess`-reading builder ([`ProcInfoBuild`]) and the chunked
+/// copy loops.
 ///
-/// # Design
-///
-/// minix-rs is a complete Rust rewrite — this struct does NOT mirror C's
-/// `struct proc` field-by-field (which contains pointers, intrusive linked
-/// list nodes, and arch-private register state). Instead, it exposes the
-/// user-visible fields that IS/MIB/VM/PM actually consume:
-/// - `p_endpoint`, `p_nr`, `p_name` — identification
-/// - `p_rts_flags`, `p_misc_flags` — state
-/// - `p_priority`, `p_cpu_time_left`, `p_quantum_size_ms` — scheduling
-/// - `p_cpu` — CPU affinity
-/// - `p_user_time`, `p_sys_time`, `p_cycles` — accounting
-/// - `p_pending` — signals
-/// - `p_getfrom_e`, `p_sendto_e` — IPC state
-///
-/// C: `struct proc` — kernel/proc.h:22-137
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ProcInfoStruct {
-    /// C: `p_nr` — process number (slot index).
-    pub p_nr: i32,
-    /// C: `p_endpoint` — endpoint identifier.
-    pub p_endpoint: i32,
-    /// C: `p_rts_flags` — runtime status flags.
-    pub p_rts_flags: u32,
-    /// C: `p_misc_flags` — miscellaneous flags.
-    pub p_misc_flags: u32,
-    /// C: `p_priority` — current scheduling priority.
-    pub p_priority: i8,
-    /// C: `p_cpu` — CPU the process is running on.
-    pub p_cpu: u32,
-    /// C: `p_quantum_size_ms` — time quantum in milliseconds.
-    pub p_quantum_size_ms: u32,
-    /// C: `p_cpu_time_left` — CPU time remaining (ticks).
-    pub p_cpu_time_left: u64,
-    /// C: `p_user_time` — user time in ticks.
-    pub p_user_time: u64,
-    /// C: `p_sys_time` — system time in ticks.
-    pub p_sys_time: u64,
-    /// C: `p_cycles` — cycles consumed.
-    pub p_cycles: u64,
-    /// C: `p_pending` — pending signal bitmap.
-    pub p_pending: u64,
-    /// C: `p_getfrom_e` — endpoint to receive from.
-    pub p_getfrom_e: i32,
-    /// C: `p_sendto_e` — endpoint to send to.
-    pub p_sendto_e: i32,
-    /// C: `p_name` — process name (16 bytes including NUL).
-    pub p_name: [u8; 16],
-    /// C: `p_priv` (index) — privilege table index (replaces pointer).
-    /// -1 = no privilege assigned.
-    pub p_priv_id: i32,
-    /// Padding to align the struct to 8 bytes.
-    pub _padding: [u8; 4],
+/// Kernel-side builder for the shared wire snapshot: only the
+/// `KProcess`-reading half is kernel-owned, because `KProcess` is.
+pub trait ProcInfoBuild {
+    fn from_kprocess(p: &crate::proc::KProcess) -> Self;
 }
 
-impl ProcInfoStruct {
-    /// Build a ProcInfoStruct from a KProcess.
-    /// C: `proc_addr(nr)` → struct proc (kernel builds the struct in-place;
-    /// Rust builds a snapshot because KProcess layout differs from C).
+impl ProcInfoBuild for ProcInfoStruct {
     fn from_kprocess(p: &crate::proc::KProcess) -> Self {
         use core::sync::atomic::Ordering;
         Self {
@@ -453,35 +406,7 @@ impl ProcInfoStruct {
     }
 }
 
-impl Default for ProcInfoStruct {
-    fn default() -> Self {
-        Self {
-            p_nr: 0,
-            p_endpoint: 0,
-            p_rts_flags: 0,
-            p_misc_flags: 0,
-            p_priority: 0,
-            p_cpu: 0,
-            p_quantum_size_ms: 0,
-            p_cpu_time_left: 0,
-            p_user_time: 0,
-            p_sys_time: 0,
-            p_cycles: 0,
-            p_pending: 0,
-            p_getfrom_e: 0,
-            p_sendto_e: 0,
-            p_name: [0; 16],
-            p_priv_id: -1,
-            _padding: [0; 4],
-        }
-    }
-}
-
-/// C-compatible privilege info structure exposed by GET_PRIV / GET_PRIVTAB.
-///
-/// # Design
-///
-/// Like `ProcInfoStruct`, this struct does NOT mirror C's `struct priv`
+// Like `ProcInfoStruct`, this struct does NOT mirror C's `struct priv`
 /// field-by-field. It exposes the user-visible fields that IS/MIB/PM
 /// consume:
 /// - `s_proc_nr`, `s_id`, `s_flags` — identity/capability

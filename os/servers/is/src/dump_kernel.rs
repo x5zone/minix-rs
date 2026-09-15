@@ -19,37 +19,10 @@
 // (fix: kernel `do_getinfo` arms emit these layouts; see A-4).
 
 use crate::acquire::DiagctlTransport;
+pub use minix_types::ProcInfoStruct;
 use crate::PCStr;
 use core::fmt;
 use minix_types::Endpoint;
-
-/// Kernel process-table snapshot (used fields only).
-///
-/// C: `struct proc` — `minix3/minix/kernel/proc.h:22-82` (subset).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct KProcSnap {
-    /// C: `p_rts_flags` (proc.h:27).
-    pub p_rts_flags: u32,
-    /// C: `p_getfrom_e` (proc.h:75).
-    pub p_getfrom_e: i32,
-    /// C: `p_sendto_e` (proc.h:76).
-    pub p_sendto_e: i32,
-    /// C: `p_name[PROC_NAME_LEN]` (proc.h:80, type.h:145: 16).
-    pub p_name: [u8; 16],
-    /// C: `p_priority` (proc.h:30).
-    pub p_priority: i8,
-    /// C: `p_quantum_size_ms` (proc.h:32).
-    pub p_quantum_size_ms: u32,
-    /// C: `p_user_time` (proc.h:59).
-    pub p_user_time: i32,
-    /// C: `p_sys_time` (proc.h:60).
-    pub p_sys_time: i32,
-    /// C: `p_endpoint` (proc.h:82).
-    pub p_endpoint: i32,
-    /// C: `p_nr` (proc.h:25).
-    pub p_nr: i32,
-}
 
 /// Kernel privilege snapshot (used fields only).
 ///
@@ -426,7 +399,7 @@ pub const RTS_RECEIVING: u32 = 0x08;
 /// C: the three-way head — `(%2d) ` idle / `[%2d] ` task / ` %2d  ` user
 /// (dmp_kernel.c:38-40) — plus the `--more--` breakpoint (the caller's
 /// loop breaks on [`PageAction::More`]).
-fn write_row_head(out: &mut dyn fmt::Write, p: &KProcSnap) -> fmt::Result {
+fn write_row_head(out: &mut dyn fmt::Write, p: &ProcInfoStruct) -> fmt::Result {
     match row_head(p.p_nr) {
         RowHead::Idle => write!(out, "({:2}) ", p.p_nr),
         RowHead::Task => write!(out, "[{:2}] ", p.p_nr),
@@ -437,7 +410,7 @@ fn write_row_head(out: &mut dyn fmt::Write, p: &KProcSnap) -> fmt::Result {
 /// PRINTRTS (dmp_kernel.c:20-28): `" %s"` flag code + `" %-7.7s"` peer
 /// name — SENDING prints the send-to peer, RECEIVING the get-from peer,
 /// anything else an empty name resolved as `%-7.7s` of `""`.
-fn write_printrts(out: &mut dyn fmt::Write, tab: &[KProcSnap], p: &KProcSnap) -> fmt::Result {
+fn write_printrts(out: &mut dyn fmt::Write, tab: &[ProcInfoStruct], p: &ProcInfoStruct) -> fmt::Result {
     write!(out, " {} ", PCStr(&p_rts_flags_str(p.p_rts_flags)))?;
     let peer = if p.p_rts_flags & RTS_SENDING != 0 {
         Some(p.p_sendto_e)
@@ -455,7 +428,7 @@ fn write_printrts(out: &mut dyn fmt::Write, tab: &[KProcSnap], p: &KProcSnap) ->
 /// `proc_name(nr)` (dmp_kernel.c:385-395) against a fetched table copy:
 /// ANY/NONE/BOGUS are literals, an empty slot prints `EMPTY`, else the
 /// row's `p_name` — through [`PCStr`] with the caller's format spec.
-fn write_peer_name(out: &mut dyn fmt::Write, tab: &[KProcSnap], slot: i32) -> fmt::Result {
+fn write_peer_name(out: &mut dyn fmt::Write, tab: &[ProcInfoStruct], slot: i32) -> fmt::Result {
     let idx = (slot + NR_TASKS) as usize;
     let is_empty = match tab.get(idx) {
         Some(p) => p.p_rts_flags == RTS_SLOT_FREE,
@@ -478,7 +451,7 @@ fn write_peer_name(out: &mut dyn fmt::Write, tab: &[KProcSnap], slot: i32) -> fm
 /// user/sys times, then PRINTRTS.
 pub fn render_proctab(
     out: &mut dyn fmt::Write,
-    tab: &[KProcSnap],
+    tab: &[ProcInfoStruct],
     cur: &mut PageCursor,
 ) -> fmt::Result {
     out.write_str(PROCTAB_COLUMNS)?;
@@ -515,7 +488,7 @@ pub fn render_proctab(
 /// a blank line + `pagelines++` + a stack-trace request per row.
 pub fn render_procstack(
     out: &mut dyn fmt::Write,
-    tab: &[KProcSnap],
+    tab: &[ProcInfoStruct],
     cur: &mut PageCursor,
     diag: &mut dyn DiagctlTransport,
 ) -> fmt::Result {
@@ -544,7 +517,7 @@ pub fn render_procstack(
 pub fn render_privileges(
     out: &mut dyn fmt::Write,
     privs: &[KPrivSnap],
-    tab: &[KProcSnap],
+    tab: &[ProcInfoStruct],
     cur: &mut PageCursor,
 ) -> fmt::Result {
     debug_assert!(privs.len() > USER_PRIV_ID, "fallback row must exist");
@@ -796,10 +769,10 @@ mod tests {
         assert_eq!(KMESS_BUF_SIZE, 10000);
     }
 
-    fn snap(slot: i32, rts: u32, name: &[u8]) -> KProcSnap {
+    fn snap(slot: i32, rts: u32, name: &[u8]) -> ProcInfoStruct {
         let mut n = [0u8; 16];
         n[..name.len()].copy_from_slice(name);
-        KProcSnap {
+        ProcInfoStruct {
             p_rts_flags: rts,
             p_getfrom_e: 0,
             p_sendto_e: 0,
@@ -810,6 +783,7 @@ mod tests {
             p_sys_time: 2,
             p_endpoint: slot,
             p_nr: slot,
+            ..Default::default()
         }
     }
 
@@ -882,7 +856,7 @@ mod tests {
     fn test_render_proctab_more_breakpoint_persists() {
         // C: PROCLOOP's static oldrp — after --more--, the next press
         // resumes after the breakpoint row.
-        let mut tab = [KProcSnap::default(); 261];
+        let mut tab = [ProcInfoStruct::default(); 261];
         let mut filled = 0usize;
         for (i, slot) in (-4..).enumerate().take(261) {
             let mut row = snap(slot, 0, b"p");
@@ -1038,7 +1012,7 @@ mod tests {
 
     #[test]
     fn test_snapshots_default_zeroed() {
-        let p = KProcSnap::default();
+        let p = ProcInfoStruct::default();
         assert_eq!((p.p_rts_flags, p.p_nr, p.p_endpoint), (0, 0, 0));
         assert_eq!(p.p_name.len(), 16);
         let k = KinfoSnap::default();

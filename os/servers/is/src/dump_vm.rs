@@ -210,7 +210,7 @@ pub const VM_INTERNAL_ERROR: &str = "IS: internal error\n";
 // ── render (V1-P1-3 execution face) ───────────────────────────────
 
 use crate::acquire::VmInfoTransport;
-use crate::dump_kernel::{KProcSnap, NR_TASKS, RTS_SLOT_FREE};
+use crate::dump_kernel::{ProcInfoStruct, NR_TASKS, RTS_SLOT_FREE};
 use crate::PCStr;
 use core::fmt;
 use minix_types::{Endpoint, OK};
@@ -274,7 +274,7 @@ fn feed_region(
 /// [`BatchCursor`], all carried across key presses like the C statics.
 pub fn render_vm(
     out: &mut dyn fmt::Write,
-    tab: &[KProcSnap],
+    tab: &[ProcInfoStruct],
     acq: &mut dyn VmInfoTransport,
     fold: &mut FoldState,
     cur: &mut BatchCursor,

@@ -22,7 +22,7 @@
 
 use crate::dump_ds::DsEntrySnap;
 use crate::dump_kernel::{
-    BootImageSnap, IrqHookSnap, KProcSnap, KPrivSnap, KinfoSnap, KmessagesSnap,
+    BootImageSnap, IrqHookSnap, ProcInfoStruct, KPrivSnap, KinfoSnap, KmessagesSnap,
 };
 use crate::dump_pm::MProcSnap;
 use crate::dump_rs::{RprocSnap, RprocpubSnap};
@@ -97,7 +97,7 @@ pub trait SysGetinfoTransport {
     fn get_image(&mut self, out: &mut [BootImageSnap]) -> i32;
     /// Kernel process table. C: `sys_getproctab` — dmp_kernel.c:265/328/368,
     /// dmp_vm.c:83.
-    fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32;
+    fn get_proctab(&mut self, out: &mut [ProcInfoStruct]) -> i32;
     /// Boot monitor parameters (NUL-separated string blob).
     /// C: `sys_getmonparams` — dmp_kernel.c:101.
     fn get_monparams(&mut self, out: &mut [u8]) -> i32;
@@ -257,7 +257,7 @@ impl SysGetinfoTransport for UnimplementedAcquires {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
-    fn get_proctab(&mut self, _out: &mut [KProcSnap]) -> i32 {
+    fn get_proctab(&mut self, _out: &mut [ProcInfoStruct]) -> i32 {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
@@ -398,7 +398,7 @@ impl SysGetinfoTransport for FakeAcquires {
         self.getinfo_status
     }
 
-    fn get_proctab(&mut self, out: &mut [KProcSnap]) -> i32 {
+    fn get_proctab(&mut self, out: &mut [ProcInfoStruct]) -> i32 {
         self.seen.push("proctab");
         if self.getinfo_status == OK {
             for (i, slot) in out.iter_mut().enumerate() {
@@ -625,7 +625,7 @@ mod tests {
         );
 
         f.getinfo_status = minix_types::EFAULT;
-        let mut procs = [KProcSnap::default(); 1];
+        let mut procs = [ProcInfoStruct::default(); 1];
         assert_eq!(f.get_proctab(&mut procs), minix_types::EFAULT);
         assert_eq!(procs[0].p_nr, 0, "failed fetch leaves the outlet untouched");
     }

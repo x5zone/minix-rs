@@ -62,14 +62,11 @@ pub const VFS_GCOV_FLUSH_OFF: u32 = 44;
 /// `VFS_GETSYSINFO` offset (`callnr.h:120`).
 pub const VFS_GETSYSINFO_OFF: u32 = 48;
 
-/// `SI_PROC_TAB` (`minix3/minix/include/minix/sysinfo.h:11`).
-pub const SI_PROC_TAB: u32 = 2;
-/// `SI_DMAP_TAB` (`sysinfo.h:12`).
-pub const SI_DMAP_TAB: u32 = 3;
-/// `SI_CALL_STATS` (`sysinfo.h:14`, `ENABLE_SYSCALL_STATS` gated, no table here).
-pub const SI_CALL_STATS: u32 = 9;
-/// `SI_PROCLIGHT_TAB` (`sysinfo.h:17`).
-pub const SI_PROCLIGHT_TAB: u32 = 13;
+// E-ISPROD:`SI_PROC_TAB`/`SI_DMAP_TAB`/`SI_CALL_STATS`/`SI_PROCLIGHT_TAB`
+// 的权威在 `minix_types::sysinfo`(i32,与 C int 的 what 域一致)——VFS
+// 历史本地副本(u32)已删除,统一 re-export 后本地消费点做 u32 比较。
+pub use minix_types::{SI_CALL_STATS, SI_DMAP_TAB, SI_PROC_TAB};
+pub const SI_PROCLIGHT_TAB: u32 = minix_types::SI_PROCLIGHT_TAB as u32;
 
 /// Asking surface (`do_getsysinfo:72-103`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,10 +83,13 @@ impl SysinfoWhat {
     /// Decode the wire `what`; statistics (`9`) and wild values refuse
     /// (`default:104-105`; `9` has no table outside the stats build).
     pub fn from_raw(raw: u32) -> Option<Self> {
+        // E-ISPROD:三个常量是 minix_types i32 权威的 re-export,与 u32
+        // 的 raw 视图比较需显式 cast(C int 的 what 域在 VFS 内部按位
+        // 保持)。
         match raw {
-            SI_PROC_TAB => Some(Self::ProcTab),
-            SI_DMAP_TAB => Some(Self::DmapTab),
-            SI_PROCLIGHT_TAB => Some(Self::ProcLightTab),
+            v if v == SI_PROC_TAB as u32 => Some(Self::ProcTab),
+            v if v == SI_DMAP_TAB as u32 => Some(Self::DmapTab),
+            v if v == SI_PROCLIGHT_TAB => Some(Self::ProcLightTab),
             _ => None,
         }
     }
