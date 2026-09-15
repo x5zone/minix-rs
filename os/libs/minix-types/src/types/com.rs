@@ -294,6 +294,9 @@ pub const SYS_STATE_ADD_IPC_WL_FILTER: i32 = 4;
 /// Clear all IPC filters. C: `SYS_STATE_CLEAR_IPC_FILTERS` — com.h:446.
 pub const SYS_STATE_CLEAR_IPC_FILTERS: i32 = 5;
 
+/// Schedctl flag:kernel 充当调度器。C: `SCHEDCTL_FLAG_KERNEL` — com.h:782。
+pub const SCHEDCTL_FLAG_KERNEL: u32 = 1;
+
 /// Exec frame: number of ELF auxiliary-vector slots the initial stack
 /// reserves budget for. C: `PMEF_AUXVECTORS` — com.h:356.
 pub const PMEF_AUXVECTORS: usize = 20;

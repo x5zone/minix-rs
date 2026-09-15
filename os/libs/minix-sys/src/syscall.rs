@@ -820,6 +820,35 @@ pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32)
     sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, target as u64, 0)
 }
 
+/// SYS_SCHEDCTL(54):调度控制——RS SchedApi 的 KERNEL 分支
+/// (C `sched_start.c:46-88`:`sys_schedctl(SCHEDCTL_FLAG_KERNEL,
+/// endpt, priority, quantum, cpu)`;kernel `dispatch_schedctl`
+/// 语义:-1 = 保持当前值)。
+pub fn sys_schedctl(
+    transport: &impl KernelCallTransport,
+    endpoint: i32,
+    priority: i32,
+    quantum: i32,
+    cpu: i32,
+) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_schedctl 是 SCHEDCTL 的文档化载荷
+        //(kernel/src/syscall_process.rs msg_schedctl:114-117)。
+        let sc = unsafe { &mut msg.m_u.m_lsys_krn_schedctl };
+        sc.flags = minix_types::SCHEDCTL_FLAG_KERNEL;
+        sc.endpoint = endpoint;
+        sc.priority = priority;
+        sc.quantum = quantum;
+        sc.cpu = cpu;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_SCHEDCTL, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
 /// SYS_SIGRETURN：信号处理返回，恢复目标进程的被信号上下文（C: libsys
 /// `sys_sigreturn`——`m_sigcalls.endpt/sigctx`；kernel
 /// `dispatch_sigreturn`）。
@@ -1716,4 +1745,34 @@ mod tests {
         // SAFETY: 断言读回 diagctl 臂。
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
+    }
+
+    /// E9 SchedApi:SYS_SCHEDCTL 的 KERNEL 分支线面——flags 置
+    /// SCHEDCTL_FLAG_KERNEL,priority/quantum/cpu 的 -1 = 保持当前值
+    /// (C sched_start.c:46-88;kernel dispatch_schedctl:651 起的
+    /// Option 转换以 -1 为哨兵)。
+    #[test]
+    fn test_sys_schedctl_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        sys_schedctl(&canned, 9, 12, 200, -1).unwrap();
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, minix_types::SYS_SCHEDCTL);
+        // SAFETY: 断言读回 schedctl 臂。
+        let sc = unsafe { sent[0].m_u.m_lsys_krn_schedctl };
+        assert_eq!(sc.flags, minix_types::SCHEDCTL_FLAG_KERNEL);
+        assert_eq!(sc.endpoint, 9);
+        assert_eq!(sc.priority, 12);
+        assert_eq!(sc.quantum, 200);
+        assert_eq!(sc.cpu, -1);
+    }
+
+    /// 内核拒绝(非法 flag 组合)时 wrapper 透传负 errno。
+    #[test]
+    fn test_sys_schedctl_propagates_kernel_error() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-minix_types::EINVAL);
+        let r = sys_schedctl(&canned, 9, 12, 200, -1);
+        assert_eq!(r, Err(-minix_types::EINVAL));
     }
