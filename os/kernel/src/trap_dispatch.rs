@@ -36,6 +36,9 @@ use minix_arch::x86_64::exception::X86_64ExceptionFrame;
 use minix_arch::x86_64::trap_stub::TrapFrame;
 use minix_types::VirBytes;
 
+/// The int-33 IPC gate (C: IPC_VECTOR_ORIG = 33, interrupt.h:33).
+const IPC_VECTOR_GATE: u8 = 33;
+
 /// Build the CPU-pushed tail of the frame as an `X86_64ExceptionFrame` for
 /// the arch-generic dispatcher (which is implemented over that type).
 fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
@@ -61,6 +64,21 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
 /// stack; the stub resumes via iretq when this returns.
 pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
+
+    // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
+    // soft-int leg (C: IPC_VECTOR_ORIG, interrupt.h:33; gate DPL=3,
+    // trap_entry.rs configure_ipc_entry). The register ABI is the C i386
+    // soft-int convention widened to 64 bits — RAX = src/dst endpoint
+    // (SENDA: count), RBX = message pointer (SENDA: table pointer),
+    // RCX = IPC call number (design doc 18, decision 2; C:
+    // usermapped_glo_ipc.S IPCARGS/SENDA_ARGS). errno returns in RAX;
+    // IPC status rides the saved-context RBX channel as already wired
+    // (or_ipc_status_reg / set_secondary_ipc_return).
+    if vector == IPC_VECTOR_GATE {
+        let cur_nr = current_ipc_proc_nr();
+        x86_ipc_dispatch_body(frame, cur_nr);
+        return;
+    }
 
     // LAPIC spurious interrupt (C: apic.c apic_spurious_interrupt): no
     // handler chain, no EOI — the spurious vector never enters IRR/ISR.
@@ -164,6 +182,127 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             frame.rip
         ),
     }
+}
+
+/// E1 trap bridge — locate the current user process for the vector-33 arm.
+/// Mirrors the SYSCALL body's per-CPU anchor read (proc_ptr before any lock).
+fn current_ipc_proc_nr() -> crate::proc::ProcNr {
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    smp.cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "int-33 IPC before scheduler bring-up (proc_ptr = None on                  cpu {cpu:?}) — wiring bug"
+            )
+        })
+}
+
+/// E1 trap bridge body: vector-33 IPC leg.
+///
+/// Contract (design doc 18, decisions 1-3):
+/// - registers: RAX = src/dst endpoint (SENDA: count), RBX = message
+///   pointer (SENDA: table pointer), RCX = IPC call number;
+/// - the interrupted register file is persisted into the caller's saved
+///   context BEFORE dispatch, so delivery-side IPC-status ORs land in the
+///   same state the scheduler restores;
+/// - a reply-code outcome returns through the stub (errno in RAX, status
+///   RBX synced back from the context); a NoReply (Blocked) outcome never
+///   returns — the BKL released by `kernel_call_finish` is re-acquired and
+///   the CPU enters the scheduling loop, which restores whoever is
+///   runnable (the blocked caller resumes only when its IPC completes).
+///
+/// # Safety
+///
+/// Same contract as `x86_trap_dispatch_body`: `frame` points at the
+/// TrapFrame built by the asm stub on this CPU's kernel stack, and the
+/// per-CPU `proc_ptr` anchor names the interrupted process.
+unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::ProcNr) {
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    let cur_idx = crate::proc_table::nr_to_idx(cur_nr)
+        .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
+
+    // Decision 3: persist the user register file before any dispatch side
+    // effect — delivery paths OR IPC status into this saved context.
+    {
+        let procs = table.procs_slice_mut();
+        let caller = &mut procs[cur_idx];
+        minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
+    }
+
+    // SAFETY (aliasing): same ground truth as the SYSCALL body — the caller
+    // lives inside the table; the two &mut never touch the same bytes at
+    // the same time (kernel_call_finish / dispatch_ipc_entry consume them
+    // in disjoint parameter roles).
+    let caller = unsafe {
+        &mut *(core::ptr::addr_of_mut!(table.procs_slice_mut()[cur_idx]))
+    };
+
+    // Register extraction (design decision 2).
+    let call_nr = frame.rcx as i32;
+    let r1 = frame.rax; // src/dst endpoint, or SENDA count
+    let r2 = frame.rbx; // message pointer, or SENDA table pointer
+    let is_senda = call_nr == (crate::ipc::IpcCall::SendA as i32);
+    caller.p_defer.r2 = r1 as usize;
+    caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+
+    // Copy the user message (kernel-side copy, TOCTOU defense — the same
+    // shape as kernel_call's own copy). SENDA carries no message buffer:
+    // mini_senda reads entries from the user table directly (proc.c:683).
+    let mut msg = minix_types::Message::default();
+    if !is_senda {
+        use crate::ipc::UserCopy as _;
+        match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
+            Ok(m) => msg = m,
+            Err(_) => {
+                // C system.c:152-155 parity (kernel_call's copy arm):
+                // SIGSEGV + EFAULT, without entering IPC dispatch.
+                crate::syscall_signal::cause_signal(
+                    caller.p_nr,
+                    crate::syscall_signal::SIGSEGV,
+                    table,
+                    unsafe { crate::priv_table_boot_unchecked() },
+                );
+                frame.rax = crate::errno::EFAULT as i64 as u64;
+                return;
+            }
+        }
+    }
+    msg.m_type = call_nr;
+    msg.m_source = caller.p_endpoint;
+
+    // BKL: dispatch_ipc_entry acquires and transfers out (held across
+    // kernel_call_finish, which releases it on every non-VmSuspend path).
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    let result = crate::syscall::dispatch_ipc_entry(caller, &mut msg, priv_table, table);
+    crate::syscall::kernel_call_finish(caller, &msg, result, table, priv_table);
+
+    // Delivered (reply code): errno rides RAX out through the stub's
+    // iretq; the IPC status bits were ORed into the saved context's RBX by
+    // the delivery path — pull that register back into the frame so the
+    // stub restores the up-to-date value (C: status lives in p_reg.bx).
+    // Blocked (NoReply): leave RAX untouched — the caller must not observe
+    // a return value; it stays unrunnable until its IPC completes.
+    if let Some(code) = result.reply_code() {
+        frame.rax = code as i64 as u64;
+        minix_arch::sync_status_register_to_frame(&caller.cpu_context, frame);
+    } else {
+        // Enter the scheduling loop; never returns to this frame.
+        reenter_scheduler();
+    }
+}
+
+/// Re-acquire the BKL (released by `kernel_call_finish`) and enter the
+/// scheduling loop — the unified exit for blocked IPC (design decision 3).
+fn reenter_scheduler() -> ! {
+    // scheduler_loop consumes the held-BKL convention (assume_held witness
+    // inside); the guard is forgotten deliberately — ownership passes to
+    // the ambient held-BKL scope the same way dispatch_ipc_entry's
+    // transfer() hands the lock off.
+    let guard = crate::smp::bkl_lock();
+    core::mem::forget(guard);
+    let cpu = crate::current_cpu_id();
+    crate::scheduler_loop(cpu)
 }
 
 /// B-path body: SYSCALL entry → `kernel_call` (trap-1).

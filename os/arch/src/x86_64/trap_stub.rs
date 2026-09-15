@@ -501,6 +501,38 @@ pub fn stub_va(vector: u8) -> Option<VirBytes> {
 }
 
 /// Address of the LSTAR SYSCALL entry (B path).
+/// Persist an interrupted user register file into the per-process saved
+/// context (E1 trap bridge, design decision 3: `CpuContext` is the single
+/// user-state truth; the scheduler restore path reads it back).
+///
+/// GP index order matches the trap-return restore sequence (gp[0]=rax …
+/// gp[13]=r15). Segment registers ds/es/fs/gs are not in the TrapFrame —
+/// every user process runs the same flat selectors in this kernel, so the
+/// saved context keeps its boot values (documented simplification; a future
+/// TLS-style per-thread selector would extend the stub, not this function).
+pub fn save_frame_to_context(frame: &TrapFrame, ctx: &mut super::boot::X86_64CpuContext) {
+    ctx.gp_regs[0] = frame.rax;
+    ctx.gp_regs[1] = frame.rcx;
+    ctx.gp_regs[2] = frame.rdx;
+    ctx.gp_regs[3] = frame.rsi;
+    ctx.gp_regs[4] = frame.rdi;
+    ctx.gp_regs[5] = frame.rbp;
+    ctx.gp_regs[6] = frame.r8;
+    ctx.gp_regs[7] = frame.r9;
+    ctx.gp_regs[8] = frame.r10;
+    ctx.gp_regs[9] = frame.r11;
+    ctx.gp_regs[10] = frame.r12;
+    ctx.gp_regs[11] = frame.r13;
+    ctx.gp_regs[12] = frame.r14;
+    ctx.gp_regs[13] = frame.r15;
+    ctx.rbx = frame.rbx;
+    ctx.rip = frame.rip;
+    ctx.rsp = frame.rsp;
+    ctx.psw = frame.rflags;
+    ctx.cs = frame.cs;
+    ctx.ss = frame.ss;
+}
+
 pub fn syscall_entry_va() -> VirBytes {
     // SAFETY: address-only symbol read.
     VirBytes::new(unsafe { &x86_syscall_entry as *const u8 as usize } as u64)
@@ -734,5 +766,49 @@ mod tests {
         for v in [0u8, 8, 14, 0x50, 0x70, 0xFF] {
             assert!(!user_accessible(v), "vector {v:#04x} must be kernel-only");
         }
+    }
+}
+
+#[cfg(test)]
+mod save_frame_tests {
+    use super::*;
+
+    /// E1 slice 1: the TrapFrame → CpuContext persistence must keep the GP
+    /// index order the trap-return restore sequence expects (gp[0]=rax …
+    /// gp[13]=r15) and carry the named fields (rbx/rip/rsp/psw/cs/ss) —
+    /// a swapped index here silently corrupts the wrong register on
+    /// every blocked-then-resumed IPC.
+    #[test]
+    fn save_frame_to_context_persists_all_fields() {
+        let frame = TrapFrame {
+            rax: 0x1000, rbx: 0x1001, rcx: 0x1002, rdx: 0x1003,
+            rsi: 0x1004, rdi: 0x1005, rbp: 0x1006,
+            r8: 0x1007, r9: 0x1008, r10: 0x1009, r11: 0x100a,
+            r12: 0x100b, r13: 0x100c, r14: 0x100d, r15: 0x100e,
+            vector: 33,
+            errcode: 0,
+            rip: 0x2000,
+            cs: 0x1B,
+            rflags: 0x202,
+            rsp: 0x7fff_0000,
+            ss: 0x23,
+        };
+        let mut ctx = super::super::boot::X86_64CpuContext::new();
+        save_frame_to_context(&frame, &mut ctx);
+
+        assert_eq!(ctx.gp_regs[0], 0x1000); // rax
+        assert_eq!(ctx.gp_regs[1], 0x1002); // rcx
+        assert_eq!(ctx.gp_regs[2], 0x1003); // rdx
+        assert_eq!(ctx.gp_regs[3], 0x1004); // rsi
+        assert_eq!(ctx.gp_regs[4], 0x1005); // rdi
+        assert_eq!(ctx.gp_regs[5], 0x1006); // rbp
+        assert_eq!(ctx.gp_regs[6], 0x1007); // r8
+        assert_eq!(ctx.gp_regs[13], 0x100e); // r15
+        assert_eq!(ctx.rbx, 0x1001);
+        assert_eq!(ctx.rip, 0x2000);
+        assert_eq!(ctx.rsp, 0x7fff_0000);
+        assert_eq!(ctx.psw, 0x202);
+        assert_eq!(ctx.cs, 0x1B);
+        assert_eq!(ctx.ss, 0x23);
     }
 }
