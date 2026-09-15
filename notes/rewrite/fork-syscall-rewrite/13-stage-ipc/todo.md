@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 3 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4），余 17 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 4 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2），余 16 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -21,7 +21,7 @@
 | 级别 | 条目 | 一句话 |
 |---|---|---|
 | P1 | IPC-P1-1 | 服务层组装根缺失：`CallHandler` 只有 `StubHandler`，七个调用无真入口；薄序列器方案 + 服务层必须回答的边界契约清单 |
-| P1 | IPC-P1-2 | do_semop 检查顺序分歧：C（sem.c:693 注释、:704/:709/:731）与 doc 06 都规定权限先于越界/撤销，`validate_ops`/`authorize_ops` 的拆分把顺序弄反 |
+| P1 | IPC-P1-2 | do_semop 检查顺序分歧：C（sem.c:693 注释、:704/:709/:731）与 doc 06 都规定权限先于越界/撤销，`validate_ops`/`authorize_ops` 的拆分把顺序弄反（**✅ 已完成** 2026-09-16，见 §1 修复记录） |
 | P1 | IPC-P1-3 | IPC_SET 应用逻辑缺失（sem+shm 两处）：C 改 uid/gid/权限位+ctime（sem.c:550-559、shm.c:314-328），Rust 只有授权检查没有落账函数 |
 | P1 | IPC-P1-4 | shm 的 IPC_RMID 标记逻辑缺失：C 置 SHM_DEST 并立即尝试销毁（shm.c:334-336），Rust 的 sweep 只读标记不置标记 |
 | P1 | IPC-P1-5 | shmat/shmdt 落账缺失：C 刷新 atime/lpid（shm.c:164-165、:228-229），且 shmdt 更新的也是 atime（C 的怪癖，doc 08 已如实记录）——Rust 连函数都没有 |
@@ -65,7 +65,7 @@
 5. **挂起回信**：`Wakeup.code == NO_REPLY`（EDONTREPLY）时不发送（`table.rs:134-137` 的文档已写明由发送方检查——这个检查就是服务层的）。
 6. **每轮收尾**：dispatch 路径末尾的 `on_cycle_end` 要发起全表 `vm_getrefcount` 轮询再喂给 `sweep`（`refcount.rs:66-73` 已写明查询在边界）。
 
-### IPC-P1-2 do_semop 入口检查顺序：权限被排到了越界/撤销之后
+### IPC-P1-2 do_semop 入口检查顺序：权限被排到了越界/撤销之后【✅ 已完成 2026-09-16】
 
 **是什么**：C 的 do_semop 入口顺序是：找集合（sem.c:667-668）→ 个数零/超上限（:670-673）→ 拷贝数组（:676-682）→ **权限**（掩码组装 :695-702，`r = EACCES` 检查 :704）→ **序号越界**（`r = EFBIG` :709-717）→ **撤销标志**（:729-739）→ 试执行（:742）。顺序不是偶然的——sem.c:690-693 的注释写明："perform the permission check **before** checking on the validity of semaphore numbers, since obtaining the semaphore set size itself requires read permission"。Linux 同哲学：`ipcperms()` 在触碰信号量值或入队之前跑，挂起恢复后 `sem_revalidate()` 重查。本 stage 的设计文档也是对的：doc 06 §2.2 的七步表按 C 序排列（权限掩码第 4 步、越界第 5 步、撤销第 6 步），doc 06 §4（:169）开的处方就是 `validate(count, ops, perm, identity)`——权限在 validate 里面。
 
@@ -78,6 +78,8 @@
 - doc 06 需要的同步：若采 A，§4 的 D5 处方与现状重新一致，只需把测试表里 `validate_rejects_bad_index`/`validate_rejects_undo` 的调用样例加上 perm/identity 参数；若采 B，doc 06 §2.2 的七步表要加一段"拆分保序"说明。A 的文档代价更小。
 
 **建议**：方案 A，并补一个"无权限 + 越界序号 → EACCES"的顺序回归测试守住优先级（现在没有测试覆盖这个优先级，与 IPC-T-1 同批）。**注意**：当前无调用者，故记 P1；服务层若按现状注释接线，本条即升级正确性问题（P0）。
+
+**修复记录（2026-09-16，方案 A 落地）**：`validate_ops` 签名改为 `(ops, set_count, perm, caller)`（doc 06 §4:169 的处方原形），内部按 C 序三段扫描——掩码（sem.c:697-706）→ check_perm（:704，sem.c:690-693 注释的缘由写进函数文档）→ 越界（:709-717）→ 撤销（:729-739）；`authorize_ops` 与 `need_mask` 删除（授权已并入 validate，零外部调用者）。测试：原两个 validate 测试补权限参数，新增 `validate_perm_precedes_num_and_undo`（无权限+越界 → EACCES、无权限+SEM_UNDO → EACCES、root 过门后后置检查仍生效）。doc 06 §4.2 函数清单与 §5.1 测试表同步。验证：`cargo test -p minix-ipc-server` = **84 passed / 0 failed**（83+1）。
 
 ### IPC-P1-3 IPC_SET 的应用逻辑缺失（sem 与 shm 两处）
 

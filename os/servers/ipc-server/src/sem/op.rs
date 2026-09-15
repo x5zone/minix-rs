@@ -17,7 +17,7 @@ use minix_types::{IPC_NOWAIT, IPC_W, SEM_UNDO, SEMMSL, SEMOPM, SEMVMX};
 use super::SemError;
 use super::table::SemSet;
 use super::waiter::WaiterTable;
-use crate::perms::check_perm;
+use crate::perms::{Identity, IpcPerm, check_perm, resolve_semop_mask};
 
 // ============================================================================
 // Operation item and trial outcome
@@ -75,42 +75,55 @@ pub enum OpNeed {
 // Entry validation (pure checks of do_semop's head)
 // ============================================================================
 
-/// Validate an operation array: size, numbers, undo exclusion.
+/// Validate an operation array and enforce permission, in C's order.
 ///
-/// C: `do_semop` head (sem.c:670-739) minus transport (allocation, copy)
-/// and the permission call itself (the caller checks the returned need
-/// with `check_perm`, document 04). The undo scan rejects every
-/// `SEM_UNDO` flag with `EINVAL` (the `SHRT_MAX` magic in C only skips the
-/// warning print, never the rejection — sem.c:730-739).
-pub fn validate_ops(ops: &[SemOp], set_count: usize) -> Result<OpNeed, SemError> {
+/// C: `do_semop` head (sem.c:667-739) minus transport (allocation, copy).
+/// The precedence is part of the contract, and the reason this function
+/// takes the permission inputs itself (document 06 §4, IPC-P1-2): the
+/// permission check runs BEFORE the semaphore-number validity check —
+/// sem.c:690-693 explains why ("obtaining the semaphore set size itself
+/// requires read permission") — and the `SEM_UNDO` rejection comes last.
+/// Handing the permission decision to the caller would let the order be
+/// reshuffled, changing which errno a multi-fault request observes.
+///
+/// Returns what the array needs permission-wise; the empty array succeeds
+/// outright and needs nothing (sem.c:670-671).
+pub fn validate_ops(
+    ops: &[SemOp],
+    set_count: usize,
+    perm: &IpcPerm,
+    caller: Identity,
+) -> Result<OpNeed, SemError> {
     if ops.is_empty() {
         return Ok(OpNeed::Nothing);
     }
     if ops.len() > SEMOPM {
         return Err(SemError::TooManyOps);
     }
-    let mut need = OpNeed::Read;
+    // C: the mask loop, sem.c:697-706 — any non-zero operation wants the
+    // write bit, all-zero wants the read bit.
+    let need = if ops.iter().any(|op| op.op != 0) {
+        OpNeed::Write
+    } else {
+        OpNeed::Read
+    };
+    if !check_perm(perm, caller, resolve_semop_mask(need == OpNeed::Write)) {
+        return Err(SemError::Access);
+    }
+    // C: the range loop, sem.c:709-717.
     for op in ops {
         if op.num as usize >= set_count {
             return Err(SemError::BadNumber);
         }
+    }
+    // C: the undo loop, sem.c:729-739 — every `SEM_UNDO` flag fails (the
+    // `SHRT_MAX` magic only skips the warning print, never the rejection).
+    for op in ops {
         if op.flag as i32 & SEM_UNDO != 0 {
             return Err(SemError::Invalid);
         }
-        if op.op != 0 {
-            need = OpNeed::Write;
-        }
     }
     Ok(need)
-}
-
-/// Wanted permission bit for a validated need (`None` = nothing wanted).
-pub const fn need_mask(need: OpNeed) -> Option<u32> {
-    match need {
-        OpNeed::Nothing => None,
-        OpNeed::Read => Some(minix_types::IPC_R),
-        OpNeed::Write => Some(IPC_W),
-    }
 }
 
 // ============================================================================
@@ -236,33 +249,30 @@ pub fn retry(
     wakes
 }
 
-/// Permission pre-check shared by the entry path: the wanted bit must hold.
-///
-/// Thin wrapper so the entry sequence reads as validate → authorize → try.
-pub fn authorize_ops(
-    perm: &crate::perms::IpcPerm,
-    caller: crate::perms::Identity,
-    need: OpNeed,
-) -> Result<(), SemError> {
-    match need_mask(need) {
-        None => Ok(()),
-        Some(mask) => {
-            if check_perm(perm, caller, mask) {
-                Ok(())
-            } else {
-                Err(SemError::Access)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::perms::Identity;
+    use crate::perms::{Identity, IpcPerm};
     use crate::sem::table::SemaphoreTable;
     use crate::sem::waiter::Waiter;
     use minix_types::Endpoint;
+
+    /// A permission record whose owner (uid 1) passes read and write.
+    fn allowed_perm() -> IpcPerm {
+        IpcPerm {
+            key: 1,
+            uid: 1,
+            gid: 1,
+            creator_uid: 1,
+            creator_gid: 1,
+            mode: 0o600,
+            seq: 0,
+        }
+    }
+
+    fn allowed_caller() -> Identity {
+        Identity { uid: 1, gid: 1 }
+    }
 
     fn values(v: &[u16]) -> [u16; SEMMSL] {
         let mut scratch = [0u16; SEMMSL];
@@ -344,24 +354,63 @@ mod tests {
 
     #[test]
     fn validate_rejects_bad_index() {
-        // C: sem.c:709-712 — EFBIG past the set size.
-        assert_eq!(validate_ops(&[op(5, 1, 0)], 2), Err(SemError::BadNumber));
-        assert_eq!(validate_ops(&[], 2), Ok(OpNeed::Nothing));
-        assert_eq!(validate_ops(&[op(0, 0, 0)], 2), Ok(OpNeed::Read));
-        assert_eq!(validate_ops(&[op(0, 1, 0)], 2), Ok(OpNeed::Write));
+        // C: sem.c:709-712 — EFBIG past the set size. The permission gate
+        // passes here (owner), so the later checks are reachable.
+        let (perm, caller) = (allowed_perm(), allowed_caller());
+        assert_eq!(
+            validate_ops(&[op(5, 1, 0)], 2, &perm, caller),
+            Err(SemError::BadNumber)
+        );
+        assert_eq!(validate_ops(&[], 2, &perm, caller), Ok(OpNeed::Nothing));
+        assert_eq!(
+            validate_ops(&[op(0, 0, 0)], 2, &perm, caller),
+            Ok(OpNeed::Read)
+        );
+        assert_eq!(
+            validate_ops(&[op(0, 1, 0)], 2, &perm, caller),
+            Ok(OpNeed::Write)
+        );
     }
 
     #[test]
     fn validate_rejects_undo() {
         // C: sem.c:730-739 — any SEM_UNDO flag fails (the SHRT_MAX magic
         // only skips the warning print, never the rejection).
+        let (perm, caller) = (allowed_perm(), allowed_caller());
         assert_eq!(
-            validate_ops(&[op(0, 1, minix_types::SEM_UNDO as u16)], 2),
+            validate_ops(&[op(0, 1, minix_types::SEM_UNDO as u16)], 2, &perm, caller),
             Err(SemError::Invalid)
         );
         // Too many operations fail first.
         let many = alloc::vec![op(0, 0, 0); SEMOPM + 1];
-        assert_eq!(validate_ops(&many, 2), Err(SemError::TooManyOps));
+        assert_eq!(
+            validate_ops(&many, 2, &perm, caller),
+            Err(SemError::TooManyOps)
+        );
+    }
+
+    #[test]
+    fn validate_perm_precedes_num_and_undo() {
+        // C: sem.c:690-693 (comment) + :704/:709/:731 — permission is the
+        // earlier gate, so a request failing both the permission check and
+        // a later check must observe EACCES (IPC-P1-2).
+        let perm = allowed_perm();
+        let stranger = Identity { uid: 999, gid: 999 };
+        assert_eq!(
+            validate_ops(&[op(5, 1, 0)], 2, &perm, stranger),
+            Err(SemError::Access),
+            "no permission + bad number must answer EACCES"
+        );
+        assert_eq!(
+            validate_ops(&[op(0, 1, minix_types::SEM_UNDO as u16)], 2, &perm, stranger),
+            Err(SemError::Access),
+            "no permission + SEM_UNDO must answer EACCES"
+        );
+        // Root passes the gate, so the later checks apply to root.
+        assert_eq!(
+            validate_ops(&[op(5, 1, 0)], 2, &perm, Identity { uid: 0, gid: 0 }),
+            Err(SemError::BadNumber)
+        );
     }
 
     #[test]

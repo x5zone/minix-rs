@@ -166,7 +166,7 @@ os/servers/ipc-server/src/sem/
 - `SemOp { num: u16, op: i16, flag: u16 }`：对应 C 的 `sembuf`（序号、操作、标志）。
 - `TryOutcome` 枚举：`Done`（全做完）、`Suspend { blocked_on: usize }`（卡点下标）、`Failed(SemError)`。
 - `try_ops(values: &mut [u16], ops: &[SemOp], pid: i32, now: u64, times) -> TryOutcome`：2.3 节的逐行对应（正操作超范围、负操作不足、零操作非零、落定记进程与时间），草稿语义由调用者保证（函数内先拷草稿再提交，或调用者给草稿）。
-- `validate(count, ops, perm, identity) -> Result<(), SemError>`：2.2 节七步中的纯判断部分（个数、掩码、越界、撤销）。
+- `validate_ops(ops, count, perm, identity) -> Result<OpNeed, SemError>`：2.2 节七步中的纯判断部分（个数、掩码、越界、撤销），顺序即 C 的顺序——权限在越界与撤销之前（第 690 行到第 693 行的注释给足了理由），所以权限输入收在函数签名里，调用方想换序都换不了；返回的 `OpNeed` 告诉服务层该请求要读位还是写位（空数组直接成功，无需权限）。
 - `retry(set, queue) -> Vec<Wake>`：2.4 节的外层驱动加逐个重试加卡点迁移。
 
 **等待与完成**（`waiter.rs`）：
@@ -198,6 +198,7 @@ os/servers/ipc-server/src/sem/
 | `try_rollback_leaves_zero` | `op.rs` 测试模块 | 未走完不留痕（第 350 行到第 360 行，草稿语义） |
 | `validate_rejects_bad_index` | `op.rs` 测试模块 | 序号越界回序号太大（第 709 行到第 712 行） |
 | `validate_rejects_undo` | `op.rs` 测试模块 | 撤销标志回参数错误（第 730 行到第 739 行） |
+| `validate_perm_precedes_num_and_undo` | `op.rs` 测试模块 | 权限先于越界与撤销：多重失败只见访问拒绝（第 690 行到第 693 行、第 704 行，IPC-P1-2） |
 | `retry_wakes_fifo` | `op.rs` 测试模块 | 先进先出重试与连锁进展（第 393 行到第 422 行） |
 | `park_rejects_double` | `waiter.rs` 测试模块 | 单挂起不变量（第 755 行断言） |
 | `cancel_exit_suppresses` | `waiter.rs` 测试模块 | 退出取消不发信（第 887 行） |
