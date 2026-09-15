@@ -349,6 +349,51 @@ mod tests {
     }
 
     #[test]
+    fn migrate_block_moves_suspension_count() {
+        // C: sem.c:408-420 — a still-blocked waiter whose blocking point
+        // moved carries its suspension count to the new semaphore: one
+        // counter relieved at the old point, one taken at the new
+        // (IPC-T-1; the waiter itself stays queued).
+        let mut table = SemaphoreTable::new();
+        table
+            .create(1, 2, 0o1000 | 0o600, Identity { uid: 1, gid: 1 }, 0)
+            .unwrap();
+        let mut waiters = WaiterTable::new();
+        let set = table.get_mut(0).unwrap();
+        waiters.park(
+            set,
+            0,
+            Waiter {
+                endpoint: Endpoint(10),
+                pid: 10,
+                ops: alloc::vec![
+                    SemOp {
+                        num: 0,
+                        op: -5,
+                        flag: 0
+                    },
+                    SemOp {
+                        num: 1,
+                        op: 0,
+                        flag: 0
+                    },
+                ],
+                blocked_on: 0,
+                set_index: 0,
+            },
+        );
+        assert_eq!(table.get(0).unwrap().sems[0].raise_waiters, 1);
+        // The blocking point moves from op 0 (raise-wait on semaphore 0)
+        // to op 1 (wait-for-zero on semaphore 1).
+        let set = table.get_mut(0).unwrap();
+        waiters.migrate_block(10, set, 0, 1);
+        let set = table.get(0).unwrap();
+        assert_eq!(set.sems[0].raise_waiters, 0, "old point relieved");
+        assert_eq!(set.sems[1].zero_waiters, 1, "new point taken");
+        assert!(waiters.is_parked(10), "still queued, still blocked");
+    }
+
+    #[test]
     fn drain_set_wakes_eidrm_in_order() {
         // C: sem.c:259-263 — head-to-tail EIDRM wakes on removal.
         let (mut table, index) = live_set();

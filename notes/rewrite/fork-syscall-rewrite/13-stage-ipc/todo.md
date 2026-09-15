@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 12 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），余 11 条开口（P3-1 内 ShmTable 约定随 P1-1）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -30,7 +30,7 @@
 | P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数（**✅ 已完成** 2026-09-16，见 §2 修复记录；ShmTable Box 约定随 P1-1） |
-| T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试 |
+| T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试（**✅ 已完成** 2026-09-16） |
 | T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试；IPC-T-3 `tests/` 集成目录被注释声称但不存在；IPC-T-4 sweep rc==0 边界无测试（**✅ 已完成** 2026-09-16，随 IPC-P1-6）；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
 | D | IPC-D-1 | README.md:6 与 plan.md:6/:167/:410 的"空壳 stub"表述过时 |
 | D | IPC-D-2 | plan.md:17 A-1（minix-types 无 IPC 消息类型）已失效；A-5 应注记部分完成 |
@@ -201,9 +201,11 @@
 
 83 个现有测试与行为契约清单做了双向对账（契约 → 测试、测试 → 契约）。整体质量好：每个测试锚定 C 行号、断言行为而非实现细节；全部测试在逐文件深读时过目，断言值与 C 语义重点核对过 try_ops/retry/sweep/perms/classify 五个模块（逐条对），没有发现"测试代码自身错误"。缺口如下：
 
-### IPC-T-1 `migrate_block` 零测试
+### IPC-T-1 `migrate_block` 零测试【✅ 已完成 2026-09-16】
 
 挂起计数迁移（C check_set 的 :408-420，`waiter.rs:148-156`）是 semop 语义里最容易错的函数——它要在两个信号量的 `semncnt`/`semzcnt` 之间搬计数，搬错会让 GETNCNT/GETZCNT 返回错值、且影响后续重试的判定。`retry_wakes_fifo`（`op.rs:371-411`）没有走到迁移分支（卡点没变过）。补法：构造一个两信号量集合，等待者卡在信号量 0，另一操作抬高信号量 0 后其卡点落到信号量 1（或同集合不同下标的等价场景），断言 `raise_waiters`/`zero_waiters` 一减一增。
+
+**修复记录（2026-09-16）**：测试 `migrate_block_moves_suspension_count` 落地——两信号量集合，等待者携带双操作数组卡在操作 0（等增长），直接调 `migrate_block(…, 0, 1)` 模拟重试中卡点后移，四断言：旧点 `raise_waiters` 归零、新点 `zero_waiters` 记一、等待者仍在队、（隐含）调用前旧点计数为一。doc 06 §5.1 补行。验证：`cargo test -p minix-ipc-server` = **91 passed / 0 failed**（90+1）。
 
 ### IPC-T-2 `next_seq` 环绕无测试
 

@@ -203,6 +203,7 @@ os/servers/ipc-server/src/sem/
 | `park_rejects_double` | `waiter.rs` 测试模块 | 单挂起不变量（第 755 行断言） |
 | `cancel_exit_suppresses` | `waiter.rs` 测试模块 | 退出取消不发信（第 887 行） |
 | `cancel_signal_replies_intr` | `waiter.rs` 测试模块 | 信号取消回中断（第 887 行） |
+| `migrate_block_moves_suspension_count` | `waiter.rs` 测试模块 | 卡点迁移：旧点计数减、新点计数加、等待者留队（第 408 行到第 420 行，IPC-T-1） |
 | `generation_endpoints_share_slot` | `waiter.rs` 测试模块 | 两代同槽共享槽位、占位不符终止（第 751 行槽位号、第 880 行身份核对） |
 | `drain_set_wakes_eidrm_in_order` | `waiter.rs` 测试模块 | 删除排空顺序唤醒（第 259 行到第 263 行） |
 
