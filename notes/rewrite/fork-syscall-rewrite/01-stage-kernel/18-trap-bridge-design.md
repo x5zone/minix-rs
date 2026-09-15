@@ -1,6 +1,6 @@
 # E1 trap 桥设计——用户态如何走进内核,以及如何回来
 
-> 状态:**待评审**(campaign 单条协议 Step 3;无批准不进实现)
+> 状态:**已批准**(2026-09-16,用户授权执行会话代评审;评审修正一处初稿 guess——SENDA 寄存器角色,见决策二修订)
 > 日期:2026-09-16。作者:campaign 执行会话。
 > 范围:01-stage-kernel 的 int-33 IPC trap 桥 + minix-sys 用户侧 trap 体(E1 的两半)。
 > 前置裁决已定:二次 IPC 返回通道 = 保存上下文 RBX(`CpuContextArch::set_secondary_ipc_return`,commit 207e30644)。
@@ -55,7 +55,7 @@ minix-rs 内核至今从不返回用户态。调度循环(`scheduler_loop`,kerne
 
 **方案 B——SysV 风格:** RDI = 消息指针,RSI = 端点,RDX = 调用号。优点:与 SYSCALL 腿一致,读代码顺。缺点:纯发明,C 无此物;违背 translate 防线——在有 C 参照的 ABI 上自创约定,就是 E-RSWIRE 条目警告过的"guess"。
 
-**选 A。** RAX/RBX/RCX;errno 返回 RAX,IPC status 继续走保存上下文 RBX 的 OR 通道(约束 R6,R5——trap_return 的 RBX 恢复步就是用户侧回流)。SENDA 的表指针和长度在 C i386 走 r2/r3(约束 R3 的 p_defer 对应),x86-64 腿放 RDX(table ptr)+ RSI(count)。
+**选 A。** RAX/RBX/RCX;errno 返回 RAX,IPC status 继续走保存上下文 RBX 的 OR 通道(约束 R6,R5——trap_return 的 RBX 恢复步就是用户侧回流)。**SENDA 的寄存器角色(评审修正)**:C `SENDA_ARGS`(usermapped_glo_ipc.S:87-90)是 `eax = count, ebx = table`——与普通 IPC 复用同两寄存器、仅换语义,不占用新寄存器;初稿在此处发明的 RDX/RSI 分配无 C 依据,系 guess,撤回。RECEIVE 的 status 出参按 C `GETSTATUS`(usermapped_glo_ipc.S:92-96)语义:wrapper 在用户侧把返回后的 EBX(status)写到调用者给的指针,内核不感知该指针。do_kernel_call(C 单参 `eax`,KERVEC 腿)本 rewrite 由既有 SYSCALL 腿承载,int-33 不设此变体。
 
 ### 决策三:保存区与返回模型——TrapFrame 直返,还是统一进 CpuContext?
 
@@ -83,5 +83,5 @@ minix-sys 的 `DirectTrapTransport`/`DirectKernelCallTransport` 是所有 wrappe
 
 - **两腿并存的长期成本**:SYSCALL 腿(同进程 sysret)与 int-33 腿(统一调度出口)并存,恢复模型不同。若 E8 通电后维持,建议在 01-stage-kernel 记一条"是否收敛单腿"的 OQ,而不是现在静默双轨。
 - **嵌套与内核态误触发**:33 号门 DPL=3,内核态 int 33 属 wiring bug——分派体应沿 SYSCALL 腿的先例 panic 而非静默(trap_stub.rs 的 S-3d 教训)。
-- **SENDA 表指针**:RDX 载表指针是本设计的新约定(C i386 在 r3),切片 1 单测要钉住 p_defer.r3 的来源。
+- ~~SENDA 表指针~~(评审已解决):SENDA 复用 EAX(count)/EBX(table),无新约定;切片 1 单测钉住 p_defer.r3 = 表指针的抽取来源(C r3 语义,proc.c:683)。
 - **性能**:决策三的方案乙让每次 IPC 多一跳调度循环。若通电实测成瓶颈,再评估"同进程快速出口"旁路,且必须保住 CpuContext 单一真值不变。
