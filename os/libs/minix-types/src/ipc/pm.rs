@@ -393,3 +393,112 @@ mod time_wire_tests {
         assert_eq!(offset_of!(MessLcPmTime, nsec), 16);
     }
 }
+
+// ── E7 D/E 批:itimer 与 exec 调用号与 wire 结构 ──
+
+/// C: `PM_ITIMER` — callnr.h:30(PM_BASE + 17)。
+pub const PM_ITIMER: i32 = 17;
+/// C: `PM_EXEC` — callnr.h:27(PM_BASE + 14)。
+pub const PM_EXEC: i32 = 14;
+/// C: `PM_EXEC_NEW` — callnr.h:56(PM_BASE + 43)。
+pub const PM_EXEC_NEW: i32 = 43;
+/// C: `PM_EXEC_RESTART` — callnr.h:57(PM_BASE + 44)。
+pub const PM_EXEC_RESTART: i32 = 44;
+
+/// itimer 请求载荷(C: `mess_lc_pm_itimer` — ipc.h:468-474)。
+///
+/// `which`:ITIMER_REAL/ITIMER_VIRTUAL/ITIMER_PROF;`value`/`ovalue`
+/// 为 `struct itimerval` 的用户态指针。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmItimer {
+    /// 定时器类型。C: `int which`。
+    pub which: i32,
+    /// 新值指针(`struct itimerval *`)。C: `vir_bytes value`。
+    pub value: u64,
+    /// 旧值出参指针。C: `vir_bytes ovalue`。
+    pub ovalue: u64,
+    /// LP64:value/ovalue 拓为 8 字节(域合计 24),padding 由 44 缩至 32,总 56。
+    pub _padding: [u8; 32],
+}
+
+/// exec 请求载荷(C: `mess_lc_pm_exec` — ipc.h:435-443:name/namelen/
+/// frame/framelen/ps_str 五域 + padding[36])。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmExec {
+    /// 新映像名指针。C: `vir_bytes name`。
+    pub name: u64,
+    /// 名字长度。C: `size_t namelen`。
+    pub namelen: u64,
+    /// 初始栈帧指针。C: `vir_bytes frame`。
+    pub frame: u64,
+    /// 栈帧长度。C: `size_t framelen`。
+    pub framelen: u64,
+    /// ps_strings 指针。C: `vir_bytes ps_str`。
+    pub ps_str: u64,
+    /// LP64:五个 4 字节域拓为 8 字节(40),padding 由 36 缩至 16,总 56。
+    pub _padding: [u8; 16],
+}
+
+/// exec-restart 应答载荷(RS→PM)。C: `mess_rs_pm_exec_restart` —
+/// ipc.h:1869-1876:endpt/result/pc/ps_str + padding[40]。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessRsPmExecRestart {
+    /// 目标进程端点。C: `endpoint_t endpt`。
+    pub endpt: i32,
+    /// exec 结果。C: `int result`。
+    pub result: i32,
+    /// 新入口 PC。C: `vir_bytes pc`。
+    pub pc: u64,
+    /// ps_strings 指针。C: `vir_bytes ps_str`。
+    pub ps_str: u64,
+    /// LP64:pc/ps_str 拓为 8 字节(域合计 24),padding 由 40 缩至 32,总 56。
+    pub _padding: [u8; 32],
+}
+
+#[cfg(test)]
+mod itimer_exec_wire_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// C 绝对值 pin:D/E 批调用号。
+    #[test]
+    fn test_itimer_exec_call_numbers_match_c() {
+        assert_eq!(PM_ITIMER, 17); // callnr.h:30
+        assert_eq!(PM_EXEC, 14); // callnr.h:27
+        assert_eq!(PM_EXEC_NEW, 43); // callnr.h:56
+        assert_eq!(PM_EXEC_RESTART, 44); // callnr.h:57
+    }
+
+    /// 布局见证:MessLcPmItimer 56 字节(which@0/value@8/ovalue@16)。
+    #[test]
+    fn test_mess_lc_pm_itimer_layout() {
+        assert_eq!(size_of::<MessLcPmItimer>(), 56);
+        assert_eq!(offset_of!(MessLcPmItimer, which), 0);
+        assert_eq!(offset_of!(MessLcPmItimer, value), 8);
+        assert_eq!(offset_of!(MessLcPmItimer, ovalue), 16);
+    }
+
+    /// 布局见证:MessLcPmExec 56 字节(name/namelen/frame/framelen/ps_str)。
+    #[test]
+    fn test_mess_lc_pm_exec_layout() {
+        assert_eq!(size_of::<MessLcPmExec>(), 56);
+        assert_eq!(offset_of!(MessLcPmExec, name), 0);
+        assert_eq!(offset_of!(MessLcPmExec, namelen), 8);
+        assert_eq!(offset_of!(MessLcPmExec, frame), 16);
+        assert_eq!(offset_of!(MessLcPmExec, framelen), 24);
+        assert_eq!(offset_of!(MessLcPmExec, ps_str), 32);
+    }
+
+    /// 布局见证:MessRsPmExecRestart 56 字节(endpt/result/pc/ps_str)。
+    #[test]
+    fn test_mess_rs_pm_exec_restart_layout() {
+        assert_eq!(size_of::<MessRsPmExecRestart>(), 56);
+        assert_eq!(offset_of!(MessRsPmExecRestart, endpt), 0);
+        assert_eq!(offset_of!(MessRsPmExecRestart, result), 4);
+        assert_eq!(offset_of!(MessRsPmExecRestart, pc), 8);
+        assert_eq!(offset_of!(MessRsPmExecRestart, ps_str), 16);
+    }
+}
