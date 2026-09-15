@@ -17,7 +17,7 @@
 | **P0** | **V1-P0-1** | ~~panic 诊断 hook 注册表分裂：kernel 写 `minix_types` 注册表，minix-rt 的 panic handler 读的是自己 crate 内的重复注册表——hook 永不命中~~（**✅ 已修复** 2026-09-16，Fix #1，见 §3.1 修复记录） |
 | **P0** | **V1-P0-2** | 10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族（vm_info/vm_procctl/vm_cache/vm_getrusage），Rust 零实现且无登记（§3.1） |
 | **P0** | **V1-P0-3** | ~~`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）~~（**✅ 已修复** 2026-09-16，Fix #3，见 §3.1 修复记录） |
-| P1 | V1-P1-1 | 诞生链整体缺口：真实 `_start` 只做分配器初始化→main→exit；start.rs/init.rs 模块无生产调用方，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
+| P1 | V1-P1-1 | 🔄 诞生链整体缺口（**第一步已完成** 2026-09-16，Fix #4：start.rs 整模块删除 + 02/03 篇同步；**第二步挂 E1 切片 5 通电**）：真实 `_start` 只做分配器初始化→main→exit，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
 | P1 | V1-P1-3 | misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送（§3.2） |
 | P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |
@@ -147,6 +147,13 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 **验证**：第一步以 grep 证明死代码清除；第二步归 E1 切片 5 验收（首个 no_std 二进制真机跑通 argv 传递）。
 **边界**：与 V1-P0-3（同文件删除）、V1-P1-4（init.rs 分歧裁决）联动执行；A-4 TLS 在方案 A 中显式登记为"接线时决定是否引入"（relibc 的 errno 依赖 TLS，本仓 A-5 Result 语义已消除该需求，登记为 ARCH 差异而非遗漏）。
 
+**修复记录（Fix #4，2026-09-16）**：第一步按方案 A 落地（比原计划更彻底——整模块删除而非逐类型删除）——
+- **裁决**：删除前核查确认 start.rs 全部公开项（含 `UNINITIALIZED_ENVIRON_SENTINEL`/`EntryDescriptor`/`short_program_name`/`environ_is_uninitialized`/`ArrayDirection`/`run_function_array`/`RunOnce`/`StartupStage`）在生产路径零调用（35 个命令的 `use minix_rt::*` glob 下无一名命中；init 命令的 `EntryError` 是它自己的同名类型）。投机性纯函数已两次暴露与现实脱节（372 栈预算、"环境哨兵检测"叙述在 C 源无对应检测点），保留价值低于接线时按真实寄存器 ABI 重写的价值——与 E-BOOTFRAME 成功先例同构（对着 C 真值与见证测试落地，而非对着投机抽象补线）。
+- **Files**：删除 `os/libs/minix-rt/src/start.rs`（444 行，13 个测试随模块消失）；`lib.rs` 删 `pub mod start` 声明、crate 文档模块清单改四模块、"Relation to Redox" 段重写（原 "Redox 的 linker crate" 为虚构引用，relibc 才是 Redox 用户态运行时——顺带完成 V1-P2-3 第 4 项）。
+- **Docs**：02 篇三节改写——§3 重写为"Rust 现状与接线时的设计准则"（如实记载删除史实与理由，保留五条已验证设计准则供接线时对照）；§4 从错误表改为"失败去处"叙述（EntryError 类型已不存在）；§5 改为入口路径现状说明 + 接线时的测试重建骨架；§7 参见更新并修正"7 行指令"为"6 条指令"（顺带完成 V1-P2-3 第 5 项）。03 篇 §7 参见的 start.rs 行改指 lib.rs。§2.4 末尾删除引用已删枚举的句子。
+- **测试**：minix-rt 60 → 47 passed（start.rs 实际 13 个测试随模块删除；02 篇原记载 11 个，又一处既有漂移，已在篇内如实记载）；clippy minix-rt 零警告；no_std+panic-handler 形态编译通过；`grep start.rs` 在 minix-rt 与四篇文档中零残留。
+- **边界**：`initialize_runtime`（init.rs）保留至第二步接线时收编（死代码清单 #2 理由不变）；`ProcessStrings`（handoff.rs）保留（01 篇域模型，ps_strings 构造校验有测试锚定）；A-4 TLS 登记为接线时裁决项。
+
 #### V1-P1-2（P1-design-deviation）诊断双轨：模型层与生产 panic 路径互不相连，`PanicPlan` 是幻影类型名——✅ 已修复 2026-09-16（Fix #2）
 
 **现状锚点**：diag.rs 提供了完整模型——`DiagBuffer`（kputc 缓冲语义逐条对应 C，`diag.rs:121-130` ≙ `kputc.c:22`）、`format_panic_identity`、`PanicStage` 八阶（diag.rs:316-348，对齐 `panic.c:34-66`）、`DiagnosticSink`。但生产 panic handler（`lib.rs:287-342`）自带 256 字节 `BufferWriter` 格式化，与 diag.rs 的任何机制零调用关系；panic 末段只有自旋（lib.rs:339-341），C 的 "no message" 分支、尾换行、stacktrace 标记、abort 阶梯（panic.c:43-66）无执行器。`os/libs/minix-rt/src/diag.rs:15` 引用的 `PanicPlan` 类型全仓不存在（实际类型叫 `PanicStage`）。另有已自认的附加行为 `write_and_flush`（diag.rs:133-137，C 无此步）。
@@ -231,12 +238,12 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 
 | # | 位置 | 内容 | 为何死 | 处置建议 |
 |---|------|------|--------|---------|
-| 1 | `minix-rt/src/start.rs` 全模块（除 2 个被 init.rs 用的类型外） | `StartupStage`/`EntryDescriptor`/`short_program_name`/`run_function_array`/`RunOnce` | 生产 `_start`（lib.rs:112-128）不走 start.rs；workspace grep 零生产调用方 | 删（V1-P1-1 方案 A 第一步）；设计意图留存于 02 篇文档 |
+| 1 | ✅ `minix-rt/src/start.rs` 全模块 | `StartupStage`/`EntryDescriptor`/`short_program_name`/`run_function_array`/`RunOnce` | 生产 `_start`（lib.rs:112-128）不走 start.rs；workspace grep 零生产调用方 | **已删**（Fix #4，2026-09-16）；设计准则留存于 02 篇 §3 |
 | 2 | `minix-rt/src/init.rs:225-275` | `initialize_runtime` | 零生产调用方（lib.rs:30-32 自认"将来再委托"） | 保留至 V1-P1-1 第二步接线时收编（唯一有"未来消费者"辩护的项——接线前不删，防丢设计） |
 | 3 | `minix-rt/src/handoff.rs:291-330` + 测试 :499 区段 | `STACK_MINIMUM_BYTES`/`compute_stack_size` | 零消费方，且常量与 C 矛盾（V1-P0-3） | 删 |
 | 4 | `minix-rt/src/lib.rs:376-412` | 本地 `PANIC_DIAGNOSTIC_HOOK` 注册表三函数 | kernel 写的是 minix-types 注册表，此表无人写（V1-P0-1） | 删，改委托 minix_types |
 | 5 | `minix-rt/src/init.rs:251-256` | `NullPage` 错误分支 | `ValidatedKernInfo::new` 只返回 `BadMagic`，分支不可达 | 删（V1-P1-4 同轮） |
-| 6 | `minix-rt/src/start.rs:67-133` vs `handoff.rs:350-385` | `EntryDescriptor` 与 `ProcessStrings` 近同构（差一个字段） | 双真相源，前者随死代码批消失 | 删 1 保 1（随 #1） |
+| 6 | ✅ `minix-rt/src/start.rs:67-133` vs `handoff.rs` `ProcessStrings` | `EntryDescriptor` 与 `ProcessStrings` 近同构（差一个字段） | 双真相源，前者随死代码批消失 | **已删**（Fix #4 随 start.rs 整模块删除，保 `ProcessStrings`——01 篇域模型） |
 
 拿不准项（OQ 上交，不擅删）：`minix-sys/src/misc.rs` 的 `MIB_ENDPOINT_NUMBER`/`MIB_CALL_SYSCTL`/`SYSCTL_SHORT_NAME_LENGTH` 三个常量——sysctl 发送半归 E-RMIBWIRE 后，这些常量是否由 minix-sys 保留（rmib.rs 已有自身常量）需该轨道裁决。
 

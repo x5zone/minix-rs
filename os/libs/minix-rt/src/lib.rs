@@ -6,8 +6,9 @@
 //!
 //! - `01-kernel-handoff`: the kernel information page and the initial stack
 //!   ([`handoff`]).
-//! - `02-crt0-start`: the program entry sequence from the first instruction
-//!   to the `main` call ([`start`]).
+//! - `02-crt0-start`: the program entry sequence — currently the minimal
+//!   `_start` below; the full crt0 chain lands with the real-machine boot
+//!   wiring (edge E1 slice 5).
 //! - `03-runtime-init`: publishing the kernel information page and the
 //!   communication vector table ([`init`]).
 //! - `06-allocator`: break management and slab allocation ([`alloc`]).
@@ -18,14 +19,15 @@
 //!
 //! # Crate status
 //!
-//! The five modules have complete logic with unit tests. The function below
+//! The four modules have complete logic with unit tests. The function below
 //! remains a placeholder with well-defined behavior (no silent failures):
 //!
 //! - `_start()` — calls `init`, then `main`, then `minix_sys::exit`.
 //!
-//! The `panic` handler formats the location and message into a stack buffer
-//! and emits it through the diagnostic sink (see [`diag`]); the default sink
-//! spins, preserving the previous observable behavior.
+//! The `panic` handler formats the location and message through the shared
+//! formatter in [`diag`], then emits through the diagnostic hook or the
+//! default sink; the default sink spins, preserving the previous observable
+//! behavior.
 //!
 //! `init()` now initializes the global allocator (idempotent). It will
 //! delegate to [`init::initialize_runtime`] once the communication trap is
@@ -45,21 +47,19 @@
 //!
 //! # Relation to Redox
 //!
-//! Redox ships the same shape in its `linker` crate: parse the startup
-//! information the kernel left behind, run the startup function lists, call
-//! `main`, pass the result to `exit`. The Minix variant differs in its input:
-//! Linux and Redox place the argument count and pointers directly on the
-//! initial stack, while Minix passes a pointer to a process string
-//! descriptor plus two loader values in registers. The [`start`] module
-//! therefore takes the descriptor as its input rather than re-parsing a raw
-//! stack image.
+//! Redox's userland runtime (relibc) walks the same arc: its crt0 assembly
+//! receives the startup values, a Rust `__libc_init` runs the startup lists
+//! and thread setup, then `main` runs and its result goes to `exit`. The
+//! Minix variant differs in its input: Linux and Redox place the argument
+//! count and pointers directly on the initial stack, while Minix passes a
+//! pointer to a process string descriptor plus two loader values in
+//! registers, so the entry code must read the descriptor instead of parsing
+//! a raw stack image.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 /// Kernel handoff: kernel information page and initial stack (document 01).
 pub mod handoff;
-/// Program entry: descriptor check through the `main` call (document 02).
-pub mod start;
 /// Runtime initialization: kernel page query and vector install (document 03).
 pub mod init;
 /// Memory allocator: break management plus slab allocation (document 06).

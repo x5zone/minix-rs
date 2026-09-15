@@ -138,7 +138,7 @@ C 语言在 32 位 Intel 上没有用户态的线程本地存储，错误号是�
 
 - `os/libs/minix-rt/src/init.rs`：本篇对应的 Rust 实现，包含查询 trait、状态类型、初始化函数、错误号转换和全部测试。
 - `os/libs/minix-rt/src/handoff.rs`：第 01 篇的实现，魔数校验和页面类型来自那里。
-- `os/libs/minix-rt/src/start.rs`：第 02 篇的实现，单次守卫的思想与本篇的显式初始化互相呼应。
+- `os/libs/minix-rt/src/lib.rs`：crate 入口与文档；第 02 篇的最小 `_start` 在那里，单次初始化的思想与本篇的显式初始化互相呼应。
 - `minix3/minix/lib/libc/sys/init.c`：构造器函数的原始实现，含查询、校验、安装三步。
 - `minix3/minix/include/minix/ipc.h`：向量表结构和内联包装函数的原始定义。
 - `minix3/lib/libc/gen/_errno.c`：错误号取地址函数的原始实现。
