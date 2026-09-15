@@ -243,7 +243,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Docs**：10 篇 §1 概念两处（哨兵模型改为结果类型表述，补"C 的失败判定本在协议返回值"的机制说明）、§3.2 整节改写（"用结果通道消除三个哨兵"，如实记载双层签名弯路与收窄理由——接口上每个变体必须有真实路径可达）、§5 测试表 13 → 14 + 统计刷新（168）。
 - **边界**：minix-types 的 `VmMmapOut`/`VmReply` 等服务端语义层不受影响；失败载荷哨兵检测（否决方案）不再考虑。
 
-#### V1-P2-2（P2，跨层部分挂 edge E-MINTYPES-RUNTIME）wire 打包双体系与 helper 三重复
+#### V1-P2-2（P2，跨层部分挂 edge E-MINTYPES-RUNTIME）wire 打包双体系与 helper 三重复——🔄 stage 内半暂缓（pm.rs 被 E9 批次实时修改，避让；其余部分已随 Fix #6/#8/#9 顺带减量）
 
 同一调用的 wire 契约存在两套表达：minix-types 的类型化路线（union 具名 arm + 语义 In/Out 结构 + `DecodeFromM1`/`EncodeToM1` codec trait，消费面：VM 服务器 encode.rs:141-144 与 dispatcher.rs:720-734——但 VM 分发主路径实际走固有方法 `decode_message`，trait 消费仅 4 处）与 minix-sys 的本地路线（每个调用族本地 `#[repr(C)]` payload + 裸字节打包，`cleared_message`/`write_payload` 在 `pm.rs:91-108`/`vm.rs:96-110` 各复制一份，rs.rs:82 又一种 raw 直写）。实例：VM_REMAP 在 `minix-types/src/ipc/vm.rs:526-527` 区段标注 "DEFERRED"，而 minix-sys `vm.rs:305-327` 已有该调用的客户端打包实现（且 `remap_via` 泛化 call 号可表达 REMAP_RO）——两处对同一契约的状态认知不一致 [待验证：两者语义层不同（服务端解码类型 vs 客户端打包），执行时按 fix-guard 复核后再定级]。**建议**：crate 内部分——`cleared_message`/`write_payload` 收敛为 minix-sys 单一内部 helper，本地 payload 补 56 字节/偏移断言（§2.6）；跨 crate 部分——99 篇定稿时裁决"布局单点归 minix-types、minix-sys 只做打包与传输"的边界（Redox 先例：syscall 契约单源 syscalls.toml + 单 crate 统一 data 模块，§7），登记 edge E-MINTYPES-RUNTIME。
 
