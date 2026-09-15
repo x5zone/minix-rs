@@ -14,7 +14,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 
 | 级别 | 条目 | 一句话 | 状态 |
 |---|---|---|---|
-| P1-1 | 主循环装配与传输 seam | MibServer + 双/三 trait + run_once，对齐 DS/SCHED 先例；含 UserSpaceTransport 上移再评估结论 | ⬜ |
+| P1-1 | 主循环装配与传输 seam | MibServer + 双/三 trait + run_once，对齐 DS/SCHED 先例；含 UserSpaceTransport 上移评估结论 | ✅ 2026-09-15（`server.rs`：MibIpc/MibServer/run_once 三信臂；10 装配测试） |
 | P1-2 | 树竞技场与执行 walker | 兑现 04/13/15 四篇文档的 arena 承诺（时点已到且说法矛盾，见 P3-1）；`LevelVerdict` 执行者 | ✅ 2026-09-15（`MibTree` + 四线 build + walker 执行器 + 10 集成测试，136 passed） |
 | P1-3 | A-4 交换格式布局裁决与锚定 | sysctlnode/sysctldesc/kinfo_lwp/kinfo_proc2 整层无结构无断言 | ✅ 2026-09-15（`minix-types::sysctl_abi`，4 结构 + 4 断言测试，196 passed） |
 | P1-4 | 拷贝/授权执行半 | mib_oldp/mib_newp 类型化 + datacopy/grant 动词接线 | ✅ 2026-09-15（`transport.rs` 双 trait + `Oldp`/`Newp`/`RelayRequest`/`RelayGrant`/`auth::ask`，126 passed） |
