@@ -257,6 +257,8 @@
 4. `SchedApi` 面：KERNEL 分支走 SYS_SCHEDCTL（E8 已列对端），SCHED 分支走 SCHEDULING_* 消息（依赖 06-stage-sched 服务器）。
 全部落定后逐条回写 03-stage-rs/todo.md §18.10 E-11 与 A5 路线图第 6 步。
 
+> **进度（2026-09-16，🔄 切片 1b PmApi 分域闭环，commit d18be19e1）**：PmApi 面的 minix-sys 消息构造落地——minix-types pm.rs 增 `PM_SRV_FORK=41`/`PM_GETEPINFO=45`/`PM_GETPROCNR=46`（callnr.h:54/:58/:59）与四个 wire 结构（getepinfo 请求/应答 56B LP64：groups@8 对齐垫 padding 44→32；getprocnr 请求/应答；srv_fork 请求沿 message.rs 既有 `MessLsysPmSrvFork`，不重复定义）+ MessageUnion 四臂（`m_rs_pm_exec_restart` 同批补齐——exec.c:128-132）。minix-sys 客户端：`getepinfo_via`/`getnpid_via`/`getnuid_via`/`getprocnr_via`/`exec_restart_via`（`srv_fork` 客户端已有 `service_fork_via`）。Canned 回放 ×4。**对端核查记录**：PM_GETEPINFO 的 PM 侧 handler 为 partial（04-stage-pm V3-P2-4(a) 已修、(b) 组表拷出随 D-30/批次 A/G）——组表参数沿 C getepinfo 默认 NULL/0，PM 侧接通后扩参数；PM_SRV_FORK 侧 PM handler 属批次 G 未落，wire 以 C 为准先行不构成漂移（E7/VFSWIRE 同款纪律）。**余项**：VmApi（挂 02-stage-vm T12/T13）、SchedApi（挂 06-stage-sched 服务器）；RS 侧 KernelApi 换装属 03-stage-rs 域内。
+
 > **进度（2026-09-16，🔄 切片 1 SysApi 面闭环，commit cbb7b9571）**：SysApi 九方法所需 minix-sys 包装齐备——kill/update/setalarm 三个 E2/E6 已有；本轮补六个：`sys_get_machine`/`sys_get_hz`/`sys_get_priv`（GETINFO 通用承载 `sys_getinfo_into` 逐域填 `m_lsys_krn_sys_getinfo`，GET_PRIV 的目标端点走 `val_len2_e` 域——kernel getinfo_priv:925-929）+ `sys_privctl`（M1 request/endpt/arg_ptr）+ `sys_diagctl_stacktrace`（DIAGCTL_CODE_STACKTRACE=2）。`sys_times` 发现已有同语义实现（E6 已落），get_ticks 直接消费，不重复造。六个 Canned 回放测试逐域断言出站线面与应答臂回填（minix-sys 161 全绿）。**余项**：PmApi（PM_SRV_FORK/GETEPINFO wire——与 04-stage-pm 对端协同）、VmApi（VM_RS_MEM_*——挂 02-stage-vm T12/T13）、SchedApi（SYS_SCHEDCTL——E8 对端）三分域仍开放；RS 侧 UnimplementedKernelApi 换装成真实现属 03-stage-rs 域内工作（stage 内），与本 edge 条目的 minix-sys 契约面切割。
 
 **解锁**：03-stage-rs 19 号主线通电；E-1 自升级；E5(c) 联调链。
