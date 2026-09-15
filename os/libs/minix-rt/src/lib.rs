@@ -181,6 +181,14 @@ static POOL_STORAGE: PoolStorage = PoolStorage(core::cell::UnsafeCell::new(
 ));
 
 /// Holder for the lazily created global allocator.
+///
+/// WHY A HAND-ROLLED TICKET: `core` has no `Once` (`std::sync::Once` is
+/// std-only, and this crate compiles `no_std`), and `core::cell::OnceCell`
+/// cannot serve here — initialization needs a `&mut` through a shared
+/// static, which `OnceCell` never hands out. The swap-ticket below is the
+/// accepted `no_std` idiom for "run once, then read": the atomic hands out
+/// a single first ticket, ordering the construction against every later
+/// read.
 struct GlobalAllocator {
     inner: core::cell::UnsafeCell<Option<alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>>>,
     ready: core::sync::atomic::AtomicBool,

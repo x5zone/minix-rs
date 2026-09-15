@@ -26,7 +26,7 @@
 | P2 | V1-P2-2 | wire 打包双体系：minix-types 的类型化布局与 minix-sys 的本地裸字节打包并存，`cleared_message`/`write_payload` 在三个文件各复制一份；VM_REMAP 两处状态标注不一致（§3.2，跨层部分挂 edge E-MINTYPES-RUNTIME） |
 | P2 | V1-P2-3 | ~~注释锚点失实批：10 处~~（**✅ 全部处置** 2026-09-16，Fix #1/#2/#4/#12，见 §3.2 修复记录） |
 | P3 | V1-P3-1 | ~~测试浅化批：大块分配测试未验证页边界、panic 阶梯只验长度不验中间序~~（**✅ 已修复** 2026-09-16，Fix #13，见 §3.2 修复记录） |
-| P3 | V1-P3-2 | GlobalAllocator 手写简化版 Once + 注释中英混用（§3.2） |
+| P3 | V1-P3-2 | ~~GlobalAllocator 手写简化版 Once + 注释中英混用~~（**✅ 已处置** 2026-09-16，Fix #14：Once 裁决为保留+理由注释；中文段英译，见 §3.2 修复记录） |
 | edge | E-MINTYPES-RUNTIME（新） | minix-types 布局单点权威收敛（Redox syscalls.toml 先例），99 篇定稿驱动 |
 | edge | E-MINSYS-SCOPE（新） | minix-sys 内六个域外 stage 客户端模块的 crate 内聚性处置 |
 | edge | E1 增补 | 通电族增加"首个 no_std minix-rt 二进制"验证面 |
@@ -276,9 +276,15 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Files**：`os/libs/minix-rt/src/alloc.rs`（大块分配测试改用页对齐测试池——`#[repr(align(4096))]` 镜像全局池的真实对齐契约——并新增"起始地址页对齐"断言，原测试的普通数组池使该断言不可测；首次尝试直接加对齐断言被实测打回：普通数组池上大块起始偏移 1976，暴露对齐性取决于供给方基址而非分配器本身，据此改测试夹具而非硬凑断言）；`os/libs/minix-sys/src/ipc.rs`（SENDA 测试更名 `test_enqueue_leaves_slot_valid_with_notify` 并加注释：提交序由 `&mut self` 单写者构造保证，单线程测试观察的是入队后状态）。
 - **第三项**（panic 阶梯只验长度）：随 Fix #2 的 PanicStage 删除而消失，重构后的报告格式化测试断言完整形状。
 - **测试**：minix-rt 46 / minix-sys 185 全绿；clippy 零新增。
-#### V1-P3-2（P3）实现细节两小项
+#### V1-P3-2（P3）实现细节两小项——✅ 已处置 2026-09-16（Fix #14）
 
 `minix-rt/src/lib.rs:203-217` 手写 swap 票券版 Once——`core::sync::Once`（Rust 1.73 起进 core）可替，或保留但补一行"为何不用 Once"的理由注释（现有 SAFETY 注释只论证了正确性，没论证不用标准件的理由）。`os/libs/minix-sys/src/syscall.rs:190/:203/:211-217` 中文注释段与全英文正文混用，统一为英文（与 crate 其余部分一致）。
+
+**修复记录（Fix #14，2026-09-16）**：
+- **Once 裁决**：尝试替换为 `core::sync::Once` 被编译器打回——`Once` 是 std 专属，`core` 没有它；`core::cell::OnceCell`（1.70）也不适用——初始化需要经共享 static 拿 `&mut`，OnceCell 从不发放。裁决为**保留手写 swap 票券**并在类型文档补齐"Why"段：core 无 Once、OnceCell 无 &mut，swap 票券是 no_std 的既有惯用法（原 V1 建议的"换 Once"前提不成立，勘误）。
+- **注释语言**：syscall.rs 三段中文（CannedKernelCallTransport 的整体回写文档、回放逻辑行注、E6 SYS_* 约定块）译为英文，与 crate 正文一致。范围外说明：E7/E9 批次在 pm.rs/syscall.rs 新增的中文注释归并行线程其自己的落点语言裁决，本条不越界。
+- **Files**：`os/libs/minix-rt/src/lib.rs`（GlobalAllocator 票券 + Why 段）；`os/libs/minix-sys/src/syscall.rs`（三段英译）。
+- **测试**：minix-rt 46 / minix-sys 185 全绿；clippy 零新增。
 
 ### 3.3 已登记缺口一览（防重复扫描）
 

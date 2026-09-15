@@ -187,8 +187,9 @@ impl CannedKernelCallTransport {
         self.replies.push(reply_message_type);
     }
 
-    /// Appends a full reply message to the script (payload + m_type 整体
-    /// 回写，供 SYS_TIMES 这类"回复即载荷"的内核调用断言解码)。
+    /// Appends a full reply message to the script — the payload and the
+    /// message type are written back as one, so calls whose reply IS the
+    /// payload (SYS_TIMES and friends) can assert the decoded fields.
     pub fn reply_message(&mut self, message: Message) {
         self.replies.push(message.m_type);
         self.payloads.borrow_mut().push_back(message);
@@ -200,7 +201,8 @@ impl KernelCallTransport for CannedKernelCallTransport {
         let index = self.calls.get();
         self.calls.set(index + 1);
         self.sent.borrow_mut().push(*message);
-        // 有整条载荷脚本则整体回写；否则仅回写 m_type。
+        // A scripted full-message payload overwrites the whole message;
+        // without one, only the message type lands.
         match self.payloads.borrow_mut().pop_front() {
             Some(full) => *message = full,
             None => message.m_type = self.replies.get(index).cloned().unwrap_or(0),
@@ -208,13 +210,14 @@ impl KernelCallTransport for CannedKernelCallTransport {
         message.m_type
     }
 }
-// ── SYS_* kernel-call wrappers（edge_todo.md E6：每类一个薄包装）──
+// ── SYS_* kernel-call wrappers (one thin wrapper per call, edge E6) ────
 //
-// 约定（对齐 VM 侧 `kernel_gateway.rs` 与 C libsys）：
-// - m_type 由 `perform_kernel_call` 写入调用号；
-// - 请求载荷按 C 的 union 成员填写；
-// - 返回值 = 内核回复 m_type（负 errno 或非负结果），**不**吞错——
-//   调用方按各自 C 原位的语义决定忽略或 panic。
+// Conventions (matching the VM-side `kernel_gateway.rs` and C libsys):
+// - `perform_kernel_call` writes the call number into the message type;
+// - request payloads fill the C union members;
+// - the return value is the raw reply message type (a negative errno or a
+//   non-negative result) and is never swallowed — each caller decides, per
+//   its C call site, whether to ignore or panic on it.
 
 /// C: SYS_KILL 是内核调用 6（`kernel/src/syscall_signal.rs:138`
 /// `Syscall::Kill`；C `callnr.h` `SYS_KILL`）。
