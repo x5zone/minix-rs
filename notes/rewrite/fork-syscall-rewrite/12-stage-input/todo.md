@@ -1,5 +1,7 @@
 # 12-stage-input Rust 实现架构级 Review TODO
 
+> **状态（2026-09-15）**：**13 条 IN-* 条目全部完成**（首轮审查同日完成实施）。轮次与提交：R1 `89e72b848`（IN-P1-3+IN-P2-1）、R2 `d6ce66e71`（IN-P1-2）、R3 `5a7e50a32`（IN-P2-3）、R4 `3133b18ae`（IN-P1-1）、R5 `dc5642a20`（IN-P2-2）、R6 `4b51515f3`（IN-D1）、R7 `ca7349f9b`（IN-D2）、R8 `dfc19a6c0`（IN-P3-1）、R9 `191ba3441`（IN-P3-2）、R10 `f73765d4d`（IN-P3-3）、R11 `00d30fc09`（IN-D3）、R12 `c5e9e6ab0`（IN-D4）。每条目正文保留"是什么/方案对比/修复记录"作为决策档案；edge 四条（E-INWIRE/E-CDRCONV/E-TTYEVENT/E-PCKBDREG）归并行 edge 线程，不在本清单。
+
 > 来源：2026-09-15 首轮架构审查（`code-excellence` + coverage 查漏补缺，双目标一次扫描）。
 > 范围：`os/servers/input/src/`（13 文件 4641 行）、`os/libs/minix-sys/src/inputdriver.rs`（486 行）、`os/libs/minix-types/src/ipc/input.rs`（529 行）及 `message.rs` 的 input 联合体成员（message.rs:248-255）。邻接只读（所有权在 16-stage-drivers，只登记移交，不当场处置）：`os/drivers/hid/pckbd`、`os/drivers/tty/tty`、`os/libs/minix-chardriver`。
 > 方法：三层对账（C 语义 → 决策核心 → 可运行实体）+ 分层设计审视（整体 → crate 边界 → trait/模块 → 函数），对照 Minix3 C 源（ground truth）、Redox 的中断分发 → `ps2d` → `inputd` 分层（[This Month in Redox 2026-01](https://www.redox-os.org/news/this-month-260131/)、[System Components](https://redox-os-redox.mintlify.app/architecture/components)）、Linux 的 serio → input core → evdev 分层（[内核输入子系统文档](https://www.kernel.org/doc/html/v4.16/input/input.html)）、Rust 社区实践（纯函数决策核 + 效应输出、`embedded-hal` 式硬件 trait 边界）。
@@ -100,11 +102,7 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 
 **修复记录（2026-09-15，方案一落地，与 IN-P1-3 同一轮——同一函数契约无法分两次改）**：`EventCount`/`ByteCount` newtype 落在 eventbuf.rs；`decide_read` 的 `Serve` 变体携带 `EventCount`（钳制后的胃口），回信字节值由 `plan_read_copy` 规划期算好，分发层不再手工乘事件大小。`EVENT_BYTES` 常量从 handlers.rs 移到 structs.rs（与 `EVENT_BUFFER_SIZE` 同居的布局事实）。文档 07（§3.1/§4.1/§4.4/§5）同步。
 
-### IN-P2-2 事件码词汇的 crate 归属（归属迁移）【✅ 已完成 2026-09-15】
-
-**修复记录（2026-09-15，方案一落地，`[ARCH: New]` 三处一致）**：`event.rs`（事件格式与小枚举）与 `key_codes.rs`（215 键码，机械生成）整体迁入 `os/libs/minix-types/src/ipc/{input_event,key_codes}.rs`，逐字未动（值、测试名、生成器注释全部保留，8 个测试随迁）；输入服务经 `minix_input` 的 re-export 消费，crate 内 `crate::event`/`crate::key_codes` 引用路径全部改指 `minix_types`。随迁时删除了原 event.rs 的三个"声明式副本"常量（`DEVICE_TYPE_KEYBOARD/MOUSE`、`INVALID_INPUT_ID`）——`minix-types` 的 `INPUT_DEV_KBD/INPUT_DEV_MOUSE/INVALID_INPUT_ID` 本就是权威，迁移后第二轮副本失去存在理由（这正是单一权威收敛的意义：副本只会活一轮）。`[ARCH]` 标注三处：文档 04 frontmatter 与 §4（理由与位置）、`ipc/input_event.rs`/`ipc/key_codes.rs` 模块文档、两侧代码路径。pckbd 侧的本地重述清理归 edge E-PCKBDREG（16-stage 域）。验证：`cargo test -p minix-input` 86 通过、`-p minix-types` 220 通过（含随迁 8 个）、clippy 零告警。
-
-### IN-P2-2 事件码词汇的 crate 归属
+### IN-P2-2 事件码词汇的 crate 归属【✅ 已完成 2026-09-15】
 
 **是什么**：C 的 `minix/include/minix/input.h` 是三方共享头——input 服务器（事件格式与常量）、pckbd（产生事件码）、TTY 的 keyboard.c（消费 `INPUT_PAGE_KEY` 过滤与 `NR_SCAN_CODES` 边界，keyboard.c:148-176）。Rust 把 20 字节事件格式与 215 个 `INPUT_KEY_*` 键码放在了 `os/servers/input/src/event.rs` 与 `key_codes.rs`（文档 04 的 frontmatter 如此声明）。后果已经在发生：pckbd 侧开始本地重述常量（scancode.rs 的 `KEY_ESCAPE`/`KEY_ENTER`、bridge.rs:18-27 的设备类型常量），16-stage 的 TTY 将来要么重复定义 215 个键码、要么让驱动 crate 依赖一个服务器 crate——后者是层级倒置。
 
@@ -112,6 +110,8 @@ C 的 `input_copy_events` 返回**字节数**（`event_size * event_count`，inp
 - 方案一（推荐）：事件格式与事件码词汇迁入 `minix-types`（与 `ipc/input.rs` 同居），server/pckbd/tty 三方消费。这与项目既有的单一权威收敛先例同构（SYS_ 调用号收敛 E-MINTYPES-SYS、REQ_* 契约收敛 E-REQWIRE 都是把分散定义收到 minix-types）。属架构演进，需 `[ARCH: ...]` 三处一致（文档 04 frontmatter、minix-types 模块文档、两侧代码）。
 - 方案二：维持 server crate 所有，驱动依赖 `minix_input` lib。层级倒置（驱动 → 服务器依赖），且 minix-input 是 bin+lib 双目标 crate，被驱动依赖会拖入无关编译单元。
 - 方案三：各 crate 自持一份。违背单一权威，现状的零散重述就是方案三的演化结果，应制止而非追认。
+
+**修复记录（2026-09-15，方案一落地，`[ARCH: New]` 三处一致）**：`event.rs`（事件格式与小枚举）与 `key_codes.rs`（215 键码，机械生成）整体迁入 `os/libs/minix-types/src/ipc/{input_event,key_codes}.rs`，逐字未动（值、测试名、生成器注释全部保留，8 个测试随迁）；输入服务经 `minix_input` 的 re-export 消费，crate 内 `crate::event`/`crate::key_codes` 引用路径全部改指 `minix_types`。随迁时删除了原 event.rs 的三个"声明式副本"常量（`DEVICE_TYPE_KEYBOARD/MOUSE`、`INVALID_INPUT_ID`）——`minix-types` 的 `INPUT_DEV_KBD/INPUT_DEV_MOUSE/INVALID_INPUT_ID` 本就是权威，迁移后第二轮副本失去存在理由（这正是单一权威收敛的意义：副本只会活一轮）。`[ARCH]` 标注三处：文档 04 frontmatter 与 §4（理由与位置）、`ipc/input_event.rs`/`ipc/key_codes.rs` 模块文档、两侧代码路径。pckbd 侧的本地重述清理归 edge E-PCKBDREG（16-stage 域）。验证：`cargo test -p minix-input` 86 通过、`-p minix-types` 220 通过（含随迁 8 个）、clippy 零告警。
 
 ### IN-P2-3 组合层设计未定（效应输出模式）【✅ 已完成 2026-09-15】
 
