@@ -31,7 +31,7 @@ use minix_types::{Endpoint, Errno, Message};
 
 use crate::buf::Buf;
 use crate::event_queue::EventQueue;
-use crate::hooks::{ServerConfig, S_IFDIR};
+use crate::hooks::ServerConfig;
 pub use inode::{InodeContent, InodeStat, InodeTree, Ino, NAME_MAX_LEN, PNAME_MAX_LEN, S_IFMT, S_IFREG};
 use inode::is_dir;
 
@@ -427,7 +427,7 @@ mod tests {
     fn read_deleted_is_eof() {
         // C: deleted node → 0 / EOF (file.c:62-64).
         let mut fs = VTreeFs::new(&cfg(64)).unwrap();
-        let g = content_file(&mut fs.tree_mut(), "g", "data");
+        let g = content_file(fs.tree_mut(), "g", "data");
         fs.tree_mut().reference(g).unwrap();
         fs.tree_mut().delete(g).unwrap();
         assert_eq!(fs.read(g, 8, 0).unwrap(), Vec::<u8>::new());
@@ -437,7 +437,7 @@ mod tests {
     fn read_static_content_renders_text_plus_newline() {
         // Static content: `text + '\n'` through the skip/cap funnel (06).
         let mut fs = VTreeFs::new(&cfg(64)).unwrap();
-        let f = content_file(&mut fs.tree_mut(), "f", "hi");
+        let f = content_file(fs.tree_mut(), "f", "hi");
         assert_eq!(fs.read(f, 8, 0).unwrap(), b"hi\n".to_vec());
         // Offset skip: the first produced byte is eaten.
         assert_eq!(fs.read(f, 8, 1).unwrap(), b"i\n".to_vec());
@@ -477,7 +477,7 @@ mod tests {
         // fires only after a short chunk (file.c:97) — here after the
         // second chunk carries the tail.
         let mut fs = VTreeFs::new(&cfg(4)).unwrap();
-        let f = content_file(&mut fs.tree_mut(), "f", "ssssss");
+        let f = content_file(fs.tree_mut(), "f", "ssssss");
         assert_eq!(fs.read(f, 10, 0).unwrap(), b"ssssss\n".to_vec());
     }
 
