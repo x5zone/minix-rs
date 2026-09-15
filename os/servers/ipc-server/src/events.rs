@@ -10,7 +10,7 @@
 //! arrival means). The cross-service call (`proceventmask`) and the reply
 //! send stay with the service layer — this module returns the decision.
 
-use minix_types::{Endpoint, PROC_EVENT_EXIT, PROC_EVENT_REPLY, PROC_EVENT_SIGNAL};
+use minix_types::{Endpoint, PROC_EVENT_EXIT};
 
 // ============================================================================
 // Subscription switch
@@ -134,26 +134,7 @@ impl ProcEvent {
             },
         }
     }
-
-    /// Whether this event reaches the waiter cancellation (always true:
-    /// C calls `sem_process_event` unconditionally when subscribed —
-    /// main.c:203-204 — and the cancellation itself no-ops for strangers).
-    pub const fn needs_cancel(self) -> bool {
-        true
-    }
 }
-
-/// Reply type acknowledging a process event.
-///
-/// C: `m->m_type = PROC_EVENT_REPLY` — main.c:207. Sent no matter what
-/// the triage found (even for leftover events after unsubscribing —
-/// main.c:160-161).
-pub const fn ack_type() -> i32 {
-    PROC_EVENT_REPLY
-}
-
-/// Signal event bit (re-export for mask readers).
-pub const SIGNAL_BIT: u32 = PROC_EVENT_SIGNAL;
 
 #[cfg(test)]
 mod tests {
@@ -189,18 +170,14 @@ mod tests {
     fn event_kind_maps_exit_only() {
         // C: main.c:197 — equality with the exit bit, nothing else.
         assert_eq!(EventKind::from_raw(PROC_EVENT_EXIT), EventKind::Exit);
-        assert_eq!(EventKind::from_raw(PROC_EVENT_SIGNAL), EventKind::Signal);
+        assert_eq!(
+            EventKind::from_raw(minix_types::PROC_EVENT_SIGNAL),
+            EventKind::Signal
+        );
         assert_eq!(EventKind::from_raw(0xFFFF), EventKind::Signal);
         assert!(EventKind::Exit.exited());
         assert!(!EventKind::Signal.exited());
         let event = ProcEvent::new(Endpoint(7), true);
         assert_eq!(event.kind, EventKind::Exit);
-        assert!(event.needs_cancel());
-    }
-
-    #[test]
-    fn ack_is_reply_type() {
-        // C: main.c:207 — the echo reply type.
-        assert_eq!(ack_type(), PROC_EVENT_REPLY);
     }
 }

@@ -1,6 +1,6 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
-> **状态（2026-09-16）**：首轮架构审查完成，全部条目开口待修。执行节奏：todo-fix 三段式，一次一条一提交。
+> **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 1 条（IPC-P2-3），余 19 条开口。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。
 > **方法**：C 四文件逐函数清单 → `tools/coverage-extract/ipc-semantic-map.json` → Rust 实态，逐符号分类；约 20 项行为契约逐条对照 C 源（每条给出 C 行号与 Rust 行号）；分层架构审视（整体 → 模块 → trait → 函数），对照 Redox 的用户态化（userspaceification）路线、Linux `ipc/sem.c` 的现代设计（每集合锁、RCU、pending 队列、ipcperms 先行）与 OS 理论。
@@ -28,7 +28,7 @@
 | P1 | IPC-P1-6 | 引用计数 rc==0 环绕分歧：C 的 u8 回绕（rc-1=255）使段存活，Rust 饱和到 0 会销毁带 SHM_DEST 的段（shm.c:187 vs refcount.rs:91） |
 | P2 | IPC-P2-1 | 判定/效果分离整体评估：维持，不学 Linux 的直改+锁，也不学 Redox scheme 的直改式 handler；理由与边界 |
 | P2 | IPC-P2-2 | transport trait 双名冲突与 send 语义保真：ipc-server 本地 `IpcTransport`（2 方法）vs minix-sys 同名 trait（7 方法）；进程事件回信在 C 是 asynsend3(AMF_NOREPLY) 不是 ipc_sendnb，单一 `send` 表达不了 |
-| P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名 |
+| P2 | IPC-P2-3 | 死代码消除：10 个零使用常量再导出、恒真的 `needs_cancel()` 与 `write_all`/`write_value` 返回值、`ack_type`/`proc_event_reply_type` 双名（**✅ 已完成** 2026-09-16，见 §2 修复记录） |
 | P3 | IPC-P3-1 | 小项集合：`RefCell<Box<T>>` 的 Box 冗余、`ShmTable::new()` 90KB 值拷贝、`migrate_block` 的两次克隆、`classify` 的 is_notify 冗余参数 |
 | T | IPC-T-1 | `migrate_block`（挂起计数迁移，最易错的函数之一）零测试 |
 | T | IPC-T-2 | `next_seq` 0x7fff 环绕无测试；IPC-T-3 `tests/` 集成目录被注释声称但不存在；IPC-T-4 sweep rc==0 边界无测试；IPC-T-5 `run()` 连续失败 panic 路径无测试 |
@@ -157,7 +157,7 @@
 
 **建议**：方案 A，在服务层接线前做（晚做一天，测试 transport 就多一天接错形状的风险）。进程事件路径（`server.rs:280-299`）改调 `send_async`。
 
-### IPC-P2-3 死代码消除：常量再导出、恒真函数、双名常量
+### IPC-P2-3 死代码消除：常量再导出、恒真函数、双名常量【✅ 已完成 2026-09-16】
 
 **是什么**：三组。其一，**10 个零使用的常量再导出**（grep 全 crate 验证，定义处之外零引用）：`sem/table.rs:330`（`DENIED`）、`:333`（`SUPPRESSED`）、`sem/op.rs:260`（`AGAIN`）、`sem/waiter.rs:233`（`SUPPRESSED_WAKE`）、`shm/attach.rs:303`（`WRITE_MASK`）、`:305`（`READ_MASK`）、`:307`（`WRITE_BIT`）、`perms.rs:263`（`READ_BIT`）、`:265`（`WRITE_BIT`）、`:267`（`CONTROL_BIT`）、`:269`（`READ_WRITE`）——它们把 minix-types 的值换个名字再导出，注释都写"for mask-table readers"，而那些 reader 从未出现。服务层要用时从 minix-types 拿即可（crate 内其它代码正是这么做的）。其二，**恒真的函数与返回值**：`ProcEvent::needs_cancel()` 恒返回 true（`events.rs:141-143`，C 的门在订阅掩码上，main.c:203-204，而"未订阅时必无等待者"的不变量使恒真在行为上等价——但恒真谓词没有信息量）；`write_all`/`write_value` 的 `Result<bool>` 恒返回 `Ok(true)`（`ctl.rs:189-234`，"是否需要重试队列"在 C 里是无条件 check_set，sem.c:627/:641，bool 是残留）。其三，**双名常量**：`ack_type()`（`events.rs:151`）与 `proc_event_reply_type()`（`dispatch.rs:96`）返回同一个 `PROC_EVENT_REPLY`，两个名字各有一组调用者。
 
@@ -169,6 +169,8 @@
 - **方案 B（否决）：标 `#[allow(dead_code)]` 留着**。"服务层可能用到"是猜测；真用到时从 minix-types 拿一个常量的成本是零。留着只会让 grep 结果持续膨胀。
 
 **建议**：方案 A，一个独立小提交（与行为无关的纯删除 + 受影响测试同步），在服务层接线前做完，避免接线轮的 diff 混入删除噪音。
+
+**修复记录（2026-09-16，方案 A 落地）**：删除 11 处零使用常量定义（DENIED/SUPPRESSED/AGAIN/SUPPRESSED_WAKE/WRITE_MASK/READ_MASK/WRITE_BIT 两处/READ_BIT/CONTROL_BIT/READ_WRITE）及同族死常量 SIGNAL_BIT（events.rs，登记时未枚举、同类别一并删）；删恒真 `needs_cancel()` 与 `ack_type()`（回执统一走 `dispatch::proc_event_reply_type`，冗余测试 `ack_is_reply_type` 一并删除——其断言已被 dispatch 的 `should_reply_suspend_suppresses` 覆盖）；`write_all`/`write_value` 返回 `Result<bool>` → `Result<()>`，"成功即需重试"写进函数文档。顺带清理 6 个文件的未用导入（EAGAIN/EACCES/NO_REPLY/IPC_M/IPC_W/PROC_EVENT_REPLY/PROC_EVENT_SIGNAL）。文档同步：doc 09 D4 决策行改指 dispatch、§4.1 模块注记更新、§4.2 删两函数并新增"为何删"段落（防补回）。验证：`cargo test -p minix-ipc-server` = **82 passed / 0 failed**（83−1，删冗余测试）；clippy 本 crate 零告警（依赖 minix-types 余 1 条既有告警，与本条无关）；死代码 grep 零残留。
 
 ### IPC-P3-1 小项集合（不阻塞接线，顺手轮处理）
 

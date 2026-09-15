@@ -12,7 +12,7 @@
 
 use alloc::vec::Vec;
 
-use minix_types::{EAGAIN, IPC_NOWAIT, IPC_W, SEM_UNDO, SEMMSL, SEMOPM, SEMVMX};
+use minix_types::{IPC_NOWAIT, IPC_W, SEM_UNDO, SEMMSL, SEMOPM, SEMVMX};
 
 use super::SemError;
 use super::table::SemSet;
@@ -255,9 +255,6 @@ pub fn authorize_ops(
         }
     }
 }
-
-/// Again error code (re-export for entry-path readers).
-pub const AGAIN: i32 = EAGAIN;
 
 #[cfg(test)]
 mod tests {

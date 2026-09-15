@@ -10,10 +10,10 @@
 //! layer executes them (documents 09/06).
 
 use minix_types::{
-    ACCESSPERMS, EACCES, IPC_CREAT, IPC_EXCL, IPC_PRIVATE, SEM_ALLOC, SEM_SEQ_MASK, SEMMNI, SEMMSL,
+    ACCESSPERMS, IPC_CREAT, IPC_EXCL, IPC_PRIVATE, SEM_ALLOC, SEM_SEQ_MASK, SEMMNI, SEMMSL,
 };
 
-use super::{NO_REPLY, SemError};
+use super::SemError;
 use crate::perms::{Identity, IpcPerm, check_perm};
 
 // ============================================================================
@@ -325,12 +325,6 @@ pub const fn encode_id(index: usize, seq: u16) -> i32 {
 pub const fn next_seq(seq: u16) -> u16 {
     ((seq as u32 + 1) & SEM_SEQ_MASK) as u16
 }
-
-/// Access-denied error code (re-export for mask-table readers).
-pub const DENIED: i32 = EACCES;
-
-/// Suppression marker passthrough (exit path produces no message).
-pub const SUPPRESSED: i32 = NO_REPLY;
 
 #[cfg(test)]
 mod tests {

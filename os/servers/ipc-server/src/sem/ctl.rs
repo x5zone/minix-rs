@@ -184,14 +184,15 @@ pub fn read_all(table: &SemaphoreTable, index: usize) -> Result<[u16; SEMMSL], S
 /// Write all values from a caller-supplied buffer.
 ///
 /// C: `SETALL` (sem.c:610-628). Every value is range-checked *before* any
-/// is stored; returns whether the waiter queue needs a retry (`check_set`,
-/// sem.c:627 — the service layer runs it).
+/// is stored. Success implies the caller runs the queue retry afterwards —
+/// C does so unconditionally (`check_set`, sem.c:627); there is no
+/// "retry not needed" outcome to report.
 pub fn write_all(
     table: &mut SemaphoreTable,
     index: usize,
     values: &[u16],
     now: u64,
-) -> Result<bool, SemError> {
+) -> Result<(), SemError> {
     let set = table.get(index).ok_or(SemError::Invalid)?;
     if values.len() < set.count {
         return Err(SemError::Invalid);
@@ -206,20 +207,20 @@ pub fn write_all(
         set.sems[i].value = v;
     }
     set.change_time = now;
-    Ok(true)
+    Ok(())
 }
 
 /// Write one value.
 ///
-/// C: `SETVAL` (sem.c:629-642). Returns whether the waiter queue needs a
-/// retry, like [`write_all`].
+/// C: `SETVAL` (sem.c:629-642). Success implies the queue retry, like
+/// [`write_all`].
 pub fn write_value(
     table: &mut SemaphoreTable,
     index: usize,
     num: i32,
     value: i32,
     now: u64,
-) -> Result<bool, SemError> {
+) -> Result<(), SemError> {
     let set = table.get(index).ok_or(SemError::Invalid)?;
     if num < 0 || num as usize >= set.count {
         return Err(SemError::Invalid);
@@ -230,7 +231,7 @@ pub fn write_value(
     let set = table.get_mut(index).expect("checked live above");
     set.sems[num as usize].value = value as u16;
     set.change_time = now;
-    Ok(true)
+    Ok(())
 }
 
 // ============================================================================
@@ -429,7 +430,7 @@ mod tests {
     fn ctl_get_set_roundtrip() {
         // C: sem.c:581-642 — set then read back; out-of-range rejected.
         let mut table = one_set();
-        assert!(write_value(&mut table, 0, 1, 42, 222).unwrap());
+        write_value(&mut table, 0, 1, 42, 222).unwrap();
         assert_eq!(query_scalar(&table, 0, SemctlCommand::GetValue, 1), Ok(42));
         assert_eq!(
             query_scalar(&table, 0, SemctlCommand::GetValue, 3),
@@ -445,7 +446,7 @@ mod tests {
         assert_eq!((all[0], all[1], all[2]), (0, 42, 0));
         let mut vals = [7u16; SEMMSL];
         vals[0] = 1;
-        assert!(write_all(&mut table, 0, &vals, 333).unwrap());
+        write_all(&mut table, 0, &vals, 333).unwrap();
         assert_eq!(query_scalar(&table, 0, SemctlCommand::GetValue, 0), Ok(1));
         assert_eq!(
             write_all(&mut table, 0, &[SEMVMX as u16 + 1], 0),

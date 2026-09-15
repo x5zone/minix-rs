@@ -16,8 +16,8 @@
 //! etc.) pin down what each call site asks for (document 04 §2.4).
 
 use minix_types::{
-    EACCES, EPERM, IPC_INFO, IPC_M, IPC_R, IPC_RMID, IPC_SET, IPC_W, SEM_INFO, SETALL, SETVAL,
-    SHM_INFO, SHM_RDONLY,
+    EACCES, EPERM, IPC_INFO, IPC_R, IPC_RMID, IPC_SET, IPC_W, SEM_INFO, SETALL, SETVAL, SHM_INFO,
+    SHM_RDONLY,
 };
 
 // ============================================================================
@@ -258,15 +258,6 @@ pub const fn resolve_shmctl_access(cmd: i32) -> ShmctlAccess {
         _ => ShmctlAccess::CheckRead,
     }
 }
-
-/// Read permission bit (re-export for mask-table readers).
-pub const READ_BIT: u32 = IPC_R;
-/// Write permission bit (re-export for mask-table readers).
-pub const WRITE_BIT: u32 = IPC_W;
-/// Control-information bit (re-exported for completeness).
-pub const CONTROL_BIT: u32 = IPC_M;
-/// Read-plus-write mask used by non-read-only attaches.
-pub const READ_WRITE: u32 = IPC_R | IPC_W;
 
 #[cfg(test)]
 mod tests {

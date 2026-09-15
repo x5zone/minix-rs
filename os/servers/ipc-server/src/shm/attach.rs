@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 
 use minix_types::{
-    IPC_INFO, IPC_R, IPC_RMID, IPC_SET, IPC_STAT, IPC_W, SHM_INFO, SHM_RND, SHM_STAT, SHMMNI,
+    IPC_INFO, IPC_R, IPC_RMID, IPC_SET, IPC_STAT, SHM_INFO, SHM_RND, SHM_STAT, SHMMNI,
 };
 
 use super::ShmError;
@@ -298,13 +298,6 @@ pub fn highest_slot_reply(table: &ShmTable) -> i32 {
         0
     }
 }
-
-/// Write mask used when the attach is not read-only.
-pub const WRITE_MASK: u32 = IPC_R | IPC_W;
-/// Read mask used for read-only attaches and status reads.
-pub const READ_MASK: u32 = IPC_R;
-/// Write bit (re-export for attach-path readers).
-pub const WRITE_BIT: u32 = IPC_W;
 
 #[cfg(test)]
 mod tests {

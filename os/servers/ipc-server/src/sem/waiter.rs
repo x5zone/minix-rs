@@ -14,7 +14,6 @@ use alloc::vec::Vec;
 
 use minix_types::{EIDRM, EINTR, Endpoint, NR_PROCS, SEMMNI};
 
-use super::NO_REPLY;
 use super::op::SemOp;
 use super::table::{SemSet, Wakeup};
 
@@ -228,9 +227,6 @@ fn bump_count(set: &mut SemSet, waiter: &Waiter, delta: i32) {
         *counter = counter.saturating_sub(1);
     }
 }
-
-/// Suppression marker passthrough (exit path produces no message).
-pub const SUPPRESSED_WAKE: i32 = NO_REPLY;
 
 #[cfg(test)]
 mod tests {
