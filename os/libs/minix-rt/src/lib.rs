@@ -324,13 +324,14 @@ fn panic(info: &PanicInfo) -> ! {
     }
     let _ = write!(writer, "{}\n", info.message());
     let length = writer.length;
-    // Stage 2 (A-8 step): a registered diagnostic hook takes over ALL
+    // Stage 2 (A-8 step 2): a registered diagnostic hook takes over ALL
     // rendering. The kernel hook (D-48) prints the C-panic format —
     // "kernel panic: " + message + "kernel on CPU %d: " + backtrace —
-    // through the kernel EarlyConsole, which this crate cannot reach
-    // (dependency direction: kernel → minix-rt).
+    // through the kernel EarlyConsole. The hook registry lives in
+    // minix-types, the shared contract crate both sides already depend
+    // on: the kernel registers at boot, this handler consults here.
     let message = core::str::from_utf8(&buffer[..length]).unwrap_or("panicked (non-utf8 message)");
-    if !run_panic_diagnostic_hook(message) {
+    if !minix_types::run_panic_diagnostic_hook(message) {
         // No hook registered (pre-registration panics, or binaries
         // without a kernel): stage-1 emit through the default sink.
         let mut sink = diag::SpinSink;
@@ -341,11 +342,16 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
-// ── Panic diagnostic hook (D-48, A-8 step 2) ────────────────────────────
+// ── Panic diagnostic hook contract (D-48, A-8 step 2) ───────────────────
+//
+// The hook registry itself lives in minix-types (`minix_types::
+// set_panic_diagnostic_hook` / `run_panic_diagnostic_hook`): one registry,
+// written by the kernel at boot and read by this crate's panic handler.
+// The no-hook fallback path (spin sink) is intentionally untestable
+// in-process — spinning is its contract.
 
 #[cfg(test)]
 mod panic_diagnostic_tests {
-    use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     static HOOK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -354,59 +360,24 @@ mod panic_diagnostic_tests {
         HOOK_INVOCATIONS.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// Hook set → run invokes it with the message and reports true;
-    /// cleared → run reports false. Workspace forces
-    /// RUST_TEST_THREADS=1, so the shared static slot is serial.
+    /// Consumer-side contract pin: the panic handler in no_std builds
+    /// consults the shared minix-types registry — the same one the kernel
+    /// registers into at boot. A hook registered through the shared API
+    /// must be visible to the shared run helper, and clearing it must
+    /// restore the "no hook" answer. Workspace forces RUST_TEST_THREADS=1,
+    /// so the shared static slot is serial.
     #[test]
-    fn hook_set_run_clear_round_trip() {
-        set_panic_diagnostic_hook(None);
-        assert!(!run_panic_diagnostic_hook("stage-1 fallback"));
+    fn panic_hook_contract_through_shared_registry() {
+        minix_types::set_panic_diagnostic_hook(None);
+        assert!(!minix_types::run_panic_diagnostic_hook("no hook yet"));
         assert_eq!(HOOK_INVOCATIONS.load(Ordering::Acquire), 0);
 
-        set_panic_diagnostic_hook(Some(counting_hook));
-        assert!(run_panic_diagnostic_hook("kernel message"));
+        minix_types::set_panic_diagnostic_hook(Some(counting_hook));
+        assert!(minix_types::run_panic_diagnostic_hook("panic path message"));
         assert_eq!(HOOK_INVOCATIONS.load(Ordering::Acquire), 1);
 
-        set_panic_diagnostic_hook(None);
-        assert!(!run_panic_diagnostic_hook("fallback again"));
+        minix_types::set_panic_diagnostic_hook(None);
+        assert!(!minix_types::run_panic_diagnostic_hook("cleared again"));
         assert_eq!(HOOK_INVOCATIONS.load(Ordering::Acquire), 1);
-    }
-}
-
-/// Kernel-side panic renderer, registered at boot (see
-/// `minix_kernel::register_panic_diagnostic`). Receives the formatted
-/// stage-1 message (location + payload) and takes over rendering.
-pub type PanicDiagnosticHook = fn(&str);
-
-static PANIC_DIAGNOSTIC_HOOK: minix_types::AssumeSyncCell<Option<PanicDiagnosticHook>> =
-    minix_types::AssumeSyncCell::new(None);
-
-/// Register (or clear) the panic diagnostic hook.
-///
-/// Called once from the kernel boot path, as early as the kernel's
-/// diagnostic context (EarlyConsole, CPU id, stack walker) is usable.
-/// Panics before registration fall back to the stage-1 sink path.
-pub fn set_panic_diagnostic_hook(hook: Option<PanicDiagnosticHook>) {
-    // SAFETY: panic handling is effectively single-threaded — the first
-    // panic halts forward progress; registration happens before any
-    // concurrency exists (single-CPU boot) or under the BKL.
-    unsafe { *PANIC_DIAGNOSTIC_HOOK.get() = hook };
-}
-
-/// Current hook, if any.
-pub fn panic_diagnostic_hook() -> Option<PanicDiagnosticHook> {
-    // SAFETY: as `set_panic_diagnostic_hook`.
-    unsafe { *PANIC_DIAGNOSTIC_HOOK.get() }
-}
-
-/// Invoke the registered hook with the formatted panic message.
-/// Returns `true` if a hook ran, `false` when none is registered.
-pub fn run_panic_diagnostic_hook(message: &str) -> bool {
-    match panic_diagnostic_hook() {
-        Some(hook) => {
-            hook(message);
-            true
-        }
-        None => false,
     }
 }
