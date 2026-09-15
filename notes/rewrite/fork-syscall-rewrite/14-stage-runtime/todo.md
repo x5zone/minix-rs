@@ -19,7 +19,7 @@
 | **P0** | **V1-P0-3** | ~~`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）~~（**✅ 已修复** 2026-09-16，Fix #3，见 §3.1 修复记录） |
 | P1 | V1-P1-1 | 🔄 诞生链整体缺口（**第一步已完成** 2026-09-16，Fix #4：start.rs 整模块删除 + 02/03 篇同步；**第二步挂 E1 切片 5 通电**）：真实 `_start` 只做分配器初始化→main→exit，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
-| P1 | V1-P1-3 | misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送（§3.2） |
+| P1 | V1-P1-3 | ~~misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送~~（**✅ 已修复** 2026-09-16，Fix #10，见 §3.2 修复记录） |
 | P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |
 | P1 | V1-P1-5 | 99 篇（全局概念/布局权威）pending 是多个已登记缺口的共同解锁前置（09 open 路径布局、VM_REMAP 布局对齐都在等它）（§3.2） |
 | P2 | V1-P2-1 | ~~查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`~~（**✅ 已修复** 2026-09-16，Fix #6，见 §3.2 修复记录） |
@@ -194,7 +194,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - **Docs**：07 篇 §3.3 重写（单一格式化之家 + 静默截断契约 + handler 三步形状）、§5 测试表更新（13 → 14，梯子八阶行替换为报告形状/截断两行，统计刷新至 2026-09-16）。§4 错误表中"未知控制码 | 调用者决定"为已登记分歧，维持不变。
 - **边界**：`format_panic_identity` 与 `write_and_flush` 保留（A-8 步骤 2 接通内核通道时的消费面，07 篇有记载）；`DiagCode::from_number` 返 None 为已登记分歧，不改。
 
-#### V1-P1-3（P1-design-missing）misc 发送半缺口：nanosleep 与 svrctl 只有判定半，select 组装跨篇无主
+#### V1-P1-3（P1-design-missing）misc 发送半缺口：nanosleep 与 svrctl 只有判定半，select 组装跨篇无主——✅ 已修复 2026-09-16（Fix #10）
 
 **现状锚点**：`os/libs/minix-sys/src/misc.rs:80-124` 的 nanosleep 是两个纯函数（`validate_sleep_request`/`remaining_sleep`），:126-148 的 svrctl 是纯分派（`dispatch_server_control`）——对比 pm.rs 的完整形态（`fork_via(transport)` 发消息收回复），缺的是：构造 VFS_SELECT 消息（空集 + 超时）→ `perform_syscall` → 用返回时间算 remaining 的完整链。C 真值：`minix3/minix/lib/libc/sys/nanosleep.c:28-56/:70-92`。11 篇明确"验证函数的调用方（未来的等待封装）只管调"（`11-misc-syscalls.md:62`）且"等待调用归第 09 篇"（:58）——但 09 篇 Rust 侧无 select 封装声明（`09-vfs-syscalls.md:129-130` 只列读写开关定位四载荷），**等待封装两篇都没接**。
 
@@ -203,6 +203,13 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 - 方案 B（否决）：维持纯函数并改为显式登记 ENOSYS 形状（09 篇 open 路径先例）。否决理由：open 的 ENOSYS 有真实理由（64 位路径布局未定稿）；select 的载荷形状（timeout + 空集）C 侧无歧义，无理由等 99 篇。
 **验证**：`nanosleep_via` 带 CannedTransport 回放测试（断言 select 调用号 + 超时字段编码 + remaining 计算）。
 **边界**：与 VFS_SELECT 载荷布局（`09-vfs-syscalls.md:56` 列了 +30）同轮落地；不碰 E-RMIBWIRE 的 sysctl 轨道。
+
+**修复记录（Fix #10，2026-09-16）**：按方案 A 落地（含两处计划修订）——
+- **C 真值修正**：细读 `nanosleep.c` 后发现剩余时间**不依赖 select 回写**——C 用 gettimeofday 前后测挂钟差（:44-92），select 的超时缓冲被写回与否都不影响。因此组合面拆干净：发送半（本条）+ 挂钟快照测量（`remaining_sleep` 已有，组合归调用方），不需要跨服务器回写语义。
+- **Files**：`os/libs/minix-sys/src/vfs.rs`（+`TimeVal` LP64 时间值、+`select_empty_via` 空集等待：nfds@0 + 三空指针栏@8/16/24 + 超时地址@32，`mess_lc_vfs_select` 的 LP64 适配、+`VFS_CALL_SERVER_CONTROL=0x12B` pin callnr.h:115）；`os/libs/minix-sys/src/misc.rs`（+`nanosleep_via` 组合验证/换算/发送、+`svrctl_via` 按分组字符路由到 PM(38)/VFS(0x12B)，`mess_lc_svrctl` 双 64 位栏 @0/@8、+两调用号常量——PM_CALL_SERVER_CONTROL 落 misc.rs 而非 pm.rs，后者正被并行线程 E9 批次实时修改，避让）。C 版 svrctl 的 request 参数在 LP64 是 64 位栏，C 源 i386 形的 4 字节布局按 E7 先例适配。
+- **测试**：vfs +2（空集五栏出站断言 + EINTR 传播）；misc +4（nanosleep 消息形状与超时地址非零、非法请求零往返、svrctl 双路由字节断言、陌生分组零往返）；minix-sys 179 → 185 passed。
+- **Docs**：09 篇 §3.4 新增（等待形状，含通用 select 暂缓论证——fd_set 类型待消费方）、§5 表 15 → 17 + 统计刷新；11 篇 §5 表 12 → 16 + 发送半补齐说明 + 统计刷新。
+- **边界**：完整 fd_set 语义的通用 select（含集合类型设计）暂缓待消费方；E-RMIBWIRE 的 sysctl 轨道未动。
 
 #### V1-P1-4（P1-design-deviation）kerninfo MAGIC 失配：C 容错降级 vs Rust 拒绝启动——接线前必须裁决——✅ 已裁决并落地 2026-09-16（Fix #5，对齐 C 容错）
 

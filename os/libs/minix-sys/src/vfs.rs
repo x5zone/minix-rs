@@ -380,6 +380,54 @@ pub fn open_via(
     }
 }
 
+/// Server-control request number for the file-system group.
+///
+/// C: `VFS_SVRCTL (VFS_BASE + 43)` (`minix3/minix/include/minix/callnr.h:115`).
+pub const VFS_CALL_SERVER_CONTROL: i32 = 0x100 + 43;
+
+/// A wall-clock split used as the select timeout buffer.
+///
+/// C: `struct timeval` (`minix3/sys/sys/time.h`): whole seconds plus a
+/// microsecond fraction, both 64-bit on LP64. The server may write the
+/// remaining time back through the caller's pointer; callers that ignore
+/// it simply drop the buffer, exactly like the C sleep path.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TimeVal {
+    /// Whole seconds.
+    pub seconds: i64,
+    /// Microsecond fraction.
+    pub microseconds: i64,
+}
+
+/// Waits with empty descriptor sets and a timeout — the select shape the
+/// sleep composition needs.
+///
+/// C: `select(0, NULL, NULL, NULL, &timeout)` (`minix3/minix/lib/libc/sys/
+/// nanosleep.c:58`): zero descriptors, three empty set pointers, and one
+/// timeout buffer whose address travels in the last payload lane. The wire
+/// payload is `mess_lc_vfs_select` (`minix3/minix/include/minix/ipc.h:
+/// 800-813`) adapted to LP64: descriptor count at byte 0, the three set
+/// pointers at 8/16/24, the timeout pointer at 32.
+///
+/// A positive result means the wait completed inside the timeout; a failed
+/// round trip is an `Err` (interrupted sleeps carry `EINTR`, and the
+/// caller measures any remaining time with wall-clock snapshots — the C
+/// composition uses `gettimeofday` before and after for the same effect).
+pub fn select_empty_via(
+    transport: &impl IpcTransport,
+    timeout: &mut TimeVal,
+) -> Result<i32, Errno> {
+    let mut message = Message::zeroed();
+    // SAFETY: five lanes of the select payload — nfds (u32 @0), three
+    // null set pointers (@8/16/24), and the timeout address (@32).
+    unsafe {
+        message.m_u.raw[..4].copy_from_slice(&0u32.to_ne_bytes());
+        message.m_u.raw[32..40].copy_from_slice(&(timeout as *mut TimeVal as u64).to_ne_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_SELECT, &mut message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,10 +450,44 @@ mod tests {
         assert_eq!(VFS_CALL_FCNTL, 0x119);
         assert_eq!(VFS_CALL_GETDENTS, 0x11D);
         assert_eq!(VFS_CALL_SELECT, 0x11E);
+        assert_eq!(VFS_CALL_SERVER_CONTROL, 0x12B);
         assert_eq!(VFS_ENDPOINT_NUMBER, 1);
         assert_eq!(OPEN_FLAG_CREATE, 0x200);
         assert_eq!(FCNTL_COMMAND_DUPLICATE, 0);
         assert_eq!(MAX_IO_SEGMENTS, 1024);
+    }
+
+    #[test]
+    fn test_select_empty_sends_zero_count_and_timeout_pointer() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let mut timeout = TimeVal { seconds: 2, microseconds: 1 };
+        assert_eq!(select_empty_via(&transport, &mut timeout), Ok(0));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, vfs_endpoint());
+        assert_eq!(sent[0].1.m_type, VFS_CALL_SELECT);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[..4], &0u32.to_ne_bytes());
+        assert_eq!(&raw[8..16], &0u64.to_ne_bytes());
+        assert_eq!(&raw[16..24], &0u64.to_ne_bytes());
+        assert_eq!(&raw[24..32], &0u64.to_ne_bytes());
+        assert_eq!(
+            &raw[32..40],
+            &(&mut timeout as *mut TimeVal as u64).to_ne_bytes()
+        );
+    }
+
+    #[test]
+    fn test_select_empty_propagates_interruption() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Err(crate::ipc::TrapStatus(-minix_types::EINTR)));
+        let mut timeout = TimeVal::default();
+        assert_eq!(
+            select_empty_via(&transport, &mut timeout),
+            Err(Errno::from_i32(minix_types::EINTR))
+        );
     }
 
     #[test]

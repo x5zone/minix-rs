@@ -28,7 +28,20 @@
 //! No shared state: all functions take explicit inputs and return explicit
 //! outputs. Time values are snapshots; callers re-read for fresh data.
 
-use minix_types::Errno;
+use crate::ipc::IpcTransport;
+use crate::syscall::perform_syscall;
+use crate::{pm::pm_endpoint, vfs::vfs_endpoint};
+use minix_types::{Errno, Message};
+
+/// Server-control request to the process manager.
+///
+/// C: `PM_SVRCTL (PM_BASE + 38)` (`minix3/minix/include/minix/callnr.h:51`).
+pub const PM_CALL_SERVER_CONTROL: i32 = 38;
+
+/// Server-control request to the file system.
+///
+/// C: `VFS_SVRCTL (VFS_BASE + 43)` (`minix3/minix/include/minix/callnr.h:115`).
+pub const VFS_CALL_SERVER_CONTROL: i32 = 0x100 + 43;
 
 /// Management information server endpoint.
 ///
@@ -249,6 +262,60 @@ pub const fn sysctl_name_fits_inline(name_length: usize) -> bool {
     name_length <= SYSCTL_SHORT_NAME_LENGTH
 }
 
+/// Sleeps through the descriptor-wait call with empty sets.
+///
+/// This is the transport half of the sleep composition (C:
+/// `minix3/minix/lib/libc/sys/nanosleep.c:58`, `select(0, NULL, NULL, NULL,
+/// &timeout)`): the validated request becomes a timeout
+/// (`crate::vfs::TimeVal`), the select message carries zero descriptors,
+/// three empty set pointers, and the buffer's address in the timeout lane.
+/// A failed round trip is an `Err` (an interrupted sleep carries `EINTR`);
+/// callers that owe a remaining time measure it with wall-clock snapshots
+/// and [`remaining_sleep`], exactly as the C composition measures with
+/// `gettimeofday` before and after.
+pub fn nanosleep_via(
+    transport: &impl IpcTransport,
+    request: Option<SleepRequest>,
+) -> Result<(), Errno> {
+    let timeout = validate_sleep_request(request)?;
+    let mut buffer = crate::vfs::TimeVal {
+        seconds: timeout.seconds,
+        microseconds: timeout.microseconds,
+    };
+    crate::vfs::select_empty_via(transport, &mut buffer)?;
+    Ok(())
+}
+
+/// Runs one server-control request against the group's server.
+///
+/// C: `svrctl` (`minix3/minix/lib/libc/sys/svrctl.c:11-31`): the group
+/// character picks the server (process-manager groups `'M'`/`'P'`, the
+/// file-system group `'F'`), the request number and the argument pointer
+/// travel in the control payload (`mess_lc_svrctl`, `ipc.h:604-609`:
+/// request at byte 0, argument at byte 8 on LP64), and the reply type is
+/// the call result. An unknown group is rejected without a round trip.
+pub fn svrctl_via(
+    transport: &impl IpcTransport,
+    request: u64,
+    argument: u64,
+) -> Result<i32, Errno> {
+    let (endpoint, call_number) = match dispatch_server_control(request)? {
+        ServerControlTarget::ProcessManager => {
+            (pm_endpoint(), PM_CALL_SERVER_CONTROL)
+        }
+        ServerControlTarget::FileSystem => {
+            (vfs_endpoint(), VFS_CALL_SERVER_CONTROL)
+        }
+    };
+    let mut message = Message::zeroed();
+    // SAFETY: two 64-bit lanes at bytes 0 and 8 of the control payload.
+    unsafe {
+        message.m_u.raw[..8].copy_from_slice(&request.to_ne_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&argument.to_ne_bytes());
+    }
+    perform_syscall(transport, endpoint, call_number, &mut message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +458,74 @@ mod tests {
     fn test_sysctl_inline_boundary() {
         assert!(sysctl_name_fits_inline(8));
         assert!(!sysctl_name_fits_inline(9));
+    }
+
+    #[test]
+    fn test_nanosleep_sends_select_with_timeout_lane() {
+        let mut transport = crate::ipc::CannedTransport::new();
+        transport.reply_sendrec(Ok(Message::zeroed()));
+        assert_eq!(
+            nanosleep_via(
+                &transport,
+                Some(SleepRequest { seconds: 2, nanoseconds: 1 }),
+            ),
+            Ok(())
+        );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        // The wait call goes to the file-system server (C: nanosleep.c:58).
+        assert_eq!(sent[0].0, vfs_endpoint());
+        assert_eq!(sent[0].1.m_type, crate::vfs::VFS_CALL_SELECT);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        // Zero descriptor count, three empty set pointers, one buffer.
+        assert_eq!(&raw[..4], &0u32.to_ne_bytes());
+        assert_eq!(&raw[8..32], &[0u8; 24]);
+        assert_ne!(&raw[32..40], &0u64.to_ne_bytes());
+    }
+
+    #[test]
+    fn test_nanosleep_rejects_bad_request_without_round_trip() {
+        let transport = crate::ipc::CannedTransport::new();
+        assert_eq!(
+            nanosleep_via(&transport, None),
+            Err(Errno::from_i32(minix_types::EFAULT))
+        );
+        assert_eq!(transport.sent.borrow().len(), 0);
+    }
+
+    #[test]
+    fn test_svrctl_routes_by_group_character() {
+        // 'P' group goes to the process manager, 'F' to the file system.
+        let mut transport = crate::ipc::CannedTransport::new();
+        transport.reply_sendrec(Ok(Message::zeroed()));
+        let request = (b'P' as u64) << 8 | 1;
+        assert_eq!(svrctl_via(&transport, request, 0x4000), Ok(0));
+        {
+            let sent = transport.sent.borrow();
+            assert_eq!(sent[0].0, pm_endpoint());
+            assert_eq!(sent[0].1.m_type, PM_CALL_SERVER_CONTROL);
+            // SAFETY: test-only payload read-back of the outgoing wire bytes.
+            let raw = unsafe { &sent[0].1.m_u.raw };
+            assert_eq!(&raw[..8], &request.to_ne_bytes());
+            assert_eq!(&raw[8..16], &0x4000u64.to_ne_bytes());
+        }
+
+        transport.reply_sendrec(Ok(Message::zeroed()));
+        let request = (b'F' as u64) << 8 | 2;
+        assert_eq!(svrctl_via(&transport, request, 0x4000), Ok(0));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[1].0, vfs_endpoint());
+        assert_eq!(sent[1].1.m_type, VFS_CALL_SERVER_CONTROL);
+    }
+
+    #[test]
+    fn test_svrctl_rejects_unknown_group_without_round_trip() {
+        let transport = crate::ipc::CannedTransport::new();
+        assert_eq!(
+            svrctl_via(&transport, (b'X' as u64) << 8, 0),
+            Err(Errno::from_i32(minix_types::EINVAL))
+        );
+        assert_eq!(transport.sent.borrow().len(), 0);
     }
 }
