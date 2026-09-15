@@ -19,6 +19,7 @@
 | V11 遗留 | V11-P1-1 / V11-P2-8 / V10-P2-3 | 开口（§1，均为通电件或判定维持） |
 | V12（2026-09-08） | P0 两项（G-V12-8 缺页链写 PTE、V12-P1-3 wire 字宽）+ G-V12-10 + V12-P1-2 已修（Fix #59–#62）；开口 12 条 | 修 4 / 开 12（开口见 §1，正文在 V12 存档） |
 | **V13（2026-09-09）** | **V13-P1-1 + V13-P2-1..6 + V13-P3-1** | **开口（§18）** |
+| 增补（2026-09-16） | V14-P2-1（VM SEF 接线预登记，会话决议非扫描轮） | 开口（§19） |
 
 ### 0.2 V13 轮速览（本轮新增）
 
@@ -482,9 +483,28 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 
 ---
 
+## 19. 增补登记（2026-09-16，V14 轮预登记）
+
+> 来源：2026-09-16 会话决议（minix-sef 消费方盘点），非完整 review 轮——无 Step 0 / Gate A 产出，不改变 V13 轮已记录的收敛评估；编号预占 V14，下一次完整扫描轮顺延使用。
+> 背景：`os/libs/minix-sef` 已随 E-ISWIRE(1)（609e73f22，2026-09-16）从 5 行占位实装为 SEF 接收循环库（`SefIpc` 动词注入 + `sef_receive_status` 分类核 + RS ping 拦截，对照 C libsys sef.c:149-260 / sef_ping.c:21-38）；edge_todo.md E-ISWIRE 登记的生产接线消费方为 IS（首个深度消费方）、MIB（第二）、devman（第三），**VM 不在名单中**——而 VM 恰是 SEF 协议面实现得最完整的一个（内联自持，见下条证据）。
+
+### V14-P2-1（P2 接线债）VM 的 SEF 协议面内联自持、未列入 minix-sef 消费方——同一 C 协议存在两份 Rust 实现
+
+- **证据**：VM 无 minix-sef 依赖（`os/servers/vm/Cargo.toml` 无声明），SEF 等价逻辑全部内联并各自锚定 C：
+  - 启动握手：main.rs:51-54（自述 "C: sef_local_startup()"，握手折叠进主循环优先级 2 分派——该形状本身有文档登记：01-vm-init-main.md §3.4）+ `rs_handshake`（vm_server.rs:1234，对照 C sef_startup + sef_cb_init_fresh）+ RS_INIT 解包（vm_server.rs:1114-1122，对照 do_sef_init_request）；
+  - 接收循环：`run_once` 内联 sef_receive_status 等价接收（vm_server.rs:961）+ 对全部 notify 一律 continue（:973，对照 C main.c:126-129）+ 信号分派体 `handle_signal`（:827，C sef_cb_signal_handler 体，生产入口标注 wired at E1，:825）；
+  - minix-sef 侧对应面：`SefEvent::{Signal, Init, Call}` 分类 + ping 拦截——与 VM 内联版是同一 C 单源（libsys/sef.c）的两份 Rust 翻译。
+- **影响**：当前无行为 bug（VM 内联版有测试承载）。三笔真实成本：① 协议实现双源——ping 拦截/notify 分类的任何修正要改两处，随消费方增多漂移风险上升（V13-P2-6 的 overlay 错位已证明"同一协议两份解码"就是错位温床）；② **E1 通电时的信号抵达裁决**：C 侧信号经 sef_receive_status 拦截直达 handler；Rust 内联版 run_once 对 notify 一律 continue，若 E1 走 SYSTEM notify 通道投递，现循环形状会把它当普通 notify 吞掉——minix-sef 的 `SefEvent::Signal` 分类正是这段语义的现成实现，切换与否必须在 E1 接线时点显式裁决，不能两不靠；③ 与 IS/MIB/devman 的 SEF 面形成两种形状（事件上浮 vs 内联跳过），联调（E5）对账成本增加。
+- **修改方案**（候选）：A（建议）——VM 引入 minix-sef 依赖成为第四消费方：`KernelIpcTransport` 薄适配 `SefIpc`，`run_once` 接收+分类半改走 `sef_receive_status`，`SefEvent::Call` 进既有优先级分发、`Signal` → `handle_signal`、`Init` → `rs_handshake`；与 E-RSWIRE VM 侧解码批（V13-P2-2/P2-5/P2-6）同批开——`ipc_call_rs_init` 目前诚实返回 NotImplemented（vm_server.rs:1454/:1473，E-RSWIRE 门控），握手路径本来就要重开，避免两次打开同一函数族。B（若裁决维持内联）——在 run_once 接收处 + checklist 登记有意偏差（理由 + 复核时点），防止后续 reviewer 重复登记本条（pattern 86 同族教训：有共享替代品的内联实现必须显式注释）。
+- **时点与依赖**：不早于 E-ISWIRE(2)(3)（避免 VM 单独承受 minix-sef API 摇摆）；信号半与 E1 接线强耦合（见影响 ②）。minix-sef 的 LU/ST 拦截路径登记不实装，不阻塞 VM（VM 不消费 LU/ST）。
+- **验证**：切换后 `cargo test -p minix-vm --lib` 三矩阵全绿；既有 run_once mock transport 测试族（V10-P0-2）适配 `SefIpc`；补映射测试（`SefEvent::Init` → rs_handshake 恰一次、`SefEvent::Signal` → handle_signal、ping 拦截不上浮）。
+- **edge 联动**：E-ISWIRE（edge_todo.md）——VM 为候选消费方，本条是 VM 侧活指针（V13-P2-2/P2-5 先例），共享 crate 侧工作唯一入口仍在 edge_todo.md；E1——信号投递通道裁决（影响 ②）；E5——联调对账面。
+
+---
+
 ## 存档指引
 
 - 第一轮至第六轮全部条目与修复记录：[`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)
 - 第七轮 V12 全卷（含 Fix #59–#62 修复记录原文）：[`archive/todo-V12-archive-2026-09-09.md`](archive/todo-V12-archive-2026-09-09.md)
 - 本轮 SYMBOLS 全量清单：`.review/claude/vm/v13/SYMBOLS.md`（中间产物，正式引用以本文件 §18.1/§1 汇总为准）
-- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§18.4 两条增补）
+- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
