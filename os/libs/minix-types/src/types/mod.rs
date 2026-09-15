@@ -13,6 +13,8 @@
 //! - `cell`: Single-threaded interior mutability primitives
 //! - `errno`: POSIX errno constants
 //! - `diagnostic`: panic diagnostic hook registration (D-48, kernel ↔ minix-rt shared)
+//! - `grant`: grant wire layout (`cp_grant_t` family — kernel ↔ user-space
+//!   grant-table contract, E-DSWIRE)
 
 mod address;
 mod bitmap;
@@ -23,6 +25,7 @@ mod com;
 mod diagnostic;
 mod endpoint;
 mod errno;
+mod grant;
 mod id;
 mod pid;
 mod proc_nr;
@@ -39,6 +42,7 @@ pub use com::*;
 pub use diagnostic::*;
 pub use endpoint::*;
 pub use errno::*;
+pub use grant::*;
 pub use id::*;
 pub use pid::*;
 pub use proc_nr::*;

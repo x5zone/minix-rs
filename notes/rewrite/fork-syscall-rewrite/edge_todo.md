@@ -323,6 +323,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **复核（2026-09-15，10-stage-mib 首轮架构审查）**：锚点仍有效——`cargo clippy -p minix-sys` 实测 5 条告警（rmib.rs collapsible-if 与 `MountTable` 缺 `Default` 的建议均仍在）；本轮无新增卫生项，条目维持原判。
 
+> **进度（2026-09-15，✅ 闭单）**：随 E-DSWIRE ds.rs 工作轮顺带清零（同文件纪律如本条所愿，且提前于 E1——grant/ds 两新模块落地时工作区已零告警）。(1) misc.rs:219/:220 双 collapsible-if：**const fn 限制下的改写**——`Option::and_then` 尚非 const-stable，if-let 合并形状不可用，改嵌套 `match`（const 兼容且不触发 collapsible-if）；(2) rmib.rs:85 collapsible-if：let 链合并（Rust 2024 let-chains）；(3) rmib.rs:127 `MountTable` 补 `Default` impl（委托 `new()`）；(4) syscall.rs:444（原 :308）doc 注释后空行删除；(5) ds.rs 新增侧自检（unused Vec 导入/未读赋值随写随清）。(6) **profile 归位**：kernel/boot-shim 的非根 `[profile.*]` 段删除——cargo 对非根 package 直接忽略这些声明（死声明），根 profile 已含 `panic = "abort"`；实测两处删除后 build 行为无变化（`-p minix-kernel -p boot-shim` 组合 check 的 E0152/E0425 为干净 HEAD 既有的 feature 统一化形状，与本删除无关）。**验收口径**：`cargo clippy -p minix-sys` 本体告警 5 → **0**，workspace clippy 清单中 minix-sys 消失（minix-types 1 条为登记在案的 known）；原验收句"全 workspace 清零"当前被他 crate 既有告警（kernel 44/arch 7/ds 6/init 82 等——E-MINSYS-HYGIENE 登记后各开发轮累积，非本条范围）阻塞，如实登记不假完成。**验证**：minix-sys 136 passed；types/kernel/vm/rs/ds/is/mib/fs 九 crate 全绿。
+
 ---
 
 ## E-VMTLB kernel 侧目标进程 TLB 刷新机制缺失（02-stage-vm V13 轮登记，2026-09-09）
@@ -480,6 +482,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **解锁**：07-stage-ds/todo.md P1-4 执行半；E5(f) 联调；A-2 regex 决策的端到端验证面；minix-sys 死依赖处置（ds crate Cargo.toml）。
 
 > **进度（2026-09-15，07-stage-ds 执行轮）**：DS 侧 seam 已落地（`server.rs` 双 trait + 七臂 + run/run_once，`heap.rs` A-3 固定池），真实端 `SysIpc` 委托 minix-sys `IpcTransport`（E1 通电即活）、`SysKernel` 三拷贝动词 EIO 诚实桩（等 minix-sys 补 SYS_SAFECOPY*/SYS_DATACOPY 包装）；minix-types MessageUnion 已补 `m_ds_req`/`m_ds_reply` 两臂（IS 轮同款先例）。ds crate 的 minix-sys 死依赖已转正（server.rs 真实端消费）。**剩余**：minix-sys ds.rs 客户端模块（libsys/ds.c 18 API）、E1/E2 通电、E5(f) 联调。
+>
+> **进度（2026-09-15，ds.rs 客户端模块 ✅；真实通电仍挂 E1）**：minix-sys 补齐两件——(1) **`grant.rs` 用户态授权表**（C libsys safecopies.c 的重写：slots+freelist+生长即注册，`grant_direct`/`revoke` 纯表编辑不陷阱；槽布局 `cp_grant_t` 下沉至 `minix-types::types::grant` 单一权威——kernel `grant.rs` 改消费 re-export，用户态库与内核读同一 wire 布局，E-REQWIRE 纪律）；(2) **`ds.rs` 客户端**（`DsClient<T>` 18 API：publish_label/u32/str/mem、retrieve_u32/label_endpt/str/mem、delete（四 arm 归一）、subscribe、check——键 grant 方向/长度按 ds.c:13-19（CHECK/RETRIEVE_LABEL 写入 80 字节房间，其余 READ strlen+1），值 grant 覆盖 publish_raw/retrieve_raw，check 应答骑请求车道（ds.c:215-216））。测试：grant 表生命周期 ×4（布局/回收+序列号/非法 access/注册载荷）+ ds 回放待 E1 后补端到端（现以 grant 表测试覆盖关键半）。**mib_get_label 消费点**（remote.rs:204-209）的执行半随本条可接。**剩余**：E1/E2 通电、E5(f) 联调。
 >
 > **增补（2026-09-15，10-stage-mib 首轮架构审查）**：新增消费方——MIB 服务器的 `mib_get_label`（C remote.c:88 `ds_retrieve_label_name`）是远程子树注册的第一步；os/servers/mib/src/remote.rs:204-209 目前只有 label 界判定（ENAMETOOLONG），DS 查询执行半随本条 minix-sys ds.rs 落地后接线（10-stage-mib/todo.md P1-1 的 `MibServices` seam 消费）。
 

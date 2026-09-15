@@ -215,14 +215,18 @@ pub const fn wall_clock_time(snapshot: ClockSnapshot) -> (u64, u64) {
     }
     let seconds = snapshot.boottime_seconds + snapshot.realtime_ticks / snapshot.ticks_per_second;
     let remainder = snapshot.realtime_ticks % snapshot.ticks_per_second;
-    let mut fraction = 0;
-    if let Some(scaled) = remainder.checked_mul(40_000) {
-        if let Some(per_unit) = scaled.checked_div(snapshot.ticks_per_second) {
-            if let Some(nanoseconds) = per_unit.checked_mul(25_000) {
-                fraction = nanoseconds;
-            }
-        }
-    }
+    // const fn 限制:Option::and_then 尚未 const-stable,嵌套 match 是
+    // const 兼容的表达(collapsible-if 的 if-let 形状在这里不可用)。
+    let fraction = match remainder.checked_mul(40_000) {
+        Some(scaled) => match scaled.checked_div(snapshot.ticks_per_second) {
+            Some(per_unit) => match per_unit.checked_mul(25_000) {
+                Some(nanoseconds) => nanoseconds,
+                None => 0,
+            },
+            None => 0,
+        },
+        None => 0,
+    };
     (seconds, fraction)
 }
 

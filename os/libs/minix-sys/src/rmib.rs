@@ -82,10 +82,10 @@ pub fn validate_sparse(ids: &[u32], has_flags: &[bool]) -> Result<(), SparseErro
     }
     let mut prev: Option<u32> = None;
     for (i, &id) in ids.iter().enumerate() {
-        if let Some(p) = prev {
-            if id <= p {
-                return Err(SparseError::NotSorted);
-            }
+        if let Some(p) = prev
+            && id <= p
+        {
+            return Err(SparseError::NotSorted);
         }
         if !has_flags[i] {
             return Err(SparseError::Unflagged);
@@ -121,6 +121,12 @@ pub struct MountTable {
 /// A claimed slot: the root id for this subtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slot(pub u8);
+
+impl Default for MountTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MountTable {
     /// Empty table: nothing mounted.

@@ -442,7 +442,7 @@ pub fn sys_trace(
 /// 载荷 `mess_lsys_krn_sys_copy`：src_endpt（`SELF` 由内核替换为调用者
 /// endpoint，`syscall_copy.rs:124` `SELF = -2`）→ dst_endpt 的虚地址。
 /// PM 的 rusage 投递（tell_parent）与 exec 的 frame 拷贝共用此通道。
-
+///
 /// C: SYS_RUNCTL 是内核调用 46（`kernel/src/syscall.rs` `Syscall::Runctl`）。
 pub const SYS_RUNCTL_CALL: i32 = 46;
 /// Runctl 动作：停止进程。C: `RC_STOP`（do_runctl.c）。

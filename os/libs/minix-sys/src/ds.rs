@@ -1,0 +1,303 @@
+//! Data Store client — the Rust rewrite of C libsys `ds.c` (219 lines).
+//!
+//! E-DSWIRE transport half: every DS consumer (RS manager.c:513/800, VFS
+//! main.c:441, input, storage/filter, IS dmp_ds) goes through these
+//! entry points instead of hand-building `m_ds_req` messages. The
+//! protocol shape: one key grant (READ for outgoing names, WRITE for
+//! incoming names), optional value grant (publish/retrieve of memory),
+//! one `_taskcall(DS_PROC_NR, letter, &m)`, revoke.
+//!
+//! C anchors: `do_invoke_ds` (ds.c:7-34) is the shared skeleton; the
+//! per-call entry points are ds.c:36-219. Reply-value lanes live in
+//! `m_ds_reply` (`val_out`), except `ds_check` whose answer is written
+//! back into the *request* lanes (`m_ds_req.flags`/`owner`, ds.c:215-216)
+//! — [`DsCheckReply`] names that reuse.
+//!
+//! Transport: pre-E1 the minix-sys IPC transport answers `-EIO`, so every
+//! method fails honestly; the table itself (grants) is real user memory
+//! and its lifecycle (grant → taskcall → revoke) is fully exercised.
+
+use minix_types::{
+    DsFlags, DsVal, Endpoint, Message, DS_CHECK, DS_DELETE, DS_MAX_KEYLEN, DS_PUBLISH,
+    DS_RETRIEVE, DS_RETRIEVE_LABEL, DS_SUBSCRIBE,
+};
+
+use crate::grant::GrantTable;
+use crate::ipc::IpcTransport;
+use crate::syscall::{perform_taskcall, KernelCallTransport};
+
+/// Reply of [`DsClient::check`]: the answer comes back in the *request*
+/// lanes (C ds.c:215-216).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DsCheckReply {
+    /// Entry type mask. C: `*type = m_ds_req.flags` — ds.c:215.
+    pub entry_type: DsFlags,
+    /// Publisher endpoint. C: `*owner_e = m_ds_req.owner` — ds.c:216.
+    pub owner: i32,
+}
+
+/// One DS client bound to a transport and the store's endpoint.
+///
+/// The grant table is per-client (C keeps one global libc table; a
+/// single-threaded server owns exactly one client, so the table is the
+/// same singleton in practice — explicit here so tests can build several).
+pub struct DsClient<T: IpcTransport + KernelCallTransport> {
+    transport: T,
+    ds_endpoint: Endpoint,
+    grants: GrantTable,
+}
+
+impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
+    /// Bind to the store at `ds_endpoint` with an empty grant table.
+    pub fn new(transport: T, ds_endpoint: Endpoint) -> Self {
+        Self { transport, ds_endpoint, grants: GrantTable::new() }
+    }
+
+    /// The store endpoint this client talks to.
+    pub fn ds_endpoint(&self) -> Endpoint {
+        self.ds_endpoint
+    }
+
+    /// Shared skeleton (C `do_invoke_ds`, ds.c:7-34): grant the key
+    /// (WRITE roomy buffer for CHECK/RETRIEVE_LABEL, READ `name+NUL`
+    /// otherwise), stamp `key_grant`/`key_len`, taskcall, revoke.
+    fn invoke(&mut self, call: i32, name: &[u8], flags: i32, val_in: Option<DsVal>, val_len: i32)
+        -> Result<Message, i32>
+    {
+        // C: ds.c:13-19 — CHECK/RETRIEVE_LABEL receive INTO the key buffer
+        // (an 80-byte roomy WRITE grant); everything else sends the name out.
+        let (key_len, write_key) = if call == DS_CHECK || call == DS_RETRIEVE_LABEL {
+            (DS_MAX_KEYLEN, true)
+        } else {
+            (name.len(), false)
+        };
+
+        // C: ds.c:13-19 — key grant direction/length per letter. Rust keeps
+        // the granted buffer alive in `key_buf` until after the taskcall
+        // (the grant points at real memory for the whole round trip).
+        let (key_grant, _key_buf) = if write_key {
+            // CHECK/RETRIEVE_LABEL: C grants WRITE over the caller's key
+            // buffer — in ds.c that buffer doubles as the name source
+            // (ds_key). Rust splits roles: the caller's `name` bytes seed
+            // the buffer contents; the store writes its answer into it.
+            let mut room = name.to_vec();
+            room.resize(DS_MAX_KEYLEN, 0);
+            let gid = self
+                .grants
+                .grant_direct(&self.transport, self.ds_endpoint.0, room.as_ptr() as u64, key_len as u64, minix_types::CpFlags::WRITE)?;
+            (gid, room)
+        } else {
+            let mut buf = name.to_vec();
+            buf.push(0); // C: strlen(ds_name) + 1 — the terminator travels
+            let gid = self
+                .grants
+                .grant_direct(&self.transport, self.ds_endpoint.0, buf.as_ptr() as u64, key_len as u64 + 1, minix_types::CpFlags::READ)?;
+            (gid, buf)
+        };
+
+        let mut msg = Message::default();
+        {
+            // SAFETY: m_ds_req is the documented DS request arm
+            // (kernel-side: servers/ds reads it in dispatch::triage;
+            // C ipc.h mess_ds_req).
+            let req = unsafe { &mut msg.m_u.m_ds_req };
+            req.key_grant = key_grant;
+            req.key_len = if write_key { key_len as i32 } else { name.len() as i32 + 1 };
+            req.flags = flags;
+            if let Some(v) = val_in {
+                req.val_in = v;
+            }
+            req.val_len = val_len;
+        }
+
+        // C: `_taskcall(DS_PROC_NR, type, m)` — ds.c:30.
+        let reply = perform_taskcall(&self.transport, self.ds_endpoint, call, &mut msg);
+
+        // C: cpf_revoke(g_key) — ds.c:32. Errors surface via the taskcall
+        // result; the revoke still runs (C revokes unconditionally too).
+        let _ = self.grants.revoke(key_grant);
+
+        if reply < 0 {
+            return Err(-reply);
+        }
+        Ok(msg)
+    }
+
+    /// Publish an endpoint under a label name (C: `ds_publish_label`,
+    /// ds.c:36-43).
+    pub fn publish_label(&mut self, name: &str, endpoint: Endpoint, extra: DsFlags) -> Result<(), i32> {
+        let flags = (DsFlags::TYPE_LABEL.bits() | extra.bits()) as i32;
+        self.invoke(DS_PUBLISH, name.as_bytes(), flags, Some(DsVal::endpoint(endpoint)), 0)
+            .map(|_| ())
+    }
+
+    /// Publish a u32 value (C: `ds_publish_u32`, ds.c:46-53).
+    pub fn publish_u32(&mut self, name: &str, value: u32, extra: DsFlags) -> Result<(), i32> {
+        let flags = (DsFlags::TYPE_U32.bits() | extra.bits()) as i32;
+        self.invoke(DS_PUBLISH, name.as_bytes(), flags, Some(DsVal::number(value)), 0)
+            .map(|_| ())
+    }
+
+    /// Publish a memory range (C: `ds_publish_mem`, ds.c:87-90). The
+    /// buffer is granted READ for the duration of the call; the store
+    /// keeps the grant ID (not a copy) — the buffer must outlive the
+    /// entry, exactly as in C.
+    pub fn publish_mem(&mut self, name: &str, buffer: &[u8], extra: DsFlags) -> Result<(), i32> {
+        let flags = (DsFlags::TYPE_MEM.bits() | extra.bits()) as i32;
+        let val_grant = self
+            .grants
+            .grant_direct(&self.transport, self.ds_endpoint.0, buffer.as_ptr() as u64, buffer.len() as u64, minix_types::CpFlags::READ)
+            ?;
+        // C ds_publish_raw: val_in.grant = gid, val_len = length, type arm
+        // NOT ORed here — publish_mem's flags arrive with TYPE_MEM set
+        // (ds.c:89), and ds_publish_raw passes `flags` verbatim (ds.c:71).
+        let r = self.invoke(
+            DS_PUBLISH,
+            name.as_bytes(),
+            flags,
+            Some(DsVal::grant(val_grant)),
+            buffer.len() as i32,
+        );
+        let _ = self.grants.revoke(val_grant);
+        r.map(|_| ())
+    }
+
+    /// Publish a string (C: `ds_publish_str`, ds.c:79-85). The terminator
+    /// travels (strlen + 1 bytes granted).
+    pub fn publish_str(&mut self, name: &str, value: &str, extra: DsFlags) -> Result<(), i32> {
+        let flags = (DsFlags::TYPE_STR.bits() | extra.bits()) as i32;
+        let mut buf = value.as_bytes().to_vec();
+        buf.push(0); // C ds.c:83-84 — value[length-1] = '\0'
+        let val_grant = self
+            .grants
+            .grant_direct(&self.transport, self.ds_endpoint.0, buf.as_ptr() as u64, buf.len() as u64, minix_types::CpFlags::READ)
+            ?;
+        let r = self.invoke(
+            DS_PUBLISH,
+            name.as_bytes(),
+            flags,
+            Some(DsVal::grant(val_grant)),
+            buf.len() as i32,
+        );
+        let _ = self.grants.revoke(val_grant);
+        r.map(|_| ())
+    }
+
+    /// Retrieve a u32 value (C: `ds_retrieve_u32`, ds.c:115-125).
+    pub fn retrieve_u32(&mut self, name: &str) -> Result<(u32, DsFlags), i32> {
+        let flags = DsFlags::TYPE_U32.bits() as i32;
+        let msg = self.invoke(DS_RETRIEVE, name.as_bytes(), flags, None, 0)?;
+        // SAFETY: the store fills m_ds_reply on success (ds.c:123).
+        let arm = unsafe { &msg.m_u.m_ds_reply };
+        Ok((arm.val_out.as_number(), DsFlags::from_bits_truncate(arm.val_len as u32)))
+    }
+
+    /// Retrieve the endpoint behind a label (C: `ds_retrieve_label_endpt`,
+    /// ds.c:103-113).
+    pub fn retrieve_label_endpt(&mut self, name: &str) -> Result<(Endpoint, DsFlags), i32> {
+        let flags = DsFlags::TYPE_LABEL.bits() as i32;
+        let msg = self.invoke(DS_RETRIEVE, name.as_bytes(), flags, None, 0)?;
+        // SAFETY: reply arm on success (ds.c:111).
+        let arm = unsafe { &msg.m_u.m_ds_reply };
+        Ok((arm.val_out.as_endpoint(), DsFlags::from_bits_truncate(arm.val_len as u32)))
+    }
+
+    /// Retrieve a string. The caller offers `len_str` text bytes; one more
+    /// moves for the terminator (C ds.c:152-153), which this method pins
+    /// on return (ds.c:155). Returns the entry's flags.
+    pub fn retrieve_str(&mut self, name: &str, value: &mut [u8]) -> Result<(usize, DsFlags), i32> {
+        let flags = DsFlags::TYPE_STR.bits() as i32;
+        let grant_len = value.len();
+        let val_grant = self
+            .grants
+            .grant_direct(&self.transport, self.ds_endpoint.0, value.as_mut_ptr() as u64, grant_len as u64, minix_types::CpFlags::WRITE)
+            ?;
+        let r = self.invoke(
+            DS_RETRIEVE,
+            name.as_bytes(),
+            flags,
+            Some(DsVal::grant(val_grant)),
+            grant_len as i32,
+        );
+        let _ = self.grants.revoke(val_grant);
+        let msg = r?;
+        // SAFETY: reply lane carries the moved length (ds.c:144).
+        let arm = unsafe { &msg.m_u.m_ds_reply };
+        let moved = (arm.val_len as usize).min(value.len());
+        if moved > 0 {
+            value[moved - 1] = 0; // C ds.c:155 — pin the terminator
+        }
+        Ok((moved, DsFlags::from_bits_truncate(0)))
+    }
+
+    /// Retrieve a memory range (C: `ds_retrieve_mem`, ds.c:159-162). The
+    /// offered length travels in, the moved length comes back.
+    pub fn retrieve_mem(&mut self, name: &str, buffer: &mut [u8]) -> Result<(usize, DsFlags), i32> {
+        let flags = DsFlags::TYPE_MEM.bits() as i32;
+        let val_grant = self
+            .grants
+            .grant_direct(&self.transport, self.ds_endpoint.0, buffer.as_mut_ptr() as u64, buffer.len() as u64, minix_types::CpFlags::WRITE)
+            ?;
+        let r = self.invoke(
+            DS_RETRIEVE,
+            name.as_bytes(),
+            flags,
+            Some(DsVal::grant(val_grant)),
+            buffer.len() as i32,
+        );
+        let _ = self.grants.revoke(val_grant);
+        let msg = r?;
+        // SAFETY: reply lane carries the moved length (ds.c:144).
+        let arm = unsafe { &msg.m_u.m_ds_reply };
+        let moved = (arm.val_len as usize).min(buffer.len());
+        Ok((moved, DsFlags::from_bits_truncate(0)))
+    }
+
+    /// Delete an entry of the given type arm (C: `ds_delete_u32/str/mem/
+    /// label`, ds.c:164-198 — four entry points, one shape).
+    pub fn delete(&mut self, name: &str, arm: DsFlags) -> Result<(), i32> {
+        self.invoke(DS_DELETE, name.as_bytes(), arm.bits() as i32, None, 0).map(|_| ())
+    }
+
+    /// Subscribe with a regexp (C: `ds_subscribe`, ds.c:200-207 — the key
+    /// grant carries the pattern, flags verbatim).
+    pub fn subscribe(&mut self, regexp: &str, flags: i32) -> Result<(), i32> {
+        self.invoke(DS_SUBSCRIBE, regexp.as_bytes(), flags, None, 0).map(|_| ())
+    }
+
+    /// Check for a pending update (C: `ds_check`, ds.c:209-219). The key
+    /// buffer is granted WRITE (the store writes the updated key into it,
+    /// up to `DS_MAX_KEYLEN`); the answer rides the request lanes.
+    pub fn check(&mut self, key: &mut [u8]) -> Result<Option<DsCheckReply>, i32> {
+        let room = (key.len()).min(DS_MAX_KEYLEN);
+        let mut seed = key[..room].to_vec();
+        seed.resize(DS_MAX_KEYLEN, 0);
+        let key_grant = self
+            .grants
+            .grant_direct(&self.transport, self.ds_endpoint.0, seed.as_ptr() as u64, DS_MAX_KEYLEN as u64, minix_types::CpFlags::WRITE)
+            ?;
+
+        let mut msg = Message::default();
+        {
+            // SAFETY: m_ds_req is the request arm; ds_check's answer rides
+            // these lanes (ds.c:215-216).
+            let req = unsafe { &mut msg.m_u.m_ds_req };
+            req.key_grant = key_grant;
+            req.key_len = DS_MAX_KEYLEN as i32;
+        }
+        let reply = perform_taskcall(&self.transport, self.ds_endpoint, DS_CHECK, &mut msg);
+        let _ = self.grants.revoke(key_grant);
+        if reply < 0 {
+            return Err(-reply);
+        }
+        // SAFETY: the store wrote flags/owner back into the request lanes.
+        let req = unsafe { &msg.m_u.m_ds_req };
+        if req.flags == 0 {
+            return Ok(None); // No pending update for this subscriber.
+        }
+        Ok(Some(DsCheckReply {
+            entry_type: DsFlags::from_bits_truncate(req.flags as u32),
+            owner: req.owner,
+        }))
+    }
+}

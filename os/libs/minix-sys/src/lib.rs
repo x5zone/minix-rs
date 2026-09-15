@@ -43,6 +43,11 @@ pub mod rs;
 /// (17-stage-net/23-libc-socket.md). Traps stay with the callers; the legacy
 /// device fallback is documented but never taken ([ARCH] N-2).
 pub mod socket;
+/// User-space grant table (C libsys safecopies.c) — the transport half for
+/// every granting client (E-DSWIRE: DS first; devman/RS/VM clients follow).
+pub mod grant;
+/// Data Store client (C libsys ds.c, E-DSWIRE transport half).
+pub mod ds;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).

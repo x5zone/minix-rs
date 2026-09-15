@@ -25,13 +25,3 @@ minix-plat = { path = "../plat", features = ["mock"] }
 default = ["mock"]
 mock = ["minix-arch/mock", "minix-plat/mock"]
 qemu_test = []
-
-[profile.dev]
-opt-level = 0
-debug = true
-panic = "abort"
-
-[profile.release]
-opt-level = 3
-lto = true
-panic = "abort"

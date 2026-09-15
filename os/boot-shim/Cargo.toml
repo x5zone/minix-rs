@@ -29,9 +29,3 @@ test = true
 name = "boot-shim"
 test = false
 required-features = ["uefi"]
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
