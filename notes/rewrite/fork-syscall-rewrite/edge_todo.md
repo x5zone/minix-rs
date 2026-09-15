@@ -661,3 +661,74 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 > **复核（2026-09-15）**：现状与条目基本一致，两点修正——(1) 该 crate 已在 workspace 成员表（os/Cargo.toml:194，与条目记载一致），但仍零依赖者；(2) gpio lib.rs:4-6 注释引用的是 server crate 包名 `minix-devman`（引用对象本身就不该是任何 devman crate，应是 minix-sys 的 devman_client 模块）。方案 A 删除时四处一并清：crate 目录 + 成员行 + 12-gpio-devman.md:200 测试命令 + gpio 注释。
 
 > **进度（2026-09-15，✅ 闭单，方案 A 执行）**：(1) `os/libs/minix-devman-client/`（4 文件）git rm + workspace 成员行删除；(2) gpio lib.rs 文档注释改为指认 `minix-sys` 的 `devman_client`/`usb_model` 模块（消除指向 server crate 包名的分层违例失真）；(3) 12-gpio-devman.md 四处引用改指 minix-sys 两模块（模块行/测试命令/rg 清单/参见）+ 顶部改版注记（§3.4–3.6 等客户端叙事的 Rust 侧映射重排登记为 16-stage-drivers stage 内工作，C 分析仍有效）；(4) 11-stage-devman/todo.md 范围行/基线命令（历史记录保留并标注删除）/OQ 注/§6 指针行四处同步。**验证**：`cargo test -p minix-driver-gpio --lib` 8 passed、`cargo test -p minix-sys --lib` 125 passed（devman_client 7 + usb_model 5 承接原孤儿测试的语义面：注册/注销/序列化尺寸/接口绑定——第二真相源消除后由权威实现唯一承载）；全仓 grep `minix-devman-client` 仅剩历史记录与本条目闭单注记。**观察登记（不顺手修）**：doc 12 的 §1.4–1.6/§3.4–3.6 客户端教学叙事仍以孤儿 crate 的概念命名（Registry/DeviceRecord）展开，重排归 16-stage-drivers 工作流（doc 顶部改版注记已声明）。
+
+---
+
+## E-INWIRE input 服务器生产传输接线四缺：事件循环、announce、编解码器消费、端到端联调（12-stage-input 首轮架构审查登记，2026-09-15）
+
+**问题**：`os/servers/input` 的决策核心完整（66 个纯函数测试全过，对账见 12-stage-input/todo.md §1.0），但"服务器"实体未组装：`main.rs:31-32` 是带注释的空 `loop {}`；生产代码零状态（`InputTable::fresh()`（structs.rs:315）的调用者全部是测试）；`minix-types` 的五个消息编解码器（`ipc/input.rs` 的 conf/setleds/input_event/tty_event/tty_up 构造与解码）在 server 内零消费——server 今天无法构造发给驱动的 `INPUT_CONF`，也无法解出驱动发来的 `INPUT_EVENT`。四个落点：
+
+1. **事件循环落地方式**。`minix-sef` 目前是 5 行占位 stub（os/libs/minix-sef/src/lib.rs，"SEF 服务框架……待实装"），E-ISWIRE 已跟踪其缺口。input 需要裁决：等 minix-sef 实装后走 `sef_receive_status` 等价物（C 侧 `chardriver_task` 的收信循环，chardriver.c:549-573），还是先用 `minix-sys::receive`（lib.rs:86，已存在）直写最小循环。倾向后者先行、minix-sef 实装后切换——input 的判决面已全在纯函数里，循环壳随时可换。
+2. **chardriver_announce 等价物**。DS 发布 `drv.chr.<label>` + 释放上一代阻塞调用者 + 清开门集合（C chardriver.c:99-127）。状态半已在 minix-chardriver `CharServer::announce`（driver.rs:346），DS 发布半可用 minix-sys ds.rs 的 `publish_label`（ds.rs:128）——缺的是把两者与 `sys_statectl CLEAR_IPC_REFS` 等价面串起来的生产代码。
+3. **五消息编解码器接入 + m_source 回填**。构造器统一置 `Endpoint::NONE`（ipc/input.rs:247,280,311,347,377），发送方在传输时回填真实来源——该回填动作目前无执行者。DS 客户端全套餐已备（ds.rs:187 `retrieve_u32`/:197 `retrieve_label_endpt`/:264 `subscribe`/:271 `check`，恰为 `input_check` 全部所需），asynsend 表已备（ipc.rs `AMF_NOREPLY` 面）——缺口是组装而非等待。
+4. **端到端联调**。input↔pckbd↔TTY 事件链与 input↔VFS 读链的真实通电验证，挂靠 E5。
+
+**影响**：input 不能出生（与 E-DMWIRE 的 devman 同款停车自白）；E5 的输入链联调无从谈起；`/dev/kbd*`、`/dev/mouse*` 无服务端。
+
+**为何 edge**：① minix-sys 传输/DS/asynsend 是共享基建域（E1/E-DSWIRE 已立）；② minix-sef 落地方式是跨 stage 决策（E-ISWIRE 同一 shared crate）；③ 联调归 E5。stage 内的六件纯决策组装（IN-P1-1）不属本条，见 12-stage-input/todo.md。
+
+**建议**：IN-P1-1 的决策面先落地（尤其 `input_other` 分派与离去检测——它们定义了传输层必须提供的回调形状），再按 1→3→2 顺序接线；循环壳先 `minix-sys::receive` 直写、标注 minix-sef 切换点。
+
+**依赖**：E-ISWIRE（minix-sef 决策，若选择等待）；E-CDRCONV（若收敛裁决改变 announce 归属）；E5（联调）。
+**解锁**：E5 输入链；`input` 服务进程真实化；13-stage-ipc 的消息面有一个真实生产消费者。
+
+---
+
+## E-CDRCONV chardriver 框架双实现收敛（A-1 收口）+ minix-chardriver CDEV_REPLY_BASE 错值（12-stage-input 首轮架构审查登记，2026-09-15）
+
+**问题一（架构收敛，plan.md A-1 的收口时机已到）**：C 只有一个 `libchardriver`（chardriver.c 600 行，input、tty、十余个字符驱动共用），Rust 出现两套同源实现——`os/servers/input/src/framework.rs`（605 行：`classify_request`:190 / `gate_character_request`:228 / `decide_reply`:335 三判决 + 常量 + 应答结构）与 `os/libs/minix-chardriver`（1014 行：`CharDriver` trait driver.rs:180 + `classify` driver.rs:273 + `CharServer` driver.rs:326）。后者是**零依赖方孤儿**：grep 全 workspace，无任何 Cargo.toml 依赖它（仅 os/Cargo.toml:186 的成员声明），无任何 .rs 引用其符号。重复物清单：`CharacterRequest`（framework.rs:49）vs `CdevRequest`（protocol.rs:59）；`OpenDeviceSet` ×2（framework.rs:246 / protocol.rs:165，256 槽线性数组两份）；`ReplyDecision`（framework.rs:307）vs `reply_decision`（driver.rs:85 区域）；`NotifySource` ×2（framework.rs:175 / driver.rs:32）；CDEV 常量两份（framework.rs:29-36 / protocol.rs:16-48）。plan.md §7.3 的 A-1 建议是"新建共享框架 crate；input 内部最小等价实现可先行"——前半句已建成（16-stage 01-chardriver-framework.md 与库同时交付）、后半句已执行（12-stage 02-chardriver-framework.md 以 framework.rs 为实现锚点），但两半从未合拢，且 12-stage/02 与 16-stage/01 两篇文档各自成立、互不引用。
+
+**方案对比**：
+- **方案 A**：input 迁入 minix-chardriver——input 删 framework.rs 的框架半、依赖共享库、保留业务判决。收益：单一权威立即成立。代价：input 已验证的"三判决纯函数"风格与 trait 回调风格需磨合（`decide_reply` 的判决表 vs `reply_decision` 的判决函数语义相近但形状不同）；input 的 66 个测试需随迁改写。
+- **方案 B（推荐）**：minix-chardriver 重构为消费纯函数核——把 framework.rs 式 decide 函数提升为库 API（判决皆纯函数、皆可测），`CharDriver` trait + `CharServer` 作可选表皮（供未来直接式驱动用）。收益：与 input 已验证模式一致、与 16-stage 已写的 trait 面兼容、tty 等后续驱动两种风格都可落。代价：库内 API 重排，16-stage/01 文档 §3-4 章同步。
+- **方案 C**：双轨并存 + 文档豁免——在 12-stage/02 与 16-stage/01 双文档声明各自边界。代价：违背单一权威先例（E-MINTYPES-SYS/E-REQWIRE 的收敛方向），两套 `OpenDeviceSet` 重启门语义靠人工保持一致，是最贵的一项。
+- 无论何者：`[ARCH: ...]` 三处一致（12-stage/02、16-stage/01、两侧代码），属架构演进需用户批准。
+
+**问题二（wire 错值，正确性问题——发现于本轮，交 full-review/todo-fix 修，本条只登记）**：`os/libs/minix-chardriver/src/protocol.rs:22` `CDEV_REPLY_BASE: i32 = 0x500`，注释自引"C: `CDEV_RS_BASE`（com.h:934）"，但 C 的真值是 `CDEV_RS_BASE 0x480`（com.h:920；0x500 是 `BDEV_RQ_BASE`，com.h:963）。servers/input 的 `CHARACTER_RESPONSE_BASE = 0x480` 是对的（framework.rs:31，测试 framework.rs:448-450 锁 0x480/0x481/0x482 三值）。该常量当前无消费者（grep 仅定义处），属潜伏错误——恰因孤儿化而未爆。收敛时随方案 A/B 一并消除（这也是"孤儿库让 bug 隐形"的实证）。
+
+**为何 edge**：① minix-chardriver 是共享基建（16-stage 所有、未来十余个字符驱动共用）；② 涉 12-stage 与 16-stage 两篇框架文档的三处一致改写；③ wire 错值修复属正确性动作（本条不执行）。
+
+**依赖**：无硬依赖（可在 input 通电前独立收口，且越早越便宜——input 通电后迁移成本上升）。
+**解锁**：E-INWIRE 的 announce 归属定案；tty 驱动（16-stage 06）接入框架时不再有二选一困惑；12-stage/02 与 16-stage/01 文档合一。
+
+---
+
+## E-TTYEVENT TTY_INPUT_UP / TTY_INPUT_EVENT 消费侧零实现（12-stage-input 首轮架构审查登记，2026-09-15）
+
+**问题**：C 的 input↔TTY 契约是三件事——input 启动时向 TTY 发 `TTY_INPUT_UP` 握手（input.c:671-677）；设备与其 mux 都未被打开时，事件转发 `TTY_INPUT_EVENT` 给 TTY（input.c:408-421）；TTY 侧 `do_input` 消费（`INPUT_PAGE_KEY` 过滤 + `NR_SCAN_CODES` 边界 + 释放位，keyboard.c:148-176），并经 `INPUT_SETLEDS` 回设灯（keyboard.c:369-384；input 侧只接受 TTY 来源，input.c:630-635）。Rust 现状：**生产侧已备**——servers/input 的 `forward_to_terminal`（produce.rs:131）、init 的 `NotifyTerminal` 步骤（init.rs）、minix-types 两消息号与 `tty_event_msg`/`tty_up_msg` 编解码（ipc/input.rs:37/:41/:337-383）齐备；**消费侧零实现**——`os/drivers/tty/tty` 全 crate grep 无 `TTY_INPUT_UP`/`TtyEvent` 消费（session.rs:221 的 "tty_events" 只是 select 唤醒的计数变量名），minix-types/ipc/tty.rs 只有 FKEY 观察者协议（tty.rs:1-40），与 input 无关。16-stage 06-tty-driver 文档面也无对应条目 [待验证]（其 STATE 记该篇九门收口，但代码 grep 零命中——收口范围可能未含此契约）。
+
+**影响**：input↔TTY 握手链单向断裂：即使 E-INWIRE 给 input 通电，键盘事件也无法到达行律（`/dev/console` 无键盘输入）；LED 回设链（TTY → INPUT_SETLEDS → input → 驱动）上游无生产者，input 的 SETLEDS-from-TTY 分支将永远走不到。
+
+**为何 edge**：消费侧归 16-stage-drivers（06-tty-driver 的实现域）；wire 字段本身已定稿（ipc/input.rs），无需再议契约；两侧属不同 stage 的生产代码，需联动验证。
+
+**建议**：16-stage 06-tty-driver 补三件事——UP 握手（保存 input endpoint，供 EVENT/SETLEDS 双向寻址）、EVENT 消费（过滤 + 边界 + 释放位入 inbuf）、set_leds 回发（asynsend INPUT_SETLEDS）。均可在 minix-types 既有编解码器上以纯函数决策先行，传输接线随该 stage 自己的通电件。
+
+**依赖**：E-INWIRE（对端通电后才能联调，实现本身不依赖）。
+**解锁**：E5 输入链的控制台半；`/dev/console` 键盘可用；LED 回设链闭环。
+
+---
+
+## E-PCKBDREG pckbd 邻接面移交登记：一处行为分歧 + 三处缺口 + 双轨重编码（12-stage-input 首轮架构审查登记，2026-09-15）
+
+**所有权声明**：`os/drivers/hid/pckbd`（892 行）属 16-stage-drivers（其 13-pckbd-driver.md 已九门收口，17 测试全过）。以下为 12-stage 视角（文档 14-pckbd-driver.md 的契约面对账）扫描发现的移交项，登记于此供 16-stage 排期；第 1 项是正确性问题，修复走 full-review/todo-fix，本条不执行。
+
+1. **行为分歧（正确性）**：C `kbd_process` 的状态 3 遇非 NumLock 索引时 FALLTHROUGH 穿透到 default，仍查 `scanmap_normal` 发出普通键事件（pckbd.c:343-361）；Rust `ScancodeState::feed` 状态 3 非 NumLock 一律吞掉（scancode.rs:119-131）。序列 E1 1D 1C 在 C 发出 ENTER 按下、Rust 丢弃。现有测试只覆盖状态 2 断裂（scancode.rs:282 `test_broken_pause_prelude_resets`），状态 3 断裂未锁。E1 1D 后接 0xE0/0xE1 的前缀重启路径同样未测且行为存疑。
+2. **FLAG_RELATIVE 死常量**：C 鼠标位移事件带 `INPUT_FLAG_REL`（pckbd.c:409）；Rust `MouseEvent::Motion` 无 flags 字段（mouse.rs:48），`FLAG_RELATIVE`（mouse.rs:40）零代码路径引用——事件下游（input 服务器 `stored_event`，produce.rs:175）按 C 语义是要透传 flags 的，此处缺失会使相对位移事件在线上丢标志。
+3. **扫描码全表缺席**：C 两张 0x80 项表 `scanmap_normal`/`scanmap_escaped`（table.c:11-169）；Rust `ReferenceMap` 仅 4 项 + PAUSE（scancode.rs:176-208），全表在 workspace 任何 crate 中不存在（grep `scanmap` 仅命中文档注释）。16-stage 文档称"全表是数据（随服务数据走）"（16-stage-drivers/13-pckbd-driver.md:125），但数据无处可走；`EmptyMap`（scancode.rs:210）因数据缺席成为 mock-only 抽象（模式 80）。另与 12-stage todo IN-P2-2 联动：表的内容若落地，键码词汇应消费 minix-types 权威（迁移后），不是本地重述。
+4. **ACK 条件缺位**：C 的 ACK 有效需状态口无超时位 `!(sb & 0x40)`（pckbd.c:129）；Rust `LedOutbox::note_ack` 无状态参数（led.rs:123-130），无法表达该条件——硬件半落地时需补参数或改签名。
+5. **双轨重编码**：pckbd `InputBridge`（bridge.rs:54-130，bound + 两 id）与 minix-sys `DriverRegistration` + `decide_report`（inputdriver.rs:37-44/:161-174，Option 三元组）编码同一份 C do_conf/send-event 门控逻辑；bridge 缺 `is_disabled` 等价物（configure 两 id 均无效时返回值语义与 minix-sys 版不一致，bridge.rs:82-90 vs inputdriver.rs:81-83）。pckbd 的 Cargo.toml 声明依赖 minix-types/minix-sys 但 6 个源文件零 use——依赖边只存在于清单。收敛方向：bridge 改为 minix-sys 决策函数的消费方，或删除 bridge（其消费路径本 crate 内为零）。
+
+**为何 edge**：全部落点在 16-stage-drivers 所属 crate；第 5 项涉共享 crate minix-sys 的消费关系；12-stage 自身无处置权。
+
+**依赖**：第 3 项与 12-stage-input/todo.md IN-P2-2（键码词汇归属迁移）联动；其余无。
+**解锁**：E5 输入链的驱动半；pckbd 硬件落地时不再踩状态 3 与 ACK 条件两颗雷。
