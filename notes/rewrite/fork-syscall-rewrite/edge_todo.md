@@ -201,6 +201,8 @@
 
 **解锁**：04-stage-pm/todo.md P1-1（每臂解码）/ P1-4 / P2-3 的实施前提；未来 libc/commands 侧 PM 调用发起方的常量消费。
 
+> **进度（2026-09-16，🔄 A 批凭证片闭环）**：`ipc/pm.rs` 新增 A 批凭证调用号 ×15（PM_GETPID 4..PM_REBOOT 37，callnr.h:17-52 绝对值 pin 测试）与三个 wire 结构（`MessLcPmSetid`（SETUID/SETGID 同布局共用）、`MessLcPmGetsid`、`MessLcPmGroups`（LP64 ptr@8、padding 48→40），56 字节布局见证 ×3）。PM_BASE=0 的 A 批调用号本就无偏移基，与 com.rs 既有语义一致。**剩余**：B 信号控制 6→C 时间 6→D itimer→E exec 3（`m_lexec_pm_exec_new`/`m_rs_pm_exec_restart`）→F 调度 2（SEND_PRIORITY/SEND_TIME_SLICE 常量补齐）→G 杂项 9——按 04-stage-pm/todo.md §11.1.1 接线批次表逐批推进；(3) PmRequest/PmResponse 死代码处置（E7 设计决策：A 批 wire 落地后其去留已可判定——两者是零使用死代码，删除）与调用号收敛（PmCall 枚举上移）待 OQ 确认归属。**验证**：minix-types 212 passed；clippy 1 条 known。
+
 > **进度（2026-09-06）**：首个切片已落地——`MessPmLcWait4 { status }` + `m_pm_lc_wait4` arm（`message.rs`，56 字节断言 `test_pm_wait4_message_layouts`），wait4 回复载荷契约（04-stage-pm/todo.md D-26/Fix #22）闭环；其余 wire 族照本切片的风格推进。
 >
 > **进度（2026-09-08，V2 轮增补）**：(1) **仓库内先例确立**：`minix-types::ipc::rs_start`（约 900 行 per-server 类型化 wire 模块，commit 764d738af，03-stage-rs Fix #81）为建议 (1) 的"按调用族建 wire 结构体"提供了本仓样式模板，实施时应对照该模块的组织方式（wire 结构 + `size_of` 断言 + 解码函数）。(2) **wire 成员清单按 04-stage-pm/todo.md §11.1.1 接线批次表逐批落地**：A 凭证 13 调用（`m_lc_pm_getuid`/`setuid`/`groups`/`getsid` 等）→ B 信号控制 6 → C 时间 6 → D itimer → E exec 3（`m_lexec_pm_exec_new`/`m_rs_pm_exec_restart`）→ F 调度 2（含补 `SEND_PRIORITY`/`SEND_TIME_SLICE` 常量）→ G 杂项 9。(3) A 批次 wire 设计时需决定 gid 载荷宽度以恢复 C 的 GID_MAX 拒绝语义（04-stage-pm/todo.md §11 V2-P3-2，GID_MAX=2^31-1，`minix3/sys/sys/syslimits.h:53`）。
