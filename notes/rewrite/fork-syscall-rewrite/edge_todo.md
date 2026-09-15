@@ -129,6 +129,8 @@
 
 **依赖**：minix3 libc 源码参照（crt0 约定）；与 E1/E2 无序（frame 构造纯 VM 内）。
 
+> **进度（2026-09-16，✅ 四项全闭环，commit f459852ea）**：(1) `PsStrings` 32B LP64 布局落 minix-types（exec.h:111-116）+ PMEF_AUXVECTORS/PMEF_EXECNAMELEN1 上收 com.rs（com.h:356-357，PATH_MAX=1024 syslimits.h:64）；`stack_params`/`stack_fill` 复刻落 **minix-sys stack.rs**（libc stack_utils.c 的归位——C 就在 libc，VM/RS/execve 三方消费）。(2) exec_bootproc 尾段抽成 `install_boot_stack`：建帧（帧缓冲 = VM 栈上一页，同 C main.c:352 `char frame[VM_PAGE_SIZE]`）+ 栈 region（user_sp 向下一页覆盖 [vsp,vsp+frame_size)）+ 页 materialize + `handle_memory_once` 实化（main.c:400 调用点，写前可映射+可写门）+ DM 写帧替代 sys_datacopy（main.c:402-404；两侧皆可直接寻址）。(3) `sys_exec` 换真值——stack=vsp、ps_str=绝对地址；name 仍 0（kernel 侧 name 拷贝语义另案，C 传的是 VM 本地 progname 指针）。(4) 集成测试：SimPaging + MockGateway 下断言 `last_exec` 四元组与帧字节逐字节回读（DM 窗口读 vsp 比对独立构建的参考帧）。**连带裁决**：① handoff v3→v4 增 `user_sp`（C VM 从 kernel_boot_info 读同一值 main.c:372；kernel writer 用 KernelInfo.user_sp）；② STACK_MIN_SZ 的 C argc 槽 `sizeof(int)`(4) 与 fill 实写整字(8) 在 LP64 不一致——从 fill 实际写入裁决，budget=1400；③ ps_argvstr=vsp+sizeof(argc) 在 i386 恰为 argv[0] 槽地址——LP64 裁决为 vsp+8（槽地址语义，非首字符串地址，stack_utils.c:169 实读）。**顺手修一个通电必炸的潜在 panic**：init_proc 从未 init_page_table/init_regions，regions_mut() 的 debug 守卫会在 boot 路径崩——补上（= C pt_new/pt_bind main.c:344-347 + map_region_init main.c:468）。**验证**：minix-vm 504 / minix-sys 155 / minix-types 237 全绿；clippy 与干净 HEAD 13=13 对账零新增。
+
 ---
 
 ## E-FORKMSG kernel sys_fork 应答补 msgaddr 出参（= 02-stage-vm T33 余件，2026-09-07 登记）
