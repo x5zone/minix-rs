@@ -276,21 +276,21 @@ devman **不在 boot_image**（`minix3/minix/kernel/table.c:44-64` 无 devman �
 
 ### 3.1 钩子表：13 个 NULL 槽 → 3 个 `Option` 字段
 
-C 的 `struct fs_hooks` 有 13 个函数指针槽，devman 填 3 个、其余靠 `memset` 置 NULL。Rust 的 `FsHooks`（`hooks.rs`）只建模 devman 用的 3 个：
+C 的 `struct fs_hooks` 有 13 个函数指针槽，devman 填 3 个、其余靠 `memset` 置 NULL。Rust 的 `FsHooks`（`hooks.rs`）只建模 devman 用的 3 个中的 2 个——`message_hook` 没有对应字段，DEVMAN 消息由 `Server::run` 的 Devman 臂直接分派（见下）：
 
 ```rust
 pub struct FsHooks {
     pub init_hook: Option<fn(&mut InitCtx)>,
     pub read_hook: Option<ReadHookFn>,
-    pub message_hook: Option<MessageHookFn>,
 }
 ```
 
-三个取舍：
+四个取舍：
 
 1. **为什么是 `Option` 而不是 NULL**：`None` 在类型层面就是"未注册"，调用点 `if let Some(f) = hooks.init_hook` 与 mount.c:24 的 NULL 检查语义相同，但编译器强制你处理 `None` 分支——C 忘记检查就野指针，Rust 忘记处理就编译不过。
 2. **为什么是 `fn` 而不是 `Fn` trait 对象**：C 函数指针无捕获，`fn` 类型与之对等；单线程事件循环不需要 `Send`。06 若需要带状态的 read 闭包再评估 `Box<dyn Fn>`，本篇不预支复杂度（YAGNI）。
-3. **为什么只有 3 个字段而不是 13 个**：plan §3.4 边界——其余 10 个槽是 02 的职责，在 `vtreefs` 框架模块内补全。本篇建 13 字段的结构体会造成两个"全表"定义，违反事实唯一性。
+3. **为什么只有 2 个字段而不是 13 个**：plan §3.4 边界——其余 10 个槽是 02 的职责，在 `vtreefs` 框架模块内补全。本篇建 13 字段的结构体会造成两个"全表"定义，违反事实唯一性。
+4. **`message_hook` 为什么消失了（DM-P1-2）**：C 需要它，是因为 `fsdriver_task` 只认文件请求，设备消息必须有个旁路入口——于是 C 在框架循环里留了一个 hook 钩子，钩子里再放一个 switch（main.c:46-58，那个出名的无 break 级联）。Rust 统一后只有 `Server::run` 一个循环、一个 match：FS 请求走 `Request` 臂，DEVMAN 消息走 `DevmanMsg` 臂——旁路和钩子都不需要了。同样的消息、同样的处理、少一个第二真相源（05 §3.2 的单分派在装配层兑现）。
 
 对照 Redox：`redox_scheme::Scheme` trait 对未实现的方法返回 `ENOSYS` 默认实现；此处 `None` 的默认行为是 init 无操作 / read 返回 EOF / message 忽略——"缺失=安全默认值"的思想一致，只是机制不同（trait 默认方法 vs Option 分支）。
 
@@ -341,6 +341,8 @@ C 的三行 `sef_setcb_*` 注册在 Rust 侧表达为启动序列契约（`SefLi
 ### 3.6 message 分发：本篇只做"忽略"桩
 
 `message_hook` 的完整分发是 05 的职责。本篇的 fail-closed 默认就是 `devman_message_hook` 的空实现（忽略并返回）加上 `fire_message` 的 `None` 分支（忽略），注释指向 05/A-3。这不是最终行为，是防止 01 的桩与 05 的实现冲突的占位——05 落地时替换 `devman_message_hook` 的函数体为单 handler 分派（`fire_message` 签名不变）。注意不另设第二忽略入口：曾经的 `dispatch_message_default()` 因与空实现语义重复且 0 调用已删除，避免死代码。
+
+**后续演化（DM-P1-2，已落地）**：这个桩最终没有"替换函数体"而是整体退役——统一循环 `Server::run` 落地后，DEVMAN 消息不再经过 hook 旁路（`FsHooks` 只剩 init/read 两钩，见 §3.1 取舍 4），桩与 `fire_message` 一并删除。历史价值在于它记录了 05 落地时的中间态：桩期空臂是 fail-closed 占位，不是终态行为。
 
 ---
 

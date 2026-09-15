@@ -172,11 +172,13 @@ C 用数组 + 空闲表 + **两张哈希表**。Rust 侧保留数组（`Vec` 池
 
 devman 未注册的变更槽（write/trunc/mknod/…）在 Rust 侧是 `unsupported() → ENOSYS`。C 的 `fs_write` 无 hook 时是 `EACCES`（file.c:123）——为什么不照搬？因为 EACCES 在 VFS 语义里是"权限不够"（调用者可能换个身份重试），而真相是"这个服务器根本没这功能"，ENOSYS（"没实现"）才是诚实回答，调用者行为也不同（换身份 vs 放弃）。read 的 EOF 默认保留（§2.5：空文件是最无害的谎言，且 06 的事件语义依赖它）。这条取舍记在这里，99 收口错误码时复核。
 
-### 3.7 传输注入：`run` 的循环逻辑现在就绪，生产传输待定
+### 3.7 传输注入：循环逻辑就绪，生产传输待定
 
-`VTreeFs::run(&mut impl Transport)` 是 `fsdriver_task` 分发形状的现在完成时：Mount/Lookup/Read/Readdir/Other/Unmount 六分支 + 错误→哨兵回复。`Transport` trait 把"下一条消息从哪来"反转出去——测试用 `VecTransport`（脚本进、回复出），生产用内核 IPC（`minix-sys::receive` 现为 `todo!()`，调了就 panic）。于是 main 的 park 循环性质变了：01 时它是"整个事件循环缺席"，现在它是"循环逻辑就绪，只缺传输"。P1-6 收窄为传输接线（§4.4），doc 与注释同步改写。
+`Transport` trait 把"下一条消息从哪来"反转出去——测试用 `VecTransport`（脚本进、回复/发送出），生产用内核 IPC（`minix-sys::receive` 现为 `todo!()`，调了就 panic）。于是 main 的 park 循环性质变了：01 时它是"整个事件循环缺席"，后来是"循环逻辑就绪，只缺传输"。P1-6 收窄为传输接线（§4.4），doc 与注释同步改写。
 
-Reply 的错误传递：`Read` 失败时回哨兵 `err_marker`（`0xFF` + 4 字节 errno）——因为空 `Vec` 是合法 EOF，错误必须有别于空。真正的 fsdriver 回复带状态字，这里是测试传输层的最小可辨别编码（§4.3 注记，传输落地时替换）。
+**循环的家（DM-P1-2，已落地）**：循环本体在 `Server::run`（09 装配篇），不在本篇——一个循环一个 match，FS 请求（`Incoming::Fs`）与 DEVMAN 消息（`Incoming::Devman`）同表分发，与 C 的 `fsdriver_task` 单入口同形。本篇保留逐操作语义（mount/lookup/read/readdir）与 `Request`/`Reply`/`Transport`/`VecTransport` 类型。`Other` 变体随 `message_hook` 旁路一并退役（01 §3.1 取舍 4）。
+
+Reply 的错误传递：**错误在载荷里**——`Mounted(Result<Ino, Errno>)` 等每个 FS 变体携带 `Result`，传输层把它映射到 fsdriver 回复的状态字。曾经的 `err_marker` 哨兵（`0xFF` + 4 字节 errno，为绕开"空 Vec 是合法 EOF"而发明）与 mount/lookup/readdir 的错误吞噬（失败回 `Ino(0)`/空表）一并删除——测试传输层和真实传输层看到的错误语义从此同一个。
 
 ---
 
@@ -187,8 +189,9 @@ Reply 的错误传递：`Read` 失败时回哨兵 `err_marker`（`0xFF` + 4 字�
 ```
 os/servers/devman/src/vtreefs/
   inode.rs  — Ino / InodeStat / Inode / InodeTree（池、树、引用计数、遍历）
-  mod.rs    — VTreeFs（mount/unmount/lookup/read/readdir/stat/other/run）
-              + Request / Reply / Transport / VecTransport（测试）
+  mod.rs    — VTreeFs（mount/unmount/lookup/read/readdir/stat）
+              + Request / Incoming / Reply / Transport / VecTransport（测试）
+  （循环本体在 server.rs 的 Server::run——DM-P1-2 统一，见 §3.7）
 ```
 
 `lib.rs` 加 `pub mod vtreefs` 一行。`main.rs` 的 park 注释改写（§3.7 收窄语义）。
@@ -199,7 +202,7 @@ os/servers/devman/src/vtreefs/
 2. 根永在槽 0、永不可删、引用可增减（mount/unmount 配对）。
 3. `read` 的 hook 调用次数 == 循环轮数；`pos` 严格递增 `got` 之和。
 4. `delete` 先递归孩子再置标志；文件立即断链、目录留链到回收（C §2.4 原样）。
-5. `run` 每个 `next()` 必恰一次 `reply()`（循环体无 `continue` 裸奔路径）。
+5. 循环对每个 `Incoming::Fs` 必恰一次 `reply()`；`Incoming::Devman` 走 send/sendrec 通道（server.rs，DM-P1-2）。
 
 ### 4.3 与 C 步骤的差异说明
 
@@ -221,7 +224,7 @@ os/servers/devman/src/vtreefs/
 
 ### 4.4 P1-6 收窄记录
 
-01 的 P1-6（"main park，事件循环缺席"，02-owned）本篇后收窄为"传输接线"：`run` + `Transport` + `VecTransport` 端到端已测（`run_dispatches_script`），`main.rs` 注释已改写。STATE 的 P1-6 更新 owner 为"传输（minix-sys IPC 落地）"，不再阻塞 03~13（框架数据平面 100% 可用，04/06 直接调 `tree_mut`/`read`）。
+01 的 P1-6（"main park，事件循环缺席"，02-owned）本篇后收窄为"传输接线"：`Transport` + `VecTransport` 端到端已测（循环级用例在 server.rs，DM-P1-2 迁移），`main.rs` 注释已改写。STATE 的 P1-6 更新 owner 为"传输（minix-sys IPC 落地）"，不再阻塞 03~13（框架数据平面 100% 可用，04/06 直接调 `tree_mut`/`read`）。
 
 ---
 
@@ -253,7 +256,7 @@ os/servers/devman/src/vtreefs/
 | `read_overlong_hook_result_is_eio` | 超长 EIO | §3.5 硬化 |
 | `readdir_dot_dot_children` | 顺序 + 游标 + 删跳过 + 文件两条 + reaped 拒 | §2.8 |
 | `other_forwards_to_message_hook` | 转交可观测 | §2.10 |
-| `run_dispatches_script` | transport 端到端 5 请求 | §3.7 |
+| （`run_dispatches_script` 已随循环迁往 server.rs——`run_fs_replies_carry_errors` 等承接） | — | §3.7 |
 | `unsupported_is_enosys` | 未实现槽 ENOSYS | §3.6 |
 
 截至 2026-09-04：`cargo test -p minix-devman` **31 passed / 0 failed**（01 的 7 + 本篇 24）。`cargo clippy -p minix-devman --all-targets` devman 部分 0 警告（minix-types 遗留 2 处与本篇无关：event.rs 空行、vm.rs 枚举体量；本次为 02 新增 `Errno::ENOENT/EIO/EEXIST/ENAMETOOLONG/ENOTDIR` 5 个 assoc 常量，纯加法）。

@@ -30,7 +30,6 @@ pub const NO_DEV: i32 = 0;
 pub struct InitCtx {
     init_requested: bool,
 }
-
 impl InitCtx {
     pub fn new() -> Self {
         InitCtx {
@@ -59,40 +58,40 @@ impl Default for InitCtx {
 pub type ReadHookFn =
     fn(buf: &mut [u8], len: usize, offset: i64, cbdata_addr: usize) -> i64;
 
-/// C: `message_hook` signature (`vtreefs.h:43`).
-pub type MessageHookFn = fn(m_type: i32, m_source: i32, _ipc_status: i32);
-
 // ── FsHooks ──
 
 /// C: `struct fs_hooks` (`vtreefs.h:24-44`, 13 slots).
-/// Only the 3 slots devman uses are modeled here; the remaining 10 slots
+/// Only the slots devman wires are modeled here; the remaining 10 slots
 /// (lookup/getdents/write/...) belong to 02's framework module.
+///
+/// C's `main` registers **three** hooks (main.c:78-80); Rust models two
+/// and routes DEVMAN messages through `Server::run`'s Devman arm instead
+/// of a `message_hook` — one dispatch truth for the whole server, where
+/// C had a second switch inside the hook (DM-P1-2). Same messages, same
+/// handling, no side door.
 pub struct FsHooks {
     /// C: `main.c:78` `hooks.init_hook = init_hook`.
     pub init_hook: Option<fn(&mut InitCtx)>,
     /// C: `main.c:79` `hooks.read_hook = read_hook`.
     pub read_hook: Option<ReadHookFn>,
-    /// C: `main.c:80` `hooks.message_hook = message_hook`.
-    pub message_hook: Option<MessageHookFn>,
 }
 
 impl FsHooks {
-    /// C: `main.c:70-80` — zeroed table with the three devman hooks filled.
+    /// C: `main.c:70-80` — zeroed table with the devman hooks filled
+    /// (init + read; the C message_hook's job lives in `Server::run`).
     pub fn devman_default() -> Self {
         FsHooks {
             init_hook: Some(devman_init_hook),
             read_hook: Some(devman_read_hook),
-            message_hook: Some(devman_message_hook),
         }
     }
 
-    /// All-`None`: missing hook = safe default (no-op / EOF / ignore).
+    /// All-`None`: missing hook = safe default (no-op / EOF).
     /// Mirrors the Redox `Scheme` "unimplemented = ENOSYS" idea.
     pub fn empty() -> Self {
         FsHooks {
             init_hook: None,
             read_hook: None,
-            message_hook: None,
         }
     }
 
@@ -116,13 +115,6 @@ impl FsHooks {
             None => 0,
         }
     }
-
-    /// Default when no message hook: ignore (fail-closed; 05 refines this).
-    pub fn fire_message(&self, m_type: i32, m_source: i32, ipc_status: i32) {
-        if let Some(f) = self.message_hook {
-            f(m_type, m_source, ipc_status);
-        }
-    }
 }
 
 // ── Default hook bodies (wiring only; business logic in 04/05/06) ──
@@ -143,24 +135,6 @@ pub fn devman_read_hook(
     cbdata_addr: usize,
 ) -> i64 {
     crate::files::dispatch_read(buf, len, offset, cbdata_addr)
-}
-
-/// C: `main.c:46-58` — message entry.
-/// [ARCH:A-3] single-handler dispatch is live: `dispatch(m_type)` routes
-/// to exactly one arm (05). Handler bodies land in 07–09; until then each
-/// arm is a fail-closed placeholder pointing at its owner doc.
-pub fn devman_message_hook(m_type: i32, _m_source: i32, _ipc_status: i32) {
-    match crate::ipc::dispatch(m_type) {
-        // 07-devm-add-device.md owns this arm.
-        crate::ipc::Handler::Add => {}
-        // 08-devm-del-device.md owns this arm.
-        crate::ipc::Handler::Del => {}
-        // 09-devm-bind-unbind.md owns this arm (RS-only gate inside).
-        crate::ipc::Handler::Bind => {}
-        crate::ipc::Handler::Unbind => {}
-        // 05 §2.6: unknown → run nothing, reply nothing.
-        crate::ipc::Handler::Ignored => {}
-    }
 }
 
 // ── RootStat ──
@@ -311,7 +285,6 @@ mod tests {
         assert!(!ctx.init_requested());
         let mut buf = [0u8; 8];
         assert_eq!(h.fire_read(&mut buf, 8, 0, 0), 0);
-        h.fire_message(1, 2, 3); // must not panic
     }
 
     #[test]

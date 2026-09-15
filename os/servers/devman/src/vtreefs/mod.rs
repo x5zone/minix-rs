@@ -11,12 +11,13 @@
 //!
 //! | C entry | Rust | Note |
 //! |---|---|---|
-//! | `run_vtreefs` | [`VTreeFs::run`] | init sequence + transport loop |
+//! | `run_vtreefs` init half | [`VTreeFs::new`] | init sequence |
+//! | `fsdriver_task` dispatch half | [`crate::server::Server::run`] | the loop lives on `Server` so DEVMAN messages and FS requests share one dispatch truth (DM-P1-2); C's loop (`fsdriver_task`) is likewise the single entry |
 //! | `fs_mount`/`fs_unmount` | [`VTreeFs::mount`]/[`VTreeFs::unmount`] | REQ_ISROOT→EINVAL; cleanup_hook absent (devman never registers it, main.c:78-80) |
 //! | `fs_read` | [`VTreeFs::read`] | full chunk loop incl. partial-result rule |
 //! | `fs_getdents` traversal | [`VTreeFs::readdir`] | entry order only; dirent wire encoding belongs to the VFS transport |
 //! | `fs_lookup`/`fs_stat` shape | [`VTreeFs::lookup`]/stat getters | traversal + attrs; `struct stat` encoding deferred like dirents |
-//! | `fs_other` | [`VTreeFs::other`] | opaque forward to `message_hook` |
+//! | `fs_other` | `Server::run` Devman arm | C forwards non-FS messages to the registered `message_hook`; devman-rs has no hook — the unified loop dispatches `DevmanMsg`s directly (one switch, like C's single `fsdriver` table) |
 //! | write/trunc/mknod/… | `Err(ENOSYS)` | devman leaves the slots NULL; C `fs_write` without hook is `EACCES` (file.c:122) — the framework default for unwired mutating ops is explicit `ENOSYS` |
 //!
 //! # Single-threaded model
@@ -26,7 +27,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_types::Errno;
+use minix_types::{Endpoint, Errno, Message};
 
 use crate::hooks::{FsHooks, ReadHookFn, ServerConfig, S_IFDIR};
 pub use inode::{InodeStat, InodeTree, Ino, NAME_MAX_LEN, PNAME_MAX_LEN, S_IFMT, S_IFREG};
@@ -60,56 +61,107 @@ pub enum Request {
     Lookup { dir: Ino, name: String },
     Read { ino: Ino, len: usize, pos: u64 },
     Readdir { dir: Ino, start: u64 },
-    Other { m_type: i32, m_source: i32 },
 }
 
-/// The matching reply for each [`Request`] variant, in order.
+/// One item off the wire, already classified: a VFS-side FS request, or a
+/// decoded DEVMAN message from `source` (`None` = Ignored type, 05 §2.6 —
+/// the loop answers with a single no-op). One enum, one loop, one dispatch
+/// truth (DM-P1-2; C's `fsdriver_task` table is the same single entry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Incoming {
+    Fs(Request),
+    Devman {
+        source: Endpoint,
+        msg: Option<crate::ipc::DevmanMsg>,
+    },
+}
+
+/// The matching reply for each [`Request`] variant, in order. Errors ride
+/// in the payload — the transport maps them onto the fsdriver reply's
+/// status word (C replies carry `RES_*` the same way); there is no
+/// sentinel encoding and no silent success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    Mounted(Ino),
+    Mounted(Result<Ino, Errno>),
     Unmounted,
-    Found(Ino),
-    Data(Vec<u8>),
-    Entries(Vec<Dirent>),
-    OtherDone,
+    Found(Result<Ino, Errno>),
+    Data(Result<Vec<u8>, Errno>),
+    Entries(Result<Vec<Dirent>, Errno>),
 }
 
-/// Message source/sink for [`VTreeFs::run`].
+/// Message source/sink for the server loop (`Server::run`).
 ///
 /// Dependency injection (no globals): production uses the kernel IPC
 /// transport once `minix-sys` implements it; tests use [`VecTransport`].
+/// The trait is a dumb pipe — the *server* stamps replies
+/// (`apply_reply_with_id`) and builds forward messages; the transport
+/// only moves bytes.
 pub trait Transport {
     /// Next classified request, or `None` when the loop should stop.
-    fn next(&mut self) -> Option<Request>;
-    /// Deliver the reply for the last request.
+    fn next(&mut self) -> Option<Incoming>;
+    /// Deliver the reply for the last FS request.
     fn reply(&mut self, reply: Reply);
+    /// Async send of a stamped DEVMAN reply (C `ipc_send` — never sendrec).
+    fn send(&mut self, dest: Endpoint, msg: &Message);
+    /// Synchronous round trip with a device owner (C `ipc_sendrec`,
+    /// bind.c:32/80); the answered message carries the driver's RESULT.
+    fn sendrec(&mut self, owner: Endpoint, msg: &mut Message) -> Result<(), Errno>;
 }
 
-/// In-memory transport for tests: replays a script, records replies.
+/// In-memory transport for tests: replays a script, records replies,
+/// sends, and sendrecs (with an optional scripted sendrec answer).
 #[cfg(test)]
 pub struct VecTransport {
-    pub script: alloc::collections::VecDeque<Request>,
+    pub script: alloc::collections::VecDeque<Incoming>,
     pub replies: Vec<Reply>,
+    pub sent: Vec<(Endpoint, Message)>,
+    /// Per-`sendrec` outcomes, popped front-first; `Err` models transport
+    /// failure, `Ok(answer)` replays a driver reply with the given RESULT.
+    pub sendrec_script: alloc::collections::VecDeque<Result<i32, Errno>>,
+    pub sendrecs: Vec<(Endpoint, Message)>,
 }
 
 #[cfg(test)]
 impl VecTransport {
-    pub fn new(script: Vec<Request>) -> Self {
+    pub fn new(script: Vec<Incoming>) -> Self {
         VecTransport {
             script: script.into_iter().collect(),
             replies: Vec::new(),
+            sent: Vec::new(),
+            sendrec_script: alloc::collections::VecDeque::new(),
+            sendrecs: Vec::new(),
         }
     }
 }
 
 #[cfg(test)]
 impl Transport for VecTransport {
-    fn next(&mut self) -> Option<Request> {
+    fn next(&mut self) -> Option<Incoming> {
         self.script.pop_front()
     }
 
     fn reply(&mut self, reply: Reply) {
         self.replies.push(reply);
+    }
+
+    fn send(&mut self, dest: Endpoint, msg: &Message) {
+        self.sent.push((dest, *msg));
+    }
+
+    fn sendrec(&mut self, owner: Endpoint, msg: &mut Message) -> Result<(), Errno> {
+        let answer = self.sendrec_script.pop_front().unwrap_or(Ok(0));
+        self.sendrecs.push((owner, *msg));
+        match answer {
+            Ok(result) => {
+                // Union field assignment through a place expression is
+                // safe Rust (only reads are unsafe) — and it must go
+                // through the place: `unsafe { msg.m_u.m_m4 }` would copy
+                // the union out and write to the copy.
+                msg.m_u.m_m4.m4l1 = result as i64;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -298,13 +350,6 @@ impl VTreeFs {
         Ok(out)
     }
 
-    /// C: `fs_other` (vtreefs.c:66-80) — non-filesystem messages go to
-    /// `message_hook` (copied first in C so the hook may mutate; a
-    /// `Copy` move is the same thing here). Ignored when unregistered.
-    pub fn other(&self, m_type: i32, m_source: i32, ipc_status: i32) {
-        self.hooks.fire_message(m_type, m_source, ipc_status);
-    }
-
     /// Mutating ops devman never wires (write/trunc/mknod/…) — explicit
     /// `ENOSYS`, mirroring the Redox `Scheme` default-method idea from
     /// 01 §3.1. (C's own asymmetric defaults — read→EOF, write→EACCES —
@@ -312,57 +357,16 @@ impl VTreeFs {
     pub fn unsupported(&self) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-
-    /// C: `fsdriver_task(&vtreefs_table)` dispatch shape (table.c:6-24,
-    /// 17 slots; devman-relevant subset) over an injected [`Transport`].
-    /// Runs until the transport yields `None`. Pure logic — fully
-    /// testable with [`VecTransport`]; the production transport (kernel
-    /// IPC via `minix-sys`, currently `todo!()`) is the only missing
-    /// piece for `main` (P1-6, narrowed to transport wiring).
-    pub fn run(&mut self, transport: &mut impl Transport) {
-        while let Some(req) = transport.next() {
-            let reply = match req {
-                Request::Mount { is_root } => match self.mount(is_root) {
-                    Ok(ino) => Reply::Mounted(ino),
-                    Err(_) => Reply::Mounted(Ino(0)),
-                },
-                Request::Unmount => {
-                    self.unmount();
-                    Reply::Unmounted
-                }
-                Request::Lookup { dir, name } => match self.lookup(dir, &name) {
-                    Ok(ino) => Reply::Found(ino),
-                    Err(_) => Reply::Found(Ino(0)),
-                },
-                Request::Read { ino, len, pos } => match self.read(ino, len, pos) {
-                    Ok(data) => Reply::Data(data),
-                    Err(e) => Reply::Data(err_marker(e)),
-                },
-                Request::Readdir { dir, start } => match self.readdir(dir, start) {
-                    Ok(entries) => Reply::Entries(entries),
-                    Err(_) => Reply::Entries(Vec::new()),
-                },
-                Request::Other {
-                    m_type,
-                    m_source,
-                } => {
-                    self.other(m_type, m_source, 0);
-                    Reply::OtherDone
-                }
-            };
-            transport.reply(reply);
-        }
-    }
 }
 
-/// Error marker for [`Reply::Data`]: an empty read is legal EOF, so errors
-/// surface as a sentinel the transport maps back to the errno. (The real
-/// fsdriver reply path carries the status word; `VecTransport`-level tests
-/// assert on this marker. See 02 §4.3.)
-fn err_marker(e: Errno) -> Vec<u8> {
-    let n = e.to_i32() as u32;
-    alloc::vec![0xFF, (n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, n as u8]
-}
+// C's dispatch half: `fsdriver_task(&vtreefs_table)` (table.c:6-24, 17
+// slots) is one loop over one table — the single entry for every message.
+// [DM-P1-2: devman-rs keeps that shape — the loop lives on `Server::run`
+// so FS requests and DEVMAN messages share one dispatch truth; two loops
+// would be the dual-dispatch problem again. `VTreeFs` keeps the per-op
+// semantics (mount/lookup/read/readdir) that the loop dispatches over;
+// the production transport is still the only missing piece for `main`
+// (P1-6, narrowed to transport wiring).]
 
 // `inode::Inode` exposes its own accessors; these two predicates keep the
 // mode checks at the call sites expressive.
@@ -379,7 +383,7 @@ mod tests {
     use super::*;
     use crate::hooks::{S_IFDIR, S_IRALL};
     use crate::RootStat;
-    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn cfg(buf: usize) -> ServerConfig {
         ServerConfig {
@@ -455,12 +459,6 @@ mod tests {
         }
     }
 
-    static MSG_SEEN: AtomicI32 = AtomicI32::new(-1);
-
-    fn hook_msg(m_type: i32, _src: i32, _status: i32) {
-        MSG_SEEN.store(m_type, Ordering::SeqCst);
-    }
-
     static INIT_N: AtomicUsize = AtomicUsize::new(0);
 
     fn hook_init_count(_ctx: &mut crate::hooks::InitCtx) {
@@ -471,7 +469,6 @@ mod tests {
         FsHooks {
             init_hook: None,
             read_hook: Some(f),
-            message_hook: None,
         }
     }
 
@@ -490,7 +487,6 @@ mod tests {
         let hooks = FsHooks {
             init_hook: Some(hook_init_count),
             read_hook: None,
-            message_hook: None,
         };
         let mut fs = VTreeFs::new(&cfg(64), hooks).unwrap();
         assert_eq!(fs.mount(false).unwrap(), Ino(1));
@@ -597,57 +593,10 @@ mod tests {
         assert_eq!(fs.stat(Ino(99)), Err(Errno::EINVAL));
     }
 
-    #[test]
-    fn other_forwards_to_message_hook() {
-        // C: fs_other → message_hook (vtreefs.c:66-80).
-        MSG_SEEN.store(-1, Ordering::SeqCst);
-        let hooks = FsHooks {
-            init_hook: None,
-            read_hook: None,
-            message_hook: Some(hook_msg),
-        };
-        let fs = VTreeFs::new(&cfg(64), hooks).unwrap();
-        fs.other(7, 8, 0);
-        assert_eq!(MSG_SEEN.load(Ordering::SeqCst), 7);
-    }
-
-    #[test]
-    fn run_dispatches_script() {
-        // End-to-end through the injected transport (02 §4.4): mount →
-        // lookup-miss → other → unmount. Read path is covered above.
-        let hooks = FsHooks {
-            init_hook: None,
-            read_hook: None,
-            message_hook: Some(hook_msg),
-        };
-        let mut fs = VTreeFs::new(&cfg(64), hooks).unwrap();
-        MSG_SEEN.store(-1, Ordering::SeqCst);
-        let mut t = VecTransport::new(alloc::vec![
-            Request::Mount { is_root: true },
-            Request::Mount { is_root: false },
-            Request::Lookup {
-                dir: Ino(1),
-                name: String::from("nope"),
-            },
-            Request::Other {
-                m_type: 42,
-                m_source: 3,
-            },
-            Request::Unmount,
-        ]);
-        fs.run(&mut t);
-        assert_eq!(
-            t.replies,
-            alloc::vec![
-                Reply::Mounted(Ino(0)),
-                Reply::Mounted(Ino(1)),
-                Reply::Found(Ino(0)),
-                Reply::OtherDone,
-                Reply::Unmounted,
-            ]
-        );
-        assert_eq!(MSG_SEEN.load(Ordering::SeqCst), 42);
-    }
+    // [DM-P1-2: the former `other_forwards_to_message_hook` and
+    // `run_dispatches_script` tests moved with the loop itself —
+    // `Server::run` in server.rs now owns loop-level coverage, FS and
+    // DEVMAN alike.]
 
     #[test]
     fn unsupported_is_enosys() {

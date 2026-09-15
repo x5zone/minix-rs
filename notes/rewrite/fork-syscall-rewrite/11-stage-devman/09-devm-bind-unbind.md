@@ -90,7 +90,7 @@ C 的 `do_bind` 内含 `sendrec`（阻塞等驱动），Rust 拆 `do_bind`（门
 ```
 os/servers/devman/src/
   bind.rs   — Action / do_bind / on_bind_response / do_unbind / on_unbind_response（+4 测试）
-  server.rs — OutAction / Server / handle_other / answer_*（+2 测试）
+  server.rs — OutAction / Server / handle_other / run（统一循环，DM-P1-2）/ answer_* / stamp_reply / build_forward（+6 测试）
 ```
 
 ### 4.2 引用配对表（08 §4.2 右半边）
@@ -104,8 +104,8 @@ os/servers/devman/src/
 
 | C | Rust | 分类 |
 |---|---|---|
-| do_bind 含 sendrec（阻塞） | do_bind + on_bind_response 两段 | 分层（IPC 线拆分，单测无需 IPC） |
-| 自写 reply 两处 | 统一 OutAction::Reply（传输调 apply_reply） | 去重（05 §2.3 预告兑现） |
+| do_bind 含 sendrec（阻塞） | do_bind + on_bind_response 两段；`Server::run` 的 Forward 臂负责同步往返 | 分层（IPC 线拆分，单测无需 IPC） |
+| 自写 reply 两处 | 统一 OutAction::Reply（`Server::run` 调 `stamp_reply` → `apply_reply_with_id`） | 去重（05 §2.3 预告兑现） |
 | handler 返回 int（恒 0） | Action/Result | A-7 |
 | owner 裸端点（恒有值） | `unwrap_or(source)` 兜底 | 防御默认（注释；覆盖路径恒 Some） |
 
@@ -121,8 +121,12 @@ os/servers/devman/src/
 | `unbind_enodev_tolerated_and_forced_ok` | 19 照转 + 强制 OK + 他错透传 | §2.2 三不对称 |
 | `lifecycle_add_bind_unbind_del` | ADD→BIND→UNBIND→DEL 全旅程单入口 | §1.2 路径图可执行版 |
 | `unknown_is_nothing` | A-6 码 → Nothing | 05 §2.6 装配侧 |
+| `run_fs_replies_carry_errors` | 统一循环 FS 臂错误入载荷（Err(EINVAL)/Err(ENOENT)） | DM-P1-2 |
+| `run_devman_add_sends_stamped_dual_word_reply` | 循环内 ADD：server 盖戳 + 双字回复（RESULT+DEVICE_ID） | DM-P1-2 + DM-P2-1 |
+| `run_bind_forward_roundtrip` | 循环内 BIND：构转发 → sendrec → answer → RS 回 0 → BOUND | DM-P1-2 + §2.1 |
+| `run_bind_forward_driver_error_reaches_rs` | 驱动拒绑：态不变 + RS 听到驱动 errno | DM-P1-2 + §2.2 |
 
-截至 2026-09-04：`cargo test -p minix-devman` **73 passed / 0 failed**（59 + 07 的 3 + 08 的 4 + 本篇 6：bind 4 + server 2）。`cargo clippy` devman 部分 0 警告。
+截至 2026-09-15：`cargo test -p minix-devman` **85 passed / 0 failed**（本篇 bind 4 + server 6）。`cargo clippy` devman 部分 0 警告。
 
 ---
 

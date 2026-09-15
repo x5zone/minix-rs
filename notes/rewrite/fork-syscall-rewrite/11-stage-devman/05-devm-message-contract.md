@@ -144,7 +144,7 @@ os/servers/devman/src/ipc/
 ### 4.2 调用关系（本篇是原语层）
 
 ```
-02 run → Other → 01 message_hook(桩) → 05 dispatch (05 落地后替换桩内部分发)
+Server::run（统一循环）→ Devman 臂 → classify → handle_other → 05 原语（stamp_reply 盖戳回发）
 07 do_add ─┬─ grant 读数 (message::grant_*)
            └─ apply_reply (成功/ENOMEM/EINVAL/ENODEV)
 08 do_del ──── apply_reply
