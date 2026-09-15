@@ -2882,7 +2882,7 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
         // `proc_no_time` when the quantum is exhausted (with its
         // scheduler-notify policy split) and the post-quantum runnability
         // re-check (C:427-428) — one `false` exit back to the pick path.
-        if !table.check_quantum(picked, &section) {
+        if !table.check_quantum(picked, priv_table, &section) {
             continue;
         }
 

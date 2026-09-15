@@ -226,15 +226,6 @@ fn nr_to_idx(nr: ProcNr) -> Option<usize> {
     Some(offset as usize)
 }
 
-/// Check if a process is preemptible via its privilege flags.
-///
-/// C: `priv(p)->s_flags & PREEMPTIBLE` in const.h:143.
-#[allow(dead_code)] // scheduler helper; not yet wired to all call sites
-fn is_preemptible(p: &KProcess) -> bool {
-    let prio = p.get_priority().get();
-    prio != priority::TASK_Q
-}
-
 /// Check if a process is scheduled by the kernel (no user-space scheduler).
 ///
 /// C: `proc_kernel_scheduler(p)` macro in proc.h:178.
@@ -552,32 +543,102 @@ mod tests {
     #[test]
     fn test_proc_no_time_kernel_scheduled() {
         let mut table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         make_runnable(&mut table, ProcNr(0),priority::USER_Q);
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = None;
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
 
         let section = crate::smp::bkl_lock_section();
-        table.sched_proc_no_time(ProcNr(0), &section);
+        table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
 
         let left = table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
         assert!(left > 0);
     }
 
+    /// Give `nr` a priv slot carrying `flags` and link it into the table
+    /// (same construction as lib.rs's `make_runnable_billable`).
+    fn assign_priv_flags(
+        table: &mut ProcessTable,
+        priv_table: &mut crate::kpriv::PrivTable,
+        nr: ProcNr,
+        flags: crate::capability::ProcessCapability,
+    ) {
+        let pid = priv_table.assign_static(nr).expect("priv slot");
+        priv_table.get_mut(pid).unwrap().flags.s_flags = flags;
+        table.get_mut(nr).unwrap().priv_id = Some(pid);
+    }
+
     #[test]
     fn test_proc_no_time_user_scheduled_preemptible() {
         let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        // USR_F = BILLABLE | PREEMPTIBLE (priv.h:49) — the bit proc_no_time
+        // consumes (C: proc.c:1895).
+        assign_priv_flags(&mut table, &mut priv_table, ProcNr(0),
+            crate::capability::ProcessCapability::USR_F);
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
 
         table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
-        table.sched_proc_no_time(ProcNr(0), &section);
+        table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
 
         assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+    }
+
+    // ── E-PREEMPTFLAG（edge_todo.md）：抢占门读特权标志，不读优先级 ──
+
+    /// MAX_USER_Q == TASK_Q == 0（config.h:67-68）：优先级 0 的用户进程
+    /// 合法可抢占。旧实现以 `priority != 0` 近似 PREEMPTIBLE，把这类进程
+    /// 永久挡在 NO_QUANTUM 之外（SCHED 接管后经 START/NICE 可达优先级 0，
+    /// 从此被内核无限续量）。C 的判据是 priv 标志位（proc.c:1895）——
+    /// USR_F 携带 PREEMPTIBLE（priv.h:49），本测试钉住修正后的行为。
+    #[test]
+    fn test_proc_no_time_priority_zero_preemptible_notifies_scheduler() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        make_runnable(&mut table, ProcNr(0), priority::MAX_USER_Q);
+        assign_priv_flags(&mut table, &mut priv_table, ProcNr(0),
+            crate::capability::ProcessCapability::USR_F);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
+
+        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        let section = crate::smp::bkl_lock_section();
+        table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
+        crate::smp::bkl_unlock();
+
+        assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM),
+            "priority-0 + USR_F（PREEMPTIBLE）必须通知调度者，实际 {:?}",
+            table.get(ProcNr(0)).unwrap().p_rts_flags);
+    }
+
+    /// 用户调度的进程若特权标志缺 PREEMPTIBLE（如 TSK_F = SYS_PROC，
+    /// priv.h:44），必须走续量分支不发通知——位测试是唯一判据
+    /// （C: proc.c:1895 `priv(p)->s_flags & PREEMPTIBLE` 不成立 → else）。
+    #[test]
+    fn test_proc_no_time_non_preemptible_priv_renews_quantum() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        assign_priv_flags(&mut table, &mut priv_table, ProcNr(0),
+            crate::capability::ProcessCapability::TSK_F);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
+        table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
+
+        let section = crate::smp::bkl_lock_section();
+        table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
+        crate::smp::bkl_unlock();
+
+        let left = table.get(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.load(Ordering::Acquire);
+        assert!(left > 0, "无 PREEMPTIBLE 位必须续量，实际 cpu_time_left={}", left);
+        assert!(!table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
     }
 
     // ── sched_proc tests (2026-06-16) ────────────────────────────────

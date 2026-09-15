@@ -667,6 +667,13 @@ impl ProcessTable {
         }
 
         // Phase 3: preemption check (only same CPU)
+        // E-PREEMPTFLAG 余项（edge_todo.md）：本分支当前生产不可达——所有
+        // 调用方（rts_unset / requeue_if_preempted）都传 `current_nr=None`，
+        // 而 C 的 enqueue() 自己读 CPU 本地 proc_ptr（proc.c:1633），恒有
+        // current。激活本分支需与 current 来源（CpuLocal.proc_ptr，SMP 工作窗）
+        // 一并设计，抢占门届时同样消费特权标志（proc.c:1638
+        // `priv(p)->s_flags & PREEMPTIBLE`，见下方 `preemptible()` 助手），
+        // 而非这里的优先级近似。
         if let Some(cur_nr) = current_nr {
             let (cur_prio, cur_cpu, cur_preemptible) = {
                 // R-15 (2026-08-12): INVARIANT: `cur_nr` is the currently-running
@@ -758,20 +765,44 @@ impl ProcessTable {
         );
     }
 
+    /// Whether a process's privilege grants preemption.
+    ///
+    /// C: `priv(p)->s_flags & PREEMPTIBLE` — proc.c:1638 (enqueue
+    /// preemption) / proc.c:1895 (proc_no_time). The privilege flags
+    /// decide, not the priority: `MAX_USER_Q == TASK_Q == 0`
+    /// (config.h:67-68), so a priority-0 user process is legally
+    /// preemptible (USR_F carries PREEMPTIBLE, priv.h:49), while kernel
+    /// tasks (TSK_F) lack the bit. A missing priv slot or priv id means
+    /// "not preemptible" — same fallback as `is_billable` (lib.rs).
+    fn preemptible(&self, nr: ProcNr, priv_table: &crate::kpriv::PrivTable) -> bool {
+        self.get(nr)
+            .and_then(|p| p.priv_id)
+            .and_then(|pid| priv_table.get(pid))
+            .is_some_and(|k| k.is_preemptible())
+    }
+
     /// Handle quantum exhaustion based on scheduling policy.
     ///
     /// C: `proc_no_time()` in proc.c:1893-1910.
-    pub fn sched_proc_no_time(&mut self, nr: ProcNr, section: &crate::smp::BklSection<'_>) {
-        let (kernel_scheduled, preemptible, quantum_ms) = {
+    pub fn sched_proc_no_time(
+        &mut self,
+        nr: ProcNr,
+        priv_table: &crate::kpriv::PrivTable,
+        section: &crate::smp::BklSection<'_>,
+    ) {
+        let (kernel_scheduled, quantum_ms) = {
             // R-15 (2026-08-12): INVARIANT: `nr` is a runnable process that
             // exhausted its quantum, so it must be in the table; `get()` cannot
             // return None.
             let p = self.get(nr).expect("sched_proc_no_time: invalid proc nr");
             let ks = p.p_sched.scheduler.is_none() || p.p_sched.scheduler == Some(p.p_nr);
-            let pre = p.get_priority().get() != 0;
             let qms = p.p_sched.quantum.size_ms.load(Ordering::Acquire);
-            (ks, pre, qms)
+            (ks, qms)
         };
+        // C: proc.c:1895 — the PREEMPTIBLE bit lives in the privilege table,
+        // so this chase needs `priv_table` (borrow discipline: C chases
+        // `priv(p)` directly; the Rust kernel keeps the tables separate).
+        let preemptible = self.preemptible(nr, priv_table);
 
         if !kernel_scheduled && preemptible {
             // User-scheduled + preemptible: dequeue + notify scheduler.
@@ -1219,12 +1250,17 @@ impl ProcessTable {
     /// 如果进程无剩余时间片，调用 sched_proc_no_time。
     ///
     /// 返回 true 表示进程仍可运行，false 表示不可运行。
-    pub fn check_quantum(&mut self, nr: ProcNr, section: &crate::smp::BklSection<'_>) -> bool {
+    pub fn check_quantum(
+        &mut self,
+        nr: ProcNr,
+        priv_table: &crate::kpriv::PrivTable,
+        section: &crate::smp::BklSection<'_>,
+    ) -> bool {
         let has_time_left = self.get(nr).is_some_and(|p| {
             p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0
         });
         if !has_time_left {
-            self.sched_proc_no_time(nr, section);
+            self.sched_proc_no_time(nr, priv_table, section);
         }
         self.get(nr).is_some_and(|p| p.is_runnable())
     }

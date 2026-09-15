@@ -396,6 +396,10 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **复核（2026-09-15，前提已变）**：PREEMPTIBLE 位**已存在**——capability.rs:69-70（0x0000_0002，已入 SRV_F/USR_F 模板）+ kpriv.rs:164-173 的 `KPrivFlags::is_preemptible()`（`#[allow(dead_code)]`，注释自述 "scheduler preemption check not yet wired"）+ KPriv 包装（:491-495）。原「步骤 1 priv 表补位」作废；余下：两处优先级近似（proc_table.rs:679 enqueue Phase 3、:771 sched_proc_no_time，锚点从 674/766 漂移）改读特权标志、sched.rs:232-233 助手接线并修文档漂移、补 priority-0 + 用户调度用例与非 PREEMPTIBLE 抑制用例。
 
+> **进度（2026-09-15，🔄 live 半闭环）**：NO_QUANTUM 门（sched_proc_no_time，C proc.c:1893-1910，经 check_quantum ← 调度主循环 lib.rs 生产可达）已完整修复——新增 `ProcessTable::preemptible(nr, &PrivTable)` 助手（镜像 lib.rs is_billable 的查表形状：priv_id → priv_table.get → `KPriv::is_preemptible()`，缺 priv 即不可抢占），`&PrivTable` 穿参（is_billable/process_misc_flags 先例），`priority != 0` 近似删除。方案裁决：全局 priv_table 追踪（否——测试用本地表而全局表为空，既有 NO_QUANTUM 测试将被迫变异全局状态致并行互扰）；KProcess 缓存位（否——第二真相源 + 约 10 处 priv 挂接点的同步义务）。sched.rs 死助手 is_preemptible（"文档声称 priv、实现读优先级"的漂移源）删除。测试：新增 ×2（priority-0 + USR_F → 通知，钉住 MAX_USER_Q==TASK_Q==0 的合法可抢占；TSK_F 缺 PREEMPTIBLE → 续量不发通知）+ 既有 ×2 补 priv 构造。验证：`cargo test -p minix-kernel --lib` 746 passed；clippy 44=44 零新增。回写：06-stage-sched/todo.md §2。
+>
+> **余项登记（enqueue Phase 3 抢占门，proc_table.rs:669-686）**：本轮执行发现该分支**生产不可达**——全部调用方（rts_unset:433、requeue_if_preempted:lib.rs:2381）传 `current_nr=None`，而 C 的 enqueue() 自己读 CPU 本地 proc_ptr（proc.c:1633）恒有 current。原条目"enqueue 抢占对 priority-0 当前进程永不发生（同因）"据此修正：抢占从不被评估，不只是标志源错。激活需两件同做：(a) current 来源改读 CpuLocal.proc_ptr（SMP 工作窗，与 E-SCHEDSMP 协同）；(b) 抢占门消费特权标志（proc.c:1638）。不先穿参修死分支的理由：27+ 站点的投机性签名泛化服务于一个今天不可能执行的分支，且 (a) 的设计可能重排该签名。本条目维持 open（🔄）至 Phase 3 激活。
+
 ---
 
 ## E-SCHEDSMP SCHED cpu 下发链的 SMP 三件套缺口（01-stage-kernel SMP 工作窗，06-stage-sched V2 轮升级登记，2026-09-09）
