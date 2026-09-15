@@ -19,7 +19,7 @@
 
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
-| P1 | IN-P1-1 | 可运行实体缺席：主循环策略、`input_other` 两个消息面分支、驱动离去检测、label 校验、CONF 回信构造、生产态构造 |
+| P1 | IN-P1-1 | 可运行实体缺席：主循环策略、`input_other` 两个消息面分支、驱动离去检测、label 校验、CONF 回信构造、生产态构造（✅ 2026-09-15，见 §1） |
 | P1 | IN-P1-2 | "唤醒时恰好拷一个事件"的组合缺失：C 最核心的运行时链路没有承载函数，也没有测试（✅ 2026-09-15，见 §1） |
 | P1 | IN-P1-3 | 拷贝失败不推进的挂钩点缺失：`serve_copy` 无条件推进队列指针，传输失败分支不存在（✅ 2026-09-15，见 §1） |
 | P2 | IN-P2-1 | `serve_copy` 返回单位分歧：Rust 返回事件数，C 返回字节数，签名层无提示（✅ 2026-09-15，见 §2） |
@@ -47,7 +47,7 @@
 
 C 语义层：`input.c` 20 个函数中，18 个有 Rust 决策函数或数据化对应（如 `input_map` → structs.rs:119 `map_minor_to_index`、`input_process` → produce.rs:157 `enqueue` + produce.rs:228 `decide_wake`、`input_alloc_id` → connect.rs:58 `alloc_id`）；2 个只有局部对应（`input_check` 缺离去半、`input_other` 缺消息面两分支），见 IN-P1-1。wire 层：五个消息（`TTY_INPUT_UP` 0x1302、`TTY_INPUT_EVENT` 0x1303、`INPUT_CONF` 0x1500、`INPUT_SETLEDS` 0x1501、`INPUT_EVENT` 0x1580）的消息号、字段顺序、字段宽与 C（com.h:879-893、ipc.h:236-259、:993-1001）逐项一致，56 字节载荷有断言锁（message.rs:3899-3902），联合体成员与 C ipc.h 的四条接入一一对应，无遗漏消息类型。可运行实体层：主循环、生产状态、传输装配三者全缺（见 §0 判断 2）。
 
-### IN-P1-1 可运行实体缺席（六件 stage 内组装工作）
+### IN-P1-1 可运行实体缺席（六件 stage 内组装工作）【✅ 已完成 2026-09-15】
 
 **是什么**：input 服务器今天无法作为进程运行——不是因为有半成品跑不通，而是"服务器"这个实体根本还没被组装起来。六件缺失的工作全部可以先用纯函数决策的形式落地，不依赖传输层：
 
@@ -61,6 +61,8 @@ C 语义层：`input.c` 20 个函数中，18 个有 Rust 决策函数或数据�
 **为什么这么切**：1-6 里除主循环的收发动作外都是纯决策，先落决策再接传输，与这个 crate 已验证的开发顺序一致。实际收发与 DS 客户端消费属于传输接线，登记在 edge E-INWIRE，不在此重复。
 
 **处置建议**：按 2 → 3 → 4 → 5 → 6 → 1 的顺序逐项经 `todo-fix` 落地（每项独立可测）；主循环策略与 IN-P2-3 的组合层设计合并裁决后一次落地。
+
+**修复记录（2026-09-15，全部六件落地）**：新增 `dispatcher.rs`——`Server { table, opened }` 生产态装配（第 6 件，`Server::fresh` 对应 input.c:652-662 的清表加宣告期清登记簿）；`handle_arrival(server, Arrival) -> Outcome` 主循环裁决（第 1 件）：字符设备请求分支串起门卫（GateVerdict，未登记只放开门、登记簿满答 EAGAIN 并注明不可达依据）、第 06-08 篇全部判决与效应；`input_other` 两个消息面分支（第 2 件）——`Arrival::TerminalSetleds` 内做仅 TTY 来源检查（`Endpoint::TTY`，input.c:630-635 的 A-10 fail-closed）后走 `broadcast_lights`（存全部、发有主），DS 通知则按两段式驱动驱动生命周期；离去检测（第 3 件）——`Server::departure_candidates`（列出有主槽位，input.c:588-602 的循环半）加 `Server::driver_departed`（ESRCH 断开：读者 EIO、选择者可读通知、只清主人）；label 校验（第 4 件）——`connect.rs` 新增 `labels_match`（input.c:492-495 的 strcmp 语义）加 `Server::driver_connect`（不符静默忽略）；CONF 回信构造（第 5 件）——`Effect::input_conf` 消费 minix-types 的 `conf_msg`（保留槽 rsvd1/rsvd2 由构造器按 C 填 INVALID，IN-P2-2 关联项就此消解）。唤醒与读两条"拷贝横在判决与提交之间"的路径统一为 `Outcome::GrantCopy` + `complete_grant_copy`（唤醒件另有无条件解挂，input.c:365）。新增 11 条组合测试（开门登记、陈旧请求静默、未知次设备号、读的拷贝/挂起/唤醒往返、转交、灯令来源与广播、ioctl、驱动连接与离去、取消）。文档 01（§4.5 分发小节）、11（§4.3 增补）同步；main.rs 诚实占位注释更新为指向 dispatcher.rs。验证：`cargo test -p minix-input` 94 通过 0 失败；clippy 本 crate 零告警。
 
 ### IN-P1-2 "唤醒时恰好拷一个事件"的组合缺失【✅ 已完成 2026-09-15】
 

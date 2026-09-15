@@ -39,6 +39,7 @@
 extern crate alloc;
 
 pub mod connect;
+pub mod dispatcher;
 pub mod effects;
 pub mod error;
 pub mod event;
@@ -53,8 +54,10 @@ pub mod structs;
 
 pub use connect::{
     ConnectReport, DisconnectEffects, NO_SLOT, alloc_id, connect_driver, disconnect_device,
-    key_is_new_driver, wants_from_typemask,
+    key_is_new_driver, labels_match, wants_from_typemask,
 };
+pub use dispatcher::{Arrival, CdevCall, GrantCopy, Outcome, Server, complete_grant_copy,
+    handle_arrival};
 pub use error::InputError;
 pub use effects::{Effect, ReplyValue};
 pub use event::{

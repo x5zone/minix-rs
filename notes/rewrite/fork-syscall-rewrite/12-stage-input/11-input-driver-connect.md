@@ -285,7 +285,7 @@ pub struct ConnectReport {
 }
 ```
 
-掩码解码（`wants_from_typemask`，`const fn` 位测试）→ 按需分配 → 组装报告（含读记忆恢复项，`remembered_lights` 第 10 篇）。标签核对（传输层，2.2 节）与配置发送（传输层，第 05 篇载荷）在报告之外——报告是待办清单，不是执行。
+掩码解码（`wants_from_typemask`，`const fn` 位测试）→ 按需分配 → 组装报告（含读记忆恢复项，`remembered_lights` 第 10 篇）。标签核对与配置发送在报告之外——报告是待办清单，不是执行。2026-09-15 增补：标签核对本身也是纯决策，落在 `labels_match`（`input.c:492-495` 的 `strcmp` 语义：不符静默忽略）；"核对、分配、发配置、恢复灯"四件事由分发器的 `Server::driver_connect` 一线串起，配置与灯令以第 02 篇 4.5 节的效应清单出去。离开检测同样两段式：`departure_candidates` 列出待核槽位（`input.c:588-602` 的循环半），传输逐个向数据存储核销，`ESRCH` 者交 `Server::driver_departed`（`input.c:533-553` 的断开半）。
 
 ### 4.4 断开：`DisconnectEffects` 与 `disconnect_device`（对应 1.4 节、决策 3.3）
 

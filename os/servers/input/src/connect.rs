@@ -38,6 +38,28 @@ pub fn key_is_new_driver(key: &str) -> Option<&str> {
     key.strip_prefix(DRIVER_KEY_PREFIX)
 }
 
+// ── Connect ──
+
+/// Compares the label a driver published in its key with the label the
+/// store reports for its endpoint.
+///
+/// C: `strcmp(label, labelp)` in `input_connect` (`input.c:492`); a
+/// mismatch silently ignores the registration (`input.c:493-495`) — a
+/// driver that announces under someone else's name does not get hardware
+/// wired up. Same first-NUL comparison as [`label_eq`]: both sides are
+/// fixed-width buffers in C, where `strcmp` stops at the first NUL.
+pub fn labels_match(key_label: &[u8], store_label: &[u8]) -> bool {
+    let key_end = key_label
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(key_label.len());
+    let store_end = store_label
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(store_label.len());
+    key_label[..key_end] == store_label[..store_end]
+}
+
 // ── Slot allocation ──
 
 /// Claims a slot for a driver of one kind (keyboards or mice).
