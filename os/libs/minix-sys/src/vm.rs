@@ -69,6 +69,14 @@ pub const VM_CALL_INFO: i32 = 0xC28;
 pub const VM_CALL_REMAP_READ_ONLY: i32 = 0xC2C;
 /// Process control. C: `VM_PROCCTL (VM_RQ_BASE+45)`.
 pub const VM_CALL_PROCESS_CONTROL: i32 = 0xC2D;
+/// Map a file-system cache block. C: `VM_MAPCACHEPAGE (VM_RQ_BASE+26)`.
+pub const VM_CALL_MAP_CACHE_PAGE: i32 = 0xC1A;
+/// Identify a cache block. C: `VM_SETCACHEPAGE (VM_RQ_BASE+27)`.
+pub const VM_CALL_SET_CACHE_PAGE: i32 = 0xC1B;
+/// Forget a cache block. C: `VM_FORGETCACHEPAGE (VM_RQ_BASE+28)`.
+pub const VM_CALL_FORGET_CACHE_PAGE: i32 = 0xC1C;
+/// Clear a device's cache blocks. C: `VM_CLEARCACHE (VM_RQ_BASE+29)`.
+pub const VM_CALL_CLEAR_CACHE: i32 = 0xC1D;
 
 /// No access. C: `PROT_NONE 0x00` (`minix3/sys/sys/mman.h:62`).
 pub const MAP_PROTECTION_NONE: u32 = 0x00;
@@ -529,6 +537,201 @@ pub fn process_control_handlemem_via(
     )
 }
 
+/// Page size for the cache family: one cache block is a whole number of
+/// pages. C: `PAGE_SIZE` (`minix3/minix/include/machine/param.h`, 4096 on
+/// every supported architecture).
+pub const CACHE_PAGE_SIZE: i32 = 4096;
+
+/// Absence of a device number; the cache family refuses it.
+///
+/// C: `NO_DEV` (`minix3/minix/include/minix/const.h:132`, `(dev_t) 0`).
+pub const NO_DEVICE: u64 = 0;
+
+/// Core of the cache-block family, returning the reply message.
+///
+/// C: `vm_cachecall` (`minix3/minix/lib/libsys/vm_cache.c:15-43`): one
+/// shared fill routine for all four cache calls, writing the `m_vmmcp`
+/// lanes (64-bit overlay layout, mirrored by [`minix_types::VmCacheIn`] —
+/// the VM server decodes from this very arm): `dev` @0, `dev_offset` @8,
+/// `ino_offset` @16, `ino` @24, `block` @32, `flags_ptr` @40, `pages`
+/// @48, `flags` @49.
+///
+/// The C version panics on a misaligned block size or offset and asserts a
+/// non-`NO_DEV` device — caller bugs, not runtime conditions — and this
+/// wrapper panics the same way rather than inventing an error lane the C
+/// wire never sees.
+#[allow(clippy::too_many_arguments)] // ten parameters mirror the C core (vm_cache.c:15-19)
+fn cache_call_via(
+    transport: &impl IpcTransport,
+    call: i32,
+    block: u64,
+    dev: u64,
+    dev_offset: i64,
+    ino: u64,
+    ino_offset: i64,
+    flags_ptr: u64,
+    blocksize: i32,
+    setflags: u8,
+) -> Result<Message, Errno> {
+    if blocksize % CACHE_PAGE_SIZE != 0 {
+        panic!(
+            "blocksize {} should be a multiple of pagesize {}",
+            blocksize, CACHE_PAGE_SIZE
+        );
+    }
+    if ino_offset % CACHE_PAGE_SIZE as i64 != 0 {
+        panic!(
+            "inode offset {} should be a multiple of pagesize {}",
+            ino_offset, CACHE_PAGE_SIZE
+        );
+    }
+    if dev_offset % CACHE_PAGE_SIZE as i64 != 0 {
+        panic!(
+            "dev offset {} should be a multiple of pagesize {}",
+            dev_offset, CACHE_PAGE_SIZE
+        );
+    }
+    if dev == NO_DEVICE {
+        panic!("cache call without a device");
+    }
+    let mut message = cleared_message();
+    // SAFETY: the m_vmmcp lanes at 0/8/16/24/32/40/48/49, per the layout
+    // documented on `minix_types::VmCacheIn`.
+    unsafe {
+        message.m_u.raw[..8].copy_from_slice(&dev.to_ne_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&(dev_offset as u64).to_ne_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&(ino_offset as u64).to_ne_bytes());
+        message.m_u.raw[24..32].copy_from_slice(&ino.to_ne_bytes());
+        message.m_u.raw[32..40].copy_from_slice(&block.to_ne_bytes());
+        message.m_u.raw[40..48].copy_from_slice(&flags_ptr.to_ne_bytes());
+        message.m_u.raw[48] = (blocksize / CACHE_PAGE_SIZE) as u8;
+        message.m_u.raw[49] = setflags;
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), call, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    // `_taskcall` reuses the request message as the reply buffer; the
+    // caller reads whatever reply lanes its call defines.
+    Ok(message)
+}
+
+/// Maps a file-system cache block into the caller's address space.
+///
+/// C: `vm_map_cacheblock` (`minix3/minix/lib/libsys/vm_cache.c:47-57`):
+/// the mapped virtual address comes back in the reply's `m_vmmcp_reply`
+/// lane (64-bit overlay: `addr` @0, see [`minix_types::MessVmmcpReply`]).
+/// A failed call is an `Err`; C's mapped-failed sentinel never crosses
+/// this interface.
+///
+/// The `flags` reference plays the role of C's `u32_t *flags`: its address
+/// travels in the `flags_ptr` lane. The current minix-rs server does not
+/// write it back yet — the write-back lands with the server's setcache
+/// flag handling, and this signature is stable across that change.
+pub fn map_cacheblock_via(
+    transport: &impl IpcTransport,
+    dev: u64,
+    dev_offset: i64,
+    ino: u64,
+    ino_offset: i64,
+    flags: &mut u32,
+    blocksize: i32,
+) -> Result<VirBytes, Errno> {
+    let reply = cache_call_via(
+        transport,
+        VM_CALL_MAP_CACHE_PAGE,
+        0,
+        dev,
+        dev_offset,
+        ino,
+        ino_offset,
+        flags as *mut u32 as u64,
+        blocksize,
+        0,
+    )?;
+    // SAFETY: the reply's mapped address sits at byte zero of the
+    // m_vmmcp_reply overlay (64-bit overlay per MessVmmcpReply).
+    let addr = unsafe { reply.m_u.raw[..8].as_ptr().cast::<u64>().read() };
+    Ok(VirBytes(addr))
+}
+
+/// Identifies a cache block to the server.
+///
+/// C: `vm_set_cacheblock` (`vm_cache.c:59-66`): the block address travels
+/// in the `block` lane, and `setflags` rides in the one-byte flags lane.
+#[allow(clippy::too_many_arguments)]
+pub fn set_cacheblock_via(
+    transport: &impl IpcTransport,
+    block: VirBytes,
+    dev: u64,
+    dev_offset: i64,
+    ino: u64,
+    ino_offset: i64,
+    flags: &mut u32,
+    blocksize: i32,
+    setflags: u8,
+) -> Result<(), Errno> {
+    cache_call_via(
+        transport,
+        VM_CALL_SET_CACHE_PAGE,
+        block.0,
+        dev,
+        dev_offset,
+        ino,
+        ino_offset,
+        flags as *mut u32 as u64,
+        blocksize,
+        setflags,
+    )?;
+    Ok(())
+}
+
+/// Forgets a cache block: no inode association, no flags.
+///
+/// C: `vm_forget_cacheblock` (`vm_cache.c:68-75`): the C caller passes
+/// `VMC_NO_INODE` (`minix3/minix/include/minix/vm.h:90`, value 0) as the
+/// inode and zeroes the rest.
+pub fn forget_cacheblock_via(
+    transport: &impl IpcTransport,
+    dev: u64,
+    dev_offset: i64,
+    blocksize: i32,
+) -> Result<(), Errno> {
+    cache_call_via(
+        transport,
+        VM_CALL_FORGET_CACHE_PAGE,
+        0,
+        dev,
+        dev_offset,
+        0,
+        0,
+        0,
+        blocksize,
+        0,
+    )?;
+    Ok(())
+}
+
+/// Clears every cache block belonging to a device.
+///
+/// C: `vm_clear_cache` (`vm_cache.c:77-89`): only the device lane is
+/// filled; no alignment requirements apply (C checks none).
+pub fn clear_cache_via(transport: &impl IpcTransport, dev: u64) -> Result<(), Errno> {
+    if dev == NO_DEVICE {
+        panic!("cache call without a device");
+    }
+    let mut message = cleared_message();
+    // SAFETY: the device occupies the first eight bytes (m2_l1 overlay).
+    unsafe {
+        message.m_u.raw[..8].copy_from_slice(&dev.to_ne_bytes());
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_CLEAR_CACHE, &mut message);
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,5 +1043,108 @@ mod tests {
             process_control_clear_via(&transport, Endpoint(3)),
             Err(Errno::from_i32(minix_types::EINVAL))
         );
+    }
+
+    #[test]
+    fn test_map_cacheblock_reads_reply_address() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        // SAFETY: test-only payload setup through the documented overlay.
+        unsafe {
+            reply.m_u.raw[..8].copy_from_slice(&0x9000_0000u64.to_ne_bytes());
+        }
+        transport.reply_sendrec(Ok(reply));
+        let mut flags = 0u32;
+        let result = map_cacheblock_via(
+            &transport, 0x5678, 0x10_0000, 42, 0x20_0000, &mut flags, 4096,
+        );
+        assert_eq!(result, Ok(VirBytes(0x9000_0000)));
+        // Outgoing lanes: dev @0, dev_offset @8, ino_offset @16, ino @24,
+        // block @32 (NULL for map), flags_ptr @40, pages @48 = 1.
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VM_CALL_MAP_CACHE_PAGE);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[..8], &0x5678u64.to_ne_bytes());
+        assert_eq!(&raw[8..16], &0x10_0000u64.to_ne_bytes());
+        assert_eq!(&raw[16..24], &0x20_0000u64.to_ne_bytes());
+        assert_eq!(&raw[24..32], &42u64.to_ne_bytes());
+        assert_eq!(&raw[32..40], &0u64.to_ne_bytes());
+        assert_eq!(&raw[40..48], &(&mut flags as *mut u32 as u64).to_ne_bytes());
+        assert_eq!(raw[48], 1);
+    }
+
+    #[test]
+    fn test_set_cacheblock_sends_block_and_setflags() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let mut flags = 0u32;
+        assert_eq!(
+            set_cacheblock_via(
+                &transport,
+                VirBytes(0x9000_0000),
+                0x5678,
+                0x10_0000,
+                42,
+                0x20_0000,
+                &mut flags,
+                4096,
+                1,
+            ),
+            Ok(())
+        );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VM_CALL_SET_CACHE_PAGE);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[32..40], &0x9000_0000u64.to_ne_bytes());
+        assert_eq!(raw[49], 1);
+    }
+
+    #[test]
+    fn test_forget_cacheblock_zeroes_inode_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(
+            forget_cacheblock_via(&transport, 0x5678, 0x10_0000, 8192),
+            Ok(())
+        );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VM_CALL_FORGET_CACHE_PAGE);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        // C: ino = VMC_NO_INODE (0), ino_offset = 0, pages = blocksize/4096 = 2.
+        assert_eq!(&raw[16..24], &0u64.to_ne_bytes());
+        assert_eq!(&raw[24..32], &0u64.to_ne_bytes());
+        assert_eq!(raw[48], 2);
+    }
+
+    #[test]
+    fn test_clear_cache_sends_device_only() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(clear_cache_via(&transport, 0x5678), Ok(()));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VM_CALL_CLEAR_CACHE);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[..8], &0x5678u64.to_ne_bytes());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_cache_call_panics_on_misaligned_blocksize() {
+        // C: vm_cachecall panics on a block size that is not a page
+        // multiple (vm_cache.c:17-19) — a caller bug, not a runtime error.
+        let transport = CannedTransport::new();
+        let _ = map_cacheblock_via(&transport, 1, 0, 0, 0, &mut 0u32, 100);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_cache_call_panics_on_no_device() {
+        // C: assert(dev != NO_DEV) (vm_cache.c:31) with NO_DEV = 0.
+        let transport = CannedTransport::new();
+        let _ = map_cacheblock_via(&transport, NO_DEVICE, 0, 0, 0, &mut 0u32, 4096);
     }
 }
