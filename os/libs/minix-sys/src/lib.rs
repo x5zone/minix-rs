@@ -37,6 +37,9 @@ pub mod vfs;
 pub mod vm;
 /// Miscellaneous calls: sleeping, server control, clock reads (document 11).
 pub mod misc;
+/// Initial-stack frame construction (E-BOOTFRAME — `minix_stack_params`/
+/// `minix_stack_fill`, libc stack_utils.c).
+pub mod stack;
 /// Reincarnation server queries: lookup and endpoint questions (document 12).
 pub mod rs;
 /// User-space socket call policy: call list, flag handling, fallback rule

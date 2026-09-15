@@ -29,7 +29,12 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 /// - 2: full boot contract — free regions (A2 classification), the
 ///   LiveBootstrap deduction record, reserved modules, the boot image
 ///   table and the kernel footprint.
-pub const VM_BOOT_HANDOFF_VERSION: u32 = 3;
+/// - 3: kernel text/data span for per-process kernel mappings (V11/E3).
+/// - 4: `user_sp` — the initial user stack top, C `kinfo.user_sp`
+///   (pre_init.c:156). VM builds every boot process's initial stack
+///   frame downward from it (E-BOOTFRAME; C exec_bootproc reads the
+///   same value out of `kernel_boot_info`, main.c:372).
+pub const VM_BOOT_HANDOFF_VERSION: u32 = 4;
 
 /// Maximum free-region entries the handoff page carries.
 ///
@@ -132,6 +137,11 @@ pub struct VmBootHandoff {
     /// Pages in the kernel data span (V11/E3; 0 = whole-span-as-text,
     /// the minix-rs kernel image is one contiguous span).
     pub kern_data_pages: u32,
+    /// Initial user stack top. C: `kinfo.user_sp = USR_STACKTOP`
+    /// (pre_init.c:156) — exec_bootproc builds the initial stack frame
+    /// downward from this value and the frame's `vsp` becomes the
+    /// process's starting stack pointer (main.c:391-411).
+    pub user_sp: u64,
     /// Fresh-boot flag (C: `is_first_time()`, main.c:79-88). 1 = fresh.
     pub is_first_time: u32,
     /// Valid entries in `free_regions`.
@@ -415,6 +425,7 @@ mod tests {
                 kern_phys_base: 0,
                 kern_text_pages: 0,
                 kern_data_pages: 0,
+                user_sp: 0,
                 is_first_time: 1,
                 free_region_count: 0,
                 deducted_count: 0,

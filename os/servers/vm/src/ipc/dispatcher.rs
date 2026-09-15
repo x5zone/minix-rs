@@ -1281,6 +1281,7 @@ mod tests {
                 dropped_messages: 0,
                 #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
+                user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
             },
             src,
             dst,
@@ -1351,6 +1352,7 @@ mod tests {
             dropped_messages: 0,
             #[cfg(feature = "sanity_checks")]
             sanity_ticks: 0,
+            user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
         }
     }
 
@@ -1582,6 +1584,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1615,6 +1618,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1652,6 +1656,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1687,6 +1692,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1721,6 +1727,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1757,6 +1764,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 }, req) {
@@ -1789,6 +1797,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 }, req) {
@@ -1822,6 +1831,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 }, req) {
@@ -1854,6 +1864,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 }, req) {
@@ -1886,6 +1897,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1923,6 +1935,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1959,6 +1972,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -1998,6 +2012,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -2034,6 +2049,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -2070,6 +2086,7 @@ mod tests {
                     vm_allocated_bytes: 0,
                     pagefault_errors: 0,
                     dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
                     #[cfg(feature = "sanity_checks")]
                 sanity_ticks: 0,
                 },
@@ -2098,7 +2115,7 @@ mod tests {
         };
         let mut page_alloc = default_vm();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:204-205).
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_setcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
@@ -2123,7 +2140,7 @@ mod tests {
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(no valid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2144,7 +2161,7 @@ mod tests {
             block: 0x1000,
         };
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_setcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -2166,7 +2183,7 @@ mod tests {
         };
         // Endpoint(999) is not in the process table
         let mut page_alloc = default_vm();
-        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_setcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_setcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2190,7 +2207,7 @@ mod tests {
             block: 0,
         };
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidAddress) => {}
             other => panic!("dispatch_mapcache(unaligned dev_offset) must return InvalidAddress, got {:?}", other),
         }
@@ -2213,7 +2230,7 @@ mod tests {
         };
         let mut cache = _default_cache();
         // C: bytes < VM_PAGE_SIZE → EINVAL (mem_cache.c:116).
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(1), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(1), req) {
             VmReply::Error(VmError::InvalidParam) => {}
             other => panic!("dispatch_mapcache(pages=0) must return InvalidParam (EINVAL), got {:?}", other),
         }
@@ -2236,7 +2253,7 @@ mod tests {
         };
         // Endpoint(999) is not in the process table
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(999), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(999), req) {
             VmReply::Error(VmError::InvalidProcess) => {}
             other => panic!("dispatch_mapcache(invalid caller) must return InvalidProcess, got {:?}", other),
         }
@@ -2261,7 +2278,7 @@ mod tests {
         // but we need a valid endpoint to get past vm_isokendpt.
         // Endpoint(0) is VM itself, which should be in the table.
         let mut cache = _default_cache();
-        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0 }, Endpoint(0), req) {
+        match MessageDispatcher::dispatch_mapcache(&mut crate::vm_server::VmContext { proc_table: table, gateway: test_gateway(), page_alloc, page_frames: Some(frames), page_cache: cache, vfs_queue: crate::vfs_queue::VfsRequestQueue::new(), kernel_allocated: crate::boot::KernelAllocated::ZERO, vm_allocated_bytes: 0, pagefault_errors: 0, dropped_messages: 0, #[cfg(feature = "sanity_checks")] sanity_ticks: 0, user_sp: minix_types::VirBytes(0x7fff_ffff_f000) }, Endpoint(0), req) {
             VmReply::Error(VmError::NotFound) | VmReply::Error(VmError::InvalidProcess) => {} // either is acceptable
             other => panic!("dispatch_mapcache(cache miss) must return NotFound or InvalidProcess, got {:?}", other),
         }
@@ -2318,6 +2335,7 @@ mod tests {
             vm_allocated_bytes: 0,
             pagefault_errors: 0,
             dropped_messages: 0,
+user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
             #[cfg(feature = "sanity_checks")] sanity_ticks: 0,
         };
         match MessageDispatcher::dispatch_mapcache(&mut ctx, caller_ep, req) {

@@ -307,6 +307,10 @@ pub fn build_vm_handoff(
         kern_phys_base: kernel_info.kern_phys_base().0,
         kern_text_pages: (kernel_info.kern_size() / 4096) as u32,
         kern_data_pages: 0,
+        // E-BOOTFRAME: VM builds boot-proc initial stacks downward from
+        // this value. C: execi->stack_high = kernel_boot_info.user_sp
+        // (main.c:372); kinfo.user_sp = USR_STACKTOP (pre_init.c:156).
+        user_sp: kernel_info.user_sp.0,
         is_first_time: 1,
         free_region_count: classification.free_region_count as u32,
         deducted_count: classification.deducted_count as u32,

@@ -15,7 +15,7 @@
 //! one-way and one-shot, so making the dependency visible at the
 //! constructor keeps the startup chain auditable and testable.
 
-use minix_types::{BootImage, Endpoint, HandoffMemRegion, NR_BOOT_PROCS, PhysBytes};
+use minix_types::{BootImage, Endpoint, HandoffMemRegion, NR_BOOT_PROCS, PhysBytes, VirBytes};
 use crate::phys_mem::{BootMemRegion, CLICK_SIZE};
 
 /// VM's own boot-image process number.
@@ -105,6 +105,11 @@ pub struct BootParams<'a> {
     /// `None` for version ≤ 2 handoffs (the historical mock constants
     /// apply) and for host tests (`BootParams::simple`).
     pub kernel_layout: Option<minix_types::KernelLayout>,
+    /// Initial user stack top (handoff v4; C `kernel_boot_info.user_sp`,
+    /// sourced from `kinfo.user_sp = USR_STACKTOP`, pre_init.c:156).
+    /// exec_bootproc builds each boot process's initial stack frame
+    /// downward from here (E-BOOTFRAME).
+    pub user_sp: VirBytes,
 }
 
 impl<'a> BootParams<'a> {
@@ -124,6 +129,10 @@ impl<'a> BootParams<'a> {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
+            // Test-only constructor: a plausible stack top the boot-path
+            // tests can build frames against (matches the x86-64 value
+            // the kernel reports; see kernel lib.rs boot-proc tables).
+            user_sp: VirBytes(0x7fff_ffff_f000),
         }
     }
 
@@ -298,6 +307,9 @@ pub fn read_boot_params() -> BootParams<'static> {
         // V11/E3: version ≥ 3 handoffs carry the kernel layout; version ≤ 2
         // yields None (consumer falls back to the mock constants + warn).
         kernel_layout: handoff.kernel_layout(),
+        // E-BOOTFRAME: handoff v4 carries the initial user stack top
+        // (C exec_bootproc reads `kernel_boot_info.user_sp`, main.c:372).
+        user_sp: VirBytes(handoff.user_sp),
     };
     params.validate();
     reconcile(&params, &handoff.deducted[..handoff.deducted_count as usize]);
@@ -451,6 +463,7 @@ mod tests {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
         };
         assert_eq!(params.extra_pages(), 3);
     }
@@ -471,6 +484,7 @@ mod tests {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
         };
         assert_eq!(params.extra_pages(), 4);
     }

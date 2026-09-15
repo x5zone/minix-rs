@@ -294,6 +294,15 @@ pub const SYS_STATE_ADD_IPC_WL_FILTER: i32 = 4;
 /// Clear all IPC filters. C: `SYS_STATE_CLEAR_IPC_FILTERS` — com.h:446.
 pub const SYS_STATE_CLEAR_IPC_FILTERS: i32 = 5;
 
+/// Exec frame: number of ELF auxiliary-vector slots the initial stack
+/// reserves budget for. C: `PMEF_AUXVECTORS` — com.h:356.
+pub const PMEF_AUXVECTORS: usize = 20;
+
+/// Exec frame: executable-name budget (PATH_MAX + 1 slot discipline —
+/// the C constant is `PATH_MAX`). C: `PMEF_EXECNAMELEN1` — com.h:357,
+/// PATH_MAX = 1024 (sys/sys/syslimits.h:64).
+pub const PMEF_EXECNAMELEN1: usize = 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +315,13 @@ mod tests {
         assert_eq!(SYS_STATE_ADD_IPC_BL_FILTER, 3);
         assert_eq!(SYS_STATE_ADD_IPC_WL_FILTER, 4);
         assert_eq!(SYS_STATE_CLEAR_IPC_FILTERS, 5);
+    }
+
+    #[test]
+    fn test_pmef_exec_frame_constants() {
+        // C: com.h:356-357 / syslimits.h:64.
+        assert_eq!(PMEF_AUXVECTORS, 20);
+        assert_eq!(PMEF_EXECNAMELEN1, 1024);
     }
 
     #[test]

@@ -41,7 +41,8 @@ use crate::pagetable::vm_self_map::init_vm_self_pt;
 use crate::direct_map::vm_phys_to_virt;
 use crate::region::PageFrames;
 use minix_types::PhysBytes;
-#[cfg(test)]
+// VmContext.user_sp + install_boot_stack use VirBytes unconditionally
+// (E-BOOTFRAME); before that only test code needed it.
 use minix_types::VirBytes;
 
 /// The memory subsystem state the server drives: the physical-page
@@ -87,6 +88,11 @@ pub(crate) struct VmContext {
     /// refcount verification. C: SANITYCHECKS 周期校验 (alloc.c)。
     #[cfg(feature = "sanity_checks")]
     pub(crate) sanity_ticks: u32,
+    /// Initial user stack top (E-BOOTFRAME). C: `kernel_boot_info.user_sp`
+    /// (glo.h; `kinfo.user_sp = USR_STACKTOP`, pre_init.c:156) —
+    /// exec_bootproc builds boot-proc initial stacks downward from it
+    /// (main.c:346-411).
+    pub(crate) user_sp: VirBytes,
 }
 
 impl VmContext {
@@ -94,6 +100,7 @@ impl VmContext {
         page_alloc: VmPageAllocator,
         kernel_allocated: KernelAllocated,
         vm_allocated_bytes: u64,
+        user_sp: VirBytes,
     ) -> Self {
         let gateway: alloc::rc::Rc<
             core::cell::RefCell<alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>,
@@ -121,6 +128,7 @@ impl VmContext {
             dropped_messages: 0,
             #[cfg(feature = "sanity_checks")]
             sanity_ticks: 0u32,
+            user_sp,
         }
     }
 
@@ -263,7 +271,12 @@ impl VmServer {
         let kernel_layout = params.kernel_layout;
 
         Self {
-            ctx: VmContext::new(page_alloc, params.kernel_allocated, params.vm_allocated_bytes),
+            ctx: VmContext::new(
+            page_alloc,
+            params.kernel_allocated,
+            params.vm_allocated_bytes,
+            params.user_sp,
+        ),
             initialized: false,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
@@ -735,12 +748,134 @@ impl VmServer {
             }
         }
 
-        // E-BOOTFRAME: stack/ps_str reported as 0 until the initial-stack
-        // ABI lands; the kernel treats them as "no ps_strings" (matches
-        // the boot-gated state — these procs are not user-runnable yet).
+        self.install_boot_stack(ip.endpoint, ip.name(), entry)
+    }
+
+    /// E-BOOTFRAME: build and install the initial stack frame for a boot
+    /// process, then `sys_exec` with the real `stack`/`ps_str` values.
+    ///
+    /// C: main.c:346-411 — `minix_stack_params` sizes the frame,
+    /// `minix_stack_fill` lays out argc/argv/envp/strings/ps_strings
+    /// (byte-exact; the pure builders live in `minix_sys::stack`),
+    /// `handle_memory_once` maps the stack range (main.c:400), and the
+    /// frame bytes are copied to `vsp` (main.c:402-404, sys_datacopy;
+    /// here a Direct Map write). `ps_str = vsp + (psp - frame)` rides
+    /// `sys_exec`'s last argument (main.c:409-411); the kernel parks it
+    /// in the process's saved RBX (the ps_strings register convention).
+    fn install_boot_stack(
+        &mut self,
+        endpoint: Endpoint,
+        name: &str,
+        entry: u64,
+    ) -> Result<(), &'static str> {
+        const PS: usize = crate::region::page_state::PAGE_SIZE as usize;
+        use crate::region::page_state::PfnAllocator as _;
+        // C: char *argv[] = {ip->proc_name, NULL}; char *envp[] = {NULL}
+        // (main.c:347-348).
+        let argv = [name];
+
+        // C: minix_stack_params + the frame_size > sizeof(frame) panic
+        // (main.c:392-397) — our frame buffer is one page, same budget.
+        let params = minix_sys::stack::stack_params(&argv, &[]);
+        if params.frame_size > PS {
+            return Err("initial stack frame exceeds one page");
+        }
+        let mut frame = [0u8; PS];
+        let filled = minix_sys::stack::stack_fill(
+            &argv,
+            &[],
+            params.frame_size,
+            self.ctx.user_sp.0,
+            &mut frame[..params.frame_size],
+        )
+        .map_err(|_| "stack_fill refused the frame")?;
+        let vsp = filled.vsp;
+
+        // Map the stack: one page below user_sp covers the frame
+        // (frame_size <= PAGE_SIZE and vsp = user_sp - frame_size).
+        let region_base = VirBytes(vsp & !(PS as u64 - 1));
+        let region = crate::region::VirRegion::with_memtype(
+            region_base,
+            VirBytes((self.ctx.user_sp.0 - region_base.0) as u64),
+            crate::region::VrFlags::ANON | crate::region::VrFlags::WRITABLE,
+            &crate::memtype::MEM_TYPE_ANON,
+        );
+        let table = self.ctx.proc_table;
+        let slot = table
+            .vm_isokendpt(endpoint)
+            .map_err(|_| "boot proc endpoint not registered")?;
+        let mut proc = table
+            .get_active(slot)
+            .ok_or("boot proc slot not active")?;
+        proc.regions_mut()
+            .insert(region)
+            .map_err(|_| "boot stack region overlap")?;
+
+        // Materialize the stack page (C: the VR_UNINITIALIZED half of
+        // boot_alloc/handle_memory_start) — the pfn stays in hand for the
+        // frame-byte write below.
+        let frames = self
+            .ctx
+            .page_frames
+            .as_mut()
+            .ok_or("page_frames not initialized")?;
+        let pfn = self.ctx.page_alloc.alloc_pfn()
+            .map_err(|_| "boot stack page allocation failed")?;
+        {
+            let vr = proc
+                .regions_mut()
+                .find_mut(region_base)
+                .ok_or("stack region vanished")?;
+            vr.map_page(frames, VirBytes(0), pfn, &crate::memtype::MEM_TYPE_ANON);
+        }
+
+        // C: handle_memory_once(vmp, vsp, frame_size, 1) — main.c:400.
+        // The fresh page has no CoW to resolve; the call is the
+        // C-isomorphic gate (range mapped + writable) before the copy.
+        {
+            let (regions, pt) = proc.mem_parts_mut();
+            crate::fork::handle_memory_once(
+                regions,
+                frames,
+                &mut self.ctx.page_alloc,
+                VirBytes(vsp),
+                VirBytes(params.frame_size as u64),
+                true,
+                pt,
+            )
+            .map_err(|_| "stack range failed the map check")?;
+        }
+
+        // Write the frame bytes through the Direct Map (C:
+        // sys_datacopy(SELF, frame, endpoint, vsp, ...), main.c:402-404 —
+        // the image sits on our stack buffer; the target page is the one
+        // just mapped, reachable through the DM window).
+        let dst_phys = pfn as u64 * PS as u64;
+        let dst_va = crate::direct_map::vm_phys_to_virt(
+            crate::phys_mem::AlignedPhysBytes::new(dst_phys),
+        );
+        let write_off = (vsp - region_base.0) as usize;
+        // The frame's byte 0 lands at `vsp`, which sits `write_off` bytes
+        // into the mapped page — not at the page start.
+        // SAFETY: the DM window maps all of physical memory; the page was
+        // just allocated to this process's stack region with refcount 1
+        // (no CoW sharing), so the bytes are exclusively ours to write.
+        // `write_off + frame_size <= PS` holds because the region spans
+        // [region_base, user_sp) and vsp + frame_size == user_sp.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                frame.as_ptr(),
+                (dst_va.0 + write_off as u64) as *mut u8,
+                params.frame_size,
+            );
+        }
+
+        // C: sys_exec(endpoint, vsp, progname, pc, ps_str) — main.c:409-411.
+        // `name` stays 0 (kernel-side name semantics are a separate edge);
+        // stack/ps_str are now the real ABI values.
         let mut gateway = self.ctx.gateway.borrow_mut();
         gateway
-            .sys_exec(ip.endpoint, entry, 0, 0, 0)
+            .sys_exec(endpoint, entry, vsp, 0, filled.ps_str)
             .map_err(|_| "sys_exec rejected by kernel")?;
         Ok(())
     }
@@ -755,6 +890,14 @@ impl VmServer {
         // C: clear_proc() is compile-time in Rust (vacant slot); activate()
         // sets VMF_INUSE + vm_endpoint (main.c:277-280).
         let mut proc = empty.activate(ip.endpoint);
+        // C: exec_bootproc's pt_new + pt_bind (main.c:344-347) give the
+        // boot process a fresh page table, and map_region_init()
+        // (main.c:468) its empty region map — exec_bootproc's segment and
+        // stack inserts depend on both. Rust: explicit init on the handle
+        // (SimPaging stands in for the arch table in test builds).
+        proc.init_page_table()
+            .expect("init_proc: boot page table init failed");
+        proc.init_regions();
         proc.set_boot(ip);
     }
 
@@ -2533,7 +2676,105 @@ mod tests {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
         }
+    }
+
+    /// E-BOOTFRAME: `install_boot_stack` builds the initial frame with the
+    /// `minix_sys::stack` builders, maps one stack page below `user_sp`,
+    /// writes the frame bytes there, and hands `sys_exec` the real
+    /// `stack`/`ps_str` (C: main.c:346-411). MockGateway captures the
+    /// wire values; the written bytes are read back through the Direct Map
+    /// and compared against an independently built frame.
+    #[test]
+    fn test_install_boot_stack_writes_frame_and_exec_values() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+
+            // Boot proc in slot 9 (the init test's PFS stand-in shape).
+            let mut img = BootImage::empty();
+            img.proc_nr = 9;
+            img.endpoint = Endpoint::PFS;
+            img.start_addr = 0x100_0000;
+            img.proc_name[0] = b'p';
+            img.proc_name[1] = b'f';
+            img.proc_name[2] = b's';
+            let boot_procs = [vm_boot_image(), img];
+            let regions = test_free_regions();
+            let mut server =
+                VmServer::new_with_boot_params(boot_params(&regions, &boot_procs, &[]));
+            server.init();
+
+            // Recording gateway (shared-handle delegate pattern).
+            let mock = alloc::rc::Rc::new(core::cell::RefCell::new(
+                crate::kernel_gateway::MockGateway::new(),
+            ));
+            server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(SharedMockGateway(alloc::rc::Rc::clone(&mock)))
+                    as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
+            ));
+
+            const PS: usize = crate::region::page_state::PAGE_SIZE as usize;
+            let entry = 0x40_1000u64;
+            server
+                .install_boot_stack(Endpoint::PFS, "pfs", entry)
+                .expect("boot stack install");
+
+            // Expected placement from the same pure builders the
+            // production path uses.
+            let params = minix_sys::stack::stack_params(&["pfs"], &[]);
+            assert!(params.frame_size <= PS);
+            let user_sp = server.ctx.user_sp.0;
+            let vsp = user_sp - params.frame_size as u64;
+            let mut expect = alloc::vec![0u8; params.frame_size];
+            let placement = minix_sys::stack::stack_fill(
+                &["pfs"],
+                &[],
+                params.frame_size,
+                user_sp,
+                &mut expect,
+            )
+            .expect("reference frame builds");
+
+            // sys_exec wire: (endpoint, ip=entry, stack=vsp, ps_str).
+            let (ep, ip_val, stack_val, ps_val) = mock
+                .borrow()
+                .last_exec
+                .get()
+                .expect("sys_exec recorded by mock");
+            assert_eq!(ep, Endpoint::PFS);
+            assert_eq!(ip_val, entry);
+            assert_eq!(stack_val, vsp, "stack = vsp (main.c:410)");
+            assert_eq!(ps_val, placement.ps_str, "ps_str absolute (main.c:411)");
+            assert!(ps_val < user_sp);
+
+            // Frame bytes readable at vsp through the Direct Map.
+            let table = VmProcTable::get_global();
+            let proc = table.get_active(UserSlot(9)).expect("slot 9 active");
+            let region_base = vsp & !(PS as u64 - 1);
+            let region = proc
+                .regions()
+                .find(minix_types::VirBytes(region_base))
+                .expect("stack region registered");
+            let pfn = region.physblocks[0]
+                .pfn()
+                .expect("stack page materialized");
+            let off_in_page = (vsp - region_base) as usize;
+            let phys_page = pfn as u64 * PS as u64;
+            let va = crate::direct_map::vm_phys_to_virt(
+                crate::phys_mem::AlignedPhysBytes::new(phys_page),
+            );
+            // SAFETY: DM window covers physical memory; the bytes were just
+            // written by install_boot_stack and nothing reuses the page.
+            // The read starts mid-page at `off_in_page` (frame byte 0 = vsp).
+            let written = unsafe {
+                core::slice::from_raw_parts(
+                    (va.0 + off_in_page as u64) as *const u8,
+                    params.frame_size,
+                )
+            };
+            assert_eq!(written, &expect[..], "frame bytes land at vsp");
+        });
     }
 
     #[test]
