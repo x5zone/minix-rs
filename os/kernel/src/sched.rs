@@ -276,13 +276,14 @@ pub struct SchedParams {
 ///
 /// # `niced` parameter rationale
 ///
-/// The C `sched_proc()` accepts `niced` as an `int` (boolean coercion of
-/// `m_ptr->m_lsys_krn_schedule.niced`). The kernel's `SYS_SCHEDCTL` path
-/// (`do_schedctl.c`) always passes `FALSE` (0); only `SYS_NICE` (PM → kernel
-/// via `SYS_SCHEDULE`) sets `niced = !!(...)`. The Rust signature keeps
-/// `niced: bool` (rather than hard-coding `false`) so the future `SYS_NICE`
-/// syscall can reuse this function without API churn. Callers that match the
-/// `SYS_SCHEDCTL` path pass `false` explicitly (see `dispatch_schedule`).
+/// The C `sched_proc()` accepts `niced` as an `int`. The only producer of
+/// the flag is SYS_SCHEDULE: `do_schedule.c:27` coerces the wire field with
+/// `niced = !!(m_ptr->m_lsys_krn_schedule.niced)` — C has no SYS_NICE
+/// kernel call (only a 2005 changelog mention in system.h:12). The kernel's
+/// own `SYS_SCHEDCTL` path always passes `FALSE` (do_schedctl.c:37). The
+/// Rust signature keeps `niced: bool` so both callers express their intent
+/// explicitly (`dispatch_schedule` coerces the wire field; the SCHEDCTL
+/// path passes `false`).
 ///
 /// # Errors
 ///

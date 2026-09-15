@@ -35,7 +35,7 @@ dispatch.rs:21 `pub const SUSPEND: i32 = -998;` 与 transport.rs:41/:45 的 SYS_
 
 | edge 条目 | 来源 | 一句话 | 06 侧关联 |
 |---|---|---|---|
-| E-SCHEDNICED | V2 §1.3 | kernel 丢弃 SYS_SCHEDULE 的 niced 字段，注释引用不存在的 SYS_NICE | 12 篇契约 niced 半 |
+| E-SCHEDNICED | V2 §1.3 | kernel 丢弃 SYS_SCHEDULE 的 niced 字段，注释引用不存在的 SYS_NICE——**✅ 2026-09-15 修复**：dispatch_schedule 改 `sched.niced != 0`（do_schedule.c:27），SchedParams 文档双锚点重写；classify_cpu_state 生产接线登记不实现（clock 记账重构窗口）；niced wire→MF_NICED 端到端测试钉住（edge_todo.md 闭单注记） | 12 篇契约 niced 半 |
 | E-PREEMPTFLAG | V2 §1.3 | PREEMPTIBLE 用 priority!=0 近似，队列 0 进程永不通知调度者——**live 半 ✅ 2026-09-15**：sched_proc_no_time 改读特权标志（穿参 &PrivTable，镜像 is_billable），priority-0 + USR_F 测试钉住；enqueue Phase 3 余项 = 分支生产不可达（无调用方传 current_nr），待 CpuLocal.proc_ptr 激活时一并接特权标志（edge_todo.md 🔄） | 08/12 篇 NO_QUANTUM 链 |
 | E-SCHEDSMP | 第一轮 §7 升级 | cpu 下发链三环断（每核队列/EBADCPU/迁移） | 06 篇重试环、10 篇 pick |
 | E-MINTYPES-SYS | V2 §4.4 | SYS_* 调用号常量三处各自表达 | 本文 §1（P2-3 合并修） |

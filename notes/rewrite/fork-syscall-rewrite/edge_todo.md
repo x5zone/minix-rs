@@ -375,6 +375,9 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **复核（2026-09-15，下半已闭合）**：clock.rs 记账半已落地——`CP_NICE`（clock.rs:451）、`classify_cpu_state` 读 `MiscFlagsBits::NICED` 归桶（:479，测试 :1527）、`sched_proc` 真实置/清 MF_NICED（sched.rs:418-421，测试 :649）。剩余仅上半接线：dispatch_schedule 的 `let niced = false;`（syscall.rs:923）与 `let _niced = sched.niced;`（:893）换真值；`classify_cpu_state` 尚无生产调用点（lib.rs 生产路径只记 CP_INTR）——接线时一并评估，不接则登记理由。sched.rs:286-294 的 "SYS_NICE" 虚构引用仍在。
 
+> **进度（2026-09-15，✅ 闭单）**：dispatch_schedule 删 `let niced = false;` 硬编码与 `_niced` 丢弃绑定，改 `let niced = sched.niced != 0;`（C do_schedule.c:27 `!!` 布尔强转的直译面；数据源就是 SYS_SCHEDULE 消息本身——C 无 SYS_NICE 内核调用，仅 system.h:12 的 2005 年变更日志提及）；sched.rs SchedParams 的 "future SYS_NICE" 虚构 rationale 重写为 do_schedule.c:27 + do_schedctl.c:37（SCHEDCTL 路径恒 FALSE）双锚点。测试新增 `test_dispatch_schedule_niced_wire_bit_sets_mf_niced`（SYS_PROC caller + wire niced=1 → 目标进程 MF_NICED 置位，旧代码下失败）。classify_cpu_state 生产接线评估：**登记不实现**——分类器与 CP_NICE 桶已备，但生产记账路径（lib.rs 调度循环只记 CP_INTR）的结构与 C 的 arch_clock counter 选择链不同，接线属 clock 记账重构窗口；MF_NICED 位现已从 wire 端到端正确落盘，符合原条目"先登记不实现"的预授权。验证：`cargo test -p minix-kernel --lib` 747 passed；clippy 44=44 零新增。
+> **非 edge 观察（不顺手修）**：`test_sched_proc_niced_flag_set_and_clear` 在过滤单独运行时因全局 CLOCK_STATE 未初始化而 panic（lib.rs:1538 read_tsc 路径）——干净 HEAD 复现，全量运行时靠 clock 测试先行初始化才通过，属顺序依赖的既有脆弱性；修复归 01-stage-kernel 自己的 todo（clock 测试全局装配纪律），不属 edge。
+
 ---
 
 ## E-PREEMPTFLAG PREEMPTIBLE 特权标志缺失——priority != 0 近似当成了语义（06-stage-sched V2 轮登记，2026-09-09）

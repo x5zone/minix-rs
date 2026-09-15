@@ -890,7 +890,6 @@ fn dispatch_schedule(
     let _quantum = sched.quantum;
     let _priority = sched.priority;
     let _cpu = sched.cpu;
-    let _niced = sched.niced;
 
     // C: do_schedule.c:14-15 — endpoint_to_nr lookup.
     let target_nr = match proc_table.endpoint_to_nr(Endpoint(endpoint)) {
@@ -916,11 +915,11 @@ fn dispatch_schedule(
 
     // Apply scheduling parameters via sched_proc (per-CPU scheduling queue).
     // C: do_schedule.c:21-25 — sched_proc(p, priority, quantum, cpu, niced).
-    // C: do_schedule.c:27 — `niced = !!(m_ptr->m_lsys_krn_schedule.niced)`
-    // (boolean coercion of the int field). We pass `false` here matching
-    // the kernel's SYS_SCHEDCTL path (C: do_schedctl.c passes FALSE);
-    // SYS_NICE is not yet wired up, so `niced` stays false for now.
-    let niced = false;
+    // C: do_schedule.c:27 — `niced = !!(m_ptr->m_lsys_krn_schedule.niced)`:
+    // the SYS_SCHEDULE message itself is the data source (C has no SYS_NICE
+    // kernel call — only a 2005 changelog mention in system.h:12). The
+    // kernel's own SYS_SCHEDCTL path passes FALSE (do_schedctl.c:37).
+    let niced = sched.niced != 0;
 
     // Design decision §3.8 (11-scheduling-primitives.md): convert C's i32 -1 sentinel
     // ("keep current") to Option. Negative values other than -1 are rejected
@@ -3076,6 +3075,46 @@ mod tests {
         let result = dispatch_schedule(&mut caller, &msg, &mut proc_table, &priv_table);
         // Should pass SYS_PROC check → reach endpoint validation → EINVAL.
         assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_dispatch_schedule_niced_wire_bit_sets_mf_niced() {
+        // E-SCHEDNICED: C do_schedule.c:27 — `niced = !!(...)` coerces the
+        // SYS_SCHEDULE wire field; sched_proc Step 8 maps it onto MF_NICED
+        // (system.c:695-698). The old dispatch hard-coded `niced = false`,
+        // so the wire value was dropped and NICED could never be set from
+        // SYS_SCHEDULE.
+        use crate::capability::ProcessCapability;
+        use crate::kpriv::USER_PRIV_ID;
+        use crate::proc::MiscFlagsBits;
+
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut caller = KProcess::new(ProcNr(0), minix_types::Endpoint(100));
+        caller.priv_id = Some(USER_PRIV_ID);
+        if let Some(p) = priv_table.get_mut(USER_PRIV_ID) {
+            p.flags.s_flags |= ProcessCapability::SYS_PROC;
+            p.identity.s_proc_nr = Some(ProcNr(0));
+        }
+        // Target: slot 1, occupied with a resolvable endpoint; no user-space
+        // scheduler registered (None → any caller allowed, do_schedule.c:18-19).
+        proc_table.get_mut(ProcNr(1)).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        proc_table.get_mut(ProcNr(1)).unwrap().p_endpoint = minix_types::Endpoint(201);
+
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Schedule as i32;
+        msg.m_u.m_lsys_krn_schedule.endpoint = 201;
+        msg.m_u.m_lsys_krn_schedule.priority = -1; // keep current
+        msg.m_u.m_lsys_krn_schedule.quantum = -1;  // keep current
+        msg.m_u.m_lsys_krn_schedule.cpu = -1;      // keep current
+        msg.m_u.m_lsys_krn_schedule.niced = 1;     // the field under test
+        let result = dispatch_schedule(&mut caller, &msg, &mut proc_table, &priv_table);
+        assert_eq!(result, KcallResult::Ok(0));
+
+        assert!(
+            proc_table.get(ProcNr(1)).unwrap().p_misc_flags.is_set(MiscFlagsBits::NICED),
+            "wire niced=1 必须经 dispatch 到 sched_proc 落成 MF_NICED"
+        );
     }
 
     // ── dispatch_privctl tests (FIX-25, Phase 5) ──────────────────────
