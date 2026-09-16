@@ -14,7 +14,7 @@ pub struct BootImageStruct {
     pub proc_nr: i32,
     /// C: `proc_name[PROC_NAME_LEN]` — name in process table.
     /// (C: `PROC_NAME_LEN` = 16 — type.h:145; re-exports via `boot`.)
-    pub proc_name: [u8; super::PROC_NAME_LEN],
+    pub proc_name: [u8; crate::types::boot::PROC_NAME_LEN],
     /// C: `endpoint` — endpoint number when started.
     pub endpoint: i32,
     /// C: `start_addr` — physical address of the process image.
@@ -27,7 +27,7 @@ impl Default for BootImageStruct {
     fn default() -> Self {
         Self {
             proc_nr: 0,
-            proc_name: [0; super::PROC_NAME_LEN],
+            proc_name: [0; crate::types::boot::PROC_NAME_LEN],
             endpoint: 0,
             start_addr: 0,
             len: 0,
