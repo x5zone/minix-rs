@@ -11,7 +11,7 @@
 //! a kernel and mirrors the transport split of the block-client library.
 
 use super::device::{DeviceExtent, MemoryMinor};
-use minix_types::{ENOMEM, ENXIO, OK};
+use minix_types::{EINVAL, ENOMEM, ENXIO, OK};
 
 /// Bytes in one page window for absolute-memory access.
 ///
@@ -172,11 +172,22 @@ pub trait PageMapper {
     fn window_mut(&mut self) -> &mut [u8];
 }
 
-/// Mapper failure: only out-of-memory exists in C (`memory.c:254-258`).
+/// Mapper failure modes.
+///
+/// C has only out-of-memory (`memory.c:254-258`); its page-start arithmetic
+/// never produces an unaligned address, so the misalignment case below
+/// cannot arise in a faithful caller. It exists so the test mapper (and any
+/// future mapper) can separate "the caller handed me garbage" from "the
+/// backing store is exhausted" instead of overloading one variant with two
+/// causes that need different fixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapperError {
     /// No memory for the mapping (C answers "no memory").
     NoMemory,
+    /// The address was not page-aligned — a caller bug, never a wire
+    /// answer. Should a buggy caller surface it anyway, the honest errno
+    /// is "invalid argument".
+    Misaligned,
 }
 
 impl MapperError {
@@ -184,6 +195,7 @@ impl MapperError {
     pub const fn code(self) -> i32 {
         match self {
             MapperError::NoMemory => ENOMEM,
+            MapperError::Misaligned => EINVAL,
         }
     }
 }
@@ -236,7 +248,7 @@ impl MemMapper {
 impl PageMapper for MemMapper {
     fn map(&mut self, page_start: u64) -> Result<(), MapperError> {
         if !page_start.is_multiple_of(PAGE_WINDOW) {
-            return Err(MapperError::NoMemory);
+            return Err(MapperError::Misaligned);
         }
         let start = page_start as usize;
         let end = start + PAGE_WINDOW as usize;
@@ -426,6 +438,17 @@ mod tests {
         assert_eq!(window.select(0), Err(MapperError::NoMemory));
         assert_eq!(MapperError::NoMemory.code(), ENOMEM);
         assert_eq!(window.mapped_page(), None);
+    }
+
+    #[test]
+    fn test_mem_mapper_splits_misuse_from_exhaustion() {
+        let mut mapper = MemMapper::new(1);
+        // An unaligned address is a caller bug, not exhaustion.
+        assert_eq!(mapper.map(100), Err(MapperError::Misaligned));
+        assert_eq!(MapperError::Misaligned.code(), EINVAL);
+        // Past the backing store is the real out-of-memory.
+        assert_eq!(mapper.map(PAGE_WINDOW), Err(MapperError::NoMemory));
+        assert_eq!(mapper.map(0), Ok(()));
     }
 
     #[test]
