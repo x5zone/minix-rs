@@ -493,7 +493,7 @@ impl FsDriver for MemFileServer {
         *stat = minix_types::Stat {
             device: 0,
             inode: node.inode_number,
-            mode: node.mode as u32,
+            mode: node.mode,
             nlinks: 1,
             owner: 0,
             group: 0,
