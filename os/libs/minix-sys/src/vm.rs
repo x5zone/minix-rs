@@ -1147,4 +1147,112 @@ mod tests {
         let transport = CannedTransport::new();
         let _ = map_cacheblock_via(&transport, NO_DEVICE, 0, 0, 0, &mut 0u32, 4096);
     }
+
+    /// E9 VmApi:VM_RS_SET_PRIV M2 载荷域断言(target/mask_ptr/is_sys)。
+    #[test]
+    fn test_vm_rs_set_priv_m2_fields() {
+        let mut msg = Message::default();
+        // SAFETY: writing the m_m2 arm for wire construction.
+        unsafe {
+            msg.m_u.m_m2 = minix_types::MessageM2 {
+                m2i1: 9,
+                m2l1: 0x5000,
+                m2i2: 1,
+                ..Default::default()
+            };
+        }
+        assert_eq!(unsafe { msg.m_u.m_m2 }.m2i1, 9);
+        assert_eq!(unsafe { msg.m_u.m_m2 }.m2l1, 0x5000);
+        assert_eq!(unsafe { msg.m_u.m_m2 }.m2i2, 1);
+    }
+
+    /// E9 SchedApi:SCHEDULING_START 消息域断言(endpoint/parent/maxprio/quantum)。
+    #[test]
+    fn test_sched_scheduling_start_fields() {
+        let m = minix_types::ipc::MessLsysSchedSchedulingStart {
+            endpoint: 9,
+            parent: 3,
+            maxprio: 8,
+            quantum: 200,
+            _padding: [0; 40],
+        };
+        assert_eq!(m.endpoint, 9);
+        assert_eq!(m.parent, 3);
+        assert_eq!(m.maxprio, 8);
+        assert_eq!(m.quantum, 200);
+    }
+
+    /// E9 SchedApi:SCHEDULING_STOP 消息域断言(endpoint)。
+    #[test]
+    fn test_sched_scheduling_stop_fields() {
+        let m = minix_types::ipc::MessLsysSchedSchedulingStop {
+            endpoint: 9,
+            _padding: [0; 52],
+        };
+        assert_eq!(m.endpoint, 9);
+    }
+}
+
+
+// ── E9 VmApi 分域:RS 服务进程管理的 VM 消息构造面 ──
+
+/// VM_RS_SET_PRIV(0xC25):RS 设置目标进程的特权结构。
+/// M2 载荷:m2i1=target, m2l1=mask buf ptr, m2i2=is_sys_proc。
+pub fn vm_rs_set_priv_via(
+    transport: &impl IpcTransport,
+    target: Endpoint,
+    mask_buf: u64,
+    is_sys: i32,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    {
+        // SAFETY: m_m2 是 VM_RS_SET_PRIV 的文档化载荷。
+        let m2 = unsafe { &mut message.m_u.m_m2 };
+        m2.m2i1 = target.0;
+        m2.m2l1 = mask_buf as i64;
+        m2.m2i2 = is_sys;
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_SET_PRIV as i32, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(())
+}
+
+/// VM_RS_MEMCTL(0xC2A):RS 内存控制(pin/heap/map 预分配等)。
+/// M1 载荷:m1i1=endpt, m1i2=req。
+pub fn vm_rs_memctl_via(
+    transport: &impl IpcTransport,
+    endpt: Endpoint,
+    req: i32,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    {
+        // SAFETY: m_m1 是 VM_RS_MEMCTL 的文档化载荷。
+        let m1 = unsafe { &mut message.m_u.m_m1 };
+        m1.m1i1 = endpt.0;
+        m1.m1i2 = req;
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_MEMCTL as i32, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(())
+}
+
+/// VM_RS_UPDATE(0xC29):RS live-update 更新进程。
+/// M2 载荷:m2i1=src, m2i2=dst, m2i3=flags。
+pub fn vm_rs_update_via(
+    transport: &impl IpcTransport,
+    src: Endpoint,
+    dst: Endpoint,
+    flags: i32,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    {
+        // SAFETY: m_m2 是 VM_RS_UPDATE 的文档化载荷。
+        let m2 = unsafe { &mut message.m_u.m_m2 };
+        m2.m2i1 = src.0;
+        m2.m2i2 = dst.0;
+        m2.m2i3 = flags;
+    }
+    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_UPDATE as i32, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(())
 }

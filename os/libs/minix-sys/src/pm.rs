@@ -708,3 +708,46 @@ mod pm_service_tests {
         // 无 panic 即 Ok;字段断言在集成层覆盖(真传输语义)。
     }
 }
+
+
+// ── E9 SchedApi 分域:SCHEDULING_* 消息构造面(RS/PM → 调度器)──
+
+/// SCHEDULING_START(0xF02):调度器启动目标进程的调度。
+/// C: `sched_start` — sched_start.c:46-88,MessLsysSchedSchedulingStart
+/// {endpoint, parent, maxprio, quantum} 四域。
+pub fn sched_start_via(
+    transport: &impl IpcTransport,
+    scheduler: Endpoint,
+    endpoint: Endpoint,
+    parent: Endpoint,
+    maxprio: i32,
+    quantum: i32,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    message.m_u.m_lsys_sched_scheduling_start = minix_types::ipc::MessLsysSchedSchedulingStart {
+        endpoint: endpoint.0,
+        parent: parent.0,
+        maxprio,
+        quantum,
+        _padding: [0; 40],
+    };
+    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_START, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(())
+}
+
+/// SCHEDULING_STOP(0xF03):调度器停止目标进程的调度。
+pub fn sched_stop_via(
+    transport: &impl IpcTransport,
+    scheduler: Endpoint,
+    endpoint: Endpoint,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    message.m_u.m_lsys_sched_scheduling_stop = minix_types::ipc::MessLsysSchedSchedulingStop {
+        endpoint: endpoint.0,
+        _padding: [0; 52],
+    };
+    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_STOP, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(())
+}
