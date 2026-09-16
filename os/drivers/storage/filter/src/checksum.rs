@@ -31,10 +31,6 @@ pub enum ChecksumKind {
 /// Sectors covered by one group checksum (`NR_SUM_SEC`, `sum.c`).
 pub const SECTORS_PER_GROUP: u32 = 8;
 
-/// How many failed verifications drop a mirror member before the
-/// driver kills it (mirror kill threshold, `driver.c:331-392`).
-pub const MIRROR_KILL_THRESHOLD: u32 = 3;
-
 /// Retry-the-other-mirror marker (`RET_REDO`, `inc.h:57`).
 pub const RETRY_OTHER_MIRROR: i32 = 1;
 
@@ -73,40 +69,84 @@ impl GroupLayout {
     }
 }
 
-/// Mirror health: counts failures and drops the member at the threshold.
+/// Restart budget per lower driver before mirroring gives up
+/// (`NR_RESTARTS`, `main.c:28`).
+pub const NR_RESTARTS: u32 = 3;
+
+/// Which half of the mirror pair a restart belongs to
+/// (`DRIVER_MAIN` / `DRIVER_BACKUP`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MirrorHealth {
-    failures: u32,
-    dropped: bool,
+pub enum MirrorMember {
+    /// The primary driver.
+    Main,
+    /// The mirror driver.
+    Backup,
 }
 
-impl MirrorHealth {
-    /// A freshly attached mirror member.
-    pub fn new() -> Self {
-        MirrorHealth { failures: 0, dropped: false }
-    }
-
-    /// Record one failed verification; true once the member is dropped.
-    pub fn record_failure(&mut self) -> bool {
-        if self.dropped {
-            return true;
-        }
-        self.failures += 1;
-        if self.failures >= MIRROR_KILL_THRESHOLD {
-            self.dropped = true;
-        }
-        self.dropped
-    }
-
-    /// Whether this member still serves requests.
-    pub fn is_live(&self) -> bool {
-        !self.dropped
-    }
+/// What the service should do after one lower driver was restarted.
+///
+/// C: `bad_driver` (`driver.c:384-408`): under the budget the answer is
+/// "retry the request" (`EAGAIN`); crossing the budget with mirroring on
+/// switches mirroring off and promotes the survivor (`OK`); crossing it
+/// without a mirror left gives up (`EIO`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirrorOutcome {
+    /// Keep going: the restart is still inside the budget (`EAGAIN`).
+    Retry,
+    /// Mirroring is now off and the survivor is the new main (`OK`).
+    FailOver,
+    /// The last driver crossed the budget with no mirror left (`EIO`).
+    GiveUp,
 }
 
-impl Default for MirrorHealth {
-    fn default() -> Self {
-        Self::new()
+/// Mirror pair state: per-member restart budgets plus the global
+/// mirroring switch.
+///
+/// C: `driver[which].kills` counts restarts of each lower driver
+/// (`driver.c:384-388`); crossing `NR_RESTARTS` turns `USE_MIRROR` off
+/// for the whole filter and promotes the surviving member to main
+/// (`driver.c:390-405`). Failures are counted per *driver restart*, not
+/// per checksum mismatch, and the response is fail-over plus a global
+/// switch, never a per-member removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirrorState {
+    mirroring: bool,
+    main_kills: u32,
+    backup_kills: u32,
+}
+
+impl MirrorState {
+    /// A pair that came up mirroring (or not, per the command line).
+    pub fn new(mirroring: bool) -> Self {
+        MirrorState {
+            mirroring,
+            main_kills: 0,
+            backup_kills: 0,
+        }
+    }
+
+    /// Record that `member` was restarted; returns the continuation.
+    pub fn record_restart(&mut self, member: MirrorMember) -> MirrorOutcome {
+        let kills = match member {
+            MirrorMember::Main => &mut self.main_kills,
+            MirrorMember::Backup => &mut self.backup_kills,
+        };
+        *kills += 1;
+        if *kills < NR_RESTARTS {
+            return MirrorOutcome::Retry;
+        }
+        if self.mirroring {
+            // Threshold reached with a mirror left: mirroring goes off
+            // and the survivor becomes the main driver.
+            self.mirroring = false;
+            return MirrorOutcome::FailOver;
+        }
+        MirrorOutcome::GiveUp
+    }
+
+    /// Whether mirroring is still on.
+    pub const fn is_mirroring(&self) -> bool {
+        self.mirroring
     }
 }
 
@@ -124,14 +164,59 @@ mod tests {
     }
 
     #[test]
-    fn test_mirror_drops_at_threshold() {
-        let mut health = MirrorHealth::new();
-        assert!(health.is_live());
-        assert!(!health.record_failure());
-        assert!(!health.record_failure());
-        assert!(health.record_failure());
-        assert!(!health.is_live());
-        assert!(health.record_failure());
+    fn test_mirror_failover_after_restart_budget() {
+        // Two restarts are inside the budget (EAGAIN); the third crossing
+        // switches mirroring off and promotes the survivor (driver.c:
+        // 384-405).
+        let mut mirror = MirrorState::new(true);
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::Retry
+        );
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::Retry
+        );
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::FailOver
+        );
+        assert!(!mirror.is_mirroring());
+    }
+
+    #[test]
+    fn test_last_driver_crossing_budget_gives_up() {
+        // With mirroring already off, a member crossing the budget has no
+        // survivor to promote: give up (EIO).
+        let mut mirror = MirrorState::new(false);
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::Retry
+        );
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::Retry
+        );
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::GiveUp
+        );
+    }
+
+    #[test]
+    fn test_members_count_restarts_independently() {
+        // Budgets are per member: the main and the backup each get their
+        // own NR_RESTARTS allowance.
+        let mut mirror = MirrorState::new(true);
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Backup),
+            MirrorOutcome::Retry
+        );
+        assert_eq!(
+            mirror.record_restart(MirrorMember::Main),
+            MirrorOutcome::Retry
+        );
+        assert!(mirror.is_mirroring());
     }
 
     #[test]

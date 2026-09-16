@@ -210,6 +210,14 @@ minix-plat = { path = "plat" }
 minix-kernel = { path = "kernel", default-features = false }
 boot-shim = { path = "boot-shim", default-features = false }
 
+# 驱动框架库（16-stage-drivers）
+minix-chardriver = { path = "libs/minix-chardriver" }
+minix-blockdriver = { path = "libs/minix-blockdriver" }
+minix-netdriver = { path = "libs/minix-netdriver" }
+minix-bdev = { path = "libs/minix-bdev" }
+minix-virtio = { path = "libs/minix-virtio" }
+minix-usb = { path = "libs/minix-usb" }
+
 # 外部依赖
 bitflags = "2.4"
 
