@@ -2,7 +2,7 @@
 //!
 //! Defines the messages exchanged between PM and other services (Kernel, VM, VFS).
 
-use crate::{EAGAIN, EINVAL, EIO, ENOMEM, ENOSYS, EPERM, ESRCH, Endpoint};
+use crate::{EAGAIN, EINVAL, EIO, ENOMEM, ENOSYS, EPERM, ESRCH};
 
 /// PM 错误类型（fork 协调错误的用户可见形态；`PmRequest`/`PmResponse`
 /// 两个零使用枚举已按 E7 预裁决删除——PM wire 面由类型化
@@ -63,9 +63,8 @@ pub const PM_SYSUNAME: i32 = 25;
 pub const PM_SVRCTL: i32 = 38;
 /// C: `PM_SPROF (PM_BASE + 39)` — callnr.h:52.
 pub const PM_SPROF: i32 = 39;
-/// C: `PM_GETSYSINFO (PM_BASE + 47)` — callnr.h:60（PM 服务端 SI 表；
-/// 表快照 wire 归 E-MIBPROD/E-ISPROD 域）。
-pub const PM_GETSYSINFO: i32 = 47;
+// PM_GETSYSINFO（PM_BASE + 47，callnr.h:60）已有权威定义于
+// `ipc/sysinfo.rs`（PM 表请求，E-MIBPROD/E-ISPROD 域）——不在此重复。
 
 /// `mcontext_t` 指针载荷（GETMCONTEXT/SETMCONTEXT 共用）。
 ///
@@ -77,6 +76,12 @@ pub struct MessLcPmMcontext {
     /// `mcontext_t *`——用户态上下文存储地址。
     pub ctx: u64,
     _pad: [u8; 48],
+}
+
+impl Default for MessLcPmMcontext {
+    fn default() -> Self {
+        Self { ctx: 0, _pad: [0; 48] }
+    }
 }
 impl MessLcPmMcontext {
     pub const fn new() -> Self {
@@ -674,7 +679,6 @@ mod g_batch_wire_tests {
         assert_eq!(PM_SYSUNAME, 25); // callnr.h:38
         assert_eq!(PM_SVRCTL, 38); // callnr.h:51
         assert_eq!(PM_SPROF, 39); // callnr.h:52
-        assert_eq!(PM_GETSYSINFO, 47); // callnr.h:60
     }
 
     /// 布局见证：五个 G 批结构均为 56 字节（PM wire 总长契约）。

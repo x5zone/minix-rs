@@ -14,8 +14,6 @@
 //! `mpsigact` 表、`mp_timer` 链）对应字段保持零值——C 消费方对
 //! "未使用"与"零值"的处理相同。
 
-use core::mem::size_of;
-
 /// C `NGROUPS_MAX` — sys/sys/syslimits.h:59。
 pub const NGROUPS_MAX: usize = 16;
 /// C `PROC_NAME_LEN` — type.h:145。
@@ -98,6 +96,12 @@ pub struct MprocWire {
     pub mp_name: [u8; PROC_NAME_LEN],
     pub mp_magic: i32,
     _pad3: [u8; 4],
+}
+
+impl Default for MprocWire {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MprocWire {

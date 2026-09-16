@@ -62,7 +62,7 @@ pub use id::*;
 pub use irq_hook::*;
 pub use kinfo::*;
 pub use kerninfo::*;
-pub use mproc::*;
+pub use mproc::{MprocWire, SigSetWire, MinixTimerWire, MP_MAGIC, NGROUPS_MAX};
 pub use pid::*;
 pub use priv_info::*;
 pub use proc_info::*;

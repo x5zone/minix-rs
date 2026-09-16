@@ -40,6 +40,7 @@ pub const GET_KENV: i32 = 5;
 pub const GET_IRQHOOKS: i32 = 6;
 // 7: E-ISKMESS A-3 决策的 `GET_KMESSAGES` 新臂(04 篇 §4.1;C 头未
 // 分配此孔,minix-rs 以孔 7 作内核消息环形缓冲快照的请求号)。
+#[allow(dead_code)] // IS 生产 KerninfoTransport（real-trap 构建）消费
 pub const GET_KMESSAGES: i32 = 7;
 /// C: `GET_PRIVTAB 8` — com.h:323.
 pub const GET_PRIVTAB: i32 = 8;
