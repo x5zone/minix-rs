@@ -90,20 +90,7 @@ pub fn sync_filesystem(
 /// the bits it actually holds; missing tail bytes count as nothing, never
 /// as free.
 pub fn count_free_bits(image: &[u8], total_bits: u64) -> u64 {
-    let mut free = 0u64;
-    let mut bit = 0u64;
-    for byte in image {
-        for position in 0..8u64 {
-            if bit >= total_bits {
-                return free;
-            }
-            if byte & (1 << position) == 0 {
-                free += 1;
-            }
-            bit += 1;
-        }
-    }
-    free
+    crate::superblock::count_clear_bits_in_image(image, 0, total_bits)
 }
 
 /// Decide whether a dirty mark is legal (`MARKDIRTY`, `clean.h:5-12`).

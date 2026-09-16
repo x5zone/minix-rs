@@ -386,6 +386,25 @@ pub struct Bitmap {
     bit_count: u64,
 }
 
+
+/// Count clear bits in a bitmap image starting at map bit `base`, stopping
+/// at `total_bits` map bits. Bits at or past the total are padding and are
+/// never counted, even when clear (`stats.c:73-76`); image bytes past the
+/// bit count contribute nothing. The one primitive behind the free-space
+/// counts of documents 10, 16, and 17.
+pub fn count_clear_bits_in_image(image: &[u8], base: u64, total_bits: u64) -> u64 {
+    let covered = (image.len() as u64).saturating_mul(8);
+    let limit = covered.min(total_bits.saturating_sub(base));
+    let mut free = 0u64;
+    for index in 0..limit {
+        let byte = image[(index / 8) as usize];
+        if byte & (1 << (index % 8)) == 0 {
+            free += 1;
+        }
+    }
+    free
+}
+
 impl Bitmap {
     /// Empty map of `bit_count` bits, all free except reserved bit zero
     /// (always set on disk, never allocated).

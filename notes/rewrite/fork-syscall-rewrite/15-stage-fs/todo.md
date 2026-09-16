@@ -166,6 +166,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **✅ 2026-09-17 闭环（Fix #11）**：`handle_header` 返回类型改为 `HeaderAction` 三态（Silence/Reply{status,transaction}/Continue{request,transaction}），虚构的 `Reply{status:0}` 不再存在；随重构 `Handling` 枚举失去全部使用者，按死代码纪律一并移除。九十七测试全绿。
 
 **V1-P2-7 空闲位统计的三份重复实现。** mount.rs:242、meta.rs:349、maint.rs:92 各有一份逐块计位实现，C 只有 stats.c:14 一份。修复：收敛到 superblock.rs 一处（与位图同址），三处改调用；顺带补 origin 起点语义说明（C 从 s_isearch/s_zsearch 起步会漏计尾部，Rust 从 0 计满图——收敛时统一为计满图并记录）。
+**✅ 2026-09-17 闭环（Fix #18）**：权威核 `superblock::count_clear_bits_in_image(image, base, total_bits)` 落地（位图同址、纯函数、带越界裁剪），mount/meta/maint 三处改调该核——语义统一为「从零计满图」，origin 起点差异一并消灭；测试全绿（一百二十三个）。
 
 **V1-P2-8 块层缺口分组。** 本 stage 内：ONE_SHOT 前插（cache.c:533-544）、`lmfs_prefetch` 位图选区间（cache.c:1089-1130）、脏块排序批量写（cache.c:884-885）、运行期池调整与 usage 重估触发（cache.c:119-161、cache.c:1192-1207）。跨轨道：短末块部分读写与 gather/scatter（E-FSBDEV）、vmcache 零拷贝与旗标机（E-FSVMCACHE）。本 stage 内的四项在 V2 轮按「先测试钉行为、再对齐实现」推进。
 

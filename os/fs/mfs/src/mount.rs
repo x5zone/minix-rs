@@ -465,20 +465,13 @@ pub fn count_free_bits<S: BlockSource>(
                 AcquireMode::Normal,
             )
             .map_err(|_| MountError::Inner(Errno::from_i32(EIO)))?;
-        let data = cache.slot_data(slot);
-        for (word_index, chunk) in data.chunks(4).enumerate() {
-            let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            for bit in 0..32u64 {
-                let number = index * block_size as u64 * 8 + word_index as u64 * 32 + bit;
-                if number >= bits {
-                    break;
-                }
-                if word & (1 << bit) == 0 {
-                    free += 1;
-                }
-            }
-        }
+        let image = cache.slot_data(slot).to_vec();
         let _ = cache.release(slot);
+        free += crate::superblock::count_clear_bits_in_image(
+            &image,
+            index * block_size as u64 * 8,
+            bits,
+        );
     }
     Ok(free)
 }

@@ -351,8 +351,8 @@ fn count_clear_bits<S: BlockSource>(
     superblock: &crate::superblock::Superblock,
 ) -> Result<u64, MetaError> {
     let total_bits = superblock.inode_count as u64 + 1;
+    let block_bits = (superblock.block_size * 8) as u64;
     let mut free = 0u64;
-    let mut bit = 0u64;
     for index in 0..superblock.inode_map_blocks.max(0) as u64 {
         let slot = cache
             .acquire(
@@ -362,20 +362,11 @@ fn count_clear_bits<S: BlockSource>(
             .map_err(|_| MetaError::Invalid)?;
         let bytes = cache.slot_data(slot).to_vec();
         let _ = cache.release(slot);
-        for byte in bytes {
-            for position in 0..8u64 {
-                if bit >= total_bits {
-                    break;
-                }
-                if byte & (1 << position) == 0 {
-                    free += 1;
-                }
-                bit += 1;
-            }
-            if bit >= total_bits {
-                break;
-            }
-        }
+        free += crate::superblock::count_clear_bits_in_image(
+            &bytes,
+            index * block_bits,
+            total_bits,
+        );
     }
     Ok(free)
 }
