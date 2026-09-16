@@ -254,6 +254,21 @@ impl X86_64Protection {
         self.gdt[gdt_idx + 1] = desc[1];
     }
 
+    /// Rebuild every CPU's 16-byte TSS descriptor from the instance's
+    /// CURRENT address (E1: `init()` builds the descriptors while the
+    /// instance is still a stack local; after the move into the global the
+    /// embedded bases are stale, and the first CPL3→CPL0 transition — the
+    /// first user-mode entry — reads a dead TSS whose sp0 is 0).
+    pub fn refresh_tss_descriptors(&mut self) {
+        for slot in 0..MAX_CPUS as u32 {
+            let tss_addr = &self.tss[slot as usize] as *const Tss64 as u64;
+            let desc = make_tss_desc64(tss_addr, TSS64_SIZE as u16 - 1, 0);
+            let gdt_idx = GDT_TSS_FIRST_INDEX + slot as usize * GDT_SLOTS_PER_TSS;
+            self.gdt[gdt_idx] = desc[0];
+            self.gdt[gdt_idx + 1] = desc[1];
+        }
+    }
+
     /// Task-register selector for `cpu_id` (long-mode selector math: the
     /// descriptor starts at GDT slot `GDT_TSS_FIRST_INDEX + i*2`).
     fn tss_selector(cpu_id: u32) -> u16 {

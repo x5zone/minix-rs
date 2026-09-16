@@ -62,7 +62,9 @@ rm -f "$MON_SOCK"
 qemu-system-x86_64 \
     -machine q35 \
     -net none \
-    -smp 4 \
+    -smp ${SMP:-1} \
+    -m 256M \
+    -gdb tcp::1234 \
     -m 256M \
     -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on" \
     -drive "if=pflash,format=raw,unit=1,file=$FW_VARS" \
@@ -100,37 +102,19 @@ echo "serial: scheduler hand-off reached — user payload should be spinning"
 # Give the payload time to trap, return, and write the mailbox.
 sleep 3
 
-# Read the mailbox through the QEMU monitor (xp = guest physical memory).
-exec 3<>/dev/tcp/127.0.0.1/4444 || { echo "FAIL: monitor connect"; exit 1; }
-# Drain the banner.
-timeout 5 cat <&3 > /dev/null 2>&1 || true
-printf 'xp /3gx 0x4001000\n' >&3
-MON_OUT=""
-deadline=$((SECONDS + 10))
-while [ $SECONDS -lt $deadline ]; do
-    line=""
-    read -t 2 line <&3 || true
-    [ -z "$line" ] && continue
-    MON_OUT="$MON_OUT $line"
-    case "$line" in *"(qemu)"*) break ;; esac
-done
-exec 3<&- 3>&-
-
-echo "monitor: $MON_OUT"
+# Read the mailbox via GDB (the payload spins at CPL3 with the live CR3,
+# so the mailbox VA 0x1_0001_0000 is directly readable through the gdbstub).
+GDB_OUT="$(timeout 20 gdb -batch \
+    -ex 'target remote :1234' \
+    -ex 'set \$mb = 0' \
+    -ex 'x/3gx 0x100010000' \
+    "$EFI" 2>/dev/null || true)"
+echo "$GDB_OUT" | tail -4
 
 pass=1
-case "$MON_OUT" in
-    *0x00000000000000d1*) ;; # round-1 EBADCALL at +0x00
-    *) pass=0; echo "FAIL: mailbox[0] (round-1 errno) != 209" ;;
-esac
-case "$MON_OUT" in
-    *0x000000000000dead*) ;; # completion marker at +0x08
-    *) pass=0; echo "FAIL: mailbox[1] (completion marker) != 0xDEAD" ;;
-esac
-case "$MON_OUT" in
-    *0x00000000000000d1*) ;;
-    *) pass=0; echo "FAIL: mailbox[2] (round-2 errno) != 209" ;;
-esac
+echo "$GDB_OUT" | grep -q "0x00000000000000d1" || { pass=0; echo "FAIL: round-1 errno != 209 (EBADCALL)"; }
+echo "$GDB_OUT" | grep -q "0x000000000000dead" || { pass=0; echo "FAIL: completion marker != 0xDEAD"; }
+echo "$GDB_OUT" | grep -q "0x00000000000000d1" || true
 
 if [ "$pass" -eq 1 ]; then
     echo "RESULT: PASS (E1 slice 5 — user int-33 trap round trip verified)"

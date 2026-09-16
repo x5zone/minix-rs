@@ -822,6 +822,12 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // second instance.
     let prot = CurrentProtection::init(0, kernel_info.kern_stack_top);
     store_protection(prot);
+    // E1: the instance's address changed when it moved into the global —
+    // the TSS descriptors embedded in the GDT still encode the pre-move
+    // stack-local bases. Rebuild them from the final addresses before
+    // ltr; otherwise the first CPL3→CPL0 transition (user-mode entry)
+    // reads a dead TSS (sp0 = 0 → page fault at VA -8 on the frame push).
+    with_protection_mut(|prot| prot.refresh_tss_descriptors());
     with_protection(|prot| prot.load());
 
     // S-6.1 (D-40 identity anchor): program the BSP's GS area so
@@ -900,6 +906,17 @@ pub(crate) fn with_protection<R>(
     f: impl FnOnce(&minix_arch::x86_64::protection::X86_64Protection) -> R,
 ) -> R {
     let p = unsafe { (*PROTECTION.get()).as_ref() }
+        .expect("PROTECTION not initialized — init_protection must run first");
+    f(p)
+}
+
+/// Mutable variant for boot-time fixes that must run against the live
+/// tables (E1: the TSS descriptor rebuild after the instance moved into
+/// the global). Single-threaded boot only.
+pub(crate) fn with_protection_mut<R>(
+    f: impl FnOnce(&mut minix_arch::x86_64::protection::X86_64Protection) -> R,
+) -> R {
+    let p = unsafe { (*PROTECTION.get()).as_mut() }
         .expect("PROTECTION not initialized — init_protection must run first");
     f(p)
 }
