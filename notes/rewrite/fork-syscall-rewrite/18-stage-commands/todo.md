@@ -176,7 +176,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - ✅ **echo 端到端落地**（原步骤 2 提前为模板步骤）：`minix-fileops` 新增 `src/echo.rs` 决定半——`echo_emit(argv, emit_sink)` 零分配纯函数，承载 echo.c 的全部判定语义（仅首位 `-n` 是标志且 echo.c:61 明文禁止 getopt、单空格分隔无尾随、换行控制、写失败即停上报），10 个测试全过（ crate 共 30）；`src/bin/echo.rs` 执行半薄壳——`minix_sys::write(STDOUT, piece)` 逐片写、退出码 0/1。
 - ✅ **两个宿主/真机接缝的裁决**（新发现，超出原计划）：① `minix_sys::exit` 在宿主必然自旋（`pm.rs:141-155` 忠实复刻 C `_exit` 的最后手段——协议失败即挂），echo 因此改用显式 `terminate()` 接缝（std 构建走宿主运行时终止；no_std 构建换 `minix_sys::exit`，与 argv 接缝同批切换）；② 冒烟进一步暴露 `perform_syscall`（`syscall.rs:94-101`）按 m_type 负值判错而 `DirectTrapTransport` 的 Err 携带正 errno（`ipc.rs:549`），宿主下全部 `*_via` 假成功（write 返回 Ok(5)）——属 14 侧共享协议层，登记 edge **E-SYSCALL-SIGN**，14 修复后本命令宿主行为自动变诚实（exit 1），命令代码零改动。
 - ⚠️ **步骤顺序偏离及理由**：原步骤 1 是"init 域示范（reboot/shutdown/rcorder）"。让位于 echo 的理由：reboot/shutdown/rcorder 按 plan §6 属交付链收尾批 8，且 reboot(2)/时间解析等执行面尚缺、先行只会造出新的"说谎二进制"；echo 是 §6 批 1 的 stdio 批成员、99 §3 已裁定其依赖齐备，作为模板更有代表性。init 域 bin 留在批 8 与其执行面一起实现。
-- 待续：步骤 3（占位壳删除）、步骤 4（plan 与文档同步）、后续逐域接线（每批同步回填 Requires 列）。
+- ✅ **步骤 3 占位壳删除完成**（2026-09-17，迭代 6）：34 个说谎占位 crate（bin 七个、sbin 三个、游戏个体二十四个）已从 `os/commands/` 与 workspace 成员表整体移除，成员收敛为 24 个域 crate（init + 23 库）+ 少量服务/工具项；`cargo metadata` 校验通过、`minix-stdio-games` 35 测试与 `minix-fileops` 30 测试回归全绿、仓库内无任何 crate 引用它们（grep 实证）。`primes`（流式区间）与 `arithmetic`（交互随机源）等执行面缺口随各域批次的 Requires 列登记，不再以 exit(0) 占位壳的形式假装存在。
+- 待续：步骤 4（plan 与各篇文档头同步）、后续逐域接线（每批同步回填 Requires 列）。
 
 ---
 
