@@ -605,6 +605,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：E2（`_kernel_call` wrapper）；与 E-KERNINFO（kerninfo 共享家族）交叉引用——按 04 篇既定决策走 sys_getinfo 子请求，不依赖 MINIX_KERNINFO 映射机制。
 **解锁**：08-stage-is DumpId::Kmessages 臂。
 
+> **收口（2026-09-17，✅ IS 侧取数通道填实）**：内核半（kmess 环形缓冲 + GET_KMESSAGES=7 子请求臂 + copy_snapshot_to_caller）已由 D-17（832c20945）落地；本日补齐最后一块——IS 生产 `KernelKmessTransport`（sys_getinfo_into 经 DirectKernelCallTransport 拉取 10008 字节快照：km_next/km_size 头 + 10000 环体），拆包进 KmessagesSnap + ring 前缀（容量截断语义与 kmessages_dmp 游标自排解耦）；宿主构建诚实上浮 -EIO（real-trap 门控同款）。测试 ×4（拆包 round-trip/容量截断/宿主 -EIO/尺寸契约，106→110 passed）。**链路激活待 E-ISWIRE(3) 的 IS main 装配**（当前 main 仍挂 UnimplementedAcquires，A-6 裁决项）。
+
 > **复核（2026-09-15）**：IS 侧锚点更新——fail-closed panic 现于 acquire.rs:289（should_panic 测试 :644-645）；kernel 侧与 minix-types 的 GET_KMESSAGES 仍双零命中（仅 syscall.rs:2591/2604-2609/3828 关于 kmess 缓冲已移除的注释）。
 
 ---
