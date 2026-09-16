@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作第二组——文件里面的行：取头取尾、排序去重、计数切割、字符转换
 > **源码**: `minix3/usr.bin/` 三十五个（`head` 204 行、`sort` 418 行、`wc` 354 行、`tr` 283 行、`uniq` 257 行、`cut` 306 行，及 `cksum`、`cmp`、`col`、`colrm`、`column`、`comm`、`csplit`、`expand`、`fold`、`hexdump`、`join`、`jot`、`lam`、`paste`、`patch`、`rev`、`sdiff`、`seq`、`shuffle`、`split`、`tail`、`tee`、`unexpand`、`unifdef`、`units`、`unvis`、`uuidgen`、`vis`、`yes`）、`minix3/minix/commands/` 三个（`look`、`ifdef`、`crc`）、`minix3/minix/usr.bin/diff/`
-> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`，25 个测试通过）
+> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`，库测试 25 个）；同 crate `src/bin/` 薄壳三个已接线：tr、cut、uniq（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`08-grep-sed.md`（正则概念在后——阅读顺序先本篇后 08，但概念上 08 是本篇部分工具的理论基础，见 1.5 节说明）
 > **不覆盖（移交）**: 正则引擎（见 `08-grep-sed.md`）、编辑器（见 `09-editors.md`）、排序的缓冲策略与比较器（后续阶段）
 
@@ -142,7 +142,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-textfilter`：**25 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-textfilter`：**25 个测试，全部通过**（截至 2026-09-17）；另有 tr、cut、uniq 三个已接线的命令二进制，其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/textfilter` 复现）：
 
@@ -152,7 +152,19 @@
 - **字符集**（`tr.rs`，7 个）：`test_translate_basic`（基本映射）、`test_short_second_set_repeats_last`（短集补末）、`test_range_and_repeat_sets`（区间与重复写法）、`test_named_class`（命名类十数字）、`test_delete_and_squeeze`（删除与压缩）、`test_class_strategies_agree`（两策略 256 字节一致）、`test_bad_sets_rejected`（逆区间、未知类名、坏重复）。
 - **去重**（`uniq.rs`，4 个）：`test_collapses_adjacent`（相邻合并、非相邻不合并）、`test_repeated_and_unique_modes`（两种筛选）、`test_counted_format`（计数前缀）、`test_empty_input_no_runs`（空输入）。
 
-尚未覆盖、随后续阶段补齐的：排序执行层（键解析、外部归并）、比较器（`cmp`、`diff`、`patch` 的文件配对）、分页与数字格式化（`pr`、`seq` 的输出宽度）、多字节字符感知（`cut -c`、`tr` 类、正则引擎统一升级）。行算法层是全覆盖的，执行与策略层是显式留白的。
+尚未覆盖、随后续阶段补齐的：排序执行层（键解析、外部归并）、比较器（`cmp`、`diff`、`patch` 的文件配对）、分页与数字格式化（`pr`、`seq` 的输出宽度）、多字节字符感知（`cut -c`、`tr` 类、正则引擎统一升级）、uniq 的 `-i`/`-f`/`-s` 比较面与组合模式（库尚只载单一模式，见 §4.4 标注）。行算法层与三个已接线二进制是完整的，执行与策略层是显式留白的。
+
+### 4.5 命令契约与 Requires
+
+行为判定沿用 `99-global-concepts.md` §2 的规则：以 POSIX 为准绳、以 Minix3 C 实现为真值，C 偏离处在"当前状态"列标注。依赖面按 §1 分层契约只含 `minix-sys` 顶层与 `minix-rt`：
+
+| 命令 | Requires（最小 API） | 当前状态 |
+|------|---------------------|---------|
+| tr | `read`、`write`、`exit`、argv 交接 | 已接线（翻译、`-d` 删除、`-s` 压缩、`-c` 取补四路） |
+| cut | 同上 | 已接线（`-b`/`-c` 字节与 `-f` 字段两路，`-d`/`-s` 就位）；文件操作数待开放路径调用解锁（现仅 stdin） |
+| uniq | 同上 | 已接线（`-c`/`-d`/`-u` 单模式）；`-i`/`-f`/`-s` 比较面与组合模式待批 |
+| head、tail、wc | 同上 | 决定半已测（`window.rs`、`count.rs`），薄壳随下一批接线 |
+| sort、cmp、diff、patch、pr、seq 及其余 | 各自的决定半尚未写库 | 随对应批次立项 |
 
 ---
 
