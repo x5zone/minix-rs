@@ -109,12 +109,16 @@ pub fn check_name_for_rename(name: &str) -> Result<(), Errno> {
 // ---------------------------------------------------------------------------
 
 /// Validated input for the mount (`ReadSuper`) adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountInput {
     /// Device to mount from.
     pub device: u64,
     /// Mount flags from the request.
     pub flags: MountFlags,
+    /// Driver label carried by the request (`fsdriver_getname`,
+    /// `call.c:36-41`). Owned because the C adapter copies the name out of
+    /// its grant into a local buffer before anyone reads it.
+    pub label: alloc::string::String,
 }
 
 /// Outcome of a successful mount: the root node plus the negotiated
@@ -148,7 +152,7 @@ pub fn adapt_mount<D: FsDriver>(
     if already_mounted {
         return Err(Errno::from_i32(minix_types::EBUSY));
     }
-    driver.bound_driver(input.device, "");
+    driver.bound_driver(input.device, &input.label);
     let mut capabilities = CapabilityFlags::EMPTY;
     let root = driver.mount(input.device, input.flags, &mut capabilities)?;
     capabilities = negotiate_peek(capabilities, file_peek, block_peek, has_backing_device);
@@ -722,26 +726,63 @@ mod tests {
 
     #[test]
     fn test_mount_refuses_second_mount() {
-        let mut driver = StubDriver::ok();
-        let input = MountInput {
+        let input = || MountInput {
             device: 3,
             flags: MountFlags::EMPTY,
+            label: alloc::string::String::new(),
         };
+        let mut driver = StubDriver::ok();
         // Diskless stub without peek entry points: the framework still
         // advertises peek because reads can emulate it.
-        let reply = adapt_mount(&mut driver, input, false, false, false, false).unwrap();
+        let reply = adapt_mount(&mut driver, input(), false, false, false, false).unwrap();
         assert!(reply.capabilities.has_peek());
         // Backed device without peek entry points: no peek advertised.
         let mut driver = StubDriver::ok();
-        let reply = adapt_mount(&mut driver, input, false, true, false, false).unwrap();
+        let reply = adapt_mount(&mut driver, input(), false, true, false, false).unwrap();
         assert_eq!(reply.root.inode_number, 10);
         assert!(!reply.capabilities.has_peek());
         assert_eq!(
-            adapt_mount(&mut driver, input, true, true, false, false)
+            adapt_mount(&mut driver, input(), true, true, false, false)
                 .unwrap_err()
                 .to_i32(),
             minix_types::EBUSY
         );
+    }
+
+    #[test]
+    fn test_mount_carries_driver_label() {
+        struct LabelSpy {
+            seen: Option<alloc::string::String>,
+        }
+        impl FsDriver for LabelSpy {
+            fn mount(
+                &mut self,
+                device: u64,
+                _flags: MountFlags,
+                capabilities: &mut CapabilityFlags,
+            ) -> Result<FileNode, Errno> {
+                *capabilities = CapabilityFlags::EMPTY;
+                Ok(FileNode::new(1, 0o040755, 0, 0, 0, device))
+            }
+            fn bound_driver(&mut self, _device: u64, label: &str) {
+                self.seen = Some(alloc::string::String::from(label));
+            }
+        }
+        let mut driver = LabelSpy { seen: None };
+        adapt_mount(
+            &mut driver,
+            MountInput {
+                device: 2,
+                flags: MountFlags::EMPTY,
+                label: alloc::string::String::from("ram0"),
+            },
+            false,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(driver.seen.as_deref(), Some("ram0"));
     }
 
     #[test]
@@ -801,6 +842,7 @@ mod tests {
             MountInput {
                 device: 4,
                 flags: MountFlags::EMPTY,
+                label: alloc::string::String::new(),
             },
             server.state.mount.is_mounted(),
             true,

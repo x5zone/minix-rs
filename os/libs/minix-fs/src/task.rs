@@ -50,7 +50,7 @@ use crate::protocol::{FileNode, LookupFlags, MountFlags, TransactionId};
 /// The C adapter writes a whole `struct stat` (or `struct statvfs`) into the
 /// reply area; the exact layout is the caller's agreement (see the `stat`
 /// method documentation). Servers that need more ask for more.
-pub const STATUS_SCRATCH_SIZE: usize = 64;
+pub const STATUS_SCRATCH_SIZE: usize = 96;
 
 /// One received message envelope: who sent it, whether the kernel flagged it
 /// as a notification, and the raw message type.
@@ -79,6 +79,9 @@ pub enum RequestBody {
         device: u64,
         /// Mount flags.
         flags: MountFlags,
+        /// Driver label, fetched by the transport (`fsdriver_getname`,
+        /// `call.c:36-41`).
+        label: alloc::string::String,
     },
     /// Release references on an inode (`PutNode`).
     PutNode {
@@ -460,12 +463,16 @@ fn dispatch<D: FsDriver, T: FsTransport>(
     let err = |e: Errno| error(e.to_i32());
     let zero = || FsReply::status(0, transaction);
     match body {
-        RequestBody::ReadSuper { device, flags } => {
+        RequestBody::ReadSuper { device, flags, label } => {
             let already = server.state.mount.is_mounted();
             let (file_peek, block_peek, has_backing_device) = server.peek_knobs();
             match adapt_mount(
                 &mut server.driver,
-                crate::call::MountInput { device, flags },
+                crate::call::MountInput {
+                    device,
+                    flags,
+                    label,
+                },
                 already,
                 has_backing_device,
                 file_peek,
@@ -1093,6 +1100,7 @@ mod tests {
                 RequestBody::ReadSuper {
                     device: 4,
                     flags: MountFlags::EMPTY,
+                    label: alloc::string::String::new(),
                 },
             ),
             Incoming::Request(
@@ -1147,6 +1155,7 @@ mod tests {
                 RequestBody::ReadSuper {
                     device: 4,
                     flags: MountFlags::EMPTY,
+                    label: alloc::string::String::new(),
                 },
             ),
             Incoming::Request(
@@ -1181,6 +1190,7 @@ mod tests {
                 RequestBody::ReadSuper {
                     device: 9,
                     flags: MountFlags::EMPTY,
+                    label: alloc::string::String::new(),
                 },
             ),
             Incoming::Request(
