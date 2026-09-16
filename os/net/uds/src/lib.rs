@@ -15,6 +15,8 @@
 pub mod core;
 /// Data plane policy: ring arithmetic, segment kinds, caps.
 pub mod io;
+/// Service main loop: SEF interception and the socket-device road.
+pub mod server;
 
 /// Service initialization entry (wires the tables; traffic and storage stay out).
 pub fn init() {}

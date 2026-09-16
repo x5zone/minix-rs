@@ -51,6 +51,15 @@ pub fn version_allowed(major: u32, minor: u32) -> bool {
     major == VERSION_MAJOR && minor == VERSION_MINOR
 }
 
+/// Whether a message type is a character or block device request — the two
+/// ranges the main loop routes to the filter device (`lwip.c:358-361`:
+/// `IS_CDEV_RQ`/`IS_BDEV_RQ`). The range bases are owned by the driver
+/// frameworks, not re-declared here.
+pub fn is_filter_request(m_type: i32) -> bool {
+    minix_chardriver::protocol::is_char_request(m_type)
+        || (m_type & !0x7f) == minix_blockdriver::protocol::BDEV_REQUEST_BASE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

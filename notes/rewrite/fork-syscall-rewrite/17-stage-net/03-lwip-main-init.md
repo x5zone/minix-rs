@@ -2,7 +2,7 @@
 
 > **分类**：服务骨架（十三步上楼，四路分岔口，建户按域分）
 > **源码**：`minix3/minix/net/lwip/lwip.c`（三百八十二行的启动链与主循环）、`minix3/minix/net/lwip/mibtree.c`（一百四十一行的管理树注册）
-> **Rust 模块**：`os/net/lwip/src/startup.rs`（启动阶段机与分发道路）
+> **Rust 模块**：`os/net/lwip/src/startup.rs`（启动阶段机与分发道路）、`os/net/lwip/src/server.rs`（主循环、传输接缝、道路分发）、`os/libs/minix-netdriver/src/service.rs`（两服务共用的到达分类器）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/01-sockdriver-framework.md`（套接字框架，十七请求）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`（事件框架，对象与续作）
 > **说明**：轻量骨架是两框架第一次完整消费：启动链十三步一步登天，主循环四路分岔各走各。本篇讲上楼顺序与分岔口，不讲各房间内部。各模块实现与消息流量在服务层，本库只定顺序与道路。
 
@@ -63,6 +63,10 @@
 ### 2.3 主循环四路（`lwip.c` 第三百零一行到第三百七十九行）
 
 循环前置：扫环回队 `ifdev_poll`（第三百零七行），看闹钟 `check_lwip_timer`（第三百一十五 行），收信 `sef_receive_status`（第三百一十七行，中断继续他错崩溃在第三百一十八行到第三百二十一行）。通知路在第三百二十五行（时钟 `expire_timers` 响铃在第三百二十八行，设备上下线 `ndev_check` 查网卡在第三百三十四行）。管理路在第三百四十七行（转管理库 `rmib_process` 处理在第三百四十八行）。套接字路在第三百五十二行（套接字请求交 `sockevent_process` 事件处理在第三百五十五 行，字符块请求交 `bpfdev_process` 过滤设备在第三百六十二行）。网卡回执路在第三百六十八行默认分支内（网卡响应交 `ndev_process` 网卡处理在第三百七十一行，陌生打日志丢弃在第三百七十六行到第三百七十七行）。
+
+### 2.3.1 Rust 主循环的到达分类（`os/net/lwip/src/server.rs`，`os/libs/minix-netdriver/src/service.rs`）
+
+主循环本体在 `server.rs` 的 `run` 函数：启动链走满七步才放行第一封消息（`Startup` 阶段机做门），循环内先问处理器还要不要跑，再经 `minix-sef` 的 `sef_receive_status` 收信——PIN 送回、信号上报、普通消息落到四条路上。分类规则由 `minix-netdriver` 的 `classify` 承担，与 C 同序：来源端点优先（时钟走到期、数据存储走驱动上下线、MIB 走管理路、VFS 走设备分诊），类型判定其次（套接字设备范围、过滤器设备的字符块范围、网卡回复范围）。两处与 C 的刻意差异都记录在案：非时钟非数据存储的通知在 C 里走默认分支打日志，Rust 侧同位就是 `unexpected` 路（不另设路）；传输连续三次损坏时循环带错误退出，C 侧同位是 panic——退出与崩溃对服务管理器是同一件事的两说。每条路的实现体挂在 `NetHandler` 特征上，生产类型在 `main.rs`，测试用脚本化传输与记录型处理器（IPC 服务器的既有形状）。
 
 ### 2.4 分诊四域（`lwip.c` 第一百五十一行到第一百九十行）
 

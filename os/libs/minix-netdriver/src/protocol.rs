@@ -192,6 +192,14 @@ pub const fn is_net_request(message_type: i32) -> bool {
     (message_type & !0x7f) == NDEV_REQUEST_BASE
 }
 
+/// Returns true when a raw message type is from the network reply range.
+///
+/// C: `IS_NDEV_RS(type)` (`com.h:1090`): replies and status reports
+/// travel on the reply base, opposite in direction to the requests.
+pub const fn is_net_reply(message_type: i32) -> bool {
+    (message_type & !0x7f) == NDEV_REPLY_BASE
+}
+
 /// Hardware address of a network card (Ethernet: six bytes).
 ///
 /// C: `netdriver_addr_t` (`netdriver.h:18-20`): a byte array of

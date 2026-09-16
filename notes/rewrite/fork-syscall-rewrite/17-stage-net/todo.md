@@ -43,7 +43,7 @@
 | P1 | **N1-P1-1** | sockid 命名空间（lwip.h:58-62）零 Rust 归属 ✅ **已落地（2026-09-17）**：`minix-netdriver/src/sockid.rs` |
 | P1 | **N1-P1-2** | sockdriver/sockevent 实体机制（续延池/事件对象/定时器/select 语义，C 3,740 行）无设计条目 ✅ **已落地（2026-09-17）**：`socktable.rs` + 02 篇机器章节 |
 | P1 | **N1-P1-3** | [ARCH N-1] 栈本体选型 ✅ **已裁决（2026-09-17）**：smoltcp 一族 + 自研语义垫片，墙后可回退 FFI |
-| P1 | **N1-P1-4** | 传输层与主循环设计：DispatchRoad 4 路对接真实 IPC + SEF/RS（edge E-NETSTART）+ 启动粒度决策 |
+| P1 | **N1-P1-4** | 传输层与主循环设计：DispatchRoad 4 路对接真实 IPC + SEF/RS（edge E-NETSTART）+ 启动粒度决策 ✅ **已落地（2026-09-17）**：lwip/uds 双 server 真实事件循环 |
 | P1 | **N1-P1-5** | 缓冲模型设计：pbuf 等价物与 VFS↔net↔NDEV 零拷贝链 |
 | P2 | N1-P2-1 | lwip crate 内 4 组重复函数收敛（send_flags/payload_fits/组播默认值/buffer_size_allowed） |
 | P2 | N1-P2-2 | driver.rs 死代码批：classify 死分支 + 三常量包装 + PolicyRow.priority + rawsock 常函数判定 |
@@ -51,7 +51,7 @@
 | P2 | N1-P2-4 | translate 模式三处：恒等 flag 映射 / common_bits 逐位循环 / 手工位运算 vs bitflags 2.x |
 | P2 | N1-P2-5 | 恒真测试分级处置（ALL_* 长度断言 + BUILD_C_FILES 文档型常量）vs 有效 wire 契约锁 |
 | P2 | N1-P2-6 | 16 个 crate 声明未使用的 minix-types/minix-sys 依赖 |
-| P2 | N1-P2-7 | uds 未依赖 minix-netdriver："两个网络服务的共同骨架"未接线（sdev/sockevent 全仓零消费者） |
+| P2 | N1-P2-7 | uds 未依赖 minix-netdriver："两个网络服务的共同骨架"未接线（sdev/sockevent 全仓零消费者）✅ **已接线（2026-09-17）**：uds 依赖 minix-netdriver 并消费 socktable |
 | P3 | N1-P3-1 | 文档同步：plan.md §6.1 checklist 全 ☐ 过时、§3.4 测试基线过时、00/99 两篇仍骨架 |
 | P3 | N1-P3-2 | 文档模板复制段落（ipsock.rs:10-14 ≈ udpsock.rs:10-13） |
 | edge | E-SDEVOWN（并行登记，本轮增补证据） | sdev/sockevent 归属 17-stage 但寄居 minix-netdriver，vfs 另有一份 923 行独立实现——本轮补充类型漂移细节（u32 enum vs u64 手抄）与 sockid 缺口 |
@@ -103,10 +103,13 @@
 **验证**：`cargo test -p minix-net-lwip --lib` = 89 passed（新增 `test_wall_composes_hooks_lifecycle_and_poll`、`test_wall_frame_seam_moves_bytes_both_ways`）；Gate E：24 篇 §5.1 表与 `rg "fn test_" os/net/lwip/src/lwip_port.rs` 对账一致。
 **残留**：smoltcp 依赖在缓冲轮次（N1-P1-5）才进 Cargo；适配层为后续独立轮次。
 
-### N1-P1-4 传输层与主循环设计（DispatchRoad 对接 + SEF/RS 启动）
+### ✅ N1-P1-4 传输层与主循环设计——已落地 2026-09-17
 
-**问题**：main.rs 均为 `init(); loop {}` 占位（`os/net/lwip/src/main.rs:4`、`os/net/uds/src/main.rs:4`）；startup.rs 的 `DispatchRoad` 4 路分发（:86-97）与 `NetServer`/`LoopAction`（driver.rs:356-380）无真实消息源；SEF/RS 启动握手缺失（同 E-FSRUNTIME 在 fs 的先例，挂 edge E-NETSTART）。另有粒度决策：`StartupStage` 8 态（startup.rs:20-37）压缩了 C 的 13 步链（lwip.c:203-263），真实 SEF/RS init 时每步是否对应一次 RS 调用需定。
-**建议**：复用 02-stage-vm 已验证的 KernelIpcTransport 模式（V11-P1-1 先例：VM 侧逻辑完备，真实通电挂 edge）；主循环形态采用"receive 阻塞 + notify 优先 + 4 路 match"，与 C `main`（lwip.c:293-382）逐段对表；启动粒度在 E-NETSTART 落地时定（建议保留 8 态粗粒度，步内顺序作注释——细粒度只是 translate）。
+**落地**：lwip `server.rs`（`run` 循环：启动链门控七步 → SEF 拦截收信 → 四路分发 → 回复非阻塞发送）+ uds `server.rs`（通知路 + 套接字设备路 + 排空退出）+ 共享分类器 `minix-netdriver/src/service.rs`（来源端点优先、类型其次，与 C 同序）。两个 main.rs 的 `loop {}` 占位与 TODO 注释消除：生产传输为 `KernelIpc` 适配器（minix-sys 陷阱指令），SEF 经 `minix-sef`，`EINTR` 回环、连续三次传输损坏带错误退出。
+**设计要点**：① 传输接缝拆成 `SefIpc`（收+通知，SEF ping 内部吞掉）+ `ReplyIpc`（非阻塞回复），生产/测试双实现（ipc-server 的事件循环先例）；② 每条路的业务体挂 `NetHandler`/`UdsHandler` 特征，循环零业务逻辑——处理中再触发事件只是又一次调用（对照 R3 的动作出列，风格一致）；③ 非 CLOCK/DS 的通知在 C 里就是意外分支（printf 后丢弃，lwip.c:336-343），不另设路；④ 启动粒度定案：保留 8 态粗粒度，逐步映射 RS 调用属 translate；⑤ uds 主循环条件 `loop_keeps_running`（排空语义）接入 `keep_running`。
+**接线红利**：minix-types/minix-sys 在 lwip/uds 两 crate 从"声明未用"转为真实使用；uds 接上 minix-netdriver（N1-P2-7 并入本轮闭环）；发现并修正一处分发偏差（VFS 未知号曾误入套接字路，C 的 fallthrough 语义是意外）。
+**验证**：`cargo test -p minix-net-lwip -p minix-net-uds -p minix-netdriver` = 92+9+50 = 151 passed；新增循环测试 4 个（启动门/六到达分发与回复送达/范围判定锁/启动前零分发），脚本化传输 + 记录型处理器，SEF ping 吞掉断言在案；clippy 0 警告。
+**残留**：RS 域注册/特权协议与 QEMU 真机冒烟挂 edge E-NETSTART（本轮循环已可注入测试全链路跑通，非 DEFERRED 逃避——跨 stage 边界项按规则归 edge）；各路实现体随 R5 与 21/22 篇轨道。
 
 ### N1-P1-5 缓冲模型设计（pbuf 等价物与零拷贝链）
 
@@ -149,10 +152,9 @@
 `os/net/lwip`、`os/net/uds`、14 个 NIC crate 的 Cargo.toml 均声明 minix-types + minix-sys，代码 grep 零引用（仅 minix-netdriver/driver.rs:14 真实使用 minix_types 三常量）。
 **建议**：与 E-SDEVOWN/E-DEVWIRE 联动——若 wire 类型落点裁定为 minix-sys/minix-types 的 net 模块，这些依赖将来会真实化，可留但应加注释或 `#[cfg]`；否则删除。不与 E-MINSYS-SCOPE 的 ds 先例（edge_todo.md ds 依赖卫生条款）重复立项，net 侧收敛随 wire 裁定一次处理。
 
-### N1-P2-7 uds 未依赖 minix-netdriver（共同骨架未接线）
+### ✅ N1-P2-7 uds 未依赖 minix-netdriver——已接线 2026-09-17（随 N1-P1-4 并入本轮）
 
-plan.md 将 libsockdriver 定位为"两个网络服务的共同骨架"，但 `os/net/uds/Cargo.toml` 只依赖 minix-types/minix-sys；全仓 `minix_netdriver` 反向 grep 仅工作区成员表——sdev.rs/sockevent.rs 写完后没有任何 server 消费。
-**建议**：不单独修——它是 N1-P1-2/P1-4 的自然结果（实体机制落地时 lwip/uds 同时接上）。登记在此防止"骨架库长期零消费者"被遗忘；若 N1-P1-2 裁定 sock 表不放 minix-netdriver，则 minix-netdriver 应明示其纯协议库定位（driver.rs 框架归 16-stage 消费）。
+uds 的 Cargo 依赖补上 minix-netdriver + minix-sef；`server.rs` 的套接字设备路消费 `sdev::is_sdev_request` 与 `socktable::SockTable`，sdev/sockevent/sockid/socktable 四模块自此有了真实消费者。与 E-SDEVOWN 的关系不变：若其裁定建独立 minix-sockdriver，四模块整体迁移。
 
 ---
 

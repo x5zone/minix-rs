@@ -33,6 +33,9 @@
 //! - [`socktable`] — the socket object table: continuations, select
 //!   waiters, alarms, and the wake-action pump (document
 //!   `02-sockevent-framework.md`, machinery sections).
+//! - [`service`] — arrival classification shared by the two network
+//!   services' main loops (document `03-lwip-main-init.md`, dispatch
+//!   roads).
 //!
 //! All drivers built on this framework are single-threaded event loops: one
 //! message at a time, no shared mutable state across threads.
@@ -44,6 +47,7 @@ extern crate alloc;
 pub mod driver;
 pub mod portio;
 pub mod protocol;
+pub mod service;
 pub mod sdev;
 pub mod sockevent;
 pub mod sockid;

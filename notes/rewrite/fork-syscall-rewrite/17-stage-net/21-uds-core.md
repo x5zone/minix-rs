@@ -2,7 +2,7 @@
 
 > **分类**：本地域套接字服务第 1 篇，覆盖对象数量、连接状态、散列定位、类型分发、主循环存活规则、状态查询面
 > **源码**：`minix3/minix/net/uds/uds.c`（1417 行）、对象布局 `minix3/minix/net/uds/uds.h`（第 15 行到第 36 行，状态机说明第 86 行到第 135 行）、状态查询 `minix3/minix/net/uds/stat.c`（186 行）
-> **Rust 模块**：`os/net/uds/src/core.rs`（数量上限、状态枚举、散列定位、类型分发、存活判断）
+> **Rust 模块**：`os/net/uds/src/core.rs`（数量上限、状态枚举、散列定位、类型分发、存活判断）、`os/net/uds/src/server.rs`（主循环：SEF 拦截、套接字设备路、排空退出）
 > **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`（套接字事件分发，悬挂与续作语义）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（轻量协议栈启动链，主循环形状的对照）
 >
 > **本篇不覆盖的内容**：
