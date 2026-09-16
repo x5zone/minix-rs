@@ -54,7 +54,7 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_lookup",
         request: RequestNumber::Lookup,
         owner: "11-mfs-path.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_putnode",
@@ -66,13 +66,13 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_readwrite",
         request: RequestNumber::Read,
         owner: "14-mfs-read.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_readwrite",
         request: RequestNumber::Write,
         owner: "15-mfs-write.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_readwrite",
@@ -84,55 +84,55 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_getdents",
         request: RequestNumber::GetDents,
         owner: "14-mfs-read.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_trunc",
         request: RequestNumber::Truncate,
         owner: "13-mfs-link.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_seek",
         request: RequestNumber::InhibitRead,
         owner: "14-mfs-read.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_create",
         request: RequestNumber::Create,
         owner: "12-mfs-open.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_mkdir",
         request: RequestNumber::MakeDir,
         owner: "12-mfs-open.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_mknod",
         request: RequestNumber::MakeNode,
         owner: "12-mfs-open.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_link",
         request: RequestNumber::Link,
         owner: "13-mfs-link.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_unlink",
         request: RequestNumber::Unlink,
         owner: "13-mfs-link.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_unlink",
         request: RequestNumber::RemoveDir,
         owner: "13-mfs-link.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_rename",
@@ -144,37 +144,37 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_slink",
         request: RequestNumber::SymbolicLink,
         owner: "12-mfs-open.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_rdlink",
         request: RequestNumber::ReadLink,
         owner: "13-mfs-link.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_stat",
         request: RequestNumber::Stat,
         owner: "16-mfs-metadata.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_chown",
         request: RequestNumber::ChangeOwner,
         owner: "16-mfs-metadata.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_chmod",
         request: RequestNumber::ChangeMode,
         owner: "16-mfs-metadata.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_utime",
         request: RequestNumber::UpdateTimes,
         owner: "16-mfs-metadata.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_mountpt",
@@ -186,13 +186,13 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_statvfs",
         request: RequestNumber::StatVfs,
         owner: "16-mfs-metadata.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_sync",
         request: RequestNumber::Sync,
         owner: "17-mfs-maint.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "lmfs_driver",
@@ -272,8 +272,8 @@ mod tests {
     #[test]
     fn test_table_has_thirty_one_rows_like_c() {
         assert_eq!(MFS_TABLE.len(), 31);
-        assert_eq!(live_entries().count(), 8);
-        assert_eq!(pending_entries().count(), 23);
+        assert_eq!(live_entries().count(), 28);
+        assert_eq!(pending_entries().count(), 3);
     }
 
     #[test]

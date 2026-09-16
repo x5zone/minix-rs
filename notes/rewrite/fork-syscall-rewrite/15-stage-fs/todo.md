@@ -9,7 +9,7 @@
 
 | 编号 | 级别 | 一句话 | 状态 |
 |---|---|---|---|
-| V1-P0-1 | P0 | mfs 服务装配断层：31 个分发行全部不可达（无 `impl FsDriver`、无事件循环） | 🔄 之 1 已提交（框架任务循环）；余装配 + 冒烟 |
+| V1-P0-1 | P0 | mfs 服务装配断层：31 个分发行全部不可达（无 `impl FsDriver`、无事件循环） | ✅ 2026-09-17 闭环（之 1 循环 + 之 2 装配/冒烟 + P1-8 账本翻转） |
 | V1-P0-2 | P0 | rmdir 链接计数与 C 行为不符：子目录 nlinks 终值 1、父目录未递减 | 开口项（交修复轮） |
 | V1-P1-1 | P1 | `fs_rename` 整体缺失（link.c:255-422 的完整决策树无对应） | 开口项 |
 | V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | 开口项 |
@@ -18,7 +18,7 @@
 | V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | ✅ 2026-09-16 Fix #1（先行落地：P0-1 装配的依赖） |
 | V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | 开口项 |
 | V1-P1-7 | P1 | mount 适配层丢失驱动标签：`adapt_mount` 向 `bound_driver` 传空字符串 | 开口项 |
-| V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | 开口项 |
+| V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | ✅ 2026-09-17 Fix #2（随装配翻转，钉住测试 28/3） |
 | V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | 开口项 |
 | V1-P1-10 | P1 | `PATH_GET_UCRED` 的凭据 grant 校验无处实现 | 开口项 |
 | V1-P1-11 | P1 | procfs 内容面缺口：cmdline、environ、cpuinfo、pci、ipcvecs、service 目录 | 开口项 |
@@ -128,7 +128,8 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 
 **V1-P1-7 mount 适配层丢失驱动标签。** C fsdriver_readsuper 先经 `fsdriver_getname` 取标签再调 `fdr_driver(dev, label)`（call.c:36-41）；Rust `adapt_mount` 硬编码 `driver.bound_driver(input.device, "")`（call.rs:151）。修复方向：`MountInput` 增加 label 字段，由协议层（ReadSuper 消息的 name 字段经 `fetch_name`，data.rs:125）填充；在装配层验收。
 
-**V1-P1-8 完备性账本滞后 20 行。** table.rs:40 的 23 行 `PendingDocument` 中 20 行实现已存在（2.1 节清单 A）。table.rs:229-242 的 `live_entries/pending_entries` 是本 crate 唯一的机读化完备状态，当前给出与代码相反的画像，违反该文件头「nothing is ever silently unimplemented」的自订纪律（table.rs:7-10）。修复方向：随 V1-P0-1 装配把 19 行翻为 live（Lookup 行在入口函数落地后翻）；并给账本立规矩——翻转与实现同一提交，测试 `test_table_has_thirty_one_rows_like_c`（table.rs:273-277）的 8/23 断言同步更新。
+**V1-P1-8 完备性账本滞后 20 行。** table.rs:40 的 23 行 `PendingDocument` 中 20 行实现已存在（2.1 节清单 A）。table.rs:229-242 的 `live_entries/pending_entries` 是本 crate 唯一的机读化完备状态，当前给出与代码相反的画像，违反该文件头「nothing is ever silently unimplemented」的自订纪律（table.rs:7-10）。
+**✅ 2026-09-17 闭环（Fix #2）**：二十行随装配翻转 `LiveInCrate`（含 Lookup——入口经镜像桥与 `lookup_name` 收口），钉住测试更新为 28/3，`cargo test -p minix-fs-mfs` 一百零八全绿；07 篇 §4.3 同步翻转事实与剩余三行（PutNode/Peek/Rename，分属 P1-2/P1-3/P1-1）。
 
 **V1-P1-9 vtreefs/sffs 脱离框架。** `minix-vtreefs` 与 `minix-sffs` 的 Cargo.toml 只依赖 minix-types；而 C 的 libvtreefs/libsffs 都构建在 libfsdriver 之上（libvtreefs/vtreefs.c 的 fs_* 函数族、libsffs/table.c），文档 18 第 6 行也把 01 篇（框架主循环与回调表）列为前置。结果：procfs/ptyfs 的树有了、挂载分发没有；doc 与代码不一致。方案 A：vtreefs 增加对 minix-fs 的依赖，提供 `TreeServer` 的 `FsDriver` 实现（对应 C 的 fs_* 族），procfs/ptyfs 直接消费；方案 B：维持解耦，在文档 18 增补偏离声明并 [ARCH] 三处一致。推荐 A（与 C 结构一致，且装配是迟早要做的事）；sffs 待语义补齐（V1-P2-10）后同样处理。
 
