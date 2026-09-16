@@ -97,6 +97,16 @@ impl LineId {
     pub const fn is_log_alias(minor: u32) -> bool {
         minor == LOG_MINOR
     }
+
+    /// True when the line is inside the console range.
+    ///
+    /// C: `isconsole(tp)` (`tty.c:46`) — a pointer below the serial table
+    /// entries. The log alias behaves differently on a console line (no
+    /// read, no counting, no control adoption) than on a serial line, where
+    /// it acts like any ordinary open (`tty.c:734-743`).
+    pub const fn is_console(self) -> bool {
+        matches!(self, LineId::Console(_))
+    }
 }
 
 /// Number of line-table slots (consoles plus serials).

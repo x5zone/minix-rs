@@ -127,16 +127,25 @@ impl TtySession {
         self.line
     }
 
-    /// Open the line: refuse the log alias for reading, adopt control
-    /// unless forbidden, count up, notify the device on first open.
+    /// Open the line: refuse the log alias for reading on a console, adopt
+    /// control unless forbidden, count up, notify the device on first open.
     ///
     /// C: `do_open` (`tty.c:721-752`). Returns the controlling-terminal
     /// marker when the line becomes the caller's controlling terminal.
     /// `device_opened` reports whether the device-level open hook must run
     /// (first open of a non-log line).
+    ///
+    /// The log alias is special only on a console line: there it is a
+    /// write-only diagnostics device — reads are refused, and a write open
+    /// neither adopts the controlling terminal nor counts (`tty.c:734-743`
+    /// keeps adopt/count in the `else` branch). A log minor redirected to
+    /// a serial line takes the ordinary path, exactly as in C.
     pub fn open(&mut self, raw_minor: u32, access: i32, caller: i64) -> (i32, bool) {
-        if LineId::is_log_alias(raw_minor) && access & ACCESS_READ != 0 {
-            return (-eacces_code(), false);
+        if LineId::is_log_alias(raw_minor) && self.line.is_console() {
+            if access & ACCESS_READ != 0 {
+                return (-eacces_code(), false);
+            }
+            return (OK, false);
         }
         let mut result = OK;
         if access & ACCESS_NOCTTY == 0 {
@@ -150,8 +159,14 @@ impl TtySession {
     /// Close the line: last close clears control, cancels calls, resets
     /// configuration to defaults.
     ///
-    /// C: `do_close` (`tty.c:754-776`).
-    pub fn close(&mut self) -> bool {
+    /// C: `do_close` (`tty.c:754-776`). A close through the log alias on a
+    /// console line neither decrements the open count nor runs the
+    /// last-close cleanup (`tty.c:761`), mirroring the open-side rule —
+    /// the alias never counted, so it must not uncount either.
+    pub fn close(&mut self, raw_minor: u32) -> bool {
+        if LineId::is_log_alias(raw_minor) && self.line.is_console() {
+            return false;
+        }
         if self.opens == 0 {
             return false;
         }
@@ -168,8 +183,15 @@ impl TtySession {
     }
 
     /// Open count.
-    pub fn open_count(&self) -> u32 {
+    pub const fn open_count(&self) -> u32 {
         self.opens
+    }
+
+    /// Endpoint of the controlling terminal, zero when none.
+    ///
+    /// C: `tp->tty_pgrp` (`tty.c:741`), read by hangup and signal paths.
+    pub const fn controlling_caller(&self) -> i64 {
+        self.controlling
     }
 
     /// Suspend a read: fails when one is already parked or the size is
@@ -387,17 +409,51 @@ mod tests {
         let mut session = session();
         let (result, _) = session.open(LOG_MINOR, ACCESS_READ, 42);
         assert!(result < 0);
-        let (result, _) = session.open(LOG_MINOR, 0, 42);
+        // A write open through the alias succeeds, but neither adopts the
+        // controlling terminal nor counts (tty.c:734-743 else branch).
+        let (result, device_opened) = session.open(LOG_MINOR, 0, 42);
+        assert_eq!(result, OK);
+        assert!(!device_opened);
+        assert_eq!(session.open_count(), 0);
+        assert_eq!(session.controlling_caller(), 0);
+    }
+
+    #[test]
+    fn test_log_alias_close_skips_count_and_cleanup() {
+        let mut session = session();
+        // The alias never counted on open, so closing through it must not
+        // uncount or run the last-close cleanup (tty.c:761).
+        assert!(!session.close(LOG_MINOR));
+        // Opening the line the ordinary way, then closing through the
+        // alias, leaves the real open untouched.
+        session.open(0, 0, 42);
+        assert_eq!(session.open_count(), 1);
+        assert!(!session.close(LOG_MINOR));
+        assert_eq!(session.open_count(), 1);
+        assert!(session.close(0));
+        assert_eq!(session.open_count(), 0);
+    }
+
+    #[test]
+    fn test_log_alias_on_serial_line_behaves_ordinarily() {
+        // A log minor redirected to a serial line takes the ordinary open
+        // path: adopt, count, device-open on first (tty.c:734 else branch).
+        let mut session = TtySession::new(LineId::Serial(0));
+        let (result, device_opened) = session.open(LOG_MINOR, 0, 42);
         assert_eq!(result, CONTROLLED);
+        assert!(device_opened);
+        assert_eq!(session.open_count(), 1);
+        assert!(session.close(LOG_MINOR));
+        assert_eq!(session.open_count(), 0);
     }
 
     #[test]
     fn test_last_close_resets_configuration() {
         let mut session = session();
         session.open(0, 0, 42);
-        assert!(session.close());
+        assert!(session.close(0));
         assert_eq!(session.open_count(), 0);
-        assert!(!session.close());
+        assert!(!session.close(0));
     }
 
     #[test]

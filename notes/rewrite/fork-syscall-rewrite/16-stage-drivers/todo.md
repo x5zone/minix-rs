@@ -22,7 +22,7 @@
 
 ### 1.2 boot 关键（docs 05–08）
 
-- **B1 [P1] tty 的 log 别名写打开污染会话**：C `do_open` 对 LOG_MINOR（控制台别名）既不收编 ctty 也不计数（`drivers/tty/tty/tty.c:733-743`，else 分支之外）；Rust `TtySession::open` 只拦"log+读"组合（`os/drivers/tty/tty/src/session.rs:138-140`），log+写会走收编 ctty 且 `opens+=1`，末次关闭的复位语义被污染。补"log+写跳过收编与计数"分支 + 对应测试。
+- **B1 ✅（2026-09-17）[P1] tty 的 log 别名写打开污染会话**：C `do_open` 对 LOG_MINOR（控制台别名）既不收编 ctty 也不计数（`drivers/tty/tty/tty.c:733-743`，else 分支之外）；Rust `TtySession::open` 只拦"log+读"组合（`os/drivers/tty/tty/src/session.rs:138-140`），log+写会走收编 ctty 且 `opens+=1`，末次关闭的复位语义被污染。补"log+写跳过收编与计数"分支 + 对应测试。（执行记录：C 的日志特殊分支仅作用于控制台行——isconsole 判定，串口行上的日志号走普通路径；close 侧按 tty.c:761 对称拦截，测试 27→29。）
 - **B2 [P1] pty 主端关闭缺挂断效应**：C `pty_master_close` 置 `c_ospeed=B0`（从端读到 EOF）并 `sigchar(SIGHUP)`（`drivers/tty/pty/pty.c:241-250`）；Rust `PairState::close` 只动标志位（`os/drivers/tty/pty/src/pair.rs:132-146`），且两个 crate 都没有 hangup 概念与接缝（tty 的 `LineBackend` 也没有 hangup 方法）。行为补齐与接缝设计见 A8。
 - **B3 [P2] log 唤醒顺序无类型保证**：`take_waiter`/`clear_watched` 是两个独立调用（`os/drivers/system/log/src/device.rs:135-139,194-196`），"先唤醒挂起读再通知选择者"只是文档主张，服务层写反了没有测试能红。
 - **B4 [P2] memory 误用与资源不足混码**：`MemMapper::map` 把非页对齐也报 `NoMemory`（`os/drivers/storage/memory/src/transfer.rs:238-240`）。加内部 `Misaligned` 变体（内部类型，不违 errno 纪律）。
