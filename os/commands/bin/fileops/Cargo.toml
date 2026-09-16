@@ -8,3 +8,9 @@ license.workspace = true
 [lib]
 name = "minix_fileops"
 path = "src/lib.rs"
+
+# Dependencies serve the `src/bin/*.rs` doing halves; the library itself
+# stays free of any system-call imports (pure deciding half).
+[dependencies]
+minix-sys = { workspace = true }
+minix-rt = { workspace = true, features = ["std"] }

@@ -17,6 +17,9 @@
 //!   `primary` in `minix3/bin/test/test.c` lines 160 to 163) over the
 //!   [`testexpr::FileTester`] trait.
 //! - [`path`]: `basename`/`dirname` splitting (pure string surgery).
+//! - [`echo`]: flag detection and output layout for `echo` (leading `-n`
+//!   only — echo.c:61 forbids getopt — with piece-by-piece emission over a
+//!   caller sink).
 //!
 //! File status queries go through [`testexpr::FileTester`] with one
 //! implementation per deployment stage, so unit tests never touch a real
@@ -27,6 +30,7 @@
 //! Everything borrows from the input and uses fixed size buffers: no heap,
 //! `no_std` throughout.
 
+pub mod echo;
 pub mod mode;
 pub mod path;
 pub mod testexpr;

@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作主力——shell 调用的命令中，搬运、查看、判断文件的三十个
 > **源码**: `minix3/bin/` 十五个（`cat`、`chmod`、`cp`、`df`、`echo`、`expr`、`ln`、`ls` 715 行、`mkdir`、`mv`、`pwd`、`rm`、`rmdir`、`sync`、`test` 717 行）、`minix3/usr.bin/` 十五个（`basename`、`dirname`、`du`、`false`、`find` 306 行、`flock`、`mkfifo`、`mktemp`、`pathchk`、`printf`、`stat`、`touch`、`true`、`xargs`、`xinstall`）、`minix3/usr.sbin/` 三个（`chroot`、`link`、`unlink`）、`minix3/minix/commands/truncate/`，合计 34 个命令
-> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`，20 个测试通过）；`os/commands/bin/` 下 `cat`、`cp`、`echo`、`ls`、`mv`、`rm` 仍为启动占位（文件读写待系统调用）
+> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`，30 个测试通过）；`src/bin/echo.rs` 为首个真实命令二进制（决定半在库、执行半经 `minix-sys` 顶层 `write` 与 exit；宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后表现为 exit 1）；`os/commands/bin/` 下 `cat`、`cp`、`ls`、`mv`、`rm` 仍为启动占位（文件读写待系统调用）
 > **前置依赖**: `05-shell-family.md`（调用方：内建与外部的区分）、文件系统调用（`14-stage-runtime` 的文件部分）
 > **不覆盖（移交）**: 文本处理（见 `07-text-filter.md`）、存储管理（见 `14` 到 `17` 各篇）、表达式求值之外的 `test` 内建包装（见 `05` 篇内建部分）
 
@@ -172,15 +172,16 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ## 5. 测试要点
 
-`cargo test -p minix-fileops`：**20 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-fileops`：**30 个测试，全部通过**（截至 2026-09-17）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/fileops` 复现）：
 
 - **模式算术**（`mode.rs`，8 个）：`test_octal_replaces_low_bits`（八进制替换且保留文件类型位）、`test_bad_octal_rejected`（非八进制数字、超长、空串）、`test_add_and_remove`（加减）、`test_set_exactly`（精确设置与清空）、`test_special_bits`（设标识位与粘滞位）、`test_copy_between_classes`（类间复制 `g=u`）、`test_chained_clauses`（逗号多子句）、`test_bad_clause_rejected`（非法主语、缺算子、缺内容）。
 - **表达式求值**（`testexpr.rs`，8 个）：`test_file_status_operators`（六问真假）、`test_empty_fs_answers_no`（空系统全否）、`test_string_operators`（相等、不等、空非空、裸串）、`test_integer_operators`（六比较加非数字报错）、`test_boolean_precedence`（与高于或、非、括号）、`test_newer_older`（新旧比较与缺席为假）、`test_malformed_rejected`（括号不配对、缺操作数、多余单词）、`test_testers_share_the_trait`（接口统一）。
 - **路径切分**（`path.rs`，4 个）：`test_basename_common`（四种形状）、`test_basename_suffix`（后缀三规则）、`test_dirname_common`（六种形状）、`test_empty_path_rejected`（空路径）。
+- **echo 输出布局**（`echo.rs`，10 个）：`test_no_args_prints_bare_newline`（无参数只换行）、`test_single_arg_then_newline`、`test_arguments_separated_by_single_spaces`（单空格分隔、无尾随空格）、`test_leading_nflag_prints_nothing_extra`（`echo -n` 零输出）、`test_leading_nflag_suppresses_only_the_newline`、`test_second_nflag_is_data_not_flag`（getopt 禁令：仅首位 `-n` 是标志，后随的 `-n` 是数据）、`test_double_dash_is_ordinary_data`（echo 无 `--` 约定）、`test_empty_argument_keeps_both_spaces`、`test_write_failure_stops_emission_and_reports`（写失败即停并上报）、`test_write_failure_on_trailing_newline_reports`。
 
-尚未覆盖、随后续阶段补齐的：文件读写命令的执行层（`cat`、`cp`、`ls`、`mv`、`rm` 等六个占位二进制，待文件系统调用）、目录遍历（`find`、`du` 的执行层）、`chroot`（待进程根目录状态）。判断与切分层是全覆盖的，执行层是显式留白的。
+尚未覆盖、随后续阶段补齐的：文件读写命令的执行层（`cat`、`cp`、`ls`、`mv`、`rm` 五个占位二进制，待文件系统调用）、目录遍历（`find`、`du` 的执行层）、`chroot`（待进程根目录状态）。`echo` 已在本轮补上执行半（`src/bin/echo.rs`）：决定半在库内全测，执行半经 `minix-sys` 顶层 `write` 与 exit 收尾，宿主端行为待 edge E-SYSCALL-SIGN 修正传输失败符号后即为诚实的 exit 1。判断与切分层是全覆盖的，其余执行层是显式留白的。
 
 ---
 

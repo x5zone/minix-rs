@@ -127,7 +127,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 | 级别 | 编号 | 一句话 | 状态 |
 |------|------|--------|------|
-| **P0** | C-1 | 二进制面整体缺失：58 个成员只有 `minix-init` 一个真实命令；"决定半"（23 个组库）与"执行半"（31 个 stub 二进制壳）两半分裂且互不引用。收敛为域内 crate + `src/bin/` 薄壳（[ARCH]） | 待做 |
+| **P0** | C-1 | 二进制面整体缺失：58 个成员只有 `minix-init` 一个真实命令；"决定半"（23 个组库）与"执行半"（31 个 stub 二进制壳）两半分裂且互不引用。收敛为域内 crate + `src/bin/` 薄壳（[ARCH]） | 🔄 进行中（2026-09-17，迭代 5）：echo 已作为薄壳模板落地；占位壳删除与逐域接线待续（见 §6.1 执行进度） |
 | P1 | C-2 | `minix-sys` 顶层未再导出 errno 常量，`minix-init` 被迫直依赖 `minix-types`——99 §1 分层契约的唯一现存反例 | ✅ 18 侧完成（2026-09-17，迭代 4）：init 改用 `minix_sys::Errno::EEXIST`，依赖行已删；minix-sys 侧常量再导出仍挂 edge `E-CMDSYSFACE`（服务后续命令） |
 | P1 | C-3 | 命令拿不到自己的参数与环境：`minix-rt` 只有 `progname()`/`argv_bytes(index)` 雏形，无环境访问器 | 待做（14 侧半已挂 edge `E-CMDSYSFACE`） |
 | P1 | C-4 | `plan.md:186` 验收基线写的 `cargo test -p commands-*` 包名前缀不存在，实际包名前缀是 `minix-*` | ✅ 完成（2026-09-17，迭代 3）：§3.4 改为 `minix-` 前缀可执行形式，同节过时的"全部为 stub"快照句一并按文档-代码同步门更新 |
@@ -170,6 +170,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 5. **防自创层**：跨域共享的工具函数不得新建"命令公共库"crate——跨域 helper 要么下沉 `minix-rt`（属运行时能力，走 edge 登记），要么就留在本域 crate 内。这是对"AI 每轮补代码时自创路径"风险的显式防线。
 
 **为何是 [ARCH]**：crate 边界是架构决策，须三处一致标注——`plan.md` §2 Rust 侧列、各篇文档 Rust 模块行、`os/Cargo.toml` 成员表与各 crate 布局。
+
+**执行进度（2026-09-17，迭代 5）**：
+
+- ✅ **echo 端到端落地**（原步骤 2 提前为模板步骤）：`minix-fileops` 新增 `src/echo.rs` 决定半——`echo_emit(argv, emit_sink)` 零分配纯函数，承载 echo.c 的全部判定语义（仅首位 `-n` 是标志且 echo.c:61 明文禁止 getopt、单空格分隔无尾随、换行控制、写失败即停上报），10 个测试全过（ crate 共 30）；`src/bin/echo.rs` 执行半薄壳——`minix_sys::write(STDOUT, piece)` 逐片写、退出码 0/1。
+- ✅ **两个宿主/真机接缝的裁决**（新发现，超出原计划）：① `minix_sys::exit` 在宿主必然自旋（`pm.rs:141-155` 忠实复刻 C `_exit` 的最后手段——协议失败即挂），echo 因此改用显式 `terminate()` 接缝（std 构建走宿主运行时终止；no_std 构建换 `minix_sys::exit`，与 argv 接缝同批切换）；② 冒烟进一步暴露 `perform_syscall`（`syscall.rs:94-101`）按 m_type 负值判错而 `DirectTrapTransport` 的 Err 携带正 errno（`ipc.rs:549`），宿主下全部 `*_via` 假成功（write 返回 Ok(5)）——属 14 侧共享协议层，登记 edge **E-SYSCALL-SIGN**，14 修复后本命令宿主行为自动变诚实（exit 1），命令代码零改动。
+- ⚠️ **步骤顺序偏离及理由**：原步骤 1 是"init 域示范（reboot/shutdown/rcorder）"。让位于 echo 的理由：reboot/shutdown/rcorder 按 plan §6 属交付链收尾批 8，且 reboot(2)/时间解析等执行面尚缺、先行只会造出新的"说谎二进制"；echo 是 §6 批 1 的 stdio 批成员、99 §3 已裁定其依赖齐备，作为模板更有代表性。init 域 bin 留在批 8 与其执行面一起实现。
+- 待续：步骤 3（占位壳删除）、步骤 4（plan 与文档同步）、后续逐域接线（每批同步回填 Requires 列）。
 
 ---
 
