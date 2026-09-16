@@ -52,6 +52,12 @@ pub struct Credentials {
     /// Supplementary groups (empty for plain requests).
     pub extra_groups: [u32; 16],
     /// How many entries of `extra_groups` are valid.
+    ///
+    /// The wire form of credentials travels as a grant: whoever builds the
+    /// value from a request validates the grant length against the C
+    /// `struct ucred` size first (`lookup.c:147-157` — a size mismatch is
+    /// "invalid"). This value-level struct is what the framework consumes
+    /// after that check.
     pub extra_group_count: usize,
 }
 

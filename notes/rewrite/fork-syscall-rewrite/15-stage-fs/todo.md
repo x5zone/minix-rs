@@ -20,7 +20,7 @@
 | V1-P1-7 | P1 | mount 适配层丢失驱动标签：`adapt_mount` 向 `bound_driver` 传空字符串 | ✅ 2026-09-17 Fix #7（MountInput/请求体携 label，spy 测试锁定） |
 | V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | ✅ 2026-09-17 Fix #2（随装配翻转，钉住测试 28/3） |
 | V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | 开口项 |
-| V1-P1-10 | P1 | `PATH_GET_UCRED` 的凭据 grant 校验无处实现 | 开口项 |
+| V1-P1-10 | P1 | `PATH_GET_UCRED` 的凭据 grant 校验无处实现 | ✅ 2026-09-17 Fix #10（声明式落账：值构造前校验归传输解码，结构文档锚定） |
 | V1-P1-11 | P1 | procfs 内容面缺口：cmdline、environ、cpuinfo、pci、ipcvecs、service 目录 | 开口项 |
 | V1-P2-1 ~ V1-P2-11 | P2 | 写路径免读优化、缓存拷贝清单、getdents 冷目录、预读策略、stat 无类型契约、双语义返回、三份重复实现、块层缺口、写盘只读护栏、ext2/isofs/sffs 覆盖面、测试缺口 | 开口项 |
 | V1-P3-1 ~ V1-P3-8 | P3 | 死语句、unused import、位图起点差异、errno 边缘顺序、短末块判定、消费方画像、无调用方的预滤函数、间接块校验粒度 | 开口项 |
@@ -142,6 +142,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P1-9 vtreefs/sffs 脱离框架。** `minix-vtreefs` 与 `minix-sffs` 的 Cargo.toml 只依赖 minix-types；而 C 的 libvtreefs/libsffs 都构建在 libfsdriver 之上（libvtreefs/vtreefs.c 的 fs_* 函数族、libsffs/table.c），文档 18 第 6 行也把 01 篇（框架主循环与回调表）列为前置。结果：procfs/ptyfs 的树有了、挂载分发没有；doc 与代码不一致。方案 A：vtreefs 增加对 minix-fs 的依赖，提供 `TreeServer` 的 `FsDriver` 实现（对应 C 的 fs_* 族），procfs/ptyfs 直接消费；方案 B：维持解耦，在文档 18 增补偏离声明并 [ARCH] 三处一致。推荐 A（与 C 结构一致，且装配是迟早要做的事）；sffs 待语义补齐（V1-P2-10）后同样处理。
 
 **V1-P1-10 `PATH_GET_UCRED` 凭据校验缺失。** C lookup.c:147-157 在该旗标置位时经 grant 搬运 ucred 并校验 `ucred_size == sizeof(ucred)`；Rust 侧凭据由调用方以值传入，grant 搬运与长度校验无处实现。修复方向：协议层（data.rs 的通道抽象）补 grant 形态的凭据读取，或书面声明由 VFS 侧传入值并记录偏差（需与 05-stage-vfs 对账后二选一）。
+**✅ 2026-09-17 闭环（Fix #10，声明式落账）**：框架消费的是校验之后的值——`Credentials` 结构文档锚定 C 校验点（lookup.c:147-157），grant 长度对 `struct ucred` 尺寸的校验归生产传输的解码半（E-FSRUNTIME 接线时的契约之一），与 VFS 侧对账由 05 轨道持有。若未来传输实现无法承担校验，再回到框架补 grant 形态读取（重开本条）。
 
 **V1-P1-11 procfs 内容面缺口。** C 有而 Rust 无：pid_cmdline/pid_environ（pid.c，需经 VM 读进程内存，受 E-FSVMCACHE 类轨道约束）、root_cpuinfo 与 cpuinfo.c、root_pci、root_ipcvecs、service.c 全族（经 RS 查询服务目录，依赖 RS 轨道）。修复分两批：不依赖轨道的（cpuinfo/pci/ipcvecs 的渲染，C 侧是读内核信息结构）随内核信息通道（对账 E-KERNINFO）走；依赖 RS/VM 的挂 edge。
 
