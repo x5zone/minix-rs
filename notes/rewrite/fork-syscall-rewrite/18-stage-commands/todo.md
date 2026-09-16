@@ -131,7 +131,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 | P1 | C-2 | `minix-sys` 顶层未再导出 errno 常量，`minix-init` 被迫直依赖 `minix-types`——99 §1 分层契约的唯一现存反例 | 待做（minix-sys 侧半已挂 edge `E-CMDSYSFACE`） |
 | P1 | C-3 | 命令拿不到自己的参数与环境：`minix-rt` 只有 `progname()`/`argv_bytes(index)` 雏形，无环境访问器 | 待做（14 侧半已挂 edge `E-CMDSYSFACE`） |
 | P1 | C-4 | `plan.md:186` 验收基线写的 `cargo test -p commands-*` 包名前缀不存在，实际包名前缀是 `minix-*` | 待做（一行修正） |
-| P2 | C-5 | `os/Cargo.toml:71` 与 `:77` 重复登记 `commands/bin/fileops`；`plan.md` §2 的"35 crate"数字与实际 58 个成员漂移 | 待做（随 C-1 收敛一并修） |
+| P2 | C-5 | `os/Cargo.toml:71` 与 `:77` 重复登记 `commands/bin/fileops`；`plan.md` §2 的"35 crate"数字与实际 58 个成员漂移 | ✅ 重复登记已删（2026-09-17，迭代 2）；数字随 C-1 ④ 更新 |
 | P2 | C-6 | `/etc` 配置面零落地（`os/etc/` 只有占位 README），[ARCH] A-6（rc 脚本形态）决策悬置 | OQ 上交用户，不擅自决策 |
 | P2 | C-7 | 99 §1 的边界硬规则只有文档约定，无机制化检查 | 待做（守卫脚本） |
 

@@ -74,7 +74,6 @@ members = [
     "commands/bin/rm",
     "commands/bin/sh",
     "commands/bin/shell",
-    "commands/bin/fileops",
     "commands/bin/editor",
     "commands/bin/proctools",
     "commands/bin/termctl",
