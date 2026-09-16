@@ -834,6 +834,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 > **进度（2026-09-16，🔄 第 8 项布局闭环，minix-types sysvipc 模块）**：`IpcPerm` 24B（五 u32 域 + seq + 垫，ipc.h:54-66）+ `SemidDs` 56B（perm@0/nsems@24/otime@32/ctime@40/私有指针槽@48，sem.h:55-66，LP64）+ `ShmidDs` 80B（perm@0/segsz@24/lpid@32/cpid@36/nattch@40/atime@48/dtime@56/ctime@64/私有指针槽@72，shm.h:99-114）落 `minix-types/src/ipc/sysvipc.rs`，布局见证 ×3（offset_of 全钉）。C 头按 i386 书写，本重写沿用 64-bit-overlay 判例（time_t 8 字节、指针 8 字节，与 MessVmmcpReply 同款）。**余项**：第 3-7 项（wrapper/组装，CannedTransport 可测）随 E9 三分域同型批量；第 1/2 项（trap/SEF）随 E1 real-trap 门控的通电族落地。**验证**：minix-types 251 全绿。
 
+> **收口（2026-09-17，✅ 第 3-7 项闭环，bbac3ba9d）**：五件边界动词由并行 lane 落地并入主——(3) `sys_datacopy`（syscall.rs:829）、(4) `proceventmask_via`（pm.rs:746，proceventmask.c:19 旧掩码回读语义）、(5) `VM_CALL_SHARED_UNMAP` 常量+wrapper、(6) `clock_time_via`（syscall.rs:850）、(7) `getnpid_via`/`getnuid_via`/`getngid_via` 窄 helper（pm.rs:407-412）——Canned 回放测试同批。**E-IPCWIRE 八缺全部闭合**（1/2 随 E1 real-trap 门控与 minix-sef 就绪；ipc-server main 装配与 13-stage IPC-P1-1 服务层接线属 13-stage 内工作）。832c20945/0fc245136 同期：E-ISKMESS 亦收口（kernel kmess 臂 + IS 生产 KerninfoTransport）。
+
 ---
 
 ## E-MINTYPES-RUNTIME minix-types 布局单点权威收敛（14-stage-runtime V1 轮登记，2026-09-16）
