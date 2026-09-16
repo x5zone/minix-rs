@@ -573,15 +573,48 @@ pub struct Server<D: FsDriver> {
     pub state: ServerState,
     /// The file server implementation.
     pub driver: D,
+    /// Whether the driver implements the file peek entry point.
+    file_peek: bool,
+    /// Whether the driver implements the block peek entry point.
+    block_peek: bool,
+    /// Whether the server has a backing block device (diskless servers get
+    /// peek emulated through reads).
+    has_backing_device: bool,
 }
 
 impl<D: FsDriver> Server<D> {
     /// Start a server around an implementation.
+    ///
+    /// Defaults match a server backed by a real device without peek entry
+    /// points; use [`Server::with_peek`] to declare peek support.
     pub const fn new(driver: D) -> Self {
         Self {
             state: ServerState::fresh(),
             driver,
+            file_peek: false,
+            block_peek: false,
+            has_backing_device: true,
         }
+    }
+
+    /// Declare the peek and backing-device facts the C table carries in its
+    /// `fdr_peek`/`fdr_bpeek` pointers and the device global
+    /// (`fsdriver.h:53-105`, `fsdriver.c:5-7`).
+    pub const fn with_peek(
+        mut self,
+        file_peek: bool,
+        block_peek: bool,
+        has_backing_device: bool,
+    ) -> Self {
+        self.file_peek = file_peek;
+        self.block_peek = block_peek;
+        self.has_backing_device = has_backing_device;
+        self
+    }
+
+    /// The peek and backing-device facts, for the mount and peek adapters.
+    pub const fn peek_knobs(&self) -> (bool, bool, bool) {
+        (self.file_peek, self.block_peek, self.has_backing_device)
     }
 
     /// Request termination: the loop exits once the file system is also

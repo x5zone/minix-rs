@@ -23,6 +23,8 @@
 //! - [`bio`] — raw block transfer, prefetch, driver binding, ramdisk
 //!   (document 05).
 //! - [`memfs`] — in-memory file server proving the trait (documents 01-03).
+//! - [`task`] — the server task loop: receive, classify, adapt, reply
+//!   (document 01, `fsdriver_task`).
 //!
 //! All servers built on this framework are single-threaded event loops: one
 //! message at a time, no shared mutable state across threads. Types in this
@@ -42,3 +44,4 @@ pub mod driver;
 pub mod lookup;
 pub mod memfs;
 pub mod protocol;
+pub mod task;

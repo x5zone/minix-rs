@@ -9,7 +9,7 @@
 
 | 编号 | 级别 | 一句话 | 状态 |
 |---|---|---|---|
-| V1-P0-1 | P0 | mfs 服务装配断层：31 个分发行全部不可达（无 `impl FsDriver`、无事件循环） | 开口项 |
+| V1-P0-1 | P0 | mfs 服务装配断层：31 个分发行全部不可达（无 `impl FsDriver`、无事件循环） | 🔄 之 1 已提交（框架任务循环）；余装配 + 冒烟 |
 | V1-P0-2 | P0 | rmdir 链接计数与 C 行为不符：子目录 nlinks 终值 1、父目录未递减 | 开口项（交修复轮） |
 | V1-P1-1 | P1 | `fs_rename` 整体缺失（link.c:255-422 的完整决策树无对应） | 开口项 |
 | V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | 开口项 |
@@ -99,6 +99,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 方案 A：新建 `MfsServer` 结构聚合 `ServerCore` + `InodeTable` + `Superblock`，实现 `FsDriver` 的 26 个已有能力（真 pending 三行走默认 ENOSYS），框架补一个 `run(server, transport)` 事件循环，用 `RamDisk` + 测试镜像写装配冒烟测试（mount → lookup → read → write → sync 全链）。对照 Redox：redoxfs 在同一 crate 内直接实现 `Scheme` trait 并自跑事件循环，没有「框架半成品 + 实现半成品」两截；我们保留 C 的框架/server 两截结构（8 个 server 共享框架，有正当性），但必须让两截尽早相遇。
 方案 B：只补文档声明「mfs 当前是库不是服务器」，把装配推迟到运行时轨道。否决理由：装配 mismatches（签名不契合、生命周期错位）只有写装配代码才会暴露，推迟会把 V1-P1-4/5/6 这类缺口全部拖到联调期才炸。
 推荐：方案 A，并把 table.rs 翻转纳入同一修复（V1-P1-8）。[ARCH] 判定：属于实现补全（Rewrite 边界内），不改外部行为，无需三处标注；若装配中发现必须改 `FsDriver` 签名，则升级为 Architectural Evolution，按规范三处一致标注。
+**🔄 进度（2026-09-16，之 1 落地）**：框架任务循环 `os/libs/minix-fs/src/task.rs` 提交——`FsTransport` 接缝（receive/reply/copy_in/copy_out/scratch 五方法）、`RequestBody` 三十二变体类型化请求体（名字按 `fsdriver_getname` 语义拷贝为自有缓冲）、`FsReply` 状态+事务号+载荷（Transfer/Node/Lookup）、`Incoming::Cancelled` 对应 `fsdriver_terminate` 的取消接收语义、`Server` 增 peek/后端设备三构造期旋钮（对应 C 表 `fdr_peek`/`fdr_bpeek` 与设备全局）。六项循环测试全绿（crate 96 个），clippy 零告警；01 篇同步 §4.3/§5.3。余：`MfsServer` 装配 + `impl FsDriver` + 冒烟链。
 
 **V1-P0-2 rmdir 的链接计数与 C 行为不符。**
 事实：C 的 remove_dir 依次调用三次 unlink_file 语义（link.c:205 父名 nlinks-1；link.c:210 子目录 `.` 再-1；link.c:211 `..` 使父目录 nlinks-1），子目录 nlinks 归 0（NO_LINK）触发释放。Rust `remove_directory`（link.rs:317-393）对镜像做父名与点项删除后只做一次 `nlinks -= 1`（link.rs:383-388），父目录 nlinks 完全未动：子目录终值 1 而非 NO_LINK，`put` 的释放分支（inode.rs:450）永不触发。
