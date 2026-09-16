@@ -203,7 +203,7 @@
 ```
 
 - 契约表必须覆盖组内**全部命令**（以 §5.2 归属表核对），不允许"典型命令详述、其余略过"
-- 纯 stdio 类命令（22 等）只依赖 `exec + stdio + exit`，最早可验收（§6 批 1）
+- 纯 stdio 类命令（22 等）只依赖 `exec`、`minix-sys` 顶层的 `read`/`write` 与 `exit`（依赖面判定见 99-global-concepts.md §1 分层契约），最早可验收（§6 批 1）
 - 终端控制类命令（13/23）依赖 termios/转义序列落地，先定 [ARCH] A-2 再实装
 
 ---
@@ -391,7 +391,7 @@
 | RS 服务管理 server 端 | 03-stage-rs | 本 stage 只覆盖 service/svrctl 客户端命令面 |
 | 驱动实现（tty/readclock/audio/网络等） | 16-stage-drivers | 命令只经 `/dev` 接口消费 |
 | ld.elf_so / 动态链接 | [ARCH] A-1 | 静态链接，不实现 |
-| libc/libminc/libsys 实现 | 14-stage-runtime | 命令只消费 exec/stdio/termios/socket API |
+| libc/libminc/libsys 实现 | 14-stage-runtime | 命令只消费 `minix-sys` 顶层调用封装与 `minix-rt`（分层契约见 99-global-concepts.md §1；终端属性走 ioctl 封装、网络走 socket 封装） |
 | lwip/uds 网络协议实现 | 17-stage-net | 命令只消费 libc socket 封装 |
 | 构建工具链（gcc/binutils/make 宿主面、tools/awk、tools/sed、gnu/dist、tests/） | 构建链 | 本 stage 只覆盖系统内命令 |
 | xorg/图形栈 | defer | 无图形子系统；xorg.conf 不覆盖 |
@@ -402,9 +402,9 @@
 
 ## 6. 实施顺序（自下而上，每批可独立验收）
 
-> 阅读顺序 = §2 阶段序；实施顺序按依赖与验收粒度重排。命令实装依赖 14-stage-runtime（exec/stdio/termios）与 17-stage-net（socket）先行。
+> 阅读顺序 = §2 阶段序；实施顺序按依赖与验收粒度重排。命令实装依赖 14-stage-runtime（exec 与文件/终端调用封装）与 17-stage-net（socket 封装）先行；"stdio" 一词的准确含义见 99-global-concepts.md §1。
 
-1. **stdio 批**：06（file-ops）→ 07（text-filter）→ 08（grep-sed）→ 22（stdio 游戏）——只需 `exec + stdio + exit`，最早可验收
+1. **stdio 批**：06（file-ops）→ 07（text-filter）→ 08（grep-sed）→ 22（stdio 游戏）——只需 `exec`、`minix-sys` 顶层的 `read`/`write` 与 `exit`（99-global-concepts.md §1），最早可验收
 2. **shell 批**：05（sh 主线，依赖 13 termios 决策）→ 09（ed/mined）
 3. **文档/归档/进程批**：10 → 11 → 12（依赖 06/07/08）
 4. **终端批**：13（termios/terminfo 决策先行，[ARCH] A-2）→ 23（终端游戏）

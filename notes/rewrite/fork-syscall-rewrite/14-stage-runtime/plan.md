@@ -270,7 +270,7 @@ syscall 封装不充当概念引入的驱动，而是按**服务分组**展开�
 
 | 排除项 | 理由 | 去向 |
 |--------|------|------|
-| libc 全量（stdio/string/ctype/regex/malloc 实现/compiler-rt） | [ARCH] A-2：Rust core/alloc 语义替代 | — |
+| libc 全量（stdio/string/ctype/regex/malloc 实现/compiler-rt） | [ARCH] A-2：Rust core/alloc 语义替代；stdio 无专篇即源于此——命令的输出通道是 minix-sys 顶层 write（os/libs/minix-sys/src/lib.rs:217），消费契约见 18-stage-commands/99-global-concepts.md §1 | — |
 | socket 族封装（17 个文件） | 网络服务依赖 net stage | 17-stage-net |
 | shmget/shmat/shctl | 用户态 IPC 服务 | 13-stage-ipc |
 | `sys_*.c` 内核调用封装（~50 文件） | server 专用，A-10 | 各 server stage |
