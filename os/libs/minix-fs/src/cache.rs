@@ -194,7 +194,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             return Err(Errno::from_i32(EINVAL));
         }
         let mut slots = Vec::with_capacity(pool_size);
-        for slot in 0..pool_size {
+        for _slot in 0..pool_size {
             slots.push(Buffer::free());
         }
         // 串起空闲链：头到尾依次链接。
@@ -431,7 +431,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             }
             link = next;
         }
-        for (slot, buffer) in self.slots.iter_mut().enumerate() {
+        for buffer in self.slots.iter_mut() {
             if let Some(key) = buffer.key
                 && key.device == device
             {
@@ -570,7 +570,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
 
     /// Push one slot at the tail of the free list: the most recently
     /// released position, evicted last.
-    fn list_push_tail(&mut self, slot: usize) {
+    fn list_push_tail(&mut self, _slot: usize) {
         self.slots[slot].prev = self.free_tail;
         self.slots[slot].next = NO_SLOT;
         if self.free_tail != NO_SLOT {
@@ -1024,7 +1024,7 @@ mod tests {
         cache.index.clear();
         cache.free_head = 0;
         cache.free_tail = size - 1;
-        for slot in 0..size {
+        for _slot in 0..size {
             cache.slots.push(Buffer::free());
         }
         for slot in 0..size - 1 {
