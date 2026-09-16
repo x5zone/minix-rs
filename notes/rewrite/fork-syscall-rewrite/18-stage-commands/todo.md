@@ -180,6 +180,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - 待续：步骤 4（plan 与各篇文档头同步）、后续逐域接线（每批同步回填 Requires 列）。
 - ✅ **步骤 4 文档/plan 同步完成**（2026-09-17，迭代 7）：六篇文档 Rust 模块行（05/06/14/15/22/23/24）、99 两处引用已删除文件的 echo 锚点（模式 66 RCPD 现实案例，改为指向 `os/commands/bin/fileops/src/bin/echo.rs`）、plan §2 的"35 crate"数字（改 24 个域 crate）与四行 Rust 侧列、`minix-stdio-games` 库头的 bcd/ppt 过度声称（按现状修正为"契约在内、实现未写"）。
 - **长尾批次登记（C-1 的逐域接线，每批 = 一次 todo-fix）**：批次顺序沿用 plan §6（stdio 批 06→07→08→22 先行）。每批的动作固定为：该篇契约表逐命令回填 Requires 列（P1-1）→ 库内决定半补齐 → `src/bin/{命令}.rs` 薄壳（argv/terminate 接缝照 echo 模板，no_std 目标落地时一刀切换）→ 行为测试 → `cargo test -p {crate}` → 守卫脚本通过 → 文档 §5 测试统计同步。
+- ✅ **批次二完成：06 篇纯参数五件端到端**（2026-09-17，迭代 10）：`true`、`false`（纯退出码语义）、`basename`、`dirname`（决定半复用已测的 `path.rs`）四个薄壳接线，fileops 现有六个二进制；`cargo test -p minix-fileops` 30 个全过、守卫全绿。06 篇新增 §4.5 命令契约与 Requires 分组表（三十四个命令逐组回填，含 cat 的 `open` 现有路径 ENOSYS 阻塞、test 文件问的 stat 依赖、printf/expr/pathchk 的决定半待写），POSIX 基准引用（P1-2）随批落地。剩余批次：07/08（需 LineReader 接入各文本过滤决定半）、06 的 expr/printf/pathchk 决定半、05/09 及后续各批。
 - ✅ **批次一完成：22 篇 stdio 游戏全接线**（2026-09-17，迭代 9）：新增 `bin_support.rs`（行缓冲 `LineReader` 惰性消费设计 + 十进制格式化 + 宿主/真机接缝，6 测试随壳运行）与两个决定半模块 `bcd.rs`（打孔表逐值转写 `bcd.c` + `render_card`，7 测试）、`ppt.rs`（`punch_byte`/`decode_line` 往返，6 测试）；九个薄壳接线（bcd/ppt/factor/primes/caesar/morse/pig/number/arithmetic）；`cargo test -p minix-stdio-games` 102 个全过、守卫脚本全绿。已声明的偏离（22 篇 §4.4 标注）：primes 界限封顶 1,000,000（C 近 2^32 流式筛待批）、arithmetic 播种用 LCG 加宿主时钟（C 用 `random(3)`）、banner 薄壳待真字体。22 篇的 Requires 列（P1-1）与 POSIX 基准引用（P1-2）随批回填。
 
 ### 6.1.1 C-7 边界守卫（迭代 8）

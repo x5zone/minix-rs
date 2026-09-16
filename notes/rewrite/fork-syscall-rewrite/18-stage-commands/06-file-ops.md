@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作主力——shell 调用的命令中，搬运、查看、判断文件的三十个
 > **源码**: `minix3/bin/` 十五个（`cat`、`chmod`、`cp`、`df`、`echo`、`expr`、`ln`、`ls` 715 行、`mkdir`、`mv`、`pwd`、`rm`、`rmdir`、`sync`、`test` 717 行）、`minix3/usr.bin/` 十五个（`basename`、`dirname`、`du`、`false`、`find` 306 行、`flock`、`mkfifo`、`mktemp`、`pathchk`、`printf`、`stat`、`touch`、`true`、`xargs`、`xinstall`）、`minix3/usr.sbin/` 三个（`chroot`、`link`、`unlink`）、`minix3/minix/commands/truncate/`，合计 34 个命令
-> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`，30 个测试通过）；`src/bin/echo.rs` 为首个真实命令二进制（决定半在库、执行半经 `minix-sys` 顶层 `write` 与 exit；宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后表现为 exit 1）；其余命令的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（文件读写待系统调用；原 `os/commands/bin/` 下 `cat`、`cp`、`ls`、`mv`、`rm` 五个占位壳已于 2026-09-17 删除）
+> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`，30 个库测试通过）；`src/bin/` 薄壳六个已接线：echo、true、false、basename、dirname（本批新增后四个，合计六个二进制，2026-09-17）；执行半经 `minix-sys` 顶层 `write` 与 exit（宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后即为诚实退出码）；其余命令的薄壳随本域执行层批次在本 crate 内落地（文件读写待系统调用；原 `os/commands/bin/` 下占位壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `05-shell-family.md`（调用方：内建与外部的区分）、文件系统调用（`14-stage-runtime` 的文件部分）
 > **不覆盖（移交）**: 文本处理（见 `07-text-filter.md`）、存储管理（见 `14` 到 `17` 各篇）、表达式求值之外的 `test` 内建包装（见 `05` 篇内建部分）
 
@@ -170,9 +170,28 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ---
 
+### 4.5 命令契约与 Requires
+
+行为判定沿用 `99-global-concepts.md` §2 的规则：以 POSIX 为准绳、以 Minix3 C 实现为真值，C 偏离处在"当前状态"列标注。依赖面按 §1 分层契约只含 `minix-sys` 顶层与 `minix-rt`；同一 Requires 组内命令共用一行：
+
+| 命令 | Requires（最小 API） | 当前状态 |
+|------|---------------------|---------|
+| echo | `write`、`exit`、argv 交接 | 已接线（`src/bin/echo.rs`） |
+| true、false | `exit` | 已接线（纯退出码，忽略操作数） |
+| basename、dirname | `write`、`exit`、argv 交接 | 已接线（决定半在 `path.rs`） |
+| cat | `open`（现有路径）、`read`、`write`、`close` | 待 `open` 现有路径解锁（`minix-sys/src/lib.rs:189` 的 ENOSYS，等 99 篇 64 位路径消息布局） |
+| cp、ln、mv、rm、mkdir、rmdir、chmod、chown、touch、mkfifo、truncate、link、unlink | 上一行全部，加各自的方向调用（建链/截断/权限位面） | 待 14 侧逐项登记封装 |
+| df、du、find、stat、`test` 的文件问 | `stat`、`getdents` | 缺封装（`../14-stage-runtime/todo.md:60` 已登记） |
+| printf、expr、pathchk | `write`、`exit`、argv 交接 | 决定半待写（纯参数求值，无系统调用），决定半落地即接线 |
+| mktemp | `open` 的建路径（已实现）加 `O_EXCL` 语义确认 | 待批 |
+| xargs | `fork`、`exec`（调用方备栈形态）、`waitpid` | 待 `exec` 调用方协议批 |
+| pwd、sync、flock、chroot、xinstall | 各自调用面（getcwd/update/flock/chroot/安装语义） | 待 14 侧登记 |
+
+---
+
 ## 5. 测试要点
 
-`cargo test -p minix-fileops`：**30 个测试，全部通过**（截至 2026-09-17）。
+`cargo test -p minix-fileops`：**30 个测试，全部通过**（截至 2026-09-17）；另有六个已接线的命令二进制（echo、true、false、basename、dirname 加早前的 echo 壳一并计入 `src/bin/`），其决定半由上述 30 个库测试覆盖。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/fileops` 复现）：
 
@@ -187,7 +206,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ## 6. 过渡：搬得动文件之后，去读懂文字
 
-本篇走完了日常操作的第一组：文件的属性、关系、搬运、判断。用户在 shell 里管理文件的三十四个常用动作，决策核心已经就位，只剩读写执行层待系统调用。
+本篇走完了日常操作的第一组：文件的属性、关系、搬运、判断。三十四个常用动作里，纯参数的五件（echo、true、false、basename、dirname）已经端到端可用，其余的决策核心已经就位，只剩读写执行层待系统调用。
 
 但文件里面装的是文字，文字有文字的玩法：取头取尾、排序去重、计数切割、字符转换——这是 `07-text-filter.md` 的职责。请沿因果链继续向下走：先会"搬文件"，再会"读文件里的行"。
 
