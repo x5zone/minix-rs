@@ -21,7 +21,7 @@
 | V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | ✅ 2026-09-17 Fix #2（随装配翻转，钉住测试 28/3） |
 | V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | ✅ 2026-09-17 Fix #21（vtreefs 接框架：TreeServer 的 FsDriver 实现；sffs 半随 P2-10 分期） |
 | V1-P1-10 | P1 | `PATH_GET_UCRED` 的凭据 grant 校验无处实现 | ✅ 2026-09-17 Fix #10（声明式落账：值构造前校验归传输解码，结构文档锚定） |
-| V1-P1-11 | P1 | procfs 内容面缺口：cmdline、environ、cpuinfo、pci、ipcvecs、service 目录 | 开口项 |
+| V1-P1-11 | P1 | procfs 内容面缺口：cmdline、environ、cpuinfo、pci、ipcvecs、service 目录 | ✅ 2026-09-17 Fix #23（渲染经接缝+mock 落地，真实数据源通电归 edge） |
 | V1-P2-1 ~ V1-P2-11 | P2 | 写路径免读优化、缓存拷贝清单、getdents 冷目录、预读策略、stat 无类型契约、双语义返回、三份重复实现、块层缺口、写盘只读护栏、ext2/isofs/sffs 覆盖面、测试缺口 | 开口项 |
 | V1-P3-1 ~ V1-P3-8 | P3 | 死语句、unused import、位图起点差异、errno 边缘顺序、短末块判定、消费方画像、无调用方的预滤函数、间接块校验粒度 | 开口项 |
 | edge×4 | — | E-FSRUNTIME / E-FSBDEV / E-FSVMCACHE / E-FSCMDS（见第 5 节） | 已登记 |
@@ -146,6 +146,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **✅ 2026-09-17 闭环（Fix #10，声明式落账）**：框架消费的是校验之后的值——`Credentials` 结构文档锚定 C 校验点（lookup.c:147-157），grant 长度对 `struct ucred` 尺寸的校验归生产传输的解码半（E-FSRUNTIME 接线时的契约之一），与 VFS 侧对账由 05 轨道持有。若未来传输实现无法承担校验，再回到框架补 grant 形态读取（重开本条）。
 
 **V1-P1-11 procfs 内容面缺口。** C 有而 Rust 无：pid_cmdline/pid_environ（pid.c，需经 VM 读进程内存，受 E-FSVMCACHE 类轨道约束）、root_cpuinfo 与 cpuinfo.c、root_pci、root_ipcvecs、service.c 全族（经 RS 查询服务目录，依赖 RS 轨道）。修复分两批：不依赖轨道的（cpuinfo/pci/ipcvecs 的渲染，C 侧是读内核信息结构）随内核信息通道（对账 E-KERNINFO）走；依赖 RS/VM 的挂 edge。
+**✅ 2026-09-17 闭环（Fix #23）**：`content.rs` 增 cpuinfo 处理器块渲染（`%-16s: value` 字段格式）、PCI 设备行渲染、IPC 向量表渲染（`%08lx T name(k)` 行式），`render_cmdline`/`render_environ` 以 NUL 分隔参数与环境项；新模块 `service.rs` 以 `ServiceDirectory` 接缝供给服务清单与行式渲染。全部经固定输入的测试驱动（procfs 二十三测试全绿），真实数据源通电（内核信息与 RS 传输）归 E-KERNINFO/E-FSRUNTIME 侧；19 篇 §4.6 同步。
 
 ### 3.3 P2
 

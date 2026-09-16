@@ -24,6 +24,7 @@ extern crate alloc;
 pub mod buf;
 pub mod content;
 pub mod pid;
+pub mod service;
 
 pub use minix_vtreefs as framework;
 

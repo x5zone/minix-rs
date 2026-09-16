@@ -308,3 +308,211 @@ mod tests {
         assert_eq!(out.result(), b"1 s 4 init S 0 10 5 6 7 8 9 4096 0 0\n");
     }
 }
+
+/// 一个处理器的描述（`cpuinfo.c` 的字段集，按目标架构裁剪）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessorInfo<'a> {
+    /// 处理器编号（`processor : N`）。
+    pub id: u32,
+    /// 厂商标识（`vendor_id`）。
+    pub vendor: &'a str,
+    /// 型号名（`model name`）。
+    pub model: &'a str,
+    /// 特性位名称列表（`flags`）。
+    pub flags: &'a [&'a str],
+}
+
+/// 逐处理器输出 `/proc/cpuinfo` 的块（`cpuinfo.c:100-120` 的
+/// `%-16s: value` 字段格式；flags 以空格分隔、行尾换行）。
+pub fn render_cpuinfo(buf: &mut ProcBuf, processors: &[ProcessorInfo<'_>]) {
+    for processor in processors {
+        buf.push_str("processor       : ");
+        buf.push_u64(processor.id as u64);
+        buf.push_str("\n");
+        buf.push_str("vendor_id       : ");
+        buf.push_str(processor.vendor);
+        buf.push_str("\n");
+        buf.push_str("model name      : ");
+        buf.push_str(processor.model);
+        buf.push_str("\n");
+        buf.push_str("flags           : ");
+        for flag in processor.flags {
+            buf.push_str(flag);
+            buf.push_str(" ");
+        }
+        buf.push_str("\n");
+    }
+}
+
+/// 一条 PCI 设备记录（总线、设备、功能、厂商、型号）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciEntry {
+    /// 总线号。
+    pub bus: u8,
+    /// 设备号。
+    pub device: u8,
+    /// 功能号。
+    pub function: u8,
+    /// 厂商标识。
+    pub vendor: u16,
+    /// 型号标识。
+    pub product: u16,
+}
+
+/// 逐行输出 PCI 设备表（`root_pci` 的设备清单语义；每行一条记录）。
+fn push_hex_u16(buf: &mut ProcBuf, value: u16) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for shift in [12i64, 8, 4, 0] {
+        let nibble = ((value >> shift) & 0xF) as u8;
+        buf.push_bytes(&[HEX[nibble as usize]]);
+    }
+}
+
+pub fn render_pci(buf: &mut ProcBuf, entries: &[PciEntry]) {
+    for entry in entries {
+        buf.push_str("pci bus ");
+        push_hex_u16(buf, entry.bus as u16);
+        buf.push_str(" device ");
+        push_hex_u16(buf, entry.device as u16);
+        buf.push_str(" function ");
+        push_hex_u16(buf, entry.function as u16);
+        buf.push_str(": vendor ");
+        push_hex_u16(buf, entry.vendor);
+        buf.push_str(" device ");
+        push_hex_u16(buf, entry.product);
+        buf.push_str("\n");
+    }
+}
+
+/// 一条 IPC 向量记录（名称与入口地址）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpcVector {
+    /// 向量入口地址。
+    pub address: u64,
+    /// 向量名称（`sendrec`、`send`、`notify`、`senda`、`sendnb`、
+    /// `receive`、`do_kernel_call` 之一）。
+    pub name: &'static str,
+}
+
+/// 输出 IPC 向量表（`root_ipcvecs`，`root.c:181-208`）：每行
+/// `地址 T 名称(k)`，地址按八位十六进制零填充。
+pub fn render_ipcvecs(buf: &mut ProcBuf, vectors: &[IpcVector]) {
+    for vector in vectors {
+        buf.push_bytes(&address_bytes(vector.address));
+        buf.push_str(" T ");
+        buf.push_str(vector.name);
+        buf.push_str("(k)\n");
+    }
+}
+
+/// 八位十六进制零填充地址字节（`root_ipcvecs` 的 `%08lx` 格式）。
+fn address_bytes(address: u64) -> [u8; 8] {
+    // `%08lx` 打印低三十二位的八个 nibble，小数字零填充。
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [0u8; 8];
+    for (index, slot) in out.iter_mut().enumerate() {
+        let shift = 28 - index as i64 * 4;
+        *slot = HEX[((address >> shift) & 0xF) as usize];
+    }
+    out
+}
+
+/// 进程命令行（`pid_cmdline`）：参数间以 NUL 字节分隔，与内核暴露的
+/// argv 布局一致；结尾不带终止字节。
+pub fn render_cmdline(buf: &mut ProcBuf, arguments: &[&[u8]]) {
+    for (index, argument) in arguments.iter().enumerate() {
+        if index > 0 {
+            buf.push_bytes(&[0]);
+        }
+        buf.push_bytes(argument);
+    }
+}
+
+/// 进程环境块（`pid_environ`）：`KEY=VALUE` 项间以 NUL 字节分隔。
+pub fn render_environ(buf: &mut ProcBuf, variables: &[&[u8]]) {
+    for (index, variable) in variables.iter().enumerate() {
+        if index > 0 {
+            buf.push_bytes(&[0]);
+        }
+        buf.push_bytes(variable);
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn test_render_cpuinfo_matches_field_format() {
+        let mut buf = ProcBuf::new(256, 0, 256);
+        let processors = [ProcessorInfo {
+            id: 0,
+            vendor: "GenuineIntel",
+            model: "Intel",
+            flags: &["fpu", "vme"],
+        }];
+        render_cpuinfo(&mut buf, &processors);
+        let text = core::str::from_utf8(buf.result()).unwrap();
+        assert!(text.contains("processor       : 0"));
+        assert!(text.contains("vendor_id       : GenuineIntel"));
+        assert!(text.contains("model name      : Intel"));
+        assert!(text.contains("flags           : fpu vme \n"));
+    }
+
+    #[test]
+    fn test_render_pci_lists_devices() {
+        let mut buf = ProcBuf::new(128, 0, 128);
+        render_pci(
+            &mut buf,
+            &[PciEntry {
+                bus: 0,
+                device: 31,
+                function: 0,
+                vendor: 0x8086,
+                product: 0x2415,
+            }],
+        );
+        let text = core::str::from_utf8(buf.result()).unwrap();
+        assert!(text.contains("vendor 8086"));
+        assert!(text.contains("device 2415"));
+    }
+
+    #[test]
+    fn test_render_ipcvecs_pads_addresses() {
+        let mut buf = ProcBuf::new(128, 0, 128);
+        render_ipcvecs(
+            &mut buf,
+            &[IpcVector {
+                address: 0xabc,
+                name: "sendrec",
+            }],
+        );
+        let text = core::str::from_utf8(buf.result()).unwrap();
+        assert!(text.contains("00000abc T sendrec(k)"));
+    }
+
+    #[test]
+    fn test_render_cmdline_and_environ_nul_separate() {
+        let mut buf = ProcBuf::new(64, 0, 64);
+        render_cmdline(&mut buf, &[b"init", b"-v"]);
+        let text = core::str::from_utf8(buf.result()).unwrap();
+        assert_eq!(text, "init\0-v");
+        let mut buf = ProcBuf::new(64, 0, 64);
+        render_environ(&mut buf, &[b"HOME=/", b"PATH=/bin"]);
+        let text = core::str::from_utf8(buf.result()).unwrap();
+        assert_eq!(text, "HOME=/\0PATH=/bin");
+    }
+
+    #[test]
+    fn test_render_helpers_accept_empty_input() {
+        let mut buf = ProcBuf::new(16, 0, 16);
+        render_cpuinfo(&mut buf, &[]);
+        render_pci(&mut buf, &[]);
+        render_ipcvecs(&mut buf, &[]);
+        render_cmdline(&mut buf, &[]);
+        render_environ(&mut buf, &[]);
+        assert!(buf.result().is_empty());
+        let _ = vec![0u8];
+    }
+}
