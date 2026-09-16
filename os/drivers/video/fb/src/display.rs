@@ -47,15 +47,25 @@ pub fn decode_ioctl(raw: u32) -> Option<FbIoctl> {
 }
 
 /// Open counter for one device (`open_counter`, `fb.c:59-97`).
+///
+/// The hardware-initialization flag is deliberately independent of the
+/// count: C initializes once, on the first open ever (`initialized`,
+/// `fb.c:63-83`), and never re-initializes when the device is closed and
+/// reopened — a count-based test (`count == 1`) would re-run setup on
+/// every reopen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenCounter {
     count: u32,
+    initialized: bool,
 }
 
 impl OpenCounter {
     /// A device nobody has opened yet.
     pub fn new() -> Self {
-        OpenCounter { count: 0 }
+        OpenCounter {
+            count: 0,
+            initialized: false,
+        }
     }
 
     /// Record one open; the first open initializes the hardware.
@@ -74,9 +84,16 @@ impl OpenCounter {
         true
     }
 
-    /// Whether the first open still has to initialize the hardware.
+    /// Whether the hardware still has to be initialized.
     pub fn needs_init(&self) -> bool {
-        self.count == 1
+        !self.initialized
+    }
+
+    /// Mark the hardware initialization as done (the service calls this
+    /// after the first open runs its setup, mirroring C setting
+    /// `initialized` inside `fb_open`).
+    pub fn mark_initialized(&mut self) {
+        self.initialized = true;
     }
 
     /// Current holder count.
@@ -128,9 +145,24 @@ mod tests {
         let mut counter = OpenCounter::new();
         assert_eq!(counter.open(), 1);
         assert!(counter.needs_init());
+        counter.mark_initialized();
+        assert!(!counter.needs_init());
         assert_eq!(counter.open(), 2);
         assert!(!counter.needs_init());
         assert_eq!(counter.count(), 2);
+    }
+
+    #[test]
+    fn test_reopen_does_not_reinitialize() {
+        // C's `initialized` flag never resets on close (fb.c:63-83): the
+        // sequence open, close, open runs the hardware setup once. A
+        // count-based test (`count == 1`) would wrongly re-initialize.
+        let mut counter = OpenCounter::new();
+        counter.open();
+        counter.mark_initialized();
+        counter.close();
+        counter.open();
+        assert!(!counter.needs_init());
     }
 
     #[test]
