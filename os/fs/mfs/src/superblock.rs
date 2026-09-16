@@ -572,6 +572,18 @@ mod tests {
     }
 
     #[test]
+    fn test_max_size_widens_without_long_max_clamp() {
+        // s_max_size 是盘上有符号三十二位字段：最大值 2147483647 经
+        // 加宽进入六十四位长度，C 的 LONG_MAX 截断在本目标不可达
+        // （三十二位 long 的上限与字段上限重合，截断是恒等操作）。
+        let mut disk = valid_disk();
+        disk.max_size = i32::MAX;
+        let parsed = parse_superblock(&block_with(&disk), 0x301, false).unwrap();
+        assert_eq!(parsed.max_size, i32::MAX as i64);
+        assert_eq!(parsed.max_size, 2_147_483_647);
+    }
+
+    #[test]
     fn test_old_magics_rejected() {
         for magic in [MAGIC_V1, MAGIC_V2, 0x1234] {
             let mut disk = valid_disk();
@@ -653,6 +665,15 @@ mod tests {
         let back = DiskSuperblock::from_bytes(&disk.to_bytes()).unwrap();
         assert_eq!(disk, back);
         assert_eq!(DiskSuperblock::STORED_BYTES, 31);
+    }
+
+    #[test]
+    fn test_max_size_u32_needs_no_clamp() {
+        // s_max_size 是盘上三十二位字段：最大值也不超 i64 上限，
+        // 因此 C 的 LONG_MAX 截断在本目标不可达（superblock.rs 论证）。
+        let max_u32 = u32::MAX as u64;
+        assert!(max_u32 <= i64::MAX as u64);
+        assert_eq!(max_u32 as i64, max_u32 as i64);
     }
 
     #[test]
