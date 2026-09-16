@@ -167,6 +167,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P2-8 块层缺口分组。** 本 stage 内：ONE_SHOT 前插（cache.c:533-544）、`lmfs_prefetch` 位图选区间（cache.c:1089-1130）、脏块排序批量写（cache.c:884-885）、运行期池调整与 usage 重估触发（cache.c:119-161、cache.c:1192-1207）。跨轨道：短末块部分读写与 gather/scatter（E-FSBDEV）、vmcache 零拷贝与旗标机（E-FSVMCACHE）。本 stage 内的四项在 V2 轮按「先测试钉行为、再对齐实现」推进。
 
 **V1-P2-9 `write_to_disk` 无只读护栏。** C 只在 `!s_rd_only` 时置脏写回（inode.c:398）；Rust 无该检查（inode.rs:623-663），靠调用方自律；maint.rs:116 的 `check_dirty_mark` 存在但未接入。修复：把只读判断下沉到 `write_to_disk`（Superblock 在手即可判定）。
+**✅ 2026-09-17 闭环（Fix #13）**：`InodeIo` 增 `read_only` 字段（`from_superblock` 从挂载状态带入），`write_back` 在只读时报只读错误——护栏从「调用方自律」变为结构强制；专测锁定（只读参数下写回拒绝、磁盘不动）。09 篇 §4.2 同步。
 
 **V1-P2-10 ext2 / isofs / sffs 覆盖面对账。** 三者目前是格式解析层，与文档分期（21/22/23/24 篇声称范围）一致，非缺陷；本行登记 C 侧未覆盖语义块清单（ext2：适配入口/数据路径/分配/名字空间；isofs：查找/getdents/stat/挂载生命周期；sffs：handle/inode/lookup 核心/do_* 全套），作为后续文档与实现排期的输入。完成前 bin 不可用（走 E-FSRUNTIME）。**裁决（2026-09-16）**：不纳入本轮实施战役——分期设计如此；全量语义留待后续「文档 + 实现」独立波次（届时先补 21~24 篇缺失章节，再随 mfs 装配模式逐 server 复用）。
 

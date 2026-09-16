@@ -696,6 +696,11 @@ impl InodeTable {
         slot: usize,
         params: &InodeIo,
     ) -> Result<(), InodeError> {
+        // C 只在非只读挂载时把槽位标脏（`inode.c:398`），只读挂载的
+        // 写回在此整体拒绝：内存态保留，磁盘不动。
+        if params.read_only {
+            return Err(InodeError::ReadOnly);
+        }
         self.write_to_disk(cache, slot, params)
     }
 
@@ -729,6 +734,8 @@ pub struct InodeIo {
     pub inodes_per_block: u32,
     /// Zones per indirect block.
     pub indirect_per_block: u32,
+    /// Whether the mount is read-only: writes to disk are refused.
+    pub read_only: bool,
 }
 
 impl InodeIo {
@@ -751,6 +758,7 @@ impl InodeIo {
                 + superblock.zone_map_blocks as u64,
             inodes_per_block: superblock.inodes_per_block,
             indirect_per_block: superblock.indirect_per_block,
+            read_only: superblock.read_only,
         }
     }
 }
@@ -774,6 +782,7 @@ mod tests {
             inode_base_block: 4,
             inodes_per_block: 8,
             indirect_per_block: 128,
+            read_only: false,
         }
     }
 
@@ -876,6 +885,23 @@ mod tests {
         let back = DiskInode::from_bytes(&cache.slot_data(check)[offset..]).unwrap();
         assert_eq!(back.size, 500);
         let _ = cache.release(check);
+    }
+
+    #[test]
+    fn test_write_back_refuses_read_only() {
+        let mut cache = test_cache();
+        let mut params = test_params();
+        params.read_only = true;
+        let mut table = InodeTable::new();
+        write_disk_inode(&mut cache, &params, 3, &sample_record(0o100644, 10));
+        let slot = table.get(&mut cache, DEVICE, 3, &params).unwrap();
+        table.slot_mut(slot).size = 500;
+        table.slot_mut(slot).dirty = true;
+        // 只读挂载：写回整体拒绝（EROFS），磁盘不动。
+        assert!(matches!(
+            table.write_back(&mut cache, slot, &params),
+            Err(InodeError::ReadOnly)
+        ));
     }
 
     #[test]
