@@ -50,9 +50,21 @@ impl X86PrivilegeLevel {
 const GDT_NULL_INDEX: usize = 0;
 const GDT_KERN_CS_INDEX: usize = 1;
 const GDT_KERN_DS_INDEX: usize = 2;
-const GDT_USER_CS_INDEX: usize = 3;
+/// SYSRET anchor slot (AMD APM Vol 3 / SDM: sysret64 loads
+/// `CS ← (STAR[63:48] + 16) | 3` and `SS ← (STAR[63:48] + 8) | 3` — the
+/// STAR user base points THREE slots before the 64-bit user CS, with user
+/// data one slot below it. Same convention as Linux's GDT
+/// (`__USER32_CS`=anchor, `__USER_DS`=anchor+8, `__USER_CS`=anchor+16):
+/// STAR[63:48] holds this slot's selector and SYSRET derives the real
+/// CS/SS from it. The descriptor here is a copy of the user code segment;
+/// nothing ever selects it — it exists positionally.
+/// (The pre-fix layout put user CS at this slot and user DS at +8, so
+/// sysretq loaded CS from the TSS descriptor at anchor+16 — live #GP(0x28)
+/// on the first iret after a syscall in test-user-trap E8.)
+const GDT_USER_ANCHOR_INDEX: usize = 3;
 const GDT_USER_DS_INDEX: usize = 4;
-const GDT_TSS_FIRST_INDEX: usize = 5;
+const GDT_USER_CS_INDEX: usize = 5;
+const GDT_TSS_FIRST_INDEX: usize = 6;
 
 /// GDT slots per TSS descriptor. Long mode (unlike C's i386) uses 16-byte
 /// TSS descriptors — two consecutive GDT entries. Selector for CPU `i` =
@@ -67,6 +79,9 @@ pub(crate) const KERN_DS_SELECTOR: u16 = (GDT_KERN_DS_INDEX * 8) as u16;
 pub(crate) const USER_CS_SELECTOR: u16 = ((GDT_USER_CS_INDEX * 8) | 3) as u16;
 #[allow(dead_code)] // user data segment selector; not yet wired to all call sites
 pub(crate) const USER_DS_SELECTOR: u16 = ((GDT_USER_DS_INDEX * 8) | 3) as u16;
+/// STAR[63:48] value — the SYSRET anchor selector (see `GDT_USER_ANCHOR_INDEX`):
+/// sysret64 loads SS = anchor+8 (user data) and CS = anchor+16 (user code).
+pub(crate) const USER_STAR_ANCHOR_SELECTOR: u16 = ((GDT_USER_ANCHOR_INDEX * 8) | 3) as u16;
 
 const MAX_CPUS: usize = 8;
 
@@ -198,7 +213,9 @@ impl X86_64Protection {
             DS_GRANULARITY,
         );
 
-        self.gdt[GDT_USER_CS_INDEX] = make_seg_desc(
+        // SYSRET anchor slot — same user-code descriptor as GDT[5]; never
+        // selected by any segment load (see GDT_USER_ANCHOR_INDEX).
+        self.gdt[GDT_USER_ANCHOR_INDEX] = make_seg_desc(
             0, 0xFFFFF,
             USER_CS_ACCESS,
             USER_CS_GRANULARITY,
@@ -208,6 +225,12 @@ impl X86_64Protection {
             0, 0xFFFFF,
             USER_DS_ACCESS,
             DS_GRANULARITY,
+        );
+
+        self.gdt[GDT_USER_CS_INDEX] = make_seg_desc(
+            0, 0xFFFFF,
+            USER_CS_ACCESS,
+            USER_CS_GRANULARITY,
         );
     }
 

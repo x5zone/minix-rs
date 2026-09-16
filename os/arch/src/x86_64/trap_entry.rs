@@ -42,7 +42,7 @@
 //! | `set_handler` (install handler) | Write one IDT gate entry (handler addr + DPL + IST) |
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};
-use crate::x86_64::protection::{KERN_CS_SELECTOR, USER_CS_SELECTOR};
+use crate::x86_64::protection::{KERN_CS_SELECTOR, USER_STAR_ANCHOR_SELECTOR};
 use minix_types::VirBytes;
 
 // IDT gate type encoding (p_dpl_type field bits 0-3)
@@ -265,12 +265,17 @@ impl TrapEntryArch for X86_64TrapEntry {
         //   SFMASK: only bit 9 (IF) is set, matching C behavior.
         //   EFER: only SCE bit is set, enabling SYSCALL/SYSRET.
         unsafe {
-            // STAR[32:47] = SYSCALL CS (KERN_CS_SELECTOR)
-            // STAR[48:63] = SYSRET CS (USER_CS_SELECTOR)
-            // C: AMD_MSR_STAR — archconst.h:170
-            //   64-bit: KERN_CS_SELECTOR << 32 | USER_CS_SELECTOR << 48
+            // STAR[32:47] = SYSCALL CS (KERN_CS_SELECTOR) — SYSCALL loads
+            // CS ← STAR[47:32] and SS ← STAR[47:32] + 8 (KERN_DS).
+            // STAR[48:63] = SYSRET anchor (USER_STAR_ANCHOR_SELECTOR) —
+            // sysret64 loads SS ← anchor + 8 (user data, GDT[4]) and
+            // CS ← anchor + 16 (user code, GDT[5]); see
+            // `GDT_USER_ANCHOR_INDEX` for the +8/+16 convention.
+            // C: AMD_MSR_STAR — archconst.h:170 (i386 convention did not
+            // transfer; the x86-64 port derives the layout from the AMD
+            // APM sysret pseudocode, Linux GDT as precedent).
             let star = (KERN_CS_SELECTOR as u64) << 32
-                     | (USER_CS_SELECTOR as u64) << 48;
+                     | (USER_STAR_ANCHOR_SELECTOR as u64) << 48;
             wrmsr(MSR_STAR, star);
 
             // LSTAR = SYSCALL entry point (RIP on SYSCALL)

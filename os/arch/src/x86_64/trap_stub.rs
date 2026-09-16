@@ -363,8 +363,11 @@ core::arch::global_asm!(
     "  swapgs",
     "  mov qword ptr gs:{gs_user_rsp}, rsp",  // park user RSP
     "  mov rsp, gs:{gs_kern_stack}",          // per-CPU kernel stack top (S-4)
+    "  push {user_ss}",                       // frame.ss (flat user data) —
+                                              // pushed FIRST so the CPU-tail
+                                              // matches the hardware int
+                                              // frame order (ss@21, rsp@20)
     "  push qword ptr gs:{gs_user_rsp}",      // frame.rsp (user)
-    "  push {user_ss}",                       // frame.ss (flat user data)
     "  push r11",                             // frame.rflags
     "  push {user_cs}",                       // frame.cs
     "  push rcx",                             // frame.rip
@@ -409,13 +412,11 @@ core::arch::global_asm!(
     "  pop r15",
     "  add rsp, 16", // vector + errcode
     "  pop rcx",     // rip for sysret (user rcx is not preserved — ABI)
-    "  add rsp, 8",  // cs slot (sysret takes CS from STAR)
+    "  add rsp, 8",  // cs slot (sysret takes CS from STAR anchor + 16)
     "  pop r11",     // rflags for sysret (user r11 is not preserved — ABI)
-    "  add rsp, 8",  // ss slot (sysret takes SS from STAR+8) — without this
-                     // skip, `pop rsp` below loads the SS constant 0x23 as
-                     // the user stack pointer (observed live in the E8
-                     // test-user-trap SYSCALL leg)
-    "  pop rsp",     // back on the user stack
+    "  pop rsp",     // frame.rsp slot = parked user RSP (frame.ss sits below
+                     // and is simply abandoned — sysret takes SS from the
+                     // STAR anchor + 8, not from the stack)
     "  swapgs",
     "  sysretq",
     gs_kern_stack = const GS_SLOT_KERNEL_STACK,
@@ -666,8 +667,10 @@ pub fn write_syscall_msrs(entry_point: VirBytes) {
     // defined SYSCALL configuration, executed at CPL0.
     use crate::x86_64::trap_entry::{MSR_EFER, MSR_LSTAR, MSR_SFMASK, MSR_STAR, EFER_SCE, SFMASK_CLEAR_IF};
     unsafe {
+        // STAR[63:48] = SYSRET anchor — sysret64 derives SS=+8/CS=+16 from
+        // it (see `GDT_USER_ANCHOR_INDEX`); STAR[47:32] = SYSCALL CS.
         let star = (crate::x86_64::protection::KERN_CS_SELECTOR as u64) << 32
-                 | (crate::x86_64::protection::USER_CS_SELECTOR as u64) << 48;
+                 | (crate::x86_64::protection::USER_STAR_ANCHOR_SELECTOR as u64) << 48;
         crate::x86_64::trap_entry::wrmsr(MSR_STAR, star);
         crate::x86_64::trap_entry::wrmsr(MSR_LSTAR, entry_point.get());
         crate::x86_64::trap_entry::wrmsr(MSR_SFMASK, SFMASK_CLEAR_IF);
