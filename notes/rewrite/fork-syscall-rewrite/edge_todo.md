@@ -12,6 +12,7 @@
 > 2026-09-15 增补：11-stage-devman 首轮架构审查（11-stage-devman/todo.md §6）登记 E-DMWIRE（devman 生产接线四缺：server transport + 请求分类器 + 装配半 + client/RS 侧生产传输）与 E-DMCLIENT（minix-devman-client 孤儿 crate 处置，涉 16-stage-drivers）两条，并增补 E-REQWIRE（devman 为 VTreeFS wire 第三消费方）、E-ISWIRE（devman 为 minix-sef 第三消费方）、E-DSWIRE（devman 客户端 init 的 DS label 查询消费方）、E5（(h) devman 生命周期联调验收面）。
 > 2026-09-16 增补：13-stage-ipc 首轮架构审查（13-stage-ipc/todo.md）登记 E-IPCWIRE（ipc-server 生产面接线八缺：trap 桥/SEF 层/sys_datacopy/proceventmask/VM_SHM_UNMAP/clock/getepinfo 窄 helper 七件 minix-sys 面 + minix-types 的 semid_ds/shmid_ds 布局面）。
 > 2026-09-16 增补：14-stage-runtime 首轮架构审查（14-stage-runtime/todo.md V1）登记 E-MINTYPES-RUNTIME（minix-types 布局单点权威收敛，99 篇定稿驱动）与 E-MINSYS-SCOPE（minix-sys 六个域外 stage 客户端模块的内聚性处置）两条，并在 E1 增补"首个 no_std minix-rt 二进制"通电验证面。
+> 2026-09-16 增补：15-stage-fs 首轮架构审查（15-stage-fs/todo.md V1）登记 E-FSRUNTIME（8 个 fs server bin 的 SEF/RS 启动握手与运行时接线）、E-FSBDEV（minix-fs 块层与真实块驱动的接缝，涉 16-stage-drivers）、E-FSVMCACHE（二级缓存零拷贝页移交与旗标机，涉 02-stage-vm）、E-FSCMDS（fsck/mkfs 命令占位认领）四条。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -563,6 +564,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **增补（2026-09-15，11-stage-devman 首轮架构审查）**：minix-sef 的**第三消费方**是 devman——`SefHooks` trait（os/servers/devman/src/hooks.rs:268-271：init_server/on_signal）与 `SefLifecycle` 枚举（:257-263）目前只有测试替身实现（hooks.rs:336-365），生产实现被 STATE.md OQ-1 挡在 minix-sef 门前（hooks.rs:255 自注 "minix-sef is currently a stub"）。C 参照是 vtreefs.c:54-59 的三注册 + sef_local_startup（devman 侧经 libvtreefs 间接消费 libsys/sef）。devman 侧 `SefHooks` 生产 impl 随本条 (1) 一并做；若 minix-sef 长期不到场，11-stage-devman/todo.md DM-P1-2 的分派面统一将连带评估该 trait 的去留（模式 80：无生产实现者的占位抽象）。
 
+> **MIB/devman 接线收口（2026-09-16，✅ 不依赖 A-6 的捆绑件全部落地，commit b756afc9e）**：三件——①**MIB 接收路径接入 `minix_sef::sef_receive_status`**：mib crate 补 minix-sef workspace 依赖；`MibIpc` 增 `notify` 动词（SysIpc→transport.notify，测试 Mock 记录）；`run_once` 的接收半改走 SEF 库——RS ping（NOTIFY 通知 + `SEF_PING_REQUEST_TYPE`）在库内 pong 并吞掉，永不到达 triage（此前 RS ping 会落进 NotifyRefusal 被**静默丢弃且不回 pong**，RS 永远等不到活性应答——SEF 活性探测语义缺陷，此为其一）；`Server` 的 run/run_once impl 块收紧 `I: MibIpc + SefIpc` 界。②**status_is_notify 宏语义 C 修正**：原实现 `(status − 0x1000) < 0x100` 是 com.h:94 `is_notify`（m_type 带），而 C mib main.c:449 调用的是 com.h:93 `is_ipc_notify`（`IPC_STATUS_CALL(status) == NOTIFY`，低 0x3F 位 == 4，ipcconst.h:10/21-22）——宏张冠李戴修正为 `(status & 0x3F) == CALL_NOTIFY`。③**devman 生产 `SefHooks`**（`DevmanSef`）：init_server = `Server::new` 重建框架+树（C init_hook/init_inodes；restart 在 C 注册为 `SEF_CB_INIT_RESTART_STATEFUL`——状态随 RS 镜像恢复，回调体为空，本 hook 仅 fresh 触发）；on_signal 仅 SIGTERM 锁存 `terminate` 停机旗（C got_signal，vtreefs.c:39-46），+生产行为测试。**新测试**：MIB ×2（RS ping pong+吞掉/ ping 后真实调用照常应答）、devman ×1（重建+SIGTERM 锁存）。**验证**：sef 4 / mib 152（+2）/ devman 80（+1）/ is 106 / kernel 759 全绿；clippy 触及 crate 对账持平（5=5）。**E-ISWIRE 剩余**：(3) 的 IS main.rs 生产替换（挂 A-6 诊断通道裁决）+ MIB/devman 的 main 装配随各自 P1-6 传输窗口。
+
 ---
 
 ## E-ISPROD GETSYSINFO/GET_*/VM_INFO producer 布局与 IS 快照对齐（08-stage-is V1 轮登记，2026-09-14）
@@ -858,3 +861,71 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **解锁**：14-stage 域内/域外 review 边界长期化；各 stage 客户端协议演进时的明确落点与编译面收敛。
 
 > **进度（2026-09-16，✅ 方案 A 落地，feature 门控 + 模块归属表）**：执行前复核——六个域外模块（ds 303/rmib 1287/devman_client 423/inputdriver 512/usb_model 437/socket 146 行）**全仓零外部消费者**（grep 60+ 依赖方仅命中核心模块 ipc/syscall），唯一 crate 内依赖 usb_model→devman_client（super::devman_client 四处）。实施：Cargo.toml 六 feature（`ds`/`rmib`/`devman`/`input`/`usb=["devman"]`/`socket`，default 全开保持既有 Cargo.toml 零改动），lib.rs 逐模块 `#[cfg]` 门控 + 模块归属表（模块→feature→所属 stage 文档→关联 edge 条目）写入 crate 文档头。**验证矩阵**：default（192 测试全绿）/ `--no-default-features`（仅核心编译 ✓）/ `--features usb`（依赖传递拉入 devman ✓）/ `--features ds,rmib,devman,input,socket` 组合 ✓；依赖方抽查 minix-sched/minix-ds/minix-mib/minix-sef 零错误。方案 B（per-stage crate 拆分）维持否决状态，待方案 A 运行观察。
+
+---
+
+## E-FSRUNTIME 8 个 fs server bin 的 SEF/RS 启动握手与运行时接线（15-stage-fs V1 轮登记，2026-09-16）
+
+**问题**：8 个 fs server 的 bin 全部未接事件循环与进程握手：mfs 是 `fn main() { loop {} }`（os/fs/mfs/src/main.rs:8-10，模块注释声明归服务运行时轨道）；ext2/isofs/vbfs/hgfs/procfs/ptyfs 的 main.rs 第 4-6 行是同义 TODO 注释；pfs 构建 server 后停放（os/fs/pfs/src/main.rs:8-10）。C 对应物是各 server main.c 的三段：`env_setargs`（mfs/main.c:19）、`sef_local_startup`（:31-42，含 `sef_setcb_init_restart` 状态化重启）、`fsdriver_task(&mfs_table)` 分发主循环（:23）。框架内事件循环与 `impl FsDriver` 装配归 15-stage-fs/todo.md V1-P0-1，本条只管进程侧：SEF 回调注册、RS 启动握手、参数解析、信号接线。
+
+**影响**：mfs 纵有 26/31 个已实现的请求处理函数，也无从作为进程对外服务；boot 挂载链（VFS `do_init_root` → `mount_pfs()` → `mount_fs(DEV_IMGRD, "/", MFS)`，15-stage-fs/00-fs-overview.md:13）的 fs 侧永远等不到。
+
+**为何 edge**：判定②③——SEF/RS 握手属服务运行时轨道的生产代码（与 E-ISBOOT、E-INWIRE 同型），且 boot 挂载联调需要 VFS + kernel + fs 多进程参战。
+
+**建议**：
+- 方案 A（推荐）：按 E-ISBOOT/E-INWIRE 先例，等服务运行时轨道提供 startup 面（sef 回调注册 + RS_INIT 握手 + 信号循环）后逐 server 接线；mfs 第一个接（V1-P0-1 的装配产物直接可用），pfs 第二个（boot 链需要）。
+- 方案 B（否决）：各 fs crate 自带完整握手实现。否决理由：与 C 的 libfsdriver/sef 分层相悖，8 个 server 重复实现同一握手。
+
+**依赖**：15-stage-fs/todo.md V1-P0-1（装配先行）；服务运行时轨道基建（E-ISBOOT 同类）。
+**解锁**：boot 内存盘挂载链联调；8 server 全部可被 RS 启动。
+
+---
+
+## E-FSBDEV minix-fs 块层与真实块驱动的接缝（15-stage-fs V1 轮登记，2026-09-16）
+
+**问题**：`os/libs/minix-fs/src/bio.rs` 的 `DeviceInfo` trait（bio.rs:40-46）生产实现只有 `RamDisk`；真块驱动相关的五件事全部悬空：分区尺寸查询（C `bdev_ioctl` DIOCGETP，bio.c:146-147）、驱动标签绑定（bdev_driver）、短末块部分读写（`lmfs_get_partial_block`）、聚散 I/O（`rw_scattered` + `bdev_gather`，cache.c:840、cache.c:742-757）、mount 的 `bdev_open`/`bdev_close`（mount.c:23,35,66；os/fs/mfs/src/mount.rs:8-9 自述缺席）。minix-bdev 与 minix-blockdriver 两 crate 归 16-stage-drivers（16-stage-drivers/02-blockdriver-framework.md、04-bdev-client.md）。
+
+**影响**：FS 只能跑在内存盘上；磁盘 server（mfs/ext2/isofs）无法访问真实设备；脏块批量回写与短末块设备缺优化路径。
+
+**为何 edge**：判定②——生产实现落在对方 stage 目录（os/drivers/storage 与 minix-bdev/minix-blockdriver，16-stage-drivers 轨道）；边界 trait（DeviceInfo）与本 stage 的 RamDisk 不动。
+
+**建议**：
+- 方案 A（推荐）：16-stage 落 minix-bdev 客户端通电后，在 fs 侧实现 `DeviceInfo` 的真实形态（包装 bdev 传输）并补短末块路径；本 stage 保持 trait 与 RamDisk 现状。
+- 方案 B（否决）：15-stage 直接在 minix-fs 内实现驱动传输。否决理由：与 C 的 libminixfs/bdev 分层相悖，且 minix-bdev 归属已定。
+
+**依赖**：16-stage-drivers 的 blockdriver 框架与 bdev 客户端两篇实施；E-FSRUNTIME（进程在才谈驱动连接）。
+**解锁**：磁盘 server 的真机联调；15-stage-fs/todo.md V1-P2-8 的短末块与聚散 I/O 项。
+
+---
+
+## E-FSVMCACHE FS 二级缓存的零拷贝页移交与旗标机（15-stage-fs V1 轮登记，2026-09-16）
+
+**问题**：C libminixfs 的 vmcache 是零拷贝页所有权移交（`vm_map_cacheblock`/`vm_set_cacheblock`，cache.c:443-451、cache.c:562-587）+ `VMMC_EVICTED`/`VMMC_BLOCK_LOCKED`/`VMSF_ONCE` 旗标机（cache.c:345-388）+ 按块 inode/offset 标签索引（libminixfs.h:29-30）+ 按 blocksize 对齐自动启停（cache.c:1236-1239）；Rust 的 `SecondLevelCache`（os/libs/minix-fs/src/cache.rs:97-110）只是拷贝型影子缓存钩子，unmount 路径的 `vm_clear_cache` 调用方也缺（C 在 call.c:83-84）。cache.rs:15-22 自述归属 VM 轨道。
+
+**影响**：FS 与 VM 页缓存无法共享页；`REQ_PEEK` 的 HAS_PEEK 能力与写时零拷贝不可用；mfs 的 peek 只能走 read 仿真（15-stage-fs/todo.md V1-P1-3）。
+
+**为何 edge**：判定①②——vm_* 传输面属 minix-types/minix-sys 共享契约 + VM 服务器生产代码（02-stage-vm 轨道）。
+
+**建议**：
+- 方案 A（推荐）：VM 轨道提供页移交/逐出回报传输面后，把 `SecondLevelCache` 升级为真实现（含标签索引与对齐门控），mfs 侧接 HAS_PEEK。
+- 方案 B（否决）：在 minix-fs 内先做拷贝型二级缓存撑场面。否决理由：拷贝型无性能收益反而增加整块拷贝，属伪实现。
+
+**依赖**：02-stage-vm 页缓存轨道；E-MINTYPES-RUNTIME（vm 消息布局同源权威）。
+**解锁**：HAS_PEEK 能力、FS↔VM 共享页、V1-P1-3 方案 B。
+
+---
+
+## E-FSCMDS fsck/mkfs 命令占位的轨道认领（15-stage-fs V1 轮登记，2026-09-16）
+
+**问题**：`os/commands/sbin/{fsck,mkfs}/src/main.rs` 各 14/15 行，纯参数解析占位；C 侧对应按文件系统分型的离线工具族（mkfs.mfs、fsck.mfs 等）。15-stage-fs 的 26 篇文档范围是 8 server + 4 框架库（plan.md §1.1），不含离线工具；命令轨道尚未建立，归属悬空。
+
+**影响**：无法离线制作与校验镜像；测试与装机只能依赖预制镜像。
+
+**为何 edge**：判定②——实现落点（os/commands/）不在 15-stage-fs 的 crate 集内；且 mkfs/fsck 需要跨 crate 复用各 fs 的盘上结构。
+
+**建议**：
+- 方案 A（推荐）：等 mfs/ext2 的盘上结构层稳定（15-stage-fs/todo.md V1-P2-10 排期）后由命令轨道认领，直接复用 minix-fs-mfs/minix-fs-ext2 的解析与写入函数（Rust 侧天然可共享；C 的 mkfs/fsck 是独立复制的实现，Rust 侧可做得更好）。
+- 方案 B（否决）：15-stage 提前认领。否决理由：命令 crate 的归属与 sbin 分型构建形态未定，提前认领会重演域外混装（对账 E-MINSYS-SCOPE）。
+
+**依赖**：V1-P2-10（盘上结构层稳定）；命令轨道建立。
+**解锁**：镜像制作/校验自动化、装机流程。
