@@ -45,6 +45,7 @@ use minix_arch::{DirectMapArch, ReturnSequence, TrapStyle, pt_alloc};
 // E1 slice 5: QEMU test kernels build a user context directly and must
 // record the full-context return style (`test-user-trap`).
 pub use minix_arch::TrapStyle as PublicTrapStyle;
+pub use kerninfo::init_kerninfo;
 
 /// End of identity-mapped region during boot (4 GB).
 /// C: pg_identity() maps 1024 × 4MB = 4GB (I386_BIG_PAGE_SIZE × 1024).
@@ -77,6 +78,7 @@ pub mod syscall_clock;
 pub mod ipc_filter;
 pub mod cross_space;
 pub(crate) mod kmess;
+pub mod kerninfo;
 pub mod misc;
 pub mod debug;
 pub mod page_fault;
@@ -477,6 +479,14 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Phase B: cstart — protection + clock + interrupt
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
+
+    // Phase B.5: kernel information page — build, user-map, publish.
+    // From here on the MINIX_KERNINFO IPC call (= 6) answers OK with the
+    // page address instead of EBADCALL (C: proc.c:685-693, publication at
+    // memory.c:913). Runs before proc_init so boot processes are born with
+    // the page already queryable, mirroring the C order where the cstart
+    // kuserinfo fill (main.c:438-440) precedes proc_init.
+    kerninfo::init_kerninfo(kernel_info);
 
     // Phase C: proc_init + arch_boot_proc
     // Populates the global `PROC_TABLE` / `PRIV_TABLE` statics.

@@ -276,6 +276,26 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **理由**: minix-rs 是完整重写，无 legacy binary 兼容需求；不需要 `kui_size` ABI 兼容性检查机制。
 
+### 3.7 增补（2026-09-17）: `MINIX_KERNINFO` 调用共享页半保留——D4 的部分修正
+
+**触发**: edge E-KERNINFO 执行轮实读 C 分派代码后发现，D4 的"无统一内核信息页概念"漏掉了一个事实——C 的 `do_ipc` 里存在独立的 `MINIX_KERNINFO` 调用（= 6，`ipcconst.h:12`），它不读消息缓冲，而是通过二次返回寄存器（i386 为 `p_reg.bx`，`arch_system.c:184-186`）把 `minix_kerninfo_user` 交给调用者（proc.c:685-693），页未发布时返回 EBADCALL（proc.c:687-689）。这是一个可观察的 IPC 契约，不只是 `.usermapped` 段的内部布局。
+
+**Ground Truth 链裁决**: C 源行为 > design doc——该调用按 C 外部行为保留，D4 相应收窄。收窄后的边界：
+
+| 内容 | 处置 | 依据 |
+|------|------|------|
+| `.usermapped` 段本体 + 21 个 IPC trampoline | 维持不移植（D1/D5 不变） | 64 位 syscall 单指令入内核，无 trampoline 需求 |
+| `kinfo`/`machine`/`kmessages`/`loadinfo`/`kclockinfo` 经共享页暴露 | 维持不移植（各走 `sys_getinfo` 子请求，kmessages 归 E-ISKMESS） | 布局不泄漏、权限可控（§1.1 的系统调用获取策略） |
+| `MINIX_KERNINFO` 调用 + kerninfo 页（magic + `kuserinfo`） | **保留并实装**（`os/kernel/src/kerninfo.rs`） | C 可观察行为；`kuserinfo` 是 C 明示的 userland ABI（type.h:203-208） |
+
+**实装形态**（`kerninfo::init_kerninfo`，kmain Phase B.5）：内核镜像静态页（`KerninfoPage`，4 KiB 对齐，`BklProtected` 审计为 write-once）在启动时填充 magic 与 `kuserinfo`（`kui_size`/`kui_user_sp = kinfo.user_sp`，main.c:438-440 对应），经活动页根把该物理页用户只读映射到固定保留 VA `KERNINFO_USER_VA = 0x2_0000_0000`（高于 4 GiB identity 窗口、低于各架构用户 VA 上限），最后发布地址到 `MINIX_KERNINFO_USER`。映射后调用即从 EBADCALL 翻转为 OK + 页地址。
+
+**与 C 的分工差异（契约不变）**: C 的 VM 把 `.usermapped` 段映射进每个进程地址空间并回调内核换算 `FIXEDPTR`（memory.c:874-925）；本重写 bootstrap 期没有 VM，由内核自己对活动根做这一次映射——与 `VmBootHandoff` 页同型（lib.rs `init_proc_and_boot`）。VM 接管逐进程地址空间后，"把 kerninfo 页复制进每个新根"随之移交 VM 域，发布机制（本模块 + dispatch 臂读 `MINIX_KERNINFO_USER`）不受该移交影响。
+
+**映射机制对照**: Linux 的 vDSO/vvar 是同型机制——内核在启动时构造只读数据页并映射进每个进程地址空间的保留 VA；本重写与其一致，而与 Redox 的"一切经 scheme 请求"策略不同（§1.4 的三路对照中，minix-rs 在这一个调用上回到了 Minix3/Linux 阵营）。
+
+**顺带修复的 arch 缺陷**: `X86_64Paging::walk_alloc` 此前给新建中间层只写 PRESENT\|WRITABLE，不传播 USER 位——U/S 逐层 AND，任何用户叶子 behind 新建中间层都会在 CPL3 首次访问时 #PF(err=5)。本调用映射与 `VmBootHandoff` 页（VM 出生首读，尚未真机通电）同踩此雷；修复为从叶子 PTE 派生中间层 USER（Linux 以 `_PAGE_USER` 填中间层同型），test-user-trap 真机五断言验收。
+
 ---
 
 ## Ch4: Rust 实现
@@ -336,7 +356,7 @@ os/kernel/src/misc.rs 定义 `LoadInfoStruct`，用于 `sys_getinfo` GET_LOADINF
 |--------|--------|---------|
 | `.usermapped` section | kernel.lds:27 | 不保留 |
 | `.usermapped_glo` section | kernel.lds:25 | 不保留 |
-| `minix_kerninfo` | usermapped_data.c:4 | 无统一入口；sys_getinfo 各子请求 |
+| `minix_kerninfo` | usermapped_data.c:4 | ~~无统一入口~~ **部分保留（2026-09-17 修正，见 §3.7）**：`MINIX_KERNINFO` 调用 + kerninfo 页（magic + kuserinfo）实装于 `kerninfo::init_kerninfo`；其余子结构维持 sys_getinfo 替代 |
 | `kinfo`（usermapped 用途） | usermapped_data.c:7 | KernelInfo（boot→kernel）+ sys_getinfo GET_KINFO |
 | `machine` | usermapped_data.c:8 | sys_getinfo GET_MACHINE / GET_CPUINFO |
 | `kmessages` | usermapped_data.c:9 | 无替代（future work） |

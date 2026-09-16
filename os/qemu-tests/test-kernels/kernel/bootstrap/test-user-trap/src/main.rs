@@ -1,4 +1,5 @@
-//! Test: user-mode trap bridge bring-up (E1 slice 5; edge E1).
+//! Test: user-mode trap bridge bring-up (E1 slice 5; edge E1) + kerninfo
+//! publication (E-KERNINFO kernel half).
 //!
 //! Verifies the full user → kernel → user round trip through the vector-33
 //! IPC gate: the kernel maps a user code page (CPL3) containing an
@@ -6,8 +7,9 @@
 //! enters the scheduling loop (`switch_to_user`), and the payload's trap
 //! round-trips through `x86_ipc_dispatch_body` — an undefined call number
 //! (99) must come back as EBADCALL(209) in RAX, and a MINIX_KERNINFO probe
-//! (call 6, page unpublished in this test) must also return EBADCALL
-//! (C: proc.c:602-606 default branch / proc.c:687-689 kerninfo-not-ready).
+//! (call 6) must return OK(0) in RAX with the user-mapped page address in
+//! RBX (C: proc.c:685-693 secondary return channel) once
+//! `init_kerninfo` has published the page.
 //!
 //! Boot flow: identical to test-smp-aps through smp_init (multi-AP online,
 //! both schedulers live), then: user pages mapped via the live root
@@ -18,9 +20,12 @@
 //!
 //! PASS = GDB reads the user mailbox (physical 0x400_1000, mapped at
 //! VA 0x1_0001_0000):
-//!   [+0x00] == 209    round-1 errno (undefined call 99 → EBADCALL)
-//!   [+0x08] == 0xDEAD payload completion marker
-//!   [+0x18] == 209    round-2 errno (MINIX_KERNINFO, page unpublished)
+//!   [+0x00] == 209         round-1 errno (undefined call 99 → EBADCALL)
+//!   [+0x08] == 0xDEAD      payload completion marker
+//!   [+0x10] == 100         hz value (E8 SYSCALL-leg write-back)
+//!   [+0x18] == 0           round-2: MINIX_KERNINFO returns OK
+//!   [+0x28] == 0x2_0000_0000  kerninfo page VA (secondary return RBX)
+//!   [+0x30] == 0xfc3b84bf  KERNINFO_MAGIC read from the page at CPL3
 //! The run script (qemu-tests/test-user-trap.sh) drives QEMU+GDB and
 //! asserts the mailbox.
 
@@ -142,21 +147,35 @@ const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 id
 /// mov  [0x4001_0000 + 0x00], rax   ; mailbox[0] = errno
 /// mov  r11, 0xDEAD
 /// mov  [0x4001_0000 + 0x08], r11   ; mailbox[1] = completion marker
-/// mov  ecx, 6                      ; MINIX_KERNINFO (page unpublished)
-/// int  0x21                        ; → EBADCALL(209) again
-/// mov  [0x4001_0000 + 0x18], rax   ; mailbox[2] = errno
+/// mov  rdi, msg_va
+/// syscall                          ; SYSCALL leg: GetInfo GET_HZ (E8)
+/// mov  [0x4001_0000 + 0x20], rax   ; syscall return code
+/// mov  rax, [0x400_1200]           ; hz buffer written by the kernel
+/// mov  [0x4001_0000 + 0x10], rax   ; mailbox[2] = hz value
+/// mov  ecx, 6                      ; MINIX_KERNINFO (published by init_kerninfo)
+/// int  0x21                        ; → OK(0) in RAX, page VA in RBX
+/// mov  [0x4001_0000 + 0x18], rax   ; mailbox[3] = 0 (OK, not EBADCALL)
+/// mov  rax, rbx
+/// mov  [0x4001_0000 + 0x28], rax   ; mailbox[5] = kerninfo page VA
+/// mov  rax, [rbx]                  ; CPL3 read of the published page
+/// mov  [0x4001_0000 + 0x30], rax   ; mailbox[6] = KERNINFO_MAGIC
 /// jmp  $                           ; spin; kernel ticks continue
 /// ```
 /// Register ABI per the approved E1 design (decision 2): RCX = call
-/// number, RAX = errno return. The two mailbox stores after the first
-/// trap prove the kernel dispatched, returned through the stub, and the
-/// payload kept running in CPL3.
+/// number, RAX = errno return, RBX = secondary return channel (status /
+/// kerninfo page address). The mailbox stores after the first trap prove
+/// the kernel dispatched, returned through the stub, and the payload kept
+/// running in CPL3; the two stores after the second trap prove the
+/// kerninfo publication end-to-end, including a CPL3 data read of the
+/// mapped page.
 #[unsafe(link_section = ".rodata")]
-static USER_PAYLOAD: [u8; 95] = [0xB9, 0x63, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC0, 0xAD, 0xDE, 0x00, 0x00, 0x48, 0xA3, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xBF, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xA3, 0x20, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xA1, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x48, 0xA3, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x06, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x18, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB, 0xFE];
+static USER_PAYLOAD: [u8; 121] = [0xB9, 0x63, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC0, 0xAD, 0xDE, 0x00, 0x00, 0x48, 0xA3, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xBF, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xA3, 0x20, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xA1, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x48, 0xA3, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x06, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x18, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0x89, 0xD8, 0x48, 0xA3, 0x28, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x03, 0x48, 0xA3, 0x30, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB, 0xFE];
 
 /// User mailbox physical page (data page): [+0x00] round-1 errno,
-/// [+0x08] completion marker, [+0x18] round-2 errno. Read by the run
-/// script through GDB.
+/// [+0x08] completion marker, [+0x10] hz value (E8), [+0x18] round-2
+/// errno (0 = OK once kerninfo is published), [+0x28] kerninfo page VA
+/// (secondary return RBX), [+0x30] magic read from the page at CPL3.
+/// Read by the run script through GDB.
 const MAILBOX_MAGIC: u64 = 0xDEAD;
 const EBADCALL: u64 = 209;
 
@@ -224,6 +243,12 @@ fn main() -> Status {
     // 4. Clock + interrupt controller (kmain Phase B order).
     minix_kernel::init_clock_and_interrupts();
     early_console::write_str("  clock + controller initialized\n");
+
+    // 4.5. Kernel information page (kmain Phase B.5) — publishes the
+    // MINIX_KERNINFO page so the payload's round-2 call 6 returns OK with
+    // the page VA instead of EBADCALL.
+    minix_kernel::init_kerninfo(&result.kernel_info);
+    early_console::write_str("  kerninfo page published\n");
 
     // 5. Process table (Phase C) + SMP state (Phase D).
     early_console::write_str("  calling init_proc_and_boot\n");

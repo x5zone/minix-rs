@@ -342,14 +342,34 @@ impl PteWalkArch for X86_64PteWalk {
 ///
 /// The Direct Map window selected by `channel` must be active. See
 /// `walk_read`.
-fn walk_alloc(root_paddr: u64, vaddr: u64, channel: PteChannel) -> Result<u64, PageTableError> {
+fn walk_alloc(
+    root_paddr: u64,
+    vaddr: u64,
+    channel: PteChannel,
+    leaf_pte: u64,
+) -> Result<u64, PageTableError> {
+    // Intermediate levels carry USER when the leaf does: U/S is ANDed at
+    // EVERY level, so a user-accessible leaf behind supervisor-only
+    // intermediates faults with #PF(err=5) on first CPL3 access. Derived
+    // from the leaf rather than stored per-level (Linux populates
+    // intermediate entries with _PAGE_USER the same way). WRITABLE stays
+    // unconditional on intermediates — effective permissions still AND
+    // with the leaf, so a read-only leaf stays read-only. NX needs no
+    // propagation: execution is forbidden when ANY level sets it.
+    let mid_flags = X64PteFlags::PRESENT
+        | X64PteFlags::WRITABLE
+        | if leaf_pte & X64PteFlags::USER.bits() != 0 {
+            X64PteFlags::USER
+        } else {
+            X64PteFlags::empty()
+        };
     let i4 = pml4_index(vaddr);
     // SAFETY: channel's Direct Map active per function precondition.
     let pml4e = unsafe { read_pte_dm(root_paddr + (i4 as u64) * 8, channel) };
     let pdpt = if pml4e & X64PteFlags::PRESENT.bits() == 0 {
         // Allocate a new PDPT page.
         let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-        let entry = phys.0 | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits();
+        let entry = phys.0 | mid_flags.bits();
         // SAFETY: channel's Direct Map active; PML4 entry slot is 8-byte aligned.
         unsafe { write_pte_dm(root_paddr + (i4 as u64) * 8, entry, 0, channel) };
         phys.0
@@ -366,7 +386,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64, channel: PteChannel) -> Result<u64, P
     }
     let pd = if pdpte & X64PteFlags::PRESENT.bits() == 0 {
         let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-        let entry = phys.0 | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits();
+        let entry = phys.0 | mid_flags.bits();
         unsafe { write_pte_dm(pdpt + (i3 as u64) * 8, entry, 0, channel) };
         phys.0
     } else {
@@ -381,7 +401,7 @@ fn walk_alloc(root_paddr: u64, vaddr: u64, channel: PteChannel) -> Result<u64, P
     }
     let pt = if pde & X64PteFlags::PRESENT.bits() == 0 {
         let (phys, _virt) = crate::pt_alloc::alloc_pt_page()?;
-        let entry = phys.0 | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits();
+        let entry = phys.0 | mid_flags.bits();
         unsafe { write_pte_dm(pd + (i2 as u64) * 8, entry, 0, channel) };
         phys.0
     } else {
@@ -555,13 +575,16 @@ impl Paging for X86_64Paging {
             return Err(PageTableError::InvalidAddress);
         }
         // Walk to the leaf PTE address, allocating intermediate tables.
-        let leaf_paddr = walk_alloc(self.root_paddr, vaddr.0, self.channel)?;
+        // The leaf PTE is composed first so walk_alloc can propagate the
+        // USER bit into the intermediate levels it creates (U/S is ANDed
+        // per level — see walk_alloc).
+        let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
+        let leaf_paddr = walk_alloc(self.root_paddr, vaddr.0, self.channel, new_pte)?;
         // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
         let pte = unsafe { read_pte_dm(leaf_paddr, self.channel) };
         if pte & X64PteFlags::PRESENT.bits() != 0 {
             return Err(PageTableError::AlreadyMapped);
         }
-        let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
         // SAFETY: see above. Flush TLB for the target vaddr in case a
         // stale entry lingers from a prior unmap.
         unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };

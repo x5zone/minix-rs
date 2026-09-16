@@ -134,6 +134,7 @@ mod bkl_protected {
         // Write-once-read-only after boot (no BKL needed post-init):
         minix_boot::KernelInfo,
         crate::memmap::MemMapEntry,
+        crate::kerninfo::KerninfoPage,
 
         // BKL-serialized mutation (kernel-internal types):
         crate::proc_table::ProcessTable,
@@ -205,6 +206,7 @@ mod bkl_protected_tests {
         // Write-once-read-only after boot:
         assert_impl::<minix_boot::KernelInfo>();
         assert_impl::<crate::memmap::MemMapEntry>();
+        assert_impl::<crate::kerninfo::KerninfoPage>();
 
         // BKL-serialized mutation:
         assert_impl::<crate::proc_table::ProcessTable>();
@@ -429,8 +431,8 @@ pub(crate) const KERNINFO_USER_UNSET: u64 = 0;
 
 /// User-mapped virtual address of the `minix_kerninfo` page (E-KERNINFO).
 ///
-/// Written once by arch/boot init when the page gets its user mapping
-/// (lands with the E1 user-mode trap bridge); read on every
+/// Written once by `kerninfo::init_kerninfo` (kmain Phase B.5) after the
+/// page gets its user mapping in the bootstrap root; read on every
 /// `MINIX_KERNINFO` IPC call. `AtomicU64` for the same reason as
 /// `CURRENT_ROOT_PHYS`: plain write-once-read-many `u64` needs no
 /// `SyncUnsafeCell` wrapper.

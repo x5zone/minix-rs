@@ -1,17 +1,22 @@
 #!/bin/bash
-# test-user-trap.sh — E1 slice 5: user-mode int-33 trap bridge bring-up.
+# test-user-trap.sh — E1 slice 5: user-mode int-33 trap bridge bring-up,
+# plus the E-KERNINFO publication check (kernel half).
 #
 # Boots test-user-trap.efi (OVMF, same staging as run_qemu.sh). The guest
 # kernel maps CPL3 code/data/stack pages for the VM boot process, enters
 # the scheduling loop, and the payload traps twice through vector 33:
 #   round 1: undefined call 99  → EBADCALL(209) in RAX
-#   round 2: MINIX_KERNINFO (6) → EBADCALL(209), page unpublished
-# The payload writes both errnos plus a 0xDEAD completion marker into a
-# user mailbox page (physical 0x400_1000).
+#   round 2: MINIX_KERNINFO (6) → OK(0) in RAX, user-mapped page VA in
+#            RBX (secondary return channel, proc.c:690-692); the payload
+#            then reads KERNINFO_MAGIC from the page at CPL3
+# and runs the E8 SYSCALL leg (GetInfo GET_HZ → hz written back).
+# Results land in a user mailbox page (physical 0x400_1000): round-1
+# errno, 0xDEAD marker, hz value, round-2 errno, page VA, magic.
 #
-# PASS determination: this script polls the QEMU monitor (`xp` = physical
-# memory dump) for the three mailbox quadwords. The guest never exits
-# (the payload spins), so the script kills QEMU after reading the values.
+# PASS determination: this script reads the mailbox quadwords through the
+# QEMU gdbstub (the payload spins at CPL3 with the live CR3) and asserts
+# five distinctive values. The guest never exits, so the script kills
+# QEMU after reading the values.
 #
 # Exit codes: 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
 
@@ -106,18 +111,23 @@ sleep 3
 # so the mailbox VA 0x1_0001_0000 is directly readable through the gdbstub).
 GDB_OUT="$(timeout 20 gdb -batch \
     -ex 'target remote :1234' \
-    -ex 'set \$mb = 0' \
-    -ex 'x/3gx 0x100010000' \
+    -ex 'set $mb = 0' \
+    -ex 'x/7gx 0x100010000' \
     "$EFI" 2>/dev/null || true)"
-echo "$GDB_OUT" | tail -4
+echo "$GDB_OUT" | tail -5
 
 pass=1
 echo "$GDB_OUT" | grep -q "0x00000000000000d1" || { pass=0; echo "FAIL: round-1 errno != 209 (EBADCALL)"; }
 echo "$GDB_OUT" | grep -q "0x000000000000dead" || { pass=0; echo "FAIL: completion marker != 0xDEAD"; }
-echo "$GDB_OUT" | grep -q "0x00000000000000d1" || true
+echo "$GDB_OUT" | grep -q "0x0000000000000064" || { pass=0; echo "FAIL: hz != 100 (E8 SYSCALL-leg write-back)"; }
+# Round 2 (MINIX_KERNINFO, E-KERNINFO kernel half): OK(0) in RAX, the
+# user-mapped page VA in RBX (secondary return channel), and the page
+# readable at CPL3 (KERNINFO_MAGIC at offset 0).
+echo "$GDB_OUT" | grep -q "0x0000000200000000" || { pass=0; echo "FAIL: kerninfo page VA != 0x2_0000_0000 (secondary return RBX)"; }
+echo "$GDB_OUT" | grep -q "0x00000000fc3b84bf" || { pass=0; echo "FAIL: KERNINFO_MAGIC not readable from CPL3"; }
 
 if [ "$pass" -eq 1 ]; then
-    echo "RESULT: PASS (E1 slice 5 — user int-33 trap round trip verified)"
+    echo "RESULT: PASS (E1 slice 5 trap round trip + E-KERNINFO publication verified)"
     exit 0
 fi
 echo "RESULT: FAIL"
