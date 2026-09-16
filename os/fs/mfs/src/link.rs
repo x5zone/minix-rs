@@ -380,11 +380,25 @@ pub fn remove_directory<S: BlockSource>(
             &mut number,
         );
     }
+    // Link accounting follows the three `unlink_file` calls of the C
+    // sequence (`link.c:205-211`): the parent's name entry drops the child
+    // by one, the dot entry drops the child again, and the dot-dot entry
+    // — which names the parent — drops the parent. The child lands at
+    // NO_LINK, so its final release reports the zones for reclamation.
+    // Saturation replaces the C unsigned wrap-around: a directory with
+    // fewer than two links is already corrupt, and saturating keeps the
+    // release decision reachable instead of wrapping to a huge count.
     {
         let inode = ctx.table.slot_mut(child);
-        inode.nlinks -= 1;
+        inode.nlinks = inode.nlinks.saturating_sub(2);
         inode.pending_updates |= crate::inode::UPDATE_CHANGE;
         inode.dirty = true;
+    }
+    {
+        let pdir = ctx.table.slot_mut(parent);
+        pdir.nlinks = pdir.nlinks.saturating_sub(1);
+        pdir.pending_updates |= crate::inode::UPDATE_CHANGE;
+        pdir.dirty = true;
     }
     let mut outcome = LinkOutcome::default();
     release_child(ctx, child, &mut outcome);
@@ -999,6 +1013,9 @@ mod tests {
             &mut child_images,
         )
         .unwrap();
+        // The three-step accounting lands the child at NO_LINK (its name,
+        // its dot, and the parent's dot-dot all went away).
+        assert_eq!(fixture.table.slot(sub).nlinks, crate::inode::NO_LINK);
         assert!(outcome.reclaimed.is_empty());
         assert_eq!(SAME_NAME, 1000);
         assert_eq!(FIRST_HALF, 0);
