@@ -44,13 +44,17 @@ pub enum PrinterState {
 }
 
 /// Read a raw status byte (`printer_intr` / `output_done`,
-/// `printer.c:208-241,345-423`): paper first, then online, then the
-/// masked value against the healthy constant.
+/// `printer.c:208-241,345-423`).
+///
+/// C checks offline FIRST (`printer.c:217-219`: `(done_status & ON_LINE)
+/// == 0` is the input-output error), then paper (`printer.c:220-222`:
+/// the try-again case). An offline printer must not be classified as an
+/// out-of-paper retry — dead is not the same as temporarily thirsty.
 pub fn read_status(raw: u8) -> PrinterState {
-    if raw & STATUS_NO_PAPER != 0 {
-        PrinterState::NoPaper
-    } else if raw & STATUS_ONLINE == 0 {
+    if raw & STATUS_ONLINE == 0 {
         PrinterState::Offline
+    } else if raw & STATUS_NO_PAPER != 0 {
+        PrinterState::NoPaper
     } else if raw & STATUS_MASK == STATUS_NORMAL {
         PrinterState::Ready
     } else {
@@ -80,10 +84,16 @@ mod tests {
 
     #[test]
     fn test_status_byte_reads_in_priority_order() {
+        // Clean states first.
         assert_eq!(read_status(0x90), PrinterState::Ready);
         assert_eq!(read_status(0x10), PrinterState::Busy);
+        // Online with paper out: the try-again case.
         assert_eq!(read_status(0xB0), PrinterState::NoPaper);
         assert_eq!(read_status(0x80), PrinterState::Offline);
+        // The regression lock: paper-out with the line DOWN is offline
+        // (input-output error), not a retryable paper condition — C
+        // checks ON_LINE before NO_PAPER (printer.c:217-222).
+        assert_eq!(read_status(0x20), PrinterState::Offline);
     }
 
     #[test]
