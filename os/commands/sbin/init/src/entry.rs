@@ -8,7 +8,7 @@
 //! perform no system calls, so they are unit-testable without forking.
 //! Side effects (exiting, forking MAKEDEV, closing fds) live in `main.rs`.
 
-use minix_types::{EEXIST, Errno};
+use minix_sys::Errno;
 
 /// How `/etc/rc` should run (C: `runcom_mode`, init.c:151).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,7 @@ impl EntryError {
             // C uses errx (no errno) for the pid check; EEXIST is the
             // closest stable mapping for "already running" and is only
             // used for the exit-path translation, never as a syscall errno.
-            EntryError::AlreadyRunning => Errno::from_i32(EEXIST),
+            EntryError::AlreadyRunning => Errno::EEXIST,
         }
     }
 }
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(EntryError::NotRoot.to_errno(), Errno::EPERM);
         assert_eq!(
             EntryError::AlreadyRunning.to_errno(),
-            Errno::from_i32(EEXIST)
+            Errno::EEXIST
         );
     }
 

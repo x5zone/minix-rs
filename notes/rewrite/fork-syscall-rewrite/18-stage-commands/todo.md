@@ -128,7 +128,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 | 级别 | 编号 | 一句话 | 状态 |
 |------|------|--------|------|
 | **P0** | C-1 | 二进制面整体缺失：58 个成员只有 `minix-init` 一个真实命令；"决定半"（23 个组库）与"执行半"（31 个 stub 二进制壳）两半分裂且互不引用。收敛为域内 crate + `src/bin/` 薄壳（[ARCH]） | 待做 |
-| P1 | C-2 | `minix-sys` 顶层未再导出 errno 常量，`minix-init` 被迫直依赖 `minix-types`——99 §1 分层契约的唯一现存反例 | 待做（minix-sys 侧半已挂 edge `E-CMDSYSFACE`） |
+| P1 | C-2 | `minix-sys` 顶层未再导出 errno 常量，`minix-init` 被迫直依赖 `minix-types`——99 §1 分层契约的唯一现存反例 | ✅ 18 侧完成（2026-09-17，迭代 4）：init 改用 `minix_sys::Errno::EEXIST`，依赖行已删；minix-sys 侧常量再导出仍挂 edge `E-CMDSYSFACE`（服务后续命令） |
 | P1 | C-3 | 命令拿不到自己的参数与环境：`minix-rt` 只有 `progname()`/`argv_bytes(index)` 雏形，无环境访问器 | 待做（14 侧半已挂 edge `E-CMDSYSFACE`） |
 | P1 | C-4 | `plan.md:186` 验收基线写的 `cargo test -p commands-*` 包名前缀不存在，实际包名前缀是 `minix-*` | ✅ 完成（2026-09-17，迭代 3）：§3.4 改为 `minix-` 前缀可执行形式，同节过时的"全部为 stub"快照句一并按文档-代码同步门更新 |
 | P2 | C-5 | `os/Cargo.toml:71` 与 `:77` 重复登记 `commands/bin/fileops`；`plan.md` §2 的"35 crate"数字与实际 58 个成员漂移 | ✅ 重复登记已删（2026-09-17，迭代 2）；数字随 C-1 ④ 更新 |
@@ -179,7 +179,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 **影响**：这是规则与现实的偏离点：不是 init 的作者想越界，而是 libc 面不完整把它逼出去的。若不修，后续每个需要判 `EEXIST` 的命令都会复制这条越界路径，99 §1 从第一条命令起就名存实亡。
 
-**处置**：minix-sys 侧（errno 常量再导出，对齐 C 的 `libc` 中 errno.h 的地位）已登记 edge `E-CMDSYSFACE`，由 14-stage-runtime 执行。18 侧的对应动作：API 就绪后，`minix-init` 改用 `minix_sys::` 路径、删除 `minix-types` 依赖行、`cargo tree -p minix-init` 确认传递依赖消失。
+**处置**：minix-sys 侧（errno 常量再导出，对齐 C 的 `libc` 中 errno.h 的地位）已登记 edge `E-CMDSYSFACE`，由 14-stage-runtime 执行。18 侧的对应动作：✅ 已完成（2026-09-17，迭代 4）——实施时发现 `minix_types::Errno` 本就有 `EEXIST` 关联常量（`os/libs/minix-types/src/types/errno.rs:204`），随类型再导出（`lib.rs:264`）即可达，无需等 14 侧：`entry.rs:11` 改为 `use minix_sys::Errno;`，`:91` 与测试 `:322` 的 `Errno::from_i32(EEXIST)`（i32 往返解码）改为直接用关联常量 `Errno::EEXIST`，`Cargo.toml` 删除 `minix-types` 依赖行。验证：`cargo test -p minix-init` 89 通过；`grep -rn "minix_types" os/commands/` 零命中；`cargo tree -p minix-init` 剩余的 minix-types 均为经 minix-sys/minix-rt 的传递依赖（再导出正是设计的消费通道，边界规则约束源码级直接引用）。
 
 ---
 
