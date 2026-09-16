@@ -44,12 +44,15 @@ use minix_sys::ipc::IpcTransport as _;
 /// `NOTIFY_MESSAGE` — com.h:92.
 pub const NOTIFY_MESSAGE: u32 = 0x1000;
 
-/// C: `is_ipc_notify(status)` — com.h:93 (the status minus
-/// `NOTIFY_MESSAGE` lands inside the notify band). The status word is
-/// authoritative: MIB reads with `sef_receive_status`, no call-number
-/// guessing.
+/// C: `is_ipc_notify(status)` — com.h:93: the status call field
+/// (`IPC_STATUS_CALL`, low `0x3F` bits — ipcconst.h:21-22) equals
+/// `NOTIFY` (4 — ipcconst.h:10). The status word is authoritative: MIB
+/// reads with `sef_receive_status`, no call-number guessing. (The
+/// previous form subtracted `NOTIFY_MESSAGE` and tested a 0x100 band —
+/// that is com.h:94 `is_notify`, the m_type-band macro, not the status
+/// macro main.c:449 calls.)
 pub const fn status_is_notify(status: u32) -> bool {
-    status.wrapping_sub(NOTIFY_MESSAGE) < 0x100
+    (status & 0x3F) == minix_sys::ipc::CALL_NOTIFY
 }
 
 /// C: `IPC_STATUS_CALL(status) == SENDREC` — the caller is blocked in
@@ -70,6 +73,8 @@ pub trait MibIpc {
     /// Send-and-receive against a peer service (remote relay, 12).
     /// C: `ipc_sendrec` — remote.c:422-436.
     fn send_rec(&mut self, peer: Endpoint, message: &mut Message) -> Result<(), i32>;
+    /// Notification (the SEF ping pong). C: `ipc_notify` — sef_ping.c:61.
+    fn notify(&mut self, to: Endpoint) -> Result<(), i32>;
 }
 
 /// Receive-failure bound (DS's honest-death discipline: a transient
@@ -124,7 +129,7 @@ pub enum Turn {
     ReceiveFailed,
 }
 
-impl<K: MibKernel, S: MibServices, I: MibIpc> Server<K, S, I> {
+impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I> {
     /// Assemble from parts.
     pub fn new(server: MibServer, ipc: I, kernel: K, services: S) -> Self {
         Self { server, ipc, kernel, services }
@@ -136,8 +141,19 @@ impl<K: MibKernel, S: MibServices, I: MibIpc> Server<K, S, I> {
     /// turn did plus the triage verdict for tests.
     pub fn run_once(&mut self) -> (Turn, Incoming) {
         let mut msg = Message::default();
-        let status = match self.ipc.receive_status(&mut msg) {
-            Ok(s) => s,
+        // E-ISWIRE: the receive goes through the SEF library — RS pings
+        // are ponged (notify) and swallowed inside `sef_receive_status`,
+        // never reaching the triage below. C: mib main.c:443 reads with
+        // `sef_receive_status`; SYSTEM notifies surface as SefEvent::Signal
+        // (MIB registers no signal handler — ignored, same as C's
+        // `is_ipc_notify` refusal at main.c:449-454).
+        let status = match minix_sef::sef_receive_status(
+            &mut self.ipc,
+            Endpoint::ANY,
+            &mut msg,
+            &mut |_sig| {},
+        ) {
+            Ok(rx) => rx.status as u32,
             Err(_) => return (Turn::ReceiveFailed, Incoming::Unknown),
         };
         let incoming = triage(status_is_notify(status), msg.m_type);
@@ -504,9 +520,27 @@ impl MibIpc for SysIpc {
             .sendrec(peer, message)
             .map_err(|status| status.0)
     }
+
+    fn notify(&mut self, to: Endpoint) -> Result<(), i32> {
+        self.transport.notify(to).map_err(|status| status.0)
+    }
 }
 
-impl<K: MibKernel, S: MibServices, I: MibIpc> Server<K, S, I> {
+/// The SEF library reads through the same verbs (E-ISWIRE: the receive
+/// half of the MIB loop is `minix_sef::sef_receive_status`, so RS pings
+/// are ponged and swallowed inside the library — C mib main.c:443 reads
+/// with `sef_receive_status` for exactly this reason).
+impl minix_sef::SefIpc for SysIpc {
+    fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        <Self as MibIpc>::receive_status(self, msg).map(|s| s as i32)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        <Self as MibIpc>::notify(self, dest)
+    }
+}
+
+impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I> {
     /// Run the server loop until the transport dies for good. C:
     /// `main()` — main.c:433-492 (the receive "cannot fail" panic
     /// becomes a counted bound — the SCHED/DS honest-death discipline).
@@ -537,10 +571,11 @@ mod tests {
     };
 
     /// Scripted message seam: a FIFO of received messages plus a log
-    /// of every reply sent.
+    /// of every reply sent and every pong notified.
     struct MockIpc {
         queue: RefCell<Vec<(u32, Message)>>,
         sent: RefCell<Vec<Message>>,
+        pongs: RefCell<Vec<Endpoint>>,
         fail_recv: bool,
     }
 
@@ -549,12 +584,28 @@ mod tests {
             Self {
                 queue: RefCell::new(items.to_vec()),
                 sent: RefCell::new(Vec::new()),
+                pongs: RefCell::new(Vec::new()),
                 fail_recv: false,
             }
         }
     }
 
+    impl minix_sef::SefIpc for MockIpc {
+        fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+            <MockIpc as MibIpc>::receive_status(self, msg).map(|s| s as i32)
+        }
+
+        fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+            <MockIpc as MibIpc>::notify(self, dest)
+        }
+    }
+
     impl MibIpc for MockIpc {
+        fn notify(&mut self, to: Endpoint) -> Result<(), i32> {
+            self.pongs.borrow_mut().push(to);
+            Ok(())
+        }
+
         fn receive_status(&mut self, message: &mut Message) -> Result<u32, i32> {
             if self.fail_recv {
                 return Err(EIO);
@@ -598,11 +649,49 @@ mod tests {
     /// Notify arrivals are logged and never answered (:449-454).
     #[test]
     fn test_notify_never_replies() {
-        let mut s = server_with(&[(NOTIFY_MESSAGE, mib_msg(minix_types::MIB_SYSCTL))]);
+        let mut s = server_with(&[(minix_sys::ipc::CALL_NOTIFY, mib_msg(minix_types::MIB_SYSCTL))]);
         let (turn, incoming) = s.run_once();
         assert_eq!(turn, Turn::Handled);
         assert_eq!(incoming, Incoming::NotifyRefusal);
         assert!(s.ipc.sent.borrow().is_empty());
+    }
+
+    /// RS ping: ponged inside the SEF library and swallowed — the turn is
+    /// the NEXT receive failing on the exhausted script, never a triage
+    /// verdict, and no reply goes out (E-ISWIRE; C: sef.c:208-214 +
+    /// sef_ping.c:21-38 — the loop reads through `sef_receive_status`).
+    #[test]
+    fn test_rs_ping_ponged_and_swallowed() {
+        let mut ping = Message::default();
+        ping.m_type = minix_sef::SEF_PING_REQUEST_TYPE as i32;
+        ping.m_source = minix_sef::RS_ENDPOINT;
+        let mut s = server_with(&[(minix_sys::ipc::CALL_NOTIFY as u32, ping)]);
+        let (turn, incoming) = s.run_once();
+        assert_eq!(turn, Turn::ReceiveFailed);
+        assert_eq!(incoming, Incoming::Unknown);
+        assert!(s.ipc.sent.borrow().is_empty());
+        assert_eq!(*s.ipc.pongs.borrow(), vec![minix_sef::RS_ENDPOINT]);
+    }
+
+    /// RS ping followed by a real call: the ping vanishes, the call is
+    /// answered normally (the loop survives the interception).
+    #[test]
+    fn test_rs_ping_then_call_is_answered() {
+        let mut ping = Message::default();
+        ping.m_type = minix_sef::SEF_PING_REQUEST_TYPE as i32;
+        ping.m_source = minix_sef::RS_ENDPOINT;
+        // MockIpc pops LIFO — the ping (listed last) is received first.
+        let mut s = server_with(&[
+            (minix_sys::ipc::CALL_SENDREC, mib_msg(0x42)),
+            (minix_sys::ipc::CALL_NOTIFY as u32, ping),
+        ]);
+        let (turn, incoming) = s.run_once();
+        assert_eq!(turn, Turn::Handled);
+        assert_eq!(incoming, Incoming::Unknown);
+        let sent = s.ipc.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, ENOSYS);
+        assert_eq!(*s.ipc.pongs.borrow(), vec![minix_sef::RS_ENDPOINT]);
     }
 
     /// Wild number from a blocking caller: ENOSYS goes back (:474-479).

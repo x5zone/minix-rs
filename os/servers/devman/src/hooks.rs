@@ -7,7 +7,8 @@
 //! inode, and hand both to `run_vtreefs`. This module models exactly those
 //! three things with Rust types; the VTreeFS internals live in 02's module.
 
-use minix_types::Errno;
+use minix_types::{Errno, SIGNAL_TERMINATE};
+use crate::server::Server;
 
 // ── Constants (C sources annotated; 99-devm-global-concepts is upstream) ──
 
@@ -103,6 +104,45 @@ pub trait SefHooks {
     fn on_signal(&mut self, sig: i32);
 }
 
+/// Production SEF hooks (E-ISWIRE) — the callbacks C main.c:77-80 fills
+/// and libvtreefs's `sef_local_startup` (vtreefs.c:52-62) registers:
+/// `init_server` = `init_hook` (fresh init: rebuild the framework + tree
+/// from the stored config via [`Server::new`]); restart is registered as
+/// `SEF_CB_INIT_RESTART_STATEFUL` (vtreefs.c:57) — state survives the RS
+/// image restore, so the restart callback body is empty and this hook is
+/// only ever invoked for the fresh case. `on_signal` = `got_signal`
+/// (vtreefs.c:39-46): everything but SIGTERM is ignored; SIGTERM latches
+/// [`terminate`] as the event loop's clean-stop flag
+/// (`fsdriver_terminate`).
+pub struct DevmanSef {
+    config: ServerConfig,
+    /// The framework + device-tree state (rebuilt by [`Self::init_server`]).
+    pub server: Server,
+    /// SIGTERM latch — the event loop's exit flag.
+    pub terminate: bool,
+}
+
+impl DevmanSef {
+    /// Fresh-boot assembly: config + first `Server` (C main.c:82-89).
+    pub fn new(config: ServerConfig) -> Result<Self, Errno> {
+        Ok(Self { server: Server::new(&config)?, config, terminate: false })
+    }
+}
+
+impl SefHooks for DevmanSef {
+    fn init_server(&mut self) -> Result<(), Errno> {
+        self.server = Server::new(&self.config)?;
+        Ok(())
+    }
+
+    fn on_signal(&mut self, sig: i32) {
+        // C: got_signal (vtreefs.c:39-46) — SIGTERM only.
+        if sig == SIGNAL_TERMINATE {
+            self.terminate = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +186,22 @@ mod tests {
                 self.sequence.push(SefLifecycle::SignalTerm);
             }
         }
+    }
+
+    /// Production impl (E-ISWIRE): fresh init rebuilds the Server from
+    /// the config; SIGTERM latches, other signals don't.
+    #[test]
+    fn test_devman_sef_production_hooks() {
+        let root = RootStat::devman_root();
+        let mut sef = DevmanSef::new(ServerConfig::devman_default(root)).unwrap();
+        assert!(!sef.terminate);
+        // Fresh init: rebuild is transparent (the framework re-inits).
+        assert!(sef.init_server().is_ok());
+        // got_signal: SIGTERM latches the stop flag, the rest is ignored.
+        sef.on_signal(9);
+        assert!(!sef.terminate);
+        sef.on_signal(SIGNAL_TERMINATE);
+        assert!(sef.terminate);
     }
 
     /// Test double #2 (behavior: fresh init always fails).
