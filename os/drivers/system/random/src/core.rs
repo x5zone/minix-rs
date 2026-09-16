@@ -12,6 +12,8 @@
 //! below. Counter arithmetic, block chunking, and the reseed mix order are
 //! pure and fully testable.
 
+use super::pool::PoolHash;
+
 /// Cipher block width in bytes (the platform cipher width).
 ///
 /// The C code uses the cipher block size throughout (`random.c`); sixteen
@@ -151,31 +153,29 @@ impl GeneratorCore {
         out
     }
 
-    /// Mix pool digests into a fresh key following the C order.
+    /// Mix pool digests into a fresh key through the hash finalization.
     ///
-    /// C: `reseed` (`random.c:206-236`): when already seeded, the old key
-    /// joins first; pool zero always joins; further pools join per
-    /// [`super::pool::reseed_extra_pools`]; every joined pool resets. The
-    /// digests arrive precomputed (hashing stays behind the pool trait);
-    /// this method folds them in order, marks seeded, and bumps the
-    /// reseed count.
-    pub fn reseed(&mut self, digests: &[&[u8; 32]]) {
-        let mut mixed = self.key;
+    /// C: `reseed` (`random.c:206-236`): the new key is one hash
+    /// finalization over the old key (only when already seeded) followed by
+    /// the joined pools' digests, pool zero always first; further pools
+    /// join per [`super::pool::reseed_extra_pools`], and every joined pool
+    /// resets. The digests arrive precomputed (pool hashing stays with the
+    /// pool set); the finalization itself runs here through the caller's
+    /// hasher — the same incremental shape as C's `SHA256_CTX` — so the
+    /// byte order (key, then digests in join order) is pinned by test.
+    /// Marks seeded and bumps the reseed count.
+    pub fn reseed<H: PoolHash>(&mut self, finalizer: &mut H, digests: &[&[u8; 32]]) {
         if self.seeded {
-            fold_in(&mut mixed, &self.key_as_digest());
+            finalizer.absorb(&self.key);
         }
         for digest in digests {
-            fold_in(&mut mixed, digest);
+            finalizer.absorb(*digest);
         }
-        self.key[..32].copy_from_slice(&mixed[..32]);
+        let mut key = [0u8; KEY_SIZE];
+        finalizer.snapshot_reset(&mut key);
+        self.key = key;
         self.reseeds += 1;
         self.seeded = true;
-    }
-
-    fn key_as_digest(&self) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&self.key[..32]);
-        out
     }
 }
 
@@ -185,14 +185,9 @@ impl Default for GeneratorCore {
     }
 }
 
-fn fold_in(state: &mut [u8; KEY_SIZE], digest: &[u8; 32]) {
-    for i in 0..KEY_SIZE {
-        state[i] ^= digest[i % 32].rotate_left(1);
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::pool::FoldHash;
     use super::*;
 
     #[test]
@@ -231,12 +226,55 @@ mod tests {
     fn test_reseed_marks_seeded_and_counts() {
         let mut core = GeneratorCore::new();
         let digest = [7u8; 32];
-        core.reseed(&[&digest]);
+        let mut hash = FoldHash::new();
+        core.reseed(&mut hash, &[&digest]);
         assert!(core.is_seeded());
         assert_eq!(core.reseed_count(), 1);
         let before = core.key;
-        core.reseed(&[&digest]);
+        let mut hash = FoldHash::new();
+        core.reseed(&mut hash, &[&digest]);
         assert_ne!(core.key, before);
+    }
+
+    #[test]
+    fn test_first_reseed_hashes_digests_only() {
+        // C: without got_seeded the old (zero) key stays out of the ctx
+        // (random.c:215-217). FoldHash is position-dependent, so "digest
+        // only" and "zero key then digest" produce different snapshots;
+        // the replay pins the former.
+        let digest = [7u8; 32];
+        let mut core = GeneratorCore::new();
+        let mut expected = FoldHash::new();
+        expected.absorb(&digest);
+        let mut want = [0u8; KEY_SIZE];
+        expected.snapshot_reset(&mut want);
+        let mut hash = FoldHash::new();
+        core.reseed(&mut hash, &[&digest]);
+        assert_eq!(core.key, want);
+    }
+
+    #[test]
+    fn test_second_reseed_hashes_old_key_then_digests_in_order() {
+        // C: got_seeded puts the whole old key into the ctx ahead of the
+        // pool digests (random.c:215-217), each digest in join order, one
+        // finalization producing the next key (random.c:230-232). Varied
+        // byte patterns keep the weak folding hasher order-sensitive.
+        let first_digest: [u8; 32] = core::array::from_fn(|i| (i * 7 + 1) as u8);
+        let second_digest: [u8; 32] = core::array::from_fn(|i| (i * 13 + 5) as u8);
+        let mut core = GeneratorCore::new();
+        let mut hash = FoldHash::new();
+        core.reseed(&mut hash, &[&first_digest]);
+        let old_key = core.key;
+        let mut expected = FoldHash::new();
+        expected.absorb(&old_key);
+        expected.absorb(&first_digest);
+        expected.absorb(&second_digest);
+        let mut want = [0u8; KEY_SIZE];
+        expected.snapshot_reset(&mut want);
+        let mut hash = FoldHash::new();
+        core.reseed(&mut hash, &[&first_digest, &second_digest]);
+        assert_eq!(core.key, want);
+        assert_ne!(core.key, old_key);
     }
 
     #[test]
