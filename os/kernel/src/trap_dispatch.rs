@@ -167,6 +167,24 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.rsp);
             Console::write_str(" ss ");
             Console::write_hex(frame.ss);
+            // TEMP-DEBUG (E8): remove after bootstrap bring-up.
+            Console::write_str(" cr2 ");
+            Console::write_hex(<X86_64ExceptionFrame as ExceptionArch>::page_fault_address().get());
+            for (name, val) in [
+                ("rdi", frame.rdi),
+                ("rsi", frame.rsi),
+                ("rdx", frame.rdx),
+                ("rcx", frame.rcx),
+                ("r8", frame.r8),
+                ("r9", frame.r9),
+                ("rax", frame.rax),
+                ("rbx", frame.rbx),
+            ] {
+                Console::write_str(" ");
+                Console::write_str(name);
+                Console::write_str(" ");
+                Console::write_hex(val);
+            }
             Console::write_str("\n");
             panic!(
                 "kernel exception vector {} at rip {:#x} errcode {:#x}",
@@ -218,6 +236,19 @@ fn current_ipc_proc_nr() -> crate::proc::ProcNr {
 /// TrapFrame built by the asm stub on this CPU's kernel stack, and the
 /// per-CPU `proc_ptr` anchor names the interrupted process.
 unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::ProcNr) {
+    // TEMP-DEBUG (E8): remove after bootstrap bring-up.
+    {
+        use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+        Console::write_str("[ipc] call=");
+        Console::write_hex(frame.rcx);
+        Console::write_str(" frame.cs=");
+        Console::write_hex(frame.cs);
+        Console::write_str(" frame.ss=");
+        Console::write_hex(frame.ss);
+        Console::write_str(" frame.rflags=");
+        Console::write_hex(frame.rflags);
+        Console::write_str("\n");
+    }
     let table = unsafe { crate::proc_table_boot_unchecked() };
     let cur_idx = crate::proc_table::nr_to_idx(cur_nr)
         .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));

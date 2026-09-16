@@ -42,7 +42,7 @@
 use minix_types::{Endpoint, PhysBytes, VirBytes};
 
 use crate::proc::KProcess;
-use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset};
+use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset, cross_space_write};
 use minix_arch::CurrentDirectMap;
 
 // ── Kernel-internal cross-process copy ──
@@ -166,6 +166,55 @@ pub fn data_copy_vmcheck(
         // not a kernel-call dispatcher. The dispatcher layer
         // (dispatch_vircopy) is responsible for saving the request message
         // before calling this function if resumption requires it.
+        caller.suspend_for_vm_with_copy(
+            VmSuspendType::KernelCall,
+            target,
+            check_params,
+            None,
+            copy_ctx,
+        );
+    }
+
+    result
+}
+
+/// Kernel-local → process copy with VM check.
+///
+/// One-sided companion of [`data_copy_vmcheck`] for kernel-produced data
+/// (C: `sys_datacopy(SELF, &local, caller, ...)` — the `do_getinfo.c:209-217`
+/// common tail). The source is kernel memory read directly by virtual
+/// address; only the destination is PTE-resolved, so only a destination
+/// fault can suspend. On `Suspended(Dst)` this sets `RTS_VMREQUEST` on the
+/// caller and stores the copy context, mirroring the destination arm of
+/// [`data_copy_vmcheck`].
+pub fn write_to_process_vmcheck(
+    caller: &mut KProcess,
+    src: &[u8],
+    dst: AddressRef,
+    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+) -> CrossSpaceResult {
+    let result = cross_space_write::<CurrentDirectMap>(src, &dst, &proc_cr3);
+
+    if let CrossSpaceResult::Suspended(fault_type) = result {
+        // Kernel-local sources cannot fault — only the destination can.
+        debug_assert!(matches!(fault_type, VmFaultType::Dst));
+        let (target, start) = dst
+            .as_process()
+            .expect("kernel-local source cannot fault; dst must be a process address");
+        let check_params = crate::vm::VmCheckParams {
+            start,
+            length: VirBytes(src.len() as u64),
+            write_flag: true,
+        };
+        // The source is kernel-local (not an AddressRef) — the context's
+        // src half is unused on retry; the resume path re-dispatches the
+        // kernel call from the caller's saved message.
+        let copy_ctx = crate::vm::VmCopyContext::new(
+            AddressRef::Physical(PhysBytes(0)),
+            dst,
+            src.len(),
+            fault_type,
+        );
         caller.suspend_for_vm_with_copy(
             VmSuspendType::KernelCall,
             target,

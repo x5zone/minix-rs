@@ -152,7 +152,7 @@ const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 id
 /// trap prove the kernel dispatched, returned through the stub, and the
 /// payload kept running in CPL3.
 #[unsafe(link_section = ".rodata")]
-static USER_PAYLOAD: [u8; 85] = [0xB9, 0x63, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC0, 0xAD, 0xDE, 0x00, 0x00, 0x48, 0xA3, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xBF, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xA1, 0x00, 0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xA3, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x06, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x18, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB, 0xFE];
+static USER_PAYLOAD: [u8; 95] = [0xB9, 0x63, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC0, 0xAD, 0xDE, 0x00, 0x00, 0x48, 0xA3, 0x08, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xBF, 0x00, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xA3, 0x20, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x48, 0xA1, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x48, 0xA3, 0x10, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xB9, 0x06, 0x00, 0x00, 0x00, 0xCD, 0x21, 0x48, 0xA3, 0x18, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0xEB, 0xFE];
 
 /// User mailbox physical page (data page): [+0x00] round-1 errno,
 /// [+0x08] completion marker, [+0x18] round-2 errno. Read by the run
@@ -305,34 +305,64 @@ fn main() -> Status {
     early_console::write_str("  VM boot proc: user context set, runnable\n");
 
     // ── E8: identity channel bypass ──
-    // OR the USER bit into the identity map's PDP[0] (1GB huge page covering
-    // VA 0-1GB). This makes VA 0x400_1200 (the hz buffer) CPL3-readable,
-    // so `copy_struct_to_caller`'s kernel write is observable by the user
-    // payload's subsequent read. Without this, the bootstrap root's
-    // identity entries are kernel-only and CPL3 reads fault.
+    // OR the USER bit into the identity map's descent for VA 0x400_1200
+    // (the hz buffer), so `copy_struct_to_caller`'s kernel write is
+    // observable by the user payload's subsequent read. Without this, the
+    // bootstrap root's identity entries are kernel-only and CPL3 reads
+    // fault (#PF err=5, live: user read of 0x4001200 after the GET_HZ
+    // round-trip succeeded).
     {
+        // U/S is ANDed at EVERY level — the boot identity map is
+        // supervisor-only, so the USER bit must reach the LEAF. The boot
+        // identity uses 2 MiB leaves (kern_phys_base 0x20_0000 is not
+        // 1 GiB-aligned → kern_huge falls back), so the descent is
+        // PML4[0] → PDP[0] (table) → PD[HZ_BUF_VA >> 21] (2 MiB leaf).
+        // The leaf index is computed from the buffer address: 0x0400_1200
+        // is 64 MiB + 0x1200, i.e. leaf 32 — the first bring-up hardcoded
+        // leaf 2 (the 4-6 MiB range) and the CPL3 read still faulted.
+        const PAGE_USER: u64 = 0x4;
+        let addr_mask = 0x000f_ffff_ffff_f000;
+        let leaf_idx = (HZ_BUF_VA >> 21) & 511;
         let root = result.root_page.0;
         let pml4e = unsafe { core::ptr::read_volatile(root as *const u64) };
-        let pdp_base = pml4e & 0x000f_ffff_ffff_f000;
-        let pdp0_addr = pdp_base;
-        let pdp0 = unsafe { core::ptr::read_volatile(pdp0_addr as *const u64) };
-        unsafe { core::ptr::write_volatile(pdp0_addr as *mut u64, pdp0 | 0x4); }
-        early_console::write_str("  identity PDP[0] USER bit set\n");
+        unsafe { core::ptr::write_volatile(root as *mut u64, pml4e | PAGE_USER); }
+        let pdp_base = pml4e & addr_mask;
+        let pdp0 = unsafe { core::ptr::read_volatile(pdp_base as *const u64) };
+        unsafe { core::ptr::write_volatile(pdp_base as *mut u64, pdp0 | PAGE_USER); }
+        let pd_base = pdp0 & addr_mask;
+        let pde = unsafe { core::ptr::read_volatile((pd_base + leaf_idx * 8) as *const u64) };
+        unsafe { core::ptr::write_volatile((pd_base + leaf_idx * 8) as *mut u64, pde | PAGE_USER); }
+        // The identity leaf was already walked by the kernel in supervisor
+        // mode, so its translation is TLB-cached supervisor-only. invlpg the
+        // hz page (or reload CR3) or the CPL3 read still faults on the stale
+        // entry (observed: fix ineffective until the flush was added).
+        unsafe { core::arch::asm!("invlpg [{}]", in(reg) HZ_BUF_VA, options(nostack, preserves_flags)); }
+        early_console::write_str("  identity PML4[0]+PDP[0]+PD[32] USER bits set\n");
     }
 
     // ── E8: pre-build the GetInfo GET_HZ message for the syscall leg ──
     // The kernel's kernel_call reads this message from user memory (RDI)
     // and writes the hz value to val_ptr. GET_HZ = 18, GETINFO = 26.
     unsafe {
-        let msg_base = (USER_DATA_VA + 0x100) as *mut u64;
+        // Message layout (message.rs:45-52): m_source@0 (i32), m_type@4
+        // (i32), m_u payload@8. The first bring-up wrote 26 at offset 0 —
+        // m_type stayed 0 and the kernel dispatched Syscall::Fork, so
+        // GET_HZ never ran (observed: hz buffer stayed 0).
+        let msg = USER_DATA_VA + 0x100;
+        // m_source = 0 (kernel stamps the caller endpoint anyway)
+        core::ptr::write_volatile(msg as *mut u32, 0);
         // m_type = SYS_GETINFO(26)
-        core::ptr::write_volatile(msg_base, 26);
-        // m_lsys_krn_sys_getinfo.request = GET_HZ(18) at arm offset 0 (msg+8)
-        core::ptr::write_volatile(msg_base.add(1), 18);
-        // val_ptr = data_va + 0x200 at arm offset 8 (msg+16)
-        core::ptr::write_volatile(msg_base.add(2), HZ_BUF_VA);
-        // val_len = 4 at arm offset 16 (msg+24)
-        core::ptr::write_volatile((USER_DATA_VA + 0x100 + 24) as *mut u32, 4);
+        core::ptr::write_volatile((msg + 4) as *mut u32, 26);
+        // payload request = GET_HZ(18) — arm offset 0
+        core::ptr::write_volatile((msg + 8) as *mut u32, 18);
+        // payload endpt = 0 — arm offset 4
+        core::ptr::write_volatile((msg + 12) as *mut u32, 0);
+        // payload val_ptr = hz buffer — arm offset 8
+        core::ptr::write_volatile((msg + 16) as *mut u64, HZ_BUF_VA);
+        // payload val_len = 4 — arm offset 16
+        core::ptr::write_volatile((msg + 24) as *mut u32, 4);
+        // payload val_len2_e = 0 — arm offset 24 (unused by GET_HZ)
+        core::ptr::write_volatile((msg + 32) as *mut u32, 0);
         // Zero the hz buffer
         core::ptr::write_bytes(HZ_BUF_VA as *mut u8, 0, 8);
     }

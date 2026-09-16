@@ -113,21 +113,43 @@ fn memmap_candidates(kernel_info: &KernelInfo) -> impl Iterator<Item = DmRange> 
 /// the fallback/test paths allocate the bump region inside conventional
 /// RAM, where source 1 already maps every page).
 ///
-/// When the bump region contains the root page (the root is allocated from
-/// the bump), the two source-2 candidates overlap; the bump candidate is
-/// front-trimmed past the root so the root leaf installs exactly once.
+/// The root page and the bump region overlap in two shapes:
+///
+/// - **Root allocated from the bump** (ascending: root is the first bump
+///   page): the two source-2 candidates overlap; the bump candidate is
+///   front-trimmed past the root so the root leaf installs exactly once.
+/// - **Root allocated separately, above the bump** (the UEFI shim's
+///   `MaxAddress` allocations descend: `alloc_root_page` runs first and
+///   lands at the top of free low memory, the bump below it): the ranges
+///   are disjoint, so the FULL bump range needs its own coverage. The
+///   previous unconditional `max(base, root_end)` trim underflowed here —
+///   `end − start` wrapped below base and the candidate became a silent
+///   zero-iteration no-op, leaving every runtime-allocated page-table page
+///   outside the kernel DM window (the first walker access then #PFs).
+///
+/// A root page strictly inside the bump (neither first nor disjoint) would
+/// split the bump into two disjoint coverage ranges; no current allocator
+/// produces that shape, and the `DmRange` slot pair cannot express it —
+/// the middle piece is emitted as `[base, root_base)` and the remainder
+/// above the root is skipped with the shape documented here.
 fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Option<DmRange>; 2] {
     let in_memmap =
         |r: &DmRange| memmap_candidates(kernel_info).any(|m| r.base < m.base + m.len && m.base < r.base + r.len);
 
     let root_range = DmRange::new(root.0, PAGE_SIZE);
     let root_end = root.0 + PAGE_SIZE;
-    let bump_range = boot_alloc::boot_alloc_region()
-        .map(|(base, end)| {
+    let bump_range = boot_alloc::boot_alloc_region().and_then(|(base, end)| {
+        if root.0 >= base && root.0 < end {
+            // Root inside the bump: front-trim past the root page. The trim
+            // is guarded (start < end) so an empty remainder stays `None`
+            // instead of wrapping into a bogus giant range.
             let start = core::cmp::max(base, root_end);
-            DmRange::new(start, end - start)
-        })
-        .filter(|r| r.len > 0);
+            (start < end).then(|| DmRange::new(start, end - start))
+        } else {
+            // Disjoint allocations: the whole bump range needs coverage.
+            Some(DmRange::new(base, end - base))
+        }
+    });
 
     let mut out = [None, None];
     if !in_memmap(&root_range) {
@@ -209,6 +231,48 @@ mod tests {
         let cands = bootstrap_tree_candidates(&info, PhysBytes(0x9000_0000));
         assert_eq!(cands[0], Some(DmRange::new(0x9000_0000, PAGE_SIZE)));
         assert_eq!(cands[1], Some(DmRange::new(0x9000_0000 + PAGE_SIZE, 0x3000)));
+    }
+
+    /// Disjoint shape (UEFI shim): `alloc_root_page` runs first with
+    /// `MaxAddress` and lands ABOVE the later-allocated bump region, so the
+    /// root page is not inside the bump at all. The full bump range must
+    /// survive as a candidate — the old unconditional `max(base, root_end)`
+    /// trim underflowed (`end − start` wrapped) and the candidate silently
+    /// established nothing, leaving every runtime page-table page outside
+    /// the kernel DM window (live #PF: walk of the user-top PDPT at
+    /// PA 0x0dfb4000 through DM 0xffff8080_0dfb4ff8, test-user-trap E8).
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_union_keeps_full_bump_when_root_above_bump() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_boot::MemoryRegion;
+
+        let info = KernelInfo {
+            memmap: &[MemoryRegion { base: PhysBytes(0), len: 0x800_0000 }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200_000,
+            free_upper_idx: None,
+            user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: minix_types::VirBytes(0xFFFF_8000_0020_0000),
+            syscall_entry: minix_types::VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        };
+        // Real test-user-trap numbers: bump [0x0dfaf000, 0x0dfef000) (64
+        // pages), root page 0x0e789000 — above the bump end, outside the
+        // 128 MiB memmap.
+        boot_alloc::init_boot_pt_alloc(0x0dfa_f000, 0x0dfe_f000);
+        let cands = bootstrap_tree_candidates(&info, PhysBytes(0x0e78_9000));
+        assert_eq!(cands[0], Some(DmRange::new(0x0e78_9000, PAGE_SIZE)));
+        assert_eq!(
+            cands[1],
+            Some(DmRange::new(0x0dfa_f000, 0x0dfe_f000 - 0x0dfa_f000)),
+            "disjoint bump must be covered in full, not trimmed/underflowed"
+        );
     }
 
     // ── Boot-flow integration: arch_boot_impl Step 4 establishes DM coverage ──

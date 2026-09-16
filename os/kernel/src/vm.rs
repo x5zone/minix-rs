@@ -405,6 +405,48 @@ pub fn cross_space_memset<D: DirectMapArch>(
     CrossSpaceResult::Completed(Ok(()))
 }
 
+/// Copy kernel-local memory into a process address space.
+///
+/// One-sided variant of [`cross_space_copy`] for kernel-produced data —
+/// C's `SELF` source in `sys_datacopy(SELF, &local, caller, ...)` (the
+/// `do_getinfo.c:209-217` common tail). The source is kernel memory that
+/// the kernel reads **directly by virtual address**: kernel stack/data
+/// VAs sit in the higher-half kernel window, outside both Direct Map
+/// windows, so running them through `DirectMapArch::virt_to_phys` would
+/// wrap into a bogus "physical" and a non-canonical alias (the live #GP
+/// this replaced in test-user-trap GET_HZ). Only the destination needs
+/// PTE resolution and the DM alias. Page-fault semantics match the
+/// destination half of [`cross_space_copy`].
+///
+/// C: `virtual_copy_f()` source-side SELF branch — memory.c:592
+pub fn cross_space_write<D: DirectMapArch>(
+    src: &[u8],
+    dst: &AddressRef,
+    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+) -> CrossSpaceResult {
+    let dst_phys = match resolve_physical::<D>(dst, &proc_cr3) {
+        Ok(p) => p,
+        Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
+        Err(ResolveError::UnknownEndpoint) => {
+            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+        }
+    };
+
+    let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
+
+    // SAFETY:
+    // - dst_vaddr is derived from DirectMapArch::kernel_phys_to_virt() on a
+    //   physical address returned by lookup_in_table (page-backed).
+    // - `src` is kernel-local memory the kernel owns exclusively under the
+    //   BKL; it cannot overlap the DM alias of a process page.
+    // - u8 has no alignment requirements.
+    unsafe {
+        core::ptr::copy_nonoverlapping(src.as_ptr(), dst_vaddr.0 as *mut u8, src.len());
+    }
+
+    CrossSpaceResult::Completed(Ok(()))
+}
+
 pub fn copy_page_table_ref(_as: &PageTableRef) -> PageTableRef {
     PageTableRef::new()
 }

@@ -1116,8 +1116,13 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
         } else {
             crate::capability::CapabilityTemplate::KernelTask
         };
-        let _priv_id = priv_table.grant_capability(nr, template)
+        let priv_id = priv_table.grant_capability(nr, template)
             .expect("grant_capability: kernel task priv slot occupied");
+        // E1 slice 5: link the priv slot back into the process — C's
+        // `get_priv(rp, id)` sets rp->p_priv (proc.h); without this the
+        // process's priv_id stays None and every kernel call is denied
+        // ECALLDENIED (observed live in test-user-trap).
+        proc.priv_id = Some(priv_id);
 
         // Architecture-private CPU context. The arch layer decides the
         // initial PSW/PSR/sstatus, segment selectors, FPU policy, and
@@ -1168,8 +1173,12 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
             } else {
                 crate::capability::CapabilityTemplate::RootService
             };
-            let _priv_id = priv_table.grant_capability(nr, template)
+            let priv_id = priv_table.grant_capability(nr, template)
                 .expect("grant_capability: static priv slot occupied");
+            // E1 slice 5: same priv-link as the kernel-task loop — without
+            // it the schedulable services fail every kernel call with
+            // ECALLDENIED (C: get_priv(rp, id) → rp->p_priv).
+            proc.priv_id = Some(priv_id);
         } else {
             // Don't let the process run for now.
             // C: RTS_SET(rp, RTS_NO_PRIV | RTS_NO_QUANTUM) — main.c:226

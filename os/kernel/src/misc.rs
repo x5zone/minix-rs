@@ -29,7 +29,7 @@ use crate::proc::{ProcNr, NR_BOOT_MODULES};
 use crate::kpriv::PrivTable;
 use crate::proc_table::{NR_PROCS, NR_TASKS, ProcessTable};
 use crate::syscall::{KcallResult, Syscall};
-use crate::cross_space::data_copy_vmcheck;
+use crate::cross_space::{data_copy_vmcheck, write_to_process_vmcheck};
 use crate::vm::{AddressRef, CrossSpaceResult};
 use crate::clock::ClockState;
 use minix_arch::{CurrentDirectMap, DirectMapArch};
@@ -597,12 +597,15 @@ struct BootImageStruct {
     len: u64,
 }
 
-/// Copy a kernel-stack struct to the caller's `val_ptr` via `data_copy_vmcheck`.
+/// Copy a kernel-stack struct to the caller's `val_ptr` via `write_to_process_vmcheck`.
 ///
 /// Implements the C `do_getinfo` common tail (do_getinfo.c:209-217): the
-/// `val_len` E2BIG check followed by the kernel→user `data_copy_vmcheck`. The
-/// source is a kernel direct-mapped local; the destination is the caller's
-/// user-space `val_ptr`.
+/// `val_len` E2BIG check followed by the kernel→user copy. The source is a
+/// kernel local read **directly** by virtual address (C's `SELF` source —
+/// kernel stack/data VAs live in the higher-half kernel window, outside
+/// both Direct Map windows, so DM `virt_to_phys` arithmetic does not apply
+/// to them); only the caller's user-space `val_ptr` destination goes
+/// through the cross-space PTE walk.
 ///
 /// Returns `OK` on success, `EFAULT` on address error, `VmSuspend` if the
 /// caller's destination page is not yet faulted in.
@@ -619,16 +622,18 @@ fn copy_struct_to_caller<T>(
     }
     let caller_endpt = caller.p_endpoint;
     let caller_cr3 = caller.p_seg.phys_root;
-    let src_phys = CurrentDirectMap::virt_to_phys(VirBytes(data as *const T as u64));
     let proc_cr3 = |endpt: Endpoint| {
         if endpt == caller_endpt { Some(caller_cr3) } else { None }
     };
-    let src = AddressRef::Physical(src_phys);
+    // SAFETY: `data` points to a live kernel local of `size_of::<T>()`
+    // bytes (a `&T` reference), valid for `length` byte reads.
+    let src =
+        unsafe { core::slice::from_raw_parts(data as *const T as *const u8, length) };
     let dst = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(val_ptr),
     };
-    match data_copy_vmcheck(caller, src, dst, length, proc_cr3) {
+    match write_to_process_vmcheck(caller, src, dst, proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,

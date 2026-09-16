@@ -554,6 +554,27 @@ fn kernel_call_dispatch_inner(
         .and_then(|id| priv_table.get(id))
         .is_none_or(|caller_priv| !kcall_filter_check(caller_priv, call_nr as u32));
     if call_denied {
+        // TEMP-DEBUG (E8): remove after bootstrap bring-up. Host tests have
+        // no early-console backing — the write would fault the test process.
+        #[cfg(not(test))]
+        {
+            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            Console::write_str("[kc-denied] caller_nr=");
+            Console::write_hex(caller.p_nr.0 as u64);
+            Console::write_str(" call_nr=");
+            Console::write_hex(call_nr as u64);
+            Console::write_str(" has_priv=");
+            Console::write_hex(caller.priv_id.is_some() as u64);
+            if let Some(id) = caller.priv_id {
+                if let Some(pr) = priv_table.get(id) {
+                    Console::write_str(" mask=");
+                    Console::write_hex(pr.ipc.s_k_call_mask.bits());
+                } else {
+                    Console::write_str(" priv_slot=MISSING");
+                }
+            }
+            Console::write_str("\n");
+        }
         return KcallResult::CallDenied;
     }
 

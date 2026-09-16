@@ -411,6 +411,10 @@ core::arch::global_asm!(
     "  pop rcx",     // rip for sysret (user rcx is not preserved — ABI)
     "  add rsp, 8",  // cs slot (sysret takes CS from STAR)
     "  pop r11",     // rflags for sysret (user r11 is not preserved — ABI)
+    "  add rsp, 8",  // ss slot (sysret takes SS from STAR+8) — without this
+                     // skip, `pop rsp` below loads the SS constant 0x23 as
+                     // the user stack pointer (observed live in the E8
+                     // test-user-trap SYSCALL leg)
     "  pop rsp",     // back on the user stack
     "  swapgs",
     "  sysretq",
