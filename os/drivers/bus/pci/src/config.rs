@@ -157,7 +157,9 @@ impl ConfigSpace for MemConfigSpace {
                 cells[slot] = (cells[slot] & !(0xFF << shift)) | ((value & 0xFF) << shift);
             }
             AccessWidth::Bits16 => {
-                cells[slot] = (cells[slot] & 0xFFFF_0000) | (value & 0xFFFF);
+                let shift = (address.offset % 4) * 8;
+                cells[slot] =
+                    (cells[slot] & !(0xFFFF << shift)) | ((value & 0xFFFF) << shift);
             }
             AccessWidth::Bits32 => {
                 cells[slot] = value;
@@ -222,6 +224,29 @@ mod tests {
         assert_eq!(
             space.read(addr(1, AccessWidth::Bits32)),
             Err(ConfigError::Invalid)
+        );
+    }
+
+    #[test]
+    fn test_sixteen_bit_write_respects_lane() {
+        // A 16-bit access at offset % 4 == 2 addresses the HIGH half of the
+        // cell; the write must land there and nowhere else. (The read path
+        // always shifted correctly; only the write merged into the low
+        // half, so this round trip is the regression lock.)
+        let mut space = MemConfigSpace::new();
+        space
+            .write(addr(0, AccessWidth::Bits32), 0xA7C5_9B3D)
+            .unwrap();
+        space.write(addr(2, AccessWidth::Bits16), 0x1111).unwrap();
+        assert_eq!(space.read(addr(0, AccessWidth::Bits32)).unwrap(), 0x1111_9B3D);
+        space.write(addr(0, AccessWidth::Bits16), 0x2222).unwrap();
+        assert_eq!(space.read(addr(0, AccessWidth::Bits32)).unwrap(), 0x1111_2222);
+        // Neighbouring bytes survive both writes: offset 5 is lane 1 of the
+        // next cell, which still holds the uninitialised all-ones pattern.
+        space.write(addr(5, AccessWidth::Bits8), 0x55).unwrap();
+        assert_eq!(
+            space.read(addr(4, AccessWidth::Bits32)).unwrap(),
+            0xFFFF_55FF
         );
     }
 }
