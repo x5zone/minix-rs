@@ -97,7 +97,6 @@ where
     V: SecondLevelCache,
     B: DataBackend,
 {
-    let _ = info;
     if device == NO_DEV {
         return Err(Errno::from_i32(EINVAL));
     }
@@ -254,8 +253,8 @@ pub fn prefetch_blocks<S: BlockSource, V: SecondLevelCache>(
 ) {
     let limit = cache.readahead_limit().min(blocks.len());
     let mut run = 0usize;
-    for offset in 0..limit {
-        match cache.acquire(BlockKey::new(device, blocks[offset]), AcquireMode::Peek) {
+    for &block in &blocks[..limit] {
+        match cache.acquire(BlockKey::new(device, block), AcquireMode::Peek) {
             Ok(slot) => {
                 let _ = cache.release(slot);
                 break;
@@ -265,8 +264,8 @@ pub fn prefetch_blocks<S: BlockSource, V: SecondLevelCache>(
             }
         }
     }
-    for offset in 0..run {
-        let key = BlockKey::new(device, blocks[offset]);
+    for &block in &blocks[..run] {
+        let key = BlockKey::new(device, block);
         match cache.acquire(key, AcquireMode::Peek) {
             Ok(slot) => {
                 let _ = cache.release(slot);

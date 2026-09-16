@@ -254,15 +254,6 @@ impl TransactionId {
     }
 }
 
-/// Decide whether a raw message type belongs to the file server protocol.
-///
-/// C: `IS_FS_RQ(type)` (`minix3/minix/include/minix/vfsif.h:77`): all but the
-/// low eight bits must equal `FS_BASE`. This is a coarse pre-filter used
-/// before the transaction identifier is stripped.
-pub const fn is_file_request(raw_type: i32) -> bool {
-    (raw_type & !0xff) == FS_BASE
-}
-
 /// Flags of a mount request (`ReadSuper`).
 ///
 /// C: `REQ_RDONLY` / `REQ_ISROOT` (`minix3/minix/include/minix/vfsif.h:8-9`).
@@ -498,13 +489,6 @@ mod tests {
         let (call, decoded) = TransactionId::decode(encoded);
         assert_eq!(call, -EINVAL);
         assert_eq!(decoded, id);
-    }
-
-    #[test]
-    fn test_is_file_request_prefilter() {
-        assert!(is_file_request(FS_BASE + 28));
-        assert!(!is_file_request(0));
-        assert!(!is_file_request(0x500));
     }
 
     #[test]
