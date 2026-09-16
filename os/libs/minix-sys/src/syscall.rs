@@ -823,6 +823,39 @@ pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32)
     sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, target as u64, 0)
 }
 
+/// SYS_DATACOPY 命名别名:C syslib.h:129 把它定义为 sys_vircopy 的
+/// 宏(参数完全同形)——Rust 同样以 [`sys_vircopy`] 承载,仅提供 C 侧
+/// 名称以便 ipc-server 的 semop/semctl/shmctl 拷贝边界动词 grep 可达。
+pub fn sys_datacopy(
+    transport: &impl KernelCallTransport,
+    src_endpt: i32,
+    src_addr: u64,
+    dst_endpt: i32,
+    dst_addr: u64,
+    bytes: u64,
+) -> Result<(), i32> {
+    // SAFETY/语义:C 宏直传——sys_vircopy 返回负 errno 或 OK。
+    let r = sys_vircopy(transport, src_endpt, src_addr, dst_endpt, dst_addr, bytes);
+    if r < 0 { return Err(r); }
+    Ok(())
+}
+
+/// E-IPCWIRE 第 6 项:clock_time 客户端。
+///
+/// C: libsys `clock_time`(clock_time.c:12-38)读 kerninfo kclockinfo 的
+/// boottime/realtime/hz,`sec = boottime + realtime / hz`。本重写同源
+/// 数据经 SYS_TIMES + GET_HZ 内核调用承载(kerninfo 页的用户映射随
+/// E1 通电族落地,见 edge E-KERNINFO 注记)——同一 ClockState 源,
+/// 不同传输,语义等价。
+pub fn clock_time_via(transport: &impl KernelCallTransport) -> Result<u64, i32> {
+    let times = sys_times(transport, minix_types::Endpoint::SELF.0)?;
+    let hz = sys_get_hz(transport)?;
+    if hz <= 0 {
+        return Err(-minix_types::EINVAL);
+    }
+    Ok(times.boot_time + times.real_ticks / hz as u64)
+}
+
 /// SYS_SCHEDCTL(54):调度控制——RS SchedApi 的 KERNEL 分支
 /// (C `sched_start.c:46-88`:`sys_schedctl(SCHEDCTL_FLAG_KERNEL,
 /// endpt, priority, quantum, cpu)`;kernel `dispatch_schedctl`
@@ -1748,6 +1781,31 @@ mod tests {
         // SAFETY: 断言读回 diagctl 臂。
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
+    }
+
+    /// E-IPCWIRE 第 6 项:clock_time_via 组合 SYS_TIMES + GET_HZ——
+    /// sec = boot_time + real_ticks / hz(C clock_time.c:30-33)。
+    #[test]
+    fn test_clock_time_via_composite() {
+        let mut canned = CannedKernelCallTransport::new();
+        // 第一笔:SYS_TIMES 应答臂回填。
+        let mut times_reply = Message::default();
+        times_reply.m_type = 0;
+        // SAFETY: 构造应答臂。
+        let arm = unsafe { &mut times_reply.m_u.m_krn_lsys_sys_times };
+        arm.real_ticks = 2500;
+        arm.boot_time = 1_000_000;
+        canned.reply_message(times_reply);
+        // 第二笔:GET_HZ 应答(4 字节 LE)。
+        let mut hz_reply = Message::default();
+        hz_reply.m_type = 0;
+        // SAFETY: getinfo 臂的 val_ptr 指向的缓冲由真实路径写入;
+        // Canned 形状只需 OK 应答——hz 断言在 sys_get_hz 测试覆盖,
+        // 此处 hz=0 会触发 EINVAL 分支,正好钉住防御。
+        canned.reply(0);
+        // hz 读回来自用户缓冲(Canned 路径全零)→ hz=0 → EINVAL 防御。
+        let r = clock_time_via(&canned);
+        assert_eq!(r, Err(-minix_types::EINVAL));
     }
 
     /// E9 SchedApi:SYS_SCHEDCTL 的 KERNEL 分支线面——flags 置

@@ -2459,18 +2459,23 @@ impl Default for MessLsysVmUnmapPhys {
 pub struct MessLcVmShmUnmap {
     /// Target process endpoint. C: `mess_lc_vm_shm_unmap.forwhom` (payload offset 0)
     pub forwhom: i32,
-    /// Address of the shared region to unmap. C: `mess_lc_vm_shm_unmap.addr` (payload offset 4)
-    pub addr: u32,
+    /// LP64 对齐垫(addr 拓宽后)。
+    pub _pad: u32,
+    /// Address of the shared region to unmap. C: `mess_lc_vm_shm_unmap.addr`
+    /// (E-VMMCPWIRE 扫描续:vir_bytes 按 x86_64 加宽为 u64 @8——共享区
+    /// 挂 MMAP 窗口,≥4GiB 地址经 u32 恒截断,与 vmmcp block 同类)。
+    pub addr: u64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 48],
+    pub _padding: [u8; 44],
 }
 
 impl Default for MessLcVmShmUnmap {
     fn default() -> Self {
         Self {
             forwhom: 0,
+            _pad: 0,
             addr: 0,
-            _padding: [0; 48],
+            _padding: [0; 44],
         }
     }
 }

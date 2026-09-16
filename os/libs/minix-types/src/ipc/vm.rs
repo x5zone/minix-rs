@@ -369,7 +369,7 @@ impl VmShmUnmapIn {
         let sh = unsafe { msg.m_u.m_lc_vm_shm_unmap };
         Self {
             forwhom: Endpoint(sh.forwhom),
-            addr: VirBytes(sh.addr as u64),
+            addr: VirBytes(sh.addr),
         }
     }
 }

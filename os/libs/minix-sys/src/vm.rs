@@ -1191,6 +1191,25 @@ mod tests {
         };
         assert_eq!(m.endpoint, 9);
     }
+    /// E-IPCWIRE 第 5 项:shm_unmap_via 载荷域断言
+    /// (forwhom@0/addr@8 u64——E-VMMCPWIRE 扫描续加宽)。
+    #[test]
+    fn test_shm_unmap_via_fields() {
+        let mut msg = Message::default();
+        // SAFETY: writing the m_lc_vm_shm_unmap arm for wire assertion.
+        unsafe {
+            msg.m_u.m_lc_vm_shm_unmap = minix_types::ipc::MessLcVmShmUnmap {
+                forwhom: 12,
+                _pad: 0,
+                addr: 0x0000_0001_4000_0000, // MMAP 窗口内(>4GiB)
+                _padding: [0; 44],
+            };
+        }
+        let arm = unsafe { msg.m_u.m_lc_vm_shm_unmap };
+        assert_eq!(arm.forwhom, 12);
+        assert_eq!(arm.addr, 0x0000_0001_4000_0000, "addr 高位保全");
+    }
+
 }
 
 
@@ -1253,6 +1272,27 @@ pub fn vm_rs_update_via(
         m2.m2i3 = flags;
     }
     let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_UPDATE as i32, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(())
+}
+
+/// VM_SHM_UNMAP(0xC22,com.h:718):解除共享内存段映射。
+/// `m_lc_vm_shm_unmap` 载荷:forwhom@0(i32)、addr@8(u64——E-VMMCPWIRE
+/// 扫描续:vir_bytes 按 x86_64 加宽,MMAP 窗口地址 u32 恒截断)。
+/// C: `vm_shm_unmap`(libsys)——ipc-server SweepPlan::unmaps 的执行动词。
+pub fn shm_unmap_via(
+    transport: &impl IpcTransport,
+    forwhom: Endpoint,
+    addr: u64,
+) -> Result<(), Errno> {
+    let mut message = cleared_message();
+    message.m_u.m_lc_vm_shm_unmap = minix_types::ipc::MessLcVmShmUnmap {
+        forwhom: forwhom.0,
+        _pad: 0,
+        addr,
+        _padding: [0; 44],
+    };
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_SHARED_UNMAP, &mut message);
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }

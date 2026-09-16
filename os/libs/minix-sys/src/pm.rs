@@ -365,8 +365,8 @@ pub fn service_fork_via(
 /// - `getprocnr_via` 覆盖 C `getprocnr`(`libsys/getprocnr.c:6-16`);
 /// - `exec_restart_via` 覆盖 RS exec 终步的 PM_EXEC_RESTART
 ///   (C `servers/rs/exec.c:124-135`)。
-/// 组表(groups)拷出沿 C getepinfo 的默认形态传 NULL/0——PM 侧组表
-/// 拷出未接线(04-stage-pm D-30),接通后再扩参数。
+///   组表(groups)拷出沿 C getepinfo 的默认形态传 NULL/0——PM 侧组表
+///   拷出未接线(04-stage-pm D-30),接通后再扩参数。
 
 /// getepinfo 解码结果:C `getepinfo` 语义(返回 pid,出参 euid/egid)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -707,8 +707,56 @@ mod pm_service_tests {
         exec_restart_via(&transport, Endpoint(11), 0, 0x40_1000, 0x7FFF_E000).unwrap();
         // 无 panic 即 Ok;字段断言在集成层覆盖(真传输语义)。
     }
+    /// E-IPCWIRE 第 4 项:proceventmask_via 请求域(mask)与应答
+    /// (旧掩码作正返回值,proceventmask.c:19)。
+    #[test]
+    fn test_proceventmask_via_wire() {
+        let (mut transport, ()) = make_canned();
+        transport.reply_sendrec(Ok(reply_with_type(0b101))); // 旧掩码
+        let old = proceventmask_via(&transport, 0b010).unwrap();
+        assert_eq!(old, 0b101);
+    }
+
+    /// E-IPCWIRE 第 7 项:getngid_via 从 getepinfo 应答臂取 egid。
+    #[test]
+    fn test_getngid_via_reply_arm() {
+        let (mut transport, ()) = make_canned();
+        let mut reply = reply_with_type(500);
+        // SAFETY: 构造应答臂。
+        unsafe {
+            reply.m_u.m_pm_lsys_getepinfo = minix_types::ipc::MessPmLsysGetepinfo {
+                uid: 999, euid: 1000, gid: 100, egid: 101, ngroups: 0,
+                _padding: [0; 36],
+            };
+        }
+        transport.reply_sendrec(Ok(reply));
+        let egid = getngid_via(&transport, Endpoint(9)).unwrap();
+        assert_eq!(egid, 101);
+    }
+
 }
 
+
+// ── E-IPCWIRE 第 4/7 项:proceventmask 客户端 + getngid 窄 helper ──
+
+/// PM_PROCEVENTMASK(40):订阅/退订进程事件,返回先前掩码。
+/// C: libsys `proceventmask`(proceventmask.c:11-19)——消息构造器
+/// [`minix_types::ipc::proceventmask_msg`] 已备,此处补 taskcall 组装;
+/// ipc-server `events.rs` 的 SyncAction(订阅/退订)由此承载。
+pub fn proceventmask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno> {
+    let mut message = minix_types::ipc::proceventmask_msg(
+        minix_types::ProcEventMask::from_bits_truncate(mask),
+    );
+    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_PROCEVENTMASK, &mut message);
+    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    Ok(reply as u32)
+}
+
+/// PM_GETEPINFO 薄壳:取有效 gid(C `getngid`,getepinfo.c 家族第三个
+/// 窄 helper;getnpid_via/getnuid_via 见上)。
+pub fn getngid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i32, Errno> {
+    getepinfo_via(transport, proc_ep).map(|i| i.egid)
+}
 
 // ── E9 SchedApi 分域:SCHEDULING_* 消息构造面(RS/PM → 调度器)──
 
