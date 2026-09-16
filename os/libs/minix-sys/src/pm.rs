@@ -778,3 +778,28 @@ pub fn sched_stop_via(
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
+
+#[cfg(test)]
+mod payload_layout_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// E-MINTYPES-RUNTIME 第②步：本地 payload 补 56 字节/偏移断言
+    /// （C ipc.h:435-444 mess_lc_pm_exec 五域 + ipc.h:1420-1427 srv_fork）。
+    #[test]
+    fn test_exec_payload_layout() {
+        assert_eq!(size_of::<ExecPayload>(), 56);
+        assert_eq!(offset_of!(ExecPayload, name), 0);
+        assert_eq!(offset_of!(ExecPayload, namelen), 8);
+        assert_eq!(offset_of!(ExecPayload, frame), 16);
+        assert_eq!(offset_of!(ExecPayload, framelen), 24);
+        assert_eq!(offset_of!(ExecPayload, ps_str), 32);
+    }
+
+    #[test]
+    fn test_service_fork_payload_layout() {
+        assert_eq!(size_of::<ServiceForkPayload>(), 56);
+        assert_eq!(offset_of!(ServiceForkPayload, uid), 0);
+        assert_eq!(offset_of!(ServiceForkPayload, gid), 4);
+    }
+}

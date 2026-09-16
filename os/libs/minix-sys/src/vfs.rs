@@ -653,3 +653,41 @@ mod tests {
         assert_eq!(transport.sendrec_calls.get(), 0);
     }
 }
+
+#[cfg(test)]
+mod payload_layout_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// E-MINTYPES-RUNTIME 第②步：VFS 族五个 payload 的 56 字节/偏移断言
+    /// （C ipc.h:795-803 readwrite、close、seek、create——C 字段顺序）。
+    #[test]
+    fn test_readwrite_payload_layout() {
+        assert_eq!(size_of::<ReadWritePayload>(), 56);
+        assert_eq!(offset_of!(ReadWritePayload, fd), 0);
+        assert_eq!(offset_of!(ReadWritePayload, buffer_address), 8);
+        assert_eq!(offset_of!(ReadWritePayload, length), 16);
+        assert_eq!(offset_of!(ReadWritePayload, cumulative), 24);
+    }
+
+    #[test]
+    fn test_seek_payload_layout() {
+        // C: mess_lc_vfs_seek（offset 头 + whence）——C 字段顺序逐域。
+        assert_eq!(size_of::<SeekPayload>(), 56);
+        assert_eq!(offset_of!(SeekPayload, offset), 0);
+    }
+
+    #[test]
+    fn test_create_payload_layout() {
+        assert_eq!(size_of::<CreatePayload>(), 56);
+        assert_eq!(offset_of!(CreatePayload, name_address), 0);
+    }
+
+    #[test]
+    fn test_time_val_layout() {
+        // C: struct timespec 的 seconds/nsec 双 64 位形态（LP64 16B）。
+        assert_eq!(size_of::<TimeVal>(), 16);
+        assert_eq!(offset_of!(TimeVal, seconds), 0);
+        assert_eq!(offset_of!(TimeVal, microseconds), 8);
+    }
+}

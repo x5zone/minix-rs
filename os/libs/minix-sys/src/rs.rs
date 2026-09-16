@@ -433,3 +433,20 @@ mod tests {
         assert_eq!(transport.sendrec_calls.get(), 0);
     }
 }
+
+#[cfg(test)]
+mod payload_layout_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// E-MINTYPES-RUNTIME 第②步：lookup payload 布局见证（C 字段顺序：
+    /// length/name_length/endpoint + 对齐垫 + address，总长 56）。
+    #[test]
+    fn test_lookup_payload_layout() {
+        assert_eq!(size_of::<LookupPayload>(), 56);
+        assert_eq!(offset_of!(LookupPayload, length), 0);
+        assert_eq!(offset_of!(LookupPayload, name_length), 4);
+        assert_eq!(offset_of!(LookupPayload, endpoint), 8);
+        assert_eq!(offset_of!(LookupPayload, address), 16);
+    }
+}

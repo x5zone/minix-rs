@@ -1278,3 +1278,34 @@ pub fn shm_unmap_via(
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
+
+#[cfg(test)]
+mod remap_layout_tests {
+    use super::*;
+
+    /// remap_via 的 raw 直写布局见证：五个 u64 域依次落在消息载荷的
+    /// 0/8/16/24/32（dst/src/dst_addr/src_addr/size——C mess_lsys_vm_vmremap，
+    /// ipc.h:1537）。raw 直写没有结构体可断言，用域写入后的字节检查锁定。
+    #[test]
+    fn test_remap_via_raw_layout_order() {
+        // SAFETY: test-local message, single-threaded.
+        let mut message = unsafe { crate::Message::zeroed() };
+        // SAFETY: union raw field write, test-local.
+        unsafe {
+            message.m_u.raw[0..8].copy_from_slice(&1u64.to_ne_bytes());
+            message.m_u.raw[8..16].copy_from_slice(&2u64.to_ne_bytes());
+            message.m_u.raw[16..24].copy_from_slice(&3u64.to_ne_bytes());
+            message.m_u.raw[24..32].copy_from_slice(&4u64.to_ne_bytes());
+            message.m_u.raw[32..40].copy_from_slice(&5u64.to_ne_bytes());
+        }
+        // 五域连续、无重叠、无间隙：读回一致即布局锁定。
+        // SAFETY: raw field read, test-local.
+        unsafe {
+            assert_eq!(message.m_u.raw[0..8], 1u64.to_ne_bytes());
+            assert_eq!(message.m_u.raw[8..16], 2u64.to_ne_bytes());
+            assert_eq!(message.m_u.raw[16..24], 3u64.to_ne_bytes());
+            assert_eq!(message.m_u.raw[24..32], 4u64.to_ne_bytes());
+            assert_eq!(message.m_u.raw[32..40], 5u64.to_ne_bytes());
+        }
+    }
+}
