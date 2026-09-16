@@ -44,6 +44,28 @@ pub enum Cancelled {
     Read,
 }
 
+/// What the service must send after bytes land in the ring, in order.
+///
+/// C: the tail of `log_write` (`log.c:171-191`) is a fixed statement
+/// order — revive a suspended reader first, then send the late select
+/// notice once and drop the watched bits. Freeing the two sends as
+/// separate library calls would leave that order to whoever writes the
+/// service loop, with no test able to catch a swap; the plan freezes it in
+/// the return value the service consumes top-down.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WakePlan {
+    /// Revive this suspended reader first (`log.c:173-180`): caller,
+    /// identifier, and the outstanding want. Present only while data waits
+    /// in the ring.
+    pub reader: Option<(i64, u32, u64)>,
+    /// Then send this late select notice (`log.c:178-189`): caller and the
+    /// claimed read bits. Skip it when the reader above just consumed
+    /// everything — C re-checks `log_size > 0` after the revival
+    /// (`log.c:178-180`), and the ring's read pointer only moves when the
+    /// service copies, so the final call belongs to the service.
+    pub watcher: Option<(i64, u32)>,
+}
+
 /// One log device: ring plus the single suspended reader plus watchers.
 ///
 /// C: `struct logdevice` (`log.h:14-26`) with `log_source NONE` meaning
@@ -131,11 +153,30 @@ impl LogDevice {
         ))
     }
 
-    /// Take the parked reader, if any (wake after a write).
-    pub fn take_waiter(&mut self) -> Option<(i64, u32, u64)> {
-        self.waiter
-            .take()
-            .map(|waiter| (waiter.caller, waiter.id, waiter.want))
+    /// Claim the wake targets after bytes landed in the ring.
+    ///
+    /// C: the tail of `log_write` (`log.c:171-191`). A suspended reader is
+    /// revived only while data waits (`log_size > 0`), and a registered
+    /// select watcher is claimed exactly once — the read bits drop at claim
+    /// time, the C equivalent of clearing them right after
+    /// `chardriver_reply_select`. Sending the replies stays with the
+    /// service, which consumes [`WakePlan`] top-down.
+    pub fn after_write(&mut self) -> WakePlan {
+        let reader = if self.ring.is_empty() {
+            None
+        } else {
+            self.waiter
+                .take()
+                .map(|waiter| (waiter.caller, waiter.id, waiter.want))
+        };
+        let read_bits = self.watched & OP_READ;
+        let watcher = if !self.ring.is_empty() && read_bits != 0 {
+            self.watched &= !read_bits;
+            Some((self.watch_caller, read_bits))
+        } else {
+            None
+        };
+        WakePlan { reader, watcher }
     }
 
     /// Cancel the parked read matching this caller and identifier.
@@ -178,21 +219,6 @@ impl LogDevice {
             self.watch_caller = caller;
         }
         Ok(ready)
-    }
-
-    /// Watch bits currently registered.
-    pub fn watched(&self) -> u32 {
-        self.watched
-    }
-
-    /// Who to notify for watches.
-    pub fn watch_caller(&self) -> i64 {
-        self.watch_caller
-    }
-
-    /// Clear watch bits (after the late notice goes out).
-    pub fn clear_watched(&mut self, bits: u32) {
-        self.watched &= !bits;
     }
 }
 
@@ -247,11 +273,46 @@ mod tests {
     fn test_wake_and_cancel_pair() {
         let mut device = LogDevice::new();
         device.read(0, 100, 7, 1, false).unwrap();
-        assert_eq!(device.take_waiter(), Some((7, 1, 100)));
+        // A write lands first: the parked reader wakes with data waiting,
+        // exactly the C revival guard (log.c:173).
+        device.ring_mut().note_written(5);
+        let plan = device.after_write();
+        assert_eq!(plan.reader, Some((7, 1, 100)));
+        // The revival's copy drains the ring (the service does it through
+        // the ring), so the next read parks again and cancel matches it.
+        device.ring_mut().note_read(5);
         device.read(0, 100, 7, 1, false).unwrap();
         assert_eq!(device.cancel(0, 7, 1), Ok(Some(Cancelled::Read)));
         assert_eq!(device.cancel(0, 7, 9), Ok(None));
         assert!(device.cancel(1, 7, 1).is_err());
+    }
+
+    #[test]
+    fn test_after_write_holds_reader_wake_while_ring_empty() {
+        // C guards the revival on log_size > 0 (log.c:173): a parked
+        // reader is not woken by a plan built while the ring is empty, and
+        // the waiter survives for the real wake.
+        let mut device = LogDevice::new();
+        device.read(0, 100, 7, 1, false).unwrap();
+        assert_eq!(device.after_write(), WakePlan::default());
+        device.ring_mut().note_written(5);
+        let plan = device.after_write();
+        assert_eq!(plan.reader, Some((7, 1, 100)));
+    }
+
+    #[test]
+    fn test_after_write_wakes_reader_before_watcher_once() {
+        let mut device = LogDevice::new();
+        device.read(0, 100, 7, 1, false).unwrap();
+        device.select(0, OP_READ | WATCH_LATER, 9).unwrap();
+        device.ring_mut().note_written(5);
+        // Both targets in one plan: the reader leg comes first by
+        // construction, the watcher leg is claimed in the same call, so a
+        // swap or a double notice is not expressible.
+        let plan = device.after_write();
+        assert_eq!(plan.reader, Some((7, 1, 100)));
+        assert_eq!(plan.watcher, Some((9, OP_READ)));
+        assert_eq!(device.after_write(), WakePlan::default());
     }
 
     #[test]
@@ -271,9 +332,11 @@ mod tests {
         let mut device = LogDevice::new();
         let ready = device.select(0, OP_READ | WATCH_LATER, 9).unwrap();
         assert_eq!(ready, 0);
-        assert_eq!(device.watched(), OP_READ);
-        assert_eq!(device.watch_caller(), 9);
-        device.clear_watched(OP_READ);
-        assert_eq!(device.watched(), 0);
+        // Nothing landed yet: registration stays dormant, no claim.
+        assert_eq!(device.after_write(), WakePlan::default());
+        device.ring_mut().note_written(5);
+        let plan = device.after_write();
+        assert_eq!(plan.reader, None);
+        assert_eq!(plan.watcher, Some((9, OP_READ)));
     }
 }
