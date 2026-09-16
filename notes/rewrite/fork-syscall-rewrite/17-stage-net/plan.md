@@ -211,7 +211,7 @@ socket driver（lwip / uds，libsockdriver 框架）
 | N-3 | **BPF 过滤器** | `bpf_filter.c`：NetBSD bpf_filter 用户态移植（mbuf→pbuf、无 BPF context）561 行 | Rust 重写 bpf 解释器（或最小子集：tcpdump 常用指令）；`/dev/bpf` 语义保留 | 18 | 待设计 |
 | N-4 | **NDEV 消费侧抽象** | `ndev.c`：直接发 NDEV_RQ（com.h 0x1A00）到网卡驱动、DS notify 跟踪 up/down | `minix-netdriver` crate 提供协议类型 + trait；lwip 侧为纯消费方（与 16 框架对称） | 13 | 待设计 |
 | N-5 | **IPv6 支持** | `USE_INET6` 条件编译（`net/lwip/Makefile`），PF_INET6 与 PF_INET 同路径 | 首版决策：Rust 栈 IPv6 支持面（smoltcp 支持）；`MINIX_SIOCGIFMEDIA` 等 ioctl 的 IPv6 分支 | 06/09/10/24 | 待设计 |
-| N-6 | **sockid 命名空间** | `SOCKID_TCP 0x0 / UDP 0x00100000 / RAW 0x00200000 / RT 0x00400000 / LNK 0x00800000`（lwip.h）+ libsockevent hash 槽（id + id>>16）% 256 | Rust 类型化 SocketId（协议族标记 + 序号），hash 语义保留 | 02/99 | 待设计 |
+| N-6 | **sockid 命名空间** | `SOCKID_TCP 0x0 / UDP 0x00100000 / RAW 0x00200000 / RT 0x00400000 / LNK 0x00800000`（lwip.h）+ libsockevent hash 槽（id + id>>16）% 256 | Rust 类型化 SockId（新类型包 int32_t，负数错误通道分家；类基值或下标铸造同 C；20 位下标字段溢出拒绝；uds 裸下标形状保留，hash 语义复用 sockevent::hash_slot） | 01/99（修正：`sockid_t` 在 sockdriver.h，归 01 篇而非 02） | 已落地（2026-09-17，`minix-netdriver/src/sockid.rs`） |
 | N-7 | **远程 MIB（rmib）** | `rmib_process`/`rmib_register`：socket driver 注册 `net.*` 子树，MIB server（10-stage-mib）转发查询 | trait 化 rmib 树（与 10-stage-mib Rust 侧对称）；`net.inet.tcp.isn_secret` 等可写节点 | 03/20/21/23 | 待设计 |
 | N-8 | **sockaddr 类型安全** | `SOCKADDR_MAX 256` + `STATIC_SOCKADDR_MAX_ASSERT` + `union sockaddr_any`（sa/sin/sin6/sdlx）；`sockaddr_dlx` 自定最大尺寸版 | Rust `SockAddr` enum（Ipv4/Ipv6/Link/Unix）+ 尺寸不变式（类型系统表达 SOCKADDR_MAX） | 01/05/99 | 待设计 |
 | N-9 | **/dev/bpf 字符设备面** | `bpfdev.c`：libchardriver 回调表 + `chardriver_task`（CDEV_CLONED/select/reply） | 消费 `minix-chardriver`（16 框架）Rust 版；BPF 设备语义独立于网络协议栈 | 18 | 待设计 |

@@ -40,7 +40,7 @@
 
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
-| P1 | **N1-P1-1** | sockid 命名空间（lwip.h:58-62）零 Rust 归属——99 篇承诺归属 minix-types 未兑现，wire 层无锚 |
+| P1 | **N1-P1-1** | sockid 命名空间（lwip.h:58-62）零 Rust 归属 ✅ **已落地（2026-09-17）**：`minix-netdriver/src/sockid.rs` |
 | P1 | **N1-P1-2** | sockdriver/sockevent 实体机制（续延池/事件对象/定时器/select 语义，C 3,740 行）无设计条目——本 stage 最大实现缺口 |
 | P1 | **N1-P1-3** | [ARCH N-1] 栈本体选型 ✅ **已裁决（2026-09-17）**：smoltcp 一族 + 自研语义垫片，墙后可回退 FFI |
 | P1 | **N1-P1-4** | 传输层与主循环设计：DispatchRoad 4 路对接真实 IPC + SEF/RS（edge E-NETSTART）+ 启动粒度决策 |
@@ -79,11 +79,12 @@
 
 ## 2. 整体架构层条目（如果今天重写会怎么设计）
 
-### N1-P1-1 sockid 命名空间零 Rust 归属（计划外缺失）
+### ✅ N1-P1-1 sockid 命名空间零 Rust 归属（计划外缺失）——已落地 2026-09-17
 
-**问题**：MINIX3 的 sockid 是跨消息的 socket 标识：五类基值 `SOCKID_TCP 0x0 / UDP 0x00100000 / RAW 0x00200000 / RT 0x00400000 / LNK 0x00800000`（`minix3/minix/net/lwip/lwip.h:58-62`），在 SDEV_SELECT2_REPLY / CANCEL / 驱动状态报告等 wire 消息中传递。99-net-global-concepts.md 承诺其常量值归属 minix-types（:7-14），但全 `os/net` grep 无任何 `sockid`/`SOCKID` 符号。
-**影响**：N1-P1-2 的 sock 表、N1-P1-4 的 wire 层实现时将被迫现场发明类型，重演"三处手抄"。
-**建议**：sockid 的五类基值语义上是 lwip 服务内部命名空间（lwip.h 是 server 自有头），但 99 篇承诺其归属 minix-types、且 sockid 的 wire 宽度随 SDEV 契约走——归属随 edge E-SDEVOWN 的单一权威落点一并裁定（基值族 + sockid_t 等价类型），lwip 服务的分配/查找逻辑（C `sockmap`）留 N1-P1-2。
+**落地**：`os/libs/minix-netdriver/src/sockid.rs`——`SockId` 新类型（包 `int32_t`）+ `SockClass` 五类枚举。设计要点：① 负数是错误通道（`sockdriver.h:27-28`），`from_raw` 拒绝负值，标识与错误在类型上分家；② 铸造同 C 形状"类基值或下标"（`tcpsock.c:140` 等）；③ 下标字段 20 位（类基值以 0x00100000 步进推得），溢出拒绝；④ **不做按类枚举**——uds 裸下标（`uds.c:97-101`）与 TCP 类共用数值区间，枚举会对裸下标撒谎，这是本条最重要的一次防 translate 判断。
+**home 决策**：minix-netdriver（与 sdev/sockevent 同居，uds 依赖路径 N1-P2-7 打通）；E-SDEVOWN 若裁定建 minix-sockdriver，三个模块整体迁移。99 篇"归属 minix-types"承诺随 E-SDEVOWN 的 wire 收敛一并处置，本条不再单独等待。
+**验证**：`cargo test -p minix-netdriver --lib sockid` = 5 passed（类基值锁值/铸造同形/溢出与负数拒绝/线上往返/哈希互通）；全量 `cargo test -p minix-netdriver --lib` = 36 passed；Gate E：01 篇 §5.2 表与 `rg "fn test_" sockid.rs` 对账一致。
+**文档同步**：01 篇新增 §3.4 决策 + §2.7/§2.8 矩阵与差异行 + §5.2 测试表；plan.md N-6 行状态与涉及文档修正（02/99 → 01/99，`sockid_t` 在 sockdriver.h，C 真值优先）。
 
 ### N1-P1-2 sockdriver/sockevent 实体机制无设计条目（本 stage 最大缺口）
 

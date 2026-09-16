@@ -25,6 +25,9 @@
 //! - [`sdev`] — socket-device request and reply numbers, guards, and the
 //!   suspendability rule (documents `01-sockdriver-framework.md`
 //!   sections 1 and 2).
+//! - [`sockid`] — the socket identifier namespace: class bases, index
+//!   field, safe decode (document `01-sockdriver-framework.md`, sockid
+//!   section).
 //! - [`sockevent`] — socket event masks, flags, and hash slots
 //!   (document `02-sockevent-framework.md` sections 1 and 2).
 //!
@@ -40,3 +43,4 @@ pub mod portio;
 pub mod protocol;
 pub mod sdev;
 pub mod sockevent;
+pub mod sockid;
