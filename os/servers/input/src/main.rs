@@ -29,9 +29,13 @@ fn main() {
         // gates, and replies through the framework (framework.rs), with the
         // per-arrival decisions in dispatcher.rs.
         //
-        // Spinning is intentional until the transport lands: a server that
-        // cannot receive yet must not pretend otherwise.
-        #[allow(clippy::empty_loop)]
-        loop {}
+        // E-INWIRE: the transport is landed (minix-sys direct verbs); the
+        // loop classifies, dispatches, and performs through serve.rs. The
+        // SEF switch point (receive → sef_receive_status) is documented at
+        // KernelTransport::receive.
+        let self_ep = minix_types::Endpoint::NONE; // A-6/RS assignment pending
+        let mut transport = minix_input::serve::KernelTransport;
+        let mut server = minix_input::dispatcher::Server::fresh();
+        minix_input::serve::serve(&mut transport, self_ep, &mut server);
     }
 }

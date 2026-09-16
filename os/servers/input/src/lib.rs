@@ -49,6 +49,7 @@ pub mod handlers;
 pub mod init;
 pub mod produce;
 pub mod setleds;
+pub mod serve;
 pub mod structs;
 
 pub use connect::{
