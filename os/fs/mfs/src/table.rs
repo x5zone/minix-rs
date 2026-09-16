@@ -60,7 +60,7 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_putnode",
         request: RequestNumber::PutNode,
         owner: "09-mfs-inode.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_readwrite",
@@ -272,8 +272,8 @@ mod tests {
     #[test]
     fn test_table_has_thirty_one_rows_like_c() {
         assert_eq!(MFS_TABLE.len(), 31);
-        assert_eq!(live_entries().count(), 28);
-        assert_eq!(pending_entries().count(), 3);
+        assert_eq!(live_entries().count(), 29);
+        assert_eq!(pending_entries().count(), 2);
     }
 
     #[test]

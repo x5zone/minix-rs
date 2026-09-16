@@ -12,7 +12,7 @@
 | V1-P0-1 | P0 | mfs 服务装配断层：31 个分发行全部不可达（无 `impl FsDriver`、无事件循环） | ✅ 2026-09-17 闭环（之 1 循环 + 之 2 装配/冒烟 + P1-8 账本翻转） |
 | V1-P0-2 | P0 | rmdir 链接计数与 C 行为不符：子目录 nlinks 终值 1、父目录未递减 | 开口项（交修复轮） |
 | V1-P1-1 | P1 | `fs_rename` 整体缺失（link.c:255-422 的完整决策树无对应） | 开口项 |
-| V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | 开口项 |
+| V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | ✅ 2026-09-17 Fix #3（表级 put_count + 装配接线 + 账本 29/2） |
 | V1-P1-3 | P1 | Peek 路径缺失：read.c:156-159 的 `FSC_PEEK` 分支无对应 | 开口项 |
 | V1-P1-4 | P1 | `ReclaimZones` 无执行者：unlink 最后一链后数据区实际不回收 | 开口项 |
 | V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | ✅ 2026-09-16 Fix #1（先行落地：P0-1 装配的依赖） |
@@ -100,7 +100,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 方案 B：只补文档声明「mfs 当前是库不是服务器」，把装配推迟到运行时轨道。否决理由：装配 mismatches（签名不契合、生命周期错位）只有写装配代码才会暴露，推迟会把 V1-P1-4/5/6 这类缺口全部拖到联调期才炸。
 推荐：方案 A，并把 table.rs 翻转纳入同一修复（V1-P1-8）。[ARCH] 判定：属于实现补全（Rewrite 边界内），不改外部行为，无需三处标注；若装配中发现必须改 `FsDriver` 签名，则升级为 Architectural Evolution，按规范三处一致标注。
 **🔄 进度（2026-09-16，之 1 落地）**：框架任务循环 `os/libs/minix-fs/src/task.rs` 提交——`FsTransport` 接缝（receive/reply/copy_in/copy_out/scratch 五方法）、`RequestBody` 三十二变体类型化请求体（名字按 `fsdriver_getname` 语义拷贝为自有缓冲）、`FsReply` 状态+事务号+载荷（Transfer/Node/Lookup）、`Incoming::Cancelled` 对应 `fsdriver_terminate` 的取消接收语义、`Server` 增 peek/后端设备三构造期旋钮（对应 C 表 `fdr_peek`/`fdr_bpeek` 与设备全局）。六项循环测试全绿（crate 96 个），clippy 零告警；01 篇同步 §4.3/§5.3。余：`MfsServer` 装配 + `impl FsDriver` + 冒烟链。
-**✅ 之 2 部分落地（2026-09-17）**：装配地基与服务器主体提交——(a) 位图随挂载装载、同步回写，`unmount` 的 sync 闭包改为接收 `&mut MountedFs` 并**归还源设备**（重挂载语义，C 进程跨卸载保设备句柄）；(b) `Parts` 拆借用透镜 + `MfsServer`（持 `Option<S>` 源、`MountedFs`、池配置、注入时钟）+ `impl FsDriver`：mount/unmounted/is_mount_point/read/write/get_dents/truncate（整文件与打洞两臂）/sought/lookup_child/create/stat（本地六十四字节布局，P2-5 收敛）/synchronized/flushed 全部接线，`sync_mounted` 按「先 inode、再位图、后冲刷」次序；(c) 冒烟测试全链通过（挂载→查找→创建→写→读→枚举→状态→同步→卸载→设备交还→重挂载后文件仍在），crate 108 测试全绿。**裁决落定**：池随挂载建立、容量来自启动配置（与 C 的池生命周期差异不可观察）；能力位空（C 框架只补窥视位、mfs 从不设 `RES_64BIT`，grep 证据 `call.c:48-51`）。**余下未接线方法（走 trait 默认 ENOSYS，账实相符）**：make_dir/make_node/link/unlink/remove_dir/symbolic_link/read_link（LinkCtx 族，之 3）、change_owner/change_mode/update_times/stat_vfs（meta 族，之 3）、block_read/block_write/peek（bio_transfer 接线，之 3）、put_node（P1-2）、rename（P1-1）。
+**✅ 之 2 部分落地（2026-09-17）**：装配地基与服务器主体提交——(a) 位图随挂载装载、同步回写，`unmount` 的 sync 闭包改为接收 `&mut MountedFs` 并**归还源设备**（重挂载语义，C 进程跨卸载保设备句柄）；(b) `Parts` 拆借用透镜 + `MfsServer`（持 `Option<S>` 源、`MountedFs`、池配置、注入时钟）+ `impl FsDriver`：mount/unmounted/is_mount_point/read/write/get_dents/truncate（整文件与打洞两臂）/sought/lookup_child/create/stat（本地六十四字节布局，P2-5 收敛）/synchronized/flushed 全部接线，`sync_mounted` 按「先 inode、再位图、后冲刷」次序；(c) 冒烟测试全链通过（挂载→查找→创建→写→读→枚举→状态→同步→卸载→设备交还→重挂载后文件仍在），crate 108 测试全绿。**裁决落定**：池随挂载建立、容量来自启动配置（与 C 的池生命周期差异不可观察）；能力位空（C 框架只补窥视位、mfs 从不设 `RES_64BIT`，grep 证据 `call.c:48-51`）。**余下未接线方法（走 trait 默认 ENOSYS，账实相符）**：make_dir/make_node/link/unlink/remove_dir/symbolic_link/read_link（LinkCtx 族，之 3）、change_owner/change_mode/update_times/stat_vfs（meta 族，之 3）、block_read/block_write/peek（bio_transfer 接线，之 3）、rename（P1-1）。**之 3 范围**：上述 LinkCtx 族（load_parent/store_parent 已就位，remove_directory 需子目录镜像）+ meta 四方法 + bio_transfer 三方法的接线与逐方法测试；P1-4 的回收执行体挂进 unlink/remove_dir 的 ReclaimZones 出口，随之 3 同轮自然落地。
 **之 2 开工前的四个待裁决点（2026-09-16 登记，均已裁决）**：
 1. 池归属冲突（已裁决：A 变体落地）——`MfsServer` 持 `Option<S>` 源，挂载取走、卸载经 `BlockCache::into_source` 归还；池容量仍来自启动配置（差异不可观察），`ServerCore`/`prepare` 保留于 startup.rs 待 07 篇后续裁决是否收缩（记入批 7 死代码复核）。
 2. `MountedFs` 拆借用（已落地）：`Parts` 透镜（server.rs 定义、mount.rs `parts()` 构造）一次拆出表/缓存/超级块/双位图/区策略 + 几何快照；位图为 `MountedFs` 独立字段（挂载装载、同步回写）。
@@ -116,6 +116,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P1-1 `fs_rename` 整体缺失。** C link.c:255-422 的完整决策树无对应：SAME=1000 收敛、superdir 环走查（link.c:315-342）、同目录「先 DELETE 旧名腾位再 ENTER」（link.c:391-395 的反直觉顺序）、跨目录 `..` 改链与父目录 nlinks 递增（link.c:405-414）。Rust 仅有 `SAME_NAME` 常量（link.rs:32）且测试只断言其数值（link.rs:1003/1154）。修复走 todo-fix 三段式（先讲清 C 的决策树，再给方案对比，最后实施）。
 
 **V1-P1-2 `fs_putnode` 缺失。** C inode.c:38-64：引用计数按 `count-1` 批量递减、超量为 panic。Rust `put` 只减 1（inode.rs:437-478）；配套的 `duplicate`（inode.rs:365）在生产代码零调用。修复时与 V1-P0-1 的装配一起验收（putnode 只有经由分发才可测）。
+**✅ 2026-09-17 闭环（Fix #3）**：`InodeTable::put_count`（inode.rs——减 `count-1` 后交 `put` 消耗最后一个引用；未知号、零计数、超量计数按协议违反拒绝且计数不动，对应 C 的三处宕机换成报错）；`MfsServer::put_node` 接线 + 表级三测试（批量释放余一持有、超量拒绝计数不动、未知号拒绝）+ 装配层用例（释放后读回答无效、超量拒绝、根目录完好）。账本 PutNode 行随实现翻转（29/2）。07 篇 §4.3 与 09 篇 §4.2 同步。ReleaseOutcome::ReclaimZones 的执行者仍归 P1-4。
 
 **V1-P1-3 Peek 路径缺失。** C read.c:156-159 的 `FSC_PEEK` 缺块分支无对应；适配器默认以 read 仿真兜底（call.rs:297-305 引 call.c:294-306），所以 mfs 作为无 peek 能力服务器在协议层可工作，但 `CapabilityFlags::HAS_PEEK` 永不置位。方案 A：维持无 peek（与 C 的无 peek server 同型），登记声明即可；方案 B：实现 peek 并接入 VM 零拷贝（与 E-FSVMCACHE 绑定）。推荐 A 先行，B 随 VM 轨道。
 

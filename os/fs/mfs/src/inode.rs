@@ -477,6 +477,31 @@ impl InodeTable {
         }
     }
 
+    /// Batch release by inode number (`fs_putnode`, `inode.c:38-64`).
+    ///
+    /// Drops `count` references in one request the way the C entry point
+    /// does: subtract `count - 1` and let [`InodeTable::put`] consume the
+    /// last one, so a final count of zero runs the release-or-reclaim
+    /// decision. An unknown number or a count past the reference total is
+    /// a protocol violation — the C code aborts the server there
+    /// (`inode.c:46-56`); this table refuses with an error and leaves the
+    /// counter untouched.
+    pub fn put_count<S: BlockSource, V: SecondLevelCache>(
+        &mut self,
+        cache: &mut BlockCache<S, V>,
+        device: u64,
+        number: u64,
+        count: u32,
+        params: &InodeIo,
+    ) -> Result<ReleaseOutcome, InodeError> {
+        let slot = self.find(device, number).ok_or(InodeError::Invalid)?;
+        if count == 0 || count > self.slots[slot].count {
+            return Err(InodeError::Invalid);
+        }
+        self.slots[slot].count -= count - 1;
+        self.put(cache, slot, params)
+    }
+
     /// Allocate a fresh inode (`alloc_inode`, `inode.c:252-303`).
     ///
     /// Refuses read-only mounts, takes a bitmap bit from the hint, then a
@@ -851,6 +876,58 @@ mod tests {
         let back = DiskInode::from_bytes(&cache.slot_data(check)[offset..]).unwrap();
         assert_eq!(back.size, 500);
         let _ = cache.release(check);
+    }
+
+    #[test]
+    fn test_put_count_batch_release_and_hold() {
+        let mut cache = test_cache();
+        let params = test_params();
+        let mut table = InodeTable::new();
+        write_disk_inode(&mut cache, &params, 3, &sample_record(0o100644, 10));
+        let slot = table.get(&mut cache, DEVICE, 3, &params).unwrap();
+        table.duplicate(slot);
+        table.duplicate(slot);
+        assert_eq!(table.slot(slot).count, 3);
+        // Two of three dropped in one request: still held.
+        assert_eq!(
+            table
+                .put_count(&mut cache, DEVICE, 3, 2, &params)
+                .unwrap(),
+            ReleaseOutcome::Held
+        );
+        assert_eq!(table.slot(slot).count, 1);
+        // The last one: full release.
+        assert_eq!(
+            table
+                .put_count(&mut cache, DEVICE, 3, 1, &params)
+                .unwrap(),
+            ReleaseOutcome::Released
+        );
+    }
+
+    #[test]
+    fn test_put_count_overcount_refused_and_counter_untouched() {
+        let mut cache = test_cache();
+        let params = test_params();
+        let mut table = InodeTable::new();
+        write_disk_inode(&mut cache, &params, 3, &sample_record(0o100644, 10));
+        let slot = table.get(&mut cache, DEVICE, 3, &params).unwrap();
+        // Protocol violation: the request drops more references than exist.
+        // The C code aborts the server here; the table refuses and leaves
+        // the counter untouched.
+        assert!(table
+            .put_count(&mut cache, DEVICE, 3, 2, &params)
+            .is_err());
+        assert_eq!(table.slot(slot).count, 1);
+        // Zero counts are refused the same way (the adapter screens them,
+        // the table does not rely on it).
+        assert!(table
+            .put_count(&mut cache, DEVICE, 3, 0, &params)
+            .is_err());
+        // Unknown numbers are refused.
+        assert!(table
+            .put_count(&mut cache, DEVICE, 99, 1, &params)
+            .is_err());
     }
 
     #[test]

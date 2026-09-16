@@ -286,6 +286,16 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         }
     }
 
+    fn put_node(&mut self, inode: u64, count: u32) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        parts
+            .inodes
+            .put_count(parts.cache, parts.device, inode, count, &parts.io)
+            .map(|_| ())
+            .map_err(|error| error.to_errno())
+    }
+
     fn is_mount_point(&mut self, inode: u64) -> Result<(), Errno> {
         let fs = self.mounted()?;
         let parts = fs.parts();
@@ -819,6 +829,28 @@ mod tests {
             .unwrap();
         assert_eq!(got, 3);
         assert_eq!(seen, b"abc".to_vec());
+    }
+
+    #[test]
+    fn test_put_node_releases_and_refuses_overcount() {
+        let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server.create(1, "temp", 0o100644, 0, 0).unwrap();
+        // The create leaves one reference: releasing it retires the slot.
+        server.put_node(2, 1).unwrap();
+        let error = server
+            .read(2, 0, 4, &mut |bytes: &[u8]| {
+                let _ = bytes;
+            })
+            .unwrap_err();
+        // The read path answers invalid for a released number, the same
+        // error the C read half reports when `get_inode` fails.
+        assert_eq!(error.to_i32(), EINVAL);
+        // A count past the reference total is refused untouched.
+        assert!(server.put_node(1, 5).is_err());
+        let (node, _) = server.lookup_child(1, ".").unwrap();
+        assert_eq!(node.inode_number, 1);
     }
 
     #[test]
