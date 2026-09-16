@@ -17,9 +17,11 @@ pub const CDEV_REQUEST_BASE: i32 = 0x400;
 
 /// Base of the character reply range.
 ///
-/// C: `CDEV_RS_BASE` (`com.h:934`). Replies live in a separate range so a
-/// reply can never be mistaken for a new request.
-pub const CDEV_REPLY_BASE: i32 = 0x500;
+/// C: `CDEV_RS_BASE 0x480` (`com.h:920`). Replies live in a separate range
+/// so a reply can never be mistaken for a new request; `0x500` belongs to
+/// the *block* request range (`BDEV_RQ_BASE`, `com.h:963`), so a reply
+/// built on that base would decode as a block request on the wire.
+pub const CDEV_REPLY_BASE: i32 = 0x480;
 
 /// Maximum number of minor devices remembered as opened.
 ///
@@ -329,6 +331,16 @@ mod tests {
         assert!(is_char_request(CdevRequest::Select.message_type()));
         assert!(!is_char_request(0x500));
         assert!(!is_char_request(0));
+    }
+
+    #[test]
+    fn test_reply_base_matches_cdev_rs_and_stays_outside_requests() {
+        // C: CDEV_RS_BASE 0x480 (com.h:920). The value must both match the
+        // C constant and stay outside the character request family — 0x500
+        // (the old wrong value here) is BDEV_RQ_BASE, a block request base.
+        assert_eq!(CDEV_REPLY_BASE, 0x480);
+        assert!(!is_char_request(CDEV_REPLY_BASE));
+        assert_eq!(CdevRequest::decode(CDEV_REPLY_BASE), None);
     }
 
     #[test]
