@@ -127,13 +127,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 | 级别 | 编号 | 一句话 | 状态 |
 |------|------|--------|------|
-| **P0** | C-1 | 二进制面整体缺失：58 个成员只有 `minix-init` 一个真实命令；"决定半"（23 个组库）与"执行半"（31 个 stub 二进制壳）两半分裂且互不引用。收敛为域内 crate + `src/bin/` 薄壳（[ARCH]） | 🔄 进行中（2026-09-17，迭代 5）：echo 已作为薄壳模板落地；占位壳删除与逐域接线待续（见 §6.1 执行进度） |
+| **P0** | C-1 | 二进制面整体缺失：58 个成员只有 `minix-init` 一个真实命令；"决定半"（23 个组库）与"执行半"（31 个 stub 二进制壳）两半分裂且互不引用。收敛为域内 crate + `src/bin/` 薄壳（[ARCH]） | 🔄 结构收敛完成（2026-09-17，迭代 5-7）：echo 模板落地、34 占位壳删除、文档/plan 同步、守卫全绿；逐域接线为长尾批次（见 §6.1 执行进度） |
 | P1 | C-2 | `minix-sys` 顶层未再导出 errno 常量，`minix-init` 被迫直依赖 `minix-types`——99 §1 分层契约的唯一现存反例 | ✅ 18 侧完成（2026-09-17，迭代 4）：init 改用 `minix_sys::Errno::EEXIST`，依赖行已删；minix-sys 侧常量再导出仍挂 edge `E-CMDSYSFACE`（服务后续命令） |
 | P1 | C-3 | 命令拿不到自己的参数与环境：`minix-rt` 只有 `progname()`/`argv_bytes(index)` 雏形，无环境访问器 | 待做（14 侧半已挂 edge `E-CMDSYSFACE`） |
 | P1 | C-4 | `plan.md:186` 验收基线写的 `cargo test -p commands-*` 包名前缀不存在，实际包名前缀是 `minix-*` | ✅ 完成（2026-09-17，迭代 3）：§3.4 改为 `minix-` 前缀可执行形式，同节过时的"全部为 stub"快照句一并按文档-代码同步门更新 |
 | P2 | C-5 | `os/Cargo.toml:71` 与 `:77` 重复登记 `commands/bin/fileops`；`plan.md` §2 的"35 crate"数字与实际 58 个成员漂移 | ✅ 重复登记已删（2026-09-17，迭代 2）；数字随 C-1 ④ 更新 |
 | P2 | C-6 | `/etc` 配置面零落地（`os/etc/` 只有占位 README），[ARCH] A-6（rc 脚本形态）决策悬置 | OQ 上交用户，不擅自决策 |
-| P2 | C-7 | 99 §1 的边界硬规则只有文档约定，无机制化检查 | 待做（守卫脚本） |
+| P2 | C-7 | 99 §1 的边界硬规则只有文档约定，无机制化检查 | ✅ 完成（2026-09-17，迭代 8）：`tools/check-command-boundary.sh` 落地并全绿 |
 
 ---
 
@@ -178,6 +178,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - ⚠️ **步骤顺序偏离及理由**：原步骤 1 是"init 域示范（reboot/shutdown/rcorder）"。让位于 echo 的理由：reboot/shutdown/rcorder 按 plan §6 属交付链收尾批 8，且 reboot(2)/时间解析等执行面尚缺、先行只会造出新的"说谎二进制"；echo 是 §6 批 1 的 stdio 批成员、99 §3 已裁定其依赖齐备，作为模板更有代表性。init 域 bin 留在批 8 与其执行面一起实现。
 - ✅ **步骤 3 占位壳删除完成**（2026-09-17，迭代 6）：34 个说谎占位 crate（bin 七个、sbin 三个、游戏个体二十四个）已从 `os/commands/` 与 workspace 成员表整体移除，成员收敛为 24 个域 crate（init + 23 库）+ 少量服务/工具项；`cargo metadata` 校验通过、`minix-stdio-games` 35 测试与 `minix-fileops` 30 测试回归全绿、仓库内无任何 crate 引用它们（grep 实证）。`primes`（流式区间）与 `arithmetic`（交互随机源）等执行面缺口随各域批次的 Requires 列登记，不再以 exit(0) 占位壳的形式假装存在。
 - 待续：步骤 4（plan 与各篇文档头同步）、后续逐域接线（每批同步回填 Requires 列）。
+- ✅ **步骤 4 文档/plan 同步完成**（2026-09-17，迭代 7）：六篇文档 Rust 模块行（05/06/14/15/22/23/24）、99 两处引用已删除文件的 echo 锚点（模式 66 RCPD 现实案例，改为指向 `os/commands/bin/fileops/src/bin/echo.rs`）、plan §2 的"35 crate"数字（改 24 个域 crate）与四行 Rust 侧列、`minix-stdio-games` 库头的 bcd/ppt 过度声称（按现状修正为"契约在内、实现未写"）。
+- **长尾批次登记（C-1 的逐域接线，每批 = 一次 todo-fix）**：批次顺序沿用 plan §6（stdio 批 06→07→08→22 先行）。每批的动作固定为：该篇契约表逐命令回填 Requires 列（P1-1）→ 库内决定半补齐（如 22 的 `bcd`/`ppt` 模块）→ `src/bin/{命令}.rs` 薄壳（argv/terminate 接缝照 echo 模板，no_std 目标落地时一刀切换）→ 行为测试 → `cargo test -p {crate}` → 守卫脚本通过 → 文档 §5 测试统计同步。已知的执行面阻塞在批前登记：`primes`（流式区间语义）、`arithmetic`（随机源与交互协议）、05 `sh`（子进程原语）、14/15（E-FSCMDS 盘上结构层）。
+
+### 6.1.1 C-7 边界守卫（迭代 8）
+
+✅ `tools/check-command-boundary.sh` 落地（2026-09-17）：源码级检查 `os/commands/` 内 `minix_types` 直引与 `minix_sys::ipc` 触达，零命中输出 OK、违例逐行列出并提示"缺封装去 14 侧登记，不在命令里手搓"。运行结果 OK——与迭代 4 的 init 修复互为验收（脚本在 init 去 minix-types 之后才可能全绿，两步的先后依赖即 C-2 的设计意图）。
 
 ---
 
