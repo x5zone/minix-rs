@@ -116,13 +116,14 @@ impl Default for DeviceLife {
     }
 }
 
-/// Kick policy: ring the host bell only when it helps.
+/// Kick policy: ring the host bell only when it asked for notifications.
 ///
-/// C: `wants_kick` (`virtio.c:766-783`): kick when the host asked for
-/// notification (no-notify clear) or when the queue ran out of room
-/// (the host might be waiting for space). Pure function of three facts.
-pub const fn wants_kick(no_notify: bool, queue_full: bool) -> bool {
-    !no_notify || queue_full
+/// C: `wants_kick` (`virtio.c:766-770`) checks exactly one fact — the
+/// used-ring `NO_NOTIFY` flag. When the host sets it, it is polling the
+/// ring itself and a doorbell write is wasted effort; correctness never
+/// depends on the kick either way (the host re-checks the used index).
+pub const fn wants_kick(no_notify: bool) -> bool {
+    !no_notify
 }
 
 /// Port and register access behind one trait: the service crate talks to
@@ -216,9 +217,10 @@ mod tests {
 
     #[test]
     fn test_kick_policy() {
-        assert!(wants_kick(false, false));
-        assert!(!wants_kick(true, false));
-        assert!(wants_kick(true, true));
+        // C pins exactly one condition (virtio.c:768-770): the NO_NOTIFY
+        // flag. There is no queue-full clause to fall back on.
+        assert!(wants_kick(false));
+        assert!(!wants_kick(true));
     }
 
     #[test]
