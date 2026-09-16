@@ -14,7 +14,7 @@
 | V1-P1-1 | P1 | `fs_rename` 整体缺失（link.c:255-422 的完整决策树无对应） | 开口项 |
 | V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | ✅ 2026-09-17 Fix #3（表级 put_count + 装配接线 + 账本 29/2） |
 | V1-P1-3 | P1 | Peek 路径缺失：read.c:156-159 的 `FSC_PEEK` 分支无对应 | 开口项 |
-| V1-P1-4 | P1 | `ReclaimZones` 无执行者：unlink 最后一链后数据区实际不回收 | 开口项 |
+| V1-P1-4 | P1 | `ReclaimZones` 无执行者：unlink 最后一链后数据区实际不回收 | ✅ 2026-09-17 Fix #4（执行体挂 unlink/remove_dir/put_node 三出口，卷视图可观察验证） |
 | V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | ✅ 2026-09-16 Fix #1（先行落地：P0-1 装配的依赖） |
 | V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | 开口项 |
 | V1-P1-7 | P1 | mount 适配层丢失驱动标签：`adapt_mount` 向 `bound_driver` 传空字符串 | 开口项 |
@@ -101,6 +101,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 推荐：方案 A，并把 table.rs 翻转纳入同一修复（V1-P1-8）。[ARCH] 判定：属于实现补全（Rewrite 边界内），不改外部行为，无需三处标注；若装配中发现必须改 `FsDriver` 签名，则升级为 Architectural Evolution，按规范三处一致标注。
 **🔄 进度（2026-09-16，之 1 落地）**：框架任务循环 `os/libs/minix-fs/src/task.rs` 提交——`FsTransport` 接缝（receive/reply/copy_in/copy_out/scratch 五方法）、`RequestBody` 三十二变体类型化请求体（名字按 `fsdriver_getname` 语义拷贝为自有缓冲）、`FsReply` 状态+事务号+载荷（Transfer/Node/Lookup）、`Incoming::Cancelled` 对应 `fsdriver_terminate` 的取消接收语义、`Server` 增 peek/后端设备三构造期旋钮（对应 C 表 `fdr_peek`/`fdr_bpeek` 与设备全局）。六项循环测试全绿（crate 96 个），clippy 零告警；01 篇同步 §4.3/§5.3。余：`MfsServer` 装配 + `impl FsDriver` + 冒烟链。
 **✅ 之 2 部分落地（2026-09-17）**：装配地基与服务器主体提交——(a) 位图随挂载装载、同步回写，`unmount` 的 sync 闭包改为接收 `&mut MountedFs` 并**归还源设备**（重挂载语义，C 进程跨卸载保设备句柄）；(b) `Parts` 拆借用透镜 + `MfsServer`（持 `Option<S>` 源、`MountedFs`、池配置、注入时钟）+ `impl FsDriver`：mount/unmounted/is_mount_point/read/write/get_dents/truncate（整文件与打洞两臂）/sought/lookup_child/create/stat（本地六十四字节布局，P2-5 收敛）/synchronized/flushed 全部接线，`sync_mounted` 按「先 inode、再位图、后冲刷」次序；(c) 冒烟测试全链通过（挂载→查找→创建→写→读→枚举→状态→同步→卸载→设备交还→重挂载后文件仍在），crate 108 测试全绿。**裁决落定**：池随挂载建立、容量来自启动配置（与 C 的池生命周期差异不可观察）；能力位空（C 框架只补窥视位、mfs 从不设 `RES_64BIT`，grep 证据 `call.c:48-51`）。**余下未接线方法（走 trait 默认 ENOSYS，账实相符）**：make_dir/make_node/link/unlink/remove_dir/symbolic_link/read_link（LinkCtx 族，之 3）、change_owner/change_mode/update_times/stat_vfs（meta 族，之 3）、block_read/block_write/peek（bio_transfer 接线，之 3）、rename（P1-1）。**之 3 范围**：上述 LinkCtx 族（load_parent/store_parent 已就位，remove_directory 需子目录镜像）+ meta 四方法 + bio_transfer 三方法的接线与逐方法测试；P1-4 的回收执行体挂进 unlink/remove_dir 的 ReclaimZones 出口，随之 3 同轮自然落地。
+**✅ 之 3 落地（2026-09-17）**：名字空间族七方法（make_node/make_dir/link/unlink/remove_dir/symbolic_link/read_link）经 LinkCtx/CreateCtx 与镜像桥接线（make_dir 的子目录点项镜像按旧尺寸零经桥分配区号并建映射）；meta 四方法（change_owner/change_mode/update_times/stat_vfs——卷布局八字节十字段）直通；块传输两方法经 `bio_transfer` 加内存后端暂存（peek 按能力协商保持未实现）；`stat_vfs` 的卷空闲在位图上现算（与 C `stadir.c:783` 同法）。三个装配级测试：名字空间族全链、statvfs/元数据/回收可观察性、原始块读回。crate 一百一十四测试全绿，clippy 零告警。**账本仅余 Peek（P1-3）与 Rename（P1-1）两行待建。**
 **之 2 开工前的四个待裁决点（2026-09-16 登记，均已裁决）**：
 1. 池归属冲突（已裁决：A 变体落地）——`MfsServer` 持 `Option<S>` 源，挂载取走、卸载经 `BlockCache::into_source` 归还；池容量仍来自启动配置（差异不可观察），`ServerCore`/`prepare` 保留于 startup.rs 待 07 篇后续裁决是否收缩（记入批 7 死代码复核）。
 2. `MountedFs` 拆借用（已落地）：`Parts` 透镜（server.rs 定义、mount.rs `parts()` 构造）一次拆出表/缓存/超级块/双位图/区策略 + 几何快照；位图为 `MountedFs` 独立字段（挂载装载、同步回写）。
@@ -120,7 +121,8 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 
 **V1-P1-3 Peek 路径缺失。** C read.c:156-159 的 `FSC_PEEK` 缺块分支无对应；适配器默认以 read 仿真兜底（call.rs:297-305 引 call.c:294-306），所以 mfs 作为无 peek 能力服务器在协议层可工作，但 `CapabilityFlags::HAS_PEEK` 永不置位。方案 A：维持无 peek（与 C 的无 peek server 同型），登记声明即可；方案 B：实现 peek 并接入 VM 零拷贝（与 E-FSVMCACHE 绑定）。推荐 A 先行，B 随 VM 轨道。
 
-**V1-P1-4 `ReclaimZones` 无执行者。** C 在最后一个引用释放且 `i_nlinks==NO_LINK` 时同步 `truncate_inode(rip, 0)`（inode.c:220-231）真实释放全部数据区与间接块。Rust 只把非零 zone 号打包进 `ReleaseOutcome::ReclaimZones`（inode.rs:450-462，含 zones[7..9] 的间接块号但调用方无从区分类型），crate 内没有位图释放或缓存逐出的消费者（grep `reclaimed` 仅 link.rs:125-134 收集与测试断言）。效果：unlink 最后一链后 zone 实际泄漏。修复方向：给 `MfsServer`（V1-P0-1 的装配产物）实现回收执行体，按 zone 号区间区分间接块与数据块，释放位图并 `BlockCache::free_block`。
+**V1-P1-4 `ReclaimZones` 无执行者。** C 在最后一个引用释放且 `i_nlinks==NO_LINK` 时同步 `truncate_inode(rip, 0)`（inode.c:220-231）真实释放全部数据区与间接块。Rust 只把非零 zone 号打包进 `ReleaseOutcome::ReclaimZones`（inode.rs:450-462，含 zones[7..9] 的间接块号但调用方无从区分类型），crate 内没有位图释放或缓存逐出的消费者（grep `reclaimed` 仅 link.rs:125-134 收集与测试断言）。效果：unlink 最后一链后 zone 实际泄漏。
+**✅ 2026-09-17 闭环（Fix #4）**：执行体 `MfsServer::reclaim_zones` 落地——逐非零区号经 `mfs_cache::free_zone` 清位图（含搜索位回拨）并 `free_block` 摘除缓存副本，挂三个出口：`unlink`、`remove_dir`、`put_node`（引用清零且链接数为无主时区表随释放结果携带，此时数据区与间接块的释放动作相同，无需按类型区分——区号→位号换算是唯一映射）。装配级测试以卷空闲区计数为观察口：创建并写入后空闲减一，unlink 加引用释放加同步后空闲复原。
 
 **V1-P1-5 目录块镜像缺桥接。** dir.rs 的四模式搜索以调用方提供的 `Vec<Vec<u8>>` 块镜像流转（dir.rs:158），crate 内不存在从 `BlockCache` 装载镜像或把镜像写回缓存的代码（dir.rs:10-14 自述归文档 14/15），因此 create/unlink/mkdir/link 的目录修改落不到磁盘。方案 A：装配层（`MfsServer` 的方法）提供装载/写回桥，镜像设计保留；方案 B：删除镜像，目录操作直接经 `BlockCache` 槽进行（更贴近 C，少一次拷贝，但 dir.rs 全部签名要改）。推荐 A 先落地保行为，B 作为 V2 轮重写评估项（镜像使每次目录操作多 O(块数) 拷贝）。
 **✅ 2026-09-16 闭环（Fix #1）**：新模块 `os/fs/mfs/src/dir_io.rs`——`load_dir_blocks`（逐文件块翻译 + 缓存读出）与 `store_dir_blocks`（整块免读覆写置脏；旧尺寸外追加块经 `alloc_zone`+`write_map` 建映射；尺寸内空洞按损坏报 EIO，与 `list_dir_entries` 同规则）。位图以闭包注入，模块不依赖超级块结构；inode 元数据写回留给装配层。七个新测试全绿（crate 105 个）；文档同步 14 篇 §4.4/§5.4，dir.rs 过时注释更新。批内顺序调整说明：本条先行于 V1-P0-1，因为装配冒烟链的 lookup 依赖本桥。

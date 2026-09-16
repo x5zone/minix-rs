@@ -22,13 +22,17 @@
 
 use alloc::vec::Vec;
 
+use minix_fs::bio::{bio_transfer, TransferDirection};
 use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::bio::DeviceInfo;
+use minix_fs::data::{DataChannel, MemoryBackend};
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
 
 use minix_types::{EBADF, EBUSY, EIO, EINVAL, ENOENT, Errno};
 
 use crate::dir::DirError;
+use crate::link::LinkCtx;
 use crate::dir_io::{load_dir_blocks, store_dir_blocks};
 use crate::inode::{InodeIo, InodeTable, TABLE_SLOTS};
 
@@ -46,6 +50,26 @@ use crate::write::{truncate_file, write_file};
 /// device and inode fields in the reply (`call.c:732-738`); this server
 /// writes every field into the buffer the transport offers.
 pub const STAT_LAYOUT_SIZE: usize = 64;
+
+/// Byte layout of the volume-status reply filled by
+/// [`FsDriver::stat_vfs`]: blocks, blocks free, blocks available, block
+/// size, fragment size, io size, files, files free, files available, name
+/// max — ten eight-byte fields, little endian.
+pub const STATVFS_LAYOUT_SIZE: usize = 80;
+
+/// Device facts for raw transfers: the usable size comes from the mounted
+/// superblock's zone total, the label binding is a framework no-op here.
+struct SuperblockBytes {
+    bytes: u64,
+}
+
+impl DeviceInfo for SuperblockBytes {
+    fn partition_size_bytes(&self, _device: u64) -> Result<u64, Errno> {
+        Ok(self.bytes)
+    }
+
+    fn bind_label(&mut self, _device: u64, _label: &str) {}
+}
 
 /// Where the server reads the wall clock. A function pointer because the
 /// server needs exactly one time source and never inspects it; the runtime
@@ -219,6 +243,22 @@ impl<S: BlockSource> MfsServer<S> {
         Ok((blocks, old_size))
     }
 
+    /// Reclaim the data zones of a fully released inode (the `ReclaimZones`
+    /// outcome of a final release): free each zone's bitmap bit and drop the
+    /// cached copy, so the next allocation can reuse the space. Zone numbers
+    /// of zero are absent slots.
+    fn reclaim_zones(fs: &mut MountedFs<S>, zones: &[u64]) {
+        let parts = fs.parts();
+        let first = parts.superblock.first_data_zone;
+        let cell = core::cell::RefCell::new((&mut *parts.zmap, &mut parts.superblock.zsearch));
+        let (mut _alloc_bit, mut free_bit) = zone_closures(&cell, first);
+        for &zone in zones {
+            if zone != 0 {
+                crate::mfs_cache::free_zone(parts.cache, parts.device, parts.space, zone, &mut free_bit);
+            }
+        }
+    }
+
     /// Store a parent directory's images back: mapping updates land in the
     /// directory's zone slots, then the caller's reference goes back.
     fn store_parent(
@@ -289,11 +329,17 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     fn put_node(&mut self, inode: u64, count: u32) -> Result<(), Errno> {
         let fs = self.mounted()?;
         let parts = fs.parts();
-        parts
+        let outcome = parts
             .inodes
             .put_count(parts.cache, parts.device, inode, count, &parts.io)
-            .map(|_| ())
-            .map_err(|error| error.to_errno())
+            .map_err(|error| error.to_errno())?;
+        // A final release on an unlinked inode carries its data zones: the
+        // executor frees the bitmap bits and the cached copies here, the
+        // same point where the C `put_inode` runs `truncate_inode`.
+        if let crate::inode::ReleaseOutcome::ReclaimZones(zones) = outcome {
+            Self::reclaim_zones(fs, &zones);
+        }
+        Ok(())
     }
 
     fn is_mount_point(&mut self, inode: u64) -> Result<(), Errno> {
@@ -619,6 +665,451 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         ))
     }
 
+    fn make_node(
+        &mut self,
+        directory: u64,
+        name: &str,
+        mode: u32,
+        owner: u32,
+        group: u32,
+        device: u64,
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
+        let created = {
+            let parts = fs.parts();
+            let mut ctx = CreateCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                superblock: parts.superblock,
+                bitmap: parts.imap,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+            };
+            crate::open::create_device(
+                &mut ctx,
+                directory,
+                &mut blocks,
+                name.as_bytes(),
+                mode as u16,
+                owner as u16,
+                group as u16,
+                device,
+            )
+            .map_err(|error| error.to_errno())?
+        };
+        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        let _ = created;
+        Ok(())
+    }
+
+    fn make_dir(
+        &mut self,
+        directory: u64,
+        name: &str,
+        mode: u32,
+        owner: u32,
+        group: u32,
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
+        let mut child_blocks: Vec<Vec<u8>> = Vec::new();
+        let created = {
+            let parts = fs.parts();
+            let mut ctx = CreateCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                superblock: parts.superblock,
+                bitmap: parts.imap,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+            };
+            crate::open::create_dir(
+                &mut ctx,
+                directory,
+                &mut blocks,
+                name.as_bytes(),
+                mode as u16,
+                owner as u16,
+                group as u16,
+                &mut child_blocks,
+            )
+            .map_err(|error| error.to_errno())?
+        };
+        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        // The child's dot-entry images map onto a fresh zone here: the child
+        // was created at size zero, so every image is an append through the
+        // mapping (`create_dir` set the size itself).
+        {
+            let parts = fs.parts();
+            let child_slot = parts
+                .inodes
+                .get(parts.cache, parts.device, created.number, &parts.io)
+                .map_err(|_| Errno::from_i32(ENOENT))?;
+            let first = parts.superblock.first_data_zone;
+            let cell = core::cell::RefCell::new((&mut *parts.zmap, &mut parts.superblock.zsearch));
+            let (mut alloc_bit, mut free_bit) = zone_closures(&cell, first);
+            let stored = store_dir_blocks(
+                parts.cache,
+                parts.device,
+                &mut parts.inodes.slot_mut(child_slot).zones,
+                parts.map,
+                parts.range,
+                parts.space,
+                &mut alloc_bit,
+                &mut free_bit,
+                0,
+                &child_blocks,
+                parts.block_size,
+            );
+            let _ = parts.inodes.put(parts.cache, child_slot, &parts.io);
+            stored?;
+        }
+        Ok(())
+    }
+
+    fn link(
+        &mut self,
+        directory: u64,
+        name: &str,
+        inode: u64,
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
+        {
+            let parts = fs.parts();
+            let mut ctx = LinkCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+                block_size: parts.block_size,
+            };
+            crate::link::create_link(
+                &mut ctx,
+                directory,
+                &mut blocks,
+                name.as_bytes(),
+                inode,
+            )
+            .map_err(|error| error.to_errno())?;
+        }
+        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        Ok(())
+    }
+
+    fn unlink(&mut self, directory: u64, name: &str) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
+        let outcome = {
+            let parts = fs.parts();
+            let mut ctx = LinkCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+                block_size: parts.block_size,
+            };
+            crate::link::remove_file(&mut ctx, directory, &mut blocks, name.as_bytes())
+                .map_err(|error| error.to_errno())?
+        };
+        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        Self::reclaim_zones(fs, &outcome.reclaimed);
+        Ok(())
+    }
+
+    fn remove_dir(&mut self, directory: u64, name: &str) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
+        // Locate the child in the parent images so its own images load for
+        // the emptiness walk (`remove_dir` reads the child before deleting).
+        let mut found = 0u32;
+        {
+            let parts = fs.parts();
+            let dir_slot = parts
+                .inodes
+                .get(parts.cache, parts.device, directory, &parts.io)
+                .map_err(|_| Errno::from_i32(ENOENT))?;
+            let (mode, nlinks, size) = {
+                let dir = parts.inodes.slot(dir_slot);
+                (dir.mode, dir.nlinks, dir.size as u64)
+            };
+            crate::dir::lookup_name(
+                mode,
+                nlinks,
+                &mut blocks,
+                parts.block_size,
+                size,
+                name.as_bytes(),
+                &mut found,
+            )
+            .map_err(|error| error.to_errno())?;
+            let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
+        }
+        let (_, _, mut child_blocks) = {
+            let parts = fs.parts();
+            let child_slot = parts
+                .inodes
+                .get(parts.cache, parts.device, found as u64, &parts.io)
+                .map_err(|_| Errno::from_i32(ENOENT))?;
+            let (zones, size) = {
+                let child = parts.inodes.slot(child_slot);
+                (child.zones, child.size as u64)
+            };
+            let images = load_dir_blocks(
+                parts.cache,
+                parts.device,
+                &zones,
+                parts.map,
+                parts.range,
+                size,
+                parts.block_size,
+            )?;
+            let _ = parts.inodes.put(parts.cache, child_slot, &parts.io);
+            (zones, size, images)
+        };
+        let outcome = {
+            let parts = fs.parts();
+            let mut ctx = LinkCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+                block_size: parts.block_size,
+            };
+            crate::link::remove_directory(
+                &mut ctx,
+                directory,
+                &mut blocks,
+                name.as_bytes(),
+                &mut child_blocks,
+            )
+            .map_err(|error| error.to_errno())?
+        };
+        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        Self::reclaim_zones(fs, &outcome.reclaimed);
+        Ok(())
+    }
+
+    fn symbolic_link(
+        &mut self,
+        directory: u64,
+        name: &str,
+        owner: u32,
+        group: u32,
+        target: &[u8],
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
+        {
+            let parts = fs.parts();
+            let mut ctx = CreateCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                superblock: parts.superblock,
+                bitmap: parts.imap,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+            };
+            crate::open::create_symlink(
+                &mut ctx,
+                directory,
+                &mut blocks,
+                name.as_bytes(),
+                owner as u16,
+                group as u16,
+                target,
+            )
+            .map_err(|error| error.to_errno())?;
+        }
+        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        Ok(())
+    }
+
+    fn read_link(
+        &mut self,
+        inode: u64,
+        capacity: usize,
+        out: &mut dyn FnMut(&[u8]),
+    ) -> Result<usize, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        let mut ctx = LinkCtx {
+            table: parts.inodes,
+            cache: parts.cache,
+            device: parts.device,
+            io: parts.io,
+            read_only: parts.read_only,
+            block_size: parts.block_size,
+        };
+        crate::link::read_link(&mut ctx, inode, capacity, out).map_err(|error| error.to_errno())
+    }
+
+    fn change_owner(&mut self, inode: u64, owner: u32, group: u32) -> Result<u32, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        crate::meta::change_owner(
+            parts.inodes,
+            parts.cache,
+            &parts.io,
+            parts.device,
+            inode,
+            owner as u16,
+            group as u16,
+        )
+        .map(|mode| mode as u32)
+        .map_err(|error| error.to_errno())
+    }
+
+    fn change_mode(&mut self, inode: u64, mode: u32) -> Result<u32, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        crate::meta::change_mode(
+            parts.inodes,
+            parts.cache,
+            &parts.io,
+            parts.device,
+            inode,
+            parts.read_only,
+            mode as u16,
+        )
+        .map(|mode| mode as u32)
+        .map_err(|error| error.to_errno())
+    }
+
+    fn update_times(
+        &mut self,
+        inode: u64,
+        accessed: (i64, i64),
+        modified: (i64, i64),
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        crate::meta::update_times(
+            parts.inodes,
+            parts.cache,
+            &parts.io,
+            parts.device,
+            inode,
+            crate::meta::TimeSpec {
+                seconds: accessed.0,
+                nanoseconds: accessed.1,
+            },
+            crate::meta::TimeSpec {
+                seconds: modified.0,
+                nanoseconds: modified.1,
+            },
+        )
+        .map_err(|error| error.to_errno())
+    }
+
+    fn stat_vfs(&mut self, out: &mut [u8]) -> Result<(), Errno> {
+        if out.len() < STATVFS_LAYOUT_SIZE {
+            return Err(Errno::from_i32(EINVAL));
+        }
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        let zone_free = crate::mount::count_free_bits(
+            parts.superblock,
+            parts.cache,
+            crate::superblock::MAP_ZONE,
+        )
+        .map_err(|error| error.to_errno())?;
+        let volume = crate::meta::read_volume_stat(
+            parts.cache,
+            parts.superblock,
+            parts.superblock.zones,
+            parts.superblock.zones.saturating_sub(zone_free),
+        )
+        .map_err(|error| error.to_errno())?;
+        out[0..8].copy_from_slice(&volume.blocks.to_le_bytes());
+        out[8..16].copy_from_slice(&volume.blocks_free.to_le_bytes());
+        out[16..24].copy_from_slice(&volume.blocks_available.to_le_bytes());
+        out[24..32].copy_from_slice(&volume.block_size.to_le_bytes());
+        out[32..40].copy_from_slice(&volume.fragment_size.to_le_bytes());
+        out[40..48].copy_from_slice(&volume.io_size.to_le_bytes());
+        out[48..56].copy_from_slice(&volume.files.to_le_bytes());
+        out[56..64].copy_from_slice(&volume.files_free.to_le_bytes());
+        out[64..72].copy_from_slice(&volume.files_available.to_le_bytes());
+        out[72..80].copy_from_slice(&volume.name_max.to_le_bytes());
+        Ok(())
+    }
+
+    fn block_read(
+        &mut self,
+        device: u64,
+        position: i64,
+        length: usize,
+        out: &mut dyn FnMut(&[u8]),
+    ) -> Result<usize, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        let mut staging = alloc::vec![0u8; length];
+        {
+            let mut backend = MemoryBackend {
+                storage: &mut staging,
+                fail_with: None,
+            };
+            let mut channel = DataChannel::Present {
+                backend: &mut backend,
+                size: length,
+            };
+            let mut info = SuperblockBytes {
+                bytes: parts.superblock.zones * parts.block_size as u64,
+            };
+            bio_transfer(
+                parts.cache,
+                &mut info,
+                device,
+                position,
+                length,
+                TransferDirection::Read,
+                &mut channel,
+            )
+            .map_err(|_| Errno::from_i32(EIO))?;
+        }
+        let moved = staging.len();
+        out(&staging);
+        let _ = moved;
+        Ok(staging.len())
+    }
+
+    fn block_write(&mut self, device: u64, position: i64, data: &[u8]) -> Result<usize, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        let mut staging = data.to_vec();
+        {
+            let mut backend = MemoryBackend {
+                storage: &mut staging,
+                fail_with: None,
+            };
+            let mut channel = DataChannel::Present {
+                backend: &mut backend,
+                size: data.len(),
+            };
+            let mut info = SuperblockBytes {
+                bytes: parts.superblock.zones * parts.block_size as u64,
+            };
+            bio_transfer(
+                parts.cache,
+                &mut info,
+                device,
+                position,
+                data.len(),
+                TransferDirection::Write,
+                &mut channel,
+            )
+            .map_err(|_| Errno::from_i32(EIO))?;
+        }
+        Ok(data.len())
+    }
+
     fn stat(&mut self, inode: u64, out: &mut [u8]) -> Result<(), Errno> {
         if out.len() < STAT_LAYOUT_SIZE {
             return Err(Errno::from_i32(EINVAL));
@@ -727,9 +1218,10 @@ mod tests {
                 [SUPER_BLOCK_OFFSET..SUPER_BLOCK_OFFSET + bytes.len()]
                 .copy_from_slice(&bytes);
         }
-        // Bitmaps: inode bit one and zone bit one (the root's zone).
-        disk.block_mut(2).expect("imap block")[0] |= 1 << 1;
-        disk.block_mut(3).expect("zmap block")[0] |= 1 << 1;
+        // Bitmaps: bit zero is the reserved bit (always set on a
+        // well-formed image), bit one is the root's inode and zone.
+        disk.block_mut(2).expect("imap block")[0] |= 0b11;
+        disk.block_mut(3).expect("zmap block")[0] |= 0b11;
         // Root inode record.
         {
             let bytes = root_record().to_bytes();
@@ -851,6 +1343,113 @@ mod tests {
         assert!(server.put_node(1, 5).is_err());
         let (node, _) = server.lookup_child(1, ".").unwrap();
         assert_eq!(node.inode_number, 1);
+    }
+
+    #[test]
+    fn test_namespace_family_link_unlink_symlink_mkdir_rmdir_mknod() {
+        let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server.create(1, "a", 0o100644, 0, 0).unwrap();
+        // Hard link: both names reach the same inode, the link count rises.
+        server.link(1, "b", 2).unwrap();
+        let (node, _) = server.lookup_child(1, "b").unwrap();
+        assert_eq!(node.inode_number, 2);
+        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        server.stat(2, &mut stat).unwrap();
+        assert_eq!(stat[2..4], 2u16.to_le_bytes());
+        // Unlink one name: the other still reaches the file.
+        server.unlink(1, "a").unwrap();
+        assert!(server.lookup_child(1, "a").is_err());
+        let (node, _) = server.lookup_child(1, "b").unwrap();
+        assert_eq!(node.inode_number, 2);
+        // Symbolic link round trip.
+        server.symbolic_link(1, "s", 0, 0, b"b").unwrap();
+        let (link_node, _) = server.lookup_child(1, "s").unwrap();
+        let mut target = Vec::new();
+        let got = server
+            .read_link(link_node.inode_number, 32, &mut |bytes: &[u8]| {
+                target.extend_from_slice(bytes)
+            })
+            .unwrap();
+        assert_eq!(got, 1);
+        assert_eq!(target, b"b".to_vec());
+        // Directory create, enumerate the dots, then remove.
+        server.make_dir(1, "d", 0o040755, 0, 0).unwrap();
+        let (dir_node, _) = server.lookup_child(1, "d").unwrap();
+        let mut listed = Vec::new();
+        let mut position = 0i64;
+        server
+            .get_dents(dir_node.inode_number, &mut position, 1024, &mut |bytes: &[u8]| {
+                listed.extend_from_slice(bytes)
+            })
+            .unwrap();
+        // The child lists the two dot names: three dot bytes across the
+        // packed entries ("." once, ".." twice).
+        assert!(listed.iter().filter(|&&byte| byte == b'.').count() >= 3);
+        server.remove_dir(1, "d").unwrap();
+        assert!(server.lookup_child(1, "d").is_err());
+        // Device node carries the device number in its status.
+        server.make_node(1, "c", 0o020600, 0, 0, 0x301).unwrap();
+        let (node, _) = server.lookup_child(1, "c").unwrap();
+        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        server.stat(node.inode_number, &mut stat).unwrap();
+        assert_eq!(stat[8..16], 0x301u64.to_le_bytes());
+    }
+
+    #[test]
+    fn test_statvfs_meta_and_reclaim_visibility() {
+        let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        let mut scratch = [0u8; 96];
+        server.stat_vfs(&mut scratch).unwrap();
+        let free_before = u64::from_le_bytes(scratch[8..16].try_into().unwrap());
+        // A file with a data zone, synced so the usage is real.
+        server.create(1, "a", 0o100644, 0, 0).unwrap();
+        server.write(2, 0, b"abc").unwrap();
+        server.synchronized();
+        server.stat_vfs(&mut scratch).unwrap();
+        let free_after_alloc = u64::from_le_bytes(scratch[8..16].try_into().unwrap());
+        assert_eq!(free_after_alloc, free_before - 1);
+        // Permission bits and timestamps through the metadata family.
+        server.change_mode(2, 0o100600).unwrap();
+        server.change_owner(2, 5, 7).unwrap();
+        server.update_times(2, (10, 0), (20, 0)).unwrap();
+        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        server.stat(2, &mut stat).unwrap();
+        assert_eq!(stat[0..2], 0o100600u16.to_le_bytes());
+        assert_eq!(stat[4..6], 5u16.to_le_bytes());
+        assert_eq!(stat[6..8], 7u16.to_le_bytes());
+        assert_eq!(stat[24..32], 10i64.to_le_bytes());
+        assert_eq!(stat[32..40], 20i64.to_le_bytes());
+        // Unlinking the last name drops the link count to zero; the zones
+        // are freed when the virtual file system releases its reference —
+        // then the reclaim executor returns the space, visible after sync.
+        server.unlink(1, "a").unwrap();
+        server.put_node(2, 1).unwrap();
+        server.synchronized();
+        server.stat_vfs(&mut scratch).unwrap();
+        let free_after_reclaim = u64::from_le_bytes(scratch[8..16].try_into().unwrap());
+        assert_eq!(free_after_reclaim, free_before);
+    }
+
+    #[test]
+    fn test_block_read_raw_root_block() {
+        let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        // Raw transfer of the root directory block: the dot entry bytes
+        // come through untouched.
+        let mut seen = Vec::new();
+        let got = server
+            .block_read(DEVICE, 5 * BLOCK_SIZE as i64, BLOCK_SIZE, &mut |bytes: &[u8]| {
+                seen.extend_from_slice(bytes)
+            })
+            .unwrap();
+        assert_eq!(got, BLOCK_SIZE);
+        assert_eq!(&seen[..4], &1u32.to_le_bytes());
+        assert_eq!(&seen[4..5], b".");
     }
 
     #[test]
