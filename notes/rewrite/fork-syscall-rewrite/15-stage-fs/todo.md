@@ -13,7 +13,7 @@
 | V1-P0-2 | P0 | rmdir 链接计数与 C 行为不符：子目录 nlinks 终值 1、父目录未递减 | ✅ 2026-09-17 Fix #5（子目录饱和减二、父目录减一，测试断言落账） |
 | V1-P1-1 | P1 | `fs_rename` 整体缺失（link.c:255-422 的完整决策树无对应） | ✅ 2026-09-17 Fix #8（决策树全实现 + MfsServer 接线 + 账本 30/1） |
 | V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | ✅ 2026-09-17 Fix #3（表级 put_count + 装配接线 + 账本 29/2） |
-| V1-P1-3 | P1 | Peek 路径缺失：read.c:156-159 的 `FSC_PEEK` 分支无对应 | 开口项 |
+| V1-P1-3 | P1 | Peek 路径缺失：read.c:156-159 的 `FSC_PEEK` 分支无对应 | ✅ 2026-09-17 Fix #9（方案修正：C mfs 有 peek 入口，实现为读路径直通 + HAS_PEEK） |
 | V1-P1-4 | P1 | `ReclaimZones` 无执行者：unlink 最后一链后数据区实际不回收 | ✅ 2026-09-17 Fix #4（执行体挂 unlink/remove_dir/put_node 三出口，卷视图可观察验证） |
 | V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | ✅ 2026-09-16 Fix #1（先行落地：P0-1 装配的依赖） |
 | V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | ✅ 2026-09-17 Fix #6（归零 + 跨组件钉住测试 + 03 篇对齐说明更新） |
@@ -121,7 +121,8 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P1-2 `fs_putnode` 缺失。** C inode.c:38-64：引用计数按 `count-1` 批量递减、超量为 panic。Rust `put` 只减 1（inode.rs:437-478）；配套的 `duplicate`（inode.rs:365）在生产代码零调用。修复时与 V1-P0-1 的装配一起验收（putnode 只有经由分发才可测）。
 **✅ 2026-09-17 闭环（Fix #3）**：`InodeTable::put_count`（inode.rs——减 `count-1` 后交 `put` 消耗最后一个引用；未知号、零计数、超量计数按协议违反拒绝且计数不动，对应 C 的三处宕机换成报错）；`MfsServer::put_node` 接线 + 表级三测试（批量释放余一持有、超量拒绝计数不动、未知号拒绝）+ 装配层用例（释放后读回答无效、超量拒绝、根目录完好）。账本 PutNode 行随实现翻转（29/2）。07 篇 §4.3 与 09 篇 §4.2 同步。ReleaseOutcome::ReclaimZones 的执行者仍归 P1-4。
 
-**V1-P1-3 Peek 路径缺失。** C read.c:156-159 的 `FSC_PEEK` 缺块分支无对应；适配器默认以 read 仿真兜底（call.rs:297-305 引 call.c:294-306），所以 mfs 作为无 peek 能力服务器在协议层可工作，但 `CapabilityFlags::HAS_PEEK` 永不置位。方案 A：维持无 peek（与 C 的无 peek server 同型），登记声明即可；方案 B：实现 peek 并接入 VM 零拷贝（与 E-FSVMCACHE 绑定）。推荐 A 先行，B 随 VM 轨道。
+**V1-P1-3 Peek 路径缺失。** C read.c:156-159 的 `FSC_PEEK` 缺块分支无对应；适配器默认以 read 仿真兜底（call.rs:297-305 引 call.c:294-306），所以 mfs 作为无 peek 能力服务器在协议层可工作，但 `CapabilityFlags::HAS_PEEK` 永不置位。方案 A：维持无 peek（与 C 的无 peek server 同型），登记声明即可；方案 B：实现 peek 并接入 VM 零拷贝（与 E-FSVMCACHE 绑定）。
+**✅ 2026-09-17 闭环（Fix #9，方案修正）**：核查发现原方案 A 的前提不成立——C mfs **有** peek 入口（`table.c:20` `.fdr_peek = fs_readwrite`），挂载协商会点亮 HAS_PEEK。实现改为：`MfsServer::peek` 复用读路径暖缓存、丢弃字节、只报字节数（等价 C 的 FSC_PEEK 分支）；挂载能力注释同步修正（原「不加能力位」的注释与 C 不符）。Peek 行翻转为已通，账本 **31/0 全通**；14 篇 §1.4、07 篇 §4.3 同步。缺块时的 `lmfs_zero_block_ino` 通知仍归 E-FSVMCACHE（VM 轨道）。
 
 **V1-P1-4 `ReclaimZones` 无执行者。** C 在最后一个引用释放且 `i_nlinks==NO_LINK` 时同步 `truncate_inode(rip, 0)`（inode.c:220-231）真实释放全部数据区与间接块。Rust 只把非零 zone 号打包进 `ReleaseOutcome::ReclaimZones`（inode.rs:450-462，含 zones[7..9] 的间接块号但调用方无从区分类型），crate 内没有位图释放或缓存逐出的消费者（grep `reclaimed` 仅 link.rs:125-134 收集与测试断言）。效果：unlink 最后一链后 zone 实际泄漏。
 **✅ 2026-09-17 闭环（Fix #4）**：执行体 `MfsServer::reclaim_zones` 落地——逐非零区号经 `mfs_cache::free_zone` 清位图（含搜索位回拨）并 `free_block` 摘除缓存副本，挂三个出口：`unlink`、`remove_dir`、`put_node`（引用清零且链接数为无主时区表随释放结果携带，此时数据区与间接块的释放动作相同，无需按类型区分——区号→位号换算是唯一映射）。装配级测试以卷空闲区计数为观察口：创建并写入后空闲减一，unlink 加引用释放加同步后空闲复原。

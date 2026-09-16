@@ -303,10 +303,9 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         let source = self.source.take().ok_or_else(|| Errno::from_i32(EBUSY))?;
         match crate::mount::mount(source, device, flags, self.pool_buffers) {
             Ok((fs, node)) => {
-                // C wires no capability bits for MFS: the framework only
-                // ever adds the peek flag (`call.c:48-51`), which needs peek
-                // entry points or no backing device — this server has the
-                // device and not the entry points, so nothing is added.
+                // MFS declares a peek entry point in C (`table.c:20`
+                // `.fdr_peek = fs_readwrite`), so the framework's
+                // negotiation adds HAS_PEEK; nothing else is set.
                 *capabilities = CapabilityFlags::EMPTY;
                 self.fs = Some(fs);
                 Ok(node)
@@ -410,6 +409,17 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             data,
         )
         .map_err(|error| error.to_errno())
+    }
+
+    fn peek(&mut self, inode: u64, position: i64, length: usize) -> Result<usize, Errno> {
+        // C 的 peek 入口就是读写路径本身（`table.c:20`
+        // `.fdr_peek = fs_readwrite`）：FSC_PEEK 分支按普通读走块、暖
+        // 缓存，只是不向调用方拷贝数据（`read.c:156-159`）。这里的实现
+        // 同理：读一遍、字节丢弃，返回字节数（不报新位置）。
+        let mut sink = |bytes: &[u8]| {
+            let _ = bytes;
+        };
+        self.read(inode, position, length, &mut sink)
     }
 
     fn get_dents(
@@ -1505,6 +1515,18 @@ mod tests {
         assert_eq!(got, BLOCK_SIZE);
         assert_eq!(&seen[..4], &1u32.to_le_bytes());
         assert_eq!(&seen[4..5], b".");
+    }
+
+    #[test]
+    fn test_peek_warms_cache_without_advancing() {
+        let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server.create(1, "a", 0o100644, 0, 0).unwrap();
+        server.write(2, 0, b"xyz").unwrap();
+        // Peek 只报字节数：读路径暖缓存，不做拷贝，也没有新位置。
+        let got = server.peek(2, 0, 16).unwrap();
+        assert_eq!(got, 3);
     }
 
     #[test]

@@ -78,7 +78,7 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_readwrite",
         request: RequestNumber::Peek,
         owner: "14-mfs-read.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_getdents",
@@ -272,8 +272,8 @@ mod tests {
     #[test]
     fn test_table_has_thirty_one_rows_like_c() {
         assert_eq!(MFS_TABLE.len(), 31);
-        assert_eq!(live_entries().count(), 30);
-        assert_eq!(pending_entries().count(), 1);
+        assert_eq!(live_entries().count(), 31);
+        assert_eq!(pending_entries().count(), 0);
     }
 
     #[test]
