@@ -157,6 +157,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **✅ 2026-09-17 闭环（Fix #16）**：`list_dir_entries` 签名增 `io` 并改走 `InodeTable::get`——冷目录从盘装载、非目录拒绝（read.c:474 同法）；每个表项目标经打开-释放对取真实模式推导类型，装载失败降级未知而非中断。冷目录行为有测试锁定（放回引用后枚举成功），mfs 一百二十三测试全绿；14 篇 §4.3 同步。
 
 **V1-P2-4 预读策略差异。** C rahead：EOF 截断（read.c:393-394）、临近一阶间接块加窗（read.c:397-402）、映射失败退化顺序号穿洞续排（read.c:426-432）；Rust readahead_file：固定 32 次、遇第一个洞即停、无 EOF 截断与间接加窗（read.rs:278-308）。顺序大文件近似、稀疏与边界文件预读量不同。方案 A：逐条对齐 C 四点；方案 B：保留现状并在文档 14 增补偏离声明（read.rs:11-14 已声明部分取舍）。推荐 A（预读是纯内部优化，对齐 C 无成本争议）。
+**✅ 2026-09-17 闭环（Fix #17，方案 A 落地）**：`readahead_file` 签名改为收位置与本次剩余字节数，窗口计算与 C 逐条对齐——剩余块数起窗、临近一阶间接块窗口与块数加一、不足三十二补足、按文件末尾截断、按块层上限截断；洞不再中断排队，顺序猜测继续。既有有界性测试全绿，14 篇 §4.2 同步。
 
 **V1-P2-5 stat/statvfs 的无类型字节布局契约。** `FsDriver::stat(&mut self, inode: u64, out: &mut [u8])`（driver.rs:277-280）与 stat_vfs（driver.rs:310-313）把布局决定权完全交给调用方，每个 server 自定义字节序与字段序（memfs.rs:33-37 自定义 20 字节布局即是例证）。对照 Redox：redox-scheme 用 typed `Stat` 结构；对照 C：Minix3 用共享 `struct stat` safecopy。方案 A：minix-types 定义 `Stat`/`StatVfs` typed 结构（字段与 C 布局一一对应）+ `to_bytes`，trait 签名改 `out: &mut Stat`；方案 B：维持字节切片。推荐 A：字段错位从「联调期 wire 事故」提前到「编译期」，且不改 wire 行为。[ARCH] 判定：内部类型强化（Refactor 级），无需三处标注。
 **✅ 2026-09-17 闭环（Fix #12）**：minix-types 权威落地 `Stat`（八十八字节：模式、链接数、属主、属组各二，设备、节点号、特殊设备号、大小、三个时间、块尺寸、块数各八）与 `StatVfs`（八字节十字段八十字节），带 `zeroed()` 与 `write_to`（缓冲不足报无效参数）；`FsDriver::stat/stat_vfs`、两个适配器、任务循环、memfs/pfs/mfs 三个服务器全部收敛到 typed 签名，memfs 的二十字节与 pfs/mfs 的各自布局两套私有字节序消灭；`FsTransport::scratch` 与 `STATUS_SCRATCH_SIZE` 随之移除（typed 结构无需暂存缓冲）。minix-fs 九十八、pfs 十二、mfs 一百二十一测试全绿。

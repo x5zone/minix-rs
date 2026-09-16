@@ -209,8 +209,9 @@ pub fn read_file<S: BlockSource>(
         let mapped = map_position(table, cache, device, slot, &params, file_block)?;
         if let Some(device_block) = mapped {
             if first_block {
-                // Warm what follows (see below); only once per call.
-                readahead_file(table, cache, device, slot, &params, file_block);
+                // Warm what follows (see below); only once per call, with
+                // this transfer's position and remainder like the C call.
+                readahead_file(table, cache, device, slot, &params, position, remaining);
                 first_block = false;
             }
             let cache_slot = cache
@@ -270,40 +271,71 @@ fn map_position<S: BlockSource>(
 
 /// Warm the blocks following a read (`rahead` policy, `read.c:330-448`).
 ///
-/// Maps up to the prefetch minimum ahead (skipped after a seek, like the C
-/// code) and warms the mapped device blocks through the block layer.
-/// Holes (unmapped) stop the run: only contiguous mapped runs warm, because
-/// sparse regions need no cache. Returns warmed blocks; failures are silent
-/// because demand reads follow.
+/// `position` is the offset the current transfer starts at and `bytes_left`
+/// the bytes of this transfer still to go, exactly as the C caller passes
+/// them. The window starts at this transfer's remaining block count, gains
+/// one when the first indirect block falls into the neighbourhood
+/// (`read.c:397-402`), rises to the prefetch minimum unless the seek flag
+/// says otherwise (`read.c:405-406`), then clamps to the file end
+/// (`read.c:409`) and to the block layer's transfer ceiling
+/// (`read.c:412`). Holes map to the sequential device block — the same
+/// fallback the C queue uses (`read.c:426-432`) — so the run continues
+/// across sparse regions instead of stopping.
 fn readahead_file<S: BlockSource>(
     table: &InodeTable,
     cache: &mut BlockCache<S, NoSecondLevel>,
     device: u64,
     slot: usize,
     params: &FileParams,
-    file_block: u64,
+    position: u64,
+    bytes_left: usize,
 ) -> usize {
     if table.slot(slot).seek {
         return 0;
     }
-    // Copy the zones out first: mapping borrows the cache mutably per
-    // call, so numbers cross the boundary by value.
     let zones = table.slot(slot).zones;
-    let map_params = params.map;
-    let range = params.range;
-    let mut run = Vec::new();
-    let mut block = file_block + 1;
-    for _ in 0..PREFETCH_MINIMUM {
-        // NOTE: mapping reads indirect blocks through the cache; each call
-        // is self-contained, so sequential calls stay borrow-clean.
-        match map_one(cache, device, &zones, map_params, range, block) {
-            Ok(Some(device_block)) => run.push(device_block),
-            _ => break,
-        }
-        block += 1;
+    let size = table.slot(slot).size as u64;
+    let block_size = params.block_size as u64;
+    let mut blocks_ahead = (bytes_left as u64).div_ceil(block_size);
+    let mut blocks_left = size.saturating_sub(position).div_ceil(block_size);
+    // 临近一阶间接块：窗口与块总数同时加一（link.c:397-402 同式，
+    // `read.c:397-402`）。
+    let indirect1_position = (params.map.direct_zones as u64).saturating_mul(block_size);
+    if position <= indirect1_position && size > indirect1_position {
+        blocks_ahead += 1;
+        blocks_left += 1;
     }
-    let warmed = run.len().min(cache.readahead_limit());
-    minix_fs::bio::prefetch_blocks(cache, device, &run[..warmed]);
+    if blocks_ahead < PREFETCH_MINIMUM as u64 {
+        blocks_ahead = PREFETCH_MINIMUM as u64;
+    }
+    blocks_ahead = blocks_ahead.min(blocks_left).min(minix_fs::cache::MAX_PREFETCH as u64);
+    if blocks_ahead == 0 {
+        return 0;
+    }
+    // 收集窗口内的设备块号：映射命中用映射值，洞用顺序猜测继续排队
+    // （`read.c:426-432` 的回退），不再中途停下。
+    let mut queue = Vec::new();
+    let mut position_running = position;
+    let mut previous = 0u64;
+    for _ in 0..blocks_ahead {
+        let file_block = position_running / block_size;
+        match map_one(cache, device, &zones, params.map, params.range, file_block) {
+            Ok(Some(device_block)) => {
+                queue.push(device_block);
+                previous = device_block;
+            }
+            // 洞：顺序猜测继续（上一个设备块加一；无前值则停在块首之后）。
+            _ => {
+                if previous != 0 {
+                    queue.push(previous + 1);
+                    previous += 1;
+                }
+            }
+        }
+        position_running += block_size;
+    }
+    let warmed = queue.len().min(cache.readahead_limit());
+    minix_fs::bio::prefetch_blocks(cache, device, &queue[..warmed]);
     warmed
 }
 
@@ -915,6 +947,12 @@ mod tests {
         zones[0] = 40;
         let dir = open_file(&mut fixture, zones, 192, TYPE_DIRECTORY as u16);
         let dir_number = fixture.table.slot(dir).number;
+        let io = InodeIo {
+            inode_base_block: 4,
+            inodes_per_block: 8,
+            indirect_per_block: 128,
+            read_only: false,
+        };
         // 冷目录：先放回引用，枚举时从盘重新装载（与 C get_inode 一致）。
         {
             let slot = fixture.table.find(DEVICE, dir_number).unwrap();
