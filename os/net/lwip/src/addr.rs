@@ -38,6 +38,8 @@ pub struct PolicyRow {
     pub prefix_len: u8,
     /// Priority of this row (kept for documentation; the current service
     /// uses labels for source selection and does not sort by priority).
+    /// The column itself is real: rule table row `Preference` in RFC 6724
+    /// §2.1 — kept so the struct mirrors the table it transcribes.
     pub priority: u8,
     /// Label returned when this row matches first.
     pub label: u8,

@@ -8,8 +8,8 @@
 //! `netdriver_stat_*`) in `minix3/minix/lib/libnetdriver/netdriver.c`.
 
 use super::protocol::{
-    HardwareAddress, LinkState, MULTICAST_LIST_MAX, NDEV_LINK_UP, NDEV_MODE_DOWN, NdevRequest,
-    NetStats, RECV_QUEUE_BOUND, SEND_QUEUE_BOUND, StatKind, is_net_request,
+    HardwareAddress, LinkState, MULTICAST_LIST_MAX, NdevRequest, NetStats, RECV_QUEUE_BOUND,
+    SEND_QUEUE_BOUND, StatKind,
 };
 use minix_types::{EINTR, EINVAL, OK};
 
@@ -397,9 +397,9 @@ pub fn classify(
     let Some(request) = NdevRequest::decode(message_type) else {
         return Ok(Route::Other);
     };
-    if !is_net_request(message_type) {
-        return Ok(Route::Other);
-    }
+    // `decode` already bounds the type to the request range (base plus
+    // zero through five), so the `IS_NDEV_RQ` mask check is implied here —
+    // one guard is enough (N1-P2-2, 2026-09-17).
     if server.expects_init() && request != NdevRequest::Init {
         return Err(EINVAL);
     }
@@ -413,21 +413,6 @@ pub fn classify(
 /// configuration path).
 pub const fn multicast_fallback(offered: usize) -> bool {
     offered > MULTICAST_LIST_MAX
-}
-
-/// Success marker for the announce path.
-pub const fn announce_ok() -> i32 {
-    OK
-}
-
-/// Mode value meaning "interface down".
-pub const fn mode_down() -> u32 {
-    NDEV_MODE_DOWN
-}
-
-/// Link value meaning "up".
-pub const fn link_up() -> u32 {
-    NDEV_LINK_UP
 }
 
 #[cfg(test)]

@@ -129,11 +129,12 @@
 **验证**：`cargo test -p minix-net-lwip --lib` = 97 passed（测试名与断言值不变——行为无差异的直接证据）；clippy 0 警告。
 **文档同步**：09/10 篇矩阵行注明"算术经 ipsock 共享实现（2026-09-17 收敛）"。
 
-### N1-P2-2 driver.rs 死代码批（删/接线/标注三分）
+### ✅ N1-P2-2 driver.rs 死代码批——已处置 2026-09-17
 
-- **死分支**：`classify` 中 `NdevRequest::decode` 成功后 `is_net_request` 恒真（decode 只在 base+0..=5 上 Some，均通过 mask 检查；driver.rs:395-400）→ 删 :398-400 两行或删 decode 改手写，二选一。
-- **死包装**：`announce_ok`/`mode_down`/`link_up` 常函数纯转发常量、生产零调用（driver.rs:416-429）→ 删（为何死：仅为命名阅读性；消除影响：无，常量本身已有语义名）。
-- **文档型字段/函数判定**：`PolicyRow.priority` 自述"kept for documentation"（addr.rs:39-41）；`creation_requires_root` 恒真（rawsock.rs:44-49，有显式辩护注释）。二者属"审计型存活"，判定：保留但把辩护注释升级为指向 C 锚点的单一来源，或删除由测试承载（OQ 留给执行轮，不擅删）。
+- **死分支已删**：`classify` 的 `is_net_request` 二次检查（decode 已保证范围，恒真）删除，留注释说明单一守卫的理由；随删 `is_net_request` 与 `NDEV_LINK_UP`/`NDEV_MODE_DOWN` 的未用 import。
+- **死包装已删**：`announce_ok`/`mode_down`/`link_up`（全仓零引用，纯常量转发）。
+- **两个 OQ 判定（保留 + 锚点升级）**：`PolicyRow.priority` 补 RFC 6724 §2.1 规则表 `Preference` 列锚点——该列是 RFC 表格的真实组成部分，结构体照表转录，删除反而丢结构；`creation_requires_root` 恒真但注释已含 C 锚点（lwip.c:169-170）且有测试锁定，保留为命名的安全不变量。
+**验证**：`cargo test -p minix-netdriver --lib` = 50 passed；clippy 0 警告。
 
 ### N1-P2-3 legacy_fallback_applies 审计型死代码处置
 
