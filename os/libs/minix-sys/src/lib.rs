@@ -15,6 +15,23 @@
 //! environment no kernel answers, so they return explicit errors instead of
 //! faulting. Test code that needs scripted replies uses [`ipc::CannedTransport`]
 //! with [`syscall::perform_syscall`] directly.
+//!
+//! # Module ownership (E-MINSYS-SCOPE plan A)
+//!
+//! This crate is 14-stage-runtime's implementation crate; the domain-external
+//! client modules below belong to other stages and are feature-gated (all
+//! default-on, so existing dependents compile unchanged). When another stage
+//! evolves its client protocol, its feature boundary contains the breakage.
+//!
+//! | Module           | Feature   | Owning stage doc                          | Related edge entry |
+//! |------------------|-----------|--------------------------------------------|--------------------|
+//! | `ipc` `syscall` `pm` `vfs` `vm` `misc` `stack` `arch_trap` `rs` `grant` | (core, always on) | 14-stage-runtime (docs 04-05, 08-12) | — |
+//! | `ds`             | `ds`      | 07-stage-ds (libsys ds.c)                  | E-DSWIRE           |
+//! | `rmib`           | `rmib`    | 10-stage-mib (22-mib-rmib-client.md)       | E-RMIBWIRE         |
+//! | `devman_client`  | `devman`  | 11-stage-devman (10-libdevman-client.md)   | E-DMWIRE           |
+//! | `usb_model`      | `usb`     | 11-stage-devman (11-usb-device-model.md)   | E-DMWIRE           |
+//! | `inputdriver`    | `input`   | 12-stage-input (12-libinputdriver.md)      | E-INWIRE           |
+//! | `socket`         | `socket`  | 17-stage-net (23-libc-socket.md)           | — (policy only)    |
 
 #![no_std]
 
@@ -48,27 +65,33 @@ pub mod rs;
 /// User-space socket call policy: call list, flag handling, fallback rule
 /// (17-stage-net/23-libc-socket.md). Traps stay with the callers; the legacy
 /// device fallback is documented but never taken ([ARCH] N-2).
+#[cfg(feature = "socket")]
 pub mod socket;
 /// User-space grant table (C libsys safecopies.c) — the transport half for
 /// every granting client (E-DSWIRE: DS first; devman/RS/VM clients follow).
 pub mod grant;
 /// Data Store client (C libsys ds.c, E-DSWIRE transport half).
+#[cfg(feature = "ds")]
 pub mod ds;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).
+#[cfg(feature = "devman")]
 pub mod devman_client;
 /// Input-driver client library: driver-side announce, event filing, and
 /// server-message handling (12-stage-input/12-libinputdriver.md).
 /// Transport (label lookup, publish, blocking send) stays out until the
 /// IPC transport lands — same boundary as `devman_client`.
+#[cfg(feature = "input")]
 pub mod inputdriver;
 /// Remote MIB client: pure bookkeeping for mounted subtrees
 /// (10-stage-mib/22-mib-rmib-client.md). Message sending and grant
 /// handling stay out until the IPC transport lands.
+#[cfg(feature = "rmib")]
 pub mod rmib;
 /// USB device modeling over the devman client
 /// (11-stage-devman/11-usb-device-model.md).
+#[cfg(feature = "usb")]
 pub mod usb_model;
 
 /// File descriptor.

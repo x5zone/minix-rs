@@ -11,6 +11,17 @@ path = "src/lib.rs"
 
 [features]
 real-trap = []
+# Domain-external client modules (E-MINSYS-SCOPE plan A): each feature gates
+# one other stage's client library so its protocol evolution cannot leak
+# compile-time breakage into the 60+ dependents of this crate. Default keeps
+# every module compiled (existing Cargo.toml files need no changes).
+ds = []
+rmib = []
+devman = []
+input = []
+usb = ["devman"]
+socket = []
+default = ["ds", "rmib", "devman", "input", "usb", "socket"]
 
 [dependencies]
 minix-types = { workspace = true }

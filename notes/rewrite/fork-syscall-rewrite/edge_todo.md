@@ -855,3 +855,5 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：E-MINSYS-HYGIENE（同 crate 卫生轮，同场处置）；E-RMIBWIRE/E-DMWIRE/E-DSWIRE 执行时顺带评估各自模块的 feature 归置。
 **解锁**：14-stage 域内/域外 review 边界长期化；各 stage 客户端协议演进时的明确落点与编译面收敛。
+
+> **进度（2026-09-16，✅ 方案 A 落地，feature 门控 + 模块归属表）**：执行前复核——六个域外模块（ds 303/rmib 1287/devman_client 423/inputdriver 512/usb_model 437/socket 146 行）**全仓零外部消费者**（grep 60+ 依赖方仅命中核心模块 ipc/syscall），唯一 crate 内依赖 usb_model→devman_client（super::devman_client 四处）。实施：Cargo.toml 六 feature（`ds`/`rmib`/`devman`/`input`/`usb=["devman"]`/`socket`，default 全开保持既有 Cargo.toml 零改动），lib.rs 逐模块 `#[cfg]` 门控 + 模块归属表（模块→feature→所属 stage 文档→关联 edge 条目）写入 crate 文档头。**验证矩阵**：default（192 测试全绿）/ `--no-default-features`（仅核心编译 ✓）/ `--features usb`（依赖传递拉入 devman ✓）/ `--features ds,rmib,devman,input,socket` 组合 ✓；依赖方抽查 minix-sched/minix-ds/minix-mib/minix-sef 零错误。方案 B（per-stage crate 拆分）维持否决状态，待方案 A 运行观察。
