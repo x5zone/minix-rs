@@ -8,8 +8,8 @@
 //! `netdriver_stat_*`) in `minix3/minix/lib/libnetdriver/netdriver.c`.
 
 use super::protocol::{
-    HardwareAddress, MULTICAST_LIST_MAX, NDEV_LINK_UNKNOWN, NDEV_LINK_UP, NDEV_MODE_DOWN,
-    NdevRequest, NetStats, RECV_QUEUE_BOUND, SEND_QUEUE_BOUND, StatKind, is_net_request,
+    HardwareAddress, LinkState, MULTICAST_LIST_MAX, NDEV_LINK_UP, NDEV_MODE_DOWN, NdevRequest,
+    NetStats, RECV_QUEUE_BOUND, SEND_QUEUE_BOUND, StatKind, is_net_request,
 };
 use minix_types::{EINTR, EINVAL, OK};
 
@@ -53,11 +53,13 @@ pub struct InitReport {
 /// Link report produced by the link callback.
 ///
 /// C: `ndr_get_link` returns the link state and media (`netdriver.c` link
-/// helpers); unknown means "assume up".
+/// helpers). Three states exist (`com.h:1143-1145`); "unknown" means the
+/// stack assumes the link is up, which is why a card that cannot report
+/// link state reads as unknown rather than down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkReport {
-    /// One of `NDEV_LINK_UNKNOWN` and `NDEV_LINK_UP`.
-    pub link: u32,
+    /// One of the three [`LinkState`] values.
+    pub link: LinkState,
     /// Media type identifier (board-specific).
     pub media: u32,
 }
@@ -143,7 +145,7 @@ pub trait NetDriver {
     /// Report link state and media (`ndr_get_link`).
     fn link(&mut self) -> LinkReport {
         LinkReport {
-            link: NDEV_LINK_UNKNOWN,
+            link: LinkState::Unknown,
             media: 0,
         }
     }
@@ -249,7 +251,7 @@ pub struct NetServer {
     recv_queue: RecvQueue,
     stats: NetStats,
     stats_pending: bool,
-    link: u32,
+    link: LinkState,
     media: u32,
 }
 
@@ -267,7 +269,7 @@ impl NetServer {
             recv_queue: RecvQueue::new(),
             stats: NetStats::default(),
             stats_pending: false,
-            link: NDEV_LINK_UNKNOWN,
+            link: LinkState::Unknown,
             media: 0,
         }
     }
@@ -348,7 +350,7 @@ impl NetServer {
     }
 
     /// Current link state.
-    pub fn link(&self) -> u32 {
+    pub const fn link(&self) -> LinkState {
         self.link
     }
 
@@ -460,7 +462,7 @@ mod tests {
 
         fn link(&mut self) -> LinkReport {
             LinkReport {
-                link: NDEV_LINK_UP,
+                link: LinkState::Up,
                 media: 1,
             }
         }
@@ -494,7 +496,7 @@ mod tests {
         assert_eq!(card.sent, 60);
         assert_eq!(card.receive(1500), 64);
         let link = card.link();
-        assert_eq!(link.link, NDEV_LINK_UP);
+        assert_eq!(link.link, LinkState::Up);
         card.interrupt(0b100);
         assert_eq!(card.interrupts, 0b100);
     }
@@ -566,6 +568,19 @@ mod tests {
     }
 
     #[test]
+    fn test_link_states_match_c_values_and_wire_round_trip() {
+        use super::super::protocol::{NDEV_LINK_DOWN, NDEV_LINK_UNKNOWN, NDEV_LINK_UP};
+        // com.h:1143-1145 pins exactly three values; the wire numbers are
+        // part of the NDEV contract with the protocol stack.
+        assert_eq!(LinkState::Unknown.wire(), NDEV_LINK_UNKNOWN);
+        assert_eq!(LinkState::Unknown.wire(), 0);
+        assert_eq!(LinkState::Up.wire(), NDEV_LINK_UP);
+        assert_eq!(LinkState::Up.wire(), 1);
+        assert_eq!(LinkState::Down.wire(), NDEV_LINK_DOWN);
+        assert_eq!(LinkState::Down.wire(), 2);
+    }
+
+    #[test]
     fn test_server_lifecycle_and_link_tracking() {
         let mut server = NetServer::new();
         server.mark_running();
@@ -573,10 +588,17 @@ mod tests {
         server.set_up(true);
         assert!(server.is_up());
         server.note_link(LinkReport {
-            link: NDEV_LINK_UP,
+            link: LinkState::Up,
             media: 7,
         });
-        assert_eq!(server.link(), NDEV_LINK_UP);
+        assert_eq!(server.link(), LinkState::Up);
+        // A down report must survive the round trip: the one state the old
+        // raw-integer shape could not express without inventing it.
+        server.note_link(LinkReport {
+            link: LinkState::Down,
+            media: 7,
+        });
+        assert_eq!(server.link(), LinkState::Down);
         server.terminate();
         assert_eq!(server.note_receive(Err(EINTR)), LoopAction::Stop);
         let mut address = HardwareAddress::zero(6);

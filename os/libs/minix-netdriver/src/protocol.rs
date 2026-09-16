@@ -101,6 +101,37 @@ pub const NDEV_LINK_UNKNOWN: u32 = 0;
 ///
 /// C: `NDEV_LINK_UP 1` (`com.h:1144`).
 pub const NDEV_LINK_UP: u32 = 1;
+/// Link state: link is down.
+///
+/// C: `NDEV_LINK_DOWN 2` (`com.h:1145`).
+pub const NDEV_LINK_DOWN: u32 = 2;
+
+/// Link state as a type: the three values a link report may carry.
+///
+/// C: `com.h:1142-1146` defines exactly three link values and drivers store
+/// them in plain ints, where any other number compiles fine. The enum makes
+/// a fabricated fourth state unrepresentable while [`LinkState::wire`]
+/// keeps the on-the-wire values pinned to the C constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    /// Link status is unknown; the stack assumes up (`NDEV_LINK_UNKNOWN`).
+    Unknown,
+    /// Link is up (`NDEV_LINK_UP`).
+    Up,
+    /// Link is down (`NDEV_LINK_DOWN`).
+    Down,
+}
+
+impl LinkState {
+    /// The wire value carried in initialization and status replies.
+    pub const fn wire(self) -> u32 {
+        match self {
+            LinkState::Unknown => NDEV_LINK_UNKNOWN,
+            LinkState::Up => NDEV_LINK_UP,
+            LinkState::Down => NDEV_LINK_DOWN,
+        }
+    }
+}
 
 /// Network request kind, one variant per request number.
 ///
