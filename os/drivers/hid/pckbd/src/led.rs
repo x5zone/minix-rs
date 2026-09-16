@@ -59,6 +59,12 @@ pub const fn translate_leds(mask: u32) -> u8 {
 /// C: `KB_ACK 0xFA` (`pckbd.h:10`).
 pub const ACK_BYTE: u8 = 0xFA;
 
+/// Controller status bit: last read timed out.
+///
+/// C: literal `0x40` in the ack branch (`pckbd.c:129`) — an ack read with
+/// this bit set is discarded.
+pub const STATUS_TIMEOUT: u8 = 0x40;
+
 /// Queued LED commands: offset, available count, ack expectation.
 ///
 /// C: `kbdout` (`pckbd.c:12-17`). `set_leds` appends the two bytes when
@@ -123,9 +129,12 @@ impl LedOutbox {
 
     /// Note the keyboard's acknowledgment of the outstanding byte.
     ///
-    /// C: the ack branch of `scan_keyboard` (`pckbd.c:129-134`).
-    pub fn note_ack(&mut self, byte: u8) -> bool {
-        if byte == ACK_BYTE && self.expect_ack {
+    /// C: the ack branch of `scan_keyboard` (`pckbd.c:129-134`). The
+    /// acknowledgment only counts when the status byte carries no timeout
+    /// bit (`0x40`): a timed-out read's data is stale controller noise,
+    /// not a real ack.
+    pub fn note_ack(&mut self, status: u8, byte: u8) -> bool {
+        if status & STATUS_TIMEOUT == 0 && byte == ACK_BYTE && self.expect_ack {
             self.expect_ack = false;
             true
         } else {
@@ -168,10 +177,24 @@ mod tests {
         assert_eq!(first, LED_COMMAND);
         assert!(outbox.expects_ack());
         assert_eq!(outbox.take(), None);
-        assert!(outbox.note_ack(ACK_BYTE));
+        assert!(outbox.note_ack(0, ACK_BYTE));
         assert!(!outbox.expects_ack());
         let second = outbox.take().unwrap();
         assert_eq!(second, MASK_CAPS);
+    }
+
+    #[test]
+    fn test_ack_with_timeout_status_is_discarded() {
+        // C checks `!(sb & 0x40)` before trusting the ack (pckbd.c:129):
+        // a timed-out read's byte is stale noise, and the outstanding
+        // command stays pending for the resend logic.
+        let mut outbox = LedOutbox::new();
+        outbox.queue(1 << LOCK_NUM);
+        assert!(outbox.take().is_some());
+        assert!(!outbox.note_ack(STATUS_TIMEOUT, ACK_BYTE));
+        assert!(outbox.expects_ack());
+        assert!(outbox.note_ack(0, ACK_BYTE));
+        assert!(!outbox.expects_ack());
     }
 
     #[test]

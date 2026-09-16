@@ -43,9 +43,15 @@ pub const FLAG_RELATIVE: i32 = 0x04;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseEvent {
     /// Button index (zero-based) changed to pressed (true) or not.
+    ///
+    /// C sends these with zero flags (`pckbd.c:396-400`).
     Button { index: usize, pressed: bool },
     /// Axis moved by this signed delta (relative).
-    Motion { axis: u16, delta: i32 },
+    ///
+    /// C sends motion with `INPUT_FLAG_REL` set (`pckbd.c:408-409`): the
+    /// flag rides on the event so downstream consumers know the value is
+    /// relative, not absolute.
+    Motion { axis: u16, delta: i32, flags: i32 },
 }
 
 /// Three-byte packet assembler with button memory.
@@ -107,6 +113,7 @@ impl MouseAssembler {
                 events.push(MouseEvent::Motion {
                     axis: axes[i],
                     delta,
+                    flags: FLAG_RELATIVE,
                 });
             }
         }
@@ -160,9 +167,11 @@ mod tests {
             events,
             alloc::vec![MouseEvent::Motion {
                 axis: AXIS_X,
-                delta: -1
+                delta: -1,
+                flags: FLAG_RELATIVE
             }]
         );
+        // The wire value itself stays pinned (input.h:47).
         assert_eq!(FLAG_RELATIVE, 0x04);
     }
 
