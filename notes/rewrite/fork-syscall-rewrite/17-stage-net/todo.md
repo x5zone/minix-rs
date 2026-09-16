@@ -44,7 +44,7 @@
 | P1 | **N1-P1-2** | sockdriver/sockevent 实体机制（续延池/事件对象/定时器/select 语义，C 3,740 行）无设计条目 ✅ **已落地（2026-09-17）**：`socktable.rs` + 02 篇机器章节 |
 | P1 | **N1-P1-3** | [ARCH N-1] 栈本体选型 ✅ **已裁决（2026-09-17）**：smoltcp 一族 + 自研语义垫片，墙后可回退 FFI |
 | P1 | **N1-P1-4** | 传输层与主循环设计：DispatchRoad 4 路对接真实 IPC + SEF/RS（edge E-NETSTART）+ 启动粒度决策 ✅ **已落地（2026-09-17）**：lwip/uds 双 server 真实事件循环 |
-| P1 | **N1-P1-5** | 缓冲模型设计：pbuf 等价物与 VFS↔net↔NDEV 零拷贝链 |
+| P1 | **N1-P1-5** | 缓冲模型设计：pbuf 等价物与 VFS↔net↔NDEV 零拷贝链 ✅ **已落地（2026-09-17）**：单尺寸 slab 池 + 帧链（mempool.rs） |
 | P2 | N1-P2-1 | lwip crate 内 4 组重复函数收敛（send_flags/payload_fits/组播默认值/buffer_size_allowed） |
 | P2 | N1-P2-2 | driver.rs 死代码批：classify 死分支 + 三常量包装 + PolicyRow.priority + rawsock 常函数判定 |
 | P2 | N1-P2-3 | legacy_fallback_applies 审计型死代码处置（[ARCH N-2]） |
@@ -111,10 +111,12 @@
 **验证**：`cargo test -p minix-net-lwip -p minix-net-uds -p minix-netdriver` = 92+9+50 = 151 passed；新增循环测试 4 个（启动门/六到达分发与回复送达/范围判定锁/启动前零分发），脚本化传输 + 记录型处理器，SEF ping 吞掉断言在案；clippy 0 警告。
 **残留**：RS 域注册/特权协议与 QEMU 真机冒烟挂 edge E-NETSTART（本轮循环已可注入测试全链路跑通，非 DEFERRED 逃避——跨 stage 边界项按规则归 edge）；各路实现体随 R5 与 21/22 篇轨道。
 
-### N1-P1-5 缓冲模型设计（pbuf 等价物与零拷贝链）
+### ✅ N1-P1-5 缓冲模型设计——已落地 2026-09-17
 
-**问题**：C 侧 PBUF_POOL_SIZE=0 用定制池替代（lwip_port.rs:24-26 契约已记录），pbuf 分层引用与 UDS 的"数据+元数据单环"（uds io.c:122，Rust io.rs:11-13 已建模意图）都只有常量无数值结构；NDEV 侧 SEND_QUEUE_BOUND=8/RECV=2（protocol.rs:37,42）如何与栈缓冲衔接未设计。
-**建议**（≥2 方案）：方案 A：`Pool` 定制池 + 引用计数分片（pbuf 语义的 Rust 化，零拷贝留在栈内）；方案 B：smoltcp 路线则用其 `RxToken/TxToken::consume` 闭包免拷贝（仅栈内），VFS↔net 边界首版接受一次拷贝（Redox buffer_pool 先例），零拷贝移交挂后续（对照 E-FSVMCACHE 在 fs 的页移交先例）。裁定随 N1-P1-3 选型联动。
+**落地**：`os/net/lwip/src/mempool.rs` 扩为两半：尺寸半边（原有）+ 池本体——`Pool`（512 字节单尺寸切片，slab 整块增长每块 512 片，上限 64 块即 mempool.c:238 的约 17MB）+ `SliceHandle` 句柄（索引不引用，仓库扩容不挪切片）+ `Frame` 帧链（句柄加已用长度，整链归还）。耗尽形状与 C 一致：分配返回空即套接字层 ENOBUFS（udpsock.c:496-497）。
+**设计裁定**（≥2 方案）：单尺寸 slab 池胜出——C 的双尺寸编片（大片加四分之一小片，mempool.c:116-123）是给 pbuf 头部贴身装箱的产物，栈墙后头部归栈，小片随 pbuf 消失（差异表登记，非行为契约）；引用计数节点被否——单线程下显式归还路径里计数器纯属开销，是照抄 pbuf 生命周期的 translate。栈内缓冲归 smoltcp（R1 裁决的自然结果），服务器侧池只管 NDEV 帧、过滤器缓存与排队。
+**验证**：`cargo test -p minix-net-lwip --lib mempool` = 8 passed（slab 增长封顶/耗尽无缓冲/句柄字节往返/LIFO 复用/帧记账归还/17MB 账目）；clippy 0 警告；Gate E：04 篇 §5.2 五行对账一致。
+**文档同步**：04 篇头部 + §3.4 池决策 + §3.5 汇总两行 + §5.2 池测试表。
 
 ---
 
