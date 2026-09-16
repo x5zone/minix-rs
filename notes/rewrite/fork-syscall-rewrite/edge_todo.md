@@ -757,6 +757,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **依赖**：E-ISWIRE（minix-sef 决策，若选择等待）；E-CDRCONV（若收敛裁决改变 announce 归属）；E5（联调）。
 **解锁**：E5 输入链；`input` 服务进程真实化；13-stage-ipc 的消息面有一个真实生产消费者。
 
+> **循环壳收口（2026-09-17，✅ 循环壳半落地，593c2daa6）**：input 新增 `serve.rs`——Transport trait（receive/send/asynsend/write_grant/publish_label）+ KernelTransport（minix-sys 直写，minix-sef 切换点=receive）+ classify（notify→DriverStoreChanged、INPUT_EVENT/INPUT_SETLEDS→decode→Arrival，m_source 回填）+ perform（ReplyTask→CDEV_REPLY 裸字节 status@8/id@12、ReplySelect→CDEV_SEL2_REPLY、SendDriverAsync/SendTerminalBlocking→m_source 回填发送）+ serve loop（GrantCopy→逐事件 24B drain→sys_safecopyto→complete_grant_copy）；main.rs 空 loop 替换，测试 ×2。**登记**：DS announce 暂 ENOSYS（DsClient<T> 双 trait 约束过窄需放宽/拆分）；asynsend 暂以阻塞 send 承载（SENDA 表接线登记）。**剩余 = 真机联调（E5）+ DS announce 接线**。
+
 ---
 
 ## E-CDRCONV chardriver 框架双实现收敛（A-1 收口）+ minix-chardriver CDEV_REPLY_BASE 错值（12-stage-input 首轮架构审查登记，2026-09-15）
