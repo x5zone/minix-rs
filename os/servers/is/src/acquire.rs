@@ -22,7 +22,7 @@
 
 use crate::dump_ds::DsEntrySnap;
 use crate::dump_kernel::{
-    BootImageSnap, IrqHookSnap, ProcInfoStruct, KPrivSnap, KinfoSnap, KmessagesSnap,
+    BootImageStruct, IrqHookStruct, KmessagesSnap, KinfoStruct, PrivInfoStruct, ProcInfoStruct,
 };
 use crate::dump_pm::MProcSnap;
 use crate::dump_rs::{RprocSnap, RprocpubSnap};
@@ -92,9 +92,9 @@ pub const IS_GETSYSINFO_CALLS: &[(Endpoint, SiWhat)] = &[
 /// structurally absent.
 pub trait SysGetinfoTransport {
     /// Kernel info structure. C: `sys_getkinfo` — dmp_kernel.c:197.
-    fn get_kinfo(&mut self, out: &mut KinfoSnap) -> i32;
+    fn get_kinfo(&mut self, out: &mut KinfoStruct) -> i32;
     /// Boot image table. C: `sys_getimage` — dmp_kernel.c:174.
-    fn get_image(&mut self, out: &mut [BootImageSnap]) -> i32;
+    fn get_image(&mut self, out: &mut [BootImageStruct]) -> i32;
     /// Kernel process table. C: `sys_getproctab` — dmp_kernel.c:265/328/368,
     /// dmp_vm.c:83.
     fn get_proctab(&mut self, out: &mut [ProcInfoStruct]) -> i32;
@@ -102,11 +102,11 @@ pub trait SysGetinfoTransport {
     /// C: `sys_getmonparams` — dmp_kernel.c:101.
     fn get_monparams(&mut self, out: &mut [u8]) -> i32;
     /// IRQ hook table. C: `sys_getirqhooks` — dmp_kernel.c:129.
-    fn get_irqhooks(&mut self, out: &mut [IrqHookSnap]) -> i32;
+    fn get_irqhooks(&mut self, out: &mut [IrqHookStruct]) -> i32;
     /// IRQ mask table. C: `sys_getirqactids` — dmp_kernel.c:133.
     fn get_irqactids(&mut self, out: &mut [i32]) -> i32;
     /// Privilege table. C: `sys_getprivtab` — dmp_kernel.c:261.
-    fn get_privtab(&mut self, out: &mut [KPrivSnap]) -> i32;
+    fn get_privtab(&mut self, out: &mut [PrivInfoStruct]) -> i32;
 }
 
 /// `sys_diagctl` stack-trace channel.
@@ -249,11 +249,11 @@ impl<T> Acquires for T where
 pub struct UnimplementedAcquires;
 
 impl SysGetinfoTransport for UnimplementedAcquires {
-    fn get_kinfo(&mut self, _out: &mut KinfoSnap) -> i32 {
+    fn get_kinfo(&mut self, _out: &mut KinfoStruct) -> i32 {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
-    fn get_image(&mut self, _out: &mut [BootImageSnap]) -> i32 {
+    fn get_image(&mut self, _out: &mut [BootImageStruct]) -> i32 {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
@@ -265,7 +265,7 @@ impl SysGetinfoTransport for UnimplementedAcquires {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
-    fn get_irqhooks(&mut self, _out: &mut [IrqHookSnap]) -> i32 {
+    fn get_irqhooks(&mut self, _out: &mut [IrqHookStruct]) -> i32 {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
@@ -273,7 +273,7 @@ impl SysGetinfoTransport for UnimplementedAcquires {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 
-    fn get_privtab(&mut self, _out: &mut [KPrivSnap]) -> i32 {
+    fn get_privtab(&mut self, _out: &mut [PrivInfoStruct]) -> i32 {
         panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
     }
 }
@@ -380,19 +380,19 @@ impl FakeAcquires {
 }
 
 impl SysGetinfoTransport for FakeAcquires {
-    fn get_kinfo(&mut self, out: &mut KinfoSnap) -> i32 {
+    fn get_kinfo(&mut self, out: &mut KinfoStruct) -> i32 {
         self.seen.push("kinfo");
         if self.getinfo_status == OK {
-            *out = KinfoSnap::default();
+            *out = KinfoStruct::default();
         }
         self.getinfo_status
     }
 
-    fn get_image(&mut self, out: &mut [BootImageSnap]) -> i32 {
+    fn get_image(&mut self, out: &mut [BootImageStruct]) -> i32 {
         self.seen.push("image");
         if self.getinfo_status == OK {
             for (i, slot) in out.iter_mut().enumerate() {
-                *slot = BootImageSnap { proc_nr: i as i32, ..Default::default() };
+                *slot = BootImageStruct { proc_nr: i as i32, ..Default::default() };
             }
         }
         self.getinfo_status
@@ -416,11 +416,11 @@ impl SysGetinfoTransport for FakeAcquires {
         self.getinfo_status
     }
 
-    fn get_irqhooks(&mut self, out: &mut [IrqHookSnap]) -> i32 {
+    fn get_irqhooks(&mut self, out: &mut [IrqHookStruct]) -> i32 {
         self.seen.push("irqhooks");
         if self.getinfo_status == OK {
             for slot in out.iter_mut() {
-                *slot = IrqHookSnap::default();
+                *slot = IrqHookStruct::default();
             }
         }
         self.getinfo_status
@@ -436,11 +436,11 @@ impl SysGetinfoTransport for FakeAcquires {
         self.getinfo_status
     }
 
-    fn get_privtab(&mut self, out: &mut [KPrivSnap]) -> i32 {
+    fn get_privtab(&mut self, out: &mut [PrivInfoStruct]) -> i32 {
         self.seen.push("privtab");
         if self.getinfo_status == OK {
             for slot in out.iter_mut() {
-                *slot = KPrivSnap::default();
+                *slot = PrivInfoStruct::default();
             }
         }
         self.getinfo_status
@@ -603,7 +603,7 @@ mod tests {
         // 04 §2.6: acquisition failure is recoverable — statuses flow back
         // to the caller (05~10 warn-and-continue), never panic here.
         let mut f = FakeAcquires::ok();
-        let mut kinfo = KinfoSnap::default();
+        let mut kinfo = KinfoStruct::default();
         assert_eq!(f.get_kinfo(&mut kinfo), OK);
         assert_eq!(f.stacktrace(Endpoint::PM), OK);
         let mut meta = KmessagesSnap::default();

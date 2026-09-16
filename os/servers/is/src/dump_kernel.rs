@@ -13,77 +13,24 @@
 //! work, explicit TODO below). Layouts: C `int→i32`, `endpoint_t→i32`,
 //! `char[N]→[u8;N]`, `u32_t→u32`, `clock_t→i32` (32-bit Minix).
 
-// TODO(P1): [code] [factual] Align kernel-crate GETINFO producers with the
-// snapshot layouts below (dump_kernel.rs:KwSnap structs) — see 05 §4.
-// (current state: snapshots are IS-side wire proposals)
-// (fix: kernel `do_getinfo` arms emit these layouts; see A-4).
+// E-ISPROD: the four wire snapshots (KPrivSnap/BootImageSnap/KinfoSnap/
+// IrqHookSnap) moved to `minix_types::types` as the single authority — the
+// kernel GETINFO producers now emit exactly these layouts (the founding
+// mismatch this file's TODO tracked is resolved; widths follow the kernel
+// producer: u32 flags, u64 ipc map / policy / notify_id).
 
 use crate::acquire::DiagctlTransport;
-pub use minix_types::ProcInfoStruct;
+pub use minix_types::{BootImageStruct, IrqHookStruct, KinfoStruct, PrivInfoStruct, ProcInfoStruct};
 use crate::PCStr;
 use core::fmt;
 use minix_types::Endpoint;
 
-/// Kernel privilege snapshot (used fields only).
-///
-/// C: `struct priv` — `minix3/minix/kernel/priv.h:21-61` (subset).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct KPrivSnap {
-    /// C: `s_proc_nr` (priv.h:22).
-    pub s_proc_nr: i32,
-    /// C: `s_id` (priv.h:23).
-    pub s_id: i32,
-    /// C: `s_flags` (priv.h:24).
-    pub s_flags: i16,
-    /// C: `s_trap_mask` (priv.h:34).
-    pub s_trap_mask: i16,
-    /// C: `s_grant_entries` (priv.h:62).
-    pub s_grant_entries: i32,
-    /// C: `s_ipc_to` (priv.h:39) — `NR_SYS_PROCS` (64) bits = 2 words;
-    /// privileges_dmp prints each word `%08x` (dmp_kernel.c:284-286).
-    /// (V1-P1-3: added — the dump prints these columns, the old snapshot
-    /// predated the execution face.)
-    pub s_ipc_to: [u32; 2],
-    /// C: `s_k_call_mask` (priv.h:47) — `NR_SYS_CALLS` (58) bits = 2 words,
-    /// printed `%08x` per `BITCHUNK_BITS` chunk (dmp_kernel.c:289-291).
-    pub s_k_call_mask: [u32; 2],
-}
-
-/// Boot-image entry snapshot.
-///
-/// C: `struct boot_image` — `minix3/minix/include/minix/type.h:148-154`
-/// (subset: the dump prints only these two — dmp_kernel.c:180-183, even
-/// though the header names flags/stack columns).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct BootImageSnap {
-    /// C: `proc_nr` (type.h:149).
-    pub proc_nr: i32,
-    /// C: `proc_name[PROC_NAME_LEN]` (type.h:150).
-    pub proc_name: [u8; 16],
-}
-
-/// Kernel info snapshot (printed fields only).
-///
-/// C: `struct kinfo` — `minix3/minix/include/minix/param.h:14-54` (subset).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct KinfoSnap {
-    /// C: `nr_procs` (param.h:40).
-    pub nr_procs: i32,
-    /// C: `nr_tasks` (param.h:41).
-    pub nr_tasks: i32,
-    /// C: `release[6]` (param.h:42).
-    pub release: [u8; 6],
-    /// C: `version[6]` (param.h:43).
-    pub version: [u8; 6],
-}
-
 /// Kernel-message ring snapshot (cursor fields only).
 ///
 /// C: `struct kmessages` — `minix3/minix/include/minix/type.h:170-176`
-/// (subset; the buffer itself streams through the output channel).
+/// (subset; the buffer itself streams through the output channel). This
+/// one stays IS-side: the kmess arm's producer (kernel/src/kmess.rs) was
+/// aligned separately in E-ISKMESS.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct KmessagesSnap {
@@ -91,25 +38,6 @@ pub struct KmessagesSnap {
     pub km_next: i32,
     /// C: `km_size` (type.h:172).
     pub km_size: i32,
-}
-
-/// IRQ hook snapshot (printed fields only).
-///
-/// C: `struct irq_hook` — `minix3/minix/kernel/type.h:18-26` (subset;
-/// `next`/`handler` pointers never cross to IS).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct IrqHookSnap {
-    /// C: `proc_nr_e` (type.h:23).
-    pub proc_nr_e: i32,
-    /// C: `irq` (type.h:21).
-    pub irq: i32,
-    /// C: `policy` (type.h:25).
-    pub policy: u32,
-    /// C: `notify_id` (type.h:24).
-    pub notify_id: u32,
-    /// C: `id` (type.h:22).
-    pub id: i32,
 }
 
 // ── flag encoders (A-12) ──────────────────────────────────────────
@@ -120,8 +48,8 @@ pub struct IrqHookSnap {
 /// `BILLABLE 0x004→B`, `DYN_PRIV_ID 0x008→D`, `SYS_PROC 0x010→S`,
 /// `CHECK_IO_PORT 0x020→I`, `CHECK_IRQ 0x040→Q`, `CHECK_MEM 0x080→M` —
 /// const.h:143-150).
-pub const fn s_flags_str(flags: i16) -> [u8; 8] {
-    let f = flags as u32;
+pub const fn s_flags_str(flags: u32) -> [u8; 8] {
+    let f = flags;
     [
         if f & 0x002 != 0 { b'P' } else { b'-' },
         if f & 0x004 != 0 { b'B' } else { b'-' },
@@ -139,8 +67,8 @@ pub const fn s_flags_str(flags: i16) -> [u8; 8] {
 /// C: `s_traps_str` — dmp_kernel.c:236-247 (`1<<SEND→S`, `1<<SENDA→A`,
 /// `1<<RECEIVE→R`, `1<<SENDREC→B`, `1<<NOTIFY→N`; `SEND=1`, `RECEIVE=2`,
 /// `SENDREC=3`, `NOTIFY=4`, `SENDA=16` — ipcconst.h:7-16).
-pub const fn s_traps_str(flags: i16) -> [u8; 6] {
-    let f = flags as u32;
+pub const fn s_traps_str(flags: u32) -> [u8; 6] {
+    let f = flags;
     [
         if f & (1 << 1) != 0 { b'S' } else { b'-' },
         if f & (1 << 16) != 0 { b'A' } else { b'-' },
@@ -516,7 +444,7 @@ pub fn render_procstack(
 /// codes, grant count and the `%08x` bitmap chunks.
 pub fn render_privileges(
     out: &mut dyn fmt::Write,
-    privs: &[KPrivSnap],
+    privs: &[PrivInfoStruct],
     tab: &[ProcInfoStruct],
     cur: &mut PageCursor,
 ) -> fmt::Result {
@@ -544,7 +472,9 @@ pub fn render_privileges(
             PCStr(&s_traps_str(sp.s_trap_mask)),
             sp.s_grant_entries
         )?;
-        for w in sp.s_ipc_to {
+        // The producer's single u64 word splits back into the two
+        // BITCHUNK `%08x` words C prints (dmp_kernel.c:284-286).
+        for w in [sp.s_ipc_to as u32, (sp.s_ipc_to >> 32) as u32] {
             write!(out, " {:08x}", w)?;
         }
         out.write_str(" ")?;
@@ -559,7 +489,7 @@ pub fn render_privileges(
 /// `image_dmp` (dmp_kernel.c:168-185): the header promises four columns,
 /// the rows print two (`%8s %4d`) — the header's lie is kept verbatim
 /// (05 §2.5).
-pub fn render_image(out: &mut dyn fmt::Write, image: &[BootImageSnap]) -> fmt::Result {
+pub fn render_image(out: &mut dyn fmt::Write, image: &[BootImageStruct]) -> fmt::Result {
     out.write_str(IMAGE_TITLE)?;
     out.write_str(IMAGE_COLUMNS)?;
     for ip in image {
@@ -572,7 +502,7 @@ pub fn render_image(out: &mut dyn fmt::Write, image: &[BootImageSnap]) -> fmt::R
 /// `masked` is decided by `actids[irq] & id`.
 pub fn render_irqtab(
     out: &mut dyn fmt::Write,
-    hooks: &[IrqHookSnap],
+    hooks: &[IrqHookStruct],
     actids: &[i32],
 ) -> fmt::Result {
     out.write_str(IRQTAB_TITLE)?;
@@ -585,7 +515,7 @@ pub fn render_irqtab(
         }
         write!(out, "{:10}  ", e.proc_nr_e)?;
         write!(out, "    ({:02}) ", e.irq)?;
-        if e.policy & IRQ_REENABLE != 0 {
+        if e.policy & u64::from(IRQ_REENABLE) != 0 {
             out.write_str("  reenable")?;
         } else {
             out.write_str("      -   ")?;
@@ -637,7 +567,7 @@ pub fn render_monparams(out: &mut dyn fmt::Write, blob: &[u8]) -> fmt::Result {
 /// `kenv_dmp` (dmp_kernel.c:191-213): kinfo's four printed fields only —
 /// C fetches a machine struct too but never reads it (05 §2.6 exclusion;
 /// structurally absent here, so its failure branch has no counterpart).
-pub fn render_kenv(out: &mut dyn fmt::Write, kinfo: &KinfoSnap) -> fmt::Result {
+pub fn render_kenv(out: &mut dyn fmt::Write, kinfo: &KinfoStruct) -> fmt::Result {
     out.write_str(KENV_TITLE)?;
     writeln!(out, "- nr_procs:     {:3}", kinfo.nr_procs as u32)?;
     writeln!(out, "- nr_tasks:     {:3}", kinfo.nr_tasks as u32)?;
@@ -665,7 +595,7 @@ mod tests {
         // C promotes `short` to `int` value-preserving, as does `as u32`.
         assert_eq!(&s_traps_str(0), b"-----\x00");
         assert_eq!(&s_traps_str(0x1E), b"S-RBN\x00");
-        assert_eq!(&s_traps_str(-1), b"SARBN\x00");
+        assert_eq!(&s_traps_str(0xFFFF_FFFF), b"SARBN\x00");
     }
 
     #[test]
@@ -884,15 +814,16 @@ mod tests {
     fn test_render_privileges_match_fallback_and_chunks() {
         // C: dmp_kernel.c:270-292 — matched priv row + the USER_PRIV_ID
         // fallback, bitmap words as %08x.
-        let mut privs = [KPrivSnap::default(); NR_SYS_PROCS];
-        privs[0] = KPrivSnap {
+        let mut privs = [PrivInfoStruct::default(); NR_SYS_PROCS];
+        privs[0] = PrivInfoStruct {
             s_proc_nr: 1,
             s_id: 7,
-            s_flags: -1, // all bits → PBDSIQM
+            s_flags: 0xFFFF, // all dump bits → PBDSIQM
             s_trap_mask: 0x1E,
             s_grant_entries: 42,
-            s_ipc_to: [0xdeadbeef, 0x12345678],
+            s_ipc_to: (0x12345678u64 << 32) | 0xdeadbeef, // low word prints first
             s_k_call_mask: [0xffffffff, 0x0000ffff],
+            ..PrivInfoStruct::default()
         };
         let tab = [snap(-5, RTS_SLOT_FREE, b""), snap(1, 0, b"vfs"), snap(2, 0, b"who")];
         let mut out = String::new();
@@ -908,7 +839,7 @@ mod tests {
     fn test_render_image_rows() {
         // C: dmp_kernel.c:178-184 — %8s %4d rows, header promises four
         // columns and lies (kept verbatim).
-        let image = [BootImageSnap { proc_nr: -4, proc_name: name8(b"idle") }];
+        let image = [BootImageStruct { proc_nr: -4, proc_name: name8(b"idle"), ..BootImageStruct::default() }];
         let mut out = String::new();
         render_image(&mut out, &image).unwrap();
         assert_eq!(
@@ -921,8 +852,15 @@ mod tests {
     fn test_render_irqtab_unused_and_masked() {
         // C: dmp_kernel.c:145-162 — <unused> rows, policy word, masked.
         let hooks = [
-            IrqHookSnap { proc_nr_e: Endpoint::NONE.get(), irq: 0, policy: 0, notify_id: 0, id: 0 },
-            IrqHookSnap { proc_nr_e: 3, irq: 1, policy: IRQ_REENABLE, notify_id: 9, id: 0x10 },
+            IrqHookStruct { proc_nr_e: Endpoint::NONE.get(), ..IrqHookStruct::default() },
+            IrqHookStruct {
+                proc_nr_e: 3,
+                irq: 1,
+                policy: u64::from(IRQ_REENABLE),
+                notify_id: 9,
+                id: 0x10,
+                ..IrqHookStruct::default()
+            },
         ];
         let actids = [0i32, 0x30]; // irq 1 masked by 0x10
         let mut out = String::new();
@@ -937,11 +875,12 @@ mod tests {
     #[test]
     fn test_render_kenv_fields() {
         // C: dmp_kernel.c:206-212.
-        let kinfo = KinfoSnap {
+        let kinfo = KinfoStruct {
             nr_procs: 256,
             nr_tasks: 5,
             release: *b"7.99.2",
             version: *b"r12345",
+            ..KinfoStruct::default()
         };
         let mut out = String::new();
         render_kenv(&mut out, &kinfo).unwrap();
@@ -1015,9 +954,9 @@ mod tests {
         let p = ProcInfoStruct::default();
         assert_eq!((p.p_rts_flags, p.p_nr, p.p_endpoint), (0, 0, 0));
         assert_eq!(p.p_name.len(), 16);
-        let k = KinfoSnap::default();
+        let k = KinfoStruct::default();
         assert_eq!(k.release.len(), 6);
-        let b = BootImageSnap::default();
+        let b = BootImageStruct::default();
         assert_eq!(b.proc_name.len(), 16);
     }
 }

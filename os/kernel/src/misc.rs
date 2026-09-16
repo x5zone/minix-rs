@@ -14,9 +14,9 @@
 //! - **D2**: Return ENOSYS for unimplemented calls (matches C)
 //! - **D5**: TRACE deferred — debugging feature, not core
 
-use minix_types::ProcInfoStruct;
+use minix_types::{BootImageStruct, IrqHookStruct, KinfoStruct, PrivInfoStruct, ProcInfoStruct};
 use minix_types::{
-    Message, MessageM4, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo,
+    Message, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo,
     MessLsysKrnSysTrace, Endpoint, VirBytes,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -419,39 +419,23 @@ impl ProcInfoBuild for ProcInfoStruct {
 /// - `s_grant_entries` — grant table
 ///
 /// C: `struct priv` — include/minix/priv.h:76-110
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PrivInfoStruct {
-    /// C: `s_proc_nr` — process number this privilege belongs to.
-    pub s_proc_nr: i32,
-    /// C: `s_id` — privilege ID.
-    pub s_id: i32,
-    /// C: `s_flags` — privilege flags (s_flags).
-    pub s_flags: u32,
-    /// C: `s_trap_mask` — allowed traps.
-    pub s_trap_mask: u32,
-    /// C: `s_grant_entries` — number of grant entries.
-    pub s_grant_entries: i32,
-    /// C: `s_sig_mgr` — signal manager endpoint.
-    pub s_sig_mgr: i32,
-    /// C: `s_notify_pending` — pending notifications.
-    pub s_notify_pending: u64,
-    /// C: `s_sig_pending` — pending signals.
-    pub s_sig_pending: u64,
-    /// C: `s_ipc_to` — bitmap of endpoints allowed to send to.
-    pub s_ipc_to: u64,
-    /// C: `s_k_call_mask` — allowed kernel calls (SYS_CALL_MASK_SIZE=2).
-    pub s_k_call_mask: [u32; crate::kpriv::SYS_CALL_MASK_SIZE],
+//
+// PrivInfoStruct/IrqHookStruct/BootImageStruct moved to `minix_types::types`
+// (E-ISPROD single authority); the kernel-side constructor half hangs off
+// the `PrivInfoBuild` extension trait (ProcInfoBuild precedent). The trait
+// stays crate-private: its signature exposes the crate-private `KPriv`.
+trait PrivInfoBuild {
+    fn from_kpriv(p: &crate::kpriv::KPriv) -> Self;
 }
 
-impl PrivInfoStruct {
+impl PrivInfoBuild for PrivInfoStruct {
     /// Build a PrivInfoStruct from a KPriv.
     ///
     /// This is a **wire boundary**: `PrivInfoStruct` keeps the Minix3 raw
     /// widths exposed by GET_PRIV/GET_PRIVTAB, so the kernel-side newtypes
     /// are encoded here (`to_wire` / `bits`).
     fn from_kpriv(p: &crate::kpriv::KPriv) -> Self {
-        Self {
+        PrivInfoStruct {
             s_proc_nr: p.identity.s_proc_nr.map(|nr| nr.0).unwrap_or(-1),
             s_id: p.identity.s_id as i32,
             s_flags: p.flags.s_flags.to_wire() as u32,
@@ -466,23 +450,6 @@ impl PrivInfoStruct {
     }
 }
 
-impl Default for PrivInfoStruct {
-    fn default() -> Self {
-        Self {
-            s_proc_nr: -1,
-            s_id: 0,
-            s_flags: 0,
-            s_trap_mask: 0,
-            s_grant_entries: 0,
-            s_sig_mgr: 0,
-            s_notify_pending: 0,
-            s_sig_pending: 0,
-            s_ipc_to: 0,
-            s_k_call_mask: [0; crate::kpriv::SYS_CALL_MASK_SIZE],
-        }
-    }
-}
-
 /// Number of per-state CPU tick counters.
 /// C: `#define MINIX_CPUSTATES 5` — const.h:176. pub(crate): CpuLocal's
 /// `tsc_per_state` (tick-1) is sized by it.
@@ -490,112 +457,10 @@ pub(crate) const MINIX_CPUSTATES: usize = 5;
 
 // ── C-compatible IRQ hook struct (GET_IRQHOOKS) ──
 
-/// C-compatible IRQ hook structure exposed by GET_IRQHOOKS.
-///
-/// C: `struct irq_hook` — kernel/type.h:18-26
-///
-/// # Layout (64-bit)
-///
-/// ```text
-/// offset  field       type           size
-/// 0       next        *mut           8    (pointer: next hook in chain)
-/// 8       handler     *mut           8    (function pointer: handler)
-/// 16      irq         i32            4    (IRQ vector number)
-/// 20      id          i32            4    (id of this hook)
-/// 24      proc_nr_e   i32            4    (endpoint; NONE if not in use)
-/// 28      padding     [u8;4]         4    (align notify_id to 8)
-/// 32      notify_id   u64            8    (irq_id_t = unsigned long)
-/// 40      policy      u64            8    (irq_policy_t = unsigned long)
-/// total                                48 bytes
-/// ```
-///
-/// # Design
-///
-/// Unlike `ProcInfoStruct` (which is a semantic snapshot), this struct
-/// mirrors the C `struct irq_hook` field-by-field because user-space tools
-/// (IS server's `dmp_kernel.c`) interpret the raw bytes via the C layout.
-/// The `next` and `handler` pointer fields are exported as raw addresses
-/// (0 for NULL); user-space tools only read the non-pointer fields.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct IrqHookStruct {
-    /// C: `next` — pointer to next hook in chain. Exported as 0 (NULL)
-    /// because Rust uses index-based linked lists, not pointers. User-space
-    /// tools do not dereference this field.
-    next: u64,
-    /// C: `handler` — function pointer to interrupt handler. Exported as 0
-    /// because Rust uses `fn` pointers stored in the IrqManager, not in the
-    /// exported struct. User-space tools do not call this field.
-    handler: u64,
-    /// C: `irq` — IRQ vector number.
-    irq: i32,
-    /// C: `id` — id of this hook (bit position in irq_actids).
-    id: i32,
-    /// C: `proc_nr_e` — owning process endpoint (NONE if not in use).
-    proc_nr_e: i32,
-    /// Padding to align `notify_id` to 8 bytes (matches C ABI on 64-bit).
-    _pad0: [u8; 4],
-    /// C: `notify_id` — id to return on interrupt (irq_id_t = unsigned long).
-    notify_id: u64,
-    /// C: `policy` — bit mask for policy (irq_policy_t = unsigned long).
-    policy: u64,
-}
-
-impl Default for IrqHookStruct {
-    fn default() -> Self {
-        Self {
-            next: 0,
-            handler: 0,
-            irq: -1,
-            id: 0,
-            proc_nr_e: Endpoint::NONE.0,
-            _pad0: [0; 4],
-            notify_id: 0,
-            policy: 0,
-        }
-    }
-}
-
-// ── C-compatible boot image struct (GET_IMAGE) ──
-
-/// C-compatible boot image structure exposed by GET_IMAGE.
-///
-/// C: `struct boot_image` — include/minix/type.h:148-154
-///
-/// # Layout (64-bit)
-///
-/// ```text
-/// offset  field       type           size
-/// 0       proc_nr     i32            4
-/// 4       proc_name   [u8;16]        16
-/// 20      endpoint    i32            4
-/// 24      start_addr  u64            8    (phys_bytes, 8-byte aligned)
-/// 32      len         u64            8    (phys_bytes)
-/// total                                40 bytes
-/// ```
-///
-/// # Design
-///
-/// In C, `image[]` is a static table initialized in `table.c` describing
-/// the boot-time processes (CLOCK, IDLE, KERNEL, PM, VM, etc.). In Rust,
-/// this information is built from the process table snapshot + boot modules
-/// at syscall time. The `start_addr` and `len` fields come from
-/// `KernelInfo.boot_modules`.
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct BootImageStruct {
-    /// C: `proc_nr` — process number to use.
-    proc_nr: i32,
-    /// C: `proc_name[PROC_NAME_LEN]` — name in process table (16 bytes).
-    proc_name: [u8; 16],
-    /// C: `endpoint` — endpoint number when started.
-    endpoint: i32,
-    /// C: `start_addr` — physical address where the process image is in memory.
-    /// 8-byte aligned (phys_bytes = u64 on 64-bit).
-    start_addr: u64,
-    /// C: `len` — length of the process image in bytes.
-    len: u64,
-}
+// IrqHookStruct/BootImageStruct moved to `minix_types::types` (E-ISPROD
+// single authority — the IS dumps consume the same definition); the hook
+// fill in `getinfo_irq_hooks` uses the imported type's own `Default`
+// (sentinels irq=-1 / proc_nr_e=NONE live there).
 
 /// Copy a kernel-stack struct to the caller's `val_ptr` via `write_to_process_vmcheck`.
 ///
@@ -713,7 +578,7 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
 
     match req {
         GetInfoRequest::WhoAmI => getinfo_whoami(caller, msg, priv_table),
-        GetInfoRequest::KInfo => getinfo_kinfo(msg),
+        GetInfoRequest::KInfo => getinfo_kinfo(caller, val_ptr, val_len),
         GetInfoRequest::Proc => getinfo_proc(caller, proc_table, val_ptr, val_len, val_len2_e),
         GetInfoRequest::ProcTab => getinfo_proc_tab(caller, proc_table, val_ptr, val_len),
         GetInfoRequest::PrivTab => getinfo_priv_tab(caller, priv_table, val_ptr, val_len),
@@ -766,39 +631,47 @@ fn getinfo_whoami(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTab
     KcallResult::Ok(OK)
 }
 
-/// GET_KINFO — key kernel parameters in the reply message (m_m4 format).
+/// GET_KINFO — kernel info snapshot (struct copy).
 ///
-/// C: do_getinfo.c:41-70 — build kinfo structure
-/// C copies the entire `struct kinfo` via data_copy_vmcheck.
-/// Rust: Return key fields in the reply message (m_m4 format).
-/// Full data_copy_vmcheck path: `data_copy_vmcheck` is available,
-/// but `struct kinfo` C-compatible layout + conversion is not yet
-/// designed. Key fields are returned in the reply message instead.
-///
-/// Fields returned (C kinfo mapping):
-///   m4l1 = nr_procs  (C: kinfo.nr_procs)
-///   m4l2 = nr_tasks  (C: kinfo.nr_tasks)
-///   m4l3 = user_sp   (C: kinfo.user_sp — pre_init.c:156 USR_STACKTOP)
-///   m4l4 = freepde_start (C: kinfo.freepde_start — pre_init.c:233)
-///   m4l5 = vir_kern_start (C: kinfo.vir_kern_start — pre_init.c:113)
-fn getinfo_kinfo(msg: &mut Message) -> KcallResult {
-    let (user_sp, freepde_start, vir_kern_start) =
-        crate::kernel_info()
-            .map(|ki| {
-                (ki.user_sp.0 as i64, ki.free_upper_idx().unwrap_or(0) as i64, ki.kern_virt_base.0 as i64)
-            })
-            .unwrap_or((0, 0, 0));
-    // SAFETY: `m_type == SYS_GETINFO` with `request == GET_KINFO`
-    // guarantees the M4 format is active. `#[repr(C)]` union write is sound.
-    msg.m_u.m_m4 = MessageM4 {
-        m4l1: NR_PROCS as i64,
-        m4l2: NR_TASKS as i64,
-        m4l3: user_sp,
-        m4l4: freepde_start,
-        m4l5: vir_kern_start,
-        _padding: [0u8; 16],
+/// C: do_getinfo.c:41-70 — copy `sizeof(kinfo)` to the caller
+/// (param.h:14-54). The former Rust encoding packed five fields into M4
+/// message registers, which could not carry `release`/`version` and
+/// diverged from the C struct-copy contract; E-ISPROD replaced it with a
+/// [`KinfoStruct`] copy (used-fields subset, minix-types single authority
+/// — field order preserves C kinfo relative order).
+fn getinfo_kinfo(caller: &mut KProcess, val_ptr: u64, val_len: i32) -> KcallResult {
+    let (user_sp, freepde_start, vir_kern_start) = crate::kernel_info()
+        .map(|ki| {
+            (
+                ki.user_sp.0 as i64,
+                ki.free_upper_idx().unwrap_or(0) as i64,
+                ki.kern_virt_base.0 as i64,
+            )
+        })
+        .unwrap_or((0, 0, 0));
+    let info = KinfoStruct {
+        freepde_start,
+        user_sp,
+        vir_kern_start,
+        nr_procs: NR_PROCS as i32,
+        nr_tasks: NR_TASKS as i32,
+        // C: kinfo.release/version — the kernel build identity
+        // (config.h OS_RELEASE/OS_VERSION; minix-types kerninfo family).
+        release: str_to_kinfo_field(minix_types::OS_RELEASE),
+        version: str_to_kinfo_field(minix_types::OS_VERSION),
+        _padding: [0; 4],
     };
-    KcallResult::Ok(OK)
+    copy_struct_to_caller(caller, &info, val_ptr, val_len)
+}
+
+/// Copy a release/version string into the C `char[6]` kinfo field
+/// (NUL-padded, truncated at 5 chars + NUL).
+fn str_to_kinfo_field(s: &str) -> [u8; 6] {
+    let mut out = [0u8; 6];
+    let bytes = s.as_bytes();
+    let n = bytes.len().min(5);
+    out[..n].copy_from_slice(&bytes[..n]);
+    out
 }
 
 /// GET_PROC — copy a single process table entry to the caller.
@@ -845,19 +718,21 @@ fn getinfo_proc_tab(caller: &mut KProcess, proc_table: &ProcessTable, val_ptr: u
         if endpt == caller_endpt { Some(caller_cr3) } else { None }
     };
     for i in 0..total {
-        // Build the snapshot; the proc_table borrow ends here.
+        // Build the snapshot; the proc_table borrow ends here. The kernel
+        // local is the copy SOURCE read directly by virtual address (the
+        // `copy_struct_to_caller` SELF semantics — a stack address has no
+        // DM-window phys translation).
         let info = proc_table.get_by_index(i)
             .map(ProcInfoStruct::from_kprocess)
             .unwrap_or_default();
-        let src_phys = CurrentDirectMap::virt_to_phys(
-            VirBytes(&info as *const ProcInfoStruct as u64),
-        );
-        let src = AddressRef::Physical(src_phys);
+        // SAFETY: `&info` is a live kernel local of `elem_size` bytes.
+        let src =
+            unsafe { core::slice::from_raw_parts(&info as *const ProcInfoStruct as *const u8, elem_size) };
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(val_ptr + (i * elem_size) as u64),
         };
-        match data_copy_vmcheck(caller, src, dst, elem_size, proc_cr3) {
+        match write_to_process_vmcheck(caller, src, dst, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => continue,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -887,15 +762,16 @@ fn getinfo_priv_tab(caller: &mut KProcess, priv_table: &PrivTable, val_ptr: u64,
         let info = priv_table.get(i as crate::kpriv::PrivId)
             .map(PrivInfoStruct::from_kpriv)
             .unwrap_or_default();
-        let src_phys = CurrentDirectMap::virt_to_phys(
-            VirBytes(&info as *const PrivInfoStruct as u64),
-        );
-        let src = AddressRef::Physical(src_phys);
+        // Kernel-local source read directly by VA (copy_struct_to_caller
+        // SELF semantics — same fix as getinfo_proc_tab).
+        // SAFETY: `&info` is a live kernel local of `elem_size` bytes.
+        let src =
+            unsafe { core::slice::from_raw_parts(&info as *const PrivInfoStruct as *const u8, elem_size) };
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(val_ptr + (i * elem_size) as u64),
         };
-        match data_copy_vmcheck(caller, src, dst, elem_size, proc_cr3) {
+        match write_to_process_vmcheck(caller, src, dst, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => continue,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,

@@ -10,17 +10,22 @@
 //! - `address`: Virtual/physical address types
 //! - `bitmap`: Generic bitmap
 //! - `boot`: Boot image types
+//! - `boot_image`: GET_IMAGE wire entry (E-ISPROD)
 //! - `cell`: Single-threaded interior mutability primitives
 //! - `errno`: POSIX errno constants
 //! - `diagnostic`: panic diagnostic hook registration (D-48, kernel ↔ minix-rt shared)
 //! - `grant`: grant wire layout (`cp_grant_t` family — kernel ↔ user-space
 //!   grant-table contract, E-DSWIRE)
+//! - `irq_hook`: GET_IRQHOOKS wire entry (E-ISPROD)
+//! - `kinfo`: GET_KINFO wire entry (E-ISPROD)
 //! - `kerninfo`: `MINIX_KERNINFO` shared page ABI (`minix_kerninfo` /
 //!   `kuserinfo` + OS release constants, E-KERNINFO)
+//! - `priv_info`: GET_PRIVTAB wire entry (E-ISPROD)
 
 mod address;
 mod bitmap;
 mod boot;
+mod boot_image;
 mod cell;
 mod clock;
 mod com;
@@ -29,8 +34,11 @@ mod endpoint;
 mod errno;
 mod grant;
 mod id;
+mod irq_hook;
+mod kinfo;
 mod kerninfo;
 mod pid;
+mod priv_info;
 mod proc_info;
 mod proc_nr;
 mod ps_strings;
@@ -41,6 +49,7 @@ mod sysctl_abi;
 pub use address::*;
 pub use bitmap::*;
 pub use boot::*;
+pub use boot_image::*;
 pub use cell::*;
 pub use clock::*;
 pub use com::*;
@@ -49,8 +58,11 @@ pub use endpoint::*;
 pub use errno::*;
 pub use grant::*;
 pub use id::*;
+pub use irq_hook::*;
+pub use kinfo::*;
 pub use kerninfo::*;
 pub use pid::*;
+pub use priv_info::*;
 pub use proc_info::*;
 pub use proc_nr::*;
 pub use ps_strings::*;

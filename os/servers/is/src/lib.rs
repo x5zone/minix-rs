@@ -215,7 +215,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     fn run_dump(&mut self, dump: DumpId) {
         use dump_ds::DsEntrySnap;
         use dump_kernel::{
-            BootImageSnap, IrqHookSnap, ProcInfoStruct, KPrivSnap, KinfoSnap, KmessagesSnap,
+            BootImageStruct, IrqHookStruct, KmessagesSnap, KinfoStruct, PrivInfoStruct, ProcInfoStruct,
             MULTIBOOT_PARAM_BUF, NR_BOOT_PROCS, NR_IRQ_HOOKS, PROC_TABLE_LEN,
             render_image, render_irqtab, render_kenv, render_kmessages, render_monparams,
             render_privileges, render_proctab, render_procstack,
@@ -255,7 +255,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 );
             }
             DumpId::Privileges => {
-                let mut privs = [KPrivSnap::default(); dump_kernel::NR_SYS_PROCS];
+                let mut privs = [PrivInfoStruct::default(); dump_kernel::NR_SYS_PROCS];
                 let r = self.acquires.get_privtab(&mut privs);
                 if r != OK {
                     let _ = writeln!(
@@ -281,7 +281,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 );
             }
             DumpId::Image => {
-                let mut image = [BootImageSnap::default(); NR_BOOT_PROCS];
+                let mut image = [BootImageStruct::default(); NR_BOOT_PROCS];
                 let r = self.acquires.get_image(&mut image);
                 if r != OK {
                     let _ = writeln!(
@@ -293,7 +293,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let _ = render_image(out, &image);
             }
             DumpId::Irqtab => {
-                let mut hooks = [IrqHookSnap::default(); NR_IRQ_HOOKS];
+                let mut hooks = [IrqHookStruct::default(); NR_IRQ_HOOKS];
                 let r = self.acquires.get_irqhooks(&mut hooks);
                 if r != OK {
                     let _ = writeln!(
@@ -339,7 +339,7 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let _ = render_monparams(out, &blob);
             }
             DumpId::Kenv => {
-                let mut kinfo = KinfoSnap::default();
+                let mut kinfo = KinfoStruct::default();
                 let r = self.acquires.get_kinfo(&mut kinfo);
                 if r != OK {
                     let _ = writeln!(
