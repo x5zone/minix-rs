@@ -83,12 +83,6 @@ pub const fn vfs_endpoint() -> Endpoint {
     Endpoint(VFS_ENDPOINT_NUMBER)
 }
 
-/// Creates a zeroed message, mirroring the `memset(&m, 0, sizeof(m))` that
-/// opens every C wrapper in this group.
-fn cleared_message() -> Message {
-    Message::zeroed()
-}
-
 /// Read-write payload in C field order.
 ///
 /// C: `mess_lc_vfs_readwrite` (`minix3/minix/include/minix/ipc.h:795-803`) —
@@ -106,18 +100,6 @@ struct ReadWritePayload {
     _padding: [u8; 24],
 }
 
-/// Copies a packed payload into the message body (same helper shape as the
-/// process manager group; layouts centralize in the global concepts
-/// document as planned).
-fn write_payload(message: &mut Message, packed: &[u8]) {
-    debug_assert!(packed.len() <= minix_types::MESSAGE_PAYLOAD_SIZE);
-    // SAFETY: the raw payload is 56 writable bytes; the caller guarantees
-    // the packed slice fits (debug-checked above).
-    unsafe {
-        message.m_u.raw[..packed.len()].copy_from_slice(packed);
-    }
-}
-
 /// Reads a file descriptor's bytes.
 ///
 /// C: `read` (`minix3/minix/lib/libc/sys/read.c`): clear a message, store
@@ -129,7 +111,7 @@ pub fn read_via(
     buffer_address: u64,
     length: usize,
 ) -> Result<usize, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = ReadWritePayload {
         fd,
         _padding_before_buffer: [0; 4],
@@ -145,7 +127,7 @@ pub fn read_via(
             core::mem::size_of::<ReadWritePayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     let transferred = perform_syscall(transport, vfs_endpoint(), VFS_CALL_READ, &mut message)?;
     Ok(transferred as usize)
 }
@@ -160,7 +142,7 @@ pub fn write_via(
     buffer_address: u64,
     length: usize,
 ) -> Result<usize, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = ReadWritePayload {
         fd,
         _padding_before_buffer: [0; 4],
@@ -176,7 +158,7 @@ pub fn write_via(
             core::mem::size_of::<ReadWritePayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     let transferred = perform_syscall(transport, vfs_endpoint(), VFS_CALL_WRITE, &mut message)?;
     Ok(transferred as usize)
 }
@@ -197,7 +179,7 @@ struct ClosePayload {
 /// C: `close` (`minix3/minix/lib/libc/sys/close.c`): clear a message, store
 /// the descriptor with a zero no-block flag, and run the protocol.
 pub fn close_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = ClosePayload {
         fd,
         no_block: 0,
@@ -210,7 +192,7 @@ pub fn close_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
             core::mem::size_of::<ClosePayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_CLOSE, &mut message).map(|_| ())
 }
 
@@ -240,7 +222,7 @@ pub fn lseek_via(
     offset: i64,
     whence: i32,
 ) -> Result<i64, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = SeekPayload {
         offset,
         fd,
@@ -254,7 +236,7 @@ pub fn lseek_via(
             core::mem::size_of::<SeekPayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_LSEEK, &mut message)?;
     // SAFETY: the reply payload is 56 readable bytes; the offset sits at
     // byte zero by the C read-back cited above.
@@ -356,7 +338,7 @@ pub fn open_via(
     flags: i32,
     mode: u32,
 ) -> Result<i32, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     match dispatch_open(flags, mode) {
         OpenDispatch::Create { mode } => {
             let packed = CreatePayload {
@@ -373,7 +355,7 @@ pub fn open_via(
                     core::mem::size_of::<CreatePayload>(),
                 )
             };
-            write_payload(&mut message, bytes);
+            crate::syscall::write_payload(&mut message, bytes);
             perform_syscall(transport, vfs_endpoint(), VFS_CALL_CREATE, &mut message)
         }
         OpenDispatch::OpenExisting => Err(Errno::ENOSYS),

@@ -90,27 +90,6 @@ pub const fn pm_endpoint() -> Endpoint {
     Endpoint(PM_ENDPOINT_NUMBER)
 }
 
-/// Creates a zeroed message, mirroring the `memset(&m, 0, sizeof(m))` that
-/// opens every C wrapper in this group.
-fn cleared_message() -> Message {
-    Message::zeroed()
-}
-
-/// Copies a packed payload into the message body.
-///
-/// Payload layouts belong to the global concepts document; until it lands,
-/// each call group packs its own fields through this helper. The copy keeps
-/// the exact C field order and sizes, so the bytes on the wire match the C
-/// library bit for bit.
-fn write_payload(message: &mut Message, packed: &[u8]) {
-    debug_assert!(packed.len() <= minix_types::MESSAGE_PAYLOAD_SIZE);
-    // SAFETY: the raw payload is 56 writable bytes; the caller guarantees
-    // the packed slice fits (debug-checked above).
-    unsafe {
-        message.m_u.raw[..packed.len()].copy_from_slice(packed);
-    }
-}
-
 /// Execution payload in C field order.
 ///
 /// C: `mess_lc_pm_exec` (`minix3/minix/include/minix/ipc.h:435-444`): path
@@ -147,7 +126,7 @@ struct ServiceForkPayload {
 /// type carries the child identity: the parent receives the child process
 /// identifier, the child receives zero.
 pub fn fork_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_FORK, &mut message)
 }
 
@@ -160,7 +139,7 @@ pub fn fork_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
 /// spins, which is the safe Rust spelling of the same last resort (an
 /// invalid jump cannot be expressed without breaking memory safety).
 pub fn exit_via(transport: &impl IpcTransport, status: i32) -> ! {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // The exit payload is a plain 56-byte value type; writing it through
     // the union overlay matches the C field assignment
     // (`m.m_lc_pm_exit.status = status` in _exit.c:19). Union field writes
@@ -191,7 +170,7 @@ pub fn waitpid_via(
     options: i32,
     rusage_address: u64,
 ) -> Result<(Pid, i32), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // Same plain-value overlay reasoning as exit_via (see wait4.c:18-20
     // for the three field assignments).
     message.m_u.m_lc_pm_wait4 = minix_types::MessLcPmWait4 {
@@ -212,7 +191,7 @@ pub fn waitpid_via(
 /// C: `getpid` (`minix3/minix/lib/libc/sys/getpid.c`): clear a message and
 /// run the protocol; the reply message type is the identifier.
 pub fn getpid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_GETPID, &mut message)
 }
 
@@ -221,7 +200,7 @@ pub fn getpid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
 /// C: `kill` (`minix3/minix/lib/libc/sys/kill.c:12-22`): clear a message,
 /// store the target identifier and signal number, and run the protocol.
 pub fn kill_via(transport: &impl IpcTransport, target: Pid, signal: i32) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // Same plain-value overlay reasoning (see kill.c:19-20).
     message.m_u.m_lc_pm_kill = minix_types::MessLcPmKill {
         pid: target,
@@ -301,7 +280,7 @@ pub const fn prepare_exec(
 /// execution never comes back — so the result is always an error when it
 /// arrives.
 pub fn exec_via(transport: &impl IpcTransport, prepared: PreparedExec) -> Errno {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = ExecPayload {
         name: prepared.path_address,
         namelen: prepared.path_length as u64,
@@ -318,7 +297,7 @@ pub fn exec_via(transport: &impl IpcTransport, prepared: PreparedExec) -> Errno 
             core::mem::size_of::<ExecPayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     match perform_syscall(transport, pm_endpoint(), PM_CALL_EXEC, &mut message) {
         Ok(_) => Errno::EIO,
         Err(error) => error,
@@ -336,7 +315,7 @@ pub fn service_fork_via(
     real_user: Uid,
     real_group: Gid,
 ) -> Result<Pid, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = ServiceForkPayload {
         uid: real_user,
         gid: real_group,
@@ -349,7 +328,7 @@ pub fn service_fork_via(
             core::mem::size_of::<ServiceForkPayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_SERVICE_FORK, &mut message);
     if reply < 0 {
         Err(Errno::from_i32(-reply))
@@ -381,7 +360,7 @@ pub struct GetepInfo {
 
 /// PM_GETEPINFO(45):按端点取凭证。组表拷出暂沿 C 默认(NULL/0)。
 pub fn getepinfo_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<GetepInfo, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     message.m_u.m_lsys_pm_getepinfo = minix_types::ipc::MessLsysPmGetepinfo {
         endpt: proc_ep.0,
         _pad: 0,
@@ -416,7 +395,7 @@ pub fn getnuid_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result<i
 /// PM_GETPROCNR(46):按 pid 反查端点(C `getprocnr`,getprocnr.c:6-16;
 /// 应答 m_pm_lsys_getprocnr.endpt 携带端点)。
 pub fn getprocnr_via(transport: &impl IpcTransport, pid: Pid) -> Result<Endpoint, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     message.m_u.m_lsys_pm_getprocnr = minix_types::ipc::MessLsysPmGetprocnr {
         pid,
         _padding: [0; 52],
@@ -439,7 +418,7 @@ pub fn exec_restart_via(
     pc: u64,
     ps_str: u64,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     message.m_u.m_rs_pm_exec_restart = minix_types::ipc::MessRsPmExecRestart {
         endpt: proc_ep.0,
         result,
@@ -463,7 +442,7 @@ pub fn service_kill_via(
     target: Pid,
     signal: i32,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // Same overlay reasoning as kill_via (see srv_kill.c:11-12).
     message.m_u.m_rs_pm_srv_kill = minix_types::MessRsPmSrvKill {
         pid: target,
@@ -771,7 +750,7 @@ pub fn sched_start_via(
     maxprio: i32,
     quantum: i32,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     message.m_u.m_lsys_sched_scheduling_start = minix_types::ipc::MessLsysSchedSchedulingStart {
         endpoint: endpoint.0,
         parent: parent.0,
@@ -790,7 +769,7 @@ pub fn sched_stop_via(
     scheduler: Endpoint,
     endpoint: Endpoint,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     message.m_u.m_lsys_sched_scheduling_stop = minix_types::ipc::MessLsysSchedSchedulingStop {
         endpoint: endpoint.0,
         _padding: [0; 52],

@@ -99,24 +99,6 @@ pub const fn vm_endpoint() -> Endpoint {
     Endpoint(VM_ENDPOINT_NUMBER)
 }
 
-/// Creates a zeroed message, mirroring the `memset(&m, 0, sizeof(m))` that
-/// opens every C wrapper in this group.
-fn cleared_message() -> Message {
-    Message::zeroed()
-}
-
-/// Copies a packed payload into the message body (same helper shape as the
-/// earlier groups; layouts centralize in the global concepts document as
-/// planned).
-fn write_payload(message: &mut Message, packed: &[u8]) {
-    debug_assert!(packed.len() <= minix_types::MESSAGE_PAYLOAD_SIZE);
-    // SAFETY: the raw payload is 56 writable bytes; the caller guarantees
-    // the packed slice fits (debug-checked above).
-    unsafe {
-        message.m_u.raw[..packed.len()].copy_from_slice(packed);
-    }
-}
-
 /// Mapping request in C field order.
 ///
 /// C: `mess_mmap` (`minix3/minix/include/minix/ipc.h:1582-1593`) — offset,
@@ -181,7 +163,7 @@ pub fn mmap_via(
     caller: Endpoint,
     request: MapRequest,
 ) -> Result<VirBytes, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = MapPayload {
         offset: request.offset,
         address: request.address.0,
@@ -200,7 +182,7 @@ pub fn mmap_via(
             core::mem::size_of::<MapPayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     perform_syscall(transport, vm_endpoint(), VM_CALL_MMAP, &mut message)?;
     // SAFETY: the reply payload is 56 readable bytes; the chosen address
     // sits at the return-address lane (last eight bytes before padding).
@@ -217,7 +199,7 @@ pub fn munmap_via(
     address: VirBytes,
     length: VirBytes,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     let packed = MapPayload {
         offset: 0,
         address: address.0,
@@ -236,7 +218,7 @@ pub fn munmap_via(
             core::mem::size_of::<MapPayload>(),
         )
     };
-    write_payload(&mut message, bytes);
+    crate::syscall::write_payload(&mut message, bytes);
     perform_syscall(transport, vm_endpoint(), VM_CALL_MUNMAP, &mut message).map(|_| ())
 }
 
@@ -254,7 +236,7 @@ pub fn break_via(
     if requested_break == cached_break {
         return Ok(cached_break);
     }
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // The break payload is one address at byte zero (see the shared break
     // payload type); the remaining bytes stay zeroed.
     // SAFETY: writing eight bytes into the 56-byte raw payload.
@@ -276,7 +258,7 @@ pub fn fork_address_space_via(
     endpoint: Endpoint,
     slot: i32,
 ) -> Result<Endpoint, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: two plain integers at bytes zero and four; exact bytes below.
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
@@ -296,7 +278,7 @@ pub fn fork_address_space_via(
 ///
 /// C: `vm_exit` (sends the endpoint, returns the raw reply).
 pub fn exit_address_space_via(transport: &impl IpcTransport, endpoint: Endpoint) -> i32 {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: one plain integer at byte zero.
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
@@ -319,7 +301,7 @@ pub fn remap_via(
     source_address: VirBytes,
     size: VirBytes,
 ) -> Result<VirBytes, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: five plain 64-bit lanes at bytes 0..40; exact bytes below.
     unsafe {
         message.m_u.raw[0..8].copy_from_slice(&(destination.0 as u64).to_ne_bytes());
@@ -345,7 +327,7 @@ pub fn physical_address_via(
     endpoint: Endpoint,
     address: VirBytes,
 ) -> Result<PhysBytes, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: endpoint at bytes 0..4, address at bytes 8..16.
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
@@ -368,7 +350,7 @@ pub fn reference_count_via(
     endpoint: Endpoint,
     address: VirBytes,
 ) -> Result<u8, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: same two-field layout as the physical query above.
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
@@ -392,7 +374,7 @@ pub fn map_physical_via(
     physical: PhysBytes,
     length: VirBytes,
 ) -> Result<VirBytes, Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: three plain lanes at bytes 0..24; exact bytes below.
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&target.0.to_ne_bytes());
@@ -425,7 +407,7 @@ pub const PROCESS_CONTROL_PARAM_HANDLE_MEM: i32 = 2;
 /// (`com.h:644`), the same lane the VM server decodes [`minix_types::
 /// VmWillexitIn`] from.
 pub fn will_exit_via(transport: &impl IpcTransport, endpoint: Endpoint) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: one plain integer at byte zero (m1_i1 lane).
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
@@ -455,7 +437,7 @@ pub fn unmap_physical_via(
     target: Endpoint,
     vaddr: VirBytes,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: ep at bytes 0..4, 32-bit vaddr at bytes 4..8 — the wire
     // shape follows the 32-bit C sender, so a 64-bit address truncates
     // exactly as the C library's own i386 builds do.
@@ -485,7 +467,7 @@ fn process_control_via(
     len: i32,
     flags: i32,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: the m9 lanes are 32-bit fields at offsets 16/20/24/28/32 of
     // the payload (param/who/m1/len/flags), per the MessLcVmProcctl layout.
     unsafe {
@@ -594,7 +576,7 @@ fn cache_call_via(
     if dev == NO_DEVICE {
         panic!("cache call without a device");
     }
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: the m_vmmcp lanes at 0/8/16/24/32/40/48/49, per the layout
     // documented on `minix_types::VmCacheIn`.
     unsafe {
@@ -720,7 +702,7 @@ pub fn clear_cache_via(transport: &impl IpcTransport, dev: u64) -> Result<(), Er
     if dev == NO_DEVICE {
         panic!("cache call without a device");
     }
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     // SAFETY: the device occupies the first eight bytes (m2_l1 overlay).
     unsafe {
         message.m_u.raw[..8].copy_from_slice(&dev.to_ne_bytes());
@@ -1223,7 +1205,7 @@ pub fn vm_rs_set_priv_via(
     mask_buf: u64,
     is_sys: i32,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     {
         // SAFETY: m_m2 是 VM_RS_SET_PRIV 的文档化载荷。
         let m2 = unsafe { &mut message.m_u.m_m2 };
@@ -1243,7 +1225,7 @@ pub fn vm_rs_memctl_via(
     endpt: Endpoint,
     req: i32,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     {
         // SAFETY: m_m1 是 VM_RS_MEMCTL 的文档化载荷。
         let m1 = unsafe { &mut message.m_u.m_m1 };
@@ -1263,7 +1245,7 @@ pub fn vm_rs_update_via(
     dst: Endpoint,
     flags: i32,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     {
         // SAFETY: m_m2 是 VM_RS_UPDATE 的文档化载荷。
         let m2 = unsafe { &mut message.m_u.m_m2 };
@@ -1285,7 +1267,7 @@ pub fn shm_unmap_via(
     forwhom: Endpoint,
     addr: u64,
 ) -> Result<(), Errno> {
-    let mut message = cleared_message();
+    let mut message = crate::syscall::cleared_message();
     message.m_u.m_lc_vm_shm_unmap = minix_types::ipc::MessLcVmShmUnmap {
         forwhom: forwhom.0,
         _pad: 0,

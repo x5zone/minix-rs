@@ -826,6 +826,25 @@ pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32)
 /// SYS_DATACOPY 命名别名:C syslib.h:129 把它定义为 sys_vircopy 的
 /// 宏(参数完全同形)——Rust 同样以 [`sys_vircopy`] 承载,仅提供 C 侧
 /// 名称以便 ipc-server 的 semop/semctl/shmctl 拷贝边界动词 grep 可达。
+/// Creates a zeroed message — the single crate-wide helper
+/// (`cleared_message`, mirroring the `memset(&m, 0, sizeof(m))` that opens
+/// every C wrapper). Previously duplicated per group module; consolidated
+/// here (E-MINTYPES-RUNTIME 第②步，单点 helper).
+pub(crate) fn cleared_message() -> crate::Message {
+    crate::Message::zeroed()
+}
+
+/// Copies a packed payload into the message body (single crate-wide
+/// helper; payloads must fit the 56-byte union).
+pub(crate) fn write_payload(message: &mut crate::Message, packed: &[u8]) {
+    debug_assert!(packed.len() <= minix_types::MESSAGE_PAYLOAD_SIZE);
+    // SAFETY: the raw payload is 56 writable bytes; the caller guarantees
+    // the packed slice fits (debug-checked above).
+    unsafe {
+        message.m_u.raw[..packed.len()].copy_from_slice(packed);
+    }
+}
+
 pub fn sys_datacopy(
     transport: &impl KernelCallTransport,
     src_endpt: i32,

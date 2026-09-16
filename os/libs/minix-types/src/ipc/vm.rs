@@ -523,7 +523,10 @@ pub struct VmProcctlIn {
 }
 
 // ---------------------------------------------------------------------------
-// VM_REMAP / VM_REMAP_RO  (PM → VM)  — DEFERRED
+// VM_REMAP / VM_REMAP_RO  (PM → VM)  — 客户端打包已实现（分叉消除：
+// minix-sys `remap_via` 泛化 call 号覆盖 VM_REMAP/VM_REMAP_RO，见
+// vm.rs:305-327 与 E-MINTYPES-RUNTIME 裁决）；服务端解码臂随 VM 消费
+// 落地时补充。
 // ---------------------------------------------------------------------------
 // C: mess_lsys_vm_vmremap (ipc.h:1537) — destination/source endpoints are
 // explicit message fields, NOT derived from m_source (the IPC server
