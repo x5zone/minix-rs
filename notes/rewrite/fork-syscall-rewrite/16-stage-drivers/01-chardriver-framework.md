@@ -138,7 +138,7 @@ Redox 的方案（方案特征）更接近 Minix3：一组打开、读取、写�
 
 | C 符号 | 本篇位置 | Rust 对应 | 状态 |
 |--------|----------|-----------|------|
-| `chardriver_task`、`chardriver_terminate` | 第 2.6 节 | `CharServer`、`LoopAction` | 已覆盖 |
+| `chardriver_task`、`chardriver_terminate` | 第 2.6 节 | `CharServer`、`LoopAction` | 已覆盖（`[ARCH: 驱动服务运行时统一]`——机制在 `minix-driver-rt::core`，本库留名与家族路由） |
 | `chardriver_process` | 第 2.6 节 | `classify` | 已覆盖 |
 | `chardriver_announce`、`clear_open_devs`、`is_open_dev`、`set_open_dev` | 第 2.2 节 | `announce`、`OpenDeviceSet` | 已覆盖 |
 | `chardriver_reply`、`send_reply` | 第 2.4 节 | `reply_decision` | 已覆盖 |

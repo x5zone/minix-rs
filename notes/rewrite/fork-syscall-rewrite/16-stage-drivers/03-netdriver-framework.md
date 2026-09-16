@@ -103,7 +103,7 @@ Minix3 的网络框架就是这座塔台。协议栈是航空公司：它把要�
 
 | C 符号 | 本篇位置 | Rust 对应 | 状态 |
 |--------|----------|-----------|------|
-| `netdriver_task`、`netdriver_init`、`netdriver_terminate`、`netdriver_process` | 第 2.3、2.4 节 | `NetServer`、`classify`、`LoopAction` | 已覆盖 |
+| `netdriver_task`、`netdriver_init`、`netdriver_terminate`、`netdriver_process` | 第 2.3、2.4 节 | `NetServer`、`classify`、`LoopAction` | 已覆盖（`LoopAction` 与收发结果策略在 `minix-driver-rt::core`） |
 | `netdriver_recv`、`netdriver_send`、`netdriver_link` | 第 1.4、1.5 节 | `SendQueue`、`RecvQueue`、`note_link` | 已覆盖 |
 | `netdriver_stat_*` 四函数 | 第 1.5 节 | `NetStats::add` | 已覆盖 |
 | `netdriver_copyin`、`netdriver_copyout` | 第 2.6 节差异表 | 不管实现 | 已记录，不管实现 |

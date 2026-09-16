@@ -125,7 +125,7 @@ Rust 实现只保留单线程事件循环，多线程的线程拓扑不复刻。
 
 | C 符号 | 本篇位置 | Rust 对应 | 状态 |
 |--------|----------|-----------|------|
-| `blockdriver_task`（三套其一，单线程） | 第 2.5 节 | `BlockServer` 加循环动作 | 已覆盖（单线程） |
+| `blockdriver_task`（三套其一，单线程） | 第 2.5 节 | `BlockServer` 加循环动作 | 已覆盖（单线程；`[ARCH: 驱动服务运行时统一]`——机制在 `minix-driver-rt::core`） |
 | `blockdriver_task`（多线程） | 第 2.5 节 | 不复刻，队列策略保留 | 已覆盖（架构演进） |
 | `blockdriver_receive_mq`、`blockdriver_mq_queue` | 第 2.5 节 | `PendingQueue` 入队出队 | 已覆盖 |
 | `blockdriver_process`、`blockdriver_terminate`、`blockdriver_announce` | 第 2.3、2.5 节 | `classify`、`terminate`、`announce` | 已覆盖 |

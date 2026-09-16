@@ -29,6 +29,7 @@
 
 extern crate alloc;
 
+pub mod core;
 pub mod kernel;
 pub mod runtime;
 pub mod transport;

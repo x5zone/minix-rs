@@ -302,72 +302,10 @@ impl Default for PendingQueue {
 
 /// Set of minor devices opened since the last announce.
 ///
-/// Same 256-slot policy as the character framework (each framework keeps
-/// its own table; see `driver.c` open helpers).
-#[derive(Debug, Clone)]
-pub struct OpenDeviceSet {
-    slots: [u32; MAX_OPEN_DEVICES],
-    len: usize,
-}
-
-impl OpenDeviceSet {
-    /// Empty set, as right after an announce.
-    pub const fn new() -> OpenDeviceSet {
-        OpenDeviceSet {
-            slots: [0; MAX_OPEN_DEVICES],
-            len: 0,
-        }
-    }
-
-    /// Forget every recorded device (fresh start or restart).
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    /// Number of recorded devices.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// True when the set holds no device.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// True when the raw minor value was recorded before.
-    pub fn contains_raw(&self, minor: u32) -> bool {
-        self.slots[..self.len].contains(&minor)
-    }
-
-    /// True when the device was recorded before.
-    pub fn contains(&self, minor: DeviceMinor) -> bool {
-        self.contains_raw(minor.0)
-    }
-
-    /// Record a raw minor value; returns false when the table is full.
-    pub fn insert_raw(&mut self, minor: u32) -> bool {
-        if self.contains_raw(minor) {
-            return true;
-        }
-        if self.len >= MAX_OPEN_DEVICES {
-            return false;
-        }
-        self.slots[self.len] = minor;
-        self.len += 1;
-        true
-    }
-
-    /// Record a device; returns false when the table is full.
-    pub fn insert(&mut self, minor: DeviceMinor) -> bool {
-        self.insert_raw(minor.0)
-    }
-}
-
-impl Default for OpenDeviceSet {
-    fn default() -> Self {
-        OpenDeviceSet::new()
-    }
-}
+/// The 256-slot machinery is the shared driver-runtime core
+/// (`[ARCH: 驱动服务运行时统一]`); the character framework's identical
+/// copy was consolidated there.
+pub type OpenDeviceSet = minix_driver_rt::core::OpenSet;
 
 /// Default result when a device provides no transfer callback.
 ///

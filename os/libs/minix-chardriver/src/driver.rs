@@ -288,7 +288,7 @@ pub fn classify(
     };
     if is_char_request(message_type) {
         match minor {
-            Some(device) if !opened.contains(device) => {
+            Some(device) if !opened.contains_raw(device.0) => {
                 if request == CdevRequest::Open {
                     return Route::Request(request);
                 }
@@ -316,90 +316,15 @@ pub fn cloned_minor(result: i32, requested: DeviceMinor) -> DeviceMinor {
 
 /// Server state for one character driver: run flag plus open tracking.
 ///
-/// C: the file-static `running` flag (`chardriver.c:52`) with
-/// `chardriver_terminate` (`chardriver.c:537-544`) clearing it, and the
-/// open-device set (`chardriver.c:54-56`). The receive loop itself
-/// (`chardriver_task`, `chardriver.c:549-570`) stays in the service crate
-/// because only it owns the transport; this type owns the policy: when to
-/// keep looping, when a receive error is fatal, and when an interrupt means
-/// "stop now".
-pub struct CharServer {
-    running: bool,
-    opened: OpenDeviceSet,
-}
-
-impl CharServer {
-    /// Fresh server, as before the first announce.
-    pub fn new() -> CharServer {
-        CharServer {
-            running: false,
-            opened: OpenDeviceSet::new(),
-        }
-    }
-
-    /// Announce readiness: start running and forget pre-restart opens.
-    ///
-    /// C: `chardriver_announce` (`chardriver.c:99-124`) publishes the
-    /// "driver up" event and calls `clear_open_devs`. The data-store
-    /// publication itself stays in the service crate; this method owns the
-    /// state half of the announce.
-    pub fn announce(&mut self) {
-        self.running = true;
-        self.opened.clear();
-    }
-
-    /// Stop after the current request (`chardriver_terminate`).
-    pub fn terminate(&mut self) {
-        self.running = false;
-    }
-
-    /// True while the event loop should keep receiving.
-    pub fn is_running(&self) -> bool {
-        self.running
-    }
-
-    /// Open-device set for the router.
-    pub fn opened(&self) -> &OpenDeviceSet {
-        &self.opened
-    }
-
-    /// Mutable open-device set (record opens, clear on restart).
-    pub fn opened_mut(&mut self) -> &mut OpenDeviceSet {
-        &mut self.opened
-    }
-
-    /// Handle one receive outcome from the transport.
-    ///
-    /// C: the loop body in `chardriver_task` (`chardriver.c:560-569`).
-    /// A transport error of "interrupted" while stopping ends the loop
-    /// quietly; any other transport error is fatal, because the framework
-    /// treats a failed receive as unrecoverable and stops rather than
-    /// serving with unknown state.
-    pub fn note_receive(&mut self, result: Result<(), i32>) -> LoopAction {
-        match result {
-            Ok(()) => LoopAction::Dispatch,
-            Err(code) if code == EINTR && !self.running => LoopAction::Stop,
-            Err(_) => LoopAction::Abort,
-        }
-    }
-}
-
-impl Default for CharServer {
-    fn default() -> Self {
-        CharServer::new()
-    }
-}
+/// C: the file-static `running` flag (`chardriver.c:52`) and the
+/// open-device set (`chardriver.c:54-56`). The machinery is the shared
+/// driver-runtime core (`[ARCH: 驱动服务运行时统一]`) — the block
+/// framework's identical copy was consolidated there; this alias keeps
+/// the character-family name over the shared implementation.
+pub type CharServer = minix_driver_rt::core::ServerState;
 
 /// What the event loop does next after one receive outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
-    /// A message arrived: route it.
-    Dispatch,
-    /// Termination was requested while blocked: leave the loop.
-    Stop,
-    /// The receive itself failed: stop immediately.
-    Abort,
-}
+pub type LoopAction = minix_driver_rt::core::LoopAction;
 
 /// Error for a block-side open answered by a character driver.
 pub const fn block_open_error() -> i32 {
@@ -519,7 +444,7 @@ mod tests {
     fn test_opened_devices_pass_the_restart_gate() {
         let mut server = CharServer::new();
         server.announce();
-        server.opened_mut().insert(DeviceMinor(5));
+        server.opened_mut().insert_raw(5);
         assert_eq!(
             classify(
                 false,

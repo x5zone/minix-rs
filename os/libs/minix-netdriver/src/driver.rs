@@ -11,7 +11,7 @@ use super::protocol::{
     HardwareAddress, LinkState, MULTICAST_LIST_MAX, NdevRequest, NetStats, RECV_QUEUE_BOUND,
     SEND_QUEUE_BOUND, StatKind,
 };
-use minix_types::{EINTR, EINVAL, OK};
+use minix_types::EINVAL;
 
 /// Router classification for one incoming network message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,11 +356,9 @@ impl NetServer {
 
     /// Handle one receive outcome from the transport (fail-stop policy).
     pub fn note_receive(&mut self, result: Result<(), i32>) -> LoopAction {
-        match result {
-            Ok(()) => LoopAction::Dispatch,
-            Err(code) if code == EINTR && !self.running => LoopAction::Stop,
-            Err(_) => LoopAction::Abort,
-        }
+        // Shared receive-outcome policy (fail-stop; interrupt while
+        // terminating leaves quietly).
+        minix_driver_rt::core::loop_action(result, self.running)
     }
 }
 
@@ -370,16 +368,9 @@ impl Default for NetServer {
     }
 }
 
-/// What the event loop does next after one receive outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
-    /// A message arrived: route it.
-    Dispatch,
-    /// Termination was requested while blocked: leave the loop.
-    Stop,
-    /// The receive itself failed: stop immediately.
-    Abort,
-}
+/// What the event loop does next after one receive outcome
+/// (shared driver-runtime core).
+pub type LoopAction = minix_driver_rt::core::LoopAction;
 
 /// Classify one message before running any handler.
 ///
@@ -419,6 +410,7 @@ pub const fn multicast_fallback(offered: usize) -> bool {
 mod tests {
     use super::super::protocol::{HardwareAddress, StatKind};
     use super::*;
+    use minix_types::{EINTR, OK};
 
     /// Silent card: implements nothing, keeps defaults.
     struct SilentCard;

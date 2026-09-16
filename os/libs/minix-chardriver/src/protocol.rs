@@ -160,73 +160,9 @@ pub struct RequestId(pub u32);
 ///
 /// C: `open_devs` plus `next_open_devs_slot` plus the three helpers
 /// `clear_open_devs`, `is_open_dev`, `set_open_dev` (`chardriver.c:54-94`).
-/// The C code panics when the table overflows; this type reports the same
-/// situation as a boolean so the server — not the library — decides whether
-/// a full table is fatal for its device.
-#[derive(Debug, Clone)]
-pub struct OpenDeviceSet {
-    slots: [u32; MAX_OPEN_DEVICES],
-    len: usize,
-}
-
-impl OpenDeviceSet {
-    /// Empty set, as right after an announce.
-    pub const fn new() -> OpenDeviceSet {
-        OpenDeviceSet {
-            slots: [0; MAX_OPEN_DEVICES],
-            len: 0,
-        }
-    }
-
-    /// Forget every recorded device (fresh start or restart).
-    ///
-    /// C: `clear_open_devs` (`chardriver.c:61-65`).
-    pub fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    /// Number of recorded devices.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// True when the set holds no device.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// True when the device was recorded before.
-    ///
-    /// C: `is_open_dev` (`chardriver.c:70-80`), a linear scan, which is
-    /// fine for at most a few hundred entries on a slow control path.
-    pub fn contains(&self, minor: DeviceMinor) -> bool {
-        self.slots[..self.len].contains(&minor.0)
-    }
-
-    /// Record a device; returns false when the table is already full.
-    ///
-    /// C: `set_open_dev` (`chardriver.c:85-94`), which panics on overflow.
-    /// Returning false instead of panicking keeps the "no reply" and
-    /// "error reply" policy in the server layer where the message context
-    /// is available.
-    pub fn insert(&mut self, minor: DeviceMinor) -> bool {
-        if self.contains(minor) {
-            return true;
-        }
-        if self.len >= MAX_OPEN_DEVICES {
-            return false;
-        }
-        self.slots[self.len] = minor.0;
-        self.len += 1;
-        true
-    }
-}
-
-impl Default for OpenDeviceSet {
-    fn default() -> Self {
-        OpenDeviceSet::new()
-    }
-}
+/// The machinery lives in the shared driver runtime (`[ARCH: 驱动服务运行时
+/// 统一]`); the block framework's identical copy was consolidated there.
+pub type OpenDeviceSet = minix_driver_rt::core::OpenSet;
 
 /// Default result when a device provides no read or write callback.
 ///
@@ -347,29 +283,29 @@ mod tests {
     fn test_open_set_records_and_finds_devices() {
         let mut set = OpenDeviceSet::new();
         assert!(set.is_empty());
-        assert!(set.insert(DeviceMinor(3)));
-        assert!(set.insert(DeviceMinor(7)));
+        assert!(set.insert_raw(3));
+        assert!(set.insert_raw(7));
         assert_eq!(set.len(), 2);
-        assert!(set.contains(DeviceMinor(3)));
-        assert!(!set.contains(DeviceMinor(4)));
+        assert!(set.contains_raw(3));
+        assert!(!set.contains_raw(4));
     }
 
     #[test]
     fn test_open_set_insert_is_idempotent() {
         let mut set = OpenDeviceSet::new();
-        assert!(set.insert(DeviceMinor(9)));
-        assert!(set.insert(DeviceMinor(9)));
+        assert!(set.insert_raw(9));
+        assert!(set.insert_raw(9));
         assert_eq!(set.len(), 1);
     }
 
     #[test]
     fn test_open_set_clear_forgets_everything_after_restart() {
         let mut set = OpenDeviceSet::new();
-        set.insert(DeviceMinor(1));
-        set.insert(DeviceMinor(2));
+        set.insert_raw(1);
+        set.insert_raw(2);
         set.clear();
         assert!(set.is_empty());
-        assert!(!set.contains(DeviceMinor(1)));
+        assert!(!set.contains_raw(1));
     }
 
     #[test]

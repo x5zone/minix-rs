@@ -182,78 +182,16 @@ pub fn classify(
 /// multi-threaded loop is not replicated; the single event loop plus the
 /// bounded pending queue (protocol module) covers both C loops' admission
 /// policy.
-pub struct BlockServer {
-    running: bool,
-    opened: OpenDeviceSet,
-}
-
-impl BlockServer {
-    /// Fresh server, as before the first announce.
-    pub fn new() -> BlockServer {
-        BlockServer {
-            running: false,
-            opened: OpenDeviceSet::new(),
-        }
-    }
-
-    /// Announce readiness: start running and forget pre-restart opens.
-    ///
-    /// C: `blockdriver_announce` (publishes the `drv.blk.` event and clears
-    /// the table; the publication itself stays in the service crate).
-    pub fn announce(&mut self) {
-        self.running = true;
-        self.opened.clear();
-    }
-
-    /// Stop after the current request (`blockdriver_terminate`).
-    pub fn terminate(&mut self) {
-        self.running = false;
-    }
-
-    /// True while the event loop should keep receiving.
-    pub fn is_running(&self) -> bool {
-        self.running
-    }
-
-    /// Open-device set for the router.
-    pub fn opened(&self) -> &OpenDeviceSet {
-        &self.opened
-    }
-
-    /// Mutable open-device set.
-    pub fn opened_mut(&mut self) -> &mut OpenDeviceSet {
-        &mut self.opened
-    }
-
-    /// Handle one receive outcome from the transport.
-    ///
-    /// Same fail-stop policy as characters: an interrupt while stopping
-    /// ends the loop quietly, any other transport error aborts.
-    pub fn note_receive(&mut self, result: Result<(), i32>) -> LoopAction {
-        match result {
-            Ok(()) => LoopAction::Dispatch,
-            Err(code) if code == EINTR && !self.running => LoopAction::Stop,
-            Err(_) => LoopAction::Abort,
-        }
-    }
-}
-
-impl Default for BlockServer {
-    fn default() -> Self {
-        BlockServer::new()
-    }
-}
+/// Server state for one block driver: run flag plus open tracking.
+///
+/// The machinery is the shared driver-runtime core (`[ARCH: 驱动服务运行时
+/// 统一]`); the character framework's identical copy was consolidated
+/// there; this alias keeps the block-family name over the shared
+/// implementation.
+pub type BlockServer = minix_driver_rt::core::ServerState;
 
 /// What the event loop does next after one receive outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
-    /// A message arrived: route it.
-    Dispatch,
-    /// Termination was requested while blocked: leave the loop.
-    Stop,
-    /// The receive itself failed: stop immediately.
-    Abort,
-}
+pub type LoopAction = minix_driver_rt::core::LoopAction;
 
 /// Partition-style decision helper: which styles need table parsing.
 ///
