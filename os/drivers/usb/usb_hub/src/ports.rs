@@ -43,10 +43,22 @@ pub enum PortObservation {
     Arrived,
     /// A device left.
     Left,
-    /// The port reports a status error (power it off, mark broken).
+    /// The port reports a status error (power it off, block the port).
     StatusError,
-    /// The port stopped answering (hangs the task in C).
+    /// The port stopped answering (hangs the whole task in C).
     CommError,
+}
+
+/// What the service loop must do after folding one observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortEffect {
+    /// Keep polling as usual.
+    Continue,
+    /// A communication error hangs the ENTIRE hub task, not one port:
+    /// C jumps to `HUB_ERROR` and sleeps on a semaphore until the hub is
+    /// removed (`usb_hub.c:465-468`, `usb_hub.c:500-507`). The port's own
+    /// state is not touched.
+    SuspendTask,
 }
 
 /// One hub port: belief plus reset budget.
@@ -67,30 +79,42 @@ impl HubPort {
         self.belief
     }
 
-    /// Fold one poll observation into the belief (`hub_handle_change`,
-    /// `usb_hub.c:693`: arrivals connect, departures disconnect,
-    /// status errors break the port permanently).
-    pub fn observe(&mut self, observation: PortObservation) {
-        match observation {
-            PortObservation::None => {}
-            PortObservation::Arrived => {
-                if self.belief != PortBelief::Broken {
-                    self.belief = PortBelief::Connected;
-                    self.resets_used = 0;
-                }
-            }
-            PortObservation::Left => {
-                self.belief = PortBelief::Disconnected;
+/// Fold one poll observation into the belief (`hub_handle_change`,
+/// `usb_hub.c:693`, with the `hub_task` switch at `usb_hub.c:440-491`).
+///
+/// Two C details this keeps faithful: a status-error port is blocked
+/// until the hub itself is detached — the poll loop skips blocked ports
+/// before reading status (`usb_hub.c:444-446`), so a departure on a
+/// blocked port is unreachable and cannot clear the block. A
+/// communication error is not a port state at all: it hangs the whole
+/// task (`usb_hub.c:465-468`).
+pub fn observe(&mut self, observation: PortObservation) -> PortEffect {
+    match observation {
+        PortObservation::None => PortEffect::Continue,
+        PortObservation::Arrived => {
+            if self.belief != PortBelief::Broken {
+                self.belief = PortBelief::Connected;
                 self.resets_used = 0;
             }
-            PortObservation::StatusError => {
-                self.belief = PortBelief::Broken;
-            }
-            PortObservation::CommError => {
-                self.belief = PortBelief::Broken;
-            }
+            PortEffect::Continue
         }
+        PortObservation::Left => {
+            if self.belief == PortBelief::Broken {
+                // Unreachable in C (blocked ports are skipped); refuse to
+                // model an un-block that cannot happen.
+                return PortEffect::Continue;
+            }
+            self.belief = PortBelief::Disconnected;
+            self.resets_used = 0;
+            PortEffect::Continue
+        }
+        PortObservation::StatusError => {
+            self.belief = PortBelief::Broken;
+            PortEffect::Continue
+        }
+        PortObservation::CommError => PortEffect::SuspendTask,
     }
+}
 
     /// Spend one reset attempt (`hub_handle_connection`, `usb_hub.c:826`):
     /// true while attempts remain, false once the budget is exhausted.
@@ -133,7 +157,10 @@ mod tests {
     }
 
     #[test]
-    fn test_status_error_breaks_port_permanently() {
+    fn test_status_error_blocks_port_until_hub_detach() {
+        // Status error blocks the port; the poll loop skips blocked ports
+        // before reading status (usb_hub.c:444-446), so a departure can
+        // never reach — let alone clear — a blocked port.
         let mut port = HubPort::new();
         port.observe(PortObservation::Arrived);
         port.observe(PortObservation::StatusError);
@@ -141,7 +168,18 @@ mod tests {
         port.observe(PortObservation::Arrived);
         assert_eq!(port.belief(), PortBelief::Broken);
         port.observe(PortObservation::Left);
-        assert_eq!(port.belief(), PortBelief::Disconnected);
+        assert_eq!(port.belief(), PortBelief::Broken);
+    }
+
+    #[test]
+    fn test_comm_error_suspends_whole_task_not_port() {
+        // C's CommError jumps to HUB_ERROR: the task hangs, and the
+        // port's own state is never touched (usb_hub.c:465-468).
+        let mut port = HubPort::new();
+        port.observe(PortObservation::Arrived);
+        let effect = port.observe(PortObservation::CommError);
+        assert_eq!(effect, PortEffect::SuspendTask);
+        assert_eq!(port.belief(), PortBelief::Connected);
     }
 
     #[test]
