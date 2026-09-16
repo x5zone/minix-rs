@@ -425,10 +425,14 @@ pub fn resolve_path<D: FsDriver>(
                         let mut path = Box::new([0u8; PATH_MAX]);
                         path[..working_length].copy_from_slice(&working_path[..working_length]);
                         driver.put_node(current.inode_number, 1).ok();
+                        // The C ladder sets `ptr = path` before breaking out
+                        // (`lookup.c:269`), so the offset it reports is zero
+                        // (`lookup.c:308-309`): the restart begins at the
+                        // start of the rewritten path, never mid-way.
                         return Ok(LookupOutcome::AbsoluteSymlink {
                             path,
                             path_length: working_length,
-                            offset: component_start,
+                            offset: 0,
                             links_resolved,
                         });
                     }
@@ -663,6 +667,34 @@ mod tests {
     }
 
     #[test]
+    fn test_absolute_symlink_offset_is_zero_past_first_component() {
+        // The link sits behind another component, so the pre-rewrite
+        // component offset is non-zero; the C ladder resets its pointer to
+        // the path start before reporting ESYMLINK (`lookup.c:269`,
+        // `lookup.c:308-309`), and the offset here must follow.
+        let mut driver = TreeDriver {
+            entries: BTreeMap::from([
+                ((1, b"sub".to_vec()), (FileNode::new(2, 0o040755, 0, 0, 0, 0), false)),
+                ((2, b"link".to_vec()), (TreeDriver::link_node(5), false)),
+            ]),
+            links: BTreeMap::from([(5, b"/etc/hosts".to_vec())]),
+            released: Vec::new(),
+        };
+        let outcome = resolve_path(&mut driver, &input("sub/link")).unwrap();
+        match &outcome {
+            LookupOutcome::AbsoluteSymlink {
+                path,
+                path_length,
+                offset,
+                ..
+            } => {
+                assert_eq!(&path[..*path_length], b"/etc/hosts");
+                assert_eq!(*offset, 0);
+            }
+            other => panic!("expected AbsoluteSymlink, got {other:?}"),
+        }
+    }
+
     fn test_resolve_absolute_symlink_redirects() {
         let mut driver = TreeDriver {
             entries: BTreeMap::from([((1, b"link".to_vec()), (TreeDriver::link_node(5), false))]),

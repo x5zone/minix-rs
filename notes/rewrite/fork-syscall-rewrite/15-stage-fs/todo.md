@@ -16,7 +16,7 @@
 | V1-P1-3 | P1 | Peek 路径缺失：read.c:156-159 的 `FSC_PEEK` 分支无对应 | 开口项 |
 | V1-P1-4 | P1 | `ReclaimZones` 无执行者：unlink 最后一链后数据区实际不回收 | ✅ 2026-09-17 Fix #4（执行体挂 unlink/remove_dir/put_node 三出口，卷视图可观察验证） |
 | V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | ✅ 2026-09-16 Fix #1（先行落地：P0-1 装配的依赖） |
-| V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | 开口项 |
+| V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | ✅ 2026-09-17 Fix #6（归零 + 跨组件钉住测试 + 03 篇对齐说明更新） |
 | V1-P1-7 | P1 | mount 适配层丢失驱动标签：`adapt_mount` 向 `bound_driver` 传空字符串 | 开口项 |
 | V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | ✅ 2026-09-17 Fix #2（随装配翻转，钉住测试 28/3） |
 | V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | 开口项 |
@@ -129,6 +129,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **✅ 2026-09-16 闭环（Fix #1）**：新模块 `os/fs/mfs/src/dir_io.rs`——`load_dir_blocks`（逐文件块翻译 + 缓存读出）与 `store_dir_blocks`（整块免读覆写置脏；旧尺寸外追加块经 `alloc_zone`+`write_map` 建映射；尺寸内空洞按损坏报 EIO，与 `list_dir_entries` 同规则）。位图以闭包注入，模块不依赖超级块结构；inode 元数据写回留给装配层。七个新测试全绿（crate 105 个）；文档同步 14 篇 §4.4/§5.4，dir.rs 过时注释更新。批内顺序调整说明：本条先行于 V1-P0-1，因为装配冒烟链的 lookup 依赖本桥。
 
 **V1-P1-6 绝对符号链接的 offset 分歧。** C 在符号链接改写路径后置 `ptr = path`（lookup.c:269），绝对链接返回 ESYMLINK 时 `m_fs_vfs_lookup.offset = ptr - path = 0`（lookup.c:308-309），VFS 从重写路径的起点重新解析。Rust 返回 `offset: component_start`（lookup.rs:424-433），即旧路径中链接组件的起点——对重写后的新路径该值没有意义。修复方向：改为 0 并加钉住测试；同时在 05-stage-vfs 侧对账 VFS 消费 offset 的语义（本条修复只动 minix-fs，VFS 侧只需读代码验证，不构成跨 stage 改码）。
+**✅ 2026-09-17 闭环（Fix #6）**：`AbsoluteSymlink` 臂的 offset 改为 0（lookup.rs，注释锚 lookup.c:269/308-309）；新增跨组件钉住测试（路径 sub/link，断言 offset==0 且改写路径为 /etc/hosts），ELEAVEMOUNT 的分量起点语义经核与 C 一致保持不动；03 篇 §4.3 的偏差记录改为「已对齐」并更新 §5.3/§5.4。minix-fs 九十六测试全绿。
 
 **V1-P1-7 mount 适配层丢失驱动标签。** C fsdriver_readsuper 先经 `fsdriver_getname` 取标签再调 `fdr_driver(dev, label)`（call.c:36-41）；Rust `adapt_mount` 硬编码 `driver.bound_driver(input.device, "")`（call.rs:151）。修复方向：`MountInput` 增加 label 字段，由协议层（ReadSuper 消息的 name 字段经 `fetch_name`，data.rs:125）填充；在装配层验收。
 
