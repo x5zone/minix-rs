@@ -133,7 +133,7 @@ const USER_CODE_PHYS: u64 = 0x0400_0000; // 64 MiB — region 2
 const USER_DATA_PHYS: u64 = 0x0400_1000;
 const USER_STACK_PHYS: u64 = 0x0400_2000;
 const MSG_VA: u64 = 0x1_0001_0100;   // GetInfo message in the data page
-const HZ_BUF_VA: u64 = 0x1_0001_0200; // hz result buffer
+const HZ_BUF_VA: u64 = 0x0400_1200; // hz result buffer (identity VA = PA, E8 identity-channel bypass)
 
 /// The CPL3 payload (hand-assembled x86-64):
 /// ```text
@@ -304,6 +304,22 @@ fn main() -> Status {
     }
     early_console::write_str("  VM boot proc: user context set, runnable\n");
 
+    // ── E8: identity channel bypass ──
+    // OR the USER bit into the identity map's PDP[0] (1GB huge page covering
+    // VA 0-1GB). This makes VA 0x400_1200 (the hz buffer) CPL3-readable,
+    // so `copy_struct_to_caller`'s kernel write is observable by the user
+    // payload's subsequent read. Without this, the bootstrap root's
+    // identity entries are kernel-only and CPL3 reads fault.
+    {
+        let root = result.root_page.0;
+        let pml4e = unsafe { core::ptr::read_volatile(root as *const u64) };
+        let pdp_base = pml4e & 0x000f_ffff_ffff_f000;
+        let pdp0_addr = pdp_base;
+        let pdp0 = unsafe { core::ptr::read_volatile(pdp0_addr as *const u64) };
+        unsafe { core::ptr::write_volatile(pdp0_addr as *mut u64, pdp0 | 0x4); }
+        early_console::write_str("  identity PDP[0] USER bit set\n");
+    }
+
     // ── E8: pre-build the GetInfo GET_HZ message for the syscall leg ──
     // The kernel's kernel_call reads this message from user memory (RDI)
     // and writes the hz value to val_ptr. GET_HZ = 18, GETINFO = 26.
@@ -314,11 +330,11 @@ fn main() -> Status {
         // m_lsys_krn_sys_getinfo.request = GET_HZ(18) at arm offset 0 (msg+8)
         core::ptr::write_volatile(msg_base.add(1), 18);
         // val_ptr = data_va + 0x200 at arm offset 8 (msg+16)
-        core::ptr::write_volatile(msg_base.add(2), (USER_DATA_VA + 0x200) as u64);
+        core::ptr::write_volatile(msg_base.add(2), HZ_BUF_VA);
         // val_len = 4 at arm offset 16 (msg+24)
         core::ptr::write_volatile((USER_DATA_VA + 0x100 + 24) as *mut u32, 4);
         // Zero the hz buffer
-        core::ptr::write_bytes((USER_DATA_VA + 0x200) as *mut u8, 0, 8);
+        core::ptr::write_bytes(HZ_BUF_VA as *mut u8, 0, 8);
     }
     early_console::write_str("  GetInfo GET_HZ message pre-built\n");
 
