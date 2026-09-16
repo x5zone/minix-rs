@@ -4,34 +4,9 @@
 
 use crate::{EAGAIN, EINVAL, EIO, ENOMEM, ENOSYS, EPERM, ESRCH, Endpoint};
 
-/// PM request message types.
-///
-/// These are the requests that PM receives from other services.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PmRequest {
-    /// Fork request from user process (via kernel).
-    ///
-    /// Kernel sends this when a process calls fork().
-    Fork {
-        /// Caller process endpoint.
-        caller: Endpoint,
-    },
-}
-
-/// PM response message types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PmResponse {
-    /// Fork succeeded (returned to parent process).
-    ForkParent {
-        /// Child process PID.
-        child_pid: i32,
-    },
-    /// Fork succeeded (returned to child process).
-    ForkChild,
-    /// Operation failed.
-    Error(PmError),
-}
-
+/// PM 错误类型（fork 协调错误的用户可见形态；`PmRequest`/`PmResponse`
+/// 两个零使用枚举已按 E7 预裁决删除——PM wire 面由类型化
+/// `Mess*` 结构承载，见下方 G 批及 A-E 批）。
 /// PM error types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PmError {
@@ -72,40 +47,118 @@ impl PmError {
     }
 }
 
+// ── G 批：杂项 9 调用（04-stage-pm/todo.md §11.1.1 批次表）──
+//
+// C 真值：callnr.h 18/19/25/37/38/39/47 + ipc.h 对应
+// `mess_lc_pm_*` / `mess_lc_svrctl` 结构。45/46（getepinfo/getprocnr）
+// 已由 E9 PmApi 切片落地；37 常量已由 A 批锚定，本批补齐结构。
+
+/// C: `PM_GETMCONTEXT (PM_BASE + 18)` — callnr.h:31.
+pub const PM_GETMCONTEXT: i32 = 18;
+/// C: `PM_SETMCONTEXT (PM_BASE + 19)` — callnr.h:32.
+pub const PM_SETMCONTEXT: i32 = 19;
+/// C: `PM_SYSUNAME (PM_BASE + 25)` — callnr.h:38（C 注记 obsolete，行为保留）。
+pub const PM_SYSUNAME: i32 = 25;
+/// C: `PM_SVRCTL (PM_BASE + 38)` — callnr.h:51.
+pub const PM_SVRCTL: i32 = 38;
+/// C: `PM_SPROF (PM_BASE + 39)` — callnr.h:52.
+pub const PM_SPROF: i32 = 39;
+/// C: `PM_GETSYSINFO (PM_BASE + 47)` — callnr.h:60（PM 服务端 SI 表；
+/// 表快照 wire 归 E-MIBPROD/E-ISPROD 域）。
+pub const PM_GETSYSINFO: i32 = 47;
+
+/// `mcontext_t` 指针载荷（GETMCONTEXT/SETMCONTEXT 共用）。
+///
+/// C: `mess_lc_pm_mcontext` — ipc.h:477-481。LP64：指针 4→8，
+/// padding 52→48，总长保持 56。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmMcontext {
+    /// `mcontext_t *`——用户态上下文存储地址。
+    pub ctx: u64,
+    _pad: [u8; 48],
+}
+impl MessLcPmMcontext {
+    pub const fn new() -> Self {
+        Self { ctx: 0, _pad: [0; 48] }
+    }
+}
+
+/// REBOOT 载荷。
+///
+/// C: `mess_lc_pm_reboot` — ipc.h:503-507（int how + pad52，
+/// LP64 同形 56）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmReboot {
+    /// 重启方式（RBT_HALT/RBT_REBOOT/RBT_PANIC）。
+    pub how: i32,
+    _pad: [u8; 52],
+}
+impl MessLcPmReboot {
+    pub const fn new(how: i32) -> Self {
+        Self { how, _pad: [0; 52] }
+    }
+}
+
+/// SYSUNAME 载荷。
+///
+/// C: `mess_lc_pm_sysuname` — ipc.h:565-571（req/field/len/value）。
+/// LP64：len 对齐 8 → @8，value @16，padding 40→28，总长 56。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmSysuname {
+    /// 操作码（uname 命名空间 request）。
+    pub req: i32,
+    /// 字段选择。
+    pub field: i32,
+    /// 缓冲长度。
+    pub len: u64,
+    /// 用户缓冲指针。
+    pub value: u64,
+    _pad: [u8; 28],
+}
+
+/// SVRCTL 载荷（PM 服务器控制；与内核/RS 的 `mess_lc_svrctl` 同形）。
+///
+/// C: `mess_lc_svrctl` — ipc.h:603-608（unsigned long request +
+/// vir_bytes arg）。LP64：request@0、arg@8、padding 48，总长 56。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmSvrctl {
+    /// SVRCTL 请求码。
+    pub request: u64,
+    /// 请求参数（用户指针或数值）。
+    pub arg: u64,
+    _pad: [u8; 40],
+}
+
+/// SPROF 载荷（PM 侧统计剖面控制）。
+///
+/// C: `mess_lc_pm_sprof` — ipc.h:550-558。LP64：三个 int + 三个
+/// 8 字节域，padding 32→16，总长 56。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessLcPmSprof {
+    /// 动作码（start/stop）。
+    pub action: i32,
+    /// 采样频率。
+    pub freq: i32,
+    /// 中断类型。
+    pub intr_type: i32,
+    /// 控制块指针。
+    pub ctl_ptr: u64,
+    /// 内存区指针。
+    pub mem_ptr: u64,
+    /// 内存区大小。
+    pub mem_size: u64,
+    _pad: [u8; 16],
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_pm_fork_request() {
-        let req = PmRequest::Fork {
-            caller: Endpoint::PM,
-        };
-
-        match req {
-            PmRequest::Fork { caller } => {
-                assert_eq!(caller, Endpoint::PM);
-            }
-        }
-    }
-
-    #[test]
-    fn test_pm_response_fork_parent() {
-        let resp = PmResponse::ForkParent { child_pid: 100 };
-
-        match resp {
-            PmResponse::ForkParent { child_pid } => {
-                assert_eq!(child_pid, 100);
-            }
-            _ => panic!("expected ForkParent"),
-        }
-    }
-
-    #[test]
-    fn test_pm_response_fork_child() {
-        let resp = PmResponse::ForkChild;
-        assert!(matches!(resp, PmResponse::ForkChild));
-    }
 
     #[test]
     fn test_pm_error_to_errno() {
@@ -604,5 +657,54 @@ mod pm_service_wire_tests {
         assert_eq!(offset_of!(MessLsysPmGetprocnr, pid), 0);
         assert_eq!(size_of::<MessPmLsysGetprocnr>(), 56);
         assert_eq!(offset_of!(MessPmLsysGetprocnr, endpt), 0);
+    }
+}
+
+#[cfg(test)]
+mod g_batch_wire_tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    /// G 批调用号绝对值 pin（C callnr.h 31/32/38/51/52/60，
+    /// PM_BASE = 0）。
+    #[test]
+    fn test_g_batch_call_numbers_match_c() {
+        assert_eq!(PM_GETMCONTEXT, 18); // callnr.h:31
+        assert_eq!(PM_SETMCONTEXT, 19); // callnr.h:32
+        assert_eq!(PM_SYSUNAME, 25); // callnr.h:38
+        assert_eq!(PM_SVRCTL, 38); // callnr.h:51
+        assert_eq!(PM_SPROF, 39); // callnr.h:52
+        assert_eq!(PM_GETSYSINFO, 47); // callnr.h:60
+    }
+
+    /// 布局见证：五个 G 批结构均为 56 字节（PM wire 总长契约）。
+    #[test]
+    fn test_g_batch_struct_sizes() {
+        assert_eq!(size_of::<MessLcPmMcontext>(), 56);
+        assert_eq!(size_of::<MessLcPmReboot>(), 56);
+        assert_eq!(size_of::<MessLcPmSysuname>(), 56);
+        assert_eq!(size_of::<MessLcPmSvrctl>(), 56);
+        assert_eq!(size_of::<MessLcPmSprof>(), 56);
+    }
+
+    /// 字段偏移见证（LP64 判例：Mcontext/Reboot 单域；Sysuname 的
+    /// len 对齐 8 → @8、value @16；Svrctl 双 8 字节域；Sprof 三个
+    /// int + 对齐垫 + 三个 8 字节域）。
+    #[test]
+    fn test_g_batch_field_offsets() {
+        assert_eq!(offset_of!(MessLcPmMcontext, ctx), 0);
+        assert_eq!(offset_of!(MessLcPmReboot, how), 0);
+        assert_eq!(offset_of!(MessLcPmSysuname, req), 0);
+        assert_eq!(offset_of!(MessLcPmSysuname, field), 4);
+        assert_eq!(offset_of!(MessLcPmSysuname, len), 8);
+        assert_eq!(offset_of!(MessLcPmSysuname, value), 16);
+        assert_eq!(offset_of!(MessLcPmSvrctl, request), 0);
+        assert_eq!(offset_of!(MessLcPmSvrctl, arg), 8);
+        assert_eq!(offset_of!(MessLcPmSprof, action), 0);
+        assert_eq!(offset_of!(MessLcPmSprof, freq), 4);
+        assert_eq!(offset_of!(MessLcPmSprof, intr_type), 8);
+        assert_eq!(offset_of!(MessLcPmSprof, ctl_ptr), 16);
+        assert_eq!(offset_of!(MessLcPmSprof, mem_ptr), 24);
+        assert_eq!(offset_of!(MessLcPmSprof, mem_size), 32);
     }
 }
