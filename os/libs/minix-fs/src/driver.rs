@@ -507,23 +507,6 @@ pub fn classify(
     }
 }
 
-/// Outcome of handling one message: what reply status to send, if any.
-///
-/// Sending itself stays outside this framework (it needs the kernel
-/// interface); this value tells the event loop what to do next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Handling {
-    /// Send a reply carrying this status and the echoed transaction id.
-    Reply {
-        /// Status code: success or an error number.
-        status: i32,
-        /// Transaction identifier echoed from the request.
-        transaction: TransactionId,
-    },
-    /// Send nothing (non-request messages only).
-    NoReply,
-}
-
 /// Handle one message header through classification only.
 ///
 /// This covers the dispatch rules that do not need the server: `Other`
@@ -532,33 +515,44 @@ pub enum Handling {
 /// [`crate::call`], so it is reported back for the caller to continue.
 /// The `run_post_call` flag tells the caller whether the server's post-call
 /// hook must run (only after a dispatched request that produced a reply).
-pub fn handle_header(route: Route) -> (Handling, Option<RequestNumber>) {
+pub enum HeaderAction {
+    /// 非请求消息：交给 `other` 钩子，不发回复。
+    Silence,
+    /// 拒绝类回答：未挂载（EINVAL）或未知请求（ENOSYS）。
+    Reply {
+        /// 状态码：EINVAL 或 ENOSYS。
+        status: i32,
+        /// 回显的事务编号。
+        transaction: TransactionId,
+    },
+    /// 可分发请求：调用方继续走适配层，适配结果就是回复。
+    Continue {
+        /// 要适配的请求。
+        request: RequestNumber,
+        /// 回显的事务编号。
+        transaction: TransactionId,
+    },
+}
+
+/// 把路由结果翻译成循环动作。
+pub fn handle_header(route: Route) -> HeaderAction {
     match route {
-        Route::Other => (Handling::NoReply, None),
-        Route::NotMounted { transaction, .. } => (
-            Handling::Reply {
-                status: EINVAL,
-                transaction,
-            },
-            None,
-        ),
-        Route::Unknown { transaction } => (
-            Handling::Reply {
-                status: ENOSYS,
-                transaction,
-            },
-            None,
-        ),
+        Route::Other => HeaderAction::Silence,
+        Route::NotMounted { transaction, .. } => HeaderAction::Reply {
+            status: EINVAL,
+            transaction,
+        },
+        Route::Unknown { transaction } => HeaderAction::Reply {
+            status: ENOSYS,
+            transaction,
+        },
         Route::Dispatch {
             request,
             transaction,
-        } => (
-            Handling::Reply {
-                status: 0,
-                transaction,
-            },
-            Some(request),
-        ),
+        } => HeaderAction::Continue {
+            request,
+            transaction,
+        },
     }
 }
 
@@ -736,9 +730,7 @@ mod tests {
             VFS_ENDPOINT,
         );
         assert_eq!(route, Route::Other);
-        let (handling, request) = handle_header(route);
-        assert_eq!(handling, Handling::NoReply);
-        assert_eq!(request, None);
+        assert!(matches!(handle_header(route), HeaderAction::Silence));
     }
 
     #[test]
@@ -775,14 +767,13 @@ mod tests {
             VFS_ENDPOINT,
         );
         assert!(matches!(read_route, Route::NotMounted { .. }));
-        let (handling, _) = handle_header(read_route);
-        assert_eq!(
-            handling,
-            Handling::Reply {
+        assert!(matches!(
+            handle_header(read_route),
+            HeaderAction::Reply {
                 status: EINVAL,
                 transaction: TransactionId(3)
             }
-        );
+        ));
     }
 
     #[test]
@@ -826,14 +817,13 @@ mod tests {
                 transaction: TransactionId(2)
             }
         );
-        let (handling, _) = handle_header(route);
-        assert_eq!(
-            handling,
-            Handling::Reply {
+        assert!(matches!(
+            handle_header(route),
+            HeaderAction::Reply {
                 status: ENOSYS,
                 transaction: TransactionId(2)
             }
-        );
+        ));
     }
 
     #[test]

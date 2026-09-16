@@ -701,6 +701,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_resolve_absolute_symlink_redirects() {
         let mut driver = TreeDriver {
             entries: BTreeMap::from([((1, b"link".to_vec()), (TreeDriver::link_node(5), false))]),

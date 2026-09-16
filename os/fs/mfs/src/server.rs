@@ -1145,7 +1145,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             Self::load_parent(fs, new_directory)?
         };
         let outcome = {
-            let mut parts = fs.parts();
+            let parts = fs.parts();
             let mut ctx = LinkCtx {
                 table: parts.inodes,
                 cache: parts.cache,

@@ -159,6 +159,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P2-5 stat/statvfs 的无类型字节布局契约。** `FsDriver::stat(&mut self, inode: u64, out: &mut [u8])`（driver.rs:277-280）与 stat_vfs（driver.rs:310-313）把布局决定权完全交给调用方，每个 server 自定义字节序与字段序（memfs.rs:33-37 自定义 20 字节布局即是例证）。对照 Redox：redox-scheme 用 typed `Stat` 结构；对照 C：Minix3 用共享 `struct stat` safecopy。方案 A：minix-types 定义 `Stat`/`StatVfs` typed 结构（字段与 C 布局一一对应）+ `to_bytes`，trait 签名改 `out: &mut Stat`；方案 B：维持字节切片。推荐 A：字段错位从「联调期 wire 事故」提前到「编译期」，且不改 wire 行为。[ARCH] 判定：内部类型强化（Refactor 级），无需三处标注。
 
 **V1-P2-6 `handle_header` 的双语义返回。** Dispatch 分支同时返回 `Handling::Reply { status: 0 }` 与 `Some(request)`（driver.rs:552-562），调用方必须遵守「有 request 就忽略 Reply」的隐含约定，误用会发出一个内容为空的成功回复。方案 A：返回 `enum HeaderOutcome { Refuse(Handling), Dispatch { request, transaction } }`；方案 B：维持并加文档警示。推荐 A（调用方只有装配层一处，改动面小）。
+**✅ 2026-09-17 闭环（Fix #11）**：`handle_header` 返回类型改为 `HeaderAction` 三态（Silence/Reply{status,transaction}/Continue{request,transaction}），虚构的 `Reply{status:0}` 不再存在；随重构 `Handling` 枚举失去全部使用者，按死代码纪律一并移除。九十七测试全绿。
 
 **V1-P2-7 空闲位统计的三份重复实现。** mount.rs:242、meta.rs:349、maint.rs:92 各有一份逐块计位实现，C 只有 stats.c:14 一份。修复：收敛到 superblock.rs 一处（与位图同址），三处改调用；顺带补 origin 起点语义说明（C 从 s_isearch/s_zsearch 起步会漏计尾部，Rust 从 0 计满图——收敛时统一为计满图并记录）。
 
