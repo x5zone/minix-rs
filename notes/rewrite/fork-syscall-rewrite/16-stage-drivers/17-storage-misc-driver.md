@@ -120,8 +120,8 @@
 | 密度表与兼容表 | 第 2.3 节 | `Density` 与 `DENSITIES` | 已覆盖 |
 | 六次重试与中场校准 | 第 2.3 节 | `RetryPolicy` | 已覆盖 |
 | 上电顺序与命令集 | 第 2.7 节 | `InitSequence` 与 `CardCommand` | 已覆盖 |
-| 规则查找与三个拦截点 | 第 2.4 节 | `find_rule` 与 `Hook` | 已覆盖 |
-| 故障动作与掩码 | 第 2.4 节 | `FaultAction` | 已覆盖 |
+| 规则查找与三个拦截点 | 第 2.4 节 | `find_rules` 与钩子掩码 | 已覆盖 |
+| 故障动作与掩码 | 第 2.4 节 | `FaultAction` 与动作本体函数 | 已覆盖 |
 | 校验种类与组布局 | 第 2.5 节 | `ChecksumKind` 与 `GroupLayout` | 已覆盖 |
 | 镜像摘除 | 第 2.5 节 | `MirrorState`（重启账本与全局开关） | 已覆盖 |
 | 分块搬运与几何现编 | 第 2.6 节 | `split_chunks` 与 `derive_geometry` | 已覆盖 |
@@ -191,9 +191,9 @@
 | 错误数到三次 | 先校准再继续 | `RecalibrateAndRetry` | 中场休息不清零 |
 | 上电乱序成功 | 不推进 | `note_success` 返回假 | 顺序错不算数 |
 | 就绪后再成功 | 无下一态 | `note_success` 返回假 | 到头了 |
-| 规则地址越界 | 不命中 | `find_rule` 返回空 | 范围外放行 |
-| 镜像失败满三次 | 摘除成员 | `is_live` 返回假 | 坏份开除 |
-| 摘除后再失败 | 保持摘除 | `record_failure` 返回真 | 开除不返聘 |
+| 规则地址越界 | 不命中 | `find_rules` 不含该索引 | 范围外放行 |
+| 镜像重启满三次 | 关镜像转正备份 | `MirrorOutcome::FailOver` | 幸存者顶上 |
+| 镜像关后再越线 | 放弃传输 | `MirrorOutcome::GiveUp` | 无镜可返 |
 | 传输长度为零 | 无需搬运 | 空数组 | 空车不上路 |
 | 小文件无几何 | 最小布局 | 单磁头单扇区 | 现编一套 |
 

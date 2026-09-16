@@ -15,6 +15,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod rules;
 
 /// Service initialization entry (wires the proxy table; forwarding stays out).
