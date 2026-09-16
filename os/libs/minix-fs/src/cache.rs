@@ -215,6 +215,12 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         &self.source
     }
 
+    /// Take the backing source back (unmount hands the device to the
+    /// server so a later mount can reuse it).
+    pub fn into_source(self) -> S {
+        self.source
+    }
+
     /// Buffers currently pinned by callers.
     pub fn pinned(&self) -> usize {
         self.pinned

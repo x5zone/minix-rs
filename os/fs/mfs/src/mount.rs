@@ -23,8 +23,8 @@ use minix_fs::protocol::{FileNode, MountFlags};
 use crate::inode::{InodeError, InodeTable, ReleaseOutcome, TYPE_BLOCK, TYPE_CHARACTER};
 use crate::mfs_cache::ZoneSpace;
 use crate::superblock::{
-    DiskSuperblock, FLAG_CLEAN, ROOT_INODE_NUMBER, START_BLOCK, SUPER_BLOCK_OFFSET, SuperError,
-    Superblock, parse_superblock,
+    Bitmap, DiskSuperblock, FLAG_CLEAN, ROOT_INODE_NUMBER, START_BLOCK, SUPER_BLOCK_OFFSET,
+    SuperError, Superblock, parse_superblock,
 };
 
 /// Why mounting failed. Every variant maps to the wire code the C mount
@@ -90,6 +90,10 @@ pub struct MountedFs<S: BlockSource> {
     superblock: Superblock,
     cache: BlockCache<S, NoSecondLevel>,
     inodes: InodeTable,
+    /// Inode allocation map, loaded at mount, written back at sync.
+    imap: Bitmap,
+    /// Zone allocation map, loaded at mount, written back at sync.
+    zmap: Bitmap,
     read_only: bool,
     downgraded: bool,
     root_slot: usize,
@@ -134,6 +138,140 @@ impl<S: BlockSource> MountedFs<S> {
     /// Root inode number (always one).
     pub const fn root_number() -> u64 {
         ROOT_INODE_NUMBER
+    }
+
+    /// Exclusive inode table access.
+    pub fn inodes_mut(&mut self) -> &mut InodeTable {
+        &mut self.inodes
+    }
+
+    /// The root slot's table index.
+    pub const fn root_slot(&self) -> usize {
+        self.root_slot
+    }
+
+    /// The inode geometry for disk transfers.
+    pub fn io(&self) -> crate::inode::InodeIo {
+        crate::inode::InodeIo::from_superblock(&self.superblock)
+    }
+
+    /// Shared inode map access.
+    pub const fn imap(&self) -> &Bitmap {
+        &self.imap
+    }
+
+    /// Exclusive inode map access.
+    pub fn imap_mut(&mut self) -> &mut Bitmap {
+        &mut self.imap
+    }
+
+    /// Shared zone map access.
+    pub const fn zmap(&self) -> &Bitmap {
+        &self.zmap
+    }
+
+    /// Exclusive zone map access.
+    pub fn zmap_mut(&mut self) -> &mut Bitmap {
+        &mut self.zmap
+    }
+
+    /// Write both allocation maps back into their image blocks and mark
+    /// them dirty. The block pass of a flush carries them to disk, the same
+    /// point where the C code's dirty bitmap blocks land.
+    pub fn store_bitmaps(&mut self) -> Result<(), MountError> {
+        let start = START_BLOCK;
+        let imap_blocks = self.superblock.inode_map_blocks as u64;
+        let zmap_blocks = self.superblock.zone_map_blocks as u64;
+        let bits_per_block = (self.superblock.block_size * 8) as u64;
+        let device = self.device;
+        for index in 0..imap_blocks {
+            Self::store_map(
+                &mut self.cache,
+                &self.imap,
+                device,
+                start + index,
+                index * bits_per_block,
+            )?;
+        }
+        for index in 0..zmap_blocks {
+            Self::store_map(
+                &mut self.cache,
+                &self.zmap,
+                device,
+                start + imap_blocks + index,
+                index * bits_per_block,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Write one map block: the map slice `[base, base + block bits)` goes
+    /// into the cached block as a whole-block overwrite (no-read acquire),
+    /// marked dirty. The flush carries it to disk, the same point where the
+    /// C code's dirty bitmap blocks land.
+    fn store_map(
+        cache: &mut BlockCache<S, NoSecondLevel>,
+        map: &Bitmap,
+        device: u64,
+        block: u64,
+        base: u64,
+    ) -> Result<(), MountError> {
+        let slot = cache
+            .acquire(BlockKey::new(device, block), AcquireMode::NoRead)
+            .map_err(|_| MountError::Inner(Errno::from_i32(EIO)))?;
+        {
+            let data = cache.slot_data_mut(slot);
+            map.store_image_at(base, data);
+        }
+        cache.mark_dirty(slot);
+        let _ = cache.release(slot);
+        Ok(())
+    }
+
+    /// Load both allocation maps from their image blocks (the read pass of
+    /// `mount`, before any allocation can run).
+    fn load_bitmaps(&mut self) -> Result<(), MountError> {
+        let start = START_BLOCK;
+        let imap_blocks = self.superblock.inode_map_blocks as u64;
+        let zmap_blocks = self.superblock.zone_map_blocks as u64;
+        let bits_per_block = (self.superblock.block_size * 8) as u64;
+        let device = self.device;
+        for index in 0..imap_blocks {
+            Self::load_map(
+                &mut self.cache,
+                &mut self.imap,
+                device,
+                start + index,
+                index * bits_per_block,
+            )?;
+        }
+        for index in 0..zmap_blocks {
+            Self::load_map(
+                &mut self.cache,
+                &mut self.zmap,
+                device,
+                start + imap_blocks + index,
+                index * bits_per_block,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Read one map block into the map slice `[base, base + block bits)`.
+    fn load_map(
+        cache: &mut BlockCache<S, NoSecondLevel>,
+        map: &mut Bitmap,
+        device: u64,
+        block: u64,
+        base: u64,
+    ) -> Result<(), MountError> {
+        let slot = cache
+            .acquire(BlockKey::new(device, block), AcquireMode::Normal)
+            .map_err(|_| MountError::Inner(Errno::from_i32(EIO)))?;
+        let image = cache.slot_data(slot).to_vec();
+        let _ = cache.release(slot);
+        map.load_image_at(base, &image);
+        Ok(())
     }
 }
 
@@ -219,18 +357,27 @@ pub fn mount<S: BlockSource>(
         store_superblock(&mut cache, device, &superblock)?;
     }
 
-    Ok((
-        MountedFs {
-            device,
-            superblock,
-            cache,
-            inodes,
-            read_only,
-            downgraded,
-            root_slot,
-        },
-        node,
-    ))
+    // Allocation maps, loaded fresh from the image (`mount.c` keeps its
+    // bitmaps in the cache blocks; the in-memory maps here are loaded at
+    // mount and written back at sync — the flush point is the same).
+    let imap_bits = superblock.inode_count as u64 + 1;
+    let zmap_bits =
+        superblock
+            .zones
+            .saturating_sub(superblock.first_data_zone.saturating_sub(1));
+    let mut mounted = MountedFs {
+        device,
+        superblock,
+        cache,
+        inodes,
+        imap: Bitmap::new(imap_bits),
+        zmap: Bitmap::new(zmap_bits),
+        read_only,
+        downgraded,
+        root_slot,
+    };
+    mounted.load_bitmaps()?;
+    Ok((mounted, node))
 }
 
 /// Count free bits in a bitmap (`count_free_bits`, `stats.c`, owned here
@@ -342,8 +489,8 @@ pub struct UnmountReport {
 /// belongs to the driver stage.
 pub fn unmount<S: BlockSource>(
     mut mounted: MountedFs<S>,
-    sync: &mut dyn FnMut(),
-) -> Result<UnmountReport, MountError> {
+    sync: &mut dyn FnMut(&mut MountedFs<S>),
+) -> Result<(UnmountReport, S), MountError> {
     let device = mounted.device;
     let mut busy_count = 0u32;
     // Count in-use slots on this device (`mount.c:144-148`).
@@ -365,16 +512,20 @@ pub fn unmount<S: BlockSource>(
         Ok(ReleaseOutcome::ReclaimZones(_)) => return Err(MountError::RootMissing),
         Err(error) => return Err(error.into()),
     }
-    sync();
+    sync(&mut mounted);
     if !mounted.superblock.read_only {
         mounted.superblock.flags |= FLAG_CLEAN;
         store_superblock(&mut mounted.cache, device, &mounted.superblock)?;
     }
     mounted.cache.invalidate_device(device);
-    Ok(UnmountReport {
+    let report = UnmountReport {
         busy_count,
         was_downgraded: mounted.downgraded,
-    })
+    };
+    // Hand the device back so the server can mount again: the C server
+    // keeps its storage handle across unmounts.
+    let source = mounted.cache.into_source();
+    Ok((report, source))
 }
 
 /// Check a mount point candidate (`fs_mountpt`, `mount.c:104-128`).
@@ -558,10 +709,33 @@ mod tests {
         // Mounting dirties the superblock: the clean flag is cleared.
         assert_eq!(mounted.superblock().flags & FLAG_CLEAN, 0);
         let mut synced = false;
-        let report = unmount(mounted, &mut || synced = true).unwrap();
+        let (report, source) = unmount(mounted, &mut |_| synced = true).unwrap();
         assert!(synced);
         assert_eq!(report.busy_count, 1);
         assert!(!report.was_downgraded);
+        // The device comes back: a server can mount again after unmount.
+        assert_eq!(source.block_count(), ZONE_TOTAL as usize);
+        assert_eq!(source.block_size(), BLOCK_SIZE);
+    }
+
+    #[test]
+    fn test_bitmaps_loaded_from_image_and_stored_back() {
+        let image = build_image();
+        let (mut mounted, _) = mount(image.disk, DEVICE, flags(false), MIN_POOL_SIZE).unwrap();
+        // The image marks zone bit one (root directory zone five).
+        assert!(mounted.zmap().test(1));
+        assert!(mounted.imap().test(1));
+        // Allocate through the map, write the maps back, and read the raw
+        // blocks: the new bit must survive the round trip.
+        let bit = mounted.zmap_mut().alloc(2).unwrap();
+        mounted.store_bitmaps().unwrap();
+        let slot = mounted
+            .cache_mut()
+            .acquire(BlockKey::new(DEVICE, 3), AcquireMode::Normal)
+            .unwrap();
+        let byte = mounted.cache().slot_data(slot)[bit as usize / 8];
+        let _ = mounted.cache_mut().release(slot);
+        assert_eq!(byte & (1 << (bit % 8)), 1 << (bit % 8));
     }
 
     #[test]

@@ -457,6 +457,52 @@ impl Bitmap {
     pub const fn bit_count(&self) -> u64 {
         self.bit_count
     }
+
+    /// Set one bit without touching the search hint (image loading and
+    /// callers that repair a map). Out-of-range bits are refused.
+    pub fn set(&mut self, bit: u64) -> bool {
+        if bit >= self.bit_count {
+            return false;
+        }
+        self.words[bit as usize / 32] |= 1 << (bit % 32);
+        true
+    }
+
+    /// Load a bitmap image starting at map bit `base`: byte `i / 8`, bit
+    /// `i % 8` of the image carries map bit `base + i` (little-endian bit
+    /// order, the layout the on-disk map uses). Image bits past the map are
+    /// ignored; map bits the image does not cover stay as they are.
+    pub fn load_image_at(&mut self, base: u64, image: &[u8]) {
+        let covered = image.len() as u64 * 8;
+        for index in 0..covered {
+            let bit = base + index;
+            if bit >= self.bit_count {
+                break;
+            }
+            if image[index as usize / 8] & (1 << (index % 8)) != 0 {
+                self.words[bit as usize / 32] |= 1 << (bit % 32);
+            }
+        }
+    }
+
+    /// Store map bits `[base, base + 8 * out.len())` into a bitmap image,
+    /// the inverse of [`Bitmap::load_image_at`]. The buffer is fully
+    /// overwritten; bits the map does not have are zeroed padding.
+    pub fn store_image_at(&self, base: u64, out: &mut [u8]) {
+        for byte in out.iter_mut() {
+            *byte = 0;
+        }
+        let covered = out.len() as u64 * 8;
+        for index in 0..covered {
+            let bit = base + index;
+            if bit >= self.bit_count {
+                break;
+            }
+            if self.words[bit as usize / 32] & (1 << (bit % 32)) != 0 {
+                out[index as usize / 8] |= 1 << (index % 8);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
