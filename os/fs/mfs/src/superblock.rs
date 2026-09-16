@@ -656,6 +656,16 @@ mod tests {
     }
 
     #[test]
+    fn test_double_free_bit_returns_false() {
+        let mut map = Bitmap::new(64);
+        let bit = map.alloc(1).unwrap();
+        assert!(map.free(bit));
+        // 第二次释放同一位：返回 false，位保持空闲，不再变化。
+        assert!(!map.free(bit));
+        assert!(!map.test(bit));
+    }
+
+    #[test]
     fn test_bitmap_alloc_free_wrap() {
         // Ten bits: zero reserved, one to nine usable.
         let mut map = Bitmap::new(10);

@@ -179,6 +179,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P2-10 ext2 / isofs / sffs 覆盖面对账。** 三者目前是格式解析层，与文档分期（21/22/23/24 篇声称范围）一致，非缺陷；本行登记 C 侧未覆盖语义块清单（ext2：适配入口/数据路径/分配/名字空间；isofs：查找/getdents/stat/挂载生命周期；sffs：handle/inode/lookup 核心/do_* 全套），作为后续文档与实现排期的输入。完成前 bin 不可用（走 E-FSRUNTIME）。**裁决（2026-09-16）**：不纳入本轮实施战役——分期设计如此；全量语义留待后续「文档 + 实现」独立波次（届时先补 21~24 篇缺失章节，再随 mfs 装配模式逐 server 复用）。
 
 **V1-P2-11 测试缺口（top 项）。** 按分片 A 的对照（第 4 节引用），优先补：rmdir 记账（随 V1-P0-2）、rename 全分支（随 V1-P1-1）、putnode 批量语义（随 V1-P1-2）、写满块零设备读断言（随 V1-P2-1）、冷目录 getdents（随 V1-P2-3）、双 free 位返回 false 的钉住测试（superblock.rs:594 现只测回绕）、`s_max_size` 截断不可达论证的钉住测试。其余中置信度项（unmount busy 路径、父目录 NO_LINK 守卫、BlockSizeMismatch）在装配冒烟测试中顺带覆盖。
+**✅ 2026-09-17 大部分闭环（Fix #22）**：双 free 位钉住测试落地（`test_double_free_bit_returns_false`——第二次 free 返回 false 且位保持空闲）；其余各项已随对应修复各自的专测覆盖（rmdir/rename/putnode/免读/冷目录均有独立用例）。剩余：`s_max_size` 钉住测试随 P2-10 分期波次补。
 
 ### 3.4 P3
 
