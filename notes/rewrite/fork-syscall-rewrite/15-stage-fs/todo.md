@@ -100,6 +100,11 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 方案 B：只补文档声明「mfs 当前是库不是服务器」，把装配推迟到运行时轨道。否决理由：装配 mismatches（签名不契合、生命周期错位）只有写装配代码才会暴露，推迟会把 V1-P1-4/5/6 这类缺口全部拖到联调期才炸。
 推荐：方案 A，并把 table.rs 翻转纳入同一修复（V1-P1-8）。[ARCH] 判定：属于实现补全（Rewrite 边界内），不改外部行为，无需三处标注；若装配中发现必须改 `FsDriver` 签名，则升级为 Architectural Evolution，按规范三处一致标注。
 **🔄 进度（2026-09-16，之 1 落地）**：框架任务循环 `os/libs/minix-fs/src/task.rs` 提交——`FsTransport` 接缝（receive/reply/copy_in/copy_out/scratch 五方法）、`RequestBody` 三十二变体类型化请求体（名字按 `fsdriver_getname` 语义拷贝为自有缓冲）、`FsReply` 状态+事务号+载荷（Transfer/Node/Lookup）、`Incoming::Cancelled` 对应 `fsdriver_terminate` 的取消接收语义、`Server` 增 peek/后端设备三构造期旋钮（对应 C 表 `fdr_peek`/`fdr_bpeek` 与设备全局）。六项循环测试全绿（crate 96 个），clippy 零告警；01 篇同步 §4.3/§5.3。余：`MfsServer` 装配 + `impl FsDriver` + 冒烟链。
+**之 2 开工前的四个待裁决点（2026-09-16 登记，执行时按多方案流程裁决）**：
+1. 池归属冲突：`startup.rs::prepare`/`ServerCore` 语义是每服务器一份池（`main.c:62` 的 `lmfs_buf_pool` 语义，startup.rs:77-86），而 `mount.rs::mount(source, …)` 按值收源并自建缓存池（mount.rs:155-158，每挂载一份）——两截相撞。候选：A) `MfsServer` 变体 `Detached{source}/Attached(MountedFs)`，接受每挂载池，`ServerCore` 收缩或移除；B) 改造 mount.rs 拆出 `mount_into(cache, …)` 复用既有池（更贴 C，动 stage API）。倾向 B 前先读 unmount 是否能取回 source。
+2. `MountedFs` 拆借用：`CreateCtx` 需要 `&mut InodeTable/&mut cache/&mut Superblock/&mut Bitmap` 四路可变借用（open.rs:119-131），`MountedFs` 需要按字段提供 ctx 构造方法；`Bitmap` 存放位置（Superblock 内部还是 MountedFs 独立字段）待读 mount.rs:88-155 全部访问器后定。
+3. `FsDriver::stat` 的字节填充：`meta.rs::read_stat` 产出 `FileStat`（meta.rs:199），到 `&mut [u8]` 的布局编码在装配层完成，`st_dev/st_ino` 预填归谁（C 在适配器 call.c:732-738）随 P2-5 typed Stat 一并裁决，装配层先按「server 填全部字段」落地。
+4. 冒烟镜像构造：mount.rs 测试已有镜像构造先例（mount.rs:550-697 测试段），复用其模式做 RamDisk 上的最小 MFS 镜像（超级块 + 位图 + 根目录 + 两个点项），冒烟链 mount→lookup→read→write→sync 走 task.rs 循环 + 脚本传输。
 
 **V1-P0-2 rmdir 的链接计数与 C 行为不符。**
 事实：C 的 remove_dir 依次调用三次 unlink_file 语义（link.c:205 父名 nlinks-1；link.c:210 子目录 `.` 再-1；link.c:211 `..` 使父目录 nlinks-1），子目录 nlinks 归 0（NO_LINK）触发释放。Rust `remove_directory`（link.rs:317-393）对镜像做父名与点项删除后只做一次 `nlinks -= 1`（link.rs:383-388），父目录 nlinks 完全未动：子目录终值 1 而非 NO_LINK，`put` 的释放分支（inode.rs:450）永不触发。
