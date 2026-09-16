@@ -90,6 +90,8 @@ pub struct MountedFs<S: BlockSource> {
     superblock: Superblock,
     cache: BlockCache<S, NoSecondLevel>,
     inodes: InodeTable,
+    /// Live allocation-policy state (search hints move as zones allocate).
+    space: ZoneSpace,
     /// Inode allocation map, loaded at mount, written back at sync.
     imap: Bitmap,
     /// Zone allocation map, loaded at mount, written back at sync.
@@ -145,6 +147,11 @@ impl<S: BlockSource> MountedFs<S> {
         &mut self.inodes
     }
 
+    /// Exclusive superblock access (search hints move as allocation runs).
+    pub fn superblock_mut(&mut self) -> &mut Superblock {
+        &mut self.superblock
+    }
+
     /// The root slot's table index.
     pub const fn root_slot(&self) -> usize {
         self.root_slot
@@ -173,6 +180,42 @@ impl<S: BlockSource> MountedFs<S> {
     /// Exclusive zone map access.
     pub fn zmap_mut(&mut self) -> &mut Bitmap {
         &mut self.zmap
+    }
+
+    /// Disjoint mutable pieces of the mount, one bundle for the data path.
+    ///
+    /// The stage functions take the table, the cache, the maps, and the
+    /// geometry as separate parameters; this splitter hands them out from
+    /// one `&mut MountedFs` without aliasing, which a caller reaching
+    /// through accessors cannot do.
+    pub fn parts(
+        &mut self,
+    ) -> crate::server::Parts<'_, S> {
+        crate::server::Parts {
+            device: self.device,
+            read_only: self.read_only,
+            max_size: self.superblock.max_size as u64,
+            block_size: self.superblock.block_size,
+            io: crate::inode::InodeIo::from_superblock(&self.superblock),
+            map: crate::read::MapParams {
+                direct_zones: self.superblock.direct_zones,
+                indirect_per_block: self.superblock.indirect_per_block,
+            },
+            range: crate::read::ZoneRange {
+                first: self.superblock.first_data_zone,
+                count: self
+                    .superblock
+                    .zones
+                    .saturating_sub(self.superblock.first_data_zone)
+                    + 1,
+            },
+            superblock: &mut self.superblock,
+            cache: &mut self.cache,
+            inodes: &mut self.inodes,
+            imap: &mut self.imap,
+            zmap: &mut self.zmap,
+            space: &mut self.space,
+        }
     }
 
     /// Write both allocation maps back into their image blocks and mark
@@ -365,11 +408,13 @@ pub fn mount<S: BlockSource>(
         superblock
             .zones
             .saturating_sub(superblock.first_data_zone.saturating_sub(1));
+    let space = crate::mount::zone_space(&superblock);
     let mut mounted = MountedFs {
         device,
         superblock,
         cache,
         inodes,
+        space,
         imap: Bitmap::new(imap_bits),
         zmap: Bitmap::new(zmap_bits),
         read_only,

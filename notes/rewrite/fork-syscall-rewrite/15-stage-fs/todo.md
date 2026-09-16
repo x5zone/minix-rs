@@ -100,11 +100,12 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 方案 B：只补文档声明「mfs 当前是库不是服务器」，把装配推迟到运行时轨道。否决理由：装配 mismatches（签名不契合、生命周期错位）只有写装配代码才会暴露，推迟会把 V1-P1-4/5/6 这类缺口全部拖到联调期才炸。
 推荐：方案 A，并把 table.rs 翻转纳入同一修复（V1-P1-8）。[ARCH] 判定：属于实现补全（Rewrite 边界内），不改外部行为，无需三处标注；若装配中发现必须改 `FsDriver` 签名，则升级为 Architectural Evolution，按规范三处一致标注。
 **🔄 进度（2026-09-16，之 1 落地）**：框架任务循环 `os/libs/minix-fs/src/task.rs` 提交——`FsTransport` 接缝（receive/reply/copy_in/copy_out/scratch 五方法）、`RequestBody` 三十二变体类型化请求体（名字按 `fsdriver_getname` 语义拷贝为自有缓冲）、`FsReply` 状态+事务号+载荷（Transfer/Node/Lookup）、`Incoming::Cancelled` 对应 `fsdriver_terminate` 的取消接收语义、`Server` 增 peek/后端设备三构造期旋钮（对应 C 表 `fdr_peek`/`fdr_bpeek` 与设备全局）。六项循环测试全绿（crate 96 个），clippy 零告警；01 篇同步 §4.3/§5.3。余：`MfsServer` 装配 + `impl FsDriver` + 冒烟链。
-**之 2 开工前的四个待裁决点（2026-09-16 登记，执行时按多方案流程裁决）**：
-1. 池归属冲突：`startup.rs::prepare`/`ServerCore` 语义是每服务器一份池（`main.c:62` 的 `lmfs_buf_pool` 语义，startup.rs:77-86），而 `mount.rs::mount(source, …)` 按值收源并自建缓存池（mount.rs:155-158，每挂载一份）——两截相撞。候选：A) `MfsServer` 变体 `Detached{source}/Attached(MountedFs)`，接受每挂载池，`ServerCore` 收缩或移除；B) 改造 mount.rs 拆出 `mount_into(cache, …)` 复用既有池（更贴 C，动 stage API）。倾向 B 前先读 unmount 是否能取回 source。
-2. `MountedFs` 拆借用：`CreateCtx` 需要 `&mut InodeTable/&mut cache/&mut Superblock/&mut Bitmap` 四路可变借用（open.rs:119-131），`MountedFs` 需要按字段提供 ctx 构造方法；`Bitmap` 存放位置（Superblock 内部还是 MountedFs 独立字段）待读 mount.rs:88-155 全部访问器后定。
-3. `FsDriver::stat` 的字节填充：`meta.rs::read_stat` 产出 `FileStat`（meta.rs:199），到 `&mut [u8]` 的布局编码在装配层完成，`st_dev/st_ino` 预填归谁（C 在适配器 call.c:732-738）随 P2-5 typed Stat 一并裁决，装配层先按「server 填全部字段」落地。
-4. 冒烟镜像构造：mount.rs 测试已有镜像构造先例（mount.rs:550-697 测试段），复用其模式做 RamDisk 上的最小 MFS 镜像（超级块 + 位图 + 根目录 + 两个点项），冒烟链 mount→lookup→read→write→sync 走 task.rs 循环 + 脚本传输。
+**✅ 之 2 部分落地（2026-09-17）**：装配地基与服务器主体提交——(a) 位图随挂载装载、同步回写，`unmount` 的 sync 闭包改为接收 `&mut MountedFs` 并**归还源设备**（重挂载语义，C 进程跨卸载保设备句柄）；(b) `Parts` 拆借用透镜 + `MfsServer`（持 `Option<S>` 源、`MountedFs`、池配置、注入时钟）+ `impl FsDriver`：mount/unmounted/is_mount_point/read/write/get_dents/truncate（整文件与打洞两臂）/sought/lookup_child/create/stat（本地六十四字节布局，P2-5 收敛）/synchronized/flushed 全部接线，`sync_mounted` 按「先 inode、再位图、后冲刷」次序；(c) 冒烟测试全链通过（挂载→查找→创建→写→读→枚举→状态→同步→卸载→设备交还→重挂载后文件仍在），crate 108 测试全绿。**裁决落定**：池随挂载建立、容量来自启动配置（与 C 的池生命周期差异不可观察）；能力位空（C 框架只补窥视位、mfs 从不设 `RES_64BIT`，grep 证据 `call.c:48-51`）。**余下未接线方法（走 trait 默认 ENOSYS，账实相符）**：make_dir/make_node/link/unlink/remove_dir/symbolic_link/read_link（LinkCtx 族，之 3）、change_owner/change_mode/update_times/stat_vfs（meta 族，之 3）、block_read/block_write/peek（bio_transfer 接线，之 3）、put_node（P1-2）、rename（P1-1）。
+**之 2 开工前的四个待裁决点（2026-09-16 登记，均已裁决）**：
+1. 池归属冲突（已裁决：A 变体落地）——`MfsServer` 持 `Option<S>` 源，挂载取走、卸载经 `BlockCache::into_source` 归还；池容量仍来自启动配置（差异不可观察），`ServerCore`/`prepare` 保留于 startup.rs 待 07 篇后续裁决是否收缩（记入批 7 死代码复核）。
+2. `MountedFs` 拆借用（已落地）：`Parts` 透镜（server.rs 定义、mount.rs `parts()` 构造）一次拆出表/缓存/超级块/双位图/区策略 + 几何快照；位图为 `MountedFs` 独立字段（挂载装载、同步回写）。
+3. `FsDriver::stat` 的字节填充（已按「server 填全部字段」落地）：`STAT_LAYOUT_SIZE=64` 本地小端布局（server.rs 常量注释），P2-5 收敛到 minix-types typed Stat。
+4. 冒烟镜像构造（已落地）：最小镜像按 mount.rs 测试模式在 server.rs 测试内构造；冒烟链经 `FsDriver` 直调完成（task.rs 循环已有六项独立测试），经 run() 的脚本传输全链留待之 3 与名字空间接线同轮补。
 
 **V1-P0-2 rmdir 的链接计数与 C 行为不符。**
 事实：C 的 remove_dir 依次调用三次 unlink_file 语义（link.c:205 父名 nlinks-1；link.c:210 子目录 `.` 再-1；link.c:211 `..` 使父目录 nlinks-1），子目录 nlinks 归 0（NO_LINK）触发释放。Rust `remove_directory`（link.rs:317-393）对镜像做父名与点项删除后只做一次 `nlinks -= 1`（link.rs:383-388），父目录 nlinks 完全未动：子目录终值 1 而非 NO_LINK，`put` 的释放分支（inode.rs:450）永不触发。
