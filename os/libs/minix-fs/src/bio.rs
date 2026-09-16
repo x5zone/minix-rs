@@ -188,11 +188,16 @@ where
                     channel.copy_out(moved, bytes)
                 }
                 TransferDirection::Write => {
-                    let mut staging = alloc::vec![0u8; chunk];
-                    match channel.copy_in(moved, &mut staging) {
+                    // 暂存后直接拼进缓存的槽位并置脏：不再克隆整块后由
+                    // write_slot 整块拷回。
+                    let mut staged = alloc::vec![0u8; chunk];
+                    match channel.copy_in(moved, &mut staged) {
                         Ok(()) => {
-                            let merged = staging_at(cache, slot, block_offset, &staging);
-                            cache.write_slot(slot, &merged)
+                            let data = cache.slot_data_mut(slot);
+                            data[block_offset..block_offset + chunk]
+                                .copy_from_slice(&staged);
+                            cache.mark_dirty(slot);
+                            Ok(())
                         }
                         Err(error) => Err(error),
                     }
@@ -226,27 +231,6 @@ where
         outcome?;
     }
     Ok(moved)
-}
-
-/// Copy helper: splice staged bytes into the slot at an offset.
-///
-/// The cache owns the slot bytes; callers stage into a temporary buffer
-/// first (the channel reads into caller memory, never into cache memory
-/// directly), then this helper writes the staged bytes at the offset and
-/// returns them for [`BlockCache::write_slot`]. Kept as a free function so
-/// the borrow of `cache` for reading does not overlap the mutable borrow
-/// for writing.
-fn staging_at<S: BlockSource, V: SecondLevelCache>(
-    cache: &BlockCache<S, V>,
-    slot: usize,
-    offset: usize,
-    staging: &[u8],
-) -> Vec<u8> {
-    let mut merged = cache.slot_data(slot).to_vec();
-    if offset + staging.len() <= merged.len() {
-        merged[offset..offset + staging.len()].copy_from_slice(staging);
-    }
-    merged
 }
 
 /// Warm the run of uncached blocks ahead of a read.

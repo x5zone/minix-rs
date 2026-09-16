@@ -21,7 +21,7 @@
 //!   future work owned by the virtual memory stage; the hooks are already in
 //!   the acquire and release paths.
 
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use minix_types::{EAGAIN, EINVAL, ENOENT, Errno};
@@ -135,6 +135,11 @@ struct Buffer {
     dirty: bool,
     /// Current users; pinned while above zero.
     users: usize,
+    /// Free-list links: previous and next slot in the free chain
+    /// (`NO_SLOT` when absent), the intrusive form of the C
+    /// `front`/`rear` pointers.
+    prev: usize,
+    next: usize,
 }
 
 impl Buffer {
@@ -145,9 +150,14 @@ impl Buffer {
             data: Vec::new(),
             dirty: false,
             users: 0,
+            prev: NO_SLOT,
+            next: NO_SLOT,
         }
     }
 }
+
+/// "No slot" sentinel in the free-list links.
+const NO_SLOT: usize = usize::MAX;
 
 /// Hashed least-recently-used block cache over a [`BlockSource`].
 ///
@@ -163,9 +173,11 @@ pub struct BlockCache<S: BlockSource, V: SecondLevelCache = NoSecondLevel> {
     slots: Vec<Buffer>,
     /// Hash index: block key to slot number. C: `buf_hash` (`cache.c:59`).
     index: BTreeMap<BlockKey, usize>,
-    /// Free slots from least to most recently released. C: the `front` /
-    /// `rear` chain (`cache.c:46-47`).
-    free_order: VecDeque<usize>,
+    /// Free slots in least-recently-used order, an intrusive doubly-linked
+    /// list through the slot array (C: the `front`/`rear` chain,
+    /// `cache.c:46-47`); `NO_SLOT` ends the chain.
+    free_head: usize,
+    free_tail: usize,
     /// Blocks currently pinned by callers. C: `bufs_in_use` (`cache.c:48`).
     pinned: usize,
     /// File system usage counters feeding the sizing heuristic.
@@ -182,17 +194,21 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             return Err(Errno::from_i32(EINVAL));
         }
         let mut slots = Vec::with_capacity(pool_size);
-        let mut free_order = VecDeque::with_capacity(pool_size);
         for slot in 0..pool_size {
             slots.push(Buffer::free());
-            free_order.push_back(slot);
+        }
+        // 串起空闲链：头到尾依次链接。
+        for slot in 0..pool_size - 1 {
+            slots[slot].next = slot + 1;
+            slots[slot + 1].prev = slot;
         }
         Ok(Self {
             source,
             second_level,
             slots,
             index: BTreeMap::new(),
-            free_order,
+            free_head: 0,
+            free_tail: pool_size - 1,
             pinned: 0,
             total_blocks: 0,
             used_blocks: 0,
@@ -241,7 +257,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             // treat saturation as a programming error in debug builds.
             debug_assert!(self.slots[slot].users < i8::MAX as usize);
             if self.slots[slot].users == 0 {
-                self.remove_from_free(slot);
+                self.list_unlink(slot);
                 self.pinned += 1;
             }
             self.slots[slot].users += 1;
@@ -266,16 +282,17 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         self.index.insert(key, slot);
 
         if mode == AcquireMode::Normal {
-            let block_size = self.source.block_size();
-            let mut staging = alloc::vec![0; block_size];
-            if let Err(error) = self.source.read_block(key, &mut staging) {
+            // 存储源与槽位是不相交的字段借用：驱动直读进缓冲，
+            // 不经过暂存分配（对齐 C 驱动直写缓冲的行为）。
+            let slot_data = &mut self.slots[slot].data;
+            let source = &self.source;
+            if let Err(error) = source.read_block(key, slot_data) {
                 self.release_slot(slot);
                 self.index.remove(&key);
                 self.slots[slot].key = None;
                 self.slots[slot].data.clear();
                 return Err(error);
             }
-            self.slots[slot].data.copy_from_slice(&staging);
         }
         Ok(slot)
     }
@@ -357,8 +374,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         }
         for slot in dirty_slots {
             let key = self.slots[slot].key.expect("dirty slot has a key");
-            let data = self.slots[slot].data.clone();
-            self.source.write_block(key, &data)?;
+            self.source.write_block(key, &self.slots[slot].data)?;
             self.slots[slot].dirty = false;
         }
         Ok(())
@@ -403,6 +419,18 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     /// Drop every cached block of a device and tell the second level to
     /// forget it. C: `lmfs_invalidate` (`cache.c:782-808`).
     pub fn invalidate_device(&mut self, device: u64) {
+        // 空闲链上的同设备槽位先摘除（保持链结构），再清各槽位内容。
+        let mut link = self.free_head;
+        while link != NO_SLOT {
+            let next = self.slots[link].next;
+            let on_device = self.slots[link]
+                .key
+                .is_some_and(|key| key.device == device);
+            if on_device {
+                self.list_unlink(link);
+            }
+            link = next;
+        }
         for (slot, buffer) in self.slots.iter_mut().enumerate() {
             if let Some(key) = buffer.key
                 && key.device == device
@@ -411,9 +439,6 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
                 buffer.key = None;
                 buffer.data.clear();
                 buffer.dirty = false;
-                if buffer.users == 0 && !self.free_order.contains(&slot) {
-                    self.free_order.push_back(slot);
-                }
             }
         }
         self.second_level.forget_device(device);
@@ -481,23 +506,29 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     /// (`cache.c:394`); a library reports the overload instead so the caller
     /// can retry after releasing buffers.
     fn evict_one(&mut self) -> Result<usize, Errno> {
-        let slot = self.free_order.pop_front().ok_or(Errno::from_i32(EAGAIN))?;
-        let (old_key, was_dirty, data) = {
+        let slot = self.list_pop_front().ok_or(Errno::from_i32(EAGAIN))?;
+        let (old_key, was_dirty) = {
             let buffer = &mut self.slots[slot];
-            (buffer.key.take(), buffer.dirty, buffer.data.clone())
+            (buffer.key.take(), buffer.dirty)
         };
         if let Some(key) = old_key {
             self.index.remove(&key);
             if was_dirty {
-                self.source.write_block(key, &data).inspect_err(|_| {
-                    // Restore the victim so its dirty contents survive the
-                    // failed write-back instead of being silently dropped.
-                    let buffer = &mut self.slots[slot];
-                    buffer.key = Some(key);
-                    buffer.dirty = true;
-                    self.index.insert(key, slot);
-                    self.free_order.push_front(slot);
-                })?;
+                // 直接把缓存的字节写回存储：源与槽位是不相交的借用，
+                // 不需要克隆整块（旧实现为绕借用检查克隆过一次）。
+                let data = &self.slots[slot].data;
+                self.source
+                    .write_block(key, data)
+                    .inspect_err(|_| {
+                        // Restore the victim so its dirty contents survive
+                        // the failed write-back instead of being silently
+                        // dropped.
+                        let buffer = &mut self.slots[slot];
+                        buffer.key = Some(key);
+                        buffer.dirty = true;
+                        self.index.insert(key, slot);
+                        self.list_push_front(slot);
+                    })?;
             }
             self.slots[slot].dirty = false;
             self.slots[slot].data.clear();
@@ -505,27 +536,76 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         Ok(slot)
     }
 
+    /// Push one slot at the head of the free list: the "needed again soon"
+    /// position used when a victim write-back fails.
+    fn list_push_front(&mut self, slot: usize) {
+        self.slots[slot].prev = NO_SLOT;
+        self.slots[slot].next = self.free_head;
+        if self.free_head != NO_SLOT {
+            self.slots[self.free_head].prev = slot;
+        } else {
+            self.free_tail = slot;
+        }
+        self.free_head = slot;
+    }
+
+    /// Unlink one slot from the free list in constant time: the neighbours
+    /// re-link past it (the C `rm_lru` walks the same doubly-linked chain,
+    /// `cache.c:1171`).
+    fn list_unlink(&mut self, slot: usize) {
+        let (prev, next) = (self.slots[slot].prev, self.slots[slot].next);
+        if prev != NO_SLOT {
+            self.slots[prev].next = next;
+        } else {
+            self.free_head = next;
+        }
+        if next != NO_SLOT {
+            self.slots[next].prev = prev;
+        } else {
+            self.free_tail = prev;
+        }
+        self.slots[slot].prev = NO_SLOT;
+        self.slots[slot].next = NO_SLOT;
+    }
+
+    /// Push one slot at the tail of the free list: the most recently
+    /// released position, evicted last.
+    fn list_push_tail(&mut self, slot: usize) {
+        self.slots[slot].prev = self.free_tail;
+        self.slots[slot].next = NO_SLOT;
+        if self.free_tail != NO_SLOT {
+            self.slots[self.free_tail].next = slot;
+        } else {
+            self.free_head = slot;
+        }
+        self.free_tail = slot;
+    }
+
+    /// Pop the head of the free list (the least recently released slot).
+    fn list_pop_front(&mut self) -> Option<usize> {
+        let slot = self.free_head;
+        if slot == NO_SLOT {
+            return None;
+        }
+        self.list_unlink(slot);
+        Some(slot)
+    }
+
     /// Unpin one use of a slot; return it to the free ordering when the last
     /// user leaves. Internal: bounds are checked by [`BlockCache::release`]
     /// and by [`BlockCache::acquire`].
     fn release_slot(&mut self, slot: usize) {
-        let buffer = &mut self.slots[slot];
-        buffer.users -= 1;
         self.pinned -= 1;
-        if buffer.users == 0 {
-            self.free_order.push_back(slot);
+        let users = self.slots[slot].users - 1;
+        self.slots[slot].users = users;
+        if users == 0 {
             if self.second_level.is_enabled()
-                && let Some(key) = buffer.key
+                && let Some(key) = self.slots[slot].key
             {
-                self.second_level.offer(key, &buffer.data);
+                let data = &self.slots[slot].data;
+                self.second_level.offer(key, data);
             }
-        }
-    }
-
-    /// Remove a slot from the free ordering after a cache hit.
-    fn remove_from_free(&mut self, slot: usize) {
-        if let Some(position) = self.free_order.iter().position(|&s| s == slot) {
-            self.free_order.remove(position);
+            self.list_push_tail(slot);
         }
     }
 }
@@ -748,6 +828,37 @@ mod tests {
     }
 
     #[test]
+    fn test_lru_order_tracks_touches() {
+        let mut cache = BlockCache::with_pool(
+            MemSource::with_blocks(16, 64),
+            NoSecondLevel,
+            MIN_POOL_SIZE,
+        )
+        .unwrap();
+        // Load six blocks to fill the pool (order: 0..6 — block 0 is the
+        // LRU end).
+        for block in 0..6u64 {
+            let slot = cache
+                .acquire(BlockKey::new(1, block), AcquireMode::NoRead)
+                .unwrap();
+            cache.release(slot).unwrap();
+        }
+        // Touch block 1 (the middle): it moves to the LRU end.
+        let middle = cache
+            .acquire(BlockKey::new(1, 1), AcquireMode::NoRead)
+            .unwrap();
+        cache.release(middle).unwrap();
+        // A new block needs a victim: block 0 goes first (untouched),
+        // block 1 survives the touch.
+        let victim = cache
+            .acquire(BlockKey::new(1, 20), AcquireMode::NoRead)
+            .unwrap();
+        cache.release(victim).unwrap();
+        assert!(!cache.index.contains_key(&BlockKey::new(1, 0)));
+        assert!(cache.index.contains_key(&BlockKey::new(1, 1)));
+    }
+
+    #[test]
     fn test_full_pool_reports_overload_instead_of_panicking() {
         let mut cache =
             BlockCache::with_pool(MemSource::with_blocks(64, 64), NoSecondLevel, MIN_POOL_SIZE)
@@ -911,10 +1022,14 @@ mod tests {
         // above; pinned count is zero by the guard.
         cache.slots.clear();
         cache.index.clear();
-        cache.free_order.clear();
+        cache.free_head = 0;
+        cache.free_tail = size - 1;
         for slot in 0..size {
             cache.slots.push(Buffer::free());
-            cache.free_order.push_back(slot);
+        }
+        for slot in 0..size - 1 {
+            cache.slots[slot].next = slot + 1;
+            cache.slots[slot + 1].prev = slot;
         }
         Ok(())
     }
