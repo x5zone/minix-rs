@@ -15,6 +15,10 @@ use alloc::vec::Vec;
 pub const MAX_DEVICES: usize = 64;
 
 /// One enumerated device: bus position plus identifiers.
+///
+/// C: `struct pcidev` (`pci.c:62-77`) carries the same identity fields the
+/// access rules match against: vendor and device identifiers, subsystem
+/// identifiers, and the three class bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PciDevice {
     /// Bus number.
@@ -27,38 +31,118 @@ pub struct PciDevice {
     pub vendor: u16,
     /// Device identifier.
     pub device_id: u16,
+    /// Subsystem vendor identifier (`pd_sub_vid`).
+    pub sub_vendor: u16,
+    /// Subsystem device identifier (`pd_sub_did`).
+    pub sub_device: u16,
+    /// Base class (`pd_baseclass`).
+    pub base_class: u8,
+    /// Subclass (`pd_subclass`).
+    pub sub_class: u8,
+    /// Programming interface (`pd_infclass`).
+    pub interface: u8,
     /// Interrupt pin (zero means none).
     pub irq_pin: u8,
     /// Routed interrupt line (set by routing; 0xFF means unknown).
     pub irq_line: u8,
 }
 
+/// Wildcard meaning "any subsystem vendor" (`NO_SUB_VID`, rs.h:79).
+pub const NO_SUB_VENDOR: u16 = 0xFFFF;
+/// Wildcard meaning "any subsystem device" (`NO_SUB_DID`, rs.h:80).
+pub const NO_SUB_DEVICE: u16 = 0xFFFF;
+
 impl PciDevice {
     /// Position key shared with configuration access.
     pub const fn position(self) -> (u8, u8, u8) {
         (self.bus, self.device, self.function)
     }
+
+    /// The twenty-four-bit class code the access rules match against.
+    ///
+    /// C: `(pd_baseclass << 16) | (pd_subclass << 8) | pd_infclass`
+    /// (`pci.c:2069-2071`).
+    pub const fn class_id(&self) -> u32 {
+        ((self.base_class as u32) << 16) | ((self.sub_class as u32) << 8) | self.interface as u32
+    }
 }
 
-/// One access-list entry: this caller may see this device.
+/// One device-identifier pattern inside an access list.
+///
+/// C: `struct rs_pci_id` (`rs.h:73-78`): vendor and device must match
+/// exactly; the subsystem pair may be the `NO_SUB_*` wildcards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AccessEntry {
-    /// Caller endpoint.
-    pub caller: i64,
-    /// Device index in the database.
-    pub index: usize,
+pub struct AclDevice {
+    /// Vendor identifier (exact).
+    pub vendor: u16,
+    /// Device identifier (exact).
+    pub device_id: u16,
+    /// Subsystem vendor, or [`NO_SUB_VENDOR`] for any.
+    pub sub_vendor: u16,
+    /// Subsystem device, or [`NO_SUB_DEVICE`] for any.
+    pub sub_device: u16,
+}
+
+/// One class pattern inside an access list: matches when the pattern equals
+/// the device class code masked by [`AclClass::mask`].
+///
+/// C: `struct rs_pci_class` (`rs.h:82-85`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AclClass {
+    /// Pattern value compared against the masked class code.
+    pub class: u32,
+    /// Mask applied to the device class code first.
+    pub mask: u32,
+}
+
+/// One caller's access list: the device and class patterns it may see.
+///
+/// C: `struct rs_pci` (`rs.h`): RS installs one list per driver endpoint
+/// (`do_set_acl`, RS-only); the list holds device-identifier entries and
+/// class entries.
+#[derive(Debug, Clone, Default)]
+pub struct PciAcl {
+    /// Device patterns, any of which grants visibility.
+    pub devices: Vec<AclDevice>,
+    /// Class patterns, any of which grants visibility.
+    pub classes: Vec<AclClass>,
+}
+
+impl PciAcl {
+    /// True when this list matches the device: a device-identifier entry
+    /// first, then a class entry (`visible`, `pci.c:2047-2083`).
+    pub fn matches(&self, device: &PciDevice) -> bool {
+        for entry in &self.devices {
+            if entry.vendor == device.vendor
+                && entry.device_id == device.device_id
+                && (entry.sub_vendor == NO_SUB_VENDOR
+                    || entry.sub_vendor == device.sub_vendor)
+                && (entry.sub_device == NO_SUB_DEVICE
+                    || entry.sub_device == device.sub_device)
+            {
+                return true;
+            }
+        }
+        for entry in &self.classes {
+            if entry.class == (device.class_id() & entry.mask) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Device database: records plus per-caller access lists.
 ///
-/// C: the enumerated device array behind the index walk plus the
-/// `rs_pci` access lists consulted by `visible`. Iteration order is
-/// enumeration order (first means index zero, next means index plus
-/// one); visibility filters apply on top.
+/// C: the enumerated device array behind the index walk plus the `pci_acl`
+/// table of per-driver `rs_pci` lists. Iteration order is enumeration order
+/// (first means index zero, next means index plus one); visibility filters
+/// apply on top: a caller without a list sees everything, a caller with a
+/// list sees only pattern matches.
 #[derive(Debug, Clone, Default)]
 pub struct DeviceDb {
     devices: Vec<PciDevice>,
-    access: Vec<AccessEntry>,
+    acls: Vec<(i64, PciAcl)>,
 }
 
 impl DeviceDb {
@@ -66,7 +150,7 @@ impl DeviceDb {
     pub fn new() -> DeviceDb {
         DeviceDb {
             devices: Vec::new(),
-            access: Vec::new(),
+            acls: Vec::new(),
         }
     }
 
@@ -113,6 +197,26 @@ impl DeviceDb {
             .position(|known| known.position() == (bus, device, function))
     }
 
+    /// Install (or replace) one caller's access list.
+    ///
+    /// C: `do_set_acl` (`main.c:238-281`) — RS alone installs lists, one
+    /// per driver; setting twice for the same endpoint replaces the older
+    /// list. The RS-source check lives in the service dispatch.
+    pub fn set_acl(&mut self, caller: i64, acl: PciAcl) {
+        if let Some(slot) = self.acls.iter_mut().find(|(who, _)| *who == caller) {
+            slot.1 = acl;
+        } else {
+            self.acls.push((caller, acl));
+        }
+    }
+
+    /// Drop one caller's access list; the caller sees everything again.
+    ///
+    /// C: `do_del_acl` (`main.c:283-321`).
+    pub fn del_acl(&mut self, caller: i64) {
+        self.acls.retain(|(who, _)| *who != caller);
+    }
+
     /// First visible index at or after `start` for this caller, if any.
     ///
     /// C: `_pci_first_dev` starts at zero, `_pci_next_dev` resumes after
@@ -123,46 +227,18 @@ impl DeviceDb {
 
     /// True when this caller may see this device.
     ///
-    /// C: `visible` (`pci.c:2004-2086`): unrestricted devices are visible
-    /// to everyone; restricted devices only to listed callers. Restriction
-    /// here means "an entry names this device for somebody": once any
-    /// entry names the device, unlisted callers lose it.
+    /// C: `visible` (`pci.c:2039-2086`): the rule is per *caller* — a
+    /// caller with no access list sees every device (procfs relies on it),
+    /// while a listed caller sees only what its device-identifier or class
+    /// patterns match.
     pub fn is_visible(&self, caller: i64, index: usize) -> bool {
-        if index >= self.devices.len() {
+        let Some(device) = self.devices.get(index) else {
             return false;
+        };
+        match self.acls.iter().find(|(who, _)| *who == caller) {
+            None => true,
+            Some((_, acl)) => acl.matches(device),
         }
-        let restricted = self.access.iter().any(|entry| entry.index == index);
-        if !restricted {
-            return true;
-        }
-        self.access
-            .iter()
-            .any(|entry| entry.index == index && entry.caller == caller)
-    }
-
-    /// Grant a caller access to a device (reserve path).
-    ///
-    /// C: `_pci_grant_access` behind `do_reserve` (`main.c:238-...`).
-    pub fn grant(&mut self, caller: i64, index: usize) -> bool {
-        if index >= self.devices.len() {
-            return false;
-        }
-        if self
-            .access
-            .iter()
-            .any(|entry| entry.caller == caller && entry.index == index)
-        {
-            return true;
-        }
-        self.access.push(AccessEntry { caller, index });
-        true
-    }
-
-    /// Forget every entry of one caller (release and delete-access paths).
-    ///
-    /// C: `_pci_release` and `do_del_acl` (`main.c`).
-    pub fn release_caller(&mut self, caller: i64) {
-        self.access.retain(|entry| entry.caller != caller);
     }
 }
 
@@ -177,8 +253,22 @@ mod tests {
             function: 0,
             vendor: 0x8086,
             device_id: 0x100E,
+            sub_vendor: 0x1234,
+            sub_device: 0x5678,
+            base_class: 0x02,
+            sub_class: 0x00,
+            interface: 0x00,
             irq_pin: 1,
             irq_line: 0xFF,
+        }
+    }
+
+    fn pattern(vendor: u16, device_id: u16) -> AclDevice {
+        AclDevice {
+            vendor,
+            device_id,
+            sub_vendor: NO_SUB_VENDOR,
+            sub_device: NO_SUB_DEVICE,
         }
     }
 
@@ -200,7 +290,9 @@ mod tests {
     }
 
     #[test]
-    fn test_unrestricted_devices_are_visible_to_all() {
+    fn test_caller_without_acl_sees_everything() {
+        // C visible(): `!aclp → TRUE` — procfs relies on seeing all
+        // devices without a list (pci.c:2044-2047).
         let mut db = DeviceDb::new();
         db.add(card(0, 1));
         assert_eq!(db.next_visible(100, 0), Some(0));
@@ -208,21 +300,81 @@ mod tests {
     }
 
     #[test]
-    fn test_grant_restricts_to_listed_caller() {
+    fn test_acl_restricts_listed_caller_to_matches() {
         let mut db = DeviceDb::new();
-        db.add(card(0, 1));
-        db.add(card(0, 2));
-        assert!(db.grant(100, 0));
+        db.add(card(0, 1)); // 0x8086:0x100E, class 02_00_00
+        db.add(card(0, 2)); // same identifiers: patterns hit both
+        let mut acl = PciAcl::default();
+        acl.devices.push(pattern(0x8086, 0x100E));
+        db.set_acl(100, acl);
         assert_eq!(db.next_visible(100, 0), Some(0));
-        assert_eq!(db.next_visible(200, 0), Some(1));
-        db.release_caller(100);
+        // An unlisted caller still sees everything: the list binds only
+        // its owner, unlike the old per-device restriction model.
         assert_eq!(db.next_visible(200, 0), Some(0));
+        // A pattern that matches nothing hides the whole bus from its
+        // owner.
+        let mut acl = PciAcl::default();
+        acl.devices.push(pattern(0x10EC, 0x8168));
+        db.set_acl(300, acl);
+        assert_eq!(db.next_visible(300, 0), None);
+        db.del_acl(300);
+        assert_eq!(db.next_visible(300, 0), Some(0));
     }
 
     #[test]
-    fn test_grant_out_of_range_fails() {
+    fn test_acl_wildcards_and_class_masks() {
         let mut db = DeviceDb::new();
-        assert!(!db.grant(100, 7));
+        db.add(card(0, 1));
+        // Subsystem wildcards pass; an exact wrong subsystem fails.
+        let mut acl = PciAcl::default();
+        acl.devices.push(AclDevice {
+            vendor: 0x8086,
+            device_id: 0x100E,
+            sub_vendor: NO_SUB_VENDOR,
+            sub_device: 0x5678,
+        });
+        db.set_acl(100, acl);
+        assert_eq!(db.is_visible(100, 0), true);
+        let mut acl = PciAcl::default();
+        acl.devices.push(AclDevice {
+            vendor: 0x8086,
+            device_id: 0x100E,
+            sub_vendor: 0x9999,
+            sub_device: NO_SUB_DEVICE,
+        });
+        db.set_acl(100, acl);
+        assert!(!db.is_visible(100, 0));
+        // Class mask: the class code is (base<<16)|(sub<<8)|interface, so
+        // network base class 02 is 0x0002_0000 under mask 0x00FF_0000.
+        db.del_acl(100);
+        let mut acl = PciAcl::default();
+        acl.classes.push(AclClass {
+            class: 0x0002_0000,
+            mask: 0x00FF_0000,
+        });
+        db.set_acl(100, acl);
+        assert!(db.is_visible(100, 0));
+    }
+
+    #[test]
+    fn test_set_acl_replaces_previous_list() {
+        // C keeps one list per driver: a second do_set_acl for the same
+        // endpoint replaces the first.
+        let mut db = DeviceDb::new();
+        db.add(card(0, 1));
+        let mut deny_all = PciAcl::default();
+        deny_all.devices.push(pattern(0x10EC, 0x8168));
+        db.set_acl(100, deny_all);
+        assert!(!db.is_visible(100, 0));
+        let mut allow_all = PciAcl::default();
+        allow_all.devices.push(pattern(0x8086, 0x100E));
+        db.set_acl(100, allow_all);
+        assert!(db.is_visible(100, 0));
+    }
+
+    #[test]
+    fn test_out_of_range_index_is_invisible() {
+        let mut db = DeviceDb::new();
         assert!(!db.is_visible(100, 7));
     }
 }
