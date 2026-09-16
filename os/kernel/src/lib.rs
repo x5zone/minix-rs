@@ -373,6 +373,19 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     kernel_info
 }
 
+/// Stores the boot `KernelInfo` into the process-global slot.
+///
+/// kmain Phase A calls this; bootstrap test kernels that bypass kmain call
+/// it explicitly before any consumer of [`KERNEL_INFO`] (e.g.
+/// `dispatch_diagctl`'s kernel-span translation).
+pub fn store_kernel_info(kernel_info: &KernelInfo) {
+    // SAFETY: boot is single-threaded (before BKL exists); one write, then
+    // read-only for the rest of the run.
+    unsafe {
+        *KERNEL_INFO.get() = Some(*kernel_info);
+    }
+}
+
 /// Kernel main — called after the higher-half transition.
 ///
 /// This function runs at the kernel's high virtual address.
@@ -405,13 +418,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         Console::init();
     }
 
-    // C: memcpy(&kinfo, local_cbi, sizeof(kinfo)) + kernel_may_alloc = 1
-    // Rust: copy the KernelInfo into the global (KernelInfo is Copy).
-    // SAFETY: This runs during boot (single-threaded, before BKL needed).
-    //         No concurrent access possible at this point.
-    unsafe {
-        *KERNEL_INFO.get() = Some(*kernel_info);
-    }
+    store_kernel_info(kernel_info);
     KERNEL_MAY_ALLOC.store(true, Ordering::Release);
 
     // Phase A.2: Initialize FREE_MEMMAP from KernelInfo.memmap + cut boot module regions.
@@ -1263,7 +1270,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     &mut vm_alloc,
                     &access,
                 )
-                .expect("load_vm_elf: VM ELF is required at boot");
+                .unwrap_or_else(|e| {
+                    panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
+                });
                 // FIX-23 (Phase 4): Reclaim VM module physical memory after
                 // ELF segments have been copied into the VM process's page
                 // tables. C: protect.c:450-451 — mod->mod_start = mod_end = 0.
@@ -1345,7 +1354,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     &mut vm_alloc,
                     &access,
                 )
-                .expect("load_vm_elf: VM ELF is required at boot");
+                .unwrap_or_else(|e| {
+                    panic!("load_vm_elf: VM ELF is required at boot: {e:?}")
+                });
 
                 // Reclaim VM module physical memory after ELF segments
                 // have been copied into the bootstrap page table.
@@ -1450,6 +1461,8 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
     //
     // The global `PROC_TABLE` / `PRIV_TABLE` statics now hold the initialized
     // tables; callers acquire them via `crate::proc_table()` / `crate::priv_table()`.
+
+
 }
 
 /// Initialize post-boot architecture state.

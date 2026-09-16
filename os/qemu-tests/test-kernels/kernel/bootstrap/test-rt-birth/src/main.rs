@@ -155,6 +155,7 @@ fn main() -> Status {
     unsafe { BOOT_SERVICES_EXITED = true; }
 
     // 2. Paging (Phase A) — identity + higher-half + Direct Map coverage.
+    minix_kernel::store_kernel_info(&result.kernel_info);
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
     let info = minix_kernel::arch_boot_impl::<X86_64Paging>(&result.kernel_info, result.root_page);

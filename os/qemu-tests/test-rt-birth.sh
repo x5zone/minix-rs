@@ -122,7 +122,7 @@ sleep 3
 pass=1
 grep -q "rt-birth argv=0 progname=''" "$SERIAL_LOG" || { pass=0; echo "FAIL: descriptor parse line missing"; }
 grep -q "rt-birth kerninfo=ready flags=2" "$SERIAL_LOG" || { pass=0; echo "FAIL: kerninfo trap query did not validate (flags != MINIX_KIF_USERINFO)"; }
-grep -q "rt-birth user_sp=0x7fff" "$SERIAL_LOG" || { pass=0; echo "FAIL: kuserinfo direct read missing (user_sp)"; }
+grep -q "rt-birth user_sp=0x00007fff" "$SERIAL_LOG" || { pass=0; echo "FAIL: kuserinfo direct read missing (user_sp)"; }
 grep -q "RT-BIRTH MAIN OK" "$SERIAL_LOG" || { pass=0; echo "FAIL: main not reached"; }
 grep -q "rt-birth panic render check" "$SERIAL_LOG" || { pass=0; echo "FAIL: panic render check missing on console"; }
 

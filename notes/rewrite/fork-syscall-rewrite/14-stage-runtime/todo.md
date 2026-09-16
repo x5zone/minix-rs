@@ -17,7 +17,7 @@
 | **P0** | **V1-P0-1** | ~~panic 诊断 hook 注册表分裂：kernel 写 `minix_types` 注册表，minix-rt 的 panic handler 读的是自己 crate 内的重复注册表——hook 永不命中~~（**✅ 已修复** 2026-09-16，Fix #1，见 §3.1 修复记录） |
 | **P0** | **V1-P0-2** | ~~10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族，Rust 零实现且无登记~~（**✅ 已修复** 2026-09-16，Fix #7/#8/#9：§2.5 清单 + 七个 wrapper；vm_info 暂缓已论证，见 §3.1 修复记录） |
 | **P0** | **V1-P0-3** | ~~`STACK_MINIMUM_BYTES=372` 与 C `STACK_MIN_SZ`（约 1364 字节级）矛盾且整段死代码——生产的栈布局在 minix-sys（`STACK_MIN_SZ=1400`）~~（**✅ 已修复** 2026-09-16，Fix #3，见 §3.1 修复记录） |
-| P1 | V1-P1-1 | 🔄 诞生链整体缺口（**第一步已完成** 2026-09-16，Fix #4：start.rs 整模块删除 + 02/03 篇同步；**第二步挂 E1 切片 5 通电**）：真实 `_start` 只做分配器初始化→main→exit，argv/environ/progname/ps_strings/fini_array/IPC 向量安装在真机路径上都不发生（§3.2） |
+| P1 | V1-P1-1 | ✅ 诞生链整体闭环（第一步 2026-09-16 Fix #4 删 start.rs；**第二步 2026-09-17 真机落地**：minix-rt `crt0` 模块——x86-64 naked `_start`（C crt0.S 入口 ABI：RBX=ps_strings）+ 六命名阶段 + argv/progname 发布 + M_TRAIL 证据；首个 minix-rt 用户二进制 rt-birth 经生产 load_vm_elf 真机执行至 forced panic，五断言 PASS（见 edge_todo E1 诞生链通电注记）；fini_array/init_array 维持登记（无消费方） |
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
 | P1 | V1-P1-3 | ~~misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送~~（**✅ 已修复** 2026-09-16，Fix #10，见 §3.2 修复记录） |
 | P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |

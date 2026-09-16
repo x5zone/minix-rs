@@ -534,7 +534,17 @@ fn kernel_call_dispatch_inner(
     // fits in u16, so valid calls survive intact. Any out-of-range (or
     // truncated) value is rejected by `Syscall::try_from` below as `BadCall`,
     // and in-range survivors are still gated by the per-caller `kcall_mask`.
-    let call_nr = msg.m_type as u16;
+    //
+    // Base normalization (C mpx.S `subl $KERNEL_CALL` parity): libc issues
+    // ABSOLUTE call numbers (com.h `SYS_*` = KERNEL_CALL + offset — the
+    // E2/E6 wrapper precedent), while the dispatch tables index by the
+    // RELATIVE offset. Host tests feed relative numbers directly; both
+    // shapes normalize here — anything below the base passes through.
+    let call_nr = if msg.m_type >= minix_types::KERNEL_CALL {
+        (msg.m_type - minix_types::KERNEL_CALL) as u16
+    } else {
+        msg.m_type as u16
+    };
 
     let syscall = match Syscall::try_from(call_nr) {
         Ok(s) => s,
@@ -2506,7 +2516,6 @@ fn dispatch_diagctl(
     msg.debug_check_m_type_any(&[Syscall::Diagctl as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let diag_msg = unsafe { &msg.m_u.m_lsys_krn_sys_diagctl };
-
     match diag_msg.code {
         // DIAGCTL_CODE_DIAG = 1: output diagnostic message
         // C: do_diagctl.c:28-44 — data_copy from caller, then kputc each byte
@@ -2525,6 +2534,17 @@ fn dispatch_diagctl(
             const DIAGBUFSIZE: usize = 128;
 
             let len = diag_msg.len as usize;
+            // TEMP-DEBUG: head-of-arm probe.
+            {
+                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                Console::write_str("TEMP code1: code=");
+                Console::write_hex(diag_msg.code as u64);
+                Console::write_str(" buf=");
+                Console::write_hex(diag_msg.buf);
+                Console::write_str(" len=");
+                Console::write_hex(diag_msg.len as u64);
+                Console::write_str("\n");
+            }
             if len > DIAGBUFSIZE {
                 return KcallResult::Ok(E2BIG);
             }
@@ -2537,23 +2557,54 @@ fn dispatch_diagctl(
             let caller_cr3 = caller.p_seg.phys_root;
 
             let mut diagbuf = [0u8; DIAGBUFSIZE];
-            // Kernel stack is in the direct map — get its physical address.
-            let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-                diagbuf.as_mut_ptr() as u64,
-            ));
+            // Kernel-stack VA → phys via the boot span identity
+            // (kern_phys_base + va - kern_virt_base). The DirectMap
+            // `virt_to_phys` conversion branch does NOT apply to
+            // higher-half kernel-image VAs — it yields a garbage address
+            // there (E8 precedent: same misuse fixed in
+            // copy_struct_to_caller).
+            let kernel_info = unsafe { *crate::globals::KERNEL_INFO.get() }
+                .expect("dispatch_diagctl: KERNEL_INFO unset");
+            let stack_va = diagbuf.as_mut_ptr() as u64;
+            debug_assert!(
+                stack_va >= kernel_info.kern_virt_base().0
+                    && stack_va - kernel_info.kern_virt_base().0 < kernel_info.kern_size(),
+                "diagbuf outside the kernel image span",
+            );
+            let dst_phys = PhysBytes(
+                kernel_info.kern_phys_base().0 + (stack_va - kernel_info.kern_virt_base().0),
+            );
 
             let proc_cr3 = |endpt: Endpoint| {
                 if endpt == caller_endpt { Some(caller_cr3) } else { None }
             };
 
+            {
+                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                Console::write_str("TEMP d1 cr3=");
+                Console::write_hex(caller_cr3.0);
+                Console::write_str(" buf=");
+                Console::write_hex(diag_msg.buf);
+                Console::write_str(" dstphys=");
+                Console::write_hex(dst_phys.0);
+                Console::write_str("\n");
+            }
             let src = AddressRef::Process {
                 endpoint: caller_endpt,
                 offset: VirBytes(diag_msg.buf),
             };
             let dst = AddressRef::Physical(dst_phys);
+            {
+                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                Console::write_str("TEMP d2 pre-copy\n");
+            }
 
             match data_copy_vmcheck(caller, src, dst, len, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {
+                    {
+                        use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                        Console::write_str("TEMP d3 copied\n");
+                    }
                     // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
                     // the kmess ring is the C kputc accumulation half —
                     // record here so the IS `kmessages_dmp` replay
