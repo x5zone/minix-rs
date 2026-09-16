@@ -141,11 +141,11 @@
 `os/libs/minix-sys/src/socket.rs:103-107`：[ARCH N-2] 弃用 fallback 后该函数恒不会被生产调用，仅测试引用（:140-145）；头注释自辩"documents the old branch so its removal is reviewable"（:101-102）。
 **建议**：方案 A：降为 `#[cfg(test)]` 或并入 23 篇文档正文（条件本就是两行 errno 比较），函数删除；方案 B：保留现状。推荐 A——审计信息归文档是本仓既有惯例（对照 E-MINSYS-SCOPE 的域归属裁定），活代码里不应有"只为 review 存在"的函数。
 
-### N1-P2-4 translate 模式三处（模式 16/17 对照）
+### ✅ N1-P2-4 translate 模式三处——已处置 2026-09-17
 
-- `open_flags_from_socket_type`（minix-sys/socket.rs:80-95）：三支 if/else 做恒等映射（FLAG_* 与 O_* 位值同为 0x01/0x02/0x04），整个函数等价 `socket_type & 0x07`。方案 A：改掩码 + 注释保留 C `_socket_flags` 语义与位值假设；方案 B：保留显式映射作为"位值分叉时自动出错"的契约文档。倾向 A 但属风格判定（OQ）。
-- `common_bits` 逐位循环（addr.rs:106-119）→ `(a ^ b).leading_zeros()` 一行；`row_matches` 的 128 位手移（addr.rs:47-53）同步评估。
-- 手工 `u32` 位族（sockevent.rs:22-51、protocol.rs 位常量区）→ workspace 已有 bitflags 2.x 依赖可选：SEV/SFL 是真 bitflag 语义（C 本就是宏位族），建议引入；sockid 基值族不是（是命名空间基址，enum 更合适）。
+- **恒等映射已化简**：`open_flags_from_socket_type` 改为一次掩码运算，注释保留位值同源的假设与 C `_socket_flags` 出处（方案 A；测试三个不变，行为零差异）。
+- **common_bits 已化简**：逐位循环改为 `(first ^ second).leading_zeros().min(limit)` 一行；addr 18 测试全过（行为不变）。`row_matches` 的 128 位比较经评估保留——两值与掩码的三方比较不是 leading_zeros 能表达的形状。
+- **SEV/SFL 迁 bitflags 2.4**：两个位标类型分域（事件域与标志域编译期隔离，裸 u32 时代互混不响）；`as u32` 全部改 `.bits()`；socktable 的事件/标志消费同步迁移。sockid 基值族维持 enum——它是命名空间基址不是位族（N1-P1-1 的判定不变）。doc-02 §3.1/§3.5 决策同步改写（普通枚举判定被位标类型取代，理由入档）。
 
 ### N1-P2-5 恒真测试分级处置（Gate E 附带发现）
 

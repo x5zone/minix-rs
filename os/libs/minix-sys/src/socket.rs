@@ -78,20 +78,11 @@ pub const FLAG_NO_BROKEN_PIPE_SIGNAL: i32 = 0x04;
 /// `socket.c`: close-on-exec maps to `O_CLOEXEC`, non-blocking to
 /// `O_NONBLOCK`, no-broken-pipe-signal to `O_NOSIGPIPE`).
 pub fn open_flags_from_socket_type(socket_type: i32) -> i32 {
-    const OPEN_CLOSE_ON_EXEC: i32 = 0x01;
-    const OPEN_NON_BLOCKING: i32 = 0x02;
-    const OPEN_NO_BROKEN_PIPE_SIGNAL: i32 = 0x04;
-    let mut result = 0;
-    if socket_type & FLAG_CLOSE_ON_EXEC != 0 {
-        result |= OPEN_CLOSE_ON_EXEC;
-    }
-    if socket_type & FLAG_NON_BLOCKING != 0 {
-        result |= OPEN_NON_BLOCKING;
-    }
-    if socket_type & FLAG_NO_BROKEN_PIPE_SIGNAL != 0 {
-        result |= OPEN_NO_BROKEN_PIPE_SIGNAL;
-    }
-    result
+    // The three socket-type bits and the three open bits carry the same
+    // values (0x01/0x02/0x04), so the C per-bit walk collapses to a mask.
+    // Should the two families ever diverge, the per-bit mapping lives in
+    // `_socket_flags` (`socket.c`) and comes back here as three arms.
+    socket_type & (FLAG_CLOSE_ON_EXEC | FLAG_NON_BLOCKING | FLAG_NO_BROKEN_PIPE_SIGNAL)
 }
 
 /// Whether the legacy device fallback applies to a file system failure.

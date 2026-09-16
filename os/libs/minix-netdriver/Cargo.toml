@@ -6,4 +6,5 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+bitflags = { workspace = true }
 minix-types = { workspace = true }

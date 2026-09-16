@@ -106,18 +106,8 @@ pub fn normalize_prefix(address: u128, prefix_len: u8) -> u128 {
 /// Count common leading bits of two addresses up to `max`
 /// (pure form of `addr_get_common_bits`, `addr.c:640-689`).
 pub fn common_bits(first: u128, second: u128, max: u32) -> u32 {
-    let mut common = 0_u32;
     let limit = max.min(128);
-    let mut bit = 127_i32;
-    while common < limit && bit >= 0 {
-        let mask = 1_u128 << (bit as u32);
-        if (first & mask) != (second & mask) {
-            break;
-        }
-        common += 1;
-        bit -= 1;
-    }
-    common
+    (first ^ second).leading_zeros().min(limit)
 }
 
 /// Build an Internet Protocol version 6 mapped address from a version 4

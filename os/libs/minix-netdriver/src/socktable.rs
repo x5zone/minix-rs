@@ -235,8 +235,8 @@ impl SockTable {
         };
 
         let mut effective = mask;
-        if effective & SocketEvent::Connect as u32 != 0 {
-            effective |= SocketEvent::Send as u32;
+        if effective & SocketEvent::Connect.bits() != 0 {
+            effective |= SocketEvent::Send.bits();
         }
 
         let mut remaining = Vec::new();
@@ -251,10 +251,10 @@ impl SockTable {
 
         if let Some(wait) = entry.select_wait {
             let mut candidates = 0u8;
-            if effective & (SocketEvent::Accept as u32 | SocketEvent::Receive as u32) != 0 {
+            if effective & (SocketEvent::Accept.bits() | SocketEvent::Receive.bits()) != 0 {
                 candidates |= wait.ops & SDEV_OP_RD;
             }
-            if effective & SocketEvent::Send as u32 != 0 {
+            if effective & SocketEvent::Send.bits() != 0 {
                 candidates |= wait.ops & SDEV_OP_WR;
             }
             if candidates != 0 {
@@ -273,10 +273,10 @@ impl SockTable {
             return Vec::new();
         };
         entry.error = Some(error);
-        let wake = SocketEvent::Bind as u32
-            | SocketEvent::Connect as u32
-            | SocketEvent::Send as u32
-            | SocketEvent::Receive as u32;
+        let wake = SocketEvent::Bind.bits()
+            | SocketEvent::Connect.bits()
+            | SocketEvent::Send.bits()
+            | SocketEvent::Receive.bits();
         self.raise(id, wake)
     }
 
@@ -366,7 +366,7 @@ impl Default for SockTable {
 
 /// Compile-time reminder that the flag words stay usable as `SFL_*` masks.
 #[cfg(test)]
-const _: () = assert!(crate::sockevent::SocketFlag::Timer as u32 == 0x10);
+const _: () = assert!(crate::sockevent::SocketFlag::Timer.bits() == 0x10);
 
 #[cfg(test)]
 mod tests {
@@ -382,7 +382,7 @@ mod tests {
     };
 
     fn recv_cont(caller: Endpoint) -> Continuation {
-        Continuation::new(Receive, caller, SocketEvent::Receive as u32, None).expect("recv suspends")
+        Continuation::new(Receive, caller, SocketEvent::Receive.bits(), None).expect("recv suspends")
     }
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
         table.add(ID).expect("add");
         table.suspend(ID, recv_cont(CALLER_A)).expect("suspend");
 
-        let actions = table.raise(ID, SocketEvent::Receive as u32);
+        let actions = table.raise(ID, SocketEvent::Receive.bits());
         assert_eq!(actions.len(), 1, "一次事件唤醒一条续作");
         match &actions[0] {
             WakeAction::Resume { id, continuation } => {
@@ -413,11 +413,11 @@ mod tests {
     fn test_connect_event_implies_send_wakeup() {
         let mut table = SockTable::new();
         table.add(ID).expect("add");
-        let send_cont = Continuation::new(Send, CALLER_A, SocketEvent::Send as u32, None)
+        let send_cont = Continuation::new(Send, CALLER_A, SocketEvent::Send.bits(), None)
             .expect("send suspends");
         table.suspend(ID, send_cont).expect("suspend");
 
-        let actions = table.raise(ID, SocketEvent::Connect as u32);
+        let actions = table.raise(ID, SocketEvent::Connect.bits());
         assert_eq!(actions.len(), 1, "接通即 imply 可写（sockevent.c:781-782）");
         assert!(matches!(actions[0], WakeAction::Resume { .. }));
     }
@@ -428,14 +428,14 @@ mod tests {
         table.add(ID).expect("add");
         table.suspend(
             ID,
-            Continuation::new(Accept, CALLER_A, SocketEvent::Accept as u32, None)
+            Continuation::new(Accept, CALLER_A, SocketEvent::Accept.bits(), None)
                 .expect("accept suspends"),
         )
         .expect("suspend");
         table
             .suspend(
                 ID,
-                Continuation::new(Connect, CALLER_B, SocketEvent::Connect as u32, None)
+                Continuation::new(Connect, CALLER_B, SocketEvent::Connect.bits(), None)
                     .expect("connect suspends"),
             )
             .expect("suspend");
@@ -473,20 +473,20 @@ mod tests {
         table.add(ID).expect("add");
         table.register_select(ID, CALLER_A, SDEV_OP_RD | SDEV_OP_WR).expect("register");
 
-        let actions = table.raise(ID, SocketEvent::Send as u32);
+        let actions = table.raise(ID, SocketEvent::Send.bits());
         assert_eq!(actions.len(), 1);
         assert!(
             matches!(actions[0], WakeAction::RetestSelect { ops: 0x02, .. }),
             "只有写兴趣可能被发送事件满足"
         );
 
-        let actions = table.raise(ID, SocketEvent::Receive as u32);
+        let actions = table.raise(ID, SocketEvent::Receive.bits());
         assert_eq!(actions.len(), 1, "等待者未被确认取走前持续在册");
         assert!(matches!(actions[0], WakeAction::RetestSelect { ops: 0x01, .. }));
 
         let wait = table.take_select(ID).expect("服务确认满足后取走");
         assert!(wait.caller() == CALLER_A);
-        assert!(table.raise(ID, SocketEvent::Receive as u32).is_empty(), "取走后不再重测");
+        assert!(table.raise(ID, SocketEvent::Receive.bits()).is_empty(), "取走后不再重测");
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         table
             .suspend(
                 ID,
-                Continuation::new(Send, CALLER_B, SocketEvent::Send as u32, None).expect("send"),
+                Continuation::new(Send, CALLER_B, SocketEvent::Send.bits(), None).expect("send"),
             )
             .expect("suspend b");
         table.register_select(ID, CALLER_A, SDEV_OP_RD).expect("register");
@@ -517,7 +517,7 @@ mod tests {
         table
             .suspend(
                 ID,
-                Continuation::new(Receive, CALLER_A, SocketEvent::Receive as u32, Some(500))
+                Continuation::new(Receive, CALLER_A, SocketEvent::Receive.bits(), Some(500))
                     .expect("recv with timeout"),
             )
             .expect("suspend");
@@ -556,7 +556,7 @@ mod tests {
         table.add(id_b).expect("add b 同槽共存");
         table.suspend(id_a, recv_cont(CALLER_A)).expect("suspend on a");
 
-        let actions = table.raise(id_b, SocketEvent::Receive as u32);
+        let actions = table.raise(id_b, SocketEvent::Receive.bits());
         assert!(actions.is_empty(), "事件不串门");
         assert!(table.close(id_a).expect("close a").continuations.len() == 1);
         assert!(table.contains(id_b), "同槽邻居安然无恙");
@@ -571,7 +571,7 @@ mod tests {
         );
         let mut table = SockTable::new();
         table.add(ID).expect("add");
-        assert!(table.raise(ID, SocketEvent::Receive as u32).is_empty());
-        assert!(SocketFlag::Closing as u32 != 0);
+        assert!(table.raise(ID, SocketEvent::Receive.bits()).is_empty());
+        assert!(SocketFlag::Closing.bits() != 0);
     }
 }
