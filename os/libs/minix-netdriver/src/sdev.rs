@@ -90,10 +90,31 @@ pub fn is_sdev_reply(raw: u32) -> bool {
     raw & !0x7f == SDEV_RS_BASE
 }
 
+/// No transfer flags set (`SDEV_NOFLAGS`, `com.h:1071`).
+pub const SDEV_NOFLAGS: u32 = 0x00;
+
+/// Do not suspend the I/O request: answer at once instead of waiting
+/// (`SDEV_NONBLOCK`, `com.h:1072`).
+pub const SDEV_NONBLOCK: u32 = 0x01;
+
+/// Selected for read operation (`SDEV_OP_RD`, `com.h:1075`).
+pub const SDEV_OP_RD: u8 = 0x01;
+
+/// Selected for write operation (`SDEV_OP_WR`, `com.h:1076`).
+pub const SDEV_OP_WR: u8 = 0x02;
+
+/// Selected for error operation (`SDEV_OP_ERR`, `com.h:1077`; the C
+/// framework never tests this bit — see `sockevent.c:817` — and neither
+/// does the machinery).
+pub const SDEV_OP_ERR: u8 = 0x04;
+
+/// Notification requested for a select (`SDEV_NOTIFY`, `com.h:1078`).
+pub const SDEV_NOTIFY: u8 = 0x08;
+
 /// Whether a request may wait for a later event
 /// (`sockdriver.c:10-26`): waiting requests need suspend and resume;
 /// the rest always answer at once. Cancel carries no answer at all.
-pub fn may_suspend(request: SdevRequest) -> bool {
+pub const fn may_suspend(request: SdevRequest) -> bool {
     match request {
         SdevRequest::Bind
         | SdevRequest::Connect
@@ -137,6 +158,16 @@ mod tests {
     fn test_six_replies_follow_their_base() {
         assert_eq!(SdevReply::Reply as u32, 0x1980);
         assert_eq!(SdevReply::SelectReply2 as u32, 0x1985);
+    }
+
+    #[test]
+    fn test_flag_bits_match_com_header() {
+        assert_eq!(SDEV_NOFLAGS, 0x00);
+        assert_eq!(SDEV_NONBLOCK, 0x01);
+        assert_eq!(SDEV_OP_RD, 0x01);
+        assert_eq!(SDEV_OP_WR, 0x02);
+        assert_eq!(SDEV_OP_ERR, 0x04);
+        assert_eq!(SDEV_NOTIFY, 0x08);
     }
 
     #[test]

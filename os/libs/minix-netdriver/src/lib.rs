@@ -30,6 +30,9 @@
 //!   section).
 //! - [`sockevent`] — socket event masks, flags, and hash slots
 //!   (document `02-sockevent-framework.md` sections 1 and 2).
+//! - [`socktable`] — the socket object table: continuations, select
+//!   waiters, alarms, and the wake-action pump (document
+//!   `02-sockevent-framework.md`, machinery sections).
 //!
 //! All drivers built on this framework are single-threaded event loops: one
 //! message at a time, no shared mutable state across threads.
@@ -44,3 +47,4 @@ pub mod protocol;
 pub mod sdev;
 pub mod sockevent;
 pub mod sockid;
+pub mod socktable;

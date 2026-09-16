@@ -41,7 +41,7 @@
 | 级别 | 条目 | 一句话 |
 |------|------|--------|
 | P1 | **N1-P1-1** | sockid 命名空间（lwip.h:58-62）零 Rust 归属 ✅ **已落地（2026-09-17）**：`minix-netdriver/src/sockid.rs` |
-| P1 | **N1-P1-2** | sockdriver/sockevent 实体机制（续延池/事件对象/定时器/select 语义，C 3,740 行）无设计条目——本 stage 最大实现缺口 |
+| P1 | **N1-P1-2** | sockdriver/sockevent 实体机制（续延池/事件对象/定时器/select 语义，C 3,740 行）无设计条目 ✅ **已落地（2026-09-17）**：`socktable.rs` + 02 篇机器章节 |
 | P1 | **N1-P1-3** | [ARCH N-1] 栈本体选型 ✅ **已裁决（2026-09-17）**：smoltcp 一族 + 自研语义垫片，墙后可回退 FFI |
 | P1 | **N1-P1-4** | 传输层与主循环设计：DispatchRoad 4 路对接真实 IPC + SEF/RS（edge E-NETSTART）+ 启动粒度决策 |
 | P1 | **N1-P1-5** | 缓冲模型设计：pbuf 等价物与 VFS↔net↔NDEV 零拷贝链 |
@@ -86,14 +86,14 @@
 **验证**：`cargo test -p minix-netdriver --lib sockid` = 5 passed（类基值锁值/铸造同形/溢出与负数拒绝/线上往返/哈希互通）；全量 `cargo test -p minix-netdriver --lib` = 36 passed；Gate E：01 篇 §5.2 表与 `rg "fn test_" sockid.rs` 对账一致。
 **文档同步**：01 篇新增 §3.4 决策 + §2.7/§2.8 矩阵与差异行 + §5.2 测试表；plan.md N-6 行状态与涉及文档修正（02/99 → 01/99，`sockid_t` 在 sockdriver.h，C 真值优先）。
 
-### N1-P1-2 sockdriver/sockevent 实体机制无设计条目（本 stage 最大缺口）
+### ✅ N1-P1-2 sockdriver/sockevent 实体机制无设计条目——已落地 2026-09-17
 
-**问题**：C 侧 libsockdriver + libsockevent 合计 3,740 行，核心是：① per-call 续延对象池（`call` 结构挂 endpt/event，sockdriver.c:290-472 各 resume 路径）；② 256 槽 sock 哈希对象表（sockevent.c:12-14）；③ 定时器链（SFL_TIMER，sockevent.h:19）；④ select 双段回复 + SEV_CONNECT→SEV_SEND 联动等事件语义（sockevent.c:781-816）。Rust 侧仅有 sdev.rs 的可挂起表（:96-116，且头注释 :10-12 自认"waiting requests need the resume machinery owned by the event library"）——该 machinery 无模块、无设计文档、无排期。
-**影响**：这是 lwip/uds 两个 server 的共同骨架；不定设计，N1-P1-4 的主循环写不动。
-**建议**（≥2 方案，对照 Redox/OS 实践）：
-- 方案 A（推荐）：per-socket `enum Continuation` 状态机——8 个可挂起操作各一 variant，挂在 sock 对象内，事件到达时 match 恢复。对照 Redox `SocketFile` 的 `read_notified`/`write_notified` 去重布尔 + smoltcp 的 per-socket State 枚举 + readiness scan 惯例：单线程事件循环下无共享竞争，状态与数据同处一行 Cache Line，且天然杜绝 C 的"池耗尽"路径（sockdriver.c 需处理 call 池满）。
-- 方案 B（否决但保留评审权）：全局续延表 keyed by endpoint，1:1 对齐 C 形状。否决理由：translate 味重（模式 16）——C 用池是因为 C 没有 per-socket 所属关系可挂；Rust sock 对象就是天然宿主。仅在"续延必须脱离 sock 生命周期独立存活"（SEV_CLOSE 后仍要回复 CANCEL）时局部采纳，届时复合进方案 A。
-- 落地形态：新增设计文档（候选名 `02-sockevent-framework.md` 增补节或独立 `25-sockevent-runtime.md`），定义 Continuation 枚举、sock 对象布局、事件泵伪代码，再进实现。
+**落地**：`os/libs/minix-netdriver/src/socktable.rs`（对象表 256 槽 + `Continuation` + 事件泵 + 选择登记 + 双闹钟）。
+**核心设计**（≥2 方案对比后裁定，见 02 篇 §3.3-3.4）：**动作出列代替回调**——`raise` 返回 `WakeAction` 清单（Resume/RetestSelect/Alarm/TimedOut）交服务逐条执行，C 的回调重入保护（`sockevent_working` 旗标 + 待处理队列，sockevent.c:915-941）在动作模型下没有保护对象，不复存在。记账进库、就绪判定留服务（C 里两件事本就分开：挂起结构是纯记账，试选回调每次问协议族水位）。续延显式携带唤醒掩码与截止时刻（C 由框架按请求类型定事件、`spr_time` 记超时——`sockevent_proc.h:4-19`）；错误唤醒集与 C 逐位一致（BIND|CONNECT|SEND|RECV，接客除外——测试曾假设错误唤醒接客，被证伪后按 C 真值修正，sockevent.c:963）；关闭绝不定时（独立方法，`raise` 收不到关闭位，sockevent.c:899-909 语义）。
+**顺带补齐**：sdev.rs 头注释声称但缺失的 `SDEV_NONBLOCK`/`SDEV_OP_*` 常量（com.h:1071-1078）+ `may_suspend` 常量化。
+**防 translate 自查**：固定池 → 随对象生灭的 Vec（池上界改为对象寿命，差异表登记）；回调分发 → 动作出列；测试曾被错误假设打红一次（set_error 唤醒集），以 C 真值裁决——正是"卓越建立在正确之上"的实证。
+**验证**：`cargo test -p minix-netdriver --lib` = 46 passed（机器 9 个：挂起唤醒/联动/错误集/立即回收/选择重测/撤单/双闹钟/同槽共存/非挂起拒绝）；clippy 0 警告；Gate E：02 篇 §5.2 与 grep 对账一致。
+**文档同步**：02 篇（头部模块行、§2.7 矩阵五增行、§2.8 差异六行、§3.3-3.5 决策重写、§4 错误表、§5.2 测试表、§6/§7）；01 篇（§2.7 标志行、§5.1 标志测试、§5.3 计数）；lib.rs 模块清单。
 
 ### ✅ N1-P1-3 [ARCH N-1] 协议栈本体选型——已裁决 2026-09-17
 
