@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作主力——shell 调用的命令中，搬运、查看、判断文件的三十个
 > **源码**: `minix3/bin/` 十五个（`cat`、`chmod`、`cp`、`df`、`echo`、`expr`、`ln`、`ls` 715 行、`mkdir`、`mv`、`pwd`、`rm`、`rmdir`、`sync`、`test` 717 行）、`minix3/usr.bin/` 十五个（`basename`、`dirname`、`du`、`false`、`find` 306 行、`flock`、`mkfifo`、`mktemp`、`pathchk`、`printf`、`stat`、`touch`、`true`、`xargs`、`xinstall`）、`minix3/usr.sbin/` 三个（`chroot`、`link`、`unlink`）、`minix3/minix/commands/truncate/`，合计 34 个命令
-> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`，30 个测试通过）；`src/bin/echo.rs` 为首个真实命令二进制（决定半在库、执行半经 `minix-sys` 顶层 `write` 与 exit；宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后表现为 exit 1）；`os/commands/bin/` 下 `cat`、`cp`、`ls`、`mv`、`rm` 仍为启动占位（文件读写待系统调用）
+> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`，30 个测试通过）；`src/bin/echo.rs` 为首个真实命令二进制（决定半在库、执行半经 `minix-sys` 顶层 `write` 与 exit；宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后表现为 exit 1）；其余命令的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（文件读写待系统调用；原 `os/commands/bin/` 下 `cat`、`cp`、`ls`、`mv`、`rm` 五个占位壳已于 2026-09-17 删除）
 > **前置依赖**: `05-shell-family.md`（调用方：内建与外部的区分）、文件系统调用（`14-stage-runtime` 的文件部分）
 > **不覆盖（移交）**: 文本处理（见 `07-text-filter.md`）、存储管理（见 `14` 到 `17` 各篇）、表达式求值之外的 `test` 内建包装（见 `05` 篇内建部分）
 

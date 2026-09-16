@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第二组——在屏幕上动起来的游戏，光标能走、格子能翻的证明
 > **源码**: `minix3/games/tetris/shapes.c`（邻居偏移见第 46 行到第 53 行附近、吻合测试见第 82 行附近、放置见第 97 行附近）、`minix3/games/tetris/tetris.h`（棋盘宽 12 高 23 见第 54 行到第 56 行附近）、`minix3/games/tetris/tetris.c`（棋盘数组见第 62 行附近、消行见第 109 行到第 118 行附近）、`minix3/games/worm/worm.c`（屏幕初始化见第 120 行附近、格子绘制见第 203 行到第 204 行附近）、`minix3/games/rain/rain.c`（延时选项见第 87 行附近、雨滴绘制见第 117 行到第 118 行附近）、`minix3/games/colorbars/colorbars.c`（彩条动画）、`minix3/games/snake/`（贪吃蛇与计分）、`minix3/games/rogue/rogue.h`（墙门标志见第 54 行到第 56 行附近、每层最多房间 `MAXROOMS 9` 见第 293 行附近）、`minix3/games/rogue/room.c`（房间布置）
-> **Rust 模块**: `os/commands/games/term-games`（库包 `minix-term-games`：`screen.rs`、`tetris.rs`、`snake.rs`、`crawler.rs`、`dungeon.rs`、`random.rs`，32 个测试通过）；各游戏二进制包（`os/commands/games/` 下同名目录，当前为执行占位，键盘读取与屏幕绘制随执行层落地）
+> **Rust 模块**: `os/commands/games/term-games`（库包 `minix-term-games`：`screen.rs`、`tetris.rs`、`snake.rs`、`crawler.rs`、`dungeon.rs`、`random.rs`，32 个测试通过）；各游戏的 `src/bin/` 薄壳随执行层批次在本 crate 内落地（键盘读取与屏幕绘制依赖 [ARCH] A-2 落地；原同名占位二进制壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `13-terminal-termios.md`（终端控制先行）
 > **不覆盖（移交）**: 终端能力数据库移植（架构演进决策，见 3.5 节）、键盘读取与真实绘制（各游戏二进制包）、怪物物品与计分（后续补齐）
 

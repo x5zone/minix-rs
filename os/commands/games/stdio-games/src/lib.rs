@@ -15,18 +15,21 @@
 //! (`minix3/games/pig/pig.c` with the vowel rule near line 103 and the usage
 //! line `pig` near line 133), arithmetic quiz
 //! (`minix3/games/arithmetic/arithmetic.c` with the default range 10 near
-//! line 99 and the right and wrong counters near line 100), big banners
+//! line 99 and the right and wrong counters near line 100), and big banners
 //! (`minix3/games/banner/banner.c` with the full width 132 near line 58 and
-//! the usage line `banner [-w width] [message]` near line 1057), number words
-//! (`minix3/games/number/number.c`), binary coded display
-//! (`minix3/games/bcd/bcd.c`), and paper tape punch (`minix3/games/ppt/ppt.c`).
+//! the usage line `banner [-w width] [message]` near line 1057). Number
+//! words (`minix3/games/number/number.c`), binary coded display
+//! (`minix3/games/bcd/bcd.c`), and paper tape punch (`minix3/games/ppt/ppt.c`)
+//! are part of this document's contract but not yet written here — their
+//! deciding halves land with the execution batch that wires their binaries.
 //!
 //! # Design
 //!
 //! These games only read and write; they never touch the screen directly.
 //! What is pure here lives in this crate, what reads the keyboard and writes
-//! the display stays with the per game binaries (`os/commands/games/`,
-//! currently execution stubs):
+//! the display stays with the thin `src/bin/` programs of this same crate
+//! (the former per-game placeholder binary crates were removed on
+//! 2026-09-17; see the stage todo §6.1 step 3):
 //!
 //! - [`factor`]: decimal parsing, trial division with a small prime wheel,
 //!   and `number: factor ...` line rendering.

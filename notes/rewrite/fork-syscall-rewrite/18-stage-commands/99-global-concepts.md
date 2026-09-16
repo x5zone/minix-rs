@@ -38,7 +38,7 @@ minix-rs 沿用同一方向，C 库的位置由两样东西顶上：
 | `minix-sys` 顶层 | `minix-sys::ipc` 的 `send`/`receive`/`sendrec` | 假设服务器的内部实现 |
 | `minix-sys::ipc` 与 `minix-types` | 内核调用入口与消息布局 | 业务语义 |
 
-需要的能力如果在 `minix-sys` 顶层没有对应函数，正确做法是在运行时阶段补一个封装，而不是在命令里直接发消息。`os/commands/bin/echo/src/main.rs:9` 的 `TODO` 就属于这种情况：它要的只是 `write`（`os/libs/minix-sys/src/lib.rs:217`），不需要知道 VFS 的消息编号。
+需要的能力如果在 `minix-sys` 顶层没有对应函数，正确做法是在运行时阶段补一个封装，而不是在命令里直接发消息。echo 就是这种情况的正面样本：它的二进制（`os/commands/bin/fileops/src/bin/echo.rs`）只调用 `write`（`os/libs/minix-sys/src/lib.rs:217`）与 exit，不需要知道 VFS 的消息编号。
 
 plan.md 中多处用 "stdio" 指代命令的输入输出通道（`plan.md:206`、`:394`、`:405`、`:407`）。由于 [ARCH] A-2 已决定不移植 libc 的 stdio（`../14-stage-runtime/plan.md:157`、`:273`），这些句子需要落到具体函数上，否则读者会等待一个不会出现的库。准确的含义是：
 
@@ -66,7 +66,7 @@ plan.md §3.6 的契约表当前列为：命令 / C 源 / 职责 / 关键选项 
 
 | 命令 | Requires（最小 API） | 当前状态 |
 |------|---------------------|---------|
-| echo | `write`、`exit`、argv 交接（`minix-rt`） | API 齐备，命令本体为占位（`os/commands/bin/echo/src/main.rs:9`） |
+| echo | `write`、`exit`、argv 交接（`minix-rt`） | 已实现（`os/commands/bin/fileops/src/bin/echo.rs`；argv 接缝现走 std，no_std 构建换 minix-rt） |
 | cat | `open`、`read`、`write`、`close`、`exit` | API 齐备 |
 | ls | `open`、`getdents`、`stat`、`write` | `getdents`、`stat` 缺封装（`../14-stage-runtime/todo.md:60`） |
 | sh（执行器） | `fork`、`exec`、`waitpid`、`dup2`、`pipe`、`kill`、信号面 | `dup2`、`pipe`、信号面缺封装 |

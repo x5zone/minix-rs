@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的交互起点——登录程序交棒之后，谁解释用户敲下的每一行字
 > **源码**: `minix3/bin/sh/`（Almquist shell，22 个 C 文件：`parser.c` 1686 行、`expand.c` 1640 行、`eval.c` 1366 行、`jobs.c` 1532 行、`exec.c` 1071 行、`redir.c` 400 行、`main.c` 376 行、`builtins.def` 93 行）、`minix3/bin/ksh/`、`minix3/bin/csh/`、`minix3/bin/hostname/hostname.c`（101 行，主函数第 57 行）、`minix3/usr.bin/uname/uname.c`（159 行，系统调用第 111 行）、`minix3/usr.bin/env/env.c`（99 行）、`minix3/usr.bin/getopt/getopt.c`（41 行）、`minix3/minix/commands/sysenv/sysenv.c`（81 行）、`minix3/etc/profile`、`minix3/etc/shrc`、`minix3/etc/csh.cshrc`、`minix3/etc/csh.login`、`minix3/etc/csh.logout`、`minix3/etc/hostname.file`（内容 `minix`）
-> **Rust 模块**: `os/commands/bin/shell`（库包 `minix-shell`：`lexer.rs`、`expand.rs`、`redir.rs`、`script.rs`，36 个测试通过）；`os/commands/bin/sh` 仍为启动占位（派生执行待进程原语）
+> **Rust 模块**: `os/commands/bin/shell`（库包 `minix-shell`：`lexer.rs`、`expand.rs`、`redir.rs`、`script.rs`，36 个测试通过）；`sh` 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（派生执行待进程原语；原 `os/commands/bin/sh` 占位壳已于 2026-09-17 删除）
 > **前置依赖**: `03-login-passwd.md`（登录链交棒到 shell）、终端属性（`13-terminal-termios.md` 的行规程部分）
 > **不覆盖（移交）**: 命令工具本体（见 `06` 到 `24` 各篇）、终端驱动（见 `16-stage-drivers` 的终端部分）、作业控制的进程组实现（见进程管理阶段）
 

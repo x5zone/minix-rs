@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的准备层——磁盘先切分、卷先格式化，挂载才有东西可用
 > **源码**: `minix3/sys/sys/bootblock.h`（表偏移 446、魔数 `0xAA55` 在 510、四项、激活标志 `0x80`、类型码含 Minix `0x80` 与 `0x81`、Linux 原生 `0x83`、386BSD `0xA5`；16 字节项结构第 703 到 714 行）、`minix3/minix/commands/part/part.c`（扇区 512 第 47 行、引导块第 300 行、表拷贝第 384 到 482 行、起止换算第 550 到 551 行与第 691 到 702 行）、`minix3/minix/commands/fdisk/fdisk.c`（表指针定位）、`minix3/minix/commands/partition/`、`autopart/`、`repartition/`、`format/`、`devsize/`、`minix3/sbin/newfs_ext2fs/`、`newfs_msdos/`、`newfs_udf/`、`newfs_v7fs/`、`minix3/usr.sbin/makefs/`
-> **Rust 模块**: `os/commands/sbin/diskfmt`（库包 `minix-diskfmt`：`mbr.rs`、`size.rs`，9 个测试通过）；`os/commands/sbin/mkfs` 仍为启动占位（格式化执行待块设备接口）
+> **Rust 模块**: `os/commands/sbin/diskfmt`（库包 `minix-diskfmt`：`mbr.rs`、`size.rs`，9 个测试通过）；mkfs 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（格式化执行待块设备接口，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/mkfs` 占位壳已于 2026-09-17 删除）
 > **前置依赖**: `14-mount-fsck.md`（挂载使用在先，准备在后——阅读顺序先用后备，见 1.5 节说明）
 > **不覆盖（移交）**: 分区写入执行与格式化执行（待块设备接口）、文件系统内部结构（见 `15-stage-fs`）、存储驱动（见驱动阶段）
 

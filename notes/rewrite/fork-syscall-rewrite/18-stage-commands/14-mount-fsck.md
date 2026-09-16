@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的存物层——磁盘挂上去、文件系统有人检查
 > **源码**: `minix3/minix/commands/mount/mount.c`（类型选项标志第 41 到 60 行、用法第 17 与 168 行、参数计数检查第 60 行）、`minix3/minix/commands/umount/umount.c`、`minix3/sbin/mount/`（`fattr.c` 属性工具、`mountprog.h`）、`minix3/sbin/fsck/`（`fsck.c` 通过号零跳过第 254 行、`preen.c` 预检查模式、`progress.c` 进度）、`minix3/sbin/fsck_ext2fs/`、`minix3/minix/commands/fsck.mfs/`、`minix3/etc/newfstab.sh`（单参数、读变量、必填检查）
-> **Rust 模块**: `os/commands/sbin/mountinfo`（库包 `minix-mountinfo`：`fstab.rs`、`options.rs`、`order.rs`，12 个测试通过）；`os/commands/sbin/fsck` 仍为启动占位（检查遍待文件系统接口）
+> **Rust 模块**: `os/commands/sbin/mountinfo`（库包 `minix-mountinfo`：`fstab.rs`、`options.rs`、`order.rs`，12 个测试通过）；fsck 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（检查遍待文件系统接口，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/fsck` 占位壳已于 2026-09-17 删除）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`15-stage-fs` 的服务端语义（挂载调用的另一端）
 > **不覆盖（移交）**: 文件系统服务端实现（见 `15-stage-fs`）、块驱动（见 `16-stage-drivers` 的存储部分）、检查遍实现（后续文件系统阶段）
 
