@@ -21,7 +21,7 @@
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
 | P1 | V1-P1-3 | ~~misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送~~（**✅ 已修复** 2026-09-16，Fix #10，见 §3.2 修复记录） |
 | P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |
-| P1 | V1-P1-5 | 99 篇（全局概念/布局权威）pending 是多个已登记缺口的共同解锁前置（09 open 路径布局、VM_REMAP 布局对齐都在等它）（§3.2） |
+| P1 | V1-P1-5 | ✅ 99/00 篇同批落稿（2026-09-17，95f971f02）：99-global-concepts 正文 v1（四核心点 + 调用号体例归一裁决 + 56B LP64 判例 + .design outline/design 快照）+ 00-runtime-overview 正文 v1（总览/主线含 rt-birth 真机里程碑/导航/设计原则）；minix-sys 四族 payload 断言补齐（d1091c2b2，200 passed）|
 | P2 | V1-P2-1 | ~~查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`~~（**✅ 已修复** 2026-09-16，Fix #6，见 §3.2 修复记录） |
 | P2 | V1-P2-2 | wire 打包双体系：minix-types 的类型化布局与 minix-sys 的本地裸字节打包并存，`cleared_message`/`write_payload` 在三个文件各复制一份；VM_REMAP 两处状态标注不一致（§3.2，跨层部分挂 edge E-MINTYPES-RUNTIME） |
 | P2 | V1-P2-3 | ~~注释锚点失实批：10 处~~（**✅ 全部处置** 2026-09-16，Fix #1/#2/#4/#12，见 §3.2 修复记录） |
