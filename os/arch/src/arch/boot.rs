@@ -357,69 +357,108 @@ pub fn load_vm_elf<P: Paging, A: PhysAccess>(
         let page_mask = page_size - 1;
         let vaddr_start = seg.vaddr;
         let vaddr_end = seg.vaddr + seg.memsz;
-        // C contract: `pg_map` asserts `!(vaddr % PAGE_SIZE)` for
-        // PG_ALLOCATEME (pg_utils.c:277). Link-script-produced ELF
-        // vaddrs are page-aligned; a non-aligned vaddr would make
-        // `copy_start = vaddr - vaddr_start` below underflow, so enforce
-        // the same contract as C (debug builds).
-        debug_assert!(
-            vaddr_start % page_size == 0,
-            "load_vm_elf: PT_LOAD vaddr must be page-aligned (C: pg_utils.c:277)"
-        );
+        // Segment start may sit mid-page (lld's separate-code layout packs
+        // a later PT_LOAD into the previous segment's last page), so the
+        // page walk begins at the page-aligned address BELOW vaddr_start.
+        // C contract note: pg_map's `!(vaddr % PAGE_SIZE)` assert
+        // (pg_utils.c:277) applies to C's own link layout; this loader
+        // deliberately accepts mid-page segment starts and maps each page
+        // exactly once (the shared boundary page is written through its
+        // already-installed mapping instead of re-mapped).
         let mut vaddr = vaddr_start & !page_mask; // page-align down
-        let mut file_offset = seg.offset;
-        let mut file_remaining = seg.filesz;
 
         while vaddr < vaddr_end {
-            // ① Allocate a physical frame (PA chosen by the allocator,
-            //    not derived from the VA).
-            let frame = vm_alloc
-                .alloc_page()
-                .map_err(|_| VmLoadError::OutOfMemory)?;
-            // ② Kernel-accessible destination for zero + copy.
-            //    `PhysAccess` guarantees the whole frame is accessible.
-            let dst = access.frame_virt(frame);
+            // Where the segment begins inside THIS page: non-zero only on
+            // the segment's first page when vaddr_start is mid-page.
+            let seg_start_in_page = (vaddr_start.saturating_sub(vaddr)) as usize;
+            // Segment-image offset of the page's first owned byte (0 on
+            // the first page, page-granular afterwards).
+            let page_off = vaddr.saturating_sub(vaddr_start) as usize;
+            // Segment bytes owned by this page: the remaining memsz
+            // clipped to the room between the segment start and the page
+            // end.
+            let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+                .min(page_size as usize - seg_start_in_page));
 
-            // ③ Zero the entire frame first: covers unaligned first/last
-            //    pages and `.bss` (memsz > filesz) tail.
-            //    SAFETY: `dst` is a kernel-accessible VA covering one
-            //    whole frame (PhysAccess contract); PAGE_SIZE bytes are
-            //    in range.
-            unsafe {
-                core::ptr::write_bytes(dst.0 as *mut u8, 0, page_size as usize);
-            }
+            // ① Destination frame. A page that is ALREADY mapped is a
+            //    shared boundary page: linkers (lld's separate-code
+            //    layout) start a later PT_LOAD inside the previous
+            //    segment's last page. C parity: the C loader maps such a
+            //    page once and both segments' bytes land in the same
+            //    frame (libexec pg_map). Copy into the existing frame;
+            //    only a fresh page gets a new frame + full zero + map.
+            let (dst, shared_page) = match paging.query(VirBytes(vaddr)) {
+                Some((pa, _flags)) => (access.frame_virt(PhysFrame::new(pa)).0, true),
+                None => {
+                    // ①a Allocate a physical frame (PA chosen by the
+                    //    allocator, not derived from the VA).
+                    let frame = vm_alloc
+                        .alloc_page()
+                        .map_err(|_| VmLoadError::OutOfMemory)?;
+                    // ①b Kernel-accessible destination for zero + copy.
+                    //    `PhysAccess` guarantees the whole frame is
+                    //    accessible.
+                    let dst = access.frame_virt(frame);
 
-            // ④ Copy file-backed bytes for this page (may be partial).
-            if file_remaining > 0 {
-                let copy_start = (vaddr - vaddr_start) as usize;
-                let copy_len = core::cmp::min(
-                    file_remaining as usize,
-                    page_size as usize - ((vaddr - vaddr_start) % page_size) as usize,
-                );
-                if copy_start + copy_len <= seg.filesz as usize {
-                    let src_offset = file_offset as usize;
-                    let dst_ptr = dst.0 as *mut u8;
-                    // SAFETY: `dst` is in range (verified by PhysAccess);
-                    // `copy_len` is bounded by the remaining ELF bytes
-                    // and the page size.
+                    // ①c Zero the entire frame first: covers unaligned
+                    //    first/last pages and `.bss` (memsz > filesz)
+                    //    tail.
+                    //    SAFETY: `dst` is a kernel-accessible VA covering
+                    //    one whole frame (PhysAccess contract); PAGE_SIZE
+                    //    bytes are in range.
                     unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            image.as_ptr().add(src_offset),
-                            dst_ptr,
-                            copy_len,
-                        );
+                        core::ptr::write_bytes(dst.0 as *mut u8, 0, page_size as usize);
                     }
-                    file_offset += copy_len as u64;
-                    file_remaining -= copy_len as u64;
+
+                    // ①d Install the VM mapping only after the frame is
+                    //    fully constructed: VM VA → allocated PA.
+                    paging
+                        .map(VirBytes(vaddr), frame.start(), flags)
+                        .map_err(|_| VmLoadError::MappingFailed)?;
+                    total_allocated += page_size as usize;
+                    (dst.0, false)
+                }
+            };
+
+            // ② File-backed bytes for this page: the segment's file slice
+            //    [page_off, page_off + file_bytes_here) lands at
+            //    dst[seg_start_in_page..]. saturating_sub: bss-only pages
+            //    (page_off ≥ filesz) simply have no file part.
+            let file_bytes_here =
+                (seg.filesz.saturating_sub(page_off as u64) as usize).min(seg_bytes_here);
+            if file_bytes_here > 0 {
+                let src_offset = seg.offset + page_off as u64;
+                // SAFETY: `dst` is in range (verified by PhysAccess);
+                // src_offset + file_bytes_here ≤ filesz ≤ image length
+                // (segment table validated by `segment_iter`).
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        image.as_ptr().add(src_offset as usize),
+                        (dst as *mut u8).add(seg_start_in_page),
+                        file_bytes_here,
+                    );
                 }
             }
 
-            // ⑤ Install the VM mapping only after the frame is fully
-            //    constructed: VM VA → allocated PA.
-            paging
-                .map(VirBytes(vaddr), frame.start(), flags)
-                .map_err(|_| VmLoadError::MappingFailed)?;
-            total_allocated += page_size as usize;
+            // ③ `.bss` tail of a SHARED page: a fresh page was zeroed in
+            //    full (①c), but on a shared page the bytes below
+            //    `seg_start_in_page` belong to the previous segment —
+            //    only this segment's own bss region may be cleared.
+            if shared_page {
+                let bss_bytes_here = seg_bytes_here - file_bytes_here;
+                if bss_bytes_here > 0 {
+                    // SAFETY: seg_start_in_page + seg_bytes_here ≤
+                    // page_size (page/segment geometry above); `dst`
+                    // covers the whole frame.
+                    unsafe {
+                        core::ptr::write_bytes(
+                            (dst as *mut u8).add(seg_start_in_page + file_bytes_here),
+                            0,
+                            bss_bytes_here,
+                        );
+                    }
+                }
+            }
 
             vaddr += page_size;
         }
