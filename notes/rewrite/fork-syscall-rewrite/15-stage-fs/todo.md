@@ -149,6 +149,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 ### 3.3 P2
 
 **V1-P2-1 写路径整块免读优化缺失。** C rw_chunk 在写满块或「块对齐且越过旧 EOF」时用 NO_READ（read.c:175-177）；Rust 对已映射块一律 `AcquireMode::Normal`（write.rs:280-282），每次整块写多一次设备读。修复：在 `write_file` 的分块判断处引入 NoRead 条件（含短末块语义，与 V1-P3-5 一并对账），用 `CountingSource` 断言零设备读。
+**✅ 2026-09-17 闭环（Fix #14）**：`ensure_block` 增 `skip_read` 参数——写入从块首开始且写满一整块（`offset==0 && chunk==block_size`）时，已映射块按免读方式拿块；未映射块照旧分配清零。短末块语义随 V1-P3-5 对账。计数源测试锁定：两次整块写穿透读为零；crate 一百二十三测试全绿；15 篇 §4.2 同步免读优化说明。
 
 **V1-P2-2 缓存与传输热路径的拷贝清单。** 五处可消除或收缩的拷贝：(1) `acquire` 的 Normal 路径先读入临时 `staging` 再 `copy_from_slice`（cache.rs:262-272）——`self.source` 与 `self.slots[slot]` 是不相交字段的借用，Rust 允许直接 `self.source.read_block(key, &mut self.slots[slot].data)`；(2) `evict_one` 为借检克隆整块（cache.rs:479-482）；(3) `flush_device` 每脏块 `data.clone()`（cache.rs:352-355）；(4) bio 写路径 `staging_at` 克隆整块再由 `write_slot` 整块拷回（bio.rs:239-250）——用 `slot_data_mut` + 区间 `copy_from_slice` 可省两次整块拷贝；(5) LRU 命中的 `remove_from_free` 线性扫描 O(池深)（cache.rs:520-524）。对照 Redox：redoxfs 的 `DiskCache` 直接在缓冲上读写，无搬运层；对照 C：lmfs 的驱动直读缓冲。方案 A：逐项就地消除（不改 API，收益立得）；方案 B：Buffer 内嵌 prev/next 把 LRU 改成侵入式双向链（与 C cache.c:46-47 同构），(5) 从 O(n) 归 O(1)。推荐 A 全做、B 只做 (5)（池默认 1024，(5) 的常数不可忽略）。
 

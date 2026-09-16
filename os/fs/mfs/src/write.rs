@@ -270,6 +270,7 @@ pub fn ensure_block<S: BlockSource>(
     range: ZoneRange,
     block_size: usize,
     position: u64,
+    skip_read: bool,
 ) -> Result<usize, WriteError> {
     let zones = table.slot(slot).zones;
     let file_block = position / block_size as u64;
@@ -277,8 +278,15 @@ pub fn ensure_block<S: BlockSource>(
         crate::read::map_file_block(cache, device, &zones, params, range, file_block)
             .map_err(|_| WriteError::Io)?
     {
+        // 整块覆写时旧内容无关紧要：免读直接拿块（`read.c:175-177` 的
+        // NO_READ 优化）。
+        let mode = if skip_read {
+            AcquireMode::NoRead
+        } else {
+            AcquireMode::Normal
+        };
         return cache
-            .acquire(BlockKey::new(device, device_block), AcquireMode::Normal)
+            .acquire(BlockKey::new(device, device_block), mode)
             .map_err(|_| WriteError::Io);
     }
     // Miss: seed the hint like the C code, allocate, and map it in.
@@ -367,9 +375,12 @@ pub fn write_file<S: BlockSource>(
     while remaining > 0 {
         let offset = (position % block_size as u64) as usize;
         let chunk = (block_size - offset).min(remaining);
+        // 整块覆写（块对齐且写满一块）时免读：旧内容即刻被覆盖
+        // （`read.c:175-177` 的 NO_READ 优化）。
+        let whole = offset == 0 && chunk == block_size;
         let cache_slot = ensure_block(
             table, cache, space, alloc_bit, free_bit, device, slot, params, range, block_size,
-            position,
+            position, whole,
         )?;
         // Existing block at or past the old end, block-aligned start,
         // partial chunk: clear first so no stale tail survives.
@@ -725,6 +736,133 @@ mod tests {
         );
     }
 
+    /// 计数存储源：统计穿透缓存的读盘次数（免读优化的观察口）。
+    struct CountingSource {
+        inner: RamDisk,
+        reads: alloc::rc::Rc<core::cell::Cell<usize>>,
+    }
+
+    impl BlockSource for CountingSource {
+        fn block_size(&self) -> usize {
+            self.inner.block_size()
+        }
+        fn read_block(&self, key: BlockKey, out: &mut [u8]) -> Result<(), Errno> {
+            self.reads.set(self.reads.get() + 1);
+            self.inner.read_block(key, out)
+        }
+        fn write_block(&mut self, key: BlockKey, data: &[u8]) -> Result<(), Errno> {
+            self.inner.write_block(key, data)
+        }
+    }
+
+    #[test]
+    fn test_full_block_overwrite_skips_storage_read() {
+        let reads = alloc::rc::Rc::new(core::cell::Cell::new(0usize));
+        let disk = RamDisk::new(64, 512).unwrap();
+        let mut cache = BlockCache::with_pool(
+            CountingSource {
+                inner: disk,
+                reads: alloc::rc::Rc::clone(&reads),
+            },
+            NoSecondLevel,
+            8,
+        )
+        .unwrap();
+        let mut table = InodeTable::new();
+        let io = crate::inode::InodeIo {
+            inode_base_block: 4,
+            inodes_per_block: 8,
+            indirect_per_block: 128,
+            read_only: false,
+        };
+        let mut space = crate::mfs_cache::ZoneSpace {
+            first_data_zone: 4,
+            zone_count: 61,
+            zsearch: 4,
+        };
+        let params = crate::read::MapParams {
+            direct_zones: 7,
+            indirect_per_block: 128,
+        };
+        let range = crate::read::ZoneRange {
+            first: 4,
+            count: 61,
+        };
+        let bits = alloc::rc::Rc::new(core::cell::Cell::new(3u64));
+        let _ = table.get(&mut cache, DEVICE, 2, &io).unwrap();
+        let slot = table.find(DEVICE, 2).unwrap();
+        {
+            let inode = table.slot_mut(slot);
+            inode.mode = 0o100644;
+            inode.nlinks = 1;
+        }
+        let data = [0xA5u8; 512];
+        {
+            let bits = alloc::rc::Rc::clone(&bits);
+            let mut alloc_bit = move |hint: u64| {
+                let _ = hint;
+                let bit = bits.get();
+                bits.set(bit + 1);
+                Some(bit)
+            };
+            let mut free_bit = |bit: u64| {
+                let _ = bit;
+            };
+            let moved = write_file(
+                &mut table,
+                &mut cache,
+                &mut space,
+                &mut alloc_bit,
+                &mut free_bit,
+                DEVICE,
+                slot,
+                params,
+                range,
+                512,
+                1_000_000,
+                false,
+                0,
+                &data,
+            )
+            .unwrap();
+            assert_eq!(moved, 512);
+        }
+        // 第二次整块写覆盖已映射块：免读优化生效，存储读不得增加。
+        let reads_before = reads.get();
+        let data2 = [0x5Au8; 512];
+        {
+            let bits = alloc::rc::Rc::clone(&bits);
+            let mut alloc_bit = move |hint: u64| {
+                let _ = hint;
+                let bit = bits.get();
+                bits.set(bit + 1);
+                Some(bit)
+            };
+            let mut free_bit = |bit: u64| {
+                let _ = bit;
+            };
+            let moved = write_file(
+                &mut table,
+                &mut cache,
+                &mut space,
+                &mut alloc_bit,
+                &mut free_bit,
+                DEVICE,
+                slot,
+                params,
+                range,
+                512,
+                1_000_000,
+                false,
+                0,
+                &data2,
+            )
+            .unwrap();
+            assert_eq!(moved, 512);
+        }
+        assert_eq!(reads.get(), reads_before);
+    }
+
     #[test]
     fn test_ensure_block_allocates_and_zeroes() {
         let mut fixture = fixture();
@@ -742,6 +880,7 @@ mod tests {
             fixture.range,
             BLOCK_SIZE,
             0,
+            false,
         )
         .unwrap();
         // Fresh block reads zero.
@@ -770,6 +909,7 @@ mod tests {
             fixture.range,
             BLOCK_SIZE,
             0,
+            false,
         )
         .unwrap();
         fixture.cache.release(cache_slot).unwrap();
