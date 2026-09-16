@@ -7,7 +7,7 @@
 //! bounds in `minix3/minix/lib/libblockdriver/mq.c:24` (`MQ_SIZE 128`), and
 //! the partition geometry in `minix3/minix/include/minix/partition.h`.
 
-use minix_types::{EBADF, EINVAL, EIO, ENOTTY, OK};
+use minix_types::{EINVAL, EIO, ENOTTY, ENXIO, OK};
 
 /// Base of the block request range.
 ///
@@ -382,10 +382,12 @@ pub const NO_IOCTL_HOOK: i32 = ENOTTY;
 
 /// Default result when a non-disk device receives a partition request.
 ///
-/// C: partition handling is skipped unless the type is disk; the Rust side
-/// reports "bad file descriptor", matching the C refusal to serve geometry
-/// for non-disk types.
-pub const NOT_DISK: i32 = EBADF;
+/// C has no "not a disk" errno: a partition or geometry request whose
+/// `bdr_part` hook returns `NULL` (the shape every non-disk minor takes) is
+/// refused with `ENXIO` (`driver.c:286-292`, in `DIOCSETP`/`DIOCGETP`), and
+/// an ioctl with no hook at all gets `ENOTTY` (`driver.c:352-355`). This
+/// constant carries the first of the two: no partition entry, no device.
+pub const NOT_DISK: i32 = ENXIO;
 
 /// Error for a request with no usable minor number.
 pub const BAD_MINOR: i32 = EINVAL;

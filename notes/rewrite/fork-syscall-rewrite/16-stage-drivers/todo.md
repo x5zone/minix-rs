@@ -17,7 +17,7 @@
 
 - **F1 [P0] `CDEV_REPLY_BASE` 错值**：`os/libs/minix-chardriver/src/protocol.rs:22` 定义 `CDEV_REPLY_BASE: i32 = 0x500`，注释自引 `com.h:934`；C 真值是 `CDEV_RS_BASE 0x480`（`minix3/minix/include/minix/com.h:920`），0x500 是 `BDEV_RQ_BASE`（com.h:963）。该常量当前零消费者，属潜伏错误；input 侧 `CHARACTER_RESPONSE_BASE = 0x480` 是对的。已登记为 edge E-CDRCONV 问题二，随框架收敛一并修；若本 stage 先修：改值同时改注释行号，并补一条对 com.h 的钉值测试。
 - **F2 ✅（2026-09-17）[P0] bdev 回复不验类型**：`os/libs/minix-bdev/src/client.rs:557-565` `check_reply` 只对 `id` 匹配，`Reply { id, status, .. }` 丢弃了 `message_type`——函数自己的文档注释写着"type must be the block general reply"，代码没做；C `bdev_sendrec/sendrec` 首查 `m_type == BDEV_REPLY`（`libbdev/ipc.c:144-268`）。`open/close` 内联路径（client.rs:497-507,529-537）同样不验且与 `check_reply` 重复。`TransportError::BadReply` 变体存在但无人产生。既有测试只测 id 错配、未测类型错配（盲区与缺口同源）。修法：三验收敛进 `check_reply`（类型→标识→状态），open/close 复用，补类型错配负例。
-- **F3 [P1] blockdriver 自造 errno**：`os/libs/minix-blockdriver/src/protocol.rs:388` `NOT_DISK: i32 = EBADF` 在 libblockdriver 全目录 grep 无出处；C 对非磁盘是跳过分区（`drvlib.c` 分区入口）、DIOCGETP 缺分区答 ENXIO（`driver.c:286-292`）、未知 ioctl 答 ENOTTY（`driver.c:355`）。违反"错误必须映射 Minix3 errno"约束。
+- **F3 ✅（2026-09-17）[P1] blockdriver 自造 errno**：`os/libs/minix-blockdriver/src/protocol.rs:388` `NOT_DISK: i32 = EBADF` 在 libblockdriver 全目录 grep 无出处；C 对非磁盘是跳过分区（`drvlib.c` 分区入口）、DIOCGETP 缺分区答 ENXIO（`driver.c:286-292`）、未知 ioctl 答 ENOTTY（`driver.c:355`）。违反"错误必须映射 Minix3 errno"约束。
 - **F4 [P0] 链路三态缺一**：C 有 `NDEV_LINK_DOWN 2`（com.h:1145），Rust 无此常量、`LinkReport` 注释自述"link: One of UNKNOWN and UP"（`os/libs/minix-netdriver/src/driver.rs:59-60`），链路断开不可表达；doc 03 §2.2 还断言"链路状态两个（1143-1144 行）"——C 实有三个。代码补枚举、文档改叙述，一并落。
 
 ### 1.2 boot 关键（docs 05–08）
