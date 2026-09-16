@@ -6,6 +6,7 @@
 //!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Clock, Pid, Uid, Gid, Endpoint, VirBytes, EINVAL, EPERM, ESRCH, ENOSPC, E2BIG, ENOSYS};
+use minix_types::MprocWire;
 use crate::mproc::ProcTable;
 use crate::ipc::ReplyIntent;
 
@@ -329,28 +330,42 @@ pub fn do_getsysinfo(
     if !is_superuser(table, caller) {
         return Err(MiscError::Perm);
     }
-    let (src, len) = match what {
+    match what {
         SysInfoWhat::ProcTab => {
-            let b = ctl.proc_tab();
-            (b.as_ptr() as usize, b.len())
+            // D-29 真实数据路径：整表 C-ABI 序列化（`struct mproc` 464B/槽
+            // × NR_PROCS），逐槽拷出到调用方缓冲。C: misc.c:142-143 的
+            // sys_datacopy(SELF, mproc, dst, size) 对应——逐槽拷避免 118KB
+            // 内核/堆中转缓冲。
+            const WIRE_SIZE: usize = core::mem::size_of::<MprocWire>();
+            let tab_size = WIRE_SIZE * table.procs.len();
+            if size != tab_size {
+                return Err(MiscError::Inval);
+            }
+            for (idx, slot) in table.procs.iter().enumerate() {
+                let wire = crate::mproc::wire::serialize_slot(idx, slot);
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        core::ptr::addr_of!(wire) as *const u8,
+                        WIRE_SIZE,
+                    )
+                };
+                cpy.copy_to_user(
+                    bytes,
+                    VirBytes(dst.0 + (idx * WIRE_SIZE) as u64),
+                )?;
+            }
+            Ok(())
         }
         #[cfg(feature = "syscall_stats")]
         SysInfoWhat::CallStats => {
             let b = ctl.call_stats();
-            (b.as_ptr() as usize, b.len())
+            if size != b.len() {
+                return Err(MiscError::Inval);
+            }
+            cpy.copy_to_user(b, dst)?;
+            Ok(())
         }
-    };
-    if size != len {
-        return Err(MiscError::Inval);
     }
-    // 数据路径 fail-closed（V3-P1-4）：C 拷出真实 mproc 表（misc.c:142-143），
-    // 但 PM 的表是 Rust 类型化结构，没有 C `struct mproc` 布局的字节视图——
-    // 旧代码在此拷出 `len` 个零字节（"dummy bytes"，无 DEFERRED 契约），
-    // 消费方（RS）会把全零表当真。真实路径需要 PM 表的 C-ABI 序列化镜像
-    // wire（批次 G 接线时一并落，挂 edge E7）。
-    // [DEFERRED: D-29] 阻塞依赖：C-ABI 表镜像 wire 成员（edge E7）。
-    let _ = (src, cpy, dst);
-    Err(MiscError::Nosys)
 }
 
 /// `do_getprocnr` (`misc.c:149-164`, D3).
@@ -677,14 +692,16 @@ mod tests {
         let mut cpy = NopCopy;
         // non-super → Perm
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 100, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Perm);
-        // super but size mismatch
+        // super but size mismatch（表大小 = 槽数 × 464）
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0));
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 99, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Inval);
-        // 权限/参数合法但数据路径未实现 → 诚实 ENOSYS（V3-P1-4：旧代码
-        // 在此拷出 len 个零字节并返回 Ok——假数据比失败更危险）。
+        // D-29 激活：size = 表大小 → 真实序列化拷出（NopCopy 吞拷贝），
+        // 返回 Ok——ENOSYS fail-closed 由真实数据路径取代（V3-P1-4 →
+        // D-29 闭环）。
+        let mproc_tab = table.procs.len() * core::mem::size_of::<minix_types::MprocWire>();
         assert_eq!(
-            do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 100, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(),
-            MiscError::Nosys
+            do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, mproc_tab, VirBytes(0x1000), &ctl, &mut cpy).unwrap(),
+            ()
         );
     }
 

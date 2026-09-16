@@ -48,6 +48,7 @@ mod signal;
 mod credentials;
 mod context;
 mod fork;
+pub mod wire;
 
 pub use constants::*;
 pub use pid_gen::*;
