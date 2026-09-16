@@ -160,22 +160,24 @@ impl<H: FsHooks> FsDriver for TreeServer<H> {
                 capacity,
                 &mut staging,
             );
-            self.tree.list(
-                &mut self.hooks,
-                dir_node,
-                &mut resume,
-                capacity,
-                &mut |entry: DirEntry| {
-                    // Entries past a full caller buffer are dropped here:
-                    // the tree enumeration completes, the packed prefix is
-                    // what the caller sees.
-                    let _ = encoder.add(
-                    entry.number,
-                    &entry.name,
-                    DirentType::from_raw(entry.file_type),
-                );
-                },
-            );
+            self.tree
+                .list(
+                    &mut self.hooks,
+                    dir_node,
+                    &mut resume,
+                    capacity,
+                    &mut |entry: DirEntry| {
+                        // Entries past a full caller buffer are dropped
+                        // here: the tree enumeration completes, the packed
+                        // prefix is what the caller sees.
+                        let _ = encoder.add(
+                            entry.number,
+                            &entry.name,
+                            DirentType::from_raw(entry.file_type),
+                        );
+                    },
+                )
+                .map_err(node_error)?;
         }
         *position = resume as i64;
         out(&caller);
@@ -228,7 +230,6 @@ impl<H: FsHooks> FsDriver for TreeServer<H> {
     }
 
     fn stat(&mut self, inode: u64, out: &mut minix_types::Stat) -> Result<(), Errno> {
-        let node = self.tree.find(inode).map_err(node_error)?;
         let (status, accessed, modified, changed) = self
             .tree
             .file_stat(&mut self.hooks, inode, 0)
