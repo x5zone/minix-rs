@@ -16,10 +16,6 @@
 /// `minix3/sys/netinet/in.h:85`).
 pub const IPPROTO_UDP: i32 = 17;
 
-/// Send flag allowing the caller to bypass routing tables
-/// (`MSG_DONTROUTE`, 0x04, `minix3/sys/sys/socket.h:510`).
-pub const MSG_DONTROUTE: u32 = 0x04;
-
 /// Largest datagram payload in bytes (`UDP_MAX_PAYLOAD`, `udpsock.c:27`,
 /// the largest unsigned 16-bit value).
 pub const MAX_PAYLOAD: usize = 65535;
@@ -49,7 +45,7 @@ pub fn protocol_allowed(protocol: i32) -> bool {
 /// Only the do-not-route bit may be set. Any other bit means the caller asked
 /// for an operation the datagram layer does not support.
 pub fn send_flags_allowed(flags: u32) -> bool {
-    flags & !MSG_DONTROUTE == 0
+    crate::ipsock::send_flags_allowed(flags)
 }
 
 /// Whether a send length passes the two early checks
@@ -62,7 +58,7 @@ pub fn send_flags_allowed(flags: u32) -> bool {
 /// expresses the late bound, which is independent of socket state; the
 /// service binary applies the early bound with the live buffer size.
 pub fn payload_fits(header_length: usize, payload_length: usize) -> bool {
-    header_length.saturating_add(payload_length) <= MAX_PAYLOAD
+    crate::ipsock::payload_fits(header_length, payload_length, MAX_PAYLOAD)
 }
 
 /// Whether a payload length passes a caller-supplied send buffer
@@ -74,6 +70,7 @@ pub fn send_length_allowed(payload_length: usize, send_buffer: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipsock::MSG_DONTROUTE;
 
     #[test]
     fn test_protocol_accepts_wildcard_and_udp_only() {

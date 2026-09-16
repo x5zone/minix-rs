@@ -62,13 +62,13 @@ pub fn checksum_mandatory(is_version6: bool, protocol: i32) -> bool {
 /// Whether a send flag set passes (`rawsock_pre_send`, `rawsock.c:463-464`,
 /// identical to the datagram rule).
 pub fn send_flags_allowed(flags: u32) -> bool {
-    flags & !crate::udpsock::MSG_DONTROUTE == 0
+    crate::ipsock::send_flags_allowed(flags)
 }
 
 /// Whether header plus payload fits the largest payload
 /// (`rawsock_send`, `rawsock.c:704-713`).
 pub fn payload_fits(header_length: usize, payload_length: usize) -> bool {
-    header_length.saturating_add(payload_length) <= MAX_PAYLOAD
+    crate::ipsock::payload_fits(header_length, payload_length, MAX_PAYLOAD)
 }
 
 #[cfg(test)]
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_send_flags_match_datagram_rule() {
         assert!(send_flags_allowed(0));
-        assert!(send_flags_allowed(crate::udpsock::MSG_DONTROUTE));
+        assert!(send_flags_allowed(crate::ipsock::MSG_DONTROUTE));
         assert!(!send_flags_allowed(0x02));
     }
 

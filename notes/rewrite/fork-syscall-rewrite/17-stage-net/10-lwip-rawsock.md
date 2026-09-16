@@ -78,7 +78,7 @@
 | 协议号 0 到 255 | 第 2.3 节 | `os/net/lwip/src/rawsock.rs` 的 `protocol_allowed` 函数 | 已覆盖 |
 | 特权门禁在分配器 | 第 2.3 节 | `os/net/lwip/src/rawsock.rs` 的 `creation_requires_root` 函数 | 已覆盖 |
 | 版本 6 控制报文强制校验和 | 第 2.3 节 | `os/net/lwip/src/rawsock.rs` 的 `checksum_mandatory` 函数 | 已覆盖 |
-| 发送标志与载荷边界 | 第 2.4 节 | `os/net/lwip/src/rawsock.rs` 的 `send_flags_allowed` 与 `payload_fits` 函数 | 已覆盖 |
+| 发送标志与载荷边界 | 第 2.4 节 | `os/net/lwip/src/rawsock.rs` 的 `send_flags_allowed` 与 `payload_fits` 函数（算术经 `ipsock` 共享实现，2026-09-17 收敛） | 已覆盖 |
 | 头部包含与过滤器细节 | 第 2.5 节 | 服务主程序（需要控制块） | 已记录，规则已文档化 |
 
 ### 2.7 与 C 语言 1341 行的差异说明

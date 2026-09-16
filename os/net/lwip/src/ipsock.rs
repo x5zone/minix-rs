@@ -82,6 +82,27 @@ pub fn buffer_size_allowed(value: usize, minimum: usize, maximum: usize) -> bool
     minimum <= value && value <= maximum
 }
 
+/// Send flag allowing the caller to bypass routing tables
+/// (`MSG_DONTROUTE`, 0x04, `minix3/sys/sys/socket.h:510`). Both datagram
+/// and raw send paths accept exactly this one flag.
+pub const MSG_DONTROUTE: u32 = 0x04;
+
+/// Whether a send flag set passes (`udpsock.c:263-264` and the raw
+/// counterpart `rawsock.c:463-464`): only the do-not-route bit may be set.
+/// One implementation here; the datagram and raw modules call it so the
+/// rule cannot drift between them.
+pub fn send_flags_allowed(flags: u32) -> bool {
+    flags & !MSG_DONTROUTE == 0
+}
+
+/// Whether header plus payload stays within a payload bound
+/// (`udpsock.c:486-493`, `rawsock.c` 晚期检查同型). Each caller passes its
+/// own protocol bound — the bounds carry per-protocol C anchors, the
+/// arithmetic is shared.
+pub fn payload_fits(header_length: usize, payload_length: usize, max: usize) -> bool {
+    header_length.saturating_add(payload_length) <= max
+}
+
 /// Whether toggling the version 6 only flag is currently meaningful.
 ///
 /// The original records the flag at creation (`ipsock_socket`,

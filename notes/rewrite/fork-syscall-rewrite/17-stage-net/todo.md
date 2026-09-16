@@ -122,10 +122,12 @@
 
 ## 3. crate / 模块层条目
 
-### N1-P2-1 lwip crate 内 4 组重复函数收敛
+### ✅ N1-P2-1 lwip crate 内重复函数收敛——已落地 2026-09-17
 
-锚点：`send_flags_allowed`（udpsock.rs:51-53 ≡ rawsock.rs:64-66，后者跨模块引 `crate::udpsock::MSG_DONTROUTE`，rawsock.rs:65）；`payload_fits`（udpsock.rs:64-66 ≡ rawsock.rs:70-72，两个独立 `MAX_PAYLOAD`=65535 常量，另 pktsock.rs:24,40 还有 DATAGRAM/RAW 两份 65535）；组播默认值（rawsock.rs:26,29 ≡ udpsock.rs 组播常量）；`buffer_size_allowed` 双类型版本（ipsock.rs:81 usize vs pktsock.rs:81 u32）+ tcpsock.rs:63-71 内联第三份同型区间检查。
-**建议**：C 侧 udpsock.c/rawsock.c 各自实现是 C 的复制惯例；同一 Rust crate 内应收敛——方案 A：datagram 公共小模块（或 ipsock 层）承载四组，常量单点 `pub use`；方案 B：仅合并函数、常量留原地。推荐 A（65535 的四份手抄是 drift 隐患）。
+**落地**：纯逻辑收敛到 `ipsock.rs`（互联网套接字公共层）：`send_flags_allowed` + `MSG_DONTROUTE`（原 udpsock/rawsock 各一份，rawsock 还跨模块引 udpsock 的常量）、`payload_fits(header, payload, max)`（调用方自带各自协议上限）、区间检查统一走 `buffer_size_allowed`（pktsock 的 u32 版与 tcpsock 的两处内联 Range 检查全部改为委托）。udpsock/rawsock 的同名函数保留为带 C 锚点的语义入口，函数体一行委托。
+**范围判定收窄**：组播默认值与各 `MAX_PAYLOAD` 常量**不收敛**——它们各有独立 C 锚点（udpsock.c:147 vs rawsock.c:319；udpsock.c:27 vs rawsock.c:48），是恰好同值的独立契约项，合并会丢失锚点。
+**验证**：`cargo test -p minix-net-lwip --lib` = 97 passed（测试名与断言值不变——行为无差异的直接证据）；clippy 0 警告。
+**文档同步**：09/10 篇矩阵行注明"算术经 ipsock 共享实现（2026-09-17 收敛）"。
 
 ### N1-P2-2 driver.rs 死代码批（删/接线/标注三分）
 

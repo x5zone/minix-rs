@@ -61,13 +61,13 @@ pub const ALL_CONNECTION_FLAGS: [u32; 5] = [
 /// the management tree at `tcpsock.c:162-163` and enforced when the socket is
 /// created at `tcpsock.c:268-269`).
 pub fn send_buffer_allowed(size: u32) -> bool {
-    (SEND_BUFFER_MIN..=SEND_BUFFER_MAX).contains(&size)
+    crate::ipsock::buffer_size_allowed(size as usize, SEND_BUFFER_MIN as usize, SEND_BUFFER_MAX as usize)
 }
 
 /// Whether a receive buffer size passes (`tcpsock.c:89-91`, enforced through
 /// the same limit table mechanism as the send side).
 pub fn receive_buffer_allowed(size: u32) -> bool {
-    (RECEIVE_BUFFER_MIN..=RECEIVE_BUFFER_MAX).contains(&size)
+    crate::ipsock::buffer_size_allowed(size as usize, RECEIVE_BUFFER_MIN as usize, RECEIVE_BUFFER_MAX as usize)
 }
 
 /// Whether a write fails with a broken pipe (`tcpsock_try_send`,

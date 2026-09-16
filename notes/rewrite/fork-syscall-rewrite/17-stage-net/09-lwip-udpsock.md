@@ -81,7 +81,7 @@
 | `udpsock_socket` 协议号检查 | 第 2.3 节 | `os/net/lwip/src/udpsock.rs` 的 `protocol_allowed` 函数 | 已覆盖 |
 | 组播生存时间 1 与环回默认开启 | 第 2.3 节 | `os/net/lwip/src/udpsock.rs` 的两个默认值常量 | 已覆盖 |
 | `udpsock_input` 转交共享层 | 第 2.3 节 | 服务主程序（需要队列），调用关系已文档化 | 已记录 |
-| `udpsock_pre_send` 标志与长度检查 | 第 2.5 节 | `os/net/lwip/src/udpsock.rs` 的 `send_flags_allowed`、`send_length_allowed`、`payload_fits` 函数 | 已覆盖 |
+| `udpsock_pre_send` 标志与长度检查 | 第 2.5 节 | `os/net/lwip/src/udpsock.rs` 的 `send_flags_allowed`、`send_length_allowed`、`payload_fits` 函数（旗标与越界算术经 `ipsock` 共享实现，2026-09-17 收敛） | 已覆盖 |
 | 最大载荷 65535 | 第 2.2 节 | `os/net/lwip/src/udpsock.rs` 的 `MAX_PAYLOAD` 常量 | 已覆盖 |
 | 绑定连接与选项细节 | 第 2.4 节、第 2.6 节 | 服务主程序（需要接口表与控制块） | 已记录，规则已文档化 |
 

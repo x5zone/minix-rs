@@ -79,7 +79,7 @@ pub fn has_header_flag(set: u8, flag: u8) -> bool {
 /// limits through the management tree. This helper owns the closed-interval
 /// comparison so the two call sites cannot drift apart.
 pub fn buffer_size_allowed(value: u32, minimum: u32, maximum: u32) -> bool {
-    minimum <= value && value <= maximum
+    crate::ipsock::buffer_size_allowed(value as usize, minimum as usize, maximum as usize)
 }
 
 #[cfg(test)]
