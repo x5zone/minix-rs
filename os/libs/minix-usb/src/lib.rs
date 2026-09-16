@@ -10,4 +10,6 @@
 //! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
 #![no_std]
 
+extern crate alloc;
+
 pub mod urb;

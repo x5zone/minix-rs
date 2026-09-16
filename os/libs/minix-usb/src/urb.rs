@@ -66,9 +66,26 @@ pub fn find_pending(pending: &[PendingUrb], id: u32) -> Option<&PendingUrb> {
     pending.iter().find(|entry| entry.id == id)
 }
 
+/// Unlink and return the pending block with this identifier.
+///
+/// C: `_usb_urb_complete` (`usb.c:157-186`) is the only place a pending
+/// block leaves the list — a completed block is unlinked and handed to
+/// the completion handler, and a cancelled block arrives here too (the
+/// HCD completes it with an error status). An unknown identifier only
+/// draws a warning in C and drops the event; the invalid marker never
+/// matches anything.
+pub fn remove_pending(pending: &mut alloc::vec::Vec<PendingUrb>, id: u32) -> Option<PendingUrb> {
+    if id == INVALID_URB_ID {
+        return None;
+    }
+    let position = pending.iter().position(|entry| entry.id == id)?;
+    Some(pending.remove(position))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_invalid_marker_is_zero() {
@@ -95,5 +112,25 @@ mod tests {
         assert_eq!(find_pending(&pending, 8), None);
         assert_eq!(find_pending(&pending, INVALID_URB_ID), None);
         assert!(find_pending(&[], 7).is_none());
+    }
+
+    #[test]
+    fn test_completion_unlinks_the_matched_block() {
+        // C: _usb_urb_complete unlinks the entry by identifier and hands
+        // it to the completion handler (usb.c:157-186); the cancel path
+        // flows through the same unlink via the HCD's error completion.
+        let mut pending = vec![
+            PendingUrb { id: 7, endpoint: 2, kind: TransferKind::Bulk, direction: Direction::In },
+            PendingUrb { id: 9, endpoint: 4, kind: TransferKind::Control, direction: Direction::Out },
+        ];
+        let done = remove_pending(&mut pending, 7).unwrap();
+        assert_eq!(done.id, 7);
+        assert_eq!(pending.len(), 1);
+        assert!(find_pending(&pending, 7).is_none());
+        // A completion for an unknown (or already handled) identifier
+        // drops the event without disturbing the list.
+        assert!(remove_pending(&mut pending, 7).is_none());
+        assert!(remove_pending(&mut pending, INVALID_URB_ID).is_none());
+        assert_eq!(pending.len(), 1);
     }
 }
