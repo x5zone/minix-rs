@@ -9,6 +9,7 @@
 //! access entry or when no access list restricts the device.
 
 use alloc::vec::Vec;
+use minix_types::{EBUSY, EINVAL, EPERM};
 
 /// Maximum devices in the database (test-sized; production sizes from the
 /// enumeration, which is bounded by bus topology).
@@ -45,6 +46,10 @@ pub struct PciDevice {
     pub irq_pin: u8,
     /// Routed interrupt line (set by routing; 0xFF means unknown).
     pub irq_line: u8,
+    /// Reserved (in use) flag (`pd_inuse`).
+    pub in_use: bool,
+    /// Reserving caller endpoint (`pd_proc`), zero while unreserved.
+    pub owner: i64,
 }
 
 /// Wildcard meaning "any subsystem vendor" (`NO_SUB_VID`, rs.h:79).
@@ -240,6 +245,43 @@ impl DeviceDb {
             Some((_, acl)) => acl.matches(device),
         }
     }
+
+    /// Reserve a device for one caller: occupy it or explain why not.
+    ///
+    /// C: `_pci_reserve` (`pci.c:2323-2343`) — an out-of-range index is
+    /// "invalid argument", a device the caller cannot see is "not
+    /// permitted", a device already reserved by somebody else is "busy",
+    /// and reserving while already the owner just re-succeeds. The kernel
+    /// privilege grants (I/O ranges, memory, IRQ) that follow in C stay
+    /// with the service dispatch; the occupancy policy lives here.
+    pub fn reserve(&mut self, caller: i64, index: usize) -> Result<(), i32> {
+        if index >= self.devices.len() {
+            return Err(EINVAL);
+        }
+        if !self.is_visible(caller, index) {
+            return Err(EPERM);
+        }
+        let device = &mut self.devices[index];
+        if device.in_use && device.owner != caller {
+            return Err(EBUSY);
+        }
+        device.in_use = true;
+        device.owner = caller;
+        Ok(())
+    }
+
+    /// Release every device this caller had reserved.
+    ///
+    /// C: `_pci_release` (`pci.c:2350-2362`) walks the whole table and
+    /// clears the in-use flag on each device the caller owns.
+    pub fn release_caller(&mut self, caller: i64) {
+        for device in &mut self.devices {
+            if device.in_use && device.owner == caller {
+                device.in_use = false;
+                device.owner = 0;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +302,8 @@ mod tests {
             interface: 0x00,
             irq_pin: 1,
             irq_line: 0xFF,
+            in_use: false,
+            owner: 0,
         }
     }
 
@@ -376,5 +420,33 @@ mod tests {
     fn test_out_of_range_index_is_invisible() {
         let mut db = DeviceDb::new();
         assert!(!db.is_visible(100, 7));
+    }
+
+    #[test]
+    fn test_reserve_occupies_and_reports_busy_for_others() {
+        let mut db = DeviceDb::new();
+        db.add(card(0, 1));
+        // First reserve succeeds and re-reserving as the owner is fine
+        // (pci.c:2337-2340 only refuses a DIFFERENT caller).
+        assert_eq!(db.reserve(100, 0), Ok(()));
+        assert_eq!(db.reserve(100, 0), Ok(()));
+        // A different caller gets "busy"; release frees the device.
+        assert_eq!(db.reserve(200, 0), Err(EBUSY));
+        db.release_caller(100);
+        assert_eq!(db.reserve(200, 0), Ok(()));
+    }
+
+    #[test]
+    fn test_reserve_refuses_invisible_and_out_of_range() {
+        let mut db = DeviceDb::new();
+        db.add(card(0, 1));
+        // Blind to this caller: "not permitted" comes before "busy" would
+        // even be reachable (pci.c:2330-2334).
+        let mut acl = PciAcl::default();
+        acl.devices.push(pattern(0x10EC, 0x8168));
+        db.set_acl(300, acl);
+        assert_eq!(db.reserve(300, 0), Err(EPERM));
+        // Out of range: "invalid argument".
+        assert_eq!(db.reserve(300, 9), Err(EINVAL));
     }
 }
