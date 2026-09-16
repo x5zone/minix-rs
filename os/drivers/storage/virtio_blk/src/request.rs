@@ -140,9 +140,12 @@ pub fn plan_transfer(
 /// Translate a device status byte into the answer code.
 ///
 /// C: `virtio_blk_status2error` (`virtio_blk.c:549-563`): ok maps to
-/// success, input-output error maps to itself, unsupported maps to
-/// itself, anything else is treated as input-output error (unknown
-/// statuses must not pass as success).
+/// success, input-output error maps to itself, unsupported maps to itself,
+/// and anything else **panics** — an unknown status means the host is
+/// misbehaving and C stops the driver. This library runs where panicking
+/// is not an option, so the unknown case is rewritten to input-output
+/// error instead; the invariant both sides share is that an unknown status
+/// never passes as success.
 pub const fn status_to_code(status: u8) -> i32 {
     match status {
         STATUS_OK => 0,
@@ -195,6 +198,8 @@ mod tests {
         assert_eq!(status_to_code(STATUS_OK), 0);
         assert!(status_to_code(STATUS_IO_ERROR) < 0);
         assert!(status_to_code(STATUS_UNSUPPORTED) < 0);
+        // Pins the RUST decision: C panics on unknown (virtio_blk.c:557),
+        // the no-panic rewrite answers input-output error.
         assert_eq!(status_to_code(0xFF), status_to_code(STATUS_IO_ERROR));
     }
 
