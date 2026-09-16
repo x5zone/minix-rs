@@ -21,7 +21,7 @@ use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLe
 use minix_fs::data::{DataChannel, MemoryBackend};
 use minix_fs::dentry::{DentryEncoder, DirentType};
 
-use crate::inode::{InodeTable, TYPE_MASK};
+use crate::inode::{InodeTable, TYPE_MASK, InodeIo};
 
 /// Minimum prefetch on sequential reads (`BLOCKS_MINIMUM`, `read.c:344`,
 /// thirty-two), skipped after a seek.
@@ -339,13 +339,17 @@ pub fn list_dir_entries<S: BlockSource>(
     position: &mut u64,
     capacity: usize,
     params: &FileParams,
+    io: &InodeIo,
     out: &mut dyn FnMut(&[u8]),
 ) -> Result<usize, ReadError> {
     let block_size = params.block_size;
     if !(*position).is_multiple_of(crate::inode::DIRECTORY_ENTRY_SIZE as u64) {
         return Err(ReadError::Unaligned);
     }
-    let slot = table.find(device, number).ok_or(ReadError::Invalid)?;
+    // 冷目录从盘装载（C 用 `get_inode`，`read.c:474`），非目录拒绝。
+    let slot = table
+        .get(cache, device, number, io)
+        .map_err(|_| ReadError::Invalid)?;
     let (size, is_dir) = {
         let inode = table.slot(slot);
         (
@@ -414,13 +418,17 @@ pub fn list_dir_entries<S: BlockSource>(
                 }
                 // Name length up to the first zero, capped at sixty.
                 let name_length = entry.name_len().min(crate::dir::ENTRY_NAME_SIZE);
-                // Resolve the target type through the table (`read.c:516`).
-                // Cold entries may need loading; try the table hit only (no
-                // disk in listing: matches "seriously expensive" comment by
-                // degrading to unknown).
-                let raw_type = match table.find(device, entry.ino as u64) {
-                    Some(target_slot) => file_type_byte(table.slot(target_slot).mode),
-                    None => dirent_unknown(),
+                // Resolve the target type through the table, loading cold
+                // inodes the way the C `get_inode` does (`read.c:516`); a
+                // target that refuses to load degrades to unknown instead
+                // of aborting the listing.
+                let raw_type = match table.get(cache, device, entry.ino as u64, io) {
+                    Ok(target_slot) => {
+                        let mode = table.slot(target_slot).mode;
+                        let _ = table.put(cache, target_slot, io);
+                        file_type_byte(mode)
+                    }
+                    Err(_) => dirent_unknown(),
                 };
                 let entry_pos = block_pos + (index * crate::inode::DIRECTORY_ENTRY_SIZE) as u64;
                 match encoder.add(entry.ino as u64, &entry.name[..name_length], raw_type) {
@@ -907,10 +915,21 @@ mod tests {
         zones[0] = 40;
         let dir = open_file(&mut fixture, zones, 192, TYPE_DIRECTORY as u16);
         let dir_number = fixture.table.slot(dir).number;
+        // 冷目录：先放回引用，枚举时从盘重新装载（与 C get_inode 一致）。
+        {
+            let slot = fixture.table.find(DEVICE, dir_number).unwrap();
+            let _ = fixture.table.put(&mut fixture.cache, slot, &io);
+        }
         // Tiny capacity forces a mid-walk stop with resume position.
         let mut position = 0u64;
         let mut first_batch = Vec::new();
         let params = file_params();
+        let io = InodeIo {
+            inode_base_block: 4,
+            inodes_per_block: 8,
+            indirect_per_block: 128,
+            read_only: false,
+        };
         let moved = list_dir_entries(
             &mut fixture.table,
             &mut fixture.cache,
@@ -919,6 +938,7 @@ mod tests {
             &mut position,
             24,
             &params,
+            &io,
             &mut |chunk: &[u8]| first_batch.extend_from_slice(chunk),
         )
         .unwrap();
@@ -934,6 +954,7 @@ mod tests {
             &mut position,
             1024,
             &params,
+            &io,
             &mut |chunk: &[u8]| rest.extend_from_slice(chunk),
         )
         .unwrap();
@@ -950,6 +971,7 @@ mod tests {
                 &mut bad,
                 1024,
                 &params,
+                &io,
                 &mut |_| {},
             )
             .unwrap_err(),

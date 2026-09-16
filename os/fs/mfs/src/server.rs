@@ -436,6 +436,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             &mut resume,
             capacity,
             &params,
+            &parts.io,
             out,
         )
         .map_err(|error| error.to_errno())?;
