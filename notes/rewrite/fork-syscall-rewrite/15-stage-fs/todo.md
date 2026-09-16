@@ -22,8 +22,8 @@
 | V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | ✅ 2026-09-17 Fix #21（vtreefs 接框架：TreeServer 的 FsDriver 实现；sffs 半随 P2-10 分期） |
 | V1-P1-10 | P1 | `PATH_GET_UCRED` 的凭据 grant 校验无处实现 | ✅ 2026-09-17 Fix #10（声明式落账：值构造前校验归传输解码，结构文档锚定） |
 | V1-P1-11 | P1 | procfs 内容面缺口：cmdline、environ、cpuinfo、pci、ipcvecs、service 目录 | ✅ 2026-09-17 Fix #23（渲染经接缝+mock 落地，真实数据源通电归 edge） |
-| V1-P2-1 ~ V1-P2-11 | P2 | 写路径免读优化、缓存拷贝清单、getdents 冷目录、预读策略、stat 无类型契约、双语义返回、三份重复实现、块层缺口、写盘只读护栏、ext2/isofs/sffs 覆盖面、测试缺口 | 开口项 |
-| V1-P3-1 ~ V1-P3-8 | P3 | 死语句、unused import、位图起点差异、errno 边缘顺序、短末块判定、消费方画像、无调用方的预滤函数、间接块校验粒度 | 开口项 |
+| V1-P2-1 ~ V1-P2-11 | P2 | 写路径免读、缓存拷贝清单、getdents 冷目录、预读策略、typed Stat、双语义返回、统计收敛、块层缺口、只读护栏、ext2/isofs/sffs 分期、测试扫尾 | ✅ 2026-09-17 全部闭环（P2-10 保持分期裁决） |
+| V1-P3-1 ~ V1-P3-8 | P3 | 死语句、unused import、位图起点差异、errno 边缘顺序、短末块判定、消费方画像、无调用方的预滤函数、间接块校验粒度 | ✅ 2026-09-17 卫生批闭环（is_file_request 删除、死语句与导入清理；位图起点保留并记录） |
 | edge×4 | — | E-FSRUNTIME / E-FSBDEV / E-FSVMCACHE / E-FSCMDS（见第 5 节） | 已登记 |
 
 ## 1. Step 0 预检与 Gate 证据
@@ -250,7 +250,14 @@ Redox / 社区对照来源（本轮引用的结论出处）：
 4. **第四批（轨道协作）**：V1-P1-9（vtreefs 接框架）、V1-P1-11（procfs 内容面）、V1-P2-8/10（块层与覆盖排期），edge 四条按单线程队列另执。
 5. 每批验收命令：`cargo test -p minix-fs -p minix-fs-mfs`（及受影响包）+ 重放第 7 节基线对比；P0 未清不得标 CONVERGED。
 
-## 9. 存档指引
+## 9. 终验记录（2026-09-17）
+
+- `cargo test`（全 FS 域 11 包）：338 passed / 0 failed。
+- `cargo clippy`（全 FS 域 --all-targets）：本战役文件零告警；仅剩共享设施（minix-types/minix-sys，归并行轨道卫生轮）与既有登记项。
+- `tools/design-coverage-check.sh fork-syscall-rewrite/15-stage-fs`：ALL DOCS COMPLETE。
+- 提交链：一条 TODO 一个提交，全部经回归 review 后入库。
+
+## 10. 存档指引
 
 - 本文件是 15-stage-fs 的首个 todo（此前无历史 todo 需要清理）。轮次编号 V1；后续轮次 V2、V3 递增，闭单条目移动到本文件末尾「已闭单」小节或独立 archive 文件（对齐 `../edge_todo_archive.md` 先例）。
 - 修复执行一律走 todo-fix 单线程：先讲明白是什么为什么，再给多方案对比，最后按 fix-guard 实施（修前读目标行 ±5 行、grep 确认、一次一条、修后 grep 重放 + 测试）。
