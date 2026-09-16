@@ -1,0 +1,14 @@
+[package]
+name = "minix-driver-rt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[lib]
+name = "minix_driver_rt"
+path = "src/lib.rs"

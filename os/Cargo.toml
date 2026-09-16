@@ -173,6 +173,7 @@ members = [
     "libs/minix-sef",
     "libs/minix-fs",
     "libs/minix-chardriver",
+    "libs/minix-driver-rt",
     "libs/minix-blockdriver",
     "libs/minix-netdriver",
     "libs/minix-vtreefs",
@@ -212,6 +213,7 @@ boot-shim = { path = "boot-shim", default-features = false }
 
 # 驱动框架库（16-stage-drivers）
 minix-chardriver = { path = "libs/minix-chardriver" }
+minix-driver-rt = { path = "libs/minix-driver-rt" }
 minix-blockdriver = { path = "libs/minix-blockdriver" }
 minix-netdriver = { path = "libs/minix-netdriver" }
 minix-bdev = { path = "libs/minix-bdev" }
