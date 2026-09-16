@@ -25,11 +25,14 @@ pub enum NetQueue {
 /// Largest packet buffer in bytes (`MAX_PACK_SIZE`).
 pub const MAX_PACKET_SIZE: usize = 1514;
 
-/// Buffers the driver keeps outstanding (`BUF_PACKETS` scale).
-pub const BUFFER_COUNT: u32 = 256;
+/// Buffers the driver keeps outstanding (`BUF_PACKETS`, `virtio_net.c:39`).
+///
+/// C notes this should scale with the queue sizes the device offers; the
+/// constant matches C until that knob exists.
+pub const BUFFER_COUNT: u32 = 64;
 
-/// Refill while fewer than this many buffers are outstanding (half
-/// of `BUFFER_COUNT`, `virtio_net.c:239`).
+/// Refill while fewer than this many buffers are outstanding (half of
+/// `BUFFER_COUNT`, the `BUF_PACKETS / 2` loop bound at `virtio_net.c:218`).
 pub const REFILL_THRESHOLD: u32 = BUFFER_COUNT / 2;
 
 /// Pad short frames up to this length (`NDEV_ETH_PACKET_MIN`).
@@ -60,11 +63,14 @@ mod tests {
 
     #[test]
     fn test_refill_below_half_buffers() {
-        assert_eq!(REFILL_THRESHOLD, 128);
+        // C: BUF_PACKETS 64 (virtio_net.c:39), threshold = half (the loop
+        // bound at virtio_net.c:218).
+        assert_eq!(BUFFER_COUNT, 64);
+        assert_eq!(REFILL_THRESHOLD, 32);
         assert!(refill_needed(0));
-        assert!(refill_needed(127));
-        assert!(!refill_needed(128));
-        assert!(!refill_needed(256));
+        assert!(refill_needed(31));
+        assert!(!refill_needed(32));
+        assert!(!refill_needed(64));
     }
 
     #[test]
