@@ -181,9 +181,9 @@
 
 ### 3.4 测试基线（截至 2026-08-16）
 
-- `os/commands/*` 全部为 stub（`exit(0)` 占位），`cargo test` 无命令行为测试
+- 快照（截至 2026-08-16）：当时 `os/commands/*` 全部为占位（`exit(0)`），无命令行为测试；此后 init 完整实现、23 个域库持真实逻辑与约 700 个测试，命令二进制面的收敛见 todo.md §6.1 C-1
 - 每篇改写完成时在该命令 crate 内补充行为测试（输入/输出/退出码/错误面），文末更新测试统计
-- 命令级验收基线：`cargo test -p commands-*` 各 crate 独立可跑
+- 命令级验收基线：包名前缀是 `minix-`（如 `cargo test -p minix-fileops` 逐 crate 可跑）；仓库中不存在 `commands-*` 前缀的包（2026-09-17 修正）
 
 ### 3.5 Review gate 要求（每篇改写必检）
 
