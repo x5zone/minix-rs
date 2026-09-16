@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第一组——只用标准输入输出说话的游戏，系统能跑、管道能通的证明
 > **源码**: `minix3/games/factor/factor.c`（输出形状见头注释、因子打印函数见第 184 行附近、大数路径见第 110 行附近、用法 `factor [value ...]` 见第 268 行附近）、`minix3/games/primes/primes.c` 与 `pattern.c` 与 `pr_tbl.c` 与 `spsp.c`（区间素数表）、`minix3/games/caesar/caesar.c`（轮转表构造见第 82 行附近、溢出保护 `rot %= LETTERS` 见第 86 行附近、轮转解析见第 125 行附近）、`minix3/games/morse/morse.c`（码表见第 96 行附近、用法 `morse [-ds] [string ...]` 见第 140 行附近、解码匹配见第 219 行附近）、`minix3/games/pig/pig.c`（元音规则见第 103 行附近、用法 `pig` 见第 133 行附近）、`minix3/games/arithmetic/arithmetic.c`（缺省范围 10 见第 99 行附近、对错计数见第 100 行附近、范围选项见第 107 行附近）、`minix3/games/banner/banner.c`（整幅宽 132 见第 58 行附近、用法 `banner [-w width] [message]` 见第 1057 行附近、列缩放见第 1064 行到第 1066 行附近）、`minix3/games/number/number.c`（数字转英文单词）、`minix3/games/bcd/bcd.c`（大字显示）、`minix3/games/ppt/ppt.c`（纸带 punch 显示）
-> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`，35 个测试通过）；十个游戏的决定半中 `bcd` 与 `ppt` 尚未写入库（库头注释已按现状修正），各游戏的 `src/bin/` 薄壳随执行层批次在本 crate 内落地（原同名占位二进制壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 48 个）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，合计 102 个测试全过，2026-09-17）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（原同名占位二进制壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（标准输入输出面先行）
 > **不覆盖（移交）**: 终端控制（见第 23 篇）、键盘读取与逐行显示执行（各游戏二进制包）、大数概率分解（后续补齐）
 
@@ -107,11 +107,14 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 
 ### 4.1 模块结构
 
-`os/commands/games/stdio-games`（库包名 `minix-stdio-games`）共 8 个源文件：
+`os/commands/games/stdio-games`（库包名 `minix-stdio-games`）共 11 个源文件（`bin_support.rs` 经 `#[path]` 只进入各二进制壳，不进入库）：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
 | `lib.rs` | — | 错误类型（`GameError`，22 对应参数无效、2 对应查无、34 对应超范围）与模块组织 |
+| `bcd.rs` | `bcd.c` 第 87 到 120 行（孔位表）、第 151 到 220 行（卡片绘制） | 打孔表、单卡渲染 |
+| `ppt.rs` | `ppt.c` 第 52 行（EDGE）、第 129 到 175 行（打孔与读带） | 纸带行渲染、读带还原 |
+| `bin_support.rs` | — | 各二进制壳共用：行缓冲（C `fgets` 形状）、十进制格式化、宿主/真机接缝 |
 | `factor.rs` | `factor.c` 第 184 行与第 268 行附近 | 数值解析、试除、行绘制 |
 | `primes.rs` | `primes.c` 区间语义 | 界限解析、区间生成 |
 | `caesar.rs` | `caesar.c` 第 82 行与第 86 行与第 125 行附近 | 轮转解析、单字节轮转、行轮转 |
@@ -128,6 +131,8 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 - **猪拉丁语**：三规则分支。不变量：元音开头加长后缀；辅音串搬移；`y` 位置语义；全大写后缀大写。
 - **测验计分 `Score`**：对错两数。不变量：饱和加；总数为零时百分比为零；减法截零；除法除零得零。
 - **横幅宽度**：一到整幅宽。不变量：零与超限报超范围；非数字报参数无效；列缩放端点恒等。
+- **打孔卡 `bcd.rs`**：孔位表逐字节十二位。不变量：表按 `bcd.c` 逐值转写；渲染恒为十四行框；文本先截断四十八列再大写。
+- **纸带 `ppt.rs`**：十一列线形（八数据位夹进纸孔）。不变量：编码位序自高到低、进纸孔在位 3 与位 2 之间；读带以进纸孔为锚、非空格即孔、越界列视为空白。
 
 ### 4.3 函数一览
 
@@ -145,12 +150,33 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 | `number_words` | 数值、缓冲 | 词长 | 数词语义 |
 | `render_banner_row` | 字形源、文本、行号、缓冲 | 行长度 | 横幅行语义 |
 | `grade` | 计分、题目、答案 | 对错 | 计分语义 |
+| `hole_mask` | 字节 | 十二位孔码 | `holes[256]` 查表语义 |
+| `render_card` | 行、缓冲 | 长度 | `printcard` 语义 |
+| `punch_byte` | 字节、缓冲 | 行长度 | `putppt` 语义 |
+| `decode_line` | 带行 | 字节或失步 | `getppt` 语义 |
+
+### 4.4 命令契约与 Requires
+
+行为判定沿用 `99-global-concepts.md` §2 的规则：以 POSIX 为准绳、以 Minix3 C 实现为真值，C 实现偏离处在本表"当前状态"列显式标注（如 primes 的界限封顶、arithmetic 的播种来源）。依赖面按 §1 分层契约只含 `minix-sys` 顶层与 `minix-rt`：
+
+| 命令 | Requires（最小 API） | 当前状态 |
+|------|---------------------|---------|
+| bcd | `read`、`write`、`exit`、argv 交接 | 已接线（`src/bin/bcd.rs`） |
+| ppt | 同上 | 已接线（`src/bin/ppt.rs`，编码与 `-d` 解码两路） |
+| factor | 同上 | 已接线（`src/bin/factor.rs`） |
+| primes | 同上 | 已接线；界限封顶 1,000,000（试除引擎定位），C 的近 2^32 流式筛待后续批 |
+| caesar | 同上 | 已接线固定轮转路；无参频率破解（`guess_and_rotate`）待决定半 |
+| morse | 同上 | 已接线编码与 `-d` 解码；`-s` 码表打印待批 |
+| pig | 同上 | 已接线 |
+| number | 同上 | 已接线 |
+| arithmetic | 同上 + 时钟读（播种） | 已接线；`penalise` 罚则提示与用时统计待批 |
+| banner | 同上 + 真位图字体资产 | 决定半已测，薄壳待字体后接线 |
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-stdio-games`：**35 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-stdio-games`：**102 个测试，全部通过**（库 48 加九个二进制壳的行缓冲与格式化各 6 个；截至 2026-09-17）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/games/stdio-games` 复现）：
 
@@ -161,8 +187,11 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 - **文字**（`words.rs`，5 个）：`test_vowel_start_gains_way`、`test_consonant_cluster_moves`（辅音串与 `y` 位置）、`test_capitalization_kept`（大小写三档）、`test_number_words`（零到千）、`test_bad_words_rejected`。
 - **横幅**（`banner.rs`，5 个）：`test_widths_parse`、`test_scrunch_endpoints`（端点恒等）、`test_block_renders_framed`（框形）、`test_empty_source_misses`、`test_bad_row_rejected`。
 - **测验**（`quiz.rs`，4 个）：`test_ranges_parse`、`test_answers_computed`（四则与截零）、`test_grading_counts`、`test_empty_score_zero`。
+- **打孔卡**（`bcd.rs`，7 个）：`test_frame_geometry`（十四行框与列数）、`test_hole_marks_against_the_table`（孔行与表一致）、`test_lowercase_becomes_uppercase`（渲染前大写）、`test_truncation_at_48_columns`、`test_trailing_newline_is_dropped`、`test_newline_inside_text_terminates_the_line`、`test_oversized_output_reports_out_of_range`。
+- **纸带**（`ppt.rs`，6 个）：`test_punch_line_shape`、`test_punch_all_zero_and_all_one`、`test_punch_reports_small_output`、`test_decode_reverses_punch`（编码解码往返）、`test_decode_line_without_feed_hole_is_none`（失步）、`test_decode_treats_anything_but_blank_as_hole`。
+- **行缓冲**（`bin_support.rs`，随九个壳各 6 个）：`test_lines_include_newline_and_split`、`test_final_fragment_without_newline_is_a_line`、`test_oversized_input_returns_full_buffer_lines`（满缓冲即行）、`test_empty_input_yields_no_lines`、`test_reader_failure_ends_stream_with_error`、`test_utoa_shapes`。
 
-尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、键盘读取与逐行显示（各游戏二进制包）、真位图字体（执行层资源）、纸带与编码显示的字体面。玩法层是全覆盖的，执行层是显式留白的。
+尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、caesar 无参频率破解（`guess_and_rotate`）、morse `-s` 码表打印、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
 
 ---
 

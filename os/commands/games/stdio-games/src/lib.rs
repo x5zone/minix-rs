@@ -48,9 +48,11 @@
 //! execution layer.
 
 pub mod banner;
+pub mod bcd;
 pub mod caesar;
 pub mod factor;
 pub mod morse;
+pub mod ppt;
 pub mod primes;
 pub mod quiz;
 pub mod words;
