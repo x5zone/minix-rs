@@ -427,10 +427,7 @@ impl<C: Clock> FsDriver for PfsServer<C> {
         Ok(())
     }
 
-    fn stat(&mut self, inode_number: u64, out: &mut [u8]) -> Result<(), Errno> {
-        if out.len() < STATUS_BUFFER_SIZE {
-            return Err(Errno::from_i32(EINVAL));
-        }
+    fn stat(&mut self, inode_number: u64, stat: &mut minix_types::Stat) -> Result<(), Errno> {
         // Refresh lazy times before reporting, exactly once per dirty set.
         // The clock is read only when something is pending, like the C
         // code reading it inside `if (rip->i_update != 0)`.
@@ -443,21 +440,24 @@ impl<C: Clock> FsDriver for PfsServer<C> {
             Self::apply_pending_times(inode, now);
         }
         let inode = self.find(inode_number)?;
-        // Device field carries the device number: workaround for an old
-        // socketpair bug, kept verbatim (`pfs.c:342`).
-        out[0..8].copy_from_slice(&inode.device.to_le_bytes());
-        out[8..12].copy_from_slice(&inode.mode.to_le_bytes());
-        out[12..16].copy_from_slice(&0u32.to_le_bytes());
-        out[16..20].copy_from_slice(&inode.owner.to_le_bytes());
-        out[20..24].copy_from_slice(&inode.group.to_le_bytes());
-        out[24..32].copy_from_slice(&inode.device.to_le_bytes());
-        out[32..40].copy_from_slice(&(inode.size as u64).to_le_bytes());
-        out[40..48].copy_from_slice(&inode.accessed.to_le_bytes());
-        out[48..56].copy_from_slice(&inode.modified.to_le_bytes());
-        out[56..64].copy_from_slice(&inode.changed.to_le_bytes());
-        out[64..72].copy_from_slice(&(PIPE_BUFFER_SIZE as u64).to_le_bytes());
-        let blocks = (inode.size as u64).div_ceil(STATUS_BLOCK_SIZE);
-        out[72..80].copy_from_slice(&blocks.to_le_bytes());
+        // Device field carries the device number twice (st_dev and
+        // st_rdev): workaround for an old socketpair bug, kept verbatim
+        // (`pfs.c:342`).
+        *stat = minix_types::Stat {
+            device: inode.device,
+            inode: inode_number as u64,
+            mode: inode.mode as u32,
+            nlinks: 0,
+            owner: inode.owner as u32,
+            group: inode.group as u32,
+            special: inode.device,
+            size: inode.size as i64,
+            accessed: inode.accessed,
+            modified: inode.modified,
+            changed: inode.changed,
+            block_size: PIPE_BUFFER_SIZE as u64,
+            blocks: (inode.size as u64).div_ceil(STATUS_BLOCK_SIZE),
+        };
         Ok(())
     }
 
@@ -642,21 +642,21 @@ mod tests {
         let mut server = mounted();
         let pipe = new_pipe(&mut server);
         // Creation pends all three updates; first stat consumes second 1000.
-        let mut status = [0u8; STATUS_BUFFER_SIZE];
+        let mut status = minix_types::Stat::zeroed();
         server.stat(pipe, &mut status).unwrap();
-        assert_eq!(&status[40..48], &1000i64.to_le_bytes());
+        assert_eq!(status.accessed, 1000);
         // Second stat consumes 1010 but nothing is pending: times stand still.
         server.stat(pipe, &mut status).unwrap();
-        assert_eq!(&status[40..48], &1000i64.to_le_bytes());
+        assert_eq!(status.accessed, 1000);
         // A write pends modify+change; next stat picks up 1010 (the clock
         // moved once for the first stat and stands still while clean).
         server.write(pipe, 0, b"x").unwrap();
         server.stat(pipe, &mut status).unwrap();
-        assert_eq!(&status[48..56], &1010i64.to_le_bytes());
+        assert_eq!(status.modified, 1010);
         // Size and block count follow content.
-        assert_eq!(&status[32..40], &1u64.to_le_bytes());
-        assert_eq!(&status[72..80], &1u64.to_le_bytes());
-        assert_eq!(&status[64..72], &(PIPE_BUFFER_SIZE as u64).to_le_bytes());
+        assert_eq!(status.size, 1);
+        assert_eq!(status.blocks, 1);
+        assert_eq!(status.block_size, PIPE_BUFFER_SIZE as u64);
     }
 
     #[test]

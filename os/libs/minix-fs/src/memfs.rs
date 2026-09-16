@@ -30,12 +30,6 @@ pub const ROOT_INODE: u64 = 1;
 /// First inode number handed out to created files.
 const FIRST_FREE_INODE: u64 = 2;
 
-/// Layout of the status buffer filled by `stat`: inode (eight bytes),
-/// mode (four bytes), size (eight bytes), all little-endian. This layout is
-/// local to the memory server and only used by its own tests; production
-/// servers define the caller-agreed layout of their own replies.
-pub const STAT_BUFFER_SIZE: usize = 20;
-
 /// One stored node.
 #[derive(Debug, Clone)]
 enum Node {
@@ -494,14 +488,23 @@ impl FsDriver for MemFileServer {
         Ok(take)
     }
 
-    fn stat(&mut self, inode: u64, out: &mut [u8]) -> Result<(), Errno> {
-        if out.len() < STAT_BUFFER_SIZE {
-            return Err(Errno::from_i32(EINVAL));
-        }
+    fn stat(&mut self, inode: u64, stat: &mut minix_types::Stat) -> Result<(), Errno> {
         let node = self.describe(inode)?;
-        out[..8].copy_from_slice(&node.inode_number.to_le_bytes());
-        out[8..12].copy_from_slice(&node.mode.to_le_bytes());
-        out[12..20].copy_from_slice(&node.size.to_le_bytes());
+        *stat = minix_types::Stat {
+            device: 0,
+            inode: node.inode_number,
+            mode: node.mode as u32,
+            nlinks: 1,
+            owner: 0,
+            group: 0,
+            special: 0,
+            size: node.size,
+            accessed: 0,
+            modified: 0,
+            changed: 0,
+            block_size: 0,
+            blocks: 0,
+        };
         Ok(())
     }
 
@@ -657,16 +660,17 @@ mod tests {
         assert_eq!(seen, b"target");
     }
 
-    #[test]
+        #[test]
     fn test_stat_layout() {
-        let (mut server, inode) = server_with_file();
-        let mut buf = [0u8; STAT_BUFFER_SIZE];
-        server.stat(inode, &mut buf).unwrap();
-        assert_eq!(&buf[..8], &inode.to_le_bytes());
-        assert_eq!(&buf[8..12], &0o100644u32.to_le_bytes());
-        assert_eq!(&buf[12..20], &0i64.to_le_bytes());
-        let mut short = [0u8; 4];
-        assert_eq!(server.stat(inode, &mut short).unwrap_err().to_i32(), EINVAL);
+        let mut server = MemFileServer::new();
+        let mut capabilities = crate::protocol::CapabilityFlags::EMPTY;
+        server
+            .mount(1, crate::protocol::MountFlags::EMPTY, &mut capabilities)
+            .unwrap();
+        let mut stat = minix_types::Stat::zeroed();
+        server.stat(1, &mut stat).unwrap();
+        assert_eq!(stat.inode, 1);
+        assert_eq!(stat.size, 0);
     }
 
     #[test]

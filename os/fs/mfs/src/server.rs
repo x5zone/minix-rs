@@ -28,6 +28,7 @@ use minix_fs::bio::DeviceInfo;
 use minix_fs::data::{DataChannel, MemoryBackend};
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
+use minix_types::{Stat, StatVfs};
 
 use minix_types::{EBADF, EBUSY, EIO, EINVAL, ENOENT, Errno};
 
@@ -42,20 +43,6 @@ use crate::open::CreateCtx;
 use crate::read::{list_dir_entries, map_file_block, read_file, FileParams, MapParams, ZoneRange};
 use crate::superblock::Bitmap;
 use crate::write::{truncate_file, write_file};
-
-/// Byte layout of the status reply filled by [`FsDriver::stat`]: mode,
-/// nlinks, owner, group (two bytes each), then device, size, access,
-/// modify, change, block size, block count (eight bytes each), little
-/// endian throughout — sixty-four bytes. The C adapter pre-fills the
-/// device and inode fields in the reply (`call.c:732-738`); this server
-/// writes every field into the buffer the transport offers.
-pub const STAT_LAYOUT_SIZE: usize = 64;
-
-/// Byte layout of the volume-status reply filled by
-/// [`FsDriver::stat_vfs`]: blocks, blocks free, blocks available, block
-/// size, fragment size, io size, files, files free, files available, name
-/// max — ten eight-byte fields, little endian.
-pub const STATVFS_LAYOUT_SIZE: usize = 80;
 
 /// Device facts for raw transfers: the usable size comes from the mounted
 /// superblock's zone total, the label binding is a framework no-op here.
@@ -1027,10 +1014,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         .map_err(|error| error.to_errno())
     }
 
-    fn stat_vfs(&mut self, out: &mut [u8]) -> Result<(), Errno> {
-        if out.len() < STATVFS_LAYOUT_SIZE {
-            return Err(Errno::from_i32(EINVAL));
-        }
+    fn stat_vfs(&mut self, vfs: &mut StatVfs) -> Result<(), Errno> {
         let fs = self.mounted()?;
         let parts = fs.parts();
         let zone_free = crate::mount::count_free_bits(
@@ -1046,143 +1030,26 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             parts.superblock.zones.saturating_sub(zone_free),
         )
         .map_err(|error| error.to_errno())?;
-        out[0..8].copy_from_slice(&volume.blocks.to_le_bytes());
-        out[8..16].copy_from_slice(&volume.blocks_free.to_le_bytes());
-        out[16..24].copy_from_slice(&volume.blocks_available.to_le_bytes());
-        out[24..32].copy_from_slice(&volume.block_size.to_le_bytes());
-        out[32..40].copy_from_slice(&volume.fragment_size.to_le_bytes());
-        out[40..48].copy_from_slice(&volume.io_size.to_le_bytes());
-        out[48..56].copy_from_slice(&volume.files.to_le_bytes());
-        out[56..64].copy_from_slice(&volume.files_free.to_le_bytes());
-        out[64..72].copy_from_slice(&volume.files_available.to_le_bytes());
-        out[72..80].copy_from_slice(&volume.name_max.to_le_bytes());
+        *vfs = StatVfs {
+            blocks: volume.blocks,
+            blocks_free: volume.blocks_free,
+            blocks_available: volume.blocks_available,
+            block_size: volume.block_size,
+            fragment_size: volume.fragment_size,
+            io_size: volume.io_size,
+            files: volume.files,
+            files_free: volume.files_free,
+            files_available: volume.files_available,
+            name_max: volume.name_max,
+        };
         Ok(())
     }
 
-    fn block_read(
-        &mut self,
-        device: u64,
-        position: i64,
-        length: usize,
-        out: &mut dyn FnMut(&[u8]),
-    ) -> Result<usize, Errno> {
-        let fs = self.mounted()?;
-        let parts = fs.parts();
-        let mut staging = alloc::vec![0u8; length];
-        {
-            let mut backend = MemoryBackend {
-                storage: &mut staging,
-                fail_with: None,
-            };
-            let mut channel = DataChannel::Present {
-                backend: &mut backend,
-                size: length,
-            };
-            let mut info = SuperblockBytes {
-                bytes: parts.superblock.zones * parts.block_size as u64,
-            };
-            bio_transfer(
-                parts.cache,
-                &mut info,
-                device,
-                position,
-                length,
-                TransferDirection::Read,
-                &mut channel,
-            )
-            .map_err(|_| Errno::from_i32(EIO))?;
-        }
-        let moved = staging.len();
-        out(&staging);
-        let _ = moved;
-        Ok(staging.len())
-    }
-
-    fn block_write(&mut self, device: u64, position: i64, data: &[u8]) -> Result<usize, Errno> {
-        let fs = self.mounted()?;
-        let parts = fs.parts();
-        let mut staging = data.to_vec();
-        {
-            let mut backend = MemoryBackend {
-                storage: &mut staging,
-                fail_with: None,
-            };
-            let mut channel = DataChannel::Present {
-                backend: &mut backend,
-                size: data.len(),
-            };
-            let mut info = SuperblockBytes {
-                bytes: parts.superblock.zones * parts.block_size as u64,
-            };
-            bio_transfer(
-                parts.cache,
-                &mut info,
-                device,
-                position,
-                data.len(),
-                TransferDirection::Write,
-                &mut channel,
-            )
-            .map_err(|_| Errno::from_i32(EIO))?;
-        }
-        Ok(data.len())
-    }
-
-    fn rename(
-        &mut self,
-        old_directory: u64,
-        old_name: &str,
-        new_directory: u64,
-        new_name: &str,
-    ) -> Result<(), Errno> {
-        let fs = self.mounted()?;
-        let same = old_directory == new_directory;
-        let (mut old_blocks, old_size) = Self::load_parent(fs, old_directory)?;
-        let (mut new_blocks, new_size) = if same {
-            // 同父目录分支不触碰新镜像：空镜像即可（函数文档约定）。
-            (Vec::new(), 0)
-        } else {
-            Self::load_parent(fs, new_directory)?
-        };
-        let outcome = {
-            let parts = fs.parts();
-            let mut ctx = LinkCtx {
-                table: parts.inodes,
-                cache: parts.cache,
-                device: parts.device,
-                io: parts.io,
-                read_only: parts.read_only,
-                block_size: parts.block_size,
-                map: parts.map,
-                range: parts.range,
-            };
-            crate::link::rename(
-                &mut ctx,
-                old_directory,
-                &mut old_blocks,
-                old_name.as_bytes(),
-                new_directory,
-                &mut new_blocks,
-                new_name.as_bytes(),
-            )
-            .map_err(|error| error.to_errno())?
-        };
-        Self::store_parent(fs, old_directory, old_size, &mut old_blocks)?;
-        if !same {
-            Self::store_parent(fs, new_directory, new_size, &mut new_blocks)?;
-        }
-        Self::reclaim_zones(fs, &outcome.reclaimed);
-        Ok(())
-    }
-
-    fn stat(&mut self, inode: u64, out: &mut [u8]) -> Result<(), Errno> {
-        if out.len() < STAT_LAYOUT_SIZE {
-            return Err(Errno::from_i32(EINVAL));
-        }
+    fn stat(&mut self, inode: u64, stat: &mut Stat) -> Result<(), Errno> {
         let now = (self.clock)();
         let fs = self.mounted()?;
         let parts = fs.parts();
-        let stat = crate::meta::read_stat(
+        let file = crate::meta::read_stat(
             parts.inodes,
             parts.cache,
             &parts.io,
@@ -1195,18 +1062,94 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             parts.read_only,
         )
         .map_err(|error| error.to_errno())?;
-        out[0..2].copy_from_slice(&stat.mode.to_le_bytes());
-        out[2..4].copy_from_slice(&stat.nlinks.to_le_bytes());
-        out[4..6].copy_from_slice(&stat.owner.to_le_bytes());
-        out[6..8].copy_from_slice(&stat.group.to_le_bytes());
-        out[8..16].copy_from_slice(&stat.device.to_le_bytes());
-        out[16..24].copy_from_slice(&stat.size.to_le_bytes());
-        out[24..32].copy_from_slice(&stat.accessed.to_le_bytes());
-        out[32..40].copy_from_slice(&stat.modified.to_le_bytes());
-        out[40..48].copy_from_slice(&stat.changed.to_le_bytes());
-        out[48..56].copy_from_slice(&stat.block_size.to_le_bytes());
-        out[56..64].copy_from_slice(&stat.blocks.to_le_bytes());
+        *stat = Stat {
+            device: parts.device,
+            inode,
+            mode: file.mode as u32,
+            nlinks: file.nlinks as u32,
+            owner: file.owner as u32,
+            group: file.group as u32,
+            special: file.device,
+            size: file.size,
+            accessed: file.accessed,
+            modified: file.modified,
+            changed: file.changed,
+            block_size: file.block_size,
+            blocks: file.blocks,
+        };
         Ok(())
+    }
+
+    fn block_read(
+        &mut self,
+        device: u64,
+        position: i64,
+        length: usize,
+        out: &mut dyn FnMut(&[u8]),
+    ) -> Result<usize, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        // 暂存缓冲按分区大小钳制，避免越界长度造成巨大分配。
+        let partition = parts.superblock.zones.saturating_mul(parts.block_size as u64);
+        let clamped =
+            (length as u64).min(partition.saturating_sub(position.max(0) as u64)) as usize;
+        let mut staging = alloc::vec![0u8; clamped];
+        {
+            let mut backend = MemoryBackend {
+                storage: &mut staging,
+                fail_with: None,
+            };
+            let mut channel = DataChannel::Present {
+                backend: &mut backend,
+                size: clamped,
+            };
+            let mut info = SuperblockBytes {
+                bytes: parts.superblock.zones.saturating_mul(parts.block_size as u64),
+            };
+            bio_transfer(
+                parts.cache,
+                &mut info,
+                device,
+                position,
+                clamped,
+                TransferDirection::Read,
+                &mut channel,
+            )?;
+        }
+        out(&staging);
+        Ok(staging.len())
+    }
+
+    fn block_write(&mut self, device: u64, position: i64, data: &[u8]) -> Result<usize, Errno> {
+        let fs = self.mounted()?;
+        let parts = fs.parts();
+        let partition = parts.superblock.zones.saturating_mul(parts.block_size as u64);
+        let clamped =
+            (data.len() as u64).min(partition.saturating_sub(position.max(0) as u64)) as usize;
+        let mut staging = data[..clamped].to_vec();
+        {
+            let mut backend = MemoryBackend {
+                storage: &mut staging,
+                fail_with: None,
+            };
+            let mut channel = DataChannel::Present {
+                backend: &mut backend,
+                size: clamped,
+            };
+            let mut info = SuperblockBytes {
+                bytes: parts.superblock.zones.saturating_mul(parts.block_size as u64),
+            };
+            bio_transfer(
+                parts.cache,
+                &mut info,
+                device,
+                position,
+                clamped,
+                TransferDirection::Write,
+                &mut channel,
+            )?;
+        }
+        Ok(clamped.min(data.len()))
     }
 
     fn synchronized(&mut self) {
@@ -1357,10 +1300,11 @@ mod tests {
         assert_eq!(listed_bytes, 16 + 16 + 24);
         assert!(listed.windows(5).any(|window| window == b"hello"));
 
-        // Status reports the written size.
-        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        // Status reports the written size and the owning device.
+        let mut stat = Stat::zeroed();
         server.stat(2, &mut stat).unwrap();
-        assert_eq!(stat[16..24], 3i64.to_le_bytes());
+        assert_eq!(stat.size, 3);
+        assert_eq!(stat.device, DEVICE);
 
         // Sync flushes; unmount returns the device for a later mount.
         server.synchronized();
@@ -1420,9 +1364,9 @@ mod tests {
         server.link(1, "b", 2).unwrap();
         let (node, _) = server.lookup_child(1, "b").unwrap();
         assert_eq!(node.inode_number, 2);
-        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        let mut stat = Stat::zeroed();
         server.stat(2, &mut stat).unwrap();
-        assert_eq!(stat[2..4], 2u16.to_le_bytes());
+        assert_eq!(stat.nlinks, 2);
         // Unlink one name: the other still reaches the file.
         server.unlink(1, "a").unwrap();
         assert!(server.lookup_child(1, "a").is_err());
@@ -1457,9 +1401,9 @@ mod tests {
         // Device node carries the device number in its status.
         server.make_node(1, "c", 0o020600, 0, 0, 0x301).unwrap();
         let (node, _) = server.lookup_child(1, "c").unwrap();
-        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        let mut stat = Stat::zeroed();
         server.stat(node.inode_number, &mut stat).unwrap();
-        assert_eq!(stat[8..16], 0x301u64.to_le_bytes());
+        assert_eq!(stat.special, 0x301);
     }
 
     #[test]
@@ -1467,27 +1411,27 @@ mod tests {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
         server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
-        let mut scratch = [0u8; 96];
+        let mut scratch = StatVfs::zeroed();
         server.stat_vfs(&mut scratch).unwrap();
-        let free_before = u64::from_le_bytes(scratch[8..16].try_into().unwrap());
+        let free_before = scratch.blocks_free;
         // A file with a data zone, synced so the usage is real.
         server.create(1, "a", 0o100644, 0, 0).unwrap();
         server.write(2, 0, b"abc").unwrap();
         server.synchronized();
         server.stat_vfs(&mut scratch).unwrap();
-        let free_after_alloc = u64::from_le_bytes(scratch[8..16].try_into().unwrap());
+        let free_after_alloc = scratch.blocks_free;
         assert_eq!(free_after_alloc, free_before - 1);
         // Permission bits and timestamps through the metadata family.
         server.change_mode(2, 0o100600).unwrap();
         server.change_owner(2, 5, 7).unwrap();
         server.update_times(2, (10, 0), (20, 0)).unwrap();
-        let mut stat = [0u8; STAT_LAYOUT_SIZE];
+        let mut stat = Stat::zeroed();
         server.stat(2, &mut stat).unwrap();
-        assert_eq!(stat[0..2], 0o100600u16.to_le_bytes());
-        assert_eq!(stat[4..6], 5u16.to_le_bytes());
-        assert_eq!(stat[6..8], 7u16.to_le_bytes());
-        assert_eq!(stat[24..32], 10i64.to_le_bytes());
-        assert_eq!(stat[32..40], 20i64.to_le_bytes());
+        assert_eq!(stat.mode, 0o100600);
+        assert_eq!(stat.owner, 5);
+        assert_eq!(stat.group, 7);
+        assert_eq!(stat.accessed, 10);
+        assert_eq!(stat.modified, 20);
         // Unlinking the last name drops the link count to zero; the zones
         // are freed when the virtual file system releases its reference —
         // then the reclaim executor returns the space, visible after sync.
@@ -1495,8 +1439,7 @@ mod tests {
         server.put_node(2, 1).unwrap();
         server.synchronized();
         server.stat_vfs(&mut scratch).unwrap();
-        let free_after_reclaim = u64::from_le_bytes(scratch[8..16].try_into().unwrap());
-        assert_eq!(free_after_reclaim, free_before);
+        assert_eq!(scratch.blocks_free, free_before);
     }
 
     #[test]

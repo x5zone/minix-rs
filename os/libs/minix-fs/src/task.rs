@@ -45,13 +45,6 @@ use crate::driver::{FsDriver, Server};
 use crate::lookup::{resolve_path, Credentials, LookupInput, LookupOutcome};
 use crate::protocol::{FileNode, LookupFlags, MountFlags, TransactionId};
 
-/// Lower bound for the status scratch buffers of `Stat` and `StatVfs`.
-///
-/// The C adapter writes a whole `struct stat` (or `struct statvfs`) into the
-/// reply area; the exact layout is the caller's agreement (see the `stat`
-/// method documentation). Servers that need more ask for more.
-pub const STATUS_SCRATCH_SIZE: usize = 96;
-
 /// One received message envelope: who sent it, whether the kernel flagged it
 /// as a notification, and the raw message type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,10 +399,6 @@ pub trait FsTransport {
     fn receive(&mut self) -> Incoming;
     /// Send a reply for one request.
     fn reply(&mut self, to: i32, reply: FsReply);
-    /// Borrow a reply scratch buffer of at least `len` bytes (the status
-    /// answers write into the reply area, like the C adapters write into
-    /// `m_out`).
-    fn scratch(&mut self, len: usize) -> &mut [u8];
     /// Move request bytes in: stage the next slice of the write payload at
     /// `offset` into `out`.
     fn copy_in(&mut self, offset: usize, out: &mut [u8]) -> Result<(), Errno>;
@@ -821,8 +810,8 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             }
         }
         RequestBody::Stat { inode } => {
-            let scratch = transport.scratch(STATUS_SCRATCH_SIZE);
-            match adapt_stat(&mut server.driver, inode, scratch) {
+            let mut stat = minix_types::Stat::zeroed();
+            match adapt_stat(&mut server.driver, inode, &mut stat) {
                 Ok(()) => zero(),
                 Err(e) => err(e),
             }
@@ -850,8 +839,8 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             Err(e) => err(e),
         },
         RequestBody::StatVfs => {
-            let scratch = transport.scratch(STATUS_SCRATCH_SIZE);
-            match adapt_stat_vfs(&mut server.driver, scratch) {
+            let mut vfs = minix_types::StatVfs::zeroed();
+            match adapt_stat_vfs(&mut server.driver, &mut vfs) {
                 Ok(()) => zero(),
                 Err(e) => err(e),
             }
@@ -982,11 +971,6 @@ mod tests {
 
         fn reply(&mut self, to: i32, reply: FsReply) {
             self.replies.push((to, reply));
-        }
-
-        fn scratch(&mut self, len: usize) -> &mut [u8] {
-            self.out_bytes.resize(len, 0);
-            &mut self.out_bytes
         }
 
         fn copy_in(&mut self, offset: usize, out: &mut [u8]) -> Result<(), Errno> {

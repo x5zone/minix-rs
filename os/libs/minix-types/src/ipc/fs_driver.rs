@@ -207,3 +207,151 @@ mod tests {
         assert_ne!(FS_BASE & !0x7f, 0x580); // BDEV_RS_BASE
     }
 }
+
+/// 文件状态回复的类型化结构（`fs_stat` 的载荷，字段集与 C `struct stat`
+/// 一致；字节布局为稳定小端序，由 [`Stat::write_to`] 写出，虚拟文件系统
+/// 服务按同一布局解码）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stat {
+    /// 设备号（`st_dev`）。
+    pub device: u64,
+    /// 索引节点号（`st_ino`）。
+    pub inode: u64,
+    /// 模式位（`st_mode`）。
+    pub mode: u32,
+    /// 硬链接数（`st_nlink`）。
+    pub nlinks: u32,
+    /// 属主（`st_uid`）。
+    pub owner: u32,
+    /// 属组（`st_gid`）。
+    pub group: u32,
+    /// 设备节点的设备号（`st_rdev`）。
+    pub special: u64,
+    /// 文件长度（`st_size`）。
+    pub size: i64,
+    /// 访问时间（`st_atime`）。
+    pub accessed: i64,
+    /// 修改时间（`st_mtime`）。
+    pub modified: i64,
+    /// 状态变化时间（`st_ctime`）。
+    pub changed: i64,
+    /// 首选输入输出块尺寸（`st_blksize`）。
+    pub block_size: u64,
+    /// 占用的五百一十二字节块数（`st_blocks`）。
+    pub blocks: u64,
+}
+
+impl Stat {
+    /// 写出所需的字节数。
+    pub const SIZE: usize = 88;
+
+    /// 全零状态：由调用方逐字段填充。
+    pub const fn zeroed() -> Self {
+        Self {
+            device: 0,
+            inode: 0,
+            mode: 0,
+            nlinks: 0,
+            owner: 0,
+            group: 0,
+            special: 0,
+            size: 0,
+            accessed: 0,
+            modified: 0,
+            changed: 0,
+            block_size: 0,
+            blocks: 0,
+        }
+    }
+
+    /// 按稳定小端序写出全部字段。缓冲区不足八十八字节报无效参数。
+    pub fn write_to(&self, out: &mut [u8]) -> Result<(), crate::Errno> {
+        if out.len() < Self::SIZE {
+            return Err(crate::Errno::from_i32(crate::EINVAL));
+        }
+        out[0..2].copy_from_slice(&self.mode.to_le_bytes());
+        out[2..4].copy_from_slice(&(self.nlinks as u16).to_le_bytes());
+        out[4..6].copy_from_slice(&(self.owner as u16).to_le_bytes());
+        out[6..8].copy_from_slice(&(self.group as u16).to_le_bytes());
+        out[8..16].copy_from_slice(&self.device.to_le_bytes());
+        out[16..24].copy_from_slice(&self.inode.to_le_bytes());
+        out[24..32].copy_from_slice(&self.special.to_le_bytes());
+        out[32..40].copy_from_slice(&(self.size as u64).to_le_bytes());
+        out[40..48].copy_from_slice(&self.accessed.to_le_bytes());
+        out[48..56].copy_from_slice(&self.modified.to_le_bytes());
+        out[56..64].copy_from_slice(&self.changed.to_le_bytes());
+        out[64..72].copy_from_slice(&self.block_size.to_le_bytes());
+        out[72..80].copy_from_slice(&self.blocks.to_le_bytes());
+        Ok(())
+    }
+}
+
+/// 卷状态回复的类型化结构（`fs_statvfs` 的载荷，字段集与 C
+/// `struct statvfs` 一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatVfs {
+    /// 全部数据块数（`f_blocks`）。
+    pub blocks: u64,
+    /// 空闲数据块数（`f_bfree`）。
+    pub blocks_free: u64,
+    /// 非特权可用的数据块数（`f_bavail`）。
+    pub blocks_available: u64,
+    /// 块尺寸（`f_frsize`/`f_bsize`）。
+    pub block_size: u64,
+    /// 片尺寸（`f_frsize`）。
+    pub fragment_size: u64,
+    /// 首选输入输出尺寸（`f_iosize`）。
+    pub io_size: u64,
+    /// 全部索引节点数（`f_files`）。
+    pub files: u64,
+    /// 空闲索引节点数（`f_ffree`）。
+    pub files_free: u64,
+    /// 非特权可用的索引节点数（`f_favail`）。
+    pub files_available: u64,
+    /// 文件名最大长度（`f_namemax`）。
+    pub name_max: u64,
+}
+
+impl StatVfs {
+    /// 写出所需的字节数。
+    pub const SIZE: usize = 80;
+
+    /// 全零卷状态：由调用方逐字段填充。
+    pub const fn zeroed() -> Self {
+        Self {
+            blocks: 0,
+            blocks_free: 0,
+            blocks_available: 0,
+            block_size: 0,
+            fragment_size: 0,
+            io_size: 0,
+            files: 0,
+            files_free: 0,
+            files_available: 0,
+            name_max: 0,
+        }
+    }
+
+    /// 按稳定小端序写出全部字段。
+    pub fn write_to(&self, out: &mut [u8]) -> Result<(), crate::Errno> {
+        if out.len() < Self::SIZE {
+            return Err(crate::Errno::from_i32(crate::EINVAL));
+        }
+        let fields = [
+            self.blocks,
+            self.blocks_free,
+            self.blocks_available,
+            self.block_size,
+            self.fragment_size,
+            self.io_size,
+            self.files,
+            self.files_free,
+            self.files_available,
+            self.name_max,
+        ];
+        for (index, value) in fields.iter().enumerate() {
+            out[index * 8..index * 8 + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
+    }
+}

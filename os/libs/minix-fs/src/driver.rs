@@ -274,8 +274,8 @@ pub trait FsDriver {
     /// the status buffer is defined by the caller; the default adapter
     /// contract passes a mutable byte slice so servers fill it field by
     /// field without depending on a C structure definition.
-    fn stat(&mut self, inode: u64, out: &mut [u8]) -> Result<(), Errno> {
-        let _ = (inode, out);
+    fn stat(&mut self, inode: u64, stat: &mut minix_types::Stat) -> Result<(), Errno> {
+        let _ = (inode, stat);
         Err(Errno::from_i32(ENOSYS))
     }
 
@@ -307,8 +307,8 @@ pub trait FsDriver {
 
     /// Read file system statistics into the caller-supplied buffer.
     /// C: `fdr_statvfs`, request `StatVfs`.
-    fn stat_vfs(&mut self, out: &mut [u8]) -> Result<(), Errno> {
-        let _ = out;
+    fn stat_vfs(&mut self, vfs: &mut minix_types::StatVfs) -> Result<(), Errno> {
+        let _ = vfs;
         Err(Errno::from_i32(ENOSYS))
     }
 
@@ -865,7 +865,8 @@ mod tests {
             post_calls: 0,
             others: 0,
         };
-        assert_eq!(driver.stat_vfs(&mut [0; 64]).unwrap_err().to_i32(), ENOSYS);
+        let mut vfs = minix_types::StatVfs::zeroed();
+        assert_eq!(driver.stat_vfs(&mut vfs).unwrap_err().to_i32(), ENOSYS);
         assert_eq!(driver.truncate(1, 0, 10).unwrap_err().to_i32(), ENOSYS);
         assert!(driver.put_node(1, 2).is_ok());
         driver.unmounted();

@@ -478,8 +478,12 @@ pub fn adapt_read_link<D: FsDriver>(
 /// C: `fsdriver_stat` (`call.c:717-741`). The device and inode number
 /// pre-fill done by the C adapter is the caller's job; the adapter only
 /// validates the plumbing and forwards.
-pub fn adapt_stat<D: FsDriver>(driver: &mut D, inode: u64, out: &mut [u8]) -> Result<(), Errno> {
-    driver.stat(inode, out)
+pub fn adapt_stat<D: FsDriver>(
+    driver: &mut D,
+    inode: u64,
+    stat: &mut minix_types::Stat,
+) -> Result<(), Errno> {
+    driver.stat(inode, stat)
 }
 
 /// Run the change-owner adapter and report the resulting mode.
@@ -511,8 +515,11 @@ pub fn adapt_update_times<D: FsDriver>(
 
 /// Run the file system statistics adapter. C: `fsdriver_statvfs`
 /// (`call.c:834-851`).
-pub fn adapt_stat_vfs<D: FsDriver>(driver: &mut D, out: &mut [u8]) -> Result<(), Errno> {
-    driver.stat_vfs(out)
+pub fn adapt_stat_vfs<D: FsDriver>(
+    driver: &mut D,
+    vfs: &mut minix_types::StatVfs,
+) -> Result<(), Errno> {
+    driver.stat_vfs(vfs)
 }
 
 /// Run the sync adapter: notify and always succeed.
@@ -670,12 +677,9 @@ mod tests {
             Ok(data.len())
         }
 
-        fn stat(&mut self, _inode: u64, out: &mut [u8]) -> Result<(), Errno> {
+        fn stat(&mut self, _inode: u64, stat: &mut minix_types::Stat) -> Result<(), Errno> {
             self.check()?;
-            self.log[0] = 1;
-            if !out.is_empty() {
-                out[0] = 42;
-            }
+            stat.mode = 42;
             Ok(())
         }
     }
@@ -827,9 +831,9 @@ mod tests {
             fail_with: Some(minix_types::EIO),
             log: [0; 8],
         };
-        let mut out = [0u8; 8];
+        let mut stat = minix_types::Stat::zeroed();
         assert_eq!(
-            adapt_stat(&mut driver, 1, &mut out).unwrap_err().to_i32(),
+            adapt_stat(&mut driver, 1, &mut stat).unwrap_err().to_i32(),
             minix_types::EIO
         );
     }
