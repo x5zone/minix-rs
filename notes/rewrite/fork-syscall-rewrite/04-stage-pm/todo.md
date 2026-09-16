@@ -162,7 +162,7 @@ V3 增补一处同族实例：`dispatcher.rs:32` 本地定义 `PROC_EVENT_REPLY:
 | D-26 | ✅ 已修复（Fix #22，2026-09-06） | | | |
 | D-27 | ✅ 已修复（Fix #32，2026-09-08）：SIGHUP 会话组广播 | | | |
 | D-28 | ✅ 已修复（Fix #34，2026-09-08）：check_parent 的 SIGCHLD 投递 | | | |
-| D-29 | `misc.rs` do_getsysinfo 数据路径 | **2026-09-09 登记（Fix #46）**：权限门与 size 校验真实，数据拷出 fail-closed 返回 ENOSYS（V3-P1-4：旧代码拷 len 个零字节假数据，无契约）。真实数据路径 = PM 表的 C-ABI 序列化镜像 wire + 批次 G 接线 | 20-misc-queries.md | C-ABI 表镜像 wire 成员（edge E7）+ 批次 G |
+| D-29 | `misc.rs` do_getsysinfo 数据路径 | ✅ 闭环（2026-09-17，edge E-MIBPROD）：minix-types `types/mproc.rs` C struct mproc 464B repr(C) 全字段镜像（切片 1）+ PM `mproc/wire.rs` 序列化（identity/state/resources/ipc 四层 → 逐字段映射）+ do_getsysinfo ProcTab 臂激活（size = 槽数×464，逐槽 serialize + copy_to_user，测试更新对齐）。minix-pm 381 全绿 | 20-misc-queries.md | ✅ |
 
 不属于 DEFERRED 但同源（plan.md §4 登记）：A-7 定时器抽象（部分收敛，Fix #39）、A-10 内核延迟调用 DELAY_CALL/SIGSNDELAY、A-13 进程组/会话设计层。
 
