@@ -671,6 +671,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 > **复核（2026-09-15）**：10-stage-mib P1-3 已闭环，但产出范围是 **sysctl ABI**（minix-types::sysctl_abi 四结构）——proc_tab/mproc_tab/fproc_tab 的快照布局裁决仍开放，随 E-ISPROD 合并轮一并定；P1-4（transport seam）与 P1-5（Tables 拉取状态机，seam 半）亦已闭环——P1-5 的生产数据源仍随本条对账后接通。
 
+> **mproc_tab 数据路径闭环（2026-09-17，✅ kernel/PM 半落地，fbd4afa9b + fbb4f5cd9）**：前置 04-stage D-29 闭环——minix-types 新增 `types/mproc.rs`（C struct mproc 464B repr(C) 全字段镜像 + 布局见证 ×3，切片 1）+ PM `mproc/wire.rs` 序列化（ProcTable 四层类型化槽 → MprocWire 逐字段映射：mp_sigact=0/Box actions、mp_flags=lifecycle+block+wait+remaining 合成、SigSet u64→LE 双 u32）+ `do_getsysinfo` ProcTab 臂激活（size = 槽数×464，逐槽 serialize + copy_to_user，替换 V3-P1-4 以来的 ENOSYS fail-closed）。**E-MIBPROD 消费对账**：mproc_tab 快照权威 = `minix_types::MprocWire`（与 E-ISPROD 的 ProcInfoStruct 同型单点权威）；IS dump_pm 的 MProcSnap 消费对账随 run_dump 装配（E-ISWIRE(3)）落地。**剩余 = fproc_tab producer（VFS 域）**。
+
 ---
 
 ## E-MIBGRANT kernel grant.rs magic-grant 门端点常量与 C 不符（10-stage-mib 首轮架构审查登记，2026-09-15）
