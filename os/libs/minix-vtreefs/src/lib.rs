@@ -19,6 +19,7 @@
 
 extern crate alloc;
 
+mod driver;
 mod tree;
 
 pub use tree::{

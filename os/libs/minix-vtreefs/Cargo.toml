@@ -6,4 +6,5 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+minix-fs = { path = "../../libs/minix-fs" }
 minix-types = { workspace = true }

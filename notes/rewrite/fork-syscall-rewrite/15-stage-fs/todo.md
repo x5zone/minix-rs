@@ -19,7 +19,7 @@
 | V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | ✅ 2026-09-17 Fix #6（归零 + 跨组件钉住测试 + 03 篇对齐说明更新） |
 | V1-P1-7 | P1 | mount 适配层丢失驱动标签：`adapt_mount` 向 `bound_driver` 传空字符串 | ✅ 2026-09-17 Fix #7（MountInput/请求体携 label，spy 测试锁定） |
 | V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | ✅ 2026-09-17 Fix #2（随装配翻转，钉住测试 28/3） |
-| V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | 开口项 |
+| V1-P1-9 | P1 | vtreefs 与 sffs 脱离框架（只依赖 minix-types），与文档 18 的前置声明及 C 的依赖结构不一致 | ✅ 2026-09-17 Fix #21（vtreefs 接框架：TreeServer 的 FsDriver 实现；sffs 半随 P2-10 分期） |
 | V1-P1-10 | P1 | `PATH_GET_UCRED` 的凭据 grant 校验无处实现 | ✅ 2026-09-17 Fix #10（声明式落账：值构造前校验归传输解码，结构文档锚定） |
 | V1-P1-11 | P1 | procfs 内容面缺口：cmdline、environ、cpuinfo、pci、ipcvecs、service 目录 | 开口项 |
 | V1-P2-1 ~ V1-P2-11 | P2 | 写路径免读优化、缓存拷贝清单、getdents 冷目录、预读策略、stat 无类型契约、双语义返回、三份重复实现、块层缺口、写盘只读护栏、ext2/isofs/sffs 覆盖面、测试缺口 | 开口项 |
@@ -140,6 +140,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **✅ 2026-09-17 闭环（Fix #2）**：二十行随装配翻转 `LiveInCrate`（含 Lookup——入口经镜像桥与 `lookup_name` 收口），钉住测试更新为 28/3，`cargo test -p minix-fs-mfs` 一百零八全绿；07 篇 §4.3 同步翻转事实与剩余三行（PutNode/Peek/Rename，分属 P1-2/P1-3/P1-1）。
 
 **V1-P1-9 vtreefs/sffs 脱离框架。** `minix-vtreefs` 与 `minix-sffs` 的 Cargo.toml 只依赖 minix-types；而 C 的 libvtreefs/libsffs 都构建在 libfsdriver 之上（libvtreefs/vtreefs.c 的 fs_* 函数族、libsffs/table.c），文档 18 第 6 行也把 01 篇（框架主循环与回调表）列为前置。结果：procfs/ptyfs 的树有了、挂载分发没有；doc 与代码不一致。方案 A：vtreefs 增加对 minix-fs 的依赖，提供 `TreeServer` 的 `FsDriver` 实现（对应 C 的 fs_* 族），procfs/ptyfs 直接消费；方案 B：维持解耦，在文档 18 增补偏离声明并 [ARCH] 三处一致。推荐 A（与 C 结构一致，且装配是迟早要做的事）；sffs 待语义补齐（V1-P2-10）后同样处理。
+**✅ 2026-09-17 闭环（Fix #21，vtreefs 半）**：`minix-vtreefs` 增 minix-fs 依赖，新模块 `driver.rs` 落地 `TreeServer<H: FsHooks>` 的 `FsDriver` 实现——挂载（初始化钩子 + 根节点 + 六十四位能力位）、查找、读、枚举（经目录项编码器）、写、截断（整文件语义）、属主/模式变更（经 chstat 钩子）、状态（typed Stat）与卷状态（零块容量语义）；符号链接的建立与读取走 slink/rdlink 钩子；解除链接走钩子加树删除。四个装配级测试（挂载能力位、typed 状态、钩子读写往返、缺失节点报错）。procfs/ptyfs 消费走 V1-P2-5 之后的批 6/7 排期；sffs 半保持分期。
 
 **V1-P1-10 `PATH_GET_UCRED` 凭据校验缺失。** C lookup.c:147-157 在该旗标置位时经 grant 搬运 ucred 并校验 `ucred_size == sizeof(ucred)`；Rust 侧凭据由调用方以值传入，grant 搬运与长度校验无处实现。修复方向：协议层（data.rs 的通道抽象）补 grant 形态的凭据读取，或书面声明由 VFS 侧传入值并记录偏差（需与 05-stage-vfs 对账后二选一）。
 **✅ 2026-09-17 闭环（Fix #10，声明式落账）**：框架消费的是校验之后的值——`Credentials` 结构文档锚定 C 校验点（lookup.c:147-157），grant 长度对 `struct ucred` 尺寸的校验归生产传输的解码半（E-FSRUNTIME 接线时的契约之一），与 VFS 侧对账由 05 轨道持有。若未来传输实现无法承担校验，再回到框架补 grant 形态读取（重开本条）。
