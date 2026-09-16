@@ -206,7 +206,7 @@ socket driver（lwip / uds，libsockdriver 框架）
 
 | # | ARCH 项 | Minix3 现状 | minix-rs 演进 | 涉及新文档 | 状态 |
 |---|---------|------------|--------------|-----------|------|
-| N-1 | **lwIP 第三方栈** | liblwip：lwIP 2.x 导入（`dist/src` 编译子集 68 .c / 58232 行 + 4 patches），Minix 胶水 lwipopts.h/lwiphooks.h/arch/cc.h；lwip 服务链接 `-llwip`（`net/lwip/Makefile`） | Rust 栈替代（候选：smoltcp / 自研精简栈 / FFI 保留 C）；首版可先 FFI 后逐层替换；lwipopts 配置面（NO_SYS=1/PBUF_POOL_SIZE=0/TCP_SND_BUF=11*MSS 等）映射为 Rust 常量 | 24（决策）+ 各模块（调用面） | 设计决策（占位 README 已声明"非目标可长期后置"） |
+| N-1 | **lwIP 第三方栈** | liblwip：lwIP 2.x 导入（`dist/src` 编译子集 68 .c / 58232 行 + 4 patches），Minix 胶水 lwipopts.h/lwiphooks.h/arch/cc.h；lwip 服务链接 `-llwip`（`net/lwip/Makefile`） | **已裁决（2026-09-17）**：smoltcp 一族 Rust 栈 + 自研语义垫片；`lwip_port.rs` 的 `Stack`/`StackHooks` trait 为墙，FFI 路线墙后可回退；lwipopts 配置面（NO_SYS=1/PBUF_POOL_SIZE=0/TCP_SND_BUF=11*MSS 等）为行为契约常量；依据与偏差表见 24 篇 §1.5 | 24 §1.5（裁决）+ lwip_port.rs（墙） | 已裁决（墙骨架已落地，垫片随后续轮次） |
 | N-2 | **libc socket 旧式 fallback** | `libc/sys/socket.c` 等：先 `_syscall(VFS_PROC_NR, VFS_SOCKET, ...)`，EAFNOSUPPORT/ENOSYS 时回退 `open(TCP_DEVICE/UDP_DEVICE/IP_DEVICE/UDS_DEVICE)` + `net/gen/*` 旧设备协议（NWIOSIPOPT 等） | 丢弃 fallback（minix-rs VFS SDEV 路径唯一）；14 的 libc 常量面保留现代 socket 常量（AF_*/SOCK_*/SO_*） | 23 | 设计决策（WONTFIX fallback） |
 | N-3 | **BPF 过滤器** | `bpf_filter.c`：NetBSD bpf_filter 用户态移植（mbuf→pbuf、无 BPF context）561 行 | Rust 重写 bpf 解释器（或最小子集：tcpdump 常用指令）；`/dev/bpf` 语义保留 | 18 | 待设计 |
 | N-4 | **NDEV 消费侧抽象** | `ndev.c`：直接发 NDEV_RQ（com.h 0x1A00）到网卡驱动、DS notify 跟踪 up/down | `minix-netdriver` crate 提供协议类型 + trait；lwip 侧为纯消费方（与 16 框架对称） | 13 | 待设计 |
