@@ -225,7 +225,7 @@ impl<S: BlockSource> MfsServer<S> {
         fs: &mut MountedFs<S>,
         directory: u64,
         old_size: u64,
-        blocks: &mut Vec<Vec<u8>>,
+        blocks: &mut [Vec<u8>],
     ) -> Result<(), Errno> {
         let parts = fs.parts();
         let dir_slot = parts
@@ -245,7 +245,7 @@ impl<S: BlockSource> MfsServer<S> {
             &mut alloc_bit,
             &mut free_bit,
             old_size,
-            blocks,
+            &*blocks,
             parts.block_size,
         );
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
@@ -598,7 +598,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             )
             .map_err(|error| error.to_errno())?
         };
-        Self::store_parent(fs, directory, old_size, &mut blocks)?;
+        Self::store_parent(fs, directory, old_size, blocks.as_mut_slice())?;
         Ok(FileNode::new(
             file.ino,
             file.mode as u32,
@@ -799,7 +799,7 @@ mod tests {
         server.synchronized();
         server.unmounted();
         assert!(!server.is_mounted());
-        let mut source = server.take_source().unwrap();
+        let source = server.take_source().unwrap();
         // The written bytes survive on the device the server handed back.
         let mut block = alloc::vec![0u8; BLOCK_SIZE];
         source
