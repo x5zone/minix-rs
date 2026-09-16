@@ -85,9 +85,12 @@ pub enum FeedOutcome {
 /// Scancode state machine: normal, escaped, pause-armed, pause-confirm.
 ///
 /// C: `kbd_state` (`pckbd.c:26`) with states zero through three
-/// (`kbd_process`, `pckbd.c:335-367`). Prefix bytes never produce events
-/// by themselves; the pause key resolves only after its full six-byte
-/// prelude (extend-one, control press and release are swallowed).
+/// (`kbd_process`, `pckbd.c:335-367`). The pause-confirm state is the
+/// subtlety: NumLock there resolves the Pause key, but any other byte
+/// falls through to the ordinary handling — prefix bytes re-enter the
+/// prefix states, other keys do the normal-table lookup (`pckbd.c:353-358`
+/// `/* FALLTHROUGH */`). The pause press prelude (E1 14 E1) relies on
+/// exactly that fallthrough to re-arm the prefix machine.
 pub struct ScancodeState {
     state: u8,
 }
@@ -116,18 +119,21 @@ impl ScancodeState {
                 self.state = if index == CONTROL_INDEX { 3 } else { 0 };
                 FeedOutcome::NeedMore
             }
-            3 => {
+            // Pause confirms only with NumLock; C reaches the same result
+            // by falling through to the default handling otherwise
+            // (`pckbd.c:353-358` `/* FALLTHROUGH */`), so the guard arm
+            // below covers exactly that case and everything else lands in
+            // the shared default: a prefix byte re-enters the prefix
+            // states, any other byte does an ordinary table lookup.
+            3 if index == NUMLOCK_INDEX => {
                 self.state = 0;
-                if index == NUMLOCK_INDEX {
-                    return FeedOutcome::Event(
-                        KeyCode {
-                            page: PAGE_KEY,
-                            code: KEY_PAUSE,
-                        },
-                        press,
-                    );
-                }
-                FeedOutcome::Swallowed
+                FeedOutcome::Event(
+                    KeyCode {
+                        page: PAGE_KEY,
+                        code: KEY_PAUSE,
+                    },
+                    press,
+                )
             }
             _ => match byte {
                 EXTEND_0 => {
@@ -139,6 +145,7 @@ impl ScancodeState {
                     FeedOutcome::NeedMore
                 }
                 _ => {
+                    self.state = 0;
                     let key = map.normal(index);
                     emit(key, press)
                 }
@@ -290,6 +297,50 @@ mod tests {
                 KeyCode {
                     page: PAGE_KEY,
                     code: KEY_ENTER
+                },
+                Press::Down
+            )
+        );
+    }
+
+    #[test]
+    fn test_state3_non_numlock_falls_through_to_normal_table() {
+        // C: state 3 with any byte other than NumLock falls through to the
+        // default handling — here an ordinary table lookup (pckbd.c:353-361
+        // `/* FALLTHROUGH */`). The old Rust swallowed the byte instead.
+        let map = ReferenceMap;
+        let mut state = ScancodeState::new();
+        assert_eq!(state.feed(&map, EXTEND_1), FeedOutcome::NeedMore);
+        assert_eq!(state.feed(&map, CONTROL_INDEX), FeedOutcome::NeedMore);
+        assert_eq!(
+            state.feed(&map, 0x1C),
+            FeedOutcome::Event(
+                KeyCode {
+                    page: PAGE_KEY,
+                    code: KEY_ENTER
+                },
+                Press::Down
+            )
+        );
+    }
+
+    #[test]
+    fn test_state3_prefix_byte_reenters_prefix_state() {
+        // The same fallthrough: a prefix byte seen in state 3 restarts the
+        // prefix machine. E1 1D E0 1C must resolve through the ESCAPED
+        // table (KP Enter 0x58); a reset machine would take the normal
+        // table and emit plain Enter 0x28.
+        let map = ReferenceMap;
+        let mut state = ScancodeState::new();
+        assert_eq!(state.feed(&map, EXTEND_1), FeedOutcome::NeedMore);
+        assert_eq!(state.feed(&map, CONTROL_INDEX), FeedOutcome::NeedMore);
+        assert_eq!(state.feed(&map, EXTEND_0), FeedOutcome::NeedMore);
+        assert_eq!(
+            state.feed(&map, 0x1C),
+            FeedOutcome::Event(
+                KeyCode {
+                    page: PAGE_KEY,
+                    code: 0x0058
                 },
                 Press::Down
             )
