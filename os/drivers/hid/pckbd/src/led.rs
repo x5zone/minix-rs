@@ -19,12 +19,16 @@ pub const LED_COMMAND: u8 = 0xED;
 /// C: `KBD_OUT_BUFSZ 16` (`pckbd.h:27`).
 pub const OUTBOX_SIZE: usize = 16;
 
-/// Lock-bit positions in the input-server mask.
-pub const LOCK_NUM: u32 = 0;
-/// Caps-lock bit position.
-pub const LOCK_CAPS: u32 = 1;
-/// Scroll-lock bit position.
-pub const LOCK_SCROLL: u32 = 2;
+/// Input-server mask bit position for Num lock.
+///
+/// C: the server builds its mask as `1 << code` with the `INPUT_LED_*`
+/// codes (`input.h:293-295`) — Num is code 1, so mask bit `0x2`. Positions
+/// 0/1/2 would shift every light by one and make Scroll unreachable.
+pub const LOCK_NUM: u32 = 1;
+/// Caps-lock bit position (code 2, mask bit `0x4`).
+pub const LOCK_CAPS: u32 = 2;
+/// Scroll-lock bit position (code 3, mask bit `0x8`).
+pub const LOCK_SCROLL: u32 = 3;
 
 /// Keyboard mask bits for the three locks.
 pub const MASK_NUM: u8 = 0x02;
@@ -142,10 +146,15 @@ mod tests {
 
     #[test]
     fn test_mask_translation_matches_c_mapping() {
+        // Wire values spelled literally: the server mask uses `1 << code`
+        // with codes 1/2/3 (input.h:293-295), the keyboard byte uses the
+        // pckbd.h LED bits (scroll 0x01, num 0x02, caps 0x04).
         assert_eq!(translate_leds(0), 0);
-        assert_eq!(translate_leds(1 << LOCK_NUM), MASK_NUM);
+        assert_eq!(translate_leds(0x2), MASK_NUM);
+        assert_eq!(translate_leds(0x4), MASK_CAPS);
+        assert_eq!(translate_leds(0x8), MASK_SCROLL);
         assert_eq!(
-            translate_leds((1 << LOCK_NUM) | (1 << LOCK_CAPS) | (1 << LOCK_SCROLL)),
+            translate_leds(0x2 | 0x4 | 0x8),
             MASK_NUM | MASK_CAPS | MASK_SCROLL
         );
     }
