@@ -53,6 +53,26 @@ pub enum MasterOpen {
     Cloned(usize),
 }
 
+/// What the service must perform after one end closes.
+///
+/// C: `pty_master_close` (`pty.c:225-246`) has two branches — with a live
+/// slave it marks the pseudo side closed and hangs the line up
+/// (`c_ospeed = B0` makes slave reads see EOF; `sigchar(SIGHUP)` notifies
+/// the slave's session); without one it resets the pair. `pty_slave_close`
+/// (`pty.c:775-796`) replies pending master transfers (buffer module) and
+/// resets when the master had already closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseEffect {
+    /// Only a flag changed; nothing observable.
+    Quiet,
+    /// The slave survives: make slave reads see EOF (speed B0) and raise
+    /// SIGHUP on the slave's session. Both are service actions.
+    SlaveHangup,
+    /// Both sides are done and the pair reset; the service clears the
+    /// Unix98 node when the pair had one.
+    PairReset,
+}
+
 /// One pair's state: flags only; buffers live in their own types.
 ///
 /// C: the `state` field of `pty_t` (`pty.c:46-56`). Read/write suspend
@@ -123,25 +143,37 @@ impl PairState {
         self.flags |= TTY_ACTIVE;
     }
 
-    /// Close one end; both closed resets the pair.
+    /// Close one end; returns what the service must perform.
     ///
-    /// C: `pty_master_close` plus `pty_reset` (`pty.c:205-260`): closing
-    /// marks the end closed, and the last close clears everything
-    /// (including the filesystem node for Unix98 pairs, handled by the
-    /// service crate on observing a fresh [`PairState::is_free`]).
-    pub fn close(&mut self, end: PairEnd) {
+    /// C: `pty_master_close` (`pty.c:225-246`): with a live slave (active
+    /// and not already closed) the master marks only `PTY_CLOSED` and
+    /// hangs the line — EOF plus SIGHUP on the slave; otherwise the pair
+    /// resets outright. `pty_slave_close` (`pty.c:775-796`) does nothing
+    /// without an active master, resets when the master had already
+    /// closed, and merely marks `TTY_CLOSED` otherwise.
+    pub fn close(&mut self, end: PairEnd) -> CloseEffect {
         match end {
             PairEnd::Master => {
-                self.flags &= !PTY_ACTIVE;
-                self.flags |= PTY_CLOSED;
+                if self.flags & (TTY_ACTIVE | TTY_CLOSED) != TTY_ACTIVE {
+                    self.flags = 0;
+                    CloseEffect::PairReset
+                } else {
+                    self.flags |= PTY_CLOSED;
+                    CloseEffect::SlaveHangup
+                }
             }
             PairEnd::Slave => {
-                self.flags &= !TTY_ACTIVE;
-                self.flags |= TTY_CLOSED;
+                if self.flags & PTY_ACTIVE == 0 {
+                    return CloseEffect::Quiet;
+                }
+                if self.flags & PTY_CLOSED != 0 {
+                    self.flags = 0;
+                    CloseEffect::PairReset
+                } else {
+                    self.flags |= TTY_CLOSED;
+                    CloseEffect::Quiet
+                }
             }
-        }
-        if self.flags & (PTY_ACTIVE | TTY_ACTIVE) == 0 {
-            self.flags = 0;
         }
     }
 
@@ -239,10 +271,33 @@ mod tests {
         let mut pair = PairState::new();
         pair.clone_master();
         pair.open_slave();
-        pair.close(PairEnd::Master);
+        // Master close with a live slave: hang the slave up, no reset yet
+        // (pty.c:240-244 — only PTY_CLOSED is set).
+        assert_eq!(pair.close(PairEnd::Master), CloseEffect::SlaveHangup);
         assert!(!pair.is_free());
-        pair.close(PairEnd::Slave);
+        // The surviving slave's close spends the pair.
+        assert_eq!(pair.close(PairEnd::Slave), CloseEffect::PairReset);
         assert!(pair.is_free());
+        assert_eq!(pair.flags(), 0);
+    }
+
+    #[test]
+    fn test_master_close_resets_when_slave_gone() {
+        // Without a live slave, master close resets the pair outright
+        // (pty.c:234-236).
+        let mut pair = PairState::new();
+        pair.clone_master();
+        assert_eq!(pair.close(PairEnd::Master), CloseEffect::PairReset);
+        assert!(pair.is_free());
+        assert_eq!(pair.flags(), 0);
+    }
+
+    #[test]
+    fn test_slave_close_without_master_is_quiet() {
+        // C: `!(pp->state & PTY_ACTIVE) → return 0` — no flags change
+        // (pty.c:778-780).
+        let mut pair = PairState::new();
+        assert_eq!(pair.close(PairEnd::Slave), CloseEffect::Quiet);
         assert_eq!(pair.flags(), 0);
     }
 
