@@ -148,6 +148,10 @@ pub struct LinkCtx<'a, S: BlockSource> {
     pub read_only: bool,
     /// File block size in bytes.
     pub block_size: usize,
+    /// Mapping geometry (direct zones, indirect density).
+    pub map: crate::read::MapParams,
+    /// Valid zone range for indirect validation.
+    pub range: crate::read::ZoneRange,
 }
 
 /// Create a hard link (`fs_link`, `link.c:32-97`).
@@ -404,6 +408,403 @@ pub fn remove_directory<S: BlockSource>(
     release_child(ctx, child, &mut outcome);
     release_parent(ctx, parent);
     Ok(outcome)
+}
+
+
+/// Rename a name, possibly across directories (`fs_rename`,
+/// `link.c:255-422`).
+///
+/// The two parents carry their own images: the same-directory branch never
+/// touches `new_dir_images`, so a caller with one parent directory passes
+/// any valid image list for it (an empty one). The moved directory's own
+/// images — read and rewritten for the `..` update — go through the bridge
+/// inside this function, because the moved directory is not a parameter.
+///
+/// Error-path note: when replacing an existing new name has already
+/// reclaimed zones and a later step fails, the reclaimed list is dropped
+/// with the error. The C code frees inline at the same decision points, so
+/// the observable tree state matches; only the Rust-side reclaim list is
+/// lost on that rare path.
+pub fn rename<S: BlockSource>(
+    ctx: &mut LinkCtx<'_, S>,
+    old_dir_number: u64,
+    old_dir_images: &mut Vec<Vec<u8>>,
+    old_name: &[u8],
+    new_dir_number: u64,
+    new_dir_images: &mut Vec<Vec<u8>>,
+    new_name: &[u8],
+) -> Result<LinkOutcome, LinkError> {
+    let old_dir = open_parent(ctx, old_dir_number)?;
+    // 旧文件（link.c:268-277）：打开失败随父目录引用一起返回。
+    let old_file = match open_child(ctx, old_dir, old_dir_images, old_name) {
+        Ok(slot) => slot,
+        Err(error) => {
+            release_parent(ctx, old_dir);
+            return Err(error);
+        }
+    };
+    // 旧文件是挂载点（link.c:279-283）。
+    if ctx.table.slot(old_file).mountpoint {
+        release_pair(ctx, old_dir, old_file);
+        return Err(LinkError::Busy);
+    }
+    // 新父目录（link.c:286-290）。
+    let new_dir = match open_parent(ctx, new_dir_number) {
+        Ok(slot) => slot,
+        Err(error) => {
+            release_pair(ctx, old_dir, old_file);
+            return Err(error);
+        }
+    };
+    // 新父目录已被删除（link.c:291-296）。
+    if ctx.table.slot(new_dir).nlinks == crate::inode::NO_LINK {
+        release_pair(ctx, old_dir, old_file);
+        release_parent(ctx, new_dir);
+        return Err(LinkError::Invalid);
+    }
+    let same_pdir = old_dir_number == new_dir_number;
+    // 试探新名字，不要求存在（link.c:299）。同一父目录时新名字就在
+    // 旧镜像里（C 的 new_dirp == old_dirp），搜同一份镜像。
+    let probe_images: &mut Vec<Vec<u8>> = if same_pdir {
+        old_dir_images
+    } else {
+        new_dir_images
+    };
+    let mut new_file = {
+        let dir = ctx.table.slot(new_dir);
+        let (mode, nlinks, size) = (dir.mode, dir.nlinks, dir.size as u64);
+        let mut found = 0u32;
+        match crate::dir::lookup_name(
+            mode,
+            nlinks,
+            probe_images,
+            ctx.block_size,
+            size,
+            new_name,
+            &mut found,
+        ) {
+            Ok(()) => Some(
+                ctx.table
+                    .get(ctx.cache, ctx.device, found as u64, &ctx.io)
+                    .map_err(|_| LinkError::Invalid)?,
+            ),
+            Err(DirError::NotFound) => None,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    // 新名字是挂载点：放掉试探引用，按忙回答（link.c:302-306）。
+    if let Some(slot) = new_file {
+        if ctx.table.slot(slot).mountpoint {
+            let io = ctx.io;
+            let _ = ctx.table.put(ctx.cache, slot, &io);
+            new_file = None;
+            return Err(LinkError::Busy);
+        }
+    }
+    let odir = ctx.table.slot(old_file).mode as u32 & TYPE_MASK == TYPE_DIRECTORY;
+    let old_number = child_number(ctx, old_file);
+    let mut same = false;
+    let mut error: Option<LinkError> = None;
+
+    if new_file.is_none() {
+        // 环走查（link.c:315-342）：目录搬家且父目录不同时，顺新父目录
+        // 的点点上走，撞见旧文件就是把目录搬进自己的子树。缺点点按最坏
+        // 情况处理（link.c:336-340）。
+        if odir && !same_pdir {
+            let mut current = new_dir_number;
+            loop {
+                if current == old_number {
+                    error = Some(LinkError::Invalid);
+                    break;
+                }
+                if current == ROOT_INODE_NUMBER {
+                    break;
+                }
+                let slot = ctx
+                    .table
+                    .get(ctx.cache, ctx.device, current, &ctx.io)
+                    .map_err(|_| LinkError::Invalid)?;
+                let (mode, nlinks, size, zones) = {
+                    let dir = ctx.table.slot(slot);
+                    (dir.mode, dir.nlinks, dir.size as u64, dir.zones)
+                };
+                let mut images = crate::dir_io::load_dir_blocks(
+                    ctx.cache,
+                    ctx.device,
+                    &zones,
+                    ctx.map,
+                    ctx.range,
+                    size,
+                    ctx.block_size,
+                )
+                .map_err(|_| LinkError::Io)?;
+                let _ = ctx.table.put(ctx.cache, slot, &ctx.io);
+                let mut found = 0u32;
+                match crate::dir::lookup_name(
+                    mode,
+                    nlinks,
+                    &mut images,
+                    ctx.block_size,
+                    size,
+                    b"..",
+                    &mut found,
+                ) {
+                    Ok(()) => current = found as u64,
+                    Err(_) => {
+                        error = Some(LinkError::Invalid);
+                        break;
+                    }
+                }
+                if current == old_number {
+                    error = Some(LinkError::Invalid);
+                    break;
+                }
+                if current == ROOT_INODE_NUMBER {
+                    break;
+                }
+            }
+        }
+        // 目录搬家且新父目录链接到顶（link.c:346-349）。
+        if error.is_none()
+            && odir
+            && !same_pdir
+            && ctx.table.slot(new_dir).nlinks as u32 >= crate::inode::LINK_CEILING
+        {
+            error = Some(LinkError::LinkCeiling);
+        }
+    } else {
+        // 新名字存在（link.c:350-356）：同一文件记内部相同标记，类型
+        // 交错各报其错。
+        let slot = new_file.unwrap();
+        let new_number = child_number(ctx, slot);
+        let ndir = ctx.table.slot(slot).mode as u32 & TYPE_MASK == TYPE_DIRECTORY;
+        if old_number == new_number {
+            same = true;
+        } else if odir && !ndir {
+            error = Some(LinkError::NotDirectory);
+        } else if !odir && ndir {
+            error = Some(LinkError::IsDirectory);
+        }
+    }
+
+    let mut outcome = LinkOutcome::default();
+    if error.is_none() && !same {
+        // 新名字已存在：先腾位置（link.c:371-378）。腾出来的区号折进
+        // 本次的回收清单。
+        if let Some(slot) = new_file {
+            let (zones, size) = {
+                let node = ctx.table.slot(slot);
+                (node.zones, node.size as u64)
+            };
+            let mut replaced_images = crate::dir_io::load_dir_blocks(
+                ctx.cache,
+                ctx.device,
+                &zones,
+                ctx.map,
+                ctx.range,
+                size,
+                ctx.block_size,
+            )
+            .map_err(|_| LinkError::Io)?;
+            // 同父目录时新名字就在旧镜像里：替换操作走旧镜像
+            // （C 的 new_dirp == old_dirp，同一目录）。
+            let target_images: &mut Vec<Vec<u8>> = if same_pdir {
+                &mut *old_dir_images
+            } else {
+                &mut *new_dir_images
+            };
+            let replaced = if odir {
+                remove_directory(
+                    ctx,
+                    new_dir_number,
+                    target_images,
+                    new_name,
+                    &mut replaced_images,
+                )
+            } else {
+                remove_file(ctx, new_dir_number, target_images, new_name)
+            };
+            match replaced {
+                Ok(done) => outcome.reclaimed.extend(done.reclaimed),
+                Err(e) => error = Some(e),
+            }
+        }
+    }
+
+    if error.is_none() {
+        // 同父目录先删旧名腾出槽位，再进新名（link.c:391-395）；跨父目录
+        // 先进新名，保证新目录满时旧名字还在（link.c:397-399）。
+        let number = old_number as u32;
+        let mut scratch = 0u32;
+        if same_pdir {
+            let mut scan = crate::dir::DirScan {
+                size: ctx.table.slot(old_dir).size as u64,
+                last_dpos: ctx.table.slot(old_dir).scan_hint,
+            };
+            let deleted = search_blocks(
+                old_dir_images,
+                ctx.block_size,
+                &mut scan,
+                true,
+                ctx.read_only,
+                SearchOp::Delete,
+                old_name,
+                &mut scratch,
+            );
+            deleted.map_err(LinkError::from)?;
+            let mut target = number;
+            let entered = search_blocks(
+                old_dir_images,
+                ctx.block_size,
+                &mut scan,
+                true,
+                ctx.read_only,
+                SearchOp::Enter,
+                new_name,
+                &mut target,
+            );
+            entered.map_err(LinkError::from)?;
+            {
+                let dir = ctx.table.slot_mut(old_dir);
+                dir.size = scan.size as i64;
+                dir.scan_hint = scan.last_dpos;
+                dir.dirty = true;
+            }
+        } else {
+            let mut scan = crate::dir::DirScan {
+                size: ctx.table.slot(new_dir).size as u64,
+                last_dpos: ctx.table.slot(new_dir).scan_hint,
+            };
+            let mut target = number;
+            let entered = search_blocks(
+                new_dir_images,
+                ctx.block_size,
+                &mut scan,
+                true,
+                ctx.read_only,
+                SearchOp::Enter,
+                new_name,
+                &mut target,
+            );
+            entered.map_err(LinkError::from)?;
+            {
+                let dir = ctx.table.slot_mut(new_dir);
+                dir.size = scan.size as i64;
+                dir.scan_hint = scan.last_dpos;
+                dir.dirty = true;
+            }
+            let mut scan = crate::dir::DirScan {
+                size: ctx.table.slot(old_dir).size as u64,
+                last_dpos: ctx.table.slot(old_dir).scan_hint,
+            };
+            let deleted = search_blocks(
+                old_dir_images,
+                ctx.block_size,
+                &mut scan,
+                true,
+                ctx.read_only,
+                SearchOp::Delete,
+                old_name,
+                &mut scratch,
+            );
+            deleted.map_err(LinkError::from)?;
+            {
+                let dir = ctx.table.slot_mut(old_dir);
+                dir.size = scan.size as i64;
+                dir.scan_hint = scan.last_dpos;
+                dir.dirty = true;
+            }
+        }
+    }
+
+    if error.is_none() && !same && odir && !same_pdir {
+        // 目录跨父目录搬家：改写被搬目录里的点点（link.c:405-414）。
+        // 先删旧点点，再把新父目录的编号作为点点进入——不增长，整块
+        // 原位覆写即可。
+        let (zones, size) = {
+            let node = ctx.table.slot(old_file);
+            (node.zones, node.size as u64)
+        };
+        let mut moved_images = crate::dir_io::load_dir_blocks(
+            ctx.cache,
+            ctx.device,
+            &zones,
+            ctx.map,
+            ctx.range,
+            size,
+            ctx.block_size,
+        )
+        .map_err(|_| LinkError::Io)?;
+        let mut scan = crate::dir::DirScan {
+            size,
+            last_dpos: 0,
+        };
+        let mut none = 0u32;
+        let _ = search_blocks(
+            &mut moved_images,
+            ctx.block_size,
+            &mut scan,
+            true,
+            ctx.read_only,
+            SearchOp::Delete,
+            b"..",
+            &mut none,
+        );
+        let mut dotdot = new_dir_number as u32;
+        let entered = search_blocks(
+            &mut moved_images,
+            ctx.block_size,
+            &mut scan,
+            true,
+            ctx.read_only,
+            SearchOp::Enter,
+            b"..",
+            &mut dotdot,
+        );
+        if entered.is_ok() {
+            for (index, image) in moved_images.iter().enumerate() {
+                let file_block = index as u64;
+                let zones = ctx.table.slot(old_file).zones;
+                let mapped = crate::read::map_file_block(
+                    ctx.cache,
+                    ctx.device,
+                    &zones,
+                    ctx.map,
+                    ctx.range,
+                    file_block,
+                )
+                .map_err(|_| LinkError::Io)?;
+                if let Some(zone) = mapped {
+                    let slot = ctx
+                        .cache
+                        .acquire(BlockKey::new(ctx.device, zone), AcquireMode::NoRead)
+                        .map_err(|_| LinkError::Io)?;
+                    ctx.cache
+                        .write_slot(slot, image)
+                        .map_err(|_| LinkError::Io)?;
+                    ctx.cache.mark_dirty(slot);
+                    let _ = ctx.cache.release(slot);
+                }
+            }
+            {
+                let dir = ctx.table.slot_mut(new_dir);
+                dir.nlinks += 1;
+                dir.dirty = true;
+            }
+        }
+    }
+
+    // 释放四个槽位（link.c:417-420）。SAME 按成功返回（link.c:421）。
+    release_pair(ctx, old_dir, old_file);
+    release_parent(ctx, new_dir);
+    if let Some(slot) = new_file {
+        let io = ctx.io;
+        let _ = ctx.table.put(ctx.cache, slot, &io);
+    }
+    match error {
+        Some(e) => Err(e),
+        None => Ok(outcome),
+    }
 }
 
 /// Open the parent directory or report invalid.
@@ -772,6 +1173,14 @@ mod tests {
             io: fixture.io,
             read_only: false,
             block_size: BLOCK_SIZE,
+            map: crate::read::MapParams {
+                direct_zones: 7,
+                indirect_per_block: 128,
+            },
+            range: crate::read::ZoneRange {
+                first: 4,
+                count: 61,
+            },
         }
     }
 
@@ -1020,6 +1429,315 @@ mod tests {
         assert_eq!(SAME_NAME, 1000);
         assert_eq!(FIRST_HALF, 0);
         assert_eq!(LAST_HALF, 1);
+    }
+
+
+    /// 种一个名字进镜像并同步目录尺寸（rename 内部按槽位尺寸走查）。
+    fn plant_name(
+        fixture: &mut Fixture,
+        dir: usize,
+        images: &mut Vec<Vec<u8>>,
+        name: &[u8],
+        number: u32,
+    ) {
+        let size = fixture.table.slot(dir).size as u64;
+        let last = fixture.table.slot(dir).scan_hint;
+        let mut scan = crate::dir::DirScan {
+            size,
+            last_dpos: last,
+        };
+        let mut target = number;
+        search_blocks(
+            images,
+            BLOCK_SIZE,
+            &mut scan,
+            true,
+            false,
+            SearchOp::Enter,
+            name,
+            &mut target,
+        )
+        .unwrap();
+        let dir_inode = fixture.table.slot_mut(dir);
+        dir_inode.size = scan.size as i64;
+        dir_inode.scan_hint = scan.last_dpos;
+        dir_inode.dirty = true;
+    }
+
+    /// 在盘上种一个真实目录：点与点点写入区号对应的块，槽位带区号、
+    /// 尺寸与链接数二——环走查从缓存读「..」，夹具必须有真的磁盘点项链。
+    fn plant_dir(fixture: &mut Fixture, slot: usize, zone: u64, parent_number: u64) {
+        let number = fixture.table.slot(slot).number;
+        let mut images: Vec<Vec<u8>> = Vec::new();
+        let mut scan = crate::dir::DirScan::default();
+        let mut dot = number as u32;
+        search_blocks(
+            &mut images,
+            BLOCK_SIZE,
+            &mut scan,
+            true,
+            false,
+            SearchOp::Enter,
+            b".",
+            &mut dot,
+        )
+        .unwrap();
+        let mut dotdot = parent_number as u32;
+        search_blocks(
+            &mut images,
+            BLOCK_SIZE,
+            &mut scan,
+            true,
+            false,
+            SearchOp::Enter,
+            b"..",
+            &mut dotdot,
+        )
+        .unwrap();
+        for (index, image) in images.iter().enumerate() {
+            let cache_slot = fixture
+                .cache
+                .acquire(
+                    minix_fs::cache::BlockKey::new(DEVICE, zone + index as u64),
+                    minix_fs::cache::AcquireMode::NoRead,
+                )
+                .unwrap();
+            fixture.cache.write_slot(cache_slot, image).unwrap();
+            fixture.cache.mark_dirty(cache_slot);
+            fixture.cache.release(cache_slot).unwrap();
+        }
+        let inode = fixture.table.slot_mut(slot);
+        inode.zones[0] = zone;
+        inode.size = scan.size as i64;
+        inode.dirty = true;
+    }
+
+    fn search_found(
+        fixture: &mut Fixture,
+        dir: usize,
+        images: &mut Vec<Vec<u8>>,
+        name: &[u8],
+    ) -> Option<u32> {
+        let size = fixture.table.slot(dir).size as u64;
+        let mut found = 0u32;
+        let mode = fixture.table.slot(dir).mode;
+        let nlinks = fixture.table.slot(dir).nlinks;
+        match crate::dir::lookup_name(mode, nlinks, images, BLOCK_SIZE, size, name, &mut found) {
+            Ok(()) => Some(found),
+            Err(DirError::NotFound) => None,
+            Err(_) => None,
+        }
+    }
+
+    #[test]
+    fn test_rename_same_directory_moves_entry() {
+        let mut fixture = fixture();
+        let mut images = Vec::new();
+        let dir = open_dir(&mut fixture);
+        let dir_number = fixture.table.slot(dir).number;
+        let file = open_file(&mut fixture);
+        let file_number = fixture.table.slot(file).number;
+        plant_name(&mut fixture, dir, &mut images, b"a", file_number as u32);
+        let mut ctx = ctx_of(&mut fixture);
+        rename(&mut ctx, dir_number, &mut images, b"a", dir_number, &mut Vec::new(), b"b").unwrap();
+        assert!(search_found(&mut fixture, dir, &mut images, b"a").is_none());
+        assert_eq!(
+            search_found(&mut fixture, dir, &mut images, b"b"),
+            Some(file_number as u32)
+        );
+    }
+
+    #[test]
+    fn test_rename_cross_directory_rewrites_dotdot() {
+        let mut fixture = fixture();
+        let mut dir1_images = Vec::new();
+        let mut dir2_images = Vec::new();
+        let dir1 = open_dir(&mut fixture);
+        let dir1_number = fixture.table.slot(dir1).number;
+        let dir2 = open_dir(&mut fixture);
+        let dir2_number = fixture.table.slot(dir2).number;
+        let inner = open_dir(&mut fixture);
+        let inner_number = fixture.table.slot(inner).number;
+        // 三个目录都种真的磁盘点项链：dir1 与 dir2 的点点指根，
+        // inner 的点点指 dir1。
+        plant_dir(&mut fixture, dir1, 7, 1);
+        plant_dir(&mut fixture, dir2, 8, 1);
+        plant_dir(&mut fixture, inner, 9, dir1_number);
+        plant_name(&mut fixture, dir1, &mut dir1_images, b"inner", inner_number as u32);
+        let mut ctx = ctx_of(&mut fixture);
+        rename(
+            &mut ctx,
+            dir1_number,
+            &mut dir1_images,
+            b"inner",
+            dir2_number,
+            &mut dir2_images,
+            b"moved",
+        )
+        .unwrap();
+        // 新父目录查得到，旧父目录没有了。
+        assert_eq!(
+            search_found(&mut fixture, dir2, &mut dir2_images, b"moved"),
+            Some(inner_number as u32)
+        );
+        assert!(search_found(&mut fixture, dir1, &mut dir1_images, b"inner").is_none());
+        // 点点改写：冲刷后 inner 数据区的第 64 字节起指向新父目录。
+        fixture.cache.flush_all().unwrap();
+        let mut block = alloc::vec![0u8; BLOCK_SIZE];
+        minix_fs::cache::BlockSource::read_block(
+            fixture.cache.source(),
+            minix_fs::cache::BlockKey::new(DEVICE, 9),
+            &mut block,
+        )
+        .unwrap();
+        assert_eq!(block[64..68], (dir2_number as u32).to_le_bytes());
+        // 新父目录因获得子目录链接计数加一。
+        assert!(fixture.table.slot(dir2).nlinks >= 2);
+    }
+
+    #[test]
+    fn test_rename_replaces_existing_file() {
+        let mut fixture = fixture();
+        let mut images = Vec::new();
+        let dir = open_dir(&mut fixture);
+        let dir_number = fixture.table.slot(dir).number;
+        let first = open_file(&mut fixture);
+        let first_number = fixture.table.slot(first).number;
+        let second = open_file(&mut fixture);
+        let second_number = fixture.table.slot(second).number;
+        plant_name(&mut fixture, dir, &mut images, b"a", first_number as u32);
+        plant_name(&mut fixture, dir, &mut images, b"b", second_number as u32);
+        // a 改名到 b：b 的旧编号退出，a 的编号顶上。
+        let mut ctx = ctx_of(&mut fixture);
+        rename(
+            &mut ctx,
+            dir_number,
+            &mut images,
+            b"a",
+            dir_number,
+            &mut Vec::new(),
+            b"b",
+        )
+        .unwrap();
+        assert_eq!(
+            search_found(&mut fixture, dir, &mut images, b"b"),
+            Some(first_number as u32)
+        );
+        assert!(search_found(&mut fixture, dir, &mut images, b"a").is_none());
+        let _ = second_number;
+    }
+
+    #[test]
+    fn test_rename_type_mismatch_refused() {
+        let mut fixture = fixture();
+        let mut images = Vec::new();
+        let dir = open_dir(&mut fixture);
+        let dir_number = fixture.table.slot(dir).number;
+        let file = open_file(&mut fixture);
+        let file_number = fixture.table.slot(file).number;
+        let sub = open_dir(&mut fixture);
+        let sub_number = fixture.table.slot(sub).number;
+        plant_name(&mut fixture, dir, &mut images, b"f", file_number as u32);
+        plant_name(&mut fixture, dir, &mut images, b"d", sub_number as u32);
+        // 文件改名到已存在的目录名：报告是目录。
+        let mut ctx = ctx_of(&mut fixture);
+        assert_eq!(
+            rename(
+                &mut ctx,
+                dir_number,
+                &mut images,
+                b"f",
+                dir_number,
+                &mut Vec::new(),
+                b"d"
+            )
+            .unwrap_err(),
+            LinkError::IsDirectory
+        );
+        // 目录改名到已存在的文件名：报告非目录。
+        let mut ctx = ctx_of(&mut fixture);
+        assert_eq!(
+            rename(
+                &mut ctx,
+                dir_number,
+                &mut images,
+                b"d",
+                dir_number,
+                &mut Vec::new(),
+                b"f"
+            )
+            .unwrap_err(),
+            LinkError::NotDirectory
+        );
+        let _ = (file_number, sub_number);
+    }
+
+    #[test]
+    fn test_rename_same_name_reports_success() {
+        let mut fixture = fixture();
+        let mut images = Vec::new();
+        let dir = open_dir(&mut fixture);
+        let dir_number = fixture.table.slot(dir).number;
+        let file = open_file(&mut fixture);
+        let file_number = fixture.table.slot(file).number;
+        plant_name(&mut fixture, dir, &mut images, b"keep", file_number as u32);
+        let mut ctx = ctx_of(&mut fixture);
+        let outcome =
+            rename(&mut ctx, dir_number, &mut images, b"keep", dir_number, &mut Vec::new(), b"keep").unwrap();
+        assert!(outcome.reclaimed.is_empty());
+        assert_eq!(
+            search_found(&mut fixture, dir, &mut images, b"keep"),
+            Some(file_number as u32)
+        );
+    }
+
+    #[test]
+    fn test_rename_cycle_refused_and_emlink() {
+        let mut fixture = fixture();
+        let mut images = Vec::new();
+        let dir = open_dir(&mut fixture);
+        let dir_number = fixture.table.slot(dir).number;
+        let sub = open_dir(&mut fixture);
+        let sub_number = fixture.table.slot(sub).number;
+        let top = open_dir(&mut fixture);
+        let top_number = fixture.table.slot(top).number;
+        // dir 的点点指根，sub 的点点指 dir；top 的点点指根但链接数到顶。
+        plant_dir(&mut fixture, dir, 7, 1);
+        plant_dir(&mut fixture, sub, 8, dir_number);
+        plant_dir(&mut fixture, top, 9, 1);
+        fixture.table.slot_mut(top).nlinks = crate::inode::LINK_CEILING as u16;
+        plant_name(&mut fixture, dir, &mut images, b"d", sub_number as u32);
+        // 环：把 dir 搬进 sub 的子树，走查从 sub 上行撞见 dir，报告
+        // 无效参数。
+        let mut ctx = ctx_of(&mut fixture);
+        assert_eq!(
+            rename(
+                &mut ctx,
+                dir_number,
+                &mut images,
+                b"d",
+                sub_number,
+                &mut Vec::new(),
+                b"x"
+            )
+            .unwrap_err(),
+            LinkError::Invalid
+        );
+        // 链接到顶：目录搬进链接数到顶的新父目录报告链接过多。
+        let mut ctx = ctx_of(&mut fixture);
+        assert_eq!(
+            rename(
+                &mut ctx,
+                dir_number,
+                &mut images,
+                b"d",
+                top_number,
+                &mut Vec::new(),
+                b"x"
+            )
+            .unwrap_err(),
+            LinkError::LinkCeiling
+        );
     }
 
     #[test]

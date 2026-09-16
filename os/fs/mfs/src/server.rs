@@ -787,6 +787,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 io: parts.io,
                 read_only: parts.read_only,
                 block_size: parts.block_size,
+                map: parts.map,
+                range: parts.range,
             };
             crate::link::create_link(
                 &mut ctx,
@@ -813,6 +815,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 io: parts.io,
                 read_only: parts.read_only,
                 block_size: parts.block_size,
+                map: parts.map,
+                range: parts.range,
             };
             crate::link::remove_file(&mut ctx, directory, &mut blocks, name.as_bytes())
                 .map_err(|error| error.to_errno())?
@@ -881,6 +885,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 io: parts.io,
                 read_only: parts.read_only,
                 block_size: parts.block_size,
+                map: parts.map,
+                range: parts.range,
             };
             crate::link::remove_directory(
                 &mut ctx,
@@ -947,6 +953,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             io: parts.io,
             read_only: parts.read_only,
             block_size: parts.block_size,
+            map: parts.map,
+            range: parts.range,
         };
         crate::link::read_link(&mut ctx, inode, capacity, out).map_err(|error| error.to_errno())
     }
@@ -1108,6 +1116,53 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             .map_err(|_| Errno::from_i32(EIO))?;
         }
         Ok(data.len())
+    }
+
+    fn rename(
+        &mut self,
+        old_directory: u64,
+        old_name: &str,
+        new_directory: u64,
+        new_name: &str,
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let same = old_directory == new_directory;
+        let (mut old_blocks, old_size) = Self::load_parent(fs, old_directory)?;
+        let (mut new_blocks, new_size) = if same {
+            // 同父目录分支不触碰新镜像：空镜像即可（函数文档约定）。
+            (Vec::new(), 0)
+        } else {
+            Self::load_parent(fs, new_directory)?
+        };
+        let outcome = {
+            let mut parts = fs.parts();
+            let mut ctx = LinkCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+                block_size: parts.block_size,
+                map: parts.map,
+                range: parts.range,
+            };
+            crate::link::rename(
+                &mut ctx,
+                old_directory,
+                &mut old_blocks,
+                old_name.as_bytes(),
+                new_directory,
+                &mut new_blocks,
+                new_name.as_bytes(),
+            )
+            .map_err(|error| error.to_errno())?
+        };
+        Self::store_parent(fs, old_directory, old_size, &mut old_blocks)?;
+        if !same {
+            Self::store_parent(fs, new_directory, new_size, &mut new_blocks)?;
+        }
+        Self::reclaim_zones(fs, &outcome.reclaimed);
+        Ok(())
     }
 
     fn stat(&mut self, inode: u64, out: &mut [u8]) -> Result<(), Errno> {

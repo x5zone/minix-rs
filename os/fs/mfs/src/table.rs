@@ -138,7 +138,7 @@ pub const MFS_TABLE: [TableEntry; 31] = [
         c_handler: "fs_rename",
         request: RequestNumber::Rename,
         owner: "13-mfs-link.md",
-        status: EntryStatus::PendingDocument,
+        status: EntryStatus::LiveInCrate,
     },
     TableEntry {
         c_handler: "fs_slink",
@@ -272,8 +272,8 @@ mod tests {
     #[test]
     fn test_table_has_thirty_one_rows_like_c() {
         assert_eq!(MFS_TABLE.len(), 31);
-        assert_eq!(live_entries().count(), 29);
-        assert_eq!(pending_entries().count(), 2);
+        assert_eq!(live_entries().count(), 30);
+        assert_eq!(pending_entries().count(), 1);
     }
 
     #[test]
