@@ -804,6 +804,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **依赖**：第 8 项无依赖；第 3-7 项无硬依赖（可宿主测试）；第 1/2 项依赖 E1（trap 桥）。
 **解锁**：13-stage-ipc/todo.md IPC-P1-1（服务层接线）全链；ipc-server main.rs 去 panic；E5 IPC 联调验收面前置。
 
+> **进度（2026-09-16，🔄 第 8 项布局闭环，minix-types sysvipc 模块）**：`IpcPerm` 24B（五 u32 域 + seq + 垫，ipc.h:54-66）+ `SemidDs` 56B（perm@0/nsems@24/otime@32/ctime@40/私有指针槽@48，sem.h:55-66，LP64）+ `ShmidDs` 80B（perm@0/segsz@24/lpid@32/cpid@36/nattch@40/atime@48/dtime@56/ctime@64/私有指针槽@72，shm.h:99-114）落 `minix-types/src/ipc/sysvipc.rs`，布局见证 ×3（offset_of 全钉）。C 头按 i386 书写，本重写沿用 64-bit-overlay 判例（time_t 8 字节、指针 8 字节，与 MessVmmcpReply 同款）。**余项**：第 3-7 项（wrapper/组装，CannedTransport 可测）随 E9 三分域同型批量；第 1/2 项（trap/SEF）随 E1 real-trap 门控的通电族落地。**验证**：minix-types 251 全绿。
+
 ---
 
 ## E-MINTYPES-RUNTIME minix-types 布局单点权威收敛（14-stage-runtime V1 轮登记，2026-09-16）
