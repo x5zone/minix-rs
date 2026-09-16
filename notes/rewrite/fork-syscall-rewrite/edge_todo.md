@@ -857,6 +857,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **依赖**：14-stage-runtime/todo.md V1-P1-5（99 篇改写）为前置；执行时与 E-IPCWIRE 第 8 项同轮（同为 minix-types 布局面）。
 **解锁**：09 篇 open 路径布局落地（40 字节内联的 64 位裁决）；14-stage-runtime/todo.md V1-P2-2 收敛；VM_REMAP_RO 客户端 wrapper 定稿。
 
+> **前置核对（2026-09-17，T8 开工前）**：V1-P1-5（99 篇改写）仍未完成——99-global-concepts.md 为 19 行骨架（核心点四项：endpoint/generation、message 布局与 56 字节负载约束、服务号常量、全局状态表 _minix_kerninfo/_minix_ipcvecs；边界：一切机制移交 00~13）。**99 篇创作输入已集齐**：§2 矩阵 + 各篇"移交 99"悬空项清单（09 篇 open 路径 40 字节裁决、08 篇消息体布局归档、V1-P2-2 wire 单点权威、本条 VM_REMAP 分叉）。**执行序建议**：①99 篇创作轮（Gate H.6 三件套 + cmd-12/19 流程，含 00 篇同批）→ ②minix-sys 逐族收敛（cleared_message/write_payload 单一 helper、VM_REMAP 分叉消除、本地 payload 补 56B/偏移断言）→ ③codec trait 裁决 → ④全回归 + 本条收口。规模：一个完整会话（文档创作轮 + 多族收敛），勿在残量上下文开工。
+
 ---
 
 ## E-MINSYS-SCOPE minix-sys 内域外 stage 客户端模块的内聚性处置（14-stage-runtime V1 轮登记，2026-09-16）
