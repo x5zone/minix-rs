@@ -7,11 +7,11 @@
 //! only ever sees the first sixty bytes: truncation happens here and nowhere
 //! else.
 //!
-//! The walk runs over caller-supplied block images in directory order. Block
-//! fetching (`get_block_map`) and allocation (`new_block`) belong to the
-//! data path (documents 14 and 15), which will feed real cache bytes into
-//! the same walk; until then the images parameter keeps this stage complete
-//! and tested without them.
+//! The walk runs over caller-supplied block images in directory order.
+//! Fetching real bytes into images and writing modified images back is the
+//! bridge module's job (`crate::dir_io`, document 14): it maps each file
+//! block through the inode zones and copies between the cache and the
+//! images, so this stage stays a pure codec-plus-walk.
 
 use alloc::vec::Vec;
 

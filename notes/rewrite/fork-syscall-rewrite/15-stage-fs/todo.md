@@ -15,7 +15,7 @@
 | V1-P1-2 | P1 | `fs_putnode` 缺失：count-1 批量递减语义不存在 | 开口项 |
 | V1-P1-3 | P1 | Peek 路径缺失：read.c:156-159 的 `FSC_PEEK` 分支无对应 | 开口项 |
 | V1-P1-4 | P1 | `ReclaimZones` 无执行者：unlink 最后一链后数据区实际不回收 | 开口项 |
-| V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | 开口项 |
+| V1-P1-5 | P1 | 目录块镜像与缓存之间没有装载与写回的桥接，目录操作落不到磁盘 | ✅ 2026-09-16 Fix #1（先行落地：P0-1 装配的依赖） |
 | V1-P1-6 | P1 | 绝对符号链接的 offset 语义与 C 分歧（C 报 0，Rust 报旧路径组件起点） | 开口项 |
 | V1-P1-7 | P1 | mount 适配层丢失驱动标签：`adapt_mount` 向 `bound_driver` 传空字符串 | 开口项 |
 | V1-P1-8 | P1 | 完备性账本滞后：23 行 pending 中 20 行的实现已经存在 | 开口项 |
@@ -115,6 +115,7 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P1-4 `ReclaimZones` 无执行者。** C 在最后一个引用释放且 `i_nlinks==NO_LINK` 时同步 `truncate_inode(rip, 0)`（inode.c:220-231）真实释放全部数据区与间接块。Rust 只把非零 zone 号打包进 `ReleaseOutcome::ReclaimZones`（inode.rs:450-462，含 zones[7..9] 的间接块号但调用方无从区分类型），crate 内没有位图释放或缓存逐出的消费者（grep `reclaimed` 仅 link.rs:125-134 收集与测试断言）。效果：unlink 最后一链后 zone 实际泄漏。修复方向：给 `MfsServer`（V1-P0-1 的装配产物）实现回收执行体，按 zone 号区间区分间接块与数据块，释放位图并 `BlockCache::free_block`。
 
 **V1-P1-5 目录块镜像缺桥接。** dir.rs 的四模式搜索以调用方提供的 `Vec<Vec<u8>>` 块镜像流转（dir.rs:158），crate 内不存在从 `BlockCache` 装载镜像或把镜像写回缓存的代码（dir.rs:10-14 自述归文档 14/15），因此 create/unlink/mkdir/link 的目录修改落不到磁盘。方案 A：装配层（`MfsServer` 的方法）提供装载/写回桥，镜像设计保留；方案 B：删除镜像，目录操作直接经 `BlockCache` 槽进行（更贴近 C，少一次拷贝，但 dir.rs 全部签名要改）。推荐 A 先落地保行为，B 作为 V2 轮重写评估项（镜像使每次目录操作多 O(块数) 拷贝）。
+**✅ 2026-09-16 闭环（Fix #1）**：新模块 `os/fs/mfs/src/dir_io.rs`——`load_dir_blocks`（逐文件块翻译 + 缓存读出）与 `store_dir_blocks`（整块免读覆写置脏；旧尺寸外追加块经 `alloc_zone`+`write_map` 建映射；尺寸内空洞按损坏报 EIO，与 `list_dir_entries` 同规则）。位图以闭包注入，模块不依赖超级块结构；inode 元数据写回留给装配层。七个新测试全绿（crate 105 个）；文档同步 14 篇 §4.4/§5.4，dir.rs 过时注释更新。批内顺序调整说明：本条先行于 V1-P0-1，因为装配冒烟链的 lookup 依赖本桥。
 
 **V1-P1-6 绝对符号链接的 offset 分歧。** C 在符号链接改写路径后置 `ptr = path`（lookup.c:269），绝对链接返回 ESYMLINK 时 `m_fs_vfs_lookup.offset = ptr - path = 0`（lookup.c:308-309），VFS 从重写路径的起点重新解析。Rust 返回 `offset: component_start`（lookup.rs:424-433），即旧路径中链接组件的起点——对重写后的新路径该值没有意义。修复方向：改为 0 并加钉住测试；同时在 05-stage-vfs 侧对账 VFS 消费 offset 的语义（本条修复只动 minix-fs，VFS 侧只需读代码验证，不构成跨 stage 改码）。
 

@@ -13,6 +13,7 @@
 extern crate alloc;
 
 pub mod dir;
+pub mod dir_io;
 pub mod inode;
 pub mod link;
 pub mod maint;
