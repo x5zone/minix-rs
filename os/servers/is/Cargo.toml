@@ -11,8 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 minix-types = { workspace = true }
-# minix-sys 接线是 forward reference（E-ISWIRE）：生产 transport 落地时按实际
-# 消费加回，不预先挂死依赖（08-stage-is/todo.md V1-P2-1）。
+# E-ISKMESS：生产 KerninfoTransport 落地，按 V1-P2-1 的 forward-reference
+# 约定加回实际消费的依赖。real-trap 由 boot image 构建开启（宿主构建保持
+# -EIO fail-closed，与 minix-rt DirectTrapSource 同款门控）。
+minix-sys = { workspace = true }
 
 [lib]
 name = "minix_is"

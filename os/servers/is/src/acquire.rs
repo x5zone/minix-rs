@@ -28,6 +28,12 @@ use crate::dump_pm::MProcSnap;
 use crate::dump_rs::{RprocSnap, RprocpubSnap};
 use crate::dump_vfs::{DmapSnap, FProcSnap};
 use crate::dump_vm::{VmRegionSnap, VmStatsSnap, VmUsageSnap};
+use minix_sys::syscall::{sys_getinfo_into, DirectKernelCallTransport};
+
+/// GET_KMESSAGES 快照总大小（kernel `kmess::KMESS_SNAPSHOT_SIZE` 镜像：
+/// 8 字节游标头 + 10000 字节环体，sys_config.h:22）。内核侧常量为
+/// pub(crate)，此处按同一 wire 契约本地锚定并测试锁定。
+const KMESS_SNAPSHOT_SIZE: usize = 10008;
 use minix_types::{
     DS_GETSYSINFO, Endpoint, PM_GETSYSINFO, RS_GETSYSINFO, SI_DATA_STORE, SI_DMAP_TAB,
     SI_PROCPUB_TAB, SI_PROC_TAB, VFS_GETSYSINFO,
@@ -454,6 +460,7 @@ impl DiagctlTransport for FakeAcquires {
     }
 }
 
+
 impl KerninfoTransport for FakeAcquires {
     fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
         self.seen.push("kmessages");
@@ -567,6 +574,51 @@ impl VmInfoTransport for FakeAcquires {
     }
 }
 }
+/// 生产 `KerninfoTransport`：经 `sys_getinfo` 的 `GET_KMESSAGES`
+/// 子请求（E-ISKMESS A-3，minix-types `sysinfo::GET_KMESSAGES` = 7）从
+/// 内核拉取环形缓冲快照并拆包。
+///
+/// 快照 wire 形状（kernel `kmess::KMESS_SNAPSHOT_SIZE` = 10008）：
+/// `km_next` (i32) @0、`km_size` (i32) @4、顺序展开的环体 10000 字节。
+/// 拆包后 `meta` 携游标、`ring` 携调用方缓冲能容纳的环体前缀。
+///
+/// 宿主构建（未开 `real-trap`）下 transport 诚实返回 `-EIO`，本实现原样
+/// 上浮——调用方按既有 fail-closed 语义处理，与
+/// `minix-rt::DirectTrapSource` 同款门控形态。
+pub struct KernelKmessTransport;
+
+impl KerninfoTransport for KernelKmessTransport {
+    fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
+        // 10008 字节快照缓冲：固定容量（内核臂单次整块拷出），栈上分配
+        // —— IS 用户栈 64 KiB（loader stack），快照占 ~15%，余量充足；
+        // C 的 kmessages_dmp print_buf 为同量级缓冲（dmp_kernel.c:74）。
+        let mut snap = [0u8; KMESS_SNAPSHOT_SIZE];
+        match sys_getinfo_into(
+            &DirectKernelCallTransport,
+            minix_types::GET_KMESSAGES,
+            &mut snap,
+            Endpoint::NONE.get(),
+        ) {
+            Ok(()) => {
+                split_kmess_snapshot(&snap, meta, ring);
+                minix_types::OK
+            }
+            Err(code) => code,
+        }
+    }
+}
+
+/// 拆 GET_KMESSAGES 快照：8 字节头（`km_next`/`km_size`，LE i32）进
+/// `meta`，环体按 `ring` 容量填前缀（调用方缓冲短于 10000 时截断——
+/// `kmessages_dmp` 的 print 组装按 `km_size` 游标重排，与容量无关）。
+fn split_kmess_snapshot(snap: &[u8], meta: &mut KmessagesSnap, ring: &mut [u8]) {
+    meta.km_next = i32::from_le_bytes([snap[0], snap[1], snap[2], snap[3]]);
+    meta.km_size = i32::from_le_bytes([snap[4], snap[5], snap[6], snap[7]]);
+    let body = &snap[8..];
+    let n = body.len().min(ring.len());
+    ring[..n].copy_from_slice(&body[..n]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::fake::FakeAcquires;
@@ -654,5 +706,67 @@ mod tests {
         // C: com.h:413. The stacktrace method fixes the code internally;
         // the constant stays imported so the wire value is asserted once.
         assert_eq!(DIAGCTL_CODE_STACKTRACE, 2);
+    }
+}
+
+#[cfg(test)]
+mod kerninfo_transport_tests {
+    use super::*;
+
+    /// 快照拆包契约：8 字节头（km_next/km_size，LE i32）进 meta，
+    /// 环体按调用方缓冲容量填前缀（kernel kmess::KMESS_SNAPSHOT_SIZE
+    /// 同一 wire 形状——kernel/src/kmess.rs:29-32）。
+    #[test]
+    fn test_split_kmess_snapshot_round_trip() {
+        let mut snap = vec![0u8; 10008];
+        snap[0..4].copy_from_slice(&5i32.to_le_bytes());      // km_next
+        snap[4..8].copy_from_slice(&10_000i32.to_le_bytes()); // km_size
+        for (i, b) in snap[8..].iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+
+        let mut meta = KmessagesSnap { km_next: 0, km_size: 0 };
+        let mut ring = [0u8; 10_000];
+        split_kmess_snapshot(&snap, &mut meta, &mut ring);
+
+        assert_eq!(meta.km_next, 5);
+        assert_eq!(meta.km_size, 10_000);
+        assert_eq!(ring[0], (0 % 251) as u8);
+        assert_eq!(ring[9999], (9999 % 251) as u8);
+    }
+
+    /// 调用方缓冲短于环体时按容量截断——kmessages_dmp 的 print 组装
+    /// 按 km_size 游标自排（dmp_kernel.c:77-85），与快照总长解耦。
+    #[test]
+    fn test_split_kmess_snapshot_truncates_to_ring_capacity() {
+        let mut snap = vec![0u8; 10008];
+        snap[0..4].copy_from_slice(&7i32.to_le_bytes());
+        snap[4..8].copy_from_slice(&10_000i32.to_le_bytes());
+
+        let mut meta = KmessagesSnap { km_next: 0, km_size: 0 };
+        let mut ring = [0xABu8; 128];
+        split_kmess_snapshot(&snap, &mut meta, &mut ring);
+
+        assert_eq!(meta.km_next, 7);
+        assert_eq!(&ring[..4], &[0, 0, 0, 0]); // 体前 4 字节（快照零填充）
+        assert_eq!(ring[127], 0);
+    }
+
+    /// 宿主构建（未开 real-trap）下 DirectKernelCallTransport 诚实返回
+    /// -EIO：生产 transport 原样上浮，不吞错、不假装成功——调用方按
+    /// fail-closed 语义处理（minix-rt DirectTrapSource 同款门控形态）。
+    #[test]
+    fn test_kernel_kmess_transport_hosted_is_eio() {
+        let mut t = KernelKmessTransport;
+        let mut meta = KmessagesSnap { km_next: 0, km_size: 0 };
+        let mut ring = [0u8; 64];
+        let code = t.kmessages(&mut meta, &mut ring);
+        assert_eq!(code, -minix_types::EIO);
+    }
+
+    /// 快照尺寸契约：wire 头 8 字节 + 10000 环体（sys_config.h:22）。
+    #[test]
+    fn test_kmess_snapshot_size_matches_kernel() {
+        assert_eq!(KMESS_SNAPSHOT_SIZE, 10008);
     }
 }
