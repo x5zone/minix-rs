@@ -344,13 +344,37 @@ pub enum CopyError {
 pub struct KernelUserCopy;
 
 impl UserCopy for KernelUserCopy {
+    #[cfg(not(test))]
+    fn copy_msg_from_user(&self, src: VirBytes) -> Result<Message, CopyError> {
+        // E1/E8: CPL0 reads user VAs through the shared page tables
+        // (higher-half layout — kernel and user share the same CR3).
+        // The volatile read prevents the compiler from optimizing away
+        // the access; an unmapped VA would trigger a page fault caught
+        // by the kernel's page-fault handler (standard user-VA access
+        // from kernel mode).
+        //
+        // SAFETY: `src` is a user VA from the trap-frame contract (the
+        // caller's RDI/m_user). The kernel's page-fault handler handles
+        // the case where the VA is not mapped (C: user acc check).
+        let msg = unsafe { core::ptr::read_volatile(src.0 as *const Message) };
+        Ok(msg)
+    }
+    #[cfg(test)]
     fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> {
-        // Stub: real implementation reads from the user address space.
-        // Boot-time callers always pass `FROM_KERNEL`, bypassing this path.
+        // Hosted test build: no real user address space. Return a zeroed
+        // message — tests that need specific content use mock UserCopy.
         Ok(Message::default())
     }
+    #[cfg(not(test))]
+    fn copy_msg_to_user(&self, dst: VirBytes, msg: &Message) -> Result<(), CopyError> {
+        // SAFETY: symmetric with copy_msg_from_user — CPL0 write to the
+        // caller's user VA through the shared page tables.
+        unsafe { core::ptr::write_volatile(dst.0 as *mut Message, *msg) };
+        Ok(())
+    }
+    #[cfg(test)]
     fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> {
-        // Stub: symmetric with `copy_msg_from_user`.
+        // Hosted test: no-op stub.
         Ok(())
     }
     fn read_senda_entry(
