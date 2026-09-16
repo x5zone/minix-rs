@@ -28,8 +28,12 @@ pub enum CardCommand {
     Switch = 6,
     /// Select the card (`SELECT_DESELECT_CARD`, 7).
     Select = 7,
+    /// Fetch the extended card-specific data (`SEND_EXT_CSD`, 8).
+    SendExtCsd = 8,
     /// Fetch card-specific data (`SEND_CSD`, 9).
     SendCsd = 9,
+    /// Poll the card state (`SEND_STATUS`, 13).
+    SendStatus = 13,
     /// Fix the block length (`SET_BLOCKLEN`, 16).
     SetBlockLength = 16,
     /// Read one block (`READ_SINGLE_BLOCK`, 17).
@@ -41,66 +45,74 @@ pub enum CardCommand {
 /// Block size the driver negotiates with CMD16 (`emmc.c`, 512 bytes).
 pub const NEGOTIATED_BLOCK_SIZE: u32 = 512;
 
-/// Power-up stage: where the card is in its initialization sequence
-/// (`emmc.c:790-890`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitStage {
-    /// Nothing sent yet; CMD0 comes first.
-    Fresh,
-    /// CMD0 sent; polling the card with CMD1.
-    PollingOpCond,
-    /// Card ready; fetching identity (CMD2, CMD3, CMD9).
-    Identifying,
-    /// Card selected (CMD7); switching speed and block size.
-    Configuring,
-    /// CMD6 and CMD16 accepted; reads and writes may flow.
-    Ready,
-}
+/// The card bring-up order, straight down the C path.
+///
+/// C: `emmc_card_initialize` (`emmc.c:790-890`): reset, voltage/polling,
+/// identity, addressing, CSD, selection, EXT_CSD fetch, then the two
+/// CMD6 switches (high-speed timing, bus width) each confirmed by a
+/// CMD13 status check, and finally CMD16 fixing the block length at 512.
+/// Arguments (switch targets, address value) are service data; the order
+/// is the protocol.
+pub const CARD_SEQUENCE: [CardCommand; 12] = [
+    CardCommand::GoIdle,
+    CardCommand::SendOpCond,
+    CardCommand::AllSendCid,
+    CardCommand::SetRelativeAddr,
+    CardCommand::SendCsd,
+    CardCommand::Select,
+    CardCommand::SendExtCsd,
+    CardCommand::Switch,
+    CardCommand::SendStatus,
+    CardCommand::Switch,
+    CardCommand::SendStatus,
+    CardCommand::SetBlockLength,
+];
 
-/// Power-up sequence driver: one command at a time, in fixed order.
+/// Power-up sequence driver: walks [`CARD_SEQUENCE`] one success at a time.
+///
+/// A step advances only on `note_success`; a polling command (CMD1) is
+/// simply re-fed until the service sees it accepted, and a failed switch
+/// (CMD6) stops the walk where it stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InitSequence {
-    stage: InitStage,
+    step: usize,
 }
 
 impl InitSequence {
     /// A card that has just been powered on.
-    pub fn new() -> Self {
-        InitSequence { stage: InitStage::Fresh }
+    pub const fn new() -> Self {
+        InitSequence { step: 0 }
     }
 
-    /// Current stage of the sequence.
-    pub fn stage(&self) -> InitStage {
-        self.stage
+    /// Position in the bring-up order (zero-based).
+    pub const fn step(&self) -> usize {
+        self.step
     }
 
-    /// The command to send next for the current stage.
-    pub fn next_command(&self) -> CardCommand {
-        match self.stage {
-            InitStage::Fresh => CardCommand::GoIdle,
-            InitStage::PollingOpCond => CardCommand::SendOpCond,
-            InitStage::Identifying => CardCommand::AllSendCid,
-            InitStage::Configuring => CardCommand::Switch,
-            InitStage::Ready => CardCommand::ReadSingle,
+    /// The command to send next, or None once the card is ready.
+    pub const fn next_command(&self) -> Option<CardCommand> {
+        if self.step < CARD_SEQUENCE.len() {
+            Some(CARD_SEQUENCE[self.step])
+        } else {
+            None
         }
     }
 
-    /// Advance after a successful reply; out-of-order success is refused.
+    /// Advance one command after a successful reply.
+    ///
+    /// False once the sequence is exhausted — every card command in
+    /// [`CARD_SEQUENCE`] has been accepted and transfers may flow.
     pub fn note_success(&mut self) -> bool {
-        let next = match self.stage {
-            InitStage::Fresh => InitStage::PollingOpCond,
-            InitStage::PollingOpCond => InitStage::Identifying,
-            InitStage::Identifying => InitStage::Configuring,
-            InitStage::Configuring => InitStage::Ready,
-            InitStage::Ready => return false,
-        };
-        self.stage = next;
+        if self.step >= CARD_SEQUENCE.len() {
+            return false;
+        }
+        self.step += 1;
         true
     }
 
     /// Whether transfers may flow (CMD17/CMD24 allowed).
     pub fn is_ready(&self) -> bool {
-        self.stage == InitStage::Ready
+        self.step >= CARD_SEQUENCE.len()
     }
 }
 
@@ -117,19 +129,45 @@ mod tests {
     #[test]
     fn test_sequence_starts_with_reset_command() {
         let seq = InitSequence::new();
-        assert_eq!(seq.stage(), InitStage::Fresh);
-        assert_eq!(seq.next_command(), CardCommand::GoIdle);
+        assert_eq!(seq.step(), 0);
+        assert_eq!(seq.next_command(), Some(CardCommand::GoIdle));
         assert!(!seq.is_ready());
     }
 
     #[test]
-    fn test_sequence_reaches_ready_in_four_steps() {
+    fn test_sequence_walks_the_full_c_order() {
+        // emmc.c:790-890, verbatim: reset, poll, identity, address, CSD,
+        // select, EXT_CSD, switch+status twice, block length. Every step
+        // advances only on success; the walk ends ready with no command.
         let mut seq = InitSequence::new();
-        for _ in 0..4 {
+        for expected in CARD_SEQUENCE {
+            assert_eq!(seq.next_command(), Some(expected));
             assert!(seq.note_success());
         }
         assert!(seq.is_ready());
+        assert_eq!(seq.next_command(), None);
         assert!(!seq.note_success());
+    }
+
+    #[test]
+    fn test_every_opcode_is_reachable_in_the_walk() {
+        // The old model defined commands its sequence never returned; this
+        // pins the fix: each enum value appears in the bring-up order (the
+        // transfer pair CMD17/24 runs after ready, outside the walk).
+        for opcode in [
+            CardCommand::GoIdle,
+            CardCommand::SendOpCond,
+            CardCommand::AllSendCid,
+            CardCommand::SetRelativeAddr,
+            CardCommand::Switch,
+            CardCommand::Select,
+            CardCommand::SendExtCsd,
+            CardCommand::SendCsd,
+            CardCommand::SendStatus,
+            CardCommand::SetBlockLength,
+        ] {
+            assert!(CARD_SEQUENCE.contains(&opcode), "{opcode:?} unreachable");
+        }
     }
 
     #[test]

@@ -111,7 +111,7 @@
 
 ### 2.7 闪存卡：命令集与上电顺序（`sdmmcreg.h` 第二十四行到第六十五 行，`emmc.c` 第七百九十行到第八百九十行）
 
-命令集 `sdmmcreg.h` 含复位 `MMC_GO_IDLE_STATE` 零、查条件 `MMC_SEND_OP_COND` 一、取标识 `MMC_ALL_SEND_CID` 二、定地址 `MMC_SET_RELATIVE_ADDR` 三、切换 `MMC_SWITCH` 六、选中 `MMC_SELECT_CARD` 七、取扩展参数 `MMC_SEND_EXT_CSD` 八、取参数 `MMC_SEND_CSD` 九、停止 `MMC_STOP_TRANSMISSION` 十二、查状态 `MMC_SEND_STATUS` 十三、定块长 `MMC_SET_BLOCKLEN` 十六、单块读 `MMC_READ_BLOCK_SINGLE` 十七、单块写 `MMC_WRITE_BLOCK_SINGLE` 二十四、擦除 `MMC_ERASE` 三十八（第二十四行到第五十二行），安全数字卡特有 `SD_SEND_IF_COND` 八与 `SD_APP_OP_COND` 四十一两条。上电顺序在第七百九十行到第八百九十行（复位、轮询、取标识、选中、切高速、定块长五百一十二字节），单块读写在第五百四十四行与第五百五十八行。主机抽象在 `mmchost.h`（一百五十六行），具体实现与空实现各一版。回调表 `mmc_driver` 在第七十四行到第八十三行（含中断回调 `hw_intr` 与闹钟占位，其余见第 2.2 节对照表），传输入口 `block_transfer` 定义在第二百八十行（声明在第四十七行）。
+命令集 `sdmmcreg.h` 含复位 `MMC_GO_IDLE_STATE` 零、查条件 `MMC_SEND_OP_COND` 一、取标识 `MMC_ALL_SEND_CID` 二、定地址 `MMC_SET_RELATIVE_ADDR` 三、切换 `MMC_SWITCH` 六、选中 `MMC_SELECT_CARD` 七、取扩展参数 `MMC_SEND_EXT_CSD` 八、取参数 `MMC_SEND_CSD` 九、停止 `MMC_STOP_TRANSMISSION` 十二、查状态 `MMC_SEND_STATUS` 十三、定块长 `MMC_SET_BLOCKLEN` 十六、单块读 `MMC_READ_BLOCK_SINGLE` 十七、单块写 `MMC_WRITE_BLOCK_SINGLE` 二十四、擦除 `MMC_ERASE` 三十八（第二十四行到第五十二行），另有安全数字卡特有 `SD_SEND_IF_COND` 八与 `SD_APP_OP_COND` 四十一两条——注意这两条只存在于头文件，C 驱动是 eMMC 专用，`emmc.c` 从不发送，Rust 侧同此边界。上电顺序在第七百九十行到第八百九十行，十二步完整走过：复位、轮询、取标识、定地址、取参数、选中、取扩展参数、切高速加查状态、切位宽加查状态、定块长五百一十二字节，单块读写在第五百四十四行与第五百五十八行。主机抽象在 `mmchost.h`（一百五十六行），具体实现与空实现各一版。回调表 `mmc_driver` 在第七十四行到第八十三行（含中断回调 `hw_intr` 与闹钟占位，其余见第 2.2 节对照表），传输入口 `block_transfer` 定义在第二百八十行（声明在第四十七行）。
 
 ### 2.8 符号覆盖矩阵
 
