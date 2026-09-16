@@ -25,3 +25,10 @@ RUST_TEST_THREADS = "1"
 # Messages per frame and marginally exceeded the old limit. 8 MiB restores
 # headroom; override per-run with RUST_MIN_STACK=<n> if needed.
 RUST_MIN_STACK = "8388608"
+
+# Freestanding user images (x86_64-unknown-none) must be ET_EXEC, not
+# static-pie: the kernel's boot ELF loader (minix_elf::segment_iter, consumed
+# by load_vm_elf) requires e_type == ET_EXEC, and the birth chain has no
+# relocation processor. Target-scoped — no other build uses this target.
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static", "-C", "code-model=large"]

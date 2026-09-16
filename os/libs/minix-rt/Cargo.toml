@@ -24,3 +24,7 @@ std = []
 # boot-shim) must NOT enable this feature, or E0152 fires. Library
 # consumers (minix-kernel) depend on minix-rt without it.
 panic-handler = []
+# Opt-in `#[global_allocator]` binding of the runtime slab (see the
+# `global_alloc_binding` module in lib.rs): for freestanding binaries that
+# want `minix_rt::alloc` usable through the standard `alloc` paths.
+alloc-global = []

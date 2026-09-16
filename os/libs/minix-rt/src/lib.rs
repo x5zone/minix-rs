@@ -6,9 +6,9 @@
 //!
 //! - `01-kernel-handoff`: the kernel information page and the initial stack
 //!   ([`handoff`]).
-//! - `02-crt0-start`: the program entry sequence — currently the minimal
-//!   `_start` below; the full crt0 chain lands with the real-machine boot
-//!   wiring (edge E1 slice 5).
+//! - `02-crt0-start`: the program entry sequence — the real birth chain
+//!   (entry stub, descriptor check, runtime init, publish, main, exit)
+//!   lives in [`crt0`].
 //! - `03-runtime-init`: publishing the kernel information page and the
 //!   communication vector table ([`init`]).
 //! - `06-allocator`: break management and slab allocation ([`alloc`]).
@@ -19,19 +19,10 @@
 //!
 //! # Crate status
 //!
-//! The four modules have complete logic with unit tests. The function below
-//! remains a placeholder with well-defined behavior (no silent failures):
-//!
-//! - `_start()` — calls `init`, then `main`, then `minix_sys::exit`.
-//!
-//! The `panic` handler formats the location and message through the shared
-//! formatter in [`diag`], then emits through the diagnostic hook or the
-//! default sink; the default sink spins, preserving the previous observable
-//! behavior.
-//!
-//! `init()` now initializes the global allocator (idempotent). It will
-//! delegate to [`init::initialize_runtime`] once the communication trap is
-//! wired.
+//! The five modules have complete logic with unit tests. The birth chain
+//! (`crt0::_start` → named stages → main → exit) is the no_std entry; the
+//! first real-machine verification is the `test-rt-birth` QEMU run (edge
+//! E1 slice 5 acceptance).
 //!
 //! # Standard library versus freestanding builds
 //!
@@ -58,6 +49,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+/// Program birth chain: entry stub, named birth stages, and the published
+/// process vectors ([`crt0`]; documents 02 + 03 wiring).
+pub mod crt0;
 /// Kernel handoff: kernel information page and initial stack (document 01).
 pub mod handoff;
 /// Runtime initialization: kernel page query and vector install (document 03).
@@ -88,45 +82,6 @@ use core::panic::PanicInfo;
 ///   line of `main`).
 pub fn init() {
     ensure_global_allocator();
-}
-
-/// Program entry point (`no_std` mode only).
-///
-/// In `no_std` mode, this is the actual entry point the linker emits.
-/// Calls `minix_rt::init()`, then the user-provided `main` function,
-/// then exits via `minix_sys::exit`.
-///
-/// In `std` mode, the std runtime provides its own `_start`; this
-/// function is not compiled.
-///
-/// # Safety
-///
-/// `main` is declared as an extern Rust symbol. The linker is expected
-/// to provide a `main` function in the final binary (typically from the
-/// `commands/` crate). If `main` is missing, linking fails — there is
-/// no runtime fallback.
-///
-/// C: counterpart of crt0's `_start` (`minix3/lib/csu/arch/x86_64/crt0.S`
-/// entry, `crt0-common.c` `___start` body). The Rust version is minimal
-/// today; the full birth chain lands with the boot wiring (edge E1 slice 5).
-#[cfg(all(not(test), not(feature = "std")))]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    init();
-
-    // The user's `main` function. Declared as extern because it lives
-    // in a different crate (the executable that links against minix-rt).
-    // Returning `i32` matches the C convention (exit code).
-    unsafe extern "Rust" {
-        fn main() -> i32;
-    }
-
-    let exit_code = unsafe { main() };
-
-    // Delegate to minix-sys: `exit` sends the PM_EXIT message and, if
-    // the process manager cannot be reached, spins — the C `_exit`-plus-
-    // abort ladder reduced to its last resort (see `minix_sys::pm`).
-    minix_sys::exit(exit_code);
 }
 
 /// Allocates `size` bytes of uninitialized memory.
@@ -237,6 +192,33 @@ fn with_global_allocator<R>(action: impl FnOnce(&mut alloc::SlabAllocator<alloc:
             .expect("global allocator is ready after ensure");
         action(allocator)
     }
+}
+
+/// Binding of the runtime slab allocator to the `#[global_allocator]` slot
+/// (opt-in: a binary providing its own global allocator must not enable
+/// this feature, exactly like the `panic-handler` feature).
+///
+/// Alignment contract: the slab serves 8-byte-aligned blocks, so requests
+/// with a stricter alignment fail honest (null) instead of misbehaving.
+#[cfg(all(not(feature = "std"), feature = "alloc-global"))]
+mod global_alloc_binding {
+    struct RtGlobalAlloc;
+
+    unsafe impl core::alloc::GlobalAlloc for RtGlobalAlloc {
+        unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+            if layout.align() > 8 {
+                return core::ptr::null_mut();
+            }
+            crate::alloc(layout.size())
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
+            crate::free(ptr);
+        }
+    }
+
+    #[global_allocator]
+    static RT_GLOBAL_ALLOCATOR: RtGlobalAlloc = RtGlobalAlloc;
 }
 
 #[cfg(test)]
