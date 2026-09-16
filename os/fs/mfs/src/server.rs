@@ -173,7 +173,7 @@ impl<S: BlockSource> MfsServer<S> {
     /// it from.
     fn sync_mounted(fs: &mut MountedFs<S>) -> Result<(), Errno> {
         {
-            let mut parts = fs.parts();
+            let parts = fs.parts();
             for slot in 0..TABLE_SLOTS {
                 if parts.inodes.slot(slot).dirty {
                     parts
@@ -197,7 +197,7 @@ impl<S: BlockSource> MfsServer<S> {
         fs: &mut MountedFs<S>,
         directory: u64,
     ) -> Result<(Vec<Vec<u8>>, u64), Errno> {
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let dir_slot = parts
             .inodes
             .get(parts.cache, parts.device, directory, &parts.io)
@@ -227,7 +227,7 @@ impl<S: BlockSource> MfsServer<S> {
         old_size: u64,
         blocks: &mut Vec<Vec<u8>>,
     ) -> Result<(), Errno> {
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let dir_slot = parts
             .inodes
             .get(parts.cache, parts.device, directory, &parts.io)
@@ -288,7 +288,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 
     fn is_mount_point(&mut self, inode: u64) -> Result<(), Errno> {
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         check_mountpoint(
             parts.inodes,
             parts.cache,
@@ -307,7 +307,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let params = FileParams {
             map: parts.map,
             range: parts.range,
@@ -329,7 +329,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 
     fn write(&mut self, inode: u64, position: i64, data: &[u8]) -> Result<usize, Errno> {
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let slot = parts
             .inodes
             .find(parts.device, inode)
@@ -367,7 +367,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             return Err(Errno::from_i32(EINVAL));
         }
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let params = FileParams {
             map: parts.map,
             range: parts.range,
@@ -395,7 +395,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             return Err(Errno::from_i32(EINVAL));
         }
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let slot = parts
             .inodes
             .find(parts.device, inode)
@@ -512,14 +512,14 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 
     fn sought(&mut self, inode: u64) {
         if let Some(fs) = self.fs.as_mut() {
-            let mut parts = fs.parts();
+            let parts = fs.parts();
             crate::open::mark_seek(parts.inodes, parts.device, inode);
         }
     }
 
     fn lookup_child(&mut self, directory: u64, name: &str) -> Result<(FileNode, bool), Errno> {
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let dir_slot = parts
             .inodes
             .get(parts.cache, parts.device, directory, &parts.io)
@@ -577,7 +577,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         let fs = self.mounted()?;
         let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
         let (file, _) = {
-            let mut parts = fs.parts();
+            let parts = fs.parts();
             let mut ctx = CreateCtx {
                 table: parts.inodes,
                 cache: parts.cache,
@@ -615,7 +615,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         }
         let now = (self.clock)();
         let fs = self.mounted()?;
-        let mut parts = fs.parts();
+        let parts = fs.parts();
         let stat = crate::meta::read_stat(
             parts.inodes,
             parts.cache,
