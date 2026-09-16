@@ -38,6 +38,14 @@ pub struct Reply {
     pub status: i32,
 }
 
+/// The only reply type a block driver sends (`BDEV_REPLY`).
+///
+/// C: `BDEV_REPLY (BDEV_RS_BASE + 0)` with `BDEV_RS_BASE 0x580`
+/// (`com.h:964,979`). Every reply entering the client passes through
+/// [`check_reply`]-style validation, which rejects anything else before the
+/// identifier is even looked at.
+pub const BDEV_REPLY: i32 = 0x580;
+
 /// Transport error: the message never reached the driver or no usable reply
 /// came back. Distinct from a reply that arrived carrying an error status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,13 +98,13 @@ impl Transport for LoopbackTransport {
         if self.mismatch_once {
             self.mismatch_once = false;
             return Ok(Reply {
-                message_type: 0x580,
+                message_type: BDEV_REPLY,
                 id: destination.id.wrapping_add(1),
                 status: self.status,
             });
         }
         Ok(Reply {
-            message_type: 0x580,
+            message_type: BDEV_REPLY,
             id: destination.id,
             status: self.status,
         })
@@ -135,7 +143,7 @@ impl Transport for RecordingTransport {
         self.sent.push(destination);
         if self.replies.is_empty() {
             return Ok(Reply {
-                message_type: 0x580,
+                message_type: BDEV_REPLY,
                 id: destination.id,
                 status: self.fallback,
             });
@@ -194,7 +202,7 @@ mod tests {
         let mut transport = RecordingTransport::new(-5);
         transport.push(Err(TransportError::SendFailed));
         transport.push(Ok(Reply {
-            message_type: 0x580,
+            message_type: BDEV_REPLY,
             id: 3,
             status: 0,
         }));

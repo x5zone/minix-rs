@@ -1,0 +1,118 @@
+# 16-stage-drivers TODO
+
+> **来源**：2026-09-17 全量代码扫描（code-excellence + 查漏补缺双目标）。范围：`os/drivers/*` 57 个 crate、`os/libs/minix-{chardriver,blockdriver,netdriver,bdev,virtio,usb}` 六个框架库、`os/libs/minix-sys` 中归属本 stage 的 `devman_client.rs`/`usb_model.rs`（`inputdriver.rs` 归属已在 edge E-PCKBDREG 议定）。方法：四批次并行深审（框架+boot 关键 / 系统服务+输入 / 存储+USB / 显示音频网络杂项），逐条对照 Minix3 C 源，另对照 Redox drivers 现状与 Rust 社区实践。
+> **门证据**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 16-stage-drivers` 报告 00/99 两篇缺 `.design` 快照（见 G5）；`cargo test` 框架库 94 测试 + 驱动 crate 242 测试全绿；`tools/check-rs-unwired.sh` PASS。
+> **执行约定**：每条走 todo-fix 单线程（讲明白 → 多方案对比 → 实施），修前按 fix-guard 重读目标行，修后 `cargo test -p {crate}` + 文档同步。标 ✅ 的条目已完成；正确性修复只在本文件登记，执行时若发现新跨 stage 问题按约定追加进 `../../edge_todo.md`。
+
+## 0. 现状总览
+
+- 57 个驱动 crate 中 31 个有实质策略逻辑（约 8300 行、242 个测试），26 个为纯占位（15 行 stub）。六个框架库共 5214 行、94 个测试。全部 `main.rs` 仍是同一个七行占位骨架（`fn main() { init(); loop {} }`，仅 crate 名不同）——没有任何驱动进程真的在跑。
+- 26 篇文档 §5 声称的测试逐名 grep 对账全部命中，无一虚构；但 netdriver 有 9 个未记载的测试（`sdev.rs` 5 + `sockevent.rs` 4，属 17-stage-net 语义，见 edge E-SDEVOWN）。
+- `plan.md` §3.4 的基线（"57 crate 全 stub、框架库为空"）已过时：那是 2026-08-16 的快照，此后 31 个 crate 已落地策略层。本文件以当前状态为准。
+- **总体判断**：文档锚点纪律与测试对账质量很高，策略层的 Rewrite 质量普遍好于 translate（枚举+trait+纯函数替代 C 全局数组与函数指针表）。系统性风险有三：①**框架库与驱动 crate 零接线**——六个框架库没有任何下游消费者，tty/pty/log 各自手抄 `CDEV_OP_*` 常量，集成期才会暴露的断裂今天都还隐形（含一个已登记的 wire 错值，见 F1）；②**policy/transport 边界划得过窄**——最容易出错的字节级契约（virtio 环布局、CBW/CSC、USB 消息字段映射）和 DMA 缓冲管理被推给尚不存在的服务层，库内只剩"常量+状态机"（见 A5）；③**4 处"改写了 C 语义但文档仍按 C 表述"**的叙事失真（V2/V3/N3 与 doc 11 §1.4）。
+
+## 1. 正确性修复（先于一切改进；每条修后同步文档并补测试）
+
+### 1.1 框架库（docs 01–04）
+
+- **F1 [P0] `CDEV_REPLY_BASE` 错值**：`os/libs/minix-chardriver/src/protocol.rs:22` 定义 `CDEV_REPLY_BASE: i32 = 0x500`，注释自引 `com.h:934`；C 真值是 `CDEV_RS_BASE 0x480`（`minix3/minix/include/minix/com.h:920`），0x500 是 `BDEV_RQ_BASE`（com.h:963）。该常量当前零消费者，属潜伏错误；input 侧 `CHARACTER_RESPONSE_BASE = 0x480` 是对的。已登记为 edge E-CDRCONV 问题二，随框架收敛一并修；若本 stage 先修：改值同时改注释行号，并补一条对 com.h 的钉值测试。
+- **F2 ✅（2026-09-17）[P0] bdev 回复不验类型**：`os/libs/minix-bdev/src/client.rs:557-565` `check_reply` 只对 `id` 匹配，`Reply { id, status, .. }` 丢弃了 `message_type`——函数自己的文档注释写着"type must be the block general reply"，代码没做；C `bdev_sendrec/sendrec` 首查 `m_type == BDEV_REPLY`（`libbdev/ipc.c:144-268`）。`open/close` 内联路径（client.rs:497-507,529-537）同样不验且与 `check_reply` 重复。`TransportError::BadReply` 变体存在但无人产生。既有测试只测 id 错配、未测类型错配（盲区与缺口同源）。修法：三验收敛进 `check_reply`（类型→标识→状态），open/close 复用，补类型错配负例。
+- **F3 [P1] blockdriver 自造 errno**：`os/libs/minix-blockdriver/src/protocol.rs:388` `NOT_DISK: i32 = EBADF` 在 libblockdriver 全目录 grep 无出处；C 对非磁盘是跳过分区（`drvlib.c` 分区入口）、DIOCGETP 缺分区答 ENXIO（`driver.c:286-292`）、未知 ioctl 答 ENOTTY（`driver.c:355`）。违反"错误必须映射 Minix3 errno"约束。
+- **F4 [P0] 链路三态缺一**：C 有 `NDEV_LINK_DOWN 2`（com.h:1145），Rust 无此常量、`LinkReport` 注释自述"link: One of UNKNOWN and UP"（`os/libs/minix-netdriver/src/driver.rs:59-60`），链路断开不可表达；doc 03 §2.2 还断言"链路状态两个（1143-1144 行）"——C 实有三个。代码补枚举、文档改叙述，一并落。
+
+### 1.2 boot 关键（docs 05–08）
+
+- **B1 [P1] tty 的 log 别名写打开污染会话**：C `do_open` 对 LOG_MINOR（控制台别名）既不收编 ctty 也不计数（`drivers/tty/tty/tty.c:733-743`，else 分支之外）；Rust `TtySession::open` 只拦"log+读"组合（`os/drivers/tty/tty/src/session.rs:138-140`），log+写会走收编 ctty 且 `opens+=1`，末次关闭的复位语义被污染。补"log+写跳过收编与计数"分支 + 对应测试。
+- **B2 [P1] pty 主端关闭缺挂断效应**：C `pty_master_close` 置 `c_ospeed=B0`（从端读到 EOF）并 `sigchar(SIGHUP)`（`drivers/tty/pty/pty.c:241-250`）；Rust `PairState::close` 只动标志位（`os/drivers/tty/pty/src/pair.rs:132-146`），且两个 crate 都没有 hangup 概念与接缝（tty 的 `LineBackend` 也没有 hangup 方法）。行为补齐与接缝设计见 A8。
+- **B3 [P2] log 唤醒顺序无类型保证**：`take_waiter`/`clear_watched` 是两个独立调用（`os/drivers/system/log/src/device.rs:135-139,194-196`），"先唤醒挂起读再通知选择者"只是文档主张，服务层写反了没有测试能红。
+- **B4 [P2] memory 误用与资源不足混码**：`MemMapper::map` 把非页对齐也报 `NoMemory`（`os/drivers/storage/memory/src/transfer.rs:238-240`）。加内部 `Misaligned` 变体（内部类型，不违 errno 纪律）。
+
+### 1.3 系统服务与输入（docs 09–13）
+
+- **S1 [P0] random 重播种终结偏离 C**：C 新 key = 对（旧 key + 各池摘要）做 `SHA256_Final`（`drivers/system/random/random.c:216-232`）；Rust `GeneratorCore::reseed` 用 `fold_in`（逐字节 XOR + rotate_left(1)）线性混合（`os/drivers/system/random/src/core.rs:162-192`）——不在任何杂凑 trait 之后，与 C、与 doc 09 §1.5/§2.5"杂凑终结"均不等，安全相关。修法：终结半改走 `PoolHash` trait（C 字节级可达、可测），补 C 测试向量钉住混合次序。
+- **S2 [P0] pci 可见性模型不是 C 的**：C `visible()` 对无 ACL 调用者放行全部设备（`drivers/bus/pci/pci.c:2039-2044`），对有 ACL 者按其 vid/did/sub_vid/sub_did + class 掩码逐条匹配；Rust `DeviceDb::is_visible` 用 (caller, index) 对，任何人登记一次就把该设备对所有人藏起来（`os/drivers/bus/pci/src/database.rs:130-141`）。doc 11 §1.4 把 Rust 规则当 C 规则陈述——代码文档都要改。修法：按 C 建 `AclEntry{vid,did,sub_vid,sub_did}` + class 掩码 + `InUse` 位的逐 caller 模型（方案 B"Redox pcid 静态匹配制"会丢 RS 动态授权，不取）。
+- **S3 [P0] pci 预留独占缺失**：C `_pci_reserve` 有 `pd_inuse && pd_proc != proc → EBUSY` 与 `!visible → EPERM`（pci.c:2320-2344）；Rust `grant()` 允许多 caller 预留同一设备、无可见性检查、无 errno（database.rs:146-159）。C 的 ACL 管理限 RS 进程（`main.c:233-238,275-281`）也未建模。virtio/ahci/net 各 stage 都会消费这个契约，宜先修。
+- **S4 [P1] pci 测试替身 16 位写错**：`MemConfigSpace` 的 16 位写忽略偏移移位、恒写低半（`os/drivers/bus/pci/src/config.rs:159-161`），而读的方向是对的（:140-143）；无 offset%4==2 的测试。修 double + 补奇对齐测试。
+- **S5 [P0] pckbd 状态 3 穿透被吞**：C 状态 3 遇非 NumLock 索引 FALLTHROUGH 到 default，仍按普通键处理（`drivers/hid/pckbd/pckbd.c:353-358`）；Rust 一律吞掉并复位（`os/drivers/hid/pckbd/src/scancode.rs:119-131`）。序列 `E1 1D 1C` C 发 ENTER、Rust 丢。已在 edge E-PCKBDREG 第 1 项登记，修复时同步补状态 3 断裂测试。
+- **S6 [P1] pckbd LED 位序整体错一位（本轮新发现）**：input 服务器产出的 `INPUT_SETLEDS` 掩码按 C 约定是 `1 << INPUT_LED_*`，Num/Caps/Scroll 落在位 1/2/3（`os/servers/input/src/handlers.rs:213-227`，对照 `minix3/minix/include/minix/input.h:292-296` 与 `servers/input/input.c:262-268`）；pckbd 的 `translate_leds` 却按位 0/1/2 测试（`os/drivers/hid/pckbd/src/led.rs:23-27,39-51` 的 `LOCK_NUM/CAPS/SCROLL = 0/1/2`）。后果：服务器点亮 NumLock（掩码 0x2）时驱动点亮的是 CAPS 硬件位；ScrollLock（位 3，0x8）永远不可达。修法：`LOCK_*` 改 1/2/3（与 `MASK_*` 键盘侧输出位 0x2/0x4/0x1 保持分工清晰）+ 端到端掩码测试。
+- **S7 [P2] pckbd 事件标志与 ACK 条件**：`FLAG_RELATIVE` 零引用、`MouseEvent::Motion` 无 flags 字段（`os/drivers/hid/pckbd/src/mouse.rs:40,48`）；`LedOutbox::note_ack` 缺状态口超时位条件（led.rs:123-130，C `pckbd.c:129` 需 `!(sb & 0x40)`）。均已在 edge E-PCKBDREG 第 2/4 项登记，随硬件半落地执行。
+
+### 1.4 存储与 USB（docs 14–19）
+
+- **V1 [P0] virtio `wants_kick` 添加了 C 没有的条件**：C 只在 host 请求通知时踢门（`lib/libvirtio/virtio.c:766-783`）；Rust 多了 `|| queue_full` 分支（`os/libs/minix-virtio/src/device.rs:119-126`）且 doc+注释把它当 C 行为。要么删掉回到 C 单条件，要么明标 `[ARCH: 扩展]` 三处一致——现在两头都不占。OQ：`queue_full` 分支是否有真实动机，执行时先查 git 历史与 doc 14。
+- **V2 [P0] virtio_blk 未知状态语义反述**：C `virtio_blk_status2error` 对未知状态是 panic（`drivers/storage/virtio_blk/virtio_blk.c:549-563`）；doc 15 §1.1/§2.3/§4 均称"其余全按输入输出错"——与源码相反。Rust `_ => -EIO`（`os/drivers/storage/virtio_blk/src/request.rs:151`）是无 panic 环境的合理改写，但文档必须改为"C panic，Rust 改判 EIO"的差异表述；既有测试（request.rs:194-199）固化了失真，随文档一并翻新。
+- **V3 [P0] filter 镜像摘除语义张冠李戴**：C 是驱动死亡→RS 重启，重启次数达 `NR_RESTARTS=3` 后全局关闭 USE_MIRROR（`drivers/storage/filter/driver.c:387-392`、`main.c:28`）；Rust `MirrorHealth` 按校验失败计数、按成员摘除（`os/drivers/storage/filter/src/checksum.rs:76-99`），doc 17 §1.4/§2.5 把它当 C 行为描述。裁决建议：Rust 的 per-member 模型其实比 C 的全局关更精细，值得作为 `[ARCH: per-member health]` 演进项正名，而不是冒充 C；若要贴 C 则改 `DriverRestartBudget`（kills 计数 + 全局开关）。
+- **V4 [P0] mmc 初始化序列自相矛盾**：`next_command` 五阶段只会返回 GoIdle/SendOpCond/AllSendCid/Switch/ReadSingle（`os/drivers/storage/mmc/src/commands.rs:78-99`）；枚举里定义的 SetRelativeAddr/Select/SendCsd/SetBlockLength 永远不可达，C 序列的 CMD3/CMD9/CMD7/CMD8(EXT_CSD)/CMD13/CMD16 全部缺失，SD 两条路径（doc 17 §2.7 明文列入）完全缺席，doc §2.8 却标"已覆盖"。修法：序列改逐命令推进（阶段内多条），或删不可达枚举值 + doc 明标 MMC-only。
+- **V5 [P1] ahci 识别容量截断且无支持门禁**：C 拼装 4 个 word 得 48+ 位容量并先验 GCAP/LBA/DMA/FLUSH/LBA48 支持位，不满足即拒（`drivers/storage/ahci/ahci.c:537-560`、`ahci.h:103-106`）；Rust `parse` 只取 word 100/101 拼 32 位（`os/drivers/storage/ahci/src/identify.rs:31-45`）——大于 2TiB 的盘容量错，ATAPI/可移盘/无 LBA48 盘照单全收。doc 15 §2.4"识别缓存→parse 已覆盖"高估。
+- **V6 [P1] fbd 故障注入两处失真**：规则匹配缺区间重叠/读写标志/skip 递减/count 生命周期，且只取第一条命中而非聚合全部（`os/drivers/storage/fbd/src/rules.rs:63-82` 对照 `fbd/rule.c:88-140`）；四个 `FaultAction` 动作本体（corrupt/torn-write 等纯数据变换，`action.c:105-216`）一个未实现——不能捣乱的 fbd 库没有验收价值。修法：`apply(action, buf, block) -> buf'` 纯函数 + property 测试。
+- **V7 [P1] usb_hub 两处语义反向**：C 通信错是整个任务挂起（`usb_hub.c:466-470` goto HUB_ERROR），Rust 却按端口拉黑；C 的 Left 洗白条件是"集线器拔出才复位"（usb_hub.c:489-491），Rust 是该端口设备搬走即洗白（`os/drivers/usb/usb_hub/src/ports.rs:82-93`），测试固化了失真。doc 19 §2.5 自己写了"通信错挂起"——代码反着写了。
+- **V8 [P1] urb 花名册只进不出**：`find_pending` 只查不删（`os/libs/minix-usb/src/urb.rs:62-67`），完成路径没有出册操作，C `usb.c:65-68` 入册 + `_usb_urb_complete` 出册不对称。补 `complete(id) -> Option<PendingUrb>`（swap_remove 语义）+ `cancel`，十行内可测。
+
+### 1.5 网络与杂项（docs 20–24）
+
+- **N1 [P0] virtio_net 缓冲常量放大 4 倍**：Rust `BUFFER_COUNT=256`、`REFILL_THRESHOLD=128`（`os/drivers/net/virtio_net/src/queues.rs:29-33`）；C `BUF_PACKETS 64`（`virtio_net.c:38`）、阈值 32（virtio_net.c:218 的 `BUF_PACKETS / 2`）。doc 22 §2.6 的语义（"在飞不足一半就补"）没错，是常量错；既有测试把 128 固化成"正确"。
+- **N2 [P1] lance 认卡算法简化错**：C 是双字段——32 位 `chip_version` 先过 `(v & 0xfff) == 0x3` 门卫，再取 `(v >> 12) & 0xffff` 查全表（`drivers/net/lance/lance.c:707-722`，表 9 项含 unknown 终结）；Rust 对 `u16 & 0x0FFF` 直接匹配截断 id（`os/drivers/net/lance/src/ring.rs:39-51`），输入 0x0000 时误判 Lance7990、0x2260 时误判 79C961（C 均判 unknown）。doc 23 §2.5/§3.4 同犯此简化。修法：照 C 双字段重写 `identify_chip(version: u32)`。
+- **N3 [P0] printer 状态优先级反转（doc 同犯）**：C `output_done` 先查离线（`(done_status & ON_LINE) == 0 → EIO`）再查缺纸（`→ EAGAIN`）（`drivers/printer/printer/printer.c:216-224`）；Rust `read_status` 缺纸先判（`os/drivers/printer/printer/src/status.rs:49-58`），doc 24 §1.1/§3.1 还把反向顺序写成"优先级铁律"。离线压倒缺纸才是 C 的行为。既有测试固化了反转，随修复翻新；doc 24 §2.2 另有三处行号锚点错（值全对：NORMAL_STATUS 记 47 实 48、STATUS_MASK 记 52 实 50、ON_LINE 记 47 实 49）。
+- **N4 [P2] fb 首开判定偏离 C**：C 是独立一次性 `initialized` 静态（`fb.c:63-83`）；Rust `OpenCounter::needs_init()` 以 `count==1` 判首开（`os/drivers/video/fb/src/display.rs:78-80`），开→关→开误报需再初始化，doc 20 §3.3 还把偏离写成了设计。改独立 `initialized: bool`。
+
+## 2. 查漏补缺（缺失清单）
+
+- **G1 [P0] libaudiodriver 零归属**：C `lib/libaudiodriver/`（audio_fw.c 868 + liveupdate.c 109）有 14 个钩子（`audio_fw.h:9-22`）与主循环/分片状态机，`os/libs/` 无 `minix-audiodriver` crate，doc 21 也未声明 defer——既不建也不声明，是覆盖契约的真空。doc 21 §2.7 称 14 钩子"已覆盖（初始化入口注释）"，注释不等于覆盖。落点：新建 `minix-audiodriver`（14 钩子 trait + 分片状态机，与 chardriver/blockdriver/netdriver 同列）。
+- **G2 [P0] libi2cdriver 零覆盖**：C 366 行被 `plan.md:268` 映射到 doc 24 且标"已核对"，但 doc 24 全文零提及、`os/libs/` 亦无 `minix-i2cdriver`。cat24c256/bmp085/sht21/tsl2550 都是 i2c 底盘驱动，服务层落地时会爆发。落点同 G1：新建 crate 并补 doc 24 章节。
+- **G3 [P1] pckbd 扫描码全表不存在**：C 两张 0x80 项表（table.c:11-169），workspace 任何 crate 都没有全表（edge E-PCKBDREG 第 3 项在案）。落点：pckbd 内 `const` 全表（编译期可查），键码词汇消费 minix-types 权威。
+- **G4 [P1] random 生产密码学后端不存在**：C 用 AES-256 计数器流（random.c:90,198）+ SHA256 池摘要（random.c:26,51）；Rust 只有 `BlockCipher`/`PoolHash` trait 和测试替身，`os/` 全域无生产实现。这是 plan A-10 的落地决策：移植 `rijndael_alg.c`（1036 行，审计负担）对比 引入 no_std 密码学 crate（供应链风险），执行时两案对比后定。
+- **G5 [P1] 文档骨架 00/99 未展开 + 设计快照缺失**：`00-drivers-overview.md` 与 `99-global-concepts.md` 均为 13 行占位，`tools/design-coverage-check.sh fork-syscall-rewrite --stage 16-stage-drivers` 报 6 个 `.design/00-*`、`.design/99-*` 快照缺失。99 尤其重要：请求常量全集的单一叙事点（常量散布现状见 A4/E-DEVWIRE）。
+- **G6 [P1] 服务二进制层整体为零**：57 个 `main.rs` 同一占位骨架；唯一活着的事件循环壳是 input 服务器自写的 `serve.rs`（且因此与 minix-chardriver 形成双实现，见 edge E-CDRCONV）。统一方案见 A1。
+- **G7 [P1] 文档覆盖声明过宽修正清单**（均为 doc 编辑，与对应代码条目联动）：doc 04 §2.9 把 `bdev_minor_reopen` 标"已覆盖"但重开流程不存在（`minor.c:17-76` 无对应物）；doc 11 §1.4 把 Rust 可见性规则当 C 陈述（S2）；doc 12 §3.4/§5.3/§5.4 仍描述已删除的 `minix-devman-client` 设计 + §1.4"未绑定计数"在 C 与 Rust 都不存在；doc 13 缺键盘 watchdog（`pckbd.c:21-23,49-62`）；doc 15 §2.3（V2）；doc 17 §2.8（V4）与 §1.4/§2.5（V3）；doc 20 §3.3（N4）；doc 21 §2.7（G1 + 十一控制请求 `ioc_sound.h:12-22` 与 sb16 停/续字节 `sb16.h:107-110` 未建模）；doc 24 §1.1/§3.1/§2.2（N3）；`plan.md:123,238` 的 fb mmap 旧错未随 doc 20 勘误回改。
+- **G8 [P2] netdriver 能力面缺失**：九个 `NDEV_CAP_*`（com.h:1126-1134）、四个 `NDEV_FLAG_*`（com.h:1137-1140）、六个回复编号的枚举（现仅 `NDEV_REPLY_BASE`）在 protocol.rs 只有注释提及。
+- **G9 [P2] 零散语义缺口**：readclock 缺 `RTCDEV_Y2KBUG 0x01` 标志与 `tm_wday`/`tm_yday` 携带（`os/drivers/clock/readclock/src/protocol.rs:104-117`）；tty 缺 winsize 字段（C `tty.c:766` 关闭恢复窗口尺寸，TIOCSWINSZ 不可表达）；dp8390 游标缺 BNRY 特例 `next==startpage → stoppage-1` 且 `>=` 应为 `==`（`dp8390.c:610-611,668-671`）；virtio 环线格式（→A5）；usb_storage CBW/CSW/CDB 字节构造与 `usb_urb` 字段映射 com.h:829-840（→A5）。
+
+## 3. 架构改进（整体 → 框架层 → 家族层 → 横切）
+
+- **A1 [L0，ARCH] 驱动服务运行时统一**：现状是 57 个同构占位 `main.rs` + input 服务器一个手写事件循环壳（`os/servers/input/src/serve.rs`，E-INWIRE 已裁决其 minix-sef 切点）。若各 stage 的驱动 bin 逐个手写，会得到 57 份漂移的启动/announce/SEF 拷贝。方案一（推荐）：提取 `minix-driver-rt` 公共运行时——transport trait 注入（照 input `Transport` 五动词先例）+ DS announce + `minix_sef::sef_receive_status` 切点 + RS 启动握手，各 bin 只剩"构造 device + 跑 runtime"。方案二：每个框架库自带 server 壳（chardriver 有 `CharServer`、blockdriver/netdriver 同构），bin 直接调用——省一个 crate 但三份壳继续平行演化。对照 Redox：`redox-daemon`（fork+pipe 就绪握手、`ready()` 未调用即编译警告）+ 每类设备一个框架 crate + `common`（dma/sgl/timeout）的组合，正是方案一的形态（来源：gitlab.redox-os.org/redox-os/drivers）。执行时机：memory/tty 接线批（A2 第一波）之前，先定这一层。
+- **A2 [L0] 框架接线计划**：六个框架库当前零下游消费者（grep 全 workspace，仅 `os/Cargo.toml` 成员声明）。"策略在 lib、传输在 bin"的拆分本身是对的（可测性极佳），但接线次序要按 plan §6 波次显式排：memory/tty 先消费 chardriver/blockdriver（boot 关键批，最小可启动闭环），virtio_blk 随后消费 blockdriver+virtio，net 变体消费 netdriver。每接一个，其 §1/§2 的条目就地验证。
+- **A3 [L1] 三个框架库的服务器状态机收敛**：`OpenDeviceSet`/`Route`/`NotifyKind`/`LoopAction` 在 chardriver（protocol.rs:157-227）、blockdriver（protocol.rs:303-370）、netdriver 三处几乎逐字重复——rule of three 已到。方案一：提取 `minix-driver-core`（泛型 `Server<S: OpenSet>`）；方案二：宏生成；方案三：等真实驱动接线后再抽象（接线会暴露真实差异，避免为想象中的共性付费）。倾向：与 E-CDRCONV 方案 B（库改纯函数核）同轮裁决，避免两次重排同一批 API。
+- **A4 [L1] 协议常量单一来源（本 stage 配合项）**：C 的 com.h 是一份头文件；Rust 侧请求/回复/标志常量散布在 minix-chardriver（protocol.rs:16-48）、minix-blockdriver（protocol.rs:14-65）、minix-netdriver（protocol.rs:10-60）、readclock（protocol.rs:11-53）与消费者侧的重述（`os/servers/vfs/src/cdev.rs:21-34` 手抄 CDEV 六常量且类型漂移 i32/u8；`os/servers/vfs/src/bdev.rs:26-28` 的 `BDEV_R_BIT/W_BIT` 对应生产侧改名后的 `BDEV_READ_ACCESS/WRITE_ACCESS`——同一线上值、两个名字、两处定义）。plan.md §2 本就指派 99 的 Rust 模块为 minix-types。已登记 edge E-DEVWIRE（含与 E-REQWIRE/E-CDRCONV 的关系），本 stage 的配合动作：常量上收后删本地副本、补对 com.h 的钉值测试。
+- **A5 [L1，ARCH] policy/transport 边界重划：线格式与 DMA 缓冲归 policy 库**：现状 virtio 环的 `vring_avail/used` 线格式零建模（`lib/libvirtio/virtio_ring.h:61-86` 无 Rust 承载，`vring_size` 布局计算缺失）、`collect()` 返回序号而非 used elem 的 id（乱序完成不可建模，`os/libs/minix-virtio/src/ring.rs:169-176`）、usb_storage 的 CBW/CSW/CDB 字节构造缺席（纯字节填充却归服务层）、`usb_urb` 十余字段仅存 4 字段、DMA 缓冲管理两头无归属。方案一（推荐）：这些字节级契约下沉回库——`#[repr(C)]` 环结构 + 布局断言 + `Hal` 式 trait 只抽象 DMA 分配与地址翻译（先例：rcore-os `virtio-drivers` 的 `Hal` trait = dma_alloc/phys↔virt/share，docs.rs/virtio-drivers；Redox `common/src/dma.rs` 同位）；寄存器访问与中断留服务层。方案二：维持现状但在 doc 14/18 §2.8 明写"线格式无 Rust 承载，服务层自担"——不推荐，等于把最容易错的契约留在无人测试的地方。跨 stage 依赖（连续物理页的分配方）已登记 edge E-DMABUF。
+- **A6 [L1] bdev CallSlot 保存 Destination**：现槽位丢了 C `bdev_call_t` 的消息本体与向量，flush/重发无法在本库实现。方案：槽内存目的地（每组 4 个整数），换回完整 flush/重发能力；与 F2 同轮做（同一文件、同一组测试）。
+- **A7 [L2 net] 共享 NIC 环策略层**：dp8390/e1000/rtl8139 各写一份头尾取模环算术（`ring.rs`/`desc.rs`/`txrx.rs`），lance 第四份在路上。方案一（推荐）：新建 `minix-nic-policy` 放通用环游标/轮转/绕回 + 各卡常量表；方案二：并入 minix-netdriver（C 里 libnetdriver 管协议不管环几何，稍有错位但免新建）。对照 Redox：`driver-network` 一个 crate 定义 `NetworkAdapter` 五方法 trait，e1000d/rtl8169d/alxd 等 daemon 共享（来源同 A1）。每卡一 crate 的进程模型不动，动的只是策略共享。
+- **A8 [L2 tty/pty] 会话与队列组合 + 挂断接缝**：`TtySession` 与输入队列靠服务层手工同步（`note_input`/`note_output` 外注事实，session.rs:259-268），漏一次就绪判断就错；方案一（推荐）：`TtySession` 持有 `InputQueue` 库内组合；方案二：维持外注但提供 `SessionReady` 聚合函数。挂断：B2 补行为时定义 `MasterHooks`（主端七挂钩 trait，照 LineBackend 对称）或复用 `LineBackend` 加 hangup 方法，两 crate 共用。
+- **A9 [L2 random] 密码学后端选型**：即 G4 的决策，两案（移植 rijndael 对比 引 no_std crate）+ 第三案（`sha2`-crate 只解决杂凑半、AES 保持移植）——执行时按 no_std 约束与审计成本对比后定，doc 09 §3.2 同步。
+- **A10 [L3] 错误与句柄类型化**：钩子签名保持 C 哨兵约定（负 `i64` 表错、`grant: u64` 裸句柄，`os/libs/minix-chardriver/src/driver.rs:195-234`）。方案一（推荐）：新接口用 `Result<usize, Errno>` + `minix-types` 的 Grant 句柄类型（grant.rs 已是 cp_grant_t 单一权威），旧签名桥接保留；方案二：全量翻签名（一次到位但波及全部测试）。社区参照：embedded-hal 1.0 的 `Error::kind()` 模式——HAL 自定错误枚举 + 公共 kind 查询，驱动只依赖 kind（blog.rust-embedded.org/embedded-hal-v1）。注意边界：内部错误枚举可自由细分（如 B4 的 Misaligned），对外回复仍映射 Minix3 errno。
+- **A11 [L2 pckbd] bridge.rs 删除**：与 `minix-sys/inputdriver.rs`（512 行，更忠实、含 DS announce 键）双轨编码同一份 C inputdriver.c 逻辑，doc 13 从未提及后者；pckbd 的 Cargo.toml 声明依赖 minix-sys 但六个源文件零 use。收敛方向已在 E-PCKBDREG 第 5 项：bridge 改为 minix-sys 决策函数的消费方或删除。倾向删除（crate 内消费路径为零）。
+
+## 4. 死代码清单（每项"为何死 + 消除影响"；拿不准的 OQ 上交，不擅自删）
+
+| 位置 | 内容 | 为何死 / 消除影响 |
+|---|---|---|
+| `os/drivers/storage/ramdisk/` 整 crate | plan §5.4（plan.md:373）明确排除（无 .c，非驱动），stub 注释却自称"C 对应 ramdisk/" | 事实错误 + 死 crate；删，或注明"按 plan §5.4 无 C 对应，语义归 18-stage-commands boot 布局" |
+| `os/drivers/examples/hello/` | doc 24 §2.7 说"文档即课本（无 Rust 建模）"，stub 与文档互相矛盾 | 二选一：删 crate 或改 doc 认可 stub |
+| `os/drivers/hid/pckbd/src/bridge.rs` 全模块 | 与 minix-sys/inputdriver.rs 双轨（E-PCKBDREG 第 5 项） | 删除，见 A11 |
+| minix-bdev `client.rs:584-591,39` | `LOCAL_REFUSAL`/`TRANSPORT_FAILURE`/`CALL_TABLE_BUSY`/`RECOVERY_RETRIES`/`SUCCESS` 全零使用（doc §4 错误表还列了 CALL_TABLE_BUSY） | 随 F2/A6 翻新时统一裁决；doc 表同步 |
+| minix-chardriver `driver.rs:405-417` + `protocol.rs:22` + RESTARTED re-export | `block_open_error`/`bad_minor_error`/`announce_ok` 仅测试引用；`CDEV_REPLY_BASE` 零使用（且错值，F1） | 随 A3/E-CDRCONV 收敛时清理 |
+| minix-blockdriver `driver.rs:271-292` | `not_disk_error` 等 4 个错误构造函数零使用——调用点直接返回字面量 | **模式级发现**：各 crate 普遍存在"错误构造函数定义了、调用点用字面量"的两张皮（memory `device.rs:261-273`、tty `session.rs:359`、log `device.rs:215`、random `device.rs:118,121` 同款）；清理时统一"要么调用要么删" |
+| minix-netdriver `driver.rs:417-429` | `announce_ok`/`mode_down`/`link_up` 零使用 | 随 F4/A7 处理 |
+| minix-virtio `ring.rs:25-43`、`features.rs:46`、`device.rs:131-187` | 5 个通知/间接常量、`agreed_bits`、`IoPort/NullPort/VecPort`（测试脚手架住进 lib） | 脚手架移 `#[cfg(test)]` 或删；常量随 A5 线格式落地时回收 |
+| mmc `commands.rs` | SetRelativeAddr/Select/SendCsd/SetBlockLength 四枚举值不可达（V4） | 随 V4 序列重写回收 |
+| usb `urb.rs:21-33` | `TransferKind::Isochronous`、`Direction` 无消费逻辑 | V8 出册落地时回收 |
+| filter `checksum.rs:147-148` | `BadSumPolicy` 两变体从不构造、`RETRY_OTHER_MIRROR` 仅测试 | 随 V3 裁决 |
+| vnd `layout.rs:65,70` | `_position` 死局部变量（offset 参数算完即弃） | 用之或删参 |
+| **OQ-1** | netdriver `sdev.rs`+`sockevent.rs`（17-stage-net 语义，零引用，vfs 另有 923 行独立副本） | 归属处置已登记 edge E-SDEVOWN，本 stage 不擅自删 |
+| **OQ-2** | virtio `wants_kick` 的 `queue_full` 分支 | 意图不明（V1），先查动机再定删/标 ARCH |
+| **OQ-3** | pci `BusControl` 枚举（doc §3.4 自述故意先行） | 保留，服务层落地时验证 |
+
+## 5. 测试缺口
+
+- **固化错误的测试**（修复对应条目时必须翻新，不是删测试了事）：virtio_net 阈值 128（queues.rs:62-68）、lance 认卡（`test_chip_table_matches_known_versions`）、printer 优先级（`test_status_byte_reads_in_priority_order`）、virtio_blk 未知状态→EIO（request.rs:194-199）、mmc"四步就绪"、hub"拉黑不返聘"、bdev"认回显拒错配"（只测 id 未测类型）。
+- **缺失的负例/行为锁**：bdev 类型错配；pckbd 状态 3 穿透与 E1 前缀重启；LED 端到端掩码（服务器约定 → 硬件位）；random 重播种 C 向量；pci offset%4==2 16 位写；log 唤醒顺序；dp8390 BNRY 特例；协商位 ≥32 回绕；urb 部分完成预算耗尽。
+- **未记载的测试**：minix-netdriver sdev/sockevent 9 个（doc 03 未列；随 E-SDEVOWN 归属定案后决定去留与记载）。
+- **集成测试缺位**：驱动联调（IRQ 通知 → 事件循环 → grant 拷贝）今天为零，属多进程联调，按约定走 edge 通电族（E5/E8/E-INWIRE 一线），本 stage 不单独建。
+
+## 6. 建议执行顺序
+
+1. **正确性快修批**（§1）：F2/F4/S1/S2/S3/S6/V4/N1/N3 等独立条目，每条 todo-fix 单线程，先于一切架构动作——卓越建立在正确之上。
+2. **文档对账批**（G7）：纯 doc 编辑，与 §1 已修条目联动收尾。
+3. **框架决策批**（A1/A3 + edge E-CDRCONV 裁决）：驱动服务运行时与状态机收敛一次定案，避免 memory/tty 接线时二次返工。
+4. **接线批**（A2，按 plan §6 波次）：memory → tty/pty/log → random/readclock/pci/gpio → pckbd → 存储 → USB → 显示/音频/网络/杂项；每接一个 crate，就地清其 §2 缺失与 §4 死代码。
+5. **线格式下沉批**（A5 + E-DMABUF）：virtio 环、CBW/CDB、usb_urb 映射与 DMA 契约，在存储/USB 服务层开工前完成。
+6. **收尾**：G5（00/99 展开 + 快照补齐）随各批成果回填。

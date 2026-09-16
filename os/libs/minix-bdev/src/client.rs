@@ -8,7 +8,7 @@
 //! `bdev.c:374-640`, and the reply demultiplexer plus wait in
 //! `minix3/minix/lib/libbdev/ipc.c:269-346`.
 
-use super::transport::{Destination, Reply, Transport, TransportError};
+use super::transport::{BDEV_REPLY, Destination, Reply, Transport, TransportError};
 use alloc::vec::Vec;
 use minix_types::{EBUSY, EINVAL, EIO, ENOMEM, OK};
 
@@ -494,17 +494,13 @@ impl<T: Transport> BdevClient<T> {
             minor: device.minor(),
             id: NO_ID,
         });
-        match reply {
-            Ok(Reply {
-                id: NO_ID, status, ..
-            }) if status == OK => {
-                self.opens.add(device, access);
-                OK
-            }
-            Ok(Reply { status, .. }) => status,
-            Err(TransportError::SendFailed) => -EIO,
-            Err(_) => -EINVAL,
+        // Sync requests carry NO_ID and expect NO_ID back (ipc.c:184-189):
+        // a reply with any other identifier is a bad reply, not a status.
+        let status = check_reply(reply, NO_ID);
+        if status == OK {
+            self.opens.add(device, access);
         }
+        status
     }
 
     /// Close a device: send close, forget one open on success.
@@ -526,15 +522,11 @@ impl<T: Transport> BdevClient<T> {
             minor: device.minor(),
             id: NO_ID,
         });
-        match reply {
-            Ok(Reply { status, .. }) if status == OK => {
-                self.opens.remove(device);
-                OK
-            }
-            Ok(Reply { status, .. }) => status,
-            Err(TransportError::SendFailed) => -EIO,
-            Err(_) => -EINVAL,
+        let status = check_reply(reply, NO_ID);
+        if status == OK {
+            self.opens.remove(device);
         }
+        status
     }
 
     /// True when the device has a recorded open.
@@ -548,15 +540,15 @@ impl<T: Transport> BdevClient<T> {
     }
 }
 
-/// Check a synchronous reply: identifier must echo, type must be the block
-/// general reply.
+/// Check a synchronous reply: type first, identifier second, status last.
 ///
-/// C: `bdev_sendrec` validates `m_type == BDEV_REPLY` and the identifier
-/// (`ipc.c:144-268`); a mismatch is "invalid argument", a transport failure
-/// is "input-output error".
+/// C: `bdev_sendrec` validates `m_type == BDEV_REPLY` before anything else,
+/// then the identifier (`ipc.c:179-189`); either mismatch is "invalid
+/// argument", a transport failure is "input-output error". Only a reply that
+/// passes all three checks contributes its status.
 pub fn check_reply(reply: Result<Reply, TransportError>, want_id: i32) -> i32 {
     match reply {
-        Ok(Reply { id, status, .. }) if id == want_id => status,
+        Ok(r) if r.message_type == BDEV_REPLY && r.id == want_id => r.status,
         Ok(_) => -EINVAL,
         Err(TransportError::SendFailed) => -EIO,
         Err(TransportError::BadReply) => -EINVAL,
@@ -568,11 +560,18 @@ pub fn check_reply(reply: Result<Reply, TransportError>, want_id: i32) -> i32 {
 ///
 /// Helper for the demultiplex loop: each reply is filed into the table by
 /// identifier; strays are counted and dropped, matching
-/// `bdev_reply_asyn` (`ipc.c:269-316`).
+/// `bdev_reply_asyn` (`ipc.c:269-316`). A reply whose type is not the block
+/// general reply cannot belong to any call, so it counts as a stray too —
+/// the no-panic equivalent of C's `assert(m->m_type == BDEV_REPLY)`
+/// (`ipc.c:279`).
 pub fn demux_batch(table: &mut CallTable, replies: &[Reply]) -> (Vec<usize>, usize) {
     let mut completed = Vec::new();
     let mut strays = 0;
     for reply in replies {
+        if reply.message_type != BDEV_REPLY {
+            strays += 1;
+            continue;
+        }
         match table.complete(reply.id, reply.status) {
             Some(handle) => completed.push(handle),
             None => strays += 1,
@@ -682,19 +681,25 @@ mod tests {
         assert_eq!(table.complete(99, OK), None);
         let replies = [
             Reply {
-                message_type: 0x580,
+                message_type: BDEV_REPLY,
                 id: 99,
                 status: OK,
             },
             Reply {
-                message_type: 0x580,
+                message_type: BDEV_REPLY,
                 id: 100,
+                status: OK,
+            },
+            // Not the block general reply: belongs to no call at all.
+            Reply {
+                message_type: 0x500,
+                id: 99,
                 status: OK,
             },
         ];
         let (completed, strays) = demux_batch(&mut table, &replies);
         assert!(completed.is_empty());
-        assert_eq!(strays, 2);
+        assert_eq!(strays, 3);
     }
 
     #[test]
@@ -724,19 +729,56 @@ mod tests {
     #[test]
     fn test_check_reply_accepts_echo_and_rejects_mismatch() {
         let good: Result<Reply, TransportError> = Ok(Reply {
-            message_type: 0x580,
+            message_type: BDEV_REPLY,
             id: NO_ID,
             status: OK,
         });
         assert_eq!(check_reply(good, NO_ID), OK);
         let mismatch: Result<Reply, TransportError> = Ok(Reply {
-            message_type: 0x580,
+            message_type: BDEV_REPLY,
             id: 5,
             status: OK,
         });
         assert_eq!(check_reply(mismatch, NO_ID), -EINVAL);
         assert_eq!(check_reply(Err(TransportError::SendFailed), NO_ID), -EIO);
         assert_eq!(check_reply(Err(TransportError::DriverGone), NO_ID), -EBUSY);
+    }
+
+    #[test]
+    fn test_check_reply_rejects_non_reply_type() {
+        // A request number echoed back is not a reply, even with a matching
+        // identifier and a success status (ipc.c:179: type is checked first).
+        let impostor: Result<Reply, TransportError> = Ok(Reply {
+            message_type: super::BdevOp::Open.message_type(),
+            id: NO_ID,
+            status: OK,
+        });
+        assert_eq!(check_reply(impostor, NO_ID), -EINVAL);
+    }
+
+    #[test]
+    fn test_open_rejects_mismatched_reply_without_recording() {
+        let mut client = BdevClient::new(RecordingTransport::new(OK));
+        assert!(client.bind(Major(2), 40));
+        // Wrong type, right identifier, success status: still a bad reply.
+        client.transport_mut().push(Ok(Reply {
+            message_type: 0x500,
+            id: NO_ID,
+            status: OK,
+        }));
+        assert_eq!(client.open(device(), 1), -EINVAL);
+        assert!(!client.is_open(device()));
+        // Wrong identifier: EINVAL too, not the carried status (ipc.c:184).
+        client.transport_mut().push(Ok(Reply {
+            message_type: BDEV_REPLY,
+            id: 7,
+            status: OK,
+        }));
+        assert_eq!(client.open(device(), 1), -EINVAL);
+        assert!(!client.is_open(device()));
+        // The fallback answers healthily, so the next open records.
+        assert_eq!(client.open(device(), 1), OK);
+        assert!(client.is_open(device()));
     }
 
     #[test]
