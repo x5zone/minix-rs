@@ -169,7 +169,8 @@ scope 内 39 处标记复核完毕：无一处 `todo!`/`unimplemented!`/`FIXME`�
 **V1-P2-7 空闲位统计的三份重复实现。** mount.rs:242、meta.rs:349、maint.rs:92 各有一份逐块计位实现，C 只有 stats.c:14 一份。修复：收敛到 superblock.rs 一处（与位图同址），三处改调用；顺带补 origin 起点语义说明（C 从 s_isearch/s_zsearch 起步会漏计尾部，Rust 从 0 计满图——收敛时统一为计满图并记录）。
 **✅ 2026-09-17 闭环（Fix #18）**：权威核 `superblock::count_clear_bits_in_image(image, base, total_bits)` 落地（位图同址、纯函数、带越界裁剪），mount/meta/maint 三处改调该核——语义统一为「从零计满图」，origin 起点差异一并消灭；测试全绿（一百二十三个）。
 
-**V1-P2-8 块层缺口分组。** 本 stage 内：ONE_SHOT 前插（cache.c:533-544）、`lmfs_prefetch` 位图选区间（cache.c:1089-1130）、脏块排序批量写（cache.c:884-885）、运行期池调整与 usage 重估触发（cache.c:119-161、cache.c:1192-1207）。跨轨道：短末块部分读写与 gather/scatter（E-FSBDEV）、vmcache 零拷贝与旗标机（E-FSVMCACHE）。本 stage 内的四项在 V2 轮按「先测试钉行为、再对齐实现」推进。
+**V1-P2-8 块层缺口分组。** 本 stage 内：ONE_SHOT 前插（cache.c:533-544）、`lmfs_prefetch` 位图选区间（cache.c:1089-1130）、脏块排序批量写（cache.c:884-885）、运行期池调整与 usage 重估触发（cache.c:119-161、cache.c:1192-1207）。跨轨道：短末块部分读写与 gather/scatter（E-FSBDEV）、vmcache 零拷贝与旗标机（E-FSVMCACHE）。
+**✅ 2026-09-17 闭环（Fix #20）**：四项全部落地 cache.rs——`release_one_shot`（LRU 队首插入，跳过近期块直接逐出）、`prefetch_uncached_range`（范围内最长未缓存连续段暖读，返回暖块数）、`flush_device` 脏块按块号升序写（存储见有序运行）+ `note_written` 写量累计与 `write_reestimate_due` 十兆阈值、`resize_pool`（钉住拒 EBUSY、低于下限拒 EINVAL、冲刷后重建槽链）。四个新测试锁定行为，minix-fs 一百零三测试全绿。
 
 **V1-P2-9 `write_to_disk` 无只读护栏。** C 只在 `!s_rd_only` 时置脏写回（inode.c:398）；Rust 无该检查（inode.rs:623-663），靠调用方自律；maint.rs:116 的 `check_dirty_mark` 存在但未接入。修复：把只读判断下沉到 `write_to_disk`（Superblock 在手即可判定）。
 **✅ 2026-09-17 闭环（Fix #13）**：`InodeIo` 增 `read_only` 字段（`from_superblock` 从挂载状态带入），`write_back` 在只读时报只读错误——护栏从「调用方自律」变为结构强制；专测锁定（只读参数下写回拒绝、磁盘不动）。09 篇 §4.2 同步。

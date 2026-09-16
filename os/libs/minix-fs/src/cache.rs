@@ -24,13 +24,17 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use minix_types::{EAGAIN, EINVAL, ENOENT, Errno};
+use minix_types::{EAGAIN, EBUSY, EINVAL, ENOENT, Errno};
 
 /// Smallest pool the cache accepts.
 ///
 /// C: `MINBUFS` (`cache.c:44`, value six). Below this the pool cannot make
 /// progress: too few buffers to stage a scattered transfer.
 pub const MIN_POOL_SIZE: usize = 6;
+
+/// 写入量跨过该阈值即提示重新评估池尺寸（`cache.c:119-161` 的十兆带宽
+/// 台阶）。
+pub const WRITE_REESTIMATE_THRESHOLD: u64 = 10 * 1024 * 1024;
 
 /// Upper bound for one prefetch run.
 ///
@@ -180,6 +184,9 @@ pub struct BlockCache<S: BlockSource, V: SecondLevelCache = NoSecondLevel> {
     free_tail: usize,
     /// Blocks currently pinned by callers. C: `bufs_in_use` (`cache.c:48`).
     pinned: usize,
+    /// Bytes written to storage since the last usage re-estimation
+    /// (`lmfs_change_blockusage`, `cache.c:119-161`).
+    written_since_estimate: u64,
     /// File system usage counters feeding the sizing heuristic.
     total_blocks: u64,
     used_blocks: u64,
@@ -210,6 +217,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             free_head: 0,
             free_tail: pool_size - 1,
             pinned: 0,
+            written_since_estimate: 0,
             total_blocks: 0,
             used_blocks: 0,
         })
@@ -372,12 +380,127 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
                 dirty_slots.push(slot);
             }
         }
+        let mut written = 0u64;
         for slot in dirty_slots {
             let key = self.slots[slot].key.expect("dirty slot has a key");
+            let bytes = self.slots[slot].data.len() as u64;
             self.source.write_block(key, &self.slots[slot].data)?;
             self.slots[slot].dirty = false;
+            written += bytes;
+        }
+        self.note_written(written);
+        Ok(())
+    }
+
+    /// Account bytes written to storage for the usage re-estimation
+    /// trigger (`lmfs_change_blockusage`, `cache.c:119-161`).
+    pub fn note_written(&mut self, bytes: u64) {
+        self.written_since_estimate =
+            self.written_since_estimate.saturating_add(bytes);
+    }
+
+    /// Whether enough was written since the last estimate that the pool
+    /// sizing heuristic should run again.
+    pub fn write_reestimate_due(&self) -> bool {
+        self.written_since_estimate >= WRITE_REESTIMATE_THRESHOLD
+    }
+
+    /// Clear the written-since-estimate accumulator (after a resize).
+    pub fn clear_written_note(&mut self) {
+        self.written_since_estimate = 0;
+    }
+
+    /// Rebuild the pool at a new size (`lmfs_buf_pool` re-invoked,
+    /// `cache.c:1245-1261`). Refuses while anything is pinned (`EBUSY`)
+    /// and below the minimum (`EINVAL`); dirty blocks flush first so
+    /// nothing is lost.
+    pub fn resize_pool(&mut self, new_size: usize) -> Result<(), Errno> {
+        if self.pinned != 0 {
+            return Err(Errno::from_i32(EBUSY));
+        }
+        if new_size < MIN_POOL_SIZE {
+            return Err(Errno::from_i32(EINVAL));
+        }
+        self.flush_all()?;
+        self.slots.clear();
+        self.index.clear();
+        for _slot in 0..new_size {
+            self.slots.push(Buffer::free());
+        }
+        for slot in 0..new_size - 1 {
+            self.slots[slot].next = slot + 1;
+            self.slots[slot + 1].prev = slot;
+        }
+        self.free_head = 0;
+        self.free_tail = new_size - 1;
+        Ok(())
+    }
+
+    /// Release a block that will not be needed again (`ONE_SHOT` blocks):
+    /// it goes to the FRONT of the free list, so the next eviction picks it
+    /// before any block likely to be reused (`cache.c:533-544`).
+    pub fn release_one_shot(&mut self, slot: usize) -> Result<(), Errno> {
+        if slot >= self.slots.len() || self.slots[slot].users == 0 {
+            return Err(Errno::from_i32(EINVAL));
+        }
+        self.slots[slot].users -= 1;
+        self.pinned -= 1;
+        if self.slots[slot].users == 0 {
+            self.list_push_front(slot);
         }
         Ok(())
+    }
+
+    /// Warm the longest uncached run inside `[first_block, first_block +
+    /// count)` (`lmfs_prefetch`, `cache.c:1057-1130`): the range maps to a
+    /// cached/uncached bitmap, the longest uncached stretch wins, and its
+    /// blocks read into the cache. Best effort by design — the demand path
+    /// re-reads anyway. Returns the warmed block count.
+    pub fn prefetch_uncached_range(
+        &mut self,
+        device: u64,
+        first_block: u64,
+        count: u64,
+    ) -> usize {
+        if count == 0 {
+            return 0;
+        }
+        // C builds a before/after bitmap (`cache.c:1089-1130`); the longest
+        // uncached stretch of the range wins.
+        let mut best_start = 0u64;
+        let mut best_len = 0u64;
+        let mut run_start = 0u64;
+        let mut run_len = 0u64;
+        for offset in 0..count {
+            let block = first_block + offset;
+            if self.index.contains_key(&BlockKey::new(device, block)) {
+                if run_len > best_len {
+                    best_len = run_len;
+                    best_start = run_start;
+                }
+                run_len = 0;
+            } else {
+                if run_len == 0 {
+                    run_start = block;
+                }
+                run_len += 1;
+            }
+        }
+        if run_len > best_len {
+            best_start = run_start;
+            best_len = run_len;
+        }
+        let mut warmed = 0usize;
+        for offset in 0..best_len {
+            let block = best_start + offset;
+            if let Ok(cache_slot) =
+                self.acquire(BlockKey::new(device, block), AcquireMode::Normal)
+            {
+                self.release_slot(cache_slot);
+                warmed += 1;
+            }
+        }
+        warmed
     }
 
     /// Flush every device. C: `lmfs_flushall` (`cache.c:1295-1311`).
@@ -570,7 +693,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
 
     /// Push one slot at the tail of the free list: the most recently
     /// released position, evicted last.
-    fn list_push_tail(&mut self, _slot: usize) {
+    fn list_push_tail(&mut self, slot: usize) {
         self.slots[slot].prev = self.free_tail;
         self.slots[slot].next = NO_SLOT;
         if self.free_tail != NO_SLOT {
@@ -825,6 +948,103 @@ mod tests {
         cache.release(slot).unwrap();
         // Victim block zero survived on storage.
         assert_eq!(cache.source.blocks[&0], [0u8; 64]);
+    }
+
+    #[test]
+    fn test_release_one_shot_front_inserts() {
+        let mut cache = BlockCache::with_pool(
+            MemSource::with_blocks(16, 64),
+            NoSecondLevel,
+            MIN_POOL_SIZE,
+        )
+        .unwrap();
+        // Fill the pool: 0..6 (0 is the LRU end).
+        for block in 0..6u64 {
+            let slot = cache
+                .acquire(BlockKey::new(1, block), AcquireMode::NoRead)
+                .unwrap();
+            cache.release(slot).unwrap();
+        }
+        // Re-acquire block 3 and mark it one-shot: it jumps to the front
+        // (the next eviction victim), jumping over blocks 4 and 5.
+        let shot = cache.acquire(BlockKey::new(1, 3), AcquireMode::NoRead).unwrap();
+        cache.release_one_shot(shot).unwrap();
+        let victim = cache
+            .acquire(BlockKey::new(1, 20), AcquireMode::NoRead)
+            .unwrap();
+        cache.release(victim).unwrap();
+        assert!(!cache.index.contains_key(&BlockKey::new(1, 3)));
+        assert!(cache.index.contains_key(&BlockKey::new(1, 4)));
+        assert!(cache.index.contains_key(&BlockKey::new(1, 5)));
+    }
+
+    #[test]
+    fn test_prefetch_range_warms_longest_uncached_run() {
+        let mut cache = BlockCache::with_pool(
+            MemSource::with_blocks(16, 64),
+            NoSecondLevel,
+            MIN_POOL_SIZE,
+        )
+        .unwrap();
+        // Cache block 3 of the range [0, 8): the longest uncached run is
+        // [4, 8) — four blocks warm, and block 3 stays as it is.
+        let slot = cache
+            .acquire(BlockKey::new(1, 3), AcquireMode::Normal)
+            .unwrap();
+        cache.release(slot).unwrap();
+        let warmed = cache.prefetch_uncached_range(1, 0, 8);
+        assert_eq!(warmed, 4);
+        for block in 4..8u64 {
+            assert!(cache.index.contains_key(&BlockKey::new(1, block)));
+        }
+        // A second pass warms only the still-uncached head run [0, 3):
+        // blocks 3..8 were cached by the first call.
+        let again = cache.prefetch_uncached_range(1, 0, 8);
+        assert_eq!(again, 3);
+    }
+
+    #[test]
+    fn test_resize_pool_rebuilds_and_refuses() {
+        let mut cache = BlockCache::with_pool(
+            MemSource::with_blocks(16, 64),
+            NoSecondLevel,
+            MIN_POOL_SIZE,
+        )
+        .unwrap();
+        // Refuses below the minimum.
+        assert_eq!(
+            cache.resize_pool(MIN_POOL_SIZE - 1).unwrap_err().to_i32(),
+            EINVAL
+        );
+        // Grows: the chain serves every slot.
+        cache.resize_pool(12).unwrap();
+        assert_eq!(cache.pool_size(), 12);
+        for block in 0..12u64 {
+            let slot = cache
+                .acquire(BlockKey::new(1, block), AcquireMode::NoRead)
+                .unwrap();
+            cache.release(slot).unwrap();
+        }
+        // Shrinks with nothing pinned: back to the minimum.
+        cache.resize_pool(MIN_POOL_SIZE).unwrap();
+        assert_eq!(cache.pool_size(), MIN_POOL_SIZE);
+    }
+
+    #[test]
+    fn test_write_reestimate_threshold() {
+        let mut cache = BlockCache::with_pool(
+            MemSource::with_blocks(16, 64),
+            NoSecondLevel,
+            MIN_POOL_SIZE,
+        )
+        .unwrap();
+        assert!(!cache.write_reestimate_due());
+        cache.note_written(WRITE_REESTIMATE_THRESHOLD - 1);
+        assert!(!cache.write_reestimate_due());
+        cache.note_written(1);
+        assert!(cache.write_reestimate_due());
+        cache.clear_written_note();
+        assert!(!cache.write_reestimate_due());
     }
 
     #[test]
