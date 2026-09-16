@@ -14,9 +14,14 @@
 pub const RING_SIZE: usize = 16;
 
 /// Known chip versions (`chip_table`, `lance.c:63-87`).
+///
+/// The C search skips table entry zero, so `Lance7990` is never a search
+/// hit — it is the fallback identity the C probe reports when the version
+/// gate fails (`lance_probe`, `lance.c:704`). This module models that as
+/// `None` and lets the caller choose the fallback name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
-    /// Original LANCE 7990.
+    /// Original LANCE 7990 (the C fallback identity, not a search hit).
     Lance7990,
     /// 79C960.
     Am79C960,
@@ -34,18 +39,27 @@ pub enum ChipVersion {
     Am79C978,
 }
 
-/// Match a register version value to a known chip
-/// (`lance.c:707-714`, masked with `0xFFF`).
-pub fn identify_chip(version: u16) -> Option<ChipVersion> {
-    match version & 0x0FFF {
-        0x000 => Some(ChipVersion::Lance7990),
-        0x003 => Some(ChipVersion::Am79C960),
-        0x260 => Some(ChipVersion::Am79C961),
-        0x420 => Some(ChipVersion::PcnetPci),
-        0x430 => Some(ChipVersion::Pcnet32),
-        0x621 => Some(ChipVersion::Am79C970A),
-        0x625 => Some(ChipVersion::Am79C973),
-        0x626 => Some(ChipVersion::Am79C978),
+/// Identify a chip from the thirty-two-bit version in CSR88/CSR89.
+///
+/// C: `lance_probe` (`lance.c:707-722`) — a two-field algorithm. The low
+/// twelve bits must read exactly `0x003`, otherwise the version is not
+/// trusted (the probe falls back to the ancient-LANCE identity). The
+/// identifier is then the next sixteen bits, `(version >> 12) & 0xffff`,
+/// matched against `chip_table` entries one through seven; identifier
+/// zero and anything unknown land on the terminator entry "PCnet
+/// (unknown)".
+pub fn identify_chip(version: u32) -> Option<ChipVersion> {
+    if version & 0xFFF != 0x003 {
+        return None;
+    }
+    match (version >> 12) & 0xFFFF {
+        0x0003 => Some(ChipVersion::Am79C960),
+        0x2260 => Some(ChipVersion::Am79C961),
+        0x2420 => Some(ChipVersion::PcnetPci),
+        0x2430 => Some(ChipVersion::Pcnet32),
+        0x2621 => Some(ChipVersion::Am79C970A),
+        0x2625 => Some(ChipVersion::Am79C973),
+        0x2626 => Some(ChipVersion::Am79C978),
         _ => None,
     }
 }
@@ -61,14 +75,48 @@ mod tests {
 
     #[test]
     fn test_chip_table_matches_known_versions() {
-        assert_eq!(identify_chip(0x0000), Some(ChipVersion::Lance7990));
-        assert_eq!(identify_chip(0x0003), Some(ChipVersion::Am79C960));
-        assert_eq!(identify_chip(0x2260), Some(ChipVersion::Am79C961));
-        assert_eq!(identify_chip(0x2420), Some(ChipVersion::PcnetPci));
-        assert_eq!(identify_chip(0x2430), Some(ChipVersion::Pcnet32));
-        assert_eq!(identify_chip(0x2621), Some(ChipVersion::Am79C970A));
-        assert_eq!(identify_chip(0x2625), Some(ChipVersion::Am79C973));
-        assert_eq!(identify_chip(0x2626), Some(ChipVersion::Am79C978));
-        assert_eq!(identify_chip(0x9999), None);
+        // Full register values: low twelve bits 0x003, identifier in bits
+        // 12..=27. Written as (id << 12) | 0x003 — e.g. 79C960 reads as
+        // 0x0000_3003.
+        assert_eq!(
+            identify_chip((0x0003 << 12) | 0x003),
+            Some(ChipVersion::Am79C960)
+        );
+        assert_eq!(
+            identify_chip((0x2260 << 12) | 0x003),
+            Some(ChipVersion::Am79C961)
+        );
+        assert_eq!(
+            identify_chip((0x2420 << 12) | 0x003),
+            Some(ChipVersion::PcnetPci)
+        );
+        assert_eq!(
+            identify_chip((0x2430 << 12) | 0x003),
+            Some(ChipVersion::Pcnet32)
+        );
+        assert_eq!(
+            identify_chip((0x2621 << 12) | 0x003),
+            Some(ChipVersion::Am79C970A)
+        );
+        assert_eq!(
+            identify_chip((0x2625 << 12) | 0x003),
+            Some(ChipVersion::Am79C973)
+        );
+        assert_eq!(
+            identify_chip((0x2626 << 12) | 0x003),
+            Some(ChipVersion::Am79C978)
+        );
+    }
+
+    #[test]
+    fn test_gate_and_unknown_identifiers_are_refused() {
+        // Gate fails: low twelve bits are not 0x003 (lance.c:711-714).
+        assert_eq!(identify_chip(0x0000_0001), None);
+        assert_eq!(identify_chip(0x0000_0000), None);
+        // Gate passes but the identifier is zero or unknown: the search
+        // walks off into the terminator entry "PCnet (unknown)"
+        // (lance.c:715-720).
+        assert_eq!(identify_chip(0x0000_0003), None);
+        assert_eq!(identify_chip(0x5000_0003), None);
     }
 }
