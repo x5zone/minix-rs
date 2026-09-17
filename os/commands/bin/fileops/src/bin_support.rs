@@ -20,6 +20,12 @@ pub fn warn(bytes: &[u8]) {
     let _ = minix_sys::write(STDERR, bytes);
 }
 
+/// Writes the slice to standard output, reporting success without
+/// exiting (the form the printf engine's sink needs).
+pub fn write_ok(bytes: &[u8]) -> bool {
+    minix_sys::write(STDOUT, bytes).is_ok()
+}
+
 /// Terminates the process with an exit status (see the module header).
 pub fn terminate(code: i32) -> ! {
     std::process::exit(code)

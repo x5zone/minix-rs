@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作主力——shell 调用的命令中，搬运、查看、判断文件的三十个
 > **源码**: `minix3/bin/` 十五个（`cat`、`chmod`、`cp`、`df`、`echo`、`expr`、`ln`、`ls` 715 行、`mkdir`、`mv`、`pwd`、`rm`、`rmdir`、`sync`、`test` 717 行）、`minix3/usr.bin/` 十五个（`basename`、`dirname`、`du`、`false`、`find` 306 行、`flock`、`mkfifo`、`mktemp`、`pathchk`、`printf`、`stat`、`touch`、`true`、`xargs`、`xinstall`）、`minix3/usr.sbin/` 三个（`chroot`、`link`、`unlink`）、`minix3/minix/commands/truncate/`，合计 34 个命令
-> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`、`pathchk.rs`，37 个库测试通过）；`src/bin/` 薄壳七个已接线：echo、true、false、basename、dirname、pathchk（2026-09-17）；执行半经 `minix-sys` 顶层 `write` 与 exit（宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后即为诚实退出码）；其余命令的薄壳随本域执行层批次在本 crate 内落地（文件读写待系统调用；原 `os/commands/bin/` 下占位壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/bin/fileops`（库包 `minix-fileops`：`mode.rs`、`testexpr.rs`、`path.rs`、`echo.rs`、`pathchk.rs`、`printf.rs`，60 个库测试通过）；`src/bin/` 薄壳八个已接线：echo、true、false、basename、dirname、pathchk、printf（2026-09-17）；执行半经 `minix-sys` 顶层 `write` 与 exit（宿主端的传输失败语义待 edge E-SYSCALL-SIGN 修正后即为诚实退出码）；其余命令的薄壳随本域执行层批次在本 crate 内落地（文件读写待系统调用；原 `os/commands/bin/` 下占位壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `05-shell-family.md`（调用方：内建与外部的区分）、文件系统调用（`14-stage-runtime` 的文件部分）
 > **不覆盖（移交）**: 文本处理（见 `07-text-filter.md`）、存储管理（见 `14` 到 `17` 各篇）、表达式求值之外的 `test` 内建包装（见 `05` 篇内建部分）
 
@@ -183,7 +183,8 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 | cp、ln、mv、rm、mkdir、rmdir、chmod、chown、touch、mkfifo、truncate、link、unlink | 上一行全部，加各自的方向调用（建链/截断/权限位面） | 待 14 侧逐项登记封装 |
 | df、du、find、stat、`test` 的文件问 | `stat`、`getdents` | 缺封装（`../14-stage-runtime/todo.md:60` 已登记） |
 | pathchk | `write`、`exit`、argv 交接 | 已接线 `-p` 路（决定半 `pathchk.rs`：`_POSIX_NAME_MAX`/`_POSIX_PATH_MAX` 常量界限、可移植字符集、前导连字符；诊断走标准错误）；缺省模式的 `pathconf`/`stat` 探测待批，现显式拒绝 |
-| printf、expr | `write`、`exit`、argv 交接 | 决定半待写（printf 需运行时格式引擎含浮点渲染，expr 需表达式求值器），各自独立批次落地即接线 |
+| printf | `write`、`exit`、argv 交接 | 已接线（决定半 `printf.rs`：运行时格式引擎——标志/宽度/精度与 `d i o u x X s c %b %%`、格式复用、`\c` 截停、base 0 数字解析与字符常量前缀；浮点转换 `e E f g G` 按裁决单独处理，现显式拒绝） |
+| expr | `write`、`exit`、argv 交接 | 决定半待写（表达式求值器），独立批次落地即接线 |
 | mktemp | `open` 的建路径（已实现）加 `O_EXCL` 语义确认 | 待批 |
 | xargs | `fork`、`exec`（调用方备栈形态）、`waitpid` | 待 `exec` 调用方协议批 |
 | pwd、sync、flock、chroot、xinstall | 各自调用面（getcwd/update/flock/chroot/安装语义） | 待 14 侧登记 |
@@ -192,7 +193,8 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ## 5. 测试要点
 
-`cargo test -p minix-fileops`：**37 个测试，全部通过**（截至 2026-09-17，其中 7 个为 pathchk 决定半）；另有七个已接线的命令二进制（echo、true、false、basename、dirname、pathchk），其决定半由上述库测试覆盖。
+`cargo test -p minix-fileops`：**60 个测试，全部通过**（截至 2026-09-17，其中 7 个为 pathchk 决定半、23 个为 printf 引擎）；另有八个已接线的命令二进制（echo、true、false、basename、dirname、pathchk、printf），其决定半由上述库测试覆盖。
+- **printf 引擎**（`printf.rs`，23 个）：`test_literal_text_passes_through`、`test_percent_percent_is_one_percent`、`test_decimal_and_string_basics`、`test_missing_operands_are_zero_and_empty`（干列表补零与空串）、`test_format_reuses_over_extra_operands`（格式复用）、`test_flags_plus_space_and_minus`、`test_zero_flag_zero_fills_against_width`（0 旗标与精度互斥）、`test_precision_on_integers`（含精度零渲染零值为空）、`test_unsigned_octal_hex_upper`、`test_negative_unsigned_rejected`（`getuintmax` 拒负）、`test_alternate_form_prefixes`（`#` 的 0/0x/0X 前缀）、`test_string_width_and_precision`、`test_char_takes_first_byte`、`test_star_width_comes_from_operands`（`*` 取操作数）、`test_escapes_expand_in_the_format`（八进制至多三位、十六进制两位）、`test_c_escape_halts_output`（`\c` 截停）、`test_unknown_escape_warns_but_passes_through`、`test_numeric_operands_use_base_zero`（base 0 解析）、`test_character_constant_prefix_operand`（`"A` 字符常量）、`test_bad_number_warns_status_one`、`test_b_expands_operand_escapes`（`%b` 操作数转义）、`test_float_conversions_are_declared_unsupported`、`test_missing_format_character_is_an_error`。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/fileops` 复现）：
 
@@ -207,7 +209,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ## 6. 过渡：搬得动文件之后，去读懂文字
 
-本篇走完了日常操作的第一组：文件的属性、关系、搬运、判断。三十四个常用动作里，不碰文件的六件（echo、true、false、basename、dirname、pathchk -p）已经端到端可用，其余的决策核心已经就位，只剩读写执行层待系统调用。
+本篇走完了日常操作的第一组：文件的属性、关系、搬运、判断。三十四个常用动作里，不碰文件的七件（echo、true、false、basename、dirname、pathchk -p、printf）已经端到端可用，其余的决策核心已经就位，只剩读写执行层待系统调用。
 
 但文件里面装的是文字，文字有文字的玩法：取头取尾、排序去重、计数切割、字符转换——这是 `07-text-filter.md` 的职责。请沿因果链继续向下走：先会"搬文件"，再会"读文件里的行"。
 
