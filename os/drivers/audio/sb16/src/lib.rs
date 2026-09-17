@@ -12,6 +12,7 @@
 
 #![no_std]
 
+pub mod char_face;
 pub mod dsp;
 
 /// Service initialization entry (wires the card table; port traffic stays out).

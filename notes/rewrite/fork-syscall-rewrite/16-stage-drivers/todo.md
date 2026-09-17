@@ -82,6 +82,8 @@
 
 - **A2-net ✅（2026-09-17，A2 网络批首项）[L2] dp8390 消费 netdriver**：`char_face::Dp8390Face` 实现 `NetDriver`——name/init 报环形几何与 PROM 地址（服务层填）、link 恒未知（无链路寄存器）、length_ok 走帧界守卫、advance 走 G9 的停止页特例；寄存器与 PROM 读取归服务层；dp8390 测试 5→8。
 
+- **A2-sb16 ✅（2026-09-17，A2 音频批）[L2] sb16 消费 minix-audiodriver**：`char_face::Sb16Face` 实现 `AudioHooks`——init 报单子设备、start/stop 追踪运行态、get_frag_size 报协商值、set_rate 走 SB16 有限速率表（上限 23111，44100 拒绝）、rate_command_byte 消费 dsp.rs 的命令字节；sb16 测试 4→7。
+
 - **A2-audio ✅（2026-09-17，A2 音频批）[L2] es1371 消费 minix-audiodriver**：`char_face::Es1371Face` 实现 `AudioHooks`——init 报双子设备、start/stop 按子设备追踪运行态、get_frag_size 报协商值、set_rate 消费 rate.rs 的表外拒绝；DSP/codec 寄存器流量归服务层；es1371 测试 3→6。
 
 - **A2-fb ✅（2026-09-17，A2 显示批）[L2] fb 消费 chardriver**：`char_face::FbFace` 实现 `CharDriver`——read/write 按设备大小截断（`truncate_to_device`）、ioctl 走四请求解码（未知答 ENOTTY，`FbIoctl` 枚举直达服务层分发）、open/close 走 OpenCounter（N4 初始化旗语义）；重启窗口门控在服务层（拥有重启时间戳）；fb 测试 9→14。
