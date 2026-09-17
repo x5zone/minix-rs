@@ -16,6 +16,7 @@
 extern crate alloc;
 
 pub mod buffer;
+pub mod char_face;
 pub mod pair;
 pub mod ptyfs;
 pub mod select;

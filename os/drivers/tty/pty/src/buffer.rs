@@ -91,6 +91,11 @@ impl OutputRing {
         true
     }
 
+    /// Whether a master read is currently parked.
+    pub const fn has_parked_reader(&self) -> bool {
+        self.reader.is_some()
+    }
+
     /// Serve the parked read from the ring; packet mode prepends the zero
     /// byte before the first payload byte.
     ///
