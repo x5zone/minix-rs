@@ -44,8 +44,12 @@ pub const FEATURE_EVENT_INDEX: u8 = 29;
 
 /// One descriptor: address, length, flags, next.
 ///
-/// C: `struct vring_desc` (`virtio_ring.h`): sixteen bytes on the wire.
+/// C: `struct vring_desc` (`virtio_ring.h:63-75`): sixteen bytes on the
+/// wire, exactly this field order. The `#[repr(C)]` makes the type safe
+/// to overlay on (or write into) the shared queue memory the service
+/// maps; the const size assert pins the contract at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 pub struct Descriptor {
     /// Guest-physical address (opaque to this crate).
     pub address: u64,
@@ -55,6 +59,56 @@ pub struct Descriptor {
     pub flags: u16,
     /// Next descriptor in the chain (or free-list link).
     pub next: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<Descriptor>() == 16);
+
+/// Available-ring header: flags plus free-running index
+/// (`struct vring_avail`, `virtio_ring.h:77-80`), followed by `num`
+/// u16 ring entries (and, with EVENT_IDX, one more u16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct AvailHeader {
+    /// Flag bits (no-interrupt).
+    pub flags: u16,
+    /// Free-running index of the next available entry.
+    pub idx: u16,
+}
+
+/// Used-ring header: flags plus free-running index, followed by `num`
+/// used elements (`struct vring_used`, `virtio_ring.h:89-94`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct UsedHeader {
+    /// Flag bits (no-notify).
+    pub flags: u16,
+    /// Free-running index of the next used entry.
+    pub idx: u16,
+}
+
+/// Byte size of one queue's shared memory, per the C layout formula
+/// (`vring_size`, `virtio_ring.h:136-145`): descriptor table, then the
+/// available ring padded up to `align`, then the used ring.
+pub const fn vring_size(num: u16, align: u32) -> u32 {
+    let num = num as u32;
+    let desc = 16 * num;
+    let avail = 2 * (3 + num); // flags + idx + num entries + event idx
+    let avail_total = (desc + avail + align - 1) & !(align - 1);
+    let used = 6 + 8 * num; // flags + idx + num elements + event idx
+    avail_total + used
+}
+
+/// Byte offset of the available ring from the queue base
+/// (`vring_init`: right after the descriptor table).
+pub const fn avail_offset(num: u16) -> u32 {
+    16 * num as u32
+}
+
+/// Byte offset of the used ring from the queue base (`vring_init`:
+/// after the available ring, padded up to `align`).
+pub const fn used_offset(num: u16, align: u32) -> u32 {
+    let avail_end = avail_offset(num) + 2 * (3 + num as u32);
+    (avail_end + align - 1) & !(align - 1)
 }
 
 impl Descriptor {
@@ -79,6 +133,9 @@ pub struct UsedElement {
     /// Bytes the host wrote.
     pub length: u32,
 }
+
+/// Wire chain terminator stored in a chain's last `next` field.
+pub const CHAIN_END: u16 = u16::MAX;
 
 /// Virtqueue index state: free list plus available/used cursors.
 ///
@@ -165,14 +222,76 @@ impl QueueState {
         self.used_index = used;
     }
 
-    /// Collect one completed entry; `None` when all are collected.
-    pub fn collect(&mut self) -> Option<u16> {
-        if self.collected == self.used_index {
+    /// Used entries the guest has not collected yet.
+    pub const fn uncollected(&self) -> u16 {
+        self.used_index.wrapping_sub(self.collected)
+    }
+
+    /// Mark one used entry handled (advance the collection cursor).
+    pub fn note_collected(&mut self) {
+        self.collected = self.collected.wrapping_add(1);
+    }
+
+    /// Reserve a chain of `count` descriptors linked through `next`;
+    /// returns the head index, or `None` when fewer are free.
+    ///
+    /// C: the chaining half of `virtio_to_queue` — descriptors come off
+    /// the free list in order, each pointing at the following one, the
+    /// last carrying [`CHAIN_END`] (the wire chain terminator). Arguments
+    /// per descriptor are the service's business.
+    pub fn take_chain(&mut self, count: usize) -> Option<u16> {
+        if count == 0 || count as u16 > self.free_count {
             return None;
         }
-        let id = self.collected;
-        self.collected = self.collected.wrapping_add(1);
-        Some(id)
+        let head = self.free_head;
+        // Walk count-1 links: intermediate descriptors are already
+        // threaded in free-list order, which IS the chain order.
+        let mut tail = head;
+        for _ in 1..count {
+            tail = self.next[tail as usize];
+        }
+        // The chain ends here; the free list continues after it.
+        self.free_head = self.next[tail as usize];
+        self.next[tail as usize] = CHAIN_END;
+        self.free_count -= count as u16;
+        Some(head)
+    }
+
+    /// Return one completed chain to the free list; returns the number of
+    /// descriptors freed.
+    ///
+    /// C: the completion half of `virtio_from_queue` — walking the chain
+    /// from the used element's `id` and re-threading the free list
+    /// (`virtio.c:627` area). The `id` comes from the used-ring entry the
+    /// service reads; a corrupt chain (walking off the table) frees
+    /// nothing, matching C's fail-stop posture for impossible states.
+    pub fn collect_chain(&mut self, head: u16) -> usize {
+        if head as usize >= self.next.len() {
+            return 0;
+        }
+        // Pass one: find the chain tail and its length. A step bound of
+        // the table size catches corrupt chains (including a re-collected
+        // head that is already on the free list, which is circular) —
+        // fail closed, freeing nothing.
+        let mut tail = head;
+        let mut count = 1usize;
+        let mut steps = 0usize;
+        while self.next[tail as usize] != CHAIN_END {
+            tail = self.next[tail as usize];
+            if tail as usize >= self.next.len() {
+                return 0;
+            }
+            steps += 1;
+            if steps >= self.next.len() {
+                return 0;
+            }
+            count += 1;
+        }
+        // Pass two: splice the whole chain in front of the free list.
+        self.next[tail as usize] = self.free_head;
+        self.free_head = head;
+        self.free_count += count as u16;
+        count
     }
 }
 
@@ -218,8 +337,52 @@ mod tests {
         assert_eq!(queue.pending(), 2);
         queue.note_used(1);
         assert_eq!(queue.pending(), 1);
-        assert_eq!(queue.collect(), Some(0));
-        assert_eq!(queue.collect(), None);
+        assert_eq!(queue.uncollected(), 1);
+        queue.note_collected();
+        assert_eq!(queue.uncollected(), 0);
+    }
+
+    #[test]
+    fn test_chain_take_and_collect_round_trip() {
+        // The completion path must recover EVERY descriptor of a chain,
+        // walking from the used-ring head id (virtio.c:627 area) — the
+        // old cursor-returning collect leaked the whole chain.
+        let mut queue = QueueState::new(8);
+        let head_a = queue.take_chain(3).unwrap();
+        let head_b = queue.take_chain(2).unwrap();
+        assert_eq!(queue.free(), 3);
+        // Host completed chain b first (out-of-order completion).
+        assert_eq!(queue.collect_chain(head_b), 2);
+        assert_eq!(queue.free(), 5);
+        assert_eq!(queue.collect_chain(head_a), 3);
+        assert_eq!(queue.free(), 8);
+    }
+
+    #[test]
+    fn test_collect_chain_of_single_descriptor() {
+        let mut queue = QueueState::new(4);
+        let head = queue.take_chain(1).unwrap();
+        assert_eq!(queue.collect_chain(head), 1);
+        assert_eq!(queue.free(), 4);
+        // A re-collected (stale) head re-threads without corruption: the
+        // free list stays exactly four long.
+        queue.collect_chain(head);
+        assert_eq!(queue.free(), 4);
+    }
+
+    #[test]
+    fn test_vring_layout_matches_c_formula() {
+        // vring_size formula (virtio_ring.h:136-145): descriptor table,
+        // avail ring padded to align, then the used ring.
+        assert_eq!(avail_offset(8), 128); // 16 * 8
+        assert_eq!(avail_offset(16), 256);
+        // avail region: flags+idx+8 entries+event = 2*(3+8) = 22 bytes;
+        // used starts at align_up(128+22, 4096) = 4096.
+        assert_eq!(used_offset(8, 4096), 4096);
+        assert_eq!(vring_size(8, 4096), 4096 + 6 + 8 * 8);
+        // Small align: avail region ends at 150; align_up(150, 16) = 160.
+        assert_eq!(used_offset(8, 16), 160);
+        assert_eq!(vring_size(8, 16), 160 + 6 + 64);
     }
 
     #[test]

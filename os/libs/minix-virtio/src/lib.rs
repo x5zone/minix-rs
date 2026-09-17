@@ -18,4 +18,5 @@ extern crate alloc;
 
 pub mod device;
 pub mod features;
+pub mod hal;
 pub mod ring;
