@@ -115,7 +115,7 @@ C 语言直接调内核消息原语发消息，这让库函数在没有内核的
 | `bdev_callback_asyn`、`bdev_restart_asyn` | 第 2.6 节 | 服务层（本库只管状态机） | 已记录，不管实现 |
 | `bdev_call_free` | 第 2.7 节差异表 | `collect` 即释放 | 已覆盖 |
 | `bdev_driver_init`、`bdev_driver_clear`、`bdev_driver_set`、`bdev_driver_get`、`bdev_driver_update` | 第 2.3 节 | `DriverTable` | 已覆盖 |
-| `bdev_minor_reopen`、`bdev_minor_add`、`bdev_minor_del`、`bdev_minor_is_open` | 第 2.4 节 | `OpenTracker` | 已覆盖 |
+| `bdev_minor_reopen`、`bdev_minor_add`、`bdev_minor_del`、`bdev_minor_is_open` | 第 2.4 节 | `OpenTracker` 与 `allocate`/`destination` | 已覆盖（计数与重发配方；`minor.c:17-76` 的逐次重发循环归服务层 flush） |
 | `bdev_senda`、`bdev_sendrec` | 第 2.5 节 | `Transport` | 已覆盖（抽象层） |
 | `bdev_update` | 第 2.3 节 | 服务层发现（本库不管轮询） | 已记录，不管实现 |
 | 调用槽结构八字段 | 第 2.7 节差异表 | `CallSlot`（回调与向量在服务层） | 已覆盖（可测试部分） |

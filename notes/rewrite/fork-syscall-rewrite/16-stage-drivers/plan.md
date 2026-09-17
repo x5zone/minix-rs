@@ -235,7 +235,7 @@ net（14 个同构网卡）、storage（ahci/at_wini/floppy/mmc/fbd/filter/vnd�
 | A-10 | 熵源 | random + AES（rijndael） | 密码学 Rust 库（RNG 后端）；no_std 约束 | 09 | 设计期 |
 | A-11 | Live Update | `blockdriver_liveupdate`（liveupdate.c 94 行）+ log liveupdate | 与 02-stage-vm A-8 同步 fail-closed | 02/08 | 设计期 |
 | A-12 | 键盘映射 | `keymaps/genmap.c` 生成表 | 静态表生成（build 时），console 渲染层 | 06/13 | 设计期 |
-| A-13 | 帧缓冲 | fb + mmap 帧缓冲（fb.c） | 帧缓冲 mmap 与 02-stage-vm mmap 语义衔接 | 20 | 设计期 |
+| A-13 | 帧缓冲 | fb 是字符设备（读写+四 ioctl），无 mmap（doc 20 勘误） | 撤销——无 mmap 需求 | 20 | 已撤销（勘误） |
 
 ---
 
