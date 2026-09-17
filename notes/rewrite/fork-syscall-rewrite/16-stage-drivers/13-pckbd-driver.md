@@ -2,7 +2,7 @@
 
 > **分类**：输入第 1 篇（扫描码翻译，事件桥）
 > **源码**：`minix3/minix/drivers/hid/pckbd/pckbd.c`（五百零七行，扫描、翻译、发光二极管、桥接）、`minix3/minix/drivers/hid/pckbd/table.c`（一百六十九行，扫描码对照表）、`minix3/minix/drivers/hid/pckbd/pckbd.h`（按键常量）、`minix3/minix/lib/libinputdriver/inputdriver.c`（二百零六行，事件桥）、`minix3/minix/include/minix/inputdriver.h`（桥回调表）、`minix3/minix/include/minix/input.h`（事件词汇）、`minix3/minix/include/minix/com.h`（第八百九十行到第八百九十三行，输入协议号）
-> **Rust 模块**：`os/drivers/hid/pckbd/src/scancode.rs`（扫描码状态机）、`os/drivers/hid/pckbd/src/mouse.rs`（鼠标包组装）、`os/drivers/hid/pckbd/src/led.rs`（发光二极管 outbox）、`os/drivers/hid/pckbd/src/bridge.rs`（事件桥）
+> **Rust 模块**：`os/drivers/hid/pckbd/src/scancode.rs`（扫描码状态机）、`os/drivers/hid/pckbd/src/mouse.rs`（鼠标包组装）、`os/drivers/hid/pckbd/src/led.rs`（发光二极管 outbox）、`os/libs/minix-sys/src/inputdriver.rs`（事件桥，单一权威——桥属协议而非本驱动，crate 内旧 bridge 副本已删，对账 edge E-PCKBDREG 第 5 项）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（本篇不走字符框架，走输入协议，见第 1.2 节）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`（终端键盘读取是另一条路）
 > **说明**：键盘鼠标驱动是人手与系统的翻译官：按键变成事件，滚轮变成位移，大小写灯听指挥。本篇讲翻译的三件事：扫描码状态机、鼠标三字节包、发光二极管 outbox，外加事件桥（通往输入服务的单行道）。键盘初始化的端口体操（自检、中断挂钩、控制器命令）在服务层实现，本库只定策略。
 
@@ -197,18 +197,13 @@ Minix3 的键盘部分就是这位译员。扫描码是源语言（硬件方言�
 | 超时位确认不算数 | 状态口超时位吞确认、重发逻辑接管 | pckbd.c:129 状态检查 |
 | 满队丢清确认 | 十六满再排不变 | 溢出分支 |
 
-### 5.4 桥模块测试（四个）
+### 5.4 事件桥测试（归 `minix-sys::inputdriver`）
 
-| 测试 | 验证内容 | 对应依据 |
-|------|----------|----------|
-| 未配全拦 | 新桥无路由 | 双门禁 |
-| 配置路由分种类 | 键盘通鼠标拦 | 号门禁 |
-| 崩溃解绑 | 失败后全拦 | 发送失败分支 |
-| 宣告标志 | 有鼠双位无鼠单位 | 上报标志 |
+事件桥的门禁、发送与解绑决策是协议而非驱动（crate 内旧 bridge 副本已删，对账 edge E-PCKBDREG 第 5 项）；其测试随 `minix-sys` 的测试套运行，见 `rg "fn test_" os/libs/minix-sys/src/inputdriver.rs`。
 
 ### 5.5 测试统计（截至 2026-09-17）
 
-- 本篇直接相关：二十个（扫描八个，鼠标四个，灯四个，桥四个），全部通过。
+- 本篇直接相关：十六个（扫描八个，鼠标四个，灯四个），全部通过；事件桥测试四项随 `minix-sys` 套件另行运行。
 - 复现命令：`cargo test -p minix-driver-pckbd --lib`（工作目录 `os/`）。
 - 完整测试清单：`rg "fn test_" os/drivers/hid/pckbd/src/`。
 
