@@ -35,8 +35,9 @@
 - **P0-1 ☐ main() 空转，入口 8 步只做了 3 步**（BUG-级缺失）。
   `main.rs:24-55` 实际只做参数解析（`parse_boot_args`）、设备探测（`FsDeviceProbe`）、入口决策（`decide_entry`），然后 `loop { park() }`。对照 `init.c:229-367` 的 8 步：身份校验（`check_identity` 存在于 `entry.rs:101` 但 main 从不调用）、setsid、信号注册（handle/delset，init.c:310-334）、close(0/1/2)（init.c:339-341）、securelevel 探测（has_securelevel，init.c:353）、`transition()`（init.c:358）全部缺失。`decision.runcom_mode` 计算后被丢弃（`main.rs:47-50` 两个 match 臂均为空），`-f` 目前没有任何运行时效果。`main.rs:29` 的 `_warnings` 也直接丢弃，C 侧 `warning()` 通道没有消费者。（修复方案：P1-1 运行模型定型后重写 main；在 minix-sys 缺口（E-INITSYS）落地前不可行动）
 
-- **P0-2 ☐ 全部状态函数没有进程控制实体**（MISSING）。
-  C 的核心动作——fork、exec、阻塞 waitpid、kill——在 crate 内零调用（minix-sys 的 `fork`/`exec`/`waitpid`/`kill` 封装在 `libs/minix-sys/src/lib.rs:148/157/167/175` 已存在，但 init 未使用）。具体缺口：`single_user` 的 shell spawn 与五分支 wait 循环（init.c:694-877，Rust 只有 `single_user.rs:60-83` 的分类器）；`runetcrc` 的 fork/exec + 双跑 chroot 重试（init.c:879-969，Rust 只有 `runcom.rs:27-47`）；`multi_user` 的 start_getty/start_window_system/setctty/collect_child 实体（init.c:1290-1370、669-689、1460-1497——**`setctty` 全库无任何 Rust 代码**，而 `multi_user.rs:3-5` 模块头声称覆盖它）；`clean_ttys` 的会话遍历 + kill（init.c:1569-1629，Rust 只有 `clean_ttys.rs:19-30` 四臂 diff）；`death` 的 kill(-1) + alarm + ECHILD 回收循环（init.c:1661-1698，Rust 只有 `shutdown.rs:22-29` 分类器）。（修复方案：随 P1-3 的 InitHost seam 逐状态函数落地，每落地一个状态函数同步其文档 §5 测试）
+- **P0-2 🔄 2026-09-18（Fix #9 起分批闭单）状态函数进程控制实体**。
+  原问题：C 的核心动作——fork、exec、阻塞 waitpid、kill——在 crate 内零调用；setctty 全库无代码；multi_user.rs 模块头声称覆盖不存在的函数。
+  **修复进度**：P0-2a single_user 实体 ✅（Fix #9，init.c:694-877 三幕结构 + 双 exec 兜底 + ^D 语义，doc 04 重写）；P0-2b runetcrc、P0-2c multi_user（setctty/collect_child/start_getty）、P0-2d clean_ttys/death/catatonia 跟随后续 Fix。前提 P1-3 接缝已落地。
 
 - **P0-3 ☐ 信号子系统只有映射表，没有真身**（MISSING/TRAIT-ONLY）。
   `state_machine.rs` 的 `signal_to_state`（:78-85）与 `AlarmFlag`（:156-168）是纯数据；`LiveSignalRegistry::register` 记录意图后返回 `Err(RegistryError::Deferred)`（:132-141），`block_all_except` 是空操作（:143-145）。C 的 5 个信号处理函数没有可运行的对应物：`transition_handler`（init.c:1502-1522）、`alrm_handler`（1649-1655）、`disaster`（505-511）、`minixreboot`（518-525）、`minixpowerdown`（531-538）。其中 minixreboot/minixpowerdown 需要 fork+exec `/sbin/shutdown`，`contracts.rs:24-35` 已能构造 argv 但无人执行。依赖 edge E-INITSYS ①。（修复方案：真 handler 落成一个只置原子标志 + `siglongjmp` 无关的最小函数族，与 P1-1 的 EINTR 主循环配套）
