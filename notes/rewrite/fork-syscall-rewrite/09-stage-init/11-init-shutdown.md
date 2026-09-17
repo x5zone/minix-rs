@@ -46,7 +46,6 @@
 
 | 测试 | C 对照 |
 |---|---|
-| `test_catatonia_marks_all` | init.c:1639-1640 |
 | `test_death_sequence_order` | init.c:1667 |
 | `test_round_all_dead` | init.c:1691-1692 |
 | `test_round_timeout_next` | init.c:1686-1689 |

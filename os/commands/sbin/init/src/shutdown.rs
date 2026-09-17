@@ -29,19 +29,9 @@ pub fn classify_round(reaped_all: bool, timed_out: bool) -> DeathRoundOutcome {
     }
 }
 
-/// Count sessions catatonia would mark (C: init.c:1639-1640).
-pub fn catatonia_marks(session_count: usize) -> usize {
-    session_count
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_catatonia_marks_all() {
-        assert_eq!(catatonia_marks(5), 5);
-    }
 
     #[test]
     fn test_death_sequence_order() {

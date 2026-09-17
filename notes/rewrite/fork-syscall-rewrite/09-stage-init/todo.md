@@ -92,8 +92,9 @@
 
 ### 1.3 P2 打磨
 
-- **P2-1 ☐ 恒等函数与无效测试：`catatonia_marks`**。
-  `shutdown.rs:33-35` 的 `catatonia_marks(session_count) -> usize { session_count }` 是恒等函数，其测试 `test_catatonia_marks_all` 断言 5==5（:42-44）。C 的 catatonia 是把全部会话置 SE_SHUTDOWN（init.c:1634-1643），"数量"不是语义。删除函数与测试，语义由 P0-2 的 catatonia 实体承接。
+- **P2-1 ✅ 2026-09-18（Fix #3）删除恒等函数 `catatonia_marks` 及无效测试**。
+  原问题：`shutdown.rs:33-35` 的 `catatonia_marks(session_count) -> usize { session_count }` 是恒等函数，其测试断言 5==5。C 的 catatonia 语义是"全部会话置 SE_SHUTDOWN 后回 multi_user"（init.c:1634-1643），数量不是语义。
+  **修复记录**：方案对比——A 删除，语义由 Wave3 的 catatonia 实体承接（采纳）/ B 改造为标记动作枚举（为保留而保留，YAGNI，否决）。doc 11 §5 表同步删除该行。测试 98 → 97（净减一个无效测试，属预期减项）。
 - **P2-2 ☐ 假调用 shim 与空洞测试：`vec_from_slice` / utmp 空断言**。
   `entry.rs:359-365` 的 `alloc_or_std_vec::vec_from_slice` 唯一使用点是一个测试里的 `let _ = vec_from_slice(&[1u8]);`（:232）——调用只为压制 dead_code 告警，断言零内容。`utmp.rs:95-100` 的 `test_runlevel_skipped_when_no_sessions` 断言局部常量 `let sessions_empty = true` 为真——C 语义（init.c:1439-1440 的 sessions==NULL 短路）完全没有被测试到。两条都是模式"测试族-无效"实例：删除 shim；utmp 测试改为对真实函数的空会话输入断言（依赖 P0-6 的 sink 落地，或先删除占位测试）。
 - **P2-3 ☐ `AlreadyRunning → EEXIST` 的自造 errno 重审**。
