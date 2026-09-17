@@ -83,6 +83,9 @@ pub struct Session {
     pub device: String,
     pub getty: Option<ParsedCommand>,
     pub window: Option<ParsedCommand>,
+    /// Wall-clock seconds of the last spawn (C: `se_started`), the
+    /// getty debounce input; 0 = never started.
+    pub started_secs: i64,
 }
 
 /// Why a session could not be built.
@@ -123,6 +126,7 @@ pub fn build_session(
         device: format!("/dev/{name}"),
         getty: Some(ParsedCommand::path_is_first_word(getty_argv)),
         window: window_parsed,
+        started_secs: 0,
     })
 }
 

@@ -35,13 +35,13 @@
 
 ## 3. Rust 设计决策
 
-防抖动与回收分类提炼为纯函数，进程操作收敛为 trait。与 Redox 的守护进程重启退避思路一致，但退避参数取 Minix 原值。
+**[ARCH: init-host-seam]** 防抖动与回收分类提炼为纯函数，全部机器动作走 `InitHost`。三处容易读漏的 C 语义在此钉住：稳态的 `waitpid` **不带** WUNTRACED（init.c:1559，options 为 0，暂停的子进程根本不可见——与救援状态相反）；安全级判定是 `==0 则升 1` 而非"大于 0"（init.c:1541-1543，管理员用 -1 表示"别动"）；防抖动的睡发生在**子进程里**（init.c:1347-1349，拖住的是 exec 而不是父循环）。时钟不可读（live 宿主 ENOSYS）按"足够慢"降级——防抖失效但 getty 照常运行，这是诚实失败的延伸。
 
 ---
 
 ## 4. 实现详解
 
-模块 `multi_user.rs`；差异：`time()`/`gettimeofday` 改为传入秒数；全局链表操作改为动作枚举。
+模块 `multi_user.rs`（P0-2c）。`multi_user(host, deps) -> StateKind`：扫表补 getty、无限收割、返回被请求的状态；`start_getty` 返回 pid 或"严重麻烦"（fork 失败），子进程按 chroot→防抖→窗口→exec 的次序走，窗口系统是 getty 子进程里的再一次 fork；`collect_child` 沿 DB 找会话、清台账、SHUTDOWN 摘链或重启重挂，四动作枚举 `CollectAction` 保留纯分类器供直测。`time()`/`gettimeofday` 经 `host.now_secs()`，ENOSYS 视为 0；链表操作改为 `Vec<Session>` 加 `SessionDb` 索引。
 
 ---
 
@@ -55,10 +55,17 @@
 | `test_collect_removes_shutdown` | init.c:1476-1485 |
 | `test_collect_unknown_ignores` | init.c:1469-1470 |
 | `test_collect_spawn_failure_requests_clean` | init.c:1487-1491 |
+| `test_collect_child_ignores_unknown_pid` | init.c:1468-1470 |
+| `test_collect_child_restarts_and_reindexes` | init.c:1487-1495 全链（清台账/换 pid/DB 重挂） |
+| `test_collect_child_shutdown_removes_session` | init.c:1476-1485 摘链 |
+| `test_multi_user_spawns_all_and_reaps_until_requested` | init.c:1546-1562 主循环 |
+| `test_multi_user_spawn_failure_requests_clean_ttys` | init.c:1551-1554 + 安全级 1 不动 |
+| `test_getty_child_debounce_window_sleeps_before_exec` | init.c:1347-1350 子进程内防抖 |
+| `test_getty_child_starts_window_then_getty_when_configured` | init.c:1352-1356 窗口先于 getty |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：62 个通过（累计），0 失败。
+- `cargo test -p minix-init`：139 个通过（累计），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/multi_user.rs`。
 
 ---
