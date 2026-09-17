@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod char_face;
 pub mod core;
 pub mod crypto;
 pub mod device;
