@@ -200,6 +200,7 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 | 窗口未初始化 | 输入输出错误 | 服务层按规划报该码 | 后备没准备好 |
 | 映射失败 | 内存不足 | `MapperError::NoMemory` 转该码 | 页建不出来 |
 | 映射地址不对齐 | C 无此情形（页起算恒对齐） | `MapperError::Misaligned` 转无效参数 | 调用方错误，非线上答案 |
+| 字符面框架接线 | 第 2.2 节 | `char_face::MemoryChar` 实现 `CharDriver` | 已覆盖（块面与真实循环随接线批） |
 | 非盘扩容 | 无效参数 | `ResizeVerdict::NotRamdisk` | 面的守卫的控制版 |
 | 盘忙扩容 | 忙 | `ResizeVerdict::Busy` | 独占要求 |
 | 复制失败（块） | 停下 | 服务层按规划处理 | 块复制失败无恢复意义，文档记录 |
