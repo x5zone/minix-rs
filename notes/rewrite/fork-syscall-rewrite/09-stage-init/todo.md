@@ -68,7 +68,7 @@
 
 ### 1.2 P1 架构分层审视（每项 ≥2 方案对比；整体 → 模块 → trait → 函数）
 
-- **P1-1 ☐ [L0 整体] 运行模型定型：阻塞 waitpid 主循环**。
+- **P1-1 ✅ 2026-09-18（Fix #16）运行模型定型：阻塞 waitpid 主循环落地（driver.rs::run_transition）**。原方案对比：
   方案 A：单线程阻塞 `waitpid(-1, &status, WUNTRACED)` 主循环，信号 handler 只置原子标志（`AlarmFlag` 已为此预备，`state_machine.rs:152-168`），循环每轮检查标志位，waitpid 返回 EINTR 时继续——与 C 结构同构（init.c:1559-1561 的 while(1) waitpid），与 Redox init 的裸 waitpid 循环同构（其 src/main.rs 收尾三行就是一个 loop-waitpid）。方案 B：self-pipe 事件循环（Linux 最佳实践，Kerrisk TLPI 的 async-signal-safe 标准解）——需要 pipe(2)，minix-sys 无此封装，为 init 单独引管道收益存疑。方案 C：现状 park()——不是方案，是缺口本身。**推荐 A**；前提是 E-INITSYS ① 的 sigaction/sigprocmask 与 EINTR 语义（plan.md A-9）落地。附带决策：EINTR 后重试与"先查 flag 再 wait"的竞态窗口处理要写进文档 02（C 靠 sigsetmask 窗口，init.c:335-367）。
 
 - **P1-2 ☐ [L0 整体] std 链接 vs no_std 决策**。
