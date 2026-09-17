@@ -1086,3 +1086,10 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：E-SYSCALL-SIGN（宿主下 `*_via` 假成功未修复前，本条各件的宿主级验收不可信）；open 存在路径另有其注释声明的前置（全局概念文档的 64 位路径消息布局）。交叉引用：E-CMDSYSFACE（init 依赖面已收敛为 minix-sys+minix-rt，`os/commands/sbin/init/Cargo.toml:12-14` 实证，其 C-2 已执行）；E-MINSYS-SCOPE（新增客户端模块的内聚性归其处置窗口）；E-ISBOOT（/etc/rc 消费面的配置层）。
 **解锁**：09-stage-init/todo.md §3 领取条件第 3 条（主体接线）与第 4 条（P0-5/6/7）；getty/login 等后续命令族的进程控制需求；E5 init START 冒烟链的真实半。
+
+> **进度（2026-09-18，🔄 09 侧客户端面全落地，提交 e8be0da5a+6a9614bc6）**：
+> - **④ ✅** `minix-types::types::signal` 模块转 pub + `minix_sys` 再导出（`pub use minix_types::signal`，init 侧本地 `sig` 镜像删除改 import）。
+> - **③ ✅** WaitStatus 解码器上移 `minix-sys/src/wait.rs`（WaitStatus/from_raw + WNOHANG/WUNTRACED/EINTR，7 测试）；init 侧转薄壳再导出，本地实现删除。
+> - **① 客户端半 ✅** minix-sys 新增 `sigaction_via/sigprocmask_via/sigsuspend_via/sigpending_via` + `SigActionWire`（C struct sigaction 用户镜像，PM sys_datacopy 契约）+ `MessLcPmSig/MessLcPmSigset/MessPmLcSigset` 三臂入 Message union（E-MINTYPES 范式）；7 个 wire 形状测试。
+> - **② 客户端半 ✅** `getuid_via`（m1i1/m1i2 回复对）/`setsid_via`（m_type 即会话 id）；init MinixSysHost getuid/setsid 接真实半。
+> - **剩余（04/14 阶段 + E5 联调）**：PM `dispatch_pm_call` 缺信号/uid 族 match 臂（handle_sigaction/sigprocmask logic 已在但未接消息解码）；minix-rt sigreturn 桩 + panic-handler 接线；端到端投递通电。init 侧 trampoline/静态 SignalState 已就绪，PM 臂闭单即活。

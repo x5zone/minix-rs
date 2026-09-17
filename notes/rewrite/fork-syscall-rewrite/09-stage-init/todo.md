@@ -44,8 +44,8 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 
 | 残余项 | 解锁条件 |
 |---|---|
-| signal_state（note_signal/note_shutdown_request/take_*） | E-INITSYS ① sigaction 客户端面 |
-| log::disaster/DisasterAction（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
+| signal_state（take_* 待主循环 drain 接线；note_* 已由 trampoline 消费 ✅） | E-INITSYS ① PM 臂闭单后由 run_transition 接管 |
+| log::disaster（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
 | contracts（request_for/shutdown_argv/SHUTDOWN_PATH）+ SignalState::take_shutdown_request 的驱动侧 drain | E-INITSYS ①（handler 置位 + 主循环边界执行 spawn） |
 | multi_user::setctty 包装 | E-INITSYS ②（setsid/login_tty） |
 | utmp（session_utmpx/RecordType::Login/clear_session_logs） | E-INITSYS ②（open-existing 后的文件写） |
@@ -74,7 +74,7 @@ password.rs 的解析/分发/门控接线已闭环；DES/MD5/SHA1/bcrypt 四后�
 
 | edge 条目 | 状态 | 一句话 | 09 侧关联 |
 |---|---|---|---|
-| E-INITSYS | 🔄 待共享基建 lane 领取 | ①信号族封装（PM 端点已在）②进程控制族（setsid/getuid/reboot 封装 + open 存在路径）③WaitStatus 解码上移（crate 内 mini 版已先行） | P0-1~P0-7 live 半、P1-1、P2-6 残余 |
+| E-INITSYS | 🔄 ④③①②客户端面已落地（e8be0da5a+6a9614bc6）；剩 PM dispatch 臂（04）+ minix-rt sigreturn 桩（14）+ E5 通电 | ①信号族封装 ②进程控制族 ③WaitStatus 上移 ④signal 再导出 | P0-1~P0-7 live 半、P1-1、P2-6 残余 |
 | E-CMDSYSFACE（既有） | 开口 | 命令层 libc face；minix-rt env API + no_std 决策 | P1-2 |
 | E-ISBOOT（既有） | 开口 | rc/system.conf 等价物不存在 | P0-2b 的 /etc/rc 消费面 |
 | E5（既有） | 开口 | 端到端联调包（init START 冒烟） | 本轮实体的真机验证出口 |
