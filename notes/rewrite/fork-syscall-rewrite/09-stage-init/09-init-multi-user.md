@@ -51,10 +51,6 @@
 |---|---|
 | `test_spacing_triggers_sleep` | init.c:1350-1355 |
 | `test_spacing_no_sleep` | 同上 |
-| `test_collect_restarts` | init.c:1487-1495 |
-| `test_collect_removes_shutdown` | init.c:1476-1485 |
-| `test_collect_unknown_ignores` | init.c:1469-1470 |
-| `test_collect_spawn_failure_requests_clean` | init.c:1487-1491 |
 | `test_collect_child_ignores_unknown_pid` | init.c:1468-1470 |
 | `test_collect_child_restarts_and_reindexes` | init.c:1487-1495 全链（清台账/换 pid/DB 重挂） |
 | `test_collect_child_shutdown_removes_session` | init.c:1476-1485 摘链 |

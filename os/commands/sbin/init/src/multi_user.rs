@@ -15,9 +15,9 @@ use crate::host::InitHost;
 use crate::log::{emergency, stall, warning};
 use crate::session::{Session, SE_SHUTDOWN};
 use crate::session_db::SessionDb;
-use crate::state_machine::{sig, StateKind};
+use crate::state_machine::StateKind;
 use crate::wait::WaitStatus;
-use minix_sys::{Errno, Pid};
+use minix_sys::Pid;
 
 /// Minimum getty spacing in seconds (C: `GETTY_SPACING`, init.c:92).
 pub const GETTY_SPACING_SECS: i64 = 5;
@@ -42,22 +42,6 @@ pub enum CollectAction {
     RemoveSession,
     RestartSession,
     RequestCleanTtys,
-}
-
-/// Classify a reaped child against the table state — the pure summary
-/// of `collect_child`'s decision ladder, kept for direct testing of the
-/// four outcomes the entity implements.
-pub fn classify_collect(known: bool, shutdown: bool, spawn_ok: bool) -> CollectAction {
-    if !known {
-        return CollectAction::Ignore;
-    }
-    if shutdown {
-        return CollectAction::RemoveSession;
-    }
-    if !spawn_ok {
-        return CollectAction::RequestCleanTtys;
-    }
-    CollectAction::RestartSession
 }
 
 /// Claim `device` as the child's controlling terminal (C: `setctty`,
@@ -135,28 +119,26 @@ pub fn start_getty(
     }
 
     // C: the getty follows the boot into the chroot (init.c:1336-1342).
-    if did_multiuser_chroot {
-        if let Err(e) = host.chroot(rootdir) {
+    if did_multiuser_chroot
+        && let Err(e) = host.chroot(rootdir) {
             stall(
                 host,
                 &format!("can't chroot getty `{}' inside `{}': {e}", session.device, rootdir),
             );
             host.exit_process(7);
         }
-    }
 
     // C: too-fast restart sleeps in the child, delaying the exec
     // (init.c:1344-1350). No readable clock (ENOSYS) counts as "slow
     // enough" — the debounce degrades, the getty still runs.
-    if let Ok(now) = host.now_secs() {
-        if getty_delay_secs(now, session.started_secs) > 0 {
+    if let Ok(now) = host.now_secs()
+        && getty_delay_secs(now, session.started_secs) > 0 {
             warning(
                 host,
                 &format!("getty repeating too quickly on port `{}', sleeping", session.device),
             );
             let _ = host.sleep_secs(GETTY_SLEEP_SECS);
         }
-    }
 
     if session.window.is_some() {
         start_window_system(host, session);
@@ -186,7 +168,7 @@ pub fn multi_user(
     // C: level 0 means "kernel should enter secure mode" — raise it to
     // 1 (init.c:1540-1544). Note the == test, not >.
     if host.securitylevel().ok().flatten() == Some(0) {
-        host.set_securitylevel(1);
+        let _ = host.set_securitylevel(1);
     }
 
     // C: every line without a live process gets a getty; a fork error
@@ -289,6 +271,7 @@ mod tests {
     use crate::driver::ChildCollector;
     use crate::host::ScriptHost;
     use crate::session::build_session;
+    use minix_sys::Errno;
 
     fn no_clear(_device: &str, _pid: Pid, _status: &WaitStatus) {}
     fn sample(index: usize, name: &str) -> Session {
@@ -306,34 +289,9 @@ mod tests {
         assert_eq!(getty_delay_secs(100, 100), 0);
     }
 
-    #[test]
-    fn test_collect_restarts() {
-        assert_eq!(
-            classify_collect(true, false, true),
-            CollectAction::RestartSession
-        );
-    }
 
-    #[test]
-    fn test_collect_removes_shutdown() {
-        assert_eq!(
-            classify_collect(true, true, true),
-            CollectAction::RemoveSession
-        );
-    }
 
-    #[test]
-    fn test_collect_unknown_ignores() {
-        assert_eq!(classify_collect(false, false, true), CollectAction::Ignore);
-    }
 
-    #[test]
-    fn test_collect_spawn_failure_requests_clean() {
-        assert_eq!(
-            classify_collect(true, false, false),
-            CollectAction::RequestCleanTtys
-        );
-    }
 
     #[test]
     fn test_collect_child_ignores_unknown_pid() {

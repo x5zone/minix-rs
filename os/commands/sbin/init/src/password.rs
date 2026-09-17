@@ -38,11 +38,12 @@ pub fn parse_password_hash(pw_passwd: &str) -> PasswordHash {
         return PasswordHash::Locked;
     }
     if let Some(rest) = pw_passwd.strip_prefix('$') {
-        match rest.as_bytes().first() {
-            Some(b'2') => return PasswordHash::Bcrypt,
-            Some(b's') => return PasswordHash::Sha1,
-            Some(b'1') | _ => return PasswordHash::Md5,
-        }
+        return match rest.as_bytes().first() {
+            Some(b'2') => PasswordHash::Bcrypt,
+            Some(b's') => PasswordHash::Sha1,
+            // C: any other $-prefix defaults to MD5 (crypt.c:515-518).
+            _ => PasswordHash::Md5,
+        };
     }
     // DES settings are the two leading salt characters.
     let salt_len = pw_passwd.chars().take(2).count().min(2);

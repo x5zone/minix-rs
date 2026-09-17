@@ -16,7 +16,6 @@
 use crate::host::InitHost;
 use crate::state_machine::StateKind;
 use crate::wait::WaitStatus;
-use minix_sys::Errno;
 /// C: `_PATH_UTMPX` (`minix3/include/utmpx.h:39`).
 pub const UTMPX_PATH: &str = "/var/run/utmpx";
 /// C: `_PATH_WTMPX` (`minix3/include/utmpx.h:40`).
@@ -219,6 +218,7 @@ pub fn append_record(host: &mut dyn InitHost, path: &str, rec: &UtmpxRecord) -> 
 mod tests {
     use super::*;
     use crate::host::ScriptHost;
+    use minix_sys::Errno;
 
     #[test]
     fn test_runlevel_maps_all_states() {

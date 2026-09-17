@@ -11,7 +11,6 @@
 //! real one.
 
 use crate::host::InitHost;
-use minix_sys::Errno;
 
 /// How `/etc/rc` should run (C: `runcom_mode`, init.c:151).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,43 +65,6 @@ pub fn parse_boot_args(argv: &[String]) -> (BootArgs, Vec<String>) {
     }
 
     (args, warnings)
-}
-
-/// Entry identity failure (C: `err(1)` / `errx(1)`, init.c:242-249).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntryError {
-    /// `getuid() != 0` (C sets `errno = EPERM`).
-    NotRoot,
-    /// `getpid() != 1` (C: `"already running"`).
-    AlreadyRunning,
-}
-
-impl EntryError {
-    /// Map to the Minix3 errno value (no invented codes).
-    pub fn to_errno(self) -> Errno {
-        match self {
-            EntryError::NotRoot => Errno::EPERM,
-            // C uses errx (no errno) for the pid check; EEXIST is the
-            // closest stable mapping for "already running" and is only
-            // used for the exit-path translation, never as a syscall errno.
-            EntryError::AlreadyRunning => Errno::EEXIST,
-        }
-    }
-}
-
-/// Verify the process is entitled to be init.
-///
-/// Pure wrapper over the C checks `getuid() != 0` (init.c:242-245) and
-/// `getpid() != 1` (init.c:248-249). Exiting/logging is the caller's
-/// policy, so this function returns `Result` for testability.
-pub fn check_identity(uid: u32, pid: i32) -> Result<(), EntryError> {
-    if uid != 0 {
-        return Err(EntryError::NotRoot);
-    }
-    if pid != 1 {
-        return Err(EntryError::AlreadyRunning);
-    }
-    Ok(())
 }
 
 /// First state to enter (subset of the full machine in 02).
@@ -204,6 +166,7 @@ pub fn ensure_console(host: &mut dyn InitHost, console_path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::host::ScriptHost;
+    use minix_sys::Errno;
 
     fn argv(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -254,21 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn test_identity_root_and_pid1_ok() {
-        assert_eq!(check_identity(0, 1), Ok(()));
-    }
-
-    #[test]
-    fn test_identity_non_root_fails() {
-        assert_eq!(check_identity(1000, 1), Err(EntryError::NotRoot));
-    }
-
-    #[test]
-    fn test_identity_wrong_pid_fails() {
-        assert_eq!(check_identity(0, 42), Err(EntryError::AlreadyRunning));
-    }
-
-    #[test]
     fn test_decide_defaults_to_runcom() {
         let d = decide_entry(&BootArgs::default(), true);
         assert_eq!(
@@ -296,15 +244,6 @@ mod tests {
     fn test_decide_console_failure_forces_single_user() {
         let d = decide_entry(&BootArgs::default(), false);
         assert_eq!(d.initial, InitialState::SingleUser);
-    }
-
-    #[test]
-    fn test_entry_error_maps_to_errno() {
-        assert_eq!(EntryError::NotRoot.to_errno(), Errno::EPERM);
-        assert_eq!(
-            EntryError::AlreadyRunning.to_errno(),
-            Errno::EEXIST
-        );
     }
 
     #[test]

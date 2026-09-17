@@ -12,12 +12,10 @@
 //! [`InitHost`] seam with the fork semantics intact — `Ok(0)` means
 //! this very call now runs the child branch.
 
-use crate::host::{default_signal_spec, ignore_spec, restore_spec, InitHost, SignalSpec};
+use crate::host::{ignore_spec, restore_spec, InitHost};
 use crate::log::{emergency, warning};
-use crate::state_machine::{sig, HandlerKind, StateKind};
+use crate::state_machine::{sig, StateKind};
 use crate::wait::{EINTR, WNOHANG, WUNTRACED};
-use minix_sys::Errno;
-use minix_sys::Pid;
 
 /// Absolute path of the rc shell (C: `INIT_BSHELL` = `_PATH_BSHELL`,
 /// init.c:105, exec'd at init.c:913).
@@ -42,26 +40,6 @@ pub fn password_gate_required(
     root_has_password && (from_securitylevel >= 2 || !console_secure)
 }
 
-/// One password prompt outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PasswordAttempt {
-    Success,
-    /// Empty input (^D): exit 0 → proceed to multi-user path.
-    EmptyExit,
-    Retry,
-}
-
-/// Classify one prompt attempt (C: init.c:754-762).
-pub fn classify_attempt(input_empty: bool, matches: bool) -> PasswordAttempt {
-    if input_empty {
-        PasswordAttempt::EmptyExit
-    } else if matches {
-        PasswordAttempt::Success
-    } else {
-        PasswordAttempt::Retry
-    }
-}
-
 /// Choose the shell path (C: ALTSHELL block, init.c:781-782).
 pub fn choose_shell(altshell_input: &str, default: &str) -> String {
     let trimmed = altshell_input.trim();
@@ -70,45 +48,6 @@ pub fn choose_shell(altshell_input: &str, default: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-/// What `single_user` hands back to the transition loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WaitOutcome {
-    Continue,
-    Transition(StateKind),
-    RestartSingleUser,
-    RebootQuiet,
-    ProceedRuncomFastboot,
-}
-
-/// Classify one wait observation (pure; I/O stays in the driver).
-///
-/// The outcome order mirrors the C wait loop: a stopped child (only
-/// reported under WUNTRACED, init.c:827) keeps the loop going, an
-/// externally requested transition wins next, then the fatal-signal
-/// ladder — SIGKILL means the operator killed the shell and init
-/// reboots quietly (init.c:849-856), any other signal restarts the
-/// shell — and any normal exit proceeds to `/etc/rc` with FASTBOOT
-/// (init.c:866-870); the exit code is not consulted.
-pub fn classify_wait(status: crate::wait::WaitStatus, requested: Option<StateKind>) -> WaitOutcome {
-    use crate::wait::WaitStatus;
-    if status.stopped() {
-        return WaitOutcome::Continue;
-    }
-    if let Some(state) = requested {
-        return WaitOutcome::Transition(state);
-    }
-    if status.signaled() {
-        if status.signaled_by(sig::SIGNAL_KILL) {
-            return WaitOutcome::RebootQuiet;
-        }
-        return WaitOutcome::RestartSingleUser;
-    }
-    if status.exited() {
-        return WaitOutcome::ProceedRuncomFastboot;
-    }
-    WaitOutcome::RestartSingleUser
 }
 
 /// What `single_user` hands back to the driver (C: the `state_func_t`
@@ -157,7 +96,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
     // C: downgrade an active security level first (init.c:711-713);
     // the gate compares against the pre-downgrade value.
     if deps.from_securitylevel > 0 {
-        host.set_securitylevel(0);
+        let _ = host.set_securitylevel(0);
     }
 
     // C: SIG_IGN for SIGHUP/SIGTSTP around the shell (init.c:715-719);
@@ -273,8 +212,8 @@ fn child_shell(
     // multi-user (init.c:731-771). The gate runs only when a hash
     // exists and the console is not secure (or the level was >= 2 —
     // see `password_gate_required`).
-    if let Some(verify) = verify_password {
-        if password_gate_required(console_secure, from_securitylevel, true) {
+    if let Some(verify) = verify_password
+        && password_gate_required(console_secure, from_securitylevel, true) {
             host.console_write(
                 crate::log::Severity::Emerg,
                 "Enter root password, or ^D to go multi-user",
@@ -294,7 +233,6 @@ fn child_shell(
                 }
             }
         }
-    }
 
     // ALTSHELL: offer an alternate shell path (init.c:779-789).
     host.console_write(
@@ -335,7 +273,10 @@ mod tests {
     use crate::host::ScriptHost;
     use crate::session::Session;
     use crate::session_db::HashMapDb;
+    use crate::host::{default_signal_spec, ignore_spec, restore_spec};
+    use crate::state_machine::HandlerKind;
     use crate::signal_state::SignalState;
+    use minix_sys::Errno;
     use crate::wait::WaitStatus;
 
     fn fresh_collector<'a>(
@@ -358,12 +299,6 @@ mod tests {
         assert!(!password_gate_required(false, 0, false));
     }
 
-    #[test]
-    fn test_empty_input_exits() {
-        assert_eq!(classify_attempt(true, false), PasswordAttempt::EmptyExit);
-        assert_eq!(classify_attempt(false, true), PasswordAttempt::Success);
-        assert_eq!(classify_attempt(false, false), PasswordAttempt::Retry);
-    }
 
     #[test]
     fn test_choose_shell_default_and_alt() {
@@ -372,44 +307,10 @@ mod tests {
         assert_eq!(choose_shell("/bin/ksh\n", RC_SHELL_PATH), "/bin/ksh");
     }
 
-    #[test]
-    fn test_wait_stop_continues() {
-        let stopped = WaitStatus::Stopped { stopsig: 18 };
-        assert_eq!(classify_wait(stopped, None), WaitOutcome::Continue);
-    }
 
-    #[test]
-    fn test_wait_requested_transitions() {
-        assert_eq!(
-            classify_wait(WaitStatus::Exited { code: 0 }, Some(StateKind::Death)),
-            WaitOutcome::Transition(StateKind::Death)
-        );
-    }
 
-    #[test]
-    fn test_wait_sigkill_quiets() {
-        let killed = WaitStatus::Signaled { termsig: 9, core_dumped: false };
-        assert_eq!(classify_wait(killed, None), WaitOutcome::RebootQuiet);
-    }
 
-    #[test]
-    fn test_wait_other_signal_restarts_single_user() {
-        let hup = WaitStatus::Signaled { termsig: 1, core_dumped: false };
-        assert_eq!(classify_wait(hup, None), WaitOutcome::RestartSingleUser);
-    }
 
-    #[test]
-    fn test_wait_normal_proceeds_runcom_fastboot() {
-        assert_eq!(
-            classify_wait(WaitStatus::Exited { code: 0 }, None),
-            WaitOutcome::ProceedRuncomFastboot
-        );
-        // Exit code is not consulted — C reads only WIFEXITED here.
-        assert_eq!(
-            classify_wait(WaitStatus::Exited { code: 7 }, None),
-            WaitOutcome::ProceedRuncomFastboot
-        );
-    }
 
     #[test]
     fn test_entity_happy_path_runs_shell_then_fastboot() {

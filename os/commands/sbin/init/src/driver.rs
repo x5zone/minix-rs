@@ -80,7 +80,7 @@ impl DriverState {
     }
 
     /// Build the child reaper over the table and DB.
-    pub fn collector(&mut self) -> ChildCollector {
+    pub fn collector(&mut self) -> ChildCollector<'_> {
         ChildCollector {
             sessions: &mut self.sessions,
             db: &mut self.db,
@@ -90,7 +90,7 @@ impl DriverState {
     }
 
     /// The runlevel ledger writer over this state.
-    pub fn ledger(&mut self) -> Ledger {
+    pub fn ledger(&mut self) -> Ledger<'_> {
         Ledger::new(&mut self.sessions_seen)
     }
 }

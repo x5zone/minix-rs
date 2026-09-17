@@ -47,9 +47,6 @@
 | 测试 | C 对照 |
 |---|---|
 | `test_death_sequence_order` | init.c:1667 |
-| `test_round_all_dead` | init.c:1686-1692 |
-| `test_round_timeout_next` | init.c:1686-1689 |
-| `test_stuck_warns` | init.c:1695 |
 | `test_catatonia_marks_all_sessions` | init.c:1639-1640 |
 | `test_death_esrch_on_first_round_goes_single_user` | init.c:1679-1681（台账先写） |
 | `test_death_childless_round_ends_early` | init.c:1688-1692 ECHILD |

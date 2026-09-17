@@ -105,6 +105,20 @@ impl Signal {
         }
     }
 
+    /// The C signal name ("SIGHUP", ...) for log messages (C:
+    /// `sys_siglist`); `Other` formats as its number.
+    pub fn name(self) -> String {
+        match self {
+            Signal::Sighup => "SIGHUP".to_string(),
+            Signal::Sigterm => "SIGTERM".to_string(),
+            Signal::Sigtstp => "SIGTSTP".to_string(),
+            Signal::Sigalrm => "SIGALRM".to_string(),
+            Signal::Sigabrt => "SIGABRT".to_string(),
+            Signal::Sigusr1 => "SIGUSR1".to_string(),
+            Signal::Other(n) => format!("signal {n}"),
+        }
+    }
+
     /// Classify a raw signum; unknown numbers stay in [`Signal::Other`].
     pub fn from_signum(n: i32) -> Signal {
         match n {

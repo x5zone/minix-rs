@@ -5,13 +5,9 @@
 
 use crate::host::InitHost;
 use crate::log::warning;
-use crate::multi_user::collect_child;
 use crate::session::{Session, SE_SHUTDOWN};
-use crate::session_db::SessionDb;
 use crate::signal_state::AlarmFlag;
 use crate::state_machine::{sig, StateKind};
-use crate::wait::WaitStatus;
-use minix_sys::{Errno, Pid};
 use std::sync::Arc;
 
 /// Seconds per death round (C: `DEATH_WATCH`, init.c:96).
@@ -26,25 +22,6 @@ pub const DEATH_SEQUENCE: [i32; 3] =
 const ESRCH: i32 = 3;
 /// C: `ECHILD 10` (`sys/errno.h:10`) — no children left to reap.
 const ECHILD: i32 = 10;
-
-/// One death-round outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeathRoundOutcome {
-    AllDead,
-    NextRound,
-    StuckWarn,
-}
-
-/// Classify one round (pure).
-pub fn classify_round(reaped_all: bool, timed_out: bool) -> DeathRoundOutcome {
-    if reaped_all {
-        DeathRoundOutcome::AllDead
-    } else if timed_out {
-        DeathRoundOutcome::NextRound
-    } else {
-        DeathRoundOutcome::StuckWarn
-    }
-}
 
 /// Inputs for the two shutdown states.
 pub struct ShutdownDeps<'a, 'b> {
@@ -62,7 +39,7 @@ pub struct ShutdownDeps<'a, 'b> {
 /// Block further logins: mark every session and return to multi-user,
 /// where the dying sessions are reaped (C: `catatonia`,
 /// init.c:1634-1643).
-pub fn catatonia(sessions: &mut Vec<Session>) -> StateKind {
+pub fn catatonia(sessions: &mut [Session]) -> StateKind {
     for sp in sessions.iter_mut() {
         sp.flags.set(SE_SHUTDOWN);
     }
@@ -87,11 +64,10 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
 
     for &signum in DEATH_SEQUENCE.iter() {
         // C: nobody received the signal — done early (init.c:1679-1681).
-        if let Err(e) = host.kill(-1, signum) {
-            if e.to_i32() == ESRCH {
+        if let Err(e) = host.kill(-1, signum)
+            && e.to_i32() == ESRCH {
                 return StateKind::SingleUser;
             }
-        }
 
         deps.clang.take(); // clang = 0
         let _ = host.alarm(DEATH_WATCH_SECS as u32);
@@ -134,6 +110,9 @@ mod tests {
     use crate::driver::{ChildCollector, Ledger};
     use crate::host::ScriptHost;
     use crate::session::build_session;
+    use crate::session_db::SessionDb;
+    use crate::wait::WaitStatus;
+    use minix_sys::Errno;
 
     fn sample(index: usize, name: &str) -> Session {
         build_session(index, name, "/sbin/getty", None, true).unwrap()
@@ -144,20 +123,8 @@ mod tests {
         assert_eq!(DEATH_SEQUENCE, [1, 15, 9]);
     }
 
-    #[test]
-    fn test_round_all_dead() {
-        assert_eq!(classify_round(true, false), DeathRoundOutcome::AllDead);
-    }
 
-    #[test]
-    fn test_round_timeout_next() {
-        assert_eq!(classify_round(false, true), DeathRoundOutcome::NextRound);
-    }
 
-    #[test]
-    fn test_stuck_warns() {
-        assert_eq!(classify_round(false, false), DeathRoundOutcome::StuckWarn);
-    }
 
     #[test]
     fn test_catatonia_marks_all_sessions() {

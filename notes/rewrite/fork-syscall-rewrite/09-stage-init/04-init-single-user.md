@@ -93,13 +93,7 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 | 测试 | C 对照 |
 |---|---|
 | `test_gate_requires_password_matrix` | init.c:749-750 |
-| `test_empty_input_exits` | init.c:755-756 |
 | `test_choose_shell_default_and_alt` | init.c:781-782 |
-| `test_wait_stop_continues` | init.c:836-840 |
-| `test_wait_requested_transitions` | init.c:843-847 |
-| `test_wait_sigkill_quiets` | init.c:849-856 |
-| `test_wait_other_signal_restarts_single_user` | init.c:857-863 |
-| `test_wait_normal_proceeds_runcom_fastboot` | init.c:866-870（退出码不参与） |
 | `test_entity_happy_path_runs_shell_then_fastboot` | wait 循环主干 |
 | `test_entity_downgrades_securitylevel_before_fork` | init.c:711-713 |
 | `test_entity_fork_failure_retries` | init.c:814-821 |

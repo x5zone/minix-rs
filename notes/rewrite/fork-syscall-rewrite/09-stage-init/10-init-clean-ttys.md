@@ -48,10 +48,6 @@
 
 | 测试 | C 对照 |
 |---|---|
-| `test_known_on_keeps` | init.c:1601-1603 |
-| `test_known_off_shutdowns` | init.c:1597-1600 |
-| `test_unknown_creates` | init.c:1620 |
-| `test_missing_retires` | init.c:1622-1628 |
 | `test_entity_index_change_warns_and_updates` | init.c:1590-1596 |
 | `test_entity_off_line_shuts_down_and_hups` | init.c:1597-1600 |
 | `test_entity_absent_line_retires` | init.c:1622-1628 |

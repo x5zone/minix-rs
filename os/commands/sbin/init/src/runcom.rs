@@ -17,7 +17,6 @@ use crate::log::{emergency, stall, warning};
 use crate::session::ParsedCommand;
 use crate::state_machine::{sig, StateKind};
 use crate::wait::{EINTR, WNOHANG, WUNTRACED, WaitStatus};
-use minix_sys::{Errno, Pid};
 
 /// Absolute path of the rc shell (C: `INIT_BSHELL` = `_PATH_BSHELL`,
 /// init.c:105, exec'd at init.c:913).
@@ -38,35 +37,6 @@ pub fn rc_argv(mode: RuncomMode) -> ParsedCommand {
     ParsedCommand {
         exec_path: RC_SHELL_PATH.to_string(),
         argv,
-    }
-}
-
-/// Where a finished `/etc/rc` run goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RcOutcome {
-    SingleUser,
-    Continue,
-    RebootQuiet,
-    ReadTtys,
-}
-
-/// Classify one wait observation for the rc child (C: init.c:949-968).
-///
-/// A stopped rc keeps the loop going; SIGTERM arriving together with a
-/// catatonia request means "shut down, quietly" (init.c:949-957); any
-/// other death — signal or nonzero exit — falls back to single-user
-/// (init.c:959-966); only a clean zero exit reaches read_ttys
-/// (init.c:968).
-pub fn classify_rc_exit(status: WaitStatus, catatonia_requested: bool) -> RcOutcome {
-    if status.stopped() {
-        return RcOutcome::Continue;
-    }
-    if catatonia_requested && status.signaled_by(sig::SIGNAL_TERMINATE) {
-        return RcOutcome::RebootQuiet;
-    }
-    match status {
-        WaitStatus::Exited { code } if code == 0 => RcOutcome::ReadTtys,
-        _ => RcOutcome::SingleUser,
     }
 }
 
@@ -165,15 +135,14 @@ fn runetcrc(
                 handlers: vec![],
                 blocked_except: Some(vec![]),
             });
-            if trychroot {
-                if let Err(e) = host.chroot(deps.rootdir) {
+            if trychroot
+                && let Err(e) = host.chroot(deps.rootdir) {
                     warning(
                         host,
                         &format!("failed to chroot to `{}': {}", deps.rootdir, e),
                     );
                     host.exit_process(4); // force single user mode
                 }
-            }
             let err = host.exec(&cmd);
             stall(
                 host,
@@ -260,6 +229,7 @@ mod tests {
     use crate::host::ScriptHost;
     use crate::session::Session;
     use crate::signal_state::SignalState;
+    use minix_sys::Errno;
     use std::sync::Arc;
 
     fn fixture() -> (ScriptHost, Vec<Session>, crate::session_db::HashMapDb, Arc<SignalState>) {
@@ -304,45 +274,11 @@ mod tests {
         assert_eq!(cmd.argv[1], "/etc/rc");
     }
 
-    #[test]
-    fn test_zero_exit_goes_read_ttys() {
-        assert_eq!(
-            classify_rc_exit(WaitStatus::Exited { code: 0 }, false),
-            RcOutcome::ReadTtys
-        );
-    }
 
-    #[test]
-    fn test_nonzero_goes_single_user() {
-        assert_eq!(
-            classify_rc_exit(WaitStatus::Exited { code: 1 }, false),
-            RcOutcome::SingleUser
-        );
-    }
 
-    #[test]
-    fn test_abnormal_goes_single_user() {
-        let killed = WaitStatus::Signaled { termsig: 11, core_dumped: true };
-        assert_eq!(classify_rc_exit(killed, false), RcOutcome::SingleUser);
-    }
 
-    #[test]
-    fn test_catatonia_sigterm_quiets() {
-        let term = WaitStatus::Signaled { termsig: 15, core_dumped: false };
-        assert_eq!(classify_rc_exit(term, true), RcOutcome::RebootQuiet);
-    }
 
-    #[test]
-    fn test_catatonia_without_sigterm_still_single_user() {
-        let kill = WaitStatus::Signaled { termsig: 9, core_dumped: false };
-        assert_eq!(classify_rc_exit(kill, true), RcOutcome::SingleUser);
-    }
 
-    #[test]
-    fn test_stopped_rc_continues() {
-        let stopped = WaitStatus::Stopped { stopsig: 18 };
-        assert_eq!(classify_rc_exit(stopped, false), RcOutcome::Continue);
-    }
 
     #[test]
     fn test_runetcrc_child_exec_request_carries_autoboot() {

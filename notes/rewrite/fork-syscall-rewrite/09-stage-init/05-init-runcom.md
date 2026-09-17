@@ -71,12 +71,6 @@ fastboot 时 `argv[2]` 为空指针，即只传两个参数。`_PATH_RUNCOM` 即
 | `test_rc_argv_autoboot_has_third` | init.c:899 |
 | `test_rc_argv_fastboot_truncated` | init.c:899 |
 | `test_rc_exec_path_is_shell_binary_argv0_is_sh` | init.c:899-900/913 路径与 argv[0] 分离 |
-| `test_zero_exit_goes_read_ttys` | init.c:968 |
-| `test_nonzero_goes_single_user` | init.c:965-966 |
-| `test_abnormal_goes_single_user` | init.c:959-963 |
-| `test_catatonia_sigterm_quiets` | init.c:949-957 |
-| `test_catatonia_without_sigterm_still_single_user` | init.c:949-957 双条件 |
-| `test_stopped_rc_continues` | init.c:941-946 |
 | `test_runetcrc_child_exec_request_carries_autoboot` | init.c:884-910 子分支 + `_exit(5)` |
 | `test_runetcrc_chroot_failure_exits_four` | init.c:903-906 `_exit(4)` |
 | `test_runetcrc_chrooted_child_execs_after_chroot` | chroot 先于 exec、fastboot 无第三参 |
