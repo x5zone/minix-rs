@@ -10,6 +10,8 @@ name = "minix-driver-gpio"
 path = "src/main.rs"
 
 [dependencies]
+minix-chardriver = { workspace = true }
+minix-driver-rt = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 

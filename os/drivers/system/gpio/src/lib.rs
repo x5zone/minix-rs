@@ -16,6 +16,7 @@
 
 extern crate alloc;
 
+pub mod char_face;
 pub mod files;
 pub mod pins;
 
