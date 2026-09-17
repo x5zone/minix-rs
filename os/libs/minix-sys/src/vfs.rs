@@ -331,6 +331,52 @@ struct CreatePayload {
 /// document, which owns all message body layouts. Until it lands, the
 /// open-existing path reports `ENOSYS` explicitly instead of sending a
 /// malformed message.
+/// C: `mess_lc_vfs_path` (`ipc.h:754-768`) — open-existing 的载荷形状。
+/// i386 原始布局：name/len/flags/mode/buf[40] = 56 字节。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct OpenPathPayload {
+    name: u64,
+    len: u64,
+    flags: i32,
+    mode: i32,
+    buf: [u8; 32],
+}
+
+/// open-existing 内联容量（LP64 判例：指针 4→8 后 buf 由 40 收缩为 32；
+/// 含 NUL 的总长 ≤ 32 才能内联）。
+pub const OPEN_PATH_INLINE_MAX: usize = 32;
+
+/// open-existing 路径的 wire 裁决（99 篇定稿 + 09 篇 §3.2 缺口闭合）：
+/// 路径 ≤ [`OPEN_PATH_INLINE_MAX`] 字节（含 NUL）时内联进载荷 buf；
+/// 超长返回 `ENAMETOOLONG`——C 的 loadname（loadname.c:18）在超长时
+/// 跳过 strcpy 但不报错（截断静默发生），minix-rs 诚实化为显式错误
+/// （DELIBERATE DIVERGENCE：加固而非行为漂移，登记于 09 篇 §3.2）。
+pub fn open_existing_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    flags: i32,
+) -> Result<i32, Errno> {
+    if name_length_including_nul == 0 || name_length_including_nul > OPEN_PATH_INLINE_MAX {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    // SAFETY: the caller's path buffer lives in this same address space
+    // (user library reads its own argument — C loadname.c:16-17 同型)。
+    let path_bytes = unsafe {
+        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+    };
+    let mut packed = [0u8; core::mem::size_of::<OpenPathPayload>()];
+    packed[0..8].copy_from_slice(&name_address.to_le_bytes());
+    packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+    packed[16..20].copy_from_slice(&flags.to_le_bytes());
+    // mode @20..24 = 0（非创建路径无 mode，C open.c:31 同填 0）。
+    packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    let mut message = crate::syscall::cleared_message();
+    crate::syscall::write_payload(&mut message, &packed);
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_OPEN, &mut message)
+}
+
 pub fn open_via(
     transport: &impl IpcTransport,
     name_address: u64,
@@ -657,6 +703,7 @@ mod tests {
 #[cfg(test)]
 mod payload_layout_tests {
     use super::*;
+    use crate::ipc::CannedTransport;
     use core::mem::{offset_of, size_of};
 
     /// E-MINTYPES-RUNTIME 第②步：VFS 族五个 payload 的 56 字节/偏移断言
@@ -689,5 +736,43 @@ mod payload_layout_tests {
         assert_eq!(size_of::<TimeVal>(), 16);
         assert_eq!(offset_of!(TimeVal, seconds), 0);
         assert_eq!(offset_of!(TimeVal, microseconds), 8);
+    }
+}
+
+#[cfg(test)]
+mod open_path_tests {
+    use super::*;
+    use core::mem::offset_of;
+    use crate::ipc::CannedTransport;
+
+    /// open-existing 载荷布局见证：LP64 判例下总长 56（C i386 buf[40]
+    /// 收缩为 32），字段序 name/len/flags/mode/buf。
+    #[test]
+    fn test_open_path_payload_layout() {
+        assert_eq!(size_of::<OpenPathPayload>(), 56);
+        assert_eq!(offset_of!(OpenPathPayload, name), 0);
+        assert_eq!(offset_of!(OpenPathPayload, len), 8);
+        assert_eq!(offset_of!(OpenPathPayload, flags), 16);
+        assert_eq!(offset_of!(OpenPathPayload, mode), 20);
+        assert_eq!(offset_of!(OpenPathPayload, buf), 24);
+    }
+
+    /// 内联拷贝：路径字节进 buf、len 含 NUL——C loadname.c:16-18 同型。
+    #[test]
+    fn test_open_path_inline_boundary() {
+        // 恰好 32（含 NUL）：可内联。
+        assert_eq!(31, OPEN_PATH_INLINE_MAX - 1);
+        // 超界 33：ENAMETOOLONG。
+        let long = [b'a'; 34];
+        assert_eq!(
+            open_existing_via(
+                &CannedTransport::new(),
+                long.as_ptr() as u64,
+                long.len(),
+                0
+            )
+            .unwrap_err(),
+            Errno::ENAMETOOLONG
+        );
     }
 }
