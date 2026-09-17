@@ -677,6 +677,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 > **mproc_tab 数据路径闭环（2026-09-17，✅ kernel/PM 半落地，fbd4afa9b + fbb4f5cd9）**：前置 04-stage D-29 闭环——minix-types 新增 `types/mproc.rs`（C struct mproc 464B repr(C) 全字段镜像 + 布局见证 ×3，切片 1）+ PM `mproc/wire.rs` 序列化（ProcTable 四层类型化槽 → MprocWire 逐字段映射：mp_sigact=0/Box actions、mp_flags=lifecycle+block+wait+remaining 合成、SigSet u64→LE 双 u32）+ `do_getsysinfo` ProcTab 臂激活（size = 槽数×464，逐槽 serialize + copy_to_user，替换 V3-P1-4 以来的 ENOSYS fail-closed）。**E-MIBPROD 消费对账**：mproc_tab 快照权威 = `minix_types::MprocWire`（与 E-ISPROD 的 ProcInfoStruct 同型单点权威）；IS dump_pm 的 MProcSnap 消费对账随 run_dump 装配（E-ISWIRE(3)）落地。**剩余 = fproc_tab producer（VFS 域）**。
 
+> **fproc_tab 数据路径闭环（2026-09-18，✅ VFS/IS 半落地，7defc8735 + ae452edf8）**：三张跨服务快照的 producer 半自此全闭——minix-types `types/fproc.rs`（FProcSnap 52B repr(C)，11 域 + reserved[2]，布局见证，7defc8735）+ VFS `FProc::to_fproc_snap`（BlockedOn 标签枚举坍缩回 C 判别值 const.h:19-25 + fp_cdev.endpt 列 dmp_fs.c:60-63、nfds = filp 非 None 计数 A-4 偏差、未用槽 = 全零 BSS 行）+ `do_getsysinfo` ProcTab 臂（root 门 → 精确 len 门 NR_PROCS×52B → 逐槽 serialize + SELF→caller 拷出，CopyToUser 接缝 pm/misc.rs:140 同型；DMAP/PROCLIGHT 两臂 fail-closed 各挂余项）+ IS `VfsProcTabTransport` 生产消费腿（sendrec 直组 m_lsys_getsysinfo 三 lane，宿主诚实 -EIO，main 装配仍挂 E-ISWIRE(3)）。**剩余 = DMAP_TAB producer（dump_vfs TODO(P1) 收窄后的余项）+ RS/DS/VM producer 对账 + MIB/IS 的 run_dump 真实装配（E-ISWIRE(3)）**。
+
 ---
 
 ## E-MIBGRANT kernel grant.rs magic-grant 门端点常量与 C 不符（10-stage-mib 首轮架构审查登记，2026-09-15）
@@ -866,6 +868,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 > **第②步断言补齐 + 00 篇同批（2026-09-17，✅ 本条三步全部落地，d1091c2b2）**：四族 payload 布局断言补齐——pm（ExecPayload 五域 56B + ServiceForkPayload）、vm（remap_via raw 直写五域布局锁定）、vfs（ReadWritePayload/SeekPayload/CreatePayload/TimeVal 偏移）、rs（LookupPayload 对齐垫）；minix-sys 192→200 passed。00-runtime-overview 正文 v1 同批落稿（V1-P1-5 的文档半闭环：99 篇 + 00 篇两篇齐）。**E-MINTYPES-RUNTIME 三步执行序全部落地，本条收口**——余项归域：VFS fproc_tab wire（VFS 域）、SEDA 表接线与 DS announce 约束放宽（T7 登记项）、真机联调族（E5）。
 
 > **前置核对（2026-09-17，T8 开工前）**：V1-P1-5（99 篇改写）仍未完成——99-global-concepts.md 为 19 行骨架（核心点四项：endpoint/generation、message 布局与 56 字节负载约束、服务号常量、全局状态表 _minix_kerninfo/_minix_ipcvecs；边界：一切机制移交 00~13）。**99 篇创作输入已集齐**：§2 矩阵 + 各篇"移交 99"悬空项清单（09 篇 open 路径 40 字节裁决、08 篇消息体布局归档、V1-P2-2 wire 单点权威、本条 VM_REMAP 分叉）。**执行序建议**：①99 篇创作轮（Gate H.6 三件套 + cmd-12/19 流程，含 00 篇同批）→ ②minix-sys 逐族收敛（cleared_message/write_payload 单一 helper、VM_REMAP 分叉消除、本地 payload 补 56B/偏移断言）→ ③codec trait 裁决 → ④全回归 + 本条收口。规模：一个完整会话（文档创作轮 + 多族收敛），勿在残量上下文开工。
+
+> **余项销账（2026-09-18）**：本条 866 行登记的余项"VFS fproc_tab wire（VFS 域）"已随 E-MIBPROD fproc_tab 半闭合（ae452edf8，FProcSnap 权威消费 + do_getsysinfo ProcTab 臂 + IS VfsProcTabTransport）——余项清单仅剩 T7 登记项（SEDA 表接线与 DS announce 约束放宽）与真机联调族（E5）。
 
 ---
 
@@ -1057,6 +1061,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：无；18 侧 echo bin 已按“transport 报错即 exit 1”写好，本条落地后其宿主行为自动变诚实（无需改命令代码）。
 **解锁**：18-stage-commands 全部命令 bin 的宿主冒烟可信化；`cargo test` 之外新增“宿主运行即失败可见”的验收面。
+
+> **增补（2026-09-18，T9 fproc_tab wire 轮）：taskcall 腿同型缺陷**。`perform_taskcall`（os/libs/minix-sys/src/syscall.rs:112-125）对 transport 级失败 `return status.0` 原样返回——DirectTrapTransport 宿主回退携带正 errno（如 `TrapStatus(EIO)`=+5），穿过任何 `reply < 0` 判错的消费端即假成功；`system_info_via`（os/libs/minix-sys/src/rs.rs:264-285）的 getsysinfo 全家（PM/VFS/RS/DS 四腿）在宿主下同型失真。首个真实消费者 IS `VfsProcTabTransport`（ae452edf8）已本地归一（`Err(status) => -(status.0.unsigned_abs())`）绕开并在注释声明回迁条件。本条方案 A（transport 失败短路 Err）落地时覆盖两腿：`perform_syscall` 与 `perform_taskcall` 一并短路，`system_info_via` 与 IS 侧归一随之回迁。宿主 -EIO 的 IS 门控测试（`test_vfs_proc_tab_transport_hosted_is_eio`）已钉住消费侧语义，方案 A 落地后该测试应保持绿。
 
 ---
 
