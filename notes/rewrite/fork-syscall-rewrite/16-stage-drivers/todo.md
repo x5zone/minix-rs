@@ -123,7 +123,7 @@
 - **A10 [L3] 错误与句柄类型化**：钩子签名保持 C 哨兵约定（负 `i64` 表错、`grant: u64` 裸句柄，`os/libs/minix-chardriver/src/driver.rs:195-234`）。方案一（推荐）：新接口用 `Result<usize, Errno>` + `minix-types` 的 Grant 句柄类型（grant.rs 已是 cp_grant_t 单一权威），旧签名桥接保留；方案二：全量翻签名（一次到位但波及全部测试）。社区参照：embedded-hal 1.0 的 `Error::kind()` 模式——HAL 自定错误枚举 + 公共 kind 查询，驱动只依赖 kind（blog.rust-embedded.org/embedded-hal-v1）。注意边界：内部错误枚举可自由细分（如 B4 的 Misaligned），对外回复仍映射 Minix3 errno。
 - **A11 ✅（2026-09-17）[L2 pckbd] bridge.rs 删除**：与 `minix-sys/inputdriver.rs`（512 行，更忠实、含 DS announce 键）双轨编码同一份 C inputdriver.c 逻辑，doc 13 从未提及后者；pckbd 的 Cargo.toml 声明依赖 minix-sys 但六个源文件零 use。收敛方向已在 E-PCKBDREG 第 5 项：bridge 改为 minix-sys 决策函数的消费方或删除。倾向删除（crate 内消费路径为零）。（执行记录：bridge.rs 及模块声明删除，lib.rs 文档改指 minix-sys 单一权威；doc 13 头部模块行与 §5.4/§5.5 同步（桥测试归 minix-sys 套件）；pckbd 16 测试全绿。）
 
-## 4. 死代码清单（每项"为何死 + 消除影响"；拿不准的 OQ 上交，不擅自删）
+## 4. 死代码清单（Batch 7 已清扫完成：ramdisk/hello 两 crate 已删，bdev/chardriver/blockdriver 死 fn 已删，pckbd bridge 已删；OQ 三项保留裁决记录）
 
 | 位置 | 内容 | 为何死 / 消除影响 |
 |---|---|---|
