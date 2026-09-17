@@ -44,7 +44,7 @@ mod priv_info;
 mod proc_info;
 mod proc_nr;
 mod ps_strings;
-mod signal;
+pub mod signal;
 mod sysctl;
 mod sysctl_abi;
 

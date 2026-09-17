@@ -346,6 +346,25 @@ pub struct MessLcPmSigset {
     pub _padding: [u8; 24],
 }
 
+/// SIGPROCMASK/SIGPENDING 回复载荷(C: `mess_pm_lc_sigset` — 旧掩码/待决
+/// 集由回复消息带回,signal.c:117/97)。LP64:set 16 字节 + padding 至 56。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessPmLcSigset {
+    /// 旧掩码(SIGPROCMASK)或待决集(SIGPENDING)。C: `sigset_t set`。
+    pub set: [u32; 4],
+    /// Padding to 56 bytes (C: union payload size)。
+    pub _padding: [u8; 40],
+}
+
+impl MessPmLcSigset {
+    /// Zeroed form (tests and raw overlays).
+    pub const fn zeroed() -> Self {
+        Self { set: [0; 4], _padding: [0; 40] }
+    }
+}
+
+
 #[cfg(test)]
 mod sig_wire_tests {
     use super::*;

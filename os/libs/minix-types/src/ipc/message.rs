@@ -10,7 +10,10 @@ use crate::types::GrantId;
 use super::vm::{MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRusage, MessLsysVmUpdate};
 // E9 PmApi: the service-process message arms reuse the wire structs defined
 // in [`crate::ipc::pm`] (single definition, union + client decoder).
-use super::pm::{MessLsysPmGetepinfo, MessLsysPmGetprocnr, MessPmLsysGetepinfo, MessPmLsysGetprocnr, MessRsPmExecRestart};
+use super::pm::{
+    MessLcPmSig, MessLcPmSigset, MessLsysPmGetepinfo, MessLsysPmGetprocnr,
+    MessPmLsysGetepinfo, MessPmLsysGetprocnr, MessPmLcSigset, MessRsPmExecRestart,
+};
 
 /// Message payload size (bytes).
 ///
@@ -249,6 +252,12 @@ pub union MessageUnion {
     pub m_pm_lc_ptrace: MessPmLcPtrace,
     /// PM: kill params (user → PM). C: `mess_lc_pm_kill` (pid, signo) — ipc.h:1880 (rs) / 535 (sig) overlay
     pub m_lc_pm_kill: MessLcPmKill,
+    /// PM: sigaction params (user → PM). C: `mess_lc_pm_sig` (nr, act, oact, ret) — ipc.h:528-540
+    pub m_lc_pm_sig: MessLcPmSig,
+    /// PM: signal-mask params (user → PM). C: `mess_lc_pm_sigset` (how, ctx, set) — ipc.h:543-549
+    pub m_lc_pm_sigset: MessLcPmSigset,
+    /// PM: signal-mask/pending reply (PM → user). C: `mess_pm_lc_sigset` — signal.c:117/97
+    pub m_pm_lc_sigset: MessPmLcSigset,
     /// PM: srv_kill params (RS → PM). C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885
     pub m_rs_pm_srv_kill: MessRsPmSrvKill,
     /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).

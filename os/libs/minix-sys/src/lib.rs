@@ -94,6 +94,8 @@ pub mod rmib;
 #[cfg(feature = "usb")]
 pub mod usb_model;
 
+pub mod wait;
+
 /// File descriptor.
 pub type Fd = i32;
 
@@ -262,6 +264,12 @@ pub fn mmap(
 /// `EGENERIC`/`ERESTART` (errno.h:78/211/199/200/196); two Errno types force
 /// a conversion at every `KernelApi` boundary (todo §11 N4).
 pub use minix_types::Errno;
+
+/// Signal number constants (Minix3 `<sys/signal.h>` numbering, e.g.
+/// SIGUSR1 = 30 — the value Linux x86 numbers SIGUSR1 differently).
+/// Re-exported so command crates read signums from one authority
+/// without depending on `minix-types` directly (edge E-INITSYS ④).
+pub use minix_types::signal;
 
 #[cfg(test)]
 mod tests {

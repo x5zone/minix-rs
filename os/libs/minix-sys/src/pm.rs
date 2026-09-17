@@ -64,6 +64,20 @@ pub const PM_CALL_EXEC: i32 = 14;
 pub const PM_CALL_SERVICE_FORK: i32 = 41;
 /// E9 PmApi:PM_GETEPINFO(callnr.h:58,PM_BASE + 45)。
 pub const PM_CALL_GETEPINFO: i32 = 45;
+/// C: `PM_GETUID (PM_BASE + 6)` (`callnr.h:20`) — 回复 m1i1=ruid、m1i2=euid。
+pub const PM_CALL_GETUID: i32 = 6;
+/// C: `PM_SETSID (PM_BASE + 15)` (`callnr.h:29`) — 回复值即新会话 id。
+pub const PM_CALL_SETSID: i32 = 15;
+/// C: `PM_SIGACTION (PM_BASE + 20)` (`callnr.h:33`).
+pub const PM_CALL_SIGACTION: i32 = 20;
+/// C: `PM_SIGSUSPEND (PM_BASE + 21)` (`callnr.h:34`).
+pub const PM_CALL_SIGSUSPEND: i32 = 21;
+/// C: `PM_SIGPENDING (PM_BASE + 22)` (`callnr.h:35`).
+pub const PM_CALL_SIGPENDING: i32 = 22;
+/// C: `PM_SIGPROCMASK (PM_BASE + 23)` (`callnr.h:36`).
+pub const PM_CALL_SIGPROCMASK: i32 = 23;
+/// C: `PM_REBOOT (PM_BASE + 37)` (`callnr.h:50`).
+pub const PM_CALL_REBOOT: i32 = 37;
 /// E9 PmApi:PM_GETPROCNR(callnr.h:59,PM_BASE + 46)。
 pub const PM_CALL_GETPROCNR: i32 = 46;
 /// Stop a system service (server-side call).
@@ -216,6 +230,128 @@ pub fn kill_via(transport: &impl IpcTransport, target: Pid, signal: i32) -> Resu
 /// signal numbers, then send the signal to the caller's own identifier. The
 /// range check happens before any transport use, so an invalid number never
 /// causes a round trip.
+/// `struct sigaction` 的用户态内存镜像(LP64,32 字节)。
+///
+/// PM 经 `sys_datacopy` 于 `act`/`oact` 地址把这份字节出入
+/// (pm/signal.c:47-66):handler 8 字节 @0、`sigset_t` 16 字节 @8、
+/// flags 4 字节 @24。PM 内部把 16 字节掩码折叠为 u64——那是 04 阶段
+/// 的解码半,与本镜像无关;客户端只保证字节图与 C `struct sigaction`
+/// 一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct SigActionWire {
+    /// SIG_DFL=0 / SIG_IGN=1 / handler 地址。
+    pub sa_handler: usize,
+    /// 处理期间屏蔽的信号集(C `sigset_t`,16 字节)。
+    pub sa_mask: [u32; 4],
+    /// SA_* 标志。
+    pub sa_flags: i32,
+    /// LP64 尾填充。
+    pub _pad: [u8; 4],
+}
+
+/// 安装/查询一个信号的处置(C: `do_sigaction`,pm/signal.c:40-86)。
+///
+/// 线格式 `mess_lc_pm_sig`(ipc.h:528-540):`nr` 为信号号,`act`/`oact`
+/// 是**用户态地址**(PM 用 `sys_datacopy` 出入,`act==0` 即只读查询),
+/// `ret` 是 sigreturn 恢复桩地址。`sigreturn=0` 表示 minix-rt 恢复桩
+/// 尚未提供——安装语义成立,投递后半端仍登记于 E-INITSYS ①。
+#[allow(clippy::too_many_arguments)]
+pub fn sigaction_via(
+    transport: &impl IpcTransport,
+    signo: i32,
+    act: Option<&SigActionWire>,
+    oact: Option<&mut SigActionWire>,
+    sigreturn: u64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    message.m_u.m_lc_pm_sig = minix_types::MessLcPmSig {
+        pid: 0,
+        nr: signo,
+        act: act
+            .map(|a| a as *const SigActionWire as u64)
+            .unwrap_or(0),
+        oact: oact
+            .map(|o| o as *mut SigActionWire as u64)
+            .unwrap_or(0),
+        ret: sigreturn,
+        _padding: [0; 24],
+    };
+    perform_syscall(transport, pm_endpoint(), PM_CALL_SIGACTION, &mut message).map(|_| ())
+}
+
+/// 读/写调用者的信号掩码(C: `do_sigprocmask`,pm/signal.c:99-155)。
+///
+/// 掩码按值走消息(`m_lc_pm_sigset.set`),旧掩码经回复消息
+/// `m_pm_lc_sigset.set` 带回(signal.c:117);`how = SIG_INQUIRE`(10)
+/// 时 `set` 被忽略、仅查旧掩码。`KILL/STOP` 的屏蔽请求由服务端剥除。
+pub fn sigprocmask_via(
+    transport: &impl IpcTransport,
+    how: i32,
+    set: Option<&[u32; 4]>,
+) -> Result<[u32; 4], Errno> {
+    let mut message = crate::syscall::cleared_message();
+    message.m_u.m_lc_pm_sigset = minix_types::MessLcPmSigset {
+        how,
+        _pad: [0; 4],
+        ctx: 0,
+        set: set.copied().unwrap_or([0; 4]),
+        _padding: [0; 24],
+    };
+    perform_syscall(transport, pm_endpoint(), PM_CALL_SIGPROCMASK, &mut message)?;
+    // SAFETY: reply overlay read; the PM writes `mess_pm_lc_sigset` on
+    // this call (signal.c:117).
+    let raw = unsafe { message.m_u.m_pm_lc_sigset.set };
+    Ok(raw)
+}
+
+/// 以给定掩码等待信号(C: `sigsuspend(2)`)。正常情况下仅在 handler
+/// 返回后经 sigreturn 醒来,调用失败面即 errno(`EINTR` 为设计值)。
+pub fn sigsuspend_via(
+    transport: &impl IpcTransport,
+    mask: &[u32; 4],
+    sigreturn: u64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    message.m_u.m_lc_pm_sigset = minix_types::MessLcPmSigset {
+        how: 0,
+        _pad: [0; 4],
+        ctx: sigreturn,
+        set: *mask,
+        _padding: [0; 24],
+    };
+    perform_syscall(transport, pm_endpoint(), PM_CALL_SIGSUSPEND, &mut message).map(|_| ())
+}
+
+/// 读待决信号集(C: `do_sigpending`,pm/signal.c:88-97;回复
+/// `m_pm_lc_sigset.set`,signal.c:97 附近)。
+pub fn sigpending_via(transport: &impl IpcTransport) -> Result<[u32; 4], Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, pm_endpoint(), PM_CALL_SIGPENDING, &mut message)?;
+    // SAFETY: same reply overlay as sigprocmask (signal.c:97).
+    let pending = unsafe { message.m_u.m_pm_lc_sigset.set };
+    Ok(pending)
+}
+
+/// 建立新会话并成为其首进程(C: `setsid(2)`;回复值为新会话 id,与
+/// PM 的 `Reply(procgrp)` 回复约定一致,见 getpid_via 的 m_type 读法)。
+pub fn setsid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, pm_endpoint(), PM_CALL_SETSID, &mut message)
+        .map(|reply_type| reply_type as Pid)
+}
+
+/// 读真实/有效 uid(C: `getuid(2)`/`geteuid(2)`;回复 m1i1=ruid、
+/// m1i2=euid,一次消息同时携带)。
+pub fn getuid_via(transport: &impl IpcTransport) -> Result<(i32, i32), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, pm_endpoint(), PM_CALL_GETUID, &mut message)?;
+    // SAFETY: the PM fills `m_m1` (m1i1=ruid, m1i2=euid) on this call —
+    // the same reply overlay the C getuid reads (lib/libc getuid).
+    let m1 = unsafe { message.m_u.m_m1 };
+    Ok((m1.m1i1, m1.m1i2))
+}
+
 pub fn raise_via(transport: &impl IpcTransport, signal: i32) -> Result<(), Errno> {
     if !minix_types::is_valid_signal_number(signal) {
         return Err(Errno::EINVAL);
@@ -521,6 +657,142 @@ mod tests {
         transport.reply_sendrec(Ok(reply_with_type(0)));
         assert_eq!(kill_via(&transport, 9, 15), Ok(()));
         assert_eq!(transport.sendrec_calls.get(), 1);
+    }
+
+    #[test]
+    fn test_getuid_reads_m1_pair() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        reply.m_u.m_m1.m1i1 = 0; // ruid
+        reply.m_u.m_m1.m1i2 = 0; // euid
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(getuid_via(&transport), Ok((0, 0)));
+    }
+
+    #[test]
+    fn test_setsid_returns_reply_session_id() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(42)));
+        assert_eq!(setsid_via(&transport), Ok(42));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, pm_endpoint());
+        assert_eq!(sent.m_type, PM_CALL_SETSID);
+    }
+
+    #[test]
+    fn test_sigaction_wire_carries_nr_act_oact_ret() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let act = SigActionWire {
+            sa_handler: 0x2000,
+            sa_mask: [1, 0, 0, 0],
+            sa_flags: 0,
+            _pad: [0; 4],
+        };
+        let mut oact = SigActionWire {
+            sa_handler: 0,
+            sa_mask: [0; 4],
+            sa_flags: 0,
+            _pad: [0; 4],
+        };
+        assert_eq!(
+            sigaction_via(&transport, 1, Some(&act), Some(&mut oact), 0x4000),
+            Ok(())
+        );
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, pm_endpoint());
+        assert_eq!(sent.m_type, PM_CALL_SIGACTION);
+        // SAFETY: byte-level read of the union overlay lanes for test
+        // assertions only.
+        let (nr, act_addr, oact_addr, ret) = unsafe {
+            (
+                i32::from_ne_bytes(sent.m_u.raw[4..8].try_into().unwrap()),
+                u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()),
+                u64::from_ne_bytes(sent.m_u.raw[16..24].try_into().unwrap()),
+                u64::from_ne_bytes(sent.m_u.raw[24..32].try_into().unwrap()),
+            )
+        };
+        assert_eq!(nr, 1);
+        assert_eq!(act_addr, &act as *const SigActionWire as u64);
+        assert_eq!(oact_addr, &mut oact as *mut SigActionWire as u64);
+        assert_eq!(ret, 0x4000);
+    }
+
+    #[test]
+    fn test_sigaction_none_act_is_read_only_query() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let mut collector = SigActionWire {
+            sa_handler: 0,
+            sa_mask: [0; 4],
+            sa_flags: 0,
+            _pad: [0; 4],
+        };
+        assert_eq!(
+            sigaction_via(&transport, 2, None, Some(&mut collector), 0),
+            Ok(())
+        );
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        let act_addr = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
+        assert_eq!(act_addr, 0, "act==0 is the C read-only query form");
+    }
+
+    #[test]
+    fn test_sigprocmask_sends_mask_by_value_and_reads_old() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        // 回复叠加 m_pm_lc_sigset.set(旧掩码)在 raw 前 16 字节。
+        let old_mask: [u32; 4] = [0b101, 0, 0, 0];
+        for (i, word) in old_mask.iter().enumerate() {
+            // SAFETY: byte-level reply overlay for test scripting.
+            unsafe {
+                reply.m_u.raw[i * 4..(i + 1) * 4].copy_from_slice(&word.to_ne_bytes());
+            }
+        }
+        transport.reply_sendrec(Ok(reply));
+        let set: [u32; 4] = [0b10, 0, 0, 0];
+        assert_eq!(sigprocmask_via(&transport, 3, Some(&set)), Ok(old_mask));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, PM_CALL_SIGPROCMASK);
+        // SAFETY: byte-level overlay reads for assertions. Layout:
+        // how @0、pad @4、ctx(u64) @8、set([u32;4]) @16。
+        let (how, ctx, wire_set) = unsafe {
+            (
+                i32::from_ne_bytes(sent.m_u.raw[0..4].try_into().unwrap()),
+                u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()),
+                u32::from_ne_bytes(sent.m_u.raw[16..20].try_into().unwrap()),
+            )
+        };
+        assert_eq!(how, 3); // SIG_SETMASK
+        assert_eq!(ctx, 0);
+        assert_eq!(wire_set, 0b10);
+    }
+
+    #[test]
+    fn test_sigsuspend_carries_mask_and_ctx() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let mask: [u32; 4] = [0, 0b1000, 0, 0];
+        assert_eq!(sigsuspend_via(&transport, &mask, 0x1234), Ok(()));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, PM_CALL_SIGSUSPEND);
+        let ctx = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
+        assert_eq!(ctx, 0x1234);
+    }
+
+    #[test]
+    fn test_sigpending_reads_reply_set() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        let pending: [u32; 4] = [0b100, 0, 0, 0];
+        for (i, word) in pending.iter().enumerate() {
+            // SAFETY: byte-level reply overlay for test scripting.
+            unsafe {
+                reply.m_u.raw[i * 4..(i + 1) * 4].copy_from_slice(&word.to_ne_bytes());
+            }
+        }
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(sigpending_via(&transport), Ok(pending));
     }
 
     #[test]

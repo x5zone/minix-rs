@@ -5,34 +5,14 @@
 //! (`transition_handler`), `1649-1655` (`alrm_handler`).
 //! Design contract: `.design/02-design.v1.md §1.1-§1.4`.
 
-/// Minix3 signal numbers init reacts to.
-///
-/// Names and values mirror the single authority
-/// `minix-types/src/types/signal.rs` (anchored to
-/// `minix3/sys/sys/signal.h`), held locally because command crates read
-/// shared constants through `minix-sys`, which does not re-export the
-/// family yet — the switch to `minix_sys::signal` is registered as an
-/// E-INITSYS follow-up and is a one-line import change here.
-pub mod sig {
-    /// C: `SIGHUP 1` (`signal.h:52`).
-    pub const SIGNAL_HANGUP: i32 = 1;
-    /// C: `SIGABRT 6` (`signal.h:57`).
-    pub const SIGNAL_ABORT: i32 = 6;
-    /// C: `SIGKILL 9` (`signal.h:61`).
-    pub const SIGNAL_KILL: i32 = 9;
-    /// C: `SIGALRM 14` (`signal.h:66`).
-    pub const SIGNAL_ALARM: i32 = 14;
-    /// C: `SIGTERM 15` (`signal.h:67`).
-    pub const SIGNAL_TERMINATE: i32 = 15;
-    /// C: `SIGTSTP 18` (`signal.h:70`).
-    pub const SIGNAL_TERMINAL_STOP: i32 = 18;
-    /// C: `SIGCONT 19` (`signal.h:71`) — resume a stopped shell.
-    pub const SIGNAL_CONTINUE: i32 = 19;
-    /// C: `SIGUSR1 30` (`signal.h:82`) — Minix3 numbering; 10 is SIGBUS.
-    pub const SIGNAL_USER_1: i32 = 30;
-}
+/// Signal numbers flow from the single authority `minix_sys::signal`
+/// (Minix3 `<sys/signal.h>` numbering); E-INITSYS ④ closed 2026-09-18.
+pub use minix_sys::signal as sig;
 
-use sig::{SIGNAL_ALARM, SIGNAL_ABORT, SIGNAL_HANGUP, SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE, SIGNAL_USER_1};
+use sig::{
+    SIGNAL_ABORT, SIGNAL_ALARM, SIGNAL_CONTINUE, SIGNAL_HANGUP, SIGNAL_KILL,
+    SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE, SIGNAL_USER_1,
+};
 
 /// The seven init states (C: `DEATH`..`CATATONIA`, init.c:133-139).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

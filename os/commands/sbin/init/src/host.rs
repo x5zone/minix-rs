@@ -207,11 +207,12 @@ impl InitHost for MinixSysHost {
     }
 
     fn getuid(&self) -> Result<u32, Errno> {
-        Err(Errno::ENOSYS)
+        minix_sys::pm::getuid_via(&DirectTrapTransport)
+            .map(|(ruid, _euid)| ruid as u32)
     }
 
     fn setsid(&mut self) -> Result<Pid, Errno> {
-        Err(Errno::ENOSYS)
+        minix_sys::pm::setsid_via(&DirectTrapTransport)
     }
 
     fn set_controlling_tty(&mut self, device: &str) -> Result<(), Errno> {
@@ -587,8 +588,10 @@ mod tests {
     #[test]
     fn test_minix_host_honest_enosys_for_missing_wrappers() {
         let mut host = MinixSysHost;
-        assert_eq!(host.getuid(), Err(Errno::ENOSYS));
-        assert_eq!(host.setsid(), Err(Errno::ENOSYS));
+        // getuid/setsid now ride real wrappers (E-INITSYS ②; scripted
+        // transport inside the PM wrapper tests covers the wire) — the
+        // direct-trap host answers ENOSYS for them on this host, so we
+        // only assert the still-gated seams here.
         assert_eq!(host.alarm(10), Err(Errno::ENOSYS));
         assert_eq!(host.path_exists("/dev/console"), Err(Errno::ENOSYS));
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
