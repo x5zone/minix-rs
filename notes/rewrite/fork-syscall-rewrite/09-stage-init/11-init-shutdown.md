@@ -38,7 +38,7 @@
 
 ## 4. 实现详解
 
-模块 `shutdown.rs`；差异：闹钟标志复用 02 的 `AlarmFlag`；广播副作用由调用方执行。
+模块 `shutdown.rs`（P0-2d）。`catatonia(sessions)` 极简：全体置 SHUTDOWN 回 multi_user。`death(host, deps) -> StateKind` 是三轮 kill(-1, SIGHUP→SIGTERM→SIGKILL)，每轮 clang 清零、alarm(10)、循环收割（ECHILD 即收工直回 single_user；clang 置位则进下一轮；其余 errno 继续等），三轮耗尽后给出 ps-axl 警告。台账入口 `deps.record_shutdown` 与 clang 标志（`Arc<AlarmFlag>`，与真实 handler 共享）都由调用方注入。唯一返回态是 single_user——C 如此，Rust 亦然。
 
 ---
 
@@ -47,13 +47,17 @@
 | 测试 | C 对照 |
 |---|---|
 | `test_death_sequence_order` | init.c:1667 |
-| `test_round_all_dead` | init.c:1691-1692 |
+| `test_round_all_dead` | init.c:1686-1692 |
 | `test_round_timeout_next` | init.c:1686-1689 |
 | `test_stuck_warns` | init.c:1695 |
+| `test_catatonia_marks_all_sessions` | init.c:1639-1640 |
+| `test_death_esrch_on_first_round_goes_single_user` | init.c:1679-1681（台账先写） |
+| `test_death_childless_round_ends_early` | init.c:1688-1692 ECHILD |
+| `test_death_all_rounds_exhausted_warns` | init.c:1694-1696 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：71 个通过（累计），0 失败。
+- `cargo test -p minix-init`：149 个通过（累计），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/shutdown.rs`。
 
 ---

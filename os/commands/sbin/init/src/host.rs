@@ -330,6 +330,13 @@ pub struct ScriptHost {
     pub chroots: Vec<String>,
     /// Whether scripted `chroot` calls succeed (default true).
     pub chroot_ok: bool,
+    /// Queue of kill failures; empty queue = every kill succeeds.
+    pub kill_errors: Vec<Errno>,
+    /// Queue of waitpid failures, served before `wait_outcomes`.
+    pub wait_errors: Vec<Errno>,
+    /// When set, `alarm` arms the shared clang flag — the scripted
+    /// shape of "kernel raises SIGALRM, the handler sets clang".
+    pub alarm_sets_clang: Option<std::sync::Arc<crate::state_machine::AlarmFlag>>,
 }
 
 impl ScriptHost {
@@ -366,6 +373,9 @@ impl InitHost for ScriptHost {
 
     fn waitpid(&mut self, pid: Pid, options: i32) -> Result<(Pid, WaitStatus), Errno> {
         let _ = (pid, options);
+        if !self.wait_errors.is_empty() {
+            return Err(self.wait_errors.remove(0));
+        }
         if self.wait_outcomes.is_empty() {
             panic!("script: waitpid requested but queue empty");
         }
@@ -374,6 +384,9 @@ impl InitHost for ScriptHost {
 
     fn kill(&mut self, pid: Pid, signum: i32) -> Result<(), Errno> {
         self.kills.push((pid, signum));
+        if !self.kill_errors.is_empty() {
+            return Err(self.kill_errors.remove(0));
+        }
         Ok(())
     }
 
@@ -425,6 +438,9 @@ impl InitHost for ScriptHost {
 
     fn alarm(&mut self, secs: u32) -> Result<(), Errno> {
         self.alarms.push(secs);
+        if let Some(clang) = &self.alarm_sets_clang {
+            clang.set();
+        }
         Ok(())
     }
 

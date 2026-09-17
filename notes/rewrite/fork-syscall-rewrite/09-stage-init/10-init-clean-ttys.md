@@ -40,7 +40,7 @@
 
 ## 4. 实现详解
 
-模块 `clean_ttys.rs`；差异：链表遍历改为动作枚举，kill 副作用由调用方执行。
+模块 `clean_ttys.rs`（P0-2d）。`clean_ttys(host, sessions, db, lines) -> StateKind`：先清全表 PRESENT，再按新文件逐行对账——命中会话置 PRESENT、utmp 索引迁移时警告并跟随、行熄火或 getty 解析失败则置 SHUTDOWN 并对活进程挂 SIGHUP，新行经 `build_session` 入表；收尾扫一遍，凡无 PRESENT 者皆 SHUTDOWN 加 SIGHUP。返回恒为 multi_user。`lines` 由调用方经 host 读文件并解析——live 宿主读不到文件时按空文件处理，等价于 C 在 getttyent 颗粒无收时的行为：全体退役。
 
 ---
 
@@ -48,14 +48,20 @@
 
 | 测试 | C 对照 |
 |---|---|
-| `test_known_on_keeps` | init.c:1605 |
-| `test_known_off_shutdowns` | init.c:1598-1603 |
-| `test_unknown_creates` | init.c:1616 |
-| `test_missing_retires` | init.c:1621-1626 |
+| `test_known_on_keeps` | init.c:1601-1603 |
+| `test_known_off_shutdowns` | init.c:1597-1600 |
+| `test_unknown_creates` | init.c:1620 |
+| `test_missing_retires` | init.c:1622-1628 |
+| `test_entity_index_change_warns_and_updates` | init.c:1590-1596 |
+| `test_entity_off_line_shuts_down_and_hups` | init.c:1597-1600 |
+| `test_entity_absent_line_retires` | init.c:1622-1628 |
+| `test_entity_new_line_creates_session` | init.c:1620 new_session |
+| `test_entity_kept_line_clears_shutdown_flag` | init.c:1601-1603 清 SHUTDOWN |
+| `test_entity_unreadable_file_retires_everything` | 空 getttyent 行为 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：66 个通过（累计），0 失败。
+- `cargo test -p minix-init`：149 个通过（累计），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/clean_ttys.rs`。
 
 ---
