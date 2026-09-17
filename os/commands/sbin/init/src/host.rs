@@ -151,6 +151,10 @@ pub trait InitHost {
     /// Set an environment variable in this process (C: `setenv("PATH",
     /// INIT_PATH, 1)`, init.c:801) so the exec'd child inherits it.
     fn set_env(&mut self, key: &str, value: &str) -> Result<(), Errno>;
+
+    /// Change the process root (C: `chroot(rootdir)` in the chroot run
+    /// of `/etc/rc`, init.c:903). ENOSYS until E-INITSYS ②.
+    fn chroot(&mut self, root: &str) -> Result<(), Errno>;
 }
 
 /// The real machine, over `minix-sys`.
@@ -287,6 +291,11 @@ impl InitHost for MinixSysHost {
         let _ = (key, value);
         Err(Errno::ENOSYS)
     }
+
+    fn chroot(&mut self, root: &str) -> Result<(), Errno> {
+        let _ = root;
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// A scripted host for tests: every effect is a queued outcome or a
@@ -318,6 +327,9 @@ pub struct ScriptHost {
     pub env_sets: Vec<(String, String)>,
     /// Statuses handed to `exit_process` before the (test-side) panic.
     pub exits: Vec<i32>,
+    pub chroots: Vec<String>,
+    /// Whether scripted `chroot` calls succeed (default true).
+    pub chroot_ok: bool,
 }
 
 impl ScriptHost {
@@ -449,6 +461,15 @@ impl InitHost for ScriptHost {
     fn set_env(&mut self, key: &str, value: &str) -> Result<(), Errno> {
         self.env_sets.push((key.to_string(), value.to_string()));
         Ok(())
+    }
+
+    fn chroot(&mut self, root: &str) -> Result<(), Errno> {
+        self.chroots.push(root.to_string());
+        if self.chroot_ok {
+            Ok(())
+        } else {
+            Err(Errno::EPERM)
+        }
     }
 }
 
