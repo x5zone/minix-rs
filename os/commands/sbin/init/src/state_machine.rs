@@ -146,45 +146,9 @@ pub fn signal_to_state(sig: Signal) -> Option<StateKind> {
     }
 }
 
-/// Drives the `transition()` loop (C: init.c:624-640).
-///
-/// `step` runs one state function and returns the next state, or `None`
-/// to stop (C: state function returning NULL). `run` iterates up to
-/// `max_steps` so tests can bound the infinite loop.
-pub trait TransitionDriver {
-    fn step(&mut self, current: StateKind) -> Option<StateKind>;
-
-    fn run(&mut self, initial: StateKind, max_steps: Option<usize>) -> Vec<StateKind> {
-        let mut trace = vec![initial];
-        let mut current = initial;
-        let limit = max_steps.unwrap_or(usize::MAX);
-        for _ in 0..limit {
-            match self.step(current) {
-                Some(next) => {
-                    trace.push(next);
-                    current = next;
-                }
-                None => break,
-            }
-        }
-        trace
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-
-    struct ScriptDriver {
-        script: HashMap<StateKind, Option<StateKind>>,
-    }
-
-    impl TransitionDriver for ScriptDriver {
-        fn step(&mut self, current: StateKind) -> Option<StateKind> {
-            self.script.get(&current).copied().flatten()
-        }
-    }
 
     #[test]
     fn test_state_chars_roundtrip() {
@@ -233,31 +197,6 @@ mod tests {
             assert_eq!(Signal::from_signum(sig.signum()), sig);
         }
         assert_eq!(Signal::from_signum(99), Signal::Other(99));
-    }
-
-    #[test]
-    fn test_driver_runs_fixed_steps() {
-        let mut driver = ScriptDriver {
-            script: HashMap::from([
-                (StateKind::Runcom, Some(StateKind::ReadTtys)),
-                (StateKind::ReadTtys, Some(StateKind::MultiUser)),
-                (StateKind::MultiUser, Some(StateKind::MultiUser)),
-            ]),
-        };
-        let trace = driver.run(StateKind::Runcom, Some(2));
-        assert_eq!(
-            trace,
-            vec![StateKind::Runcom, StateKind::ReadTtys, StateKind::MultiUser]
-        );
-    }
-
-    #[test]
-    fn test_driver_stops_on_none() {
-        let mut driver = ScriptDriver {
-            script: HashMap::from([(StateKind::Death, None)]),
-        };
-        let trace = driver.run(StateKind::Death, None);
-        assert_eq!(trace, vec![StateKind::Death]);
     }
 
 }

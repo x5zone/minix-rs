@@ -200,9 +200,18 @@ pub fn clear_session_logs(host: &mut dyn InitHost, device: &str, pid: i32, statu
     append_record(host, WTMPX_PATH, &dead)
 }
 
+/// A DEAD_PROCESS entry for a dead session line (C: `logoutx`'s
+/// record, built here so the driver can flush it synchronously).
+pub fn dead_record(device: &str, pid: i32, code: i32, tv_secs: i64) -> UtmpxRecord {
+    let line = device.strip_prefix("/dev/").unwrap_or(device);
+    let mut rec = make_utmpx("", line, RecordType::Dead, pid, tv_secs, code, 0);
+    rec.user = String::new();
+    rec
+}
+
 /// Serialize and append one record; `false` is the C "ledger write
 /// failed" answer callers warn about and otherwise ignore.
-fn append_record(host: &mut dyn InitHost, path: &str, rec: &UtmpxRecord) -> bool {
+pub fn append_record(host: &mut dyn InitHost, path: &str, rec: &UtmpxRecord) -> bool {
     host.append_file(path, rec.encode().as_bytes()).is_ok()
 }
 

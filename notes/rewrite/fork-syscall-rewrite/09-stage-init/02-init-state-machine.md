@@ -126,11 +126,9 @@ pub fn signal_to_state(sig: Signal) -> Option<StateKind>
 
 `Signal` 是 `Sighup/Sigterm/Sigtstp/Sigalrm/Sigabrt/Sigusr1/Other(i32)` 的枚举，避免裸 int。变体本身不带数值：signum 的唯一权威是 Minix3 `<sys/signal.h>`（SIGUSR1 是 30，10 是 SIGBUS——Linux x86 的编号在这里会认错人），init 内以 `sig` 常量模块镜像该权威，待 minix-sys 再导出信号家族后一行切换。`from_signum` 把原始编号分类成枚举，未知编号落进 `Other`；`signal_to_state` 的映射表与 C 三分支逐行对照，`default` 对应 `None`。调用方（driver）负责把 `Some` 写进请求槽、`None` 理解为清零，语义与 C 一致但数据流显式。
 
-### 3.4 决策三：TransitionDriver 可步进主循环
+### 3.4 决策三：transition 主循环与状态分派
 
-C 的 `for(;;)` 无法单测，Rust 的 `run(max_steps)` 允许测试跑固定步数后停下断言轨迹。`step()` 返回 `None` 表示“当前状态函数要求停机”（对应 C 的返回空指针），测试可覆盖这条罕见路径。
-
-### 3.5 决策四：SignalState——异步写状态的三位一体
+C 的 `transition` 七行循环（init.c:630-639：写 runlevel 台账、调状态函数、永远重复）在 `driver.rs` 里保持同构：`run_transition` 每轮先经 `Ledger` 写台账（会话表未建立时按 C 的 `sessions == NULL` 门跳过），再 `match` 分派到当前状态函数——这个 match 就是 C 编译器从 `state_t` 函数指针生成的分派表。早期版本曾抽象出一个「可步进驱动器」trait，但它只能测试任意假图；真正的状态图只有驱动真实状态函数才能测到，该 trait 已随本次收敛删除。状态间共享的机器状态（会话表、DB、信号状态、chroot）收敛在 `DriverState` 单一所有者里，按状态切成 `ChildCollector`（收割）与 `Ledger`（台账）两个视图传递，避免 C 全局变量的别名风险。### 3.5 决策四：SignalState——异步写状态的三位一体
 
 `signal_state.rs` 的 `SignalState` 收纳 C 的三个信号上下文全局：`clang`（Arc 共享的原子标志，alrm_handler 与 death 的 watch 共用）、`requested_transition`（原子状态字符）、以及 minix 挂钩的待决请求。这里有一处**机制层的自觉偏离**（外部行为不变）：C 的 `minixreboot` 在 handler 里直接 fork/exec `/sbin/shutdown`（init.c:517-525），POSIX 意义上这是 async-signal-safe 的反例；Rust 侧 handler 只置原子请求（`note_signal`/`note_shutdown_request`），驱动循环在下一个等待边界执行 spawn（`take_shutdown_request`）。可观察次序一致——请求都在下一次等待边界生效——但 fork 挪出了信号上下文。
 

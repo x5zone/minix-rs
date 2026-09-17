@@ -6,6 +6,7 @@
 
 mod clean_ttys;
 mod contracts;
+mod driver;
 mod entry;
 mod host;
 mod log;

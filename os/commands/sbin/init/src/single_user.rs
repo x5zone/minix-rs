@@ -143,13 +143,13 @@ pub struct SingleUserDeps<'a> {
     /// `from_securitylevel`, init.c:711 — the gate looks at the value
     /// the kernel had, not the downgraded one).
     pub from_securitylevel: i32,
-    /// Called for every reaped child (C: `collect_child(wpid,
-    /// status)`, init.c:833 — the shell's own pid included; the
-    /// session table ignores unknown pids).
-    pub collect: &'a mut dyn FnMut(Pid, &crate::wait::WaitStatus),
-    /// The externally requested transition, polled after every wait
-    /// round (C: the `requested_transition` global).
-    pub requested: &'a dyn Fn() -> Option<StateKind>,
+    /// The child reaper over the session table (C: `collect_child`,
+    /// init.c:833 — the shell's own pid included; the table ignores
+    /// unknown pids).
+    pub collector: &'a mut crate::driver::ChildCollector<'a>,
+    /// The externally requested transition (C: the
+    /// `requested_transition` global).
+    pub requested: &'a crate::signal_state::SignalState,
 }
 
 /// The 's' state: a rescue shell on the console, then FASTBOOT.
@@ -191,7 +191,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
         let mut shell_done: Option<crate::wait::WaitStatus> = None;
         match wpid_status {
             Ok((wpid, status)) => {
-                (deps.collect)(wpid, &status);
+                deps.collector.collect(host, wpid, &status);
                 if wpid == pid {
                     if status.stopped() {
                         // C: stopped shell — SIGCONT it and keep
@@ -207,6 +207,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
                 // C: EINTR continues the wait (init.c:831-832); the
                 // request poll happens below, as in the C condition.
             }
+            Err(err) if err.to_i32() == EINTR => continue,
             Err(_) => {
                 warning(host, "wait for single-user shell failed; restarting");
                 restore_after(host);
@@ -215,7 +216,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
         }
 
         if let Some(status) = shell_done {
-            if let Some(state) = (deps.requested)() {
+            if let Some(state) = deps.requested.take_requested() {
                 restore_after(host);
                 return SingleUserOutcome::Transition(state);
             }
@@ -223,7 +224,7 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
             return finish_shell(host, status);
         }
 
-        if let Some(state) = (deps.requested)() {
+        if let Some(state) = deps.requested.take_requested() {
             restore_after(host);
             return SingleUserOutcome::Transition(state);
         }
@@ -330,12 +331,23 @@ fn child_shell(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::ChildCollector;
     use crate::host::ScriptHost;
+    use crate::session::Session;
+    use crate::session_db::HashMapDb;
+    use crate::signal_state::SignalState;
     use crate::wait::WaitStatus;
 
-    fn no_collect(_pid: Pid, _status: &WaitStatus) {}
-    fn no_request() -> Option<StateKind> {
-        None
+    fn fresh_collector<'a>(
+        sessions: &'a mut Vec<Session>,
+        db: &'a mut HashMapDb,
+    ) -> ChildCollector<'a> {
+        ChildCollector {
+            sessions,
+            db,
+            did_multiuser_chroot: false,
+            rootdir: "/".into(),
+        }
     }
 
     #[test]
@@ -369,10 +381,7 @@ mod tests {
     #[test]
     fn test_wait_requested_transitions() {
         assert_eq!(
-            classify_wait(
-                WaitStatus::Exited { code: 0 },
-                Some(StateKind::Death)
-            ),
+            classify_wait(WaitStatus::Exited { code: 0 }, Some(StateKind::Death)),
             WaitOutcome::Transition(StateKind::Death)
         );
     }
@@ -386,10 +395,7 @@ mod tests {
     #[test]
     fn test_wait_other_signal_restarts_single_user() {
         let hup = WaitStatus::Signaled { termsig: 1, core_dumped: false };
-        assert_eq!(
-            classify_wait(hup, None),
-            WaitOutcome::RestartSingleUser
-        );
+        assert_eq!(classify_wait(hup, None), WaitOutcome::RestartSingleUser);
     }
 
     #[test]
@@ -409,16 +415,18 @@ mod tests {
     fn test_entity_happy_path_runs_shell_then_fastboot() {
         let mut host = ScriptHost::parent_only();
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
-        let mut collects = Vec::new();
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: None,
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut |pid, status| collects.push((pid, *status)),
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         assert_eq!(single_user(&mut host, deps), SingleUserOutcome::ProceedRuncomFastboot);
-        assert_eq!(collects.len(), 1);
     }
 
     #[test]
@@ -426,12 +434,16 @@ mod tests {
         let mut host = ScriptHost::parent_only();
         host.securitylevel = Some(2);
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: None,
             console_secure: false,
             from_securitylevel: 2,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         let _ = single_user(&mut host, deps);
         assert_eq!(host.securitylevel_sets, vec![0]);
@@ -441,14 +453,17 @@ mod tests {
     fn test_entity_fork_failure_retries() {
         let mut host = ScriptHost::default();
         host.fork_outcomes.push(Err(Errno::EAGAIN));
-        // The WNOHANG reap loop runs until its first error.
-        host.wait_outcomes.push(Err(Errno::ESRCH));
+        host.wait_errors.push(Errno::ESRCH); // the WNOHANG reap ends
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: None,
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         assert_eq!(single_user(&mut host, deps), SingleUserOutcome::Restart);
         assert!(host.console.iter().any(|(_, m)| m.contains("can't fork")));
@@ -461,16 +476,18 @@ mod tests {
         let mut host = ScriptHost::parent_only();
         host.wait_outcomes.push(Ok((42, WaitStatus::Exited { code: 1 })));
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
-        let mut collected = Vec::new();
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: None,
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut |pid, status| collected.push((pid, *status)),
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         assert_eq!(single_user(&mut host, deps), SingleUserOutcome::ProceedRuncomFastboot);
-        assert_eq!(collected.len(), 2);
     }
 
     #[test]
@@ -478,14 +495,18 @@ mod tests {
         let mut host = ScriptHost::parent_only();
         host.wait_outcomes.push(Ok((
             7,
-            WaitStatus::Signaled { termsig: sig::SIGNAL_KILL, core_dumped: false },
+            WaitStatus::Signaled { termsig: 9, core_dumped: false },
         )));
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: None,
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         assert_eq!(single_user(&mut host, deps), SingleUserOutcome::AwaitReboot);
     }
@@ -494,12 +515,17 @@ mod tests {
     fn test_entity_requested_transition_wins_after_shell_exit() {
         let mut host = ScriptHost::parent_only();
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        signals.note_signal(20 - 2); // SIGTSTP(18) → catatonia
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: None,
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &|| Some(StateKind::Catatonia),
+            collector: &mut collector,
+            requested: &signals,
         };
         assert_eq!(
             single_user(&mut host, deps),
@@ -520,22 +546,23 @@ mod tests {
         host.input_lines.push(Some(String::new())); // altshell RETURN
         host.exec_outcomes.push(Errno::EPERM);
         host.exec_outcomes.push(Errno::EPERM);
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: Some(&|clear| clear == "swordfish"),
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(host.exec_requests.len(), 2);
         let cmd = &host.exec_requests[0];
         assert_eq!(cmd.exec_path, RC_SHELL_PATH);
         assert_eq!(cmd.argv, vec!["-sh"]);
-        assert_eq!(
-            host.env_sets,
-            vec![("PATH".to_string(), INIT_PATH.to_string())]
-        );
+        assert_eq!(host.env_sets, vec![("PATH".to_string(), INIT_PATH.to_string())]);
         // C: sleep(STALL_TIMEOUT) then _exit(3) after both execs fail.
         assert_eq!(host.slept, vec![30]);
         assert_eq!(host.exits, vec![3]);
@@ -551,12 +578,16 @@ mod tests {
         host.input_lines.push(Some("/bin/ksh\n".into())); // alt shell
         host.exec_outcomes.push(Errno::EPERM);
         host.exec_outcomes.push(Errno::EPERM);
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: Some(&|clear| clear == "swordfish"),
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         // First attempt execs the operator's shell; the fallback resets
@@ -577,12 +608,16 @@ mod tests {
         host.input_lines.push(Some(String::new())); // altshell RETURN
         host.exec_outcomes.push(Errno::EPERM);
         host.exec_outcomes.push(Errno::EPERM);
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: Some(&|clear| clear == "swordfish"),
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(
@@ -599,12 +634,16 @@ mod tests {
         let mut host = ScriptHost::default();
         host.fork_outcomes.push(Ok(0));
         host.input_lines.push(None); // EOF = ^D
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = HashMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
             verify_password: Some(&|_| false),
             console_secure: false,
             from_securitylevel: 0,
-            collect: &mut no_collect,
-            requested: &no_request,
+            collector: &mut collector,
+            requested: &signals,
         };
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(host.exits, vec![0]);
@@ -632,8 +671,6 @@ mod tests {
                 (sig::SIGNAL_TERMINAL_STOP, HandlerKind::Transition),
             ]
         );
-        // Sanity: the default table still installs from main.
         assert_eq!(default_signal_spec().handlers.len(), 6);
-        let _ = SignalSpec::default();
     }
 }

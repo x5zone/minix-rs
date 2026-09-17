@@ -160,6 +160,10 @@ pub trait InitHost {
     /// `pututxline`/`logwtmpx`, init.c:1446/1008). ENOSYS until
     /// E-INITSYS ② lands the open-existing path.
     fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno>;
+
+    /// Read a whole file as text (C: fopen/getttyent/getpwnam reads of
+    /// `/etc/ttys` and `/etc/passwd`). ENOSYS until E-INITSYS ②.
+    fn read_file(&self, path: &str) -> Result<String, Errno>;
 }
 
 /// The real machine, over `minix-sys`.
@@ -306,6 +310,11 @@ impl InitHost for MinixSysHost {
         let _ = (path, bytes);
         Err(Errno::ENOSYS)
     }
+
+    fn read_file(&self, path: &str) -> Result<String, Errno> {
+        let _ = path;
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// A scripted host for tests: every effect is a queued outcome or a
@@ -342,6 +351,8 @@ pub struct ScriptHost {
     pub chroot_ok: bool,
     /// Recorded (path, text) appends.
     pub appends: Vec<(String, String)>,
+    /// (path, contents) answers for `read_file`; missing path = ENOSYS.
+    pub files: Vec<(String, String)>,
     /// Queue of append failures; empty queue = every append succeeds.
     pub append_errors: Vec<Errno>,
     /// Queue of kill failures; empty queue = every kill succeeds.
@@ -387,13 +398,13 @@ impl InitHost for ScriptHost {
 
     fn waitpid(&mut self, pid: Pid, options: i32) -> Result<(Pid, WaitStatus), Errno> {
         let _ = (pid, options);
+        if !self.wait_outcomes.is_empty() {
+            return self.wait_outcomes.remove(0);
+        }
         if !self.wait_errors.is_empty() {
             return Err(self.wait_errors.remove(0));
         }
-        if self.wait_outcomes.is_empty() {
-            panic!("script: waitpid requested but queue empty");
-        }
-        self.wait_outcomes.remove(0)
+        panic!("script: waitpid requested but queue empty");
     }
 
     fn kill(&mut self, pid: Pid, signum: i32) -> Result<(), Errno> {
@@ -509,6 +520,15 @@ impl InitHost for ScriptHost {
         self.appends
             .push((path.to_string(), String::from_utf8_lossy(bytes).into_owned()));
         Ok(())
+    }
+
+    fn read_file(&self, path: &str) -> Result<String, Errno> {
+        for (candidate, contents) in &self.files {
+            if candidate == path {
+                return Ok(contents.clone());
+            }
+        }
+        Err(Errno::ENOSYS)
     }
 }
 

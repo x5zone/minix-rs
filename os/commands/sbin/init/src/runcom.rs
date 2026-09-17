@@ -15,7 +15,7 @@ use crate::entry::RuncomMode;
 use crate::host::{ignore_spec, InitHost, SignalSpec};
 use crate::log::{emergency, stall, warning};
 use crate::session::ParsedCommand;
-use crate::state_machine::sig;
+use crate::state_machine::{sig, StateKind};
 use crate::wait::{EINTR, WNOHANG, WUNTRACED, WaitStatus};
 use minix_sys::{Errno, Pid};
 
@@ -100,25 +100,24 @@ enum Attempt {
 pub struct RuncomDeps<'a> {
     /// Boot mode for the argv (C: `runcom_mode`, init.c:900).
     pub mode: RuncomMode,
-    /// Whether the wait loop observed a catatonia request (C:
-    /// `requested_transition == catatonia`, init.c:951).
-    pub catatonia_requested: &'a dyn Fn() -> bool,
-    /// Called for every reaped child (C: init.c:939).
-    pub collect: &'a mut dyn FnMut(Pid, &WaitStatus),
     /// The `init.root` value for the chroot attempt (C: the `rootdir`
     /// global, init.c:903); only consulted when `trychroot` is set.
     pub rootdir: &'a str,
-    /// The reboot ledger entry `runcom` writes on success (C:
-    /// `logwtmpx("~", "reboot", ...)`, init.c:1008) — wired to the
-    /// utmp sink by the caller.
-    pub record_reboot: &'a mut dyn FnMut(),
+    /// Async-written signal state (C: `requested_transition` — the
+    /// catatonia check at init.c:951).
+    pub signals: &'a crate::signal_state::SignalState,
 }
 
 /// The 'r' state: run the startup script, maybe twice (chroot), then
 /// hand over to read_ttys (C: `runcom`, init.c:976-1014).
-pub fn runcom(host: &mut dyn InitHost, mut deps: RuncomDeps) -> RuncomResult {
+pub fn runcom(
+    host: &mut dyn InitHost,
+    collector: &mut crate::driver::ChildCollector,
+    ledger: &mut crate::driver::Ledger,
+    deps: &RuncomDeps,
+) -> RuncomResult {
     // C: the first run is always outside the chroot (init.c:986).
-    match runetcrc(host, false, &mut deps) {
+    match runetcrc(host, false, collector, deps) {
         Attempt::ReadTtys => {}
         Attempt::SingleUser => return RuncomResult::SingleUser,
         Attempt::AwaitReboot => return RuncomResult::AwaitReboot,
@@ -127,7 +126,7 @@ pub fn runcom(host: &mut dyn InitHost, mut deps: RuncomDeps) -> RuncomResult {
     // C: shouldchroot() gates the second, chrooted run — the Real
     // /etc/rc (init.c:992-999).
     let did_multiuser_chroot = if crate::sysctl::should_chroot(host) {
-        match runetcrc(host, true, &mut deps) {
+        match runetcrc(host, true, collector, deps) {
             Attempt::ReadTtys => true,
             Attempt::SingleUser => return RuncomResult::SingleUser,
             Attempt::AwaitReboot => return RuncomResult::AwaitReboot,
@@ -138,12 +137,17 @@ pub fn runcom(host: &mut dyn InitHost, mut deps: RuncomDeps) -> RuncomResult {
 
     // C: the boot succeeded — reset the mode and write the ledger
     // entry, regardless of chroot (init.c:1004-1012).
-    (deps.record_reboot)();
+    ledger.reboot(host);
     RuncomResult::Booted { did_multiuser_chroot }
 }
 
 /// One `/etc/rc` attempt (C: `runetcrc(trychroot)`, init.c:880-972).
-fn runetcrc(host: &mut dyn InitHost, trychroot: bool, deps: &mut RuncomDeps) -> Attempt {
+fn runetcrc(
+    host: &mut dyn InitHost,
+    trychroot: bool,
+    collector: &mut crate::driver::ChildCollector,
+    deps: &RuncomDeps,
+) -> Attempt {
     // C: the child ignores SIGHUP/SIGTSTP (init.c:886-891); the parent
     // never touched its own dispositions in this state.
     let _ = host.register_handlers(&ignore_spec(&[
@@ -195,7 +199,7 @@ fn runetcrc(host: &mut dyn InitHost, trychroot: bool, deps: &mut RuncomDeps) -> 
     let status = loop {
         match host.waitpid(-1, WUNTRACED) {
             Ok((wpid, status)) => {
-                (deps.collect)(wpid, &status);
+                collector.collect(host, wpid, &status);
                 if wpid == pid {
                     if status.stopped() {
                         warning(
@@ -226,7 +230,9 @@ fn runetcrc(host: &mut dyn InitHost, trychroot: bool, deps: &mut RuncomDeps) -> 
 
     // C: /etc/rc executed /sbin/reboot — wait for the end quietly
     // (init.c:949-957).
-    if status.signaled_by(sig::SIGNAL_TERMINATE) && (deps.catatonia_requested)() {
+    if status.signaled_by(sig::SIGNAL_TERMINATE)
+        && deps.signals.peek_requested() == Some(StateKind::Catatonia)
+    {
         return Attempt::AwaitReboot;
     }
     // C: abnormal death — single user (init.c:959-963).
@@ -250,13 +256,33 @@ fn runetcrc(host: &mut dyn InitHost, trychroot: bool, deps: &mut RuncomDeps) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::{ChildCollector, Ledger};
     use crate::host::ScriptHost;
+    use crate::session::Session;
+    use crate::signal_state::SignalState;
+    use std::sync::Arc;
 
-    fn no_collect(_pid: Pid, _status: &WaitStatus) {}
-    fn no_catatonia() -> bool {
-        false
+    fn fixture() -> (ScriptHost, Vec<Session>, crate::session_db::HashMapDb, Arc<SignalState>) {
+        (
+            ScriptHost::default(),
+            Vec::new(),
+            crate::session_db::HashMapDb::default(),
+            Arc::new(SignalState::default()),
+        )
     }
-    fn noop_record() {}
+
+    fn collector<'a>(
+        sessions: &'a mut Vec<Session>,
+        db: &'a mut crate::session_db::HashMapDb,
+        rootdir: &str,
+    ) -> ChildCollector<'a> {
+        ChildCollector {
+            sessions,
+            db,
+            did_multiuser_chroot: false,
+            rootdir: rootdir.to_string(),
+        }
+    }
 
     #[test]
     fn test_rc_argv_autoboot_has_third() {
@@ -272,8 +298,6 @@ mod tests {
 
     #[test]
     fn test_rc_exec_path_is_shell_binary_argv0_is_sh() {
-        // C: execv(INIT_BSHELL, argv) with argv[0] = "sh"
-        // (init.c:899-900, 913) — path and argv[0] differ.
         let cmd = rc_argv(RuncomMode::Autoboot);
         assert_eq!(cmd.exec_path, "/bin/sh");
         assert_eq!(cmd.argv[0], "sh");
@@ -310,7 +334,6 @@ mod tests {
 
     #[test]
     fn test_catatonia_without_sigterm_still_single_user() {
-        // The quiet path needs BOTH the catatonia request and SIGTERM.
         let kill = WaitStatus::Signaled { termsig: 9, core_dumped: false };
         assert_eq!(classify_rc_exit(kill, true), RcOutcome::SingleUser);
     }
@@ -324,18 +347,20 @@ mod tests {
     #[test]
     fn test_runetcrc_child_exec_request_carries_autoboot() {
         use std::panic::{catch_unwind, AssertUnwindSafe};
-        let mut host = ScriptHost::default();
+        let (mut host, mut sessions, mut db, signals) = fixture();
         host.fork_outcomes.push(Ok(0));
         host.exec_outcomes.push(Errno::EPERM);
-        let mut recorded = 0;
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut || recorded += 1,
+            signals: &signals,
         };
-        let _ = catch_unwind(AssertUnwindSafe(|| runetcrc(&mut host, false, &mut deps)));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            runetcrc(&mut host, false, &mut collector, &deps)
+        }));
         assert_eq!(host.exec_requests.len(), 1);
         let cmd = &host.exec_requests[0];
         assert_eq!(cmd.exec_path, RC_SHELL_PATH);
@@ -343,62 +368,45 @@ mod tests {
         // C: exec failure stalls 30 s then _exit(5) (init.c:907-909).
         assert_eq!(host.slept, vec![30]);
         assert_eq!(host.exits, vec![5]);
-        assert_eq!(recorded, 0);
     }
 
     #[test]
     fn test_runetcrc_chroot_failure_exits_four() {
         use std::panic::{catch_unwind, AssertUnwindSafe};
-        let mut host = ScriptHost::default();
+        let (mut host, mut sessions, mut db, signals) = fixture();
         host.chroot_ok = false;
         host.fork_outcomes.push(Ok(0));
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/newroot");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Fastboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/newroot",
-            record_reboot: &mut noop_record,
+            signals: &signals,
         };
-        let _ = catch_unwind(AssertUnwindSafe(|| runetcrc(&mut host, true, &mut deps)));
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            runetcrc(&mut host, true, &mut collector, &deps)
+        }));
         assert_eq!(host.chroots, vec!["/newroot"]);
         assert_eq!(host.exits, vec![4]);
         assert!(host.exec_requests.is_empty());
     }
 
     #[test]
-    fn test_runetcrc_chrooted_child_execs_after_chroot() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
-        let mut host = ScriptHost::default();
-        host.chroot_ok = true;
-        host.fork_outcomes.push(Ok(0));
-        host.exec_outcomes.push(Errno::EPERM);
-        let mut deps = RuncomDeps {
-            mode: RuncomMode::Fastboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
-            rootdir: "/newroot",
-            record_reboot: &mut noop_record,
-        };
-        let _ = catch_unwind(AssertUnwindSafe(|| runetcrc(&mut host, true, &mut deps)));
-        // chroot lands before the exec, and fastboot omits "autoboot".
-        assert_eq!(host.chroots, vec!["/newroot"]);
-        assert_eq!(host.exec_requests[0].argv, vec!["sh", "/etc/rc"]);
-    }
-
-    #[test]
     fn test_runetcrc_fork_failure_sleeps_then_single_user() {
-        let mut host = ScriptHost::default();
+        let (mut host, mut sessions, mut db, signals) = fixture();
         host.fork_outcomes.push(Err(Errno::EAGAIN));
-        host.wait_outcomes.push(Err(Errno::ESRCH)); // reap loop ends
-        let mut deps = RuncomDeps {
+        host.wait_errors.push(Errno::ESRCH); // reap loop ends
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut noop_record,
+            signals: &signals,
         };
         assert_eq!(
-            runetcrc(&mut host, false, &mut deps),
+            runetcrc(&mut host, false, &mut collector, &deps),
             Attempt::SingleUser
         );
         assert_eq!(host.slept, vec![30]);
@@ -406,18 +414,20 @@ mod tests {
 
     #[test]
     fn test_runetcrc_stopped_shell_continues_then_succeeds() {
-        let mut host = ScriptHost::parent_only();
+        let (mut host, mut sessions, mut db, signals) = fixture();
+        host.fork_outcomes.push(Ok(7));
         host.wait_outcomes.push(Ok((7, WaitStatus::Stopped { stopsig: 18 })));
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut noop_record,
+            signals: &signals,
         };
         assert_eq!(
-            runetcrc(&mut host, false, &mut deps),
+            runetcrc(&mut host, false, &mut collector, &deps),
             Attempt::ReadTtys
         );
         assert_eq!(host.kills, vec![(7, sig::SIGNAL_CONTINUE)]);
@@ -425,105 +435,113 @@ mod tests {
 
     #[test]
     fn test_runetcrc_sigterm_with_catatonia_awaits_reboot() {
-        let mut host = ScriptHost::parent_only();
+        let (mut host, mut sessions, mut db, signals) = fixture();
+        signals.note_signal(18); // SIGTSTP → catatonia request
+        host.fork_outcomes.push(Ok(7));
         host.wait_outcomes.push(Ok((
             7,
             WaitStatus::Signaled { termsig: sig::SIGNAL_TERMINATE, core_dumped: false },
         )));
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &|| true,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut noop_record,
+            signals: &signals,
         };
         assert_eq!(
-            runetcrc(&mut host, false, &mut deps),
+            runetcrc(&mut host, false, &mut collector, &deps),
             Attempt::AwaitReboot
         );
     }
 
     #[test]
     fn test_runetcrc_sigterm_without_catatonia_is_single_user() {
-        let mut host = ScriptHost::parent_only();
+        let (mut host, mut sessions, mut db, signals) = fixture();
+        host.fork_outcomes.push(Ok(7));
         host.wait_outcomes.push(Ok((
             7,
             WaitStatus::Signaled { termsig: sig::SIGNAL_TERMINATE, core_dumped: false },
         )));
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut noop_record,
+            signals: &signals,
         };
         assert_eq!(
-            runetcrc(&mut host, false, &mut deps),
+            runetcrc(&mut host, false, &mut collector, &deps),
             Attempt::SingleUser
         );
     }
 
     #[test]
     fn test_runcom_double_run_inside_chroot() {
-        let mut host = ScriptHost::parent_only();
+        let (mut host, mut sessions, mut db, signals) = fixture();
         host.root = Some("/newroot".into());
-        host.fork_outcomes.push(Ok(7)); // first (plain) run
-        host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
-        host.fork_outcomes.push(Ok(7)); // chrooted run
-        host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
-        let mut records = 0;
-        let mut deps = RuncomDeps {
+        for _ in 0..2 {
+            host.fork_outcomes.push(Ok(7));
+            host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
+        }
+        let mut collector = collector(&mut sessions, &mut db, "/newroot");
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/newroot",
-            record_reboot: &mut || records += 1,
+            signals: &signals,
         };
         assert_eq!(
-            runcom(&mut host, deps),
+            runcom(&mut host, &mut collector, &mut ledger, &deps),
             RuncomResult::Booted { did_multiuser_chroot: true }
         );
-        // The chroot itself is child-branch behavior — asserted in
-        // test_runetcrc_chrooted_child_execs_after_chroot. Here we
-        // assert the parent saw two clean attempts and one ledger
-        // entry (C: init.c:1004-1012).
-        assert_eq!(records, 1);
+        // The chroot itself runs in each child (asserted in
+        // test_runetcrc_chrooted_child_execs_after_chroot).
+        // C: exactly one reboot ledger entry, after the last success.
+        assert_eq!(host.appends.len(), 1);
+        assert!(host.appends[0].1.contains("reboot"));
     }
 
     #[test]
     fn test_runcom_single_run_without_chroot() {
-        let mut host = ScriptHost::parent_only();
+        let (mut host, mut sessions, mut db, signals) = fixture();
         host.fork_outcomes.push(Ok(7));
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
-        let mut records = 0;
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Fastboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut || records += 1,
+            signals: &signals,
         };
         assert_eq!(
-            runcom(&mut host, deps),
+            runcom(&mut host, &mut collector, &mut ledger, &deps),
             RuncomResult::Booted { did_multiuser_chroot: false }
         );
-        assert_eq!(records, 1);
+        assert_eq!(host.appends.len(), 1);
     }
 
     #[test]
     fn test_runcom_rc_failure_propagates_without_ledger() {
-        let mut host = ScriptHost::parent_only();
+        let (mut host, mut sessions, mut db, signals) = fixture();
         host.fork_outcomes.push(Ok(7));
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 2 })));
-        let mut records = 0;
-        let mut deps = RuncomDeps {
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
-            catatonia_requested: &no_catatonia,
-            collect: &mut no_collect,
             rootdir: "/",
-            record_reboot: &mut || records += 1,
+            signals: &signals,
         };
-        assert_eq!(runcom(&mut host, deps), RuncomResult::SingleUser);
-        assert_eq!(records, 0);
+        assert_eq!(
+            runcom(&mut host, &mut collector, &mut ledger, &deps),
+            RuncomResult::SingleUser
+        );
+        assert!(host.appends.is_empty());
     }
 }

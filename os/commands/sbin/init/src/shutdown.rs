@@ -47,25 +47,16 @@ pub fn classify_round(reaped_all: bool, timed_out: bool) -> DeathRoundOutcome {
 }
 
 /// Inputs for the two shutdown states.
-pub struct ShutdownDeps<'a> {
-    /// The session table (C: the `sessions` list).
-    pub sessions: &'a mut Vec<Session>,
-    /// pid → session index (C: the session DB).
-    pub db: &'a mut dyn SessionDb,
-    /// Session ledger cleanup per dying child (C:
-    /// `clear_session_logs`, init.c:1466).
-    pub clear_logs: &'a mut dyn FnMut(Pid, &WaitStatus),
-    /// The shutdown ledger entry `death` writes once (C:
-    /// `logwtmpx("~", "shutdown", ...)`, init.c:1674) — wired to the
-    /// utmp sink by the caller.
-    pub record_shutdown: &'a mut dyn FnMut(),
+pub struct ShutdownDeps<'a, 'b> {
+    /// The child reaper over the session table and DB (C: the
+    /// `sessions` list plus `collect_child`).
+    pub collector: &'a mut crate::driver::ChildCollector<'b>,
+    /// The ledger writer (C: `logwtmpx("~", "shutdown", ...)`,
+    /// init.c:1674).
+    pub ledger: &'a mut crate::driver::Ledger<'a>,
     /// The SIGALRM flag (C: `clang`, init.c:173) — shared with the
     /// real handler so an asynchronous set is visible here.
     pub clang: Arc<AlarmFlag>,
-    /// Chroot state for respawned gettys during the wait (C:
-    /// `did_multiuser_chroot`/`rootdir`, forwarded to collect_child).
-    pub did_multiuser_chroot: bool,
-    pub rootdir: &'a str,
 }
 
 /// Block further logins: mark every session and return to multi-user,
@@ -88,11 +79,11 @@ pub fn catatonia(sessions: &mut Vec<Session>) -> StateKind {
 /// the only exit state, exactly as in C.
 pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
     // C: mark everything (init.c:1666-1668).
-    for sp in deps.sessions.iter_mut() {
+    for sp in deps.collector.sessions.iter_mut() {
         sp.flags.set(SE_SHUTDOWN);
     }
     // C: the shutdown ledger entry, once (init.c:1672-1677).
-    (deps.record_shutdown)();
+    deps.ledger.shutdown(host);
 
     for &signum in DEATH_SEQUENCE.iter() {
         // C: nobody received the signal — done early (init.c:1679-1681).
@@ -109,16 +100,7 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
         loop {
             match host.waitpid(-1, 0) {
                 Ok((pid, status)) => {
-                    collect_child(
-                        host,
-                        deps.sessions,
-                        &mut *deps.db,
-                        &mut *deps.clear_logs,
-                        deps.did_multiuser_chroot,
-                        deps.rootdir,
-                        pid,
-                        &status,
-                    );
+                    deps.collector.collect(host, pid, &status);
                 }
                 Err(e) => {
                     if e.to_i32() == ECHILD {
@@ -149,11 +131,9 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::{ChildCollector, Ledger};
     use crate::host::ScriptHost;
     use crate::session::build_session;
-
-    fn noop_clear(_pid: Pid, _status: &WaitStatus) {}
-    fn noop_record() {}
 
     fn sample(index: usize, name: &str) -> Session {
         build_session(index, name, "/sbin/getty", None, true).unwrap()
@@ -196,19 +176,23 @@ mod tests {
         let mut sessions = vec![sample(1, "tty1")];
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
-        let mut records = 0;
-        let mut deps = ShutdownDeps {
+        let mut collector = ChildCollector {
             sessions: &mut sessions,
             db: &mut db,
-            clear_logs: &mut noop_clear,
-            record_shutdown: &mut || records += 1,
-            clang: Arc::new(AlarmFlag::default()),
             did_multiuser_chroot: false,
-            rootdir: "/",
+            rootdir: "/".into(),
+        };
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let mut deps = ShutdownDeps {
+            collector: &mut collector,
+            ledger: &mut ledger,
+            clang: Arc::new(AlarmFlag::default()),
         };
         assert_eq!(death(&mut host, &mut deps), StateKind::SingleUser);
         // The ledger entry is written before the rounds, regardless.
-        assert_eq!(records, 1);
+        assert_eq!(host.appends.len(), 1);
+        assert!(host.appends[0].1.contains("shutdown"));
         assert!(host.alarms.is_empty()); // never armed
     }
 
@@ -221,14 +205,18 @@ mod tests {
         let mut sessions = vec![sample(1, "tty1")];
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
-        let mut deps = ShutdownDeps {
+        let mut collector = ChildCollector {
             sessions: &mut sessions,
             db: &mut db,
-            clear_logs: &mut noop_clear,
-            record_shutdown: &mut noop_record,
-            clang: Arc::new(AlarmFlag::default()),
             did_multiuser_chroot: false,
-            rootdir: "/",
+            rootdir: "/".into(),
+        };
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let mut deps = ShutdownDeps {
+            collector: &mut collector,
+            ledger: &mut ledger,
+            clang: Arc::new(AlarmFlag::default()),
         };
         assert_eq!(death(&mut host, &mut deps), StateKind::SingleUser);
         assert_eq!(host.alarms, vec![DEATH_WATCH_SECS as u32]);
@@ -244,21 +232,23 @@ mod tests {
         db.open().unwrap();
         let clang = Arc::new(AlarmFlag::default());
         host.alarm_sets_clang = Some(clang.clone());
-        let mut deps = ShutdownDeps {
-            sessions: &mut sessions,
-            db: &mut db,
-            clear_logs: &mut noop_clear,
-            record_shutdown: &mut noop_record,
-            clang,
-            did_multiuser_chroot: false,
-            rootdir: "/",
-        };
-        // Each round reaps one unknown pid (ignored by the table),
-        // then clang ends the round.
         for _ in 0..3 {
             host.wait_outcomes
                 .push(Ok((99, WaitStatus::Exited { code: 0 })));
         }
+        let mut collector = ChildCollector {
+            sessions: &mut sessions,
+            db: &mut db,
+            did_multiuser_chroot: false,
+            rootdir: "/".into(),
+        };
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let mut deps = ShutdownDeps {
+            collector: &mut collector,
+            ledger: &mut ledger,
+            clang,
+        };
         assert_eq!(death(&mut host, &mut deps), StateKind::SingleUser);
         assert!(host
             .console

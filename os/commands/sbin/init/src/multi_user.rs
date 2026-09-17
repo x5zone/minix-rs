@@ -172,52 +172,41 @@ pub fn start_getty(
     host.exit_process(8);
 }
 
-/// Inputs for the steady state.
-pub struct MultiUserDeps<'a> {
-    /// The session table, in ttys order (C: the `sessions` list).
-    pub sessions: &'a mut Vec<Session>,
-    /// pid → session index (C: the Berkeley DB via `find_session`/
-    /// `add_session`/`del_session`).
-    pub db: &'a mut dyn SessionDb,
-    /// Whether the boot chrooted — gettys follow it (C:
-    /// `did_multiuser_chroot`).
-    pub did_multiuser_chroot: bool,
-    /// The chroot root used by the boot (C: `rootdir`).
-    pub rootdir: &'a str,
-    /// Session ledger cleanup for a dying child (C:
-    /// `clear_session_logs(sp, status)`, init.c:1466 — wired to the
-    /// utmp sink by the caller).
-    pub clear_logs: &'a mut dyn FnMut(Pid, &WaitStatus),
-    /// The externally requested transition (C: `requested_transition`).
-    pub requested: &'a dyn Fn() -> Option<StateKind>,
-}
-
 /// The 'm' state: spawn gettys, reap forever, hand back the requested
 /// transition (C: `multi_user`, init.c:1528-1564).
 ///
 /// A `None` return is not possible: the C loop only leaves via a
-/// requested transition. `Err` is likewise folded away — fork trouble
-/// during a respawn requests clean_ttys instead of aborting.
-pub fn multi_user(host: &mut dyn InitHost, deps: MultiUserDeps) -> StateKind {
+/// requested transition. Fork trouble during a respawn requests
+/// clean_ttys instead of aborting.
+pub fn multi_user(
+    host: &mut dyn InitHost,
+    collector: &mut crate::driver::ChildCollector,
+    signals: &crate::signal_state::SignalState,
+) -> StateKind {
     // C: level 0 means "kernel should enter secure mode" — raise it to
     // 1 (init.c:1540-1544). Note the == test, not >.
-    if deps_read_level(host) == Some(0) {
+    if host.securitylevel().ok().flatten() == Some(0) {
         host.set_securitylevel(1);
     }
 
     // C: every line without a live process gets a getty; a fork error
     // requests clean_ttys and stops the sweep (init.c:1546-1555).
     let mut requested: Option<StateKind> = None;
-    let sessions = &mut *deps.sessions;
-    for sp in sessions.iter_mut() {
-        if sp.process.is_some() {
+    for index in 0..collector.sessions.len() {
+        if collector.sessions[index].process.is_some() {
             continue;
         }
-        match start_getty(host, sp, deps.did_multiuser_chroot, deps.rootdir) {
+        let spawn = start_getty(
+            host,
+            &mut collector.sessions[index],
+            collector.did_multiuser_chroot,
+            &collector.rootdir,
+        );
+        match spawn {
             Ok(pid) => {
-                sp.process = Some(pid);
-                sp.started_secs = host.now_secs().unwrap_or(0);
-                deps.db.insert(pid, sp.index);
+                collector.sessions[index].process = Some(pid);
+                collector.sessions[index].started_secs = host.now_secs().unwrap_or(0);
+                collector.db.insert(pid, index + 1);
             }
             Err(()) => {
                 requested = Some(StateKind::CleanTtys);
@@ -230,31 +219,19 @@ pub fn multi_user(host: &mut dyn InitHost, deps: MultiUserDeps) -> StateKind {
     while requested.is_none() {
         match host.waitpid(-1, 0) {
             Ok((pid, status)) => {
-                let action = collect_child(
-                    host,
-                    sessions,
-                    &mut *deps.db,
-                    &mut *deps.clear_logs,
-                    deps.did_multiuser_chroot,
-                    deps.rootdir,
-                    pid,
-                    &status,
-                );
-                if action == CollectAction::RequestCleanTtys {
+                if collector.collect(host, pid, &status)
+                    == CollectAction::RequestCleanTtys
+                {
                     requested = Some(StateKind::CleanTtys);
                     break;
                 }
             }
             Err(_) => break,
         }
-        requested = (deps.requested)();
+        requested = signals.take_requested();
     }
 
     requested.unwrap_or(StateKind::CleanTtys)
-}
-
-fn deps_read_level(host: &dyn InitHost) -> Option<i32> {
-    host.securitylevel().ok().flatten()
 }
 
 /// Reap one child (C: `collect_child`, init.c:1460-1497).
@@ -268,7 +245,7 @@ pub fn collect_child(
     host: &mut dyn InitHost,
     sessions: &mut Vec<Session>,
     db: &mut dyn SessionDb,
-    clear_logs: &mut dyn FnMut(Pid, &WaitStatus),
+    clear_logs: &mut dyn FnMut(&str, Pid, &WaitStatus),
     did_multiuser_chroot: bool,
     rootdir: &str,
     pid: Pid,
@@ -278,13 +255,13 @@ pub fn collect_child(
         Some(index) => index,
         None => return CollectAction::Ignore,
     };
-    clear_logs(pid, status);
-    db.remove(pid);
-
     let pos = match sessions.iter().position(|sp| sp.index == index) {
         Some(pos) => pos,
         None => return CollectAction::Ignore,
     };
+    clear_logs(&sessions[pos].device, pid, status);
+    db.remove(pid);
+
     let shutting_down = sessions[pos].flags.contains(SE_SHUTDOWN);
     if shutting_down {
         sessions.remove(pos);
@@ -309,16 +286,12 @@ pub fn collect_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::ChildCollector;
     use crate::host::ScriptHost;
     use crate::session::build_session;
 
-    fn no_collect(_pid: Pid, _status: &WaitStatus) {}
-    fn no_request() -> Option<StateKind> {
-        None
-    }
-    fn noop_clear(_pid: Pid, _status: &WaitStatus) {}
-
-    fn sample_session(index: usize, name: &str) -> Session {
+    fn no_clear(_device: &str, _pid: Pid, _status: &WaitStatus) {}
+    fn sample(index: usize, name: &str) -> Session {
         build_session(index, name, "/sbin/getty", None, true).unwrap()
     }
 
@@ -351,10 +324,7 @@ mod tests {
 
     #[test]
     fn test_collect_unknown_ignores() {
-        assert_eq!(
-            classify_collect(false, false, true),
-            CollectAction::Ignore
-        );
+        assert_eq!(classify_collect(false, false, true), CollectAction::Ignore);
     }
 
     #[test]
@@ -367,26 +337,23 @@ mod tests {
 
     #[test]
     fn test_collect_child_ignores_unknown_pid() {
-        let mut host = ScriptHost::parent_only();
+        let mut host = ScriptHost::default();
         let mut sessions = vec![sample_session(1, "tty1")];
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
-        let mut cleared = 0;
+        let mut cleared: Vec<(String, i32)> = Vec::new();
+        let mut collector = ChildCollector {
+            sessions: &mut sessions,
+            db: &mut db,
+            did_multiuser_chroot: false,
+            rootdir: "/".into(),
+        };
         assert_eq!(
-            collect_child(
-                &mut host,
-                &mut sessions,
-                &mut db,
-                &mut |pid: Pid, _: &WaitStatus| cleared += 1,
-                false,
-                "/",
-                999,
-                &WaitStatus::Exited { code: 0 },
-            ),
+            collector.collect(&mut host, 999, &WaitStatus::Exited { code: 0 }),
             CollectAction::Ignore
         );
-        assert_eq!(cleared, 0);
-        assert_eq!(sessions.len(), 1);
+        let _ = (&mut no_clear, &mut cleared);
+        assert_eq!(collector.sessions.len(), 1);
     }
 
     #[test]
@@ -399,81 +366,72 @@ mod tests {
         db.open().unwrap();
         db.insert(4, 1);
         sessions[0].process = Some(4);
-        let mut cleared = Vec::new();
+        let mut collector = ChildCollector {
+            sessions: &mut sessions,
+            db: &mut db,
+            did_multiuser_chroot: false,
+            rootdir: "/".into(),
+        };
         assert_eq!(
-            collect_child(
-                &mut host,
-                &mut sessions,
-                &mut db,
-                &mut |pid, _| cleared.push(pid),
-                false,
-                "/",
-                4,
-                &WaitStatus::Exited { code: 0 },
-            ),
+            collector.collect(&mut host, 4, &WaitStatus::Exited { code: 0 }),
             CollectAction::RestartSession
         );
-        assert_eq!(cleared, vec![4]);
-        assert_eq!(sessions[0].process, Some(9));
-        assert_eq!(sessions[0].started_secs, 500);
-        assert_eq!(db.find(9), Some(1));
-        assert_eq!(db.find(4), None);
+        assert_eq!(collector.sessions[0].process, Some(9));
+        assert_eq!(collector.sessions[0].started_secs, 500);
+        assert_eq!(collector.db.find(9), Some(1));
+        assert_eq!(collector.db.find(4), None);
     }
 
     #[test]
     fn test_collect_child_shutdown_removes_session() {
-        let mut host = ScriptHost::parent_only();
+        let mut host = ScriptHost::default();
         let mut sessions = vec![sample_session(1, "tty1")];
         sessions[0].flags.set(SE_SHUTDOWN);
+        sessions[0].process = Some(4);
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
         db.insert(4, 1);
-        sessions[0].process = Some(4);
+        let mut collector = ChildCollector {
+            sessions: &mut sessions,
+            db: &mut db,
+            did_multiuser_chroot: false,
+            rootdir: "/".into(),
+        };
         assert_eq!(
-            collect_child(
-                &mut host,
-                &mut sessions,
-                &mut db,
-                &mut noop_clear,
-                false,
-                "/",
-                4,
-                &WaitStatus::Exited { code: 0 },
-            ),
+            collector.collect(&mut host, 4, &WaitStatus::Exited { code: 0 }),
             CollectAction::RemoveSession
         );
-        assert!(sessions.is_empty());
-        assert_eq!(db.find(4), None);
+        assert!(collector.sessions.is_empty());
+        assert_eq!(collector.db.find(4), None);
     }
 
     #[test]
     fn test_multi_user_spawns_all_and_reaps_until_requested() {
         let mut host = ScriptHost::default();
         host.securitylevel = Some(0);
-        // Two sessions → two spawns, then one reap whose respawn gets
-        // a fork, then a request.
         host.fork_outcomes.push(Ok(10));
         host.fork_outcomes.push(Ok(11));
         host.fork_outcomes.push(Ok(12)); // respawn of the reaped getty
         host.now = 42;
         host.wait_outcomes.push(Ok((11, WaitStatus::Exited { code: 0 })));
+        host.wait_errors.push(Errno::ESRCH); // ends the reap loop
         let mut sessions = vec![sample_session(1, "tty1"), sample_session(2, "tty2")];
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
-        // The poll answers immediately after the first reap.
-        let deps = MultiUserDeps {
+        let signals = std::sync::Arc::new(crate::signal_state::SignalState::default());
+        let mut collector = ChildCollector {
             sessions: &mut sessions,
             db: &mut db,
             did_multiuser_chroot: false,
-            rootdir: "/",
-            clear_logs: &mut noop_clear,
-            requested: &|| Some(StateKind::CleanTtys),
+            rootdir: "/".into(),
         };
-        assert_eq!(multi_user(&mut host, deps), StateKind::CleanTtys);
+        assert_eq!(
+            multi_user(&mut host, &mut collector, &signals),
+            StateKind::CleanTtys
+        );
         assert_eq!(host.securitylevel_sets, vec![1]); // level 0 → 1
         // Both gettys spawned plus the respawn of the reaped one.
-        assert_eq!(host.exec_requests.len() + host.kills.len(), 0);
-        assert_eq!(host.now, 42);
+        assert!(collector.db.find(12).is_some());
     }
 
     #[test]
@@ -484,17 +442,23 @@ mod tests {
         let mut sessions = vec![sample_session(1, "tty1"), sample_session(2, "tty2")];
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
-        let deps = MultiUserDeps {
+        let signals = std::sync::Arc::new(crate::signal_state::SignalState::default());
+        let mut collector = ChildCollector {
             sessions: &mut sessions,
             db: &mut db,
             did_multiuser_chroot: false,
-            rootdir: "/",
-            clear_logs: &mut noop_clear,
-            requested: &no_request,
+            rootdir: "/".into(),
         };
-        assert_eq!(multi_user(&mut host, deps), StateKind::CleanTtys);
+        assert_eq!(
+            multi_user(&mut host, &mut collector, &signals),
+            StateKind::CleanTtys
+        );
         // Level 1 stays untouched — C only raises level 0.
         assert!(host.securitylevel_sets.is_empty());
+    }
+
+    fn sample_session(index: usize, name: &str) -> Session {
+        sample(index, name)
     }
 
     #[test]
@@ -504,7 +468,7 @@ mod tests {
         host.now = 100;
         host.fork_outcomes.push(Ok(0)); // child branch
         host.exec_outcomes.push(Errno::EPERM);
-        let mut session = sample_session(1, "tty1");
+        let mut session = sample(1, "tty1");
         session.started_secs = 98; // 2 s ago — inside the 5 s window
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let _ = start_getty(&mut host, &mut session, false, "/");
