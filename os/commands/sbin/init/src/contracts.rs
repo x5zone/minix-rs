@@ -3,6 +3,9 @@
 //! Covers `minix3/sbin/init/init.c:517-538`.
 //! Design contract: `.design/14-design.v1.md §1.1-§1.2`.
 
+use crate::state_machine::sig;
+use sig::{SIGNAL_ABORT, SIGNAL_USER_1};
+
 /// What kind of shutdown a signal requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownRequest {
@@ -10,12 +13,15 @@ pub enum ShutdownRequest {
     Powerdown,
 }
 
-/// Map the Minix-specific hooks: SIGABRT(6) → reboot, SIGUSR1(10/30) →
-/// powerdown. Other signals yield `None` (owned by 02/03 handlers).
+/// Map the Minix-specific hooks: SIGABRT → reboot, SIGUSR1 → powerdown.
+///
+/// Signums come from the Minix3 numbering authority (where SIGUSR1 = 30
+/// and 10 is SIGBUS — the value the old `10` arm used to match powers
+/// nothing). Other signals yield `None` (owned by 02/03 handlers).
 pub fn request_for(signum: i32) -> Option<ShutdownRequest> {
     match signum {
-        6 => Some(ShutdownRequest::Reboot),
-        10 | 30 => Some(ShutdownRequest::Powerdown),
+        SIGNAL_ABORT => Some(ShutdownRequest::Reboot),
+        SIGNAL_USER_1 => Some(ShutdownRequest::Powerdown),
         _ => None,
     }
 }
@@ -50,7 +56,13 @@ mod tests {
 
     #[test]
     fn test_sigusr1_requests_powerdown() {
-        assert_eq!(request_for(10), Some(ShutdownRequest::Powerdown));
+        // Minix3 SIGUSR1 = 30; 10 is SIGBUS there and must not match.
+        assert_eq!(request_for(30), Some(ShutdownRequest::Powerdown));
+    }
+
+    #[test]
+    fn test_sigbus_is_not_a_hook() {
+        assert_eq!(request_for(10), None);
     }
 
     #[test]

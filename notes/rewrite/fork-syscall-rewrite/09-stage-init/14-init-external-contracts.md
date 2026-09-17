@@ -69,6 +69,7 @@ minixpowerdown: fork==0 → execl(...,"-p",...) → _exit(1)
 |---|---|
 | `test_sigabrt_requests_reboot` | init.c:517-525 |
 | `test_sigusr1_requests_powerdown` | init.c:530-538 |
+| `test_sigbus_is_not_a_hook` | Minix3 SIGBUS(10) 非挂钩，signal.h:62 |
 | `test_other_signal_none` | transition_handler 分流 |
 | `test_reboot_argv` | shutdown -r now |
 | `test_powerdown_argv` | shutdown -p now |

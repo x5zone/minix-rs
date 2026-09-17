@@ -124,7 +124,7 @@ pub enum StateKind { Death, SingleUser, Runcom, ReadTtys, MultiUser, CleanTtys, 
 pub fn signal_to_state(sig: Signal) -> Option<StateKind>
 ```
 
-`Signal` 是 `Sighup/Sigterm/Sigstp/Other(i32)` 的枚举，避免裸 int。映射表与 C 三分支逐行对照，`default` 对应 `None`。调用方（driver）负责把 `Some` 写进请求槽、`None` 理解为清零，语义与 C 一致但数据流显式。
+`Signal` 是 `Sighup/Sigterm/Sigtstp/Sigalrm/Sigabrt/Sigusr1/Other(i32)` 的枚举，避免裸 int。变体本身不带数值：signum 的唯一权威是 Minix3 `<sys/signal.h>`（SIGUSR1 是 30，10 是 SIGBUS——Linux x86 的编号在这里会认错人），init 内以 `sig` 常量模块镜像该权威，待 minix-sys 再导出信号家族后一行切换。`from_signum` 把原始编号分类成枚举，未知编号落进 `Other`；`signal_to_state` 的映射表与 C 三分支逐行对照，`default` 对应 `None`。调用方（driver）负责把 `Some` 写进请求槽、`None` 理解为清零，语义与 C 一致但数据流显式。
 
 ### 3.4 决策三：TransitionDriver 可步进主循环
 
@@ -170,6 +170,7 @@ os/commands/sbin/init/src/
 | `test_state_chars_roundtrip` | 七字符双向 | init.c:133-139 |
 | `test_signal_to_state_maps` | 三映射 | init.c:1508-1516 |
 | `test_signal_to_state_default_none` | default 清零 | init.c:1518-1520 |
+| `test_signum_roundtrip_matches_minix3_numbering` | signum 权威与双向映射 | signal.h:52-82 |
 | `test_fake_registry_records` | 注册记录 | init.c:369-389 |
 | `test_driver_runs_fixed_steps` | 主循环步进 | init.c:624-640 |
 | `test_driver_stops_on_none` | 空指针返回路径 | init.c:628-629 |

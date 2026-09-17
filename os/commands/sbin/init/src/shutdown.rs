@@ -3,12 +3,14 @@
 //! Covers `minix3/sbin/init/init.c:1634-1698`.
 //! Design contract: `.design/11-design.v1.md §1.1-§1.2`.
 
+use crate::state_machine::sig::{SIGNAL_HANGUP, SIGNAL_KILL, SIGNAL_TERMINATE};
+
 /// Seconds per death round (C: `DEATH_WATCH`, init.c:96).
 pub const DEATH_WATCH_SECS: u64 = 10;
 
-/// Kill escalation sequence (C: `death_sigs`, init.c:1667).
-/// Values are POSIX signal numbers: SIGHUP=1, SIGTERM=15, SIGKILL=9.
-pub const DEATH_SEQUENCE: [i32; 3] = [1, 15, 9];
+/// Kill escalation sequence (C: `death_sigs`, init.c:1667):
+/// SIGHUP, SIGTERM, SIGKILL — values from the Minix3 numbering authority.
+pub const DEATH_SEQUENCE: [i32; 3] = [SIGNAL_HANGUP, SIGNAL_TERMINATE, SIGNAL_KILL];
 
 /// One death-round outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
