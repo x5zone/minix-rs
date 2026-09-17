@@ -116,6 +116,25 @@ pub struct LineConfig {
     pub controls: ControlChars,
     /// Output speed (zero means hung up).
     pub output_speed: u32,
+    /// Window size reported to TIOCGWINSZ (`tty_winsize`).
+    pub window: WindowSize,
+}
+
+/// Window size of one line: rows and columns (`struct winsize`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSize {
+    /// Rows visible.
+    pub rows: u16,
+    /// Columns visible.
+    pub cols: u16,
+}
+
+impl WindowSize {
+    /// All-zero defaults (C: `winsize_defaults` is a zeroed static,
+    /// `tty.c:126`).
+    pub const fn defaults() -> WindowSize {
+        WindowSize { rows: 0, cols: 0 }
+    }
 }
 
 impl LineConfig {
@@ -125,6 +144,7 @@ impl LineConfig {
             flags: LineFlags::defaults(),
             controls: ControlChars::defaults(),
             output_speed: 9600,
+            window: WindowSize::defaults(),
         }
     }
 

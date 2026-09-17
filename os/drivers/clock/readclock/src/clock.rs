@@ -183,6 +183,8 @@ mod tests {
             day: 1,
             month: 0,
             year: 126,
+            week_day: 0,
+            year_day: 0,
         }
     }
 

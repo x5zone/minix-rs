@@ -48,6 +48,13 @@ pub const REPLY: i32 = RTC_REPLY_BASE;
 /// (`forward.c:113`).
 pub const NO_FLAGS: i32 = 0;
 
+/// Interpret a reported year of 1980 as 2000 (Y2K-buggy CMOS).
+///
+/// C: `RTCDEV_Y2KBUG 0x01` (`com.h:1015`), consumed by the i386 CMOS
+/// clock implementation; the flag belongs to the wire contract even
+/// though the arch clock itself is service-layer.
+pub const RTC_Y2KBUG: i32 = 0x01;
+
 /// Real-time-clock request kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RtcRequest {
@@ -95,11 +102,12 @@ pub const fn is_clock_message(message_type: i32) -> bool {
     (message_type & !0x7f) == RTC_REQUEST_BASE || (message_type & !0x7f) == RTC_REPLY_BASE
 }
 
-/// Broken-down calendar time (year through second).
+/// Broken-down calendar time (year through second, weekday and yearday
+/// riding along).
 ///
 /// C: `struct tm` as carried by `fetch_t`/`store_t`
 /// (`readclock.c:179-191`). Weekday and yearday ride along untouched;
-/// the driver never interprets them.
+/// the driver never interprets them, so the type carries both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrokenTime {
     /// Seconds after the minute (zero to sixty-one, leap included).
@@ -114,6 +122,10 @@ pub struct BrokenTime {
     pub month: i32,
     /// Years since nineteen hundred.
     pub year: i32,
+    /// Days since Sunday, carried uninterpreted (`tm_wday`).
+    pub week_day: i32,
+    /// Days since January first, carried uninterpreted (`tm_yday`).
+    pub year_day: i32,
 }
 
 impl BrokenTime {
@@ -172,6 +184,8 @@ mod tests {
             day: 5,
             month: 8,
             year: 126,
+            week_day: 3,
+            year_day: 216,
         };
         assert!(good.is_plausible());
         let bad = BrokenTime { hours: 24, ..good };

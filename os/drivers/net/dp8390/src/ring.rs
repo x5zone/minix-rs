@@ -35,11 +35,13 @@ impl RecvCursor {
         RecvCursor { start_page, stop_page, boundary: start_page.wrapping_sub(1) }
     }
 
-    /// Next page to read: boundary plus one, wrapping from stop
-    /// back to start (`dp8390.c:610-611`).
+    /// Next page to read: boundary plus one, wrapping exactly at the
+    /// stop page (`dp8390.c:610-611` — the C test is equality, not
+    /// greater-or-equal; a corrupt boundary above the ring stays visible
+    /// instead of being silently normalized).
     pub fn next_page(&self) -> u8 {
         let next = self.boundary.wrapping_add(1);
-        if next >= self.stop_page { self.start_page } else { next }
+        if next == self.stop_page { self.start_page } else { next }
     }
 
     /// Whether a packet waits: current differs from the next page
@@ -49,8 +51,17 @@ impl RecvCursor {
     }
 
     /// Advance the boundary past a consumed packet (`dp8390.c:668-671`).
+    ///
+    /// C carries one special case: a chain ending at the start page writes
+    /// `stoppage - 1` as the new boundary, not `startpage - 1` (which
+    /// would point below the ring). The plain path is simply next minus
+    /// one.
     pub fn advance(&mut self, next: u8) {
-        self.boundary = next.wrapping_sub(1);
+        if next == self.start_page {
+            self.boundary = self.stop_page.wrapping_sub(1);
+        } else {
+            self.boundary = next - 1;
+        }
     }
 
     /// Current boundary value (for tests and the service layer).
@@ -87,6 +98,17 @@ mod tests {
         let cursor = RecvCursor::new(0x46, 0x60);
         assert!(!cursor.packet_waiting(0x46));
         assert!(cursor.packet_waiting(0x47));
+    }
+
+    #[test]
+    fn test_advance_wraps_at_start_page_like_the_chip() {
+        // C writes stoppage-1 when the chain ends at the start page
+        // (dp8390.c:668-671); the plain path is next-1.
+        let mut cursor = RecvCursor::new(0x46, 0x60);
+        cursor.advance(0x46); // chain ends at start page
+        assert_eq!(cursor.boundary(), 0x5F); // stoppage - 1, not 0x45
+        cursor.advance(0x47);
+        assert_eq!(cursor.boundary(), 0x46); // plain path: next - 1
     }
 
     #[test]
