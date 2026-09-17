@@ -142,7 +142,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-textfilter`：**97 个测试，全部通过**（截至 2026-09-18，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr、4 个为 rev、4 个为 comm、6 个为 expand、3 个为 unexpand、7 个为 fold、5 个为 cksum 的决定半）；另有十七个已接线的命令二进制，其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
+`cargo test -p minix-textfilter`：**108 个测试，全部通过**（截至 2026-09-18，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr、4 个为 rev、4 个为 comm、6 个为 expand、3 个为 unexpand、7 个为 fold、5 个为 cksum、4 个为 paste、3 个为 split、6 个为 tsort 的决定半）；另有二十个已接线的命令二进制，其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
 - **制表展开**（`expand.rs`，6 个）：`test_default_eight_column_stops`（do-while 至少一空格后补至 8 的倍数）、`test_single_stop_multiples`、`test_stop_list_picks_next_beyond_column`（末停后一格）、`test_backspace_pulls_the_column_and_passes_through`（退格透传拉列）、`test_newline_resets_the_column`、`test_stop_list_validation`（0/257/乱序/越界）。
 - **制表还原**（`unexpand.rs`，8 个）：`test_leading_blank_run_becomes_tabs_at_eight`（8 空格一停、4 空格保持）、`test_two_space_gap_becomes_one_tab`（非 `-a` 首非空白后透传）、`test_single_space_stays_a_space`、`test_without_a_only_leading_blanks_convert`、`test_backspace_pulls_both_columns`（`-a` 下退格回拉后仍成 tab）、`test_stop_list_bounds_the_tab_region`、`test_parse_stops_rejects_unordered`、`test_every_line_converts`。
 - **折行**（`fold.rs`，7 个）：`test_short_lines_pass_through`、`test_break_after_the_last_space`（末空格断行且空格留续行头）、`test_no_space_breaks_hard`、`test_split_words_breaks_anywhere`、`test_tab_counts_to_the_next_stop`（tab 超宽时空缓冲先出空行）、`test_count_bytes_counts_the_tab_as_one`、`test_empty_input_yields_nothing`。
@@ -185,6 +185,9 @@
 | unexpand | 同上 | 已接线（`tabify` 逐字节移植：`dcol`/`ocol` 双列、≥2 列间隙成 tab、`-t` 边界限位、退格双列回拉、`-a` 全行/缺省仅前导空白；文件操作数待开放路径） |
 | fold | 同上 | 已接线（`\b`/`\r`/`\t` 列规则、`-b` 逐字节、`-s` 逐字符断行、缺省最后空格断行且空格留在续行头——fold.c:163-172 的缓冲回移语义；文件操作数待开放路径） |
 | cksum | 同上 | 已接线决定半（`cksum.rs`：POSIX CRC 表 const 生成〔多项式 0x04c11db7，与 C crctab 全表核对〕、长度小端尾随、取反输出；`-o 1`/`-o 2` 历史和；与系统 cksum 四组值交叉验证；`-a` crypto 族显式拒绝待密码原语；文件操作数待开放路径） |
+| paste | 同上 | 已接线决定半（`paste.rs`：`-d` 分隔符列表循环与空项无分隔、`-s` 串行合并；并行多流与文件操作数待开放路径，单流透传） |
+| split | 同上 | 已接线决定半（`split.rs`：块计算与 `aa`..`zz` 后缀枚举；写文件面待开放，二进制以 `==> 前缀 <==` 横幅输出各块） |
+| tsort | 同上 | 已接线（优先级归并输出、自环与环报告断开、重复弧重复计数、奇数个记号报错；`-l`/`-d` 待批） |
 | diff、patch 及其余 | 各自的决定半尚未写库 | 随对应批次立项 |
 
 ---
