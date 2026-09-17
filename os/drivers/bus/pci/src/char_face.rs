@@ -72,9 +72,10 @@ impl PciFace {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::{AclClass, AclDevice, NO_SUB_DEVICE, NO_SUB_VENDOR, PciAcl, PciDevice};
+    use crate::database::{AclDevice, NO_SUB_DEVICE, NO_SUB_VENDOR, PciAcl, PciDevice};
     use minix_types::{EBUSY, EINVAL};
 
     fn card(bus: u8, device: u8) -> PciDevice {
