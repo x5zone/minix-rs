@@ -57,7 +57,7 @@
 
 ## 2. 查漏补缺（缺失清单）
 
-- **G1 [P0] libaudiodriver 零归属**：C `lib/libaudiodriver/`（audio_fw.c 868 + liveupdate.c 109）有 14 个钩子（`audio_fw.h:9-22`）与主循环/分片状态机，`os/libs/` 无 `minix-audiodriver` crate，doc 21 也未声明 defer——既不建也不声明，是覆盖契约的真空。doc 21 §2.7 称 14 钩子"已覆盖（初始化入口注释）"，注释不等于覆盖。落点：新建 `minix-audiodriver`（14 钩子 trait + 分片状态机，与 chardriver/blockdriver/netdriver 同列）。
+- **G1 ✅（2026-09-17）[P0] libaudiodriver 零归属**：C `lib/libaudiodriver/`（audio_fw.c 868 + liveupdate.c 109）有 14 个钩子（`audio_fw.h:9-22`）与主循环/分片状态机，`os/libs/` 无 `minix-audiodriver` crate，doc 21 也未声明 defer——既不建也不声明，是覆盖契约的真空。doc 21 §2.7 称 14 钩子"已覆盖（初始化入口注释）"，注释不等于覆盖。落点：新建 `minix-audiodriver`（14 钩子 trait + 分片状态机，与 chardriver/blockdriver/netdriver 同列）。（执行记录：新 crate `os/libs/minix-audiodriver`——`hooks::AudioHooks` 十四方法（默认体对齐 C 空钩子回退，`NoCard` 空实现满足门禁）、`subdev::SubDevice` 分片环状态机（`consume_fragment`/`produce_fragment`/`queue_extra` 对齐 handle_int_write/read 的游标与 OutOfData 规则；`dma_bytes_left` 64K 边界）、`special::SpecialFile` 特殊文件表与查找；测试 5 个；doc 21 头部模块行与 §3.6 十四钩子行同步。）
 - **G2 [P0] libi2cdriver 零覆盖**：C 366 行被 `plan.md:268` 映射到 doc 24 且标"已核对"，但 doc 24 全文零提及、`os/libs/` 亦无 `minix-i2cdriver`。cat24c256/bmp085/sht21/tsl2550 都是 i2c 底盘驱动，服务层落地时会爆发。落点同 G1：新建 crate 并补 doc 24 章节。
 - **G3 [P1] pckbd 扫描码全表不存在**：C 两张 0x80 项表（table.c:11-169），workspace 任何 crate 都没有全表（edge E-PCKBDREG 第 3 项在案）。落点：pckbd 内 `const` 全表（编译期可查），键码词汇消费 minix-types 权威。
 - **G4 [P1] random 生产密码学后端不存在**：C 用 AES-256 计数器流（random.c:90,198）+ SHA256 池摘要（random.c:26,51）；Rust 只有 `BlockCipher`/`PoolHash` trait 和测试替身，`os/` 全域无生产实现。这是 plan A-10 的落地决策：移植 `rijndael_alg.c`（1036 行，审计负担）对比 引入 no_std 密码学 crate（供应链风险），执行时两案对比后定。

@@ -2,7 +2,7 @@
 
 > **分类**：显示音频第 2 篇（声卡七兄弟，采样率只定范围）
 > **源码**：`minix3/minix/lib/libaudiodriver/audio_fw.c`（八百六十八行的音频框架）、`minix3/minix/drivers/audio/es1371/es1371.c`（六百五十六行的参考实现）与 `SRC.c`（一百九十六行的采样率转换）与 `codec.c`（二百六十四行的编解码器）与 `sample_rate_converter.c`（二百四十行的转换新封装）、`minix3/minix/drivers/audio/sb16/sb16.c`（四百四十九行的老声卡）与 `mixer.c`（二百五十四行的混音器）、`minix3/minix/include/minix/audio_fw.h`（九十一行的驱动钩子定义）、`minix3/minix/include/sys/ioc_sound.h`（第十二行到第二十二行的十一的声音控制请求）
-> **Rust 模块**：`os/drivers/audio/es1371/src/rate.rs`（采样率范围与通道路由）、`os/drivers/audio/sb16/src/dsp.rs`（处理器命令与速率分字节）
+> **Rust 模块**：`os/libs/minix-audiodriver`（音频框架：十四钩子行为定义、子设备直接存取分片环、特殊文件表——对账 edge E-DMCLIENT 同款"框架归框架库"纪律）、`os/drivers/audio/es1371/src/rate.rs`（采样率范围与通道路由）、`os/drivers/audio/sb16/src/dsp.rs`（处理器命令与速率分字节）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架，七兄弟挂靠的框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/20-fb-driver.md`（帧缓冲，同为字符设备的变体）
 > **说明**：声卡七兄弟是字符设备的发声变体：框架定十四钩子，声卡各填各的寄存器。本篇讲钩子是什么、采样率怎么谈、老声卡命令怎么发。寄存器写入与端口流量在服务层，本库只定范围与命令。
 
@@ -93,7 +93,7 @@
 
 | C 符号 | 本篇位置 | Rust 对应 | 状态 |
 |--------|----------|-----------|------|
-| 十四钩子 | 第 2.2 节 | 初始化入口注释 | 已覆盖 |
+| 十四钩子 | 第 2.2 节 | `minix-audiodriver` 的 `AudioHooks` 十四方法（默认体对齐 C 空钩子回退）与 `SubDevice` 分片环 | 已覆盖 |
 | 五字符回调 | 第 2.2 节 | 框架挂靠声明 | 已覆盖 |
 | 十一控制请求 | 第 2.3 节 | 速率命令对照 | 已覆盖 |
 | 速率上下限 | 第 2.4 节 | `MIN_RATE_HZ` 与 `MAX_RATE_HZ` | 已覆盖 |

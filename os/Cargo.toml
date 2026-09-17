@@ -172,6 +172,7 @@ members = [
     # 用户态框架库（占位，镜像 minix3/minix/lib）
     "libs/minix-sef",
     "libs/minix-fs",
+    "libs/minix-audiodriver",
     "libs/minix-chardriver",
     "libs/minix-driver-rt",
     "libs/minix-blockdriver",
@@ -212,6 +213,7 @@ minix-kernel = { path = "kernel", default-features = false }
 boot-shim = { path = "boot-shim", default-features = false }
 
 # 驱动框架库（16-stage-drivers）
+minix-audiodriver = { path = "libs/minix-audiodriver" }
 minix-chardriver = { path = "libs/minix-chardriver" }
 minix-driver-rt = { path = "libs/minix-driver-rt" }
 minix-blockdriver = { path = "libs/minix-blockdriver" }
