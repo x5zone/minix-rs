@@ -13,6 +13,7 @@
 
 #![no_std]
 
+pub mod char_face;
 pub mod rate;
 
 /// Service initialization entry (wires the card table; codec traffic stays out).

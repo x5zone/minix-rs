@@ -10,6 +10,7 @@ name = "minix-driver-es1371"
 path = "src/main.rs"
 
 [dependencies]
+minix-audiodriver = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 
