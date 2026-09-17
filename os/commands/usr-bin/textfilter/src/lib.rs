@@ -32,9 +32,11 @@
 extern crate alloc;
 
 pub mod cmp;
+pub mod comm;
 pub mod count;
 pub mod cut;
 pub mod pr;
+pub mod rev;
 pub mod seq;
 pub mod sort;
 pub mod tr;

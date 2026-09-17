@@ -35,6 +35,12 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
+/// Writes the slice to standard output, reporting success without
+/// exiting (the form the yes loop's sink needs).
+pub fn write_ok(bytes: &[u8]) -> bool {
+    write(STDOUT, bytes).is_ok()
+}
+
 /// Best-effort write to standard error (the C `warnx` channel); write
 /// failures are ignored exactly as stdio's are in the C utilities.
 pub fn warn(bytes: &[u8]) {
