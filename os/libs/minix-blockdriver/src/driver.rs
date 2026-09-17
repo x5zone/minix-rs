@@ -233,6 +233,7 @@ pub const fn unknown_request_error() -> i32 {
 mod tests {
     use super::super::protocol::{BdevRequest, BlockDriverType, DeviceMinor, RequestId};
     use super::*;
+    use minix_types::EINTR;
 
     /// Minimal disk: implements nothing, keeps C defaults.
     struct SilentDisk;
