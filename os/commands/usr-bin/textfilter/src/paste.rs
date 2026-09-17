@@ -99,17 +99,17 @@ mod tests {
     }
 
     #[test]
-    fn test_serial_delimiter_list_cycles() {
+    fn test_serial_delimiter_list_cycles_per_character() {
+        // paste.c cycles the -d list per character: + : % + : ...
         let options = parse(&["-s", "-d", "+:%"]).unwrap();
-        assert_eq!(join_serial(&["a", "b", "c", "d"], &options), "a+:b%:c+:d\n");
+        assert_eq!(join_serial(&["a", "b", "c", "d"], &options), "a+b:c%d\n");
     }
 
     #[test]
-    fn test_serial_delimiter_list_entry_can_be_empty() {
-        // "-d x@" has two entries: "x" for the first gap, "" for the
-        // second — nothing joins there.
-        let options = parse(&["-s", "-d", "x@"]).unwrap();
-        assert_eq!(join_serial(&["a", "b", "c"], &options), "axbc\n");
+    fn test_serial_delimiter_list_character_semantics() {
+        // "-d @@" gives two @ entries cycling: gaps use @, @, @...
+        let options = parse(&["-s", "-d", "@@"]).unwrap();
+        assert_eq!(join_serial(&["a", "b", "c"], &options), "a@b@c\n");
     }
 
     #[test]

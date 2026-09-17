@@ -68,15 +68,16 @@ mod tests {
     #[test]
     fn test_explicit_count_and_empty_input() {
         let lines: Vec<String> = (1..=5).map(|n| n.to_string()).collect();
-        let chunks = chunks(&lines, 2);
-        assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[2], vec!["5".to_string()]);
+        let groups = chunks(&lines, 2);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[2], vec!["5".to_string()]);
         assert!(chunks(&[], 10).is_empty());
     }
 
     #[test]
     fn test_zero_count_is_no_chunks() {
-        assert!(chunks(&["a"], 0).is_empty());
+        let lines = vec!["a".to_string()];
+        assert!(chunks(&lines, 0).is_empty());
     }
 
     #[test]
