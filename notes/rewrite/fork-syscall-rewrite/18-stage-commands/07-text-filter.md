@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作第二组——文件里面的行：取头取尾、排序去重、计数切割、字符转换
 > **源码**: `minix3/usr.bin/` 三十五个（`head` 204 行、`sort` 418 行、`wc` 354 行、`tr` 283 行、`uniq` 257 行、`cut` 306 行，及 `cksum`、`cmp`、`col`、`colrm`、`column`、`comm`、`csplit`、`expand`、`fold`、`hexdump`、`join`、`jot`、`lam`、`paste`、`patch`、`rev`、`sdiff`、`seq`、`shuffle`、`split`、`tail`、`tee`、`unexpand`、`unifdef`、`units`、`unvis`、`uuidgen`、`vis`、`yes`）、`minix3/minix/commands/` 三个（`look`、`ifdef`、`crc`）、`minix3/minix/usr.bin/diff/`
-> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`、`sort.rs`、`cmp.rs`、`seq.rs`、`pr.rs`、`rev.rs`、`comm.rs`、`expand.rs`、`unexpand.rs`、`fold.rs`、`cksum.rs`、`paste.rs`、`split.rs`、`tsort.rs`、`colrm.rs`、`vis.rs`，库测试 131 个）；同 crate `src/bin/` 薄壳二十二个已接线：tr、cut、uniq、head、tail、wc、sort、cmp、seq、pr、yes、rev、comm、expand、unexpand、fold、cksum、paste、split、tsort、vis、unvis（yes 为纯执行半无限循环；rev 走 stdin；comm 双流同源自检；cksum 走 stdin，crypto 算法族显式拒绝；cmp/pr/expand/unexpand/fold 的文件操作数待开放路径，2026-09-18）（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
+> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`、`sort.rs`、`cmp.rs`、`seq.rs`、`pr.rs`、`rev.rs`、`comm.rs`、`expand.rs`、`unexpand.rs`、`fold.rs`、`cksum.rs`、`paste.rs`、`split.rs`、`tsort.rs`、`colrm.rs`、`vis.rs`、`column.rs`，库测试 131 个）；同 crate `src/bin/` 薄壳二十四个已接线：tr、cut、uniq、head、tail、wc、sort、cmp、seq、pr、yes、rev、comm、expand、unexpand、fold、cksum、paste、split、tsort、vis、unvis（yes 为纯执行半无限循环；rev 走 stdin；comm 双流同源自检；cksum 走 stdin，crypto 算法族显式拒绝；cmp/pr/expand/unexpand/fold 的文件操作数待开放路径，2026-09-18）（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`08-grep-sed.md`（正则概念在后——阅读顺序先本篇后 08，但概念上 08 是本篇部分工具的理论基础，见 1.5 节说明）
 > **不覆盖（移交）**: 正则引擎（见 `08-grep-sed.md`）、编辑器（见 `09-editors.md`）、排序的缓冲策略与比较器（后续阶段）
 
@@ -142,7 +142,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-textfilter`：**127 个测试，全部通过**（截至 2026-09-18，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr、4 个为 rev、4 个为 comm、6 个为 expand、3 个为 unexpand、7 个为 fold、5 个为 cksum、4 个为 paste、3 个为 split、6 个为 tsort、4 个为 column 的决定半、11 个为 vis/unvis 编解码、8 个为 colrm）；另有二十五个已接线的命令二进制（薄壳二十四个加 tee 的扇出形态），其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
+`cargo test -p minix-textfilter`：**203 个测试，全部通过**（截至 2026-09-18，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr、4 个为 rev、4 个为 comm、6 个为 expand、3 个为 unexpand、7 个为 fold、5 个为 cksum、4 个为 paste、3 个为 split、6 个为 tsort、4 个为 column 的决定半、11 个为 vis/unvis 编解码、8 个为 colrm、12 个为 jot、7 个为 lam、15 个为 col、12 个为 hexdump、10 个为 units、17 个为 unifdef、3 个为 floatfmt 垫片）；另有三十一个已接线的命令二进制（薄壳三十个加 tee 的扇出形态），其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
 - **制表展开**（`expand.rs`，6 个）：`test_default_eight_column_stops`（do-while 至少一空格后补至 8 的倍数）、`test_single_stop_multiples`、`test_stop_list_picks_next_beyond_column`（末停后一格）、`test_backspace_pulls_the_column_and_passes_through`（退格透传拉列）、`test_newline_resets_the_column`、`test_stop_list_validation`（0/257/乱序/越界）。
 - **制表还原**（`unexpand.rs`，8 个）：`test_leading_blank_run_becomes_tabs_at_eight`（8 空格一停、4 空格保持）、`test_two_space_gap_becomes_one_tab`（非 `-a` 首非空白后透传）、`test_single_space_stays_a_space`、`test_without_a_only_leading_blanks_convert`、`test_backspace_pulls_both_columns`（`-a` 下退格回拉后仍成 tab）、`test_stop_list_bounds_the_tab_region`、`test_parse_stops_rejects_unordered`、`test_every_line_converts`。
 - **折行**（`fold.rs`，7 个）：`test_short_lines_pass_through`、`test_break_after_the_last_space`（末空格断行且空格留续行头）、`test_no_space_breaks_hard`、`test_split_words_breaks_anywhere`、`test_tab_counts_to_the_next_stop`（tab 超宽时空缓冲先出空行）、`test_count_bytes_counts_the_tab_as_one`、`test_empty_input_yields_nothing`。
@@ -192,6 +192,15 @@
 | unvis | 同上 | 已接线决定半与薄壳（S_META/S_CTRL/八进制状态机对照 lib/libc/gen/unvis.c:217-330；HTTP/MIME 旗标族待批） |
 | colrm | 同上 | 已接线决定半与薄壳（列显示计：tab 进位到 8 的倍数、退格回拉、换行清零；范围 [start, stop] 之外的字节保留） |
 | tee | 同上 | 结构性接线（stdin 到 stdout 的扇出与部分写循环；文件目标待开放路径，`-a`/`-i` 随之） |
+| column | 同上 | 已接线决定半与薄壳（`column.rs`：`-t` 表格 strtok 切字段、逐列最大宽对齐、字段后两空格；`-x` 横向填充与缺省纵向；termwidth 缺省 80，真实终端宽度查询随终端面；文件操作数待开放路径） |
+| col | 同上 | 已接线决定半与薄壳（半行进位账本：退格叠印、回车复写、ESC-7/8/9 半整行进退、SI/SO 字符集、`-b` 仅留末印、空格压缩成 tab〔`-x` 关闭〕、越界回退一次性告警；UTF-8 续字节按 C locale 的 `isgraph` 丢弃。`-e` 迷你格式语言、注释跨行 DODGY 列为后续批） |
+| jot | 同上 | 已接线决定半与薄壳（右到左操作数推导、非数字取末字符、`-p` 缺省时按小数位取精度、格式合成与校验〔`%s` 拒绝、整型族置 dox、尾随垃圾报错〕、`-r` 区间缩放与 `-c` 字节输出；libc `random()` 位序不复现，注入 LCG，列为本批登记角落） |
+| lam | 同上 | 决定半与薄壳（逐流 sep/宽度/pad/行终止符规格、大写 `-F/-P/-S/-T` 粘滞继承、`min.max` 截断补齐、缺流 pad 补白；命名文件操作数待 open-existing 解锁，`-` 可用） |
+| hexdump | 同上 | 已接线决定半与薄壳（七种规范格式按块渲染、块内尾空格末次抑制、越界字段按 `%<宽>s` 补空白、`%_p` 零宽垫、重复块 `*` 抑制〔FIRST→WAIT→DUP〕、`-n`/`-s b|k|m`、终地址行宽度随格式；`-e`/`-f` 格式语言显式拒绝并登记） |
+| units | 同上 | 已接线决定半与薄壳（词表解析〔前缀 `-` 后缀、注释行〕、表达式归约〔`a|b` 有理数、尾数字重复、指数负号保留〕、`^`/复数/前缀三级查找、约分与顺从性检查、`\t* / \t/` 答案、`-l/-L` 清单；数据库经 std::fs 读 `-f` 或 `/usr/lib/units`，PATH 搜索为登记角落） |
+| unifdef | 同上 | 已接线决定半与薄壳（十状态 #if 状态机、C 注释扫描含反斜杠续行、四级优先表达式〔`defined()`、`-D` 值、十六/八进制字面量〕、`#elif`→`#if`/`#endif` 关键字改写保嵌套、`-c` 补集、`-l` 置空、`-s` 符号清单、退出码 0/1/2；注释跨行的 DODGY 表列未建模，`-d`/`-e` 收下即忽略，均登记） |
+| look、ifdef | — | 查证（2026-09-18）：`minix3/usr.bin/` 下无此二命令（`look.c` 在 `usr.bin/m4/` 内属 m4 内建，`ifdef` 同为 m4 内建），不在 07 篇接线范围 |
+| crc | — | 查证（2026-09-18）：`usr.bin/cksum/crc.c` 的 CRC 已由本库 `cksum` 模块的 `cksum_crc` 覆盖（批次十四，const 表与 C crctab 全表核对），无独立命令需要接线 |
 | diff、patch 及其余 | 各自的决定半尚未写库 | 随对应批次立项 |
 
 ---
