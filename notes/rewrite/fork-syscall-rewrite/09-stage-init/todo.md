@@ -32,7 +32,8 @@
 
 按"查漏补缺先行"的约定，先把缺口列全。标注说明：MISSING = C 有语义、Rust 无任何对应代码；TRAIT-ONLY = 只有 trait/fake、无 live 实现；BUG = 已有代码与 C 语义不符。
 
-- **P0-1 ☐ main() 空转，入口 8 步只做了 3 步**（BUG-级缺失）。
+- **P0-1 ✅ 2026-09-18（Fix #17）main() 八步接线完成**。
+  原问题：main 只做解析/探测/决策然后 park 永久停泊。
   `main.rs:24-55` 实际只做参数解析（`parse_boot_args`）、设备探测（`FsDeviceProbe`）、入口决策（`decide_entry`），然后 `loop { park() }`。对照 `init.c:229-367` 的 8 步：身份校验（`check_identity` 存在于 `entry.rs:101` 但 main 从不调用）、setsid、信号注册（handle/delset，init.c:310-334）、close(0/1/2)（init.c:339-341）、securelevel 探测（has_securelevel，init.c:353）、`transition()`（init.c:358）全部缺失。`decision.runcom_mode` 计算后被丢弃（`main.rs:47-50` 两个 match 臂均为空），`-f` 目前没有任何运行时效果。`main.rs:29` 的 `_warnings` 也直接丢弃，C 侧 `warning()` 通道没有消费者。（修复方案：P1-1 运行模型定型后重写 main；在 minix-sys 缺口（E-INITSYS）落地前不可行动）
 
 - **P0-2 🔄 2026-09-18（Fix #9 起分批闭单）状态函数进程控制实体**。
