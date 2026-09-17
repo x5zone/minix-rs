@@ -36,6 +36,7 @@
 - ✅ **README.md** 状态行与关键文件清单更新（checklist 过期说法移除，指向 todo.md 与 archive）。
 - ✅ **`.design/` 00/99 快照六件套**生成，`tools/design-coverage-check.sh` 收敛为 **ALL DOCS COMPLETE**（19 docs）。
 - ✅ **Gate E 全量对账**：14 条失效行清理（doc 01/02/03/05/12 的已删测试行），复扫「声称但代码缺失：无」。
+- ✅ 审计补漏（二次确认轮，2026-09-18）：①plan.md 两处「当前为 stub」声明刷新为实体接线现状；②12 篇 §5.1 累计统计统一刷为「143 个通过（全 crate 口径，截至 2026-09-18）」（原为 2026-09-04 起的六种旧计数）；③doc 02/04 的 rg 清单行补 host.rs/password.rs 两个新模块。
 
 ### P2-6 ✅（第一轮+审计轮完成，残余为门控 API 面）
 
@@ -45,7 +46,7 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 |---|---|
 | signal_state（note_signal/note_shutdown_request/take_*） | E-INITSYS ① sigaction 客户端面 |
 | log::disaster/DisasterAction（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
-| contracts（request_for/shutdown_argv/SHUTDOWN_PATH） | E-INITSYS ①（handler 消费） |
+| contracts（request_for/shutdown_argv/SHUTDOWN_PATH）+ SignalState::take_shutdown_request 的驱动侧 drain | E-INITSYS ①（handler 置位 + 主循环边界执行 spawn） |
 | multi_user::setctty 包装 | E-INITSYS ②（setsid/login_tty） |
 | utmp（session_utmpx/RecordType::Login/clear_session_logs） | E-INITSYS ②（open-existing 后的文件写） |
 | session_db（FakeDb/DbError/open/is_open） | 会话表重启路径接线 |

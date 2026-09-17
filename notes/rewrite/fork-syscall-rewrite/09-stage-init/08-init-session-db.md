@@ -54,9 +54,9 @@ DB 等于 pid 到会话的内存哈希。下一章看稳态如何用它回收子
 | `test_reopen_clears` | 1025-1030 |
 | `test_null_db_fake` | 1044-1045/1087-1088 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：56 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/session_db.rs`。
 
 ---

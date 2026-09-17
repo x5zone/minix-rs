@@ -174,10 +174,10 @@ os/commands/sbin/init/src/
 | `test_boot_chain_walks_every_boundary_to_multi_user` | 'r'→'t'→'m' 全图边界 | init.c:630-639 |
 | `test_boot_chain_clean_ttys_and_death_and_catatonia_boundaries` | 'T'/'c'/'d' 边界 | init.c:1569-1698 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
 - `cargo test -p minix-init`：20 个通过（01 的 13 个加本篇 7 个），0 失败。
-- 完整清单：`rg "fn test_" os/commands/sbin/init/src/state_machine.rs os/commands/sbin/init/src/signal_state.rs os/commands/sbin/init/src/driver.rs os/commands/sbin/init/src/wait.rs`。
+- 完整清单：`rg "fn test_" os/commands/sbin/init/src/state_machine.rs os/commands/sbin/init/src/signal_state.rs os/commands/sbin/init/src/driver.rs os/commands/sbin/init/src/wait.rs os/commands/sbin/init/src/host.rs`。
 
 ---
 

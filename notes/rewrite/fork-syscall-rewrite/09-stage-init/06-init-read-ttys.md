@@ -67,9 +67,9 @@
 | `test_plan_counts_sessions` | init.c:1279-1284 |
 | `test_plan_counts_exclude_off_and_gettyless_lines` | new_session 三条件过滤，init.c:1147-1149 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：45 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/ttys.rs`。
 
 ---

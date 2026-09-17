@@ -54,7 +54,7 @@
 
 ### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：149 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/shutdown.rs`。
 
 ---

@@ -59,7 +59,7 @@ SUPPORT_UTMP 与 SUPPORT_UTMPX 双写是 Minix 构建的现状（Makefile 双开
 
 ### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：157 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/utmp.rs`。
 
 ---

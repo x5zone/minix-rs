@@ -227,7 +227,7 @@ os/commands/sbin/init/src/
 | `test_decide_single_user_flag` | `-s` 改 single_user | `init.c:290` |
 | `test_decide_console_failure_forces_single_user` | 设备失败降级 | `init.c:269-270` |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
 - `cargo test -p minix-init`：13 个通过，0 个失败。
 - 本节列出与本模块直接相关的 13 个（全集）。

@@ -108,8 +108,8 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 
 ### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：122 个通过（累计），0 失败。
-- 清单：`rg "fn test_" os/commands/sbin/init/src/single_user.rs`。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
+- 清单：`rg "fn test_" os/commands/sbin/init/src/single_user.rs os/commands/sbin/init/src/password.rs`（password 为 04 篇口令门的实现半，ARCH A-12）。
 
 ---
 

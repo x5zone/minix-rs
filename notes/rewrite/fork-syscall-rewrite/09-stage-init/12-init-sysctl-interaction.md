@@ -53,9 +53,9 @@ minix-rs 内核暂无这两个语义，本篇定义 trait 契约并用内存假�
 | `test_chroot_matrix` | init.c:1896-1899 |
 
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：76 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/sysctl.rs`。
 
 ---

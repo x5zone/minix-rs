@@ -67,9 +67,9 @@ getty 字符串为 `"getty名 终端名"` 再分词（`init.c:1193-1196`）；�
 | `test_flags_bits` | init.c:161-162 |
 | `test_window_optional` | init.c:1203-1215 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：51 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/session.rs`。
 
 ---

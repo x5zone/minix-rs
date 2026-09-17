@@ -130,9 +130,9 @@ os/commands/sbin/init/src/log.rs — Severity / stall/warning/emergency/disaster
 | `test_emergency_logs_emerg` | 最高级 | init.c:472-481 |
 | `test_disaster_records_and_requests_exit` | 遗言加退出码 | init.c:504-511 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：25 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/log.rs`。
 
 ---

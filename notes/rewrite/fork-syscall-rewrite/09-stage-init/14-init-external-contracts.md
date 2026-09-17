@@ -76,9 +76,9 @@ minixpowerdown: fork==0 → execl(...,"-p",...) → _exit(1)
 | `test_shutdown_exec_path_differs_from_argv0` | init.c:521-522 路径与 argv[0] 分离 |
 | `test_boot_argv_contract` | vm/main.c:345 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：87 个通过（累计），0 失败。
+- `cargo test -p minix-init`：143 个通过（全 crate 口径），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/contracts.rs`。
 
 ---
