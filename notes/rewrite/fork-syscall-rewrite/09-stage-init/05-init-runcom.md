@@ -54,13 +54,13 @@ fastboot 时 `argv[2]` 为空指针，即只传两个参数。`_PATH_RUNCOM` 即
 
 ## 3. Rust 设计决策
 
-`rc_argv(mode)` 返回 `ParsedCommand`：exec 路径是 `/bin/sh`（C 的 `INIT_BSHELL`，init.c:105/913），argv[0] 是裸名 `sh`（init.c:899-900），fastboot 时截断第三个参数；`classify_rc_exit(WaitStatus, catatonia_requested)` 把子进程结局映射为 `RcOutcome`——静默重启需要 catatonia 请求与 SIGTERM 两个条件同时成立（init.c:949-957），这是文档里最容易读漏的一处；两次执行的顺序语义由 runcom 实体承接（P0-2b 落地），chroot 判定依赖 12 的 trait。exec 回退与 stall 通道复用 03。与 Redox 对照：Redox 的 rc.d 风格是逐脚本执行，Minix 是单脚本加参数，我们保留单脚本语义不硬套。
+`rc_argv(mode)` 返回 `ParsedCommand`：exec 路径是 `/bin/sh`（C 的 `INIT_BSHELL`，init.c:105/913），argv[0] 是裸名 `sh`（init.c:899-900），fastboot 时截断第三个参数；`classify_rc_exit(WaitStatus, catatonia_requested)` 把子进程结局映射为 `RcOutcome`——静默重启需要 catatonia 请求与 SIGTERM 两个条件同时成立（init.c:949-957），这是文档里最容易读漏的一处；两次执行的顺序语义由 `runcom` 实体承接：`runetcrc` 是一次尝试，`runcom` 是「跑一次、也许 chroot 再跑一次、写台账」的策略层，chroot 判定复用 12 的 `should_chroot`。exec 回退与 stall 通道复用 03。与 Redox 对照：Redox 的 rc.d 风格是逐脚本执行，Minix 是单脚本加参数，我们保留单脚本语义不硬套。
 
 ---
 
 ## 4. 实现详解
 
-模块 `runcom.rs`；差异：全局 `runcom_mode` 改为参数传递；`_exit(4/5)` 合并为 `SingleUser` 数据；chroot 副作用由调用方执行。
+模块 `runcom.rs`，实体分两层（P0-2b）。`runetcrc` 是一次尝试：子分支忽略 SIGHUP/SIGTSTP、占控制台、解屏蔽、可选 chroot（失败 `_exit(4)`）、exec（失败 stall 30 秒后 `_exit(5)`）；父循环收集每个收场的子进程，只认 rc 自己的 pid。`runcom` 是策略层：先跑一次，`should_chroot` 为真再在 chroot 里跑第二次，成功后写 reboot 台账（`deps.record_reboot`，接线到 13 的 utmp sink）并交出 `did_multiuser_chroot`。与 C 的差异：全局 `runcom_mode` 与 `did_multiuser_chroot` 变成参数与返回值；`_exit(4/5)` 留在子分支原样发散（剧本宿主记录退出码）；注意 fork 失败这条路 C 会先睡一个 STALL_TIMEOUT 再回 single_user——single_user 自己的 fork 失败没有这一睡，两处不可混淆。
 
 ---
 
@@ -77,10 +77,20 @@ fastboot 时 `argv[2]` 为空指针，即只传两个参数。`_PATH_RUNCOM` 即
 | `test_catatonia_sigterm_quiets` | init.c:949-957 |
 | `test_catatonia_without_sigterm_still_single_user` | init.c:949-957 双条件 |
 | `test_stopped_rc_continues` | init.c:941-946 |
+| `test_runetcrc_child_exec_request_carries_autoboot` | init.c:884-910 子分支 + `_exit(5)` |
+| `test_runetcrc_chroot_failure_exits_four` | init.c:903-906 `_exit(4)` |
+| `test_runetcrc_chrooted_child_execs_after_chroot` | chroot 先于 exec、fastboot 无第三参 |
+| `test_runetcrc_fork_failure_sleeps_then_single_user` | init.c:911-922（含睡 30 秒） |
+| `test_runetcrc_stopped_shell_continues_then_succeeds` | init.c:943-946 SIGCONT |
+| `test_runetcrc_sigterm_with_catatonia_awaits_reboot` | init.c:949-957 |
+| `test_runetcrc_sigterm_without_catatonia_is_single_user` | 双条件反例 |
+| `test_runcom_double_run_inside_chroot` | init.c:986-999 两次运行 + 单条台账 |
+| `test_runcom_single_run_without_chroot` | init.c:1000-1002 |
+| `test_runcom_rc_failure_propagates_without_ledger` | 失败不写台账 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：38 个通过（累计），0 失败。
+- `cargo test -p minix-init`：132 个通过（累计），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/runcom.rs`。
 
 ---
