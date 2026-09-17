@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod led;
 pub mod mouse;
 pub mod scancode;
+pub mod tables;
 
 /// Service initialization entry (wires the tables; transport stays out).
 pub fn init() {}
