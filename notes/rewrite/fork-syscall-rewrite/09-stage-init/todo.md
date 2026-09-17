@@ -44,19 +44,19 @@
   原问题：C 的 5 个信号处理函数只有映射表对应物，无注册路径、无 handler 真身。
   **修复记录**：新建 `signal_state.rs`——`SignalState` 三位一体（clang 原子标志 / requested_transition 原子状态字符 / minix 挂钩待决请求），handler 侧 `note_signal`/`note_shutdown_request`、驱动侧 `take_requested`/`take_shutdown_request`；注册表已在 P1-3 落为 `SignalSpec`+`default_signal_spec()`。**自觉偏离**：C 的 minixreboot 在 handler 里 fork/exec（init.c:517-525），违背 async-signal-safe；Rust 侧 handler 只置原子位，spawn 由主循环在等待边界执行（外部行为不变，docs 02 §3.5/14 §1 同步声明）。live 注册（真 sigaction）仍挂 E-INITSYS ①。测试 149 → 152。
 
-- **P0-4 ☐ wait-status 解码缺位：预解码 bool 没有生产者**（MISSING/设计缺口）。
+- **P0-4 ✅ 2026-09-18（Fix #6）wait-status 解码缺位（随 P1-4 WaitStatus 闭环）**。
   `classify_wait`（`single_user.rs:60-66`）、`classify_rc_exit`（`runcom.rs:27-33`）、`classify_collect`（`multi_user.rs:34`）、`diff_line`（`clean_ttys.rs:19`）、`plan_read_ttys`（`ttys.rs:51`）全部吃"预先解码好的 bool 散参"（stopped/exited_normally/signaled/termsig_is_kill……）。C 用 `WIFEXITED`/`WEXITSTATUS`/`WUNTRACED` 宏族解码 waitpid 状态（init.c:825-873 等），而这组宏在全 `os/libs` 没有任何对应物——grep `WIFEXITED|WEXITSTATUS|WUNTRACED|WaitStatus` 在 pm/minix-sys/minix-types 均零命中。也就是说这些签名是 C 宏形状倒灌进 Rust 的产物，现实中没有任何调用方能造出这些 bool。（修复方案：P1-4 引入 `WaitStatus` 类型；宏族解码器的归属在 edge E-INITSYS ③ 落地）
 
-- **P0-5 ☐ mfs_dev 的 MAKEDEV 分支缺失，live 探测用宿主文件系统**（MISSING/BUG-级）。
+- **P0-5 ✅ 2026-09-18（Fix #19）ensure_console 实体（fork MAKEDEV + 重检）**。
   `entry.rs:158-166` 注释自认"live implementation will use minix_sys once those syscalls land (currently stubbed)"；C 的 MAKEDEV fork/exec 兜底（init.c:1759-1787）与 `_exit(11/12)` 两条退路完全没有 Rust 代码。现存的 `FsDeviceProbe`（`entry.rs:202-214`）用 `std::fs::metadata` 问的是**宿主**文件系统，在真机镜像上这个 std 链接的二进制根本无法运行（P1-2）。`entry.rs:9` 头注释声称"Side effects (exiting, forking MAKEDEV, closing fds) live in main.rs"，而 main.rs 一个都没做——注释已过时。（修复方案：live 探测改走 minix-sys stat/access；MAKEDEV 分支随 P0-2 的 fork/exec 能力一起落地）
 
-- **P0-6 ☐ utmp/utmpx 记账写路径整体缺失**（MISSING）。
+- **P0-6 ✅ 2026-09-18（Fix #14）utmp/wtmpx 台账写路径语义闭环**。
   `utmp.rs` 只有记录结构与 runlevel 映射：`make_utmpx`/`session_utmpx`（init.c:1372-1409）、`utmpx_set_runlevel`（1429-1451）、`logwtmp`/`logwtmpx`、`clear_session_logs`（647-662）均无实现，模块头（`utmp.rs:1-6`）自述 ARCH A-2 defer 且连 sink trait 都未定义。C 在 runcom 末尾写 `~`/`reboot`（init.c:1008）、death 末尾写 `~`/`shutdown`（1674）这两个落账点没有任何 Rust 对应。依赖 VFS open 的存在路径（E-INITSYS ②）与 A-2 决策。（修复方案：先落 `UtmpSink` seam + 内存 fake，live 半等 VFS；两个落账点作为 P0-2 状态函数的组成部分实现）
 
-- **P0-7 ☐ securelevel 只有不完整的 fake，createsysctlnode 缺失**（TRAIT-ONLY/MISSING）。
+- **P0-7 ✅ 2026-09-18（Fix #19 附带）securelevel 语义收敛到接缝，live 半维持 A-4/A-5**。
   `sysctl.rs:10-45` 的 `SecureLevel` trait 只有 `FakeSecureLevel` 一个实现（单行为 impl，另见 P1-3）；C 的 `createsysctlnode`（init.c:1811-1857，init.root 节点创建）没有任何 Rust 代码，`shouldchroot` 的 ENOENT 节点重建逻辑（1872-1885）也没有——`sysctl.rs:48-50` 的 `should_chroot` 只是字符串判断。依赖 A-4/A-5 与内核 mib 服务（10-stage）。（修复方案：trait 契约保持，live 半挂 edge E-INITSYS ② 的 sysctl 面；createsysctlnode 语义并入该条）
 
-- **P0-8 ☐ 单用户口令门没有密码验证**（MISSING）。
+- **P0-8 ✅ 2026-09-18（Fix #18）口令门：passwd 解析 + 方案分发完整落地**。
   `classify_attempt(input_empty, matches)`（`single_user.rs:29-37`）吃一个 `matches: bool`，而 C 用 getpwnam + crypt 比较口令（init.c:754-788）——比较本身没有任何 Rust 实现，`root_has_password` 的来源（读 /etc/passwd 或等价物）同样缺失。真机上这道门等于不存在。依赖 passwd/group 读路径（与 15-stage-fs 相关，但口令比较属本 stage 语义）。（修复方案：`PasswordVerifier` seam + crypt 语义的 Rust 实现，live 数据源另议）
 
 - **P0-9 ✅ 2026-09-18（Fix #1）ttys 解析对齐 getttyent 字段语义**。

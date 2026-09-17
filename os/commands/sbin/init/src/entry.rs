@@ -144,13 +144,60 @@ pub fn decide_entry(args: &BootArgs, console_ok: bool) -> EntryDecision {
 /// Probe whether `/dev/console` is reachable (C: `mfs_dev`'s stat,
 /// init.c:1729).
 ///
-/// The MAKEDEV fork/exec fallback (init.c:1759-1787) lands with the
-/// process entities; until then a missing console falls straight back
-/// to single-user, which is also where C ends up when MAKEDEV cannot
-/// save the day. The `#if 0` debug block (init.c:1716-1756) is
-/// deliberately not modelled (dead code).
+/// The MAKEDEV fork/exec fallback (init.c:1757-1787) is the
+/// [`ensure_console`] half of this module.
 pub fn console_present(host: &dyn InitHost, console_path: &str) -> bool {
     matches!(host.path_exists(console_path), Ok(true))
+}
+
+/// Ensure the console exists, running the MAKEDEV helper when it does
+/// not (C: `mfs_dev`'s MAKEDEV branch, init.c:1757-1787).
+///
+/// C runs this as a throwaway helper process — `_exit(10/11/12)` are
+/// that helper's codes — while the probe here runs in-process, so the
+/// helper exits collapse into `false` plus the same warnings. The
+/// helper's `chdir("/dev")` collapses into an absolute script path;
+/// C's `access("./MAKEDEV")` preference picks `/dev/MAKEDEV` after
+/// that chdir, so the absolute form is the same file.
+pub fn ensure_console(host: &mut dyn InitHost, console_path: &str) -> bool {
+    if console_present(host, console_path) {
+        return true;
+    }
+    let script = "/dev/MAKEDEV";
+    let cmd = crate::session::ParsedCommand {
+        exec_path: "/bin/sh".to_string(),
+        argv: vec![
+            "sh".to_string(),
+            script.to_string(),
+            "-MM".to_string(),
+            "init".to_string(),
+        ],
+    };
+    match host.fork() {
+        Ok(0) => {
+            let err = host.exec(&cmd);
+            crate::log::warning(host, &format!("can't exec `{script}': {err}"));
+            host.exit_process(10);
+        }
+        Err(_) => {
+            crate::log::warning(host, "Unable to run MAKEDEV");
+            false
+        }
+        Ok(pid) => {
+            match host.waitpid(pid, 0) {
+                Ok((_, status)) => {
+                    if status.exit_code() != Some(0) {
+                        crate::log::warning(
+                            host,
+                            &format!("MAKEDEV exit status {:?}", status.exit_code()),
+                        );
+                    }
+                }
+                Err(_) => crate::log::warning(host, "Unable to run MAKEDEV"),
+            }
+            console_present(host, console_path)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +328,38 @@ mod tests {
         // entry decision treats it exactly like C treats a missing
         // console device.
         assert!(!console_present(&crate::host::MinixSysHost, "/dev/console"));
+    }
+
+    #[test]
+    fn test_ensure_console_runs_makedev_and_rechecks() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        // Console missing → MAKEDEV child runs; the recheck still
+        // fails, so the C helper's _exit(11) collapses into `false`.
+        let mut host = ScriptHost::default();
+        host.fork_outcomes.push(Ok(0));
+        host.exec_outcomes.push(Errno::EPERM);
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            assert!(!ensure_console(&mut host, "/dev/console"));
+        }));
+        let cmd = &host.exec_requests[0];
+        assert_eq!(cmd.argv, vec!["sh", "/dev/MAKEDEV", "-MM", "init"]);
+        assert_eq!(host.exits, vec![10]);
+
+        // A successful MAKEDEV that created the console: helper exits
+        // cleanly, the recheck succeeds.
+        let mut host = ScriptHost::default();
+        host.fork_outcomes.push(Ok(8));
+        host.wait_outcomes
+            .push(Ok((8, crate::wait::WaitStatus::Exited { code: 0 })));
+        host.paths.push(("/dev/console".into(), true));
+        assert!(ensure_console(&mut host, "/dev/console"));
+    }
+
+    #[test]
+    fn test_ensure_console_fork_failure_is_false_not_panic() {
+        let mut host = ScriptHost::default();
+        host.fork_outcomes.push(Err(Errno::EAGAIN));
+        assert!(!ensure_console(&mut host, "/dev/console"));
+        assert!(host.console.iter().any(|(_, m)| m.contains("MAKEDEV")));
     }
 }

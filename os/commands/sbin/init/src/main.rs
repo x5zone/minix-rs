@@ -11,6 +11,7 @@ mod entry;
 mod host;
 mod log;
 mod multi_user;
+mod password;
 mod runcom;
 mod session;
 mod session_db;
@@ -57,7 +58,7 @@ fn main() {
     // C step 3: device probe (init.c:269-270). ENOSYS counts as "no
     // console" and forces single-user, the same fallback as C's
     // missing console.
-    let console_ok = entry::console_present(&host, single_user::CONSOLE_PATH);
+    let console_ok = entry::ensure_console(&mut host, single_user::CONSOLE_PATH);
 
     // C step 4: flag parsing (init.c:287-303).
     let argv: Vec<String> = std::env::args().collect();
@@ -100,7 +101,14 @@ fn main() {
         sessions_seen: false,
         did_multiuser_chroot: false,
         rootdir: "/".to_string(),
-        root_verify: None,
+        // C step 7b: read root's hash for the single-user gate
+        // (getpwnam, init.c:733) — an unreadable passwd means no gate,
+        // exactly the C shape when getpwnam fails.
+        root_verify: host
+            .read_file("/etc/passwd")
+            .ok()
+            .and_then(|body| password::root_password_hash(&body))
+            .and_then(|hash| password::build_verifier(&hash)),
     };
 
     let initial = match decision.initial {
