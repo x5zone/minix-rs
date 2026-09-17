@@ -54,7 +54,7 @@ fastboot 时 `argv[2]` 为空指针，即只传两个参数。`_PATH_RUNCOM` 即
 
 ## 3. Rust 设计决策
 
-`rc_argv(mode)` 纯组装 fastboot 时截断第三个参数；`classify_rc_exit` 把退出状态映射为 `RcOutcome`；`RuncomFlow` 记录两次执行的顺序语义，chroot 判定依赖 12 的 trait。exec 回退与 stall 通道复用 03。与 Redox 对照：Redox 的 rc.d 风格是逐脚本执行，Minix 是单脚本加参数，我们保留单脚本语义不硬套。
+`rc_argv(mode)` 纯组装 fastboot 时截断第三个参数；`classify_rc_exit(WaitStatus, catatonia_requested)` 把子进程结局映射为 `RcOutcome`——静默重启需要 catatonia 请求与 SIGTERM 两个条件同时成立（init.c:949-957），这是文档里最容易读漏的一处；两次执行的顺序语义由 runcom 实体承接（P0-2b 落地），chroot 判定依赖 12 的 trait。exec 回退与 stall 通道复用 03。与 Redox 对照：Redox 的 rc.d 风格是逐脚本执行，Minix 是单脚本加参数，我们保留单脚本语义不硬套。
 
 ---
 
@@ -74,6 +74,8 @@ fastboot 时 `argv[2]` 为空指针，即只传两个参数。`_PATH_RUNCOM` 即
 | `test_nonzero_goes_single_user` | init.c:965-966 |
 | `test_abnormal_goes_single_user` | init.c:959-963 |
 | `test_catatonia_sigterm_quiets` | init.c:949-957 |
+| `test_catatonia_without_sigterm_still_single_user` | init.c:949-957 双条件 |
+| `test_stopped_rc_continues` | init.c:941-946 |
 
 ### 5.1 测试统计（截至 2026-09-04）
 

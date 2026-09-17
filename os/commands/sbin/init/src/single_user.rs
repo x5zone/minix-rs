@@ -3,7 +3,8 @@
 //! Covers `minix3/sbin/init/init.c:694-877` (`single_user`).
 //! Design contract: `.design/04-design.v1.md §1.1-§1.4`.
 
-use crate::state_machine::StateKind;
+use crate::state_machine::{sig, StateKind};
+use crate::wait::WaitStatus;
 
 /// Whether the password gate must prompt.
 pub fn password_gate_required(
@@ -57,26 +58,28 @@ pub enum WaitOutcome {
 }
 
 /// Classify one wait observation (pure; I/O stays in the driver).
-pub fn classify_wait(
-    stopped: bool,
-    requested: Option<StateKind>,
-    exited_normally: bool,
-    signaled: bool,
-    termsig_is_kill: bool,
-) -> WaitOutcome {
-    if stopped {
+///
+/// The outcome order mirrors the C wait loop: a stopped child (only
+/// reported under WUNTRACED, init.c:827) keeps the loop going, an
+/// externally requested transition wins next, then the fatal-signal
+/// ladder — SIGKILL means the operator killed the shell and init
+/// reboots quietly (init.c:849-856), any other signal restarts the
+/// shell — and a normal exit proceeds to `/etc/rc` with FASTBOOT
+/// (init.c:866-870).
+pub fn classify_wait(status: WaitStatus, requested: Option<StateKind>) -> WaitOutcome {
+    if status.stopped() {
         return WaitOutcome::Continue;
     }
     if let Some(state) = requested {
         return WaitOutcome::Transition(state);
     }
-    if signaled {
-        if termsig_is_kill {
+    if status.signaled() {
+        if status.signaled_by(sig::SIGNAL_KILL) {
             return WaitOutcome::RebootQuiet;
         }
         return WaitOutcome::RestartSingleUser;
     }
-    if exited_normally {
+    if status.exited() {
         return WaitOutcome::ProceedRuncomFastboot;
     }
     WaitOutcome::RestartSingleUser
@@ -110,32 +113,40 @@ mod tests {
 
     #[test]
     fn test_wait_stop_continues() {
-        assert_eq!(
-            classify_wait(true, None, false, false, false),
-            WaitOutcome::Continue
-        );
+        let stopped = WaitStatus::Stopped { stopsig: 18 };
+        assert_eq!(classify_wait(stopped, None), WaitOutcome::Continue);
     }
 
     #[test]
     fn test_wait_requested_transitions() {
         assert_eq!(
-            classify_wait(false, Some(StateKind::Death), false, false, false),
+            classify_wait(
+                WaitStatus::Exited { code: 0 },
+                Some(StateKind::Death)
+            ),
             WaitOutcome::Transition(StateKind::Death)
         );
     }
 
     #[test]
     fn test_wait_sigkill_quiets() {
+        let killed = WaitStatus::Signaled { termsig: 9, core_dumped: false };
+        assert_eq!(classify_wait(killed, None), WaitOutcome::RebootQuiet);
+    }
+
+    #[test]
+    fn test_wait_other_signal_restarts_single_user() {
+        let hup = WaitStatus::Signaled { termsig: 1, core_dumped: false };
         assert_eq!(
-            classify_wait(false, None, false, true, true),
-            WaitOutcome::RebootQuiet
+            classify_wait(hup, None),
+            WaitOutcome::RestartSingleUser
         );
     }
 
     #[test]
     fn test_wait_normal_proceeds_runcom_fastboot() {
         assert_eq!(
-            classify_wait(false, None, true, false, false),
+            classify_wait(WaitStatus::Exited { code: 0 }, None),
             WaitOutcome::ProceedRuncomFastboot
         );
     }

@@ -76,7 +76,7 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 
 ### 3.3 等待结局枚举
 
-`WaitOutcome::{Continue, Transition, RestartSingleUser, RebootQuiet, ProceedRuncom}` 加 `classify_wait(stopped, requested, signaled, termsig, exited)` 纯函数，五结局单测全覆盖。`ProcessOps` trait 收敛 fork/exec/wait/kill，Live 待 A-9，Fake 剧本驱动，双实现满足 trait 规则。
+`classify_wait(WaitStatus, requested)` 纯函数吃 `wait.rs` 的 `WaitStatus`（C 宏族的 Rust 和类型，见 09 篇对 collect_child 的同源说明），五个结局与 C 等待循环逐一对照；stopped/请求/信号阶梯/零退出的先后次序就是 init.c:827-870 的次序。等待的 fork/exec/wait/kill 副作用收敛到进程接缝（Wave2 定型），Live 待 A-9，Fake 剧本驱动。
 
 ---
 
@@ -96,6 +96,7 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 | `test_wait_stop_continues` | init.c:836-840 |
 | `test_wait_requested_transitions` | init.c:843-847 |
 | `test_wait_sigkill_quiets` | init.c:849-856 |
+| `test_wait_other_signal_restarts_single_user` | init.c:857-863 |
 | `test_wait_normal_proceeds_runcom_fastboot` | init.c:866-870 |
 
 ### 5.1 测试统计（截至 2026-09-04）

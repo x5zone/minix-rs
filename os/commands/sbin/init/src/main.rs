@@ -18,6 +18,7 @@ mod state_machine;
 mod sysctl;
 mod ttys;
 mod utmp;
+mod wait;
 
 use entry::{DeviceEnsureOutcome, DeviceProbe, FsDeviceProbe, InitialState, decide_entry, parse_boot_args};
 
