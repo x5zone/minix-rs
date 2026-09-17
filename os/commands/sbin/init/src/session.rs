@@ -36,11 +36,30 @@ impl SessionFlags {
     }
 }
 
-/// A parsed command (program + argv).
+/// A spawn request: the exec path plus the full argv.
+///
+/// Minix3 execs children in two shapes, and one field cannot express
+/// both. Getty and window commands exec their first ttys word as the
+/// path (`execv(sp->se_getty_argv[0], ...)`, init.c:1365), so there
+/// `exec_path` equals `argv[0]`. The rc shell and the shutdown hooks
+/// exec a fixed absolute path with a bare argv[0] (`execv(INIT_BSHELL,
+/// ...)` where argv[0] is "sh", init.c:913; `execl("/sbin/shutdown",
+/// "shutdown", ...)`, init.c:521-522) — there the two differ.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCommand {
-    pub program: String,
+    /// Path handed to the exec call.
+    pub exec_path: String,
+    /// Full argv, including argv[0] as the child should see it.
     pub argv: Vec<String>,
+}
+
+impl ParsedCommand {
+    /// Build from a word-split command line where the first word is
+    /// both path and argv[0] (the getty/window shape).
+    pub fn path_is_first_word(argv: Vec<String>) -> ParsedCommand {
+        let exec_path = argv.first().cloned().unwrap_or_default();
+        ParsedCommand { exec_path, argv }
+    }
 }
 
 /// Split a command line on whitespace (C: `construct_argv`, init.c:1101-1118).
@@ -90,14 +109,10 @@ pub fn build_session(
     }
     let getty_cmd = format!("{getty} {name}");
     let getty_argv = split_command(&getty_cmd).ok_or(BuildReject::OffOrMissing)?;
-    let getty_program = getty_argv[0].clone();
     let window_parsed = match window {
         Some(w) if !w.trim().is_empty() => {
             let argv = split_command(w).ok_or(BuildReject::OffOrMissing)?;
-            Some(ParsedCommand {
-                program: argv[0].clone(),
-                argv,
-            })
+            Some(ParsedCommand::path_is_first_word(argv))
         }
         _ => None,
     };
@@ -106,10 +121,7 @@ pub fn build_session(
         process: None,
         flags: SessionFlags::present(),
         device: format!("/dev/{name}"),
-        getty: Some(ParsedCommand {
-            program: getty_program,
-            argv: getty_argv,
-        }),
+        getty: Some(ParsedCommand::path_is_first_word(getty_argv)),
         window: window_parsed,
     })
 }

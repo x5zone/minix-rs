@@ -73,6 +73,7 @@ minixpowerdown: fork==0 → execl(...,"-p",...) → _exit(1)
 | `test_other_signal_none` | transition_handler 分流 |
 | `test_reboot_argv` | shutdown -r now |
 | `test_powerdown_argv` | shutdown -p now |
+| `test_shutdown_exec_path_differs_from_argv0` | init.c:521-522 路径与 argv[0] 分离 |
 | `test_boot_argv_contract` | vm/main.c:345 |
 
 ### 5.1 测试统计（截至 2026-09-04）

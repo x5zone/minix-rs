@@ -4,16 +4,28 @@
 //! Design contract: `.design/05-design.v1.md §1.1-§1.3`.
 
 use crate::entry::RuncomMode;
+use crate::session::ParsedCommand;
 use crate::state_machine::sig;
 use crate::wait::WaitStatus;
 
-/// Assemble `sh /etc/rc [autoboot]` argv (C: init.c:897-900).
-pub fn rc_argv(mode: RuncomMode) -> Vec<String> {
+/// Absolute path of the rc shell (C: `INIT_BSHELL` = `_PATH_BSHELL`,
+/// init.c:105, exec'd at init.c:913).
+pub const RC_SHELL_PATH: &str = "/bin/sh";
+
+/// Assemble the `sh /etc/rc [autoboot]` spawn request (C: the argv at
+/// init.c:899-900, exec'd via `execv(INIT_BSHELL, ...)` at init.c:913).
+///
+/// The exec path is the shell binary; argv[0] is the bare "sh" the
+/// child sees — the distinction ParsedCommand exists for.
+pub fn rc_argv(mode: RuncomMode) -> ParsedCommand {
     let mut argv = vec!["sh".to_string(), "/etc/rc".to_string()];
     if mode == RuncomMode::Autoboot {
         argv.push("autoboot".to_string());
     }
-    argv
+    ParsedCommand {
+        exec_path: RC_SHELL_PATH.to_string(),
+        argv,
+    }
 }
 
 /// Where a finished `/etc/rc` run goes.
@@ -51,13 +63,24 @@ mod tests {
 
     #[test]
     fn test_rc_argv_autoboot_has_third() {
-        assert_eq!(rc_argv(RuncomMode::Autoboot).len(), 3);
-        assert_eq!(rc_argv(RuncomMode::Autoboot)[2], "autoboot");
+        let cmd = rc_argv(RuncomMode::Autoboot);
+        assert_eq!(cmd.argv.len(), 3);
+        assert_eq!(cmd.argv[2], "autoboot");
     }
 
     #[test]
     fn test_rc_argv_fastboot_truncated() {
-        assert_eq!(rc_argv(RuncomMode::Fastboot).len(), 2);
+        assert_eq!(rc_argv(RuncomMode::Fastboot).argv.len(), 2);
+    }
+
+    #[test]
+    fn test_rc_exec_path_is_shell_binary_argv0_is_sh() {
+        // C: execv(INIT_BSHELL, argv) with argv[0] = "sh"
+        // (init.c:899-900, 913) — path and argv[0] differ.
+        let cmd = rc_argv(RuncomMode::Autoboot);
+        assert_eq!(cmd.exec_path, "/bin/sh");
+        assert_eq!(cmd.argv[0], "sh");
+        assert_eq!(cmd.argv[1], "/etc/rc");
     }
 
     #[test]

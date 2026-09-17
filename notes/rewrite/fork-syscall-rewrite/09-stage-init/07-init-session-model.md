@@ -46,7 +46,7 @@ getty 字符串为 `"getty名 终端名"` 再分词（`init.c:1193-1196`）；�
 
 ## 3. Rust 设计决策
 
-节点结构体加位标志加纯分词。链表指针不进入节点（由容器管理，避免 C 式侵入式链表的别名风险）。`build_session` 合并 new 与 setupargv 的成功路径，失败返回 `None` 并附原因枚举。与 Redox 的会话管理对照：Redox 用 scheme 路径索引，我们用 pid 索引（见 08），节点本身都是值类型加 RAII。
+节点结构体加位标志加纯分词。链表指针不进入节点（由容器管理，避免 C 式侵入式链表的别名风险）。`build_session` 合并 new 与 setupargv 的成功路径，失败返回 `Err` 并附原因枚举。`ParsedCommand` 里 exec 路径与 argv[0] 是两个字段：getty 与 window 命令两者相等（C 用 `execv(se_getty_argv[0], ...)`，init.c:1365，路径就是第一个词），而 rc 与 shutdown 的 exec 路径是固定绝对路径、argv[0] 是裸名（见 05/14）——一个字段表达不了这两种形状。与 Redox 的会话管理对照：Redox 用 scheme 路径索引，我们用 pid 索引（见 08），节点本身都是值类型加 RAII。
 
 ---
 
