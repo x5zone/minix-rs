@@ -13,6 +13,10 @@
 > 2026-09-16 增补：13-stage-ipc 首轮架构审查（13-stage-ipc/todo.md）登记 E-IPCWIRE（ipc-server 生产面接线八缺：trap 桥/SEF 层/sys_datacopy/proceventmask/VM_SHM_UNMAP/clock/getepinfo 窄 helper 七件 minix-sys 面 + minix-types 的 semid_ds/shmid_ds 布局面）。
 > 2026-09-16 增补：14-stage-runtime 首轮架构审查（14-stage-runtime/todo.md V1）登记 E-MINTYPES-RUNTIME（minix-types 布局单点权威收敛，99 篇定稿驱动）与 E-MINSYS-SCOPE（minix-sys 六个域外 stage 客户端模块的内聚性处置）两条，并在 E1 增补"首个 no_std minix-rt 二进制"通电验证面。
 > 2026-09-16 增补：15-stage-fs 首轮架构审查（15-stage-fs/todo.md V1）登记 E-FSRUNTIME（8 个 fs server bin 的 SEF/RS 启动握手与运行时接线）、E-FSBDEV（minix-fs 块层与真实块驱动的接缝，涉 16-stage-drivers）、E-FSVMCACHE（二级缓存零拷贝页移交与旗标机，涉 02-stage-vm）、E-FSCMDS（fsck/mkfs 命令占位认领）四条。
+> 2026-09-17 增补：16-stage-drivers 全量代码扫描（16-stage-drivers/todo.md）登记 E-DEVWIRE（设备族 CDEV/BDEV/NDEV/RTCDEV 线上常量单一来源，含 vfs 消费侧重述与 BDEV 命名分叉）、E-SDEVOWN（sdev/sockevent 17-stage-net 语义寄居 minix-netdriver + vfs 独立副本）、E-DMABUF（DMA/连续物理页契约 02-stage-vm ↔ 16-stage-drivers 无归属）三条。
+> 2026-09-17 增补：18-stage-commands 架构审查（18-stage-commands/todo.md §6）登记 E-CMDSYSFACE（命令层 libc 调用面缺口：errno 常量再导出 + argv/env 访问器 + 两条卫生警告，14-stage-runtime 侧实现），并注明其 §6.1 的域 crate 收敛是 E-FSCMDS"命令轨道建立"前置的一半。
+> 2026-09-17 增补：18-stage-commands 首个命令 bin（echo）冒烟发现 E-SYSCALL-SIGN（perform_syscall 按 m_type 负值判错 vs DirectTrapTransport 正 errno 的符号冲突，宿主下全部 *_via 假成功，syscall.rs:94-101）。
+> 2026-09-17 增补：09-stage-init 首轮架构扫描（09-stage-init/todo.md §2）登记 E-INITSYS（init 真实运行必需的 minix-sys 客户端面三件：信号族封装 / 进程控制族封装与 open 存在路径 / WaitStatus 解码与 WUNTRACED），并在 E-CMDSYSFACE 增补 no_std 决策关联。
 > 定位：**跨 stage 边界条目的唯一入口**，后续单线程逐条执行，避免并发修改各 stage 的 todo.md 时发生冲突。
 > Edge 判定规则（三类）：① 共享契约/基础设施层——minix-types 布局、minix-sys trap 层与 SYS_* wrapper、os/arch 的 pt_alloc；② 对方 stage 目录里的生产代码（如 kernel 侧填充 handoff 字段）；③ 多进程联调测试（QEMU 端到端）。
 > stage 内生产代码（消费既有稳定契约，含 seam + mock 测试）**不属于** edge，在所属 stage 的 todo.md 内实施。
@@ -757,7 +761,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **依赖**：E-ISWIRE（minix-sef 决策，若选择等待）；E-CDRCONV（若收敛裁决改变 announce 归属）；E5（联调）。
 **解锁**：E5 输入链；`input` 服务进程真实化；13-stage-ipc 的消息面有一个真实生产消费者。
 
-> **循环壳收口（2026-09-17，✅ 循环壳半落地，593c2daa6）**：input 新增 `serve.rs`——Transport trait（receive/send/asynsend/write_grant/publish_label）+ KernelTransport（minix-sys 直写，minix-sef 切换点=receive）+ classify（notify→DriverStoreChanged、INPUT_EVENT/INPUT_SETLEDS→decode→Arrival，m_source 回填）+ perform（ReplyTask→CDEV_REPLY 裸字节 status@8/id@12、ReplySelect→CDEV_SEL2_REPLY、SendDriverAsync/SendTerminalBlocking→m_source 回填发送）+ serve loop（GrantCopy→逐事件 24B drain→sys_safecopyto→complete_grant_copy）；main.rs 空 loop 替换，测试 ×2。**登记**：DS announce 暂 ENOSYS（DsClient<T> 双 trait 约束过窄需放宽/拆分）；asynsend 暂以阻塞 send 承载（SENDA 表接线登记）。**剩余 = 真机联调（E5）+ DS announce 接线**。
+> **循环壳收口（2026-09-17，✅ 循环壳半落地，593c2daa6）**：input 新增 `serve.rs`——Transport trait（receive/send/asynsend/write_grant/publish_label）+ KernelTransport（minix-sys 直写，minix-sef 切换点=receive）+ classify（notify→DriverStoreChanged、INPUT_EVENT/INPUT_SETLEDS→decode→Arrival，m_source 回填）+ perform（ReplyTask→CDEV_REPLY 裸字节 status@8/id@12、ReplySelect→CDEV_SEL2_REPLY、SendDriverAsync/SendTerminalBlocking→m_source 回填发送）+ serve loop（GrantCopy→逐事件 24B drain→sys_safecopyto→complete_grant_copy）；main.rs 空 loop 替换，测试 ×2。**两项登记已解除（2026-09-17，794d3eb91）**：①asynsend 真实化——单槽 SENDA 表（AsyncSlot VALID|NO_REPLY + ipc.senda）；②DS announce 真实化——KernelTransport 聚合双载体（ipc=int-33 腿 + kernel=SYSCALL 腿，自身实现双 trait 满足 DsClient<T> 约束，"一个 C 进程 = 两条硬件腿"的 Rust 对应物），publish 经 DsClient → drv.chr.input。**剩余 = 真机联调（E5，需各服务器参战）**。
 
 ---
 
@@ -949,3 +953,128 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 **依赖**：V1-P2-10（盘上结构层稳定）；命令轨道建立。
 **解锁**：镜像制作/校验自动化、装机流程。
+
+---
+
+## E-DEVWIRE 设备族请求/回复线上常量单一来源（16-stage-drivers 全量扫描登记，2026-09-17）
+
+**问题**：C 侧 CDEV/BDEV/NDEV/RTCDEV/USB_RQ 全部住一份 `include/minix/com.h`；Rust 侧常量散布至少七处且消费者重述——生产侧：`os/libs/minix-chardriver/src/protocol.rs:16-48`（CDEV 基址/标志 + `CdevRequest` 枚举）、`os/libs/minix-blockdriver/src/protocol.rs:14-65`（BDEV，且改名 `BDEV_READ_ACCESS/WRITE_ACCESS` 对应 C `BDEV_R_BIT/W_BIT`）、`os/libs/minix-netdriver/src/protocol.rs:10-60`（NDEV，回复仅基址无枚举）、`os/drivers/clock/readclock/src/protocol.rs:11-53`（RTCDEV 住驱动 crate 而非框架库）；消费侧重述：`os/servers/vfs/src/cdev.rs:21-34` 手抄 CDEV 六常量且类型漂移（u8 对生产侧 i32）、`os/servers/vfs/src/bdev.rs:26-28` 用 C 名字 `BDEV_R_BIT/W_BIT` 对生产侧新名——同一线上值、两个名字、两处定义。分叉已实际发生：`CDEV_REPLY_BASE 0x500` 错值（E-CDRCONV 问题二）。`16-stage-drivers/plan.md` §2 本指派 99-global-concepts 的 Rust 模块为 minix-types，现状违约。
+
+**影响**：双真相漂移持续累积（错值已是实证）；17-stage-net 消费 NDEV、18-stage-commands 消费 RTCDEV/USB_RQ 时将各自再抄一份，扩散面随 stage 推进而增大。
+
+**为何 edge**：判定①——共享契约（minix-types 承载）；消费方跨 05-stage-vfs、12-stage-input、17-stage-net、18-stage-commands 多个 stage。
+
+**建议**：
+- 方案 A（推荐）：设备族线上常量上收 `minix-types`（`types/com.rs` 扩展或独立 device-protocol 模块），各框架库 re-export，消费方删本地副本改 import，并补对 `com.h` 逐值的钉值测试（防漂移）。
+- 方案 B（否决）：消费方直接依赖框架库取常量（如 vfs 依赖 minix-chardriver）。否决理由：服务器依赖驱动框架库方向倒挂，且解决不了 NDEV/RTCDEV 等无消费框架的场景。
+- 与 E-REQWIRE 同纪律（那次收敛 REQ_* VFS↔FS，本条收敛设备族）；与 E-CDRCONV 同轮执行（同一批文件）；承接 E-MINTYPES-RUNTIME 的 99 篇权威收敛方向。
+
+**依赖**：E-CDRCONV（错值与 chardriver 双实现先收敛）；E-MINTYPES-RUNTIME。
+**解锁**：vfs/input/驱动三侧常量同源；16-stage `99-global-concepts.md` 展开（16-stage-drivers/todo.md G5）即有单一事实可写。
+
+---
+
+## E-SDEVOWN sdev/sockevent 语义归属（17-stage-net）寄居 minix-netdriver（16-stage-drivers 全量扫描登记，2026-09-17）
+
+**问题**：`os/libs/minix-netdriver/src/sdev.rs`（SDEV 0x1900 十七请求）与 `sockevent.rs`（SEV_*/SFL_* 事件）是 17-stage-net 的 libsockdriver 语义（`16-stage-drivers/plan.md` §5.4 排除表明确划归 17），却寄居在 16-stage 的 minix-netdriver crate；doc 03 通篇未提（`lib.rs:23-29` 自述归 17 阶段文档）；全 workspace 无任何 crate 引用这两模块；同时 `os/servers/vfs/src/sdev.rs`（923 行）是同一协议的另一份独立实现——三处相关、两份副本、零共享，漂移条件齐备。netdriver 文档 §5 的测试计数因此混入 9 个未记载测试。
+
+**影响**：17-stage-net 开工时面对两份都不权威的实现，需先考古再收敛；16-stage 的文档测试对账永远差 9 个。
+
+**为何 edge**：判定②+①——语义属 17-stage-net，文件宿主是 16-stage crate，vfs 是第三个相关方；归属与收敛须 17-stage 裁决（孤儿处置先例：E-DMCLIENT）。
+
+**建议**：
+- 方案 A（推荐）：17-stage 认领时两份副本都删，在 minix-sys 客户端域或新 `minix-sockdriver` 单点重建（对账 E-MINSYS-SCOPE 的内聚性处置思路）。
+- 方案 B：迁入 vfs 消费的公共库，vfs 改依赖——保底方案，但 sdev 协议的驱动侧（lwip/uds）消费者也在 17-stage，归属仍乱。
+- 方案 C（否决）：维持现状 + doc 03/17 双声明豁免——违背单一权威方向（E-REQWIRE/E-MINTYPES-SYS 的收敛先例）。
+
+**依赖**：17-stage-net 开工（此前维持冻结，不动不删）。
+**解锁**：sockdriver 单一权威；doc 03 测试计数归真。
+
+---
+
+## E-DMABUF DMA/连续物理页契约无归属（02-stage-vm ↔ 16-stage-drivers）（16-stage-drivers 全量扫描登记，2026-09-17）
+
+**问题**：C 侧 virtio 队列内存要求连续物理页（`lib/libvirtio/virtio.c:319` 附近 alloc_contig），ahci 命令表/PRDT（`ahci.c` 装配半）与 usb_storage 缓冲同理需要物理连续与一致映射。minix-rs 侧：16-stage 各库的 DMA 缓冲管理零建模（doc 14 §2.3 写明"队列内存是连续物理页"后即推给服务层，无任何 doc 认领分配器）；02-stage-vm 侧没有面向驱动的连续页分配/物理↔虚拟翻译接口文档。`16-stage-drivers/plan.md` §4 的 A-4（DMA 抽象）与 A-6（vm_map_phys 衔接）均停留"设计期"，两侧都未启动。
+
+**影响**：virtio_blk/ahci/usbd 的服务层无法开工（这是存储与 USB 波次的硬前置）；若各驱动自建分配，将绕过 VM 的物理内存权威，重演各自为政。
+
+**为何 edge**：判定①——物理内存分配契约的生产方是 02-stage-vm，消费方是 16-stage 多个驱动；接口文档归属两侧都没领。
+
+**建议**：
+- 方案 A（推荐）：02-stage-vm 定义连续页分配 + 物理↔虚拟翻译的 trait 契约，16-stage 驱动库以 trait 注入消费（策略/机制照旧分离）。外部先例：rcore-os `virtio-drivers` 的 `Hal` trait（dma_alloc/dma_dealloc/phys↔virt/share，docs.rs/virtio-drivers）；Redox `drivers/common/src/dma.rs` 同位。
+- 方案 B（否决）：内核直供分配调用（照 C 的内核旁路思路）。否决理由：驱动进程直碰内核物理分配违背微内核边界，也违背本项目"硬件抽象在 plat/VM、OS 层不见物理地址"的既有纪律。
+
+**依赖**：02-stage-vm 物理分配面稳定（Direct Map 语义已在，欠驱动侧接口化）。
+**解锁**：16-stage-drivers/todo.md A5（线格式下沉批）；doc 14/16/18 的服务层开工；plan A-4/A-6 落地。
+
+---
+
+## E-NETSTART lwip/uds 双 server 的 SEF/RS 启动握手与真实 main（17-stage-net 架构扫描登记，2026-09-17）
+
+**问题**：`os/net/lwip/src/main.rs:4` 与 `os/net/uds/src/main.rs:4` 均为 `// TODO: 实装为真实服务进程（事件循环 + RS 启动协议）` + `loop {}` 占位；C 侧两 server 都走 SEF 启动（lwip.c 的 13 步 init 链 + sef_startup，uds.c 同构），且 rc 脚本已有 `up lwip`/`up uds` 挂载点（minix3/etc/usr/rc:259 `up lwip -dev /dev/bpf -script /etc/rs.lwip`、`:286 up uds`；Rust 树的 rc 尚未建）。minix-sef/minix-rt 的通用启动框架尚不成体系——fs 侧同一缺口已立 E-FSRUNTIME（fs 8 server），net 侧此前无条目。startup.rs 已建模的启动链与 4 路分发（os/net/lwip/src/startup.rs:20-97）因此无真实消息源。
+
+**影响**：lwip/uds 无法被 RS 加载，net 面真机冒烟与联合验收全阻断；17-stage-net/todo.md N1-P1-4（传输层与主循环设计）通电前置。
+
+**为何 edge**：判定①——SEF/RS 握手是 minix-sef/minix-rt 共享框架 + 03-stage-rs 的 RS 侧对接；与 E-FSRUNTIME 同根，若每 stage 各写一遍启动样板，RS 域注册/更新协议将各自漂移。
+
+**建议**：
+- 方案 A（推荐）：跟随 E-FSRUNTIME 落地的通用 SEF/RS start 框架，lwip/uds 作为后续消费者接入；启动粒度沿用 startup.rs 现有 8 态粗粒度（13 步的步内顺序注释化即可，逐步映射 RS 调用属 translate）。
+- 方案 B（否决）：net 侧自写启动样板先行。否决理由：与 fs 先例重复建设；两套启动样板会让 E-RSWIRE 的 RS 域注册收敛面翻倍。
+
+**依赖**：E-FSRUNTIME（通用 start 框架落地）；17-stage-net/todo.md N1-P1-4（主循环设计同批）。
+**解锁**：lwip/uds 可被 RS 加载并响应 `up lwip`/`up uds`；net 面 QEMU 冒烟；N1-P1-4 的 DispatchRoad 分发接上真实消息源。
+
+---
+
+## E-CMDSYSFACE 命令层 libc 调用面缺口：errno 常量再导出 + argv/env 访问器（18-stage-commands 架构审查登记，2026-09-17）
+
+**问题**：18-stage 的全部命令按 `18-stage-commands/99-global-concepts.md` §1 分层契约只允许依赖 `minix-sys` 顶层与 `minix-rt`，但该 libc 面存在三个缺口。① errno 常量未再导出：`os/libs/minix-sys/src/lib.rs:43` 只再导出 `Errno`/`Gid`/`Pid`/`Uid` 四个类型，`EEXIST` 等常量仍只在 `minix-types`，导致 `os/commands/sbin/init` 成为全 `os/commands` 唯一直接依赖 `minix-types` 的 crate（其 Cargo.toml 依赖行 + `src/entry.rs:11` 的 `use minix_types::{EEXIST, Errno};`，2026-09-17 grep 实测唯一命中）。② 参数/环境访问器只有雏形：`minix-rt` 出生链已把描述符解析为静态量（`crt0.rs:29-34` publish 阶段），对外仅有 `progname()`（`crt0.rs:129`）与逐个取的 `argv_bytes(index)`（`crt0.rs:154`）；`handoff.rs:290-315` 的 `environment_list`/`environment_count` 已解析但无对外访问器，也没有一次取全的迭代器封装。③ 卫生：`minix-sys/src/pm.rs:30` unused import `Message`、`minix-rt/src/crt0.rs:170` 不必要的 `mut`（`cargo build -p minix-init` 实测），可并入 E-MINSYS-HYGIENE 同轮或顺带。
+
+**影响**：第一个要实现的真实命令 `echo`（`99-global-concepts.md` §3 示例行：只需 `write`、`exit`、argv 交接）就同时撞上②——命令今天拿不到自己的参数；init 的越界依赖使分层契约从第一条命令起就有现存反例；18-stage 侧计划的边界守卫脚本（其 todo.md §6.7 C-7）在①修复前无法零误报启用。
+
+**为何 edge**：判定①——minix-sys/minix-rt 是全体用户态共享的基础设施层，生产方是 14-stage-runtime（其 todo.md V1 轨道主导该 crate 演进），消费方是 18-stage 全部命令；18-stage 无权修改该层。
+
+**建议**：
+- 方案 A（推荐）：① `minix-sys` 顶层再导出 errno 常量集（对齐 C libc 中 errno.h 的地位；类型再导出的先例就在同文件 `lib.rs:264` 的 `pub use minix_types::Errno`）；② `minix-rt` 补 `env_bytes(index)` 与一次取全的 `args()`/`envs()` 迭代器（publish 静态量已就位，纯增量，不动出生链与 crt0 布局）；③ 顺带清理③两条警告。
+- 方案 B（否决）：命令侧继续用 `minix-types` 常量并各自解析描述符。否决理由：破坏分层契约第一条硬规则，每个命令复制一份描述符解析（对账 translate 防线），且守卫脚本永无法启用。
+
+**依赖**：无硬依赖（纯增量 API）。18-stage 侧的接线动作在其 todo.md §6.2（C-2：init 去除 minix-types 依赖）与 §6.3（C-3：Requires 回填指向本 API）。
+**解锁**：18-stage-commands/todo.md C-1 落地步（echo 第一个端到端命令）、C-2、C-7 守卫脚本零误报启用；E-FSCMDS 的"命令轨道建立"前置之一（crate 收敛半在 18-stage todo.md §6.1 C-1，本条供其 API 面）。
+
+---
+
+## E-SYSCALL-SIGN perform_syscall 与 DirectTrapTransport 的 errno 符号约定冲突，宿主下系统调用假成功（18-stage-commands 架构审查发现，2026-09-17）
+
+**问题**：`os/libs/minix-sys/src/syscall.rs:94-101` 的 `perform_syscall` 把 transport 的失败状态写回 `message.m_type` 后按**负数**判错（C 内核约定的"负 errno 直返"）。但 `os/libs/minix-sys/src/ipc.rs:549` 等处 `DirectTrapTransport` 的失败携带**正数** errno（`Err(TrapStatus(minix_types::EIO))`，errno 常量全系为正值，如 `os/libs/minix-types/src/types/errno.rs:31` 的 `EEXIST: i32 = 17`）。于是宿主（无 `real-trap`，default features 不含它，`libs/minix-sys/Cargo.toml:24`）下每次 sendrec 失败都被翻译成 `Ok(正数)`。
+
+**影响**（2026-09-17 实测）：全部经 `perform_syscall` + `DirectTrapTransport` 的 `*_via` 封装（pm/vfs/vm/misc）在宿主下假成功——首个真实命令 echo 的冒烟运行（`os/target/debug/echo hello world`）write 返回 `Ok(5)`、进程 exit 0 且无输出，"无内核则诚实失败"的宿主语义整个失效；依赖该语义的宿主级验收（18-stage 各命令 bin）全部失真。on-target 真实 trap 路径的符号语义不受本条影响（E1 通电验证过 EBADCALL 负值通路），但宿主与真机的行为分叉违背"transport 报告显式失败"的 lib.rs:13-17 声明。
+
+**为何 edge**：判定①——perform_syscall 与 transport 的符号约定是全体用户态共享的 syscall 协议层，生产方 14-stage-runtime 轨道今日活跃（syscall.rs 由其 V1 轮刚收敛过 helper），18-stage 不越界修改。
+
+**建议**：
+- 方案 A（推荐）：`perform_syscall` 对 transport 级失败直接短路——`Err(status) => return Err(Errno::from_i32(status.0))`，不再经 m_type 往返；m_type 负值判错只保留给"sendrec 成功但回复携带负 errno"的真实回复路径。方案对两种 transport 语义统一，宿主假成功即刻消失。
+- 方案 B（否决）：改 `DirectTrapTransport` 让 Err 携带负值。否决理由：TrapStatus 的正 errno 语义被 ipc.rs 全部 match 与 `trap_status_to_ipc_error` 消费，牵一发动全身；且"Err 里装负数"违反该类型自身的字段命名直觉。
+
+**依赖**：无；18 侧 echo bin 已按“transport 报错即 exit 1”写好，本条落地后其宿主行为自动变诚实（无需改命令代码）。
+**解锁**：18-stage-commands 全部命令 bin 的宿主冒烟可信化；`cargo test` 之外新增“宿主运行即失败可见”的验收面。
+
+---
+
+## E-INITSYS init 真实运行必需的 minix-sys 客户端面三件套：信号族 / 进程控制族 / wait-status 解码（09-stage-init 首轮架构扫描登记，2026-09-17）
+
+**问题**：`os/commands/sbin/init` 当前是纯逻辑骨架——`main.rs:52-54` 做完参数解析与入口决策后 `std::thread::park()` 永久停泊，全 crate（15 文件 2025 行，89 测试全绿）没有一处 fork/exec/waitpid/kill/signal 系统调用。阻塞它的不是服务器侧而是 minix-sys 客户端面，三件套逐项核对（2026-09-17 grep 实证）：
+
+- ① **信号族**：服务器侧已就绪——PM 端点 `PM_SIGACTION`/`PM_SIGSUSPEND`/`PM_SIGPENDING`/`PM_SIGPROCMASK` 在 `os/servers/pm/src/ipc/calls.rs:69-75`，实现半 `os/servers/pm/src/signal_handlers.rs:90/148`（handle_sigaction/handle_sigprocmask），信号投递链 `os/servers/pm/src/signal.rs:59-92`（do_kill/check_sig）+ kernel `SYS_KILL` 族 `os/kernel/src/syscall_signal.rs:154/377/475`。客户端侧 minix-sys 只有 `kill_via`（`os/libs/minix-sys/src/pm.rs:202`，顶层 `lib.rs:175`），**没有** sigaction_via/sigprocmask_via/sigsuspend_via/sigpending_via；`os/libs/minix-rt/src/lib.rs:76` 注明 sigaction 属未来工作。init 的全部信号语义（handle/delset 注册 + transition_handler/alrm_handler/disaster/minixreboot/minixpowerdown 五个 handler，init.c:310-334/1502-1522/1649-1655/505-538）因此完全无法表达。
+- ② **进程控制族与 open**：PM 端点已在——`PM_SETSID`（calls.rs:59）、`PM_GETUID`（:41）、`PM_GETGID`（:55）、`PM_REBOOT`（:103）——但 minix-sys 无对应 `*_via` 封装（grep setsid/getuid 零命中）；`setctty` 依赖的 dup2/chroot 归属未定 [待验证：callnr.h 与 VFS 对应关系]；`alarm(3)`（death 的 DEATH_WATCH 需要，init.c:1685）无 PM 面封装 [待验证：callnr.h 的 PM_SETALRM]；`minix-sys/src/lib.rs:186-190` 的 `open` 存在路径按注释报 `ENOSYS`（等 64 位路径消息布局的全局概念决策），utmp 记账与 /dev/console 打开全部挂此。
+- ③ **wait-status 解码与 WUNTRACED**：全 `os/libs` 无 `WIFEXITED`/`WEXITSTATUS`/`WTERMSIG`/`WIFSTOPPED`/`WUNTRACED` 任何对应物（grep 零命中）；`waitpid_via` 已透传 options（`os/libs/minix-sys/src/lib.rs:167-172`）但 WUNTRACED 的 PM 侧语义实现状态待核实（PM 内部仅 `os/servers/pm/src/wait.rs:47` 的私有 WNOHANG 常量）。对照：nix 0.31 的 `WaitStatus::from_raw(pid, status) -> Result<WaitStatus>`（Exited/Signaled/Stopped/Continued/StillAlive，EINVAL 显式报错）是类型设计参照。
+
+**影响**：09-stage-init/todo.md §1.1 的 P0-1（main 空转）、P0-2（状态函数无实体）、P0-3（信号子系统）、P0-5（MAKEDEV/live 探测）、P0-6（utmp 写路径）、P0-7（securelevel live 半）与 §1.2 P1-1（运行模型）、P1-4（WaitStatus）全部以本条为领取条件；edge E5 的 init START 冒烟链同样依赖。这些缺口也是 09 侧 82 条 clippy 死代码告警（7 个 seam trait never used）的根因——纯逻辑测试无法掩盖运行时零接线。
+
+**为何 edge**：判定①——minix-sys 是全体用户态共享的 syscall 客户端层（同 E-CMDSYSFACE/E-MINSYS-SCOPE 先例），生产方是 14-stage-runtime 轨道；09-stage 不越界修改共享库。init 自身决策逻辑（分类器、状态机、会话表）属 stage 内生产代码，不在本条范围。
+
+**建议**：
+- 方案 A（推荐）：按既有 `*_via(transport)` 家族模式逐件补齐——①sigaction_via/sigprocmask_via/sigsuspend_via/sigpending_via（minix-types 若缺 PM 消息布局面一并补，参照 E6/E7 的系统化方式）；②setsid_via/getuid_via/getgid_via/reboot_via，open 存在路径按 lib.rs:186-190 注释的前置决策解锁，dup2/chroot/alarm 按 callnr.h 核实归属后补；③`WaitStatus` 解码器 + WUNTRACED 选项语义落 minix-sys（09 侧可先在其 crate 内做纯解码 mini 版，成熟后上移——已在其 todo.md P1-4 记录该迁移路径）。执行顺序建议 ③→①→②：③ 纯函数无依赖可先做；① 是 init 主循环（waitpid EINTR + handler）的硬前置。
+- 方案 B（否决）：init crate 自带裸 sendrec 构造 PM 消息。否决理由：破坏 minix-sys 单点客户端分层（与 E-MINSYS-SCOPE 的收敛方向相反），每个命令复制一份消息构造即 translate 防线问题。
+
+**依赖**：E-SYSCALL-SIGN（宿主下 `*_via` 假成功未修复前，本条各件的宿主级验收不可信）；open 存在路径另有其注释声明的前置（全局概念文档的 64 位路径消息布局）。交叉引用：E-CMDSYSFACE（init 依赖面已收敛为 minix-sys+minix-rt，`os/commands/sbin/init/Cargo.toml:12-14` 实证，其 C-2 已执行）；E-MINSYS-SCOPE（新增客户端模块的内聚性归其处置窗口）；E-ISBOOT（/etc/rc 消费面的配置层）。
+**解锁**：09-stage-init/todo.md §3 领取条件第 3 条（主体接线）与第 4 条（P0-5/6/7）；getty/login 等后续命令族的进程控制需求；E5 init START 冒烟链的真实半。
