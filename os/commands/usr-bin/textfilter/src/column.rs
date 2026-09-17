@@ -72,9 +72,17 @@ pub fn parse_entries(lines: &[&str]) -> Vec<String> {
 /// columnates the whole entries: down the columns by default, across
 /// rows with `-x`.
 pub fn columnate(entries: &[String], options: &ColumnOptions) -> Vec<String> {
+    // main() rounds the longest entry up to the tab stop first, then
+    // dispatches (column.c:128-137); a length that reaches the terminal
+    // width degrades to one entry per line.
+    let maxlength = tab_round(maxlen(entries));
     if options.table {
-        table_mode(entries, options)
-    } else if options.fill_rows_first {
+        return table_mode(entries, options);
+    }
+    if maxlength >= options.termwidth {
+        return entries.to_vec();
+    }
+    if options.fill_rows_first {
         c_columnate(entries, options)
     } else {
         r_columnate(entries, options)
@@ -116,6 +124,11 @@ fn table_mode(entries: &[String], options: &ColumnOptions) -> Vec<String> {
 /// the `TABROUND` boundary of each column (`c_columnate`,
 /// column.c:141-165).
 fn c_columnate(entries: &[String], options: &ColumnOptions) -> Vec<String> {
+    // The C returns early when there are no entries (column.c:126-128);
+    // without that guard the width divisions below would be zero.
+    if entries.is_empty() {
+        return Vec::new();
+    }
     let maxlength = tab_round(maxlen(entries));
     let numcols = options.termwidth / maxlength;
     let mut out = Vec::new();
@@ -147,6 +160,10 @@ fn c_columnate(entries: &[String], options: &ColumnOptions) -> Vec<String> {
 
 /// Fills entries down the columns: `numcols` across, rows first.
 fn r_columnate(entries: &[String], options: &ColumnOptions) -> Vec<String> {
+    // Same empty-input guard as `c_columnate` (column.c:126-128).
+    if entries.is_empty() {
+        return Vec::new();
+    }
     let maxlength = tab_round(maxlen(entries));
     let numcols = options.termwidth / maxlength;
     let numrows = entries.len().div_ceil(numcols);
@@ -178,8 +195,67 @@ fn maxlen(entries: &[String]) -> usize {
     entries.iter().map(|e| e.len()).max().unwrap_or(0)
 }
 
-/// `TABROUND(l)` (column.c:59): round a length up to the next multiple
-/// of eight.
+/// `TABROUND(l)` (column.c:59): `(l + TAB) & ~(TAB - 1)` — round up to
+/// the next multiple of eight; an already-aligned length advances a
+/// full stop (which is what terminates the columnate tab loops).
 fn tab_round(length: usize) -> usize {
-    (length + 7) & !7
+    (length + 8) & !7
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_table_mode_splits_and_pads_by_max_column_width() {
+        let options = ColumnOptions {
+            table: true,
+            ..ColumnOptions::default()
+        };
+        let entries = vec![
+            "a\tbb\tccc".to_string(),
+            "dddd\te\tff".to_string(),
+        ];
+        let out = columnate(&entries, &options);
+        // Each row: fields padded to the per-column max (4) plus a
+        // two-space gap; the trailing gap is trimmed.
+        // Per-column widths [4, 2, 3]; each field is followed by
+        // (width - len + 2) spaces, the trailing run trimmed.
+        assert_eq!(out[0], "a     bb  ccc");
+        assert_eq!(out[1], "dddd  e   ff");
+    }
+
+    #[test]
+    fn test_table_mode_ignores_blank_lines() {
+        let options = ColumnOptions {
+            table: true,
+            ..ColumnOptions::default()
+        };
+        let lines = ["", "x\ty"];
+        let entries = parse_entries(&lines);
+        let out = columnate(&entries, &options);
+        // parse_entries skips the blank line (mirroring the C input
+        // face), so one padded line comes out.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], "x  y");
+    }
+
+    #[test]
+    fn test_table_mode_custom_separator() {
+        let mut options = ColumnOptions {
+            table: true,
+            ..ColumnOptions::default()
+        };
+        options.separator = ":".to_string();
+        let entries = vec!["1:b:22".to_string()];
+        let out = columnate(&entries, &options);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].starts_with("1  b  22"));
+    }
+
+    #[test]
+    fn test_entry_collection_strips_leading_blanks_and_skips_blank_lines() {
+        let entries = parse_entries(&["   one", "", "  two"]);
+        assert_eq!(entries, vec!["one", "two"]);
+    }
 }
