@@ -17,6 +17,7 @@
 
 #![no_std]
 
+pub mod char_face;
 pub mod display;
 pub mod mode;
 
