@@ -47,11 +47,11 @@ minix-rs 内核暂无这两个语义，本篇定义 trait 契约并用内存假�
 
 | 测试 | C 对照 |
 |---|---|
-| `test_absent_returns_minus_one` | init.c:575-576 |
-| `test_set_same_noop` | init.c:603-605 |
+| `test_absent_node_means_no_level` | init.c:575-576, 587 |
+| `test_set_same_level_is_noop` | init.c:603-605 |
 | `test_single_user_downgrades` | init.c:723-725 语义 |
 | `test_chroot_matrix` | init.c:1896-1899 |
-| `test_root_slash_no_chroot` | init.c:1896-1897 |
+
 
 ### 5.1 测试统计（截至 2026-09-04）
 
