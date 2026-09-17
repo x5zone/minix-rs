@@ -3,6 +3,7 @@
 > **分类**：杂项（家家一件小事，状态页数公式各管一件）
 > **源码**：`minix3/minix/drivers/printer/printer/printer.c`（四百二十四行的打印机）、`minix3/minix/drivers/eeprom/cat24c256/cat24c256.c`（五百零五行的存储器）、`minix3/minix/drivers/sensors/bmp085/bmp085.c`（五百八十三行的气压传感器）、`minix3/minix/drivers/examples/hello/hello.c`（一百五十八行的最小示例）与其余速览（见第 2.6 节矩阵，电源高级配置接口一百五十七文件八万三千二百七十九行系第三方移植）
 > **Rust 模块**：`os/drivers/printer/printer/src/status.rs`（状态位与重试预算）、`os/drivers/eeprom/cat24c256/src/pages.rs`（分片与地址宽度）、`os/drivers/sensors/bmp085/src/convert.rs`（校准换算）
+> **框架补充（2026-09-17）**：`os/libs/minix-i2cdriver` 承载 libi2cdriver（366 行）的宣告键、地址校验与寄存器操作序列——plan §5.1 原映射本篇但从未落地，现由该 crate 归属；cat24c256/bmp085/sht21/tsl2550 同为 i2c 底盘，服务层接线时共用。
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/00-drivers-overview.md`（驱动子系统全景，杂项在其中的位置）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/23-net-driver-variants.md`（变体查表思想对照）
 > **说明**：杂项是全阶段收尾：家家只管一件小事（打印机看状态位，存储器切分片，传感器套公式，示例当课本）。本篇讲三家详例加余家矩阵，不重复讲各类别核心语义。端口总线流量在服务层，本库只定状态页数公式。
 
