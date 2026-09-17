@@ -553,6 +553,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 
 > **增补（2026-09-15，11-stage-devman 首轮架构审查）**：新增消费方——devman 驱动侧客户端的 `init`（minix-sys/src/devman_client.rs:135-137，注入闭包形式）与 RS 侧 `RsTransport::devman_endpoint`（os/servers/devman/src/rs_contract.rs:24-26）都依赖 `ds_retrieve_label_endpt("devman")`（C generic.c:193 / manager.c:841/898）；两处的生产接线随本条 minix-sys ds.rs 落地（E-DMWIRE 第 4 缺消费）。
 
+> **T7 双登记解除（2026-09-18，✅ 7dfa450c2）**：minix-driver-rt `KernelTransport` 的两条登记位随 T7 落地——①`publish_label` 从 ENOSYS fail-closed 变真实 DS 发布半（chardriver_announce 的 ds_publish_label 腿）：根因是 `DsClient<T: IpcTransport + KernelCallTransport>` 单参数强制聚合双 trait，`DsClient<I, K>` 双载体参数化（ds.rs，"一个 C 进程 = 两条硬件腿"的类型化）后单一直传载体直接装配；grant 链（grant.rs register 正 errno）与 taskcall 链（负状态）的符号混流在 trait 边界归一为负状态。②driver-rt `asynsend` 从阻塞 send 占位换单槽 SENDA 表（AsyncSlot VALID|NO_REPLY + senda，input 794d3eb91 同型接线）。input 的 publish_label 聚合 workaround 同批改按双腿装配。测试 ×4（ds 双载体装配 + 分腿 publish 回放；driver-rt 宿主 -EIO 门控 ×2）。**剩余 = E1 通电 + E5 联调**（与本条其余项一致）。
+
 ---
 
 ## E-ISWIRE IS 生产 transport 接线：minix-sef/minix-sys 替换 fail-closed 占位（08-stage-is V1 轮登记，2026-09-14）
