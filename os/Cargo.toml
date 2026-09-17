@@ -205,6 +205,7 @@ minix-boot = { path = "libs/minix-boot" }
 minix-sys = { path = "libs/minix-sys" }
 minix-sef = { path = "libs/minix-sef" }
 minix-rt = { path = "libs/minix-rt" }
+minix-regex = { path = "commands/usr-bin/regex" }
 minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
 minix-fs = { path = "libs/minix-fs" }

@@ -14,3 +14,6 @@ path = "src/lib.rs"
 [dependencies]
 minix-sys = { workspace = true }
 minix-rt = { workspace = true, features = ["std"] }
+# The `:` operator of expr anchors a basic regular expression; the BRE
+# engine is the 08-stage library (the C expr links libc's regcomp).
+minix-regex = { workspace = true }

@@ -30,7 +30,12 @@
 //! Everything borrows from the input and uses fixed size buffers: no heap,
 //! `no_std` throughout.
 
+// The `expr` evaluator materialises intermediate values as strings; every
+// other module stays allocation free.
+extern crate alloc;
+
 pub mod echo;
+pub mod expr;
 pub mod mode;
 pub mod path;
 pub mod pathchk;
