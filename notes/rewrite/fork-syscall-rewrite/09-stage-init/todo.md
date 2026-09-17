@@ -95,8 +95,9 @@
 - **P2-1 ✅ 2026-09-18（Fix #3）删除恒等函数 `catatonia_marks` 及无效测试**。
   原问题：`shutdown.rs:33-35` 的 `catatonia_marks(session_count) -> usize { session_count }` 是恒等函数，其测试断言 5==5。C 的 catatonia 语义是"全部会话置 SE_SHUTDOWN 后回 multi_user"（init.c:1634-1643），数量不是语义。
   **修复记录**：方案对比——A 删除，语义由 Wave3 的 catatonia 实体承接（采纳）/ B 改造为标记动作枚举（为保留而保留，YAGNI，否决）。doc 11 §5 表同步删除该行。测试 98 → 97（净减一个无效测试，属预期减项）。
-- **P2-2 ☐ 假调用 shim 与空洞测试：`vec_from_slice` / utmp 空断言**。
-  `entry.rs:359-365` 的 `alloc_or_std_vec::vec_from_slice` 唯一使用点是一个测试里的 `let _ = vec_from_slice(&[1u8]);`（:232）——调用只为压制 dead_code 告警，断言零内容。`utmp.rs:95-100` 的 `test_runlevel_skipped_when_no_sessions` 断言局部常量 `let sessions_empty = true` 为真——C 语义（init.c:1439-1440 的 sessions==NULL 短路）完全没有被测试到。两条都是模式"测试族-无效"实例：删除 shim；utmp 测试改为对真实函数的空会话输入断言（依赖 P0-6 的 sink 落地，或先删除占位测试）。
+- **P2-2 ✅ 2026-09-18（Fix #4）删除假调用 shim 与 utmp 空洞测试**。
+  原问题：`entry.rs:359-365` 的 `alloc_or_std_vec::vec_from_slice` 唯一使用点是测试里的 `let _ = vec_from_slice(&[1u8]);`——调用只为压制 dead_code 告警；`utmp.rs:95-100` 的 `test_runlevel_skipped_when_no_sessions` 断言局部常量为真，C 语义（init.c:1439-1440 的 sessions==NULL 短路）完全没被测到。
+  **修复记录**：shim 模块与假调用整体删除；空洞测试删除，`utmpx_set_runlevel` 的空会话短路语义将在 P0-6 落地真函数时补真实测试（doc 13 §5 已摘除该行）。测试 97 → 96；clippy 85 → 83。
 - **P2-3 ☐ `AlreadyRunning → EEXIST` 的自造 errno 重审**。
   `entry.rs:88-91` 把 C 的 `errx(1, "already running")`（init.c:248-249，无 errno）映射为 EEXIST，commit 70d66c605 有辩护记录。问题：AGENTS.md 规定错误类型必须对齐 Minix3 errno、不自造；errx 语义是"打印+退出码 1"，不是 errno。方案 A：`EntryError::AlreadyRunning` 不再提供 to_errno，改为 console 报错 + `exit(1)`（忠实 C）。方案 B：保留映射但文档标注"仅 hosted 测试用"。**推荐 A**，真机路径不经过 errno。
 - **P2-4 ☐ `disaster` 的信号名参数**。

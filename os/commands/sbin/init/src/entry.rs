@@ -216,7 +216,6 @@ impl DeviceProbe for FsDeviceProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc_or_std_vec::vec_from_slice;
 
     // `no_std`-friendly helper: this crate builds with std (via minix-rt),
     // but keep arg construction explicit for readability.
@@ -229,7 +228,6 @@ mod tests {
         let (args, warns) = parse_boot_args(&argv(&["init"]));
         assert_eq!(args, BootArgs::default());
         assert!(warns.is_empty());
-        let _ = vec_from_slice(&[1u8]);
     }
 
     #[test]
@@ -353,13 +351,5 @@ mod tests {
         };
         let probes: [&dyn DeviceProbe; 2] = [&fake, &live];
         assert!(probes.iter().all(|probe| probe.console_present()));
-    }
-}
-
-/// Tiny shim so tests read naturally without pulling `std::vec` into
-/// scope under a future `no_std` build of this binary crate.
-mod alloc_or_std_vec {
-    pub fn vec_from_slice(items: &[u8]) -> Vec<u8> {
-        items.to_vec()
     }
 }

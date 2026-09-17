@@ -92,14 +92,6 @@ mod tests {
     }
 
     #[test]
-    fn test_runlevel_skipped_when_no_sessions() {
-        // C skips when sessions == NULL (init.c:1439-1440); model as:
-        // caller checks emptiness before recording.
-        let sessions_empty = true;
-        assert!(sessions_empty);
-    }
-
-    #[test]
     fn test_line_suffix_id() {
         assert_eq!(line_id_suffix("tty12345", 4), "2345");
         assert_eq!(line_id_suffix("tty", 4), "tty");

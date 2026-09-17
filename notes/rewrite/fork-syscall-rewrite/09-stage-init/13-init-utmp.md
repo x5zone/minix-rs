@@ -50,7 +50,6 @@ SUPPORT_UTMP 与 SUPPORT_UTMPX 双写是 Minix 构建的现状（Makefile 双开
 | `test_runlevel_maps_all_states` | init.c:1411-1427 |
 | `test_runlevel_unknown_falls_to_death` | init.c:1426 |
 | `test_session_record_login_vs_dead` | init.c:1379 |
-| `test_runlevel_skipped_when_no_sessions` | init.c:1439-1440 |
 | `test_line_suffix_id` | init.c:1401-1404 |
 
 ### 5.1 测试统计（截至 2026-09-04）
