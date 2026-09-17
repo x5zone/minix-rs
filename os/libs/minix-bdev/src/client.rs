@@ -300,6 +300,7 @@ struct CallSlot {
     state: CallState,
     device: u32,
     id: i32,
+    destination: Destination,
     driver_tries: u32,
     transfer_tries: u32,
 }
@@ -310,6 +311,12 @@ impl CallSlot {
             state: CallState::Free,
             device: 0,
             id: NO_ID,
+            destination: Destination {
+                endpoint: 0,
+                message_type: 0,
+                minor: 0,
+                id: NO_ID,
+            },
             driver_tries: 0,
             transfer_tries: 0,
         }
@@ -337,14 +344,18 @@ impl CallTable {
     /// Allocate a slot for a new call; `None` (busy) when full.
     ///
     /// C: a full call vector makes the async entry return a negative
-    /// identifier; callers treat it as "try again later".
-    pub fn allocate(&mut self, device: Device, id: i32) -> Option<usize> {
+    /// identifier; callers treat it as "try again later". The destination
+    /// (endpoint, message type, minor, identifier) is stored with the
+    /// call so a flush or resend can rebuild the exact request without
+    /// the caller remembering it — the piece C kept in `bdev_call_t`.
+    pub fn allocate(&mut self, device: Device, id: i32, destination: Destination) -> Option<usize> {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.state == CallState::Free {
                 *slot = CallSlot {
                     state: CallState::Pending,
                     device: device.raw,
                     id,
+                    destination,
                     driver_tries: DRIVER_RETRIES,
                     transfer_tries: TRANSFER_RETRIES,
                 };
@@ -352,6 +363,30 @@ impl CallTable {
             }
         }
         None
+    }
+
+    /// The wire destination a pending call was sent with (the resend
+    /// recipe for flush and restart recovery).
+    pub fn destination(&self, handle: usize) -> Option<&Destination> {
+        self.slots.get(handle).and_then(|slot| {
+            if slot.state == CallState::Pending {
+                Some(&slot.destination)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Every pending call's handle and destination, for the flush walk
+    /// (`bdev_flush_asyn` re-sends each pending request, `call.c`).
+    pub fn pending_destinations(&self) -> alloc::vec::Vec<(usize, Destination)> {
+        let mut out = alloc::vec::Vec::new();
+        for (index, slot) in self.slots.iter().enumerate() {
+            if slot.state == CallState::Pending {
+                out.push((index, slot.destination));
+            }
+        }
+        out
     }
 
     /// File a reply for the call carrying this identifier.
@@ -668,7 +703,13 @@ mod tests {
     #[test]
     fn test_call_table_allocate_complete_collect_cycle() {
         let mut table = CallTable::new();
-        let handle = table.allocate(device(), 7).unwrap();
+        let destination = Destination {
+            endpoint: 5,
+            message_type: BdevOp::Read.message_type(),
+            minor: device().minor(),
+            id: 7,
+        };
+        let handle = table.allocate(device(), 7, destination).unwrap();
         assert_eq!(table.collect(handle), None);
         assert_eq!(table.complete(7, 42), Some(handle));
         assert_eq!(table.collect(handle), Some(42));
@@ -703,9 +744,39 @@ mod tests {
     }
 
     #[test]
+    fn test_pending_destinations_support_flush_and_resend() {
+        // A6 capability lock: the flush walk (bdev_flush_asyn) rebuilds
+        // each pending request from its stored destination — endpoint,
+        // message type, minor and identifier all survive in the slot.
+        let mut table = CallTable::new();
+        let destination = Destination {
+            endpoint: 5,
+            message_type: BdevOp::Read.message_type(),
+            minor: device().minor(),
+            id: 7,
+        };
+        let handle = table.allocate(device(), 7, destination).unwrap();
+        assert_eq!(table.destination(handle), Some(&destination));
+        let pending = table.pending_destinations();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, handle);
+        assert_eq!(pending[0].1, destination);
+        // Completed calls no longer expose a destination.
+        table.complete(7, OK);
+        assert_eq!(table.destination(handle), None);
+        assert!(table.pending_destinations().is_empty());
+    }
+
+    #[test]
     fn test_send_failures_retry_then_give_up() {
         let mut table = CallTable::new();
-        let handle = table.allocate(device(), 7).unwrap();
+        let destination = Destination {
+            endpoint: 5,
+            message_type: BdevOp::Read.message_type(),
+            minor: device().minor(),
+            id: 7,
+        };
+        let handle = table.allocate(device(), 7, destination).unwrap();
         for _ in 0..DRIVER_RETRIES {
             assert!(table.note_send_failure(handle));
         }
@@ -716,7 +787,13 @@ mod tests {
     #[test]
     fn test_transfer_errors_retry_then_give_up() {
         let mut table = CallTable::new();
-        let handle = table.allocate(device(), 9).unwrap();
+        let destination = Destination {
+            endpoint: 5,
+            message_type: BdevOp::Read.message_type(),
+            minor: device().minor(),
+            id: 9,
+        };
+        let handle = table.allocate(device(), 9, destination).unwrap();
         assert_eq!(table.device_of(handle), Some(device()));
         for _ in 0..TRANSFER_RETRIES {
             assert!(table.note_transfer_error(handle));
