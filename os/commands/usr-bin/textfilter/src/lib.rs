@@ -34,6 +34,7 @@ extern crate alloc;
 pub mod cksum;
 pub mod cmp;
 pub mod colrm;
+pub mod column;
 pub mod comm;
 pub mod count;
 pub mod expand;
