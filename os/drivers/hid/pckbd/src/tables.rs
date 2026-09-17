@@ -9,7 +9,7 @@
 //!
 //! Full-map behavior: a lookup that hits padding produces no event.
 
-use crate::scancode::{KeyMap, KeyCode, PAGE_KEY};
+use crate::scancode::{KeyMap, KeyCode};
 
 pub const SCANMAP_NORMAL: [(u16, u16); 128] = [
     (0, 0),
