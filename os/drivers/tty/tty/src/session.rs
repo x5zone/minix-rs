@@ -326,7 +326,7 @@ impl TtySession {
         }
         if ops & OP_READ != 0
             && (self.reader.is_some()
-                || (self.input.len() > 0
+                || (!self.input.is_empty()
                     && (!self.config.flags.canonical || self.input.break_count() > 0)))
         {
             ready |= OP_READ;

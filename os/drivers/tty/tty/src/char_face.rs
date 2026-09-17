@@ -61,7 +61,7 @@ impl<B: LineBackend> TtyDriver<B> {
 impl<B: LineBackend> CharDriver for TtyDriver<B> {
     fn open(&mut self, minor: DeviceMinor, access: i32, user: i64) -> i32 {
         let Some(slot) = self.slot(minor.0) else {
-            return -(minix_types::ENXIO as i32);
+            return -minix_types::ENXIO;
         };
         let (result, _device_opened) = self.sessions[slot].open(minor.0, access, user);
         if result >= 0 {
@@ -72,7 +72,7 @@ impl<B: LineBackend> CharDriver for TtyDriver<B> {
 
     fn close(&mut self, minor: DeviceMinor) -> i32 {
         let Some(slot) = self.slot(minor.0) else {
-            return -(minix_types::ENXIO as i32);
+            return -minix_types::ENXIO;
         };
         if self.sessions[slot].close(minor.0) {
             0
