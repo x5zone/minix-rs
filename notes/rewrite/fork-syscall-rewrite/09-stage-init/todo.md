@@ -60,8 +60,9 @@
   原问题：`ttys.rs:37-38` 用 `status.contains("on")` 和 `contains("secure")` 判断 TTY_ON/TTY_SECURE，子串误匹配（`ondemand` 会开行、`insecure` 会开 root）；且真实样本 `minix3/etc/ttys` 首行的引号 getty 字段 `"/usr/libexec/getty default"` 会被空白分词错位。
   **修复记录**：对照 `minix3/lib/libc/gen/getttyent.c` 后发现比预想深一层——引号是模式开关（`skip()` 的 `q ^= QUOTED`，getttyent.c:183-185，引号可在字段任意位置出现并被剥除）、`off` 是显式清除（先 `on` 后 `off` 后者赢）、`window=` 是带值选项、无状态 token 的行交出 status 0 的条目（过滤归 07）。重写为 `strip_inline_comment`（引号感知行内注释截断）+ `next_field`（skip 状态机：引号剥除、`\"` 转义）+ `TtyStatus` 位组 token 循环；golden 测试取真实 ttys 行。方案对比：A 仅 token 化（引号字段仍错位，否决）/ B getttyent 语义对齐（采纳）/ C 正则（no_std 零依赖不可用）。doc 06 §3/§4/§5 重写同步。测试 89 → 97；clippy 82 → 85（新增纯函数接线前传递性死代码，终态门在 P2-6）。
 
-- **P0-10 ☐ plan_read_ttys 把 off 行计入会话数**（BUG，可立即修）。
-  `plan_read_ttys` 返回 `MultiUser { sessions: lines.len() }`（`ttys.rs:58-60`），把解析出的**全部**行计入；C 的会话只为 TTY_ON 且 getty 非空的行创建（`new_session` init.c:1147-1149，Rust 侧 `session.rs:88-90` 也正确拒绝了 off 行）。`ttys.rs:89-90` 测试注释声称"keeps them so the plan can count faithfully"，与实现自相矛盾——含 off 行的 /etc/ttys 会得到虚高的会话数。（修复方案：plan 接口改为接收已过滤的会话列表，或内部按 `status_on` 过滤；同步修 `test_plan_counts_sessions`）
+- **P0-10 ✅ 2026-09-18（Fix #2）plan 会话计数按 new_session 三条件过滤**。
+  原问题：`plan_read_ttys` 把解析出的全部行计入（`lines.len()`），C 只对 TTY_ON 且名字与 getty 非空的行建会话（`new_session` init.c:1147-1149）。
+  **修复记录**：方案对比——A plan 内部过滤（采纳：C 的过滤就发生在 read_ttys 的建会话循环 init.c:1279-1282 内，属本层语义）/ B 推给调用方（read_ttys 层语义外泄，否决）/ C 直接返回会话列表（Wave 3 实体化时自然发生，本轮不做）。过滤条件取 init.c:1147-1149 的三条件（on + 非空名 + 非空 getty）；新增 `test_plan_counts_exclude_off_and_gettyless_lines`。doc 06 §5 同步。测试 97 → 98。
 
 ### 1.2 P1 架构分层审视（每项 ≥2 方案对比；整体 → 模块 → trait → 函数）
 

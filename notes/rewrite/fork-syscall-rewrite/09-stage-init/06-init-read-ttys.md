@@ -65,6 +65,7 @@
 | `test_plan_db_failure_goes_single_user` | init.c:1262-1271 |
 | `test_plan_db_failure_chrooted_goes_death` | init.c:1266-1267 |
 | `test_plan_counts_sessions` | init.c:1279-1284 |
+| `test_plan_counts_exclude_off_and_gettyless_lines` | new_session 三条件过滤，init.c:1147-1149 |
 
 ### 5.1 测试统计（截至 2026-09-04）
 

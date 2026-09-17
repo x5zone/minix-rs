@@ -157,6 +157,12 @@ pub enum ReadTtysNext {
 }
 
 /// Decide the next state from parsed lines and the DB outcome.
+///
+/// The session count covers only lines a session would actually be
+/// built for — TTY_ON set and both name and getty present — mirroring
+/// the triple condition in `new_session` (init.c:1147-1149) that
+/// `read_ttys` applies per line (init.c:1279-1282). Off and getty-less
+/// lines parse but never become sessions.
 pub fn plan_read_ttys(lines: &[TtysLine], db_ok: bool, did_chroot: bool) -> ReadTtysNext {
     if !db_ok {
         if did_chroot {
@@ -164,9 +170,11 @@ pub fn plan_read_ttys(lines: &[TtysLine], db_ok: bool, did_chroot: bool) -> Read
         }
         return ReadTtysNext::SingleUser;
     }
-    ReadTtysNext::MultiUser {
-        sessions: lines.len(),
-    }
+    let sessions = lines
+        .iter()
+        .filter(|line| line.status.on && !line.name.is_empty() && !line.getty.is_empty())
+        .count();
+    ReadTtysNext::MultiUser { sessions }
 }
 
 #[cfg(test)]
@@ -289,6 +297,21 @@ mod tests {
         assert_eq!(
             plan_read_ttys(&lines, true, false),
             ReadTtysNext::MultiUser { sessions: 2 }
+        );
+    }
+
+    #[test]
+    fn test_plan_counts_exclude_off_and_gettyless_lines() {
+        // C: new_session rejects off lines and empty gettys
+        // (init.c:1147-1149), so the session count covers neither.
+        let lines = vec![
+            parse_ttys_line("tty1 /sbin/getty vt100 on").unwrap(),
+            parse_ttys_line("tty2 /sbin/getty vt100 off").unwrap(),
+            parse_ttys_line("tty3 \"\" vt100 on").unwrap(),
+        ];
+        assert_eq!(
+            plan_read_ttys(&lines, true, false),
+            ReadTtysNext::MultiUser { sessions: 1 }
         );
     }
 }
