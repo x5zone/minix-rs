@@ -33,6 +33,7 @@
 pub mod echo;
 pub mod mode;
 pub mod path;
+pub mod pathchk;
 pub mod testexpr;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.

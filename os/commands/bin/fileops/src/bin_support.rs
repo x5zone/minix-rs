@@ -9,8 +9,16 @@
 
 use minix_sys::Fd;
 
+/// Standard error, POSIX `STDERR_FILENO`.
+pub const STDERR: Fd = 2;
 /// Standard output, POSIX `STDOUT_FILENO`.
 pub const STDOUT: Fd = 1;
+
+/// Best-effort write to standard error (the C `warnx` channel); write
+/// failures are ignored exactly as stdio's are in the C utilities.
+pub fn warn(bytes: &[u8]) {
+    let _ = minix_sys::write(STDERR, bytes);
+}
 
 /// Terminates the process with an exit status (see the module header).
 pub fn terminate(code: i32) -> ! {
