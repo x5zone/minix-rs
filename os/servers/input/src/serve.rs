@@ -96,9 +96,10 @@ impl Transport for KernelTransport {
     }
 
     fn publish_label(&mut self, name: &str) -> Result<(), i32> {
-        // DsClient consumes both legs by value; both carriers are zero
-        // sized, so re-constructing the aggregate is free.
-        let mut ds = DsClient::new(*self, Endpoint::DS);
+        // DsClient 的双腿已参数化分离（ds.rs，T7 约束放宽）：IPC 腿消费
+        // 本聚合的 `ipc` 载体，grant 腿直接挂 SYSCALL 载体——两载体均为
+        // 零尺寸，按值重组免费。
+        let mut ds = DsClient::new(self.ipc, self.kernel, Endpoint::DS);
         ds.publish_label(name, Endpoint::NONE, minix_types::DsFlags::empty())
     }
 }

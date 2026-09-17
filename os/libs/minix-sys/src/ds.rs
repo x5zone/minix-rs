@@ -36,21 +36,30 @@ pub struct DsCheckReply {
     pub owner: i32,
 }
 
-/// One DS client bound to a transport and the store's endpoint.
+/// One DS client bound to two transport legs and the store's endpoint.
+///
+/// C 的一个进程自带两条硬件腿：DS 对话走 int-33 IPC（`_taskcall`），
+/// grant 生命线走 SYSCALL（`cpf_*` = SYS_SAFECOPY 家族）。`IpcTransport`
+/// 与 `KernelCallTransport` 分立成两个载体参数（T7 约束放宽，2026-09-18）：
+/// 单一直传载体不再被迫聚合双 trait（input 聚合 workaround 与
+/// minix-driver-rt 的 ENOSYS 登记随此解除）。
 ///
 /// The grant table is per-client (C keeps one global libc table; a
 /// single-threaded server owns exactly one client, so the table is the
 /// same singleton in practice — explicit here so tests can build several).
-pub struct DsClient<T: IpcTransport + KernelCallTransport> {
-    transport: T,
+pub struct DsClient<I: IpcTransport, K: KernelCallTransport> {
+    /// DS 对话腿：publish/retrieve/check 的 `_taskcall(DS, ...)`。
+    ipc: I,
+    /// grant 生命线腿：`grant_direct`/`revoke` 的内核调用。
+    kernel: K,
     ds_endpoint: Endpoint,
     grants: GrantTable,
 }
 
-impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
+impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
     /// Bind to the store at `ds_endpoint` with an empty grant table.
-    pub fn new(transport: T, ds_endpoint: Endpoint) -> Self {
-        Self { transport, ds_endpoint, grants: GrantTable::new() }
+    pub fn new(ipc: I, kernel: K, ds_endpoint: Endpoint) -> Self {
+        Self { ipc, kernel, ds_endpoint, grants: GrantTable::new() }
     }
 
     /// The store endpoint this client talks to.
@@ -84,14 +93,14 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
             room.resize(DS_MAX_KEYLEN, 0);
             let gid = self
                 .grants
-                .grant_direct(&self.transport, self.ds_endpoint.0, room.as_ptr() as u64, key_len as u64, minix_types::CpFlags::WRITE)?;
+                .grant_direct(&self.kernel, self.ds_endpoint.0, room.as_ptr() as u64, key_len as u64, minix_types::CpFlags::WRITE)?;
             (gid, room)
         } else {
             let mut buf = name.to_vec();
             buf.push(0); // C: strlen(ds_name) + 1 — the terminator travels
             let gid = self
                 .grants
-                .grant_direct(&self.transport, self.ds_endpoint.0, buf.as_ptr() as u64, key_len as u64 + 1, minix_types::CpFlags::READ)?;
+                .grant_direct(&self.kernel, self.ds_endpoint.0, buf.as_ptr() as u64, key_len as u64 + 1, minix_types::CpFlags::READ)?;
             (gid, buf)
         };
 
@@ -111,7 +120,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
         }
 
         // C: `_taskcall(DS_PROC_NR, type, m)` — ds.c:30.
-        let reply = perform_taskcall(&self.transport, self.ds_endpoint, call, &mut msg);
+        let reply = perform_taskcall(&self.ipc, self.ds_endpoint, call, &mut msg);
 
         // C: cpf_revoke(g_key) — ds.c:32. Errors surface via the taskcall
         // result; the revoke still runs (C revokes unconditionally too).
@@ -146,7 +155,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
         let flags = (DsFlags::TYPE_MEM.bits() | extra.bits()) as i32;
         let val_grant = self
             .grants
-            .grant_direct(&self.transport, self.ds_endpoint.0, buffer.as_ptr() as u64, buffer.len() as u64, minix_types::CpFlags::READ)
+            .grant_direct(&self.kernel, self.ds_endpoint.0, buffer.as_ptr() as u64, buffer.len() as u64, minix_types::CpFlags::READ)
             ?;
         // C ds_publish_raw: val_in.grant = gid, val_len = length, type arm
         // NOT ORed here — publish_mem's flags arrive with TYPE_MEM set
@@ -170,7 +179,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
         buf.push(0); // C ds.c:83-84 — value[length-1] = '\0'
         let val_grant = self
             .grants
-            .grant_direct(&self.transport, self.ds_endpoint.0, buf.as_ptr() as u64, buf.len() as u64, minix_types::CpFlags::READ)
+            .grant_direct(&self.kernel, self.ds_endpoint.0, buf.as_ptr() as u64, buf.len() as u64, minix_types::CpFlags::READ)
             ?;
         let r = self.invoke(
             DS_PUBLISH,
@@ -210,7 +219,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
         let grant_len = value.len();
         let val_grant = self
             .grants
-            .grant_direct(&self.transport, self.ds_endpoint.0, value.as_mut_ptr() as u64, grant_len as u64, minix_types::CpFlags::WRITE)
+            .grant_direct(&self.kernel, self.ds_endpoint.0, value.as_mut_ptr() as u64, grant_len as u64, minix_types::CpFlags::WRITE)
             ?;
         let r = self.invoke(
             DS_RETRIEVE,
@@ -236,7 +245,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
         let flags = DsFlags::TYPE_MEM.bits() as i32;
         let val_grant = self
             .grants
-            .grant_direct(&self.transport, self.ds_endpoint.0, buffer.as_mut_ptr() as u64, buffer.len() as u64, minix_types::CpFlags::WRITE)
+            .grant_direct(&self.kernel, self.ds_endpoint.0, buffer.as_mut_ptr() as u64, buffer.len() as u64, minix_types::CpFlags::WRITE)
             ?;
         let r = self.invoke(
             DS_RETRIEVE,
@@ -274,7 +283,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
         seed.resize(DS_MAX_KEYLEN, 0);
         let key_grant = self
             .grants
-            .grant_direct(&self.transport, self.ds_endpoint.0, seed.as_ptr() as u64, DS_MAX_KEYLEN as u64, minix_types::CpFlags::WRITE)
+            .grant_direct(&self.kernel, self.ds_endpoint.0, seed.as_ptr() as u64, DS_MAX_KEYLEN as u64, minix_types::CpFlags::WRITE)
             ?;
 
         let mut msg = Message::default();
@@ -285,7 +294,7 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
             req.key_grant = key_grant;
             req.key_len = DS_MAX_KEYLEN as i32;
         }
-        let reply = perform_taskcall(&self.transport, self.ds_endpoint, DS_CHECK, &mut msg);
+        let reply = perform_taskcall(&self.ipc, self.ds_endpoint, DS_CHECK, &mut msg);
         let _ = self.grants.revoke(key_grant);
         if reply < 0 {
             return Err(-reply);
@@ -299,5 +308,39 @@ impl<T: IpcTransport + KernelCallTransport> DsClient<T> {
             entry_type: DsFlags::from_bits_truncate(req.flags as u32),
             owner: req.owner,
         }))
+    }
+}
+
+#[cfg(test)]
+mod ds_client_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+    use crate::syscall::CannedKernelCallTransport;
+
+    /// 双载体装配契约（T7 约束放宽，2026-09-18）：grant 生命线载体
+    /// （`KernelCallTransport`，SYSCALL 腿）与 DS 对话载体
+    /// （`IpcTransport`，int-33 腿）分立成两个参数——单一直传载体
+    /// （如只实现其一的 CannedKernelCallTransport）不再被迫聚合双 trait
+    /// （input 的聚合 workaround 与 minix-driver-rt 的 ENOSYS 登记随此
+    /// 解除）。
+    #[test]
+    fn test_dual_carrier_assembly() {
+        let ds = DsClient::new(CannedTransport::new(), CannedKernelCallTransport::new(), Endpoint::DS);
+        assert_eq!(ds.ds_endpoint(), Endpoint::DS);
+    }
+
+    /// publish 的两类动词各走各腿：grant 生命线落 kernel 载体（空脚本
+    /// 内核调用即成功），`_taskcall(DS, DS_PUBLISH)` 落 ipc 载体（脚本
+    /// OK 应答）——整链成功，无人再要求同一类型实现双 trait。
+    #[test]
+    fn test_publish_label_over_split_carriers() {
+        let mut ipc = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0; // do_invoke_ds 成功
+        ipc.reply_sendrec(Ok(reply));
+        let mut ds = DsClient::new(ipc, CannedKernelCallTransport::new(), Endpoint::DS);
+        assert!(ds
+            .publish_label("drv.chr.t7", Endpoint::NONE, minix_types::DsFlags::empty())
+            .is_ok());
     }
 }
