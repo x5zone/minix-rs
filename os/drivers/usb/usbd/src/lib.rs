@@ -20,6 +20,9 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod char_face;
 pub mod enumerate;
 pub mod protocol;
 

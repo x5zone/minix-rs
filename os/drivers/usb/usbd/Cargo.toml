@@ -10,6 +10,7 @@ name = "minix-driver-usbd"
 path = "src/main.rs"
 
 [dependencies]
+minix-usb = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 
