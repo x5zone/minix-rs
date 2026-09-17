@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的模式匹配层——描述"要找什么样的行"的语言，以及使用它的两个工具
 > **源码**: `minix3/minix/usr.bin/grep/`（`grep.c` 506 行：用法第 112 到 122 行、标志变量第 67 到 86 行、选项处理第 281 到 451 行、编译第 480 行、退出第 497 到 505 行；`util.c` 641 行：匹配第 205 行；`grep.h`：正则头文件第 36 行、标志注释第 66 行；`file.c` 227 行、`queue.c` 122 行、`binary.c` 93 行、`mmfile.c` 106 行）、`minix3/usr.bin/sed/`（`compile.c` 947 行：替换编译声明第 81 行、替换分派第 122 行、地址解析第 189 到 196 行、替换调用第 339 行、替换编译定义第 480 行；`process.c` 792 行：匹配输出第 95 到 97 行、跳转第 113 到 135 行、地址判定第 277 行、空匹配推进第 403 到 432 行；`main.c` 517 行；`misc.c` 119 行）
-> **Rust 模块**: `os/commands/usr-bin/regex`（库包 `minix-regex`：`pattern.rs`、`matcher.rs`、`grep.rs`、`sed.rs`，34 个测试通过）
+> **Rust 模块**: `os/commands/usr-bin/regex`（库包 `minix-regex`：`pattern.rs`、`matcher.rs`、`grep.rs`、`sed.rs`，库测试 34 个）；同 crate `src/bin/` 薄壳两个已接线：grep、sed（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；2026-09-17）
 > **前置依赖**: `07-text-filter.md`（行变换的直觉）、编译原理的行话（本篇自包含讲解，不预设）
 > **不覆盖（移交）**: 编辑器中的正则使用（见 `09-editors.md`）、 `grep` 的递归遍历与上下文行（执行层，后续阶段）、地址中的行号范围执行（`sed` 执行层，后续阶段）
 
@@ -145,7 +145,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-regex`：**34 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-regex`：**34 个测试，全部通过**（截至 2026-09-17）；另有 grep、sed 两个已接线的命令二进制，其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/regex` 复现）：
 
@@ -154,7 +154,16 @@
 - **搜索选项**（`grep.rs`，7 个）：`test_pattern_operand_form`（位置模式）、`test_bundled_flags_and_e_pattern`（捆绑标志加多模式）、`test_mode_flags`（三拼写切换）、`test_unknown_flag_rejected`（未知标志）、`test_missing_pattern_rejected`（缺模式）、`test_double_dash_ends_flags`（双横杠）、`test_exit_code_matches_c_truth_table`（退出真值表六行情景）。
 - **替换**（`sed.rs`，11 个）：`test_first_only_by_default`（默认首个）、`test_global_flag`（全局）、`test_nth_match_only`（第 N 个）、`test_ampersand_replays_match`（取整匹配回放）、`test_group_reference`（分组回放换位）、`test_custom_delimiter`（自定分隔符）、`test_print_flag`（打印标志）、`test_missing_delimiter_rejected`（缺分隔符）、`test_zero_nth_rejected`（零序号）、`test_no_match_copies_input`（未命中原样）、`test_empty_match_walk_terminates`（空匹配终止）。
 
-尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）。模式与替换层是全覆盖的，执行层是显式留白的。
+尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）、grep 的 `-i` 大小写折叠与 `-w` 词边界（引擎未建模，二进制显式拒绝）、sed 的 `;` 链与其他动词（二进制显式拒绝）。模式与替换层、两个已接线二进制是完整的，执行层是显式留白的。
+
+### 4.5 命令契约与 Requires
+
+行为判定沿用 `99-global-concepts.md` §2 的规则：以 POSIX 为准绳、以 Minix3 C 实现为真值，C 偏离处在"当前状态"列标注。依赖面按 §1 分层契约只含 `minix-sys` 顶层与 `minix-rt`：
+
+| 命令 | Requires（最小 API） | 当前状态 |
+|------|---------------------|---------|
+| grep | `read`、`write`、`exit`、argv 交接 | 已接线（`-E`/`-G`/`-F`、`-v`、`-n`、`-c`、`-q`、`-x`、`-l`、可重复 `-e`）；`-i`/`-w` 解析成功但引擎未建模，二进制显式拒绝（退出 2）；文件操作数待开放路径调用 |
+| sed | 同上 | 已接线（`s` 命令，含 `p` 标志与 `-n` 的 C 交互、`g`/`N` 作用域）；`;` 链、地址与其他动词显式拒绝；文件操作数待开放路径调用 |
 
 ---
 
