@@ -1,12 +1,16 @@
-# Prompt 改进规划：文档文风、full-review、正确性与代码可读性补强
+# Prompt 改进规划：卓越优先（教科书文档 × 最美代码）+ 正确性与底线卫生补强
 
 > **文件性质**：规划书（任务卡 + 前因后果 + 验收标准）。后续交给其他 AI 执行。
-> **创建**：2026-09-16
-> **来源**：用户与 opencode 的讨论，先后三轮——
+> **创建**：2026-09-16（2026-09-18 第四轮修订）
+> **来源**：用户与 opencode 的讨论，先后四轮——
 > - 第一轮：文档质量诊断 + full-review 使用诉求（对应工作流 A/B/C）；
 > - 第二轮：review 流程正确性审计（对应工作流 D/E/F，2026-09-16 追加）；
-> - 第三轮：代码可读性与代码架构可读性审计（对应工作流 G，2026-09-16 追加）。
-> **不做什么**：本文件只是计划。它本身不修改规则、不修改文档、不修改代码。
+> - 第三轮：代码可读性与代码架构可读性审计（对应工作流 G，2026-09-16 追加）；
+> - 第四轮：锚点权重审计 + 卓越层补位（对应 D5 改写与 H/I 批，2026-09-18 追加）。
+>
+> **北极星（第四轮明确的用户标准）**：最高目标是**最美的代码 + 教科书的文档**（第一流技术博客级），规则为此服务。行号/锚点类规则是 AI 为自己加的校验脚手架——留在底线层（卫生项：批量做、不占轮次），不得进入卓越性的房间。判断任何规则、门、度量是否值得做，先问"读者或代码因此变好了吗"；答不上来的，降级或删除。
+>
+> **不做什么**：本文件只是计划，它本身不修改规则、不修改文档、不修改代码。第四轮明确**不新增以行号为中心的强制门**，原"行号自动化"方案作废，改为一次性符号锚点迁移（D5 改写）。
 
 ---
 
@@ -23,7 +27,7 @@
 | 5 | `prompt/README.md` | 三端同步机制（改规则后必须同步哪些文件、跑哪些脚本） |
 | 6 | `prompt/review-rules/review-cmds.md` | 任务命令规范（本次要改的主要源文件之一） |
 | 7 | `prompt/review-rules/review-process.md` | 流程权威定义（本次要改的另一个主要源文件） |
-| 8 | `prompt/review-rules/review-code-checklist.md` + `prompt/review-rules/review-code-excellence.md` | 工作流 B/D 的代码维度来源 |
+| 8 | `prompt/review-rules/review-code-checklist.md` + `prompt/review-rules/review-code-excellence.md` + `prompt/review-rules/review-doc-excellence.md` | 工作流 B/D 的代码维度来源；H 批的卓越性判据来源 |
 | 9 | `os/qemu-tests/README.md` | 工作流 D1 的 QEMU 集成测试入口与 PASS 标记格式 |
 | 10 | `os/README.md` + `os/arch/README.md` | 工作流 G3 的架构总览、依赖图与设计理由（漂移检查对象） |
 | 11 | 本文件 | 任务卡与验收标准 |
@@ -31,14 +35,16 @@
 ### 0.2 执行原则
 
 1. **单一真相源**：规则只改 `prompt/review-rules/` 与 `prompt/skill/`（适配层）。禁止在 `.claude/`、`.codex/`、`.trae/` 里手写一套新规则——那三个目录是派生端。同步用脚本（见 `prompt/README.md` 与本文工作流 C）。
-2. **一次一个任务，且先有触发**：任务只有在你（用户）提出改进需求之后才执行（触发方式见 0.8）；执行时按第九部分（任务汇总）的依赖顺序逐个推进，每个任务有独立验收命令。不要一轮做完所有任务，也不要因为"它在计划里"就去做。
+2. **一次一个任务，且先有触发**：任务只有在你（用户）提出改进需求之后才执行（触发方式见 0.8）；执行时按第十一部分（任务汇总）的依赖顺序逐个推进，每个任务有独立验收命令。不要一轮做完所有任务，也不要因为"它在计划里"就去做。
 3. **每个任务留证据**：每个任务的验收命令输出（命令 + 结果片段）必须贴进交付说明。只写"已完成"不算完成。
 4. **不改存量文档正文**：工作流 A 只做"止损 + 增量门"，不批量重写现有文档。存量清单只登记（见 A4）。
 5. **不碰 `minix3/`**：那是 ground truth C 源码，只读。
 6. **不动 `prompt/skill/review-agent-ide.md` 的篇幅**：该文件距 Trae 的 10,000 字符硬上限只剩约 250 字符余量（`prompt/README.md` 有实测表）。如果某任务确实需要改它，先精简等量内容再加入。
 7. **不 commit**：除非用户明确要求。
+8. **卓越优先，机械让位（第四轮）**：任务排序、注意力分配与验收标准都以"最美的代码 + 教科书的文档"为准。锚点、行号、格式等机械项归卫生层：批量做、不占 review 轮次、不进收敛计数。新增任何强制检查必须同时说明它保护读者的什么价值，并降级或合并一个存量机械检查，或明确标注"不占轮次"——这是注意力预算（默认决策见 0.3 第四轮）。
+9. **静态计数只作快照**：本文件里的"N 个文件 / N 处 / 行数"都是诊断时点数字，会随并发改动漂移；执行任何任务前先用 `rg` 实测（B4.2/E2 已如此要求，本原则推广到全文）。规则文本以实测结果为准，不以本文件的静态数字为准。
 
-### 0.3 默认决策（用户不在场时按此执行；用户在场则先确认第十部分的 Open Questions）
+### 0.3 默认决策（用户不在场时按此执行；用户在场则先确认第十二部分的 Open Questions）
 
 第一轮（工作流 A/B/C）：
 
@@ -49,7 +55,7 @@
 
 第二轮（工作流 D/E/F）：
 
-- QEMU 门触发面 = `os/kernel/**`、`os/arch/**`、`os/boot-shim/**` 的非测试代码改动，或文档声称的行为依赖真实硬件路径；其余写 `N/A + 理由`。
+- QEMU 门触发面 = 以 D1 列出的 CI 路径清单为准（`os/kernel/**`、`os/arch/**`、`os/plat/**`、`os/libs/{minix-types,minix-boot,minix-elf,minix-platform}/**`、`os/boot-shim/**`、`os/qemu-tests/**` 的非测试代码改动，或文档声称的行为依赖真实硬件路径）；其余写 `N/A + 理由`。不要另造更窄的列表。
 - unsafe 审计：存量基线冻结（只登记不修），增量（`--diff`）裸 unsafe 阻断；Miri 先登记 OQ，不默认引入。
 - zero-P0 独立复核：单 agent 环境用"跨 session 换模型 + 随机章节完整重跑"兜底；有跨工具条件时优先跨工具只读复核。
 - 测试正确性抽样：按分层抽样取 30%（至少 3 个，含 1 个错误路径）。
@@ -65,6 +71,15 @@
 - 依赖方向：按 `os/README.md` 现状冻结规则，发现违例登记 OQ，不擅自改结构。
 - 卓越性提级只对"新增代码"生效（存量仍为 backlog）。
 
+第四轮（D5 改写 + H/I 批）：
+
+- 锚点形态：**符号锚点**（`path:fn name`、`path:struct Name`、C `path.c:func`）取代行号锚点；行号只允许写成工具派生的 `（Lnn，工具生成）`，禁止手工维护。
+- 卫生项分层：锚点漂移、拼写、全角/半角、格式等机械项在 scan.md 单列"卫生项"，只记录 + 批量修；**不进 P1/P2 计数、不进 `weighted_new`、不参与 Step 7.1 收敛判定**。
+- 复述测试：structure.md §11 升级为必答产物（复述结论进 scan）；Ch1 复述不通过 → 教学类 P1（新增/触碰章节必须修复或写明延期理由；存量登记；H 批完成以 H4 为准，见 OQ25/OQ29）。
+- 非法态测试：每个核心状态机 / trait 边界必须产出"非法态封堵清单"；封不住 → 设计类 P1。首批验证样本 = 对话中识别的三处可疑设计（wire 布局裸常量、unsafe 散装、PM Lifecycle 半封装），执行时先复核具体位置。
+- 代码块审查：文档中的每段 Rust 代码块（rust 围栏）必须分类（逐字引用 / 教学简化 / 反面示例 / 签名示意）并给出最佳实践判定；未标注的反模式 → P1。
+- 内容优先：`18-stage` Requires 回填（P1-1）与 99 汇总篇重写一旦被触发，插到锚点卫生批次之前（I1/I2；默认顺序见第十一部分）。
+
 ### 0.4 工作量预估（供另一个 AI 排期，非硬性）
 
 | 任务 | 预估 | 类型 |
@@ -79,21 +94,27 @@
 | C1 三端同步 | 1 小时 | 流程 |
 | C2 回归 | 0.5 小时 | 流程 |
 | B5 端到端演练 | 1-2 小时 | 演练 |
-| D1 QEMU 门 | 1 小时 | 文档 |
+| D1 QEMU 门 | 1 小时（坚持单例；CI 超时 45 分钟） | 文档 |
 | D2 `unsafe-audit.sh` | 2-3 小时 | 工具 |
 | D3 coverage 多域 | 2-3 小时 | 工具 |
 | D4 证据脚本化 | 2 小时 | 工具 |
-| D5 `review-line-check.sh` + 预算 | 3-4 小时 | 工具 + 文档 |
+| D5 符号锚点迁移 + 卫生分层（2026-09-18 改写，原行号自动化作废） | 3-4 小时 | 工具 + 规则 |
 | D6 正确性门演练 | 1-2 小时 | 演练 |
 | E1 zero-P0 独立复核 | 1 小时 | 文档 |
 | E2 测试正确性门 | 1-2 小时 | 文档 |
 | E3 正确性 P1 时限 | 1 小时 | 文档 |
-| F1 design C 锚点 + 契约矩阵 | 2 小时 | 文档 |
+| F1 design C 锚点 + 契约矩阵 | 2 小时起（符号多的模块应上调，见执行注意） | 文档 |
 | F2 `[ARCH]` 外部锚点 | 1 小时 | 文档 |
 | G1 `code-style-lint.sh` | 2-3 小时 | 工具 |
-| G2 missing_docs + CI 扩展 | 2-3 小时 | 配置 |
+| G2 missing_docs + CI 扩展 | 2-3 小时起（全 workspace 需分批摸，见执行注意） | 配置 |
 | G3 架构可读性验收（漂移 + 依赖方向 + 路径抽查） | 3 小时 | 工具 + 文档 |
 | G4 可读性提级（新增代码 P1） | 1 小时 | 文档 |
+| H1 读者复述测试提级 | 1-2 小时 | 规则 + 演练 |
+| H2 非法态不可表达测试 | 2 小时 | 规则 + 演练 |
+| H3 文档 Rust 代码块逐块审查 | 2-3 小时 | 工具 + 规则 + 演练 |
+| H4 卓越样章示范（文档 + 模块） | 3-4 小时 | 演练 |
+| I1 18-stage Requires 回填 | 逐批（每批 1 次 todo-fix） | 内容 |
+| I2 99 汇总篇重写 | 3-5 小时 | 内容 |
 
 ### 0.5 证据块统一格式（所有 `gate-evidence-*` 适用）
 
@@ -136,11 +157,15 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ### 0.8 触发方式：你在对话里提出改进需求（本计划不按批次推进）
 
-本计划是服务层的候选池，不是排期表，也不是一套流程。第九部分回答"有哪些可做的事"，本节只回答"这份文件是怎么被用起来的"。
+本计划是服务层的候选池，不是排期表，也不是一套流程。第十一部分回答"有哪些可做的事"，本节只回答"这份文件是怎么被用起来的"。任务数量是候选池规模，不是一次性工作量承诺；任何时刻只执行被触发的那一个任务（0.2 第 2 条）。
 
 **唯一的触发方式**：你在真工作里发现问题后，直接向 AI 提问，典型句式：
 
 > "X 这里不对 / X 总是有问题，你阅读一下当前的 `prompt/` 目录，然后思考一下如何改进。"
+>
+> 也可以直接给出北极星式的问题（第四轮的标准）：
+>
+> > "这个文档/代码能不能达到教科书的文档、最美的代码？规则有问题就改规则。"
 
 你不需要先填任何表格，本项目里也不会有人替你维护执行记录——提出问题本身就是触发。
 
@@ -156,7 +181,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 |---|---|
 | 正式文档正文出现 review 编号、修复日期、迭代史 | A 批（先跑 A2 的文风 lint） |
 | full-review 只审了文档，关联代码没有产物证据 | B1 + B3 |
-| 文档引用的行号发生漂移 | D5 |
+| 文档引用的行号发生漂移 | 卫生批次（批量换成符号锚点，不占轮次；见 D5 改写） |
 | 关键路径代码有裸 unsafe、没有 SAFETY 说明 | D2 |
 | 内核启动 / 中断 / 分页 / BKL 改动后没有真实硬件路径证据 | D1 |
 | 覆盖率缺口、C 符号漏审 | D3 与覆盖率专项 |
@@ -164,6 +189,11 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 | design 快照缺少 C 源码锚点 | F1 |
 | 新读者看不懂模块结构、注释、依赖方向 | G1 / G3 |
 | `tools/check-review-rules.sh` 或 `tools/generate-derived-skills.sh --check` 报漂移 | 立即按 C1/C2 处理 |
+| 文档读完讲不出机制、只有函数名流水账 | H1（复述测试） |
+| 核心状态机靠约定不靠类型封堵 | H2（非法态测试） |
+| 文档里的 Rust 示例教了坏习惯 | H3（代码块审查） |
+| 命令缺哪些底层 API 说不清 | I1（Requires 回填） |
+| 新人读不懂系统结构 | I2（99 汇总篇重写） |
 
 **明确不做的事**：
 
@@ -174,7 +204,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ---
 
-## 一、背景：为什么要做这两件事（前因后果）
+## 一、背景：为什么要做这些改进（前因后果）
 
 ### 1.1 触发点
 
@@ -219,10 +249,12 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 - 工作流 A：让"过程痕迹进正文"这件事从"没人管"变成"写入时即被拦截"，并提供可执行的检查工具。
 - 工作流 B：让 `full-review` 在文档范围内默认审查"文档 + 关联 Rust 代码"，关联代码清单与代码维度结论必须出现在产物里。
 - 工作流 C：所有规则改动三端同步（`prompt/` → `.trae/` + `.codex/` + `.claude/` 对应的派生位置），并通过回归脚本。
-- 工作流 D（第二轮）：把正确性证据从"读代码 + hosted 单测"升级为"可执行 + 可核对磁盘事实"——QEMU 冒烟、unsafe 审计、覆盖率多域、Gate 证据脚本化、行号自动化。
+- 工作流 D（第二轮）：把正确性证据从"读代码 + hosted 单测"升级为"可执行 + 可核对磁盘事实"——QEMU 冒烟、unsafe 审计、覆盖率多域、Gate 证据脚本化；行号自动化在第四轮改写为符号锚点迁移（D5 改写）。
 - 工作流 E（第二轮）：补独立验证与判定收敛的漏洞——zero-P0 也要独立复核、测试正确性进 P0/Gate、正确性 P1 设时限。
 - 工作流 F（第二轮）：给设计快照与架构演进补外部权威——design 决策附 C 锚点、契约覆盖矩阵、`[ARCH]` 断言附 spec 锚点。
 - 工作流 G（第三轮）：补代码可读性与代码架构可读性——新增代码的可读性止损（lint + rustc/clippy 配置）、架构可读性验收（README/`//!` 漂移、依赖方向、新读者路径）。
+- 工作流 H（第四轮）：给卓越层补可执行判据——读者复述测试（H1）、非法态不可表达测试（H2）、文档 Rust 代码块逐块审查（H3）、卓越样章示范（H4）。
+- 工作流 I（第四轮）：内容优先——18-stage Requires 回填（I1）、99 汇总篇重写（I2）。
 
 **非目标（本轮不做）**：
 
@@ -232,6 +264,8 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 - 不改变 review 的事实核验标准与 P0/P1/P2 判定标准（工作流 E2 新增 P0-test-wrong 属于分类补充，不是判定标准变更）。
 - 不引入 Miri/loom 等需要 nightly 的动态验证工具（登记为 OQ10，由用户决定是否另立项目）。
 - 不批量重写存量代码的注释/命名/文档（工作流 G 只做增量止损 + 基线登记；存量治理另立批次）。
+- 不新增以行号为中心的强制门或工具（第四轮作废"行号自动化"方向，改为符号锚点迁移；行号漂移只进卫生项）。
+- 不做存量文档的卓越性全量阻断（H 批只对新增/触碰面强制，存量登记 backlog；与 OQ21 同哲学）。
 
 ### 1.5 第二轮触发点：正确性保证审计（2026-09-16 追加）
 
@@ -247,7 +281,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 | 6 | 证据自证：gate-evidence 是执行者粘贴文本；`tools/verify-check.py` 只查关键字存在，不验真 | `tools/verify-check.py` 功能说明；Gate Evidence Rule | D4 |
 | 7 | 测试正确性不在门里：有 P0-test-missing 无 P0-test-wrong；test-audit 不阻塞 CONVERGED；Gate E 只 grep 测试名 | `prompt/review-rules/review.md` P0 表；`review-cmds.md` §五（自记"测试代码就是错的"事故） | E2 |
 | 8 | 收敛允许带 P1 交付，而 P1 含语义/安全类问题，且无到期复审 | `prompt/review-rules/review.md:541-547`；Step 7.1 停止规则 | E3 |
-| 9 | 注意力错配：强制项集中在文档侧，代码维度无里程碑；行号自动化 Proposal #7 仍是"待开发" | CLAUDE.md 累积改进表（6 篇文档 25+ 处行号漂移）；sched/12 那轮唯一发现是行号偏移 | D5 |
+| 9 | 注意力错配：强制项集中在文档侧，代码维度无里程碑；行号自动化 Proposal #7 仍是"待开发"——**第四轮修正：错配的根源正是把行号当成了目标；正确处置是卫生分层 + 卓越判据，不是继续自动化行号** | CLAUDE.md 累积改进表（6 篇文档 25+ 处行号漂移）；sched/12 那轮唯一发现是行号偏移 | D5（改写）+ H1/H2/H3 |
 
 > 第 1 项已由第一轮的 B3.3/B4 承担，D4 只补"证据必须来自磁盘事实"这一层；其余八项是本轮新增工作流 D/E/F 的来源。
 
@@ -264,6 +298,19 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 | 5 | 代码架构可读性无验收：`os/README.md`（架构总览 + 依赖图）与 `os/arch/README.md`（ISA vs board 设计理由）质量不错，但 review 规则零引用；无依赖方向检查；无"新读者路径"检查 | `rg "os/README" prompt/` 零命中；`tools/` 无 dep 脚本 | G3 |
 
 > 与第一轮同哲学：增量止损 + 存量登记，不做批量重写。存量素材其实不差（1010 个 `.rs` 有 1000 个带 `//!`，约 4.97 万行 `///` 对约 9900 个 pub 项），问题在"没有机制防止它退化"。
+
+### 1.7 第四轮触发点：锚点权重审计与卓越层补位（2026-09-18 追加）
+
+用户的最终标准：**行号最不重要，文档要教科书级、代码要美**。审计结论：现有规则把"AI 可校验"误当成了卓越，行号族规则正是这个错觉的产物；而卓越层没有可执行的判据。四个证据与四条纠正：
+
+| # | 证据 | 纠正 |
+|---|---|---|
+| 1 | 行号/锚点族规则（模式 66 RCPD、73-77，加 Step 1.0a~1.0g）集中诞生于 2026-07-16 与 2026-07-30~31；Blocker Gates 9 个里 4 个（A/D/E/H）本质是引用/存在性检查；D5 原方案还要把行号检查全量化 | **卫生项分层**：锚点漂移/格式等机械项批量修，不进 P1 计数、不进收敛判定；D5 改为一次性符号锚点迁移（`path:fn name`，行号只作工具派生提示） |
+| 2 | 文档侧唯一进入 Blocker Gate 的教学性检查是 structure.md 12 节（复述等 12 项与正确性项混在同一张判定表，没有独立证据要求）；`review-doc-excellence.md §4.1-4.5` 虽有 A/B/C/D 分级但明确不阻塞（`:319`）；代码侧 `review-code-excellence.md:28` 的"非法态不可表达"只是 [MEDIUM] 检查项 | 补两条可执行判据：**读者复述测试**（Ch1 不看代码讲出机制，H1）与**非法态不可表达测试**（每个核心状态机说出它用类型封住了什么，H2），配样章示范（H4） |
+| 3 | 读者学习 Rust 的入口是文档里的代码块，但现有模式 73 / Step 1.0b 只查"与源码同步"，不评判示例本身是否 idiomatic | **文档 Rust 代码块逐块审查**（H3）：逐字引用/教学简化/反面示例/签名示意四分类 + 最佳实践判据 |
+| 4 | 对话明确的优先项在计划里零提及：`18-stage` Requires 回填（P1-1）与 99 汇总篇重写决定"命令能不能跑、新人能不能读懂" | 新增工作流 I（内容优先）；被触发时排在锚点卫生批次之前（默认顺序见第十一部分） |
+
+> 与前三轮的关系：A/B/D1/D2/E2/E3 的正确性建设保留不动（正确性优先）；本轮的改法是"加卓越 + 降机械"，不是"减正确性"。
 
 ---
 
@@ -286,7 +333,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 - `[ARCH: ...]` 架构演进标注（三处一致是项目硬要求）。
 - `TODO` / `DEFERRED` 标记（由既有 Doc-Sync-4 流程管理）。
 - 文档头 `> **创建**:` / `> **重写**:` 行里的日期。
-- 事实断言的 `file:line` 锚点（锚点纪律是硬要求，不在禁止范围）。
+- 事实断言的锚点（符号锚点优先：`path:fn name`；锚点纪律是硬要求，不在禁止范围）。
 - 文档内交叉引用 `§X.Y`、`NN-doc.md`。
 - 方法/机制本身就叫"模式"的词（保护模式、实模式、长模式）——lint 只匹配 "模式 + 数字"。
 
@@ -347,7 +394,8 @@ tools/doc-style-lint.sh --self-test          # 内置正/反例自测，exit 0 =
 | SL-2 | error | `\bFIX-[0-9]+\b` | 修复条目编号 |
 | SL-3 | error | `\bP[0-9]+-[0-9]+\b`、`\bD-[0-9]+\b`、`\bR-[0-9]+\b`、`\bW-[0-9]+\b` | issue 编号（注意：不要收录裸 `P0`/`P1`，会误伤 §5 测试优先级表） |
 | SL-4 | error | `20[0-9]{2}-[0-9]{2}-[0-9]{2}` | 正文日期；出现在 `> **创建**` / `> **重写**` 行时跳过 |
-| SL-5 | error | `旧文档\|旧版\|原先\|最初\|曾经\|已修复\|修复前\|原实现\|旧实现\|前版` | 修复史叙事 |
+| SL-5 | error | `旧文档\|旧版\|已修复\|修复前\|原实现\|旧实现\|前版\|原先` | 修复史叙事；**不含裸"最初/曾经"**——合法的 C 历史叙述（如"Minix3 最初把…"）不能用 error 级误伤 |
+| SL-5b | warning | `最初\|曾经\|后来` | 单独出现时可能是教学需要的设计历史（见 `review-doc-excellence.md §4.3 历史背景`），只在 `--strict` 下报告，人工判断是设计史还是修复史 |
 | SL-6 | error | `本表不列\|本文档不展开\|不替.{0,6}抢\|论证归属\|写作策略\|文档维护者` | 写作策略元注释 |
 | SL-7 | error | `scan\.md\|STATE\.md\|VERIFY-CHECK\|Pattern #[0-9]+\|模式 [0-9]+\|Gate [0-9A-Z]\|反查维度` | review 工具术语 |
 | SL-8 | warning | `\bP[0-9]\b`（仅在 `--strict`） | 裸优先级词（存量 §5 表格大量存在，故默认不报） |
@@ -358,7 +406,7 @@ tools/doc-style-lint.sh --self-test          # 内置正/反例自测，exit 0 =
 2. **跳过行内代码**：反引号包裹的内容不检查（`D-13` 作为代码标识符时可能是合法的，比如讨论某个内核常量名——脚本按行处理时可用 `sed` 先剥离反引号内容再匹配）。
 3. **输出格式**：`{file}:{line}: [{ID}] {message} :: {匹配文本}`；末尾输出各 ID 计数汇总；`--diff` 模式要同时输出被检查的 diff 范围。
 4. **`--diff` 实现**：`git diff -U0 [RANGE] -- '*.md'`，解析 `@@` 头拿到新增行的行号集合，再对这些行跑规则。已暂存与未暂存都要覆盖（`git diff` + `git diff --cached` 两路合并）。
-5. **`--self-test`**：内置两组 fixture 文本（一组含各类违规 → 期望命中；一组为干净正文含 `[ARCH:...]`、`file:line` 锚点、头部创建日期、`保护模式` 等合法样例 → 期望零命中），自测不通过 = 脚本不可交付。
+5. **`--self-test`**：内置三组 fixture 文本（一组含各类违规 → 期望命中；一组为干净正文含 `[ARCH:...]`、`file:line` 锚点、头部创建日期、`保护模式` 等合法样例 → 期望零命中；一组为**合法历史叙述**样例，如"Minix3 最初把进程表放在 BSS 段"→ 期望零 error 命中、SL-5b 仅在 `--strict` 下命中），自测不通过 = 脚本不可交付。
 6. 脚本头部注释写清用途、规则表对应的规则来源（A1.2 第 7 条），与 `tools/lint-review-rules.sh` 的风格保持一致。
 
 **验收**：
@@ -408,7 +456,7 @@ cut -d: -f1 /tmp/doc-style-report.txt | sort | uniq -c | sort -rn | head -10
 ### A4.x 存量统计（{日期} 执行）
 - 总命中：{N}（其中 SL-1 编号 {a}、SL-4 日期 {b}、SL-5 修复史 {c}、SL-6 元注释 {d}、SL-7 工具术语 {e}）
 - Top 10 文件：...
-- 战役启动条件：工作流 A/B 落地并经两轮 review 验证后，由用户决定是否启动 style-fix 逐文档战役
+- 战役启动条件：A/B 与 H 批落地，抽样样章达到"教科书级"标准（H4：复述通过 + §4.1-4.5 至少 B），之后由用户决定是否启动 style-fix 逐文档战役
 - 战役执行方式（届时候选）：每篇文档先跑 lint 出清单 → 按"事实信息移回 .review/todo、正文改写"处理 → 出修订版
 ```
 
@@ -459,7 +507,7 @@ cut -d: -f1 /tmp/doc-style-report.txt | sort | uniq -c | sort -rn | head -10
 - 分隔符统一半角冒号加空格（存量里的全角冒号由工具兼容，文档更新时顺手改）。
 - 路径：仓库根相对路径、带 `os/` 前缀、每条路径单独一个反引号、逗号分隔。
 - 禁止花括号展开（如 `os/kernel/src/{proc.rs,proc_table.rs}`）——解析工具不认，存量的这类写法在编辑战役时拆开。
-- 头部行允许在路径后带说明（例如 `（`符号` :行号）`），工具只提取形如 `os/….rs` 的反引号 token，其余忽略。
+- 头部行允许在路径后带说明（例如 `fn clock_init` 或 `（L123，工具生成）`），工具只提取形如 `os/….rs` 的反引号 token，其余忽略。
 - 无关联 Rust 代码的文档（如 `00-*-overview.md`、`99-global-concepts.md`、纯 TODO 文档）写 `> **Rust 实现**: 无（{一句理由}）`。
 - **与既有 `> **状态**:` 字段的裁决**：`review-doc-checklist.md` §1 模板现有一个可选 `> **状态**: 可选，标注 Rust 实现状态` 字段。`Rust 实现` 字段落地时同步裁决：推荐废弃 `状态` 字段（路径声明职责并入 `Rust 实现`），若保留则明确两字段的分工；不允许两个字段都声称"Rust 实现状态"。
 
@@ -647,8 +695,8 @@ done
 通用项（每轮都跑）：
 
 - C2 的回归命令全绿 + 同步输出必含的"字符上限"与"源漂移审计"两项实测。
-- **成功度量（improvement metrics）**：重跑附录 2 的审计命令，把数字记入执行记录并与本计划基线对比——review 编号数、正文日期数、裸 unsafe 数、`missing_docs` 警告数、头部字段缺失数、CLAUDE.md 里 ⏸ Proposal 剩余数。拿不出数字变化，不算完成。
-- **规则集膨胀刹车**：本轮新增/修改的规则条款若超过 20 行，需在执行记录里说明"为什么不能合并/替代既有条款"；三个存量清单（文档过程痕迹 / unsafe / 代码可读性）在 G 批完成后合并登记到同一个"存量债登记处"（建议 `.review/BACKLOG.md`，只登记不定稿）。
+- **成功度量（improvement metrics，2026-09-18 重排为卓越优先）**：先看卓越度量——复述通过文档数（H1）、非法态封堵清单与落地改进数（H2）、文档代码块分类覆盖率与未标注反模式数（H3）、样章达标数（H4）；再看正确性度量——裸 unsafe 数、`missing_docs` 警告数、契约/覆盖率缺口、正确性 P1 未处置数；机械度量（review 编号数、正文日期数、行号漂移数、头部字段缺失数、Proposal 剩余数）只作健康检查，不作为"完成"的主证据。拿不出卓越度量的变化，不算完成。
+- **规则集膨胀刹车**：本轮新增/修改的规则条款若超过 20 行，需在执行记录里说明"为什么不能合并/替代既有条款"；三个存量清单（文档过程痕迹 / unsafe / 代码可读性）在 G 批完成后合并登记到同一个"存量债登记处"（建议 `.review/BACKLOG.md`，只登记不定稿）。候选池同样适用：一轮里新增任务数（含新工具/新基线）必须能被用户的触发需求解释，否则合并或删除；本文件是候选池，不是要消化的 backlog。
 - 执行记录填写：任务状态、度量对比、遗留问题。
 - **落地 commit 与回滚点**：本轮有规则类改动时，把落地 commit 记入任务状态行；需要撤销时按 0.6 回滚（撤销规则行 + 重跑 C2 三脚本），不追溯旧产物。
 
@@ -661,7 +709,7 @@ done
 第二轮（工作流 D/E/F）额外：
 
 1. D1-D6、E1-E3、F1-F2 的验收命令全部通过并留输出。
-2. D6 演练产物可查：`gate-evidence-qemu`（或环境缺失声明）、`gate-evidence-unsafe`（含与基线差值）、coverage 多域输出、`review-line-check` 全量输出、`GATE-CHECK` 结论行。
+2. D6 演练产物可查：`gate-evidence-qemu`（或环境缺失声明）、`gate-evidence-unsafe`（含与基线差值）、coverage 多域输出、`anchor-resolve` 输出（0 定义条数）、`GATE-CHECK` 结论行。
 3. `tools/unsafe-baseline.txt` 已产出并入库；CLAUDE.md/review-core.md 的 Proposal #7/#8/#12/#13 状态已回填。
 
 第三轮（工作流 G）额外：
@@ -691,7 +739,7 @@ done
 2. N/A 规则：纯文档改动或只碰 `#[cfg(test)]` → 写 `gate-evidence-qemu: N/A + 一句理由`；环境缺 QEMU/固件时不允许静默 N/A，必须写"环境缺失 + 未验证项清单"并按 P1 登记（沿用既有的"工具物理不可用 → PARTIAL"原则）。
 3. `prompt/review-rules/review-cmds.md` §二 强制门追加引用；`prompt/skill/cmds/full-review/SKILL.md` 同步摘要。
 
-**执行注意**：先读 `os/qemu-tests/README.md` 确认依赖（QEMU + OVMF/AA64 UEFI/RISC-V UEFI 固件 + rustup target）；脚本不可用时把具体缺什么记录下来，不要伪造 PASS。还要在任务说明里写清定位：CI（`qemu-tests.yml`）已在 push/PR 时跑同一套测试，review 门是"本地/提交前层"——两者共用测试，不共用证据（review 用 log + `gate-evidence-qemu`）。
+**执行注意**：先读 `os/qemu-tests/README.md` 确认依赖（QEMU + OVMF/AA64 UEFI/RISC-V UEFI 固件 + rustup target）；脚本不可用时把具体缺什么记录下来，不要伪造 PASS。还要在任务说明里写清定位：CI（`qemu-tests.yml`）已在 push/PR 时跑同一套测试，review 门是"本地/提交前层"——两者共用测试，不共用证据（review 用 log + `gate-evidence-qemu`）。CI 单次超时 45 分钟（`.github/workflows/qemu-tests.yml:39`）；本地 review 坚持单例优先，默认不走全量 `run_all.sh`。
 
 **验收**：
 
@@ -763,7 +811,7 @@ rg -c "kernel/" /tmp/SYMBOLS-multi.md      # 非零，证明 kernel 域被纳入
 1. 扩展 `tools/review-gate-check.sh`：
    - 保留既有检查（design/outline 快照、STATE/scan/SYMBOLS/structure/VERIFY-CHECK 存在性）；
    - 新增：产物非空 + 关键锚段 grep（`gate-evidence-A`、`gate-evidence-code`、`gate-evidence-qemu|unsafe`（按触发条件））；
-   - 新增：证据块引用的磁盘产物真实存在（SYMBOLS.md 路径、qemu log 路径、unsafe 报告路径、review-line-check 输出路径）；
+   - 新增：证据块引用的磁盘产物真实存在（SYMBOLS.md 路径、qemu log 路径、unsafe 报告路径、anchor-resolve 输出路径）；
    - 输出机器可引用的结论行：`GATE-CHECK: PASS|FAIL <明细>`。
 2. 规则：`prompt/review-rules/review-process.md` Step 5.5 要求 scan.md 的 Gate 状态表引用该工具结论行（粘贴原文），"✅ PASS" 无工具行视为无效证据（按 L3 处理）。
 3. `tools/verify-check.py`：把"gate-evidence 块存在性检查"升级为"证据块 ↔ 磁盘产物交叉核对"。
@@ -778,38 +826,54 @@ bash -n tools/review-gate-check.sh
 tools/review-gate-check.sh codex fork-syscall-rewrite 12-kernel-interface | tail -3
 ```
 
-### D5. 行号自动化（Proposal #7）与代码维度时间预算
+### D5. 符号锚点迁移与卫生项分层（2026-09-18 改写，取代"行号自动化"）
 
-**目标**：消灭行号漂移这类"机械但耗注意力"的检查，把预算让给语义检查。
+**目标**：消灭行号漂移这类机械耗注意力检查。方式不是"把行号检查全量化"（那是让拐杖变承重墙），而是**把锚点符号化**：事实断言用符号定位，行号只在工具输出里派生。符号化之后，漂移问题结构性消失，review 轮次的注意力全部让给语义与卓越性检查。
 
-**现状证据**：CLAUDE.md 累积改进表记录"6 个 doc 累计 25+ 处 P2 偏移"；Proposal #7 `tools/review-line-check.sh` 至今标注"⏸ 待开发"；sched/12 那轮唯一发现就是 5 处行号偏移。
+**现状证据**：CLAUDE.md 累积改进表记录"6 个 doc 累计 25+ 处 P2 偏移"；Proposal #7 `tools/review-line-check.sh` 至今"⏸ 待开发"；sched/12 那轮唯一发现就是 5 处行号偏移。用户裁定：行号是 AI 的校验脚手架，不是目标。
+
+**锚点约定（新，写入规则源）**：
+
+| 对象 | 锚点形态 | 例子 |
+|---|---|---|
+| Rust 函数/类型/trait/常量 | `path:fn name`、`path:struct Name`、`path:trait Name`、`path:const NAME` | `os/kernel/src/clock.rs:fn clock_init` |
+| 同名方法歧义 | 加 impl 限定 | `os/kernel/src/proc.rs:impl Proc::new` |
+| C 函数/结构体/常量 | `path:func`、`path:struct name`、`path:NAME` | `minix3/minix/kernel/proc.c:proc_init` |
+| 函数内部的具体片段 | 函数符号 + 引文片段 | `os/kernel/src/proc.rs:fn do_fork（match 分支）` |
+| 行号（可选） | 工具派生，写成 `（L123，工具生成）`；**禁止手工维护** | — |
 
 **改动点**：
 
-1. 实现 `tools/review-line-check.sh`：
-   - 抽取 doc 内 `path:line`、`path:line-line`、`path:line,line` 引用；
-   - 校验文件与行号存在；对失效引用，用引用附近的反引号符号名/上下文重定位，输出建议新行号（即 Proposal #13 的反向偏移自动重算）；
-   - 输出表：引用 / 现状 / 状态 / 建议。
-2. 接入 Step 1.0a：从"人工抽 5-10 处"改为"全量跑工具 + 输出贴进 scan.md"；人工只处理工具无法定位的条目。
-3. 时间预算：Step 0 声明预算时，若文档有关联代码，必须写明"代码维度预算 ≥ 总预算 30%"；实际占比写入 scan.md，偏差 >20% 需解释。
-4. `prompt/review-rules/review-process.md` 检查项注册表把 `1.0a-自动` 状态从"⏸ 待开发"改为"已落地"。
-5. **Proposal 状态回填（容易漏）**：本任务同时收编 Proposal #7 与 #13。完成后必须把以下三处的"⏸"改为"✅ 已落地（D5，{日期}）"：
-   - `CLAUDE.md` 累积改进表（`Proposal #7 自动化行号校验脚本` 与 `Step 1.0a-自动 反向偏移自动重算` 两行）；
-   - `.claude/rules/review-core.md` §Proposal 状态（#7、#13 条目）；
-   - `prompt/README.md` 若有对应 Proposal 记录一并更新。
+1. **工具**：写 `tools/anchor-migrate.sh`（一次性迁移）与 `tools/anchor-resolve.sh`（解析/校验）。
+   - 迁移：读文档中旧 `path:line` 锚点，从该行向上找最近的定义行（fn/struct/enum/trait/const/impl），重写为符号锚点；指向函数内部的引用改为"函数符号 + 引文片段"；无法解析的列清单人工过一遍。C 源用启发式（非缩进、非 `;` 结尾的 `NAME(` 行），歧义即报告。
+   - 解析（review 时用）：按声明形态正则定位（Rust `^\s*(pub(\([^)]*\))?\s+)?(unsafe\s+)?(async\s+)?fn\s+NAME\b`，类型同型），**调用点与注释不参与匹配**；输出当前行号供摘录引用。错误只有两种：0 定义 → P0-fact（符号消失/改名）；多定义 → 要求文档补限定。
+   - 原 `tools/review-line-check.sh`（Proposal #7）方案作废，能力并入这两个脚本。
+2. **卫生项分层（对话第 1 条纠正）**：`prompt/review-rules/review-process.md` Step 7.1（`:2278-2299`）与 scan.md Issue List 增加"卫生项"分区——除"锚点 0 定义"（按 P0-fact 处理）外的机械项（行号提示过期、全角/半角、拼写、格式）只记录 + 批量修，**不进 P1/P2 计数、不进 `weighted_new`、不参与收敛判定**。
+3. **规则收编**（源文件清单，按 C1/C2 同步）：
+   - `prompt/review-rules/review-process.md`：检查项注册表 `:70-77` 的 1.0a~1.0g 收缩为一个"锚点解析"步骤；实现段 `:1196-1547`（至 Step 1.5 前）同步收缩；Step 7.1 加卫生项条款。
+   - `prompt/review-rules/review-doc-checklist.md`：`:313-320`、`:449-451`、`:482-485` 的"±1 行 P2 / 偏移 >5 行 P1 / 范围上界 P2"整组阈值表删除，改为"0 定义 → P0-fact；改名/歧义 → P1/P2（要求补限定）"。
+   - `prompt/review-rules/review-patterns.md`：模式 66/73/74/75/76/77 中与行号漂移相关的判据改写为符号判据；模式 66 保留"路径存在性"职责；模式 83 的锚点形态更新为符号锚点。
+   - `prompt/review-rules/review-cmds.md` §一 锚点纪律门、§六 style-bible 第 6 条与 `prompt/skill/cmds/style-bible/SKILL.md` 同步措辞。
+4. **时间预算（保留原 D5 第 3 项）**：Step 0 声明预算时，若文档有关联代码，写明"代码维度预算 ≥ 总预算 30%"；锚点迁移/卫生批量不计入 review 预算（它是独立批次）。
+5. **Proposal 状态回填**：CLAUDE.md 累积改进表与 `.claude/rules/review-core.md` §Proposal 状态中，Proposal #7 与 Step 1.0a-自动（#13）改为"✅ 已落地（D5 改写，{日期}）：行号自动化作废，改为符号锚点迁移"。
 
-**执行注意**：抽取正则要排除代码块内的字符串（``` 围栏）；对 `minix3/` C 路径与 `os/` Rust 路径都适用；工具输出作为 L1 证据可直接粘贴。
+**执行注意**：迁移是批量机械活，一次 git 提交完成，不逐文档开 review 轮次；解析工具的错报（同名测试、宏生成）允许在迁移报告里登记为"歧义"，要求文档补限定而不是工具加特例。代码注释里的 `see X.rs:N`（模式 77）不在本轮迁移范围，随模式 77 的符号化改写单独批量处理。规则收编后必须跑 C1/C2。
 
 **验收**：
 
 ```bash
-tools/review-line-check.sh notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md | tail -20
-rg -n "review-line-check" prompt/review-rules/review-process.md
+tools/anchor-resolve.sh --self-test
+tools/anchor-resolve.sh --check notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md | tail -5
+# 期望：0 定义条数为 0；多定义条目已补限定或登记为待补
+rg -n "卫生项" prompt/review-rules/review-process.md        # Step 7.1 含卫生项条款
+# 迁移统计写入执行记录：旧行号锚点数 → 新符号锚点数 → 无法解析清单 → 首轮卫生项计数
 ```
+
+**行为验证（必做，self-test 不能代替）**：用一篇含行号漂移的文档（旧 scan 或现场造样）跑一次新口径 scan，对比新旧 `weighted_new` 与收敛评估，确认漂移项只出现在"卫生项"分区、不进入加权计数。输出贴进执行记录；不做这一步，Step 7.1 的卫生排除条款视为未验证。
 
 ### D6. 正确性门演练（D1-D5 的合并验证）
 
-**任务**：选一篇内核代码文档（建议 `01-stage-kernel/13-syscall-dispatch.md` 或 `01-boot-shim-bootstrap.md`）跑一轮修订后的 review，验证：QEMU 冒烟（或环境缺失声明）、unsafe 报告与基线差值、coverage 多域、行号全量校验、Gate 状态表引用 `GATE-CHECK` 结论行。
+**任务**：选一篇内核代码文档（建议 `01-stage-kernel/13-syscall-dispatch.md` 或 `01-boot-shim-bootstrap.md`）跑一轮修订后的 review，验证：QEMU 冒烟（或环境缺失声明）、unsafe 报告与基线差值、coverage 多域、锚点解析（符号锚点 0 定义）、Gate 状态表引用 `GATE-CHECK` 结论行。
 
 **验收**：5 项证据块可指认，产物写 `.review/{tool}/{module}/{doc-stem}/`；结论追加到本文件"执行记录"。
 
@@ -850,8 +914,8 @@ rg -n "独立复核范围|zero-P0|P0=0" \
 1. `prompt/review-rules/review.md` P0 表新增第 7 类 **P0-test-wrong**：测试断言与文档/design 声称的行为不符、assert 永真、fixture 与生产路径脱节；等级与 `P0-test-missing` 相同（阻断 CONVERGED）。
 2. Step 4.5 扩展：对 §5 测试做**抽样执行验证**——分层抽样取 30%（至少 3 个，含 1 个错误路径）：读函数体确认断言对应描述 + `cargo test <name>` 实跑；输出 `gate-evidence-test` 块（抽样清单 / 实跑输出 / 判定）。
 3. **收编 Proposal #8（测试数量准确性机制）**：该机制已经落地在 `prompt/review-rules/review-doc-checklist.md`（测试总数末段补充）与 `.claude/rules/review-process.md §Step 4.5b`。本任务不重复发明，只在 Step 4.5 里引用它，并把它的状态从"⏸"回填为"✅ 已落地"（位置同 D5 的 Proposal 回填清单）。
-4. **同步面（先跑 rg 列全，不要照抄本清单）**：`P0-test-missing` 当前出现在 14 个文件（该数字含本计划，规则文件实为 13 个；若把 `.trae` 派生副本也算上是 15 个）——`rg -ln "P0-test-missing" prompt/ .claude/ .codex/ .trae/ CLAUDE.md AGENTS.md`，逐处决定是否加 `P0-test-wrong`。特别不能漏：`.claude/rules/review-core.md`（P0 列表）、`.claude/skills/review-scan/checks/patterns.md`、`prompt/skill/review-patterns-skill.md`、`prompt/skill/review-implementation-skill.md`、`prompt/README.md`、`CLAUDE.md`、`AGENTS.md`；`.trae/` 下的派生副本由生成脚本同步，不要手改。
-5. **计数宣称同步（易漏）**："P0 六分类"这一表述当前出现在 7 个规则文件（`rg -ln "六分类" prompt/ .claude/ .codex/ .trae/ CLAUDE.md AGENTS.md`，不含本计划）：`review.md`、`review-patterns.md`、`review-core-semantics.md`、`review-doc-excellence.md`、`README.md`、`review-patterns-skill.md`、`.codex/skills/review-patterns-skill/SKILL.md`——新增 `P0-test-wrong` 后全部改为"七分类"；`.trae/skills/review-patterns-skill/SKILL.md` 也含该词，同样由生成脚本同步。
+4. **同步面（先跑 rg 列全，不要照抄本清单）**：`P0-test-missing` 实测出现在 16 个文件（2026-09-18，含本计划；执行时先跑 `rg -ln "P0-test-missing" prompt/ .claude/ .codex/ .trae/ CLAUDE.md AGENTS.md` 重测）——逐处决定是否加 `P0-test-wrong`。特别不能漏：`.claude/rules/review-core.md`（P0 列表）、`.claude/skills/review-scan/checks/patterns.md`、`prompt/skill/review-patterns-skill.md`、`prompt/skill/review-implementation-skill.md`、`prompt/README.md`、`CLAUDE.md`、`AGENTS.md`；`.trae/` 下的派生副本由生成脚本同步，不要手改。
+5. **计数宣称同步（易漏）**："P0 六分类"实测出现在 10 个文件（2026-09-18，含本计划与 `.trae/documents/` 下的过程文档；执行时先跑 `rg -ln "六分类" prompt/ .claude/ .codex/ .trae/ CLAUDE.md AGENTS.md` 重测）——其中需要手改的规则/适配源为：`review.md`、`review-patterns.md`、`review-core-semantics.md`、`review-doc-excellence.md`、`README.md`、`prompt/skill/review-patterns-skill.md`——新增 `P0-test-wrong` 后全部改为"七分类"；`.codex/`、`.trae/` 派生副本由生成脚本同步。另：本计划 0.1 启动清单里的"P0 六分类"描述顺手同步为"七分类"（计划不是规则源，完成即退场，不列入规则同步面）。
 6. **若同时新增测试族模式**（可选）：按附录 4 的 Pattern housekeeping 清单执行（计数宣称 5 处 + lint L5 + 派生同步）。
 
 **执行注意**：只抽 §5 明确列出的测试名；实跑输出记入证据（`cargo test -p <crate> <name>`）；抽样未覆盖的测试在 scan.md 标注"未抽样"，不得表述为"已验证"。
@@ -900,14 +964,15 @@ rg -n "正确性相关 P1|发现日期|correctness" \
 3. 同步：`prompt/skill/review-core-semantics-skill.md`、`prompt/skill/review-process-skill.md`。
 4. **收编 Proposal #12（design.md §X-Y"权威位置"段）**：该 Proposal 至今"⏸ 待用户确认后落地"。F1 的"C 证据"要求与其同源——若 design 模板采用"权威位置"段（同一常量/函数在多个 crate 有定义时标注唯一权威），一并实现并把状态回填为"✅"（`CLAUDE.md` 与 `.claude/rules/review-core.md` 两处 Proposal 列表）；不实现则在本任务说明里显式写"Proposal #12 保持 ⏸，理由 X"。
 
-**执行注意**：矩阵的每个"语义未变"判定也必须有依据（C 函数与 Rust 函数行为对照一句话），不能只写标签。
+**执行注意**：矩阵的每个"语义未变"判定也必须有依据（C 函数与 Rust 函数行为对照一句话），不能只写标签。契约覆盖矩阵对符号量大的模块（>100 个 §2.3 符号）是重活，允许按文件分批归档；执行时估时按实测上调（原 2 小时是"Top 5 抽样"时代的估算）。
 
 **验收**：
 
 ```bash
 rg -n "契约覆盖矩阵|C 证据" prompt/review-rules/review-process.md \
   prompt/skill/review-core-semantics-skill.md
-# 用 sched/12（C 语义域 12 个符号）试跑矩阵并统计归档率
+# 1) 快跑：用 sched/12（C 语义域 12 个符号）试跑矩阵并统计归档率
+# 2) 成本试金石：再选一个符号量大的模块（如 RS/VM）实测归档耗时，写进执行记录并校准估时
 ```
 
 ### F2. `[ARCH]` 外部权威锚点
@@ -984,7 +1049,7 @@ tools/code-style-lint.sh --report | tail -5
 3. `cargo doc --no-deps` 检查：默认 rustdoc warning 不会让命令失败，必须用 `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`（或 CI 里显式导出该环境变量）才具备阻断力；先跑出警告清单，再决定是否阻断。
 4. 可 hosted 测试的 crate 增加 `cargo test --doc`（doctest 当前是卓越性 P2；先纳入报告，不阻断，升级时机登记 OQ22）。
 
-**执行注意**：workspace 含 no_std/裸机 crate，clippy 可能因 target 不可用而失败；按 `os/.cargo/config.toml` 现有 target 配置分批跑，失败清单登记而非跳过。`qemu-tests` 与 `boot-shim` 的构建 target 是 UEFI/no_main，lint 前先确认它们能被 stable clippy 检查（不行则登记豁免 + 理由）。
+**执行注意**：workspace 含 no_std/裸机 crate，clippy 可能因 target 不可用而失败；按 `os/.cargo/config.toml` 现有 target 配置分批跑，失败清单登记而非跳过。`qemu-tests` 与 `boot-shim` 的构建 target 是 UEFI/no_main，lint 前先确认它们能被 stable clippy 检查（不行则登记豁免 + 理由）。全 workspace 约 1010 个 `.rs` 文件、19 个 libs，2-3 小时大概率不够；先产失败清单分批推进，必要时拆成独立批次并上调估时。
 
 **验收**：
 
@@ -1047,7 +1112,124 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 
 ---
 
-## 九、任务汇总与依赖顺序
+## 九、工作流 H：卓越层——把"最高目标"变成可执行判据（2026-09-18 新增）
+
+> 来源：1.7 的缺口 2。目标：让"最美的代码 + 教科书的文档"从口号变成带证据的交付物。与 A-G 的本质区别：A-G 的产物是"防御性规则 + 工具"（避免变差），H 的产物是"读者与代码真的变好"（追求变美）。范围默认只对新增/触碰面阻断，存量只登记（与 OQ21 同哲学）。
+>
+> **前置**：H 批开工前先完成 D5 改写（符号锚点 + 卫生分层），否则卓越批的注意力会被行号机械活持续挤占。
+>
+> **"触碰"的判定（防误伤存量）**：以本次 git diff 实际改动的章节/代码为准；纯审查、未修改的存量内容只登记不阻断（OQ21/OQ25/OQ26/OQ27）。H1-H3 的注意力预算来自 D5 收缩 1.0a~1.0g 释放出的机械检查时间。
+>
+> **收敛门**：H 批是否完成以 **H4 为准**（样章文档 + 模块双达标 + 用户认可，用户门）。H1-H3 是方法：它们的发现进 P1 池（新增/触碰面修复或写明延期理由，存量登记），不单独改变全局 CONVERGED 口径——是否给卓越 P1 单列收敛口径，见 OQ29，由用户裁决。
+
+### H1. 读者复述测试提级（文档）
+
+**现状证据**：`prompt/review-rules/review-process.md:705-708` 的 structure.md §11 是 12 节之一（Step 0.5.2 与其它 11 节同表逐项判定，没有"复述证据"这一必答产物；Gate D-6 只要求 structure.md 生成 + 12 节评审完成）；`prompt/review-rules/review-cmds.md:90` 把它只当 style-fix 的自检；`review-doc-excellence.md:126` 有"能让读者闭眼复述状态机"的表述，但不是可判定判据。
+
+**改动点**：
+
+1. structure.md 模板 §11 升级为**必答产物**：写出"不看代码、不用函数名，用机制语言复述 Ch1"的结论（一页以内），判断标准 = 能否说出"这个机制解决什么矛盾、状态怎么转、边界在哪"。
+2. `prompt/review-rules/review-doc-checklist.md:86` 的 1.3 与 `review-process.md` Step 0.5.2 的通过门槛同步：复述不通过 → 教学类 P1（新增/触碰章节必须修复或写明延期理由，存量登记；OQ25/OQ29），并在 scan.md §structure.md 评审与 Issue List 显著位置单列。
+3. `review-doc-excellence.md` §4.3"运行时视角三问可泛化性"与 §4.5 概念教学升级：A/B/C/D 分级必须引用复述结果；`review-process-skill.md` / `review-doc-skill.md` / `.claude/skills/review-scan/checks/doc.md` 按 C1/C2 同步。
+
+**执行注意**：复述文本必须由审阅者自己写（不是把 Ch1 抄一遍），在 scan.md 里留痕；允许标注"复述在 X 处卡住"。
+
+**验收**：
+
+```bash
+rg -n "读者复述|复述测试" prompt/review-rules/review-process.md prompt/review-rules/review-doc-checklist.md \
+  prompt/skill/review-process-skill.md prompt/skill/review-doc-skill.md prompt/review-rules/review-doc-excellence.md
+# 用 H4 样章跑一次，复述文本与卡点写入样章产物
+```
+
+### H2. 非法态不可表达测试（代码）
+
+**现状证据**：`prompt/review-rules/review-code-excellence.md:28,36-38` 的"make wrong state unrepresentable"只是 [MEDIUM] 检查项；`review-code-checklist.md:20,95` 有语义（"能否构造出逻辑非法但类型合法的状态"）但没有门；Gate D 第 2 项（trait ≥2 impl）只是它的弱形式。
+
+**改动点**：
+
+1. 新增产物模板"非法态封堵清单"：每个核心状态机 / 句柄 / 地址类型一行——状态集 → 类型如何表达 → 封堵了哪些非法态 → 封不住哪些 → 结论（合格 / 设计类 P1）。
+2. 判级：核心状态机封不住关键非法态 → 设计类 P1（新增/触碰代码必须修复或写明延期理由，存量登记；OQ26/OQ29）；普通类型表达力问题 → 卓越性 P2。
+3. 接入 `review-cmds.md` §四 code-excellence 的产物（设计对比表旁列一份封堵清单）与 Step 3.6 的 `gate-evidence-code`（增一行"非法态封堵"）。Step 3.6 由 B3.3 新建；若尚未落地，先接 code-excellence 产物，B3.3 落地后再迁移。
+4. 首批样本（对话识别的三处可疑设计，均能躲过现有机械模式；执行时先复核具体位置）：wire 布局裸常量（常量散落，无 newtype 承载）、unsafe 散装（边界未收敛到少数 safe 封装）、PM Lifecycle 半封装（状态机未全封）。
+
+**执行注意**：不要求"所有类型都 newtype"（那是过度抽象，模式 24）；只要求核心状态机的合法状态集能被类型枚举。判定要写"为什么封不住"，避免标签化。
+
+**验收**：
+
+```bash
+rg -n "非法态封堵|invalid states" prompt/review-rules/review-code-excellence.md prompt/review-rules/review-code-checklist.md prompt/review-rules/review-cmds.md
+# 对一个模块（建议 PM lifecycle 或 VM phys_pagestate）产出清单，至少一条改进落地并配 cargo test
+```
+
+### H3. 文档 Rust 代码块逐块审查（文档 × 代码）
+
+**现状证据**：模式 73 / Step 1.0b（`review-process.md:1283-1298`）与 doc-checklist §2.4b 只查"示例与源码同步"（`static mut` / edition 漂移），不评判示例本身是否 idiomatic；读者学 Rust 的入口恰恰是这些块。
+
+**改动点**：
+
+1. 写轻量抽取脚本 `tools/doc-snippet-extract.sh`：按围栏抽出 `rust` / `ignore` / `no_run` 块，输出 `{doc}:{start-end}:{语言}` 清单；不发明复杂解析。
+2. **四类分类**（每块必须归一类）：逐字引用（贴仓库代码）/ 教学简化（示意，可省略但必须标注）/ 反面示例（必须标 ❌ 且给正确版本）/ 签名示意（伪代码或签名骨架，必须标注）。
+3. 最佳实践判据（`review-code-excellence.md` §16/§17/§19 的教学简版 + 本项目特例）：所有权/借用是否展示正确；`unsafe` 是否带安全论据（"这里假设 X 成立"）；kernel 语境是否出现 `Rc`/`RefCell`/`Box<dyn Error>`；`unwrap`/`panic!` 在被教路径是否配解释；`clone()` 是否用来绕借用且不解释；`static mut` 是否已迁移；命名与类型表达是否表达意图。
+4. 产物表：`| 位置 | 类型 | 是否可编译 | 是否 idiomatic | 问题 | 判级 | 建议 |`；判级：未标注的反模式 P1（新增/触碰块必须修复或写明延期理由；存量登记 OQ27）；逐字引用漂移 P1（模式 73）；简化块风格瑕疵卓越性 P2；分类缺失 P2。
+5. 接入：`full-review` Step 3.6 与 `style-fix` 的文档类产物；不新增 Gate 字母（沿用 OQ2 的裁决）。Step 3.6 由 B3.3 新建；若尚未落地，先接 style-fix 产物，B3.3 落地后再迁移。
+
+**执行注意**：不得把"教学简化"一律判违规——判据是"是否标注 + 是否教了反模式"，不是"是否达到生产级"。
+
+**验收**：
+
+```bash
+tools/doc-snippet-extract.sh notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md | head
+# 对抽取出的块逐块分类并出表；至少修 1 处未标注的反模式或漂移示例
+```
+
+### H4. 卓越样章示范（把卓越性变成可见交付）
+
+**任务**：选一篇文档 + 一个代码模块，完整走 H1/H2/H3 + `review-doc-excellence.md` §4.1-4.5 + `review-code-excellence.md` §16-21，产出第一个 A/B 级样板。
+
+**建议样本**：文档选已人工审阅过、代码集中的一篇（候选 `01-stage-kernel/05-clock-interrupt-init.md` 或 `02-stage-vm/15-ipc-dispatch.md`）；模块选 PM Lifecycle 或 VM phys_pagestate（H2 样本所在域，执行时先复核）。
+
+**验收**：文档 §4.1-4.5 至少 B 且复述通过；模块非法态清单闭环且至少一条改进落地；用户按"第一流技术博客"标准实测认可（**用户门，不是工具门**：结论写成"用户认可记录"，不得包装成机器 PASS）。结论追加到本文件 H4 段。
+
+### H5. 工作流 H 的验收汇总
+
+- [ ] H1 规则同步，复述结论成为 structure.md 必答产物。
+- [ ] H2 清单模板进 code-excellence 与 Step 3.6，样章模块至少一条落地。
+- [ ] H3 抽取脚本可用，样章文档全块分类出表。
+- [ ] H4 样章双达标（文档 + 模块），用户认可。
+- [ ] H 批收敛门 = H4（H1-H3 发现进 P1 池并留痕；卓越 P1 是否单列口径由 OQ29 裁决）。
+- [ ] C 批同步 + 回归全绿。
+
+---
+
+## 十、工作流 I：内容优先——让命令能跑、让新人能读懂（2026-09-18 新增）
+
+> 来源：1.7 的缺口 4。这两项是真实内容交付，不属"存量正文清洗"（A4 编辑战役）；未被触发时按第十一部分默认顺序，被触发时插到锚点卫生批次之前。
+
+### I1. 18-stage 命令契约表 Requires 回填（P1-1）
+
+**现状证据**：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/todo.md:15,44-60`——命令契约表缺 Requires 列，读者无从知道实现一个命令缺哪个 `minix-sys` 函数；模板与示例已写入 `18-stage-commands/99-global-concepts.md` §3，逐命令回填待做。
+
+**任务**：按 99 §3 模板逐命令回填 Requires；跨文档统计同一 API 的消费者数量，作为 14-stage-runtime 补齐顺序的依据。
+
+**验收**：
+
+```bash
+rg -c "Requires" notes/rewrite/fork-syscall-rewrite/18-stage-commands/06-file-ops.md
+# 各篇计数与 §5.2 命令归属表的命令数一致；跨文档 API 消费统计写入 18-stage todo
+```
+
+### I2. 99 汇总篇重写
+
+**现状证据**：对话裁定 99 汇总篇决定新人能不能读懂系统，应优先于锚点修复。`01-stage-kernel/99-global-concepts.md` 与 `18-stage-commands/99-global-concepts.md` 是两处载体（后者已含 §3 Requires 模板）；本条不作内容断言——执行时先按 H1 方法做一次复述测试，用卡点定位重写范围（该文档可能正被并发会话改动，动前按 0.8 的隔离规则确认）。
+
+**任务**：以 H1 的复述判据为目标重写（读者不看代码能讲出系统分层与关键机制）；与前一阶段文档的交叉引用一并校验。
+
+**验收**：重写后按 H1 方法做一次复述，卡点数写进结论；`style-bible` 与文风 lint（A2）零 error。
+
+---
+
+## 十一、任务汇总与依赖顺序
 
 本表是能力清单（有哪些任务、依赖关系、产物），不是执行排期；什么时候执行由 0.8 的触发方式决定（你在对话里提出改进需求后才动手）。
 
@@ -1067,7 +1249,7 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 | 12 | C3 | 总验收（第一轮） | 全部 | 本文件执行记录 |
 | 13 | D2 | unsafe 审计工具与增量门 | A2 的脚本风格 | 脚本 + 基线 + 规则 |
 | 14 | D3 | coverage 多 `--c-dir` 与语义域一致性 | - | 工具改造 + 规则 |
-| 15 | D5 | 行号自动化 + 代码维度预算 | - | 脚本 + 规则 |
+| 15 | D5 | 符号锚点迁移 + 卫生项分层（2026-09-18 改写；定义以 §五 工作流 D 的 D5 为准） | - | 脚本 + 规则 + 迁移统计 |
 | 16 | D1 | QEMU 门 | - | 规则（Step -0.5 + 强制门） |
 | 17 | D4 | 证据脚本化 | D1、D2（证据产物路径） | gate 脚本 + 规则 |
 | 18 | E2 | 测试正确性抽样门 + P0-test-wrong | - | P0 分类 + 规则 |
@@ -1087,13 +1269,31 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 
 > 顺序说明：第一轮（1-12）先把文风与"文档+代码"机制建起来；第二轮（13-25）补正确性证据与独立验证；第三轮（26-31）补代码可读性与架构可读性。每批的 C1/C2/C3 各跑一次，不要合并——但如果 G 批与 D/E/F 批同一次实施，可以共用一次同步与回归（在两批的 C3 记录里注明合并事实）。
 >
-> **触发密集时的优先顺序（不是排期）**：如果一段时间里问题集中、需要成批处理，按这个顺序投入产出比最高：A2 + A3（文风增量门，防止继续腐化）→ B1 + B2 + B3（关联代码清单与 Step 3.6，恢复 full-review 本意）→ D5（行号自动化）→ D2（unsafe 审计，风险最大面），约 12-14 小时。每批做完跑 C1/C2 让机制生效，然后回到真工作，其余任务继续待命。
+> **触发密集时的优先顺序（不是排期；2026-09-18 按北极星重排）**：D5 改写（符号锚点 + 卫生分层，先止住机械噪声）→ H1 + H3（复述测试与代码块审查，直接服务"教科书文档"）→ H2（非法态测试，服务"最美代码"）→ A2 + A3（文风增量门，防止继续腐化）→ B1 + B2 + B3（关联代码清单与 Step 3.6，恢复 full-review 本意）→ D2（unsafe 审计，风险最大面）。每批做完跑 C1/C2 让机制生效，然后回到真工作，其余任务继续待命。
 >
-> **不建议先做的**：D3（coverage 工具改造，工作量中等且影响既有命令）、E1（独立复核规则，需要用户拍板复核形态）、F1/F2（设计与架构锚点，属于长期质量）、G2（CI 扩展，需要全 crate 摸一遍构建）。
+> **内容优先项（独立于工具批）**：I1（Requires 回填）与 I2（99 重写）不属机械批次；未被触发时按默认顺序在 H 批之后执行，被用户触发时插到锚点卫生批次（D5）之前（见 OQ28）。
+>
+> **不建议先做的**：D3（coverage 工具改造，工作量中等且影响既有命令）、E1（独立复核规则，需要用户拍板复核形态）、F1/F2（设计与架构锚点，属于长期质量）、G2（CI 扩展，需要全 crate 摸一遍构建），以及任何"以行号为中心"的新工具或新门（第四轮已作废该方向）。
+
+> **第四轮追加任务（2026-09-18）**——"层"是本轮新增的排序依据：**卓越层**任务优先于**机械层**任务；D5 已改写，不再做行号自动化。行 32 是 D5 改写后的重新入表，**定义以 §五 工作流 D 的 D5 为准**，本表只作索引。
+
+| 顺序 | ID | 层 | 任务 | 依赖 | 产物 |
+|---|---|---|---|---|---|
+| 32 | D5 | 底线/卫生 | 符号锚点迁移 + 卫生项分层（改写） | - | 脚本 + 规则 + 迁移统计 |
+| 33 | I1 | 内容 | 18-stage Requires 回填 | - | 各篇契约表 Requires 列 |
+| 34 | I2 | 内容 | 99 汇总篇重写 | H1（复述判据；未落地时用人工等效方法） | 重写稿 + 复述结论 |
+| 35 | H1 | 卓越 | 读者复述测试提级 | D5（先完成符号锚点迁移） | 规则 + 样章复述 |
+| 36 | H2 | 卓越 | 非法态不可表达测试 | B3.3（Step 3.6；未落地则先接 code-excellence） | 模板 + 样章模块落地 |
+| 37 | H3 | 卓越 | 文档 Rust 代码块逐块审查 | B3.3（Step 3.6；未落地则先接 style-fix） | 抽取脚本 + 块清单表 |
+| 38 | H4 | 卓越 | 卓越样章示范 | H1/H2/H3 | 样板文档 + 模块 + 用户认可 |
+| 39 | C1/C2 | 流程 | 四轮同步 + 回归 | 32-38 | 派生目录 + 脚本输出 |
+| 40 | C3（第四轮） | 流程 | 总验收 | 39 | 卓越度量变化 + 执行记录 |
+
+**第四轮推荐顺序**：D5 改写（一次性符号锚点迁移，立刻消除机械噪声）→ H1 + H3（文档侧卓越判据与代码块审查）→ H2（代码美学判据）→ I1/I2（内容优先项）→ H4（样章收口）。
 
 ---
 
-## 十、Open Questions（执行者需向用户确认的点）
+## 十二、Open Questions（执行者需向用户确认的点）
 
 | # | 问题 | 推荐默认 |
 |---|---|---|
@@ -1119,6 +1319,13 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 | OQ20 | 依赖方向规则按现状冻结还是按"理想分层"修正？发现现状违例怎么办？ | 按现状冻结；违例登记 OQ，不擅自改结构 |
 | OQ21 | 可读性提级是否只限新增代码（存量不判 P1）？ | 只限新增（以 `--diff` 为准），存量留给治理批次 |
 | OQ22 | `cargo test --doc` / doctest 何时从"报告"升级为"阻断"？ | 先观察一轮；对已有 doctest 的 crate 先接 |
+| OQ23 | 符号锚点约定：`path:fn name` 前缀风格是否统一？C 源启发式解析的歧义如何处理？ | 统一 `fn/struct/enum/trait/const` 前缀；歧义要求文档补 `impl Type::method` 限定，工具不加特例 |
+| OQ24 | 卫生项是否需要判级？是否允许任何情况下升级为 P1？ | 不判级、只记录；唯一例外："锚点 0 定义"（符号消失）按 P0-fact 处理，属正确性不属卫生 |
+| OQ25 | 复述测试不通过（教学类 P1）是否阻塞 CONVERGED？ | 新增/触碰章节进 P1 池并必须在 scan 单列（修复或写明延期理由）；存量进 backlog；H 批完成以 H4 为准（见 OQ29） |
+| OQ26 | 非法态封堵清单对存量模块是否强制？ | 只对新增/触碰的核心状态机强制；存量登记（与 OQ21 一致） |
+| OQ27 | 代码块审查范围：全量还是增量？ | 新增/触碰块强制；存量只出清单（与 A4 同哲学） |
+| OQ28 | I1/I2 与 D5/H 批的执行次序？ | 默认 D5 → H1/H3 → H2 → I1 → I2 → H4；内容项（I1/I2）被用户触发时插到 D5 之前 |
+| OQ29 | 卓越类 P1（复述/非法态/反模式）是否单独设全局收敛口径？ | 默认不单列（避免与正确性 P1 两套收敛规则），H4 作 H 批完成门；用户要更强约束再升级 |
 
 **OQ 阻塞关系与默认执行**（用户不在场时：可先按默认执行，事后复核）：
 
@@ -1130,8 +1337,12 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 | OQ19 | G1 | 注释语言检查级别未定；默认 warning 不阻断 |
 | OQ20 | G3 | 现状依赖违例处置未定；脚本先只报告不阻断 |
 | OQ21 | G4 | 提级范围默认只限新增代码 |
+| OQ23 | D5 | 锚点约定未定；先按推荐默认执行，迁移报告里复核歧义清单 |
+| OQ25 | H1 | 新增/触碰章节进 P1 池并在 scan 单列；存量登记；H 批完成以 H4 为准（OQ29） |
+| OQ27 | H3 | 存量只登记，新增/触碰块强制 |
+| OQ29 | H1-H3（口径；不阻塞执行） | 默认不单列口径；H4 用户门不受影响 |
 
-其余 OQ（1-7、9-11、13-17、22）不阻塞开工，按推荐默认执行。
+其余 OQ（1-7、9-11、13-17、22、24、26、28）不阻塞开工，按推荐默认执行。
 
 ---
 
@@ -1157,7 +1368,8 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 | 工具（新建） | `tools/doc-style-lint.sh` | 文风增量门（A2） |
 | 工具（新建） | `tools/doc-code-map.sh` | 关联代码抽取（B2） |
 | 工具（新建） | `tools/unsafe-audit.sh` | unsafe/SAFETY 审计（D2） |
-| 工具（新建） | `tools/review-line-check.sh` | 行号全量校验 + 反向偏移重算（D5，Proposal #7/#13） |
+| 工具（新建） | `tools/anchor-migrate.sh` / `tools/anchor-resolve.sh` | 符号锚点一次性迁移 + 解析校验（D5 改写；原 review-line-check 方案作废） |
+| 工具（新建） | `tools/doc-snippet-extract.sh` | 文档 Rust 代码块抽取（H3） |
 | 工具（基线） | `tools/unsafe-baseline.txt` | unsafe 存量基线（D2 产出，入库） |
 | 工具（新建） | `tools/code-style-lint.sh` | 代码可读性增量门（G1） |
 | 基线 | `tools/code-style-baseline.txt` | 代码可读性存量基线（G1 产出，入库） |
@@ -1236,6 +1448,20 @@ rg -c "pub (fn|struct|enum|trait|const|type)" os --glob '*.rs' | awk -F: '{s+=$2
 rg -c "//.*[\x{4e00}-\x{9fff}]" os --glob '*.rs' | awk -F: '{s+=$2} END {print s}'  # 约 4267 行含中文注释
 ```
 
+第四轮（锚点与卓越性）的证据与统计命令：
+
+```bash
+# 11) 锚点形态普查：行号锚点 vs 符号锚点（D5 迁移基线；口径按本篇文档调整）
+rg -o "\.rs:[0-9]+" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/[0-9][0-9]-*.md | wc -l
+rg -o "\.rs:(fn|struct|enum|trait|const) " notes/rewrite/fork-syscall-rewrite/01-stage-kernel/[0-9][0-9]-*.md | wc -l
+
+# 12) 文档 Rust 代码块普查（H3 基线）
+rg -c '^```rust' notes/rewrite/fork-syscall-rewrite/*/[0-9][0-9]-*.md | awk -F: '{s+=$2} END {print s}'
+
+# 13) 复述结论档案普查（H1 基线；structure.md 在 .review/{tool}/{module}/{doc-stem}/ 或 scans/ 下）
+rg -l "裸概念复述" .review/codex/*/*/structure.md 2>/dev/null | wc -l
+```
+
 样本证据（正文位置）：
 
 - `01-stage-kernel/13-syscall-dispatch.md:884`、`:403`、`:715`
@@ -1264,8 +1490,14 @@ rg -c "//.*[\x{4e00}-\x{9fff}]" os --glob '*.rs' | awk -F: '{s+=$2} END {print s
 | 代码架构可读性 | 宏观层面的"新读者能否看懂结构"：模块职责/边界/依赖方向可读、核心路径可走通、trait 划分有理由（对应 checklist §2/§6、patterns 79-82、`os/README.md`/`//!`） |
 | 路径可读性 | G3 的抽查方法：只读代码 + `//!` + README，沿一条核心主线（如 boot → kmain → scheduler → IPC）走通并记录卡点 |
 | 新增代码 | G 批的判级边界：以 `--diff`/git diff 的新增或修改行为准，存量不计入 P1 |
+| 符号锚点 | 用定义点（`path:fn name` / `path:struct Name` / C `path.c:func`）定位源码；行号只作工具派生提示 |
+| 卫生项 | 锚点提示过期、拼写、全角/半角、格式等机械项；批量修，不进 P1/P2 计数、不进收敛判定 |
+| 读者复述测试 | 不看代码、不用函数名，用机制语言复述 Ch1；说不出机制 → 教学类 P1（H1） |
+| 非法态封堵清单 | 每个核心状态机/句柄/地址类型一行：状态集 → 类型表达 → 封住的非法态 → 封不住的 → 结论（H2） |
+| 代码块四分类 | 文档 Rust 块分为逐字引用 / 教学简化 / 反面示例 / 签名示意，分类缺失或未标注反模式即问题（H3） |
+| 卓越度量 | 复述通过数、非法态清单与落地数、代码块分类覆盖与反模式数、样章达标数；验收主证据（其余为健康检查） |
 
-## 附录 4：Pattern 新增 housekeeping 清单（E2/F2 适用）
+## 附录 4：Pattern 新增 housekeeping 清单（E2/F2/H3 适用）
 
 新增任何模式（编号或字母）时，必须同步以下位置，缺一处即规则集自检不过：
 
@@ -1277,6 +1509,8 @@ rg -c "//.*[\x{4e00}-\x{9fff}]" os --glob '*.rs' | awk -F: '{s+=$2} END {print s
 | 4 | `AGENTS.md` | skill 表里 review-patterns-skill 的描述（当前 84） |
 | 5 | `.claude/skills/review-scan/checks/patterns.md` | Claude 版按领域合并的模式库正文（如该模式属于必检族） |
 | 6 | 派生（自动） | `tools/generate-derived-skills.sh` 后由脚本处理 `.trae/`/`.codex/` |
+
+> **编号冲突提示（2026-09-18）**：F2 与 H3 都声明可能新增模式（F2 的"ARCH 断言无外部权威锚点"、H3 的"未标注反模式示例"）。当前下一个空闲编号是 84；两者按落地先后取号，后者顺延（85），并各自按本清单同步计数。
 
 验证：
 
@@ -1310,7 +1544,7 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 | D2 | 未开始 | | |
 | D3 | 未开始 | | |
 | D4 | 未开始 | | |
-| D5 | 未开始 | | |
+| D5（原行号自动化） | 已作废，见 D5 改写 | — | — |
 | D6 | 未开始 | | |
 | E1 | 未开始 | | |
 | E2 | 未开始 | | |
@@ -1323,24 +1557,47 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 | G3 | 未开始 | | |
 | G4 | 未开始 | | |
 | C3（G 批） | 未开始 | | |
+| D5（改写） | 未开始 | | |
+| H1 | 未开始 | | |
+| H2 | 未开始 | | |
+| H3 | 未开始 | | |
+| H4 | 未开始 | | |
+| I1 | 未开始 | | |
+| I2 | 未开始 | | |
+| C3（第四轮） | 未开始 | | |
 
 ### 度量对比（每轮 C3 填写）
 
-基线数字（2026-09-16，取自附录 2 的审计命令）：
+基线数字（2026-09-16，取自附录 2 的审计命令；第四轮新增卓越组，机械组不再作为"完成"主证据）：
 
-| 指标 | 基线 | 第一轮后 | 第二轮后 | 第三轮后 |
-|---|---|---|---|---|
-| 正式文档 review 编号数（窄口径：Vx-Py/Px-y/FIX-/R-，见附录 2 第 1 条） | 约 330 | | | |
-| 正式文档 review 编号数（宽口径：再加 D-/W-） | 约 451 | | | |
-| 正文日期数 | 约 316 | | | |
-| 裸 unsafe 数（无 SAFETY） | 待 D2 首跑 | | | |
-| `missing_docs` 警告数 | 待 G2 首跑 | | | |
-| 头部字段缺失文档数 | 待 B1 统计 | | | |
-| CLAUDE.md ⏸ Proposal 剩余数 | 4（#7/#8/#12/#13） | | | |
+| 组 | 指标 | 基线 | 第一轮后 | 第二轮后 | 第三轮后 | 第四轮后 |
+|---|---|---|---|---|---|---|
+| 卓越 | 复述通过文档数（H1） | 待测 | | | | |
+| 卓越 | 非法态封堵清单产出的模块数 / 落地改进数（H2） | 待测 | | | | |
+| 卓越 | 文档 Rust 代码块已分类数 / 未标注反模式数（H3） | 待测 | | | | |
+| 卓越 | 卓越样章达标数（H4：文档 A/B + 模块闭环） | 0 | | | | |
+| 正确性 | 裸 unsafe 数（无 SAFETY） | 待 D2 首跑 | | | | |
+| 正确性 | `missing_docs` 警告数 | 待 G2 首跑 | | | | |
+| 正确性 | 契约/覆盖率缺口数（Gate B/C 归档） | 待 F1 统计 | | | | |
+| 正确性 | 正确性相关 P1 未处置数（E3） | 待统计 | | | | |
+| 机械 | 正式文档 review 编号数（窄口径：Vx-Py/Px-y/FIX-/R-，见附录 2 第 1 条） | 约 330 | | | | |
+| 机械 | 正式文档 review 编号数（宽口径：再加 D-/W-） | 约 451 | | | | |
+| 机械 | 正文日期数 | 约 316 | | | | |
+| 机械 | 行号锚点数 / 符号锚点数（D5 迁移统计） | 待 D5 首跑 | | | | |
+| 机械 | 头部字段缺失文档数 | 待 B1 统计 | | | | |
+| 机械 | CLAUDE.md ⏸ Proposal 剩余数 | 4（#7/#8/#12/#13） | | | | |
 
 ### A4 存量统计
 
 （待 A2 完成后填写）
+
+### D5 迁移统计
+
+（待 D5 完成后填写：旧行号锚点数 → 新符号锚点数 → 无法解析清单 → 首轮卫生项计数）
+
+### H4 样章结论
+
+（待 H4 完成后填写：文档 §4.1-4.5 等级 + 复述卡点 + 模块非法态清单 + 用户认可记录）
 
 ### B5 演练结论
 
