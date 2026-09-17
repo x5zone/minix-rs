@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod char_face;
 pub mod config;
 pub mod database;
 pub mod protocol;
