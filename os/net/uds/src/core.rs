@@ -109,15 +109,9 @@ mod tests {
     }
 
     #[test]
-    fn test_domain_and_types_match_dispatch() {
+    fn test_domain_gate_matches_dispatch() {
         assert!(domain_allowed(true));
         assert!(!domain_allowed(false));
-        let types = [
-            SocketType::Stream,
-            SocketType::SequencePacket,
-            SocketType::Datagram,
-        ];
-        assert_eq!(types.len(), 3);
     }
 
     #[test]

@@ -91,15 +91,4 @@ mod tests {
         assert!(control_length_allowed(4096));
         assert!(!control_length_allowed(4097));
     }
-
-    #[test]
-    fn test_segment_kinds_cover_buffer_use() {
-        let kinds = [
-            SegmentKind::Data,
-            SegmentKind::Control,
-            SegmentKind::DataAndControl,
-            SegmentKind::Empty,
-        ];
-        assert_eq!(kinds.len(), 4);
-    }
 }

@@ -147,10 +147,12 @@
 - **common_bits 已化简**：逐位循环改为 `(first ^ second).leading_zeros().min(limit)` 一行；addr 18 测试全过（行为不变）。`row_matches` 的 128 位比较经评估保留——两值与掩码的三方比较不是 leading_zeros 能表达的形状。
 - **SEV/SFL 迁 bitflags 2.4**：两个位标类型分域（事件域与标志域编译期隔离，裸 u32 时代互混不响）；`as u32` 全部改 `.bits()`；socktable 的事件/标志消费同步迁移。sockid 基值族维持 enum——它是命名空间基址不是位族（N1-P1-1 的判定不变）。doc-02 §3.1/§3.5 决策同步改写（普通枚举判定被位标类型取代，理由入档）。
 
-### N1-P2-5 恒真测试分级处置（Gate E 附带发现）
+### ✅ N1-P2-5 恒真测试分级处置——已落地 2026-09-17
 
-判定标准：断言对象若为编译期事实（本地 enum 的 variant 数组长度），测试恒真、无效。清单：`test_dispatch_covers_four_roads`（startup.rs:141-150，构造数组断言 len==5）、`test_domain_and_types_match_dispatch` 尾部（core.rs:115-120，len==3）、`test_segment_kinds_cover_buffer_use`（io.rs:96-104，len==4）、`test_hooks_cover_glue_header`（lwip_port.rs:83-85）、`test_patches_cover_patch_directory`（lwip_port.rs:88-90，断言字面量数组长度）。**与之相反，wire 契约锁是有效测试**：`test_sdev_bases_match_com_header`、`test_seventeen_requests_numbered_in_order`（sdev.rs:123-134）、`test_key_options_match_glue_header`（lwip_port.rs:73-80，锁 lwipopts 契约值）、`test_request_indices_match_c_offsets`——断言对象是跨语言 wire 事实，编译期不可知，保留。另：`BUILD_C_FILES: usize = 68`（lwip_port.rs:18）是构建事实非运行时常量，建议降为文档（24 篇已载）+ 删常量。
-**处置**：恒真组删除或改 `const { assert!() }` 编译期断言；逐条走 fix-guard。
+- **删除**：`test_dispatch_covers_four_roads`（startup.rs，数组长度恒真）；`test_raw_needs_root` 与 `test_domain_and_types_match_dispatch` 的变体计数尾巴裁掉（保留实质断言）；`test_segment_kinds_cover_buffer_use` 整个删除（io.rs，段判别无 wire 契约）。中途自查否决了两个更差的改法（matches! 字面恒真、format!+leak 的伪判重）——恒真测试的正解是删除，不是换个姿势写。
+- **转编译期冻结**：lwip_port 的钩子/补丁清单长度断言改 `const _: ()` ——清单是手工维护的 C 镜像，冻结留编译期，运行期测试撤销（doc-24 §5.1 同步）。
+- **勘误保留**：`BUILD_C_FILES` 按 doc-04 §3.1 在册裁定保留（"不记录时子集漂移无人发现"——与 N1-P2-3 同款勘误逻辑：扫描建议与在册决策冲突时，决策优先）。
+**验证**：lwip 94 passed / uds 8 passed；Gate E：03/21/22/24 篇测试表同步更新。
 
 ### N1-P2-6 16 个 crate 声明未使用的依赖
 

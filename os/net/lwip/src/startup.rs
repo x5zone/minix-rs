@@ -138,27 +138,8 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_covers_four_roads() {
-        let roads = [
-            DispatchRoad::Notify,
-            DispatchRoad::Management,
-            DispatchRoad::SocketDevice,
-            DispatchRoad::CardResponse,
-            DispatchRoad::Unexpected,
-        ];
-        assert_eq!(roads.len(), 5);
-    }
-
-    #[test]
     fn test_raw_needs_root() {
         assert!(raw_allowed(true));
         assert!(!raw_allowed(false));
-        let domains = [
-            SocketDomain::InternetV4,
-            SocketDomain::InternetV6,
-            SocketDomain::Route,
-            SocketDomain::Link,
-        ];
-        assert_eq!(domains.len(), 4);
     }
 }

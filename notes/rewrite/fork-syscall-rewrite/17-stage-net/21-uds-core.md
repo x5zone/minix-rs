@@ -132,7 +132,7 @@
 |----------|----------|----------|
 | `test_limits_match_header` | 上限 256，散列 64，协议 0，槽界正确 | 第 2.2 节对象与散列 |
 | `test_states_cover_header_list` | 5 种状态俱全且顺序一致 | 第 2.3 节状态机 |
-| `test_domain_and_types_match_dispatch` | 本地域通过，三种类型俱全 | 第 2.3 节分发 |
+| `test_domain_gate_matches_dispatch` | 本地域通过，非本地域拒绝 | 第 2.3 节分发 |
 | `test_loop_runs_while_work_remains` | 运行或使用即继续，排空判断 | 第 2.4 节主循环 |
 
 ### 5.2 测试统计（截至 2026-09-06）

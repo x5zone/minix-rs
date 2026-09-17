@@ -224,16 +224,17 @@ mod tests {
         assert_eq!(TCP_SEND_BUFFER, 11 * 1460);
     }
 
-    #[test]
-    fn test_hooks_cover_glue_header() {
-        assert_eq!(ALL_HOOKS.len(), 4);
-    }
-
-    #[test]
-    fn test_patches_cover_patch_directory() {
-        assert_eq!(PATCHES.len(), 4);
-    }
 }
+
+// The hook list mirrors `lwiphooks.h` and the patch list mirrors the patch
+// directory — both hand-maintained, so the counts freeze at compile time
+// instead of burning a runtime test on a fact the compiler already knows
+// (N1-P2-5).
+#[cfg(test)]
+const _: () = {
+    assert!(ALL_HOOKS.len() == 4);
+    assert!(PATCHES.len() == 4);
+};
 
 #[cfg(test)]
 mod wall_tests {

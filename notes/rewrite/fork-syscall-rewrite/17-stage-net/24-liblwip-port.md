@@ -155,17 +155,16 @@
 | 测试函数 | 验证内容 | 对应依据 |
 |----------|----------|----------|
 | `test_key_options_match_glue_header` | 子集 68，单线程 1，池 0，分段 1460，窗口 16384，发送 11 倍 | 第 2.2 节选项 |
-| `test_hooks_cover_glue_header` | 4 个钩子俱全 | 第 1.3 节钩子 |
-| `test_patches_cover_patch_directory` | 4 个补丁俱全 | 第 1.4 节补丁 |
+| 钩子与补丁清单冻结 | 4 钩子 4 补丁的数目转为编译期断言（运行期恒真测试撤销，N1-P2-5） | 第 1.3、1.4 节清单 |
 | `test_wall_composes_hooks_lifecycle_and_poll` | 墙的钩子、开/关生命周期、就绪查询、泵询问能走通一圈；关闭后的句柄不再报事件 | 第 1.5 节栈墙 |
 | `test_wall_frame_seam_moves_bytes_both_ways` | 帧双向穿越：入站帧进栈（空帧被拒），出站帧到服务缓冲 | 第 1.5 节栈墙 |
 
 ### 5.2 测试统计（截至 2026-09-17）
 
-- 本篇直接相关：5 个测试函数，全部通过。
+- 本篇直接相关：3 个测试函数加一组编译期冻结断言，全部通过。
 - 复现命令（工作目录为 `os/`）：`cargo test -p minix-net-lwip --lib lwip_port`
 - 完整测试清单：`rg "fn test_" os/net/lwip/src/lwip_port.rs`
-- 全量测试结果：`cargo test -p minix-net-lwip --lib` 共 89 个测试通过，包含本篇 5 个。
+- 全量测试结果：`cargo test -p minix-net-lwip --lib` 共 95 个测试通过，包含本篇 3 个。
 
 ---
 

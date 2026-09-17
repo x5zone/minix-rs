@@ -124,7 +124,6 @@
 | `test_ring_wraps_at_buffer_size` | 末尾加 1 绕回，整圈回零 | 第 2.2 节推进宏 |
 | `test_free_and_payload_account_for_header` | 空闲饱和，载荷扣头部 | 第 2.2 节剩余计算 |
 | `test_control_cap_is_enforced` | 4096 通过，4097 拒绝 | 第 2.3 节上限检查 |
-| `test_segment_kinds_cover_buffer_use` | 4 种段俱全 | 第 1.3 节段类型 |
 
 ### 5.2 测试统计（截至 2026-09-06）
 
