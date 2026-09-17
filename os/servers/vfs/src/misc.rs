@@ -36,9 +36,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use minix_types::Endpoint;
+use minix_types::{Endpoint, FProcSnap, NR_PROCS, VirBytes};
 
 use crate::device_map::{IOC_IN, IOC_OUT};
+use crate::fproc::FProcTable;
 use crate::open::FileType;
 use crate::protect::readonly_gate;
 
@@ -109,6 +110,61 @@ pub fn sysinfo_len_gate(len: u64, buf_size: u64) -> Result<(), MiscError> {
         return Err(MiscError::Inval);
     }
     Ok(())
+}
+
+/// Copy-out seam of the asking door (`sys_datacopy_wrapper(SELF, src,
+/// who_e, dst, len)` — `do_getsysinfo:113`): whole-table bytes travel from
+/// VFS memory to the caller. The production half rides the SYS_DATACOPY
+/// family; tests script it (PM `CopyToUser`, pm/misc.rs:140, same shape).
+pub trait CopyToUser {
+    fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError>;
+}
+
+/// `do_getsysinfo` execution half (`misc.c:59-113`): root door, table
+/// selection, exact-length door, then the table copy SELF → caller.
+///
+/// C copies `sizeof(struct fproc) * NR_PROCS` raw bytes (`misc.c:76-77`);
+/// the wire here is the ruled A-4 deviation ([`FProcSnap`], 52 B/slot —
+/// pointer arrays don't cross the wire), so the length contract is
+/// `NR_PROCS * size_of::<FProcSnap>()` on both sides (IS's out slice is
+/// `[FProcSnap; NR_PROCS]`, dmp_fs.c:31 shape). Slots serialize one at a
+/// time into the caller's buffer (D-29 PM 同型) — no staging copy. Unused
+/// slots ride along as the all-zero rows C's BSS image carries; filtering
+/// (`pid <= 0`) is the consumer's job (dmp_fs.c:44-45).
+pub fn do_getsysinfo(
+    table: &FProcTable,
+    is_root: bool,
+    what: SysinfoWhat,
+    buf_size: u64,
+    dst: VirBytes,
+    cpy: &mut dyn CopyToUser,
+) -> Result<(), MiscError> {
+    sysinfo_root_gate(is_root)?;
+    match what {
+        SysinfoWhat::ProcTab => {
+            const WIRE: usize = core::mem::size_of::<FProcSnap>();
+            sysinfo_len_gate((WIRE * NR_PROCS) as u64, buf_size)?;
+            for (idx, fp) in table.slots().iter().enumerate() {
+                let wire = fp.to_fproc_snap();
+                // SAFETY: `FProcSnap` is a 52-byte repr(C) POD; the byte
+                // view feeds the copy seam only (D-29 同款 wire 展开).
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        core::ptr::addr_of!(wire) as *const u8,
+                        WIRE,
+                    )
+                };
+                cpy.copy_to_user(bytes, VirBytes(dst.0 + (idx * WIRE) as u64))?;
+            }
+            Ok(())
+        }
+        // C also serves SI_DMAP_TAB (`misc.c:78-80`) and fills
+        // SI_PROCLIGHT_TAB for MIB on request (`misc.c:81-95`). Both
+        // producer halves stay fail-closed until their wire authorities
+        // land: DMAP is the remaining half of dump_vfs's TODO(P1); the
+        // light table is the A-7/MIB defer (fproc.rs `snapshot_light`).
+        SysinfoWhat::DmapTab | SysinfoWhat::ProcLightTab => Err(MiscError::Inval),
+    }
 }
 
 /// How a process is blocked, as far as the light table cares
@@ -958,6 +1014,99 @@ mod tests {
             light_task(BlockKind::Other, Endpoint(5), Some(Endpoint(7))),
             LightTask::NoDriver
         );
+    }
+
+    /// Records every copy with its destination offset — the scripted
+    /// `sys_datacopy_wrapper` leg of the asking door.
+    struct RecordingCopy {
+        copies: Vec<(u64, Vec<u8>)>,
+    }
+
+    impl CopyToUser for RecordingCopy {
+        fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError> {
+            self.copies.push((dst.0, src.to_vec()));
+            Ok(())
+        }
+    }
+
+    /// `SI_PROC_TAB` serves every slot as one 52-byte `FProcSnap` row at a
+    /// stride of `size_of::<FProcSnap>()` (`misc.c:76-77,113` A-4 wire):
+    /// occupied slots round-trip through the copy bytes, unused slots ride
+    /// as the all-zero BSS rows, and the row count is exactly `NR_PROCS`.
+    #[test]
+    fn test_do_getsysinfo_proc_tab_serves_whole_table() {
+        const WIRE: usize = core::mem::size_of::<FProcSnap>();
+        let mut table = FProcTable::new();
+        {
+            let fp = table.get_mut(minix_types::UserSlot::new(3)).unwrap();
+            fp.pid = 77;
+            fp.filps[0] = Some(1);
+            fp.blocked_on = crate::fproc::BlockedOn::Cdev(crate::fproc::CdevBlock {
+                dev: minix_types::NO_DEV,
+                endpt: Endpoint(5),
+                grant: None,
+            });
+        }
+        let mut cpy = RecordingCopy { copies: Vec::new() };
+        let want = (WIRE * NR_PROCS) as u64;
+        do_getsysinfo(
+            &table,
+            true,
+            SysinfoWhat::ProcTab,
+            want,
+            VirBytes(0x5000),
+            &mut cpy,
+        )
+        .unwrap();
+
+        assert_eq!(cpy.copies.len(), NR_PROCS, "one copy per table slot");
+        for (idx, (dst, bytes)) in cpy.copies.iter().enumerate() {
+            assert_eq!(*dst, 0x5000 + (idx * WIRE) as u64, "stride walk");
+            assert_eq!(bytes.len(), WIRE);
+        }
+        // Occupied slot round-trips through the wire bytes.
+        let row3 = unsafe {
+            core::ptr::read_unaligned(cpy.copies[3].1.as_ptr() as *const FProcSnap)
+        };
+        assert_eq!(row3, table.slots()[3].to_fproc_snap());
+        assert_eq!(row3.fp_pid, 77);
+        assert_eq!(row3.nfds, 1);
+        assert_eq!(row3.fp_blocked_on, 5);
+        assert_eq!(row3.fp_cdev_endpt, 5);
+        // Unused slot rides as the zero row (C's BSS image).
+        assert_eq!(cpy.copies[0].1, vec![0u8; WIRE]);
+    }
+
+    /// Doors run before any copy: strangers get `EPERM`, wrong sizes get
+    /// `EINVAL` (`misc.c:70,108-109`), and the two not-yet-armed tables
+    /// (DMAP producer, A-7 light table) stay fail-closed with nothing copied.
+    #[test]
+    fn test_do_getsysinfo_gates_fail_closed() {
+        let table = FProcTable::new();
+        let wire = (core::mem::size_of::<FProcSnap>() * NR_PROCS) as u64;
+
+        let mut cpy = RecordingCopy { copies: Vec::new() };
+        assert_eq!(
+            do_getsysinfo(&table, false, SysinfoWhat::ProcTab, wire, VirBytes(0), &mut cpy),
+            Err(MiscError::Perm)
+        );
+        assert_eq!(
+            do_getsysinfo(&table, true, SysinfoWhat::ProcTab, wire - 1, VirBytes(0), &mut cpy),
+            Err(MiscError::Inval)
+        );
+        assert_eq!(
+            do_getsysinfo(&table, true, SysinfoWhat::ProcTab, wire + 1, VirBytes(0), &mut cpy),
+            Err(MiscError::Inval)
+        );
+        assert_eq!(
+            do_getsysinfo(&table, true, SysinfoWhat::DmapTab, wire, VirBytes(0), &mut cpy),
+            Err(MiscError::Inval)
+        );
+        assert_eq!(
+            do_getsysinfo(&table, true, SysinfoWhat::ProcLightTab, wire, VirBytes(0), &mut cpy),
+            Err(MiscError::Inval)
+        );
+        assert!(cpy.copies.is_empty(), "no copy on any refused path");
     }
 
     #[test]

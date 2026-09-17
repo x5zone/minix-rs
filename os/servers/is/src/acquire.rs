@@ -28,6 +28,7 @@ use crate::dump_pm::MProcSnap;
 use crate::dump_rs::{RprocSnap, RprocpubSnap};
 use crate::dump_vfs::{DmapSnap, FProcSnap};
 use crate::dump_vm::{VmRegionSnap, VmStatsSnap, VmUsageSnap};
+use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
 use minix_sys::syscall::{sys_getinfo_into, DirectKernelCallTransport};
 
 /// GET_KMESSAGES 快照总大小（kernel `kmess::KMESS_SNAPSHOT_SIZE` 镜像：
@@ -35,7 +36,7 @@ use minix_sys::syscall::{sys_getinfo_into, DirectKernelCallTransport};
 /// pub(crate)，此处按同一 wire 契约本地锚定并测试锁定。
 const KMESS_SNAPSHOT_SIZE: usize = 10008;
 use minix_types::{
-    DS_GETSYSINFO, Endpoint, PM_GETSYSINFO, RS_GETSYSINFO, SI_DATA_STORE, SI_DMAP_TAB,
+    DS_GETSYSINFO, Endpoint, Message, PM_GETSYSINFO, RS_GETSYSINFO, SI_DATA_STORE, SI_DMAP_TAB,
     SI_PROCPUB_TAB, SI_PROC_TAB, VFS_GETSYSINFO,
 };
 
@@ -619,6 +620,94 @@ fn split_kmess_snapshot(snap: &[u8], meta: &mut KmessagesSnap, ring: &mut [u8]) 
     ring[..n].copy_from_slice(&body[..n]);
 }
 
+/// 生产 `GetSysinfoTransport` 的 VFS fproc_tab 腿（E-MIBPROD fproc_tab 半，
+/// 2026-09-18）。C: `getsysinfo(VFS_PROC_NR, SI_PROC_TAB, fproc,
+/// sizeof(fproc))`（libsys/getsysinfo.c:26-31 + dmp_fs.c:31）——what/
+/// where/size 三元组经 `m_lsys_getsysinfo` 到 VFS，服务端 `do_getsysinfo`
+/// 按 A-4 快照（`FProcSnap` 52B×NR_PROCS，指针数组不出 wire）逐槽拷回。
+///
+/// 传输 = `DirectTrapTransport`：real-trap 构建下通电即活；宿主构建诚实
+/// 上浮 -EIO（`KernelKmessTransport` 同款门控形态）。main 装配挂
+/// E-ISWIRE(3)（A-6 诊断通道裁决），当前仍以 `UnimplementedAcquires` 出生。
+///
+/// 其余四腿不在此武装：pm/rs/ds/vfs_dmap 各归其 producer 域收口后逐腿
+/// 接入（DS/PM producer 已闭，IS 侧装配统一随 E-ISWIRE(3)）——域内
+/// fail-closed panic 与 `UnimplementedAcquires` 同语义：接线缺口是装配
+/// 错误，不是运行时错误。
+pub struct VfsProcTabTransport;
+
+impl VfsProcTabTransport {
+    /// fproc_tab 腿的可注入传输形态（生产传 [`DirectTrapTransport`]，
+    /// 测试传脚本双替身）。
+    ///
+    /// 消息打包与 `system_info_via` 同布局（what @0..4、where @8..16、
+    /// size @16..24），但 sendrec 直组而不经 `perform_taskcall`：
+    /// DirectTrapTransport 宿主回退以**正** errno 报错（ipc.rs TrapStatus
+    /// 回退臂，sched `trap_errno` 同读），而 taskcall 语义负值才是失败
+    /// （syscall.rs:104-111）——正状态穿过 `perform_taskcall` 会被
+    /// `>= 0` 判成成功。此处本地归一为 Minix 负状态上浮；共享符号约定
+    /// 的裁决已挂 edge E-SYSCALL-SIGN（perform_syscall 腿登记，
+    /// taskcall 腿同型缺陷 2026-09-18 增补），其方案 A 落地后本处
+    /// 归一与 `system_info_via` 一并回迁。
+    fn vfs_proc_tab_via(transport: &impl IpcTransport, out: &mut [FProcSnap]) -> i32 {
+        let mut msg = Message {
+            m_type: getsysinfo_call(Endpoint::VFS),
+            ..Message::default()
+        };
+        // SAFETY: m_lsys_getsysinfo 的 raw 三 lane 视图（C getsysinfo.c:
+        // 27-29 的 what/where/size；where 是调用方缓冲地址，服务端按
+        // sys_datacopy SELF→caller 回填）。
+        unsafe {
+            msg.m_u.raw[..4].copy_from_slice(&SI_PROC_TAB.to_ne_bytes());
+            msg.m_u.raw[8..16].copy_from_slice(&(out.as_mut_ptr() as u64).to_ne_bytes());
+            msg.m_u.raw[16..24]
+                .copy_from_slice(&(core::mem::size_of_val(out) as u64).to_ne_bytes());
+        }
+        match transport.sendrec(Endpoint::VFS, &mut msg) {
+            // C _taskcall 原样返回：OK(0) 成功，负值 = 错误码；非零正
+            // 回复非标准，原样上浮交由 `!= OK` 消费面判失败（dmp_fs.c:31）。
+            Ok(()) => msg.m_type,
+            Err(status) => -(status.0.unsigned_abs() as i32),
+        }
+    }
+}
+
+impl GetSysinfoTransport for VfsProcTabTransport {
+    fn vfs_proc_tab(&mut self, out: &mut [FProcSnap]) -> i32 {
+        Self::vfs_proc_tab_via(&DirectTrapTransport, out)
+    }
+
+    fn pm_proc_tab(&mut self, _out: &mut [MProcSnap]) -> i32 {
+        panic!(
+            "IS acquire: pm_proc_tab leg not armed in VfsProcTabTransport \
+             (PM producer closed by D-29; IS assembly lands with E-ISWIRE(3))"
+        );
+    }
+
+    fn vfs_dmap_tab(&mut self, _out: &mut [DmapSnap]) -> i32 {
+        panic!(
+            "IS acquire: vfs_dmap_tab leg not armed in VfsProcTabTransport \
+             (DMAP producer pending, dump_vfs TODO(P1); IS assembly lands \
+             with E-ISWIRE(3))"
+        );
+    }
+
+    fn rs_tables(&mut self, _pub_out: &mut [RprocpubSnap], _priv_out: &mut [RprocSnap]) -> i32 {
+        panic!(
+            "IS acquire: rs_tables leg not armed in VfsProcTabTransport \
+             (RS producer lane; IS assembly lands with E-ISWIRE(3))"
+        );
+    }
+
+    fn ds_data_store(&mut self, _out: &mut [DsEntrySnap]) -> i32 {
+        panic!(
+            "IS acquire: ds_data_store leg not armed in VfsProcTabTransport \
+             (DS producer closed in 07-stage-ds; IS assembly lands with \
+             E-ISWIRE(3))"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::fake::FakeAcquires;
@@ -768,5 +857,95 @@ mod kerninfo_transport_tests {
     #[test]
     fn test_kmess_snapshot_size_matches_kernel() {
         assert_eq!(KMESS_SNAPSHOT_SIZE, 10008);
+    }
+}
+
+#[cfg(test)]
+mod vfs_proc_tab_transport_tests {
+    use super::fake::FakeAcquires;
+    use super::*;
+    use minix_sys::ipc::CannedTransport;
+    use minix_types::OK;
+
+    /// wire 三元组回放：请求臂 = `getsysinfo(VFS, SI_PROC_TAB, buf,
+    /// 52×len)`——目的地 VFS、调用号 `VFS_GETSYSINFO`、what/where/size 三
+    /// lane（C getsysinfo.c:22-31 + dmp_fs.c:31）；应答臂 m_type 原样上浮
+    /// （_taskcall 语义，OK(0) 即成功）。
+    #[test]
+    fn test_vfs_proc_tab_wire_roundtrip_canned() {
+        let mut canned = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = OK;
+        canned.reply_sendrec(Ok(reply));
+
+        let mut tab = [FProcSnap::default(); 4];
+        let r = VfsProcTabTransport::vfs_proc_tab_via(&canned, &mut tab);
+        assert_eq!(r, OK);
+
+        let sent = canned.sent.borrow();
+        let (dest, msg) = &sent[0];
+        assert_eq!(*dest, Endpoint::VFS);
+        assert_eq!(msg.m_type, getsysinfo_call(Endpoint::VFS));
+        assert_eq!(msg.m_type, VFS_GETSYSINFO);
+        // SAFETY(test): 读回打包的三 lane（与 vfs_proc_tab_via 同布局）。
+        unsafe {
+            let raw = &msg.m_u.raw;
+            let what = i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]);
+            let mut where_bytes = [0u8; 8];
+            where_bytes.copy_from_slice(&raw[8..16]);
+            let where_addr = u64::from_ne_bytes(where_bytes);
+            let mut size_bytes = [0u8; 8];
+            size_bytes.copy_from_slice(&raw[16..24]);
+            let size = u64::from_ne_bytes(size_bytes);
+            assert_eq!(what, SI_PROC_TAB);
+            assert_eq!(where_addr, tab.as_mut_ptr() as u64);
+            assert_eq!(size, (tab.len() * core::mem::size_of::<FProcSnap>()) as u64);
+        }
+    }
+
+    /// 服务端负回复（如 ENOSYS/EINVAL）原样上浮为负状态——run_dump 的
+    /// `!= OK` 消费面按 04 §2.6 warn-and-continue。
+    #[test]
+    fn test_vfs_proc_tab_error_reply_passthrough() {
+        let mut canned = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = -minix_types::EINVAL;
+        canned.reply_sendrec(Ok(reply));
+
+        let mut tab = [FProcSnap::default(); 2];
+        assert_eq!(
+            VfsProcTabTransport::vfs_proc_tab_via(&canned, &mut tab),
+            -minix_types::EINVAL
+        );
+    }
+
+    /// 宿主构建（未开 real-trap）下 DirectTrapTransport 诚实报错——
+    /// DirectTrapTransport 宿主回退为正 errno（TrapStatus(EIO)），本地
+    /// 归一为 Minix 负状态 `-EIO`，不假装成功（KernelKmessTransport
+    /// 同款门控验证）。
+    #[test]
+    fn test_vfs_proc_tab_transport_hosted_is_eio() {
+        let mut t = VfsProcTabTransport;
+        let mut tab = [FProcSnap::default(); 2];
+        assert_eq!(t.vfs_proc_tab(&mut tab), -minix_types::EIO);
+    }
+
+    /// 未武装的四腿 fail-closed panic（装配错误，不是运行时错误）。
+    #[test]
+    #[should_panic(expected = "pm_proc_tab leg not armed")]
+    fn test_unarmed_pm_leg_panics() {
+        let mut t = VfsProcTabTransport;
+        let mut tab = [MProcSnap::default(); 1];
+        let _ = t.pm_proc_tab(&mut tab);
+    }
+
+    /// FakeAcquires 的 vfs_proc_tab 腿仍在（编排层测试不换装）——本模块
+    /// 只验证生产 transport 自身；main 换装挂 E-ISWIRE(3)。
+    #[test]
+    fn test_fake_acquires_leg_unchanged() {
+        let mut f = FakeAcquires::ok();
+        let mut tab = [FProcSnap::default(); 2];
+        assert_eq!(f.vfs_proc_tab(&mut tab), OK);
+        assert_eq!(tab[1].fp_pid, 1);
     }
 }

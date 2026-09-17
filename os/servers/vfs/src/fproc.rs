@@ -29,7 +29,8 @@
 //!   needed. See `02-fproc-struct.md` §3.
 
 use minix_types::{
-    Bitmap, DevId, Endpoint, Gid, GrantId, Mode, NO_DEV, NR_PROCS, Pid, Uid, UserSlot, VirBytes,
+    Bitmap, DevId, Endpoint, FProcSnap, Gid, GrantId, Mode, NO_DEV, NR_PROCS, Pid, Uid, UserSlot,
+    VirBytes,
 };
 
 /// Maximum number of open file descriptors per process.
@@ -359,6 +360,48 @@ impl FProc {
     pub fn is_in_use(&self) -> bool {
         self.pid != PID_FREE
     }
+
+    /// Serializes this slot into the `SI_PROC_TAB` wire shape
+    /// (`minix_types::FProcSnap`, the A-4 used-fields authority, E-MIBPROD).
+    ///
+    /// C ground truth is `struct fproc` (`fproc.h:12-86`) copied verbatim by
+    /// `do_getsysinfo` (`misc.c:76-77`); the wire here is the ruled
+    /// deviation: pointer arrays (`fp_filp`, `fp_wd`/`fp_rd`) carry no
+    /// meaning across the wire, so the descriptor count rides in `nfds`
+    /// instead, and the tagged [`BlockedOn`] collapses back to the C
+    /// discriminator (`const.h:19-25`) plus the `fp_cdev.endpt` column
+    /// dmp_fs.c:60-63 reads. An unused slot serializes to the all-zero
+    /// snapshot, matching C's zeroed BSS image (PID_FREE = 0, `fproc.h:103`).
+    pub fn to_fproc_snap(&self) -> FProcSnap {
+        // Discriminant → C `FP_BLOCKED_ON_*` value, with the CDEV driver
+        // endpoint as the second column (`fp_cdev.endpt`, 0 when absent).
+        let (blocked_on, cdev_endpt) = match &self.blocked_on {
+            BlockedOn::None => (0, 0),
+            BlockedOn::Pipe(_) => (1, 0),
+            BlockedOn::Flock(_) => (2, 0),
+            BlockedOn::PipeOpen(_) => (3, 0),
+            BlockedOn::Select => (4, 0),
+            BlockedOn::Cdev(b) => (5, b.endpt.get()),
+            BlockedOn::Sdev(_) => (6, 0),
+        };
+        FProcSnap {
+            fp_pid: self.pid,
+            // Wire keeps the C 32-bit device view the IS decoder reads
+            // (dump_vfs `major_of`/`minor_of` take i32); DevId is 64-bit
+            // internally (ARCH A-8).
+            fp_tty: self.tty as i32,
+            fp_umask: self.umask,
+            fp_realuid: self.real_uid,
+            fp_effuid: self.eff_uid,
+            fp_realgid: self.real_gid,
+            fp_effgid: self.eff_gid,
+            fp_flags: self.flags.bits(),
+            fp_blocked_on: blocked_on,
+            nfds: self.filps.iter().filter(|f| f.is_some()).count() as u32,
+            fp_cdev_endpt: cdev_endpt,
+            _reserved: [0; 2],
+        }
+    }
 }
 
 /// VFS process table.
@@ -412,6 +455,17 @@ impl FProcTable {
         } else {
             None
         }
+    }
+
+    /// The whole slot array in table order (slot `i` at index `i`).
+    ///
+    /// Wire-serialization callers (`do_getsysinfo`'s `SI_PROC_TAB` leg)
+    /// walk every slot regardless of use, exactly like C's
+    /// `sys_datacopy_wrapper(SELF, fproc, ...)` copies the raw
+    /// `fproc[NR_PROCS]` BSS image (`misc.c:76-77,113`) — per-slot
+    /// filtering is the *consumer's* job (dmp_fs.c skips `pid <= 0`).
+    pub fn slots(&self) -> &[FProc] {
+        &self.slots
     }
 
     /// Finds fproc by endpoint.
@@ -841,6 +895,109 @@ mod tests {
         let v = table.snapshot_light();
         assert_eq!(v[0].tty, 7);
         assert_eq!(v[0].blocked_on, BlockedOn::None);
+    }
+
+    /// Unused slot → all-zero wire: C's `do_getsysinfo` copies the raw BSS
+    /// image (`misc.c:76-77`), so an empty slot must serialize to the
+    /// `FProcSnap::default()` zero row (PID_FREE = 0, `fproc.h:103`).
+    #[test]
+    fn test_to_fproc_snap_unused_slot_is_all_zero() {
+        let fp = FProc::new_unused();
+        assert_eq!(fp.to_fproc_snap(), FProcSnap::default());
+        assert_eq!(fp.to_fproc_snap().fp_pid, PID_FREE);
+        assert_eq!(fp.to_fproc_snap().fp_blocked_on, 0);
+        assert_eq!(fp.to_fproc_snap().nfds, 0);
+    }
+
+    /// Field-by-field mapping of an occupied slot: direct fields ride 1:1,
+    /// the filp pointer array collapses to the `nfds` count (A-4), and a
+    /// CDEV block fills both the discriminator and the `fp_cdev.endpt`
+    /// column (dmp_fs.c:60-63).
+    #[test]
+    fn test_to_fproc_snap_field_mapping() {
+        let mut fp = FProc::new_unused();
+        fp.pid = 1234;
+        fp.flags = FpFlags::SRV_PROC | FpFlags::SESLDR;
+        fp.tty = 0x0040_0007; // 64-bit DevId internally (ARCH A-8)
+        fp.umask = 0o022;
+        fp.real_uid = 1000;
+        fp.eff_uid = 0;
+        fp.real_gid = 1000;
+        fp.eff_gid = 0;
+        fp.filps[0] = Some(10);
+        fp.filps[1] = Some(11);
+        fp.filps[2] = Some(12);
+        fp.blocked_on = BlockedOn::Cdev(CdevBlock {
+            dev: NO_DEV,
+            endpt: Endpoint::TTY,
+            grant: Some(7),
+        });
+
+        let snap = fp.to_fproc_snap();
+        assert_eq!(snap.fp_pid, 1234);
+        assert_eq!(snap.fp_tty, 0x0040_0007u64 as i32);
+        assert_eq!(snap.fp_umask, 0o022);
+        assert_eq!(snap.fp_realuid, 1000);
+        assert_eq!(snap.fp_effuid, 0);
+        assert_eq!(snap.fp_realgid, 1000);
+        assert_eq!(snap.fp_effgid, 0);
+        assert_eq!(snap.fp_flags, 0o0005); // SRV_PROC | SESLDR (fproc.h:91-98)
+        assert_eq!(snap.nfds, 3);
+        assert_eq!(snap.fp_blocked_on, 5); // FP_BLOCKED_ON_CDEV (const.h:24)
+        assert_eq!(snap.fp_cdev_endpt, Endpoint::TTY.get());
+        assert_eq!(snap._reserved, [0; 2]);
+    }
+
+    /// Every non-CDEV block kind maps to its C discriminator
+    /// (`const.h:19-25`) with the CDEV endpoint column zeroed; the tagged
+    /// enum guarantees the payload can never disagree with the wire value
+    /// (ARCH A-3).
+    #[test]
+    fn test_to_fproc_snap_blocked_on_wire_codes() {
+        let mut fp = FProc::new_unused();
+        fp.blocked_on = BlockedOn::Pipe(PipeBlock {
+            call: PipeIo::Read,
+            fd: 3,
+            buf: VirBytes::new(0x1000),
+            nbytes: 8,
+            cum_io: 0,
+        });
+        assert_eq!(fp.to_fproc_snap().fp_blocked_on, 1);
+        assert_eq!(fp.to_fproc_snap().fp_cdev_endpt, 0);
+
+        fp.blocked_on = BlockedOn::Flock(FlockBlock {
+            fd: 2,
+            cmd: FlockCmd::SetLkw,
+            arg: VirBytes::new(0x2000),
+        });
+        assert_eq!(fp.to_fproc_snap().fp_blocked_on, 2);
+
+        fp.blocked_on = BlockedOn::PipeOpen(PipeOpenBlock { fd: 1 });
+        assert_eq!(fp.to_fproc_snap().fp_blocked_on, 3);
+
+        fp.blocked_on = BlockedOn::Select;
+        assert_eq!(fp.to_fproc_snap().fp_blocked_on, 4);
+
+        fp.blocked_on = BlockedOn::Sdev(SdevBlock {
+            dev: NO_DEV,
+            call: SdevCall::Accept,
+            grants: [None, None, None],
+            aux: SdevAux::None,
+        });
+        assert_eq!(fp.to_fproc_snap().fp_blocked_on, 6);
+        assert_eq!(fp.to_fproc_snap().fp_cdev_endpt, 0);
+    }
+
+    /// `slots()` exposes the table in slot order for whole-table wire walks
+    /// (`do_getsysinfo` copies every slot; filtering is the consumer's job).
+    #[test]
+    fn test_fproc_table_slots_order() {
+        let mut table = FProcTable::new();
+        table.get_mut(UserSlot::new(3)).unwrap().pid = 33;
+        let slots = table.slots();
+        assert_eq!(slots.len(), NR_PROCS);
+        assert_eq!(slots[3].pid, 33);
+        assert_eq!(slots[0].pid, PID_FREE);
     }
 
 }

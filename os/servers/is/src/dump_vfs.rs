@@ -8,11 +8,13 @@
 //!
 //! `[ARCH: A-4]`: snapshots are wire-contract proposals (`#[repr(C)]`,
 //! used-fields subsets); the VFS-side GETSYSINFO producer aligns to them
-//! (pending VFS-crate work, explicit TODO below).
+//! (SI_PROC_TAB half closed: `FProcSnap` is the minix-types authority and
+//! VFS `do_getsysinfo` serves it via `FProc::to_fproc_snap` — E-MIBPROD,
+//! 2026-09-18; DMAP half pending, TODO below).
 
-// TODO(P1): [code] [factual] Align VFS-crate GETSYSINFO producers with the
-// snapshots below — see 07 §4. (current state: IS-side wire proposals)
-// (fix: VFS `do_getsysinfo` SI_PROC_TAB/SI_DMAP_TAB payloads match; A-4).
+// TODO(P1): [code] [factual] Align the VFS-crate DMAP_TAB producer with the
+// snapshot below — see 07 §4. (SI_PROC_TAB half closed 2026-09-18:
+// VFS `do_getsysinfo` ProcTab arm matches `FProcSnap`; A-4).
 
 /// VFS process snapshot (used fields only).
 ///
