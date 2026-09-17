@@ -86,7 +86,7 @@
 
 | C 符号 | 本篇位置 | Rust 对应 | 状态 |
 |--------|----------|-----------|------|
-| 包签名与包结构 | 第 2.2 节 | `CBW_SIGNATURE` 与 `CSW_SIGNATURE` | 已覆盖 |
+| 包签名与包结构 | 第 2.2 节 | `Cbw`/`Csw`（repr(C, packed) 钉 31/13 字节）、`cdb_read10`/`cdb_write10`/`cdb_inquiry` 等构造器、`CBW_SIGNATURE`/`CSW_SIGNATURE` | 已覆盖 |
 | 标签配对 | 第 2.2 节 | `TagPairing` | 已覆盖 |
 | 状态三值 | 第 2.2 节 | `CommandStatus` | 已覆盖 |
 | 七种命令码 | 第 2.3 节 | `ScsiCommand` | 已覆盖 |

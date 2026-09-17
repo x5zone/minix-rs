@@ -115,9 +115,176 @@ pub fn transfer_allowed(position: u64, length: u64) -> bool {
     length > 0 && position.is_multiple_of(SECTOR_SIZE) && length.is_multiple_of(SECTOR_SIZE)
 }
 
+/// Transfer direction flag inside the command wrapper
+/// (`CBW_FLAGS_OUT 0x00` / `CBW_FLAGS_IN 0x80`, `bulk.h:14-15`).
+pub const CBW_FLAGS_OUT: u8 = 0x00;
+pub const CBW_FLAGS_IN: u8 = 0x80;
+
+/// The 31-byte Command Block Wrapper that opens every transfer
+/// (`struct mass_storage_cbw`, `bulk.h:18-27`, packed).
+///
+/// The `#[repr(C, packed)]` overlays (and produces) the exact wire
+/// bytes the bulk-only protocol ships to the device; the const asserts
+/// pin the 31-byte size the spec mandates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, packed)]
+pub struct Cbw {
+    /// Signature: [`CBW_SIGNATURE`].
+    pub signature: u32,
+    /// Echoed by the matching status wrapper.
+    pub tag: u32,
+    /// Bytes of data the host expects to move.
+    pub data_transfer_length: u32,
+    /// Direction plus reserved bits (`CBW_FLAGS_IN`/`CBW_FLAGS_OUT`).
+    pub flags: u8,
+    /// Logical unit number.
+    pub lun: u8,
+    /// Length of the command block below.
+    pub cdb_length: u8,
+    /// The SCSI command block.
+    pub cdb: [u8; COMMAND_BLOCK_LENGTH],
+}
+
+const _: () = assert!(core::mem::size_of::<Cbw>() == 31);
+
+impl Cbw {
+    /// Build a wrapper: signature, tag, transfer length and direction,
+    /// logical unit, and the command block with its length.
+    pub fn new(
+        tag: u32,
+        data_transfer_length: u32,
+        to_device: bool,
+        lun: u8,
+        cdb: [u8; COMMAND_BLOCK_LENGTH],
+        cdb_length: u8,
+    ) -> Self {
+        Cbw {
+            signature: CBW_SIGNATURE,
+            tag,
+            data_transfer_length,
+            flags: if to_device { CBW_FLAGS_OUT } else { CBW_FLAGS_IN },
+            lun,
+            cdb_length,
+            cdb,
+        }
+    }
+}
+
+/// The 13-byte Command Status Wrapper that closes every transfer
+/// (`struct mass_storage_csw`, `bulk.h:35-42`, packed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, packed)]
+pub struct Csw {
+    /// Signature: [`CSW_SIGNATURE`].
+    pub signature: u32,
+    /// Echo of the command wrapper's tag.
+    pub tag: u32,
+    /// Bytes of the transfer the device did not move.
+    pub data_residue: u32,
+    /// Outcome (`CommandStatus` discriminants).
+    pub status: u8,
+}
+
+const _: () = assert!(core::mem::size_of::<Csw>() == 13);
+
+/// Build a 10-byte READ(10) command block: opcode, big-endian LBA at 2,
+/// big-endian block count at 7 (`SCSI_SET_READ_*`, `scsi.h:88-90`).
+pub fn cdb_read10(lba: u32, blocks: u16) -> [u8; COMMAND_BLOCK_LENGTH] {
+    let mut cdb = [0u8; COMMAND_BLOCK_LENGTH];
+    cdb[0] = ScsiCommand::Read as u8;
+    cdb[2..6].copy_from_slice(&lba.to_be_bytes());
+    cdb[7..9].copy_from_slice(&blocks.to_be_bytes());
+    cdb
+}
+
+/// Build a 10-byte WRITE(10) command block (`SCSI_SET_WRITE_*`,
+/// `scsi.h:92-94`).
+pub fn cdb_write10(lba: u32, blocks: u16) -> [u8; COMMAND_BLOCK_LENGTH] {
+    let mut cdb = cdb_read10(lba, blocks);
+    cdb[0] = ScsiCommand::Write as u8;
+    cdb
+}
+
+/// Build a 6-byte INQUIRY command block with allocation length
+/// (`SCSI_SET_INQUIRY_*`, `scsi.h:79-83`): opcode, page code 0 at 2,
+/// allocation length at 4.
+pub fn cdb_inquiry(allocation_length: u8) -> [u8; COMMAND_BLOCK_LENGTH] {
+    let mut cdb = [0u8; COMMAND_BLOCK_LENGTH];
+    cdb[0] = ScsiCommand::Inquiry as u8;
+    cdb[4] = allocation_length;
+    cdb
+}
+
+/// Build a 6-byte TEST UNIT READY command block (`scsi.h:93-94`).
+pub fn cdb_test_unit_ready() -> [u8; COMMAND_BLOCK_LENGTH] {
+    let mut cdb = [0u8; COMMAND_BLOCK_LENGTH];
+    cdb[0] = ScsiCommand::TestUnitReady as u8;
+    cdb
+}
+
+/// Build a 6-byte REQUEST SENSE command block (`scsi.h:97-99`).
+pub fn cdb_request_sense(allocation_length: u8) -> [u8; COMMAND_BLOCK_LENGTH] {
+    let mut cdb = [0u8; COMMAND_BLOCK_LENGTH];
+    cdb[0] = ScsiCommand::RequestSense as u8;
+    cdb[4] = allocation_length;
+    cdb
+}
+
+/// Build a 10-byte READ CAPACITY command block (`scsi.h:101-104`).
+pub fn cdb_read_capacity() -> [u8; COMMAND_BLOCK_LENGTH] {
+    let mut cdb = [0u8; COMMAND_BLOCK_LENGTH];
+    cdb[0] = ScsiCommand::ReadCapacity as u8;
+    cdb
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cbw_wire_bytes_and_size() {
+        assert_eq!(core::mem::size_of::<Cbw>(), 31);
+        assert_eq!(core::mem::size_of::<Csw>(), 13);
+        let cdb = cdb_read10(0x1234_5678, 4);
+        let cbw = Cbw::new(9, 4 * 512, false, 0, cdb, 10);
+        // Signature little-endian ("USBC"), tag echo, data length,
+        // IN flag with LUN 0 and CDB length 10.
+        let bytes: &[u8; 31] = unsafe { &*(&cbw as *const Cbw as *const [u8; 31]) };
+        assert_eq!(&bytes[..4], &0x4342_5355u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &9u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &(4u32 * 512).to_le_bytes());
+        assert_eq!(bytes[12], CBW_FLAGS_IN);
+        assert_eq!(bytes[13], 0);
+        assert_eq!(bytes[14], 10);
+        assert_eq!(&bytes[15..17], &[0x28, 0x00]); // opcode, then flags
+        assert_eq!(&bytes[17..21], &0x1234_5678u32.to_be_bytes()); // LBA
+        assert_eq!(&bytes[22..24], &4u16.to_be_bytes()); // block count
+        // CSW: signature, tag, residue, failed status.
+        let csw = Csw { signature: CSW_SIGNATURE, tag: 9, data_residue: 0, status: CommandStatus::Failed as u8 };
+        let csw_bytes: &[u8; 13] = unsafe { &*(&csw as *const Csw as *const [u8; 13]) };
+        assert_eq!(&csw_bytes[..4], &0x5342_5355u32.to_le_bytes());
+        assert_eq!(csw_bytes[12], 1);
+    }
+
+    #[test]
+    fn test_cdb_builders_pin_opcodes_and_be_fields() {
+        let read = cdb_read10(0x1234_5678, 4);
+        assert_eq!(read[0], 0x28);
+        assert_eq!(&read[2..6], &[0x12, 0x34, 0x56, 0x78]);
+        assert_eq!(&read[7..9], &[0, 4]);
+        let write = cdb_write10(1, 2);
+        assert_eq!(write[0], 0x2A);
+        assert_eq!(&write[2..6], &[0, 0, 0, 1]);
+        assert_eq!(&write[7..9], &[0, 2]);
+        let inquiry = cdb_inquiry(36);
+        assert_eq!(inquiry[0], 0x12);
+        assert_eq!(inquiry[4], 36);
+        assert_eq!(cdb_test_unit_ready()[0], 0x00);
+        assert_eq!(cdb_request_sense(18)[0], 0x03);
+        assert_eq!(cdb_request_sense(18)[4], 18);
+        assert_eq!(cdb_read_capacity()[0], 0x25);
+    }
+
 
     #[test]
     fn test_signatures_match_bulk_header() {

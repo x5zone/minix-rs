@@ -13,3 +13,4 @@
 extern crate alloc;
 
 pub mod urb;
+pub mod wire;
