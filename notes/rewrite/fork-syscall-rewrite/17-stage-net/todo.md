@@ -50,7 +50,7 @@
 | P2 | N1-P2-3 | legacy_fallback_applies 审计型死代码处置（[ARCH N-2]） |
 | P2 | N1-P2-4 | translate 模式三处：恒等 flag 映射 / common_bits 逐位循环 / 手工位运算 vs bitflags 2.x |
 | P2 | N1-P2-5 | 恒真测试分级处置（ALL_* 长度断言 + BUILD_C_FILES 文档型常量）vs 有效 wire 契约锁 |
-| P2 | N1-P2-6 | 16 个 crate 声明未使用的 minix-types/minix-sys 依赖 |
+| P2 | N1-P2-6 | 16 个 crate 声明未使用的 minix-types/minix-sys 依赖 ✅ **已闭环（2026-09-17）**：lwip/uds 随 N1-P1-4 真实化；NIC 部分归 16-stage/E-DEVWIRE |
 | P2 | N1-P2-7 | uds 未依赖 minix-netdriver："两个网络服务的共同骨架"未接线（sdev/sockevent 全仓零消费者）✅ **已接线（2026-09-17）**：uds 依赖 minix-netdriver 并消费 socktable |
 | P3 | N1-P3-1 | 文档同步：plan.md §6.1 checklist 全 ☐ 过时、§3.4 测试基线过时、00/99 两篇仍骨架 |
 | P3 | N1-P3-2 | 文档模板复制段落（ipsock.rs:10-14 ≈ udpsock.rs:10-13） |
@@ -154,10 +154,10 @@
 - **勘误保留**：`BUILD_C_FILES` 按 doc-04 §3.1 在册裁定保留（"不记录时子集漂移无人发现"——与 N1-P2-3 同款勘误逻辑：扫描建议与在册决策冲突时，决策优先）。
 **验证**：lwip 94 passed / uds 8 passed；Gate E：03/21/22/24 篇测试表同步更新。
 
-### N1-P2-6 16 个 crate 声明未使用的依赖
+### ✅ N1-P2-6 16 个 crate 声明未使用的依赖——已闭环 2026-09-17
 
-`os/net/lwip`、`os/net/uds`、14 个 NIC crate 的 Cargo.toml 均声明 minix-types + minix-sys，代码 grep 零引用（仅 minix-netdriver/driver.rs:14 真实使用 minix_types 三常量）。
-**建议**：与 E-SDEVOWN/E-DEVWIRE 联动——若 wire 类型落点裁定为 minix-sys/minix-types 的 net 模块，这些依赖将来会真实化，可留但应加注释或 `#[cfg]`；否则删除。不与 E-MINSYS-SCOPE 的 ds 先例（edge_todo.md ds 依赖卫生条款）重复立项，net 侧收敛随 wire 裁定一次处理。
+- **lwip/uds 部分**：随 N1-P1-4 自然消除——两 crate 现真实使用 minix-types（Message/Endpoint）、minix-sys（DirectTrapTransport）及 minix-sef/minix-netdriver/chardriver/blockdriver（新增），"声明未用"不再成立。
+- **14 个 NIC crate 部分**：划归 16-stage 车道（os/drivers/net 是其域，且该域扫描线程正在活跃工作——workspace 依赖表与 driver-rt 抽取都是本轮眼见为实）。其依赖清理随 E-DEVWIRE 的常量单一来源落地一并处理，本条不再跟踪。
 
 ### ✅ N1-P2-7 uds 未依赖 minix-netdriver——已接线 2026-09-17（随 N1-P1-4 并入本轮）
 
