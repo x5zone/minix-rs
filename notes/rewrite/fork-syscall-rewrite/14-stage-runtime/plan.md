@@ -297,7 +297,7 @@ syscall 封装不充当概念引入的驱动，而是按**服务分组**展开�
 
 | 编号 | 状态 | 日期 | 说明 |
 |------|------|------|------|
-| 00~13、99 | pending | 2026-08-16 | plan.md 定稿后创建最小骨架（本计划第 8 步） |
+| 00~13、99 | 正文 v1 落稿 | 2026-09-17 | 01~13 已于 2026-09-05 全部收敛（`.review/codex/runtime/STATE.md`）；00/99 正文 v1 同批落稿（95f971f02，V1-P1-5 闭单——14-stage-runtime/todo.md §V1-P1-5）；99 配 .design outline/design 快照，00 的 .design 快照与 99 的 outline-review 仍缺（Gate H.6 尾巴，随 14 侧后续 review 轮补齐） |
 
 ---
 
