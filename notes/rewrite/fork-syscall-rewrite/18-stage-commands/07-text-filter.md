@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作第二组——文件里面的行：取头取尾、排序去重、计数切割、字符转换
 > **源码**: `minix3/usr.bin/` 三十五个（`head` 204 行、`sort` 418 行、`wc` 354 行、`tr` 283 行、`uniq` 257 行、`cut` 306 行，及 `cksum`、`cmp`、`col`、`colrm`、`column`、`comm`、`csplit`、`expand`、`fold`、`hexdump`、`join`、`jot`、`lam`、`paste`、`patch`、`rev`、`sdiff`、`seq`、`shuffle`、`split`、`tail`、`tee`、`unexpand`、`unifdef`、`units`、`unvis`、`uuidgen`、`vis`、`yes`）、`minix3/minix/commands/` 三个（`look`、`ifdef`、`crc`）、`minix3/minix/usr.bin/diff/`
-> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`、`sort.rs`，库测试 36 个）；同 crate `src/bin/` 薄壳七个已接线：tr、cut、uniq、head、tail、wc、sort（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
+> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`、`sort.rs`、`cmp.rs`、`seq.rs`、`pr.rs`，库测试 56 个）；同 crate `src/bin/` 薄壳十个已接线：tr、cut、uniq、head、tail、wc、sort、cmp、seq、pr（cmp 的文件操作数待开放路径，结构性与决定半先到位，2026-09-17）（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`08-grep-sed.md`（正则概念在后——阅读顺序先本篇后 08，但概念上 08 是本篇部分工具的理论基础，见 1.5 节说明）
 > **不覆盖（移交）**: 正则引擎（见 `08-grep-sed.md`）、编辑器（见 `09-editors.md`）、排序的缓冲策略与比较器（后续阶段）
 
@@ -142,7 +142,10 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-textfilter`：**36 个测试，全部通过**（截至 2026-09-17，其中 11 个为 sort 的键解析与比较器）；另有 tr、cut、uniq、head、tail、wc、sort 七个已接线的命令二进制，其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
+`cargo test -p minix-textfilter`：**56 个测试，全部通过**（截至 2026-09-17，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr 的决定半）；另有 tr、cut、uniq、head、tail、wc、sort、cmp、seq、pr 十个已接线的命令二进制，其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
+- **逐字节比较**（`cmp.rs`，5 个）：`test_equal_streams`、`test_first_difference_reports_byte_and_line`、`test_list_all_collects_every_difference`、`test_eof_names_the_shorter_stream`（regular.c:119 的三目选短流）、`test_line_counter_follows_the_first_stream`（行计数随第一流）。
+- **数字序列**（`seq.rs`，9 个）：`test_default_first_and_increment`、`test_first_last_and_stride`（两操作数方向跟随，seq.c:150-152）、`test_direction_errors`（错误方向命名报错，seq.c:154-159）、`test_separator_flag`（分隔符逐数输出含尾随）、`test_equalize_pads_to_common_width`（`-w` 零填含符号位）、`test_terminator_flag`、`test_zero_increment_rejected`、`test_non_integer_operand_rejected`、`test_float_format_declared_unsupported`。
+- **分页**（`pr.rs`，6 个）：`test_page_geometry_is_66_lines`（66=5+56+5）、`test_header_line_carries_text_and_page_number`、`test_time_prefix_rides_the_header_line`、`test_body_pads_to_capacity`、`test_no_header_prints_the_body_bare`、`test_page_length_below_header_plus_trailer_is_rejected_by_the_caller`（pr.c:1875-1878 的页长下限由壳把守）。
 - **键解析与比较器**（`sort.rs`，11 个）：`test_plain_byte_order`、`test_reverse_inverts`、`test_numeric_with_signs_and_fractions`（符号、小数、非数字按零）、`test_fold_and_dictionary`（折叠使键相等后整行回退、字典过滤）、`test_month_table`（月份表与未知前置）、`test_key_spec_field_selection_with_delimiter`（`-t:` 下 `-k2,2` 及整行破并列）、`test_key_spec_dot_zero_rejected`（`.0` 非法偏移）、`test_local_reverse_drops_under_global`（init.c:239-242 的局部 `r` 语义）、`test_fields_split_on_blank_runs`（空白分段）、`test_tie_falls_back_to_whole_line`、`test_parse_options_rejects_unknown`。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/textfilter` 复现）：
@@ -167,7 +170,10 @@
 | head、tail | 同上 | 已接线（`-n`，缺省 10）；窗口容量封顶 32（固定数组窗口），`-c` 字节模式与文件操作数待批 |
 | wc | 同上 | 已接线（`-l`/`-w`/`-c` 任选，缺省三路，流式计数不经收集）；C 的文件操作数列对齐未复刻，文件操作数待开放路径 |
 | sort | 同上 | 已接线（决定半 `sort.rs`：`-k F[.C][flags][,F[.C][flags]]` 键规格、`b d f i M n r` 修饰符、`-t`、`-r`、`-u`、`-c`、整行回退；外部归并引擎属执行层，超内存输入待批；文件操作数待开放路径） |
-| cmp、diff、patch、pr、seq 及其余 | 各自的决定半尚未写库 | 随对应批次立项 |
+| cmp | 同上 | 已接线决定半（`cmp.rs`：逐字节比较、首个差异的字符与行定位、`-l` 全量清单、EOF 指名短流；二进制结构就位，文件操作数待开放路径） |
+| seq | 同上 | 已接线（决定半 `seq.rs`：整数序列、方向跟随的缺省增量、方向错误与零增量报错、`-w` 等宽、`-s` 分隔、`-t` 终止；浮点增量与 `-f` 格式待浮点渲染裁决；二进制全功能） |
+| pr | 同上 | 已接线决定半与单栏分页（66 行页、5+5 头尾、`-h`、`-l`、`-t`；时间字段由壳注入、多栏与 `-m` 待批；文件操作数待开放路径） |
+| diff、patch 及其余 | 各自的决定半尚未写库 | 随对应批次立项 |
 
 ---
 

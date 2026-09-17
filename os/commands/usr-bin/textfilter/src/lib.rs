@@ -31,11 +31,14 @@
 // stays allocation free.
 extern crate alloc;
 
+pub mod cmp;
 pub mod count;
 pub mod cut;
+pub mod pr;
+pub mod seq;
+pub mod sort;
 pub mod tr;
 pub mod uniq;
-pub mod sort;
 pub mod window;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
