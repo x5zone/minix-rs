@@ -96,7 +96,7 @@ impl CharDriver for FbFace {
                 // service's job.
                 0
             }
-            None => -(minix_types::ENOTTY as i32),
+            None => -(minix_types::ENOTTY),
         }
     }
 }
