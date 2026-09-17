@@ -10,6 +10,10 @@
 //! `perform_syscall` is fixed (edge E-SYSCALL-SIGN), hosted runs observe
 //! fake successes on both channels.
 
+// Each binary includes this module and uses the subset it needs; the
+// unused helpers in any one binary are intentional, not drift.
+#![allow(dead_code)]
+
 use minix_sys::{read, write, Fd};
 
 /// Standard input, POSIX `STDIN_FILENO`.
@@ -48,6 +52,27 @@ pub fn read_stdin() -> Vec<u8> {
         }
     }
     input
+}
+
+/// Renders `value` in decimal into `out`, returning the written length.
+///
+/// The counting totals are 64 bit (`Counter`), so the formatter is too.
+pub fn utoa_u64(mut value: u64, out: &mut [u8]) -> usize {
+    if value == 0 {
+        out[0] = b'0';
+        return 1;
+    }
+    let mut digits = [0u8; 20];
+    let mut count = 0;
+    while value > 0 {
+        digits[count] = b'0' + (value % 10) as u8;
+        value /= 10;
+        count += 1;
+    }
+    for (index, digit) in digits[..count].iter().rev().enumerate() {
+        out[index] = *digit;
+    }
+    count
 }
 
 /// Splits collected input into lines, dropping the trailing newline of

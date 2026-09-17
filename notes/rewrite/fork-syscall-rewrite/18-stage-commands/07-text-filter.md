@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作第二组——文件里面的行：取头取尾、排序去重、计数切割、字符转换
 > **源码**: `minix3/usr.bin/` 三十五个（`head` 204 行、`sort` 418 行、`wc` 354 行、`tr` 283 行、`uniq` 257 行、`cut` 306 行，及 `cksum`、`cmp`、`col`、`colrm`、`column`、`comm`、`csplit`、`expand`、`fold`、`hexdump`、`join`、`jot`、`lam`、`paste`、`patch`、`rev`、`sdiff`、`seq`、`shuffle`、`split`、`tail`、`tee`、`unexpand`、`unifdef`、`units`、`unvis`、`uuidgen`、`vis`、`yes`）、`minix3/minix/commands/` 三个（`look`、`ifdef`、`crc`）、`minix3/minix/usr.bin/diff/`
-> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`，库测试 25 个）；同 crate `src/bin/` 薄壳三个已接线：tr、cut、uniq（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
+> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`，库测试 25 个）；同 crate `src/bin/` 薄壳六个已接线：tr、cut、uniq、head、tail、wc（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3；2026-09-17）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`08-grep-sed.md`（正则概念在后——阅读顺序先本篇后 08，但概念上 08 是本篇部分工具的理论基础，见 1.5 节说明）
 > **不覆盖（移交）**: 正则引擎（见 `08-grep-sed.md`）、编辑器（见 `09-editors.md`）、排序的缓冲策略与比较器（后续阶段）
 
@@ -163,7 +163,8 @@
 | tr | `read`、`write`、`exit`、argv 交接 | 已接线（翻译、`-d` 删除、`-s` 压缩、`-c` 取补四路） |
 | cut | 同上 | 已接线（`-b`/`-c` 字节与 `-f` 字段两路，`-d`/`-s` 就位）；文件操作数待开放路径调用解锁（现仅 stdin） |
 | uniq | 同上 | 已接线（`-c`/`-d`/`-u` 单模式）；`-i`/`-f`/`-s` 比较面与组合模式待批 |
-| head、tail、wc | 同上 | 决定半已测（`window.rs`、`count.rs`），薄壳随下一批接线 |
+| head、tail | 同上 | 已接线（`-n`，缺省 10）；窗口容量封顶 32（固定数组窗口），`-c` 字节模式与文件操作数待批 |
+| wc | 同上 | 已接线（`-l`/`-w`/`-c` 任选，缺省三路，流式计数不经收集）；C 的文件操作数列对齐未复刻，文件操作数待开放路径 |
 | sort、cmp、diff、patch、pr、seq 及其余 | 各自的决定半尚未写库 | 随对应批次立项 |
 
 ---
