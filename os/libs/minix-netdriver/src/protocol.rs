@@ -15,6 +15,130 @@ pub const NDEV_REQUEST_BASE: i32 = 0x1A00;
 /// C: `NDEV_RS_BASE 0x1A80` (`com.h:1086`).
 pub const NDEV_REPLY_BASE: i32 = 0x1A80;
 
+/// Reply: initialization report (`NDEV_INIT_REPLY`, `com.h:1103`).
+pub const NDEV_INIT_REPLY: i32 = NDEV_REPLY_BASE;
+/// Reply: configuration report (`NDEV_CONF_REPLY`, `com.h:1104`).
+pub const NDEV_CONF_REPLY: i32 = NDEV_REPLY_BASE + 1;
+/// Reply: send accepted (`NDEV_SEND_REPLY`, `com.h:1105`).
+pub const NDEV_SEND_REPLY: i32 = NDEV_REPLY_BASE + 2;
+/// Reply: receive data (`NDEV_RECV_REPLY`, `com.h:1106`).
+pub const NDEV_RECV_REPLY: i32 = NDEV_REPLY_BASE + 3;
+/// Reply: ioctl result (`NDEV_IOCTL_REPLY`, `com.h:1107`, reserved).
+pub const NDEV_IOCTL_REPLY: i32 = NDEV_REPLY_BASE + 4;
+/// Reply: status report (`NDEV_STATUS`, `com.h:1108`).
+pub const NDEV_STATUS_REPLY: i32 = NDEV_REPLY_BASE + 5;
+
+/// Capability: IPv4 header checksum generation (`com.h:1126`).
+pub const NDEV_CAP_CS_IP4_TX: u32 = 0x01;
+/// Capability: IPv4 header checksum verification (`com.h:1127`).
+pub const NDEV_CAP_CS_IP4_RX: u32 = 0x02;
+/// Capability: UDP checksum generation (`com.h:1128`).
+pub const NDEV_CAP_CS_UDP_TX: u32 = 0x04;
+/// Capability: UDP checksum verification (`com.h:1129`).
+pub const NDEV_CAP_CS_UDP_RX: u32 = 0x08;
+/// Capability: TCP checksum generation (`com.h:1130`).
+pub const NDEV_CAP_CS_TCP_TX: u32 = 0x10;
+/// Capability: TCP checksum verification (`com.h:1131`).
+pub const NDEV_CAP_CS_TCP_RX: u32 = 0x20;
+/// Capability: multicast, negotiation time only (`com.h:1132`).
+pub const NDEV_CAP_MCAST: u32 = 0x2000_0000;
+/// Capability: broadcast, negotiation time only (`com.h:1133`).
+pub const NDEV_CAP_BCAST: u32 = 0x4000_0000;
+/// Capability: hardware address settable, negotiation time only
+/// (`com.h:1134`).
+pub const NDEV_CAP_HWADDR: u32 = 0x8000_0000;
+
+/// Driver flag: debug mode (`NDEV_FLAG_DEBUG`, `com.h:1137`).
+pub const NDEV_FLAG_DEBUG: u32 = 0x01;
+/// Driver flag: board-specific LINK0 (`NDEV_FLAG_LINK0`, `com.h:1138`).
+pub const NDEV_FLAG_LINK0: u32 = 0x02;
+/// Driver flag: board-specific LINK1 (`NDEV_FLAG_LINK1`, `com.h:1139`).
+pub const NDEV_FLAG_LINK1: u32 = 0x04;
+/// Driver flag: board-specific LINK2 (`NDEV_FLAG_LINK2`, `com.h:1140`).
+pub const NDEV_FLAG_LINK2: u32 = 0x08;
+
+/// The six reply numbers as a type (`com.h:1103-1108`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NdevReply {
+    /// Initialization report.
+    Init,
+    /// Configuration report.
+    Conf,
+    /// Send accepted.
+    Send,
+    /// Receive data.
+    Recv,
+    /// Ioctl result (reserved).
+    Ioctl,
+    /// Status report.
+    Status,
+}
+
+impl NdevReply {
+    /// The wire number for this reply.
+    pub const fn message_type(self) -> i32 {
+        NDEV_REPLY_BASE + self.index() as i32
+    }
+
+    /// Zero-based position within the reply family.
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Decode a message type into a reply, refusing out-of-family values.
+    pub const fn decode(message_type: i32) -> Option<NdevReply> {
+        if (message_type & !0x7f) != NDEV_REPLY_BASE {
+            return None;
+        }
+        match message_type - NDEV_REPLY_BASE {
+            0 => Some(NdevReply::Init),
+            1 => Some(NdevReply::Conf),
+            2 => Some(NdevReply::Send),
+            3 => Some(NdevReply::Recv),
+            4 => Some(NdevReply::Ioctl),
+            5 => Some(NdevReply::Status),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    #[test]
+    fn test_reply_numbers_match_com_header() {
+        // com.h:1103-1108 — six replies at the RS base.
+        assert_eq!(NdevReply::Init.message_type(), NDEV_INIT_REPLY);
+        assert_eq!(NdevReply::Conf.message_type(), NDEV_CONF_REPLY);
+        assert_eq!(NdevReply::Send.message_type(), NDEV_SEND_REPLY);
+        assert_eq!(NdevReply::Recv.message_type(), NDEV_RECV_REPLY);
+        assert_eq!(NdevReply::Ioctl.message_type(), NDEV_IOCTL_REPLY);
+        assert_eq!(NdevReply::Status.message_type(), NDEV_STATUS_REPLY);
+        assert_eq!(NdevReply::decode(NDEV_STATUS_REPLY), Some(NdevReply::Status));
+        assert_eq!(NdevReply::decode(NDEV_REPLY_BASE + 6), None);
+    }
+
+    #[test]
+    fn test_capability_and_flag_bits_match_com_header() {
+        // com.h:1126-1134 — six checksum lanes plus three init-only bits.
+        assert_eq!(NDEV_CAP_CS_IP4_TX, 0x01);
+        assert_eq!(NDEV_CAP_CS_IP4_RX, 0x02);
+        assert_eq!(NDEV_CAP_CS_UDP_TX, 0x04);
+        assert_eq!(NDEV_CAP_CS_UDP_RX, 0x08);
+        assert_eq!(NDEV_CAP_CS_TCP_TX, 0x10);
+        assert_eq!(NDEV_CAP_CS_TCP_RX, 0x20);
+        assert_eq!(NDEV_CAP_MCAST, 0x2000_0000);
+        assert_eq!(NDEV_CAP_BCAST, 0x4000_0000);
+        assert_eq!(NDEV_CAP_HWADDR, 0x8000_0000);
+        // com.h:1137-1140 — four driver-specific flags.
+        assert_eq!(NDEV_FLAG_DEBUG, 0x01);
+        assert_eq!(NDEV_FLAG_LINK0, 0x02);
+        assert_eq!(NDEV_FLAG_LINK1, 0x04);
+        assert_eq!(NDEV_FLAG_LINK2, 0x08);
+    }
+}
+
 /// Maximum driver name length including the trailing zero.
 ///
 /// C: `NDEV_NAME_MAX 16` (`config.h:102`).
