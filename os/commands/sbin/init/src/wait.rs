@@ -7,8 +7,6 @@
 //! here so the mutual exclusions are compiler-checked instead of
 //! re-derived at every call site.
 
-use crate::state_machine::sig;
-
 /// Option bits for `waitpid` (C: `minix3/sys/sys/wait.h:76-79`).
 pub const WNOHANG: i32 = 0x0000_0001;
 /// C: `WUNTRACED` (`wait.h:77`) — report stopped children too.
@@ -115,6 +113,7 @@ pub(crate) fn exit_code_raw(code: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state_machine::sig;
 
     #[test]
     fn test_zero_status_is_clean_exit() {

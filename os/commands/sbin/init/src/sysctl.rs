@@ -2,101 +2,90 @@
 //!
 //! Covers `minix3/sbin/init/init.c:544-618` and `1811-1900`.
 //! ARCH A-4 (securelevel) and A-5 (init.root) are deferred: the
-//! traits below define the contract; live sysctl wiring lands with
-//! the kernel service.
+//! machine answers come through [`InitHost`] methods, whose live
+//! implementation returns ENOSYS until the kernel mib face lands.
 //! Design contract: `.design/12-design.v1.md §1.1-§1.2`.
 
-/// Secure-level boundary (C: has/get/setsecuritylevel).
-pub trait SecureLevel {
-    fn present(&self) -> bool;
-    fn get(&self) -> Option<i32>;
-    fn set(&mut self, level: i32) -> bool;
+use crate::host::InitHost;
+
+/// Read the kernel security level.
+///
+/// `Ok(None)` covers "the node does not exist" — the C
+/// `getsecuritylevel` answer of -1 on a kernel without securelevel
+/// support (init.c:575-576, 587). An `Err` (live host: ENOSYS) means
+/// the question cannot be asked yet; callers treat it like `None`
+/// plus a warning.
+pub fn get_securitylevel(host: &dyn InitHost) -> Option<i32> {
+    host.securitylevel().ok().flatten()
 }
 
-/// In-memory fake level for tests.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FakeSecureLevel {
-    pub supported: bool,
-    pub level: i32,
-    pub sets: Vec<i32>,
+/// Lower the security level to `level` (C: `setsecuritylevel`,
+/// init.c:595-618).
+///
+/// `Ok(false)` covers both "unsupported" and "already at that level" —
+/// the two C no-op shapes. Single-user does this downgrade at
+/// init.c:723-725 when the level is above zero.
+pub fn set_securitylevel(host: &mut dyn InitHost, level: i32) -> bool {
+    matches!(host.set_securitylevel(level), Ok(true))
 }
 
-impl SecureLevel for FakeSecureLevel {
-    fn present(&self) -> bool {
-        self.supported
+/// Whether to chroot before running `/etc/rc` (C: `shouldchroot`,
+/// init.c:1859-1900).
+///
+/// C reads the `init.root` sysctl node, recreates it on ENOENT, and
+/// chroots only when the value names a non-`/` directory. The
+/// node-recreate half is A-5; here the host answers, and an unreadable
+/// node counts as "no chroot" — the value C starts from when the node
+/// does not exist.
+pub fn should_chroot(host: &dyn InitHost) -> bool {
+    match host.init_root() {
+        Ok(Some(rootdir)) => !rootdir.is_empty() && rootdir != "/",
+        _ => false,
     }
-
-    fn get(&self) -> Option<i32> {
-        if !self.supported {
-            // C: return -1 when unsupported (init.c:575-576, 587).
-            return None;
-        }
-        Some(self.level)
-    }
-
-    fn set(&mut self, level: i32) -> bool {
-        if !self.supported || level == self.level {
-            return false;
-        }
-        self.level = level;
-        self.sets.push(level);
-        true
-    }
-}
-
-/// Whether to chroot (C: `shouldchroot`, init.c:1896-1899).
-pub fn should_chroot(rootdir: &str) -> bool {
-    !rootdir.is_empty() && rootdir != "/"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::ScriptHost;
 
     #[test]
-    fn test_absent_returns_minus_one() {
-        let lvl = FakeSecureLevel {
-            supported: false,
-            level: 0,
-            sets: Vec::new(),
-        };
-        assert_eq!(lvl.get(), None);
+    fn test_absent_node_means_no_level() {
+        let host = ScriptHost::default();
+        assert_eq!(get_securitylevel(&host), None);
     }
 
     #[test]
-    fn test_set_same_noop() {
-        let mut lvl = FakeSecureLevel {
-            supported: true,
-            level: 1,
-            sets: Vec::new(),
-        };
-        assert!(!lvl.set(1));
-        assert!(lvl.sets.is_empty());
+    fn test_set_same_level_is_noop() {
+        let mut host = ScriptHost::default();
+        host.securitylevel = Some(1);
+        assert!(!set_securitylevel(&mut host, 1));
+        assert!(host.securitylevel_sets.is_empty());
     }
 
     #[test]
     fn test_single_user_downgrades() {
-        let mut lvl = FakeSecureLevel {
-            supported: true,
-            level: 1,
-            sets: Vec::new(),
-        };
-        // single_user: if level > 0, set 0 (init.c:723-725).
-        if lvl.get().unwrap_or(0) > 0 {
-            lvl.set(0);
+        // C: if level > 0, set 0 (init.c:723-725).
+        let mut host = ScriptHost::default();
+        host.securitylevel = Some(1);
+        if get_securitylevel(&host).unwrap_or(0) > 0 {
+            set_securitylevel(&mut host, 0);
         }
-        assert_eq!(lvl.get(), Some(0));
+        assert_eq!(get_securitylevel(&host), Some(0));
+        assert_eq!(host.securitylevel_sets, vec![0]);
     }
 
     #[test]
-    fn test_should_chroot_matrix() {
-        assert!(should_chroot("/newroot"));
-        assert!(!should_chroot("/"));
-        assert!(!should_chroot(""));
-    }
-
-    #[test]
-    fn test_root_slash_no_chroot() {
-        assert!(!should_chroot("/"));
+    fn test_chroot_matrix() {
+        let mut host = ScriptHost::default();
+        host.root = Some("/newroot".into());
+        assert!(should_chroot(&host));
+        host.root = Some("/".into());
+        assert!(!should_chroot(&host));
+        host.root = Some("".into());
+        assert!(!should_chroot(&host));
+        // Unreadable node: no chroot, no crash.
+        let bare = ScriptHost::default();
+        assert!(!should_chroot(&bare));
     }
 }

@@ -5,7 +5,6 @@
 //! (`transition_handler`), `1649-1655` (`alrm_handler`).
 //! Design contract: `.design/02-design.v1.md §1.1-§1.4`.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Minix3 signal numbers init reacts to.
@@ -33,7 +32,7 @@ pub mod sig {
     pub const SIGNAL_USER_1: i32 = 30;
 }
 
-use sig::{SIGNAL_ALARM, SIGNAL_ABORT, SIGNAL_HANGUP, SIGNAL_KILL, SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE, SIGNAL_USER_1};
+use sig::{SIGNAL_ALARM, SIGNAL_ABORT, SIGNAL_HANGUP, SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE, SIGNAL_USER_1};
 
 /// The seven init states (C: `DEATH`..`CATATONIA`, init.c:133-139).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,71 +142,6 @@ pub fn signal_to_state(sig: Signal) -> Option<StateKind> {
     }
 }
 
-/// Registration errors (defer until `minix_sys` signal syscalls land).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegistryError {
-    /// Live registration needs real `sigaction` (ARCH A-8 gap).
-    Deferred,
-}
-
-/// Signal registration boundary (C: `handle`/`delset`, init.c:369-405).
-pub trait SignalRegistry {
-    fn register(&mut self, handler: HandlerKind, sigs: &[Signal]) -> Result<(), RegistryError>;
-    fn block_all_except(&mut self, except: &[Signal]);
-    fn registered(&self, sig: Signal) -> Option<HandlerKind>;
-}
-
-/// In-memory fake registry for tests.
-#[derive(Debug, Default)]
-pub struct FakeSignalRegistry {
-    table: HashMap<Signal, HandlerKind>,
-    pub blocked_except: Vec<Signal>,
-}
-
-impl SignalRegistry for FakeSignalRegistry {
-    fn register(&mut self, handler: HandlerKind, sigs: &[Signal]) -> Result<(), RegistryError> {
-        for sig in sigs {
-            self.table.insert(*sig, handler);
-        }
-        Ok(())
-    }
-
-    fn block_all_except(&mut self, except: &[Signal]) {
-        self.blocked_except = except.to_vec();
-    }
-
-    fn registered(&self, sig: Signal) -> Option<HandlerKind> {
-        self.table.get(&sig).copied()
-    }
-}
-
-/// Live registry placeholder (needs real `sigaction`; ARCH A-8).
-#[derive(Debug, Default)]
-pub struct LiveSignalRegistry {
-    table: HashMap<Signal, HandlerKind>,
-}
-
-impl SignalRegistry for LiveSignalRegistry {
-    fn register(&mut self, handler: HandlerKind, sigs: &[Signal]) -> Result<(), RegistryError> {
-        // Real implementation will call sigaction per signal with
-        // sa_mask = full set and SA_NOCLDSTOP for SIGCHLD-equivalents
-        // (init.c:380-386). Unavailable until minix_sys lands.
-        // Record intent so callers can observe it, then report deferral.
-        for sig in sigs {
-            self.table.insert(*sig, handler);
-        }
-        Err(RegistryError::Deferred)
-    }
-
-    fn block_all_except(&mut self, _except: &[Signal]) {
-        // Deferred with register(); no observable state yet.
-    }
-
-    fn registered(&self, sig: Signal) -> Option<HandlerKind> {
-        self.table.get(&sig).copied()
-    }
-}
-
 /// Alarm flag (C: `clang`, init.c:173; set by `alrm_handler`, init.c:1649-1655).
 ///
 /// Atomic so a real signal handler can set it asynchronously.
@@ -254,6 +188,7 @@ pub trait TransitionDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     struct ScriptDriver {
         script: HashMap<StateKind, Option<StateKind>>,
@@ -312,16 +247,6 @@ mod tests {
             assert_eq!(Signal::from_signum(sig.signum()), sig);
         }
         assert_eq!(Signal::from_signum(99), Signal::Other(99));
-    }
-
-    #[test]
-    fn test_fake_registry_records() {
-        let mut reg = FakeSignalRegistry::default();
-        reg.register(HandlerKind::Transition, &[Signal::Sighup, Signal::Sigterm])
-            .unwrap();
-        assert_eq!(reg.registered(Signal::Sighup), Some(HandlerKind::Transition));
-        reg.block_all_except(&[Signal::Sighup]);
-        assert_eq!(reg.blocked_except, vec![Signal::Sighup]);
     }
 
     #[test]

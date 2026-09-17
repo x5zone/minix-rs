@@ -2,12 +2,15 @@
 //!
 //! Covers `minix3/sbin/init/init.c:229-367` (`main`) and the device-probe
 //! entry point `minix3/sbin/init/init.c:1703-1788` (`mfs_dev`).
-//! Design contract: `.design/01-design.v1.md §1.1-§1.4` (see plan.md §2/§4).
+//! Design contract: `.design/01-design.v1.md §1.1-§1.4`.
 //!
-//! The module is intentionally pure: argument parsing and entry decisions
-//! perform no system calls, so they are unit-testable without forking.
-//! Side effects (exiting, forking MAKEDEV, closing fds) live in `main.rs`.
+//! The module is intentionally free of side effects: argument parsing
+//! and entry decisions answer questions, and the machine answers
+//! through the [`InitHost`] seam (`path_exists`) — so the probe is
+//! testable without a filesystem while the live host still asks the
+//! real one.
 
+use crate::host::InitHost;
 use minix_sys::Errno;
 
 /// How `/etc/rc` should run (C: `runcom_mode`, init.c:151).
@@ -48,20 +51,14 @@ pub fn parse_boot_args(argv: &[String]) -> (BootArgs, Vec<String>) {
             continue;
         }
         if arg.starts_with('-') && arg.len() > 1 {
-            let mut unknown_in_this = false;
             for flag in arg.chars().skip(1) {
                 match flag {
                     's' => args.single_user = true,
                     'f' => args.fastboot = true,
                     other => {
                         warnings.push(format!("unrecognized flag `{other}'"));
-                        unknown_in_this = true;
                     }
                 }
-            }
-            // A bare "-" is a positional argument, not flags.
-            if unknown_in_this && arg == "-" {
-                warnings.push("ignoring excess arguments".to_string());
             }
             continue;
         }
@@ -144,81 +141,23 @@ pub fn decide_entry(args: &BootArgs, console_ok: bool) -> EntryDecision {
     }
 }
 
-/// Outcome of ensuring `/dev` is usable (C: `mfs_dev`, init.c:1703-1788).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceEnsureOutcome {
-    /// `/dev/console` present (or created successfully).
-    Ok,
-    /// Probe failed; caller must fall back to single-user (init.c:269-270).
-    FellBackToSingleUser,
-    /// Probe failed in a way the caller cannot recover from.
-    Failed,
-}
-
-/// Abstraction over the `/dev/console` probe + MAKEDEV fallback.
+/// Probe whether `/dev/console` is reachable (C: `mfs_dev`'s stat,
+/// init.c:1729).
 ///
-/// The live implementation will use `minix_sys` once those syscalls land
-/// (currently stubbed); tests use an in-memory fake. The `#if 0` debug
-/// block (init.c:1716-1756) is deliberately not modelled (dead code).
-pub trait DeviceProbe {
-    fn console_present(&self) -> bool;
-    fn ensure_devices(&self) -> DeviceEnsureOutcome;
-}
-
-/// In-memory fake probe for tests and early bring-up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FakeDeviceProbe {
-    pub present: bool,
-    pub ensure_outcome: DeviceEnsureOutcome,
-}
-
-impl DeviceProbe for FakeDeviceProbe {
-    fn console_present(&self) -> bool {
-        self.present
-    }
-
-    fn ensure_devices(&self) -> DeviceEnsureOutcome {
-        self.ensure_outcome
-    }
-}
-
-/// Filesystem backed probe for the live boot path.
-///
-/// Behaviour differs from the fake on purpose: answers come from the
-/// machine instead of canned values. The console counts as present when its
-/// device path exists; device assurance succeeds when the device directory
-/// itself is reachable, otherwise the entry decision falls back to
-/// single-user mode exactly as the C boot path does when the console is
-/// missing. Only standard file metadata queries are used, so the probe
-/// behaves identically on any host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FsDeviceProbe {
-    /// Device path treated as the console, usually `/dev/console`.
-    pub console_path: &'static str,
-    /// Directory whose reachability gates device assurance, usually `/dev`.
-    pub device_dir: &'static str,
-}
-
-impl DeviceProbe for FsDeviceProbe {
-    fn console_present(&self) -> bool {
-        std::fs::metadata(self.console_path).is_ok()
-    }
-
-    fn ensure_devices(&self) -> DeviceEnsureOutcome {
-        if std::fs::metadata(self.device_dir).is_ok() {
-            DeviceEnsureOutcome::Ok
-        } else {
-            DeviceEnsureOutcome::Failed
-        }
-    }
+/// The MAKEDEV fork/exec fallback (init.c:1759-1787) lands with the
+/// process entities; until then a missing console falls straight back
+/// to single-user, which is also where C ends up when MAKEDEV cannot
+/// save the day. The `#if 0` debug block (init.c:1716-1756) is
+/// deliberately not modelled (dead code).
+pub fn console_present(host: &dyn InitHost, console_path: &str) -> bool {
+    matches!(host.path_exists(console_path), Ok(true))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::ScriptHost;
 
-    // `no_std`-friendly helper: this crate builds with std (via minix-rt),
-    // but keep arg construction explicit for readability.
     fn argv(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
     }
@@ -322,34 +261,25 @@ mod tests {
     }
 
     #[test]
-    fn test_fs_probe_sees_live_filesystem() {
-        // The test host always has a root directory; a sibling path that
-        // cannot exist stands in for the missing console.
-        let present = FsDeviceProbe {
-            console_path: "/",
-            device_dir: "/",
-        };
-        assert!(present.console_present());
-        assert_eq!(present.ensure_devices(), DeviceEnsureOutcome::Ok);
-        let missing = FsDeviceProbe {
-            console_path: "/no-such-console-device",
-            device_dir: "/no-such-device-dir",
-        };
-        assert!(!missing.console_present());
-        assert_eq!(missing.ensure_devices(), DeviceEnsureOutcome::Failed);
-    }
+    fn test_probe_asks_the_host_seam() {
+        // Present console: the scripted host answers from its table.
+        let mut host = ScriptHost::default();
+        host.paths.push(("/dev/console".into(), true));
+        assert!(console_present(&host, "/dev/console"));
 
-    #[test]
-    fn test_probes_are_interchangeable_as_trait_objects() {
-        let fake = FakeDeviceProbe {
-            present: true,
-            ensure_outcome: DeviceEnsureOutcome::Ok,
-        };
-        let live = FsDeviceProbe {
-            console_path: "/",
-            device_dir: "/",
-        };
-        let probes: [&dyn DeviceProbe; 2] = [&fake, &live];
-        assert!(probes.iter().all(|probe| probe.console_present()));
+        // Missing console: probe false, entry falls to single-user.
+        let mut missing = ScriptHost::default();
+        missing.paths.push(("/dev/console".into(), false));
+        assert!(!console_present(&missing, "/dev/console"));
+        assert_eq!(
+            decide_entry(&BootArgs::default(), console_present(&missing, "/dev/console")).initial,
+            InitialState::SingleUser
+        );
+
+        // An erroring probe (ENOSYS on the real machine before
+        // E-INITSYS) counts as "no console" — honest failure, and the
+        // entry decision treats it exactly like C treats a missing
+        // console device.
+        assert!(!console_present(&crate::host::MinixSysHost, "/dev/console"));
     }
 }

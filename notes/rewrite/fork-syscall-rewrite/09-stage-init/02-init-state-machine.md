@@ -130,20 +130,16 @@ pub fn signal_to_state(sig: Signal) -> Option<StateKind>
 
 C 的 `for(;;)` 无法单测，Rust 的 `run(max_steps)` 允许测试跑固定步数后停下断言轨迹。`step()` 返回 `None` 表示“当前状态函数要求停机”（对应 C 的返回空指针），测试可覆盖这条罕见路径。
 
-### 3.5 决策四：SignalRegistry 双实现
+### 3.5 决策四：信号注册表收敛为 SignalSpec 数据 + host 安装
 
-`FakeSignalRegistry` 记录注册表供断言；`LiveSignalRegistry` 预留真实 `sigaction` 接线，当前返回 defer 错误（A-8 缺口显式化）。`SA_NOCLDSTOP` 语义写进 Live 注释，`SA_RESTART` 疑问如实转述，不虚构结论。
-
----
-
-## 4. 实现详解
+**[ARCH: init-host-seam]** 原 `SignalRegistry` trait（Fake 记录 + Live 返回 defer 错误）退役：注册表达降为数据——`SignalSpec { handlers, blocked_except }`（符号对，来自 C 的 `handle()`/`delset()` 调用点），安装动作是 `InitHost::register_handlers`。live 宿主在 sigaction 客户端面（E-INITSYS ①）落地前返回 ENOSYS；剧本宿主记录整张 spec 供断言。`SA_NOCLDSTOP`/`SA_RESTART` 的转述原则不变：如实记录，不虚构结论。
 
 ### 4.1 模块结构
 
 ```text
 os/commands/sbin/init/src/
   entry.rs          — 01（本篇复用 InitialState→StateKind 升级见 §4.3）
-  state_machine.rs  — 本篇：StateKind / Signal / signal_to_state / TransitionDriver / SignalRegistry
+  state_machine.rs  — 本篇：StateKind / Signal / signal_to_state / sig 常量 /（TransitionDriver 随主循环轮退役）
 ```
 
 设计决策引用：文件头标 `design §1.1~§1.4`；每个映射分支注释 C 行号。

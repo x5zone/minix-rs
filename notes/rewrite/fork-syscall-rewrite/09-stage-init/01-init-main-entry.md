@@ -169,18 +169,9 @@ C 用两个全局变量（`requested_transition`、`runcom_mode`）隐式传递�
 
 状态本身用枚举而非函数指针。C 的 `state_t` 是返回函数指针的函数指针（`init.c:130-131`），类型体操复杂且无法穷尽匹配。Rust 的 `InitialState` 只有两个变体，`match` 必须处理完备，新增状态时编译器会逼着补全。完整七状态枚举在 02 定义，本篇只用其子集并做显式注释，避免前向引用。
 
-### 3.5 决策四：mfs_dev 收敛为 DeviceProbe trait
+### 3.5 决策四：mfs_dev 收敛为 host 接缝上的探测
 
-```rust
-pub trait DeviceProbe {
-    fn console_present(&self) -> bool;
-    fn ensure_devices(&self) -> DeviceEnsureOutcome;
-}
-```
-
-真实实现检查 `/dev/console` 是否存在，缺失则执行 MAKEDEV 流程；测试用内存假实现直接返回预设值。`DeviceEnsureOutcome::{Ok, FellBackToSingleUser, Failed}` 对应 C 的三种结局。`#if 0` 死代码段在 Rust 侧直接丢弃，并在注释中说明丢弃依据（C 行号），不做无意义的逐行翻译。
-
-构建变体宏（`LETS_GET_SMALL`、`MFS_DEV_IF_NO_CONSOLE` 等 Makefile 开关）属于 **[ARCH A-7]**：Rust 侧取 Minix 默认全开语义（支持 `-s`/`-f`、支持 MAKEDEV 回退），暂不提供 feature 开关。如未来需要裁剪体积，再引入 Cargo feature，此处预留注释说明。
+**[ARCH: init-host-seam]** 原 `DeviceProbe` trait（fake + host 文件系统两个实现）随接缝收敛退役：探测现在是 `entry::console_present(host, path)`，机器回答经由 `InitHost::path_exists`。live 宿主在 minix-sys 的 stat 面落地（E-INITSYS ②）前诚实返回 ENOSYS，探测按"无控制台"处理，与 C 在设备缺失时的单用户回退同一条路。MAKEDEV 的 fork/exec 兜底（init.c:1759-1787）属进程实体，随 P0-2 批次落地。
 
 ### 3.6 本篇有意不做的事
 
@@ -195,7 +186,7 @@ pub trait DeviceProbe {
 ```text
 os/commands/sbin/init/src/
   main.rs    — 接线：init() → 校验 → 会话 → 设备 → 参数 → 信号占位 → transition 占位
-  entry.rs   — 本篇：BootArgs / Identity / EntryDecision / DeviceProbe
+  entry.rs   — 本篇：BootArgs / Identity / EntryDecision / 探测（走 host 接缝）
 ```
 
 设计决策引用：`entry.rs` 顶部注释标 `design §1.1~§1.4`；每个公有项注释其 C 对照行号。
@@ -206,7 +197,7 @@ os/commands/sbin/init/src/
 |---|---|---|
 | S1 身份校验 | `check_identity(uid, pid)` 返回 Result | 退出上移 main；语义等价 |
 | S2 setsid | trait 占位（02 落地完整信号与会话抽象） | 本篇只记调用点，缺口显式标注 |
-| S4 mfs_dev | `DeviceProbe::ensure_devices()` | 死代码段丢弃；三种结局枚举化 |
+| S4 mfs_dev | `entry::console_present(host, ...)` | 死代码段丢弃；探测走 host 接缝 |
 | S6 getopt | `parse_boot_args(argv)` 纯函数 | 副作用后移 decide_entry |
 | S8 close/securelevel/transition | main 接线顺序保留 | securelevel 机制移交 12 |
 

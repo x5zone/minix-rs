@@ -7,6 +7,7 @@
 mod clean_ttys;
 mod contracts;
 mod entry;
+mod host;
 mod log;
 mod multi_user;
 mod runcom;
@@ -20,7 +21,8 @@ mod ttys;
 mod utmp;
 mod wait;
 
-use entry::{DeviceEnsureOutcome, DeviceProbe, FsDeviceProbe, InitialState, decide_entry, parse_boot_args};
+use entry::{InitialState, decide_entry, parse_boot_args};
+use host::MinixSysHost;
 
 fn main() {
     minix_rt::init();
@@ -29,22 +31,17 @@ fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let (boot_args, _warnings) = parse_boot_args(&argv);
 
-    // S4: device probe against the live filesystem. A missing console or
-    // device directory falls back to single-user mode, matching the C boot
-    // path (init.c:229-367); tests keep using FakeDeviceProbe.
-    let probe = FsDeviceProbe {
-        console_path: "/dev/console",
-        device_dir: "/dev",
-    };
-    let console_ok = match probe.ensure_devices() {
-        DeviceEnsureOutcome::Ok => true,
-        DeviceEnsureOutcome::FellBackToSingleUser | DeviceEnsureOutcome::Failed => false,
-    };
+    // S4: device probe through the host seam. On the live host this is
+    // an honest ENOSYS until E-INITSYS lands open/stat, which counts as
+    // "no console" — the same single-user fallback as the C boot path
+    // (init.c:269-270).
+    let console_ok = entry::console_present(&MinixSysHost, "/dev/console");
 
     let decision = decide_entry(&boot_args, console_ok);
 
-    // S7/S8 + transition() land in 02 (state machine). For now, record
-    // the decision and wait so the binary has well-defined behaviour.
+    // S7/S8 + transition() land with the state machine wiring. For
+    // now, record the decision and wait so the binary has
+    // well-defined behaviour.
     match decision.initial {
         InitialState::Runcom => {}
         InitialState::SingleUser => {}

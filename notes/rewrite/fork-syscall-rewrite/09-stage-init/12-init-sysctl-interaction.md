@@ -33,7 +33,7 @@ minix-rs 内核暂无这两个语义，本篇定义 trait 契约并用内存假�
 
 ## 3. Rust 设计决策
 
-`SecureLevel` trait 加内存假实现；`should_chroot(root)` 纯函数：`/` 或空为假，其余为真。Live sysctl 待内核服务。
+`SecureLevel` trait 随 **[ARCH: init-host-seam]** 收敛退役：安全级读写是 `InitHost::securitylevel`/`set_securitylevel`，`should_chroot` 经 `InitHost::init_root` 问机器，节点不存在按 C 的无支持路径处理。live 宿主在内核 mib 面落地前返回 ENOSYS（A-4/A-5 缺口在 kernel 侧，非本 stage 可闭合）。
 
 ---
 

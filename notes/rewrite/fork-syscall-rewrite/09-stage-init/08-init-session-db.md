@@ -34,7 +34,7 @@ DB 等于 pid 到会话的内存哈希。下一章看稳态如何用它回收子
 
 ## 3. Rust 设计决策
 
-`SessionDb` trait 加 `HashMapDb` 真实现与 `FakeDb` 剧本实现，双实现满足 trait 规则并关闭 01 的 OQ-1 关联（DeviceProbe 仍单 impl，见 §5 注）。`open()` 语义对应“关旧开新”，失败返回 `DbError` 而非 exit。utmp 挂钩移交 13。与 Redox 对照：Redox 同样用 HashMap 做进程索引，我们借鉴其所有权模式（值类型存储而非裸指针），避免 C 的指针拷贝。
+`SessionDb` trait 加 `HashMapDb` 真实现与 `FakeDb` 剧本实现（注：随 **[ARCH: init-host-seam]** 的收敛方向，`SessionDb` 是纯内存数据结构、不涉及机器副作用，是唯一保留在接缝之外的 trait；原句里 DeviceProbe 的单 impl 关联已随该 trait 退役而消失）。`open()` 语义对应“关旧开新”，失败返回 `DbError` 而非 exit。utmp 挂钩移交 13。与 Redox 对照：Redox 同样用 HashMap 做进程索引，我们借鉴其所有权模式（值类型存储而非裸指针），避免 C 的指针拷贝。
 
 ---
 

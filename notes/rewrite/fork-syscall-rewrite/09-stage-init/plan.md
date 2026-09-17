@@ -189,6 +189,7 @@ session 生命周期
 | A-8 | **信号处理** | `sigaction/sigprocmask`（`handle/delset`，`SA_NOCLDSTOP`，注释 "XXX SA_RESTART?"） | minix-rt 信号抽象支持状态待确认 → **依赖/缺口** | 02 | 待确认 |
 | A-9 | **进程等待** | `waitpid(-1, &status, WUNTRACED)` 阻塞 + EINTR 重试 | minix-sys 进程等待抽象（依赖 PM 服务） | 04/05/09/11 | 依赖 |
 | A-10 | **时间/睡眠** | `sleep/nanosleep/alarm/gettimeofday`（`dtrtime`、GETTY_SPACING/GETTY_SLEEP/WINDOW_WAIT/DEATH_WATCH/STALL_TIMEOUT） | minix-rt 时间抽象（依赖 kernel 时钟） | 03/09/11/13 | 依赖 |
+| A-11 | **机器接缝收敛** | C 直接调 libc，机器副作用散布各函数（`[ARCH: init-host-seam]`） | 七个按关注点拆分的 seam trait（DeviceProbe/SignalRegistry/TransitionDriver/LogSink/Clock/SessionDb/SecureLevel，多为单实现）收敛为单一 `InitHost` 面（`host.rs`）：fork/exec/waitpid/kill/信号安装/setsid/控制终端/uid/alarm/时钟/睡眠/路径探测/console，live 宿主对缺失的 minix-sys 封装诚实返回 ENOSYS，剧本宿主供测试；`SessionDb` 是纯内存数据结构，保留在接缝外 | 01/02/03/04/05/09/10/11/12/14 | 演进（2026-09-18 落地） |
 
 > **A-1~A-7 为 init 自身范围的 ARCH；A-8~A-10 是 minix-rs 基础库依赖，需在写文档时核实 minix-rt/minix-sys 实际能力，标注 已实现/缺口。**
 

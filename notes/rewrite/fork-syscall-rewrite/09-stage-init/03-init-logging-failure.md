@@ -92,13 +92,13 @@ pub enum Severity { Alert, Emerg }
 
 `stall/warning→Alert`，`emergency/disaster→Emerg`，与 C 的 syslog 级别逐行对照。未来 syslog 服务落地时再做 `Severity→syslog::Priority` 映射，当前 Console 实现直写标准错误。
 
-### 3.3 决策二：LogSink 双实现
+### 3.3 决策二：日志走 host 接缝，Severity 保留
 
-`FakeLogSink` 内存记录 `(Severity, String)` 供断言；`ConsoleLogSink` 预留直写通道。C 的 NB（session logger）转述为注释，不实现。
+**[ARCH: init-host-seam]** 原 `LogSink`（Fake+Console 两个实现）与 `Clock` trait 退役：`stall/warning/emergency/disaster` 现在拿 `&mut dyn InitHost`，输出走 `console_write(severity, message)`、停等走 `sleep_secs`。`ConsoleLogSink` 曾是一个为凑"双实现"而存在的静默 no-op——这正是接缝收敛要消灭的形状。C 的 NB（session logger）转述为注释，不实现。
 
 ### 3.4 决策三：睡眠注入与永不返回的诚实表达
 
-`stall()` 签名取 `clock: &dyn Clock`，Fake 时钟只记录秒数。`disaster()` 返回 `DisasterAction::ExitWith(i32)` 数据而非直接 `_exit`，退出动作上移调用方，单测可断言遗言内容与退出码。
+`stall()` 的停等经由 host 的 `sleep_secs`，剧本宿主只记录秒数。`disaster()` 返回 `DisasterAction::ExitWith(i32)` 数据而非直接 `_exit`，退出动作上移调用方，单测可断言遗言内容与退出码。
 
 ---
 
@@ -107,15 +107,15 @@ pub enum Severity { Alert, Emerg }
 ### 4.1 模块结构
 
 ```text
-os/commands/sbin/init/src/log.rs — Severity / LogSink / Fake+Console / Clock / stall/warning/emergency/disaster
+os/commands/sbin/init/src/log.rs — Severity / stall/warning/emergency/disaster（I/O 走 host 接缝）
 ```
 
 ### 4.2 与 C 的差异说明
 
 | C | Rust | 分类 |
 |---|---|---|
-| 全局 vsyslog 直调 | LogSink trait 注入 | 可测性演进 |
-| sleep(30) 硬编码等待 | Clock trait，Fake 不真睡 | 测试性演进 |
+| 全局 vsyslog 直调 | host 接缝 console_write | 可测性演进 |
+| sleep(30) 硬编码等待 | host 接缝 sleep_secs，剧本不真睡 | 测试性演进 |
 | disaster 直接 _exit | 返回 ExitWith 数据 | 库策略分离 |
 | session logger NB | 注释转述不实现 | 诚实缺口 |
 
