@@ -120,7 +120,7 @@ VFS/devman → 驱动
 | 5 | 17 | `17-storage-misc-driver.md` | floppy/mmc/fbd/filter/vnd：其余存储变体差异矩阵 | `drivers/storage/`（floppy/mmc/fbd/filter/vnd） | `os/drivers/storage/*` | 新建 |
 | 6 USB | 18 | `18-usb-framework.md` | libusb + usbd：URB 协议、HCD（hcd.c/hcd_common.c/hcd_schedule.c/hcd_ddekit.c/musb）、枚举 | `lib/libusb/usb.c` + `drivers/usb/usbd/` | `minix-usb` + `os/drivers/usb/usbd` | 新建 |
 | 6 | 19 | `19-usb-storage-hub.md` | usb_storage（含 scsi.c）+ usb_hub：BOT 传输、SCSI 命令、hub 端口管理 | `drivers/usb/usb_storage/` + `usb_hub/` | `os/drivers/usb/usb_storage` + `usb_hub` | 新建 |
-| 7 显示/音频 | 20 | `20-fb-driver.md` | fb：帧缓冲（fb.c/fb_edid.c/fb_arch.c）、mmap 到用户、EDID | `drivers/video/fb/` | `os/drivers/video/fb` | 新建 |
+| 7 显示/音频 | 20 | `20-fb-driver.md` | fb：帧缓冲（fb.c/fb_edid.c/fb_arch.c）、EDID（勘误：字符设备，无 mmap） | `drivers/video/fb/` | `os/drivers/video/fb` | 新建 |
 | 7 | 21 | `21-audio-drivers.md` | libaudiodriver + 7 声卡：audio 请求协议、es1370/es1371 参考 + AC97 + 变体差异 | `lib/libaudiodriver/` + `drivers/audio/`（7 个） | `os/drivers/audio/*` | 新建 |
 | 8 网络 | 22 | `22-net-driver-reference.md` | dp8390 参考 + virtio_net：NDEV 完整消费（初始化/收发/链路/组播/统计） | `drivers/net/dp8390/` + `virtio_net/` | `os/drivers/net/dp8390` + `virtio_net` | 新建 |
 | 8 | 23 | `23-net-driver-variants.md` | 其余 12 网卡：e1000/rtl8139/rtl8169/fxp/3c90x/atl2/lance/dec21140A/ip1000/lan8710a/vt6105/dpeth 变体差异矩阵 | `drivers/net/`（其余 12 目录） | `os/drivers/net/*` | 新建 |
