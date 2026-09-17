@@ -187,9 +187,10 @@ socket driver（lwip / uds，libsockdriver 框架）
 | 24 | 03（lwip_init 调用面） | lwIP 配置面/胶水/替代决策 | Minix 侧各模块（03~20） |
 | 99 | 无 | 全局常量/命名空间/边界 | 一切机制（00~24） |
 
-### 3.4 测试基线（截至 2026-08-16）
+### 3.4 测试基线（截至 2026-09-17）
 
-- `os/net/lwip`、`os/net/uds`、`os/libs/minix-netdriver` 均为占位 stub，`cargo test` 无实质测试
+- `cargo test -p minix-net-lwip -p minix-net-uds -p minix-netdriver`（工作目录 `os/`）：**97 + 9 + 50 = 156 passed / 0 failed**
+- 三 crate clippy 零警告；net 范围零 `unsafe`、零 `todo!`
 - 每篇改写完成时在文末更新该模块测试统计（review-doc-skill §2.4j）
 
 ### 3.5 Review gate 要求（每篇改写必检）
@@ -366,32 +367,32 @@ socket driver（lwip / uds，libsockdriver 框架）
 
 | 序 | 文档 | 状态 |
 |----|------|------|
-| 1 | `00-net-overview.md` | ☐ |
-| 2 | `01-sockdriver-framework.md` | ☐ |
-| 3 | `02-sockevent-framework.md` | ☐ |
-| 4 | `03-lwip-main-init.md` | ☐ |
-| 5 | `04-lwip-mempool.md` | ☐ |
-| 6 | `05-lwip-util-addr.md` | ☐ |
-| 7 | `06-lwip-ipsock.md` | ☐ |
-| 8 | `07-lwip-pktsock.md` | ☐ |
-| 9 | `08-lwip-tcpsock.md` | ☐ |
-| 10 | `09-lwip-udpsock.md` | ☐ |
-| 11 | `10-lwip-rawsock.md` | ☐ |
-| 12 | `11-lwip-lnksock.md` | ☐ |
-| 13 | `12-lwip-mcast.md` | ☐ |
-| 14 | `13-lwip-ndev.md` | ☐ |
-| 15 | `14-lwip-ifdev.md` | ☐ |
-| 16 | `15-lwip-ethif.md` | ☐ |
-| 17 | `16-lwip-ifaddr.md` | ☐ |
-| 18 | `17-lwip-ifconf.md` | ☐ |
-| 19 | `18-lwip-bpfdev.md` | ☐ |
-| 20 | `19-lwip-route.md` | ☐ |
-| 21 | `20-lwip-rtsock.md` | ☐ |
-| 22 | `21-uds-core.md` | ☐ |
-| 23 | `22-uds-io.md` | ☐ |
-| 24 | `23-libc-socket.md` | ☐ |
-| 25 | `24-liblwip-port.md` | ☐ |
-| 26 | `99-net-global-concepts.md` | ☐ |
+| 1 | `00-net-overview.md` | ☐（最小化骨架，随 N1-P3-1 展开） |
+| 2 | `01-sockdriver-framework.md` | ☑ |
+| 3 | `02-sockevent-framework.md` | ☑ |
+| 4 | `03-lwip-main-init.md` | ☑ |
+| 5 | `04-lwip-mempool.md` | ☑ |
+| 6 | `05-lwip-util-addr.md` | ☑ |
+| 7 | `06-lwip-ipsock.md` | ☑ |
+| 8 | `07-lwip-pktsock.md` | ☑ |
+| 9 | `08-lwip-tcpsock.md` | ☑ |
+| 10 | `09-lwip-udpsock.md` | ☑ |
+| 11 | `10-lwip-rawsock.md` | ☑ |
+| 12 | `11-lwip-lnksock.md` | ☑ |
+| 13 | `12-lwip-mcast.md` | ☑ |
+| 14 | `13-lwip-ndev.md` | ☑ |
+| 15 | `14-lwip-ifdev.md` | ☑ |
+| 16 | `15-lwip-ethif.md` | ☑ |
+| 17 | `16-lwip-ifaddr.md` | ☑ |
+| 18 | `17-lwip-ifconf.md` | ☑ |
+| 19 | `18-lwip-bpfdev.md` | ☑ |
+| 20 | `19-lwip-route.md` | ☑ |
+| 21 | `20-lwip-rtsock.md` | ☑ |
+| 22 | `21-uds-core.md` | ☑ |
+| 23 | `22-uds-io.md` | ☑ |
+| 24 | `23-libc-socket.md` | ☑ |
+| 25 | `24-liblwip-port.md` | ☑ |
+| 26 | `99-net-global-concepts.md` | ☐（最小化骨架，随 N1-P3-1 展开） |
 
 ---
 

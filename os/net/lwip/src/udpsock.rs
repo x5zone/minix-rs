@@ -7,10 +7,10 @@
 //! flags pass, when a send length is too large, and which multicast defaults
 //! a new socket gets.
 //!
-//! The design follows the same split the Linux datagram layer and the Redox
-//! network stack use: validation helpers are pure and total, while the
-//! service binary owns tables and input-output. Callers convert the boolean
-//! answer into the Minix wire error at the message boundary.
+//! The multicast defaults live beside the send guards because a datagram
+//! socket acquires all of them in one breath at creation time (`udpsock.c`
+//! creates, then sets TTL and loop); splitting them across modules would
+//! make the creation contract read as three unrelated numbers.
 
 /// Internet protocol number for user datagrams (`IPPROTO_UDP`, 17,
 /// `minix3/sys/netinet/in.h:85`).
