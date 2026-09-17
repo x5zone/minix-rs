@@ -10,6 +10,9 @@ name = "minix-driver-virtio_blk"
 path = "src/main.rs"
 
 [dependencies]
+minix-blockdriver = { workspace = true }
+minix-chardriver = { workspace = true }
+minix-driver-rt = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 

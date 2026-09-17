@@ -15,6 +15,7 @@
 
 extern crate alloc;
 
+pub mod char_face;
 pub mod geometry;
 pub mod request;
 

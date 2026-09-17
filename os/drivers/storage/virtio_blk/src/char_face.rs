@@ -33,7 +33,7 @@ impl VirtioBlkFace {
     /// A face over a device with the given sector capacity.
     pub fn new(sectors: u64, read_only: bool, flush: bool) -> Self {
         VirtioBlkFace {
-            geometry: DriveGeometry::new(sectors),
+            geometry: DriveGeometry { sectors, read_only },
             opens: OpenCount::new(),
             opened: OpenDeviceSet::new(),
             last_plan: None,
