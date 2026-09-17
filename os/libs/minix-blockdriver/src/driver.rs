@@ -12,7 +12,7 @@ use super::protocol::{
     NO_TRANSFER_HOOK, NOT_DISK, OpenDeviceSet, PartitionGeometry, PartitionStyle, RequestId,
     SUCCESS, is_block_request,
 };
-use minix_types::{EINTR, EINVAL, OK};
+use minix_types::{EINVAL, OK};
 
 /// Router classification for one incoming block message.
 ///

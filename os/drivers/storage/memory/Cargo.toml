@@ -10,6 +10,7 @@ name = "minix-driver-memory"
 path = "src/main.rs"
 
 [dependencies]
+minix-blockdriver = { workspace = true }
 minix-chardriver = { workspace = true }
 minix-driver-rt = { workspace = true }
 minix-types = { workspace = true }

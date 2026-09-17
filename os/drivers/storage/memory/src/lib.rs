@@ -21,6 +21,7 @@
 extern crate alloc;
 
 pub mod device;
+pub mod block_face;
 pub mod char_face;
 pub mod transfer;
 
