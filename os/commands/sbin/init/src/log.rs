@@ -11,6 +11,7 @@
 //! scripted host records what a test would have captured.
 
 use crate::host::InitHost;
+use crate::state_machine::Signal;
 
 /// Syslog severity subset used by init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,11 +51,13 @@ pub enum DisasterAction {
 ///
 /// Records the fatal message, sleeps so it can be read, and returns
 /// the requested exit code instead of exiting inline — exiting is the
-/// caller's branch, which keeps the function testable.
-pub fn disaster(host: &mut dyn InitHost, sig: i32, sig_name: &str) -> DisasterAction {
-    host.console_write(Severity::Emerg, &format!("fatal signal: {sig_name}"));
+/// caller's branch, which keeps the function testable. The signal name
+/// in the message comes from the [`Signal`] authority (C:
+/// `sys_siglist[sig]`, init.c:507).
+pub fn disaster(host: &mut dyn InitHost, sig: Signal) -> DisasterAction {
+    host.console_write(Severity::Emerg, &format!("fatal signal: {}", sig.name()));
     let _ = host.sleep_secs(STALL_TIMEOUT_SECS);
-    DisasterAction::ExitWith(sig)
+    DisasterAction::ExitWith(sig.signum())
 }
 
 #[cfg(test)]
@@ -89,8 +92,10 @@ mod tests {
     #[test]
     fn test_disaster_records_and_requests_exit() {
         let mut host = ScriptHost::default();
-        let action = disaster(&mut host, 11, "SIGSEGV");
-        assert!(host.console[0].1.contains("SIGSEGV"));
+        let action = disaster(&mut host, Signal::from_signum(11));
+        // SIGSEGV is not one of init's handler signals — the name falls
+        // to the numbered form rather than pretending a full sys_siglist.
+        assert!(host.console[0].1.contains("signal 11"));
         assert_eq!(host.slept, vec![STALL_TIMEOUT_SECS]);
         assert_eq!(action, DisasterAction::ExitWith(11));
     }

@@ -171,7 +171,7 @@ C 用两个全局变量（`requested_transition`、`runcom_mode`）隐式传递�
 
 ### 3.5 决策四：mfs_dev 收敛为 host 接缝上的探测
 
-**[ARCH: init-host-seam]** 原 `DeviceProbe` trait（fake + host 文件系统两个实现）随接缝收敛退役：探测现在是 `entry::console_present(host, path)`，机器回答经由 `InitHost::path_exists`。live 宿主在 minix-sys 的 stat 面落地（E-INITSYS ②）前诚实返回 ENOSYS，探测按"无控制台"处理，与 C 在设备缺失时的单用户回退同一条路。MAKEDEV 的 fork/exec 兜底（init.c:1759-1787）属进程实体，随 P0-2 批次落地。
+**[ARCH: init-host-seam]** 原 `DeviceProbe` trait（fake + host 文件系统两个实现）随接缝收敛退役：探测现在是 `entry::console_present(host, path)`，机器回答经由 `InitHost::path_exists`。live 宿主在 minix-sys 的 stat 面落地（E-INITSYS ②）前诚实返回 ENOSYS，探测按"无控制台"处理，与 C 在设备缺失时的单用户回退同一条路。MAKEDEV 的 fork/exec 兜底已随 P0-5 落地为 `entry::ensure_console`：console 缺失时 fork 子进程跑 `/bin/sh /dev/MAKEDEV -MM init` 再重检，C 的 helper `_exit(10/11/12)` 折叠为布尔加同款告警（本探测进程内跑，无独立 helper）。
 
 ### 3.6 本篇有意不做的事
 

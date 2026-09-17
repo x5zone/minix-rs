@@ -44,7 +44,7 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 | 残余项 | 解锁条件 |
 |---|---|
 | signal_state（note_signal/note_shutdown_request/take_*） | E-INITSYS ① sigaction 客户端面 |
-| log::disaster/DisasterAction | E-INITSYS ①（fatal handler 安装） |
+| log::disaster/DisasterAction（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
 | contracts（request_for/shutdown_argv/SHUTDOWN_PATH） | E-INITSYS ①（handler 消费） |
 | multi_user::setctty 包装 | E-INITSYS ②（setsid/login_tty） |
 | utmp（session_utmpx/RecordType::Login/clear_session_logs） | E-INITSYS ②（open-existing 后的文件写） |
