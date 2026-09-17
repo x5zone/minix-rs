@@ -52,8 +52,8 @@
 | P2 | N1-P2-5 | 恒真测试分级处置（ALL_* 长度断言 + BUILD_C_FILES 文档型常量）vs 有效 wire 契约锁 |
 | P2 | N1-P2-6 | 16 个 crate 声明未使用的 minix-types/minix-sys 依赖 ✅ **已闭环（2026-09-17）**：lwip/uds 随 N1-P1-4 真实化；NIC 部分归 16-stage/E-DEVWIRE |
 | P2 | N1-P2-7 | uds 未依赖 minix-netdriver："两个网络服务的共同骨架"未接线（sdev/sockevent 全仓零消费者）✅ **已接线（2026-09-17）**：uds 依赖 minix-netdriver 并消费 socktable |
-| P3 | N1-P3-1 | 文档同步：plan.md §6.1 checklist 全 ☐ 过时、§3.4 测试基线过时、00/99 两篇仍骨架 |
-| P3 | N1-P3-2 | 文档模板复制段落（ipsock.rs:10-14 ≈ udpsock.rs:10-13） |
+| P3 | N1-P3-1 | 文档同步：plan.md 基线/checklist ✅（2026-09-17）；**00/99 两篇展开仍开口**（随下一轮落稿） |
+| P3 | N1-P3-2 | 文档模板复制段落 ✅ **已差异化（2026-09-17）**：udpsock 改述组播创建契约理由 |
 | edge | E-SDEVOWN（并行登记，本轮增补证据） | sdev/sockevent 归属 17-stage 但寄居 minix-netdriver，vfs 另有一份 923 行独立实现——本轮补充类型漂移细节（u32 enum vs u64 手抄）与 sockid 缺口 |
 | edge | E-DEVWIRE（并行登记） | 设备族 wire 常量单一来源已含 NDEV（minix-netdriver/protocol.rs） |
 | edge | E-NETSTART（新） | lwip/uds 双 server 缺 SEF/RS 启动握手，依赖 E-FSRUNTIME 通用框架 |
@@ -195,6 +195,19 @@ uds 的 Cargo 依赖补上 minix-netdriver + minix-sef；`server.rs` 的套接�
 - **E-NETSTART（本轮新登记）**：lwip/uds SEF/RS 启动握手，依赖并跟随 E-FSRUNTIME（fs 8 server 先例）的通用框架；解锁后 N1-P1-4 主循环才能真实通电。
 - **E-RMIBWIRE**（已有）：lwip/uds 的 MIB 注册与转发在其解锁条款内（edge_todo.md lwip/uds 子树条款），不重复立项。
 - **E-MINSYS-SCOPE**（已闭）：socket.rs 的 feature 域归属已裁（socket feature，default on）。
+
+---
+
+## 8. P3 落地记录（2026-09-17）
+
+### ◐ N1-P3-1 文档同步——plan.md 已同步；00/99 展开仍开口
+
+**已落地**：plan.md §3.4 基线更新（97+9+50=156 passed、clippy 零警告、零 unsafe/todo!）+ §6.1 checklist 01-24 篇勾选、00/99 两篇如实标注骨架待展开。
+**开口**：00-net-overview 与 99-net-global-concepts 两篇从骨架展开为教学全稿（收编本轮新增的 wire/续延/池/栈墙设计与测试表），随下一轮落稿——余量不足以按 style-bible 标准写好时不交敷衍稿。
+
+### ✅ N1-P3-2 文档模板复制段落——已差异化 2026-09-17
+
+udpsock.rs 头注释中原样复制 ipsock 的"Linux/Redox 同款分层"段落删除，改述本模块真实的设计理由：组播默认值与发送守卫同居一处，是因为套接字创建时一口气取得全部默认值（udpsock.c 创建即设 TTL 与 loop），拆模块会让创建契约读成三个不相干数字。
 
 ---
 
