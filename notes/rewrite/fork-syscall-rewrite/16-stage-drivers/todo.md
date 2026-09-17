@@ -128,13 +128,13 @@
 | 位置 | 内容 | 为何死 / 消除影响 |
 |---|---|---|
 | `os/drivers/storage/ramdisk/` 整 crate | plan §5.4（plan.md:373）明确排除（无 .c，非驱动），stub 注释却自称"C 对应 ramdisk/" | 事实错误 + 死 crate；删，或注明"按 plan §5.4 无 C 对应，语义归 18-stage-commands boot 布局" |
-| `os/drivers/examples/hello/` | doc 24 §2.7 说"文档即课本（无 Rust 建模）"，stub 与文档互相矛盾 | 二选一：删 crate 或改 doc 认可 stub |
-| `os/drivers/hid/pckbd/src/bridge.rs` 全模块 | 与 minix-sys/inputdriver.rs 双轨（E-PCKBDREG 第 5 项） | 删除，见 A11 |
-| minix-bdev `client.rs:584-591,39` | `LOCAL_REFUSAL`/`TRANSPORT_FAILURE`/`CALL_TABLE_BUSY`/`RECOVERY_RETRIES`/`SUCCESS` 全零使用（doc §4 错误表还列了 CALL_TABLE_BUSY） | 随 F2/A6 翻新时统一裁决；doc 表同步 |
-| minix-chardriver `driver.rs:405-417` + `protocol.rs:22` + RESTARTED re-export | `block_open_error`/`bad_minor_error`/`announce_ok` 仅测试引用；`CDEV_REPLY_BASE` 零使用（且错值，F1） | 随 A3/E-CDRCONV 收敛时清理 |
-| minix-blockdriver `driver.rs:271-292` | `not_disk_error` 等 4 个错误构造函数零使用——调用点直接返回字面量 | **模式级发现**：各 crate 普遍存在"错误构造函数定义了、调用点用字面量"的两张皮（memory `device.rs:261-273`、tty `session.rs:359`、log `device.rs:215`、random `device.rs:118,121` 同款）；清理时统一"要么调用要么删" |
+| `os/drivers/examples/hello/` ✅ | doc 24 §2.7 说"文档即课本（无 Rust 建模）"，stub 与文档互相矛盾 | 已删除（doc 24 的"无 Rust 建模"为准） |
+| `os/drivers/hid/pckbd/src/bridge.rs` 全模块 ✅ | 与 minix-sys/inputdriver.rs 双轨（E-PCKBDREG 第 5 项） | 已删除（A11，2026-09-17） |
+| minix-bdev `client.rs:584-591,39` ✅ | 五常量已删（Batch 7，doc §4 错误表已同步） | grep 零残留 |
+| minix-chardriver 三个死 fn + RESTARTED re-export ✅ | 已删（Batch 7；CDEV_REPLY_BASE 修值保留） | grep 零残留 |
+| minix-blockdriver 四个死 fn ✅ | 已删（Batch 7；模式级发现的其余 crate 项随各 crate 后续清扫） |
 | minix-netdriver `driver.rs:417-429` | `announce_ok`/`mode_down`/`link_up` 零使用 | 随 F4/A7 处理 |
-| minix-virtio `ring.rs:25-43`、`features.rs:46`、`device.rs:131-187` | 5 个通知/间接常量、`agreed_bits`、`IoPort/NullPort/VecPort`（测试脚手架住进 lib） | 脚手架移 `#[cfg(test)]` 或删；常量随 A5 线格式落地时回收 |
+| minix-virtio 5 常量 + agreed_bits + IoPort 组 ✅ | 已删/移测（Batch 7；A5 线格式落地后常量有消费） |
 | mmc `commands.rs` | SetRelativeAddr/Select/SendCsd/SetBlockLength 四枚举值不可达（V4） | 随 V4 序列重写回收 |
 | usb `urb.rs:21-33` | `TransferKind::Isochronous`、`Direction` 无消费逻辑 | V8 出册落地时回收 |
 | filter `checksum.rs:147-148` | `BadSumPolicy` 两变体从不构造、`RETRY_OTHER_MIRROR` 仅测试 | 随 V3 裁决 |
