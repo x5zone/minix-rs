@@ -155,6 +155,11 @@ pub trait InitHost {
     /// Change the process root (C: `chroot(rootdir)` in the chroot run
     /// of `/etc/rc`, init.c:903). ENOSYS until E-INITSYS ②.
     fn chroot(&mut self, root: &str) -> Result<(), Errno>;
+
+    /// Append bytes to a file (C: the utmp/wtmp ledger appends behind
+    /// `pututxline`/`logwtmpx`, init.c:1446/1008). ENOSYS until
+    /// E-INITSYS ② lands the open-existing path.
+    fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno>;
 }
 
 /// The real machine, over `minix-sys`.
@@ -296,6 +301,11 @@ impl InitHost for MinixSysHost {
         let _ = root;
         Err(Errno::ENOSYS)
     }
+
+    fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno> {
+        let _ = (path, bytes);
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// A scripted host for tests: every effect is a queued outcome or a
@@ -330,6 +340,10 @@ pub struct ScriptHost {
     pub chroots: Vec<String>,
     /// Whether scripted `chroot` calls succeed (default true).
     pub chroot_ok: bool,
+    /// Recorded (path, text) appends.
+    pub appends: Vec<(String, String)>,
+    /// Queue of append failures; empty queue = every append succeeds.
+    pub append_errors: Vec<Errno>,
     /// Queue of kill failures; empty queue = every kill succeeds.
     pub kill_errors: Vec<Errno>,
     /// Queue of waitpid failures, served before `wait_outcomes`.
@@ -486,6 +500,15 @@ impl InitHost for ScriptHost {
         } else {
             Err(Errno::EPERM)
         }
+    }
+
+    fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno> {
+        if !self.append_errors.is_empty() {
+            return Err(self.append_errors.remove(0));
+        }
+        self.appends
+            .push((path.to_string(), String::from_utf8_lossy(bytes).into_owned()));
+        Ok(())
     }
 }
 
