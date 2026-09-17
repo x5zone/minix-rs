@@ -17,37 +17,9 @@
 /// VFS process snapshot (used fields only).
 ///
 /// C: `struct fproc` — `minix3/minix/servers/vfs/fproc.h` (subset).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct FProcSnap {
-    /// C: `fp_pid` (fproc.h:18).
-    pub fp_pid: i32,
-    /// C: `fp_tty` device number (fproc.h:27).
-    pub fp_tty: i32,
-    /// C: `fp_umask` (fproc.h:69).
-    pub fp_umask: u32,
-    /// C: `fp_realuid` (fproc.h:63).
-    pub fp_realuid: u32,
-    /// C: `fp_effuid` + `fp_realgid` + `fp_effgid` (fproc.h:63-65 area).
-    pub fp_effuid: u32,
-    /// C: `fp_realgid`.
-    pub fp_realgid: u32,
-    /// C: `fp_effgid`.
-    pub fp_effgid: u32,
-    /// C: `fp_flags` (fproc.h:16).
-    pub fp_flags: u32,
-    /// C: `fp_blocked_on` (fproc.h:29).
-    pub fp_blocked_on: i32,
-    /// Open-descriptor count. C counts `fp_filp[j] != NULL` over
-    /// `OPEN_MAX` slots (dmp_fs.c:44-47) — pointer arrays carry no meaning
-    /// in the snapshot, so the producer computes the count and ships the
-    /// number (A-4 wire-contract deviation, documented in 07 §3 D2).
-    /// (V1-P1-3: field added with the execution face.)
-    pub nfds: u32,
-    /// C: `fp_cdev.endpt` (fproc.h:33 area) — the blocked-on-CDEV endpoint
-    /// column (dmp_fs.c:64); meaningless unless `fp_blocked_on` is CDEV.
-    pub fp_cdev_endpt: i32,
-}
+// FProcSnap 已上收 `minix_types::FProcSnap`（E-MIBPROD 快照权威单点，
+// 与 MprocWire/ProcInfoStruct 同型）。本 crate 改 import 消费。
+pub use minix_types::FProcSnap;
 
 use crate::PCStr;
 use core::fmt;
@@ -305,13 +277,7 @@ mod tests {
             fp_blocked_on: blocked_on,
             nfds,
             fp_cdev_endpt: 7,
-        }
-        .at(slot)
-    }
-
-    impl FProcSnap {
-        fn at(self, _slot: usize) -> Self {
-            self
+            ..Default::default()
         }
     }
 
