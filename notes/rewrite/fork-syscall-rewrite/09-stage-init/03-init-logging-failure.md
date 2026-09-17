@@ -129,7 +129,6 @@ os/commands/sbin/init/src/log.rs — Severity / stall/warning/emergency/disaster
 | `test_warning_logs_alert_without_sleep` | 不睡 | init.c:457-466 |
 | `test_emergency_logs_emerg` | 最高级 | init.c:472-481 |
 | `test_disaster_records_and_requests_exit` | 遗言加退出码 | init.c:504-511 |
-| `test_console_sink_never_panics_on_empty` | 空消息稳健 | 稳健性 |
 
 ### 5.1 测试统计（截至 2026-09-04）
 

@@ -212,7 +212,7 @@ pub fn run_transition(host: &mut dyn InitHost, state: &mut DriverState, first: S
 }
 
 /// One state execution — the C switch table.
-fn step(host: &mut dyn InitHost, state: &mut DriverState, current: StateKind) -> StateKind {
+pub(crate) fn step(host: &mut dyn InitHost, state: &mut DriverState, current: StateKind) -> StateKind {
     match current {
         StateKind::Death => {
             let DriverState {
@@ -372,6 +372,7 @@ mod tests {
     use super::*;
     use crate::host::ScriptHost;
     use crate::session_db::SessionDb;
+    use minix_sys::Errno;
 
     fn fresh_state() -> DriverState {
         DriverState {
@@ -436,6 +437,80 @@ mod tests {
         assert_eq!(host.appends[0].0, crate::utmp::UTMPX_PATH);
         assert!(host.appends[0].1.contains("run-level m"));
         assert!(host.appends[0].1.contains("|115|109")); // 's'→'m'
+    }
+
+    #[test]
+    fn test_boot_chain_walks_every_boundary_to_multi_user() {
+        // The 's'→'r'→'t'→'m' spine over the real state functions: rc
+        // exits clean (runcom), the ttys table builds one session
+        // (read_ttys), multi_user spawns its getty.
+        let mut host = ScriptHost::default();
+        host.files.push((
+            TTYS_PATH.into(),
+            "tty1 /sbin/getty vt100 on\n".into(),
+        ));
+        host.fork_outcomes.push(Ok(30)); // rc child
+        host.wait_outcomes.push(Ok((30, WaitStatus::Exited { code: 0 })));
+        host.fork_outcomes.push(Ok(31)); // getty child
+        host.wait_errors.push(Errno::ESRCH); // ends the reap loop
+        host.now = 9;
+        let mut state = fresh_state();
+        // Boot 成功时 runcom 直接接过 read_ttys 一步（C 分两轮，Rust
+        // 驱动合并为一个分派边界），交付 MultiUser 与已建会话表。
+        assert_eq!(step(&mut host, &mut state, StateKind::Runcom), StateKind::MultiUser);
+        assert!(state.sessions_seen);
+        // 多用户首轮为唯一会话拉起 getty（pid 31），随后脚本以 ESRCH
+        // 收割循环收尾——无请求时 C 的 unwrap 语义即 clean_ttys。
+        assert_eq!(step(&mut host, &mut state, StateKind::MultiUser), StateKind::CleanTtys);
+        assert_eq!(state.sessions[0].process, Some(31));
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(state.sessions[0].process, Some(31));
+    }
+
+    #[test]
+    fn test_boot_chain_rc_failure_falls_back_to_single_user() {
+        let mut host = ScriptHost::default();
+        host.files.push((TTYS_PATH.into(), String::new()));
+        host.fork_outcomes.push(Ok(30));
+        host.wait_outcomes.push(Ok((30, WaitStatus::Exited { code: 1 })));
+        let mut state = fresh_state();
+        assert_eq!(step(&mut host, &mut state, StateKind::Runcom), StateKind::SingleUser);
+    }
+
+    #[test]
+    fn test_boot_chain_single_user_then_runcom_fastboot() {
+        let mut host = ScriptHost::default();
+        host.files.push((TTYS_PATH.into(), String::new()));
+        // shell (pid 7) exits normally — FASTBOOT to runcom; rc then
+        // succeeds — read_ttys.
+        host.fork_outcomes.push(Ok(7));
+        host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
+        host.fork_outcomes.push(Ok(8));
+        host.wait_outcomes.push(Ok((8, WaitStatus::Exited { code: 0 })));
+        let mut state = fresh_state();
+        state.mode = RuncomMode::Fastboot;
+        assert_eq!(step(&mut host, &mut state, StateKind::SingleUser), StateKind::Runcom);
+        assert_eq!(state.mode, RuncomMode::Fastboot);
+        // rc 干净退出：驱动把 read_ttys 合并进同一边界。
+        assert_eq!(step(&mut host, &mut state, StateKind::Runcom), StateKind::MultiUser);
+    }
+
+    #[test]
+    fn test_boot_chain_clean_ttys_and_death_and_catatonia_boundaries() {
+        // 'T' on an empty re-read retires everything but still hands
+        // back multi-user; catatonia marks and returns multi-user;
+        // death with nobody alive lands single-user.
+        let mut host = ScriptHost::default();
+        let mut state = fresh_state();
+        state.sessions.push(
+            crate::session::build_session(1, "tty1", "/sbin/getty", None, true).unwrap(),
+        );
+        assert_eq!(step(&mut host, &mut state, StateKind::CleanTtys), StateKind::MultiUser);
+        assert_eq!(step(&mut host, &mut state, StateKind::Catatonia), StateKind::MultiUser);
+        assert!(state.sessions[0].flags.contains(crate::session::SE_SHUTDOWN));
+        // death: kill(-1, SIGHUP) hits ESRCH — straight to single-user.
+        host.kill_errors.push(Errno::ESRCH);
+        assert_eq!(step(&mut host, &mut state, StateKind::Death), StateKind::SingleUser);
     }
 
     #[test]

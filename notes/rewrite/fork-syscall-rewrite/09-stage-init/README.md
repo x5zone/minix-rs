@@ -1,6 +1,6 @@
 # 09-stage-init — INIT 文档目录
 
-> **状态**: 骨架就绪（plan.md 定稿 2026-08-16；各 doc 为最小骨架，待按 plan.md 改写）
+> **状态**: 01~14 正文 v1 落稿（2026-09-04 重写，2026-09-18 随实体接线轮同步）；00/99 正文 v1 落稿（2026-09-18）
 > **主线**: init 状态机启动顺序（single_user → runcom → read_ttys → multi_user 稳态 ↔ clean_ttys/catatonia/death）
 > **Ground truth**: `minix3/sbin/init/`（init.c 1902 行）
 
@@ -27,9 +27,10 @@
 
 ## 关键文件
 
-- `plan.md` — 文档重组计划（定稿，含覆盖契约 §5 与 ARCH 清单 §4）
+- `plan.md` — 文档重组计划（定稿，含覆盖契约 §5 与 ARCH 清单 §4，A-11 为 init-host-seam）
+- `todo.md` — Rust 实现架构级 Review TODO（当前开口项唯一清单）
+- `archive/todo-V1-archive-2026-09-18.md` — 扫描轮与修复迭代轮 Fix #1~#20 检索权威
 - `draft/` — 旧占位素材（README）
-- `checklist.md` — 函数级基线（实现期创建，参照 02-stage-vm/checklist.md 模式）
 
 ## 启动链路位置
 

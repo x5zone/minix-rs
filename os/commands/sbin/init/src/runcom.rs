@@ -329,6 +329,34 @@ mod tests {
     }
 
     #[test]
+    fn test_runetcrc_chrooted_child_execs_after_chroot() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let (mut host, mut sessions, mut db, signals) = fixture();
+        host.chroot_ok = true;
+        host.fork_outcomes.push(Ok(0));
+        host.exec_outcomes.push(Errno::EPERM);
+        let mut collector = ChildCollector {
+            sessions: &mut sessions,
+            db: &mut db,
+            did_multiuser_chroot: false,
+            rootdir: "/newroot".into(),
+        };
+        let mut seen = false;
+        let mut ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
+            mode: RuncomMode::Fastboot,
+            rootdir: "/newroot",
+            signals: &signals,
+        };
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            runetcrc(&mut host, true, &mut collector, &deps)
+        }));
+        // chroot lands before the exec, and fastboot omits "autoboot".
+        assert_eq!(host.chroots, vec!["/newroot"]);
+        assert_eq!(host.exec_requests[0].argv, vec!["sh", "/etc/rc"]);
+    }
+
+    #[test]
     fn test_runetcrc_fork_failure_sleeps_then_single_user() {
         let (mut host, mut sessions, mut db, signals) = fixture();
         host.fork_outcomes.push(Err(Errno::EAGAIN));

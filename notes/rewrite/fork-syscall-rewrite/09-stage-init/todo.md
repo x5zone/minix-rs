@@ -21,7 +21,7 @@
 
 验证基线（2026-09-18 实测；后续轮对照）：
 
-- `cargo test -p minix-init`：**138 passed / 0 failed**（首轮 89；中途峰值 165，P2-6 删 23 个被实体取代的分类器测试后为终态）
+- `cargo test -p minix-init`：**143 passed / 0 failed**（首轮 89；P1-8 全图测试 +5 后为终态）
 - `cargo clippy -p minix-init`：**32 条**——全部为 E-INITSYS 门控 API 面（见 §1 P2-6 残余表），非删除对象
 - `tools/design-coverage-check.sh`：14/16 PASS（00/99 两篇骨架缺快照，归 P2-5）
 
@@ -29,14 +29,15 @@
 
 ## 1. 开口项（全部挂共享基建等待态）
 
-### P2-5 ☐ 文档与快照 drift（部分完成）
+### P2-5 ✅ 文档与快照 drift（2026-09-18 审计轮闭环）
 
-- ✅ 已修：doc 06 §3（幽灵 `TtysSource` trait、子串匹配描述）、`multi_user.rs` 模块头、`entry.rs` 过时注释、docs 04/05/09/10/11/13/14 随实体重写。
-- ☐ **00-init-overview.md 与 99-init-global-concepts.md 正文改写**（仍为 pending 骨架；plan.md §6.1 排期，style-fix 级投入）+ 对应 `.design/` 快照六件套（这两篇仍 CRITICAL）。
-- ☐ **README.md**（:32 的 checklist 说法早于 2026-09-04 重写）。
-- ☐ **99 篇常量表补全**：`_PATH_CONSTTY=/dev/constty`（paths.h:63）、`INIT_PATH=_PATH_STDPATH`（init.c:103/107）、`RUNLVL_MSG="run-level %c"`（utmpx.h:74）、`/dev/MAKEDEV` 兜底（init.c:1765-1767）。
+- ✅ doc 06 §3（幽灵 `TtysSource` trait、子串匹配描述）、`multi_user.rs` 模块头、`entry.rs` 过时注释、docs 01/02/03/04/05/07/09/10/11/12/13/14 随实体重写。
+- ✅ **00/99 正文 v1 落稿**（00 补 Rust 实现形态段；99 补 13 行常量对照表——CONSTTY/INIT_PATH/RUNLVL_MSG/MAKEDEV 兜底四项含内）。
+- ✅ **README.md** 状态行与关键文件清单更新（checklist 过期说法移除，指向 todo.md 与 archive）。
+- ✅ **`.design/` 00/99 快照六件套**生成，`tools/design-coverage-check.sh` 收敛为 **ALL DOCS COMPLETE**（19 docs）。
+- ✅ **Gate E 全量对账**：14 条失效行清理（doc 01/02/03/05/12 的已删测试行），复扫「声称但代码缺失：无」。
 
-### P2-6 ☐ 死代码消除（第一轮已完成，残余为门控 API 面）
+### P2-6 ✅（第一轮+审计轮完成，残余为门控 API 面）
 
 clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 
@@ -57,9 +58,9 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 
 已落约束：真机入口路径只准依赖 minix_rt/minix_sys（main 的 `std::env::args` 是现存唯一 std 面）。hosted cfg-feature 拆分的前置是 minix-rt 的 env 访问 API——E-CMDSYSFACE 方案 A 既有提案。领取条件 = E-CMDSYSFACE 闭单。
 
-### P1-8 ☐ 测试三层终检（部分完成）
+### P1-8 ✅ 测试三层终检（2026-09-18 审计轮闭环）
 
-三层现状：纯函数单测 ✓；ttys golden（minix3/etc/ttys 真实行）✓；实体级集成（ScriptHost 驱动 single_user/runcom/multi_user/death 全分支）✓。待补：run_transition 全图逐边界断言（step() 提 pub(crate) 后机械改造）。
+三层就位：纯函数单测 ✓；ttys golden + 密码/台账单测 ✓；**全图逐边界断言** ✓（step() 提 pub(crate)，五条 boot-chain 测试走 's'→'r'→'t'→'m' 主线、rc 失败回退、'T'/'c'/'d' 边界与 ESRCH 早退）。
 
 ### P0-8 残余 ☐ libcrypt 哈希后端
 
@@ -84,8 +85,7 @@ password.rs 的解析/分发/门控接线已闭环；DES/MD5/SHA1/bcrypt 四后�
 2. **P0-8 残余**：libcrypt 后端独立 crate（edge 登记）。
 3. **P2-5 余件**：README/00/99 正文 + 快照 + 99 常量表（style-fix 级）。
 4. **P1-2 余件**：cfg feature hosted 拆分（等 minix-rt env API）。
-5. **P1-8 余件**：step() 提 pub(crate) + run_transition 逐边界断言。
-6. 每次修复遵循 fix-guard（修前读 ±5、一次一条、修后 grep 验证），修完跑 `cargo test -p minix-init` 对照基线 **138 passed**，Gate E 对照各篇 §5。
+5. 每次修复遵循 fix-guard（修前读 ±5、一次一条、修后 grep 验证），修完跑 `cargo test -p minix-init` 对照基线 **138 passed**，Gate E 对照各篇 §5。
 
 ---
 

@@ -169,15 +169,15 @@ os/commands/sbin/init/src/
 | `test_signal_to_state_maps` | 三映射 | init.c:1508-1516 |
 | `test_signal_to_state_default_none` | default 清零 | init.c:1518-1520 |
 | `test_signum_roundtrip_matches_minix3_numbering` | signum 权威与双向映射 | signal.h:52-82 |
-| `test_fake_registry_records` | 注册记录 | init.c:369-389 |
-| `test_driver_runs_fixed_steps` | 主循环步进 | init.c:624-640 |
-| `test_driver_stops_on_none` | 空指针返回路径 | init.c:628-629 |
-| `test_alarm_flag_set_and_clear` | clang 语义 | init.c:1649-1655 |
+| `test_note_signal_stores_transition` | handler 侧写原子请求 | init.c:1503-1521 |
+| `test_shutdown_request_roundtrip` | 挂钩请求 drain | init.c:517-538 |
+| `test_boot_chain_walks_every_boundary_to_multi_user` | 'r'→'t'→'m' 全图边界 | init.c:630-639 |
+| `test_boot_chain_clean_ttys_and_death_and_catatonia_boundaries` | 'T'/'c'/'d' 边界 | init.c:1569-1698 |
 
 ### 5.1 测试统计（截至 2026-09-04）
 
 - `cargo test -p minix-init`：20 个通过（01 的 13 个加本篇 7 个），0 失败。
-- 完整清单：`rg "fn test_" os/commands/sbin/init/src/state_machine.rs`。
+- 完整清单：`rg "fn test_" os/commands/sbin/init/src/state_machine.rs os/commands/sbin/init/src/signal_state.rs os/commands/sbin/init/src/driver.rs os/commands/sbin/init/src/wait.rs`。
 
 ---
 

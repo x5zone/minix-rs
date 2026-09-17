@@ -223,13 +223,9 @@ os/commands/sbin/init/src/
 | `test_parse_combined_flags` | `-sf` 合写 | 同上 |
 | `test_parse_unknown_flag_warns` | 未知参数进 warnings | `init.c:295-297` |
 | `test_parse_excess_args_warn` | 多余位置参数警告 | `init.c:300-301` |
-| `test_identity_root_and_pid1_ok` | 合法身份通过 | `init.c:242-249` |
-| `test_identity_non_root_fails` | 非 root 报 NotRoot | `init.c:242-245` |
-| `test_identity_wrong_pid_fails` | pid 非 1 报 AlreadyRunning | `init.c:248-249` |
 | `test_decide_defaults_to_runcom` | 默认首状态 runcom | `init.c:195` |
 | `test_decide_single_user_flag` | `-s` 改 single_user | `init.c:290` |
 | `test_decide_console_failure_forces_single_user` | 设备失败降级 | `init.c:269-270` |
-| `test_entry_error_maps_to_errno` | NotRoot 对应 EPERM | errno 对齐约束 |
 
 ### 5.1 测试统计（截至 2026-09-04）
 
