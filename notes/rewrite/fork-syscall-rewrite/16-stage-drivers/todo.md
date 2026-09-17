@@ -82,6 +82,8 @@
 
 - **A2-net ✅（2026-09-17，A2 网络批首项）[L2] dp8390 消费 netdriver**：`char_face::Dp8390Face` 实现 `NetDriver`——name/init 报环形几何与 PROM 地址（服务层填）、link 恒未知（无链路寄存器）、length_ok 走帧界守卫、advance 走 G9 的停止页特例；寄存器与 PROM 读取归服务层；dp8390 测试 5→8。
 
+- **A2-usb_storage ✅（2026-09-17，A2 USB 批）[L2] usb_storage 消费 minix-usb**：`block_face::StorageFace` 组合 CBW 构造/标签配对与 URB 花名册——read/write 提交走 CDB 构造与 transfer_allowed 守卫（零长拒于本地）、urb 标识即 BOT 标签（完成路径与配对同一权威）、wire 槽位携带 grant id 与字节大小；usb_storage 测试 7→11。
+
 - **A2-usbd ✅（2026-09-17，A2 USB 批）[L2] usbd 消费 minix-usb**：`char_face::UsbdFace` 组合枚举走查与 URB 花名册——submit 派标识并填 send_urb 线槽（grant id/大小，`wire.rs`）、complete 走出册并回填完成报告（V8 的 remove_pending）、未知标识对不上不扰册；usbd 测试 7→11。
 
 - **A2-sb16 ✅（2026-09-17，A2 音频批）[L2] sb16 消费 minix-audiodriver**：`char_face::Sb16Face` 实现 `AudioHooks`——init 报单子设备、start/stop 追踪运行态、get_frag_size 报协商值、set_rate 走 SB16 有限速率表（上限 23111，44100 拒绝）、rate_command_byte 消费 dsp.rs 的命令字节；sb16 测试 4→7。

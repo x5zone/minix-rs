@@ -17,6 +17,9 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod block_face;
 pub mod cbw;
 
 /// Service initialization entry (wires the storage table; endpoint traffic stays out).
