@@ -18,6 +18,8 @@ use minix_sys::{read, write, Fd};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
+/// Standard error, POSIX `STDERR_FILENO`.
+pub const STDERR: Fd = 2;
 /// Standard output, POSIX `STDOUT_FILENO`.
 pub const STDOUT: Fd = 1;
 
@@ -31,6 +33,12 @@ pub fn emit(bytes: &[u8]) {
     if write(STDOUT, bytes).is_err() {
         terminate(1);
     }
+}
+
+/// Best-effort write to standard error (the C `warnx` channel); write
+/// failures are ignored exactly as stdio's are in the C utilities.
+pub fn warn(bytes: &[u8]) {
+    let _ = write(STDERR, bytes);
 }
 
 /// Reads all of standard input into one vector.

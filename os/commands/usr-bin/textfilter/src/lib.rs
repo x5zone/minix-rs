@@ -27,10 +27,15 @@
 //! Everything borrows from the input and uses fixed size buffers: no heap,
 //! `no_std` throughout.
 
+// The `sort` option parser materialises its key list; every other module
+// stays allocation free.
+extern crate alloc;
+
 pub mod count;
 pub mod cut;
 pub mod tr;
 pub mod uniq;
+pub mod sort;
 pub mod window;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
