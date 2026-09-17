@@ -134,6 +134,24 @@ impl InputQueue {
         cell
     }
 
+    /// Hand out up to `max` bytes; canonical mode stops at (and
+    /// consumes) the first line break, non-canonical hands out whatever
+    /// is queued. Returns the number of bytes written into `out`.
+    ///
+    /// C: the read-side walk of the input ring (`tty.c` read path).
+    pub fn drain_ready(&mut self, max: usize, out: &mut alloc::vec::Vec<u8>) -> usize {
+        let mut moved = 0;
+        while moved < max {
+            let Some(cell) = self.pop() else { break };
+            out.push(cell.value);
+            moved += 1;
+            if cell.mark.end_of_line {
+                break;
+            }
+        }
+        moved
+    }
+
     /// Drop the whole current line (kill processing).
     ///
     /// C: the kill branch of `in_process`: characters vanish up to (but

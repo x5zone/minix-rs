@@ -7,6 +7,7 @@
 //! `do_select` (`tty.c:865-899`), and the hangup plus canonical-newline
 //! rules inside `select_try`.
 
+use super::input::{InputQueue, LineProcessor};
 use super::line::LineId;
 use super::termios::LineConfig;
 use minix_types::{EAGAIN, EBADF, EINTR, EINVAL, ENXIO, OK};
@@ -81,8 +82,11 @@ pub struct TtySession {
     writer: Option<Suspended>,
     drain: Option<Suspended>,
     watcher: Option<Watcher>,
-    queue_len: usize,
-    queue_breaks: usize,
+    /// The line's own input queue with its line-discipline processor
+    /// (A8 composition: the queue lives in the session, so readiness
+    /// probes read real state instead of hand-copied facts).
+    input: InputQueue,
+    processor: LineProcessor,
     output_pending: bool,
     device_writable: bool,
 }
@@ -115,8 +119,8 @@ impl TtySession {
             writer: None,
             drain: None,
             watcher: None,
-            queue_len: 0,
-            queue_breaks: 0,
+            input: InputQueue::new(),
+            processor: LineProcessor::new(),
             output_pending: false,
             device_writable: true,
         }
@@ -277,10 +281,30 @@ impl TtySession {
         None
     }
 
-    /// Feed queue and output facts for readiness probes.
-    pub fn note_input(&mut self, queued: usize, breaks: usize) {
-        self.queue_len = queued;
-        self.queue_breaks = breaks;
+    /// Mutable access to the line's input queue (the face hands bytes
+    /// out of it; the session still owns the line-discipline state).
+    pub fn input_mut(&mut self) -> &mut InputQueue {
+        &mut self.input
+    }
+
+    /// Run raw device bytes through the line discipline into the line's
+    /// own queue; returns the number of bytes stored.
+    ///
+    /// C: the keyboard/serial path feeding the input ring through
+    /// `in_process` (`tty.c`). The session owning the queue means
+    /// readiness probes read real state instead of hand-copied counts.
+    pub fn feed_input(&mut self, bytes: &[u8]) -> usize {
+        let mut stored = 0;
+        for byte in bytes {
+            let _ = self.processor.feed(
+                &mut self.input,
+                *byte,
+                &self.config.flags,
+                &self.config.controls,
+            );
+            stored += 1;
+        }
+        stored
     }
 
     /// Note whether output is still draining and the device can take more.
@@ -302,7 +326,8 @@ impl TtySession {
         }
         if ops & OP_READ != 0
             && (self.reader.is_some()
-                || (self.queue_len > 0 && (!self.config.flags.canonical || self.queue_breaks > 0)))
+                || (self.input.len() > 0
+                    && (!self.config.flags.canonical || self.input.break_count() > 0)))
         {
             ready |= OP_READ;
         }
@@ -478,9 +503,11 @@ mod tests {
     #[test]
     fn test_probe_honors_hangup_and_canonical_rule() {
         let mut session = session();
-        session.note_input(5, 0);
+        // Canonical mode: queued bytes without a line break are not ready.
+        session.feed_input(&[0x41, 0x42, 0x43, 0x44, 0x45]); // plain letters: eol(0), eof(4), kill(0x15) avoided
         assert_eq!(session.probe(OP_READ), 0);
-        session.note_input(5, 1);
+        // A newline completes the line: readiness arrives.
+        session.feed_input(&[0x0A]);
         assert_eq!(session.probe(OP_READ), OP_READ);
         session.config.output_speed = 0;
         assert_eq!(session.probe(OP_READ | OP_WRITE), OP_READ | OP_WRITE);
@@ -492,7 +519,7 @@ mod tests {
         session.note_output(false, true);
         let ready = session.select(0, OP_READ | OP_WRITE, 9).unwrap();
         assert_eq!(ready, OP_WRITE);
-        session.note_input(3, 1);
+        session.feed_input(&[1, 2, 0x0A]);
         let fired = session.retry_watch().unwrap();
         assert_eq!(fired, (9, 0, OP_READ));
         assert!(session.retry_watch().is_none());
