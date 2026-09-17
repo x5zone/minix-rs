@@ -6,10 +6,16 @@
 //! (`chardriver.c:127-174`).
 //!
 //! Loop shell policy (E-INWIRE): written directly against `minix-sys`
-//! receive/send/asynsend. **minix-sef switch point**: when input gains SEF
-//! lifecycle handling, [`KernelTransport::receive`] swaps to
+//! receive/send/senda. **minix-sef switch point**: when input gains SEF
+//! lifecycle handling, the transport's `receive` swaps to
 //! `minix_sef::sef_receive_status` (RS ping absorption) — the IS/MIB
 //! precedent — and nothing else in this module changes.
+//!
+//! The transport aggregates BOTH hardware legs (a C process owns them
+//! simultaneously): the IPC leg (`DirectTrapTransport`) for
+//! receive/send/asynsend, and the SYSCALL leg (`DirectKernelCallTransport`)
+//! for grant writes and the DS client. `KernelTransport` implements both
+//! traits by delegation — the Rust counterpart of "one C process".
 //!
 //! Announce: DS publishes `drv.chr.input` at startup (C: chardriver
 //! announce, `chardriver.c:99`), `sys_statectl CLEAR_IPC_REFS` drops the
@@ -18,10 +24,13 @@
 
 use crate::dispatcher::{complete_grant_copy, handle_arrival, Arrival, Outcome};
 use crate::effects::Effect;
-use minix_sys::syscall::{sys_safecopyto, DirectKernelCallTransport};
-use minix_types::{decode_input_event, decode_setleds, INPUT_EVENT, INPUT_SETLEDS};
+use minix_sys::ds::DsClient;
+use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
+use minix_sys::syscall::{
+    sys_safecopyto, DirectKernelCallTransport, KernelCallTransport as _,
+};
+use minix_types::{decode_input_event, decode_setleds, Endpoint, Message, INPUT_EVENT, INPUT_SETLEDS};
 use alloc::vec::Vec;
-use minix_types::{Endpoint, Message};
 
 /// CDEV reply message types. C: `com.h:935-937` —
 /// `CDEV_REPLY = CDEV_RS_BASE(0x480)`、`CDEV_SEL2_REPLY = CDEV_RS_BASE + 2`.
@@ -44,14 +53,25 @@ pub trait Transport {
     fn publish_label(&mut self, name: &str) -> Result<(), i32>;
 }
 
-/// The production transport: every verb is a `minix-sys` call.
-/// **minix-sef switch point**: `receive` swaps to
+/// The production transport: both hardware legs, aggregated.
+///
+/// - `ipc` (DirectTrapTransport): the int-33 IPC leg — receive/send/
+///   asynsend of this module's [`Transport`] surface.
+/// - `kernel` (DirectKernelCallTransport): the SYSCALL leg — grant writes
+///   and the DS client's kernel-call half.
+///
+/// **minix-sef switch point**: the `receive` delegation swaps to
 /// `minix_sef::sef_receive_status` when input gains SEF lifecycle handling
 /// (the IS/MIB precedent) — callers are unchanged.
-pub struct KernelTransport;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KernelTransport {
+    pub ipc: DirectTrapTransport,
+    pub kernel: DirectKernelCallTransport,
+}
 
 impl Transport for KernelTransport {
     fn receive(&mut self, msg: &mut Message) -> Result<(), i32> {
+        // minix-sef switch point (see the struct docs).
         minix_sys::receive(Endpoint::ANY, msg).map_err(|_| -minix_types::EIO)
     }
 
@@ -60,28 +80,56 @@ impl Transport for KernelTransport {
     }
 
     fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
-        // SENDA 表接线前以阻塞 send 承载异步回复（登记：C asynsend3
-        // AMF_NOREPLY 的异步语义挂 SENDA 客户端接线）。
-        minix_sys::send(dst, msg).map_err(|_| -minix_types::EIO)
+        // C: `asynsend3(endpt, &m, AMF_NOREPLY)` — a one-slot SENDA table
+        // with the no-reply flag set (`ipc.rs:202`, flag value 8).
+        let slot = AsyncSlot {
+            flags: AsyncSlotFlags(AsyncSlotFlags::VALID.0 | AsyncSlotFlags::NO_REPLY.0),
+            destination: dst,
+            result: 0,
+            message: *msg,
+        };
+        self.ipc.senda(&[slot]).map_err(|_| -minix_types::EIO)
     }
 
     fn write_grant(&mut self, granter: Endpoint, grant: i32, bytes: &[u8]) -> Result<(), i32> {
-        sys_safecopyto(
-            &DirectKernelCallTransport,
-            granter.get(),
-            grant,
-            0,
-            bytes.as_ptr() as u64,
-            bytes.len() as u64,
-        )
+        sys_safecopyto(&self.kernel, granter.get(), grant, 0, bytes.as_ptr() as u64, bytes.len() as u64)
     }
 
-    fn publish_label(&mut self, _name: &str) -> Result<(), i32> {
-        // 登记：DsClient<T> 要求 T 同时实现 IpcTransport + KernelCallTransport
-        // （ds.rs:44），而单一直传载体只能实现其一——DS 发布需该约束放宽
-        // 或拆分 client 后接线。此前 announce 走 TTY_INPUT_UP 阻塞发送
-        // （serve 的 pre-receive 序列），标签发布待上述裁决。
-        Err(-minix_types::ENOSYS)
+    fn publish_label(&mut self, name: &str) -> Result<(), i32> {
+        // DsClient consumes both legs by value; both carriers are zero
+        // sized, so re-constructing the aggregate is free.
+        let mut ds = DsClient::new(*self, Endpoint::DS);
+        ds.publish_label(name, Endpoint::NONE, minix_types::DsFlags::empty())
+    }
+}
+
+impl minix_sys::ipc::IpcTransport for KernelTransport {
+    fn send(&self, destination: Endpoint, message: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+        self.ipc.send(destination, message)
+    }
+    fn receive(&self, source: Endpoint, message: &mut Message) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
+        self.ipc.receive(source, message)
+    }
+    fn sendrec(&self, destination: Endpoint, message: &mut Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+        self.ipc.sendrec(destination, message)
+    }
+    fn notify(&self, destination: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> {
+        self.ipc.notify(destination)
+    }
+    fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+        self.ipc.sendnb(destination, message)
+    }
+    fn senda(&self, table: &[AsyncSlot]) -> Result<(), minix_sys::ipc::TrapStatus> {
+        self.ipc.senda(table)
+    }
+    fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> {
+        self.ipc.query_kerninfo_page()
+    }
+}
+
+impl minix_sys::syscall::KernelCallTransport for KernelTransport {
+    fn kernel_call(&self, message: &mut Message) -> i32 {
+        self.kernel.kernel_call(message)
     }
 }
 

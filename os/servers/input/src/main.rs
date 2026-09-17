@@ -34,7 +34,7 @@ fn main() {
         // SEF switch point (receive → sef_receive_status) is documented at
         // KernelTransport::receive.
         let self_ep = minix_types::Endpoint::NONE; // A-6/RS assignment pending
-        let mut transport = minix_input::serve::KernelTransport;
+        let mut transport = minix_input::serve::KernelTransport::default();
         let mut server = minix_input::dispatcher::Server::fresh();
         minix_input::serve::serve(&mut transport, self_ep, &mut server);
     }
