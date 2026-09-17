@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod char_face;
 pub mod led;
 pub mod mouse;
 pub mod scancode;
