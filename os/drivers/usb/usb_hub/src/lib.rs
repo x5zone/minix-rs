@@ -15,6 +15,9 @@
 
 #![no_std]
 
+extern crate alloc;
+
+pub mod char_face;
 pub mod ports;
 
 /// Service initialization entry (wires the hub table; control traffic stays out).

@@ -82,6 +82,8 @@
 
 - **A2-net ✅（2026-09-17，A2 网络批首项）[L2] dp8390 消费 netdriver**：`char_face::Dp8390Face` 实现 `NetDriver`——name/init 报环形几何与 PROM 地址（服务层填）、link 恒未知（无链路寄存器）、length_ok 走帧界守卫、advance 走 G9 的停止页特例；寄存器与 PROM 读取归服务层；dp8390 测试 5→8。
 
+- **A2-usb_hub ✅（2026-09-17，A2 USB 批）[L2] usb_hub 消费 minix-usb**：`char_face::HubFace` 组合端口看法与控制 urb 花名册——轮询轮的 urb 提交/完成走 minix-usb 花名册、observe 委托端口状态机（通信错挂全任务、状态错拉黑免疫出走）、复位预算照旧；usb_hub 测试 5→9。
+
 - **A2-usb_storage ✅（2026-09-17，A2 USB 批）[L2] usb_storage 消费 minix-usb**：`block_face::StorageFace` 组合 CBW 构造/标签配对与 URB 花名册——read/write 提交走 CDB 构造与 transfer_allowed 守卫（零长拒于本地）、urb 标识即 BOT 标签（完成路径与配对同一权威）、wire 槽位携带 grant id 与字节大小；usb_storage 测试 7→11。
 
 - **A2-usbd ✅（2026-09-17，A2 USB 批）[L2] usbd 消费 minix-usb**：`char_face::UsbdFace` 组合枚举走查与 URB 花名册——submit 派标识并填 send_urb 线槽（grant id/大小，`wire.rs`）、complete 走出册并回填完成报告（V8 的 remove_pending）、未知标识对不上不扰册；usbd 测试 7→11。
