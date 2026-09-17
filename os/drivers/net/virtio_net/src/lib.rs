@@ -14,6 +14,7 @@
 
 #![no_std]
 
+pub mod char_face;
 pub mod queues;
 
 /// Service initialization entry (wires the card table; queue traffic stays out).
