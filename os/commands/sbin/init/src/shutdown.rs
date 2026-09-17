@@ -6,9 +6,8 @@
 use crate::host::InitHost;
 use crate::log::warning;
 use crate::session::{Session, SE_SHUTDOWN};
-use crate::signal_state::AlarmFlag;
 use crate::state_machine::{sig, StateKind};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Seconds per death round (C: `DEATH_WATCH`, init.c:96).
 pub const DEATH_WATCH_SECS: u64 = 10;
@@ -33,7 +32,7 @@ pub struct ShutdownDeps<'a, 'b> {
     pub ledger: &'a mut crate::driver::Ledger<'a>,
     /// The SIGALRM flag (C: `clang`, init.c:173) — shared with the
     /// real handler so an asynchronous set is visible here.
-    pub clang: Arc<AlarmFlag>,
+    pub clang: &'a AtomicBool,
 }
 
 /// Block further logins: mark every session and return to multi-user,
@@ -69,7 +68,7 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
                 return StateKind::SingleUser;
             }
 
-        deps.clang.take(); // clang = 0
+        deps.clang.swap(false, Ordering::SeqCst); // clang = 0
         let _ = host.alarm(DEATH_WATCH_SECS as u32);
 
         let mut children_exhausted = false;
@@ -84,13 +83,13 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
                     }
                     // C's do-while checks clang and ECHILD; other
                     // errnos (EINTR among them) keep the reap going.
-                    if children_exhausted || deps.clang.take() {
+                    if children_exhausted || deps.clang.swap(false, Ordering::SeqCst) {
                         break;
                     }
                     continue;
                 }
             }
-            if deps.clang.take() {
+            if deps.clang.swap(false, Ordering::SeqCst) {
                 break;
             }
         }
@@ -151,10 +150,11 @@ mod tests {
         };
         let mut seen = false;
         let mut ledger = Ledger::new(&mut seen);
+        let clang = std::sync::atomic::AtomicBool::new(false);
         let mut deps = ShutdownDeps {
             collector: &mut collector,
             ledger: &mut ledger,
-            clang: Arc::new(AlarmFlag::default()),
+            clang: &clang,
         };
         assert_eq!(death(&mut host, &mut deps), StateKind::SingleUser);
         // The ledger entry is written before the rounds, regardless.
@@ -180,10 +180,11 @@ mod tests {
         };
         let mut seen = false;
         let mut ledger = Ledger::new(&mut seen);
+        let clang = std::sync::atomic::AtomicBool::new(false);
         let mut deps = ShutdownDeps {
             collector: &mut collector,
             ledger: &mut ledger,
-            clang: Arc::new(AlarmFlag::default()),
+            clang: &clang,
         };
         assert_eq!(death(&mut host, &mut deps), StateKind::SingleUser);
         assert_eq!(host.alarms, vec![DEATH_WATCH_SECS as u32]);
@@ -197,7 +198,7 @@ mod tests {
         let mut sessions = vec![sample(1, "tty1")];
         let mut db = crate::session_db::HashMapDb::default();
         db.open().unwrap();
-        let clang = Arc::new(AlarmFlag::default());
+        let clang = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         host.alarm_sets_clang = Some(clang.clone());
         for _ in 0..3 {
             host.wait_outcomes
@@ -214,7 +215,7 @@ mod tests {
         let mut deps = ShutdownDeps {
             collector: &mut collector,
             ledger: &mut ledger,
-            clang,
+            clang: &clang,
         };
         assert_eq!(death(&mut host, &mut deps), StateKind::SingleUser);
         assert!(host

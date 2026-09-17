@@ -229,12 +229,11 @@ pub(crate) fn step(host: &mut dyn InitHost, state: &mut DriverState, current: St
                 did_multiuser_chroot: *did_multiuser_chroot,
                 rootdir: rootdir.clone(),
             };
-            let clang = signals.clang.clone();
             let mut ledger = Ledger::new(&mut state.sessions_seen);
             let mut deps = ShutdownDeps {
                 collector: &mut collector,
                 ledger: &mut ledger,
-                clang,
+                clang: signals.clang(),
             };
             death(host, &mut deps)
         }

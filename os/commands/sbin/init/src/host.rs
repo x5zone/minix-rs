@@ -25,6 +25,7 @@ use crate::state_machine::HandlerKind;
 use crate::wait::{from_raw, WaitStatus};
 use minix_sys::ipc::DirectTrapTransport;
 use minix_sys::{self, Errno, Pid};
+use minix_sys::pm::SigActionWire;
 
 /// Which signals want which handler, plus the block mask.
 ///
@@ -238,8 +239,30 @@ impl InitHost for MinixSysHost {
     }
 
     fn register_handlers(&mut self, spec: &SignalSpec) -> Result<(), Errno> {
-        let _ = spec;
-        Err(Errno::ENOSYS)
+        // Real installation: one sigaction per entry with the shared
+        // trampoline, then the block mask. Two honest gaps remain:
+        // (a) the sigreturn stub address is 0 until minix-rt provides
+        // one; (b) the PM dispatch arm for PM_SIGACTION is missing, so
+        // a real PM answers EBADCALL — main logs it and the machine
+        // runs on default dispositions until E-INITSYS ① closes.
+        let tramp = crate::signal_state::trampoline_address();
+        for (signum, kind) in &spec.handlers {
+            let handler = match kind {
+                HandlerKind::Ignore => 1usize, // SIG_IGN
+                _ => tramp,
+            };
+            let act = SigActionWire {
+                sa_handler: handler,
+                sa_mask: [0; 4],
+                sa_flags: 0,
+                _pad: [0; 4],
+            };
+            minix_sys::pm::sigaction_via(&DirectTrapTransport, *signum, Some(&act), None, 0)?;
+        }
+        if let Some(except) = &spec.blocked_except {
+            minix_sys::pm::sigprocmask_via(&DirectTrapTransport, SIG_SETMASK, Some(&sigset_full_minus(except)))?;
+        }
+        Ok(())
     }
 
     fn alarm(&mut self, secs: u32) -> Result<(), Errno> {
@@ -362,7 +385,7 @@ pub struct ScriptHost {
     pub wait_errors: Vec<Errno>,
     /// When set, `alarm` arms the shared clang flag — the scripted
     /// shape of "kernel raises SIGALRM, the handler sets clang".
-    pub alarm_sets_clang: Option<std::sync::Arc<crate::signal_state::AlarmFlag>>,
+    pub alarm_sets_clang: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ScriptHost {
@@ -465,7 +488,7 @@ impl InitHost for ScriptHost {
     fn alarm(&mut self, secs: u32) -> Result<(), Errno> {
         self.alarms.push(secs);
         if let Some(clang) = &self.alarm_sets_clang {
-            clang.set();
+            clang.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         Ok(())
     }
@@ -581,6 +604,30 @@ pub fn restore_spec(signums: &[i32]) -> SignalSpec {
     }
 }
 
+
+/// C: `SIG_SETMASK 3` (`minix3/sys/sys/signal.h:176`).
+const SIG_SETMASK: i32 = 3;
+
+/// 全信号集（1..=64;C `sigfillset`,128 位 sigset_t 的高 64 位不用）。
+fn sigset_full() -> [u32; 4] {
+    let mut set = [0u32; 4];
+    for sig in 1..=64usize {
+        set[(sig - 1) / 32] |= 1 << ((sig - 1) % 32);
+    }
+    set
+}
+
+/// 全集减去 `except`（C: `delset` 变参循环,init.c:324-327）。
+fn sigset_full_minus(except: &[i32]) -> [u32; 4] {
+    let mut set = sigset_full();
+    for &sig in except {
+        if (1..=64).contains(&sig) {
+            set[((sig - 1) / 32) as usize] &= !(1 << ((sig - 1) % 32));
+        }
+    }
+    set
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,8 +644,11 @@ mod tests {
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
+        // 信号安装已是真实封装（E-INITSYS ①）：DirectTrap 是宿主回环
+        // 传输，返回 Ok；真机上的 PM 未服务该调用号时回 EBADCALL
+        // （sys/errno.h:205），main 告警后继续——两条路径都如实。
         let spec = default_signal_spec();
-        assert_eq!(host.register_handlers(&spec), Err(Errno::ENOSYS));
+        assert_eq!(host.register_handlers(&spec), Ok(()));
         assert_eq!(
             host.exec(&ParsedCommand {
                 exec_path: "/bin/sh".into(),
