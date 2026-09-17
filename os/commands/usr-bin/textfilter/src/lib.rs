@@ -42,6 +42,7 @@ pub mod diff;
 pub mod expand;
 pub mod jot;
 pub mod lam;
+pub mod patch;
 pub mod paste;
 pub mod split;
 pub mod floatfmt;

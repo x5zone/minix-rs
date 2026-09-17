@@ -142,7 +142,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-textfilter`：**219 个测试，全部通过**（截至 2026-09-18，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr、4 个为 rev、4 个为 comm、6 个为 expand、3 个为 unexpand、7 个为 fold、5 个为 cksum、4 个为 paste、3 个为 split、6 个为 tsort、4 个为 column 的决定半、11 个为 vis/unvis 编解码、8 个为 colrm、12 个为 jot、7 个为 lam、15 个为 col、12 个为 hexdump、10 个为 units、17 个为 unifdef、3 个为 floatfmt 垫片、15 个为 diff 引擎）；另有三十二个已接线的命令二进制（薄壳三十一个加 tee 的扇出形态），其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
+`cargo test -p minix-textfilter`：**229 个测试，全部通过**（截至 2026-09-18，其中 11 个为 sort、5 个为 cmp、9 个为 seq、6 个为 pr、4 个为 rev、4 个为 comm、6 个为 expand、3 个为 unexpand、7 个为 fold、5 个为 cksum、4 个为 paste、3 个为 split、6 个为 tsort、4 个为 column 的决定半、11 个为 vis/unvis 编解码、8 个为 colrm、12 个为 jot、7 个为 lam、15 个为 col、12 个为 hexdump、10 个为 units、17 个为 unifdef、3 个为 floatfmt 垫片、15 个为 diff 引擎、10 个为 patch 引擎）；另有三十三个已接线的命令二进制（薄壳三十二个加 tee 的扇出形态），其决定半由上述库测试覆盖，行收集与切分属执行半的宿主接缝（见篇首说明）。
 - **制表展开**（`expand.rs`，6 个）：`test_default_eight_column_stops`（do-while 至少一空格后补至 8 的倍数）、`test_single_stop_multiples`、`test_stop_list_picks_next_beyond_column`（末停后一格）、`test_backspace_pulls_the_column_and_passes_through`（退格透传拉列）、`test_newline_resets_the_column`、`test_stop_list_validation`（0/257/乱序/越界）。
 - **制表还原**（`unexpand.rs`，8 个）：`test_leading_blank_run_becomes_tabs_at_eight`（8 空格一停、4 空格保持）、`test_two_space_gap_becomes_one_tab`（非 `-a` 首非空白后透传）、`test_single_space_stays_a_space`、`test_without_a_only_leading_blanks_convert`、`test_backspace_pulls_both_columns`（`-a` 下退格回拉后仍成 tab）、`test_stop_list_bounds_the_tab_region`、`test_parse_stops_rejects_unordered`、`test_every_line_converts`。
 - **折行**（`fold.rs`，7 个）：`test_short_lines_pass_through`、`test_break_after_the_last_space`（末空格断行且空格留续行头）、`test_no_space_breaks_hard`、`test_split_words_breaks_anywhere`、`test_tab_counts_to_the_next_stop`（tab 超宽时空缓冲先出空行）、`test_count_bytes_counts_the_tab_as_one`、`test_empty_input_yields_nothing`。
@@ -202,7 +202,7 @@
 | look、ifdef | — | 查证（2026-09-18）：`minix3/usr.bin/` 下无此二命令（`look.c` 在 `usr.bin/m4/` 内属 m4 内建，`ifdef` 同为 m4 内建），不在 07 篇接线范围 |
 | crc | — | 查证（2026-09-18）：`usr.bin/cksum/crc.c` 的 CRC 已由本库 `cksum` 模块的 `cksum_crc` 覆盖（批次十四，const 表与 C crctab 全表核对），无独立命令需要接线 |
 | diff | 同上 | 已接线决定半与薄壳（4.4BSD 引擎全链：稠密等价类〔代 readhash，jackpot 复核随之精确化〕、公共前后缀剪枝、sort+equiv+unsort、stone 候选搜索含 isqrt 尝试上限、unravel 出 J 表、check 复核、六种输出格式 normal/`-e` 逆序 ed/`-f`/`-n` RCS/`-q`/`-u` 合并上下文，15 测试对照宿主向量；`-c`、`#ifdef`、`-b/-w/-i` 忽略族、`\ No newline` 与目录递归为登记角落） |
-| patch | 各自的决定半尚未写库 | 下一批次立项（pch.c 补丁解析 + 匹配应用引擎） |
+| patch | 同上 | 已接线决定半与薄壳（unified/normal hunk 解析〔pch.c 的 UNI_DIFF/NORMAL_DIFF 分支：`(起始,计数)` 头、`< / --- / >` 体、空格被吃容错〕、定位引擎〔patch.c 的 locate_hunk/patch_match/apply_hunk：猜测位 `first+last_offset`、正负偏移交替搜索、上下文 fuzz 最多 2 且拒绝真空匹配、`where--` 后按对齐行惰性拷贝/删除/插入〕，10 测试；context 格式、ed 管道、`-R`、reject 文件与 `\ No newline` 为登记角落） |
 
 ---
 
