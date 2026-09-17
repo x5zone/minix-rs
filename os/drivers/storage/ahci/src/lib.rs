@@ -15,6 +15,7 @@
 
 extern crate alloc;
 
+pub mod block_face;
 pub mod identify;
 pub mod port;
 
