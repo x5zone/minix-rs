@@ -17,6 +17,7 @@
 extern crate alloc;
 
 pub mod core;
+pub mod crypto;
 pub mod device;
 pub mod pool;
 
