@@ -48,6 +48,7 @@ pub mod sort;
 pub mod tsort;
 pub mod tr;
 pub mod uniq;
+pub mod vis;
 pub mod window;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
