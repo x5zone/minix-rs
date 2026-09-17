@@ -13,6 +13,7 @@ mod multi_user;
 mod runcom;
 mod session;
 mod session_db;
+mod signal_state;
 mod shutdown;
 mod single_user;
 mod state_machine;

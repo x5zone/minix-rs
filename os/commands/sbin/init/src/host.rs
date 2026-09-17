@@ -336,7 +336,7 @@ pub struct ScriptHost {
     pub wait_errors: Vec<Errno>,
     /// When set, `alarm` arms the shared clang flag — the scripted
     /// shape of "kernel raises SIGALRM, the handler sets clang".
-    pub alarm_sets_clang: Option<std::sync::Arc<crate::state_machine::AlarmFlag>>,
+    pub alarm_sets_clang: Option<std::sync::Arc<crate::signal_state::AlarmFlag>>,
 }
 
 impl ScriptHost {

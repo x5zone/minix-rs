@@ -5,8 +5,6 @@
 //! (`transition_handler`), `1649-1655` (`alrm_handler`).
 //! Design contract: `.design/02-design.v1.md §1.1-§1.4`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 /// Minix3 signal numbers init reacts to.
 ///
 /// Names and values mirror the single authority
@@ -148,24 +146,6 @@ pub fn signal_to_state(sig: Signal) -> Option<StateKind> {
     }
 }
 
-/// Alarm flag (C: `clang`, init.c:173; set by `alrm_handler`, init.c:1649-1655).
-///
-/// Atomic so a real signal handler can set it asynchronously.
-#[derive(Debug, Default)]
-pub struct AlarmFlag {
-    inner: AtomicBool,
-}
-
-impl AlarmFlag {
-    pub fn set(&self) {
-        self.inner.store(true, Ordering::SeqCst);
-    }
-
-    pub fn take(&self) -> bool {
-        self.inner.swap(false, Ordering::SeqCst)
-    }
-}
-
 /// Drives the `transition()` loop (C: init.c:624-640).
 ///
 /// `step` runs one state function and returns the next state, or `None`
@@ -280,12 +260,4 @@ mod tests {
         assert_eq!(trace, vec![StateKind::Death]);
     }
 
-    #[test]
-    fn test_alarm_flag_set_and_clear() {
-        let flag = AlarmFlag::default();
-        assert!(!flag.take());
-        flag.set();
-        assert!(flag.take());
-        assert!(!flag.take());
-    }
 }

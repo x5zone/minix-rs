@@ -130,7 +130,11 @@ pub fn signal_to_state(sig: Signal) -> Option<StateKind>
 
 C 的 `for(;;)` 无法单测，Rust 的 `run(max_steps)` 允许测试跑固定步数后停下断言轨迹。`step()` 返回 `None` 表示“当前状态函数要求停机”（对应 C 的返回空指针），测试可覆盖这条罕见路径。
 
-### 3.5 决策四：信号注册表收敛为 SignalSpec 数据 + host 安装
+### 3.5 决策四：SignalState——异步写状态的三位一体
+
+`signal_state.rs` 的 `SignalState` 收纳 C 的三个信号上下文全局：`clang`（Arc 共享的原子标志，alrm_handler 与 death 的 watch 共用）、`requested_transition`（原子状态字符）、以及 minix 挂钩的待决请求。这里有一处**机制层的自觉偏离**（外部行为不变）：C 的 `minixreboot` 在 handler 里直接 fork/exec `/sbin/shutdown`（init.c:517-525），POSIX 意义上这是 async-signal-safe 的反例；Rust 侧 handler 只置原子请求（`note_signal`/`note_shutdown_request`），驱动循环在下一个等待边界执行 spawn（`take_shutdown_request`）。可观察次序一致——请求都在下一次等待边界生效——但 fork 挪出了信号上下文。
+
+### 3.6 决策五：信号注册表收敛为 SignalSpec 数据 + host 安装
 
 **[ARCH: init-host-seam]** 原 `SignalRegistry` trait（Fake 记录 + Live 返回 defer 错误）退役：注册表达降为数据——`SignalSpec { handlers, blocked_except }`（符号对，来自 C 的 `handle()`/`delset()` 调用点），安装动作是 `InitHost::register_handlers`。live 宿主在 sigaction 客户端面（E-INITSYS ①）落地前返回 ENOSYS；剧本宿主记录整张 spec 供断言。`SA_NOCLDSTOP`/`SA_RESTART` 的转述原则不变：如实记录，不虚构结论。
 

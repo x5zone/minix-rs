@@ -11,7 +11,7 @@
 
 init 最容易被误解的身份是“系统服务”。它不是。RS 登记表把它标为 `USR_F`（`minix3/minix/servers/rs/table.c:28`），procfs 的 `service_active` 对它返回假（`minix3/minix/fs/procfs/service.c:195-207`），它没有 IPC 主循环，没有 SEF，没有 CALLMAP。它只是一个 pid 为 1 的普通用户进程，恰好被所有人认识：内核把它放在 boot 镜像最后（`table.c:64`），VM 用固定参数 `{"init", NULL}` 启动它（`vm/main.c:345`），PM 把孤儿都过继给它（`forkexit.c:396`），键盘驱动在 Ctrl-Alt-Del 时给它发 SIGABRT（`keyboard.c:300`），电源驱动在低电时给它发 SIGUSR1（`tps65217.c:226`）。认识它的人越多，它的契约越不能变。
 
-两个 Minix 特有挂钩是这种“众所周知”的体现。SIGABRT 不再是崩溃，而是“用户按了 Ctrl-Alt-Del，请重启”；SIGUSR1 不再是自定义信号，而是“电池快没电了，请关机”。两者都只是 fork 一个 `/sbin/shutdown` 子进程，参数分别是 `-r` 与 `-p`，自己立刻返回。这种“信号转进程”的设计避免在信号上下文里做实事，与 02 的桥模型一致。
+两个 Minix 特有挂钩是这种“众所周知”的体现。SIGABRT 不再是崩溃，而是“用户按了 Ctrl-Alt-Del，请重启”；SIGUSR1 不再是自定义信号，而是“电池快没电了，请关机”。两者都只是 fork 一个 `/sbin/shutdown` 子进程，参数分别是 `-r` 与 `-p`，自己立刻返回。这种“信号转进程”的设计避免在信号上下文里做实事，与 02 的桥模型一致。Rust 侧把这条原则贯彻得更彻底：handler 只把请求写进 `SignalState` 的原子位，fork/exec 由主循环在下一个等待边界代劳——C 在 handler 里 fork（init.c:517-525）其实违背了自己想守的原则，重写顺手修正了机制，外部行为不变。
 
 ### 1.1 小结
 

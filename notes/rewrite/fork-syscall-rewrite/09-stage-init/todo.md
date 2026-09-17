@@ -39,8 +39,9 @@
   原问题：C 的核心动作——fork、exec、阻塞 waitpid、kill——在 crate 内零调用；setctty 全库无代码；multi_user.rs 模块头声称覆盖不存在的函数。
   **修复进度**：P0-2a single_user 实体 ✅（Fix #9，init.c:694-877 三幕结构 + 双 exec 兜底 + ^D 语义，doc 04 重写）；P0-2b runetcrc、P0-2c multi_user（setctty/collect_child/start_getty）、P0-2d clean_ttys/death/catatonia 跟随后续 Fix。前提 P1-3 接缝已落地。
 
-- **P0-3 ☐ 信号子系统只有映射表，没有真身**（MISSING/TRAIT-ONLY）。
-  `state_machine.rs` 的 `signal_to_state`（:78-85）与 `AlarmFlag`（:156-168）是纯数据；`LiveSignalRegistry::register` 记录意图后返回 `Err(RegistryError::Deferred)`（:132-141），`block_all_except` 是空操作（:143-145）。C 的 5 个信号处理函数没有可运行的对应物：`transition_handler`（init.c:1502-1522）、`alrm_handler`（1649-1655）、`disaster`（505-511）、`minixreboot`（518-525）、`minixpowerdown`（531-538）。其中 minixreboot/minixpowerdown 需要 fork+exec `/sbin/shutdown`，`contracts.rs:24-35` 已能构造 argv 但无人执行。依赖 edge E-INITSYS ①。（修复方案：真 handler 落成一个只置原子标志 + `siglongjmp` 无关的最小函数族，与 P1-1 的 EINTR 主循环配套）
+- **P0-3 ✅ 2026-09-18（Fix #13）信号子系统 stage 半闭环**。
+  原问题：C 的 5 个信号处理函数只有映射表对应物，无注册路径、无 handler 真身。
+  **修复记录**：新建 `signal_state.rs`——`SignalState` 三位一体（clang 原子标志 / requested_transition 原子状态字符 / minix 挂钩待决请求），handler 侧 `note_signal`/`note_shutdown_request`、驱动侧 `take_requested`/`take_shutdown_request`；注册表已在 P1-3 落为 `SignalSpec`+`default_signal_spec()`。**自觉偏离**：C 的 minixreboot 在 handler 里 fork/exec（init.c:517-525），违背 async-signal-safe；Rust 侧 handler 只置原子位，spawn 由主循环在等待边界执行（外部行为不变，docs 02 §3.5/14 §1 同步声明）。live 注册（真 sigaction）仍挂 E-INITSYS ①。测试 149 → 152。
 
 - **P0-4 ☐ wait-status 解码缺位：预解码 bool 没有生产者**（MISSING/设计缺口）。
   `classify_wait`（`single_user.rs:60-66`）、`classify_rc_exit`（`runcom.rs:27-33`）、`classify_collect`（`multi_user.rs:34`）、`diff_line`（`clean_ttys.rs:19`）、`plan_read_ttys`（`ttys.rs:51`）全部吃"预先解码好的 bool 散参"（stopped/exited_normally/signaled/termsig_is_kill……）。C 用 `WIFEXITED`/`WEXITSTATUS`/`WUNTRACED` 宏族解码 waitpid 状态（init.c:825-873 等），而这组宏在全 `os/libs` 没有任何对应物——grep `WIFEXITED|WEXITSTATUS|WUNTRACED|WaitStatus` 在 pm/minix-sys/minix-types 均零命中。也就是说这些签名是 C 宏形状倒灌进 Rust 的产物，现实中没有任何调用方能造出这些 bool。（修复方案：P1-4 引入 `WaitStatus` 类型；宏族解码器的归属在 edge E-INITSYS ③ 落地）
