@@ -74,15 +74,17 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 
 `choose_shell(input, default)` 去空白后空则取默认。与 Redox 的 shell 回退链思路一致，但路径常量取 Minix 的 `INIT_BSHELL`。
 
-### 3.3 等待结局枚举
+### 3.3 等待结局枚举与状态实体
 
-`classify_wait(WaitStatus, requested)` 纯函数吃 `wait.rs` 的 `WaitStatus`（C 宏族的 Rust 和类型，见 09 篇对 collect_child 的同源说明），五个结局与 C 等待循环逐一对照；stopped/请求/信号阶梯/零退出的先后次序就是 init.c:827-870 的次序。等待的 fork/exec/wait/kill 副作用收敛到进程接缝（Wave2 定型），Live 待 A-9，Fake 剧本驱动。
+`classify_wait(WaitStatus, requested)` 纯函数吃 `wait.rs` 的 `WaitStatus`（C 宏族的 Rust 和类型），五个结局与 C 等待循环逐一对照；stopped/请求/信号阶梯/零退出的先后次序就是 init.c:827-870 的次序，其中"零退出"不看退出码——C 只测 WIFEXITED，^D 的 0 和 shell 的 1 走同一条 FASTBOOT 之路。
+
+状态本体（P0-2a）补齐 C 的三幕结构：父幕降级安全级、SIG_IGN 窗口、fork 与等待收集；子幕在控制终端上要口令、问备用 shell、exec 双次兜底。剧本宿主把 `fork_outcomes` 排成队，`Ok(0)` 把测试送进子分支——C 的"fork 返回两次"在测试里是"脚本回放两次"。子进程的 `_exit` 无法在测试里真实发生，剧本宿主记录退出码后以 panic 收场，测试用 catch_unwind 包住调用再断言 `exits` 队列——发散语义诚实，断言不缺席。
 
 ---
 
 ## 4. 实现详解
 
-模块 `single_user.rs`；与 C 差异：全局写改为返回值；`_exit` 改为动作枚举；信号保存恢复语义保留为注释。`runcom_mode=FASTBOOT` 的副作用显式为 `ProceedRuncom { fastboot: true }` 数据。
+模块 `single_user.rs`。状态函数本体是 `single_user(host, deps) -> SingleUserOutcome`，fork 语义原样保留（`Ok(0)` 走子分支）；与 C 的差异：`requested_transition` 全局变成 `deps.requested` 询问闭包，`collect_child` 变成 `deps.collect` 回调（每个收到的子进程都喂给它，包括 shell 自己的 pid——会话表会忽略陌生 pid），口令匹配是 `deps.verify_password` 注入的判定闭包（crypt 后端见 12/ARCH A-12）。`SingleUserOutcome::AwaitReboot` 对应 C 的 `sigfillset` + `for(;;) sigsuspend`——那个状态函数从不返回，驱动层对它停泊即可。子分支的 `exec` 兜底是双次的：第一次带 altshell 或 `-sh`，失败后重置 `argv[0]` 为 `-sh` 重试 `INIT_BSHELL`——即使第一次已经是它（init.c:803-808 的原样语义），最后裸 `sleep(30)` 加 `_exit(3)`。
 
 ---
 
@@ -97,11 +99,22 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 | `test_wait_requested_transitions` | init.c:843-847 |
 | `test_wait_sigkill_quiets` | init.c:849-856 |
 | `test_wait_other_signal_restarts_single_user` | init.c:857-863 |
-| `test_wait_normal_proceeds_runcom_fastboot` | init.c:866-870 |
+| `test_wait_normal_proceeds_runcom_fastboot` | init.c:866-870（退出码不参与） |
+| `test_entity_happy_path_runs_shell_then_fastboot` | wait 循环主干 |
+| `test_entity_downgrades_securitylevel_before_fork` | init.c:711-713 |
+| `test_entity_fork_failure_retries` | init.c:814-821 |
+| `test_entity_ignores_foreign_children_until_shell_exits` | init.c:825-874 的 `wpid != pid` 续等 |
+| `test_entity_sigkill_death_awaits_reboot` | init.c:849-856 |
+| `test_entity_requested_transition_wins_after_shell_exit` | init.c:846-848 |
+| `test_entity_child_branch_gates_then_execs_default_shell` | init.c:721-813 子分支 + PATH |
+| `test_entity_child_branch_matching_password_reaches_altshell_prompt` | init.c:731-789 + 双 exec 兜底 |
+| `test_entity_child_branch_wrong_password_reprompts` | init.c:764-770 |
+| `test_entity_child_branch_eof_on_password_exits_zero` | init.c:758-760 的 ^D `_exit(0)` |
+| `test_ignore_then_restore_shapes_are_data` | SIG_IGN 窗口与 satstp/sahup 恢复 |
 
-### 5.1 测试统计（截至 2026-09-04）
+### 5.1 测试统计（截至 2026-09-18）
 
-- `cargo test -p minix-init`：32 个通过（累计），0 失败。
+- `cargo test -p minix-init`：122 个通过（累计），0 失败。
 - 清单：`rg "fn test_" os/commands/sbin/init/src/single_user.rs`。
 
 ---

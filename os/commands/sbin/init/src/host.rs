@@ -35,11 +35,14 @@ use minix_sys::{self, Errno, Pid};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SignalSpec {
     /// (signum, handler) pairs, in registration order (C: one
-    /// `handle()` line per group).
+    /// `handle()` line per group). Entries install incrementally:
+    /// signums not listed keep their current disposition.
     pub handlers: Vec<(i32, HandlerKind)>,
-    /// Signums exempted from the full block (C: `delset` items,
-    /// init.c:327).
-    pub blocked_except: Vec<i32>,
+    /// `None` leaves the signal mask alone; `Some(except)` sets the
+    /// mask to "block everything except `except`" — `Some(vec![])` is
+    /// the unblock-all of the post-fork child (C: `sigprocmask`
+    /// SIG_SETMASK with an empty set, init.c:793-795).
+    pub blocked_except: Option<Vec<i32>>,
 }
 
 /// Everything init does to the machine, in one place.
@@ -139,6 +142,15 @@ pub trait InitHost {
     /// Write a line to the console (C: the syslog fallback path; the
     /// `#if 0` `print_console` stays unmodelled per doc 03).
     fn console_write(&mut self, severity: crate::log::Severity, message: &str);
+
+    /// Read one line from the console (fd 0): the single-user password
+    /// and alt-shell prompts (C: `getpass`/`fgets`, init.c:756/782).
+    /// `None` is EOF — the ^D "go multi-user" answer.
+    fn read_line(&mut self) -> Option<String>;
+
+    /// Set an environment variable in this process (C: `setenv("PATH",
+    /// INIT_PATH, 1)`, init.c:801) so the exec'd child inherits it.
+    fn set_env(&mut self, key: &str, value: &str) -> Result<(), Errno>;
 }
 
 /// The real machine, over `minix-sys`.
@@ -247,6 +259,34 @@ impl InitHost for MinixSysHost {
         let _ = minix_sys::write(1, message.as_bytes());
         let _ = minix_sys::write(1, b"\n");
     }
+
+    fn read_line(&mut self) -> Option<String> {
+        // Byte-at-a-time fd-0 read until newline; EOF before any byte
+        // is None (the ^D path). No echo and no history — getpass
+        // semantics, not readline.
+        let mut line = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            match minix_sys::read(0, &mut byte) {
+                Ok(0) | Err(_) => {
+                    return if line.is_empty() { None } else { Some(String::from_utf8_lossy(&line).into_owned()) }
+                }
+                Ok(_) => {
+                    if byte[0] == b'\n' {
+                        return Some(String::from_utf8_lossy(&line).into_owned());
+                    }
+                    line.push(byte[0]);
+                }
+            }
+        }
+    }
+
+    fn set_env(&mut self, key: &str, value: &str) -> Result<(), Errno> {
+        // minix-rt has no env mutation yet (E-CMDSYSFACE); the child
+        // would exec without the PATH override.
+        let _ = (key, value);
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// A scripted host for tests: every effect is a queued outcome or a
@@ -273,13 +313,19 @@ pub struct ScriptHost {
     pub securitylevel: Option<i32>,
     pub securitylevel_sets: Vec<i32>,
     pub root: Option<String>,
+    /// Queue of console input lines (prompts); empty queue = EOF.
+    pub input_lines: Vec<Option<String>>,
+    pub env_sets: Vec<(String, String)>,
+    /// Statuses handed to `exit_process` before the (test-side) panic.
+    pub exits: Vec<i32>,
 }
 
 impl ScriptHost {
-    /// A host whose fork always reports the parent side (`Ok(1)`).
+    /// A host whose fork reports the parent side with child pid 7 —
+    /// the pid parent-branch test scripts should wait for.
     pub fn parent_only() -> ScriptHost {
         ScriptHost {
-            fork_outcomes: vec![Ok(1)],
+            fork_outcomes: vec![Ok(7)],
             ..ScriptHost::default()
         }
     }
@@ -287,27 +333,31 @@ impl ScriptHost {
 
 impl InitHost for ScriptHost {
     fn fork(&mut self) -> Result<Pid, Errno> {
-        self.fork_outcomes
-            .pop()
-            .unwrap_or_else(|| panic!("script: fork requested but queue empty"))
+        if self.fork_outcomes.is_empty() {
+            panic!("script: fork requested but queue empty");
+        }
+        self.fork_outcomes.remove(0)
     }
 
     fn exec(&mut self, cmd: &ParsedCommand) -> Errno {
         self.exec_requests.push(cmd.clone());
-        self.exec_outcomes
-            .pop()
-            .unwrap_or_else(|| panic!("script: exec requested but queue empty"))
+        if self.exec_outcomes.is_empty() {
+            panic!("script: exec requested but queue empty");
+        }
+        self.exec_outcomes.remove(0)
     }
 
     fn exit_process(&mut self, status: i32) -> ! {
-        panic!("script: child exit({status}) reached in a test")
+        self.exits.push(status);
+        panic!("script: child exit({status}) — end of a child branch")
     }
 
     fn waitpid(&mut self, pid: Pid, options: i32) -> Result<(Pid, WaitStatus), Errno> {
         let _ = (pid, options);
-        self.wait_outcomes
-            .pop()
-            .unwrap_or_else(|| panic!("script: waitpid requested but queue empty"))
+        if self.wait_outcomes.is_empty() {
+            panic!("script: waitpid requested but queue empty");
+        }
+        self.wait_outcomes.remove(0)
     }
 
     fn kill(&mut self, pid: Pid, signum: i32) -> Result<(), Errno> {
@@ -387,6 +437,19 @@ impl InitHost for ScriptHost {
     fn console_write(&mut self, severity: crate::log::Severity, message: &str) {
         self.console.push((severity, message.to_string()));
     }
+
+    fn read_line(&mut self) -> Option<String> {
+        if self.input_lines.is_empty() {
+            None
+        } else {
+            self.input_lines.remove(0)
+        }
+    }
+
+    fn set_env(&mut self, key: &str, value: &str) -> Result<(), Errno> {
+        self.env_sets.push((key.to_string(), value.to_string()));
+        Ok(())
+    }
 }
 
 /// The signal set init registers, as a [`SignalSpec`] (C: the `handle`
@@ -404,12 +467,36 @@ pub fn default_signal_spec() -> SignalSpec {
             (sig::SIGNAL_ABORT, HandlerKind::Reboot),
             (sig::SIGNAL_USER_1, HandlerKind::Powerdown),
         ],
-        blocked_except: vec![
+        blocked_except: Some(vec![
             sig::SIGNAL_HANGUP,
             sig::SIGNAL_TERMINATE,
             sig::SIGNAL_TERMINAL_STOP,
             sig::SIGNAL_ALARM,
-        ],
+        ]),
+    }
+}
+
+/// Install a few handler entries without touching the mask — the
+/// pre-fork SIG_IGN window and its post-loop restore (C: the
+/// `sigaction(SIGTSTP/SIGHUP, ...)` pairs in `single_user`/`runetcrc`).
+pub fn ignore_spec(signums: &[i32]) -> SignalSpec {
+    SignalSpec {
+        handlers: signums.iter().map(|&s| (s, HandlerKind::Ignore)).collect(),
+        blocked_except: None,
+    }
+}
+
+/// Re-install the default disposition of `signums` (the C pattern of
+/// restoring the saved `satstp`/`sahup` actions, init.c:858-862).
+pub fn restore_spec(signums: &[i32]) -> SignalSpec {
+    let default = default_signal_spec();
+    SignalSpec {
+        handlers: default
+            .handlers
+            .into_iter()
+            .filter(|(s, _)| signums.contains(s))
+            .collect(),
+        blocked_except: None,
     }
 }
 
@@ -451,7 +538,7 @@ mod tests {
         assert!(spec.handlers.contains(&(14, HandlerKind::Alarm)));
         assert!(spec.handlers.contains(&(6, HandlerKind::Reboot)));
         assert!(spec.handlers.contains(&(30, HandlerKind::Powerdown)));
-        assert_eq!(spec.blocked_except, vec![1, 15, 18, 14]);
+        assert_eq!(spec.blocked_except, Some(vec![1, 15, 18, 14]));
     }
 
     #[test]

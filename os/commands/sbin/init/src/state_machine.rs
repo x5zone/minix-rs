@@ -28,6 +28,8 @@ pub mod sig {
     pub const SIGNAL_TERMINATE: i32 = 15;
     /// C: `SIGTSTP 18` (`signal.h:70`).
     pub const SIGNAL_TERMINAL_STOP: i32 = 18;
+    /// C: `SIGCONT 19` (`signal.h:71`) — resume a stopped shell.
+    pub const SIGNAL_CONTINUE: i32 = 19;
     /// C: `SIGUSR1 30` (`signal.h:82`) — Minix3 numbering; 10 is SIGBUS.
     pub const SIGNAL_USER_1: i32 = 30;
 }
@@ -119,7 +121,8 @@ impl Signal {
     }
 }
 
-/// Which handler owns a signal (C: one `handle()` line per group).
+/// Which handler owns a signal (C: one `handle()` line per group, or
+/// `SIG_IGN` in the pre-fork windows of `single_user`/`runetcrc`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandlerKind {
     Transition,
@@ -127,6 +130,9 @@ pub enum HandlerKind {
     Reboot,
     Powerdown,
     Disaster,
+    /// C: `sa_handler = SIG_IGN` — a temporary ignore, not a handler
+    /// table entry.
+    Ignore,
 }
 
 /// Map a signal to the requested state (C: `transition_handler`, init.c:1502-1522).

@@ -12,6 +12,11 @@ pub const WNOHANG: i32 = 0x0000_0001;
 /// C: `WUNTRACED` (`wait.h:77`) — report stopped children too.
 pub const WUNTRACED: i32 = 0x0000_0002;
 
+/// C: `EINTR 4` (`sys/errno.h:18`) — waitpid answers can carry it and
+/// the Errno authority exposes no associated constant yet; local anchor
+/// until E-INITSYS normalizes the family.
+pub const EINTR: i32 = 4;
+
 /// How one waited-for child ended.
 ///
 /// The variants mirror the C test macros: `Exited` is WIFEXITED,
