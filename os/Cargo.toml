@@ -173,6 +173,7 @@ members = [
     "libs/minix-sef",
     "libs/minix-fs",
     "libs/minix-audiodriver",
+    "libs/minix-i2cdriver",
     "libs/minix-chardriver",
     "libs/minix-driver-rt",
     "libs/minix-blockdriver",
@@ -214,6 +215,7 @@ boot-shim = { path = "boot-shim", default-features = false }
 
 # 驱动框架库（16-stage-drivers）
 minix-audiodriver = { path = "libs/minix-audiodriver" }
+minix-i2cdriver = { path = "libs/minix-i2cdriver" }
 minix-chardriver = { path = "libs/minix-chardriver" }
 minix-driver-rt = { path = "libs/minix-driver-rt" }
 minix-blockdriver = { path = "libs/minix-blockdriver" }
