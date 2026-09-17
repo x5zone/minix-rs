@@ -60,8 +60,13 @@ fn main() {
     // missing console.
     let console_ok = entry::ensure_console(&mut host, single_user::CONSOLE_PATH);
 
-    // C step 4: flag parsing (init.c:287-303).
-    let argv: Vec<String> = std::env::args().collect();
+    // C step 4: flag parsing (init.c:287-303). Args come from the
+    // birth descriptor via minix-rt — no std env anywhere on the boot
+    // path (P1-2).
+    let argv: Vec<String> = (0..minix_rt::crt0::argv_count())
+        .filter_map(|i| minix_rt::crt0::argv_bytes(i))
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .collect();
     let (boot_args, boot_warnings) = parse_boot_args(&argv);
     for warning in &boot_warnings {
         log::warning(&mut host, warning);

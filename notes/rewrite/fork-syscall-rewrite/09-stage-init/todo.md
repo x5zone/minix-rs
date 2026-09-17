@@ -54,9 +54,10 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 
 附带：`cargo clippy --fix` 会移除仅测试配置使用的导入，后续跑 --fix 必须以 `--tests` 视角复查编译。
 
-### P1-2 ☐ std/no_std 决策（约束已落，拆分待共享面）
+### P1-2 ◐ std/no_std 决策（env 面已接 minix-rt，no_std 化剩三件裁决）
 
-已落约束：真机入口路径只准依赖 minix_rt/minix_sys（main 的 `std::env::args` 是现存唯一 std 面）。hosted cfg-feature 拆分的前置是 minix-rt 的 env 访问 API——E-CMDSYSFACE 方案 A 既有提案。领取条件 = E-CMDSYSFACE 闭单。
+- ✅ 已落：boot 路径的参数读取改走 `minix_rt::crt0::argv_count/argv_bytes`（E-CMDSYSFACE 方案 A ② 的 env API 已由共享 lane 落地），`std::env` 依赖归零；真机入口路径只准依赖 minix_rt/minix_sys 的约束已写入本条。
+- ☐ 残余（完整 `#![no_std]` 化需三件裁决，非本 stage 单方面可定）：①`HashMapDb` 的 HashMap→BTreeMap 或自定 hasher（动 A-1 已闭单的架构决策）；②`std::sync::Arc`→`alloc::sync::Arc`（机械）；③panic handler 由 minix-rt 统一提供的形式（E1「首个 no_std 二进制」验证面）。三件全部挂 E-CMDSYSFACE/E1 等待态，登记 edge。
 
 ### P1-8 ✅ 测试三层终检（2026-09-18 审计轮闭环）
 
