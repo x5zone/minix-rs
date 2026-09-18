@@ -293,6 +293,24 @@ pub trait IpcApi {
 
     /// Revokes a grant (C: `cpf_revoke` — the update cleanup half).
     fn grant_revoke(&mut self, grant: GrantId);
+    /// Requests a service to prepare for (or cancel) its live update.
+    ///
+    /// C: `request_prepare_update_service` — update.c:185-233: m_type
+    /// `RS_LU_PREPARE`, payload `m_rs_update{flags, state_data_gid,
+    /// state}` delivered via `rs_asynsend`.
+    fn lu_request_prepare(
+        &mut self,
+        ep: Endpoint,
+        flags: i32,
+        state_data_gid: Option<GrantId>,
+        state: i32,
+    ) -> Result<(), Errno>;
+
+    /// Asks VM to prepare a new instance based on an old one.
+    ///
+    /// C: `vm_prepare` — libsys vm_prepare.c: `_taskcall(VM,
+    /// VM_RS_PREPARE, {src, dst, flags})`.
+    fn vm_prepare(&mut self, src: Endpoint, dst: Endpoint, flags: i32) -> Result<(), Errno>;
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -492,6 +510,20 @@ impl IpcApi for UnimplementedKernelApi {
     }
 
     fn grant_revoke(&mut self, _grant: GrantId) {}
+
+    fn lu_request_prepare(
+        &mut self,
+        _ep: Endpoint,
+        _flags: i32,
+        _state_data_gid: Option<GrantId>,
+        _state: i32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    fn vm_prepare(&mut self, _src: Endpoint, _dst: Endpoint, _flags: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
 }
 
 /// Boot image + boot tables bundle.

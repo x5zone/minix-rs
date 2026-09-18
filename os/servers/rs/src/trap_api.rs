@@ -572,4 +572,45 @@ impl IpcApi for TrapKernelApi {
     fn grant_revoke(&mut self, grant: GrantId) {
         let _ = self.grants.revoke(grant);
     }
+
+    fn lu_request_prepare(
+        &mut self,
+        ep: Endpoint,
+        flags: i32,
+        state_data_gid: Option<GrantId>,
+        state: i32,
+    ) -> Result<(), Errno> {
+        // C update.c:203-227 —— m_rs_update 三域 + rs_asynsend。
+        let mut msg = Message::default();
+        msg.m_u.m_rs_update = {
+            let mut u = minix_types::MessRsUpdate::default();
+            u.result = 0;
+            u.state = state;
+            u.flags = flags;
+            u.state_data_gid = state_data_gid.unwrap_or(-1);
+            u
+        };
+        msg.m_type = minix_types::RS_LU_PREPARE;
+        self.asynsend(ep, &msg)
+    }
+
+    fn vm_prepare(&mut self, src: Endpoint, dst: Endpoint, flags: i32) -> Result<(), Errno> {
+        use minix_sys::syscall::perform_taskcall;
+        let mut msg = Message::default();
+        {
+            // SAFETY: m_lsys_vm_update 是 VM_RS_PREPARE 的文档化载荷
+            //(minix-types vm.rs:1710-1719)。
+            let u = unsafe { &mut msg.m_u.m_lsys_vm_update };
+            u.src = src.0;
+            u.dst = dst.0;
+            u.flags = flags;
+        }
+        perform_taskcall(
+            &self.ipc,
+            minix_types::Endpoint::VM,
+            minix_types::VM_RS_PREPARE as i32,
+            &mut msg,
+        )
+        .map(|_| ())
+    }
 }

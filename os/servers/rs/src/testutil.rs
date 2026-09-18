@@ -162,6 +162,8 @@ pub struct MockKernelApi {
     pub last_grant: Option<(u32, u64, u64)>,
     /// 已 revoke 的 gid。
     pub revoked_grants: Vec<GrantId>,
+    /// lu_request_prepare 调用记录。
+    pub prepare_requests: Vec<Endpoint>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
     /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
     pub inbox: Vec<(minix_types::Message, crate::dispatch::IpcStatus, Clock)>,
@@ -208,6 +210,7 @@ impl MockKernelApi {
             grant_seq: 0,
             last_grant: None,
             revoked_grants: Vec::new(),
+            prepare_requests: Vec::new(),
             inbox: Vec::new(),
             sent: Vec::new(),
             replies: Vec::new(),
@@ -509,6 +512,21 @@ impl IpcApi for MockKernelApi {
 
     fn grant_revoke(&mut self, grant: GrantId) {
         self.revoked_grants.push(grant);
+    }
+
+    fn lu_request_prepare(
+        &mut self,
+        ep: Endpoint,
+        _flags: i32,
+        _state_data_gid: Option<GrantId>,
+        _state: i32,
+    ) -> Result<(), Errno> {
+        self.prepare_requests.push(ep);
+        Ok(())
+    }
+
+    fn vm_prepare(&mut self, _src: Endpoint, _dst: Endpoint, _flags: i32) -> Result<(), Errno> {
+        Ok(())
     }
 }
 
