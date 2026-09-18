@@ -1961,3 +1961,42 @@ restore 消费 `consume_flush_tlb_flag` / 设置点 `vmctl_vminhibit_set` 的
 FLUSH_TLB 不完备（本地臂设、IPI 臂漏，已修：K3），或 pick 点判定/
 restore 消费任一缺席，a3 的"持续反复故障"即复现。a1/a2/a4 检验 CoW
 本体与页记账。
+
+## 28. K6 设计：x86 AP LAPIC local timer（设计研究交付，edge1 K6）
+
+> 归属：edge1 K6（设计先行裁决——实现前置的设计研究）。C 锚点：`arch_clock.c:131-139`
+> （`init_local_timer`：`tsc_per_ms/tsc_per_tick[cpu]` 校准 + `lapic_set_timer_one_shot`）、
+> `apic.c:526-543`（one-shot 编程：DCR 分频 + ICR 计数 + LVT 裸向量）、`apic.h:90`
+> （`APIC_TIMER_INT_VECTOR = 0xf0` 专用向量）、`clock.c:70/300`（`timer_int_handler`
+> 经 `app_cpu_init_timer` 注册于每 CPU 本地时钟）。
+
+### 28.1 tick 在 AP 上到底做什么（C 语义 → Rust 架构对账）
+
+C 的本地时钟 tick（`timer_int_handler`，每 CPU 每 tick 一次）做三类事，BSP 与 AP 共用同一 handler、按 CPU 本地状态自然分职：
+
+1. **本 CPU 记账**：读 `proc_ptr`/`bill_ptr`，user/sys 时间累计、虚拟定时器递减（clock.c:113-135）。
+2. **量子到期检测**：非 `arch_timer_int_handler()` 空壳路径——SMP 下每 tick 检查当前进程配额，耗尽即走调度（proc.c 的 NO_QUANTUM/notify 臂）。
+3. **BSP 专属全局推进**：uptime/realtime、闹钟扫描（do_clocktick，仅 BSP 路径生效）。
+
+**Rust 现状对账**：全局时间推进（uptime/闹钟）已由 BSP PIT tick 的 `clock_irq_handler` 承担 ✔；quantum 衰减走 `context_stop` 的 TSC-delta（切换点，非 tick 点）✔；**缺口 = AP 上无周期 tick** ⇒ (a) 记账分类（`classify_cpu_state`/CP_* 桶已备无生产调用）、(b) tick 点量子耗尽的抢占评估（CPU-hogging 进程在无切换点时永不被打断——这正是 K6 行"AP 上 quantum 递减停摆"的准确语义：不是递减停摆，是**无 tick 就无耗尽检测点**）、(c) one-shot 重装填。
+
+### 28.2 设计（实现蓝图，下一会话执行）
+
+1. **向量**：专用向量 0xf0（C parity）——`trap_stub.rs` 的向量表加 `(0xf0, false)` stub；`x86_trap_dispatch_body` 加早臂：`vector == 0xf0` → 调 `clock::local_tick()`（带 trap frame PC 供 profiling 复用——K5 的 `stash_profile_pc` 同款手递）→ return，**不经 IrqManager**（本地向量无钩子链语义；LAPIC EOI 由 handler 内 `lapic_eoi` 完成，与 `complete()` 协议一致）。
+2. **LAPIC timer 驱动**（`os/arch/src/x86_64/clock.rs` 扩展）：
+   - `init_local_timer(freq, cpu_id)`：`APIC_TIMER_DCR`（分频，C `APIC_TDCR_1`=1）、`LAPIC_TIMER_ICR`（计数 = `(lapic_bus_freq/cpu 频率换算) × usec`）、`LAPIC_LVT_TIMER` = 0xf0 向量 + one-shot 模式（bit 17=0 periodic off，C :541-542 同为裸向量非 periodic）。
+   - **总线频率校准**：C `apic.c:517` 用 PIT tick 探测 LAPIC CCR 递减量（`lapic_delta`）得 `lapic_bus_freq[cpu]`——Rust 同构：BSP PIT 已跑，AP 校准循环采样 `PROBE_TICKS` 次 CCR 差 × `system_hz`。
+   - **TSC per-CPU 校准**（`tsc_per_ms[cpu]`，arch_clock.c:131-133 同位序）：同一探测窗内读 TSC 差 → `cpu_set_freq` 对应物，写 per-CPU 槽（`CpuLocal` 或专用 per-CPU 数组）。
+3. **重装填**：每次本地 tick 尾部 `lapic_set_timer_one_shot(1000000/system_hz)`（C :578 同函数复用）——one-shot 语义下 tick 与 re-arm 是同一条代码路径，永不失活。
+4. **本地 tick 的 Rust 职责**（新 `clock::local_tick(cpu_id)`）：
+   - (a) `classify_cpu_state` 记账（CP_NICE 桶接线顺带闭环 E-SCHEDNICED 下半的遗留登记）；
+   - (b) 量子到期评估：读 `cpu_time_left`，耗尽且 PREEMPTIBLE/用户调度 → 既有 `sched_proc_no_time` 臂（live 半已修的路径）；
+   - (c) one-shot 重装填。
+   - BSP 不装 LAPIC timer（C 同：BSP 用 PIT 全局线），`init_local_timer` 仅在 AP bring-up 路径调用（`app_cpu_init_timer` 对位——S-4 的 init_ap 尾部插桩点）。
+5. **测试**：hosted——local_tick 记账/量子评估纯逻辑单测；硬件——新 carrier `test-smp-aps` 扩展（AP 侧 tick 计数器读回）或独立 `test-local-timer`：AP 运行 N 秒后其本地 tick 计数 ≥ 阈值（无本地 timer 时恒 0，二值判据无假阳性）。
+
+### 28.3 风险与开放点
+
+- LVT 向量 0xf0 与 IDT stub 的门类型（中断门 IF 自动清 → handler 内必须 EOI 后才开中断；C 同为中断门）。
+- `lapic_bus_freq` 探测的 PROBE_TICKS 取值与 PIT 噪声——C 用 `PROBE_TICKS-1` 归一，照抄。
+- BSP PIT 与 AP LAPIC 双源并存期：x86 carrier 中 BSP 的 tick 仍走 IOAPIC 0x50——两源互不相干（一全局一本地），无合并点。
