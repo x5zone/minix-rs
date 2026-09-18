@@ -56,7 +56,25 @@ type MockIpcSend = dyn FnMut(Endpoint, &Message) -> Result<(), IpcError>;
 
 ## 阶段 2: VM — 地址空间克隆与CoW机制实现
 
-**状态**: ❌ 待实现
+**状态**: ✅ 已完成（PFN 模型落地，与原规划形态有演进——对账见 §2.0）
+
+### 2.0 实际落地对账（edge1 K15 回写）
+
+原规划假定"Mock 页表 + `PhysBlock` 向量 + refcount"的纯软件模型；实际实现选择了
+**PFN 物理帧号分配器 + 真实页表写入 + eager CoW** 的形态——VM 直接操作进程硬件
+页表、物理内存用位图/伙伴/线段树三种分配器管理。语义全覆盖，落点迁址如下：
+
+| 原任务（语义） | 实际落点 |
+|---|---|
+| 2.1-2.8 `VmFlags`/`VmRegion`/`PhysBlock`/`PageTable Mock`/`VmProc(Table)` | `os/servers/vm/src/vmproc/`（进程与区域模型）、`region/`（区域语义）、`phys_mem/`（`alloc_trait.rs` 分配器 trait + `bitmap_alloc.rs`/`buddy_alloc.rs`/`segment_tree_alloc.rs` 三实现 + `allocator_tests.rs`）——`PhysBlock` 计数语义由 PFN 分配器的帧引用计数承担 |
+| 2.9-2.14 `pb_link`/`pb_reference`/`pb_unreferenced`/`anon_writable`/`mem_cow` CoW 族 | `os/servers/vm/src/cow_exec_pf.rs`（CoW 缺页执行路径，含 eager 策略）、`fork.rs`（fork 侧共享建立）；帧生命周期在 `phys_mem/` 分配器内闭环 |
+| 2.15-2.16 `fork_copy`/`map_proc_copy` | `os/servers/vm/src/fork.rs` |
+| 2.17-2.18 `pt_new`/`pt_bind`（Mock） | `os/servers/vm/src/pagetable/`（`sim.rs` 宿主模拟 + `vm_self_map.rs` 自映射）+ `kernel_gateway.rs`（经内核的真页表写入通道）——Mock 假设被"VM 写进程硬件 PTE"的真实形态取代 |
+| 2.19 ACL 继承 | `os/servers/vm/src/acl.rs` |
+| 2.20-2.21 `fork_from`/`vm_fork` 主流程 | `os/servers/vm/src/fork.rs` + `vm_server.rs`（服务器分派） |
+| 2.22-2.23 lib.rs/Cargo.toml | 随实现落地（模块树见 `os/servers/vm/src/lib.rs`） |
+| 2.24 单元测试 | `phys_mem/allocator_tests.rs` + 各模块内嵌测试（`cargo test -p minix-vm`） |
+
 **硬件依赖**: 物理内存分配Mock、页表操作Mock
 **Mock说明**: 所有MMU硬件操作、物理内存实际分配全部使用Mock，仅实现CoW引用计数逻辑
 **Minix3 源码参考**: `minix/servers/vm/fork.c`, `region.c`, `phys.c`
@@ -205,7 +223,30 @@ test_shared_region_not_cow()
 
 ## 阶段 3: Kernel — PCB克隆与上下文伪造实现
 
-**状态**: ❌ 待实现
+**状态**: ✅ 已完成（落点迁址——对账见 §3.0）
+
+### 3.0 实际落地对账（edge1 K15 回写）
+
+原规划的单文件 `os/kernel/src/system/do_fork.rs` 与独立 `endpoint.rs` 未按此形态
+落地：fork 的内核半随调度/信号域演进分散到 proc.rs 与 syscall_process.rs，
+Endpoint 语义收进 `minix-types`（wire 层单一权威）。语义逐项对位：
+
+| 原任务（语义） | 实际落点 |
+|---|---|
+| 3.1-3.2 `RtsFlags`/`MiscFlags` 位标志 | `os/kernel/src/proc.rs`（`RtsFlagsBits`/`MiscFlagsBits`，bitflags + 原子包装 `RtsFlags`/`MiscFlags`） |
+| 3.3 `KProcess` 结构体 | `os/kernel/src/proc.rs`（`KProcess`） |
+| 3.4 `ProcTable`（procs + generations） | `os/kernel/src/proc_table.rs`（`ProcessTable`，generations 语义在 endpoint 编码与槽位管理内） |
+| 3.5-3.8 `make_endpoint`/generation 提取/校验 | `os/libs/minix-types/src/types/endpoint.rs`（`Endpoint::from_generation_slot` 等 wire 编解码）——wire 层单一权威，kernel 侧 `proc.rs`/`proc_table.rs` 消费 |
+| 3.9 `KProcess::sys_fork` PCB 克隆 + 上下文伪造 | `os/kernel/src/proc.rs`（`KProcess::fork_from` + `complete_fork_setup`）+ `os/kernel/src/syscall_process.rs`（SYS_FORK 分派臂） |
+| 3.10 `ret_reg = 0` | `os/kernel/src/syscall_process.rs`（fork 子臂返回值伪造） |
+| 3.11 generation 递增 + 回绕 | `os/libs/minix-types` Endpoint 编解码 + `os/kernel/src/syscall_process.rs`（新代分配） |
+| 3.12 RTS 标志管理（NO_QUANTUM/VMINHIBIT/NO_PRIV） | `os/kernel/src/proc.rs`（`complete_fork_setup`）+ `os/kernel/src/syscall_signal.rs`（NO_PRIV 臂） |
+| 3.13 FPU 保存区 | `os/kernel/src/proc.rs`（FPU 区域随 cpu_context 演进落地） |
+| 3.14 特权进程降级（scheduler → RS） | `os/servers/pm/src/mproc/fork.rs`（阶段 1 已落）+ kernel 侧 privilege 传递 |
+| 3.15 进程名 "*F" 追加 | `os/kernel/src/proc.rs`（fork 名称处理） |
+| 3.16 lib.rs 模块导出 | 随实现落地（fork 语义入 proc/syscall_process 模块树） |
+| 3.17 Kernel 层单元测试 | `proc.rs`/`syscall_process.rs` 内嵌测试族（`cargo test -p minix-kernel --lib` 773 passed） |
+
 **硬件依赖**: 寄存器读写Mock、FPU上下文Mock
 **Mock说明**: 所有寄存器硬件访问、FPU状态保存/恢复全部使用Mock，仅实现上下文伪造(ret_reg=0)、RTS标志管理、Endpoint生成逻辑
 **Minix3 源码参考**: `minix/kernel/system/do_fork.c`

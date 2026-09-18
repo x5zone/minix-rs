@@ -33,12 +33,14 @@
 | C-5 | edge2 L2 E-SYSCALL-SIGN 回迁消费侧 | edge2 | `os/servers/is/src/acquire.rs`（`vfs_proc_tab_via` 撤本地符号归一，改走共享 `perform_taskcall`）+ 四处命令侧"待 sign 修复"注释卫生（`os/commands/bin/fileops/src/bin/echo.rs`、`os/commands/usr-bin/regex/src/bin_support.rs`、`os/commands/usr-bin/textfilter/src/bin_support.rs`、`os/commands/games/stdio-games/src/bin_support.rs`，仅注释）。IS 注释自证等待本裁决（acquire.rs:649-651） | edge2 | ✅ 销账（2026-09-18，0cca4247d） |
 | C-6 | edge3 S6 D-16 DumpCore wire 按值携带名字（OQ-5 裁决 2026-09-19） | edge3（需求方） | `os/libs/minix-types`（`VfsCall::DumpCore` 成员改造：i32 path → 按值 name+len）+ `os/servers/vfs` 消费侧 | 无 | ☐ S6 开工时 edge3 持锁 |
 | C-7 | edge3 S19 A-6 诊断缝共享 helper | edge3（需求方） | `os/libs/minix-sys/src/syscall.rs`（`sys_diagctl` 旁新增 `sys_diagctl_write` 字符串便利封装，仅加函数不改既有）+ `os/servers/rs`（SysApi::diag_write 缝） | 无 | ✅ 销账（2026-09-19，1f72d8ffe） |
+| C-8 | edge3 S17 换装 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：pm.rs 新增 `setuid_via`（PM_SETUID=5，raw 载荷）+ vm.rs `vm_rs_memctl_via` 扩 (addr,len) 参数（原版丢 HeapPrealloc/MapPrealloc 的地址对，零调用方扩参无涟漪） | 无 | ✅ 销账（2026-09-19，0e33c276c） |
 
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
 | 日期 | 线 | 文件 | 意图 | 销账 |
 |---|---|---|---|---|
 | 2026-09-18 | edge1 | `os/qemu-tests/run_all.sh` | K12：test-user-trap / test-rt-birth 纳入一键回归（特殊协议脚本区 + user-trap 入构建清单；rt-birth 内核因 `include_bytes!(env!)` 由其脚本自建，不入普通构建清单） | ✅ 同日 |
+| 2026-09-18 | edge1 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 
