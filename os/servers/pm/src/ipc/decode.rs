@@ -136,6 +136,18 @@ pub(crate) fn exec_restart(msg: &Message) -> (i32, i32, u64, u64) {
     (pl.endpt, pl.result, pl.pc, pl.ps_str)
 }
 
+/// mcontext 参数 (endpt, ctx 用户态指针)。user → PM。
+///
+/// C: `mess_lc_pm_mcontext`(minix-types `MessLcPmMcontext` —
+/// endpt@0/ctx@8;MessageUnion 无专属臂,raw 字节读)。
+pub(crate) fn mcontext(msg: &Message) -> (i32, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;endpt@0/ctx@8。
+    let raw = unsafe { msg.m_u.raw };
+    let endpt = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let ctx = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    (endpt, ctx)
+}
+
 /// 时间族参数 (clk_id, now, sec, nsec)。user → PM。
 ///
 /// C: `mess_lc_pm_time`(minix-types `MessLcPmTime` — sec@0/clk_id@8/

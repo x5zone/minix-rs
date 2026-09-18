@@ -984,8 +984,9 @@ mod tests {
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
-        // PM_GETMCONTEXT（handler 归 20-misc-queries.md，尚未实现）
-        let mut msg = Message { m_type: 18, ..Message::default() };
+        // PM_GETRUSAGE(36)——批次 C 余件:生产 TimesVmCtl 需 VM_GETRUSAGE
+        // 对端(登记),接线前维持 ENOSYS 诚实占位。
+        let mut msg = Message { m_type: 36, ..Message::default() };
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);

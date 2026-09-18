@@ -734,6 +734,25 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // ===== S8 批次 G:mcontext 族两调用(mcontext.c)=====
+        // C do_getmcontext(mcontext.c:13-22):sys_getmcontext 透传,
+        // 错误收敛 EINVAL(do_getmcontext 的 MiscError::Inval)。
+        PmCall::GetMContext => {
+            let (endpt, ctx) = super::decode::mcontext(msg);
+            let ctl = crate::misc::SysMcontextCtl;
+            match crate::misc::do_getmcontext(&ctl, Endpoint(endpt), VirBytes(ctx)) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetMContext => {
+            let (endpt, ctx) = super::decode::mcontext(msg);
+            let ctl = crate::misc::SysMcontextCtl;
+            match crate::misc::do_setmcontext(&ctl, Endpoint(endpt), VirBytes(ctx)) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步

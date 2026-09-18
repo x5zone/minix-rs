@@ -270,6 +270,34 @@ pub trait SprofCtl {
     fn sprof(&mut self, action: i32, mem_size: usize, freq: u32, intr_type: i32, ep: Endpoint, ctl_ptr: VirBytes, mem_ptr: VirBytes) -> i32;
 }
 
+/// `McontextCtl` 生产实现(S8 批次 G):sys_getmcontext/sys_setmcontext
+/// 直委托(minix-sys wrapper,E6 已落;错误透传,do_* 层收敛 EINVAL)。
+pub struct SysMcontextCtl;
+
+impl McontextCtl for SysMcontextCtl {
+    fn get(&self, ep: Endpoint, ctx: VirBytes) -> i32 {
+        match minix_sys::syscall::sys_getmcontext(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            ep.0,
+            ctx.0,
+        ) {
+            Ok(()) => 0,
+            Err(e) => e,
+        }
+    }
+
+    fn set(&self, ep: Endpoint, ctx: VirBytes) -> i32 {
+        match minix_sys::syscall::sys_setmcontext(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            ep.0,
+            ctx.0,
+        ) {
+            Ok(()) => 0,
+            Err(e) => e,
+        }
+    }
+}
+
 /// Helper: `is_superuser`.
 pub(crate) fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> bool {
     table.procs[caller.get()]
