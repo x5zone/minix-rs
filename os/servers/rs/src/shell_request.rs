@@ -1536,6 +1536,22 @@ impl RsServer {
             if let Some(name) = state.table.get(id).pub_.label.as_str() {
                 let _ = ds.delete(name, minix_types::DsFlags::TYPE_LABEL);
             }
+            // C manager.c:896-914 —— devman unbind 半:devman_id 非零时
+            // 向 devman 发 DEVMAN_UNBIND(m4:RESULT@0/DEVICE_ID@8/
+            // ENDPOINT@16),失败仅记录不影响结果。
+            if let Some(devman_id) = state.table.get(id).pub_.devman_id {
+                if let Some(devman_ep) = self.kernel.ds_lookup_by_label("devman") {
+                    let mut unbind = minix_types::Message::default();
+                    // SAFETY: DEVMAN_UNBIND 走 m4 三域(ipc.h/com.h:864-866):
+                    // RESULT@0(应答)/DEVICE_ID@8/ENDPOINT@16。
+                    unsafe {
+                        unbind.m_u.m_m4.m4l2 = devman_id as i64;
+                        unbind.m_u.m_m4.m4l3 = state.table.get(id).pub_.endpoint.0 as i64;
+                    }
+                    unbind.m_type = minix_types::DEVMAN_UNBIND;
+                    let _ = self.kernel.sendrec_to(devman_ep, &mut unbind);
+                }
+            }
             crate::recovery::cleanup_service(
                 &mut state.table,
                 id,

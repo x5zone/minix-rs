@@ -162,6 +162,8 @@ pub struct MockKernelApi {
     pub last_grant: Option<(u32, u64, u64)>,
     /// 已 revoke 的 gid。
     pub revoked_grants: Vec<GrantId>,
+    /// sendrec_to 记录(dest + 消息快照)。
+    pub sent_rec: Vec<(Endpoint, minix_types::Message)>,
     /// lu_request_prepare 调用记录。
     pub prepare_requests: Vec<Endpoint>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
@@ -210,6 +212,7 @@ impl MockKernelApi {
             grant_seq: 0,
             last_grant: None,
             revoked_grants: Vec::new(),
+            sent_rec: Vec::new(),
             prepare_requests: Vec::new(),
             inbox: Vec::new(),
             sent: Vec::new(),
@@ -502,6 +505,11 @@ impl IpcApi for MockKernelApi {
 
     fn ds_lookup_by_label(&mut self, _label: &str) -> Option<Endpoint> {
         None
+    }
+
+    fn sendrec_to(&mut self, dest: Endpoint, msg: &mut minix_types::Message) -> Result<(), Errno> {
+        self.sent_rec.push((dest, *msg));
+        Ok(())
     }
 
     fn grant_read(&mut self, _dest: Endpoint, addr: u64, len: u64) -> Result<GrantId, Errno> {

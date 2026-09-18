@@ -26,7 +26,7 @@
 //! (19 号换装:每方法委托 minix-sys 真实 wrapper);tests use
 //! `MockKernelApi`.
 
-use minix_types::{BootImage, Clock, Endpoint, Errno, GrantId, Pid};
+use minix_types::{BootImage, Clock, Endpoint, Errno, GrantId, Message, Pid};
 
 use crate::privilege::{CallMask, PrivFlags};
 use crate::process_table::RProcTable;
@@ -311,6 +311,11 @@ pub trait IpcApi {
     /// C: `vm_prepare` — libsys vm_prepare.c: `_taskcall(VM,
     /// VM_RS_PREPARE, {src, dst, flags})`.
     fn vm_prepare(&mut self, src: Endpoint, dst: Endpoint, flags: i32) -> Result<(), Errno>;
+
+    /// Blocking send-and-receive to an arbitrary peer (19 号:devman
+    /// unbind 的 DEVMAN_UNBIND 交换等)。reply 覆盖 msg,m_type 携带
+    /// 结果码(C ipc_sendrec 语义)。
+    fn sendrec_to(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), Errno>;
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -522,6 +527,10 @@ impl IpcApi for UnimplementedKernelApi {
     }
 
     fn vm_prepare(&mut self, _src: Endpoint, _dst: Endpoint, _flags: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    fn sendrec_to(&mut self, _dest: Endpoint, _msg: &mut Message) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }

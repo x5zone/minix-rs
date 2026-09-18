@@ -550,6 +550,13 @@ impl IpcApi for TrapKernelApi {
         self.ds.retrieve_label_endpt(label).ok().map(|(ep, _)| ep)
     }
 
+    fn sendrec_to(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), Errno> {
+        self.ipc
+            .sendrec(dest, msg)
+            .map(|_| ())
+            .map_err(|t| Errno::from_i32(t.0))
+    }
+
     fn grant_read(
         &mut self,
         dest: Endpoint,
