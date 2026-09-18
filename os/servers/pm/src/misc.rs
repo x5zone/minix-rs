@@ -298,6 +298,40 @@ impl McontextCtl for SysMcontextCtl {
     }
 }
 
+/// `SprofCtl` 生产实现(S8 批次 G):sys_sprof 直委托(E6 wrapper;
+/// 错误透传为原始 errno,do_sprofile 的 feature 门控保持)。
+pub struct SysSprofCtl {
+    /// 目标进程 endpoint(sprof 的采样对象;do_sprofile 以 caller 填入)。
+    pub ep: Endpoint,
+}
+
+impl SprofCtl for SysSprofCtl {
+    fn sprof(
+        &mut self,
+        action: i32,
+        mem_size: usize,
+        freq: u32,
+        intr_type: i32,
+        ep: Endpoint,
+        ctl_ptr: VirBytes,
+        mem_ptr: VirBytes,
+    ) -> i32 {
+        let _ = ep;
+        match minix_sys::syscall::sys_sprof(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            action,
+            freq as i32,
+            intr_type,
+            self.ep.0,
+            ctl_ptr.0,
+            mem_ptr.0,
+        ) {
+            Ok(()) => 0,
+            Err(e) => e,
+        }
+    }
+}
+
 /// Helper: `is_superuser`.
 pub(crate) fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> bool {
     table.procs[caller.get()]

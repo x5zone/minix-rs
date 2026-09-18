@@ -798,6 +798,34 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // C: do_sysuname(misc.c:60-96)——uname 命名空间只读半;
+        // 字节经 copy 缝拷到调用方 value 缓冲,返回拷贝字节数。
+        PmCall::SysUname => {
+            let (req, field, len, value) = super::decode::sysuname(msg);
+            let mut cpy = KernCopyToUser { kern, who: msg.m_source };
+            match crate::misc::do_sysuname(
+                field as usize,
+                req,
+                len as usize,
+                msg.m_source,
+                &mut cpy,
+            ) {
+                Ok(n) => ReplyIntent::Reply(n as i32),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_sprofile(profile.c:22-45)——sprofile feature 门控;
+        // SprofCtl 生产直委托 sys_sprof。
+        PmCall::SProf => {
+            let (action, freq, intr_type, ctl_ptr, _mem_ptr, _mem_size) =
+                super::decode::sprof(msg);
+            let ep = table.procs[caller.get()].endpoint();
+            let mut ctl = crate::misc::SysSprofCtl { ep };
+            match crate::misc::do_sprofile(action, &mut ctl) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -1135,11 +1163,11 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
-        let mut msg = Message { m_type: 25, ..Message::default() };
+        let mut msg = Message { m_type: 36, ..Message::default() };
         msg.m_source = ep;
         assert_eq!(
             dispatch_pm_call(
-                PmCall::SysUname,
+                PmCall::GetRUsage,
                 &mut table,
                 &mut events,
                 &mut transport,

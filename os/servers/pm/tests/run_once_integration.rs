@@ -272,7 +272,7 @@ fn unwired_call_replies_enosys() {
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     srv.transport_mut()
-        .queue_receive(request(25, caller_ep), IpcStatus::default()); // PM_SYSUNAME = 25
+        .queue_receive(request(36, caller_ep), IpcStatus::default()); // PM_GETRUSAGE = 36
 
     assert_eq!(srv.run_once(), RunStep::Handled);
 

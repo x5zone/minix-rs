@@ -136,6 +136,51 @@ pub(crate) fn exec_restart(msg: &Message) -> (i32, i32, u64, u64) {
     (pl.endpt, pl.result, pl.pc, pl.ps_str)
 }
 
+/// sysuname 参数 (req, field, len, value 指针)。user → PM。
+///
+/// C: `mess_lc_pm_sysuname` — ipc.h:565-571(req@0/field@4/len@8/
+/// value@16,raw 字节读,无专属臂)。
+pub(crate) fn sysuname(msg: &Message) -> (i32, i32, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路。
+    let raw = unsafe { msg.m_u.raw };
+    let req = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let field = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+    let len = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    let value = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+    (req, field, len, value)
+}
+
+/// svrctl 参数 (request, arg)。user → PM。
+///
+/// C: `mess_lc_svrctl` — ipc.h:603-608(request@0/arg@8)。
+pub(crate) fn svrctl(msg: &Message) -> (u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路。
+    let raw = unsafe { msg.m_u.raw };
+    let request = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+    let arg = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    (request, arg)
+}
+
+/// sprof 参数 (action, freq, intr_type, ctl_ptr, mem_ptr, mem_size)。
+/// user → PM。
+///
+/// C: `mess_lc_pm_sprof` — ipc.h:550-558(LP64 六域:action@0/freq@4/
+/// intr_type@8/ctl_ptr@16/mem_ptr@24/mem_size@32)。
+pub(crate) fn sprof(msg: &Message) -> (i32, i32, i32, u64, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路。
+    let raw = unsafe { msg.m_u.raw };
+    let i32_at = |o: usize| i32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+    let u64_at = |o: usize| u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+    (
+        i32_at(0),
+        i32_at(4),
+        i32_at(8),
+        u64_at(16),
+        u64_at(24),
+        u64_at(32),
+    )
+}
+
 /// mcontext 参数 (endpt, ctx 用户态指针)。user → PM。
 ///
 /// C: `mess_lc_pm_mcontext`(minix-types `MessLcPmMcontext` —

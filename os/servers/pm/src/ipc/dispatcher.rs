@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn test_pm_call_routes_to_dispatch_pm_call() {
         // C: main.c:90-101 — IS_PM_CALL → call_vec（单一分发表）。
-        // 未接线调用（SysUname 25,批次 G）→ ENOSYS(批次 A 后余件)。
+        // 未接线调用（GetRUsage 36,S4 余件）→ ENOSYS。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
@@ -396,7 +396,7 @@ mod tests {
                 &mut kern,
                 &mut timers,
                 UserSlot::new(3),
-                &msg_with(25, ep)
+                &msg_with(36, ep)
             ),
             ReplyIntent::Reply(ENOSYS)
         );
