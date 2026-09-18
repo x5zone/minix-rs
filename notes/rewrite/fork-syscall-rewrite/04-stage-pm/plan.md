@@ -222,7 +222,7 @@ PM_FORK 到达（主循环 dispatch，04）
 | `sys_getksig`/`sys_endksig` | `KernelGateway::get_ksig`/`end_ksig` | `sys_getksig`（7）/`sys_endksig`（8） | `dispatch_getksig`/`dispatch_endksig` | SIGKSIG 拉取循环（批次 H） |
 | `sys_sigsend` | `KernelGateway::sys_sigsend` | `sys_sigsend`（SYS_SIGSEND=9） | `dispatch_sigsend` | sig_send 被捕获信号投递 |
 | `sys_delay_stop` | `KernelGateway::sys_delay_stop`（`exit.rs:63`，V3-P1-3 起入中央网关；pre-E6 诚实占位默认实现 `exit.rs:179`） | 未落地（E6；占位以 -EIO 短路并 panic 化失败路径，`signal.c:245` 同型） | 待核实 | stop_proc（V3-P1-3 起 sig_proc VFS 分支消费） |
-| `sys_setalarm`/`sys_vtimer` | `TimerCtl`/`VTimerCtl`（Trap 占位） | 已落地（`sys_setalarm`，`os/libs/minix-sys/src/syscall.rs:735`；`sys_vtimer`，`:1024`）——PM 侧生产 impl 待批次 D | setalarm 已有/vtimer 待核实 | itimer/虚拟计时器 |
+| `sys_setalarm`/`sys_vtimer` | `TimerCtl`/`VTimerCtl`（批次 D 起为 `SysTimerCtl`/`SysVTimerCtl` 生产实现） | 已落地（`sys_setalarm`，`os/libs/minix-sys/src/syscall.rs:735`；`sys_vtimer`，`:1024`）——PM 侧生产 impl 已接（S5：本地簿记 + 内核时钟/vtimer 直委托） | setalarm 已有/vtimer 已有 | itimer/虚拟计时器 |
 | `sys_datacopy` | （copy_from_user 以 vircopy 同型承接，Fix #27 先例） | 已落地（`os/libs/minix-sys/src/syscall.rs:862`）——PM 消费待批次 A/G | — | getsysinfo 表拷出（D-29）/ getepinfo groups（D-30）/ itimer value |
 | `sys_sigreturn` | 批次 B | 已落地（`os/libs/minix-sys/src/syscall.rs:924`）——PM 接线待批次 B | 待核实 | do_sigreturn |
 | `SYS_GETMONPARAMS`/`SYS_GETIMAGE` | — | 双侧新建（E6） | 不存在 | BootParams（D-02） |

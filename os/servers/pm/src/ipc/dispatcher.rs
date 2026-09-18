@@ -91,6 +91,7 @@ pub fn dispatch_message<T: IpcTransport>(
     events: &mut crate::event::EventRegistry,
     transport: &mut T,
     kern: &mut dyn crate::exit::KernelGateway,
+    timers: &mut crate::timer::TimerFaces,
     caller: UserSlot,
     msg: &Message,
 ) -> ReplyIntent {
@@ -103,7 +104,9 @@ pub fn dispatch_message<T: IpcTransport>(
         // C: main.c:90-101 — call_index = call_nr - PM_BASE；越界/NULL →
         // ENOSYS。
         match PmCall::from_call_nr(call_nr) {
-            Some(call) => dispatch_pm_call(call, table, events, transport, kern, caller, msg),
+            Some(call) => {
+                dispatch_pm_call(call, table, events, transport, kern, timers, caller, msg)
+            }
             None => ReplyIntent::Reply(ENOSYS),
         }
     } else {
@@ -215,6 +218,40 @@ pub fn vm_exit<T: IpcTransport + ?Sized>(transport: &mut T, endpoint: Endpoint) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::timer::{TimerCtl, TimerFaces, VTimerCtl};
+    use minix_types::{Clock, Endpoint};
+
+    /// 空转定时器出口(测试只为通过分发,不消费计时器语义)。
+    pub struct TestTimerCtl;
+    impl TimerCtl for TestTimerCtl {
+        fn set(&mut self, _ep: Endpoint, _ticks: Clock) {}
+        fn cancel(&mut self, _ep: Endpoint) {}
+        fn exptime(&self, _ep: Endpoint) -> Option<Clock> {
+            None
+        }
+        fn now(&self) -> Clock {
+            0
+        }
+    }
+    pub struct TestVTimerCtl;
+    impl crate::timer::VTimerCtl for TestVTimerCtl {
+        fn vtimer(
+            &mut self,
+            _ep: Endpoint,
+            _which: crate::timer::ItimerWhich,
+            _set: Option<Clock>,
+            _get: Option<&mut Clock>,
+        ) -> i32 {
+            0
+        }
+    }
+    fn timers() -> TimerFaces<'static> {
+        // 测试用泄漏式构造('static 借用由泄漏的 Box 承担)。
+        let tctl: &'static mut dyn TimerCtl = Box::leak(Box::new(TestTimerCtl));
+        let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(TestVTimerCtl));
+        TimerFaces { tctl, vctl, system_hz: 100 }
+    }
+
     use crate::event::EventRegistry;
     use crate::ipc::TestIpcTransport;
     use crate::mproc::Lifecycle;
@@ -290,11 +327,13 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
+        let mut timers = timers();
         let intent = dispatch_message(
             &mut table,
             &mut events,
             &mut transport,
             &mut kern,
+            &mut timers,
             UserSlot::new(3),
             &msg_with(0x980 + 7, Endpoint::RS),
         );
@@ -309,11 +348,13 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, true);
         let mut kern = NoopKernel;
+        let mut timers = timers();
         let intent = dispatch_message(
             &mut table,
             &mut events,
             &mut transport,
             &mut kern,
+            &mut timers,
             UserSlot::new(3),
             &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
         );
@@ -326,11 +367,13 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
+        let mut timers = timers();
         let intent = dispatch_message(
             &mut table,
             &mut events,
             &mut transport,
             &mut kern,
+            &mut timers,
             UserSlot::new(3),
             &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
         );
@@ -344,12 +387,14 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
+        let mut timers = timers();
         assert_eq!(
             dispatch_message(
                 &mut table,
                 &mut events,
                 &mut transport,
                 &mut kern,
+                &mut timers,
                 UserSlot::new(3),
                 &msg_with(4, ep)
             ),
@@ -363,12 +408,14 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
+        let mut timers = timers();
         assert_eq!(
             dispatch_message(
                 &mut table,
                 &mut events,
                 &mut transport,
                 &mut kern,
+                &mut timers,
                 UserSlot::new(3),
                 &msg_with(0x100, ep)
             ),

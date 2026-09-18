@@ -4,6 +4,7 @@
 //! Design: `.design/14-design.v1.md` D1–D8 (explicit `TicksConv`/`ItimerWhich`/`AlarmState`/`Option`).
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
+use alloc::collections::BTreeMap;
 use minix_types::{Endpoint, UserSlot, EINVAL};
 use crate::mproc::{ProcTable, RemainingFlags};
 
@@ -165,14 +166,27 @@ pub trait VTimerCtl {
     fn vtimer(&mut self, ep: Endpoint, which: ItimerWhich, set: Option<Clock>, get: Option<&mut Clock>) -> i32;
 }
 
-/// 生产占位（pre-E6）：`sys_vtimer` wrapper 未落地（edge E6 清单）——
-/// 任何调用以 `-EIO` 失败。C 的 `check_vtimer`（alarm.c:239）不检查
-/// 重挂返回值，失败无不可恢复后果，故此处诚实失败而非 panic。
-pub struct TrapVTimerCtl;
+/// 生产 `VTimerCtl`（S5）：委托 minix-sys `sys_vtimer`（ITIMER_VIRTUAL/
+/// ITIMER_PROF 的内核半）。返回约定与 C `check_vtimer`（alarm.c:239）
+/// 一致——OK/负 errno；取回的旧值经 `get` 出参交付。
+pub struct SysVTimerCtl;
 
-impl VTimerCtl for TrapVTimerCtl {
-    fn vtimer(&mut self, _ep: Endpoint, _which: ItimerWhich, _set: Option<Clock>, _get: Option<&mut Clock>) -> i32 {
-        -minix_types::EIO
+impl VTimerCtl for SysVTimerCtl {
+    fn vtimer(&mut self, ep: Endpoint, which: ItimerWhich, set: Option<Clock>, get: Option<&mut Clock>) -> i32 {
+        match minix_sys::syscall::sys_vtimer(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            ep.0,
+            which as i32,
+            set.map(|c| c as u64),
+        ) {
+            Ok(old) => {
+                if let (Some(slot), Some(v)) = (get, old) {
+                    *slot = v as Clock;
+                }
+                0
+            }
+            Err(e) => -e,
+        }
     }
 }
 
@@ -353,24 +367,62 @@ pub fn cause_sigalrm<T: crate::ipc::IpcTransport + ?Sized>(
     true
 }
 
-/// 生产 `TimerCtl`（pre-E6 诚实占位）。真实实现 = minix-sys
-/// `sys_setalarm` wrapper（edge E6）；CLOCK notify 通电挂 edge E1——trap
-/// 层落地前本实现的任何方法都不应被触达，触达即 `unimplemented!()`。
-pub struct TrapTimerCtl;
+/// 生产 `TimerCtl`（S5）：本地到期簿记 + 内核时钟。
+///
+/// C 的 `set_timer`/`cancel_timer`（alarm.c:305/308）是**纯本地**簿记
+/// ——PM 从不调用 `sys_setalarm`（全 grep 无命中），CLOCK notify 到达
+/// 后由 `expire_timers` 扫描到期者（main.c:65-71）。Rust 的队列对应物
+/// 即 mproc `resources.timer`（A-7，`handle_clock_notify` 扫表）；
+/// 本实现的 set/cancel/exptime 维护同构的本地簿记（trait 面自洽，
+/// 供不持表的调用方查询），`now()` 是唯一的内核半——uptime 经
+/// `sys_times`（E1 已通电），itimer/到期算术的权威时钟。
+pub struct SysTimerCtl {
+    pending: BTreeMap<Endpoint, Clock>,
+    kernel: minix_sys::syscall::DirectKernelCallTransport,
+}
 
-impl TimerCtl for TrapTimerCtl {
-    fn set(&mut self, _ep: Endpoint, _ticks: Clock) {
-        unimplemented!("TimerCtl::set — sys_setalarm wrapper 落地于 edge E6（通电挂 E1）");
+impl SysTimerCtl {
+    pub const fn new() -> Self {
+        Self {
+            pending: BTreeMap::new(),
+            kernel: minix_sys::syscall::DirectKernelCallTransport,
+        }
     }
-    fn cancel(&mut self, _ep: Endpoint) {
-        unimplemented!("TimerCtl::cancel — sys_setalarm wrapper 落地于 edge E6");
+}
+
+impl Default for SysTimerCtl {
+    fn default() -> Self {
+        Self::new()
     }
-    fn exptime(&self, _ep: Endpoint) -> Option<Clock> {
-        unimplemented!("TimerCtl::exptime — sys_setalarm wrapper 落地于 edge E6");
+}
+
+impl TimerCtl for SysTimerCtl {
+    fn set(&mut self, ep: Endpoint, ticks: Clock) {
+        self.pending.insert(ep, self.now() + ticks);
+    }
+    fn cancel(&mut self, ep: Endpoint) {
+        self.pending.remove(&ep);
+    }
+    fn exptime(&self, ep: Endpoint) -> Option<Clock> {
+        self.pending.get(&ep).copied()
     }
     fn now(&self) -> Clock {
-        unimplemented!("TimerCtl::now — 内核 uptime 面（edge E6）");
+        // C: getuptime（libsys/getuptime.c）——SYS_TIMES 的 boot_ticks。
+        match minix_sys::syscall::sys_times(&self.kernel, minix_types::Endpoint::SELF.0) {
+            Ok(t) => t.boot_ticks as Clock,
+            // 时钟不可达时时间算术不可信：0 让到期判定立即触发（fail
+            // -loud 的时钟语义——错误不该表现为"永远不到期"）。
+            Err(_) => 0,
+        }
     }
+}
+
+/// 分发面的定时器出口束（S5）：`dispatch_pm_call` 的 Itimer 臂经此拿到
+/// 两个计时器出口与系统频率。
+pub struct TimerFaces<'a> {
+    pub tctl: &'a mut dyn TimerCtl,
+    pub vctl: &'a mut dyn VTimerCtl,
+    pub system_hz: Clock,
 }
 
 /// `handle_clock_notify` (`main.c:65-71` CLOCK → `expire_timers`)。

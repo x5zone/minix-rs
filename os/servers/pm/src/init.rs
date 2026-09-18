@@ -190,10 +190,10 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     /// IPC 传输（VFS_PM_INIT 同步等）。
     transport: T,
     /// 内核定时器出口（CLOCK notify → `expire_timers`，14-itimer.md；
-    /// 生产 `TrapTimerCtl` pre-E6 fail-closed，测试注入脚本化实现）。
+    /// 生产 `SysTimerCtl` 本地簿记 + 内核时钟，测试注入脚本化实现）。
     timer: Box<dyn crate::timer::TimerCtl>,
     /// 虚拟计时器出口（SIGVTALRM/SIGPROF 重挂，14-itimer.md；SIGKSIG
-    /// 拉取经 process_ksig 消费；生产 `TrapVTimerCtl` pre-E6 诚实 `-EIO`）。
+    /// 拉取经 process_ksig 消费；生产 `SysVTimerCtl` 委托 sys_vtimer）。
     vtimer: Box<dyn crate::timer::VTimerCtl>,
     /// `init()` 是否已完成（run() 前置断言）。
     initialized: bool,
@@ -236,8 +236,8 @@ impl<T: IpcTransport> PmServer<T> {
             params,
             transport,
             kern,
-            Box::new(crate::timer::TrapTimerCtl),
-            Box::new(crate::timer::TrapVTimerCtl),
+            Box::new(crate::timer::SysTimerCtl::new()),
+            Box::new(crate::timer::SysVTimerCtl),
         )
     }
 
@@ -454,11 +454,17 @@ impl<T: IpcTransport> PmServer<T> {
         // C: main.c:88-103 — 第二/三路：事件回复 + PM 调用族统一经
         // dispatch_message → dispatch_pm_call 的**单一分发表**（ARCH A-5）。
         // 主循环不内联拦截任何 PM 调用（旧实现 7 个内联块已收编，04 文档 §3.6）。
+        let mut timers = crate::timer::TimerFaces {
+            tctl: self.timer.as_mut(),
+            vctl: self.vtimer.as_mut(),
+            system_hz: self.params.system_hz as i64,
+        };
         let intent = dispatch_message(
             &mut self.table,
             &mut self.event_registry,
             &mut self.transport,
             self.kern.as_mut(),
+            &mut timers,
             caller,
             &msg,
         );
@@ -933,7 +939,7 @@ mod tests {
             TestIpcTransport::new(),
             Box::new(crate::exit::TrapKernelGateway::new(minix_sys::syscall::DirectKernelCallTransport)),
             Box::new(StubTimer),
-            Box::new(crate::timer::TrapVTimerCtl),
+            Box::new(crate::timer::SysVTimerCtl),
         );
         let mut msg = Message { m_type: 0x1000, ..Message::default() };
         msg.m_source = Endpoint::CLOCK;

@@ -99,6 +99,21 @@ pub(crate) fn ptrace(msg: &Message) -> (i32, i32, u64, i64) {
     (pl.pid, pl.req, pl.addr, pl.data)
 }
 
+/// itimer 参数 (which, value 指针, ovalue 指针)。user → PM。
+///
+/// C: `mess_lc_pm_itimer`（minix-types `MessLcPmItimer`，repr(C) 域序
+/// which@0/value@8/ovalue@16；value/ovalue 是 `struct itimerval` 的
+/// 用户态指针，字节搬运经网关 copy 缝）。MessageUnion 无专属臂——
+/// 按字节读前 24 字节（vm.rs wrapper 的 raw 读取先例）。
+pub(crate) fn itimer(msg: &Message) -> (i32, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路；raw 臂按字节
+    // 读取，无类型重解释，域序与 `MessLcPmItimer` 的 repr(C) 排布一致。
+    let raw = unsafe { msg.m_u.raw };
+    let u64_at = |off: usize| u64::from_le_bytes(raw[off..off + 8].try_into().unwrap());
+    let which = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    (which, u64_at(8), u64_at(16))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +172,18 @@ mod tests {
     fn proceventmask_decodes_mask() {
         let m = msg_with(|m| m.m_u.m_lsys_pm_proceventmask.mask = 0b101);
         assert_eq!(proceventmask(&m), 0b101);
+    }
+
+    #[test]
+    fn itimer_decodes_which_and_pointers() {
+        let m = msg_with(|m| unsafe {
+            // 按域序写 raw:which@0/value@8/ovalue@16(repr(C) 字节排布)。
+            // 切片访问即对 union 字段的读借用,需 unsafe 块包裹。
+            m.m_u.raw[0..4].copy_from_slice(&0i32.to_le_bytes());
+            m.m_u.raw[8..16].copy_from_slice(&0x5000u64.to_le_bytes());
+            m.m_u.raw[16..24].copy_from_slice(&0x6000u64.to_le_bytes());
+        });
+        assert_eq!(itimer(&m), (0, 0x5000, 0x6000));
     }
 
     #[test]

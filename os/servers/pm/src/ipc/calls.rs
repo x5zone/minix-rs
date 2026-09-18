@@ -202,12 +202,16 @@ impl PmCall {
 /// handler 签名与 C `int (*)(void)` 的差异见 04 文档 §3.3（D3/D5）：
 /// C handler 读全局 `m_in`/`mp`；Rust 显式传 `table`/`events`/`transport`
 /// + caller 槽位 + 消息引用（ARCH A-3：隐式全局 → 显式参数）。
+// 参数面是 ARCH A-3 的刻意形状:每个参数对应一条独立的 seam(表/事件/
+// 传输/内核网关/定时器束/调用方/消息),不应为了 lint 计数再聚合。
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch_pm_call<T: IpcTransport>(
     call: PmCall,
     table: &mut ProcTable,
     events: &mut EventRegistry,
     transport: &mut T,
     kern: &mut dyn crate::exit::KernelGateway,
+    timers: &mut crate::timer::TimerFaces,
     caller: UserSlot,
     msg: &Message,
 ) -> ReplyIntent {
@@ -303,12 +307,79 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // C: do_setitimer——批次 D。value/ovalue 是 `struct itimerval`
+        // 用户态指针(32 字节:interval@0..16 + value@16..32,每域
+        // tv_sec@0..8 + tv_usec@8..16),字节搬运经网关 copy 缝;旧值只在
+        // ovalue 非零时写回。
+        PmCall::Itimer => {
+            let (which, value_ptr, ovalue_ptr) = super::decode::itimer(msg);
+            let mut raw = [0u8; 32];
+            if let Err(e) = kern.copy_from_user(msg.m_source, value_ptr, &mut raw) {
+                return ReplyIntent::Reply(positive_errno(e));
+            }
+            let le_i64 = |b: &[u8]| i64::from_le_bytes(b.try_into().unwrap());
+            let op = crate::timer::ItimerOp {
+                set: Some(crate::timer::Itimerval {
+                    it_interval: crate::timer::Timeval {
+                        tv_sec: le_i64(&raw[0..8]),
+                        tv_usec: le_i64(&raw[8..16]),
+                    },
+                    it_value: crate::timer::Timeval {
+                        tv_sec: le_i64(&raw[16..24]),
+                        tv_usec: le_i64(&raw[24..32]),
+                    },
+                }),
+                get: ovalue_ptr != 0,
+            };
+            let conv = crate::timer::TicksConv { hz: timers.system_hz };
+            match crate::timer::do_itimer(
+                table,
+                caller,
+                which,
+                op,
+                &conv,
+                timers.vctl,
+                timers.tctl,
+            ) {
+                Ok(old) => {
+                    if let Some(old) = old
+                        && ovalue_ptr != 0
+                    {
+                        let mut out = [0u8; 32];
+                        out[0..8].copy_from_slice(&old.it_interval.tv_sec.to_le_bytes());
+                        out[8..16].copy_from_slice(&old.it_interval.tv_usec.to_le_bytes());
+                        out[16..24].copy_from_slice(&old.it_value.tv_sec.to_le_bytes());
+                        out[24..32].copy_from_slice(&old.it_value.tv_usec.to_le_bytes());
+                        if let Err(e) = kern.copy_to_user(&out, msg.m_source, ovalue_ptr) {
+                            return ReplyIntent::Reply(positive_errno(e));
+                        }
+                    }
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(positive_errno(e.to_errno())),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
         // 划账该表（V2-P2-6：兜底臂使"未接线"无需标记即可编译，台账是
         // 义务的承接面）。
         _ => ReplyIntent::Reply(ENOSYS),
+    }
+}
+
+/// 网关/wrapper 的负 errno 约定 → reply 的正 errno(错误保真,取绝对值)。
+fn leak_timers() -> crate::timer::TimerFaces<'static> {
+    let tctl: &'static mut dyn crate::timer::TimerCtl = Box::leak(Box::new(crate::timer::SysTimerCtl::new()));
+    let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(crate::timer::SysVTimerCtl));
+    crate::timer::TimerFaces { tctl, vctl, system_hz: 100 }
+}
+
+fn positive_errno(e: i32) -> i32 {
+    if e < 0 {
+        -e
+    } else {
+        e
     }
 }
 
@@ -384,6 +455,7 @@ mod tests {
             &mut events,
             &mut transport,
             &mut NoopKernel,
+            &mut leak_timers(),
             UserSlot::new(3),
             &msg,
         );
@@ -407,6 +479,7 @@ mod tests {
             &mut events,
             &mut transport,
             &mut NoopKernel,
+            &mut leak_timers(),
             UserSlot::new(3),
             &msg,
         );
@@ -431,6 +504,7 @@ mod tests {
             &mut events,
             &mut transport,
             &mut NoopKernel,
+            &mut leak_timers(),
             UserSlot::new(3),
             &msg,
         );
@@ -452,7 +526,8 @@ mod tests {
                 &mut table,
                 &mut events,
                 &mut transport,
-            &mut NoopKernel,
+                &mut NoopKernel,
+                &mut leak_timers(),
                 UserSlot::new(3),
                 &msg
             ),
