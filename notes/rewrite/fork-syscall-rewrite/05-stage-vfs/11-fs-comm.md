@@ -154,8 +154,9 @@ Rust 改写不是照抄 `comm.c:19` 的 `c_cur_reqs++` 与 `w_next` 裸链表，
 - **C**：`fs_sendrec:134-170` 的"`find_vmnt→EDEADLK→w_sendrec 挂接→窗口二守门→sendmsg/queuemsg→worker_wait→读 reqmp->m_type`"六步，与 `do_reply`（`main.c:187-211`）的"`find_vmnt(VM 豁免)→w_task 校验→*w_sendrec = m_in→c_cur_reqs--→worker_signal`"五步，是同一对话的两半。
 - **Rust**：`IpcFsTransport<T: IpcTransport>`（`fs_comm.rs`）是 `sendmsg` 的真发送对应物——窗口开则 `GlobalComm::sendmsg` 计数后经 `sendnb` 投递（`asynsend3(AMF_NOREPLY)` 语义），请求 `m_type` 先经 `TRNS_ADD_ID` 戳入槽号低 16 位；窗口满或 `VMNT_CALLBACK` 走 `queuemsg` 记账（排队是常态路径而非错误，`comm.c:156-158`）。`asynsend3` 底层失败新增 `CommError::IpcError(r)` 原值透传——注意 C 的计数递增先于投递，失败后窗口计数不回滚（`comm.c:17-23` 的既有次序，非 Rust 引入）。
 - **回复半**：`VfsState::handle_fs_reply`（`main_loop.rs`）补齐 `do_reply` 全语义——VM 回复跳过 vmnt 查找（`main.c:190`）、找不到挂载点同 C 一样 fail-fast panic、`w_task` 不符 typed 为 `FsReplyError::WrongTask`（C 的 printf+return 面）、回复消息覆写槽的 `sendrec` 存储（`*w_sendrec = m_in` 对应物，续接侧从同槽读结果）、`c_cur_reqs--` 后槽态 `WaitingForFs→Busy`（`worker_signal` 对应物）。`run_once` 的 `Route::FsReply` 臂接通，主循环单轮内即可观测"请求发出→回复落地→窗口放行"闭环。
-- **`GlobalComm` 入 `VfsState`**：`comm` 字段（ARCH A-4 的最后一块聚合），`handle_fs_reply` 的窗口递减经此访问；C 的 `vmnt.m_comm` 嵌入在 Rust 由 `VfsState.comm.vmnts[idx]` 与 `VmntTable` 平行索引，槽号即对齐键。
-- **边界**：排队的请求在窗口放行后的补发（`fs_sendmore` 的真发送半）需要 worker 槽内保存的请求消息，归对话原语层（`req_*` 包装接线时）；驱动回复的 `Bdev/Cdev/Sdev` 消费归 20/21/22。
+- **对话原语与补发**：`VfsState::fs_sendrec`（`main_loop.rs`）是 `fs_sendrec`（comm.c:134-170）六步的进入半——vmnt 校验（`fs` 不符即 `EIO`）、`EDEADLK` 自死锁守门（调用进程 endpoint 即目标 FS）、`w_sendrec` 双重挂接断言、`set_waiting` 挂接后走 [`FsTransport::send_fs`]；发送失败不清等待标记（与 C 一致，留待槽释放）。`VfsState::flush_send_queue` 是 `send_work`×`fs_sendmore` 的真发送半——`GlobalComm::fs_sendmore` 承载守门序与 `pop + sending--`，随后补 transid 戳并 `sendnb`；发送失败以 `(void)` 忽略继续（comm.c:86 的既有行为）。C 由作业结束的 worker 调 `send_work()`，单线程模型下由主循环层在回复落地后调用。
+- **`GlobalComm` 入 `VfsState`**：`comm` 字段（ARCH A-4 的最后一块聚合），`handle_fs_reply` 的窗口递减与 `flush_send_queue` 的窗口守门经此访问；C 的 `vmnt.m_comm` 嵌入在 Rust 由 `VfsState.comm.vmnts[idx]` 与 `VmntTable` 平行索引，槽号即对齐键。
+- **边界**：驱动对话的 `dmap_servicing` 排他与回复消费归 20/21/22；syscall 臂消费 `fs_sendrec` 原语（挂起 + 续接状态机）归 13/15/16 的臂接线。
 
 ### ARCH 决策总表
 
@@ -250,6 +251,13 @@ os/servers/vfs/src/
 | `test_handle_fs_reply_spurious_transid` | `main.c:80-89` | 非 transid 段回复拒收 | `main_loop.rs` |
 | `test_handle_fs_reply_unknown_fs_panics_like_c` | `main.c:190-191` | 非 VM 回复无 vmnt → fail-fast panic | `main_loop.rs` |
 | `test_run_once_fs_reply_reaches_slot` | `main.c:80-89` | 主循环单轮 `FsReply` 路由→槽落地闭环 | `main_loop.rs` |
+| `test_fs_sendrec_send_path_marks_waiting` | `comm.c:137-158` | 窗口开 → 投递 + 槽 `WaitingForFs` + transid 戳 | `main_loop.rs` |
+| `test_fs_sendrec_vmnt_mismatch_is_eio` | `comm.c:137-140` | `find_vmnt` 不符 → `EIO`，槽不动 | `main_loop.rs` |
+| `test_fs_sendrec_edeadlk_when_caller_is_fs` | `comm.c:142-144` | 调用进程即目标 FS → `EDEADLK` | `main_loop.rs` |
+| `test_fs_sendrec_double_sendrec_asserts` | `comm.c:146` | 双重 `w_sendrec` 挂接 → 断言（fail-fast） | `main_loop.rs` |
+| `test_fs_sendrec_queue_path_marks_waiting` | `comm.c:156-158` | 窗口满 → 排队记账，槽同样 `WaitingForFs` | `main_loop.rs` |
+| `test_flush_after_reply_drains_queue` | `comm.c:66-87` | 回复放行 → 补发排队请求（戳+sending--）→ 再 flush 无补发 | `main_loop.rs` |
+| `test_flush_skips_send_failures_and_empty_mounts` | `comm.c:86` | 补发失败 `(void)` 忽略，计数不回滚 | `main_loop.rs` |
 
 测试策略：`TransId` 的 `ADD/GET/DEL` 以 `add(0x1234,0xB01)→get 0xB01 & del 0x1234` 往返样本覆盖；`FsComm` 的窗口以 `max=1 cur=1→Queue` 与 `max=4 cur=1→Send` 两样本覆盖；`queue` 以 `enqueue 1,2 → dequeue 1` 的 FIFO 样本覆盖；`sendmsg` 以 `cur 0→1` 的递增样本覆盖；`fs_cancel` 以 `queue 2→while pop 2→sending 0` 的清空样本覆盖；`TransId` 与 `Queue` 的双 trait 以 `Vfs vs Test` 的 `0xB01 vs 0xC01` 与 `Fifo head vs Lifo tail` 的 `dyn` 行为差异样本覆盖。
 

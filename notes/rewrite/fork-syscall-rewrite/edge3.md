@@ -30,7 +30,7 @@
 
 | 编号 | 条目 | 来源 | 要点 | 前置 | 状态 |
 |---|---|---|---|---|---|
-| S12 | W1：内核 IPC 原语真实传输激活 + 56 臂接入 | [05-stage-vfs/todo.md P1-2](05-stage-vfs/todo.md) ｜ plan.md §8 矩阵 | trap 桥已通 → fs_comm 窗口接真实 IpcTransport/sys_safecopy/sys_datacopy；dispatch 64 臂中 56 个对话臂从 Nosys 逐臂接入 | 无 | 🔄 2026-09-19（W1 首片 de08528d5→本片:IpcFsTransport 生产传输[sendnb 真发送+窗口二守门+transid 戳+IpcError 透传]+handle_fs_reply 补 do_reply 全语义[VM 豁免/wrong-task typed/落地+c_cur_reqs--/worker_signal]+GlobalComm 入 VfsState+run_once FsReply 臂接通;余件=队列补发半归对话原语层+56 臂逐臂接入[S13/S14 依 W6/W7 次序]） |
+| S12 | W1：内核 IPC 原语真实传输激活 + 56 臂接入 | [05-stage-vfs/todo.md P1-2](05-stage-vfs/todo.md) ｜ plan.md §8 矩阵 | trap 桥已通 → fs_comm 窗口接真实 IpcTransport/sys_safecopy/sys_datacopy；dispatch 64 臂中 56 个对话臂从 Nosys 逐臂接入 | 无 | 🔄 2026-09-19（W1 两片:f746ea022 传输底座[IpcFsTransport 生产传输+handle_fs_reply 补 do_reply 全语义+GlobalComm 入 VfsState+run_once FsReply 臂]+本片对话原语[VfsState::fs_sendrec 六步进入半+EDEADLK/双重挂接守门+flush_send_queue 补发半];余件=56 臂逐臂接入[S13/S14 依 W6/W7 次序]） |
 | S13 | W4 + W5：SEF LU/restart 接线；dmap/smap 初始化 + DS 订阅排空 | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) | C-1 SEF RS 侧行、C-9 真实 DS 订阅（DsClient 已备） | S12 | ☐ |
 | S14 | W6 + W9：根挂载 REQ_READSUPER 往返 + mfs 25 项 Pending | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) ｜ [15-stage-fs/todo.md](15-stage-fs/todo.md) | C-7 readsuper 确认往返；mfs 侧 fs_lookup 等 25 项（15-stage 域内，同线） | S12；mfs 侧随 S28 | ☐ |
 | S15 | W8：驱动死亡级联 fproc 扫描编排 | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) | 驱动死亡 → fproc 扫描 → 关闭句柄 | S12 | ☐ |

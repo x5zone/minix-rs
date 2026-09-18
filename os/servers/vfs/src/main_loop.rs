@@ -36,7 +36,7 @@ use crate::device_map::{DmapTable, SmapTable};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;
 use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
-use crate::fs_comm::GlobalComm;
+use crate::fs_comm::{CommError, FsTransport, GlobalComm};
 use crate::vnode::VnodeTable;
 use crate::vmnt::VmntTable;
 use crate::worker::WorkerPool;
@@ -780,6 +780,105 @@ impl VfsState {
         self.reply(target, result)
     }
 
+    /// `fs_sendrec`（comm.c:134-170）的对话原语——syscall 臂的进入半。
+    ///
+    /// 与 C 六步对应：`find_vmnt(fs_e)` 校验（`vmnt` 存在且 `fs` 指向
+    /// 同一端点，不符即 `EIO`，comm.c:137-140）→ `EDEADLK` 自死锁守门
+    /// （调用进程本身就是该 FS，comm.c:142-144）→ `assert(w_sendrec ==
+    /// NULL)`（槽不得已在等待，comm.c:146）→ `w_sendrec` 挂接
+    /// （[`crate::worker::WorkerSlot::set_waiting`]）→ 窗口二守门下的
+    /// `sendmsg`/`queuemsg`（经 [`FsTransport::send_fs`]）。C 的
+    /// `worker_wait` 在单线程模型中即"臂返回 Suspend、槽停在
+    /// `WaitingForFs`"，回复由 [`Self::handle_fs_reply`] 落地。
+    ///
+    /// 发送失败时槽的等待标记不清除——与 C 一致（`sendmsg` 失败后
+    /// `w_sendrec` 留待作业结束的 `worker_release` 清理），调用方臂
+    /// 收到 `Err` 后走错误回复并释放槽。
+    pub fn fs_sendrec<T: FsTransport>(
+        &mut self,
+        transport: &mut T,
+        vmnt: usize,
+        fs_ep: Endpoint,
+        slot: crate::fs_comm::SlotId,
+        req: &Message,
+    ) -> Result<(), CommError> {
+        let v = self
+            .vmnt_table
+            .get(crate::vmnt::VmntId(vmnt))
+            .ok_or(CommError::NoVmnt)?;
+        if v.fs != fs_ep {
+            return Err(CommError::NoVmnt);
+        }
+        // comm.c:142-144 — `if (fs_e == fp->fp_endpoint) return EDEADLK`。
+        if let Some(fp_slot) = self.worker_pool.get(slot).and_then(|w| w.fp_slot)
+            && let Some(fp) = self.fproc_table.get(fp_slot)
+            && fp.endpoint == fs_ep
+        {
+            return Err(CommError::Deadlock);
+        }
+        {
+            let w = self
+                .worker_pool
+                .get_mut(slot)
+                .ok_or(CommError::NoWorker)?;
+            // comm.c:146 — `assert(self->w_sendrec == NULL)`。
+            assert!(
+                w.state != crate::worker::WorkerState::WaitingForFs,
+                "fs_sendrec on already-waiting slot (C comm.c:146 assert)"
+            );
+            w.set_waiting(fs_ep, *req);
+        }
+        transport.send_fs(vmnt, fs_ep, slot, req, &mut self.comm).map(|_| ())
+    }
+
+    /// `send_work`（comm.c:37-47）× `fs_sendmore`（comm.c:66-87）的
+    /// 真发送半——窗口放行后把排队的请求补发出去。
+    ///
+    /// C 的补发由作业结束的 worker 调 `send_work()` 驱动；单线程模型
+    /// 下由主循环层在回复落地后调用（`run()` 持 transport 时），本原语
+    /// 独立可测。`GlobalComm::fs_sendmore` 承载 C 的守门序与
+    /// `pop + sending--`（`c_cur_reqs++` 由其内联）；随后按 `sendmsg`
+    /// 的 transid 戳 + `asynsend3` 投递——发送失败以 `(void)` 忽略继续
+    /// （comm.c:86 的既有行为，计数已先行递增）。返回实际补发条数。
+    pub fn flush_send_queue<T: minix_sys::ipc::IpcTransport>(
+        &mut self,
+        transport: &mut T,
+    ) -> usize {
+        let mut sent = 0;
+        for idx in 0..crate::vmnt::NR_MNTS {
+            // C fs_sendmore:79 `if (vmp->m_fs_e == NONE) return` 的
+            // 对应物——空挂载槽不扫。
+            if self
+                .vmnt_table
+                .get(crate::vmnt::VmntId(idx))
+                .is_none_or(|v| v.fs == Endpoint::NONE)
+            {
+                continue;
+            }
+            while let Some(slot) = self.comm.fs_sendmore(idx) {
+                let Some(worker) = self.worker_pool.get(slot) else {
+                    continue;
+                };
+                let Some(req) = worker.sendrec else {
+                    continue;
+                };
+                let fs_ep = self
+                    .vmnt_table
+                    .get(crate::vmnt::VmntId(idx))
+                    .map(|v| v.fs)
+                    .unwrap_or(Endpoint::NONE);
+                // C sendmsg 的 `TRNS_ADD_ID` 戳（此处补戳排队时未 stamp
+                // 的槽内请求）+ `asynsend3`（`(void)` 忽略失败）。
+                let mut out = req;
+                out.m_type = crate::fs_comm::TransId::add(req.m_type as u32, slot) as i32;
+                if transport.sendnb(fs_ep, &out).is_ok() {
+                    sent += 1;
+                }
+            }
+        }
+        sent
+    }
+
     /// `do_reply:187`（main.c）——FS 回复落地到等待中的 worker 槽。
     ///
     /// C 步骤逐条对应：
@@ -1007,6 +1106,187 @@ mod tests {
         assert!(matches!(route, Route::FsReply { worker_slot: 2, .. }));
         assert_eq!(state.worker_pool.get(2).unwrap().state, WorkerState::Busy);
         assert_eq!(state.comm.vmnts[0].cur_reqs, 0);
+    }
+
+    // ── S12 第二片:fs_sendrec 对话原语 + flush_send_queue 补发 ──
+
+    extern crate alloc;
+
+    /// 可脚本失败的最小 IPC 传输(sendnb 记录 + 可注入失败)。
+    struct FlushIpc {
+        sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
+        fail: bool,
+    }
+    impl minix_sys::ipc::IpcTransport for FlushIpc {
+        fn send(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn receive(
+            &self,
+            _s: Endpoint,
+            _m: &mut Message,
+        ) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
+            Err(minix_sys::ipc::TrapStatus(-1))
+        }
+        fn sendrec(&self, _d: Endpoint, _m: &mut Message) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn sendnb(&self, d: Endpoint, m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+            if self.fail {
+                return Err(minix_sys::ipc::TrapStatus(-5));
+            }
+            self.sent.borrow_mut().push((d, *m));
+            Ok(())
+        }
+        fn senda(&self, _t: &[minix_sys::ipc::AsyncSlot]) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> { Ok(0) }
+    }
+
+    /// 回复落地 + 补发的闭环Fixture:vmnt0(MFS) + 槽 2 在飞。
+    fn dialogue_fixture() -> VfsState {
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        seed_waiting(&mut state, 2, Endpoint::MFS);
+        state.comm.vmnts[0].cur_reqs = 1;
+        state
+    }
+
+    #[test]
+    fn test_fs_sendrec_send_path_marks_waiting() {
+        // comm.c:137-158 主路径:窗口开 → sendnb 投递 + 槽 WaitingForFs。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+        };
+        let req = Message { m_type: 0x503, ..Message::default() };
+        let r = state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 3, &req);
+        assert_eq!(r, Ok(()));
+        let w = state.worker_pool.get(3).unwrap();
+        assert_eq!(w.state, WorkerState::WaitingForFs);
+        assert_eq!(w.task, Some(Endpoint::MFS));
+        assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
+        assert_eq!(probe.transport.sent.borrow().len(), 1);
+        assert_eq!(probe.transport.sent.borrow()[0].1.m_type as u32, crate::fs_comm::TransId::add(0x503, 3));
+    }
+
+    #[test]
+    fn test_fs_sendrec_vmnt_mismatch_is_eio() {
+        // comm.c:137-140 — find_vmnt 找不到该 fs endpoint → EIO。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+        };
+        let req = Message::default();
+        assert_eq!(
+            state.fs_sendrec(&mut probe, 0, Endpoint::from_generation_slot(1, 9), 3, &req),
+            Err(CommError::NoVmnt)
+        );
+        assert!(state.worker_pool.get(3).unwrap().state == WorkerState::Idle);
+    }
+
+    #[test]
+    fn test_fs_sendrec_edeadlk_when_caller_is_fs() {
+        // comm.c:142-144 — 调用进程本身就是目标 FS → EDEADLK。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let caller_ep = Endpoint::from_generation_slot(1, 9);
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+            v.fs = caller_ep;
+            v.dev = 2;
+        }
+        // 槽 3 绑定 fproc,其 endpoint 即目标 FS。
+        let fp = state.fproc_table.get_mut(UserSlot::new(3)).unwrap();
+        fp.endpoint = caller_ep;
+        let w = state.worker_pool.get_mut(3).unwrap();
+        w.fp_slot = Some(UserSlot::new(3));
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+        };
+        let req = Message::default();
+        assert_eq!(
+            state.fs_sendrec(&mut probe, 1, caller_ep, 3, &req),
+            Err(CommError::Deadlock)
+        );
+        assert!(probe.transport.sent.borrow().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "fs_sendrec on already-waiting slot")]
+    fn test_fs_sendrec_double_sendrec_asserts() {
+        // comm.c:146 — `assert(self->w_sendrec == NULL)`。
+        let mut state = dialogue_fixture(); // 槽 2 已 WaitingForFs
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+        };
+        let req = Message::default();
+        let _ = state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 2, &req);
+    }
+
+    #[test]
+    fn test_fs_sendrec_queue_path_marks_waiting() {
+        // comm.c:156-158 窗口满 → 排队,槽同样 WaitingForFs(sending++,
+        // 不投递)。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        state.comm.vmnts[0].cur_reqs = 1; // max=1 已占满
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+        };
+        let req = Message { m_type: 0x604, ..Message::default() };
+        assert_eq!(state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req), Ok(()));
+        assert!(probe.transport.sent.borrow().is_empty());
+        assert_eq!(state.comm.sending, 1);
+        assert_eq!(state.comm.vmnts[0].queued(), 1);
+        assert_eq!(state.worker_pool.get(4).unwrap().state, WorkerState::WaitingForFs);
+    }
+
+    #[test]
+    fn test_flush_after_reply_drains_queue() {
+        // 闭环:在飞(槽2)+ 排队(槽4)→ 回复落地放行 → flush 补发
+        // 槽 4 的请求(transid 戳)→ 窗口再占满。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        seed_waiting(&mut state, 2, Endpoint::MFS);
+        state.comm.vmnts[0].cur_reqs = 1;
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+        };
+        let req = Message { m_type: 0x604, ..Message::default() };
+        // 窗口满 → 槽 4 排队(请求存槽内,未 stamp)。
+        assert_eq!(state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req), Ok(()));
+        // 回复落地槽 2,窗口放行。
+        let reply = reply_msg(0x503, 2, Endpoint::MFS);
+        assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(2));
+        // 补发:槽 4 的请求上瓦,stamped + 投递。
+        assert_eq!(state.flush_send_queue(&mut probe.transport), 1);
+        assert_eq!(probe.transport.sent.borrow().len(), 1);
+        let (dst, sent) = probe.transport.sent.borrow()[0].clone();
+        assert_eq!(dst, Endpoint::MFS);
+        assert_eq!(sent.m_type as u32, crate::fs_comm::TransId::add(0x604, 4));
+        assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
+        assert_eq!(state.comm.sending, 0);
+        // 再 flush:窗口又满,无补发。
+        assert_eq!(state.flush_send_queue(&mut probe.transport), 0);
+    }
+
+    #[test]
+    fn test_flush_skips_send_failures_and_empty_mounts() {
+        // comm.c:86 — 补发的 asynsend3 失败 `(void)` 忽略;空挂载槽不扫。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        seed_waiting(&mut state, 2, Endpoint::MFS);
+        state.comm.vmnts[0].cur_reqs = 1;
+        let mut probe = crate::fs_comm::IpcFsTransport {
+            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: true },
+        };
+        let req = Message::default();
+        assert_eq!(state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req), Ok(()));
+        let reply = reply_msg(0x503, 2, Endpoint::MFS);
+        assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(2));
+        assert_eq!(state.flush_send_queue(&mut probe.transport), 0);
+        // 计数已随 fs_sendmore 先行递增(C 既有次序)。
+        assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
+        assert!(probe.transport.sent.borrow().is_empty());
     }
 
     #[test]
