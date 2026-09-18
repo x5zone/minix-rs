@@ -86,7 +86,7 @@ pt->pt_dir = vm_allocpages((phys_bytes *)&pt->pt_dir_phys,
     VMP_PAGEDIR, ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE);
 ```
 
-内存来源由 `vm_allocpages()` 根据全局变量 `pt_init_done` 决定（[pagetable.c:328](minix3/minix/servers/vm/pagetable.c#L328)）：
+内存来源由 `vm_allocpages()` 根据全局变量 `pt_init_done` 决定（[minix3/minix/servers/vm/pagetable.c:vm_mappages（L328，工具生成）](minix3/minix/servers/vm/pagetable.c#L328)）：
 - **init 阶段**（`pt_init_done == 0`）：来自静态 BSS `static_sparepages[]`（4KB 页框池，供页表分配）/`static_sparepagedirs[]`（16KB 页目录框池，供页目录分配）
 - **normal 阶段**（`pt_init_done == 1`）：来自 `alloc_mem()` 物理分配器
 
@@ -1583,7 +1583,7 @@ fn setup_process_memory(active: &mut ActiveProc) -> Result<(), PageTableError> {
 |--------|------|------|
 | `pt_t vm_pt` | `MaybeUninit<PageTable>` | 延迟初始化 |
 | `pt_new(&vm_pt)` | `ActiveProc::init_page_table()` | 创建页表 + 映射内核 |
-| `pt_free(&vm_pt)` | `VmProc::clear()` | 释放二级页表（不释放页目录，见 [pagetable.c:1427](minix3/minix/servers/vm/pagetable.c#L1427)） |
+| `pt_free(&vm_pt)` | `VmProc::clear()` | 释放二级页表（不释放页目录，见 [minix3/minix/servers/vm/pagetable.c:pt_free](minix3/minix/servers/vm/pagetable.c#L1427)） |
 | `pt_bind(&vm_pt, vmp)` | `ActiveProc::bind_page_table()` | 绑定进程 |
 | `pt_mapkernel(&vm_pt)` | `PageTable::map_kernel()` | 映射内核（init_page_table 内部调用） |
 | `pt_writemap(...)` | `Paging::map()` / `Paging::update_flags()` | 映射页面（`WMF_WRITEFLAGSONLY` 对应 `update_flags`） |

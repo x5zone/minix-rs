@@ -180,10 +180,10 @@
 - `07-text-filter.md`——文本过滤（上一步：行变换）
 - `09-editors.md`——编辑器（下一步：共享正则语法）
 - `minix3/minix/usr.bin/grep/grep.c:67-86`——标志变量区（选项语义的目录）
-- `minix3/minix/usr.bin/grep/grep.c:505`——退出真值表（`exit_code` 的逐行对照）
-- `minix3/usr.bin/sed/compile.c:480`——替换编译（`parse_subst` 的逐行对照）
-- `minix3/usr.bin/sed/process.c:403-432`——空匹配推进（`apply` 的逐行对照）
-- `minix3/usr.bin/sed/compile.c:193`——地址首字符集
+- `minix3/minix/usr.bin/grep/grep.c:main（L505，工具生成）`——退出真值表（`exit_code` 的逐行对照）
+- `minix3/usr.bin/sed/compile.c:compile_subst`——替换编译（`parse_subst` 的逐行对照）
+- `minix3/usr.bin/sed/process.c:substitute（L403，工具生成）`——空匹配推进（`apply` 的逐行对照）
+- `minix3/usr.bin/sed/compile.c:addrchar`——地址首字符集
 
 ---
 

@@ -142,43 +142,43 @@ Rust 改写不是照抄 `socket.c` 的检查与分配流程，而是吸收 Linux
 ### D1 调用枚举（复用调用号）
 
 - **C**：头注释十六种调用消息头表（`socket.c:9-32`）。
-- **Rust**：`SockCall` 十六值 + `reply_layout()`（三种回执布局）+ `needs_fd_precheck()`（三个需 fd 槽位预检的创建调用）+ `SocketPathRef` 占位（`os/servers/vfs/src/socket.rs:77,115,124`）。
+- **Rust**：`SockCall` 十六值 + `reply_layout()`（三种回执布局）+ `needs_fd_precheck()`（三个需 fd 槽位预检的创建调用）+ `SocketPathRef` 占位（`os/servers/vfs/src/socket.rs:const O_NONBLOCK（L77，工具生成）,115,124`）。
 - **为什么**：消息头布局与是否需 fd 槽位预检是调用点最需要的两项信息；调用号数值复用 `call_table.rs:VfsCallNum`。替代方案（重定义调用号）被否决：single source 在 09，重复即漂移。
 
 ### D2 标志换算
 
 - **C**：`get_sock_flags` 三位 + `type & ~SOCK_FLAGS_MASK` 剥离（`socket.c:44-57,207`）。
-- **Rust**：`sock_flags()` + `strip_sock_type()`（`os/servers/vfs/src/socket.rs:149,165`）。
+- **Rust**：`sock_flags()` + `strip_sock_type()`（`os/servers/vfs/src/socket.rs:enum ReplyLayout（L149，工具生成）,165`）。
 - **为什么**：换算与剥离针对同一 type 字段的两种用途；未知位静默忽略可用单测直接验证。替代方案（bitflags 双向）被否决：SOCK_ 与 O_ 分属两个域，单个旗集会抹平域界。
 
 ### D3 fd 有效性与类型检查 trait 化
 
 - **C**：`get_sock` 取 filp/类型检查/取设备号标志/解锁四步 + 解锁说明（`socket.c:276-302`）。
-- **Rust**：`SockLookup{lookup}`（`TableLookup` 按表应答 vs `EmptyTable` 常拒）+ `SockTarget{dev, flags: Option}`（`os/servers/vfs/src/socket.rs:171,186,193,232`）。
+- **Rust**：`SockLookup{lookup}`（`TableLookup` 按表应答 vs `EmptyTable` 常拒）+ `SockTarget{dev, flags: Option}`（`os/servers/vfs/src/socket.rs:fn needs_fd_precheck（L171，工具生成）,186,193,232`）。
 - **为什么**：filp 表是唯一的不可测点，以 trait 隔离便于测试；`flags: Option` 对应 `flags != NULL`（listen 不需要 flags）。解锁说明转为文档注释（单线程借用下自然成立）。替代方案（直连 filp 表）被否决：判定层不碰活表。
 
 ### D4 分配器 trait 化
 
 - **C**：`make_sock_fd` 九步（`socket.c:86-170`）。
-- **Rust**：`FdAllocator{alloc}`（`ScriptedAlloc` 按脚本发 fd vs `FailingAlloc` 常败）+ `SockFdSpec::new` 掩码校验 + `ACCEPT_INHERIT_MASK`（`os/servers/vfs/src/socket.rs:242,278,285,345`）。
+- **Rust**：`FdAllocator{alloc}`（`ScriptedAlloc` 按脚本发 fd vs `FailingAlloc` 常败）+ `SockFdSpec::new` 掩码校验 + `ACCEPT_INHERIT_MASK`（`os/servers/vfs/src/socket.rs:fn lookup,278,285,345`）。
 - **为什么**：九步中的执行留给 14/12/05，判定层只保留规格；断言转为 verdict 是 ARCH 加固（C 的 assert 在 release 下消失）。替代方案（九步直译）被否决：直译执行逻辑后判定层过重，且 PFS/fd 表不可单测。
 
 ### D5 失败清理表
 
 - **C**：三路清理各不相同（`socket.c:214-215,252-261,461-466`）。
-- **Rust**：`BuildStep` 四值 + `compensate()` + `CloseTarget::{DriverSock, ProcFd}` + `CloseList`（`os/servers/vfs/src/socket.rs:355,364,404,421`）。
+- **Rust**：`BuildStep` 四值 + `compensate()` + `CloseTarget::{DriverSock, ProcFd}` + `CloseList`（`os/servers/vfs/src/socket.rs:fn scripted（L355，工具生成）,364,404,421`）。
 - **为什么**：清理规则是谁分配谁释放：VFS 分配的 fd 由 VFS 关闭，驱动创建的套接字请驱动关闭；用清单表示清理几个、清理谁、按何顺序，逐项可数。替代方案（调用点各写）被否决：与 23-D5 同理，同一逻辑复制即漂移。
 
 ### D6 阻塞恢复分类
 
 - **C**：accept 恢复三分支 + 监听套接字验证 + 两路 recv 恢复（`socket.c:399-477,526-537,608-651`）。
-- **Rust**：`classify_accept()` 四分支 + `accept_inherit_flags()` + `classify_recvfrom()` + `recvmsg_update()`（`os/servers/vfs/src/socket.rs:437,458,472,478,491,501,511`）。
+- **Rust**：`classify_accept()` 四分支 + `accept_inherit_flags()` + `classify_recvfrom()` + `recvmsg_update()`（`os/servers/vfs/src/socket.rs:fn is_empty（L437，工具生成）,458,472,478,491,501,511`）。
 - **为什么**：阻塞恢复处理唤醒后的分支选择；四分支穷举使监听套接字验证失败无处遗漏；不再阻塞由类型保证（纯输入，无分配器）。替代方案（布尔三参）被否决：四分支非布尔可读。
 
 ### D7 消息头检查
 
 - **C**：单项检查 + SSIZE 检查 + 回执规则 + 关断方向检查 + 监听 backlog 钳零（`socket.c:573-581,593-594,758-759,355-356`）。
-- **Rust**：`iov_gate()` + `check_iov_len()` + `reply_msgbuf()` + `check_shutdown_how()`（复用 22 的 `SHUT_*`）+ `clamp_backlog()`（`os/servers/vfs/src/socket.rs:521,531,540,549,555,565,578`）。
+- **Rust**：`iov_gate()` + `check_iov_len()` + `reply_msgbuf()` + `check_shutdown_how()`（复用 22 的 `SHUT_*`）+ `clamp_backlog()`（`os/servers/vfs/src/socket.rs:enum RecvReply（L521，工具生成）,531,540,549,555,565,578`）。
 - **为什么**：五项检查都是消息头与参数合法性检查；集中实现则改一处即改五处。替代方案（检查散落各 do_*）被否决：调用点的共用检查应集中管理。
 
 ### ARCH 决策总表
@@ -213,8 +213,8 @@ os/servers/vfs/src/
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
 | SOCK 三旗/掩码 | `socket.h:113-116` | `socket.rs:37,43` | 域内换算 |
-| O_ 三旗/RDWR | `fcntl.h:81,118,124,66` | `socket.rs:46,55` | 域内映射 |
-| 新结点模式/SSIZE | `stat.h:162,189`/`common_limits.h:55` | `socket.rs:61,65,68` | 分配模式/散件上限 |
+| O_ 三旗/RDWR | `minix3/sys/sys/fcntl.h:O_NONBLOCK,118,124,66` | `socket.rs:46,55` | 域内映射 |
+| 新结点模式/SSIZE | `stat.h:162,189`/`minix3/sys/sys/common_limits.h:SSIZE_MAX` | `socket.rs:61,65,68` | 分配模式/散件上限 |
 | 十六调用 | `socket.c:9-32` | `socket.rs:77,115,124` | 三种回执布局 + 三个需 fd 槽位预检的创建调用 |
 | 换算剥离 | `socket.c:44-57,207` | `socket.rs:149,165` | 三位 + 掩码 |
 | fd 有效性与类型检查 | `socket.c:276-302` | `socket.rs:171,186,193,232` | 表/空双实现 |
@@ -283,7 +283,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/socket.c:1-762`（十八函数全族）、`minix3/sys/sys/socket.h:113-116,604-606`（`SOCK_*/SHUT_*`）、`minix3/sys/sys/fcntl.h:66,81,118,124`（`O_*`）、`minix3/sys/sys/stat.h:162,189`（`S_IFSOCK/ACCESSPERMS`）、`minix3/sys/sys/common_limits.h:55`（`SSIZE_MAX`）、`minix3/minix/servers/vfs/path.c:801-830`（`do_socketpath` 执行，归 13）
+- C 源：`minix3/minix/servers/vfs/socket.c:1-762`（十八函数全族）、`minix3/sys/sys/socket.h:SOCK_CLOEXEC,604-606`（`SOCK_*/SHUT_*`）、`minix3/sys/sys/fcntl.h:O_RDWR,81,118,124`（`O_*`）、`minix3/sys/sys/stat.h:S_IFSOCK,189`（`S_IFSOCK/ACCESSPERMS`）、`minix3/sys/sys/common_limits.h:SSIZE_MAX`（`SSIZE_MAX`）、`minix3/minix/servers/vfs/path.c:canonical_path（L801，工具生成）`（`do_socketpath` 执行，归 13）
 - 阶段文档：`22-sdev.md`（驱动对话与 SHUT 复用）、`23-select.md`（选择登记与恢复）、`19-device-map.md`（smap 协议域检查）、`14-filedes.md`（fd 表执行）、`12-request-wrappers.md`（PFS 分配）、`04-filp-table.md`（filp 检查）、`09-main-loop.md`（调用分发）
-- Rust 实现：`os/servers/vfs/src/socket.rs:1`（本篇判定层）、`os/servers/vfs/src/sdev.rs:91`（`SHUT_*` 复用）、`os/servers/vfs/src/call_table.rs:78`（调用号复用）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/socket.rs:1`（本篇判定层）、`os/servers/vfs/src/sdev.rs:const SHUT_RD（L91，工具生成）`（`SHUT_*` 复用）、`os/servers/vfs/src/call_table.rs:enum VfsCallNum（L78，工具生成）`（调用号复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（消息头拷贝语义）

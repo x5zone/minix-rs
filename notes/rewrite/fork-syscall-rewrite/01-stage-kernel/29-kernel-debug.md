@@ -58,7 +58,7 @@ Minix3 的调试功能通过预处理宏控制，生产构建中完全不编译�
 
 ### 2.2 调度队列 sanity check
 
-minix3/minix/kernel/debug.c:16-134 实现调度队列一致性验证：
+minix3/minix/kernel/debug.c:runqueues_ok_cpu 实现调度队列一致性验证：
 
 **`runqueues_ok_cpu(cpu)`**（L16-107）验证单个 CPU 的调度队列：
 1. 初始化所有进程的 `p_found = 0`
@@ -74,7 +74,7 @@ minix3/minix/kernel/debug.c:16-134 实现调度队列一致性验证：
 
 ### 2.3 进程信息打印
 
-minix3/minix/kernel/debug.c:136-312 实现进程详情打印：
+minix3/minix/kernel/debug.c:runqueues_ok（L136，工具生成） 实现进程详情打印：
 
 **辅助函数**：
 - `rtsflagstr(flags)`（L136-161）: 将 RTS 标志位转为字符串（RTS_SLOT_FREE / RTS_PROC_STOP / RTS_SENDING 等 15 个标志）
@@ -95,7 +95,7 @@ nr: name endpoint prio time user/sys cycles high:low cpu pdbr rts misc sched sig
 
 ### 2.4 IPC 消息跟踪
 
-minix3/minix/kernel/debug.c:314-426 `DEBUG_DUMPIPC` 条件编译块：
+minix3/minix/kernel/debug.c:print_proc_recursive（L314，工具生成） `DEBUG_DUMPIPC` 条件编译块：
 
 **`mtypename(mtype, possible_callname)`**（L315-354）: 解析消息类型名称，从 `extracted-mtype.h` 和 `extracted-errno.h` 匹配。
 
@@ -113,7 +113,7 @@ operation src dst mtype(mtype_hex) [params...]
 
 ### 2.5 IPC 统计
 
-minix3/minix/kernel/debug.c:428-516 `DEBUG_IPCSTATS` 条件编译块：
+minix3/minix/kernel/debug.c:IDENT（L428，工具生成） `DEBUG_IPCSTATS` 条件编译块：
 
 **全局状态**：
 - `messages[IPCPROCS][IPCPROCS]`（L431）: 消息计数矩阵，`IPCPROCS = NR_PROCS+1`
@@ -128,7 +128,7 @@ minix3/minix/kernel/debug.c:428-516 `DEBUG_IPCSTATS` 条件编译块：
 
 ### 2.6 IPC hooks
 
-minix3/minix/kernel/debug.c:518-563 `DEBUG_IPC_HOOK` 条件编译块：
+minix3/minix/kernel/debug.c:statmsg（L518，工具生成） `DEBUG_IPC_HOOK` 条件编译块：
 
 5 个 hook 函数在 IPC 路径中被调用：
 
@@ -160,8 +160,8 @@ minix3/minix/kernel/debug.c:518-563 `DEBUG_IPC_HOOK` 条件编译块：
 **Rust 64-bit 决策**: 实现（`os/kernel/src/debug.rs`）。
 
 **实现内容**:
-- `runqueues_ok_cpu(smp_state, proc_table, cpu) -> bool`（os/kernel/src/debug.rs:47）对应 C `runqueues_ok_cpu(cpu)`（minix3/minix/kernel/debug.c:16-107）
-- `runqueues_ok(smp_state, proc_table) -> bool`（os/kernel/src/debug.rs:190）对应 C `runqueues_ok()`（minix3/minix/kernel/debug.c:121-131）
+- `runqueues_ok_cpu(smp_state, proc_table, cpu) -> bool`（os/kernel/src/debug.rs:fn runqueues_ok_cpu）对应 C `runqueues_ok_cpu(cpu)`（minix3/minix/kernel/debug.c:runqueues_ok_cpu）
+- `runqueues_ok(smp_state, proc_table) -> bool`（os/kernel/src/debug.rs:fn runqueues_ok（L190，工具生成））对应 C `runqueues_ok()`（minix3/minix/kernel/debug.c:runqueues_ok）
 
 **实现差异**:
 1. **`p_found` 改为本地 bitset**: C 在 `proc.p_found` 字段上操作（修改进程表）；Rust 使用本地 `[bool; PROC_TABLE_SIZE]` 数组避免修改进程表（保持只读检查的纯度）
@@ -181,9 +181,9 @@ minix3/minix/kernel/debug.c:518-563 `DEBUG_IPC_HOOK` 条件编译块：
 **Rust 64-bit 决策**: 部分实现——`print_proc` 已实现；`print_proc_depends` / `print_proc_recursive` 不实现。
 
 **实现内容**:
-- `write_rts_flags(flags)`（os/kernel/src/debug.rs:208）对应 C `rtsflagstr(flags)`（minix3/minix/kernel/debug.c:136-161）
-- `write_misc_flags(flags)`（os/kernel/src/debug.rs:238）对应 C `miscflagstr(flags)`（minix3/minix/kernel/debug.c:163-174）
-- `print_proc(proc)`（os/kernel/src/debug.rs:258）对应 C `print_proc(pp)`（minix3/minix/kernel/debug.c:249-275）
+- `write_rts_flags(flags)`（os/kernel/src/debug.rs:fn write_rts_flags（L208，工具生成））对应 C `rtsflagstr(flags)`（minix3/minix/kernel/debug.c:runqueues_ok（L136，工具生成））
+- `write_misc_flags(flags)`（os/kernel/src/debug.rs:fn write_misc_flags（L238，工具生成））对应 C `miscflagstr(flags)`（minix3/minix/kernel/debug.c:FLAG（L163，工具生成））
+- `print_proc(proc)`（os/kernel/src/debug.rs:fn print_proc（L258，工具生成））对应 C `print_proc(pp)`（minix3/minix/kernel/debug.c:print_proc）
 
 **实现差异**:
 1. **直接 console 输出替代字符串返回**: C 用 `static char buf[]` 返回字符串（非线程安全）；Rust 直接走 `EarlyConsole::write_str`，无字符串分配
@@ -236,7 +236,7 @@ minix3/minix/kernel/debug.c:518-563 `DEBUG_IPC_HOOK` 条件编译块：
 
 #### 4.1.1 `runqueues_ok_cpu` 实现要点
 
-os/kernel/src/debug.rs:47-189 实现单 CPU 调度队列验证：
+os/kernel/src/debug.rs:fn runqueues_ok_cpu 实现单 CPU 调度队列验证：
 
 ```rust
 pub fn runqueues_ok_cpu(
@@ -271,7 +271,7 @@ pub fn runqueues_ok_cpu(
 
 #### 4.1.2 `print_proc` 实现要点
 
-os/kernel/src/debug.rs:258-269 实现：
+os/kernel/src/debug.rs:fn print_proc（L258，工具生成） 实现：
 
 ```rust
 pub fn print_proc(proc: &KProcess) {
@@ -328,14 +328,14 @@ pub fn print_proc(proc: &KProcess) {
 
 ## Ch5: 测试
 
-### 5.1 已有测试（os/kernel/src/debug.rs:296-317）
+### 5.1 已有测试（os/kernel/src/debug.rs:fn test_write_rts_flags_empty（L296，工具生成））
 
 | 测试 | 位置 | 覆盖内容 | 状态 |
 |------|------|---------|------|
-| `test_write_rts_flags_empty` | debug.rs:296 | 空标志位不触发 panic | ✅ passing |
-| `test_write_rts_flags_single` | debug.rs:303 | 单个 RTS 标志位输出正确 | ✅ ignored（需 logger） |
-| `test_write_misc_flags_empty` | debug.rs:308 | 空标志位不触发 panic | ✅ passing |
-| `test_write_misc_flags_single` | debug.rs:314 | 单个 misc 标志位输出正确 | ✅ ignored（需 logger） |
+| `test_write_rts_flags_empty` | os/kernel/src/debug.rs:fn test_write_rts_flags_empty（L296，工具生成） | 空标志位不触发 panic | ✅ passing |
+| `test_write_rts_flags_single` | os/kernel/src/debug.rs:fn test_write_rts_flags_single（L303，工具生成） | 单个 RTS 标志位输出正确 | ✅ ignored（需 logger） |
+| `test_write_misc_flags_empty` | os/kernel/src/debug.rs:fn test_write_misc_flags_empty（L308，工具生成） | 空标志位不触发 panic | ✅ passing |
+| `test_write_misc_flags_single` | os/kernel/src/debug.rs:fn test_write_misc_flags_single（L314，工具生成） | 单个 misc 标志位输出正确 | ✅ ignored（需 logger） |
 
 ### 5.2 不需要测试（WONTFIX 项）
 

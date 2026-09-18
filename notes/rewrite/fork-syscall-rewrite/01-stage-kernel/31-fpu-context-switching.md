@@ -73,7 +73,7 @@ fpu_owner == None  ⟹  硬件状态不可信，任何进程的 FPU 状态都在
 
 ### 1.6 信号路径的 FPU 保存
 
-信号帧（sigcontext）必须包含被中断计算的完整状态，否则 handler 返回后计算状态丢失。因此信号传递时若目标进程"用过 FPU"（proc_used_fpu），必须把硬件现场保存进 sigcontext（do_sigsend.c:86-87：`save_fpu(rp)` + `memcpy(&fr.sf_sc.sc_fpu_state, rp->p_seg.fpu_state, FPU_XFP_SIZE)`）。
+信号帧（sigcontext）必须包含被中断计算的完整状态，否则 handler 返回后计算状态丢失。因此信号传递时若目标进程"用过 FPU"（proc_used_fpu），必须把硬件现场保存进 sigcontext（minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L86，工具生成）：`save_fpu(rp)` + `memcpy(&fr.sf_sc.sc_fpu_state, rp->p_seg.fpu_state, FPU_XFP_SIZE)`）。
 
 这是 lazy 模型的例外点：**#NM 路径"延迟恢复"，信号路径"立即保存"**——因为信号帧是一次性快照，必须完整。
 
@@ -123,7 +123,7 @@ void fpu_init(void)
 ```
 
 要点：
-- **fninit + fnstsw + fnstcw 检测**：执行 `fninit` 后读状态字 `sw` 与控制字 `cw`；`(sw & 0xff) == 0` 且 `(cw & 0x103f) == 0x3f` 判定 FPU 存在（无 FPU 时状态字全 1）。检测结果写入每 CPU 变量 `fpu_presence`（cpulocals.h:72）。
+- **fninit + fnstsw + fnstcw 检测**：执行 `fninit` 后读状态字 `sw` 与控制字 `cw`；`(sw & 0xff) == 0` 且 `(cw & 0x103f) == 0x3f` 判定 FPU 存在（无 FPU 时状态字全 1）。检测结果写入每 CPU 变量 `fpu_presence`（minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L72，工具生成））。
 - **CR0.MP|NE**：MP 位让任务切换自动置 TS；NE 位让 x87 算术异常走内部异常（而非外部 IRQ13）。一次写入，无条件设置（有 FPU 时）。
 - **CR4.OSFXSR/OSXMMEXCPT 由 CPUID 决定**：`_CPUF_I386_FXSR` → CR4_OSFXSR（FXSAVE/FXRSTOR 可用）；`_CPUF_I386_SSE` → 额外 CR4_OSXMMEXCPT（SSE 异常使能）。未设置则 SSE 指令触发 #UD。
 - `osfxsr_feature` 由 CPUID 结果决定（FXSR 有 → 1，无 → 0），后续保存/恢复据此选 FXSAVE/FXRSTOR 还是 FNSAVE/FRSTOR 格式。
@@ -270,7 +270,7 @@ void save_fpu(struct proc *pr)
 
 要点：**pr 可能正运行在另一个 CPU 上**（SMP）——本地 CPU 无法读另一 CPU 的寄存器组，`save_fpu` 对远程进程**不做本地保存**，而是发 `smp_schedule_stop_proc_save_ctx(pr)` IPI：让远程 CPU 停住该进程并**在 SAVE_CTX 中断路径中保存其上下文**（含 FPU——正是 Rust `smp.rs:498-525` SAVE_CTX FPU 保存路径的 C 对应，doc 16 §4 已覆盖）。`stopped` 记忆 + `RTS_PROC_STOP` 恢复：若进程原本在运行则让其继续（靠"内核不能在它所在 CPU 运行"维持阻塞语义）。
 
-**注意**：`save_fpu` 的远程分支不检查 fpu_owner——它无条件触发上下文保存（调用方保证只有 owner 才需要）；本地分支才有 `fpu_owner == pr` guard（§2.3）。**每 CPU 一个 fpu_owner**（cpulocals.h:73），所以 #NM 处理中保存前任 owner 永远走本地路径（§2.6 详述）。
+**注意**：`save_fpu` 的远程分支不检查 fpu_owner——它无条件触发上下文保存（调用方保证只有 owner 才需要）；本地分支才有 `fpu_owner == pr` guard（§2.3）。**每 CPU 一个 fpu_owner**（minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L73，工具生成）），所以 #NM 处理中保存前任 owner 永远走本地路径（§2.6 详述）。
 
 ### 2.5 恢复：restore_fpu（arch_system.c:189-203）
 
@@ -409,7 +409,7 @@ void release_fpu(struct proc * p) {
 - `release_fpu` **不碰 TS 位**：它只清 owner 指针（`*fpu_owner_ptr == p` 才清——非 owner 不动，避免误清别人）。清 owner 后该 CPU 下次 #NM 时 `*local_fpu_owner == NULL`，直接跳过保存步骤（§2.6）。
 - `release_fpu` 在**进程死亡**时调用（proc.c:1961-1968，进程退出清理路径）——释放所有权，避免悬挂指针指向已回收的 proc 表项。
 
-### 2.8 信号路径：do_sigsend（do_sigsend.c:19 + :84-88）
+### 2.8 信号路径：do_sigsend（minix3/minix/kernel/system/do_sigsend.c:do_sigsend + :84-88）
 
 ```c
 int do_sigsend(struct proc * caller, message * m_ptr)
@@ -430,7 +430,7 @@ int do_sigsend(struct proc * caller, message * m_ptr)
 }
 ```
 
-要点：FPU 保存块位于 `do_sigsend` 主函数中（do_sigsend.c:84-88），在 KTS_NONE 检查（信号帧必须包含 trap style，否则 EINVAL）之后。`proc_used_fpu(rp)` 检查 MF_FPU_INITIALIZED（与 restore_fpu 相同的"曾经用过"标记）；`save_fpu(rp)` 立即保存（信号帧需要一次性快照，见 §2.3 的 SMP 分支——目标进程可能在其他 CPU 上）。信号帧的 FPU 布局由 `fpu_sigcontext`（arch_system.c:614）定义——sigcontext 是架构相关的 ABI 结构（osfxsr 时从 xfp_regs 读错误状态，否则 fpu_regs）。
+要点：FPU 保存块位于 `do_sigsend` 主函数中（minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L84，工具生成）），在 KTS_NONE 检查（信号帧必须包含 trap style，否则 EINVAL）之后。`proc_used_fpu(rp)` 检查 MF_FPU_INITIALIZED（与 restore_fpu 相同的"曾经用过"标记）；`save_fpu(rp)` 立即保存（信号帧需要一次性快照，见 §2.3 的 SMP 分支——目标进程可能在其他 CPU 上）。信号帧的 FPU 布局由 `fpu_sigcontext`（arch_system.c:614）定义——sigcontext 是架构相关的 ABI 结构（osfxsr 时从 xfp_regs 读错误状态，否则 fpu_regs）。
 
 ### 2.9 每 CPU 数据与查询：cpulocals.h + is_fpu（main.c:518）
 
@@ -487,7 +487,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
 ```
 
 实际签名含 `Sized + Send + Sync + Default` supertrait 与 `&self` 接收者
-（fpu_arch.rs:59-116）——实例仅用于调用，FPU 控制寄存器是每 CPU 全局状态，
+（os/arch/src/arch/fpu_arch.rs:trait FpuArch）——实例仅用于调用，FPU 控制寄存器是每 CPU 全局状态，
 `CurrentFpuArch::default()` 是零开销 ZST（与 `CurrentClockArch` 同模式）。
 
 设计对照（C → Rust）：
@@ -507,7 +507,7 @@ pub trait FpuArch: Sized + Send + Sync + Default {
 - **ARM64**: FPSIMD 寄存器组（Q0-Q31 + FPCR/FPSR），528B 布局。
 - **RISC-V**: F/D 扩展寄存器（f0-f31 + fcsr），264B 布局。
 
-三者都实现 `FpuArch::State`：内核的 `KProcess.fpu_state`（os/kernel/src/proc.rs:975）是关联类型实例——**同一份 KProcess 代码在三架构编译出不同大小的保存区**，无需 cfg 分支。
+三者都实现 `FpuArch::State`：内核的 `KProcess.fpu_state`（os/kernel/src/proc.rs:struct KProcess（L975，工具生成））是关联类型实例——**同一份 KProcess 代码在三架构编译出不同大小的保存区**，无需 cfg 分支。
 
 ### 4.3 smp.rs 集成（os/kernel/src/smp.rs）
 
@@ -548,7 +548,7 @@ if vector.get() == 7 && is_user {
 **kernel 模式 #NM**：`is_nested` 检查在特判之前 → 进 `handle_nested` → 无恢复点
 → `KernelPanic`（C: exception_entry_nested 同路径）。nested 的
 `FaultContext::FpuRestore` 情形（恢复执行中再次故障）已有独立恢复点
-`RecoveryPoint::FpuRestoreFailure`（exception_dispatcher.rs:165-169，测试
+`RecoveryPoint::FpuRestoreFailure`（os/arch/src/arch/exception_dispatcher.rs:fn handle_nested（L165，工具生成），测试
 nested_fpu_restore 覆盖）。
 
 **FpuTrap 的消费者（待接线）**：交付路径接线后，FpuTrap 的执行体为 C
@@ -561,7 +561,7 @@ copr_not_available_handler 的 lazy 恢复主体（§2.6 的 1-4 步）+ 直跳�
 | 缺口 | C 对应 | 状态 |
 |------|--------|------|
 | lazy-restore 主体（FpuTrap 消费） | proc.c:1922-1958 | 待异常交付路径接线（D5） |
-| 信号路径 FPU 保存 | do_sigsend.c:86 + fpu_sigcontext | 待实现（D6，Task 3 候选） |
+| 信号路径 FPU 保存 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L86，工具生成） + fpu_sigcontext | 待实现（D6，Task 3 候选） |
 | trap_entry vector 7 handler=0 | x86_64/trap_entry.rs:197 | IDT 门已登记（handler=0 占位），exception delivery wiring 的一部分（14 doc 已知限制） |
 
 ---

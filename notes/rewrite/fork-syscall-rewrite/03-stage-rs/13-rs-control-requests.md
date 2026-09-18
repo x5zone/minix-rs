@@ -1,7 +1,7 @@
 # 13-rs-control-requests: 控制请求
 
 > **分类**: 阶段 4 — 服务生命周期（控制面）
-> **源码**: `minix3/minix/servers/rs/request.c`（`do_up`—15、`do_down`—111、`do_restart`—160、`do_clone`—208、`do_unclone`—253、`do_edit`—298、`do_refresh`—390、`do_shutdown`—431）、`minix3/minix/servers/rs/manager.c:988-1008`（`stop_service`）
+> **源码**: `minix3/minix/servers/rs/request.c`（`do_up`—15、`do_down`—111、`do_restart`—160、`do_clone`—208、`do_unclone`—253、`do_edit`—298、`do_refresh`—390、`do_shutdown`—431）、`minix3/minix/servers/rs/manager.c:stop_service`（`stop_service`）
 > **Rust 模块**: `os/servers/rs/src/request.rs`（`up_init_flags`/`check_duplicates`/`mark_late_reply`/`StopSignal`/`stop_service`/`shutdown_apply`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`copy_rs_start`/`check_request`/`init_slot`/`edit_slot`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（`clone_service`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（`start_service`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`RS_LATEREPLY`）
 > **说明**: 本文档是 RS 的**控制面分派层**：主循环（06）把 `RS_UP/DOWN/RESTART/CLONE/UNCLONE/EDIT/REFRESH/SHUTDOWN` 八类消息分派到对应 handler（`RS_UPDATE` 归 16）。每个 handler 都是"校验 → 调机制"的薄层；机制本身（创建/发布/运行/清理/更新）在 10/11/12/15/16。同时本文档绘制**服务生命周期次主线路径图**（plan §1.3）。
@@ -73,7 +73,7 @@
 2. `alloc_slot`（request.c:30-34）——失败 `ENOMEM`；
 3. `copy_rs_start`（request.c:38-42）——从调用者地址空间拷贝 `rs_start`（08）；
 4. `check_request`（request.c:43-46）——参数校验（08）；
-5. **init_flags 映射**（request.c:50-61）：`RSS_FORCE_INIT_CRASH/FAIL/TIMEOUT/DEFCB`（minix3/minix/include/minix/rs.h:42-45，调试钩子）→ `SEF_INIT_CRASH/FAIL/TIMEOUT/DEFCB`（sef.h:98-101），随 RS_INIT 消息传给服务（12）；
+5. **init_flags 映射**（request.c:50-61）：`RSS_FORCE_INIT_CRASH/FAIL/TIMEOUT/DEFCB`（minix3/minix/include/minix/rs.h:RSS_FORCE_INIT_CRASH，调试钩子）→ `SEF_INIT_CRASH/FAIL/TIMEOUT/DEFCB`（minix3/minix/include/minix/sef.h:SEF_INIT_CRASH），随 RS_INIT 消息传给服务（12）；
 6. `init_slot`（request.c:63-68）——槽位落地（08）；
 7. **重复检查**（request.c:70-87）：label 重 → `EBUSY`；`dev_nr > 0` 且重 → `EBUSY`；任一 domain 重 → `EBUSY`；
 8. `start_service`（request.c:89-93）——10/11/12 的编排；
@@ -95,7 +95,7 @@
   Rust 拆成"先拷贝后检查"两段：单字段无效的 errno 与 C 完全一致（门在 `edit_slot`
   里、开在原始声明长度上）；复合无效请求的 errno 先后顺序在拷贝/检查边界处与 C
   不同——两种都拒绝且不伤槽位，这是 fetch/check 拆分的显式设计差异。
-- **`RsStart.progname_len` 补字段**。progname 的 E2BIG 门（manager.c:1593）开在
+- **`RsStart.progname_len` 补字段**。progname 的 E2BIG 门（minix3/minix/servers/rs/manager.c:rs_start（L1593，工具生成））开在
   *声明长度*上，而 `Label` 只有 16 字节内容、无法表达"声称 20 字节但缓冲里第 3 字节
   就是 NUL"——旧的"NUL 位置推导长度"是对错误量的门。`progname_len` 与
   `cmdlen`/`scriptlen`/`ipclen` 同型（原始声明值），`edit_slot` 的门改开在其上。
@@ -127,9 +127,9 @@
 
 ### 2.1b stop_service 的决策化（A4，2026-09-06，todo §18 Fix #52）
 
-`stop_service`（manager.c:988-1008）在 Rust 中拆为**纯决策 + 调用方副作用**：
+`stop_service`（minix3/minix/servers/rs/manager.c:stop_service）在 Rust 中拆为**纯决策 + 调用方副作用**：
 `stop_decision(slot, how, ticks) -> StopDecision { signal, mutations }`——信号选择
-（RS→SIGHUP，manager.c:1003；其余→SIGTERM）与槽位变异（`how` 标志 + `stop_tm`，R13 载荷）
+（RS→SIGHUP，minix3/minix/servers/rs/manager.c:stop_service（L1003，工具生成）；其余→SIGTERM）与槽位变异（`how` 标志 + `stop_tm`，R13 载荷）
 由决策返回，13 接线发送信号（`kernel.srv_kill`）并 `mutations.apply`。全表 `shutdown` 扫描
 （`shutdown_apply`）保留直接变异——表级编排域与逐槽控制决策域分工不同（A4 的分界）。
 
@@ -138,7 +138,7 @@
 1. `copy_label` → `lookup_slot_by_label`（不存在 → `ESRCH`）；
 2. `check_call_permission(m_source, RS_DOWN, rp)`（04）；
 3. **TERMINATED 分支**（request.c:137-146）：服务已死（恢复脚本正在执行 RS_DOWN）→ `unpublish_service` + `cleanup_service` + `return OK`——**立即完成清理，不等退出**；
-4. 否则 `stop_service(rp, RS_EXITING)`（manager.c:988-1008，见 2.7）+ `RS_LATEREPLY` 记录 + `EDONTREPLY`——**服务退出后补发 reply**（15 的 terminate 路径）。
+4. 否则 `stop_service(rp, RS_EXITING)`（minix3/minix/servers/rs/manager.c:stop_service，见 2.7）+ `RS_LATEREPLY` 记录 + `EDONTREPLY`——**服务退出后补发 reply**（15 的 terminate 路径）。
 
 ### 2.3 do_restart：恢复脚本入口（request.c:160-203）
 
@@ -175,14 +175,14 @@
 - **do_refresh**（request.c:390-426）：`stop_service(rp, RS_REFRESHING)`（不是 `RS_EXITING`！）+ `RS_LATEREPLY`（request = `RS_REFRESH`）+ `EDONTREPLY`。`RS_REFRESHING` 让 15 的退出处理走"刷新"路径（旧实例清理 + 新实例以相同配置重启）。
 - **do_shutdown**（request.c:431-457）：`check_call_permission(RS_SHUTDOWN, NULL)`（`m_ptr == NULL` 时跳过——内核触发）；`shutting_down = TRUE`（glo.h:51）；**全表扫描**：所有 `RS_IN_USE` 槽 `r_flags |= RS_EXITING`（request.c:449-455）——停机后 15 的重启逻辑（`shutting_down` 检查）不会再复活服务。
 
-### 2.7 stop_service：停止原语（manager.c:988-1008）
+### 2.7 stop_service：停止原语（minix3/minix/servers/rs/manager.c:stop_service）
 
 `stop_service(rp, how)` 是 do_down/do_refresh 共用的停止原语：
 
-1. **信号选择**（manager.c:1003）：`endpoint != RS_PROC_NR ? SIGTERM : SIGHUP`——普通服务友好信号 SIGTERM；**RS 自己用 SIGHUP**（RS 的 SEF 信号处理器把 SIGHUP 当作停止请求，06/18）；
-2. `r_flags |= how`（manager.c:1005）——`RS_EXITING` 或 `RS_REFRESHING`（"退出后做什么"）；
-3. `sys_kill(endpoint, signo)`（manager.c:1006）——先友好信号；
-4. `r_stop_tm = getticks()`（manager.c:1007）——**记录时间**：07 的心跳检查据此判定"给了 SIGTERM 但没退出 → SIGKILL 升级"。
+1. **信号选择**（minix3/minix/servers/rs/manager.c:stop_service（L1003，工具生成））：`endpoint != RS_PROC_NR ? SIGTERM : SIGHUP`——普通服务友好信号 SIGTERM；**RS 自己用 SIGHUP**（RS 的 SEF 信号处理器把 SIGHUP 当作停止请求，06/18）；
+2. `r_flags |= how`（minix3/minix/servers/rs/manager.c:stop_service（L1005，工具生成））——`RS_EXITING` 或 `RS_REFRESHING`（"退出后做什么"）；
+3. `sys_kill(endpoint, signo)`（minix3/minix/servers/rs/manager.c:stop_service（L1006，工具生成））——先友好信号；
+4. `r_stop_tm = getticks()`（minix3/minix/servers/rs/manager.c:stop_service（L1007，工具生成））——**记录时间**：07 的心跳检查据此判定"给了 SIGTERM 但没退出 → SIGKILL 升级"。
 
 ---
 
@@ -197,12 +197,12 @@
 | `up_init_flags(rss)` | request.c:50-61 | `RSS_FORCE_INIT_*` → `SEF_INIT_*` 位映射 |
 | `check_duplicates(table, label, dev_nr, domains)` | request.c:70-87 | label/dev_nr/domain 三查 → `EBUSY` |
 | `mark_late_reply(slot, caller, request)` | request.c:101-103 等 | `RS_LATEREPLY` 三字段一致写 |
-| `StopSignal` + `stop_service(table, rp, how, ticks)` | manager.c:988-1008 | 信号选择 + 标志/计时器；`sys_kill` 由调用方发 |
+| `StopSignal` + `stop_service(table, rp, how, ticks)` | minix3/minix/servers/rs/manager.c:stop_service | 信号选择 + 标志/计时器；`sys_kill` 由调用方发 |
 | `shutdown_apply(table)` | request.c:447-455 | 全表 `RS_EXITING` + `true`（shutting_down） |
 
 ### 3.2 StopSignal 建模
 
-C 用 `SIGTERM`/`SIGHUP` 宏（libc 信号号 15/1）；Rust `StopSignal` 枚举（`Term`/`Hangup`）+ `as_i32()`，`sys_kill` 面（19）消费。选择逻辑纯化：`endpoint == RS → Hangup`（manager.c:1003）。
+C 用 `SIGTERM`/`SIGHUP` 宏（libc 信号号 15/1）；Rust `StopSignal` 枚举（`Term`/`Hangup`）+ `as_i32()`，`sys_kill` 面（19）消费。选择逻辑纯化：`endpoint == RS → Hangup`（minix3/minix/servers/rs/manager.c:stop_service（L1003，工具生成））。
 
 ### 3.3 handler 骨架的公共化
 
@@ -214,14 +214,14 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 
 ### 4.1 模块结构
 
-`os/servers/rs/src/request.rs` 函数表见 §3.1；`SEF_INIT_*` 四个常量（sef.h:98-101）一并建模。
+`os/servers/rs/src/request.rs` 函数表见 §3.1；`SEF_INIT_*` 四个常量（minix3/minix/include/minix/sef.h:SEF_INIT_CRASH）一并建模。
 
 ### 4.2 关键不变量
 
 1. **LATEREPLY 三字段一致写**：`mark_late_reply` 一次写齐 `flags/caller/caller_request`，避免 06 读到半状态。
 2. **`stop_service` 只做槽位侧 + 返回信号**：`sys_kill` 由调用方发送；信号选择（RS→SIGHUP）是纯函数。
 3. **`do_up` 的重复检查在 `start_service` 之前**（request.c:70-90）：重复服务永远不进创建路径。
-4. **`RS_REFRESHING` vs `RS_EXITING` 是两条不同的退出意图**（manager.c:1005）：15 据此分派刷新/终止路径。
+4. **`RS_REFRESHING` vs `RS_EXITING` 是两条不同的退出意图**（minix3/minix/servers/rs/manager.c:stop_service（L1005，工具生成））：15 据此分派刷新/终止路径。
 5. **`shutdown_apply` 后服务不再被重启**：全表 `RS_EXITING` + `shutting_down`（15 检查）。
 
 ---
@@ -259,7 +259,7 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
    - `test_do_up_struct_copy_failure_propagates`：结构体拷出界 → `EFAULT` 传播；
    - `test_do_edit_updates_settings_in_sequence`：quantum/priority 重配 + 行保持 live；
    - `test_do_edit_unknown_label_is_esrch`；
-   - `test_do_edit_updating_target_is_ebusy`（manager.c:108-110）；
+   - `test_do_edit_updating_target_is_ebusy`（minix3/minix/servers/rs/manager.c:rproc（L108，工具生成））；
    - `test_do_edit_sched_stop_failure_aborts_untouched`（E-7 EditSlot 门：abort 且槽位
      不动）。
 
@@ -287,5 +287,5 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— `r_stop_tm` 与 SIGKILL 升级
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `cleanup_service`/`restart_service`/`crash_service`
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `RS_UPDATE`/`do_upd_ready`
-- `minix3/minix/servers/rs/request.c:15-457`、`manager.c:988-1008` —— ground truth
-- `minix3/minix/include/minix/sef.h:98-101` —— `SEF_INIT_*` 调试标志
+- `minix3/minix/servers/rs/request.c:do_up`、`minix3/minix/servers/rs/manager.c:stop_service` —— ground truth
+- `minix3/minix/include/minix/sef.h:SEF_INIT_CRASH` —— `SEF_INIT_*` 调试标志

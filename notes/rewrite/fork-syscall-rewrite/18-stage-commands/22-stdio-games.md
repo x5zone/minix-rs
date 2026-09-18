@@ -207,10 +207,10 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 
 - `06-file-ops.md`——标准输入输出（本篇的前置）
 - `23-terminal-games.md`——终端游戏（下一步：动屏幕）
-- `minix3/games/factor/factor.c:184-268`——试除与用法（`factor.rs` 的形状来源）
-- `minix3/games/caesar/caesar.c:82-125`——建表与解析（`caesar.rs` 的形状来源）
-- `minix3/games/morse/morse.c:96-219`——码表与匹配（`morse.rs` 的形状来源）
-- `minix3/games/pig/pig.c:103-133`——元音规则（`words.rs` 的形状来源）
+- `minix3/games/factor/factor.c:main（L184，工具生成）`——试除与用法（`factor.rs` 的形状来源）
+- `minix3/games/caesar/caesar.c:init_rottbl`——建表与解析（`caesar.rs` 的形状来源）
+- `minix3/games/morse/morse.c:__COPYRIGHT（L96，工具生成）`——码表与匹配（`morse.rs` 的形状来源）
+- `minix3/games/pig/pig.c:pigout（L103，工具生成）`——元音规则（`words.rs` 的形状来源）
 
 ---
 

@@ -154,7 +154,7 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/main.c`（全文 132 行）、`minix3/minix/include/minix/com.h:90-93,498-507`
+- C 源：`minix3/minix/servers/ds/main.c`（全文 132 行）、`minix3/minix/include/minix/com.h:NOTIFY_MESSAGE,498-507`
 - 阶段文档：`00-ds-overview.md`（总览）、`02-ds-message-contract.md`（下一站，协议面）
 - Rust 实现：`os/servers/ds/src/dispatch.rs`、`os/servers/ds/src/sef.rs`
 - 对端：`../01-stage-kernel/12-ipc-core.md`（`sef_receive` / `ipc_send` 原语）

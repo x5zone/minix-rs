@@ -1,7 +1,7 @@
 # 05 — 系统信息库树查找：静态数组直接索引，动态链表有序走查
 
 > **分类**: 查找算法 / 双通道 verdict
-> **源码**: `minix3/minix/servers/mib/tree.c:12,34-81`（`IS_STATIC_ID` + `mib_find` 全段）
+> **源码**: `minix3/minix/servers/mib/tree.c:IS_STATIC_ID,34-81`（`IS_STATIC_ID` + `mib_find` 全段）
 > **说明**: 按 id 找结点：静态数组 O(1)，动态有序链表 O(n) 带提前收工；落空时顺手报出插入点（08 复用）。分发（10）每走一步名字调一次它，理解成本要对得起调用频率。
 
 ---
@@ -117,6 +117,6 @@ os/servers/mib/src/tree/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/tree.c:12,34-81`
+- C 源：`minix3/minix/servers/mib/tree.c:IS_STATIC_ID,34-81`
 - 阶段文档：`03-mib-node-model.md`（判定语义）、`04-mib-static-tree-init.md`（`csize/clen` 来源）、`08-mib-dynamic-nodes.md`（插入点消费 + `prevpp` 删除）、`10-mib-dispatch.md`（每步调用）
 - Rust 实现：`os/servers/mib/src/tree/lookup.rs`

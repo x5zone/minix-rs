@@ -119,7 +119,7 @@ else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr)) {
 }
 ```
 
-`GET_BIT` 是独立宏（bitmap.h:16）——展开结构（`MAP_CHUNK(map,bit) & (1 << CHUNK_OFFSET(bit))`）与 `get_sys_bit`（const.h:20，作用于 `sys_map_t` 结构体）相似，但参数类型不同（裸 `bitchunk_t` 数组），并非别名。`s_k_call_mask` 是 `bitchunk_t[SYS_CALL_MASK_SIZE]`（priv.h:38），`NR_SYS_CALLS=58`（com.h:270），故 `SYS_CALL_MASK_SIZE=2`（2×32=64 ≥ 58）。检查顺序：先验 call_nr 范围（EBADREQUEST），再查位图（ECALLDENIED）。
+`GET_BIT` 是独立宏（minix3/minix/include/minix/bitmap.h:GET_BIT）——展开结构（`MAP_CHUNK(map,bit) & (1 << CHUNK_OFFSET(bit))`）与 `get_sys_bit`（const.h:20，作用于 `sys_map_t` 结构体）相似，但参数类型不同（裸 `bitchunk_t` 数组），并非别名。`s_k_call_mask` 是 `bitchunk_t[SYS_CALL_MASK_SIZE]`（priv.h:38），`NR_SYS_CALLS=58`（com.h:270），故 `SYS_CALL_MASK_SIZE=2`（2×32=64 ≥ 58）。检查顺序：先验 call_nr 范围（EBADREQUEST），再查位图（ECALLDENIED）。
 
 ### 2.5 L2 过滤：`CANRECEIVE` / `WILLRECEIVE`（ipc.h:14-22）
 
@@ -255,11 +255,11 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 
 | 函数 | C 行为 | Rust 行为 | 差异类型 | 严重度 | C 证据 | Rust 证据 | 备注 |
 |------|--------|----------|---------|--------|--------|----------|------|
-| `may_send_to` | `get_sys_bit(s_ipc_to, nr_to_id(nr))` 查位图 | `caller_priv.may_send_to(target_sys_id)` 委派 `s_ipc_to` u64 位测试 | 一致 | — | priv.h:86 | kpriv.rs:387 | D3 u64 统一 |
+| `may_send_to` | `get_sys_bit(s_ipc_to, nr_to_id(nr))` 查位图 | `caller_priv.may_send_to(target_sys_id)` 委派 `s_ipc_to` u64 位测试 | 一致 | — | priv.h:86 | os/kernel/src/kpriv.rs:fn default（L387，工具生成） | D3 u64 统一 |
 | `may_asynsend_to` | `may_send_to(rp,nr) \|\| rp->p_nr == nr` 允许 self-send | ✅ 已实现（ipc.rs:1456 `\|\| p_nr == caller_nr`；D-17，2026-09-06 补不对称测试 ×2） | 对齐 | P1 | priv.h:87 | — | 异步 IPC 允许 self-send |
-| `GET_BIT(s_k_call_mask, call_nr)` | 位图查 call_nr 是否允许 | `kcall_filter_check(caller_priv, call_nr)` u64 位测试 | 一致 | — | system.c:111 | ipc_filter.rs:72-80 | D3 u64 统一 |
+| `GET_BIT(s_k_call_mask, call_nr)` | 位图查 call_nr 是否允许 | `kcall_filter_check(caller_priv, call_nr)` u64 位测试 | 一致 | — | system.c:111 | os/kernel/src/ipc_filter.rs:fn kcall_filter_check（L72，工具生成） | D3 u64 统一 |
 | `allow_ipc_filtered_msg` | 遍历 s_ipcf 过滤链，按 m_source/m_type 匹配，blacklist 默认 allow | ✅ 已实现（D-16，2026-09-06：`ipc_filter::chain_allowed` 链式遍历 + receive/send/senda 插桩） | 对齐 | P1 | system.c:803-874 | — | 细粒度过滤 |
-| `IPCF_POOL_ALLOCATE_SLOT` | 扫描池找 `type==IPCF_NONE` 槽位 | `IpcFilterPool::allocate` 找 `None` 槽位 | 一致（语义等价） | — | ipc_filter.h:59-70 | ipc_filter.rs:222-230 | D5 Option 替代哨兵 |
+| `IPCF_POOL_ALLOCATE_SLOT` | 扫描池找 `type==IPCF_NONE` 槽位 | `IpcFilterPool::allocate` 找 `None` 槽位 | 一致（语义等价） | — | ipc_filter.h:59-70 | os/kernel/src/ipc_filter.rs:fn chain_allowed（L222，工具生成） | D5 Option 替代哨兵 |
 
 ---
 
@@ -274,7 +274,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**B 内联函数**
 - **理由**：C 用宏是因无类型系统约束；Rust 内联函数获得类型安全（`u64` 区分 map，`u16` 区分 index），编译期仍内联（`#[inline]`）。宏版本在 Rust 中需 `unsafe` transmute 或 `macro_rules!`，丧失类型检查。
 - **C 对齐**：const.h:20-27 `get_sys_bit/set_sys_bit/unset_sys_bit` 语义保持。
-- **实现**：ipc_filter.rs:86-111。
+- **实现**：os/kernel/src/ipc_filter.rs:fn set_sys_bit。
 
 ### D2: 过滤函数位置 — 独立函数 vs 内联
 
@@ -283,7 +283,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**B 独立函数**
 - **理由**：单一职责 + 可测试性。C `may_send_to` 是宏自动内联，但 Rust 语义下独立函数 + `#[inline]` 仍可内联且可独立单元测试（9 个测试见 Ch5）。
 - **C 对齐**：priv.h:86 `may_send_to` + system.c:111 `GET_BIT(s_k_call_mask)` 语义保持。
-- **实现**：ipc_filter.rs:59-80。
+- **实现**：os/kernel/src/ipc_filter.rs:fn ipc_filter_check。
 
 ### D3: `s_k_call_mask` 类型 — u64 vs `[u32; 2]`
 
@@ -310,7 +310,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**B Option**
 - **理由**：Rust "illegal states unrepresentable" 原则。C `IPCF_NONE` 是哨兵值（模式 17），用 `type` 字段同时表达"是否分配"和"分配后的类型"是状态混用——若代码忘记检查 `type==IPCF_NONE` 就读 `elements`，会读到未初始化数据。Option 强制调用方处理 None 分支，编译期消除此类 bug。
 - **C 对齐**：ipc_filter.h:13 `IPCF_NONE` / ipc_filter.h:58 `IPCF_POOL_IS_FREE_SLOT` 语义保持（NONE 迁移到 Option）。
-- **实现**：ipc_filter.rs:199-201 `slots: [Option<IpcFilterSlot>; IPCF_POOL_SIZE]`。
+- **实现**：os/kernel/src/ipc_filter.rs:type ClassResolver<'a> `slots: [Option<IpcFilterSlot>; IPCF_POOL_SIZE]`。
 
 ### D6: 过滤链 next — `Option<usize>` vs 裸指针
 
@@ -319,7 +319,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**B Option<usize>**
 - **理由**：避免 `unsafe` + 索引边界检查。C 用裸指针是因无所有权概念，释放后 `next` 仍指向已释放槽位是潜在 bug（use-after-free）。Rust 用池内索引：`free` 时 `slot = None` 自动断开链，悬垂索引在 `get(index)` 时返回 `None` 而非 UB。
 - **C 对齐**：ipc_filter.h:47 `struct ipc_filter_s *next` → `Option<usize>`（语义等价）。
-- **实现**：ipc_filter.rs:167 `pub next: Option<usize>`。
+- **实现**：os/kernel/src/ipc_filter.rs:fn el_check（L167，工具生成） `pub next: Option<usize>`。
 
 ### D7: `IPCF_MATCH_M_SOURCE/M_TYPE` — bitflags vs 裸 u32
 
@@ -328,7 +328,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**B bitflags**（当前用 const 常量过渡，未来迁移到 bitflags 宏）
 - **理由**：类型安全 + 可组合（`MATCH_M_SOURCE | MATCH_M_TYPE`）。C 裸 int 用 `&` 位运算易写错（`flags & IPCF_MATCH_M_TYPE` 漏 `&` 不报错），Rust bitflags 提供编译期检查 + `contains`/`insert` 等 API。
 - **C 对齐**：include/minix/ipc_filter.h:18-19 `IPCF_MATCH_M_SOURCE/M_TYPE` 语义保持。
-- **实现妥协**：当前用 `IpcFilterElFlags` struct + `const MATCH_M_SOURCE: u32 = 0x1`（ipc_filter.rs:124-130），未引入 `bitflags!` 宏（避免新依赖）。语义等价，未来可平滑迁移到 bitflags。
+- **实现妥协**：当前用 `IpcFilterElFlags` struct + `const MATCH_M_SOURCE: u32 = 0x1`（os/kernel/src/ipc_filter.rs:impl IpcFilterElFlags（L124，工具生成）），未引入 `bitflags!` 宏（避免新依赖）。语义等价，未来可平滑迁移到 bitflags。
 
 ### D8: `filter_type` — enum vs int
 
@@ -337,7 +337,7 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**B enum**
 - **理由**：穷尽匹配 + 编译器检查。C `IPCF_NONE=0` 用 int 表示，但 Rust 中 `Option<IpcFilterSlot>` 已表达 NONE，enum 只需 Blacklist/Whitelist 两个变体。未来新增类型（如 rate-limit）时 match 会编译报错提示补全分支。
 - **C 对齐**：ipc_filter.h:13-15 `IPCF_NONE/BLACKLIST/WHITELIST` 语义保持（NONE 迁移到 Option）。
-- **实现**：ipc_filter.rs:117-120 `enum IpcFilterType { Blacklist, Whitelist }`。
+- **实现**：os/kernel/src/ipc_filter.rs:enum IpcFilterType `enum IpcFilterType { Blacklist, Whitelist }`。
 
 ### D9: IPC_STATUS 机制 — ✅ IMPLEMENTED (P9-2, 2026-08-13)
 
@@ -346,8 +346,8 @@ int allow_ipc_filtered_msg(struct proc *rp, endpoint_t src_e,
 - **结论**：**A IMPLEMENTED**（原 DEFERRED，P9-2 落地）
 - **理由**：IPC_STATUS 在 RECEIVE 完成时设置状态码到 `p_reg.IPC_STATUS_REG`，原标注 DEFERRED 因 Rust RECEIVE 路径未完整实现。P9-2 落地后 RECEIVE 路径已接通，IPC_STATUS 有消费方，故实现。诚实标注优于假装实现。
 - **实现路径**：
-  - `CpuContextArch::or_ipc_status_reg(ctx, value)` trait 方法 + 三架构 impl（os/arch/src/arm64/boot.rs:161、os/arch/src/riscv64/boot.rs:146、x86_64 同）
-  - `proc.rs:1654-1679` 实现 `ipc_status_add_call` / `ipc_status_add_flags` 两个 helper（C 的 `IPC_STATUS_ADD` 内联进两者，无独立 `ipc_status_add`）
+  - `CpuContextArch::or_ipc_status_reg(ctx, value)` trait 方法 + 三架构 impl（os/arch/src/arm64/boot.rs:fn or_ipc_status_reg、os/arch/src/riscv64/boot.rs:fn or_ipc_status_reg、x86_64 同）
+  - `os/kernel/src/proc.rs:fn fork_from（L1654，工具生成）` 实现 `ipc_status_add_call` / `ipc_status_add_flags` 两个 helper（C 的 `IPC_STATUS_ADD` 内联进两者，无独立 `ipc_status_add`）
   - `ipc.rs` 4 路径 wire：SEND (line 841/858) / NOTIFY (line 950) / SENDA (line 959) / SENDA target (line 1002/1007)
 - **C 对齐**：`ipc.h:25-48 IPC_STATUS_*` 语义已实现（对应 C 的宏展开）。
 
@@ -459,16 +459,16 @@ if call_denied {
 | C 函数 | C 位置 | Rust 状态 | 依赖 |
 |--------|--------|----------|------|
 | `allow_ipc_filtered_msg` | system.c:803-874 | ✅ 已实现（D-16，2026-09-06：`ipc_filter::chain_allowed` + receive Phase 1/2/3 与 send/senda 插桩） | — |
-| `allow_ipc_filtered_memreq` | system.c:879+ | ✅ 已实现（2026-08-14 核实） | 语义对应 `VmRequestQueue::dequeue_filtered`（vm.rs:588-620，do_vmctl.c:37-79 遍历时按过滤器跳过请求）——C 在 MEMREQ_GET 遍历时过滤，Rust 在 `dequeue_filtered` 消费 |
+| `allow_ipc_filtered_memreq` | system.c:879+ | ✅ 已实现（2026-08-14 核实） | 语义对应 `VmRequestQueue::dequeue_filtered`（vm.rs:588-620，minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L37，工具生成） 遍历时按过滤器跳过请求）——C 在 MEMREQ_GET 遍历时过滤，Rust 在 `dequeue_filtered` 消费 |
 | `may_asynsend_to` 不对称 | priv.h:87 | ✅ 已实现（2026-09-06，D-17：ipc.rs:1456 self 例外 + 不对称测试 ×2） | — |
 | `IPCF_EL_MATCH` 宏链 | ipc_filter.h:19-41 | ✅ 已实现（D-18，2026-09-06：`el_match`/`el_check` + ANY_USR/SYS/TSK 类别匹配） | — |
-| `IPC_STATUS_*` | ipc.h:25-48 | ✅ 已实现 (P9-2) | `CpuContextArch::or_ipc_status_reg` + `proc.rs:1654-1679` + `ipc.rs` 4 路径 wire |
+| `IPC_STATUS_*` | ipc.h:25-48 | ✅ 已实现 (P9-2) | `CpuContextArch::or_ipc_status_reg` + `os/kernel/src/proc.rs:fn fork_from（L1654，工具生成）` + `ipc.rs` 4 路径 wire |
 
 ---
 
 ## Ch5: 测试
 
-测试位于 `os/kernel/src/ipc_filter.rs:261+`（9 个单元测试），验证 L1 过滤与过滤池契约。
+测试位于 `os/kernel/src/ipc_filter.rs:fn append_to_chain（L261，工具生成）+`（9 个单元测试），验证 L1 过滤与过滤池契约。
 
 | 测试函数 | 覆盖点 | C 对齐 |
 |---------|--------|--------|
@@ -489,7 +489,7 @@ if call_denied {
 
 **未覆盖**（依赖缺口）：`allow_ipc_filtered_msg` 的过滤链遍历、blacklist/whitelist 翻转逻辑、`IPCF_EL_MATCH` 匹配——待 L2 过滤实现后补充。
 
-**IPC_STATUS_* 测试**（P9-2 落地）：IPC_STATUS helper（`ipc_status_add_call` / `ipc_status_add_flags`，os/kernel/src/proc.rs:1654-1679，C 的 `IPC_STATUS_ADD` 内联进两者）无独立单元测试，由 `ipc.rs` 4 路径 wire 点的集成测试间接覆盖（SEND/NOTIFY/SENDA 路径在 os/kernel/src/ipc.rs:841/950/959/1002 调用 helper 设置状态码）。
+**IPC_STATUS_* 测试**（P9-2 落地）：IPC_STATUS helper（`ipc_status_add_call` / `ipc_status_add_flags`，os/kernel/src/proc.rs:fn fork_from（L1654，工具生成），C 的 `IPC_STATUS_ADD` 内联进两者）无独立单元测试，由 `ipc.rs` 4 路径 wire 点的集成测试间接覆盖（SEND/NOTIFY/SENDA 路径在 os/kernel/src/ipc.rs:fn is_willing_to_receive（L841，工具生成）/950/959/1002 调用 helper 设置状态码）。
 
 ---
 

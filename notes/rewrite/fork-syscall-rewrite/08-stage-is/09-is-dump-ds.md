@@ -3,7 +3,7 @@
 > **源码**：`minix3/minix/servers/is/dmp_ds.c`（全 52 行）+
 > `servers/ds/store.h:12-29`（NR_DS_KEYS/data_store）+
 > `include/minix/ds.h:12-29`（DSF_*/DS_MAX_KEYLEN 80）+
-> `sys_config.h:9`（NR_SYS_PROCS 64）+ `com.h:65`（DS=6）
+> `minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`（NR_SYS_PROCS 64）+ `com.h:65`（DS=6）
 > **Rust**：`os/servers/is/src/dump_ds.rs`（新）
 > **draft 素材**：`draft/tmp_dmp_ds.c.md`（行文底料；Rust 块废弃同 01 §3.0）
 > **位置**：DumpId DataStore（03 表）；取数 SI_DATA_STORE（04 §2.4/§6 行；

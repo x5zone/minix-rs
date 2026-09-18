@@ -422,7 +422,7 @@ bitflags::bitflags! {
 | `VM_FORK` | `fork::do_fork` | `dispatch_fork` | 已实现 |
 | `VM_BRK` | `brk::handle_brk` | `dispatch_brk` | 已实现 |
 | `VM_MMAP` | `mmap::handle_mmap` | `dispatch_mmap` | 已实现 |
-| `VM_VFS_MMAP` | `mmap::handle_vfs_mmap` | `dispatch_vfs_mmap` | 已实现 (mmap.rs:273) |
+| `VM_VFS_MMAP` | `mmap::handle_vfs_mmap` | `dispatch_vfs_mmap` | 已实现 (os/servers/vm/src/mmap.rs:fn handle_mmap（L273，工具生成）) |
 | `VM_MUNMAP` | `munmap::handle_munmap` | `dispatch_munmap` | 已实现 |
 | `VM_MAP_PHYS` | `map_phys::handle_map_phys` | `dispatch_map_phys` | 已实现 |
 | `VM_UNMAP_PHYS` | `munmap::handle_munmap` | `dispatch_unmap_phys` | 占位（NotImplemented） |

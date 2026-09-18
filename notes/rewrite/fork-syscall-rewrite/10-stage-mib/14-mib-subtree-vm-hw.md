@@ -33,11 +33,11 @@
 
 ### 1.5 第三个数：宽数变窄数在哪里截断
 
-物理内存和用户内存各有两个版本：三十二位版本和六十四位版本，同一个函数按节点大小分流（`hw.c:31,67`）。三步走：先按六十四位算全（总页数乘页长，**先转成六十四位再乘**，不然页数多了先溢出，`:29,57`），用户内存再减去内核占用（宁可得零也不回绕，`:62-65`），三十二位版本超出上限就截到上限（`:32-35`）。
+物理内存和用户内存各有两个版本：三十二位版本和六十四位版本，同一个函数按节点大小分流（`minix3/minix/servers/mib/hw.c:mib_hw_physmem（L31，工具生成）,67`）。三步走：先按六十四位算全（总页数乘页长，**先转成六十四位再乘**，不然页数多了先溢出，`:29,57`），用户内存再减去内核占用（宁可得零也不回绕，`:62-65`），三十二位版本超出上限就截到上限（`:32-35`）。
 
 拿数字走一遍：一百万页，每页四千零九十六字节，总字节数约四十亿。如果先按三十二位乘再转成六十四位，页再多一倍就溢出了。所以顺序不能错：先转六十四位，再乘。用户内存同理先算全，再减内核占用：内核账目比总量还大，说明数据坏了，返回零，不返回负数（无符号数没有负数，回绕会变成天文数字）。三十二位版本最后截断：超上限报上限，不直接丢掉高位。这样三十二位程序拿不到真值，但能拿到上限这个可用的数，而不是溢出后的错数。
 
-在线处理器数最简单：问内核要机器信息，把处理器个数拷贝出来（`hw.c:81-95`）。配置数（构建期宏，编译时定了几个）和在线数（运行时测了几个）是两个事实，两个节点，不要合并且不要互推。
+在线处理器数最简单：问内核要机器信息，把处理器个数拷贝出来（`minix3/minix/servers/mib/hw.c:mib_hw_usermem（L81，工具生成）`）。配置数（构建期宏，编译时定了几个）和在线数（运行时测了几个）是两个事实，两个节点，不要合并且不要互推。
 
 机器字符串是 C 的条件编译：i386 分支写 `i386`，arm 分支写 `evbarm`，别的架构直接编译失败（`hw.c:5-13`）。Rust 侧是六十四位新行（架构演进，§3 的第五个决策），不是 i386 分支的修改。新架构加一行，旧行不动。
 
@@ -67,11 +67,11 @@ Redox 选了第三条路：系统方案下按路径读，文本和二进制混�
 
 负载函数、内存统计函数、最大睡眠（和 13 的等待上限同源的二十）、无内核栈（零，"Minix 进程没有内核栈"，`:138-140`。有理由的零，不是缺省值）。空着的九个位置（仪表、旧统计、内核内存页、匿名配额上下限、执行配额上下限、文件配额上下限）。
 
-### 2.4 硬件三个函数（`hw.c:18-95`）
+### 2.4 硬件三个函数（`minix3/minix/servers/mib/hw.c:machine（L18，工具生成）`）
 
 物理内存（`:18-40`）：读统计数据。用六十四位乘。三十二位版本截断，六十四位版本直出。用户内存（`:45-76`）：同上一步再减内核占用（再读用量，失败返回参数错误，`:59-60`）。减法饱和。两个版本分流。在线数（`:81-95`）：问机器信息，处理器个数直接拷贝。
 
-### 2.5 硬件表（`hw.c:98-130`，十填六空）
+### 2.5 硬件表（`minix3/minix/servers/mib/hw.c:mib_hw_ncpuonline（L98，工具生成）`，十填六空）
 
 机器（字符串，架构相关）、配置数（构建宏）、字节序（小端四千一百二十三）、物理内存与用户内存（函数，三十二位版本）、页长（四千零九十六）、机器架构（字符串）、六十四位两个版本（函数）、在线数（函数）。空着的六个位置（型号、磁盘名、输入输出统计、对齐、控制台魔数、统计名）。架构字符串：C 只认识两种，第三种编译失败（`:5-13`）。六十四位是新增行（架构演进，§3 第五个决策）。
 
@@ -112,9 +112,9 @@ os/servers/mib/src/subtree/
 | 三窗口数学 | `vm.c:37-39,43,65-70` | `vm.rs` 常量加四函数 | 槽数、欠填、平均、刻度 |
 | 位移搜索 | `vm.c:100-104` | 位移搜索函数 | 首中。无则空 |
 | 虚拟内存四个表项 | `vm.c:120-144` | 表加清单 | 四加九等于十三 |
-| 宽乘、饱和减、截断 | `hw.c:29,57,62-65,32-35` | 三函数 | 先宽。饱和。截断 |
-| 版本判断 | `hw.c:31,67` | 版本判断函数 | 四字节即三十二位版本 |
-| 硬件十个表项 | `hw.c:98-130` | 表加清单 | 十加六等于十六 |
+| 宽乘、饱和减、截断 | `minix3/minix/servers/mib/hw.c:mib_hw_physmem（L29，工具生成）,57,62-65,32-35` | 三函数 | 先宽。饱和。截断 |
+| 版本判断 | `minix3/minix/servers/mib/hw.c:mib_hw_physmem（L31，工具生成）,67` | 版本判断函数 | 四字节即三十二位版本 |
+| 硬件十个表项 | `minix3/minix/servers/mib/hw.c:mib_hw_ncpuonline（L98，工具生成）` | 表加清单 | 十加六等于十六 |
 | 架构字符串 | `hw.c:5-13` | 机器字符串常量 | 架构演进新增行 |
 
 ### 4.3 不变量
@@ -142,9 +142,9 @@ os/servers/mib/src/subtree/
 | `test_table_shape`（虚拟内存） | `vm.c:120-144` | 四加九等于十三、排序、互斥、抽查 | `os/servers/mib/src/subtree/vm.rs` |
 | `test_loadavg_math` | `vm.c:37-39,43,65-70` | 窗口、欠填、平均、零钟 | `os/servers/mib/src/subtree/vm.rs` |
 | `test_page_shift` | `vm.c:100-104` | 首中、六十四位延长、无命中空 | `os/servers/mib/src/subtree/vm.rs` |
-| `test_table_shape`（硬件） | `hw.c:98-130` | 十加六等于十六、两版本同形 | `os/servers/mib/src/subtree/hw.rs` |
-| `test_mem_math` | `hw.c:29-35,57-71` | 宽乘、饱和、截断、版本判断 | `os/servers/mib/src/subtree/hw.rs` |
-| `test_vm_hw_ids` | `uvm_param.h:165-180` 加 `sysctl.h:893-909` | 抽查 | `os/libs/minix-types/src/types/sysctl.rs` |
+| `test_table_shape`（硬件） | `minix3/minix/servers/mib/hw.c:mib_hw_ncpuonline（L98，工具生成）` | 十加六等于十六、两版本同形 | `os/servers/mib/src/subtree/hw.rs` |
+| `test_mem_math` | `minix3/minix/servers/mib/hw.c:mib_hw_physmem（L29，工具生成）,57-71` | 宽乘、饱和、截断、版本判断 | `os/servers/mib/src/subtree/hw.rs` |
+| `test_vm_hw_ids` | `minix3/sys/uvm/uvm_param.h:VM_METER` 加 `sysctl.h:893-909` | 抽查 | `os/libs/minix-types/src/types/sysctl.rs` |
 
 ### 5.1 测试统计（截至 2026-09-05）
 
@@ -161,7 +161,7 @@ os/servers/mib/src/subtree/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/vm.c`（全文）、`minix3/minix/servers/mib/hw.c`（全文）、`minix3/minix/include/minix/type.h:88-99`（负载常量）、`minix3/sys/sys/endian.h:100`（小端值）
+- C 源：`minix3/minix/servers/mib/vm.c`（全文）、`minix3/minix/servers/mib/hw.c`（全文）、`minix3/minix/include/minix/type.h:_LOAD_UNIT_SECS`（负载常量）、`minix3/sys/sys/endian.h:LITTLE_ENDIAN`（小端值）
 - 阶段文档：`13-mib-subtree-kern.md`（写法篇）、`04-mib-static-tree-init.md`（初始化挂载）、`15-mib-subtree-minix.md`（下一站）、`16-mib-proc-tables.md`（统计执行同源）
 - Rust 实现：`os/servers/mib/src/subtree/vm.rs`、`os/servers/mib/src/subtree/hw.rs`、`os/libs/minix-types/src/types/sysctl.rs`（虚拟内存与硬件编号值表）
 - 相关约定：架构演进 A-9（plan §4 排除约定）、A-12（要数据的代码）

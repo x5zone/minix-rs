@@ -185,7 +185,7 @@ if (isemptyp(rp)) return(EINVAL);                            // 槽位非空
 3. **不可运行断言**：`assert(!proc_is_runnable(src) && !proc_is_runnable(dst))`
 4. **updatable 检查**：`proc_is_updatable(src) && proc_is_updatable(dst)` → `EBUSY`
 5. **权限继承**：`inherit_priv_irq/io/mem(src, dst)` — 将 src 的 IRQ/I/O/内存范围转移到 dst
-6. **目标掩码继承**：遍历 `s_ipc_to` 位图，对每个置位走 `set_sendto_bit(dst, i)`（C do_update.c:107-112 逐位授予：守卫 + 回执对称；每轮迭代重读 src 掩码，对齐 C 的活读取。2026-09-05 D-49 前 Rust 为 union 合并，无守卫/回执）
+6. **目标掩码继承**：遍历 `s_ipc_to` 位图，对每个置位走 `set_sendto_bit(dst, i)`（C minix3/minix/kernel/system/do_update.c:do_update（L107，工具生成） 逐位授予：守卫 + 回执对称；每轮迭代重读 src 掩码，对齐 C 的活读取。2026-09-05 D-49 前 Rust 为 union 合并，无守卫/回执）
 7. **槽位交换**：
    - 保存原始状态（`orig_src_proc`/`orig_src_priv`/`orig_dst_proc`/`orig_dst_priv`）
    - `adjust_asyn_table` 双向调整异步消息表
@@ -325,11 +325,11 @@ if (call_vec[call_nr] == NULL) return EBADREQUEST;
 **Rust**: enum 覆盖全部 13 个变体，按依赖关系分三层（截至 2026-08-14 三层全部实现）：
 - **已实现**（纯 flag/RTS 操作 + reply data 写回）：`T_STOP`/`T_RESUME`/`T_STEP`/`T_SYSCALL`/`T_DETACH`
 - **已实现**（跨地址空间拷贝，接入 `data_copy_vmcheck`）：`T_GETINS`/`T_GETDATA`/`T_SETINS`/`T_SETDATA`/`T_READB_INS`/`T_WRITEB_INS`（字节级拷贝，无对齐要求，支持 VMSUSPEND 恢复路径）
-- **已实现**（字段访问，早期为对齐检查 only）：`T_GETUSER`（proc-struct + priv-struct 分支均实现：经 `ProcInfoStruct`/`PrivInfoStruct` 快照 + `read_word_at_offset` 读取，对齐 C do_trace.c:108-123）+ `T_SETUSER`（arch trait `write_user_register` 负责段寄存器保护与 PSW 位掩码）
+- **已实现**（字段访问，早期为对齐检查 only）：`T_GETUSER`（proc-struct + priv-struct 分支均实现：经 `ProcInfoStruct`/`PrivInfoStruct` 快照 + `read_word_at_offset` 读取，对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L108，工具生成））+ `T_SETUSER`（arch trait `write_user_register` 负责段寄存器保护与 PSW 位掩码）
 
 **理由**：
 - flag 操作（`MF_STEP`/`RTS_P_STOP`/`MF_SC_TRACE`/`MF_SC_ACTIVE`）通过 `MiscFlags::set`/`RtsFlags::clear` 原子 API 即可实现，无需跨地址空间拷贝。reply `data=0` 通过 `write_trace_reply_data(msg, 0)` 写回。
-- `T_GETUSER`/`T_SETUSER` 的对齐检查是 C 显式前置检查（`do_trace.c:106`/`137`），独立于字段访问，可单独实现并测试。
+- `T_GETUSER`/`T_SETUSER` 的对齐检查是 C 显式前置检查（`minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L106，工具生成）`/`137`），独立于字段访问，可单独实现并测试。
 - 内存读写 `T_GETINS` 等的 `COPYFROMPROC`/`COPYTOPROC` 是字节级 `virtual_copy`，无对齐要求。Rust 通过 `data_copy_vmcheck` 实现相同语义（Direct Map + PTE walk），并额外支持 VMSUSPEND（C 的 `virtual_copy` 在页未映射时返回 EFAULT；`data_copy_vmcheck` 请求 VM 处理页缺失后重试）。
 
 > design.md §D5 ↔ misc.rs:1378-1753（`dispatch_trace` 全函数）
@@ -481,23 +481,23 @@ pub fn dispatch_trace(
 
 > design.md §D3/D5/D9 ↔ misc.rs:1378-1753
 
-**前置验证**（对齐 C do_trace.c:83-87）：
+**前置验证**（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L83，工具生成））：
 1. `TraceRequest::try_from(request)` → `EINVAL`
 2. `proc_table.endpoint_to_nr(target_endpoint)` → `EINVAL`
 3. `ProcessTable::is_kernel(target_nr)` → `EPERM`
 4. 槽位非空（`endpoint_to_nr` 成功即保证）
 
 **分派逻辑**（按 D5 三层）：
-- `Stop`：`target.p_rts_flags.set(PROC_STOP)` + `clear(SC_TRACE|STEP)`（对齐 C do_trace.c:89-93）
-- `Resume`：`clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C do_trace.c:174-177）
-- `Step`：`set(STEP)` + `clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C do_trace.c:179-183）
-- `Syscall`：`set(SC_TRACE)` + `clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C do_trace.c:185-189）
-- `Detach`：`clear(SC_ACTIVE)` + `clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C do_trace.c:170-177，C 中 fall through 到 `T_RESUME`）
-- `GetIns`/`GetData`：`data_copy_vmcheck` 从目标进程拷贝 `sizeof(long)` 字节到内核 buffer，结果写入 reply `data` 字段（对齐 C do_trace.c:95-103 COPYFROMPROC）。页缺失时返回 `VmSuspend`（C 返回 EFAULT）。
-- `SetIns`/`SetData`：`data_copy_vmcheck` 从内核 buffer 拷贝 `sizeof(long)` 字节到目标进程，reply `data=0`（对齐 C do_trace.c:126-134 COPYTOPROC）。
-- `ReadBIns`/`WriteBIns`：同上但拷贝 1 字节（对齐 C do_trace.c:191-200）。
-- `GetUser`：对齐检查（`tr_addr & WORD_MASK != 0` → `EFAULT`，对齐 C do_trace.c:106）→ proc-struct 分支从 `ProcInfoStruct` 快照读取 `u64`（已实现）→ priv-struct 分支从 `PrivInfoStruct` 快照读取 `u64`（已实现：`dispatch_trace` 签名新增 `priv_table: &PrivTable` 参数，经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照，对齐 C do_trace.c:117-123 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑）
-- `SetUser`：对齐检查（`tr_addr & WORD_MASK != 0` → `EFAULT`，对齐 C do_trace.c:137）→ 调用 `CpuContextArch::write_user_register(&mut rp.cpu_context, tr_addr, tr_data)` 写入寄存器保存区（已实现，arch 层负责段寄存器保护与 PSW 位掩码）
+- `Stop`：`target.p_rts_flags.set(PROC_STOP)` + `clear(SC_TRACE|STEP)`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L89，工具生成））
+- `Resume`：`clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L174，工具生成））
+- `Step`：`set(STEP)` + `clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L179，工具生成））
+- `Syscall`：`set(SC_TRACE)` + `clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L185，工具生成））
+- `Detach`：`clear(SC_ACTIVE)` + `clear(PROC_STOP)` + `write_trace_reply_data(msg, 0)`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L170，工具生成），C 中 fall through 到 `T_RESUME`）
+- `GetIns`/`GetData`：`data_copy_vmcheck` 从目标进程拷贝 `sizeof(long)` 字节到内核 buffer，结果写入 reply `data` 字段（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L95，工具生成） COPYFROMPROC）。页缺失时返回 `VmSuspend`（C 返回 EFAULT）。
+- `SetIns`/`SetData`：`data_copy_vmcheck` 从内核 buffer 拷贝 `sizeof(long)` 字节到目标进程，reply `data=0`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L126，工具生成） COPYTOPROC）。
+- `ReadBIns`/`WriteBIns`：同上但拷贝 1 字节（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L191，工具生成））。
+- `GetUser`：对齐检查（`tr_addr & WORD_MASK != 0` → `EFAULT`，对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L106，工具生成））→ proc-struct 分支从 `ProcInfoStruct` 快照读取 `u64`（已实现）→ priv-struct 分支从 `PrivInfoStruct` 快照读取 `u64`（已实现：`dispatch_trace` 签名新增 `priv_table: &PrivTable` 参数，经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照，对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L117，工具生成） 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑）
+- `SetUser`：对齐检查（`tr_addr & WORD_MASK != 0` → `EFAULT`，对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L137，工具生成））→ 调用 `CpuContextArch::write_user_register(&mut rp.cpu_context, tr_addr, tr_data)` 写入寄存器保存区（已实现，arch 层负责段寄存器保护与 PSW 位掩码）
 
 **`write_trace_reply_data`**：写入 reply 消息的 `data` 字段。C 使用 `m_krn_lsis_sys_trace.data`（reply union 成员）；Rust 写入 `msg.m_u.m_lsys_krn_sys_trace.data`（request union 成员），二者在 `#[repr(C)]` union 中位于相同字节偏移（`data@16`），因此等价。`msg` 必须 `&mut` 以支持此写回。
 
@@ -516,7 +516,7 @@ pub fn dispatch_update(
 
 > design.md §D3 ↔ misc.rs:1572-1836 (`dispatch_update`) + misc.rs:1837-1860 (`proc_is_updatable`)
 
-**7 步验证**（对齐 C do_update.c:55-79）：
+**7 步验证**（对齐 C minix3/minix/kernel/system/do_update.c:do_update（L55，工具生成））：
 1. `isokendpt(src_e)` → `EINVAL`
 2. `src.is_sys_proc()` → `EPERM`
 3. `isokendpt(dst_e)` → `EINVAL`
@@ -534,7 +534,7 @@ pub fn proc_is_updatable(p: &KProcess) -> bool {
     false
 }
 ```
-对齐 C 宏 `proc_is_updatable(p)`（do_update.c:18-20）。Rust 用纯函数便于测试——不需要构造完整 `ProcessTable` 即可验证逻辑。
+对齐 C 宏 `proc_is_updatable(p)`（minix3/minix/kernel/system/do_update.c:proc_is_updatable）。Rust 用纯函数便于测试——不需要构造完整 `ProcessTable` 即可验证逻辑。
 
 **已实现**：槽位交换体（步骤 8-12）全部完成：
 - `inherit_priv_irq/io/mem`：`KPriv::add_irq/add_io/add_mem` 方法（dedup + CHECK_* flag）
@@ -542,7 +542,7 @@ pub fn proc_is_updatable(p: &KProcess) -> bool {
 - `abort_proc_ipc_send`：清除 `RTS_SENDING` + `SenderQueue::remove_by_nr` 从 target 的 caller_q 移除
 - 槽位交换：`ProcessTable::swap_slots` + `PrivTable::swap_slots`（`core::mem::swap` + `split_at_mut`）
 - `adjust_proc_slot`：恢复 endpoint/nr/priv_id/caller_q/scheduler/cpu/cpu_mask（`caller_q` 通过 `mem::replace` 提取/恢复）
-- `adjust_priv_slot`：恢复 s_id/s_proc_nr/pending bits/diag_sig/s_alarm_timer（C do_update.c:292 七字段全量，2026-09-08 补齐 s_alarm_timer——U-1）
+- `adjust_priv_slot`：恢复 s_id/s_proc_nr/pending bits/diag_sig/s_alarm_timer（C minix3/minix/kernel/system/do_update.c:adjust_priv_slot（L292，工具生成） 七字段全量，2026-09-08 补齐 s_alarm_timer——U-1）
 - `swap_proc_slot_pointer`（ptproc）no-op：两进程均非 runnable，ptproc 不指向它们
 - `swap_memreq`：已实现（2026-09-08，U-2）——`ProcessTable::vm_swap_requestor`（proc_table.rs），恰一侧 RTS_VMREQUEST 时重锚链条目到进程现居槽位；`proc_is_updatable` 不排除 VMREQUEST 位，非 runnable ≠ 链外
 - `adjust_asyn_table` 跳过：C 中失败仅打印 warning（非致命），需跨地址空间 `data_copy`，仅在 live update 场景触发
@@ -560,17 +560,17 @@ pub fn dispatch_profile(
 > design.md §D3/D8 ↔ misc.rs:1986-2442（`proc_table: &mut ProcessTable`——`clean_seen_flag` 需遍历清除 `MF_SPROF_SEEN`）
 
 **PROF_START**：
-1. `SPROFILING.compare_exchange(false, true)` 失败 → `EBUSY`（对齐 C do_sprofile.c:50-53）
-2. `isokendpt(endpt)` 失败 → rollback + `EINVAL`（对齐 C do_sprofile.c:56-57）
-3. `ProfIntrType::try_from(intr_type)` 失败 → rollback + `EINVAL`（对齐 C do_sprofile.c:84-86）
+1. `SPROFILING.compare_exchange(false, true)` 失败 → `EBUSY`（对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L50，工具生成））
+2. `isokendpt(endpt)` 失败 → rollback + `EINVAL`（对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L56，工具生成））
+3. `ProfIntrType::try_from(intr_type)` 失败 → rollback + `EINVAL`（对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L84，工具生成））
 4. ✅ `PROF_RTC` → `crate::clock::init_profile_clock(freq)`（misc.rs:2041，经 `ClockArch` 接线）；`PROF_NMI` → rollback + `ENOSYS`（NMI 子系统超范围，设计排除；代码附完整 NMI subsystem WONTFIX 注释）
-5. `clean_seen_flag()`：清除全部进程的 `MF_SPROF_SEEN`（对齐 C do_sprofile.c:91）——这是 `&mut ProcessTable` 的消费点
+5. `clean_seen_flag()`：清除全部进程的 `MF_SPROF_SEEN`（对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L91，工具生成））——这是 `&mut ProcessTable` 的消费点
 6. Rollback `SPROFILING`（验证失败 / `init_profile_clock` 失败 / PROF_NMI 时回滚）
 
 **PROF_STOP**：
-1. `SPROFILING.compare_exchange(true, false)` 失败 → `EBUSY`（对齐 C do_sprofile.c:101-104）
+1. `SPROFILING.compare_exchange(true, false)` 失败 → `EBUSY`（对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L101，工具生成））
 2. ✅ `crate::clock::stop_profile_clock()`（misc.rs:2094，经 `ClockArch` 接线）
-3. ✅ 数据搬运已实现（对齐 C do_sprofile.c:117-120）：`SPROF_INFO`（指针地址经 `SyncUnsafeCell::get` 获取，D-62④）与采样缓冲区经 `data_copy_vmcheck` 双拷贝到用户空间（`dispatch_profile`，misc.rs:2251 起）；`mem_used == 0` 时缓冲区拷贝为 no-op
+3. ✅ 数据搬运已实现（对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L117，工具生成））：`SPROF_INFO`（指针地址经 `SyncUnsafeCell::get` 获取，D-62④）与采样缓冲区经 `data_copy_vmcheck` 双拷贝到用户空间（`dispatch_profile`，misc.rs:2251 起）；`mem_used == 0` 时缓冲区拷贝为 no-op
 4. `clean_seen_flag()`
 
 **Rollback 机制**：验证失败时 `SPROFILING.store(false)` 回滚，避免后续 `PROF_START` 被毒化。这是 Rust 相对 C 的改进——C 在验证失败后直接 return，`sprofiling` 仍是 0（因为还没到 `sprofiling = 1`），但 Rust 用 `compare_exchange` 提前设置了 true，需要显式回滚。
@@ -593,9 +593,9 @@ pub fn dispatch_profile(
 | `struct k_randomness` | include/minix/type.h:187-194 | `KRandomness`（`#[repr(C)]`，2184 字节） | `random_elements`/`random_sources`/`bin[16]` |
 | `krandom` 全局 | kernel/glo.h | `KRANDOM: SyncUnsafeCell<KRandomness>` | BKL 保护，与 `PROC_TABLE`/`PRIV_TABLE`/`IRQ_MANAGER` 同模式 |
 | `krandom_init()` | main.c:48-49（`krandom.random_sources`/`random_elements` 直接赋值，**无此函数**） | `krandom::init()`（`lib.rs:387` 调用） | 设置 `KRANDOM_INIT` 标志，`const fn new()` 已初始化字段 |
-| `get_randomness(&krandom, irq)` | do_irqctl.c:154 | `krandom::get_randomness(source)` | ✅ 已实现 read_tsc 采样（D-33，2026-09-06；**[ARCH: deviation]** C i386/earm 为空体） |
-| `GET_RANDOMNESS` | do_getinfo.c:148-160 | `dispatch_getinfo::Randomness`（misc.rs:1192-1202） | 快照 + `wipe_all` + 拷贝 |
-| `GET_RANDOMNESS_BIN` | do_getinfo.c:161-178 | `dispatch_getinfo::RandomnessBin`（misc.rs:1210-1234） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
+| `get_randomness(&krandom, irq)` | minix3/minix/kernel/system/do_irqctl.c:generic_handler（L154，工具生成） | `krandom::get_randomness(source)` | ✅ 已实现 read_tsc 采样（D-33，2026-09-06；**[ARCH: deviation]** C i386/earm 为空体） |
+| `GET_RANDOMNESS` | minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L148，工具生成） | `dispatch_getinfo::Randomness`（misc.rs:1192-1202） | 快照 + `wipe_all` + 拷贝 |
+| `GET_RANDOMNESS_BIN` | minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L161，工具生成） | `dispatch_getinfo::RandomnessBin`（misc.rs:1210-1234） | 索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin` |
 
 **设计决策**（krandom.rs 文件头 D1-D4）：
 
@@ -641,8 +641,8 @@ GetInfoRequest::RandomnessBin => {
 ```
 
 **语义对齐验证**：
-- C `do_getinfo.c:153-156` 在拷贝后 `wipe` 原数据：Rust `wipe_all()`/`wipe_bin()` 在快照后立即调用，语义一致。
-- C `do_getinfo.c:171-174` 检查 `r_size < RANDOM_ELEMENTS` 返回 `ENOENT`（bin 未满）：Rust 同样检查并返回 `ENOENT`。
+- C `minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L153，工具生成）` 在拷贝后 `wipe` 原数据：Rust `wipe_all()`/`wipe_bin()` 在快照后立即调用，语义一致。
+- C `minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L171，工具生成）` 检查 `r_size < RANDOM_ELEMENTS` 返回 `ENOENT`（bin 未满）：Rust 同样检查并返回 `ENOENT`。
 - C 用 `static struct k_randomness copy` 保留计数器：Rust 用栈上 `snapshot` 变量（BKL 保护下安全）。
 
 **测试覆盖**（krandom.rs `mod tests`，6 个）：
@@ -710,7 +710,7 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | dispatch_unused | 1 | dead code 守卫 | ENOSYS（历史遗存，见 §4.6） |
 | **总计** | **58** | — | — |
 
-> 实际测试位置：`os/kernel/src/misc.rs:2450-3674`（`#[cfg(test)] mod tests`）。验证命令：`cargo test -p minix-kernel --lib misc`。
+> 实际测试位置：`os/kernel/src/misc.rs:fn profile_sample（L2450，工具生成）`（`#[cfg(test)] mod tests`）。验证命令：`cargo test -p minix-kernel --lib misc`。
 > **测试范围说明**：上表 58 个测试属 `misc::tests` 模块；`cargo test --lib misc` 还会按名称匹配 7 个跨模块测试（`proc::tests` 1 个 + `proc_table::tests` 4 个 + 其他 2 个，均含 `misc` 字样），实测 **65 passed; 0 failed; 1 ignored**（2026-08-14 验证）。
 > **krandom 单独统计**：krandom.rs `mod tests` 另有 6 个布局/wipe 测试（见 §4.7 测试覆盖表），不在上述 58 个之内。
 
@@ -725,13 +725,13 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 ### 5.2 关键测试说明
 
 **`test_dispatch_trace_step_clears_proc_stop_and_sets_step_flag`**：
-验证 `T_STEP` 的两个副作用——设置 `MF_STEP` 和清除 `RTS_P_STOP`。这是 L1 对偶测试，验证 Rust 行为与 C do_trace.c:179-183 一致。
+验证 `T_STEP` 的两个副作用——设置 `MF_STEP` 和清除 `RTS_P_STOP`。这是 L1 对偶测试，验证 Rust 行为与 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L179，工具生成） 一致。
 
 **`test_dispatch_trace_getins_unaligned_no_alignment_check`**：
 验证 `T_GETINS` 无对齐检查——`tr_addr = 0x1001`（1 字节偏离 8 字节边界）仍走 `data_copy_vmcheck` 成功拷贝（非 `EFAULT`）。C 的 `COPYFROMPROC` 调用 `virtual_copy_vmcheck`（字节级拷贝，无对齐要求），Rust 不添加 C 没有的检查。早期版本此测试名为 `test_dispatch_trace_getins_unaligned_returns_enosys`（返回 `ENOSYS`），随 `T_GETINS` 接入 `data_copy_vmcheck` 改名。
 
 **`test_sprof_double_start_returns_ebusy`**：
-验证 `SPROFILING` 状态机——预先设置 `sprofiling=true`，再次 `PROF_START` → `EBUSY`。对齐 C do_sprofile.c:50-53。
+验证 `SPROFILING` 状态机——预先设置 `sprofiling=true`，再次 `PROF_START` → `EBUSY`。对齐 C minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L50，工具生成）。
 
 **`test_sprof_start_rollback_on_invalid_endpoint`**：
 验证 rollback 机制——`PROF_START` 验证失败后 `SPROFILING` 必须回滚为 false。这是 Rust 特有的测试（C 无此逻辑，因为 C 不提前设置 `sprofiling`）。
@@ -769,21 +769,21 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 | ~~GETINFO GET_PROC/GET_PROCTAB~~ | do_getinfo.c:GET_PROC/PROCTAB | ✅ 已实现: `ProcInfoStruct` 快照（misc.rs:784/754，ProcTab 分块拷贝避免 27KB 栈缓冲） | — |
 | ~~GETINFO GET_PRIV/GET_PRIVTAB~~ | do_getinfo.c:GET_PRIV/PRIVTAB | ✅ 已实现: `PrivInfoStruct` 快照（misc.rs:893/791） | — |
 | ~~GETINFO GET_REGS~~ | do_getinfo.c:GET_REGS | ✅ 已实现: cpu_context 物理地址直拷（misc.rs:915） | — |
-| ~~GETINFO GET_RANDOMNESS~~ | do_getinfo.c:148-160 | ✅ 已实现（`misc.rs:1192-1202`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
-| ~~GETINFO GET_RANDOMNESS_BIN~~ | do_getinfo.c:161-178 | ✅ 已实现（`misc.rs:1210-1234`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
+| ~~GETINFO GET_RANDOMNESS~~ | minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L148，工具生成） | ✅ 已实现（`misc.rs:1192-1202`，快照 + `wipe_all` + `copy_struct_to_caller`） | — |
+| ~~GETINFO GET_RANDOMNESS_BIN~~ | minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L161，工具生成） | ✅ 已实现（`misc.rs:1210-1234`，索引检查 + `r_size<RANDOM_ELEMENTS→ENOENT` + `wipe_bin`） | — |
 | ~~GETINFO IMAGE/IRQHOOKS/IRQACTIDS/IDLETSC~~ | do_getinfo.c 各 case | ✅ 已实现: boot modules + IrqManager 快照 + IDLE 槽位（misc.rs:1135/1103/1010/1040） | — |
-| GETINFO MONPARAMS | do_getinfo.c:143-146 | ⚠️ `KernelInfo.param_buf` 字段存在但 boot-shim 填充为空切片 → `EINVAL`（P9-1，misc.rs:1150） | boot-shim 接入 UEFI load options |
+| GETINFO MONPARAMS | minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L143，工具生成） | ⚠️ `KernelInfo.param_buf` 字段存在但 boot-shim 填充为空切片 → `EINVAL`（P9-1，misc.rs:1150） | boot-shim 接入 UEFI load options |
 | ~~TRACE 跨地址空间拷贝~~ | do_trace.c COPYFROMPROC/COPYTOPROC | ✅ 已实现: `data_copy_vmcheck` | — |
-| ~~TRACE T_SETUSER 段寄存器保护~~ | do_trace.c:141-166 | ✅ 已实现: `CpuContextArch::write_user_register` trait 方法 + 三架构实现（x86_64 段寄存器保护 + PSW 用户位掩码；arm64/riscv64 偏移映射） | — |
-| ~~TRACE T_GETUSER priv-struct 分支~~ | do_trace.c:117-123 | ✅ 已实现: `dispatch_trace` 签名新增 `priv_table: &PrivTable`；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取；对齐 C 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑；2 个测试覆盖（正常读取 + 越界 EFAULT） | — |
-| ~~UPDATE 槽位交换~~ | do_update.c:129-147 | ✅ 已实现: `ProcessTable::swap_slots` + `PrivTable::swap_slots` (`core::mem::swap` + `split_at_mut`) + `adjust_proc_slot`/`adjust_priv_slot` 恢复 identity 字段 | — |
-| ~~UPDATE inherit_priv_*~~ | do_update.c:94-105 | ✅ 已实现: `KPriv::add_irq/add_io/add_mem` (dedup + CHECK_* flag) | — |
-| ~~UPDATE abort_proc_ipc_send~~ | do_update.c:220-236 | ✅ 已实现: `SenderQueue::remove_by_nr` + `RTS_SENDING` clear + `MF_SENDING_FROM_KERNEL` clear | — |
-| UPDATE swap_memreq | do_update.c:313-337 | ✅ 已实现（2026-09-08，U-2）：`ProcessTable::vm_swap_requestor`——D-20 的 VmRequestQueue 已存在，恰一侧 VMREQUEST 时重锚 stale 条目；`proc_is_updatable` 不排除 VMREQUEST（如 NO_PRIV 用户进程 kcall 挂 VM 检查），no-op 前提失效 | `ProcessTable::vm_swap_requestor` |
-| ~~SPROF 时钟初始化（PROF_RTC）~~ | do_sprofile.c:75-82 | ✅ 已实现: `ClockArch::init_profile_clock(freq)` / `stop_profile_clock()` | — |
+| ~~TRACE T_SETUSER 段寄存器保护~~ | minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L141，工具生成） | ✅ 已实现: `CpuContextArch::write_user_register` trait 方法 + 三架构实现（x86_64 段寄存器保护 + PSW 用户位掩码；arm64/riscv64 偏移映射） | — |
+| ~~TRACE T_GETUSER priv-struct 分支~~ | minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L117，工具生成） | ✅ 已实现: `dispatch_trace` 签名新增 `priv_table: &PrivTable`；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取；对齐 C 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑；2 个测试覆盖（正常读取 + 越界 EFAULT） | — |
+| ~~UPDATE 槽位交换~~ | minix3/minix/kernel/system/do_update.c:do_update（L129，工具生成） | ✅ 已实现: `ProcessTable::swap_slots` + `PrivTable::swap_slots` (`core::mem::swap` + `split_at_mut`) + `adjust_proc_slot`/`adjust_priv_slot` 恢复 identity 字段 | — |
+| ~~UPDATE inherit_priv_*~~ | minix3/minix/kernel/system/do_update.c:do_update（L94，工具生成） | ✅ 已实现: `KPriv::add_irq/add_io/add_mem` (dedup + CHECK_* flag) | — |
+| ~~UPDATE abort_proc_ipc_send~~ | minix3/minix/kernel/system/do_update.c:abort_proc_ipc_send | ✅ 已实现: `SenderQueue::remove_by_nr` + `RTS_SENDING` clear + `MF_SENDING_FROM_KERNEL` clear | — |
+| UPDATE swap_memreq | minix3/minix/kernel/system/do_update.c:swap_memreq | ✅ 已实现（2026-09-08，U-2）：`ProcessTable::vm_swap_requestor`——D-20 的 VmRequestQueue 已存在，恰一侧 VMREQUEST 时重锚 stale 条目；`proc_is_updatable` 不排除 VMREQUEST（如 NO_PRIV 用户进程 kcall 挂 VM 检查），no-op 前提失效 | `ProcessTable::vm_swap_requestor` |
+| ~~SPROF 时钟初始化（PROF_RTC）~~ | minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L75，工具生成） | ✅ 已实现: `ClockArch::init_profile_clock(freq)` / `stop_profile_clock()` | — |
 | SPROF PROF_NMI | do_sprofile.c | NMI 子系统超范围（设计排除），返回 `ENOSYS` | N/A（设计排除） |
-| ~~SPROF 数据拷贝~~ | do_sprofile.c:117-120 | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（`dispatch_profile`，misc.rs:2251 起；指针经 `SyncUnsafeCell::get`，D-62④） | — |
-| ~~SPROF clean_seen_flag~~ | do_sprofile.c:25-31 | ✅ 已实现: 遍历清除 `MF_SPROF_SEEN`（misc.rs:1980 调用，`&mut ProcessTable` 消费点） | — |
+| ~~SPROF 数据拷贝~~ | minix3/minix/kernel/system/do_sprofile.c:do_sprofile（L117，工具生成） | ✅ 已实现: `SPROF_INFO` + 采样缓冲区经 `data_copy_vmcheck` 双拷贝（`dispatch_profile`，misc.rs:2251 起；指针经 `SyncUnsafeCell::get`，D-62④） | — |
+| ~~SPROF clean_seen_flag~~ | minix3/minix/kernel/system/do_sprofile.c:clean_seen_flag | ✅ 已实现: 遍历清除 `MF_SPROF_SEEN`（misc.rs:1980 调用，`&mut ProcessTable` 消费点） | — |
 | ~~SPROF profile_sample~~ | profile.c:75-110 | ✅ 已实现: `profile_sample`（misc.rs:2329）+ 8 个测试（见 §4.8） | — |
 
 > **已解除的 DEFERRED**（本轮修复）：
@@ -797,7 +797,7 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 > - GET_HZ/GET_LOADINFO/GET_MACHINE/GET_CPUINFO/GET_CPUTICKS 已实现：经 `copy_struct_to_caller<T>` + `data_copy_vmcheck` 拷贝到用户空间；`LoadInfoStruct`/`MachineStruct`/`CpuInfoEntry` 均为 `#[repr(C)]`（此前返回 ENOSYS）
 > - SPROF START（PROF_RTC）→ `ClockArch::init_profile_clock(freq)` 已接线；SPROF STOP → `ClockArch::stop_profile_clock()` 已接线；PROF_NMI → `ENOSYS`（NMI 子系统设计排除）
 > - GETINFO DEFERRED 注释已更新：`data_copy_vmcheck` 已就绪，实际阻塞于 C 兼容结构体布局（struct proc/priv/reg_t 等）
-> - **T_SETUSER 已实现**: 新增 `CpuContextArch::write_user_register` trait 方法（`os/arch/src/arch/boot.rs:214`），三架构均覆盖：
+> - **T_SETUSER 已实现**: 新增 `CpuContextArch::write_user_register` trait 方法（`os/arch/src/arch/boot.rs:fn inherit_fpu_state（L214，工具生成）`），三架构均覆盖：
 >   - x86_64 (`os/arch/src/x86_64/boot.rs`): 段寄存器（cs/ds/es/fs/gs/ss）禁止写入返回 `Err(())`；PSW (RFLAGS) 应用 `PSW_USER_MASK=0x0DD5` 用户位掩码（CF/PF/AF/ZF/SF/TF/DF/OF/IF）；其余通用寄存器按偏移直接写入
 >   - arm64 (`os/arch/src/arm64/boot.rs`): psr/pc/sp/r0 直接写入；gp_regs[0..30] 按 `(offset-32)/8` 索引写入
 >   - riscv64 (`os/arch/src/riscv64/boot.rs`): sstatus/sepc/sp/a0 直接写入；gp_regs[0..30] 同 arm64 偏移映射
@@ -809,8 +809,8 @@ pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable)
 > - SPROF STOP 数据搬运 + `clean_seen_flag` + `profile_sample`（profile.c 映射）全部落地
 > - `dispatch_unused` 确认为 dead code（对应虚构的 C `do_unused`），未识别调用实际走 `BadCall`/`EBADREQUEST`
 > - `dispatch_trace` 签名从 `&ProcessTable` 改为 `&mut ProcessTable`，支持 `proc_table.get_mut(target_nr)` 获取 `&mut KProcess` 用于寄存器写入；`syscall.rs::dispatch_trace` wrapper 同步更新
-> - **T_GETUSER proc-struct 分支已实现**: 通过 `ProcInfoStruct::from_kprocess` 构造快照后 `read_word_at_offset` 读取 `u64`（对齐 C do_trace.c:108-111）
-> - **T_GETUSER priv-struct 分支已实现**: `dispatch_trace` 签名新增 `priv_table: &PrivTable` 参数；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取（对齐 C do_trace.c:117-123 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑）；2 个测试覆盖（正常读取 s_proc_nr + 越界 EFAULT）
+> - **T_GETUSER proc-struct 分支已实现**: 通过 `ProcInfoStruct::from_kprocess` 构造快照后 `read_word_at_offset` 读取 `u64`（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L108，工具生成））
+> - **T_GETUSER priv-struct 分支已实现**: `dispatch_trace` 签名新增 `priv_table: &PrivTable` 参数；经 `rp.priv_id` → `priv_table.get(pid)` → `PrivInfoStruct::from_kpriv` 构造快照 + `read_word_at_offset` 读取（对齐 C minix3/minix/kernel/system/do_trace.c:COPYFROMPROC（L117，工具生成） 的 `sizeof(struct proc)` 向上对齐 + 偏移减法逻辑）；2 个测试覆盖（正常读取 s_proc_nr + 越界 EFAULT）
 > - **测试隔离修复**: `BootAlloc` / `IpcFilterPool` 全局状态封装为结构体，支持 per-test 实例（避免 `cargo test` 多线程并行时 `BOOT_PT_NEXT` / `ipc_filter_pool()` 全局状态互染）
 
 > **2026-08-17 追加（GET_IMAGE 布局修复）**：

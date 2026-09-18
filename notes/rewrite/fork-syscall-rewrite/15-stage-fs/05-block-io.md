@@ -72,23 +72,23 @@
 
 取设备主设备号对应的驱动项，登记标签。注释写明这是薄封装，目标是把块设备库藏到文件系统视线之外。当前六行，将来接缝。
 
-### 2.3 块预取 `block_prefetch` `block_prefetch`（`bio.c:64-99`）
+### 2.3 块预取 `block_prefetch` `block_prefetch`（`minix3/minix/lib/libminixfs/bio.c:lmfs_driver（L64，工具生成）`）
 
-取预读上限，超限则截断并视末块为整块。逐块窥视拿：命中则放回并跳出（`bio.c:88-94`，注释写明命中常见，因为每次读前都预取），收集未命中计数。计数大于零则调预读（`bio.c:97-98`）。末块不满时用部分块窥视。注释留了一个待办：按可用缓冲数限流（`bio.c:62`）。
+取预读上限，超限则截断并视末块为整块。逐块窥视拿：命中则放回并跳出（`minix3/minix/lib/libminixfs/bio.c:block_prefetch（L88，工具生成）`，注释写明命中常见，因为每次读前都预取），收集未命中计数。计数大于零则调预读（`minix3/minix/lib/libminixfs/bio.c:block_prefetch（L97，工具生成）`）。末块不满时用部分块窥视。注释留了一个待办：按可用缓冲数限流（`minix3/minix/lib/libminixfs/bio.c:lmfs_driver（L62，工具生成）`）。
 
-### 2.4 传输主函数 `lmfs_bio` `lmfs_bio`（`bio.c:116-246`）
+### 2.4 传输主函数 `lmfs_bio` `lmfs_bio`（`minix3/minix/lib/libminixfs/bio.c:block_prefetch（L116，工具生成）`）
 
-空设备拒绝（`bio.c:127-128`）。取块大小，定读写方向，断言块大小为正。零长度早退（`bio.c:135-136`）。位置负、长度超限、位置加长度溢出，三者任一拒绝（`bio.c:138-139`，溢出用 `pos > INT64_MAX - bytes + 1` 表达）。
+空设备拒绝（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L127，工具生成）`）。取块大小，定读写方向，断言块大小为正。零长度早退（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L135，工具生成）`）。位置负、长度超限、位置加长度溢出，三者任一拒绝（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L138，工具生成）`，溢出用 `pos > INT64_MAX - bytes + 1` 表达）。
 
-问分区大小（`bio.c:146-147`，注释抱怨不能缓存结果，因为看不见分区变更通知，`bio.c:141-144`）。起点超分区报零（文件尾，`bio.c:149-150`）。长度裁到分区末尾（`bio.c:152-153`）。算起始块、块内偏移、剩余块数（`bio.c:156-158`）。末块是设备末块则算尾巴长度（`bio.c:166-169`）。
+问分区大小（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L146，工具生成）`，注释抱怨不能缓存结果，因为看不见分区变更通知，`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L141，工具生成）`）。起点超分区报零（文件尾，`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L149，工具生成）`）。长度裁到分区末尾（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L152，工具生成）`）。算起始块、块内偏移、剩余块数（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L156，工具生成）`）。末块是设备末块则算尾巴长度（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L166，工具生成）`）。
 
-主循环（`bio.c:173-236`）：本块搬运量取三者最小（块剩、请求剩）；读则预取（`bio.c:186-188`）；整块覆写用免读（`bio.c:194`）；末块不满用部分块拿；拿块失败打印设备号块号错误码并跳出（`bio.c:202-206`）；读则复制出，写则复制进加标脏（复制失败也标脏，注释解释接口问题但为防缓存与磁盘脱节必须标，`bio.c:210-222`）；放回；失败跳出；块号推进，偏移清零，剩余块减一。
+主循环（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L173，工具生成）`）：本块搬运量取三者最小（块剩、请求剩）；读则预取（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L186，工具生成）`）；整块覆写用免读（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L194，工具生成）`）；末块不满用部分块拿；拿块失败打印设备号块号错误码并跳出（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L202，工具生成）`）；读则复制出，写则复制进加标脏（复制失败也标脏，注释解释接口问题但为防缓存与磁盘脱节必须标，`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L210，工具生成）`）；放回；失败跳出；块号推进，偏移清零，剩余块减一。
 
-收尾（`bio.c:242-245`）：一次没搬成就报错误，否则报搬运量。短搬加后续错误报短计数——调用者能区分"全失败"与"搬了一半"。
+收尾（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L242，工具生成）`）：一次没搬成就报错误，否则报搬运量。短搬加后续错误报短计数——调用者能区分"全失败"与"搬了一半"。
 
-### 2.5 刷后失效 `lmfs_bflush` `lmfs_bflush`（`bio.c:255-263`）
+### 2.5 刷后失效 `lmfs_bflush` `lmfs_bflush`（`minix3/minix/lib/libminixfs/bio.c:lmfs_bflush`）
 
-先刷本设备脏块，再作废本设备全部缓存。注释写明目的：设备关闭后不留过期拷贝（`bio.c:249-254`）。
+先刷本设备脏块，再作废本设备全部缓存。注释写明目的：设备关闭后不留过期拷贝（`minix3/minix/lib/libminixfs/bio.c:lmfs_bio（L249，工具生成）`）。
 
 ### 2.6 与 Rust 实现的步骤差异说明
 

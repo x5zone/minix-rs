@@ -26,7 +26,7 @@
 
 ### 1.2 申请按调度器身份分三路
 
-申请先看调度器是谁，分三路走（`sched_start.c:58-76` + `sched_stop.c:16-17`）。第一路是没有调度器（`NONE`：没人管，`58-59`/`16-17` 直接返回 `OK`，不用发消息）；第二路是内核调度（`KERNEL`：内核自己管，直接调 `sys_schedctl` 传参数（`70-76`），不走消息）；第三路是用户态调度器（发消息申请（`80-96`），消息里带 4 个值）。三路的区别：第一路是"完了"（没事可做），第二路是"直达"（参数直接给内核，不走消息），第三路是"发消息"（写信给 SCHED）。三路里有两路不发消息：短路的就是不发消息的路，消息只是第三路的形状。
+申请先看调度器是谁，分三路走（`minix3/minix/lib/libsys/sched_start.c:sched_start（L58，工具生成）` + `minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）`）。第一路是没有调度器（`NONE`：没人管，`58-59`/`16-17` 直接返回 `OK`，不用发消息）；第二路是内核调度（`KERNEL`：内核自己管，直接调 `sys_schedctl` 传参数（`70-76`），不走消息）；第三路是用户态调度器（发消息申请（`80-96`），消息里带 4 个值）。三路的区别：第一路是"完了"（没事可做），第二路是"直达"（参数直接给内核，不走消息），第三路是"发消息"（写信给 SCHED）。三路里有两路不发消息：短路的就是不发消息的路，消息只是第三路的形状。
 
 ### 1.3 新建和继承带的内容不一样
 
@@ -38,7 +38,7 @@
 
 ### 1.5 主记录跟着生死走
 
-主记录存在 `mproc.h:78` 的 `mp_scheduler` 里，走一个来回：空（刚 fork 还没申请：`forkexit.c:101` 先断言是空）→ 有（生了就申请：`PRIV_PROC` 的孩子默认主是 `SCHED_PROC_NR`（`101-102`），回复是谁主就是谁）→ 空（死了就取消：`sched_stop`（`425`，失败只打印警告、不拦着退出）→ 主记回空（`441`））。主跟着生死走（活着就有主，死了就没主，主是生死的影子）。初始值分两种（`main.c:199,213`）：INIT 生下来就是内核调度（`KERNEL`，第一个进程特殊），系统进程生下来是空（`NONE`，RS 的孩子，PM 不管，见 14）。
+主记录存在 `minix3/minix/servers/pm/mproc.h:sigaction（L78，工具生成）` 的 `mp_scheduler` 里，走一个来回：空（刚 fork 还没申请：`minix3/minix/servers/pm/forkexit.c:do_fork（L101，工具生成）` 先断言是空）→ 有（生了就申请：`PRIV_PROC` 的孩子默认主是 `SCHED_PROC_NR`（`101-102`），回复是谁主就是谁）→ 空（死了就取消：`sched_stop`（`425`，失败只打印警告、不拦着退出）→ 主记回空（`441`））。主跟着生死走（活着就有主，死了就没主，主是生死的影子）。初始值分两种（`main.c:199,213`）：INIT 生下来就是内核调度（`KERNEL`，第一个进程特殊），系统进程生下来是空（`NONE`，RS 的孩子，PM 不管，见 14）。
 
 ### 1.6 INIT 是个特例
 
@@ -60,15 +60,15 @@
 
 ## 2 C 源码分析
 
-### 2.1 三个申请函数（`sched_start.c:11-97` + `sched_stop.c:9-29`）
+### 2.1 三个申请函数（`minix3/minix/lib/libsys/sched_start.c:sched_inherit` + `minix3/minix/lib/libsys/sched_stop.c:sched_stop`）
 
-继承函数（`11-41`：5 个断言（`18-22`：三个 endpoint 非负、上限在界内、指针非空）→ 清零（`24`）→ 填 3 个字段（`25-27`）→ 发送（`30`：`SCHEDULING_INHERIT`）→ 读回复（`39`））；新建函数（`46-97`：选路（`58-76`，见 §2.2）→ 清零填 4 个字段（`80-84`）→ 发送（`87`：`SCHEDULING_START`）→ 读回复（`96`））；取消函数（`sched_stop.c:9-29`：短路（`16-17`）→ 2 个断言（`20-21`）→ 清零只填 endpoint（`23-24`）→ 发送（`25`：`SCHEDULING_STOP`））。三个函数同一个套路（断言/清零/发送/读回复，取消没有读回复，因为取消不产生新的主）。
+继承函数（`11-41`：5 个断言（`18-22`：三个 endpoint 非负、上限在界内、指针非空）→ 清零（`24`）→ 填 3 个字段（`25-27`）→ 发送（`30`：`SCHEDULING_INHERIT`）→ 读回复（`39`））；新建函数（`46-97`：选路（`58-76`，见 §2.2）→ 清零填 4 个字段（`80-84`）→ 发送（`87`：`SCHEDULING_START`）→ 读回复（`96`））；取消函数（`minix3/minix/lib/libsys/sched_stop.c:sched_stop`：短路（`16-17`）→ 2 个断言（`20-21`）→ 清零只填 endpoint（`23-24`）→ 发送（`25`：`SCHEDULING_STOP`））。三个函数同一个套路（断言/清零/发送/读回复，取消没有读回复，因为取消不产生新的主）。
 
-### 2.2 选路检查（`sched_start.c:58-76` + `sched_stop.c:16-17`）
+### 2.2 选路检查（`minix3/minix/lib/libsys/sched_start.c:sched_start（L58，工具生成）` + `minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）`）
 
-新建的短路（`58-59`：`NONE` 直接 `OK`，不发消息）；内核直达（`70-76`：`KERNEL` 就调 `sys_schedctl(FLAG_KERNEL, ...)`（`71-72`）→ 失败返回错误码（`73`）→ 主记为内核（`75`：`*newscheduler_e = KERNEL`））；发消息（`80-96`：走消息，见 §2.3）；取消的短路（`sched_stop.c:16-17`：`KERNEL` 或 `NONE` 直接 `OK`，内核管的退出时自己了结，没人管的本来就没什么可取消的）。取消短路有两个条件（内核管的退出即了结，另有接管或进程即死，见 `14-15` 的注释；没人管的无可取消）。
+新建的短路（`58-59`：`NONE` 直接 `OK`，不发消息）；内核直达（`70-76`：`KERNEL` 就调 `sys_schedctl(FLAG_KERNEL, ...)`（`71-72`）→ 失败返回错误码（`73`）→ 主记为内核（`75`：`*newscheduler_e = KERNEL`））；发消息（`80-96`：走消息，见 §2.3）；取消的短路（`minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）`：`KERNEL` 或 `NONE` 直接 `OK`，内核管的退出时自己了结，没人管的本来就没什么可取消的）。取消短路有两个条件（内核管的退出即了结，另有接管或进程即死，见 `14-15` 的注释；没人管的无可取消）。
 
-### 2.3 新建和继承的内容与回复（`sched_start.c:24-39,80-96`）
+### 2.3 新建和继承的内容与回复（`minix3/minix/lib/libsys/sched_start.c:sched_inherit（L24，工具生成）,80-96`）
 
 继承填 3 个字段（`25-27`：endpoint/parent/maxprio，时间片空着）→ 新建填 4 个字段（`81-84`：上面 3 个 + quantum，时间片跟着走）→ 转发注释（`33-38`/`90-95`：回复可能和问的不一样，"might have forwarded"）→ 照着回复写（`39`/`96`）。类型的差别：继承的 `maxprio` 是 `unsigned`（`12`），新建的 `maxprio`/`quantum` 是 `int`（`49-50`，断言 `>= 0`/`> 0`（`64`/`66`）），新建的内容有下界，继承的没有下界（继承的界在父进程的时间片，不在消息栏里）。
 
@@ -76,7 +76,7 @@
 
 首次申请（`20-50`：扫表（`IN_USE` 非 `PRIV`）→ 双断言（`34` 只有 INIT 在场/`36` 父亲是自己）→ 按通用流程申请（`37-43`：`USER_Q/USER_QUANTUM/-1`）→ 失败打警告（`44-47`））；fork 后申请（`55-83`：nice 换算成队列（`59-61`，换算规则见 05）→ 继承来源二选一（`67-76`：`PRIV_PROC` 的父亲就抄 INIT（`73`，附父亲无主的断言 `72`），否则抄亲生父亲）→ 发继承消息（`79-83`））；改 nice（`89-111`：内核管的拒绝（`98-99`：`KERNEL`/`NONE` 返回 `EINVAL`，内核管的队列不能这么改，想改走内核的门，13 不设这个门）→ 换算（`102`）→ 发消息（`105-108`：endpoint/maxprio 两个字段（`mess_pm_sched_scheduling_set_nice`）））。
 
-### 2.5 生死来回（`forkexit.c:101-102,425,438-441`，概念引用）
+### 2.5 生死来回（`minix3/minix/servers/pm/forkexit.c:do_fork（L101，工具生成）,425,438-441`，概念引用）
 
 默认主（`101-102`：`PRIV_PROC` 的孩子默认 `SCHED_PROC_NR`（附无主的断言 `101`），RS 生的孩子 PM 给个默认主（RS 不管非系统进程，见 `97-99` 的注释））→ 死时取消（`425`：`sched_stop(主，号)`，失败打警告（`426-433`：取消失败的麻烦在后头（同一个位置再登记新人会搞混），警告一句了事））→ 主记回空（`438-441`：`mp_scheduler = NONE`，死了就没主）。本节只讲来回的三节，表的实现归 PM，见 D4。
 
@@ -92,8 +92,8 @@ Rust 改写不是把三个函数两百行照抄一遍，而是在吸收 Linux"�
 
 ### D1 申请三路做成枚举
 
-- **C**：`NONE → OK`（`58-59`）/ `KERNEL → sys_schedctl`（`70-76`）/ 其余发消息（`80-96`）；取消是 `KERNEL||NONE → OK`（`sched_stop.c:16-17`）。
-- **Rust**：`SchedulerSel::{None, Kernel, Server(Endpoint)}`（`os/servers/sched/src/client.rs:28`）+ `route_start`（`client.rs:74`）/ `route_stop`（`client.rs:103`）（短路做成 `Done` 变体）。
+- **C**：`NONE → OK`（`58-59`）/ `KERNEL → sys_schedctl`（`70-76`）/ 其余发消息（`80-96`）；取消是 `KERNEL||NONE → OK`（`minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）`）。
+- **Rust**：`SchedulerSel::{None, Kernel, Server(Endpoint)}`（`os/servers/sched/src/client.rs:enum SchedulerSel（L28，工具生成）`）+ `route_start`（`client.rs:74`）/ `route_stop`（`client.rs:103`）（短路做成 `Done` 变体）。
 - **为什么**：短路是选路的结果（调用者 match 三路全覆盖，每路都有归宿，不会漏）；C 的提前返回是单函数的写法（返回后没有值，"完了"和"直达"的区别湮没了）。`None` 和 `Kernel` 是两条不同的路（完了不发消息，直达带参数走 `sys_schedctl`，参数即 12 的组装形状）。备选方案（`if sel == NONE return Ok` 直译）被否决了：捷径不是路由，返回后调用者不知道去哪了。
 
 ### D2 新建和继承做成两个包
@@ -148,20 +148,20 @@ os/libs/minix-types/src/ipc/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 申请身份 | `sched_start.c:58-76` | `client.rs:28,74,103` | 完了/直达/发消息三路 |
-| 新建内容 | `sched_start.c:81-84` | `client.rs:115,130` | 4 个字段组装 |
-| 继承内容 | `sched_start.c:25-27` | `client.rs:148,162` | 3 个字段、时间片置零组装 |
-| 回复主记录 | `sched_start.c:39,96` | `client.rs:196` | 回复是谁主就是谁 |
+| 申请身份 | `minix3/minix/lib/libsys/sched_start.c:sched_start（L58，工具生成）` | `client.rs:28,74,103` | 完了/直达/发消息三路 |
+| 新建内容 | `minix3/minix/lib/libsys/sched_start.c:sched_start（L81，工具生成）` | `client.rs:115,130` | 4 个字段组装 |
+| 继承内容 | `minix3/minix/lib/libsys/sched_start.c:sched_inherit（L25，工具生成）` | `client.rs:148,162` | 3 个字段、时间片置零组装 |
+| 回复主记录 | `minix3/minix/lib/libsys/sched_start.c:sched_inherit（L39，工具生成）,96` | `client.rs:196` | 回复是谁主就是谁 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 短路不发消息（完了直达不行文） | `route_*` 的 `Done` | 变体即路 | `sched_start.c:58-59` + `sched_stop.c:16-17` |
-| 新建带、继承零（内容有无） | 双包的形状 | 类型即约定 | `sched_start.c:25-27,81-84` |
-| 回复即主（申请不挑主） | `read_scheduler` | 读即收 | `sched_start.c:39,96` |
+| 短路不发消息（完了直达不行文） | `route_*` 的 `Done` | 变体即路 | `minix3/minix/lib/libsys/sched_start.c:sched_start（L58，工具生成）` + `minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）` |
+| 新建带、继承零（内容有无） | 双包的形状 | 类型即约定 | `minix3/minix/lib/libsys/sched_start.c:sched_inherit（L25，工具生成）,81-84` |
+| 回复即主（申请不挑主） | `read_scheduler` | 读即收 | `minix3/minix/lib/libsys/sched_start.c:sched_inherit（L39，工具生成）,96` |
 | 消息顺序同约定（顺序即约定） | `wire` 双组装 | 顺序直译 | `message.rs:1054/1093` |
-| 主跟着生死（来回在 PM） | 调用者约定（PM 三处持有） | 文档即约定 | `forkexit.c:101,425,441` |
+| 主跟着生死（来回在 PM） | 调用者约定（PM 三处持有） | 文档即约定 | `minix3/minix/servers/pm/forkexit.c:do_fork（L101，工具生成）,425,441` |
 
 ---
 
@@ -171,11 +171,11 @@ os/libs/minix-types/src/ipc/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_start_routes` | `sched_start.c:58-76` | 空即完了/内核即直达/用户态即发消息（含参数随行） | `client.rs` |
-| `test_stop_routes` | `sched_stop.c:16-17` | 内核空皆完了/用户态即发消息（只带 endpoint） | `client.rs` |
-| `test_inherit_pack` | `sched_start.c:25-27` | 3 字段时间片零 + 消息顺序 | `client.rs` |
-| `test_start_pack` | `sched_start.c:81-84` | 4 字段随行 + 消息顺序 | `client.rs` |
-| `test_reply_forwarding` | `sched_start.c:33-39` | 回复和问的不一样也照收（转发委托） | `client.rs` |
+| `test_start_routes` | `minix3/minix/lib/libsys/sched_start.c:sched_start（L58，工具生成）` | 空即完了/内核即直达/用户态即发消息（含参数随行） | `client.rs` |
+| `test_stop_routes` | `minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）` | 内核空皆完了/用户态即发消息（只带 endpoint） | `client.rs` |
+| `test_inherit_pack` | `minix3/minix/lib/libsys/sched_start.c:sched_inherit（L25，工具生成）` | 3 字段时间片零 + 消息顺序 | `client.rs` |
+| `test_start_pack` | `minix3/minix/lib/libsys/sched_start.c:sched_start（L81，工具生成）` | 4 字段随行 + 消息顺序 | `client.rs` |
+| `test_reply_forwarding` | `minix3/minix/lib/libsys/sched_start.c:sched_inherit（L33，工具生成）` | 回复和问的不一样也照收（转发委托） | `client.rs` |
 
 测试策略：选路用三路（完了直达发消息）锁定；组装用内容有无（4 字段/3 字段零时间片）锁定；回复用转委托（名字不一样也照收）锁定。
 
@@ -206,7 +206,7 @@ os/libs/minix-types/src/ipc/
 
 ## 7 参见
 
-- C 源：`minix3/minix/lib/libsys/sched_start.c:11-97`（继承与新建）、`minix3/minix/lib/libsys/sched_stop.c:9-29`（取消）、`minix3/minix/servers/pm/schedule.c:20-112`（PM 申请面）、`minix3/minix/servers/pm/forkexit.c:101-102,425,438-441`（生死来回）、`minix3/minix/servers/pm/main.c:199,213,372-380`（初值与失败策略）
+- C 源：`minix3/minix/lib/libsys/sched_start.c:sched_inherit`（继承与新建）、`minix3/minix/lib/libsys/sched_stop.c:sched_stop`（取消）、`minix3/minix/servers/pm/schedule.c:sched_init`（PM 申请面）、`minix3/minix/servers/pm/forkexit.c:do_fork（L101，工具生成）,425,438-441`（生死来回）、`minix3/minix/servers/pm/main.c:sef_cb_init_fresh（L199，工具生成）,213,372-380`（初值与失败策略）
 - 阶段文档：`02-sched-message-surface.md`（5 种消息的版面）、`04-schedproc-table.md`（槽位检查）、`06-start-scheduling.md`（收消息检查）、`12-kernel-interface.md`（上一站）、`14-rs-interaction.md`（下一站）
 - Rust 实现：`os/servers/sched/src/client.rs:1`（本篇申请镜像层）
-- 对端：`../04-stage-pm/16-scheduling.md`（PM 申请面实现，主权方）、`os/servers/pm/src/sched.rs:1`（调用面实现）、`os/libs/minix-types/src/ipc/message.rs:1054,1093,1157`（消息体的来源）
+- 对端：`../04-stage-pm/16-scheduling.md`（PM 申请面实现，主权方）、`os/servers/pm/src/sched.rs:1`（调用面实现）、`os/libs/minix-types/src/ipc/message.rs:struct MessLsysKrnSysStatectl,1093,1157`（消息体的来源）

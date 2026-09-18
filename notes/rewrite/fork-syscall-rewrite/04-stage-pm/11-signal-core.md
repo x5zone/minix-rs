@@ -32,11 +32,11 @@
 - `pid == -1`：全系统（除 `INIT_PID ≤1` 的 `INIT`/`idle`，`603` `pid <= INIT_PID → continue`）；
 - `pid < -1`：指定组 `-pid`（`604` `procgrp != -pid → continue`）。
 
-`proc_id==-1 && SIGTERM` 先杀 `RS`（`588-589` `sys_kill(RS, SIGTERM)` 先行，使 `RS` 有机会清理服务，再逆序扫全表）与 `wait4` 的 `pidarg` 四态同源但信号侧多 `RS` 先杀的时序（`forkexit.c:588-589` 广播 `SIGTERM` 时 `RS` 先行）。
+`proc_id==-1 && SIGTERM` 先杀 `RS`（`588-589` `sys_kill(RS, SIGTERM)` 先行，使 `RS` 有机会清理服务，再逆序扫全表）与 `wait4` 的 `pidarg` 四态同源但信号侧多 `RS` 先杀的时序（`minix3/minix/servers/pm/forkexit.c:wait_test（L588，工具生成）` 广播 `SIGTERM` 时 `RS` 先行）。
 
 ### 1.3 为什么系统进程受保护：`PRIV_PROC` 的三重
 
-`PRIV_PROC` 为内核任务/驱动（`VFS`/`VM`/`INET`，`mproc.h:98` `0x02000`），用户态 `kill` 的致命信号若可任意杀系统服务则微内核可用性崩，三重保护：
+`PRIV_PROC` 为内核任务/驱动（`VFS`/`VM`/`INET`，`minix3/minix/servers/pm/mproc.h:PRIV_PROC` `0x02000`），用户态 `kill` 的致命信号若可任意杀系统服务则微内核可用性崩，三重保护：
 
 - `SIGS_IS_LETHAL` 致命信号（`SIGKILL/TERM` 等，`sys/sigtype.h`）仅 `ksig==TRUE`（来自内核/RS）可杀 `PRIV_PROC`（`616-618` `!ksig && is_lethal && PRIV_PROC → EPERM`）；
 - 广播 `SIGKILL` 时跳过 `PRIV_PROC`（`607-608` `proc_id==-1 && SIGKILL && PRIV_PROC → continue`）；
@@ -73,7 +73,7 @@ Rust 改写不是照抄 `for (rmp=NR_PROCS-1; rmp>=0; rmp--)`，而是在吸收�
 
 Linux 的 `kill` 还区分 `tgkill`（线程组）与 `tkill`（单线程），而 Minix3 无线程（`NR_PROCS` 进程即线程），`sig_proc` 的 `TRACE` 先行与 Linux 的 `ptrace` 信号拦截同源（`PTRACE_O_TRACESYSGOOD`），但 Minix3 以 `sigtrace` 位图 + `TRACE_STOPPED` 显式化，Linux 以 `task->ptrace` 标志。
 
-**Redox `SigQueue`。** Redox 以 `SigQueue` + `Scheme` 信号分发，Minix3 以 `pending/ksigpending` 双位图（`mproc.h:57-58`）+ `SIGS_IS_LETHAL` 保护，`ksig` 的 `kernel_pending` 位使内核信号与用户信号可区分（`add_pending(signo, true)`）。Redox 的 `SigQueue` 为 per-process 队列（`Vec<Signal>`），Minix3 为位图（`u64`），位图使 `sigismember` 为常数时间（`1<<(n-1)`），队列使信号可排队（`sigqueue` 的 `siginfo`），Minix3 选择位图以保 `PM` 单线程无堆分配（`#![no_std]`）。
+**Redox `SigQueue`。** Redox 以 `SigQueue` + `Scheme` 信号分发，Minix3 以 `pending/ksigpending` 双位图（`minix3/minix/servers/pm/mproc.h:sigaction（L57，工具生成）`）+ `SIGS_IS_LETHAL` 保护，`ksig` 的 `kernel_pending` 位使内核信号与用户信号可区分（`add_pending(signo, true)`）。Redox 的 `SigQueue` 为 per-process 队列（`Vec<Signal>`），Minix3 为位图（`u64`），位图使 `sigismember` 为常数时间（`1<<(n-1)`），队列使信号可排队（`sigqueue` 的 `siginfo`），Minix3 选择位图以保 `PM` 单线程无堆分配（`#![no_std]`）。
 
 **`seL4` 无信号。** `seL4` 无信号原语，以 `Notification` 替代，Minix3 的 `sig_proc` 9 链 + `VFS|EVENT` 挂起 + `PROC_STOPPED` 兼作 `restart_sigs` 重检标志，与 `seL4` 的显式 `Notification` 同为异步事件，但 Minix3 以 `PM` 集中分发。`seL4` 的 `Notification` 为显式 capability（`seL4_Signal`），Minix3 的 `sig_proc` 为隐式 `pending` 位图 + `PROC_STOPPED` 标志，Rust 侧 `SignalState` 使隐式位图显式化（`SigSet` + `suspended`）。
 
@@ -282,7 +282,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 ### D6：`sig_proc_exit` 的 `core_sset` 分支
 
-`is_core_dump(signo)` + `exit_proc(dump_core)`，`dump_core` 双门（`realuid != effuid` 与 `PRIV_PROC`）。`exit_proc` 尾部无条件 `tell_vfs`（`forkexit.c:350-358`），因此 `sig_proc`→`sig_proc_exit` 全程携带调用者的真实 transport——曾经在此构造一次性测试 mock，导致信号终止的 VFS 告知全部丢失（todo.md §11 V2-P0-1，已修复并由 `test_signal_termination_tells_vfs` 锁定）。
+`is_core_dump(signo)` + `exit_proc(dump_core)`，`dump_core` 双门（`realuid != effuid` 与 `PRIV_PROC`）。`exit_proc` 尾部无条件 `tell_vfs`（`minix3/minix/servers/pm/forkexit.c:exit_proc（L350，工具生成）`），因此 `sig_proc`→`sig_proc_exit` 全程携带调用者的真实 transport——曾经在此构造一次性测试 mock，导致信号终止的 VFS 告知全部丢失（todo.md §11 V2-P0-1，已修复并由 `test_signal_termination_tells_vfs` 锁定）。
 
 ### D7：`check_sig` 计数与 `SUSPEND`
 
@@ -300,7 +300,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 `do_kill`/`check_sig` 逆序扫描 + `sig_proc` 9 链 + `sig_proc_exit` + `process_ksig` 双检 + `SIGVTALRM` 重启 + `SIGSNDELAY` 恢复。
 
-**内核信号入口（批次 H，V3-P1-2）**：`run_once` 的通知分支识别 SYSTEM 源通知（C 经 SEF 拦截 SIGKSIG，main.c:121 + sef_signal.c:104-108）后驱动 `process_sigmgr_signals` 拉取循环——`sys_getksig` 取回（endpt + 位图）→ `sys_endksig` 逐信号确认 → `process_ksig` 处置，直到内核报告无更多。触发判定按 Rust 内核实际行为：`SigSet(u64)` 装不下 SIGKSIG 位 73（kernel syscall_signal.rs:88-94 已声明，SigSet 拓宽为跨层 wire 变更挂 edge E6），SYSTEM 通知本身即"有积累"的唯一载体。同轮修复 `process_ksig` 两处：check_sig 返回值改按 C 不检查（SIGSNDELAY=70 超出 _NSIG，旧 `?` 传播使尾部死路）；SIGSNDELAY 值从误写的 42 改为真值 70，尾部接 `handle_sigsn_delay` 同语义（清 DELAY_CALL → VFS|EVENT 在途 stop_proc，否则 check_pending）。
+**内核信号入口（批次 H，V3-P1-2）**：`run_once` 的通知分支识别 SYSTEM 源通知（C 经 SEF 拦截 SIGKSIG，main.c:121 + minix3/minix/lib/libsys/sef_signal.c:do_sef_signal_request（L104，工具生成））后驱动 `process_sigmgr_signals` 拉取循环——`sys_getksig` 取回（endpt + 位图）→ `sys_endksig` 逐信号确认 → `process_ksig` 处置，直到内核报告无更多。触发判定按 Rust 内核实际行为：`SigSet(u64)` 装不下 SIGKSIG 位 73（kernel os/kernel/src/syscall_signal.rs:const SIGKSIG（L88，工具生成） 已声明，SigSet 拓宽为跨层 wire 变更挂 edge E6），SYSTEM 通知本身即"有积累"的唯一载体。同轮修复 `process_ksig` 两处：check_sig 返回值改按 C 不检查（SIGSNDELAY=70 超出 _NSIG，旧 `?` 传播使尾部死路）；SIGSNDELAY 值从误写的 42 改为真值 70，尾部接 `handle_sigsn_delay` 同语义（清 DELAY_CALL → VFS|EVENT 在途 stop_proc，否则 check_pending）。
 
 `VFS|EVENT` 挂起分支（C `signal.c:425-444`）已按 C 全语义落地：置 `pending`/`kernel_pending` 位后，未停止的进程经 `stop_proc(MustStop)` 停住（C 的 `stop_proc(rmp, FALSE)`，内核 `EBUSY` 即 panic）。内核停止能力经 `KernelGateway::sys_delay_stop`（exit.rs，生产实现 pre-E6 诚实回 `-EIO`）+ `GatewayStopBridge` 适配到 13 的 `KernelStop` seam——sig_proc 签名与全部调用点零变化。分支条件按 C 用 `VFS_CALL|EVENT_CALL` 两个 flag（`is_vfs_blocked()||is_event_blocked()`），不含 C 也不含的 `DELAY_CALL`。
 
@@ -350,7 +350,7 @@ Rust 改写遵循"显式 `SignalTarget` 枚举 + `SignalState` 四位图 + `Sign
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/pm/signal.c:197-646`（`do_kill`/`check_sig`/`sig_proc` 等）
+- C 源：`minix3/minix/servers/pm/signal.c:do_kill`（`do_kill`/`check_sig`/`sig_proc` 等）
 - 设计契约：`.design/11-design.v1.md`（D1–D8）、`.design/11-outline.v1.md` 等
 - PM 阶段文档：03-mproc-table.md（`ProcTable`）、04-ipc-dispatch.md（`ReplyIntent`）、02-mproc-struct.md（`SignalState`）、09-pm-exit.md（`sig_proc_exit`）、13-signal-flow.md（`stop_proc` 等）
 - 内核接口：01-stage-kernel/19-syscall-signal.md（`sys_kill` 等）

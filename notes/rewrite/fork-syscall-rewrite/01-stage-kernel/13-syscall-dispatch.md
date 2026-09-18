@@ -944,6 +944,6 @@ errno 常量已统一权威位置（D1 单一来源：kernel/src/errno.rs 再导
 ### 7.3 外部参考
 
 - `minix3/minix/kernel/system.c:52-163` — `call_vec` + `kernel_call_dispatch` + `kernel_call_finish` + `kernel_call`
-- `minix3/minix/kernel/system.c:612-637` — `kernel_call_resume`
-- `minix3/minix/include/minix/com.h:207-270` — `SYS_*` 常量 + `NR_SYS_CALLS` + `KERNEL_CALL`
+- `minix3/minix/kernel/system.c:kernel_call_resume` — `kernel_call_resume`
+- `minix3/minix/include/minix/com.h:SYS_FORK` — `SYS_*` 常量 + `NR_SYS_CALLS` + `KERNEL_CALL`
 - os/kernel/src/syscall.rs — Rust 实现（3298 行）

@@ -82,7 +82,7 @@ Missing this section → scan.md marked DRAFT.
      - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.3 嵌入生成**（AI 自审）
      - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **Step 0.3.4 嵌入生成**（不中断 review）
      - 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过
-   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）
+   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））
    - **豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化**（模式 71 DOG）
 
 ---

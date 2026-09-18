@@ -168,4 +168,4 @@ os/servers/devman/src/add_device.rs — do_add + unwind_staged + add_static（+5
 - `05-devm-message-contract.md` — grant 原语 + `apply_reply`（本篇的进与出）
 - `06-event-buf.md` — `push` + 文件注册（本篇调的机制）
 - `08-devm-del-device.md` — 删除级联（refcount 的消费者）
-- C 源：`minix3/minix/servers/devman/device.c:223-277,314-418`
+- C 源：`minix3/minix/servers/devman/device.c:do_add_device,314-418`

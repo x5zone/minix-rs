@@ -1,6 +1,6 @@
 # 13-init-utmp：会话日志账本
 
-> **定位**：`session_utmpx`（`minix3/sbin/init/init.c:1372-1381`）、`make_utmpx`（1383-1409）、`get_runlevel`（1411-1427）、`utmpx_set_runlevel`（1429-1451）、`clear_session_logs`（647-662)。**[ARCH A-2]** utmp/utmpx 缺口 defer，语义契约先行。
+> **定位**：`session_utmpx`（`minix3/sbin/init/init.c:start_getty（L1372，工具生成）`）、`make_utmpx`（1383-1409）、`get_runlevel`（1411-1427）、`utmpx_set_runlevel`（1429-1451）、`clear_session_logs`（647-662)。**[ARCH A-2]** utmp/utmpx 缺口 defer，语义契约先行。
 > **Rust**：`os/commands/sbin/init/src/utmp.rs`。
 > **前置依赖**：02（状态字符）、07（会话字段）。
 > **本篇不覆盖（移交）**：libc utmp 文件格式实现（无 minix-rs 服务前 defer）。
@@ -74,4 +74,4 @@ SUPPORT_UTMP 与 SUPPORT_UTMPX 双写是 Minix 构建的现状（Makefile 双开
 
 - `02-init-state-machine.md` — 状态字符。
 - `08-init-session-db.md` — add/del 挂钩点。
-- C 源码：`minix3/sbin/init/init.c:647-662,1372-1451`。
+- C 源码：`minix3/sbin/init/init.c:transition（L647，工具生成）,1372-1451`。

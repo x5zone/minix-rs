@@ -154,7 +154,7 @@ void kputc(int c)
 - 遇到 `END_OF_KMESS` 时调用 `send_diag_sig()`（utility.c:81）——向注册了 `DIAGCTL_CODE_REGISTER` 的用户态进程发送 `SIGKMESS` 信号
 - **panic/serial_debug 时跳过通知**（utility.c:80）——panic 期间用户态服务可能已不可用，避免信号递归
 
-**`do_diagctl` 调用路径**（do_diagctl.c:33-41）：
+**`do_diagctl` 调用路径**（minix3/minix/kernel/system/do_diagctl.c:do_diagctl（L33，工具生成））：
 
 ```c
 // DIAGCTL_CODE_DIAG：用户态请求内核打印诊断消息
@@ -203,7 +203,7 @@ void _exit(int e)
 
 **演进 rationale**：
 - C `kmess_buf` 环形缓冲是为**无 log 框架的内核**设计的——内核先缓冲，用户态日志服务定期拉取
-- Rust `EarlyConsole` trait（`os/plat/src/early_console.rs:14`）提供跨架构直接输出：boot 期即可用，无需用户态服务
+- Rust `EarlyConsole` trait（`os/plat/src/early_console.rs:trait EarlyConsole`）提供跨架构直接输出：boot 期即可用，无需用户态服务
 - Rust `log` crate 提供 leveled logging（`error!`/`warn!`/`info!`/`debug!`/`trace!`）+ 后端抽象——mock 平台（`os/plat/src/mock.rs`）用 `log::debug!` 记录操作
 - `do_diagctl` 的 `kputc` 路径在 Rust 中由 `EarlyConsole` 直接输出替代（演进方向）——消除 `END_OF_KMESS` + `send_diag_sig` 通知机制（当前实现状态见 §6.4：`DIAGCTL_CODE_DIAG` 返回 ENOSYS）
 
@@ -235,7 +235,7 @@ C `kmess` 缓冲机制被 Rust 拆解为两层：
 
 minix-rs 有两个 `#[panic_handler]` 实现：
 
-**1. 内核运行时 panic handler**（`os/libs/minix-rt/src/lib.rs:169`）：
+**1. 内核运行时 panic handler**（`os/libs/minix-rt/src/lib.rs:fn ensure_global_allocator（L169，工具生成）`）：
 
 ```rust
 // 文档注释说明：当前行为是 halt-loop，未来计划格式化消息 + write + exit
@@ -253,7 +253,7 @@ fn panic(_info: &PanicInfo) -> ! {
 >
 > 文档注释（line 148-167）说明未来路线图：格式化 panic 消息 → 调用 `minix_sys::write(STDERR, buf)` → `minix_sys::exit(1)`。当前因 `minix_sys::write` 未落地，halt-loop 是最安全的最小行为。
 
-**2. UEFI boot-shim panic handler**（`os/boot-shim/src/main.rs:56`）：
+**2. UEFI boot-shim panic handler**（`os/boot-shim/src/main.rs:fn main（L56，工具生成）`）：
 
 ```rust
 #[panic_handler]
@@ -272,10 +272,10 @@ boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，�
 
 | 调用点 | 场景 | C 等价 |
 |--------|------|--------|
-| `os/kernel/src/syscall.rs:1681` | `SYS_ABORT` 系统调用 | C `SYS_ABORT` → `do_abort`（do_abort.c:16）→ `prepare_shutdown`（main.c:353）→ `minix_shutdown`（main.c:368） |
-| `os/kernel/src/proc_table.rs:731` | `notify_scheduler` 内核发送失败 | 内部不变式违反 |
-| `os/kernel/src/vm.rs:909` | `kernel_call_resume` 状态非法 | 内部不变式违反 |
-| `os/kernel/src/irq_manager.rs:150,154,161,318,342` | IRQ handler/vector 校验失败 | 内部不变式违反 |
+| `os/kernel/src/syscall.rs:fn privctl_set_sys（L1681，工具生成）` | `SYS_ABORT` 系统调用 | C `SYS_ABORT` → `do_abort`（minix3/minix/kernel/system/do_abort.c:do_abort）→ `prepare_shutdown`（main.c:353）→ `minix_shutdown`（main.c:368） |
+| `os/kernel/src/proc_table.rs:fn sched_enqueue_head（L731，工具生成）` | `notify_scheduler` 内核发送失败 | 内部不变式违反 |
+| `os/kernel/src/vm.rs:fn memreq_reply（L909，工具生成）` | `kernel_call_resume` 状态非法 | 内部不变式违反 |
+| `os/kernel/src/irq_manager.rs:fn notify_hardware（L150，工具生成）,154,161,318,342` | IRQ handler/vector 校验失败 | 内部不变式违反 |
 
 > `os/kernel/src/syscall.rs`（line 1681）—— `dispatch_abort` 的 `panic!("MINIX will now be shut down ... (SYS_ABORT from endpoint {:?}...)")`
 
@@ -286,7 +286,7 @@ boot-shim 的 panic handler 更简陋——boot 期无任何子系统可用，�
 
 ### 4.2 Rust kputc / log 接入
 
-**`EarlyConsole` trait**（`os/plat/src/early_console.rs:14`）：
+**`EarlyConsole` trait**（`os/plat/src/early_console.rs:trait EarlyConsole`）：
 
 ```rust
 pub trait EarlyConsole {
@@ -308,7 +308,7 @@ pub trait EarlyConsole {
 - x86_64：COM1 串口（0x3F8）
 - arm64：PL011 UART
 - riscv64：SBI ecall
-- mock：`log::debug!`（`os/plat/src/mock.rs:62`）
+- mock：`log::debug!`（`os/plat/src/mock.rs:impl EarlyConsole for MockEarlyConsole（L62，工具生成）`）
 
 **内核调用点**（对应 C `kputc` 经 `printf` 调用）：
 
@@ -343,7 +343,7 @@ fn init(&mut self) {
 
 ### 5.2 EarlyConsole 测试
 
-`EarlyConsole` trait 的 mock 实现（`MockEarlyConsole`，`os/plat/src/mock.rs:58`）用 `log::debug!` 记录字节输出，可在 `cargo test` 中验证调用序列。
+`EarlyConsole` trait 的 mock 实现（`MockEarlyConsole`，`os/plat/src/mock.rs:struct MockEarlyConsole（L58，工具生成）`）用 `log::debug!` 记录字节输出，可在 `cargo test` 中验证调用序列。
 
 ### 5.3 测试缺口
 
@@ -361,8 +361,8 @@ fn init(&mut self) {
 
 | C 函数 | Rust 等价 | 状态 | 实现位置 |
 |--------|----------|------|---------|
-| `panic` | `panic!()` 宏 + `#[panic_handler]` | ✅ ARCH 演进 | `os/libs/minix-rt/src/lib.rs:169` |
-| `kputc` | `EarlyConsole::write_str()` + `log` crate | ✅ ARCH 演进 | `os/plat/src/early_console.rs:14`, `os/plat/src/mock.rs` |
+| `panic` | `panic!()` 宏 + `#[panic_handler]` | ✅ ARCH 演进 | `os/libs/minix-rt/src/lib.rs:fn ensure_global_allocator（L169，工具生成）` |
+| `kputc` | `EarlyConsole::write_str()` + `log` crate | ✅ ARCH 演进 | `os/plat/src/early_console.rs:trait EarlyConsole`, `os/plat/src/mock.rs` |
 | `_exit` | `panic!()` 语义覆盖 | ✅ ARCH 演进 | 无需实现（`no_std` 编译期排除） |
 
 ### 6.2 kmess 缓冲未实现（ARCH 演进）

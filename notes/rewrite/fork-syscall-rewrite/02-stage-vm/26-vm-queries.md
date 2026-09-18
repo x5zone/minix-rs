@@ -24,7 +24,7 @@ VM 是 Minix3 中**内存状态的唯一权威**：虚拟地址→物理页的�
 
 | 服务 | 请求码 | 回答的系统问题 | 典型消费者 |
 |------|--------|---------------|-----------|
-| VM_INFO | com.h:729 | 内存有多忙？进程用了多少？它的地址空间长什么样？ | MIB（hw.c:26/:54/:59、proc.c:621）、procfs（pid.c:213）、VFS coredump（coredump.c:205）、`is` 调试 |
+| VM_INFO | com.h:729 | 内存有多忙？进程用了多少？它的地址空间长什么样？ | MIB（minix3/minix/servers/mib/hw.c:mib_hw_physmem（L26，工具生成）/:54/:59、proc.c:621）、procfs（minix3/minix/fs/procfs/pid.c:pid_map（L213，工具生成））、VFS coredump（minix3/minix/servers/vfs/coredump.c:get_memory_regions（L205，工具生成））、`is` 调试 |
 | VM_GETPHYS | com.h:720 | 这个虚拟地址属于哪个区域？区域的标识是什么？ | IPC shm（shm.c:118，共享内存令牌） |
 | VM_GETREF | com.h:722 | 这个区域被重映射过多少次？ | 调试、内存分析 |
 | VM_GETRUSAGE | com.h:764 | 这个进程的峰值内存与缺页计数？ | PM（getrusage(2) 系统调用） |
@@ -63,13 +63,13 @@ USAGE 模式有一个 C 侧的特殊约定：**`ep < 0` 表示内核**（内核�
 
 `VM_GETPHYS` 的名字极具误导性。C 侧 `map_get_phys` 最终调用 memtype 的 `regionid` 回调：
 
-- `anon_regionid` 返回 `region->id`（mem_anon.c:132-135）——**区域的唯一编号**，与物理地址无关；
-- `shared_regionid` 返回**源区域**的 id（mem_shared.c:99-108）；
-- 只有 anon/shared 两类区域实现了 `regionid` 回调（mem_anon.c:42、mem_shared.c:35）；direct/contig/cache/file 类区域**没有**该回调 → `map_get_phys` 返回 EINVAL。
+- `anon_regionid` 返回 `region->id`（minix3/minix/servers/vm/mem_anon.c:anon_regionid）——**区域的唯一编号**，与物理地址无关；
+- `shared_regionid` 返回**源区域**的 id（minix3/minix/servers/vm/mem_shared.c:shared_regionid）；
+- 只有 anon/shared 两类区域实现了 `regionid` 回调（minix3/minix/servers/vm/mem_anon.c:mem_type（L42，工具生成）、minix3/minix/servers/vm/mem_shared.c:mem_type（L35，工具生成））；direct/contig/cache/file 类区域**没有**该回调 → `map_get_phys` 返回 EINVAL。
 
 真正的消费者是 **IPC shm 服务**：`shmget` 时 mmap 一块匿名内存，用 `vm_getphys(sef_self(), page)` 拿到该区域的 id 存为 `vm_id`（shm.c:112-118）；`shmat` 时再用 `vm_remap` 把共享区域映射到客户端。**region id 是跨进程传递的共享内存令牌**，物理地址反而没有意义（物理页可能被迁移、回收）。
 
-这个历史命名在 Rust 重写中**原样保留**（外部行为不变）：`handle_get_phys` 返回 `MemType::region_id()`，文档与注释均明确"不是物理地址"。GETREF 同理：`anon_refcount`/`shared_refcount` 返回 `1 + vr->remaps`（mem_anon.c:142-145、mem_shared.c:207-210）——区域的**重映射计数**，不是物理页的引用计数（物理页引用计数是 11 篇的 `PageFrames` 域，查询面不暴露它）。
+这个历史命名在 Rust 重写中**原样保留**（外部行为不变）：`handle_get_phys` 返回 `MemType::region_id()`，文档与注释均明确"不是物理地址"。GETREF 同理：`anon_refcount`/`shared_refcount` 返回 `1 + vr->remaps`（minix3/minix/servers/vm/mem_anon.c:anon_refcount、minix3/minix/servers/vm/mem_shared.c:shared_refcount）——区域的**重映射计数**，不是物理页的引用计数（物理页引用计数是 11 篇的 `PageFrames` 域，查询面不暴露它）。
 
 ### 1.4 查询服务的共同纪律：复制前先钉住目标页
 
@@ -105,7 +105,7 @@ Rust 的 IPC 消息模型里，结果以 `VmReply` 枚举返回、由传输层�
 #define VMIW_REGION 3
 ```
 
-libc 侧封装（`libsys/vm_info.c`）：`vm_info_stats`（:10-19）、`vm_info_usage(who, vui)`（:24-34，`who` 可为负端点查内核）、`vm_info_region(who, vri, count, &next)`（:39-57，分页游标由调用者持有并回传）。注意 `vm_info_region` 的**循环约定**在消费者侧（procfs pid.c:229、coredump.c:225）：`do { ... } while (r == MAX_VRI_COUNT)`——返回满 64 条就继续翻页。
+libc 侧封装（`libsys/vm_info.c`）：`vm_info_stats`（:10-19）、`vm_info_usage(who, vui)`（:24-34，`who` 可为负端点查内核）、`vm_info_region(who, vri, count, &next)`（:39-57，分页游标由调用者持有并回传）。注意 `vm_info_region` 的**循环约定**在消费者侧（procfs minix3/minix/fs/procfs/pid.c:pid_map（L229，工具生成）、minix3/minix/servers/vfs/coredump.c:get_memory_regions（L225，工具生成））：`do { ... } while (r == MAX_VRI_COUNT)`——返回满 64 条就继续翻页。
 
 ### 2.2 do_info —— 三模式分派（utility.c:100-184）
 
@@ -257,7 +257,7 @@ vui->vui_total = kernel_boot_info.vm_allocated_bytes +
 vui->vui_virtual = vui->vui_mvirtual = vui->vui_total;
 ```
 
-`get_vm_self_pages()`（pagetable.c:1500）统计 VM 自映射页数（页表页 + 自身映射），在 pagetable.c:249/:362/:390 处增删。
+`get_vm_self_pages()`（minix3/minix/servers/vm/pagetable.c:get_vm_self_pages）统计 VM 自映射页数（页表页 + 自身映射），在 minix3/minix/servers/vm/pagetable.c:vm_freepages（L249，工具生成）/:362/:390 处增删。
 
 **`is_stack_region`（region.c:1384-1390）**——栈区启发式：
 
@@ -364,8 +364,8 @@ for (count = 0; (vr = region_get_iter(&v_iter)) && count < max;
 | get_usage_info | 函数 | region.c:1395 | ✅ | §2.6 |
 | get_region_info | 函数 | region.c:1452 | ✅ | §2.6 |
 | get_stats_info | 函数 | cache.c:328 | ✅ | §2.6 |
-| anon_regionid / anon_refcount | 函数 | mem_anon.c:132/:142 | ✅ | §1.3/§2.3/§2.4（回调本体归 12 篇） |
-| shared_regionid / shared_refcount | 函数 | mem_shared.c:99/:207 | ✅ | §1.3/§2.3/§2.4（回调本体归 12 篇） |
+| anon_regionid / anon_refcount | 函数 | minix3/minix/servers/vm/mem_anon.c:anon_regionid/:142 | ✅ | §1.3/§2.3/§2.4（回调本体归 12 篇） |
+| shared_regionid / shared_refcount | 函数 | minix3/minix/servers/vm/mem_shared.c:shared_regionid/:207 | ✅ | §1.3/§2.3/§2.4（回调本体归 12 篇） |
 | VM_INFO / VM_GETPHYS / VM_GETREF / VM_GETRUSAGE | 宏 | com.h:729/:720/:722/:764 | ✅ | §2.1 |
 | VMIW_STATS / USAGE / REGION | 宏 | com.h:732-734 | ✅ | §2.1 |
 | vm_stats_info / vm_usage_info / vm_region_info | 结构 | vm.h:40-46/:48-57/:59-64 | ✅ | §2.7 |
@@ -418,9 +418,9 @@ C 用裸整数 `what` + switch；Rust 用 `InfoQuery { Stats, Usage { target }, 
 
 ### 3.4 StatsInfo 五字段完整（D4）
 
-**C 侧事实**：`vm_stats_info` 有 5 个字段，`get_stats_info`（cache.c:328-331）填 `vsi_cached`；MIB 的 hw.c:26/:54 读它（`vm_info_stats` 调用点）。
+**C 侧事实**：`vm_stats_info` 有 5 个字段，`get_stats_info`（cache.c:328-331）填 `vsi_cached`；MIB 的 minix3/minix/servers/mib/hw.c:mib_hw_physmem（L26，工具生成）/:54 读它（`vm_info_stats` 调用点）。
 
-**Rust 设计**：`StatsInfo` 补上 `cached_pages: u64`（query.rs:99-107），数据来自 `PageCache::total_cached()`（page_cache.rs:421），经 `dispatch_info` 新参数 `cached_pages: u64` 传入（dispatcher.rs:948-955）。**旧实现丢 vsi_cached**——这是本轮 P1 级缺口：C 提供的数据在 Rust 侧被静默丢弃，MIB 读不到缓存页数。
+**Rust 设计**：`StatsInfo` 补上 `cached_pages: u64`（query.rs:99-107），数据来自 `PageCache::total_cached()`（os/servers/vm/src/page_cache.rs:fn total_cached），经 `dispatch_info` 新参数 `cached_pages: u64` 传入（dispatcher.rs:948-955）。**旧实现丢 vsi_cached**——这是本轮 P1 级缺口：C 提供的数据在 Rust 侧被静默丢弃，MIB 读不到缓存页数。
 
 **V10-P2-4 扩展**：`VmReply::InfoStats`（minix-types vm.rs:661-678）在 5 个 C wire 字段之外携带两个 minix-rs 可观测性计数——`dropped_messages: u64`（主循环丢弃消息数，[ARCH: A-14]）与 `pagefault_errors: u64`（页错误处理失败数，[ARCH: A-15]，V9-P1-1）。**V11/T18 追加第三个**：`alloc_failures: u32`（页分配失败数——内存压力信号，[ARCH: A-16]，取自 `VmPageAllocator::alloc_failures()`）。三者**均不在 C 的 `struct vm_stats_info` wire 布局上**（encode 时丢弃，见 §4.8）——进程内可观测（测试 + 未来 syslog 槽位），对外 wire 保持 C 兼容。
 
@@ -428,7 +428,7 @@ C 用裸整数 `what` + switch；Rust 用 `InfoQuery { Stats, Usage { target }, 
 
 **C 侧事实**：`vm_usage_info` 有 8 个字段；`get_usage_info` 尾部填 maxrss/minflt/majflt（region.c:1444-1446，MIB 单调用需求）；`ep < 0` → 内核（region.c:1410-1413）；`ep == VM_PROC_NR` → VM 自身（region.c:1405-1408）。
 
-**Rust 设计**：`UsageInfo` 补 `max_rss_kb`/`minor_faults`/`major_faults`（query.rs:122-131），来自 `ActiveProc::total_max/minor_fault/major_fault`（vmproc_handle.rs:216/:226/:231）。`handle_info` 的 Usage 分支按序特判（query.rs:306-397）：
+**Rust 设计**：`UsageInfo` 补 `max_rss_kb`/`minor_faults`/`major_faults`（query.rs:122-131），来自 `ActiveProc::total_max/minor_fault/major_fault`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn total_max（L216，工具生成）/:226/:231）。`handle_info` 的 Usage 分支按序特判（query.rs:306-397）：
 
 ```
 target.get() < 0      → 内核用量（UsageSources.kernel_bytes）
@@ -436,9 +436,9 @@ target == Endpoint::VM → VM 自身用量（UsageSources.vm_self_bytes）
 否则                  → 逐进程统计（region 遍历 + PageFrames 引用计数）
 ```
 
-**boot 数据源**（`UsageSources`，query.rs:183-186 + vm_server.rs:1032-1044）：`kernel_bytes = kernel_allocated.static_bytes + dynamic_bytes`（对应 region.c:1360-1361）；`vm_self_bytes = vm_allocated_bytes + self_page_count() * PAGE_SIZE`。`vm_allocated_bytes` 是 `BootParams` 新增字段（boot.rs:87，对应 `kernel_boot_info.vm_allocated_bytes`，param.h:44）。
+**boot 数据源**（`UsageSources`，query.rs:183-186 + os/servers/vm/src/vm_server.rs:const MAX_MEMREQ_BATCH（L1032，工具生成））：`kernel_bytes = kernel_allocated.static_bytes + dynamic_bytes`（对应 region.c:1360-1361）；`vm_self_bytes = vm_allocated_bytes + self_page_count() * PAGE_SIZE`。`vm_allocated_bytes` 是 `BootParams` 新增字段（boot.rs:87，对应 `kernel_boot_info.vm_allocated_bytes`，param.h:44）。
 
-**ARCH 标注**：`get_vm_self_pages()`（pagetable.c:1500）在 Rust 中由 `VmPageAllocator::self_page_count()`（alloc_page.rs:102）承担——Direct Map（A-1，06 篇 §3.3）消除了 VM 自映射页的独立记账通道，VM 自身用量统一走分配器活跃计数。
+**ARCH 标注**：`get_vm_self_pages()`（minix3/minix/servers/vm/pagetable.c:get_vm_self_pages）在 Rust 中由 `VmPageAllocator::self_page_count()`（os/servers/vm/src/alloc_page.rs:fn alloc_pages（L102，工具生成））承担——Direct Map（A-1，06 篇 §3.3）消除了 VM 自映射页的独立记账通道，VM 自身用量统一走分配器活跃计数。
 
 ### 3.6 RegionInfo 对齐"用段"语义 + vri_flags 不建模（D6）
 
@@ -461,7 +461,7 @@ pub(crate) struct RegionInfo {
 
 ### 3.7 分页游标与 MAX_VRI_COUNT=64（D7）
 
-**C 侧事实**：游标 `next` 是 **vaddr**（每次访问区域 end，region.c:1473）；续扫用 `AVL_GREATER_EQUAL(next)`（:1464）；调用者循环 `while (r == MAX_VRI_COUNT)`（procfs pid.c:229）；`count = MIN(请求, 64)`（utility.c:149）。
+**C 侧事实**：游标 `next` 是 **vaddr**（每次访问区域 end，region.c:1473）；续扫用 `AVL_GREATER_EQUAL(next)`（:1464）；调用者循环 `while (r == MAX_VRI_COUNT)`（procfs minix3/minix/fs/procfs/pid.c:pid_map（L229，工具生成））；`count = MIN(请求, 64)`（utility.c:149）。
 
 **Rust 设计**（query.rs:398-465）：
 
@@ -470,22 +470,22 @@ pub(crate) struct RegionInfo {
 - handler 内固定数组 `[RegionInfo; 64]`（栈上 64×16B，无分配）；
 - BTreeMap 按 vaddr 升序迭代天然等价 AVL 中序；`vr.vaddr < next` 过滤等价 `AVL_GREATER_EQUAL`。
 
-**transport 缺口（诚实标注）**：`VmReply::InfoRegion.regions` 是**栈上 inline 数组** `[VmRegionInfo; 64]`（minix-types vm.rs:709-718）——`VmReply` 整体因此保持 `Copy`（minix-types vm.rs:634-651 注释解释 inline 比 Box 更优：变体 ~1.5 KiB 小到足以放栈，`VmRegionInfo` 自身 `Copy`，且 boxing 会引入 `extern crate alloc` 而无收益）。但 M1 编码只有 3 指针 + 3 整型槽，**无法内联数组**——`encode_reply_data` 只写 `count`/`next` 到整型槽、源侧长度到 `m1p1`（vm_server.rs:1215-1236，VMI-2 现状延续）。数组负载 DEFERRED 到 `sys_datacopy` 传输接线。**handler 正确性是硬契约**（数据算对了，编码缺一步），文档与代码注释均显式标注。`VmReply::InfoRegion { regions, .. }` 构造路径**无任何堆分配**——`regions` 字段是值类型 64×24B = 1536B，Copy 触发 64 次 24B mem-copy（SIMD 友好），远快于 `Box` 的 alloc+memcpy+refcount 路径。`#[allow(clippy::large_enum_variant)]` 标在 `DispatchAction`（vm_server.rs:719-729）以及未来其他 `Copy`-by-value 使用点，silence ~1.5 KiB "large variant" lint。
+**transport 缺口（诚实标注）**：`VmReply::InfoRegion.regions` 是**栈上 inline 数组** `[VmRegionInfo; 64]`（minix-types vm.rs:709-718）——`VmReply` 整体因此保持 `Copy`（minix-types vm.rs:634-651 注释解释 inline 比 Box 更优：变体 ~1.5 KiB 小到足以放栈，`VmRegionInfo` 自身 `Copy`，且 boxing 会引入 `extern crate alloc` 而无收益）。但 M1 编码只有 3 指针 + 3 整型槽，**无法内联数组**——`encode_reply_data` 只写 `count`/`next` 到整型槽、源侧长度到 `m1p1`（os/servers/vm/src/vm_server.rs:fn run_once（L1215，工具生成），VMI-2 现状延续）。数组负载 DEFERRED 到 `sys_datacopy` 传输接线。**handler 正确性是硬契约**（数据算对了，编码缺一步），文档与代码注释均显式标注。`VmReply::InfoRegion { regions, .. }` 构造路径**无任何堆分配**——`regions` 字段是值类型 64×24B = 1536B，Copy 触发 64 次 24B mem-copy（SIMD 友好），远快于 `Box` 的 alloc+memcpy+refcount 路径。`#[allow(clippy::large_enum_variant)]` 标在 `DispatchAction`（os/servers/vm/src/vm_server.rs:const PS（L719，工具生成））以及未来其他 `Copy`-by-value 使用点，silence ~1.5 KiB "large variant" lint。
 
 ### 3.8 GETPHYS/GETREF 走 MemType 能力门控（D8）
 
-**C 侧事实**：`map_get_phys`/`map_get_ref` 检查**回调存在性**（region.c:1331/:1349）；仅 anon/shared 注册（mem_anon.c:42/:44、mem_shared.c:35/:36）。
+**C 侧事实**：`map_get_phys`/`map_get_ref` 检查**回调存在性**（region.c:1331/:1349）；仅 anon/shared 注册（minix3/minix/servers/vm/mem_anon.c:mem_type（L42，工具生成）/:44、minix3/minix/servers/vm/mem_shared.c:mem_type（L35，工具生成）/:36）。
 
-**Rust 设计**：`MemType` trait 新增两个能力谓词（memtype.rs:133-140）：
+**Rust 设计**：`MemType` trait 新增两个能力谓词（os/servers/vm/src/memtype.rs:fn ev_sanitycheck（L133，工具生成））：
 
 ```rust
 fn supports_region_id(&self) -> bool { false }  // C: regionid != NULL
 fn supports_ref_count(&self) -> bool { false }  // C: refcount != NULL
 ```
 
-`AnonymousMemory`/`SharedMemory` 覆写为 true（memtype.rs:298-303/:472-477）；已有 `region_id()`/`ref_count()` 默认返回 0（= C 的 NULL 语义），anon 返回 `region.id`/`1 + remaps`（memtype.rs:307-312），shared 返回 `param.shared.id`/`1 + remaps`（memtype.rs:485-496）。
+`AnonymousMemory`/`SharedMemory` 覆写为 true（os/servers/vm/src/memtype.rs:fn ev_pagefault（L298，工具生成）/:472-477）；已有 `region_id()`/`ref_count()` 默认返回 0（= C 的 NULL 语义），anon 返回 `region.id`/`1 + remaps`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L307，工具生成）），shared 返回 `param.shared.id`/`1 + remaps`（os/servers/vm/src/memtype.rs:struct SharedMemory（L485，工具生成））。
 
-**本轮 P0 修正**：旧 `handle_get_phys` 匹配 `VrParam::Direct { phys }` 返回物理地址——但 C 中 **direct 类 memtype 恰恰没有 regionid 回调**（应 EINVAL），而 anon 区域在 Rust 模型里 `param` 默认就是 `Direct { phys: 0 }`（VirRegion::default，vir_region.rs:51-54）——旧实现对 anon 区域返回 0、对 anon/shared 返回 NotSupported，**与 C 完全相反**。新实现对 anon 返回 `region.id`、对 shared 返回源区域 id、对无能力 memtype 返回 EINVAL，与 C 一致。
+**本轮 P0 修正**：旧 `handle_get_phys` 匹配 `VrParam::Direct { phys }` 返回物理地址——但 C 中 **direct 类 memtype 恰恰没有 regionid 回调**（应 EINVAL），而 anon 区域在 Rust 模型里 `param` 默认就是 `Direct { phys: 0 }`（VirRegion::default，os/servers/vm/src/region/vir_region.rs:const PREALLOC_MAP）——旧实现对 anon 区域返回 0、对 anon/shared 返回 NotSupported，**与 C 完全相反**。新实现对 anon 返回 `region.id`、对 shared 返回源区域 id、对无能力 memtype 返回 EINVAL，与 C 一致。
 
 ### 3.9 GETRUSAGE 的 PM-only 语义与 children 零值（D9 局部）
 
@@ -506,7 +506,7 @@ C 的非 PM 返回 OK、端点错 ESRCH、children 为 TODO 且假定 PM 先清�
 | 3 | region 数组编码 | sys_datacopy 送 64 条 | 只编码 count/next，数组 DEFERRED | transport 缺口（D7） |
 | 4 | vri_flags | 恒 0（死字段） | 不建模 | 结构简化（D6） |
 | 5 | is_stack_region | vaddr/length 精确启发式（region.c:1388-1389） | `end_addr() == region_top()` 近似 | 近似（C 自述 guesswork） |
-| 6 | get_vm_self_pages | pagetable.c:1500 独立计数器 | `self_page_count()`（分配器记账） | ARCH（D5，A-1 衍生） |
+| 6 | get_vm_self_pages | minix3/minix/servers/vm/pagetable.c:get_vm_self_pages 独立计数器 | `self_page_count()`（分配器记账） | ARCH（D5，A-1 衍生） |
 | 7 | MAX_VRI_COUNT | 64（vm.h:66） | 64（旧 8 已修正） | 事实修正 |
 | 8 | GETPHYS/GETREF errno | 全 EINVAL | InvalidParam（EINVAL）；旧 EFAULT 已修正 | 事实修正 |
 | 9 | rusage 结构往返 | 15 字段结构复制 | 3 字段消息回复 | ARCH（D9） |
@@ -555,7 +555,7 @@ pub(crate) fn handle_get_phys(
 
 ### 4.3 handle_get_refcount（query.rs:241-264）
 
-同构于 GETPHYS，门控换成 `supports_ref_count`，返回 `memtype.ref_count(vr) as u8`（C: `u8_t *cnt`，mmap.c:481）。remaps 语义：anon/shared 的 `1 + remaps`（memtype.rs:311-312/:493-494），与 12 篇的 memtype 回调定义一致。
+同构于 GETPHYS，门控换成 `supports_ref_count`，返回 `memtype.ref_count(vr) as u8`（C: `u8_t *cnt`，mmap.c:481）。remaps 语义：anon/shared 的 `1 + remaps`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L311，工具生成）/:493-494），与 12 篇的 memtype 回调定义一致。
 
 ### 4.4 handle_info —— Stats 分支（query.rs:296-305）
 
@@ -653,7 +653,7 @@ pub(crate) fn handle_getrusage(
 
 **decode**（dispatcher.rs:1142-1183）：`what=0/1/2` 映射三模式；REGION 模式先做 SELF 替换；`next` 读为 `VirBytes`；非法 what → `InvalidParam`（C: utility.c:163 EINVAL）。
 
-**encode**（vm_server.rs:1280-1420）：
+**encode**（os/servers/vm/src/vm_server.rs:fn dispatch_on_msg（L1280，工具生成））：
 
 | 回复 | 槽位分配 | 说明 |
 |------|---------|------|
@@ -685,12 +685,12 @@ pub(crate) fn handle_getrusage(
 |------|--------|--------|
 | test_query_error_errno | QueryError→VmError→to_errno 全链：4×EINVAL + getrusage ESRCH | utility.c:110/:442/:449/:474、region.c:1327-1334 |
 | test_get_phys_invalid_endpoint / test_get_refcount_invalid_endpoint | 无效端点 → ProcessNotFound | mmap.c:449-450/:474-475 |
-| test_get_phys_anon_region_returns_region_id | anon 区域返回 region.id（含非起始地址 → NotMapped） | mem_anon.c:132-135、region.c:1328 |
-| test_get_refcount_anon_returns_1_plus_remaps | anon remaps=3 → 4 | mem_anon.c:142-145 |
+| test_get_phys_anon_region_returns_region_id | anon 区域返回 region.id（含非起始地址 → NotMapped） | minix3/minix/servers/vm/mem_anon.c:anon_regionid、region.c:1328 |
+| test_get_refcount_anon_returns_1_plus_remaps | anon remaps=3 → 4 | minix3/minix/servers/vm/mem_anon.c:anon_refcount |
 | test_get_phys_unsupported_memtype | Direct 类无能力 → NotSupported（GETPHYS+GETREF） | region.c:1331/:1349 |
 | test_getrusage_non_pm / test_getrusage_pm_invalid_endpoint | 非 PM → Ok；PM+无效端点 → ProcessNotFound | utility.c:437-442 |
 | test_handle_info_stats_cached_pages | Stats 五字段 + cached=123 | cache.c:328-331 |
-| test_dropped_messages_observable_via_info_stats（vm_server.rs:1792） | **V10-P2-4**：3 次 receive 失败 → `dropped_messages==3`，经 VMIW_STATS 的 `VmReply::InfoStats` 扩展字段可观测（`pagefault_errors==0`） | minix-rs 扩展（[ARCH: A-14]；C wire 无槽位） |
+| test_dropped_messages_observable_via_info_stats（os/servers/vm/src/vm_server.rs:fn test_choose_allocator_segment_tree_wins_over_buddy（L1792，工具生成）） | **V10-P2-4**：3 次 receive 失败 → `dropped_messages==3`，经 VMIW_STATS 的 `VmReply::InfoStats` 扩展字段可观测（`pagefault_errors==0`） | minix-rs 扩展（[ARCH: A-14]；C wire 无槽位） |
 | test_handle_info_stats_alloc_failures_observable（query.rs，V11/T18） | 耗尽 2 页微型分配器（8 次尝试）→ `InfoStats.alloc_failures` 精确等于失败次数 | minix-rs 扩展（[ARCH: A-16]；C wire 无槽位） |
 | test_handle_info_usage_kernel_target | ep=KERNEL → kernel_bytes，virtual=mvirtual=total | region.c:1357-1364 |
 | test_handle_info_usage_vm_self_target | ep=VM → vm_self_bytes | region.c:1366-1373 |
@@ -698,14 +698,14 @@ pub(crate) fn handle_getrusage(
 | test_handle_info_usage_process_accumulation | 单页 refcount=2 + VR_SHARED → total=common=shared；maxrss=total_max/1024 | region.c:1415-1446 |
 | test_handle_info_region_pagination | 两页游标续扫：首页 2 条（含空区域跳过、用段计算、prot 推导）、次页 0 条 | region.c:1452-1505 |
 | test_handle_info_region_count_zero | count=0 → 0 条 | region.c:1462 |
-| test_memtype_capability_gates | anon/shared true；direct/contig/cache/file false | mem_anon.c:42/:44、mem_shared.c:35/:36 |
-| test_shared_region_id_and_refcount | shared.region_id=param.shared.id=77、ref_count=1+remaps | mem_shared.c:99-108/:207-210 |
+| test_memtype_capability_gates | anon/shared true；direct/contig/cache/file false | minix3/minix/servers/vm/mem_anon.c:mem_type（L42，工具生成）/:44、minix3/minix/servers/vm/mem_shared.c:mem_type（L35，工具生成）/:36 |
+| test_shared_region_id_and_refcount | shared.region_id=param.shared.id=77、ref_count=1+remaps | minix3/minix/servers/vm/mem_shared.c:shared_regionid/:207-210 |
 | test_used_page_range_empty | 无映射页 → (None, None) | region.c:1485-1489 |
 | 其余 6 个结构/字段测试 | StatsInfo/UsageInfo/ResourceUsage/InfoResult 字段对齐与构造 | vm.h:40-57 |
 
 ### 5.2 测试统计（截至 2026-08-17，V10 收敛后实测）
 
-- `cargo test -p minix-vm --lib`：**441 passed / 0 failed**（`test_map_lazy` 等 P0-1 修复后全绿；V10-P2-4 新增 `test_dropped_messages_observable_via_info_stats`，vm_server.rs:1792）
+- `cargo test -p minix-vm --lib`：**441 passed / 0 failed**（`test_map_lazy` 等 P0-1 修复后全绿；V10-P2-4 新增 `test_dropped_messages_observable_via_info_stats`，os/servers/vm/src/vm_server.rs:fn test_choose_allocator_segment_tree_wins_over_buddy（L1792，工具生成））
 - query.rs tests 模块：**24 个**；dispatcher 29 个全过；vm_server 34 个全过（含 26-P0 回归 `test_dispatch_vm_info_what_matches_c_wire` 与 V10 主循环端到端测试）；transport 7 个全过
 - `cargo clippy -p minix-vm --lib`：**0 warnings**（V10-P2-1 收敛后）
 

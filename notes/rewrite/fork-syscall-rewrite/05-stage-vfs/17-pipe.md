@@ -68,7 +68,7 @@ socket 是唯一的例外：`sdev_cancel` 自己发回复，`unpause` 直接返�
 
 ### 2.1 `do_pipe2/create_pipe` 建管机（`pipe.c:39-144`）
 
-`do_pipe2` 合并新旧标志位（`45-46`，`oflags` 为兼容保留）后调 `create_pipe`，成功才回填 fd 对（`49-52`）。`create_pipe` 七步：锁 PFS（`70-71`，`PFS_PROC_NR` 见 `minix3/minix/include/minix/com.h:68`，失踪即 panic）→ 取空 vnode（`74-77`）→ 取读 fd（`82-86`，失败只解 vnode 与 vmnt）→ 取写 fd（`89-96`，失败回滚读端）→ `req_newnode(I_NAMED_PIPE)`（`101-102`，失败回滚双端）→ 填 vnode 九字段（`117-127`：双端点、双 inode 号、模式、双计数、引用、尺寸 0、空挂载、`NO_DEV`）→ 填双 filp（`130-138`：同 vnode + `dup_vnode`、读 `O_RDONLY`/写 `O_WRONLY` 叠共享位、双端 CLOEXEC）→ 解锁返回（`140-143`）。
+`do_pipe2` 合并新旧标志位（`45-46`，`oflags` 为兼容保留）后调 `create_pipe`，成功才回填 fd 对（`49-52`）。`create_pipe` 七步：锁 PFS（`70-71`，`PFS_PROC_NR` 见 `minix3/minix/include/minix/com.h:PFS_PROC_NR`，失踪即 panic）→ 取空 vnode（`74-77`）→ 取读 fd（`82-86`，失败只解 vnode 与 vmnt）→ 取写 fd（`89-96`，失败回滚读端）→ `req_newnode(I_NAMED_PIPE)`（`101-102`，失败回滚双端）→ 填 vnode 九字段（`117-127`：双端点、双 inode 号、模式、双计数、引用、尺寸 0、空挂载、`NO_DEV`）→ 填双 filp（`130-138`：同 vnode + `dup_vnode`、读 `O_RDONLY`/写 `O_WRONLY` 叠共享位、双端 CLOEXEC）→ 解锁返回（`140-143`）。
 
 ### 2.2 `map_vnode` 映射机（`pipe.c:151-182`）
 
@@ -84,7 +84,7 @@ socket 是唯一的例外：`sdev_cancel` 自己发回复，`unpause` 直接返�
 
 ### 2.5 `release` 扫描机（`pipe.c:363-429`）
 
-select 相（`379-394`）：读写操作映射 `SEL_RD/WR`（`380-383`），扫 filp 表回调并清位（`385-393`）。proc 相（`397-427`）：`op` 取 `VFS_OPEN/VFS_READ/VFS_WRITE`（见 `minix3/minix/include/minix/callnr.h:72-75`），开配开、读写配调用、未复活三元合取（`403-407`），按挂起原因取 fd（`411-414`），跳过空 filp/已关（`416-417`）与异 vnode（`418-419`），`revive` 后递减计数（`422-423`），负值 panic（`424-425`），配额耗尽早停（`426`）。
+select 相（`379-394`）：读写操作映射 `SEL_RD/WR`（`380-383`），扫 filp 表回调并清位（`385-393`）。proc 相（`397-427`）：`op` 取 `VFS_OPEN/VFS_READ/VFS_WRITE`（见 `minix3/minix/include/minix/callnr.h:VFS_READ`），开配开、读写配调用、未复活三元合取（`403-407`），按挂起原因取 fd（`411-414`），跳过空 filp/已关（`416-417`）与异 vnode（`418-419`），`revive` 后递减计数（`422-423`），负值 panic（`424-425`），配额耗尽早停（`426`）。
 
 ### 2.6 `revive` 标记机（`pipe.c:435-492`）
 
@@ -107,51 +107,51 @@ Rust 改写不是照抄 `pipe.c` 的扫描循环，而是吸收 Linux/Redox 的�
 ### D1 定量纯函数
 
 - **C**：`pipe_check` 内嵌 `find_filp` 扫描与 `release` 副作用（`pipe.c:220,229,238,256,273,284`）。
-- **Rust**：`pipe_check_decision(dir, buffered, capacity, reader, writer, nonblock, touch, requested, waiters) -> PipeCheckVerdict::{Allow{bytes,wake}, Suspend(WakePlan), Reject}`（`os/servers/vfs/src/pipe.rs:86`）。
+- **Rust**：`pipe_check_decision(dir, buffered, capacity, reader, writer, nonblock, touch, requested, waiters) -> PipeCheckVerdict::{Allow{bytes,wake}, Suspend(WakePlan), Reject}`（`os/servers/vfs/src/pipe.rs:fn pipe_check_decision`）。
 - **为什么**：定量数学与对端查询/唤醒执行分离；`Allow` 自带唤醒计划使调用点无需二次查账。替代方案（verdict 不带唤醒、调用点重算）被否决：重算即重复矩阵，重复即漂移——EAGAIN 快失败仍欠一次唤醒（`229`）是最好的证据。
 
 ### D2 建管分阶段与回滚表
 
 - **C**：七阶段直线代码，回滚散在三处（`pipe.c:82-96,104-113`）。
-- **Rust**：`PipeNodeFactory` trait（`MemPipeFs` 常成功 vs `FailPipeFs` 常 `EIO`）+ `CreateStage` 四值 + `rollback_for` 纯表 + `end_flags` 标志拆分（`os/servers/vfs/src/pipe.rs:254,189,216,286`）。
+- **Rust**：`PipeNodeFactory` trait（`MemPipeFs` 常成功 vs `FailPipeFs` 常 `EIO`）+ `CreateStage` 四值 + `rollback_for` 纯表 + `end_flags` 标志拆分（`os/servers/vfs/src/pipe.rs:fn rollback_for（L254，工具生成）,189,216,286`）。
 - **为什么**：回滚义务随阶段单调增长，表使“第 N 步失败回滚什么”一测即知。`dup_vnode` 语义留调用点（05 管辖），`PFS` 加锁留 06（vmnt 管辖）。
 
 ### D3 账本显式
 
 - **C**：`susp_count++/--` 裸整数 + 负值 panic（`pipe.c:306,423-425`）。
-- **Rust**：`SuspLedger/ReviveLedger` 新型 + `dec_checked` 守卫 + `susp_delta` 计数规则（`os/servers/vfs/src/pipe.rs:296,353,331`）。
+- **Rust**：`SuspLedger/ReviveLedger` 新型 + `dec_checked` 守卫 + `susp_delta` 计数规则（`os/servers/vfs/src/pipe.rs:fn newnode（L296，工具生成）,353,331`）。
 - **为什么**：加减配对跨三函数，裸整数无法表达义务；守卫把“双唤醒 bug”变成可断言的返回值而非崩溃。替代方案（`debug_assert`）被否决：测试构建中断言触发即失败，不可测——守卫值才是可测的。
 
 ### D4 唤醒谓词
 
 - **C**：匹配规则内嵌 proc 扫描循环（`pipe.c:403-419`）。
-- **Rust**：`release_match(live, blocked, op, revived, filp_ok, same_vnode) -> bool` 六元合取 + `select_ack` 位清除（`os/servers/vfs/src/pipe.rs:421,440`）。
+- **Rust**：`release_match(live, blocked, op, revived, filp_ok, same_vnode) -> bool` 六元合取 + `select_ack` 位清除（`os/servers/vfs/src/pipe.rs:fn suspend_record（L421，工具生成）,440`）。
 - **为什么**：六元合取的组合可单测全覆盖；select 相与 proc 相分离与 C 同构（`379`/`397` 两相）。
 
 ### D5 复活 verdict
 
 - **C**：两门 + 标记 + 四回复分支 + SDEV panic（`pipe.c:445-490`）。
-- **Rust**：`revive_decision -> ReviveVerdict::{Noop, MarkReviving, Reply(i32), Invalid}`（`os/servers/vfs/src/pipe.rs:487`）；SDEV/未知 → `Invalid→EIO`。
+- **Rust**：`revive_decision -> ReviveVerdict::{Noop, MarkReviving, Reply(i32), Invalid}`（`os/servers/vfs/src/pipe.rs:enum DriverWake（L487，工具生成）`）；SDEV/未知 → `Invalid→EIO`。
 - **为什么**：标记与回复的分化是复活的核心知识；`Invalid` 是 ARCH 加固（C 视其为不可能，panic 即整服崩溃）。
 
 ### D6 中断 verdict
 
 - **C**：六分支的回复值×取消动作×计数调整交织（`pipe.c:522-560`）。
-- **Rust**：`unpause_decision -> UnpausePlan{reply, cancel, dec_susp, dec_reviving}`（`os/servers/vfs/src/pipe.rs:565`）；`CancelOp::{None, ForgetSelect, CancelCdev, CancelSdev}`。
+- **Rust**：`unpause_decision -> UnpausePlan{reply, cancel, dec_susp, dec_reviving}`（`os/servers/vfs/src/pipe.rs:enum UnpauseReply（L565，工具生成）`）；`CancelOp::{None, ForgetSelect, CancelCdev, CancelSdev}`。
 - **为什么**：三元组是中断的全部知识；SDEV 自回复以 `CancelSdev` 显式（调用点直返，不经过统一 replycode）。先清状态的时序义务留调用点注释。
 
 ### D7 映射 verdict
 
 - **C**：短路 + panic + EBUSY 免解 + 落定散列（`pipe.c:157-181`）。
-- **Rust**：`map_decision -> MapVerdict::{AlreadyMapped, Proceed(UnlockNote), Absent}`（`os/servers/vfs/src/pipe.rs:610`）。
+- **Rust**：`map_decision -> MapVerdict::{AlreadyMapped, Proceed(UnlockNote), Absent}`（`os/servers/vfs/src/pipe.rs:fn unpause_decision（L610，工具生成）`）。
 - **为什么**：免解是映射最微妙的知识；`UnlockNote::{Unlock, SkipUnlock}` 使调用点解锁义务显式，不可遗漏。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | 挂起/唤醒皆 verdict，执行留 08/09 | `pipe.rs:59,469,549` + 本文档 D1/D5/D6 + 17 正文 §1.3 |
-| A-4 全局聚合（glo.h→状态聚合） | `SuspLedger/ReviveLedger` 新型先行 | `pipe.rs:296,353` + 本文档 D3 + 17 正文 §1.4 |
+| A-1 单线程事件循环（mthread→状态机） | 挂起/唤醒皆 verdict，执行留 08/09 | `os/servers/vfs/src/pipe.rs:enum PipeCheckVerdict,469,549` + 本文档 D1/D5/D6 + 17 正文 §1.3 |
+| A-4 全局聚合（glo.h→状态聚合） | `SuspLedger/ReviveLedger` 新型先行 | `os/servers/vfs/src/pipe.rs:fn newnode（L296，工具生成）,353` + 本文档 D3 + 17 正文 §1.4 |
 
 ---
 
@@ -173,21 +173,21 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `PIPE_BUF` | `syslimits.h:66` | `pipe.rs:25` | 32768（`__minix`） |
-| `do_pipe2` 标志合并 | `pipe.c:45-46` | `pipe.rs:29 merge_pipe2_flags` | 或合并 |
-| `pipe_check` | `pipe.c:187` | `pipe.rs:86 pipe_check_decision` | 读写矩阵纯函数 |
-| 空读 EAGAIN 唤醒 | `pipe.c:229` | `pipe.rs:140 read_reject_wake` | 快失败仍欠唤醒 |
-| `create_pipe` | `pipe.c:60` | `pipe.rs:254,189,216,286` | 工厂 + 阶段 + 回滚 + 标志 |
-| `susp_count` | `glo.h:14` | `pipe.rs:296 SuspLedger` | 加减 + 下溢守卫 |
-| `reviving` | `glo.h:16` | `pipe.rs:353 ReviveLedger` | 标记计数 |
-| `pipe_suspend` | `pipe.c:315` | `pipe.rs:385 suspend_record` | 复用 PipeBlock |
-| `release` 匹配 | `pipe.c:403-419` | `pipe.rs:421 release_match` | 六元合取 |
-| select 清位 | `pipe.c:392` | `pipe.rs:440 select_ack` | 位清除 |
-| 驱散分类 | `pipe.c:344-350` | `pipe.rs:457 classify_driver_waiter` | 三分类 |
-| `revive` | `pipe.c:435` | `pipe.rs:469,487` | verdict 五值 |
-| `unpause` | `pipe.c:498` | `pipe.rs:527,549,565` | 回复 + 取消 + 计划 |
-| `map_vnode` | `pipe.c:151` | `pipe.rs:591,610` | verdict 三值 |
-| 错误族 | `pipe.c` 全文件 | `pipe.rs:629,644 PipeError::to_errno` | 5 变体→errno，无自创 |
+| `PIPE_BUF` | `minix3/sys/sys/syslimits.h:PIPE_BUF` | `os/servers/vfs/src/pipe.rs:const PIPE_BUF` | 32768（`__minix`） |
+| `do_pipe2` 标志合并 | `pipe.c:45-46` | `os/servers/vfs/src/pipe.rs:fn merge_pipe2_flags merge_pipe2_flags` | 或合并 |
+| `pipe_check` | `pipe.c:187` | `os/servers/vfs/src/pipe.rs:fn pipe_check_decision pipe_check_decision` | 读写矩阵纯函数 |
+| 空读 EAGAIN 唤醒 | `pipe.c:229` | `os/servers/vfs/src/pipe.rs:fn read_decision（L140，工具生成） read_reject_wake` | 快失败仍欠唤醒 |
+| `create_pipe` | `pipe.c:60` | `os/servers/vfs/src/pipe.rs:fn rollback_for（L254，工具生成）,189,216,286` | 工厂 + 阶段 + 回滚 + 标志 |
+| `susp_count` | `glo.h:14` | `os/servers/vfs/src/pipe.rs:fn newnode（L296，工具生成） SuspLedger` | 加减 + 下溢守卫 |
+| `reviving` | `glo.h:16` | `os/servers/vfs/src/pipe.rs:fn dec_checked（L353，工具生成） ReviveLedger` | 标记计数 |
+| `pipe_suspend` | `pipe.c:315` | `os/servers/vfs/src/pipe.rs:fn new suspend_record` | 复用 PipeBlock |
+| `release` 匹配 | `pipe.c:403-419` | `os/servers/vfs/src/pipe.rs:fn suspend_record（L421，工具生成） release_match` | 六元合取 |
+| select 清位 | `pipe.c:392` | `os/servers/vfs/src/pipe.rs:enum BlockKind select_ack` | 位清除 |
+| 驱散分类 | `pipe.c:344-350` | `os/servers/vfs/src/pipe.rs:fn release_match（L457，工具生成） classify_driver_waiter` | 三分类 |
+| `revive` | `pipe.c:435` | `os/servers/vfs/src/pipe.rs:fn release_match（L469，工具生成）,487` | verdict 五值 |
+| `unpause` | `pipe.c:498` | `os/servers/vfs/src/pipe.rs:fn revive_decision（L527，工具生成）,549,565` | 回复 + 取消 + 计划 |
+| `map_vnode` | `pipe.c:151` | `os/servers/vfs/src/pipe.rs:struct UnpausePlan（L591，工具生成）,610` | verdict 三值 |
+| 错误族 | `pipe.c` 全文件 | `os/servers/vfs/src/pipe.rs:enum MapVerdict（L629，工具生成）,644 PipeError::to_errno` | 5 变体→errno，无自创 |
 
 ### 4.3 不变量
 
@@ -208,19 +208,19 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_pipe2_flag_merge` | `pipe.c:45-46,133-134` | 标志合并 + 双端拆分 | `pipe.rs:660` |
-| `test_create_rollback_table` | `pipe.c:82-113` | 回滚单调三样本 | `pipe.rs:674` |
-| `test_factories_differ` | design D2 | 双工厂分化 + trait 多态 | `pipe.rs:700` |
-| `test_read_sizing_matrix` | `pipe.c:217-235` | 读三路 + 快失败唤醒 + check-only | `pipe.rs:712` |
-| `test_write_sizing_matrix` | `pipe.c:237-287` | 写五路 + 原子/EAGAIN 边界 | `pipe.rs:750` |
-| `test_susp_ledgers` | `pipe.c:304-306` + glo.h | 计数规则 + 加减守卫 | `pipe.rs:808` |
-| `test_suspend_record_reuses_pipe_block` | `pipe.c:322-327` | 五字段复用 | `pipe.rs:827` |
-| `test_release_match_conjunction` | `pipe.c:403-419,392` | 六元合取 9 样本 + 清位 | `pipe.rs:837` |
-| `test_revive_verdicts` | `pipe.c:445-490` | 两门 + 标记 + 回复 + 禁用 | `pipe.rs:857` |
-| `test_unpause_plans` | `pipe.c:503-560` | 回数/EINTR + 取消三类 + 计数 | `pipe.rs:881` |
-| `test_map_verdicts` | `pipe.c:157-167` | 短路 + 缺席 + 免解 | `pipe.rs:905` |
-| `test_driver_waiter_classification` | `pipe.c:344-350` | 三分类 + 优先 | `pipe.rs:916` |
-| `test_errno_map_covers_pipe_c` | `pipe.c` 全文件 | 5 变体→errno 全映射 | `pipe.rs:925` |
+| `test_pipe2_flag_merge` | `pipe.c:45-46,133-134` | 标志合并 + 双端拆分 | `os/servers/vfs/src/pipe.rs:enum PipeError（L660，工具生成）` |
+| `test_create_rollback_table` | `pipe.c:82-113` | 回滚单调三样本 | `os/servers/vfs/src/pipe.rs:enum PipeError（L674，工具生成）` |
+| `test_factories_differ` | design D2 | 双工厂分化 + trait 多态 | `os/servers/vfs/src/pipe.rs:fn test_pipe2_flag_merge` |
+| `test_read_sizing_matrix` | `pipe.c:217-235` | 读三路 + 快失败唤醒 + check-only | `os/servers/vfs/src/pipe.rs:fn test_create_rollback_table（L712，工具生成）` |
+| `test_write_sizing_matrix` | `pipe.c:237-287` | 写五路 + 原子/EAGAIN 边界 | `os/servers/vfs/src/pipe.rs:fn test_create_rollback_table（L750，工具生成）` |
+| `test_susp_ledgers` | `pipe.c:304-306` + glo.h | 计数规则 + 加减守卫 | `os/servers/vfs/src/pipe.rs:fn test_read_sizing_matrix（L808，工具生成）` |
+| `test_suspend_record_reuses_pipe_block` | `pipe.c:322-327` | 五字段复用 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L827，工具生成）` |
+| `test_release_match_conjunction` | `pipe.c:403-419,392` | 六元合取 9 样本 + 清位 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L837，工具生成）` |
+| `test_revive_verdicts` | `pipe.c:445-490` | 两门 + 标记 + 回复 + 禁用 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L857，工具生成）` |
+| `test_unpause_plans` | `pipe.c:503-560` | 回数/EINTR + 取消三类 + 计数 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L881，工具生成）` |
+| `test_map_verdicts` | `pipe.c:157-167` | 短路 + 缺席 + 免解 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L905，工具生成）` |
+| `test_driver_waiter_classification` | `pipe.c:344-350` | 三分类 + 优先 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L916，工具生成）` |
+| `test_errno_map_covers_pipe_c` | `pipe.c` 全文件 | 5 变体→errno 全映射 | `os/servers/vfs/src/pipe.rs:fn test_write_sizing_matrix（L925，工具生成）` |
 
 测试策略：定量以读写矩阵全样本覆盖（含 EAGAIN 仍唤醒的反直觉项与 atomic 边界项）；建管以回滚单调性覆盖；账本以加减守卫覆盖；唤醒以合取真值表覆盖；复活/中断以分支全覆盖；错误以 5 变体全映射覆盖。
 
@@ -252,7 +252,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/pipe.c:1-561`（`do_pipe2/create_pipe/map_vnode/pipe_check/suspend/pipe_suspend/unsuspend_by_endpt/release/revive/unpause`）、`minix3/minix/servers/vfs/glo.h:14-16`（`susp_count/reviving`）、`minix3/minix/servers/vfs/const.h:19-25`（`FP_BLOCKED_ON_*`）、`minix3/minix/include/minix/com.h:1151`（`SUSPEND`）、`minix3/sys/sys/syslimits.h:66`（`PIPE_BUF`）
+- C 源：`minix3/minix/servers/vfs/pipe.c:1-561`（`do_pipe2/create_pipe/map_vnode/pipe_check/suspend/pipe_suspend/unsuspend_by_endpt/release/revive/unpause`）、`minix3/minix/servers/vfs/glo.h:EXTERN（L14，工具生成）`（`susp_count/reviving`）、`minix3/minix/servers/vfs/const.h:FP_BLOCKED_ON_NONE`（`FP_BLOCKED_ON_*`）、`minix3/minix/include/minix/com.h:SUSPEND`（`SUSPEND`）、`minix3/sys/sys/syslimits.h:PIPE_BUF`（`PIPE_BUF`）
 - 阶段文档：`16-read-write.md`（分派 verdict）、`02-fproc-struct.md`（`BlockedOn/PipeBlock`）、`04-filp-table.md`（对端存在性）、`09-main-loop.md`（延迟处理）、`08-worker-thread.md`（挂起执行）
-- Rust 实现：`os/servers/vfs/src/pipe.rs:1`（本篇判定层）、`os/servers/vfs/src/fproc.rs:94`（`BlockedOn` 七态）、`os/servers/vfs/src/read_write.rs:1`（`RwDir` 与续挂判定）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/pipe.rs:1`（本篇判定层）、`os/servers/vfs/src/fproc.rs:enum BlockedOn（L94，工具生成）`（`BlockedOn` 七态）、`os/servers/vfs/src/read_write.rs:1`（`RwDir` 与续挂判定）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（用户缓冲拷贝语义）

@@ -22,13 +22,13 @@
 
 ### 1.1 为什么 PM 需要三元组 `real/effective/saved`：审计、可切换、可回退
 
-`uid` 的三元组在 `mproc.h:40-46` 的 `real/effective/saved` 与 `minix_types::IdSet<Uid>` 的 `real/effective/saved` 同构：
+`uid` 的三元组在 `minix3/minix/servers/pm/mproc.h:sigaction（L40，工具生成）` 的 `real/effective/saved` 与 `minix_types::IdSet<Uid>` 的 `real/effective/saved` 同构：
 
 - `real` 是“谁创建的我”（审计源，`getuid` 返回 `real`，`setuid` 的 `real!=uid` 判据即此）；
 - `effective` 是“我以谁的权限行事”（访问检查，`is_superuser` 的 `eff==0` 即此）；
 - `saved` 是“上一次的 `effective`”（`seteuid(saved)` 可回退到上一次的 `effective`，`seteuid` 的 `saved!=uid` 三重判据即此）。
 
-`gid` 三元同理（`real/eff/saved` 的 `IdSet<Gid>`）。`seteuid` 的 `real/saved/eff!=SUPER_USER→EPERM` 三重（`getset.c:131-133`）使“已保存的 `root` 可切回 `root`”而 `real` 仅作审计——`real` 不变仅 `eff` 变的 `seteuid` 是 `real==uid` 的审计直通。
+`gid` 三元同理（`real/eff/saved` 的 `IdSet<Gid>`）。`seteuid` 的 `real/saved/eff!=SUPER_USER→EPERM` 三重（`minix3/minix/servers/pm/getset.c:do_set（L131，工具生成）`）使“已保存的 `root` 可切回 `root`”而 `real` 仅作审计——`real` 不变仅 `eff` 变的 `seteuid` 是 `real==uid` 的审计直通。
 
 ### 1.2 为什么 `setuid` 有 BSD 全置语义：`real=eff=saved=uid` 的原子
 
@@ -40,11 +40,11 @@ real=eff=saved=uid（117-119）BSD 全置
 VFS_PM_SETUID 编码 ENDPT/EID/RID（121-125）
 ```
 
-BSD 全置使“成功后三元一致”的原子语义：`setuid(geteuid())` 的 `real!=uid` 但 `eff==0` 时可成功并三元全置为 `uid`（`real` 审计被改），与 `seteuid` 的仅 `eff` 单置对偶（`134` `eff=uid`）。`getset.c:113` 注释 *NetBSD specific semantics: setuid(geteuid()) may fail* 即此 `real` 判据的 BSD 特异。
+BSD 全置使“成功后三元一致”的原子语义：`setuid(geteuid())` 的 `real!=uid` 但 `eff==0` 时可成功并三元全置为 `uid`（`real` 审计被改），与 `seteuid` 的仅 `eff` 单置对偶（`134` `eff=uid`）。`minix3/minix/servers/pm/getset.c:do_set（L113，工具生成）` 注释 *NetBSD specific semantics: setuid(geteuid()) may fail* 即此 `real` 判据的 BSD 特异。
 
 ### 1.3 为什么 `setuid` 成功的进程必须同步 VFS：双副本一致
 
-`uid/gid` 在 VFS 侧另有一份 `fproc` 副本（`05-stage-vfs/02-fproc-struct.md` 的 `fp_realuid/fp_effuid` 族），`do_set` 成功后的 `tell_vfs(VFS_PM_SETUID)` 的 `VFS_CALL` 置位 + `SUSPEND`（`getset.c:219-222` 三段式：编码 `121-125` → `tell_vfs` → `SUSPEND`）使两份表一致（`05` 的 `handle_vfs_reply` 的 `VFS_PM_SETUID→SetGid/SETEGID` 双分支 `reply(OK)` 解挂）。
+`uid/gid` 在 VFS 侧另有一份 `fproc` 副本（`05-stage-vfs/02-fproc-struct.md` 的 `fp_realuid/fp_effuid` 族），`do_set` 成功后的 `tell_vfs(VFS_PM_SETUID)` 的 `VFS_CALL` 置位 + `SUSPEND`（`minix3/minix/servers/pm/getset.c:do_set（L219，工具生成）` 三段式：编码 `121-125` → `tell_vfs` → `SUSPEND`）使两份表一致（`05` 的 `handle_vfs_reply` 的 `VFS_PM_SETUID→SetGid/SETEGID` 双分支 `reply(OK)` 解挂）。
 
 `GROUPS` 亦双副本：`mp_sgroups` 16 组在 PM，`fproc` 的组列表在 VFS，`VFS_PM_SETGROUPS` 的 `GROUP_NO/GROUP_ADDR` 编码（`199-203`）使 VFS 侧 `fproc` 组列表与 `ngroups` 同步。
 
@@ -68,11 +68,11 @@ procgrp==pid → EPERM（206）“已是会话首则失败”
 procgrp=pid（207）“成为新会话首”为 `procgrp=pid`（A-13 进程组/会话语义，procgrp==pid 即“我是组长”）
 ```
 
-`procgrp` 是进程组（`mproc.h:30` `mp_procgrp`），`pid` 相等即“组长”（会话首的进程组与 `pid` 相等为首），`GETSID` 的 `p?find_proc(p):who_p→procgrp`（`74`）与此对偶（`getsid(pid)` 返回 `target` 的 `procgrp`，`pid==0→who_p` 的 `caller` 自查）。
+`procgrp` 是进程组（`minix3/minix/servers/pm/mproc.h:sigaction（L30，工具生成）` `mp_procgrp`），`pid` 相等即“组长”（会话首的进程组与 `pid` 相等为首），`GETSID` 的 `p?find_proc(p):who_p→procgrp`（`74`）与此对偶（`getsid(pid)` 返回 `target` 的 `procgrp`，`pid==0→who_p` 的 `caller` 自查）。
 
 ### 1.6 为什么 `TAINTED` 与 `issetugid`：污染位的 `LD_PRELOAD` 防注入
 
-`exec` 的 `setuid` 位使进程被污染（`exec.c:84` `~TAINTED` 默认清零 + `105/108` `TAINTED` 置位），`PM_ISSETUGID` 的 `!!(flags & TAINTED)`（`getset.c:81` `TAINTED 0x40000`）是 `issetugid(2)` 的 `LD_PRELOAD` 防注入检查（`libexec` 的 `rtld` 路径隔离，`issetugid` 为真时不加载用户 `LD_LIBRARY_PATH`）。
+`exec` 的 `setuid` 位使进程被污染（`exec.c:84` `~TAINTED` 默认清零 + `105/108` `TAINTED` 置位），`PM_ISSETUGID` 的 `!!(flags & TAINTED)`（`minix3/minix/servers/pm/getset.c:do_get（L81，工具生成）` `TAINTED 0x40000`）是 `issetugid(2)` 的 `LD_PRELOAD` 防注入检查（`libexec` 的 `rtld` 路径隔离，`issetugid` 为真时不加载用户 `LD_LIBRARY_PATH`）。
 
 `TAINTED` 的 `RemainingFlags::TAINTED` 在 `D5` 以 `tainted: bool` 唯一真源消除位与 `exec` 散落的双重性（`A-12`）。
 
@@ -80,7 +80,7 @@ procgrp=pid（207）“成为新会话首”为 `procgrp=pid`（A-13 进程组/�
 
 Rust 改写不是照抄 `mp_realuid != uid && mp_effuid != SUPER_USER` 条件，而是在吸收工业级 OS 的成熟模式后做取舍。
 
-**Linux `cred` 的四元 + capabilities。** Linux `cred { uid,euid,suid,fsuid; gid,egid,sgid,fsgid; groups }` + `capabilities(7)` 的 `cap_setuid/cap_setgid` 以 `capable(CAP_SETUID)` 替代 `eff==SUPER_USER` 的位判据，`setuid` 的 `real/effective/saved/fsuid` 四元全置（`kernel/sys.c:SYSC_setuid`）与 Minix3 的 `real/eff/saved` 三元同源但多 `fsuid`（`VFS` 侧 `fproc` 的 `fsuid` 在 Minix3 为 `VFS_PM_SET*` 双副本协同而非 `fsuid` 四元）。Linux 的 `groups` 以 `cred->group_info` 的 `flex_array` 变长（`NGROUPS_MAX 65536`），Minix3 以 `mp_sgroups[16]` 固定 16 组（`mproc.h:50` `NGROUPS_MAX 16`）——16 组是微内核进程表固定大小的产物（`mproc` 约 480B，16 组占 64B），`Vec<Gid>` 在 Rust 侧变长但 `GID_MAX` 越界仍 16 组钳位。
+**Linux `cred` 的四元 + capabilities。** Linux `cred { uid,euid,suid,fsuid; gid,egid,sgid,fsgid; groups }` + `capabilities(7)` 的 `cap_setuid/cap_setgid` 以 `capable(CAP_SETUID)` 替代 `eff==SUPER_USER` 的位判据，`setuid` 的 `real/effective/saved/fsuid` 四元全置（`kernel/sys.c:SYSC_setuid`）与 Minix3 的 `real/eff/saved` 三元同源但多 `fsuid`（`VFS` 侧 `fproc` 的 `fsuid` 在 Minix3 为 `VFS_PM_SET*` 双副本协同而非 `fsuid` 四元）。Linux 的 `groups` 以 `cred->group_info` 的 `flex_array` 变长（`NGROUPS_MAX 65536`），Minix3 以 `mp_sgroups[16]` 固定 16 组（`minix3/minix/servers/pm/mproc.h:sigaction（L50，工具生成）` `NGROUPS_MAX 16`）——16 组是微内核进程表固定大小的产物（`mproc` 约 480B，16 组占 64B），`Vec<Gid>` 在 Rust 侧变长但 `GID_MAX` 越界仍 16 组钳位。
 
 **Redox `Context::uid/gid` 的 `RwLock<Credentials>`。** Redox 以 `context::Context { uid: Uid, gid: Gid, groups: Vec<Gid> }` + `scheme::Scheme` 的 `RwLock` 句柄与 `potassium` 的 `capability` 隔离，`getuid/setuid` 经 `context::current().uid` 的 `RwLock` 读/写（`kernel/context/context.rs`），VFS 侧 `Scheme` 的 `uid` 检查在 `open` 时以 `Context` 快照而非 `fproc` 双副本——Redox 无 `TAINTED` 位（`setuid` 位的污染经 `Scheme` 的 `setuid` 计数），Minix3 的 `TAINTED` 位为 `rtld` 的 `issetugid` 快捷。
 
@@ -115,7 +115,7 @@ int do_get(void)
 
 `24` 行 `rmp=mp` 的全局伪装在 `Rust` 以 `caller: UserSlot` 显式参替代“伪装 `mp`”（`A-3` 全局 `mp` 显式化，`11` 的 `SignalContext` 同 `A-3`），`28` 行 `switch(call_nr)` 7 分支 + `84-86` `default→EINVAL` 使 `GetOp` 枚举穷尽。
 
-### 2.2 `PM_GETGROUPS`（`getset.c:29-50`）
+### 2.2 `PM_GETGROUPS`（`minix3/minix/servers/pm/getset.c:do_get（L29，工具生成）`）
 
 ```c
 	case PM_GETGROUPS: // 29
@@ -133,9 +133,9 @@ int do_get(void)
 		break; // 50
 ```
 
-`31-32` 的 `NGROUPS_MAX 16`（`mproc.h:50` `NGROUPS_MAX 16`，`minix_types::NGROUPS_MAX`）与 `191` 行 `GID_MAX` 越界对偶（`get` 不检 `GID_MAX`，`set` 检），`34-36` 的 `0→count` 查询使两阶段查询在一次 `do_get` 完成，`39-41` 的 `<avail→EINVAL` 非截断（`getgroups(8,buf)` 在 `avail=12` 时 `EINVAL` 而非截断为 8）。
+`31-32` 的 `NGROUPS_MAX 16`（`minix3/minix/servers/pm/mproc.h:sigaction（L50，工具生成）` `NGROUPS_MAX 16`，`minix_types::NGROUPS_MAX`）与 `191` 行 `GID_MAX` 越界对偶（`get` 不检 `GID_MAX`，`set` 检），`34-36` 的 `0→count` 查询使两阶段查询在一次 `do_get` 完成，`39-41` 的 `<avail→EINVAL` 非截断（`getgroups(8,buf)` 在 `avail=12` 时 `EINVAL` 而非截断为 8）。
 
-### 2.3 `PM_GETUID/GETGID`（`getset.c:51-59`）
+### 2.3 `PM_GETUID/GETGID`（`minix3/minix/servers/pm/getset.c:do_get（L51，工具生成）`）
 
 ```c
 	case PM_GETUID: // 51
@@ -150,7 +150,7 @@ int do_get(void)
 
 `52-58` 的 `real` 经 `rc` + `eff` 经 `reply` 双值在 `Rust` 以 `GetResult::Uid { real, eff }` 载荷显式（`m_pm_lc_getuid.euid` 的 `reply` 字段在 `GetResult::Uid` 中，双值无需 `reply` 副作用）。
 
-### 2.4 `PM_GETPID`（`getset.c:61-64`）
+### 2.4 `PM_GETPID`（`minix3/minix/servers/pm/getset.c:do_get（L61，工具生成）`）
 
 ```c
 	case PM_GETPID: // 61
@@ -161,7 +161,7 @@ int do_get(void)
 
 `62` 行 `mproc[who_p].pid` 的 `who_p` 全局在 `Rust` 以 `caller: UserSlot` 显式参（`A-3`），`63` 行 `mproc[parent].pid` 的 `parent` 槽索引经 `Guardianship::parent` 显式。
 
-### 2.5 `PM_GETPGRP`（`getset.c:66-68`）
+### 2.5 `PM_GETPGRP`（`minix3/minix/servers/pm/getset.c:do_get（L66，工具生成）`）
 
 ```c
 	case PM_GETPGRP: // 66
@@ -171,7 +171,7 @@ int do_get(void)
 
 `67` 行 `procgrp` 是进程组（`A-13`），`setsid` 的 `procgrp=pid` 成为新会话首（`207`）与此对偶。
 
-### 2.6 `PM_GETSID`（`getset.c:70-79`）
+### 2.6 `PM_GETSID`（`minix3/minix/servers/pm/getset.c:do_get（L70，工具生成）`）
 
 ```c
 	case PM_GETSID: // 70
@@ -185,7 +185,7 @@ int do_get(void)
 
 `74` 行 `p?find_proc(p):&mproc[who_p]` 的 `p==0→caller` 自查与 `find_proc` 的 `ESRCH` 双路径（`75` `ESRCH` 初始后 `target→procgrp`），`Rust` 以 `PidTable::pid_of` + `Guardianship` 显式。
 
-### 2.7 `PM_ISSETUGID`（`getset.c:80-82`）
+### 2.7 `PM_ISSETUGID`（`minix3/minix/servers/pm/getset.c:do_get（L80，工具生成）`）
 
 ```c
 	case PM_ISSETUGID: // 80
@@ -195,7 +195,7 @@ int do_get(void)
 
 `81` 行 `!!(flags & TAINTED)` 的位→`bool` 在 `Rust` 以 `tainted: bool` 唯一真源（`D5`），`TAINTED` 位与 `exec` 散落的双重性以 `bool` 消除。
 
-### 2.8 `do_set` 序言（`getset.c:95-108`）
+### 2.8 `do_set` 序言（`minix3/minix/servers/pm/getset.c:do_set`）
 
 ```c
 int do_set(void)
@@ -208,7 +208,7 @@ int do_set(void)
 
 `101` 行 `rmp=mp` 全局伪装同 `do_get:24`，`108` 行 `memset(m,0)` 的 `VFS_PM_SET*` 消息清零在 `Rust` 以 `VfsCall::Set*` 枚举携带 `ENDPT/EID/RID` 三字段。
 
-### 2.9 `PM_SETUID`（`getset.c:111-126`）
+### 2.9 `PM_SETUID`（`minix3/minix/servers/pm/getset.c:do_set（L111，工具生成）`）
 
 ```c
 	case PM_SETUID: // 111
@@ -223,7 +223,7 @@ int do_set(void)
 
 `114-115` 的 `real!=uid && eff!=SUPER_USER→EPERM` 与 `SETEUID` 的三重 `131-133` 对偶（`SETUID` 二重判据 `real/eff` vs `SETEUID` 三重 `real/saved/eff`），`117-119` 的 `real=eff=saved=uid` BSD 全置原子（成功后三元一致）与 `SETEUID` 的 `134` `eff=uid` 单置对偶。
 
-### 2.10 `PM_SETEUID`（`getset.c:128-141`）
+### 2.10 `PM_SETEUID`（`minix3/minix/servers/pm/getset.c:do_set（L128，工具生成）`）
 
 ```c
 	case PM_SETEUID: // 128
@@ -239,7 +239,7 @@ int do_set(void)
 
 `131-133` 的 `real/saved/eff!=SUPER_USER` 三重使“已保存的 `root` 可切回”而 `real` 仅审计——`real==uid` 的审计直通使 `real` 不变仅 `eff` 变的 `seteuid` 可 `real` 直通。
 
-### 2.11 `PM_SETGID/SETEGID` 对称（`getset.c:143-170`）
+### 2.11 `PM_SETGID/SETEGID` 对称（`minix3/minix/servers/pm/getset.c:do_set（L143，工具生成）`）
 
 ```c
 	case PM_SETGID: // 143
@@ -259,9 +259,9 @@ int do_set(void)
 		break; // 170
 ```
 
-`145-146` 的 `gid` 判据仍用 `effuid` 的 `SUPER_USER`（`uid` 的 `SUPER_USER` 即 `gid` 的特权判据，`mproc.h:40-46` 的 `uid/gid` 三元分层但特权判据统一 `effuid==0`），`147-149` 的全置与 `163` 的单置对偶与 `SETUID/SETEUID` 同构。
+`145-146` 的 `gid` 判据仍用 `effuid` 的 `SUPER_USER`（`uid` 的 `SUPER_USER` 即 `gid` 的特权判据，`minix3/minix/servers/pm/mproc.h:sigaction（L40，工具生成）` 的 `uid/gid` 三元分层但特权判据统一 `effuid==0`），`147-149` 的全置与 `163` 的单置对偶与 `SETUID/SETEUID` 同构。
 
-### 2.12 `PM_SETGROUPS`（`getset.c:172-204`）
+### 2.12 `PM_SETGROUPS`（`minix3/minix/servers/pm/getset.c:do_set（L172，工具生成）`）
 
 ```c
 	case PM_SETGROUPS: // 172
@@ -283,7 +283,7 @@ int do_set(void)
 
 `173-174` 的 `eff!=SUPER_USER` 单判据（`SETGROUPS` 仅 `root` 可设组，`GETGROUPS` 无此判据），`181-182` 的 `ptr==0→EFAULT` 与 `sys_datacopy` 的空指针显式 `EFAULT` 对偶（`do_get` 的 `GETGROUPS` 无 `ptr` 校验，`sys_datacopy` 与此对偶），`190-192` 的 `GID_MAX` 越界在 Rust 以 `Gid` 64 位扩展的 `GID_MAX` 一处检查（`A-11`），`194-196` 的尾段清零使 `ngroups` 缩小时残留组不泄漏（`ngroups` 缩小后旧尾组清 0）。
 
-### 2.13 `PM_SETSID`（`getset.c:205-212`）
+### 2.13 `PM_SETSID`（`minix3/minix/servers/pm/getset.c:do_set（L205，工具生成）`）
 
 ```c
 	case PM_SETSID: // 205
@@ -295,7 +295,7 @@ int do_set(void)
 
 `206` 的 `procgrp==pid→EPERM` 已是会话首则失败（`setsid` 的“成为新会话首”为 `procgrp=pid`，已是会话首则无需再设），`207` 行 `procgrp=pid` 的赋值与 `GETSID` 的 `target→procgrp`（`76-77`）对偶。
 
-### 2.14 统一 VFS 转发与 SUSPEND（`getset.c:218-222`）
+### 2.14 统一 VFS 转发与 SUSPEND（`minix3/minix/servers/pm/getset.c:do_set（L218，工具生成）`）
 
 ```c
   /* Send the request to VFS */
@@ -306,20 +306,20 @@ int do_set(void)
 
 `219-222` 三段式（编码 `121-125/136-140/151-154` → `tell_vfs` → `SUSPEND`）与 `05` 的 `handle_vfs_reply` 的 `VFS_PM_SETUID→SetUid/SETEGID` 分支 `reply(OK)` 解挂构成双向闭环（`tell_vfs` 的 `VFS_CALL` 置位在 `05` 的 `VFS_PM_SET*_REPLY` 后 `~VFS_CALL` 清）。
 
-### 2.15 消息与类型（`ipc.h:469` `mess_lc_pm_uid/gid/getsid/groups` + `com.h:521-531` `VFS_PM_SETUID 1` 等 + `mproc.h:40-50` 三元组 + `mproc.h:103` `TAINTED`）
+### 2.15 消息与类型（`ipc.h:469` `mess_lc_pm_uid/gid/getsid/groups` + `com.h:521-531` `VFS_PM_SETUID 1` 等 + `minix3/minix/servers/pm/mproc.h:sigaction（L40，工具生成）` 三元组 + `minix3/minix/servers/pm/mproc.h:TAINTED` `TAINTED`）
 
-- `mess_lc_pm_setuid { uid }`/`mess_lc_pm_setgid { gid }`/`mess_lc_pm_getsid { pid }`/`mess_lc_pm_groups { num, ptr }`（`ipc.h:469` `uid/gid/pid/num/ptr`，`_ASSERT 56B`）、`mess_pm_lc_getuid { euid }`/`mess_pm_lc_getgid { egid }`/`mess_pm_lc_getpid { parent_pid }`（`ipc.h:469` `euid/egid/parent_pid` 的 `reply` 字段）、`VFS_PM_SETUID 1/GID 2/SID 3/GROUPS 11`（`com.h:521-531` `VFS_PM_RQ_BASE+1` 等）+ `VFS_PM_SETUID_REPLY 1` 等（`com.h:534-544` `VFS_PM_RS_BASE+1` 等）、`mp_realuid/effuid/svuid` 等三元组（`mproc.h:40-46`）、`mp_ngroups/sgroups[16]`（`mproc.h:48-50` `NGROUPS_MAX 16`）、`TAINTED 0x40000`（`mproc.h:103`）、`callnr.h:PM_GETUID..PM_SETSID`（`GETUID 0..SETSID 40`）。
+- `mess_lc_pm_setuid { uid }`/`mess_lc_pm_setgid { gid }`/`mess_lc_pm_getsid { pid }`/`mess_lc_pm_groups { num, ptr }`（`ipc.h:469` `uid/gid/pid/num/ptr`，`_ASSERT 56B`）、`mess_pm_lc_getuid { euid }`/`mess_pm_lc_getgid { egid }`/`mess_pm_lc_getpid { parent_pid }`（`ipc.h:469` `euid/egid/parent_pid` 的 `reply` 字段）、`VFS_PM_SETUID 1/GID 2/SID 3/GROUPS 11`（`com.h:521-531` `VFS_PM_RQ_BASE+1` 等）+ `VFS_PM_SETUID_REPLY 1` 等（`com.h:534-544` `VFS_PM_RS_BASE+1` 等）、`mp_realuid/effuid/svuid` 等三元组（`minix3/minix/servers/pm/mproc.h:sigaction（L40，工具生成）`）、`mp_ngroups/sgroups[16]`（`minix3/minix/servers/pm/mproc.h:sigaction（L48，工具生成）` `NGROUPS_MAX 16`）、`TAINTED 0x40000`（`minix3/minix/servers/pm/mproc.h:TAINTED`）、`callnr.h:PM_GETUID..PM_SETSID`（`GETUID 0..SETSID 40`）。
 
 ### 2.16 不变式即契约
 
 | 类别 | 检测 | 触发 | 严重度 |
 |------|------|------|--------|
-| `NGROUPS_MAX 16` 与 `GID_MAX` 约束 | `getset.c:31/178/191` | `ngroups>16` 或 `gid>GID_MAX → EINVAL` | 可恢复 |
-| `GETGROUPS==0` 查询 | `getset.c:34-36` | `ngroups==0→r=ngroups` 先问再拷 | 不变量 |
-| `SETUID` 的三元全置 | `getset.c:117-119` BSD | `real=eff=saved=uid` 原子 | 不变量 |
-| `TAINTED` 的 `issetugid` 位 | `getset.c:81` `!!(TAINTED)` | `TAINTED` 位→`bool` | 不变量 |
-| `SETSID` 的 `procgrp==pid→EPERM` | `getset.c:206` | 已是会话首则失败 | 可恢复 |
-| `VFS_PM_SET*` 的 `tell_vfs→SUSPEND` | `getset.c:219-222` | `do_set` 成功后 `VFS_CALL` 置位 | 不变量（`ReplyLater`） |
+| `NGROUPS_MAX 16` 与 `GID_MAX` 约束 | `minix3/minix/servers/pm/getset.c:do_get（L31，工具生成）/178/191` | `ngroups>16` 或 `gid>GID_MAX → EINVAL` | 可恢复 |
+| `GETGROUPS==0` 查询 | `minix3/minix/servers/pm/getset.c:do_get（L34，工具生成）` | `ngroups==0→r=ngroups` 先问再拷 | 不变量 |
+| `SETUID` 的三元全置 | `minix3/minix/servers/pm/getset.c:do_set（L117，工具生成）` BSD | `real=eff=saved=uid` 原子 | 不变量 |
+| `TAINTED` 的 `issetugid` 位 | `minix3/minix/servers/pm/getset.c:do_get（L81，工具生成）` `!!(TAINTED)` | `TAINTED` 位→`bool` | 不变量 |
+| `SETSID` 的 `procgrp==pid→EPERM` | `minix3/minix/servers/pm/getset.c:do_set（L206，工具生成）` | 已是会话首则失败 | 可恢复 |
+| `VFS_PM_SET*` 的 `tell_vfs→SUSPEND` | `minix3/minix/servers/pm/getset.c:do_set（L219，工具生成）` | `do_set` 成功后 `VFS_CALL` 置位 | 不变量（`ReplyLater`） |
 | `VFS_PM_SET*_REPLY→OK` 双向 | `com.h:534-544` | `Set*Reply` 后 `reply(OK)` 解挂（`05` 的 `VfsReply::Set*`） | 不变量 |
 
 ---
@@ -408,7 +408,7 @@ impl Credentials {
 }
 ```
 
-`is_superuser` 一处谓词收敛 `getset.c:114/131/145/160/173` 的 `eff!=SUPER_USER` 五处判据，`set_uid_all` 等三元全置/单置对偶与 `117-119`/`134` 同原子。
+`is_superuser` 一处谓词收敛 `minix3/minix/servers/pm/getset.c:do_set（L114，工具生成）/131/145/160/173` 的 `eff!=SUPER_USER` 五处判据，`set_uid_all` 等三元全置/单置对偶与 `117-119`/`134` 同原子。
 
 ### 4.3 `credentials.rs`：`do_get/do_set` 分派
 
@@ -425,18 +425,18 @@ pub fn do_set(table: &mut ProcTable, caller: UserSlot, op: SetOp, copier: &mut d
 
 ### 4.4 `os/libs/minix-types/src/ipc/message.rs`：消息联合体对齐
 
-已存 `MessLcPmUid/Gid/GetSid/Groups` + `MessPmLcGetUid/Gid/GetPid`（与 `ipc.h:469` 对齐，`_ASSERT_MSG_SIZE` 56B），`MESS_LC_PM_GROUPS` 的 `num/ptr` 与 `getset.c:30/43` 对齐。
+已存 `MessLcPmUid/Gid/GetSid/Groups` + `MessPmLcGetUid/Gid/GetPid`（与 `ipc.h:469` 对齐，`_ASSERT_MSG_SIZE` 56B），`MESS_LC_PM_GROUPS` 的 `num/ptr` 与 `minix3/minix/servers/pm/getset.c:do_get（L30，工具生成）/43` 对齐。
 
 ### 4.5 不变量表
 
 | # | 不变量 | C 锚点 | Rust 表达 | 检测 |
 |---|--------|--------|-----------|------|
-| 1 | `NGROUPS_MAX 16` 与 `GID_MAX` | `getset.c:31/191` | `CopyGroups::gid_max` | `test_setgroups_gid_max` |
-| 2 | `GETGROUPS==0` 查询 | `getset.c:34-36` | `GetGroups{count:0}→Groups{avail}` | `test_getgroups_zero_queries` |
-| 3 | `SETUID` 三元全置 | `getset.c:117-119` BSD | `Credentials::set_uid_all` | `test_setuid_full_triplet` |
-| 4 | `TAINTED` 位 `issetugid` | `getset.c:81` `!!(TAINTED)` | `tainted: bool` | `test_issetugid_tainted` |
-| 5 | `SETSID` `procgrp==pid→EPERM` | `getset.c:206` | `SetSid→Perm` | `test_setsid_already_leader` |
-| 6 | `VFS_PM_SET*→SUSPEND` | `getset.c:219-222` | `ReplyIntent::ReplyLater` | `test_do_set_forwards_to_vfs` |
+| 1 | `NGROUPS_MAX 16` 与 `GID_MAX` | `minix3/minix/servers/pm/getset.c:do_get（L31，工具生成）/191` | `CopyGroups::gid_max` | `test_setgroups_gid_max` |
+| 2 | `GETGROUPS==0` 查询 | `minix3/minix/servers/pm/getset.c:do_get（L34，工具生成）` | `GetGroups{count:0}→Groups{avail}` | `test_getgroups_zero_queries` |
+| 3 | `SETUID` 三元全置 | `minix3/minix/servers/pm/getset.c:do_set（L117，工具生成）` BSD | `Credentials::set_uid_all` | `test_setuid_full_triplet` |
+| 4 | `TAINTED` 位 `issetugid` | `minix3/minix/servers/pm/getset.c:do_get（L81，工具生成）` `!!(TAINTED)` | `tainted: bool` | `test_issetugid_tainted` |
+| 5 | `SETSID` `procgrp==pid→EPERM` | `minix3/minix/servers/pm/getset.c:do_set（L206，工具生成）` | `SetSid→Perm` | `test_setsid_already_leader` |
+| 6 | `VFS_PM_SET*→SUSPEND` | `minix3/minix/servers/pm/getset.c:do_set（L219，工具生成）` | `ReplyIntent::ReplyLater` | `test_do_set_forwards_to_vfs` |
 
 ---
 
@@ -467,7 +467,7 @@ pub fn do_set(table: &mut ProcTable, caller: UserSlot, op: SetOp, copier: &mut d
 
 ### 5.3 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `NGROUPS_MAX 16`（`mproc.h:50`）、`TAINTED 0x40000`（`mproc.h:103`）、`VFS_PM_SETUID 1` 等（`com.h:521`）
+- `test_constants_match_c`：锁定 `NGROUPS_MAX 16`（`minix3/minix/servers/pm/mproc.h:sigaction（L50，工具生成）`）、`TAINTED 0x40000`（`minix3/minix/servers/pm/mproc.h:TAINTED`）、`VFS_PM_SETUID 1` 等（`com.h:521`）
 
 测试策略：`CopyGroups`/`VfsForwarder` 均 `Test*` mock 可注入 `EFAULT/EINVAL` 与计数；`is_sane` 的 `MAX_SECS/US` 边界在 `credentials.rs` 纯逻辑层验证；`VFS` 转发的 `VFS_CALL→SUSPEND` 与 `Set*Reply→OK` 双向由 `05` 的 `handle_vfs_reply` 已验证，本章仅断言 `forward_set → ReplyLater`。
 
@@ -494,7 +494,7 @@ pub fn do_set(table: &mut ProcTable, caller: UserSlot, op: SetOp, copier: &mut d
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/getset.c` 全文（`18-89` `do_get` + `95-223` `do_set`）、`minix3/minix/servers/pm/mproc.h:40-50`（三元组 + `mp_ngroups/sgroups`）+ `mproc.h:103`（`TAINTED`）、`minix3/minix/include/minix/com.h:521-531`（`VFS_PM_SETUID 1` 等）+ `minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_*`）、`minix3/sys/sys/limits.h:GID_MAX`（`0xFFFFFFFF`）
+- C 源（ground truth）：`minix3/minix/servers/pm/getset.c` 全文（`18-89` `do_get` + `95-223` `do_set`）、`minix3/minix/servers/pm/mproc.h:sigaction（L40，工具生成）`（三元组 + `mp_ngroups/sgroups`）+ `minix3/minix/servers/pm/mproc.h:TAINTED`（`TAINTED`）、`minix3/minix/include/minix/com.h:VFS_PM_SETUID`（`VFS_PM_SETUID 1` 等）+ `minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_*`）、`minix3/sys/sys/limits.h:GID_MAX`（`0xFFFFFFFF`）
 - PM 阶段文档：02-mproc-struct.md（`Credentials` 三元与 `TAINTED`）、05-vfs-interaction.md（`tell_vfs` 的 `NotIdle` 守卫与 `handle_vfs_reply` 的 `Set*` 分支）、04-ipc-dispatch.md（`ReplyIntent::ReplyLater`）、17-exec.md（`setuid` 位染污）、11-signal-core.md（`SUPER_USER` 四重）、16-scheduling.md（`nice` 的 `eff` 判据）
 - 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`sys_datacopy` 的 `vir_bytes` 真实传输，`libsys` 路径）
 - 阶段内顺序：02/05 → **本章（15）** → 17（`TAINTED` 染污）→ 16（`nice` 的 `SUPER_USER` 同源）→ 15 的 `GETSID` `find_proc` 消费方 `18`（`do_trace` 的 `find_proc` 同 `p?find_proc(p):who_p`）

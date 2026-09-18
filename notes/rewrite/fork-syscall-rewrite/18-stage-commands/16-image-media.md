@@ -82,7 +82,7 @@ ISO 格式存双端序本就是为了检错：只读小端，对端损坏浑然�
 |-----------|----------------|------|
 | `lib.rs` | — | 错误类型（`ImageError`，22 对应参数无效、12 对应缓冲不足）与模块组织 |
 | `dd.rs` | `args.c:105-121`（操作数）、`conv.c` 思想 | 操作数解析（`parse_operands`）与复制计划（`CopyPlan`） |
-| `iso.rs` | `isoread.c:41`（标识） | 主卷识别（`parse_primary`，四项检查） |
+| `iso.rs` | `minix3/minix/commands/isoread/isoread.c:ISO9660_ID`（标识） | 主卷识别（`parse_primary`，四项检查） |
 | `device.rs` | 块寻址思想 | `BlockDevice` 接口、`SliceDevice` 与 `EmptyDevice` |
 
 ### 4.2 关键类型与不变量
@@ -130,7 +130,7 @@ ISO 格式存双端序本就是为了检错：只读小端，对端损坏浑然�
 - `14-mount-fsck.md`、`15-partition-format.md`——挂载与切分（本篇的前置）
 - `18-network-config.md`——网络配置（下一步：连通远方）
 - `minix3/bin/dd/args.c:105-121`——操作数表（`CopyPlan` 的逐行对照）
-- `minix3/minix/commands/isoread/isoread.c:41`——卷标识（`parse_primary` 的一句话来源）
+- `minix3/minix/commands/isoread/isoread.c:ISO9660_ID`——卷标识（`parse_primary` 的一句话来源）
 
 ---
 

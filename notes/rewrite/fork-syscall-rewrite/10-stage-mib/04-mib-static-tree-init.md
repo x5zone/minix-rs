@@ -1,7 +1,7 @@
 # 04 — 系统信息库静态树初始化：七个顶层槽位、四次子树连接、一次全树走查
 
 > **分类**: 启动 wiring / 初始化顺序
-> **源码**: `minix3/minix/servers/mib/main.c:36-64`（静态表与根）、`main.c:384-410`（`mib_init`）、`minix3/minix/servers/mib/tree.c:1476-1536`（`mib_tree_recurse`/`mib_tree_init`）、四子树各一行（`kern.c:504-508`、`vm.c:150-154`、`hw.c:136-140`、`minix.c:85-89`）
+> **源码**: `minix3/minix/servers/mib/main.c:36-64`（静态表与根）、`main.c:384-410`（`mib_init`）、`minix3/minix/servers/mib/tree.c:mib_dispatch（L1476，工具生成）`（`mib_tree_recurse`/`mib_tree_init`）、四子树各一行（`minix3/minix/servers/mib/kern.c:mib_kern_init`、`vm.c:150-154`、`minix3/minix/servers/mib/hw.c:mib_hw_init`、`minix3/minix/servers/mib/minix.c:mib_minix_init`）
 > **说明**: 启动时静态树怎么立起来：七顶层槽位、根、四根 wiring 线、全树点名（计数/链父/继承版本）。子树表的内容在 13/14/15，点名算法的查找用法在 05。
 
 ---
@@ -53,10 +53,10 @@ C 语言的静态表分两阶段：编译期用 `MIB_ENODE` 先布置七个空�
 
 | 行 | 调用 | 效果 |
 |----|------|------|
-| `:395` | `mib_kern_init(&mib_table[CTL_KERN])` | `MIB_INIT_ENODE(node, mib_kern_table)`（`kern.c:507`） |
+| `:395` | `mib_kern_init(&mib_table[CTL_KERN])` | `MIB_INIT_ENODE(node, mib_kern_table)`（`minix3/minix/servers/mib/kern.c:mib_kern_init（L507，工具生成）`） |
 | `:396` | `mib_vm_init(&mib_table[CTL_VM])` | 同上（`vm.c:153`） |
-| `:397` | `mib_hw_init(&mib_table[CTL_HW])` | 同上（`hw.c:139`） |
-| `:398` | `mib_minix_init(&mib_table[CTL_MINIX])` | 同上（`minix.c:88`） |
+| `:397` | `mib_hw_init(&mib_table[CTL_HW])` | 同上（`minix3/minix/servers/mib/hw.c:mib_hw_init（L139，工具生成）`） |
+| `:398` | `mib_minix_init(&mib_table[CTL_MINIX])` | 同上（`minix3/minix/servers/mib/minix.c:mib_minix_init（L88，工具生成）`） |
 | `:404` | `mib_tree_init()` | §2.3 |
 | `:407` | `mib_remote_init()` | 远端表复位（12） |
 
@@ -74,10 +74,10 @@ C 语言的静态表分两阶段：编译期用 `MIB_ENODE` 先布置七个空�
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 空架子后填消失 | `MIB_ENODE` 空表 + `MIB_INIT_ENODE` 后填（跨文件 `sizeof` 无奈） | `TOP_SLOTS` 七常量一步到位（`static_tree.rs:36`） | 无奈不是语义：Rust 同 crate 常量直接定长，`MIB_INIT_ENODE` 这一步没有对应物——`slot_flags`（`:86`）只算读写位，类型位由 03 分类 |
+| D1 | 空架子后填消失 | `MIB_ENODE` 空表 + `MIB_INIT_ENODE` 后填（跨文件 `sizeof` 无奈） | `TOP_SLOTS` 七常量一步到位（`os/servers/mib/src/tree/static_tree.rs:const TOP_SLOTS`） | 无奈不是语义：Rust 同 crate 常量直接定长，`MIB_INIT_ENODE` 这一步没有对应物——`slot_flags`（`:86`）只算读写位，类型位由 03 分类 |
 | D2 | 四线变数组 | 四行顺序调用 | `WIRE_ORDER`（`init.rs:32`）+ `WireStep`（`:20`） | 顺序是契约（kern 先），数组让顺序可测（`assert_eq!` 整序）；13/14/15 各消费一根线，线头名字从这里 grep 得到 |
 | D3 | 点名 verdict 化 | 循环里计数/链父/递归混写 | `judge_child`（`init.rs:75`：空/计数/计数+递归）+ `fold_static`（`:91`：纯折叠，返 `(live, needs_recurse)`） | 链父指针是 arena 效果（待 04 后续：静态 arena 落地时），verdict 先行——verdict-first 延续 01/02/03；`check_parent`（`:116`）把入口断言变成 `bool` |
-| D4 | 根变规格 | `MIB_NODE(_RW, table, "", "")` 一行 | `RootSpec::spec()`（`static_tree.rs:123`：可写恒真） | 根的"可写、无名、内部"三属性里只有可写影响行为（init 可种顶层）；无名/内部是注释级事实，doc 写清即可，不值得类型 |
+| D4 | 根变规格 | `MIB_NODE(_RW, table, "", "")` 一行 | `RootSpec::spec()`（`os/servers/mib/src/tree/static_tree.rs:fn spec`：可写恒真） | 根的"可写、无名、内部"三属性里只有可写影响行为（init 可种顶层）；无名/内部是注释级事实，doc 写清即可，不值得类型 |
 
 替代方案及否决：静态 arena（把七槽 + 子表一次性建成真正的树，含父指针）——否决，子表内容在 13/14/15，arena 于执行轮统一建（兑现点单一真值见 15 §4.4：todo.md P1-2），本篇只钉槽位与点名 verdict（verdict-first 同 01 D-否决）。
 
@@ -98,10 +98,10 @@ os/servers/mib/src/tree/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 七槽 | `main.c:46-54` | `static_tree.rs:19,36` | id 稀疏；vendor 唯一可写 |
-| 槽读写位 | `mib.h:259-263` | `static_tree.rs:86` | 全 PERMANENT；读写按槽 |
-| 查槽 | —（Rust 侧新服务） | `static_tree.rs:99` | 无槽 → `None`（VFS 等） |
-| 根规格 | `main.c:62` | `static_tree.rs:116,123` | 可写恒真 |
+| 七槽 | `main.c:46-54` | `os/servers/mib/src/tree/static_tree.rs:struct TopSlot,36` | id 稀疏；vendor 唯一可写 |
+| 槽读写位 | `mib.h:259-263` | `os/servers/mib/src/tree/static_tree.rs:fn slot_flags` | 全 PERMANENT；读写按槽 |
+| 查槽 | —（Rust 侧新服务） | `os/servers/mib/src/tree/static_tree.rs:fn top_slot` | 无槽 → `None`（VFS 等） |
+| 根规格 | `main.c:62` | `os/servers/mib/src/tree/static_tree.rs:struct RootSpec,123` | 可写恒真 |
 | 四线/三阶段 | `main.c:384-410` | `init.rs:20,32,39,49` | 顺序钉死 |
 | 点名 verdict | `tree.c:1497-1512` | `init.rs:59,75,91` | 空/计数/递归；纯折叠 |
 | 入口断言 | `tree.c:1485-1486` | `init.rs:116` | 非 NODE+PARENT 拒绝 |
@@ -148,6 +148,6 @@ C 两截（空架子+后填）vs Rust 一步（D1）：文件组织/语言能力
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/main.c:36-64,384-410`、`minix3/minix/servers/mib/tree.c:1476-1536`、`minix3/minix/servers/mib/mib.h:252-324`、`kern.c:504-508`、`vm.c:150-154`、`hw.c:136-140`、`minix.c:85-89`
+- C 源：`minix3/minix/servers/mib/main.c:36-64,384-410`、`minix3/minix/servers/mib/tree.c:mib_dispatch（L1476，工具生成）`、`minix3/minix/servers/mib/mib.h:MIB_NODE`、`minix3/minix/servers/mib/kern.c:mib_kern_init`、`vm.c:150-154`、`minix3/minix/servers/mib/hw.c:mib_hw_init`、`minix3/minix/servers/mib/minix.c:mib_minix_init`
 - 阶段文档：`01-mib-init-main.md`（注册）、`03-mib-node-model.md`（上一站，形状）、`05-mib-tree-lookup.md`（下一站，查找）、`13/14/15-mib-subtree-*.md`（四线内容）、`12-mib-remote-subtrees.md`（第三阶段）
 - Rust 实现：`os/servers/mib/src/tree/static_tree.rs`、`os/servers/mib/src/tree/init.rs`

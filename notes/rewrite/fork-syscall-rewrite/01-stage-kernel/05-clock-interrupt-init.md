@@ -1,7 +1,7 @@
 # 05-clock-interrupt-init: 时钟与中断初始化
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/clock.c:48-74`, `minix3/minix/kernel/arch/i386/i8259.c:28-63`, `minix3/minix/kernel/arch/i386/arch_system.c:246-288`, `minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:22-44`, `minix3/minix/kernel/arch/earm/arch_system.c:101-132`
+> **源码**: `minix3/minix/kernel/clock.c:init_clock`, `minix3/minix/kernel/arch/i386/i8259.c:intr_init`, `minix3/minix/kernel/arch/i386/arch_system.c:arch_init`, `minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:22-44`, `minix3/minix/kernel/arch/earm/arch_system.c:arch_init`
 > **说明**: cstart() 的后半段——init_clock + intr_init + arch_init，让内核能响应硬件事件
 > **前置**: [03-kmain-cstart.md](03-kmain-cstart.md) — 保护模式已初始化
 
@@ -127,7 +127,7 @@ void init_clock(void)
 
 1. **`memset(&kclockinfo, 0, ...)`**：清零时钟信息结构体。`kclockinfo` 包含 tick 频率（`hz`）、当前 tick 计数、实时时钟偏移等字段。
 
-2. **`env_get("hz")`**：从 boot 参数获取时钟频率。Minix3 的 boot 参数由 boot monitor 传递，格式是 `key=value` 字符串。默认 `DEFAULT_HZ = 60`（x86，`minix3/minix/include/arch/i386/include/archconst.h:4`）或 `1000`（ARM，`minix3/minix/include/arch/earm/include/archconst.h:4`）。
+2. **`env_get("hz")`**：从 boot 参数获取时钟频率。Minix3 的 boot 参数由 boot monitor 传递，格式是 `key=value` 字符串。默认 `DEFAULT_HZ = 60`（x86，`minix3/minix/include/arch/i386/include/archconst.h:DEFAULT_HZ`）或 `1000`（ARM，`minix3/minix/include/arch/earm/include/archconst.h:DEFAULT_HZ`）。
 
    > **设计层面的取舍**：x86 的 60 Hz 来自 IBM PC 8254 PIT 的输入时钟（1.1931816 MHz）与分频器选择，是早期 PC 的遗留值；ARM 的 1000 Hz 提供更高精度但增加中断开销。Rust 版把默认 tick 率统一为 100 Hz，并把这一取舍放在设计决策章节（§3.2）讨论，而不是在 C 源码分析中展开。
 
@@ -141,7 +141,7 @@ void init_clock(void)
 
 ### 2.2 intr_init()：x86-64 中断控制器初始化
 
-`i8259.c:30-53`（8259A PIC 版本；实际函数体范围，L28-29 是前置注释 + 空行；L54-58 是 `irq_8259_unmask`，L59-63 是 `irq_8259_mask`，均在 `intr_init` 之外）：
+`minix3/minix/kernel/arch/i386/i8259.c:intr_init（L30，工具生成）`（8259A PIC 版本；实际函数体范围，L28-29 是前置注释 + 空行；L54-58 是 `irq_8259_unmask`，L59-63 是 `irq_8259_mask`，均在 `intr_init` 之外）：
 
 ```c
 int intr_init(const int auto_eoi)
@@ -182,7 +182,7 @@ int intr_init(const int auto_eoi)
 
 ### 2.3 intr_init()：ARM 中断控制器初始化
 
-`omap_intr.c:24-44`（OMAP INTC 版本）：
+`minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init`（OMAP INTC 版本）：
 
 ```c
 int intr_init(const int auto_eoi)
@@ -446,7 +446,7 @@ pub trait InterruptController: Sized + Send + Sync {
 | x86-64 | `os/plat/src/x86_64/interrupt.rs` | LAPIC + IOAPIC |
 | aarch64 | `os/plat/src/arm64/interrupt.rs` | GICv3 |
 | riscv64 | `os/plat/src/riscv64/interrupt.rs` | PLIC |
-| mock（测试） | `os/plat/src/mock.rs:24` | 用于 IRQ/驱动测试，不进生产路径 |
+| mock（测试） | `os/plat/src/mock.rs:impl InterruptRouter for MockInterruptController（L24，工具生成）` | 用于 IRQ/驱动测试，不进生产路径 |
 
 编译期通过 `minix-plat` 的 `CurrentInterruptController` 类型别名选择当前架构的实现：
 
@@ -588,7 +588,7 @@ pub trait ArchInit: Sized + Send + Sync {
 
 ### 3.7 决策：本阶段不实现完整的 `timer_int_handler`、`intr_handle` 和 `bsp_finish_booting`
 
-**Minix3 C 的做法**：`timer_int_handler()`（`clock.c:70-173`）除了更新 `uptime`/`realtime`/`loadavg` 外，还更新 `bill_ptr` 和各进程的 user/sys 时间统计；`irq_handle()`（`interrupt.c:116-158`，旧注释中的 `intr_handle` 与汇编标签 `intr_handle` 都指向同一函数）做完整的中断分发（mask 当前 IRQ、查 `irq_handlers[]` 表、调用注册 handler，最后 `unmask`）；`bsp_finish_booting()`（`main.c:38-109`）使能定时器中断（`boot_cpu_init_timer`）、初始化 FPU、设置 `kernel_may_alloc=0` 并移交用户态。
+**Minix3 C 的做法**：`timer_int_handler()`（`clock.c:70-173`）除了更新 `uptime`/`realtime`/`loadavg` 外，还更新 `bill_ptr` 和各进程的 user/sys 时间统计；`irq_handle()`（`minix3/minix/kernel/interrupt.c:irq_handle`，旧注释中的 `intr_handle` 与汇编标签 `intr_handle` 都指向同一函数）做完整的中断分发（mask 当前 IRQ、查 `irq_handlers[]` 表、调用注册 handler，最后 `unmask`）；`bsp_finish_booting()`（`main.c:38-109`）使能定时器中断（`boot_cpu_init_timer`）、初始化 FPU、设置 `kernel_may_alloc=0` 并移交用户态。
 
 **Rust 当前做法**：本阶段只让内核具备响应时钟中断和中断控制器的硬件能力，因此：
 - `ClockState::tick()` 已实现软件计数与记账：`uptime`/`realtime`/`loadavg` 更新、进程 user/sys 时间、虚拟/档案定时器到期、BSP 到期 alarm 定时器处理（详见 §4.1）；quantum 递减不在 `tick()` 内（由 `clock::decrement_quantum()` 处理，D9），基于 quantum 的调度决策留到 [11-scheduling-primitives.md](11-scheduling-primitives.md)；
@@ -610,7 +610,7 @@ pub trait ArchInit: Sized + Send + Sync {
 **D-59 解决记录（2026-09-09）**：上表记录的"aarch64/riscv64 timer 全程 live、且 `enable_timer_irq` 零调用"缺口已修复，新形态与 C 时序逐点对齐：
 
 1. **Phase B 纯软件化**：`init_clock_and_interrupts` 不再调用 `ClockArch::init_timer`（C `init_clock` clock.c:48-66 即纯软件）。硬件定时器的编程、handler 注册、门控打开全部收敛到 `bsp_finish_booting` Step 6——C `boot_cpu_init_timer`（clock.c:294）的位置。
-2. **Step 6 三段序列**（对应 C `(a) init_local_timer → (b) register_local_timer_handler`）：先 `init_timer` 只编程（aarch64 写 `CNTP_CVAL` 后保持 `CNTP_CTL_EL0 = Enable=0/IMASK=1`；riscv64 写 `mtimecmp` 不碰 `sie.STIE`；x86_64 编程 PIT）；再 `IrqManager::register_hook`（挂在 `minix_plat::TIMER_IRQ` 上，首 handler 触发 C parity 的自动 unmask——interrupt.c:65——打开控制器侧交付门）；最后 `<CurrentTimerIrqGate>::enable_timer_irq()` 打开定时器模块本地门。
+2. **Step 6 三段序列**（对应 C `(a) init_local_timer → (b) register_local_timer_handler`）：先 `init_timer` 只编程（aarch64 写 `CNTP_CVAL` 后保持 `CNTP_CTL_EL0 = Enable=0/IMASK=1`；riscv64 写 `mtimecmp` 不碰 `sie.STIE`；x86_64 编程 PIT）；再 `IrqManager::register_hook`（挂在 `minix_plat::TIMER_IRQ` 上，首 handler 触发 C parity 的自动 unmask——minix3/minix/kernel/interrupt.c:put_irq_handler（L65，工具生成）——打开控制器侧交付门）；最后 `<CurrentTimerIrqGate>::enable_timer_irq()` 打开定时器模块本地门。
 3. **`TIMER_IRQ` 按架构定义**（`os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs`，crate 根 cfg 选择）：x86_64 = 0（PIT → IOAPIC 输入 0，C `CLOCK_IRQ`）；aarch64 = 30（CNTP 非安全 PPI，GIC PPI 分配 CNTPNSIRQ，QEMU virt device-tree PPI 14 + 基 16）；riscv64 = 0（伪向量——本地定时器不过 PLIC，向量 0 保留为分发标识，PLIC mask/unmask 对 0 恒 no-op）。
 4. **x86_64 门控语义修正 `[ARCH: gate-semantics]`**：`X86_64TimerIrqGate::enable/disable_timer_irq` 改为文档化 no-op——PIT 没有模块本地门（交付门就是 IOAPIC 线，由第 2 步的 unmask 承担）；旧实现清 LAPIC LVT Timer Mask 是陷阱（LVT 定时器未编程也非时钟源，unmask 它等于打开一个无 handler 的中断源）。LVT 门随未来 LAPIC 时钟源批次回归。
 5. **riscv64 `arch_init` 不再提前开中断**：原 Step 2 的 `csrs sie, 0x22`（STIE+SSIE）删除——STIE 归第 2 步的门控；SSIE 归 SMP IPI bring-up（smp_todo.md S-7/S-10）。
@@ -641,9 +641,9 @@ Linux 对照：clockevent 子系统同样把定时器编程（`clockevents_confi
 >
 > | 演进 | 内容 | Minix3 现状 | minix-rs |
 > |------|------|-------------|----------|
-> | aarch64 中断路径 | OMAP INTC → GICv3 | 32 位 ARM 用 OMAP INTC（`omap_intr.c:24-40`）+ BSP timer（`omap_timer.c`），见 §2.3 | ARMv8-A GICv3（GICD/GICR + CPU interface）+ Generic Timer（CNTP），见 §4.6/§4.7 |
+> | aarch64 中断路径 | OMAP INTC → GICv3 | 32 位 ARM 用 OMAP INTC（`minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init`）+ BSP timer（`omap_timer.c`），见 §2.3 | ARMv8-A GICv3（GICD/GICR + CPU interface）+ Generic Timer（CNTP），见 §4.6/§4.7 |
 > | riscv64 全新架构 | Minix3 无 RISC-V 移植（minix-rs 引入） | — | 对标 RISC-V Privileged Spec 1.12：CLINT mtime/mtimecmp + PLIC + `sie.STIE` + PMP，见 §4.5/§4.8/§4.12 |
-> | 时钟频率统一 100 Hz | i386 `DEFAULT_HZ=60`、earm `DEFAULT_HZ=1000`（`archconst.h:4`），boot 参数可调 | 三架构统一编译期常量 100 Hz（`os/arch/src/arch/clock.rs:43`），见 §3.2 |
+> | 时钟频率统一 100 Hz | i386 `DEFAULT_HZ=60`、earm `DEFAULT_HZ=1000`（`archconst.h:4`），boot 参数可调 | 三架构统一编译期常量 100 Hz（`os/arch/src/arch/clock.rs:const DEFAULT_HZ`），见 §3.2 |
 
 ---
 
@@ -710,7 +710,7 @@ C 版用 `cpu_is_bsp(cpuid)` 在运行时判断，Rust 用结构体字段 `is_bs
 
 #### 4.1.1 常量与全局时间镜像
 
-**常量**：`DEFAULT_HZ` 与 `TMR_NEVER` 是 `pub`；`LOAD_UNIT_SECS`/`LOAD_HISTORY` 是模块私有。`DEFAULT_HZ` 的权威定义在 arch 层（`os/arch/src/arch/clock.rs:43`，kernel 层是独立副本，见 §3.2）；`LOAD_HISTORY_SIZE` 同样在 arch 层（`os/arch/src/arch/clock.rs:49`），kernel 层的私有 `LOAD_HISTORY` 与它同值（150）。
+**常量**：`DEFAULT_HZ` 与 `TMR_NEVER` 是 `pub`；`LOAD_UNIT_SECS`/`LOAD_HISTORY` 是模块私有。`DEFAULT_HZ` 的权威定义在 arch 层（`os/arch/src/arch/clock.rs:const DEFAULT_HZ`，kernel 层是独立副本，见 §3.2）；`LOAD_HISTORY_SIZE` 同样在 arch 层（`os/arch/src/arch/clock.rs:const LOAD_HISTORY_SIZE`），kernel 层的私有 `LOAD_HISTORY` 与它同值（150）。
 
 ```rust
 /// 默认时钟频率（Hz）。
@@ -1675,7 +1675,7 @@ pub trait TimerIrqGate: Sized {
 
 | 架构 | impl 类型 | enable_timer_irq | disable_timer_irq | C 源码 |
 |------|----------|------------------|-------------------|--------|
-| x86_64 | `X86_64TimerIrqGate` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | `arch_clock.c:177`（APIC 路径）+ `apic.c:44` / `apic.c:475-477`（LVT Mask）+ `apic.c:lapic_enable()`（SVR Enable 职责归属见 §4.7.1） |
+| x86_64 | `X86_64TimerIrqGate` | 清 LAPIC LVT Timer Mask bit (offset 0x320, bit 16) + 置 LAPIC SVR Enable bit (offset 0xF0, bit 8) | 置 LAPIC LVT Timer Mask bit | `arch_clock.c:177`（APIC 路径）+ `minix3/minix/kernel/arch/i386/apic.c:APIC_LVTT_MASK` / `minix3/minix/kernel/arch/i386/apic.c:apic_calibrate_clocks（L475，工具生成）`（LVT Mask）+ `apic.c:lapic_enable()`（SVR Enable 职责归属见 §4.7.1） |
 | aarch64 | `AArch64TimerIrqGate` | `msr CNTP_CTL_EL0, 1` (Enable=1, IMASK=0) + `isb` | `msr CNTP_CTL_EL0, 2` (Enable=0, IMASK=1) + `isb` | `earm/arch_clock.c:182`（BSP 转发）+ `bsp/ti/omap_intr.c:22-44`（32 位 ARM；aarch64 为架构演进 架构演进，见 §2.5） |
 | riscv64 | `Riscv64TimerIrqGate` | `csrs sie, 0x20` (STIE=bit 5) | `csrc sie, 0x20` | **（Minix3 无 riscv64 移植 架构演进；对标 RISC-V Privileged Spec 1.12 §4.1.3 Supervisor Interrupt Registers）** |
 
@@ -2118,7 +2118,7 @@ impl EarlyConsole for X86_64EarlyConsole {
 
 #### 5.1.1 时钟状态与定时器测试（`os/kernel/src/clock.rs`）
 
-> 注：`ClockState` / `LoadInfo` 的权威定义位于 `os/kernel/src/clock.rs`（内核态时钟状态机，与 `os/arch/src/arch/clock.rs` 的 `ClockArch` 硬件抽象分离，分层决策见 §3.1）；`DEFAULT_HZ` / `LOAD_HISTORY_SIZE` 的权威定义位于 `os/arch/src/arch/clock.rs:43,49`，`os/kernel/src/clock.rs:474` 的同值 `DEFAULT_HZ` 与私有 `LOAD_HISTORY`（L487）是独立副本（修改先改 arch 再 sync，见 §3.2）。`arch/clock.rs` 的 3 个测试（`test_default_hz_value` / `test_load_history_size` / `test_read_tsc_default_delegates_to_read_ticks`）验证的正是 arch 层常量与 `read_tsc` 默认委托。
+> 注：`ClockState` / `LoadInfo` 的权威定义位于 `os/kernel/src/clock.rs`（内核态时钟状态机，与 `os/arch/src/arch/clock.rs` 的 `ClockArch` 硬件抽象分离，分层决策见 §3.1）；`DEFAULT_HZ` / `LOAD_HISTORY_SIZE` 的权威定义位于 `os/arch/src/arch/clock.rs:const DEFAULT_HZ,49`，`os/kernel/src/clock.rs:fn classify_cpu_state（L474，工具生成）` 的同值 `DEFAULT_HZ` 与私有 `LOAD_HISTORY`（L487）是独立副本（修改先改 arch 再 sync，见 §3.2）。`arch/clock.rs` 的 3 个测试（`test_default_hz_value` / `test_load_history_size` / `test_read_tsc_default_delegates_to_read_ticks`）验证的正是 arch 层常量与 `read_tsc` 默认委托。
 
 **ClockState 初始化与 tick 行为**：
 

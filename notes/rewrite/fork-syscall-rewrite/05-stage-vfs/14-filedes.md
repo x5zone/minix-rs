@@ -34,7 +34,7 @@
 
 ### 1.4 `close_fd` 的 `OPCL` 放行与 `FILP_CLOSED` 的只关语义
 
-`open.c:690 close_fd:699 get_filp2(rfp, fd, OPCL)→NULL→EBADF` 的 `EBADF` 守门与 `filedes.c:250 invalidate_filp: rfilp->filp_mode=FILP_CLOSED` 的 `FILP_CLOSED` 只关哨兵使 `get_filp2:191 if(mode==FILP_CLOSED)→EIO` 的 `EIO` 抑制在 `14` 的 `invalidate_filp_by_char_major` 后可观测：驱动 `dmap_unmap_by_endpt` 后的 `invalidate_filp_by_char_major(major)` 使 `read` 的 `FILP_CLOSED→EIO` 而 `close` 的 `FILP_CLOSED` 可通过 `get_filp2:191` 的 `locktype==OPCL` 分支（`close_fd` 的 `get_filp2(OPCL)` 允许 `CLOSED`）。
+`open.c:690 close_fd:699 get_filp2(rfp, fd, OPCL)→NULL→EBADF` 的 `EBADF` 守门与 `minix3/minix/servers/vfs/filedes.c:invalidate_filp invalidate_filp: rfilp->filp_mode=FILP_CLOSED` 的 `FILP_CLOSED` 只关哨兵使 `get_filp2:191 if(mode==FILP_CLOSED)→EIO` 的 `EIO` 抑制在 `14` 的 `invalidate_filp_by_char_major` 后可观测：驱动 `dmap_unmap_by_endpt` 后的 `invalidate_filp_by_char_major(major)` 使 `read` 的 `FILP_CLOSED→EIO` 而 `close` 的 `FILP_CLOSED` 可通过 `get_filp2:191` 的 `locktype==OPCL` 分支（`close_fd` 的 `get_filp2(OPCL)` 允许 `CLOSED`）。
 
 ### 1.5 `do_copyfd` 的 `FROM/TO/CLOSE` 三操作与 `super_user` 守门
 
@@ -46,7 +46,7 @@
 
 ### 1.7 小结
 
-`fp_filp[256]` 的 `NULL` 空闲在 `get_fd` 的 `start→OPEN_MAX` 最低空闲可观测，`filp[1024]` 的 `count==0` 空闲在 `get_fd` 的 `filp_count==0 && trylock` 可观测，`FD_CLOEXEC` 的 `Bitmap` 位集在 `cloexec_set` 的 `FD_SET/FD_CLR` 可观测，`close_fd` 的 `EBADF` 守门与 `get_filp2` 的 `EBADF/EIO` 双守门（`OPCL` 放行 `CLOSED`）使 `FILP_CLOSED` 的只关语义在 `invalidate` 后可观测，`do_copyfd` 的 `FROM/TO/CLOSE` 三操作在 `super_user` 守门后可观测。下一节以 `filedes.c:88-656` 全文与 `open.c:690` 的 `close_fd` 为主线逐段核对。
+`fp_filp[256]` 的 `NULL` 空闲在 `get_fd` 的 `start→OPEN_MAX` 最低空闲可观测，`filp[1024]` 的 `count==0` 空闲在 `get_fd` 的 `filp_count==0 && trylock` 可观测，`FD_CLOEXEC` 的 `Bitmap` 位集在 `cloexec_set` 的 `FD_SET/FD_CLR` 可观测，`close_fd` 的 `EBADF` 守门与 `get_filp2` 的 `EBADF/EIO` 双守门（`OPCL` 放行 `CLOSED`）使 `FILP_CLOSED` 的只关语义在 `invalidate` 后可观测，`do_copyfd` 的 `FROM/TO/CLOSE` 三操作在 `super_user` 守门后可观测。下一节以 `minix3/minix/servers/vfs/filedes.c:check_fds` 全文与 `open.c:690` 的 `close_fd` 为主线逐段核对。
 
 ---
 
@@ -92,11 +92,11 @@
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 `fp_filp[fd]=NULL`，而是吸收 Redox/Linux 的 `FdTable` 模型后做取舍。以下决策对应 `.design/14-design.v1.md` D1-D6。
+Rust 改写不是照抄 `minix3/minix/servers/vfs/filedes.c:get_fd（L121，工具生成）` 的 `for(i=start)` 与 `open.c:706` 的 `fp_filp[fd]=NULL`，而是吸收 Redox/Linux 的 `FdTable` 模型后做取舍。以下决策对应 `.design/14-design.v1.md` D1-D6。
 
 ### D1 `fd` 索引的 `Fd` 新型与 `OPEN_MAX` 上界显式
 
-- **C**：`int fd` 裸整数与 `OPEN_MAX 256` 的 `i>=OPEN_MAX→EMFILE` 散落（`filedes.c:130`）。
+- **C**：`int fd` 裸整数与 `OPEN_MAX 256` 的 `i>=OPEN_MAX→EMFILE` 散落（`minix3/minix/servers/vfs/filedes.c:get_fd（L130，工具生成）`）。
 - **Rust**：`Fd(u8)` 的 `u8` 上界 `256` 使 `Fd::new(300)→None` 的 `TryFrom` 守门在编译期可观测，`OPEN_MAX: usize = 256` 的 `const` 使 `Fd` 的 `0..256` 范围在 `FdTable::alloc` 的 `start..OPEN_MAX` 扫描可测试；`Fd::as_usize` 的 `as usize` 在 `fp_filp[fd.as_usize]` 的索引中可观测。
 - **为什么**：`int` 的 `fd<0||>=OPEN_MAX` 在 Rust 以 `Fd` 的 `Option` 使 `EBADF` 在 `Fd::new` 可早拒绝。
 
@@ -113,14 +113,14 @@ Rust 改写不是照抄 `filedes.c:121` 的 `for(i=start)` 与 `open.c:706` 的 
 
 ### D4 `close_fd` 的 `EBADF` 守门与 `OPCL` 放行
 
-- **C**：`get_filp2(OPCL)→NULL→EBADF` 与 `mode==FILP_CLOSED→EIO` 的 `OPCL` 例外（`filedes.c:186-188` 的 `locktype != VNODE_OPCL` 前置使 `close(2)` 穿过 `CLOSED`）。
+- **C**：`get_filp2(OPCL)→NULL→EBADF` 与 `mode==FILP_CLOSED→EIO` 的 `OPCL` 例外（`minix3/minix/servers/vfs/filedes.c:get_filp2（L186，工具生成）` 的 `locktype != VNODE_OPCL` 前置使 `close(2)` 穿过 `CLOSED`）。
 - **Rust**：`close_fd(&mut FProc, Fd, &mut FilpTable) -> Result<(), FdError>` 的 `filps[fd].ok_or(BadFd)` 与 filp 表探针使 `NULL→BadFd` 可测试；`FILP_CLOSED` **不设闸**——`OPCL` 是 `get_filp2` 门中唯一的例外（注释 "disallow all use except close(2)"），驱动死亡后被失效的 filp 仍持有槽位，close 必须继续释放（清 fd + cloexec + `filp_count--`）；非 `OPCL` 访问的 `EIO` 属 `get_filp` 的锁型接缝（`filp.rs` 的 `FilpError::Closed → EIO`），不在本函数。
 - **为什么**：`FILP_CLOSED` 的只关语义使 `read` 的 `EIO`（非 `OPCL` 访问）与 `close` 的 `OK`（`OPCL` 放行）在两条路径上各自成立，混在 `close_fd` 里会把"释放资源"误做成"拒绝关闭"。
 
 ### D5 `do_copyfd` 的 `FROM/TO/CLOSE` 与 `super_user` 守门显式
 
 - **C**：`do_copyfd:539 super_user→EPERM` 的 `SU_UID` 守门与 `isokendpt→EINVAL` 的三守门及 `COPYFD_FROM: S_ISSOCK && smap_endpt==who_e → EDEADLK` 的自复制 `EDEADLK`。
-- **Rust**：`CopyFdCtx { filp_table, vnode_table, smap_table, policy, caller_endpoint(who_e), remote_slot(isokendpt 恒等), is_super, cloexec }` 把 C 的隐式环境显式注入（`FreeCtx` 同型），`copy_fd(caller, remote, fd, kind, ctx)` 的方向由 `kind` 决定——`From`：filp 取自 remote、装入 caller 且 `COPYFD_CLOEXEC` 剥离（`filedes.c:600-602`）；`To`：filp 取自 caller、装入 remote 且 `CLOEXEC` 置位（`:617-624`）；`Close`：`count>1 → dec + 清 remote fd / 否则 EBADF`（`:636-646`）。三守门齐：`is_super→EPERM`、`filp_ioctl_holder==remote_slot→EBADF`（`:582-585` VND 死锁防护）、`From` 的 `S_ISSOCK && smap_endpt_by_dev(v_sdev)==who_e→EDEADLK`（`:606-613`）。
+- **Rust**：`CopyFdCtx { filp_table, vnode_table, smap_table, policy, caller_endpoint(who_e), remote_slot(isokendpt 恒等), is_super, cloexec }` 把 C 的隐式环境显式注入（`FreeCtx` 同型），`copy_fd(caller, remote, fd, kind, ctx)` 的方向由 `kind` 决定——`From`：filp 取自 remote、装入 caller 且 `COPYFD_CLOEXEC` 剥离（`minix3/minix/servers/vfs/filedes.c:do_copyfd（L600，工具生成）`）；`To`：filp 取自 caller、装入 remote 且 `CLOEXEC` 置位（`:617-624`）；`Close`：`count>1 → dec + 清 remote fd / 否则 EBADF`（`:636-646`）。三守门齐：`is_super→EPERM`、`filp_ioctl_holder==remote_slot→EBADF`（`:582-585` VND 死锁防护）、`From` 的 `S_ISSOCK && smap_endpt_by_dev(v_sdev)==who_e→EDEADLK`（`:606-613`）。
 - **为什么**：方向由 `kind` 决定而非调用方交换参数——C 的消息只带一个远端端点，`FROM/TO` 的取用侧与安装侧在 `get_filp2(COPYFD_TO?fp:rfp)` 一处分化，Rust 以 `match kind` 的取用/安装矩阵使方向错配在函数内不可表达；裸 `src/dst` 双进程参数的旧签名被否决——两种 kind 下同一参数语义互换，等于把 C 的方向正确性外包给每个调用点的纪律。
 
 ### D6 `invalidate_filp` 族的 `FILP_CLOSED` 传播与 `CLOEXEC` 位集
@@ -155,15 +155,15 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `OPEN_MAX 256` | `syslimits.h:38` | `filedes.rs:OPEN_MAX:usize=256` | `Fd(0..255)` 上界 |
-| `check_fds` | `filedes.c:88` | `FProc::check_fds(nfds) -> Result<(),FdError>` | `available >= nfds → OK else EMFILE` |
-| `get_fd` | `filedes.c:110` | `FProc::alloc_fd(start, policy) -> Result<(Fd, FilpId), FdError>` | `LowestFree` 的 `start..256` 扫描 + `FilpTable::alloc` 的 `count==0` 双守门 |
+| `OPEN_MAX 256` | `minix3/sys/sys/syslimits.h:OPEN_MAX` | `filedes.rs:OPEN_MAX:usize=256` | `Fd(0..255)` 上界 |
+| `check_fds` | `minix3/minix/servers/vfs/filedes.c:check_fds` | `FProc::check_fds(nfds) -> Result<(),FdError>` | `available >= nfds → OK else EMFILE` |
+| `get_fd` | `minix3/minix/servers/vfs/filedes.c:get_fd` | `FProc::alloc_fd(start, policy) -> Result<(Fd, FilpId), FdError>` | `LowestFree` 的 `start..256` 扫描 + `FilpTable::alloc` 的 `count==0` 双守门 |
 | `close_fd` | `open.c:690` | `FProc::close_fd(fd, filp_table) -> Result<(),FdError>` | `BadFd→EBADF / CLOSED→EIO / NULL→Close / FD_CLR / close_filp` |
-| `do_copyfd` | `filedes.c:524` | `FProc::copy_fd(target, fd, kind, cred) -> Result<Fd,FdError>` | `super_user→EPERM / isokendpt→BadEndpoint / S_ISSOCK→EDEADLK / LowestFree→fd / count++` |
-| `invalidate_filp` | `filedes.c:250` | `Filp::invalidate()` | `mode=CLOSED` |
-| `invalidate_filp_by_endpt` | `filedes.c:298` | `invalidate_by_endpoint(&mut FilpTable, &VnodeTable, ep) -> usize` | `v_fs_e==ep → CLOSED` 计数 |
-| `invalidate_filp_by_char_major` | `filedes.c:254` | `invalidate_by_char_major(&mut FilpTable, &VnodeTable, major) -> usize` | `S_ISCHR && major(v_sdev)==major → CLOSED` 计数 |
-| `invalidate_filp_by_sock_drv` | `filedes.c:269` | `invalidate_by_sock_drv(&mut FilpTable, &VnodeTable, num) -> usize` | `S_ISSOCK && smap_num==num → CLOSED` 计数 |
+| `do_copyfd` | `minix3/minix/servers/vfs/filedes.c:do_copyfd` | `FProc::copy_fd(target, fd, kind, cred) -> Result<Fd,FdError>` | `super_user→EPERM / isokendpt→BadEndpoint / S_ISSOCK→EDEADLK / LowestFree→fd / count++` |
+| `invalidate_filp` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp` | `Filp::invalidate()` | `mode=CLOSED` |
+| `invalidate_filp_by_endpt` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt` | `invalidate_by_endpoint(&mut FilpTable, &VnodeTable, ep) -> usize` | `v_fs_e==ep → CLOSED` 计数 |
+| `invalidate_filp_by_char_major` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp（L254，工具生成）` | `invalidate_by_char_major(&mut FilpTable, &VnodeTable, major) -> usize` | `S_ISCHR && major(v_sdev)==major → CLOSED` 计数 |
+| `invalidate_filp_by_sock_drv` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_char_major（L269，工具生成）` | `invalidate_by_sock_drv(&mut FilpTable, &VnodeTable, num) -> usize` | `S_ISSOCK && smap_num==num → CLOSED` 计数 |
 | `Fd` | `int fd` | `filedes.rs:Fd(u8)` | `TryFrom<usize> → Option<Fd>` 的 `EBADF` 早拒绝 |
 | `FdAllocPolicy` | `get_fd:121 for` | `trait FdAllocPolicy::allocate(table, start)->Option<usize>` | `LowestFree` 生产单实现；`NextFitDemo` cfg(test) 对照 |
 
@@ -171,12 +171,12 @@ os/servers/vfs/src/
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 空闲 `fp_filp==NULL` | `FProc::alloc_fd` | `table[start..].iter().position(|f| f.is_none())` | `filedes.c:121` |
-| `fd` 上界 `0..256` | `Fd::new` | `if fd>=256 → BadFd` | `filedes.c:188 if(fild<0||>=OPEN_MAX)` |
-| `CLOSED→EIO` | `FProc::get` | `mode==CLOSED → Err(Io)` | `filedes.c:191` |
+| 空闲 `fp_filp==NULL` | `FProc::alloc_fd` | `table[start..].iter().position(|f| f.is_none())` | `minix3/minix/servers/vfs/filedes.c:get_fd（L121，工具生成）` |
+| `fd` 上界 `0..256` | `Fd::new` | `if fd>=256 → BadFd` | `minix3/minix/servers/vfs/filedes.c:get_filp2（L188，工具生成） if(fild<0||>=OPEN_MAX)` |
+| `CLOSED→EIO` | `FProc::get` | `mode==CLOSED → Err(Io)` | `minix3/minix/servers/vfs/filedes.c:get_filp2（L191，工具生成）` |
 | `cloexec` 位集 `FD_SET/FD_CLR` | `Bitmap` | `cloexec_set.set(fd)` | `open.c:710` |
-| `COPYFD` 三操作 | `CopyFdKind` | `match From/To/Close` 穷尽 | `filedes.c:578` |
-| `invalidate` 计数 | `invalidate_by_endpoint` | `for(filp: v_fs_e==ep) CLOSED → count` | `filedes.c:298` |
+| `COPYFD` 三操作 | `CopyFdKind` | `match From/To/Close` 穷尽 | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L578，工具生成）` |
+| `invalidate` 计数 | `invalidate_by_endpoint` | `for(filp: v_fs_e==ep) CLOSED → count` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt` |
 
 ---
 
@@ -187,25 +187,25 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_fd_new` | `filedes.c:188` | `Fd(256)→BadFd, 255→Ok` 的 `u8` 上界 | `filedes.rs` |
-| `test_check_fds` | `filedes.c:88` | `available 2 → nfds 3→EMFILE` | `filedes.rs` |
-| `test_get_fd_lowest` | `filedes.c:110` | `start=0→Fd0, 占用0→Fd1` 的 `LowestFree` | `filedes.rs` |
-| `test_get_fd_enfile` | `filedes.c:154` | `filp 1024 耗尽→ENFILE` | `filedes.rs` |
+| `test_fd_new` | `minix3/minix/servers/vfs/filedes.c:get_filp2（L188，工具生成）` | `Fd(256)→BadFd, 255→Ok` 的 `u8` 上界 | `filedes.rs` |
+| `test_check_fds` | `minix3/minix/servers/vfs/filedes.c:check_fds` | `available 2 → nfds 3→EMFILE` | `filedes.rs` |
+| `test_get_fd_lowest` | `minix3/minix/servers/vfs/filedes.c:get_fd` | `start=0→Fd0, 占用0→Fd1` 的 `LowestFree` | `filedes.rs` |
+| `test_get_fd_enfile` | `minix3/minix/servers/vfs/filedes.c:get_fd（L154，工具生成）` | `filp 1024 耗尽→ENFILE` | `filedes.rs` |
 | `test_close_ebadf` | `open.c:690` | `fd 99 NULL→EBADF` | `filedes.rs` |
-| `test_close_after_invalidate_proceeds` | `filedes.c:186-188` | `OPCL` 放行 `FILP_CLOSED`：invalidate 后 close 继续，释放 fd 与 `filp_count` | `filedes.rs` |
+| `test_close_after_invalidate_proceeds` | `minix3/minix/servers/vfs/filedes.c:get_filp2（L186，工具生成）` | `OPCL` 放行 `FILP_CLOSED`：invalidate 后 close 继续，释放 fd 与 `filp_count` | `filedes.rs` |
 | `test_close_ok` | `open.c:690` | `close_fd→NULL + FD_CLR + count--` | `filedes.rs` |
-| `test_cloexec_copy` | `filedes.c:524` | `From→To→Cloexec` 的 `FD_SET` 位集 | `filedes.rs` |
-| `test_invalidate` | `filedes.c:250` | `invalidate→CLOSED` 单写 | `filedes.rs` |
-| `test_invalidate_by_endpt` | `filedes.c:298` | `fs_e==ep→CLOSED` 按端点计数（endpoint 5→1、6→2、他端点不动） | `filedes.rs` |
-| `test_invalidate_by_char_major` | `filedes.c:254` | `S_ISCHR && major==4` 命中；他 major 与 regular 文件不动 | `filedes.rs` |
-| `test_invalidate_by_sock_drv` | `filedes.c:269` | `S_ISSOCK && smap_num==1` 命中；num 2 与 char 设备不动 | `filedes.rs` |
-| `test_copy_from` | `filedes.c:600-602` | `From` 取 remote 装 caller、CLOEXEC 不置 | `filedes.rs` |
-| `test_copy_to` | `filedes.c:617-624` | `To` 取 caller 装 remote、`CLOEXEC` 置位 + count++ + `EPERM` | `filedes.rs` |
-| `test_copy_from_self_socket_edeadlk` | `filedes.c:606-613` | `S_ISSOCK && smap_endpt==who_e → EDEADLK` | `filedes.rs` |
-| `test_copy_to_ioctl_holder_ebadf` | `filedes.c:582-585` | remote 持 `ioctl_holder → EBADF`（VND 死锁防护） | `filedes.rs` |
-| `test_copy_close` | `filedes.c:636` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 remote fd`、caller 引用保留 | `filedes.rs` |
-| `test_copy_close_last_reference_ebadf` | `filedes.c:644` | `count==1→EBADF` 且 fd 不清除 | `filedes.rs` |
-| `test_fd_alloc_policy_two_impls` | `filedes.c:121` | `LowestFree` vs cfg(test) 对照 `NextFitDemo` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
+| `test_cloexec_copy` | `minix3/minix/servers/vfs/filedes.c:do_copyfd` | `From→To→Cloexec` 的 `FD_SET` 位集 | `filedes.rs` |
+| `test_invalidate` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp` | `invalidate→CLOSED` 单写 | `filedes.rs` |
+| `test_invalidate_by_endpt` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt` | `fs_e==ep→CLOSED` 按端点计数（endpoint 5→1、6→2、他端点不动） | `filedes.rs` |
+| `test_invalidate_by_char_major` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp（L254，工具生成）` | `S_ISCHR && major==4` 命中；他 major 与 regular 文件不动 | `filedes.rs` |
+| `test_invalidate_by_sock_drv` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_char_major（L269，工具生成）` | `S_ISSOCK && smap_num==1` 命中；num 2 与 char 设备不动 | `filedes.rs` |
+| `test_copy_from` | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L600，工具生成）` | `From` 取 remote 装 caller、CLOEXEC 不置 | `filedes.rs` |
+| `test_copy_to` | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L617，工具生成）` | `To` 取 caller 装 remote、`CLOEXEC` 置位 + count++ + `EPERM` | `filedes.rs` |
+| `test_copy_from_self_socket_edeadlk` | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L606，工具生成）` | `S_ISSOCK && smap_endpt==who_e → EDEADLK` | `filedes.rs` |
+| `test_copy_to_ioctl_holder_ebadf` | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L582，工具生成）` | remote 持 `ioctl_holder → EBADF`（VND 死锁防护） | `filedes.rs` |
+| `test_copy_close` | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L636，工具生成）` | `COPYFD_CLOSE` 的 `count>1→count-- + 清 remote fd`、caller 引用保留 | `filedes.rs` |
+| `test_copy_close_last_reference_ebadf` | `minix3/minix/servers/vfs/filedes.c:do_copyfd（L644，工具生成）` | `count==1→EBADF` 且 fd 不清除 | `filedes.rs` |
+| `test_fd_alloc_policy_two_impls` | `minix3/minix/servers/vfs/filedes.c:get_fd（L121，工具生成）` | `LowestFree` vs cfg(test) 对照 `NextFitDemo` 的 `allocate` 行为差异 `start 5→5 vs 10` | `filedes.rs` |
 
 测试策略：`Fd` 的 `u8` 上界以 `Fd(256)→BadFd` 的 `TryFrom` 早拒绝样本覆盖；`check_fds` 以 `available 2, nfds 3→EMFILE` 的 `nfds` 窗口样本覆盖；`get_fd` 以 `LowestFree(0)→0` 的 `start..256` 扫描样本覆盖；`close_fd` 以 `EBADF/CLOSED 放行/OK` 的三守门样本覆盖；`FdAllocPolicy` 以 `LowestFree(5→5) vs NextFitDemo(5→10)` 的 `dyn` 行为差异样本覆盖（对照实现非 C 语义，cfg(test) 限定）。
 
@@ -232,7 +232,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/filedes.c:88-656`（`88 check_fds` 的 `nfds` 窗口、`110 get_fd` 的 `start→OPEN_MAX` 扫描与 `filp_count==0` 双守门、`162 get_filp` 的 `EBADF/EIO` 双守门、`205 find_filp` 的 `vno==vp` 反查、`250 invalidate_filp` 的 `CLOSED` 单写、`298 invalidate_filp_by_endpt` 的 `fs_e` 守门、`313 lock_filp` 的 `softlock`、`413 close_filp` 的 `S_ISCHR/S_ISBLK` 分流、`524 do_copyfd` 的 `FROM/TO/CLOSE` 三操作）、`minix3/minix/servers/vfs/open.c:690-727`（`690 close_fd` 的 `NULL→EBADF→NULL fd→close_filp→FD_CLR→lock_revive`）、`minix3/minix/servers/vfs/file.h:filp`（`filp_count/mode`）、`minix3/minix/servers/vfs/fproc.h:fp_filp`（`fp_filp[256]` 私有索引）、`minix3/minix/include/sys/syslimits.h:38`（`OPEN_MAX 256`）、`minix3/minix/servers/vfs/const.h:NR_FILPS`（`NR_FILPS 1024`）
+- C 源：`minix3/minix/servers/vfs/filedes.c:check_fds`（`88 check_fds` 的 `nfds` 窗口、`110 get_fd` 的 `start→OPEN_MAX` 扫描与 `filp_count==0` 双守门、`162 get_filp` 的 `EBADF/EIO` 双守门、`205 find_filp` 的 `vno==vp` 反查、`250 invalidate_filp` 的 `CLOSED` 单写、`298 invalidate_filp_by_endpt` 的 `fs_e` 守门、`313 lock_filp` 的 `softlock`、`413 close_filp` 的 `S_ISCHR/S_ISBLK` 分流、`524 do_copyfd` 的 `FROM/TO/CLOSE` 三操作）、`minix3/minix/servers/vfs/open.c:close_fd`（`690 close_fd` 的 `NULL→EBADF→NULL fd→close_filp→FD_CLR→lock_revive`）、`minix3/minix/servers/vfs/file.h:filp`（`filp_count/mode`）、`minix3/minix/servers/vfs/fproc.h:fp_filp`（`fp_filp[256]` 私有索引）、`minix3/minix/include/sys/syslimits.h:38`（`OPEN_MAX 256`）、`minix3/minix/servers/vfs/const.h:NR_FILPS`（`NR_FILPS 1024`）
 - 阶段文档：`02-fproc-struct.md`（`FProc{filps,cloexec_set}` 的 `fp_filp` 私有索引）、`04-filp-table.md`（`FilpTable` 的 `count==0` 哨兵）、`10-pm-protocol.md`（`copy_fproc` 的 `filp_shared` 计数）、`99-global-concepts.md`（`OPEN_MAX/NR_FILPS` 常量与 `Fd` 术语）
 - Rust 实现：`os/servers/vfs/src/filedes.rs:1`（`Fd/FdError + FdAllocPolicy(LowestFree vs NextFit) + check_fds/get_fd/close_fd/invalidate/copy_fd`）、`os/servers/vfs/src/fproc.rs:1`（`FProc.filps: [Option<FilpId>;256]` 的 `FP_CLOSED` 抑制与 `cloexec_set:Bitmap`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（`sys_datacopy` 的跨进程 `COPYFD` 拷贝）

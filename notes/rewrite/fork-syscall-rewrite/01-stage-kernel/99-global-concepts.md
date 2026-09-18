@@ -51,5 +51,5 @@ IPC 过滤器特殊值：`ANY_USR`（匹配任何用户进程）、`ANY_SYS`（�
 |------|------|------|
 | Endpoint 验证 | `isokendpt_f()` | proc.c:1830 |
 | Endpoint 查找 | `endpoint_lookup()` | proc.c:1818 |
-| Generation 递增 | fork 时 generation++ | do_fork.c:59-72 |
+| Generation 递增 | fork 时 generation++ | minix3/minix/kernel/system/do_fork.c:do_fork（L59，工具生成） |
 | Endpoint 初始化 | `proc_init()` 中 `_ENDPOINT(0, p_nr)` | proc.c:133 |

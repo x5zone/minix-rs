@@ -88,7 +88,7 @@ return SUSPEND;                                 /* 阻止主循环自动回复 *
 
 ### 1.5 RprocTab：RS 公开的系统进程表
 
-RS 维护一张**公开的系统进程表** `struct rprocpub[NR_SYS_PROCS]`（rs.h:165-183，NR_SYS_PROCS=64）：每个条目描述一个已注册服务的公开信息——`endpoint`、`vm_call_mask`（VM 调用权限位图）、`label`、`sys_flags` 等。
+RS 维护一张**公开的系统进程表** `struct rprocpub[NR_SYS_PROCS]`（minix3/minix/include/minix/rs.h:rprocpub，NR_SYS_PROCS=64）：每个条目描述一个已注册服务的公开信息——`endpoint`、`vm_call_mask`（VM 调用权限位图）、`label`、`sys_flags` 等。
 
 VM 在 RS_INIT 握手时拿到这张表（main.c:241-260，sys_safecopyfrom :246-250）：
 
@@ -99,9 +99,9 @@ RS_INIT（主循环优先级 2，15 篇 §1.2）
              └─ acl_set(&vmproc[n], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))
 ```
 
-`map_service`（main.c:755-768）本质就是 `acl_set` 的一次封装：验证 endpoint → 把 RS 声明的调用掩码写入该进程的 ACL。`IS_RPUB_BOOT_USR(rpub)`（rs.h:188）= `rpub->endpoint == INIT_PROC_NR`——boot 进程里只有 init 是"用户进程"，其余都是系统进程（`!IS_RPUB_BOOT_USR` = is_sys）。
+`map_service`（main.c:755-768）本质就是 `acl_set` 的一次封装：验证 endpoint → 把 RS 声明的调用掩码写入该进程的 ACL。`IS_RPUB_BOOT_USR(rpub)`（minix3/minix/include/minix/rs.h:IS_RPUB_BOOT_USR）= `rpub->endpoint == INIT_PROC_NR`——boot 进程里只有 init 是"用户进程"，其余都是系统进程（`!IS_RPUB_BOOT_USR` = is_sys）。
 
-Rust 侧对应：`RprocTab`/`RprocEntry`（vm_server.rs:1013-1046）+ `rs_handshake`（vm_server.rs:659-681）复刻"复制表 → 逐条 acl_set"两步（真实 IPC 复制 DEFERRED，见 §3.9/§4.6）。
+Rust 侧对应：`RprocTab`/`RprocEntry`（os/servers/vm/src/vm_server.rs:const MAX_MEMREQ_BATCH（L1013，工具生成））+ `rs_handshake`（os/servers/vm/src/vm_server.rs:const PS（L659，工具生成））复刻"复制表 → 逐条 acl_set"两步（真实 IPC 复制 DEFERRED，见 §3.9/§4.6）。
 
 ### 1.6 `adjust_proc_refs`：交换后的 region parent 重绑定
 
@@ -138,7 +138,7 @@ MEMCTL 子请求（com.h:741-745）：
 | 3 | `VM_RS_MEM_MAP_PREALLOC` | 预分配 mmap 区域 |
 | 4 | `VM_RS_MEM_GET_PREALLOC_MAP` | 查询预分配的 mmap 区域 |
 
-UPDATE/PREPARE 的标志位（rs.h:198-199）：`SF_VM_ROLLBACK 0x080`（回滚更新，反向切换）、`SF_VM_NOMMAP 0x100`（不迁移 mmap 区域）。
+UPDATE/PREPARE 的标志位（minix3/minix/include/minix/rs.h:SF_VM_ROLLBACK）：`SF_VM_ROLLBACK 0x080`（回滚更新，反向切换）、`SF_VM_NOMMAP 0x100`（不迁移 mmap 区域）。
 
 ### 2.2 do_rs_set_priv — 权限设置（rs.c:34-66）
 
@@ -308,8 +308,8 @@ for(vmp = vmproc; vmp < &vmproc[VMP_NR]; vmp++) {
 | do_rs_memctl | 函数 | rs.c:349-390 | §2.5 |
 | map_service | 静态函数 | main.c:755-768 | §2.7 |
 | adjust_proc_refs | 函数 | utility.c:477-492 | §2.8 |
-| struct rprocpub | 结构 | rs.h:165-183 | §1.5/§2.7 |
-| SF_VM_ROLLBACK / SF_VM_NOMMAP | 宏 | rs.h:198-199 | §2.1 |
+| struct rprocpub | 结构 | minix3/minix/include/minix/rs.h:rprocpub | §1.5/§2.7 |
+| SF_VM_ROLLBACK / SF_VM_NOMMAP | 宏 | minix3/minix/include/minix/rs.h:SF_VM_ROLLBACK | §2.1 |
 | VM_RS_SET_PRIV/UPDATE/MEMCTL/PREPARE | 宏 | com.h:724/:736/:738/:766 | §2.1 |
 | VM_RS_MEM_*（5 个） | 宏 | com.h:741-745 | §2.1 |
 
@@ -410,7 +410,7 @@ C 的 5 步在 Rust 中分步落地（rs.rs:168-248）：
 | 4 | map_pin_memory(dst) | 同 2 | ✅ |
 | 5 | !NOMMAP → map_proc_dyn_data(src, dst) | **DEFERRED**（A-8） | ❌ |
 
-**步骤 3 的实现细节**：C 用 `region_search(VM_MMAPBASE, AVL_LESS)` 取"MMAPBASE 以下最大区域"的末端作为当前堆顶；Rust 用 `regions().find_less(VirBytes(MMAP_BASE))`（region_map.rs:99）。`src_end > dst_end` 条件**必须保留**——无条件调用 `handle_brk` 会把更大的 dst 堆收缩到 src 的大小（C 只扩不缩）。`handle_brk` 内部以 `vm_region_top` 为当前堆顶（19 篇 §2），与"数据区末端"在 brk 不变量下相等（brk 每次增长/收缩同步更新 region_top 与数据区长度）。
+**步骤 3 的实现细节**：C 用 `region_search(VM_MMAPBASE, AVL_LESS)` 取"MMAPBASE 以下最大区域"的末端作为当前堆顶；Rust 用 `regions().find_less(VirBytes(MMAP_BASE))`（os/servers/vm/src/region/region_map.rs:fn find_overlap）。`src_end > dst_end` 条件**必须保留**——无条件调用 `handle_brk` 会把更大的 dst 堆收缩到 src 的大小（C 只扩不缩）。`handle_brk` 内部以 `vm_region_top` 为当前堆顶（19 篇 §2），与"数据区末端"在 brk 不变量下相等（brk 每次增长/收缩同步更新 region_top 与数据区长度）。
 
 **步骤 5 为什么 DEFERRED**：`map_proc_dyn_data` 需要"范围受限的 CoW 区域复制 + 活动进程页表同步"——`fork_region`（fork.rs:92，18 篇 §2.2）是整地址空间复制且目标是**新建**进程（页表未绑定，PTE 写入无 TLB 负担）；LU 的目标是**已运行**进程，向已绑定页表写 PTE 需要 TLB 处理与内核协作。这与 UPDATE 的 `sys_update` 同属 A-8（内核 IPC/多组件 LU 未落地）。
 
@@ -444,7 +444,7 @@ C 的 7 步全部有 Rust 对应（rs.rs `handle_rs_update`）：
 
 **HEAP_PREALLOC**（rs.rs:369-394）：`region_top()` 取当前堆顶（= C 的 data 区末端）；`checked_add` 是 **tightening**——C 的 `bytes = *addr + *len` 在溢出时静默回绕，会把堆 shrink 成小值，Rust fail-closed（EINVAL）；委托 `handle_brk`（19 篇 §2.3）。
 
-**MAP_PREALLOC 的 RS 第三方映射建模**（rs.rs:395-442）：C 的 `map_page_region` 是内部调用，没有 `do_mmap` 的 execpriv 门控；Rust 的 `handle_mmap` 把 `MAP_UNINITIALIZED` 门控在 execpriv（VFS/RS，mmap.rs:313-315）。而 `do_rs_memctl` 语义上**永远由 RS 发起**——所以 Rust 把请求建模为 **RS 对目标的第三方映射**：`caller = Endpoint::RS`、`forwhom = target`、`flags = PRIVATE|ANONYMOUS|PREALLOC|UNINITIALIZED|THIRDPARTY`。这精确表达了 C 的特权模型（RS 可以替其他进程做特殊 mmap），且 `handle_mmap` 内部会重新 `vm_isokendpt(target)` 验证。
+**MAP_PREALLOC 的 RS 第三方映射建模**（rs.rs:395-442）：C 的 `map_page_region` 是内部调用，没有 `do_mmap` 的 execpriv 门控；Rust 的 `handle_mmap` 把 `MAP_UNINITIALIZED` 门控在 execpriv（VFS/RS，os/servers/vm/src/mmap.rs:fn handle_mmap（L313，工具生成））。而 `do_rs_memctl` 语义上**永远由 RS 发起**——所以 Rust 把请求建模为 **RS 对目标的第三方映射**：`caller = Endpoint::RS`、`forwhom = target`、`flags = PRIVATE|ANONYMOUS|PREALLOC|UNINITIALIZED|THIRDPARTY`。这精确表达了 C 的特权模型（RS 可以替其他进程做特殊 mmap），且 `handle_mmap` 内部会重新 `vm_isokendpt(target)` 验证。
 
 **未建模分支**：C 的 `is_vm` 分支（目标为 VM 自身时用 `VM_OWN_MMAPBASE`/`VM_OWN_MMAPTOP`，rs.c:312-314）在 minix-rs 未区分——仅当 MEMCTL 目标是 VM 自身时可达，而 VM 自更新属 A-8（MAKE_VM DEFERRED，不存在第二个 VM 实例），实际不可达；若未来落地 VM 自更新需补该分支。
 
@@ -457,9 +457,9 @@ struct RprocEntry { in_use: bool, endpoint: Endpoint, call_mask: u32, is_user: b
 struct RprocTab { entries: [RprocEntry; 32] }
 ```
 
-- **32 槽**：握手 stub 的占位容量——与 C 的 `rprocpub[NR_SYS_PROCS]=64`（main.c:63，sys_config.h:9）及 minix-rs 的 `NR_PROCS=256`（minix-types types/com.rs:36，`VM_PROC_COUNT=NR_PROCS+1=257`，vmproc/table.rs:41）均不同源；常量表只用于握手 stub 的条目形态，真实解码落地时以 minix-rs 的进程表容量为准（差异诚实标注）。
+- **32 槽**：握手 stub 的占位容量——与 C 的 `rprocpub[NR_SYS_PROCS]=64`（main.c:63，minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS）及 minix-rs 的 `NR_PROCS=256`（minix-types types/com.rs:36，`VM_PROC_COUNT=NR_PROCS+1=257`，vmproc/table.rs:41）均不同源；常量表只用于握手 stub 的条目形态，真实解码落地时以 minix-rs 的进程表容量为准（差异诚实标注）。
 - `is_user` 字段：C 的判定是 `IS_RPUB_BOOT_USR`（endpoint==INIT_PROC_NR）；Rust 由未来握手解码填充（当前 stub 恒 false）。
-- `rs_handshake`（vm_server.rs:972-995）复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**V11/T9 step 3 更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现为诚实 `NotImplemented`——rprocpub 字节 ABI 解码挂 **edge E-RSWIRE**（本仓 minix3 子树缺 devmajor_t/bitchunk_t/rs_pci 定义，无法 pinning）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
+- `rs_handshake`（os/servers/vm/src/vm_server.rs:const SIGKMEM（L972，工具生成））复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**V11/T9 step 3 更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现为诚实 `NotImplemented`——rprocpub 字节 ABI 解码挂 **edge E-RSWIRE**（本仓 minix3 子树缺 devmajor_t/bitchunk_t/rs_pci 定义，无法 pinning）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
 
 ### 3.10 差异清单
 
@@ -551,7 +551,7 @@ match request:
   GetPreallocMap: 区域扫描 PREALLOC_MAP → AddrLen / (0, 0)
 ```
 
-### 4.6 RprocTab 与 rs_handshake（vm_server.rs:659-681、946-980）
+### 4.6 RprocTab 与 rs_handshake（os/servers/vm/src/vm_server.rs:const PS（L659，工具生成）、946-980）
 
 ```rust
 fn rs_handshake(&mut self) -> Result<(), VmError> {

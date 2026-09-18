@@ -8,7 +8,7 @@
 
 > 本章不讲什么：
 > - 内核调度原语内部（`enqueue`/`dequeue`/`pick_proc` 队列操作）——见 `../01-stage-kernel/11-scheduling-primitives.md`
-> - `sched_proc` 参数应用的完整流程——见 `../01-stage-kernel/11-scheduling-primitives.md` §3.8/§4.5（本文只引用调用点 `do_schedctl.c:37`）
+> - `sched_proc` 参数应用的完整流程——见 `../01-stage-kernel/11-scheduling-primitives.md` §3.8/§4.5（本文只引用调用点 `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L37，工具生成）`）
 > - `mini_send` 投递机制的细节——那是内核 IPC 的话题，本文只约定一件事：通知带 `FROM_KERNEL` 标志
 > - PM/RS 的调用面（`sched_start`/`sched_inherit` 谁在什么时候调）——见 `13-pm-interaction.md`/`14-rs-interaction.md`
 
@@ -30,7 +30,7 @@
 
 ### 1.3 注册时的检查顺序
 
-`do_schedctl.c:16-43` 里的检查是有固定顺序的，顺序本身就是一种快速失败的设计。第一步查标志位（`17-21`：出现未定义的标志位直接返回 `EINVAL`，连 endpoint 都不看）；第二步查 endpoint（`23-26`：用 `isokendpt` 验证 endpoint 有效，无效返回 `EINVAL`，有效才换算成进程地址）；第三步按标志分两个分支（`28-43`：带 `SCHEDCTL_FLAG_KERNEL` 走内核调度分支，先调 `sched_proc` 应用参数，失败直接返回、归属指针不动（`37-39`，参数先落、归属后改）；不带该标志走 SCHED 调度分支，直接把 `p_scheduler` 指向调用者（`42`），不读任何参数）。这个顺序不能换：标志错了即使 endpoint 是对的，也在第一步就被拒绝，这样最省事（和 10 §1.2 先判单核再走通用逻辑是同一个道理）。
+`minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L16，工具生成）` 里的检查是有固定顺序的，顺序本身就是一种快速失败的设计。第一步查标志位（`17-21`：出现未定义的标志位直接返回 `EINVAL`，连 endpoint 都不看）；第二步查 endpoint（`23-26`：用 `isokendpt` 验证 endpoint 有效，无效返回 `EINVAL`，有效才换算成进程地址）；第三步按标志分两个分支（`28-43`：带 `SCHEDCTL_FLAG_KERNEL` 走内核调度分支，先调 `sched_proc` 应用参数，失败直接返回、归属指针不动（`37-39`，参数先落、归属后改）；不带该标志走 SCHED 调度分支，直接把 `p_scheduler` 指向调用者（`42`），不读任何参数）。这个顺序不能换：标志错了即使 endpoint 是对的，也在第一步就被拒绝，这样最省事（和 10 §1.2 先判单核再走通用逻辑是同一个道理）。
 
 ### 1.4 时间片耗尽时内核如何通知
 
@@ -60,11 +60,11 @@
 
 ## 2 C 源码分析
 
-### 2.1 标志检查与 endpoint 检查（`do_schedctl.c:7-26`）
+### 2.1 标志检查与 endpoint 检查（`minix3/minix/kernel/system/do_schedctl.c:do_schedctl`）
 
 先声明局部变量（`7-13`：调用者指针、消息指针、标志、优先级/时间片/CPU、进程号、返回值），然后从消息里取出标志（`16`），检查有没有未知位（`17-21`：有就返回 `EINVAL`，还打印一句警告），再验证 endpoint（`23-24`：`isokendpt` 不通过返回 `EINVAL`），最后把 endpoint 换算成进程地址（`26`：`proc_addr`）。
 
-### 2.2 两个注册分支（`do_schedctl.c:28-45`）
+### 2.2 两个注册分支（`minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L28，工具生成）`）
 
 内核调度分支（`28-39`）：标志带 `SCHEDCTL_FLAG_KERNEL` 就进这里，先从消息里取出三个数（`32-34`：优先级、时间片、CPU），再调 `sched_proc(..., FALSE)` 应用参数（`37`：`FALSE` 表示不是 nice 调整，细节见 09），最后把 `p_scheduler` 置空（`39`：收归内核；注意顺序是参数先落、归属后改，参数应用失败（`37-38` 直接返回）则归属指针不动，不会出现"参数没应用、归属已改"的半截状态）。SCHED 调度分支（`40-43`）：标志不带该位就进这里，直接把 `p_scheduler` 指向调用者（`42`），不读参数。最后返回 `OK`（`45`）。两个分支的区别：内核调度分支带参数（参数先行、归属后置），SCHED 调度分支不带参数（归属指针就是全部内容），参数的有无跟着分支走（见 D2）。
 
@@ -82,7 +82,7 @@
 
 ### 2.6 调度归属的判断（`proc.h:178-179`，概念引用）
 
-`p_scheduler == NULL || == self` 就是内核调度（`178-179`：空指针和指向自己是同一个意思，见 §1.2）。内核侧 Rust 已经把这两种情况合并了（`os/kernel/src/proc.rs:560` 用 `Option` 表示，`None` 就是内核调度，那是内核侧 S-1 的实现，归 11 管，这里只引用）。
+`p_scheduler == NULL || == self` 就是内核调度（`178-179`：空指针和指向自己是同一个意思，见 §1.2）。内核侧 Rust 已经把这两种情况合并了（`os/kernel/src/proc.rs:fn default` 用 `Option` 表示，`None` 就是内核调度，那是内核侧 S-1 的实现，归 11 管，这里只引用）。
 
 ---
 
@@ -93,19 +93,19 @@ Rust 改写不是把一门两函照抄一遍，而是在吸收 Linux"检查和�
 ### D1 标志位集合化
 
 - **C**：`flags & ~SCHEDCTL_FLAG_KERNEL → EINVAL`（`17-21`）；目前唯一合法的位是 `SCHEDCTL_FLAG_KERNEL = 1`（`com.h:449`）。
-- **Rust**：`SchedctlFlags`（`os/servers/sched/src/kernel_api/schedctl.rs:35` 的 `KERNEL` 位）+ `validate_flags(raw)`（`schedctl.rs:47`：有未知位就返回 `EINVAL`）。
-- **为什么**：SCHED 这一侧提前检查，答案和内核完全一样，可以省掉一次 IPC 来回（06 的 `admit()` 也是这个做法：检查放在近处，决定放在远处，两边答案一致）。标志的权威值在内核侧（`os/kernel/src/syscall_process.rs:49` 私有保存，判的人拿着真值）；SCHED 这一侧只是镜像，附了权威注释（和 05 里 `DEFAULT_USER_TIME_SLICE` 两处同值、判的人为准的做法一样，Proposal #12 的惯例）。备选方案（直接传裸 `u32`）被否决了：位的含义没有名字，以后加位容易错。
+- **Rust**：`SchedctlFlags`（`os/servers/sched/src/kernel_api/schedctl.rs:struct SchedctlFlags` 的 `KERNEL` 位）+ `validate_flags(raw)`（`os/servers/sched/src/kernel_api/schedctl.rs:fn validate_flags`：有未知位就返回 `EINVAL`）。
+- **为什么**：SCHED 这一侧提前检查，答案和内核完全一样，可以省掉一次 IPC 来回（06 的 `admit()` 也是这个做法：检查放在近处，决定放在远处，两边答案一致）。标志的权威值在内核侧（`os/kernel/src/syscall_process.rs:const SCHEDCTL_FLAG_KERNEL` 私有保存，判的人拿着真值）；SCHED 这一侧只是镜像，附了权威注释（和 05 里 `DEFAULT_USER_TIME_SLICE` 两处同值、判的人为准的做法一样，Proposal #12 的惯例）。备选方案（直接传裸 `u32`）被否决了：位的含义没有名字，以后加位容易错。
 
 ### D2 调度归属两种状态
 
 - **C**：`p_scheduler` 裸指针有三种形状（空/指向自己/指向 SCHED，`proc.h:178-179`）。
-- **Rust**：`SchedulerAssignment::{Kernel, Server}`（`schedctl.rs:59`：标志带 `KERNEL` 位就是 `Kernel`，否则是 `Server`）。
+- **Rust**：`SchedulerAssignment::{Kernel, Server}`（`os/servers/sched/src/kernel_api/schedctl.rs:enum SchedulerAssignment`：标志带 `KERNEL` 位就是 `Kernel`，否则是 `Server`）。
 - **为什么**：空指针和指向自己是同一个意思（都是内核调度），所以三种形状实际是两种状态（S-1：内核侧已经用 `Option` 合并了空和自己，那是 11 的范围；SCHED 这一侧用枚举合并，两边一致）。内核调度分支带参数（`sched_proc` 先行，见 `37`），SCHED 调度分支不带参数（只改归属指针，见 `42`），参数的有无跟着归属走，归属就是参数的开关。备选方案（三种形状直译成三个枚举变体）被否决了：同一个意思拆成两个变体是 C 指针写法的形状，不是归属的实质。
 
 ### D3 接管调用的组装
 
 - **C**：`sys_schedctl(flags, endpoint, priority, quantum, cpu)` 的形状（06 里 `218` 行这样调；消息里五个字段的顺序见 `message.rs:821-831` 的 `MessLsysKrnSchedctl`）。
-- **Rust**：`SchedctlCall`（`schedctl.rs:87`）+ `register(target)`（`schedctl.rs:107`：标志零、参数零，对应 06 的 `sys_schedctl(0, ep, 0, 0, 0)` 形状）+ `to_kernel(target, p, q, c)`（`schedctl.rs:121`：带 `KERNEL` 标志、参数随行）+ `wire()`（`schedctl.rs:137`：按五个字段的顺序组装消息）。
+- **Rust**：`SchedctlCall`（`os/servers/sched/src/kernel_api/schedctl.rs:struct SchedctlCall`）+ `register(target)`（`os/servers/sched/src/kernel_api/schedctl.rs:fn register`：标志零、参数零，对应 06 的 `sys_schedctl(0, ep, 0, 0, 0)` 形状）+ `to_kernel(target, p, q, c)`（`os/servers/sched/src/kernel_api/schedctl.rs:fn to_kernel`：带 `KERNEL` 标志、参数随行）+ `wire()`（`os/servers/sched/src/kernel_api/schedctl.rs:fn wire`：按五个字段的顺序组装消息）。
 - **为什么**：组装和发送分开（组装哪些值发上去是契约的事，什么时候发是事件循环的事，本模块不碰 IPC 发送；04 的 D2、10 的 D1、11 的 D3 都是这个做法）。SCHED 调度分支不读参数，所以 `register` 把参数置零（内核注册分支本来就不读参数，见 `40-43`，置零和"没有参数"是同一个效果）。备选方案（在组装函数里直接发出去）被否决了：发送是事件循环的权力，不是契约模块的权力。
 
 ### D4 统计字段只描述、不建模
@@ -118,7 +118,7 @@ Rust 改写不是把一门两函照抄一遍，而是在吸收 Linux"检查和�
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| S-1 双层调度模型类型化（SCHED 侧：归属两种状态的枚举） | `SchedulerAssignment` | `schedctl.rs:59` + 本文档 D2 + plan §4/S-1 行 |
+| S-1 双层调度模型类型化（SCHED 侧：归属两种状态的枚举） | `SchedulerAssignment` | `os/servers/sched/src/kernel_api/schedctl.rs:enum SchedulerAssignment` + 本文档 D2 + plan §4/S-1 行 |
 
 ---
 
@@ -150,18 +150,18 @@ os/kernel/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 标志位 | `com.h:449` | `schedctl.rs:27,35,47` | 只有一位有定义，其余位都拒绝 |
-| 归属状态 | `proc.h:178-179` | `schedctl.rs:59` | 带 `KERNEL` 位即内核调度，否则 SCHED 调度 |
-| 接管组装 | `do_schedctl.c:7-46` | `schedctl.rs:87,107,121,137` | 注册零参/内核调度带参/五字段顺序组装 |
+| 标志位 | `com.h:449` | `os/servers/sched/src/kernel_api/schedctl.rs:const SCHEDCTL_FLAG_KERNEL,35,47` | 只有一位有定义，其余位都拒绝 |
+| 归属状态 | `proc.h:178-179` | `os/servers/sched/src/kernel_api/schedctl.rs:enum SchedulerAssignment` | 带 `KERNEL` 位即内核调度，否则 SCHED 调度 |
+| 接管组装 | `minix3/minix/kernel/system/do_schedctl.c:do_schedctl` | `os/servers/sched/src/kernel_api/schedctl.rs:struct SchedctlCall,107,121,137` | 注册零参/内核调度带参/五字段顺序组装 |
 | 七个统计字段 | `proc.c:1876-1883` | （只描述不建模，D4） | 全发、SCHED 只读来源 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 未知标志位拒绝 | `validate_flags` | 位集合即检查 | `do_schedctl.c:17-21` |
+| 未知标志位拒绝 | `validate_flags` | 位集合即检查 | `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L17，工具生成）` |
 | 归属两种状态（空和自己合并为内核调度） | `from_flags` | 枚举即合并 | `proc.h:178-179` |
-| 注册零参（参数本来就不读） | `register` | 零即无参 | `do_schedctl.c:40-43` |
+| 注册零参（参数本来就不读） | `register` | 零即无参 | `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L40，工具生成）` |
 | 消息五个字段的顺序（顺序即约定） | `wire` | 顺序直译 | `message.rs:821-831` |
 | 统计全发、只读来源 | 调用者约定（08 只读来源） | 文档即约定 | `proc.c:1874-1883` |
 
@@ -173,10 +173,10 @@ os/kernel/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_flags_validate` | `do_schedctl.c:17-21` | 空标志通过、`KERNEL` 位通过、未知位拒绝（含多位并拒绝） | `schedctl.rs` |
-| `test_assignment_from_flags` | `proc.h:178-179` + `do_schedctl.c:28-42` | 带位即内核调度，不带即 SCHED 调度 | `schedctl.rs` |
-| `test_register_call` | `do_schedctl.c:40-43` | 注册零参 + 归属为 SCHED 调度 | `schedctl.rs` |
-| `test_kernel_call` | `do_schedctl.c:28-39` | 内核调度带参 + 归属为内核调度 | `schedctl.rs` |
+| `test_flags_validate` | `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L17，工具生成）` | 空标志通过、`KERNEL` 位通过、未知位拒绝（含多位并拒绝） | `schedctl.rs` |
+| `test_assignment_from_flags` | `proc.h:178-179` + `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L28，工具生成）` | 带位即内核调度，不带即 SCHED 调度 | `schedctl.rs` |
+| `test_register_call` | `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L40，工具生成）` | 注册零参 + 归属为 SCHED 调度 | `schedctl.rs` |
+| `test_kernel_call` | `minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L28，工具生成）` | 内核调度带参 + 归属为内核调度 | `schedctl.rs` |
 | `test_wire_order` | `message.rs:821-831` | 五字段顺序组装（标志/endpoint/优先级/时间片/CPU） | `schedctl.rs` |
 
 测试策略：标志检查用空、合法、未知三个例子锁定；归属用带位、不带位两个例子锁定；组装用零参（注册）、带参（内核调度）和五字段顺序锁定。
@@ -208,7 +208,7 @@ os/kernel/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/kernel/system/do_schedctl.c:7-46`（注册检查与分支）、`minix3/minix/kernel/proc.c:1860-1891`（通知消息的构造）、`minix3/minix/kernel/proc.c:1893-1910`（抢占判断的两个分支）、`minix3/minix/kernel/proc.h:178-179`（归属判断）、`minix3/minix/include/minix/com.h:449,801-807`（标志位与消息号）、`minix3/minix/kernel/ipc.h:12`（代发标志）
+- C 源：`minix3/minix/kernel/system/do_schedctl.c:do_schedctl`（注册检查与分支）、`minix3/minix/kernel/proc.c:notify_scheduler`（通知消息的构造）、`minix3/minix/kernel/proc.c:proc_no_time`（抢占判断的两个分支）、`minix3/minix/kernel/proc.h:proc_kernel_scheduler`（归属判断）、`minix3/minix/include/minix/com.h:SCHEDCTL_FLAG_KERNEL,801-807`（标志位与消息号）、`minix3/minix/kernel/ipc.h:FROM_KERNEL`（代发标志）
 - 阶段文档：`06-start-scheduling.md`（接管时用组装函数）、`08-noquantum-nice.md`（通知的读取方）、`09-schedule-process.md`（上一站）、`11-balance-queues.md`（平衡对照）、`13-pm-interaction.md`（下一站）
 - Rust 实现：`os/servers/sched/src/kernel_api/schedctl.rs:1`（本篇契约层）
-- 对端：`../01-stage-kernel/11-scheduling-primitives.md`（原语实现 §3.8/§4.5/§5，主权方）、`os/kernel/src/syscall_process.rs:630`（内核检查逻辑的实现）、`os/libs/minix-types/src/ipc/message.rs:821-831,1016-1034`（消息字段顺序的来源）
+- 对端：`../01-stage-kernel/11-scheduling-primitives.md`（原语实现 §3.8/§4.5/§5，主权方）、`os/kernel/src/syscall_process.rs:fn dispatch_runctl（L630，工具生成）`（内核检查逻辑的实现）、`os/libs/minix-types/src/ipc/message.rs:struct MessLsysKrnSysCopy（L821，工具生成）,1016-1034`（消息字段顺序的来源）

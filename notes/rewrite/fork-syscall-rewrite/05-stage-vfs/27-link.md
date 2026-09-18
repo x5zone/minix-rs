@@ -98,43 +98,43 @@ Rust 改写不是照抄 `link.c` 的路径解析与 FS 下发流程，而是吸�
 ### D1 调用枚举
 
 - **C**：头注释七个入口，unlink 兼管 rmdir（`link.c:1-12,156-159`）。
-- **Rust**：`LinkCall` 八个变体 + `ends_in_dir()`（`os/servers/vfs/src/link.rs:42,61`）。
+- **Rust**：`LinkCall` 八个变体 + `ends_in_dir()`（`os/servers/vfs/src/link.rs:enum LinkCall,61`）。
 - **为什么**：unlink 兼管 rmdir 是调用层面的事实，按调用号拆分为八个变体可使分流穷举。替代方案（七值 + 布尔）被否决：兼管是调用面的事实，八个变体更直接。
 
 ### D2 路径解析规格
 
 - **C**：七个调用各有一套路径解析（锁组合 + 终止标志散见 `link.c:45-56,107-109,186-231,295-297,398-400,442-491`）。
-- **Rust**：`LinkLookup` 九种 + `lookup_spec()` 纯函数表（`os/servers/vfs/src/link.rs:73,87,96,111,131`）。
+- **Rust**：`LinkLookup` 九种 + `lookup_spec()` 纯函数表（`os/servers/vfs/src/link.rs:enum TerminalKind,87,96,111,131`）。
 - **为什么**：路径解析是"文件名对应哪个 vnode"的公共逻辑；锁意图与锁状态分离（锁状态归 05/06，本层只记录意图）。替代方案（各调用分散书写）被否决：锁组合错配会导致死锁或竞态，集中成一张表更易检查。
 
 ### D3 粘滞位检查
 
 - **C**：两处共用逻辑（删除 `132-152`/重命名 `197-217`）。
-- **Rust**：`sticky_check()`（`os/servers/vfs/src/link.rs:192`）。
+- **Rust**：`sticky_check()`（`os/servers/vfs/src/link.rs:fn sticky_check`）。
 - **为什么**：粘滞位保护规则在两处完全相同，收敛为一个函数。替代方案（两处各写一份）被否决：与 23-D5 同理，同一逻辑复制两份容易漂移。
 
 ### D4 截断检查
 
 - **C**：负长度检查 + 长度相同跳过 + 文件类型检查 + 写模式检查（`link.c:300-372`）。
-- **Rust**：`check_length()` + `same_size_skip()` + `truncate_type_ok()` + `write_mode_ok()`（`os/servers/vfs/src/link.rs:203,214,219,227`）。
+- **Rust**：`check_length()` + `same_size_skip()` + `truncate_type_ok()` + `write_mode_ok()`（`os/servers/vfs/src/link.rs:fn check_length,214,219,227`）。
 - **为什么**：四个检查对应四种不同的错误返回；长度相同跳过单独列出——POSIX 时间戳保留语义最容易被"优化"掉。替代方案（合并为更少函数）被否决：四种错误各有 errno，合并后无法区分。
 
 ### D5 符号链接长度检查
 
 - **C**：空路径检查 + 超长检查 + 下发长度减一（`link.c:407-416`）。
-- **Rust**：`check_slink_len()` 返回下发长度（`os/servers/vfs/src/link.rs:238`）。
+- **Rust**：`check_slink_len()` 返回下发长度（`os/servers/vfs/src/link.rs:fn check_slink_len`）。
 - **为什么**：三个检查保证符号链接内容合法；返回值即下发长度，使"末尾 NUL 不写入"可通过单测直接验证。替代方案（布尔检查 + 调用点减一）被否决：减一散落在调用点容易漏减。
 
 ### D6 readlink 检查
 
 - **C**：缓冲长度检查 + 文件类型检查 + 内核/用户端点标志 + 零终止（`link.c:453-459,487-501`）。
-- **Rust**：`check_rdlink_buf()` + `RdlinkSide` + `rdlink_channel()` + `terminate_ok()`（`os/servers/vfs/src/link.rs:249,258,270,278,292`）。
+- **Rust**：`check_rdlink_buf()` + `RdlinkSide` + `rdlink_channel()` + `terminate_ok()`（`os/servers/vfs/src/link.rs:fn check_rdlink_buf,258,270,278,292`）。
 - **为什么**：内核内部读取与用户 readlink 请求的端点与标志必须配对，拆成独立参数容易错配。替代方案（两个布尔参数）被否决：配对关系分散成参数后容易传错。
 
 ### D7 设备与权限检查及 FS 对话
 
 - **C**：两处 EXDEV 检查 + 双目录权限检查 + 旧文件名长度检查 + req_* 七个下发点（`link.c:70-77,220-259`）。
-- **Rust**：`same_device()` + `old_name_fits()` + `FsLink{七个方法}`（`ScriptedLink` 按脚本应答 vs `RefusingLink` 固定拒绝）+ `link_then_read()` 契约探针（`os/servers/vfs/src/link.rs:298,307,319,338,394,396,421`）。
+- **Rust**：`same_device()` + `old_name_fits()` + `FsLink{七个方法}`（`ScriptedLink` 按脚本应答 vs `RefusingLink` 固定拒绝）+ `link_then_read()` 契约探针（`os/servers/vfs/src/link.rs:fn same_device,307,319,338,394,396,421`）。
 - **为什么**：设备一致性与权限检查是两个调用共用的前置条件；FS 是唯一的不可测点，一个 trait 七个方法即可覆盖。替代方案（七个 trait 分立）被否决：测试矩阵会膨胀七倍，而覆盖的是同一类逻辑。
 
 ### ARCH 决策总表
@@ -235,7 +235,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/link.c:1-508`（九函数全族）、`minix3/include/limits.h:60`（`_POSIX_SYMLINK_MAX`）、`minix3/minix/servers/vfs/const.h:15`（`SU_UID`）
+- C 源：`minix3/minix/servers/vfs/link.c:1-508`（九函数全族）、`minix3/include/limits.h:_POSIX_SYMLINK_MAX`（`_POSIX_SYMLINK_MAX`）、`minix3/minix/servers/vfs/const.h:SU_UID`（`SU_UID`）
 - 阶段文档：`13-path-lookup.md`（寻路执行）、`14-filedes.md`（取卷执行）、`15-open-close.md`（O_TRUNC 同源）、`02-fproc-struct.md`（凭证）、`09-main-loop.md`（调用分发）、`28-stadir.md`（下一站）
-- Rust 实现：`os/servers/vfs/src/link.rs:1`（本篇判定层）、`os/servers/vfs/src/path.rs:13`（`PATH_MAX` 复用）、`os/servers/vfs/src/socket.rs:68`（`SSIZE_MAX_U64` 复用）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/link.rs:1`（本篇判定层）、`os/servers/vfs/src/path.rs:const PATH_MAX（L13，工具生成）`（`PATH_MAX` 复用）、`os/servers/vfs/src/socket.rs:const SOCK_CLOEXEC（L68，工具生成）`（`SSIZE_MAX_U64` 复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（名拷语义）

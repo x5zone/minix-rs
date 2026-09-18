@@ -59,7 +59,7 @@ uid 对/gid 对/会话位（`!!(flags & FP_SESLDR)`，:55）/nfds/blocked_on/
 
 ### 2.3 FP 位语义
 
-`FP_SESLDR 0004`（fproc.h:96）/`FP_REVIVED 0002`（:94，八进制字面——
+`FP_SESLDR 0004`（minix3/minix/servers/vfs/fproc.h:FP_PENDING）/`FP_REVIVED 0002`（:94，八进制字面——
 `!!` 转 0/1 后按 `%3d` 打印）；`FP_BLOCKED_ON_*` 0-6（const.h:19-25：
 NONE/PIPE/FLOCK/POPEN/SELECT/CDEV/SDEV）。
 

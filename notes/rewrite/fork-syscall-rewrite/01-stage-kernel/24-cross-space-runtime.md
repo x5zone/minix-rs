@@ -84,7 +84,7 @@ VMREQUEST 支持三种挂起场景（`proc.h:98-101`）：
 |------|---|------|---------|
 | `VMSTYPE_KERNELCALL` | 1 | 内核调用被缺页中断 | 设置 `MF_KCALL_RESUME`，调度时 `kernel_call_resume()` 重试 |
 | `VMSTYPE_DELIVERMSG` | 2 | 消息投递被缺页中断 | VM 处理后直接清除 `RTS_VMREQUEST` |
-| `VMSTYPE_MAP` | 3 | 预留类型 | 仅 `do_vmctl.c:102` 有 case 分支，当前无代码设置 |
+| `VMSTYPE_MAP` | 3 | 预留类型 | 仅 `minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L102，工具生成）` 有 case 分支，当前无代码设置 |
 
 本文档聚焦 `VMSTYPE_KERNELCALL`（跨地址空间拷贝场景）；DELIVERMSG 在 12-ipc-core.md 覆盖，MAP 当前未使用。
 
@@ -144,7 +144,7 @@ VMREQUEST 支持三种挂起场景（`proc.h:98-101`）：
 
 ### 2.4 do_copy.c — SYS_VIRCOPY / SYS_PHYSCOPY 处理
 
-`do_copy()`（`do_copy.c:22-90`）是 `SYS_VIRCOPY` / `SYS_PHYSCOPY` 的内核侧处理函数。算法步骤：
+`do_copy()`（`minix3/minix/kernel/system/do_copy.c:do_copy`）是 `SYS_VIRCOPY` / `SYS_PHYSCOPY` 的内核侧处理函数。算法步骤：
 
 1. **解析消息**（L50-56）：从 `m_lsys_krn_sys_copy` 提取 src/dst endpoint + addr + bytes
 2. **SELF 替换**（L64-65）：`vir_addr[i].proc_nr_e == SELF` → `caller->p_endpoint`
@@ -290,7 +290,7 @@ int virtual_copy_f(struct proc * caller, struct vir_addr *src,
 
 ### 4.1 cross_space_copy — 跨地址空间拷贝原语
 
-`cross_space_copy<D: DirectMapArch>()`（`os/kernel/src/vm.rs:327-370`）是跨地址空间拷贝的核心原语，对应 C 的 `virtual_copy_f()`：
+`cross_space_copy<D: DirectMapArch>()`（`os/kernel/src/vm.rs:fn cross_space_copy`）是跨地址空间拷贝的核心原语，对应 C 的 `virtual_copy_f()`：
 
 ```rust
 pub fn cross_space_copy<D: DirectMapArch>(
@@ -314,7 +314,7 @@ pub fn cross_space_copy<D: DirectMapArch>(
 
 ### 4.2 data_copy_vmcheck — 内核内部入口
 
-`data_copy_vmcheck()`（`os/kernel/src/cross_space.rs:118-179`）是内核内部跨地址空间拷贝的入口，对应 C 的 `data_copy_vmcheck()`（`arch/i386/memory.c:690-705`）：
+`data_copy_vmcheck()`（`os/kernel/src/cross_space.rs:fn data_copy_vmcheck`）是内核内部跨地址空间拷贝的入口，对应 C 的 `data_copy_vmcheck()`（`arch/i386/memory.c:690-705`）：
 
 ```rust
 pub fn data_copy_vmcheck(
@@ -345,7 +345,7 @@ pub fn data_copy_vmcheck(
 
 ### 4.3 suspend_for_vm_with_copy — VMSUSPEND 状态设置
 
-`KProcess::suspend_for_vm_with_copy()`（`os/kernel/src/proc.rs:1417-1438`）对应 C 的 `vm_suspend()`：
+`KProcess::suspend_for_vm_with_copy()`（`os/kernel/src/proc.rs:fn blocked_on（L1417，工具生成）`）对应 C 的 `vm_suspend()`：
 
 ```rust
 pub fn suspend_for_vm_with_copy(
@@ -374,7 +374,7 @@ pub fn suspend_for_vm_with_copy(
 
 ### 4.4 VmSuspendContext — 挂起状态
 
-`VmSuspendContext`（`os/kernel/src/vm.rs:494-522`）是 VMREQUEST 的状态存储，替代 C 的 `p_vmrequest`：
+`VmSuspendContext`（`os/kernel/src/vm.rs:enum VmCheckResult（L494，工具生成）`）是 VMREQUEST 的状态存储，替代 C 的 `p_vmrequest`：
 
 | Rust 字段 | C 对应 | 类型差异 |
 |----------|--------|---------|
@@ -387,21 +387,21 @@ pub fn suspend_for_vm_with_copy(
 
 ### 4.5 dispatch_vircopy — 系统调用分派
 
-`dispatch_vircopy()`（`os/kernel/src/syscall_copy.rs:220-226`）处理 `SYS_VIRCOPY` / `SYS_PHYSCOPY` 系统调用，对应 C 的 `do_copy()`。它是薄包装，委托给 `dispatch_copy()`（syscall_copy.rs:242-359）。详见 [18-syscall-copy.md](18-syscall-copy.md)。
+`dispatch_vircopy()`（`os/kernel/src/syscall_copy.rs:fn dispatch_vircopy`）处理 `SYS_VIRCOPY` / `SYS_PHYSCOPY` 系统调用，对应 C 的 `do_copy()`。它是薄包装，委托给 `dispatch_copy()`（os/kernel/src/syscall_copy.rs:fn dispatch_copy）。详见 [18-syscall-copy.md](18-syscall-copy.md)。
 
-**当前状态**（`dispatch_copy` 内部分支，对齐 C `do_copy.c:80-89`）：
+**当前状态**（`dispatch_copy` 内部分支，对齐 C `minix3/minix/kernel/system/do_copy.c:do_copy（L80，工具生成）`）：
 - **CP_FLAG_TRY 路径**（VFS 专用）：直接调用 `cross_space_copy::<CurrentDirectMap>`，`Suspended(_)` → `EFAULT`（不挂起）
-- **默认路径**：调用 `data_copy_vmcheck(caller, src, dst, bytes, proc_cr3)`（cross_space.rs:118）执行带 VM 检查的拷贝，`Suspended(_)` → `KcallResult::VmSuspend`（挂起调用方，等待 VM 修复后重试）
+- **默认路径**：调用 `data_copy_vmcheck(caller, src, dst, bytes, proc_cr3)`（os/kernel/src/cross_space.rs:fn data_copy_vmcheck）执行带 VM 检查的拷贝，`Suspended(_)` → `KcallResult::VmSuspend`（挂起调用方，等待 VM 修复后重试）
 
 ### 4.6 已知缺口（诚实标注 DEFERRED）
 
 | 缺口 | 严重度 | 理由 | 计划 |
 |------|--------|------|------|
-| 挂起路径未接入 `VmRequestQueue` + SIGKMEM 通知 | P1 DEFERRED | `VmRequestQueue` 已实现（vm.rs:534，`enqueue`@577 / `dequeue_filtered`@594 / `enqueue_and_notify`@646 / `remove`@663 + 测试），但 `suspend_for_vm_with_copy`（proc.rs:1417）只设置 `RTS_VMREQUEST` + `p_vm_suspend`，未调用 `enqueue_and_notify`——无 SIGKMEM 触发路径 | 随 SIGSEND 实现落地 |
+| 挂起路径未接入 `VmRequestQueue` + SIGKMEM 通知 | P1 DEFERRED | `VmRequestQueue` 已实现（vm.rs:534，`enqueue`@577 / `dequeue_filtered`@594 / `enqueue_and_notify`@646 / `remove`@663 + 测试），但 `suspend_for_vm_with_copy`（os/kernel/src/proc.rs:fn blocked_on（L1417，工具生成））只设置 `RTS_VMREQUEST` + `p_vm_suspend`，未调用 `enqueue_and_notify`——无 SIGKMEM 触发路径 | 随 SIGSEND 实现落地 |
 | `kernel_call_resume()` 完整重派发 | P1 DEFERRED | 简单版（vm.rs:896）已接入 `process_misc_flags`（proc_table.rs KCALL_RESUME 分支，FIX-21）；完整重派发（重新执行 `saved.reqmsg`）延迟至 `switch_to_user`（见 10-switch-to-user.md §4.2） | 随调度器集成推进 |
 | ~~aarch64/riscv64 PTE walk~~ | ~~P2 DEFERRED~~ | ✅ **已实现（2026-08-14 核实）**：三架构 `PteWalkArch` 完整实现——x86_64/paging.rs、arm64/paging.rs:310（`walk_translate` 4 级）、riscv64/paging.rs:334（Sv39 3 级） | 已解决 |
 | `VmSuspendContext` 完整三类（KERNELCALL/DELIVERMSG/MAP） | P2 DEFERRED | 当前仅 `KernelCall` + `DeliverMsg`，`Map` 未使用 | 随 IPC/message deliver 推进 |
-| 部分拷贝进度报告 | P2 WONTFIX | 代码注释已定案（cross_space.rs:139-145）：`cross_space_copy` 重试幂等（写后写同内容安全），`VmCheckParams.length` 用完整 `bytes` 是安全的；内核内部拷贝（sigframe/getinfo/diagctl）均为小拷贝，额外 VM fault 处理成本可接受 | WONTFIX（不实现） |
+| 部分拷贝进度报告 | P2 WONTFIX | 代码注释已定案（os/kernel/src/cross_space.rs:fn data_copy_vmcheck（L139，工具生成））：`cross_space_copy` 重试幂等（写后写同内容安全），`VmCheckParams.length` 用完整 `bytes` 是安全的；内核内部拷贝（sigframe/getinfo/diagctl）均为小拷贝，额外 VM fault 处理成本可接受 | WONTFIX（不实现） |
 
 ---
 

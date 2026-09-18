@@ -330,14 +330,14 @@ VM 维护以下跨组件共享的全局变量：
 | 函数 | C 源文件 | 说明 |
 |------|---------|------|
 | `cache_sanitycheck_internal` | cache.c:87 | 缓存一致性检查 |
-| `fdref_sanitycheck` | fdref.c:37 | fd 引用计数一致性检查 |
+| `fdref_sanitycheck` | minix3/minix/servers/vm/fdref.c:fdref_sanitycheck | fd 引用计数一致性检查 |
 | `map_printmap` | region.c:98 | 打印整个区域映射表 |
 | `map_printregion` | region.c:40 | 打印单个区域 |
 | `mem_sanitycheck` | alloc.c:338 | 物理内存分配器一致性检查 |
 | `printregionstats` | region.c:1510 | 区域统计打印 |
-| `pt_sanitycheck` | pagetable.c:130 | 页表结构一致性检查 |
-| `ptestr` | pagetable.c:587 | 页表条目格式化 |
-| `slabstats` | slaballoc.c:504 | Slab 分配器统计打印 |
+| `pt_sanitycheck` | minix3/minix/servers/vm/pagetable.c:pt_sanitycheck | 页表结构一致性检查 |
+| `ptestr` | minix3/minix/servers/vm/pagetable.c:ptestr | 页表条目格式化 |
+| `slabstats` | minix3/minix/servers/vm/slaballoc.c:slabstats | Slab 分配器统计打印 |
 | `usedpages_add_f` | alloc.c:509 | 已用页调试计数器 |
 | `usedpages_reset` | alloc.c:501 | 已用页计数器重置 |
 | `rmhash_f` (×2) | cache.c:152-153 | hash 表内部辅助函数 |

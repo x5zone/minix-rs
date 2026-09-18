@@ -57,7 +57,7 @@ PM 与订阅者是**生命周期独立**的两个用户态 server：PM 可能早
 | **并行同步**（同时发给 4 个订阅者，等待全部回复） | `NR_PROCS * NR_SUBS = 1024` | 固定但 4 倍膨胀 |
 | **串行同步**（一次只发给一个订阅者，等回复后再发下一个） | `NR_PROCS = 256` | 最小固定上界 |
 
-内核为 PM 预留的异步槽是 `ASYN_NR = 2 * _NR_PROCS`（`asynsend.c:17`），串行方案恰好落在其中（256 < 512），并行方案超出（1024 > 512）。**槽位上界是硬约束**，不是偏好——PM 不能让内核队列溢出，否则会 `panic("asynsend failed")`（`event.c:104-106`）。因此串行不是"效率妥协"，而是"在内核队列约束下唯一可证明有界的方案"。
+内核为 PM 预留的异步槽是 `ASYN_NR = 2 * _NR_PROCS`（`minix3/minix/lib/libsys/asynsend.c:ASYN_NR`），串行方案恰好落在其中（256 < 512），并行方案超出（1024 > 512）。**槽位上界是硬约束**，不是偏好——PM 不能让内核队列溢出，否则会 `panic("asynsend failed")`（`event.c:104-106`）。因此串行不是"效率妥协"，而是"在内核队列约束下唯一可证明有界的方案"。
 
 搭档约束是**单订阅者假设**（`event.c:24-25`）：*At this moment, we expect only one subscriber (the IPC server) which makes the serial vs parallel point less relevant.* 预留 4 个槽位是防御性上限，不是活跃值——Rust 侧仍保留 `NR_SUBS = 4`，但测试以单订阅者为主路径。
 
@@ -139,7 +139,7 @@ Rust 改写不是照抄 C 的裸数组写法，而是在吸收工业级 OS 的�
 
 ## 2 C 源码分析
 
-### 2.1 数据面：订阅表与 per-process 游标（event.c:58-67 / mproc.h:27 / const.h:13 / syslib.h:292-293 / com.h:597-619）
+### 2.1 数据面：订阅表与 per-process 游标（event.c:58-67 / minix3/minix/servers/pm/mproc.h:sigaction（L27，工具生成） / const.h:13 / syslib.h:292-293 / com.h:597-619）
 
 `event.c:58-67`（文件级 `static`）：
 
@@ -158,7 +158,7 @@ static unsigned int nested = 0;  // 重入守卫计数
 
 `NR_SUBS = 4` 是**现实上限**（`event.c:52-57` 注释："does not scale to numbers larger than this"），当前仅 IPC server 一个订阅者。`waiting` 计数让退订（`mask==0`）可延迟到"无残留等待"时再真正删除，否则残留通知的回复会找不到表项。
 
-Per-process 游标（`mproc.h:27` / `const.h:13`）：
+Per-process 游标（`minix3/minix/servers/pm/mproc.h:sigaction（L27，工具生成）` / `const.h:13`）：
 
 ```c
 char mp_eventsub;               // in mproc, 订阅者下标 0..nsubs-1 或 -1
@@ -196,7 +196,7 @@ for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++) {
 }
 ```
 
-`forkexit.c:116` 与 `216` 的 `assert(rmc->mp_eventsub == NO_EVENTSUB)` 保证新进程无悬挂游标——这是 `publish_event` 前置断言的对应物。
+`minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）` 与 `216` 的 `assert(rmc->mp_eventsub == NO_EVENTSUB)` 保证新进程无悬挂游标——这是 `publish_event` 前置断言的对应物。
 
 ### 2.2 `resume_event`：串行推进的核心（event.c:74-123）
 
@@ -438,7 +438,7 @@ void publish_event(struct mproc *rmp) {
 2. **服务死亡清理**（`event.c:330-343`）：仅当 `PRIV_PROC|EXITING` 同时置位（正在退出的系统服务）时扫描订阅表找 `endpoint == rmp.endpoint` 的项并 `remove_sub`。注释*If the wait count is nonzero, we may or may not get additional replies ... Those will be ignored.*——退订后残留回复若再到达，会在 `do_proc_event_reply` 被 `SUSPEND` 忽略（合法旁路）。
 3. **发布**（`event.c:349-352`）：置 `EVENT_CALL`、游标 0、立即 `resume_event`——若无订阅者，`resume_event` 将直接清标志并分派 `exit_restart`/`restart_sigs`，等价于"零订阅者时事件不阻塞"。
 
-### 2.7 主循环与 VFS 回复的衔接（main.c:88-89 / 365 / 413 / 149-151 / forkexit.c:116/216）
+### 2.7 主循环与 VFS 回复的衔接（main.c:88-89 / 365 / 413 / 149-151 / minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）/216）
 
 主循环第二路（`main.c:88-89`）：
 
@@ -468,7 +468,7 @@ case VFS_PM_UNPAUSE_REPLY:
 
 `return` 的含义是**不执行尾部** `main.c:421-423` 的 `if ((flags & (IN_USE|EXITING))==IN_USE) restart_sigs(rmp)`——EXIT 的进程正在退出、UNPAUSE 的进程刚被唤醒由事件驱动，不应再 `restart_sigs`。`resume_event` 的终止分派会自行调用 `exit_restart`/`restart_sigs`，因此尾部是互斥的。
 
-初始化与 `fork` 的不变量（`main.c:149-151` / `forkexit.c:116/216`）：
+初始化与 `fork` 的不变量（`main.c:149-151` / `minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）/216`）：
 
 ```c
 rmp->mp_eventsub = NO_EVENTSUB;                 // 启动初始化
@@ -477,9 +477,9 @@ assert(rmc->mp_eventsub == NO_EVENTSUB);        // fork 子进程断言
 
 新进程必须无悬挂游标，否则 `publish_event` 的前置断言失败。
 
-### 2.8 对端视角与异步容量（com.h:597-619 / ipc.h:1812/2566/2610 / asynsend.c:17）
+### 2.8 对端视角与异步容量（com.h:597-619 / ipc.h:1812/2566/2610 / minix3/minix/lib/libsys/asynsend.c:ASYN_NR）
 
-已在 §2.1 列出消息常量与载荷。补充容量实证（`asynsend.c:17`）：
+已在 §2.1 列出消息常量与载荷。补充容量实证（`minix3/minix/lib/libsys/asynsend.c:ASYN_NR`）：
 
 ```c
 #define ASYN_NR  (2 * _NR_PROCS)  // 512 槽，PM 串行需 256，满足上界
@@ -678,7 +678,7 @@ pub enum IpcBlockReason {
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/event.c:1-353`（全部）、`minix3/minix/servers/pm/mproc.h:27/86-104`（`mp_flags` 事件位）、`minix3/minix/servers/pm/const.h:13`（`NO_EVENTSUB`）、`minix3/minix/include/minix/com.h:597-619`（`COMMON_RQ/RS` + `PROC_EVENT` 族）、`minix3/minix/include/minix/ipc.h:1812/2566/2610`（`mess_pm_lsys_proc_event` / `m_lsys_pm_proceventmask` / `m_pm_lsys_proc_event`）、`minix3/minix/include/minix/syslib.h:289-293`（`PROC_EVENT_EXIT/SIGNAL`）、`minix3/minix/servers/pm/main.c:84-89/149-151/365/413`（主循环与两处发布）、`minix3/minix/servers/pm/forkexit.c:116/216`（`NO_EVENTSUB` 断言）、`minix3/minix/lib/libsys/asynsend.c:17`（`ASYN_NR`）。
+- C 源（ground truth）：`minix3/minix/servers/pm/event.c:1-353`（全部）、`minix3/minix/servers/pm/mproc.h:sigaction（L27，工具生成）/86-104`（`mp_flags` 事件位）、`minix3/minix/servers/pm/const.h:NO_EVENTSUB`（`NO_EVENTSUB`）、`minix3/minix/include/minix/com.h:COMMON_RQ_BASE`（`COMMON_RQ/RS` + `PROC_EVENT` 族）、`minix3/minix/include/minix/ipc.h:1812/2566/2610`（`mess_pm_lsys_proc_event` / `m_lsys_pm_proceventmask` / `m_pm_lsys_proc_event`）、`minix3/minix/include/minix/syslib.h:COPYFD_FLAGS（L289，工具生成）`（`PROC_EVENT_EXIT/SIGNAL`）、`minix3/minix/servers/pm/main.c:main（L84，工具生成）/149-151/365/413`（主循环与两处发布）、`minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）/216`（`NO_EVENTSUB` 断言）、`minix3/minix/lib/libsys/asynsend.c:ASYN_NR`（`ASYN_NR`）。
 - 设计契约：`.design/06-design.v1.md`（D1–D8 与行为契约表）、`.design/06-outline.v1.md`、`.design/06-outline-review.v1.md`。
 - PM 阶段文档：04-ipc-dispatch.md（第二路钩子与 `ReplyIntent::ReplyLater` 契约）、05-vfs-interaction.md（两处 `publish_event` 调用点与提前 return）、02-mproc-struct.md（`BlockState` / `NO_EVENTSUB`）、03-mproc-table.md（`pm_isokendpt` / `UserSlot`）、13-signal-flow.md（`restart_sigs` 终止）、09-pm-exit.md（`exit_restart` 终止）。
 - 阶段内顺序：01-pm-init-main.md（启动时 `NO_EVENTSUB` 初始化）、02-mproc-struct.md → 03-mproc-table.md → 04-ipc-dispatch.md → 05-vfs-interaction.md → **本章** → 09/13（终止分派消费者）。

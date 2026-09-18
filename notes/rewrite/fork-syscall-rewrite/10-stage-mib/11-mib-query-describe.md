@@ -1,7 +1,7 @@
 # 11 — 系统信息库枚举与描述：把树中节点信息复制给用户态
 
 > **分类**: 枚举序列化 / 交换格式
-> **源码**: `minix3/minix/servers/mib/tree.c:90-173`（`mib_copyout_node`）、`:179-239`（`mib_query`）、`:925-966`（`mib_copyout_desc`）、`:972-1090`（`mib_describe`）
+> **源码**: `minix3/minix/servers/mib/tree.c:mib_find（L90，工具生成）`（`mib_copyout_node`）、`:179-239`（`mib_query`）、`:925-966`（`mib_copyout_desc`）、`:972-1090`（`mib_describe`）
 > **说明**: `QUERY` 看孩子长什么样，`DESCRIBE` 看/写描述串：两次序列化（节点快照 + 描述流）与一次"只写一次"的描述设置。10 的元 op 在这里落地。
 
 ---
@@ -65,9 +65,9 @@
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
 | D1 | 标志剥离变函数 | 内联位运算（`:107-108`） | `export_flags`（`query.rs:23`）+ `export_version_ok`（`:29`） | "内部三位永不暴露"是安全 invariant（ASR 侧信道见 `:149-155`），值得函数 + 版本字节断言 |
-| D2 | 可见性复用 07 | 三处手写同谓词（`:115,:934,:1389`） | `expose_immediate`/`desc_visible` 调 `can_see`（`query.rs:56`，`describe.rs:129`） | 同谓词第三次出现（07 两处 + 本篇两处）——复用不断言两次（DRY 跨篇，07 为主） |
-| D3 | 描述长度变算术 | `strlen+1`/分支/宏三处散写 | `desc_len`（`describe.rs:29`）+ `packed_size`（`:48`）+ `roundup_desc`（`:39`） | "无串亦一 NUL"（`:941`）与"对齐间隙是用户数据"（`:961-964`）两易错点收进纯函数 + 断言 |
-| D4 | 描述字符串设置的六项检查独立为枚举 | 条件分支链式返回 | `SetDescRefusal` 六种拒绝原因 + `check_set_desc`（`describe.rs:71,88`） | 与 08 的销毁拒绝同构（六种拒绝原因各对应错误码）；检查顺序与 C 源码一致（私有可见性→超级用户→是否为挂载点→是否已设→是否永久→版本一致性） |
+| D2 | 可见性复用 07 | 三处手写同谓词（`:115,:934,:1389`） | `expose_immediate`/`desc_visible` 调 `can_see`（`query.rs:56`，`os/servers/mib/src/describe.rs:fn desc_visible（L129，工具生成）`） | 同谓词第三次出现（07 两处 + 本篇两处）——复用不断言两次（DRY 跨篇，07 为主） |
+| D3 | 描述长度变算术 | `strlen+1`/分支/宏三处散写 | `desc_len`（`os/servers/mib/src/describe.rs:fn desc_len（L29，工具生成）`）+ `packed_size`（`:48`）+ `roundup_desc`（`:39`） | "无串亦一 NUL"（`:941`）与"对齐间隙是用户数据"（`:961-964`）两易错点收进纯函数 + 断言 |
+| D4 | 描述字符串设置的六项检查独立为枚举 | 条件分支链式返回 | `SetDescRefusal` 六种拒绝原因 + `check_set_desc`（`os/servers/mib/src/describe.rs:enum SetDescRefusal（L71，工具生成）,88`） | 与 08 的销毁拒绝同构（六种拒绝原因各对应错误码）；检查顺序与 C 源码一致（私有可见性→超级用户→是否为挂载点→是否已设→是否永久→版本一致性） |
 | D5 | 函数标记变常量引用 | `SYSCTL_NODE_FN` 裸用（`:168`） | `minix-types` `SYSCTL_NODE_FN`（02 补钉，本篇测试复钉） | 假地址的值（0x1）是 ABI（trace(1) 判非零即函数）；值钉两处（02 值表 + 本篇行为测试）防单边漂移 |
 
 替代方案及否决：walker（静态+动态双循环）一步到位——否决，arena 在 13 首表落地；verdict 先行（verdict-first 延续）。
@@ -99,11 +99,11 @@ os/servers/mib/src/
 | 立即暴露 | `:121-132` | `query.rs:56` | 立即+可见（07 复用） |
 | 孩子窗口 | `:157-166` | `query.rs:67` | 远端缓存/本地/函数无 |
 | 函数标记 | `:167-168` | `query.rs:87` + 常量 | 非远端非父即标记 |
-| 描述长度 | `:937-941` | `describe.rs:29` | 含终结；无亦一 |
-| 打包 | `:956-965` | `describe.rs:39,48` | 头+串，4 对齐 |
-| scratch 断言 | `:943` | `describe.rs:57` | MAXDESCLEN 封顶故断言 |
-| 设置六杠 | `:994-1031` | `describe.rs:71,88` | 顺序六拒 |
-| 描述可见 | `:934-935` | `describe.rs:129` | 07 复用；零长非错 |
+| 描述长度 | `:937-941` | `os/servers/mib/src/describe.rs:fn desc_len（L29，工具生成）` | 含终结；无亦一 |
+| 打包 | `:956-965` | `os/servers/mib/src/describe.rs:fn roundup_desc（L39，工具生成）,48` | 头+串，4 对齐 |
+| scratch 断言 | `:943` | `os/servers/mib/src/describe.rs:fn fits_scratch（L57，工具生成）` | MAXDESCLEN 封顶故断言 |
+| 设置六杠 | `:994-1031` | `os/servers/mib/src/describe.rs:enum SetDescRefusal（L71，工具生成）,88` | 顺序六拒 |
+| 描述可见 | `:934-935` | `os/servers/mib/src/describe.rs:fn desc_visible（L129，工具生成）` | 07 复用；零长非错 |
 | 请求版本门（拷入侧） | `:194-195` | `version.rs`（`staged_vers_ok`，与 08 create `:537-538` 共一条实现） | 请求不说法语版本即拒，字段一个不读 |
 
 ### 4.3 不变量
@@ -152,6 +152,6 @@ os/servers/mib/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/tree.c:90-173,179-239,925-966,972-1090`、`minix3/sys/sys/sysctl.h:1442-1454`、`minix3/minix/include/minix/sysctl.h:10`
+- C 源：`minix3/minix/servers/mib/tree.c:mib_find（L90，工具生成）,179-239,925-966,972-1090`、`minix3/sys/sys/sysctl.h:sysctldesc`、`minix3/minix/include/minix/sysctl.h:SYSCTL_NODE_FN`
 - 阶段文档：`02-mib-message-contract.md`（交换格式）、`07-mib-auth-model.md`（可见性复用）、`08-mib-dynamic-nodes.md`（版本门同形）、`10-mib-dispatch.md`（上一站，元投递）、`12-mib-remote-subtrees.md`（下一站）、`15-mib-subtree-minix.md`（统计口消费版本）、`21-mib-client-libc.md`（排序消费方）
 - Rust 实现：`os/servers/mib/src/query.rs`、`os/servers/mib/src/describe.rs`、`os/libs/minix-types/src/types/sysctl.rs`（`SYSCTL_NODE_FN`）

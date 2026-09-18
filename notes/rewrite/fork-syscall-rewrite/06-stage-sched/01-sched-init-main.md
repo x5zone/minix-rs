@@ -92,20 +92,20 @@ Rust 改写不照抄 `main.c` 的函数指针登记方式，而是参考 RS 服�
 
 ### D1 启动方式做成枚举，不做 trait
 
-- **C**：登记两个回调（`main.c:114-115`），restart 的实现在通用库（`sef.h:85`）。
-- **Rust**：`SchedInitKind::{Fresh, RestartStateful}`（`os/servers/sched/src/sef.rs:19`），一个枚举列出两种启动方式。
+- **C**：登记两个回调（`main.c:114-115`），restart 的实现在通用库（`minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL`）。
+- **Rust**：`SchedInitKind::{Fresh, RestartStateful}`（`os/servers/sched/src/sef.rs:enum SchedInitKind`），一个枚举列出两种启动方式。
 - **为什么**：只有 fresh 有 SCHED 自己的代码，restart 完全由通用库代办。为这一个方法定义 trait 没有意义：不会有第二个实现，也不会有人拿它当泛型约束（对比 RS 的 SEF 封装，那边七个回调都有实质代码，用 trait 才合理，见 `os/servers/rs/src/sef.rs`）。备选方案（定义单方法 trait）被否决：没有多态需求，trait 只是装饰。
 
 ### D2 机器信息直接透传
 
 - **C**：读取机器信息（`130`），失败崩溃（`131`），启动定时器（`133`）。
-- **Rust**：`MachineInfo{processors_count, bsp_id}`（`os/servers/sched/src/sef.rs:34`，字段对应 `type.h:123-124`），`init_fresh(machine) -> FreshReady`（`os/servers/sched/src/sef.rs:56`），机器信息进、就绪令牌出。
+- **Rust**：`MachineInfo{processors_count, bsp_id}`（`os/servers/sched/src/sef.rs:struct MachineInfo`，字段对应 `type.h:123-124`），`init_fresh(machine) -> FreshReady`（`os/servers/sched/src/sef.rs:fn init_fresh`），机器信息进、就绪令牌出。
 - **为什么**：读取机器信息就是把两个数传进来；失败崩溃的逻辑放在二进制层（和 RS 的 `main.rs` 保持一致：崩溃是边界情况，判断是正事）；启动定时器是第 11 篇的语义，这里只保留调用位置。备选方案（在 `init_fresh` 里顺手调定时器）被否决：定时器的定义在第 11 篇，这里放占位调用就是越界。
 
 ### D3 用就绪令牌保证启动顺序
 
 - **C**：读机器信息、启动定时器、返回 OK、进主循环（`130-135` 接 `35` 的顺序）。
-- **Rust**：`FreshReady{machine}`（`os/servers/sched/src/sef.rs:46`），拿着这个令牌才表示启动完成。
+- **Rust**：`FreshReady{machine}`（`os/servers/sched/src/sef.rs:struct FreshReady`），拿着这个令牌才表示启动完成。
 - **为什么**：顺序本身就是约定（没读到机器信息就不能启动定时器）；令牌里带着机器信息（第 10 篇要用，不能丢）。备选方案（用一个布尔值表示就绪）被否决：布尔值带不出机器信息。
 
 ### D4 二进制层只装配，不决策
@@ -117,15 +117,15 @@ Rust 改写不照抄 `main.c` 的函数指针登记方式，而是参考 RS 服�
 ### D5 常量先行，结构体随后
 
 - **C**：五个消息号（`com.h:801-807`）；`minix-types` 当时只有 BASE 和 NO_QUANTUM（plan §6.2 的已知缺口）。
-- **Rust**：先补四个常量（`os/libs/minix-types/src/types/com.rs:92,95,98,101`，即 `BASE+2/+3/+4/+5`），并用测试锁定取值；消息结构体跟着使用方走（第 02 篇和第 13 篇）。
+- **Rust**：先补四个常量（`os/libs/minix-types/src/types/com.rs:const SCHEDULING_START（L92，工具生成）,95,98,101`，即 `BASE+2/+3/+4/+5`），并用测试锁定取值；消息结构体跟着使用方走（第 02 篇和第 13 篇）。
 - **为什么**：消息号是第 02 篇和第 13 篇的共同前置（plan §6.2 明确写了）；结构体跟着使用方，哪里用哪里定义。备选方案（常量下沉到 sched crate）被否决：消息号是跨 crate 的契约，权威位置在 types。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| S-5 SMP 编译期开关改运行时 | `processors_count`/`bsp_id` 透传，运行时使用 | `os/servers/sched/src/sef.rs:34` + 本文档 D2 + §1.3 |
-| S-7 SEF 生命周期（trait/回调表） | 两种启动方式做成枚举（对比 RS 的七方法 trait，原因是只有 fresh 有实质代码） | `os/servers/sched/src/sef.rs:19` + 本文档 D1 + §1.2 |
+| S-5 SMP 编译期开关改运行时 | `processors_count`/`bsp_id` 透传，运行时使用 | `os/servers/sched/src/sef.rs:struct MachineInfo` + 本文档 D2 + §1.3 |
+| S-7 SEF 生命周期（trait/回调表） | 两种启动方式做成枚举（对比 RS 的七方法 trait，原因是只有 fresh 有实质代码） | `os/servers/sched/src/sef.rs:enum SchedInitKind` + 本文档 D1 + §1.2 |
 
 ---
 
@@ -148,11 +148,11 @@ os/libs/minix-types/src/types/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 两种启动方式 | `main.c:114-115` + `sef.h:85` | `os/servers/sched/src/sef.rs:19` | 登记名字枚举 |
-| 机器信息 | `type.h:123-124` | `os/servers/sched/src/sef.rs:34` | 两个数透传 |
-| 就绪令牌 | `main.c:130-135` | `os/servers/sched/src/sef.rs:46,56` | 机器信息进、令牌出 |
-| 四个消息常量 | `com.h:801-807` | `os/libs/minix-types/src/types/com.rs:92,95,98,101` | 跨 crate 共用 |
-| 主循环装配 | `main.c:22-96` | `os/servers/sched/src/main.rs:24` | 装配加交棒，循环本体在 02 篇 |
+| 两种启动方式 | `main.c:114-115` + `minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL` | `os/servers/sched/src/sef.rs:enum SchedInitKind` | 登记名字枚举 |
+| 机器信息 | `type.h:123-124` | `os/servers/sched/src/sef.rs:struct MachineInfo` | 两个数透传 |
+| 就绪令牌 | `main.c:130-135` | `os/servers/sched/src/sef.rs:struct FreshReady,56` | 机器信息进、令牌出 |
+| 四个消息常量 | `com.h:801-807` | `os/libs/minix-types/src/types/com.rs:const SCHEDULING_START（L92，工具生成）,95,98,101` | 跨 crate 共用 |
+| 主循环装配 | `main.c:22-96` | `os/servers/sched/src/main.rs:fn main（L24，工具生成）` | 装配加交棒，循环本体在 02 篇 |
 
 ### 4.3 不变量
 
@@ -171,10 +171,10 @@ os/libs/minix-types/src/types/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_init_kinds` | `main.c:114-115` + `sef.h:85` | 两种启动方式互相区分 | `os/servers/sched/src/sef.rs:65` |
-| `test_machine_walks_in_token_walks_out` | `main.c:126-136` | 机器信息进、令牌带着同样的信息出 | `os/servers/sched/src/sef.rs:72` |
-| `test_single_cpu_boot` | `type.h:123` | 单 CPU 是合法配置 | `os/servers/sched/src/sef.rs:85` |
-| `test_sched_messages` | `com.h:801-807` | 五个消息号取值正确 | `os/libs/minix-types/src/types/com.rs:312` |
+| `test_init_kinds` | `main.c:114-115` + `minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL` | 两种启动方式互相区分 | `os/servers/sched/src/sef.rs:fn test_init_kinds` |
+| `test_machine_walks_in_token_walks_out` | `main.c:126-136` | 机器信息进、令牌带着同样的信息出 | `os/servers/sched/src/sef.rs:fn test_machine_walks_in_token_walks_out` |
+| `test_single_cpu_boot` | `type.h:123` | 单 CPU 是合法配置 | `os/servers/sched/src/sef.rs:fn test_single_cpu_boot` |
+| `test_sched_messages` | `com.h:801-807` | 五个消息号取值正确 | `os/libs/minix-types/src/types/com.rs:fn test_sys_state_opcodes（L312，工具生成）` |
 
 测试策略：启动方式用"两个变体互相不等"锁定；机器信息用"进去什么出来什么"锁定（含单 CPU 边界）；消息号用五个取值的全枚举锁定（BASE 加四个偏移）。
 
@@ -203,7 +203,7 @@ os/libs/minix-types/src/types/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/main.c:1-137`（启动与主循环全部代码）、`minix3/minix/include/minix/sef.h:85-95`（通用回调与重启实现）、`minix3/minix/include/minix/type.h:118-124`（机器信息结构）、`minix3/minix/include/minix/com.h:801-807`（五个消息号）
+- C 源：`minix3/minix/servers/sched/main.c:1-137`（启动与主循环全部代码）、`minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL`（通用回调与重启实现）、`minix3/minix/include/minix/type.h:kclockinfo（L118，工具生成）`（机器信息结构）、`minix3/minix/include/minix/com.h:SCHEDULING_BASE`（五个消息号）
 - 阶段文档：`00-sched-overview.md`（上一站）、`02-sched-message-surface.md`（下一站）、`10-pick-cpu-smp.md`（机器信息的用途）、`11-balance-queues.md`（定时器的定义）
-- Rust 实现：`os/servers/sched/src/sef.rs:1`（本篇判定层）、`os/servers/rs/src/sef.rs:1`（RS 的 SEF 封装对照）、`os/libs/minix-types/src/types/com.rs:83`（常量权威位置）
+- Rust 实现：`os/servers/sched/src/sef.rs:1`（本篇判定层）、`os/servers/rs/src/sef.rs:1`（RS 的 SEF 封装对照）、`os/libs/minix-types/src/types/com.rs:const SCHEDULING_BASE（L83，工具生成）`（常量权威位置）
 - 对端：`../01-stage-kernel/11-scheduling-primitives.md`（内核调度原语）、`../03-stage-rs/01-rs-boot-init.md`（RS 的启动对照）

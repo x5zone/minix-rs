@@ -50,12 +50,12 @@ AVL 树是二叉搜索树的一种自平衡变体：**任意节点的左右子�
 Minix3 的具体形态：
 
 - **节点 = vir_region 本身**：`lower`/`higher` 指针 + `factor` 平衡因子内嵌在 region.h:63-65（侵入式节点，无独立分配）。
-- **键 = vaddr**：比较宏按 `vaddr` 大小三态比较（regionavl_defs.h:15-17）。
-- **最大深度 30**：`AVL_MAX_DEPTH 30`（regionavl_defs.h:6，"good for 2 million nodes"）——树的深度上界直接硬编码为迭代器路径栈的容量。
+- **键 = vaddr**：比较宏按 `vaddr` 大小三态比较（minix3/minix/servers/vm/regionavl_defs.h:AVL_COMPARE_KEY_KEY）。
+- **最大深度 30**：`AVL_MAX_DEPTH 30`（minix3/minix/servers/vm/regionavl_defs.h:AVL_MAX_DEPTH，"good for 2 million nodes"）——树的深度上界直接硬编码为迭代器路径栈的容量。
 
 ### 1.3 五向搜索（avl_search_type）
 
-`avl_search_type`（cavl_if.h:25-33）是**位标志枚举**：
+`avl_search_type`（minix3/minix/servers/vm/cavl_if.h:typedef（L25，工具生成））是**位标志枚举**：
 
 ```c
 AVL_EQUAL = 1,             // 精确匹配
@@ -65,7 +65,7 @@ AVL_LESS_EQUAL = AVL_EQUAL | AVL_LESS,      // ≤
 AVL_GREATER_EQUAL = AVL_EQUAL | AVL_GREATER // ≥
 ```
 
-语义：`region_search(tree, k, st)` 返回满足 st 的**最大/最小键节点**——`AVL_LESS` 返回 < k 的最大节点，`AVL_GREATER` 返回 > k 的最小节点，组合位则允许等于。实现用 `target_cmp` 技巧（cavl_impl.h:456-493）：一次下行遍历同时记录候选（match_h），命中相等时按 st 决定接受或转向。
+语义：`region_search(tree, k, st)` 返回满足 st 的**最大/最小键节点**——`AVL_LESS` 返回 < k 的最大节点，`AVL_GREATER` 返回 > k 的最小节点，组合位则允许等于。实现用 `target_cmp` 技巧（minix3/minix/servers/vm/cavl_impl.h:L__）：一次下行遍历同时记录候选（match_h），命中相等时按 st 决定接受或转向。
 
 VM 的实际用法：
 
@@ -76,7 +76,7 @@ VM 的实际用法：
 
 ### 1.4 路径栈迭代器（region_iter）
 
-中序遍历需要"记住走到哪了"。Minix3 的迭代器是**路径栈**（cavl_if.h:158-175）：
+中序遍历需要"记住走到哪了"。Minix3 的迭代器是**路径栈**（minix3/minix/servers/vm/cavl_if.h:typedef）：
 
 ```c
 typedef struct {
@@ -87,7 +87,7 @@ typedef struct {
 } region_iter;
 ```
 
-- `region_start_iter(tree, iter, k, st)`（cavl_impl.h:979）：**按搜索类型定位起点**——从根下行记录路径，停在第一个满足 st 的节点。
+- `region_start_iter(tree, iter, k, st)`（minix3/minix/servers/vm/cavl_impl.h:L__）：**按搜索类型定位起点**——从根下行记录路径，停在第一个满足 st 的节点。
 - `region_start_iter_least`（:1039）：一路向左到最小节点。
 - `region_incr_iter`（:1100）：若当前节点有右子树，进入右子树最左；否则沿路径栈**向上退**到"上次走左的分支"（branch 位图判定）——经典中序后继。
 - `region_decr_iter`（:1145）：对称的前驱。
@@ -98,19 +98,19 @@ typedef struct {
 
 分配新区域（map_page_region）要回答"`[minv, maxv)` 内哪里能放下 length 字节"。C 实现两段式：
 
-- **region_find_slot**（region.c:399）：先用 `vm_region_top`（上次插入末尾，vmproc.h:22）当 hint 试 `[minv, hint)`，失败再试全范围 `[minv, maxv)`——**时间局部性优化**：连续 mmap 的分配地址通常单调上升。
+- **region_find_slot**（region.c:399）：先用 `vm_region_top`（上次插入末尾，minix3/minix/servers/vm/vmproc.h:vmproc（L22，工具生成））当 hint 试 `[minv, hint)`，失败再试全范围 `[minv, maxv)`——**时间局部性优化**：连续 mmap 的分配地址通常单调上升。
 - **region_find_slot_range**（region.c:302）：核心扫描——`FREEVRANGE_TRY(rangestart, rangeend)` 宏计算可用区间 `[max(start,minv), min(end,maxv))`，若 ≥ length 则**取高端** `startv = frend - length`（地址向高端对齐，利于堆/栈增长方向）；`FREEVRANGE` 宏先试"内缩一页"（start+PAGE_SIZE, end-PAGE_SIZE）再试全区间——**优先避免与相邻区域共享页表边界**。
 - 特例：`maxv == 0` 表示"就放在 minv 这里"（`maxv = minv + length`，region.c:315-327）。
 - 找到后写回 `vmp->vm_region_top = startv + length`（region.c:391）作为下次 hint。
 
 ### 1.6 Rust 模型：BTreeMap 替代 AVL（ARCH A-4）
 
-Rust 的替代方案是 `BTreeMap<VirBytes, VirRegion>`（region_map.rs:39）。**为什么是 BTreeMap 而不是手动移植 AVL**：
+Rust 的替代方案是 `BTreeMap<VirBytes, VirRegion>`（os/servers/vm/src/region/region_map.rs:fn new（L39，工具生成））。**为什么是 BTreeMap 而不是手动移植 AVL**：
 
 | 维度 | 手写 AVL（C 现状） | BTreeMap |
 |------|-------------------|----------|
 | 节点 | 侵入式（VirRegion 内嵌 lower/higher/factor） | 非侵入（VirRegion 无树字段，可 Clone/move/split） |
-| 平衡 | 手写 balance/旋转（cavl_impl.h:195-320） | 标准库维护（B 树节点内多元素） |
+| 平衡 | 手写 balance/旋转（minix3/minix/servers/vm/cavl_impl.h:L__） | 标准库维护（B 树节点内多元素） |
 | 迭代器 | 手写路径栈 + branch 位图 | 标准库原生迭代器（升序） |
 | 内存安全 | 裸指针 + 宏模板 | 所有权 + 借用检查 |
 | 代码量 | cavl_impl.h 1208 行宏模板 | RegionMap 封装 ~260 行 |
@@ -130,7 +130,7 @@ Rust 的替代方案是 `BTreeMap<VirBytes, VirRegion>`（region_map.rs:39）。
 | `region_insert` | `insert`（重叠/重复检查） | 不变量前置 |
 | `region_remove(k)` | `remove(&k)` | 按键摘除 |
 
-**为什么安全**：BTreeMap 由标准库保证平衡与内存安全，VM 侧只需保证"键不重叠"这个业务不变量——由 `insert` 的重叠预检（region_map.rs:219-227）承担。
+**为什么安全**：BTreeMap 由标准库保证平衡与内存安全，VM 侧只需保证"键不重叠"这个业务不变量——由 `insert` 的重叠预检（os/servers/vm/src/region/region_map.rs:fn traverse（L219，工具生成））承担。
 
 ### 1.7 对照 Redox / Linux
 
@@ -174,7 +174,7 @@ Walt Karas 的 AVL 库是**宏模板**：一份通用实现通过宏参数实例
 #define AVL_COMPARE_*                     /* 三态比较（> / < / =） */
 ```
 
-**实现选择掩码**（cavl_if.h:194-211）：`AVL_IMPL_INIT`/`INSERT`/`SEARCH`/`REMOVE`/`START_ITER`/`INCR_ITER` 等 16 位掩码可选编译——region.c 未定义 `AVL_IMPL_MASK`，走 `AVL_IMPL_ALL`（cavl_impl.h:172），全部函数生成。
+**实现选择掩码**（minix3/minix/servers/vm/cavl_if.h:AVL_IMPL_INIT）：`AVL_IMPL_INIT`/`INSERT`/`SEARCH`/`REMOVE`/`START_ITER`/`INCR_ITER` 等 16 位掩码可选编译——region.c 未定义 `AVL_IMPL_MASK`，走 `AVL_IMPL_ALL`（minix3/minix/servers/vm/cavl_impl.h:L__IMPL_MASK），全部函数生成。
 
 ### 2.2 AVL 结构：region_avl 根 + 侵入式节点
 
@@ -188,29 +188,29 @@ struct vir_region *lower, *higher;   /* 左/右子树指针 */
 int factor;                          /* 平衡因子 ∈ {-1,0,1} */
 ```
 
-- `region_avl` 嵌在 `vmproc`（vmproc.h:21）；`vm_region_top`（vmproc.h:22）是空槽查找 hint。
+- `region_avl` 嵌在 `vmproc`（minix3/minix/servers/vm/vmproc.h:vmproc（L21，工具生成））；`vm_region_top`（minix3/minix/servers/vm/vmproc.h:vmproc（L22，工具生成））是空槽查找 hint。
 - 平衡因子含义：-1 左高、0 等高、1 右高。越界 ±2 触发旋转。
 
 ### 2.3 平衡与插入
 
-**balance**（cavl_impl.h:195-320）是核心旋转器，处理四种失衡：
+**balance**（minix3/minix/servers/vm/cavl_impl.h:L__）是核心旋转器，处理四种失衡：
 
 - 右子树深且右孙深（RR）→ 左旋；左子树深且左孙深（LL）→ 右旋。
 - 右子树深但左孙深（RL）→ 先右旋再左旋（双旋转）；左子树深但右孙深（LR）→ 先左旋再右旋。
-- 旋转后按 `bf` 的符号更新三个节点的平衡因子（四种 case 更新表，cavl_impl.h:211-318）。
+- 旋转后按 `bf` 的符号更新三个节点的平衡因子（四种 case 更新表，minix3/minix/servers/vm/cavl_impl.h:L__（L211，工具生成））。
 
-**insert**（cavl_impl.h:321-455）：
+**insert**（minix3/minix/servers/vm/cavl_impl.h:L__）：
 
 1. 下行找插入点，用 `branch` 位图记录路径（第 n 位 = 第 n 层走右/左）；同时记录**最后一个不平衡节点**（unbal）及其深度。
 2. 键重复 → 直接返回已存在节点（**不插入**——AVL 键唯一保证）。
 3. 新节点作为叶子挂上，从 unbal 处更新平衡因子并向下传播。
 4. unbal 因子到 ±2 → 调用 balance 旋转，重新接回 parent_unbal。
 
-**与 BTreeMap 的对应**：C 的"重复键返回、不插入"→ Rust `insert` 的 `Ok(Some(old))` 替换语义（region_map.rs:219-227，BTreeMap::insert 天然同键替换）；C 的平衡维护 → 标准库内部。
+**与 BTreeMap 的对应**：C 的"重复键返回、不插入"→ Rust `insert` 的 `Ok(Some(old))` 替换语义（os/servers/vm/src/region/region_map.rs:fn traverse（L219，工具生成），BTreeMap::insert 天然同键替换）；C 的平衡维护 → 标准库内部。
 
 ### 2.4 五向搜索
 
-**search**（cavl_impl.h:456-493）用 `target_cmp` 技巧实现五向：
+**search**（minix3/minix/servers/vm/cavl_impl.h:L__）用 `target_cmp` 技巧实现五向：
 
 ```c
 if (st & AVL_LESS)      target_cmp = 1;   /* 允许键比目标大 */
@@ -235,25 +235,25 @@ return match_h;
 
 ### 2.5 删除
 
-**remove**（cavl_impl.h:545-761）：
+**remove**（minix3/minix/servers/vm/cavl_impl.h:L__）：
 
 1. 按键下行找目标 + 记录路径。
 2. 目标有两个孩子 → 用**中序后继**替换（后继摘出，目标位置放后继），维护 branch 路径。
 3. 从被删点向上回溯，逐层更新平衡因子；越界 → balance 旋转（可能级联）。
 4. 返回被摘除节点句柄（调用方负责释放——region.c:598 摘根后 map_free）。
 
-**与 BTreeMap 的对应**：`remove(&k)` 返回 `Option<VirRegion>`（region_map.rs:229-231），所有权完整交给调用方（munmap 的 re-insert、exit 的释放）。
+**与 BTreeMap 的对应**：`remove(&k)` 返回 `Option<VirRegion>`（os/servers/vm/src/region/region_map.rs:fn iter_mut（L229，工具生成）），所有权完整交给调用方（munmap 的 re-insert、exit 的释放）。
 
 ### 2.6 路径栈迭代器
 
-- **init_iter**（cavl_impl.h:962）：`depth = ~0`（无效标记）。
+- **init_iter**（minix3/minix/servers/vm/cavl_impl.h:L__）：`depth = ~0`（无效标记）。
 - **start_iter**（:979）：按 st 定位起点——与 search 同构的下行 + 路径记录；`depth = ~0` 表示空树/无满足节点。
 - **start_iter_least**（:1039）：一路向左，路径栈压满左链。
 - **get_iter**（:1087）：`depth == 0` 返回树根，否则返回 `path_h[depth-1]`。
 - **incr_iter**（:1100）：中序后继——有右子树 → 右子树最左；否则沿 branch 位图**向上退到上次走左的分支**，没有则迭代结束（depth = ~0）。
 - **decr_iter**（:1145）：对称前驱。
 
-**与 BTreeMap 的对应**：`iter()`（region_map.rs:246）= BTreeMap 原生迭代器（升序、内存安全、可 `next_back`）；路径栈/branch 位图全部消失。
+**与 BTreeMap 的对应**：`iter()`（os/servers/vm/src/region/region_map.rs:fn insert_unwrap（L246，工具生成））= BTreeMap 原生迭代器（升序、内存安全、可 `next_back`）；路径栈/branch 位图全部消失。
 
 ### 2.7 空槽查找深挖：region_find_slot_range / region_find_slot
 
@@ -305,7 +305,7 @@ if(v != SLOT_FAIL) return v;
 return region_find_slot_range(vmp, minv, maxv, length); /* 再全范围 */
 ```
 
-**Rust 对应 find_slot**（region_map.rs:157-217）：同语义 + **页对齐增强**（try_gap 内 round_up/round_down）+ checked 溢出（maxv==0 时 `checked_add`，溢出返回 None）。C 依赖调用方保证页对齐；Rust 在框架层强制。
+**Rust 对应 find_slot**（os/servers/vm/src/region/region_map.rs:fn find_slot（L157，工具生成））：同语义 + **页对齐增强**（try_gap 内 round_up/round_down）+ checked 溢出（maxv==0 时 `checked_add`，溢出返回 None）。C 依赖调用方保证页对齐；Rust 在框架层强制。
 
 ### 2.8 AVL API 消费面（调用点表）
 
@@ -340,7 +340,7 @@ return region_find_slot_range(vmp, minv, maxv, length); /* 再全范围 */
 
 ### 3.1 D1: BTreeMap 替代 AVL（ARCH A-4）
 
-`RegionMap { regions: BTreeMap<VirBytes, VirRegion> }`（region_map.rs:39）替代 regionavl：
+`RegionMap { regions: BTreeMap<VirBytes, VirRegion> }`（os/servers/vm/src/region/region_map.rs:fn new（L39，工具生成））替代 regionavl：
 
 - **非侵入节点**：VirRegion 无 lower/higher/factor（对比 region.h:63-65），可 Clone/move/split——13 的 split/remove/re-insert 流程因此可行。
 - **标准库保证**：平衡（B 树）、迭代器、内存安全、Drop 自动清理。
@@ -349,7 +349,7 @@ return region_find_slot_range(vmp, minv, maxv, length); /* 再全范围 */
 
 ### 3.2 D2: SearchType 枚举替代位标志
 
-C 的 `avl_search_type` 是位标志（cavl_if.h:25-33），允许 `AVL_LESS|AVL_GREATER` 这类**非法组合**（搜索方向矛盾）。Rust 用互斥枚举（region_map.rs:19-29）：
+C 的 `avl_search_type` 是位标志（minix3/minix/servers/vm/cavl_if.h:typedef（L25，工具生成）），允许 `AVL_LESS|AVL_GREATER` 这类**非法组合**（搜索方向矛盾）。Rust 用互斥枚举（os/servers/vm/src/region/region_map.rs:enum SearchType（L19，工具生成））：
 
 ```rust
 pub(crate) enum SearchType {
@@ -360,7 +360,7 @@ impl Default for SearchType { fn default() -> Self { Self::Equal } }
 
 ### 3.3 D3: 迭代器 = BTreeMap 原生
 
-`iter`/`iter_mut`（:246/:250）= BTreeMap 迭代（vaddr 升序）；`traverse`（:237）回调式遍历；`clear`（:254）清空。C 的 region_iter（路径栈 + branch 位图，cavl_if.h:158-175）整体消失。**收益**：无深度上限（C 的 AVL_MAX_DEPTH 30 是路径栈硬限制）、无手写后继算法、迭代中可安全 drop。
+`iter`/`iter_mut`（:246/:250）= BTreeMap 迭代（vaddr 升序）；`traverse`（:237）回调式遍历；`clear`（:254）清空。C 的 region_iter（路径栈 + branch 位图，minix3/minix/servers/vm/cavl_if.h:typedef）整体消失。**收益**：无深度上限（C 的 AVL_MAX_DEPTH 30 是路径栈硬限制）、无手写后继算法、迭代中可安全 drop。
 
 ### 3.4 D4: find_slot 页对齐增强 + checked 运算
 
@@ -372,7 +372,7 @@ C 的 region_find_slot_range 依赖调用方保证页对齐（`assert(!(length %
 
 ### 3.5 D5: 无侵入式节点 → 业务不变量前置
 
-AVL 的"键唯一 + 有序"由算法内建保证；BTreeMap 同样内建（同键替换）。**业务不变量"区域不重叠"**由 `insert` 前置检查承担（region_map.rs:219-227）：`find_overlap` 预检 → 重叠返回 `Err(region)`（调用方先 unmap，MAP_FIXED 语义）；同键替换返回 `Ok(Some(old))`。
+AVL 的"键唯一 + 有序"由算法内建保证；BTreeMap 同样内建（同键替换）。**业务不变量"区域不重叠"**由 `insert` 前置检查承担（os/servers/vm/src/region/region_map.rs:fn traverse（L219，工具生成））：`find_overlap` 预检 → 重叠返回 `Err(region)`（调用方先 unmap，MAP_FIXED 语义）；同键替换返回 `Ok(Some(old))`。
 
 ### 3.6 语义差异清单（C ↔ Rust 诚实标注）
 
@@ -384,14 +384,14 @@ AVL 的"键唯一 + 有序"由算法内建保证；BTreeMap 同样内建（同�
 | 节点 | 侵入式（region.h:63-65） | 非侵入 | ✅ 强化 |
 | 空槽查找 | region_find_slot*（hint + 高端对齐） | find_slot（+ 页对齐/checked） | ✅ 等价 + 强化 |
 | SearchType 家族消费 | utility.c/rs.c 搜索调用 | `SearchType::{Equal, Less}` + `find_less`（V10-P2-1 收敛：Greater/LessEqual/GreaterEqual 无生产消费，已删） | ✅ 收敛（10/25 DEFERRED 路径落地时按需加回） |
-| find_by_end | 无直接对应（C 用 getnextvr 相邻检查） | `find_mut_by_end`（region_map.rs:81，brk.rs:108 消费）；`find_by_end` V10-P2-1 已删（无生产消费） | ✅ Rust 新增便利 API |
+| find_by_end | 无直接对应（C 用 getnextvr 相邻检查） | `find_mut_by_end`（os/servers/vm/src/region/region_map.rs:fn find_mut_by_end，os/servers/vm/src/brk.rs:fn grow_heap（L108，工具生成） 消费）；`find_by_end` V10-P2-1 已删（无生产消费） | ✅ Rust 新增便利 API |
 | 对照测试 | — | BTreeMap↔AVL 等价对照测试不存在 | ⚠️ 诚实标注（§5.3） |
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 SearchType + search（region_map.rs:18 / :70）
+### 4.1 SearchType + search（os/servers/vm/src/region/region_map.rs:enum SearchType / :70）
 
 `search(key, st)` 是搜索入口，match 分派：
 
@@ -404,7 +404,7 @@ AVL 的"键唯一 + 有序"由算法内建保证；BTreeMap 同样内建（同�
 
 - **find**（:51）= C map_lookup 的索引步：`range(..=addr).next_back()` + `contains_addr` 过滤——地址包含查找（13 §2.4 已述）。
 - **find_mut**（:59）：先定位 key 再 `get_mut`——避免 range 迭代器与可变借用冲突。
-- **find_mut_by_end**（:81）：`range(..end).next_back()` + `end_addr() == end` 过滤——按区域末尾定位（brk 收缩/扩展找堆顶区域，brk.rs:108 用 find_mut_by_end）。`find_by_end` 无生产调用，V10-P2-1 已删。
+- **find_mut_by_end**（:81）：`range(..end).next_back()` + `end_addr() == end` 过滤——按区域末尾定位（brk 收缩/扩展找堆顶区域，os/servers/vm/src/brk.rs:fn grow_heap（L108，工具生成） 用 find_mut_by_end）。`find_by_end` 无生产调用，V10-P2-1 已删。
 
 ### 4.3 find_slot（:157-217）
 
@@ -441,11 +441,11 @@ pub(crate) fn find_slot(&self, minv, maxv, length) -> Option<VirBytes> {
 
 | Rust 消费方 | RegionMap 方法 | C 对应 |
 |------------|---------------|--------|
-| mmap.rs:219/:221/:225 | find_slot | region_find_slot（map_page_region 内） |
+| os/servers/vm/src/mmap.rs:fn roundup_page（L219，工具生成）/:221/:225 | find_slot | region_find_slot（map_page_region 内） |
 | dispatcher.rs:522/:1464 | find_slot | region_find_slot |
-| brk.rs:108 | find_mut_by_end | getnextvr 相邻检查（region.c:112-128） |
-| munmap.rs:155-192 | insert（split 后 re-insert） | region_insert |
-| vmproc_handle.rs:457/:469 | regions/regions_mut 访问器 | vm_regions_avl（vmproc.h:21） |
+| os/servers/vm/src/brk.rs:fn grow_heap（L108，工具生成） | find_mut_by_end | getnextvr 相邻检查（region.c:112-128） |
+| os/servers/vm/src/munmap.rs:fn handle_munmap（L155，工具生成） | insert（split 后 re-insert） | region_insert |
+| os/servers/vm/src/vmproc/vmproc_handle.rs:fn regions（L457，工具生成）/:469 | regions/regions_mut 访问器 | vm_regions_avl（minix3/minix/servers/vm/vmproc.h:vmproc（L21，工具生成）） |
 
 ---
 
@@ -509,7 +509,7 @@ $ cargo clippy -p minix-vm --lib → 0 warnings
 - **20/21**：mmap 消费 find_slot；munmap 消费 find_overlap/insert。
 - **25/26**：RS 热更新接线 region_search 族；查询消费 map_lookup。
 
-位置可回答性：本文档的索引结构在 **VM 启动链 `init_vm()` 初始化 vmproc 槽时建立**（region_avl 内嵌 vmproc.h:21，Rust 侧 vmproc.rs:45 `vm_regions: MaybeUninit<RegionMap>`），查找操作全部发生在**主循环分发后的服务路径**（16/18/19/20/21/25/26）。
+位置可回答性：本文档的索引结构在 **VM 启动链 `init_vm()` 初始化 vmproc 槽时建立**（region_avl 内嵌 minix3/minix/servers/vm/vmproc.h:vmproc（L21，工具生成），Rust 侧 os/servers/vm/src/vmproc/vmproc.rs:struct VmProc（L45，工具生成） `vm_regions: MaybeUninit<RegionMap>`），查找操作全部发生在**主循环分发后的服务路径**（16/18/19/20/21/25/26）。
 
 ---
 

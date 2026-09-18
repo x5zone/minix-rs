@@ -1,7 +1,7 @@
 # 20 — 整表快照和单进程快照：进程文件系统要的两份数据
 
 > **分类**: 进程信息 / 进程文件系统那一端
-> **源码**: `minix3/minix/servers/mib/proc.c:1177-1211`（整表 `mib_minix_proc_list`）、`:1217-1288`（单进程 `mib_minix_proc_data`）、`minix3/minix/include/minix/sysctl.h:58-88`（两结构和两组标志）
+> **源码**: `minix3/minix/servers/mib/proc.c:mib_kern_proc_args（L1177，工具生成）`（整表 `mib_minix_proc_list`）、`:1217-1288`（单进程 `mib_minix_proc_data`）、`minix3/minix/include/minix/sysctl.h:PROC_LIST`（两结构和两组标志）
 > **说明**: 进程信息五篇的第五篇。进程文件系统不自己读三家的表，它问系统信息服务要两份现成的数据：整表一份，单个进程一份。本篇讲两份数据怎么填，以及负进程号表示内核任务这条和别处不一样的规矩。
 
 ---
@@ -135,7 +135,7 @@ os/servers/mib/src/proc/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/proc.c:1177-1288`、`minix3/minix/include/minix/sysctl.h:58-88`
+- C 源：`minix3/minix/servers/mib/proc.c:mib_kern_proc_args（L1177，工具生成）`、`minix3/minix/include/minix/sysctl.h:PROC_LIST`
 - 阶段文档：`16-mib-proc-tables.md`（拿表和查槽）、`17-mib-proc-lwp.md`（状态判断）、`06-mib-copy-io.md`（拷出）、`10-mib-dispatch.md`（查询终点）、`21-mib-client-libc.md`（下一站，消费者视角）
 - Rust 实现：`os/servers/mib/src/proc/minix_proc.rs`、`os/libs/minix-types/src/types/sysctl.rs`（排布和标志值表）
 - 相关约定：架构演进 A-5（plan §4，排布那一端）、A-6（plan §4，表布局归三家）

@@ -165,8 +165,8 @@ Rust 侧 `tetris.rs` 的七形状（转轴首格）与形状表逐项对应，�
 - `22-stdio-games.md`——说话游戏（本篇的前置）
 - `24-text-games.md`——故事游戏（下一步：讲故事）
 - `13-terminal-termios.md`——终端控制（本篇的控制面）
-- `minix3/games/tetris/shapes.c:46-97`——形状与吻合（`tetris.rs` 的形状来源）
-- `minix3/games/rogue/rogue.h:54-293`——墙门与房间上限（`dungeon.rs` 的形状来源）
+- `minix3/games/tetris/shapes.c:TL`——形状与吻合（`tetris.rs` 的形状来源）
+- `minix3/games/rogue/rogue.h:HORWALL`——墙门与房间上限（`dungeon.rs` 的形状来源）
 
 ---
 

@@ -45,7 +45,7 @@ cached_page { dev, dev_offset, ino, ino_offset, flags, page, LRU 指针, 哈希�
 **两个索引挂同一个节点**——这不是两份缓存，而是同一份缓存的两个查询入口：
 
 - **bydev**：文件系统读写磁盘块时用（`do_mapcache`/`do_setcache`/`do_forgetcache` 全走 bydev）。
-- **byino**：文件映射缺页时用（`mappedfile_pagefault` 按 `(dev, ino, ino_offset)` 找，mem_file.c:104-110）。
+- **byino**：文件映射缺页时用（`mappedfile_pagefault` 按 `(dev, ino, ino_offset)` 找，minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L104，工具生成））。
 
 **延迟 ino 更新**（`update_inohash`，cache.c:163-174）：`find_cached_page_bydev` 命中后，如果调用方提供了 ino 信息且与节点不符，就把节点的 ino 元信息更新并**挪到新的 ino 桶**。这是"两阶段登记"的桥接：FS 可以先只按磁盘块地址登记（读块时还不知道文件归属），之后文件映射按 ino 查到同一个块。
 
@@ -68,18 +68,18 @@ cached_page { dev, dev_offset, ino, ino_offset, flags, page, LRU 指针, 哈希�
 
 | 场景 | C 行为 | 位置 |
 |------|--------|------|
-| `do_mapcache` 映射 | 遇 ONCE 条目返回 `ENOENT`（不消费） | mem_cache.c:147-158 |
-| `do_setcache` 重登记 | 旧条目是 ONCE → `rmcache` 重建（同页非 ONCE 才跳过） | mem_cache.c:236-245 |
-| 文件缺页命中 | 强制走 VFS 往返（"for one-time use pages, no caching is performed"） | mem_file.c:120-131 |
+| `do_mapcache` 映射 | 遇 ONCE 条目返回 `ENOENT`（不消费） | minix3/minix/servers/vm/mem_cache.c:do_mapcache（L147，工具生成） |
+| `do_setcache` 重登记 | 旧条目是 ONCE → `rmcache` 重建（同页非 ONCE 才跳过） | minix3/minix/servers/vm/mem_cache.c:do_setcache（L236，工具生成） |
+| 文件缺页命中 | 强制走 VFS 往返（"for one-time use pages, no caching is performed"） | minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L120，工具生成） |
 
 ### 1.5 四个缓存 IPC 服务
 
 | 请求码 | handler | 功能 | 错误码 |
 |--------|---------|------|--------|
-| `VM_MAPCACHEPAGE`（com.h:682） | `do_mapcache`（mem_cache.c:95-179） | 把缓存块映射进调用者（FS）地址空间，返回 vaddr | EFAULT/EINVAL/ENOENT/ENOMEM |
-| `VM_SETCACHEPAGE`（com.h:685） | `do_setcache`（mem_cache.c:196-277） | 把 FS 自己的匿名页登记为缓存块 | EFAULT/EINVAL |
-| `VM_FORGETCACHEPAGE`（com.h:688） | `do_forgetcache`（mem_cache.c:283-309） | 使指定设备偏移范围的缓存失效 | EFAULT/EINVAL |
-| `VM_CLEARCACHE`（com.h:691） | `do_clearcache`（mem_cache.c:315-324） | 使指定设备的全部缓存失效（卸载） | 无 |
+| `VM_MAPCACHEPAGE`（com.h:682） | `do_mapcache`（minix3/minix/servers/vm/mem_cache.c:do_mapcache） | 把缓存块映射进调用者（FS）地址空间，返回 vaddr | EFAULT/EINVAL/ENOENT/ENOMEM |
+| `VM_SETCACHEPAGE`（com.h:685） | `do_setcache`（minix3/minix/servers/vm/mem_cache.c:do_setcache） | 把 FS 自己的匿名页登记为缓存块 | EFAULT/EINVAL |
+| `VM_FORGETCACHEPAGE`（com.h:688） | `do_forgetcache`（minix3/minix/servers/vm/mem_cache.c:do_forgetcache） | 使指定设备偏移范围的缓存失效 | EFAULT/EINVAL |
+| `VM_CLEARCACHE`（com.h:691） | `do_clearcache`（minix3/minix/servers/vm/mem_cache.c:do_clearcache） | 使指定设备的全部缓存失效（卸载） | 无 |
 
 ### 1.6 对照：Redox 与 Linux
 
@@ -159,7 +159,7 @@ SLABFREE(hb);
 
 ### 2.3 mem_cache.c：CacheMemory memtype
 
-`mem_type_cache`（mem_cache.c:39-50）的回调面：
+`mem_type_cache`（minix3/minix/servers/vm/mem_cache.c:mem_type）的回调面：
 
 | 回调 | 实现 | 语义 |
 |------|------|------|
@@ -172,7 +172,7 @@ SLABFREE(hb);
 | `ev_pagefault` | `pb_link` 预载块（:181-193） | 见下 |
 | `ev_pt_flags` | arm 才非零（:51-57） | 缓存属性 |
 
-**cache_pagefault**（mem_cache.c:181-190）——缺页时把区域参数 `region->param.pb_cache` 里预载的物理块链接进缺页槽：
+**cache_pagefault**（minix3/minix/servers/vm/mem_cache.c:cache_pagefault）——缺页时把区域参数 `region->param.pb_cache` 里预载的物理块链接进缺页槽：
 
 ```c
 static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
@@ -190,7 +190,7 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 ### 2.4 do_mapcache：把缓存块映射进 FS 地址空间
 
-**源码位置**: [`mem_cache.c:95-179`](../../../minix3/minix/servers/vm/mem_cache.c#L95)
+**源码位置**: [`minix3/minix/servers/vm/mem_cache.c:do_mapcache`](../../../minix3/minix/servers/vm/mem_cache.c#L95)
 
 ```
 1. 对齐验证：dev_off/ino_off 必须页对齐 → EFAULT（:108-111）
@@ -210,7 +210,7 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 ### 2.5 do_setcache：把 FS 匿名页登记为缓存块
 
-**源码位置**: [`mem_cache.c:196-277`](../../../minix3/minix/servers/vm/mem_cache.c#L196)
+**源码位置**: [`minix3/minix/servers/vm/mem_cache.c:do_setcache`](../../../minix3/minix/servers/vm/mem_cache.c#L196)
 
 ```
 1. bytes < VM_PAGE_SIZE → EINVAL（:208）；对齐 → EFAULT（:210-213）
@@ -228,15 +228,15 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 ### 2.6 do_forgetcache / do_clearcache
 
-- `do_forgetcache`（mem_cache.c:283-309）：`bytes < PAGE_SIZE → EINVAL`；`dev_off % PAGE_SIZE → EFAULT`；逐页 `find_cached_page_bydev(dev, dev_off+offset, VMC_NO_INODE, 0, 0)`（**touchlru=0**——马上要删，不必碰 LRU）→ `rmcache`。
-- `do_clearcache`（mem_cache.c:315-324）：只读 `dev`，调 `clear_cache_bydev(dev)`。
+- `do_forgetcache`（minix3/minix/servers/vm/mem_cache.c:do_forgetcache）：`bytes < PAGE_SIZE → EINVAL`；`dev_off % PAGE_SIZE → EFAULT`；逐页 `find_cached_page_bydev(dev, dev_off+offset, VMC_NO_INODE, 0, 0)`（**touchlru=0**——马上要删，不必碰 LRU）→ `rmcache`。
+- `do_clearcache`（minix3/minix/servers/vm/mem_cache.c:do_clearcache）：只读 `dev`，调 `clear_cache_bydev(dev)`。
 
 ### 2.7 调用面：谁消费缓存
 
 | 调用者 | 路径 | 说明 |
 |--------|------|------|
-| `mappedfile_pagefault`（mem_file.c:104-138） | `find_cached_page_byino/bydev` → 命中 `pb_link`；写/末页 → `cow_block`；ONCE → 强制 VFS 往返；映射后 ONCE → `rmcache` | 文件映射缺页的缓存命中路径（23 篇消费侧） |
-| `mappedfile_setfile`（mem_file.c:210-240） | prefill 时逐页查缓存预填 | 区域初始化预填 |
+| `mappedfile_pagefault`（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L104，工具生成）） | `find_cached_page_byino/bydev` → 命中 `pb_link`；写/末页 → `cow_block`；ONCE → 强制 VFS 往返；映射后 ONCE → `rmcache` | 文件映射缺页的缓存命中路径（23 篇消费侧） |
+| `mappedfile_setfile`（minix3/minix/servers/vm/mem_file.c:mappedfile_setfile（L210，工具生成）） | prefill 时逐页查缓存预填 | 区域初始化预填 |
 | libminixfs（libminixfs/cache.c:565/:704） | `put_block(..., ONE_SHOT)` → `VMSF_ONCE` | FS 侧一次性块登记 |
 | `alloc_mem`（alloc.c:242-279） | 耗尽 → `cache_freepages(clicks)`（clicks=请求页数，alloc.c:260-262）→ 重试 | 内存压力回收 |
 | `main.c:569-572` | CALLMAP 注册 4 个 handler | 分发入口（15 篇） |
@@ -252,12 +252,12 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 ### 3.1 D1：单键模型 —— `(dev, dev_offset)` 主键 + `(dev, ino, ino_offset)` 辅索引（替代旧双键模型）
 
 **C**: 一个磁盘块恰好一个 `cached_page`，bydev 是主身份，byino 挂同一节点（cache.h:2-21，cache.c:23-24）。
-**Rust**: `PageCache { by_dev: BTreeMap<(u64,u64), CachedPage>, by_ino: BTreeMap<(u64,u64,u64), (u64,u64)> }`（page_cache.rs:201-216）——主索引存条目，辅索引映射到主键。
+**Rust**: `PageCache { by_dev: BTreeMap<(u64,u64), CachedPage>, by_ino: BTreeMap<(u64,u64,u64), (u64,u64)> }`（os/servers/vm/src/page_cache.rs:struct PageCache）——主索引存条目，辅索引映射到主键。
 
 **修正的旧模型缺陷**（24-P0-1 系列，见 §4.3）：旧实现用 `CacheKey::ByInode/ByDevice` 两个独立键类型，同一 PFN 可以两个键并存，产生三个语义偏离：
 
 1. **重复登记无守卫**：C 的 `PBF_INCACHE` 检查（cache.c:222-226）拒绝已缓存的物理块；旧 `insert` 无条件插入，同一 PFN 双条目 → 双倍 refcount、淘汰语义错乱。
-2. **bydev 查找漏查 ino 条目**：C 的 `do_mapcache`/`do_setcache` **总是** bydev 查找（mem_cache.c:147/:235），旧实现 `ino != 0` 时改走 `find_by_inode`——FS 先按块地址登记（ino=0）、后按 ino 映射时必然 ENOENT。
+2. **bydev 查找漏查 ino 条目**：C 的 `do_mapcache`/`do_setcache` **总是** bydev 查找（minix3/minix/servers/vm/mem_cache.c:do_mapcache（L147，工具生成）/:235），旧实现 `ino != 0` 时改走 `find_by_inode`——FS 先按块地址登记（ino=0）、后按 ino 映射时必然 ENOENT。
 3. **延迟 ino 更新无法表达**：`update_inohash`（cache.c:163-174）要求"bydev 命中时更新节点元信息"，双键模型没有"节点上的元信息"概念。
 
 **架构标注**: 双链哈希 → BTreeMap 双索引，`[ARCH: A-4 家族]`（与 14-region-lookup 同源：链式哈希 → 平衡树）。行为等价：O(log n) vs O(1) 摊还，缓存块量级 10^5 下不可观察。
@@ -265,34 +265,34 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 ### 3.2 D2：索引型双链 LRU（arena + free list，O(1) touch/remove）
 
 **C**: `older`/`newer` 侵入式指针双链（cache.h:17-18），touch O(1)。
-**Rust**: `LruList { nodes: Vec<LruNode>, free: Vec<u32>, head, tail }`（page_cache.rs:102-117），条目存 `lru_node: u32` 索引（page_cache.rs:94）。`push_back`（:127）从 free list 取槽或扩容；`touch`（:135）= unlink + link_tail；`remove`（:141）摘链 + 槽回收；`iter_oldest`（:179）从最老端迭代。
+**Rust**: `LruList { nodes: Vec<LruNode>, free: Vec<u32>, head, tail }`（os/servers/vm/src/page_cache.rs:struct LruList），条目存 `lru_node: u32` 索引（os/servers/vm/src/page_cache.rs:struct LruNode（L94，工具生成））。`push_back`（:127）从 free list 取槽或扩容；`touch`（:135）= unlink + link_tail；`remove`（:141）摘链 + 槽回收；`iter_oldest`（:179）从最老端迭代。
 
 **为什么不用 `Vec<CacheKey>` 扫描**（旧实现）：`touch` 在文件缺页命中路径上每次 O(n)（10^5 条目 × 每次缺页），且 `remove` 的 `retain` 也是 O(n)；C 是 O(1)。索引双链在 safe Rust 下等价复刻 C 的精确 LRU，无 unsafe。**淘汰顺序是外部可观察行为**（压力下先淘汰最老未映射页），必须等价。
 
-**free list 不缩容**：arena 峰值 = 缓存条目峰值；条目本身随 `by_dev` 删除，内存上限由缓存大小决定（注释 page_cache.rs:93-95）。
+**free list 不缩容**：arena 峰值 = 缓存条目峰值；条目本身随 `by_dev` 删除，内存上限由缓存大小决定（注释 os/servers/vm/src/page_cache.rs:struct LruNode（L93，工具生成））。
 
 ### 3.3 D3：PBF_INCACHE / refcount 复用 PageFrames，归零经 PfnAllocator 释放
 
 **C**: `phys_block.flags & PBF_INCACHE` + `refcount`（region.h:35）；`rmcache` 归零 → `free_mem`（cache.c:280-284）。
-**Rust**: 直接复用 `PageFrames` 的 `IN_CACHE` 标志与 refcount（page_state.rs:30/:166/:175）：
+**Rust**: 直接复用 `PageFrames` 的 `IN_CACHE` 标志与 refcount（os/servers/vm/src/region/page_state.rs:fn alloc_contiguous（L30，工具生成）/:166/:175）：
 
-- `PageCache::addcache` 的重复检查 = 帧 `is_cached()` **或** 主键已存在（page_cache.rs:246-255）——后者是 fail-closed 补充（C 的链式哈希允许重复键——调用方 bug；`CACHE_SANITY` 才抓，Rust 直接拒绝）。
-- `PageCache::rmcache`（page_cache.rs:281-315）：摘三处索引 → `frames.rmcache(pfn)` → **若帧 refcount == 0 → `alloc.free_pfn(pfn)`**。与 `free_region_pages`（region/mod.rs:23-77）同一模式；旧实现永不释放（内存泄漏，24-P0-1）。
-- `unmap_page`（vir_region.rs:196-223）已有"refcount==0 且 IN_CACHE 则不返回待释放页"的配合——缓存页被 unmap 后由缓存侧持有，rmcache 时统一释放。**不变量**：`IN_CACHE ⟺ PageCache.by_dev 中存在该 PFN 条目`。
-- **没有独立条目 refcount**：帧 refcount 是权威（addcache +1 = 缓存引用；map_page +1 = 映射引用）。淘汰条件 `refcount == 1` 直接读帧（page_cache.rs:389-393）。
+- `PageCache::addcache` 的重复检查 = 帧 `is_cached()` **或** 主键已存在（os/servers/vm/src/page_cache.rs:fn addcache（L246，工具生成））——后者是 fail-closed 补充（C 的链式哈希允许重复键——调用方 bug；`CACHE_SANITY` 才抓，Rust 直接拒绝）。
+- `PageCache::rmcache`（os/servers/vm/src/page_cache.rs:fn rmcache（L281，工具生成））：摘三处索引 → `frames.rmcache(pfn)` → **若帧 refcount == 0 → `alloc.free_pfn(pfn)`**。与 `free_region_pages`（region/mod.rs:23-77）同一模式；旧实现永不释放（内存泄漏，24-P0-1）。
+- `unmap_page`（os/servers/vm/src/region/vir_region.rs:fn is_direct（L196，工具生成））已有"refcount==0 且 IN_CACHE 则不返回待释放页"的配合——缓存页被 unmap 后由缓存侧持有，rmcache 时统一释放。**不变量**：`IN_CACHE ⟺ PageCache.by_dev 中存在该 PFN 条目`。
+- **没有独立条目 refcount**：帧 refcount 是权威（addcache +1 = 缓存引用；map_page +1 = 映射引用）。淘汰条件 `refcount == 1` 直接读帧（os/servers/vm/src/page_cache.rs:fn free_pages（L389，工具生成））。
 
 ### 3.4 D4：VMSF_ONCE 条目 flag（修正 dispatch 的 request.flags 误读）
 
-**C**: 条目 `hb->flags = flags & VMSF_ONCE`（cache.c:241）；mapcache 查**条目**（mem_cache.c:149）；setcache 跳过条件 = 同页**且旧条目非 ONCE**（mem_cache.c:240-246）。
-**Rust**: `CachedPage.once: bool`（page_cache.rs:85）。
+**C**: 条目 `hb->flags = flags & VMSF_ONCE`（cache.c:241）；mapcache 查**条目**（minix3/minix/servers/vm/mem_cache.c:do_mapcache（L149，工具生成））；setcache 跳过条件 = 同页**且旧条目非 ONCE**（minix3/minix/servers/vm/mem_cache.c:do_setcache（L240，工具生成））。
+**Rust**: `CachedPage.once: bool`（os/servers/vm/src/page_cache.rs:struct CachedPage（L85，工具生成））。
 
 - `dispatch_mapcache`（dispatcher.rs:482-572）：删掉旧代码 `request.flags & 0x01` 检查——**C 的 do_mapcache 根本不读 `m_vmmcp.flags`**；改为查 `entry.once`（dispatcher.rs:545 `Some(entry) if !entry.once`）。24-P0-1 修正。
 - `dispatch_setcache`（dispatcher.rs:607-713）：跳过条件 = `entry.pfn == pfn && !entry.once`（dispatcher.rs:660-664）——旧代码 `request.flags == 0` 读**新** flag 而非**旧条目** flag；新条目 `once = request.flags & VMSF_ONCE != 0`。24-P0-1 修正。
-- `MappedFile::ev_pagefault`（memtype.rs:1006-1049）：命中条目 `once == true` → `NeedVfsIo`（强制 VFS 往返，mem_file.c:120-131 的保守侧）；旧实现无此分流。差异见 §3.6。
+- `MappedFile::ev_pagefault`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L1006，工具生成））：命中条目 `once == true` → `NeedVfsIo`（强制 VFS 往返，minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L120，工具生成） 的保守侧）；旧实现无此分流。差异见 §3.6。
 
 ### 3.5 D5：延迟 ino 更新（update_inohash 等价）
 
-`find_by_dev`（page_cache.rs:317-351）命中后，若 `ino: Some` 且与条目不符 → 删旧辅索引项 → 改条目元信息 → 写新辅索引项（page_cache.rs:334-343）。**语义**：文件系统登记时可只给磁盘块地址，后续块归属变化时 ino 信息自动补全——"先 dev 后 ino"两阶段登记的桥接（C cache.c:163-174/:183-188）。传 `None`（VMC_NO_INODE）**永不**清除已有 ino 信息（C 只在传入真实 ino 时更新，cache.c:183-184）。
+`find_by_dev`（os/servers/vm/src/page_cache.rs:fn find_by_dev（L317，工具生成））命中后，若 `ino: Some` 且与条目不符 → 删旧辅索引项 → 改条目元信息 → 写新辅索引项（os/servers/vm/src/page_cache.rs:fn find_by_dev（L334，工具生成））。**语义**：文件系统登记时可只给磁盘块地址，后续块归属变化时 ino 信息自动补全——"先 dev 后 ino"两阶段登记的桥接（C cache.c:163-174/:183-188）。传 `None`（VMC_NO_INODE）**永不**清除已有 ino 信息（C 只在传入真实 ino 时更新，cache.c:183-184）。
 
 ### 3.6 差异清单（C ↔ Rust，诚实标注）
 
@@ -301,13 +301,13 @@ static int cache_pagefault(struct vmproc *vmp, struct vir_region *region,
 | 1 | **哈希 → BTreeMap**（`[ARCH: A-4 家族]`） | 双链哈希 → 主/辅 BTreeMap 索引；无固定 65536 桶，无哈希函数（checklist M-041/F-031 同步） |
 | 2 | **侵入式指针 LRU → 索引双链** | 无 unsafe；free list 复用槽；精确 LRU 语义保留（checklist F-028-F-030 同步） |
 | 3 | **重复键 fail-closed** | C 链式哈希允许重复键（sanity 才抓）；Rust `addcache` 拒绝（AlreadyCached → EINVAL） |
-| 4 | **mapcache 直接映射替代 pb_cache 间接路径** | C 走 `map_pf` → `cache_pagefault`（懒映射 + 页表写入）；Rust `region.map_page` 直接链接（dispatcher.rs:549-555）——同样的 refcount 效果、同样的可观察结果；`CacheMemory::ev_pagefault`（memtype.rs:809-918）保留 PbCache 语义作为 memtype 契约的兜底 |
+| 4 | **mapcache 直接映射替代 pb_cache 间接路径** | C 走 `map_pf` → `cache_pagefault`（懒映射 + 页表写入）；Rust `region.map_page` 直接链接（dispatcher.rs:549-555）——同样的 refcount 效果、同样的可观察结果；`CacheMemory::ev_pagefault`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L809，工具生成））保留 PbCache 语义作为 memtype 契约的兜底 |
 | 5 | **mapcache bytes 检查前置** | C 先查 endpoint（bogus source → panic）；Rust 先验 bytes（EINVAL）再查 endpoint（InvalidProcess，fail-closed）——对真实调用者无可观察差异 |
-| 6 | **缺页 ONCE 分流** | C 初始缺页（无回调）命中 ONCE 会链接 + `rmcache` 用后即弃（mem_file.c:120-138）；Rust 统一走 `NeedVfsIo`（强制往返）——不消费一次性页，端状态等价（页由 FS 重提供），差一次 IPC 往返；`mappedfile_pf_cont` 的 ONCE 用后即弃依赖 transport，未接线（backlog） |
+| 6 | **缺页 ONCE 分流** | C 初始缺页（无回调）命中 ONCE 会链接 + `rmcache` 用后即弃（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L120，工具生成））；Rust 统一走 `NeedVfsIo`（强制往返）——不消费一次性页，端状态等价（页由 FS 重提供），差一次 IPC 往返；`mappedfile_pf_cont` 的 ONCE 用后即弃依赖 transport，未接线（backlog） |
 | 7 | **`find_cached_page_bypfn` 移除** | 旧双键模型的 `pfn_index` 反索引是 C 没有的发明（checklist F-039a）；单键模型下无消费者 |
-| 8 | **`_MINIX_MAGIC` 分支不实现** | mem_cache.c:119-128/:135-137 的插桩预留（分配 1 页洞）仅编译宏启用；Rust 不实现（注释说明） |
+| 8 | **`_MINIX_MAGIC` 分支不实现** | minix3/minix/servers/vm/mem_cache.c:do_mapcache（L119，工具生成）/:135-137 的插桩预留（分配 1 页洞）仅编译宏启用；Rust 不实现（注释说明） |
 | 9 | **`cache_sanitycheck_internal` 跳过** | `CACHE_SANITY=0`（vm.h:9）编译宏；Rust 用单测覆盖等价不变量 |
-| 10 | **mapcache 区域先建后插 + 失败整区回滚** | C 在调用者映射表内建区（`map_page_region`），失败 `map_unmap_region` 整区回滚（mem_cache.c:155-157/:165-166）；Rust 先在表外组装区域、提交时插入，失败只需 `unmap_region_pages` 退引用计数（缓存的帧受 IN_CACHE 保护不进回收漏斗）——回滚语义 C-parity， unwind 面更小（区域从未进调用者页表）。中途失败注入测试 `test_dispatch_mapcache_mid_failure_rolls_back_refcounts` 定格 refcount 对称性（V12-P2-6） |
+| 10 | **mapcache 区域先建后插 + 失败整区回滚** | C 在调用者映射表内建区（`map_page_region`），失败 `map_unmap_region` 整区回滚（minix3/minix/servers/vm/mem_cache.c:do_mapcache（L155，工具生成）/:165-166）；Rust 先在表外组装区域、提交时插入，失败只需 `unmap_region_pages` 退引用计数（缓存的帧受 IN_CACHE 保护不进回收漏斗）——回滚语义 C-parity， unwind 面更小（区域从未进调用者页表）。中途失败注入测试 `test_dispatch_mapcache_mid_failure_rolls_back_refcounts` 定格 refcount 对称性（V12-P2-6） |
 
 ### 3.7 D6：alloc_cycle 补充体（cache_freepages 接线）
 
@@ -395,7 +395,7 @@ os/servers/vm/src/vm_server.rs
 
 | ID | 级别 | 内容 |
 |----|------|------|
-| 24-P0-1 | P0 | **wire format**：`VmCacheIn::decode` 从 `MessageM1` 读（dev 取自 m1p1@16、ino/ino_offset/block 硬编码 0）→ 全部字段错位；新增 `MessVmmcp`/`MessVmmcpReply` overlay（message.rs:1948/:2001）+ `decode_message`（vm.rs:1053）+ 回复编码（vm_server.rs:1123）+ 解码测试（vm.rs `test_vm_cache_in_decode_message`）。23-P0-1 同族 |
+| 24-P0-1 | P0 | **wire format**：`VmCacheIn::decode` 从 `MessageM1` 读（dev 取自 m1p1@16、ino/ino_offset/block 硬编码 0）→ 全部字段错位；新增 `MessVmmcp`/`MessVmmcpReply` overlay（message.rs:1948/:2001）+ `decode_message`（vm.rs:1053）+ 回复编码（os/servers/vm/src/vm_server.rs:fn run_once（L1123，工具生成））+ 解码测试（vm.rs `test_vm_cache_in_decode_message`）。23-P0-1 同族 |
 | 24-P0-2 | P0 | **双键模型缺陷**：`CacheKey::ByInode/ByDevice` 允许同一 PFN 双条目、无 IN_CACHE 检查、bydev 查找漏查 ino 条目、无延迟 ino 更新 → 重写为单键模型（D1）+ 惰性更新（D5） |
 | 24-P0-3 | P0 | **VMSF_ONCE 误读**：`dispatch_mapcache` 查 `request.flags & 0x01`（C 查条目 `hb->flags`）、`dispatch_setcache` 跳过条件读新 flag → 条目 `once` 语义（D4） |
 | 24-P0-4 | P0 | **缓存页永不归还**：旧 `remove` 只 `frames.rmcache` 不释放归零页（C cache.c:280-284 `free_mem`）→ `rmcache` 归零经 `PfnAllocator::free_pfn`（D3）；旧 `increase_refcount` 与 `map_page` 双重计数 → 删除（帧 refcount 权威） |
@@ -407,9 +407,9 @@ os/servers/vm/src/vm_server.rs
 
 ### 4.4 与 12/15/16/23 的关系
 
-- **12-memtype**：`CacheMemory`（memtype.rs:795）是 cache 区域的 memtype 契约；本篇实现其消费方（mapcache 直接映射 + PbCache 兜底）。
+- **12-memtype**：`CacheMemory`（os/servers/vm/src/memtype.rs:fn ev_new（L795，工具生成））是 cache 区域的 memtype 契约；本篇实现其消费方（mapcache 直接映射 + PbCache 兜底）。
 - **15-ipc-dispatch**：4 个 CALLMAP 分支（main.c:569-572）在 Rust 的分发入口（dispatcher.rs:1018-1024）；SUSPEND 不涉及缓存 handler（全同步）。
-- **16-pagefault**：文件缺页的缓存命中路径由 `MappedFile::ev_pagefault` 消费（memtype.rs:1006+），ONCE 分流与 `cow_block` 的 clearend 清零在 16/17 侧。
+- **16-pagefault**：文件缺页的缓存命中路径由 `MappedFile::ev_pagefault` 消费（os/servers/vm/src/memtype.rs:fn ev_pagefault（L1006，工具生成）+），ONCE 分流与 `cow_block` 的 clearend 清零在 16/17 侧。
 - **23-vfs-interaction**：VFS 回复后把页写进缓存（`vm_map_cacheblock`），重试缺页命中缓存——本篇是那条链路的"缓存侧"；23 篇只消费 `find_by_*`（旧 API 已于本轮同步为新 API）。
 
 ---
@@ -464,7 +464,7 @@ os/servers/vm/src/vm_server.rs
 |------|------|
 | `dispatch_mapcache`/`dispatch_setcache` 成功路径端到端（需进程槽 + 匿名区域构造） | 未覆盖（dispatcher 测试只能到 endpoint 验证——全局进程表无活动进程）；成功路径由 page_cache + memtype 单测覆盖 |
 | `cache_sanitycheck_internal`（CACHE_SANITY 宏） | 跳过（cfg 门控，vm.h:9） |
-| ONCE 页缺页命中后的 `rmcache`（mem_file.c:134-138） | 未接线（Rust 统一走 NeedVfsIo，见 §3.6 差异 6；transport 缺口） |
+| ONCE 页缺页命中后的 `rmcache`（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L134，工具生成）） | 未接线（Rust 统一走 NeedVfsIo，见 §3.6 差异 6；transport 缺口） |
 | clearend 尾清零（cow_block） | 未覆盖（17 篇范围，backlog） |
 | 真实 VFS 往返（FS 读盘 → setcache → 缺页命中） | 未覆盖（transport 缺口，23 篇同） |
 
@@ -481,7 +481,7 @@ os/servers/vm/src/vm_server.rs
 
 ### 6.1 位置可回答性
 
-**init_vm 阶段**：页缓存无显式初始化（`PageCache::new()` 空目录，vm_server.rs:127）——缓存是**运行时填充**的结构，不参与启动自举。
+**init_vm 阶段**：页缓存无显式初始化（`PageCache::new()` 空目录，os/servers/vm/src/vm_server.rs:fn new（L127，工具生成））——缓存是**运行时填充**的结构，不参与启动自举。
 
 **主循环阶段**（main.c:112-190）：
 

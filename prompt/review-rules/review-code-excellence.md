@@ -85,6 +85,25 @@ pub fn get_platform() -> &'static dyn PlatformDesc { /* ... */ }
 
 **详见**：[review.md §Design First 原则](review.md) + [review-patterns.md §模式 23 pub 滥用](review-patterns.md) + [review-patterns.md §模式 24 类型安全过度](review-patterns.md) + [review-patterns.md §模式 65 Translate 倾向](review-patterns.md)。
 
+### §16.6 非法态封堵清单（2026-09-18 H2 新增，核心状态机强制）
+
+> **把"make wrong state unrepresentable"从检查项变成可交付产物**：每个核心状态机 / 句柄 / 地址类型一行，写清类型封住了什么、封不住什么。
+
+**产物模板**（贴 scan.md / code-excellence 产物，设计对比表旁列一份）：
+
+```markdown
+| 类型/状态机 | 合法状态集 | 类型如何表达 | 封堵了哪些非法态 | 封不住哪些 | 结论 |
+|---|---|---|---|---|---|
+| PM Lifecycle | Uninit→Init→Running→Zombie | typestate 链 | 已 Init 前调用 run（编译拒绝） | Zombie 后的 IPC 复活路径 | 设计类 P1 |
+```
+
+**判级**：
+- 核心状态机**封不住关键非法态**（能构造出逻辑非法但类型合法的状态，且该状态可触发真实错误行为）→ **设计类 P1**（新增/触碰代码必须修复或写明延期理由；存量登记 backlog，OQ26）
+- 普通类型表达力问题（newtype 缺失等）→ 卓越性 P2
+- 每条"封不住"必须写**为什么封不住**（避免标签化判定）
+
+**范围刹车**：不要求"所有类型都 newtype"（过度抽象，模式 24）——只要求**核心状态机**的合法状态集能被类型枚举。首批验证样本（2026-09-18 对话识别，执行时先复核具体位置）：wire 布局裸常量（散落无 newtype 承载）、unsafe 散装（边界未收敛到少数 safe 封装）、PM Lifecycle 半封装（状态机未全封）。
+
 ---
 
 ## 三、§17 表达力卓越性

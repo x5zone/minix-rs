@@ -1,7 +1,7 @@
 # 06 — DS 启动映射：第一次启动时 RS 的服务表怎么登记进来
 
 > **分类**: 启动映射 / boot 锚点
-> **源码**: `minix3/minix/servers/ds/store.c:229-285`、`kernel/table.c:44-64`、`kernel/main.c:196,265-267`、`rs.h:165-183`、`sef.h:44-53,85`
+> **源码**: `minix3/minix/servers/ds/store.c:map_service`、`kernel/table.c:44-64`、`kernel/main.c:196,265-267`、`minix3/minix/include/minix/rs.h:rprocpub`、`sef.h:44-53,85`
 > **说明**: DS 启动后做的第一件实事：清两张表，从 RS 拷来整张服务表，逐个登记为 label 条目。本文讲清这个"清—拷—逐登"三步，以及背后的两层启动顺序。
 
 ---
@@ -65,7 +65,7 @@ DS 首次启动只做三件事：
 
 ### 2.3 两层序证据
 
-`table.c:44-64`（DS 登记第一用户服务）vs `main.c:196`（仅 kernel task/RS/VM 先可调度）+ `:265-267`（`RTS_VMINHIBIT` 抑制）。`rprocpub` 结构见 `rs.h:165-183`（`label` / `endpoint` / `in_use` 三栏是本篇用的全部）。
+`table.c:44-64`（DS 登记第一用户服务）vs `main.c:196`（仅 kernel task/RS/VM 先可调度）+ `:265-267`（`RTS_VMINHIBIT` 抑制）。`rprocpub` 结构见 `minix3/minix/include/minix/rs.h:rprocpub`（`label` / `endpoint` / `in_use` 三栏是本篇用的全部）。
 
 ---
 
@@ -99,7 +99,7 @@ os/servers/ds/src/
 | 单服务登记 | `store.c:229-249` | `boot.rs:89`（`map_service`） | 取槽 → 三栏 → label 旗（不跑通知环，D4） |
 | 双表复位 | `store.c:261-266` | `boot.rs:59`（`reset_tables`） | 全置 `None`（D2） |
 | 批量映射 | `store.c:273-279` | `boot.rs:120`（`apply_boot_map`） | 逐在用项登记，首错即停（首错码即返回值，与 C 的 panic-on-first-failure 同"停"，不同"崩"——见 §5 注） |
-| 服务描述 | `rs.h:165-183` | `boot.rs:45`（`BootService`） | 在用位 + 端点 + 名（三栏即 C 所用的全部） |
+| 服务描述 | `minix3/minix/include/minix/rs.h:rprocpub` | `boot.rs:45`（`BootService`） | 在用位 + 端点 + 名（三栏即 C 所用的全部） |
 
 注：C 在批量映射失败时 `panic`，Rust 停并返回首个错误码。启动锚点失败确实没有降级，但"停并上报"比"崩"给 supervisior（RS）更多信息——RS 才能决定是重试还是 abort。这是运行 Robustness 对启动 panic 的收敛，文档化在此，测试锁定行为（`test_apply_boot_map_stops_at_first_error` 类）。
 
@@ -132,7 +132,7 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:229-285`、`kernel/table.c:44-64`、`include/minix/rs.h:165-183`
+- C 源：`minix3/minix/servers/ds/store.c:map_service`、`kernel/table.c:44-64`、`include/minix/rs.h:165-183`
 - 阶段文档：`05-ds-identity-auth.md`（上一站）、`07-ds-publish.md`（下一站，label 发布规则的运行版）
 - Rust 实现：`os/servers/ds/src/boot.rs`
 - 对端：`../03-stage-rs/02-rs-process-table.md`（`rprocpub` 的另一面）

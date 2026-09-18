@@ -1,7 +1,7 @@
 # 03 — 系统信息库节点模型：节点内存布局、四种父子与挂载组合、一页暂存区
 
 > **分类**: 数据模型 / 树节点语义
-> **源码**: `minix3/minix/servers/mib/mib.h:110-280`（节点结构全段 + 初始化宏，宏体移交 04）、`minix3/minix/servers/mib/tree.c:12,21-27,474,829,1501,1524-1531,1776`（静态 id 判定、scratch、计数器、版本落点）
+> **源码**: `minix3/minix/servers/mib/mib.h:CTLFLAG_REMOTE（L110，工具生成）`（节点结构全段 + 初始化宏，宏体移交 04）、`minix3/minix/servers/mib/tree.c:IS_STATIC_ID,21-27,474,829,1501,1524-1531,1776`（静态 id 判定、scratch、计数器、版本落点）
 > **说明**: 树上每个结点的形状：`mib_node` 巨型联合体的五态、`mib_dynode` 的变长尾巴、四类节点矩阵、计数器与草稿纸。本文只讲"结点是什么"，不讲"结点怎么找"（05）、"怎么长出来"（08）、"怎么初始化"（04）。
 
 ---
@@ -103,12 +103,12 @@
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 类型变枚举，解码全 | 裸 nibble，无"未知类型"路径（静态宏保证） | `NodeType` 六变体 + `from_raw → Option`（`flag.rs:34`），未知 nibble 回 `None` | 动态创建（08）的 size 来自用户，校验在别处；解码器保持全函数——"不可能"的事由类型说，而不是由"没写"说 |
-| D2 | 四格矩阵变枚举，非结点无格 | 注释表格 + 两位手工与 | `NodeRole` 四变体 + `classify → Option`（`flag.rs:79,94`），叶子问矩阵回 `None` | "这个整数是哪种挂载"是编程错误不是第五个答案；`None` 让误用在分类时暴露，不在挂载时爆炸 |
-| D3 | 窗口与远端包不相交 | 同一联合体位置两种读法（读错即把端口号当孩子数） | `ChildWindow{csize,clen}`（`node.rs:21`）与 `RemotePack{eid,rcsize,rclen}`（`node.rs:60`）两个类型 + `to_word/from_word`（`:78` 起） | C 的坑（`:150-156` 复用）用类型填上：拿窗口当包装错即编译失败；pack 越界拒绝（截断 `eid` 会路由到错的服务） |
-| D4 | 计数器变不可变累加 | 三个全局 `unsigned` 散落在 7 处增减 | `TreeCounts{nodes,objects,remotes}` + `baseline/node_added/...` 七个 `const fn`（`node.rs:110,119`） | 增减点散（建/删/挂载）是事实，但"基线 1/0/0"和"成对增减"值得一个类型 + 一个测试；单线程下 `Copy` 累加即真相（多线程才需要 Atomic，01 同款单线程假设） |
-| D5 | 草稿纸变预算常量 | 全局 `char scratch[]` + 四处裸用 | `SCRATCH_SIZE/ALIGN/MAX_DESC_LEN`（`node.rs:187-191`）+ 推导注释（max(4096,16+1024)=4096） | 缓冲本体是 09/11/12 的效果（栈/静态二选一，A-3）；本篇只钉预算——"一页"这个结论比缓冲本身更值得钉 |
-| D6 | 版本变谓词 | `ver` 裸 `uint32` + 四处手写比对 | `ROOT_VER/linked_ver/version_matches`（`node.rs:194-204`，`staged==0` 免检显式） | `:889` 的"0 不检查"是惯例不是注释——写进函数名级别的语义，后人不敢删 |
+| D1 | 类型变枚举，解码全 | 裸 nibble，无"未知类型"路径（静态宏保证） | `NodeType` 六变体 + `from_raw → Option`（`os/servers/mib/src/tree/flag.rs:enum NodeType`），未知 nibble 回 `None` | 动态创建（08）的 size 来自用户，校验在别处；解码器保持全函数——"不可能"的事由类型说，而不是由"没写"说 |
+| D2 | 四格矩阵变枚举，非结点无格 | 注释表格 + 两位手工与 | `NodeRole` 四变体 + `classify → Option`（`os/servers/mib/src/tree/flag.rs:enum NodeRole,94`），叶子问矩阵回 `None` | "这个整数是哪种挂载"是编程错误不是第五个答案；`None` 让误用在分类时暴露，不在挂载时爆炸 |
+| D3 | 窗口与远端包不相交 | 同一联合体位置两种读法（读错即把端口号当孩子数） | `ChildWindow{csize,clen}`（`os/servers/mib/src/tree/node.rs:struct ChildWindow`）与 `RemotePack{eid,rcsize,rclen}`（`os/servers/mib/src/tree/node.rs:struct RemotePack`）两个类型 + `to_word/from_word`（`:78` 起） | C 的坑（`:150-156` 复用）用类型填上：拿窗口当包装错即编译失败；pack 越界拒绝（截断 `eid` 会路由到错的服务） |
+| D4 | 计数器变不可变累加 | 三个全局 `unsigned` 散落在 7 处增减 | `TreeCounts{nodes,objects,remotes}` + `baseline/node_added/...` 七个 `const fn`（`os/servers/mib/src/tree/node.rs:struct TreeCounts,119`） | 增减点散（建/删/挂载）是事实，但"基线 1/0/0"和"成对增减"值得一个类型 + 一个测试；单线程下 `Copy` 累加即真相（多线程才需要 Atomic，01 同款单线程假设） |
+| D5 | 草稿纸变预算常量 | 全局 `char scratch[]` + 四处裸用 | `SCRATCH_SIZE/ALIGN/MAX_DESC_LEN`（`os/servers/mib/src/tree/node.rs:const SCRATCH_SIZE`）+ 推导注释（max(4096,16+1024)=4096） | 缓冲本体是 09/11/12 的效果（栈/静态二选一，A-3）；本篇只钉预算——"一页"这个结论比缓冲本身更值得钉 |
+| D6 | 版本变谓词 | `ver` 裸 `uint32` + 四处手写比对 | `ROOT_VER/linked_ver/version_matches`（`os/servers/mib/src/tree/node.rs:const ROOT_VER`，`staged==0` 免检显式） | `:889` 的"0 不检查"是惯例不是注释——写进函数名级别的语义，后人不敢删 |
 
 Redox/业界对照（类比）：把"结点类型"做成枚举而非位掩码直译，是 Redox 式的 tutul（scheme 节点用 Rust 枚举区分文件/目录/挂载的同款思路在概念层成立）——但本篇不引具体 Redox 符号（02 同款诚实：类比止于形状，无 API 断言）。真正可验证的对照在 repo 内：DS 的 `DsCall` 枚举（07-stage-ds/01 D1）与本篇 D1/D2 同构——"非法状态不可表达"在本 repo 已是既定风格。
 
@@ -134,14 +134,14 @@ os/servers/mib/src/tree/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 三个别名 | `mib.h:72-74` | `flag.rs:24-28` | 值同 ROOT/ALIAS/MMAP（测试钉三等式） |
-| 类型/角色 | `mib.h:86-125` | `flag.rs:34,79` + `from_raw/classify` | 未知 nibble/叶子问格 → `None` |
-| 11 谓词 | `mib.h` 各段 + `sysctl.h` | `flag.rs:116-178` | 读写/私有/永久/立即/拥有/校验/编号/hex/隐藏/无符号 + access |
-| 孩子窗口 | `mib.h:195-196` | `node.rs:21,28` | `clen>csize` 拒绝；`free_slots` |
-| 静态判定 | `tree.c:12` | `node.rs:50` | 无符号比较，负数落空 |
-| 远端包 | `mib.h:181-186` | `node.rs:60-76` + pack/unpack | 越界拒绝；字往返 |
-| 计数器 | `tree.c:25-27,474,829,1501,1524-25,1776` | `node.rs:110,119` | 基线 1/0/0 + 七累加 || 草稿预算 | `tree.c:21-23` | `node.rs:187-191` | 4096/4/1024 + 推导 |
-| 版本 | `tree.c:1505,1531` + 比对四处 | `node.rs:194-209` | 根 1/建链继承/0 免检/孩子门 |
+| 三个别名 | `mib.h:72-74` | `os/servers/mib/src/tree/flag.rs:const CTLFLAG_PARENT` | 值同 ROOT/ALIAS/MMAP（测试钉三等式） |
+| 类型/角色 | `mib.h:86-125` | `os/servers/mib/src/tree/flag.rs:enum NodeType,79` + `from_raw/classify` | 未知 nibble/叶子问格 → `None` |
+| 11 谓词 | `mib.h` 各段 + `sysctl.h` | `os/servers/mib/src/tree/flag.rs:fn access_bits` | 读写/私有/永久/立即/拥有/校验/编号/hex/隐藏/无符号 + access |
+| 孩子窗口 | `mib.h:195-196` | `os/servers/mib/src/tree/node.rs:struct ChildWindow,28` | `clen>csize` 拒绝；`free_slots` |
+| 静态判定 | `tree.c:12` | `os/servers/mib/src/tree/node.rs:fn is_static_id` | 无符号比较，负数落空 |
+| 远端包 | `mib.h:181-186` | `os/servers/mib/src/tree/node.rs:struct RemotePack` + pack/unpack | 越界拒绝；字往返 |
+| 计数器 | `tree.c:25-27,474,829,1501,1524-25,1776` | `os/servers/mib/src/tree/node.rs:struct TreeCounts,119` | 基线 1/0/0 + 七累加 || 草稿预算 | `tree.c:21-23` | `os/servers/mib/src/tree/node.rs:const SCRATCH_SIZE` | 4096/4/1024 + 推导 |
+| 版本 | `tree.c:1505,1531` + 比对四处 | `os/servers/mib/src/tree/node.rs:const ROOT_VER` | 根 1/建链继承/0 免检/孩子门 |
 
 ### 4.3 不变量
 
@@ -190,7 +190,7 @@ os/servers/mib/src/tree/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/mib.h:72-74,86-280`、`minix3/minix/servers/mib/tree.c:12,21-27,474,829,1501,1524-1531,1776`、`minix3/sys/sys/sysctl.h:92-125`
+- C 源：`minix3/minix/servers/mib/mib.h:CTLFLAG_PARENT,86-280`、`minix3/minix/servers/mib/tree.c:IS_STATIC_ID,21-27,474,829,1501,1524-1531,1776`、`minix3/sys/sys/sysctl.h:CTLTYPE_NODE`
 - 阶段文档：`02-mib-message-contract.md`（上一站，wire 值）、`04-mib-static-tree-init.md`（下一站，宏体与 wiring）、`05-mib-tree-lookup.md`（`IS_STATIC_ID` 所有权）、`08-mib-dynamic-nodes.md`（dynode 所有权）、`../07-stage-ds/01-ds-init-main.md`（`DsCall` 枚举先例）
 - Rust 实现：`os/servers/mib/src/tree/flag.rs`、`os/servers/mib/src/tree/node.rs`
 - 对端：无（纯树内语义；A-2 建模决策见 plan §4）

@@ -37,7 +37,7 @@ SIGSNDELAY + DELAY_CALL → ~DELAY_CALL (351) + assert(!PROC_STOPPED) (353)
 
 ### 1.2 为什么 `PROC_STOPPED` 有双用途：已停止与需重检
 
-`PROC_STOPPED`（`mproc.h:89 0x08`）在 `signal.c` 有双重含义（`signal.c:430-434` 注释）：
+`PROC_STOPPED`（`minix3/minix/servers/pm/mproc.h:PROC_STOPPED 0x08`）在 `signal.c` 有双重含义（`signal.c:430-434` 注释）：
 
 > *Since we always stop the process to deliver signals during a VFS or event call, the `PROC_STOPPED` flag doubles as an indicator in `restart_sigs()` that signals must be rechecked after a reply arrives.*
 
@@ -140,7 +140,7 @@ static int stop_proc(struct mproc *rmp, int may_delay)
 }
 ```
 
-三段式与 `mproc.h:89/102/97` 的 `PROC_STOPPED=0x08` / `DELAY_CALL=0x20000` / `UNPAUSED=0x1000` 互斥：`237` 行断言三者不并存，`OK→PROC_STOPPED` 与 `EBUSY+MayDefer→DELAY_CALL` 互斥置位，`EBUSY+MustStop` 为不可恢复（`panic`）——`VFS|EVENT` 挂起点与 `WAITING|SIGSUSPENDED` 的 `stop(FALSE)` 皆 `MustStop`。
+三段式与 `minix3/minix/servers/pm/mproc.h:PROC_STOPPED/102/97` 的 `PROC_STOPPED=0x08` / `DELAY_CALL=0x20000` / `UNPAUSED=0x1000` 互斥：`237` 行断言三者不并存，`OK→PROC_STOPPED` 与 `EBUSY+MayDefer→DELAY_CALL` 互斥置位，`EBUSY+MustStop` 为不可恢复（`panic`）——`VFS|EVENT` 挂起点与 `WAITING|SIGSUSPENDED` 的 `stop(FALSE)` 皆 `MustStop`。
 
 ### 2.2 `try_resume_proc`（`signal.c:266-289`）
 
@@ -221,7 +221,7 @@ static int unpause(struct mproc *rmp)
 }
 ```
 
-四段式与 `mproc.h:95/97/102/94/89` 的 `VFS_CALL`/`UNPAUSED`/`DELAY_CALL`/`SIGSUSPENDED`/`PROC_STOPPED` 五标志强耦合：`731` 断言未 `VFS|EVENT`（`VFS` 阻塞的进程不经 `unpause`，直接 `sig_proc` 的 `VFS|EVENT` 分支 `pending+stop`），`735` 的 `UNPAUSED→PROC` 断言使“`VFS` 已确认”只与 `PROC_STOPPED` 共存，`741` 的 `DELAY→FALSE` 使 `EBUSY` 时 `sig_proc:514-520` 入 `pending`，`745-753` 的 `WAITING|SIGSUSPENDED→stop(FALSE)` 使 PM 侧睡眠直接停，`760-769` 的 `!PROC_STOPPED→MayDefer→tell_vfs→FALSE` 使 `VFS` 侧睡眠经 `VFS_PM_UNPAUSE` 往返（`com.h:498`，`05` 的 `tell_vfs` 编码）后 `UNPAUSED` 才 `TRUE`。
+四段式与 `minix3/minix/servers/pm/mproc.h:VFS_CALL/97/102/94/89` 的 `VFS_CALL`/`UNPAUSED`/`DELAY_CALL`/`SIGSUSPENDED`/`PROC_STOPPED` 五标志强耦合：`731` 断言未 `VFS|EVENT`（`VFS` 阻塞的进程不经 `unpause`，直接 `sig_proc` 的 `VFS|EVENT` 分支 `pending+stop`），`735` 的 `UNPAUSED→PROC` 断言使“`VFS` 已确认”只与 `PROC_STOPPED` 共存，`741` 的 `DELAY→FALSE` 使 `EBUSY` 时 `sig_proc:514-520` 入 `pending`，`745-753` 的 `WAITING|SIGSUSPENDED→stop(FALSE)` 使 PM 侧睡眠直接停，`760-769` 的 `!PROC_STOPPED→MayDefer→tell_vfs→FALSE` 使 `VFS` 侧睡眠经 `VFS_PM_UNPAUSE` 往返（`com.h:498`，`05` 的 `tell_vfs` 编码）后 `UNPAUSED` 才 `TRUE`。
 
 ### 2.6 `process_ksig` 尾部 `SIGSNDELAY`（`signal.c:344-369`）
 
@@ -242,10 +242,10 @@ static int unpause(struct mproc *rmp)
 
 `344` 的双条件（`signo==70` 且 `DELAY_CALL`）使非延迟路径的正常 `SIGSNDELAY` 被忽略（`SIGSNDELAY` 由 `do_kill` 直接 `check_sig` 也会产生，但 `344` 仅延迟兑现），`351` 清标志后 `359-366` 的 `VFS|EVENT→stop` 与 `check_pending` 互斥分支与 `signal.c:359-366` 同序，`368` 的 `assert(!DELAY)` 保证兑现后无残留 `DELAY_CALL`。
 
-### 2.7 消息与类型（`com.h:498` / `mproc.h:86-104` / `sys/signal.h:264`）
+### 2.7 消息与类型（`com.h:498` / `minix3/minix/servers/pm/mproc.h:IN_USE` / `sys/signal.h:264`）
 
 - `VFS_PM_UNPAUSE`（`com.h:498` `VFS_PM_RQ_BASE + ?`，`0x...`，`unpause:764-765` 的 `m_type` 与 `m.VFS_PM_ENDPT`）—— `unpause` 的 `VFS` 询问与 `handle_vfs_reply` 的 `VFS_PM_UNPAUSE_REPLY`（`com.h:528`）往返（`05` 的 `VfsCall::Unpause` 编解码）。
-- `PROC_STOPPED 0x08`/`DELAY_CALL 0x20000`/`SIGSUSPENDED 0x100`/`UNPAUSED 0x1000`/`VFS_CALL 0x400`/`EVENT_CALL 0x80000`/`EXITING 0x20`/`TRACE_EXIT 0x8000`（`mproc.h:86-104`）。
+- `PROC_STOPPED 0x08`/`DELAY_CALL 0x20000`/`SIGSUSPENDED 0x100`/`UNPAUSED 0x1000`/`VFS_CALL 0x400`/`EVENT_CALL 0x80000`/`EXITING 0x20`/`TRACE_EXIT 0x8000`（`minix3/minix/servers/pm/mproc.h:IN_USE`）。
 - `SIGSNDELAY 70`（`sys/signal.h:264`，`process_ksig:344` 双条件与 `sig_proc` 的 `DELAY_CALL` 令牌同值，测试 `test_constants_match_c` 锁定）。
 - `EBUSY  -107?`（`errno.h:78`，`sys_delay_stop` 的 `EBUSY` 与 `stop_proc:250` 分支同值）与 `OK 0`。
 
@@ -307,7 +307,7 @@ Rust 改写遵循“显式 `MayDelay` 枚举 + `KernelStop/Resume` trait + `Unpa
 
 ### D8：常量收敛到 `minix-types`
 
-- **C**：`com.h:498` `VFS_PM_UNPAUSE`、`sys/signal.h:264` `SIGSNDELAY=70`、`mproc.h:86-104` 7 个 `mp_flags`。
+- **C**：`com.h:498` `VFS_PM_UNPAUSE`、`sys/signal.h:264` `SIGSNDELAY=70`、`minix3/minix/servers/pm/mproc.h:IN_USE` 7 个 `mp_flags`。
 - **Rust**：`minix-types: VFS_PM_UNPAUSE`（补 `0x...` 数值锁定）、`SIGSNDELAY=70`、`BlockState` 的 `stopped/unpaused/delayed` 守卫。
 
 ### ARCH 标注汇总
@@ -337,7 +337,7 @@ os/servers/pm/src/
 
 ### 4.2 `mproc/block.rs`：阻塞三元与守卫
 
-实际代码以直接字段操作表达同等谓词（`try_resume_proc` 内联 `is_vfs_blocked() || is_event_blocked() || is_exiting()`，signal_flow.rs:158-163；恢复时逐一清 `stopped`/`unpaused`，:170-171）。文档初稿描述的 `can_resume()`/`is_delayed()`/`clear_stopped_and_unpaused()` 谓词/方法未曾建成——§5.2 对应的两条测试声称已随本注记删除（Gate E 对账，V3-P1-5）。
+实际代码以直接字段操作表达同等谓词（`try_resume_proc` 内联 `is_vfs_blocked() || is_event_blocked() || is_exiting()`，os/servers/pm/src/signal_flow.rs:fn try_resume_proc（L158，工具生成）；恢复时逐一清 `stopped`/`unpaused`，:170-171）。文档初稿描述的 `can_resume()`/`is_delayed()`/`clear_stopped_and_unpaused()` 谓词/方法未曾建成——§5.2 对应的两条测试声称已随本注记删除（Gate E 对账，V3-P1-5）。
 
 ### 4.3 `mproc/signal.rs`：`pending & !mask` 迭代
 
@@ -433,7 +433,7 @@ pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn Kernel
 
 ### 5.3 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `SIGSNDELAY=70`（`sys/signal.h:264`）、`VFS_PM_UNPAUSE`（`com.h:498`）、`PROC_STOPPED=0x08` 等（`mproc.h:86-104`）
+- `test_constants_match_c`：锁定 `SIGSNDELAY=70`（`sys/signal.h:264`）、`VFS_PM_UNPAUSE`（`com.h:498`）、`PROC_STOPPED=0x08` 等（`minix3/minix/servers/pm/mproc.h:IN_USE`）
 
 测试策略：`KernelStop/Resume` 与 `VfsCtl`/`SigProcCaller`/`ExitHandler` 均 `Test*` mock 可注入 `OK/EBUSY` 与计数；`check_pending` 的 `sig_proc` 以“记 `signo` 顺序” mock 验 `VFS→break`；`restart_sigs` 的 `TRACE_EXIT` 以 `Lifecycle::Trace` 置位验优先。
 
@@ -463,7 +463,7 @@ pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn Kernel
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/signal.c:226-289`（`stop_proc`/`try_resume_proc`）、`minix3/minix/servers/pm/signal.c:651-776`（`check_pending`/`restart_sigs`/`unpause`）、`minix3/minix/servers/pm/signal.c:344-369`（`process_ksig` 尾部 `SIGSNDELAY`）、`minix3/minix/servers/pm/mproc.h:86-104`（`PROC_STOPPED` 等 7 个 `mp_flags`）、`minix3/minix/include/minix/com.h:498`（`VFS_PM_UNPAUSE`）、`minix3/sys/sys/signal.h:264`（`SIGSNDELAY`）
+- C 源（ground truth）：`minix3/minix/servers/pm/signal.c:stop_proc`（`stop_proc`/`try_resume_proc`）、`minix3/minix/servers/pm/signal.c:process（L651，工具生成）`（`check_pending`/`restart_sigs`/`unpause`）、`minix3/minix/servers/pm/signal.c:process_ksig（L344，工具生成）`（`process_ksig` 尾部 `SIGSNDELAY`）、`minix3/minix/servers/pm/mproc.h:IN_USE`（`PROC_STOPPED` 等 7 个 `mp_flags`）、`minix3/minix/include/minix/com.h:DS_RQ_BASE`（`VFS_PM_UNPAUSE`）、`minix3/sys/sys/signal.h:SIGSNDELAY`（`SIGSNDELAY`）
 - PM 阶段文档：11-signal-core.md（`sig_proc` 的 `VFS|EVENT` 挂点与 `process_ksig` 的 `SIGSNDELAY` 分支）、12-signal-handlers.md（`sig_send` 的 `sigmsg` 四步与 `sigsuspend` 的 `mask2` 配对、`without_unkillable`）、05-vfs-interaction.md（`handle_vfs_reply` 的 `restart_sigs` 调用点与两处 `publish_event` 提前 return）、06-event-subscription.md（`EVENT_CALL` 的 `resume_event` 尾部分派）、02-mproc-struct.md（`BlockState` 三元与 `IpcBlockReason::DelayedSignal`）、04-ipc-dispatch.md（`ReplyIntent::ReplyLater` 的 `SUSPEND` 与 `EINTR` 中断）
 - 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`sys_delay_stop/sys_resume` 的 `EBUSY` 时序与 `SENDING` 检查）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md`（`sys_sigsend`/`sys_sigreturn` 的 `sigframe` 与 `sys_kill` 的信号投递）
 - 阶段内顺序：11 → 12 → **本章（13）** → 14（`SIGALRM` 的 `ALARM_ON` 与 `check_pending` 的 `pending&!mask` 重检复用）→ 15（`TAINTED` 与 `credentials` 的信号边界）→ 16（`sched_stop` 的直毁，绕过本章的 `PROC_STOPPED`）

@@ -1,7 +1,7 @@
 # 05 — DS 身份与权限：端点和名字如何互查，谁能碰谁的条目
 
 > **分类**: 身份映射 / 权限判定
-> **源码**: `minix3/minix/servers/ds/store.c:110-156`
+> **源码**: `minix3/minix/servers/ds/store.c:ds_getprocname`
 > **说明**: 内核报过来的是端点（数字），表里存的是名字（字符串）。本文讲清两个翻译函数（端点→名、名→端点）和一个权限函数（选择性保护），以及 Rust 为什么把"翻译"和"判定"拆成两个模块。
 
 ---
@@ -95,9 +95,9 @@ os/servers/ds/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 自名 | `store.c:115-119` | `identity.rs:26`（`DS_SELF_NAME`） | `"ds"` 常量道 |
-| 端点→名 | `store.c:110-125` | `identity.rs:44`（`resolve_name`） | 自报 → label 反查 → `None`（出借表内道，不拷贝，D1 详注） |
-| 名→端点 | `store.c:130-138` | `identity.rs:64`（`resolve_endpoint`） | label 正查 → `Some` / `None`（不 panic） |
+| 自名 | `store.c:115-119` | `os/servers/ds/src/identity.rs:const DS_SELF_NAME`（`DS_SELF_NAME`） | `"ds"` 常量道 |
+| 端点→名 | `store.c:110-125` | `os/servers/ds/src/identity.rs:fn resolve_name`（`resolve_name`） | 自报 → label 反查 → `None`（出借表内道，不拷贝，D1 详注） |
+| 名→端点 | `store.c:130-138` | `os/servers/ds/src/identity.rs:fn resolve_endpoint`（`resolve_endpoint`） | label 正查 → `Some` / `None`（不 panic） |
 | 权限判定 | `store.c:143-153` | `auth.rs:32`（`check_auth`） | 门没设过，设了比名 |
 
 ### 4.3 不变量
@@ -132,6 +132,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:110-156`
+- C 源：`minix3/minix/servers/ds/store.c:ds_getprocname`
 - 阶段文档：`04-ds-slot-management.md`（上一站，查找）、`06-ds-boot-mapping.md`（下一站，owner="rs" 的来源）
 - Rust 实现：`os/servers/ds/src/identity.rs`、`os/servers/ds/src/auth.rs`

@@ -145,7 +145,7 @@ minix-rs 是 64 位重写项目，所有 C 段（`pre_init.c` / `pg_utils.c` / `
 
 #### 2.0.1 Multiboot Header — 内核告诉 GRUB "我是 Multiboot 内核"
 
-**源码**：`minix3/minix/kernel/arch/i386/head.S:43-66`（`.balign 8` 对齐指令起，含 magic/flags/checksum/video mode）
+**源码**：`minix3/minix/kernel/arch/i386/head.S:IMPORT（L43，工具生成）`（`.balign 8` 对齐指令起，含 magic/flags/checksum/video mode）
 
 Multiboot 协议要求内核二进制文件的前 8192 字节内必须包含一个 **Multiboot Header**，否则 GRUB 不认识这个内核。这个头部是内核主动嵌入的"名片"：
 
@@ -192,11 +192,11 @@ multiboot_depth:
 | `MULTIBOOT_HEADER_MAGIC` | `0x1BADB002` | 内核 → GRUB | 内核二进制头部嵌入，GRUB 读取识别 |
 | `MULTIBOOT_INFO_MAGIC` | `0x2BADB002` | GRUB → 内核 | GRUB 启动后放入 EAX，内核验证确认是 Multiboot 启动 |
 
-定义于 `minix3/sys/arch/i386/include/multiboot.h:40,86`。
+定义于 `minix3/sys/arch/i386/include/multiboot.h:MULTIBOOT_HEADER_MAGIC,86`。
 
 #### 2.0.2 head.S — 汇编入口到 pre_init() 的跳板
 
-**源码**：`minix3/minix/kernel/arch/i386/head.S:36-91`（MINIX 入口 → multiboot_init → kmain call → hang label）
+**源码**：`minix3/minix/kernel/arch/i386/head.S:IMPORT（L36，工具生成）`（MINIX 入口 → multiboot_init → kmain call → hang label）
 
 GRUB 跳转到内核后，最先执行的是 `head.S` 中的 `MINIX` 标签。这个汇编文件做了三件事：跳转到 `multiboot_init`、设置栈、调用 `pre_init()`。
 
@@ -521,9 +521,9 @@ kmain(cbi)
 >
 > | 回收阶段 | C 源码 | Rust 对应 | 详细文档 |
 > |---------|--------|----------|---------|
-> | 1. 临时切除（pre_init） | `pg_utils.c:32 cut_memmap()`（由 `pre_init.c` 调用）切掉 boot module 占用的物理内存 | `kmain` Phase A.2 调 `cut_memmap` 临时切除（os/kernel/src/lib.rs:326-333）；boot-shim `build_memmap()` 返回完整 DRAM（含 module 区域），kernel 侧负责切除（FIX-23） | 本文档 §2.4（本节上下文） |
+> | 1. 临时切除（pre_init） | `pg_utils.c:32 cut_memmap()`（由 `pre_init.c` 调用）切掉 boot module 占用的物理内存 | `kmain` Phase A.2 调 `cut_memmap` 临时切除（os/kernel/src/lib.rs:fn arch_boot_impl（L326，工具生成））；boot-shim `build_memmap()` 返回完整 DRAM（含 module 区域），kernel 侧负责切除（FIX-23） | 本文档 §2.4（本节上下文） |
 > | 2. ELF 复制后回收（protect） | `arch/i386/protect.c:450-451` 解析 ELF 后 `mod_start = mod_end = 0` | `load_vm_elf` 复制段后回收（见 [06-proc-init-boot-proc.md §2.3 boot image 存储（`arch_boot_proc()` VM ELF 加载与回收）](06-proc-init-boot-proc.md#L767-L795)） | [06-proc-init-boot-proc.md §2.3](06-proc-init-boot-proc.md) |
-> | 3. bootstrap 段回收（finish） | `main.c:301` `add_memmap(bootstrap_start, bootstrap_len)` | `os/kernel/src/lib.rs:327-337` `add_memmap(kinfo.bootstrap_start, kinfo.bootstrap_len)`（Rust port 始终 `bootstrap_len=0`，见 §3.5.1） | [08-system-init-boot-finish.md §2.3 add_memmap()](08-system-init-boot-finish.md#L170) |
+> | 3. bootstrap 段回收（finish） | `main.c:301` `add_memmap(bootstrap_start, bootstrap_len)` | `os/kernel/src/lib.rs:fn arch_boot_impl（L327，工具生成）` `add_memmap(kinfo.bootstrap_start, kinfo.bootstrap_len)`（Rust port 始终 `bootstrap_len=0`，见 §3.5.1） | [08-system-init-boot-finish.md §2.3 add_memmap()](08-system-init-boot-finish.md#L170) |
 > | 4. 内核镜像自切（pre_init，D-64① 2026-09-09） | `pre_init.c:196-216` 把内核当额外 module（`kern_mod`）一并 `cut_memmap` | `kmain` Phase A.2 Step 3 追加 `cut_memmap(kern_phys_base, kern_size)`（UEFI 路径 no-op——内核是 LOADER_DATA 不在 conventional memmap；OpenSBI 路径修复 GET_MEMINFO 把内核镜像报成可用内存的偏差） | 本文档 §2.3.4 |
 >
 > **设计原则**：回收逻辑本质是**跨阶段**的，强行集中到一个文档会破坏叙事流。本节只承担"boot module 内存**不是永久占用**"这一认知锚点；具体机制由各文档按"何时回收 / 谁回收 / 怎么标记"三问分别回答。
@@ -739,7 +739,7 @@ pub trait HugePages: Paging {
 
 | C 字段 | Rust 字段 | 理由 |
 |--------|----------|------|
-| `bootstrap_start` | `bootstrap_start: PhysBytes` | boot-shim 仍需向内核报告自身物理范围，以便后续回收；UEFI/OpenSBI 路径目前用 `PhysBytes(0)` 占位（见 `uefi_helpers.rs:132`、`opensbi_helpers.rs:229`），但字段保留 |
+| `bootstrap_start` | `bootstrap_start: PhysBytes` | boot-shim 仍需向内核报告自身物理范围，以便后续回收；UEFI/OpenSBI 路径目前用 `PhysBytes(0)` 占位（见 `os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources（L132，工具生成）`、`os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot（L229，工具生成）`），但字段保留 |
 | `bootstrap_len` | `bootstrap_len: u64` | 与 `bootstrap_start` 配对，目前用 `kern_phys_base.0` 作为上界近似，后续需精确化 |
 
 **否决的替代方案**：
@@ -763,7 +763,7 @@ pub trait HugePages: Paging {
 
 #### 3.5.1 bootstrap 语义重定义：`PhysBytes(0), 0`
 
-**C 语义**（minix3/minix/kernel/arch/earm/pre_init.c:224-240）：
+**C 语义**（minix3/minix/kernel/arch/earm/pre_init.c:get_parameters（L224，工具生成））：
 
 ```c
 extern char _kern_unpaged_start, _kern_unpaged_end;
@@ -782,7 +782,7 @@ PhysBytes(0),                                   // bootstrap_start = 0
 0,                                              // bootstrap_len   = 0
 ```
 
-内核的 `if kernel_info.bootstrap_len > 0` 守卫（`os/kernel/src/lib.rs:334`）直接跳过 `add_memmap` 调用，不做回收。这是 no-op 回收的正确表达。
+内核的 `if kernel_info.bootstrap_len > 0` 守卫（`os/kernel/src/lib.rs:fn arch_boot_impl（L334，工具生成）`）直接跳过 `add_memmap` 调用，不做回收。这是 no-op 回收的正确表达。
 
 **为什么不能用 `bootstrap_len = kern_phys_base.0`**：如果误将 `bootstrap_len` 设为 `kern_phys_base.0`，`add_memmap(0, kern_phys_base.0)` 会把 `[0, kern_phys_base)` **整段低内存**加入 free memmap，误回收仍在使用的区域：
 
@@ -793,7 +793,7 @@ PhysBytes(0),                                   // bootstrap_start = 0
 | U-Boot 镜像（生产链） | ~1MB | fatload 预加载 |
 | boot-shim 自身 | ~1MB | 整个 Rust 二进制 |
 
-误回收这些区域会让后续的内存分配（如 VM/PM 的物理页）覆盖到仍在使用的固件结构，导致不可预测的崩溃。`test_build_kernel_info_bootstrap_zero_means_no_reclaim` 单元测试（`opensbi_helpers.rs:679`）对此不变量做回归保护。
+误回收这些区域会让后续的内存分配（如 VM/PM 的物理页）覆盖到仍在使用的固件结构，导致不可预测的崩溃。`test_build_kernel_info_bootstrap_zero_means_no_reclaim` 单元测试（`os/boot-shim/src/opensbi_helpers.rs:fn test_build_kernel_info_riscv64_fields_match_input（L679，工具生成）`）对此不变量做回归保护。
 
 **为什么 Rust port 没有 unpaged section**：
 
@@ -1732,7 +1732,7 @@ Boot 阶段是最容易出问题且最难调试的阶段——一旦 `arch_boot_
 
 | 阶段 | Panic 处理 | 诊断输出 |
 |------|------------|---------|
-| **boot-shim** | `os/boot-shim/src/main.rs:56-59` `#[panic_handler] fn panic(_info) -> ! { loop {} }` | **当前无输出** — 仅死循环，调试需 QEMU `-d int` 查指令 |
+| **boot-shim** | `os/boot-shim/src/main.rs:fn main（L56，工具生成）` `#[panic_handler] fn panic(_info) -> ! { loop {} }` | **当前无输出** — 仅死循环，调试需 QEMU `-d int` 查指令 |
 | **kernel**（`kmain` 之前）| 无 `#[panic_handler]`（panic = abort 在 cfg(test-all) 启用，普通 cargo build 走默认行为）| 不可观测 |
 | **kernel**（`kmain` 之后）| 无 `#[panic_handler]`（lib crate，panic = abort，`os/kernel/Cargo.toml:32/37`）；panic 传播到调用方 bin 的 handler | 经 `EarlyConsole`（`os/plat/src/early_console.rs`）输出（`kmain` 已 init console）；qemu-test bin 的 handler 打印 `### PANIC ###` 后 halt |
 

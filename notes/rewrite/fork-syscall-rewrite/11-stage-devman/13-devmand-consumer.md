@@ -57,7 +57,7 @@ REMOVE 更值得多看一眼（:837-871）：`usb_intf_remove_event(path, dev_id
 
 `#if 0` 的 bcdDevice 块（:654-659）：死代码，11 不拼它（11 §2.1 无此属性——对照一致）。
 
-### 2.5 匹配：9 标志与 1 个复制粘贴 bug（main.c:238-296 + usb_driver.h:7-15）
+### 2.5 匹配：9 标志与 1 个复制粘贴 bug（main.c:238-296 + minix3/minix/commands/devmand/usb_driver.h:USB_MATCH_ID_VENDOR）
 
 `match_usb_id` 逐标志比对（9 项全等即中；`match == 0` 返 0——空规则集永不中，:289-291）。**`USB_MATCH_DEVICE_CLASS`（1<<3）从未被检查**：函数体查了 `DEVICE_PROTOCOL` **两次**（:247-248 与 :251-252 同条件），漏了 `DEVICE_CLASS`（:250 应为 CLASS，实为 PROTOCOL 复述）。grep 实证 + 行号双锚。约束含义：devman 侧 `bDeviceClass` 属性**可写可不写**——写了也没人看（但 11 照写：拼法完整性与匹配有效性是两回事，11 §4 注记"写而不读"，与 03 §2.4 的 subsystem 双死呼应成趣）。
 

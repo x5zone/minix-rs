@@ -319,7 +319,7 @@ static int split_region(struct vmproc *vmp, struct vir_region *vr,
 }
 ```
 
-**关键**：split 通过 `pb_reference` **增加**引用计数（一份物理页现在被两个区域引用）——不是搬运，是复制引用。`ev_split` 回调处理 memtype 专属状态（mappedfile 的 fdref `fdref_ref` ×2、offset 分配，mem_file.c:262-276）。
+**关键**：split 通过 `pb_reference` **增加**引用计数（一份物理页现在被两个区域引用）——不是搬运，是复制引用。`ev_split` 回调处理 memtype 专属状态（mappedfile 的 fdref `fdref_ref` ×2、offset 分配，minix3/minix/servers/vm/mem_file.c:mappedfile_split（L262，工具生成））。
 
 ### 2.7 map_subfree / map_free（region.c:527-585）
 
@@ -343,7 +343,7 @@ int map_free(struct vir_region *region)
 }
 ```
 
-`pb_unreferenced`（pb.c:96-134）：refcount--；从 `firstregion` 链表摘除；**refcount==0** → `ev_unreference`（memtype 决定是否释放物理页）+ `SLABFREE(pb)`。`map_free_proc`（region.c:589-612）是"全部区域"的循环版本（22 范围）。
+`pb_unreferenced`（minix3/minix/servers/vm/pb.c:pb_unreferenced）：refcount--；从 `firstregion` 链表摘除；**refcount==0** → `ev_unreference`（memtype 决定是否释放物理页）+ `SLABFREE(pb)`。`map_free_proc`（region.c:589-612）是"全部区域"的循环版本（22 范围）。
 
 ### 2.8 do_map_phys 与 mem_type_directphys（mmap.c:310-363 + mem_directphys.c）
 
@@ -397,9 +397,9 @@ int do_map_phys(message *m)
 | `split_region` | region.c:1150-1220 | 中间掏空的分裂（ev_split + pb_reference） |
 | `map_subfree` | region.c:527-565 | 逐页 pb_unreferenced |
 | `map_free` / `map_free_proc` | region.c:568-585 / 589-612 | 区域/全进程回收 |
-| `pb_unreferenced` | pb.c:96-134 | refcount-- → ev_unreference |
+| `pb_unreferenced` | minix3/minix/servers/vm/pb.c:pb_unreferenced | refcount-- → ev_unreference |
 | `do_map_phys` | mmap.c:310-363 | 物理映射建立（VR_DIRECT） |
-| `phys_setphys` | mem_directphys.c:69-72 | VR param 记录物理基址 |
+| `phys_setphys` | minix3/minix/servers/vm/mem_directphys.c:phys_setphys | VR param 记录物理基址 |
 | `do_unmap_phys` | proto.h:80 | **死声明**（无定义，handler 是 do_munmap） |
 
 ---
@@ -417,7 +417,7 @@ int do_map_phys(message *m)
 3. `VmUnmapPhysIn::decode_message`（vm.rs:309-331）/ `VmShmUnmapIn::decode_message`（vm.rs:333-351）：专用 overlay。
 4. dispatcher 三个分支改用 `decode_message(msg)`（:1038/:1043/:1157）。
 
-### 3.2 D2：handle_munmap 编排（munmap.rs:102-158）
+### 3.2 D2：handle_munmap 编排（os/servers/vm/src/munmap.rs:fn handle_munmap）
 
 承载 C `do_munmap`（mmap.c:512-573）：
 
@@ -442,7 +442,7 @@ handle_munmap(request)
 - **len roundup**：C 接受非页对齐 len（向上圆整，:569）。Rust 原实现返回 `InvalidLength`——**外部行为偏差**（用户 `munmap(ptr, 0x100)` 在 Minix3 成功）。本轮改为 `roundup_page`（§4.5），与 POSIX 一致。
 - **错误映射**（dispatcher.rs:1243-1253）：ProcessNotFound → `InvalidProcess`（EINVAL）；BadAddress/NotMapped → `InvalidAddress`（EFAULT）；**InvalidLength → `InvalidParam`（EINVAL）**（C map_unmap_range length<页 / 溢出、map_unmap_region len 非对齐 均 EINVAL——review 修复，原错误映射 EFAULT）；MemTypeNotSupported → `InvalidParam`（EINVAL）；InternalError → `InternalError`（EIO）。
 
-### 3.3 D3：unmap_range 四情形（munmap.rs:173-297）
+### 3.3 D3：unmap_range 四情形（os/servers/vm/src/munmap.rs:fn unmap_range（L173，工具生成））
 
 承载 C `map_unmap_range` + `map_unmap_region`（region.c:1222-1294/:1065-1147）。先收集重叠区域 vaddr（避免迭代中修改集合），再逐个处理：
 
@@ -453,7 +453,7 @@ handle_munmap(request)
 | `unmap_start<=vaddr && unmap_end<end` | map_unmap_region 情形2（低端） | `split(cut_len)` → free 头 → insert 尾 |
 | `unmap_start>vaddr && unmap_end>=end` | map_unmap_region 情形3（高端） | `split(head_len)` → free 尾 → insert 头 |
 
-**设计差异**：C 的低端收缩走 `ev_lowshrink`（vaddr 前移 + physblocks memmove），Rust 统一用 `VirRegion::split` 表达"保留剩余部分"——split 已处理 fdref 引用计数分裂（vir_region.rs:279-350，`VrParam::File` 分支 ref_entry ×1，**review 修复：×2 在头/尾切割时泄漏 1 个 fdref**）与 slot 搬运，**结构上消除了 ev_lowshrink 专用路径**（mappedfile 的 `offset += len` 语义由 split 的 offset 分配覆盖：右半区 `offset += split_len`）。这是结构简化（Rewrite 允许：外部行为等价），但 memtype 的 `ev_low_shrink`/`ev_split` trait 方法仍保留（default `NotSupported`），供仍需要它的类型使用。**review 补充能力门控**：中间掏空要求 `supports_split`、头部切割要求 `supports_low_shrink`（C region.c:1164/:1096 的 EINVAL 限制；directphys/shared 缺回调 → EINVAL，直接映射区域不允许分裂——也避免分裂后 `VrParam::Direct` 物理基址错位）。**文档 §3.6 #7/#15 诚实标注**。
+**设计差异**：C 的低端收缩走 `ev_lowshrink`（vaddr 前移 + physblocks memmove），Rust 统一用 `VirRegion::split` 表达"保留剩余部分"——split 已处理 fdref 引用计数分裂（os/servers/vm/src/region/vir_region.rs:fn needs_cow（L279，工具生成），`VrParam::File` 分支 ref_entry ×1，**review 修复：×2 在头/尾切割时泄漏 1 个 fdref**）与 slot 搬运，**结构上消除了 ev_lowshrink 专用路径**（mappedfile 的 `offset += len` 语义由 split 的 offset 分配覆盖：右半区 `offset += split_len`）。这是结构简化（Rewrite 允许：外部行为等价），但 memtype 的 `ev_low_shrink`/`ev_split` trait 方法仍保留（default `NotSupported`），供仍需要它的类型使用。**review 补充能力门控**：中间掏空要求 `supports_split`、头部切割要求 `supports_low_shrink`（C region.c:1164/:1096 的 EINVAL 限制；directphys/shared 缺回调 → EINVAL，直接映射区域不允许分裂——也避免分裂后 `VrParam::Direct` 物理基址错位）。**文档 §3.6 #7/#15 诚实标注**。
 
 无重叠 → 静默 `Ok(Replied)`（C :1238-1243）。每区域 `active.sub_total(freed_len)` 维护 `vm_total` 记账。溢出防护：`unmap_end <= unmap_start` → InvalidLength（C :1234 EINVAL）。
 
@@ -470,18 +470,18 @@ free_region_pages(region, pt, frames, page_alloc)
   ④ 每 (pfn, mt)：mt.ev_unreference(frames, pfn) + page_alloc.free_pfn(pfn)
 ```
 
-**与 C 的对应**：`map_subfree`（region.c:527-565）→ ③；`ev_unreference`（pb.c:96-134 内）→ ④ 前半；`free_mem` → `PfnAllocator::free_pfn`（**分配职责集中到分配器**，PFN 索引模型的结构差异——11/05 范围已确立）。`ev_delete`（mem_file.c:280-287 `mappedfile_delete` → `fdref_deref`）→ ②：file 区域最后一个引用消失 → VFS_FDCLOSE 异步通知（fdref.c:150-154）；Rust `PendingFdClose` 本地暂存，真实发送依赖 IPC transport（23 范围，backlog B2）。
+**与 C 的对应**：`map_subfree`（region.c:527-565）→ ③；`ev_unreference`（minix3/minix/servers/vm/pb.c:pb_unreferenced 内）→ ④ 前半；`free_mem` → `PfnAllocator::free_pfn`（**分配职责集中到分配器**，PFN 索引模型的结构差异——11/05 范围已确立）。`ev_delete`（minix3/minix/servers/vm/mem_file.c:mappedfile_delete `mappedfile_delete` → `fdref_deref`）→ ②：file 区域最后一个引用消失 → VFS_FDCLOSE 异步通知（minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成））；Rust `PendingFdClose` 本地暂存，真实发送依赖 IPC transport（23 范围，backlog B2）。
 
 **refcount 语义验证**（§5.1 测试）：独占页 1→0 释放；CoW 共享页 2→1 保留（`test_munmap_cow_shared_page_kept`）。
 
 **fdref 引用平衡**（review 修复，21-P1-5）：不变量是"每个存活区域持 1 个 fdref"。`VirRegion::split` 把 1 个区域变成 2 个——净增 1。原实现 `ref_entry ×2` 净增 2：头/尾切割（立即释放一半）后剩 1 个区域却持 2 个引用，fdref 永不归零 → `VFS_FDCLOSE` 永不发送（fd 泄漏）。已改为 `ref_entry ×1` + `test_munmap_file_head_cut_fdref_balanced` 回归（§5.1）。
 
-### 3.5 D5：map_phys 常量复用与权限 fail-closed（map_phys.rs:48-121）
+### 3.5 D5：map_phys 常量复用与权限 fail-closed（os/servers/vm/src/map_phys.rs:fn handle_map_phys）
 
 `handle_map_phys` 承载 C `do_map_phys`（mmap.c:310-363）：
 
-- **常量复用**：C 用运行时 `VM_MMAPBASE/VM_MMAPTOP`（32 位计算）；Rust 固定 64 位 `MMAP_BASE/MMAP_TOP`（mmap.rs:203-204，[ARCH: A-6]）。原实现硬编码字面量 `0x0000_0001_0000_0000`——与 mmap.rs 重复（const 权威位置问题，review-doc-skill §2.4g）。本轮改为 `crate::mmap::MMAP_BASE/MMAP_TOP` 引用（§4.6）。
-- **权限**：`map_perm_check`（map_phys.rs:104-121）——TTY/MEM 豁免（C mmap.c:292-297）；其余 `sys_privquery_mem` 内核 syscall 未实现 → **fail-closed 拒绝**（PermissionDenied → EPERM，backlog B1）。与 20 的 B4 同源。
+- **常量复用**：C 用运行时 `VM_MMAPBASE/VM_MMAPTOP`（32 位计算）；Rust 固定 64 位 `MMAP_BASE/MMAP_TOP`（os/servers/vm/src/mmap.rs:const MMAP_BASE，[ARCH: A-6]）。原实现硬编码字面量 `0x0000_0001_0000_0000`——与 mmap.rs 重复（const 权威位置问题，review-doc-skill §2.4g）。本轮改为 `crate::mmap::MMAP_BASE/MMAP_TOP` 引用（§4.6）。
+- **权限**：`map_perm_check`（os/servers/vm/src/map_phys.rs:fn map_perm_check）——TTY/MEM 豁免（C mmap.c:292-297）；其余 `sys_privquery_mem` 内核 syscall 未实现 → **fail-closed 拒绝**（PermissionDenied → EPERM，backlog B1）。与 20 的 B4 同源。
 - **对齐与回复**：`offset = phys % PAGE_SIZE`；`startaddr` 向下对齐；`aligned_len` 向上圆整；`find_slot` 分配；`VR_DIRECT|VR_WRITABLE + MEM_TYPE_DIRECT + VrParam::Direct{phys: startaddr}`（C `phys_setphys` 的 Rust 表达）；回复 `vaddr + offset`（C :358）。
 - **错误映射**（dispatcher.rs 对应 From impl）：InvalidLength → `InvalidParam`（EINVAL，C :323）；ProcessNotFound → `InvalidProcess`（EINVAL，C :328）；OutOfMemory → `OutOfMemory`（ENOMEM，C :351-354）；PermissionDenied → `PermissionDenied`（EPERM，C :336-340）。
 
@@ -530,7 +530,7 @@ match munmap::handle_munmap(table, page_alloc, frames, &req) {
 
 `dispatch_unmap_phys`/`dispatch_shm_unmap` 构造 `MunmapRequest { lookup_region_length: true }`（长度由区域决定，C :560-568）；`dispatch_munmap` 用 `lookup_region_length: false`。
 
-### 4.2 伪码总结（munmap.rs:102-297）
+### 4.2 伪码总结（os/servers/vm/src/munmap.rs:fn handle_munmap）
 
 ```
 handle_munmap(req):
@@ -575,18 +575,18 @@ unmap_range(addr, length):
 ### 4.5 21-P1-3 len roundup 语义修复记录（本轮）
 
 - **症状**：`handle_munmap` 对非页对齐 len 返回 `InvalidLength`（EFAULT）；C `roundup` 接受（mmap.c:569）。
-- **修复**：`roundup_page` 向上圆整（munmap.rs:98-100）；`test_munmap_unaligned_len_rounds_up` 回归。
+- **修复**：`roundup_page` 向上圆整（os/servers/vm/src/munmap.rs:fn roundup_page）；`test_munmap_unaligned_len_rounds_up` 回归。
 
 ### 4.6 map_phys 常量复用修复记录（本轮）
 
-- **症状**：`handle_map_phys` 硬编码 `0x0000_0001_0000_0000`/`0x0000_0200_0000_0000`，与 mmap.rs:203-204 重复（const 权威位置问题）。
+- **症状**：`handle_map_phys` 硬编码 `0x0000_0001_0000_0000`/`0x0000_0200_0000_0000`，与 os/servers/vm/src/mmap.rs:const MMAP_BASE 重复（const 权威位置问题）。
 - **修复**：`MMAP_BASE/MMAP_TOP` 升为 `pub(crate)`，map_phys.rs 引用。
 
 
 ### 4.7 review 轮修复记录（2026-08-16 回归深度 full-review）
 
-- **21-P0-1 memtype 能力门控缺失**：Rust 的 `unmap_range` 统一用 `VirRegion::split`，未复刻 C 的 memtype 回调门控（region.c:1164 `ev_split` / :1096 `ev_lowshrink`）。directphys/shared/cache/anon_contig 的局部拆除在 C 返回 EINVAL，Rust 原实现静默成功；其中 **VR_DIRECT 分裂还会让右半区沿用同一物理基址**（缺页时映射错误设备页）。修复：`MemType` trait 新增 `supports_split`/`supports_low_shrink` 谓词（memtype.rs:90-107），`unmap_range` 在中间掏空/头部切割前检查（munmap.rs:227-232/:254-259）；新增 `MunmapError::MemTypeNotSupported` → EINVAL；回归测试 ×3（`test_munmap_{middle_hole,head_cut}_directphys_rejected` + `test_munmap_tail_cut_directphys_allowed`）。
-- **21-P1-5 split fdref 引用泄漏**：`VirRegion::split` 原 `ref_entry ×2` 使 fdref 净增 2（应为 1：1 区域 → 2 区域）；头/尾切割立即释放一半后剩 1 区域持 2 引用，fdref 永不归零 → `VFS_FDCLOSE` 永不发送。修复：`ref_entry ×1`（vir_region.rs:321-333）；回归测试 `test_munmap_file_head_cut_fdref_balanced`。
+- **21-P0-1 memtype 能力门控缺失**：Rust 的 `unmap_range` 统一用 `VirRegion::split`，未复刻 C 的 memtype 回调门控（region.c:1164 `ev_split` / :1096 `ev_lowshrink`）。directphys/shared/cache/anon_contig 的局部拆除在 C 返回 EINVAL，Rust 原实现静默成功；其中 **VR_DIRECT 分裂还会让右半区沿用同一物理基址**（缺页时映射错误设备页）。修复：`MemType` trait 新增 `supports_split`/`supports_low_shrink` 谓词（os/servers/vm/src/memtype.rs:fn ev_split（L90，工具生成）），`unmap_range` 在中间掏空/头部切割前检查（os/servers/vm/src/munmap.rs:fn unmap_range（L227，工具生成）/:254-259）；新增 `MunmapError::MemTypeNotSupported` → EINVAL；回归测试 ×3（`test_munmap_{middle_hole,head_cut}_directphys_rejected` + `test_munmap_tail_cut_directphys_allowed`）。
+- **21-P1-5 split fdref 引用泄漏**：`VirRegion::split` 原 `ref_entry ×2` 使 fdref 净增 2（应为 1：1 区域 → 2 区域）；头/尾切割立即释放一半后剩 1 区域持 2 引用，fdref 永不归零 → `VFS_FDCLOSE` 永不发送。修复：`ref_entry ×1`（os/servers/vm/src/region/vir_region.rs:fn prepare_cow（L321，工具生成））；回归测试 `test_munmap_file_head_cut_fdref_balanced`。
 - **21-P1-4 errno 映射修正**：`MunmapError::InvalidLength` 原映射 `InvalidAddress`（EFAULT），但 C 在 len=0（region.c:1233）、溢出（:1234）、len 非对齐（:1076）三处均返回 **EINVAL**。修复：`InvalidLength → VmError::InvalidParam`（dispatcher.rs:1247-1251）；`munmap_vm_lin` 非对齐 len 改用 `BadAddress`（C mmap.c:496 EFAULT）；`test_munmap_error_to_errno` 断言更新。doc §5.1 "len=0 → InvalidLength（C EINVAL）" 由此自洽。
 - **行号漂移**：§5.1 测试表 15 行 + §2.2 代码块注释 + 头部范围全部按 `rg`/`nl -ba` 实证重算（munmap.rs 因 review 修复行号再偏移）；design 快照 21-design.v1.md 同步修正（§3.6 引用面）。
 
@@ -599,30 +599,30 @@ unmap_range(addr, length):
 
 | 测试 | 位置 | 覆盖 |
 |------|------|------|
-| `test_munmap_unaligned_addr_returns_bad_address` | munmap.rs:373 | addr 非页对齐 → BadAddress（C EFAULT） |
-| `test_munmap_zero_length_returns_invalid_length` | munmap.rs:392 | len=0 → InvalidLength（C EINVAL） |
-| `test_munmap_no_region_silent_ok` | munmap.rs:411 | 无重叠区域 → 静默 Replied（C OK） |
-| `test_munmap_unaligned_len_rounds_up` | munmap.rs:430 | 非页对齐 len 圆整后拆除（C roundup） |
-| `test_munmap_whole_region` | munmap.rs:454 | 整体包含 → 区域移除 |
-| `test_munmap_head_cut` | munmap.rs:474 | 头部切割 → 保留尾区域（vaddr/length 断言） |
-| `test_munmap_tail_cut` | munmap.rs:502 | 尾部切割 → 保留头区域 |
-| `test_munmap_middle_hole` | munmap.rs:530 | 中间掏空 → 两个区域 [0x1000,0x3000) |
-| `test_munmap_cross_regions` | munmap.rs:557 | 范围跨多个区域 → 全部移除 |
-| `test_munmap_unmap_phys_region_length` | munmap.rs:579 | UNMAP_PHYS/SHM_UNMAP 按区域全长（C :568） |
-| `test_munmap_unmap_phys_not_mapped` | munmap.rs:601 | 区域查找失败 → NotMapped（C EFAULT） |
-| `test_munmap_vm_self_suspended` | munmap.rs:620 | VM 自身分支（区域存在路径）→ unmap_range → Suspended（C :548）|
-| `test_munmap_releases_physical_page` | munmap.rs:640 | 本地区域：refcount 1→0 + free_pfn |
-| `test_munmap_cow_shared_page_kept` | munmap.rs:662 | CoW 共享页 2→1 保留 / 1→0 释放 |
-| `test_munmap_middle_hole_directphys_rejected` | munmap.rs:696 | memtype 门控：VR_DIRECT 中间掏空 → MemTypeNotSupported（C EINVAL，region.c:1164） |
-| `test_munmap_head_cut_directphys_rejected` | munmap.rs:717 | memtype 门控：VR_DIRECT 头部切割 → MemTypeNotSupported（C EINVAL，region.c:1096） |
-| `test_munmap_tail_cut_directphys_allowed` | munmap.rs:738 | 尾部切割无需回调（C region.c:1132-1135），Direct 保留物理基址 |
-| `test_munmap_file_head_cut_fdref_balanced` | munmap.rs:769 | 头部切割 fdref 1 区域 1 引用 → 归零触发 VFS_FDCLOSE（21-P1-5） |
-| `test_munmap_error_to_errno` | munmap.rs:808 | 全错误路径 errno（EFAULT/EINVAL/EIO） |
-| `test_map_phys_basic/zero_length/error_to_errno` | map_phys.rs:151-179 | 基本/零长度/errno（EPERM/ENOMEM/EINVAL） |
+| `test_munmap_unaligned_addr_returns_bad_address` | os/servers/vm/src/munmap.rs:fn insert_direct_region（L373，工具生成） | addr 非页对齐 → BadAddress（C EFAULT） |
+| `test_munmap_zero_length_returns_invalid_length` | os/servers/vm/src/munmap.rs:fn test_munmap_unaligned_addr_returns_bad_address（L392，工具生成） | len=0 → InvalidLength（C EINVAL） |
+| `test_munmap_no_region_silent_ok` | os/servers/vm/src/munmap.rs:fn test_munmap_zero_length_returns_invalid_length（L411，工具生成） | 无重叠区域 → 静默 Replied（C OK） |
+| `test_munmap_unaligned_len_rounds_up` | os/servers/vm/src/munmap.rs:fn test_munmap_no_region_silent_ok（L430，工具生成） | 非页对齐 len 圆整后拆除（C roundup） |
+| `test_munmap_whole_region` | os/servers/vm/src/munmap.rs:fn test_munmap_unaligned_len_rounds_up（L454，工具生成） | 整体包含 → 区域移除 |
+| `test_munmap_head_cut` | os/servers/vm/src/munmap.rs:fn test_munmap_whole_region（L474，工具生成） | 头部切割 → 保留尾区域（vaddr/length 断言） |
+| `test_munmap_tail_cut` | os/servers/vm/src/munmap.rs:fn test_munmap_head_cut（L502，工具生成） | 尾部切割 → 保留头区域 |
+| `test_munmap_middle_hole` | os/servers/vm/src/munmap.rs:fn test_munmap_tail_cut（L530，工具生成） | 中间掏空 → 两个区域 [0x1000,0x3000) |
+| `test_munmap_cross_regions` | os/servers/vm/src/munmap.rs:fn test_munmap_middle_hole（L557，工具生成） | 范围跨多个区域 → 全部移除 |
+| `test_munmap_unmap_phys_region_length` | os/servers/vm/src/munmap.rs:fn test_munmap_cross_regions（L579，工具生成） | UNMAP_PHYS/SHM_UNMAP 按区域全长（C :568） |
+| `test_munmap_unmap_phys_not_mapped` | os/servers/vm/src/munmap.rs:fn test_munmap_unmap_phys_region_length（L601，工具生成） | 区域查找失败 → NotMapped（C EFAULT） |
+| `test_munmap_vm_self_suspended` | os/servers/vm/src/munmap.rs:fn test_munmap_unmap_phys_not_mapped（L620，工具生成） | VM 自身分支（区域存在路径）→ unmap_range → Suspended（C :548）|
+| `test_munmap_releases_physical_page` | os/servers/vm/src/munmap.rs:fn test_munmap_vm_self_suspended（L640，工具生成） | 本地区域：refcount 1→0 + free_pfn |
+| `test_munmap_cow_shared_page_kept` | os/servers/vm/src/munmap.rs:fn test_munmap_vm_self_suspended（L662，工具生成） | CoW 共享页 2→1 保留 / 1→0 释放 |
+| `test_munmap_middle_hole_directphys_rejected` | os/servers/vm/src/munmap.rs:fn test_munmap_releases_physical_page（L696，工具生成） | memtype 门控：VR_DIRECT 中间掏空 → MemTypeNotSupported（C EINVAL，region.c:1164） |
+| `test_munmap_head_cut_directphys_rejected` | os/servers/vm/src/munmap.rs:fn test_munmap_cow_shared_page_kept（L717，工具生成） | memtype 门控：VR_DIRECT 头部切割 → MemTypeNotSupported（C EINVAL，region.c:1096） |
+| `test_munmap_tail_cut_directphys_allowed` | os/servers/vm/src/munmap.rs:fn test_munmap_middle_hole_directphys_rejected（L738，工具生成） | 尾部切割无需回调（C region.c:1132-1135），Direct 保留物理基址 |
+| `test_munmap_file_head_cut_fdref_balanced` | os/servers/vm/src/munmap.rs:fn test_munmap_head_cut_directphys_rejected（L769，工具生成） | 头部切割 fdref 1 区域 1 引用 → 归零触发 VFS_FDCLOSE（21-P1-5） |
+| `test_munmap_error_to_errno` | os/servers/vm/src/munmap.rs:fn test_munmap_file_head_cut_fdref_balanced（L808，工具生成） | 全错误路径 errno（EFAULT/EINVAL/EIO） |
+| `test_map_phys_basic/zero_length/error_to_errno` | os/servers/vm/src/map_phys.rs:fn test_map_phys_basic | 基本/零长度/errno（EPERM/ENOMEM/EINVAL） |
 | `test_vm_munmap_in_decode_message` | vm.rs:1232 | 21-P1-1：m_mmap overlay + m_source |
 | `test_vm_unmap_phys_in_decode_message` | vm.rs:1256 | 21-P1-1：专用 overlay（ep/vaddr@4） |
 | `test_vm_shm_unmap_in_decode_message` | vm.rs:1277 | 21-P1-1：专用 overlay（forwhom/addr@4） |
-| `test_dispatch_vm_unmap_phys_wired` | vm_server.rs:1323 | 21-P1-2：不再 NotImplemented |
+| `test_dispatch_vm_unmap_phys_wired` | os/servers/vm/src/vm_server.rs:fn dispatch_on_msg（L1323，工具生成） | 21-P1-2：不再 NotImplemented |
 
 ### 5.2 覆盖维度
 
@@ -643,7 +643,7 @@ unmap_range(addr, length):
 | B2 | fdref 归零 VFS_FDCLOSE 真实发送 | KernelIpcTransport 未实现 | backlog（23） |
 | B3 | VM 自身分支真实可达 | 需 VM 向自己发 VM_MUNMAP（transport） | backlog（26） |
 | B4 | TLB 批量失效 | arch 页表层逐页 unmap（08 范围） | backlog（08/arch） |
-| B5 | 页缓存页面拆除交互 | mem_type_cache 无 ev_delete（mem_cache.c:39-49）；页面经 cache_unreference（≡ anon ev_unreference）释放 | 24 范围 |
+| B5 | 页缓存页面拆除交互 | mem_type_cache 无 ev_delete（minix3/minix/servers/vm/mem_cache.c:mem_type）；页面经 cache_unreference（≡ anon ev_unreference）释放 | 24 范围 |
 
 ### 5.4 测试统计（截至 2026-08-16）
 
@@ -668,7 +668,7 @@ unmap_range(addr, length):
 | 移交项 | 目标文档 | 交接内容 |
 |--------|---------|---------|
 | 全区域释放 | 22 | `map_free_proc`（region.c:589-612）逐区域 `map_free`，本文档已铺垫 |
-| fdref 归零 VFS 对话 | 23 | `PendingFdClose` 暂存 → VFS_FDCLOSE 发送（fdref.c:150-154） |
+| fdref 归零 VFS 对话 | 23 | `PendingFdClose` 暂存 → VFS_FDCLOSE 发送（minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成）） |
 | 页缓存拆除 | 24 | cache 区域 ev_delete/ev_unreference 的缓存交互 |
 | 查询 | 26 | `do_get_phys`/`do_get_refcount`（mmap.c:438-485） |
 | TLB/arch | 08 | 逐页 `pt.unmap` 与批量失效的 arch 层实现 |

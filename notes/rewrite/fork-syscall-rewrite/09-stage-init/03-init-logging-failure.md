@@ -1,6 +1,6 @@
 # 03-init-logging-failure：日志三件套与致命信号
 
-> **定位**：`stall`（`minix3/sbin/init/init.c:440-450`）、`warning`（457-466）、`emergency`（472-481）、`disaster`（504-511）。明确排除 `print_console`（411-432，`#if 0` 死代码）与 `badsys`（490-498，非 Minix 分支）。
+> **定位**：`stall`（`minix3/sbin/init/init.c:print_console（L440，工具生成）`）、`warning`（457-466）、`emergency`（472-481）、`disaster`（504-511）。明确排除 `print_console`（411-432，`#if 0` 死代码）与 `badsys`（490-498，非 Minix 分支）。
 > **Rust**：`os/commands/sbin/init/src/log.rs`。
 > **前置依赖**：02（`disaster` 的注册位置）。
 > **本篇不覆盖（移交）**：状态转换（见 02）、重启与关机挂钩（见 14）。
@@ -147,4 +147,4 @@ os/commands/sbin/init/src/log.rs — Severity / stall/warning/emergency/disaster
 
 - `02-init-state-machine.md` — disaster 的注册位置。
 - `04-init-single-user.md`、`05-init-runcom.md`、`09-init-multi-user.md` — stall 调用点。
-- C 源码：`minix3/sbin/init/init.c:440-511`。
+- C 源码：`minix3/sbin/init/init.c:print_console（L440，工具生成）`。

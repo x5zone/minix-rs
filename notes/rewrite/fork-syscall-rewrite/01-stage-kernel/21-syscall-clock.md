@@ -16,11 +16,11 @@
 
 | 系统调用 | 语义 | C 处理函数 | 权限 |
 |---------|------|-----------|------|
-| SYS_TIMES | 查询进程时间统计 + 三时钟源 | `do_times()` (do_times.c:22-44) | 任意进程 |
-| SYS_SETALARM | 设置/取消同步闹钟 | `do_setalarm()` (do_setalarm.c:22-64) | SYS_PROC |
-| SYS_STIME | 设置 boottime | `do_stime()` (do_stime.c:15-18) | VM（信任） |
-| SYS_SETTIME | 设置实时时钟 / adjtime | `do_settime()` (do_settime.c:18-57) | PM/VM（信任） |
-| SYS_VTIMER | 设置/查询虚拟/性能定时器 | `do_vtimer()` (do_vtimer.c:21-74) | SYS_PROC |
+| SYS_TIMES | 查询进程时间统计 + 三时钟源 | `do_times()` (minix3/minix/kernel/system/do_times.c:do_times) | 任意进程 |
+| SYS_SETALARM | 设置/取消同步闹钟 | `do_setalarm()` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm) | SYS_PROC |
+| SYS_STIME | 设置 boottime | `do_stime()` (minix3/minix/kernel/system/do_stime.c:do_stime) | VM（信任） |
+| SYS_SETTIME | 设置实时时钟 / adjtime | `do_settime()` (minix3/minix/kernel/system/do_settime.c:do_settime) | PM/VM（信任） |
+| SYS_VTIMER | 设置/查询虚拟/性能定时器 | `do_vtimer()` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer) | SYS_PROC |
 
 ### 1.1 时间查询：TIMES
 
@@ -29,19 +29,19 @@
 **WHY → WHAT → HOW 弧线**：
 - **WHY**：用户态需要知道进程消耗了多少 CPU 时间（性能分析、计费），以及当前系统时间（墙上时钟、启动时长）。这两个需求对应不同时钟源，不可混淆。
 - **WHAT**：TIMES 返回 5 个值：`user_time`（用户态 tick）、`system_time`（系统态 tick）、`boot_ticks`（monotonic）、`real_ticks`（realtime）、`boot_time`（boottime）。
-- **HOW**：C `do_times` (do_times.c:22-44) 先做 SELF 替换 (do_times.c:33-34)，若 endpoint 有效则读 `rp->p_user_time`/`rp->p_sys_time` (do_times.c:37-38)，最后无条件填三时钟源 (do_times.c:40-42)。
+- **HOW**：C `do_times` (minix3/minix/kernel/system/do_times.c:do_times) 先做 SELF 替换 (minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成）)，若 endpoint 有效则读 `rp->p_user_time`/`rp->p_sys_time` (minix3/minix/kernel/system/do_times.c:do_times（L37，工具生成）)，最后无条件填三时钟源 (minix3/minix/kernel/system/do_times.c:do_times（L40，工具生成）)。
 
 **三时钟源语义**（关键不可混淆）：
 
 | 时钟源 | C 函数 | 语义 | 可设置? |
 |--------|--------|------|---------|
-| monotonic | `get_monotonic()` (do_times.c:40) | 启动后 tick 数，单调递增，不受 adjtime 影响 | 否 |
-| realtime | `get_realtime()` (do_times.c:41) | 墙上时钟 tick 数（受 adjtime 影响） | 是（SETTIME now≠0） |
-| boottime | `get_boottime()` (do_times.c:42) | 系统启动时的 Unix 时间戳 | 是（STIME） |
+| monotonic | `get_monotonic()` (minix3/minix/kernel/system/do_times.c:do_times（L40，工具生成）) | 启动后 tick 数，单调递增，不受 adjtime 影响 | 否 |
+| realtime | `get_realtime()` (minix3/minix/kernel/system/do_times.c:do_times（L41，工具生成）) | 墙上时钟 tick 数（受 adjtime 影响） | 是（SETTIME now≠0） |
+| boottime | `get_boottime()` (minix3/minix/kernel/system/do_times.c:do_times（L42，工具生成）) | 系统启动时的 Unix 时间戳 | 是（STIME） |
 
-**SELF 语义**：`endpt == SELF` (-2) 表示"查询自己"，内核替换为 `caller->p_endpoint` (do_times.c:33-34)。`endpt == NONE` 表示不查询特定进程时间，仅返回时钟值 (do_times.c:35)。
+**SELF 语义**：`endpt == SELF` (-2) 表示"查询自己"，内核替换为 `caller->p_endpoint` (minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成）)。`endpt == NONE` 表示不查询特定进程时间，仅返回时钟值 (minix3/minix/kernel/system/do_times.c:do_times（L35，工具生成）)。
 
-**并发安全**：do_times.c:29-32 注释指出时钟中断 handler 可能并发更新时间字段，但单字段读是原子的。Rust 用 `AtomicU64::load(Ordering::Relaxed)` 天然表达此语义（见 Ch3 D6）。
+**并发安全**：minix3/minix/kernel/system/do_times.c:do_times（L29，工具生成） 注释指出时钟中断 handler 可能并发更新时间字段，但单字段读是原子的。Rust 用 `AtomicU64::load(Ordering::Relaxed)` 天然表达此语义（见 Ch3 D6）。
 
 ### 1.2 同步闹钟：SETALARM
 
@@ -50,30 +50,30 @@
 **WHY → WHAT → HOW 弧线**：
 - **WHY**：系统进程需要内核级定时通知（用户进程用 SIGALRM 经 PM 转发，系统进程直接用内核闹钟）。闹钟需关联到进程的 priv 结构（每个 system process 独立）。
 - **WHAT**：SETALARM 设置/取消调用者的同步闹钟。返回上次闹钟剩余 `time_left` + 当前 `uptime`。
-- **HOW**：C `do_setalarm` (do_setalarm.c:22-64) 先 SYS_PROC 权限检查 (do_setalarm.c:33)，取 `priv(caller)->s_alarm_timer` (do_setalarm.c:36)，算 `time_left` (do_setalarm.c:40-46)，返回 `uptime` (do_setalarm.c:49)，最后 set/reset timer (do_setalarm.c:56-62)。到期回调 `cause_alarm` (do_setalarm.c:69-76) 调 `mini_notify(proc_addr(CLOCK), proc_nr_e)` (do_setalarm.c:75)。
+- **HOW**：C `do_setalarm` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm) 先 SYS_PROC 权限检查 (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成）)，取 `priv(caller)->s_alarm_timer` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L36，工具生成）)，算 `time_left` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L40，工具生成）)，返回 `uptime` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L49，工具生成）)，最后 set/reset timer (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L56，工具生成）)。到期回调 `cause_alarm` (minix3/minix/kernel/system/do_setalarm.c:cause_alarm) 调 `mini_notify(proc_addr(CLOCK), proc_nr_e)` (minix3/minix/kernel/system/do_setalarm.c:cause_alarm（L75，工具生成）)。
 
-**绝对/相对时间语义** (do_setalarm.c:56-61)：`!abs_time && exp_time==0` → 取消闹钟 `reset_kernel_timer(tp)` (do_setalarm.c:56-57)；`!abs_time && exp_time>0` → 相对时间，`exp_time += uptime` 转绝对 (do_setalarm.c:59-60)；`abs_time` → 直接用 `exp_time` (do_setalarm.c:61)。
+**绝对/相对时间语义** (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L56，工具生成）)：`!abs_time && exp_time==0` → 取消闹钟 `reset_kernel_timer(tp)` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L56，工具生成）)；`!abs_time && exp_time>0` → 相对时间，`exp_time += uptime` 转绝对 (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L59，工具生成）)；`abs_time` → 直接用 `exp_time` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L61，工具生成）)。
 
-**time_left 三分支** (do_setalarm.c:40-46)：timer 未设（`!tmr_is_set(tp)`）→ `TMR_NEVER` (do_setalarm.c:40-41)；timer 未到期（`tmr_is_first`）→ `exp_time - uptime` (do_setalarm.c:42-43)；timer 已到期 → `0` (do_setalarm.c:44-45)。
+**time_left 三分支** (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L40，工具生成）)：timer 未设（`!tmr_is_set(tp)`）→ `TMR_NEVER` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L40，工具生成）)；timer 未到期（`tmr_is_first`）→ `exp_time - uptime` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L42，工具生成）)；timer 已到期 → `0` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L44，工具生成）)。
 
-**权限**：仅 `SYS_PROC` 进程可调用 (do_setalarm.c:33)。用户进程的 SIGALRM 由 PM 转发，不直接走 SETALARM。
+**权限**：仅 `SYS_PROC` 进程可调用 (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成）)。用户进程的 SIGALRM 由 PM 转发，不直接走 SETALARM。
 
 ### 1.3 时间设置：STIME + SETTIME
 
 **灵魂本质**：STIME 设 boottime；SETTIME 双模式——adjtime 渐变调整 vs `set_realtime` 直接设置，仅 CLOCK_REALTIME 可改。
 
-**STIME** (do_stime.c:15-18)：设置启动时间 Unix 时间戳，由 VM 在初始化时调用。实现仅一行 `set_boottime(m_ptr->m_lsys_krn_sys_stime.boot_time)` (do_stime.c:17)。
+**STIME** (minix3/minix/kernel/system/do_stime.c:do_stime)：设置启动时间 Unix 时间戳，由 VM 在初始化时调用。实现仅一行 `set_boottime(m_ptr->m_lsys_krn_sys_stime.boot_time)` (minix3/minix/kernel/system/do_stime.c:do_stime（L17，工具生成）)。
 
-**SETTIME 双模式** (do_settime.c:18-57)：
+**SETTIME 双模式** (minix3/minix/kernel/system/do_settime.c:do_settime)：
 
 | 模式 | 条件 | 行为 | C 行号 |
 |------|------|------|--------|
-| adjtime | `now == 0` | 渐变调整：`set_adjtime_delta(ticks)`，`ticks = sec*hz + nsec/(1e9/hz)` | do_settime.c:29-34 |
-| set time | `now != 0` | 直接设置：算 `timediff=sec-boottime`，`set_realtime(newclock)` | do_settime.c:37-57 |
+| adjtime | `now == 0` | 渐变调整：`set_adjtime_delta(ticks)`，`ticks = sec*hz + nsec/(1e9/hz)` | minix3/minix/kernel/system/do_settime.c:do_settime（L29，工具生成） |
+| set time | `now != 0` | 直接设置：算 `timediff=sec-boottime`，`set_realtime(newclock)` | minix3/minix/kernel/system/do_settime.c:do_settime（L37，工具生成） |
 
 **约束**：
-- 仅 `CLOCK_REALTIME` 可改 (do_settime.c:25-26)，monotonic 不可设——monotonic 是内核单调时钟，受设置会破坏不变量
-- set time 模式防负值：`sec <= boottime` 或 `timediff_ticks` 越界 → 修正 boottime + `set_realtime(1)` (do_settime.c:43-48)
+- 仅 `CLOCK_REALTIME` 可改 (minix3/minix/kernel/system/do_settime.c:do_settime（L25，工具生成）)，monotonic 不可设——monotonic 是内核单调时钟，受设置会破坏不变量
+- set time 模式防负值：`sec <= boottime` 或 `timediff_ticks` 越界 → 修正 boottime + `set_realtime(1)` (minix3/minix/kernel/system/do_settime.c:do_settime（L43，工具生成）)
 
 **adjtime 为何保留**：POSIX adjtime(2) 语义——渐变调整时钟避免时间跳变，NTP 守护进程依赖。删除会破坏 POSIX 完整性（见 Ch3 D4）。
 
@@ -81,7 +81,7 @@
 
 **灵魂本质**：VT_VIRTUAL 计用户态时间、VT_PROF 计用户+系统时间，`virt_left`/`prof_left` 递减到 0 时触发 SIGVTALRM/SIGPROF——`vtimer_check` 在时钟中断检查到期。
 
-**两类定时器** (do_vtimer.c:33-34, com.h:420-421)：
+**两类定时器** (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L33，工具生成）, com.h:420-421)：
 
 | 类型 | C 常量 | 值 | 计数范围 | 到期信号 | 字段 | 标志 |
 |------|--------|---|---------|---------|------|------|
@@ -93,14 +93,14 @@
 **WHY → WHAT → HOW 弧线**：
 - **WHY**：进程需要"按 CPU 时间非墙上时间"的定时器（profiling、用户态 CPU 限制）。VT_VIRTUAL 仅计用户态，VT_PROF 计用户+系统，区分用途。
 - **WHAT**：VTIMER 设置/查询进程的虚拟/性能定时器。`VT_SET=0` 仅查询；`VT_SET=1` 设置新值（`value>0` 启用，`value=0` 禁用）。返回旧值。
-- **HOW**：C `do_vtimer` (do_vtimer.c:21-74) 先 SYS_PROC 检查 (do_vtimer.c:31)，验证 `VT_WHICH` (do_vtimer.c:33-34)，SELF 替换 + `isokendpt` (do_vtimer.c:37-38)，确定 `pt_flag`/`pt_left` (do_vtimer.c:45-51)，取旧值 (do_vtimer.c:54-58)，若 VT_SET 则 clear flag → set/clear value → set flag (do_vtimer.c:60-69)，返回旧值 (do_vtimer.c:71)。
+- **HOW**：C `do_vtimer` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer) 先 SYS_PROC 检查 (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L31，工具生成）)，验证 `VT_WHICH` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L33，工具生成）)，SELF 替换 + `isokendpt` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L37，工具生成）)，确定 `pt_flag`/`pt_left` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L45，工具生成）)，取旧值 (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L54，工具生成）)，若 VT_SET 则 clear flag → set/clear value → set flag (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L60，工具生成）)，返回旧值 (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L71，工具生成）)。
 
-**vtimer_check 到期机制** (do_vtimer.c:81-103)：由时钟中断调用，**在 15-clock-timer 实现**（tick-internal，见 Ch3 D7）：
-- `MF_VIRT_TIMER && p_virt_left==0` → 清标志 + `cause_sig(rp->p_nr, SIGVTALRM)` (do_vtimer.c:91-95)
-- `MF_PROF_TIMER && p_prof_left==0` → 清标志 + `cause_sig(rp->p_nr, SIGPROF)` (do_vtimer.c:98-102)
-- 并发安全 (do_vtimer.c:83-88)：clock handler 只递减 `p_virt_left`/`p_prof_left`，不修改 `p_misc_flags`，故 `vtimer_check` 无需锁
+**vtimer_check 到期机制** (minix3/minix/kernel/system/do_vtimer.c:vtimer_check)：由时钟中断调用，**在 15-clock-timer 实现**（tick-internal，见 Ch3 D7）：
+- `MF_VIRT_TIMER && p_virt_left==0` → 清标志 + `cause_sig(rp->p_nr, SIGVTALRM)` (minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L91，工具生成）)
+- `MF_PROF_TIMER && p_prof_left==0` → 清标志 + `cause_sig(rp->p_nr, SIGPROF)` (minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L98，工具生成）)
+- 并发安全 (minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L83，工具生成）)：clock handler 只递减 `p_virt_left`/`p_prof_left`，不修改 `p_misc_flags`，故 `vtimer_check` 无需锁
 
-**权限**：仅 `SYS_PROC` 可调用 (do_vtimer.c:31)。用户进程经 PM 设置。
+**权限**：仅 `SYS_PROC` 可调用 (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L31，工具生成）)。用户进程经 PM 设置。
 
 ---
 
@@ -110,37 +110,37 @@
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_times(caller, m_ptr)` | do_times.c:22-44 | TIMES 主函数：SELF 替换 (L33-34) → endpoint 校验 (L35) → 读 user/sys time (L37-38) → 填三时钟源 (L40-42) |
-| 并发注释 | do_times.c:29-32 | 时钟 handler 可并发更新单字段，但单字段读原子 |
+| `do_times(caller, m_ptr)` | minix3/minix/kernel/system/do_times.c:do_times | TIMES 主函数：SELF 替换 (L33-34) → endpoint 校验 (L35) → 读 user/sys time (L37-38) → 填三时钟源 (L40-42) |
+| 并发注释 | minix3/minix/kernel/system/do_times.c:do_times（L29，工具生成） | 时钟 handler 可并发更新单字段，但单字段读原子 |
 
 ### 2.2 do_setalarm.c (78 行)
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_setalarm(caller, m_ptr)` | do_setalarm.c:22-64 | SETALARM 主函数：参数提取 (L31-32) → SYS_PROC 检查 (L33) → 取 `s_alarm_timer` (L36) → `uptime=get_monotonic()` (L39) → time_left 三分支 (L40-46) → 返回 uptime (L49) → reset/set timer (L56-62) |
-| `cause_alarm(proc_nr_e)` | do_setalarm.c:69-76 | 闹钟到期回调 → `mini_notify(proc_addr(CLOCK), proc_nr_e)` (L75) |
+| `do_setalarm(caller, m_ptr)` | minix3/minix/kernel/system/do_setalarm.c:do_setalarm | SETALARM 主函数：参数提取 (L31-32) → SYS_PROC 检查 (L33) → 取 `s_alarm_timer` (L36) → `uptime=get_monotonic()` (L39) → time_left 三分支 (L40-46) → 返回 uptime (L49) → reset/set timer (L56-62) |
+| `cause_alarm(proc_nr_e)` | minix3/minix/kernel/system/do_setalarm.c:cause_alarm | 闹钟到期回调 → `mini_notify(proc_addr(CLOCK), proc_nr_e)` (L75) |
 
 ### 2.3 do_stime.c (19 行) + do_settime.c (58 行)
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_stime(caller, m_ptr)` | do_stime.c:15-18 | STIME：`set_boottime(boot_time)` (L17) |
-| `do_settime(caller, m_ptr)` | do_settime.c:18-57 | SETTIME 主函数：CLOCK_REALTIME 检查 (L25-26) → adjtime 模式 `now==0` `set_adjtime_delta(ticks)` (L29-34) / set time 模式 `now!=0` `timediff=sec-boottime` (L39-40) → 负值保护 (L43-48) → `set_realtime(newclock)` (L55) |
-| ticks 转换 | do_settime.c:31-32 | `sec*system_hz + nsec/(1e9/system_hz)` |
+| `do_stime(caller, m_ptr)` | minix3/minix/kernel/system/do_stime.c:do_stime | STIME：`set_boottime(boot_time)` (L17) |
+| `do_settime(caller, m_ptr)` | minix3/minix/kernel/system/do_settime.c:do_settime | SETTIME 主函数：CLOCK_REALTIME 检查 (L25-26) → adjtime 模式 `now==0` `set_adjtime_delta(ticks)` (L29-34) / set time 模式 `now!=0` `timediff=sec-boottime` (L39-40) → 负值保护 (L43-48) → `set_realtime(newclock)` (L55) |
+| ticks 转换 | minix3/minix/kernel/system/do_settime.c:do_settime（L31，工具生成） | `sec*system_hz + nsec/(1e9/system_hz)` |
 
 ### 2.4 do_vtimer.c (103 行)
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_vtimer(caller, m_ptr)` | do_vtimer.c:21-74 | VTIMER 主函数：SYS_PROC 检查 (L31) → VT_WHICH 验证 (L33-34) → SELF 替换 + isokendpt (L37-38) → pt_flag/pt_left 确定 (L45-51) → 旧值读取 (L54-58) → VT_SET: clear flag → set/clear value → set flag (L60-69) → 返回旧值 (L71) |
-| `vtimer_check(rp)` | do_vtimer.c:81-103 | 时钟中断调用：VIRT 到期 (L91-95) `MF_VIRT_TIMER && virt_left==0` → 清标志 + `cause_sig(SIGVTALRM)`；PROF 到期 (L98-102) 同理 → `SIGPROF` |
-| 并发注释 | do_vtimer.c:83-88 | clock handler 只递减 `p_virt_left`/`p_prof_left`，不修改 `p_misc_flags`，无需锁 |
+| `do_vtimer(caller, m_ptr)` | minix3/minix/kernel/system/do_vtimer.c:do_vtimer | VTIMER 主函数：SYS_PROC 检查 (L31) → VT_WHICH 验证 (L33-34) → SELF 替换 + isokendpt (L37-38) → pt_flag/pt_left 确定 (L45-51) → 旧值读取 (L54-58) → VT_SET: clear flag → set/clear value → set flag (L60-69) → 返回旧值 (L71) |
+| `vtimer_check(rp)` | minix3/minix/kernel/system/do_vtimer.c:vtimer_check | 时钟中断调用：VIRT 到期 (L91-95) `MF_VIRT_TIMER && virt_left==0` → 清标志 + `cause_sig(SIGVTALRM)`；PROF 到期 (L98-102) 同理 → `SIGPROF` |
+| 并发注释 | minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L83，工具生成） | clock handler 只递减 `p_virt_left`/`p_prof_left`，不修改 `p_misc_flags`，无需锁 |
 
 ### 2.5 调用关系图
 
-**SETALARM 闹钟生命周期**：用户态 `sys_setalarm` → `dispatch_setalarm` [syscall_clock.rs:175]（SYS_PROC 检查 → 取 `s_alarm_timer` 算 time_left → `set_timer(TimerEntry{NotifyAlarm{endpoint}})` 返回 `TimerId` → 存储 `(entry, id)` 到 `priv.runtime.s_alarm_timer`）→ 时钟中断到期 → `ClockState::collect_expired_timers` [clock.rs] → `pop_expired` → `TimerAction::NotifyAlarm{endpoint}` → `mini_notify(CLOCK, endpoint)`（对应 C `cause_alarm` do_setalarm.c:75）。
+**SETALARM 闹钟生命周期**：用户态 `sys_setalarm` → `dispatch_setalarm` [os/kernel/src/syscall_clock.rs:fn dispatch_setalarm（L175，工具生成）]（SYS_PROC 检查 → 取 `s_alarm_timer` 算 time_left → `set_timer(TimerEntry{NotifyAlarm{endpoint}})` 返回 `TimerId` → 存储 `(entry, id)` 到 `priv.runtime.s_alarm_timer`）→ 时钟中断到期 → `ClockState::collect_expired_timers` [clock.rs] → `pop_expired` → `TimerAction::NotifyAlarm{endpoint}` → `mini_notify(CLOCK, endpoint)`（对应 C `cause_alarm` minix3/minix/kernel/system/do_setalarm.c:cause_alarm（L75，工具生成））。
 
-**VTIMER 到期生命周期**：用户态 `sys_vtimer(VT_VIRTUAL, VT_SET, value, endpt)` → `dispatch_vtimer` [syscall_clock.rs:421]（SYS_PROC 检查 → `store(value)` 到 `virt_left` + set `VIRT_TIMER` → 返回旧值）→ 时钟中断 tick → tick handler [clock.rs] → `tick_virt_timer()` CAS 递减 `virt_left` [proc.rs:693] → 递减到 0 → SIGVTALRM（对应 C `vtimer_check` do_vtimer.c:91-95）。
+**VTIMER 到期生命周期**：用户态 `sys_vtimer(VT_VIRTUAL, VT_SET, value, endpt)` → `dispatch_vtimer` [os/kernel/src/syscall_clock.rs:fn dispatch_settime（L421，工具生成）]（SYS_PROC 检查 → `store(value)` 到 `virt_left` + set `VIRT_TIMER` → 返回旧值）→ 时钟中断 tick → tick handler [clock.rs] → `tick_virt_timer()` CAS 递减 `virt_left` [os/kernel/src/proc.rs:fn tick_prof_timer（L693，工具生成）] → 递减到 0 → SIGVTALRM（对应 C `vtimer_check` minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L91，工具生成））。
 
 ---
 
@@ -155,44 +155,44 @@
 - 如果用 `BTreeMap<u64, TimerEntry>`（exp_time 作 key）：同 exp_time 的多 timer 会覆盖——C 链表支持同 exp_time，内核场景需要。
 - 所以用 `BTreeSet<(u64, TimerId)>` + `BTreeMap<TimerId, TimerEntry>` dual-index（与 15-clock-timer D2 一致）：BTreeSet 按 (exp_time, id) 排序支持到期扫描，BTreeMap 按 `TimerId` O(log N) 查找支持 `reset_timer(id)`。
 
-**实现**：`clock_state.set_timer(entry) -> TimerId` / `reset_timer(id)` (syscall_clock.rs:246,221)。`s_alarm_timer: Option<(TimerEntry, TimerId)>` 存储 id 用于后续 reset。
+**实现**：`clock_state.set_timer(entry) -> TimerId` / `reset_timer(id)` (os/kernel/src/syscall_clock.rs:fn dispatch_setalarm（L246，工具生成）,221)。`s_alarm_timer: Option<(TimerEntry, TimerId)>` 存储 id 用于后续 reset。
 
 ### D2: cause_alarm 回调 — 函数指针 vs TimerAction enum
 
 **假设性推理**：
-- 如果用 C 的函数指针 `tmr_func_t` (do_setalarm.c:61 `cause_alarm`)：Rust 函数指针 `fn(i32)` 无闭包捕获，endpoint 需额外存 timer 结构体；类型不安全，任何函数指针都能传入。
+- 如果用 C 的函数指针 `tmr_func_t` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L61，工具生成） `cause_alarm`)：Rust 函数指针 `fn(i32)` 无闭包捕获，endpoint 需额外存 timer 结构体；类型不安全，任何函数指针都能传入。
 - 如果用 trait object `Box<dyn TimerCallback>`：堆分配 + 动态分发，no_std 下需 alloc 且增加间接调用开销。
 - 所以用 `TimerAction` enum（与 15-clock-timer D6 一致）：`NotifyAlarm { endpoint }` 变体携带 endpoint，enum 分发编译期穷尽，无堆分配。
 
-**实现**：`TimerAction::NotifyAlarm { endpoint: caller.p_endpoint }` (syscall_clock.rs:231-236)。到期时 ClockState 弹出 action，dispatch 到 `mini_notify(CLOCK, endpoint)`。
+**实现**：`TimerAction::NotifyAlarm { endpoint: caller.p_endpoint }` (os/kernel/src/syscall_clock.rs:fn dispatch_setalarm（L231，工具生成）)。到期时 ClockState 弹出 action，dispatch 到 `mini_notify(CLOCK, endpoint)`。
 
 ### D3: VT_WHICH 表达 — 整数 vs VtimerType enum
 
 **假设性推理**：
-- 如果用裸 `i32`（C 方式 do_vtimer.c:33）：`which != VT_VIRTUAL && != VT_PROF` 魔法数字比较，易写错值（如把 VT_PROF 误写为 1）。
+- 如果用裸 `i32`（C 方式 minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L33，工具生成））：`which != VT_VIRTUAL && != VT_PROF` 魔法数字比较，易写错值（如把 VT_PROF 误写为 1）。
 - 如果用 `const` 常量：仍是整数，无类型安全，函数参数无法区分"任意 i32"与"vtimer 类型"。
 - 所以用 `VtimerType` enum + `TryFrom<i32>`：编译期穷尽，`try_from(which)` 返回 `Result`，非法值 `Err(()) → EINVAL`。值 `Virtual=1, Prof=2` 对齐 C `com.h:420-421`。
 
-**实现**：`enum VtimerType { Virtual=1, Prof=2 }` + `impl TryFrom<i32>` (syscall_clock.rs:43-60)。
+**实现**：`enum VtimerType { Virtual=1, Prof=2 }` + `impl TryFrom<i32>` (os/kernel/src/syscall_clock.rs:enum VtimerType)。
 
 ### D4: SETTIME adjtime — 删除 vs 保留
 
 **假设性推理**：
-- 如果删除 adjtime 模式（仅保留 `set_realtime`）：失去 POSIX adjtime(2) 语义——渐变调整时钟避免时间跳变，NTP 场景必需。删除会破坏 POSIX 完整性，且 C ground truth 有完整实现 (do_settime.c:29-34)。
+- 如果删除 adjtime 模式（仅保留 `set_realtime`）：失去 POSIX adjtime(2) 语义——渐变调整时钟避免时间跳变，NTP 场景必需。删除会破坏 POSIX 完整性，且 C ground truth 有完整实现 (minix3/minix/kernel/system/do_settime.c:do_settime（L29，工具生成）)。
 - 如果保留但简化（不实现渐变逻辑）：`adjtime_delta` 字段无消费者，等于死代码。
 - 所以保留完整 adjtime 模式：`set_adjtime_delta(ticks)` 写入 ClockState，渐变逻辑在 15-clock-timer 的 tick handler 消费 delta。
 
-**实现**：`clock_state.set_adjtime_delta(ticks)` (syscall_clock.rs:376)，ticks = `sec*hz + nsec/(1e9/hz)` (do_settime.c:31-32)。
+**实现**：`clock_state.set_adjtime_delta(ticks)` (os/kernel/src/syscall_clock.rs:fn dispatch_settime（L376，工具生成）)，ticks = `sec*hz + nsec/(1e9/hz)` (minix3/minix/kernel/system/do_settime.c:do_settime（L31，工具生成）)。
 
 ### D5: ClockState 访问 — 全局变量 vs 参数传递（核心 anti-translate）
 
 **假设性推理**：
-- 如果用全局变量访问 ClockState（C 方式 do_setalarm.c:39 `get_monotonic()` 全局 / do_setalarm.c:57 `reset_kernel_timer(tp)` 隐式全局时钟）：测试时无法注入 mock ClockState——`get_monotonic()` 读全局 atomic，`reset_kernel_timer` 操作全局 timer 队列。单元测试无法隔离时间状态，只能测权限路径（EPERM），无法测 set/reset 行为。
+- 如果用全局变量访问 ClockState（C 方式 minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L39，工具生成） `get_monotonic()` 全局 / minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L57，工具生成） `reset_kernel_timer(tp)` 隐式全局时钟）：测试时无法注入 mock ClockState——`get_monotonic()` 读全局 atomic，`reset_kernel_timer` 操作全局 timer 队列。单元测试无法隔离时间状态，只能测权限路径（EPERM），无法测 set/reset 行为。
 - 如果用 `thread_local!`：no_std 无线程，且 SMP 内核无 thread-local 语义。
 - 如果用 trait + 全局单例：仍是全局，测试需替换全局状态，并发不安全。
 - 所以用参数传递：`dispatch_setalarm(caller, msg, priv_table: &mut PrivTable, clock_state: &mut ClockState)` 显式传入状态。测试可构造 `ClockState::new()` + `PrivTable::new()` 注入，验证 set/reset 行为。
 
-**实现**：所有 dispatch 函数接受 `&mut ClockState` / `&mut PrivTable` / `&ProcessTable` 参数 (syscall_clock.rs:175-180, 319-324, 350-355, 421-426)。`caller_has_sys_proc_with_table(caller, priv_table)` 同样参数传入 (syscall_clock.rs:282)。
+**实现**：所有 dispatch 函数接受 `&mut ClockState` / `&mut PrivTable` / `&ProcessTable` 参数 (os/kernel/src/syscall_clock.rs:fn dispatch_setalarm（L175，工具生成）, 319-324, 350-355, 421-426)。`caller_has_sys_proc_with_table(caller, priv_table)` 同样参数传入 (os/kernel/src/syscall_clock.rs:fn dispatch_setalarm（L282，工具生成）)。
 
 **与 redox 对比**：redox 用 `time::monotonic` 全局接口 + `scheme::time` 用户态驱动；minix-rs 显式传入 `ClockState` 更可测，对齐 C 的内核通知模型。
 
@@ -200,18 +200,18 @@
 
 **假设性推理**：
 - 如果用 `Cell<u64>`：`Cell` 非 `Sync`，无法跨 CPU 共享（SMP 内核硬约束），`&KProcess` 无法传递到其他 CPU。
-- 如果用 `u64` + 锁：vtimer 字段高频读写（每个 tick 递减），锁开销大且 vtimer_check 注释 (do_vtimer.c:83-88) 明确"无需锁"。
+- 如果用 `u64` + 锁：vtimer 字段高频读写（每个 tick 递减），锁开销大且 vtimer_check 注释 (minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L83，工具生成）) 明确"无需锁"。
 - 如果用 `RefCell<u64>`：同 Cell，非 Sync。
-- 所以用 `AtomicU64`：`Sync` + 无锁，`compare_exchange_weak` 递减 (proc.rs:700,716)，SMP 安全。C 靠注释约定"clock handler 只递减"的并发安全，Rust 用原子操作编译期保证。
+- 所以用 `AtomicU64`：`Sync` + 无锁，`compare_exchange_weak` 递减 (os/kernel/src/proc.rs:fn tick_prof_timer（L700，工具生成）,716)，SMP 安全。C 靠注释约定"clock handler 只递减"的并发安全，Rust 用原子操作编译期保证。
 
-**实现**：`TimeStats.virt_left: AtomicU64` / `prof_left: AtomicU64` (proc.rs:671-672)。dispatch_vtimer 用 `load(Ordering::Relaxed)` 读 / `store(Ordering::Release)` 写 (syscall_clock.rs:469,478,497,500,508,511)。
+**实现**：`TimeStats.virt_left: AtomicU64` / `prof_left: AtomicU64` (os/kernel/src/proc.rs:fn add_sys_time（L671，工具生成）)。dispatch_vtimer 用 `load(Ordering::Relaxed)` 读 / `store(Ordering::Release)` 写 (os/kernel/src/syscall_clock.rs:fn dispatch_vtimer（L469，工具生成）,478,497,500,508,511)。
 
 ### D7: vtimer_check — standalone 函数 vs tick-internal
 
 **假设性推理**：
-- 如果保留 C 的 standalone `vtimer_check(rp)` 函数 (do_vtimer.c:81-103)：需在 21 文档重复实现，但 vtimer_check 由时钟中断调用，属于 15-clock-timer 的 tick handler 职责。21 是用户态接口（set/query），15 是内核 tick 机制（递减/到期），职责分离。
+- 如果保留 C 的 standalone `vtimer_check(rp)` 函数 (minix3/minix/kernel/system/do_vtimer.c:vtimer_check)：需在 21 文档重复实现，但 vtimer_check 由时钟中断调用，属于 15-clock-timer 的 tick handler 职责。21 是用户态接口（set/query），15 是内核 tick 机制（递减/到期），职责分离。
 - 如果在 21 实现 vtimer_check：跨文档职责混乱，21 依赖 15 的 tick 调度。
-- 所以 vtimer_check 语义内联到 15-clock-timer 的 tick handler（与 15 D11 一致）：`tick_virt_timer()`/`tick_prof_timer()` 递减并返回是否到期 (proc.rs:693,709)，clock.rs 调用并处理 SIGVTALRM/SIGPROF。21 仅负责 set/query 接口。
+- 所以 vtimer_check 语义内联到 15-clock-timer 的 tick handler（与 15 D11 一致）：`tick_virt_timer()`/`tick_prof_timer()` 递减并返回是否到期 (os/kernel/src/proc.rs:fn tick_prof_timer（L693，工具生成）,709)，clock.rs 调用并处理 SIGVTALRM/SIGPROF。21 仅负责 set/query 接口。
 
 **实现**：21 文档 Ch4 标注 vtimer_check 在 15-clock-timer 实现（跨文档衔接），Ch6 参见引用 15。
 
@@ -254,7 +254,7 @@ impl TryFrom<i32> for VtimerType {
 }
 ```
 
-**与 C 的差异**（D3 见 Ch3）：`#[repr(i32)]` 保证 FFI 布局兼容性，`as i32` 可安全转回 C 值；非法 `which` 经 `TryFrom` 返回 `Err(()) → EINVAL`，替代 C 整数比较 (do_vtimer.c:33)。
+**与 C 的差异**（D3 见 Ch3）：`#[repr(i32)]` 保证 FFI 布局兼容性，`as i32` 可安全转回 C 值；非法 `which` 经 `TryFrom` 返回 `Err(()) → EINVAL`，替代 C 整数比较 (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L33，工具生成）)。
 
 ### 4.2 dispatch_times — 时间查询（A 组）
 
@@ -332,7 +332,7 @@ pub fn dispatch_times(
 }
 ```
 
-**设计要点**（D6 见 Ch3）：三时钟源 `get_monotonic`/`get_realtime`/`get_boottime` 对应 do_times.c:40-42，语义不可混淆（见 §1.1 表）；`AtomicU64::load(Relaxed)` 读 user/sys time 对应 C 单字段读原子性 (do_times.c:29-32 并发注释)。
+**设计要点**（D6 见 Ch3）：三时钟源 `get_monotonic`/`get_realtime`/`get_boottime` 对应 minix3/minix/kernel/system/do_times.c:do_times（L40，工具生成），语义不可混淆（见 §1.1 表）；`AtomicU64::load(Relaxed)` 读 user/sys time 对应 C 单字段读原子性 (minix3/minix/kernel/system/do_times.c:do_times（L29，工具生成） 并发注释)。
 
 ### 4.3 dispatch_setalarm — 同步闹钟（B 组）
 
@@ -447,8 +447,8 @@ pub fn dispatch_setalarm(
 ```
 
 **设计要点**（D1/D2/D5 见 Ch3）：
-- time_left 对应 do_setalarm.c:40-46 三分支——`Option` 替代 C `tmr_is_set(tp)` 标志检查（`None`→`TMR_NEVER`）；未到期/到期两分支合并为 `saturating_sub`（`exp_time < uptime` → 0，语义等价 C 的 `tmr_is_first` 判断：未到期 `exp_time - uptime`、到期 0）
-- `cause_alarm` 对应：C `cause_alarm(proc_nr_e)` (do_setalarm.c:69-76) → `mini_notify(proc_addr(CLOCK), proc_nr_e)` (do_setalarm.c:75)；Rust 用 `TimerAction::NotifyAlarm { endpoint }` 携带 endpoint，ClockState 到期时 dispatch 到通知
+- time_left 对应 minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L40，工具生成） 三分支——`Option` 替代 C `tmr_is_set(tp)` 标志检查（`None`→`TMR_NEVER`）；未到期/到期两分支合并为 `saturating_sub`（`exp_time < uptime` → 0，语义等价 C 的 `tmr_is_first` 判断：未到期 `exp_time - uptime`、到期 0）
+- `cause_alarm` 对应：C `cause_alarm(proc_nr_e)` (minix3/minix/kernel/system/do_setalarm.c:cause_alarm) → `mini_notify(proc_addr(CLOCK), proc_nr_e)` (minix3/minix/kernel/system/do_setalarm.c:cause_alarm（L75，工具生成）)；Rust 用 `TimerAction::NotifyAlarm { endpoint }` 携带 endpoint，ClockState 到期时 dispatch 到通知
 
 ### 4.4 dispatch_stime + dispatch_settime — 时间设置（C 组）
 
@@ -561,12 +561,12 @@ pub fn dispatch_settime(
 ```
 
 **设计要点**（D4/D5 见 Ch3）：
-- CLOCK_REALTIME 检查对应 do_settime.c:25-26 — monotonic 不可设
-- 负值保护对应 do_settime.c:43-48 — boottime 错误时修正
+- CLOCK_REALTIME 检查对应 minix3/minix/kernel/system/do_settime.c:do_settime（L25，工具生成） — monotonic 不可设
+- 负值保护对应 minix3/minix/kernel/system/do_settime.c:do_settime（L43，工具生成） — boottime 错误时修正
 
 ### 4.5 dispatch_vtimer — 虚拟/性能定时器（D 组）
 
-> 展示真实 `AtomicU64` 代码（无占位符）。`virt_left`/`prof_left` 是 `AtomicU64` (proc.rs:671-672)，SMP 安全。
+> 展示真实 `AtomicU64` 代码（无占位符）。`virt_left`/`prof_left` 是 `AtomicU64` (os/kernel/src/proc.rs:fn add_sys_time（L671，工具生成）)，SMP 安全。
 
 ```rust
 // os/kernel/src/syscall_clock.rs:421-522
@@ -692,12 +692,12 @@ pub fn dispatch_vtimer(
 }
 ```
 
-**virt_left/prof_left 定义**（跨文档引用）：`TimeStats` (proc.rs:668-672) 的 `virt_left`/`prof_left` 字段为 `AtomicU64` (proc.rs:671-672)，对应 C `p_virt_left` (do_vtimer.c:47) / `p_prof_left` (do_vtimer.c:50)。完整结构定义见 15-clock-timer。
+**virt_left/prof_left 定义**（跨文档引用）：`TimeStats` (os/kernel/src/proc.rs:fn add_user_time（L668，工具生成）) 的 `virt_left`/`prof_left` 字段为 `AtomicU64` (os/kernel/src/proc.rs:fn add_sys_time（L671，工具生成）)，对应 C `p_virt_left` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L47，工具生成）) / `p_prof_left` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L50，工具生成）)。完整结构定义见 15-clock-timer。
 
 **设计要点**（D3/D6 见 Ch3）：
-- MiscFlagsBits bitflags：`is_set`/`set`/`clear` 替代 C 裸位操作 `p_misc_flags & pt_flag` (do_vtimer.c:54,61,65)
+- MiscFlagsBits bitflags：`is_set`/`set`/`clear` 替代 C 裸位操作 `p_misc_flags & pt_flag` (minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L54，工具生成）,61,65)
 
-**vtimer_check 跨文档衔接**（D7）：C `vtimer_check(rp)` (do_vtimer.c:81-103) 在 15-clock-timer 实现（tick-internal，`tick_virt_timer`/`tick_prof_timer` CAS 递减 → SIGVTALRM/SIGPROF），21 仅负责 set/query 接口（详见 §1.4 与 Ch3 D7）。
+**vtimer_check 跨文档衔接**（D7）：C `vtimer_check(rp)` (minix3/minix/kernel/system/do_vtimer.c:vtimer_check) 在 15-clock-timer 实现（tick-internal，`tick_virt_timer`/`tick_prof_timer` CAS 递减 → SIGVTALRM/SIGPROF），21 仅负责 set/query 接口（详见 §1.4 与 Ch3 D7）。
 
 ### 4.6 caller_has_sys_proc_with_table — 权限检查（E 组）
 
@@ -731,7 +731,7 @@ pub(crate) fn caller_has_sys_proc_with_table(caller: &KProcess, priv_table: &Pri
 }
 ```
 
-**设计要点**（D5 见 Ch3）：fail-closed 语义 `priv_id=None → false`，对应 C `return(EPERM)` (do_setalarm.c:33)；`&PrivTable` 参数传入使测试可构造空表验证。
+**设计要点**（D5 见 Ch3）：fail-closed 语义 `priv_id=None → false`，对应 C `return(EPERM)` (minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成）)；`&PrivTable` 参数传入使测试可构造空表验证。
 
 ---
 
@@ -744,15 +744,15 @@ pub(crate) fn caller_has_sys_proc_with_table(caller: &KProcess, priv_table: &Pri
 | 测试函数 | 验证行为 | 对应 C 符号 |
 |---------|---------|------------|
 | `test_vtimer_type_values_match_c` | VtimerType 值对齐 C (Virtual=1, Prof=2) | `VT_VIRTUAL`/`VT_PROF` com.h:420-421 |
-| `test_vtimer_type_try_from` | `TryFrom<i32>` 合法/非法值 | do_vtimer.c:33-34 |
-| `test_clock_realtime` | `CLOCK_REALTIME=0` | do_settime.c:25 |
-| `test_ksc_caller_has_sys_proc_no_priv_id_rejected` | priv_id=None 拒绝 | do_setalarm.c:33 |
-| `test_ksc_caller_has_sys_proc_fresh_table_rejects_all` | 空 PrivTable 拒绝 | do_setalarm.c:33 |
-| `test_ksc_setalarm_non_sys_proc_returns_eperm` | SETALARM 非 SYS_PROC 返回 EPERM | do_setalarm.c:33 |
-| `test_ksc_vtimer_non_sys_proc_returns_eperm` | VTIMER 非 SYS_PROC 返回 EPERM | do_vtimer.c:31 |
+| `test_vtimer_type_try_from` | `TryFrom<i32>` 合法/非法值 | minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L33，工具生成） |
+| `test_clock_realtime` | `CLOCK_REALTIME=0` | minix3/minix/kernel/system/do_settime.c:do_settime（L25，工具生成） |
+| `test_ksc_caller_has_sys_proc_no_priv_id_rejected` | priv_id=None 拒绝 | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） |
+| `test_ksc_caller_has_sys_proc_fresh_table_rejects_all` | 空 PrivTable 拒绝 | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） |
+| `test_ksc_setalarm_non_sys_proc_returns_eperm` | SETALARM 非 SYS_PROC 返回 EPERM | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） |
+| `test_ksc_vtimer_non_sys_proc_returns_eperm` | VTIMER 非 SYS_PROC 返回 EPERM | minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L31，工具生成） |
 | `test_ksc_priv_flags_sys_proc_bit_definition` | IDL_F/SRV_F 含 SYS_PROC, USR_F 不含 | `SYS_PROC` 位 |
-| `test_dispatch_times_self_replacement` | TIMES SELF 替换 + reply 填充 | do_times.c:33-34 |
-| `test_dispatch_setalarm_reset_timer` | SETALARM 非 SYS_PROC 返回 EPERM（reset 路径前置检查） | do_setalarm.c:33 |
+| `test_dispatch_times_self_replacement` | TIMES SELF 替换 + reply 填充 | minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成） |
+| `test_dispatch_setalarm_reset_timer` | SETALARM 非 SYS_PROC 返回 EPERM（reset 路径前置检查） | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） |
 
 ### 5.2 待补充测试（行为覆盖，DEFERRED）→ ✅ 全部补齐（2026-09-08，T-6）
 
@@ -806,16 +806,16 @@ minix-rs 用参数传入 `ClockState` (D5) 替代 redox 全局 `time::` 接口�
 
 | C 符号 | C 位置 | Rust 表达 | 差异类型 | 理由 |
 |--------|--------|----------|---------|------|
-| `priv(caller)` | do_setalarm.c:33 | `caller_has_sys_proc_with_table(caller, priv_table)` | anti-translate | 参数传入，非全局 priv() (D5) |
-| `priv(caller)->s_alarm_timer` | do_setalarm.c:36 | `Option<(TimerEntry, TimerId)>` | anti-translate | Option 替代 tmr_is_set；TimerId 替代指针 (D1) |
-| `reset_kernel_timer(tp)` / `set_kernel_timer(tp,...)` | do_setalarm.c:57,61 | `reset_timer(id)` / `set_timer(entry)` | anti-translate | TimerId 替代指针 (D1) |
-| `cause_alarm` 函数指针 | do_setalarm.c:61,69-76 | `TimerAction::NotifyAlarm { endpoint }` | anti-translate | enum 变体替代函数指针 (D2) |
-| `VT_WHICH != VT_VIRTUAL && != VT_PROF` | do_vtimer.c:33-34 | `VtimerType::try_from(which)` | 类型增强 | enum + TryFrom 替代整数比较 (D3) |
+| `priv(caller)` | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） | `caller_has_sys_proc_with_table(caller, priv_table)` | anti-translate | 参数传入，非全局 priv() (D5) |
+| `priv(caller)->s_alarm_timer` | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L36，工具生成） | `Option<(TimerEntry, TimerId)>` | anti-translate | Option 替代 tmr_is_set；TimerId 替代指针 (D1) |
+| `reset_kernel_timer(tp)` / `set_kernel_timer(tp,...)` | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L57，工具生成）,61 | `reset_timer(id)` / `set_timer(entry)` | anti-translate | TimerId 替代指针 (D1) |
+| `cause_alarm` 函数指针 | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L61，工具生成）,69-76 | `TimerAction::NotifyAlarm { endpoint }` | anti-translate | enum 变体替代函数指针 (D2) |
+| `VT_WHICH != VT_VIRTUAL && != VT_PROF` | minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L33，工具生成） | `VtimerType::try_from(which)` | 类型增强 | enum + TryFrom 替代整数比较 (D3) |
 | `VT_VIRTUAL=1` / `VT_PROF=2` | com.h:420-421 | `VtimerType::Virtual=1` / `Prof=2` | 语义对齐 | 值严格对齐 com.h |
-| `&rp->p_virt_left` / `&rp->p_prof_left` | do_vtimer.c:47,50 | `virt_left.load(Relaxed)` / `prof_left.load(Relaxed)` | anti-translate | AtomicU64 替代 clock_t* (D6) |
-| `rp->p_user_time` / `rp->p_sys_time` | do_times.c:37-38 | `user_time.load(Relaxed)` / `sys_time.load(Relaxed)` | 类型增强 | AtomicU64 替代 clock_t (D6) |
-| `rp->p_misc_flags &/= |= pt_flag` | do_vtimer.c:54,61,65 | `is_set` / `clear` / `set` | 类型增强 | bitflags 替代裸位操作 |
-| `vtimer_check(rp)` | do_vtimer.c:81-103 | 在 15-clock-timer 实现（tick-internal） | 跨文档 | D7 职责分离 |
+| `&rp->p_virt_left` / `&rp->p_prof_left` | minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L47，工具生成）,50 | `virt_left.load(Relaxed)` / `prof_left.load(Relaxed)` | anti-translate | AtomicU64 替代 clock_t* (D6) |
+| `rp->p_user_time` / `rp->p_sys_time` | minix3/minix/kernel/system/do_times.c:do_times（L37，工具生成） | `user_time.load(Relaxed)` / `sys_time.load(Relaxed)` | 类型增强 | AtomicU64 替代 clock_t (D6) |
+| `rp->p_misc_flags &/= |= pt_flag` | minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L54，工具生成）,61,65 | `is_set` / `clear` / `set` | 类型增强 | bitflags 替代裸位操作 |
+| `vtimer_check(rp)` | minix3/minix/kernel/system/do_vtimer.c:vtimer_check | 在 15-clock-timer 实现（tick-internal） | 跨文档 | D7 职责分离 |
 
 ---
 
@@ -823,7 +823,7 @@ minix-rs 用参数传入 `ClockState` (D5) 替代 redox 全局 `time::` 接口�
 
 | DEFERRED 项 | 说明 | 跨文档归属 |
 |------------|------|-----------|
-| `vtimer_check` 递减与发信号 | C `vtimer_check(rp)` (do_vtimer.c:81-103) 的递减 + SIGVTALRM/SIGPROF | 15-clock-timer（`tick_virt_timer`/`tick_prof_timer` + clock.rs 信号分发） |
+| `vtimer_check` 递减与发信号 | C `vtimer_check(rp)` (minix3/minix/kernel/system/do_vtimer.c:vtimer_check) 的递减 + SIGVTALRM/SIGPROF | 15-clock-timer（`tick_virt_timer`/`tick_prof_timer` + clock.rs 信号分发） |
 | adjtime 渐变逻辑消费 | `set_adjtime_delta(ticks)` 写入后的 delta 消费（奇数 tick realtime+=2 等） | 15-clock-timer tick handler |
 | `mini_notify(CLOCK, endpoint)` 实现 | `TimerAction::NotifyAlarm` 到期后的通知分发 | 15-clock-timer（ClockState 到期 dispatch） |
 | 行为测试（8 个） | STIME/SETTIME/SETALARM/VTIMER 的行为测试（非仅 EPERM 路径） | 待补充（见 §5.2） |

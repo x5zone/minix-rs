@@ -64,7 +64,7 @@
 
 ### 2.1 `bdev_sendrec` 重试机（`bdev.c:33-73`）
 
-类型断言开场（`39`，`IS_BDEV_RQ` 见 `minix3/minix/include/minix/com.h:966`）→ 原报文留存（`40`）→ 循环发送（`43-54`：传输失败直返，`ERESTART` 恢复重发计数，五次封顶）→ 熔断 `EIO`（`57-58`）→ 死信分流（`60-70`：死亡清表 `EIO`、死锁打印 `EIO`、余 panic）→ `OK`（`72`）。
+类型断言开场（`39`，`IS_BDEV_RQ` 见 `minix3/minix/include/minix/com.h:IS_BDEV_RQ`）→ 原报文留存（`40`）→ 循环发送（`43-54`：传输失败直返，`ERESTART` 恢复重发计数，五次封顶）→ 熔断 `EIO`（`57-58`）→ 死信分流（`60-70`：死亡清表 `EIO`、死锁打印 `EIO`、余 panic）→ `OK`（`72`）。
 
 ### 2.2 `bdev_open/close` 对偶机（`bdev.c:78-138`）
 
@@ -74,7 +74,7 @@
 
 ### 2.3 `bdev_ioctl` 授权机（`bdev.c:143-186`）
 
-拆号（`153-154`）→ 查表门（`157-161`，无驱动打印 `ENXIO`）→ 造授权（`164`，19 的解码）→ 组包（`167-173`：`BDEV_IOCTL` 见 `com.h:976`、minor/request/grant/user/id 五字段）→ 发送（`176`）→ 有权即撤销（`179`，`GRANT_VALID` 见 `minix3/minix/include/minix/safecopies.h:53`）→ 失败透传（`182-183`）→ 回状态字（`185`）。
+拆号（`153-154`）→ 查表门（`157-161`，无驱动打印 `ENXIO`）→ 造授权（`164`，19 的解码）→ 组包（`167-173`：`BDEV_IOCTL` 见 `com.h:976`、minor/request/grant/user/id 五字段）→ 发送（`176`）→ 有权即撤销（`179`，`GRANT_VALID` 见 `minix3/minix/include/minix/safecopies.h:GRANT_VALID`）→ 失败透传（`182-183`）→ 回状态字（`185`）。
 
 ### 2.4 `bdev_reply` 三重门（`bdev.c:192-220`）
 
@@ -82,7 +82,7 @@
 
 ### 2.5 `bdev_up` 换人机（`bdev.c:226-282`）
 
-越界 panic（`235`）→ 取标签（`236`）→ filp 重开轮（`243-259`：跳过无效/无 vnode/异 major/非块，取读写位重开，失败清恢复标志全弃，成功记 found）→ vmnt 通告轮（`262-269`：major 命中即投递标签，失败打印继续）→ 有打开则根兜底（`277-281`：`ROOT_FS_E` 见 `minix3/minix/servers/vfs/glo.h:21`，`makedev(maj, 0)`，失败打印继续）。
+越界 panic（`235`）→ 取标签（`236`）→ filp 重开轮（`243-259`：跳过无效/无 vnode/异 major/非块，取读写位重开，失败清恢复标志全弃，成功记 found）→ vmnt 通告轮（`262-269`：major 命中即投递标签，失败打印继续）→ 有打开则根兜底（`277-281`：`ROOT_FS_E` 见 `minix3/minix/servers/vfs/glo.h:EXTERN（L21，工具生成）`，`makedev(maj, 0)`，失败打印继续）。
 
 ---
 
@@ -93,37 +93,37 @@ Rust 改写不是照抄 `bdev.c` 的阻塞循环，而是吸收 Linux/Redox 的�
 ### D1 传输 trait 化
 
 - **C**：`drv_sendrec` 真实传输内嵌重试循环（`bdev.c:44`）。
-- **Rust**：`SendTransport` trait（`ScriptedTransport` 按脚本回放 vs `DeadTransport` 常死亡）+ `transact` 泛型（`os/servers/vfs/src/bdev.rs:77,194`）。
+- **Rust**：`SendTransport` trait（`ScriptedTransport` 按脚本回放 vs `DeadTransport` 常死亡）+ `transact` 泛型（`os/servers/vfs/src/bdev.rs:trait SendTransport,194`）。
 - **为什么**：传输是唯一的不可测点；脚本化使四剧本（直达成功/重启后成功/熔断/死信）可单测。替代方案（函数指针回调）被否决：脚本下标状态自包含，函数指针需外部可变状态。
 
 ### D2 重试状态机
 
 - **C**：`retry_count` 裸计数 + `do/while`（`bdev.c:36-54`）。
-- **Rust**：`RetryState(u8)` + `step(status) -> RetryVerdict::{Done, Again, Exhausted}` + `MAX_RETRIES=5`（`os/servers/vfs/src/bdev.rs:140,42`）。
+- **Rust**：`RetryState(u8)` + `step(status) -> RetryVerdict::{Done, Again, Exhausted}` + `MAX_RETRIES=5`（`os/servers/vfs/src/bdev.rs:struct RetryState（L140，工具生成）,42`）。
 - **为什么**：循环条件与熔断收敛为一函数；原报文恢复义务留调用点（报文所有权归调用者）。替代方案（迭代器 `take(5)`）被否决：重试条件含状态字判断，非纯计数。
 
 ### D3 死信分类
 
 - **C**：死亡清表、死锁打印、余 panic（`bdev.c:60-70`）。
-- **Rust**：`classify_send(status) -> SendFault::{Dead, Locked, Fatal}`（`os/servers/vfs/src/bdev.rs:179`）；`Fatal→EIO`。
+- **Rust**：`classify_send(status) -> SendFault::{Dead, Locked, Fatal}`（`os/servers/vfs/src/bdev.rs:enum SendFault（L179，工具生成）`）；`Fatal→EIO`。
 - **为什么**：三类是三种后续动作的知识；panic→`EIO` 是 ARCH 加固（直达路径无上层可接 panic）。状态码以本地常量表达（202/208/215，三处证据，注释列明）。
 
 ### D4 驱动解析与访问位
 
 - **C**：越界/缺席双门 + 访问位拼合散在 open/close（`bdev.c:86-93,121-124`）。
-- **Rust**：`resolve_driver(major_valid, driver) -> Result` + `access_bits(read, write) -> u8`（`os/servers/vfs/src/bdev.rs:216,224`）。
+- **Rust**：`resolve_driver(major_valid, driver) -> Result` + `access_bits(read, write) -> u8`（`os/servers/vfs/src/bdev.rs:fn resolve_driver（L216，工具生成）,224`）。
 - **为什么**：双门是同一“有人管”知识的两面；拼合是位运算纯知识。位值 sync 树可验证，不编造。
 
 ### D5 回复三验
 
 - **C**：三验嵌套 + 投递唤醒（`bdev.c:198-219`）。
-- **Rust**：`ReplyCheck{known, servicing, worker_ok}` + `check_reply -> Result<(), ReplyIgnore>`（`os/servers/vfs/src/bdev.rs:237,260`）；投递留 09。
+- **Rust**：`ReplyCheck{known, servicing, worker_ok}` + `check_reply -> Result<(), ReplyIgnore>`（`os/servers/vfs/src/bdev.rs:struct ReplyCheck（L237，工具生成）,260`）；投递留 09。
 - **为什么**：合取谓词使 2³ 组合可测；`MUST NOT block` 天然成立（纯判定不等待）。拒因三值使丢弃可观测（C 只打印，本篇可测）。
 
 ### D6 换人谓词与中止
 
 - **C**：重开轮遇错全弃 vs 通告轮遇错继续的不对称（`bdev.c:251-269`）。
-- **Rust**：`reopen_candidate` 四元合取 + `notify_vmnt` + `root_notify` + `reopen_failed_aborts`（`os/servers/vfs/src/bdev.rs:276,281,289,295`）。
+- **Rust**：`reopen_candidate` 四元合取 + `notify_vmnt` + `root_notify` + `reopen_failed_aborts`（`os/servers/vfs/src/bdev.rs:fn reopen_candidate（L276，工具生成）,281,289,295`）。
 - **为什么**：两种失败语义必须显式区分；根兜底的“宁滥勿缺”以文档声明。表扫描留调用点（04/06 管辖）。
 
 ### D7 守卫义务复用
@@ -136,8 +136,8 @@ Rust 改写不是照抄 `bdev.c` 的阻塞循环，而是吸收 Linux/Redox 的�
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | 阻塞传输→trait 脚本 + verdict | `bdev.rs:77,194` + 本文档 D1 + 20 正文 §1.1 |
-| 未知失败 panic→EIO（直达加固） | `SendFault::Fatal` | `bdev.rs:169,179` + 本文档 D3 + 20 正文 §1.3 |
+| A-1 单线程事件循环（mthread→状态机） | 阻塞传输→trait 脚本 + verdict | `os/servers/vfs/src/bdev.rs:trait SendTransport,194` + 本文档 D1 + 20 正文 §1.1 |
+| 未知失败 panic→EIO（直达加固） | `SendFault::Fatal` | `os/servers/vfs/src/bdev.rs:enum SendFault（L169，工具生成）,179` + 本文档 D3 + 20 正文 §1.3 |
 
 ---
 
@@ -159,15 +159,15 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `BDEV_RQ_BASE` | `com.h:963` | `bdev.rs:16` | 0x500 |
-| `BDEV_OPEN/CLOSE/IOCTL` | `com.h:970-976` | `bdev.rs:19,21,23,46` | 选择子 |
-| `BDEV_R/W_BIT` | `com.h:982-983` | `bdev.rs:26,28,224` | 访问位 |
-| 发送状态码 | `errno.h:198-215` | `bdev.rs:34,36,39` | 分类输入 |
-| 重试机 | `bdev.c:33-73` | `bdev.rs:77,87,119,140,194` | 脚本 + 熔断 + 死信 |
-| 解析门 | `bdev.c:86-89` | `bdev.rs:216,224` | 双门 + 拼合 |
-| 回复三验 | `bdev.c:192-220` | `bdev.rs:237,248,260` | 合取 + 拒因 |
-| 换人谓词 | `bdev.c:226-282` | `bdev.rs:276,281,289,295` | 重开/通告/兜底/中止 |
-| 错误族 | `bdev.c` 全文件 | `bdev.rs:304,313 BdevError::to_errno` | 2 变体→errno，无自创 |
+| `BDEV_RQ_BASE` | `com.h:963` | `os/servers/vfs/src/bdev.rs:const BDEV_RQ_BASE` | 0x500 |
+| `BDEV_OPEN/CLOSE/IOCTL` | `com.h:970-976` | `os/servers/vfs/src/bdev.rs:const BDEV_OPEN_OFF,21,23,46` | 选择子 |
+| `BDEV_R/W_BIT` | `com.h:982-983` | `os/servers/vfs/src/bdev.rs:const BDEV_R_BIT,28,224` | 访问位 |
+| 发送状态码 | `errno.h:198-215` | `os/servers/vfs/src/bdev.rs:const SEND_DEAD_SRC_DST,36,39` | 分类输入 |
+| 重试机 | `bdev.c:33-73` | `os/servers/vfs/src/bdev.rs:trait SendTransport,87,119,140,194` | 脚本 + 熔断 + 死信 |
+| 解析门 | `bdev.c:86-89` | `os/servers/vfs/src/bdev.rs:fn resolve_driver（L216，工具生成）,224` | 双门 + 拼合 |
+| 回复三验 | `bdev.c:192-220` | `os/servers/vfs/src/bdev.rs:struct ReplyCheck（L237，工具生成）,248,260` | 合取 + 拒因 |
+| 换人谓词 | `bdev.c:226-282` | `os/servers/vfs/src/bdev.rs:fn reopen_candidate（L276，工具生成）,281,289,295` | 重开/通告/兜底/中止 |
+| 错误族 | `bdev.c` 全文件 | `os/servers/vfs/src/bdev.rs:enum BdevError（L304，工具生成）,313 BdevError::to_errno` | 2 变体→errno，无自创 |
 
 ### 4.3 不变量
 
@@ -187,14 +187,14 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_op_selectors` | `com.h:963-983` + `bdev.c:91-93` | 选择子 + 访问位拼合 | `bdev.rs:326` |
-| `test_resolve_gate_pair` | `bdev.c:88-89,123-124` | 双门 ENXIO | `bdev.rs:339` |
-| `test_retry_fuse` | `bdev.c:41-58` | 直达 + 四次又熔断 | `bdev.rs:348` |
-| `test_send_fault_classes` | `bdev.c:60-70` | 三分类 + 加固 | `bdev.rs:364` |
-| `test_transact_scripts` | `bdev.c:43-72` | 四剧本 + 轮次计数 | `bdev.rs:374` |
-| `test_reply_triple_gate` | `bdev.c:198-215` | 三验拒因 | `bdev.rs:406` |
-| `test_swap_predicates` | `bdev.c:243-281` | 重开/通告/兜底/中止 | `bdev.rs:419` |
-| `test_errno_map_covers_bdev_c` | `bdev.c` 全文件 | 2 变体→errno 全映射 | `bdev.rs:438` |
+| `test_op_selectors` | `com.h:963-983` + `bdev.c:91-93` | 选择子 + 访问位拼合 | `os/servers/vfs/src/bdev.rs:fn to_errno（L326，工具生成）` |
+| `test_resolve_gate_pair` | `bdev.c:88-89,123-124` | 双门 ENXIO | `os/servers/vfs/src/bdev.rs:fn test_op_selectors（L339，工具生成）` |
+| `test_retry_fuse` | `bdev.c:41-58` | 直达 + 四次又熔断 | `os/servers/vfs/src/bdev.rs:fn test_resolve_gate_pair` |
+| `test_send_fault_classes` | `bdev.c:60-70` | 三分类 + 加固 | `os/servers/vfs/src/bdev.rs:fn test_retry_fuse（L364，工具生成）` |
+| `test_transact_scripts` | `bdev.c:43-72` | 四剧本 + 轮次计数 | `os/servers/vfs/src/bdev.rs:fn test_send_fault_classes（L374，工具生成）` |
+| `test_reply_triple_gate` | `bdev.c:198-215` | 三验拒因 | `os/servers/vfs/src/bdev.rs:fn test_transact_scripts（L406，工具生成）` |
+| `test_swap_predicates` | `bdev.c:243-281` | 重开/通告/兜底/中止 | `os/servers/vfs/src/bdev.rs:fn test_reply_triple_gate（L419，工具生成）` |
+| `test_errno_map_covers_bdev_c` | `bdev.c` 全文件 | 2 变体→errno 全映射 | `os/servers/vfs/src/bdev.rs:fn test_reply_triple_gate（L438，工具生成）` |
 
 测试策略：选择子以位值锁定覆盖；门以双 ENXIO 覆盖；重试以直达/四又一熔断覆盖；死信以三分类覆盖；对话以四剧本 + 轮次计数覆盖；回复以 2³ 拒因覆盖；换人以四谓词覆盖；错误以全映射覆盖。
 
@@ -226,7 +226,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/bdev.c:1-282`（`bdev_sendrec/bdev_open/bdev_close/bdev_ioctl/bdev_reply/bdev_up`）、`minix3/minix/include/minix/com.h:963-983`（`BDEV_RQ_BASE/OPEN/CLOSE/IOCTL/R/W_BIT`、`IS_BDEV_RQ`）、`minix3/sys/sys/errno.h:198-215`（`ERESTART/EDEADSRCDST/ELOCKED/EDEADEPT`）、`minix3/minix/include/minix/safecopies.h:53`（`GRANT_VALID`）
+- C 源：`minix3/minix/servers/vfs/bdev.c:1-282`（`bdev_sendrec/bdev_open/bdev_close/bdev_ioctl/bdev_reply/bdev_up`）、`minix3/minix/include/minix/com.h:BDEV_RQ_BASE`（`BDEV_RQ_BASE/OPEN/CLOSE/IOCTL/R/W_BIT`、`IS_BDEV_RQ`）、`minix3/sys/sys/errno.h:EDEADSRCDST`（`ERESTART/EDEADSRCDST/ELOCKED/EDEADEPT`）、`minix3/minix/include/minix/safecopies.h:GRANT_VALID`（`GRANT_VALID`）
 - 阶段文档：`19-device-map.md`（查表与恢复 verdict）、`16-read-write.md`（`bsf` 锁与块分支）、`09-main-loop.md`（回复分流）、`06-vmnt-table.md`（通告对象）、`04-filp-table.md`（重开对象）
-- Rust 实现：`os/servers/vfs/src/bdev.rs:1`（本篇判定层）、`os/servers/vfs/src/device_map.rs:1`（查表层）、`os/servers/vfs/src/mount.rs:1`（编解码对照）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/bdev.rs:1`（本篇判定层）、`os/servers/vfs/src/device_map.rs:1`（查表层）、`os/servers/vfs/src/mount.rs:1`（编解码对照）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（驱动消息拷贝语义）

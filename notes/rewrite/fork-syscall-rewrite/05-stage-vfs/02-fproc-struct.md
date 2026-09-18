@@ -75,7 +75,7 @@ VFS 是 Minix3 唯一的多线程服务器（ARCH A-1）：主线程收消息，
 
 ## 2. C 源码分析
 
-### 2.1 struct fproc 全景（fproc.h:15-82）
+### 2.1 struct fproc 全景（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L15，工具生成））
 
 ```c
 EXTERN struct fproc {
@@ -105,11 +105,11 @@ EXTERN struct fproc {
 } fproc[NR_PROCS];                 /* 82: 全局槽位数组 */
 ```
 
-（`#if LOCK_DEBUG` 下的 `fp_vp_rdlocks`/`fp_vmnt_rdlocks` 属编译期调试计数，fproc.h:78-81，见 plan.md §5.4 A-9。）
+（`#if LOCK_DEBUG` 下的 `fp_vp_rdlocks`/`fp_vmnt_rdlocks` 属编译期调试计数，minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L78，工具生成），见 plan.md §5.4 A-9。）
 
 槽位空闲判定**不靠 flag**，靠双哨兵：`fp_pid == PID_FREE(0)` 且 `fp_endpoint == NONE`（main.c:405-408 初始化，`is_in_use` 判据）。
 
-### 2.2 fp_flags：六位进程状态（fproc.h:91-98）
+### 2.2 fp_flags：六位进程状态（minix3/minix/servers/vfs/fproc.h:fp_sdev（L91，工具生成））
 
 | 位 | 值 | 宏 | 含义与设置方 |
 |----|-----|----|-------------|
@@ -117,13 +117,13 @@ EXTERN struct fproc {
 | 0 | 0001 | `FP_SRV_PROC` | 系统服务进程（`VFS_PM_SRV_FORK` 创建） |
 | 1 | 0002 | `FP_REVIVED` | 正在从挂起恢复（pipe/lock 恢复路径置位，pipe.c:455-461） |
 | 2 | 0004 | `FP_SESLDR` | 会话领导者（`pm_setsid` 置位，misc.c:790-791） |
-| 4 | 0010 | `FP_PENDING` | 有待处理工作（worker_allow 门控期间置位，worker.c:176-184） |
+| 4 | 0010 | `FP_PENDING` | 有待处理工作（worker_allow 门控期间置位，minix3/minix/servers/vfs/worker.c:worker_allow（L176，工具生成）） |
 | 5 | 0020 | `FP_EXITING` | 正在退出（`pm_exit` 置位后开始清理 fd，归 10/26） |
 | 6 | 0040 | `FP_PM_WORK` | 有延迟的 PM 请求（service_pm_postponed，归 10） |
 
 注意位 3（0x0008）未使用。标志与阻塞状态正交：`FP_REVIVED` 只出现在阻塞恢复路径中，但它修饰"恢复进行中"这一**瞬时状态**，与"阻塞原因"（`fp_blocked_on`）是两个维度（`revive` 里两者并存，pipe.c:455-461）。
 
-### 2.3 fp_blocked_on + fp_u：判别式 + 联合体（const.h:19-25, fproc.h:30-61）
+### 2.3 fp_blocked_on + fp_u：判别式 + 联合体（const.h:19-25, minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L30，工具生成））
 
 阻塞常量：
 
@@ -137,7 +137,7 @@ EXTERN struct fproc {
 #define FP_BLOCKED_ON_SDEV	6 /* blocked on socket I/O */
 ```
 
-`fp_is_blocked(fp)` 宏即 `fp_blocked_on != FP_BLOCKED_ON_NONE`（const.h:28）。五个联合体成员（SELECT 无载荷，fproc.h:46 注释 "nothing for FP_BLOCKED_ON_SELECT for now"）：
+`fp_is_blocked(fp)` 宏即 `fp_blocked_on != FP_BLOCKED_ON_NONE`（const.h:28）。五个联合体成员（SELECT 无载荷，minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L46，工具生成） 注释 "nothing for FP_BLOCKED_ON_SELECT for now"）：
 
 | 成员 | 字段 | 行号 | 置位方 | 恢复方 |
 |------|------|------|--------|--------|
@@ -145,27 +145,27 @@ EXTERN struct fproc {
 | `u_popen` | `fd` | 38-40 | FIFO open 阻塞（pipe.c:304 计入 susp_count） | `revive` 直接回 fd（pipe.c:463-465） |
 | `u_flock` | `fd`、`cmd`（恒为 F_SETLKW）、`arg`（用户 flock 结构地址） | 41-45 | `lock.c:96` suspend(F_SETLKW) | `lock_revive`（lock.c:172） |
 | （无） | — | 46 | `select.c:339` suspend(SELECT) | `select_callback`/定时器 |
-| `u_cdev` | `dev`、`endpt`（驱动 endpoint）、`grant`（数据 grant） | 47-51 | `cdev.c:339` suspend(CDEV) | `cdev_reply`（cdev.c:481，按 endpt 路由） |
-| `u_sdev` | `dev`、`callnr`（原 socket 调用）、`grant[3]`、`aux`（fd 或 buf） | 52-60 | `sdev_suspend`（sdev.c:83-110） | `sdev_finish` 按 `callnr` 分流（sdev.c:783-916） |
+| `u_cdev` | `dev`、`endpt`（驱动 endpoint）、`grant`（数据 grant） | 47-51 | `minix3/minix/servers/vfs/cdev.c:cdev_io（L339，工具生成）` suspend(CDEV) | `cdev_reply`（minix3/minix/servers/vfs/cdev.c:cdev_reply，按 endpt 路由） |
+| `u_sdev` | `dev`、`callnr`（原 socket 调用）、`grant[3]`、`aux`（fd 或 buf） | 52-60 | `sdev_suspend`（minix3/minix/servers/vfs/sdev.c:sdev_suspend） | `sdev_finish` 按 `callnr` 分流（minix3/minix/servers/vfs/sdev.c:sdev_finish（L783，工具生成）） |
 
-C 的联合体语义：**判别式与载荷分离存储**——`fp_pipe` 只是 `fp_u.u_pipe` 的宏别名（fproc.h:85），即使 `fp_blocked_on == FP_BLOCKED_ON_CDEV`，代码仍能写 `fp_pipe.fd`。这一"未定义但可编译"的状态正是 Rust 标签枚举消灭的（§3.2）。
+C 的联合体语义：**判别式与载荷分离存储**——`fp_pipe` 只是 `fp_u.u_pipe` 的宏别名（minix3/minix/servers/vfs/fproc.h:fp_pipe），即使 `fp_blocked_on == FP_BLOCKED_ON_CDEV`，代码仍能写 `fp_pipe.fd`。这一"未定义但可编译"的状态正是 Rust 标签枚举消灭的（§3.2）。
 
 `suspend()` 的通用入口（pipe.c:302-309）断言当前不阻塞，置位 `fp_blocked_on` 并对 PIPE/POPEN 计数 `susp_count`；主循环收到 `SUSPEND` 返回码时不回复（ARCH A-5，归 09）。
 
-### 2.4 凭证字段（fproc.h:63-69）
+### 2.4 凭证字段（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L63，工具生成））
 
 - **权限检查输入**：`forbidden()`（protect.c:238-）用 `fp_effuid`/`fp_effgid` + 遍历 `fp_sgroups` 判断访问权；`super_user` 宏即 `fp_effuid == SU_UID(0)`（glo.h:33）。
 - **umask**：`do_umask` 更新 `fp_umask = ~(new_umask & RWX_MODES)`，返回旧值（protect.c:182-190）；新建文件权限 = 创建模式 `~fp_umask`。
 - **boot 身份**：VFS_PM_INIT 握手时系统进程一律 `uid/gid = 0`、`umask = ~0`（main.c:419-425，const.h:16-17 `SYS_UID`）。
 - **变更入口**：`pm_setuid`/`pm_setgid`/`pm_setgroups`（归 10）直接改写这些字段；fork 整体复制继承。
 
-### 2.5 槽位关联字段：锁与消息缓冲（fproc.h:71-75）
+### 2.5 槽位关联字段：锁与消息缓冲（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L71，工具生成））
 
 这四个字段服务于 VFS 的并发模型，不是进程"身份"：
 
 - `fp_lock`：保护 fproc 对象的互斥锁。**关键不变量：锁属于槽，不属于进程**——pm_fork 整体复制前先保存子槽自己的锁，复制后恢复（misc.c:606-608），否则父子会共享一把锁。ARCH A-6。
-- `fp_worker`：当前处理该进程请求的 worker 线程（worker.c:137/208/249/283 维护）。
-- `fp_func` + `fp_msg` + `fp_pm_msg`：挂起工作的 handler 与消息缓冲——`worker_suspend` 把进程消息存入 `fp_msg`、handler 存入 `fp_func`，`FP_PM_WORK` 时存 `fp_pm_msg`（worker.c:260-283, 389-416）。
+- `fp_worker`：当前处理该进程请求的 worker 线程（minix3/minix/servers/vfs/worker.c:worker_assign（L137，工具生成）/208/249/283 维护）。
+- `fp_func` + `fp_msg` + `fp_pm_msg`：挂起工作的 handler 与消息缓冲——`worker_suspend` 把进程消息存入 `fp_msg`、handler 存入 `fp_func`，`FP_PM_WORK` 时存 `fp_pm_msg`（minix3/minix/servers/vfs/worker.c:worker_main（L260，工具生成）, 389-416）。
 
 这三者（worker 关联 + 消息缓冲）在 Rust 中移到请求槽（§3.4）。
 
@@ -181,9 +181,9 @@ C 的联合体语义：**判别式与载荷分离存储**——`fp_pipe` 只是 
 
 Rust 侧当前提供 `VfsState::handle_pm_fork` 骨架（main_loop.rs：父槽校验、子槽空闲检查、写 `pid`/`endpoint`/`flags = NOFLAGS`），对应上段的前半部；整体复制主体（`FProc: Clone` + `filp_count`/`dup_vnode`）归 `10-pm-protocol.md`。
 
-### 2.7 fproc_light（fproc.h:111-115）
+### 2.7 fproc_light（minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成））
 
-MIB 服务拉取的轻量投影（`fpl_tty`/`fpl_blocked_on`/`fpl_task`），由 `do_getsysinfo(SI_PROCLIGHT_TAB)` 填充（misc.c:81-97）。**归 `03-fproc-table.md`**（表面操作），本篇不展开；注意 fproc.h:114 的注释 "copy of fproc.fp_task" 是过时注释——实际取自 `fp_cdev.endpt`/`smap_endpt`（misc.c:88-93）。
+MIB 服务拉取的轻量投影（`fpl_tty`/`fpl_blocked_on`/`fpl_task`），由 `do_getsysinfo(SI_PROCLIGHT_TAB)` 填充（misc.c:81-97）。**归 `03-fproc-table.md`**（表面操作），本篇不展开；注意 minix3/minix/servers/vfs/fproc.h:PID_FREE（L114，工具生成） 的注释 "copy of fproc.fp_task" 是过时注释——实际取自 `fp_cdev.endpt`/`smap_endpt`（misc.c:88-93）。
 
 ---
 
@@ -201,7 +201,7 @@ MIB 服务拉取的轻量投影（`fpl_tty`/`fpl_blocked_on`/`fpl_task`），由
 三个事实决定了本设计的形状：
 
 1. **`fproc` 只在本服务内被访问**——没有跨子系统共享，所以不需要 Linux 式引用计数子结构，保留平铺结构 + `Clone` 即 fork 复制（misc.c:607 语义）。
-2. **fd 表是数组而非 map**——`OPEN_MAX=255` 定长（syslimits.h:38，`__minix` 构建下非 NetBSD 回退值 128）、下标即 fd、O(1) 随机访问，与 Minix3 `fp_filp[OPEN_MAX]` 一致；Redox 用 `BTreeMap` 是因为 fd 空间稀疏且方案不同，这里定长数组 + `Option` 更诚实（04 文档展开 filp 表）。
+2. **fd 表是数组而非 map**——`OPEN_MAX=255` 定长（minix3/sys/sys/syslimits.h:OPEN_MAX，`__minix` 构建下非 NetBSD 回退值 128）、下标即 fd、O(1) 随机访问，与 Minix3 `fp_filp[OPEN_MAX]` 一致；Redox 用 `BTreeMap` 是因为 fd 空间稀疏且方案不同，这里定长数组 + `Option` 更诚实（04 文档展开 filp 表）。
 3. **类型系统替代"注释即契约"**——C 里 `fp_pipe.callnr` 只能注释为 "VFS_READ or VFS_WRITE"；Rust 用 `PipeIo` 枚举让错误值**不可表示**。
 
 **总原则**：不 1:1 翻译（每个字段类型化、联合体改标签枚举、哨兵改 `Option`），也不为抽象而抽象（保留平铺结构与 fork 复制语义，不引入 `Arc`/`RefCell` 等单线程下无必要的间接）。
@@ -222,7 +222,7 @@ pub enum BlockedOn {
 
 - **判别式与载荷合一**：变体即判别式，载荷是变体的字段。C 里"`fp_blocked_on=CDEV` 但读 `fp_pipe.fd`"能编译；Rust 里从 `BlockedOn::Cdev` 提取 `PipeBlock` 是编译错误。这是 sum type 对"注释即契约"的根本改善。
 - **五个载荷结构**对应 C 的五个匿名 struct，字段全部类型化：`PipeBlock { call: PipeIo, fd, buf: VirBytes, nbytes, cum_io }`、`PipeOpenBlock { fd }`、`FlockBlock { fd, cmd: FlockCmd, arg: VirBytes }`、`CdevBlock { dev: DevId, endpt: Endpoint, grant: Option<GrantId> }`、`SdevBlock { dev, call: SdevCall, grants: [Option<GrantId>; 3], aux: SdevAux }`。
-- **子类型化**：`PipeIo::{Read,Write}`（pipe.c:399-407 只有这两种）、`FlockCmd::SetLkw`（fproc.h:43 "always F_SETLKW"，F_GETLK/F_SETLK 不阻塞故不可表示）、`SdevCall`（11 个可挂起调用，sdev_finish 分流证据见 §4.2）、`SdevAux::{Fd,Buf,None}`（fproc.h:56-59）。
+- **子类型化**：`PipeIo::{Read,Write}`（pipe.c:399-407 只有这两种）、`FlockCmd::SetLkw`（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L43，工具生成） "always F_SETLKW"，F_GETLK/F_SETLK 不阻塞故不可表示）、`SdevCall`（11 个可挂起调用，sdev_finish 分流证据见 §4.2）、`SdevAux::{Fd,Buf,None}`（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L56，工具生成））。
 
 ### 3.2 类型化字段（ARCH A-8）
 
@@ -233,12 +233,12 @@ C 裸标量 → Rust 新类型/别名（`minix-types`）：
 | `pid_t` | `Pid` (i32) | 已有 |
 | `endpoint_t` | `Endpoint` | 已有；`NONE` 哨兵保留（`is_none()`） |
 | `uid_t`/`gid_t` | `Uid`/`Gid` (u32) | 已有 |
-| `dev_t` (u64) | `DevId` (u64) | **本次新增**（minix3/sys/sys/types.h:187 `uint64_t`） |
+| `dev_t` (u64) | `DevId` (u64) | **本次新增**（minix3/sys/sys/types.h:caddr_t（L187，工具生成） `uint64_t`） |
 | `mode_t` (u32) | `Mode` (u32) | **本次新增**（ansi.h:41 `__uint32_t`） |
 | `cp_grant_id_t` (i32) | `GrantId` (i32) | **本次新增**（type.h `int32_t`） |
 | `vir_bytes` | `VirBytes` (u64) | 已有；用户缓冲地址 |
 
-新增三个别名加 `NO_DEV = 0` 常量（minix3/minix/include/minix/const.h:132），全部落在 `minix-types/src/types/id.rs`，与 Uid/Gid/Pid 同一模式（别名而非新类型，因为它们在 ABI/算术中天然互操作）。`NO_DEV` 保留哨兵而非 `Option<DevId>`，理由见 §3.5。
+新增三个别名加 `NO_DEV = 0` 常量（minix3/minix/include/minix/const.h:NO_DEV），全部落在 `minix-types/src/types/id.rs`，与 Uid/Gid/Pid 同一模式（别名而非新类型，因为它们在 ABI/算术中天然互操作）。`NO_DEV` 保留哨兵而非 `Option<DevId>`，理由见 §3.5。
 
 ### 3.3 fp_lock 属于槽：单线程下的降级（ARCH A-6）
 
@@ -252,8 +252,8 @@ C 用 `mutex_t fp_lock` 保护 fproc 并发访问，pm_fork 必须"保存→复�
 
 这四个字段是**请求执行期状态**而非进程身份：
 
-- `fp_worker`（哪个 worker 在处理）→ 反向关联已在 `WorkerThread.fp_slot: Option<UserSlot>`（worker.rs:48）。只保留一个方向，避免双向指针维护。
-- `fp_func`（待执行 handler）→ `WorkerThread.func: Option<WorkerFunc>`（worker.rs:57，`WorkerFunc::DoWork/PmReboot/...` 枚举，替代 C 函数指针）。
+- `fp_worker`（哪个 worker 在处理）→ 反向关联已在 `WorkerThread.fp_slot: Option<UserSlot>`（os/servers/vfs/src/worker.rs:enum WorkerFunc（L48，工具生成））。只保留一个方向，避免双向指针维护。
+- `fp_func`（待执行 handler）→ `WorkerThread.func: Option<WorkerFunc>`（os/servers/vfs/src/worker.rs:enum WorkerFunc（L57，工具生成），`WorkerFunc::DoWork/PmReboot/...` 枚举，替代 C 函数指针）。
 - `fp_msg`（进程的挂起消息）→ 请求槽的 `w_m_in`（worker 执行时装载）；`VfsState.current_message` 承载"正在处理的消息"（A-4 聚合）。
 - `fp_pm_msg`（延迟的 PM 请求）→ 归 `10-pm-protocol.md` 的 service_pm_postponed 状态机，不在 fproc 结构里。
 
@@ -263,7 +263,7 @@ C 用 `mutex_t fp_lock` 保护 fproc 并发访问，pm_fork 必须"保存→复�
 
 | C 哨兵 | 本设计 | 理由 |
 |--------|--------|------|
-| `fp_tty = 0`（NO_DEV） | `tty: DevId` + `NO_DEV` 常量 | `fp_tty` 直接参与设备号相等比较（cdev.c:46-49/185-189、misc.c:683-687），`Option<DevId>` 会让每个比较点多一次解包；`NO_DEV` 是命名的领域常量而非魔法 0 |
+| `fp_tty = 0`（NO_DEV） | `tty: DevId` + `NO_DEV` 常量 | `fp_tty` 直接参与设备号相等比较（minix3/minix/servers/vfs/cdev.c:cdev_map（L46，工具生成）/185-189、misc.c:683-687），`Option<DevId>` 会让每个比较点多一次解包；`NO_DEV` 是命名的领域常量而非魔法 0 |
 | `GRANT_INVALID`（-1） | `Option<GrantId>` | grant 只做"有/无"判断（`GRANT_VALID`）与吊销（`cpf_revoke`），`Option` 让"无 grant"不可误用为 id |
 
 ### 3.6 字段映射总表
@@ -274,7 +274,7 @@ C 用 `mutex_t fp_lock` 保护 fproc 并发访问，pm_fork 必须"保存→复�
 | `fp_pid`/`fp_endpoint` | `FProc.pid`/`FProc.endpoint` | 保留；`PID_FREE`/`Endpoint::NONE` 双哨兵 |
 | `fp_wd`/`fp_rd` | `work_dir`/`root_dir: Option<usize>` | 全局 vnode 表下标 |
 | `fp_filp[]` | `filps: [Option<usize>; OPEN_MAX]` | 全局 filp 表下标 |
-| `fp_cloexec_set` | `cloexec_set: Bitmap`（255 位，`size = OPEN_MAX`） | 255 位 fd 位图，匹配 `fd_set`（FD_SETSIZE=255，fd_set.h:60） |
+| `fp_cloexec_set` | `cloexec_set: Bitmap`（255 位，`size = OPEN_MAX`） | 255 位 fd 位图，匹配 `fd_set`（FD_SETSIZE=255，minix3/sys/sys/fd_set.h:FD_SETSIZE） |
 | `fp_tty` | `tty: DevId` | NO_DEV 哨兵（§3.5） |
 | `fp_blocked_on`+`fp_u` | `blocked_on: BlockedOn` | 标签枚举（A-3） |
 | 凭证 8 字段 | `real_uid`/`eff_uid`/`real_gid`/`eff_gid`/`ngroups`/`supplemental_groups`/`umask: Mode` | 类型化 |
@@ -311,9 +311,9 @@ $ rg -n 'sdev_suspend\(' minix3/minix/servers/vfs/sdev.c
 635:  return sdev_suspend(...)         # sdev_close → CLOSE
 ```
 
-`shutdown` 走同步 `sdev_simple`（sdev.c:592-598），`getsockopt`/`setsockopt`/`getsockname`/`getpeername` 走同步 `sdev_sendrec`（sdev.c:505-546），均**不挂起**，故不在枚举内——注释明示负空间，防未来误加。`SdevAux` 三态（`Fd`/`Buf`/`None`）对应 fproc.h:56-59 的 aux union + "else 分支两者皆无"（sdev.c:104-107 的 assert）。
+`shutdown` 走同步 `sdev_simple`（minix3/minix/servers/vfs/sdev.c:sdev_shutdown），`getsockopt`/`setsockopt`/`getsockname`/`getpeername` 走同步 `sdev_sendrec`（minix3/minix/servers/vfs/sdev.c:sdev_get（L505，工具生成）），均**不挂起**，故不在枚举内——注释明示负空间，防未来误加。`SdevAux` 三态（`Fd`/`Buf`/`None`）对应 minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L56，工具生成） 的 aux union + "else 分支两者皆无"（minix3/minix/servers/vfs/sdev.c:sdev_suspend（L104，工具生成） 的 assert）。
 
-**`FlockCmd::SetLkw`** 单变体枚举表达"唯一可阻塞的 fcntl 命令"（fproc.h:43 注释），`F_GETLK`/`F_SETLK` 立即返回故不可表示——与 PM 侧 `IpcBlockReason::VfsCall { reply_to_new_parent }` 的"非法组合不可表示"模式同型。
+**`FlockCmd::SetLkw`** 单变体枚举表达"唯一可阻塞的 fcntl 命令"（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L43，工具生成） 注释），`F_GETLK`/`F_SETLK` 立即返回故不可表示——与 PM 侧 `IpcBlockReason::VfsCall { reply_to_new_parent }` 的"非法组合不可表示"模式同型。
 
 ### 4.3 FProc 方法
 
@@ -328,7 +328,7 @@ $ rg -n 'sdev_suspend\(' minix3/minix/servers/vfs/sdev.c
 
 ### 4.5 minix-types 新增（types/id.rs）
 
-`DevId = u64`、`Mode = u32`、`GrantId = i32` 三个别名 + `NO_DEV = 0` 常量（minix3/minix/include/minix/const.h:132）。与 Uid/Gid/Pid 同模式，为后续设备文档（19~22）与 fcntl 文档（30）复用。
+`DevId = u64`、`Mode = u32`、`GrantId = i32` 三个别名 + `NO_DEV = 0` 常量（minix3/minix/include/minix/const.h:NO_DEV）。与 Uid/Gid/Pid 同模式，为后续设备文档（19~22）与 fcntl 文档（30）复用。
 
 ### 4.6 关键不变量
 
@@ -345,7 +345,7 @@ $ rg -n 'sdev_suspend\(' minix3/minix/servers/vfs/sdev.c
 
 **`minix-types`（types/id.rs，+3 个）**：
 
-- `test_dev_no_dev_sentinel`：`NO_DEV == 0`（minix3/minix/include/minix/const.h:132）。
+- `test_dev_no_dev_sentinel`：`NO_DEV == 0`（minix3/minix/include/minix/const.h:NO_DEV）。
 - `test_mode_is_32bit`：`Mode` 占 4 字节（ansi.h:41）。
 - `test_grant_id_is_32bit`：`GrantId` 占 4 字节（type.h）。
 
@@ -353,7 +353,7 @@ $ rg -n 'sdev_suspend\(' minix3/minix/servers/vfs/sdev.c
 
 - `test_fproc_is_blocked_tagged_enum`：Pipe 载荷携带恢复参数；切到 Cdev 变体后提取 Pipe 字段是编译错误（注释锁定类型安全收益）。
 - `test_blocked_on_payload_roundtrip`：Pipe/Flock/Sdev 载荷构造与相等性。
-- `test_fp_flags_values_match_c`：6 个位值与 fproc.h:92-98 逐位锁定（0x0001/0x0002/0x0004/0x0010/0x0020/0x0040）。
+- `test_fp_flags_values_match_c`：6 个位值与 minix3/minix/servers/vfs/fproc.h:FP_NOFLAGS 逐位锁定（0x0001/0x0002/0x0004/0x0010/0x0020/0x0040）。
 - 其余 8 个（`new_unused`/`is_in_use`/`default`/表操作/`init_phase2`/标志位操作）沿用修订。
 
 ### 5.2 测试总数声明

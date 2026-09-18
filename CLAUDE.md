@@ -106,7 +106,7 @@ The review system enforces structured review via 9 domain skills (in `prompt/ski
 You MUST invoke Skill tools explicitly via the available `Skill` function. NEVER rely on "rules already loaded" or "context already has it". The Skill Invocation Log in scan.md must reflect actual Skill tool calls, not planned/intended calls.
 
 ### Blocker Gates (must pass before Final Review)
-- **Gate 0**: Artifact inventory — standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains **9** grep-verifiable anchor sections (Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果** / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory). Missing `Step 0: 预检结果` section → Gate 0 FAIL + **模式 69 PSMD 触发**.
+- **Gate 0**: Artifact inventory — standard paths complete (STATE/scan/structure/SYMBOLS); scan.md contains **9** grep-verifiable anchor sections (Skill Invocation Log / Blocker Gates Status / **Step 0: 预检结果** — must include 关联代码清单 [related-code list, B4.2] — / Step 1 / 1.5 / 2 / 3.5 / Issue List / Artifact Inventory). Missing `Step 0: 预检结果` section → Gate 0 FAIL + **模式 69 PSMD 触发**.
 - **Gate A**: Coverage enumeration — `coverage-extract.py` executed + SYMBOLS.md path in scan.md + `gate-evidence-A` block with command + stdout
 - **Gate B**: Diff extraction — Top 5 behavior contract table (3 语义偏移 + 2 覆盖缺口, **8 fields × 5 funcs**)
 - **Gate C**: Precision check — 5 meta-rules check table output
@@ -171,22 +171,21 @@ Before correctness checks, generate `structure.md` (12-section skeleton analysis
 | **Doc-Sync-2** | 文档路径与 `find` 不一致 | `find os/{dir} -name X.rs` vs `rg "path" {doc}.md` | 目录重组后 doc 未更新（pattern #73b）|
 | **Doc-Sync-3** | 虚构常量（C 源码中不存在）| `rg "{MACRO_NAME}" minix3` | 1.0 → 0 hits（pattern #73 / 67）|
 | **Doc-Sync-4** | 文档内部 TODO 未走流程 | `rg "^\s*>\s*\*\*TODO" {doc}.md` | 多个 TODO 标记未分类（Step 0.7.2）|
-| **Doc-Sync-5** | C 源码行号主动抽样 | `sed -n 'N,Mp' {c_file}` | doc 行号范围与实际不符（Step 1.0a）|
+| **Doc-Sync-5** | 符号锚点解析（行号只作工具派生提示） | `tools/anchor-resolve.sh --check {doc}.md` | 符号锚点 0 定义 → P0-fact；手工行号漂移归卫生项（Step 1.0，D5）|
 | **Doc-Sync-6** | 文档路径缺 `os/` 前缀 | `rg "kernel/src/" {doc}.md` vs `rg "os/kernel/src/" {doc}.md` | 跨文档路径风格不一致（pattern #74，Step 1.0c）|
 | **Doc-Sync-7** | 测试数量声称偏差 >50% | `rg "约 \d+|总计.*\d+" {doc}.md` vs `cargo test` | doc undercount（Step 4.5a）|
 
 **工作流**：
-1. Step 1.0a：抽取 doc 中 5-10 个 `file:line` 引用，**主动**用 `sed` 验证
-2. Step 1.0b：扫描 doc 代码块，对比实际 Rust 代码 idioms（pattern #73）
-3. Step 1.0c：扫描 doc 路径约定，与早期 doc 跨文档一致性（pattern #74）
+1. Step 1.0：锚点解析——`tools/anchor-resolve.sh --check` 校验文档符号锚点（0 定义 → P0-fact；行号只允许工具派生提示，D5）
+2. Step 1.0b（保留于 doc-checklist §2.4b，模式 73）：扫描 doc 代码块，对比实际 Rust 代码 idioms
+3. Step 1.0c（保留于 doc-checklist §2.4c，模式 74）：扫描 doc 路径约定，与早期 doc 跨文档一致性
 4. Step 4.5a：扫描 doc 测试数量声称，与 `cargo test` 实际对比
 5. Step 0.7.2：扫描 doc 内部 TODO 标记（不依赖外部 `tmp_design_and_todo/`）
 6. 修复顺序：P1（P0 安全/内存）→ P1 doc-code 漂移 → P2 → backlog
 
 **详细规则**：
-- `.claude/rules/review-process.md §Step 1.0a`（行号主动抽样）
-- `.claude/rules/review-process.md §Step 1.0b`（Rust 代码示例同步扫描）
-- `.claude/rules/review-process.md §Step 1.0c`（doc path convention 一致性，NEW）
+- `.claude/rules/review-process.md §Step 1.0`（锚点解析，D5 收编原 1.0a~1.0g）
+- `.claude/rules/review-process.md §Step 1.0b/1.0c 职责`（迁移至 review-doc-checklist §2.4b/§2.4c，模式 73/74）
 - `.claude/rules/review-process.md §Step 4.5a`（测试数量偏差检查，NEW）
 - `.claude/rules/review-process.md §Step 0.7.2`（doc 内部 TODO 扫描）
 - `.claude/rules/review-core.md §VERIFY-CHECK 同 Agent 局限`
@@ -243,16 +242,16 @@ See `prompt/skill/review-process-skill.md` §Step 7.1.
 | **§2.4h 代码注释 doc 归属交叉检查** | ✅ 已落地（review-doc-skill，Pattern #76 配套） | Doc 05 (07-31) |
 | **§2.4i L3 grep 主动验证**（NEW 2026-07-31）| ✅ 已落地（Doc 07 §5.4 6/6 stub 行号验证成功） | Doc 06 → Doc 07 |
 | **§2.4j 测试总数末段补充**（NEW 2026-07-31）| ✅ 已落地（Doc 07 末段 29/120 tests 补充） | Doc 06 → Doc 07 |
-| **Step 1.0a-自动 反向偏移自动重算** | ⏸ Proposal #7 增强 | Doc 06 (07-31) |
+| **Step 1.0a-自动 反向偏移自动重算** | ✅ 已落地（D5 改写，2026-09-18）：行号自动化作废，反向偏移由符号锚点结构性消除 | Doc 06 (07-31) |
 | **Step 7.1 触发停止规则 3**（NEW 2026-07-31）| ✅ 已应用（Doc 07 review 即触发） | Doc 07 (07-31) |
 | **Pattern #66 RCPD doc 主动应用**（NEW 2026-07-31）| ✅ Doc 07 §5.4 显式应用 | Doc 07 (07-31) |
-| **Proposal #7 自动化行号校验脚本** | ⏸ 待用户确认后开发 `tools/review-line-check.sh`（**增强**：反向偏移自动重算） | Doc 03 (07-31) |
+| **Proposal #7 自动化行号校验脚本** | ✅ 已落地（D5 改写，2026-09-18）：行号自动化作废，改为符号锚点迁移（`tools/anchor-resolve.sh` + `tools/anchor-migrate.sh`） | Doc 03 (07-31) |
 | **Proposal #8 测试数量准确性机制** | ⏸ doc §5 强制格式 + CI 钩子（**增强**：测试总数末段补充） | Doc 03 (07-31) |
 | **Proposal #9 Double-check 关键 Finding** | ✅ 已应用（修复前必验证） | Doc 03 (07-31) |
 | **Proposal #10 Pattern #75 Doc See-Also Range Drift** | ✅ 已落地 | Doc 04 (07-31) |
 | **Proposal #11 Pattern #76 Cross-Doc Attribution Drift** | ✅ 已落地 | Doc 05 (07-31) |
 | **Proposal #12 design.md §X-Y "权威位置"段** | ⏸ 待用户确认后落地 | Doc 05 (07-31) |
-| **Proposal #13 Step 1.0a-自动 反向偏移自动重算** | ⏸ Proposal #7 增强 | Doc 06 (07-31) |
+| **Proposal #13 Step 1.0a-自动 反向偏移自动重算** | ✅ 已落地（D5 改写，2026-09-18）：符号锚点结构性消除反向偏移 | Doc 06 (07-31) |
 | **Proposal #14 L3 grep 主动验证（§2.4i）** | ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
 | **Proposal #15 测试总数末段补充（§2.4j）** | ✅ 已落地（Doc 07 验证成功） | Doc 06 → Doc 07 |
 | **Proposal #16 Step 7.1 触发停止规则 3**（NEW 2026-07-31）| ✅ 已应用 | Doc 07 (07-31) |

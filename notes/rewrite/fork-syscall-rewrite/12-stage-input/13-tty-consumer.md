@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-05，首版完整文档）
 > **定位**: 转交事件的终端侧消费、握手应答、灯光回授（阶段 7，外部消费者；第 09 篇转交的接收方、第 10 篇置灯的发起方）
-> **源码**: `minix3/minix/drivers/tty/tty/arch/i386/keyboard.c:30-61,124-176,369-384`（缓冲定义、锁定位、`do_input`、`set_leds`）+ `minix3/minix/drivers/tty/tty/tty.c:205-214`（消息接入）+ `minix3/minix/include/minix/keymap.h:163`（扫描码总数）
+> **源码**: `minix3/minix/drivers/tty/tty/arch/i386/keyboard.c:KB_IN_BYTES,124-176,369-384`（缓冲定义、锁定位、`do_input`、`set_leds`）+ `minix3/minix/drivers/tty/tty/tty.c:main（L205，工具生成）`（消息接入）+ `minix3/minix/include/minix/keymap.h:NR_SCAN_CODES`（扫描码总数）
 > **Rust 模块**: 无（外部契约：终端重写归驱动阶段，本篇只定契约；号码与载荷引用第 05 篇，事件含义引用第 04 篇，接口对照见第 4 章映射表）
 > **目标读者**: 想理解"输入服务转交的事件到了终端之后经历什么、终端何时回头调灯"的读者。前置知识：第 05 篇（转交与宣告号）、第 09 篇（转交条件）、第 10 篇（置灯发送方）。
 > **本章不讲什么**: 终端内部的键盘映射、控制台、行规程（驱动阶段，只讲输入相关的三件事）；输入服务侧（第 01-11 篇，只对照）；驱动侧（第 12、第 14 篇）。

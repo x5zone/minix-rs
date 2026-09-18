@@ -26,7 +26,7 @@
 | `INPUT_SETLEDS` | `0x1501` | com.h:891 | 终端→服务、服务→驱动 | led_mask | 10/13 |
 | `INPUT_EVENT` | `0x1580` | com.h:893 | 驱动→服务 | id/page/code/value/flags | 09/12 |
 
-字符设备请求与回信（框架面，输入侧判决权威 `servers/input/src/framework.rs`，共享库同值面在 `os/libs/minix-chardriver/src/protocol.rs`——其 `CDEV_REPLY_BASE` 错值见第 2 节末注）：`CDEV_RQ_BASE 0x400`、七个请求 `CDEV_OPEN..CDEV_SELECT 0x400-0x406`（com.h:919-932）；应答基址 `CDEV_RS_BASE 0x480`、`CDEV_REPLY 0x480`/`CDEV_SEL1_REPLY 0x481`/`CDEV_SEL2_REPLY 0x482`（com.h:920，935-937）；块设备开门 `BDEV_RQ_BASE 0x500`（com.h:963，字符框架对它代答 ENXIO）。**注意**：`os/libs/minix-chardriver/src/protocol.rs:22` 的 `CDEV_REPLY_BASE = 0x500` 是已知错值（应为 0x480），登记在 edge E-CDRCONV，勿引用。
+字符设备请求与回信（框架面，输入侧判决权威 `servers/input/src/framework.rs`，共享库同值面在 `os/libs/minix-chardriver/src/protocol.rs`——其 `CDEV_REPLY_BASE` 错值见第 2 节末注）：`CDEV_RQ_BASE 0x400`、七个请求 `CDEV_OPEN..CDEV_SELECT 0x400-0x406`（com.h:919-932）；应答基址 `CDEV_RS_BASE 0x480`、`CDEV_REPLY 0x480`/`CDEV_SEL1_REPLY 0x481`/`CDEV_SEL2_REPLY 0x482`（com.h:920，935-937）；块设备开门 `BDEV_RQ_BASE 0x500`（com.h:963，字符框架对它代答 ENXIO）。**注意**：`os/libs/minix-chardriver/src/protocol.rs:const CDEV_REPLY_BASE（L22，工具生成）` 的 `CDEV_REPLY_BASE = 0x500` 是已知错值（应为 0x480），登记在 edge E-CDRCONV，勿引用。
 
 全单向纪律：五种 input 消息都没有真回信（com.h:886 "no real replies"）；服务的"回信"只发生在 CDEV 协议里，是对文件系统的回答，与驱动协议无关（A-9）。
 
@@ -50,7 +50,7 @@
 | 驱动类型位 | `INPUT_DEV_KBD 0x01`、`INPUT_DEV_MOUSE 0x02`（`_SYSTEM` 段） | input.h:9-10 | 11/12/14 |
 | 无效槽标记 | `INVALID_INPUT_ID -1` | input.c:443 使用 | 11/12 |
 
-灯位换算链（三套语言，第 08/10/14 篇各自讲一段）：调用者 `KBD_LEDS_NUM/CAPS/SCROLL`（kbdio.h:15-24）→ 服务掩码 `1 << INPUT_LED_*`（input.c:262-268）→ 驱动端口位 `0x02/0x04/0x01`（pckbd.h:37-39）。控制号 `KIOCSLEDS = 0x80046B02`（ttycom.h:174）。
+灯位换算链（三套语言，第 08/10/14 篇各自讲一段）：调用者 `KBD_LEDS_NUM/CAPS/SCROLL`（minix3/minix/include/sys/kbdio.h:kio_leds（L15，工具生成））→ 服务掩码 `1 << INPUT_LED_*`（input.c:262-268）→ 驱动端口位 `0x02/0x04/0x01`（minix3/minix/drivers/hid/pckbd/pckbd.h:LED_SCROLL_LOCK）。控制号 `KIOCSLEDS = 0x80046B02`（ttycom.h:174）。
 
 ---
 
@@ -101,11 +101,11 @@ C 侧还有一处内部崩溃（存货不足 panic，input.c:137-138），Rust �
 | 名字 | 值/形态 | 权威 | 用途 |
 |------|---------|------|------|
 | `Endpoint::TTY` | 5 | minix-types/src/types/endpoint.rs:66 | 灯令唯一合法来源（input.c:631）、握手与转交目的地 |
-| `Endpoint::VFS` / `MIB` | 1 / 7 | endpoint.rs:62/:68 | 字符设备请求的来源（文件系统） |
+| `Endpoint::VFS` / `MIB` | 1 / 7 | os/libs/minix-types/src/types/endpoint.rs:const VFS/:68 | 字符设备请求的来源（文件系统） |
 | DS 通知来源 | DS 服务端点 | input.c:613（按来源认通知） | 触发驱动到来/离去检查 |
-| `drv.inp.<label>` | u32 类型掩码 | DRIVER_KEY_PREFIX（minix-types；inputdriver.c:23） | 驱动上线宣告（第 11/12 篇） |
-| `drv.chr.<label>` | label | chardriver.c:99-127 | 字符驱动向文件系统宣告上线（第 02 篇） |
-| `"input"` | 服务自身 label | input.c:488 取回比对 | 驱动侧核验配置消息来源（inputdriver.c:89） |
+| `drv.inp.<label>` | u32 类型掩码 | DRIVER_KEY_PREFIX（minix-types；minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_announce（L23，工具生成）） | 驱动上线宣告（第 11/12 篇） |
+| `drv.chr.<label>` | label | minix3/minix/lib/libchardriver/chardriver.c:chardriver_announce | 字符驱动向文件系统宣告上线（第 02 篇） |
+| `"input"` | 服务自身 label | input.c:488 取回比对 | 驱动侧核验配置消息来源（minix3/minix/lib/libinputdriver/inputdriver.c:do_conf（L89，工具生成）） |
 | `DSF_INITIAL` | 订阅标志 | ds.h（input.c:665 使用） | 订阅时补发存量键 |
 
 ---

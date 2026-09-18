@@ -29,7 +29,7 @@ static endpoint_t devman_ep;                              /* :14 */
 static TAILQ_HEAD(devlist_head, devman_dev) dev_list;     /* :20 */
 ```
 
-两个静态量：devman 的端点（init 时 DS 查 `devman` label 得到，:193）与已注册设备表（add 入、del 出）。`devman_dev`（local.h:9-20）：`dev_id`/`parent_dev_id`/`name[32]`/`subsys*`/`data*`/`bind_cb`/`unbind_cb`/属性表/链表链——与服务端 `devman_dev`（devinfo.h:5）**同名不同形**（03 §2.7 已登记双生；客户端多了回调与定长名数组）。
+两个静态量：devman 的端点（init 时 DS 查 `devman` label 得到，:193）与已注册设备表（add 入、del 出）。`devman_dev`（local.h:9-20）：`dev_id`/`parent_dev_id`/`name[32]`/`subsys*`/`data*`/`bind_cb`/`unbind_cb`/属性表/链表链——与服务端 `devman_dev`（minix3/minix/servers/devman/devinfo.h:devman_dev）**同名不同形**（03 §2.7 已登记双生；客户端多了回调与定长名数组）。
 
 `DEVMAN_DEV_NAME_LEN` 32（local.h:7）：`name` 定长数组——`snprintf(name, 32, …)` 静默截断（11 的 `"USB%d"`/`"intf%d"` 短名永不触发，但契约上是截断，Rust `truncate_name` 同字节复刻，§3.3）。
 

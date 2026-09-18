@@ -40,9 +40,9 @@ socket 封装族）。minix-rs 保持这个形状：`os/net/lwip` 与 `os/net/ud
 rc 脚本 `up lwip`（`minix3/etc/usr/rc:259`）触发 RS 拉起服务；服务的 `main`
 先走启动链（lwip 十三步：随机种子、库初始化、事件库、高层套接字、接口、驱动
 模块、低层套接字、路由、过滤器、管理树、默认配置、定时器、放行；
-`lwip.c:203-263`），随后进入主循环：收一封消息，按来源分派到四条路之一
-（`lwip.c:293-382`）。uds 同构而更小：初始化四步、主循环二分分发、终止时排空
-存量套接字再退出（`uds.c:1349-1391`）。
+`minix3/minix/net/lwip/lwip.c:init（L203，工具生成）`），随后进入主循环：收一封消息，按来源分派到四条路之一
+（`minix3/minix/net/lwip/lwip.c:startup（L293，工具生成）`）。uds 同构而更小：初始化四步、主循环二分分发、终止时排空
+存量套接字再退出（`minix3/minix/net/uds/uds.c:uds_signal`）。
 
 Rust 侧的对应物已经落位：`startup.rs` 的 `Startup` 承担启动门控，
 `server.rs` 的 `run` 承担循环与分派，`minix-sef` 承担 SEF 拦截，

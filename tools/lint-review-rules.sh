@@ -76,8 +76,8 @@ for g in $gaps; do
 done
 [ "$l5b_ok" = "true" ] && ok "L5b 模式编号断裂仅限已记录的 61/62"
 total=$(echo "$nums" | sort -un | wc -l)
-expect=$(grep -oE "81 个编号模式" prompt/review-rules/review-patterns.md | head -1)
-if [ "$total" -eq 81 ] && [ -n "$expect" ]; then ok "L5c 编号模式总数 $total 与索引表宣称一致"; else
+expect=$(grep -oE "82 个编号模式" prompt/review-rules/review-patterns.md | head -1)
+if [ "$total" -eq 82 ] && [ -n "$expect" ]; then ok "L5c 编号模式总数 $total 与索引表宣称一致"; else
   fail "L5c 编号模式总数($total) 与索引表宣称($expect)不一致——更新 review-patterns.md 头部索引与各处宣称"
 fi
 

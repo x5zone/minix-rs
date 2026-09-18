@@ -1,6 +1,6 @@
 # 08-init-session-db：会话数据库
 
-> **定位**：`start_session_db`（`minix3/sbin/init/init.c:1021-1033`）、`add_session`（1038-1057）、`del_session`（1062-1075）、`find_session`（1080-1096）。**[ARCH A-1]** Berkeley DB 内存哈希 → `HashMap`。
+> **定位**：`start_session_db`（`minix3/sbin/init/init.c:runcom（L1021，工具生成）`）、`add_session`（1038-1057）、`del_session`（1062-1075）、`find_session`（1080-1096）。**[ARCH A-1]** Berkeley DB 内存哈希 → `HashMap`。
 > **Rust**：`os/commands/sbin/init/src/session_db.rs`。
 > **前置依赖**：07（`Session` 节点）。
 > **本篇不覆盖（移交）**：utmp 挂钩（见 13，`session_utmpx` 调用点）。
@@ -72,4 +72,4 @@ DB 等于 pid 到会话的内存哈希。下一章看稳态如何用它回收子
 - `07-init-session-model.md` — 节点。
 - `09-init-multi-user.md` — 查询方。
 - `13-init-utmp.md` — utmp 挂钩。
-- C 源码：`minix3/sbin/init/init.c:1021-1096`。
+- C 源码：`minix3/sbin/init/init.c:runcom（L1021，工具生成）`。

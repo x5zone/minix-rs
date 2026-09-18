@@ -52,7 +52,7 @@ CPU #PF → 内核 exception.c:115-125
        VPF_FLAGS = frame->errcode        /* CPU 错误码 */
 ```
 
-VM 主循环 P3 分支（main.c:153-164）校验消息来自内核后调用 `do_pagefaults(&msg)`（pagefaults.c:240-243），并 `continue` **不回复**——出错进程由 VM 在成功时用 `sys_vmctl(ep, VMCTL_CLEAR_PAGEFAULT, 0)` 解除阻塞（§2.2）。
+VM 主循环 P3 分支（main.c:153-164）校验消息来自内核后调用 `do_pagefaults(&msg)`（minix3/minix/servers/vm/pagefaults.c:do_pagefaults），并 `continue` **不回复**——出错进程由 VM 在成功时用 `sys_vmctl(ep, VMCTL_CLEAR_PAGEFAULT, 0)` 解除阻塞（§2.2）。
 
 ### 1.3 主动路径：SIGKMEM → do_memory
 
@@ -66,21 +66,21 @@ VM 主循环 P3 分支（main.c:153-164）校验消息来自内核后调用 `do_
                  └─ handle_memory_step() → map_handle_memory() → map_pf()
 ```
 
-同步变体 `handle_memory_once`（pagefaults.c:245-252）供 VM 自身使用（如 fork 后预填充消息缓冲页、`map_pin_memory`）——它断言 `r != SUSPEND`，因为调用者（VM）不能阻塞等 VFS。
+同步变体 `handle_memory_once`（minix3/minix/servers/vm/pagefaults.c:handle_memory_once）供 VM 自身使用（如 fork 后预填充消息缓冲页、`map_pin_memory`）——它断言 `r != SUSPEND`，因为调用者（VM）不能阻塞等 VFS。
 
 ### 1.4 SUSPEND 协议：单线程事件循环中的异步 I/O
 
 页错误处理可能遇到文件映射页尚未从磁盘读入（mappedfile memtype）。此时 VM 不能阻塞等待 VFS——它是单线程服务端，阻塞就死锁整个系统。C 的方案：
 
 1. `map_pf` 调用 `ph->memtype->ev_pagefault(..., pf_callback, state, ...)`，mappedfile 实现发起 VFS 异步读请求并返回 `SUSPEND`（-998，com.h:1151）。
-2. `handle_pagefault` 检测到 `SUSPEND` 直接 `return`（pagefaults.c:140-142）——进程保持 `RTS_PAGEFAULT` 挂起，VM 继续主循环。
-3. VFS 完成 I/O 后回调 `pf_cont`（pagefaults.c:161-168），还原 `pf_state`（ep/vaddr/err）并以 `retry=1` 重进 `handle_pagefault`——这次 `map_pf` 不再传回调（pagefaults.c:124-126），`assert(result != SUSPEND)`。
+2. `handle_pagefault` 检测到 `SUSPEND` 直接 `return`（minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L140，工具生成））——进程保持 `RTS_PAGEFAULT` 挂起，VM 继续主循环。
+3. VFS 完成 I/O 后回调 `pf_cont`（minix3/minix/servers/vm/pagefaults.c:pf_cont），还原 `pf_state`（ep/vaddr/err）并以 `retry=1` 重进 `handle_pagefault`——这次 `map_pf` 不再传回调（minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L124，工具生成）），`assert(result != SUSPEND)`。
 
 这与 15 的 SUSPEND 伪返回码是同一个协议：**"不回复 ≠ 失败，是稍后回复"**。区别是 15 管服务调用的延迟回复，这里管页错误进程的延迟恢复。
 
 ### 1.5 major/minor 缺页统计
 
-`handle_pagefault` 用 `map_pf` 的 `io` 出参区分缺页性质（pagefaults.c:135-138）：
+`handle_pagefault` 用 `map_pf` 的 `io` 出参区分缺页性质（minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L135，工具生成））：
 
 | 计数器 | 触发条件 | 含义 |
 |--------|---------|------|
@@ -138,7 +138,7 @@ int sys_vmctl_get_memreq(endpoint_t *who, vir_bytes *mem, vir_bytes
 
 相关 `VMCTL_*` 参数（com.h:395/:397/:398）：`VMCTL_CLEAR_PAGEFAULT`(12) 解除缺页挂起、`VMCTL_MEMREQ_GET`(14) 取内核内存请求、`VMCTL_MEMREQ_REPLY`(15) 回复请求结果；`VMPTYPE_CHECK`(1)（vm.h:38）是取到的请求类型。
 
-### 2.2 handle_pagefault：被动路径主处理函数（pagefaults.c:76-158）
+### 2.2 handle_pagefault：被动路径主处理函数（minix3/minix/servers/vm/pagefaults.c:handle_pagefault）
 
 ```c
 static void handle_pagefault(endpoint_t ep, vir_bytes addr, u32_t err, int retry)
@@ -183,11 +183,11 @@ int map_pf(struct vmproc *vmp, struct vir_region *region, vir_bytes offset,
 
 **map_handle_memory**（region.c:756-774）是批量版本：`for(offset = start; offset < lim; offset += PAGE_SIZE) map_pf(...)`，任一页失败即返回——主动路径逐区域调它。
 
-**回调类型** `vfs_callback_t`（memtype.h:9）：`void (*)(struct vmproc *vmp, message *m, void *arg, void *statearg)`——`statearg` 携带恢复状态（`pf_state` 或 `hm_state`），`m` 是 VFS 回复消息。
+**回调类型** `vfs_callback_t`（minix3/minix/servers/vm/memtype.h:void）：`void (*)(struct vmproc *vmp, message *m, void *arg, void *statearg)`——`statearg` 携带恢复状态（`pf_state` 或 `hm_state`），`m` 是 VFS 回复消息。
 
 ### 2.4 handle_memory_* 状态机：主动路径的异步保障
 
-**hm_state**（pagefaults.c:39-49）承载一次主动内存保障的完整上下文：
+**hm_state**（minix3/minix/servers/vm/pagefaults.c:hm_state）承载一次主动内存保障的完整上下文：
 
 ```c
 struct hm_state {
@@ -232,7 +232,7 @@ handle_memory_final(state, r);
 
 收尾 `memset(state, 0, sizeof(*state))`（:233）——**fail fast**：任何人再碰这个栈上状态都会在 `assert(valid == VALID)` 处炸掉，防止悬垂回调。
 
-### 2.5 do_memory：SIGKMEM 信号驱动（main.c:731-750 + pagefaults.c:294-334）
+### 2.5 do_memory：SIGKMEM 信号驱动（main.c:731-750 + minix3/minix/servers/vm/pagefaults.c:do_memory）
 
 `do_memory()` 由 SEF 信号处理器在收到 `SIGKMEM` 时调用（main.c:735-738）——"内核有未决的内存请求"：
 
@@ -262,7 +262,7 @@ while(1) {
 - **transid 恒 0**（:311、:318）：内核内存请求不携带 VFS 事务。
 - 信号处理器尾部还有 `alloc_cycle()`（保留页池补充，main.c:745-747）+ `pt_clearmapcache()`（:749）——SIGKMEM 的完整语义是"内存压力信号"：既处理内核请求，也趁机补充 VM 自身保留页。
 
-### 2.6 handle_memory_step：逐区域逐页（pagefaults.c:336-417）
+### 2.6 handle_memory_step：逐区域逐页（minix3/minix/servers/vm/pagefaults.c:handle_memory_step）
 
 外层循环按区域推进（:348-368）：`map_lookup(hmstate->vmp, hmstate->mem, NULL)` 失败或 `!(region->flags & VR_WRITABLE) && wrflag` → `EFAULT`；否则把本次范围裁剪到当前区域（`length = min(len, region->length - offset)`）。
 
@@ -289,7 +289,7 @@ offset += sublen; length -= sublen; retry = FALSE;   /* 一页成功后本次重
 2. mappedfile 且重试中（`retry`）——第二次进入不允许再调 VFS，防止 FS 出错时无限循环，同时允许 one-shot 页在此映射；
 3. `caller == NONE`（`handle_memory_once` 路径，VM 自身调用不能阻塞）。
 
-### 2.7 pf_errstr（pagefaults.c:59-70）
+### 2.7 pf_errstr（minix3/minix/servers/vm/pagefaults.c:pf_errstr）
 
 ```c
 char *pf_errstr(u32_t err)
@@ -332,7 +332,7 @@ char *pf_errstr(u32_t err)
 
 C 的 `ev_pagefault` 直接做动作（分配页、发起 I/O）并返回 int；Rust 拆成两层：
 
-- **memtype 层只判定**：`MemType::ev_pagefault` 返回 `PagefaultResult`（memtype.rs:152-158）——`Handled` / `NeedNewPage` / `NeedCow` / `NeedVfsIo` / `AccessViolation`，不碰分配器、不碰页表。
+- **memtype 层只判定**：`MemType::ev_pagefault` 返回 `PagefaultResult`（os/servers/vm/src/memtype.rs:fn ev_copy（L152，工具生成））——`Handled` / `NeedNewPage` / `NeedCow` / `NeedVfsIo` / `AccessViolation`，不碰分配器、不碰页表。
 - **调用者层执行**：`cow_exec_pf::handle_pagefault`（cow_exec_pf.rs:19-52）match 结果并执行对应动作：
 
 ```rust
@@ -357,8 +357,8 @@ match result {
 
 | 类型 | 定义 | 用途 |
 |------|------|------|
-| `CowCoreError { NoMemory, PageNotMapped }` | cow_exec_pf.rs:175-178 | `cow_resolve_core` 内部 |
-| `CowError { NoMemory, NoMemType, PageNotMapped, MemType(MemTypeError) }` | cow_exec_pf.rs:245-250 | `handle_pagefault` 对外 |
+| `CowCoreError { NoMemory, PageNotMapped }` | os/servers/vm/src/cow_exec_pf.rs:fn mappedfile_pf_cont（L175，工具生成） | `cow_resolve_core` 内部 |
+| `CowError { NoMemory, NoMemType, PageNotMapped, MemType(MemTypeError) }` | os/servers/vm/src/cow_exec_pf.rs:fn cow_resolve（L245，工具生成） | `handle_pagefault` 对外 |
 | `From<CowCoreError> for CowError` | :180-187 | 内部错误提升 |
 | `From<MemTypeError> for CowError` | :252-256 | memtype 错误并入 |
 
@@ -366,15 +366,15 @@ match result {
 
 ### 3.3 D3：refcount ≤ 1 快速路径——复用前提是"独占持有 **且** 私有即可写"（V13-P1-1 收紧）
 
-写保护页错误到来时，"这页只有我一个持有者"并不足以直接把写位翻开——还要问一句：**这类页在私有时允许写吗？** 对匿名内存答案是肯定的：私有的匿名页写就是写自己，`refcount == 1` 翻位即可（§3.1 `anon_writable` 语义）。但对 `MappedFile`（file-backed 页）答案永远是否定的——C 的 `mappedfile_writable` 直说 "We are never writable"（mem_file.c:173-175），其写故障没有引用计数的捷径，一律 `cow_block` 复制，且复制后把 `phys_region` 的 memtype 显式换成 anon（"After COW we are a normal piece of anonymous memory"，mem_file.c:70-71）。
+写保护页错误到来时，"这页只有我一个持有者"并不足以直接把写位翻开——还要问一句：**这类页在私有时允许写吗？** 对匿名内存答案是肯定的：私有的匿名页写就是写自己，`refcount == 1` 翻位即可（§3.1 `anon_writable` 语义）。但对 `MappedFile`（file-backed 页）答案永远是否定的——C 的 `mappedfile_writable` 直说 "We are never writable"（minix3/minix/servers/vm/mem_file.c:mappedfile_writable），其写故障没有引用计数的捷径，一律 `cow_block` 复制，且复制后把 `phys_region` 的 memtype 显式换成 anon（"After COW we are a normal piece of anonymous memory"，minix3/minix/servers/vm/mem_file.c:cow_block（L70，工具生成））。
 
-因此 `cow_resolve_core` 的复用捷径是合取条件 `refcount <= 1 && region.is_page_writable(...)`（cow_exec_pf.rs:268-287）。右半边不满足时——典型是独占持有的文件页（缓存项被逐出后 refcount 归一）——落入其后的复制路径：分配新页、拷贝、slot 换型 `MEM_TYPE_ANON`、PTE 同步，恰好就是 C `cow_block` 的语义。这条合取不是防御性冗余：若只看左半边，快路会为一个永不可写的页写下只读 PTE 并报告成功，内核恢复进程后指令在原地址再次故障——无限活循环（V13-P1-1，2026-09-09 修复）。Linux 在 `do_wp_page` 里画的是同一条线：仅 `PageAnon` 且映射独占的页走 `wp_page_reuse`，file-backed 私有页一律 `wp_page_copy`。
+因此 `cow_resolve_core` 的复用捷径是合取条件 `refcount <= 1 && region.is_page_writable(...)`（os/servers/vm/src/cow_exec_pf.rs:fn cow_resolve_core（L268，工具生成））。右半边不满足时——典型是独占持有的文件页（缓存项被逐出后 refcount 归一）——落入其后的复制路径：分配新页、拷贝、slot 换型 `MEM_TYPE_ANON`、PTE 同步，恰好就是 C `cow_block` 的语义。这条合取不是防御性冗余：若只看左半边，快路会为一个永不可写的页写下只读 PTE 并报告成功，内核恢复进程后指令在原地址再次故障——无限活循环（V13-P1-1，2026-09-09 修复）。Linux 在 `do_wp_page` 里画的是同一条线：仅 `PageAnon` 且映射独占的页走 `wp_page_reuse`，file-backed 私有页一律 `wp_page_copy`。
 
 快速路径由 `test_cow_resolve_no_sharing` 与 `test_cow_resolve_core_refcount_one_fast_path` 覆盖（两者的 region 均为 `VR_WRITABLE`——这正是捷径成立的前提形状）；独占文件页必须走复制路径由 `test_cow_mappedfile_sole_page_copies_and_retypes_to_anon` 定格（§5.1）。
 
 ### 3.4 D4：decode_message——64 位 wire format（ARCH + 本轮 P0 修复）
 
-**ARCH 演进**：C 的 `VPF_ADDR` 是 `m1_i1`（32 位，com.h:774），x86-32 地址恰好放得下；minix-rs 是 64 位，kernel 侧用专用 union 成员 `m_vm_pagefault`（`vpf_addr: u64` + `vpf_flags: u32`，minix-types message.rs:1486-1495）打包，出错进程端点在 `m_source`（os/kernel/src/page_fault.rs:142-166，C 对照 kernel/arch/i386/exception.c:119-122）。
+**ARCH 演进**：C 的 `VPF_ADDR` 是 `m1_i1`（32 位，com.h:774），x86-32 地址恰好放得下；minix-rs 是 64 位，kernel 侧用专用 union 成员 `m_vm_pagefault`（`vpf_addr: u64` + `vpf_flags: u32`，minix-types message.rs:1486-1495）打包，出错进程端点在 `m_source`（os/kernel/src/page_fault.rs:fn write_str（L142，工具生成），C 对照 kernel/arch/i386/exception.c:119-122）。
 
 ```rust
 pub fn decode_message(msg: &Message) -> Self {
@@ -387,13 +387,13 @@ pub fn decode_message(msg: &Message) -> Self {
 }
 ```
 
-**本轮 P0 修复记录**：旧实现 `impl DecodeFromM1 for VmPagefaultIn`（原 vm.rs:713-722）从 `m_m1` 解码（`endpoint: Endpoint(m1.m1i1)`、`vaddr: VirBytes(m1.m1p1)`、`write: m1.m1i2 != 0`），与 kernel 写入的 `m_vm_pagefault` union 成员**错位**——按 union 重叠布局实际会解出 `endpoint = 低 32 位出错地址`、`vaddr = 0`、`write = 高 32 位地址非零`，一旦端到端接线必然 `vm_isokendpt` 失败。修复：移除 M1 解码，新增 `decode_message`（minix-types vm.rs:379-398），`dispatch_pagefault` 改用（vm_server.rs:986），并补 2 个解码测试（vm.rs:1034/:1052）。`write` 语义同步修正为 `flags & 2`（C `PFERR_WRITE`），旧 `!= 0` 会把只读保护错误误判为写。
+**本轮 P0 修复记录**：旧实现 `impl DecodeFromM1 for VmPagefaultIn`（原 vm.rs:713-722）从 `m_m1` 解码（`endpoint: Endpoint(m1.m1i1)`、`vaddr: VirBytes(m1.m1p1)`、`write: m1.m1i2 != 0`），与 kernel 写入的 `m_vm_pagefault` union 成员**错位**——按 union 重叠布局实际会解出 `endpoint = 低 32 位出错地址`、`vaddr = 0`、`write = 高 32 位地址非零`，一旦端到端接线必然 `vm_isokendpt` 失败。修复：移除 M1 解码，新增 `decode_message`（minix-types vm.rs:379-398），`dispatch_pagefault` 改用（os/servers/vm/src/vm_server.rs:fn handle_signal（L986，工具生成）），并补 2 个解码测试（vm.rs:1034/:1052）。`write` 语义同步修正为 `flags & 2`（C `PFERR_WRITE`），旧 `!= 0` 会把只读保护错误误判为写。
 
 ### 3.5 D5：handle_memory_once 同步子集（fork.rs:33-85）
 
-C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NONE, NONE, 0, 0)`。Rust 在 `fork.rs` 实现同名的同步版本，专供 fork 后预填充消息缓冲页：
+C 的 `handle_memory_once`（minix3/minix/servers/vm/pagefaults.c:handle_memory_once）→ `handle_memory_start(NONE, NONE, 0, 0)`。Rust 在 `fork.rs` 实现同名的同步版本，专供 fork 后预填充消息缓冲页：
 
-- 页对齐（fork.rs:41-44，对照 pagefaults.c:262-267）；
+- 页对齐（fork.rs:41-44，对照 minix3/minix/servers/vm/pagefaults.c:handle_memory_start（L262，工具生成））；
 - 逐区域逐页（:49-82）：`regions.find(addr)` 失败 → `PageNotMapped`（C `EFAULT`）；`wrflag && !region.is_writable()` → `PageNotMapped`（C `EFAULT`）；页内 `needs_cow(frames, offset)` → `cow_resolve_core`；
 - 无 SUSPEND 分支——与 C 同步变体一致（`assert(r != SUSPEND)`）。
 
@@ -403,18 +403,18 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
-| 1 | `handle_pagefault` 验证链 + memtype 分发 | `dispatch_pagefault` + `cow_exec_pf::handle_pagefault` 等价实现（vm_server.rs:986-1057） | ✅ 已实现 |
+| 1 | `handle_pagefault` 验证链 + memtype 分发 | `dispatch_pagefault` + `cow_exec_pf::handle_pagefault` 等价实现（os/servers/vm/src/vm_server.rs:fn handle_signal（L986，工具生成）） | ✅ 已实现 |
 | 2 | wire format：`m_source` + `m1_i1`/`m1_i2` | `decode_message`：`m_source` + `m_vm_pagefault`（64 位 ARCH） | ✅ 已实现（本轮修复） |
 | 3 | SIGSEGV + `VMCTL_CLEAR_PAGEFAULT` 恢复进程 | `gateway.sys_kill`（SIGSEGV）+ `gateway.sys_vmctl_clear_pagefault` 已接线（vm_server.rs，G-V12-6/Fix #60 批次）；E2 前失败走 audit + 计数（V9-P1-1），不再静默丢弃 | ✅ 已实现（通电挂 E1/E2） |
 | 4 | `pf_errstr` 诊断日志 | no_std 无 printf；错误以 `CowError`/`VmReply::Error(AccessViolation)` 传递 | ⚠️ 简化 |
 | 5 | major/minor 缺页计数（:135-138） | 字段 + `inc_minor_fault`/`inc_major_fault` 已在生产路径接线（vm_server.rs，G-V12-6 批次：Suspended→major、Handled/MappedNewPage/CowResolved→minor） | ✅ 已实现 |
 | 6 | `do_memory`/`handle_memory_start/step/final/continue` 异步状态机 | 未实现；`fork.rs::handle_memory_once` 仅同步子集 | ⚠️ DEFERRED |
-| 7 | `map_pf` 的 `writable` 短路（region.c:711-713） | `MemType::writable` 存在（memtype.rs:20-24），由 memtype 判定 | ✅ 已实现（判定位置在 memtype） |
+| 7 | `map_pf` 的 `writable` 短路（region.c:711-713） | `MemType::writable` 存在（os/servers/vm/src/memtype.rs:trait MemType（L20，工具生成）），由 memtype 判定 | ✅ 已实现（判定位置在 memtype） |
 | 8 | `pt_clearmapcache()` 成功后调用 | Rust 无 mapcache 生产实现（24 范围） | ⚠️ 随 24 |
 | 9 | 主动路径 `vfs_avail` 计算（requestor==VFS ? 0 : 1） | 无对应（do_memory DEFERRED） | ⚠️ DEFERRED |
 | 10 | VFS 异步回调 `pf_cont`/`handle_memory_continue` | `NeedVfsIo → Suspended` 表示"等 VFS"，但回调接线未实现（23 范围） | ⚠️ DEFERRED |
-| 11 | PTE 写入：`map_pf` 尾部 `pt_writemap`（pagetable.c:784，CoW 走 WMF_WRITEFLAGSONLY）+ `map_ph_writept`——VM 自己写进程页表，否则恢复后指令二次故障 | 2026-09-08 前缺失（`vm_pt` 在故障路径零使用，本表原漏登记此行——G-V12-8）。现 `sync_slot_pte`（cow_exec_pf.rs）三路分派 query→update_flags / remap / map，贯穿 handle_pagefault 四结算点与 handle_memory_once/map_pin_memory 主动路径 | ✅ 已实现（G-V12-8，todo.md §17.9 Fix #60） |
-| 12 | TLB 一致性：C VM 自刷四处（pagetable.c:119/255/319/430，别名映射模型）+ 内核 SMP 侧 `MF_FLUSH_TLB`（proc.c:345-347） | `write_pte_dm` 写后逐条 invlpg（08 §1.8，ARCH 已登记）；SMP 目标进程刷新机制缺失 → edge E-VMTLB；VMCTL FlushTlb/InvlPg 内核命令 VM 侧零调用（有意，见 §3.7） | ⚠️ 单核自洽 / SMP 挂 E-VMTLB（V13-P2-1） |
+| 11 | PTE 写入：`map_pf` 尾部 `pt_writemap`（minix3/minix/servers/vm/pagetable.c:pt_writemap，CoW 走 WMF_WRITEFLAGSONLY）+ `map_ph_writept`——VM 自己写进程页表，否则恢复后指令二次故障 | 2026-09-08 前缺失（`vm_pt` 在故障路径零使用，本表原漏登记此行——G-V12-8）。现 `sync_slot_pte`（cow_exec_pf.rs）三路分派 query→update_flags / remap / map，贯穿 handle_pagefault 四结算点与 handle_memory_once/map_pin_memory 主动路径 | ✅ 已实现（G-V12-8，todo.md §17.9 Fix #60） |
+| 12 | TLB 一致性：C VM 自刷四处（minix3/minix/servers/vm/pagetable.c:pt_assert（L119，工具生成）/255/319/430，别名映射模型）+ 内核 SMP 侧 `MF_FLUSH_TLB`（proc.c:345-347） | `write_pte_dm` 写后逐条 invlpg（08 §1.8，ARCH 已登记）；SMP 目标进程刷新机制缺失 → edge E-VMTLB；VMCTL FlushTlb/InvlPg 内核命令 VM 侧零调用（有意，见 §3.7） | ⚠️ 单核自洽 / SMP 挂 E-VMTLB（V13-P2-1） |
 
 ### 3.7 D8：PTE 写入安全的不变量——"VM 只改不在运行的进程的页表"（V13-P2-1a 登记）
 
@@ -433,13 +433,13 @@ C 的 `handle_memory_once`（pagefaults.c:245-252）→ `handle_memory_start(NON
 
 SMP 侧的剩余缺口（其他 CPU 上**共享方**进程的陈旧翻译，C 用 `MF_FLUSH_TLB` + 调度点刷新覆盖）不在此闭合——登记为 edge E-VMTLB，随 01-stage-kernel 的 SMP 工作处置。
 
-对照：C 对这条不变量还有一套**动态强制**——`pt_writemap` 在 CONFIG_SMP 下用 `VMCTL_VMINHIBIT_SET/CLEAR` 包裹每次写批次（pagetable.c:799-815/:928-934，源码自带 FIXME 承认应在包装层做），写前停目标进程、写后恢复。单核编译下整段消失。两套策略（C 的运行时停等 vs minix-rs 的结构性纪律）是同一不变量的两种实现；若 E-VMTLB 立项，VMINHIBIT 机制是其候选方案之一（08-pagetable-ops.md §1.10/差异表第 10 行已登记该执行模型差异）。
+对照：C 对这条不变量还有一套**动态强制**——`pt_writemap` 在 CONFIG_SMP 下用 `VMCTL_VMINHIBIT_SET/CLEAR` 包裹每次写批次（minix3/minix/servers/vm/pagetable.c:pt_writemap（L799，工具生成）/:928-934，源码自带 FIXME 承认应在包装层做），写前停目标进程、写后恢复。单核编译下整段消失。两套策略（C 的运行时停等 vs minix-rs 的结构性纪律）是同一不变量的两种实现；若 E-VMTLB 立项，VMINHIBIT 机制是其候选方案之一（08-pagetable-ops.md §1.10/差异表第 10 行已登记该执行模型差异）。
 
 ---
 
 ## 4. 实现详解
 
-### 4.1 dispatch_pagefault：主循环 P3 的 handler（vm_server.rs:986-1057）
+### 4.1 dispatch_pagefault：主循环 P3 的 handler（os/servers/vm/src/vm_server.rs:fn handle_signal（L986，工具生成））
 
 ```
 decode_message(msg)                        :746  m_source + m_vm_pagefault
@@ -450,13 +450,13 @@ decode_message(msg)                        :746  m_source + m_vm_pagefault
   → Ok(_) → VmReply::Ok / Err → VmReply::Error(AccessViolation)
 ```
 
-对应 C 的 `handle_pagefault`（pagefaults.c:76-158）映射：`vm_isokendpt` → :85；`map_lookup` → `find_mut`（region_map.rs:66，BTreeMap `range(..=addr).next_back()`，见 14）；写权限检查在 `AnonymousMemory::ev_pagefault` 内（§4.2）；`pt_clearmapcache` + 恢复进程 → 无对应（§3.6 #3）。
+对应 C 的 `handle_pagefault`（minix3/minix/servers/vm/pagefaults.c:handle_pagefault）映射：`vm_isokendpt` → :85；`map_lookup` → `find_mut`（os/servers/vm/src/region/region_map.rs:fn find_mut（L66，工具生成），BTreeMap `range(..=addr).next_back()`，见 14）；写权限检查在 `AnonymousMemory::ev_pagefault` 内（§4.2）；`pt_clearmapcache` + 恢复进程 → 无对应（§3.6 #3）。
 
 ### 4.2 handle_pagefault 动作表与 memtype 决策
 
 `cow_exec_pf::handle_pagefault`（:19-52）是分派器，真正的决策在 memtype：
 
-**AnonymousMemory::ev_pagefault**（memtype.rs:220-256）：
+**AnonymousMemory::ev_pagefault**（os/servers/vm/src/memtype.rs:enum PagefaultResult）：
 
 | 条件 | 结果 | C 对照（mem_anon.c） |
 |------|------|---------------------|
@@ -465,9 +465,9 @@ decode_message(msg)                        :746  m_source + m_vm_pagefault
 | 已映射、写、`refcount >= 2` | `NeedCow` | CoW 写保护分裂 |
 | 写但区域不可写 | `AccessViolation` | C 在 handle_pagefault:110-118 SIGSEGV |
 
-`is_writable`（vir_region.rs:143-145）检查 `VrFlags::WRITABLE`。
+`is_writable`（os/servers/vm/src/region/vir_region.rs:fn with_memtype（L143，工具生成））检查 `VrFlags::WRITABLE`。
 
-**MappedFile::ev_pagefault**（memtype.rs:904-935）：
+**MappedFile::ev_pagefault**（os/servers/vm/src/memtype.rs:fn ev_resize（L904，工具生成））：
 
 | 条件 | 结果 |
 |------|------|
@@ -476,9 +476,9 @@ decode_message(msg)                        :746  m_source + m_vm_pagefault
 | 已映射 + 写 | `NeedCow` |
 | 未映射 | `NeedVfsIo`（请求 VFS 读入） |
 
-`NeedVfsIo → PagefaultAction::Suspended`（cow_exec_pf.rs:45-47）——类型层保留 SUSPEND 语义；VFS 回复回调（C `pf_cont`/`mappedfile_pf_cont`）在 23-vfs-interaction 范围。
+`NeedVfsIo → PagefaultAction::Suspended`（os/servers/vm/src/cow_exec_pf.rs:fn handle_pagefault（L45，工具生成））——类型层保留 SUSPEND 语义；VFS 回复回调（C `pf_cont`/`mappedfile_pf_cont`）在 23-vfs-interaction 范围。
 
-### 4.3 cow_resolve_core：CoW 分裂动作（cow_exec_pf.rs:85-128）
+### 4.3 cow_resolve_core：CoW 分裂动作（os/servers/vm/src/cow_exec_pf.rs:fn sync_slot_pte（L85，工具生成））
 
 ```
 get_slot(offset) → PageNotMapped（未映射）        :91-96
@@ -497,11 +497,11 @@ pending(old_pfn, memtype) → ev_unreference + free_pfn  :119-122
 
 C 的核心状态机（`hm_state` + `handle_memory_continue` + `pf_cont`）在 Rust 中**尚未落地**：
 
-- `PagefaultResult::NeedVfsIo`（memtype.rs:156）与 `PagefaultAction::Suspended`（cow_exec_pf.rs:240）**存在但无消费者**——`dispatch_pagefault` 目前把 `Ok(PagefaultAction::Suspended)` 也映射为 `VmReply::Ok`（vm_server.rs:1011），即"挂起"被当作成功吞掉，进程不会恢复（§3.6 #3/#10）。
+- `PagefaultResult::NeedVfsIo`（os/servers/vm/src/memtype.rs:fn ev_copy（L156，工具生成））与 `PagefaultAction::Suspended`（os/servers/vm/src/cow_exec_pf.rs:fn cow_resolve（L240，工具生成））**存在但无消费者**——`dispatch_pagefault` 目前把 `Ok(PagefaultAction::Suspended)` 也映射为 `VmReply::Ok`（os/servers/vm/src/vm_server.rs:const MAX_MEMREQ_BATCH（L1011，工具生成）），即"挂起"被当作成功吞掉，进程不会恢复（§3.6 #3/#10）。
 - `fork.rs::handle_memory_once`（:33-85）是唯一落地的主动路径，且只在 fork 时使用（18 详述）。
 - 诚实标注：**这意味着一页文件映射未缓存时，当前 Rust 行为与 C 不等价**——C 发起 VFS 异步读，Rust 返回 Ok 但页未映射。此缺口必须在 23（VFS 请求队列）+ 24（页缓存）接线后闭环。
 
-### 4.5 主循环接线（vm_server.rs:577-585）
+### 4.5 主循环接线（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L577，工具生成））
 
 ```rust
 // Priority 3: VM_PAGEFAULT (main.c:153-164)
@@ -521,10 +521,10 @@ if m_type == VM_PAGEFAULT {
 }
 ```
 
-- `VM_PAGEFAULT = 0xCFF`（vm_server.rs:1158）——与 C 一致（com.h:773），`callnr()` 对 0xCFF 越界返回 None，进不了 `dispatch_by_number`，只能走 P3（15 详述）。
+- `VM_PAGEFAULT = 0xCFF`（os/servers/vm/src/vm_server.rs:fn run_once（L1158，工具生成））——与 C 一致（com.h:773），`callnr()` 对 0xCFF 越界返回 None，进不了 `dispatch_by_number`，只能走 P3（15 详述）。
 - `rcv_sts.is_from_kernel()`（transport.rs:69）按 `IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)` 语义解析 bit 16（`((flags >> 16) & 1) != 0`，ipcconst.h:22-24）；`IpcStatus::default()` 下恒 false——真实状态字待 kernel IPC core（`KernelIpcTransport::receive` 填充，15 §3.7 #4 已标注；V10-P1-1 前是恒 true 桩）。
 - `DispatchAction::NoReply` 保持 C `continue` 语义（main.c:164）——不回复，进程恢复靠 `VMCTL_CLEAR_PAGEFAULT`（Rust DEFERRED，§3.6 #3）。
-- **V9-P1-1 错误可观测性**（2026-08-16，todo）：`VmReply::Error`（region 不存在 / 分配失败 / CoW 失败）被 `pagefault_errors` 计数（`vm_server.rs` 字段 + `pagefault_errors()` 访问器 vm_server.rs:547），并经 `audit_log!` 通道（test → eprintln、`vm_acl_audit` → no_std sink、release → 编译消除，lib.rs:40-54）——release 下故障不再不可观测。
+- **V9-P1-1 错误可观测性**（2026-08-16，todo）：`VmReply::Error`（region 不存在 / 分配失败 / CoW 失败）被 `pagefault_errors` 计数（`vm_server.rs` 字段 + `pagefault_errors()` 访问器 os/servers/vm/src/vm_server.rs:fn init_global_state（L547，工具生成）），并经 `audit_log!` 通道（test → eprintln、`vm_acl_audit` → no_std sink、release → 编译消除，lib.rs:40-54）——release 下故障不再不可观测。
 
 ---
 
@@ -567,9 +567,9 @@ if m_type == VM_PAGEFAULT {
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| dispatch_pagefault 端到端单测 | ⚠️ 部分 | 主循环 P3 → decode → handle_pagefault 无成功路径消息级测试（`rcv_sts.is_from_kernel()` 默认 false，真实状态字待 kernel IPC）；**失败路径已有 `test_pagefault_errors_counted`**（2026-08-16，V9-P1-1：无效 endpoint → `pagefault_errors == 1`，vm_server.rs:2059） |
+| dispatch_pagefault 端到端单测 | ⚠️ 部分 | 主循环 P3 → decode → handle_pagefault 无成功路径消息级测试（`rcv_sts.is_from_kernel()` 默认 false，真实状态字待 kernel IPC）；**失败路径已有 `test_pagefault_errors_counted`**（2026-08-16，V9-P1-1：无效 endpoint → `pagefault_errors == 1`，os/servers/vm/src/vm_server.rs:fn test_run_once_exiting_caller_denied_enosys（L2059，工具生成）） |
 | SIGSEGV / VMCTL_CLEAR_PAGEFAULT 恢复进程 | ⚠️ 未实现 | VM 无 sys_vmctl；错误已计数 + 审计（V9-P1-1），进程恢复契约仍 DEFERRED（§3.6 #3） |
-| major/minor 计数生产接线 | ⚠️ 缺失 | `inc_minor_fault`/`inc_major_fault`（vmproc_handle.rs:300-307）仅测试调用，`dispatch_pagefault` 未统计 |
+| major/minor 计数生产接线 | ⚠️ 缺失 | `inc_minor_fault`/`inc_major_fault`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn set_total）仅测试调用，`dispatch_pagefault` 未统计 |
 | `NeedVfsIo → Suspended` 的 VFS 回调 | ⚠️ 未接线 | 对应 C `pf_cont`/`handle_memory_continue`；`PagefaultAction::Suspended` 被当作 Ok 吞掉（§4.4），23/24 范围 |
 | do_memory / handle_memory_start/step/final/continue | ⚠️ 未实现 | SIGKMEM 主动路径 DEFERRED；仅 `fork.rs::handle_memory_once` 同步子集 |
 | MappedFile::ev_pagefault 的 NeedVfsIo 分支单测 | ⚠️ 缺失 | 判定表无直接测试（VFS 请求队列未接线，无法构造真实 I/O） |
@@ -590,7 +590,7 @@ $ cargo check -p minix-vm → Finished（无 error）
 
 ## 6. 过渡
 
-位置可回答性：本文档的页错误处理挂在**主循环 P3 分支**（main.c:153-164 / vm_server.rs:577-585）与 **SIGKMEM 信号**（main.c:731-750）两个锚点上——前者是 15 分发模型的特例路径，后者是 01 SEF 信号处理器的入口。两条路径汇合于 `map_pf`（region.c:664-754），即 13 的区域-物理侧桥接。
+位置可回答性：本文档的页错误处理挂在**主循环 P3 分支**（main.c:153-164 / os/servers/vm/src/vm_server.rs:fn init_boot_procs（L577，工具生成））与 **SIGKMEM 信号**（main.c:731-750）两个锚点上——前者是 15 分发模型的特例路径，后者是 01 SEF 信号处理器的入口。两条路径汇合于 `map_pf`（region.c:664-754），即 13 的区域-物理侧桥接。
 
 向下游的移交：
 

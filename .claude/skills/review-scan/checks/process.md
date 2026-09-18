@@ -670,7 +670,7 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
    - **核心变更**：原"缺失 → 阻断 + 触发附录 C（中断）"改为"缺失 → Step 0.3 嵌入生成 → 继续 review"
    - **不允许**以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"等理由跳过 — 这些都是模式 69 (PSMD) 触发的 P0-process-violation
 3. **存在旧快照时**：仍必须执行 v2 评估（重新执行 Step 0.3 产出 `.v{N+1}.md`）。旧快照的角色仅是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
-4. **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一）：
+4. **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））：
    ```markdown
    ## Step 0: 预检结果（design + outline 完整性，NEW 2026-07-16）
    | 检查项 | ls 命令 | 结果 | 判定 |

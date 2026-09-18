@@ -708,7 +708,7 @@ free_mem(mem, 4);
 
 #### 2.3.1 为什么需要保留页队列？
 
-**Minix3 源码注释**（[pagetable.c:55-57](minix3/minix/servers/vm/pagetable.c#L55-L57)）：
+**Minix3 源码注释**（[minix3/minix/servers/vm/pagetable.c:vmproc（L55，工具生成）](minix3/minix/servers/vm/pagetable.c#L55-L57)）：
 
 ```c
 /* Spare memory, ready to go after initialization, to avoid a
@@ -717,7 +717,7 @@ free_mem(mem, 4);
  */
 ```
 
-**Minix3 源码注释**（[pagetable.c:1126-1130](minix3/minix/servers/vm/pagetable.c#L1126-L1130)）：
+**Minix3 源码注释**（[minix3/minix/servers/vm/pagetable.c:pt_init（L1126，工具生成）](minix3/minix/servers/vm/pagetable.c#L1126-L1130)）：
 
 ```c
 /* Spare pages are used to allocate memory before VM has its own page
@@ -784,7 +784,7 @@ static struct reserved_pages {
 
 #### 2.3.4 使用场景：spare pages
 
-**初始化**（[pagetable.c:1151](minix3/minix/servers/vm/pagetable.c#L1151) `pt_init()`）：
+**初始化**（[minix3/minix/servers/vm/pagetable.c:pt_init（L1151，工具生成）](minix3/minix/servers/vm/pagetable.c#L1151) `pt_init()`）：
 
 ```c
 // SPAREPAGES 值取决于编译配置：
@@ -807,7 +807,7 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 }
 ```
 
-**使用**（[pagetable.c:333](minix3/minix/servers/vm/pagetable.c#L333) `vm_allocpages()`）：
+**使用**（[minix3/minix/servers/vm/pagetable.c:vm_allocpages](minix3/minix/servers/vm/pagetable.c#L333) `vm_allocpages()`）：
 
 ```c
 void *vm_allocpages(phys_bytes *phys, int reason, int pages)
@@ -889,7 +889,7 @@ void alloc_cycle(void)
 
 #### 2.4.2 进程级内存统计 (vm\_total / vm\_total\_max)
 
-每个进程在 VM 中对应一个 `struct vmproc`（[vmproc.h:13-32](minix3/minix/servers/vm/vmproc.h#L13-L32)），其中包含两个统计字段：
+每个进程在 VM 中对应一个 `struct vmproc`（[minix3/minix/servers/vm/vmproc.h:vmproc（L13，工具生成）](minix3/minix/servers/vm/vmproc.h#L13-L32)），其中包含两个统计字段：
 
 ```c
 struct vmproc {

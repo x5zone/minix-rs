@@ -1,6 +1,6 @@
 # 10-init-clean-ttys：重读终端表
 
-> **定位**：状态 `'T'`，`clean_ttys`（`minix3/sbin/init/init.c:1569-1629`，SIGHUP 触发）。
+> **定位**：状态 `'T'`，`clean_ttys`（`minix3/sbin/init/init.c:multi_user（L1569，工具生成）`，SIGHUP 触发）。
 > **Rust**：`os/commands/sbin/init/src/clean_ttys.rs`。
 > **前置依赖**：07（会话与标志）、09（SIGHUP 回收语义）。
 > **本篇不覆盖（移交）**：`new_session/setupargv` 机制（见 07）。
@@ -71,4 +71,4 @@
 ## 7. 参见
 
 - `09-init-multi-user.md` — 回收摘链。
-- C 源码：`minix3/sbin/init/init.c:1569-1629`。
+- C 源码：`minix3/sbin/init/init.c:multi_user（L1569，工具生成）`。

@@ -1,7 +1,7 @@
 # 08-system-init-boot-finish: 系统调用初始化与启动完成
 
 > **分类**: 全局基建
-> **源码**: `minix3/minix/kernel/system.c:168-270`, `minix3/minix/kernel/arch/i386/pg_utils.c:86-121`, `minix3/minix/kernel/main.c:38-109`
+> **源码**: `minix3/minix/kernel/system.c:system_init`, `minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap`, `minix3/minix/kernel/main.c:bsp_finish_booting`
 > **说明**: kmain 把内核从"初始化态"带入"运行态"——通过 T0-T6 七个阶段（实读 `os/kernel/src/lib.rs`），详见 §1.1 表格。Rust 端把 C 时代 kmain 末尾的"系统调用注册 + bootstrap 内存回收 + 启动完成"三件事拆散到了不同时机（详见 §1.1 注释）。
 
 ---
@@ -56,7 +56,7 @@ bsp_finish_booting (lib.rs:1948)
 - Step 0 与 C 同位同序——`cpu_identify()` 是 C `bsp_finish_booting` 的第一条语句（main.c:45），Rust `smp::cpu_identify()` 同样置于 Step 1 之前；此时仅 BSP 单核运行，写入全局 `CPU_INFO` 无并发（AP 路径见 §4.6）
 - Step 4 范围 `nr < NR_BOOT_PROCS - NR_TASKS`——故意排除 kernel task（永不作为运行实体被调度，见 [06 §1.4](06-proc-init-boot-proc.md)）
 - Step 5 必须先于 Step 6——TSC 基线在 timer 初始化之前建立（C `main.c:71` 注："First reset the CPU accounting values, as the timer initialization (indirectly) uses them"）
-- Step 6 是定时器硬件的唯一触点（D-59，2026-09-09）：Phase B（`init_clock_and_interrupts`）纯软件——C `init_clock`（clock.c:48-66）即纯软件；此处按 C `boot_cpu_init_timer`（clock.c:294）三段执行——`init_timer` 只编程（x86 PIT / aarch64 `CNTP_CVAL` 且保持 `CNTP_CTL=Enable=0,IMASK=1` / riscv64 `mtimecmp` 不碰 `sie.STIE`）→ `register_hook` 挂 `minix_plat::TIMER_IRQ`（首 handler 触发 C parity 的自动 unmask，interrupt.c:65）→ `<CurrentTimerIrqGate>::enable_timer_irq()` 开模块本地门（aarch64 `CNTP_CTL=1` / riscv64 `sie.STIE` / x86 no-op，`[ARCH: gate-semantics]`，[05 §3.7 D-59 解决记录](05-clock-interrupt-init.md)）
+- Step 6 是定时器硬件的唯一触点（D-59，2026-09-09）：Phase B（`init_clock_and_interrupts`）纯软件——C `init_clock`（clock.c:48-66）即纯软件；此处按 C `boot_cpu_init_timer`（clock.c:294）三段执行——`init_timer` 只编程（x86 PIT / aarch64 `CNTP_CVAL` 且保持 `CNTP_CTL=Enable=0,IMASK=1` / riscv64 `mtimecmp` 不碰 `sie.STIE`）→ `register_hook` 挂 `minix_plat::TIMER_IRQ`（首 handler 触发 C parity 的自动 unmask，minix3/minix/kernel/interrupt.c:put_irq_handler（L65，工具生成））→ `<CurrentTimerIrqGate>::enable_timer_irq()` 开模块本地门（aarch64 `CNTP_CTL=1` / riscv64 `sie.STIE` / x86 no-op，`[ARCH: gate-semantics]`，[05 §3.7 D-59 解决记录](05-clock-interrupt-init.md)）
 - Step 8 关闭分配窗口后，内核不得再直接分配物理内存（§1.4 规则 2）
 - Step 9 永不返回——内核从此进入五阶段调度循环（[10 §4](10-switch-to-user.md)：选进程 → 杂项标志 → 量子检查 → 终局分派，无就绪进程则 idle）
 - C 的 krandom / cpu_set_flag 两步差异见 §4.6"与 C 12 步的差异说明"表
@@ -81,7 +81,7 @@ T5 之前（07 完成后）：进程表/特权结构已就绪，VM direct_map �
 
 ### 2.1 相关定义（常量、宏）
 
-**系统调用号定义**（`minix3/minix/include/minix/com.h:207-270`）：
+**系统调用号定义**（`minix3/minix/include/minix/com.h:SYS_FORK`）：
 
 | 常量 | 值 | 处理函数 | 类别 |
 |------|-----|---------|------|
@@ -303,7 +303,7 @@ D2 map() 宏替代        决策 `const _: () = assert!(...)` 编译期检查与
 D3 IRQ hook 池        决策 `[Option<IrqHook>; NR_IRQ_HOOKS]` 保持 C 池语义 + O(1) 索引 + 零堆分配（已实现于 irq_manager.rs）
 D4 Alarm timer        决策 保持每 priv 一个 timer struct  per-priv 而非全局，与 C 语义一致
 D5 add_memmap 4GB 截断 决策 删除 LIMIT 截断             64 位不需要 4GB 限制，Direct Map 可表达全部物理内存；`add_memmap()` 函数本身保留（详 §3.3）
-D6 vm_running 表达    决策 全局 `AtomicBool`            C 端是全局 int（glo.h:74），Rust 全局 AtomicBool 语义等价。C 从不置 1（C omission：do_umap_remote.c:106 / acpi.c:61,70 / oxpcie.c:52,73 读它但无人置位）——Rust 在 `VMCTL_SETADDRSPACE` 目标为 VM 时修正性置 true（见 09 §3 decision4）。设计稿曾计划 SMP 后迁入 per-CPU——该迁移将偏离 C 的全局语义，若实施须 [ARCH] 标注
+D6 vm_running 表达    决策 全局 `AtomicBool`            C 端是全局 int（glo.h:74），Rust 全局 AtomicBool 语义等价。C 从不置 1（C omission：minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L106，工具生成） / acpi.c:61,70 / minix3/minix/kernel/arch/i386/oxpcie.c:oxpcie_putc（L52，工具生成）,73 读它但无人置位）——Rust 在 `VMCTL_SETADDRSPACE` 目标为 VM 时修正性置 true（见 09 §3 decision4）。设计稿曾计划 SMP 后迁入 per-CPU——该迁移将偏离 C 的全局语义，若实施须 [ARCH] 标注
 D7 switch_to_user     决策 发散函数 `-> !`              类型系统表达永不返回（详 §3.4）
 D8 kernel_may_alloc    决策 运行时 `AtomicBool`          C 运行时标志无法完全消除——`add_memmap` 在断言 `kernel_may_alloc == true` 时实际依赖它（C `pg_utils.c:96`）
 D9 条件编译 syscall   决策 trait 默认 + BadCall        不用 `#[cfg(target_arch)]`——架构不支持的 syscall 经 `ArchSyscall` 默认实现返回 `BadCall`，回复时映射 `EBADREQUEST`（详 §3.5）
@@ -919,7 +919,7 @@ fn switch_to_user() -> ! {
 
 | C 步骤 | C 位置 | 状态与设计 |
 |--------|--------|----------|
-| `cpu_identify()` | main.c:45 | ✅ **已实现（Step 0，2026-09-04 收敛 todo D-53）**。C 中 kernel 是数据生产者：`cpu_identify()`（i386: arch_system.c:212 / earm: :85；BSP 经 main.c:45、AP 经 arch_smp.c:232 调用）填 kernel 全局 `cpu_info[CONFIG_MAX_CPUS]`（glo.h；i386 字段 vendor/family/model/stepping/freq/flags，archtypes.h:39-46），kernel 自身也是读者（arch_watchdog.c 读 vendor/family 选 MSR 语义、arch_clock.c 写 freq 做 TSC 校准回填），用户态只是消费端（procfs cpuinfo.c:146、libsys tsc_util.c:40 经 GET_CPUINFO——do_getinfo.c:76-80 整体拷出）。Rust 补齐的也是生产侧，分三层：(a) **arch 探测**——`os/arch/src/arch/cpu_identity.rs` 定义 `CpuIdentity` enum（X86/Arm/Riscv 一个变体一种 ISA——C 各 arch 往同一字节 blob 写不同形状再由用户态重解释，Rust 把形状变成类型级事实）+ `CpuIdentityArch` trait，`CurrentCpuIdentity` alias 按目标架构选择（x86 CPUID leaves 0/1 / aarch64 `MIDR_EL1` / riscv64 `mvendorid·marchid·mimpid` SBI ecall），三架构探测源内核皆可用。x86 侧含一处 **MINIX3 BUG 修复**：C（arch_system.c:239）把 ext-model 合并条件误写在 base model 上（`model == 0xf || model == 0x6`），对 2007 年后 base model ∉ {0xF,0x6} 的 family-6 CPU 截断 model（Nehalem 0x106E0 → 0xE 而非 0x1E；Skylake → 0xE 而非 0x4E）；Rust 按 SDM 以 family ∈ {0xF, 0x6} 为条件（`// MINIX3 BUG:` 标注于 x86_64/cpu_identity.rs::decode_signature + 4 项签名解码单测）。minix-rs 只支持现代硬件：C 的 `max_leaf == 0` 古董 CPU 守卫（486 时代）不移植。(b) **kernel 存储**——`CPU_INFO: SyncUnsafeCell<CpuInfoTable>`（smp.rs，`[Option<CpuIdentity>; MAX_CPUS]`，`None` = 未探测槽），表格住 kernel 与 C 的分层一致（`CONFIG_MAX_CPUS` 是 kernel 配置、cpu_info[] 在 kernel glo.h），经 `BklProtected` 审批列表进 `SyncUnsafeCell`（写入=单核 boot 期；读取=GET_CPUINFO 持 BKL）；(c) **GET_CPUINFO 全记录**——misc.rs `CpuInfoEntry` 重排为 C i386 `struct cpu_info` 布局（16 字节 repr(C)：vendor=CPU_VENDOR_INTEL 0/AMD 2/UNKNOWN 0xff，archconst.h:134-136），与本文件其他 GetInfo struct 的单一 ABI 惯例一致（cf. MachineStruct）；ARM MIDR/RISC-V CSR 字段在 x86 形状中无对应（C 各 arch 本就是不同 ABI），文档化为 CPU_VENDOR_UNKNOWN + 全零，类型化身份仍可经 `smp::cpu_identity` 内部读取。**剩余缺口（有意保留）**：freq 恒 0——TSC 校准回填（arch_clock.c）未移植且 Rust kernel 无该读者；watchdog 等 kernel 内部读者未移植（26 doc WONTFIX W-1）；AP 探测路径（C arch_smp.c:227-232 持 boot_lock+BKL）随 16-smp.md SMP bring-up 落地，当前单核 boot 只填 BSP 槽 |
+| `cpu_identify()` | main.c:45 | ✅ **已实现（Step 0，2026-09-04 收敛 todo D-53）**。C 中 kernel 是数据生产者：`cpu_identify()`（i386: arch_system.c:212 / earm: :85；BSP 经 main.c:45、AP 经 minix3/minix/kernel/arch/i386/arch_smp.c:ap_finish_booting（L232，工具生成） 调用）填 kernel 全局 `cpu_info[CONFIG_MAX_CPUS]`（glo.h；i386 字段 vendor/family/model/stepping/freq/flags，archtypes.h:39-46），kernel 自身也是读者（arch_watchdog.c 读 vendor/family 选 MSR 语义、arch_clock.c 写 freq 做 TSC 校准回填），用户态只是消费端（procfs minix3/minix/fs/procfs/cpuinfo.c:root_cpuinfo（L146，工具生成）、libsys tsc_util.c:40 经 GET_CPUINFO——minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L76，工具生成） 整体拷出）。Rust 补齐的也是生产侧，分三层：(a) **arch 探测**——`os/arch/src/arch/cpu_identity.rs` 定义 `CpuIdentity` enum（X86/Arm/Riscv 一个变体一种 ISA——C 各 arch 往同一字节 blob 写不同形状再由用户态重解释，Rust 把形状变成类型级事实）+ `CpuIdentityArch` trait，`CurrentCpuIdentity` alias 按目标架构选择（x86 CPUID leaves 0/1 / aarch64 `MIDR_EL1` / riscv64 `mvendorid·marchid·mimpid` SBI ecall），三架构探测源内核皆可用。x86 侧含一处 **MINIX3 BUG 修复**：C（arch_system.c:239）把 ext-model 合并条件误写在 base model 上（`model == 0xf || model == 0x6`），对 2007 年后 base model ∉ {0xF,0x6} 的 family-6 CPU 截断 model（Nehalem 0x106E0 → 0xE 而非 0x1E；Skylake → 0xE 而非 0x4E）；Rust 按 SDM 以 family ∈ {0xF, 0x6} 为条件（`// MINIX3 BUG:` 标注于 x86_64/cpu_identity.rs::decode_signature + 4 项签名解码单测）。minix-rs 只支持现代硬件：C 的 `max_leaf == 0` 古董 CPU 守卫（486 时代）不移植。(b) **kernel 存储**——`CPU_INFO: SyncUnsafeCell<CpuInfoTable>`（smp.rs，`[Option<CpuIdentity>; MAX_CPUS]`，`None` = 未探测槽），表格住 kernel 与 C 的分层一致（`CONFIG_MAX_CPUS` 是 kernel 配置、cpu_info[] 在 kernel glo.h），经 `BklProtected` 审批列表进 `SyncUnsafeCell`（写入=单核 boot 期；读取=GET_CPUINFO 持 BKL）；(c) **GET_CPUINFO 全记录**——misc.rs `CpuInfoEntry` 重排为 C i386 `struct cpu_info` 布局（16 字节 repr(C)：vendor=CPU_VENDOR_INTEL 0/AMD 2/UNKNOWN 0xff，archconst.h:134-136），与本文件其他 GetInfo struct 的单一 ABI 惯例一致（cf. MachineStruct）；ARM MIDR/RISC-V CSR 字段在 x86 形状中无对应（C 各 arch 本就是不同 ABI），文档化为 CPU_VENDOR_UNKNOWN + 全零，类型化身份仍可经 `smp::cpu_identity` 内部读取。**剩余缺口（有意保留）**：freq 恒 0——TSC 校准回填（arch_clock.c）未移植且 Rust kernel 无该读者；watchdog 等 kernel 内部读者未移植（26 doc WONTFIX W-1）；AP 探测路径（C minix3/minix/kernel/arch/i386/arch_smp.c:ap_finish_booting（L227，工具生成） 持 boot_lock+BKL）随 16-smp.md SMP bring-up 落地，当前单核 boot 只填 BSP 槽 |
 | `krandom` 初始化 | main.c:48-49（`krandom.random_sources = RANDOM_SOURCES;` + `krandom.random_elements = RANDOM_ELEMENTS;` 直接赋值，**不是函数调用**） | ✅ 已实现（`krandom::init()`，`lib.rs:465` 调用）：设置 `KRANDOM_INIT` 标志；`KRANDOM: SyncUnsafeCell<KRandomness>` 经 `const fn new()` 已在 link 时初始化字段。`get_randomness()` 是 no-op stub 匹配 C i386/earm 语义（实际熵采集由用户态 `random` 驱动完成）。详见 [25-misc-unported.md §4.7](25-misc-unported.md) |
 | `cpu_set_flag(bsp, CPU_IS_READY)` | main.c:95 | `CPU_IS_READY` 标志在 Rust 中由 `SmpState::cpu_state` 枚举表达（`CpuState::Ready`），步骤 5 设置 TSC baseline 时隐式完成状态转换 |
 
@@ -983,13 +983,13 @@ fn switch_to_user() -> ! {
 - [10-switch-to-user.md](10-switch-to-user.md) — switch_to_user 详细实现
 - [13-syscall-dispatch.md](13-syscall-dispatch.md) — 系统调用分派详细实现
 - [14-exception-interrupt.md](14-exception-interrupt.md) — 异常与中断处理
-- C 源码：`minix3/minix/kernel/system.c:168-270` — system_init()
-- C 源码：`minix3/minix/kernel/main.c:38-109` — bsp_finish_booting()
-- C 源码：`minix3/minix/kernel/arch/i386/pg_utils.c:86-121` — add_memmap()
-- C 源码：`minix3/minix/kernel/arch/i386/arch_system.c:212-244` — cpu_identify()
-- C 头文件：`minix3/minix/include/arch/i386/include/archtypes.h:39-46` — struct cpu_info
+- C 源码：`minix3/minix/kernel/system.c:system_init` — system_init()
+- C 源码：`minix3/minix/kernel/main.c:bsp_finish_booting` — bsp_finish_booting()
+- C 源码：`minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap` — add_memmap()
+- C 源码：`minix3/minix/kernel/arch/i386/arch_system.c:cpu_identify` — cpu_identify()
+- C 头文件：`minix3/minix/include/arch/i386/include/archtypes.h:cpu_info` — struct cpu_info
 - Rust：`os/arch/src/arch/cpu_identity.rs` + `os/kernel/src/smp.rs` — CPU 身份探测与 CPU_INFO 表（todo D-53）
-- C 头文件：`minix3/minix/include/minix/com.h:207-270` — SYS_* 定义
+- C 头文件：`minix3/minix/include/minix/com.h:SYS_FORK` — SYS_* 定义
 
 ---
 

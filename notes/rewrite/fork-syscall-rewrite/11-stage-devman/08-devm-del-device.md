@@ -163,4 +163,4 @@ os/servers/devman/src/del_device.rs — do_del + get/put/del_device（+4 测试�
 - `06-event-buf.md` — REMOVE 行与注销机制（本篇调的两件套）
 - `07-devm-add-device.md` — 出生值与配对表左半边
 - `09-devm-bind-unbind.md` — 配对表右半边（bind/unbind 的 ±1）
-- C 源：`minix3/minix/servers/devman/device.c:424-515`
+- C 源：`minix3/minix/servers/devman/device.c:do_del_device`

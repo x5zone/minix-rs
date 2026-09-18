@@ -166,7 +166,7 @@ Unix 把设备抽象成文件：`/dev/console` 是控制台，`/dev/c0d0p0s0` �
 - `../11-stage-devman/`——设备管理服务（动态节点的服务端实现，与本篇静态清单互补）
 - `minix3/minix/commands/MAKEDEV/MAKEDEV.sh:56-110`——`makedev` 函数（七参数两输出）
 - `minix3/usr.bin/getent/getent.c:98-136`——数据库表与分派主函数
-- `minix3/usr.sbin/dev_mkdb/dev_mkdb.c:56-98`——常量数据库写入器
+- `minix3/usr.sbin/dev_mkdb/dev_mkdb.c:FILE_PERMISSION（L56，工具生成）`——常量数据库写入器
 - `minix3/etc/group`——组文件实例（`wheel:*:0:root` 首行即测试样本形状）
 
 ---

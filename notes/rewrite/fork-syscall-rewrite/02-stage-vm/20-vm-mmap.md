@@ -38,7 +38,7 @@ Minix3 的 mmap 区间独立于 text/data/gap/stack。32 位下运行时计算�
 └─────────── MMAPBASE .. MMAPTOP（mmap 分配区间）──┘
 ```
 
-minix-rs 为 64 位地址空间（**[ARCH: A-6]**：32 位稀缺 → 64 位余量）：固定 `MMAP_BASE = 0x0000_0001_0000_0000`、`MMAP_TOP = 0x0000_0200_0000_0000`（mmap.rs:203-204），远离 brk/stack，无需运行时重算。
+minix-rs 为 64 位地址空间（**[ARCH: A-6]**：32 位稀缺 → 64 位余量）：固定 `MMAP_BASE = 0x0000_0001_0000_0000`、`MMAP_TOP = 0x0000_0200_0000_0000`（os/servers/vm/src/mmap.rs:const MMAP_BASE），远离 brk/stack，无需运行时重算。
 
 ### 1.2 三路地址解析（mmap_region）
 
@@ -50,7 +50,7 @@ C `mmap_region`（mmap.c:36-83）决定新区域落在哪：
 | 非 FIXED + addr ≠ 0 | 先 `map_page_region(addr, 0, len)` 精确尝试（:70-76），失败回退全区间 | 提示地址（best-effort） |
 | addr == 0 | 直接 `map_page_region(VM_MMAPBASE, VM_MMAPTOP, len)`（:78-80） | 系统选择 |
 
-C 的区间查找（`region_find_slot_range`，region.c:302-394）**顶对齐放置**（`startv = frend - length`，:346）并在每个间隙两侧留 1 页 padding（`FREEVRANGE` 先试收缩区间再试全区间，:350-355）；`region_find_slot`（:399-416）优先从 `vm_region_top` 提示点向上增长。Rust `find_slot`（region_map.rs:157-211）同样是顶对齐，但从低地址向高扫描——分配策略差异（§3.6 #7，外部行为等价：区间内任一合法地址）。
+C 的区间查找（`region_find_slot_range`，region.c:302-394）**顶对齐放置**（`startv = frend - length`，:346）并在每个间隙两侧留 1 页 padding（`FREEVRANGE` 先试收缩区间再试全区间，:350-355）；`region_find_slot`（:399-416）优先从 `vm_region_top` 提示点向上增长。Rust `find_slot`（os/servers/vm/src/region/region_map.rs:fn find_slot（L157，工具生成））同样是顶对齐，但从低地址向高扫描——分配策略差异（§3.6 #7，外部行为等价：区间内任一合法地址）。
 
 ### 1.3 匿名 vs 文件分流
 
@@ -71,7 +71,7 @@ C 的区间查找（`region_find_slot_range`，region.c:302-394）**顶对齐放
 
 - **execpriv**（VFS/RS，mmap.c:208-210）：`MAP_THIRDPARTY`（代表 forwhom 映射，EPERM/ESRCH，:211-221）与 `MAP_UNINITIALIZED`（跳过清零）。
 - **map_perm_check**（mmap.c:284-307）：TTY/MEM 豁免（TTY 可为任何人 TIOCMAPMEM，MEM 仅自身）；其余 `sys_privquery_mem(target, physaddr, len)` 由内核裁决（PCI 授权）。Rust 中内核 syscall 未实现 → **fail-closed 拒绝**（§5.3 B4）。
-- **do_remap**（mmap.c:366-435）：`destination`/`source` 是**消息字段**而非 `m_source`——IPC 服务器替客户端 remap 共享内存（`minix3/minix/servers/ipc/shm.c:159`：`vm_remap(m->m_source, sef_self(), ...)`）。调用者仍需过 ACL 掩码（15 范围），但目标/来源由消息指定。
+- **do_remap**（mmap.c:366-435）：`destination`/`source` 是**消息字段**而非 `m_source`——IPC 服务器替客户端 remap 共享内存（`minix3/minix/servers/ipc/shm.c:do_shmat（L159，工具生成）`：`vm_remap(m->m_source, sef_self(), ...)`）。调用者仍需过 ACL 掩码（15 范围），但目标/来源由消息指定。
 
 ### 1.5 对照：Redox 与 Linux
 
@@ -151,7 +151,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
 1. `writable` → VR_WRITABLE（:90）。
 2. **页对齐**（:91-96）：`page_offset = file_offset % VM_PAGE_SIZE`；非零则 `file_offset -= page_offset; len += page_offset`；`len = roundup(len)`。断言三者页对齐（:98-102）。
 3. `mmap_region(vmp, addr, flags, len, vrflags, &mem_type_mappedfile, 0)`（:112-119）：失败 → ENOMEM；成功 → `*retaddr = vr->vaddr + page_offset`（**调用者看到原始偏移语义**）。
-4. `mappedfile_setfile(vmp, vr, vmfd, file_offset, dev, ino, clearend, 1, mayclosefd)`（:128）——记录文件身份供页缓存/COW 使用（mem_file.c:191-246，23/24 范围）。
+4. `mappedfile_setfile(vmp, vr, vmfd, file_offset, dev, ino, clearend, 1, mayclosefd)`（:128）——记录文件身份供页缓存/COW 使用（minix3/minix/servers/vm/mem_file.c:mappedfile_setfile，23/24 范围）。
 
 `mmap_file_cont(vmp, replymsg, cbarg, origmsg)`（:160-190，VFS 回复回调）：
 
@@ -187,7 +187,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
 6. `size` 圆整 ≠ `src_region->length` → EFAULT（:402-406，必须整区域）。
 7. `flags = VR_SHARED` (+WRITABLE 若非 RO)（:409-411）。
 8. `da` 给定 → `map_page_region(dvmp, da, 0, size, ...)`；否则 `VM_MMAPBASE..VM_MMAPTOP`（:412-415）；失败 → ENOMEM。
-9. `shared_setsource(vr, svmp->vm_endpoint, src_region)`（:417）——记录源（mem_shared.c:167-205），`srcvr->remaps++`（:195）。
+9. `shared_setsource(vr, svmp->vm_endpoint, src_region)`（:417）——记录源（minix3/minix/servers/vm/mem_shared.c:shared_setsource），`srcvr->remaps++`（:195）。
 10. 回复 `vr->vaddr`（:431）。
 
 ### 2.8 C 小结：符号全景
@@ -209,7 +209,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
 
 ## 3. Rust 设计决策
 
-### 3.1 D1：mmap_region 三路解析独立成函数（mmap.rs:226-265）
+### 3.1 D1：mmap_region 三路解析独立成函数（os/servers/vm/src/mmap.rs:fn mmap_region）
 
 `handle_mmap` 与 `mmap_file` 共享 `mmap_region`（返回解析后的 vaddr，区域由调用者创建），对应 C 同名函数：
 
@@ -217,7 +217,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
 - 提示地址：页对齐且 `find_overlap` 确认 [addr, addr+len) 空闲 → 返回 addr；否则回退全区间。
 - 全区间：`find_slot(MMAP_BASE, MMAP_TOP, len)`。
 
-### 3.2 D2：handle_mmap 编排（mmap.rs:268-387）
+### 3.2 D2：handle_mmap 编排（os/servers/vm/src/mmap.rs:fn handle_mmap（L268，工具生成））
 
 校验顺序对齐 C：THIRDPARTY（EPERM → forwhom 解析）→ `vm_isokendpt` → `len == 0` → flags 互斥（**收紧**）→ 匿名/文件分流。错误语义（dispatcher.rs:1240-1258）：
 
@@ -231,17 +231,17 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
 | `ProcessNotFound` | ESRCH（mmap.c:217 THIRDPARTY） | 保持 |
 | `OutOfMemory` | ENOMEM | 保持 |
 
-### 3.3 D3：文件映射异步两段式（mmap.rs:389-567）
+### 3.3 D3：文件映射异步两段式（os/servers/vm/src/mmap.rs:struct FileMapParams（L389，工具生成））
 
-`handle_mmap` 文件分支：`enable_filemap` 守卫（`FILEMAP_ENABLED` AtomicBool，mmap.rs:137-146，C glo.h:22/main.c:447 默认 1）→ MAP_SHARED+WRITE 拒绝 → 组装 `VfsRequest{ FdLookup, callback: mmap_file_cont, state: FdLookup{ mmap: *request } }` 入队 → `MmapResult::Suspended`。入队失败 → ENXIO（C vfs_request 失败 :266-268）。
+`handle_mmap` 文件分支：`enable_filemap` 守卫（`FILEMAP_ENABLED` AtomicBool，os/servers/vm/src/mmap.rs:static FILEMAP_ENABLED，C glo.h:22/main.c:447 默认 1）→ MAP_SHARED+WRITE 拒绝 → 组装 `VfsRequest{ FdLookup, callback: mmap_file_cont, state: FdLookup{ mmap: *request } }` 入队 → `MmapResult::Suspended`。入队失败 → ENXIO（C vfs_request 失败 :266-268）。
 
-`mmap_file_cont`（mmap.rs:525-567）从 `VfsRequestState::FdLookup { mmap }` 恢复原始请求（C origmsg，:169-181）：`reply.result != OK` → 保序返回（回复 errno 待 transport）；成功 → `mmap_file`（clearend=0、mayclosefd=1、writable=prot&WRITE）。**ipc_send 解除阻塞依赖 KernelIpcTransport（transport.rs 未实现）——backlog B3（§5.3）**。
+`mmap_file_cont`（os/servers/vm/src/mmap.rs:fn handle_vfs_mmap（L525，工具生成））从 `VfsRequestState::FdLookup { mmap }` 恢复原始请求（C origmsg，:169-181）：`reply.result != OK` → 保序返回（回复 errno 待 transport）；成功 → `mmap_file`（clearend=0、mayclosefd=1、writable=prot&WRITE）。**ipc_send 解除阻塞依赖 KernelIpcTransport（transport.rs 未实现）——backlog B3（§5.3）**。
 
-### 3.4 D4：mmap_file 与 VrParam::File（mmap.rs:414-473）
+### 3.4 D4：mmap_file 与 VrParam::File（os/servers/vm/src/mmap.rs:fn mmap_file（L414，工具生成））
 
 `FileMapParams` 聚合两路调用者的参数（VFS 消息 vs 原始 mmap + FDLOOKUP 回复）。`mmap_file`：`page_offset` 进位（retaddr = vaddr + page_offset，C mmap.c:98-100/:125）→ `mmap_region(MAPPED_FILE)` → fdref 表登记（`find_by_dev_ino` 命中则 ref，未命中 create+ref，替代 C `mappedfile_setfile`）→ `VrParam::File { inited: true, fdref_id, offset: file_offset, clearend }`。
 
-### 3.5 D5：do_remap / map_phys 语义对齐（dispatcher.rs:1347-1449 + map_phys.rs:48-122）
+### 3.5 D5：do_remap / map_phys 语义对齐（dispatcher.rs:1347-1449 + os/servers/vm/src/map_phys.rs:fn handle_map_phys）
 
 - **do_remap**：`destination`/`source` 来自消息字段（非 m_source，§1.4）；零长度/坏端点/源区域缺失 → EINVAL（**本轮修复**：原 EFAULT/ESRCH）；非区域起点/长度不匹配 → EFAULT；`VR_SHARED`(+WRITABLE)；`VrParam::Shared{ep,vaddr,id}` + `remaps++`。
 - **map_phys**：`len==0` → EINVAL（**本轮修复**：原 EFAULT）；`map_perm_check` TTY/MEM 豁免、其余 fail-closed 拒绝（内核 `sys_privquery_mem` 未实现，backlog B4）；偏移进位 + 圆整；`VR_DIRECT|WRITABLE` + `MEM_TYPE_DIRECT` + `VrParam::Direct{phys}`。
@@ -251,7 +251,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
 | 1 | 匿名区恒 `VR_WRITABLE`（mmap.c:247，PROT_READ-only 也可写） | 按 `PROT_WRITE` 派生 WRITABLE（POSIX 正确：PROT_READ-only 写入 → SIGSEGV） | ✅ 收紧（外部 API 等价，行为更符合 POSIX/Linux/Redox） |
-| 2 | MAP_SHARED 不传播 `VR_SHARED`（仅 do_remap 设） | 同 C（to_vr_flags 不含 SHARED→VR_SHARED，mmap.rs:102-121） | ✅ 等价（Minix3 用户 MAP_SHARED 匿名 fork 时按私有 COW 处理） |
+| 2 | MAP_SHARED 不传播 `VR_SHARED`（仅 do_remap 设） | 同 C（to_vr_flags 不含 SHARED→VR_SHARED，os/servers/vm/src/mmap.rs:fn to_vr_flags） | ✅ 等价（Minix3 用户 MAP_SHARED 匿名 fork 时按私有 COW 处理） |
 | 3 | `MAP_UNINITIALIZED` 无特权 → ENOMEM（mmap_region NULL） | → EINVAL（InvalidFlags） | ✅ 收紧（错误更准确，fail-fast） |
 | 4 | `MAP_FIXED` addr=0 → 尝试映射地址 0 | → EFAULT（BadAddress） | ✅ 收紧（映射地址 0 无意义且危险） |
 | 5 | `MAP_FIXED` 非页对齐地址被接受 | → EFAULT（POSIX 要求页对齐） | ✅ 收紧 |
@@ -294,7 +294,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
     → 主循环 dispatch_on_msg 在 vfs_queue 借用释放后执行 callback（vm_server.rs:626-628）
 ```
 
-### 4.2 伪码总结（mmap.rs:268-567）
+### 4.2 伪码总结（os/servers/vm/src/mmap.rs:fn handle_mmap（L268，工具生成））
 
 ```
 handle_mmap(table, page_alloc, frames, vfs_queue, req)          :268
@@ -382,28 +382,28 @@ mmap_file_cont(server, reply, state)                           :525
 
 | 测试 | 位置 | 覆盖 |
 |------|------|------|
-| `test_mmap_anonymous_basic` | mmap.rs:626 | 匿名映射基本创建 |
-| `test_mmap_zero_length_fails` | mmap.rs:641 | len=0 → InvalidLength（EINVAL） |
-| `test_mmap_flags_validation` | mmap.rs:665 | flags 无效（无 SHARED/PRIVATE）→ InvalidFlags |
-| `test_mmap_anon_with_fd_rejected` | mmap.rs:689 | MAP_ANON+fd → InvalidFlags（C :229-233） |
-| `test_mmap_error_to_errno` | mmap.rs:704 | 全错误路径 errno 映射（EINVAL/EFAULT/ENOMEM/EPERM/ENXIO/ESRCH） |
-| `test_mmap_contig_without_prealloc_fails` | mmap.rs:717 | CONTIG 无 PREALLOC → InvalidFlags |
-| `test_mmap_thirdparty_no_priv` | mmap.rs:731 | THIRDPARTY 无特权 → PermissionDenied |
-| `test_mmap_uninitialized_no_priv` | mmap.rs:745 | UNINITIALIZED 无特权 → InvalidFlags |
-| `test_mmap_fixed_unmaps_existing` | mmap.rs:759 | MAP_FIXED 覆盖已占用区间 |
-| `test_mmap_fixed_zero_addr_rejected` | mmap.rs:801 | FIXED addr=0 → BadAddress（收紧） |
-| `test_mmap_hint_exact_fit` | mmap.rs:825 | 提示地址精确命中 |
-| `test_mmap_hint_taken_falls_back` | mmap.rs:850 | 提示被占回退全区间 |
-| `test_mmap_file_disabled` | mmap.rs:892 | enable_filemap 关闭 → FileMapDisabled（ENXIO） |
-| `test_mmap_file_shared_write_rejected` | mmap.rs:919 | SHARED+WRITE 文件映射 → FileMapDisabled |
-| `test_mmap_file_enqueues_vfs_request` | mmap.rs:944 | 文件映射入队 FdLookup + Suspended |
-| `test_vfs_mmap_basic` | mmap.rs:972 | VFS_MMAP 基本 + 只读不可写 + VrParam::File |
-| `test_vfs_mmap_writable_flag` | mmap.rs:1006 | MVM_WRITABLE(0x8000) → WRITABLE |
-| `test_vfs_mmap_page_offset` | mmap.rs:1035 | 页偏移进位 retaddr + len 圆整 |
-| `test_vfs_mmap_disabled` | mmap.rs:1073 | VFS_MMAP 关闭 → FileMapDisabled |
-| `test_map_phys_basic/zero_length/error_to_errno` | map_phys.rs:153-181 | 基本/零长度/errno |
+| `test_mmap_anonymous_basic` | os/servers/vm/src/mmap.rs:fn init_test_process（L626，工具生成） | 匿名映射基本创建 |
+| `test_mmap_zero_length_fails` | os/servers/vm/src/mmap.rs:fn anon_req（L641，工具生成） | len=0 → InvalidLength（EINVAL） |
+| `test_mmap_flags_validation` | os/servers/vm/src/mmap.rs:fn test_mmap_zero_length_fails（L665，工具生成） | flags 无效（无 SHARED/PRIVATE）→ InvalidFlags |
+| `test_mmap_anon_with_fd_rejected` | os/servers/vm/src/mmap.rs:fn test_mmap_flags_validation（L689，工具生成） | MAP_ANON+fd → InvalidFlags（C :229-233） |
+| `test_mmap_error_to_errno` | os/servers/vm/src/mmap.rs:fn test_mmap_flags_validation（L704，工具生成） | 全错误路径 errno 映射（EINVAL/EFAULT/ENOMEM/EPERM/ENXIO/ESRCH） |
+| `test_mmap_contig_without_prealloc_fails` | os/servers/vm/src/mmap.rs:fn test_mmap_anon_with_fd_rejected（L717，工具生成） | CONTIG 无 PREALLOC → InvalidFlags |
+| `test_mmap_thirdparty_no_priv` | os/servers/vm/src/mmap.rs:fn test_mmap_error_to_errno（L731，工具生成） | THIRDPARTY 无特权 → PermissionDenied |
+| `test_mmap_uninitialized_no_priv` | os/servers/vm/src/mmap.rs:fn test_mmap_contig_without_prealloc_fails（L745，工具生成） | UNINITIALIZED 无特权 → InvalidFlags |
+| `test_mmap_fixed_unmaps_existing` | os/servers/vm/src/mmap.rs:fn test_mmap_thirdparty_no_priv（L759，工具生成） | MAP_FIXED 覆盖已占用区间 |
+| `test_mmap_fixed_zero_addr_rejected` | os/servers/vm/src/mmap.rs:fn test_mmap_fixed_unmaps_existing（L801，工具生成） | FIXED addr=0 → BadAddress（收紧） |
+| `test_mmap_hint_exact_fit` | os/servers/vm/src/mmap.rs:fn test_mmap_fixed_zero_addr_rejected（L825，工具生成） | 提示地址精确命中 |
+| `test_mmap_hint_taken_falls_back` | os/servers/vm/src/mmap.rs:fn test_mmap_hint_exact_fit | 提示被占回退全区间 |
+| `test_mmap_file_disabled` | os/servers/vm/src/mmap.rs:fn test_mmap_hint_taken_falls_back（L892，工具生成） | enable_filemap 关闭 → FileMapDisabled（ENXIO） |
+| `test_mmap_file_shared_write_rejected` | os/servers/vm/src/mmap.rs:fn test_mmap_file_disabled（L919，工具生成） | SHARED+WRITE 文件映射 → FileMapDisabled |
+| `test_mmap_file_enqueues_vfs_request` | os/servers/vm/src/mmap.rs:fn test_mmap_file_shared_write_rejected | 文件映射入队 FdLookup + Suspended |
+| `test_vfs_mmap_basic` | os/servers/vm/src/mmap.rs:fn test_mmap_file_enqueues_vfs_request（L972，工具生成） | VFS_MMAP 基本 + 只读不可写 + VrParam::File |
+| `test_vfs_mmap_writable_flag` | os/servers/vm/src/mmap.rs:fn test_vfs_mmap_basic（L1006，工具生成） | MVM_WRITABLE(0x8000) → WRITABLE |
+| `test_vfs_mmap_page_offset` | os/servers/vm/src/mmap.rs:fn test_vfs_mmap_writable_flag（L1035，工具生成） | 页偏移进位 retaddr + len 圆整 |
+| `test_vfs_mmap_disabled` | os/servers/vm/src/mmap.rs:fn test_vfs_mmap_page_offset（L1073，工具生成） | VFS_MMAP 关闭 → FileMapDisabled |
+| `test_map_phys_basic/zero_length/error_to_errno` | os/servers/vm/src/map_phys.rs:fn test_map_phys_basic（L153，工具生成） | 基本/零长度/errno |
 | `test_dispatch_remap_rejects_*`（4 个） | dispatcher.rs:1632-1708 | 零长度/端点/RO 分支 |
-| `test_mmap_file_cont_creates_region` | vm_server.rs:1448 | 回调端到端（区域创建 + File 参数 + 只读） |
+| `test_mmap_file_cont_creates_region` | os/servers/vm/src/vm_server.rs:fn handle_vfs_transid（L1448，工具生成） | 回调端到端（区域创建 + File 参数 + 只读） |
 | `test_vm_mmap_in/vfs_mmap/map_phys/remap_in_decode_message` | vm.rs:1082-1199 | 20-P1-1 wire format 回归 |
 
 ### 5.2 覆盖维度
@@ -448,7 +448,7 @@ mmap_file_cont(server, reply, state)                           :525
 | 移交项 | 目标文档 | 交接内容 |
 |--------|---------|---------|
 | munmap | 21 | `do_munmap`/`munmap_vm_lin`/`VM_UNMAP_PHYS`/`VM_SHM_UNMAP`（mmap.c:488-573） |
-| map_phys 细节 | 21 | `do_map_phys` 已实现（map_phys.rs:48-122，F-138）；21 侧重 unmap 侧 |
+| map_phys 细节 | 21 | `do_map_phys` 已实现（os/servers/vm/src/map_phys.rs:fn handle_map_phys，F-138）；21 侧重 unmap 侧 |
 | VFS 异步对话 | 23 | `VfsRequestQueue` 序列激活模型 + fdref 表（本文件映射入队/回调已接线） |
 | 页缓存 | 24 | `mem_type_mappedfile` pagefault → cache（23/24 链路） |
 | queries | 26 | `do_get_phys`/`do_get_refcount`（mmap.c:438-485） |

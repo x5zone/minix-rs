@@ -1,7 +1,7 @@
 # 05-devm-message-contract：消息面契约
 
 > **定位**：devman 的协议面。本篇回答：10 种消息谁定义、字段宏怎么读、grant 拷贝怎么 work、回复怎么发、谁有资格发 BIND、fall-through 到底是不是 bug、5 种没实现的消息怎么办。判定只做一次，后续篇只引用。
-> **源码**：`minix3/minix/include/minix/com.h:846-866`（常量 + 字段宏）+ `device.c:213-219`（`do_reply`）+ `device.c:223-250`（ADD 前导：grant 拷贝三错）+ `bind.c:7-19,56-68`（RS-only 门）+ `main.c:46-58`（分发形，01 已走读）。
+> **源码**：`minix3/minix/include/minix/com.h:DEVMAN_BASE`（常量 + 字段宏）+ `device.c:213-219`（`do_reply`）+ `device.c:223-250`（ADD 前导：grant 拷贝三错）+ `bind.c:7-19,56-68`（RS-only 门）+ `main.c:46-58`（分发形，01 已走读）。
 > **Rust 模块**：`os/servers/devman/src/ipc/`（`message.rs` 字段视图 + `dispatch.rs` 单分派）+ `minix-types/src/types/com.rs`（DEVMAN 数字权威）。
 > **前置依赖**：01（message_hook 调用点）、03（wire 结构）。
 > **不覆盖（移交）**：各 handler 业务（07/08/09 只调本篇原语）、事件格式（06）、客户端构造（10/11）、RS 发布流程（12）。
@@ -195,4 +195,4 @@ Server::run（统一循环）→ Devman 臂 → classify → handle_other → 05
 - `07-devm-add-device.md` — grant 拷贝的调用方 + `apply_reply` 主用户
 - `09-devm-bind-unbind.md` — `check_rs` 的调用方 + 转发握手
 - `99-devm-global-concepts.md` — 常量收口（本篇 com.rs 块的归宿说明）
-- C 源：`minix3/minix/include/minix/com.h:846-866`、`device.c:213-250`、`bind.c:7-19,56-68`、`main.c:46-58`
+- C 源：`minix3/minix/include/minix/com.h:DEVMAN_BASE`、`device.c:213-250`、`bind.c:7-19,56-68`、`main.c:46-58`

@@ -1,6 +1,6 @@
 # 06-init-read-ttys：读终端表与会话重建
 
-> **定位**：状态 `'t'`，`read_ttys`（`minix3/sbin/init/init.c:1222-1285`）、`do_setttyent`（1792-1806）。
+> **定位**：状态 `'t'`，`read_ttys`（`minix3/sbin/init/init.c:setupargv（L1222，工具生成）`）、`do_setttyent`（1792-1806）。
 > **Rust**：`os/commands/sbin/init/src/ttys.rs`。
 > **前置依赖**：02（状态字符）、05（runcom 出口）。
 > **本篇不覆盖（移交）**：`new_session/free_session` 结构细节（见 07）、会话 DB 实现（见 08）、开机 utmp 记录（见 13）、chroot 路径（见 12）。
@@ -9,7 +9,7 @@
 
 ## 1. 概念：终端表是登录系统的总开关
 
-`/etc/ttys` 是一个四列表格，每行描述一个终端：设备名、跑什么 getty、什么类型、状态标志。`TTY_ON` 表示“允许登录”，`TTY_SECURE` 表示“允许 root 登录”（`minix3/include/ttyent.h:57-58`）。init 的 `read_ttys` 不做别的，就是把这张表翻译成内存里的会话链表：开的行建会话，关的行跳过。翻译前先把旧链表整个销毁——“先清空再重建”在 01 见过，这里是第二次出现。这种粗暴但正确的策略避免了新旧 diff 的复杂性，代价是每次重读都要重建全部会话，而重读恰恰很少发生（只在启动与 SIGHUP 时）。
+`/etc/ttys` 是一个四列表格，每行描述一个终端：设备名、跑什么 getty、什么类型、状态标志。`TTY_ON` 表示“允许登录”，`TTY_SECURE` 表示“允许 root 登录”（`minix3/include/ttyent.h:TTY_ON`）。init 的 `read_ttys` 不做别的，就是把这张表翻译成内存里的会话链表：开的行建会话，关的行跳过。翻译前先把旧链表整个销毁——“先清空再重建”在 01 见过，这里是第二次出现。这种粗暴但正确的策略避免了新旧 diff 的复杂性，代价是每次重读都要重建全部会话，而重读恰恰很少发生（只在启动与 SIGHUP 时）。
 
 `do_setttyent` 的 chroot 感知值得一提：如果之前 chroot 过，ttys 路径要拼上新根（`rootdir + /etc/ttys`，`init.c:1800`），否则读宿主的表就错了。路径细节的机制见 12，本篇只确认调用点。
 
@@ -55,12 +55,12 @@
 | `test_parse_comment_and_empty_skipped` | fparseln 跳过语义 |
 | `test_statusless_line_parses_as_off` | 无状态 token 的条目 status 为 0 |
 | `test_parse_off_line_still_parsed` | new_session 过滤在 07（本篇只解析） |
-| `test_quoted_getty_keeps_inner_space` | getttyent.c:184 引号字段（minix3/etc/ttys 实行） |
+| `test_quoted_getty_keeps_inner_space` | minix3/lib/libc/gen/getttyent.c:skip（L184，工具生成） 引号字段（minix3/etc/ttys 实行） |
 | `test_quoted_empty_getty_is_off_sample` | `""` 空 getty（minix3/etc/ttys 实行） |
 | `test_substring_tokens_do_not_match` | scmp 精确 token 匹配 |
 | `test_off_after_on_clears_in_order` | `off` 显式清除 TTY_ON |
 | `test_window_option_captured` | vcmp window= 带值选项 |
-| `test_escaped_quote_inside_quoted_field` | getttyent.c:188 `\"` 转义 |
+| `test_escaped_quote_inside_quoted_field` | minix3/lib/libc/gen/getttyent.c:skip（L188，工具生成） `\"` 转义 |
 | `test_trailing_comment_ignored` | 行内 `#` 注释 |
 | `test_plan_db_failure_goes_single_user` | init.c:1262-1271 |
 | `test_plan_db_failure_chrooted_goes_death` | init.c:1266-1267 |
@@ -85,4 +85,4 @@
 - `07-init-session-model.md` — new/free/setupargv。
 - `08-init-session-db.md` — start/add/del/find。
 - `10-init-clean-ttys.md` — 重读路径的兄弟篇。
-- C 源码：`minix3/sbin/init/init.c:1222-1285,1792-1806`、`minix3/include/ttyent.h:40,57-58`。
+- C 源码：`minix3/sbin/init/init.c:setupargv（L1222，工具生成）,1792-1806`、`minix3/include/ttyent.h:_PATH_TTYS,57-58`。

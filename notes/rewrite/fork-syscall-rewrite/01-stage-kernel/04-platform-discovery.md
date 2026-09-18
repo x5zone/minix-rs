@@ -1,8 +1,8 @@
 # 04-platform-discovery: 平台硬件发现抽象
 
 > **分类**: 平台抽象 / 硬件发现
-> **源码**: `os/libs/minix-boot/src/platform.rs`（`PlatformDesc`/`PlatformDescKind`/`PlatformDescSource`/子描述符 trait）、`os/libs/minix-platform/src/desc.rs`（trait re-export）、`os/libs/minix-platform/src/kind.rs`（`parse_by_kind` 分派）、`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（品牌 struct + per-arch `QemuVirtDesc`）、`os/libs/minix-platform/src/global.rs`（`PlatformContext`/`init_from_kinfo`）、`os/libs/minix-platform/src/device_tree.rs`、`os/libs/minix-platform/src/acpi.rs`、`os/libs/minix-boot/src/kernel_info.rs:81-102`、`os/boot-shim/src/uefi_helpers.rs:52-98`、`os/boot-shim/src/opensbi_helpers.rs:222-260`、`os/kernel/src/lib.rs:359`
-> **C 参考源码**: `minix3/minix/kernel/arch/i386/arch_system.c:246-287`（`arch_init()` 调用 `acpi_init()`）、`minix3/minix/kernel/arch/i386/acpi.c:310-342`（`acpi_init()`）、`minix3/minix/kernel/arch/earm/arch_system.c:101-132`（`arch_init()` 调用 `bsp_init()`）
+> **源码**: `os/libs/minix-boot/src/platform.rs`（`PlatformDesc`/`PlatformDescKind`/`PlatformDescSource`/子描述符 trait）、`os/libs/minix-platform/src/desc.rs`（trait re-export）、`os/libs/minix-platform/src/kind.rs`（`parse_by_kind` 分派）、`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（品牌 struct + per-arch `QemuVirtDesc`）、`os/libs/minix-platform/src/global.rs`（`PlatformContext`/`init_from_kinfo`）、`os/libs/minix-platform/src/device_tree.rs`、`os/libs/minix-platform/src/acpi.rs`、`os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo（L81，工具生成）`、`os/boot-shim/src/uefi_helpers.rs:fn alloc（L52，工具生成）`、`os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot（L222，工具生成）`、`os/kernel/src/lib.rs:fn arch_boot_impl（L359，工具生成）`
+> **C 参考源码**: `minix3/minix/kernel/arch/i386/arch_system.c:arch_init`（`arch_init()` 调用 `acpi_init()`）、`minix3/minix/kernel/arch/i386/acpi.c:acpi_init`（`acpi_init()`）、`minix3/minix/kernel/arch/earm/arch_system.c:arch_init`（`arch_init()` 调用 `bsp_init()`）
 > **说明**: 内核如何在不硬编码地址的前提下，知道自己在什么硬件上运行——`PlatformDesc` trait 的设计与三架构统一抽象
 > **前置**: [03-kmain-cstart.md](03-kmain-cstart.md) — cstart 初始化序列已建立保护结构
 > **后续**: [05-clock-interrupt-init.md](05-clock-interrupt-init.md) — 时钟与中断控制器从 `PlatformDesc` 获取地址
@@ -103,9 +103,9 @@ void arch_init(void)
 }
 ```
 
-> **C 参考源码**: `minix3/minix/kernel/arch/i386/arch_system.c:246-287`
+> **C 参考源码**: `minix3/minix/kernel/arch/i386/arch_system.c:arch_init`
 
-`acpi_init()` 的实现见 `minix3/minix/kernel/arch/i386/acpi.c:310-342`：
+`acpi_init()` 的实现见 `minix3/minix/kernel/arch/i386/acpi.c:acpi_init`：
 
 ```c
 void acpi_init(void)
@@ -129,7 +129,7 @@ void acpi_init(void)
 }
 ```
 
-> **C 参考源码**: `minix3/minix/kernel/arch/i386/acpi.c:310-342`
+> **C 参考源码**: `minix3/minix/kernel/arch/i386/acpi.c:acpi_init`
 
 关键行为：
 
@@ -151,7 +151,7 @@ void arch_init(void)
 }
 ```
 
-> **C 参考源码**: `minix3/minix/kernel/arch/earm/arch_system.c:101-132`
+> **C 参考源码**: `minix3/minix/kernel/arch/earm/arch_system.c:arch_init`
 
 `bsp_init()` 的实现因板子而异，典型行为包括：
 
@@ -159,7 +159,7 @@ void arch_init(void)
 - 启用 PMU cycle counter（`arch_init()` 自身代码，`earm/arch_system.c:113-129`）。
 - 硬编码 CPU 频率（例如 `cpu_info[cpu].freq = 660; /* 660 Mhz hardcoded */`，`earm/arch_system.c:98`）。
 
-> **C 参考源码**: `minix3/minix/kernel/arch/earm/arch_system.c:98`
+> **C 参考源码**: `minix3/minix/kernel/arch/earm/arch_system.c:cpu_identify（L98，工具生成）`
 
 C 版 ARM 没有 Device Tree 解析器，因此 GIC 基址、串口基址等都来自 BSP 头文件中的宏。Rust 重写引入 DTB 解析，把"板子特定常量"变成"固件描述的数据"——这是对 C 版覆盖空白的填补，不是语义偏离。
 
@@ -176,7 +176,7 @@ C 版 ARM 没有 Device Tree 解析器，因此 GIC 基址、串口基址等都�
 
 ### 2.4 因果链抽样：C 版初始化顺序
 
-C 版启动链（x86-64）的实际顺序（来源：`minix3/minix/kernel/main.c:399-475` 的 `cstart()` 函数）：
+C 版启动链（x86-64）的实际顺序（来源：`minix3/minix/kernel/main.c:minix_shutdown（L399，工具生成）` 的 `cstart()` 函数）：
 
 ```
 main()
@@ -266,7 +266,7 @@ main()
 >
 > 但这个开销在本设计中**几乎可以忽略**：实际存储是 `PlatformDescEnum`，编译器对每个 `match desc.interrupt_controller() { ... }` 都能静态内联到具体变体的方法体；只有从 enum 切到 trait object 那一刻才有一次虚表查找，而这一步发生在 boot 时 init 阶段（`clock.rs:131` 等几处），不在时钟中断等热路径上。热路径上的 `read_tsc()` 拿到 enum 后就走具体类型的寄存器操作，无 vtable 查找。
 
-参见 `os/libs/minix-boot/src/platform.rs:247-260` 的 `PlatformDesc` trait 定义（由 `os/libs/minix-platform/src/desc.rs` re-export）。
+参见 `os/libs/minix-boot/src/platform.rs:trait PlatformDesc` 的 `PlatformDesc` trait 定义（由 `os/libs/minix-platform/src/desc.rs` re-export）。
 
 ### 3.3 子描述符为什么用 trait + `Any` downcast（TODO-01-2 修复后）
 
@@ -331,7 +331,7 @@ pub trait ConsoleDesc: Send + Sync + fmt::Debug + Any {
 6. **`PlatformDescEnum` 保留**：dispatch enum 仍然是 `DeviceTree(DeviceTreeDesc)`/`Acpi(AcpiDesc)`/`QemuVirt(QemuVirtDesc)` 三选一（变体按 arch cfg-gate），用于编译期分发 + `no_std` 下避免 `Box<dyn PlatformDesc>` 的分配器依赖。子描述符 trait 化不影响 `PlatformDescEnum` 的角色——它分发的是"解析来源"而非"硬件品牌"。
 
 参见：
-- `os/libs/minix-boot/src/platform.rs:281-317` 定义 `InterruptControllerDesc`/`TimerDesc`/`ConsoleDesc` 三个 trait（含 `as_any()` 必需方法）。
+- `os/libs/minix-boot/src/platform.rs:trait InterruptControllerDesc` 定义 `InterruptControllerDesc`/`TimerDesc`/`ConsoleDesc` 三个 trait（含 `as_any()` 必需方法）。
 - `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 定义各品牌 struct 与 trait impl。
 - `os/libs/minix-platform/src/desc.rs:1-29` 解释"为何 enum 改 trait"的设计说明。
 
@@ -400,7 +400,7 @@ impl ClockArch for Riscv64ClockArch {
 | `InterruptController`（interrupt.rs） | `gicd_base` / `plic_base` / 等 | `&dyn InterruptControllerDesc` |
 | `ArchInit`（arch_init.rs:47-61） | 架构相关 misc 参数 | `&ArchMiscDesc` |
 
-参见 `os/arch/src/arch/clock.rs:86` 定义带 `&self` 的 `ClockArch` trait；`os/plat/src/interrupt.rs:129` 定义 `InterruptController` trait；`os/arch/src/arch/arch_init.rs:47-61` 定义 `ArchInit` trait。
+参见 `os/arch/src/arch/clock.rs:trait ClockArch（L86，工具生成）` 定义带 `&self` 的 `ClockArch` trait；`os/plat/src/interrupt.rs:enum IrqAction（L129，工具生成）` 定义 `InterruptController` trait；`os/arch/src/arch/arch_init.rs:trait ArchInit（L47，工具生成）` 定义 `ArchInit` trait。
 
 ### 3.5 全局存储为什么用 `AssumeSyncCell` 而非 `Mutex`/`static mut`
 
@@ -412,10 +412,10 @@ impl ClockArch for Riscv64ClockArch {
 
 `AssumeSyncCell<T>` 是项目内统一的"UnsafeCell + 手动 `Sync`"原语，定义在 `os/libs/minix-types/src/types/cell.rs`，VM server、heap arena、vmproc 表等都已在用。它的安全契约：**调用方保证单线程独占访问**。`platform_desc` 的"boot 阶段单线程写入一次，之后所有 CPU 只读访问"恰好满足这一契约。
 
-> **参见**: `os/libs/minix-types/src/types/cell.rs:51` 定义 `AssumeSyncCell`；`os/libs/minix-platform/src/global.rs` 中以 `static PLATFORM: AssumeSyncCell<Option<PlatformContext>>` 形式持有全局描述符。
+> **参见**: `os/libs/minix-types/src/types/cell.rs:struct AssumeSyncCell<T>` 定义 `AssumeSyncCell`；`os/libs/minix-platform/src/global.rs` 中以 `static PLATFORM: AssumeSyncCell<Option<PlatformContext>>` 形式持有全局描述符。
 
 > **TODO(P1, SMP 阶段处理)**：上例"boot 阶段单线程写入一次，之后所有 CPU 只读访问"的安全契约在 SMP（`[16-smp.md](16-smp.md)`）就绪后**失效**——`AP_STARTUP` 路径下应用处理器的 BSP 同步握手可能并发访问 `PLATFORM`。届时此 `AssumeSyncCell` 必须替换为 `Mutex`/`AtomicXxx` 或拆分为 per-CPU 数据。当前单 BSP boot 路径不触发该风险，故不在本文档范围内处理。
-> **参见文件**: `os/libs/minix-types/src/types/cell.rs:51`（`AssumeSyncCell` 定义）；`os/libs/minix-platform/src/global.rs:38-51`（`PLATFORM` 静态）。
+> **参见文件**: `os/libs/minix-types/src/types/cell.rs:struct AssumeSyncCell<T>`（`AssumeSyncCell` 定义）；`os/libs/minix-platform/src/global.rs:38-51`（`PLATFORM` 静态）。
 > **跟踪**: 由 [16-smp.md](16-smp.md)（SMP 阶段文档）继承此 TODO 并在 AP bring-up 之前完成替换。
 
 ### 3.6 `QemuVirtDesc` 兜底实现
@@ -427,11 +427,11 @@ impl ClockArch for Riscv64ClockArch {
 > 参见 `os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs` 中三个 `QemuVirtDesc` 实现与各架构参数。
 >
 > **覆盖证据（2026-07-16 复核）**：经 grep 验证，当前 DTB/ACPI parser 主路径**已存在单测覆盖**——
-> - `os/libs/minix-platform/src/device_tree.rs:490` `fn test_parse_riscv64_qemu_virt_dtb` 用真实 DTB 二进制（`os/libs/minix-platform/tests/data/qemu_virt_riscv.dtb`）做端到端解析验证
-> - `os/libs/minix-platform/src/acpi.rs:551` `fn test_parse_synthetic_acpi` 用合成的 RSDP→XSDT→MADT 字节链验证完整 ACPI 解析
+> - `os/libs/minix-platform/src/device_tree.rs:fn test_parse_riscv64_qemu_virt_dtb` `fn test_parse_riscv64_qemu_virt_dtb` 用真实 DTB 二进制（`os/libs/minix-platform/tests/data/qemu_virt_riscv.dtb`）做端到端解析验证
+> - `os/libs/minix-platform/src/acpi.rs:fn parse_madt（L551，工具生成）` `fn test_parse_synthetic_acpi` 用合成的 RSDP→XSDT→MADT 字节链验证完整 ACPI 解析
 > - `os/arch/tests/qemu_test_x86_64.sh` 等 QEMU 集成测试通过 GDB checkpoint 验证 `init_clock_and_interrupts`，**必然**触发 `platform::init_from_kinfo` → parser 主路径（无 `QemuVirtDesc` 介入，因为 `platform_sources` 非空，由 boot-shim 端 find 来源填入）
 >
-> `os/kernel/tests/boot_integration.rs:34`、`os/kernel/src/lib.rs:2266/2330/2412/2507/2538/2779/2803/2827`、`os/libs/minix-boot/src/kernel_info.rs:303` 共 10 处 `platform_sources: &[]` 均为 `#[cfg(test)]` 单元测试 fixture（另有 boot.rs:455 与 boot-shim 两处 helpers 测试传参，详见 §11.2 表格），**不**针对 parser 主路径——单元测试绕过固件读取是正常设计，不构成 "test what you fly" 违反。`boot-shim/src/{uefi,opensbi}_helpers.rs:228/432` 是**生产** `KernelInfo` 构造函数的 `platform_sources` 参数（boot 期由固件发现来源后填充，见 `uefi_helpers.rs:222` / `opensbi_helpers.rs:222` 的发现逻辑）。原 §3.6 + §11 描述已纠正，详见 §11 重写。
+> `os/kernel/tests/boot_integration.rs:fn boot_simulation_full_flow（L34，工具生成）`、`os/kernel/src/lib.rs:fn set_current_ptproc_nr（L2266，工具生成）/2330/2412/2507/2538/2779/2803/2827`、`os/libs/minix-boot/src/kernel_info.rs:fn make_valid_info（L303，工具生成）` 共 10 处 `platform_sources: &[]` 均为 `#[cfg(test)]` 单元测试 fixture（另有 boot.rs:455 与 boot-shim 两处 helpers 测试传参，详见 §11.2 表格），**不**针对 parser 主路径——单元测试绕过固件读取是正常设计，不构成 "test what you fly" 违反。`boot-shim/src/{uefi,opensbi}_helpers.rs:228/432` 是**生产** `KernelInfo` 构造函数的 `platform_sources` 参数（boot 期由固件发现来源后填充，见 `os/boot-shim/src/uefi_helpers.rs:fn prepare_boot（L222，工具生成）` / `os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot（L222，工具生成）` 的发现逻辑）。原 §3.6 + §11 描述已纠正，详见 §11 重写。
 
 > **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。原 TODO 指出 `QemuVirtDesc` 的每个方法都遍布 `#[cfg(target_arch)]` 条件编译，代码重复且难以维护。修复方案是把 `QemuVirtDesc` 拆成三个 per-arch 文件（`arch/x86_64.rs`、`arch/aarch64.rs`、`arch/riscv64.rs`），每个文件持有该架构的具体子描述符字段（`ApicDesc`+`PitDesc`+`IsaSerialDesc` / `Gicv3Desc`+`ArmGenericTimerDesc`+`MmioSerialDesc` / `PlicDesc`+`ClintDesc`+`Riscv64ConsoleDesc`），方法体内直接 `&self.ic` 等返回具体 struct 引用（自动 trait object 化为 `&dyn InterruptControllerDesc`），**消除所有方法级 `#[cfg]` 分支**。`#[cfg(target_arch)]` 现在只用在 `arch/mod.rs` 的 mod 选择语句上，与 `PlatformDescEnum` 的变体 cfg-gate 一致。
 
@@ -452,15 +452,15 @@ impl ClockArch for Riscv64ClockArch {
 >
 > | 测试函数 | 文件:行号 | 覆盖目标 |
 > |---------|---------|---------|
-> | `test_dt_parse_error_variants` | `os/libs/minix-platform/src/device_tree.rs:452` | DTB parser 错误路径 |
-> | `test_from_bytes_bad_magic` | `os/libs/minix-platform/src/device_tree.rs:474` | DTB parser magic 校验 |
-> | `test_parse_riscv64_qemu_virt_dtb` | `os/libs/minix-platform/src/device_tree.rs:490` | DTB parser **端到端**（用真实 `qemu_virt_riscv.dtb`） |
-> | `test_parse_unsupported_arch_returns_error` | `os/libs/minix-platform/src/device_tree.rs:524` | DTB parser arch 拒绝路径 |
-> | `test_acpi_parse_error_variants` | `os/libs/minix-platform/src/acpi.rs:504` | ACPI parser 错误路径 |
-> | `test_acpi_desc_from_parsed` | `os/libs/minix-platform/src/acpi.rs:519` | ACPI descriptor 构造 |
-> | `test_parse_synthetic_acpi` | `os/libs/minix-platform/src/acpi.rs:551` | ACPI parser **端到端**（合成 RSDP→XSDT→MADT） |
-> | `test_parse_by_kind_unknown_returns_error` | `os/libs/minix-platform/src/kind.rs:86` | parser 调度路径 |
-> | `test_u32_le_from_slice` | `os/libs/minix-platform/src/acpi.rs:543` | parser 内部 helper |
+> | `test_dt_parse_error_variants` | `os/libs/minix-platform/src/device_tree.rs:fn test_dt_parse_error_variants` | DTB parser 错误路径 |
+> | `test_from_bytes_bad_magic` | `os/libs/minix-platform/src/device_tree.rs:fn test_from_bytes_bad_magic` | DTB parser magic 校验 |
+> | `test_parse_riscv64_qemu_virt_dtb` | `os/libs/minix-platform/src/device_tree.rs:fn test_parse_riscv64_qemu_virt_dtb` | DTB parser **端到端**（用真实 `qemu_virt_riscv.dtb`） |
+> | `test_parse_unsupported_arch_returns_error` | `os/libs/minix-platform/src/device_tree.rs:fn test_parse_unsupported_arch_returns_error` | DTB parser arch 拒绝路径 |
+> | `test_acpi_parse_error_variants` | `os/libs/minix-platform/src/acpi.rs:fn parse_madt（L504，工具生成）` | ACPI parser 错误路径 |
+> | `test_acpi_desc_from_parsed` | `os/libs/minix-platform/src/acpi.rs:fn parse_madt（L519，工具生成）` | ACPI descriptor 构造 |
+> | `test_parse_synthetic_acpi` | `os/libs/minix-platform/src/acpi.rs:fn parse_madt（L551，工具生成）` | ACPI parser **端到端**（合成 RSDP→XSDT→MADT） |
+> | `test_parse_by_kind_unknown_returns_error` | `os/libs/minix-platform/src/kind.rs:fn test_parse_by_kind_unknown_returns_error（L86，工具生成）` | parser 调度路径 |
+> | `test_u32_le_from_slice` | `os/libs/minix-platform/src/acpi.rs:fn parse_madt（L543，工具生成）` | parser 内部 helper |
 >
 > 集成测试（QEMU 端到端）：
 >
@@ -545,7 +545,7 @@ boot-shim 通过 `KernelInfo` 向 kernel 传递 DTB/RSDP 的**原始物理指针
 
 > **状态**：✅ 修复完成（TODO-01-2，2026-07-16）。原设计的 `PlatformDescriptorPtr` 是 sum type（要么 DTB、要么 RSDP），无法同时持有两者，且 `Dtb`/`Rsdp` 变体在 `KernelInfo` 公共 API 表面**显式列出固件描述符类型**，与 §3.1 "上层代码完全屏蔽设备差异" 的设计哲学矛盾。修复方案：把 enum 改为不透明 `PlatformDescKind(u32)` + `PlatformDescSource` 纯数据对，并把单值 `Option<PlatformDescriptorPtr>` 改为有序切片 `&'static [PlatformDescSource]`，同时解决"品牌名暴露"与"无法多源并存"两个问题。原 §3.7 提到的多 AI bagging 与 TODO#1 合并评审路径已通过此修复落地，不再需要进一步评估。
 
-> 参见 `os/libs/minix-boot/src/kernel_info.rs:101` 定义 `platform_sources: &'static [PlatformDescSource]`；`os/libs/minix-boot/src/platform.rs:54-150` 定义 `PlatformDescKind`/`PlatformDescSource`/`DTB`/`RSDP` 常量。
+> 参见 `os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo（L101，工具生成）` 定义 `platform_sources: &'static [PlatformDescSource]`；`os/libs/minix-boot/src/platform.rs:struct PlatformDescKind（L54，工具生成）` 定义 `PlatformDescKind`/`PlatformDescSource`/`DTB`/`RSDP` 常量。
 
 ---
 
@@ -675,7 +675,7 @@ match desc.source() {
 
 **设计权衡**：把 `source()` 放在 `PlatformDesc` trait 里 vs 单独搞个 `HasPlatformSource` trait？前者简单（一个 trait 满足所有元信息查询），后者抽象更纯（明确区分"硬件参数"和"元信息"两层）。当前选择前者——**简洁性优先于抽象纯度**——因为元信息查询需求很低，不会演化成主要扩展点。如果未来 `source()` 衍生出 `version()`、`format_revision()` 等多种元信息查询，再考虑拆分独立 trait。
 
-> 参见 `os/libs/minix-boot/src/platform.rs:155-163` 定义 `PlatformSource` enum；`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（行 146/140/179）+ `device_tree.rs:403` + `acpi.rs:247` 五处 `source()` 实现各返回自身对应变体。
+> 参见 `os/libs/minix-boot/src/platform.rs:enum PlatformSource（L155，工具生成）` 定义 `PlatformSource` enum；`os/libs/minix-platform/src/arch/{x86_64,aarch64,riscv64}.rs`（行 146/140/179）+ `device_tree.rs:403` + `os/libs/minix-platform/src/acpi.rs:fn parse（L247，工具生成）` 五处 `source()` 实现各返回自身对应变体。
 
 ### 4.2 `PlatformDesc` 的三种实现
 
@@ -836,7 +836,7 @@ impl PlatformDesc for DeviceTreeDesc {
 
 > **`dtb_phys` 为何可直接解引用**：`parse()` 把物理地址直接当虚拟地址用（`fdt::Fdt::from_ptr(dtb_phys as *const u8)`）。安全前提：boot 早期（T2.5）内核已启用分页，且恒等映射覆盖低 4GB（C `pg_identity()` 语义，见 [02-higher-half-kernel.md](02-higher-half-kernel.md)）；DTB 由 boot-shim 留在静态固件内存（低地址，远低于 4GB，见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)），VA == PA 成立。若未来 DTB 位于映射范围外（物理高端），`parse` 前需先建立临时映射——当前 UEFI/OpenSBI 路径不触发。
 
-> 参见 `os/libs/minix-platform/src/device_tree.rs:63-430`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）。
+> 参见 `os/libs/minix-platform/src/device_tree.rs:struct DeviceTreeDesc`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）。
 
 #### 4.2.3 `AcpiDesc` 解析器（x86-64）
 
@@ -888,7 +888,7 @@ impl PlatformDesc for AcpiDesc {
 
 构造 `ApicDesc { lapic_base, ioapic_base, nr_irqs }` + `PitDesc { pit_base_freq: 1_193_182, lapic_base }` + `IsaSerialDesc { port_base: 0x3F8 }`，存入 `AcpiDesc` 字段。上层通过 `&dyn InterruptControllerDesc` 拿到引用，arch 层消费代码再 `as_any().downcast_ref::<ApicDesc>()` 读取 `lapic_base` 等字段。
 
-> 参见 `os/libs/minix-platform/src/acpi.rs:111-483`（含 struct 定义、RSDP/XSDT/MADT 解析、`impl PlatformDesc`）。
+> 参见 `os/libs/minix-platform/src/acpi.rs:struct MadtEntryHeader（L111，工具生成）`（含 struct 定义、RSDP/XSDT/MADT 解析、`impl PlatformDesc`）。
 
 ### 4.3 `PlatformContext` 全局存储
 
@@ -1035,13 +1035,13 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2); // x86-64
 
 boot-shim 定位原始指针的位置（`find_platform_sources()`）：
 
-- UEFI 路径：`os/boot-shim/src/uefi_helpers.rs:52-98` 扫描 UEFI Configuration Table。
+- UEFI 路径：`os/boot-shim/src/uefi_helpers.rs:fn alloc（L52，工具生成）` 扫描 UEFI Configuration Table。
   - x86-64：查找 ACPI GUID，构造 `PlatformDescSource::new(RSDP, PhysBytes(addr))`。
   - aarch64：**优先**查找 DTB GUID，**再**查找 ACPI GUID（DTB 在前，ACPI 兜底）——支持 SBBR 服务器场景的 DTB+ACPI 共存。
   - riscv64：UEFI 路径暂未实现，返回空切片。
-- OpenSBI 路径（riscv64）：`os/boot-shim/src/opensbi_helpers.rs:222-260` 从 `a1` 寄存器拿 DTB 物理地址，构造 `PlatformDescSource::new(DTB, PhysBytes(addr))`，返回单元素切片。
+- OpenSBI 路径（riscv64）：`os/boot-shim/src/opensbi_helpers.rs:fn prepare_boot（L222，工具生成）` 从 `a1` 寄存器拿 DTB 物理地址，构造 `PlatformDescSource::new(DTB, PhysBytes(addr))`，返回单元素切片。
 
-> 参见 `os/libs/minix-boot/src/platform.rs:97-104` 定义 `DTB`/`RSDP` 常量；`os/libs/minix-platform/src/kind.rs:28` re-export 这两个常量并定义 `parse_by_kind()` 分派函数。
+> 参见 `os/libs/minix-boot/src/platform.rs:const DTB` 定义 `DTB`/`RSDP` 常量；`os/libs/minix-platform/src/kind.rs:28` re-export 这两个常量并定义 `parse_by_kind()` 分派函数。
 
 ### 4.5 硬件 trait 实例化实现（§3.4 的对应实现）
 
@@ -1133,7 +1133,7 @@ cstart()
 - 与 C 行为的兼容性：C 的 `acpi_init` 在 `arch_init` 中调用，**晚于** `init_clock` 和 `intr_init`。这是因为 C 的 `acpi_init` 解析的 ACPI 表**不**用于驱动时钟和中断控制器（那些依赖硬编码）。Rust 重写要"从解析中获取时钟/中断的基址"，所以顺序必须前移。
 - 这是与 C 的**有意偏离**，理由是 C 的硬编码本身就是要被替换的。
 
-> 参见 `os/kernel/src/lib.rs:359` 调用 `minix_platform::init_from_kinfo(kernel_info)`（位于 `init_protection` 之前，L354-363 为 Phase A.5 平台发现段），紧接 `init_protection` 和 `init_clock_and_interrupts`。
+> 参见 `os/kernel/src/lib.rs:fn arch_boot_impl（L359，工具生成）` 调用 `minix_platform::init_from_kinfo(kernel_info)`（位于 `init_protection` 之前，L354-363 为 Phase A.5 平台发现段），紧接 `init_protection` 和 `init_clock_and_interrupts`。
 
 ### 4.7 哪些常量迁入 `PlatformDesc`，哪些保留为架构常量
 
@@ -1177,13 +1177,13 @@ boot-shim 和极简 test-kernel 在 `PlatformDesc` 初始化之前就需输出�
 - ARM64 `Gicv3Desc`：`gicr_stride` 字段用于计算 per-CPU Redistributor 地址（消费方通过 `as_any().downcast_ref::<Gicv3Desc>()` 拿到）。
 - RISC-V `ClintDesc`：`mtimecmp_stride` 字段用于计算 per-hart mtimecmp 地址（消费方通过 `as_any().downcast_ref::<ClintDesc>()` 拿到）。
 
-**当前阶段**：`QemuVirtDesc` 已按 4 核编码（`nr_cpus = 4`，`cpus[0..4]` 填入各自私有地址），QEMU 测试脚本已统一加 `-smp 4`。内核启动代码仍只使用 BSP（cpu 0）；AP 启动逻辑在 [16-smp.md](16-smp.md) 实现。每个 CPU 通过 `CpuTopology.cpus[cpu_id]` 查询自己的私有信息（GICR base / mtimecmp 地址 / APIC ID）。`CpuInfo::zero()` const 构造器（`os/libs/minix-boot/src/platform.rs:213-220`）用于 `const fn` 上下文（如 `QemuVirtDesc::new()` 中初始化 `cpus` 数组），运行时再填充 per-CPU 字段。
+**当前阶段**：`QemuVirtDesc` 已按 4 核编码（`nr_cpus = 4`，`cpus[0..4]` 填入各自私有地址），QEMU 测试脚本已统一加 `-smp 4`。内核启动代码仍只使用 BSP（cpu 0）；AP 启动逻辑在 [16-smp.md](16-smp.md) 实现。每个 CPU 通过 `CpuTopology.cpus[cpu_id]` 查询自己的私有信息（GICR base / mtimecmp 地址 / APIC ID）。`CpuInfo::zero()` const 构造器（`os/libs/minix-boot/src/platform.rs:fn zero`）用于 `const fn` 上下文（如 `QemuVirtDesc::new()` 中初始化 `cpus` 数组），运行时再填充 per-CPU 字段。
 
 ### 4.9 `no_std` 约束
 
 - `minix-platform` crate 标注 `#![no_std]`（`os/libs/minix-platform/src/lib.rs:1`）。
 - 解析结果存储在 `static` 中（一次性写入，不释放）。
-- `PlatformDescEnum` 是枚举（无堆分配），`DeviceTreeDesc`/`AcpiDesc` 的字段是固定大小（`CpuTopology` 用 `[CpuInfo; MAX_CPUS]` 数组，`MAX_CPUS = 64`，见 `os/libs/minix-boot/src/platform.rs:168`）。
+- `PlatformDescEnum` 是枚举（无堆分配），`DeviceTreeDesc`/`AcpiDesc` 的字段是固定大小（`CpuTopology` 用 `[CpuInfo; MAX_CPUS]` 数组，`MAX_CPUS = 64`，见 `os/libs/minix-boot/src/platform.rs:const MAX_CPUS`）。
 - Phase 3 的 FDT 解析使用 `fdt` crate（`#![no_std]` 兼容，纯 Rust 实现）。
 - Phase 4 的 ACPI 解析自研最小化（RSDP → XSDT → MADT），不使用 `std` 集合或分配器。
 
@@ -1250,6 +1250,6 @@ boot-shim 和极简 test-kernel 在 `PlatformDesc` 初始化之前就需输出�
 - [03-kmain-cstart.md](03-kmain-cstart.md) — cstart 初始化序列（`init_from_kinfo` 的调用点）
 - [05-clock-interrupt-init.md](05-clock-interrupt-init.md) — 时钟/中断控制器从 `PlatformDesc` 获取地址
 - [16-smp.md](16-smp.md) — 多核扩展（`CpuTopology` 的消费者）
-- `minix3/minix/kernel/arch/i386/arch_system.c:246-287` — C 参考源码：`arch_init()` 调用 `acpi_init()`
-- `minix3/minix/kernel/arch/i386/acpi.c:310-342` — C 参考源码：`acpi_init()`
-- `minix3/minix/kernel/arch/earm/arch_system.c:101-132` — C 参考源码：`arch_init()` 调用 `bsp_init()`
+- `minix3/minix/kernel/arch/i386/arch_system.c:arch_init` — C 参考源码：`arch_init()` 调用 `acpi_init()`
+- `minix3/minix/kernel/arch/i386/acpi.c:acpi_init` — C 参考源码：`acpi_init()`
+- `minix3/minix/kernel/arch/earm/arch_system.c:arch_init` — C 参考源码：`arch_init()` 调用 `bsp_init()`

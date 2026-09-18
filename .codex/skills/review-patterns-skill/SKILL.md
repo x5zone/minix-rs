@@ -1,6 +1,6 @@
 ---
 name: review-patterns-skill
-description: "Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 84 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
+description: "Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 85 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
 ---
 
 # Minix-RS Review 常见错误模式
@@ -1289,9 +1289,16 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 
 ### 模式 83: 无锚点知识点断言（Unanchored Knowledge Claim）（P0）
 
-- 判定：机制性断言（"Minix3 是…"/"Linux 采用…"/"开销是…"）无 file:line/来源锚点且无 `[待验证]` 标注 → 虚构知识点
+- 判定：机制性断言（"Minix3 是…"/"Linux 采用…"/"开销是…"）无符号锚点（`path:fn name`、C `path:func`；行号只允许工具派生 `（Lnnn，工具生成）`）/来源锚点且无 `[待验证]` 标注 → 虚构知识点（2026-09-18 D5 符号化）
 - 验证：`rg "Minix3 是|Linux 采用|Redox 的实现|开销|代价" {doc}.md -n` 抽 5 条查锚点
 - 关联：#48 因果链编造的来源维扩展；review-cmds.md 各 cmd 的"锚点纪律门"配套
+
+### 模式 84: 未标注反模式的文档代码示例（Unlabeled Antipattern Snippet）（P1，NEW 2026-09-18 H3）
+
+- 判定：文档 ```rust 块教反模式而不标注——kernel 语境用 Rc/RefCell、unsafe 无安全论据、教学简化冒充逐字引用、static mut 未迁移
+- 验证：`tools/doc-snippet-extract.sh {doc}.md` 抽块 → checklist §2.4k 四类分类（逐字引用/教学简化/反面示例/签名示意）+ 最佳实践判据
+- 严重度：未标注反模式 → P1（新增/触碰块必须修复或写明延期理由，存量登记）；逐字引用漂移 → P1（模式 73）；分类缺失 → P2
+- 关联：checklist §2.4k；模式 73；style-fix 文档类产物
 
 ---
 
@@ -1315,4 +1322,4 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 | Step 4.5（测试验证，Gate E） | 35-40（测试模式） | 测试存在性 |
 | Step 5（输出） | 63 Design-Missing, 64 开发文档味, 65 Translate 倾向 | Design-First + 叙事质量 |
 | Gate H（design 门控） | 63, 64, 65 | Design 缺失/开发文档味/Translate 倾向 |
-| 卓越性 | 73-77（文档漂移模式） | Edition/路径/参见/归属/注释行号 |
+| 卓越性 | 73-77（文档漂移模式）、84（未标注反模式示例） | Edition/路径/参见/归属/注释行号/代码块反模式 |

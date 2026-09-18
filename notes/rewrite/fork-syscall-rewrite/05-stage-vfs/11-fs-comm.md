@@ -5,7 +5,7 @@
 前置阅读：`06-vmnt-table.md`（`Vmnt.m_comm: comm_t` 的三字段与 `VMNT_CALLBACK` 标志）、`09-main-loop.md`（`Route::FsReply` 的 `TRNS_GET_ID` 解码与 `do_reply` 的 `c_cur_reqs--`）、`08-worker-thread.md`（`WorkerPool::wait/signal` 的 `w_event` 队列与 `SuspendToken`）、`07-tll-lock.md`（`tll_lock` 的 `EBUSY→wait` 与 `VFS` 通信的 `worker_wait` 同源）。
 
 > 本章不讲什么：
-> - `req_*` 的 `REQ_LOOKUP/READ/CREATE…` 的 35 协议面包装—— `12-request-wrappers.md`（`request.c` 全文件，`vfsif.h:41-73`）
+> - `req_*` 的 `REQ_LOOKUP/READ/CREATE…` 的 35 协议面包装—— `12-request-wrappers.md`（`request.c` 全文件，`minix3/minix/include/minix/vfsif.h:REQ_GETNODE`）
 > - 路径解析的 `lookup/advance` 与挂载点穿越—— `13-path-lookup.md`（`fs_sendrec` 的调用方）
 > - `open/read/write` 的 `get_fd` 与 `filp` 锁—— `15/16`（`fs_sendrec` 的调用方）
 > - `bdev/cdev/sdev_reply` 的驱动回复内部与 `grant` 机制—— `20/21/22`（`09` 的 `Bdev/Cdev/Sdev` 分支消费方，仅本章 `drv_sendrec` 的块驱动直通作对照）
@@ -32,7 +32,7 @@ VFS 有 9 个 worker 可并发发起文件操作，底层 FS（如 MFS）的并�
 
 ### 1.3 `VFS_TRANSID` 的线程路由
 
-`asynsend3` 的 `AMF_NOREPLY` 使 `fs_sendrec` 的投递与 `do_reply` 的回收解耦，`VFS` 需将异步回复路由回准确 worker。`comm.c:20 transid = w_tid + VFS_TRANSID` 的 `VFS_TRANSACTION_BASE 0xB00` 前缀（`com.h:909`）与 `21 w_sendrec->m_type = TRNS_ADD_ID(m_type, transid)` 的 `((t<<16)|(id&0xFFFF))` 高位编码（`vfsif.h:80`）及 `main:88 m_type = TRNS_DEL_ID(m_type)` 的 `((short)(t>>16))` 高位剥离（`vfsif.h:81`）及 `80 transid=TRNS_GET_ID(m_type)` 的 `&0xFFFF` 低位提取（`vfsif.h:79`）的 `TRNS_ADD/GET/DEL` 三宏在 `sendmsg` 与 `do_reply` 间闭环：`sendmsg` 的 `transid+VFS_TRANSID` 写入 `m_type` 低 16，`main` 的 `transid = TRNS_GET_ID(m_in.m_type)` 提取低 16 后 `IS_VFS_FS_TRANSID(transid)` 的 `&~0xff==0xB00` 守门区分 `FS` 回复与 `PM` 的 `0x900` / `VFS_CALL` 的 `0x100` 前缀不重叠（`09` 的 `FsReply > Pm` 优先级依赖此不重叠）。
+`asynsend3` 的 `AMF_NOREPLY` 使 `fs_sendrec` 的投递与 `do_reply` 的回收解耦，`VFS` 需将异步回复路由回准确 worker。`comm.c:20 transid = w_tid + VFS_TRANSID` 的 `VFS_TRANSACTION_BASE 0xB00` 前缀（`com.h:909`）与 `21 w_sendrec->m_type = TRNS_ADD_ID(m_type, transid)` 的 `((t<<16)|(id&0xFFFF))` 高位编码（`minix3/minix/include/minix/vfsif.h:TRNS_ADD_ID`）及 `main:88 m_type = TRNS_DEL_ID(m_type)` 的 `((short)(t>>16))` 高位剥离（`minix3/minix/include/minix/vfsif.h:TRNS_DEL_ID`）及 `80 transid=TRNS_GET_ID(m_type)` 的 `&0xFFFF` 低位提取（`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID`）的 `TRNS_ADD/GET/DEL` 三宏在 `sendmsg` 与 `do_reply` 间闭环：`sendmsg` 的 `transid+VFS_TRANSID` 写入 `m_type` 低 16，`main` 的 `transid = TRNS_GET_ID(m_in.m_type)` 提取低 16 后 `IS_VFS_FS_TRANSID(transid)` 的 `&~0xff==0xB00` 守门区分 `FS` 回复与 `PM` 的 `0x900` / `VFS_CALL` 的 `0x100` 前缀不重叠（`09` 的 `FsReply > Pm` 优先级依赖此不重叠）。
 
 ### 1.4 三类 `sendrec` 的分化
 
@@ -68,7 +68,7 @@ VFS 有 9 个 worker 可并发发起文件操作，底层 FS（如 MFS）的并�
 
 ### 2.2 `sendmsg:11-32` 的 `c_cur_reqs++ + TRNS_ADD_ID + asynsend3`
 
-`sendmsg:19 if(vmp) c_cur_reqs++` 的 `vmp==NULL` 守门使 `vm_sendrec:183 sendmsg(NULL,VM)` 不增 `cur`，`20 transid = w_tid + VFS_TRANSID` 的 `VFS_TRANSACTION_BASE 0xB00` 前缀（`com.h:909`）与 `21 m_type = TRNS_ADD_ID(m_type,transid)` 的 `((t<<16)|(id&0xFFFF))` 高位编码（`vfsif.h:80`）及 `22 w_task=dst` 的 `task` 绑定，`23 asynsend3(dst,w_sendrec,AMF_NOREPLY)` 的 `non-blocking` 在 `23 r=asynsend3` 的 `printf+stacktrace` 的 `return(r)` 守门中可观测。
+`sendmsg:19 if(vmp) c_cur_reqs++` 的 `vmp==NULL` 守门使 `vm_sendrec:183 sendmsg(NULL,VM)` 不增 `cur`，`20 transid = w_tid + VFS_TRANSID` 的 `VFS_TRANSACTION_BASE 0xB00` 前缀（`com.h:909`）与 `21 m_type = TRNS_ADD_ID(m_type,transid)` 的 `((t<<16)|(id&0xFFFF))` 高位编码（`minix3/minix/include/minix/vfsif.h:TRNS_ADD_ID`）及 `22 w_task=dst` 的 `task` 绑定，`23 asynsend3(dst,w_sendrec,AMF_NOREPLY)` 的 `non-blocking` 在 `23 r=asynsend3` 的 `printf+stacktrace` 的 `return(r)` 守门中可观测。
 
 ### 2.3 `send_work:37-45` 的全局扫表
 
@@ -121,7 +121,7 @@ Rust 改写不是照抄 `comm.c:19` 的 `c_cur_reqs++` 与 `w_next` 裸链表，
 
 ### D2 `VFS_TRANSID` 类型化：`TransId` 的 `TRNS_ADD/GET/DEL` 封装
 
-- **C**：`TRNS_ADD_ID(t,id) ((t<<16)|(id&0xFFFF))` 的裸宏（`vfsif.h:80`）在 `sendmsg:21` 的 `m_type = TRNS_ADD_ID(m_type, transid)` 与 `main:88` 的 `TRNS_DEL_ID` 散落。
+- **C**：`TRNS_ADD_ID(t,id) ((t<<16)|(id&0xFFFF))` 的裸宏（`minix3/minix/include/minix/vfsif.h:TRNS_ADD_ID`）在 `sendmsg:21` 的 `m_type = TRNS_ADD_ID(m_type, transid)` 与 `main:88` 的 `TRNS_DEL_ID` 散落。
 - **Rust**：`TransId { raw: u32 }` 的 newtype + `TransId::encode(slot: SlotId) -> u32` 的 `VFS_TRANSID 0xB01 + slot` + `decode(raw)->Option<SlotId>` 的 `IS_VFS_FS_TRANSID` 前缀守门（`&~0xff==0xB00`）+ `strip(m_type)->u32` 的 `>>16` 高位剥离；`TransIdCodec` trait 的 `Vfs(0xB00)` 与 `Test(0xC00)` 双实现以本章（`fs_comm.rs`，协议属主）为唯一定义，`09` 经 re-export 复用同一契约（P2-6 收敛），本章的 `sendmsg` 复用 `TransId::encode` 的 `TRNS_ADD_ID` 封装。
 - **为什么**：`0xFFFF` 掩码的散落在 Rust 以 `TransId` 的 `newtype` 使 `m_type` 的低 16 `transid` 与高 16 `call_nr` 不混淆。
 
@@ -180,7 +180,7 @@ os/servers/vfs/src/
 | `sending` | `glo.h:17` | `GlobalComm { sending }` | `sending==sum(queue.len())` 不变量 |
 | `VFS_TRANSACTION_BASE` | `com.h:909` | `fs_comm.rs:TRANSACTION_BASE:u32=0xB00` | `~0xff` 前缀守门 |
 | `VFS_TRANSID` | `com.h:911` | `TransId::VFS_TRANSID:u32=0xB01` | `w_tid+VFS_TRANSID` 编码 |
-| `TRNS_ADD/GET/DEL` | `vfsif.h:79-81` | `TransId::add/get/del` | `((t<<16)|(id&0xFFFF))` 高位编码 |
+| `TRNS_ADD/GET/DEL` | `minix3/minix/include/minix/vfsif.h:TRNS_GET_ID` | `TransId::add/get/del` | `((t<<16)|(id&0xFFFF))` 高位编码 |
 | `sendmsg` | `comm.c:11` | `GlobalComm::sendmsg(vmp, dst, req) ->Result<TransId, CommError>` | `c_cur_reqs++ + transid+VFS_TRANSID + w_task=dst + asynsend3` |
 | `queuemsg` | `comm.c:223` | `FsComm::enqueue(slot) -> CommId` | `queue.push_back(slot); sending++` |
 | `fs_sendmore` | `comm.c:66` | `GlobalComm::fs_sendmore(vmp) ->Option<SlotId>` | `cur<max && !CALLBACK && queue非空 → pop_front + sendmsg` |
@@ -198,7 +198,7 @@ os/servers/vfs/src/
 | 窗口 `cur ≤ max` | `FsComm::can_send` | `cur < max → Ok else Queue` | `comm.c:74` |
 | 空 `queue==None → cur==0` | `FsComm::is_idle` | `queue.is_empty() && cur==0` | `comm.c:72` |
 | 全局 `sending==sum(queue.len())` | `GlobalComm` | `enqueue→sending++ / dequeue→sending--` | `comm.c:241/81` |
-| 高位编码 `TRNS_ADD→GET→DEL` 往返 | `TransId` | `del(add(t,id))==t` | `vfsif.h:79-81` |
+| 高位编码 `TRNS_ADD→GET→DEL` 往返 | `TransId` | `del(add(t,id))==t` | `minix3/minix/include/minix/vfsif.h:TRNS_GET_ID` |
 | 回调抑制 `CALLBACK→Queue` | `FsComm::can_send` | `flags.contains(CALLBACK)→Err` | `comm.c:76` |
 | 尾不变式 `w_next==NULL` | `FsComm::queue` | `VecDeque` 的 `push_back` 尾为 `None` | `comm.c:240` |
 
@@ -211,7 +211,7 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_transid_add_get_del` | `vfsif.h:79-81` | `add(t,id)→get→id, del→t` 高位往返 | `fs_comm.rs` |
+| `test_transid_add_get_del` | `minix3/minix/include/minix/vfsif.h:TRNS_GET_ID` | `add(t,id)→get→id, del→t` 高位往返 | `fs_comm.rs` |
 | `test_transid_two_impls` | `com.h:909` | `VfsTransIdCodec` 0xB00 vs `Test 0xC00` 的 `is_fs` 行为差异 | `fs_comm.rs` |
 | `test_fs_comm_window` | `comm.c:74` | `cur<max→Ok, cur==max→Queue` 的 `can_send` | `fs_comm.rs` |
 | `test_queue_tail_head` | `comm.c:229/79` | `enqueue tail→push_back, dequeue head→pop_front` 的 FIFO | `fs_comm.rs` |
@@ -256,7 +256,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/comm.c:11-244`（`sendmsg:11` 的 `c_cur_reqs++ + TRNS_ADD_ID + asynsend3`、`send_work:37` 的 `sending==0` 短路与 `NR_MNTS` 扫表、`fs_cancel:50` 的 `while(queue) stop`、`fs_sendmore:66` 的 `窗口+CALLBACK` 守门与 `pop_front + sendmsg`、`drv_sendrec:89` 的 `CTTY→EIO` 与 `dmap_servicing` 排他、`fs_sendrec:134` 的 `CALLBACK/窗口` 二守门与 `ERESTART→EIO`、`vm_sendrec:173` 的 `NULL vmp` 直通、`vm_vfs_procctl_handlemem:199` 的 `!self→EFAULT`、`queuemsg:223` 的 `sending++` 尾插）、`minix3/minix/servers/vfs/type.h:comm_t`（`c_max_reqs/c_cur_reqs/c_req_queue` 三字段）、`minix3/minix/servers/vfs/vmnt.h:7-21`（`vmnt.m_comm` 嵌入与 `VMNT_CALLBACK 02`）、`minix3/minix/include/minix/com.h:909-912`（`VFS_TRANSACTION_BASE 0xB00 / VFS_TRANSID 0xB01 / IS_VFS_FS_TRANSID ~0xff`）、`minix3/minix/include/minix/vfsif.h:79-81`（`TRNS_GET_ID/ADD/DEL` 的 `&0xFFFF/<<16/>>16`）
+- C 源：`minix3/minix/servers/vfs/comm.c:11-244`（`sendmsg:11` 的 `c_cur_reqs++ + TRNS_ADD_ID + asynsend3`、`send_work:37` 的 `sending==0` 短路与 `NR_MNTS` 扫表、`fs_cancel:50` 的 `while(queue) stop`、`fs_sendmore:66` 的 `窗口+CALLBACK` 守门与 `pop_front + sendmsg`、`drv_sendrec:89` 的 `CTTY→EIO` 与 `dmap_servicing` 排他、`fs_sendrec:134` 的 `CALLBACK/窗口` 二守门与 `ERESTART→EIO`、`vm_sendrec:173` 的 `NULL vmp` 直通、`vm_vfs_procctl_handlemem:199` 的 `!self→EFAULT`、`queuemsg:223` 的 `sending++` 尾插）、`minix3/minix/servers/vfs/type.h:comm_t`（`c_max_reqs/c_cur_reqs/c_req_queue` 三字段）、`minix3/minix/servers/vfs/vmnt.h:__VFS_VMNT_H__（L7，工具生成）`（`vmnt.m_comm` 嵌入与 `VMNT_CALLBACK 02`）、`minix3/minix/include/minix/com.h:VFS_TRANSACTION_BASE`（`VFS_TRANSACTION_BASE 0xB00 / VFS_TRANSID 0xB01 / IS_VFS_FS_TRANSID ~0xff`）、`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID`（`TRNS_GET_ID/ADD/DEL` 的 `&0xFFFF/<<16/>>16`）
 - 阶段文档：`06-vmnt-table.md`（`Vmnt.m_comm: FsComm` 嵌入与 `VMNT_CALLBACK` 标志）、`09-main-loop.md`（`Route::FsReply` 的 `TRNS_GET_ID` 解码与 `do_reply` 的 `c_cur_reqs--`）、`08-worker-thread.md`（`WorkerPool::wait/signal` 的 `w_event` 队列与 `SuspendToken`）、`07-tll-lock.md`（`tll_lock` 的 `EBUSY→wait` 与 `VFS` 通信的 `worker_wait` 同源）、`12-request-wrappers.md`（`request.c` 的 `REQ_*` 包装与 `node_details`）、`99-global-concepts.md`（`comm_t` 术语与 `sending` 计数）
 - Rust 实现：`os/servers/vfs/src/fs_comm.rs:1`（`GlobalComm{ vmnts:[FsComm;8], sending }` + `FsComm{ max/cur/queue:VecDeque }` + `TransId/TRNS_ADD/GET/DEL + FsTransport trait (Blocking vs Mock + Fifo vs Lifo)`）、`os/servers/vfs/src/vmnt.rs:1`（`Vmnt.m_comm: FsComm` 嵌入）、`os/servers/vfs/src/main_loop.rs:1`（`TransIdCodec` 的 re-export 消费端，唯一定义在 `fs_comm.rs`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/12-ipc-core.md`（`asynsend3(AMF_NOREPLY)` 的异步投递）

@@ -1,7 +1,7 @@
 # 10 — 系统信息库请求分发：逐层解析名字，走到叶子节点或处理函数
 
 > **分类**: 分发循环 / 名字解析
-> **源码**: `minix3/minix/servers/mib/tree.c:1332-1474`（`mib_dispatch` 全段）
+> **源码**: `minix3/minix/servers/mib/tree.c:mib_readwrite（L1332，工具生成）`（`mib_dispatch` 全段）
 > **说明**: 系统控制调用旅程的核心：名字按分量逐层消耗与解析，负数元标识符的多路分支，三类节点（普通叶子、函数接管、远端挂载）的判定，以及远端服务返回需重启标记时的本地续走逻辑。本篇含系统控制次主线的完整路径图（plan §1.3）。
 
 ---
@@ -169,6 +169,6 @@ os/servers/mib/src/tree/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/tree.c:1332-1474`
+- C 源：`minix3/minix/servers/mib/tree.c:mib_readwrite（L1332，工具生成）`
 - 阶段文档：`01-mib-init-main.md`（调用方）、`05-mib-tree-lookup.md`（单层查找）、`07-mib-auth-model.md`（写门/可见性复用）、`08-mib-dynamic-nodes.md`（CREATE/DESTROY 本体）、`09-mib-data-access.md`（叶子终点）、`11-mib-query-describe.md`（下一站）、`12-mib-remote-subtrees.md`（续走本体）
 - Rust 实现：`os/servers/mib/src/tree/dispatch.rs`、`os/servers/mib/src/auth.rs`（`WRITE_DENIED`）

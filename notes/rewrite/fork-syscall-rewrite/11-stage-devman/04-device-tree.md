@@ -1,7 +1,7 @@
 # 04-device-tree：根、查找与寻路
 
 > **定位**：设备树的三种操作。本篇回答：树怎么出生（`devman_init_devices`）、给定 id 怎么找到设备（DFS）、给定设备路径字符串怎么写（`generate_path` 的 `./` 前缀与尾斜杠从哪来）。
-> **源码**：`minix3/minix/servers/devman/device.c:16-39`（静态区）、`:45-70`（`devman_generate_path`）、`:187-207`（`devman_init_devices`）、`:283-308`（`_find_dev`/`devman_find_device`）。
+> **源码**：`minix3/minix/servers/devman/device.c:devman_event_read（L16，工具生成）`（静态区）、`:45-70`（`devman_generate_path`）、`:187-207`（`devman_init_devices`）、`:283-308`（`_find_dev`/`devman_find_device`）。
 > **Rust 模块**：`os/servers/devman/src/device_tree.rs`（`DeviceTree` + 默认 stat +寻路）。
 > **前置依赖**：03（`Device` 形状）、02（框架树 `add`/`name`）、01（`FirstGuard` 守卫语义）。
 > **不覆盖（移交）**：事件队列与读取（06）、添删改业务（07/08）、绑定（09）。
@@ -208,4 +208,4 @@ os/servers/devman/src/device_tree.rs — DeviceTree / default_dir_stat / default
 - `05-devm-message-contract.md` — ADD 消息形状（`insert` 的调用方）
 - `06-event-buf.md` — 事件行格式（`generate_path` 的消费者）
 - `07-devm-add-device.md` — `insert` 的调用方 + wire→Device 构造
-- C 源：`minix3/minix/servers/devman/device.c:16-70,187-207,283-308`
+- C 源：`minix3/minix/servers/devman/device.c:devman_event_read（L16，工具生成）,187-207,283-308`

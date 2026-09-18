@@ -1,7 +1,7 @@
 # 07 — DS 发布：谁能立、立在哪、能不能盖
 
 > **分类**: 数据面 handler / 发布
-> **源码**: `minix3/minix/servers/ds/store.c:287-381`、`158-181`（`get_key_name`）
+> **源码**: `minix3/minix/servers/ds/store.c:do_publish`、`158-181`（`get_key_name`）
 > **说明**: 发布是 DS 最复杂的写路径：七个拒绝理由、两种落法（新建/覆盖）、四种类型、四种堆动作。本文按 C 的顺序走一遍，并讲清 Rust 为什么把"判"和"立"拆开。
 
 ---
@@ -137,6 +137,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:287-381,158-181`
+- C 源：`minix3/minix/servers/ds/store.c:do_publish,158-181`
 - 阶段文档：`06-ds-boot-mapping.md`（上一站）、`08-ds-retrieve.md`（下一站）、`10-ds-subscribe-check.md`（通知环）
 - Rust 实现：`os/servers/ds/src/publish.rs`

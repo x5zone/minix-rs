@@ -31,7 +31,7 @@ VFS 的主循环（`main.c:68-139` `while(TRUE) { yield; send_work; get_work; di
 
 `main:80-138` 的八路优先级（`transid → PM → notify → task → BDEV → CDEV → SDEV → syscall`）以 `if/else if` 的短路固化，交换任意两路即错：
 
-1. **`IS_VFS_FS_TRANSID(transid)` → `do_reply`**（80-90，最高）——FS 的异步回复以 `m_type` 的高 16 位编码 `transid`（`vfsif.h:79` `TRNS_GET_ID` 的 `&0xFFFF`），低 8 位为 `REPLY` 状态。`VFS_TRANSID` 偏移后的 `thread_t` 回指 `workers[]` 的槽位（`worker_get(transid-VFS_TRANSID)`），`m_type = TRNS_DEL_ID` stripping 后 `*w_sendrec = m_in` + `c_cur_reqs--` + `worker_signal`。若此路后于 PM，将误把 FS 的 `VFS_TRANSID+tid` 当 PM 消息处理（`PM_PROC_NR` 的 `1` endpoint 恰为 `workers[0]` 的 `tid` 偏移，歧义）。
+1. **`IS_VFS_FS_TRANSID(transid)` → `do_reply`**（80-90，最高）——FS 的异步回复以 `m_type` 的高 16 位编码 `transid`（`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID` `TRNS_GET_ID` 的 `&0xFFFF`），低 8 位为 `REPLY` 状态。`VFS_TRANSID` 偏移后的 `thread_t` 回指 `workers[]` 的槽位（`worker_get(transid-VFS_TRANSID)`），`m_type = TRNS_DEL_ID` stripping 后 `*w_sendrec = m_in` + `c_cur_reqs--` + `worker_signal`。若此路后于 PM，将误把 FS 的 `VFS_TRANSID+tid` 当 PM 消息处理（`PM_PROC_NR` 的 `1` endpoint 恰为 `workers[0]` 的 `tid` 偏移，歧义）。
 
 2. **`who_e == PM_PROC_NR` → `service_pm`**（91-93）——PM 是唯一可对 VFS 发 `VFS_PM_*` 的端点（`com.h:513` `VFS_PM_RQ_BASE 0x900`），其消息永不经 `call_vec`，且 `service_pm` 的 `VFS_PM_UNPAUSE` 等延期请求在 `worker_start(..., NULL)` 后即 `return`（不经后续 `handle_work`）。若此路后于 `syscall`，PM 的 `VFS_PM_FORK` 将被 `is_notify` 误判为 notify（`call_nr` 的 `NOTIFY_MESSAGE` 范围恰与 `VFS_PM_*` 部分重叠的风险受 `IS_VFS_FS_TRANSID` 优先保护）。
 
@@ -49,7 +49,7 @@ VFS 的主循环（`main.c:68-139` `while(TRUE) { yield; send_work; get_work; di
 
 Minix3 的 `table.c:17` 的 `int (*const call_vec[NR_VFS_CALLS])(void) = { CALL(VFS_OPEN)=do_open, … }` 以 `CALL(n)=[n-VFS_BASE]` 的指定初始化将 64 调用号映射到 handler，调用点 `call_vec[call_index]` 的 `index <64 && !=NULL ? call : ENOSYS` 在 `do_work:283` 的 `switch` 外实现 `O(1)` 分发。问题有三：`int(*)(void)` 的 `void` 使 `m_in/m_out` 经全局 `err_code/m_in` 隐式传递；`NULL` 的哨兵在 `Enable syscall stats` 的 `calls_stats` 埋点中需 `!=NULL` 守门；`VFS_RMDIR→do_unlink` 的别名（`table.c:36` `CALL(VFS_RMDIR)=do_unlink`）在 C 中无类型区分。
 
-`ARCH A-2` 的 minix-rs 演进是 `VfsCallNum` 的 64 变体枚举 + `from_raw` 单真相解析（`CallTable`/`CallResolver` 已删，P2-2；绑定 match 即 W3 的 `dispatch_syscall`）：`VFS_BASE+0x00..0x3F` 的 64 变体在 `call_table.rs:28` 的 `repr(u32)` 枚举中显式，`from_raw(raw)->Option<VfsCallNum>` 的 `raw-VFS_BASE` 检查替代 `call_index<64`，`dispatch(call)->Result` 的 `match` 使 `VFS_RMDIR` 的别名在语义层可区分（`Rmdir` 变体可独立匹配）而非复用 `do_unlink` 的函数指针别名。
+`ARCH A-2` 的 minix-rs 演进是 `VfsCallNum` 的 64 变体枚举 + `from_raw` 单真相解析（`CallTable`/`CallResolver` 已删，P2-2；绑定 match 即 W3 的 `dispatch_syscall`）：`VFS_BASE+0x00..0x3F` 的 64 变体在 `os/servers/vfs/src/call_table.rs:enum VfsCallNum` 的 `repr(u32)` 枚举中显式，`from_raw(raw)->Option<VfsCallNum>` 的 `raw-VFS_BASE` 检查替代 `call_index<64`，`dispatch(call)->Result` 的 `match` 使 `VFS_RMDIR` 的别名在语义层可区分（`Rmdir` 变体可独立匹配）而非复用 `do_unlink` 的函数指针别名。
 
 ### 1.4 回复的双路径：`reply` 的 `ipc_sendnb` 与 `SUSPEND` 的延迟
 
@@ -85,7 +85,7 @@ C 的 `glo.h:26-32` 的 `who_p/who_e/call_nr/job_m_in/job_call_nr` 宏以 `fp - 
 
 ### 2.2 `table.c:17-82` 的 `call_vec[64]` 平表
 
-`table.c:15` 的 `CALL(n)=[n-VFS_BASE]` 指定初始化将 64 调用的 `VFS_READ..VFS_SHUTDOWN`（`callnr.h:72-136`）映射到 `do_read..do_shutdown` 64 handler：文件族 `READ/WRITE/LSEEK/OPEN/CREAT/CLOSE/PIPE2/GETDENTS`（`15/16/17`）、名字族 `LINK/UNLINK/RENAME/SYMLINK/READLINK/MKDIR/MKNOD/CHDIR/FCHDIR/CHROOT`（`13/27/28`）、元数据族 `STAT/FSTAT/LSTAT/CHMOD/FCHMOD/CHOWN/FCHOWN/UMASK/ACCESS/TRUNCATE/FTRUNCATE/UTIMENS`（`28/29/31`）、挂载族 `MOUNT/UMOUNT/STATVFS1/FSTATVFS1/GETVFSSTAT`（`18/28`）、控制族 `IOCTL/FCNTL/SELECT/SYNC/FSYNC/VMCALL/COPYFD/MAPDRIVER/GETSYSINFO/SVRCTL/GCOV_FLUSH/GETRUSAGE`（`19/23/30/31`）、套接字族 `SOCKET..SHUTDOWN`（`24`）的 6 族。`CALL(VFS_RMDIR)=do_unlink` 的别名与 `VFS_SENDMSG/RECVMSG→do_sockmsg` 的复用在平表内显式为不同索引同函数指针。
+`table.c:15` 的 `CALL(n)=[n-VFS_BASE]` 指定初始化将 64 调用的 `VFS_READ..VFS_SHUTDOWN`（`minix3/minix/include/minix/callnr.h:VFS_READ`）映射到 `do_read..do_shutdown` 64 handler：文件族 `READ/WRITE/LSEEK/OPEN/CREAT/CLOSE/PIPE2/GETDENTS`（`15/16/17`）、名字族 `LINK/UNLINK/RENAME/SYMLINK/READLINK/MKDIR/MKNOD/CHDIR/FCHDIR/CHROOT`（`13/27/28`）、元数据族 `STAT/FSTAT/LSTAT/CHMOD/FCHMOD/CHOWN/FCHOWN/UMASK/ACCESS/TRUNCATE/FTRUNCATE/UTIMENS`（`28/29/31`）、挂载族 `MOUNT/UMOUNT/STATVFS1/FSTATVFS1/GETVFSSTAT`（`18/28`）、控制族 `IOCTL/FCNTL/SELECT/SYNC/FSYNC/VMCALL/COPYFD/MAPDRIVER/GETSYSINFO/SVRCTL/GCOV_FLUSH/GETRUSAGE`（`19/23/30/31`）、套接字族 `SOCKET..SHUTDOWN`（`24`）的 6 族。`CALL(VFS_RMDIR)=do_unlink` 的别名与 `VFS_SENDMSG/RECVMSG→do_sockmsg` 的复用在平表内显式为不同索引同函数指针。
 
 ### 2.3 `main:54-141` 的八路主循环
 
@@ -117,7 +117,7 @@ C 的 `glo.h:26-32` 的 `who_p/who_e/call_nr/job_m_in/job_call_nr` 宏以 `fp - 
 
 ### 2.10 `TRNS_GET_ID/TRNS_DEL_ID/VFS_TRANSID` 的编码
 
-`vfsif.h:79 TRNS_GET_ID(t) ((t)&0xFFFF)` 的高 16 位 `transid` 提取，`81 TRNS_DEL_ID(t) ((short)(t)>>16)` 的 `m_type` 高位 stripping，`com.h:911 VFS_TRANSID (TRANSACTION_BASE+1)` 的 `thread_t` 偏移，`912 IS_VFS_FS_TRANSID(type) ((type&~0xff)==TRANSACTION_BASE)` 的 `~0xff` 前缀匹配，三者的 `thread_t` 往返在 `main:82 worker_get(transid-VFS_TRANSID)` 处闭合。
+`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID TRNS_GET_ID(t) ((t)&0xFFFF)` 的高 16 位 `transid` 提取，`81 TRNS_DEL_ID(t) ((short)(t)>>16)` 的 `m_type` 高位 stripping，`com.h:911 VFS_TRANSID (TRANSACTION_BASE+1)` 的 `thread_t` 偏移，`912 IS_VFS_FS_TRANSID(type) ((type&~0xff)==TRANSACTION_BASE)` 的 `~0xff` 前缀匹配，三者的 `thread_t` 往返在 `main:82 worker_get(transid-VFS_TRANSID)` 处闭合。
 
 ---
 
@@ -134,20 +134,20 @@ Rust 改写不是照抄 `main.c:80` 的 `transid = TRNS_GET_ID(m_in.m_type)` 与
 ### D2 函数指针表 → 类型化枚举分发（ARCH A-2）
 
 - **C**：`int(*call_vec[64])(void)` 的 64 函数指针 + `CALL(VFS_RMDIR)=do_unlink` 别名复用（`table.c:36`）。
-- **Rust**：`VfsCallNum` 的 64 变体 `enum`（`call_table.rs:28` `repr(u32)`，`VFS_BASE+0x00..0x3F`）+ `from_raw(raw)->Option<VfsCallNum>` 单真相解析（P2-2：`CallTable`/`CallResolver`/`NullResolver` 已删——查表信息量与 `from_raw` 全等，绑定由 W3 的穷举 `dispatch_syscall` match 承担）+ `TransIdCodec` trait 的 `encode/decode/is_fs_transid`（唯一定义在 fs_comm，P2-6）；`TransIdCodec` 的 `VfsTransIdCodec`（`base 0xB00`）与 `TestTransIdCodec { base: 0xC00 }` 在 `main_loop.rs:85` 行为不同（`0xB01 → Vfs true / Test false`）；`Rmdir` 与 `Unlink` 的别名在语义层分 `Rmdir` 变体独立，handler 内 `match` 可 `Rmdir => do_unlink()` 复用但调用点可区分。
+- **Rust**：`VfsCallNum` 的 64 变体 `enum`（`os/servers/vfs/src/call_table.rs:enum VfsCallNum` `repr(u32)`，`VFS_BASE+0x00..0x3F`）+ `from_raw(raw)->Option<VfsCallNum>` 单真相解析（P2-2：`CallTable`/`CallResolver`/`NullResolver` 已删——查表信息量与 `from_raw` 全等，绑定由 W3 的穷举 `dispatch_syscall` match 承担）+ `TransIdCodec` trait 的 `encode/decode/is_fs_transid`（唯一定义在 fs_comm，P2-6）；`TransIdCodec` 的 `VfsTransIdCodec`（`base 0xB00`）与 `TestTransIdCodec { base: 0xC00 }` 在 `os/servers/vfs/src/main_loop.rs:enum PmMessageType（L85，工具生成）` 行为不同（`0xB01 → Vfs true / Test false`）；`Rmdir` 与 `Unlink` 的别名在语义层分 `Rmdir` 变体独立，handler 内 `match` 可 `Rmdir => do_unlink()` 复用但调用点可区分。
 - **为什么**：`NULL` 的哨兵在 Rust 以 `Option` 的 `None→ENOSYS` 显式，`call_index<64` 的边界在 Rust 以 `raw.checked_sub(VFS_BASE) → index → Option` 的 `Result` 显式；`calls_stats` 的埋点在 Rust 以 `#[cfg(feature="syscall_stats")]` 的 `AtomicUsize` 计数显式；`resolve` 的 trait 抽象使 08 的 `Revived` 优先与 09 的 `FsReply` 路由的 `call_vec` 查询在测试中可 `NullResolver` 的拒绝样本覆盖。
 - **备选**：保留 `fn()` 指针表；否决——`void` 的隐式 `m_in` 依赖在 `CallResolver::resolve` 的 `&self` 显式上下文替代。
 
 ### D3 TransId 类型化（A-2 的子决策）
 
-- **C**：`TRNS_GET_ID(t)&0xFFFF` / `VFS_TRANSID+tid` 的裸 `u16` 编码（`vfsif.h:79/81` / `com.h:911`）。
+- **C**：`TRNS_GET_ID(t)&0xFFFF` / `VFS_TRANSID+tid` 的裸 `u16` 编码（`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID/81` / `com.h:911`）。
 - **Rust**：`TransId { slot: usize }` 的 newtype + `TransIdCodec` trait 的 `encode(slot)->u32` / `decode(raw)->Option<usize>` / `is_fs_transid(raw)->bool` + `VfsTransIdCodec`（`TRANSACTION_BASE 0x1000 + slot`）与 `TestTransIdCodec { base }` 双实现；`Route::FsReply` 的 `wp` 在 `codec.decode(TRNS_GET_ID(raw))` 的 `Option` 守门后取得，避免 `worker_get(NONE) → spurious` 的 `printf` 分支在 Rust 以 `Err(Spurious)` 的 `log::warn` 显式。
 - **为什么**：`~0xff` 的 `TRANSACTION_BASE` 掩码在 trait 的 `is_fs_transid` 方法内可测试（`VFS_BASE 0x100` 与 `TRANSACTION_BASE 0x1000` 的编码不重叠在 `is_fs_transid(raw:0x100)->false` 的样本中显式）。
 
 ### D4 回复语义显式（ARCH A-5）
 
 - **C**：`return SUSPEND` 的 `SUSPEND` 哨兵（`main.c:297` `error != SUSPEND → reply`）+ `reviving` 的 `for REVIVED→unblock` 复活 + `pipe/select/cdev/sdev` 的 `SUSPEND→revive` 三路径。
-- **Rust**：`ReplyIntent::Reply(i32)` / `ReplyLater` / `NoReply` 的 `A-5` 枚举（`main_loop.rs:118` 已落地）+ `ReplySink` trait 的 `send(endpoint, code)` + `PendingSink`（`ReplyLater` 的 `reviving++` 与 `unblock` 的 `reviving--` 往返在 `VfsState::enqueue_revive(slot)` 的 `flags|=REVIVED` 显式）。
+- **Rust**：`ReplyIntent::Reply(i32)` / `ReplyLater` / `NoReply` 的 `A-5` 枚举（`os/servers/vfs/src/main_loop.rs:fn lu_prepare（L118，工具生成）` 已落地）+ `ReplySink` trait 的 `send(endpoint, code)` + `PendingSink`（`ReplyLater` 的 `reviving++` 与 `unblock` 的 `reviving--` 往返在 `VfsState::enqueue_revive(slot)` 的 `flags|=REVIVED` 显式）。
 - **为什么**：`SUSPEND` 的哨兵在 C 以 `int` 的 `0xFFFF` 保留值隐式，Rust 以 `ReplyLater` 的 `must_be_revived` 状态不与 `0..0x3FF` 的成功码混淆；`ipc_sendnb` 的失败 `printf` 在 Rust 以 `ReplySink::send` 的 `Result<(),SendError>` 的 `log::error` 显式。
 
 ### D5 全局聚合（ARCH A-4）
@@ -189,8 +189,8 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `VFS_BASE 0x100` | `callnr.h:68` | `call_table.rs:VFS_BASE: u32 =0x100` | `repr(u32)` 枚举基址 |
-| `NR_VFS_CALLS 64` | `callnr.h:137` | `NR_VFS_CALLS: usize =64` | `handlers:[Option<VfsCallNum>;64]` 长度 |
+| `VFS_BASE 0x100` | `minix3/minix/include/minix/callnr.h:VFS_BASE` | `call_table.rs:VFS_BASE: u32 =0x100` | `repr(u32)` 枚举基址 |
+| `NR_VFS_CALLS 64` | `minix3/minix/include/minix/callnr.h:NR_VFS_CALLS` | `NR_VFS_CALLS: usize =64` | `handlers:[Option<VfsCallNum>;64]` 长度 |
 | `call_vec[64]` | `table.c:17` | `CallTable { handlers:[Option<VfsCallNum>;64] }` | `lookup(raw)->Option<VfsCallNum>` 的 `raw-VFS_BASE` 检查 |
 | `is_notify` | `com.h:93` | `main_loop.rs:NotifyKind::is_notify(raw)` | `(raw-NOTIFY)<0x100` 前缀匹配 |
 
@@ -204,14 +204,14 @@ os/servers/vfs/src/
 | `do_reply:187` | `main.c:187-211` | `handle_fs_reply(wp, msg)` | `w_task==who_e` 校验 + `w_sendrec==NULL→LateIgnored` + `c_cur_reqs--` + `signal` |
 | `do_work:263` | `main.c:263-298` | `call_table.dispatch(call)->ReplyIntent` | `IS_VFS_CALL → index<64 && Some(call) → dispatch → ENOSYS` 的 `Option` 守门 |
 | `reply:638` | `main.c:638-650` | `ReplySink::send(endpoint, code)` | `m_type=result; sendnb → Err(log)` |
-| `TRNS_GET_ID` | `vfsif.h:79` | `TransIdCodec::decode(raw&0xFFFF) → Option<usize>` | `~0xff` 的 `TRANSACTION_BASE` 掩码在 `is_fs_transid` 显式 |
+| `TRNS_GET_ID` | `minix3/minix/include/minix/vfsif.h:TRNS_GET_ID` | `TransIdCodec::decode(raw&0xFFFF) → Option<usize>` | `~0xff` 的 `TRANSACTION_BASE` 掩码在 `is_fs_transid` 显式 |
 
 ### 4.4 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
 | 复活优先 `reviving>0 → unblock` | `poll_next` | `if reviving>0 { for REVIVED→unblock }` | `main.c:590` |
-| 编码不重叠 `IS_VFS_FS_TRANSID & IS_VFS_CALL==∅` | `TransIdCodec::is_fs_transid` | `(raw&~0xff)==TRANSACTION_BASE` vs `(raw&~0xff)==VFS_BASE` | `com.h:912` vs `callnr.h:70` |
+| 编码不重叠 `IS_VFS_FS_TRANSID & IS_VFS_CALL==∅` | `TransIdCodec::is_fs_transid` | `(raw&~0xff)==TRANSACTION_BASE` vs `(raw&~0xff)==VFS_BASE` | `com.h:912` vs `minix3/minix/include/minix/callnr.h:IS_VFS_CALL` |
 | PM 永不经 call_vec | `route_message` | `who_e==PM_PROC_NR → Route::Pm` 的 `call_vec` 短路 | `main.c:91` |
 | 任务只收 notify | `route_message` | `is_notify` 分流前 `who_p<0 → Ignored` | `main.c:118` |
 | 别名 `Rmdir→do_unlink` 可区分 | `VfsCallNum::Rmdir` | `match Rmdir => do_unlink()` 的语义别名 | `table.c:36` |
@@ -236,7 +236,7 @@ os/servers/vfs/src/
 | `test_route_syscall` | `main.c:135-138` | `else → Syscall(call)` 的 `handle_work` 委派 | `main_loop.rs` |
 | `test_call_table_lookup` | `table.c:17` | `VFS_READ→Some(Read), Rmdir→Some(Rmdir)`, `0→None, 0x200→None` | `call_table.rs` |
 | `test_call_resolver_two_impls` | `table.c:17` | `CallResolver` 的 `CallTable(Some) vs NullResolver(None)` | `call_table.rs` |
-| `test_transid_codec_roundtrip` | `vfsif.h:79/81` | `encode(slot) → decode → Some(slot)` 的 `&0xFFFF` 往返 | `main_loop.rs` |
+| `test_transid_codec_roundtrip` | `minix3/minix/include/minix/vfsif.h:TRNS_GET_ID/81` | `encode(slot) → decode → Some(slot)` 的 `&0xFFFF` 往返 | `main_loop.rs` |
 | `test_transid_codec_two_impls_differ` | `com.h:911` | `Vfs(0xB01) vs Test(0xC01)` 的 `is_fs_transid` 行为差异 | `main_loop.rs` |
 | `test_transid_not_fs_for_vfs_call` | `com.h:912` | `VFS_READ(0x100) is_fs_transid==false` 的编码不重叠 | `main_loop.rs` |
 | `test_reply_intent_variants` | `main.c:297` | `Reply/ReplyLater/NoReply` 的 `!=` 可区分 | `main_loop.rs` |
@@ -268,7 +268,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/main.c:54-141`（`main` 八路循环 `worker_yield+send_work+get_work+transid/PM/notify/task/BDEV/CDEV/SDEV/syscall`）、`580-633`（`get_work: reviving优先+ANY接收+端点校验`）、`263-298`（`do_work: VFS_CALL→call_vec→reply/SUSPEND`）、`187-211`（`do_reply: w_task校验+w_sendrec→c_cur_reqs--`）、`146-181`（`handle_work: CALLBACK+available→EAGAIN→use_spare`）、`638-663`（`reply/replycode: ipc_sendnb`）、`921-973`（`unblock: PIPE→QueuedPipe vs FLOCK→RevivedLock`）、`minix3/minix/servers/vfs/table.c:17-82`（`call_vec[64]` 的 `CALL(VFS_*)` 指定初始化）、`minix3/minix/servers/vfs/glo.h:24-44`（`m_in/fp/self/reviving/susp_count/err_code/who_p/who_e/call_nr/job_m_in`）、`minix3/minix/include/minix/callnr.h:68-138`（`VFS_BASE 0x100 / NR_VFS_CALLS 64 / VFS_* 64 常量`）、`minix3/minix/include/minix/com.h:91-93`（`is_notify`）、`911-912`（`VFS_TRANSID/IS_VFS_FS_TRANSID`）、`minix3/minix/include/minix/vfsif.h:79-81`（`TRNS_GET_ID/TRNS_DEL_ID`）
+- C 源：`minix3/minix/servers/vfs/main.c:main`（`main` 八路循环 `worker_yield+send_work+get_work+transid/PM/notify/task/BDEV/CDEV/SDEV/syscall`）、`580-633`（`get_work: reviving优先+ANY接收+端点校验`）、`263-298`（`do_work: VFS_CALL→call_vec→reply/SUSPEND`）、`187-211`（`do_reply: w_task校验+w_sendrec→c_cur_reqs--`）、`146-181`（`handle_work: CALLBACK+available→EAGAIN→use_spare`）、`638-663`（`reply/replycode: ipc_sendnb`）、`921-973`（`unblock: PIPE→QueuedPipe vs FLOCK→RevivedLock`）、`minix3/minix/servers/vfs/table.c:int`（`call_vec[64]` 的 `CALL(VFS_*)` 指定初始化）、`minix3/minix/servers/vfs/glo.h:EXTERN（L24，工具生成）`（`m_in/fp/self/reviving/susp_count/err_code/who_p/who_e/call_nr/job_m_in`）、`minix3/minix/include/minix/callnr.h:VFS_BASE`（`VFS_BASE 0x100 / NR_VFS_CALLS 64 / VFS_* 64 常量`）、`minix3/minix/include/minix/com.h:NOTIFY_MESSAGE（L91，工具生成）`（`is_notify`）、`911-912`（`VFS_TRANSID/IS_VFS_FS_TRANSID`）、`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID`（`TRNS_GET_ID/TRNS_DEL_ID`）
 - 阶段文档：`01-vfs-init-main.md`（`sef_cb_init_fresh` 的 `worker_allow` 门控）、`08-worker-thread.md`（`WorkerPool` 的 `may_do_pending` 与 `steal_context`）、`02-fproc-struct.md`（`BlockedOn::Pipe/Flock` 与 `FpFlags::REVIVED`）、`10-pm-protocol.md`（`service_pm` 的 12 请求的立即 vs 延期）、`11-fs-comm.md`（`m_comm` 队列的 `c_cur_reqs` 窗口）、`99-global-concepts.md`（`VFS_BASE/NR_VFS_CALLS/TRNS` 术语）
 - Rust 实现：`os/servers/vfs/src/main_loop.rs:1`（`VfsState{ reviving, current_message, current_fp_slot }` + `Route / TransIdCodec / ReplyIntent / poll_next / route_message / unblock`）、`os/servers/vfs/src/call_table.rs:1`（`VfsCallNum(64)/CallTable[64]/CallResolver/TransIdCodec`）、`os/servers/vfs/src/worker.rs:1`（`WorkerPool` 的 `may_do_pending` 与 reviving 的复活优先互证）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/12-ipc-core.md`（`sef_receive/ipc_sendnb` 的阻塞语义）

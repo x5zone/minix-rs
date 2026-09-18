@@ -113,7 +113,7 @@
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
 | `lib.rs` | — | 错误类型（`TermError`，22 对应参数无效）与模块组织 |
-| `baud.rs` | `stty.c:137`、`print.c:71-73` 思想 | 19 档常量表与双向解析 |
+| `baud.rs` | `minix3/bin/stty/stty.c:main（L137，工具生成）`、`print.c:71-73` 思想 | 19 档常量表与双向解析 |
 | `cchar.rs` | `cchar.c` 全表、`termios.h` 槽、`ttydefaults.h` 值 | 21 项三元组、插入符、`undef` |
 | `stty.rs` | `stty.c` 参数面、`modes.c` 分组思想 | 参数解析（`parse_args`） |
 | `caps.rs` | `termcap` 格式 | 条目解析与 `TermcapSource` 接口 |
@@ -165,8 +165,8 @@
 - `03-login-passwd.md`——能力表姐妹篇（`gettytab` 同格式）
 - `14-mount-fsck.md`——挂载与检查（下一步：存物）
 - `minix3/bin/stty/cchar.c:60-80`——控制字符全表（三元组的逐行对照）
-- `minix3/bin/stty/modes.c:65-175`——四标志表（分组的逐行对照）
-- `minix3/sys/sys/termios.h:50-79`——槽位（索引的逐字来源）
+- `minix3/bin/stty/modes.c:specialmodes（L65，工具生成）`——四标志表（分组的逐行对照）
+- `minix3/sys/sys/termios.h:VEOL2`——槽位（索引的逐字来源）
 - `minix3/sys/sys/ttydefaults.h`——默认值（退格 Control-H 的出处）
 
 ---

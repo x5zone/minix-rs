@@ -1,7 +1,7 @@
 # 09-slab-allocator: 内核堆分配——从 slab 到 HeapArena + VmAllocator
 
 > **分类**: 阶段 4 — 自举的堆与元数据（堆分配面）
-> **源码**: `minix3/minix/servers/vm/slaballoc.c`（528 行：`SLABSIZES` :29 / `ITEMSPERPAGE` :31 / `ELBITS` :33 / `BITPAT` :34 / `BITEL` :35 / `GETBIT` :69 / `SETBIT` :70 / `CLEARBIT` :71 / `OBJALIGN` :73 / `MINSIZE` :75 / `MAXSIZE` :76 / `USEELEMENTS` :77 / `struct sdh` :96 / `DATABYTES` :111 / `MAGIC1` :113 / `MAGIC2` :114 / `JUNK` :115 / `NOJUNK` :116 / `struct slabdata` :118 / `slabs[]` :125 / `GETSLAB` :130 / `ADDHEAD` :140 / `UNLINKNODE` :151 / `newslabdata` :159 / `checklist` :194 / `slab_sanitycheck` :229 / `slabsane_f` :240 / `slaballoc` :259 / `objstats` :344 / `slabfree` :406 / `slablock` :464 / `slabunlock` :483 / `slabstats` :504）+ `minix3/minix/servers/vm/proto.h:133-134`（`SLABALLOC`/`SLABFREE` 宏）+ `minix3/minix/servers/vm/vm.h:13`（MEMPROTECT）+ `minix3/minix/servers/vm/vm.h:52`（VMP_SLAB）+ `minix3/minix/servers/vm/pagetable.c:403`（`vm_pagelock`）
+> **源码**: `minix3/minix/servers/vm/slaballoc.c`（528 行：`SLABSIZES` :29 / `ITEMSPERPAGE` :31 / `ELBITS` :33 / `BITPAT` :34 / `BITEL` :35 / `GETBIT` :69 / `SETBIT` :70 / `CLEARBIT` :71 / `OBJALIGN` :73 / `MINSIZE` :75 / `MAXSIZE` :76 / `USEELEMENTS` :77 / `struct sdh` :96 / `DATABYTES` :111 / `MAGIC1` :113 / `MAGIC2` :114 / `JUNK` :115 / `NOJUNK` :116 / `struct slabdata` :118 / `slabs[]` :125 / `GETSLAB` :130 / `ADDHEAD` :140 / `UNLINKNODE` :151 / `newslabdata` :159 / `checklist` :194 / `slab_sanitycheck` :229 / `slabsane_f` :240 / `slaballoc` :259 / `objstats` :344 / `slabfree` :406 / `slablock` :464 / `slabunlock` :483 / `slabstats` :504）+ `minix3/minix/servers/vm/proto.h:SLABALLOC`（`SLABALLOC`/`SLABFREE` 宏）+ `minix3/minix/servers/vm/vm.h:MEMPROTECT`（MEMPROTECT）+ `minix3/minix/servers/vm/vm.h:VMP_SLAB`（VMP_SLAB）+ `minix3/minix/servers/vm/pagetable.c:vm_pagelock`（`vm_pagelock`）
 > **Rust 模块**: `os/servers/vm/src/heap_arena.rs`（`HeapArena` + `HeapArenaError`）+ `os/servers/vm/src/global.rs`（`VmAllocator` free-list + `#[global_allocator]` + `PAGE_ALLOC_PTR`）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（`vm_self_mappages`/`vm_self_unmap`）+ `os/servers/vm/src/direct_map.rs`（`VM_HEAP_BASE`/`VM_HEAP_SIZE`/`VM_HEAP_LIMIT`）+ `os/servers/vm/src/vm_server.rs`（接线）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（`VmPageAllocator` 给堆供物理页）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（`vm_self_mappages`/`vm_self_unmap` 操作面）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 时序 + `__minix_init` 分界线）
 > **说明**: 内核堆分配语义模块：**Minix3 的 slab 尺寸分类分配器（slaballoc.c 全量）、`SLABALLOC`/`SLABFREE` 类型化宏、MEMPROTECT 调试写保护、slabstats 统计**。**不覆盖**：物理页分配器（06）、页表结构/操作（07/08）、元数据搬迁（10）、内存占用统计（26）。
@@ -33,7 +33,7 @@ init_vm()（main.c:428）
   ├─ exec_bootproc() / CALLMAP / sef_local_startup()         ← 01/15
 ```
 
-Rust 侧对应的分界线是 `VmServer::new()` 中的 `register_page_alloc()`（`vm_server.rs:92`）：此后 `#[global_allocator]` 的 `VmAllocator` 才有物理页来源（`refill_arena()` 供页）。**C 的分界线与 Rust 的分界线不是同一时刻**——前者是 libc 构造完成，后者是全局分配器获得供页能力（§1.1 详述）。
+Rust 侧对应的分界线是 `VmServer::new()` 中的 `register_page_alloc()`（`os/servers/vm/src/vm_server.rs:struct VmContext（L92，工具生成）`）：此后 `#[global_allocator]` 的 `VmAllocator` 才有物理页来源（`refill_arena()` 供页）。**C 的分界线与 Rust 的分界线不是同一时刻**——前者是 libc 构造完成，后者是全局分配器获得供页能力（§1.1 详述）。
 
 ### 1.1 堆可用分界线：init_vm() 里堆何时可用
 
@@ -50,13 +50,13 @@ __minix_init();             /* main.c:480 —— 获取内核 IPC 向量；libc 
 Rust 侧的对应物有两层：
 
 1. **`init_vm_self_pt()`**（VM 自身页表建立，07/08）——`vm_self_mappages` 的前置，HeapArena 写 PTE 依赖它。
-2. **`register_page_alloc()`**（`vm_server.rs:92`，`VmServer::new`）——`PAGE_ALLOC_PTR` 指向 `VmPageAllocator`，HeapArena::grow 才有物理页可映射。
+2. **`register_page_alloc()`**（`os/servers/vm/src/vm_server.rs:struct VmContext（L92，工具生成）`，`VmServer::new`）——`PAGE_ALLOC_PTR` 指向 `VmPageAllocator`，HeapArena::grow 才有物理页可映射。
 
 两者合起来才是 Rust 的"堆可用分界线"：**页表可写（映射能力）+ 物理页可取（供页能力）**。这个组合对应 C 侧 `pt_init()` + `__minix_init()` 之间的窗口——C 在 `pt_init()` 之后堆结构（`slabs[]`）已是静态全局、物理页可由 `vm_allocpage` 供给，所以 C 的堆实际在 `pt_init()` 后即可用，`__minix_init()` 是"libc 完整可用"的语义分界。
 
 ### 1.2 自举的堆：物理页从哪来、VA 为什么必须连续
 
-堆的物理页来源：`newslabdata()`（slaballoc.c:166）调用 `vm_allocpage(&p, VMP_SLAB)`——**VM 自己的物理页分配器（06）给堆供页**，`VMP_SLAB`（vm.h:52，reason=3）是页分配器的用途标记（与 `VMP_PAGETABLE` 等并列，供统计/审计）。这意味着堆页与 VM 管理的其他物理页同池：堆页可被碎片化分配，没有"堆专用内存区"。
+堆的物理页来源：`newslabdata()`（minix3/minix/servers/vm/slaballoc.c:newslabdata（L166，工具生成））调用 `vm_allocpage(&p, VMP_SLAB)`——**VM 自己的物理页分配器（06）给堆供页**，`VMP_SLAB`（vm.h:52，reason=3）是页分配器的用途标记（与 `VMP_PAGETABLE` 等并列，供统计/审计）。这意味着堆页与 VM 管理的其他物理页同池：堆页可被碎片化分配，没有"堆专用内存区"。
 
 堆的 VA 组织：slab 分配器要求对象地址在**连续 VA 内**（`data + i*bytes` 的指针算术），因此 slab 页必须连续映射。32 位 Minix3 的 VM 地址空间是线性映射的（页表直接覆盖整个空间），VA 连续性天然成立；64 位 Rust 重写引入 Direct Map 后，**Direct Map 提供稳定 VA（VA = PA + BASE）但不提供 VA 连续性**——物理洞变成 VA 洞，任何需要 VA 连续的分配器（bump/free-list）都无法在洞上行走。这是 09 的核心架构问题：
 
@@ -66,7 +66,7 @@ Rust 侧的对应物有两层：
 
 Minix3 的 slaballoc.c 是一个**基于单页 slab 的尺寸分类对象分配器**，四个要素：
 
-1. **尺寸分类**：`SLABSIZES=200`（slaballoc.c:29）个尺寸类，覆盖 8..207 字节（`MINSIZE=8` :75、`OBJALIGN=8` :73）；请求按 `OBJALIGN` 向上取整后落入唯一尺寸类（`GETSLAB` :130）。
+1. **尺寸分类**：`SLABSIZES=200`（minix3/minix/servers/vm/slaballoc.c:SLABSIZES）个尺寸类，覆盖 8..207 字节（`MINSIZE=8` :75、`OBJALIGN=8` :73）；请求按 `OBJALIGN` 向上取整后落入唯一尺寸类（`GETSLAB` :130）。
 2. **单页 slab**：每个 slab 恰好一页（`struct slabdata` :118），页内数据区（`DATABYTES` :111 = `VM_PAGE_SIZE - sizeof(struct sdh)`）+ 页尾头（`struct sdh` :96）；页内对象数 `ITEMSPERPAGE(bytes) = DATABYTES / bytes`（:31）。
 3. **页内位图**：`usebits[USEELEMENTS]`（:77）记录页内对象占用，`GETBIT`/`SETBIT`/`CLEARBIT`（:69-71）操作单 bit；`freeguess` 是"下一分配从哪开始找"的提示（slaballoc 从 freeguess 起线性扫描，slabfree 更新它），避免每次都从 0 扫描。
 4. **空闲链**：`slabs[200]`（:125）每个尺寸类一条双向空闲链，链上全是**未满**的 slab；满 slab 被 `UNLINKNODE`（:151）摘出，空 slab 被 `vm_freepages`（:449）还回物理分配器。
@@ -75,7 +75,7 @@ Minix3 的 slaballoc.c 是一个**基于单页 slab 的尺寸分类对象分配�
 
 ### 1.4 分配与释放流程
 
-`slaballoc(bytes)`（slaballoc.c:259）：
+`slaballoc(bytes)`（minix3/minix/servers/vm/slaballoc.c:slaballoc）：
 
 1. `roundup(bytes, OBJALIGN)`——对齐到 8 字节（`bytes = roundup(...)`）。
 2. `GETSLAB(bytes, s)`——定位尺寸类空闲链头。
@@ -84,7 +84,7 @@ Minix3 的 slaballoc.c 是一个**基于单页 slab 的尺寸分类对象分配�
 5. `SETBIT` 置占用位 + `nused++`；若该 slab 变满（`nused == ITEMSPERPAGE(bytes)`），`UNLINKNODE` 从空闲链摘出。
 6. 返回 `((char*)newslab) + i*bytes`——对象地址 = 页基址 + 对象号 × 对象大小。
 
-`slabfree(mem, bytes)`（slaballoc.c:406）：
+`slabfree(mem, bytes)`（minix3/minix/servers/vm/slaballoc.c:slabfree）：
 
 1. `objstats`（:344）反查对象所属 slab/尺寸类/对象号（页对齐取页尾头，校验魔数与占用位）。
 2. `CLEARBIT` 清占用位 + `nused--` + 更新 `freeguess`。
@@ -105,23 +105,23 @@ proto.h:133-134 的两个宏把"分配/释放"与"类型大小"绑定：
 - `SLABALLOC(var)` = `var = slaballoc(sizeof(*var))`——按变量类型的实际大小分配并赋值；失败（NULL）由调用方检查。
 - `SLABFREE(ptr)` = 按 `sizeof(*ptr)` 释放 + **置 NULL**——防止悬垂指针二次释放。
 
-这是 C 语言里能表达的最接近"类型化分配器"的约定：**分配带类型、释放带类型、释放后防悬挂**。Rust 侧 `Box::new`/`drop` 是它的天然进化——类型由编译器保证、释放由析构保证、用后释放由借用检查禁止（§3.1 D1）。消费方实证（`rg SLABALLOC|SLABFREE *.c`，2026-08-15）：vfs.c:76/135、pb.c:36/58/78/128、region.c:432/451/559/581、cache.c:227/282/285、fdref.c:97/140——覆盖 VM 的核心元数据对象（region/phys_block/fdref/page cache/vfs reqnode）。
+这是 C 语言里能表达的最接近"类型化分配器"的约定：**分配带类型、释放带类型、释放后防悬挂**。Rust 侧 `Box::new`/`drop` 是它的天然进化——类型由编译器保证、释放由析构保证、用后释放由借用检查禁止（§3.1 D1）。消费方实证（`rg SLABALLOC|SLABFREE *.c`，2026-08-15）：vfs.c:76/135、minix3/minix/servers/vm/pb.c:phys_block（L36，工具生成）/58/78/128、region.c:432/451/559/581、cache.c:227/282/285、minix3/minix/servers/vm/fdref.c:fdref（L97，工具生成）/140——覆盖 VM 的核心元数据对象（region/phys_block/fdref/page cache/vfs reqnode）。
 
 ### 1.6 MEMPROTECT：调试期写保护硬化
 
 MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：开启时，slab 页在 PTE 层被翻成**只读**（VM 自己也不可写），只有通过 `SLABDATAUSE` 宏进入临界区时才临时开写。机制链：
 
-1. `SLABDATAWRITABLE(data, wr)`（slaballoc.c:42-48）：断言当前不可写 + 请求非 NONE，`vm_pagelock(data, 0)` 翻页为可写，记 `writable` 标记。
+1. `SLABDATAWRITABLE(data, wr)`（minix3/minix/servers/vm/slaballoc.c:SLABDATAWRITABLE）：断言当前不可写 + 请求非 NONE，`vm_pagelock(data, 0)` 翻页为可写，记 `writable` 标记。
 2. `SLABDATAUNWRITABLE(data)`（:49-53）：断言当前可写，记 `WRITABLE_NONE`，`vm_pagelock(data, 1)` 翻页为只读。
 3. `SLABDATAUSE(data, code)`（:55-59）：开写 → 执行 `code`（链表/位图操作）→ 关写。
 4. `slablock`/`slabunlock`（:464/:483）：对**已分配对象**整页翻只读/可写——slaballoc 返回前 `slabunlock(ret, bytes)`（对象可写）、slabfree 里 `slabunlock(mem, bytes)` 后再写 JUNK。
-5. `vm_pagelock`（pagetable.c:403）：`pt_writemap(vmprocess, pt, m, 0, VM_PAGE_SIZE, ARCH_VM_PTE_PRESENT|ARCH_VM_PTE_USER[|RW])`——用 WMF_WRITEFLAGSONLY（08 D1）只翻 PTE RW 位，不改变物理地址。
+5. `vm_pagelock`（minix3/minix/servers/vm/pagetable.c:vm_pagelock）：`pt_writemap(vmprocess, pt, m, 0, VM_PAGE_SIZE, ARCH_VM_PTE_PRESENT|ARCH_VM_PTE_USER[|RW])`——用 WMF_WRITEFLAGSONLY（08 D1）只翻 PTE RW 位，不改变物理地址。
 
-语义：**检测对已分配对象的越权写/释放后使用**——任何未经 SLABDATAUSE 的对象写都会触发页错误；JUNK/NOJUNK 标记（:115-116）配合检测双重释放。这是调试期的"堆硬化"，生产构建（MEMPROTECT=0）下这些宏全部展开为空（slaballoc.c:63-65）。
+语义：**检测对已分配对象的越权写/释放后使用**——任何未经 SLABDATAUSE 的对象写都会触发页错误；JUNK/NOJUNK 标记（:115-116）配合检测双重释放。这是调试期的"堆硬化"，生产构建（MEMPROTECT=0）下这些宏全部展开为空（minix3/minix/servers/vm/slaballoc.c:SLABDATAWRITABLE）。
 
 ### 1.7 调试统计与一致性检查
 
-- `slabstats()`（slaballoc.c:504）：每 1000 次调用（`n%1000`）打印一次各尺寸类利用率与总利用页数（`pages` :79）——VMSTATS 输出供人工审计，非功能路径。
+- `slabstats()`（minix3/minix/servers/vm/slaballoc.c:slabstats）：每 1000 次调用（`n%1000`）打印一次各尺寸类利用率与总利用页数（`pages` :79）——VMSTATS 输出供人工审计，非功能路径。
 - `slab_sanitycheck`（:229）/`slabsane_f`（:240）/`checklist`（:194）：SANITYCHECKS 门控——魔数（`MAGIC1` :113/`MAGIC2` :114）、双向链一致性、位图-计数一致性、`usedpages_add` 登记。
 - slaballoc.c 的注释明说：这个文件**太低层**，数据结构在 alloc/free 中途必然不一致，所以不做全局 SANITYCHECK，只做自己的 `SLABSANITYCHECK`（`SCL_FUNCTIONS=2` 函数级 / `SCL_DETAIL=3` 细节级，vm.h:44-45）。
 
@@ -135,7 +135,7 @@ MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：�
 
 1. **对象生命周期表达方式不同**：C 无所有权/析构，分配器必须用位图 + 空闲链簿记"谁被占用、释放后如何复用"；Rust 的类型系统（RAII + 借用检查）让对象生命周期由编译器保证——分配器的簿记职责消失。
 2. **分配模式不同**：C 侧 slab 服务于**高频分配/释放**（每次 mmap/munmap/fork 都建/毁 region、phys_block、fdref）；Rust 侧 VM 的分配集中在启动期 + 少量长期对象，服务路径的临时对象经 `Box`/`Vec` 分配 + 析构释放（A-3 v2：free-list 复用，§3.1）。
-3. **32 位地址空间稀缺性消失**：C 侧位图管理（每对象 1 bit）是对 4GB 地址空间的精打细算；64 位 + 64MB 堆区间（`VM_HEAP_SIZE`，os/arch/src/arch/direct_map.rs:69）无需这种粒度。
+3. **32 位地址空间稀缺性消失**：C 侧位图管理（每对象 1 bit）是对 4GB 地址空间的精打细算；64 位 + 64MB 堆区间（`VM_HEAP_SIZE`，os/arch/src/arch/direct_map.rs:fn virt_to_phys（L69，工具生成））无需这种粒度。
 4. **代价诚实声明（v2 修订）**：v1 的代价（无对象复用、堆只增不减）在 2026-08-16 架构审查（todo P1-1）中被判定为长期运行短板，v2 以 free-list 复用消除；剩余代价：arena 页不收缩（与 v1 相同，见 §5.3 缺口）、无 per-object 统计。
 
 代价与收益的对照在 §3.1 D1 展开，与 Redox/Linux 的对照在 §1.9。
@@ -189,11 +189,11 @@ MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：�
 | `slablock`/`slabunlock` | 464/483 | MEMPROTECT | 对象整页只读/可写翻转 |
 | `slabstats` | 504 | 统计 | 利用率审计（n%1000 节流） |
 | `SLABALLOC`/`SLABFREE` | proto.h:133-134 | 宏 | 类型化分配/释放 |
-| `vm_pagelock` | pagetable.c:403 | 依赖 | PTE RW 位翻转 |
+| `vm_pagelock` | minix3/minix/servers/vm/pagetable.c:vm_pagelock | 依赖 | PTE RW 位翻转 |
 
 （`vm_allocpage`/`vm_freepages` 的物理页语义在 06 分析；本章只引用其调用点。）
 
-### 2.1 尺寸类与常量（slaballoc.c:29-90）
+### 2.1 尺寸类与常量（minix3/minix/servers/vm/slaballoc.c:SLABSIZES）
 
 ```c
 #define SLABSIZES 200                 /* :29 尺寸类个数 */
@@ -212,7 +212,7 @@ MEMPROTECT（vm.h:13，**默认 0**）是 SANITYCHECKS 门控的调试特性：�
 - `MAXSIZE = 207` 的命名有误导性：`bytes` 经 `roundup(bytes, OBJALIGN)` 后**可等于 208**（207 对齐到 208），此时 `GETSLAB` 的 `_gsi = 200` 触发断言失败——slaballoc 对 >207 字节请求没有优雅失败路径，是 C 侧硬限制（调用方约定不超 MAXSIZE）。
 - `pages`（:79）全局统计 slab 页总数，供 `slabstats` 利用率计算。
 
-### 2.2 数据结构：struct sdh / struct slabdata / slabs[]（slaballoc.c:96-127）
+### 2.2 数据结构：struct sdh / struct slabdata / slabs[]（minix3/minix/servers/vm/slaballoc.c:sdh）
 
 ```c
 struct sdh {                          /* :96 页尾头 */
@@ -242,7 +242,7 @@ static struct slabheader {
 
 关键设计：**头在页尾**——`objstats` 用 `(struct slabdata*)(mem - mem%VM_PAGE_SIZE)` 页对齐取头，数据区在页首使对象地址对齐到页基址 + 8 的倍数；`assert(sizeof(*n) == VM_PAGE_SIZE)`（:164）保证整页布局。
 
-### 2.3 位图与链表宏（slaballoc.c:69-71 / 130-157）
+### 2.3 位图与链表宏（minix3/minix/servers/vm/slaballoc.c:GETBIT / 130-157）
 
 ```c
 #define GETBIT(f, b)   (BITEL(f,b) &   BITPAT(b))
@@ -255,7 +255,7 @@ static struct slabheader {
 - `GETSLAB`（:130）：尺寸 → 尺寸类链头，含范围断言。
 - `ADDHEAD`（:140）：头插；`UNLINKNODE`（:151）：双向摘除。链表写全部经 `SLABDATAUSE` 保护。
 
-### 2.4 newslabdata：堆页供给（slaballoc.c:159-192）
+### 2.4 newslabdata：堆页供给（minix3/minix/servers/vm/slaballoc.c:newslabdata）
 
 ```c
 static struct slabdata *newslabdata(void)
@@ -279,7 +279,7 @@ static struct slabdata *newslabdata(void)
 - 只清零位图（数据区不清零——首次分配的对象是旧内容，调用方负责初始化；调试下 slaballoc 写 NOJUNK 标记新对象）。
 - `assert(sizeof(*n) == VM_PAGE_SIZE)`（:164）——整页布局不变量。
 
-### 2.5 slaballoc：分配路径（slaballoc.c:259-343）
+### 2.5 slaballoc：分配路径（minix3/minix/servers/vm/slaballoc.c:slaballoc）
 
 ```c
 void *slaballoc(int bytes)
@@ -320,7 +320,7 @@ void *slaballoc(int bytes)
 - 满 slab 摘链的判定在 SETBIT 后（`nused == ITEMSPERPAGE`）——释放侧对称（§2.7 的 `nused == ITEMSPERPAGE-1` 回链）。
 - 返回前 `freeguess = i+1`——下次分配从刚分配位置之后开始，减少与刚释放对象的冲突。
 
-### 2.6 objstats：反查定位（slaballoc.c:344-405）
+### 2.6 objstats：反查定位（minix3/minix/servers/vm/slaballoc.c:objstats）
 
 ```c
 static inline int objstats(void *mem, int bytes,
@@ -341,7 +341,7 @@ static inline int objstats(void *mem, int bytes,
 - 校验项（SANITYCHECKS 门控）：魔数、对象在数据区范围内、对象号整除（对齐）、占用位为 1（**释放未分配对象 → 检测**）。
 - `OBJSTATSCHECK` 失败在 SANITYCHECKS 下打印 + 返回 EINVAL，slabfree 收到非 OK → `panic`。
 
-### 2.7 slabfree：释放路径（slaballoc.c:406-463）
+### 2.7 slabfree：释放路径（minix3/minix/servers/vm/slaballoc.c:slabfree）
 
 ```c
 void slabfree(void *mem, int bytes)
@@ -364,7 +364,7 @@ void slabfree(void *mem, int bytes)
 - **空页还回物理分配器**（`vm_freepages`）是 slab 的内存收缩机制——VM 堆页不长期驻留。
 - 从满变非满回链：slaballoc 摘满链的对称操作，保证"链上只有未满 slab"不变量。
 
-### 2.8 slablock/slabunlock + vm_pagelock：MEMPROTECT 机制（slaballoc.c:464-502 + pagetable.c:403）
+### 2.8 slablock/slabunlock + vm_pagelock：MEMPROTECT 机制（minix3/minix/servers/vm/slaballoc.c:slablock + minix3/minix/servers/vm/pagetable.c:vm_pagelock）
 
 ```c
 #if MEMPROTECT
@@ -375,7 +375,7 @@ void slabunlock(void *mem, int bytes)   /* :483 —— 翻可写 */
 #endif
 ```
 
-`vm_pagelock`（pagetable.c:403-431）核心：
+`vm_pagelock`（minix3/minix/servers/vm/pagetable.c:vm_pagelock）核心：
 
 ```c
 flags = ARCH_VM_PTE_PRESENT | ARCH_VM_PTE_USER;   /* 初始无 RW */
@@ -388,7 +388,7 @@ pt_writemap(vmprocess, pt, m, 0, VM_PAGE_SIZE, flags,
 - slablock/slabunlock 的调用点：slaballoc 返回前 `slabunlock(ret, bytes)`（对象可写）、slabfree 中先 `slabunlock` 再写 JUNK 再 `slablock`（页回写保护）、SLABDATAUSE 临界区。
 - 注意 **MEMPROTECT 默认 0**（vm.h:13）：生产构建中 slablock/slabunlock/SLABDATA* 全部展开为空，`writable` 字段与翻转逻辑不存在。
 
-### 2.9 slabstats/slab_sanitycheck/slabsane_f：调试审计（slaballoc.c:194-256 / 504-528）
+### 2.9 slabstats/slab_sanitycheck/slabsane_f：调试审计（minix3/minix/servers/vm/slaballoc.c:checklist / 504-528）
 
 - `checklist`（static，:194）：遍历单尺寸类链表，校验魔数、双向链一致性、位图-计数一致（`count == nused`）、`usedpages_add(phys)` 登记；返回已用对象数。
 - `slab_sanitycheck(file, line)`（:229）：200 个尺寸类全量 `checklist`——SANITYCHECK 框架入口（sanitycheck.h 的 `SLABSANITYCHECK` 门控）。
@@ -448,7 +448,7 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
 ### 3.2 D2: 物理页碎片化 → HeapArena 连续 VA（三 VA 模型）
 
 - **C**：slab 页映射在 VM 地址空间线性区，VA 连续性由 32 位线性映射天然保证。
-- **Rust**：`HeapArena`（heap_arena.rs）保留连续 VA 区间（`VM_HEAP_BASE .. VM_HEAP_BASE + VM_HEAP_SIZE`，direct_map.rs:16-18），物理页逐页 `vm_self_mappages`（vm_self_map.rs:113）映射——**物理页可碎片化，VA 恒连续**。
+- **Rust**：`HeapArena`（heap_arena.rs）保留连续 VA 区间（`VM_HEAP_BASE .. VM_HEAP_BASE + VM_HEAP_SIZE`，direct_map.rs:16-18），物理页逐页 `vm_self_mappages`（os/servers/vm/src/pagetable/vm_self_map.rs:fn map（L113，工具生成））映射——**物理页可碎片化，VA 恒连续**。
 - **三 VA 模型**：一物理页用作堆时有至多三个虚拟地址：内核 Direct Map（`KERNEL_DIRECT_MAP_BASE + phys`，Ring 0）、VM Direct Map（`VM_DIRECT_MAP_BASE + phys`，Ring 3）、HeapArena VA（仅堆页，Ring 3）。
 - **行为契约**：`grow(pages)` 越界 → `Exhausted{requested, available}`；中途映射失败 → 回滚已映射页（`vm_self_unmap` + `free_page`）+ 释放当前页，返回 `MapFailed`（**all-or-nothing**）；`shrink(pages)` 超量 → `Underflow`；零页 → `ZeroPages`；成功 grow 返回新区间起始 VA（= 旧 limit）。
 - **差异**：C 的"堆在 VM 线性区"→ Rust 的"专用 HeapArena 区间 + 自映射"——`[ARCH: A-3]` 的 VA 连续化手段，与 Redox 的 `HEAP_START/HEAP_SIZE` 保留区间同构。
@@ -462,7 +462,7 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
 
 ### 3.4 D4: MEMPROTECT 硬化 → 移交硬化项
 
-- **C**：MEMPROTECT（vm.h:13）+ `SLABDATA*` 宏（:44-65）+ `slablock`/`slabunlock`（:464/:483）+ `vm_pagelock`（pagetable.c:403）。
+- **C**：MEMPROTECT（vm.h:13）+ `SLABDATA*` 宏（:44-65）+ `slablock`/`slabunlock`（:464/:483）+ `vm_pagelock`（minix3/minix/servers/vm/pagetable.c:vm_pagelock）。
 - **Rust**：`HeapArena::grow` 恒以 `PageFlags::read_write()` 映射（heap_arena.rs）——**未实现 PTE 写保护**。诚实标注：这是移交硬化项（§6 过渡），不是"实现简化"。
 - **行为契约**（未实现，硬化实施时预期）：debug-only `protect` API 或独立标志；经 08 D1 的 `update_flags`（vm_self_update_flags）翻转 PTE RW；与 C 的 WMF_WRITEFLAGSONLY 语义一致。
 - **为何可延后**：MEMPROTECT 是 SANITYCHECKS 门控的调试特性（默认 0），生产语义等价于"页可写"；Rust 的借用检查在**编译期**消除了 C 在**运行期**靠写保护检测的越权写/释放后使用——硬化收益在 Rust 侧大幅下降。
@@ -481,7 +481,7 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
   - `register_page_alloc(alloc)`（global.rs:445）：`compare_exchange(null → ptr)`——首次注册正常；同指针幂等重注册；不同指针 → 双初始化 bug 检测。**BSS → 堆搬迁场景为防御性设计**：当前 `main.rs` 中 `VmServer` 在栈上创建，无搬迁发生；代码注释保留该路径以防未来 VmServer 被 `Box` 化。
   - `unregister_page_alloc()`（global.rs:481）：VmServer::drop 置 null。
   - `refill_arena`：读指针，null → 返回 false（`alloc` 返回 null）。
-- **行为契约**：注册必须先于首次分配（`VmServer::new`，vm_server.rs:92）；`page_alloc_mut()` 对 null 指针 panic（fail-fast）；指针生命期 = VmServer 生命期 ≥ GLOBAL 生命期（SAFETY 注释链，global.rs）。
+- **行为契约**：注册必须先于首次分配（`VmServer::new`，os/servers/vm/src/vm_server.rs:struct VmContext（L92，工具生成））；`page_alloc_mut()` 对 null 指针 panic（fail-fast）；指针生命期 = VmServer 生命期 ≥ GLOBAL 生命期（SAFETY 注释链，global.rs）。
 - **执行模型**：VM 是用户态服务器单线程事件循环（CLAUDE.md Execution Model）——`AtomicPtr` + `AssumeSyncCell` 足够，无需 Mutex；与 kernel SMP 的 BKL 约束正交。
 
 ### 3.7 语义差异清单（C ↔ Rust 诚实标注）
@@ -509,7 +509,7 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
 
 ### 4.1 `HeapArena`：连续 VA 区间管理（heap_arena.rs）
 
-**结构**（heap_arena.rs:46-50）：
+**结构**（os/servers/vm/src/heap_arena.rs:struct HeapArena）：
 
 | 字段 | 语义 |
 |------|------|
@@ -519,8 +519,8 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
 
 **方法**：
 
-- `grow(pages, page_alloc)`（heap_arena.rs:91）：越界检查（`Exhausted`）→ 逐页 `alloc_phys(1)` + `vm_self_mappages(va, phys, read_write())` → 失败回滚（已映射页 `vm_self_unmap` + `free_page`，再释放当前页，返回 `MapFailed`）→ 成功推进 `limit`，返回旧 limit（新区间起始 VA）。
-- `shrink(pages, page_alloc)`（heap_arena.rs:141）：`Underflow` 检查 → 从新区间起始逐页 `vm_self_unmap`（返回 PhysBytes）+ `free_page` → 回退 `limit`。**当前无生产调用方**（`rg "\.shrink\(" os/servers/vm/src/` 仅定义处命中）——保留为 HeapArena 契约面，预期 10 元数据搬迁消费；doc §5.3 测试缺口含 shrink。
+- `grow(pages, page_alloc)`（os/servers/vm/src/heap_arena.rs:fn mapped_bytes（L91，工具生成））：越界检查（`Exhausted`）→ 逐页 `alloc_phys(1)` + `vm_self_mappages(va, phys, read_write())` → 失败回滚（已映射页 `vm_self_unmap` + `free_page`，再释放当前页，返回 `MapFailed`）→ 成功推进 `limit`，返回旧 limit（新区间起始 VA）。
+- `shrink(pages, page_alloc)`（os/servers/vm/src/heap_arena.rs:fn grow（L141，工具生成））：`Underflow` 检查 → 从新区间起始逐页 `vm_self_unmap`（返回 PhysBytes）+ `free_page` → 回退 `limit`。**当前无生产调用方**（`rg "\.shrink\(" os/servers/vm/src/` 仅定义处命中）——保留为 HeapArena 契约面，预期 10 元数据搬迁消费；doc §5.3 测试缺口含 shrink。
 - `available_va()`/`mapped_bytes()`：区间状态查询（bump 的 refill 决策用）。
 
 **关键设计**：
@@ -572,8 +572,8 @@ alloc(layout)
 
 ### 4.3 `PAGE_ALLOC_PTR` 接线（global.rs + vm_server.rs）
 
-- 注册：`VmServer::new()` 内 `register_page_alloc(&mut page_alloc)`（vm_server.rs:92）。
-- 注销：`VmServer::drop()` 内 `unregister_page_alloc()`（vm_server.rs:800）。
+- 注册：`VmServer::new()` 内 `register_page_alloc(&mut page_alloc)`（os/servers/vm/src/vm_server.rs:struct VmContext（L92，工具生成））。
+- 注销：`VmServer::drop()` 内 `unregister_page_alloc()`（os/servers/vm/src/vm_server.rs:const PS（L800，工具生成））。
 - `compare_exchange` 语义（global.rs:445-479，`register_page_alloc` :445-479）：null → ptr 正常；同 ptr 幂等（防御 BSS → 堆搬迁，当前 main() 栈上创建 VmServer 无搬迁）；异 ptr → 双初始化 bug 检测（注释明示）。
 - **生命期论证**（global.rs 注释链）：`GLOBAL` 是 `static`（程序整个生命期），`VmPageAllocator` 由 `VmServer` 持有（VmServer 生命期 = VM 进程生命期）→ 供页者不短于消费者。
 
@@ -595,13 +595,13 @@ VmServer::init()
 运行期：首次 Box::new → GLOBAL.alloc → refill_arena → HEAP_ARENA.grow(16)
 ```
 
-**分界线语义**（对照 §1.1）：C 的 `__minix_init()`（libc 构造）与 Rust 的"供页注册 + 映射就绪"不同时刻——Rust 侧真正的前置是 **`register_page_alloc`（供页）+ `init_vm_self_pt`（映射）两者齐备**：`register_page_alloc` 在 `init_vm_self_pt` 之前（vm_server.rs:92 先于 :111），但两者之间无任何堆分配（`params.validate`/`create_default_allocator` 均无分配），首次 `GLOBAL.alloc` 必然发生在两者之后，故安全；libc 构造语义在 Rust 中不存在（无 libc 依赖的启动）。
+**分界线语义**（对照 §1.1）：C 的 `__minix_init()`（libc 构造）与 Rust 的"供页注册 + 映射就绪"不同时刻——Rust 侧真正的前置是 **`register_page_alloc`（供页）+ `init_vm_self_pt`（映射）两者齐备**：`register_page_alloc` 在 `init_vm_self_pt` 之前（os/servers/vm/src/vm_server.rs:struct VmContext（L92，工具生成） 先于 :111），但两者之间无任何堆分配（`params.validate`/`create_default_allocator` 均无分配），首次 `GLOBAL.alloc` 必然发生在两者之后，故安全；libc 构造语义在 Rust 中不存在（无 libc 依赖的启动）。
 
 ### 4.5 消费链与边界
 
-- **消费方**：`vm_server.rs:195` `heap_arena_grow(pages, &mut self.page_alloc)`（VM_HEAP 服务 / 压力计数路径）；一切 Rust 侧 `Box`/`Vec`/`String` → `GLOBAL`（free-list 复用优先，bump 补充）。
+- **消费方**：`os/servers/vm/src/vm_server.rs:fn new` `heap_arena_grow(pages, &mut self.page_alloc)`（VM_HEAP 服务 / 压力计数路径）；一切 Rust 侧 `Box`/`Vec`/`String` → `GLOBAL`（free-list 复用优先，bump 补充）。
 - **边界**：`HeapArena` 不直接暴露给服务层（`pub(crate)`），经 `heap_arena_grow`（global.rs:511）转发；`VmAllocator` 仅以 `GLOBAL` 静态存在，无第二实例。
-- **与 08 的接缝**：`grow/shrink` 消费 08 的 `vm_self_mappages`/`vm_self_unmap`/`vm_self_unmappages`（vm_self_map.rs:113/129/151）——08 是"怎么改 VM 自身页表"，09 是"VM 的堆怎么经这些 API 自举"。
+- **与 08 的接缝**：`grow/shrink` 消费 08 的 `vm_self_mappages`/`vm_self_unmap`/`vm_self_unmappages`（os/servers/vm/src/pagetable/vm_self_map.rs:fn map（L113，工具生成）/129/151）——08 是"怎么改 VM 自身页表"，09 是"VM 的堆怎么经这些 API 自举"。
 
 ---
 

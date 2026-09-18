@@ -1,6 +1,6 @@
 # 09-init-multi-user：多用户稳态
 
-> **定位**：状态 `'m'`，`multi_user`（`minix3/sbin/init/init.c:1528-1564`）、`start_getty`（1321-1370）、`start_window_system`（1290-1316）、`setctty`（669-689）、`collect_child`（1460-1497）。
+> **定位**：状态 `'m'`，`multi_user`（`minix3/sbin/init/init.c:transition_handler（L1528，工具生成）`）、`start_getty`（1321-1370）、`start_window_system`（1290-1316）、`setctty`（669-689）、`collect_child`（1460-1497）。
 > **Rust**：`os/commands/sbin/init/src/multi_user.rs`。
 > **前置依赖**：06/07/08（表、节点、索引）。
 > **本篇不覆盖（移交）**：utmp 会话记录（见 13）、chroot 细节（见 12）。
@@ -76,4 +76,4 @@
 
 - `10-init-clean-ttys.md` — 重读。
 - `11-init-shutdown.md` — 关停。
-- C 源码：`minix3/sbin/init/init.c:669-689,1290-1370,1460-1564`。
+- C 源码：`minix3/sbin/init/init.c:clear_session_logs（L669，工具生成）,1290-1370,1460-1564`。

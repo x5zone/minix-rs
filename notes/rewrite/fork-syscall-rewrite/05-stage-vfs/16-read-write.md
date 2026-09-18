@@ -65,11 +65,11 @@
 
 ### 2.1 三向常量与入口守门（`const.h:77-79` + `read.c:30-43` + `write.c:15-24`）
 
-`READING 0/WRITING 1/PEEKING 2` 定义于 `minix3/minix/include/minix/const.h:77-79`。`do_read` 与 `do_write` 同型：`cum_io` 入参非零即 `EINVAL`（`read.c:38-39`、`write.c:20-21`，“该域保留内部用”，`32-37`），随后以方向位进 `do_read_write_peek`（`41-42`、`23-24`）。
+`READING 0/WRITING 1/PEEKING 2` 定义于 `minix3/minix/include/minix/const.h:READING`。`do_read` 与 `do_write` 同型：`cum_io` 入参非零即 `EINVAL`（`read.c:38-39`、`write.c:20-21`，“该域保留内部用”，`32-37`），随后以方向位进 `do_read_write_peek`（`41-42`、`23-24`）。
 
 ### 2.2 `bsf` 锁三函数（`read.c:49-87` + `glo.h:36`）
 
-`bsf_lock` 声明于 `minix3/minix/servers/vfs/glo.h:36`（“块特殊文件全局锁”），`main.c:448` 初始化。`lock_bsf`（`49-62`）：`trylock` 成功直返，失败则 `worker_suspend` 让出、`mutex_lock` 阻塞取、`worker_resume` 回来，阻塞取失败即 panic。`unlock_bsf`（`67-71`）：解失败即 panic。`check_bsf_lock`（`76-87`）：试锁返回 `-EBUSY` 即“锁着”panic，其他非零即“怪状态”panic，成功则立即释放试持。
+`bsf_lock` 声明于 `minix3/minix/servers/vfs/glo.h:super_user（L36，工具生成）`（“块特殊文件全局锁”），`main.c:448` 初始化。`lock_bsf`（`49-62`）：`trylock` 成功直返，失败则 `worker_suspend` 让出、`mutex_lock` 阻塞取、`worker_resume` 回来，阻塞取失败即 panic。`unlock_bsf`（`67-71`）：解失败即 panic。`check_bsf_lock`（`76-87`）：试锁返回 `-EBUSY` 即“锁着”panic，其他非零即“怪状态”panic，成功则立即释放试持。
 
 ### 2.3 `actual_read_write_peek` 校验机（`read.c:92-130`）
 
@@ -77,11 +77,11 @@
 
 ### 2.4 `read_write` 五路分派（`read.c:135-251`）
 
-入口取位置与清零累积（`145-148`），方向断言（`150`），超 `SSIZE_MAX` 即 `EINVAL`（`152`，`LONG_MAX`，见 `minix3/sys/sys/common_limits.h:55`）。FIFO（`154-161`）：偷看拒绝，`fd != -1` 断言，`VFS_READ/WRITE` 进 `rw_pipe`。CHR（`162-201`）：偷看拒绝，`NO_DEV` panic，`CDEV_READ/WRITE` 进 `cdev_io`；同步返回（“本不该发生”）记数推进，`SUSPEND` 乐观推进整单（`200`，FIXME 假设链见 §1.3）。SOCK（`202-212`）：偷看拒绝，`NO_DEV` panic，进 `sdev_readwrite`。BLK（`213-230`）：`NO_DEV` panic，加 `bsf`，偷看走 `req_bpeek`，余走 `req_breadwrite`（成功则取回新位置与增量），解锁。REG（`231-251`）：写前 `O_APPEND` 重定（`234`），偷看走 `req_peek`，余走 `req_readwrite`（非负即取新位置与增量）。
+入口取位置与清零累积（`145-148`），方向断言（`150`），超 `SSIZE_MAX` 即 `EINVAL`（`152`，`LONG_MAX`，见 `minix3/sys/sys/common_limits.h:SSIZE_MAX`）。FIFO（`154-161`）：偷看拒绝，`fd != -1` 断言，`VFS_READ/WRITE` 进 `rw_pipe`。CHR（`162-201`）：偷看拒绝，`NO_DEV` panic，`CDEV_READ/WRITE` 进 `cdev_io`；同步返回（“本不该发生”）记数推进，`SUSPEND` 乐观推进整单（`200`，FIXME 假设链见 §1.3）。SOCK（`202-212`）：偷看拒绝，`NO_DEV` panic，进 `sdev_readwrite`。BLK（`213-230`）：`NO_DEV` panic，加 `bsf`，偷看走 `req_bpeek`，余走 `req_breadwrite`（成功则取回新位置与增量），解锁。REG（`231-251`）：写前 `O_APPEND` 重定（`234`），偷看走 `req_peek`，余走 `req_readwrite`（非负即取新位置与增量）。
 
 ### 2.5 收尾三件套（`read.c:253-276`）
 
-写且（普通或目录）且超长则生长尺寸（`254-260`），位置回写 `filp`（`262`），`EPIPE` 写且无 `O_NOSIGPIPE` 则 `sys_kill(SIGPIPE)`（`264-271`，`O_NOSIGPIPE` 见 `minix3/sys/sys/fcntl.h:124`），`OK` 回累积数否则透传错误（`273-276`）。
+写且（普通或目录）且超长则生长尺寸（`254-260`），位置回写 `filp`（`262`），`EPIPE` 写且无 `O_NOSIGPIPE` 则 `sys_kill(SIGPIPE)`（`264-271`，`O_NOSIGPIPE` 见 `minix3/sys/sys/fcntl.h:O_NOSIGPIPE`），`OK` 回累积数否则透传错误（`273-276`）。
 
 ### 2.6 `do_getdents` 目录机（`read.c:282-317`）
 
@@ -89,7 +89,7 @@
 
 ### 2.7 `rw_pipe` 管道机（`read.c:323-393`）
 
-双断言开场（`333-334`：vnode 锁我持 + filp 锁我持；`340`：方向非偷看），`oflags` 与位置清零（`336-338`）。`pipe_check` 定量（`342`）：`SUSPEND` 即 `pipe_suspend` 登记后返回（`344-345`），错误（含 partial 残量，NetBSD 对齐注释 `347-350`）直接返回。读截缓冲（`358-360`），未映射 panic（`362-363`），经映射端点 `req_readwrite`（`365-366`，位置恒 0），非 `OK` 返回（`368-371`，断言非 `SUSPEND`）。推进缓冲与剩余（`373-380`），partial 非阻塞返回计数、阻塞续挂（`382-390`，`PIPE_BUF` 原子阈见 `minix3/sys/sys/syslimits.h:66`，`__minix` 下 32768），返回累积（`392`）。
+双断言开场（`333-334`：vnode 锁我持 + filp 锁我持；`340`：方向非偷看），`oflags` 与位置清零（`336-338`）。`pipe_check` 定量（`342`）：`SUSPEND` 即 `pipe_suspend` 登记后返回（`344-345`），错误（含 partial 残量，NetBSD 对齐注释 `347-350`）直接返回。读截缓冲（`358-360`），未映射 panic（`362-363`），经映射端点 `req_readwrite`（`365-366`，位置恒 0），非 `OK` 返回（`368-371`，断言非 `SUSPEND`）。推进缓冲与剩余（`373-380`），partial 非阻塞返回计数、阻塞续挂（`382-390`，`PIPE_BUF` 原子阈见 `minix3/sys/sys/syslimits.h:PIPE_BUF`，`__minix` 下 32768），返回累积（`392`）。
 
 ---
 
@@ -100,51 +100,51 @@ Rust 改写不是照抄 `read.c` 的直线代码，而是吸收 Linux/Redox 的�
 ### D1 方向类型化
 
 - **C**：`int rw_flag` 裸整数 + `assert` 三值（`read.c:150`）。
-- **Rust**：`RwDir::{Read, Write, Peek}`（`TryFrom<i32>` 拒绝三值之外）+ `wants_write/lock_kind` 派生（`os/servers/vfs/src/read_write.rs:44`）。
+- **Rust**：`RwDir::{Read, Write, Peek}`（`TryFrom<i32>` 拒绝三值之外）+ `wants_write/lock_kind` 派生（`os/servers/vfs/src/read_write.rs:enum RwDir`）。
 - **为什么**：断言是运行到才知道错；枚举使第四值不可构造。替代方案（保留整数 + 注释）被否决：方向在七处分支被匹配，整数的每次匹配都要重写拒绝臂，枚举由编译器检查穷尽。
 
 ### D2 `bsf` 协议化
 
 - **C**：`mutex_t` 全局锁 + 快慢道内嵌调用点（`read.c:49-62`）。
-- **Rust**：`trait BsfLock` + `ImmediateBsf`（常快道）vs `ContendedBsf`（首试失败走慢道）双实现 + `BsfGuard` 的 Drop 配对（`os/servers/vfs/src/read_write.rs:104,203`）。
+- **Rust**：`trait BsfLock` + `ImmediateBsf`（常快道）vs `ContendedBsf`（首试失败走慢道）双实现 + `BsfGuard` 的 Drop 配对（`os/servers/vfs/src/read_write.rs:trait BsfLock,203`）。
 - **为什么**：单线程下 mutex 退化为持有位 + 慢道挂起；trait 使“快慢分化”与“配对义务”可测。替代方案（`Cell<bool>` 直写调用点）被否决：配对义务散落五分支，遗漏即死锁——`BsfGuard` 使遗漏不可表达。
 
 ### D3 头校验收敛
 
 - **C**：锁分化 + 模式位 + 零短路散在 `actual_read_write_peek` 三十行中（`read.c:101-116`）。
-- **Rust**：`validate_head(mode, dir, nbytes) -> HeadVerdict::{Proceed(LockKind), Zero}`（`os/servers/vfs/src/read_write.rs:258`）。
+- **Rust**：`validate_head(mode, dir, nbytes) -> HeadVerdict::{Proceed(LockKind), Zero}`（`os/servers/vfs/src/read_write.rs:fn validate_head（L258，工具生成）`）。
 - **为什么**：三检查是同一扇门的三闩；收敛后“读端无读位但零字节”仍 `EBADF`（校验先于短路，C `109` 先于 `113` 同序）一测即知。
 
 ### D4 分派纯判定与 `NO_DEV` 加固
 
 - **C**：五分支内嵌驱动调用 + `NO_DEV` 三 panic（`read.c:168-169,208-209,214-215`）。
-- **Rust**：`select_route(ft, dir) -> IoRoute` 纯判定 + `check_dev(dev) -> Result`（`os/servers/vfs/src/read_write.rs:307,341`）；`NO_DEV → NoDev→ENXIO`。
+- **Rust**：`select_route(ft, dir) -> IoRoute` 纯判定 + `check_dev(dev) -> Result`（`os/servers/vfs/src/read_write.rs:fn select_route（L307，工具生成）,341`）；`NO_DEV → NoDev→ENXIO`。
 - **为什么**：判定与执行分离（执行归 12/17/20~22）。panic→错误是 ARCH 加固：C 视 `NO_DEV` 为不可能（open 已守门），panic 即整服崩溃；`ENXIO` 在可达路径等价、不可达路径更优雅。替代方案（`panic!` 直译）被否决：见 15 D7 同例。
 
 ### D5 推进显式
 
 - **C**：append 重定、尺寸生长、位置回写散在三处（`read.c:234,254-262`）。
-- **Rust**：`apply_append/grow_size` 双纯函数 + 调用点一次回写（`os/servers/vfs/src/read_write.rs:350,360`）。
+- **Rust**：`apply_append/grow_size` 双纯函数 + 调用点一次回写（`os/servers/vfs/src/read_write.rs:fn apply_append（L350，工具生成）,360`）。
 - **为什么**：三处同属“位置推进”一知识；收敛后“读不生长/目录可生长/append 读不重定”三边界各一测。
 
 ### D6 收尾表
 
 - **C**：SIGPIPE 三元条件 + 返回二选散在收尾（`read.c:264-276`）。
-- **Rust**：`should_signal_pipe(err, writing, nosigpipe)` + `finish(r, cum_io)`（`os/servers/vfs/src/read_write.rs:372,377`）。
+- **Rust**：`should_signal_pipe(err, writing, nosigpipe)` + `finish(r, cum_io)`（`os/servers/vfs/src/read_write.rs:fn should_signal_pipe（L372，工具生成）,377`）。
 - **为什么**：击发矩阵（错误×方向×标志）纯函数化后全覆盖四样本；`sys_kill` 执行留调用点（内核侧管辖）。
 
 ### D7 管道数学与执行分离
 
 - **C**：定量数学与 `req_readwrite/pipe_suspend` 执行交织（`read.c:342-392`）。
-- **Rust**：`pipe_chunk/pipe_apply/after_partial` 三纯函数（`os/servers/vfs/src/read_write.rs:386,395,414`）；`pipe_check/pipe_suspend` 本体归 17。
+- **Rust**：`pipe_chunk/pipe_apply/after_partial` 三纯函数（`os/servers/vfs/src/read_write.rs:fn pipe_chunk（L386，工具生成）,395,414`）；`pipe_check/pipe_suspend` 本体归 17。
 - **为什么**：数学（纯知识）与执行（17 管辖）分离；`position = 0 未用`以“不取位置参数”显式——签名即文档。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | mutex→持有位 + 慢道挂起移交 08；`Suspend` 只作 verdict | `read_write.rs:104,203` + 本文档 D2 + 16 正文 §1.4 |
-| A-8 64 位类型映射 | `off_t→u64` 位置、`SSIZE_MAX=LONG_MAX` 上界 | `read_write.rs:36,279` + 本文档 D5 + 16 正文 §2.4 |
+| A-1 单线程事件循环（mthread→状态机） | mutex→持有位 + 慢道挂起移交 08；`Suspend` 只作 verdict | `os/servers/vfs/src/read_write.rs:trait BsfLock,203` + 本文档 D2 + 16 正文 §1.4 |
+| A-8 64 位类型映射 | `off_t→u64` 位置、`SSIZE_MAX=LONG_MAX` 上界 | `os/servers/vfs/src/read_write.rs:const SSIZE_MAX,279` + 本文档 D5 + 16 正文 §2.4 |
 
 ---
 
@@ -167,19 +167,19 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `READING/WRITING/PEEKING` | `const.h:77-79` | `read_write.rs:24/26/28 + 44 RwDir` | 三值枚举，余值不可构造 |
-| `bsf_lock` | `glo.h:36` | `read_write.rs:104 BsfLock + 203 BsfGuard` | 快慢道 + Drop 配对 |
-| `check_bsf_lock` | `read.c:76` | `read_write.rs:232 check_bsf_free` | 空闲断言类型化 |
-| 头校验三闩 | `read.c:101-116` | `read_write.rs:258 validate_head` | 锁分化 + EBADF + 零短路 |
-| `cum_io` 守门 | `read.c:38,292` | `read_write.rs:271 check_cum_io_zero` | 非零→EINVAL |
-| `SSIZE_MAX` 守门 | `read.c:152` | `read_write.rs:279 check_size` | 超界→EINVAL |
-| 五路分派 | `read.c:154-251` | `read_write.rs:288,307 select_route` | 纯 verdict + PEEK 三拒绝 |
-| `NO_DEV` | `read.c:168,208,214` | `read_write.rs:341 check_dev` | 加固为 ENXIO |
-| append/生长 | `read.c:234,254-260` | `read_write.rs:350,360` | 双纯函数 |
-| SIGPIPE/返回 | `read.c:264-276` | `read_write.rs:372,377` | 矩阵 + 二选 |
-| 管道数学 | `read.c:342-390` | `read_write.rs:386,395,414` | 定量 + 加减 + 续挂判定 |
-| getdents 门 | `read.c:300-312` | `read_write.rs:426,438` | 双 EBADF + 推进 |
-| 错误族 | `read.c` 全文件 | `read_write.rs:450,467 IoError::to_errno` | 6 变体→errno，无自创 |
+| `READING/WRITING/PEEKING` | `const.h:77-79` | `os/servers/vfs/src/read_write.rs:const READING/26/28 + 44 RwDir` | 三值枚举，余值不可构造 |
+| `bsf_lock` | `glo.h:36` | `os/servers/vfs/src/read_write.rs:trait BsfLock BsfLock + 203 BsfGuard` | 快慢道 + Drop 配对 |
+| `check_bsf_lock` | `read.c:76` | `os/servers/vfs/src/read_write.rs:fn check_bsf_free（L232，工具生成） check_bsf_free` | 空闲断言类型化 |
+| 头校验三闩 | `read.c:101-116` | `os/servers/vfs/src/read_write.rs:fn validate_head（L258，工具生成） validate_head` | 锁分化 + EBADF + 零短路 |
+| `cum_io` 守门 | `read.c:38,292` | `os/servers/vfs/src/read_write.rs:fn check_cum_io_zero（L271，工具生成） check_cum_io_zero` | 非零→EINVAL |
+| `SSIZE_MAX` 守门 | `read.c:152` | `os/servers/vfs/src/read_write.rs:fn check_size（L279，工具生成） check_size` | 超界→EINVAL |
+| 五路分派 | `read.c:154-251` | `os/servers/vfs/src/read_write.rs:enum IoRoute（L288，工具生成）,307 select_route` | 纯 verdict + PEEK 三拒绝 |
+| `NO_DEV` | `read.c:168,208,214` | `os/servers/vfs/src/read_write.rs:fn check_dev（L341，工具生成） check_dev` | 加固为 ENXIO |
+| append/生长 | `read.c:234,254-260` | `os/servers/vfs/src/read_write.rs:fn apply_append（L350，工具生成）,360` | 双纯函数 |
+| SIGPIPE/返回 | `read.c:264-276` | `os/servers/vfs/src/read_write.rs:fn should_signal_pipe（L372，工具生成）,377` | 矩阵 + 二选 |
+| 管道数学 | `read.c:342-390` | `os/servers/vfs/src/read_write.rs:fn pipe_chunk（L386，工具生成）,395,414` | 定量 + 加减 + 续挂判定 |
+| getdents 门 | `read.c:300-312` | `os/servers/vfs/src/read_write.rs:fn validate_getdents（L426，工具生成）,438` | 双 EBADF + 推进 |
+| 错误族 | `read.c` 全文件 | `os/servers/vfs/src/read_write.rs:enum IoError（L450，工具生成）,467 IoError::to_errno` | 6 变体→errno，无自创 |
 
 ### 4.3 不变量
 
@@ -200,18 +200,18 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_direction_decode_fourth_rejected` | `const.h:77-79` + `read.c:103,150` | 三值解码 + 第四值拒绝 + 锁分化 | `read_write.rs:485` |
-| `test_entry_zero_guard` | `read.c:38,152,292` + `write.c:20` | 零守门 + 尺寸上界 | `read_write.rs:501` |
-| `test_head_gate_matrix` | `read.c:101-116` | 锁分化 + EBADF + 零短路 + 校验序 | `read_write.rs:513` |
-| `test_route_five_way_and_peek_rejections` | `read.c:154-251` | 五路 verdict + PEEK 三拒绝两放行 | `read_write.rs:535` |
-| `test_bsf_fast_and_slow_paths` | `read.c:49-62` + Guard | 快慢道 + Drop 配对 + trait 多态 | `read_write.rs:567` |
-| `test_bsf_check_free` | `read.c:76-87` | 空闲断言 + 持有拒绝 | `read_write.rs:598` |
-| `test_position_advance_trio` | `read.c:234,254-262,273-276` | 重定 + 生长 + 返回二选 | `read_write.rs:610` |
-| `test_sigpipe_matrix` | `read.c:264-271` | 击发矩阵四样本 | `read_write.rs:626` |
-| `test_no_dev_hardening` | `read.c:168,208,214` | 通过 + ENXIO 加固 | `read_write.rs:636` |
-| `test_pipe_math` | `read.c:342-390` | 定量截断 + 加减 + 续挂判定 | `read_write.rs:644` |
-| `test_getdents_gate` | `read.c:300-312` | 双 EBADF + 推进条件 | `read_write.rs:662` |
-| `test_errno_map_covers_read_c` | `read.c` 全文件 | 6 变体→errno 全映射 | `read_write.rs:675` |
+| `test_direction_decode_fourth_rejected` | `const.h:77-79` + `read.c:103,150` | 三值解码 + 第四值拒绝 + 锁分化 | `os/servers/vfs/src/read_write.rs:fn test_direction_decode_fourth_rejected` |
+| `test_entry_zero_guard` | `read.c:38,152,292` + `write.c:20` | 零守门 + 尺寸上界 | `os/servers/vfs/src/read_write.rs:fn test_entry_zero_guard` |
+| `test_head_gate_matrix` | `read.c:101-116` | 锁分化 + EBADF + 零短路 + 校验序 | `os/servers/vfs/src/read_write.rs:fn test_head_gate_matrix` |
+| `test_route_five_way_and_peek_rejections` | `read.c:154-251` | 五路 verdict + PEEK 三拒绝两放行 | `os/servers/vfs/src/read_write.rs:fn test_head_gate_matrix（L535，工具生成）` |
+| `test_bsf_fast_and_slow_paths` | `read.c:49-62` + Guard | 快慢道 + Drop 配对 + trait 多态 | `os/servers/vfs/src/read_write.rs:fn test_route_five_way_and_peek_rejections（L567，工具生成）` |
+| `test_bsf_check_free` | `read.c:76-87` | 空闲断言 + 持有拒绝 | `os/servers/vfs/src/read_write.rs:fn test_bsf_fast_and_slow_paths（L598，工具生成）` |
+| `test_position_advance_trio` | `read.c:234,254-262,273-276` | 重定 + 生长 + 返回二选 | `os/servers/vfs/src/read_write.rs:fn via（L610，工具生成）` |
+| `test_sigpipe_matrix` | `read.c:264-271` | 击发矩阵四样本 | `os/servers/vfs/src/read_write.rs:fn test_bsf_check_free（L626，工具生成）` |
+| `test_no_dev_hardening` | `read.c:168,208,214` | 通过 + ENXIO 加固 | `os/servers/vfs/src/read_write.rs:fn test_position_advance_trio（L636，工具生成）` |
+| `test_pipe_math` | `read.c:342-390` | 定量截断 + 加减 + 续挂判定 | `os/servers/vfs/src/read_write.rs:fn test_position_advance_trio（L644，工具生成）` |
+| `test_getdents_gate` | `read.c:300-312` | 双 EBADF + 推进条件 | `os/servers/vfs/src/read_write.rs:fn test_no_dev_hardening（L662，工具生成）` |
+| `test_errno_map_covers_read_c` | `read.c` 全文件 | 6 变体→errno 全映射 | `os/servers/vfs/src/read_write.rs:fn test_pipe_math（L675，工具生成）` |
 
 测试策略：方向以三值 + 越界拒绝覆盖；头校验以“许可缺失/零短路/校验序”矩阵覆盖；分派以五路 + 偷看五样本（3 拒绝 2 放行）覆盖；bsf 以快慢道 + 配对 + 断言覆盖；推进以三边界覆盖；收尾以击发矩阵覆盖；管道以定量/加减/续挂覆盖；错误以 6 变体全映射覆盖。
 
@@ -243,7 +243,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/read.c:1-393`（`do_read/lock_bsf/unlock_bsf/check_bsf_lock/actual_read_write_peek/do_read_write_peek/read_write/do_getdents/rw_pipe`）、`minix3/minix/servers/vfs/write.c:1-25`（`do_write`）、`minix3/minix/servers/vfs/glo.h:36`（`bsf_lock`）、`minix3/minix/include/minix/const.h:77-79`（`READING/WRITING/PEEKING`）、`minix3/sys/sys/common_limits.h:55`（`SSIZE_MAX`）、`minix3/sys/sys/fcntl.h:124`（`O_NOSIGPIPE`）、`minix3/sys/sys/syslimits.h:66`（`PIPE_BUF`）
+- C 源：`minix3/minix/servers/vfs/read.c:1-393`（`do_read/lock_bsf/unlock_bsf/check_bsf_lock/actual_read_write_peek/do_read_write_peek/read_write/do_getdents/rw_pipe`）、`minix3/minix/servers/vfs/write.c:1-25`（`do_write`）、`minix3/minix/servers/vfs/glo.h:super_user（L36，工具生成）`（`bsf_lock`）、`minix3/minix/include/minix/const.h:READING`（`READING/WRITING/PEEKING`）、`minix3/sys/sys/common_limits.h:SSIZE_MAX`（`SSIZE_MAX`）、`minix3/sys/sys/fcntl.h:O_NOSIGPIPE`（`O_NOSIGPIPE`）、`minix3/sys/sys/syslimits.h:PIPE_BUF`（`PIPE_BUF`）
 - 阶段文档：`15-open-close.md`（fd 落定）、`04-filp-table.md`（`filp_pos` 归属）、`14-filedes.md`（取锁语义）、`12-request-wrappers.md`（FS 协议执行）、`17-pipe.md`（管道执行）、`09-main-loop.md`（`SUSPEND` 回复路由）
-- Rust 实现：`os/servers/vfs/src/read_write.rs:1`（本篇判定层）、`os/servers/vfs/src/open.rs:1`（`FileType` 与许可位复用）、`os/servers/vfs/src/request.rs:1`（`FsClient` 执行层）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/read_write.rs:1`（本篇判定层）、`os/servers/vfs/src/open.rs:1`（`FileType` 与许可位复用）、`os/servers/vfs/src/request.rs:1`（`FsClient` 执行层）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（用户缓冲拷贝语义）

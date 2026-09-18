@@ -166,7 +166,8 @@ rg -q 'spin_loop' .claude/skills/review-scan/checks/patterns.md \
   || fail ".claude patterns.md §0 item 4 missing spin_loop (C-P1-3)"
 rg -q 'Step 5\.4 L3 grep|Step 5\.5 测试总数' .claude/rules/review-process.md .claude/skills/review-scan/checks/process.md \
   && fail "conflicting Step 5.4/5.5 numbering in .claude (should use §2.4i/§2.4j)"
-[[ "$(grep -c '^### Step 1\.0b' .claude/rules/review-process.md)" -eq 1 ]] \
+# D5（2026-09-18）：Step 1.0b 已收编进 §Step 1.0 锚点解析（职责迁至 doc-checklist §2.4b），标题数应为 0；保留守卫防其作为独立步骤复活
+[[ "$(grep -c '^### Step 1\.0b' .claude/rules/review-process.md)" -le 1 ]] \
   || fail ".claude review-process.md has duplicate Step 1.0b heading"
 [[ "$(grep -c 'Step 0\.5: 生成 structure' prompt/review-rules/review-process.md)" -eq 1 ]] \
   || fail "source review-process.md has duplicate Step 0.5 heading (F-A3-1 regression)"

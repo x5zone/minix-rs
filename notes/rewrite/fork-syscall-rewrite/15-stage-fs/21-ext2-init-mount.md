@@ -80,13 +80,13 @@
 
 读超级块（`super.c:69-150`）：映射匿名内存，设备复位保护，位置按选项（零即千零二十四），读一千零二十四字节，拷贝，魔数校验，块大小推导三验，每扇区数字段，块位数，最大长度，混合每块数，零值拒绝，表块数，每块描述符数，组数，描述符块数。每步失败返回无效参数，打印定位。
 
-### 2.5 块分配 `balloc.c`（`balloc.c:29-362`抽样）
+### 2.5 块分配 `balloc.c`（`minix3/minix/fs/ext2/balloc.c:discard_preallocated_blocks`抽样）
 
-丢窗口（`balloc.c:29-65`）：有目标只丢该文件，无目标全表丢并禁窗口。分配（`balloc.c:71-141`）：只读断言，保留线两次检查（先丢窗再拒绝），见底拒绝，目标定夺（给号用号加窗口检查，不给用组首），窗口残留警告，调位分配，记搜索。位分配（`balloc.c:150-272`）：目标合法化，搜索位回落，组内字号，逐组试（空组跳过，窗口条件 park 一字节，单比特分配），计数维护，搜索位更新。释放（`balloc.c:278-339`）：只读断言，范围断言，算组算位，系统块释放断言，清单位，计数维护，搜索位回拨，通知缓存作废。块号校验（`balloc.c:342-362`）：系统块与超界断言。
+丢窗口（`minix3/minix/fs/ext2/balloc.c:discard_preallocated_blocks`）：有目标只丢该文件，无目标全表丢并禁窗口。分配（`minix3/minix/fs/ext2/balloc.c:alloc_block`）：只读断言，保留线两次检查（先丢窗再拒绝），见底拒绝，目标定夺（给号用号加窗口检查，不给用组首），窗口残留警告，调位分配，记搜索。位分配（`minix3/minix/fs/ext2/balloc.c:alloc_block_bit`）：目标合法化，搜索位回落，组内字号，逐组试（空组跳过，窗口条件 park 一字节，单比特分配），计数维护，搜索位更新。释放（`minix3/minix/fs/ext2/balloc.c:free_block`）：只读断言，范围断言，算组算位，系统块释放断言，清单位，计数维护，搜索位回拨，通知缓存作废。块号校验（`minix3/minix/fs/ext2/balloc.c:check_block_number`）：系统块与超界断言。
 
-### 2.6 索引节点分配 `ialloc.c`（`ialloc.c:32-476`抽样）
+### 2.6 索引节点分配 `ialloc.c`（`minix3/minix/fs/ext2/ialloc.c:inode`抽样）
 
-分配（`ialloc.c:32-85`）：只读报只读，调位分配，失败报无空间（打印节流），无盘取槽，失败退位，填模式链接属主设备超级块，清场。释放（`ialloc.c:91-109`）：越界静默，清位，清类型。位分配（`ialloc.c:123-198`）：只读断言，策略四选，取描述符，置位，号换算，保留号检查，计数维护，目录计数。退位（`ialloc.c:204-250`）：只读断言，范围断言，算组算位，清位，计数维护，目录计数，游标回拨。老目录（`ialloc.c:254-276`）：均值门，最多块胜出。哈希（`ialloc.c:284-335`）：父组健康住家，二次方探测，线性扫空位。首 fit（`ialloc.c:341-358`）：游标起首个有空位组。奥洛夫（`ialloc.c:373-445`）：顶层散目录最少组三级回落，非顶层父组起双半首中。清场（`ialloc.c:454-476`）：大小时间块数标志生成访问表碎片清零，十五指针全空，标脏。
+分配（`minix3/minix/fs/ext2/ialloc.c:inode`）：只读报只读，调位分配，失败报无空间（打印节流），无盘取槽，失败退位，填模式链接属主设备超级块，清场。释放（`minix3/minix/fs/ext2/ialloc.c:free_inode`）：越界静默，清位，清类型。位分配（`minix3/minix/fs/ext2/ialloc.c:alloc_inode_bit`）：只读断言，策略四选，取描述符，置位，号换算，保留号检查，计数维护，目录计数。退位（`minix3/minix/fs/ext2/ialloc.c:free_inode_bit`）：只读断言，范围断言，算组算位，清位，计数维护，目录计数，游标回拨。老目录（`minix3/minix/fs/ext2/ialloc.c:find_group_dir`）：均值门，最多块胜出。哈希（`minix3/minix/fs/ext2/ialloc.c:find_group_hashalloc`）：父组健康住家，二次方探测，线性扫空位。首 fit（`minix3/minix/fs/ext2/ialloc.c:find_group_any`）：游标起首个有空位组。奥洛夫（`minix3/minix/fs/ext2/ialloc.c:find_group_orlov`）：顶层散目录最少组三级回落，非顶层父组起双半首中。清场（`minix3/minix/fs/ext2/ialloc.c:wipe_inode（L454，工具生成）`）：大小时间块数标志生成访问表碎片清零，十五指针全空，标脏。
 
 ### 2.7 维护 `misc.c`（`misc.c` 全三十五行）
 

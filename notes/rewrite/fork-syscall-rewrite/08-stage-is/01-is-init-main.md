@@ -2,10 +2,10 @@
 
 > **源码**：`minix3/minix/servers/is/main.c`（148 行，本文全覆盖）+
 > `minix3/minix/servers/is/inc.h`（包含面）+ `proto.h`（函数归位）+
-> `minix3/minix/lib/libsys/sef.c:208-214`（ping 拦截）+
-> `minix3/minix/lib/libsys/sef_ping.c:21`（`do_sef_ping_request`）+
-> `minix3/minix/include/minix/sef.h:121-122` + `com.h:64,90-93` +
-> `minix3/sys/sys/signal.h:67`（SIGTERM=15）
+> `minix3/minix/lib/libsys/sef.c:sef_receive_status（L208，工具生成）`（ping 拦截）+
+> `minix3/minix/lib/libsys/sef_ping.c:do_sef_ping_request`（`do_sef_ping_request`）+
+> `minix3/minix/include/minix/sef.h:INTERCEPT_SEF_PING_REQUESTS` + `com.h:64,90-93` +
+> `minix3/sys/sys/signal.h:SIGTERM`（SIGTERM=15）
 > **Rust**：`os/servers/is/src/{lib,main,sef,state,dispatch}.rs`
 > **draft 素材**：`draft/tmp_main.c.md`（逐行讲解可用作 §2 底料；
 > 其 §Rust 实现对比块整体废弃，见 §3.0）
@@ -336,7 +336,7 @@ static void sef_cb_signal_handler(int signo)
 （`main.c:104-116`）
 
 非 SIGTERM 信号直接返回（忽略）。SIGTERM（值 15，
-`minix3/sys/sys/signal.h:67`）→ 取消 fkey 映射（告诉 TTY 别再通知一个将死
+`minix3/sys/sys/signal.h:SIGTERM`）→ 取消 fkey 映射（告诉 TTY 别再通知一个将死
 之人，否则 TTY 会往不存在的端点发通知）→ `exit(0)`。注意清理顺序：
 **先 unmap 后 exit**，反过来会泄漏 TTY 侧的观察者登记。这是"灾难预演"级
 的不变量，Rust 侧用单测锁死（§5）。
@@ -369,7 +369,7 @@ get_work(void)
 ### 2.10 SEF ping 透明拦截：主循环永远看不到 ping
 
 RS 用 `-period 5HZ` 参数启动 IS 后，会周期性发 ping 检查 IS 是否还活着。
-ping 是 `NOTIFY_MESSAGE` 类型（`sef.h:122`：`SEF_PING_REQUEST_TYPE` 即
+ping 是 `NOTIFY_MESSAGE` 类型（`minix3/minix/include/minix/sef.h:SEF_PING_REQUEST_TYPE`：`SEF_PING_REQUEST_TYPE` 即
 `NOTIFY_MESSAGE`），按 §2.3 的分类器它会被判为 notify——但**主循环永远看
 不到它**，因为 `sef_receive` 内部先拦截了：
 
@@ -386,9 +386,9 @@ ping 是 `NOTIFY_MESSAGE` 类型（`sef.h:122`：`SEF_PING_REQUEST_TYPE` 即
 #endif
 ```
 
-（`minix3/minix/lib/libsys/sef.c:208-214`，开关 `sef.h:121` 恒为 1）
+（`minix3/minix/lib/libsys/sef.c:sef_receive_status（L208，工具生成）`，开关 `minix3/minix/include/minix/sef.h:INTERCEPT_SEF_PING_REQUESTS` 恒为 1）
 
-`do_sef_ping_request`（`sef_ping.c:21`）调默认回调应答后返回 OK，
+`do_sef_ping_request`（`minix3/minix/lib/libsys/sef_ping.c:do_sef_ping_request`）调默认回调应答后返回 OK，
 `continue` 让 `sef_receive` 继续等下一条消息。这意味着：ping 的应答发生在
 `get_work` 返回**之前**，分类器无感。这是"透明拦截"四个字的确切含义，
 也是 Rust 侧 transport trait 必须复现的不变量（§3 D2，单测覆盖）。
@@ -397,7 +397,7 @@ ping 是 `NOTIFY_MESSAGE` 类型（`sef.h:122`：`SEF_PING_REQUEST_TYPE` 即
 
 IS 不是常驻服务，而是**条件性 debug 服务**，三条证据链：
 
-1. 无 `boot_image` 登记：`minix3/minix/kernel/table.c:44-64` 的 17 项
+1. 无 `boot_image` 登记：`minix3/minix/kernel/table.c:boot_image` 的 17 项
   （asyncm…init）中无 `is`（`grep '"is"'` 零命中，实证）。
 2. 由 `rc.minix` 条件启动：仅当 `sysenv debug_fkeys` 非零时执行
    `up -n is -period 5HZ`（`minix3/etc/rc.minix:115-118`，`up` 行在 117；
@@ -445,7 +445,7 @@ struct + 可变借用是零成本且编译器检查的。这与 RS `RsServer` �
 
 C 的 `sef_setcb_*` 注册的是裸函数指针（§2.6）。裸 `fn` 指针不能捕获环境，
 回调体一旦需要 server 状态就只能回头碰全局量——这正是 C 用四个静态量的
-结构性原因。RS 已经趟过这条路：`os/servers/rs/src/sef.rs:60-91` 把回调集
+结构性原因。RS 已经趟过这条路：`os/servers/rs/src/sef.rs:struct SefInitInfo（L60，工具生成）` 把回调集
 建模为 `trait SefCallbacks`，由 `RsServer` 实现。本篇照抄该论证（先例引用，
 非重复发明）：
 
@@ -482,7 +482,7 @@ Minix-SEF 语义下的实例化。
 ### 3.3 D3：分类器是纯函数（dispatch.rs），02/03 留桩
 
 `main.c:48-63` 的两层分支提炼为无副作用的纯函数（RS `dispatch::classify`
-同款，`os/servers/rs/src/dispatch.rs:70-82`）：
+同款，`os/servers/rs/src/dispatch.rs:enum DispatchKind（L70，工具生成）`）：
 
 ```rust
 pub const NOTIFY_MESSAGE: i32 = 0x1000;  // com.h:90
@@ -521,9 +521,9 @@ C 用 `_ENDPOINT_P` 正是此因；② `is_notify` 保留旧形式（com.h:93）
 > **03 更新**：`handle_fkey_pressed` 亦已填实（EVENTS 拉取 + 表分派 + 恒
 > `EDONTREPLY`，见 `03-is-dump-dispatch.md` §4）；本段的"03 仍 ENOSYS"已过时。
 > **V1 审查轮更新（2026-09-15）**：`request_fkey_map` 改为 void 签名——C 的
-> `map_unmap_fkeys` 本身就是 void（dmp.c:44-68），ENOSYS 桩时代的 `Result`
+> `map_unmap_fkeys` 本身就是 void（minix3/minix/servers/is/dmp.c:NHOOKS（L44，工具生成）），ENOSYS 桩时代的 `Result`
 > 外壳在填实后已无 `Err` 可返，类型不再说谎；失败路径改为经
-> `SefTransport::warn_fkey_ctl` 告警（dmp.c:63-65 那条 printf 的通道化，
+> `SefTransport::warn_fkey_ctl` 告警（minix3/minix/servers/is/dmp.c:map_unmap_fkeys（L63，工具生成） 那条 printf 的通道化，
 > 02 §4.3"调用方告警"不变量自此有代码兑现），失败臂测试 T14 钉住。
 
 ### 3.4 D4：告警走 log 抽象（A-6 保守）
@@ -550,7 +550,7 @@ C 的 `printf("IS: warning, ...")`（§2.4）经 libc stdio 到 log 驱动。min
   故库返回动作枚举，二进制执行发散）。
 - **`main` 的不可达返回**：C `return(OK); /* shouldn't come here */`（§2.2）
   对应 `IsServer::run()` 发散签名（`-> !`），`main.rs` 照 RS
- （`os/servers/rs/src/main.rs:12-45`：test 下 allocator + 空转门）同款接线。
+ （`os/servers/rs/src/main.rs:fn main`：test 下 allocator + 空转门）同款接线。
 - **错误面**：transport `receive`/`send` 失败 → panic（C §2.9/§2.5 同语义，
   启动与回复路径不可恢复）；分类 suppressed → 不调 `send`（§2.5 回复门）。
   panic 只出现在 transport 失败路径——dump 侧失败告警不 panic 是 04 的契约，
@@ -659,7 +659,7 @@ transport 层持有，库内无 `IS_PROC_NR` 常量——全树零定义，§2.1
 | T11b | `step` 遇 Suppress（非 TTY notify） | send 零调用 + 告警零次（C default 分支静默，§2.3） |
 | T12 | transport receive 错误 | `#[should_panic]`（§2.9 不可恢复语义；send 侧 panic 防御性保留但经 step 不可达——两臂恒抑制，03 起单测锁定） |
 | T13 | `startup` | transport.startup 恰一次 + init_fresh OK（boot 锚点可达） |
-| T14 | MAP 失败（TTY 拒绝） | `warn_fkey_ctl` 恰一次 + `startup` 仍 `Ok(OK)` + 无注册在案（dmp.c:63-65 通道化，V1 轮） |
+| T14 | MAP 失败（TTY 拒绝） | `warn_fkey_ctl` 恰一次 + `startup` 仍 `Ok(OK)` + 无注册在案（minix3/minix/servers/is/dmp.c:map_unmap_fkeys（L63，工具生成） 通道化，V1 轮） |
 
 ### 5.3 测试统计（截至 2026-09-04）
 
@@ -693,7 +693,7 @@ MAP/UNMAP/EVENTS 三命令 + `TTY_FKEY_CONTROL` 消息格式 + TTY 侧
 - `03-is-dump-dispatch.md`（待写）：`do_fkey_pressed` + hooks 表 + 次主线路径图
 - `../01-stage-kernel/12-ipc-core.md`：notify/IPC 原语语义
 - `../01-stage-kernel/09-vm-boot-protocol.md`：服务启动协议参照
-- `../03-stage-rs/01-rs-boot-init.md` + `os/servers/rs/src/sef.rs:60-91`：
+- `../03-stage-rs/01-rs-boot-init.md` + `os/servers/rs/src/sef.rs:struct SefInitInfo（L60，工具生成）`：
   SEF trait 建模先例（D2 直接复用其论证）
 - `../03-stage-rs/06-rs-main-loop.md`：RS 主循环对照（RS 用状态字分类，
   IS 用消息类型分类——§2.3 FIXME 差异点）

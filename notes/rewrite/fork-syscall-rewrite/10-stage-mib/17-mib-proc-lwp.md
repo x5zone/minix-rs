@@ -1,7 +1,7 @@
 # 17 — 轻量线程快照：状态怎么定，睡在哪里怎么写
 
 > **分类**: 进程信息 / 按 NetBSD 格式填写
-> **源码**: `minix3/minix/servers/mib/proc.c:224-595`（判断状态的函数 `get_lwp_stat` 加三个填写函数函数加查询入口 `mib_kern_lwp`）
+> **源码**: `minix3/minix/servers/mib/proc.c:fill_wmesg（L224，工具生成）`（判断状态的函数 `get_lwp_stat` 加三个填写函数函数加查询入口 `mib_kern_lwp`）
 > **说明**: 进程信息五篇的第二篇，回答进程现在是什么状态、睡在哪里。表怎么拿归 16，本篇只管表拿回来之后，怎么把每一行写成 ps 命令能读的格式。
 
 ---
@@ -83,7 +83,7 @@
 | 文件服务阻塞原因 | `servers/vfs/const.h:19-25` | 0 是无，1 到 6 是管道、锁等 | 原因编号的值归文件服务管，见 §3 的第二个决策 |
 | 输出结构 | `sys/sys/sysctl.h:647-673` | 26 个字段 | 对外交换的结构：线程号、标志、状态、两个时间、优先级、处理器号、运行时间、文字、等待地址等 |
 | 文字栏宽度 | `sys/sys/sysctl.h:466/469` | 8 和 20 | 等待原因文字栏和名字栏的宽度 |
-| 查询号 | `sys/sys/sysctl.h:257` | 64 | 内核表 64 号位置挂着本篇的查询函数（`kern.c:462`） |
+| 查询号 | `sys/sys/sysctl.h:257` | 64 | 内核表 64 号位置挂着本篇的查询函数（`minix3/minix/servers/mib/kern.c:mib_kern_ipc_info（L462，工具生成）`） |
 
 输出结构的全字段（按声明顺序）：四个指针（服务填零）、线程号（拿端点号当线程号）、标志、两个时间、两个调度字段（服务填零）、两个优先级、状态、两个填充、等待原因文字、等待地址、处理器号、运行时间秒和微秒、两个处理器用量、进程号、名字。
 
@@ -214,7 +214,7 @@ os/servers/mib/src/proc/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/proc.c:224-595`、`minix3/sys/sys/sysctl.h:257/466/469/607-673`、`minix3/sys/sys/lwp.h:278-285`、`minix3/minix/servers/vfs/const.h:19-25`、`minix3/minix/kernel/proc.h:30-70/170/187`、`minix3/minix/servers/pm/mproc.h:28/64/66/80`、`minix3/minix/lib/libsys/cpuavg.c:250`、`minix3/minix/include/minix/com.h:66`
+- C 源：`minix3/minix/servers/mib/proc.c:fill_wmesg（L224，工具生成）`、`minix3/sys/sys/sysctl.h:KERN_LWP/466/469/607-673`、`minix3/sys/sys/lwp.h:LSIDL`、`minix3/minix/servers/vfs/const.h:FP_BLOCKED_ON_NONE`、`minix3/minix/kernel/proc.h:proc（L30，工具生成）/170/187`、`minix3/minix/servers/pm/mproc.h:sigaction（L28，工具生成）/64/66/80`、`minix3/minix/lib/libsys/cpuavg.c:cpuavg_getstats`、`minix3/minix/include/minix/com.h:MIB_PROC_NR`
 - 阶段文档：`16-mib-proc-tables.md`（拿表规矩和四个拿来用的函数）、`06-mib-copy-io.md`（拷贝出去）、`10-mib-dispatch.md`（查询终点）、`18-mib-proc2.md`（下一站）、`02-mib-message-contract.md`
 - Rust 实现：`os/servers/mib/src/proc/lwp.rs`、`os/servers/mib/src/proc/tables.rs`（拿来用）、`os/libs/minix-types/src/types/sysctl.rs`（状态和标志值表）
 - 相关约定：架构演进 A-4（plan §4，交换布局）、A-6（plan §4，表布局归三家）、A-12（plan §4，时钟和跨服务读取归要数据的代码）

@@ -150,10 +150,10 @@ Minix 3 自带 `mined` 而无 `vi`（`usr.bin` 下无 `vi` 目录，`which vi` �
 - `08-grep-sed.md`——共享正则语法（本篇搜索地址的理论来源）
 - `05-shell-family.md`——行编辑面（shell 侧的编辑，不在本篇）
 - `10-doc-man-tools.md`——文档排版与手册（下一步：印文字）
-- `minix3/bin/ed/main.c:285-314`——地址提取（`parse_range` 的逐行对照）
-- `minix3/bin/ed/main.c:465-481`——命令分派（`parse_command` 的逐行对照）
-- `minix3/bin/ed/main.c:1051-1242`——行操作（`TextStore` 的语义来源）
-- `minix3/bin/ed/ed.h:47-87`——错误码、上下限、全局标志、撤销操作
+- `minix3/bin/ed/main.c:extract_addr_range`——地址提取（`parse_range` 的逐行对照）
+- `minix3/bin/ed/main.c:exec_command`——命令分派（`parse_command` 的逐行对照）
+- `minix3/bin/ed/main.c:append_lines`——行操作（`TextStore` 的语义来源）
+- `minix3/bin/ed/ed.h:ERR`——错误码、上下限、全局标志、撤销操作
 
 ---
 

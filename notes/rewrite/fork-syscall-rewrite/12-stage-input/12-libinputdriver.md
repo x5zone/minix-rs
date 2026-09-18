@@ -17,7 +17,7 @@
 
 ### 1.2 阻塞发送的两个理由：不限流与测生死
 
-上报不用异步发送，用阻塞发送，注释写明两个理由（`inputdriver.c:65-71`，难得的长注释，值得全文读）。理由一：异步发送会排队，驱动发得比服务处理得快时，队列越积越长——旧事件堵在队列里，用户的按键延迟越来越大，还占内存；阻塞发送背压到源头（服务忙，驱动等），排队长度恒为零。理由二：阻塞发送失败只有一种可能——服务死了（对端活着，发送必成功）；失败时驱动把服务端点清掉，从此不再发送（等下次配置再连）。异步发送的失败语义是"稍后再说"，阻塞发送的失败语义是"对端没了"——后者恰好是驱动需要的生死信号。用什么发送原语，取决于"失败意味着什么"，这是传输选型的通用原则（背压与生死探测，两个词记住）。
+上报不用异步发送，用阻塞发送，注释写明两个理由（`minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_send_event（L65，工具生成）`，难得的长注释，值得全文读）。理由一：异步发送会排队，驱动发得比服务处理得快时，队列越积越长——旧事件堵在队列里，用户的按键延迟越来越大，还占内存；阻塞发送背压到源头（服务忙，驱动等），排队长度恒为零。理由二：阻塞发送失败只有一种可能——服务死了（对端活着，发送必成功）；失败时驱动把服务端点清掉，从此不再发送（等下次配置再连）。异步发送的失败语义是"稍后再说"，阻塞发送的失败语义是"对端没了"——后者恰好是驱动需要的生死信号。用什么发送原语，取决于"失败意味着什么"，这是传输选型的通用原则（背压与生死探测，两个词记住）。
 
 ### 1.3 陌生人过滤：配置认标签，调灯认端点
 
@@ -82,7 +82,7 @@ inputdriver_announce(unsigned int type)
 
 查自己名字（查不到就崩溃——连自己是谁都不知道的驱动不可能正确工作，和第 01 篇订阅失败崩溃同一逻辑），拼键（前缀加名字，键拼写与服务 side 过滤前缀同源，第 11 篇 2.4 节），发布类型掩码（覆盖写——重起的驱动覆盖旧条子，布告栏永远最新）。两个失败都崩溃：宣告是出生的第一件事，第一件事就办不成，活着也没意义——"早崩溃"哲学在驱动 side 的实例（对照服务 side 第 01 篇 2.4 节的订阅崩溃）。末尾注释"现在等服务联系我们"——宣告之后驱动什么都不做，等配置上门（配置是服务 side 发起的，第 11 篇）：出生顺序是"驱动先吆喝，服务后联系"，吆喝与联系之间隔着布告栏（1.1 节）。
 
-### 2.3 上报：两道门、阻塞发送、生死复位（inputdriver_send_event，inputdriver.c:42-74）
+### 2.3 上报：两道门、阻塞发送、生死复位（inputdriver_send_event，minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_announce（L42，工具生成））
 
 ```c
 void
@@ -111,7 +111,7 @@ inputdriver_send_event(int mouse, unsigned short page, unsigned short code,
 
 两道门（服务端点配好、本类槽位分到）都在组装之前——门在组装之前，组装是浪费（组装完再发现没槽位，组装的活白干；门是便宜的整数比较，组装是清零加五次赋值——便宜的先行，是全阶段统一的顺序纪律）。参数用"鼠标还是键盘"布尔选槽位（1.5 节：驱动不记号）。阻塞发送加失败复位（1.2 节：生死信号）。注意失败复位只清端点不清槽位号——槽位号是服务"上次"分配的，服务重起后会重新配置（配置来了全覆盖），留着旧号无害（发送门先查端点，端点没了发不出去，旧号够不着）；清了旧号反而有害（配置只来一半时，剩下一半的旧号还能对照排障）。"清什么留什么"的标准：清的是"继续用的依据"（端点），留的是"等待覆盖的数据"（槽位）。
 
-### 2.4 配置：验标签、存三项、满房提示（do_conf，inputdriver.c:82-111）
+### 2.4 配置：验标签、存三项、满房提示（do_conf，minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_send_event（L82，工具生成））
 
 ```c
         /* Make sure that the sender is actually the input server. */
@@ -131,7 +131,7 @@ inputdriver_send_event(int mouse, unsigned short page, unsigned short code,
 
 注释开门见山（"确认发送者真是输入服务"）。查"input"标签（查不到就忽略——布告栏病了，不是配置错了，不存半截状态，1.3 节），比端点（对不上就忽略——冒名，1.5 节温和失败的驱动 side 实例）。存三项无条件（端点加两槽位，含"未分配"——存"未分配"不是 bug，是"记住自己被禁用"，1.5 节）。两槽全"未分配"提示"没分到号，驱动禁用"（提示，不是报错：满房是 transient，第 11 篇 1.5 节）。注意"服务崩溃重起后配置会再来一次"（注释第 78-80 行）——配置是幂等的（存三项，存几遍结果一样），幂等是重起恢复的基础（重起的服务把配置重发一遍，驱动状态自动回到正轨，不需要"重连握手"这种额外协议）。
 
-### 2.5 调灯：认端点、调回调、可空（do_setleds，inputdriver.c:119-135）
+### 2.5 调灯：认端点、调回调、可空（do_setleds，minix3/minix/lib/libinputdriver/inputdriver.c:do_conf（L119，工具生成））
 
 ```c
 static void
@@ -150,7 +150,7 @@ do_setleds(struct inputdriver *idp, message *m_ptr)
 
 认端点（配置时存的，不查标签——1.3 节两种验法的第二种），取掩码，回调可空（没灯的驱动（鼠标）调灯回调是空指针，空就吸收——"可空钩子静默吸收"是回调表的统一语义，四个钩子人人如此：中断闹钟其他三处同样先判空再调，2.6 节）。文件头注释解释"为什么是掩码而不是逐个灯事件"（"图方便"，原文"for convenience reasons only"——作者诚实得可爱：没有深奥理由，就是方便。教学文档如实转述，不替作者编造深刻）。
 
-### 2.6 分发：通知三路、消息三向、永不回答（inputdriver_process，inputdriver.c:141-172）
+### 2.6 分发：通知三路、消息三向、永不回答（inputdriver_process，minix3/minix/lib/libinputdriver/inputdriver.c:do_setleds（L141，工具生成））
 
 ```c
 void
@@ -202,7 +202,7 @@ struct inputdriver {
 
 四个钩子，无出生钩（1.4 节）。原型五个（宣告、上报、分发、终止、主循环）——终止与主循环和服务 side 同形（1.6 节），分发是本章，宣告上报是 2.2-2.3 节。头文件 30 行，无多余一字：回调表加原型，库的全部契约。
 
-### 2.8 主循环与终止（inputdriver_task/terminate，inputdriver.c:177-206）
+### 2.8 主循环与终止（inputdriver_task/terminate，minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_process（L177，工具生成））
 
 与字符驱动主循环（第 02 篇 2.3 节）同形：运行标志、收任意信、信号加停标志则退、否则崩溃、分发。终止函数清标志加取消收信。同形不同命（1.6 节）。Rust 一侧主循环归传输层（收信发信是传输），分类（本章已定）与钩子（本章已定）先行——循环是胶水，胶水等传输（第 11 篇 3.4 节的纯胶水分离，同手法）。
 
@@ -212,13 +212,13 @@ struct inputdriver {
 |------|---------|-----------|-------------------------------------|
 | 三静态变量 | inputdriver.c:11-15 | 2.1 节 | `DriverRegistration`（三字段） |
 | `inputdriver_announce` | inputdriver.c:20-37 | 2.2 节 | `announce_key` + `announce_type`（查名发布归传输层） |
-| `inputdriver_send_event` | inputdriver.c:42-74 | 2.3 节 | `decide_report` + `note_server_lost`（组装发送归传输层） |
-| `do_conf` | inputdriver.c:82-111 | 2.4 节 | `verify_conf_sender` + `apply_conf`（查询归传输层） |
-| `do_setleds` | inputdriver.c:119-135 | 2.5 节 | `accept_setleds`（回调归驱动） |
-| `inputdriver_process` | inputdriver.c:141-172 | 2.6 节 | `classify_incoming` + `DriverIncoming` |
-| 回调表 | inputdriver.h:11-16 | 2.7 节 | `DriverHooks`（四钩子，无 trait） |
-| 原型 | inputdriver.h:19-25 | 2.7 节 | 各函数归属（传输层待定） |
-| task/terminate | inputdriver.c:177-206 | 2.8 节 | 循环归传输层（分类钩子先行） |
+| `inputdriver_send_event` | minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_announce（L42，工具生成） | 2.3 节 | `decide_report` + `note_server_lost`（组装发送归传输层） |
+| `do_conf` | minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_send_event（L82，工具生成） | 2.4 节 | `verify_conf_sender` + `apply_conf`（查询归传输层） |
+| `do_setleds` | minix3/minix/lib/libinputdriver/inputdriver.c:do_conf（L119，工具生成） | 2.5 节 | `accept_setleds`（回调归驱动） |
+| `inputdriver_process` | minix3/minix/lib/libinputdriver/inputdriver.c:do_setleds（L141，工具生成） | 2.6 节 | `classify_incoming` + `DriverIncoming` |
+| 回调表 | minix3/minix/include/minix/inputdriver.h:inputdriver（L11，工具生成） | 2.7 节 | `DriverHooks`（四钩子，无 trait） |
+| 原型 | minix3/minix/include/minix/inputdriver.h:inputdriver_process | 2.7 节 | 各函数归属（传输层待定） |
+| task/terminate | minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_process（L177，工具生成） | 2.8 节 | 循环归传输层（分类钩子先行） |
 
 ---
 
@@ -332,11 +332,11 @@ pub enum DriverIncoming {
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
-| `test_announce_spelling_matches_c` | 键拼写、掩码四组合 | inputdriver.c:23,32（类型掩码语义） |
+| `test_announce_spelling_matches_c` | 键拼写、掩码四组合 | minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_announce（L23，工具生成）,32（类型掩码语义） |
 | `test_registration_lifecycle_matches_c` | 初值、配置存储、禁用、丢端点留槽 | inputdriver.c:11-13,49-54,72-73,103-110 |
-| `test_conf_sender_check_matches_c` | 三结局、接受后存储双槽 | inputdriver.c:88-106 |
-| `test_setleds_source_check_matches_c` | 本人调用、陌生忽略、未配置忽略 | inputdriver.c:124-129 |
-| `test_classify_routes_like_inputdriver_process` | 通知三路、消息三向、空钩吸收 | inputdriver.c:145-171 |
+| `test_conf_sender_check_matches_c` | 三结局、接受后存储双槽 | minix3/minix/lib/libinputdriver/inputdriver.c:do_conf（L88，工具生成） |
+| `test_setleds_source_check_matches_c` | 本人调用、陌生忽略、未配置忽略 | minix3/minix/lib/libinputdriver/inputdriver.c:do_setleds（L124，工具生成） |
+| `test_classify_routes_like_inputdriver_process` | 通知三路、消息三向、空钩吸收 | minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_process（L145，工具生成） |
 | `test_number_families_stay_disjoint` | 号段不交 | com.h 号段布局 |
 
 ### 5.1 测试统计（截至 2026-09-05）

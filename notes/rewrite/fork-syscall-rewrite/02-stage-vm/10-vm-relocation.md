@@ -4,7 +4,7 @@
 > **源码**: `minix3/minix/servers/vm/pagetable.c`（`pt_init` 搬迁段 :1311-1345 / `pt_init_done` :328 / spare page 池 :59-110、:1116-1162 / `vm_allocpages` :333-394 / `vm_freepages` :235-259 / `is_staticaddr` :85）+ `minix3/minix/servers/vm/alloc.c`（`reservedqueue_*` :60-237 / `missing_spares` :74 / `alloc_cycle` :227-237）+ `minix3/minix/servers/vm/utility.c`（`swap_proc_slot` :188 / `transfer_mmap_regions` :228 / `map_proc_dyn_data` :283 / `swap_proc_dyn_data` :312）+ `minix3/minix/servers/vm/region.c`（`map_setparent` :1535）+ `minix3/minix/servers/vm/main.c`（主循环 `alloc_cycle` 钩子 :118-119）
 > **Rust 模块**: `os/servers/vm/src/vm_server.rs`（`VmServer::relocate` :182 / `mark_alloc_failure` :396）+ `os/servers/vm/src/global.rs`（`heap_arena_grow` :481）+ `os/servers/vm/src/phys_mem/mod.rs`（`PhysAlloc`/`as_bitmap` :195）+ `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（`metadata_pa_range` :110 / `available_regions` :464）+ `os/servers/vm/src/vmproc/table.rs`（`swap_slots`/`set_region_parent`，V11/T13）+ `os/servers/vm/src/rs.rs`（LU 支撑面已落地，V11/T12/T13）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理页分配器）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配器 + `missing_spares` 重解释）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（页表操作面）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md`（HeapArena）
-> **说明**: VM 自举终点语义模块：**Minix3 的初始化数据搬迁（spare page 池 + 页表结构，pagetable.c:1311-1345）+ Live Update 支撑面（swap_proc_slot / transfer_mmap_regions / map_proc_dyn_data / swap_proc_dyn_data / map_setparent）**。**不覆盖**：物理页分配器（05）、页分配器与保留页池（06）、页表结构/操作（07/08）、堆分配器（09）、RS Live Update 服务流程（25）。
+> **说明**: VM 自举终点语义模块：**Minix3 的初始化数据搬迁（spare page 池 + 页表结构，minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））+ Live Update 支撑面（swap_proc_slot / transfer_mmap_regions / map_proc_dyn_data / swap_proc_dyn_data / map_setparent）**。**不覆盖**：物理页分配器（05）、页分配器与保留页池（06）、页表结构/操作（07/08）、堆分配器（09）、RS Live Update 服务流程（25）。
 
 ---
 
@@ -32,16 +32,16 @@ init_vm()（main.c:428）
   ├─ exec_bootproc() / CALLMAP / sef_local_startup()         ← 01/15
 ```
 
-Rust 侧对应位置是 `VmServer::init()` 开头的 `relocate()`（vm_server.rs:182），在 `init_global_state()` 之前执行——语义上对应 C 的 `pt_init()` 搬迁段（§1.6）。
+Rust 侧对应位置是 `VmServer::init()` 开头的 `relocate()`（os/servers/vm/src/vm_server.rs:struct VmServer（L182，工具生成）），在 `init_global_state()` 之前执行——语义上对应 C 的 `pt_init()` 搬迁段（§1.6）。
 
 ### 1.1 为什么自举机制不能长期使用
 
 Minix3 的自举元数据在 BSS 段（`static_sparepages[]`、`free_pages_bitmap[]`、`free_page_cache[]`），由内核加载 ELF 时映射。BSS 静态分配有两个根本性约束：
 
-1. **大小固定**——编译时确定，运行时无法增长。spare page 池只有 `STATIC_SPAREPAGES` 页（i386 上 15，见 pagetable.c:59-68），页表需要增长时静态分配无法满足。
+1. **大小固定**——编译时确定，运行时无法增长。spare page 池只有 `STATIC_SPAREPAGES` 页（i386 上 15，见 minix3/minix/servers/vm/pagetable.c:vmproc（L59，工具生成）），页表需要增长时静态分配无法满足。
 2. **物理地址不可控**——由内核在加载 ELF 时决定。Live Update 后新 VM 实例有新的地址空间，旧实例的 VA/PA 全部失效。
 
-pagetable.c:1313-1316 的注释直接说明了搬迁动机：
+minix3/minix/servers/vm/pagetable.c:pt_init（L1313，工具生成） 的注释直接说明了搬迁动机：
 
 ```c
 /* VM is now fully functional in that it can dynamically allocate memory
@@ -65,22 +65,22 @@ Rust 侧对应约束是 **BumpBuf 的连续物理页要求**：自举阶段元�
 
 两者目标一致：**消除自举阶段的临时约束，让 VM 完全由动态分配支撑**。
 
-### 1.3 Minix3 的搬迁流程（pagetable.c:1317-1345）
+### 1.3 Minix3 的搬迁流程（minix3/minix/servers/vm/pagetable.c:pt_init（L1317，工具生成））
 
 搬迁分三步（详细逐行见 §2.1）：
 
 1. **用光静态页，动态回填**：
-   - `alloc_cycle()`（pagetable.c:1317）——确保分配可用（主循环钩子 main.c:118-119 的同一函数，见 §2.3）。
+   - `alloc_cycle()`（minix3/minix/servers/vm/pagetable.c:pt_init（L1317，工具生成））——确保分配可用（主循环钩子 main.c:118-119 的同一函数，见 §2.3）。
    - `while(vm_getsparepage(&phys));`（:1319）——从备用队列取出全部静态页"用光"（静态页无法被 `vm_freepages` 释放，`is_staticaddr` 检查会跳过，所以只能取走不归还）。
    - `alloc_cycle()`（:1321）——用 `alloc_mem()` 动态分配新页回填队列。
 2. **重分配内核映射页表**：`pt_allocate_kernel_mapped_pagetables()`（:1322）+ `pt_bind`/`pt_mapkernel`（:1323-1324）+ FLUSHTLB（:1326-1329）。
 3. **重建 VM 页表**：`pt_new(&newpt_dyn)` + `pt_copy` + `memcpy`（:1331-1336）替换为纯动态页表，再 `pt_bind`/`pt_mapkernel`（:1337-1338）+ FLUSHTLB（:1340-1343）。
 
-`pt_init_done = 1`（pagetable.c:1311）是搬迁的前置阶段切换：此后 `vm_allocpages` 走动态分配路径（§1.4）。
+`pt_init_done = 1`（minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））是搬迁的前置阶段切换：此后 `vm_allocpages` 走动态分配路径（§1.4）。
 
 ### 1.4 阶段切换：pt_init_done 与双路径分配
 
-`pt_init_done`（pagetable.c:328，:1311 置 1）是自举/运行两阶段的切换标志。`vm_allocpages`（pagetable.c:333-394）按它分流：
+`pt_init_done`（minix3/minix/servers/vm/pagetable.c:vm_mappages（L328，工具生成），:1311 置 1）是自举/运行两阶段的切换标志。`vm_allocpages`（minix3/minix/servers/vm/pagetable.c:vm_allocpages）按它分流：
 
 ```c
 static int pt_init_done;               /* pagetable.c:328 */
@@ -97,11 +97,11 @@ if((level > 1) || !pt_init_done) {     /* pagetable.c:352 */
 - **运行阶段**（`pt_init_done`）：走 `alloc_mem()` + `vm_mappages()` 动态路径。
 - **`level` 计数器**（:335）：限制递归深度 ≤ 2。`vm_allocpage()` 可能递归调用自身（`pt_ptalloc` → `vm_allocpage` → `vm_mappages` → `pt_writemap` → `pt_ptalloc`），`level > 1` 时强制走 spare 池打破递归。
 
-`is_staticaddr(v)`（pagetable.c:85，`v < VM_OWN_HEAPSTART`）区分静态/动态地址：`vm_freepages`（:235-259）对静态地址打印告警并跳过释放——静态页不属于动态分配，无法回收。
+`is_staticaddr(v)`（minix3/minix/servers/vm/pagetable.c:is_staticaddr，`v < VM_OWN_HEAPSTART`）区分静态/动态地址：`vm_freepages`（:235-259）对静态地址打印告警并跳过释放——静态页不属于动态分配，无法回收。
 
 ### 1.5 备用页池机制（reservedqueue_*）
 
-备用页池是 C 侧打破自举循环依赖的机制（pagetable.c:55-57 注释 "to avoid a circular dependency on allocating memory and writing it into VM's page table"）。数据结构与操作：
+备用页池是 C 侧打破自举循环依赖的机制（minix3/minix/servers/vm/pagetable.c:vmproc（L55，工具生成） 注释 "to avoid a circular dependency on allocating memory and writing it into VM's page table"）。数据结构与操作：
 
 ```c
 static struct reserved_pages {
@@ -129,7 +129,7 @@ static struct reserved_pages {
 
 ### 1.6 minix-rs 的搬迁：relocate()
 
-Rust 侧搬迁在 `VmServer::init()` 开头自动执行（vm_server.rs:182，`#[cfg(not(test))]` 门控 :257）：
+Rust 侧搬迁在 `VmServer::init()` 开头自动执行（os/servers/vm/src/vm_server.rs:struct VmServer（L182，工具生成），`#[cfg(not(test))]` 门控 :257）：
 
 ```
 relocate()（vm_server.rs:182）
@@ -151,9 +151,9 @@ relocate()（vm_server.rs:182）
 
 **`[ARCH: A-1]`（Direct Map）结构消除**（plan.md §4 A-1，06 §3.3 决策）：`reservedqueue_*`（alloc.c:60-237）在 minix-rs **不实现**。依据：
 
-- C 备用页池的唯一目的是打破自举循环依赖（pagetable.c:55-57 注释），且 `pt_init` 末尾被整体替换为动态页（pagetable.c:1311-1345）——它是自举机制，不是稳态供应。
+- C 备用页池的唯一目的是打破自举循环依赖（minix3/minix/servers/vm/pagetable.c:vmproc（L55，工具生成） 注释），且 `pt_init` 末尾被整体替换为动态页（minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））——它是自举机制，不是稳态供应。
 - minix-rs 中 VA 由 Direct Map 常量偏移给出（`VM_DIRECT_MAP_BASE + phys`），页表页分配（`alloc_page::vm_pt_alloc`，注册进 `minix_arch::pt_alloc`）从 T3 起单路径可用——循环依赖被结构性打破，`level` 计数器、`pt_init_done` 阶段切换、BSS 静态页全部消失。
-- 保留的语义：`missing_spares`（alloc.c:74）在 Rust 中重解释为**分配压力计数**（`VmServer::mark_alloc_failure`，vm_server.rs:396），主循环 `alloc_cycle` 钩子（main.c:118-119）保留为补充/回收机会（体 DEFERRED 归 24-page-cache）。
+- 保留的语义：`missing_spares`（alloc.c:74）在 Rust 中重解释为**分配压力计数**（`VmServer::mark_alloc_failure`，os/servers/vm/src/vm_server.rs:fn relocate（L396，工具生成）），主循环 `alloc_cycle` 钩子（main.c:118-119）保留为补充/回收机会（体 DEFERRED 归 24-page-cache）。
 
 代码注释标注位置：`vm_server.rs:53-61`（mark_alloc_failure 注释，见 §4.4）。
 
@@ -193,7 +193,7 @@ Rust 侧状态：LU 支撑面**全链已实现**（V11/T12/T13，见 §3.5/§4.3
 
 本章逐行验证 §1 的机制链。所有行号以 `sed -n` 实证为准（2026-08-15）。
 
-### 2.1 pt_init() 搬迁段（pagetable.c:1311-1345）
+### 2.1 pt_init() 搬迁段（minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））
 
 `pt_init_done = 1`（:1311）之后是搬迁主流程：
 
@@ -231,7 +231,7 @@ Rust 侧状态：LU 支撑面**全链已实现**（V11/T12/T13，见 §3.5/§4.3
 
 **为什么用光静态页而不是释放**：静态页的 PA 由内核加载时决定，`vm_freepages` 无法把它们还回 `alloc_mem` 的位图（它们本来就不在位图里）——唯一正确的处理就是"用掉"。
 
-### 2.2 vm_freepages 与 is_staticaddr（pagetable.c:85 / :235-259）
+### 2.2 vm_freepages 与 is_staticaddr（minix3/minix/servers/vm/pagetable.c:is_staticaddr / :235-259）
 
 ```c
 #define is_staticaddr(v) ((vir_bytes) (v) < VM_OWN_HEAPSTART)   /* :85 */
@@ -285,7 +285,7 @@ void alloc_cycle(void)
 
 主循环钩子（main.c:118-119）：`if(missing_spares > 0) { alloc_cycle(); }`——**分配压力驱动的补充机会**。minix-rs 的对应物：`mark_alloc_failure` 压力计数（§4.4）+ alloc_cycle 钩子保留（体 DEFERRED 归 24-page-cache）。
 
-### 2.4 spare page 池初始化（pagetable.c:1116-1162）
+### 2.4 spare page 池初始化（minix3/minix/servers/vm/pagetable.c:pt_init（L1116，工具生成））
 
 ```c
 /* Get ourselves spare pages. */
@@ -310,7 +310,7 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {                 /* :1155 */
 - `sys_umap` 把 VM 自身数据段的 VA 反查为 PA——自举期唯一能拿到"静态页 PA"的途径（内核知道 BSS 加载位置）。
 - 队列容量 `SPAREPAGES` 与静态填充 `STATIC_SPAREPAGES` 的差额（5/10/10 页）由 `alloc_cycle` 动态补齐。
 
-### 2.5 vm_allocpages 双路径（pagetable.c:333-394）
+### 2.5 vm_allocpages 双路径（minix3/minix/servers/vm/pagetable.c:vm_allocpages）
 
 `level` 计数器 + `pt_init_done` 双条件（§1.4）。运行阶段路径（:369-394）：
 
@@ -399,7 +399,7 @@ void map_setparent(struct vmproc *vmp)
 
 ### 2.8 本章小结
 
-- 搬迁段（pagetable.c:1311-1345）是自举终点：静态页用光 + 动态回填 + 页表重建 + 两次 FLUSHTLB。
+- 搬迁段（minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））是自举终点：静态页用光 + 动态回填 + 页表重建 + 两次 FLUSHTLB。
 - `pt_init_done`/`level`/`is_staticaddr` 是 C 侧自举期控制面；`reservedqueue_*` + `missing_spares` + `alloc_cycle` 是备用池机制。
 - LU 支撑面（utility.c）分两族：槽交换（swap_proc_slot）+ 动态数据转移（transfer_mmap_regions/map_proc_dyn_data/swap_proc_dyn_data/map_setparent）。
 
@@ -434,7 +434,7 @@ C 搬迁页表结构（spare 池 + newpt_dyn，§2.1），Rust 搬迁分配器�
 - `assert!(pa_pages > 0, "relocate: no BumpBuf metadata to relocate (already relocated?)")`——防重复搬迁。
 - `heap_arena_grow(pages).expect(...)`——新元数据分配失败即 panic。
 
-**测试门控**：`#[cfg(not(test))] self.relocate();`（vm_server.rs:257）——测试环境无真实页表（`vm_self_mappages` 不可用，`X86_64Paging::new` 是 todo!()）。搬迁语义由 `available_regions`/`init` 单元测试覆盖（§5），端到端归 QEMU 集成。
+**测试门控**：`#[cfg(not(test))] self.relocate();`（os/servers/vm/src/vm_server.rs:fn new_inner（L257，工具生成））——测试环境无真实页表（`vm_self_mappages` 不可用，`X86_64Paging::new` 是 todo!()）。搬迁语义由 `available_regions`/`init` 单元测试覆盖（§5），端到端归 QEMU 集成。
 
 ### 3.4 D4: 备用页池结构消除（ARCH A-1）
 
@@ -442,7 +442,7 @@ C 搬迁页表结构（spare 池 + newpt_dyn，§2.1），Rust 搬迁分配器�
 
 | C 语义 | Rust 对应 | 位置 |
 |--------|-----------|------|
-| `missing_spares` 压力驱动补充 | `mark_alloc_failure()` 压力计数 | vm_server.rs:396（见 §4.4） |
+| `missing_spares` 压力驱动补充 | `mark_alloc_failure()` 压力计数 | os/servers/vm/src/vm_server.rs:fn relocate（L396，工具生成）（见 §4.4） |
 | `alloc_cycle` 主循环钩子 | 保留钩子（体 DEFERRED 归 24-page-cache） | 主循环（15-ipc-dispatch 覆盖） |
 | `pt_init_done` 阶段切换 | 无（单路径分配） | — |
 | `level` 递归限制 | 无（08 D2：walk_alloc 递归结构性消失） | — |
@@ -459,7 +459,7 @@ C 搬迁页表结构（spare 池 + newpt_dyn，§2.1），Rust 搬迁分配器�
 | 维度 | Minix3 | minix-rs | 标注 |
 |------|--------|----------|------|
 | 搬迁对象 | spare 池 + 页表结构 | 分配器元数据 | ARCH A-1 |
-| 搬迁触发 | pt_init() 隐式（pagetable.c:1317） | init() 内 relocate() 显式（vm_server.rs:182） | 结构差异 |
+| 搬迁触发 | pt_init() 隐式（minix3/minix/servers/vm/pagetable.c:pt_init（L1317，工具生成）） | init() 内 relocate() 显式（os/servers/vm/src/vm_server.rs:struct VmServer（L182，工具生成）） | 结构差异 |
 | 备用页池 | reservedqueue_* 全量 | 结构消除；missing_spares → 压力计数 | ARCH A-1 |
 | 阶段切换 | pt_init_done + level | 无 | ARCH A-1 |
 | TLB 刷新 | sys_vmctl(FLUSHTLB) ×2 | arch 层管理，VM 侧无调用 | 架构差异 |
@@ -471,7 +471,7 @@ C 搬迁页表结构（spare 池 + newpt_dyn，§2.1），Rust 搬迁分配器�
 
 ## 4. 实现详解
 
-### 4.1 `VmServer::relocate()`（vm_server.rs:182-236）
+### 4.1 `VmServer::relocate()`（os/servers/vm/src/vm_server.rs:struct VmServer（L182，工具生成））
 
 搬迁编排（§1.6 流程的代码落点）：
 
@@ -524,7 +524,7 @@ fn relocate(&mut self) {
 - `free_regions` 收集在 `heap_arena_grow` **之后**：新元数据占用的页已被旧分配器标记为已用，`available_regions` 自动排除。
 - 替换（`*phys_alloc = new_alloc`）后立刻 `free_mem(old_pa, old_pa_pages)`——旧连续 PA 页释放回**新**分配器（此时 phys_alloc 已指向新分配器，释放正确）。
 
-### 4.2 `metadata_pa_range` / `available_regions`（bitmap_alloc.rs:110 / :464）
+### 4.2 `metadata_pa_range` / `available_regions`（os/servers/vm/src/phys_mem/bitmap_alloc.rs:fn new_for_test（L110，工具生成） / :464）
 
 ```rust
 pub fn metadata_pa_range(&self) -> (u64, usize) {
@@ -532,7 +532,7 @@ pub fn metadata_pa_range(&self) -> (u64, usize) {
 }
 ```
 
-`meta_phys_base`/`meta_pages` 是 `BitmapAllocator::init` 的构造参数（自举期在 `create_default_allocator` 传入，vm_server.rs:130-170）——**记录旧元数据占据的物理页**，供搬迁释放。搬迁后新分配器传 `(0, 0)`（§5 测试验证清零）。
+`meta_phys_base`/`meta_pages` 是 `BitmapAllocator::init` 的构造参数（自举期在 `create_default_allocator` 传入，os/servers/vm/src/vm_server.rs:fn new（L130，工具生成））——**记录旧元数据占据的物理页**，供搬迁释放。搬迁后新分配器传 `(0, 0)`（§5 测试验证清零）。
 
 ```rust
 fn available_regions(&self, callback: &mut dyn FnMut(usize, usize)) {
@@ -575,7 +575,7 @@ pub(crate) fn swap_slots(&self, a: UserSlot, b: UserSlot) {
 - **位交换安全性**：`VmProc` 全字段要么 `Copy`（endpoint/slot/flags/ACL/地址边界），要么可随结构移动（`RegionMap` 的 BTreeMap 节点指针相对自身、`PageTable` 无 CR3 绑定且旧主人已 unbound）——该论证由两个版本共享，完整 SAFETY 注释在 `table.rs` 与 02 文档 §4.3。
 - **身份还原**：与 C 的 `src_vmp->vm_endpoint = orig_src_vmproc.vm_endpoint` 逐字对应（§2.6）。身份保持测试：`test_swap_slots_preserves_identities`。
 
-### 4.4 `mark_alloc_failure`（vm_server.rs:396）
+### 4.4 `mark_alloc_failure`（os/servers/vm/src/vm_server.rs:fn relocate（L396，工具生成））
 
 `missing_spares` 重解释为压力计数（06 §3.3）：
 
@@ -602,7 +602,7 @@ VmServer::init() → #[cfg(not(test))] relocate()（vm_server.rs:257）
                  → init_vm_slot() / account_boot_memory() / init_boot_procs() / mark_vm_instance()
 ```
 
-C 对照：`pt_init()` 搬迁段（pagetable.c:1311-1345）位于 `init_vm()` 内 `__minix_init()` 之前——Rust 的 `relocate()` 同样在全局状态初始化之前，保证后续所有分配（进程表、区域、页缓存）都走动态路径。
+C 对照：`pt_init()` 搬迁段（minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））位于 `init_vm()` 内 `__minix_init()` 之前——Rust 的 `relocate()` 同样在全局状态初始化之前，保证后续所有分配（进程表、区域、页缓存）都走动态路径。
 
 ### 4.7 消费链与边界
 
@@ -618,11 +618,11 @@ C 对照：`pt_init()` 搬迁段（pagetable.c:1311-1345）位于 `init_vm()` �
 
 | 测试 | 位置 | 验证目标 |
 |------|------|---------|
-| `test_available_regions_init` | bitmap_alloc.rs:748 | 语义化搬迁：收集区域 + init 重建后 `free_pages` 一致 + `metadata_pa_range` 清零 |
-| `test_available_regions_basic` | bitmap_alloc.rs:785 | 已分配页不出现在空闲区域 |
-| `test_metadata_pa_range` | bitmap_alloc.rs:811 | 旧元数据 PA 范围记录 |
-| `test_metadata_pa_range_default` | bitmap_alloc.rs:822 | 默认 0 范围 |
-| `test_available_regions_init_clears_pa_range` | bitmap_alloc.rs:833 | 重建后 `metadata_pa_range` 清零（搬迁完成标志） |
+| `test_available_regions_init` | os/servers/vm/src/phys_mem/bitmap_alloc.rs:fn test_available_regions_basic（L748，工具生成） | 语义化搬迁：收集区域 + init 重建后 `free_pages` 一致 + `metadata_pa_range` 清零 |
+| `test_available_regions_basic` | os/servers/vm/src/phys_mem/bitmap_alloc.rs:fn test_available_regions_init_clears_pa_range（L785，工具生成） | 已分配页不出现在空闲区域 |
+| `test_metadata_pa_range` | os/servers/vm/src/phys_mem/bitmap_alloc.rs:fn test_physalloc_bitmap_access | 旧元数据 PA 范围记录 |
+| `test_metadata_pa_range_default` | os/servers/vm/src/phys_mem/bitmap_alloc.rs:fn test_physalloc_bitmap_access（L822，工具生成） | 默认 0 范围 |
+| `test_available_regions_init_clears_pa_range` | os/servers/vm/src/phys_mem/bitmap_alloc.rs:fn make_all_free_metadata（L833，工具生成） | 重建后 `metadata_pa_range` 清零（搬迁完成标志） |
 | `test_swap_slots_preserves_identities` | vmproc_handle.rs 测试区 | 表层 `swap_slots`：endpoint 随槽保持 + 记账字段跨槽流动（LU 身份不变量；V11/T24 自 typestate 版迁移） |
 
 ### 5.2 覆盖维度

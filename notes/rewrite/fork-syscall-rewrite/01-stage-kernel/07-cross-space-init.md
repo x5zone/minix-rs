@@ -171,9 +171,9 @@ direct_map 下这两行的语义变化：
 
 注意：Kernel direct map 同样在 boot 期随双窗口建立（`establish_boot_dm`，§1.3.2），早于阶段 D。VM 启动后的 `map_kernel` 只为**受管进程**根补齐 supervisor 权限的 Kernel DM（见 §3.4），不承担"第一次建立"。
 
-> **阶段 D 的 Rust 对应**：`init_post_and_memory`（os/kernel/src/lib.rs:1271）由三部分组成——①断言 VM 页表 root 有效（`p_seg.phys_root != 0` + `p_seg.virt_root.is_some()`，阶段 C 建立）；②记录 VM 为 kernel 级 ptproc（`set_current_ptproc_nr`，使 `dispatch_vmctl(SetAddrSpace)` 的 Step 3 能决定是否 reload CR3，详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）；③断言 VM direct map base 已配置。arch 级 `set_ptproc`（记录 `virt_root` 供 createpde 借页目录）与 freepdes 分配在现代码中没有对应物——这些类型的取舍理由与幸存契约见 §4.3。
+> **阶段 D 的 Rust 对应**：`init_post_and_memory`（os/kernel/src/lib.rs:fn init_proc_and_boot（L1271，工具生成））由三部分组成——①断言 VM 页表 root 有效（`p_seg.phys_root != 0` + `p_seg.virt_root.is_some()`，阶段 C 建立）；②记录 VM 为 kernel 级 ptproc（`set_current_ptproc_nr`，使 `dispatch_vmctl(SetAddrSpace)` 的 Step 3 能决定是否 reload CR3，详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）；③断言 VM direct map base 已配置。arch 级 `set_ptproc`（记录 `virt_root` 供 createpde 借页目录）与 freepdes 分配在现代码中没有对应物——这些类型的取舍理由与幸存契约见 §4.3。
 >
-> **两层 ptproc 跟踪的区分**：arch 层 `PostInitArch::set_ptproc` 记录 arch 内部状态（`virt_root` 供 createpde 借页目录用）——createpde 被 Direct Map 取代后该层不再需要；kernel 层 `set_current_ptproc_nr`（os/kernel/src/lib.rs:2212）记录 VM 的 proc-nr，使 `SetAddrSpace` 的 Step 3（`if current_ptproc_nr() == Some(target.p_nr)`）能判断是否需立即 reload CR3。后者是 `setcr3()` 语义的直接对应（C: `if (p == get_cpulocal_var(ptproc))`，arch_do_vmctl.c:25），**不是** createpde 临时窗口机制的一部分，因此 direct_map 下仍需保留。
+> **两层 ptproc 跟踪的区分**：arch 层 `PostInitArch::set_ptproc` 记录 arch 内部状态（`virt_root` 供 createpde 借页目录用）——createpde 被 Direct Map 取代后该层不再需要；kernel 层 `set_current_ptproc_nr`（os/kernel/src/lib.rs:fn current_cpu_id（L2212，工具生成））记录 VM 的 proc-nr，使 `SetAddrSpace` 的 Step 3（`if current_ptproc_nr() == Some(target.p_nr)`）能判断是否需立即 reload CR3。后者是 `setcr3()` 语义的直接对应（C: `if (p == get_cpulocal_var(ptproc))`，arch_do_vmctl.c:25），**不是** createpde 临时窗口机制的一部分，因此 direct_map 下仍需保留。
 
 ### 1.5 本章小结
 
@@ -191,7 +191,7 @@ direct_map 下这两行的语义变化：
 
 ### 2.1 arch_post_init()：设置 ptproc + 记录页表地址
 
-`arch_post_init` 是阶段 D 的第一步（`minix3/minix/kernel/arch/i386/protect.c:370-377`）：
+`arch_post_init` 是阶段 D 的第一步（`minix3/minix/kernel/arch/i386/protect.c:arch_post_init`）：
 
 ```c
 void arch_post_init(void)
@@ -211,13 +211,13 @@ void arch_post_init(void)
 
 **为什么是 VM**：VM 是第一个拥有完整页表的进程。从此刻到 VM 通过 `VMCTL_SETADDRSPACE` 切换到自己页表前，内核和 VM 共享 bootstrap 页表。
 
-**ptproc 是什么**：per-CPU 变量（`minix3/minix/kernel/cpulocals.h:55`），记录"当前 CR3 装的是谁"。ptproc 在 C 中有两个用途：
+**ptproc 是什么**：per-CPU 变量（`minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L55，工具生成）`），记录"当前 CR3 装的是谁"。ptproc 在 C 中有两个用途：
 1. **freepdes 临时窗口**：createpde 借 ptproc 的页目录放临时映射——因为 MMU 只按 CR3 装的页目录解释 VA，临时映射必须写入这个页目录才有效。direct_map 下此用途废弃（kernel 有 Kernel direct map，不借页目录）。
 2. **SetAddrSpace 的 CR3-reload 决策**：`setcr3()` 用 `if (p == get_cpulocal_var(ptproc))` 判断目标进程是否是当前页表进程，若是则立即 `write_cr3`（arch_do_vmctl.c:25）。direct_map 下此用途**保留**——VM 仍通过 `VMCTL_SETADDRSPACE` 切换到自己的页表，内核需知道是否该立即 reload CR3。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32` + `set_current_ptproc_nr(VM_PROC_NR)` 跟踪（详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)）。
 
 ### 2.2 pg_info()：记录 bootstrap 页表地址
 
-`pg_info` 记录 bootstrap 页表的物理/虚拟地址（`minix3/minix/kernel/arch/i386/pg_utils.c:312-316`）：
+`pg_info` 记录 bootstrap 页表的物理/虚拟地址（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_info`）：
 
 ```c
 void pg_info(phys_bytes *pagedir_ph, vir_bytes *pagedir_v)
@@ -233,9 +233,9 @@ VM 运行后会通过 `VMCTL_SETADDRSPACE` 替换为自己的页表，所以 `pg
 
 ### 2.3 pg_mapkernel()：建立内核映射 + 返回 freepde_start
 
-> **阶段归属**：`pg_mapkernel` 在 pre_init 阶段调用（`minix3/minix/kernel/arch/i386/pre_init.c:232`），比阶段 D 更早。本节讲它是为了说明 `freepde_start` 的来源——阶段 D 的 `memory_init` 要用它。
+> **阶段归属**：`pg_mapkernel` 在 pre_init 阶段调用（`minix3/minix/kernel/arch/i386/pre_init.c:pre_init（L232，工具生成）`），比阶段 D 更早。本节讲它是为了说明 `freepde_start` 的来源——阶段 D 的 `memory_init` 要用它。
 
-`pg_mapkernel` 用 4MB 大页映射内核代码/数据段（`minix3/minix/kernel/arch/i386/pg_utils.c:186-206`）：
+`pg_mapkernel` 用 4MB 大页映射内核代码/数据段（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`）：
 
 ```c
 int pg_mapkernel(void)
@@ -261,7 +261,7 @@ direct_map 下，内核映射变成 Kernel direct map（1GB huge page），`free
 
 ### 2.4 memory_init()：分配 freepdes
 
-`memory_init` 是阶段 D 的第二步（`minix3/minix/kernel/arch/i386/memory.c:707-717`）：
+`memory_init` 是阶段 D 的第二步（`minix3/minix/kernel/arch/i386/memory.c:memory_init`）：
 
 ```c
 static int freepdes[MAXFREEPDES];   /* memory.c:31 */
@@ -283,8 +283,8 @@ void memory_init(void)
 
 **一套编号通用于所有页目录**：每个进程的页目录都由 VM 装配（`pt_mapkernel`，`servers/vm/pagetable.c:1442-1482`）。VM 虽是用户态进程，但它装配的是**别人的页目录**——它通过把目标物理页映射进自己的用户区来编辑页目录（ring 3 从不直接写高地址），挑的 PDE 编号却落在内核区。两个窗口槽之外的内核区槽位也由 VM 取号填充，各有用途：
 
-- **页目录的目录**（`pagetable.c:1035-1067`）：VM 领 5 个编号（`MAX_PAGEDIR_PDES=5`），每号配一个物理页，登记所有进程页目录的物理地址（`pt_bind` 写入，`pagetable.c:1394`）；`pt_mapkernel` 再把它写进每个页目录的对应项（`pagetable.c:1475-1482`）——这个簿记页在所有地址空间的相同 VA 可见
-- **kernmap_pde**（`pagetable.c:1181`）：内核永久映射（如 video memory）经 `sys_vmctl_get_mapping` 报给 VM，VM 把它们放进每个页目录的同一编号处
+- **页目录的目录**（`minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables`）：VM 领 5 个编号（`MAX_PAGEDIR_PDES=5`），每号配一个物理页，登记所有进程页目录的物理地址（`pt_bind` 写入，`minix3/minix/servers/vm/pagetable.c:pt_bind（L1394，工具生成）`）；`pt_mapkernel` 再把它写进每个页目录的对应项（`minix3/minix/servers/vm/pagetable.c:pt_mapkernel（L1475，工具生成）`）——这个簿记页在所有地址空间的相同 VA 可见
+- **kernmap_pde**（`minix3/minix/servers/vm/pagetable.c:pt_init（L1181，工具生成）`）：内核永久映射（如 video memory）经 `sys_vmctl_get_mapping` 报给 VM，VM 把它们放进每个页目录的同一编号处
 
 这些槽位必须落在内核区：内核没有自己的页表，跑在"当前进程"的地址空间里，凡要在任意上下文可达的东西，必须在每个页目录的相同编号处出现——用户区各进程互不相同，只有内核区共享同一布局。所以这两个槽位在**每一个**进程的页目录里都保持空闲。临时窗口写入的目标是 `ptproc`——**当前 CR3 所加载页目录所属的进程**：boot 期由 `arch_post_init` 设为 VM（`protect.c:370-376`），运行期每次上下文切换经 `switch_address_space` 更新为刚被调度的进程（`proc.c:349`、`arch_proto.h:157-159`），所以写入目标随调度在 VM/PM/任意进程间变化，而槽位编号不变。BKL 下单 CPU 执行，无需加锁。
 
@@ -294,7 +294,7 @@ direct_map 下，`memory_init` 整体废弃——direct map 是永久映射，�
 
 ### 2.5 createpde() + mem_clear_mapcache()：临时窗口的使用与清理
 
-`createpde` 是 freepdes 的唯一消费者（`minix3/minix/kernel/arch/i386/memory.c:69-145`）：
+`createpde` 是 freepdes 的唯一消费者（`minix3/minix/kernel/arch/i386/memory.c:createpde`）：
 
 ```c
 static phys_bytes createpde(struct proc *target, vir_bytes v)
@@ -346,11 +346,11 @@ direct_map 下，`createpde` 退化为 `kernel_phys_to_virt(pa)` 一行加法—
 
 PTE 的 Global 位（bit 8）告诉 CPU："这条 PTE 的翻译对所有进程地址空间有效，CR3 切换时不要 invalidate 对应的 TLB 条目"。这有 3 个前提：
 
-1. **CR4.PGE 位必须启用**：x86-64 通过 CR4 第 7 位（PGE, Page Global Enable）开启 Global 位语义。Minix3 在 `vm_enable_paging()`（`minix3/minix/kernel/arch/i386/pg_utils.c:204`）中"先开 paging，再开 PGE"（`pg_utils.c:234` 注释、`pg_utils.c:235-242` 执行顺序），并以 CPU 特性检测为门（`pgeok = _cpufeature(_CPUF_I386_PGE)`，`pg_utils.c:209`）。minix-rs 对应在 x86-64 `Paging::enable()` 收尾处开启 CR4.PGE（`os/arch/src/x86_64/paging.rs:408-421`），同样以 CPUID.01H:EDX.PGE（bit 13）检测为门（`cpu_supports_pge`，`os/arch/src/x86_64/paging.rs:155-172`）——顺序与 C 一致：CR3/CR0.PG/CR0.WP 之后才设 PGE。CR4 的另一处写入是 FPU 初始化（`os/arch/src/x86_64/fpu.rs:88`，OSFXSR/OSXMMEXCPT），与 PGE 无关。未启用 PGE 时 CPU 忽略 G 位（Intel SDM：CR4.PGE=0 时 G flag 被忽略）——PTE 中的 G=1 无害，但没有 TLB 保留效果
+1. **CR4.PGE 位必须启用**：x86-64 通过 CR4 第 7 位（PGE, Page Global Enable）开启 Global 位语义。Minix3 在 `vm_enable_paging()`（`minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging`）中"先开 paging，再开 PGE"（`pg_utils.c:234` 注释、`pg_utils.c:235-242` 执行顺序），并以 CPU 特性检测为门（`pgeok = _cpufeature(_CPUF_I386_PGE)`，`pg_utils.c:209`）。minix-rs 对应在 x86-64 `Paging::enable()` 收尾处开启 CR4.PGE（`os/arch/src/x86_64/paging.rs:fn walk_alloc（L408，工具生成）`），同样以 CPUID.01H:EDX.PGE（bit 13）检测为门（`cpu_supports_pge`，`os/arch/src/x86_64/paging.rs:fn channel_to_ptr（L155，工具生成）`）——顺序与 C 一致：CR3/CR0.PG/CR0.WP 之后才设 PGE。CR4 的另一处写入是 FPU 初始化（`os/arch/src/x86_64/fpu.rs:fn init（L88，工具生成）`，OSFXSR/OSXMMEXCPT），与 PGE 无关。未启用 PGE 时 CPU 忽略 G 位（Intel SDM：CR4.PGE=0 时 G flag 被忽略）——PTE 中的 G=1 无害，但没有 TLB 保留效果
 2. **PTE 必须有 G=1 + 有效 P（Present）位**：纯 G=1 但 P=0 的 PTE 仍会被 invalidate（无效条目不缓存）
 3. **TLB shootdown 影响**：即使 G=1，CPU 显式 `invlpg`（x86-64）/ `tlbi`（aarch64/riscv64）单条 invalidate 仍生效；G=1 只豁免**全局 CR3 切换**的 flush
 
-**minix-rs 中携带 G=1 的映射**（统一经 `PageFlags::kernel_read_write()` = PRESENT|WRITABLE|GLOBAL，`os/arch/src/arch/paging.rs:99`）：bootstrap 的 identity 与 kernel 高地址段映射（`os/kernel/src/lib.rs:288`、`os/kernel/src/lib.rs:313`）、boot 期双 DM 窗口的 Kernel DM（`os/kernel/src/dm_coverage.rs` 的 `kernel_flags`）、VM `map_kernel` 的 kernel 代码/数据段与 Kernel direct map（`os/arch/src/arch/paging.rs:508-522`）。CR4.PGE 在 bootstrap 阶段 `enable()` 时即已开启，这些映射从建立之初就具备"CR3 切换不刷 TLB"的保留效果。
+**minix-rs 中携带 G=1 的映射**（统一经 `PageFlags::kernel_read_write()` = PRESENT|WRITABLE|GLOBAL，`os/arch/src/arch/paging.rs:fn kernel_read_write`）：bootstrap 的 identity 与 kernel 高地址段映射（`os/kernel/src/lib.rs:fn arch_boot_impl（L288，工具生成）`、`os/kernel/src/lib.rs:fn arch_boot_impl（L313，工具生成）`）、boot 期双 DM 窗口的 Kernel DM（`os/kernel/src/dm_coverage.rs` 的 `kernel_flags`）、VM `map_kernel` 的 kernel 代码/数据段与 Kernel direct map（`os/arch/src/arch/paging.rs:fn map_kernel（L508，工具生成）`）。CR4.PGE 在 bootstrap 阶段 `enable()` 时即已开启，这些映射从建立之初就具备"CR3 切换不刷 TLB"的保留效果。
 
 **三架构等价语义**：
 | 架构 | G 位等价 | 全局 TLB 不刷开关 | 单条 invalidate |
@@ -377,7 +377,7 @@ aarch64 没有真正的 G 位，但通过 `TCR.EPD0=1`（disable TTBR0 walks）+
 
 **本质**：每个进程页表必须映射内核——中断/系统调用进入 ring 0 时能执行内核代码。
 
-Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责：
+Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:pt_mapkernel`）职责：
 
 | 映射内容 | Minix3 `pt_mapkernel` | minix-rs `map_kernel` |
 |----------|----------------------|----------------------|
@@ -391,7 +391,7 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 **建立者时序**：
 
 - 双窗口（VM DM + Kernel DM）：由 kernel 的 `establish_boot_dm` 一次建立（arch_boot Step 4，kmain 之前）——装在 bootstrap root 上，VM 经 A1 adoption 继承（§1.3.2）
-- 受管进程根的 Kernel DM：由 VM 的 `map_kernel` 补齐（VM 运行后装配每个受管进程根时）——supervisor 权限的内核段 + Kernel DM 窗口（`os/servers/vm/src/vmproc/vmproc_handle.rs:388`）
+- 受管进程根的 Kernel DM：由 VM 的 `map_kernel` 补齐（VM 运行后装配每个受管进程根时）——supervisor 权限的内核段 + Kernel DM 窗口（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_page_table（L388，工具生成）`）
 
 注意两点：①`map_kernel` 全部映射段硬编码 supervisor 权限（`kernel_read_write()`），只能表达 supervisor DM——VM root 的 USER DM 窗口不经过它，那来自 boot 期建立 + A1 继承（权限分流是 E6 硬约束：USER DM 若经 `map_kernel` 内部 flag 分流，会把地址空间角色重新揉成一个 flag）；②`map_kernel` 的 Kernel DM 窗口沿用 boot 期既定的 VA 布局（`KERNEL_DIRECT_MAP_BASE`），不是第二次设计。
 
@@ -411,7 +411,7 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 
 | 废弃项 | C 对应 | 如果保留会怎样 | direct_map 替代 |
 |--------|--------|--------------|----------------|
-| ptproc per-CPU 变量（createpde 用途） | `cpulocals.h:55` | 泄漏 32 位"借页目录"模型，64 位下无意义 | kernel 有 Kernel direct map，不借页目录 |
+| ptproc per-CPU 变量（createpde 用途） | `minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L55，工具生成）` | 泄漏 32 位"借页目录"模型，64 位下无意义 | kernel 有 Kernel direct map，不借页目录 |
 | freepdes[] 数组 | `memory.c:32` | 全局可变状态 + 临时窗口全部问题 | direct map 永久映射（纯地址运算） |
 | memory_init() | `memory.c:707` | 运行时分配槽位的逻辑冗余 | 无需分配 |
 | PostInitArch trait | 无 C 对应 | 与 DirectMapArch 形成两套抽象 | 不引入——阶段 D 降为断言，无架构差异可抽象（§3.5） |
@@ -423,7 +423,7 @@ Minix3 的 `pt_mapkernel`（`minix3/minix/servers/vm/pagetable.c:1442`）职责�
 
 > 废弃不是删除代码，是换机制——每个废弃项都有 direct_map 的替代或确认不需要。各废弃项在现代码中的落地形态（含唯一幸存的 IPC 契约字段）见 §4.3。
 >
-> **ptproc 跟踪不全部废弃**：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:25）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（os/kernel/src/lib.rs:2169）+ `set_current_ptproc_nr(VM_PROC_NR)`（os/kernel/src/lib.rs:2212）跟踪此用途。逐用途判定去留的判据见 §4.3 与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
+> **ptproc 跟踪不全部废弃**：上表"ptproc per-CPU 变量"废弃的是其 **createpde 临时窗口用途**（借页目录放临时映射）。ptproc 的第二个用途——`setcr3()` 中 `if (p == ptproc)` 决定是否立即 reload CR3（arch_do_vmctl.c:25）——在 direct_map 下**保留**，因为 VM 仍通过 `VMCTL_SETADDRSPACE` 切换页表。Rust 用 kernel 全局 `CURRENT_PTPROC_NR: AtomicI32`（os/kernel/src/lib.rs:fn bsp_finish_booting（L2169，工具生成））+ `set_current_ptproc_nr(VM_PROC_NR)`（os/kernel/src/lib.rs:fn current_cpu_id（L2212，工具生成））跟踪此用途。逐用途判定去留的判据见 §4.3 与 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
 
 > **内核全局状态存储模式**：kernel 全局（`CURRENT_PTPROC_NR`、`PROC_TABLE`/`PRIV_TABLE` 等，见 [06-proc-init-boot-proc.md §4.3](06-proc-init-boot-proc.md)）采用"分散全局"存储——每个全局一个原子类型或固定数组，与 C 源码的全局变量一一对应，而非聚合为单一 `KernelState` 结构体。理由：① **可审计性**——分散 static 与 C 全局一一映射，review 可逐一核对；② **渐进式 init**——每个子系统独立初始化，聚合结构必须等所有子系统 init 后才能构造，编译期依赖复杂；③ **无跨子系统联动需求**——各子系统全局以参数形式传递，无需单一访问点。若后续出现需跨子系统原子联动的全局，再评估聚合。
 
@@ -506,7 +506,7 @@ pub type CurrentDirectMap = Riscv64DirectMap;
 
 ### 4.2 阶段 D 入口：确认 direct_map 就绪
 
-阶段 D 入口 `init_post_and_memory` 是确认步骤（os/kernel/src/lib.rs:1271-1315）：
+阶段 D 入口 `init_post_and_memory` 是确认步骤（os/kernel/src/lib.rs:fn init_proc_and_boot（L1271，工具生成））：
 
 ```rust
 pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
@@ -553,13 +553,13 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
 **形态一：初始化层归零**。arch 级"启动阶段初始化 trait"（C 中对应 `arch_post_init`/`memory_init` 的装配点）在现代码中没有对应物。direct map 把阶段 D 的工作降为三个断言（§4.2），而断言不需要 trait 分发——三个断言在三种架构上行为完全一致，没有任何架构差异可供抽象；为它建 trait 只会制造第二个 `DirectMapArch`（§3.3 的重复抽象问题）。判据：**能用常量与断言表达的东西，不引入抽象层**——某层"没有 trait"可以是一个经过论证的设计结论，而非实施遗漏。
 
-**形态二：协议字段保留**。`KernelInfo.free_upper_idx`（C: `kinfo.freepde_start`）是唯一幸存的 freepdes 痕迹，但身份已变——它不再是内核内部的槽位发号器，而是 `struct kinfo` 的镜像字段（C 由 kernel `pre_init.c:232` 填充、VM `pagetable.c:1030` 递增消费，用于 VM 的页目录槽位分配）。minix-rs 中 kernel 内部与 VM 都不消费该值（VM 无页目录槽位分配器），boot-shim 填 `None`（`os/boot-shim/src/uefi_helpers.rs:235`、`opensbi_helpers.rs:439`），GET_KINFO 回复的 `m4l4` 槽位填 0（`os/kernel/src/misc.rs:775`）。字段保留的理由：`KernelInfo` 是 C `struct kinfo` 的镜像，GET_KINFO 未来对齐全量 struct 拷贝（C: `do_getinfo.c:66` data_copy 语义）时需要逐字段对应。判据：**镜像 C 协议结构的字段按 C 布局保留，语义空缺用显式的 None/0 表达**——判断一个字段该不该删，看的是它在 C 协议结构中的位置，而不是有没有内部读者。
+**形态二：协议字段保留**。`KernelInfo.free_upper_idx`（C: `kinfo.freepde_start`）是唯一幸存的 freepdes 痕迹，但身份已变——它不再是内核内部的槽位发号器，而是 `struct kinfo` 的镜像字段（C 由 kernel `pre_init.c:232` 填充、VM `minix3/minix/servers/vm/pagetable.c:freepde（L1030，工具生成）` 递增消费，用于 VM 的页目录槽位分配）。minix-rs 中 kernel 内部与 VM 都不消费该值（VM 无页目录槽位分配器），boot-shim 填 `None`（`os/boot-shim/src/uefi_helpers.rs:fn build_memmap（L235，工具生成）`、`os/boot-shim/src/opensbi_helpers.rs:fn build_kernel_info（L439，工具生成）`），GET_KINFO 回复的 `m4l4` 槽位填 0（`os/kernel/src/misc.rs:fn getinfo_priv_tab（L775，工具生成）`）。字段保留的理由：`KernelInfo` 是 C `struct kinfo` 的镜像，GET_KINFO 未来对齐全量 struct 拷贝（C: `minix3/minix/kernel/system/do_getinfo.c:do_getinfo（L66，工具生成）` data_copy 语义）时需要逐字段对应。判据：**镜像 C 协议结构的字段按 C 布局保留，语义空缺用显式的 None/0 表达**——判断一个字段该不该删，看的是它在 C 协议结构中的位置，而不是有没有内部读者。
 
-**形态三：按用途拆分去留**。C 的 per-CPU `ptproc` 有两个用途，64 位下命运不同（§3.6 脚注）：借页目录放临时映射（createpde 用途）随临时窗口消亡；`setcr3()` 的 CR3-reload 决策保留为 kernel 全局 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（os/kernel/src/lib.rs:2169/:2212）。判据：**名字相同的机制也要逐用途判定去留**——"ptproc 废弃了"与"ptproc 保留着"同时成立，取决于谈的是哪个用途。
+**形态三：按用途拆分去留**。C 的 per-CPU `ptproc` 有两个用途，64 位下命运不同（§3.6 脚注）：借页目录放临时映射（createpde 用途）随临时窗口消亡；`setcr3()` 的 CR3-reload 决策保留为 kernel 全局 `CURRENT_PTPROC_NR` + `set_current_ptproc_nr`（os/kernel/src/lib.rs:fn bsp_finish_booting（L2169，工具生成）/:2212）。判据：**名字相同的机制也要逐用途判定去留**——"ptproc 废弃了"与"ptproc 保留着"同时成立，取决于谈的是哪个用途。
 
 ### 4.4 DM 覆盖建立过程：establish_boot_dm
 
-§1.3.2 的概念链路在代码中的落点是 `establish_boot_dm`（`os/kernel/src/dm_coverage.rs:66`），由 `arch_boot_impl` Step 4 调用（`os/kernel/src/lib.rs:348`，开分页之后、kmain 之前）。VA 布局常量与 `DirectMapArch` trait 见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2/§3.4；本节讲建立算法本身。
+§1.3.2 的概念链路在代码中的落点是 `establish_boot_dm`（`os/kernel/src/dm_coverage.rs:fn establish_boot_dm`），由 `arch_boot_impl` Step 4 调用（`os/kernel/src/lib.rs:fn arch_boot_impl（L348，工具生成）`，开分页之后、kmain 之前）。VA 布局常量与 `DirectMapArch` trait 见 [VM 07-pagetable-struct.md](../02-stage-vm/07-pagetable-struct.md) §3.2/§3.4；本节讲建立算法本身。
 
 **两源候选并集**：映射哪些物理内存不是"从 0 到最大物理地址反推连续映射"——memmap 非连续（reserved/MMIO/firmware hole 穿插其间），反推会把 hole 一并塞进映射。候选是两源的并集：
 
@@ -574,7 +574,7 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
 **候选范围 → 叶子映射**：每个候选范围经 `establish_dm_range`（`os/arch/src/arch/dm_coverage.rs`）裁剪到窗口 PA 上界，再按**资源包含性**选页粒度（1GiB/2MiB/4KiB）——大页仅当整个叶页落在同一候选区段内才成立，reserved hole 不可能被任何粒度的大页吞没。逐叶子装到 `va_base + pa`。
 
-**x86-64 identity 重叠处理**（`os/arch/src/x86_64/paging.rs:747` `dm_install_leaf`）：VM DM 窗口 [2GiB, 3GiB) 与 identity 映射的 PDPTE[2] 1GiB 大页重叠——同一 VA 存在两个互斥翻译（identity：PA=VA，supervisor；DM：PA=VA−BASE，user|RW）。处理按包含性分支：
+**x86-64 identity 重叠处理**（`os/arch/src/x86_64/paging.rs:fn map_huge（L747，工具生成）` `dm_install_leaf`）：VM DM 窗口 [2GiB, 3GiB) 与 identity 映射的 PDPTE[2] 1GiB 大页重叠——同一 VA 存在两个互斥翻译（identity：PA=VA，supervisor；DM：PA=VA−BASE，user|RW）。处理按包含性分支：
 
 - 1GiB 叶子单元仅在 PA [0,1GiB) 整体属于允许覆盖的资源范围时可行（整页替换 PDPTE[2]，无新增页表页）。真实 x86 PC 布局低 1GiB 结构性含 legacy hole [0xA0000, 0x100000)（VGA/ROM/BIOS，非 conventional），包含性必然失败——因此拆分路径是 x86-64 的常态
 - 拆分路径把 identity 的 1GiB 大页（或 2MiB 叶子表）**替换为空下级表**：identity 对 VA [2GiB, 3GiB) 的翻译被整体取代，替换后的表只保留后续允许单元重映射的内容——hole 不被吞没，也不会以 user|RW 方式暴露给 VM
@@ -682,10 +682,10 @@ VM 启动后: map_kernel 为受管进程根补齐 Kernel DM（supervisor, G=1）
 - [02-stage-vm/08-pagetable-ops.md](../02-stage-vm/08-pagetable-ops.md) §3.4 — `map_kernel` 职责简化
 - `os/kernel/src/dm_coverage.rs` — `establish_boot_dm`（boot 期双窗口覆盖建立 + 启动验证）
 - `os/arch/src/arch/dm_coverage.rs` — `DmCoverageArch` trait + `establish_dm_range`（候选范围 → 叶子映射驱动）
-- `minix3/minix/kernel/arch/i386/protect.c:370-377` — `arch_post_init`
-- `minix3/minix/kernel/arch/i386/pg_utils.c:186-206` — `pg_mapkernel`
-- `minix3/minix/kernel/arch/i386/pg_utils.c:312-316` — `pg_info`
-- `minix3/minix/kernel/arch/i386/memory.c:707-717` — `memory_init`
-- `minix3/minix/kernel/arch/i386/memory.c:35-145` — `mem_clear_mapcache` + `createpde`
-- `minix3/minix/kernel/cpulocals.h:55` — `ptproc` per-CPU 变量
-- `minix3/minix/kernel/arch/i386/pre_init.c:232` — `kinfo.freepde_start = pg_mapkernel()`
+- `minix3/minix/kernel/arch/i386/protect.c:arch_post_init` — `arch_post_init`
+- `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel` — `pg_mapkernel`
+- `minix3/minix/kernel/arch/i386/pg_utils.c:pg_info` — `pg_info`
+- `minix3/minix/kernel/arch/i386/memory.c:memory_init` — `memory_init`
+- `minix3/minix/kernel/arch/i386/memory.c:mem_clear_mapcache` — `mem_clear_mapcache` + `createpde`
+- `minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L55，工具生成）` — `ptproc` per-CPU 变量
+- `minix3/minix/kernel/arch/i386/pre_init.c:pre_init（L232，工具生成）` — `kinfo.freepde_start = pg_mapkernel()`

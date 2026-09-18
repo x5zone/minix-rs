@@ -85,25 +85,25 @@ Rust 改写不是把两个函数六十行照抄过来，而是参考 Linux 的�
 ### D1 发送者检查在外面
 
 - **C**：`do_noquantum` 里没有 `accept_message`（`92` 直接读 `m_source`）；检查在 `main.c:68-84`。
-- **Rust**：`admit(&Result<OccupiedSlot, SlotVerdict>)`（`os/servers/sched/src/scheduling/noquantum.rs:40`：没有发送者参数——函数签名就是信任模型；门过了把槽位（行加下标）递回去）。
+- **Rust**：`admit(&Result<OccupiedSlot, SlotVerdict>)`（`os/servers/sched/src/scheduling/noquantum.rs:fn admit`：没有发送者参数——函数签名就是信任模型；门过了把槽位（行加下标）递回去）。
 - **为什么**：检查上移了，函数里就没有检查（检查在循环层、硬说在函数层，那是形状作假）；签名里没有发送者就验不了发送者（调用者想验发送者都找不到入口——误用在编译期就暴露）。备选方案（`admit(sender_ok, ...)` 和三个臂统一）被否决了：统一的形状掩盖了真实的不对称（四个 handler 三个验发送者、一个验内核标记——形状应当说出不同，不应当抹掉不同）。
 
 ### D2 降级做成纯函数
 
 - **C**：`if (priority < MIN_USER_Q) priority += 1`（`99-101`）。
-- **Rust**：`demote(Priority) -> Option<Priority>`（`noquantum.rs:51`：饱和加一、到底封顶，`None` 防御性保留）。
+- **Rust**：`demote(Priority) -> Option<Priority>`（`os/servers/sched/src/scheduling/noquantum.rs:fn demote`：饱和加一、到底封顶，`None` 防御性保留）。
 - **为什么**：降级是个算术（无表可查、无检查可验——纯了才好测）；到底封顶就是全函数（`None` 防常量漂移，05 的 `to_priority` 同例）。备选方案（调用者内联 `+1`）被否决了：到底的判断散开（到底在各处各写一遍，以后改了一处漏一处）。
 
 ### D3 改上限分三段
 
 - **C**：验检查（`262-276`）→ 快照写值（`278-282`）→ 下发回滚（`284-291`）。
-- **Rust**：`admit`（`nice.rs:54`：EPERM→表检查码→EINVAL，和 06/07 同序；门过了天花板和槽位一起递回——写入两样都要）+ `regrade`（`nice.rs:83`：两个数一起改、一个构造）+ 回滚就是写回去（调用者拿着 `before: Current`，`Copy` 就是快照——没有回滚函数）。
+- **Rust**：`admit`（`os/servers/sched/src/scheduling/nice.rs:fn admit`：EPERM→表检查码→EINVAL，和 06/07 同序；门过了天花板和槽位一起递回——写入两样都要）+ `regrade`（`os/servers/sched/src/scheduling/nice.rs:fn regrade`：两个数一起改、一个构造）+ 回滚就是写回去（调用者拿着 `before: Current`，`Copy` 就是快照——没有回滚函数）。
 - **为什么**：快照就是值（`Current` 把一对数绑在一起就是事务性——拆开以后某次调用可能只写一半，见 §1.4）；回滚不需要函数（拿着就是快照、写回去就是回滚——函数将无事可做）；检查顺序三个臂统一（06 的 D2、07 的 D2 同理）。备选方案（`rollback(before) -> Current` 函数）被否决了：恒等函数就是摆设（返回它的输入而已）。
 
 ### D4 边界检查双向拒绝
 
 - **C**：`new_q >= 16 → EINVAL`（`276`：没写下界）。
-- **Rust**：`< 0 || >= 16 → EINVAL`（`nice.rs:66-76`，`as u8` 旁边有守卫注释——06 的 D3 那套写法的跨臂复用）。
+- **Rust**：`< 0 || >= 16 → EINVAL`（`os/servers/sched/src/scheduling/nice.rs:fn admit（L66，工具生成）`，`as u8` 旁边有守卫注释——06 的 D3 那套写法的跨臂复用）。
 - **为什么**：对外表现一致（06 的 D3 同理，不再证明）；三个臂同一套（边界双向拒绝在 06/08 两处同形——以后改一处一定会想到另一处）。备选方案（`u32` 线值绕回）被否决了：翻译腔（模式 65）。
 
 ### D5 局部下发只讲意思
@@ -144,10 +144,10 @@ os/servers/sched/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 耗尽检查 | `schedule.c:92-96` | `noquantum.rs:27,40` | 无发送者的检查 |
-| 降一级 | `schedule.c:99-101` | `noquantum.rs:51` | 到底封顶 |
-| 改上限检查 | `schedule.c:262-276` | `nice.rs:26,40,54` | 先发送者后槽位后数字 |
-| 一起改 | `schedule.c:278-288` | `nice.rs:40,83` | 配对即事务 |
+| 耗尽检查 | `schedule.c:92-96` | `os/servers/sched/src/scheduling/noquantum.rs:struct Request,40` | 无发送者的检查 |
+| 降一级 | `schedule.c:99-101` | `os/servers/sched/src/scheduling/noquantum.rs:fn demote` | 到底封顶 |
+| 改上限检查 | `schedule.c:262-276` | `os/servers/sched/src/scheduling/nice.rs:struct Request,40,54` | 先发送者后槽位后数字 |
+| 一起改 | `schedule.c:278-288` | `os/servers/sched/src/scheduling/nice.rs:struct Current,83` | 配对即事务 |
 | 局部下发名字 | `schedule.c:32-33` | （归 09，概念引用） | 动数字不动 CPU |
 
 ### 4.3 不变量
@@ -166,11 +166,11 @@ os/servers/sched/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_door_without_sender` | `schedule.c:92-96` + `main.c:70-71` | 无发送者的检查 + 三种码 | `noquantum.rs:79` |
-| `test_demote_one_step` | `schedule.c:99-101` | 降一级 + 到底停（0→1/14→15/15→15） | `noquantum.rs:90` |
-| `test_doors_in_order` | `schedule.c:262-276` | 发送者压槽位压数字 + 边界值 | `nice.rs:114` |
-| `test_regrade_writes_both` | `schedule.c:282` | 一起改一个构造 | `nice.rs:135` |
-| `test_rollback_restores_both` | `schedule.c:284-291` | 往返精确（改完恢复旧值） | `nice.rs:145` |
+| `test_door_without_sender` | `schedule.c:92-96` + `main.c:70-71` | 无发送者的检查 + 三种码 | `os/servers/sched/src/scheduling/noquantum.rs:fn test_door_without_sender` |
+| `test_demote_one_step` | `schedule.c:99-101` | 降一级 + 到底停（0→1/14→15/15→15） | `os/servers/sched/src/scheduling/noquantum.rs:fn test_demote_one_step` |
+| `test_doors_in_order` | `schedule.c:262-276` | 发送者压槽位压数字 + 边界值 | `os/servers/sched/src/scheduling/nice.rs:fn test_doors_in_order` |
+| `test_regrade_writes_both` | `schedule.c:282` | 一起改一个构造 | `os/servers/sched/src/scheduling/nice.rs:fn test_regrade_writes_both` |
+| `test_rollback_restores_both` | `schedule.c:284-291` | 往返精确（改完恢复旧值） | `os/servers/sched/src/scheduling/nice.rs:fn test_rollback_restores_both` |
 
 测试策略：检查用无发送者（签名即模型）和顺序覆盖锁定；降级用步进值（0/7/14/底四点）锁定；改上限用一起改（一个构造两个值）和往返（改完恢复精确相等）锁定。
 
@@ -202,7 +202,7 @@ os/servers/sched/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/schedule.c:87-109,254-295`（降改全流程）、`minix3/minix/servers/sched/schedule.c:32-35`（局部与迁 CPU 的名字）、`minix3/minix/servers/sched/main.c:68-84`（耗尽标记检查）、`minix3/minix/include/minix/ipc.h:1822-1827`（改上限消息形状）、`minix3/minix/servers/pm/schedule.c:89-112`（改上限来路）
+- C 源：`minix3/minix/servers/sched/schedule.c:do_noquantum,254-295`（降改全流程）、`minix3/minix/servers/sched/schedule.c:schedule_process_local`（局部与迁 CPU 的名字）、`minix3/minix/servers/sched/main.c:main（L68，工具生成）`（耗尽标记检查）、`minix3/minix/include/minix/ipc.h:1822-1827`（改上限消息形状）、`minix3/minix/servers/pm/schedule.c:sched_nice`（改上限来路）
 - 阶段文档：`02-sched-message-surface.md`（耗尽消息的检查）、`04-schedproc-table.md`（表检查规则）、`05-priority-timeslice-model.md`（上限当前位置分工）、`06-start-scheduling.md`（检查顺序的来源）、`09-schedule-process.md`（下一站）、`11-balance-queues.md`（恢复的去向）
 - Rust 实现：`os/servers/sched/src/scheduling/noquantum.rs:1`（降级臂）、`os/servers/sched/src/scheduling/nice.rs:1`（改上限臂）、`os/servers/sched/src/scheduling/mod.rs:1`（臂的名字）
 - 对端：`13-pm-interaction.md`（调用面，另篇）

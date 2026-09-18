@@ -4,9 +4,9 @@
 > `kernel/proc.h:22-82`（proc）/`:143-149`（RTS_*）/`:265-274`（ADDR 宏/
 > `isemptyp`）+ `kernel/priv.h:21-61`（priv）+ `kernel/type.h:18-26`
 > （irq_hook）+ `include/minix/param.h:14-54`（kinfo/boot_image）+
-> `type.h:148-176`（boot_image/kmessages）+ `bitmap.h:12-15` +
+> `type.h:148-176`（boot_image/kmessages）+ `minix3/minix/include/minix/bitmap.h:BITCHUNK_BITS` +
 > `const.h:143-150` + `com.h:48`（IDLE）/`:308`（IRQ_REENABLE）+
-> `ipcconst.h:7-16` + `endpoint.h:54-55`（ANY/NONE）+ `sys_config.h:8-9`
+> `ipcconst.h:7-16` + `minix3/minix/include/minix/endpoint.h:ANY`（ANY/NONE）+ `minix3/minix/include/minix/sys_config.h:_NR_PROCS`
 > （_NR_PROCS 256）/`:22`（_KMESS 10000）+ `config.h:31-33` +
 > `arch/i386/interrupt.h:35-37`（NR_IRQ_VECTORS 16）+
 > `arch/earm/multiboot.h:240`（PARAM_BUF 1024）
@@ -102,7 +102,7 @@ PROCLOOP 四段：计数器归零 → 空槽跳过（不计数）→ 满 22 行�
 `get_minix_kerninfo()->kmessages`（:71，04 §2.3 链）→ 起算
 `start = ((km_next + SIZE) - km_size) % SIZE`（:77）→ 拷贝循环 →
 `print_buf[r] = 0` 封口（:85）→ 两 `printf`。静态打印缓冲
-`print_buf[_KMESS_BUF_SIZE+1]`（:66，SIZE=10000，sys_config.h:22）是
+`print_buf[_KMESS_BUF_SIZE+1]`（:66，SIZE=10000，minix3/minix/include/minix/sys_config.h:_KMESS_BUF_SIZE）是
 "怕换行截断"的防御：环形回绕的原地打印会撕裂消息，先搬进线性缓冲再
 一次性输出。
 
@@ -180,7 +180,7 @@ RTS_NO_PRIV 0x80，proc.h:143-149）。三者各持**独立**静态缓冲（非�
 
 ### 2.11 proc_name：四规则（:385-395）
 
-`ANY→"ANY"` / `NONE→"NONE"`（endpoint.h:54-55，"bogus"注释原文）/
+`ANY→"ANY"` / `NONE→"NONE"`（minix3/minix/include/minix/endpoint.h:ANY，"bogus"注释原文）/
 `nr < -NR_TASKS || nr >= NR_PROCS`（-5/256）→`"BOGUS"` /
 空槽→`"EMPTY"` / 否则表名。PRINTRTS 的 from/to 解析经此（:24/:26）。
 

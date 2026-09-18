@@ -35,17 +35,17 @@ Rust 侧按"数字归一处、语义归一层"落位，本篇给出索引，数�
 （`com.h:1071-1072`）与选择位 `SDEV_OP_RD/WR/ERR/NOTIFY`（`com.h:1075-1078`）
 同族。Rust 落点：`minix-netdriver/src/sdev.rs`（编号枚举、守卫、可挂起表、
 旗标常量）。其中可挂起规则（八个能等、八个当场答，`sockdriver.c:8-26`）与
-错误位永不重测的规则（`sockevent.c:817`）是本族最容易走样的两条，01/02 篇
+错误位永不重测的规则（`minix3/minix/lib/libsockevent/sockevent.c:sockevent_fire（L817，工具生成）`）是本族最容易走样的两条，01/02 篇
 各有对表。
 
 ### 1.2 套接字标识族（sockid）
 
-`sockid_t` 是 `int32_t`，负数兼作错误通道（`sockdriver.h:27-28`）；五类基值
+`sockid_t` 是 `int32_t`，负数兼作错误通道（`minix3/minix/include/minix/sockdriver.h:SOCKDRIVER_IOV_MAX（L27，工具生成）`）；五类基值
 `SOCKID_TCP 0x0`、`SOCKID_UDP 0x00100000`、`SOCKID_RAW 0x00200000`、
-`SOCKID_RT 0x00400000`、`SOCKID_LNK 0x00800000`（`lwip.h:58-62`）按"基址或
-数组下标"铸成标识（`tcpsock.c:140` 等五处）；UNIX 域服务铸的是裸下标
-（`uds.c:97-101`），数值上落在 TCP 区间——解释权归铸造方，VFS 视其为不透明。
-哈希规则 `(id + (id >> 16)) % 256`（`sockevent.c:48-57`）消费裸编号。
+`SOCKID_RT 0x00400000`、`SOCKID_LNK 0x00800000`（`minix3/minix/net/lwip/lwip.h:SOCKID_TCP`）按"基址或
+数组下标"铸成标识（`minix3/minix/net/lwip/tcpsock.c:tcpsock_get_id` 等五处）；UNIX 域服务铸的是裸下标
+（`minix3/minix/net/uds/uds.c:udshash_del（L97，工具生成）`），数值上落在 TCP 区间——解释权归铸造方，VFS 视其为不透明。
+哈希规则 `(id + (id >> 16)) % 256`（`minix3/minix/lib/libsockevent/sockevent.c:sockhash_slot`）消费裸编号。
 Rust 落点：`minix-netdriver/src/sockid.rs`（新类型、二十位下标字段、负数
 拒绝）与 `sockevent.rs::hash_slot`。
 
@@ -67,7 +67,7 @@ ERR_*` 表）。两条铁律：表外的栈值落通用错误，绝不静默穿�
 ### 1.5 第三方栈胶水契约
 
 `PBUF_POOL_SIZE 0`（`lwipopts.h:80`）意味着池归服务自管——切片 512 字节
-（`lwipopts.h:49`）、slab 增长至六十四块（`mempool.c:238`，约十七 MB）；
+（`lwipopts.h:49`）、slab 增长至六十四块（`minix3/minix/net/lwip/mempool.c:MEMPOOL_DEFAULT_MAX_SLABS`，约十七 MB）；
 接收窗口 16384（`lwipopts.h:267`）与发送缓冲 11 倍分段（`:282`）是吞吐契约；
 单线程无系统层（`NO_SYS 1`，`lwipopts.h:14`）是执行模型契约。这组数字在
 Rust 侧由 `lwip_port.rs` 的常量映射承载，任何一项变动都是行为变更，须走
@@ -76,7 +76,7 @@ Rust 侧由 `lwip_port.rs` 的常量映射承载，任何一项变动都是行�
 ## Ch2: endpoint 约定——谁发来什么走哪条路
 
 两个服务的消息面由来源端点定界，分类顺序与 C 主循环同序
-（`lwip.c:293-382`；Rust `minix-netdriver/src/service.rs::classify`）：
+（`minix3/minix/net/lwip/lwip.c:startup（L293，工具生成）`；Rust `minix-netdriver/src/service.rs::classify`）：
 时钟通知驱动定时器（`Endpoint::CLOCK`）；数据存储通知携带网卡上下线
 （`Endpoint::DS`）；管理信息库请求来自 MIB 服务（`Endpoint::MIB`）；虚拟文件
 系统（`Endpoint::VFS`）送来套接字设备请求与过滤器设备请求；网卡驱动的回复

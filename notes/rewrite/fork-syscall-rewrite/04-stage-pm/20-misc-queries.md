@@ -298,7 +298,7 @@ int do_sprofile(void)
 
 `24` 行 `#if SPROFILE` 的条件编译在 Rust 以 `cfg(feature="sprofile")` 的 `ENOSYS` 缺口契约（`00-master-plan` 的 `sprofile` 仅 `mib` 服务用，`PM` 侧 `20` 标注缺口，`profile.c:43` 默认 `ENOSYS` 为本文 `D7` 的 Rust 侧 `cfg(not(feature))` 对偶）。
 
-### 2.9 `do_get/setmcontext`（`mcontext.c:13/23`）
+### 2.9 `do_get/setmcontext`（`minix3/minix/servers/pm/mcontext.c:do_setmcontext/23`）
 
 ```c
 int do_setmcontext(void) { return sys_setmcontext(who_e, m_in.m_lc_pm_mcontext.ctx); } // 15  who_e,ctx 直通（m_lc_pm_mcontext.ctx 的 VirBytes 句柄，A-3 显式 caller）
@@ -325,7 +325,7 @@ void set_rusage_times(struct rusage * r_usage, clock_t user_time, clock_t sys_ti
 
 ### 2.12 消息与类型（`callnr.h: PM_SYSUNAME 25/.../SPROF 39` + `ipc.h: MessLcPmSysuname/MessLsysGetsysinfo/.../MessLcPmMcontext` + `sysinfo.h: SI_*` + `reboot.h: RB_*` + `svrctl.h: PMSETPARAM` + `resource.h: rusage`）
 
-- `PM_SYSUNAME 25`（`callnr.h:25` `PM_BASE+25`）/ `PM_GETSYSINFO 47`（`callnr.h:47`）/ `PM_GETPROCNR 46`/`PM_GETEPINFO 45`/`PM_REBOOT 37`/`PM_SVRCTL 38`/`PM_GETRUSAGE 36`/`PM_SPROF 39`/`PM_GETMCONTEXT 18/SETMCONTEXT 19`（`callnr.h:25-39` 47 项之一，`table.c: `CALL(PM_SYSUNAME)=do_sysuname` 等）
+- `PM_SYSUNAME 25`（`minix3/minix/include/minix/callnr.h:PM_SETGID` `PM_BASE+25`）/ `PM_GETSYSINFO 47`（`minix3/minix/include/minix/callnr.h:PM_CLOCK_GETTIME`）/ `PM_GETPROCNR 46`/`PM_GETEPINFO 45`/`PM_REBOOT 37`/`PM_SVRCTL 38`/`PM_GETRUSAGE 36`/`PM_SPROF 39`/`PM_GETMCONTEXT 18/SETMCONTEXT 19`（`minix3/minix/include/minix/callnr.h:PM_SETGID` 47 项之一，`table.c: `CALL(PM_SYSUNAME)=do_sysuname` 等）
 - `MessLcPmSysuname { field, req, len, value }`（`ipc.h:469` `field: int, req: int, len: size_t, value: VirBytes`）/ `MessLsysGetsysinfo { what, size, where }`（`ipc.h:469` `what: int, size: size_t, where: VirBytes`）/ `MessLsysPmGetprocnr { pid }`（`ipc.h:469` `pid: pid_t`）/ `MessLsysPmGetepinfo { endpt, ngroups, groups }`（`ipc.h:469` `endpt: endpoint_t, ngroups: int, groups: VirBytes`）/ `MessLcPmReboot { how }`（`ipc.h:469` `how: int RB_*`）/ `MessLcSvrctl { request, arg }`（`ipc.h:469` `request: unsigned long, arg: VirBytes`）/ `MessLcPmRusage { who, addr }`（`ipc.h:469` `who: int, addr: VirBytes`）/ `MessLcPmSprof { action, mem_size, freq, intr_type, ctl_ptr, mem_ptr }`（`ipc.h:469` `action: int PROF_*`）/ `MessLcPmMcontext { ctx }`（`ipc.h:469` `ctx: VirBytes`）
 - `SI_PROC_TAB 0`（`sysinfo.h: SI_PROC_TAB 0`）/ `SI_CALL_STATS 1`（`sysinfo.h: SI_CALL_STATS 1` 的条件 `ENABLE_SYSCALL_STATS`）+ `VFS_PM_REBOOT`（`com.h: VFS_PM_REBOOT`）+ `RB_POWERDOWN`（`reboot.h: RB_POWERDOWN 1`）+ `PMSETPARAM/GETPARAM`（`svrctl.h: PMSETPARAM 0x...`）+ `RUSAGE_SELF 0/CHILDREN -1`（`resource.h: RUSAGE_SELF 0`）+ `PROF_START/STOP`（`profile.h: PROF_START 0`）
 
@@ -386,7 +386,7 @@ Rust 改写遵循“`UtsField` 枚举穷尽 + `SysInfoWhat` 精确 + `EpInfo` �
 
 ### D8：`mcontext` 透传收敛到 `McontextCtl` trait（ARCH A-3）
 
-- **C**：`mcontext.c:15/25` `sys_set/getmcontext(who_e, ctx)` 直通。
+- **C**：`minix3/minix/servers/pm/mcontext.c:do_setmcontext（L15，工具生成）/25` `sys_set/getmcontext(who_e, ctx)` 直通。
 - **Rust**：`trait McontextCtl { fn get(&self, ep: Endpoint, ctx: VirBytes) -> i32; fn set(...) -> i32; }` + `VirBytes` 不透明句柄（`A-11`）。
 
 ### ARCH 标注汇总
@@ -416,7 +416,7 @@ os/servers/pm/src/
 
 ### 4.2 `misc.rs`：杂项分派
 
-> **`do_svrctl`/`do_sysuname` 逻辑面现状（V3-P2-5，2026-09-09）**：`do_svrctl` 已按 C `misc.c:291-395` 全语义实现——`req` 形参化后补齐 IOCGROUP ∈ {'P','M'} 门（`ioc_group` 复刻 `ioccom.h:68` 算术）、四命令分派（`PMGETPARAM`/`PMSETPARAM`/`OPMGETPARAM`/`OPMSETPARAM` 以 `const fn ioc` 复刻 `_IOC` 算术，命令码逐位断言）、未知 req `EINVAL`、GET key 64 字节边界、keylen==0 全表 E2BIG 判据（`sizeof monitor_params` = 1024 全长，非实际串长）、SET 的 ENOSPC 先于边界。`do_sysuname` 补 `req` 形参方向门（`misc.c:89-96`）。用户缓冲拷贝（sysgetenv 取入/复制/EFAULT）仍属 wire 面（批次 G）。
+> **`do_svrctl`/`do_sysuname` 逻辑面现状（V3-P2-5，2026-09-09）**：`do_svrctl` 已按 C `misc.c:291-395` 全语义实现——`req` 形参化后补齐 IOCGROUP ∈ {'P','M'} 门（`ioc_group` 复刻 `minix3/sys/sys/ioccom.h:IOCGROUP` 算术）、四命令分派（`PMGETPARAM`/`PMSETPARAM`/`OPMGETPARAM`/`OPMSETPARAM` 以 `const fn ioc` 复刻 `_IOC` 算术，命令码逐位断言）、未知 req `EINVAL`、GET key 64 字节边界、keylen==0 全表 E2BIG 判据（`sizeof monitor_params` = 1024 全长，非实际串长）、SET 的 ENOSPC 先于边界。`do_sysuname` 补 `req` 形参方向门（`misc.c:89-96`）。用户缓冲拷贝（sysgetenv 取入/复制/EFAULT）仍属 wire 面（批次 G）。
 
 ```rust
 pub const PM_SYSUNAME: i32 = 25; pub const PM_GETSYSINFO: i32 = 47; /* ... SPROF 39 等 */
@@ -476,11 +476,11 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, hz: Clo
 - `test_getrusage_self_children`：`RUSAGE_SELF→sys_times` vs `CHILDREN→child_utime`（`407-434`）
 - `test_rusage_from_ticks`：`ticks*1e6/hz → sec/usec` 的 `u64` 防溢出（`149-155`）
 - `test_sprofile_enosys`：`SPROFILE` 缺省→`ENOSYS`（`profile.c:43`）
-- `test_mcontext_passthrough`：`sys_get/setmcontext` 直通（`mcontext.c:15/25`）
+- `test_mcontext_passthrough`：`sys_get/setmcontext` 直通（`minix3/minix/servers/pm/mcontext.c:do_setmcontext（L15，工具生成）/25`）
 
 ### 5.2 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `PM_SYSUNAME 25/GETSYSINFO 47/GETPROCNR 46/GETEPINFO 45/REBOOT 37/SVRCTL 38/GETRUSAGE 36/SPROF 39`（`callnr.h:25-39`）、`SI_PROC_TAB 0`（`sysinfo.h`）、`RB_POWERDOWN 1`（`reboot.h`）、`RUSAGE_SELF 0`（`resource.h`）
+- `test_constants_match_c`：锁定 `PM_SYSUNAME 25/GETSYSINFO 47/GETPROCNR 46/GETEPINFO 45/REBOOT 37/SVRCTL 38/GETRUSAGE 36/SPROF 39`（`minix3/minix/include/minix/callnr.h:PM_SETGID`）、`SI_PROC_TAB 0`（`sysinfo.h`）、`RB_POWERDOWN 1`（`reboot.h`）、`RUSAGE_SELF 0`（`resource.h`）
 - `test_find_param_kvp`：`find_param` 的 `KVP` 纯函数
 
 测试策略：`SysInfoCtl/RebootCtl/ParamStore/TimesVmCtl/SprofCtl/McontextCtl` 均 `Test*` mock 可注入 `OK/EPERM/ENOSYS` 与计数；`find_param` 纯函数脱离 `ProcTable` 独立测；`svrctl` 的 `keylen==0→全表` 与 `E2BIG` 分叉在 `ParamStore` 内单元测；`getrusage` 的 `ticks*1e6/hz` 在 `rusage_from_ticks` 纯函数验证 `u64` 防溢出。
@@ -509,7 +509,7 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, hz: Clo
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/misc.c` 全文（`72-100` `do_sysuname` + `108-144` `do_getsysinfo` + `149-164` `do_getprocnr` + `169-193` `do_getepinfo` + `198-233` `do_reboot` + `291-395` `do_svrctl` + `400-447` `do_getrusage`）、`minix3/minix/servers/pm/profile.c:22-45`（`do_sprofile` 的 `SPROFILE` 条件）、`minix3/minix/servers/pm/mcontext.c:13/23`（`do_set/getmcontext` 的 `sys_*mcontext` 透传）、`minix3/minix/servers/pm/utility.c:57-71`（`find_param` 的 `KVP` 线性）、`minix3/minix/servers/pm/utility.c:144-156`（`set_rusage_times` 的 `ticks*1e6/hz`）、`minix3/minix/include/minix/callnr.h:25-39`（`PM_SYSUNAME 25/.../SPROF 39`）、`minix3/minix/include/minix/ipc.h:469`（`MessLcPm*` 联合体）、`minix3/minix/include/minix/com.h: VFS_PM_REBOOT`（`VFS_PM_REBOOT`）、`minix3/sys/sys/sysinfo.h: SI_PROC_TAB 0`（`SI_*`）、`minix3/sys/sys/reboot.h: RB_*`（`RB_POWERDOWN`）
+- C 源（ground truth）：`minix3/minix/servers/pm/misc.c` 全文（`72-100` `do_sysuname` + `108-144` `do_getsysinfo` + `149-164` `do_getprocnr` + `169-193` `do_getepinfo` + `198-233` `do_reboot` + `291-395` `do_svrctl` + `400-447` `do_getrusage`）、`minix3/minix/servers/pm/profile.c:do_sprofile`（`do_sprofile` 的 `SPROFILE` 条件）、`minix3/minix/servers/pm/mcontext.c:do_setmcontext/23`（`do_set/getmcontext` 的 `sys_*mcontext` 透传）、`minix3/minix/servers/pm/utility.c:find_param`（`find_param` 的 `KVP` 线性）、`minix3/minix/servers/pm/utility.c:mproc（L144，工具生成）`（`set_rusage_times` 的 `ticks*1e6/hz`）、`minix3/minix/include/minix/callnr.h:PM_SETGID`（`PM_SYSUNAME 25/.../SPROF 39`）、`minix3/minix/include/minix/ipc.h:469`（`MessLcPm*` 联合体）、`minix3/minix/include/minix/com.h: VFS_PM_REBOOT`（`VFS_PM_REBOOT`）、`minix3/sys/sys/sysinfo.h: SI_PROC_TAB 0`（`SI_*`）、`minix3/sys/sys/reboot.h: RB_*`（`RB_POWERDOWN`）
 - PM 阶段文档：01-pm-init-main.md（`monitor_params` 的 `KVP` 线性串与 `uts_val` 的 `OS_*` 单一真相）、03-mproc-table.md（`find_proc/pm_isokendpt` 的 `IN_USE` 扫描）、04-ipc-dispatch.md（`call_vec` 的 `PmCall` 分发与 `ReplyIntent` 同步/永不回复边界）、10-pm-wait.md（`mp_child_utime` 的 `rusage` 累计）、11-signal-core.md（`check_sig` 的 `SIGKILL` 广播）、14-itimer.md（`HZ` 的 `ticks*1e6/hz` 分解）
 - 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/31-fpu-context-switching.md`（`sys_get/setmcontext` 的 `mcontext_t` 句柄）
 - 阶段内顺序：19-time.md（`sys_times` 的 `hz` 显式参来源）→ **本章（20）** → 99-global-concepts.md（`SI_*` 常量与 `utsname` 的 `OS_*` 单一真相的全局收敛）

@@ -1,7 +1,7 @@
 # 11-scheduling-primitives: 调度原语与进程状态机
 
 > **分类**: Kernel 调度核心
-> **C 源码**: `minix3/minix/kernel/proc.c:1595-1813`（enqueue/enqueue_head/dequeue/pick_proc）, `proc.c:1893-1910`（proc_no_time）, `system.c:642-723`（sched_proc）
+> **C 源码**: `minix3/minix/kernel/proc.c:enqueue`（enqueue/enqueue_head/dequeue/pick_proc）, `proc.c:1893-1910`（proc_no_time）, `system.c:642-723`（sched_proc）
 > **Rust 源码**: `os/kernel/src/sched.rs`, `os/kernel/src/proc_table.rs`, `os/kernel/src/proc.rs`
 > **前置**: 06（struct proc / RTS_FLAGS）、10（switch_to_user 调用方）
 
@@ -481,7 +481,7 @@ impl Scheduler {
 
 **借用分离**：`Scheduler` 方法只操作 `&mut [Option<ProcNr>]`（队列数组），不碰 `[KProcess]`（进程字段）。这避免了自借用。
 
-> **已知缺口**：Rust 实现当前未更新 `bill_ptr`（C: proc.c:1804-1809）。`set_bill_to_idle` 方法（proc_table.rs:358）仅用于 IDLE 计费初始化。完整的 bill_ptr 联动待实现（TODO）。
+> **已知缺口**：Rust 实现当前未更新 `bill_ptr`（C: proc.c:1804-1809）。`set_bill_to_idle` 方法（os/kernel/src/proc_table.rs:fn vm_swap_requestor（L358，工具生成））仅用于 IDLE 计费初始化。完整的 bill_ptr 联动待实现（TODO）。
 
 ### 4.3 ProcessTable 协调：sched_enqueue / sched_dequeue / sched_proc_no_time
 
@@ -588,7 +588,7 @@ pub fn sched_proc_no_time(&mut self, nr: ProcNr) {
 }
 ```
 
-**notify_scheduler 已实现**（proc_table.rs:643）：`rts_set(NO_QUANTUM)` 出队后，`notify_scheduler` 构建 `SCHEDULING_NO_QUANTUM` 消息（`mess_krn_lsys_schedule`，C: proc.c:1860-1891）并发送给用户态调度器。发送失败时 C panic，Rust 以 `panic!` 匹配（内核源发送失败 = 内核完整性错误）。
+**notify_scheduler 已实现**（os/kernel/src/proc_table.rs:fn sched_enqueue（L643，工具生成））：`rts_set(NO_QUANTUM)` 出队后，`notify_scheduler` 构建 `SCHEDULING_NO_QUANTUM` 消息（`mess_krn_lsys_schedule`，C: proc.c:1860-1891）并发送给用户态调度器。发送失败时 C panic，Rust 以 `panic!` 匹配（内核源发送失败 = 内核完整性错误）。
 
 ### 4.6 sched_proc 参数验证与字段更新
 

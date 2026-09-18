@@ -66,37 +66,37 @@
 
 ## 2. C 源码分析
 
-### 2.1 常量与节点结构（`pfs.c:16-44`）
+### 2.1 常量与节点结构（`minix3/minix/fs/pfs/pfs.c:PFS_NR_INODES`）
 
-节点上限五百一十二（`pfs.c:16`，注释要求与虚拟文件系统服务上限大体同步）。时间更新三位（`pfs.c:19-21`）。节点结构十三字段（`pfs.c:23-42`）：号、模式、属主、属组、大小、设备号、三时间、数据指针（仅管道）、起始偏移、更新标记、空闲哨兵、空闲链指针。空闲链是表头插入的链表（`pfs.c:44`）。
+节点上限五百一十二（`minix3/minix/fs/pfs/pfs.c:PFS_NR_INODES`，注释要求与虚拟文件系统服务上限大体同步）。时间更新三位（`minix3/minix/fs/pfs/pfs.c:ATIME`）。节点结构十三字段（`minix3/minix/fs/pfs/pfs.c:CTIME（L23，工具生成）`）：号、模式、属主、属组、大小、设备号、三时间、数据指针（仅管道）、起始偏移、更新标记、空闲哨兵、空闲链指针。空闲链是表头插入的链表（`minix3/minix/fs/pfs/pfs.c:LIST_HEAD`）。
 
-### 2.2 挂载 `pfs_mount`（`pfs.c:49-82`）
+### 2.2 挂载 `pfs_mount`（`minix3/minix/fs/pfs/pfs.c:LIST_HEAD（L49，工具生成）`）
 
-初始化空闲链，倒序建表（一号槽位号为一，空闲哨兵置真，`pfs.c:63-71`）。根节点清零（`pfs.c:78`），能力位置六十四位（`pfs.c:79`），报成功。设备号与标志位两个参数显式标注未用。
+初始化空闲链，倒序建表（一号槽位号为一，空闲哨兵置真，`minix3/minix/fs/pfs/pfs.c:pfs_mount（L63，工具生成）`）。根节点清零（`minix3/minix/fs/pfs/pfs.c:pfs_mount（L78，工具生成）`），能力位置六十四位（`minix3/minix/fs/pfs/pfs.c:pfs_mount（L79，工具生成）`），报成功。设备号与标志位两个参数显式标注未用。
 
-### 2.3 卸载 `pfs_unmount`（`pfs.c:87-99`）
+### 2.3 卸载 `pfs_unmount`（`minix3/minix/fs/pfs/pfs.c:pfs_mount（L87，工具生成）`）
 
 扫表找在用节点，找到就打印忙警告。做不了别的——内存表没有持久状态，卸载就是放行。
 
-### 2.4 查找与出生 `pfs_findnode`、`pfs_newnode`（`pfs.c:104-178`）
+### 2.4 查找与出生 `pfs_findnode`、`pfs_newnode`（`minix3/minix/fs/pfs/pfs.c:pfs_unmount（L104，工具生成）`）
 
-查找（`pfs.c:104-120`）：号界一到五百一十二，断言槽位号自洽，空闲返回空（调用者转无效参数）。出生（`pfs.c:125-178`）：类型检查（管道或块字符套接字，否则无效参数，`pfs.c:134-138`）；空栈报文件表满（`pfs.c:141-142`）；管道分配缓冲，失败报无空间（`pfs.c:146-147`）；弹栈顶，断言空闲，置忙；填模式属主属组、大小零、三更新全置；设备节点记设备号，管道记空设备；数据指针与起始清零；填回复六字段。
+查找（`minix3/minix/fs/pfs/pfs.c:pfs_unmount（L104，工具生成）`）：号界一到五百一十二，断言槽位号自洽，空闲返回空（调用者转无效参数）。出生（`minix3/minix/fs/pfs/pfs.c:pfs_findnode（L125，工具生成）`）：类型检查（管道或块字符套接字，否则无效参数，`minix3/minix/fs/pfs/pfs.c:pfs_newnode（L134，工具生成）`）；空栈报文件表满（`minix3/minix/fs/pfs/pfs.c:pfs_newnode（L141，工具生成）`）；管道分配缓冲，失败报无空间（`minix3/minix/fs/pfs/pfs.c:pfs_newnode（L146，工具生成）`）；弹栈顶，断言空闲，置忙；填模式属主属组、大小零、三更新全置；设备节点记设备号，管道记空设备；数据指针与起始清零；填回复六字段。
 
-### 2.5 死亡 `pfs_putnode`（`pfs.c:183-212`）
+### 2.5 死亡 `pfs_putnode`（`minix3/minix/fs/pfs/pfs.c:pfs_newnode（L183，工具生成）`）
 
-查不到报无效参数。计数非一报无效参数（注释解释计数长不大，`pfs.c:191-198`）。管道释放缓冲。置空闲，压回栈顶，报成功。
+查不到报无效参数。计数非一报无效参数（注释解释计数长不大，`minix3/minix/fs/pfs/pfs.c:pfs_putnode（L191，工具生成）`）。管道释放缓冲。置空闲，压回栈顶，报成功。
 
-### 2.6 管道读写 `pfs_read`、`pfs_write`（`pfs.c:217-293`）
+### 2.6 管道读写 `pfs_read`、`pfs_write`（`minix3/minix/fs/pfs/pfs.c:pfs_putnode（L217，工具生成）`）
 
-读（`pfs.c:217-248`）：非管道报无效参数；超缓冲上限报文件过大（`pfs.c:229-230`）；裁到存量；复制出，失败透传；大小减、起始加、置访问；报传输量。写（`pfs.c:253-293`）：非管道报无效参数；存量加增量超缓冲报文件过大（`pfs.c:265-266`，先验后搬）；起始非零则残留前移（`pfs.c:274-280`，注释解释写时压缩的理由）；复制进，失败透传；大小加、置变更加修改；报传输量。
+读（`minix3/minix/fs/pfs/pfs.c:pfs_putnode（L217，工具生成）`）：非管道报无效参数；超缓冲上限报文件过大（`minix3/minix/fs/pfs/pfs.c:pfs_read（L229，工具生成）`）；裁到存量；复制出，失败透传；大小减、起始加、置访问；报传输量。写（`minix3/minix/fs/pfs/pfs.c:pfs_read（L253，工具生成）`）：非管道报无效参数；存量加增量超缓冲报文件过大（`minix3/minix/fs/pfs/pfs.c:pfs_write（L265，工具生成）`，先验后搬）；起始非零则残留前移（`minix3/minix/fs/pfs/pfs.c:pfs_write（L274，工具生成）`，注释解释写时压缩的理由）；复制进，失败透传；大小加、置变更加修改；报传输量。
 
-### 2.7 截断 `pfs_trunc`、状态 `pfs_stat`、改模式 `pfs_chmod`（`pfs.c:298-375`）
+### 2.7 截断 `pfs_trunc`、状态 `pfs_stat`、改模式 `pfs_chmod`（`minix3/minix/fs/pfs/pfs.c:pfs_write（L298，工具生成）`）
 
-截断 `pfs_trunc`（`pfs.c:298-316`）：非管道报无效参数；非全零区间报无效参数；大小清零，置变更加修改。状态 `pfs_stat`（`pfs.c:321-356`）：查不到报无效参数；有挂起则读一次时钟全刷（`pfs.c:331-339`）；填状态十三字段（设备字段填设备号是旧套接字缺陷的变通，`pfs.c:342`；块大小填管道缓冲；块数按五百一十二字节向上取整，`pfs.c:352-353`）。改模式 `pfs_chmod`（`pfs.c:361-375`）：查不到报无效参数；类型位保留、权限位替换（`pfs.c:370`）；置修改加变更；回写新模式。
+截断 `pfs_trunc`（`minix3/minix/fs/pfs/pfs.c:pfs_write（L298，工具生成）`）：非管道报无效参数；非全零区间报无效参数；大小清零，置变更加修改。状态 `pfs_stat`（`minix3/minix/fs/pfs/pfs.c:pfs_trunc（L321，工具生成）`）：查不到报无效参数；有挂起则读一次时钟全刷（`minix3/minix/fs/pfs/pfs.c:pfs_stat（L331，工具生成）`）；填状态十三字段（设备字段填设备号是旧套接字缺陷的变通，`minix3/minix/fs/pfs/pfs.c:pfs_stat（L342，工具生成）`；块大小填管道缓冲；块数按五百一十二字节向上取整，`minix3/minix/fs/pfs/pfs.c:pfs_stat（L352，工具生成）`）。改模式 `pfs_chmod`（`minix3/minix/fs/pfs/pfs.c:pfs_stat（L361，工具生成）`）：查不到报无效参数；类型位保留、权限位替换（`minix3/minix/fs/pfs/pfs.c:pfs_chmod（L370，工具生成）`）；置修改加变更；回写新模式。
 
-### 2.8 信号 `pfs_signal`、启动 `pfs_init` 与 `pfs_startup`、回调表 `pfs_table`、入口 `main`（`pfs.c:380-451`）
+### 2.8 信号 `pfs_signal`、启动 `pfs_init` 与 `pfs_startup`、回调表 `pfs_table`、入口 `main`（`minix3/minix/fs/pfs/pfs.c:pfs_chmod（L380，工具生成）`）
 
-信号 `pfs_signal`（`pfs.c:380-388`）：非终止返回，终止则请求框架下班。初始化 `pfs_init`（`pfs.c:393-402`）：丢弃特权到服务用户（`rs.h:22`，九百九十九），失败警告。启动 `pfs_startup`（`pfs.c:407-420`）：注册新装回调、重启回调（有状态重启）、信号回调，交启动框架。回调表 `pfs_table`（`pfs.c:425-435`）：九项——挂载、卸载、新节点、释放节点、读、写、截断、状态、改模式。入口 `main`（`pfs.c:440-451`）：本地启动，进框架主循环，返回成功退出码。
+信号 `pfs_signal`（`minix3/minix/fs/pfs/pfs.c:pfs_chmod（L380，工具生成）`）：非终止返回，终止则请求框架下班。初始化 `pfs_init`（`minix3/minix/fs/pfs/pfs.c:pfs_signal（L393，工具生成）`）：丢弃特权到服务用户（`minix3/minix/include/minix/rs.h:SERVICE_UID`，九百九十九），失败警告。启动 `pfs_startup`（`minix3/minix/fs/pfs/pfs.c:pfs_init（L407，工具生成）`）：注册新装回调、重启回调（有状态重启）、信号回调，交启动框架。回调表 `pfs_table`（`minix3/minix/fs/pfs/pfs.c:pfs_startup（L425，工具生成）`）：九项——挂载、卸载、新节点、释放节点、读、写、截断、状态、改模式。入口 `main`（`minix3/minix/fs/pfs/pfs.c:pfs_startup（L440，工具生成）`）：本地启动，进框架主循环，返回成功退出码。
 
 ### 2.9 与 Rust 实现的步骤差异说明
 

@@ -19,14 +19,14 @@
 | `NR_LOCKS` | 8 | const.h:6 | POSIX 记录锁表槽位 |
 | `NR_SOCKDEVS` | 8 | const.h:10 | socket 驱动表（smap）行数 |
 | `NR_NONEDEVS` | `= NR_MNTS` | const.h:12 | 伪设备位图宽度——PFS 这类"无真实设备"的挂载从此分配 |
-| `OPEN_MAX` | 255 | syslimits.h:38 | 每进程 fd 上限：fd 0..254，255 本身不可用。Rust `fproc.rs:41` 同值；`Fd(u8)` 的新类型边界即此 |
-| `NGROUPS_MAX` | 16 | syslimits.h:59 | 补充组数上限；`fproc.rs` 的 `supplemental_groups: [Gid; 16]` 定长数组由此 |
+| `OPEN_MAX` | 255 | minix3/sys/sys/syslimits.h:OPEN_MAX | 每进程 fd 上限：fd 0..254，255 本身不可用。Rust `fproc.rs:41` 同值；`Fd(u8)` 的新类型边界即此 |
+| `NGROUPS_MAX` | 16 | minix3/sys/sys/syslimits.h:NGROUPS_MAX | 补充组数上限；`fproc.rs` 的 `supplemental_groups: [Gid; 16]` 定长数组由此 |
 
 这些常量的 Rust 归属遵循"归属即依赖方向"：协议常量（errno、endpoint、消息布局）入 `minix-types`；VFS 私有容量（`NR_FILPS` 等）入各表文件；跨端复用走 re-export（如 stadir 的 `pub use crate::vmnt::NR_MNTS`，Fix #33 消灭了 8/16 双值分叉）。
 
 ### 1.2 阻塞原因枚举——"进程在等谁"的类型化
 
-C 用 `fp_blocked_on` 整数 + `fp_u` 联合体（fproc.h:30-61）表达进程挂在什么上：`FP_BLOCKED_ON_NONE/PIPE/POPEN/FLOCK/SELECT/CDEV/SDEV`。Rust 以 `BlockedOn` 标签枚举承载（fproc.rs:94）——判别器与载荷绑定，读 pipe 参数时编译期不可能拿到 socket 参数（ARCH A-3）。驱动死亡级联（`unsuspend_by_endpt`）正是按这个枚举分流：CDEV → 复活回 EIO，SDEV → `sdev_stop`。
+C 用 `fp_blocked_on` 整数 + `fp_u` 联合体（minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L30，工具生成））表达进程挂在什么上：`FP_BLOCKED_ON_NONE/PIPE/POPEN/FLOCK/SELECT/CDEV/SDEV`。Rust 以 `BlockedOn` 标签枚举承载（fproc.rs:94）——判别器与载荷绑定，读 pipe 参数时编译期不可能拿到 socket 参数（ARCH A-3）。驱动死亡级联（`unsuspend_by_endpt`）正是按这个枚举分流：CDEV → 复活回 EIO，SDEV → `sdev_stop`。
 
 ### 1.3 协议边界常量——四个互不重叠的名字空间
 
@@ -42,7 +42,7 @@ C 的 `glo.h` 散装全局在 Rust 按"归属即依赖"拆进 `VfsState`（ARCH 
 
 ## 4 术语与跨地址空间拷贝
 
-`endpoint`（进程身份，`minix_types::Endpoint`）与 `transid`（`VFS_TRANSID 0xB01 + slot`，`fs_comm.rs:30-69` 的 `TransId`）是两条消息定位机制：endpoint 找进程，transid 在高 16 位找 worker 槽。`who_p`/`who_e`/`call_nr` 三个 C 宏分别是槽号/端点/调用号的当前上下文读取。`sys_datacopy_wrapper`（utility.c:142-186）是 VFS 代理的跨地址空间拷贝：PM 发来的组列表（misc.c:752）、exec 的路径（exec.c）都经它落地；Rust 侧决策口是 `PmHandler::fetch_group_list`（fail-closed ENOSYS 待 W1）。
+`endpoint`（进程身份，`minix_types::Endpoint`）与 `transid`（`VFS_TRANSID 0xB01 + slot`，`os/servers/vfs/src/fs_comm.rs:const TRANSACTION_BASE` 的 `TransId`）是两条消息定位机制：endpoint 找进程，transid 在高 16 位找 worker 槽。`who_p`/`who_e`/`call_nr` 三个 C 宏分别是槽号/端点/调用号的当前上下文读取。`sys_datacopy_wrapper`（utility.c:142-186）是 VFS 代理的跨地址空间拷贝：PM 发来的组列表（misc.c:752）、exec 的路径（exec.c）都经它落地；Rust 侧决策口是 `PmHandler::fetch_group_list`（fail-closed ENOSYS 待 W1）。
 
 类型映射（A-8）：`dev_t → DevId(u64)`、`mode_t → Mode(u32)`、`uid_t/gid_t → Uid/Gid(u32)`、`vir_bytes → VirBytes`；`LOCK_DEBUG` 调试 cfg（A-9）未移植（其断言对象——真锁——已被借用模型取代，见有意省略表）。
 
@@ -69,10 +69,10 @@ C 的 `glo.h` 散装全局在 Rust 按"归属即依赖"拆进 `VfsState`（ARCH 
 
 | C 符号 | C 锚点 | 删除理由 |
 |--------|--------|---------|
-| `check_filp_locks(_by_me)` | filedes.c:26-71 | 多线程死锁调试断言；借用模型（`locked_by`/`soft_locked`）使非法状态不可表达，断言无对象 |
-| `check_vnode_locks(_by_me)` | vnode.c:43-83 | 同上 |
-| `check_vmnt_locks(_by_me)` | vmnt.c:24-62 | 同上 |
-| `unlock_filps` | filedes.c:383 一带 | 批量解锁随软锁模型收编进 `dec_count`/槽释放路径 |
+| `check_filp_locks(_by_me)` | minix3/minix/servers/vfs/filedes.c:check_filp_locks_by_me | 多线程死锁调试断言；借用模型（`locked_by`/`soft_locked`）使非法状态不可表达，断言无对象 |
+| `check_vnode_locks(_by_me)` | minix3/minix/servers/vfs/vnode.c:check_vnode_locks_by_me | 同上 |
+| `check_vmnt_locks(_by_me)` | minix3/minix/servers/vfs/vmnt.c:check_vmnt_locks_by_me | 同上 |
+| `unlock_filps` | minix3/minix/servers/vfs/filedes.c:unlock_filps 一带 | 批量解锁随软锁模型收编进 `dec_count`/槽释放路径 |
 
 ### select 清理族（部分建模，部分省略）
 
@@ -87,7 +87,7 @@ C 的 `glo.h` 散装全局在 Rust 按"归属即依赖"拆进 `VfsState`（ARCH 
 
 | C 符号 | C 锚点 | 处置与理由 |
 |--------|--------|-----------|
-| `fetch_vmnt_paths` | vmnt.c:246-288 | **C 死代码**：定义 + `proto.h:371` 悬空声明、全树零调用；行为真相是 `fill_statvfs` 直拷 `m_mount_path`（stadir.c:284）。移植死函数即 translate 死代码（Fix #22 判定反转） |
+| `fetch_vmnt_paths` | minix3/minix/servers/vfs/vmnt.c:fetch_vmnt_paths | **C 死代码**：定义 + `proto.h:371` 悬空声明、全树零调用；行为真相是 `fill_statvfs` 直拷 `m_mount_path`（stadir.c:284）。移植死函数即 translate 死代码（Fix #22 判定反转） |
 | `panic_hook` | misc.c:989-993 | ARCH A-1 消灭 mthread 后"打印 mthread 栈"无对象（Fix #23 判定） |
 | `worker_cleanup`/`worker_init` 的 LU 调用点 | main.c:314/332/352 | 槽位是数据不是线程——清理/重建工人按构造为空操作；谓词 `lu_rollback_needs_workers`/`init_lu_needs_workers` 记录 C 分支（Fix #26） |
 

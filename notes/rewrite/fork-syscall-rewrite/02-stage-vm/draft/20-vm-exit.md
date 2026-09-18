@@ -684,7 +684,7 @@ pub(crate) fn handle_vm_exit(
 
 ### 4.4 物理页释放流程（PFN 模型）
 
-**对应 C 源码**：`map_subfree` (region.c:527-563) → `pb_unreferenced` (pb.c:96-133) → `anon_unreference` (mem_anon.c:56-62)
+**对应 C 源码**：`map_subfree` (region.c:527-563) → `pb_unreferenced` (minix3/minix/servers/vm/pb.c:pb_unreferenced) → `anon_unreference` (minix3/minix/servers/vm/mem_anon.c:anon_unreference)
 
 ```rust
 /// Release physical pages for all regions in the exiting process.

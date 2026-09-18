@@ -1,7 +1,7 @@
 # 12-ipc-core: IPC 核心机制
 
 > **分类**: Kernel IPC 核心
-> **源码**: `minix3/minix/kernel/proc.c:263-294, 479-597, 599-698, 703-768, 870-962, 967-1117, 1122-1167, 1200-1326, 1331-1346`
+> **源码**: `minix3/minix/kernel/proc.c:delivermsg, 479-597, 599-698, 703-768, 870-962, 967-1117, 1122-1167, 1200-1326, 1331-1346`
 > **前置**: 06（struct proc 字段语义）、10（switch_to_user 调用 delivermsg）、11（RTS_SENDING/RECEIVING 状态机 + rts_set 联动）
 > **说明**: 内核如何在无共享内存的前提下完成进程间消息中转、阻塞唤醒、死锁检测与通知投递
 
@@ -510,7 +510,7 @@ pub(crate) fn caller_q_remove_by_nr(procs: &mut [KProcess], dst_idx: usize, targ
 1. **零堆（否决 VecDeque 的根因）**：`VecDeque` 运行期堆分配，kernel 生产构建（无 `global_allocator`）中分配在链接期失败；C 的队列存储就在进程表内（侵入链），索引方案同构
 2. 链接是 `Option<ProcNr>` 槽索引——值语义，无借用别名，无 unsafe；入队 = 两次索引写（C: proc.c:960-964 两次指针写），不可失败
 3. `caller_q_tail` 是 O(1) 尾插扩展（C 遍历 O(n) 到尾）；FIFO 顺序与 C 逐行为一致
-4. 槽位身份字段在 `sys_update` 槽交换时保留（C: do_update.c:241-258 `rp->p_caller_q = from_rp->p_caller_q`；`send_q_link` 随内容交换）——与 C 的 slot-identity/content 二分完全对齐
+4. 槽位身份字段在 `sys_update` 槽交换时保留（C: minix3/minix/kernel/system/do_update.c:adjust_proc_slot `rp->p_caller_q = from_rp->p_caller_q`；`send_q_link` 随内容交换）——与 C 的 slot-identity/content 二分完全对齐
 
 ### 3.3 IpcEngine 形态：持有 &mut 借用的真实封装
 
@@ -740,7 +740,7 @@ pub enum DeadlockDirection {
 
 ### 4.2 IpcEngine 核心 trait/方法签名
 
-**位置**: os/kernel/src/ipc.rs:643-660
+**位置**: os/kernel/src/ipc.rs:fn caller_q_len（L643，工具生成）
 
 ```rust
 pub struct IpcEngine<'a> {
@@ -859,7 +859,7 @@ pub fn receive(&mut self, caller_nr: ProcNr, src_endpoint: Endpoint) -> IpcOutco
 
 ### 4.5 detect_deadlock 与 blocked_on 实现
 
-**位置**: os/kernel/src/ipc.rs:685-783
+**位置**: os/kernel/src/ipc.rs:struct IpcEngine<'a>（L685，工具生成）
 
 ```rust
 /// 动态选字段。C: P_BLOCKEDON 宏 — proc.h:187-194
@@ -912,9 +912,9 @@ pub fn detect_deadlock(&mut self, function: IpcCall, caller_nr: ProcNr, dst_endp
 
 ### 4.6 delivermsg 自由函数实现（FIX-20, Phase 1B）
 
-**位置**: os/kernel/src/ipc.rs:363
+**位置**: os/kernel/src/ipc.rs:fn copy_msg_from_user
 
-**调用方**: `ProcessTable::process_misc_flags`（os/kernel/src/proc_table.rs:816，DELIVERMSG 分支 :854-922），当 `MF_DELIVERMSG` 置位时调用。
+**调用方**: `ProcessTable::process_misc_flags`（os/kernel/src/proc_table.rs:fn sched_proc_no_time（L816，工具生成），DELIVERMSG 分支 :854-922），当 `MF_DELIVERMSG` 置位时调用。
 
 ```rust
 /// C: delivermsg(&p) — proc.c:263-294
@@ -975,7 +975,7 @@ impl IpcEngine {
 
 ### 4.7 check_ipc_permission 四层检查
 
-**位置**: os/kernel/src/ipc.rs:1270-1318
+**位置**: os/kernel/src/ipc.rs:fn take_pending_async（L1270，工具生成）
 
 ```rust
 pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, call: IpcCall) -> Result<(), IpcError> {
@@ -1025,7 +1025,7 @@ pub fn check_ipc_permission(&self, caller_nr: ProcNr, dst_endpoint: Endpoint, ca
 
 ### 4.8 do_ipc 分派
 
-**位置**: os/kernel/src/ipc.rs:1339-1388
+**位置**: os/kernel/src/ipc.rs:fn deliver_async（L1339，工具生成）
 
 > **入口前置**：`dispatch_ipc_entry`（syscall.rs:523-550，详见 [13-syscall-dispatch §4.8](13-syscall-dispatch.md)）从 IPC trap 入口接收控制流，解码 `IpcCall::from_raw(msg.m_type)`，acquire BKL 后调用本节的 `do_ipc`。本节描述的是 BKL 已持有后的分派逻辑。
 
@@ -1076,7 +1076,7 @@ pub fn do_ipc(
 
 ### 4.9 caller_q 队列操作（索引式侵入链自由函数）
 
-**位置**: os/kernel/src/ipc.rs:502-607
+**位置**: os/kernel/src/ipc.rs:fn delivermsg（L502，工具生成）
 
 caller_q 是**索引式侵入 FIFO**：链表节点内嵌在进程槽位中，指针退化为 `Option<ProcNr>` 槽位索引。链的存储分布与 C 同构（`proc.h:73-74`）：
 
@@ -1129,7 +1129,7 @@ pub(crate) fn caller_q_is_empty(procs: &[KProcess], dst_idx: usize) -> bool;
 1. **零堆纪律**：`VecDeque<ProcNr>`（v1 设计）是运行期堆结构——C 内核无 malloc，链表节点内嵌于 `proc[]` 静态数组。侵入链对 C 同构，链操作只是槽位字段读写，无任何分配。
 2. **链跨槽分布**：链头在目标槽、后继在发送方槽，任何单槽方法都无法在不拿整表的情况下完成链操作。自由函数以 `&mut [KProcess]`（或 `&[KProcess]`）为第一参数，借用形状与数据分布一致。
 3. **O(1) 尾插**：C 的 `mini_send` 入队需从头遍历到尾（`while (*xpp) xpp = &(*xpp)->p_q_link`）；Rust 缓存 `caller_q_tail` 后尾插 O(1)。这是实现优化，FIFO 语义不变（语义等价，非 ARCH 演进）。
-4. **slot-identity 与 content 二分**（`sys_update` 槽交换语义，见 [06 §3.4](06-proc-init-boot-proc.md)）：链身份 = 槽位 ProcNr；槽交换后新进程继承旧槽的队列位置——`caller_q_remove_by_nr` 按槽位摘链正确处理该语义，与 `do_update.c:241-258` 一致。
+4. **slot-identity 与 content 二分**（`sys_update` 槽交换语义，见 [06 §3.4](06-proc-init-boot-proc.md)）：链身份 = 槽位 ProcNr；槽交换后新进程继承旧槽的队列位置——`caller_q_remove_by_nr` 按槽位摘链正确处理该语义，与 `minix3/minix/kernel/system/do_update.c:adjust_proc_slot` 一致。
 
 **find + remove 分离**：`caller_q_find`（不可变借用）与 `caller_q_remove`（可变借用）分离，借用按序结束/开始，借用检查器接受。旧 v1 `SenderQueue` 因队列容器内聚于单槽子对象、需 find/remove 两阶段借用规避——侵入链后链接散布在发送方槽，借用退化为普通顺序槽访问，不再有该约束。
 

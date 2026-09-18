@@ -216,7 +216,7 @@ if (handle_memory_once(vmp, vir, sizeof(message), 1) != OK)
 
 **sys_fork 契约**（kernel/system/do_fork.c）：内核复制父 proc 结构到子 slot、生成 endpoint、写回 `m_krn_lsys_sys_fork.endpt`（子 endpoint）+ `msgaddr`（父进程消息缓冲虚拟地址，:112）；若带 `PFF_VMINHIBIT` 则置 `RTS_VMINHIBIT`（:115-116）阻止子进程调度。
 
-**handle_memory_once 的语义**（pagefaults.c:245-252，16 §2.9 详述）：同步遍历 `[msgaddr, msgaddr+sizeof(message))`，确保区域存在且可写（CoW 页提前解析）。C 注释明说这是**优化**（"making these messages writable is an optimisation and its return value needn't be checked"）——但 C 仍然 panic 于失败，说明语义上要求必须成功。
+**handle_memory_once 的语义**（minix3/minix/servers/vm/pagefaults.c:handle_memory_once，16 §2.9 详述）：同步遍历 `[msgaddr, msgaddr+sizeof(message))`，确保区域存在且可写（CoW 页提前解析）。C 注释明说这是**优化**（"making these messages writable is an optimisation and its return value needn't be checked"）——但 C 仍然 panic 于失败，说明语义上要求必须成功。
 
 ### 2.7 C 小结：符号全景
 
@@ -230,7 +230,7 @@ if (handle_memory_once(vmp, vir, sizeof(message), 1) != OK)
 | `map_free_proc` | region.c:589 | 区域层回滚 |
 | `acl_fork` | acl.c:110-116 | ACL 继承规则 |
 | `sys_fork` | kernel/system/do_fork.c | 内核进程注册（endpoint + msgaddr + VMINHIBIT） |
-| `handle_memory_once` | pagefaults.c:245-252 | 消息页预解析 |
+| `handle_memory_once` | minix3/minix/servers/vm/pagefaults.c:handle_memory_once | 消息页预解析 |
 
 ---
 
@@ -259,7 +259,7 @@ if (handle_memory_once(vmp, vir, sizeof(message), 1) != OK)
 2. `handle_memory_once` ×2 未实现（§3.6 #5 DEFERRED，安全论证见 §4.4）。
 3. `sys_fork` 是 stub（返回确定性 endpoint，§3.5）。
 
-### 3.2 D2：逐字段拷贝替代 *vmc = *vmp（vmproc_handle.rs:327-333）
+### 3.2 D2：逐字段拷贝替代 *vmc = *vmp（os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_from_fork（L327，工具生成））
 
 C 用整结构体浅拷贝 + 4 字段恢复（fork.c:58-64）。Rust 的 `init_from_fork` 显式继承 4 个标量（endpoint / total / total_max / region_top）+ 置 IN_USE：
 
@@ -276,7 +276,7 @@ pub(crate) fn init_from_fork(&mut self, endpoint: Endpoint, total: VirBytes, tot
 - 区域树与页表**不拷贝**——由 `init_regions`（:423-427，空 RegionMap）与 `init_page_table`（:351-403，新建 + kernel 映射）新建，避免"拷贝后恢复"的脆弱模式（C 的 origpt 保存/恢复在 Rust 中不存在）。
 - `vm_flags = IN_USE` 等价于 C 的 `vm_flags &= VMF_INUSE`（:83）——子进程只保留 IN_USE，其余标志（如 VM_INSTANCE）不继承。
 
-### 3.3 D3：ACL 继承（copy_acl_from :340-343 → AclState::acl_fork acl.rs:167-174）
+### 3.3 D3：ACL 继承（copy_acl_from :340-343 → AclState::acl_fork os/servers/vm/src/acl.rs:fn acl_fork（L167，工具生成））
 
 | C ACL | C 结果 | Rust AclState | Rust 结果 |
 |-------|--------|--------------|-----------|
@@ -290,7 +290,7 @@ pub(crate) fn init_from_fork(&mut self, endpoint: Endpoint, total: VirBytes, tot
 
 **区域层**（fork_regions :140-158）：任一 `fork_region` 失败 → `free_forked_regions`（:160-175）递减全部已复制区域的 refcount + `ev_unreference`——对应 C `map_free_proc`（region.c:956）。
 
-**进程层**（do_fork）：`fork_regions` 失败（:228-249）、`write_page_table_mappings` 失败（:306-311）都调用 `free_page_table`（vmproc_handle.rs:411-419，对应 C `pt_free`）后返回错误。
+**进程层**（do_fork）：`fork_regions` 失败（:228-249）、`write_page_table_mappings` 失败（:306-311）都调用 `free_page_table`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn free_page_table（L411，工具生成），对应 C `pt_free`）后返回错误。
 
 **bind 语义的归属**：C 中 `pt_bind` 在 `sys_fork` 之后（fork.c:94），失败即 panic；Rust 无独立 bind 步骤——`write_page_table_mappings` 失败是最后一个可恢复点（fork.rs:314-319 注释），此后 `sys_fork` 完成内核侧登记，不可恢复路径只剩 sys_fork 本身。C `pt_bind` 的内核通知语义由 SetAddrSpace 通道承接（08 §3.3 D7 裁决）。SAFETY 注释论证了各回滚点前置条件（无 CR3 引用、页表未发布、单线程）。
 
@@ -323,14 +323,14 @@ if child_slot.get() >= NR_PROCS {
 
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
-| 1 | `*vmc = *vmp` 整结构体拷贝 + 4 字段恢复（fork.c:58-64） | `init_from_fork` 逐字段拷贝（vmproc_handle.rs:327-333） | ✅ 等价 |
+| 1 | `*vmc = *vmp` 整结构体拷贝 + 4 字段恢复（fork.c:58-64） | `init_from_fork` 逐字段拷贝（os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_from_fork（L327，工具生成）） | ✅ 等价 |
 | 2 | 子槽位界检查（fork.c:47-52） | 曾缺失 → **本轮修复**（fork.rs:204-207 + 回归测试） | ✅ 修复（03-P1-1） |
 | 3 | `pt_bind` 在 sys_fork 后（fork.c:94），失败 panic | 无独立 bind 调用——内核侧登记并入 `sys_fork`（fork.rs:321，SetAddrSpace 通道语义）；最后可恢复点为 `write_page_table_mappings` | ✅ 简化 |
 | 4 | `map_free_proc`（region.c:956） | `free_forked_regions`（fork.rs:160-175） | ✅ 等价 |
 | 5 | `handle_memory_once` ×2（fork.c:97-108） | **DEFERRED**（fork.rs:325-385 注释，依赖跨 slot 可变访问 + 真实 msgaddr） | ⚠️ 待接线 |
 | 6 | `sys_fork` 真实内核调用（返回 endpoint + msgaddr） | stub（fork.rs:406-408，确定性 endpoint） | ⚠️ 待内核 IPC |
-| 7 | `region_init` 双重调用（fork.c:60 + region.c:935） | `init_regions` 一次（vmproc_handle.rs:423-427） | ✅ 简化 |
-| 8 | ACL 继承（acl.c:110-116） | `copy_acl_from` → `AclState::acl_fork`（acl.rs:167-174） | ✅ 等价 |
+| 7 | `region_init` 双重调用（fork.c:60 + region.c:935） | `init_regions` 一次（os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_regions（L423，工具生成）） | ✅ 简化 |
+| 8 | ACL 继承（acl.c:110-116） | `copy_acl_from` → `AclState::acl_fork`（os/servers/vm/src/acl.rs:fn acl_fork（L167，工具生成）） | ✅ 等价 |
 | 9 | VMF_CHILD_ENDPOINT 写回 m1_i3（fork.c:111） | `VmReply::Fork` → `EncodeToM1`（vm.rs:689-695） | ✅ 等价 |
 
 ---
@@ -403,7 +403,7 @@ C 在 sys_fork 后调用 `handle_memory_once` ×2（fork.c:97-108）把消息页
 
 - **问题**：Rust `do_fork` 无 `child_slot` 上界检查；`get_empty` 接受 0..`VM_PROC_COUNT`（含 exec 临时槽 256）。C 拒绝 `>= NR_PROCS`（fork.c:47-52）。
 - **修复**：fork.rs:203-209 `child_slot.get() >= NR_PROCS → VmForkError::InvalidSlot` → `VmError::InvalidProcess`（EINVAL）。
-- **测试**：`test_vm_server_handle_fork_rejects_exec_tmp_slot`（vm_server.rs:1395）——boot proc（slot 9, PFS）作父进程 + child_slot=256 → `VmReply::Error(VmError::InvalidProcess)`。
+- **测试**：`test_vm_server_handle_fork_rejects_exec_tmp_slot`（os/servers/vm/src/vm_server.rs:fn dispatch_on_msg（L1395，工具生成））——boot proc（slot 9, PFS）作父进程 + child_slot=256 → `VmReply::Error(VmError::InvalidProcess)`。
 - **验证**：`cargo test -p minix-vm --lib` → 361 passed / 1 failed（`test_map_lazy` pre-existing 13 范围）。
 
 ---

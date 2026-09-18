@@ -109,8 +109,8 @@ Rust 改写不是照抄 `misc.c` 的开关与指针表，而是吸收 Linux/Redo
 
 ### D1 调用面复用
 
-- **C**：八注册（`table.c:34,50,55,56,60-62,66`）+ 八号（`callnr.h:88,104,109,110,114-116,120`）。
-- **Rust**：复用 `VfsCallNum::{Sync, Fsync, Utimens, Vmcall, Getrusage, Svrctl, GcovFlush, Getsysinfo}`（`os/servers/vfs/src/call_table.rs:45,61,66,67,71-73,77`）；本篇另附八偏移常量（`os/servers/vfs/src/misc.rs:46,48,50,52,54,56,58,60`）供调用面一处览。
+- **C**：八注册（`table.c:34,50,55,56,60-62,66`）+ 八号（`minix3/minix/include/minix/callnr.h:VFS_SYNC,104,109,110,114-116,120`）。
+- **Rust**：复用 `VfsCallNum::{Sync, Fsync, Utimens, Vmcall, Getrusage, Svrctl, GcovFlush, Getsysinfo}`（`os/servers/vfs/src/call_table.rs:enum VfsCallNum（L45，工具生成）,61,66,67,71-73,77`）；本篇另附八偏移常量（`os/servers/vfs/src/misc.rs:46,48,50,52,54,56,58,60`）供调用面一处览。
 - **为什么**：八调用各为独立 VFS 消息，09 已类型化；另设枚举即两处真源。替代方案（本篇另设 MiscCall 八值）被否决：与 09 同值枚举是重复定义（模式 A 反例）。
 
 ### D2 批量查询检查
@@ -184,12 +184,12 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 八偏移 | `callnr.h:88-120` | `misc.rs:46,48,50,52,54,56,58,60` | 调用面一处览 |
-| 批量查询三表 | `sysinfo.h:11-17` | `misc.rs:63,73,85,96,104,114,125,136` | 识表/检查/填写复制 |
+| 八偏移 | `minix3/minix/include/minix/callnr.h:VFS_SYNC` | `misc.rs:46,48,50,52,54,56,58,60` | 调用面一处览 |
+| 批量查询三表 | `minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB` | `misc.rs:63,73,85,96,104,114,125,136` | 识表/检查/填写复制 |
 | 落盘同步选卷 | `misc.c:276-326` | `misc.rs:153,172,181` | 选卷纯判定 |
 | 按 fd 查询应答 | `misc.c:328-375,434-445` | `misc.rs:192,204,215,218,223,227,239,244` | 检查/页数/应答 |
 | 上游三种请求 | `com.h:702-707` + `misc.c:380-498` | `misc.rs:262,274,285,297,305` | 识请求/来源检查/异步挂起 |
-| sysctl 开关名 | `svrctl.h:23-24` + `misc.c:797-898` | `misc.rs:308,313,319,321,324,329,338,347,358,373,384,391,402,417` | 分组/键名/值域/下发 |
+| sysctl 开关名 | `minix3/minix/include/sys/svrctl.h:VFSGETPARAM` + `misc.c:797-898` | `misc.rs:308,313,319,321,324,329,338,347,358,373,384,391,402,417` | 分组/键名/值域/下发 |
 | 时间戳更新三态 | `time.c:26-155` | `misc.rs:430,441,461,477,479,481,485,494,505,520,539` | 方式/检查/三态处理 |
 | 参数探针与废弃调用 | `gcov.c:10-73` + `misc.c:989-1006` | `misc.rs:544,555,566,575,585,593,605` | 检查/分流/固定返回 |
 | 对话 | `request.h` req 族 | `misc.rs:614,629,671` | 脚本/固定拒绝双实现 |
@@ -259,7 +259,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/misc.c:52-112`（批量查询）、`minix3/minix/servers/vfs/misc.c:276-498`（落盘同步/按 fd 查询/上游请求）、`minix3/minix/servers/vfs/misc.c:797-898`（sysctl 开关）、`minix3/minix/servers/vfs/misc.c:989-1006`（异常钩子与废弃调用）、`minix3/minix/servers/vfs/time.c:1-155`（时间戳更新）、`minix3/minix/servers/vfs/gcov.c:1-73`（参数探针）、`minix3/minix/include/minix/sysinfo.h:11-17`（批量查询号）、`minix3/minix/include/sys/svrctl.h:23-24`（sysctl 开关号）、`minix3/sys/sys/ioccom.h:68`（分组检查）、`minix3/minix/include/minix/com.h:702-707`（上游请求号）、`minix3/minix/include/minix/callnr.h:88-120`（八调用号）
+- C 源：`minix3/minix/servers/vfs/misc.c:do_getsysinfo`（批量查询）、`minix3/minix/servers/vfs/misc.c:do_sync`（落盘同步/按 fd 查询/上游请求）、`minix3/minix/servers/vfs/misc.c:do_svrctl`（sysctl 开关）、`minix3/minix/servers/vfs/misc.c:panic_hook`（异常钩子与废弃调用）、`minix3/minix/servers/vfs/time.c:1-155`（时间戳更新）、`minix3/minix/servers/vfs/gcov.c:1-73`（参数探针）、`minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB`（批量查询号）、`minix3/minix/include/sys/svrctl.h:VFSGETPARAM`（sysctl 开关号）、`minix3/sys/sys/ioccom.h:IOCGROUP`（分组检查）、`minix3/minix/include/minix/com.h:VMVFSREQ_FDLOOKUP`（上游请求号）、`minix3/minix/include/minix/callnr.h:VFS_SYNC`（八调用号）
 - 阶段文档：`09-main-loop.md`（分发）、`06-vmnt-table.md`（挂载表）、`12-request-wrappers.md`（FS 信封）、`14-filedes.md`（fd 表）、`02-fproc-struct.md`（轻表类型）、`25-exec.md`（`vmfd_gate` 同 peek 对端）、`29-protect.md`（判权只读）、`19-device-map.md`（ioctl 方向位）、`23-select.md`（select_dump 对端）、`08-worker-thread.md`（available 对端）、`99-global-concepts.md`（下一站）、`30-fcntl-lock.md`（上一站）
-- Rust 实现：`os/servers/vfs/src/misc.rs:1`（本篇判定层）、`os/servers/vfs/src/exec.rs:299`（`vmfd_gate` 同 peek 对端）、`os/libs/minix-types/src/types/errno.rs:13`（errno/OK 值）
+- Rust 实现：`os/servers/vfs/src/misc.rs:1`（本篇判定层）、`os/servers/vfs/src/exec.rs:fn vmfd_gate（L299，工具生成）`（`vmfd_gate` 同 peek 对端）、`os/libs/minix-types/src/types/errno.rs:const OK`（errno/OK 值）
 - 对端：`../02-stage-vm/20-vm-mmap.md`（VM 按 fd 查询用途）、`../04-stage-pm/05-vfs-interaction.md`（PM 侧杂项对端）、`../01-stage-kernel/18-syscall-copy.md`（数据拷贝语义）

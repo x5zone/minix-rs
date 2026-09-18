@@ -629,23 +629,23 @@ struct vir_region *map_lookup(struct vmproc *vmp,
 
 | 组件 | 位置 | 说明 |
 |------|------|------|
-| `handle_munmap()` | munmap.rs:44 | IPC 处理入口，对应 C `do_munmap` |
-| `unmap_range()` | munmap.rs:67 | 范围取消映射，4 分支逻辑 |
-| `MunmapRequest` | munmap.rs:38 | 业务层请求结构（endpoint/addr/length） |
+| `handle_munmap()` | os/servers/vm/src/munmap.rs:enum MunmapOutcome（L44，工具生成） | IPC 处理入口，对应 C `do_munmap` |
+| `unmap_range()` | os/servers/vm/src/munmap.rs:enum MunmapOutcome（L67，工具生成） | 范围取消映射，4 分支逻辑 |
+| `MunmapRequest` | os/servers/vm/src/munmap.rs:enum MunmapError（L38，工具生成） | 业务层请求结构（endpoint/addr/length） |
 | `MunmapError` (5 变体) | munmap.rs:18 | 精简错误枚举 + `to_errno()` |
-| `handle_map_phys()` | map_phys.rs:39 | 物理内存映射入口 |
+| `handle_map_phys()` | os/servers/vm/src/map_phys.rs:impl From<EndpointError> for MapPhysError（L39，工具生成） | 物理内存映射入口 |
 | `MapPhysError` (4 变体) | map_phys.rs:26 | 精简错误枚举 + `to_errno()` |
 | `RegionMap::find/find_mut` | region_map.rs | 地址查找区域 |
 | `RegionMap::remove/insert` | region_map.rs | 移除/插入区域 |
 | `RegionMap::iter()` | region_map.rs | 区域遍历 |
 | `RegionMap::find_slot()` | region_map.rs | 空闲地址查找 |
-| `VirRegion::split()` | vir_region.rs:277 | 区域分裂 |
-| `VirRegion::free_range()` | vir_region.rs:312 | 释放范围内物理页 |
+| `VirRegion::split()` | os/servers/vm/src/region/vir_region.rs:fn needs_cow（L277，工具生成） | 区域分裂 |
+| `VirRegion::free_range()` | os/servers/vm/src/region/vir_region.rs:fn shared_source（L312，工具生成） | 释放范围内物理页 |
 | `free_region_pages()` | region/mod.rs:15 | 统一释放区域物理页+页表 |
-| `DirectPhysical` memtype | memtype.rs:242 | directphys 缺页/unreference/copy |
-| `MEM_TYPE_DIRECT` | memtype.rs:644 | DirectPhysical 静态实例 |
-| `MemType::ev_split()` | memtype.rs:52 | split 回调（Anon: no-op, DirectPhys: Err） |
-| `MemType::ev_low_shrink()` | memtype.rs:63 | 头部缩减回调（Anon: no-op, DirectPhys: Err） |
+| `DirectPhysical` memtype | os/servers/vm/src/memtype.rs:fn new | directphys 缺页/unreference/copy |
+| `MEM_TYPE_DIRECT` | os/servers/vm/src/memtype.rs:fn ev_pagefault（L644，工具生成） | DirectPhysical 静态实例 |
+| `MemType::ev_split()` | os/servers/vm/src/memtype.rs:fn ev_reference（L52，工具生成） | split 回调（Anon: no-op, DirectPhys: Err） |
+| `MemType::ev_low_shrink()` | os/servers/vm/src/memtype.rs:fn ev_pagefault（L63，工具生成） | 头部缩减回调（Anon: no-op, DirectPhys: Err） |
 
 **尚需完善的组件**：
 
@@ -857,7 +857,7 @@ pub(crate) fn handle_map_phys(
 
 ### 4.4 DirectPhysical::ev_pagefault — 缺页处理
 
-**对应 C 源码**：`phys_pagefault()` (mem_directphys.c:30-50)
+**对应 C 源码**：`phys_pagefault()` (minix3/minix/servers/vm/mem_directphys.c:mem_type（L30，工具生成）)
 
 ```rust
 impl MemType for DirectPhysical {

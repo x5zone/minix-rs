@@ -23,7 +23,7 @@
 
 ### 1.1 为什么 PM 是进程生命周期的权威
 
-Minix3 的 `PM` 是 `mproc` 的权威（`../04-stage-pm/00-pm-overview.md`），`VFS` 是 `fproc` 的权威。`fork/exit/exec/setuid` 的用户态发起在 `PM` 侧完成 `kernel` 的 `proc` 分配与 `mproc` 创建后，`PM` **必须**以 `VFS_PM_FORK/EXIT/EXEC…` 的 `ipc_send(VFS_PROC_NR, &m_out)` 通知 `VFS`，使 `fproc[childno]` 与 `mproc[childno]` 的 `endpoint` 对齐。`PM` 与 `VFS` 的 `NR_PROCS 256` 同界（`fproc.h:11` *must be the same as in the kernel*）使 `childno = _ENDPOINT_P(cproc)` 的槽号在两侧一致。
+Minix3 的 `PM` 是 `mproc` 的权威（`../04-stage-pm/00-pm-overview.md`），`VFS` 是 `fproc` 的权威。`fork/exit/exec/setuid` 的用户态发起在 `PM` 侧完成 `kernel` 的 `proc` 分配与 `mproc` 创建后，`PM` **必须**以 `VFS_PM_FORK/EXIT/EXEC…` 的 `ipc_send(VFS_PROC_NR, &m_out)` 通知 `VFS`，使 `fproc[childno]` 与 `mproc[childno]` 的 `endpoint` 对齐。`PM` 与 `VFS` 的 `NR_PROCS 256` 同界（`minix3/minix/servers/vfs/fproc.h:__VFS_FPROC_H__（L11，工具生成）` *must be the same as in the kernel*）使 `childno = _ENDPOINT_P(cproc)` 的槽号在两侧一致。
 
 与 `call_vec[64]` 的用户进程 `VFS_BASE 0x100` 不同，`VFS_PM_RQ_BASE 0x900` 的 `&~0x7f` 前缀（`com.h:516`）将 `PM → VFS` 的 12 请求与 `VFS → FS` 的 `REQ_*` 的 `0x00` 前缀及 `VFS → VM` 的 `VM_*` 前缀在 `m_type` 域内不重叠，使 `main:91` 的 `who_e==PM` 守门可区分 `PM` 的控制面与 `FS` 的 `transid` 回复（`09` 的 `FsReply` 优先于 `Pm` 的 8 路排序依赖此不重叠）。
 
@@ -32,7 +32,7 @@ Minix3 的 `PM` 是 `mproc` 的权威（`../04-stage-pm/00-pm-overview.md`），
 `service_pm:783` 的 `switch(call_nr)` 将 12 请求按“是否可阻塞目标进程”分三调度：
 
 - **立即**（7 路：`SETUID/SETGID/SETGROUPS/SETSID/FORK/SRV_FORK/SETGROUPS`）：`okendpt → tfp->fields` 直接写 `fproc`，`ipc_send(PM, REPLY)` 同步回复。`FORK` 的 `pm_fork` 在此路（`864 pm_fork` 后 `m_type=FORK_REPLY` → `ipc_send`），因 `fork` 的 `copy_fproc` 只涉及内存拷贝，无 `SUSPEND` 风险。
-- **延期**（4 路：`EXEC/EXIT/DUMPCORE/UNPAUSE`）：`isokendpt → slot → rfp=&fproc[slot] → worker_start(rfp,NULL,&m_in,FALSE)` 的 `PM_WORK` 标记（`worker.c:418 flags|=FP_PM_WORK`），`return` 不回复；`worker_main:270` 的 `FP_PM_WORK → w_m_in=fp_pm_msg → service_pm_postponed → flags&=~PM_WORK` 后 `ipc_send(PM, REPLY)`。延期缘于目标进程可能正 `Busy`（`08` 的 `can_start` 守门：`has_normal_work → FALSE`），`PM_WORK` 的队列使 `exec` 与 `read` 串行。
+- **延期**（4 路：`EXEC/EXIT/DUMPCORE/UNPAUSE`）：`isokendpt → slot → rfp=&fproc[slot] → worker_start(rfp,NULL,&m_in,FALSE)` 的 `PM_WORK` 标记（`minix3/minix/servers/vfs/worker.c:worker_start（L418，工具生成） flags|=FP_PM_WORK`），`return` 不回复；`worker_main:270` 的 `FP_PM_WORK → w_m_in=fp_pm_msg → service_pm_postponed → flags&=~PM_WORK` 后 `ipc_send(PM, REPLY)`。延期缘于目标进程可能正 `Busy`（`08` 的 `can_start` 守门：`has_normal_work → FALSE`），`PM_WORK` 的队列使 `exec` 与 `read` 串行。
 - **独立 worker**（1 路：`REBOOT`）：`worker_start(fproc_addr(PM_PROC_NR), pm_reboot, …)` 的 `PM_PROC_NR==0` 关联（`PM` 在 VFS 视角永 `idle`，注释 *PM is always idle*），`pm_reboot` 的 `do_sync + free_proc×256 + unmount_all` 独立于任何目标进程。
 
 此“立即 vs 延期 vs 独立”与 09 的 `SUSPEND→ReplyLater` 的 `reviving` 优先同型：`PM_WORK` 的 `FP_PENDING` 排队在 `08` 的 `pending/busy/block_all` 三计数可观测，`service_pm_postponed` 的 `switch(job_call_nr)` 的 4 分支在 `17/23/21/22` 的 `revive` 消费前不新增 `reviving`。
@@ -87,7 +87,7 @@ Minix3 的 `PM` 是 `mproc` 的权威（`../04-stage-pm/00-pm-overview.md`），
 
 ### 2.3 `service_pm_postponed:668-763` 的四分支
 
-`service_pm_postponed:677 memset(m_out,0); switch(job_call_nr)` 的 `job_call_nr` 为 `self->w_m_in.m_type` 的 `PM_WORK` 存储（`worker.c:271 w_m_in=fp_pm_msg`）。`680 EXEC: proc_e=job_m_in.VFS_PM_ENDPT; exec_path=m7_p1; len=m7_i2; frame=m7_p2; ps_str=m7_i5; assert(proc_e==fp->endpoint); r=pm_exec(path,len,frame,len,&pc,&newsp,&ps_str); m_type=EXEC_REPLY; ENDPT=proc_e; PC=newsp; STATUS=r; NEWPS_STR=ps_str` 的 `pc/newsp` 回带（`25-exec.md` 的 `minix_get_user_sp` 对端）。`703 EXIT: proc_e=ENDPT; assert(==fp); pm_exit(); REPLY dummy ENDPT` 的 `free_proc(FP_EXITING)`级联。`716 DUMPCORE: proc_e=ENDPT; csig=TERM_SIG; core_path=PATH; if(csig==0) panic; assert(==fp); pm_dumpcore(csig,core_path); REPLY CORE` 的 `0→panic` 的“无信号 core 不支持”。`740 UNPAUSE: proc_e=ENDPT; assert(==fp); unpause(); REPLY UNPAUSE` 的 `FP_BLOCKED_ON_NONE` 解挂（`17` 的 `pipe` 与 `23` 的 `select` 两路）。
+`service_pm_postponed:677 memset(m_out,0); switch(job_call_nr)` 的 `job_call_nr` 为 `self->w_m_in.m_type` 的 `PM_WORK` 存储（`minix3/minix/servers/vfs/worker.c:worker_main（L271，工具生成） w_m_in=fp_pm_msg`）。`680 EXEC: proc_e=job_m_in.VFS_PM_ENDPT; exec_path=m7_p1; len=m7_i2; frame=m7_p2; ps_str=m7_i5; assert(proc_e==fp->endpoint); r=pm_exec(path,len,frame,len,&pc,&newsp,&ps_str); m_type=EXEC_REPLY; ENDPT=proc_e; PC=newsp; STATUS=r; NEWPS_STR=ps_str` 的 `pc/newsp` 回带（`25-exec.md` 的 `minix_get_user_sp` 对端）。`703 EXIT: proc_e=ENDPT; assert(==fp); pm_exit(); REPLY dummy ENDPT` 的 `free_proc(FP_EXITING)`级联。`716 DUMPCORE: proc_e=ENDPT; csig=TERM_SIG; core_path=PATH; if(csig==0) panic; assert(==fp); pm_dumpcore(csig,core_path); REPLY CORE` 的 `0→panic` 的“无信号 core 不支持”。`740 UNPAUSE: proc_e=ENDPT; assert(==fp); unpause(); REPLY UNPAUSE` 的 `FP_BLOCKED_ON_NONE` 解挂（`17` 的 `pipe` 与 `23` 的 `select` 两路）。
 
 ### 2.4 `pm_fork:577-634` 的四步共享
 
@@ -110,7 +110,7 @@ Minix3 的 `PM` 是 `mproc` 的权威（`../04-stage-pm/00-pm-overview.md`），
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄 `misc.c:606` 的 `fproc[childno]=fproc[parentno]` 与 `worker.c:418` 的 `flags|=PM_WORK`，而是吸收 Redox/Linux 的进程凭证与 `fd` 共享模型后做取舍。以下决策对应 `.design/10-design.v1.md` D1-D6。
+Rust 改写不是照抄 `misc.c:606` 的 `fproc[childno]=fproc[parentno]` 与 `minix3/minix/servers/vfs/worker.c:worker_start（L418，工具生成）` 的 `flags|=PM_WORK`，而是吸收 Redox/Linux 的进程凭证与 `fd` 共享模型后做取舍。以下决策对应 `.design/10-design.v1.md` D1-D6。
 
 ### D1 `VFS_PM_*` 类型化：`PmRequest` 枚举的 `decode`
 
@@ -200,7 +200,7 @@ os/servers/vfs/src/
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 前缀不重叠 `IS_VFS_PM_RQ & IS_VFS_CALL==∅` | `PmRequest::decode` | `&~0x7f==0x900` vs `&~0xff==0x100` | `com.h:516` vs `callnr.h:70` |
+| 前缀不重叠 `IS_VFS_PM_RQ & IS_VFS_CALL==∅` | `PmRequest::decode` | `&~0x7f==0x900` vs `&~0xff==0x100` | `com.h:516` vs `minix3/minix/include/minix/callnr.h:IS_VFS_CALL` |
 | 槽位双守门 `okendpt + PID_FREE` | `handle_fork` | `okendpt(pproc) → parentno` + `child pid==PID_FREE` | `misc.c:592/601` |
 | 锁保留 `fp_lock ∈ slot` | `copy_fproc` | `c_token=child.lock; child=parent; child.lock=token` | `misc.c:606` |
 | FD 共享 `filp_count>0` | `handle_fork` | `for(OPEN_MAX) if(filp) incr_ref` 的 `checked_add` | `misc.c:617` |
@@ -260,7 +260,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/include/minix/com.h:513-584`（`VFS_PM_RQ/RS_BASE` 前缀与 12 请求/11 回复及 `VFS_PM_*` 的 `m7_i*/m7_p*` 宏）、`minix3/minix/servers/vfs/main.c:668-763`（`service_pm_postponed` 的 `EXEC/EXIT/DUMPCORE/UNPAUSE` 四分支）、`764-915`（`service_pm` 的 `SETUID/GID/SID/GROUPS/FORK/SRV_FORK/REBOOT` 立即与 `FORK` 的 `SRV` 追加）、`minix3/minix/servers/vfs/misc.c:503-572`（`pm_reboot` 的 `do_sync×3` 与 `free_proc` 双轮）、`577-634`（`pm_fork` 四步）、`639-720`（`free_proc/ pm_exit` 级联）、`726-792`（`pm_setgid/setgroups/setuid/setsid` 凭证）、`903-943`（`pm_dumpcore` 的 `unpause→open→write_elf→free_proc`）、`minix3/minix/servers/vfs/fproc.h:91-98`（`FP_*` 标志）、`minix3/minix/servers/vfs/glo.h:26-28`（`fproc_addr/who_p`）
+- C 源：`minix3/minix/include/minix/com.h:VFS_PM_RQ_BASE`（`VFS_PM_RQ/RS_BASE` 前缀与 12 请求/11 回复及 `VFS_PM_*` 的 `m7_i*/m7_p*` 宏）、`minix3/minix/servers/vfs/main.c:service_pm_postponed`（`service_pm_postponed` 的 `EXEC/EXIT/DUMPCORE/UNPAUSE` 四分支）、`764-915`（`service_pm` 的 `SETUID/GID/SID/GROUPS/FORK/SRV_FORK/REBOOT` 立即与 `FORK` 的 `SRV` 追加）、`minix3/minix/servers/vfs/misc.c:do_vm_call（L503，工具生成）`（`pm_reboot` 的 `do_sync×3` 与 `free_proc` 双轮）、`577-634`（`pm_fork` 四步）、`639-720`（`free_proc/ pm_exit` 级联）、`726-792`（`pm_setgid/setgroups/setuid/setsid` 凭证）、`903-943`（`pm_dumpcore` 的 `unpause→open→write_elf→free_proc`）、`minix3/minix/servers/vfs/fproc.h:fp_sdev（L91，工具生成）`（`FP_*` 标志）、`minix3/minix/servers/vfs/glo.h:who_p`（`fproc_addr/who_p`）
 - 阶段文档：`03-fproc-table.md`（`isokendpt` 三守卫与 `PID_FREE` 双哨兵）、`09-main-loop.md`（`Route::Pm` 的 `main:91` 守门与 `PROM` 前缀不重叠）、`08-worker-thread.md`（`WorkerPool::start(...,PM_WORK)` 的 `FP_PENDING` 排队与 `steal_context`）、`04-filp-table.md`（`FilpTable::incr_ref` 的 `count==0` 哨兵）、`05-vnode-table.md`（`VnodeTable::dup/put` 的 `v_ref_count/v_fs_count` 双层）、`14-filedes.md`（`close_fd` 的单步）、`99-global-concepts.md`（`VFS_PM_*` 术语与 `NR_PROCS` 常量）
 - Rust 实现：`os/servers/vfs/src/ipc/dispatcher.rs:1`（`PmRequest(12)/PmResponse(11)/PmHandler(Vfs vs Mock)/handle_fork/handle_exit/handle_setuid/free_proc`）、`os/servers/vfs/src/main_loop.rs:1`（`PmMessageType` 的 `Unknown` 兜底 + `VfsState::handle_pm_fork` 的 `PID_FREE` 守门）、`os/servers/vfs/src/fproc.rs:1`（`FProcTable::ok_endpoint` 与 `FpFlags::NOFLAGS/SESLDR/REVIVED`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../04-stage-pm/05-vfs-interaction.md`（`PM` 侧 `tell_vfs` 的 `VFS_PM_*` 发送方状态机）、`../01-stage-kernel/18-syscall-copy.md`（`sys_datacopy_wrapper` 的跨进程拷贝）

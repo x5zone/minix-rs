@@ -69,7 +69,7 @@ directphys   1 → 0 → phys_unreference 空操作（设备内存不归 VM 管�
 
 ### 1.4 VFS transid：事务化请求
 
-VFS 的请求可能携带事务 id（`TRNS_GET_ID` 从 `m_type` 低位取 16 位，vfsif.h:79——发送方用 `TRNS_ADD_ID` 把 id 放进低 16 位）；主循环命中 `IS_VFS_FS_TRANSID` 时剥掉 id、路由到 `do_procctl`（main.c:141-148）。这是 VM 侧唯一"服务多个来源、需要区分请求归属"的入口——`VMPPARAM_HANDLEMEM` 的异步续作（SUSPEND → 稍后 VM_VFS_REPLY）正是靠 transid 回连请求的。
+VFS 的请求可能携带事务 id（`TRNS_GET_ID` 从 `m_type` 低位取 16 位，minix3/minix/include/minix/vfsif.h:TRNS_GET_ID——发送方用 `TRNS_ADD_ID` 把 id 放进低 16 位）；主循环命中 `IS_VFS_FS_TRANSID` 时剥掉 id、路由到 `do_procctl`（main.c:141-148）。这是 VM 侧唯一"服务多个来源、需要区分请求归属"的入口——`VMPPARAM_HANDLEMEM` 的异步续作（SUSPEND → 稍后 VM_VFS_REPLY）正是靠 transid 回连请求的。
 
 ### 1.5 对照：Redox 与 Linux
 
@@ -222,7 +222,7 @@ map_free_proc(vmp)            region.c:589-612
 
 关键语义：
 - **逐页解除**：`pb_unreferenced` 递减 `pb->refcount`，归零才调 `ev_unreference` 释放物理页——这就是 §1.2 的"恰好一次解除"。
-- **区域级 ev_delete**：`map_free` 在页解除后调用 `def_memtype->ev_delete`；file 后备区域的 `mappedfile_delete`（mem_file.c:280-287）会 `fdref_deref`——**退出路径也必须归还 fd 引用**，这是 §3.2 Rust 修复点。
+- **区域级 ev_delete**：`map_free` 在页解除后调用 `def_memtype->ev_delete`；file 后备区域的 `mappedfile_delete`（minix3/minix/servers/vm/mem_file.c:mappedfile_delete）会 `fdref_deref`——**退出路径也必须归还 fd 引用**，这是 §3.2 Rust 修复点。
 - **顺序**：先解除页引用，再删区域结构——`ev_delete` 可能需要区域的 param（fdref_id），所以放在 `map_subfree` 之后。
 
 ### 2.6 pt_free / pt_new / pt_bind（pagetable.c）
@@ -277,7 +277,7 @@ int do_procctl(message *msg, int transid)
 - **HANDLEMEM 无条件 SUSPEND**：`handle_memory_start` 的返回值被丢弃，`do_procctl` 恒返回 SUSPEND——主循环不回复，VFS 阻塞等待稍后的 `VM_VFS_REPLY`（页错误续作机制，16 范围）。这是 §3.5 偏差的 C 基准。
 - **endpoint 命名陷阱**：C 局部变量叫 `proc` 但存的是 endpoint（`vm_isokendpt` 把 slot 写回同一变量）。Rust 用 `Endpoint`/`UserSlot` 类型区分，消除此类别名混淆。
 
-### 2.8 handle_memory_start（pagefaults.c:254-289）
+### 2.8 handle_memory_start（minix3/minix/servers/vm/pagefaults.c:handle_memory_start）
 
 HANDLEMEM 委托的底层函数：
 
@@ -320,9 +320,9 @@ if((msg.m_source == VFS_PROC_NR) && IS_VFS_FS_TRANSID(transid)) {
 | `do_willexit` | exit.c:100 | 置 EXITING |
 | `do_procctl` | exit.c:117 | CLEAR/HANDLEMEM 分派 + 权限门 |
 | `map_free_proc/map_free/map_subfree` | region.c:589/568/527 | 区域释放链 |
-| `pb_unreferenced` | pb.c:96 | 引用计数归零释放 |
-| `pt_free/pt_new/pt_bind` | pagetable.c:1427/990/1358 | 页表生命周期 |
-| `handle_memory_start/once` | pagefaults.c:254/245 | 地址可达性保证 |
+| `pb_unreferenced` | minix3/minix/servers/vm/pb.c:pb_unreferenced | 引用计数归零释放 |
+| `pt_free/pt_new/pt_bind` | minix3/minix/servers/vm/pagetable.c:pt_free/990/1358 | 页表生命周期 |
+| `handle_memory_start/once` | minix3/minix/servers/vm/pagefaults.c:handle_memory_start/245 | 地址可达性保证 |
 | `do_procctl_notrans` | main.c:419 | transid=0 的 procctl 包装 |
 | `acl_clear` | acl.c:121 | ACL 引用递减 |
 | `num_vm_instances` | glo.h:46 | VM 实例计数 |
@@ -333,7 +333,7 @@ if((msg.m_source == VFS_PROC_NR) && IS_VFS_FS_TRANSID(transid)) {
 
 ### 3.1 D1：typestate 表达两阶段协议
 
-**决策**：`ActiveProc --mark_exiting()--> ExitingProc --reap()--> EmptySlot`（vmproc_handle.rs:171/:768）；`handle_vm_exit` 用 `table.get_exiting()`（table.rs:192）取 ExitingProc，`get_exiting` 返回 `None` 即"未先 WILLEXIT"。
+**决策**：`ActiveProc --mark_exiting()--> ExitingProc --reap()--> EmptySlot`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn mark_exiting（L171，工具生成）/:768）；`handle_vm_exit` 用 `table.get_exiting()`（table.rs:192）取 ExitingProc，`get_exiting` 返回 `None` 即"未先 WILLEXIT"。
 
 **为什么好**：C 的 `VMF_EXITING` 是运行时标志，靠调用方自觉检查（brk/mmap 是否检查取决于实现）；Rust 把"正在退出"变成类型——`get_active()`（table.rs:176）对 EXITING 返回 `None`，brk/mmap/fork 的分配路径在**编译期**无法拿到 EXITING 进程的 `ActiveProc` 视图。§1.1 的"EXITING 冻结"从约定变成类型系统保证。
 
@@ -341,7 +341,7 @@ if((msg.m_source == VFS_PROC_NR) && IS_VFS_FS_TRANSID(transid)) {
 
 ### 3.2 D2：资源释放链（free_process_phys + clear）
 
-**决策**：`exit::free_process_phys(regions: &mut RegionMap, frames, page_alloc)`（exit.rs:98）逐区域完成三件事，然后 `reap()` → `VmProc::clear()`（vmproc.rs:167）归位槽位。
+**决策**：`exit::free_process_phys(regions: &mut RegionMap, frames, page_alloc)`（exit.rs:98）逐区域完成三件事，然后 `reap()` → `VmProc::clear()`（os/servers/vm/src/vmproc/vmproc.rs:fn clear（L167，工具生成））归位槽位。
 
 ```
 free_process_phys（exit.rs:98-148）
@@ -393,7 +393,7 @@ C 退出路径的错误码高度统一，Rust 修复前有两处偏差：
 （C 终步 pt_bind 无对应调用——root 通知语义由 SetAddrSpace 通道承接）
 ```
 
-**本轮补全**：C `free_proc` 会重置 `vm_region_top` + 4 个 rusage 字段（exit.c:41-42）；修复前 Rust 的 CLEAR 路径漏掉这些统计清零。新增 `VmProc::reset_rusage`（vmproc.rs:122，对应 checklist F-042）+ `ActiveProc::reset_rusage`（vmproc_handle.rs:469），CLEAR 路径与退出路径共享同一语义。
+**本轮补全**：C `free_proc` 会重置 `vm_region_top` + 4 个 rusage 字段（exit.c:41-42）；修复前 Rust 的 CLEAR 路径漏掉这些统计清零。新增 `VmProc::reset_rusage`（os/servers/vm/src/vmproc/vmproc.rs:fn is_vm_instance（L122，工具生成），对应 checklist F-042）+ `ActiveProc::reset_rusage`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn mem_parts_mut（L469，工具生成）），CLEAR 路径与退出路径共享同一语义。
 
 **保留**：ACL 与 IN_USE 标志不变（C 只调 free_proc 不调 clear_proc）；endpoint 不变。
 **收紧（文档化）**：C 对 EXITING 进程的 CLEAR 无检查；Rust `get_active()` 返回 `None` → EINVAL——病理场景（RS/VFS 不该 CLEAR 正在退出的进程），类型系统防呆。
@@ -497,7 +497,7 @@ handle_procctl_handlemem(table, alloc, frames, ep, mem, len, wrflag):
 |----|------|------|--------|
 | 22-P1-1 | `MessLcVmProcctl` overlay + `decode_message`（wire format 对齐 C m9） | message.rs / vm.rs / vm_server.rs / dispatcher.rs | com.h:753-757 |
 | 22-P1-2 | procctl errno：InvalidEndpoint→EINVAL、未知参数→EINVAL、who<=0→EINVAL | exit.rs / dispatcher.rs | exit.c:122-125/:149 |
-| 22-P1-3 | exit 路径 ev_delete + fdref deref（文件后备区域） | exit.rs | region.c:578-580 / mem_file.c:280-287 |
+| 22-P1-3 | exit 路径 ev_delete + fdref deref（文件后备区域） | exit.rs | region.c:578-580 / minix3/minix/servers/vm/mem_file.c:mappedfile_delete |
 | 22-P1-4 | CLEAR 路径 rusage/region_top 清零（`reset_rusage` 落地） | exit.rs / vmproc.rs / vmproc_handle.rs | exit.c:41-42（checklist F-042） |
 
 ### 4.4 与 03/13/15 的关系

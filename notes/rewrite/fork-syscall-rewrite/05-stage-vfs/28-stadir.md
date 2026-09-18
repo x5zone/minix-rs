@@ -110,53 +110,53 @@ Rust 改写不是照抄 `stadir.c` 的打开 vnode 与填充流程，而是吸�
 ### D1 调用枚举
 
 - **C**：头注释八个入口，fchdir 实现在 32 行（`stadir.c:1-13,32-45`）。
-- **Rust**：`StadirCall` 九个变体 + `by_fd()` + `keeps_symlink()`（`os/servers/vfs/src/stadir.rs:45,66`）。
+- **Rust**：`StadirCall` 九个变体 + `by_fd()` + `keeps_symlink()`（`os/servers/vfs/src/stadir.rs:enum StadirCall（L45，工具生成）,66`）。
 - **为什么**：头注释漏列是历史事实，枚举以实现为准（九个变体更准确）。替代方案（八值 + 注释）被否决：调用面的事实不应靠注释遮掩（24-D1 同源惯例：调用号复用处亦以实现为准）。
 
 ### D2 工作目录切换检查
 
 - **C**：`change_into` 相同跳过/类型检查/权限检查/引用替换（`117-135`）。
-- **Rust**：`change_dir()` + `AnchorOut::{Keep, Switch}`（`os/servers/vfs/src/stadir.rs:80,92`）。
+- **Rust**：`change_dir()` + `AnchorOut::{Keep, Switch}`（`os/servers/vfs/src/stadir.rs:enum AnchorOut（L80，工具生成）,92`）。
 - **为什么**：三项检查各有不同的错误返回；引用替换顺序单独列出——顺序颠倒会导致旧引用泄漏。替代方案（三个布尔与）被否决：三种错误原因各不同（OK/ENOTDIR/上游 EACCES）。
 
 ### D3 chroot 的 root 检查
 
 - **C**：`do_chroot` 首检非超级用户即 EPERM（`94`），其余与 chdir 相同。
-- **Rust**：`chroot_gate()`（`os/servers/vfs/src/stadir.rs:106`）。
+- **Rust**：`chroot_gate()`（`os/servers/vfs/src/stadir.rs:fn chroot_gate（L106，工具生成）`）。
 - **为什么**：切换根目录影响全局路径解析边界。替代方案（并入 D2）被否决：root 检查是调用级检查，工作目录切换检查是 vnode 级检查，层级不同。
 
 ### D4 stat 双入口
 
 - **C**：stat 按路径/fstat 按 fd/lstat 保留符号链接尾（`140-192,418-446`）。
-- **Rust**：`StatSrc::{ByPath{retain_symlink}, ByFd}`（`os/servers/vfs/src/stadir.rs:115`）。
+- **Rust**：`StatSrc::{ByPath{retain_symlink}, ByFd}`（`os/servers/vfs/src/stadir.rs:enum StatSrc（L115，工具生成）`）。
 - **为什么**：三个 stat 查询仅差路径解析与终止标志；保留符号链接尾差一个标志位即可表达。替代方案（三个函数分立）被否决：同一逻辑三份拷贝容易漂移。
 
 ### D5 statvfs 的实时与缓存
 
 - **C**：十七字段回填 + 实时缓存分流 + 只读叠加 + 文件系统标识（`197-289`）。
-- **Rust**：`fill_plan()` + `apply_readonly_overlay()` + `fs_identity()`（`os/servers/vfs/src/stadir.rs:127,135,145,151,161`）。
-- **Rust 名字三拷贝（C-5 闭合）**：`MountNames{fstype, mnton, mntfrom}` + `mount_names()`（`os/servers/vfs/src/stadir.rs`）对应 `stadir.c:283-285` 的 `f_fstypename ← m_fstype` / `f_mntonname ← m_mount_path` / `f_mntfromname ← m_mount_dev`。`fetch_vmnt_paths`（`vmnt.c:246-288`）经全树核实为 **C 死代码**（`proto.h:371` 悬空声明、零调用）——行为真相是 getvfsstat 按存储值直接上报挂载路径，重写同样直报并把该函数记入有意省略台账，而非移植死代码。
+- **Rust**：`fill_plan()` + `apply_readonly_overlay()` + `fs_identity()`（`os/servers/vfs/src/stadir.rs:enum StatvfsFresh（L127，工具生成）,135,145,151,161`）。
+- **Rust 名字三拷贝（C-5 闭合）**：`MountNames{fstype, mnton, mntfrom}` + `mount_names()`（`os/servers/vfs/src/stadir.rs`）对应 `stadir.c:283-285` 的 `f_fstypename ← m_fstype` / `f_mntonname ← m_mount_path` / `f_mntfromname ← m_mount_dev`。`fetch_vmnt_paths`（`minix3/minix/servers/vfs/vmnt.c:fetch_vmnt_paths`）经全树核实为 **C 死代码**（`proto.h:371` 悬空声明、零调用）——行为真相是 getvfsstat 按存储值直接上报挂载路径，重写同样直报并把该函数记入有意省略台账，而非移植死代码。
 - **为什么**：实时查询失败即 EIO、缓存先零填再复制，分两路处理；只读标志叠加单独列出。十七字段逐一建模被否决：字段搬运无判定逻辑，注释"整体复制"即可（26-D6 同源惯例）。
 
 ### D6 getvfsstat 遍历
 
 - **C**：无缓冲计数/加锁遍历/跳过/失败即返（`351-413`）。
-- **Rust**：`MountView` + `WalkOut` + `need_lock()` + `walk_plan()`（`os/servers/vfs/src/stadir.rs:171,180,191,203`）。
+- **Rust**：`MountView` + `WalkOut` + `need_lock()` + `walk_plan()`（`os/servers/vfs/src/stadir.rs:fn fs_identity（L171，工具生成）,180,191,203`）。
 - **为什么**：遍历填充时锁后复验与失败即返分别是并发与错误处理的关键；无缓冲计数不加锁单独列出。替代方案（遍历直译）被否决：拆成可测试的矩阵更易验证。
 
 ### D7 FS 对话 trait 化
 
 - **C**：`req_stat` + `req_statvfs` 两个下发点（`161,203`）。
-- **Rust**：`StatFs{stat, statvfs}`（`ScriptedStat` 按脚本应答 vs `RefusingStat` 常拒）+ `stat_then_statvfs()` 契约探针（`os/servers/vfs/src/stadir.rs:239,248,284,296`）。
+- **Rust**：`StatFs{stat, statvfs}`（`ScriptedStat` 按脚本应答 vs `RefusingStat` 常拒）+ `stat_then_statvfs()` 契约探针（`os/servers/vfs/src/stadir.rs:fn walk_plan（L239，工具生成）,248,284,296`）。
 - **为什么**：FS 是唯一的不可测点；两法一 trait 足矣（27-D7 同源惯例）。替代方案（两 trait 分立）被否决：知识同源不分立。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | 锁配对转借用注释；遍历加锁留到执行层 | `stadir.rs:191` 模块注释 + 本文档 D2/D6 + 28 正文 §1.1 |
-| A-5 SUSPEND/revive 显式化 | 本篇无 SUSPEND（查询与下发皆同步）；verdict 只有 Done | `stadir.rs:303` + 本文档 D1 + 28 正文 §1.1 |
-| A-19 statvfs 缓存类型化（十七字段→两态分支） | 整体复制注释 + 实时缓存枚举 | `stadir.rs:127` + 本文档 D5 + 28 正文 §1.5 |
+| A-1 单线程事件循环（mthread→状态机） | 锁配对转借用注释；遍历加锁留到执行层 | `os/servers/vfs/src/stadir.rs:fn mount_names` 模块注释 + 本文档 D2/D6 + 28 正文 §1.1 |
+| A-5 SUSPEND/revive 显式化 | 本篇无 SUSPEND（查询与下发皆同步）；verdict 只有 Done | `os/servers/vfs/src/stadir.rs:fn statvfs（L303，工具生成）` + 本文档 D1 + 28 正文 §1.1 |
+| A-19 statvfs 缓存类型化（十七字段→两态分支） | 整体复制注释 + 实时缓存枚举 | `os/servers/vfs/src/stadir.rs:enum StatvfsFresh（L127，工具生成）` + 本文档 D5 + 28 正文 §1.5 |
 
 ---
 

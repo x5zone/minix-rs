@@ -1,7 +1,7 @@
 # 01-vm-init-main: 启动入口与初始化骨架
 
 > **分类**: 阶段 1 — 启动入口与进程模型（锚点文档）
-> **源码**: `minix3/minix/servers/vm/main.c`（`get_mem_chunks` 定义于 `minix3/minix/servers/vm/utility.c:44`，`mem_add_total_pages`/`mem_init` 定义于 `minix3/minix/servers/vm/alloc.c`；SEF 库位于 `minix3/minix/lib/libsys/sef*.c`）
+> **源码**: `minix3/minix/servers/vm/main.c`（`get_mem_chunks` 定义于 `minix3/minix/servers/vm/utility.c:get_mem_chunks`，`mem_add_total_pages`/`mem_init` 定义于 `minix3/minix/servers/vm/alloc.c`；SEF 库位于 `minix3/minix/lib/libsys/sef*.c`）
 > **Rust 模块**: `os/servers/vm/src/main.rs`、`os/servers/vm/src/boot.rs`、`os/servers/vm/src/global.rs`、`os/servers/vm/src/vm_server.rs`（`VmServer::new_with_boot_params`/`init`/`run`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md`
 > **说明**: VM 进程从 `main()` 入口到进入主循环之前的全部启动链：`is_first_time()` 门控、`init_vm()` 各步骤、SEF 生命周期、boot 进程地址空间、`map_service`、VM 自身内存边界。主循环消息分发细节在 `15-ipc-dispatch.md`。
@@ -206,7 +206,7 @@ pt_init();                 /* 475 — 定义于 pagetable.c */
 __minix_init();
 ```
 
-`__minix_init()` 是 libc 提供的函数：VM 在确定内核映射后，才能取得之前不可用的内核 IPC 向量（`SYS_*` 调用号映射）。Rust 侧分两层（V10-P0-2）：**就绪机制**已落地——`init()` 末尾调用 `self.transport.borrow_mut().mark_initialized()`（vm_server.rs:413），把 `IpcTransport` 的 `initialized` 门控打开（对应 C 的"IPC 向量可用"时刻）；**真实系统调用**仍待 `minix-sys` 的内核 IPC 原语（`KernelIpcTransport::receive/send` 主体 `unimplemented!`，见 §3.3 的 DEFERRED 表）。
+`__minix_init()` 是 libc 提供的函数：VM 在确定内核映射后，才能取得之前不可用的内核 IPC 向量（`SYS_*` 调用号映射）。Rust 侧分两层（V10-P0-2）：**就绪机制**已落地——`init()` 末尾调用 `self.transport.borrow_mut().mark_initialized()`（os/servers/vm/src/vm_server.rs:fn relocate（L413，工具生成）），把 `IpcTransport` 的 `initialized` 门控打开（对应 C 的"IPC 向量可用"时刻）；**真实系统调用**仍待 `minix-sys` 的内核 IPC 原语（`KernelIpcTransport::receive/send` 主体 `unimplemented!`，见 §3.3 的 DEFERRED 表）。
 
 #### 2.2.5 mem_add_total_pages() 调用点（main.c:485-495）
 
@@ -313,7 +313,7 @@ CALLMAP(VM_CLEARCACHE, do_clearcache);
 CALLMAP(VM_GETRUSAGE, do_getrusage);
 ```
 
-- `vm_calls[]` 是 `NR_VM_CALLS`（`minix3/minix/include/minix/com.h:769`，值为 **49**）项的函数指针表；`CALLNUMBER(c)`（main.c:54-58）把调用号从 `VM_RQ_BASE` 归一到零基下标，越界返回 -1。
+- `vm_calls[]` 是 `NR_VM_CALLS`（`minix3/minix/include/minix/com.h:NR_VM_CALLS`，值为 **49**）项的函数指针表；`CALLNUMBER(c)`（main.c:54-58）把调用号从 `VM_RQ_BASE` 归一到零基下标，越界返回 -1。
 - 分发语义（5 优先级 + ACL）归 `15-ipc-dispatch.md`；本文档只记录"注册发生在 init_vm 尾部"。
 
 #### 2.2.8 VM 实例标记（main.c:577-586）
@@ -439,9 +439,9 @@ static int sef_cb_init_fresh(int type, sef_init_info_t *info)
 
 首次启动时：从 RS 复制 `rprocpub[]`（各服务的公开信息：endpoint、调用掩码、启动标志），对每个 `in_use` 的服务调用 `map_service` 注册 ACL。
 
-#### 2.4.3 RS_INIT 握手与异步回复（sef_init.c:193-217、471-481）
+#### 2.4.3 RS_INIT 握手与异步回复（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request、471-481）
 
-`do_sef_init_request`（sef_init.c:193-217）解析 RS_INIT 消息 → `process_init(type, &info)`（sef_init.c:43-145）→ 回调 `sef_cb_init_fresh` → 构造 RS_INIT 回复 → `sef_cb_init_response`。
+`do_sef_init_request`（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request）解析 RS_INIT 消息 → `process_init(type, &info)`（minix3/minix/lib/libsys/sef_init.c:process_init）→ 回调 `sef_cb_init_fresh` → 构造 RS_INIT 回复 → `sef_cb_init_response`。
 
 ```c
 int sef_cb_init_response_rs_asyn_once(message *m_ptr)   /* sef_init.c:471-481 */
@@ -581,7 +581,7 @@ if params.is_first_time {
 | `map_region_init()`（main.c:468） | `RegionMap::new()`（惰性，每进程初始化时） | `init_regions()` 时 |
 | `init_proc(VM_PROC_NR)`（main.c:474） | `VmServer::init_vm_slot()` → `EmptySlot::activate` + `set_boot` | `init()` Phase 2a |
 | `pt_init()`（main.c:475） | `init_vm_self_pt()` | `new_with_boot_params`（非 test） |
-| `__minix_init()`（main.c:480） | **就绪机制已落地（V10-P0-2）**：`transport.mark_initialized()`（vm_server.rs:413）；系统调用本体 DEFERRED（`minix-sys` 为 stub） | `init()` 末尾 |
+| `__minix_init()`（main.c:480） | **就绪机制已落地（V10-P0-2）**：`transport.mark_initialized()`（os/servers/vm/src/vm_server.rs:fn relocate（L413，工具生成））；系统调用本体 DEFERRED（`minix-sys` 为 stub） | `init()` 末尾 |
 | `mem_add_total_pages`（main.c:485-495） | `VmServer::account_boot_memory()` → `global::add_total_pages` | `init()` Phase 2b |
 | boot 进程循环（main.c:498-520） | `VmServer::init_boot_procs()` + `exec_bootproc`（V11/T14：装载+sys_exec 已实现；栈帧→E-BOOTFRAME）+ blob 释放 | `init()` Phase 2c |
 | CALLMAP（main.c:522-573） | `MessageDispatcher::dispatch_by_number` 编译时 match | 编译期 |
@@ -598,8 +598,8 @@ SEF 在 C 中解决 3 个问题，Rust 各有更简单的替代：
 | SEF 组件 | C 中的必要性 | Rust 下的处理 |
 |---------|-------------|--------------|
 | `sef_startup()` + `sef_cb_init_fresh`（main.c:241-260） | C 没有标准服务初始化协议，必须通过 IPC 从 RS 取 rproctab | 保留协议、去掉框架：`VmServer::rs_handshake()`——`ipc_call_rs_init()` 取 rproctab → 逐条 `acl_set`（等价 `map_service`） |
-| `do_sef_init_request` + `sef_cb_init_response`（sef_init.c:193-217） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`，返回 `DispatchAction::Suspend`（不回复） |
-| `sef_cb_init_response_rs_asyn_once`（sef_init.c:471-481） | 避免启动死锁 | **DEFERRED**：RS_INIT 回复本身依赖 asynsend 原语（内核 IPC），落地时引入 |
+| `do_sef_init_request` + `sef_cb_init_response`（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`，返回 `DispatchAction::Suspend`（不回复） |
+| `sef_cb_init_response_rs_asyn_once`（minix3/minix/lib/libsys/sef_init.c:sef_cb_init_response_rs_asyn_once） | 避免启动死锁 | **DEFERRED**：RS_INIT 回复本身依赖 asynsend 原语（内核 IPC），落地时引入 |
 | `sef_cb_init_lu_restart` / `sef_cb_lu_state_changed` / `sef_cb_init_vm_multi_lu`（main.c:196-217,592-730） | Live Update 状态机 | **DEFERRED**：`rs.rs` 的 `handle_rs_prepare`/`handle_rs_update` 已预留入口；swap_proc_slot 等 LU 语义归 `25-rs-services.md` |
 | `sef_cb_signal_handler`（main.c:731-754） | 信号经 IPC 通知送达 | 主循环 `rcv_sts.is_notify()` 分支识别通知（V10-P1-1，transport.rs:58）；`SIGKMEM → do_memory` 归 `06-page-allocator.md`，当前 DEFERRED（通知分支直接 return Handled） |
 
@@ -760,7 +760,7 @@ pub fn init(&mut self) {
 
 #### 4.4.3 主循环与 RS_INIT（对应 §3.4；细节归 15）
 
-`run()`/`run_once()`（vm_server.rs:588/:623）经 `self.transport.borrow_mut().receive()/send()` 走 `IpcTransport` trait 对象（V10-P0-2）；通知跳过用 `rcv_sts.is_notify()`（V10-P1-1）；`missing_spares` 检查保持既有实现；`dispatch_on_msg` 优先级 2 的 RS_INIT 分支调用 `rs_handshake()` 并返回 `DispatchAction::Suspend`（不回复，等价 C main.c:149-152 的 SUSPEND 语义）。
+`run()`/`run_once()`（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L588，工具生成）/:623）经 `self.transport.borrow_mut().receive()/send()` 走 `IpcTransport` trait 对象（V10-P0-2）；通知跳过用 `rcv_sts.is_notify()`（V10-P1-1）；`missing_spares` 检查保持既有实现；`dispatch_on_msg` 优先级 2 的 RS_INIT 分支调用 `rs_handshake()` 并返回 `DispatchAction::Suspend`（不回复，等价 C main.c:149-152 的 SUSPEND 语义）。
 
 #### 4.4.4 Drop 与测试基础设施修复
 
@@ -826,5 +826,5 @@ pub fn init(&mut self) {
 - `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md` — 内核侧 VMCTL 协议（`VMCTL_BOOTINHIBIT_CLEAR` 等）
 - `minix3/minix/servers/vm/main.c` — 本文档 ground truth
 - `minix3/minix/lib/libsys/sef.c`、`sef_init.c` — SEF 框架实现
-- `minix3/minix/servers/vm/utility.c:361-420` — VM 自身 libc 接口
+- `minix3/minix/servers/vm/utility.c:mmap` — VM 自身 libc 接口
 - 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/26-vm-init-main.md`（旧编号素材）

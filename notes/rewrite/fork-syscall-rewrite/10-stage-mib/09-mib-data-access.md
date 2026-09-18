@@ -1,7 +1,7 @@
 # 09 — 系统信息库数据读写：先暂存再落盘，避免中途失败污染节点
 
 > **分类**: 数据面 / 读写 verdict
-> **源码**: `minix3/minix/servers/mib/tree.c:1098-1154`（`mib_getptr`/`mib_read`）、`:1160-1300`（`mib_write`）、`:1308-1325`（`mib_readwrite`）
+> **源码**: `minix3/minix/servers/mib/tree.c:mib_getptr`（`mib_getptr`/`mib_read`）、`:1160-1300`（`mib_write`）、`:1308-1325`（`mib_readwrite`）
 > **说明**: 叶子结点字节的进出：哪条 lane、报多长、写多严、stage 哪、bool 怎么消毒、verify 怎么判。handler 们（13~20）复用 `mib_readwrite`，本篇是它们的公共地基。
 
 ---
@@ -71,10 +71,10 @@
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | lane 变枚举 | 返回指针/NULL（NULL 兼"无 lane"与"不可能"） | `PtrLane::{Immediate,External,Absent}`（`readwrite.rs:24`） | "串+立即"的不可能（`:1116-1117`）与"未知类型"（`:1119-1120`）在 C 里都是 NULL——枚举让"不可能"与"未知"同归 Absent，调用者只判一次 |
-| D2 | stage 变枚举 | `src` 指针 + `!=scratch` 判断释放 | `Stage::{Scratch,Heap}` + `stage_for`（`readwrite.rs:97,106`） | "谁分配谁释放"（`:1294-1297` 配对）是释放遗漏的温床；枚举让"堆即需释"成为类型知识（arena 落地时 `Heap` 携带释放义务） |
-| D3 | bool 消毒变函数 | `(bool)src[0]` 内联 + 编译期数组 trick | `sanitize_bool`（`readwrite.rs:138`）+ doc 链 UB 注释 | UB 规避值得名字 + 测试（`2→true`）；数组 trick（`:1163`）是 C 编译期断言，Rust 侧 `assert!(size_of::<bool>()==1)` 在测试钉（§5） |
-| D4 | 合成变函数 | 16 行直写 | `readwrite_combine`（`readwrite.rs:159`） | 读错短路/写错替换/报读长三规则值得钉（handler 复用入口的语义，一行漂移全树漂移） |
+| D1 | lane 变枚举 | 返回指针/NULL（NULL 兼"无 lane"与"不可能"） | `PtrLane::{Immediate,External,Absent}`（`os/servers/mib/src/data/readwrite.rs:enum PtrLane`） | "串+立即"的不可能（`:1116-1117`）与"未知类型"（`:1119-1120`）在 C 里都是 NULL——枚举让"不可能"与"未知"同归 Absent，调用者只判一次 |
+| D2 | stage 变枚举 | `src` 指针 + `!=scratch` 判断释放 | `Stage::{Scratch,Heap}` + `stage_for`（`os/servers/mib/src/data/readwrite.rs:enum Stage,106`） | "谁分配谁释放"（`:1294-1297` 配对）是释放遗漏的温床；枚举让"堆即需释"成为类型知识（arena 落地时 `Heap` 携带释放义务） |
+| D3 | bool 消毒变函数 | `(bool)src[0]` 内联 + 编译期数组 trick | `sanitize_bool`（`os/servers/mib/src/data/readwrite.rs:fn sanitize_bool`）+ doc 链 UB 注释 | UB 规避值得名字 + 测试（`2→true`）；数组 trick（`:1163`）是 C 编译期断言，Rust 侧 `assert!(size_of::<bool>()==1)` 在测试钉（§5） |
+| D4 | 合成变函数 | 16 行直写 | `readwrite_combine`（`os/servers/mib/src/data/readwrite.rs:fn readwrite_combine`） | 读错短路/写错替换/报读长三规则值得钉（handler 复用入口的语义，一行漂移全树漂移） |
 
 替代方案及否决：stage 代持 RAII（`StageBuf` 持草稿引用或堆 Vec，Drop 释放）——否决，arena/分配器未定（A-3，no_std 全局分配器待定）；verdict 先行，RAII 在分配器落地时从 `Stage::Heap` 长出。
 
@@ -96,15 +96,15 @@ os/servers/mib/src/data/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 取 lane | `:1101-1124` | `readwrite.rs:24,34` | 体内/外存/无 |
-| 读长 | `:1140-1146` | `readwrite.rs:62` | 串 live+1；超界拒 |
-| 写尺寸 | `:1187-1208` | `readwrite.rs:80` | 精确/封顶/未知拒 |
-| stage | `:1220-1242` | `readwrite.rs:97,106` | 草稿/堆+特权/失败码 |
-| 串终结 | `:1273-1288` | `readwrite.rs:124` | 满无终结拒 |
-| bool 消毒 | `:1265` | `readwrite.rs:138` | 非零即真 |
-| verify 判 | `:1247-1248` | `readwrite.rs:147` | 缺席过；假拒 |
-| 合成 | `:1315-1324` | `readwrite.rs:159` | 读短路/写替换/报读长 |
-| 叶判定 | `:1303-1306` | `readwrite.rs:171` | 五数据型 |
+| 取 lane | `:1101-1124` | `os/servers/mib/src/data/readwrite.rs:enum PtrLane,34` | 体内/外存/无 |
+| 读长 | `:1140-1146` | `os/servers/mib/src/data/readwrite.rs:fn read_len` | 串 live+1；超界拒 |
+| 写尺寸 | `:1187-1208` | `os/servers/mib/src/data/readwrite.rs:fn write_size_ok` | 精确/封顶/未知拒 |
+| stage | `:1220-1242` | `os/servers/mib/src/data/readwrite.rs:enum Stage,106` | 草稿/堆+特权/失败码 |
+| 串终结 | `:1273-1288` | `os/servers/mib/src/data/readwrite.rs:fn finalize_string` | 满无终结拒 |
+| bool 消毒 | `:1265` | `os/servers/mib/src/data/readwrite.rs:fn sanitize_bool` | 非零即真 |
+| verify 判 | `:1247-1248` | `os/servers/mib/src/data/readwrite.rs:fn apply_verify` | 缺席过；假拒 |
+| 合成 | `:1315-1324` | `os/servers/mib/src/data/readwrite.rs:fn readwrite_combine` | 读短路/写替换/报读长 |
+| 叶判定 | `:1303-1306` | `os/servers/mib/src/data/readwrite.rs:fn is_data_leaf` | 五数据型 |
 
 ### 4.3 不变量
 
@@ -149,6 +149,6 @@ os/servers/mib/src/data/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/tree.c:1098-1154,1160-1300,1302-1325`
+- C 源：`minix3/minix/servers/mib/tree.c:mib_getptr,1160-1300,1302-1325`
 - 阶段文档：`03-mib-node-model.md`（lane 语义）、`06-mib-copy-io.md`（钳制/精确）、`07-mib-auth-model.md`（写门）、`10-mib-dispatch.md`（下一站）、`13~20-mib-*.md`（复用方）
 - Rust 实现：`os/servers/mib/src/data/readwrite.rs`

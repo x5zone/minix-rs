@@ -26,13 +26,13 @@
   2. **活锁**——优先级反转导致低优先级持锁者被反复抢占
   3. **复杂性**——每条路径都要分析锁交互，code review 成本高
 - **WHAT**: BKL 用一个全局自旋锁串行化所有内核代码路径。持有时禁止睡眠/调度/等待 IPC/等待锁；其他 CPU 在内核入口自旋等待。
-- **HOW**: C 用 `SPINLOCK_DEFINE(big_kernel_lock)` (minix3/minix/kernel/smp.c:27) + `BKL_LOCK()/BKL_UNLOCK()` 宏。BSP 在 `kmain()` 获取 BKL，AP 在内核入口获取。BKL 持有期覆盖内核入口到 `switch_to_user()` 退出。
+- **HOW**: C 用 `SPINLOCK_DEFINE(big_kernel_lock)` (minix3/minix/kernel/smp.c:SPINLOCK_DEFINE) + `BKL_LOCK()/BKL_UNLOCK()` 宏。BSP 在 `kmain()` 获取 BKL，AP 在内核入口获取。BKL 持有期覆盖内核入口到 `switch_to_user()` 退出。
 
 **关键约束**:
 
 1. 临界区禁止睡眠（spinlock 持有者睡眠会导致其他 CPU 死锁）
-2. 阻塞操作前必须释放 BKL——`smp_schedule_sync` (minix3/minix/kernel/smp.c:86,103) / `wait_for_APs` (minix3/minix/kernel/smp.c:44) 在 wait 前 `BKL_UNLOCK()`
-3. BKL 非递归——同 CPU 二次获取死锁；minix3/minix/kernel/smp.c:80 `assert(cpu != mycpu)` 间接体现
+2. 阻塞操作前必须释放 BKL——`smp_schedule_sync` (minix3/minix/kernel/smp.c:smp_schedule_sync（L86，工具生成）,103) / `wait_for_APs` (minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L44，工具生成）) 在 wait 前 `BKL_UNLOCK()`
+3. BKL 非递归——同 CPU 二次获取死锁；minix3/minix/kernel/smp.c:smp_schedule_sync（L80，工具生成） `assert(cpu != mycpu)` 间接体现
 
 **单 CPU 退化**: `CONFIG_SMP` 未定义时 BKL 退化为 compiler fence（无竞争时 spinlock 无需自旋）。
 
@@ -40,30 +40,30 @@
 
 **灵魂本质**: 每个 CPU 拥有私有数据副本，访问无需同步——这是 cache 局部性与免锁的联合产物。
 
-**核心字段**（C: minix3/minix/kernel/cpulocals.h:40-73 `struct __cpu_local_vars`）:
+**核心字段**（C: minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L40，工具生成） `struct __cpu_local_vars`）:
 
 | 字段 | C 位置 | 语义 |
 |------|--------|------|
-| `proc_ptr` | cpulocals.h:40 | 当前运行进程（调度器快速访问） |
-| `bill_ptr` | cpulocals.h:41 | 计费进程（时钟中断记账，可能是被抢占的系统进程） |
-| `idle_proc` | cpulocals.h:42 | idle 进程存根（每 CPU 一个，无 runnable 进程时切入） |
-| `pagefault_handled` | cpulocals.h:48 | 递归缺页检测（缺页处理中再次缺页会死锁） |
-| `ptproc` | cpulocals.h:55 | 当前页表进程（共享页表的进程无法用 proc_ptr 判断 CR3 是否需重载） |
-| `run_q_head/tail` | cpulocals.h:58-59 | per-CPU 就绪队列（入队/出队免锁，仅跨 CPU 迁移需 IPI 同步） |
-| `cpu_is_idle` | cpulocals.h:60 | CPU 是否空闲 |
-| `idle_interrupted` | cpulocals.h:62 | idle 被中断标志 |
-| `tsc_ctr_switch` | cpulocals.h:65 | 上下文切换时间戳 |
-| `cpu_last_tsc` | cpulocals.h:68 | 上次 TSC 读取 |
-| `cpu_last_idle` | cpulocals.h:69 | 上次空闲时间 |
-| `fpu_presence` | cpulocals.h:72 | FPU 是否存在 |
-| `fpu_owner` | cpulocals.h:73 | FPU 当前所有者 |
+| `proc_ptr` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L40，工具生成） | 当前运行进程（调度器快速访问） |
+| `bill_ptr` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L41，工具生成） | 计费进程（时钟中断记账，可能是被抢占的系统进程） |
+| `idle_proc` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L42，工具生成） | idle 进程存根（每 CPU 一个，无 runnable 进程时切入） |
+| `pagefault_handled` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L48，工具生成） | 递归缺页检测（缺页处理中再次缺页会死锁） |
+| `ptproc` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L55，工具生成） | 当前页表进程（共享页表的进程无法用 proc_ptr 判断 CR3 是否需重载） |
+| `run_q_head/tail` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L58，工具生成） | per-CPU 就绪队列（入队/出队免锁，仅跨 CPU 迁移需 IPI 同步） |
+| `cpu_is_idle` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L60，工具生成） | CPU 是否空闲 |
+| `idle_interrupted` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L62，工具生成） | idle 被中断标志 |
+| `tsc_ctr_switch` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L65，工具生成） | 上下文切换时间戳 |
+| `cpu_last_tsc` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L68，工具生成） | 上次 TSC 读取 |
+| `cpu_last_idle` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L69，工具生成） | 上次空闲时间 |
+| `fpu_presence` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L72，工具生成） | FPU 是否存在 |
+| `fpu_owner` | minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L73，工具生成） | FPU 当前所有者 |
 
 **访问方式**:
 - SMP: `get_cpulocal_var(name)` → `__cpu_local_vars[cpuid].name`
 - 单 CPU: `__cpu_local_vars.name`（无数组下标）
 - 跨 CPU 访问: `get_cpu_var(cpu, name)` → `__cpu_local_vars[cpu].name`
 
-**cache 对齐**: C 源码 cpulocals.h:18 FIXME 注明"应 padding 防止 false sharing"，但未实现。Rust 版本同样未做 cache 行对齐（对齐 C 现状）。
+**cache 对齐**: C 源码 minix3/minix/kernel/cpulocals.h:get_cpulocal_var_ptr（L18，工具生成） FIXME 注明"应 padding 防止 false sharing"，但未实现。Rust 版本同样未做 cache 行对齐（对齐 C 现状）。
 
 ### 1.3 IPI：CPU 间如何对话
 
@@ -71,12 +71,12 @@
 
 **两类 IPI**:
 
-1. **异步 IPI** (`smp_schedule`, minix3/minix/kernel/smp.c:63-66): 仅调用 `arch_send_smp_schedule_ipi(cpu)` 通知目标 CPU，不等待。用于抢占等无返回值场景。
-2. **同步 IPI** (`smp_schedule_sync`, minix3/minix/kernel/smp.c:75-112): 设置 flags+data → 发 IPI → 释放 BKL → 等待 flags 清零 → 重获 BKL。用于跨 CPU 调度操作（停止/抑制/迁移进程）。
+1. **异步 IPI** (`smp_schedule`, minix3/minix/kernel/smp.c:smp_schedule): 仅调用 `arch_send_smp_schedule_ipi(cpu)` 通知目标 CPU，不等待。用于抢占等无返回值场景。
+2. **同步 IPI** (`smp_schedule_sync`, minix3/minix/kernel/smp.c:smp_schedule_sync): 设置 flags+data → 发 IPI → 释放 BKL → 等待 flags 清零 → 重获 BKL。用于跨 CPU 调度操作（停止/抑制/迁移进程）。
 
-**同步 IPI 的重入处理** (minix3/minix/kernel/smp.c:88-93,105-109): 等待目标 CPU 时，若本 CPU 也收到 IPI（`sched_ipi_data[mycpu].flags` 非零），先 `BKL_LOCK()` 处理自己的 IPI（调用 `smp_sched_handler()`）再继续等待。这避免了 IPI 响应饥饿。
+**同步 IPI 的重入处理** (minix3/minix/kernel/smp.c:smp_schedule_sync（L88，工具生成）,105-109): 等待目标 CPU 时，若本 CPU 也收到 IPI（`sched_ipi_data[mycpu].flags` 非零），先 `BKL_LOCK()` 处理自己的 IPI（调用 `smp_sched_handler()`）再继续等待。这避免了 IPI 响应饥饿。
 
-**IPI 标志** (minix3/minix/kernel/smp.c:21-23):
+**IPI 标志** (minix3/minix/kernel/smp.c:SCHED_IPI_STOP_PROC):
 
 | 标志 | 值 | 含义 |
 |------|----|------|
@@ -91,12 +91,12 @@
 **亲和性来源**:
 - 进程通过 `p_cpu` 字段绑定到 CPU
 - fork 时继承父进程的 `p_cpu`
-- `smp_schedule_migrate_proc` (minix3/minix/kernel/smp.c:142-154) 显式迁移
+- `smp_schedule_migrate_proc` (minix3/minix/kernel/smp.c:smp_schedule_migrate_proc) 显式迁移
 
 **迁移成本**:
 
 1. 同步 IPI 通知源 CPU 停止进程（`STOP_PROC | SAVE_CTX`）
-2. 源 CPU 保存 FPU 状态（`SAVE_CTX` 分支，minix3/minix/kernel/smp.c:170-178）
+2. 源 CPU 保存 FPU 状态（`SAVE_CTX` 分支，minix3/minix/kernel/smp.c:smp_sched_handler（L170，工具生成））
 3. 修改 `p_cpu` 字段
 4. 解除 `RTS_PROC_STOP` 让进程在新 CPU 上运行
 
@@ -106,15 +106,15 @@
 
 **灵魂本质**: BSP 通过 INIT+SIPI 唤醒 AP，AP 完成初始化后递增计数器，BSP 释放 BKL 等待握手完成。
 
-**启动时序** (minix3/minix/kernel/smp.c:30-49):
+**启动时序** (minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting):
 
 1. BSP 在 `kmain()` 持有 BKL，调用 `smp_init()` 发现并唤醒 APs
 2. BSP 调用 `wait_for_APs_to_finish_booting()`:
-   - 统计 `CPU_IS_READY` 的 CPU 数（容忍部分 AP 启动失败，smp.c:36-41）
-   - `BKL_UNLOCK()` 让 AP 能进入内核 (smp.c:44)
-   - 自旋等待 `ap_cpus_booted == n - 1` (smp.c:45-46)
-   - `BKL_LOCK()` 重新获取 (smp.c:48)
-3. AP 启动完成后调用 `ap_boot_finished(cpu)` (smp.c:51-54) 递增 `ap_cpus_booted`
+   - 统计 `CPU_IS_READY` 的 CPU 数（容忍部分 AP 启动失败，minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L36，工具生成））
+   - `BKL_UNLOCK()` 让 AP 能进入内核 (minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L44，工具生成）)
+   - 自旋等待 `ap_cpus_booted == n - 1` (minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L45，工具生成）)
+   - `BKL_LOCK()` 重新获取 (minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L48，工具生成）)
+3. AP 启动完成后调用 `ap_boot_finished(cpu)` (minix3/minix/kernel/smp.c:ap_boot_finished) 递增 `ap_cpus_booted`
 
 **AP 启动协议** (arch-specific, x86-only):
 - BSP 发 INIT IPI → 等待 → 发 SIPI（起始向量）
@@ -151,24 +151,24 @@
 | `ncpus` | minix3/minix/kernel/smp.c:7 | CPU 总数（运行时检测） |
 | `ht_per_core` | minix3/minix/kernel/smp.c:8 | 每物理核的超线程数 |
 | `bsp_cpu_id` | minix3/minix/kernel/smp.c:9 | BSP CPU 编号 |
-| `struct cpu cpus[CONFIG_MAX_CPUS]` | minix3/minix/kernel/smp.c:11 | CPU 状态数组 |
+| `struct cpu cpus[CONFIG_MAX_CPUS]` | minix3/minix/kernel/smp.c:cpu | CPU 状态数组 |
 | `CONFIG_MAX_CPUS` | config.h | 最大 CPU 数上限（32） |
-| `CPU_IS_BSP` | minix3/minix/kernel/smp.h:32 | BSP 标志位（值=1） |
-| `CPU_IS_READY` | minix3/minix/kernel/smp.h:33 | CPU 就绪标志位（值=2） |
-| `cpu_is_bsp(cpu)` | minix3/minix/kernel/smp.h:19 | `(bsp_cpu_id == cpu)` 宏 |
+| `CPU_IS_BSP` | minix3/minix/kernel/smp.h:CPU_IS_READY | BSP 标志位（值=1） |
+| `CPU_IS_READY` | minix3/minix/kernel/smp.h:cpu（L33，工具生成） | CPU 就绪标志位（值=2） |
+| `cpu_is_bsp(cpu)` | minix3/minix/kernel/smp.h:cpu_is_bsp | `(bsp_cpu_id == cpu)` 宏 |
 
 ### 2.2 BKL 定义
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `SPINLOCK_DEFINE(big_kernel_lock)` | minix3/minix/kernel/smp.c:27 | 全局内核自旋锁 |
-| `SPINLOCK_DEFINE(boot_lock)` | minix3/minix/kernel/smp.c:28 | AP 启动同步锁 |
+| `SPINLOCK_DEFINE(big_kernel_lock)` | minix3/minix/kernel/smp.c:SPINLOCK_DEFINE | 全局内核自旋锁 |
+| `SPINLOCK_DEFINE(boot_lock)` | minix3/minix/kernel/smp.c:SPINLOCK_DEFINE | AP 启动同步锁 |
 | `BKL_LOCK()/BKL_UNLOCK()` | spinlock.h | 获取/释放 BKL 宏 |
-| `ap_cpus_booted` | minix3/minix/kernel/smp.c:25 | 已启动 AP 计数（volatile） |
+| `ap_cpus_booted` | minix3/minix/kernel/smp.c:SCHED_IPI_SAVE_CTX（L25，工具生成） | 已启动 AP 计数（volatile） |
 
 ### 2.3 per-CPU 数据结构
 
-`struct __cpu_local_vars` (minix3/minix/kernel/cpulocals.h:37-75) — 详见 §1.2 字段表。
+`struct __cpu_local_vars` (minix3/minix/kernel/cpulocals.h:get_cpu_var_ptr（L37，工具生成）) — 详见 §1.2 字段表。
 
 访问宏:
 - `get_cpulocal_var(name)` → `__cpu_local_vars[cpuid].name` (SMP) / `__cpu_local_vars.name` (单 CPU)
@@ -184,7 +184,7 @@ struct sched_ipi_data {
 static struct sched_ipi_data sched_ipi_data[CONFIG_MAX_CPUS];  // smp.c:19
 ```
 
-标志常量 (minix3/minix/kernel/smp.c:21-23):
+标志常量 (minix3/minix/kernel/smp.c:SCHED_IPI_STOP_PROC):
 - `SCHED_IPI_STOP_PROC` = 1
 - `SCHED_IPI_VM_INHIBIT` = 2
 - `SCHED_IPI_SAVE_CTX` = 4
@@ -193,17 +193,17 @@ static struct sched_ipi_data sched_ipi_data[CONFIG_MAX_CPUS];  // smp.c:19
 
 | 函数 | 位置 | 语义 |
 |------|------|------|
-| `wait_for_APs_to_finish_booting()` | minix3/minix/kernel/smp.c:30-49 | BSP 释放 BKL 等待 APs，容忍部分失败 |
-| `ap_boot_finished(cpu)` | minix3/minix/kernel/smp.c:51-54 | AP 递增 `ap_cpus_booted` |
-| `smp_ipi_halt_handler()` | minix3/minix/kernel/smp.c:56-61 | IPI 停机：ack + 停定时器 + arch halt |
-| `smp_schedule(cpu)` | minix3/minix/kernel/smp.c:63-66 | 异步 IPI：仅发不等待 |
-| `smp_schedule_sync(p, task)` | minix3/minix/kernel/smp.c:75-112 | 同步 IPI：设数据→发 IPI→释放 BKL→等待→重获 BKL；含重入处理 |
-| `smp_schedule_stop_proc(p)` | minix3/minix/kernel/smp.c:114-121 | if runnable: sync(STOP_PROC); else: RTS_SET(PROC_STOP) |
-| `smp_schedule_vminhibit(p)` | minix3/minix/kernel/smp.c:123-130 | if runnable: sync(VM_INHIBIT); else: RTS_SET(VMINHIBIT) |
-| `smp_schedule_stop_proc_save_ctx(p)` | minix3/minix/kernel/smp.c:132-140 | sync(STOP_PROC \| SAVE_CTX) — 迁移前保存 FPU |
-| `smp_schedule_migrate_proc(p, dest_cpu)` | minix3/minix/kernel/smp.c:142-154 | sync(STOP \| SAVE_CTX) → 改 p_cpu → RTS_UNSET(PROC_STOP) |
-| `smp_sched_handler()` | minix3/minix/kernel/smp.c:156-187 | IPI 处理：读 flags→STOP_PROC 设 RTS→SAVE_CTX 保存 FPU→VM_INHIBIT 设 RTS→清 flags |
-| `smp_ipi_sched_handler()` | minix3/minix/kernel/smp.c:194-204 | IPI ack + 若当前非 IDLE 设 RTS_PREEMPTED |
+| `wait_for_APs_to_finish_booting()` | minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting | BSP 释放 BKL 等待 APs，容忍部分失败 |
+| `ap_boot_finished(cpu)` | minix3/minix/kernel/smp.c:ap_boot_finished | AP 递增 `ap_cpus_booted` |
+| `smp_ipi_halt_handler()` | minix3/minix/kernel/smp.c:smp_ipi_halt_handler | IPI 停机：ack + 停定时器 + arch halt |
+| `smp_schedule(cpu)` | minix3/minix/kernel/smp.c:smp_schedule | 异步 IPI：仅发不等待 |
+| `smp_schedule_sync(p, task)` | minix3/minix/kernel/smp.c:smp_schedule_sync | 同步 IPI：设数据→发 IPI→释放 BKL→等待→重获 BKL；含重入处理 |
+| `smp_schedule_stop_proc(p)` | minix3/minix/kernel/smp.c:smp_schedule_stop_proc | if runnable: sync(STOP_PROC); else: RTS_SET(PROC_STOP) |
+| `smp_schedule_vminhibit(p)` | minix3/minix/kernel/smp.c:smp_schedule_vminhibit | if runnable: sync(VM_INHIBIT); else: RTS_SET(VMINHIBIT) |
+| `smp_schedule_stop_proc_save_ctx(p)` | minix3/minix/kernel/smp.c:smp_schedule_stop_proc_save_ctx | sync(STOP_PROC \| SAVE_CTX) — 迁移前保存 FPU |
+| `smp_schedule_migrate_proc(p, dest_cpu)` | minix3/minix/kernel/smp.c:smp_schedule_migrate_proc | sync(STOP \| SAVE_CTX) → 改 p_cpu → RTS_UNSET(PROC_STOP) |
+| `smp_sched_handler()` | minix3/minix/kernel/smp.c:smp_sched_handler | IPI 处理：读 flags→STOP_PROC 设 RTS→SAVE_CTX 保存 FPU→VM_INHIBIT 设 RTS→清 flags |
+| `smp_ipi_sched_handler()` | minix3/minix/kernel/smp.c:smp_ipi_sched_handler | IPI ack + 若当前非 IDLE 设 RTS_PREEMPTED |
 
 ### 2.6 调用关系图
 
@@ -265,7 +265,7 @@ CPU B (target): 收到 IPI
 1. **BKL 释放窗口**：`smp_schedule_sync()` 在等待目标 CPU 时释放 BKL，其他 CPU 可以进入内核
 2. **递归 IPI 处理**：等待目标 CPU 时，如果本 CPU 也收到 IPI，先处理自己的 IPI 再继续等待
 3. **单 CPU 退化**：`CONFIG_SMP` 未定义时，`cpuid=0`，所有 per-CPU 变量退化为全局变量
-4. **AP 启动超时容忍**：若部分 AP 未成功启动，系统仍可运行（minix3/minix/kernel/smp.c:40-41 打印警告）
+4. **AP 启动超时容忍**：若部分 AP 未成功启动，系统仍可运行（minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L40，工具生成） 打印警告）
 
 ---
 
@@ -289,7 +289,7 @@ CPU B (target): 收到 IPI
 - 如果用 `Box<[CpuLocal]>`：同上，依赖 allocator。
 - 所以用 `[CpuLocal; MAX_CPUS]` 固定大小数组：编译期分配在 BSS，启动早期可访问，no_std 兼容。
 
-**实现**: `cpu_locals: [CpuLocal; MAX_CPUS]` (os/kernel/src/smp.rs:341)。`MAX_CPUS = 32` (os/kernel/src/smp.rs:61) 对齐 `CONFIG_MAX_CPUS` (config.h)。
+**实现**: `cpu_locals: [CpuLocal; MAX_CPUS]` (os/kernel/src/smp.rs:struct SmpState)。`MAX_CPUS = 32` (os/kernel/src/smp.rs:const MAX_CPUS) 对齐 `CONFIG_MAX_CPUS` (config.h)。
 
 ### D3. BKL 释放模式：统一 RAII guard（R-05，2026-08-12）
 
@@ -303,7 +303,7 @@ CPU B (target): 收到 IPI
   2. `core::mem::forget(guard)` ——跨函数 BKL 传递（如 `kernel_call_dispatch` → `kernel_call_finish`），BKL 保持持有，在目标函数显式 `bkl_unlock()`。
 - 所以统一为单一 RAII 类型：普通临界区让 guard 自然 drop；阻塞路径用 `release()`；跨函数传递用 `mem::forget` + 显式 `bkl_unlock()`。
 
-**实现**: `BklGuard` (os/kernel/src/smp.rs:798) — RAII（`Drop` 调用 `bkl_unlock()`）+ `BklGuard::release()` (os/kernel/src/smp.rs:819) 显式提前释放。原 `BklGuardRaii`/`bkl_lock_raii` 已移除（os/kernel/src/smp.rs:991）。
+**实现**: `BklGuard` (os/kernel/src/smp.rs:fn wait_for_aps（L798，工具生成）) — RAII（`Drop` 调用 `bkl_unlock()`）+ `BklGuard::release()` (os/kernel/src/smp.rs:fn wait_for_aps（L819，工具生成）) 显式提前释放。原 `BklGuardRaii`/`bkl_lock_raii` 已移除（os/kernel/src/smp.rs:fn smp_init（L991，工具生成））。
 
 ### D4. BKL 类型见证：BklSection witness（Rust 独有）
 
@@ -313,7 +313,7 @@ CPU B (target): 收到 IPI
 - 如果用 `BklGuard` 的引用作为参数：guard 不可复制，且需在每个函数签名中传递，侵入性大。
 - 所以用类型系统编码不变量：`BklSection<'a>` 是一个持有 BKL 的零成本 witness，通过 `smp_state_with()` 返回 `&SmpState`——只有持有见证才能访问 `SmpState` 的可变方法。这是 Capability pattern：类型见证作为能力令牌。
 
-**实现**: `BklSection<'a>` (os/kernel/src/smp.rs:867) + `bkl_lock_section()` (os/kernel/src/smp.rs:877) + `smp_state_with()` (os/kernel/src/smp.rs:905)。
+**实现**: `BklSection<'a>` (os/kernel/src/smp.rs:struct BootLockGuard<'a>（L867，工具生成）) + `bkl_lock_section()` (os/kernel/src/smp.rs:static BOOT_LOCK（L877，工具生成）) + `smp_state_with()` (os/kernel/src/smp.rs:fn ap_finish_booting（L905，工具生成）)。
 
 > **`BklSection::assume_held()` 与访问器 witness 全覆盖**（A1，2026-09-07）：`BklSection` 家族新增第三种获取途径——`unsafe fn assume_held()`，为"BKL 已由外层约定持有"的链根（boot 路径、调度循环入口、未来的 trap entry）在不重入自旋锁的前提下产出 witness，debug 构建以 `bkl_is_locked` 断言兜底：丢锁从"静默腐坏"变成"响亮 panic"。同批迁移把 proc_table/priv_table/irq_manager/clock_state/kbill 的裸 `unsafe fn` 调用点收敛到 `*_with(&section)`（调度循环链 check_quantum→sched_proc_no_time→notify_scheduler→cpu_load 全程 thread witness；kernel_call_finish 改为透传参数表、彻底去全局化；IRQ 侧 kernel_mini_notify/KernelNotifier/dispatch_hardware_irq 以 assume_held 为链根，等 S-8/S-9 以真 witness 替换；boot 侧 init_clock_and_interrupts/bsp_finish_booting 走 boot_unchecked 系列）。设计权衡：全链 threading（Redox CleanLockToken 式）要等 trap entry 存在才有根；assume_held 用 N 个可审计根位换取即时收敛，S-8 落地时每根一行换成 threaded witness。
 >
@@ -328,7 +328,7 @@ CPU B (target): 收到 IPI
 - 如果用 `enum`：IPI 标志是位组合（`STOP_PROC | SAVE_CTX`），enum 无法表达位组合语义。
 - 所以用 `bitflags!` 宏：类型安全，支持位组合（`|`/`&`/`contains`），且 `from_bits_truncate` 容忍未知位。
 
-**实现**: `SchedIpiFlags` (os/kernel/src/smp.rs:78-91)。
+**实现**: `SchedIpiFlags` (os/kernel/src/smp.rs:const READY（L78，工具生成）)。
 
 ### D6. IPI 数据原子性：AtomicU32 vs volatile
 
@@ -337,7 +337,7 @@ CPU B (target): 收到 IPI
 - 如果用 `AtomicU32`：标准库提供 Acquire/Release 语义，安全且明确内存序；跨 CPU 通信天然需要原子操作。
 - 所以用 `AtomicU32`：`flags: AtomicU32` + `load(Acquire)` / `store(Release)` / `fetch_or(AcqRel)`。
 
-**实现**: `SchedIpiData { flags: AtomicU32, target_proc: AtomicU32 }` (os/kernel/src/smp.rs:308)。
+**实现**: `SchedIpiData { flags: AtomicU32, target_proc: AtomicU32 }` (os/kernel/src/smp.rs:fn has_pending（L308，工具生成）)。
 
 ### D7. arch 抽象：SmpArch trait
 
@@ -346,13 +346,13 @@ CPU B (target): 收到 IPI
 - 如果用函数指针表：C 风格，类型不安全，且无法利用 Rust 的 trait dispatch 优化。
 - 所以定义 `trait SmpArch`：各架构在 arch 层提供实现，内核代码依赖 trait；通过泛型 `<A: SmpArch>` 静态分发，零虚拟开销。
 
-**实现**: `SmpArch` trait 定义在 arch crate（os/arch/src/arch/smp.rs），内核通过 `pub use minix_arch::SmpArch;`（os/kernel/src/smp.rs:114）re-export。四个实现已全部落地：
+**实现**: `SmpArch` trait 定义在 arch crate（os/arch/src/arch/smp.rs），内核通过 `pub use minix_arch::SmpArch;`（os/kernel/src/smp.rs:const SAVE_CTX（L114，工具生成））re-export。四个实现已全部落地：
 - `X86_64SmpArch`（os/arch/src/x86_64/smp.rs）— LAPIC ICR 发 IPI + EOI 确认 + INIT/SIPI 启动 AP
 - `AArch64SmpArch`（os/arch/src/arm64/smp.rs）— GIC SGIR 发 IPI + EOIR 确认 + PSCI `CPU_ON` 启动 AP
 - `Riscv64SmpArch`（os/arch/src/riscv64/smp.rs）— SBI `send_ipi` + `hart_start` 启动 AP
 - `MockSmpArch`（os/arch/src/arch/smp.rs）— 测试用 no-op 实现
 
-编译期别名 `minix_arch::CurrentSmpArch`（os/arch/src/lib.rs:298-311）按 target_arch 选择后端，内核代码零 `#[cfg(target_arch)]`。trait 作为泛型约束 `<A: SmpArch>` 在 `schedule_sync`/`ipi_sched_handler`/`wait_for_aps`/`ipi_halt_handler` 等函数中使用（见 §4.7-4.12）。
+编译期别名 `minix_arch::CurrentSmpArch`（os/arch/src/lib.rs:fn save_frame_to_context（L298，工具生成））按 target_arch 选择后端，内核代码零 `#[cfg(target_arch)]`。trait 作为泛型约束 `<A: SmpArch>` 在 `schedule_sync`/`ipi_sched_handler`/`wait_for_aps`/`ipi_halt_handler` 等函数中使用（见 §4.7-4.12）。
 
 ### D8. per-CPU 索引：ProcNr vs 裸指针
 
@@ -361,7 +361,7 @@ CPU B (target): 收到 IPI
 - 如果用 `Rc<RefCell<KProcess>>`：跨 CPU 共享 `Rc`/`RefCell` 违反 SMP 安全（project_memory 硬约束）。
 - 所以用 `ProcNr`（进程表索引 newtype）：用索引替代指针，通过 `ProcessTable` 统一访问；BKL 保证索引有效性。
 
-**实现**: `proc_ptr: Option<ProcNr>` / `fpu_owner: Option<ProcNr>` (os/kernel/src/smp.rs:139)。`Option` 替代 C 的 `NULL` 检查。
+**实现**: `proc_ptr: Option<ProcNr>` / `fpu_owner: Option<ProcNr>` (os/kernel/src/smp.rs:struct CpuLocal（L139，工具生成）)。`Option` 替代 C 的 `NULL` 检查。
 
 ### D9. 单 CPU 退化：运行时 CAS vs cfg gate
 
@@ -370,7 +370,7 @@ CPU B (target): 收到 IPI
 - 如果用运行时 CAS（无 cfg gate）：单 CPU 时 CAS 一次成功（无竞争），不进入自旋；代码路径单一。
 - 所以用运行时 CAS：零虚拟开销，代码路径单一，`CONFIG_SMP` 未定义时 `ncpus=1` 自动退化。
 
-**实现**: `bkl_lock()` 总是用 CAS (os/kernel/src/smp.rs:946)，无 `#[cfg]` 门控。
+**实现**: `bkl_lock()` 总是用 CAS (os/kernel/src/smp.rs:fn smp_init（L946，工具生成）)，无 `#[cfg]` 门控。
 
 ### D10. CPU ID 类型：CpuId newtype vs type alias（R-10，2026-08-12）
 
@@ -387,7 +387,7 @@ CPU B (target): 收到 IPI
 - ABI 结构体（`cpuinfo_t.cpu_id`、`ProcInfoStruct.p_cpu`）—— 匹配 C 布局，必须用 `u32`。
 - `ncpus: u32` —— 是 CPU 计数，非 id，保留 `u32`。
 
-**实现**: `CpuId` (os/kernel/src/proc.rs:461) — `pub struct CpuId(u32)` + `NONE`/`BSP` 常量 + `new`/`new_unchecked`/`raw`/`index`/`is_bsp`/`is_none` 方法。`SmpState.bsp_cpu_id` 字段 + 15 个 `cpu` 参数函数全部迁移到 `CpuId`。
+**实现**: `CpuId` (os/kernel/src/proc.rs:fn raw) — `pub struct CpuId(u32)` + `NONE`/`BSP` 常量 + `new`/`new_unchecked`/`raw`/`index`/`is_bsp`/`is_none` 方法。`SmpState.bsp_cpu_id` 字段 + 15 个 `cpu` 参数函数全部迁移到 `CpuId`。
 
 **redox 对照**: redox `LogicalCpuId(u32)` newtype 采用相同 pattern。redox 不带 `MAX_CPUS` 校验；minix-rs 的 `CpuId::new()` 增加校验因为 minix-rs 有固定 `MAX_CPUS=32` 数组。
 
@@ -428,7 +428,7 @@ bitflags::bitflags! {
 
 ### 4.2 SmpArch trait（D7）
 
-> trait 定义在 arch crate `os/arch/src/arch/smp.rs`；内核通过 `pub use minix_arch::SmpArch;`（os/kernel/src/smp.rs:114）re-export，避免内核 smp.rs 出现 `#[cfg(target_arch)]`。
+> trait 定义在 arch crate `os/arch/src/arch/smp.rs`；内核通过 `pub use minix_arch::SmpArch;`（os/kernel/src/smp.rs:const SAVE_CTX（L114，工具生成））re-export，避免内核 smp.rs 出现 `#[cfg(target_arch)]`。
 
 ```rust
 /// Architecture-specific SMP operations.
@@ -468,12 +468,12 @@ pub trait SmpArch {
 ```
 
 **实现状态**: ✅ 四个实现全部落地：
-- `X86_64SmpArch`（os/arch/src/x86_64/smp.rs:150）— LAPIC ICR + EOI + INIT/SIPI（`wait_icr_idle` + `lapic_write` ICR_HIGH/LOW）
-- `AArch64SmpArch`（os/arch/src/arm64/smp.rs:115）— GIC SGIR + EOIR + PSCI `CPU_ON`（`gic_write` + PSCI ecall）
-- `Riscv64SmpArch`（os/arch/src/riscv64/smp.rs:65）— SBI `send_ipi` + `hart_start`（SBI ecall）
-- `MockSmpArch`（os/arch/src/arch/smp.rs:119）— `#[cfg(feature = "mock")]` 测试用 no-op
+- `X86_64SmpArch`（os/arch/src/x86_64/smp.rs:fn wait_icr_idle（L150，工具生成））— LAPIC ICR + EOI + INIT/SIPI（`wait_icr_idle` + `lapic_write` ICR_HIGH/LOW）
+- `AArch64SmpArch`（os/arch/src/arm64/smp.rs:fn gicd_base（L115，工具生成））— GIC SGIR + EOIR + PSCI `CPU_ON`（`gic_write` + PSCI ecall）
+- `Riscv64SmpArch`（os/arch/src/riscv64/smp.rs:impl SmpArch for Riscv64SmpArch）— SBI `send_ipi` + `hart_start`（SBI ecall）
+- `MockSmpArch`（os/arch/src/arch/smp.rs:fn pause）— `#[cfg(feature = "mock")]` 测试用 no-op
 
-`minix_arch::CurrentSmpArch` 编译期别名（os/arch/src/lib.rs:298-311）按 `target_arch` 选择后端，内核代码零 `#[cfg(target_arch)]`。
+`minix_arch::CurrentSmpArch` 编译期别名（os/arch/src/lib.rs:fn save_frame_to_context（L298，工具生成））按 `target_arch` 选择后端，内核代码零 `#[cfg(target_arch)]`。
 
 ### 4.3 CpuLocal — per-CPU 数据（D2）
 
@@ -520,13 +520,13 @@ pub struct CpuLocal {
 - `char fpu_presence` → `bool`：同上
 - `struct proc idle_proc` (嵌入结构体) → `idle_proc: ProcNr` (索引)：节省内存，进程表统一管理
 
-> **`ptproc` 字段的 BSP 临时镜像**（P9-4，2026-08-13）：`CpuLocal::ptproc`（os/kernel/src/smp.rs:147）是 ptproc 跟踪的 SMP 最终归宿——每 CPU 记录"当前 CR3 装的是哪个进程"，供 `setcr3()` 的 `if (p == ptproc)` CR3-reload 决策用。但 SMP 尚未落地，`CpuLocal` 数组在单 CPU 下只有 BSP 一份且 `ptproc` 字段未在 `dispatch_vmctl(SetAddrSpace)` 路径中读写。
+> **`ptproc` 字段的 BSP 临时镜像**（P9-4，2026-08-13）：`CpuLocal::ptproc`（os/kernel/src/smp.rs:struct CpuLocal（L147，工具生成））是 ptproc 跟踪的 SMP 最终归宿——每 CPU 记录"当前 CR3 装的是哪个进程"，供 `setcr3()` 的 `if (p == ptproc)` CR3-reload 决策用。但 SMP 尚未落地，`CpuLocal` 数组在单 CPU 下只有 BSP 一份且 `ptproc` 字段未在 `dispatch_vmctl(SetAddrSpace)` 路径中读写。
 >
-> 为让 `SetAddrSpace` 的 Step 3（`TlbArch::set_active_root`）在 BSP 单核阶段就能工作，P9-4 在 os/kernel/src/lib.rs:1921 引入临时全局 `CURRENT_PTPROC_NR: AtomicI32`（sentinel = `i32::MIN`）+ 访问器 `current_ptproc_nr()` / `set_current_ptproc_nr()`（os/kernel/src/lib.rs:1939/1963）。`init_post_and_memory` 断言 VM 页表 root 有效后调用 `set_current_ptproc_nr(VM_PROC_NR)` 记录 VM 为当前 ptproc（arch 级 `PostInitArch::set_ptproc` 已被 Direct Map 取代）；`dispatch_vmctl(SetAddrSpace)` 用 `current_ptproc_nr() == Some(target.p_nr)` 判断是否 reload CR3。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（protect.c:372）+ `if (p == get_cpulocal_var(ptproc))`（arch_do_vmctl.c:25）。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
+> 为让 `SetAddrSpace` 的 Step 3（`TlbArch::set_active_root`）在 BSP 单核阶段就能工作，P9-4 在 os/kernel/src/lib.rs:fn smp_state_boot_unchecked（L1921，工具生成） 引入临时全局 `CURRENT_PTPROC_NR: AtomicI32`（sentinel = `i32::MIN`）+ 访问器 `current_ptproc_nr()` / `set_current_ptproc_nr()`（os/kernel/src/lib.rs:fn try_smp_state_with（L1939，工具生成）/1963）。`init_post_and_memory` 断言 VM 页表 root 有效后调用 `set_current_ptproc_nr(VM_PROC_NR)` 记录 VM 为当前 ptproc（arch 级 `PostInitArch::set_ptproc` 已被 Direct Map 取代）；`dispatch_vmctl(SetAddrSpace)` 用 `current_ptproc_nr() == Some(target.p_nr)` 判断是否 reload CR3。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（protect.c:372）+ `if (p == get_cpulocal_var(ptproc))`（arch_do_vmctl.c:25）。详见 [09-vm-boot-protocol.md §4.8](09-vm-boot-protocol.md)。
 >
 > **SMP 落地时的迁移**：当 SMP 启用后，应**移除** `CURRENT_PTPROC_NR` 全局，改用 `CpuLocal::ptproc` 作为唯一真相源——通过 `cpu_local_mut(cpu).ptproc` 访问。`current_ptproc_nr()` / `set_current_ptproc_nr()` 访问器的实现将改为委托 per-CPU 字段（`current_ptproc_nr()` 读当前 CPU 的 `CpuLocal::ptproc`，`set_current_ptproc_nr(nr)` 写当前 CPU 的 `CpuLocal::ptproc`）。这样 `dispatch_vmctl` 的调用代码无需改动——只有访问器内部实现从"读全局"切到"读 per-CPU"。CpuLocal 的 BKL 保护（§1.2）保证 per-CPU 字段访问的线程安全。
 >
-> **`CURRENT_ROOT_PHYS` 同模型镜像**（P9-5，2026-08-13）：`init_proc_and_boot` 在非 mock 路径下需要包装 `arch_boot_impl` 创建并激活的 bootstrap 页表根以加载 VM ELF。为此在 os/kernel/src/lib.rs:2103 引入 `CURRENT_ROOT_PHYS: AtomicU64`（sentinel = `u64::MAX`）+ 访问器 `current_root_phys()` / `set_current_root_phys()`。`arch_boot_impl` 在 `enable()` 成功后立即调用 `set_current_root_phys(root_page)`；`init_proc_and_boot` 通过 `current_root_phys().expect(...)` + `Paging::from_active_root` 包装根。SMP 落地时该全局也应迁移到 `CpuLocal::root_phys`，与 `ptproc` 同步迁移——每个 CPU 记录自己装入 CR3/TTBR0/satp 的根地址。详见 [09-vm-boot-protocol.md §4.9](09-vm-boot-protocol.md)。
+> **`CURRENT_ROOT_PHYS` 同模型镜像**（P9-5，2026-08-13）：`init_proc_and_boot` 在非 mock 路径下需要包装 `arch_boot_impl` 创建并激活的 bootstrap 页表根以加载 VM ELF。为此在 os/kernel/src/lib.rs:fn bsp_finish_booting（L2103，工具生成） 引入 `CURRENT_ROOT_PHYS: AtomicU64`（sentinel = `u64::MAX`）+ 访问器 `current_root_phys()` / `set_current_root_phys()`。`arch_boot_impl` 在 `enable()` 成功后立即调用 `set_current_root_phys(root_page)`；`init_proc_and_boot` 通过 `current_root_phys().expect(...)` + `Paging::from_active_root` 包装根。SMP 落地时该全局也应迁移到 `CpuLocal::root_phys`，与 `ptproc` 同步迁移——每个 CPU 记录自己装入 CR3/TTBR0/satp 的根地址。详见 [09-vm-boot-protocol.md §4.9](09-vm-boot-protocol.md)。
 
 ### 4.4 CpuState（D3 — bitflags 替代裸 u32）
 
@@ -622,7 +622,7 @@ pub struct SmpState {
 }  // smp.rs:333-346
 ```
 
-构造与访问方法（os/kernel/src/smp.rs:352-480）:
+构造与访问方法（os/kernel/src/smp.rs:struct SmpState（L352，工具生成））:
 
 ```rust
 impl SmpState {
@@ -719,7 +719,7 @@ pub fn sched_handler_full(
 }  // smp.rs:481-551
 ```
 
-**已接入**: FPU save (`save_local_fpu`) — `FpuArch` trait 已实现（三架构 save/restore/disable_exception + `Default`），per-process `State` buffer 存储在 `KProcess.fpu_state: CurrentFpuState`（`proc.rs:985`）。`CurrentFpuState` 是 `CurrentFpuArch::State` 的类型别名（`arch/src/lib.rs:201-219`）：mock=ZST / x86-64 FXSAVE=512B / aarch64 FPSIMD=528B / riscv64 F/D=264B。`sched_handler_full` SAVE_CTX 路径已调用 `FpuArch::save(&mut owner.fpu_state)`；`fork_from` 通过 `CpuContextArch::inherit_fpu_state` 继承父进程 FPU 状态。
+**已接入**: FPU save (`save_local_fpu`) — `FpuArch` trait 已实现（三架构 save/restore/disable_exception + `Default`），per-process `State` buffer 存储在 `KProcess.fpu_state: CurrentFpuState`（`os/kernel/src/proc.rs:struct KProcess（L985，工具生成）`）。`CurrentFpuState` 是 `CurrentFpuArch::State` 的类型别名（`arch/src/lib.rs:201-219`）：mock=ZST / x86-64 FXSAVE=512B / aarch64 FPSIMD=528B / riscv64 F/D=264B。`sched_handler_full` SAVE_CTX 路径已调用 `FpuArch::save(&mut owner.fpu_state)`；`fork_from` 通过 `CpuContextArch::inherit_fpu_state` 继承父进程 FPU 状态。
 
 ### 4.8 smp_schedule_sync — 同步 IPI
 
@@ -796,7 +796,7 @@ pub fn schedule_sync<A: SmpArch>(
 
 ### 4.9 跨 CPU 调度封装（4 个函数）
 
-os/kernel/src/smp.rs:606-687:
+os/kernel/src/smp.rs:fn sched_handler_full（L606，工具生成）:
 
 ```rust
 /// Stop a process on a remote CPU.
@@ -876,7 +876,7 @@ pub fn schedule_migrate_proc<A: SmpArch>(
 
 ### 4.10 ipi_sched_handler + ipi_halt_handler
 
-os/kernel/src/smp.rs:688-718:
+os/kernel/src/smp.rs:fn schedule_stop_proc（L688，工具生成）:
 
 ```rust
 /// IPI schedule handler: ack + preempt current process.
@@ -910,7 +910,7 @@ pub fn ipi_halt_handler<A: SmpArch>(&self) {
 
 ### 4.11 wait_for_APs
 
-os/kernel/src/smp.rs:719-745:
+os/kernel/src/smp.rs:fn schedule_vminhibit（L719，工具生成）:
 
 ```rust
 /// BSP waits for all APs to finish booting.
@@ -1053,7 +1053,7 @@ pub fn bkl_unlock() {
 | 异常处理入口 | arch trap entry | ❌ DEFERRED | `exception_dispatcher.rs::handle` 需加 `bkl_lock()` |
 | kmain 启动 | main.c:149 (step 8.5) | ❌ DEFERRED | `lib.rs::kmain` 需在 `switch_to_user` 前获取 BKL |
 | switch_to_user 释放 | main.c (switch_to_user) | ❌ DEFERRED | `switch_to_user` 需在调度循环前 `bkl_unlock()` |
-| 系统调用恢复 | kernel_call_resume | ✅ BKL 已覆盖（2026-09-07 S-1 勘误：原记录混淆两个同名函数，行号 :2622 已漂移） | **生产路径** = `proc_table.rs:882` 调 `vm::kernel_call_resume`（简单版：读 VM 结果 + 清标志 + Fault→SIGSEGV），在调度循环锁内运行（lib.rs:2921/:2979）——VmSuspend 侧 BKL 已由 `kernel_call_finish` 释放（:2705）。`syscall::kernel_call_resume`（:2747，完整重派发：重入 dispatch :493 持锁 → finish :2730 释放）**无生产调用方**，系 doc 10 §4.2 记录的 Rust 借用拆分偏差（process_misc_flags 持 `&mut self` 无法再传 `self`），属 resume 语义维度、非 BKL 缺口 |
+| 系统调用恢复 | kernel_call_resume | ✅ BKL 已覆盖（2026-09-07 S-1 勘误：原记录混淆两个同名函数，行号 :2622 已漂移） | **生产路径** = `os/kernel/src/proc_table.rs:fn notify_scheduler（L882，工具生成）` 调 `vm::kernel_call_resume`（简单版：读 VM 结果 + 清标志 + Fault→SIGSEGV），在调度循环锁内运行（lib.rs:2921/:2979）——VmSuspend 侧 BKL 已由 `kernel_call_finish` 释放（:2705）。`syscall::kernel_call_resume`（:2747，完整重派发：重入 dispatch :493 持锁 → finish :2730 释放）**无生产调用方**，系 doc 10 §4.2 记录的 Rust 借用拆分偏差（process_misc_flags 持 `&mut self` 无法再传 `self`），属 resume 语义维度、非 BKL 缺口 |
 
 **共享数据 BKL 保护**（DEFERRED）:
 
@@ -1075,20 +1075,20 @@ pub fn bkl_unlock() {
 
 | 函数 | C 位置 | Rust 实现状态 | 依赖 |
 |------|--------|--------------|------|
-| `schedule_sync` | smp.c:75-112 | ✅ 已实现 | `SmpArch::send_sched_ipi` |
-| `schedule_stop_proc` | smp.c:114-121 | ✅ 已实现 | `schedule_sync` |
-| `schedule_vminhibit` | smp.c:123-130 | ✅ 已实现 | `schedule_sync` |
-| `schedule_stop_proc_save_ctx` | smp.c:132-140 | ✅ 已实现 | `schedule_sync` |
-| `schedule_migrate_proc` | smp.c:142-154 | ✅ 已实现 | `schedule_stop_proc_save_ctx` |
-| `sched_handler_full` | smp.c:156-187 | ✅ 已实现（FPU save 已接入 `KProcess.fpu_state`） | per-process `FpuArch::State` 存储（`KProcess.fpu_state: CurrentFpuState`，三架构均有 `Default` impl） |
-| `ipi_sched_handler` | smp.c:194-204 | ✅ 已实现 | `SmpArch::ack_ipi` |
-| `ipi_halt_handler` | smp.c:56-61 | ✅ 已实现 | `clock::stop_local_timer()` + `SmpArch::halt_cpu` |
-| `wait_for_aps` | smp.c:30-49 | ✅ 已实现 | `SmpArch::pause`（已有 `spin_loop`） |
+| `schedule_sync` | minix3/minix/kernel/smp.c:smp_schedule_sync | ✅ 已实现 | `SmpArch::send_sched_ipi` |
+| `schedule_stop_proc` | minix3/minix/kernel/smp.c:smp_schedule_stop_proc | ✅ 已实现 | `schedule_sync` |
+| `schedule_vminhibit` | minix3/minix/kernel/smp.c:smp_schedule_vminhibit | ✅ 已实现 | `schedule_sync` |
+| `schedule_stop_proc_save_ctx` | minix3/minix/kernel/smp.c:smp_schedule_stop_proc_save_ctx | ✅ 已实现 | `schedule_sync` |
+| `schedule_migrate_proc` | minix3/minix/kernel/smp.c:smp_schedule_migrate_proc | ✅ 已实现 | `schedule_stop_proc_save_ctx` |
+| `sched_handler_full` | minix3/minix/kernel/smp.c:smp_sched_handler | ✅ 已实现（FPU save 已接入 `KProcess.fpu_state`） | per-process `FpuArch::State` 存储（`KProcess.fpu_state: CurrentFpuState`，三架构均有 `Default` impl） |
+| `ipi_sched_handler` | minix3/minix/kernel/smp.c:smp_ipi_sched_handler | ✅ 已实现 | `SmpArch::ack_ipi` |
+| `ipi_halt_handler` | minix3/minix/kernel/smp.c:smp_ipi_halt_handler | ✅ 已实现 | `clock::stop_local_timer()` + `SmpArch::halt_cpu` |
+| `wait_for_aps` | minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting | ✅ 已实现 | `SmpArch::pause`（已有 `spin_loop`） |
 | `boot_ap` | arch/i386/smp.c | ✅ 已实现（arch crate） | `SmpArch::boot_ap` — x86_64 INIT+SIPI / aarch64 PSCI / riscv64 SBI |
 | `smp_init` | arch/i386/smp.c | DEFERRED | ACPI/MADT 表解析 + `SmpArch::boot_ap` |
-| FPU save (`save_local_fpu`) | smp.c:175 | ✅ 已实现 | `KProcess.fpu_state: CurrentFpuState` 字段（`proc.rs:985`）+ `FpuArch::save/restore` trait 方法（三架构 impl，含 `Default`）；`sched_handler_full` 在 SAVE_CTX 路径调用 `FpuArch::save(&mut owner.fpu_state)` |
-| `stop_local_timer` | smp.c:59 | ✅ 已实现（os/kernel/src/clock.rs:267） | `ClockArch::stop_local_timer` |
-| `boot_lock` | smp.c:28 | DEFERRED | 随 `smp_init` 一并实现 |
+| FPU save (`save_local_fpu`) | minix3/minix/kernel/smp.c:smp_sched_handler（L175，工具生成） | ✅ 已实现 | `KProcess.fpu_state: CurrentFpuState` 字段（`os/kernel/src/proc.rs:struct KProcess（L985，工具生成）`）+ `FpuArch::save/restore` trait 方法（三架构 impl，含 `Default`）；`sched_handler_full` 在 SAVE_CTX 路径调用 `FpuArch::save(&mut owner.fpu_state)` |
+| `stop_local_timer` | minix3/minix/kernel/smp.c:smp_ipi_halt_handler（L59，工具生成） | ✅ 已实现（os/kernel/src/clock.rs:fn stop_local_timer（L267，工具生成）） | `ClockArch::stop_local_timer` |
+| `boot_lock` | minix3/minix/kernel/smp.c:SPINLOCK_DEFINE | DEFERRED | 随 `smp_init` 一并实现 |
 
 ---
 
@@ -1096,7 +1096,7 @@ pub fn bkl_unlock() {
 
 > 本章列出实际 `fn test_*` 函数名，可通过 `rg "fn test_" os/kernel/src/smp.rs` grep 验证。
 
-### 5.1 已实现测试（28 个，os/kernel/src/smp.rs:1016-1439）
+### 5.1 已实现测试（28 个，os/kernel/src/smp.rs:fn smp_init（L1016，工具生成））
 
 | 测试函数 | 验证行为 | 对应 C 符号 / 设计决策 |
 |---------|---------|----------------------|
@@ -1109,7 +1109,7 @@ pub fn bkl_unlock() {
 | `test_cpu_local_note_context_switch` | note_context_switch 记录 TSC | `note_context_switch` |
 | `test_sched_ipi_flags` | SchedIpiFlags 位组合操作 | `SchedIpiFlags` (D5) |
 | `test_sched_ipi_data` | SchedIpiData flags/target 读写 | `SchedIpiData` (D6) |
-| `test_ap_boot_counting` | ap_boot_finished 递增计数 | `ap_boot_finished` (smp.c:51) |
+| `test_ap_boot_counting` | ap_boot_finished 递增计数 | `ap_boot_finished` (minix3/minix/kernel/smp.c:ap_boot_finished) |
 | `test_handle_sched_ipi` | handle_sched_ipi 读 flags+清零 | `smp_sched_handler` (部分) |
 | `test_handle_sched_ipi_empty` | 无 IPI 时 handle_sched_ipi 无操作 | `smp_sched_handler` |
 | `test_bkl_lock_unlock` | BKL 获取/释放 | `bkl_lock/bkl_unlock` (D1) |
@@ -1123,11 +1123,11 @@ pub fn bkl_unlock() {
 | `test_bkl_guard_nested_release` | RAII + 显式 unlock 共存 | R-05 `mem::forget` + RAII |
 | `test_bkl_guard_release_method` | `guard.release()` 显式提前释放 | R-05 `BklGuard::release` |
 | `test_smp_arch_trait_mock` | SmpArch trait 可 mock | `SmpArch` (D7) |
-| `test_sched_handler_full_empty` | sched_handler_full 空标志无操作 | `smp_sched_handler` (smp.c:156) |
-| `test_sched_handler_full_stop_proc` | STOP_PROC 设 RTS_PROC_STOP | `smp_sched_handler` (smp.c:167) |
-| `test_sched_handler_full_vminhibit` | VM_INHIBIT 设 RTS_VMINHIBIT | `smp_sched_handler` (smp.c:180) |
-| `test_ipi_sched_handler_idle_no_preempt` | IDLE 进程不设 PREEMPTED | `smp_ipi_sched_handler` (smp.c:194) |
-| `test_wait_for_aps_single_cpu` | BSP 等待 APs 完成（单 CPU 退化） | `wait_for_APs` (smp.c:30) |
+| `test_sched_handler_full_empty` | sched_handler_full 空标志无操作 | `smp_sched_handler` (minix3/minix/kernel/smp.c:smp_sched_handler) |
+| `test_sched_handler_full_stop_proc` | STOP_PROC 设 RTS_PROC_STOP | `smp_sched_handler` (minix3/minix/kernel/smp.c:smp_sched_handler（L167，工具生成）) |
+| `test_sched_handler_full_vminhibit` | VM_INHIBIT 设 RTS_VMINHIBIT | `smp_sched_handler` (minix3/minix/kernel/smp.c:smp_sched_handler（L180，工具生成）) |
+| `test_ipi_sched_handler_idle_no_preempt` | IDLE 进程不设 PREEMPTED | `smp_ipi_sched_handler` (minix3/minix/kernel/smp.c:smp_ipi_sched_handler) |
+| `test_wait_for_aps_single_cpu` | BSP 等待 APs 完成（单 CPU 退化） | `wait_for_APs` (minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting) |
 | `test-smp-topo`（QEMU 集成，S-2） | `-smp 4` 下 RSDP→MADT：nr_cpus=4、APIC ID {0,1,2,3} 互异、BSP∈发现集（x86_64 PASS / aarch64 SKIP→S-2b：AAVMF 无 FDT config table + acpi 模块 x86 门控，见 smp_todo §20） | `AcpiDesc::parse` + `CpuTopology`（D-36 上半） |
 | `test-smp-topo-riscv64`（QEMU 集成，S-2） | OpenSBI a1→DTB：nr_cpus=4、hart {0,1,2,3} 互异、BSP∈发现集（PASS） | `DeviceTreeDesc::parse` + `CpuTopology`（D-36 上半） |
 | `test-smp-topo-aarch64`（QEMU 集成，S-2b） | `-smp 4` 下 ACPI2 RSDP→MADT GICC：nr_cpus=4、hw_id {0,1,2,3} 互异、BSP∈发现集（**PASS，2026-09-07**；AAVMF config table 无 FDT（legacy 与 UEFI 规范 DTB GUID 均缺，字节级实证）但有 ACPI2 RSDP——发现链走 ACPI；解析偏移修正：GICD base@+8（原 +12 读零）、GICC hw_id 用 Processor UID（QEMU GICv2 的 MPIDR 字段恒 0），均字节级实测钉住） | `AcpiDesc::parse`（MADT GICC）+ `CpuTopology`（D-36 上半） |
@@ -1207,7 +1207,7 @@ C 版在 `smp_start_aps` 里把 trampoline 基址写进 BIOS 数据区 0x467，�
 
 ### 9.5 内存序衔接（§3.9 的落点）
 
-`fill_bootstrap`（BSP）按"先填记录、后置 MAGIC"的顺序写；**发布屏障（x86 `mfence`）归 `SmpArch::boot_ap`**——在固件调用前执行（C arch_smp.c:130 先例），随 S-3c 落地。AP 侧 x86 为 TSO，无需 consumer fence；ARM/RISC-V 的 consumer barrier 由各自 S-3c 梯子首指令前补。Rust 层的 boot_ack/online 掩码（Release/Acquire，经 SmpState）不与此混淆——那条通道管掩码，本节管记录。
+`fill_bootstrap`（BSP）按"先填记录、后置 MAGIC"的顺序写；**发布屏障（x86 `mfence`）归 `SmpArch::boot_ap`**——在固件调用前执行（C minix3/minix/kernel/arch/i386/arch_smp.c:smp_start_aps（L130，工具生成） 先例），随 S-3c 落地。AP 侧 x86 为 TSO，无需 consumer fence；ARM/RISC-V 的 consumer barrier 由各自 S-3c 梯子首指令前补。Rust 层的 boot_ack/online 掩码（Release/Acquire，经 SmpState）不与此混淆——那条通道管掩码，本节管记录。
 
 ---
 
@@ -1225,7 +1225,7 @@ C 版在 `smp_start_aps` 里把 trampoline 基址写进 BIOS 数据区 0x467，�
 |---|------|------|------|------|
 | ① | riscv64 | `send_sched_ipi` 用 v0.1 legacy `send_ipi`（EID 0，FID 3） | 现代 OpenSBI 不再实现 legacy 扩展——每次 ecall 返回 NOT_SUPPORTED，**调度 IPI 从未发出过** | 换 v0.2 IPI 扩展：EID 0x735049（"sPI"）+ FID 0，参数（mask, base）不变 |
 | ② | aarch64 | PSCI `CPU_ON` 用 SMC32/HVC32 形（0x84000003） | 32 位约定下固件按 w2/w3 读参——**entry 地址高 32 位被清零**；内核镜像链接在 0x1400_0000+（>4GiB），AP 会起在截断后的垃圾地址 | 换 SMC64/HVC64 形（0xC4000003）；context_id（x3，AP 的 x0）同时改传 bootstrap 指针（§3.1 传值通道） |
-| ③ | x86_64 | `boot_ap` INIT 前无发布屏障 | BSP 填写的 early entry image 字节可能尚未到达一致性点，唤醒的 AP 读到陈旧指令/数据 | ICR 写前补 `mfence`（C arch_smp.c:130 先例；§3.9 publisher fence 归属） |
+| ③ | x86_64 | `boot_ap` INIT 前无发布屏障 | BSP 填写的 early entry image 字节可能尚未到达一致性点，唤醒的 AP 读到陈旧指令/数据 | ICR 写前补 `mfence`（C minix3/minix/kernel/arch/i386/arch_smp.c:smp_start_aps（L130，工具生成） 先例；§3.9 publisher fence 归属） |
 
 ### 10.3 riscv a2 语义勘误（§2.1/§3.1 的"改传 bootstrap 指针"）
 

@@ -40,9 +40,9 @@
 | 阶段 | 操作 | C 位置 | Rust 位置 |
 |------|------|--------|----------|
 | 1. 建立共享 | `pb_reference` refcount++；子区域 PTE 待写 | region.c:836-837（map_copy_region 内） | fork.rs:114-133（fork_region 内） |
-| 2. 写保护 | `map_writept` → `map_ph_writept` → `pr_writable` 判只读 | region.c:995-996 / :271-274 / :130-134 | vir_region.rs:256-270 + vmproc_handle.rs:505-542 |
-| 3. 触发判定 | `anon_pagefault`：`write && refcount > 1` → `mem_cow` | mem_anon.c:89-96 | memtype.rs:247-255（NeedCow） |
-| 4. 分裂 | `mem_cow`：分配 + 复制 + 换块 + 切 anon | pb.c:136-168 | cow_exec_pf.rs:85-128（cow_resolve_core） |
+| 2. 写保护 | `map_writept` → `map_ph_writept` → `pr_writable` 判只读 | region.c:995-996 / :271-274 / :130-134 | os/servers/vm/src/region/vir_region.rs:fn get_slot（L256，工具生成） + os/servers/vm/src/vmproc/vmproc_handle.rs:fn setup_cow_for_all_regions（L505，工具生成） |
+| 3. 触发判定 | `anon_pagefault`：`write && refcount > 1` → `mem_cow` | minix3/minix/servers/vm/mem_anon.c:anon_pagefault（L89，工具生成） | os/servers/vm/src/memtype.rs:impl Default for AnonymousMemory（NeedCow） |
+| 4. 分裂 | `mem_cow`：分配 + 复制 + 换块 + 切 anon | minix3/minix/servers/vm/pb.c:mem_cow | os/servers/vm/src/cow_exec_pf.rs:fn sync_slot_pte（L85，工具生成）（cow_resolve_core） |
 
 ### 1.3 引用计数语义
 
@@ -56,11 +56,11 @@
 
 ### 1.4 分裂后 memtype 切换
 
-`mem_cow` 的最后一步是 `ph->memtype = &mem_type_anon`（pb.c:165）——无论原来是匿名还是文件映射，私有副本一律变成匿名内存。理由：**私有副本与文件/源不再共享**，修改不能写回原文件，后续页错误交给 `anon_pagefault` 处理。
+`mem_cow` 的最后一步是 `ph->memtype = &mem_type_anon`（minix3/minix/servers/vm/pb.c:mem_cow（L165，工具生成））——无论原来是匿名还是文件映射，私有副本一律变成匿名内存。理由：**私有副本与文件/源不再共享**，修改不能写回原文件，后续页错误交给 `anon_pagefault` 处理。
 
 ### 1.5 对照：Redox 与 Linux
 
-- **Linux**：`mm/memory.c` 的 `do_wp_page()`——写保护页错误时的复用判据是合取的：仅 `PageAnon` 且映射独占的页走 `wp_page_reuse`（只改 PTE 权限，不拷贝）；file-backed 私有页即使独占也一律 `wp_page_copy`。对应 minix-rs 的 `cow_resolve_core` 快速路径（`refcount <= 1 && is_page_writable`，cow_exec_pf.rs:268-287——V13-P1-1 收紧，独占文件页落入复制路径换型 anon，对齐 C `cow_block`）。Linux 的 refcount 语义更复杂（`_mapcount` 只计页表映射数，另有 `_refcount` 计内核引用），Minix3/Rust 的 `refcount` 只计 phys_region 映射数。
+- **Linux**：`mm/memory.c` 的 `do_wp_page()`——写保护页错误时的复用判据是合取的：仅 `PageAnon` 且映射独占的页走 `wp_page_reuse`（只改 PTE 权限，不拷贝）；file-backed 私有页即使独占也一律 `wp_page_copy`。对应 minix-rs 的 `cow_resolve_core` 快速路径（`refcount <= 1 && is_page_writable`，os/servers/vm/src/cow_exec_pf.rs:fn cow_resolve_core（L268，工具生成）——V13-P1-1 收紧，独占文件页落入复制路径换型 anon，对齐 C `cow_block`）。Linux 的 refcount 语义更复杂（`_mapcount` 只计页表映射数，另有 `_refcount` 计内核引用），Minix3/Rust 的 `refcount` 只计 phys_region 映射数。
 - **Redox**：内核态 `page_fault_handler` 直接处理，CoW 通过 `AddressSpace` 的页表操作实现，无用户态服务器参与。Minix3 把"何时分裂"的策略留给用户态 VM，内核只负责转发异常与解除阻塞。
 - **对照要点**：三家都基于"页表只读 + 引用计数 > 1 → 写时复制"的 x86 页保护机制；差异在处理者位置与 refcount 粒度。
 
@@ -74,7 +74,7 @@ CoW = 引用计数（语义）+ 页表权限（触发）+ 分裂动作（所有�
 
 ### 2.1 建立共享：pb_reference / pb_link（pb.c）
 
-`pb_link`（pb.c:61-71）是引用计数原语：
+`pb_link`（minix3/minix/servers/vm/pb.c:pb_link）是引用计数原语：
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
@@ -91,7 +91,7 @@ USE(newphysr,
 ```
 
 - 侵入式链表：`phys_block.firstregion` 头插 `phys_region`（:68-69），`refcount++`（:70）。
-- `pb_reference`（pb.c:73-91）＝ `SLABALLOC` 新 `phys_region` + `pb_link` + `physblock_set`（:88）——fork 复制区域时对每个已映射 slot 调用它。
+- `pb_reference`（minix3/minix/servers/vm/pb.c:phys_region）＝ `SLABALLOC` 新 `phys_region` + `pb_link` + `physblock_set`（:88）——fork 复制区域时对每个已映射 slot 调用它。
 
 **fork 复制上下文**（region.c:820-849，`map_copy_region` 内）：
 
@@ -136,11 +136,11 @@ if(pt_writemap(vmp, &vmp->vm_pt, vr->vaddr + pr->offset,  /* :280-285 */
 
 | memtype | 实现 | 位置 | 语义 |
 |---------|------|------|------|
-| anon | `phys != MAP_NONE && (remaps > 0 \|\| refcount == 1)` | mem_anon.c:105-113 | 共享（refcount>1）只读 |
-| mappedfile | 恒 0 | mem_file.c:173-177 | 永不可写，写必触发 CoW |
-| shared | `phys != MAP_NONE` | mem_shared.c:161 | 只要映射即可写（不 CoW） |
+| anon | `phys != MAP_NONE && (remaps > 0 \|\| refcount == 1)` | minix3/minix/servers/vm/mem_anon.c:anon_writable | 共享（refcount>1）只读 |
+| mappedfile | 恒 0 | minix3/minix/servers/vm/mem_file.c:mappedfile_writable | 永不可写，写必触发 CoW |
+| shared | `phys != MAP_NONE` | minix3/minix/servers/vm/mem_shared.c:shared_writable | 只要映射即可写（不 CoW） |
 
-### 2.3 分裂执行：mem_cow（pb.c:136-168）
+### 2.3 分裂执行：mem_cow（minix3/minix/servers/vm/pb.c:mem_cow）
 
 ```c
 int mem_cow(struct vir_region *region,
@@ -169,7 +169,7 @@ int mem_cow(struct vir_region *region,
 
 **refcount 转移**：旧块 2→1（另一进程仍持有），新块 0→1——每次分裂把共享页拆成两个私有页。
 
-### 2.4 触发判定：anon_pagefault（mem_anon.c:64-97）
+### 2.4 触发判定：anon_pagefault（minix3/minix/servers/vm/mem_anon.c:anon_pagefault）
 
 ```c
 static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
@@ -202,7 +202,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 **触发条件**：`write && refcount > 1`——读操作不触发（多个进程可安全共享只读页）；refcount == 1 是私有页，`map_pf` 的 `writable` 短路（region.c:713）直接可写。
 
-### 2.5 引用计数维护：pb_unreferenced（pb.c:96-134）
+### 2.5 引用计数维护：pb_unreferenced（minix3/minix/servers/vm/pb.c:pb_unreferenced）
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
@@ -220,24 +220,24 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 }
 ```
 
-**rm 参数语义**：`rm=0`（CoW 用，mem_cow:163）只解除引用、保留槽位——phys_region 即将 `pb_link` 到新块；`rm=1`（munmap/exit 用）同时清槽。refcount 归零时 `ev_unreference` 释放物理页（anon 的 `free_mem`，mem_anon.c:56-62）。
+**rm 参数语义**：`rm=0`（CoW 用，mem_cow:163）只解除引用、保留槽位——phys_region 即将 `pb_link` 到新块；`rm=1`（munmap/exit 用）同时清槽。refcount 归零时 `ev_unreference` 释放物理页（anon 的 `free_mem`，minix3/minix/servers/vm/mem_anon.c:anon_unreference）。
 
 ### 2.6 C 小结：符号全景
 
 | 符号 | 位置 | 角色 |
 |------|------|------|
-| `pb_link` | pb.c:61-71 | refcount++ 原语（侵入式链表） |
-| `pb_reference` | pb.c:73-91 | fork 复制时建立共享 |
-| `pb_unreferenced` | pb.c:96-134 | refcount-- + 归零释放（rm 控制槽位） |
-| `mem_cow` | pb.c:136-168 | 分裂核心：分配/复制/换块/切 anon |
-| `anon_pagefault` | mem_anon.c:64-97 | 触发判定（含缺陷 2 泄漏） |
-| `anon_writable` | mem_anon.c:105-113 | 匿名可写判定 |
+| `pb_link` | minix3/minix/servers/vm/pb.c:pb_link | refcount++ 原语（侵入式链表） |
+| `pb_reference` | minix3/minix/servers/vm/pb.c:phys_region | fork 复制时建立共享 |
+| `pb_unreferenced` | minix3/minix/servers/vm/pb.c:pb_unreferenced | refcount-- + 归零释放（rm 控制槽位） |
+| `mem_cow` | minix3/minix/servers/vm/pb.c:mem_cow | 分裂核心：分配/复制/换块/切 anon |
+| `anon_pagefault` | minix3/minix/servers/vm/mem_anon.c:anon_pagefault | 触发判定（含缺陷 2 泄漏） |
+| `anon_writable` | minix3/minix/servers/vm/mem_anon.c:anon_writable | 匿名可写判定 |
 | `pr_writable` | region.c:130-134 | 写保护判定门 |
 | `map_ph_writept` | region.c:257-295 | PTE 写入（只读/可写） |
 | `map_writept` | region.c:906 | 全区域重写页表 |
 | `map_copy_region` | region.c:820-849 | fork 区域复制（含缺陷 1） |
-| `mappedfile_writable` | mem_file.c:173-177 | 文件映射恒不可写 |
-| `shared_writable` | mem_shared.c:161 | 共享内存可写判定 |
+| `mappedfile_writable` | minix3/minix/servers/vm/mem_file.c:mappedfile_writable | 文件映射恒不可写 |
+| `shared_writable` | minix3/minix/servers/vm/mem_shared.c:shared_writable | 共享内存可写判定 |
 
 ---
 
@@ -269,12 +269,12 @@ pub(crate) fn prepare_cow(&mut self, frames: &mut PageFrames) {   // vir_region.
 }
 ```
 
-- `setup_cow_for_all_regions`（vmproc_handle.rs:488-495）：所有区域 `WRITABLE` 复位 + `prepare_cow`。注释明确：**不递增 refcount**——那是 `fork_region` 已做的。
-- `write_page_table_mappings`（vmproc_handle.rs:505-542）：实际 PTE 权限判定（:522-525）：
+- `setup_cow_for_all_regions`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn regions_mut（L488，工具生成））：所有区域 `WRITABLE` 复位 + `prepare_cow`。注释明确：**不递增 refcount**——那是 `fork_region` 已做的。
+- `write_page_table_mappings`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn setup_cow_for_all_regions（L505，工具生成））：实际 PTE 权限判定（:522-525）：
   `writable = region.is_writable() && frames.get(pfn).refcount == 1` → `read_write()`/`read_only()`。
 - **一致性待核对**：`PageFlags::COW` 目前只写不读（判定用 `refcount == 1`），两处判据在 08/18 页表接线时需确认等价（见 §5.3）。
 
-### 3.3 D3：cow_resolve_core——分裂 + 快速路径（cow_exec_pf.rs:85-128）
+### 3.3 D3：cow_resolve_core——分裂 + 快速路径（os/servers/vm/src/cow_exec_pf.rs:fn sync_slot_pte（L85，工具生成））
 
 | C mem_cow 步骤 | Rust 对应 | 行号 |
 |---------------|----------|------|
@@ -287,39 +287,39 @@ pub(crate) fn prepare_cow(&mut self, frames: &mut PageFrames) {   // vir_region.
 | — | **refcount<=1 快速路径直接返回 old_pfn**（C 无；Linux wp_page_reuse 同思路） | :103-105 |
 | — | `verify_cow_consistency`（debug 断言） | :124-125 / :137-172 |
 
-**消除 C 缺陷 2**：Rust 的 `AnonymousMemory::ev_pagefault`（memtype.rs:220-256）**只判定不分配**——`NeedCow` 才由 `handle_pagefault` 调 `cow_resolve`（cow_exec_pf.rs:41-43）触发 `alloc_pfn`。非 CoW 路径（Handled/NeedNewPage 处理）不产生多余分配，C 的预分配泄漏从结构上不存在。
+**消除 C 缺陷 2**：Rust 的 `AnonymousMemory::ev_pagefault`（os/servers/vm/src/memtype.rs:enum PagefaultResult）**只判定不分配**——`NeedCow` 才由 `handle_pagefault` 调 `cow_resolve`（os/servers/vm/src/cow_exec_pf.rs:fn handle_pagefault（L41，工具生成））触发 `alloc_pfn`。非 CoW 路径（Handled/NeedNewPage 处理）不产生多余分配，C 的预分配泄漏从结构上不存在。
 
 ### 3.4 D4：memtype writable 回调族（memtype.rs）
 
 | Rust | 位置 | 对应 C | 语义 |
 |------|------|--------|------|
 | 默认 `false` | :95-97 | 无（C 断言必有） | trait 默认不可写 |
-| `AnonymousMemory::writable` | :192-202 | anon_writable（mem_anon.c:105-113） | `!slot.is_mapped() → false`；`remaps > 0 → true`；否则 `refcount == 1` |
-| `MappedFile::writable` | :892-894 | mappedfile_writable（mem_file.c:173-177） | 恒 false |
-| `SharedMemory::writable` | :411-413 | shared_writable（mem_shared.c:161） | `slot.is_mapped()` |
+| `AnonymousMemory::writable` | :192-202 | anon_writable（minix3/minix/servers/vm/mem_anon.c:anon_writable） | `!slot.is_mapped() → false`；`remaps > 0 → true`；否则 `refcount == 1` |
+| `MappedFile::writable` | :892-894 | mappedfile_writable（minix3/minix/servers/vm/mem_file.c:mappedfile_writable） | 恒 false |
+| `SharedMemory::writable` | :411-413 | shared_writable（minix3/minix/servers/vm/mem_shared.c:shared_writable） | `slot.is_mapped()` |
 
 ### 3.5 D5：两阶段释放（unmap_page :189-211）
 
-C 的 `pb_unreferenced` 在 refcount==0 时**同步**做 `ev_unreference` + `SLABFREE`（pb.c:122-129）。Rust 拆成两步：
+C 的 `pb_unreferenced` 在 refcount==0 时**同步**做 `ev_unreference` + `SLABFREE`（minix3/minix/servers/vm/pb.c:pb_unreferenced（L122，工具生成））。Rust 拆成两步：
 
 - `unmap_page` 递减 refcount，**当 refcount==0 且 `!IN_CACHE`** 时返回 `Some((pfn, memtype))`（:196-207）；
 - 调用方（`cow_resolve_core` :119-122、`free_forked_regions` fork.rs:162-177）再 `ev_unreference` + `free_pfn`。
 
-`IN_CACHE` 保护（vir_region.rs:201-203）：缓存页即使 refcount==0 也不归还 allocator（24-page-cache 语义）。
+`IN_CACHE` 保护（os/servers/vm/src/region/vir_region.rs:fn set_writable（L201，工具生成））：缓存页即使 refcount==0 也不归还 allocator（24-page-cache 语义）。
 
 ### 3.6 差异清单（C ↔ Rust，诚实标注）
 
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
 | 1 | `ev_reference` 返回值被忽略（region.c:841-842） | `fork_region` 检查 + `refcounted_pfns` rollback（fork.rs:121-131） | ✅ 修复 |
-| 2 | anon_pagefault 预分配泄漏（mem_anon.c:75-92） | 先判定后分配（NeedCow 才 alloc_pfn） | ✅ 修复 |
+| 2 | anon_pagefault 预分配泄漏（minix3/minix/servers/vm/mem_anon.c:anon_pagefault（L75，工具生成）） | 先判定后分配（NeedCow 才 alloc_pfn） | ✅ 修复 |
 | 3 | 侵入式链表（firstregion/next_ph_list） | PageFrames 全局 refcount 数组 | ✅ 11 已述 |
 | 4 | `pr_writable` = VR_WRITABLE && writable | `write_page_table_mappings` 判 `is_writable() && refcount==1` | ✅ 等价 |
 | 5 | `PageFlags::COW` 标记 | 只写不读（判据用 refcount==1） | ⚠️ 08/18 接线核对 |
-| 6 | mem_cow 的 pb_new 失败路径（pb.c:158-161） | `alloc_pfn` → `CowError::NoMemory`，无中间对象需清理 | ✅ 简化 |
-| 7 | file-backed `cow_block`（mem_file.c:59-77） | MappedFile CoW 经 `NeedCow` → `cow_resolve_core`；clearend 处理未接线 | ⚠️ 23 范围 |
-| 8 | SharedMemory::ev_pagefault 源进程链接（mem_shared.c:122+） | 已实现（memtype.rs:434-530，getsrc 等价 + 递归分配） | ✅ 已实现（draft 声称 stub 已过时） |
-| 9 | `anon_pt_flags`（mem_anon.c:48-54） | Rust 页表 flags 由 paging 层管理 | ⚠️ 简化 |
+| 6 | mem_cow 的 pb_new 失败路径（minix3/minix/servers/vm/pb.c:mem_cow（L158，工具生成）） | `alloc_pfn` → `CowError::NoMemory`，无中间对象需清理 | ✅ 简化 |
+| 7 | file-backed `cow_block`（minix3/minix/servers/vm/mem_file.c:cow_block） | MappedFile CoW 经 `NeedCow` → `cow_resolve_core`；clearend 处理未接线 | ⚠️ 23 范围 |
+| 8 | SharedMemory::ev_pagefault 源进程链接（minix3/minix/servers/vm/mem_shared.c:shared_pagefault+） | 已实现（os/servers/vm/src/memtype.rs:fn ev_pagefault（L434，工具生成），getsrc 等价 + 递归分配） | ✅ 已实现（draft 声称 stub 已过时） |
+| 9 | `anon_pt_flags`（minix3/minix/servers/vm/mem_anon.c:anon_pt_flags） | Rust 页表 flags 由 paging 层管理 | ⚠️ 简化 |
 
 ---
 
@@ -353,7 +353,7 @@ write_page_table_mappings（vmproc_handle.rs:505-542）
 
 C 对照：`map_writept(src); map_writept(dst);`（region.c:995-996）——父子都要重写，因为**共享页对双方都是只读的**。Rust 的 `write_page_table_mappings` 是同一语义（父与子各自的地址空间分别调）。
 
-### 4.3 cow_resolve_core：分裂动作（cow_exec_pf.rs:85-128）
+### 4.3 cow_resolve_core：分裂动作（os/servers/vm/src/cow_exec_pf.rs:fn sync_slot_pte（L85，工具生成））
 
 ```
 slot = get_slot(offset) → PageNotMapped                 :91-96
@@ -378,11 +378,11 @@ debug：verify_cow_consistency                           :124-125
 | SharedMemory | 未映射→源进程链接（§4.5） | slot.is_mapped() | **不 CoW**（真共享） |
 | ContiguousAnonymous | 预分配（ev_new） | 恒 true 风格 | 不 CoW（共享不允许，ev_reference 失败） |
 
-### 4.5 SharedMemory 源进程链接（memtype.rs:434-530）
+### 4.5 SharedMemory 源进程链接（os/servers/vm/src/memtype.rs:fn ev_pagefault（L434，工具生成））
 
-C `shared_pagefault`（mem_shared.c:122）→ Rust 已实现等价流程：
+C `shared_pagefault`（minix3/minix/servers/vm/mem_shared.c:shared_pagefault）→ Rust 已实现等价流程：
 
-1. 已映射 → `Handled`（:446-450，C mem_shared.c:139）；
+1. 已映射 → `Handled`（:446-450，C minix3/minix/servers/vm/mem_shared.c:shared_pagefault（L139，工具生成））；
 2. 解析 `VrParam::Shared { ep, vaddr, id }`（:454-457，C getsrc）；
 3. `table.vm_isokendpt` + 源区域查找 + memtype/id 校验（:466-489）；
 4. 源 slot 未映射 → 为源分配页（:499-520，C `map_pf(src)` 递归语义）；
@@ -434,7 +434,7 @@ C `shared_pagefault`（mem_shared.c:122）→ Rust 已实现等价流程：
 | fork_region 的 rollback 直接单测 | ⚠️ 缺失 | `refcounted_pfns` 回滚路径无独立测试（fork 集成测试在 18） |
 | prepare_cow → write_page_table_mappings 联合测试 | ⚠️ 缺失 | COW flag 标记 → PTE 只读的端到端无测试（页表接线未完成） |
 | PageFlags::COW 读侧消费 | ⚠️ 未接线 | write_page_table_mappings 用 refcount==1 判写；COW flag 只写不读——08/18 需核对两处判据等价 |
-| file-backed cow_block（clearend 处理） | ⚠️ 23 范围 | mem_file.c:59-77 的 clearend 分裂逻辑未实现 |
+| file-backed cow_block（clearend 处理） | ⚠️ 23 范围 | minix3/minix/servers/vm/mem_file.c:cow_block 的 clearend 分裂逻辑未实现 |
 | SharedMemory 源链接端到端（跨进程） | ⚠️ 部分 | 判定有单测，跨进程消息级无测试 |
 | anon 预分配泄漏修复的回归测试 | ⚠️ 缺失 | Rust 无泄漏是结构保证（NeedCow 才分配），无显式测试 |
 
@@ -457,7 +457,7 @@ $ cargo check -p minix-vm → Finished（110 warnings pre-existing，无 error�
 向下游的移交：
 
 - **18-vm-fork**：`fork_region`/`fork_regions`/`setup_cow_for_all_regions` 的调用方（`do_fork` 全流程）、`map_proc_copy` 等价物、endpoint 合成。
-- **23-vfs-interaction**：file-backed 的 `cow_block`（mem_file.c:59-77）——clearend 分裂、CoW 后写回语义。
+- **23-vfs-interaction**：file-backed 的 `cow_block`（minix3/minix/servers/vm/mem_file.c:cow_block）——clearend 分裂、CoW 后写回语义。
 - **08-pagetable-ops**：`write_page_table_mappings` 的 PTE 写入与 `PageFlags::COW` 读侧接线核对（§5.3 backlog）。
 
 ---

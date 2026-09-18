@@ -1,7 +1,7 @@
 # 01-pm-init-main: 启动入口与初始化骨架
 
 > **分类**: 阶段 1 — 启动与进程模型（锚点文档）
-> **源码**: `minix3/minix/servers/pm/main.c`（main/sef_local_startup/sef_cb_init_fresh/reply/get_nice_value/handle_vfs_reply）、`minix3/minix/servers/pm/schedule.c:36-69`（sched_init 调用点）、`minix3/minix/lib/libsys/sef.c` + `sef_init.c`（SEF 框架）
+> **源码**: `minix3/minix/servers/pm/main.c`（main/sef_local_startup/sef_cb_init_fresh/reply/get_nice_value/handle_vfs_reply）、`minix3/minix/servers/pm/schedule.c:sched_init（L36，工具生成）`（sched_init 调用点）、`minix3/minix/lib/libsys/sef.c` + `sef_init.c`（SEF 框架）
 > **Rust 模块**: `os/servers/pm/src/main.rs`、`os/servers/pm/src/init.rs`（`PmServer`/`BootParams`/`VfsPmInit`）、`os/servers/pm/src/ipc/transport.rs`（`IpcTransport`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/00-pm-overview.md`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md`（boot image 来源）
 > **说明**: PM 从 `main()` 入口到进入主循环之前的全部启动链：SEF 回调注册、`sef_cb_init_fresh` 八步初始化、boot image 填充（INIT + 系统进程）、VFS_PM_INIT 进程表同步、`system_hz`、`sched_init` 调用点。主循环分发细节在 `04-ipc-dispatch.md`。
@@ -55,7 +55,7 @@ PM 的启动被 Minix3 的 SEF（System Event Framework，`minix3/minix/lib/libs
 | `sef_cb_init_restart` | `sef_setcb_init_restart(SEF_CB_INIT_RESTART_STATEFUL)`（main.c:119） | 状态恢复（Live Update/重启；本档只记注册点） |
 | `sef_cb_signal_manager` | `sef_setcb_signal_manager(process_ksig)`（main.c:121） | 内核信号转发回调（`11-signal-core.md`） |
 
-`sef_startup()`（sef.c:68-105）随后执行 `sys_whoami` 获取自身信息，并等待 RS 的 `SEF_INIT` 消息——RS 是系统的"重启服务"，负责按 boot image 逐个启动系统服务并协调 Live Update。收到 `SEF_INIT_FRESH` 后，SEF 调用 `process_init`（sef_init.c:43）→ `sef_cb_init_fresh`。
+`sef_startup()`（minix3/minix/lib/libsys/sef.c:sef_startup）随后执行 `sys_whoami` 获取自身信息，并等待 RS 的 `SEF_INIT` 消息——RS 是系统的"重启服务"，负责按 boot image 逐个启动系统服务并协调 Live Update。收到 `SEF_INIT_FRESH` 后，SEF 调用 `process_init`（minix3/minix/lib/libsys/sef_init.c:process_init）→ `sef_cb_init_fresh`。
 
 关键认知：**SEF 是"注册—分发"框架，不是初始化逻辑本身**。PM 的真实初始化全部在 `sef_cb_init_fresh` 里；Rust 侧可以保留协议语义、去掉框架（见 §3.2 D2）。
 
@@ -135,7 +135,7 @@ int main(void)
 |-----------|------|---------|
 | `sef_receive_status(ANY, &m_in, &ipc_status)` | main.c:61 | 04 |
 | `is_ipc_notify`：CLOCK → `expire_timers` | main.c:65-71 | 14 |
-| `is_ipc_notify`：SYSTEM 源（SIGKSIG）→ 内核信号拉取循环 | sef_signal.c:104-108（`sef_setcb_signal_manager(process_ksig)`，main.c:121） | 11 |
+| `is_ipc_notify`：SYSTEM 源（SIGKSIG）→ 内核信号拉取循环 | minix3/minix/lib/libsys/sef_signal.c:do_sef_signal_request（L104，工具生成）（`sef_setcb_signal_manager(process_ksig)`，main.c:121） | 11 |
 | `pm_isokendpt(who_e, &who_p)` 验证 caller | main.c:75-77 | 03 |
 | EXITING 进程的延迟调用直接丢弃 | main.c:80-82 | 04/09 |
 | `IS_VFS_PM_RS` → `handle_vfs_reply()` | main.c:84-87 | 05 |
@@ -167,10 +167,10 @@ static void sef_local_startup(void)
 
 ### 2.3 SEF 库：sef_startup 与 process_init（sef.c / sef_init.c）
 
-`sef_startup()`（`minix3/minix/lib/libsys/sef.c:68-105`）做两件事：
+`sef_startup()`（`minix3/minix/lib/libsys/sef.c:sef_startup`）做两件事：
 
-1. `sys_whoami` 获取自身 endpoint/权限/init 标志（sef.c:76-84）；
-2. 按自身角色分派：RS 走 `do_sef_rs_init`，其他服务**等待 RS 的 `SEF_INIT` 消息**（sef.c:87-121），收到后调 `do_sef_init_request`（sef_init.c:34）→ `process_init`（sef_init.c:43）。
+1. `sys_whoami` 获取自身 endpoint/权限/init 标志（minix3/minix/lib/libsys/sef.c:sef_startup（L76，工具生成））；
+2. 按自身角色分派：RS 走 `do_sef_rs_init`，其他服务**等待 RS 的 `SEF_INIT` 消息**（minix3/minix/lib/libsys/sef.c:sef_startup（L87，工具生成）），收到后调 `do_sef_init_request`（sef_init.c:34）→ `process_init`（minix3/minix/lib/libsys/sef_init.c:process_init）。
 
 `process_init` 里与 PM 相关的路径：清 IPC filter → 建状态传输 grant → 按 `type` 调 `sef_cb_init_fresh`（`SEF_INIT_FRESH`）→ 向 RS 回 `SEF_INIT_REPLY`。**RS_INIT 握手（等待消息 + 回复）是框架行为**；Rust 侧将其简化（§3.2）。
 
@@ -190,8 +190,8 @@ static void sef_local_startup(void)
 逐槽执行四件事：
 
 - `init_timer(&mp_timer)`：初始化该进程的定时器节点（`14-itimer.md`）。
-- `mp_magic = MP_MAGIC`：魔数（`0xC0FFEE0`，mproc.h:106），用于在 C 侧检测表损坏/越界访问。**Rust 类型系统消灭了这类错误，无对应字段**（ARCH A-2 相关）。
-- `mp_sigact = mpsigact[rmp - mproc]`：把该槽的 sigaction 数组指针指到独立大表 `mpsigact[NR_PROCS][_NSIG]` 的对应行。mpsigact 独立于 mproc 存放是刻意设计——"sigaction 约占每进程状态 80%，独立出来让 MIB 服务免于引入"（mproc.h:16-20 注释，声明在 mproc.h:22）。**Rust 中 `SignalState::actions: Box<[SigAction; _NSIG]>` 等价表达每槽独立的动作表**。
+- `mp_magic = MP_MAGIC`：魔数（`0xC0FFEE0`，minix3/minix/servers/pm/mproc.h:MP_MAGIC），用于在 C 侧检测表损坏/越界访问。**Rust 类型系统消灭了这类错误，无对应字段**（ARCH A-2 相关）。
+- `mp_sigact = mpsigact[rmp - mproc]`：把该槽的 sigaction 数组指针指到独立大表 `mpsigact[NR_PROCS][_NSIG]` 的对应行。mpsigact 独立于 mproc 存放是刻意设计——"sigaction 约占每进程状态 80%，独立出来让 MIB 服务免于引入"（mproc.h:16-20 注释，声明在 minix3/minix/servers/pm/mproc.h:sigaction（L22，工具生成））。**Rust 中 `SignalState::actions: Box<[SigAction; _NSIG]>` 等价表达每槽独立的动作表**。
 - `mp_eventsub = NO_EVENTSUB`：事件订阅者置空（`06-event-subscription.md`）。
 
 #### 第 2 步：信号集合构建（main.c:154-165）
@@ -231,7 +231,7 @@ static void sef_local_startup(void)
   	panic("couldn't get image table: %d", s);
 ```
 
-把内核的 boot image 表拷贝到局部静态 `image[NR_BOOT_PROCS]`。`struct boot_image`（`minix3/minix/include/minix/type.h:148-153`）字段：`proc_nr`（槽号，内核 task 为负）、`proc_name`（PROC_NAME_LEN=16）、`endpoint`、`start_addr`/`len`（内存布局，PM 不用）。
+把内核的 boot image 表拷贝到局部静态 `image[NR_BOOT_PROCS]`。`struct boot_image`（`minix3/minix/include/minix/type.h:boot_image`）字段：`proc_nr`（槽号，内核 task 为负）、`proc_name`（PROC_NAME_LEN=16）、`endpoint`、`start_addr`/`len`（内存布局，PM 不用）。
 
 #### 第 5 步：boot image 填充 mproc（main.c:177-229）
 
@@ -330,7 +330,7 @@ static void sef_local_startup(void)
       (MIN_USER_Q-MAX_USER_Q+1);
 ```
 
-常量来源：`MAX_USER_Q=0`/`MIN_USER_Q=15`/`USER_Q=7`（config.h:66-74），`PRIO_MIN=-20`/`PRIO_MAX=20`（`minix3/sys/sys/resource.h:43-44`）。**INIT 与系统进程都传 USER_Q（USR_Q = SRV_Q = USER_Q，priv.h:93-95），故两者 nice 都是 0**——公式的实际作用在 16 的 `nice_to_priority` 逆变换。
+常量来源：`MAX_USER_Q=0`/`MIN_USER_Q=15`/`USER_Q=7`（config.h:66-74），`PRIO_MIN=-20`/`PRIO_MAX=20`（`minix3/sys/sys/resource.h:PRIO_MIN`）。**INIT 与系统进程都传 USER_Q（USR_Q = SRV_Q = USER_Q，priv.h:93-95），故两者 nice 都是 0**——公式的实际作用在 16 的 `nice_to_priority` 逆变换。
 
 ### 2.6 sched_init()：为 INIT 指定用户态调度器（schedule.c:36-69）
 
@@ -348,7 +348,7 @@ static void sef_local_startup(void)
 
 - 遍历条件 `IN_USE && !PRIV_PROC`：**启动时只有 INIT 满足**（系统进程全是 PRIV_PROC）。
 - 两个 assert：该进程必须是 INIT 槽（endpoint 槽号 = 11）；INIT 的父亲 endpoint == 自身（呼应 §1.4 的"自己父亲"）。
-- `sched_start`（`minix3/minix/lib/libsys/sched_start.c:46-90`）向 SCHED 服务（endpoint 4）发 `SCHEDULING_START` 消息（`sched.h` 客户端）；成功后 `mp_scheduler` 回填为 SCHED_PROC_NR。失败仅打印警告（schedule.c:60-67），不 panic。
+- `sched_start`（`minix3/minix/lib/libsys/sched_start.c:sched_start`）向 SCHED 服务（endpoint 4）发 `SCHEDULING_START` 消息（`sched.h` 客户端）；成功后 `mp_scheduler` 回填为 SCHED_PROC_NR。失败仅打印警告（schedule.c:60-67），不 panic。
 - `USER_QUANTUM=200`（config.h:74）。**SCHED 协议细节归 16**；本档只记"启动时为 INIT 完成从内核调度到用户态调度的切换"。
 
 ### 2.7 本档覆盖的函数/符号清单
@@ -362,7 +362,7 @@ static void sef_local_startup(void)
 | `get_nice_value` | main.c:276-295 | 调用点（归 16） |
 | `handle_vfs_reply` | main.c:295-424 | 调用点（归 05） |
 | `sched_init` | schedule.c:36-69 | 调用点（协议归 16） |
-| `mpsigact` | mproc.h:22 | 独立 sigaction 表（第 1 步引用） |
+| `mpsigact` | minix3/minix/servers/pm/mproc.h:sigaction（L22，工具生成） | 独立 sigaction 表（第 1 步引用） |
 | `core_sset/ign_sset/noign_sset` | glo.h:21-23 | 信号集合（消费归 11） |
 | `monitor_params` | glo.h:10 | 启动参数（消费归 20） |
 | `system_hz` | glo.h:25 | 时钟频率（消费归 14/19） |

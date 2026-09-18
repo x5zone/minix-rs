@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-05，首版完整文档）
 > **定位**: 读的三岔路（给、等、不给）与环形缓冲拷贝几何（阶段 3，字符设备操作面；打开之后的主活动）
-> **源码**: `minix3/minix/servers/input/input.c:130-199`（`input_copy_events`/`input_read`）
+> **源码**: `minix3/minix/servers/input/input.c:input_close（L130，工具生成）`（`input_copy_events`/`input_read`）
 > **Rust 模块**: `os/servers/input/src/handlers.rs`（读判断与挂起执行）+ `os/servers/input/src/eventbuf.rs`（拷贝几何）
 > **目标读者**: 想理解"读键盘时服务如何决定给几个、什么时候给、没数据时怎么等而不卡住服务"的读者。前置知识：第 02 篇（赊账许可）、第 03 篇（队列结构）、第 06 篇（判断执行分离）。
 > **本章不讲什么**: 唤醒挂起读的事件到来路径（第 09 篇）；取消挂起（第 08 篇）；跨进程内存拷贝的传输实现（未来分发层，只定几何契约）；控制、查询（第 08 篇）。

@@ -249,10 +249,10 @@ Linux 的 systemd 用单元文件声明依赖（`After` 对应"在我之前启�
 - `04-device-database.md`——设备节点与系统数据库（启动脚本的准备事项之一）
 - `../11-stage-devman/`——设备管理服务（动态设备节点的服务端实现）
 - `minix3/sbin/init/init.c`——启动初始化进程源码（ground truth）
-- `minix3/sbin/rcorder/rcorder.c:78-90`——依赖关键词定义
+- `minix3/sbin/rcorder/rcorder.c:REQUIRE_STR`——依赖关键词定义
 - `minix3/etc/rc:141-152`——收集脚本并排序的核心段
-- `minix3/sbin/init/init.c:517-538`——重启与断电信号处理
-- `minix3/sbin/init/init.c:133-139`——七状态字符定义
+- `minix3/sbin/init/init.c:disaster（L517，工具生成）`——重启与断电信号处理
+- `minix3/sbin/init/init.c:DEATH`——七状态字符定义
 
 ---
 

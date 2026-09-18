@@ -17,7 +17,7 @@ minix-rs 内核至今从不返回用户态。调度循环(`scheduler_loop`,kerne
 
 **C 一侧(ground truth):**
 
-- C1. i386 softint trap 体(usermapped_glo_ipc.S:25-40 `IPCFUNC`):`push %ebp; push %ebx; SETARGS; int $VEC; mov %ebx,%ecx; pop; pop; ret`——用户侧只保存 EBX(被内核改写为 IPC status),其余调用者寄存器任其破坏。
+- C1. i386 softint trap 体(minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S:ENTRY（L25，工具生成） `IPCFUNC`):`push %ebp; push %ebx; SETARGS; int $VEC; mov %ebx,%ecx; pop; pop; ret`——用户侧只保存 EBX(被内核改写为 IPC status),其余调用者寄存器任其破坏。
 - C2. 寄存器约定:eax=端点,ebx=消息指针,ecx=IPC 调用号,`int $0x21`(= 33 号向量)。本树 libc 只有 arm+i386 变体,**没有 amd64 参照**——这一点 E1 条目原文已声明。
 - C3. C 的 int 门返回后,errno 走 eax(p_reg.ax),IPC status 走 ebx(C: `IPC_STATUS_ADD` 就是 `p_reg.bx |= value`,ipc.h:42-48)。
 - C4. C 有两条门:32 号 KERN_CALL_VECTOR(内核调用,不阻塞)与 33 号 IPC_VECTOR(IPC,可阻塞),外加 34/35 两个 usermapped 变体(interrupt.h:31-35;我们的 trap_entry.rs:229-230 注释已对账)。
@@ -55,7 +55,7 @@ minix-rs 内核至今从不返回用户态。调度循环(`scheduler_loop`,kerne
 
 **方案 B——SysV 风格:** RDI = 消息指针,RSI = 端点,RDX = 调用号。优点:与 SYSCALL 腿一致,读代码顺。缺点:纯发明,C 无此物;违背 translate 防线——在有 C 参照的 ABI 上自创约定,就是 E-RSWIRE 条目警告过的"guess"。
 
-**选 A。** RAX/RBX/RCX;errno 返回 RAX,IPC status 继续走保存上下文 RBX 的 OR 通道(约束 R6,R5——trap_return 的 RBX 恢复步就是用户侧回流)。**SENDA 的寄存器角色(评审修正)**:C `SENDA_ARGS`(usermapped_glo_ipc.S:87-90)是 `eax = count, ebx = table`——与普通 IPC 复用同两寄存器、仅换语义,不占用新寄存器;初稿在此处发明的 RDX/RSI 分配无 C 依据,系 guess,撤回。RECEIVE 的 status 出参按 C `GETSTATUS`(usermapped_glo_ipc.S:92-96)语义:wrapper 在用户侧把返回后的 EBX(status)写到调用者给的指针,内核不感知该指针。do_kernel_call(C 单参 `eax`,KERVEC 腿)本 rewrite 由既有 SYSCALL 腿承载,int-33 不设此变体。
+**选 A。** RAX/RBX/RCX;errno 返回 RAX,IPC status 继续走保存上下文 RBX 的 OR 通道(约束 R6,R5——trap_return 的 RBX 恢复步就是用户侧回流)。**SENDA 的寄存器角色(评审修正)**:C `SENDA_ARGS`(minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S:SENDA_ARGS（L87，工具生成）)是 `eax = count, ebx = table`——与普通 IPC 复用同两寄存器、仅换语义,不占用新寄存器;初稿在此处发明的 RDX/RSI 分配无 C 依据,系 guess,撤回。RECEIVE 的 status 出参按 C `GETSTATUS`(minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S:GETSTATUS（L92，工具生成）)语义:wrapper 在用户侧把返回后的 EBX(status)写到调用者给的指针,内核不感知该指针。do_kernel_call(C 单参 `eax`,KERVEC 腿)本 rewrite 由既有 SYSCALL 腿承载,int-33 不设此变体。
 
 ### 决策三:保存区与返回模型——TrapFrame 直返,还是统一进 CpuContext?
 

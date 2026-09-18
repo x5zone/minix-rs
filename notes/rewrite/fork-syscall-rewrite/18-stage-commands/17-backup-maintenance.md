@@ -194,11 +194,11 @@ Rust 侧 `rotate.rs` 的轮转计划与脚本的移动顺序逐项对应，差�
 
 - `14-mount-fsck.md`、`15-partition-format.md`、`16-image-media.md`——挂载、切分、搬运（本篇的前置）
 - `18-network-config.md`——网络配置（下一步：连通远方）
-- `minix3/minix/commands/backup/backup.c:52-58`——复制缓冲与条目上限（`backup.rs` 的形状来源）
-- `minix3/minix/commands/cleantmp/cleantmp.c:31-73`——保留窗口（`cleantmp.rs` 的换算来源）
-- `minix3/minix/commands/progressbar/progressbar.c:11-34`——进度版式（`progress.rs` 的版式来源）
-- `minix3/minix/commands/mt/mt.c:42-78`——操作表与用法（`tape.rs` 的表格来源）
-- `minix3/minix/commands/fix/fix.c:38`——输入行上限（`rotate.rs` 的限制来源）
+- `minix3/minix/commands/backup/backup.c:COPY_SIZE`——复制缓冲与条目上限（`backup.rs` 的形状来源）
+- `minix3/minix/commands/cleantmp/cleantmp.c:SEC_DAY`——保留窗口（`cleantmp.rs` 的换算来源）
+- `minix3/minix/commands/progressbar/progressbar.c:prettyprogress`——进度版式（`progress.rs` 的版式来源）
+- `minix3/minix/commands/mt/mt.c:POS（L42，工具生成）`——操作表与用法（`tape.rs` 的表格来源）
+- `minix3/minix/commands/fix/fix.c:LINELEN`——输入行上限（`rotate.rs` 的限制来源）
 
 ---
 

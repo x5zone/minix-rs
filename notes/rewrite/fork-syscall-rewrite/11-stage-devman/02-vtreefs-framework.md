@@ -14,17 +14,17 @@
 
 devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这件事本身全是样板：维护一棵名字树、给每个节点编号、处理 mount、回答 lookup/read/getdents、把认不得的消息转交给业务。Minix3 里不止 devman 需要这套——procfs（进程信息伪文件系统）要的是一模一样的东西。于是样板被抽成库：VTreeFS。服务只填"我和别人不一样"的部分（钩子），剩下的由框架包办。
 
-这就是 hook 表的由来：框架在每个"我不知道，自己决定"的点上留一个函数指针槽（共 13 个，`vtreefs.h:24-44`），服务填自己懂的槽，不管的槽保持 NULL 走框架默认。devman 填 3 个（init/read/message，01 §1.3），剩下 10 个的默认行为就是本篇的主题之一。
+这就是 hook 表的由来：框架在每个"我不知道，自己决定"的点上留一个函数指针槽（共 13 个，`minix3/minix/include/minix/vtreefs.h:fs_hooks`），服务填自己懂的槽，不管的槽保持 NULL 走框架默认。devman 填 3 个（init/read/message，01 §1.3），剩下 10 个的默认行为就是本篇的主题之一。
 
 ### 1.2 两类请求：文件请求走表，非文件请求走钩子
 
-进主循环的消息只有两类。VFS 发来的文件请求（mount/lookup/read/write/getdents/…共 17 种）按 `vtreefs_table`（`table.c:6-24`）分发到框架自带的实现；框架实现内部再回调钩子（比如 `fs_read` 调 `read_hook`）。其余一切消息（设备驱动的 ADD/DEL/BIND/UNBIND）统称 `fs_other`，框架连看都不看，直接转给 `message_hook`（`vtreefs.c:66-80`，01 §2.5 已见调用点）。
+进主循环的消息只有两类。VFS 发来的文件请求（mount/lookup/read/write/getdents/…共 17 种）按 `vtreefs_table`（`table.c:6-24`）分发到框架自带的实现；框架实现内部再回调钩子（比如 `fs_read` 调 `read_hook`）。其余一切消息（设备驱动的 ADD/DEL/BIND/UNBIND）统称 `fs_other`，框架连看都不看，直接转给 `message_hook`（`minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup（L66，工具生成）`，01 §2.5 已见调用点）。
 
 关键洞察：**devman 只填 3 个钩子，但 VFS 照样能 `ls /sys`**——因为 lookup/getdents/stat 是框架自带实现，不经过任何钩子。钩子是"业务扩展点"，不是"请求入口"。混淆这两者是理解 VTreeFS 最常见的错误。
 
 ### 1.3 延迟初始化：树在 mount 时才出生
 
-01 §2.7 已钉死触发链：C 的 `fs_mount` 调 `init_hook`，`init_hook` 建树（Rust 侧该回调坍缩为 `Server::ensure_devices` 守卫直调，DM-P1-3）。但框架侧还有另一半故事：`init_server`（`vtreefs.c:16-33`）在 SEF fresh 路径里先分配好 inode 池和 I/O 缓冲（失败就 `panic`，活不下去），`fs_mount` 只负责"引用根 + 调钩子"。也就是说框架分两步走：**先活（分配资源）**，**再营业（mount 后建业务树）**。Rust 侧这两步对应 `VTreeFs::new`（分配，失败 `Err(ENOMEM)`）与 `mount` + `Server::ensure_devices`（营业），[ARCH:A-7] 的第二次实例（第一次是 01 的 `SefHooks`）。
+01 §2.7 已钉死触发链：C 的 `fs_mount` 调 `init_hook`，`init_hook` 建树（Rust 侧该回调坍缩为 `Server::ensure_devices` 守卫直调，DM-P1-3）。但框架侧还有另一半故事：`init_server`（`minix3/minix/lib/libvtreefs/vtreefs.c:init_server`）在 SEF fresh 路径里先分配好 inode 池和 I/O 缓冲（失败就 `panic`，活不下去），`fs_mount` 只负责"引用根 + 调钩子"。也就是说框架分两步走：**先活（分配资源）**，**再营业（mount 后建业务树）**。Rust 侧这两步对应 `VTreeFs::new`（分配，失败 `Err(ENOMEM)`）与 `mount` + `Server::ensure_devices`（营业），[ARCH:A-7] 的第二次实例（第一次是 01 的 `SefHooks`）。
 
 ### 1.4 边界声明
 
@@ -39,7 +39,7 @@ devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这
 
 ## 2. C 源码分析
 
-### 2.1 钩子全表：13 个槽，devman 用 3 个（vtreefs.h:24-44）
+### 2.1 钩子全表：13 个槽，devman 用 3 个（minix3/minix/include/minix/vtreefs.h:fs_hooks）
 
 | 槽 | 签名行 | devman | 说明 |
 |---|---|---|---|
@@ -67,7 +67,7 @@ devman 把设备树装进文件接口（01 §1.1），但"装进文件接口"这
 
 ### 2.3 加节点：7 个断言 + 双限名字 +  indexed  purge（inode.c:185-249）
 
-`add_inode(parent, name, idx, istat, nr_indexed_entries, cbdata)` 先过 7 个断言（inode.c:193-200）：父合法、父是目录、父未删、名字 ≤ NAME_MAX、idx 合法、stat 非空、名字不重复。然后拿空闲槽（空了就 `purge_inode` 腾地方）；名字 ≤ 24（`PNAME_MAX`，vtreefs.h:14）用节点内静态缓冲，超长 `malloc`（失败返回 NULL——**全函数唯一的 NULL 返回**）。
+`add_inode(parent, name, idx, istat, nr_indexed_entries, cbdata)` 先过 7 个断言（inode.c:193-200）：父合法、父是目录、父未删、名字 ≤ NAME_MAX、idx 合法、stat 非空、名字不重复。然后拿空闲槽（空了就 `purge_inode` 腾地方）；名字 ≤ 24（`PNAME_MAX`，minix3/minix/include/minix/vtreefs.h:PNAME_MAX）用节点内静态缓冲，超长 `malloc`（失败返回 NULL——**全函数唯一的 NULL 返回**）。
 
 名字有**两档限制**，容易混淆：`NAME_MAX 511`（`sys/sys/syslimits.h:57`，硬上限，断言守卫）与 `PNAME_MAX 24`（内联阈值，只决定名字存栈上还是堆上，不决定成败）。Rust 侧是统一的 `String`（堆），双限只剩下一条 `ENAMETOOLONG`（>511），24 的阈值在注释里交代去向（§3.3）。
 
@@ -117,7 +117,7 @@ C 有个反直觉但必须保留的行为：`fs_getdents` **不检查目录位**
 
 `fs_stat`（stadir.c:9）按 `i_stat` 回填 `struct stat`——Rust 侧 `stat()` 返回 `InodeStat`，`struct stat` 编码归传输层（§2.8 同款）。
 
-### 2.10 非文件消息：拷一份再转交（vtreefs.c:66-80）
+### 2.10 非文件消息：拷一份再转交（minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup（L66，工具生成））
 
 `fs_other` 把消息拷一份再调 `message_hook`——注释明示原因："不是所有用户都善待消息"（`Not all of vtreefs's users play nice with the message`）。Rust 侧 `other()` 是值语义调用，天然等价（§3.3）。
 
@@ -276,4 +276,4 @@ os/servers/devman/src/vtreefs/
 - `04-device-tree.md` — 建树内容（本篇 `add` 的调用方）
 - `05-devm-message-contract.md` — `other()` 转交后的世界
 - `06-event-buf.md` — 两种文件内容的读语义（本篇 `read_chunk` 的分派目标）
-- C 源：`minix3/minix/lib/libvtreefs/{vtreefs.c:16-110,table.c:6-24,inode.c:31-626,mount.c:10-56,file.c:46-295,path.c:9-59,stadir.c:9}`、`minix3/minix/include/minix/vtreefs.h:14,24-44`、`minix3/sys/sys/syslimits.h:57`
+- C 源：`minix3/minix/lib/libvtreefs/{minix3/minix/lib/libvtreefs/vtreefs.c:init_server,table.c:6-24,inode.c:31-626,mount.c:10-56,file.c:46-295,path.c:9-59,stadir.c:9}`、`minix3/minix/include/minix/vtreefs.h:PNAME_MAX,24-44`、`minix3/sys/sys/syslimits.h:NAME_MAX`

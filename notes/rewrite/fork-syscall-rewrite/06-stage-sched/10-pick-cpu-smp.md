@@ -59,9 +59,9 @@ C 里有两套写法：编译期（`#ifdef CONFIG_SMP`，有这个开关才走�
 
 函数开头（`48-52`：两个局部变量 `cpu/c`，负载初值设为无符号最大值 `cpu_load = (unsigned)-1`）→ 单核短路（`54-57`：`count == 1` 就用启动核）→ 系统进程短路（`60-63`：从 RS 出生的就用启动核）→ 初值设为启动核（`66`：`cpu = bsp_id`，回退的初值）→ 选最闲的循环（`67-75`：跳过死核（`68-70`：68 行注释，69 行判断，70 行 `continue`，恒真宏守的其实是这里）→ 跳过启动核（`71` 行前半）→ 严格更闲才替换（`71` 行后半，平局时留小编号））→ 选中并记账（`76-77`：写进表项、计数器加一）。
 
-### 2.3 编译开关的两套写法（`schedproc.h:14-16` + `schedule.c:78-80`）
+### 2.3 编译开关的两套写法（`minix3/minix/servers/sched/schedproc.h:EXTERN（L14，工具生成）` + `schedule.c:78-80`）
 
-缺省单核（`schedproc.h:14-16`：没有 SMP 配置时 `CONFIG_MAX_CPUS = 1`）→ 非 SMP 直接返回 0（`schedule.c:78-80`：`#else` 分支里 `cpu = 0`，没有核的概念）。
+缺省单核（`minix3/minix/servers/sched/schedproc.h:EXTERN（L14，工具生成）`：没有 SMP 配置时 `CONFIG_MAX_CPUS = 1`）→ 非 SMP 直接返回 0（`schedule.c:78-80`：`#else` 分支里 `cpu = 0`，没有核的概念）。
 
 ### 2.4 机器信息的结构（`type.h:122-125`）
 
@@ -80,33 +80,33 @@ Rust 改写不是把 C 函数逐行翻译，而是在参考 Linux 选最闲核�
 ### D1 三条规则做成纯函数
 
 - **C**：`pick_cpu(proc)`（`48-78`：读表项、做判断、写回核号，一体）。
-- **Rust**：`pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> CpuId`（`os/servers/sched/src/cpu.rs:70`：是不是系统进程由调用者传进来，拓扑显式传参，负载只读一个视图；返回值是 `CpuId(u32)` 新类型——"这是 CPU 号"写进签名，内核 `proc.rs` 同形，合法性由本函数这个唯一生产者保证，构造不校验）。
+- **Rust**：`pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> CpuId`（`os/servers/sched/src/cpu.rs:fn pick`：是不是系统进程由调用者传进来，拓扑显式传参，负载只读一个视图；返回值是 `CpuId(u32)` 新类型——"这是 CPU 号"写进签名，内核 `proc.rs` 同形，合法性由本函数这个唯一生产者保证，构造不校验）。
 - **为什么**：系统进程的判断在 05 已经有了，调用者传结论进来就行，重判一遍就是两处真相来源；拓扑显式传参（S-5：运行时数字做参数，不读全局，读全局就是隐式参数，隐式参数不好测）；负载传切片视图（调用者持有表，04 的 D2 同样思路，`&[Option<u32>]` 能表示任意核数，不需要定长泛型）。备选方案（传整个表项和机器结构、照 C 直译）被否决了：判断和选择混在一起（读表项等于重判系统进程，模式 A）。
 
 ### D2 死亡用 `None` 表示
 
 - **C**：`CPU_DEAD=-1`（`37`）+ 恒真宏（`39`，永远触发不了）+ 负载比较里的真过滤（`71`）。
-- **Rust**：`CpuLoad = Option<u32>`（`cpu.rs:50`）+ 选择时跳过 `None`（`pick` 的循环体直接对 `Option` 模式匹配，`cpu.rs:81-88`——真过滤就是这一道，不再起第二个名字）。
+- **Rust**：`CpuLoad = Option<u32>`（`os/servers/sched/src/cpu.rs:type CpuLoad`）+ 选择时跳过 `None`（`pick` 的循环体直接对 `Option` 模式匹配，`os/servers/sched/src/cpu.rs:fn pick（L81，工具生成）`——真过滤就是这一道，不再起第二个名字）。
 - **为什么**：取起作用的那道门（恒真宏是个没写完的抽象，留着它后人会信错门）；哨兵收进类型（S-4：`-1` 变成 `None`，和 05 的 D5 同一个道理）；负载比较天然拒绝死核（跳过 `None` 和"C 里最大值选不中"效果一样，路不同、果同，06 的 D3 同样思路）。备选方案（保留 `CPU_DEAD: u32 = u32::MAX` 常量）被否决了：哨兵进类型就是模式 17 的问题。
 
 ### D3 计数用饱和加减
 
 - **C**：`++`（`77`）/`--`（07 的 `130`）无符号直接算，溢出会绕回。
-- **Rust**：`add_load`/`release_load`（`cpu.rs:113,125`：饱和加减） + `mark_dead`（`cpu.rs:101`：置 `None`）——三个动词都收 `CpuId`，数组下标换算（`cpu.0 as usize`）收在动词内部，调用方不再摸裸数字。
+- **Rust**：`add_load`/`release_load`（`os/servers/sched/src/cpu.rs:fn add_load,125`：饱和加减） + `mark_dead`（`os/servers/sched/src/cpu.rs:fn mark_dead`：置 `None`）——三个动词都收 `CpuId`，数组下标换算（`cpu.0 as usize`）收在动词内部，调用方不再摸裸数字。
 - **为什么**：正常路径（每次选中都有一次释放配对）和 C 的结果完全一样；非正常路径（比如释放了两次）停在 0，不会绕回成极大值——绕回成极大值会被负载比较误读成死核（见 §1.4 的比较），那是 C 的意外，不是 C 的约定；标死亡就是置空（什么时候标由 06 的重试循环决定，这个函数只执行标记）。备选方案（用 `wrapping_add/sub` 逐行贴着 C 写）被否决了：逐行贴合保住的是意外（模式 65），不是语义。
 
 ### D4 编译开关改成运行时参数
 
-- **C**：`#ifdef CONFIG_SMP`（`50/78`：两套写法）+ `CONFIG_MAX_CPUS`（`schedproc.h:14-16`）。
-- **Rust**：`MachineTopology{processors_count, bsp_id}`（`cpu.rs:24`：对照 `type.h:122-125`）+ 单核短路（`count <= 1` 就用启动核，非 SMP 直接返回 0 是这个式子的特例，见 §1.5）。
+- **C**：`#ifdef CONFIG_SMP`（`50/78`：两套写法）+ `CONFIG_MAX_CPUS`（`minix3/minix/servers/sched/schedproc.h:EXTERN（L14，工具生成）`）。
+- **Rust**：`MachineTopology{processors_count, bsp_id}`（`os/servers/sched/src/cpu.rs:struct MachineTopology`：对照 `type.h:122-125`）+ 单核短路（`count <= 1` 就用启动核，非 SMP 直接返回 0 是这个式子的特例，见 §1.5）。
 - **为什么**：开关变成数字（S-5：编译开关改运行时检测；`bsp_id` 越界就钳进视图范围，只钳不 panic）；空视图返回 0（约定：调用者永远传真实表，到不了这个分支，不断言）。备选方案（`#[cfg]` 写两套实现）被否决了：行为差别应该体现在值上，不应该体现在编译配置上（模式 14）。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| S-4 CPU 负载追踪（哨兵类型化） | `CpuLoad` + `mark_dead` | `cpu.rs:50,101` + 本文档 D2 + plan §4/S-4 行 |
-| S-5 SMP 编译期开关（运行时化） | `MachineTopology` + 单核短路 | `cpu.rs:24` + 本文档 D4 + plan §4/S-5 行 |
+| S-4 CPU 负载追踪（哨兵类型化） | `CpuLoad` + `mark_dead` | `os/servers/sched/src/cpu.rs:type CpuLoad,101` + 本文档 D2 + plan §4/S-4 行 |
+| S-5 SMP 编译期开关（运行时化） | `MachineTopology` + 单核短路 | `os/servers/sched/src/cpu.rs:struct MachineTopology` + 本文档 D4 + plan §4/S-5 行 |
 
 ---
 
@@ -132,10 +132,10 @@ os/libs/minix-types/src/types/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 机器信息 | `type.h:122-125` | `cpu.rs:24` | 两个数显式传参 |
-| 死亡表示 | `schedule.c:37-39` | `cpu.rs:50` | 无值即不可用（模式匹配即过滤） |
-| 选择规则 | `schedule.c:48-78` | `cpu.rs:70` | 三条按顺序匹配 |
-| 台账三个动作 | `schedule.c:77,229` + 07 的 `130` | `cpu.rs:88,100,112` | 标死亡/加一/减一 |
+| 机器信息 | `type.h:122-125` | `os/servers/sched/src/cpu.rs:struct MachineTopology` | 两个数显式传参 |
+| 死亡表示 | `schedule.c:37-39` | `os/servers/sched/src/cpu.rs:type CpuLoad` | 无值即不可用（模式匹配即过滤） |
+| 选择规则 | `schedule.c:48-78` | `os/servers/sched/src/cpu.rs:fn pick` | 三条按顺序匹配 |
+| 台账三个动作 | `schedule.c:77,229` + 07 的 `130` | `os/servers/sched/src/cpu.rs:fn pick（L88，工具生成）,100,112` | 标死亡/加一/减一 |
 
 ### 4.3 不变量
 
@@ -145,7 +145,7 @@ os/libs/minix-types/src/types/
 | 死核选不中（没有负载可比） | `None` 跳过 | 类型即门禁 | `schedule.c:69-71` |
 | 平局取小编号（严格小于才替换） | `<` 不用 `<=` | 符号即顺序 | `schedule.c:71` |
 | 台账收支相符（选中加、释放减） | 饱和加减三个动作 + 往返测试 | 值验证 | `schedule.c:77` 对 07 的 `130` |
-| 开关变数字（编译期退到运行时） | `MachineTopology` 显式传参 | 值即开关 | `schedproc.h:14-16` |
+| 开关变数字（编译期退到运行时） | `MachineTopology` 显式传参 | 值即开关 | `minix3/minix/servers/sched/schedproc.h:EXTERN（L14，工具生成）` |
 
 ---
 
@@ -156,11 +156,11 @@ os/libs/minix-types/src/types/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_single_cpu` | `schedule.c:54-57,78-80` | 单核就用启动核（系统进程和台账都不看） | `cpu.rs:143` |
-| `test_system_to_bsp` | `schedule.c:60-63` | 系统进程固定放启动核（含非零启动核） | `cpu.rs:153` |
-| `test_least_loaded` | `schedule.c:65-76` | 选最闲的 + 平局取小 + 启动核不抢 | `cpu.rs:165` |
-| `test_dead_skipped` | `schedule.c:68-69` + `229` | 死核跳过 + 全死回退启动核 | `cpu.rs:185` |
-| `test_books_balance` | `schedule.c:77,229` + 07 的 `130` | 加减标死亡 + 重复释放饱和 + 越界不 panic | `cpu.rs:198` |
+| `test_single_cpu` | `schedule.c:54-57,78-80` | 单核就用启动核（系统进程和台账都不看） | `os/servers/sched/src/cpu.rs:fn test_single_cpu` |
+| `test_system_to_bsp` | `schedule.c:60-63` | 系统进程固定放启动核（含非零启动核） | `os/servers/sched/src/cpu.rs:fn test_system_to_bsp` |
+| `test_least_loaded` | `schedule.c:65-76` | 选最闲的 + 平局取小 + 启动核不抢 | `os/servers/sched/src/cpu.rs:fn test_least_loaded` |
+| `test_dead_skipped` | `schedule.c:68-69` + `229` | 死核跳过 + 全死回退启动核 | `os/servers/sched/src/cpu.rs:fn test_dead_skipped` |
+| `test_books_balance` | `schedule.c:77,229` + 07 的 `130` | 加减标死亡 + 重复释放饱和 + 越界不 panic | `os/servers/sched/src/cpu.rs:fn test_books_balance` |
 
 测试策略：规则用三条顺序（单核/系统/选最闲）和三个例子（平局/抢位/死守）锁死；台账用三个动作和下饱和边（减到 0 停住）锁死；开关用运行时数字（非零启动核）锁死。
 
@@ -191,7 +191,7 @@ os/libs/minix-types/src/types/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/schedule.c:37-78`（选核和台账全家）、`minix3/minix/servers/sched/schedproc.h:14-16`（缺省单核）、`minix3/minix/include/minix/type.h:122-125`（机器信息结构）、`minix3/minix/servers/sched/schedule.c:227-230`（标死亡联动）
+- C 源：`minix3/minix/servers/sched/schedule.c:CPU_DEAD`（选核和台账全家）、`minix3/minix/servers/sched/schedproc.h:EXTERN（L14，工具生成）`（缺省单核）、`minix3/minix/include/minix/type.h:machine`（机器信息结构）、`minix3/minix/servers/sched/schedule.c:do_start_scheduling（L227，工具生成）`（标死亡联动）
 - 阶段文档：`01-sched-init-main.md`（机器信息）、`05-priority-timeslice-model.md`（系统进程判断）、`06-start-scheduling.md`（标死亡的循环）、`09-schedule-process.md`（上一站）、`11-balance-queues.md`（下一站）
 - Rust 实现：`os/servers/sched/src/cpu.rs:1`（本篇选核记账层）
 - 对端：`../01-stage-kernel/16-smp.md`（内核迁移机制）

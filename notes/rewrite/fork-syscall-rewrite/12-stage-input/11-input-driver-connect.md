@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-05，首版完整文档）
 > **定位**: 槽位分配、连接配置、断开清理、到来检查（阶段 5，驱动生命周期；主人关系的建立与解除）
-> **源码**: `minix3/minix/servers/input/input.c:430-603`（`input_alloc_id`/`input_connect`/`input_disconnect`/`input_check`）+ 数据存储订发布面（`ds.h:25-69` 使用面； `drv.inp.` 前缀两端对照第 12 篇）
+> **源码**: `minix3/minix/servers/input/input.c:input_event（L430，工具生成）`（`input_alloc_id`/`input_connect`/`input_disconnect`/`input_check`）+ 数据存储订发布面（`ds.h:25-69` 使用面； `drv.inp.` 前缀两端对照第 12 篇）
 > **Rust 模块**: `os/servers/input/src/connect.rs`（分配、连接报告、断开效应、到来过滤）
 > **目标读者**: 想理解"驱动来了怎么分房、走了怎么送客、服务怎么知道谁来了谁走了"的读者。前置知识：第 03 篇（槽位）、第 05 篇（配置载荷与单向纪律）、第 10 篇（灯光记忆）。
 > **本章不讲什么**: 驱动 side 的宣告与组装（第 12 篇，只对照）；数据存储服务内部实现（07-stage-ds，只用使用面）；事件上报（第 09 篇）；灯光发送（第 10 篇，只读记忆）。

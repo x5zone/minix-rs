@@ -85,13 +85,13 @@ Rust 改写不是把两个 C 函数逐行翻译，而是在参考 Linux 周期�
 ### D1 超时时间做成值对象
 
 - **C**：`static unsigned balance_timeout`（`16`）+ `BALANCE_TIMEOUT 5`（`18`）+ `5 * sys_hz()`（`338`）。
-- **Rust**：`BALANCE_TIMEOUT_SECS`（`os/servers/sched/src/balancer.rs:23`：人读的数，恒为 5）+ `Balancer::init(hz)`（超时时间用饱和乘算出来）+ `timeout_ticks()`（取值）。
+- **Rust**：`BALANCE_TIMEOUT_SECS`（`os/servers/sched/src/balancer.rs:const BALANCE_TIMEOUT_SECS`：人读的数，恒为 5）+ `Balancer::init(hz)`（超时时间用饱和乘算出来）+ `timeout_ticks()`（取值）。
 - **为什么**：超时时间是算一次、读多次的值对象，不是服务；设闹钟和失败 panic 都归调用者（闹钟是环（02）的事，持表和下发分离见 06/09 的同样分法，本模块不碰闹钟、不决定生死）。饱和乘：正常频率下和 C 的值完全一样；离谱频率下钳住不绕回（10 的 D3 同样道理：绕回成 0 等于闹钟密不间断，那是 C 的意外，不是 C 的约定）。备选方案（`init` 里直接调 `sys_setalarm`）被否决了：算值和设闹钟混在一起（模式 A），设闹钟是环的事，不是值的事。
 
 ### D2 恢复判断做成纯函数
 
 - **C**：`if (priority > max_priority) { priority -= 1; schedule_process_local(rmp); }`（`359-362`，返回值不检查）。
-- **Rust**：`rebalance_one(max: Priority, current: Priority) -> Option<Priority>`（`balancer.rs:73`：超上限就返回高一级，否则返回 `None`）。
+- **Rust**：`rebalance_one(max: Priority, current: Priority) -> Option<Priority>`（`os/servers/sched/src/balancer.rs:fn rebalance_one`：超上限就返回高一级，否则返回 `None`）。
 - **为什么**：判断（该不该恢复）和执行（扫表、下发、再设闹钟）分开——判断是纯逻辑，执行是持表人的事（04 的 D2、10 的 D1 同样思路：表在服务端，下发在边界，闹钟在环）。`Priority` 复用 `schedproc.rs` 的同一份（上限检查 `>= 16` 在构造时已经拦掉，见 06，所以恢复判断永远超不过上限）。`None` 就是"已到上限、没事可做"（C 用空 else 分支表示停止，Rust 用 `None` 表示停止，意思一样、说法不同）。备选方案（`fn rebalance(&mut SchedProc)` 读写一体）被否决了：判断和执行混在一起（读表项即改表项，模式 A）。
 
 ### D3 扫表、下发、设闹钟三件事分开
@@ -137,10 +137,10 @@ os/servers/sched/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 人读的数 | `schedule.c:18` | `balancer.rs:23` | 恒为 5（秒） |
-| 超时时间的值 | `schedule.c:16,338` | `balancer.rs:38,51,58` | 5 乘时钟频率（饱和乘） |
-| 恢复的判断 | `schedule.c:360-361` | `balancer.rs:73` | 超上限返回高一级，否则无 |
-| 替换的位置 | `schedule.c:348-352` | `balancer.rs:30-38`（注释） | 第二套策略到了立 trait |
+| 人读的数 | `schedule.c:18` | `os/servers/sched/src/balancer.rs:const BALANCE_TIMEOUT_SECS` | 恒为 5（秒） |
+| 超时时间的值 | `schedule.c:16,338` | `os/servers/sched/src/balancer.rs:struct Balancer,51,58` | 5 乘时钟频率（饱和乘） |
+| 恢复的判断 | `schedule.c:360-361` | `os/servers/sched/src/balancer.rs:fn rebalance_one` | 超上限返回高一级，否则无 |
+| 替换的位置 | `schedule.c:348-352` | `os/servers/sched/src/balancer.rs:const BALANCE_TIMEOUT_SECS（L30，工具生成）`（注释） | 第二套策略到了立 trait |
 
 ### 4.3 不变量
 
@@ -148,7 +148,7 @@ os/servers/sched/src/
 |--------|------|------|------|
 | 升到上限就停（超上限才恢复） | `rebalance_one` 开头判断 | `>` 不用 `>=` | `schedule.c:360` |
 | 一次只升一级 | 减 1 单步 | 单步即防振荡 | `schedule.c:361` |
-| 恢复超不过上限（返回值域） | `Priority` 构造检查 | 类型即边界 | `schedproc.rs:51` |
+| 恢复超不过上限（返回值域） | `Priority` 构造检查 | 类型即边界 | `os/servers/sched/src/schedproc.rs:fn new（L51，工具生成）` |
 | 超时饱和（绕回不会发生） | `saturating_mul` | 值验证 | `schedule.c:338` |
 | 局部下发不动核（掩码即边界） | 调用者约定（按 09 LOCAL 组装） | 文档即约定 | `schedule.c:32-33` |
 
@@ -166,8 +166,8 @@ os/servers/sched/src/
 | `test_restore_one_level` | `schedule.c:360-361` | 超上限返回高一级（含底边单步） | `balancer.rs` |
 | `test_at_ceiling_rests` | `schedule.c:360` | 到上限就停 + 没降过也停 | `balancer.rs` |
 | `test_gradual_return` | `schedule.c:360-361` | 连调收敛到上限（防振荡的形状） | `balancer.rs` |
-| `test_init_scheduling_arms_bell` | `schedule.c:334-342` | 装配层：闹钟按 5×频率布下（100→500）、失败向上抛、`balancer` 就位 | `os/servers/sched/src/server.rs:628` |
-| `test_clock_rebalances_multiple_slots_in_order` | `schedule.c:353-365` | 多进程同轮各升一级、到上限的整段跳过（`if` 守护全body）、只给动了的通知、永不回复 | `os/servers/sched/src/server.rs:1100` |
+| `test_init_scheduling_arms_bell` | `schedule.c:334-342` | 装配层：闹钟按 5×频率布下（100→500）、失败向上抛、`balancer` 就位 | `os/servers/sched/src/server.rs:fn test_init_scheduling_arms_bell` |
+| `test_clock_rebalances_multiple_slots_in_order` | `schedule.c:353-365` | 多进程同轮各升一级、到上限的整段跳过（`if` 守护全body）、只给动了的通知、永不回复 | `os/servers/sched/src/server.rs:fn test_clock_rebalances_multiple_slots_in_order` |
 
 测试策略：超时时间用乘法三个例子（正常/零/溢出）锁死；恢复判断用停止条件（到上限停）和步幅（单步）锁死；防振荡用连调收敛（渐渐回去的形状）锁死。
 
@@ -198,7 +198,7 @@ os/servers/sched/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/schedule.c:16-18`（超时时间的数）、`minix3/minix/servers/sched/schedule.c:32-33`（局部下发的掩码）、`minix3/minix/servers/sched/schedule.c:334-343`（启动设闹钟）、`minix3/minix/servers/sched/schedule.c:348-369`（恢复函数体）、`minix3/minix/servers/sched/main.c:44-51`（闹钟响了调恢复的链路）、`minix3/minix/lib/libsys/sys_setalarm.c`（设闹钟的含义）
+- C 源：`minix3/minix/servers/sched/schedule.c:16-18`（超时时间的数）、`minix3/minix/servers/sched/schedule.c:schedule_process_local`（局部下发的掩码）、`minix3/minix/servers/sched/schedule.c:init_scheduling`（启动设闹钟）、`minix3/minix/servers/sched/schedule.c:init_scheduling（L348，工具生成）`（恢复函数体）、`minix3/minix/servers/sched/main.c:main（L44，工具生成）`（闹钟响了调恢复的链路）、`minix3/minix/lib/libsys/sys_setalarm.c`（设闹钟的含义）
 - 阶段文档：`02-sched-message-surface.md`（主循环收通知的环）、`05-priority-timeslice-model.md`（上限的含义）、`08-noquantum-nice.md`（降级的对照）、`10-pick-cpu-smp.md`（上一站）、`12-kernel-interface.md`（下一站）
 - Rust 实现：`os/servers/sched/src/balancer.rs:1`（本篇平衡恢复层）
 - 对端：`../01-stage-kernel/15-clock-timer.md`（时钟中断内核侧）

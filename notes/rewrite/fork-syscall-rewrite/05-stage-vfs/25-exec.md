@@ -124,37 +124,37 @@ Rust 改写不是照抄 `exec.c` 的打开文件与装载流程，而是吸收 L
 ### D1 管线枚举
 
 - **C**：头注释十一步 + `FAILCHECK` 跳终局（`exec.c:1-11,156,386-401`）。
-- **Rust**：`ExecPhase` 十一段 + `?` 早返 + `CleanupPlan`（`os/servers/vfs/src/exec.rs:54,518,526`）。
+- **Rust**：`ExecPhase` 十一段 + `?` 早返 + `CleanupPlan`（`os/servers/vfs/src/exec.rs:enum ExecPhase（L54，工具生成）,518,526`）。
 - **为什么**：管线是"执行到哪一步"的知识；枚举使断点可名状。替代方案（布尔组）被否决：十一段非布尔可表。
 
 ### D2 打开文件的三项检查
 
 - **C**：`get_read_vp` 释放旧文件/记录进程名/打开文件/三项检查/有效 uid-gid/读首块（`exec.c:89-154`）。
-- **Rust**：`IdCheck` 三值 + `check_identity()` + `SuidHonor` + `honor_suid()`（`os/servers/vfs/src/exec.rs:81,91,106,120`）。
+- **Rust**：`IdCheck` 三值 + `check_identity()` + `SuidHonor` + `honor_suid()`（`os/servers/vfs/src/exec.rs:enum IdCheck（L81，工具生成）,91,106,120`）。
 - **为什么**：三项检查顺序即优先级；有效 uid/gid 应用的 sugid 条件使"谁的有效 id"一算可知。替代方案（三布尔返回）被否决：三错各有 errno，枚举即分流。
 
 ### D3 脚本解释器处理
 
 - **C**：`is_script` 双字节 + `patch_stack` 补栈 + `insert_arg` 算术（`exec.c:522-529,534-602,607-683`）。
-- **Rust**：`is_script()` + `PatchPlan::{Direct, ViaInterpreter}` + `OffsetCalc` + `calc_insert()`（`os/servers/vfs/src/exec.rs:144,150,159,169,186`）。
+- **Rust**：`is_script()` + `PatchPlan::{Direct, ViaInterpreter}` + `OffsetCalc` + `calc_insert()`（`os/servers/vfs/src/exec.rs:fn honor_suid（L144，工具生成）,150,159,169,186`）。
 - **为什么**：插参算术是全篇最微妙的纯计算；C 对齐公式的"已对齐再进一字" quirks 被逐算符镜像并注记。替代方案（指针直算）被否决：usize 算术配显式边界检查更安全。
 
 ### D4 动态链接处理
 
 - **C**：解释器分类三值 + 动态链接支路（打开主文件/定基址/记名并切换文件，`exec.c:278-314`）。
-- **Rust**：`classify_interpreter()`（负值直通）+ `loader_base()` + `VP_SWITCHES` 标志表（`os/servers/vfs/src/exec.rs:222,233,246,257,265`）。
+- **Rust**：`classify_interpreter()`（负值直通）+ `loader_base()` + `VP_SWITCHES` 标志表（`os/servers/vfs/src/exec.rs:enum DynSwitch（L222，工具生成）,233,246,257,265`）。
 - **为什么**：三值非二值，枚举消灭"负数即动态"的误读；切换文件标志表使 1,1→1,0→0,0 一表可查。替代方案（布尔动静）被否决：错/静态/动态三态非二值。
 
 ### D5 装载双路径
 
 - **C**：`read_seg` 双检查 + `vfs_memmap` 标志转换 + `exec_loaders[]` 表 + vmfd 取用条件（`exec.c:688-715,161-180,78-81,320-321`）。
-- **Rust**：`check_seg()` + `mmap_flags()` + `ImageLoader{load, setup_stack}`（`ScriptedLoader` 按脚本应答 vs `NullLoader` 恒 `ENOEXEC`，即哨兵）+ `vmfd_gate()`（`os/servers/vfs/src/exec.rs:284,293,299,305,315,324,347,359`）。
+- **Rust**：`check_seg()` + `mmap_flags()` + `ImageLoader{load, setup_stack}`（`ScriptedLoader` 按脚本应答 vs `NullLoader` 恒 `ENOEXEC`，即哨兵）+ `vmfd_gate()`（`os/servers/vfs/src/exec.rs:fn check_seg（L284，工具生成）,293,299,305,315,324,347,359`）。
 - **为什么**：装载表是"先试 ELF，不行即无"的知识；哨兵即第二实现，表驱动天然穷举。替代方案（函数指针表直译）被否决：trait 双钩对应装载/备栈，可测试。
 
 ### D6 辅向量准备
 
 - **C**：`stack_prepare_elf` 七个辅向量封口 + `map_header` 取小首读（`exec.c:413-517,736-763`）。
-- **Rust**：`AuxKind` 七名（数值归 ELF ABI，判定层只记名）+ `plan_aux()`（容名/溢名皆封口）+ `HeaderReader`（`ScriptedHeader` 定长应答 vs `ZeroHeader` 空文件）+ `HeaderInfo`（`os/servers/vfs/src/exec.rs:375,396,411,445,454,461,477`）。
+- **Rust**：`AuxKind` 七名（数值归 ELF ABI，判定层只记名）+ `plan_aux()`（容名/溢名皆封口）+ `HeaderReader`（`ScriptedHeader` 定长应答 vs `ZeroHeader` 空文件）+ `HeaderInfo`（`os/servers/vfs/src/exec.rs:enum AuxKind（L375，工具生成）,396,411,445,454,461,477`）。
 - **为什么**：辅向量表是"动态链接续命七件事"的知识；数值不入判定层避 P0-fact 风险（ABI 数值归执行层）。替代方案（数值硬编码）被否决：记错一位即 P0。
 
 ### D7 收尾步骤
@@ -193,7 +193,7 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 栈界/路界/名界 | `syslimits.h:49,64`/`type.h:145`/`sys_config.h:25` | `exec.rs:31,35` | 256K/1024/16/4M |
+| 栈界/路界/名界 | `minix3/sys/sys/syslimits.h:ARG_MAX,64`/`type.h:145`/`minix3/minix/include/minix/sys_config.h:DEFAULT_STACK_LIMIT` | `exec.rs:31,35` | 256K/1024/16/4M |
 | 旗位/页/基 | `mman.h:64`/`vm.h:34`/`exec.c:67,302` | `exec.rs:39,43,45` | 换算与预留 |
 | 管线十一 | `exec.c:1-11` | `exec.rs:54` | 阶段枚举 |
 | 打开文件三项检查 | `exec.c:126-147` | `exec.rs:81,91,106,120` | 检查顺序 + 有效 uid/gid |
@@ -266,7 +266,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/exec.c:1-763`（十四函数全族）、`minix3/sys/sys/syslimits.h:49,64`（`ARG_MAX/PATH_MAX`）、`minix3/minix/include/minix/sys_config.h:25`（`DEFAULT_STACK_LIMIT`）、`minix3/minix/include/minix/type.h:145`（`PROC_NAME_LEN`）、`minix3/sys/sys/mman.h:64`（`PROT_WRITE`）、`minix3/minix/include/minix/vm.h:34`（`MVM_WRITABLE`）
+- C 源：`minix3/minix/servers/vfs/exec.c:1-763`（十四函数全族）、`minix3/sys/sys/syslimits.h:ARG_MAX,64`（`ARG_MAX/PATH_MAX`）、`minix3/minix/include/minix/sys_config.h:DEFAULT_STACK_LIMIT`（`DEFAULT_STACK_LIMIT`）、`minix3/minix/include/minix/type.h:PROC_NAME_LEN`（`PROC_NAME_LEN`）、`minix3/sys/sys/mman.h:PROT_WRITE`（`PROT_WRITE`）、`minix3/minix/include/minix/vm.h:MVM_WRITABLE`（`MVM_WRITABLE`）
 - 阶段文档：`10-pm-protocol.md`（`VFS_PM_EXEC` 入口）、`13-path-lookup.md`（寻路执行）、`29-protect.md`（X 执行权限检查）、`12-request-wrappers.md`（FS 读写）、`14-filedes.md`（fd 表）、`02-fproc-struct.md`（凭证与进程名）、`09-main-loop.md`（调用分发）、`26-coredump.md`（转储调用点）
-- Rust 实现：`os/servers/vfs/src/exec.rs:1`（本篇判定层）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/exec.rs:1`（本篇判定层）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 跨阶段：`../02-stage-vm/20-vm-mmap.md`（mmap 装载执行）、`../04-stage-pm/17-exec.md`（新生通告执行）、`../01-stage-kernel/18-syscall-copy.md`（栈拷语义）

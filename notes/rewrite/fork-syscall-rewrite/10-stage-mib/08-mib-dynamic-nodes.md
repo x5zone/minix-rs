@@ -1,7 +1,7 @@
 # 08 — 系统信息库动态节点：创建时多重校验，销毁时多重守卫
 
 > **分类**: 生命周期 / 创建销毁 verdict
-> **源码**: `minix3/minix/servers/mib/tree.c:242-266`（`mib_check_name`）、`:277-359`（`mib_scan`）、`:426-481`（`mib_upgrade`/`mib_add`）、`:486-775`（`mib_create`）、`:784-916`（`mib_remove`/`mib_destroy`）
+> **源码**: `minix3/minix/servers/mib/tree.c:mib_query（L242，工具生成）`（`mib_check_name`）、`:277-359`（`mib_scan`）、`:426-481`（`mib_upgrade`/`mib_add`）、`:486-775`（`mib_create`）、`:784-916`（`mib_remove`/`mib_destroy`）
 > **说明**: 运行时节点的完整生命周期：名字合法性校验、扫描是否与现有节点冲突、标志位合法性检查、创建与删除的多重守卫、版本号递增、内存归属。实际的内存分配、链表链接与数据拷贝是后续竞技场与传输层的效果，本篇只负责所有判决逻辑。
 
 ---
@@ -73,10 +73,10 @@
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 名字校验变 `Option` | 回 0 表失败 | `check_name → Option<usize>`（`dynamic.rs:26`） | 0 在 C 里既是"失败"又是"长度零"歧义（空名失败回 0，长度不可能是 0——歧义无害但难读）；`None` 即失败 |
-| D2 | 扫描变纯函数 | 指针输出参数（idp/prevpp/nodep） | `scan(...) → ScanOutcome::{StaticClash,DynClash,Free{id,insert_at}}`（`dynamic.rs:50,81`） | 三个输出参数是 C 惯例；枚举一次说清"撞哪/空哪/插哪"；05 `Missing{insert_at}` 在此复用为插入点 |
-| D3 | 拒绝变枚举+码 | 裸 errno（`EPERM/EBUSY/ENOTEMPTY/EINVAL` 散落） | `DestroyRefusal` 六变体 + `(Refusal, i32)`（`dynamic.rs:219,235`） | 销毁有六种死法，裸码分不清"永久"与"函数结点"（都是 `EPERM`）；变体是原因，码是传输——原因值得名字 |
-| D4 | 差量变结构 | 全局 `--` 散写 | `RemoveDelta{free_desc,free_dynode,csize_dec,objects_dec}`（`dynamic.rs:274,287`） | `clen/nodes--` 恒成立不值得建模（调用者照做）；**条件成立**的四项才值得（动态/描述拥有与否四组合，测试全覆盖） |
+| D1 | 名字校验变 `Option` | 回 0 表失败 | `check_name → Option<usize>`（`os/servers/mib/src/tree/dynamic.rs:fn check_name`） | 0 在 C 里既是"失败"又是"长度零"歧义（空名失败回 0，长度不可能是 0——歧义无害但难读）；`None` 即失败 |
+| D2 | 扫描变纯函数 | 指针输出参数（idp/prevpp/nodep） | `scan(...) → ScanOutcome::{StaticClash,DynClash,Free{id,insert_at}}`（`os/servers/mib/src/tree/dynamic.rs:enum ScanOutcome,81`） | 三个输出参数是 C 惯例；枚举一次说清"撞哪/空哪/插哪"；05 `Missing{insert_at}` 在此复用为插入点 |
+| D3 | 拒绝变枚举+码 | 裸 errno（`EPERM/EBUSY/ENOTEMPTY/EINVAL` 散落） | `DestroyRefusal` 六变体 + `(Refusal, i32)`（`os/servers/mib/src/tree/dynamic.rs:fn create_alloc_size（L219，工具生成）,235`） | 销毁有六种死法，裸码分不清"永久"与"函数结点"（都是 `EPERM`）；变体是原因，码是传输——原因值得名字 |
+| D4 | 差量变结构 | 全局 `--` 散写 | `RemoveDelta{free_desc,free_dynode,csize_dec,objects_dec}`（`os/servers/mib/src/tree/dynamic.rs:fn check_destroy（L274，工具生成）,287`） | `clen/nodes--` 恒成立不值得建模（调用者照做）；**条件成立**的四项才值得（动态/描述拥有与否四组合，测试全覆盖） |
 | D5 | 版本递增变函数 | `+1` + 跳零散写 | `next_root_ver`（`version.rs:15`，wrapping+跳零）+ `create_ver_ok`（`:26`） | u32 回绕跳零是"写一次忘一次"的典型（`:440-441` 两行）；函数+回绕测试钉死 |
 
 替代方案及否决：arena 一步到位（Vec/BTree 真表 + 指针手术）——否决，静态 arena 于执行轮统一建（单一真值见 15 §4.4：todo.md P1-2），本篇 verdict 先行（verdict-first 延续；`scan` 的切片签名在 arena 落地时换容器不换语义）。**容器裁决（P2-3，2026-09-15）**：动态子节点 = `BTreeMap`（`tree/arena.rs` 的 `ChildMap`，三方案对比与 [ARCH] 标注在该模块文档）；`scan` 的 `insert_at` 语义由 walker 在 map 上原样复现（`range` + 位置换算，测试已钉）。
@@ -99,18 +99,18 @@ os/servers/mib/src/tree/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 名字体统 | `:247-266` | `dynamic.rs:26` | 符号风；`None` 即败 |
-| 扫描 | `:277-359` | `dynamic.rs:50,81` | 三 outcome；双遍名查 |
+| 名字体统 | `:247-266` | `os/servers/mib/src/tree/dynamic.rs:fn check_name` | 符号风；`None` 即败 |
+| 扫描 | `:277-359` | `os/servers/mib/src/tree/dynamic.rs:enum ScanOutcome,81` | 三 outcome；双遍名查 |
 | 父槽位上限 | `:517-519` | `dynamic.rs`（`create_csize_ok`，`i32::MAX` 为界） | [ARCH] 容器 u32、界随 int id 空间 |
-| 标志白名单 | `:552-554` | `dynamic.rs:140` | USERFLAGS+UNSIGNED 外全拒 |
-| RW 消毒 | `:575-576` | `dynamic.rs:149` | 有位即全掩码 |
-| 立即拥有组合 | `:556-572,623-624` | `dynamic.rs:165` | NODE 禁双；叶禁矛盾 |
-| 类型尺寸 | `:579-631` | `dynamic.rs:185` | 标量精确；串构非零；NODE 零空 |
-| 分配尺寸 | `:679-684` | `dynamic.rs:202` | 头+名（+数）；败报 EINVAL（调用方） |
-| 销毁六拒 | `:869-899` | `dynamic.rs:219,235` | 变体+码 |
-| 删除差量 | `:793-829` | `dynamic.rs:274,287` | 条件四项 |
+| 标志白名单 | `:552-554` | `os/servers/mib/src/tree/dynamic.rs:fn scan（L140，工具生成）` | USERFLAGS+UNSIGNED 外全拒 |
+| RW 消毒 | `:575-576` | `os/servers/mib/src/tree/dynamic.rs:fn create_csize_ok（L149，工具生成）` | 有位即全掩码 |
+| 立即拥有组合 | `:556-572,623-624` | `os/servers/mib/src/tree/dynamic.rs:fn sanitize_rw（L165，工具生成）` | NODE 禁双；叶禁矛盾 |
+| 类型尺寸 | `:579-631` | `os/servers/mib/src/tree/dynamic.rs:fn data_combo_ok（L185，工具生成）` | 标量精确；串构非零；NODE 零空 |
+| 分配尺寸 | `:679-684` | `os/servers/mib/src/tree/dynamic.rs:fn type_size_ok（L202，工具生成）` | 头+名（+数）；败报 EINVAL（调用方） |
+| 销毁六拒 | `:869-899` | `os/servers/mib/src/tree/dynamic.rs:fn create_alloc_size（L219，工具生成）,235` | 变体+码 |
+| 删除差量 | `:793-829` | `os/servers/mib/src/tree/dynamic.rs:fn check_destroy（L274，工具生成）,287` | 条件四项 |
 | 版本递增 | `:439-448` | `version.rs:15` | 回绕跳零 |
-| 建版本规则 | `:544-546` | `version.rs:26` | 父或根或零 |
+| 建版本规则 | `:544-546` | `os/servers/mib/src/tree/version.rs:fn next_root_ver（L26，工具生成）` | 父或根或零 |
 | 请求版本门 | `:537-538`（query 同型 `:194-195`） | `version.rs`（`staged_vers_ok`） | 11 篇同规则共一条实现 |
 
 ### 4.3 不变量
@@ -160,6 +160,6 @@ os/servers/mib/src/tree/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/tree.c:242-266,277-359,426-481,486-775,784-916`
+- C 源：`minix3/minix/servers/mib/tree.c:mib_query（L242，工具生成）,277-359,426-481,486-775,784-916`
 - 阶段文档：`03-mib-node-model.md`（dynode/版本）、`05-mib-tree-lookup.md`（插入点）、`07-mib-auth-model.md`（改结构门）、`06-mib-copy-io.md`（拷入原语）、`09-mib-data-access.md`（下一站）、`11-mib-query-describe.md`（回显）
 - Rust 实现：`os/servers/mib/src/tree/dynamic.rs`、`os/servers/mib/src/tree/version.rs`

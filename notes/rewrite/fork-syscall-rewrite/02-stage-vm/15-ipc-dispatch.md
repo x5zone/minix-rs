@@ -71,7 +71,7 @@ if(result != SUSPEND) {          /* main.c:181 */
 
 ### 1.4 VFS transid：事务路由
 
-VFS 向 VM 发消息时，`m_type` 可以是**编码格式**：高 16 位是真实调用号，低 16 位是事务 ID（vfsif.h:79-81）：
+VFS 向 VM 发消息时，`m_type` 可以是**编码格式**：高 16 位是真实调用号，低 16 位是事务 ID（minix3/minix/include/minix/vfsif.h:TRNS_GET_ID）：
 
 ```c
 #define TRNS_GET_ID(t)		((t) & 0xFFFF)          /* 取低 16 位 = transid */
@@ -94,7 +94,7 @@ if (is_ipc_notify(rcv_sts)) {
 
 同样地，`VM_PAGEFAULT` 必须来自内核——`IPC_STATUS_FLAGS_TEST(rcv_sts, IPC_FLG_MSG_FROM_KERNEL)`（ipcconst.h:28/:34）验证消息**由内核代表进程发出**（信任标志），否则打印 "faked VM_PAGEFAULT message!" 告警。这是对伪造消息的第一道防线。
 
-**Rust 对应（V10-P1-1）**：状态字解析收敛为 `IpcStatus` 方法——`is_notify()`（transport.rs:58，`(flags & 0x3F) == NOTIFY`）与 `is_from_kernel()`（transport.rs:69，`((flags >> 16) & 1) != 0`，`IPC_FLG_MSG_FROM_KERNEL` 位）。主循环在 endpoint 校验**之前**跳过通知（vm_server.rs:639），P3 分支用 `rcv_sts.is_from_kernel()` 做 `debug_assert`（vm_server.rs:813）。`flags` 的真实来源待 kernel IPC core（`KernelIpcTransport::receive` 填充）；默认 `IpcStatus::default()` 下两者恒 false。
+**Rust 对应（V10-P1-1）**：状态字解析收敛为 `IpcStatus` 方法——`is_notify()`（transport.rs:58，`(flags & 0x3F) == NOTIFY`）与 `is_from_kernel()`（transport.rs:69，`((flags >> 16) & 1) != 0`，`IPC_FLG_MSG_FROM_KERNEL` 位）。主循环在 endpoint 校验**之前**跳过通知（os/servers/vm/src/vm_server.rs:fn exec_bootproc（L639，工具生成）），P3 分支用 `rcv_sts.is_from_kernel()` 做 `debug_assert`（os/servers/vm/src/vm_server.rs:const PS（L813，工具生成））。`flags` 的真实来源待 kernel IPC core（`KernelIpcTransport::receive` 填充）；默认 `IpcStatus::default()` 下两者恒 false。
 
 **release 可观测性（V13-P3-1，2026-09-09）**：单纯的 `debug_assert!` 在 release 下把整个检查连同条件一起编译掉——伪造消息静默通过，弱于 C（release 保留 printf 后照常处理）。现改为显式 `if !is_from_kernel()`：测试构建仍是硬失败（debug_assert 语义不变），release 走 `audit_log!` 记一行 `[VM PF] faked pagefault source`。两侧行为面不变（都不拒绝伪造消息），差距只在可观测性，现已对齐。
 
@@ -253,7 +253,7 @@ while (TRUE) {
 - **P4 正常调用（:165-176）**：ACL 检查失败只打印告警（`vmc_name` 提供可读性），`result` 保持初值 **ENOSYS**——调用者看到的是"不支持"，不是 EPERM；成功则调 handler。`SANITYCHECK(SCL_FUNCTIONS)` 包住 handler，异常时输出调用栈（A-7 cfg 替代）。
 - **回复（:178-191）**：`result != SUSPEND` 才回复；`msg.m_type = result` 把 errno 写回消息类型位；再 `assert(!IS_VFS_FS_TRANSID(transid))` 保证回复消息类型干净。`ipc_send` 失败 panic——回复丢失是致命错误。
 
-### 2.5 transid 宏与 SUSPEND（vfsif.h:79-81 / com.h:911-912 / com.h:1151）
+### 2.5 transid 宏与 SUSPEND（minix3/minix/include/minix/vfsif.h:TRNS_GET_ID / com.h:911-912 / com.h:1151）
 
 | 宏 | 定义 | 语义 |
 |----|------|------|
@@ -368,9 +368,9 @@ impl VmReplyForIpc {
 | `KernelIpcTransport`（:147） | 生产 | `receive`/`send` 主体 `unimplemented!("wiring pending kernel IPC core")`——内核 IPC 原语未就绪；`initialized` 门控（`mark_initialized` 置位，:167）给出清晰错误而非旧版 `Err(())` |
 | `TestIpcTransport`（:215） | `#[cfg(test)]` | 队列式 mock：`queue_receive` 预置消息 + `IpcStatus`、`sent` 记录每次 `send`、`should_fail` 强制失败；`TestTransportHandle`（:269）在 transport 移入 `VmServer` 后继续持有共享状态 |
 
-接线（V10-P0-2）：`VmServer.transport` 字段（vm_server.rs:134-136）由构造器注入——生产 `new_with_boot_params` → `kernel_transport()`（vm_server.rs:173）创建共享 `KernelIpcTransport`；测试 `new_for_test`（vm_server.rs:157）注入 `TestIpcTransport`，主循环经 `self.transport.borrow_mut().receive()/send()` 走 trait 对象（`run_once` vm_server.rs:623）。`mark_initialized`（trait 默认 no-op，transport.rs:131）在 `init()` 调用（vm_server.rs:413）——对应 C `__minix_init`（main.c:480）的"IPC 就绪"门控（01 篇 §3.3）。
+接线（V10-P0-2）：`VmServer.transport` 字段（os/servers/vm/src/vm_server.rs:fn usage_sources（L134，工具生成））由构造器注入——生产 `new_with_boot_params` → `kernel_transport()`（os/servers/vm/src/vm_server.rs:struct VmServer（L173，工具生成））创建共享 `KernelIpcTransport`；测试 `new_for_test`（os/servers/vm/src/vm_server.rs:struct VmServer（L157，工具生成））注入 `TestIpcTransport`，主循环经 `self.transport.borrow_mut().receive()/send()` 走 trait 对象（`run_once` os/servers/vm/src/vm_server.rs:fn init_boot_procs（L623，工具生成））。`mark_initialized`（trait 默认 no-op，transport.rs:131）在 `init()` 调用（os/servers/vm/src/vm_server.rs:fn relocate（L413，工具生成））——对应 C `__minix_init`（main.c:480）的"IPC 就绪"门控（01 篇 §3.3）。
 
-### 3.4 D4：五优先级 dispatch_on_msg（vm_server.rs:786-886）
+### 3.4 D4：五优先级 dispatch_on_msg（os/servers/vm/src/vm_server.rs:const PS（L786，工具生成））
 
 `run()` 循环体把 C 的 if-else 链（main.c:137-176）提炼成 `dispatch_on_msg`：
 
@@ -378,7 +378,7 @@ impl VmReplyForIpc {
 |---------|----------|---------|
 | P1 VFS transid | `source == VFS_PROC_NR && is_vfs_fs_transid(m_type)` → `handle_vfs_transid` | 校验 clean_type==VM_PROCCTL + transid≠0（C 无显式校验，直接 do_procctl） |
 | P2 RS_INIT | `m_type == RS_INIT && source == RS_PROC_NR` → `rs_handshake()` + `DispatchAction::Suspend` | `rs_handshake` 复刻 `sef_cb_init_fresh`（rproctab + map_service），SEF 框架 DEFERRED（A-8） |
-| P3 VM_PAGEFAULT | `debug_assert!(rcv_sts.is_from_kernel())` + `dispatch_pagefault` + `NoReply` | 生产用 debug_assert（C 是运行时告警）；失败结果计数 + `audit_log!`（V9-P1-1，vm_server.rs:819-829），不再静默丢弃 |
+| P3 VM_PAGEFAULT | `debug_assert!(rcv_sts.is_from_kernel())` + `dispatch_pagefault` + `NoReply` | 生产用 debug_assert（C 是运行时告警）；失败结果计数 + `audit_log!`（V9-P1-1，os/servers/vm/src/vm_server.rs:const PS（L819，工具生成）），不再静默丢弃 |
 | P4 正常调用 | `callnr()` → `acl_check` → `dispatch_by_number` | ACL 拒绝 → 回复 ENOSYS（保持 C result 初值语义） |
 | P5 兜底 | `DispatchAction::Reply(NotImplemented)` | = ENOSYS |
 
@@ -398,7 +398,7 @@ if let Some((callback, reply, state)) = result.vfs_callback {
 
 ### 3.6 D6：acl_check 接线 + ENOSYS 语义保持
 
-调用点（vm_server.rs:844-863）：
+调用点（os/servers/vm/src/vm_server.rs:const PS（L844，工具生成））：
 
 ```rust
 if let Some(proc) = table.get_active(caller_slot) {
@@ -410,17 +410,17 @@ if let Some(proc) = table.get_active(caller_slot) {
 }
 ```
 
-- `proc.acl_check`（vmproc_handle.rs:246-248）转发 `AclState::acl_check`（acl.rs:96-131）——三态（Uninitialized/Default/System(mask)）查 `1u64 << call` 位。
+- `proc.acl_check`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn set_acl（L246，工具生成））转发 `AclState::acl_check`（os/servers/vm/src/acl.rs:fn acl_check（L96，工具生成））——三态（Uninitialized/Default/System(mask)）查 `1u64 << call` 位。
 - **ENOSYS 语义保持**（04 已修）：C 中 ACL 拒绝路径不改 `result` 初值（main.c:139 `result = ENOSYS`），调用者看到 ENOSYS 而非 EPERM；Rust 用 `VmError::NotImplemented` 精确复刻，`AclState::acl_check` 内部仍返回 EPERM（= C 的 acl_check 返回值）。
-- VM 自身端点豁免：`endpoint == Endpoint::VM` 直接放行（acl.rs:97-99）。
+- VM 自身端点豁免：`endpoint == Endpoint::VM` 直接放行（os/servers/vm/src/acl.rs:fn acl_check（L97，工具生成））。
 
 ### 3.7 差异清单（C ↔ Rust，诚实标注）
 
 | # | C 行为 | Rust 行为 | 性质 |
 |---|--------|----------|------|
-| 1 | `RS_INIT` = 0x714（com.h:478） | 修复前 `const RS_INIT = 0x606`（vm_server.rs:973）——优先级 2 永不匹配 | **P0 修复**（0x606→0x714，现 const 在 vm_server.rs:1157，0x606 残留 0） |
+| 1 | `RS_INIT` = 0x714（com.h:478） | 修复前 `const RS_INIT = 0x606`（os/servers/vm/src/vm_server.rs:const SIGKMEM（L973，工具生成））——优先级 2 永不匹配 | **P0 修复**（0x606→0x714，现 const 在 os/servers/vm/src/vm_server.rs:fn run_once（L1157，工具生成），0x606 残留 0） |
 | 2 | SEF 框架（sef_local_startup/sef_startup） | `rs_handshake()` 直接复刻 sef_cb_init_fresh 两步；SEF 生命周期 DEFERRED | A-8 缺口契约 |
-| 3 | `is_ipc_notify(rcv_sts)` 读状态字 | `IpcStatus::is_notify()`（transport.rs:58）按 `IPC_STATUS_CALL == NOTIFY` 解析；主循环在 endpoint 校验前跳过通知（vm_server.rs:639） | **V10-P1-1 修复**（2026-08-16）：`flags` 真实来源仍待 kernel IPC，但解析语义已与 C 位定义一致 |
+| 3 | `is_ipc_notify(rcv_sts)` 读状态字 | `IpcStatus::is_notify()`（transport.rs:58）按 `IPC_STATUS_CALL == NOTIFY` 解析；主循环在 endpoint 校验前跳过通知（os/servers/vm/src/vm_server.rs:fn exec_bootproc（L639，工具生成）） | **V10-P1-1 修复**（2026-08-16）：`flags` 真实来源仍待 kernel IPC，但解析语义已与 C 位定义一致 |
 | 4 | `IPC_FLG_MSG_FROM_KERNEL` 运行时校验 + 告警 | `rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16；`IpcStatus::default()` 下恒 false（不再是恒 true 桩） | 生产路径未达（KernelIpcTransport unimplemented） |
 | 5 | `do_procctl(&msg, transid)` 直接调 | `handle_vfs_transid` 显式校验 clean_type/transid 后调 `dispatch_procctl` | 防御增强 |
 | 6 | VFS 回复内联回调 | 回调延迟到主循环借用边界执行 | borrow checker 驱动，语义等价 |
@@ -432,9 +432,9 @@ if let Some(proc) = table.get_active(caller_slot) {
 
 ## 4. 实现详解
 
-### 4.1 run() / run_once() 主循环（vm_server.rs:588-721）
+### 4.1 run() / run_once() 主循环（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L588，工具生成））
 
-`run()` 不再内联单次迭代——每轮工作拆到 `run_once() -> RunStep`（vm_server.rs:623-715，V10-P0-2），测试可用 mock transport 逐轮驱动主循环：
+`run()` 不再内联单次迭代——每轮工作拆到 `run_once() -> RunStep`（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L623，工具生成），V10-P0-2），测试可用 mock transport 逐轮驱动主循环：
 
 ```rust
 pub fn run(&mut self) -> ! {
@@ -509,9 +509,9 @@ fn run_once(&mut self) -> RunStep {
 
 与 C 主循环逐句对应：alloc_cycle 钩子（main.c:118-120）、收消息（:122-123）、通知过滤（:125-129）、caller 验证（:130-132）、五优先级（:137-176）、SUSPEND 抑制回复（:178-191）。**回复编码两段式**：`reply_to_errno` 决定 `m_type`（errno），`encode_reply_data` 填载荷字段（C 的 handler 直接写 `msg` 字段）。
 
-**与 C 的边界差异（[ARCH: A-14] V9-P0-1）**：C 在收消息失败（:122-123）与未知 endpoint（:131-132）两处直接 `panic`——VM 是系统唯一内存管理服务器，panic 意味着全系统内存管理停摆，且页表/refcount/region 状态不可恢复。Rust 改为**丢弃消息 + `dropped_messages` 饱和计数 + `audit_log!` 审计**（test → eprintln、`vm_acl_audit` → no_std sink、release 无 feature → 编译消除，见 §3.7 #7），主循环继续。外部可观察行为不变——该 caller 本就无法得到服务；`ipc_send` 失败仍 panic（回复丢失 = 调用者永久挂起，A-14 只覆盖输入边界）。另一个 C 没有的边界：transport 本身损坏（连续 64 次 receive 失败）时 `run()` panic 而非空转烧 CPU（`test_run_busy_loop_protection`，vm_server.rs:1849）。
+**与 C 的边界差异（[ARCH: A-14] V9-P0-1）**：C 在收消息失败（:122-123）与未知 endpoint（:131-132）两处直接 `panic`——VM 是系统唯一内存管理服务器，panic 意味着全系统内存管理停摆，且页表/refcount/region 状态不可恢复。Rust 改为**丢弃消息 + `dropped_messages` 饱和计数 + `audit_log!` 审计**（test → eprintln、`vm_acl_audit` → no_std sink、release 无 feature → 编译消除，见 §3.7 #7），主循环继续。外部可观察行为不变——该 caller 本就无法得到服务；`ipc_send` 失败仍 panic（回复丢失 = 调用者永久挂起，A-14 只覆盖输入边界）。另一个 C 没有的边界：transport 本身损坏（连续 64 次 receive 失败）时 `run()` panic 而非空转烧 CPU（`test_run_busy_loop_protection`，os/servers/vm/src/vm_server.rs:fn test_dispatch_vm_info_what_matches_c_wire（L1849，工具生成））。
 
-### 4.2 dispatch_on_msg 五优先级（vm_server.rs:786-886）
+### 4.2 dispatch_on_msg 五优先级（os/servers/vm/src/vm_server.rs:const PS（L786，工具生成））
 
 ```rust
 fn dispatch_on_msg(&mut self, msg: &Message, rcv_sts: &IpcStatus,
@@ -555,7 +555,7 @@ fn dispatch_on_msg(&mut self, msg: &Message, rcv_sts: &IpcStatus,
 }
 ```
 
-transid 辅助函数（vm_server.rs:1081-1110）逐字复刻 C 宏：
+transid 辅助函数（os/servers/vm/src/vm_server.rs:fn run（L1081，工具生成））逐字复刻 C 宏：
 
 | Rust | C | 语义 |
 |------|---|------|
@@ -564,7 +564,7 @@ transid 辅助函数（vm_server.rs:1081-1110）逐字复刻 C 宏：
 | `transid_strip` :1102 | `TRNS_DEL_ID` | `((m_type >> 16) as i16) as u32`（符号扩展保留） |
 | `callnr` :1168 | `CALLNUMBER` | `checked_sub(VM_RQ_BASE)` + `< NR_VM_CALLS` |
 
-### 4.3 handle_vfs_transid（vm_server.rs:931-984）
+### 4.3 handle_vfs_transid（os/servers/vm/src/vm_server.rs:fn mark_vm_instance（L931，工具生成））
 
 ```rust
 fn handle_vfs_transid(&mut self, clean_type: u32, transid: i32, msg: &Message) -> VmReply {
@@ -606,18 +606,18 @@ C 的 `do_procctl(&msg, transid)` 在 Rust 拆成"**前置校验 + 委托 dispat
 ### 4.5 特殊路径：exec_newmem 与 pagefault 不进 dispatch_by_number
 
 - **`VM_EXEC_NEWMEM`**：`dispatch_by_number` **无**该分支——请求落到 `_` 兜底返回 NotImplemented。**V11/T19 parity 核实**：C 的 CALLMAP 同样不注册这条调用（`vm_calls[c].vmc_func == NULL` → main.c:139/165 ENOSYS），两侧可观察行为一致；孤儿 stub 及其 60 行架构注记已删除（dispatcher.rs 的 exec_newmem/DMA parity 注记处）。若未来某 Minix3 修订真正注册了 handler，再按『VmServer 层持有全组件访问』的方向立项。
-- **`VM_PAGEFAULT`**：`callnr()` 对 `0xCFF` 返回 None（越界，`const VM_PAGEFAULT: u32 = 0xCFF` 在 vm_server.rs:1158），根本进不了 dispatch_by_number——P3 分支先截获。`dispatch_pagefault`（vm_server.rs:986-1057）在 `VmServer` 层持有 `&mut self`，委托 `cow_exec_pf::handle_pagefault`（16 详述）。
+- **`VM_PAGEFAULT`**：`callnr()` 对 `0xCFF` 返回 None（越界，`const VM_PAGEFAULT: u32 = 0xCFF` 在 os/servers/vm/src/vm_server.rs:fn run_once（L1158，工具生成）），根本进不了 dispatch_by_number——P3 分支先截获。`dispatch_pagefault`（os/servers/vm/src/vm_server.rs:fn handle_signal（L986，工具生成））在 `VmServer` 层持有 `&mut self`，委托 `cow_exec_pf::handle_pagefault`（16 详述）。
 
-### 4.6 reply 编码（vm_server.rs:1233-1420）
+### 4.6 reply 编码（os/servers/vm/src/vm_server.rs:enum RunStep（L1233，工具生成））
 
 `reply_to_errno` 全变体显式列出的原因：**新增 VmReply 变体必须在此处补编码分支，否则编译错误**。`VmError::to_errno()`（minix-types vm.rs:610-628）做 errno 映射（EINVAL/ESRCH/ENOMEM/EFAULT/EPERM/EACCES/EIO/ENOSYS/ENOENT）。`encode_reply_data` 对每个带载荷变体写 M1 字段（fork 子进程 endpoint、brk 新地址、mmap 地址、Info* 统计等）。
 
-### 4.7 IpcTransport 接线（vm_server.rs:134-186 / 588-721，V10-P0-2）
+### 4.7 IpcTransport 接线（os/servers/vm/src/vm_server.rs:fn usage_sources（L134，工具生成） / 588-721，V10-P0-2）
 
-transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（vm_server.rs:134-136），**构造器注入**（V9-P1-2 的落地）：
+transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（os/servers/vm/src/vm_server.rs:fn usage_sources（L134，工具生成）），**构造器注入**（V9-P1-2 的落地）：
 
-- **生产**：`new_with_boot_params`（vm_server.rs:149）→ `kernel_transport()`（vm_server.rs:168）创建共享 `KernelIpcTransport`；`init()` 调用 `mark_initialized`（vm_server.rs:413，对应 C `__minix_init` main.c:480）。
-- **测试**：`new_for_test`（vm_server.rs:157）注入 `TestIpcTransport`；测试保留 `TestTransportHandle`（transport.rs:269）驱动 `queue_receive` / 检查 `sent`——主循环走真实的 `run_once` → `dispatch_on_msg` → `send` 全路径（V10-P0-2，§5.1）。
+- **生产**：`new_with_boot_params`（os/servers/vm/src/vm_server.rs:struct VmServer（L149，工具生成））→ `kernel_transport()`（os/servers/vm/src/vm_server.rs:struct VmServer（L168，工具生成））创建共享 `KernelIpcTransport`；`init()` 调用 `mark_initialized`（os/servers/vm/src/vm_server.rs:fn relocate（L413，工具生成），对应 C `__minix_init` main.c:480）。
+- **测试**：`new_for_test`（os/servers/vm/src/vm_server.rs:struct VmServer（L157，工具生成））注入 `TestIpcTransport`；测试保留 `TestTransportHandle`（transport.rs:269）驱动 `queue_receive` / 检查 `sent`——主循环走真实的 `run_once` → `dispatch_on_msg` → `send` 全路径（V10-P0-2，§5.1）。
 - 旧的进程全局 `IPC_TRANSPORT_PTR: AtomicPtr` + `Box::into_raw` 泄漏路径与自由函数 `ipc_receive`/`ipc_send` 包装已删除；`transport()`/`ipc_transport_for_build()` 选择器不再存在。
 
 ---
@@ -686,11 +686,11 @@ transport 是 `VmServer` 的实例字段 `Rc<RefCell<Box<dyn IpcTransport>>>`（
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| dispatch_on_msg 五优先级直接单测 | ✅ 已闭环 | **V10-P0-2**：`test_run_once_dispatch_reply_round`（vm_server.rs:1684）经 TestTransportHandle 驱动完整主循环一轮（receive → notify 检查 → dispatch → send 记录）；`test_run_once_receive_failure_counts`（:1782）覆盖丢弃路径；`test_pagefault_errors_counted`（:2071）覆盖 P3 失败路径 |
+| dispatch_on_msg 五优先级直接单测 | ✅ 已闭环 | **V10-P0-2**：`test_run_once_dispatch_reply_round`（os/servers/vm/src/vm_server.rs:fn callnr（L1684，工具生成））经 TestTransportHandle 驱动完整主循环一轮（receive → notify 检查 → dispatch → send 记录）；`test_run_once_receive_failure_counts`（:1782）覆盖丢弃路径；`test_pagefault_errors_counted`（:2071）覆盖 P3 失败路径 |
 | RS_INIT 分支测试 | ✅ 已闭环（V11/T9 step 3） | `test_run_once_rs_init_fails_closed_until_erswire`（vm_server.rs）：TestIpcTransport 投递带 grant 的 RS_INIT → 握手 fail-closed（E-RSWIRE 前 NotImplemented）→ 无回复 + `dropped_messages==1`；grant 经 `RsInit::decode_message`（minix-types `m_rs_init` union 成员，roundtrip 测试同上）贯通 |
-| VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（vm_server.rs:2071）：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
-| is_ipc_notify 分支 | ✅ 已闭环 | **V10-P1-1**：`test_run_once_notify_skipped_before_dispatch`（vm_server.rs:1735）——NOTIFY 状态消息经 `IpcStatus::is_notify()` 在 dispatch 前跳过 |
-| acl_check 拒绝路径单测 | ⚠️ 部分 | AclState::acl_check 有单测（acl.rs:200+），但 dispatch_on_msg 层"拒绝→ENOSYS 回复"无直接测试 |
+| VM_PAGEFAULT 分支测试 | ✅ 部分 | `test_pagefault_errors_counted`（os/servers/vm/src/vm_server.rs:fn test_run_once_exiting_caller_denied_enosys（L2071，工具生成））：P3 分支失败 → 计数 1（V9-P1-1）；`rcv_sts.is_from_kernel()`（transport.rs:69）解析 bit 16，默认 `IpcStatus::default()` 恒 false，真实状态字未接 kernel IPC |
+| is_ipc_notify 分支 | ✅ 已闭环 | **V10-P1-1**：`test_run_once_notify_skipped_before_dispatch`（os/servers/vm/src/vm_server.rs:fn has_pending_vfs_requests（L1735，工具生成））——NOTIFY 状态消息经 `IpcStatus::is_notify()` 在 dispatch 前跳过 |
+| acl_check 拒绝路径单测 | ⚠️ 部分 | AclState::acl_check 有单测（os/servers/vm/src/acl.rs:fn test_acl_check_uninitialized+），但 dispatch_on_msg 层"拒绝→ENOSYS 回复"无直接测试 |
 | munmap/brk 测试的页表路径 | ✅ 已闭环（V11/T25） | 六处测试分支的 `pt = None` 桩全部翻转为 `Some(active.page_table_mut())`（测试构建下是 SimPaging，V11/T21）；测试 helper 补 `init_page_table()`。"真实 unmap 后 query 清空 + refcount 归零"由专项测试 `test_free_region_pages_sim_paging_unmaps`（region/mod.rs）权威承载 |
 | DMA 三请求 | ⚠️ 显式排除 | dispatch_by_number `_` 兜底 NotImplemented；C 有 do_adddma 等（DMA 表 DEFERRED） |
 | VFS transid 编码端到端 | ⚠️ 缺失 | TRNS_ADD_ID 编码（VFS 侧）不在 VM 测试范围；仅单向 GET/STRIP 解码 |

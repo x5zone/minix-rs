@@ -779,7 +779,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 
 > **与 C 源码的差异**：C 的 `pg_mapkernel()` 只设 `PRESENT | BIGPAGE | WRITE`，无 GLOBAL 位。Rust 代码中 `PageFlags::kernel_read_write()` 含 GLOBAL，boot 阶段无实际作用（无进程切换，CR3 不变）。GLOBAL 位的真正价值在 VM 的 Direct Map 中——每次进程切换重写 CR3 时避免内核映射 TLB miss。
 
-**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:130-166`，三架构版本 + mock 测试入口)：
+**`arch_boot()` 的实际代码** (`os/kernel/src/lib.rs:fn lock_boot_globals（L130，工具生成）`，三架构版本 + mock 测试入口)：
 
 ```rust
 // x86-64
@@ -833,7 +833,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 > - aarch64: `minix_arch::arm64::paging::AArch64Paging` (TTBR1, 4 级 L0→L3)
 > - riscv64: `minix_arch::riscv64::paging::Riscv64Paging` (Sv39, 3 级)
 >
-> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:130-166](os/kernel/src/lib.rs)。
+> 其余步骤（`arch_boot_impl::<P>` + `HigherHalf::jump_to_kmain`）完全相同——这是 `P: HugePages` 泛型设计的目标。详见 [os/kernel/src/lib.rs:fn lock_boot_globals（L130，工具生成）](os/kernel/src/lib.rs)。
 
 **为什么必须 `jump_to_kmain` 而不是直接 `kmain(info)`？**
 
@@ -924,7 +924,7 @@ boot-shim (UEFI/OpenSBI，低地址执行)
 arch_boot_impl → HigherHalf::jump_to_kmain → kmain (naked) → kmain_verify
 ```
 
-`kmain` 使用 `#[naked]` 属性避免函数序言修改栈指针，直接捕获入口时的 SP/PC/FP 寄存器值。`kmain` 与 `kmain_verify` 位于内核 `os/kernel/src/lib.rs:599-643`（`#[cfg(feature = "qemu_test")]`）——测试内核 `main.rs` 仅调用 `arch_boot`，跳转后的验证由内核侧完成。`kmain_verify` 断言：
+`kmain` 使用 `#[naked]` 属性避免函数序言修改栈指针，直接捕获入口时的 SP/PC/FP 寄存器值。`kmain` 与 `kmain_verify` 位于内核 `os/kernel/src/lib.rs:fn kmain（L599，工具生成）`（`#[cfg(feature = "qemu_test")]`）——测试内核 `main.rs` 仅调用 `arch_boot`，跳转后的验证由内核侧完成。`kmain_verify` 断言：
 
 1. **SP >= kern_virt_base**：栈指针在高地址空间
 2. **SP 16 字节对齐**：满足 ABI 要求

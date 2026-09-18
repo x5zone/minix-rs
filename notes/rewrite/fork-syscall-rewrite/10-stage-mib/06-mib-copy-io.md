@@ -1,7 +1,7 @@
 # 06 — 系统信息库拷贝输入输出：判断何种数据需要搬运、谁有权限触碰
 
 > **分类**: 拷贝原语 / 数据搬运 verdict
-> **源码**: `minix3/minix/servers/mib/main.c:64-258`（`mib_oldp/newp` + 全部拷贝/长度/relay 原语）、`minix3/minix/servers/mib/tree.c:371-420`（`mib_copyin_str`）、`minix3/minix/include/minix/safecopies.h:52-53,64-65`（grant 常量）
+> **源码**: `minix3/minix/servers/mib/main.c:mib_node（L64，工具生成）`（`mib_oldp/newp` + 全部拷贝/长度/relay 原语）、`minix3/minix/servers/mib/tree.c:mib_scan（L371，工具生成）`（`mib_copyin_str`）、`minix3/minix/include/minix/safecopies.h:GRANT_INVALID,64-65`（grant 常量）
 > **说明**: 字节怎么进出：旧槽钳制、新数据精确匹配、字符串分页猜、grant 转交。判什么动（verdict）与真的动（`sys_datacopy`/`cpf_grant_magic` 效果，A-12 transport）在此分家。
 
 ---
@@ -72,12 +72,12 @@
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 空指针变 `Option` | `NULL` 哨兵 + 分支 | `Option<u64>` 长度（`copy.rs:24,35`），`None` 即关 | C 式哨兵（模式 17）直译是第一 translate 味；`None` 让"关"在类型里，`in_range(None, _)==false` 无需注释 |
-| D2 | 钳制变返回值 | 回 `size` + 副作用拷 | `CopySpan{xfer, report}`（`copy.rs:49,61`） | "动了多少"与"报多少"是两回事（§2.1）——结构体让两回事各有名字；transport 执行 `xfer`，上层上报 `report` |
-| D3 | 分页猜变纯函数 | 循环 + `copyin_aux` 交织 | `next_chunk`（`copy.rs:112`：页界+缓冲钳制）+ `nul_size`（`:127`：+1 终结符） | 循环的"算块"与"拷块"解耦：算块纯可测（含 `addr%PAGE` 边界），拷块是 transport 效果；`None` 即"界尽"（`:418-419` 的 `EINVAL` 由调用者转） |
-| D4 | grant 无效变 `None` | `GRANT_INVALID(-1)` 哨兵 | `RelayRegion{grant: Option<GrantId>, len}`（`relay.rs:51`），`relay_old/new`（`:63,78`） | 与 `minix-types` `GrantId` 文档约定（"Option::None at use sites"，`id.rs:74`）同构——哨兵只活在线上（`GRANT_INVALID` 常量保留供 wire 比对），逻辑层无哨兵 |
-| D5 | 失败码变常量 | 注释"must not be ENOMEM"两处 | `RELAY_FAIL = EINVAL`（`relay.rs:96`）+ 注释链 01 §1.4 | 注释会撒谎，常量不会：调用者 `GrantOutcome::Failed → RELAY_FAIL`，想报 ENOMEM 得先改常量名 |
-| D6 | 方向变枚举 | `CPF_WRITE`/`CPF_READ` 裸传 | `RelayDir::{Write, Read}` + `flag()`（`relay.rs:28,37`） | "旧授写、新授读"（§1.3）值得一个名字；`flag()` 是 wire 唯一出口，方向弄反编译不过（类型错位非值错位） |
+| D1 | 空指针变 `Option` | `NULL` 哨兵 + 分支 | `Option<u64>` 长度（`os/servers/mib/src/io/copy.rs:const PAGE_SIZE（L24，工具生成）,35`），`None` 即关 | C 式哨兵（模式 17）直译是第一 translate 味；`None` 让"关"在类型里，`in_range(None, _)==false` 无需注释 |
+| D2 | 钳制变返回值 | 回 `size` + 副作用拷 | `CopySpan{xfer, report}`（`os/servers/mib/src/io/copy.rs:fn get_old_len（L49，工具生成）,61`） | "动了多少"与"报多少"是两回事（§2.1）——结构体让两回事各有名字；transport 执行 `xfer`，上层上报 `report` |
+| D3 | 分页猜变纯函数 | 循环 + `copyin_aux` 交织 | `next_chunk`（`os/servers/mib/src/io/copy.rs:fn check_copyin（L112，工具生成）`：页界+缓冲钳制）+ `nul_size`（`:127`：+1 终结符） | 循环的"算块"与"拷块"解耦：算块纯可测（含 `addr%PAGE` 边界），拷块是 transport 效果；`None` 即"界尽"（`:418-419` 的 `EINVAL` 由调用者转） |
+| D4 | grant 无效变 `None` | `GRANT_INVALID(-1)` 哨兵 | `RelayRegion{grant: Option<GrantId>, len}`（`os/servers/mib/src/io/relay.rs:struct RelayRegion（L51，工具生成）`），`relay_old/new`（`:63,78`） | 与 `minix-types` `GrantId` 文档约定（"Option::None at use sites"，`os/libs/minix-types/src/types/id.rs:type GrantId（L74，工具生成）`）同构——哨兵只活在线上（`GRANT_INVALID` 常量保留供 wire 比对），逻辑层无哨兵 |
+| D5 | 失败码变常量 | 注释"must not be ENOMEM"两处 | `RELAY_FAIL = EINVAL`（`os/servers/mib/src/io/relay.rs:fn relay_new（L96，工具生成）`）+ 注释链 01 §1.4 | 注释会撒谎，常量不会：调用者 `GrantOutcome::Failed → RELAY_FAIL`，想报 ENOMEM 得先改常量名 |
+| D6 | 方向变枚举 | `CPF_WRITE`/`CPF_READ` 裸传 | `RelayDir::{Write, Read}` + `flag()`（`os/servers/mib/src/io/relay.rs:enum RelayDir（L28，工具生成）,37`） | "旧授写、新授读"（§1.3）值得一个名字；`flag()` 是 wire 唯一出口，方向弄反编译不过（类型错位非值错位） |
 
 替代方案及否决：`CopyTransport` trait（`copy_out/copy_in` 方法 + 真实现/测试 mock 双实现）——否决，真实现今天只能回 `ENOSYS` stub（P0-code-bug），mock 双实现为凑 Gate D-2 而设是模式 25（不必要抽象）；verdict-值（"判动"）先行，trait 等 transport 落地（A-12）时从 12 的真实需求长出来。
 
@@ -102,14 +102,14 @@ grant 常量（`CPF_READ=1`/`CPF_WRITE=2`）住 `minix-types` `id.rs`（`GrantId
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 范围/长度 | `main.c:90-113` | `copy.rs:24,35` | 关→false/0 |
-| 钳制 | `main.c:120-141` | `copy.rs:49,61` | 越界零动全报 |
-| 新长度/精确拷 | `main.c:158-185` | `copy.rs:80,93` | 不等即 `EINVAL` |
-| 分页/终结 | `tree.c:397-410` | `copy.rs:112,127` | 页界钳制；+1 终结 |
-| grant 有效 | `safecopies.h:52-53` | `relay.rs:14,17` | `> -1` |
-| 方向 | `main.c:216-217,241-242` | `relay.rs:28,37` | 旧写新读 |
-| 转交在场 | `main.c:210-252` | `relay.rs:51,63,78` | 关→无效+零 |
-| 失败码 | `main.c:208,236` | `relay.rs:96` | `EINVAL` 恒 |
+| 范围/长度 | `main.c:90-113` | `os/servers/mib/src/io/copy.rs:const PAGE_SIZE（L24，工具生成）,35` | 关→false/0 |
+| 钳制 | `main.c:120-141` | `os/servers/mib/src/io/copy.rs:fn get_old_len（L49，工具生成）,61` | 越界零动全报 |
+| 新长度/精确拷 | `main.c:158-185` | `os/servers/mib/src/io/copy.rs:fn copyout_span（L80，工具生成）,93` | 不等即 `EINVAL` |
+| 分页/终结 | `tree.c:397-410` | `os/servers/mib/src/io/copy.rs:fn check_copyin（L112，工具生成）,127` | 页界钳制；+1 终结 |
+| grant 有效 | `minix3/minix/include/minix/safecopies.h:GRANT_INVALID` | `relay.rs:14,17` | `> -1` |
+| 方向 | `main.c:216-217,241-242` | `os/servers/mib/src/io/relay.rs:enum RelayDir（L28，工具生成）,37` | 旧写新读 |
+| 转交在场 | `main.c:210-252` | `os/servers/mib/src/io/relay.rs:struct RelayRegion（L51，工具生成）,63,78` | 关→无效+零 |
+| 失败码 | `main.c:208,236` | `os/servers/mib/src/io/relay.rs:fn relay_new（L96，工具生成）` | `EINVAL` 恒 |
 
 ### 4.3 不变量
 
@@ -139,8 +139,8 @@ grant 常量（`CPF_READ=1`/`CPF_WRITE=2`）住 `minix-types` `id.rs`（`GrantId
 | `test_copyout_span_clamps` | `main.c:127-141` | 全/尾钳/越界零动/关 | `copy.rs` |
 | `test_check_copyin_exact` | `main.c:177-181` | 等值/±1/关/零长 | `copy.rs` |
 | `test_next_chunk_page_bounded` | `tree.c:397-410,418` | 页界/缓冲钳/耗尽/终结+1 | `copy.rs` |
-| `test_grant_validity` | `safecopies.h:52-53` | -1 无效/0 有效 | `relay.rs` |
-| `test_relay_directions` | `main.c:216-217,241-242` + `safecopies.h:64-65` | 旧写新读 + 值 2/1 | `relay.rs` |
+| `test_grant_validity` | `minix3/minix/include/minix/safecopies.h:GRANT_INVALID` | -1 无效/0 有效 | `relay.rs` |
+| `test_relay_directions` | `main.c:216-217,241-242` + `minix3/minix/include/minix/safecopies.h:CPF_READ` | 旧写新读 + 值 2/1 | `relay.rs` |
 | `test_relay_presence` | `main.c:210-252` | 关无效零/开带长/失败 EINVAL | `relay.rs` |
 
 ### 5.1 测试统计（截至 2026-09-05）
@@ -157,7 +157,7 @@ grant 常量（`CPF_READ=1`/`CPF_WRITE=2`）住 `minix-types` `id.rs`（`GrantId
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/main.c:64-258`、`minix3/minix/servers/mib/tree.c:371-420`、`minix3/minix/include/minix/safecopies.h:52-53,64-65`
+- C 源：`minix3/minix/servers/mib/main.c:mib_node（L64，工具生成）`、`minix3/minix/servers/mib/tree.c:mib_scan（L371，工具生成）`、`minix3/minix/include/minix/safecopies.h:GRANT_INVALID,64-65`
 - 阶段文档：`01-mib-init-main.md`（配对 verdict）、`02-mib-message-contract.md`（信封 lane）、`09-mib-data-access.md`（调用方）、`12-mib-remote-subtrees.md`（转交旅程）、`../07-stage-ds/02-ds-message-contract.md`（grant 先例对照）
 - Rust 实现：`os/servers/mib/src/io/copy.rs`、`os/servers/mib/src/io/relay.rs`、`os/libs/minix-types/src/types/id.rs`（CPF 常量）
 - 对端：A-12 transport（`minix-sys` 落地后接线）

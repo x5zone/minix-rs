@@ -160,7 +160,7 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 - `06-file-ops.md`——文件操作（归档打包的文件来源）
 - `12-process-tools.md`——进程与会话（下一步：看护运行）
 - `minix3/minix/commands/compress/compress.c:20-42`——选项与策略（头部说明书）
-- `minix3/usr.bin/uuencode/uuencode.c:63-113`——双编码器分派
+- `minix3/usr.bin/uuencode/uuencode.c:__COPYRIGHT（L63，工具生成）`——双编码器分派
 - `minix3/usr.bin/shar/shar.sh`——归档生成端（`scan_archive` 的逆过程）
 
 ---

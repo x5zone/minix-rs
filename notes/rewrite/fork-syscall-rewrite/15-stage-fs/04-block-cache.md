@@ -67,11 +67,11 @@
 
 ## 2. C 源码分析
 
-### 2.1 缓冲头 `struct buf` 与取值模式（`libminixfs.h:11-57`）
+### 2.1 缓冲头 `struct buf` 与取值模式（`minix3/minix/include/minix/libminixfs.h:buf`）
 
-缓冲结构分数据段与头段：数据指针、双向空闲链指针、哈希链指针、设备号、块号、使用计数、二级缓存标记、块字节数、标志、关联的索引节点与文件偏移（`libminixfs.h:11-31`）。使用计数是字符型（`libminixfs.h:21`），上限一百二十七——单线程服务器里够用了。
+缓冲结构分数据段与头段：数据指针、双向空闲链指针、哈希链指针、设备号、块号、使用计数、二级缓存标记、块字节数、标志、关联的索引节点与文件偏移（`minix3/minix/include/minix/libminixfs.h:buf`）。使用计数是字符型（`minix3/minix/include/minix/libminixfs.h:buf（L21，工具生成）`），上限一百二十七——单线程服务器里够用了。
 
-取值模式三个：正常（必须读盘）、免读（不读盘）、窥视（只查有无，不在报无此项）（`libminixfs.h:55-57`）。块输入输出三个函数声明（驱动绑定、块传输、刷设备）在第 05 篇展开。
+取值模式三个：正常（必须读盘）、免读（不读盘）、窥视（只查有无，不在报无此项）（`minix3/minix/include/minix/libminixfs.h:NORMAL`）。块输入输出三个函数声明（驱动绑定、块传输、刷设备）在第 05 篇展开。
 
 ### 2.2 池与全局量（`cache.c:38-71`，`MINBUFS` 在 `cache.c:44`）
 

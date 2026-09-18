@@ -27,26 +27,26 @@
 
 `vnode.h:13` 的 `v_ref_count` 与 `14` 的 `v_fs_count` 构成双层：
 
-- `v_ref_count`：VFS 层的“引用计数”，`dup_vnode` 时 `++`（`vnode.c:233`），`put_vnode` 时 `>1 → --`（`260` 快速路径）或 `==1 → req_putnode + 0`（`282-295` 慢路径）；
-- `v_fs_count`：底层 FS 的“打开计数”，`clean_refs` 的 `>256 → req_putnode(fs_count-1), fs_count=1`（`vnode.c:263` `>256` 阈值与 `313` `fs_count-1`）防止 `int` 环绕。
+- `v_ref_count`：VFS 层的“引用计数”，`dup_vnode` 时 `++`（`minix3/minix/servers/vfs/vnode.c:dup_vnode（L233，工具生成）`），`put_vnode` 时 `>1 → --`（`260` 快速路径）或 `==1 → req_putnode + 0`（`282-295` 慢路径）；
+- `v_fs_count`：底层 FS 的“打开计数”，`clean_refs` 的 `>256 → req_putnode(fs_count-1), fs_count=1`（`minix3/minix/servers/vfs/vnode.c:put_vnode（L263，工具生成）` `>256` 阈值与 `313` `fs_count-1`）防止 `int` 环绕。
 
-二者的延迟同步是性能优化：`put_vnode` 的 `ref>1` 时仅 `ref--` 而不立即 `req_putnode`，`fs_count` 的 `>256` 阈值才 `clean_refs` 的 `req_putnode(fs_count-1)` 将多余的 FS 引用一次性回收（`vnode.c:263` 的 `if fs_count>256 → clean_refs` 与 `305-314` 的 `if fs_count>1 → put(fs_count-1), fs_count=1` 阈值闭环）。`fs_count` 的 256 阈值并非 255 或 257，而是 `int` 的 `2^31-1` 环绕前的批量回收点——`ref_count` 的 `int` 上界与 `fs_count` 的 `int` 上界同为 `2^31-1`，但 `fs_count` 的 `req_putnode` 往返 FS 成本使“每 `put` 都同步”不可接受。
+二者的延迟同步是性能优化：`put_vnode` 的 `ref>1` 时仅 `ref--` 而不立即 `req_putnode`，`fs_count` 的 `>256` 阈值才 `clean_refs` 的 `req_putnode(fs_count-1)` 将多余的 FS 引用一次性回收（`minix3/minix/servers/vfs/vnode.c:put_vnode（L263，工具生成）` 的 `if fs_count>256 → clean_refs` 与 `305-314` 的 `if fs_count>1 → put(fs_count-1), fs_count=1` 阈值闭环）。`fs_count` 的 256 阈值并非 255 或 257，而是 `int` 的 `2^31-1` 环绕前的批量回收点——`ref_count` 的 `int` 上界与 `fs_count` 的 `int` 上界同为 `2^31-1`，但 `fs_count` 的 `req_putnode` 往返 FS 成本使“每 `put` 都同步”不可接受。
 
-`vnode.c:263` 的 `if (v_fs_count > 256) vnode_clean_refs(vp);` 在 `put_vnode` 的 `ref>1 → ref--` 快速路径后插入 `clean_if_needed`，使 `dup` 的 `ref++` 在 `ref>1` 时仅 `ref--` 而不立即 `req_putnode` 的延迟同步在 `256` 处批量回收，与 `filp` 的 `count-- → 0 ? put_vnode` 的单层闭环分化（`04` 的单层 vs `05` 的双层）。
+`minix3/minix/servers/vfs/vnode.c:put_vnode（L263，工具生成）` 的 `if (v_fs_count > 256) vnode_clean_refs(vp);` 在 `put_vnode` 的 `ref>1 → ref--` 快速路径后插入 `clean_if_needed`，使 `dup` 的 `ref++` 在 `ref>1` 时仅 `ref--` 而不立即 `req_putnode` 的延迟同步在 `256` 处批量回收，与 `filp` 的 `count-- → 0 ? put_vnode` 的单层闭环分化（`04` 的单层 vs `05` 的双层）。
 
 ### 1.3 空闲与锁的耦合
 
-`vnode` 的空闲判定与 `filp` 相同但增加锁耦合：`vnode.c:91` 的 `get_free_vnode` 以 `ref==0 && !is_vnode_locked(vp)` 双条件判断空闲——`ref==0` 无引用且未被 `tll` 持有方可分配。这与 `filp` 的 `count==0 && trylock==0` 同型（`04` 的 `alloc_filp` 双条件），均以“无共享者且无持有者”作为空闲的充分条件。
+`vnode` 的空闲判定与 `filp` 相同但增加锁耦合：`minix3/minix/servers/vfs/vnode.c:get_free_vnode（L91，工具生成）` 的 `get_free_vnode` 以 `ref==0 && !is_vnode_locked(vp)` 双条件判断空闲——`ref==0` 无引用且未被 `tll` 持有方可分配。这与 `filp` 的 `count==0 && trylock==0` 同型（`04` 的 `alloc_filp` 双条件），均以“无共享者且无持有者”作为空闲的充分条件。
 
-`vnode.c:92-99` 的清零 `v_uid=-1, v_gid=-1, sdev=NO_DEV, mapfs_e=NONE, mapfs_count=0, mapinode=0` 则将“分配即清零”的语义与 `get_free_vnode` 的返回前 5 字段原子化。与 `filp` 的 `alloc_filp` 清零 `selectors/ops` 同型，但 `vnode` 的清零包含 `sdev` 的设备哨兵（`NO_DEV` 0）与 `mapfs` 的映射端点（`NONE`）。
+`minix3/minix/servers/vfs/vnode.c:get_free_vnode（L92，工具生成）` 的清零 `v_uid=-1, v_gid=-1, sdev=NO_DEV, mapfs_e=NONE, mapfs_count=0, mapinode=0` 则将“分配即清零”的语义与 `get_free_vnode` 的返回前 5 字段原子化。与 `filp` 的 `alloc_filp` 清零 `selectors/ops` 同型，但 `vnode` 的清零包含 `sdev` 的设备哨兵（`NO_DEV` 0）与 `mapfs` 的映射端点（`NONE`）。
 
-`is_vnode_locked` 的 `tll_islocked || tll_haspendinglock`（`vnode.c:128` `tll_islocked(&vp->v_lock) || tll_haspendinglock(&vp->v_lock)`）使“持有中”与“等待中”均视为“非空闲”——与 `filp` 的 `trylock==0` 的“可加锁”判据同为“锁可获取即空闲”的互斥语义。
+`is_vnode_locked` 的 `tll_islocked || tll_haspendinglock`（`minix3/minix/servers/vfs/vnode.c:is_vnode_locked（L128，工具生成）` `tll_islocked(&vp->v_lock) || tll_haspendinglock(&vp->v_lock)`）使“持有中”与“等待中”均视为“非空闲”——与 `filp` 的 `trylock==0` 的“可加锁”判据同为“锁可获取即空闲”的互斥语义。
 
 ### 1.4 锁的升级与借用
 
-`vnode.h:26-29` 的 `VNODE_NONE/TLL_NONE` / `READ/TLL_READ` / `OPCL/TLL_READSER` / `WRITE/TLL_WRITE` 映射使 `lock_vnode(vp, VNODE_READ/OPCL/WRITE)` 的 `tll_lock` 可升级：`vnode.c:218-224` 的 `upgrade_vnode_lock` 以 `tll_upgrade` 将 `READ` 提升为 `WRITE`（`open` 的 `lookup` 先 `READ` 探路，命中后 `WRITE` 修改）。
+`vnode.h:26-29` 的 `VNODE_NONE/TLL_NONE` / `READ/TLL_READ` / `OPCL/TLL_READSER` / `WRITE/TLL_WRITE` 映射使 `lock_vnode(vp, VNODE_READ/OPCL/WRITE)` 的 `tll_lock` 可升级：`minix3/minix/servers/vfs/vnode.c:upgrade_vnode_lock` 的 `upgrade_vnode_lock` 以 `tll_upgrade` 将 `READ` 提升为 `WRITE`（`open` 的 `lookup` 先 `READ` 探路，命中后 `WRITE` 修改）。
 
-`vnode.c:156-165` 的 `lock_vnode` 在 `VNODE_READ` 时 `fp->fp_vp_rdlocks++` 的 `LOCK_DEBUG` 计数（`fproc.h:79`）则将读锁持有度暴露给 `check_vnode_locks_by_me` 的调试路径——与 `fproc` 的 `fp_lock` 正交，`vnode` 锁属于 `vnode` 槽而非进程槽。`VNODE_OPCL` 的 `TLL_READSER` 串行读（`TLL_READSER` 的 `S` 为 `Serial`）使 `open` 的 `O_EXCL` 语义在 `vnode` 锁层可串行化。
+`minix3/minix/servers/vfs/vnode.c:lock_vnode` 的 `lock_vnode` 在 `VNODE_READ` 时 `fp->fp_vp_rdlocks++` 的 `LOCK_DEBUG` 计数（`minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L79，工具生成）`）则将读锁持有度暴露给 `check_vnode_locks_by_me` 的调试路径——与 `fproc` 的 `fp_lock` 正交，`vnode` 锁属于 `vnode` 槽而非进程槽。`VNODE_OPCL` 的 `TLL_READSER` 串行读（`TLL_READSER` 的 `S` 为 `Serial`）使 `open` 的 `O_EXCL` 语义在 `vnode` 锁层可串行化。
 
 ### 1.5 挂载点穿越的承上
 
@@ -74,27 +74,27 @@
 
 `vnode.h:5` 的 `v_fs_e: endpoint_t` 为 FS 进程端点，`7` 的 `v_inode_nr: ino_t` 为 minor 设备上的 inode 号，`9` 的 `v_mode: mode_t` 为类型与权限，`10` 的 `v_uid:11` 的 `v_gid` 为属主，`12` 的 `v_size: off_t` 为大小，`13` 的 `v_ref_count` 为 VFS 引用，`14` 的 `v_fs_count` 为 FS 打开计数，`15` 的 `v_mapfs_count` 为映射 FS 计数，`16` 的 `v_bfs_e` 为块特殊文件的 FS 端点，`18` 的 `v_dev` 为 inode 所在设备，`20` 的 `v_sdev` 为特殊设备号，`21` 的 `v_vmnt: vmnt*` 为挂载实例，`22` 的 `v_lock: tll_t` 为三级锁。`vnode.h:23` 的 `} vnode[NR_VNODES];` 使 `vnode` 为 `1024` 固定数组，与 `filp[NR_FILPS]` 的 1024 同界。
 
-### 2.2 `NR_VNODES` 与 `init_vnodes`（`const.h:8` / `vnode.c:138-154`）
+### 2.2 `NR_VNODES` 与 `init_vnodes`（`const.h:8` / `minix3/minix/servers/vfs/vnode.c:init_vnodes`）
 
-`const.h:8` 的 `#define NR_VNODES 1024` 与 `main.c:486` 的 `init_vnodes()` 调用点同源。`vnode.c:142-152` 的 `init_vnodes` 循环 1024 次 `v_fs_e=NONE, v_mapfs_e=NONE, inode=0, ref=0, fs_count=0, mapfs_count=0, tll_init` 零化，与 `init_filps` 的 `mutex_init` 同型但增加 `tll_init` 的三级锁初始化。`vnode.c:140` 的 `struct vnode *vp` 指针与 `142` 的 `for (vp=&vnode[0]; vp<&vnode[NR_VNODES]; ++vp)` 的指针算术在 Rust 以 `VnodeTable: Box<[Vnode]>` 的 `iter_mut` 替代。
+`const.h:8` 的 `#define NR_VNODES 1024` 与 `main.c:486` 的 `init_vnodes()` 调用点同源。`minix3/minix/servers/vfs/vnode.c:init_vnodes（L142，工具生成）` 的 `init_vnodes` 循环 1024 次 `v_fs_e=NONE, v_mapfs_e=NONE, inode=0, ref=0, fs_count=0, mapfs_count=0, tll_init` 零化，与 `init_filps` 的 `mutex_init` 同型但增加 `tll_init` 的三级锁初始化。`minix3/minix/servers/vfs/vnode.c:init_vnodes（L140，工具生成）` 的 `struct vnode *vp` 指针与 `142` 的 `for (vp=&vnode[0]; vp<&vnode[NR_VNODES]; ++vp)` 的指针算术在 Rust 以 `VnodeTable: Box<[Vnode]>` 的 `iter_mut` 替代。
 
-### 2.3 `get_free_vnode` 双条件（`vnode.c:84-104`）
+### 2.3 `get_free_vnode` 双条件（`minix3/minix/servers/vfs/vnode.c:vnode`）
 
-`vnode.c:90-99` 的 `get_free_vnode` 以 `ref==0 && !is_vnode_locked(vp)` 双条件扫描 1024 项，命中后 `v_uid=-1, v_gid=-1, sdev=NO_DEV, mapfs_e=NONE, mapfs_count=0, mapinode=0` 的 5 字段清零（与 `filp` 的 `alloc_filp` 清零同型），否则 `err_code=ENFILE` 的 `NULL`。`vnode.c:91` 的 `if (vp->v_ref_count==0 && !is_vnode_locked(vp))` 的双条件与 `filedes.c:138` 的 `filp_count==0 && trylock==0` 同型，但增加 `is_vnode_locked` 的 `tll_islocked || tll_haspendinglock` 等待中判定。
+`minix3/minix/servers/vfs/vnode.c:get_free_vnode（L90，工具生成）` 的 `get_free_vnode` 以 `ref==0 && !is_vnode_locked(vp)` 双条件扫描 1024 项，命中后 `v_uid=-1, v_gid=-1, sdev=NO_DEV, mapfs_e=NONE, mapfs_count=0, mapinode=0` 的 5 字段清零（与 `filp` 的 `alloc_filp` 清零同型），否则 `err_code=ENFILE` 的 `NULL`。`minix3/minix/servers/vfs/vnode.c:get_free_vnode（L91，工具生成）` 的 `if (vp->v_ref_count==0 && !is_vnode_locked(vp))` 的双条件与 `minix3/minix/servers/vfs/filedes.c:get_fd（L138，工具生成）` 的 `filp_count==0 && trylock==0` 同型，但增加 `is_vnode_locked` 的 `tll_islocked || tll_haspendinglock` 等待中判定。
 
-### 2.4 `find_vnode` 命中（`vnode.c:110-124`）
+### 2.4 `find_vnode` 命中（`minix3/minix/servers/vfs/vnode.c:vnode`）
 
-`vnode.c:116-118` 的 `find_vnode(fs_e, ino)` 以 `ref>0 && v_inode_nr==ino && v_fs_e==fs_e` 线性扫描 1024 项的命中判定，与 `filp` 的 `find_filp(vp,bits)` 的 `count!=0 && vno==vp && mode&bits` 同型（`04` 的 `vp+bits` 共享检测）。`vnode.c:117` 的 `if (vp->v_ref_count>0 && vp->v_inode_nr==ino && vp->v_fs_e==fs_e) return(vp);` 的 `ref>0` 守卫使空闲槽的 `ino==0` 不命中。
+`minix3/minix/servers/vfs/vnode.c:vnode（L116，工具生成）` 的 `find_vnode(fs_e, ino)` 以 `ref>0 && v_inode_nr==ino && v_fs_e==fs_e` 线性扫描 1024 项的命中判定，与 `filp` 的 `find_filp(vp,bits)` 的 `count!=0 && vno==vp && mode&bits` 同型（`04` 的 `vp+bits` 共享检测）。`minix3/minix/servers/vfs/vnode.c:vnode（L117，工具生成）` 的 `if (vp->v_ref_count>0 && vp->v_inode_nr==ino && vp->v_fs_e==fs_e) return(vp);` 的 `ref>0` 守卫使空闲槽的 `ino==0` 不命中。
 
-### 2.5 锁族：`lock_vnode`/`unlock_vnode`/`upgrade`（`vnode.c:156-224`）
+### 2.5 锁族：`lock_vnode`/`unlock_vnode`/`upgrade`（`minix3/minix/servers/vfs/vnode.c:lock_vnode`）
 
-`vnode.c:159` 的 `tll_lock(&vp->v_lock, locktype)` 与 `177` 的 `tll_unlock` 及 `221` 的 `tll_upgrade` 构成 `VNODE_READ`（`TLL_READ` 多读者）/ `OPCL`（`TLL_READSER` 串行读）/ `WRITE`（`TLL_WRITE` 独占）的三级可升级互斥。与 `filp` 的 `filp_lock` 单级互斥分化（`04` 的 `locked_by` 单状态 vs `vnode` 的三态）。`vnode.c:165` 的 `if (locktype==VNODE_READ) fp->fp_vp_rdlocks++` 的 `LOCK_DEBUG` 计数在 Rust 以 `VnodeLockState::Read(n)` 的 `n` 显式。
+`minix3/minix/servers/vfs/vnode.c:lock_vnode（L159，工具生成）` 的 `tll_lock(&vp->v_lock, locktype)` 与 `177` 的 `tll_unlock` 及 `221` 的 `tll_upgrade` 构成 `VNODE_READ`（`TLL_READ` 多读者）/ `OPCL`（`TLL_READSER` 串行读）/ `WRITE`（`TLL_WRITE` 独占）的三级可升级互斥。与 `filp` 的 `filp_lock` 单级互斥分化（`04` 的 `locked_by` 单状态 vs `vnode` 的三态）。`minix3/minix/servers/vfs/vnode.c:lock_vnode（L165，工具生成）` 的 `if (locktype==VNODE_READ) fp->fp_vp_rdlocks++` 的 `LOCK_DEBUG` 计数在 Rust 以 `VnodeLockState::Read(n)` 的 `n` 显式。
 
-### 2.6 引用计数：`dup_vnode`/`put_vnode`/`clean_refs`（`vnode.c:225-316`）
+### 2.6 引用计数：`dup_vnode`/`put_vnode`/`clean_refs`（`minix3/minix/servers/vfs/vnode.c:upgrade_vnode_lock（L225，工具生成）`）
 
-`vnode.c:233` 的 `dup_vnode: vp->v_ref_count++` 单分支递增，与 `vnode.c:260` 的 `put_vnode: ref>1 → ref--` 快速路径及 `263` 的 `fs_count>256 → clean_refs` 阈值及 `274-295` 的 `ref==1 → req_putnode` 慢路径分化：`put_vnode` 的 `lock_vnode(VNODE_OPCL)` 守门 + `ref>1 → ref--, clean_if_needed, unlock, return` vs `ref==1 → upgrade → assert(ref>0 && fs_count>0) → req_putnode(fs_count) → fs_count=0, ref=0, mapfs_count=0, unlock` 的慢路径。`vnode.c:310-314` 的 `clean_refs: fs_count<=1 → return; put(fs_count-1), fs_count=1` 的阈值回收使 `fs_count` 的延迟同步在 `256` 处批量回收。
+`minix3/minix/servers/vfs/vnode.c:dup_vnode（L233，工具生成）` 的 `dup_vnode: vp->v_ref_count++` 单分支递增，与 `minix3/minix/servers/vfs/vnode.c:put_vnode（L260，工具生成）` 的 `put_vnode: ref>1 → ref--` 快速路径及 `263` 的 `fs_count>256 → clean_refs` 阈值及 `274-295` 的 `ref==1 → req_putnode` 慢路径分化：`put_vnode` 的 `lock_vnode(VNODE_OPCL)` 守门 + `ref>1 → ref--, clean_if_needed, unlock, return` vs `ref==1 → upgrade → assert(ref>0 && fs_count>0) → req_putnode(fs_count) → fs_count=0, ref=0, mapfs_count=0, unlock` 的慢路径。`minix3/minix/servers/vfs/vnode.c:vnode_clean_refs（L310，工具生成）` 的 `clean_refs: fs_count<=1 → return; put(fs_count-1), fs_count=1` 的阈值回收使 `fs_count` 的延迟同步在 `256` 处批量回收。
 
-`vnode.c:282` 的 `req_putnode(vp->v_fs_e, vp->v_inode_nr, vp->v_fs_count)` 的 `v_fs_count` 全量 `put` 与 `313` 的 `req_putnode(vp->v_fs_e, vp->v_inode_nr, vp->v_fs_count-1)` 的 `fs_count-1` 增量 `put` 的分化，使 `clean_refs` 的批量回收在 `256` 阈值处 `put(fs_count-1)` 后 `fs_count=1` 保留一个打开引用。
+`minix3/minix/servers/vfs/vnode.c:put_vnode（L282，工具生成）` 的 `req_putnode(vp->v_fs_e, vp->v_inode_nr, vp->v_fs_count)` 的 `v_fs_count` 全量 `put` 与 `313` 的 `req_putnode(vp->v_fs_e, vp->v_inode_nr, vp->v_fs_count-1)` 的 `fs_count-1` 增量 `put` 的分化，使 `clean_refs` 的批量回收在 `256` 阈值处 `put(fs_count-1)` 后 `fs_count=1` 保留一个打开引用。
 
 ### 2.7 设备与挂载关联
 
@@ -104,7 +104,7 @@
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄 `vnode.c:84-104` 双条件，而是吸收 Redox/Linux 的 inode 缓存模型后做取舍。以下决策对应 `.design/05-design.v1.md` D1-D5。
+Rust 改写不是照抄 `minix3/minix/servers/vfs/vnode.c:vnode` 双条件，而是吸收 Redox/Linux 的 inode 缓存模型后做取舍。以下决策对应 `.design/05-design.v1.md` D1-D5。
 
 ### D1 vnode 中介与表存储
 
@@ -161,20 +161,20 @@ os/servers/vfs/src/
 |------|------|-----------|------|
 | `Vnode` | `vnode.h:4` 全字段 | `vnode.rs:Vnode { fs, ino, mode, size, ref/fs_count, dev, sdev, vmnt, lock }` | `ref==0` 空闲哨兵保留 |
 | `VnodeTable: Box<[Vnode]>` | `vnode.h:23` 1024 固定 | `vnode.rs:VnodeTable` | `new()` 由 `(0..NR_VNODES).map(|_| Vnode::default()).collect()` 堆构造 |
-| `get_free_vnode` | `vnode.c:84` | `VnodeTable::alloc` | `ref==0 && !locked` 双条件 |
-| `find_vnode` | `vnode.c:110` | `VnodeTable::find_by_ino` | `ref>0 && fs==fs && ino==ino` |
-| `dup_vnode` | `vnode.c:225` | `VnodeTable::dup` | `ref++` |
-| `put_vnode` | `vnode.c:238` | `VnodeTable::put` | `ref>1 → ref--` 快速 vs `ref==1 → fs_put` 慢路径 + 256 阈值 |
+| `get_free_vnode` | `minix3/minix/servers/vfs/vnode.c:vnode` | `VnodeTable::alloc` | `ref==0 && !locked` 双条件 |
+| `find_vnode` | `minix3/minix/servers/vfs/vnode.c:vnode` | `VnodeTable::find_by_ino` | `ref>0 && fs==fs && ino==ino` |
+| `dup_vnode` | `minix3/minix/servers/vfs/vnode.c:upgrade_vnode_lock（L225，工具生成）` | `VnodeTable::dup` | `ref++` |
+| `put_vnode` | `minix3/minix/servers/vfs/vnode.c:dup_vnode（L238，工具生成）` | `VnodeTable::put` | `ref>1 → ref--` 快速 vs `ref==1 → fs_put` 慢路径 + 256 阈值 |
 | `VnodeLock` | `vnode.h:22` | `vnode.rs:VnodeLock` | `None/Read/ReadSer/Write` 四态 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 空闲以 `ref==0 && !locked` | `Vnode::is_free` | `ref==0 && !locked` | `vnode.c:91` |
-| 命中以 `fs+ino` | `find_by_ino` | `ref>0 && fs==fs && ino==ino` | `vnode.c:116` |
-| 归零即 `req_putnode` | `put` 慢路径 | `ref==1 → put(fs_count)` | `vnode.c:282` |
-| 256 阈值回收 | `clean_if_needed` | `fs_count>256 → put(fs_count-1)` | `vnode.c:263` |
+| 空闲以 `ref==0 && !locked` | `Vnode::is_free` | `ref==0 && !locked` | `minix3/minix/servers/vfs/vnode.c:get_free_vnode（L91，工具生成）` |
+| 命中以 `fs+ino` | `find_by_ino` | `ref>0 && fs==fs && ino==ino` | `minix3/minix/servers/vfs/vnode.c:vnode（L116，工具生成）` |
+| 归零即 `req_putnode` | `put` 慢路径 | `ref==1 → put(fs_count)` | `minix3/minix/servers/vfs/vnode.c:put_vnode（L282，工具生成）` |
+| 256 阈值回收 | `clean_if_needed` | `fs_count>256 → put(fs_count-1)` | `minix3/minix/servers/vfs/vnode.c:put_vnode（L263，工具生成）` |
 
 ---
 
@@ -185,13 +185,13 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_init_vnodes_zero` | `vnode.c:138-154` | `NR_VNODES` 全 `ref==0 && !locked` | `vnode.rs:200` |
-| `test_get_free_vnode_double` | `vnode.c:84-104` | `ref==0 && !locked` 双条件 | `vnode.rs:210` |
-| `test_find_vnode_hit` | `vnode.c:110-124` | `fs+ino` 命中 | `vnode.rs:220` |
-| `test_dup_put_fast` | `vnode.c:225-264` | `dup → ref++` / `put → ref--` 快速路径 | `vnode.rs:230` |
-| `test_put_slow_req_putnode` | `vnode.c:274-295` | `ref==1 → req_putnode` 慢路径 | `vnode.rs:240` |
-| `test_clean_refs_threshold` | `vnode.c:263/305` | `fs_count>256 → put(fs_count-1)` | `vnode.rs:250` |
-| `test_vnode_lock` | `vnode.c:156` | `VNODE_READ/WRITE` 借用语义 | `vnode.rs:260` |
+| `test_init_vnodes_zero` | `minix3/minix/servers/vfs/vnode.c:init_vnodes` | `NR_VNODES` 全 `ref==0 && !locked` | `os/servers/vfs/src/vnode.rs:fn get_mut（L200，工具生成）` |
+| `test_get_free_vnode_double` | `minix3/minix/servers/vfs/vnode.c:vnode` | `ref==0 && !locked` 双条件 | `os/servers/vfs/src/vnode.rs:fn alloc` |
+| `test_find_vnode_hit` | `minix3/minix/servers/vfs/vnode.c:vnode` | `fs+ino` 命中 | `os/servers/vfs/src/vnode.rs:fn alloc（L220，工具生成）` |
+| `test_dup_put_fast` | `minix3/minix/servers/vfs/vnode.c:upgrade_vnode_lock（L225，工具生成）` | `dup → ref++` / `put → ref--` 快速路径 | `os/servers/vfs/src/vnode.rs:fn find_by_ino（L230，工具生成）` |
+| `test_put_slow_req_putnode` | `minix3/minix/servers/vfs/vnode.c:put_vnode（L274，工具生成）` | `ref==1 → req_putnode` 慢路径 | `os/servers/vfs/src/vnode.rs:fn lock（L240，工具生成）` |
+| `test_clean_refs_threshold` | `minix3/minix/servers/vfs/vnode.c:put_vnode（L263，工具生成）/305` | `fs_count>256 → put(fs_count-1)` | `os/servers/vfs/src/vnode.rs:fn upgrade` |
+| `test_vnode_lock` | `minix3/minix/servers/vfs/vnode.c:lock_vnode` | `VNODE_READ/WRITE` 借用语义 | `os/servers/vfs/src/vnode.rs:fn put（L260，工具生成）` |
 
 测试策略：`VnodeTable` 的双条件以 `ref==0` 但 `locked` 的“不可分配”样本覆盖；`find` 以 `fs+ino` 命中/失配两样本覆盖；`dup/put` 以 `ref>1` 快速路径与 `ref==1` 慢路径两样本覆盖；`clean_refs` 以 `fs_count=257` 的阈值触发样本覆盖。
 
@@ -219,7 +219,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/vnode.h:4-30`（`vnode` 全字段 / `NR_VNODES 1024` / `VNODE_*` 锁映射）、`minix3/minix/servers/vfs/vnode.c:84-316`（`init_vnodes` / `get_free_vnode` 双条件 / `find_vnode` 命中 / `dup/put/clean_refs` 双层计数）、`minix3/minix/servers/vfs/const.h:8`（`NR_VNODES`）、`minix3/minix/servers/vfs/glo.h:bsf_lock`（`bsf` 锁）、`minix3/minix/servers/vfs/main.c:486`（`init_vnodes` 调用点）
+- C 源：`minix3/minix/servers/vfs/vnode.h:__VFS_VNODE_H__（L4，工具生成）`（`vnode` 全字段 / `NR_VNODES 1024` / `VNODE_*` 锁映射）、`minix3/minix/servers/vfs/vnode.c:vnode`（`init_vnodes` / `get_free_vnode` 双条件 / `find_vnode` 命中 / `dup/put/clean_refs` 双层计数）、`minix3/minix/servers/vfs/const.h:NR_VNODES`（`NR_VNODES`）、`minix3/minix/servers/vfs/glo.h:bsf_lock`（`bsf` 锁）、`minix3/minix/servers/vfs/main.c:sef_cb_init_fresh（L486，工具生成）`（`init_vnodes` 调用点）
 - 阶段文档：`04-filp-table.md`（`FilpTable` 的 `count==0` 哨兵与 `alloc_filp` 双扫描）、`03-fproc-table.md`（`FProcTable` 的 `is_ok_endpoint` 三守卫与 `PID_FREE` 双哨兵）、`06-vmnt-table.md`（`vmnt` 表的 `get_free/mark_free` 与 `vnode` 的 `v_vmnt` 互证）、`99-global-concepts.md`（`NR_VNODES` 常量与 `Vnode` 术语）
 - Rust 实现：`os/servers/vfs/src/vnode.rs:1`（`Vnode/VnodeTable/VnodeId/VnodeLock`）、`os/servers/vfs/src/filp.rs:1`（`Filp/FilpTable` 中介）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/06-proc-init-boot-proc.md`（`vnode` 与 `inode` 的 `NR_*` 同界）

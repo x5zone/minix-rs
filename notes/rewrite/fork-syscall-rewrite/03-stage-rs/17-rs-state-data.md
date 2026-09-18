@@ -1,7 +1,7 @@
 # 17-rs-state-data: LU 状态数据迁移
 
 > **分类**: 阶段 6 — Live Update（状态数据迁移）
-> **源码**: `minix3/minix/servers/rs/manager.c:174-284`（`init_state_data`）、`minix3/minix/servers/rs/request.c:805-844`（`do_update` 的 state data/grants 调用点）、`minix3/minix/servers/rs/update.c:135-163`（`rupdate_upd_clear` 的 revoke）、`minix3/minix/servers/rs/type.h:30-42`（`struct rprocupd`）、`minix3/minix/include/minix/rs.h:58-59,88-100`（`rs_ipc_filter_el`/`rs_state_data`）、`minix3/minix/include/minix/ipc_filter.h`（`IPCF_*`/`ANY_*`）、`minix3/minix/include/minix/sef.h:213-232`（`SEF_LU_STATE_*`）
+> **源码**: `minix3/minix/servers/rs/manager.c:init_state_data`（`init_state_data`）、`minix3/minix/servers/rs/request.c:do_update（L805，工具生成）`（`do_update` 的 state data/grants 调用点）、`minix3/minix/servers/rs/update.c:rupdate_upd_clear`（`rupdate_upd_clear` 的 revoke）、`minix3/minix/servers/rs/type.h:rprocupd`（`struct rprocupd`）、`minix3/minix/include/minix/rs.h:RS_MAX_LABEL_LEN,88-100`（`rs_ipc_filter_el`/`rs_state_data`）、`minix3/minix/include/minix/ipc_filter.h`（`IPCF_*`/`ANY_*`）、`minix3/minix/include/minix/sef.h:SEF_LU_STATE_NULL`（`SEF_LU_STATE_*`）
 > **Rust 模块**: `os/servers/rs/src/state_data.rs`（`IpcfFlags`/`SourceIpcFilterEl`/`IpcFilterEl`/`validate_state_data_size`/`validate_eval`/`num_ipc_filter_blocks`/`ipcf_els_buff_size`/`parse_label`/`parse_filter_el`/`vm_fallback_entry`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（prepare 阶段调用点）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`rprocupd` 数据形状）
 > **说明**: 本文档是 LU 状态迁移机制：prepare 阶段把旧实例的"状态"（eval 表达式 / IPC filter 表 / 自定义数据）复制给新实例。它依赖 19（`ds_retrieve_label_endpt`/`cpf_*`/`sys_datacopy` 外部契约）与 18（RS 自升级的 `cpf_reload`）——本文档只落地**数据形状、纯校验与 label 解析**（`state_data.rs`）。
@@ -31,12 +31,12 @@ Live Update 的新实例是**从零 fork 出来的**：它的代码段是新的�
 
 ### 1.2 三种状态载体（WHAT）
 
-`struct rs_state_data`（rs.h:93-100）描述一次迁移的内容载体（eval / IPC filter 两种）与整包 grant 传递通道：
+`struct rs_state_data`（minix3/minix/include/minix/rs.h:rs_state_data）描述一次迁移的内容载体（eval / IPC filter 两种）与整包 grant 传递通道：
 
 | 载体 | 数据形状 | 何时使用 | 迁移方式 |
 |------|---------|---------|---------|
-| eval 表达式 | `eval_addr` + `eval_len`（字符串） | `prepare_state == SEF_LU_STATE_EVAL` | `sys_datacopy` 复制 + NUL 结尾（manager.c:196-211） |
-| IPC filter 表 | `ipcf_els`（每块 `IPCF_MAX_ELEMENTS` 个元素）+ `ipcf_els_size` | 服务声明了过滤规则 | 逐块 datacopy + label→endpoint 解析（manager.c:215-271） |
+| eval 表达式 | `eval_addr` + `eval_len`（字符串） | `prepare_state == SEF_LU_STATE_EVAL` | `sys_datacopy` 复制 + NUL 结尾（minix3/minix/servers/rs/manager.c:init_state_data（L196，工具生成）） |
+| IPC filter 表 | `ipcf_els`（每块 `IPCF_MAX_ELEMENTS` 个元素）+ `ipcf_els_size` | 服务声明了过滤规则 | 逐块 datacopy + label→endpoint 解析（minix3/minix/servers/rs/manager.c:init_state_data（L215，工具生成）） |
 | 整包 grants（传递通道） | `size`（整包大小，成功迁移后 = 56） | 任何成功迁移（eval 或 filter，`size > 0`） | 整包 `cpf_grant_direct(CPF_READ)` 授予新实例（request.c:823-827）；`ipcf_els`/`eval_addr` 缓冲另 grant（request.c:829-845） |
 
 注意：C 里没有独立的"自定义数据"载体——迁移内容只有 eval 表达式与 IPC filter 表两种；`cpf_grant_direct` 的 grants 是**传递通道**：RS 把状态包所在的地址以 grant 形式授权给新实例（19），新实例在 `SEF_INIT_LU` 初始化时自行读取（12）。rs_state_data 本身是 RS 进程内的中间表示。
@@ -45,7 +45,7 @@ Live Update 的新实例是**从零 fork 出来的**：它的代码段是新的�
 
 ## 2. C 源码分析
 
-### 2.1 init_state_data 总流程（manager.c:174-284）
+### 2.1 init_state_data 总流程（minix3/minix/servers/rs/manager.c:init_state_data）
 
 ```
 dst 清零（size/eval/ipcf 全部置 0，185-189）
@@ -63,7 +63,7 @@ dst 清零（size/eval/ipcf 全部置 0，185-189）
 
 ### 2.2 数据结构
 
-**源形状 `struct rs_ipc_filter_el`**（rs.h:88-92，服务侧声明）：
+**源形状 `struct rs_ipc_filter_el`**（minix3/minix/include/minix/rs.h:rs_ipc_filter_el，服务侧声明）：
 ```c
 struct rs_ipc_filter_el {
     int flags;                  /* IPCF_* 标志 */
@@ -71,30 +71,30 @@ struct rs_ipc_filter_el {
     int m_type;                 /* 消息类型（RS_* / VM_* …） */
 };
 ```
-`RS_MAX_LABEL_LEN = 16`（rs.h:58），`RS_MAX_IPCF_STR_LEN = 16+12 = 28`（rs.h:59，十进制 endpoint 字符串上限）。
+`RS_MAX_LABEL_LEN = 16`（minix3/minix/include/minix/rs.h:RS_MAX_LABEL_LEN），`RS_MAX_IPCF_STR_LEN = 16+12 = 28`（minix3/minix/include/minix/rs.h:RS_MAX_IPCF_STR_LEN，十进制 endpoint 字符串上限）。
 
 **目标形状 `ipc_filter_el_t`**（ipc_filter.h，内核格式）：`{ int flags; endpoint_t m_source; int m_type; }`——label 已被解析成 endpoint。
 
-**`struct rs_state_data`**（rs.h:93-100）：`size`（整包大小，= `sizeof(struct rs_state_data)` = **x86-64 目标布局 56 字节**；本树 C 为 i386，其 sizeof = 28，见 §3.2 ARCH A-14）、`ipcf_els`/`ipcf_els_size`、`ipcf_els_gid`、`eval_addr`/`eval_len`、`eval_gid`。
+**`struct rs_state_data`**（minix3/minix/include/minix/rs.h:rs_state_data）：`size`（整包大小，= `sizeof(struct rs_state_data)` = **x86-64 目标布局 56 字节**；本树 C 为 i386，其 sizeof = 28，见 §3.2 ARCH A-14）、`ipcf_els`/`ipcf_els_size`、`ipcf_els_gid`、`eval_addr`/`eval_len`、`eval_gid`。
 
 **rprocupd 挂载点**（type.h:38-39）：`prepare_state_data`（状态包）+ `prepare_state_data_gid`（整包 grant）。
 
-### 2.3 eval 表达式迁移（manager.c:196-211）
+### 2.3 eval 表达式迁移（minix3/minix/servers/rs/manager.c:init_state_data（L196，工具生成））
 
-- 前置：`SEF_LU_STATE_EVAL`（sef.h:217）时 `eval_len == 0 || eval_addr == NULL` → **EINVAL**；
+- 前置：`SEF_LU_STATE_EVAL`（minix3/minix/include/minix/sef.h:SEF_LU_STATE_EVAL）时 `eval_len == 0 || eval_addr == NULL` → **EINVAL**；
 - `malloc(eval_len+1)` 失败 → **ENOMEM**；
 - `sys_datacopy(src_e, eval_addr, SELF, dst, eval_len)` 复制 + 尾部补 `'\0'`；
 - 成功则 `dst.size = src.size`。
 
 eval 表达式用于"应用状态较复杂时用表达式描述"（如"等待所有请求完成"），由新实例在 init 时求值（12）。
 
-### 2.4 IPC filter 解析（manager.c:215-271）
+### 2.4 IPC filter 解析（minix3/minix/servers/rs/manager.c:init_state_data（L215，工具生成））
 
-**块数校验**：`src.ipcf_els_size % rs_ipc_filter_size != 0` → **E2BIG**，其中 `rs_ipc_filter_size = sizeof(rs_ipc_filter)` = `sizeof(rs_ipc_filter_el) × IPCF_MAX_ELEMENTS`（manager.c:181）。`IPCF_MAX_ELEMENTS = NR_SYS_PROCS × 2 = 128`（ipc_filter.h；`NR_SYS_PROCS = 64`，config.h:32 + sys_config.h）。
+**块数校验**：`src.ipcf_els_size % rs_ipc_filter_size != 0` → **E2BIG**，其中 `rs_ipc_filter_size = sizeof(rs_ipc_filter)` = `sizeof(rs_ipc_filter_el) × IPCF_MAX_ELEMENTS`（minix3/minix/servers/rs/manager.c:init_state_data（L181，工具生成））。`IPCF_MAX_ELEMENTS = NR_SYS_PROCS × 2 = 128`（ipc_filter.h；`NR_SYS_PROCS = 64`，config.h:32 + sys_config.h）。
 
-**目标缓冲**：`sizeof(ipc_filter_el_t) × IPCF_MAX_ELEMENTS × num_ipc_filters`，VM 额外一块（manager.c:224-227）。
+**目标缓冲**：`sizeof(ipc_filter_el_t) × IPCF_MAX_ELEMENTS × num_ipc_filters`，VM 额外一块（minix3/minix/servers/rs/manager.c:init_state_data（L224，工具生成））。
 
-**逐元素解析**（manager.c:233-271）：`for j in 0..IPCF_MAX_ELEMENTS` 且 `rs_ipc_filter[j].flags != 0`（flags 为 0 即表尾）；`m_source` 的解析四步（manager.c:246-263）：
+**逐元素解析**（minix3/minix/servers/rs/manager.c:init_state_data（L233，工具生成））：`for j in 0..IPCF_MAX_ELEMENTS` 且 `rs_ipc_filter[j].flags != 0`（flags 为 0 即表尾）；`m_source` 的解析四步（minix3/minix/servers/rs/manager.c:init_state_data（L246，工具生成））：
 
 1. `ds_retrieve_label_endpt(label, &m_source)` 成功 → 用 DS 查询到的 endpoint（19）；
 2. label 为 `"ANY_USR"` → `ANY_USR`；`"ANY_SYS"` → `ANY_SYS`；`"ANY_TSK"` → `ANY_TSK`；
@@ -103,7 +103,7 @@ eval 表达式用于"应用状态较复杂时用表达式描述"（如"等待所
 
 `m_type` 仅当 `IPCF_MATCH_M_TYPE` 置位时从源元素取值（否则 0）；`m_source` 仅当 `IPCF_MATCH_M_SOURCE` 置位时解析（否则 0）。
 
-### 2.5 VM 保底条目（manager.c:273-277）
+### 2.5 VM 保底条目（minix3/minix/servers/rs/manager.c:init_state_data（L273，工具生成））
 
 `src_e == VM_PROC_NR` 时，在解析出的 filter 表末尾追加一条**固定保底规则**：
 
@@ -127,7 +127,7 @@ ipcf_els_buff[i][0].m_type = VM_RS_UPDATE;   /* VM_RQ_BASE+41 = 0xC29，com.h:73
 ## 3. Rust 设计决策
 
 > **R13 接线落地（2026-09-08，todo §21 Fix #90）**：`init_state_data` 组合函数已
-> 落地 `state_data.rs`（manager.c:172-285 逐分支）——上表四个纯切片是其子步骤，
+> 落地 `state_data.rs`（minix3/minix/servers/rs/manager.c:copy_label（L172，工具生成） 逐分支）——上表四个纯切片是其子步骤，
 > 组合本体 + `PreparedStateData` 产出（size / NUL 结尾 eval 字节 / 授权就绪的
 > 过滤块字节）一并在本模块。`do_update`（16 号，request.c:788-836）消费它：
 > fetch 缝 = `sys_datacopy`（生产 ENOSYS，mock 全真）、`ds_lookup` 缝 = 19 号
@@ -144,14 +144,14 @@ ipcf_els_buff[i][0].m_type = VM_RS_UPDATE;   /* VM_RQ_BASE+41 = 0xC29，com.h:73
 | Rust | C 锚点 | 语义 |
 |------|--------|------|
 | `IpcfFlags` bitflags | ipc_filter.h | `IPCF_*` 四标志 |
-| `SourceIpcFilterEl`/`IpcFilterEl` | rs.h:88-92 / ipc_filter.h | label 形状 → endpoint 形状 |
-| `validate_state_data_size` | manager.c:190 | `size != sizeof(rs_state_data)` → `E2BIG` |
-| `validate_eval` | manager.c:196-198 | EVAL 前置 → `EINVAL` |
-| `num_ipc_filter_blocks` | manager.c:215-216 | 块数校验 → `E2BIG` |
-| `ipcf_els_buff_size` | manager.c:224-227 | VM 追加块 |
-| `parse_label(label, ds_lookup)` | manager.c:246-263 | 四步解析 → `ESRCH` |
-| `parse_filter_el` | manager.c:240-270 | MATCH 门控 |
-| `vm_fallback_entry` | manager.c:273-277 | VM 保底条目 |
+| `SourceIpcFilterEl`/`IpcFilterEl` | minix3/minix/include/minix/rs.h:rs_ipc_filter_el / ipc_filter.h | label 形状 → endpoint 形状 |
+| `validate_state_data_size` | minix3/minix/servers/rs/manager.c:init_state_data（L190，工具生成） | `size != sizeof(rs_state_data)` → `E2BIG` |
+| `validate_eval` | minix3/minix/servers/rs/manager.c:init_state_data（L196，工具生成） | EVAL 前置 → `EINVAL` |
+| `num_ipc_filter_blocks` | minix3/minix/servers/rs/manager.c:init_state_data（L215，工具生成） | 块数校验 → `E2BIG` |
+| `ipcf_els_buff_size` | minix3/minix/servers/rs/manager.c:init_state_data（L224，工具生成） | VM 追加块 |
+| `parse_label(label, ds_lookup)` | minix3/minix/servers/rs/manager.c:init_state_data（L246，工具生成） | 四步解析 → `ESRCH` |
+| `parse_filter_el` | minix3/minix/servers/rs/manager.c:init_state_data（L240，工具生成） | MATCH 门控 |
+| `vm_fallback_entry` | minix3/minix/servers/rs/manager.c:init_state_data（L273，工具生成） | VM 保底条目 |
 
 ### 3.2 数据形状建模
 
@@ -166,15 +166,15 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 
 `SourceIpcFilterEl` 用 `&str` 表达 label（纯决策模型），`IpcFilterEl` 用 `Endpoint` 表达 `m_source`。`m_source` 未解析时的默认值：C 为 0（PM 端点），Rust 用 `Endpoint::NONE`——字段仅在 `IPCF_MATCH_M_SOURCE` 置位时有效，安全默认不引入歧义（ARCH A-14，见 §4.2）。
 
-> **R11（2026-08-16）label UTF-8 契约**：C 的 `m_label[RS_MAX_LABEL_LEN]` 是原始字节（rs.h:90），
+> **R11（2026-08-16）label UTF-8 契约**：C 的 `m_label[RS_MAX_LABEL_LEN]` 是原始字节（minix3/minix/include/minix/rs.h:rs_ipc_filter_el（L90，工具生成）），
 > Rust `SourceIpcFilterEl.m_label: &'a str` 要求 UTF-8——**决策为保持 `&str` + 边界 fail-closed**：
 > 19 消息边界用 `from_utf8` 校验，非 UTF-8 label 拒绝该请求。理由：(1) DS label 语义是服务名字符串
 > （Minix3 实践中为 ASCII），无真实非 UTF-8 场景；(2) `parse_label` 的十进制解析用
-> `str::parse::<i32>()`（整串消费 + 溢出失败，等价 manager.c:260-263 的 strtol 双检查），改字节需
+> `str::parse::<i32>()`（整串消费 + 溢出失败，等价 minix3/minix/servers/rs/manager.c:init_state_data（L260，工具生成） 的 strtol 双检查），改字节需
 > 手写 strtol，属 translate 反模式；(3) 拒绝方向安全（不静默错配）。代码标注：
 > `state_data.rs` `SourceIpcFilterEl`/`parse_label` 注释。
 
-> **[ARCH: A-14]** — 状态数据协议常量与安全默认，三处一致标注（doc/design/code）。行为对照点：`manager.c:190`（sizeof 门）、`manager.c:240-270`（MATCH 门控 + 解析）、`request.c:823-827`（整包 grant）。三个子项：
+> **[ARCH: A-14]** — 状态数据协议常量与安全默认，三处一致标注（doc/design/code）。行为对照点：`minix3/minix/servers/rs/manager.c:init_state_data（L190，工具生成）`（sizeof 门）、`minix3/minix/servers/rs/manager.c:init_state_data（L240，工具生成）`（MATCH 门控 + 解析）、`request.c:823-827`（整包 grant）。三个子项：
 > 1. **`RS_STATE_DATA_SIZE=56` 取 x86-64 目标布局**（本树 C 为 i386，`sizeof(struct rs_state_data)` = 28；目标端口为 64 位，wire 常量取 56）；
 > 2. **`m_source` 未设 `MATCH_M_SOURCE` 时**：C 写 0（PM 端点），Rust 用 `Endpoint::NONE`（安全默认，字段仅在门控时有效）；
 > 3. **空 label fail-closed**：C `strtol("")` 返回 0 且无 errno → `m_source` = 0（PM）被接受；Rust `parse::<i32>("")` 失败 → `ESRCH`（拒绝空 label，不沿袭 C 的 strtol 空串→0）。
@@ -204,11 +204,11 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 
 ### 4.2 关键不变量
 
-1. **块大小整除**（manager.c:215-216）：`ipcf_els_size` 必须是 `RS_IPCF_FILTER_BLOCK_SIZE` 的整数倍，否则 `E2BIG`。
-2. **MATCH 门控字段**（manager.c:243-246）：`m_source` 仅在 `MATCH_M_SOURCE` 时解析，`m_type` 仅在 `MATCH_M_TYPE` 时取值——未设时 C 为 0，Rust 用 `Endpoint::NONE`/0 默认（ARCH A-14 子项 2）。
-3. **EVAL 前置**（manager.c:196-198）：`SEF_LU_STATE_EVAL` 且缺 `eval_addr`/`eval_len` → `EINVAL`；其他 prepare_state 不做 eval 迁移。
-4. **VM 保底仅在 src==VM**（manager.c:273）：`vm_fallback_entry` 由调用方（16 的编排）在 `src_e == VM_PROC_NR` 时追加，模块只提供条目构造。
-5. **label 解析失败即 ESRCH**（manager.c:246-263）：四步是**顺序回退链**——DS 查询失败降级到 ANY_*，ANY_* 不匹配降级到十进制 `strtol`，全部失败（含空串 fail-closed，ARCH A-14 子项 3）→ `ESRCH`。
+1. **块大小整除**（minix3/minix/servers/rs/manager.c:init_state_data（L215，工具生成））：`ipcf_els_size` 必须是 `RS_IPCF_FILTER_BLOCK_SIZE` 的整数倍，否则 `E2BIG`。
+2. **MATCH 门控字段**（minix3/minix/servers/rs/manager.c:init_state_data（L243，工具生成））：`m_source` 仅在 `MATCH_M_SOURCE` 时解析，`m_type` 仅在 `MATCH_M_TYPE` 时取值——未设时 C 为 0，Rust 用 `Endpoint::NONE`/0 默认（ARCH A-14 子项 2）。
+3. **EVAL 前置**（minix3/minix/servers/rs/manager.c:init_state_data（L196，工具生成））：`SEF_LU_STATE_EVAL` 且缺 `eval_addr`/`eval_len` → `EINVAL`；其他 prepare_state 不做 eval 迁移。
+4. **VM 保底仅在 src==VM**（minix3/minix/servers/rs/manager.c:init_state_data（L273，工具生成））：`vm_fallback_entry` 由调用方（16 的编排）在 `src_e == VM_PROC_NR` 时追加，模块只提供条目构造。
+5. **label 解析失败即 ESRCH**（minix3/minix/servers/rs/manager.c:init_state_data（L246，工具生成））：四步是**顺序回退链**——DS 查询失败降级到 ANY_*，ANY_* 不匹配降级到十进制 `strtol`，全部失败（含空串 fail-closed，ARCH A-14 子项 3）→ `ESRCH`。
 
 ---
 
@@ -249,4 +249,4 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— `ds_retrieve_label_endpt`/`cpf_*`/`sys_datacopy` 契约
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自升级 `cpf_reload`/rollback 特例
 - `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/23-ipc-filter.md` —— IPC filter 内核机制
-- `minix3/minix/servers/rs/manager.c:174-284`、`request.c:805-844`、`update.c:135-163`、`include/minix/rs.h:58-59,88-100`、`include/minix/ipc_filter.h`、`include/minix/sef.h:213-232`、`include/minix/com.h:736` —— ground truth
+- `minix3/minix/servers/rs/manager.c:init_state_data`、`request.c:805-844`、`update.c:135-163`、`include/minix/rs.h:58-59,88-100`、`include/minix/ipc_filter.h`、`include/minix/sef.h:213-232`、`include/minix/com.h:736` —— ground truth

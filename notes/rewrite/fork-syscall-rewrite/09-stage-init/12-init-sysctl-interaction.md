@@ -1,6 +1,6 @@
 # 12-init-sysctl-interaction：安全级别与新根
 
-> **定位**：`has_securelevel`（`minix3/sbin/init/init.c:544-563`）、`getsecuritylevel`（568-589）、`setsecuritylevel`（594-618）、`createsysctlnode`（1811-1857）、`shouldchroot`（1859-1900)。**[ARCH A-4]** securelevel 缺口 defer，**[ARCH A-5]** init.root 缺口 defer。
+> **定位**：`has_securelevel`（`minix3/sbin/init/init.c:minixpowerdown（L544，工具生成）`）、`getsecuritylevel`（568-589）、`setsecuritylevel`（594-618）、`createsysctlnode`（1811-1857）、`shouldchroot`（1859-1900)。**[ARCH A-4]** securelevel 缺口 defer，**[ARCH A-5]** init.root 缺口 defer。
 > **Rust**：`os/commands/sbin/init/src/sysctl.rs`。
 > **前置依赖**：01（探测调用点）、04/05/09（调用方）。
 > **本篇不覆盖（移交）**：内核 sysctl 实现（见 `../01-stage-kernel/` 对应文档）。
@@ -69,4 +69,4 @@ minix-rs 内核暂无这两个语义，本篇定义 trait 契约并用内存假�
 ## 7. 参见
 
 - `04-init-single-user.md`、`05-init-runcom.md`、`09-init-multi-user.md` — 调用方。
-- C 源码：`minix3/sbin/init/init.c:544-618,1811-1900`。
+- C 源码：`minix3/sbin/init/init.c:minixpowerdown（L544，工具生成）,1811-1900`。

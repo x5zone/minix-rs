@@ -27,7 +27,7 @@
 | 分类统计 | `profile_sample` | 区分 idle / system / user 样本 |
 | NMI profiling | `nmi_sprofile_handler` | 用不可屏蔽中断采样，即使内核关中断也能触发 |
 
-**采样分类逻辑**（minix3/minix/kernel/profile.c:75-110）：
+**采样分类逻辑**（minix3/minix/kernel/profile.c:profile_sample）：
 - `IDLE` 进程 → `sprof_info.idle_samples++`（CPU 空闲）
 - `KERNEL` 或 `SYS_PROC` runnable → `sprof_info.system_samples++`（内核/系统进程）
 - 其他 → `sprof_info.user_samples++`（用户进程）
@@ -79,18 +79,18 @@ static irq_hook_t profile_clock_hook;             // IRQ hook
 
 ### 2.3 时钟初始化与停止
 
-**`init_profile_clock(freq)`**（minix3/minix/kernel/profile.c:27-37）：
+**`init_profile_clock(freq)`**（minix3/minix/kernel/profile.c:init_profile_clock）：
 1. 调用 `arch_init_profile_clock(freq)` 初始化架构专用时钟
 2. 若返回 IRQ 号 ≥ 0，注册 `profile_clock_handler` 为 IRQ handler
 3. `enable_irq` 启用中断
 
-**`stop_profile_clock()`**（minix3/minix/kernel/profile.c:42-49）：
+**`stop_profile_clock()`**（minix3/minix/kernel/profile.c:stop_profile_clock）：
 1. 调用 `arch_stop_profile_clock()` 停止架构专用时钟
 2. `disable_irq` + `rm_irq_handler` 注销 handler
 
 ### 2.4 样本收集
 
-**`sprof_save_sample(p, pc)`**（minix3/minix/kernel/profile.c:51-61）：
+**`sprof_save_sample(p, pc)`**（minix3/minix/kernel/profile.c:sprof_save_sample）：
 ```c
 struct sprof_sample *s = (struct sprof_sample *)(sprof_sample_buffer + sprof_info.mem_used);
 s->proc = p->p_endpoint;
@@ -99,7 +99,7 @@ sprof_info.mem_used += sizeof(struct sprof_sample);
 ```
 将 endpoint + PC 写入 buffer，前进 `mem_used` 指针。
 
-**`sprof_save_proc(p)`**（minix3/minix/kernel/profile.c:63-73）：
+**`sprof_save_proc(p)`**（minix3/minix/kernel/profile.c:sprof_save_proc）：
 ```c
 struct sprof_proc *s = (struct sprof_proc *)(sprof_sample_buffer + sprof_info.mem_used);
 s->proc = p->p_endpoint;
@@ -110,7 +110,7 @@ sprof_info.mem_used += sizeof(struct sprof_proc);
 
 ### 2.5 主采样逻辑
 
-**`profile_sample(p, pc)`**（minix3/minix/kernel/profile.c:75-110）：
+**`profile_sample(p, pc)`**（minix3/minix/kernel/profile.c:profile_sample）：
 
 ```c
 // 未启用或 buffer 满 → 返回
@@ -146,7 +146,7 @@ sprof_info.total_samples++;
 
 ### 2.6 中断 handler
 
-**`profile_clock_handler(hook)`**（minix3/minix/kernel/profile.c:115-126）：
+**`profile_clock_handler(hook)`**（minix3/minix/kernel/profile.c:profile_clock_handler）：
 ```c
 struct proc *p = get_cpulocal_var(proc_ptr);   // 当前进程
 profile_sample(p, (void *)p->p_reg.pc);         // 采样
@@ -156,7 +156,7 @@ return 1;                                        // 重新启用中断
 
 ### 2.7 NMI profiling handler
 
-**`nmi_sprofile_handler(frame)`**（minix3/minix/kernel/profile.c:128-155）：
+**`nmi_sprofile_handler(frame)`**（minix3/minix/kernel/profile.c:nmi_sprofile_handler）：
 
 NMI 版本与时钟版本的区别：
 - NMI 即使在内核关中断时也能触发
@@ -177,13 +177,13 @@ NMI 版本与时钟版本的区别：
 **Rust 64-bit 决策**: `ClockArch` trait 保留 `init_profile_clock` / `stop_profile_clock` 方法。
 
 **已实现**:
-- os/kernel/src/clock.rs:293: `pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError>`
-- os/kernel/src/clock.rs:315: `pub fn stop_profile_clock()`
-- os/arch/src/x86_64/clock.rs:114: `fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>`
-- os/arch/src/x86_64/clock.rs:165: `fn stop_profile_clock(&mut self)`
-- os/arch/src/arm64/clock.rs:89: aarch64 impl
+- os/kernel/src/clock.rs:fn init_profile_clock（L293，工具生成）: `pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClockError>`
+- os/kernel/src/clock.rs:fn stop_profile_clock（L315，工具生成）: `pub fn stop_profile_clock()`
+- os/arch/src/x86_64/clock.rs:fn stop_local_timer（L114，工具生成）: `fn init_profile_clock(&mut self, hz: u32) -> Result<(), ProfileClockError>`
+- os/arch/src/x86_64/clock.rs:const RTC_REG_B（L165，工具生成）: `fn stop_profile_clock(&mut self)`
+- os/arch/src/arm64/clock.rs:fn stop_local_timer（L89，工具生成）: aarch64 impl
 
-**理由**: 接口轻量，trait 抽象符合 HW 抽象原则；保留接口为未来实现预留；`do_sprofile` 系统调用已调用此接口（见 os/kernel/src/misc.rs:1957）。
+**理由**: 接口轻量，trait 抽象符合 HW 抽象原则；保留接口为未来实现预留；`do_sprofile` 系统调用已调用此接口（见 os/kernel/src/misc.rs:fn proc_is_updatable（L1957，工具生成））。
 
 ### 3.2 D2: 样本收集实现
 

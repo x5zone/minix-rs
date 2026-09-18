@@ -1,7 +1,7 @@
 # 28-usermapped-data: 用户可见内核数据（.usermapped 段机制）
 
 > **分类**: 架构机制（WONTFIX 文档化）
-> **源码**: `minix3/minix/kernel/usermapped_data.c`, `minix3/minix/kernel/arch/i386/usermapped_data_arch.c`, `minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S`, `minix3/minix/kernel/arch/i386/kernel.lds`, `minix3/minix/kernel/arch/i386/memory.c:744-806`
+> **源码**: `minix3/minix/kernel/usermapped_data.c`, `minix3/minix/kernel/arch/i386/usermapped_data_arch.c`, `minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S`, `minix3/minix/kernel/arch/i386/kernel.lds`, `minix3/minix/kernel/arch/i386/memory.c:arch_proc_init（L744，工具生成）`
 > **关联 Rust**: `os/libs/minix-boot/src/kernel_info.rs`（KernelInfo，boot→kernel）, `os/kernel/src/clock.rs`（ClockState，kclockinfo 内部化）
 > **前置**: [02-higher-half-kernel.md](02-higher-half-kernel.md), [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md), [07-cross-space-init.md](07-cross-space-init.md), [09-vm-boot-protocol.md](09-vm-boot-protocol.md)
 > **C 总行数**: ~295 行（含链接脚本 + 汇编 + C 声明）
@@ -44,9 +44,9 @@ Minix3 32-bit 采用**共享内存映射**策略；minix-rs 64-bit 采用**系�
 
 段位于内核镜像起始（unpaged 段之后，`.text` 之前），4KB 对齐确保页表粒度。
 
-**映射层面**（minix3/minix/kernel/arch/i386/memory.c:746-806）：`arch_phys_map()` 函数返回段的物理地址和长度，VM 调用此函数后用 `VMMF_USER` 标志映射到每个进程的用户地址空间。
+**映射层面**（minix3/minix/kernel/arch/i386/memory.c:arch_phys_map）：`arch_phys_map()` 函数返回段的物理地址和长度，VM 调用此函数后用 `VMMF_USER` 标志映射到每个进程的用户地址空间。
 
-**访问层面**：用户态通过 `get_minix_kerninfo()`（minix3/minix/lib/libc/sys/kernel_utils.c:26）获取顶层 `struct minix_kerninfo *` 指针，再按字段访问其他结构。
+**访问层面**：用户态通过 `get_minix_kerninfo()`（minix3/minix/lib/libc/sys/kernel_utils.c:get_minix_kerninfo）获取顶层 `struct minix_kerninfo *` 指针，再按字段访问其他结构。
 
 ### 1.3 IPC 入口向量表的三套机制
 
@@ -90,9 +90,9 @@ Minix3 32-bit 提供 3 种 IPC 入口机制，对应不同 x86 指令：
 | minix3/minix/kernel/arch/i386/usermapped_data_arch.c | 33 | 3 个 IPC 向量表定义 |
 | arch/i386/usermapped_glo_ipc.S | 108 | 3×7=21 个 IPC trampoline 函数 |
 | minix3/minix/kernel/arch/i386/kernel.lds | 37 | 链接脚本段定义（L24-28） |
-| minix3/minix/kernel/arch/i386/memory.c:744-806 | 63 | `arch_phys_map()` usermapped 段返回 |
-| minix3/minix/include/minix/type.h:98-244 | 147 | §2.2 的 7 个结构体定义（`kinfo` 在 param.h；区内另夹 io_range/minix_mem_range/boot_image/memory/k_randomness 5 个辅助结构体） |
-| minix3/minix/include/minix/param.h:14-47 | 34 | `struct kinfo` 定义 |
+| minix3/minix/kernel/arch/i386/memory.c:arch_proc_init（L744，工具生成） | 63 | `arch_phys_map()` usermapped 段返回 |
+| minix3/minix/include/minix/type.h:loadinfo | 147 | §2.2 的 7 个结构体定义（`kinfo` 在 param.h；区内另夹 io_range/minix_mem_range/boot_image/memory/k_randomness 5 个辅助结构体） |
+| minix3/minix/include/minix/param.h:kinfo | 34 | `struct kinfo` 定义 |
 
 ### 2.2 8 个用户可见数据结构
 
@@ -122,7 +122,7 @@ struct kclockinfo kclockinfo __section(".usermapped");
 | `arm_frclock` | type.h:197 | hz + tcrr | ❌ NOT userland ABI | ARM 自由运行时钟（32-bit ARM 专用） |
 | `kclockinfo` | type.h:104 | boottime + uptime + realtime + hz（含 64-bit 保留字段） | ❌ NOT userland ABI（volatile） | 时钟信息 |
 
-**`minix_kerninfo` 顶层结构详解**（minix3/minix/include/minix/type.h:214-244）：
+**`minix_kerninfo` 顶层结构详解**（minix3/minix/include/minix/type.h:minix_kerninfo）：
 
 ```c
 struct minix_kerninfo {
@@ -181,7 +181,7 @@ usermapped_send_softint:
 
 ### 2.4 `arch_phys_map()` 映射逻辑
 
-minix3/minix/kernel/arch/i386/memory.c:746-806 的 `arch_phys_map()` 函数返回 usermapped 段的物理地址和标志：
+minix3/minix/kernel/arch/i386/memory.c:arch_phys_map 的 `arch_phys_map()` 函数返回 usermapped 段的物理地址和标志：
 
 ```c
 if(index == usermapped_glo_index) {
@@ -198,7 +198,7 @@ else if(index == usermapped_index) {
 }
 ```
 
-VM 调用此函数枚举所有需要映射的段，然后在进程地址空间建立映射。`VMMF_USER` 使 PTE 置用户位（pagetable.c:1206）；`VMMF_GLO` 进一步置 PTE **Global 位**（`I386_VM_GLOBAL`，pagetable.c:1219）——TLB 全局页，CR3 切换/进程切换时不被冲刷。usermapped_glo 段映射到所有进程（同一物理页 + 同一虚拟地址），配合 Global 位避免频繁 TLB 失效。
+VM 调用此函数枚举所有需要映射的段，然后在进程地址空间建立映射。`VMMF_USER` 使 PTE 置用户位（minix3/minix/servers/vm/pagetable.c:pt_init（L1206，工具生成））；`VMMF_GLO` 进一步置 PTE **Global 位**（`I386_VM_GLOBAL`，minix3/minix/servers/vm/pagetable.c:pt_init（L1219，工具生成））——TLB 全局页，CR3 切换/进程切换时不被冲刷。usermapped_glo 段映射到所有进程（同一物理页 + 同一虚拟地址），配合 Global 位避免频繁 TLB 失效。
 
 ---
 
@@ -224,7 +224,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **C 行为**: `kinfo` 结构既用于 boot→kernel 传递（pre_init.c 填充），又通过 usermapped 暴露给用户态。
 
-**Rust 64-bit 决策**: `KernelInfo`（os/libs/minix-boot/src/kernel_info.rs:13）仅用于 boot-shim → kernel 传递，不暴露给用户态。
+**Rust 64-bit 决策**: `KernelInfo`（os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo）仅用于 boot-shim → kernel 传递，不暴露给用户态。
 
 **理由**: boot 阶段尚无系统调用机制，必须用共享内存；boot→kernel 是受控环境（同一二进制或已知兼容的二进制），安全性可保证。
 
@@ -234,7 +234,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 **C 行为**: `struct kclockinfo kclockinfo __section(".usermapped")` 全局变量，用户态直接读取 `kclockinfo.uptime`。
 
-**Rust 64-bit 决策**: `ClockState` 结构体字段（os/kernel/src/clock.rs:708），通过 `get_monotonic()` / `get_realtime()` / `get_boottime()` 函数访问。
+**Rust 64-bit 决策**: `ClockState` 结构体字段（os/kernel/src/clock.rs:fn set_alarm_timer），通过 `get_monotonic()` / `get_realtime()` / `get_boottime()` 函数访问。
 
 **理由**:
 1. 封装性——内部字段可添加验证逻辑
@@ -304,7 +304,7 @@ VM 调用此函数枚举所有需要映射的段，然后在进程地址空间�
 
 #### KernelInfo（boot→kernel 信息传递）
 
-os/libs/minix-boot/src/kernel_info.rs:13 定义 `KernelInfo` 结构体，对应 C `kinfo` 的 boot→kernel 用途：
+os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo 定义 `KernelInfo` 结构体，对应 C `kinfo` 的 boot→kernel 用途：
 
 ```rust
 pub struct KernelInfo {
@@ -327,7 +327,7 @@ pub struct KernelInfo {
 
 #### ClockState（kclockinfo 内部化）
 
-os/kernel/src/clock.rs:708 定义 `ClockState` 结构体，对应 C `kclockinfo` + `kloadinfo` + `clock_timers`：
+os/kernel/src/clock.rs:fn set_alarm_timer 定义 `ClockState` 结构体，对应 C `kclockinfo` + `kloadinfo` + `clock_timers`：
 
 ```rust
 struct ClockState {
@@ -356,17 +356,17 @@ os/kernel/src/misc.rs 定义 `LoadInfoStruct`，用于 `sys_getinfo` GET_LOADINF
 |--------|--------|---------|
 | `.usermapped` section | kernel.lds:27 | 不保留 |
 | `.usermapped_glo` section | kernel.lds:25 | 不保留 |
-| `minix_kerninfo` | usermapped_data.c:4 | ~~无统一入口~~ **部分保留（2026-09-17 修正，见 §3.7）**：`MINIX_KERNINFO` 调用 + kerninfo 页（magic + kuserinfo）实装于 `kerninfo::init_kerninfo`；其余子结构维持 sys_getinfo 替代 |
-| `kinfo`（usermapped 用途） | usermapped_data.c:7 | KernelInfo（boot→kernel）+ sys_getinfo GET_KINFO |
-| `machine` | usermapped_data.c:8 | sys_getinfo GET_MACHINE / GET_CPUINFO |
-| `kmessages` | usermapped_data.c:9 | 无替代（future work） |
-| `loadinfo`（usermapped 用途） | usermapped_data.c:10 | sys_getinfo GET_LOADINFO |
-| `kuserinfo` | usermapped_data.c:11 | KernelInfo.user_sp + sys_getinfo GET_KINFO |
-| `arm_frclock` | usermapped_data.c:13 | ARM 32-bit 专用，不保留 |
-| `kclockinfo`（usermapped 用途） | usermapped_data.c:15 | ClockState 内部字段 + sys_getinfo GET_HZ |
-| `minix_ipcvecs_softint` | usermapped_data_arch.c:4 | 64-bit syscall 指令 |
-| `minix_ipcvecs_sysenter` | usermapped_data_arch.c:14 | 64-bit syscall 指令 |
-| `minix_ipcvecs_syscall` | usermapped_data_arch.c:24 | 64-bit syscall 指令（直接，无 trampoline） |
+| `minix_kerninfo` | minix3/minix/kernel/usermapped_data.c:minix_kerninfo | ~~无统一入口~~ **部分保留（2026-09-17 修正，见 §3.7）**：`MINIX_KERNINFO` 调用 + kerninfo 页（magic + kuserinfo）实装于 `kerninfo::init_kerninfo`；其余子结构维持 sys_getinfo 替代 |
+| `kinfo`（usermapped 用途） | minix3/minix/kernel/usermapped_data.c:kinfo | KernelInfo（boot→kernel）+ sys_getinfo GET_KINFO |
+| `machine` | minix3/minix/kernel/usermapped_data.c:machine | sys_getinfo GET_MACHINE / GET_CPUINFO |
+| `kmessages` | minix3/minix/kernel/usermapped_data.c:kmessages | 无替代（future work） |
+| `loadinfo`（usermapped 用途） | minix3/minix/kernel/usermapped_data.c:loadinfo | sys_getinfo GET_LOADINFO |
+| `kuserinfo` | minix3/minix/kernel/usermapped_data.c:kuserinfo | KernelInfo.user_sp + sys_getinfo GET_KINFO |
+| `arm_frclock` | minix3/minix/kernel/usermapped_data.c:arm_frclock | ARM 32-bit 专用，不保留 |
+| `kclockinfo`（usermapped 用途） | minix3/minix/kernel/usermapped_data.c:kclockinfo | ClockState 内部字段 + sys_getinfo GET_HZ |
+| `minix_ipcvecs_softint` | minix3/minix/kernel/arch/i386/usermapped_data_arch.c:minix_ipcvecs | 64-bit syscall 指令 |
+| `minix_ipcvecs_sysenter` | minix3/minix/kernel/arch/i386/usermapped_data_arch.c:minix_ipcvecs | 64-bit syscall 指令 |
+| `minix_ipcvecs_syscall` | minix3/minix/kernel/arch/i386/usermapped_data_arch.c:minix_ipcvecs | 64-bit syscall 指令（直接，无 trampoline） |
 | 21 个 trampoline 函数 | usermapped_glo_ipc.S | 64-bit syscall/ecall/hvc 直接入内核 |
 | `arch_phys_map()` usermapped 分支 | memory.c:794-806 | 不保留 |
 | `get_minix_kerninfo()` | lib/libc/sys/kernel_utils.c:26 | 不保留 |

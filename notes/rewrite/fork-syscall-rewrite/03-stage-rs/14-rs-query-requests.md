@@ -1,7 +1,7 @@
 # 14-rs-query-requests: 查询请求
 
 > **分类**: 阶段 4 — 服务生命周期（观测面）
-> **源码**: `minix3/minix/servers/rs/request.c`（`do_getsysinfo`—1095、`do_lookup`—1144、`do_sysctl`—1181、`do_fi`—1229）、`minix3/minix/servers/rs/utility.c:69-77,142-222,485-546`（`fi_service`/`srv_to_string_gen`/`srv_upd_to_string`/`print_services_status`/`print_update_status`）
+> **源码**: `minix3/minix/servers/rs/request.c`（`do_getsysinfo`—1095、`do_lookup`—1144、`do_sysctl`—1181、`do_fi`—1229）、`minix3/minix/servers/rs/utility.c:fi_service,142-222,485-546`（`fi_service`/`srv_to_string_gen`/`srv_upd_to_string`/`print_services_status`/`print_update_status`）
 > **Rust 模块**: `os/servers/rs/src/query.rs`（`GetsysinfoTable`/`getsysinfo_table`/`NAME_BUF_LEN`/`lookup_name_len`/`SysctlAction`/`classify_sysctl` + `SI_*` 常量；`RS_SYSCTL_*`/`RS_FI_CRASH` 子功能号消费 `os/libs/minix-types/src/ipc/rs.rs` 的单一定义）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`lookup_slot_by_label`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`copy_label`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`EDONTREPLY`/`rs_asynsend`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（`start_update_prepare`/`abort_update_proc`）
 > **说明**: 本文档是 RS 的**只读观测面**：13 回答了"如何操作服务的生命周期"，本文档回答"如何**看**服务的状态、导出进程表、触发故障注入"。四个 handler 中，`do_lookup`/`do_getsysinfo` 不改变任何槽位，`do_sysctl` 的 `UPD_*` 子功能委托 16，`do_fi` 是唯一的"注入"入口（把服务搞崩，然后交给 15 恢复）。
@@ -66,11 +66,11 @@ RS 是唯一拥有**全部服务槽位**（`rproc`/`rprocpub`）的用户态服�
 
 `do_getsysinfo` 把 RS 的进程表按三种口径拷贝给调用者：
 
-1. 权限（request.c:1104-1105）：`check_call_permission(m_source, 0, NULL)`——**注意 call 参数是 0**，不是某个 RS_* 消息号；由于 `rp == NULL`，04 的判定只剩 `caller_is_root`（manager.c:21-38；`check_call_permission` 内调用点 87）——**只有 root 能导出进程表**；
+1. 权限（request.c:1104-1105）：`check_call_permission(m_source, 0, NULL)`——**注意 call 参数是 0**，不是某个 RS_* 消息号；由于 `rp == NULL`，04 的判定只剩 `caller_is_root`（minix3/minix/servers/rs/manager.c:caller_is_root；`check_call_permission` 内调用点 87）——**只有 root 能导出进程表**；
 2. 口径选择（request.c:1111-1133）：
-   - `SI_PROC_TAB`（=2，sysinfo.h:11）：拷 `rproc[]` 私有表，`len = sizeof(struct rproc) * NR_SYS_PROCS`；
-   - `SI_PROCALL_TAB`（=12，sysinfo.h:16）：先拷私有表（`len > size` → `EINVAL`，request.c:1120-1121），`dst_addr += len; size -= len`，然后 **FALLTHROUGH** 到公共表；
-   - `SI_PROCPUB_TAB`（=11，sysinfo.h:15）：拷 `rprocpub[]` 公共表；
+   - `SI_PROC_TAB`（=2，minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB）：拷 `rproc[]` 私有表，`len = sizeof(struct rproc) * NR_SYS_PROCS`；
+   - `SI_PROCALL_TAB`（=12，minix3/minix/include/minix/sysinfo.h:SI_PROCALL_TAB）：先拷私有表（`len > size` → `EINVAL`，request.c:1120-1121），`dst_addr += len; size -= len`，然后 **FALLTHROUGH** 到公共表；
+   - `SI_PROCPUB_TAB`（=11，minix3/minix/include/minix/sysinfo.h:SI_PROCPUB_TAB）：拷 `rprocpub[]` 公共表；
    - default（request.c:1131-1132）→ `EINVAL`；
 3. 最终 `len != size` → `EINVAL`（request.c:1135-1136）——调用者给的缓冲区必须**恰好**等于表的大小；
 4. `sys_datacopy(SELF, src, dst_proc, dst_addr, len)`（request.c:1138）——19 面。
@@ -142,7 +142,7 @@ Rust 侧，整个打印族（格式化 + 输出）归 **19 的诊断输出面**�
 | `SysctlAction` + `classify_sysctl(subtype)` | request.c:1185-1221 | 5 子功能枚举；未知 subtype → `EINVAL` |
 | `RS_SYSCTL_*` 子功能号 | com.h:485-489 | 定义在 minix-types `sysctl` 模块，query.rs 消费 |
 | `RS_FI_CRASH` | com.h:492 | 定义在 minix-types `ipc::rs`（=1），query.rs 接线时消费 |
-| `SI_PROC_TAB`/`SI_PROCPUB_TAB`/`SI_PROCALL_TAB` | sysinfo.h:11,15-16 | 三口径常量（=2/11/12） |
+| `SI_PROC_TAB`/`SI_PROCPUB_TAB`/`SI_PROCALL_TAB` | minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB,15-16 | 三口径常量（=2/11/12） |
 
 `COMMON_REQ_FI_CTL`（`0xE02`）消息构造与 `lookup_endpoint`（label → endpoint 解析）不落在 `query.rs`——它们分别是 19 的 IPC 面与 handler 组装的一部分；`query.rs` 保持"能判定、不动作"的纯切片边界。
 
@@ -158,7 +158,7 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 
 ### 3.3 常量归属
 
-`SI_*`（sysinfo.h:11,15-16）落在 `query.rs`——它们是"哪张表"的分类输入，minix-types 的消息面没有对应物。`RS_SYSCTL_*`（com.h:485-489）与 `RS_FI_CRASH`（com.h:492）的唯一定义在 `os/libs/minix-types/src/ipc/rs.rs`（`sysctl` 子模块 + `RS_FI_CRASH` 常量），与全部 `RS_*` 消息号同家（ARCH A-2 单一权威，见 §7 的 99）；`query.rs` 经 `use minix_types::sysctl` 消费，不再本地复制——同一 C 常量两处定义是漂移温床，`RS_FI_CRASH` 曾因此双份（值相同、测试各一份），已收敛为单点。
+`SI_*`（minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB,15-16）落在 `query.rs`——它们是"哪张表"的分类输入，minix-types 的消息面没有对应物。`RS_SYSCTL_*`（com.h:485-489）与 `RS_FI_CRASH`（com.h:492）的唯一定义在 `os/libs/minix-types/src/ipc/rs.rs`（`sysctl` 子模块 + `RS_FI_CRASH` 常量），与全部 `RS_*` 消息号同家（ARCH A-2 单一权威，见 §7 的 99）；`query.rs` 经 `use minix_types::sysctl` 消费，不再本地复制——同一 C 常量两处定义是漂移温床，`RS_FI_CRASH` 曾因此双份（值相同、测试各一份），已收敛为单点。
 
 ---
 
@@ -202,7 +202,7 @@ C 的 `do_getsysinfo` 拷出的是 `struct rproc`/`struct rprocpub` 的**原始�
 lib.rs 接线测试（I3a/I3b）：
 
 1. `test_do_lookup_resolves_label_into_reply_payload`：已知 label → `Ok(0)` 且载荷中端点 = VFS；未知 label → `ESRCH`；`len=1` → `EINVAL`（request.c:1151-1174 三分支）。
-2. `test_do_fi_injects_crash_request`：已知 label → `Ok(0)`（asynsend 缝接受发送）；未知 label → `ESRCH`。目标槽须 `SYS_PROC`（manager.c:103-105 门）。
+2. `test_do_fi_injects_crash_request`：已知 label → `Ok(0)`（asynsend 缝接受发送）；未知 label → `ESRCH`。目标槽须 `SYS_PROC`（minix3/minix/servers/rs/manager.c:rproc（L103，工具生成） 门）。
 3. `test_do_getsysinfo_permission_and_classification`：未知 `what` → `EINVAL`；`SI_PROC_TAB` → `ENOSYS`（rproc 内部表 pinning 为 E-RSWIRE 余件的诚实 fail-closed）。
 4. **接线测试（R7，Fix #85）**：`test_getsysinfo_procpub_copyout_serves_table`（全表
    64 行 × 420 字节经 safecopy 缝、活跃行 in_use/endpoint/label/sys_flags/dev_nr
@@ -238,6 +238,6 @@ minix-types（`cargo test -p minix-types`）：
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `start_update_prepare`/`abort_update_proc`/rpupd 链（`UPD_*` 委托）
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `RS_FI` 触发后的恢复路径
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md` —— `EDONTREPLY`/`rs_asynsend`/分发表
-- `minix3/minix/servers/rs/request.c:1095-1263`、`utility.c:69-80,142-222,485-546` —— ground truth
-- `minix3/minix/include/minix/sysinfo.h:11,15-16` —— `SI_*` 常量
-- `minix3/minix/include/minix/com.h:485-492,597,607` —— `RS_SYSCTL_*`/`RS_FI_CRASH`/`COMMON_REQ_FI_CTL`
+- `minix3/minix/servers/rs/request.c:do_getsysinfo`、`utility.c:69-80,142-222,485-546` —— ground truth
+- `minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB,15-16` —— `SI_*` 常量
+- `minix3/minix/include/minix/com.h:RS_SYSCTL_SRV_STATUS,597,607` —— `RS_SYSCTL_*`/`RS_FI_CRASH`/`COMMON_REQ_FI_CTL`

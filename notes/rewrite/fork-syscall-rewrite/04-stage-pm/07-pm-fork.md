@@ -39,19 +39,19 @@
 
 ### 1.3 为什么分两阶段：同步可失败的前半与异步 SUSPEND 的后半
 
-`do_fork` 的注释（`forkexit.c:56-57`）点明前提：
+`do_fork` 的注释（`minix3/minix/servers/pm/forkexit.c:do_fork（L56，工具生成）`）点明前提：
 
 > *If tables might fill up during FORK, don't even start since recovery half way through is such a nuisance.*
 
 前半（容量检查→槽位轮转→`vm_fork`）是**同步可失败**的：任一步失败可直接 `return EAGAIN/ENOMEM` 回复父进程，无 side-effect 残留（`vm_fork` 失败前未 `procs_in_use++`，未 `*rmc=*rmp`，无需清理）。
 
-后半在 `vm_fork` 成功后开启**不可回滚窗口**（`forkexit.c:82`）：
+后半在 `vm_fork` 成功后开启**不可回滚窗口**（`minix3/minix/servers/pm/forkexit.c:do_fork（L82，工具生成）`）：
 
 > *PM may not fail fork after call to vm_fork(), as VM calls sys_fork().*
 
 VM 已调用内核 `sys_fork` 复制了 `proc` 与页表，PM 若此时 `EAGAIN` 会留下 VM 侧已复制但 PM 侧未占位的孤儿。Rust 侧的顺序与 C 完全对齐：`fork.rs` 的步骤 3 用 `find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功返回之后才手动执行（`fork.rs:62-64`）——`vm_fork` 失败时进程表零污染，无需任何回滚路径，"先可失败、后不可回滚"的分界因此天然成立。
 
-VFS 投递的异步性同样源于两阶段：`VFS_PM_FORK` 经 `asynsend3`（`tell_vfs` 的 `AMF_NOREPLY`）投递后 PM **不能阻塞等待**，否则与 05 的死锁论证同构（PM 等 VFS，VFS 某路径又需 PM，见 05 §1.2）。因此 PM 在 `tell_vfs` 后立即 `return SUSPEND`（`forkexit.c:139`），延续挂在**子进程**的 `VFS_CALL` 上，回复由 05 的 `handle_vfs_reply` 在 `VFS_PM_FORK_REPLY` 到达时异步完成（`sched_start_user` 成败双分支 + `reply(parent/child)`）。
+VFS 投递的异步性同样源于两阶段：`VFS_PM_FORK` 经 `asynsend3`（`tell_vfs` 的 `AMF_NOREPLY`）投递后 PM **不能阻塞等待**，否则与 05 的死锁论证同构（PM 等 VFS，VFS 某路径又需 PM，见 05 §1.2）。因此 PM 在 `tell_vfs` 后立即 `return SUSPEND`（`minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）`），延续挂在**子进程**的 `VFS_CALL` 上，回复由 05 的 `handle_vfs_reply` 在 `VFS_PM_FORK_REPLY` 到达时异步完成（`sched_start_user` 成败双分支 + `reply(parent/child)`）。
 
 ### 1.4 子进程的第一口身份：PID 与 slot 的正交
 
@@ -65,12 +65,12 @@ VFS 投递的异步性同样源于两阶段：`VFS_PM_FORK` 经 `asynsend3`（`t
 
 ### 1.5 fork 的延续：SUSPEND 挂在子进程
 
-`do_fork` 的 `return SUSPEND`（`forkexit.c:139`）是 04 的 `ReplyIntent::ReplyLater` 的起源：`main.c:106` 的 `if (result != SUSPEND) reply` 不回复本次 `PM_FORK`，延续由 `handle_vfs_reply` 的 FORK 分支完成（05 §2.4/§4.3）：
+`do_fork` 的 `return SUSPEND`（`minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）`）是 04 的 `ReplyIntent::ReplyLater` 的起源：`main.c:106` 的 `if (result != SUSPEND) reply` 不回复本次 `PM_FORK`，延续由 `handle_vfs_reply` 的 FORK 分支完成（05 §2.4/§4.3）：
 
 - `sched_start_user` 成功 → `reply(child, OK)` + `reply(parent, child_pid)`（`!new_parent` 保护）；
 - `sched_start_user` 失败 → `exit_proc(child, -1)` 拆解孤儿 + `reply(parent, -1)`。
 
-延续挂在**子进程**（`tell_vfs(child_slot, VfsCall::Fork)` 的 `VFS_CALL` 置于子槽，`forkexit.c:130` 的 `rmc`），而非父进程——父进程在 `do_fork` 返回后即无 `VFS_CALL`，等待的是子进程的 VFS 往返。这是《UNIX fork 语义 vs 微内核实现》的典型错位：用户视角"父进程 fork"在内部实现为"子进程的 VFS 投递"。
+延续挂在**子进程**（`tell_vfs(child_slot, VfsCall::Fork)` 的 `VFS_CALL` 置于子槽，`minix3/minix/servers/pm/forkexit.c:do_fork（L130，工具生成）` 的 `rmc`），而非父进程——父进程在 `do_fork` 返回后即无 `VFS_CALL`，等待的是子进程的 VFS 往返。这是《UNIX fork 语义 vs 微内核实现》的典型错位：用户视角"父进程 fork"在内部实现为"子进程的 VFS 投递"。
 
 ### 1.6 与其他 OS 的对照
 
@@ -82,7 +82,7 @@ Rust 改写不是照抄 `*rmc=*rmp`，而是在吸收工业级 OS 的成熟模�
 
 **seL4 的 `TCB` + `CNode` 手动装配。** seL4 无 `fork` 原语，创建新线程需手动 `retype` `TCB`、`CNode`、`VSpace` 并装配。Minix3 的 `fork` 原语一次性完成装配（PM 负责身份、VM 负责页表、VFS 负责 fd），`sys_fork` 的内核 `proc` 复制是 seL4 手动装配的自动化。Rust 侧 `do_fork` 的跨服务编排（`vm_fork → copy_mproc → tell_vfs`）与 seL4 的手动装配同为"显式装配"，差异在于 Minix3 由 PM 统一编排而非调用者自行。
 
-**结论（本章的设计基线）。** 把 C 的"半途检查 + 整槽复制 + 裸 `tell_vfs` + 隐式 SUSPEND"改写为"显式协调器 `do_fork`（跨服务编排）+ 显式构造 `Process::fork_from`（字段级复制）+ 类型化投递 `VfsCall::Fork` + 显式延续 `ReplyLater`"。PM 先占槽→VM 先复制→VFS 后投递的顺序与 `forkexit.c:60-139` 逐行对齐，又因 Rust 显式构造而使 `make impossible to forget a field`（新增字段需更新 `fork_from`，编译器强制）。
+**结论（本章的设计基线）。** 把 C 的"半途检查 + 整槽复制 + 裸 `tell_vfs` + 隐式 SUSPEND"改写为"显式协调器 `do_fork`（跨服务编排）+ 显式构造 `Process::fork_from`（字段级复制）+ 类型化投递 `VfsCall::Fork` + 显式延续 `ReplyLater`"。PM 先占槽→VM 先复制→VFS 后投递的顺序与 `minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成）` 逐行对齐，又因 Rust 显式构造而使 `make impossible to forget a field`（新增字段需更新 `fork_from`，编译器强制）。
 
 ### 1.7 小结
 
@@ -98,7 +98,7 @@ Rust 改写不是照抄 `*rmc=*rmp`，而是在吸收工业级 OS 的成熟模�
 
 ## 2 C 源码分析
 
-### 2.1 容量检查：`procs_in_use` 与 `LAST_FEW`（forkexit.c:32/60-65）
+### 2.1 容量检查：`procs_in_use` 与 `LAST_FEW`（minix3/minix/servers/pm/forkexit.c:LAST_FEW/60-65）
 
 ```c
 #define LAST_FEW  2                      // forkexit.c:32
@@ -111,9 +111,9 @@ if ((procs_in_use == NR_PROCS) ||        // forkexit.c:60-65
 }
 ```
 
-`procs_in_use` 为 `glo.h:9` 全局计数（`mproc[NR_PROCS]` 中 `IN_USE` 槽数）；`LAST_FEW=2` 为预留给 superuser 的最后槽位（`00` 与 `NR_PROCS-1` 等效边界），`mp_effuid` 即 `privilege.credentials.effective`（`mproc.h:42`），`0` 为 superuser。三层判定：全满（`==NR_PROCS`）→ 全拒；近满（`>=NR_PROCS-2`）且非 root → 拒；其余可分配。`EAGAIN`（`try again`）与 Rust `ForkError::TableFull/ReservedForRoot → EAGAIN` 同映射（`mproc/fork.rs:88-94`）。
+`procs_in_use` 为 `glo.h:9` 全局计数（`mproc[NR_PROCS]` 中 `IN_USE` 槽数）；`LAST_FEW=2` 为预留给 superuser 的最后槽位（`00` 与 `NR_PROCS-1` 等效边界），`mp_effuid` 即 `privilege.credentials.effective`（`minix3/minix/servers/pm/mproc.h:sigaction（L42，工具生成）`），`0` 为 superuser。三层判定：全满（`==NR_PROCS`）→ 全拒；近满（`>=NR_PROCS-2`）且非 root → 拒；其余可分配。`EAGAIN`（`try again`）与 Rust `ForkError::TableFull/ReservedForRoot → EAGAIN` 同映射（`mproc/fork.rs:88-94`）。
 
-### 2.2 槽位轮转：`next_child` 与双 `panic` 守卫（forkexit.c:51/68-75）
+### 2.2 槽位轮转：`next_child` 与双 `panic` 守卫（minix3/minix/servers/pm/forkexit.c:do_fork（L51，工具生成）/68-75）
 
 ```c
 static unsigned int next_child = 0;      // forkexit.c:51 文件级轮转指针
@@ -129,7 +129,7 @@ if(next_child >= NR_PROCS || (mproc[next_child].mp_flags & IN_USE))
 
 轮转语义为"下一次从 `next_child+1` 开始找空槽"（与 `03-mproc-table.md` 的 `find_free_slot` 同序，先递增）；`n` 计数至 `NR_PROCS+1` 时 `panic`——此为不可达守卫（容量检查已保证存在空槽）；第二 `panic` 为"找到的槽位仍 `IN_USE`"的二次守卫（`next_child >= NR_PROCS` 实为类型守卫，`unsigned` 永非负，但 `NR_PROCS` 越界检查与 `pm_isokendpt` 的 `slot >= NR_PROCS → EINVAL` 同源）。
 
-### 2.3 `vm_fork` 同步段与不可失败窗口（forkexit.c:78-82）
+### 2.3 `vm_fork` 同步段与不可失败窗口（minix3/minix/servers/pm/forkexit.c:do_fork（L78，工具生成））
 
 ```c
 if((s=vm_fork(rmp->mp_endpoint, next_child, &child_ep)) != OK) {
@@ -140,7 +140,7 @@ if((s=vm_fork(rmp->mp_endpoint, next_child, &child_ep)) != OK) {
 
 `vm_fork` 在 `minix/vm.h` 原型为 `int vm_fork(endpoint_t, int slot, endpoint_t *)`（`m1_i1/i2` 载荷，`VM_FORK 0xC01`），VM 侧经 `sys_fork`（`kernel/system/do_fork.c:69-72`）复制 `proc` 与页表并生成新 `endpoint`（`slot + generation`）。`s` 已是 `errno`（`EAGAIN` 表满或 `ENOMEM` 内存不足），PM 直接返 `s`；成功后即进入不可失败窗口，后续 `EAGAIN` 不再合法。Rust 侧的对应实现在 `ipc/dispatcher.rs` 的 `vm_fork`（本轮起为**真实 `sendrec(VM, VM_FORK)` 任务调用**，见 §3.3/D3），errno 细粒度传播待 `PmError` 增加载荷变体（edge_todo.md E7），当前统一收敛为 `VmError`。
 
-### 2.4 槽位占位与全量复制：`procs_in_use++` → `*rmc=*rmp` → 子资源重整（forkexit.c:84-116）
+### 2.4 槽位占位与全量复制：`procs_in_use++` → `*rmc=*rmp` → 子资源重整（minix3/minix/servers/pm/forkexit.c:do_fork（L84，工具生成））
 
 ```c
 rmc = &mproc[next_child];                 // forkexit.c:84
@@ -176,8 +176,8 @@ assert(rmc->mp_eventsub == NO_EVENTSUB);  // forkexit.c:116 新进程无事件�
 逐行要点：
 
 - `procs_in_use++` 在 `*rmc=*rmp` 之前（`86`），`get_free_pid` 在 `*rmc=*rmp` 之后（`119`）——顺序与 `mproc` 全量复制的覆盖时序相关，`get_free_pid` 扫描 `mp_pid`/`procgrp` 需在子进程槽已占但 `mp_pid` 旧值未覆盖前完成？实则 `get_free_pid` 扫描包含子进程新占槽的旧 `mp_pid`（此时仍为父的 `pid`），若该旧值恰为 `next_pid` 会导致误判冲突；但 `next_pid` 轮转算法在冲突时 `next_pid++`，最终仍会跳过该旧值——顺序差异不影响可观测行为（Rust 侧显式构造无此整拷贝副产物）。
-- `mpsigact` 外置：`mproc.h:22` 的 `mpsigact[NR_PROCS][_NSIG]`（`_NSIG=32`）占 80% per-process 状态，PM 为避免 `MIB` 拉取而外置（`forkexit.c:88-89` 重指 + `memcpy`），Rust 侧 `SignalState::actions: [SigAction; 32]` 按槽位索引（`mproc/signal.rs`）。
-- `PRIV_PROC` 接管：仅当父为 `PRIV_PROC`（`mproc.h:98` `0x02000`）且 `mp_scheduler==NONE` 时，子进程转为 `User` 并 `scheduler=SCHED`（`forkexit.c:101` `SCHED_PROC_NR 4`），对应 Rust `Privilege::Kernel → User(root)`（`mproc/fork.rs:277-291`），`PRIV_PROC` 不继承（`106` 的 `IN_USE|DELAY_CALL|TAINTED` 未含 `PRIV_PROC`）。
+- `mpsigact` 外置：`minix3/minix/servers/pm/mproc.h:sigaction（L22，工具生成）` 的 `mpsigact[NR_PROCS][_NSIG]`（`_NSIG=32`）占 80% per-process 状态，PM 为避免 `MIB` 拉取而外置（`minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成）` 重指 + `memcpy`），Rust 侧 `SignalState::actions: [SigAction; 32]` 按槽位索引（`mproc/signal.rs`）。
+- `PRIV_PROC` 接管：仅当父为 `PRIV_PROC`（`minix3/minix/servers/pm/mproc.h:PRIV_PROC` `0x02000`）且 `mp_scheduler==NONE` 时，子进程转为 `User` 并 `scheduler=SCHED`（`minix3/minix/servers/pm/forkexit.c:do_fork（L101，工具生成）` `SCHED_PROC_NR 4`），对应 Rust `Privilege::Kernel → User(root)`（`mproc/fork.rs:277-291`），`PRIV_PROC` 不继承（`106` 的 `IN_USE|DELAY_CALL|TAINTED` 未含 `PRIV_PROC`）。
 - `DELAY_CALL` 的继承在 C 为 `106` 的掩码产物，但 Rust 侧刻意不继承（`mproc/fork.rs:307` 注释：mid-send 进程不可执行 `fork`，`DELAY_CALL` 继承为 whole-copy 副产物）。
 
 ### 2.5 PID 分配：`get_free_pid` 双字段扫描（utility.c:34-74）
@@ -201,9 +201,9 @@ pid_t get_free_pid(void) {                // utility.c:34
 
 `NR_PIDS=30000`（`const.h:3`），`NO_PID=0`（`const.h:8`），`INIT_PID=1`（`const.h:9`）；`next_pid` 轮转时跳过 `0/1`，双字段扫描保证 `pid` 与 `procgrp`（进程组亦占用 PID 命名空间）均不碰撞；复杂度期望 `O(1)`（冲突率约 `NR_PROCS/NR_PIDS ≈ 0.8%`），最坏 `O(NR_PROCS)`。
 
-`forkexit.c:119-120` 的 `new_pid = get_free_pid(); rmc->mp_pid = new_pid` 将全局唯一命名注入子进程（Rust `PidGenerator::get_free_pid` 同算法，`mproc/pid_gen.rs`，`Cell<Pid>` 单线程安全）。注意 C 的相位语义：`next_pid` 先自增再检查再返回（utility.c:38），首个分配值是 `INIT_PID+2`=3，pid 2 永不使用——Rust 实现曾返回自增前的旧值（首个分配 2），2026-09-08 修正（todo.md §11 V2-P1-1）。
+`minix3/minix/servers/pm/forkexit.c:do_fork（L119，工具生成）` 的 `new_pid = get_free_pid(); rmc->mp_pid = new_pid` 将全局唯一命名注入子进程（Rust `PidGenerator::get_free_pid` 同算法，`mproc/pid_gen.rs`，`Cell<Pid>` 单线程安全）。注意 C 的相位语义：`next_pid` 先自增再检查再返回（utility.c:38），首个分配值是 `INIT_PID+2`=3，pid 2 永不使用——Rust 实现曾返回自增前的旧值（首个分配 2），2026-09-08 修正（todo.md §11 V2-P1-1）。
 
-### 2.6 VFS 投递：`VFS_PM_FORK` 的 `tell_vfs(rmc)`（forkexit.c:122-130）
+### 2.6 VFS 投递：`VFS_PM_FORK` 的 `tell_vfs(rmc)`（minix3/minix/servers/pm/forkexit.c:do_fork（L122，工具生成））
 
 ```c
 memset(&m, 0, sizeof(m));                 // forkexit.c:122
@@ -218,16 +218,16 @@ tell_vfs(rmc, &m);                        // forkexit.c:130 ① not-idle ② asy
 
 `REUID/REGID = -1` 为显式哨兵，`VFS_PM_SRV_FORK`（`0x908`）才填真实 `reuid/regid`（08 差异）；`tell_vfs(rmc)` 的 `rmp` 参数即子进程 `rmc`，`VFS_CALL` 置于子槽（`utility.c:138` `rmp->mp_flags |= VFS_CALL`），延续由 05 的 `handle_vfs_reply` 的 FORK 分支消费（`sched_start_user` 成败双分支）。
 
-### 2.7 tracer 信号：`sig_proc(SIGSTOP)`（forkexit.c:133-134）
+### 2.7 tracer 信号：`sig_proc(SIGSTOP)`（minix3/minix/servers/pm/forkexit.c:do_fork（L133，工具生成））
 
 ```c
 if (rmc->mp_tracer != NO_TRACER)          // forkexit.c:133 mproc.h:34 NO_TRACER 0
     sig_proc(rmc, SIGSTOP, TRUE /*trace*/, FALSE /* ksig */); // signal.c:384
 ```
 
-`NO_TRACER` 0 与 `NO_PID` 同值但语义正交（`tracer` 为槽位索引，`pid` 为命名）；`SIGSTOP`（Minix3 为 17，`signal.h:63`）以 `trace=true` 投递，11 章详述信号语义，本章关注**子进程为什么会持有 tracer**：C 经 `*rmc = *rmp` 整体复制 `mp_tracer`/`mp_trace_flags`/`mp_sigtrace`（87），再条件清除——仅当父 `trace_flags` 不含 `TO_TRACEFORK` 时子进程的 tracer 才被置 `NO_TRACER`（91-96）。Rust 侧对应 `fork.rs` 的 `inherit_guardianship`：父 `Traced` 且 `trace_options` 含 `TRACEFORK` → 子继承（`trace_exit` 不继承，对应 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`）；随后 `do_fork` 第 8 步对持有 tracer 的子进程调用真实 `crate::signal::sig_proc(child, SIGSTOP, trace=true, ksig=false)`（C 忽略返回值，`forkexit.c:135`——子进程刚建、tracer 槽位有效，失败不可达），子进程进入 ptrace 停止态（`trace.stopped`）且 `sigtrace` 记 SIGSTOP 位。`do_srv_fork` 第 7 步同构（`forkexit.c:231-234`）。
+`NO_TRACER` 0 与 `NO_PID` 同值但语义正交（`tracer` 为槽位索引，`pid` 为命名）；`SIGSTOP`（Minix3 为 17，`signal.h:63`）以 `trace=true` 投递，11 章详述信号语义，本章关注**子进程为什么会持有 tracer**：C 经 `*rmc = *rmp` 整体复制 `mp_tracer`/`mp_trace_flags`/`mp_sigtrace`（87），再条件清除——仅当父 `trace_flags` 不含 `TO_TRACEFORK` 时子进程的 tracer 才被置 `NO_TRACER`（91-96）。Rust 侧对应 `fork.rs` 的 `inherit_guardianship`：父 `Traced` 且 `trace_options` 含 `TRACEFORK` → 子继承（`trace_exit` 不继承，对应 `FORK_INHERIT_FLAGS` 不含 `TRACE_EXIT`）；随后 `do_fork` 第 8 步对持有 tracer 的子进程调用真实 `crate::signal::sig_proc(child, SIGSTOP, trace=true, ksig=false)`（C 忽略返回值，`minix3/minix/servers/pm/forkexit.c:do_fork（L135，工具生成）`——子进程刚建、tracer 槽位有效，失败不可达），子进程进入 ptrace 停止态（`trace.stopped`）且 `sigtrace` 记 SIGSTOP 位。`do_srv_fork` 第 7 步同构（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L231，工具生成）`）。
 
-### 2.8 同步/异步边界与顺序敏感（forkexit.c:82/139）
+### 2.8 同步/异步边界与顺序敏感（minix3/minix/servers/pm/forkexit.c:do_fork（L82，工具生成）/139）
 
 ```c
 /* PM may not fail fork after call to vm_fork(), as VM calls sys_fork(). */ // 82
@@ -246,12 +246,12 @@ return SUSPEND;                            // 139 com.h:1151 -998，main.c:106 �
 
 | 类别 | 检测 | 触发 | 严重度 |
 |------|------|------|--------|
-| `panic("can't find child slot")` | `forkexit.c:72-73` | `n > NR_PROCS`（全表扫描仍 `IN_USE`） | 不可达（容量检查已保证） |
-| `panic("finds wrong child slot")` | `forkexit.c:74-75` | `next_child >= NR_PROCS \|\| IN_USE`（找到的槽仍占用） | 不可达（`IN_USE` 扫描已保证） |
+| `panic("can't find child slot")` | `minix3/minix/servers/pm/forkexit.c:do_fork（L72，工具生成）` | `n > NR_PROCS`（全表扫描仍 `IN_USE`） | 不可达（容量检查已保证） |
+| `panic("finds wrong child slot")` | `minix3/minix/servers/pm/forkexit.c:do_fork（L74，工具生成）` | `next_child >= NR_PROCS \|\| IN_USE`（找到的槽仍占用） | 不可达（`IN_USE` 扫描已保证） |
 | `panic("asynsend failed")` | `event.c:104-106` 间接（`tell_vfs` 的 `asynsend3` 失败） | 内核异步表溢出或 VFS 死亡 | 不可恢复（`ASYN_NR` 上界被突破） |
-| `assert(mp_eventsub == NO_EVENTSUB)` | `forkexit.c:116` | 新子进程仍挂事件游标 | 不可恢复（06 不变量） |
-| `EAGAIN` | `forkexit.c:64` | `procs_in_use` 全满或近满非 root | 可恢复（父进程可重试） |
-| `SUSPEND` | `forkexit.c:139` | 投递后延续由 VFS 完成 | 异步契约（`ReplyLater`） |
+| `assert(mp_eventsub == NO_EVENTSUB)` | `minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）` | 新子进程仍挂事件游标 | 不可恢复（06 不变量） |
+| `EAGAIN` | `minix3/minix/servers/pm/forkexit.c:do_fork（L64，工具生成）` | `procs_in_use` 全满或近满非 root | 可恢复（父进程可重试） |
+| `SUSPEND` | `minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）` | 投递后延续由 VFS 完成 | 异步契约（`ReplyLater`） |
 
 ---
 
@@ -261,19 +261,19 @@ Rust 改写遵循"语义重写（Rewrite）而非翻译（translate）"：保留
 
 ### D1：容量检查收敛到 `ProcTable::can_alloc_for_user`（ARCH A-3）
 
-`ProcTable::can_alloc_for_user(is_root)`（`mproc/table.rs:114`，`NR_PROCS - LAST_FEW` 阈值与 `is_root` 由 `Credentials::is_superuser` 即 `effuid==0` 判定，`Cell` 单线程）消除 `forkexit.c:60-65` 的分散阈值算术；`do_fork` 不再重复 `EAGAIN` 逻辑，直接 `if !can_alloc { return Err(EAGAIN) }`，与 `PmContext::do_fork_prepare` 单一真相。
+`ProcTable::can_alloc_for_user(is_root)`（`mproc/table.rs:114`，`NR_PROCS - LAST_FEW` 阈值与 `is_root` 由 `Credentials::is_superuser` 即 `effuid==0` 判定，`Cell` 单线程）消除 `minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成）` 的分散阈值算术；`do_fork` 不再重复 `EAGAIN` 逻辑，直接 `if !can_alloc { return Err(EAGAIN) }`，与 `PmContext::do_fork_prepare` 单一真相。
 
 ### D2：槽位轮转收敛到 `ProcTable::alloc_slot`（ARCH A-2/A-3）
 
-`alloc_slot`（`mproc/table.rs:138`，`next_child` `Cell` 先递增后检查，与 `forkexit.c:69` 同序）在 `vm_fork` 前占位，满表 `None → EAGAIN`（`panic` 不可达路径在 Rust 侧为 `Option`）；`do_fork` 不再手写 `next_child` 循环，直接 `alloc_slot().ok_or(ProcTableFull)`。
+`alloc_slot`（`mproc/table.rs:138`，`next_child` `Cell` 先递增后检查，与 `minix3/minix/servers/pm/forkexit.c:do_fork（L69，工具生成）` 同序）在 `vm_fork` 前占位，满表 `None → EAGAIN`（`panic` 不可达路径在 Rust 侧为 `Option`）；`do_fork` 不再手写 `next_child` 循环，直接 `alloc_slot().ok_or(ProcTableFull)`。
 
 ### D3：`vm_fork` 真实任务调用——`sendrec(VM, VM_FORK)` 而非假成功（ARCH A-4）
 
-C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/minix/lib/libsys/vm_fork.c:16-25`）：请求载荷 `VMF_ENDPOINT`/`VMF_SLOTNO` 走 m1（m1i1/m1i2），回复的子 endpoint 在 `VMF_CHILD_ENDPOINT`（m1i3），taskcall 返回值非 OK 即 errno（`forkexit.c:78-79` 直接 `return s`）。Rust 侧对应 `ipc/dispatcher.rs` 的自由函数 `vm_fork(transport, parent, child_slot)`：经 `IpcTransport::sendrec(Endpoint::VM, …)` 同步往返，回复 `m_type != OK` 或传输失败一律收敛为 `ForkCoordError::VmError`——**绝不伪造成功**（旧 `send_vm_fork` 占位按请求槽位捏造子 endpoint，违反 fail-closed 契约，已删除）。成功后 `child_ep` 需满足 `slot == child_slot`（`forkexit.c:75` 第二守卫，`debug_assert` 开发期守卫）。进程表零回滚：`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后执行，与 C `86` 同序，失败路径无 side-effect。errno 细粒度传播待 `PmError` 增加载荷变体（共享层，edge_todo.md E7）。
+C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/minix/lib/libsys/vm_fork.c:vm_fork（L16，工具生成）`）：请求载荷 `VMF_ENDPOINT`/`VMF_SLOTNO` 走 m1（m1i1/m1i2），回复的子 endpoint 在 `VMF_CHILD_ENDPOINT`（m1i3），taskcall 返回值非 OK 即 errno（`minix3/minix/servers/pm/forkexit.c:do_fork（L78，工具生成）` 直接 `return s`）。Rust 侧对应 `ipc/dispatcher.rs` 的自由函数 `vm_fork(transport, parent, child_slot)`：经 `IpcTransport::sendrec(Endpoint::VM, …)` 同步往返，回复 `m_type != OK` 或传输失败一律收敛为 `ForkCoordError::VmError`——**绝不伪造成功**（旧 `send_vm_fork` 占位按请求槽位捏造子 endpoint，违反 fail-closed 契约，已删除）。成功后 `child_ep` 需满足 `slot == child_slot`（`minix3/minix/servers/pm/forkexit.c:do_fork（L75，工具生成）` 第二守卫，`debug_assert` 开发期守卫）。进程表零回滚：`find_free_slot` 只找槽不计数，`procs_in_use++` 在 `vm_fork` 成功后执行，与 C `86` 同序，失败路径无 side-effect。errno 细粒度传播待 `PmError` 增加载荷变体（共享层，edge_todo.md E7）。
 
 ### D4：PID 分配收敛到 `PidGenerator`（ARCH A-11）
 
-`PidGenerator::get_free_pid(&ProcTable)`（`mproc/pid_gen.rs:32`，`NR_PIDS=30000` 上界回绕 + `pid`/`procgrp` 双字段冲突，`Cell<Pid>` 单线程）与 `utility.c:34-74` 逐行对齐；调用点保持 `*rmc=*rmp` 与子资源清零之后、`tell_vfs` 之前（`forkexit.c:119` 同序）。
+`PidGenerator::get_free_pid(&ProcTable)`（`mproc/pid_gen.rs:32`，`NR_PIDS=30000` 上界回绕 + `pid`/`procgrp` 双字段冲突，`Cell<Pid>` 单线程）与 `utility.c:34-74` 逐行对齐；调用点保持 `*rmc=*rmp` 与子资源清零之后、`tell_vfs` 之前（`minix3/minix/servers/pm/forkexit.c:do_fork（L119，工具生成）` 同序）。
 
 ### D5：`Process::fork_from` 显式构造（ARCH A-1/A-2）
 
@@ -281,15 +281,15 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 ### D6：`tell_vfs` 的 `VFS_CALL` 置于子进程（ARCH A-4/A-6）
 
-`VfsCall::Fork { child, parent, child_pid }`（`minix-types/src/ipc/vfs.rs:347` 的 `m7i1/m7i2/m7i3/-1/-1` 哨兵与 `com.h:547-583` 对齐）经 `tell_vfs(child_slot, Fork, transport)` 投递（`ipc/vfs.rs:182` 三段式：not-idle→`send(VFS)`→`VFS_CALL{reply_to_new_parent:false}`），`VFS_CALL` 置于子槽（`forkexit.c:130` 的 `rmc`），延续由 05 的 `handle_vfs_reply` 异步双回复（`reply(child,OK)`+`reply(parent,child_pid)` 且 `NEW_PARENT` 抑制）。
+`VfsCall::Fork { child, parent, child_pid }`（`minix-types/src/ipc/vfs.rs:347` 的 `m7i1/m7i2/m7i3/-1/-1` 哨兵与 `com.h:547-583` 对齐）经 `tell_vfs(child_slot, Fork, transport)` 投递（`ipc/vfs.rs:182` 三段式：not-idle→`send(VFS)`→`VFS_CALL{reply_to_new_parent:false}`），`VFS_CALL` 置于子槽（`minix3/minix/servers/pm/forkexit.c:do_fork（L130，工具生成）` 的 `rmc`），延续由 05 的 `handle_vfs_reply` 异步双回复（`reply(child,OK)`+`reply(parent,child_pid)` 且 `NEW_PARENT` 抑制）。
 
 ### D7：tracer `SIGSTOP` 与 `TO_TRACEFORK` 条件继承（2026-09-06 落地）
 
-旧实现两处与 C 不符：`do_fork` 第 8 步为 no-op 注释（"11 落地时替换"），且 `copy_mproc` 无条件把子进程监护重置为 `Normal`——`tracer().is_some()` 恒假，C 的整条 tracer 继承链在 Rust 侧不可达。2026-09-06 修复：`fork.rs` 新增共享决策函数 `inherit_guardianship`（`do_fork` 与 `do_srv_fork` 两条构造路径复用——C 是一处复制 + 一处条件，Rust 两条显式构造路径各需一次决策），语义即 `forkexit.c:87-96`：父 `Traced` + `TRACEFORK` → 继承；否则清除。第 8 步接真实 `sig_proc`（`trace=true` 走 ptrace 停止分支，`signal.c:384` → `signal.rs` 的 `trace_mask |= bit` + `trace.stopped = true`）。三个新测试覆盖继承+停止、清除+运行、srv 路径继承三情形（07 §5）。
+旧实现两处与 C 不符：`do_fork` 第 8 步为 no-op 注释（"11 落地时替换"），且 `copy_mproc` 无条件把子进程监护重置为 `Normal`——`tracer().is_some()` 恒假，C 的整条 tracer 继承链在 Rust 侧不可达。2026-09-06 修复：`fork.rs` 新增共享决策函数 `inherit_guardianship`（`do_fork` 与 `do_srv_fork` 两条构造路径复用——C 是一处复制 + 一处条件，Rust 两条显式构造路径各需一次决策），语义即 `minix3/minix/servers/pm/forkexit.c:do_fork（L87，工具生成）`：父 `Traced` + `TRACEFORK` → 继承；否则清除。第 8 步接真实 `sig_proc`（`trace=true` 走 ptrace 停止分支，`signal.c:384` → `signal.rs` 的 `trace_mask |= bit` + `trace.stopped = true`）。三个新测试覆盖继承+停止、清除+运行、srv 路径继承三情形（07 §5）。
 
 ### D8：`SUSPEND` → `ReplyLater` 与 05 的 FORK 双分支闭环（ARCH A-6）
 
-`PmCall::Fork → ReplyLater`（`ipc/calls.rs:211`）使 `main.c:106` 的 `result != SUSPEND → reply` 不回复本次 `PM_FORK`；`handle_vfs_reply` 的 FORK 分支（`ipc/vfs.rs:269`）`sched_start_user` 成功→`reply(child,OK)`+`reply(parent,child_pid)`，失败→`exit_proc(child,-1)`+`reply(parent,-1)`，`new_parent` 保护与 `forkexit.c:392-393` 同逻辑（本章发起侧 `SUSPEND`，消费侧归 05，跨文档链路在 §6 过渡闭环）。
+`PmCall::Fork → ReplyLater`（`ipc/calls.rs:211`）使 `main.c:106` 的 `result != SUSPEND → reply` 不回复本次 `PM_FORK`；`handle_vfs_reply` 的 FORK 分支（`ipc/vfs.rs:269`）`sched_start_user` 成功→`reply(child,OK)`+`reply(parent,child_pid)`，失败→`exit_proc(child,-1)`+`reply(parent,-1)`，`new_parent` 保护与 `minix3/minix/servers/pm/forkexit.c:exit_proc（L392，工具生成）` 同逻辑（本章发起侧 `SUSPEND`，消费侧归 05，跨文档链路在 §6 过渡闭环）。
 
 ---
 
@@ -306,7 +306,7 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 5. `procs_in_use` 手动 `++` + `copy_mproc(...)`（`fork.rs:65-71`，D5——`++` 在 `vm_fork` 成功之后，C `86` 同序，无回滚补偿）；
 6. `child_pid = get_free_pid(table)`（`fork.rs:73`，D4——在复制之后、`tell_vfs` 之前，C `119` 同序）；
 7. `tell_vfs(table, child_slot, VfsCall::Fork{child,parent,child_pid}, transport)?`（`fork.rs:80`，D6，`VFS_CALL` 置于子槽）；
-8. `if child_tracer.is_some() { sig_proc(child, SIGSTOP, trace=true) }`（forkexit.c:132-135，D7 已落地——真实调用，TO_TRACEFORK 条件继承见 §2.7）→ `Ok(child_pid)`（调用方 `init.rs` 映射 `ReplyLater`）。
+8. `if child_tracer.is_some() { sig_proc(child, SIGSTOP, trace=true) }`（minix3/minix/servers/pm/forkexit.c:do_fork（L132，工具生成），D7 已落地——真实调用，TO_TRACEFORK 条件继承见 §2.7）→ `Ok(child_pid)`（调用方 `init.rs` 映射 `ReplyLater`）。
 
 > 注意 C 的 `do_fork` **没有**独立的"内核 fork 请求"步骤——`proc` 复制由 VM 在 `vm_fork` 内经 `sys_fork` 完成（`kernel/system/do_fork.c:69-72`）。旧占位实现中的 `send_kernel_request(KernelRequest::Fork{...})` 步骤是与 C 不符的原型残留，已随假成功接缝一并删除。
 
@@ -330,16 +330,16 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 
 | # | 不变量 | C 锚点 | Rust 表达 |
 |---|--------|--------|-----------|
-| 1 | 满表/近满非 root → `EAGAIN` | `forkexit.c:60-65` | `can_alloc_for_user → Err(EAGAIN)` |
-| 2 | 轮转先递增后检查 | `forkexit.c:69` | `find_free_slot` 的 `(next_child+1)%NR_PROCS` |
-| 3 | `vm_fork` 前可 `EAGAIN`，后不可 | `forkexit.c:78/82` | `vm_fork` 失败即返（表零污染）；成功后进入不可失败窗口，`tell_vfs` 失败同样返 `VmError`（见 §5 差异表） |
-| 4 | `procs_in_use++` 在 `*rmc=*rmp` 前 | `forkexit.c:86` | 手动 `++` 在 `copy_mproc` 前，两者都在 `vm_fork` 成功之后（C 同序，无回滚） |
-| 5 | `mpsigact` 外置 | `forkexit.c:88-89` | `SignalState::actions` 按槽索引 |
-| 6 | `PRIV_PROC` 不继承，仅 `TAINTED` | `forkexit.c:100-106` | `RemainingFlags::TAINTED` 过滤 + `Kernel→User(SCHED)` |
-| 7 | 子资源清零 | `forkexit.c:107-114` | `child_utime=0`/`interval=0`/`started=注入时钟`（2026-09-06 D-24：getticks 桩删除，uptime 由调用方 ClockSource 注入，内核面挂 E6） |
-| 8 | `mp_eventsub == NO_EVENTSUB` | `forkexit.c:116` | `BlockState::default` + `Ipc::default`（`None`） |
-| 9 | `VFS_CALL` 置于子进程 | `forkexit.c:130` `tell_vfs(rmc)` | `tell_vfs(child_slot, Fork)` |
-| 10 | `return SUSPEND` | `forkexit.c:139` | `ReplyLater`（`PmCall::Fork`） |
+| 1 | 满表/近满非 root → `EAGAIN` | `minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成）` | `can_alloc_for_user → Err(EAGAIN)` |
+| 2 | 轮转先递增后检查 | `minix3/minix/servers/pm/forkexit.c:do_fork（L69，工具生成）` | `find_free_slot` 的 `(next_child+1)%NR_PROCS` |
+| 3 | `vm_fork` 前可 `EAGAIN`，后不可 | `minix3/minix/servers/pm/forkexit.c:do_fork（L78，工具生成）/82` | `vm_fork` 失败即返（表零污染）；成功后进入不可失败窗口，`tell_vfs` 失败同样返 `VmError`（见 §5 差异表） |
+| 4 | `procs_in_use++` 在 `*rmc=*rmp` 前 | `minix3/minix/servers/pm/forkexit.c:do_fork（L86，工具生成）` | 手动 `++` 在 `copy_mproc` 前，两者都在 `vm_fork` 成功之后（C 同序，无回滚） |
+| 5 | `mpsigact` 外置 | `minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成）` | `SignalState::actions` 按槽索引 |
+| 6 | `PRIV_PROC` 不继承，仅 `TAINTED` | `minix3/minix/servers/pm/forkexit.c:do_fork（L100，工具生成）` | `RemainingFlags::TAINTED` 过滤 + `Kernel→User(SCHED)` |
+| 7 | 子资源清零 | `minix3/minix/servers/pm/forkexit.c:do_fork（L107，工具生成）` | `child_utime=0`/`interval=0`/`started=注入时钟`（2026-09-06 D-24：getticks 桩删除，uptime 由调用方 ClockSource 注入，内核面挂 E6） |
+| 8 | `mp_eventsub == NO_EVENTSUB` | `minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）` | `BlockState::default` + `Ipc::default`（`None`） |
+| 9 | `VFS_CALL` 置于子进程 | `minix3/minix/servers/pm/forkexit.c:do_fork（L130，工具生成）` `tell_vfs(rmc)` | `tell_vfs(child_slot, Fork)` |
+| 10 | `return SUSPEND` | `minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）` | `ReplyLater`（`PmCall::Fork`） |
 
 ---
 
@@ -371,9 +371,9 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 - `test_find_parent_slot_not_found`：`find_parent_slot(EP 1,0) → Err(InvalidEndpoint)`
 - `test_do_fork_success`：`do_fork(EP 1,0) → Ok(child_pid>0)`（含 `VFS_CALL` 置于子槽断言，`05` 的 `tell_vfs` 三段式）
 - `test_do_fork_parent_not_found`：`do_fork(EP 1,0) → Err(InvalidEndpoint)`
-- `test_do_fork_tracefork_child_inherits_tracer_and_stops`：父 `Traced{TRACEFORK}` → 子继承 tracer + `trace.stopped` + `sigtrace` 记 SIGSTOP（D7，`forkexit.c:87-96/132-135`）
-- `test_do_fork_without_tracefork_child_untraced_and_running`：父 `Traced` 无 `TRACEFORK` → 子 `Normal`、未停止、`sigtrace` 清零（`forkexit.c:91-96`）
-- `test_do_srv_fork_tracefork_child_inherits_tracer_and_stops`：srv 路径同构（`forkexit.c:187-216/231-234`）
+- `test_do_fork_tracefork_child_inherits_tracer_and_stops`：父 `Traced{TRACEFORK}` → 子继承 tracer + `trace.stopped` + `sigtrace` 记 SIGSTOP（D7，`minix3/minix/servers/pm/forkexit.c:do_fork（L87，工具生成）/132-135`）
+- `test_do_fork_without_tracefork_child_untraced_and_running`：父 `Traced` 无 `TRACEFORK` → 子 `Normal`、未停止、`sigtrace` 清零（`minix3/minix/servers/pm/forkexit.c:do_fork（L91，工具生成）`）
+- `test_do_srv_fork_tracefork_child_inherits_tracer_and_stops`：srv 路径同构（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L187，工具生成）/231-234`）
 
 共 **7** 项（2026-09-06 D7 落地 +3）。**与 `mproc/fork.rs` 的 15 项正交**：`fork.rs` 测跨服务编排（`transport` 参与），`mproc/fork.rs` 测表层与显式构造（无 `transport`）。
 
@@ -394,14 +394,14 @@ C 的 `vm_fork` 是 libsys 的 `_taskcall(VM_PROC_NR, VM_FORK, &m)`（`minix3/mi
 **下一入口**：
 
 - **08-pm-srv-fork.md**——`do_srv_fork` 的 `PRIV_PROC` 继承差异（`IN_USE|PRIV_PROC|DELAY_CALL`）与 `VFS_PM_SRV_FORK` 的 `reuid/regid` 真实填充；
-- **09-pm-exit.md**——`exit_proc` / `exit_restart` / `zombify` / `check_parent` / `disinherit`（`NEW_PARENT` 真实设置点 `forkexit.c:402-403`）与 `fork` 的 `procs_in_use` 计数形成生命周期闭环；
+- **09-pm-exit.md**——`exit_proc` / `exit_restart` / `zombify` / `check_parent` / `disinherit`（`NEW_PARENT` 真实设置点 `minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）`）与 `fork` 的 `procs_in_use` 计数形成生命周期闭环；
 - **16-scheduling.md**——`sched_start_user` 的 SCHED 服务内部（`fork` 的双分支消费方）。
 
 ---
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/forkexit.c:32-140`（`do_fork`）、`minix3/minix/servers/pm/utility.c:34-74`（`get_free_pid`）、`minix3/minix/servers/pm/mproc.h:22/27/86-104`（`mpsigact`/`mp_eventsub`/`mp_flags`）、`minix3/minix/servers/pm/glo.h:9/51`（`procs_in_use`/`next_child`）、`minix3/minix/include/minix/com.h:527/540/547-583`（`VFS_PM_FORK` 字段）、`minix3/minix/include/minix/vm.h`（`vm_fork` 原型）、`minix3/minix/include/minix/callnr.h:14`（`PM_FORK 2`）、`minix3/minix/servers/pm/main.c:88-89/106`（`PROC_EVENT_REPLY`/`SUSPEND`）、`minix3/minix/servers/vm/fork.c`（VM 对端）、`minix3/minix/servers/vfs/main.c:395-410`（VFS 对端）
+- C 源（ground truth）：`minix3/minix/servers/pm/forkexit.c:LAST_FEW`（`do_fork`）、`minix3/minix/servers/pm/utility.c:get_free_pid`（`get_free_pid`）、`minix3/minix/servers/pm/mproc.h:sigaction（L22，工具生成）/27/86-104`（`mpsigact`/`mp_eventsub`/`mp_flags`）、`minix3/minix/servers/pm/glo.h:EXTERN（L9，工具生成）/51`（`procs_in_use`/`next_child`）、`minix3/minix/include/minix/com.h:VFS_PM_FORK/540/547-583`（`VFS_PM_FORK` 字段）、`minix3/minix/include/minix/vm.h`（`vm_fork` 原型）、`minix3/minix/include/minix/callnr.h:PM_EXIT`（`PM_FORK 2`）、`minix3/minix/servers/pm/main.c:main（L88，工具生成）/106`（`PROC_EVENT_REPLY`/`SUSPEND`）、`minix3/minix/servers/vm/fork.c`（VM 对端）、`minix3/minix/servers/vfs/main.c:sef_cb_init_fresh（L395，工具生成）`（VFS 对端）
 - 设计契约：`.design/07-design.v1.md`（D1–D8 与行为契约表）、`.design/07-outline.v1.md`、`.design/07-outline-review.v1.md`
 - PM 阶段文档：03-mproc-table.md（`can_alloc`/`find_free_slot`/`get_free_pid`）、04-ipc-dispatch.md（`ReplyLater` 契约与 `PmCall::Fork` 分发）、05-vfs-interaction.md（`tell_vfs` 三段式与 `handle_vfs_reply` FORK 双分支）、02-mproc-struct.md（`RemainingFlags::TAINTED` / `mpsigact`）、06-event-subscription.md（`NO_EVENTSUB`）、16-scheduling.md（`sched_start_user`）、11-signal-core.md（`sig_proc` SIGSTOP）、08-pm-srv-fork.md（`PRIV_PROC` 差异）
 - 对端实现：`02-stage-vm/18-vm-fork.md`（`vm_fork` 对端）、`05-stage-vfs`（`VFS_PM_FORK` 对端）

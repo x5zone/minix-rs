@@ -1,7 +1,7 @@
 # 08-pagetable-ops: 页表操作——生命周期、映射写入与跨页表复制
 
 > **分类**: 阶段 3 — 页与页表（操作面）
-> **源码**: `minix3/minix/servers/vm/pagetable.c`（`pt_ptalloc` :494 / `pt_ptalloc_in_range` :545 / `ptestr` :587 / `pt_map_in_range` :631 / `pt_ptmap` :685 / `pt_clearmapcache` :751 / `pt_writable` :761 / `pt_writemap` :784 / `pt_checkrange` :943 / `pt_new` :990 / `freepde` :1028 / `pt_allocate_kernel_mapped_pagetables` :1035 / `pt_copy` :1069 / `pt_bind` :1358 / `pt_free` :1427 / `pt_mapkernel` :1442）+ `minix3/minix/servers/vm/vm.h:55-61`（WMF 宏族 + `MAP_NONE`）
+> **源码**: `minix3/minix/servers/vm/pagetable.c`（`pt_ptalloc` :494 / `pt_ptalloc_in_range` :545 / `ptestr` :587 / `pt_map_in_range` :631 / `pt_ptmap` :685 / `pt_clearmapcache` :751 / `pt_writable` :761 / `pt_writemap` :784 / `pt_checkrange` :943 / `pt_new` :990 / `freepde` :1028 / `pt_allocate_kernel_mapped_pagetables` :1035 / `pt_copy` :1069 / `pt_bind` :1358 / `pt_free` :1427 / `pt_mapkernel` :1442）+ `minix3/minix/servers/vm/vm.h:VMP_CATEGORIES（L55，工具生成）`（WMF 宏族 + `MAP_NONE`）
 > **Rust 模块**: `os/arch/src/arch/paging.rs`（`Paging` trait 操作面 + `clone_range` + `map_kernel`）+ `os/arch/src/x86_64/paging.rs`（`walk_alloc` + `write_pte_dm` 逐条 invlpg）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`init_page_table`/`free_page_table`/`write_page_table_mappings`）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（`VmSelfPageTable::adopt` A1 adoption）+ 消费方 `fork.rs`/`exit.rs`/`munmap.rs`/`heap_arena.rs`
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构、Direct Map、`Paging` trait 结构）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配 + `vm_pt_alloc` 供给页表页）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm`/`pt_init` 调用点）
 > **说明**: 页表**操作**语义模块：**生命周期（`pt_new`/`pt_free`/`pt_bind`）、映射写入（`pt_writemap` + WMF 标志族）、页表页按需分配（`pt_ptalloc`/`pt_ptalloc_in_range`）、跨页表复制（`pt_copy`/`pt_map_in_range`/`pt_ptmap`）、查询校验（`pt_checkrange`/`pt_writable`）、内核协作（`pt_mapkernel`/`pt_clearmapcache`/`pt_allocate_kernel_mapped_pagetables`）**。**不覆盖**：页表结构（07）、页分配（06）、fork/mmap/pagefault/exit/LU 服务流程（18/20/21/16/22/25）。
@@ -53,7 +53,7 @@ exec:       pt_free（清旧）→ pt_new（建新）→ pt_bind（激活）→ 
 exit:       pt_free（释放）
 ```
 
-**创建（`pt_new`）**：分配一个页目录物理页并清零，然后立即调用 `pt_mapkernel` 映射内核区。关键约束是"**页目录不重复分配**"——一旦某个进程槽位的页目录被创建，就不会释放或重新分配（pagetable.c:994-997 注释给出两个理由：略快 + 避免失效内核 `page_directories` 中指向页目录的映射）。这意味着 C 中页目录的生命周期与**进程槽位**绑定，而非与进程绑定。
+**创建（`pt_new`）**：分配一个页目录物理页并清零，然后立即调用 `pt_mapkernel` 映射内核区。关键约束是"**页目录不重复分配**"——一旦某个进程槽位的页目录被创建，就不会释放或重新分配（minix3/minix/servers/vm/pagetable.c:pt_new（L994，工具生成） 注释给出两个理由：略快 + 避免失效内核 `page_directories` 中指向页目录的映射）。这意味着 C 中页目录的生命周期与**进程槽位**绑定，而非与进程绑定。
 
 **绑定（`pt_bind`）**：把页目录的物理地址登记进 `pagedir_mappings` 登记册（让内核能通过虚拟地址访问该进程的页目录），并调用 `sys_vmctl_set_addrspace` 通知内核把根地址写入进程控制块（`p_seg.p_cr3`），若进程正在运行则内核立即 `write_cr3` 切换。**绑定是地址空间从"VM 的私有数据结构"变成"CPU 可执行的地址空间"的边界**。
 
@@ -65,20 +65,20 @@ exit:       pt_free（释放）
 
 | 标志 | 值 | 语义 | C 典型调用 |
 |------|-----|------|-----------|
-| `WMF_OVERWRITE` | 0x01 | 允许覆盖已有映射（**常态**） | region.c:285、pagetable.c:713/743 |
-| `WMF_WRITEFLAGSONLY` | 0x02 | 保留原物理地址，只更新标志位 | pagetable.c:426（vm_lockpage） |
+| `WMF_OVERWRITE` | 0x01 | 允许覆盖已有映射（**常态**） | region.c:285、minix3/minix/servers/vm/pagetable.c:pt_ptmap（L713，工具生成）/743 |
+| `WMF_WRITEFLAGSONLY` | 0x02 | 保留原物理地址，只更新标志位 | minix3/minix/servers/vm/pagetable.c:vm_pagelock（L426，工具生成）（vm_lockpage） |
 | `WMF_FREE` | 0x04 | 解除映射并释放物理页 | mmap.c:500（munmap_vm_lin） |
 | `WMF_VERIFY` | 0x08 | 只校验页表项是否匹配，不写入 | region.c:153（map_ph_writept） |
 
-`MAP_NONE`（0xFFFFFFFE，vm.h:61）是"清除映射"的物理地址哨兵：`physaddr == MAP_NONE` 时 `flags` 必须为 0（断言 `physaddr != MAP_NONE || !flags`，pagetable.c:824-825），PTE 写入 `MAP_NONE` 后 PRESENT 位为 0，映射即清除。
+`MAP_NONE`（0xFFFFFFFE，vm.h:61）是"清除映射"的物理地址哨兵：`physaddr == MAP_NONE` 时 `flags` 必须为 0（断言 `physaddr != MAP_NONE || !flags`，minix3/minix/servers/vm/pagetable.c:pt_writemap（L824，工具生成）），PTE 写入 `MAP_NONE` 后 PRESENT 位为 0，映射即清除。
 
 **为什么要强调"覆盖是常态"**：C 侧几乎所有写映射调用都带 `WMF_OVERWRITE`——因为 region 映射路径经常在同一地址上重新写入（如 pagefault 处理、mmap 扩展）。Rust 把这一事实变成设计输入：严格 `map`（拒绝已映射）只用于"此处不应有映射"的场景（fork 子表），其余场景用原子覆盖 `remap`。这是 §3.1 D1 的动机。
 
 ### 1.4 页表页按需分配与递归副作用
 
-`pt_writemap` 写入 PTE 之前，目标 PDE 对应的二级页表必须存在。C 用 `pt_ptalloc_in_range` 在**写任何 PTE 之前**先为整个地址范围预分配全部二级页表——注释明说理由："在中途失败后撤销工作很痛苦"（pagetable.c:828-830）。这是"先保证结构完备，再改内容"的两阶段策略。
+`pt_writemap` 写入 PTE 之前，目标 PDE 对应的二级页表必须存在。C 用 `pt_ptalloc_in_range` 在**写任何 PTE 之前**先为整个地址范围预分配全部二级页表——注释明说理由："在中途失败后撤销工作很痛苦"（minix3/minix/servers/vm/pagetable.c:pt_writemap（L828，工具生成））。这是"先保证结构完备，再改内容"的两阶段策略。
 
-`pt_ptalloc` 分配二级页表时有一个微妙的**递归副作用**：`vm_allocpage`（06 文档）在分配页表页时可能递归触发 `vm_mappages` → `pt_writemap` → `pt_ptalloc`，内层调用可能已经完成了同一个 PDE 的分配。因此外层 `pt_ptalloc` 在分配后必须检查 `pt->pt_pt[pde]` 是否已被内层设置——若是，则释放刚分配的页并直接返回（pagetable.c:513-517）。
+`pt_ptalloc` 分配二级页表时有一个微妙的**递归副作用**：`vm_allocpage`（06 文档）在分配页表页时可能递归触发 `vm_mappages` → `pt_writemap` → `pt_ptalloc`，内层调用可能已经完成了同一个 PDE 的分配。因此外层 `pt_ptalloc` 在分配后必须检查 `pt->pt_pt[pde]` 是否已被内层设置——若是，则释放刚分配的页并直接返回（minix3/minix/servers/vm/pagetable.c:pt_ptalloc（L513，工具生成））。
 
 这个递归的存在前提是：**32 位 VM 分配物理页后必须先把该页映射进自己的地址空间才能访问它**（VM 没有 Direct Map，`vm_mappages` 动态找 VA 映射）。minix-rs 的 Direct Map 使物理页天然可访问，递归路径结构性消失——这是 §3.2 D2 的核心论证。
 
@@ -103,9 +103,9 @@ C 有三个"把映射从一个页表弄到另一个"的函数，复制对象不�
 - `pt_checkrange` 仅 region.c:746-751（`map_pf` 写 PTE 后验证映射确实建立）
 - `pt_writable` 仅 region.c:55（调试输出打印物理页是 R 还是 W）
 
-`ptestr`（pagetable.c:587）是 PTE 调试打印辅助，仅被 `pt_writemap` 的 verify 失败路径和诊断输出使用。
+`ptestr`（minix3/minix/servers/vm/pagetable.c:ptestr）是 PTE 调试打印辅助，仅被 `pt_writemap` 的 verify 失败路径和诊断输出使用。
 
-它们的架构差异也值得注意：i386 用 `PTF_WRITE` 正逻辑（置位=可写），ARM 用 `ARCH_VM_PTE_RO` 反逻辑（置位=只读）——`pt_writable` 里 `#if` 分支（pagetable.c:772-777）直接体现了这一点。minix-rs 的 `PageFlags::WRITABLE` 是 OS 层统一语义，反相位在 arch 的 `flags_to_pte`/`pte_to_flags` 翻译层处理（07 D4 已述）。
+它们的架构差异也值得注意：i386 用 `PTF_WRITE` 正逻辑（置位=可写），ARM 用 `ARCH_VM_PTE_RO` 反逻辑（置位=只读）——`pt_writable` 里 `#if` 分支（minix3/minix/servers/vm/pagetable.c:pt_writable（L772，工具生成））直接体现了这一点。minix-rs 的 `PageFlags::WRITABLE` 是 OS 层统一语义，反相位在 arch 的 `flags_to_pte`/`pte_to_flags` 翻译层处理（07 D4 已述）。
 
 ### 1.7 内核协作：每进程内核映射与 TLB 维护
 
@@ -116,7 +116,7 @@ C 有三个"把映射从一个页表弄到另一个"的函数，复制对象不�
 2. **pagedir_mappings 登记册 PDE**：把 5 个登记册 PDE（`MAX_PAGEDIR_PDES`）写入页目录，使内核能经这些 PDE 访问所有进程的页目录
 3. **kern_mappings 特殊映射**：内核通过 `sys_vmctl_get_mapping` 预留的特殊映射（视频内存、APIC 等），逐条 `pt_writemap`
 
-**`pt_clearmapcache`**：`sys_vmctl(SELF, VMCTL_CLEARMAPCACHE, 0)`——通知内核清除其内部的页表映射缓存，确保内核在使用当前页表建立新映射前使 TLB 失效。调用点在 main.c:212/719/749（VM 自身页表建立/LU 切换后）和 pagefaults.c:153。
+**`pt_clearmapcache`**：`sys_vmctl(SELF, VMCTL_CLEARMAPCACHE, 0)`——通知内核清除其内部的页表映射缓存，确保内核在使用当前页表建立新映射前使 TLB 失效。调用点在 main.c:212/719/749（VM 自身页表建立/LU 切换后）和 minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L153，工具生成）。
 
 ### 1.8 TLB 维护的架构差异：C 的全局清缓存 vs Direct Map 逐条 invlpg
 
@@ -170,7 +170,7 @@ C 有三个"把映射从一个页表弄到另一个"的函数，复制对象不�
 
 （`pt_init` :1088 的结构面已在 07 §2.5 分析；本章只引用其调用关系，不重复操作细节。）
 
-### 2.1 pt_ptalloc：分配二级页表 + 写 PDE（pagetable.c:494）
+### 2.1 pt_ptalloc：分配二级页表 + 写 PDE（minix3/minix/servers/vm/pagetable.c:pt_ptalloc）
 
 ```c
 static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
@@ -214,10 +214,10 @@ static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 
 **语义要点**：
 - **PDE 恒置 `PRESENT|USER|RW`**（i386）——保护完全依赖 PTE，PDE 层不做权限区分。这是两级页表的常见约定：PDE 只负责"页表在不在"，权限在叶表统一表达。
-- **递归副作用**（pagetable.c:513-517）：`vm_allocpage` 分配页时可能递归触发内层 `pt_ptalloc` 完成同一 PDE——外层检查 `pt->pt_pt[pde]` 已设置则释放多余页返回 OK。这个检查是 `vm_allocpage`（06）与 `pt_ptalloc` 之间的隐式协议。
+- **递归副作用**（minix3/minix/servers/vm/pagetable.c:pt_ptalloc（L513，工具生成））：`vm_allocpage` 分配页时可能递归触发内层 `pt_ptalloc` 完成同一 PDE——外层检查 `pt->pt_pt[pde]` 已设置则释放多余页返回 OK。这个检查是 `vm_allocpage`（06）与 `pt_ptalloc` 之间的隐式协议。
 - 分配失败返回 `ENOMEM`（errno 语义，非自定义错误码）。
 
-### 2.2 pt_ptalloc_in_range：范围预分配（pagetable.c:545）
+### 2.2 pt_ptalloc_in_range：范围预分配（minix3/minix/servers/vm/pagetable.c:pt_ptalloc_in_range）
 
 ```c
 int pt_ptalloc_in_range(pt_t *pt, vir_bytes start, vir_bytes end,
@@ -261,7 +261,7 @@ int pt_ptalloc_in_range(pt_t *pt, vir_bytes start, vir_bytes end,
 - **失败不回收**：中途 `pt_ptalloc` 失败时，已分配的页表保留（注释给出的理由：仍可写、不指向 nonsense、pt_ptalloc 使目录和数据保持一致状态）。这是 C 的两阶段策略的容错设计——已分配的部分无害，放弃整个操作即可。
 - `end` 是开区间上界（`end-1` 取最后 PDE），调用方（`pt_writemap`）传 `v + VM_PAGE_SIZE*pages`。
 
-### 2.3 ptestr：PTE 调试打印（pagetable.c:587）
+### 2.3 ptestr：PTE 调试打印（minix3/minix/servers/vm/pagetable.c:ptestr）
 
 ```c
 static const char *ptestr(u32_t pte)
@@ -285,7 +285,7 @@ static const char *ptestr(u32_t pte)
 
 仅被 `pt_writemap` 的 verify 失败诊断（打印 found/masked/expected 三个 PTE 的字符串形式）和调试输出使用。i386 用 `FLAG(RW, "W")` 正逻辑、ARM 用 `RO` 判断取反——与 `pt_writable` 相同的架构反相模式（§1.6）。minix-rs 的 `PageFlags` `Display` 实现（paging.rs:48-72，`P/W/U/X/G/WT/NC/A/D/GUARD`）承担了同样的诊断角色，但**无架构反相**——统一 OS 语义。
 
-### 2.4 pt_writemap：核心写映射（pagetable.c:784）
+### 2.4 pt_writemap：核心写映射（minix3/minix/servers/vm/pagetable.c:pt_writemap）
 
 ```c
 int pt_writemap(struct vmproc * vmp,
@@ -374,10 +374,10 @@ resume_exit:
 
 **语义要点**：
 1. **两阶段**：先 `pt_ptalloc_in_range`（§2.2）保证全部 PDE 存在，再逐页写 PTE。verify 模式下预分配阶段也传 verify（缺 PDE 即 EFAULT）。
-2. **WMF_WRITEFLAGSONLY/WMF_FREE 先取原物理地址**（pagetable.c:858-864）：调用方传的 `physaddr` 被忽略（vm_lockpage 传 0），从现有 PTE 提取物理地址。
-3. **WMF_FREE 释放物理页**（pagetable.c:866-868）：`free_mem(ABS2CLICK(physaddr), 1)`——写映射与物理页释放耦合在同一函数。
+2. **WMF_WRITEFLAGSONLY/WMF_FREE 先取原物理地址**（minix3/minix/servers/vm/pagetable.c:pt_writemap（L858，工具生成））：调用方传的 `physaddr` 被忽略（vm_lockpage 传 0），从现有 PTE 提取物理地址。
+3. **WMF_FREE 释放物理页**（minix3/minix/servers/vm/pagetable.c:pt_writemap（L866，工具生成））：`free_mem(ABS2CLICK(physaddr), 1)`——写映射与物理页释放耦合在同一函数。
 4. **verify 的宽松比较**：i386 掩掉 ACC/DIRTY（硬件可能已置位），"期望可写"接受"实际只读"（CoW 中间态）；ARM 掩掉 WB/WT 缓存位。不匹配返回 `EFAULT` 并打印三个 PTE 的诊断（found/masked/expected，经 `ptestr`）。
-5. **SMP 包裹**（CONFIG_SMP，pagetable.c:787-808）：操作前对目标进程 `VMCTL_VMINHIBIT_SET` 暂停，操作后 `VMCTL_VMINHIBIT_CLEAR` 恢复——防止运行中的进程在页表被改写时访问到不一致状态。minix-rs 的 VM 是单线程事件循环（无 SMP 竞争），此机制无对应（执行模型差异，AGENTS.md 已述）。
+5. **SMP 包裹**（CONFIG_SMP，minix3/minix/servers/vm/pagetable.c:pt_writemap（L787，工具生成））：操作前对目标进程 `VMCTL_VMINHIBIT_SET` 暂停，操作后 `VMCTL_VMINHIBIT_CLEAR` 恢复——防止运行中的进程在页表被改写时访问到不一致状态。minix-rs 的 VM 是单线程事件循环（无 SMP 竞争），此机制无对应（执行模型差异，AGENTS.md 已述）。
 
 **调用场景**（WMF 组合实证）：
 
@@ -386,10 +386,10 @@ resume_exit:
 | 建立映射（map_writept） | region.c:280 | `PTF_PRESENT\|PTF_USER\|rw` | `WMF_OVERWRITE` |
 | 验证映射（map_pf） | region.c:153 | 同上 | `WMF_VERIFY` |
 | 取消映射（map_unmap_region） | region.c:1139 | 0 | `WMF_OVERWRITE` |
-| 修改权限（vm_lockpage） | pagetable.c:425 | 新 flags | `WMF_OVERWRITE\|WMF_WRITEFLAGSONLY` |
+| 修改权限（vm_lockpage） | minix3/minix/servers/vm/pagetable.c:vm_pagelock（L425，工具生成） | 新 flags | `WMF_OVERWRITE\|WMF_WRITEFLAGSONLY` |
 | 释放映射（munmap_vm_lin） | mmap.c:500 | 0 | `WMF_OVERWRITE\|WMF_FREE` |
 
-### 2.5 pt_checkrange：范围 Present + 可写检查（pagetable.c:943）
+### 2.5 pt_checkrange：范围 Present + 可写检查（minix3/minix/servers/vm/pagetable.c:pt_checkrange）
 
 ```c
 int pt_checkrange(pt_t *pt, vir_bytes v,  size_t bytes, int write)
@@ -424,7 +424,7 @@ int pt_checkrange(pt_t *pt, vir_bytes v,  size_t bytes, int write)
 - **全部调用点仅 region.c:746-751**（`map_pf` 内，`#if SANITYCHECKS`）——页错误处理写 PTE 后验证映射确实建立。这是调试期断言，不是生产路径。
 - 注意它对 bigpage PDE 的隐患：`pt->pt_pt[pde]` 对 bigpage 为 NULL，`pt->pt_pt[pde][pte]` 会解引用空指针——因此调用范围不能含大页（VM 的用户区映射全为 4KB 页，此前提成立）。
 
-### 2.6 pt_writable：单页可写查询（pagetable.c:761）
+### 2.6 pt_writable：单页可写查询（minix3/minix/servers/vm/pagetable.c:pt_writable）
 
 ```c
 int pt_writable(struct vmproc *vmp, vir_bytes v)
@@ -453,7 +453,7 @@ int pt_writable(struct vmproc *vmp, vir_bytes v)
 - **i386/ARM 反相**：`PTF_WRITE` 正逻辑 vs `ARCH_VM_PTE_RO` 反逻辑。minix-rs 的 `PageFlags::WRITABLE` 统一语义（反相在 `pte_to_flags` 翻译层）。
 - **唯一调用点 region.c:55**（SANITYCHECKS 调试输出打印 R/W）——与 `pt_checkrange` 一样是诊断语义。
 
-### 2.7 pt_map_in_range：范围复制映射值（pagetable.c:631）
+### 2.7 pt_map_in_range：范围复制映射值（minix3/minix/servers/vm/pagetable.c:pt_map_in_range）
 
 ```c
 int pt_map_in_range(struct vmproc *src_vmp, struct vmproc *dst_vmp,
@@ -492,7 +492,7 @@ int pt_map_in_range(struct vmproc *src_vmp, struct vmproc *dst_vmp,
 - **调用场景**：仅 LU `swap_proc_dyn_data`（utility.c:326/331）——转移 VM 的堆/mmap 区域（`VM_OWN_HEAPBASE`→`VM_OWN_MMAPTOP`）和栈区域（`VM_STACKTOP`→`VM_DATATOP`）的映射到新 VM 实例。
 - 循环的 `if(viraddr == VM_DATATOP) break;` 是防溢出保护（`viraddr += VM_PAGE_SIZE` 到 `VM_DATATOP` 后停止）。
 
-### 2.8 pt_ptmap：转移页表结构映射（pagetable.c:685）
+### 2.8 pt_ptmap：转移页表结构映射（minix3/minix/servers/vm/pagetable.c:pt_ptmap）
 
 ```c
 int pt_ptmap(struct vmproc *src_vmp, struct vmproc *dst_vmp)
@@ -531,7 +531,7 @@ int pt_ptmap(struct vmproc *src_vmp, struct vmproc *dst_vmp)
 - **调用场景**：仅 LU 流程 rs.c:263/267——`pt_ptmap(this_vm, new_vm)`（新 VM 看到旧 VM 的页表结构）+ `pt_ptmap(new_vm, new_vm)`（新 VM 自映射，让新 VM 看到自己的页表结构）。前置是 rs.c:251/256 的 `pt_ptalloc_in_range`（为整个地址空间预分配页表）。
 - **minix-rs 无直接对应**：新 VM 实例经 `kernel_phys_to_virt(cr3_phys)` 直接读旧 VM 的页表页，无需"结构映射窗口"（§3.5 D5，A-1 结构性消除）。
 
-### 2.9 pt_clearmapcache：清内核 TLB 缓存（pagetable.c:751）
+### 2.9 pt_clearmapcache：清内核 TLB 缓存（minix3/minix/servers/vm/pagetable.c:pt_clearmapcache）
 
 ```c
 void pt_clearmapcache(void)
@@ -543,12 +543,12 @@ void pt_clearmapcache(void)
 
 **语义要点**：
 - 通知内核：当前页表（VM 自身的）的映射缓存要清除，确保内核在用当前页表建立新映射前使 TLB 失效。
-- 调用点：main.c:212（VM 自身页表建立后）、main.c:719（LU 新旧 VM 槽位重新绑定后）、main.c:749（LU 流程）、pagefaults.c:153（页错误处理后）。
+- 调用点：main.c:212（VM 自身页表建立后）、main.c:719（LU 新旧 VM 槽位重新绑定后）、main.c:749（LU 流程）、minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L153，工具生成）（页错误处理后）。
 - 语义前提是 §1.8 的架构差异：C 的"批量改 PTE + 事后全局清缓存"协议；minix-rs 以逐条 invlpg 结构性替代。
 
 ### 2.10 pt_new / pt_free / pt_bind：生命周期三件套
 
-**pt_new（pagetable.c:990）**：
+**pt_new（minix3/minix/servers/vm/pagetable.c:pt_new）**：
 
 ```c
 int pt_new(pt_t *pt)
@@ -574,9 +574,9 @@ int pt_new(pt_t *pt)
 }
 ```
 
-要点：分配页目录（`VMP_PAGEDIR`，页对齐）+ 清零 + `pt_mapkernel`。**"不重复分配"**（pagetable.c:994-997 注释）是 C 的关键不变量——页目录生命周期绑定进程槽位。
+要点：分配页目录（`VMP_PAGEDIR`，页对齐）+ 清零 + `pt_mapkernel`。**"不重复分配"**（minix3/minix/servers/vm/pagetable.c:pt_new（L994，工具生成） 注释）是 C 的关键不变量——页目录生命周期绑定进程槽位。
 
-**pt_free（pagetable.c:1427）**：
+**pt_free（minix3/minix/servers/vm/pagetable.c:pt_free）**：
 
 ```c
 void pt_free(pt_t *pt)
@@ -589,7 +589,7 @@ void pt_free(pt_t *pt)
 
 要点：只释放二级页表（`vm_freepages`，06 范围）；**不释放页目录、不释放用户物理页框**——页目录与槽位复用，用户页归 region/phys_block 生命周期。
 
-**pt_bind（pagetable.c:1358）** 五步（§1.2 已述结构）：
+**pt_bind（minix3/minix/servers/vm/pagetable.c:pt_bind）** 五步（§1.2 已述结构）：
 
 ```c
 	/* 1. 定位登记册槽位 */
@@ -622,11 +622,11 @@ void pt_free(pt_t *pt)
 
 ### 2.11 pt_mapkernel / freepde / pt_allocate_kernel_mapped_pagetables：内核协作三件套
 
-**freepde（pagetable.c:1028）**：从 `kernel_boot_info.freepde_start` 递增分配 PDE 编号——这些编号是内核预留的页目录槽位，供 `pagedir_mappings` 登记册 PDE 使用。
+**freepde（minix3/minix/servers/vm/pagetable.c:freepde）**：从 `kernel_boot_info.freepde_start` 递增分配 PDE 编号——这些编号是内核预留的页目录槽位，供 `pagedir_mappings` 登记册 PDE 使用。
 
-**pt_allocate_kernel_mapped_pagetables（pagetable.c:1035）**：初始化 `pagedir_mappings[MAX_PAGEDIR_PDES]`（pagetable.c:37-43）——为每个登记册条目分配 PDE 编号（`freepde`）+ 分配一个 `page_directories` 页表（记录所有进程页目录物理地址）+ 计算该页表在页目录中的 PDE 值（`pdm->val`）。这是"内核访问任意进程页目录"登记册的基础设施。
+**pt_allocate_kernel_mapped_pagetables（minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables）**：初始化 `pagedir_mappings[MAX_PAGEDIR_PDES]`（minix3/minix/servers/vm/pagetable.c:MAX_PAGEDIR_PDES）——为每个登记册条目分配 PDE 编号（`freepde`）+ 分配一个 `page_directories` 页表（记录所有进程页目录物理地址）+ 计算该页表在页目录中的 PDE 值（`pdm->val`）。这是"内核访问任意进程页目录"登记册的基础设施。
 
-**pt_mapkernel（pagetable.c:1442）** 三段映射：
+**pt_mapkernel（minix3/minix/servers/vm/pagetable.c:pt_mapkernel）** 三段映射：
 
 ```c
 int pt_mapkernel(pt_t *pt)
@@ -661,9 +661,9 @@ int pt_mapkernel(pt_t *pt)
 }
 ```
 
-要点：内核代码段是**大页 PDE 直写**（无二级页表），登记册段把 5 个 PDE 拷入，特殊映射段经 `pt_writemap` 逐条。`kern_start_pde` 在 pt_init 阶段 1 设置（pagetable.c:1114，`kernel_boot_info.vir_kern_start / ARCH_BIG_PAGE_SIZE`）。
+要点：内核代码段是**大页 PDE 直写**（无二级页表），登记册段把 5 个 PDE 拷入，特殊映射段经 `pt_writemap` 逐条。`kern_start_pde` 在 pt_init 阶段 1 设置（minix3/minix/servers/vm/pagetable.c:pt_init（L1114，工具生成），`kernel_boot_info.vir_kern_start / ARCH_BIG_PAGE_SIZE`）。
 
-### 2.12 pt_copy：全量复制用户区 PTE（pagetable.c:1069）
+### 2.12 pt_copy：全量复制用户区 PTE（minix3/minix/servers/vm/pagetable.c:pt_copy）
 
 ```c
 static void pt_copy(pt_t *dst, pt_t *src)
@@ -682,7 +682,7 @@ static void pt_copy(pt_t *dst, pt_t *src)
 
 **语义要点**：
 - 遍历用户区（`pde < kern_start_pde`），对每个已存在的 PDE：`pt_ptalloc` 分配目标二级页表 + `memcpy` 整页表（4KB，1024 个 u32 PTE）。
-- **仅 pt_init 阶段 6 使用**（07 §2.5 已述）：把 VM 自身页表从静态 BSS 页版本重建为纯动态版本（`pt_new(&newpt_dyn); pt_copy(&newpt_dyn, newpt); memcpy(newpt, &newpt_dyn, ...)`，pagetable.c:1324-1343）。
+- **仅 pt_init 阶段 6 使用**（07 §2.5 已述）：把 VM 自身页表从静态 BSS 页版本重建为纯动态版本（`pt_new(&newpt_dyn); pt_copy(&newpt_dyn, newpt); memcpy(newpt, &newpt_dyn, ...)`，minix3/minix/servers/vm/pagetable.c:pt_init（L1324，工具生成））。
 - 与 `pt_map_in_range` 的关系：全量版本。`memcpy` 批量是 32 位优化（PTE=u32、页表恰一页）；64 位下 PTE=u64、页表结构不同，此优化不成立（§3.5 D5）。
 
 ### 2.13 消费方全景
@@ -729,7 +729,7 @@ C 的 `pt_writemap` 用一个函数承载四种写模式（§2.4）；minix-rs �
 
 C 的"写映射前先手动预分配二级页表"在 minix-rs 中被**内化进 arch 实现**：
 
-- `walk_alloc`（os/arch/src/x86_64/paging.rs:277）：沿 PML4→PDPT→PD→PT 逐级检查，遇到不存在的中间表就分配一页并写入上层表项（`alloc_pt_page`，06 的 `vm_pt_alloc` 供给物理页）。`map` 调用它获得 leaf PTE 地址后写入。
+- `walk_alloc`（os/arch/src/x86_64/paging.rs:fn walk_read（L277，工具生成））：沿 PML4→PDPT→PD→PT 逐级检查，遇到不存在的中间表就分配一页并写入上层表项（`alloc_pt_page`，06 的 `vm_pt_alloc` 供给物理页）。`map` 调用它获得 leaf PTE 地址后写入。
 - **VM 层无"预分配页表"API**——`pt_ptalloc_in_range` 没有直接对应。调用方不再需要知道"这次写映射可能分配几个页表页"。
 
 **递归副作用消失的原因**：C 的递归前提是"VM 分配物理页后必须先映射进自己的地址空间才能访问"（`vm_allocpage` → `vm_mappages` → `pt_writemap`）。Direct Map 下物理页经 `phys_to_ptr_dm`（x86_64/paging.rs:120）直接可写，分配页表页与写页表页之间没有"先映射"步骤——`walk_alloc` 分配后直接写 DM 地址，不存在"内层已分配、外层需检查"的竞争。
@@ -746,11 +746,11 @@ C 的"写映射前先手动预分配二级页表"在 minix-rs 中被**内化进 
 | `pt_bind` | 无独立函数 | — | 第 5 步（内核通知）由 VMCTL SetAddrSpace 通道承接；步骤 1-4 登记册簿记被 Direct Map 结构性消除（D8） |
 | `pt_free` | `free_page_table` | :411 | `unsafe destroy` + 重置 `vm_pt_initialized` |
 
-**`pt_new` 的"页目录不重复分配"语义消失**：C 中页目录生命周期绑定进程槽位（§2.10）；Rust 的 `VmProcInner.vm_pt` 是 `MaybeUninit<PageTable>` + `vm_pt_initialized` 布尔状态机（vmproc.rs:35，02 文档）——`init_page_table` 每次调用都重建（先 `free_page_table` 再 init，如 exit.rs:189-190）。"不重复分配"是 32 位下避免失效 `page_directories` 映射的性能/正确性权衡，Direct Map 下内核不再持有指向页目录的映射（D8），这个约束失去存在理由。
+**`pt_new` 的"页目录不重复分配"语义消失**：C 中页目录生命周期绑定进程槽位（§2.10）；Rust 的 `VmProcInner.vm_pt` 是 `MaybeUninit<PageTable>` + `vm_pt_initialized` 布尔状态机（os/servers/vm/src/vmproc/vmproc.rs:struct VmProc（L35，工具生成），02 文档）——`init_page_table` 每次调用都重建（先 `free_page_table` 再 init，如 exit.rs:189-190）。"不重复分配"是 32 位下避免失效 `page_directories` 映射的性能/正确性权衡，Direct Map 下内核不再持有指向页目录的映射（D8），这个约束失去存在理由。
 
 **`pt_bind` 的归属（D7 裁决：本专项不保留任何 bind API）**：arch 层曾有 `bind_to_process` stub（仅参数校验——arch crate 依赖方向 kernel → arch，无法调用内核 IPC），VM 侧曾有 `bind_page_table` wrapper 转调它。二者是已验证的 no-op，已整体删除（死代码删除，重锚定见 07-pagetable-struct.md §4.2）。绑定的真实语义由两条既有通道分别承接：
 
-- **普通进程**（VM 为 fork/exec 的目标进程建的页表）：`VmCtlParam::SetAddrSpace`（os/kernel/src/syscall.rs:2003）——VM 把建好的根 PA 写进目标进程 `p_seg.phys_root`，对应 `pt_bind` 第 5 步的 `sys_vmctl_set_addrspace`；
+- **普通进程**（VM 为 fork/exec 的目标进程建的页表）：`VmCtlParam::SetAddrSpace`（os/kernel/src/syscall.rs:const RB_POWERDOWN（L2003，工具生成））——VM 把建好的根 PA 写进目标进程 `p_seg.phys_root`，对应 `pt_bind` 第 5 步的 `sys_vmctl_set_addrspace`；
 - **VM 自身**：不经 SetAddrSpace——bootstrap root 在 boot 期已登记为 VM 的根（`p_seg.phys_root = root_phys`，kernel boot 路径），VM 启动时以 A1 adoption 包装同一根（07 §3.4），之后永不换根。
 
 C 的 `pt_bind` 五步里，步骤 1-4（写 `pagedir_mappings` 登记册 + 计算内核访问 VA）是 32 位登记册机制（D8 消除），步骤 5（通知内核换根）由 SetAddrSpace 通道原样承接——**"绑定"没有消失，是它的簿记外壳消失了**。
@@ -759,7 +759,7 @@ C 的 `pt_bind` 五步里，步骤 1-4（写 `pagedir_mappings` 登记册 + 计�
 
 ### 3.4 D4: `pt_mapkernel` → `map_kernel`（三段 → 两段）
 
-`map_kernel`（os/arch/src/arch/paging.rs:494）执行两段映射：
+`map_kernel`（os/arch/src/arch/paging.rs:fn map_kernel）执行两段映射：
 
 | 段 | C `pt_mapkernel` | Rust `map_kernel` |
 |----|-----------------|-------------------|
@@ -778,7 +778,7 @@ C 的 `pt_bind` 五步里，步骤 1-4（写 `pagedir_mappings` 登记册 + 计�
 
 ### 3.5 D5: `pt_copy`/`pt_map_in_range`/`pt_ptmap` → `clone_range` + 消费方现状
 
-**`clone_range`**（os/arch/src/arch/paging.rs:453）是三个 C 函数中前两个的统一：
+**`clone_range`**（os/arch/src/arch/paging.rs:fn clone_range）是三个 C 函数中前两个的统一：
 
 ```rust
 pub fn clone_range<P: Paging>(
@@ -800,7 +800,7 @@ pub fn clone_range<P: Paging>(
 
 **`pt_ptmap` 无直接对应**（A-1 结构性消除，不是缺口）：LU（25 文档）即使实现，新 VM 实例也经 `kernel_phys_to_virt` 直接读旧 VM 的页表页（页目录/二级页表都是物理页，DM 高半窗口可见）。C 需要 `pt_ptmap` 是因为新 VM 必须"把旧 VM 的页表结构映射进自己的地址空间"才能访问——Direct Map 下这个映射天然存在。
 
-**消费方现状（诚实标注）**：当前 fork 路径**不消费 `clone_range`**——`do_fork`（fork.rs:186）用 `write_page_table_mappings`（vmproc_handle.rs:505）逐 region 逐页 `pt.map`。对照 C：`map_proc_copy` 逐 region 写 PTE（region.c:280，WMF_OVERWRITE）。Rust 的严格 map 在"子进程全新空表"上语义等价（空表无覆盖需求），且比 C 更早发现重复映射 bug。`clone_range` 的预期消费方是 LU（25 承接）——它服务的场景（两个已存在的页表之间复制）在 fork 中不出现（fork 是"新表 ← 老表"，且映射写由 region 元数据驱动而非 PTE 复制驱动）。**测试契约**：`clone_range` 当前 0 测试，本文档要求补齐（§5.1）。
+**消费方现状（诚实标注）**：当前 fork 路径**不消费 `clone_range`**——`do_fork`（fork.rs:186）用 `write_page_table_mappings`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn setup_cow_for_all_regions（L505，工具生成））逐 region 逐页 `pt.map`。对照 C：`map_proc_copy` 逐 region 写 PTE（region.c:280，WMF_OVERWRITE）。Rust 的严格 map 在"子进程全新空表"上语义等价（空表无覆盖需求），且比 C 更早发现重复映射 bug。`clone_range` 的预期消费方是 LU（25 承接）——它服务的场景（两个已存在的页表之间复制）在 fork 中不出现（fork 是"新表 ← 老表"，且映射写由 region 元数据驱动而非 PTE 复制驱动）。**测试契约**：`clone_range` 当前 0 测试，本文档要求补齐（§5.1）。
 
 ### 3.6 D6: `pt_clearmapcache` → 逐条 invlpg（结构性消除）
 
@@ -823,7 +823,7 @@ pub fn clone_range<P: Paging>(
 
 **语义改进**：C 的 `pt_checkrange` 对 bigpage PDE 会空指针崩溃（`pt->pt_pt[pde]` 为 NULL）；Rust `query` 正确处理 huge page（`WalkResult::Huge1G`/`Huge2M`，x86_64/paging.rs:510-518）。这是"移除调试 API"之外的附带收益——新实现不存在 C 的未定义行为。
 
-**sanity 延后**：VM 侧 sanity 模块（sanity.rs:20-26 注释）的 `map_sanitycheck_pt`（验证页表映射与 region 元数据一致）延后，预期用 `query()` 循环实现（07-P2-9 承接）。当前 `verify_refcounts`（sanity.rs:39）只验证物理页引用计数，不查页表——页表层验证的消费方尚未落地，诚实标注为预期工作。
+**sanity 延后**：VM 侧 sanity 模块（sanity.rs:20-26 注释）的 `map_sanitycheck_pt`（验证页表映射与 region 元数据一致）延后，预期用 `query()` 循环实现（07-P2-9 承接）。当前 `verify_refcounts`（os/servers/vm/src/sanity.rs:struct RefcountMismatch（L39，工具生成））只验证物理页引用计数，不查页表——页表层验证的消费方尚未落地，诚实标注为预期工作。
 
 ### 3.8 D8: `pagedir_mappings`/`freepde`/`kern_mappings` → 结构性消除
 
@@ -831,7 +831,7 @@ pub fn clone_range<P: Paging>(
 
 | C 机制 | 用途 | minix-rs 替代 |
 |--------|------|--------------|
-| `pagedir_mappings[MAX_PAGEDIR_PDES]`（pagetable.c:37-43） | 记录"哪些进程页目录被映射到内核地址空间" | `kernel_phys_to_virt(root_paddr)` 直接访问（DM 高半窗口） |
+| `pagedir_mappings[MAX_PAGEDIR_PDES]`（minix3/minix/servers/vm/pagetable.c:MAX_PAGEDIR_PDES） | 记录"哪些进程页目录被映射到内核地址空间" | `kernel_phys_to_virt(root_paddr)` 直接访问（DM 高半窗口） |
 | `freepde`（:1028） | 从内核预留槽位分配登记册 PDE 编号 | 无（不需要预留槽位） |
 | `pt_allocate_kernel_mapped_pagetables`（:1035） | 初始化登记册基础设施 | 无 |
 | `pt_bind` 步骤 1-4 | 写登记册 + 计算内核访问 VA | 无（登记册簿记整体消除；步骤 5 由 SetAddrSpace 通道承接，§3.3） |
@@ -844,7 +844,7 @@ pub fn clone_range<P: Paging>(
 | # | C 行为 | Rust 行为 | 类型 |
 |---|--------|----------|------|
 | 1 | `pt_writemap` 单一函数 + WMF 标志 | `map`/`remap`/`unmap`/`update_flags` 四方法 | 设计分治（D1） |
-| 2 | `pt_bind` 5 步（登记册 + 通知内核） | 登记册簿记消除；步骤 5 由 VMCTL SetAddrSpace 通道承接（os/kernel/src/syscall.rs:2003） | 结构消除 + 通道承接（D3/D8） |
+| 2 | `pt_bind` 5 步（登记册 + 通知内核） | 登记册簿记消除；步骤 5 由 VMCTL SetAddrSpace 通道承接（os/kernel/src/syscall.rs:const RB_POWERDOWN（L2003，工具生成）） | 结构消除 + 通道承接（D3/D8） |
 | 3 | `pt_new` 页目录与槽位绑定复用 | `init_page_table` 每次重建（状态机） | 设计差异（D3） |
 | 4 | `pt_mapkernel` 三段（代码/登记册/特殊映射） | `map_kernel` 两段（代码/direct map） | 结构消除（D4） |
 | 5 | `pt_copy`/`pt_map_in_range` memcpy 批量 | `clone_range` query+map 逐页 | 设计差异（D5，消费方 LU 25） |
@@ -864,7 +864,7 @@ pub fn clone_range<P: Paging>(
 
 ### 4.1 `Paging` trait 操作面：map/remap/unmap/update_flags/query
 
-**trait 方法族**（os/arch/src/arch/paging.rs:152-427，07 D4 已述结构）：
+**trait 方法族**（os/arch/src/arch/paging.rs:trait Paging，07 D4 已述结构）：
 
 | 方法 | 行号 | 语义 | 错误 |
 |------|------|------|------|
@@ -921,9 +921,9 @@ unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64) {
 **`map_kernel`**（paging.rs:494，§3.4 已述）——两段映射（内核代码/数据段 + direct map）。注意实现细节：当前 `map_kernel` 对内核代码/数据段都用 `kernel_read_write()`（rw 而非 rx）——C 的 i386 用 `ARCH_VM_PTE_RW` 大页（也是 rw）。W^X 分离（代码段只读可执行）是未来改进点，接口签名（`kernel_text_pages`/`kernel_data_pages` 分开）已为此预留。
 
 **`pt_init` 没有单函数对应物，其操作面语义由三个通道分别落地**：
-- **覆盖建立**（kernel boot 期）：`establish_boot_dm`（os/kernel/src/dm_coverage.rs:66）在 bootstrap root 上建立 kernel DM + VM DM 双窗口——候选两源并集、资格过滤、资源包含性粒度选择，全部细节 07 §4.4 已述；
-- **地址空间接管**（VM 启动期）：`VmSelfPageTable::adopt`（vm_self_map.rs:95）经 `Paging::adopt_active_root`（paging.rs:229）包装 handoff 根——A1 adoption，无拷贝；
-- **根登记**（fork/exec 运行期）：`VmCtlParam::SetAddrSpace`（os/kernel/src/syscall.rs:2003）承接 `pt_bind` 第 5 步。
+- **覆盖建立**（kernel boot 期）：`establish_boot_dm`（os/kernel/src/dm_coverage.rs:fn establish_boot_dm）在 bootstrap root 上建立 kernel DM + VM DM 双窗口——候选两源并集、资格过滤、资源包含性粒度选择，全部细节 07 §4.4 已述；
+- **地址空间接管**（VM 启动期）：`VmSelfPageTable::adopt`（os/servers/vm/src/pagetable/vm_self_map.rs:fn adopt）经 `Paging::adopt_active_root`（paging.rs:229）包装 handoff 根——A1 adoption，无拷贝；
+- **根登记**（fork/exec 运行期）：`VmCtlParam::SetAddrSpace`（os/kernel/src/syscall.rs:const RB_POWERDOWN（L2003，工具生成））承接 `pt_bind` 第 5 步。
 
 C `pt_init` 的"继承 + 登记 + 绑定"三段在 minix-rs 里不再是同一时间点的三个连续步骤：覆盖在 kernel boot 就绪，接管在 VM 启动，登记只在根变化时发生（VM 自身根永不变化）。
 
@@ -974,7 +974,7 @@ pub(crate) unsafe fn write_page_table_mappings(
 
 ### 4.5 消费链：fork / exit / munmap / heap_arena
 
-**fork**（os/servers/vm/src/fork.rs:183 `do_fork`）：
+**fork**（os/servers/vm/src/fork.rs:fn free_forked_regions（L183，工具生成） `do_fork`）：
 
 ```
 child.init_page_table()          (pt_new + map_kernel 对应)
@@ -987,7 +987,7 @@ child.write_page_table_mappings  (逐 region 写 PTE，§4.4)
 
 `write_page_table_mappings` 成功后即调用 `sys_fork`——**sys_fork 之前是最后一个可恢复点**：之后内核已提交子进程，回滚不再可能。C 的 `pt_bind` 步骤（fork.c:94）在 Rust 中由 `sys_fork` 的内核侧地址空间登记承担（A1/SetAddrSpace 语义，§3.3）——不存在独立的 bind 步骤。
 
-**exit / VMPPARAM_CLEAR**（os/servers/vm/src/exit.rs:164 `handle_procctl_clear`）：
+**exit / VMPPARAM_CLEAR**（os/servers/vm/src/exit.rs:fn free_process_phys（L164，工具生成） `handle_procctl_clear`）：
 
 ```
 free_process_phys → regions.clear() → free_page_table() → init_page_table()
@@ -996,24 +996,24 @@ free_process_phys → regions.clear() → free_page_table() → init_page_table(
 
 C 序列以 `pt_bind` 收尾（exit.c:137）——其内容是 `sys_vmctl_set_addrspace` 根通知加 i386 登记册簿记；Rust 版没有独立 bind 步骤，内核侧重登记由 VMCTL SetAddrSpace 通道承载（exit.rs:193-197 注释，§3.3）。
 
-**munmap**（os/servers/vm/src/munmap.rs:111）：`vm_self_unmappages(addr, pages)`——VM 自身线性映射批量解映射（对应 `munmap_vm_lin` 的 `pt_writemap(MAP_NONE, WMF_OVERWRITE|WMF_FREE)`，21 文档）。
+**munmap**（os/servers/vm/src/munmap.rs:fn handle_munmap（L111，工具生成））：`vm_self_unmappages(addr, pages)`——VM 自身线性映射批量解映射（对应 `munmap_vm_lin` 的 `pt_writemap(MAP_NONE, WMF_OVERWRITE|WMF_FREE)`，21 文档）。
 
-**heap_arena**（os/servers/vm/src/heap_arena.rs:113/118/161）：`vm_self_mappages`（映射堆页）+ `vm_self_unmap`（回滚/收缩解映射，返回物理地址供释放）——09 文档详述。
+**heap_arena**（os/servers/vm/src/heap_arena.rs:fn grow（L113，工具生成）/118/161）：`vm_self_mappages`（映射堆页）+ `vm_self_unmap`（回滚/收缩解映射，返回物理地址供释放）——09 文档详述。
 
 ### 4.6 消费方接线表
 
 | Rust 调用点 | 位置 | C 对应 | 说明 |
 |------------|------|--------|------|
-| `init_page_table` | vmproc_handle.rs:351 | `pt_new` + `pt_mapkernel`（exit.c:135、fork.c:70、main.c:352） | 生命周期创建 |
-| `free_page_table` | vmproc_handle.rs:411 | `pt_free`（exit.c:36、fork.c:78） | 生命周期释放 |
-| `write_page_table_mappings` | vmproc_handle.rs:515 | `map_proc_copy` 的 PTE 写入（region.c:280） | fork 映射复制（18 文档） |
-| `vm_self_mappages`/`vm_self_unmap` | vm_self_map.rs:203/219 | `pt_writemap`（vm_mappages 路径） | HeapArena 堆映射（09） |
-| `vm_self_unmappages` | vm_self_map.rs:242 | `pt_writemap(MAP_NONE)`（mmap.c:500） | munmap（21） |
+| `init_page_table` | os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_page_table（L351，工具生成） | `pt_new` + `pt_mapkernel`（exit.c:135、fork.c:70、main.c:352） | 生命周期创建 |
+| `free_page_table` | os/servers/vm/src/vmproc/vmproc_handle.rs:fn free_page_table（L411，工具生成） | `pt_free`（exit.c:36、fork.c:78） | 生命周期释放 |
+| `write_page_table_mappings` | os/servers/vm/src/vmproc/vmproc_handle.rs:fn setup_cow_for_all_regions（L515，工具生成） | `map_proc_copy` 的 PTE 写入（region.c:280） | fork 映射复制（18 文档） |
+| `vm_self_mappages`/`vm_self_unmap` | os/servers/vm/src/pagetable/vm_self_map.rs:fn vm_self_mappages/219 | `pt_writemap`（vm_mappages 路径） | HeapArena 堆映射（09） |
+| `vm_self_unmappages` | os/servers/vm/src/pagetable/vm_self_map.rs:fn vm_self_unmappages | `pt_writemap(MAP_NONE)`（mmap.c:500） | munmap（21） |
 | `map`/`remap`/`unmap`/`update_flags`/`query` | paging.rs trait | `pt_writemap`/`pt_checkrange`/`pt_writable` | 硬件机制层（未来 region 路径消费） |
 | `clone_range` | paging.rs:453 | `pt_copy`/`pt_map_in_range` | 跨表复制（LU 25 消费，当前无消费方） |
 | `map_kernel` | paging.rs:494 | `pt_mapkernel` | 每进程内核映射（init_page_table 调用） |
-| `VmSelfPageTable::adopt` | vm_self_map.rs:95 | `pt_init` 的接管语义（07 §3.4） | A1 adoption：VM 包装 bootstrap root，无拷贝 |
-| `VmCtlParam::SetAddrSpace` | syscall.rs:2003（kernel） | `pt_bind` step 5（pagetable.c:1421） | 内核侧根登记（VM 为其它进程换根） |
+| `VmSelfPageTable::adopt` | os/servers/vm/src/pagetable/vm_self_map.rs:fn adopt | `pt_init` 的接管语义（07 §3.4） | A1 adoption：VM 包装 bootstrap root，无拷贝 |
+| `VmCtlParam::SetAddrSpace` | syscall.rs:2003（kernel） | `pt_bind` step 5（minix3/minix/servers/vm/pagetable.c:pt_bind（L1421，工具生成）） | 内核侧根登记（VM 为其它进程换根） |
 | `establish_boot_dm` | kernel/src/dm_coverage.rs:66 | `pt_init` 的覆盖语义 | kernel boot 期双 DM 窗口建立（07 §4.4） |
 
 ---

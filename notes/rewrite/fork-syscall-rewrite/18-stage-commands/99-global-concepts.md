@@ -26,7 +26,7 @@
 minix-rs 沿用同一方向，C 库的位置由两样东西顶上：
 
 - Rust 的 `core` 与 `alloc`：语言自带，替代 `printf`、`malloc` 这类纯用户态实现（[ARCH] A-2 已决定不移植 libc，见 `../14-stage-runtime/plan.md:157`）。
-- `minix-sys` 的顶层函数：系统调用的调用封装。`os/libs/minix-sys/src/lib.rs:148-175` 是 `fork`、`exec`、`exit`、`waitpid`、`kill`；`:191-231` 是 `open`、`close`、`read`、`write`、`mmap`。
+- `minix-sys` 的顶层函数：系统调用的调用封装。`os/libs/minix-sys/src/lib.rs:fn fork（L148，工具生成）` 是 `fork`、`exec`、`exit`、`waitpid`、`kill`；`:191-231` 是 `open`、`close`、`read`、`write`、`mmap`。
 
 `minix-rt` 负责更早的环节：入口、参数栈交接、退出（`os/libs/minix-rt/src/crt0.rs`、`handoff.rs`）。
 
@@ -38,7 +38,7 @@ minix-rs 沿用同一方向，C 库的位置由两样东西顶上：
 | `minix-sys` 顶层 | `minix-sys::ipc` 的 `send`/`receive`/`sendrec` | 假设服务器的内部实现 |
 | `minix-sys::ipc` 与 `minix-types` | 内核调用入口与消息布局 | 业务语义 |
 
-需要的能力如果在 `minix-sys` 顶层没有对应函数，正确做法是在运行时阶段补一个封装，而不是在命令里直接发消息。echo 就是这种情况的正面样本：它的二进制（`os/commands/bin/fileops/src/bin/echo.rs`）只调用 `write`（`os/libs/minix-sys/src/lib.rs:217`）与 exit，不需要知道 VFS 的消息编号。
+需要的能力如果在 `minix-sys` 顶层没有对应函数，正确做法是在运行时阶段补一个封装，而不是在命令里直接发消息。echo 就是这种情况的正面样本：它的二进制（`os/commands/bin/fileops/src/bin/echo.rs`）只调用 `write`（`os/libs/minix-sys/src/lib.rs:fn write（L217，工具生成）`）与 exit，不需要知道 VFS 的消息编号。
 
 plan.md 中多处用 "stdio" 指代命令的输入输出通道（`plan.md:206`、`:394`、`:405`、`:407`）。由于 [ARCH] A-2 已决定不移植 libc 的 stdio（`../14-stage-runtime/plan.md:157`、`:273`），这些句子需要落到具体函数上，否则读者会等待一个不会出现的库。准确的含义是：
 

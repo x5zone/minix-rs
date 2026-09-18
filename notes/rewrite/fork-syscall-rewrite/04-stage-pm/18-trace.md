@@ -14,7 +14,7 @@
 
 > **本章不讲什么**：
 > - 内核 `sys_trace` 实现（`T_STOP/GET/SET` 寄存器/内存拷贝）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel` 的 `kernel/system/do_trace.c`
-> - `tracer_died` 的 `TRACER_DEATH` 消费（`TRACED` 转 `Zombie→ToldParent` 的 `forkexit.c:760-795`）—— `09-pm-exit.md`
+> - `tracer_died` 的 `TRACER_DEATH` 消费（`TRACED` 转 `Zombie→ToldParent` 的 `minix3/minix/servers/pm/forkexit.c:tracer_died`）—— `09-pm-exit.md`
 > - `wait4` 的 `tracer` 分支 `tell_tracer`（`W_STOPCODE` 的 `0x7f` 截断与 `wait_test` 的 `TRACE_STOPPED` 分支）—— `10-pm-wait.md` 已覆盖
 >
 > 本章只回答一个问题：**PM 如何为 `ptrace` 的 16 命令在 `T_OK/ATTACH` 的双入口与 `TRACE_STOPPED` 独立暂停与 `mp_sigtrace` 位图缓冲的 `check_sig` 全量重放与 `W_STOPCODE` 的 `wait4` 通知中建立 `Traced` 状态机**。
@@ -25,7 +25,7 @@
 
 ### 1.2 为什么 `TRACE_STOPPED` 独立于 `PROC_STOPPED`：调试暂停 vs `VFS` 异步暂停
 
-`TRACE_STOPPED 0x80`（`mproc.h:93`）的“调试器暂停”与 `PROC_STOPPED 0x08`（`mproc.h:89`）的“`VFS` 异步暂停”双轨（`trace.rs:TraceState { stopped, exit_pending }` 双 bool）：`trace_stop` 置 `TRACE_STOPPED`（`trace.c:266`）后 `wait_test` 的 `W_STOPCODE` 通知 `tracer` 的 `wait4`（`trace.c:273` `W_STOPCODE(signo)` 的 `0x7f` 截断，`wait.h: W_STOPCODE`），而 `PROC_STOPPED` 的 `restart_sigs` 重检 `pending`（`13` 的 `check_pending` 的 `VFS→break`）不经 `W_STOPCODE`——`TRACE_STOPPED` 的 `wait4` 通知经 `wait` 的 `tell_tracer` 的 `W_STOPCODE` 的 `0x7f` 截断与 `PROC_STOPPED` 的 `restart_sigs` 的 `pending` 重检双轨分叉。
+`TRACE_STOPPED 0x80`（`minix3/minix/servers/pm/mproc.h:TRACE_STOPPED`）的“调试器暂停”与 `PROC_STOPPED 0x08`（`minix3/minix/servers/pm/mproc.h:PROC_STOPPED`）的“`VFS` 异步暂停”双轨（`trace.rs:TraceState { stopped, exit_pending }` 双 bool）：`trace_stop` 置 `TRACE_STOPPED`（`trace.c:266`）后 `wait_test` 的 `W_STOPCODE` 通知 `tracer` 的 `wait4`（`trace.c:273` `W_STOPCODE(signo)` 的 `0x7f` 截断，`wait.h: W_STOPCODE`），而 `PROC_STOPPED` 的 `restart_sigs` 重检 `pending`（`13` 的 `check_pending` 的 `VFS→break`）不经 `W_STOPCODE`——`TRACE_STOPPED` 的 `wait4` 通知经 `wait` 的 `tell_tracer` 的 `W_STOPCODE` 的 `0x7f` 截断与 `PROC_STOPPED` 的 `restart_sigs` 的 `pending` 重检双轨分叉。
 
 ### 1.3 为什么 `mp_sigtrace` 位图是 `tracer` 的 `pending` 缓冲
 
@@ -176,7 +176,7 @@ int do_trace(void)
     return(OK); // 165
 ```
 
-`162` 行 `trace_flags=data` 的整字赋值：`TO_*` 选项位直接存（`TRACEFORK 0x1/ALTEXEC 0x2/NOEXEC 0x4`，`sys/ptrace.h:208-211`——本文件旧稿把 `TO_NOEXEC` 误写为 `0x1`，已勘误），`TRACE_EXIT` 状态位（`mproc.h:100` `0x8000`）在 Rust 归 `TraceState.exit_pending` 承载（`T_SETOPT` 整字赋值可触达它，`trace.rs` 的 T_SETOPT 臂同步该位，`A-12`）。
+`162` 行 `trace_flags=data` 的整字赋值：`TO_*` 选项位直接存（`TRACEFORK 0x1/ALTEXEC 0x2/NOEXEC 0x4`，`sys/ptrace.h:208-211`——本文件旧稿把 `TO_NOEXEC` 误写为 `0x1`，已勘误），`TRACE_EXIT` 状态位（`minix3/minix/servers/pm/mproc.h:TRACE_EXIT` `0x8000`）在 Rust 归 `TraceState.exit_pending` 承载（`T_SETOPT` 整字赋值可触达它，`trace.rs` 的 T_SETOPT 臂同步该位，`A-12`）。
 
 ### 2.9 `T_GETRANGE/T_SETRANGE`（`trace.c:167-188`）
 
@@ -278,7 +278,7 @@ void trace_stop(register struct mproc *rmp, int signo)
 
 ### 2.14 消息与类型（`sys/ptrace.h:226` `T_OK 0` 等 `T_*` + `sys/wait.h: W_STOPCODE` + `sys/signal.h: _NSIG 64`）
 
-- `T_OK 0` (`PT_TRACE_ME`) / `T_ATTACH 9` (`PT_ATTACH`) / `T_STOP` 等 `T_*`（`ptrace.h:226-234` `T_OK/ATTACH/STOP/READB_INS/WRITEB_INS/EXIT/SETOPT/GETRANGE/SETRANGE/DETACH/RESUME/STEP/SYSCALL`，`sys/ptrace.h:226` `T_OK 0` 等）、`W_STOPCODE(signo)` (`wait.h: W_STOPCODE` 的 `((signo)<<8 | 0x7f)` 截断，`trace.c:273`）、`_NSIG 64`（`sys/signal.h:45`）、`TRACE_STOPPED 0x80`（`mproc.h:93`）、`TO_TRACEFORK 0x1/ALTEXEC 0x2/NOEXEC 0x4`（`sys/ptrace.h:208-211`；本文件旧稿误写 `NOEXEC 0x1`，已勘误）。`T_*` 全集的数值以 `trace.rs::test_constants_match_c` 的全量断言为准（`T_STOP -1/T_STEP 104/T_DETACH 10` 等 19 项）。
+- `T_OK 0` (`PT_TRACE_ME`) / `T_ATTACH 9` (`PT_ATTACH`) / `T_STOP` 等 `T_*`（`ptrace.h:226-234` `T_OK/ATTACH/STOP/READB_INS/WRITEB_INS/EXIT/SETOPT/GETRANGE/SETRANGE/DETACH/RESUME/STEP/SYSCALL`，`sys/ptrace.h:226` `T_OK 0` 等）、`W_STOPCODE(signo)` (`wait.h: W_STOPCODE` 的 `((signo)<<8 | 0x7f)` 截断，`trace.c:273`）、`_NSIG 64`（`sys/signal.h:45`）、`TRACE_STOPPED 0x80`（`minix3/minix/servers/pm/mproc.h:TRACE_STOPPED`）、`TO_TRACEFORK 0x1/ALTEXEC 0x2/NOEXEC 0x4`（`sys/ptrace.h:208-211`；本文件旧稿误写 `NOEXEC 0x1`，已勘误）。`T_*` 全集的数值以 `trace.rs::test_constants_match_c` 的全量断言为准（`T_STOP -1/T_STEP 104/T_DETACH 10` 等 19 项）。
 
 ### 2.15 不变式即契约
 
@@ -453,13 +453,13 @@ pub struct PtraceRange { pub space: TsSpace, pub addr: VirBytes, pub ptr: VirByt
 
 `T_RESUME` 的 `check_pending` 为 `13` 的 `PROC_STOPPED` 双用途重检前置（`T_RESUME` 的 `~TRACE_STOPPED` 后 `check_pending` 的 `VFS→break` 前 `~TRACE_STOPPED` 的 `child` 上再投）。
 
-阅读顺序提示：若想先理解“`tracer_died` 的 `TRACER_DEATH` 消费”，下一站 `09-pm-exit.md` 的 `forkexit.c:760-795` 的 `TRACED` 转 `Zombie→ToldParent`；若想理解“`wait4` 的 `tracer` 分支 `tell_tracer`”，下一站 `10-pm-wait.md` 的 `wait_test` 的 `TRACE_STOPPED` 分支。
+阅读顺序提示：若想先理解“`tracer_died` 的 `TRACER_DEATH` 消费”，下一站 `09-pm-exit.md` 的 `minix3/minix/servers/pm/forkexit.c:tracer_died` 的 `TRACED` 转 `Zombie→ToldParent`；若想理解“`wait4` 的 `tracer` 分支 `tell_tracer`”，下一站 `10-pm-wait.md` 的 `wait_test` 的 `TRACE_STOPPED` 分支。
 
 ---
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/trace.c` 全文（`42-250` `do_trace` 等）、`minix3/minix/servers/pm/mproc.h:93`（`TRACE_STOPPED`）、`minix3/sys/sys/ptrace.h:226`（`T_OK 0` 等 `T_*`）、`minix3/sys/sys/wait.h: W_STOPCODE`（`0x7f` 截断）、`minix3/sys/sys/signal.h: _NSIG 64`
+- C 源（ground truth）：`minix3/minix/servers/pm/trace.c` 全文（`42-250` `do_trace` 等）、`minix3/minix/servers/pm/mproc.h:TRACE_STOPPED`（`TRACE_STOPPED`）、`minix3/sys/sys/ptrace.h:T_OK`（`T_OK 0` 等 `T_*`）、`minix3/sys/sys/wait.h: W_STOPCODE`（`0x7f` 截断）、`minix3/sys/sys/signal.h: _NSIG 64`
 - PM 阶段文档：03-mproc-table.md（`find_proc`/`pm_isokendpt`）、10-pm-wait.md（`wait_test` 的 `TRACE_STOPPED` 分支与 `W_STOPCODE`）、11-signal-core.md（`sig_proc` 的 `TRACE` 先行 `sigtrace` 位图）、09-pm-exit.md（`tracer_died` 的 `TRACE_EXIT` 消费）、02-mproc-struct.md（`TraceState` 三元）
 - 阶段内顺序：11 → 12 → 13 → **本章（18）** → 10（`wait4` 的 `tracer` 分支消费 `trace_stop` 的 `W_STOPCODE`）→ 09（`tracer_died` 的 `TRACE_EXIT` 消费）→ 02（`TraceState` 三元）
 - OS 模式参考：Linux `ptrace(PTRACE_ATTACH)` 的 `may_ptrace_attach` + `WIFSTOPPED`（`kernel/ptrace.c`）、Redox `ptrace` 缺省（`Scheme` 的 `handle`）、`seL4` `TCB` 显式 `suspend`（见 §1.7）

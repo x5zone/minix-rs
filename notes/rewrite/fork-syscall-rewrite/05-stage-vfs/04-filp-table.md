@@ -32,17 +32,17 @@
 - `fork` 的 `fproc[childno].fp_filp[i] != NULL → filp_count++` 是“子进程继承父的 fd 索引，但共享同一 filp 槽与同一偏移”——`fork` 后父子的 `filp_pos` 同步前进。
 - `dup` 的 `get_fd` 双扫描则是“进程内新 fd 索引指向已存在的 filp 槽”，同样 `filp_count++` 但不涉及 `vnode` 的 `dup_vnode`。
 
-二者的共性是“`count` 递增”，差异是“`vnode` 计数是否递增”。`filedes.c:435` 的 `f->filp_count -1 ==0 && filp_mode != FILP_CLOSED` 与 `496` 的 `--f->filp_count ==0 → put_vnode` 则将“归零时 `put_vnode`”的生命周期闭环固化。
+二者的共性是“`count` 递增”，差异是“`vnode` 计数是否递增”。`minix3/minix/servers/vfs/filedes.c:close_filp（L435，工具生成）` 的 `f->filp_count -1 ==0 && filp_mode != FILP_CLOSED` 与 `496` 的 `--f->filp_count ==0 → put_vnode` 则将“归零时 `put_vnode`”的生命周期闭环固化。
 
 ### 1.3 空闲判定与引用计数的耦合
 
 `filp[NR_FILPS]` 的空闲判定与 `fproc[NR_PROCS]` 不同：`fproc` 以 `PID_FREE 0` 哨兵判定，而 `filp` 以 `filp_count==0` 判定（`file.h:5`）。原因在于 `filp` 无 `endpoint` 的生成号可作双哨兵互证，`count` 的“共享度”本身即空闲度——`0` 即“无人共享”。
 
-`filedes.c:138` 的 `get_fd` 双扫描中 `filp_count==0 && mutex_trylock → 视为可分配` 正是“空闲即 `count==0` 且锁可获取”的耦合：空闲槽必须同时满足“无共享者”与“无持有者”。
+`minix3/minix/servers/vfs/filedes.c:get_fd（L138，工具生成）` 的 `get_fd` 双扫描中 `filp_count==0 && mutex_trylock → 视为可分配` 正是“空闲即 `count==0` 且锁可获取”的耦合：空闲槽必须同时满足“无共享者”与“无持有者”。
 
 ### 1.4 锁的归属：槽的互斥与借用
 
-`file.h:14` 的 `filp_lock: mutex_t` 属于槽（`filp`），`fproc.h:71` 的 `fp_lock` 属于进程槽，二者正交。`filedes.c:313` 的 `lock_filp(filp, tll_access)` 与 `357` 的 `unlock_filp` 将 `tll_access` 的 `VNODE_OPCL` 旁路（`get_filp2:200` 的 `locktype != VNODE_NONE` 才加锁）—— `CLOSE` 语义的 `FILP_CLOSED` 特权与锁的旁路共同使 `close(2)` 在 `filp_mode==FILP_CLOSED` 时仍可递减 `count`。
+`file.h:14` 的 `filp_lock: mutex_t` 属于槽（`filp`），`minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L71，工具生成）` 的 `fp_lock` 属于进程槽，二者正交。`minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt（L313，工具生成）` 的 `lock_filp(filp, tll_access)` 与 `357` 的 `unlock_filp` 将 `tll_access` 的 `VNODE_OPCL` 旁路（`get_filp2:200` 的 `locktype != VNODE_NONE` 才加锁）—— `CLOSE` 语义的 `FILP_CLOSED` 特权与锁的旁路共同使 `close(2)` 在 `filp_mode==FILP_CLOSED` 时仍可递减 `count`。
 
 `filp_softlock:15` 的 `非 NULL → 该 filp 未持 vnode 锁，另一 filp 已持` 与 `filp_ioctl_fp:18` 的 `非 NULL → 正在进行的 ioctl 持有者` 则构成借用语义的两种变形：前者为 `vnode` 锁的跨 `filp` 借用，后者在单线程模型下以 `Option<UserSlot>` 的 `locked_by` 显式。
 
@@ -72,27 +72,27 @@
 
 `file.h:9` 的 `filp_mode: mode_t` 存 `RW` 位（`O_RDONLY/O_WRONLY/O_RDWR`），`10` 的 `filp_flags` 存 `O_NONBLOCK` 等 `open`/`fcntl` 标志，`11` 的 `filp_count` 为共享计数，`12` 的 `filp_vno: vnode*` 指向 `vnode`，`13` 的 `filp_pos: off_t` 为共享偏移，`14` 的 `filp_lock` 为槽互斥，`15` 的 `filp_softlock` 为跨槽借用，`18` 的 `filp_ioctl_fp` 为 `ioctl` 持有者，`26-32` 的 5 选择字段为 `select` 与驱动协同。`file.h:33` 的 `} filp[NR_FILPS];` 使 `filp` 为 `NR_FILPS 1024` 的固定数组（`const.h:5`）。
 
-### 2.2 `NR_FILPS` 与 `init_filps`（`const.h:5` / `filedes.c:73-84`）
+### 2.2 `NR_FILPS` 与 `init_filps`（`const.h:5` / `minix3/minix/servers/vfs/filedes.c:init_filps`）
 
-`const.h:5` 的 `#define NR_FILPS 1024` 与 `main.c:489` 的 `init_filps()` 调用点同源。`filedes.c:77-83` 的 `init_filps` 仅 `mutex_init(&f->filp_lock)` 循环初始化 1024 把互斥量（`const.h:5` 的 1024 与 `fproc.h:82` 的 256 同为固定上界，但 `filp` 上界为 `vnode` 共享的放大）。
+`const.h:5` 的 `#define NR_FILPS 1024` 与 `main.c:489` 的 `init_filps()` 调用点同源。`minix3/minix/servers/vfs/filedes.c:init_filps（L77，工具生成）` 的 `init_filps` 仅 `mutex_init(&f->filp_lock)` 循环初始化 1024 把互斥量（`const.h:5` 的 1024 与 `minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L82，工具生成）` 的 256 同为固定上界，但 `filp` 上界为 `vnode` 共享的放大）。
 
-### 2.3 `get_fd` 双表扫描（`filedes.c:88-150`）
+### 2.3 `get_fd` 双表扫描（`minix3/minix/servers/vfs/filedes.c:check_fds`）
 
-`filedes.c:88-109` 的 `check_fds` 先验 `OPEN_MAX` 空位计数（`nfds` 的递减 `if (--nfds==0) return OK`），`111-150` 的 `get_fd` 则以双扫描原子化分配：先扫 `rfp->fp_filp[OPEN_MAX]` 找空 `fd` 索引 `k`（`111-121` `start..OPEN_MAX` 的 `fp_filp[i]==NULL → k=i`），再扫 `filp[NR_FILPS]` 找 `filp_count==0 && trylock==0` 的空 `filp`（`138-145` `count==0 && trylock==0 → mode=bits, pos=0, selectors=0, flags=0` 清零），二者同时满足才 `*fpt = f` 且 `return OK`，否则 `EMFILE`（进程级 `fd` 满）或 `ENFILE`（系统级 `filp` 满）。
+`minix3/minix/servers/vfs/filedes.c:check_fds` 的 `check_fds` 先验 `OPEN_MAX` 空位计数（`nfds` 的递减 `if (--nfds==0) return OK`），`111-150` 的 `get_fd` 则以双扫描原子化分配：先扫 `rfp->fp_filp[OPEN_MAX]` 找空 `fd` 索引 `k`（`111-121` `start..OPEN_MAX` 的 `fp_filp[i]==NULL → k=i`），再扫 `filp[NR_FILPS]` 找 `filp_count==0 && trylock==0` 的空 `filp`（`138-145` `count==0 && trylock==0 → mode=bits, pos=0, selectors=0, flags=0` 清零），二者同时满足才 `*fpt = f` 且 `return OK`，否则 `EMFILE`（进程级 `fd` 满）或 `ENFILE`（系统级 `filp` 满）。
 
-### 2.4 `get_filp`/`get_filp2` 特权（`filedes.c:162-203`）
+### 2.4 `get_filp`/`get_filp2` 特权（`minix3/minix/servers/vfs/filedes.c:filp`）
 
-`filedes.c:170` 的 `fild <0 || >=OPEN_MAX → EBADF` 首守卫，`189-191` 的 `locktype != VNODE_OPCL && filp_mode == FILP_CLOSED → EIO`（`FILP_CLOSED 0` 的特权：除 `close(2)` 的 `VNODE_OPCL` 通道外，`FILP_CLOSED` 的 `filp` 不可再用于读写），`195` 的 `filp == NULL → EBADF` 次守卫，`197-198` 的 `locktype != VNODE_NONE → lock_filp` 旁路使 `CLOSE` 语义的 `close_filp` 可不加锁递减计数。
+`minix3/minix/servers/vfs/filedes.c:get_filp（L170，工具生成）` 的 `fild <0 || >=OPEN_MAX → EBADF` 首守卫，`189-191` 的 `locktype != VNODE_OPCL && filp_mode == FILP_CLOSED → EIO`（`FILP_CLOSED 0` 的特权：除 `close(2)` 的 `VNODE_OPCL` 通道外，`FILP_CLOSED` 的 `filp` 不可再用于读写），`195` 的 `filp == NULL → EBADF` 次守卫，`197-198` 的 `locktype != VNODE_NONE → lock_filp` 旁路使 `CLOSE` 语义的 `close_filp` 可不加锁递减计数。
 
-### 2.5 `find_filp` / `find_filp_by_sock_dev` 共享检测（`filedes.c:205-246`）
+### 2.5 `find_filp` / `find_filp_by_sock_dev` 共享检测（`minix3/minix/servers/vfs/filedes.c:filp`）
 
 `205-224` 的 `find_filp(vp,bits)` 以 `filp_count!=0 && filp_vno==vp && (filp_mode & bits)` 线性扫描 1024 项，用于管道“是否仍有对端感兴趣”与 `FIFO` 打开的“共享偏移”检测；`229-246` 的 `find_filp_by_sock_dev(dev)` 进一步限定 `S_ISSOCK(v_mode) && v_sdev==dev && mode != FILP_CLOSED` 的套接字 `dev` 匹配，用于 `sdev` 回复时的 `filp` 定位。
 
-### 2.6 引用计数与 `close_filp`（`filedes.c:435/496/629`）
+### 2.6 引用计数与 `close_filp`（`minix3/minix/servers/vfs/filedes.c:close_filp（L435，工具生成）/496/629`）
 
 `435` 的 `f->filp_count -1 ==0 && mode != FILP_CLOSED` 与 `496` 的 `if (--f->filp_count==0) { put_vnode } else if (filp_count<0) panic` 的递减归零闭环，使 `filp` 的生命周期与 `vnode` 的 `put_vnode` 解耦：`filp_count` 的 `0→1` 在 `get_fd` 的分配点，`1→0` 在 `close_filp` 的归零点，`fork` 的 `pm_fork` 则以 `fproc[childno].fp_filp[i] != NULL → filp_count++`（`misc.c:629`）递增。
 
-### 2.7 锁族：`lock_filp`/`softlock`/`ioctl_fp`（`filedes.c:313-382`）
+### 2.7 锁族：`lock_filp`/`softlock`/`ioctl_fp`（`minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt（L313，工具生成）`）
 
 `313-382` 的 `lock_filp(filp, tll_access)` 以 `tll_access` 的 `VNODE_RW` 映射 `filp_lock` 的 `mutex_lock`，`softlock` 的“另一 filp 已持 `vnode` 锁而本 `filp` 借用”在 `open.c` 的 `close_fd` 路径中显式（`filp_softlock != NULL → 本 filp 未持锁`）。
 
@@ -104,7 +104,7 @@
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄 `filedes.c:88-150` 双扫描，而是吸收 Redox/Linux 的打开描述模型后做取舍。以下决策对应 `.design/04-design.v1.md` D1-D5。
+Rust 改写不是照抄 `minix3/minix/servers/vfs/filedes.c:check_fds` 双扫描，而是吸收 Redox/Linux 的打开描述模型后做取舍。以下决策对应 `.design/04-design.v1.md` D1-D5。
 
 ### D1 filp 二跳与表存储
 
@@ -120,7 +120,7 @@ Rust 改写不是照抄 `filedes.c:88-150` 双扫描，而是吸收 Redox/Linux 
 
 ### D3 锁族降级
 
-- **C**：`filp_lock` 的 `mutex_t` 与 `softlock` 的跨槽借用（`filedes.c:313`）。
+- **C**：`filp_lock` 的 `mutex_t` 与 `softlock` 的跨槽借用（`minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt（L313，工具生成）`）。
 - **Rust**：`Filp { locked_by: Option<UserSlot>, soft_locked: bool }` 的借用状态；`try_lock(slot) -> Result<(), FilpError>` 的 `try_borrow` 语义。
 - **为什么**：单线程事件循环（`ARCH A-1`）下互斥降级为借用规则；`softlock` 的借用在 Rust 以 `soft_locked` 布尔显式。
 
@@ -160,9 +160,9 @@ os/servers/vfs/src/
 |------|------|-----------|------|
 | `Filp` | `file.h:8` 全字段 | `filp.rs:Filp { count, mode, vnode, pos, select }` | `count==0` 空闲哨兵保留 |
 | `FilpTable: Box<[Filp]>` | `file.h:33` 1024 固定 | `filp.rs:FilpTable` | `new()` 由 `(0..NR_FILPS).map(|_| Filp::default()).collect()` 堆构造 |
-| `get_fd` 双扫描 | `filedes.c:88-150` | `FilpTable::alloc_fd` | `EMFILE` vs `ENFILE` 分化 |
-| `get_filp` 特权 | `filedes.c:162` | `FilpTable::get_filp` + `FilpLockMode{Opcl,None,ReadWrite}` | `FILP_CLOSED → EIO` 除 `OPCL`；`None` 探测仍拒（三态取代 bool，P1-5） |
-| `find_filp` | `filedes.c:205` | `FilpTable::find_by_vnode` | `vp+bits` 共享检测 |
+| `get_fd` 双扫描 | `minix3/minix/servers/vfs/filedes.c:check_fds` | `FilpTable::alloc_fd` | `EMFILE` vs `ENFILE` 分化 |
+| `get_filp` 特权 | `minix3/minix/servers/vfs/filedes.c:filp` | `FilpTable::get_filp` + `FilpLockMode{Opcl,None,ReadWrite}` | `FILP_CLOSED → EIO` 除 `OPCL`；`None` 探测仍拒（三态取代 bool，P1-5） |
+| `find_filp` | `minix3/minix/servers/vfs/filedes.c:filp` | `FilpTable::find_by_vnode` | `vp+bits` 共享检测 |
 | `FsfFlags` | `file.h:37` | `filp.rs:FsfFlags` | `bitflags 0x01/0x02/0x08/0x10/0x20/0x38` |
 
 ### 4.3 不变量
@@ -170,8 +170,8 @@ os/servers/vfs/src/
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
 | 空闲以 `count==0` | `Filp::is_free` | `count==0` | `file.h:5` |
-| 分配原子化 | `alloc_fd` | `fd 空位 + filp 空位且可加锁` | `filedes.c:88-150` |
-| 归零即 `put_vnode` | `close_filp` | `dec → 0 ? put_vnode` | `filedes.c:496` |
+| 分配原子化 | `alloc_fd` | `fd 空位 + filp 空位且可加锁` | `minix3/minix/servers/vfs/filedes.c:check_fds` |
+| 归零即 `put_vnode` | `close_filp` | `dec → 0 ? put_vnode` | `minix3/minix/servers/vfs/filedes.c:close_filp（L496，工具生成）` |
 | 锁属于槽 | `Filp.locked_by` | `Option<UserSlot>` | `file.h:14` |
 
 ---
@@ -183,13 +183,13 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_init_filps_free` | `filedes.c:73-84` | `NR_FILPS` 全 `count==0` | `filp.rs:180` |
-| `test_get_fd_dual_scan` | `filedes.c:88-150` | `fd` 空位 + `filp` 空位双扫描，`EMFILE` vs `ENFILE` 分化 | `filp.rs:185` |
-| `test_get_filp_closed_privilege` | `filedes.c:189` | 三态矩阵：`Opcl` 过 `CLOSED`、`None`/`ReadWrite` 拒、`EBADF` 全模式、开放 filp 全过 | `filp.rs:195` |
-| `test_find_filp_shared` | `filedes.c:205-224` | `vp+bits` 共享检测 | `filp.rs:205` |
-| `test_refcount_inc_dec` | `filedes.c:435/496` | `count++` / `count-- → 0 put` | `filp.rs:213` |
-| `test_lock_filp` | `filedes.c:313` | `locked_by` 借用语义 | `filp.rs:222` |
-| `test_fsf_flags` | `file.h:37` | `FSF_*` 位值锁定 | `filp.rs:230` |
+| `test_init_filps_free` | `minix3/minix/servers/vfs/filedes.c:init_filps` | `NR_FILPS` 全 `count==0` | `os/servers/vfs/src/filp.rs:fn alloc_filp（L180，工具生成）` |
+| `test_get_fd_dual_scan` | `minix3/minix/servers/vfs/filedes.c:check_fds` | `fd` 空位 + `filp` 空位双扫描，`EMFILE` vs `ENFILE` 分化 | `os/servers/vfs/src/filp.rs:fn alloc_filp（L185，工具生成）` |
+| `test_get_filp_closed_privilege` | `minix3/minix/servers/vfs/filedes.c:get_filp2（L189，工具生成）` | 三态矩阵：`Opcl` 过 `CLOSED`、`None`/`ReadWrite` 拒、`EBADF` 全模式、开放 filp 全过 | `os/servers/vfs/src/filp.rs:fn get_filp（L195，工具生成）` |
+| `test_find_filp_shared` | `minix3/minix/servers/vfs/filedes.c:filp` | `vp+bits` 共享检测 | `os/servers/vfs/src/filp.rs:fn get_filp（L205，工具生成）` |
+| `test_refcount_inc_dec` | `minix3/minix/servers/vfs/filedes.c:close_filp（L435，工具生成）/496` | `count++` / `count-- → 0 put` | `os/servers/vfs/src/filp.rs:fn get_filp（L213，工具生成）` |
+| `test_lock_filp` | `minix3/minix/servers/vfs/filedes.c:invalidate_filp_by_endpt（L313，工具生成）` | `locked_by` 借用语义 | `os/servers/vfs/src/filp.rs:fn find_by_vnode（L222，工具生成）` |
+| `test_fsf_flags` | `file.h:37` | `FSF_*` 位值锁定 | `os/servers/vfs/src/filp.rs:fn find_by_vnode（L230，工具生成）` |
 
 测试策略：`FilpTable` 的双扫描以 `fd` 满（`OPEN_MAX` 占满）与 `filp` 满（`NR_FILPS` 占满）两样本分别覆盖 `EMFILE` 与 `ENFILE`；`FILP_CLOSED` 特权以 `mode==0` + `VNODE_OPCL` 旁路对比覆盖；`find_filp` 以 `vp` 相同 + `bits` 命中/失配两样本覆盖。
 
@@ -217,7 +217,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/file.h:8-48`（`filp` 全字段 / `NR_FILPS 1024` / `FILP_CLOSED 0` / `FSF_*` 位集）、`minix3/minix/servers/vfs/filedes.c:73-656`（`init_filps` / `get_fd` 双扫描 / `get_filp` 特权 / `find_filp` 共享 / 计数/锁）、`minix3/minix/servers/vfs/const.h:5`（`NR_FILPS`）、`minix3/minix/servers/vfs/glo.h:bsf_lock`（`bsf` 锁）、`minix3/minix/servers/vfs/main.c:489`（`init_filps` 调用点）
+- C 源：`minix3/minix/servers/vfs/file.h:__VFS_FILE_H__（L8，工具生成）`（`filp` 全字段 / `NR_FILPS 1024` / `FILP_CLOSED 0` / `FSF_*` 位集）、`minix3/minix/servers/vfs/filedes.c:init_filps`（`init_filps` / `get_fd` 双扫描 / `get_filp` 特权 / `find_filp` 共享 / 计数/锁）、`minix3/minix/servers/vfs/const.h:NR_FILPS`（`NR_FILPS`）、`minix3/minix/servers/vfs/glo.h:bsf_lock`（`bsf` 锁）、`minix3/minix/servers/vfs/main.c:sef_cb_init_fresh（L489，工具生成）`（`init_filps` 调用点）
 - 阶段文档：`02-fproc-struct.md`（`FProc.filps` 私有索引）、`03-fproc-table.md`（`FProcTable` 的 `is_ok_endpoint` 三守卫与 `PID_FREE` 双哨兵）、`14-filedes.md`（`get_fd` 的 `fd` 侧管理）、`99-global-concepts.md`（`NR_FILPS` 常量与 `Filp` 术语）
-- Rust 实现：`os/servers/vfs/src/filp.rs:1`（`Filp/FilpTable/FilpId/FsfFlags`）、`os/servers/vfs/src/fproc.rs:274`（`FProc.filps` 互引 `FilpId`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
+- Rust 实现：`os/servers/vfs/src/filp.rs:1`（`Filp/FilpTable/FilpId/FsfFlags`）、`os/servers/vfs/src/fproc.rs:struct FProc（L274，工具生成）`（`FProc.filps` 互引 `FilpId`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/06-proc-init-boot-proc.md`（`filp` 与 `proc` 的 `NR_*` 同界）

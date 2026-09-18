@@ -230,7 +230,7 @@
 | `exec_bootproc()` | 函数 | main.c:331 | ✅ | §6 ✅ | |
 | `alloc_cycle()` | 函数 | alloc.c:227 | ✅ | §2.1 ✅ | |
 | `__minix_init()` | 函数 | — | ✅ | §2.2 ✅ | |
-| `do_memory()` | 函数 | pagefaults.c:294 | ✅ | §2.7 ✅ | |
+| `do_memory()` | 函数 | minix3/minix/servers/vm/pagefaults.c:do_memory | ✅ | §2.7 ✅ | |
 | `pt_init()` | 函数 | pagetable.c | ✅ | §2.3 ✅ | |
 | `map_service()` | 函数 | main.c:752 | ✅ | ❌ | 未覆盖 |
 | `do_procctl()` | 函数 | — | ✅ | §2.5 ✅ | |
@@ -279,7 +279,7 @@
 | Ch4 描述 | Ch4 位置 | 代码位置 | 一致? |
 |---------|---------|---------|-------|
 | VmServer 字段 | §3.2 | vm_server.rs:23-29 | ⚠️ 不一致 |
-| init() 调用 init_phase* | §3.3 | vm_server.rs:111-118 | ❌ 实际为 relocate + init_global + init_proc |
+| init() 调用 init_phase* | §3.3 | os/servers/vm/src/vm_server.rs:fn new（L111，工具生成） | ❌ 实际为 relocate + init_global + init_proc |
 | VmCallHandler 类型 | §3.5 | 不存在 | ❌ |
 
 ---
@@ -702,7 +702,7 @@ pub(crate) fn init(&mut self) {
 }
 ```
 
-**实际代码**（`vm_server.rs:111-118`）：
+**实际代码**（`os/servers/vm/src/vm_server.rs:fn new（L111，工具生成）`）：
 ```rust
 pub fn init(&mut self) {
     #[cfg(not(test))]

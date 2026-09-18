@@ -117,37 +117,37 @@ Rust 改写不是把一个函数八步照抄过来，而是参考 Linux 的继�
 ### D1 两种消息收进类型
 
 - **C**：`assert(m_type == START || m_type == INHERIT)`（`schedule.c:146-147`）+ `default: assert(0)`（`212-213`）。
-- **Rust**：`Kind::{Start, Inherit}` + `from_msg(SchedMsg) -> Option`（`os/servers/sched/src/scheduling/start.rs:28,38`，其他消息一律 `None`）。
+- **Rust**：`Kind::{Start, Inherit}` + `from_msg(SchedMsg) -> Option`（`os/servers/sched/src/scheduling/start.rs:enum Kind,38`，其他消息一律 `None`）。
 - **为什么**：断言是门，类型是墙（门可能被误闯，墙进不去——`None` 就是拒绝）；分发（02）已经分过一次类，这道是第二道（以后调用者忘了分发的约定，这个函数照样是全函数）。备选方案（`debug_assert!` 直译）被否决了：断言在 release 构建下就没了，类型检查在什么构建下都在。
 
 ### D2 检查顺序照抄
 
 - **C**：白名单 → 空检查 → 验边界（`150-166`，顺序不能换）。
-- **Rust**：`admit(sender_ok, child, maxprio)`（`start.rs:106`：`EPERM` → 表检查码 → `EINVAL` 的顺序直译，一道检查一个测试）。
+- **Rust**：`admit(sender_ok, child, maxprio)`（`os/servers/sched/src/scheduling/start.rs:fn admit（L106，工具生成）`：`EPERM` → 表检查码 → `EINVAL` 的顺序直译，一道检查一个测试）。
 - **为什么**：顺序就是诊断信息（先验发送者、再验槽位、再验数字——防误诊，见 §1.2）；三道检查收在一个函数里（调用者散着写顺序就会漂移，04 的 D5 有同样的例子）。备选方案（三个调用者各写一遍检查顺序）被否决了：重复就是漂移的开始。
 
 ### D3 边界检查双向拒绝
 
 - **C**：`max_priority >= 16 → EINVAL`（`164`：没写下界——负数绕过无符号比较进同一个拒绝）。
-- **Rust**：`maxprio < 0 || >= 16 → EINVAL`（`start.rs:113-122`，负数直接拒绝；`as u8` 旁边有守卫注释）。
+- **Rust**：`maxprio < 0 || >= 16 → EINVAL`（`os/servers/sched/src/scheduling/start.rs:fn admit（L113，工具生成）`，负数直接拒绝；`as u8` 旁边有守卫注释）。
 - **为什么**：对外表现一致，内部绕数技巧不进模型（wrap trick 是 C 写法的笨地方，不是语义本身）；守卫注释堵住 `as` 转换的疑问。备选方案（用 `u32` 绕回来求"逐行长得像"）被否决了：逐行像就是翻译腔（模式 65）。
 
 ### D4 三种填值
 
 - **C**：临时值（`174-175`）→ 覆盖（`195-196`）/ 从父进程抄（`207-208`）。
-- **Rust**：`Request`（`start.rs:55`：消息的形状，四个字段，格式归 02/13）→ `plan_start`（`start.rs:148`：直接赋显式值，临时值覆盖的净等价性写了证明）+ `plan_inherit`（`start.rs:172`：父进程探针以 facts-or-refusal 传入——`&Result<ParentState, SlotVerdict>`，门过了才有继承值）→ `Seed`（`start.rs:74`：填值结果的形状）。
+- **Rust**：`Request`（`os/servers/sched/src/scheduling/start.rs:struct Request`：消息的形状，四个字段，格式归 02/13）→ `plan_start`（`os/servers/sched/src/scheduling/start.rs:fn plan_start`：直接赋显式值，临时值覆盖的净等价性写了证明）+ `plan_inherit`（`os/servers/sched/src/scheduling/start.rs:fn plan_inherit`：父进程探针以 facts-or-refusal 传入——`&Result<ParentState, SlotVerdict>`，门过了才有继承值）→ `Seed`（`os/servers/sched/src/scheduling/start.rs:struct Seed`：填值结果的形状）。
 - **为什么**：临时值只是写法（净效果等价就省略步骤、保留证明——证明写在注释里，不在代码里）；从父进程抄收 `ParentState`（arm 不直接看父进程的表行，判断和执行分离，04 的 D2 同例）；自父 INHERIT 不需要特例（父 verdict 自己会读出 Dead——`223` 置标记在 switch 之后，这个顺序就是证明，不需要额外代码）。备选方案（`plan(kind, ...)` 一个函数两个分支）被否决了：两种消息两个名字，合成一个就把名字抹掉了（04 的 D3 同例）。
 
 ### D5 交接置标记留给调用者
 
 - **C**：`sys_schedctl` 交接（`218`）+ `flags = IN_USE`（`223`）+ `scheduler` 回复（`246`）。
-- **Rust**：三者都归调用者（`Seed` 只带填好的值——`start.rs:74`；交接归 12、下发归 09、回复经分发的 `settle`）。
+- **Rust**：三者都归调用者（`Seed` 只带填好的值——`os/servers/sched/src/scheduling/start.rs:struct Seed`；交接归 12、下发归 09、回复经分发的 `settle`）。
 - **为什么**：判断和执行分离（arm 只做判断，交接下发是执行——执行要发 IPC，纯函数做不了）；`Seed` 里不带标记和回复（标记是交接的结果，回复是循环的结果——结果不进原因）。备选方案（`Seed` 里加 `flags/scheduler` 字段）被否决了：结果进了原因，调用者就能先置标记后交接（顺序就可能错——错序正是 C 代码 `223` 在 `218` 之后所禁止的）。
 
 ### D6 重试循环收进类型
 
 - **C**：`while (rv == EBADCPU)` 标死再选（`227-231`）。
-- **Rust**：`Fanout::{Done(i32), CpuDead}` + `classify_fanout`（`start.rs:191,204`：只有 `EBADCPU` 继续循环，其他都退出）。
+- **Rust**：`Fanout::{Done(i32), CpuDead}` + `classify_fanout`（`os/servers/sched/src/scheduling/start.rs:enum Fanout,204`：只有 `EBADCPU` 继续循环，其他都退出）。
 - **为什么**：循环的继续/退出是个判断（判断收进类型，执行归调用者——标死那张表归 10，重选归 10）；`EBADCPU` 常量补齐（types，`errno.h:213` → 217，04 的 EBADEPT 同例）。备选方案（调用者散写 `if rv == -217`）被否决了：魔数散写就是漂移（模式 16）。
 
 ### ARCH 决策总表
@@ -183,12 +183,12 @@ os/libs/minix-types/src/types/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 两种消息的名字 | `schedule.c:146` | `start.rs:28,38` | 其他消息直接拒绝 |
-| 消息的形状 | `ipc.h:1430-1434` | `start.rs:55` | 四个字段只读不解释 |
-| 检查顺序 | `schedule.c:150-166` | `start.rs:106` | 先发送者后槽位后数字 |
-| 填值结果 | `schedule.c:161-163,193-208` | `start.rs:55,74,94,148,172` | 三种情况两个构造 |
-| 重试判断 | `schedule.c:227-231` | `start.rs:191,204` | 只有死 CPU 继续循环 |
-| 死 CPU 错误码 | `errno.h:213` | `errno.rs` EBADCPU + `start.rs:204` | 跨服务权威定义 |
+| 两种消息的名字 | `schedule.c:146` | `os/servers/sched/src/scheduling/start.rs:enum Kind,38` | 其他消息直接拒绝 |
+| 消息的形状 | `ipc.h:1430-1434` | `os/servers/sched/src/scheduling/start.rs:struct Request` | 四个字段只读不解释 |
+| 检查顺序 | `schedule.c:150-166` | `os/servers/sched/src/scheduling/start.rs:fn admit（L106，工具生成）` | 先发送者后槽位后数字 |
+| 填值结果 | `schedule.c:161-163,193-208` | `os/servers/sched/src/scheduling/start.rs:struct Request,74,94,148,172` | 三种情况两个构造 |
+| 重试判断 | `schedule.c:227-231` | `os/servers/sched/src/scheduling/start.rs:enum Fanout,204` | 只有死 CPU 继续循环 |
+| 死 CPU 错误码 | `errno.h:213` | `errno.rs` EBADCPU + `os/servers/sched/src/scheduling/start.rs:fn classify_fanout` | 跨服务权威定义 |
 
 ### 4.3 不变量
 
@@ -206,11 +206,11 @@ os/libs/minix-types/src/types/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_kind_gate` | `schedule.c:146,212` | 两种消息接收 + 三种消息拒绝 | `start.rs:239` |
-| `test_doors_in_order` | `schedule.c:150-166` | 发送者压槽位压数字 + 边界值（15 收、16/99/-1 拒） | `start.rs:249` |
-| `test_start_birth` | `schedule.c:174-175,191-197` | 显式值 + init 净等价（自父形状保留） | `start.rs:269` |
-| `test_inherit_birth` | `schedule.c:199-211,223` | 抄父进程值 + 死父拒绝 + 自父拒绝（无特例） | `start.rs:291` |
-| `test_fanout_retry` | `schedule.c:227` + `errno.h:213` | 只有死 CPU 循环 + 其他码退出 + 217 锁定 | `start.rs:322` |
+| `test_kind_gate` | `schedule.c:146,212` | 两种消息接收 + 三种消息拒绝 | `os/servers/sched/src/scheduling/start.rs:fn test_kind_gate` |
+| `test_doors_in_order` | `schedule.c:150-166` | 发送者压槽位压数字 + 边界值（15 收、16/99/-1 拒） | `os/servers/sched/src/scheduling/start.rs:fn test_doors_in_order` |
+| `test_start_birth` | `schedule.c:174-175,191-197` | 显式值 + init 净等价（自父形状保留） | `os/servers/sched/src/scheduling/start.rs:fn test_start_birth` |
+| `test_inherit_birth` | `schedule.c:199-211,223` | 抄父进程值 + 死父拒绝 + 自父拒绝（无特例） | `os/servers/sched/src/scheduling/start.rs:fn test_inherit_birth` |
+| `test_fanout_retry` | `schedule.c:227` + `errno.h:213` | 只有死 CPU 循环 + 其他码退出 + 217 锁定 | `os/servers/sched/src/scheduling/start.rs:fn test_fanout_retry` |
 
 测试策略：检查用顺序覆盖（发送者坏但槽位好照样 `EPERM`、槽位坏但数字好照样表检查码）锁定；填值用净等价（init 的终值就是 START 的值）和抄值（抄父进程当前位置不是上限）锁定；循环用一继续（`EBADCPU`）两退出（`OK`/其他错）锁定；错误码用 217 全量断言锁定。
 
@@ -243,7 +243,7 @@ os/libs/minix-types/src/types/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/schedule.c:140-252`（登记全流程）、`minix3/minix/include/minix/ipc.h:1430-1437,1908-1912`（登记消息与回复）、`minix3/minix/include/minix/com.h:801-807,63`（五种消息的号与调度器的号）、`minix3/minix/servers/sched/main.c:57-61`（两种消息合流）、`minix3/sys/sys/errno.h:213`（死 CPU 错误码）、`minix3/minix/lib/libsys/sched_start.c:11-66`（组装消息对端）、`minix3/minix/servers/pm/schedule.c:55-85`（继承对象对端）、`minix3/minix/servers/pm/main.c:369-373`（fork 回复路径）
+- C 源：`minix3/minix/servers/sched/schedule.c:do_start_scheduling`（登记全流程）、`minix3/minix/include/minix/ipc.h:1430-1437,1908-1912`（登记消息与回复）、`minix3/minix/include/minix/com.h:SCHEDULING_BASE,63`（五种消息的号与调度器的号）、`minix3/minix/servers/sched/main.c:main（L57，工具生成）`（两种消息合流）、`minix3/sys/sys/errno.h:EBADCPU`（死 CPU 错误码）、`minix3/minix/lib/libsys/sched_start.c:sched_inherit`（组装消息对端）、`minix3/minix/servers/pm/schedule.c:sched_start_user`（继承对象对端）、`minix3/minix/servers/pm/main.c:handle_vfs_reply（L369，工具生成）`（fork 回复路径）
 - 阶段文档：`02-sched-message-surface.md`（消息的名字）、`04-schedproc-table.md`（表检查规则）、`05-priority-timeslice-model.md`（参数定义）、`07-stop-scheduling.md`（下一站）、`09-schedule-process.md`（下发）、`10-pick-cpu-smp.md`（选 CPU）
 - Rust 实现：`os/servers/sched/src/scheduling/start.rs:1`（本篇臂层）、`os/servers/sched/src/scheduling/mod.rs:1`（臂的名字）、`os/libs/minix-types/src/types/errno.rs`（EBADCPU 权威定义）
 - 对端：`../04-stage-pm/16-scheduling.md`（PM 继承对象对端）、`13-pm-interaction.md`（组装消息面，另篇）

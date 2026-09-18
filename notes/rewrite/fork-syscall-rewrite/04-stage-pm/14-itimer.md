@@ -27,7 +27,7 @@ POSIX 的三族 `itimer` 对应三种时钟源（`sys/time.h:ITIMER_REAL 0/VIRTU
 - `ITIMER_VIRTUAL`（`SIGVTALRM 26`）：**用户态 CPU 时间**（进程在用户态的 `ticks`），仅进程运行在用户态时计时。经内核 `sys_vtimer(VT_VIRTUAL 1)` 实现（`alarm.c:205`），信号由内核的 `SIGVTALRM` 经 `process_ksig:326-328` → `check_vtimer` 重设。
 - `ITIMER_PROF`（`SIGPROF 27`）：**用户+内核 CPU 时间**（`profiling`），经内核 `sys_vtimer(VT_PROF 2)` 同路径（`alarm.c:205` `VT_PROF`）。
 
-分野的必然：`REAL` 的 `ALARM_ON` 仅 `REAL` 私有（`mproc.h:90 0x10`，`02` 的 `RemainingFlags::ALARM_ON`），`VIRTUAL/PROF` 无此位（其状态在内核 `proc` 的计时队列）；`getset_vtimer` 的 `nptr/optr` 双指针即此分野的 Rust 端 `Option<Clock>`（§3.4）。
+分野的必然：`REAL` 的 `ALARM_ON` 仅 `REAL` 私有（`minix3/minix/servers/pm/mproc.h:ALARM_ON 0x10`，`02` 的 `RemainingFlags::ALARM_ON`），`VIRTUAL/PROF` 无此位（其状态在内核 `proc` 的计时队列）；`getset_vtimer` 的 `nptr/optr` 双指针即此分野的 Rust 端 `Option<Clock>`（§3.4）。
 
 ### 1.2 为什么 `timeval ↔ ticks` 必须向上取整与溢出钳位：`ALRM_EXP_TIME` 的类型困境
 
@@ -320,9 +320,9 @@ static void cause_sigalrm(int arg)
 
 `323-331` 的三守卫（`pm_isokendpt→IN_USE|EXITING→ALARM_ON`）与 `11` 的 `process_ksig:300-309` 双守卫同型（`ALARM_ON` 替代 `IN_USE|EXITING` 的 `EDEADEPT`），`337-339` 的 `interval>0?set_alarm:clear` 周期分支与 `CLOCK` 驱动的 `expire_timers` 回调内 `set_timer` 安全（`334-335` 注释 *from within this callback from the expire_timers function. This is safe*），`343` 行 `ksig==FALSE` 使 `SIGALRM` 的 `SIG_IGN` 可忽略（`11` 的 `badignore` 不覆盖 `SIGALRM`，`ign_sset` 亦不含 `SIGALRM`）。
 
-### 2.11 消息与类型（`sys/time.h` / `com.h:420-421` / `mproc.h:62-63/90` / `main.c:65-67`）
+### 2.11 消息与类型（`sys/time.h` / `com.h:420-421` / `minix3/minix/servers/pm/mproc.h:sigaction（L62，工具生成）/90` / `main.c:65-67`）
 
-- `ITIMER_REAL 0` / `VIRTUAL 1` / `PROF 2` / `NR_ITIMERS 3`（`sys/time.h:??`，`alarm.c:101/126/134-135`）、`VT_VIRTUAL 1` / `VT_PROF 2`（`com.h:420-421`）、`mp_timer/mp_interval[3]`（`mproc.h:62-63`）、`ALARM_ON 0x10`（`mproc.h:90`）、`struct itimerval { it_interval, it_value: timeval }`（`sys/time.h`）、`mess_lc_pm_itimer { which, value, ovalue }`（`ipc.h:469` `which/value/ovalue`，`_ASSERT 56B`）、`SIGALRM 14` / `SIGVTALRM 26` / `SIGPROF 27`（`sys/signal.h`）、`CLOCK notify`（`main.c:65-67` `is_ipc_notify: CLOCK → expire_timers`，`kernel/clock.c:notify`）。
+- `ITIMER_REAL 0` / `VIRTUAL 1` / `PROF 2` / `NR_ITIMERS 3`（`sys/time.h:??`，`alarm.c:101/126/134-135`）、`VT_VIRTUAL 1` / `VT_PROF 2`（`com.h:420-421`）、`mp_timer/mp_interval[3]`（`minix3/minix/servers/pm/mproc.h:sigaction（L62，工具生成）`）、`ALARM_ON 0x10`（`minix3/minix/servers/pm/mproc.h:ALARM_ON`）、`struct itimerval { it_interval, it_value: timeval }`（`sys/time.h`）、`mess_lc_pm_itimer { which, value, ovalue }`（`ipc.h:469` `which/value/ovalue`，`_ASSERT 56B`）、`SIGALRM 14` / `SIGVTALRM 26` / `SIGPROF 27`（`sys/signal.h`）、`CLOCK notify`（`main.c:65-67` `is_ipc_notify: CLOCK → expire_timers`，`kernel/clock.c:notify`）。
 
 ### 2.12 不变式即契约
 
@@ -330,7 +330,7 @@ static void cause_sigalrm(int arg)
 |------|------|------|--------|
 | `ticks` 向上取整与 `LONG_MAX` 钳位 | `alarm.c:59/62` | `1us` 在 `100Hz` 下至少 1 tick，大延迟不溢出 | 不变量 |
 | `is_sane` 的 `MAX_SECS/US` | `alarm.c:85-86` | `sec>MAX_SECS` 或 `usec>=US` → `EINVAL` | 可恢复 |
-| `REAL` 的 `ALARM_ON` 唯一性 | `mproc.h:90` / `alarm.c:254/306/309/331` | `ALARM_ON` 时 `mp_timer` 在队列 | 不变量（Option 唯一真源） |
+| `REAL` 的 `ALARM_ON` 唯一性 | `minix3/minix/servers/pm/mproc.h:ALARM_ON` / `alarm.c:254/306/309/331` | `ALARM_ON` 时 `mp_timer` 在队列 | 不变量（Option 唯一真源） |
 | `VIRTUAL/PROF` 的 `sys_vtimer` 路径 | `alarm.c:205/240` | `REAL` 走 `set_timer`，`VIRTUAL` 走 `sys_vtimer` | 不变量 |
 | `newticks<=0→interval=0` | `alarm.c:189/289` | 取消时区间清零 | 不变量 |
 | `oldticks<=0→interval` 回绕 | `alarm.c:212/263` | 已过期但区间非零时返回区间 | 不变量 |
@@ -473,7 +473,7 @@ if msg.m_source == Endpoint::CLOCK {
 | 1 | `ticks` 向上取整 | `alarm.c:59` `+US-1` | `TicksConv::ticks_from` 的 `(hz*usec+US-1)/US` | `test_ticks_upward_rounds` |
 | 2 | `LONG_MAX` 钳位 | `alarm.c:57/62` | `checked_mul→None→MAX` | `test_ticks_overflow_clamps` |
 | 3 | `is_sane` 的 `MAX_SECS/US` | `alarm.c:85-86` | `Timeval::is_sane` | `test_is_sane_timeval` |
-| 4 | `ALARM_ON` 唯一性 | `mproc.h:90` / `alarm.c:254/306` | `Option<MinixTimer>` | `test_get_realtimer_alarm_on` |
+| 4 | `ALARM_ON` 唯一性 | `minix3/minix/servers/pm/mproc.h:ALARM_ON` / `alarm.c:254/306` | `Option<MinixTimer>` | `test_get_realtimer_alarm_on` |
 | 5 | `newticks<=0→0` | `alarm.c:189/289` | `if newticks<=0 { interval=0 }` | `test_getset_vtimer_interval_zero_on_cancel` |
 | 6 | `oldticks<=0→interval` 回绕 | `alarm.c:212/263` | `if oldticks<=0 { oldticks=interval }` | `test_getset_vtimer_returns_interval_when_expired` |
 | 7 | `SIGALRM` 的 `ksig==FALSE` | `alarm.c:343` | `SigSender::send_sigalrm(pid)` 单播 | `test_cause_sigalrm_three_guards` |
@@ -538,7 +538,7 @@ if msg.m_source == Endpoint::CLOCK {
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/alarm.c` 全文（`33-65` `ticks_from_timeval` 等）、`minix3/minix/servers/pm/mproc.h:62-63`（`mp_timer/mp_interval[3]`）+ `mproc.h:90`（`ALARM_ON`）、`minix3/minix/servers/pm/main.c:65-67`（`CLOCK notify → expire_timers`）、`minix3/minix/include/sys/time.h:ITIMER_*`（`REAL/VIRTUAL/PROF`）、`minix3/minix/include/minix/com.h:420-421`（`VT_VIRTUAL/VT_PROF`）、`minix3/sys/sys/signal.h:14`（`SIGALRM 14`）
+- C 源（ground truth）：`minix3/minix/servers/pm/alarm.c` 全文（`33-65` `ticks_from_timeval` 等）、`minix3/minix/servers/pm/mproc.h:sigaction（L62，工具生成）`（`mp_timer/mp_interval[3]`）+ `minix3/minix/servers/pm/mproc.h:ALARM_ON`（`ALARM_ON`）、`minix3/minix/servers/pm/main.c:main（L65，工具生成）`（`CLOCK notify → expire_timers`）、`minix3/minix/include/sys/time.h:ITIMER_*`（`REAL/VIRTUAL/PROF`）、`minix3/minix/include/minix/com.h:VT_VIRTUAL`（`VT_VIRTUAL/VT_PROF`）、`minix3/sys/sys/signal.h:14`（`SIGALRM 14`）
 - PM 阶段文档：11-signal-core.md（`check_sig` 的 `SIGALRM` 投递与 `SIGVTALRM` 的 `check_vtimer` 重启）、02-mproc-struct.md（`MinixTimer/intervals/ALARM_ON` 三件套）、04-ipc-dispatch.md（`is_ipc_notify` 的 CLOCK 分发）、13-signal-flow.md（`check_pending` 的 `pending&!mask` 重检与 `PROC_STOPPED` 的 break）
 - 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`CLOCK` 时钟源与 `system_hz`）
 - 阶段内顺序：11/12/13 → **本章（14）** → 15（`TAINTED` 与 `credentials` 的信号边界）→ 16（`sched_stop` 的直毁，绕过本章的 `ALARM_ON`）

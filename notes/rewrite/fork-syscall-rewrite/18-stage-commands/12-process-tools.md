@@ -175,10 +175,10 @@
 - `05-shell-family.md`——调用方（本篇命令的调用者）
 - `03-login-passwd.md`——登录记录的写入方（本篇记录的来源）
 - `13-terminal-termios.md`——终端控制（下一步：掌管终端）
-- `minix3/bin/kill/kill.c:83-195`——默认信号、列表、名转号（`signal.rs` 的逐行对照）
-- `minix3/sys/sys/signal.h:52-84`——信号编号（常量表的逐字来源）
+- `minix3/bin/kill/kill.c:main（L83，工具生成）`——默认信号、列表、名转号（`signal.rs` 的逐行对照）
+- `minix3/sys/sys/signal.h:SIGHUP`——信号编号（常量表的逐字来源）
 - `minix3/lib/libc/compat/include/utmp.h`——记录结构（`utmp.rs` 的宽度来源）
-- `minix3/bin/ps/keyword.c:115-197`——列定义宏（列层的全集）
+- `minix3/bin/ps/keyword.c:VAR6（L115，工具生成）`——列定义宏（列层的全集）
 
 ---
 

@@ -24,14 +24,14 @@
 
 - **WHY**: 系统进程（PM/VFS/RS/MEM/VM）需要在彼此的地址空间之间拷贝数据（如 fork 时 PM 拷贝子进程上下文）。这些进程已被内核信任，逐字节验证权限开销过大。
 - **WHAT**: vircopy 按虚拟地址拷贝，physcopy 按物理地址拷贝，两者共用同一 handler——区别仅在地址类型。内核仅做最小验证：SELF 替换、endpoint 有效性、溢出检查。
-- **HOW**: C 用 `do_copy()` (do_copy.c:22-90) 解析消息 → SELF 替换 (do_copy.c:64-65) → isokendpt 验证 (do_copy.c:66-71) → 溢出检查 (do_copy.c:77) → `virtual_copy_vmcheck()` (do_copy.c:87-88)。
+- **HOW**: C 用 `do_copy()` (minix3/minix/kernel/system/do_copy.c:do_copy) 解析消息 → SELF 替换 (minix3/minix/kernel/system/do_copy.c:do_copy（L64，工具生成）) → isokendpt 验证 (minix3/minix/kernel/system/do_copy.c:do_copy（L66，工具生成）) → 溢出检查 (minix3/minix/kernel/system/do_copy.c:do_copy（L77，工具生成）) → `virtual_copy_vmcheck()` (minix3/minix/kernel/system/do_copy.c:do_copy（L87，工具生成）)。
 
 **关键约束**:
 
 1. 仅系统进程可调用——权限由调用者身份保证，非内核验证
 2. SELF 表示"调用者自身"，内核在验证前替换为 caller endpoint
 3. NONE endpoint 跳过验证（物理地址拷贝，无进程上下文）
-4. CP_FLAG_TRY 是 VFS 专用标志：拷贝失败返回 EFAULT 而非 VMSUSPEND（避免内存映射文件死锁，详见 do_copy.c:80-85）
+4. CP_FLAG_TRY 是 VFS 专用标志：拷贝失败返回 EFAULT 而非 VMSUSPEND（避免内存映射文件死锁，详见 minix3/minix/kernel/system/do_copy.c:do_copy（L80，工具生成））
 
 ### 1.2 safecopy：grant 表授权拷贝（不信任调用者）
 
@@ -41,25 +41,25 @@
 
 - **WHY**: 用户态进程通过系统服务器（如 VFS）请求跨空间拷贝。内核不信任用户态进程，需要一种机制让授权方（granter）声明"允许被授权方（grantee）访问我的某段内存"。
 - **WHAT**: grant 表是 per-process 的授权表（`s_grant_table` + `s_grant_entries`），每个 grant 项（`cp_grant_t`）定义授权范围。三种 grant 类型：DIRECT（直接授权）、MAGIC（可重定向，仅 VFS/MIB）、INDIRECT（指向另一个 grant）。
-- **HOW**: `verify_grant()` (do_safecopy.c:41-266) 是核心验证函数，按 11 步验证后返回实际地址与真实 granter。
+- **HOW**: `verify_grant()` (minix3/minix/kernel/system/do_safecopy.c:verify_grant) 是核心验证函数，按 11 步验证后返回实际地址与真实 granter。
 
 **grant 验证 11 步流程**:
 
 | 步 | 验证内容 | C 位置 |
 |----|---------|--------|
-| 1 | granter endpoint 有效性（isokendpt） | do_safecopy.c:60-70 |
-| 2 | grant ID 有效性（GRANT_VALID） | do_safecopy.c:80-100 |
-| 3 | grant 表存在（HASGRANTTABLE） | do_safecopy.c:28 |
-| 4 | grant 索引在表范围内 | do_safecopy.c:105-110 |
-| 5 | 从 granter 地址空间拷入 grant 项（data_copy） | do_safecopy.c:121-123 |
-| 6 | flags 验证（CPF_USED \| CPF_VALID） | do_safecopy.c:130-135 |
-| 7 | 序列号验证（防 ABA：grant 释放后重用） | do_safecopy.c:136-145 |
-| 8 | 间接 grant 链（循环 + depth 计数，最多 5 层） | do_safecopy.c:148-173 |
-| 9 | 访问权限（CPF_READ/CPF_WRITE） | do_safecopy.c:175-181 |
-| 10 | 拷贝范围在 grant 范围内 | do_safecopy.c:202-212 |
-| 11 | 返回实际虚拟地址 + 真实 granter（magic grant 可能重定向） | do_safecopy.c:215-216, 249-250 |
+| 1 | granter endpoint 有效性（isokendpt） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L60，工具生成） |
+| 2 | grant ID 有效性（GRANT_VALID） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L80，工具生成） |
+| 3 | grant 表存在（HASGRANTTABLE） | minix3/minix/kernel/system/do_safecopy.c:HASGRANTTABLE |
+| 4 | grant 索引在表范围内 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L105，工具生成） |
+| 5 | 从 granter 地址空间拷入 grant 项（data_copy） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L121，工具生成） |
+| 6 | flags 验证（CPF_USED \| CPF_VALID） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L130，工具生成） |
+| 7 | 序列号验证（防 ABA：grant 释放后重用） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L136，工具生成） |
+| 8 | 间接 grant 链（循环 + depth 计数，最多 5 层） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L148，工具生成） |
+| 9 | 访问权限（CPF_READ/CPF_WRITE） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L175，工具生成） |
+| 10 | 拷贝范围在 grant 范围内 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L202，工具生成） |
+| 11 | 返回实际虚拟地址 + 真实 granter（magic grant 可能重定向） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L215，工具生成）, 249-250 |
 
-**CPF_TRY 软故障**: magic grant 可设置 CPF_TRY 标志，拷贝失败时向 grant 表写 faulted 标记（grant ID 含序列号，防 CPU 并发），返回 EFAULT 而非 VMSUSPEND (do_safecopy.c:258-263)。
+**CPF_TRY 软故障**: magic grant 可设置 CPF_TRY 标志，拷贝失败时向 grant 表写 faulted 标记（grant ID 含序列号，防 CPU 并发），返回 EFAULT 而非 VMSUSPEND (minix3/minix/kernel/system/do_safecopy.c:verify_grant（L258，工具生成）)。
 
 ### 1.3 umap/vumap：地址映射查询
 
@@ -69,11 +69,11 @@
 
 - **WHY**: 驱动程序需要物理地址执行 DMA。用户态进程通过 grant 授权驱动访问其内存，但驱动需要物理地址而非虚拟地址。
 - **WHAT**: umap 是 umap_remote 的子集（只允许自身地址空间和 grant）；vumap 批量映射，将虚拟地址向量转换为物理地址向量。
-- **HOW**: `do_umap()` (do_umap.c:25-37) 安全检查后委托 `do_umap_remote()` (do_umap_remote.c:26-120)：endpoint 验证 → grantee 验证 → segment type 分发 → MEM_GRANT 走 verify_grant / VIR_ADDR 直接用 offset → `vm_lookup()` VA→PA (do_umap_remote.c:94) → 连续性检查 `vm_lookup_range()` (do_umap_remote.c:106)。`do_vumap()` (do_vumap.c:22-131) 拷入向量 → 逐元素 verify_grant/vm_lookup_range → 拷出物理向量。
+- **HOW**: `do_umap()` (minix3/minix/kernel/system/do_umap.c:do_umap) 安全检查后委托 `do_umap_remote()` (minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote)：endpoint 验证 → grantee 验证 → segment type 分发 → MEM_GRANT 走 verify_grant / VIR_ADDR 直接用 offset → `vm_lookup()` VA→PA (minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L94，工具生成）) → 连续性检查 `vm_lookup_range()` (minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L106，工具生成）)。`do_vumap()` (minix3/minix/kernel/system/do_vumap.c:do_vumap) 拷入向量 → 逐元素 verify_grant/vm_lookup_range → 拷出物理向量。
 
 **umap vs umap_remote**:
 
-- umap 只允许映射自身地址空间（endpt==SELF）或 grant（seg_index==MEM_GRANT），其余返回 EPERM (do_umap.c:34)
+- umap 只允许映射自身地址空间（endpt==SELF）或 grant（seg_index==MEM_GRANT），其余返回 EPERM (minix3/minix/kernel/system/do_umap.c:do_umap（L34，工具生成）)
 - umap_remote 允许映射任意有效 endpoint 的地址空间
 
 **vumap 的 DMA 用途**: 驱动程序用 vumap 将一组 grant 批量转换为物理地址向量，直接进行 DMA 操作，避免逐个映射的系统调用开销。
@@ -86,7 +86,7 @@
 
 - **WHY**: 内核或系统进程需要清零或填充另一个进程的内存（如 fork 时清零子进程的 BSS）。
 - **WHAT**: memset 直接调用 `vm_memset()` 填充指定进程的地址空间；safememset 先验证 grant 的 CPF_WRITE 权限，再调用 `vm_memset()`。
-- **HOW**: `do_memset()` (do_memset.c:17-25) 委托 `vm_memset(caller, process, base, pattern, count)`。`do_safememset()` (do_safememset.c:20-57) endpoint 验证 → grant 表检查 (do_safememset.c:36-45) → `verify_grant(CPF_WRITE)` (do_safememset.c:48-49) → `vm_memset()` (do_safememset.c:56)。pattern 是 int 类型，vm_memset 内部 `& 0xFF` 截断为字节。
+- **HOW**: `do_memset()` (minix3/minix/kernel/system/do_memset.c:do_memset) 委托 `vm_memset(caller, process, base, pattern, count)`。`do_safememset()` (minix3/minix/kernel/system/do_safememset.c:do_safememset) endpoint 验证 → grant 表检查 (minix3/minix/kernel/system/do_safememset.c:do_safememset（L36，工具生成）) → `verify_grant(CPF_WRITE)` (minix3/minix/kernel/system/do_safememset.c:do_safememset（L48，工具生成）) → `vm_memset()` (minix3/minix/kernel/system/do_safememset.c:do_safememset（L56，工具生成）)。pattern 是 int 类型，vm_memset 内部 `& 0xFF` 截断为字节。
 
 ### 1.5 Direct Map：64 位下一行加法替代 createpde 临时映射
 
@@ -110,7 +110,7 @@
 
 | C 机制 | 64 位 Direct Map 替代 | 当前状态 |
 |--------|---------------------|---------|
-| `createpde()` 临时映射 | `kernel_phys_to_virt(pa)` 一行加法 | ✅ 已实现（`os/arch/src/arch/direct_map.rs:44` + `os/kernel/src/vm.rs:327` cross_space_copy） |
+| `createpde()` 临时映射 | `kernel_phys_to_virt(pa)` 一行加法 | ✅ 已实现（`os/arch/src/arch/direct_map.rs:const VM_DIRECT_MAP_SIZE（L44，工具生成）` + `os/kernel/src/vm.rs:fn cross_space_copy` cross_space_copy） |
 | `lin_lin_copy()` | `memcpy(kernel_phys_to_virt(src_pa), kernel_phys_to_virt(dst_pa), n)` | ✅ 已实现；跨进程 VA→PA 经 `cross_space.rs::data_copy_vmcheck` + PTE walk，dispatch 已接入 |
 | `vm_memset()` (正常路径) | `memset(kernel_phys_to_virt(pa), pattern, n)` | ✅ 已实现；`cross_space::memset_vmcheck` 处理 VMSUSPEND，dispatch_memset 已接入 |
 | `vm_lookup()` | 保留（仍需查询页表映射 VA→PA） | ✅ 已实现三架构（`minix_arch::CurrentPteWalk::walk`，trait 分发，无 `#[cfg(target_arch)]`）；`vm::lookup_in_table` 已接入 dispatch_umap_remote |
@@ -126,60 +126,60 @@
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_copy()` | do_copy.c:22-90 | 共用处理器：解析消息 → SELF 替换 → endpoint 验证 → 溢出检查 → virtual_copy_vmcheck |
-| SELF 替换 | do_copy.c:64-65 | `if (vir_addr[i].proc_nr_e == SELF) vir_addr[i].proc_nr_e = caller->p_endpoint` |
-| isokendpt 验证 | do_copy.c:66-71 | `if(! isokendpt(vir_addr[i].proc_nr_e, &p)) return(EINVAL)` |
-| 溢出检查 | do_copy.c:77 | `if (bytes != (phys_bytes)(vir_bytes) bytes) return(E2BIG)`（32 位遗留，64 位下始终通过） |
-| CP_FLAG_TRY | do_copy.c:80-85 | VFS 专用 try-copy：`assert(caller == VFS_PROC_NR)`; 失败返回 EFAULT |
-| virtual_copy_vmcheck | do_copy.c:87-88 | 实际拷贝 + 缺页挂起 |
+| `do_copy()` | minix3/minix/kernel/system/do_copy.c:do_copy | 共用处理器：解析消息 → SELF 替换 → endpoint 验证 → 溢出检查 → virtual_copy_vmcheck |
+| SELF 替换 | minix3/minix/kernel/system/do_copy.c:do_copy（L64，工具生成） | `if (vir_addr[i].proc_nr_e == SELF) vir_addr[i].proc_nr_e = caller->p_endpoint` |
+| isokendpt 验证 | minix3/minix/kernel/system/do_copy.c:do_copy（L66，工具生成） | `if(! isokendpt(vir_addr[i].proc_nr_e, &p)) return(EINVAL)` |
+| 溢出检查 | minix3/minix/kernel/system/do_copy.c:do_copy（L77，工具生成） | `if (bytes != (phys_bytes)(vir_bytes) bytes) return(E2BIG)`（32 位遗留，64 位下始终通过） |
+| CP_FLAG_TRY | minix3/minix/kernel/system/do_copy.c:do_copy（L80，工具生成） | VFS 专用 try-copy：`assert(caller == VFS_PROC_NR)`; 失败返回 EFAULT |
+| virtual_copy_vmcheck | minix3/minix/kernel/system/do_copy.c:do_copy（L87，工具生成） | 实际拷贝 + 缺页挂起 |
 
 ### 2.2 do_safecopy.c — SAFECOPYFROM/TO/VSAFECOPY
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `MAX_INDIRECT_DEPTH` | do_safecopy.c:21 | 间接 grant 最大深度 = 5 |
-| `cp_sfinfo` | do_safecopy.c:31-36 | 软故障信息（CPF_TRY 标志） |
-| `verify_grant()` | do_safecopy.c:41-266 | grant 验证：endpoint → grant_idx → 序列号 → 间接链 → 权限 → 范围 |
-| 间接链处理 | do_safecopy.c:148-173 | `if (depth == MAX_INDIRECT_DEPTH) return ELOOP`；`do { ... } while (CPF_INDIRECT)` 循环 |
-| magic grant 重定向 | do_safecopy.c:217-250 | `*e_granter = g.cp_u.cp_magic.cp_who_from` |
-| CPF_TRY 软故障 | do_safecopy.c:258-263 | 写 faulted 标记到 grant 表 |
-| `safecopy()` | do_safecopy.c:271-372 | 验证 grant → 确定源/目标 → virtual_copy_vmcheck |
-| `do_safecopy_to()` | do_safecopy.c:377-383 | CPF_WRITE 方向（caller→granter） |
-| `do_safecopy_from()` | do_safecopy.c:388-394 | CPF_READ 方向（granter→caller） |
-| `do_vsafecopy()` | do_safecopy.c:399-447 | 批量：拷入向量 → 逐元素 SELF 方向解析 → 逐元素 safecopy |
+| `MAX_INDIRECT_DEPTH` | minix3/minix/kernel/system/do_safecopy.c:MAX_INDIRECT_DEPTH | 间接 grant 最大深度 = 5 |
+| `cp_sfinfo` | minix3/minix/kernel/system/do_safecopy.c:cp_sfinfo | 软故障信息（CPF_TRY 标志） |
+| `verify_grant()` | minix3/minix/kernel/system/do_safecopy.c:verify_grant | grant 验证：endpoint → grant_idx → 序列号 → 间接链 → 权限 → 范围 |
+| 间接链处理 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L148，工具生成） | `if (depth == MAX_INDIRECT_DEPTH) return ELOOP`；`do { ... } while (CPF_INDIRECT)` 循环 |
+| magic grant 重定向 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L217，工具生成） | `*e_granter = g.cp_u.cp_magic.cp_who_from` |
+| CPF_TRY 软故障 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L258，工具生成） | 写 faulted 标记到 grant 表 |
+| `safecopy()` | minix3/minix/kernel/system/do_safecopy.c:safecopy | 验证 grant → 确定源/目标 → virtual_copy_vmcheck |
+| `do_safecopy_to()` | minix3/minix/kernel/system/do_safecopy.c:do_safecopy_to | CPF_WRITE 方向（caller→granter） |
+| `do_safecopy_from()` | minix3/minix/kernel/system/do_safecopy.c:do_safecopy_from | CPF_READ 方向（granter→caller） |
+| `do_vsafecopy()` | minix3/minix/kernel/system/do_safecopy.c:do_vsafecopy | 批量：拷入向量 → 逐元素 SELF 方向解析 → 逐元素 safecopy |
 
 ### 2.3 do_umap.c + do_umap_remote.c — UMAP/UMAP_REMOTE
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_umap()` | do_umap.c:25-37 | 安全检查（seg_index != MEM_GRANT && endpt != SELF → EPERM）→ 委托 do_umap_remote |
-| `do_umap_remote()` | do_umap_remote.c:26-120 | endpoint 验证 → grantee 验证 → segment type 分发 → vm_lookup → 连续性检查 |
-| SELF 替换 | do_umap_remote.c:40-41 | `if (endpt == SELF) okendpt(caller->p_endpoint, &proc_nr)` |
-| grantee 验证 | do_umap_remote.c:48-55 | SELF→caller；NONE/ANY/非 MEM_GRANT/无效 → EINVAL |
-| MEM_GRANT 路径 | do_umap_remote.c:60-82 | verify_grant → newoffset/newep → 重新 lookup |
-| VIR_ADDR 路径 | do_umap_remote.c:84-85 | `phys_addr = lin_addr = offset` |
-| vm_lookup | do_umap_remote.c:94 | VA→PA 翻译 |
-| 连续性检查 | do_umap_remote.c:106-109 | `vm_lookup_range(targetpr, lin_addr, NULL, count) != count → EFAULT` |
+| `do_umap()` | minix3/minix/kernel/system/do_umap.c:do_umap | 安全检查（seg_index != MEM_GRANT && endpt != SELF → EPERM）→ 委托 do_umap_remote |
+| `do_umap_remote()` | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote | endpoint 验证 → grantee 验证 → segment type 分发 → vm_lookup → 连续性检查 |
+| SELF 替换 | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L40，工具生成） | `if (endpt == SELF) okendpt(caller->p_endpoint, &proc_nr)` |
+| grantee 验证 | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L48，工具生成） | SELF→caller；NONE/ANY/非 MEM_GRANT/无效 → EINVAL |
+| MEM_GRANT 路径 | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L60，工具生成） | verify_grant → newoffset/newep → 重新 lookup |
+| VIR_ADDR 路径 | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L84，工具生成） | `phys_addr = lin_addr = offset` |
+| vm_lookup | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L94，工具生成） | VA→PA 翻译 |
+| 连续性检查 | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L106，工具生成） | `vm_lookup_range(targetpr, lin_addr, NULL, count) != count → EFAULT` |
 
 ### 2.4 do_vumap.c — VUMAP
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_vumap()` | do_vumap.c:22-131 | 拷入向量 → access 转换 → 逐元素 verify_grant/vm_lookup_range → 拷出物理向量 |
-| `vvec`/`pvec` 栈数组 | do_vumap.c:30-31 | `struct vumap_vir vvec[MAPVEC_NR]` / `struct vumap_phys pvec[MAPVEC_NR]`，编译期分配在栈 |
-| vcount/pmax 边界 | do_vumap.c:48-52 | `<= 0` → EINVAL；`> MAPVEC_NR` 截断到 MAPVEC_NR |
-| access 转换 | do_vumap.c:54-60 | VUA_READ→CPF_READ; VUA_WRITE→CPF_WRITE; VUA_READ\|VUA_WRITE→CPF_READ\|CPF_WRITE; default→EINVAL |
-| 逐元素映射 | do_vumap.c:73-118 | 每个虚拟范围可能映射到多个物理范围；循环填入物理向量 |
-| 物理向量拷出 | do_vumap.c:120-128 | `data_copy_vmcheck(caller, KERNEL, pvec, endpt, paddr, size)` |
+| `do_vumap()` | minix3/minix/kernel/system/do_vumap.c:do_vumap | 拷入向量 → access 转换 → 逐元素 verify_grant/vm_lookup_range → 拷出物理向量 |
+| `vvec`/`pvec` 栈数组 | minix3/minix/kernel/system/do_vumap.c:do_vumap（L30，工具生成） | `struct vumap_vir vvec[MAPVEC_NR]` / `struct vumap_phys pvec[MAPVEC_NR]`，编译期分配在栈 |
+| vcount/pmax 边界 | minix3/minix/kernel/system/do_vumap.c:do_vumap（L48，工具生成） | `<= 0` → EINVAL；`> MAPVEC_NR` 截断到 MAPVEC_NR |
+| access 转换 | minix3/minix/kernel/system/do_vumap.c:do_vumap（L54，工具生成） | VUA_READ→CPF_READ; VUA_WRITE→CPF_WRITE; VUA_READ\|VUA_WRITE→CPF_READ\|CPF_WRITE; default→EINVAL |
+| 逐元素映射 | minix3/minix/kernel/system/do_vumap.c:do_vumap（L73，工具生成） | 每个虚拟范围可能映射到多个物理范围；循环填入物理向量 |
+| 物理向量拷出 | minix3/minix/kernel/system/do_vumap.c:do_vumap（L120，工具生成） | `data_copy_vmcheck(caller, KERNEL, pvec, endpt, paddr, size)` |
 
 ### 2.5 do_memset.c + do_safememset.c — MEMSET/SAFEMEMSET
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_memset()` | do_memset.c:17-25 | 委托 `vm_memset(caller, process, base, pattern, count)` |
-| `do_safememset()` | do_safememset.c:20-57 | endpoint 验证 → grant 表检查 → verify_grant(CPF_WRITE) → vm_memset |
-| endpoint 验证 | do_safememset.c:36-40 | `dst_endpt == NONE` → EFAULT；`!endpoint_lookup` → EINVAL |
-| grant 表检查 | do_safememset.c:42-45 | `!(priv(dst_p) && priv(dst_p)->s_grant_table)` → EINVAL |
+| `do_memset()` | minix3/minix/kernel/system/do_memset.c:do_memset | 委托 `vm_memset(caller, process, base, pattern, count)` |
+| `do_safememset()` | minix3/minix/kernel/system/do_safememset.c:do_safememset | endpoint 验证 → grant 表检查 → verify_grant(CPF_WRITE) → vm_memset |
+| endpoint 验证 | minix3/minix/kernel/system/do_safememset.c:do_safememset（L36，工具生成） | `dst_endpt == NONE` → EFAULT；`!endpoint_lookup` → EINVAL |
+| grant 表检查 | minix3/minix/kernel/system/do_safememset.c:do_safememset（L42，工具生成） | `!(priv(dst_p) && priv(dst_p)->s_grant_table)` → EINVAL |
 
 ### 2.6 调用关系
 
@@ -229,19 +229,19 @@ do_safecopy_from/to(caller, m_ptr)  [do_safecopy.c:388/377]
 
 ### D2. grant 表访问：data_copy 从用户空间读 vs 内核缓存
 
-如果内核直接读用户空间 grant 表：需要 PTE walk 翻译 grant 表地址，可能缺页触发 VMSUSPEND——而 VMSUSPEND 处理本身可能需要读 grant 表，形成递归 VMSUSPEND。如果用 `data_copy()` 从 granter 地址空间拷入 grant 项到内核栈（C 方式，do_safecopy.c:121-123）——一次性拷入，后续验证在内核内存完成，避免递归。所以用 data_copy 拷入内核缓存。
+如果内核直接读用户空间 grant 表：需要 PTE walk 翻译 grant 表地址，可能缺页触发 VMSUSPEND——而 VMSUSPEND 处理本身可能需要读 grant 表，形成递归 VMSUSPEND。如果用 `data_copy()` 从 granter 地址空间拷入 grant 项到内核栈（C 方式，minix3/minix/kernel/system/do_safecopy.c:verify_grant（L121，工具生成））——一次性拷入，后续验证在内核内存完成，避免递归。所以用 data_copy 拷入内核缓存。
 
 ### D3. verify_grant 返回值：多个输出参数 vs GrantVerifyResult 结构体
 
-如果用多个输出参数（C 方式，do_safecopy.c:41-51 三个指针参数）：调用者需声明多个变量传指针，类型不安全，易传错。如果用结构体：`GrantVerifyResult { offset, granter, sfinfo }`——Rust 惯用法，类型安全，调用者直接解构。所以用 `GrantVerifyResult` 结构体（anti-translate）。
+如果用多个输出参数（C 方式，minix3/minix/kernel/system/do_safecopy.c:verify_grant 三个指针参数）：调用者需声明多个变量传指针，类型不安全，易传错。如果用结构体：`GrantVerifyResult { offset, granter, sfinfo }`——Rust 惯用法，类型安全，调用者直接解构。所以用 `GrantVerifyResult` 结构体（anti-translate）。
 
 ### D4. 间接 grant 链：递归 vs 循环 + depth
 
-如果用递归：间接链可能形成环（虽有 depth 限制），递归有栈溢出风险；且 no_std 下栈空间有限。如果用循环 + depth 计数（C 方式，do_safecopy.c:148-173）：`do { ... if (depth == MAX_INDIRECT_DEPTH) return ELOOP; depth++; ... } while (CPF_INDIRECT)`——无栈溢出风险，与 C 一致。所以用循环 + depth 计数。
+如果用递归：间接链可能形成环（虽有 depth 限制），递归有栈溢出风险；且 no_std 下栈空间有限。如果用循环 + depth 计数（C 方式，minix3/minix/kernel/system/do_safecopy.c:verify_grant（L148，工具生成））：`do { ... if (depth == MAX_INDIRECT_DEPTH) return ELOOP; depth++; ... } while (CPF_INDIRECT)`——无栈溢出风险，与 C 一致。所以用循环 + depth 计数。
 
 ### D5. VUMAP 物理向量：栈数组 vs Vec
 
-如果用 `Vec<VumapPhys>`：需动态分配，no_std 下需 `alloc` crate；且 DMA 路径应避免动态分配（性能 + 失败模式）。如果用栈数组 `[VumapPhys; MAPVEC_NR]`（C 方式，do_vumap.c:31）：编译期分配在栈，no_std 兼容，无动态分配失败。所以用栈数组（anti-translate）。
+如果用 `Vec<VumapPhys>`：需动态分配，no_std 下需 `alloc` crate；且 DMA 路径应避免动态分配（性能 + 失败模式）。如果用栈数组 `[VumapPhys; MAPVEC_NR]`（C 方式，minix3/minix/kernel/system/do_vumap.c:do_vumap（L31，工具生成））：编译期分配在栈，no_std 兼容，无动态分配失败。所以用栈数组（anti-translate）。
 
 ### D6. CP_FLAG_TRY / CPF_TRY：保留 vs 删除
 
@@ -257,7 +257,7 @@ do_safecopy_from/to(caller, m_ptr)  [do_safecopy.c:388/377]
 
 ### D9. safecopy 的 sfinfo：结构体 vs Option
 
-如果 sfinfo 总是存在（C 方式，do_safecopy.c:288）：大部分场景不使用 CPF_TRY，sfinfo 字段无意义但始终占用栈空间。如果用 `Option<SoftFaultInfo>`：仅 CPF_TRY 场景构造 Some，其他场景 None；类型表达"可能不存在"语义。所以用 `Option<SoftFaultInfo>`（anti-translate）。
+如果 sfinfo 总是存在（C 方式，minix3/minix/kernel/system/do_safecopy.c:safecopy（L288，工具生成））：大部分场景不使用 CPF_TRY，sfinfo 字段无意义但始终占用栈空间。如果用 `Option<SoftFaultInfo>`：仅 CPF_TRY 场景构造 Some，其他场景 None；类型表达"可能不存在"语义。所以用 `Option<SoftFaultInfo>`（anti-translate）。
 
 ### 差异类型汇总表（15 个核心符号的 C→Rust 映射全景）
 
@@ -265,21 +265,21 @@ D1-D9 逐个决策的纵向总结——一眼看清每个 C 符号的 Rust 对�
 
 | C 符号 | C 位置 | Rust 表达 | 差异类型 |
 |--------|--------|----------|---------|
-| `verify_grant(..., *offset_result, *e_granter, *sfinfo)` | do_safecopy.c:41-51 | `GrantVerifyResult { offset, effective_granter, sfinfo }` + `VerifyGrantOutcome` enum（grant.rs:257-267） | anti-translate（结构体替代多输出参数 + 三态 enum 替代 errno/VMSUSPEND 双返回） |
-| `struct cp_sfinfo sfinfo`（总是存在） | do_safecopy.c:288,31-36 | `Option<SoftFaultInfo>` | anti-translate（Option 表达"可能不存在"，大部分场景 None） |
-| `int access`（CPF_READ/CPF_WRITE 裸位） | do_safecopy.c:46,279-281 | `CpFlags` bitflags + `SafecopyAccess` enum | 语义对齐（兼容 UMAP resolve-only 语义） |
-| `endpoint_t granter`（裸 int） | do_safecopy.c:42 | `Endpoint` newtype | 类型增强（编译期防止与其他 i32 混淆） |
-| `struct vumap_phys pvec[MAPVEC_NR]` | do_vumap.c:31 | `[VumapPhys; MAPVEC_NR]` 栈数组 | anti-translate（no_std 兼容，无 alloc） |
-| `MAX_INDIRECT_DEPTH 5` | do_safecopy.c:21 | `const MAX_INDIRECT_DEPTH: usize = 5` | 语义对齐 |
-| `do { } while (CPF_INDIRECT)` | do_safecopy.c:59,173 | `for _depth in 0..MAX_INDIRECT_DEPTH` 循环 | 语义对齐（D4：避免递归栈溢出） |
-| `do_umap` → `do_umap_remote` 委托 | do_umap.c:25-37 | `dispatch_umap` 合并 | 架构演进（D8：Rust 不需要 C 的 #if 条件编译） |
+| `verify_grant(..., *offset_result, *e_granter, *sfinfo)` | minix3/minix/kernel/system/do_safecopy.c:verify_grant | `GrantVerifyResult { offset, effective_granter, sfinfo }` + `VerifyGrantOutcome` enum（grant.rs:257-267） | anti-translate（结构体替代多输出参数 + 三态 enum 替代 errno/VMSUSPEND 双返回） |
+| `struct cp_sfinfo sfinfo`（总是存在） | minix3/minix/kernel/system/do_safecopy.c:safecopy（L288，工具生成）,31-36 | `Option<SoftFaultInfo>` | anti-translate（Option 表达"可能不存在"，大部分场景 None） |
+| `int access`（CPF_READ/CPF_WRITE 裸位） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L46，工具生成）,279-281 | `CpFlags` bitflags + `SafecopyAccess` enum | 语义对齐（兼容 UMAP resolve-only 语义） |
+| `endpoint_t granter`（裸 int） | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L42，工具生成） | `Endpoint` newtype | 类型增强（编译期防止与其他 i32 混淆） |
+| `struct vumap_phys pvec[MAPVEC_NR]` | minix3/minix/kernel/system/do_vumap.c:do_vumap（L31，工具生成） | `[VumapPhys; MAPVEC_NR]` 栈数组 | anti-translate（no_std 兼容，无 alloc） |
+| `MAX_INDIRECT_DEPTH 5` | minix3/minix/kernel/system/do_safecopy.c:MAX_INDIRECT_DEPTH | `const MAX_INDIRECT_DEPTH: usize = 5` | 语义对齐 |
+| `do { } while (CPF_INDIRECT)` | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L59，工具生成）,173 | `for _depth in 0..MAX_INDIRECT_DEPTH` 循环 | 语义对齐（D4：避免递归栈溢出） |
+| `do_umap` → `do_umap_remote` 委托 | minix3/minix/kernel/system/do_umap.c:do_umap | `dispatch_umap` 合并 | 架构演进（D8：Rust 不需要 C 的 #if 条件编译） |
 | `createpde()` + `lin_lin_copy()` | memory.c | `kernel_phys_to_virt()` + `copy_nonoverlapping` | 架构演进（D1：Direct Map 一行加法替代临时映射） |
-| `virtual_copy_vmcheck()`（宏） | proto.h:184 → `virtual_copy_f` memory.c:592-666 | `data_copy_vmcheck()`（cross_space.rs:118） | 语义对齐（VA→PA 经 `lookup_in_table`，缺页 `suspend_for_vm`） |
-| `vm_memset()` | memory.c:526-577 | `memset_vmcheck()`（cross_space.rs:193） | 语义对齐（Direct Map + `ptr::write_bytes`，缺页 `suspend_for_vm`） |
-| `vm_lookup()` | do_umap_remote.c:94 | `lookup_in_table()`（vm.rs:204） | 语义对齐（`_table` 后缀强调页表 walk，委托 `CurrentPteWalk::walk`） |
-| `vm_lookup_range()` | do_umap_remote.c:106-109, do_vumap.c:94 | `lookup_range_in_table()`（vm.rs:249） | 语义对齐（4KB 页粒度连续性检查） |
-| `CP_FLAG_TRY` / `CPF_TRY` | do_copy.c:80 / do_safecopy.c:258 | 常量保留 + 分支保留 | 语义对齐（D6：VFS 依赖此语义，EFAULT 路径 DEFERRED） |
-| `data_copy(granter, ..., KERNEL, &g, sizeof(g))` | do_safecopy.c:121-123 | `data_copy_vmcheck` 经 `proc_cr3` 闭包 | 语义对齐（D2：拷入内核缓存避免递归 VMSUSPEND） |
+| `virtual_copy_vmcheck()`（宏） | proto.h:184 → `virtual_copy_f` memory.c:592-666 | `data_copy_vmcheck()`（os/kernel/src/cross_space.rs:fn data_copy_vmcheck） | 语义对齐（VA→PA 经 `lookup_in_table`，缺页 `suspend_for_vm`） |
+| `vm_memset()` | memory.c:526-577 | `memset_vmcheck()`（os/kernel/src/cross_space.rs:fn write_to_process_vmcheck（L193，工具生成）） | 语义对齐（Direct Map + `ptr::write_bytes`，缺页 `suspend_for_vm`） |
+| `vm_lookup()` | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L94，工具生成） | `lookup_in_table()`（vm.rs:204） | 语义对齐（`_table` 后缀强调页表 walk，委托 `CurrentPteWalk::walk`） |
+| `vm_lookup_range()` | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L106，工具生成）, minix3/minix/kernel/system/do_vumap.c:do_vumap（L94，工具生成） | `lookup_range_in_table()`（vm.rs:249） | 语义对齐（4KB 页粒度连续性检查） |
+| `CP_FLAG_TRY` / `CPF_TRY` | minix3/minix/kernel/system/do_copy.c:do_copy（L80，工具生成） / minix3/minix/kernel/system/do_safecopy.c:verify_grant（L258，工具生成） | 常量保留 + 分支保留 | 语义对齐（D6：VFS 依赖此语义，EFAULT 路径 DEFERRED） |
+| `data_copy(granter, ..., KERNEL, &g, sizeof(g))` | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L121，工具生成） | `data_copy_vmcheck` 经 `proc_cr3` 闭包 | 语义对齐（D2：拷入内核缓存避免递归 VMSUSPEND） |
 
 ---
 
@@ -354,7 +354,7 @@ pub enum VmCopyError {
 
 ### 4.2 dispatch_copy — VIRCOPY/PHYSCOPY
 
-> 设计决策：§3 D1（Direct Map）。对应 C: do_copy.c:22-90。
+> 设计决策：§3 D1（Direct Map）。对应 C: minix3/minix/kernel/system/do_copy.c:do_copy。
 
 `dispatch_vircopy` 与 `dispatch_physcopy` 都是 `dispatch_copy` 的薄包装（C 中两者共用同一 handler）。dispatch 完整接入 `data_copy_vmcheck`（正常路径）+ `cross_space_copy`（CP_FLAG_TRY 路径，缺页返回 EFAULT 而非 VMSUSPEND）。
 
@@ -404,7 +404,7 @@ fn dispatch_copy(caller: &mut KProcess, msg: &Message,
 
 ### 4.3 safecopy_common_impl — SAFECOPYFROM/TO
 
-> 设计决策：§3 D2（data_copy 拷入内核缓存）、§3 D3（GrantVerifyResult）。对应 C: do_safecopy.c:271-394。
+> 设计决策：§3 D2（data_copy 拷入内核缓存）、§3 D3（GrantVerifyResult）。对应 C: minix3/minix/kernel/system/do_safecopy.c:safecopy。
 
 `dispatch_safecopy_from`（CPF_READ）与 `dispatch_safecopy_to`（CPF_WRITE）都委托 `safecopy_common_impl`。验证 + `verify_grant` + `data_copy_vmcheck` 拷贝均已完整实现。
 
@@ -454,9 +454,9 @@ fn safecopy_common_impl(caller: &mut KProcess, msg: &Message,
 
 ### 4.4 dispatch_umap_remote_impl — UMAP/UMAP_REMOTE
 
-> 设计决策：§3 D8（合并 dispatch_umap）。对应 C: do_umap_remote.c:26-120。
+> 设计决策：§3 D8（合并 dispatch_umap）。对应 C: minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote。
 
-`dispatch_umap`（do_umap.c:25-37）合并了 C 的安全检查，然后委托 `dispatch_umap_remote_impl`。dispatch 已完整接入 `verify_grant` + `lookup_in_table` + `lookup_range_in_table`（连续性检查）+ 消息回填。
+`dispatch_umap`（minix3/minix/kernel/system/do_umap.c:do_umap）合并了 C 的安全检查，然后委托 `dispatch_umap_remote_impl`。dispatch 已完整接入 `verify_grant` + `lookup_in_table` + `lookup_range_in_table`（连续性检查）+ 消息回填。
 
 ```rust
 // os/kernel/src/syscall_copy.rs:802-967（节选）
@@ -517,7 +517,7 @@ fn dispatch_umap_remote_impl(caller: &mut KProcess, msg: &Message,
 
 ### 4.5 dispatch_vumap — VUMAP
 
-> 设计决策：§3 D5（栈数组）。对应 C: do_vumap.c:22-131。
+> 设计决策：§3 D5（栈数组）。对应 C: minix3/minix/kernel/system/do_vumap.c:do_vumap。
 
 验证层 + 向量拷入（`data_copy_vmcheck`）+ 逐元素 `verify_grant`/`lookup_range_in_table` + 物理向量拷出均已完整实现。
 
@@ -563,11 +563,11 @@ pub fn dispatch_vumap(caller: &mut KProcess, msg: &Message,
 }
 ```
 
-> `MAPVEC_NR` 当前值为 64（`os/kernel/src/syscall_copy.rs:121`，与 C `minix3/minix/include/minix/const.h:49` 对齐），作为栈数组上限。`VumapPhys` 结构体（D5 栈数组元素类型）已落地，作为 `lookup_range_in_table` 输出的物理范围载体。
+> `MAPVEC_NR` 当前值为 64（`os/kernel/src/syscall_copy.rs:const MAPVEC_NR`，与 C `minix3/minix/include/minix/const.h:MAPVEC_NR` 对齐），作为栈数组上限。`VumapPhys` 结构体（D5 栈数组元素类型）已落地，作为 `lookup_range_in_table` 输出的物理范围载体。
 
 ### 4.6 dispatch_memset / dispatch_safememset — MEMSET/SAFEMEMSET
 
-> 设计决策：§3 D7（保留 vm_memset 接口）。对应 C: do_memset.c:17-25, do_safememset.c:20-57。
+> 设计决策：§3 D7（保留 vm_memset 接口）。对应 C: minix3/minix/kernel/system/do_memset.c:do_memset, minix3/minix/kernel/system/do_safememset.c:do_safememset。
 
 ```rust
 // os/kernel/src/syscall_copy.rs:1266-1357（dispatch_memset 节选）
@@ -660,17 +660,17 @@ pub fn data_copy_vmcheck(
 
 | 函数 | C 位置 | 实现状态 |
 |------|--------|---------|
-| `verify_grant` 完整实现 | do_safecopy.c:41-266 | ✅ 已实现（`grant.rs`，11 步验证 + `VerifyGrantOutcome` 三态返回） |
-| `verify_grant` 间接链循环 | do_safecopy.c:148-173 | ✅ 已实现（循环 + depth ≤ MAX_INDIRECT_DEPTH=5，D4） |
-| `verify_grant` magic 重定向 | do_safecopy.c:217-250 | ✅ 已实现（`effective_granter` 重定向） |
-| `CPF_TRY` 软故障标记 | do_safecopy.c:258-263, 336-369 | ✅ 已实现（`Option<SoftFaultInfo>`，D9） |
-| `CP_FLAG_TRY` try-copy 路径 | do_copy.c:80-85 | ✅ 已实现（`cross_space_copy` 返回 EFAULT 而非 VmSuspend） |
+| `verify_grant` 完整实现 | minix3/minix/kernel/system/do_safecopy.c:verify_grant | ✅ 已实现（`grant.rs`，11 步验证 + `VerifyGrantOutcome` 三态返回） |
+| `verify_grant` 间接链循环 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L148，工具生成） | ✅ 已实现（循环 + depth ≤ MAX_INDIRECT_DEPTH=5，D4） |
+| `verify_grant` magic 重定向 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L217，工具生成） | ✅ 已实现（`effective_granter` 重定向） |
+| `CPF_TRY` 软故障标记 | minix3/minix/kernel/system/do_safecopy.c:verify_grant（L258，工具生成）, 336-369 | ✅ 已实现（`Option<SoftFaultInfo>`，D9） |
+| `CP_FLAG_TRY` try-copy 路径 | minix3/minix/kernel/system/do_copy.c:do_copy（L80，工具生成） | ✅ 已实现（`cross_space_copy` 返回 EFAULT 而非 VmSuspend） |
 | `virtual_copy_vmcheck` 跨进程 PTE walk | memory.c | ✅ 已实现（`CurrentPteWalk::walk` + `data_copy_vmcheck`） |
-| `vm_lookup` | do_umap_remote.c:94 | ✅ 已实现（`vm::lookup_in_table`，接入 dispatch_umap_remote） |
-| `vm_lookup_range` 连续性检查 | do_umap_remote.c:106-109 | ✅ 已实现（`vm::lookup_range_in_table`，接入 dispatch_umap_remote + dispatch_vumap） |
-| `vm_memset` | do_memset.c:20 | ✅ 已实现（`cross_space::memset_vmcheck`，接入 dispatch_memset） |
-| `do_vsafecopy` 向量拷入 + 逐元素循环 | do_safecopy.c:399-447 | ✅ 已实现（`data_copy_vmcheck` 拷入 + 逐元素 `verify_grant`） |
-| `do_vumap` 物理向量拷出 | do_vumap.c:120-128 | ✅ 已实现（`data_copy_vmcheck` 拷出 pvec） |
+| `vm_lookup` | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L94，工具生成） | ✅ 已实现（`vm::lookup_in_table`，接入 dispatch_umap_remote） |
+| `vm_lookup_range` 连续性检查 | minix3/minix/kernel/system/do_umap_remote.c:do_umap_remote（L106，工具生成） | ✅ 已实现（`vm::lookup_range_in_table`，接入 dispatch_umap_remote + dispatch_vumap） |
+| `vm_memset` | minix3/minix/kernel/system/do_memset.c:do_memset（L20，工具生成） | ✅ 已实现（`cross_space::memset_vmcheck`，接入 dispatch_memset） |
+| `do_vsafecopy` 向量拷入 + 逐元素循环 | minix3/minix/kernel/system/do_safecopy.c:do_vsafecopy | ✅ 已实现（`data_copy_vmcheck` 拷入 + 逐元素 `verify_grant`） |
+| `do_vumap` 物理向量拷出 | minix3/minix/kernel/system/do_vumap.c:do_vumap（L120，工具生成） | ✅ 已实现（`data_copy_vmcheck` 拷出 pvec） |
 | VMSUSPEND 协议 | memory.c + VM 服务器 | ✅ 已接入（`data_copy_vmcheck` 返回 `VmSuspend`，由上层处理 VM round-trip） |
 
 **基础设施总览**: `minix_arch::PteWalkArch` trait（`os/arch/src/arch/pte_walk_arch.rs`）三架构实现（x86_64 4-level / aarch64 4-level / riscv64 Sv39 3-level），通过 `CurrentPteWalk::walk` 类型别名 trait 分发，内核代码无 `#[cfg(target_arch)]` 行为选择。`vm::lookup_in_table`/`lookup_range_in_table`、`cross_space::data_copy_vmcheck`/`memset_vmcheck`、`grant::verify_grant`（`VerifyGrantOutcome` Ok/Err/Suspended 三态）均已就绪，7 个 dispatch 函数全部接入真实拷贝/映射路径（详见文件头注释 `syscall_copy.rs:44-75`）。

@@ -1,7 +1,7 @@
 # 19 — 进程参数：读另一个进程的命令行和环境
 
 > **分类**: 进程信息 / 跨地址空间逐页读
-> **源码**: `minix3/minix/servers/mib/proc.c:918-1176`（查询入口 `mib_kern_proc_args`）
+> **源码**: `minix3/minix/servers/mib/proc.c:mib_kern_proc2（L918，工具生成）`（查询入口 `mib_kern_proc_args`）
 > **说明**: 进程信息五篇的第四篇。ps 命令想显示进程的命令行和环境变量，数据在目标进程自己的地址空间里。本篇讲怎么一页一页走过去、页数预算怎么定、超了怎么截断。
 
 ---
@@ -146,7 +146,7 @@ os/servers/mib/src/proc/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/proc.c:918-1176`、`minix3/sys/sys/sysctl.h:677-680`
+- C 源：`minix3/minix/servers/mib/proc.c:mib_kern_proc2（L918，工具生成）`、`minix3/sys/sys/sysctl.h:KERN_PROC_ARGV`
 - 阶段文档：`16-mib-proc-tables.md`（拿表和拿来用的函数）、`18-mib-proc2.md`（槽位检查复用）、`06-mib-copy-io.md`（拷出）、`10-mib-dispatch.md`（查询终点）、`20-mib-minix-proc.md`（下一站）
 - Rust 实现：`os/servers/mib/src/proc/proc_args.rs`、`os/libs/minix-types/src/types/sysctl.rs`（查询编号值表）
 - 相关约定：架构演进 A-4（plan §4，交换布局）、A-6（plan §4，表布局归三家）、A-12（plan §4，跨地址空间读取归要数据的代码）

@@ -1,7 +1,7 @@
 # 10 — DS 订阅与通知：登记兴趣、唤醒订阅者、取走更新
 
 > **分类**: 数据面 handler / 订阅机制（次主线核心）
-> **源码**: `minix3/minix/servers/ds/store.c:456-581`（subscribe/check）、`186-227`（match/update）
+> **源码**: `minix3/minix/servers/ds/store.c:do_subscribe`（subscribe/check）、`186-227`（match/update）
 > **说明**: DS 的"推送"半：订阅者登记"我关心什么"，条目变化时被唤醒，再用 check 把更新取走。本文讲清登记、匹配、唤醒、取阅四段，以及次主线全景图。
 
 ---
@@ -165,6 +165,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:456-581,186-227`
+- C 源：`minix3/minix/servers/ds/store.c:do_subscribe,186-227`
 - 阶段文档：`09-ds-delete.md`（上一站）、`11-ds-getsysinfo.md`（下一站）、`07-ds-publish.md`（环的发布侧调用点）
 - Rust 实现：`os/servers/ds/src/subscribe.rs`、`os/servers/ds/src/notify.rs`、`os/servers/ds/src/check.rs`

@@ -22,7 +22,7 @@
 
 - **WHY**: 操作系统需要一个"进程"实体承载执行流，但进程不能凭空出现或消失——创建需要复制父状态，销毁需要回收所有资源（地址空间 / IRQ / endpoint / timer / FPU / 权限）。如果创建与销毁不是原子且幂等的，会导致两类故障：槽位泄漏（进程表耗尽，新 fork 无槽可用）或悬挂资源（IRQ 仍触发到已死进程，旧 timer 仍超时）。
 - **WHAT**: 内核用 4 条核心弧构成生命周期主链，外加 3 条控制弧。每条弧都是"读目标 proc → 改标志/字段 → 写回"的原子更新，且回收弧必须幂等（重复回收直接返回 OK，防止调用者重试触发二次释放）。
-- **HOW**: C 用 `do_fork.c:63`（`*rpc = *rpp` 结构体拷贝 + 多项修正）、`do_exec.c:45`（`arch_proc_init` 设 IP/SP + 清 DELIVERMSG）、`do_exit.c:21`（`cause_sig(caller, SIGABRT)` + `EDONTREPLY`）、`do_clear.c:35-68`（释放地址空间 → 幂等检查 → `RTS_SLOT_FREE`）。
+- **HOW**: C 用 `minix3/minix/kernel/system/do_fork.c:do_fork（L63，工具生成）`（`*rpc = *rpp` 结构体拷贝 + 多项修正）、`minix3/minix/kernel/system/do_exec.c:do_exec（L45，工具生成）`（`arch_proc_init` 设 IP/SP + 清 DELIVERMSG）、`minix3/minix/kernel/system/do_exit.c:do_exit（L21，工具生成）`（`cause_sig(caller, SIGABRT)` + `EDONTREPLY`）、`minix3/minix/kernel/system/do_clear.c:do_clear（L35，工具生成）`（释放地址空间 → 幂等检查 → `RTS_SLOT_FREE`）。
 
 ```
         SYS_FORK          SYS_EXEC         SYS_EXIT        SYS_CLEAR
@@ -36,8 +36,8 @@
 **关键概念**:
 
 - **exec 是替换非新建**: exec 不分配新 proc 槽，只改 IP/SP/名字，复用同一 endpoint——这与 fork（新建槽+新 endpoint 代际）本质不同。所以 exec 后的进程仍是"同一进程"，只是换了执行流。
-- **exit 不直接杀**: exit 调 `cause_sig(caller, SIGABRT)`（do_exit.c:21），把死亡决策权交给信号管理器。内核不越俎代庖地直接释放资源——资源释放在管理器决议后由 SYS_CLEAR 完成。这种"自杀 → 委托 → 回收"三段式让管理器能执行清理钩子（如通知父进程、记账）。典型管理方是 PM；**自管理进程**（s_sig_mgr = 自身，如 VM）退出属致命自信号：有 backup 管理器则提升接管，无 backup 内核 panic（[19-syscall-signal.md](19-syscall-signal.md) §1.4）。
-- **clear 的幂等性**: `if(isemptyp(rc)) return OK`（do_clear.c:38）——若槽位已空闲则直接返回成功。这保证 PM 在网络分区或重试场景下重复调用 clear 不会二次释放 IRQ/endpoint/timer。
+- **exit 不直接杀**: exit 调 `cause_sig(caller, SIGABRT)`（minix3/minix/kernel/system/do_exit.c:do_exit（L21，工具生成）），把死亡决策权交给信号管理器。内核不越俎代庖地直接释放资源——资源释放在管理器决议后由 SYS_CLEAR 完成。这种"自杀 → 委托 → 回收"三段式让管理器能执行清理钩子（如通知父进程、记账）。典型管理方是 PM；**自管理进程**（s_sig_mgr = 自身，如 VM）退出属致命自信号：有 backup 管理器则提升接管，无 backup 内核 panic（[19-syscall-signal.md](19-syscall-signal.md) §1.4）。
+- **clear 的幂等性**: `if(isemptyp(rc)) return OK`（minix3/minix/kernel/system/do_clear.c:do_clear（L38，工具生成））——若槽位已空闲则直接返回成功。这保证 PM 在网络分区或重试场景下重复调用 clear 不会二次释放 IRQ/endpoint/timer。
 
 ### 1.2 同步 fork：为什么父进程必须 RTS_RECEIVING
 
@@ -45,16 +45,16 @@
 
 **WHY → WHAT → HOW 弧线**:
 
-- **WHY**: fork 时子进程是父的副本，但子进程的 fork 系统调用"返回值"必须为 0（do_fork.c:74 `rpc->p_reg.retreg = 0`），让子进程代码能区分"我是子进程"。这个返回值通过父进程当时正在等待的 IPC 回复缓冲投递。如果父进程不在 RECEIVING 状态，回复缓冲指针无效，复制子进程会拷贝到一个悬空的缓冲——所以 fork 必须同步。
-- **WHAT**: 内核强制 `RTS_ISSET(rpp, RTS_RECEIVING)` 前提（do_fork.c:51），不满足返回 EINVAL。复制时 `*rpc = *rpp`（do_fork.c:63）连消息缓冲指针一并拷贝，子进程通过同一缓冲收到 pid=0。
-- **HOW**: endpoint 不能直接继承——若复用父 endpoint，旧代 ipc 消息会投递到错乱的目标。所以 `_ENDPOINT_G` 取代际 → `++gen`（do_fork.c:69）→ `_ENDPOINT(gen, p_nr)` 重组（do_fork.c:72）。代际回绕：`>= _ENDPOINT_MAX_GENERATION` 则归 1（do_fork.c:69-70）。
+- **WHY**: fork 时子进程是父的副本，但子进程的 fork 系统调用"返回值"必须为 0（minix3/minix/kernel/system/do_fork.c:do_fork（L74，工具生成） `rpc->p_reg.retreg = 0`），让子进程代码能区分"我是子进程"。这个返回值通过父进程当时正在等待的 IPC 回复缓冲投递。如果父进程不在 RECEIVING 状态，回复缓冲指针无效，复制子进程会拷贝到一个悬空的缓冲——所以 fork 必须同步。
+- **WHAT**: 内核强制 `RTS_ISSET(rpp, RTS_RECEIVING)` 前提（minix3/minix/kernel/system/do_fork.c:do_fork（L51，工具生成）），不满足返回 EINVAL。复制时 `*rpc = *rpp`（minix3/minix/kernel/system/do_fork.c:do_fork（L63，工具生成））连消息缓冲指针一并拷贝，子进程通过同一缓冲收到 pid=0。
+- **HOW**: endpoint 不能直接继承——若复用父 endpoint，旧代 ipc 消息会投递到错乱的目标。所以 `_ENDPOINT_G` 取代际 → `++gen`（minix3/minix/kernel/system/do_fork.c:do_fork（L69，工具生成））→ `_ENDPOINT(gen, p_nr)` 重组（minix3/minix/kernel/system/do_fork.c:do_fork（L72，工具生成））。代际回绕：`>= _ENDPOINT_MAX_GENERATION` 则归 1（minix3/minix/kernel/system/do_fork.c:do_fork（L69，工具生成））。
 
 **关键约束**:
 
-1. 父非 RECEIVING → EINVAL（do_fork.c:51）
-2. 子槽必须为空（`isemptyp(rpp) || !isemptyp(rpc)` → EINVAL，do_fork.c:46）
+1. 父非 RECEIVING → EINVAL（minix3/minix/kernel/system/do_fork.c:do_fork（L51，工具生成））
+2. 子槽必须为空（`isemptyp(rpp) || !isemptyp(rpc)` → EINVAL，minix3/minix/kernel/system/do_fork.c:do_fork（L46，工具生成））
 3. 复制前 `save_fpu(rpp)`（do_fork.c 附近）保证父 FPU 上下文已落盘
-4. 信号状态不继承：`RTS_UNSET(rpc, RTS_SIGNALED|RTS_SIG_PENDING|RTS_P_STOP)`（do_fork.c:122）——子进程不应继承父的待处理信号，否则会立刻被信号杀掉
+4. 信号状态不继承：`RTS_UNSET(rpc, RTS_SIGNALED|RTS_SIG_PENDING|RTS_P_STOP)`（minix3/minix/kernel/system/do_fork.c:FORKSTR（L122，工具生成））——子进程不应继承父的待处理信号，否则会立刻被信号杀掉
 
 ### 1.3 权限降级：SYS_PROC 父→USER 子
 
@@ -63,8 +63,8 @@
 **WHY → WHAT → HOW 弧线**:
 
 - **WHY**: 系统服务（如 PM）是 SYS_PROC，拥有高权限（可发内核 syscall、绑 IRQ、访问任意内存）。如果 fork 出的子进程继承 SYS_PROC，那么任何用户进程都能通过"让 PM 替自己 fork 一个 SYS_PROC 子进程"提权——这是经典 confusable deputy 安全漏洞。
-- **WHAT**: fork 检查 `priv(rpp)->s_flags & SYS_PROC`（do_fork.c:105），若父是系统进程，子进程 `p_priv = priv_addr(USER_PRIV_ID)` + `RTS_NO_PRIV`（do_fork.c:106-107）。RTS_NO_PRIV 使子进程不可调度，直到调用者通过 SYS_PRIVCTL 显式赋权。
-- **HOW**: 降级是单向的——子进程从 USER_PRIV 起步，PM 在 exec 前用 `sys_privctl` 赋予适当权限。VM 模式下还设 `RTS_VMINHIBIT`（do_fork.c:115-116），让子进程等待 VM 设置新页表后才可运行，避免子进程用父的旧页表执行。
+- **WHAT**: fork 检查 `priv(rpp)->s_flags & SYS_PROC`（minix3/minix/kernel/system/do_fork.c:FORKSTR（L105，工具生成）），若父是系统进程，子进程 `p_priv = priv_addr(USER_PRIV_ID)` + `RTS_NO_PRIV`（minix3/minix/kernel/system/do_fork.c:FORKSTR（L106，工具生成））。RTS_NO_PRIV 使子进程不可调度，直到调用者通过 SYS_PRIVCTL 显式赋权。
+- **HOW**: 降级是单向的——子进程从 USER_PRIV 起步，PM 在 exec 前用 `sys_privctl` 赋予适当权限。VM 模式下还设 `RTS_VMINHIBIT`（minix3/minix/kernel/system/do_fork.c:FORKSTR（L115，工具生成）），让子进程等待 VM 设置新页表后才可运行，避免子进程用父的旧页表执行。
 
 ### 1.4 SMP 停止：跨 CPU IPI 同步
 
@@ -72,9 +72,9 @@
 
 **WHY → WHAT → HOW 弧线**:
 
-- **WHY**: 单 CPU 下 `RTS_SET(rp, RTS_PROC_STOP)`（do_runctl.c:62）立即可行，因为当前 CPU 持有 BKL，目标进程不会同时跑。但 SMP 下目标进程可能在另一 CPU 上运行——直接改标志后，目标 CPU 仍可能用陈旧上下文继续执行一个时钟周期（如已读入寄存器的返回地址仍指向旧代码），导致状态不一致。
-- **WHAT**: SMP 路径检查 `rp->p_cpu != cpuid`（do_runctl.c:57），若目标在远 CPU，调 `smp_schedule_stop_proc(rp)`（do_runctl.c:58）发同步 IPI；否则本地 `RTS_SET`。
-- **HOW**: 同步 IPI 的完整协议见 [16-smp.md](16-smp.md) §1.3——`smp_schedule_sync(STOP_PROC)` 释放 BKL → 等待目标 CPU 处理 → 重获 BKL。RC_DELAY 模式下若目标正在 SENDING，设 `MF_SIG_DELAY` 返回 EBUSY（do_runctl.c:44-48），让 PM 延后停止。
+- **WHY**: 单 CPU 下 `RTS_SET(rp, RTS_PROC_STOP)`（minix3/minix/kernel/system/do_runctl.c:do_runctl（L62，工具生成））立即可行，因为当前 CPU 持有 BKL，目标进程不会同时跑。但 SMP 下目标进程可能在另一 CPU 上运行——直接改标志后，目标 CPU 仍可能用陈旧上下文继续执行一个时钟周期（如已读入寄存器的返回地址仍指向旧代码），导致状态不一致。
+- **WHAT**: SMP 路径检查 `rp->p_cpu != cpuid`（minix3/minix/kernel/system/do_runctl.c:do_runctl（L57，工具生成）），若目标在远 CPU，调 `smp_schedule_stop_proc(rp)`（minix3/minix/kernel/system/do_runctl.c:do_runctl（L58，工具生成））发同步 IPI；否则本地 `RTS_SET`。
+- **HOW**: 同步 IPI 的完整协议见 [16-smp.md](16-smp.md) §1.3——`smp_schedule_sync(STOP_PROC)` 释放 BKL → 等待目标 CPU 处理 → 重获 BKL。RC_DELAY 模式下若目标正在 SENDING，设 `MF_SIG_DELAY` 返回 EBUSY（minix3/minix/kernel/system/do_runctl.c:do_runctl（L44，工具生成）），让 PM 延后停止。
 
 **单 CPU 退化**: `CONFIG_SMP` 未定义时无 IPI 路径，直接 `RTS_SET`。
 
@@ -88,48 +88,48 @@
 
 ### 2.1 do_fork — 复制 proc 结构，新 endpoint
 
-入口 `do_fork(caller, m_ptr)` do_fork.c:26。消息字段：`m_lsys_krn_sys_fork.endpt`（父 endpoint）/ `.slot`（子槽位）/ `.flags`（PFF_VMINHIBIT）。
+入口 `do_fork(caller, m_ptr)` minix3/minix/kernel/system/do_fork.c:do_fork。消息字段：`m_lsys_krn_sys_fork.endpt`（父 endpoint）/ `.slot`（子槽位）/ `.flags`（PFF_VMINHIBIT）。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `isokendpt(endpt, &p_proc)` | do_fork.c:41 | 验证父 endpoint |
-| `rpp = proc_addr(p_proc)` / `rpc = proc_addr(slot)` | do_fork.c:44-45 | 父 / 子 proc 指针 |
-| `isemptyp(rpp)\|\|!isemptyp(rpc)` → EINVAL | do_fork.c:46 | 父非空子空 |
-| `RTS_ISSET(rpp, RTS_RECEIVING)` | do_fork.c:51 | 同步前提 |
-| `save_fpu(rpp)` | do_fork.c:57 | 保存父 FPU |
-| `*rpc = *rpp` | do_fork.c:63 | proc 结构体拷贝 |
-| `gen = _ENDPOINT_G(...); ++gen; _ENDPOINT(gen, p_nr)` | do_fork.c:59,69,72 | endpoint 代际 |
-| `rpc->p_reg.retreg = 0` | do_fork.c:74 | 子返回值 = 0 |
-| `RTS_SET(rpc, RTS_NO_QUANTUM)` | do_fork.c:90 | 子不可调度 |
-| `priv(rpp)->s_flags & SYS_PROC` → USER_PRIV + RTS_NO_PRIV | do_fork.c:105-107 | 权限降级 |
-| `PFF_VMINHIBIT` → RTS_VMINHIBIT | do_fork.c:115-116 | 等新页表 |
-| `RTS_UNSET(rpc, RTS_SIGNALED\|SIG_PENDING\|P_STOP)` | do_fork.c:122 | 信号不继承 |
-| `m_ptr->endpt = rpc->p_endpoint` | do_fork.c:111 | 回填子 endpoint |
+| `isokendpt(endpt, &p_proc)` | minix3/minix/kernel/system/do_fork.c:do_fork（L41，工具生成） | 验证父 endpoint |
+| `rpp = proc_addr(p_proc)` / `rpc = proc_addr(slot)` | minix3/minix/kernel/system/do_fork.c:do_fork（L44，工具生成） | 父 / 子 proc 指针 |
+| `isemptyp(rpp)\|\|!isemptyp(rpc)` → EINVAL | minix3/minix/kernel/system/do_fork.c:do_fork（L46，工具生成） | 父非空子空 |
+| `RTS_ISSET(rpp, RTS_RECEIVING)` | minix3/minix/kernel/system/do_fork.c:do_fork（L51，工具生成） | 同步前提 |
+| `save_fpu(rpp)` | minix3/minix/kernel/system/do_fork.c:do_fork（L57，工具生成） | 保存父 FPU |
+| `*rpc = *rpp` | minix3/minix/kernel/system/do_fork.c:do_fork（L63，工具生成） | proc 结构体拷贝 |
+| `gen = _ENDPOINT_G(...); ++gen; _ENDPOINT(gen, p_nr)` | minix3/minix/kernel/system/do_fork.c:do_fork（L59，工具生成）,69,72 | endpoint 代际 |
+| `rpc->p_reg.retreg = 0` | minix3/minix/kernel/system/do_fork.c:do_fork（L74，工具生成） | 子返回值 = 0 |
+| `RTS_SET(rpc, RTS_NO_QUANTUM)` | minix3/minix/kernel/system/do_fork.c:FORKSTR（L90，工具生成） | 子不可调度 |
+| `priv(rpp)->s_flags & SYS_PROC` → USER_PRIV + RTS_NO_PRIV | minix3/minix/kernel/system/do_fork.c:FORKSTR（L105，工具生成） | 权限降级 |
+| `PFF_VMINHIBIT` → RTS_VMINHIBIT | minix3/minix/kernel/system/do_fork.c:FORKSTR（L115，工具生成） | 等新页表 |
+| `RTS_UNSET(rpc, RTS_SIGNALED\|SIG_PENDING\|P_STOP)` | minix3/minix/kernel/system/do_fork.c:FORKSTR（L122，工具生成） | 信号不继承 |
+| `m_ptr->endpt = rpc->p_endpoint` | minix3/minix/kernel/system/do_fork.c:FORKSTR（L111，工具生成） | 回填子 endpoint |
 
 ### 2.2 do_exec — 清 DELIVERMSG，设 IP/SP，清 FPU
 
-入口 `do_exec(caller, m_ptr)` do_exec.c:20。消息字段：`.endpt` / `.ip` / `.stack` / `.name` / `.ps_str`。
+入口 `do_exec(caller, m_ptr)` minix3/minix/kernel/system/do_exec.c:do_exec。消息字段：`.endpt` / `.ip` / `.stack` / `.name` / `.ps_str`。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `isokendpt(endpt, &proc_nr)` | do_exec.c:27 | 验证目标 |
-| `rp->p_misc_flags &= ~MF_DELIVERMSG` | do_exec.c:32-33 | 清待投递消息 |
-| `data_copy(caller->p_endpoint, name, KERNEL, name, ...)` | do_exec.c:37 | 跨空间拷名 |
-| `arch_proc_init(rp, ip, stack, ps_str, name)` | do_exec.c:45 | 架构相关设 IP/SP |
-| `RTS_UNSET(rp, RTS_RECEIVING)` | do_exec.c:51 | 解除接收（不回复 EXEC） |
-| `&= ~MF_FPU_INITIALIZED` / `release_fpu(rp)` | do_exec.c:55,57 | FPU 失效 |
+| `isokendpt(endpt, &proc_nr)` | minix3/minix/kernel/system/do_exec.c:do_exec（L27，工具生成） | 验证目标 |
+| `rp->p_misc_flags &= ~MF_DELIVERMSG` | minix3/minix/kernel/system/do_exec.c:do_exec（L32，工具生成） | 清待投递消息 |
+| `data_copy(caller->p_endpoint, name, KERNEL, name, ...)` | minix3/minix/kernel/system/do_exec.c:do_exec（L37，工具生成） | 跨空间拷名 |
+| `arch_proc_init(rp, ip, stack, ps_str, name)` | minix3/minix/kernel/system/do_exec.c:do_exec（L45，工具生成） | 架构相关设 IP/SP |
+| `RTS_UNSET(rp, RTS_RECEIVING)` | minix3/minix/kernel/system/do_exec.c:do_exec（L51，工具生成） | 解除接收（不回复 EXEC） |
+| `&= ~MF_FPU_INITIALIZED` / `release_fpu(rp)` | minix3/minix/kernel/system/do_exec.c:do_exec（L55，工具生成）,57 | FPU 失效 |
 
 **exec 不回复语义**：exec 后进程整个地址空间被替换，原消息缓冲失效，所以 `do_exec` 清 `RTS_RECEIVING` 但不写回返回消息——PM 通过其他机制（如通知）确认 exec 完成。
 
 ### 2.3 do_exit — cause_sig(SIGABRT)，EDONTREPLY
 
-入口 `do_exit(caller, m_ptr)` do_exit.c:14。
+入口 `do_exit(caller, m_ptr)` minix3/minix/kernel/system/do_exit.c:do_exit。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `int sig_nr = SIGABRT` | do_exit.c:19 | 自杀信号 |
-| `cause_sig(caller->p_nr, sig_nr)` | do_exit.c:21 | 委托信号管理器 |
-| `return(EDONTREPLY)` | do_exit.c:23 | 不回复 |
+| `int sig_nr = SIGABRT` | minix3/minix/kernel/system/do_exit.c:do_exit（L19，工具生成） | 自杀信号 |
+| `cause_sig(caller->p_nr, sig_nr)` | minix3/minix/kernel/system/do_exit.c:do_exit（L21，工具生成） | 委托信号管理器 |
+| `return(EDONTREPLY)` | minix3/minix/kernel/system/do_exit.c:do_exit（L23，工具生成） | 不回复 |
 
 `cause_sig` 的完整 C 路径（system.c:389-449）在 do_exit 场景下有两种走向，取决于调用者的信号管理器是谁：
 
@@ -140,59 +140,59 @@
 
 ### 2.4 do_clear — 释放资源，RTS_SLOT_FREE
 
-入口 `do_clear(caller, m_ptr)` do_clear.c:17。消息字段：`m_lsys_krn_sys_clear.endpt`。
+入口 `do_clear(caller, m_ptr)` minix3/minix/kernel/system/do_clear.c:do_clear。消息字段：`m_lsys_krn_sys_clear.endpt`。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `isokendpt(endpt, &exit_p)` | do_clear.c:29 | 验证目标 |
-| `release_address_space(rc)` | do_clear.c:35 | 释放地址空间 |
-| `if(isemptyp(rc)) return OK` | do_clear.c:38 | **幂等** |
-| `for irq_hooks` / `rm_irq_handler` | do_clear.c:43 | 释放 IRQ |
-| `clear_endpoint(rc)` | do_clear.c:49 | 释放 IPC endpoint |
-| `reset_kernel_timer(&priv(rc)->s_alarm_timer)` | do_clear.c:52 | 重置定时器 |
-| `RTS_SETFLAGS(rc, RTS_SLOT_FREE)` | do_clear.c:57 | 标记槽空闲 |
-| `release_fpu` / `&= ~MF_FPU_INITIALIZED` | do_clear.c:60 | 释放 FPU |
-| `SYS_PROC` → `s_proc_nr = NONE` | do_clear.c:68 | 释放 priv |
+| `isokendpt(endpt, &exit_p)` | minix3/minix/kernel/system/do_clear.c:do_clear（L29，工具生成） | 验证目标 |
+| `release_address_space(rc)` | minix3/minix/kernel/system/do_clear.c:do_clear（L35，工具生成） | 释放地址空间 |
+| `if(isemptyp(rc)) return OK` | minix3/minix/kernel/system/do_clear.c:do_clear（L38，工具生成） | **幂等** |
+| `for irq_hooks` / `rm_irq_handler` | minix3/minix/kernel/system/do_clear.c:do_clear（L43，工具生成） | 释放 IRQ |
+| `clear_endpoint(rc)` | minix3/minix/kernel/system/do_clear.c:do_clear（L49，工具生成） | 释放 IPC endpoint |
+| `reset_kernel_timer(&priv(rc)->s_alarm_timer)` | minix3/minix/kernel/system/do_clear.c:do_clear（L52，工具生成） | 重置定时器 |
+| `RTS_SETFLAGS(rc, RTS_SLOT_FREE)` | minix3/minix/kernel/system/do_clear.c:do_clear（L57，工具生成） | 标记槽空闲 |
+| `release_fpu` / `&= ~MF_FPU_INITIALIZED` | minix3/minix/kernel/system/do_clear.c:do_clear（L60，工具生成） | 释放 FPU |
+| `SYS_PROC` → `s_proc_nr = NONE` | minix3/minix/kernel/system/do_clear.c:do_clear（L68，工具生成） | 释放 priv |
 
 ### 2.5 do_runctl — RC_STOP/RC_RESUME，SMP IPI
 
-入口 `do_runctl(caller, m_ptr)` do_runctl.c:18。消息字段：`RC_ENDPT` / `RC_ACTION` / `RC_FLAGS`。
+入口 `do_runctl(caller, m_ptr)` minix3/minix/kernel/system/do_runctl.c:do_runctl。消息字段：`RC_ENDPT` / `RC_ACTION` / `RC_FLAGS`。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `isokendpt(RC_ENDPT, &proc_nr)` | do_runctl.c:30 | 验证目标 |
-| `iskerneln(proc_nr)` → EPERM | do_runctl.c:31 | 内核进程不可控 |
-| `RC_STOP && RC_DELAY` → MF_SIG_DELAY → EBUSY | do_runctl.c:44-48 | 延迟停止 |
-| `CONFIG_SMP` && `p_cpu != cpuid` → `smp_schedule_stop_proc` | do_runctl.c:55-58 | 跨 CPU IPI |
-| `RTS_SET(rp, RTS_PROC_STOP)` | do_runctl.c:62 | 本地停止 |
-| `RTS_UNSET(rp, RTS_PROC_STOP)` | do_runctl.c:66 | 恢复 |
+| `isokendpt(RC_ENDPT, &proc_nr)` | minix3/minix/kernel/system/do_runctl.c:do_runctl（L30，工具生成） | 验证目标 |
+| `iskerneln(proc_nr)` → EPERM | minix3/minix/kernel/system/do_runctl.c:do_runctl（L31，工具生成） | 内核进程不可控 |
+| `RC_STOP && RC_DELAY` → MF_SIG_DELAY → EBUSY | minix3/minix/kernel/system/do_runctl.c:do_runctl（L44，工具生成） | 延迟停止 |
+| `CONFIG_SMP` && `p_cpu != cpuid` → `smp_schedule_stop_proc` | minix3/minix/kernel/system/do_runctl.c:do_runctl（L55，工具生成） | 跨 CPU IPI |
+| `RTS_SET(rp, RTS_PROC_STOP)` | minix3/minix/kernel/system/do_runctl.c:do_runctl（L62，工具生成） | 本地停止 |
+| `RTS_UNSET(rp, RTS_PROC_STOP)` | minix3/minix/kernel/system/do_runctl.c:do_runctl（L66，工具生成） | 恢复 |
 
 ### 2.6 do_schedctl — KERNEL flag 设参数，否则设 scheduler
 
-入口 `do_schedctl(caller, m_ptr)` do_schedctl.c:7。消息字段：`m_lsys_krn_schedctl.flags` / `.endpoint` / `.priority` / `.quantum` / `.cpu`。
+入口 `do_schedctl(caller, m_ptr)` minix3/minix/kernel/system/do_schedctl.c:do_schedctl。消息字段：`m_lsys_krn_schedctl.flags` / `.endpoint` / `.priority` / `.quantum` / `.cpu`。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `flags & ~SCHEDCTL_FLAG_KERNEL` → EINVAL | do_schedctl.c:17 | flags 校验 |
-| `isokendpt(endpoint, &proc_nr)` | do_schedctl.c:23 | 验证目标 |
-| `SCHEDCTL_FLAG_KERNEL` → `sched_proc(p, priority, quantum, cpu, FALSE)` | do_schedctl.c:28,37 | 内核调度模式 |
-| `p->p_scheduler = NULL` | do_schedctl.c:39 | 清 user scheduler |
-| `p->p_scheduler = caller` | do_schedctl.c:42 | 调用者接管 |
+| `flags & ~SCHEDCTL_FLAG_KERNEL` → EINVAL | minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L17，工具生成） | flags 校验 |
+| `isokendpt(endpoint, &proc_nr)` | minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L23，工具生成） | 验证目标 |
+| `SCHEDCTL_FLAG_KERNEL` → `sched_proc(p, priority, quantum, cpu, FALSE)` | minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L28，工具生成）,37 | 内核调度模式 |
+| `p->p_scheduler = NULL` | minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L39，工具生成） | 清 user scheduler |
+| `p->p_scheduler = caller` | minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L42，工具生成） | 调用者接管 |
 
-`priority/quantum/cpu` 为 -1 时表示"保持当前值"（do_schedctl.c:32-34），由 `sched_proc` 内部解释。
+`priority/quantum/cpu` 为 -1 时表示"保持当前值"（minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L32，工具生成）），由 `sched_proc` 内部解释。
 
 ### 2.7 do_statectl — 5 种请求分发
 
-入口 `do_statectl(caller, m_ptr)` do_statectl.c:15。消息字段：`m_lsys_krn_sys_statectl.request` / `.address` / `.length`。
+入口 `do_statectl(caller, m_ptr)` minix3/minix/kernel/system/do_statectl.c:do_statectl。消息字段：`m_lsys_krn_sys_statectl.request` / `.address` / `.length`。
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `switch(request)` | do_statectl.c:19 | 请求分发 |
-| `SYS_STATE_CLEAR_IPC_REFS` → `clear_ipc_refs(caller, EDEADSRCDST)` | do_statectl.c:21,25 | 清 IPC 引用 |
-| `SYS_STATE_SET_STATE_TABLE` → `s_state_table`/`s_state_entries` | do_statectl.c:27,29 | 设状态表 |
-| `SYS_STATE_ADD_IPC_BL_FILTER` → `add_ipc_filter(BLACKLIST, ...)` | do_statectl.c:32,34 | 黑名单 |
-| `SYS_STATE_ADD_IPC_WL_FILTER` → `add_ipc_filter(WHITELIST, ...)` | do_statectl.c:37,39 | 白名单 |
-| `SYS_STATE_CLEAR_IPC_FILTERS` → `clear_ipc_filters(caller)` | do_statectl.c:42,44 | 清过滤 |
+| `switch(request)` | minix3/minix/kernel/system/do_statectl.c:do_statectl（L19，工具生成） | 请求分发 |
+| `SYS_STATE_CLEAR_IPC_REFS` → `clear_ipc_refs(caller, EDEADSRCDST)` | minix3/minix/kernel/system/do_statectl.c:do_statectl（L21，工具生成）,25 | 清 IPC 引用 |
+| `SYS_STATE_SET_STATE_TABLE` → `s_state_table`/`s_state_entries` | minix3/minix/kernel/system/do_statectl.c:do_statectl（L27，工具生成）,29 | 设状态表 |
+| `SYS_STATE_ADD_IPC_BL_FILTER` → `add_ipc_filter(BLACKLIST, ...)` | minix3/minix/kernel/system/do_statectl.c:do_statectl（L32，工具生成）,34 | 黑名单 |
+| `SYS_STATE_ADD_IPC_WL_FILTER` → `add_ipc_filter(WHITELIST, ...)` | minix3/minix/kernel/system/do_statectl.c:do_statectl（L37，工具生成）,39 | 白名单 |
+| `SYS_STATE_CLEAR_IPC_FILTERS` → `clear_ipc_filters(caller)` | minix3/minix/kernel/system/do_statectl.c:do_statectl（L42，工具生成）,44 | 清过滤 |
 
 ### 2.8 调用关系图（时序）
 
@@ -235,9 +235,9 @@ PM: sys_clear(exit_endpt)
 
 - 如果用 Rust 的 `*rpc = *rpp` 等价结构体赋值（`Clone::clone`）：`KProcess` 含 `AtomicU8`/`AtomicU32` 等非 `Copy` 字段，且 `p_seg` 需重置、`priv_id` 需降级——直接 clone 会拷贝父的原子状态与权限，违反 fork 语义（子应是独立副本）。
 - 如果用 `KProcess::clone()` + 逐字段修正：clone 后再改 8+ 个字段，易遗漏（如忘记清 `p_reg.retreg`），且 clone 拷贝了不该拷的 `p_magic`。
-- 所以用专门的 `KProcess::fork_from(parent, child_nr, child_endpoint)` 构造函数（proc.rs:1497）：在构造期一次性应用所有 fork 修正（RTS_NO_QUANTUM、清信号标志、清 timer/trace、重置 p_seg、设 None priv_id），语义集中在一处，编译器保证字段不漏。
+- 所以用专门的 `KProcess::fork_from(parent, child_nr, child_endpoint)` 构造函数（os/kernel/src/proc.rs:fn suspend_for_vm_with_copy（L1497，工具生成））：在构造期一次性应用所有 fork 修正（RTS_NO_QUANTUM、清信号标志、清 timer/trace、重置 p_seg、设 None priv_id），语义集中在一处，编译器保证字段不漏。
 
-**实现**: `KProcess::fork_from`（proc.rs:1497）+ `complete_fork_setup`（proc.rs:1606，应用 NO_PRIV/VMINHIBIT/name 后缀）。
+**实现**: `KProcess::fork_from`（os/kernel/src/proc.rs:fn suspend_for_vm_with_copy（L1497，工具生成））+ `complete_fork_setup`（os/kernel/src/proc.rs:fn fork_from（L1606，工具生成），应用 NO_PRIV/VMINHIBIT/name 后缀）。
 
 ### D2. endpoint 表达：Endpoint newtype 替代裸 i32
 
@@ -245,9 +245,9 @@ PM: sys_clear(exit_endpt)
 
 - 如果用裸 `i32` 表达 endpoint（C 方式）：endpoint 与 errno、proc_nr、raw 值都是 i32，编译器无法区分——`return EINVAL` 和 `return child_endpoint` 类型相同，调用者可能误用。
 - 如果用 `type Endpoint = i32` 类型别名：仅文档作用，编译期无保护，与裸 i32 等价。
-- 所以用 `#[repr(transparent)] pub struct Endpoint(pub i32)` newtype（os/libs/minix-types/src/types/endpoint.rs:44）：编译期防止与其他 i32 混淆，且 `repr(transparent)` 保证 ABI 与 i32 一致（FFI/消息布局兼容）。配套 `from_generation_slot`/`slot`/`generation`/`fork_new_endpoint` 方法封装代际编解码。
+- 所以用 `#[repr(transparent)] pub struct Endpoint(pub i32)` newtype（os/libs/minix-types/src/types/endpoint.rs:struct Endpoint）：编译期防止与其他 i32 混淆，且 `repr(transparent)` 保证 ABI 与 i32 一致（FFI/消息布局兼容）。配套 `from_generation_slot`/`slot`/`generation`/`fork_new_endpoint` 方法封装代际编解码。
 
-**实现**: `Endpoint` newtype（os/libs/minix-types/src/types/endpoint.rs:44）+ `fork_new_endpoint`（os/libs/minix-types/src/types/endpoint.rs:177）+ `from_generation_slot`（os/libs/minix-types/src/types/endpoint.rs:82）。
+**实现**: `Endpoint` newtype（os/libs/minix-types/src/types/endpoint.rs:struct Endpoint）+ `fork_new_endpoint`（os/libs/minix-types/src/types/endpoint.rs:fn fork_new_endpoint）+ `from_generation_slot`（os/libs/minix-types/src/types/endpoint.rs:fn from_generation_slot）。
 
 ### D3. statectl 请求：StatectlRequest enum + match 替代 switch/case
 
@@ -255,19 +255,19 @@ PM: sys_clear(exit_endpt)
 
 - 如果用 `switch(request)` + 裸 i32 case（C 方式）：case 值是魔术数字（1-5），且 default 分支返回 EINVAL——编译器不检查是否覆盖所有 case，新增请求类型易漏。
 - 如果用 `const CLEAR_IPC_REFS: i32 = 1` 常量：仍是裸 i32 匹配，无法穷尽检查。
-- 所以用 `pub enum StatectlRequest { ClearIpcRefs=1, SetStateTable=2, ... }`（syscall_process.rs:55）+ `match req`：编译器强制穷尽检查，新增变体必须处理；`TryFrom<i32>` 把非法值转为 `Err(())` → EINVAL，集中处理边界。
+- 所以用 `pub enum StatectlRequest { ClearIpcRefs=1, SetStateTable=2, ... }`（os/kernel/src/syscall_process.rs:enum StatectlRequest（L55，工具生成））+ `match req`：编译器强制穷尽检查，新增变体必须处理；`TryFrom<i32>` 把非法值转为 `Err(())` → EINVAL，集中处理边界。
 
-**实现**: `StatectlRequest` enum（syscall_process.rs:55-71）+ `TryFrom<i32>`（syscall_process.rs:73-87）+ `match req`（syscall_process.rs:747）。
+**实现**: `StatectlRequest` enum（os/kernel/src/syscall_process.rs:enum StatectlRequest（L55，工具生成））+ `TryFrom<i32>`（os/kernel/src/syscall_process.rs:impl TryFrom<i32> for StatectlRequest（L73，工具生成））+ `match req`（os/kernel/src/syscall_process.rs:fn dispatch_schedctl（L747，工具生成））。
 
 ### D4. -1 sentinel：Option 替代裸 -1
 
 **假设性推理**:
 
-- 如果用 C 的 `priority = -1` 表示"保持当前值"（do_schedctl.c:32）：-1 是魔术值，与合法优先级 0..15 共享 i32 类型，调用者可能误传 -2（无效但不会被 -1 检查捕获，除非额外校验）。
+- 如果用 C 的 `priority = -1` 表示"保持当前值"（minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L32，工具生成））：-1 是魔术值，与合法优先级 0..15 共享 i32 类型，调用者可能误传 -2（无效但不会被 -1 检查捕获，除非额外校验）。
 - 如果用 `i32::MAX` 或其他哨兵：同样需额外校验，且与 C 语义不一致（C 用 -1）。
-- 所以用 `Option<u8>` 表达"保持当前值"：`-1 → None`，`v in 0..=255 → Some(v as u8)`，`v < -1 或 > 255 → EINVAL`（syscall_process.rs:663-668）。Option 在类型层表达"可选"，编译器强制处理 None 分支。同时保留 -1 哨兵的 C 语义兼容（消息层仍是 i32）。
+- 所以用 `Option<u8>` 表达"保持当前值"：`-1 → None`，`v in 0..=255 → Some(v as u8)`，`v < -1 或 > 255 → EINVAL`（os/kernel/src/syscall_process.rs:fn dispatch_schedctl（L663，工具生成））。Option 在类型层表达"可选"，编译器强制处理 None 分支。同时保留 -1 哨兵的 C 语义兼容（消息层仍是 i32）。
 
-**实现**: `SchedParams { priority: Option<u8>, quantum: Option<u32>, cpu: Option<u32>, niced: bool }` + dispatch_schedctl 的 -1→None 转换（syscall_process.rs:663-677）。
+**实现**: `SchedParams { priority: Option<u8>, quantum: Option<u32>, cpu: Option<u32>, niced: bool }` + dispatch_schedctl 的 -1→None 转换（os/kernel/src/syscall_process.rs:fn dispatch_schedctl（L663，工具生成））。
 
 ### D5. 返回值：KcallResult enum 替代 errno 返回
 
@@ -277,7 +277,7 @@ PM: sys_clear(exit_endpt)
 - 如果用 `Result<i32, Errno>`：EDONTREPLY 不是错误（是"不回复"语义，exit 故意不回复），强行塞进 Err 变体语义不准；且 child_endpoint 是成功返回值，与 errno 0 混在 Ok。
 - 所以用 `pub enum KcallResult { Ok(i32), VmSuspend, NoReply, BadCall, CallDenied }`（syscall.rs:198）：每个变体对应一种"调用完成方式"——Ok(返回值) / VmSuspend(需 VM 协助) / NoReply(不回复，如 exit) / BadCall(非法 syscall) / CallDenied(无权限)。dispatch 层返回 enum，上层 match 处理。
 
-**实现**: `KcallResult` enum（syscall.rs:198-210）+ `dispatch_exit` 返回 `NoReply`（syscall_process.rs:352）+ 其他 dispatch 返回 `Ok(errno)`。
+**实现**: `KcallResult` enum（syscall.rs:198-210）+ `dispatch_exit` 返回 `NoReply`（os/kernel/src/syscall_process.rs:fn dispatch_exec（L352，工具生成））+ 其他 dispatch 返回 `Ok(errno)`。
 
 ### D6. 进程号：ProcNr newtype
 
@@ -286,9 +286,9 @@ PM: sys_clear(exit_endpt)
 - 如果保持 `pub type ProcNr = i32` 类型别名：编译期与裸 i32 等价——endpoint raw、errno、proc_nr 都能互相赋值，无防护，易引入"把 errno 当 proc_nr"类 bug。
 - 升级为 `#[repr(transparent)] pub struct ProcNr(pub i32)` newtype：与 Endpoint 对齐，编译期防止混淆；`repr(transparent)` 保证消息布局兼容。
 - 取舍：`ProcNr` 使用点遍布 `proc.rs`/`proc_table.rs`/`sched.rs`/`smp.rs`/`syscall_process.rs` 等多个模块，升级需同步修改所有使用点 + 补 `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` 转换。为提供编译期类型防护，已完成 newtype 升级。
-- 后续统一（G1，2026-09-08）：newtype 曾只存在于 kernel（`os/kernel/src/proc.rs`），而 arch crate 另有一份 `pub type ProcNr = i32` 别名，导致 `build_cpu_context` 边界上 kernel 侧被迫 `nr.0` 拆包（`os/kernel/src/lib.rs:939`/`:1223` 的道歉注释即此问题的症状）。修复把 newtype 上移 minix-types 作为共享单一来源（`os/libs/minix-types/src/types/proc_nr.rs:41`），arch 与 kernel 双侧 re-export 同一类型，边界拆包点归零。
+- 后续统一（G1，2026-09-08）：newtype 曾只存在于 kernel（`os/kernel/src/proc.rs`），而 arch crate 另有一份 `pub type ProcNr = i32` 别名，导致 `build_cpu_context` 边界上 kernel 侧被迫 `nr.0` 拆包（`os/kernel/src/lib.rs:fn with_protection_mut（L939，工具生成）`/`:1223` 的道歉注释即此问题的症状）。修复把 newtype 上移 minix-types 作为共享单一来源（`os/libs/minix-types/src/types/proc_nr.rs:struct ProcNr`），arch 与 kernel 双侧 re-export 同一类型，边界拆包点归零。
 
-**实现**: `#[repr(transparent)] pub struct ProcNr(pub i32)` 权威定义在 minix-types（`os/libs/minix-types/src/types/proc_nr.rs:41`，含 `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` impl）；kernel `os/kernel/src/proc.rs:36` re-export 为 `crate::proc::ProcNr`，arch `os/arch/src/arch/boot.rs:42` re-export 为 trait 签名类型。`AtomicI32`（`p_nextready`）保持存储裸 `i32`（C ABI 兼容），访问点用 `.0` 取裸值或 `ProcNr(raw)` 构造。`NONE_PROC_NR: i32 = -1` 保持 `i32`（与 `AtomicI32` 哨兵对齐）。
+**实现**: `#[repr(transparent)] pub struct ProcNr(pub i32)` 权威定义在 minix-types（`os/libs/minix-types/src/types/proc_nr.rs:struct ProcNr`，含 `From<i32>`/`Into<i32>`/`Add`/`Sub`/`Neg`/`Display` impl）；kernel `os/kernel/src/proc.rs:36` re-export 为 `crate::proc::ProcNr`，arch `os/arch/src/arch/boot.rs:42` re-export 为 trait 签名类型。`AtomicI32`（`p_nextready`）保持存储裸 `i32`（C ABI 兼容），访问点用 `.0` 取裸值或 `ProcNr(raw)` 构造。`NONE_PROC_NR: i32 = -1` 保持 `i32`（与 `AtomicI32` 哨兵对齐）。
 
 ---
 
@@ -365,7 +365,7 @@ pub fn dispatch_fork(
 }
 ```
 
-完整覆盖 C `do_fork.c:26-134`：同步前提、代际、构造拷贝、降级、VMINHIBIT、名字后缀、回填 endpoint。
+完整覆盖 C `minix3/minix/kernel/system/do_fork.c:do_fork`：同步前提、代际、构造拷贝、降级、VMINHIBIT、名字后缀、回填 endpoint。
 
 ### 4.2 dispatch_exec — 完整实现
 
@@ -586,7 +586,7 @@ pub fn dispatch_clear(
 }
 ```
 
-**已实现**: 全部 9 步——release_address_space（do_clear.c:35，经 `syscall::release_address_space`）+ IRQ hooks 释放（do_clear.c:41-46，经全局 `irq_manager()`）+ clear_endpoint（do_clear.c:49，经 `syscall::clear_endpoint`）+ alarm timer 重置（do_clear.c:52，经 `clock_state.reset_timer(timer_id)`）。`dispatch_clear` 因此新增 `clock_state: &mut ClockState` 参数；测试通过 `init_irq_manager_for_test()` 初始化全局 IrqManager。
+**已实现**: 全部 9 步——release_address_space（minix3/minix/kernel/system/do_clear.c:do_clear（L35，工具生成），经 `syscall::release_address_space`）+ IRQ hooks 释放（minix3/minix/kernel/system/do_clear.c:do_clear（L41，工具生成），经全局 `irq_manager()`）+ clear_endpoint（minix3/minix/kernel/system/do_clear.c:do_clear（L49，工具生成），经 `syscall::clear_endpoint`）+ alarm timer 重置（minix3/minix/kernel/system/do_clear.c:do_clear（L52，工具生成），经 `clock_state.reset_timer(timer_id)`）。`dispatch_clear` 因此新增 `clock_state: &mut ClockState` 参数；测试通过 `init_irq_manager_for_test()` 初始化全局 IrqManager。
 
 ### 4.5 dispatch_runctl — 完整实现（含 SMP IPI 路径）
 
@@ -682,7 +682,7 @@ pub fn dispatch_runctl(
 }
 ```
 
-**已实现**: SMP IPI 路径（do_runctl.c:55-62）——目标在远 CPU 时经 `smp_state.schedule_stop_proc::<CurrentSmpArch>` 发同步 STOP_PROC IPI（协议见 [16-smp.md](16-smp.md) §1.3）；本地 CPU 直接 `rts_set`。单 CPU / 测试环境（SMP_STATE 未初始化）自动走本地路径。
+**已实现**: SMP IPI 路径（minix3/minix/kernel/system/do_runctl.c:do_runctl（L55，工具生成））——目标在远 CPU 时经 `smp_state.schedule_stop_proc::<CurrentSmpArch>` 发同步 STOP_PROC IPI（协议见 [16-smp.md](16-smp.md) §1.3）；本地 CPU 直接 `rts_set`。单 CPU / 测试环境（SMP_STATE 未初始化）自动走本地路径。
 
 ### 4.6 dispatch_schedctl — 完整实现
 
@@ -755,7 +755,7 @@ pub fn dispatch_schedctl(
 }
 ```
 
-**赋值时序对齐**：C 在 `sched_proc` 返回 OK 后才清 `p_scheduler`（do_schedctl.c:37 → do_schedctl.c:39）。Rust 同样保持此序——若 `sched_proc` 失败提前返回，`p_scheduler` 不被触碰，避免失败时让目标进程"既无内核调度又无 user scheduler"成为孤儿。
+**赋值时序对齐**：C 在 `sched_proc` 返回 OK 后才清 `p_scheduler`（minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L37，工具生成） → minix3/minix/kernel/system/do_schedctl.c:do_schedctl（L39，工具生成））。Rust 同样保持此序——若 `sched_proc` 失败提前返回，`p_scheduler` 不被触碰，避免失败时让目标进程"既无内核调度又无 user scheduler"成为孤儿。
 
 ### 4.7 dispatch_statectl — 完整实现
 
@@ -826,9 +826,9 @@ pub(crate) fn dispatch_statectl(
 }
 ```
 
-**实现要点**（AddIpcBlFilter/AddIpcWlFilter 元素填充）：采用借用检查器安全的模式——在可变借用 priv 分配槽位之前，先捕获 `caller_endpt` 与 `cr3`；借用结束后用 `data_copy_vmcheck`（`syscall_process.rs:841/944`）从用户空间拷入 `length` 个 `IpcFilterElement`（现为 `#[repr(C)]`，12 字节）；拷贝完成后重新借用 priv 填充 `slot.elements[0..length]`。页缺失返回 `VmSuspend`，拷贝错误返回 `EFAULT`，`length` 溢出返回 `EINVAL`。
+**实现要点**（AddIpcBlFilter/AddIpcWlFilter 元素填充）：采用借用检查器安全的模式——在可变借用 priv 分配槽位之前，先捕获 `caller_endpt` 与 `cr3`；借用结束后用 `data_copy_vmcheck`（`os/kernel/src/syscall_process.rs:fn add_ipc_filter_arm（L841，工具生成）/944`）从用户空间拷入 `length` 个 `IpcFilterElement`（现为 `#[repr(C)]`，12 字节）；拷贝完成后重新借用 priv 填充 `slot.elements[0..length]`。页缺失返回 `VmSuspend`，拷贝错误返回 `EFAULT`，`length` 溢出返回 `EINVAL`。
 
-**已实现**: 全部 5 个请求——ClearIpcRefs（do_statectl.c:21-26，经 `syscall::clear_ipc_refs`）、SetStateTable、ClearIpcFilters、AddIpcBlFilter/AddIpcWlFilter（槽位分配/释放 + 元素填充）。
+**已实现**: 全部 5 个请求——ClearIpcRefs（minix3/minix/kernel/system/do_statectl.c:do_statectl（L21，工具生成），经 `syscall::clear_ipc_refs`）、SetStateTable、ClearIpcFilters、AddIpcBlFilter/AddIpcWlFilter（槽位分配/释放 + 元素填充）。
 
 **测试隔离**：`dispatch_statectl` 签名含 `pool: &mut crate::ipc_filter::IpcFilterPool` 参数（`syscall.rs` wrapper 传入全局 `crate::ipc_filter_pool()` 的访问结果，替代 dispatch 内部直接调用全局）。`IpcFilterPool` 封装为结构体后支持 per-test 实例，避免 `cargo test` 多线程并行时全局 pool 互染。
 
@@ -836,16 +836,16 @@ pub(crate) fn dispatch_statectl(
 
 | DEFERRED 项 | C 位置 | 依赖 trait | 实现路径 |
 |------------|--------|-----------|---------|
-| ~~exec cross-space copy~~ | do_exec.c:37-42 | ✅ 已实现 | `data_copy_vmcheck` + null termination（syscall_process.rs:250-291） |
-| ~~exec arch_proc_init~~ | do_exec.c:45-48 | ✅ 已实现 | `CpuContextArch::build_cpu_context`（syscall_process.rs:293-318） |
-| ~~clear release_address_space~~ | do_clear.c:35 | ✅ 已实现 | `syscall::release_address_space`（syscall_process.rs:435-441） |
-| ~~clear IRQ hooks~~ | do_clear.c:41-46 | ✅ 已实现 | 全局 `irq_manager()` + `remove_hook_by_slot`（syscall_process.rs:444-455） |
-| ~~clear clear_endpoint~~ | do_clear.c:49 | ✅ 已实现 | `syscall::clear_endpoint`（syscall_process.rs:457-461） |
-| ~~clear reset_kernel_timer~~ | do_clear.c:52 | ✅ 已实现 | `clock_state.reset_timer(timer_id)` + `s_alarm_timer.take()`（syscall_process.rs:463-471） |
-| ~~runctl SMP IPI~~ | do_runctl.c:55-62 | ✅ 已实现 | `smp_state.schedule_stop_proc::<CurrentSmpArch>`（syscall_process.rs:544-579，见 [16-smp.md](16-smp.md) §1.3） |
-| ~~exit cause_sig 全语义~~ | do_exit.c:21 | ✅ 已实现（2026-09-05，todo D-6） | `dispatch_exit` 转调 `cause_signal`（syscall_process.rs:351-364）——管理器通知经 `mini_notify_core`；自管理致命路径（backup 提升/panic）见 [19-syscall-signal.md](19-syscall-signal.md) §4.3 |
-| ~~statectl ClearIpcRefs~~ | do_statectl.c:21-26 | ✅ 已实现 | `syscall::clear_ipc_refs`（syscall_process.rs:755-758） |
-| ~~statectl filter 元素填充~~ | do_statectl.c:32-41 | ✅ 已实现 | `data_copy_vmcheck` + filter pool（syscall_process.rs:767-972） |
+| ~~exec cross-space copy~~ | minix3/minix/kernel/system/do_exec.c:do_exec（L37，工具生成） | ✅ 已实现 | `data_copy_vmcheck` + null termination（os/kernel/src/syscall_process.rs:fn dispatch_exec（L250，工具生成）） |
+| ~~exec arch_proc_init~~ | minix3/minix/kernel/system/do_exec.c:do_exec（L45，工具生成） | ✅ 已实现 | `CpuContextArch::build_cpu_context`（os/kernel/src/syscall_process.rs:fn dispatch_exec（L293，工具生成）） |
+| ~~clear release_address_space~~ | minix3/minix/kernel/system/do_clear.c:do_clear（L35，工具生成） | ✅ 已实现 | `syscall::release_address_space`（os/kernel/src/syscall_process.rs:fn dispatch_clear（L435，工具生成）） |
+| ~~clear IRQ hooks~~ | minix3/minix/kernel/system/do_clear.c:do_clear（L41，工具生成） | ✅ 已实现 | 全局 `irq_manager()` + `remove_hook_by_slot`（os/kernel/src/syscall_process.rs:fn dispatch_clear（L444，工具生成）） |
+| ~~clear clear_endpoint~~ | minix3/minix/kernel/system/do_clear.c:do_clear（L49，工具生成） | ✅ 已实现 | `syscall::clear_endpoint`（os/kernel/src/syscall_process.rs:fn dispatch_clear（L457，工具生成）） |
+| ~~clear reset_kernel_timer~~ | minix3/minix/kernel/system/do_clear.c:do_clear（L52，工具生成） | ✅ 已实现 | `clock_state.reset_timer(timer_id)` + `s_alarm_timer.take()`（os/kernel/src/syscall_process.rs:fn dispatch_clear（L463，工具生成）） |
+| ~~runctl SMP IPI~~ | minix3/minix/kernel/system/do_runctl.c:do_runctl（L55，工具生成） | ✅ 已实现 | `smp_state.schedule_stop_proc::<CurrentSmpArch>`（os/kernel/src/syscall_process.rs:fn dispatch_runctl（L544，工具生成），见 [16-smp.md](16-smp.md) §1.3） |
+| ~~exit cause_sig 全语义~~ | minix3/minix/kernel/system/do_exit.c:do_exit（L21，工具生成） | ✅ 已实现（2026-09-05，todo D-6） | `dispatch_exit` 转调 `cause_signal`（os/kernel/src/syscall_process.rs:fn dispatch_exec（L351，工具生成））——管理器通知经 `mini_notify_core`；自管理致命路径（backup 提升/panic）见 [19-syscall-signal.md](19-syscall-signal.md) §4.3 |
+| ~~statectl ClearIpcRefs~~ | minix3/minix/kernel/system/do_statectl.c:do_statectl（L21，工具生成） | ✅ 已实现 | `syscall::clear_ipc_refs`（os/kernel/src/syscall_process.rs:fn dispatch_statectl（L755，工具生成）） |
+| ~~statectl filter 元素填充~~ | minix3/minix/kernel/system/do_statectl.c:do_statectl（L32，工具生成） | ✅ 已实现 | `data_copy_vmcheck` + filter pool（os/kernel/src/syscall_process.rs:fn dispatch_statectl（L767，工具生成）） |
 
 ---
 
@@ -886,7 +886,7 @@ pub(crate) fn dispatch_statectl(
 
 > 5 个测试全部落地于 syscall_process.rs（`test_t12_*` 前缀）。附带行为修正：幂等测试暴露
 > `dispatch_clear` 用 `endpoint_to_nr`（跳过 SLOT_FREE 槽）解析目标，导致第二次 clear 返回
-> EINVAL ≠ C 的 isemptyp→OK（do_clear.c:38，C isokendpt 不排除已释放槽位）——已修正为
+> EINVAL ≠ C 的 isemptyp→OK（minix3/minix/kernel/system/do_clear.c:do_clear（L38，工具生成），C isokendpt 不排除已释放槽位）——已修正为
 > 不排除释放槽的解析，幂等语义与 C 对齐。
 
 | 测试函数（落地名） | 验证行为 | 状态 |

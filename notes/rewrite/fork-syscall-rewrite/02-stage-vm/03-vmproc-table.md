@@ -1,7 +1,7 @@
 # 03-vmproc-table: 进程表——slot 分配、endpoint 验证与保留槽
 
 > **分类**: 阶段 1 — 启动入口与进程模型（进程表锚点）
-> **源码**: `minix3/minix/servers/vm/glo.h:17-20`（表定义）；`minix3/minix/servers/vm/utility.c:84-94`（`vm_isokendpt`）、`utility.c:186-219`（`swap_proc_slot`）；`minix3/minix/servers/vm/main.c:131/457-462`（主循环验证 + 表初始化）；`minix3/minix/include/minix/endpoint.h:45-69`（endpoint 编码）
+> **源码**: `minix3/minix/servers/vm/glo.h:VMP_EXECTMP`（表定义）；`minix3/minix/servers/vm/utility.c:vm_isokendpt`（`vm_isokendpt`）、`utility.c:186-219`（`swap_proc_slot`）；`minix3/minix/servers/vm/main.c:main（L131，工具生成）/457-462`（主循环验证 + 表初始化）；`minix3/minix/include/minix/endpoint.h:_ENDPOINT_GENERATION_SHIFT`（endpoint 编码）
 > **Rust 模块**: `os/servers/vm/src/vmproc/table.rs`（进程表 + `swap_slots` 表级交换，V11/T13）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md`（PCB 结构与状态机）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`
 > **说明**: 进程表 `vmproc[VMP_NR]` 的集合级语义：表如何初始化、slot 如何分配/查找/遍历、`vm_isokendpt` 如何把 endpoint 翻译成槽号、`VMP_EXECTMP` 保留槽的诚实定位。**不覆盖**：`struct vmproc` 的字段细节与 typestate 状态机（02）、ACL（04）、页表（07/08）、fork 全流程（18）、RS Live Update 流程（25）。
@@ -29,7 +29,7 @@
 EXTERN struct vmproc vmproc[VMP_NR];   /* glo.h:20 */
 ```
 
-`_NR_PROCS = 256`（`minix3/minix/include/minix/sys_config.h:8`）。因此表有 **257 个槽**：256 个用户进程槽（0 ~ 255）+ 1 个 **exec 临时槽**（`VMP_EXECTMP`，索引 256）。
+`_NR_PROCS = 256`（`minix3/minix/include/minix/sys_config.h:_NR_PROCS`）。因此表有 **257 个槽**：256 个用户进程槽（0 ~ 255）+ 1 个 **exec 临时槽**（`VMP_EXECTMP`，索引 256）。
 
 exec 临时槽的**设计意图**是 exec 重写路径的暂存区：exec 需要保留旧进程的部分状态、换入新映像，临时槽给这个"换血"过程一个不打扰其他进程的中间落点。但**必须如实声明**：在当前 Minix3 源码中 `VMP_EXECTMP` 只有 `glo.h:17` 一处定义，**任何 `.c` 文件都没有使用它**（`rg VMP_EXECTMP minix3/minix/servers/vm/` 仅 1 处命中）。它是一个**预留槽**——表里有它的位置，endpoint 查找却永远够不到它（§2.3 的上界论证）。本文档按这个事实描述，不编造用途。
 
@@ -138,7 +138,7 @@ int vm_isokendpt(endpoint_t endpoint, int *procn)
 
 逐步拆解：
 
-1. **提取槽号**：`_ENDPOINT_P(endpoint)`（`endpoint.h:68-69`）从 endpoint 的低位提取进程槽号（§2.4）。
+1. **提取槽号**：`_ENDPOINT_P(endpoint)`（`minix3/minix/include/minix/endpoint.h:_ENDPOINT_P`）从 endpoint 的低位提取进程槽号（§2.4）。
 2. **范围检查**：`*procn < 0 || *procn >= NR_PROCS` → `EINVAL`。两个边界都防数组越界：负槽号（内核任务端，如 `SYSTEM=-2`）与超过用户进程数的槽号。**关键细节：上界是 `NR_PROCS` 而非 `VMP_NR`**——槽 256（`VMP_EXECTMP`）虽然存在于表中，但任何编码了它的 endpoint 都会在这里被 `EINVAL` 拒绝。exec 临时槽**不可经 endpoint 寻址**，只能通过直接 slot 引用操作。
 3. **身份检查**：`endpoint != vmproc[procn].vm_endpoint` → `EDEADEPT`。endpoint 的 generation 字段保证"槽被复用后旧身份失效"（§2.4）。
 4. **活跃检查**：`!(vm_flags & VMF_INUSE)` → `EDEADEPT`。空槽或已退出进程被拒绝。注意 C **不检查 `VMF_EXITING`**——退出中的进程仍是合法 endpoint（`do_exit` 自己检查 `VMF_EXITING`，见 02 文档 §2.6）。
@@ -146,7 +146,7 @@ int vm_isokendpt(endpoint_t endpoint, int *procn)
 
 **错误码语义**：`EINVAL` = "这个 endpoint 的编码本身就是坏的"（槽号越界）；`EDEADEPT` = "编码结构合法，但指向的进程不存在/已死"（身份过期或槽空闲）。Rust 的 `EndpointError` 枚举保留了这个区分（§3.3）。
 
-### 2.4 endpoint 编码：generation + slot（endpoint.h:45-69）
+### 2.4 endpoint 编码：generation + slot（minix3/minix/include/minix/endpoint.h:_ENDPOINT_GENERATION_SHIFT）
 
 ```c
 #define _ENDPOINT_GENERATION_SHIFT	15                    /* endpoint.h:45 */
@@ -157,11 +157,11 @@ int vm_isokendpt(endpoint_t endpoint, int *procn)
 ```
 
 - endpoint 是 `int`，高 17 位是 **generation**（代数），低 15 位编码 **slot**（含 `MAX_NR_TASKS` 偏置，容纳负的核内任务槽）。
-- `_ENDPOINT(g, p)` 构造；`_ENDPOINT_P(e)` 提取 slot；`_ENDPOINT_G(e)` 提取 generation（`endpoint.h:67`）。
-- 特殊端：`ANY`/`NONE`/`SELF` 占用 `_ENDPOINT_SLOT_TOP` 附近的三个值（`endpoint.h:54-56`）。它们的 `_ENDPOINT_P` 提取值远大于 `NR_PROCS`，因此经 `vm_isokendpt` 一律 `EINVAL`——特殊端不是合法进程身份。
-- 槽号范围 `[-MAX_NR_TASKS, MAX_NR_PROCS>`（`endpoint.h:16`），`MAX_NR_TASKS = 1023`（`minix3/minix/include/minix/com.h:55`）。
+- `_ENDPOINT(g, p)` 构造；`_ENDPOINT_P(e)` 提取 slot；`_ENDPOINT_G(e)` 提取 generation（`minix3/minix/include/minix/endpoint.h:_ENDPOINT_G`）。
+- 特殊端：`ANY`/`NONE`/`SELF` 占用 `_ENDPOINT_SLOT_TOP` 附近的三个值（`minix3/minix/include/minix/endpoint.h:ANY`）。它们的 `_ENDPOINT_P` 提取值远大于 `NR_PROCS`，因此经 `vm_isokendpt` 一律 `EINVAL`——特殊端不是合法进程身份。
+- 槽号范围 `[-MAX_NR_TASKS, MAX_NR_PROCS>`（`minix3/minix/include/minix/endpoint.h:_MINIX_ENDPOINT_H（L16，工具生成）`），`MAX_NR_TASKS = 1023`（`minix3/minix/include/minix/com.h:MAX_NR_TASKS`）。
 
-**generation 是 TOCTOU 防护的机制核心**：进程退出后槽被复用，新进程拿到的新 endpoint 的 generation 不同（内核 `sys_fork` 创建子进程时递增：`minix3/minix/kernel/system/do_fork.c:69-72` 的 `if(++gen >= _ENDPOINT_MAX_GENERATION) gen = 1;` + `_ENDPOINT(gen, p_nr)`），旧 endpoint 在第 3 步身份检查处失败。Rust 的 `Endpoint::from_generation_slot`/`slot()` 与 C 逐位对应（`os/libs/minix-types/src/types/endpoint.rs:82/88`）。
+**generation 是 TOCTOU 防护的机制核心**：进程退出后槽被复用，新进程拿到的新 endpoint 的 generation 不同（内核 `sys_fork` 创建子进程时递增：`minix3/minix/kernel/system/do_fork.c:do_fork（L69，工具生成）` 的 `if(++gen >= _ENDPOINT_MAX_GENERATION) gen = 1;` + `_ENDPOINT(gen, p_nr)`），旧 endpoint 在第 3 步身份检查处失败。Rust 的 `Endpoint::from_generation_slot`/`slot()` 与 C 逐位对应（`os/libs/minix-types/src/types/endpoint.rs:fn from_generation_slot/88`）。
 
 ### 2.5 调用点全景：每条服务路径的入口
 
@@ -176,10 +176,10 @@ int vm_isokendpt(endpoint_t endpoint, int *procn)
 | `exit.c:67/105/122` | `VM_EXIT` / `VM_WILLEXIT` / `VM_PROCCTL` 目标 | 22-vm-exit |
 | `break.c:51` | `VM_BRK` 进程 | 19-vm-brk |
 | `mmap.c:148/215/219/328/389/391/449/474/529` | mmap/remap 各消息的目标与源 | 20/21 |
-| `pagefaults.c:85/166/314` | 缺页进程 | 16-pagefault |
+| `minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L85，工具生成）/166/314` | 缺页进程 | 16-pagefault |
 | `vfs.c:124` | VFS 异步对话目标 | 23-vfs-interaction |
-| `mem_cache.c:113/215` | cache 消息源 | 24-page-cache |
-| `mem_shared.c:71` | 共享内存的注册进程 | 13-region-mapping |
+| `minix3/minix/servers/vm/mem_cache.c:do_mapcache（L113，工具生成）/215` | cache 消息源 | 24-page-cache |
+| `minix3/minix/servers/vm/mem_shared.c:getsrc（L71，工具生成）` | 共享内存的注册进程 | 13-region-mapping |
 | `rs.c:42/92/97/163/168/359` | RS 各服务的目标/源 | 25-rs-services |
 | `utility.c:109/133/146/441` | `do_info` 的源与查询目标 | 26-vm-queries |
 
@@ -300,7 +300,7 @@ static VM_PROC_TABLE: VmProcTable = VmProcTable {
 要点：
 
 - `NR_PROCS` 来自 `minix-types`（与 C 的 `_NR_PROCS` 对齐）；`VM_PROC_COUNT = 257`
-- `VmProc::vacant()`（`vmproc.rs:68-91`）是 const 构造——`vm_flags` 空、`vm_endpoint = NONE`、两个 `MaybeUninit` 守卫为 `false`、`vm_slot = UserSlot(0)`（§3.4 的延迟赋值前提）
+- `VmProc::vacant()`（`os/servers/vm/src/vmproc/vmproc.rs:fn vacant`）是 const 构造——`vm_flags` 空、`vm_endpoint = NONE`、两个 `MaybeUninit` 守卫为 `false`、`vm_slot = UserSlot(0)`（§3.4 的延迟赋值前提）
 - 静态表是**编译期全初始化**，无 `init_vm` 阶段的运行时 `memset`——C 的"清零 + 写 vm_slot"循环被"构造即空 + 激活时写 vm_slot"替代（02 文档 D4 的语义等价论证）
 
 ### 4.2 内部 helper：unsafe 面收敛（table.rs:88-139）
@@ -360,11 +360,11 @@ pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, Endpoi
 
 | 消费方 | 位置 | 用法 |
 |--------|------|------|
-| 主循环 caller 验证 | `vm_server.rs:416-418` | `vm_isokendpt(who_e)` 失败 → `panic!("invalid caller")`——等价 `main.c:131` 的 panic 语义 |
+| 主循环 caller 验证 | `os/servers/vm/src/vm_server.rs:fn relocate（L416，工具生成）` | `vm_isokendpt(who_e)` 失败 → `panic!("invalid caller")`——等价 `main.c:131` 的 panic 语义 |
 | fork 父进程验证 | `fork.rs:194-196` | `vm_isokendpt(parent_endpoint)` → `VmForkError::InvalidEndpoint`——对应 `fork.c:41` |
 | exit 族 | `exit.rs:48/70/141/193` | 各 handler 先验证目标 endpoint（`From<EndpointError>` 折叠两类错误） |
-| munmap/mmap/query/map_phys | `munmap.rs:81`、`mmap.rs:198/283`、`query.rs:148/187/247/307/368`、`map_phys.rs:67` | 服务路径的入口验证 |
-| 页错误 | `vm_server.rs:713`（`dispatch_pagefault`） | `vm_isokendpt(request.endpoint)` → `InvalidProcess` |
+| munmap/mmap/query/map_phys | `os/servers/vm/src/munmap.rs:fn from（L81，工具生成）`、`os/servers/vm/src/mmap.rs:enum MmapResult（L198，工具生成）/283`、`query.rs:148/187/247/307/368`、`os/servers/vm/src/map_phys.rs:fn handle_map_phys（L67，工具生成）` | 服务路径的入口验证 |
+| 页错误 | `os/servers/vm/src/vm_server.rs:const PS（L713，工具生成）`（`dispatch_pagefault`） | `vm_isokendpt(request.endpoint)` → `InvalidProcess` |
 
 **错误折叠模式**：除主循环（panic）与 fork（区分 `InvalidEndpoint`）外，大多数消费方用 `From<EndpointError>` 把 `InvalidSlot`/`DeadEndpoint` 折叠成同一个错误（如 `MunmapError::ProcessNotFound`）——因为 C 侧这些 handler 对两类失败都返回 `EINVAL`（§2.5），外部行为一致；`EndpointError` 的区分保留给调试与语义精确性。
 
@@ -421,7 +421,7 @@ pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, Endpoi
 下一步：
 
 - `04-acl.md`——入口验证之后的下一个安全层：`vm_acl` 权限检查（`acl_init`/`acl_check`/`acl_fork`）。
-- `15-ipc-dispatch.md`——主循环如何使用 `caller_slot`（`vm_server.rs:416-418` 的完整分发骨架）。
+- `15-ipc-dispatch.md`——主循环如何使用 `caller_slot`（`os/servers/vm/src/vm_server.rs:fn relocate（L416，工具生成）` 的完整分发骨架）。
 - `18-vm-fork.md`——`vm_isokendpt` + child slot 边界（§2.7）在 fork 全流程中的使用。
 - `22-vm-exit.md`——两步退出协议如何回收槽位（`do_exit` → `clear_proc` → 槽空闲）。
 - `25-rs-services.md`——`swap_proc_slot`（§2.6）的 RS UPDATE / LU 完整流程。
@@ -431,14 +431,14 @@ pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, Endpoi
 
 ## 7. 参见
 
-- `minix3/minix/servers/vm/glo.h:17-20` — 表定义与常量（ground truth）
-- `minix3/minix/servers/vm/utility.c:84-94` — `vm_isokendpt` 三层验证
-- `minix3/minix/servers/vm/utility.c:186-219` — `swap_proc_slot`
-- `minix3/minix/servers/vm/main.c:131`、`457-462`、`699`、`760` — 主循环验证/表初始化/LU restart 调用点
-- `minix3/minix/servers/vm/fork.c:41-48` — fork 父验证 + child slot 边界
-- `minix3/minix/include/minix/endpoint.h:45-69` — endpoint 编码
-- `minix3/minix/include/minix/sys_config.h:8` — `_NR_PROCS`
+- `minix3/minix/servers/vm/glo.h:VMP_EXECTMP` — 表定义与常量（ground truth）
+- `minix3/minix/servers/vm/utility.c:vm_isokendpt` — `vm_isokendpt` 三层验证
+- `minix3/minix/servers/vm/utility.c:do_info（L186，工具生成）` — `swap_proc_slot`
+- `minix3/minix/servers/vm/main.c:main（L131，工具生成）`、`457-462`、`699`、`760` — 主循环验证/表初始化/LU restart 调用点
+- `minix3/minix/servers/vm/fork.c:do_fork（L41，工具生成）` — fork 父验证 + child slot 边界
+- `minix3/minix/include/minix/endpoint.h:_ENDPOINT_GENERATION_SHIFT` — endpoint 编码
+- `minix3/minix/include/minix/sys_config.h:_NR_PROCS` — `_NR_PROCS`
 - `os/servers/vm/src/vmproc/table.rs` — Rust 进程表实现（14 测试）
-- `os/servers/vm/src/vmproc/vmproc_handle.rs:620-695` — `ActiveProc::swap_proc_slot`（02 文档 §4.3）
-- `os/servers/vm/src/vm_server.rs:416-418` — 主循环 caller 验证
+- `os/servers/vm/src/vmproc/vmproc_handle.rs:const PAGE_SIZE（L620，工具生成）` — `ActiveProc::swap_proc_slot`（02 文档 §4.3）
+- `os/servers/vm/src/vm_server.rs:fn relocate（L416，工具生成）` — 主循环 caller 验证
 - 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/02-vmproc-table.md`（旧 fork 主线素材：地址稳定性论证/选型对比/测试维度）

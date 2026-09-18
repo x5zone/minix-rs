@@ -1,6 +1,6 @@
 # 07-init-session-model：会话结构与生命周期
 
-> **定位**：`session_t`（`minix3/sbin/init/init.c:156-170`）、`SE_*`（161-162）、`new_session`（1142-1180）、`free_session`（1123-1137）、`setupargv`（1185-1217）、`construct_argv`（1101-1118）。
+> **定位**：`session_t`（`minix3/sbin/init/init.c:init_session`）、`SE_*`（161-162）、`new_session`（1142-1180）、`free_session`（1123-1137）、`setupargv`（1185-1217）、`construct_argv`（1101-1118）。
 > **Rust**：`os/commands/sbin/init/src/session.rs`。
 > **前置依赖**：06（ttys 行来源）。
 > **本篇不覆盖（移交）**：DB 增删查（见 08）、getty 启动与回收（见 09）、防抖动时间比较（见 09，`se_started` 字段定义在本篇）。
@@ -85,4 +85,4 @@ getty 字符串为 `"getty名 终端名"` 再分词（`init.c:1193-1196`）；�
 - `06-init-read-ttys.md` — 行来源。
 - `08-init-session-db.md` — DB。
 - `09-init-multi-user.md` — 启动与防抖动。
-- C 源码：`minix3/sbin/init/init.c:156-170,1101-1217`。
+- C 源码：`minix3/sbin/init/init.c:init_session,1101-1217`。

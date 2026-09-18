@@ -59,7 +59,7 @@
 
 ✅ **通过**。VM-VFS 交互模型的核心概念描述准确：
 - 请求队列 + 回调机制与 C 源码 `vfs_request`/`do_vfs_reply` 一致
-- `VMVFSREQ_FDLOOKUP`/`VMVFSREQ_FDIO`/`VMVFSREQ_FDCLOSE` 三种请求类型经 grep 验证与 C 源码匹配（`mmap.c:89,265`, `fdref.c:150,167`, `mem_file.c:148`）
+- `VMVFSREQ_FDLOOKUP`/`VMVFSREQ_FDIO`/`VMVFSREQ_FDCLOSE` 三种请求类型经 grep 验证与 C 源码匹配（`mmap.c:89,265`, `minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成）,167`, `minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L148，工具生成）`）
 - VFS Reply 消息格式段准确反映了消息结构
 
 ### §2.2 C 代码引用验证
@@ -242,7 +242,7 @@
 
 🔴 **P0**：C 的 `mappedfile_delete` 调用 `fdref_deref(region)` 释放 fd 引用。Rust 的 `MappedFile` 实现没有重写 `ev_delete`，依赖 trait 默认空实现。这导致区域删除时 fd 引用永远不会释放。
 
-**C 代码依据** (`mem_file.c:280-283`):
+**C 代码依据** (`minix3/minix/servers/vm/mem_file.c:mappedfile_delete`):
 ```c
 static void mappedfile_delete(struct vir_region *region) {
     fdref_deref(region);
@@ -278,7 +278,7 @@ static void mappedfile_delete(struct vir_region *region) {
 
 | 文档描述 | 当前代码 | 一致性 |
 |----------|---------|--------|
-| Ch4（第一）VfsRequestQueue::handle_reply 签名 | vfs_queue.rs:140 | ⚠️ 签名不匹配 |
+| Ch4（第一）VfsRequestQueue::handle_reply 签名 | os/servers/vm/src/vfs_queue.rs:fn activate（L140，工具生成） | ⚠️ 签名不匹配 |
 | Ch4（第一）sender 字段 | vfs_queue.rs（无此字段） | ❌ 未实现 |
 | Ch4（第一）FdRefTable | fdref.rs | ✅ 已实现 |
 | Ch4（第一）PageCache | page_cache.rs | ⚠️ refcount 类型不一致(u32/u16) |
@@ -308,7 +308,7 @@ static void mappedfile_delete(struct vir_region *region) {
 | P1-1 | L779-1327 | 第一个 Ch4 中"与当前代码的差异"块引用的"当前代码"定义模糊——是指第二个 Ch4 的废弃代码还是真正的当前代码？ | 当第二个 Ch4 删除后，这些差异说明失去参照物 | 将"与当前代码的差异"改为"与 C 源码的差异"或在 Ch4 开头增加当前状态说明 | ✅ **已修复** — 所有"与当前代码的差异"已标注删除线并注明"已修复"，关键差异表列名改为"旧代码/当前代码（已对齐设计）" |
 | P1-2 | vfs_queue.rs L140-180 | `handle_reply` 返回 Option 而非直接调用回调，与文档 Ch4（第一）§4.4 的签名不一致 | 文档显示 `fn handle_reply(&mut self, reply: VfsReply, server: &mut VmServer) -> Result<(), VfsQueueError>` | 统一 API 或更新文档反映实际设计 | ✅ **已修复** — 文档 §3.3 和 §4.4 的 `handle_reply` 签名已更新为返回 `Result<Option<(VfsCallbackFn, VfsReply, VfsRequestState)>, VfsQueueError>`，与代码一致 |
 | P1-3 | L935-1050 | 文档 Ch4（第一）§4.5 的 `FdRefTable` 代码用 `refcount: u32`，当前 `fdref.rs` 实际用内联的 `u32` → 轻微差异 | 两处代码结构基本一致但字段命名略有不同 | 统一字段类型描述或标注差异 | ✅ **已修复** — 文档 §4.5 的 `FdRefTable` 代码已更新为 `UnsafeCell` + `get_global()` 模式，与 `fdref.rs` 完全一致 |
-| P1-4 | L260-280 | Ch2 §2.4 `fdref_deref` 流程描述省略了链表移除步骤 | C 源码 `fdref.c:85-95` 有完整的链表移除逻辑 `prev = fdrefs; while(prev->next != NULL)` | 补充链表移除步骤，保持 C 分析完整性 | ✅ **已修复** — 补充了 `fdref_deref` 的 6 步链表移除详细流程（头节点/非头节点两种情况），引用 C 源码行号 |
+| P1-4 | L260-280 | Ch2 §2.4 `fdref_deref` 流程描述省略了链表移除步骤 | C 源码 `minix3/minix/servers/vm/fdref.c:fdref_sanitycheck（L85，工具生成）` 有完整的链表移除逻辑 `prev = fdrefs; while(prev->next != NULL)` | 补充链表移除步骤，保持 C 分析完整性 | ✅ **已修复** — 补充了 `fdref_deref` 的 6 步链表移除详细流程（头节点/非头节点两种情况），引用 C 源码行号 |
 | P1-5 | 全局 | `MemType` trait 无法访问 `FdRefTable`，文档 §4.7 提出的"方案 C"（由调用方处理）尚未在任何地方实现 | `ev_split` 注释说"由调用方负责"但调用方未实现 | 实现方案 C 或在 ev_delete/ev_copy/ev_split 的调用点补齐 fdref 引用计数操作 | ✅ **已修复** — `free_region_pages` 增加 `ev_delete` + `FdRefTable::deref_entry`；`fork_region` 增加 `ev_copy` 后的 `fdref_ref`；`VirRegion::split` 内联处理 File 参数 + `fdref_ref` ×2 |
 | P1-6 | L1739-1781 | Ch6 "修改清单"所列文件均已有代码，但清单未区分"已修改/待修改" | 导致读者不清楚哪些修改已执行、哪些是计划 | 为每个文件标注完成状态 | ✅ **已修复** — Ch6 修改清单增加"状态"列，所有条目标注 ✅ 已实现 |
 | P1-7 | 全局 | 文档无独立测试章节 | 文档结构规范要求测试位于倒数第二章 | 增加 Ch7 测试章节，或扩展现有 §6.3 为完整测试设计 | ✅ **已修复** — §6.3 扩展为 §6.3.1 单元测试表（含状态列）+ §6.3.2 集成测试要点 |

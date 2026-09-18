@@ -75,32 +75,32 @@ Rust 改写不照抄三个函数和 switch 写法，而是参考 Linux 的槽位
 
 ### D1 槽位换算复用已有实现
 
-- **C**：`*proc = _ENDPOINT_P(endpoint)`（`utility.c:31,48`；宏定义在 `endpoint.h:68-69`）。
+- **C**：`*proc = _ENDPOINT_P(endpoint)`（`utility.c:31,48`；宏定义在 `minix3/minix/include/minix/endpoint.h:_ENDPOINT_P`）。
 - **Rust**：`Endpoint::slot()`（minix-types 里已有，换算式子已经验证过；门禁函数只收槽位号，换算归调用方）。
 - **为什么**：换算式子已经有了；门禁只管验不管算（换算是已有的事，验是本篇的事）。备选方案（门禁内部重算）被否决：算和验合一会让门禁难复用（手里已经有槽位号的调用方还得倒算回端点号，多此一举）。
 
 ### D2 查已用槽做成枚举
 
 - **C**：四道判断、三种拒绝（`utility.c:31-40`）。
-- **Rust**：`SlotVerdict::{Occupied, Task, OutOfRange, Dead}` 加 `check_occupied()`（`os/servers/sched/src/table.rs:16,70`）；门禁收两个布尔值，读表归调用方。
+- **Rust**：`SlotVerdict::{Occupied, Task, OutOfRange, Dead}` 加 `check_occupied()`（`os/servers/sched/src/table.rs:enum SlotVerdict（L16，工具生成）,70`）；门禁收两个布尔值，读表归调用方。
 - **为什么**：判断顺序就是优先级（C 的顺序不能换）；名字对不上和空槽同码不同因，枚举把原因分开；读表归调用方（门禁是判断，读是执行）。备选方案（门禁收整张表引用）被否决：判断和执行分离。
 
 ### D3 查空槽镜像对称
 
 - **C**：`sched_isemtyendpt`（`utility.c:46-56`，最后一道判断反转）。
-- **Rust**：`check_vacant()`（`os/servers/sched/src/table.rs:88`；不查名字——空槽没有名字可对）。
+- **Rust**：`check_vacant()`（`os/servers/sched/src/table.rs:fn check_vacant（L88，工具生成）`；不查名字——空槽没有名字可对）。
 - **为什么**：查空和查占对偶；空槽不验名字。备选方案（查空查占合一个函数加布尔参数）被否决：两个门两个名字，合一个就把名字丢了。
 
 ### D4 白名单三个取值
 
 - **C**：`accept_message`（`utility.c:61-74`，PM/RS 返回 1）。
-- **Rust**：`Sender::{Pm, Rs, Other}` 加 `sender_from()` 加 `accept()`（`os/servers/sched/src/valid.rs:14,28,42`；`Endpoint::PM/RS` 已有）。
+- **Rust**：`Sender::{Pm, Rs, Other}` 加 `sender_from()` 加 `accept()`（`os/servers/sched/src/valid.rs:enum Sender,28,42`；`Endpoint::PM/RS` 已有）。
 - **为什么**：名单就是信任；C 的 1/0 直译成布尔。备选方案（白名单查表驱动）被否决：两个名字恒定不变，查表属于多余。
 
 ### D5 错误码一处映射
 
 - **C**：三个错误码值（`errno.h:64,211-212`）。
-- **Rust**：`EBADEPT=216` 补进 types（`EDEADEPT=215` 就在隔壁），`SlotVerdict::errno()`（`os/servers/sched/src/table.rs:38`）一处映射。
+- **Rust**：`EBADEPT=216` 补进 types（`EDEADEPT=215` 就在隔壁），`SlotVerdict::errno()`（`os/servers/sched/src/table.rs:fn errno（L38，工具生成）`）一处映射。
 - **为什么**：常量补齐是跨服务契约；映射收在一处（三个调用方各写一遍早晚写岔）。备选方案（各调用方自己写映射）被否决：重复就是漂移的开始。
 
 ### ARCH 决策总表
@@ -131,10 +131,10 @@ os/libs/minix-types/src/types/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 查已用槽 | `utility.c:29-41` | `os/servers/sched/src/table.rs:16,33,38,70` | 穷举加一处错误码 |
-| 查空槽 | `utility.c:46-56` | `os/servers/sched/src/table.rs:88` | 最后一道判断反转 |
-| 白名单 | `utility.c:61-74` | `os/servers/sched/src/valid.rs:14,28,42` | 名字即身份 |
-| 错误码值 | `errno.h:64,211-212` | `os/libs/minix-types/src/types/errno.rs` 的 EBADEPT 加 `os/servers/sched/src/table.rs:38` | 跨服务权威 |
+| 查已用槽 | `utility.c:29-41` | `os/servers/sched/src/table.rs:enum SlotVerdict（L16，工具生成）,33,38,70` | 穷举加一处错误码 |
+| 查空槽 | `utility.c:46-56` | `os/servers/sched/src/table.rs:fn check_vacant（L88，工具生成）` | 最后一道判断反转 |
+| 白名单 | `utility.c:61-74` | `os/servers/sched/src/valid.rs:enum Sender,28,42` | 名字即身份 |
+| 错误码值 | `errno.h:64,211-212` | `os/libs/minix-types/src/types/errno.rs` 的 EBADEPT 加 `os/servers/sched/src/table.rs:fn errno（L38，工具生成）` | 跨服务权威 |
 
 ### 4.3 不变量
 
@@ -153,10 +153,10 @@ os/libs/minix-types/src/types/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_occupied_door` | `utility.c:29-41` | 四道判断加顺序优先加码值 | `os/servers/sched/src/table.rs:109` |
-| `test_vacant_mirror` | `utility.c:46-56` | 三道判断加镜像加互斥 | `os/servers/sched/src/table.rs:141` |
-| `test_names` | `com.h:59-61` | PM/RS 名字加其余全 Other | `os/servers/sched/src/valid.rs:51` |
-| `test_closed_list` | `utility.c:61-74` | 两个名字放行、其他拒绝 | `os/servers/sched/src/valid.rs:63` |
+| `test_occupied_door` | `utility.c:29-41` | 四道判断加顺序优先加码值 | `os/servers/sched/src/table.rs:fn test_occupied_door` |
+| `test_vacant_mirror` | `utility.c:46-56` | 三道判断加镜像加互斥 | `os/servers/sched/src/table.rs:fn test_vacant_mirror` |
+| `test_names` | `com.h:59-61` | PM/RS 名字加其余全 Other | `os/servers/sched/src/valid.rs:fn test_names` |
+| `test_closed_list` | `utility.c:61-74` | 两个名字放行、其他拒绝 | `os/servers/sched/src/valid.rs:fn test_closed_list` |
 
 测试策略：查已用槽用四道判断全枚举锁定（含顺序优先：任务压越界压名字）；查空槽用三道判断加互斥锁定（已用和空对同一个槽位永远意见相反）；名单用 PM/RS 取值加其他拒绝锁定；错误码用三个值全映射锁定（216/22/215）。
 
@@ -185,7 +185,7 @@ os/libs/minix-types/src/types/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/utility.c:29-74`（三道门禁全部代码）、`minix3/minix/include/minix/endpoint.h:68-69`（槽位换算宏）、`minix3/sys/sys/errno.h:64,211-212`（三个错误码值）、`minix3/minix/include/minix/com.h:59-61`（PM/RS 编号）
+- C 源：`minix3/minix/servers/sched/utility.c:sched_isokendpt`（三道门禁全部代码）、`minix3/minix/include/minix/endpoint.h:_ENDPOINT_P`（槽位换算宏）、`minix3/sys/sys/errno.h:EINVAL,211-212`（三个错误码值）、`minix3/minix/include/minix/com.h:PM_PROC_NR`（PM/RS 编号）
 - 阶段文档：`03-schedproc-struct.md`（上一站）、`05-priority-timeslice-model.md`（下一站）、`06-start-scheduling.md`（验完的去向）、`02-sched-message-surface.md`（消息里提到的人）
 - Rust 实现：`os/servers/sched/src/table.rs:1`（本篇判断层）、`os/servers/sched/src/valid.rs:1`（本篇名字层）、`os/libs/minix-types/src/types/errno.rs`（EBADEPT 权威位置）、`os/libs/minix-types/src/types/endpoint.rs`（槽位换算权威位置）
 - 对端：`../01-stage-kernel/11-scheduling-primitives.md`（内核调度原语）

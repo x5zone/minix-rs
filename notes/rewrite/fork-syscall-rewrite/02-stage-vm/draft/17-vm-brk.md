@@ -35,7 +35,7 @@
 | 实际调整 | `break.c:62` | `real_brk()` |
 | 区域扩展 | `region.c:1002` | `map_region_extend_upto_v()` |
 | 区域查找 | `region.c` (via `regionavl`) | `region_search()` |
-| 内存类型调整 | `memtype.h:21` | `ev_resize` 回调 |
+| 内存类型调整 | `minix3/minix/servers/vm/memtype.h:mem_type（L21，工具生成）` | `ev_resize` 回调 |
 
 > **注意**: Minix3 的 vmproc 结构体中**没有** `vm_brk`、`vm_data_top`、`vm_stack_low` 等堆专用字段。堆顶地址隐含在数据段 vir_region 的 `vaddr + length` 中，由 `map_region_extend_upto_v` 通过 AVL 树查找区域并扩展来管理。vmproc 中与内存统计相关的字段是 `vm_total` 和 `vm_total_max`（见 [vmproc.h](../../../../../minix3/minix/servers/vm/vmproc.h)）。
 

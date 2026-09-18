@@ -1,9 +1,9 @@
 # 04-is-data-acquisition：数据获取五通道
 
-> **源码**：`minix3/minix/include/minix/com.h:205`（KERNEL_CALL）、`:236`
+> **源码**：`minix3/minix/include/minix/com.h:KERNEL_CALL`（KERNEL_CALL）、`:236`
 > （SYS_GETINFO）、`:252`（SYS_DIAGCTL）、`:315-345`（GET_*）、`:412-415`
 > （DIAGCTL_CODE_*）、`:476`（RS_GETSYSINFO）、`:507`（DS_GETSYSINFO）、
-> `:729-734`（VM_INFO/VMIW_*）+ `sysinfo.h:11-17`（SI_*）+ `callnr.h:60`
+> `:729-734`（VM_INFO/VMIW_*）+ `minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB`（SI_*）+ `minix3/minix/include/minix/callnr.h:PM_GETSYSINFO`
 > （PM_GETSYSINFO）/`:120`（VFS_GETSYSINFO）+ `type.h:214-232`
 > （minix_kerninfo）+ `syslib.h:164-187`（diagctl/getinfo 速记宏）+
 > `libsys/{getsysinfo.c,vm_info.c,sys_diagctl.c,sys_getinfo.c}` +
@@ -120,10 +120,10 @@ stage；kernel `do_getinfo`/`do_diagctl` 实现 → kernel stage（本篇只客�
 （`syslib.h:175-187`，如 `sys_getproctab(dst)` 即 `sys_getinfo(GET_PROCTAB,
 dst, 0,0,0)`）是 IS 实际使用的拼写。
 
-**IS 用法**（8 请求）：`GET_MONPARAMS`（dmp_kernel.c:101）、`GET_IRQHOOKS`
+**IS 用法**（8 请求）：`GET_MONPARAMS`（minix3/minix/servers/is/dmp_kernel.c:monparams_dmp（L101，工具生成））、`GET_IRQHOOKS`
 （:129）、`GET_IRQACTIDS`（:133）、`GET_IMAGE`（:174）、`GET_KINFO`（:197）、
 `GET_MACHINE`（:201）、`GET_PRIVTAB`（:261）、`GET_PROCTAB`（:265/328/368、
-dmp_vm.c:83）。注意缺席者：`GET_KENV`——`kenv_dmp` 读的是 kinfo+machine
+minix3/minix/servers/is/dmp_vm.c:vm_dmp（L83，工具生成））。注意缺席者：`GET_KENV`——`kenv_dmp` 读的是 kinfo+machine
 （:197/:201），从未调 `sys_getkenv`（V1 定型后无 `get_kenv` 方法可调，
 §3 D2 V1 注记；初版 `GetRequest` 无 Kenv 变体同理）。
 
@@ -164,7 +164,7 @@ int sys_diagctl(int code, char *arg1, int arg2)   /* sys_diagctl.c */
 两者不可互换，A-3 设计已言明）。
 
 **IS 用法**：`procstack_dmp` 对每个目标 `sys_diagctl_stacktrace(rp->p_endpoint)`
-（dmp_kernel.c:378）。**两侧现状**：Minix3 C 侧完整实现（`do_diagctl` 的
+（minix3/minix/servers/is/dmp_kernel.c:procstack_dmp（L378，工具生成））。**两侧现状**：Minix3 C 侧完整实现（`do_diagctl` 的
 STACKTRACE 分支调 `proc_stacktrace`，`kernel/system/do_diagctl.c:43-47`）；
 minix-rs Rust 侧暂 ENOSYS（`syscall.rs:670`，`32-stack-tracing.md` forward
 reference，plan §5.2 已登记）——IS 调了，Rust 内核暂不接，结果是
@@ -189,9 +189,9 @@ void __minix_init(void)   /* __attribute__((constructor))，:13-31 */
 每个服务进程启动时，libc 构造子调 `ipc_minix_kerninfo()`（机器相关汇编，
 `MINIX_KERNINFO` 门）取内核映射好的 `.usermapped` 页地址，并以
 `KERNINFO_MAGIC`（`0xfc3b84bf`，type.h:229）校验——magic 不对就置 NULL
-（之后 `get_minix_kerninfo()` 的 `assert` 会炸，`kernel_utils.c:26-29`）。
-页内 `kmessages`（`usermapped_data.c:9`）是内核诊断消息环形缓冲，
-`kmessages_dmp` 直读并展开（dmp_kernel.c:63-93，`km_next`/`km_size` 环形
+（之后 `get_minix_kerninfo()` 的 `assert` 会炸，`minix3/minix/lib/libc/sys/kernel_utils.c:get_minix_kerninfo`）。
+页内 `kmessages`（`minix3/minix/kernel/usermapped_data.c:kmessages`）是内核诊断消息环形缓冲，
+`kmessages_dmp` 直读并展开（minix3/minix/servers/is/dmp_kernel.c:kmessages_dmp，`km_next`/`km_size` 环形
 游标，`_KMESS_BUF_SIZE` 静态打印缓冲）。
 
 **`[ARCH: A-3]`**（三处之一，本节）：minix-rs 64-bit 不移植 `.usermapped`
@@ -238,9 +238,9 @@ void __minix_init(void)   /* __attribute__((constructor))，:13-31 */
    （与 §2.1 `endpt=SELF` 对比：本通道是**跨地址空间拷贝**，方向仍是
    "到调用方"，但执行者是服务进程而非内核）。
 
-**IS 用法**：PM×2（`SI_PROC_TAB`，dmp_pm.c:47/82）、VFS×2（`SI_PROC_TAB`
+**IS 用法**：PM×2（`SI_PROC_TAB`，minix3/minix/servers/is/dmp_pm.c:mproc_dmp（L47，工具生成）/82）、VFS×2（`SI_PROC_TAB`
 :31 + `SI_DMAP_TAB` :71）、RS×2（`SI_PROCPUB_TAB` + `SI_PROC_TAB`，
-dmp_rs.c:33-34）、DS×1（`SI_DATA_STORE`，dmp_ds.c:15）。IS uid 0，
+minix3/minix/servers/is/dmp_rs.c:rproc_dmp（L33，工具生成））、DS×1（`SI_DATA_STORE`，minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L15，工具生成））。IS uid 0，
 root 门恒过（D4 义务①的证据）。
 
 ### 2.5 vm_info×3：厚卷分批送（地址空间）
@@ -260,10 +260,10 @@ root 门恒过（D4 义务①的证据）。
 - `vm_info_region(who, vri, count, next)`：加 `count/next`，返回后**写回**
   `*next = m.next`，返回 `m.count`（实际条数）——游标协议：
   `next==0` 开新的一轮（`prev_base` 初值 0，`first = prev_base == 0` —
-  dmp_vm.c:62/92），返回的 count/next 驱动下一轮（10 的
-  `prev_base`/`prev_i` 即此游标，dmp_vm.c:94-131）。
+  minix3/minix/servers/is/dmp_vm.c:vm_dmp（L62，工具生成）/92），返回的 count/next 驱动下一轮（10 的
+  `prev_base`/`prev_i` 即此游标，minix3/minix/servers/is/dmp_vm.c:vm_dmp（L94，工具生成））。
 
-**IS 用法**：`vm_info_stats`（dmp_vm.c:66）+ `sys_getproctab`（:83 取端点表）
+**IS 用法**：`vm_info_stats`（minix3/minix/servers/is/dmp_vm.c:vm_dmp（L66，工具生成））+ `sys_getproctab`（:83 取端点表）
 + `vm_info_usage`（:110）+ `vm_info_region` 批循环（:94/:131）。服务端实现
 归 `02-stage-vm/26-vm-queries.md`（本篇只客户端面）。
 
@@ -272,10 +272,10 @@ root 门恒过（D4 义务①的证据）。
 | 层 | 值域 | 例子 | IS 反应 | 证据 |
 |---|---|---|---|---|
 | 传输失败 | 负值 | `_taskcall` 发不出（`s < 0`） | 告警 + continue（位图按零） | 03 §2.3② |
-| 服务拒绝 | 正 errno | EPERM（非 root）、EINVAL（尺寸）、ENOSYS（未知 who） | 告警 + return（跳过本屏） | dmp_pm.c:47 `!= OK` 即返 |
-| 数据缺席 | — | DIAGCTL 未接线（ENOSYS）、kmessages 未映射 | 告警 + return | dmp_kernel.c:378 后流程照走 |
+| 服务拒绝 | 正 errno | EPERM（非 root）、EINVAL（尺寸）、ENOSYS（未知 who） | 告警 + return（跳过本屏） | minix3/minix/servers/is/dmp_pm.c:mproc_dmp（L47，工具生成） `!= OK` 即返 |
+| 数据缺席 | — | DIAGCTL 未接线（ENOSYS）、kmessages 未映射 | 告警 + return | minix3/minix/servers/is/dmp_kernel.c:procstack_dmp（L378，工具生成） 后流程照走 |
 
-统一形状（dmp_kernel.c:101 式）：`if ((r = sys_getX(...)) != OK) { printf告警;
+统一形状（minix3/minix/servers/is/dmp_kernel.c:monparams_dmp（L101，工具生成） 式）：`if ((r = sys_getX(...)) != OK) { printf告警;
 return; }`——**永不 panic**。与 01 的分界：transport（收/发）失败 = 事件
 循环已死 → panic；acquire（取数）失败 = 本屏作废 → warn。`panic` 归
 transport，`warn` 归 acquire（`acquire.rs` 头注释原文）。
@@ -330,12 +330,12 @@ GET_KENV、MIB 面的 SI_CALL_STATS 等编译期拒绝）。
 （调用点传 `size_of`，服务侧精确匹配是 EINVAL 的另一半）；③ 越权值拒绝
 （`SiWhat` 四变体：ProcTab/DmapTab/ProcPubTab/DataStore——注意 ProcTab 的
 owner 不是表的属性而是调用点的属性：PM 与 RS 各拉一次 `SI_PROC_TAB`
-（dmp_pm.c:47/dmp_rs.c:34），故不用 `owner()` 方法而用
+（minix3/minix/servers/is/dmp_pm.c:mproc_dmp（L47，工具生成）/minix3/minix/servers/is/dmp_rs.c:rproc_dmp（L34，工具生成）），故不用 `owner()` 方法而用
 `IS_GETSYSINFO_CALLS` 六对表显式枚举，单 owner 映射会误路由 RS 那一路）。
 
 ### 3.5 D5：region 游标签名（三元组）
 
-`region(who, count, next) -> (status, next_out, count_out)`（vm_info.c:39-58
+`region(who, count, next) -> (status, next_out, count_out)`（minix3/minix/lib/libsys/vm_info.c:vm_info_region
 写回语义）；推进规则归 10。本篇 fake 镜像写回单测。
 
 ### 3.6 D6：错误面（i32 直通，不转 Result）
@@ -401,9 +401,9 @@ pub trait Acquires: SysGetinfoTransport + DiagctlTransport + KerninfoTransport +
    取代初版 `GetRequest` 枚举限域）。
 2. 调用对表显式（`IS_GETSYSINFO_CALLS` 六对；RS 双拉陷阱已命名，RS 双表
    收敛为全有或全无的一个方法）。
-3. `getsysinfo_call` 未知 who → ENOSYS（getsysinfo.c:14-24）。
+3. `getsysinfo_call` 未知 who → ENOSYS（minix3/minix/lib/libsys/getsysinfo.c:getsysinfo（L14，工具生成））。
 4. `vm_region` 三元组写回，`out.len()` 即 capacity，返回的 count ≤ capacity
-   （vm_info.c:39-58）。
+   （minix3/minix/lib/libsys/vm_info.c:vm_info_region）。
 5. Unimplemented 全 panic（fail-closed）；acquire 永不 panic（§2.6）。
 
 ---
@@ -414,11 +414,11 @@ pub trait Acquires: SysGetinfoTransport + DiagctlTransport + KerninfoTransport +
 |---|---|---|---|
 | T1 | GET 速记宏 ↔ 类型化方法 1:1（7 方法，KENV/MACHINE 无方法） | 结构性（签名即对账） | syslib.h:175-187 |
 | T2 | SI 7 值 + DIAGCTL 4 值 + SYS 两码 + PM/VFS callnr | 逐值 | sysinfo.h/callnr.h |
-| T3 | SiWhat 码 + 调用对表（含 RS 双拉陷阱） | — | dmp_rs.c:33-34 |
-| T4 | who→callnr 四映射 + TTY/VM → ENOSYS | — | getsysinfo.c:14-24 |
+| T3 | SiWhat 码 + 调用对表（含 RS 双拉陷阱） | — | minix3/minix/servers/is/dmp_rs.c:rproc_dmp（L33，工具生成） |
+| T4 | who→callnr 四映射 + TTY/VM → ENOSYS | — | minix3/minix/lib/libsys/getsysinfo.c:getsysinfo（L14，工具生成） |
 | T5 | 五通道 OK/ERR 双路（ERR 回流不 panic；ERR 时出参不被改写） | — | §2.6 |
 | T6 | OK 取数填出参（proctab/monparams 实填断言） | — | §2.1/§2.4 拷贝语义 |
-| T7 | region 三元组写回 + count 夹到 capacity | — | vm_info.c:39-58 |
+| T7 | region 三元组写回 + count 夹到 capacity | — | minix3/minix/lib/libsys/vm_info.c:vm_info_region |
 | T8 | Unimplemented 全 panic（A-3 含） | `#[should_panic]` | fail-closed |
 
 ### 5.3 测试统计（截至 2026-09-04；V1 轮定型后基线见 todo.md §0）

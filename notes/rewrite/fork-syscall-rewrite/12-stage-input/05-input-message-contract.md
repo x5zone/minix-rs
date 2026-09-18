@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-05，首版完整文档）
 > **定位**: 消息编号、四个载荷结构、全单向纪律、设备节点表（阶段 2，协议面；第 01 篇握手与第 09-11 篇消息的字典）
-> **源码**: `minix3/minix/include/minix/com.h:872-893`（编号）+ `minix3/minix/include/minix/ipc.h:232-259`（服务发出的三个载荷）+ `ipc.h:993-1001`（驱动上报载荷）+ `ipc.h:2434-2436,2517`（联合体接入）+ `minix3/minix/include/minix/dmap.h:78`（主设备号）+ `minix3/minix/commands/MAKEDEV/MAKEDEV.sh:330-343`（设备节点表）+ `minix3/minix/include/sys/kbdio.h`（灯位）+ `minix3/sys/sys/ttycom.h:174`（灯控制号）+ `minix3/minix/servers/input/input.c:608-644`（消息面入口）
+> **源码**: `minix3/minix/include/minix/com.h:TTY_RQ_BASE`（编号）+ `minix3/minix/include/minix/ipc.h:232-259`（服务发出的三个载荷）+ `ipc.h:993-1001`（驱动上报载荷）+ `ipc.h:2434-2436,2517`（联合体接入）+ `minix3/minix/include/minix/dmap.h:INPUT_MAJOR`（主设备号）+ `minix3/minix/commands/MAKEDEV/MAKEDEV.sh:330-343`（设备节点表）+ `minix3/minix/include/sys/kbdio.h`（灯位）+ `minix3/sys/sys/ttycom.h:KIOCSLEDS`（灯控制号）+ `minix3/minix/servers/input/input.c:input_check（L608，工具生成）`（消息面入口）
 > **Rust 模块**: `os/libs/minix-types/src/ipc/input.rs`（编号、节点表、灯编码、构造解码）+ `os/libs/minix-types/src/ipc/message.rs`（四个载荷结构与联合体成员）
 > **目标读者**: 想理解"输入服务和驱动、终端之间用哪几个消息号、每种消息里装什么、为什么从不需要回消息"的读者。前置知识：第 01 篇（见过终端握手）、第 03 篇（知道次设备号与槽位号）、第 04 篇（知道事件长什么样）。
 > **本章不讲什么**: 字符设备请求（打开读控制那些，属于第 02 篇的前台协议）；各处理函数收到消息后做什么（第 06 至第 11 篇）；终端收到转交事件后如何消费（第 13 篇）；驱动一侧如何组装上报（第 12、第 14 篇）。
@@ -169,7 +169,7 @@ input)
 
 主设备号 64 在设备映射表里占一行（第 78 行），注释写明它属于 `/dev/input` 家族。节点表用循环生成八个编号设备（键盘次设备号是循环变量加一，鼠标是加六十五），外加两个多路器。循环变量的算术（`n+1`、`n+65`）和第 03 篇的门牌常量（起始 1、起始 65）是同一套号码的两种写法——脚本用算术，头文件用常量，Rust 用数组加测试三方互锁（第 3 章）。
 
-### 2.6 灯位与灯控制号（kbdio.h:15-24，ttycom.h:174）
+### 2.6 灯位与灯控制号（minix3/minix/include/sys/kbdio.h:kio_leds（L15，工具生成），ttycom.h:174）
 
 ```c
 typedef struct kio_leds
@@ -186,7 +186,7 @@ typedef struct kio_leds
 #define KIOCSLEDS       _IOW('k', 2, struct kio_leds)
 ```
 
-调用者传灯状态用一个结构体，里面只有一个无符号整数，三位分别表示数字锁、大写锁、滚动锁（`0x1`/`0x2`/`0x4`）。控制号用 `_IOW` 宏构造：方向（写入设备）加参数长度加组（`k`）加序号（2）。`_IOW` 的位布局在 `ioccom.h:40-87`（高三位方向、接着长度、接着组、最低序号），代入可得 `0x80046B02`——Rust 一侧用常量表达式重复这套构造，而不是硬抄结果（第 3 章），测试再把结果锁死，双保险。
+调用者传灯状态用一个结构体，里面只有一个无符号整数，三位分别表示数字锁、大写锁、滚动锁（`0x1`/`0x2`/`0x4`）。控制号用 `_IOW` 宏构造：方向（写入设备）加参数长度加组（`k`）加序号（2）。`_IOW` 的位布局在 `minix3/sys/sys/ioccom.h:_SYS_IOCCOM_H_（L40，工具生成）`（高三位方向、接着长度、接着组、最低序号），代入可得 `0x80046B02`——Rust 一侧用常量表达式重复这套构造，而不是硬抄结果（第 3 章），测试再把结果锁死，双保险。
 
 注意灯位（调用者词汇，`0x1`/`0x2`/`0x4`）和灯掩码（服务词汇，位号等于灯码 1/2/3，即 `0x2`/`0x4`/`0x8`）是两套编码，翻译发生在服务收到控制请求时（`input.c:262-268`，第 08 篇）。两套编码并存的原因：调用者沿用键盘驱动的传统位定义，服务内部用"码即位号"的统一规则——翻译层只做三位映射，不多不少。
 
@@ -242,7 +242,7 @@ input_other(message *m, int ipc_status)
 | 联合体接入 | ipc.h:2434-2436,2517 | 2.4 节 | 同上 |
 | INPUT_MAJOR | dmap.h:78 | 2.5 节 | `INPUT_MAJOR` + 节点表 |
 | 节点表 | MAKEDEV.sh:330-343 | 2.5 节 | `INPUT_NODES`（测试互锁） |
-| 灯位与灯结构 | kbdio.h:15-24 | 2.6 节 | `KioLeds` + `KBD_LEDS_*` |
+| 灯位与灯结构 | minix3/minix/include/sys/kbdio.h:kio_leds（L15，工具生成） | 2.6 节 | `KioLeds` + `KBD_LEDS_*` |
 | 灯控制号 | ttycom.h:174 | 2.6 节 | `KIOCSLEDS`（构造表达式） |
 | input_other | input.c:608-644 | 2.7 节 | 分发去向（09/10/11 篇实现） |
 | 服务声明权限 | system.conf:400-403 | 1.5 节指 01 篇 | 见 01 篇 1.1 节（不重复） |
@@ -343,13 +343,13 @@ pub const fn needs_no_reply(message_type: i32) -> bool { ... }  // com.h:886 的
 | `test_one_way_set_matches_c` | 五个号单向，相邻他协议号与空号除外 | com.h:886 |
 | `test_nodes_match_makedev` | 十节点名字号码逐项 | MAKEDEV.sh:330-343 |
 | `test_device_kinds_match_c` | 类型位可组合，非法编号为负 | input.h:6-15 |
-| `test_led_bits_match_c` | 灯结构 4 字节，三位值 | kbdio.h:15-24 |
+| `test_led_bits_match_c` | 灯结构 4 字节，三位值 | minix3/minix/include/sys/kbdio.h:kio_leds（L15，工具生成） |
 | `test_led_control_number_match_c` | 控制号等于 `0x80046B02` | ttycom.h:174 + ioccom.h 编码 |
 | `test_conf_roundtrip_with_reserved_lanes` | 配置往返，保留槽损坏拒收，他类型不误解 | input.c:516-522（发送形状，11 篇） |
 | `test_setleds_roundtrip` | 置灯往返，他类型不误解 | input.c:212-215 |
 | `test_event_reports_roundtrip` | 上报与转交往返互不串 | ipc.h 载荷形状 |
 | `test_tty_up_carries_no_payload` | 宣告只有类型号 | input.c:672-677 |
-| `test_driver_key_prefix_matches_both_sides` | 发布键前缀与第 12 篇客户端逐字一致 | inputdriver.c:32（drv.inp. 前缀对称） |
+| `test_driver_key_prefix_matches_both_sides` | 发布键前缀与第 12 篇客户端逐字一致 | minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_announce（L32，工具生成）（drv.inp. 前缀对称） |
 | `test_input_wire_layouts`（message.rs） | 四载荷 56 字节，字段顺序 | ipc.h `_ASSERT_MSG_SIZE` |
 
 ### 5.1 测试统计（截至 2026-09-05）

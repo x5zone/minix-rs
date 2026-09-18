@@ -61,8 +61,8 @@
 | SACK、时间戳、紧急指针 | lwIP 没有 SACK；时间戳与紧急未配置，且 `tcpsock.c`/`lwip.h`/libc 头 grep 零引用 | 同样没有 | **零偏差**：直觉以为的差异并不存在 |
 | pktsock、bpfdev、rtsock、ifconf | 服务自有 `.c`（链路帧直收发、BPF 解释器、路由变更广播、ioctl 面） | 全部无对应 | 两条路线都自研——不是选型差异项 |
 | IPv6（scope、4 地址、转发） | `LWIP_IPV6=1` 加 `IPV6_FORWARD=1`（lwipopts.h:446/:479） | 原生 IPv6/NDP/SLAAC；转发在我们设备层做（补丁 0002 的等价物） | 垫片 |
-| ISN 注入点 | `lwip_hook_tcp_isn`（lwiphooks.h:8-11），服务持有随机源 | smoltcp 内部生成，不可注入 | **唯一实现差异**：ISN 具体值不是行为契约（每次连接本就不同），不可预测性由栈内熵承担；墙保留钩子位，服务随机源随时可回接 |
-| 路由与网关 | 路由覆盖钩子的契约是"被调用即 panic"（lwiphooks.h:15 与 :31）——路由真相在服务的 route.c | smoltcp 有内部路由表 | 架构关键：服务表仍是唯一权威，适配层在路由变更时向栈同步；墙上只留网关解析钩子 |
+| ISN 注入点 | `lwip_hook_tcp_isn`（minix3/minix/lib/liblwip/lib/lwiphooks.h:lwip_hook_tcp_isn），服务持有随机源 | smoltcp 内部生成，不可注入 | **唯一实现差异**：ISN 具体值不是行为契约（每次连接本就不同），不可预测性由栈内熵承担；墙保留钩子位，服务随机源随时可回接 |
+| 路由与网关 | 路由覆盖钩子的契约是"被调用即 panic"（minix3/minix/lib/liblwip/lib/lwiphooks.h:LWIP_HOOK_TCP_ISN（L15，工具生成） 与 :31）——路由真相在服务的 route.c | smoltcp 有内部路由表 | 架构关键：服务表仍是唯一权威，适配层在路由变更时向栈同步；墙上只留网关解析钩子 |
 
 墙的职责用三句话固定：路由决策、时间源（毫秒，对齐 `sys_now`）、设备都在服务侧；帧只沿"接口进来、接口出去"一个方向穿越；错误一律返回 `util.rs` 的 `STACK_*` 线上值（N-14 双射表的栈侧半边）。本裁决是内部实现选择，外部行为保持 MINIX3 等价；若评审倾向先 FFI 保真，在墙后插一个 C 适配器即可，服务代码零改动——这是把"否决点"留给人评审而不是写死在代码里。
 

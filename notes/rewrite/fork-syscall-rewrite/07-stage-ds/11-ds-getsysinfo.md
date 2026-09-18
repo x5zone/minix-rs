@@ -1,7 +1,7 @@
 # 11 — DS 镜像外借：别的服务器怎么一次性读走整张表
 
 > **分类**: 数据面 handler / 系统信息查询
-> **源码**: `minix3/minix/servers/ds/store.c:653-678`、`servers/is/dmp_ds.c:8-45`、`lib/libsys/getsysinfo.c:22`
+> **源码**: `minix3/minix/servers/ds/store.c:do_getsysinfo`、`servers/is/dmp_ds.c:8-45`、`lib/libsys/getsysinfo.c:22`
 > **说明**: `do_getsysinfo` 是 DS 最短的 handler（两道门 + 一次拷贝），但它背着全阶段最重的契约：03 的 192 字节布局、04 的分配顺序，在这里一次性兑现。本文讲清这两道门和这份契约。
 
 ---
@@ -37,7 +37,7 @@ size 的**精确匹配**值得多说一句：短了会截断镜像（IS 读到�
 
 任一环松了，IS 静默读错——没有错误码，只有错数据。所以本篇的测试锁 `image_bytes() == 192 * 128`（常量式，非 `size_of` 自证：断言必须有一个**手写**的期望值，否则实现和测试会一起错）。
 
-调用链（`getsysinfo.c:22`）：客户端调通用 `getsysinfo(DS_PROC_NR, SI_DATA_STORE, buf, sizeof)` → 转成 `DS_GETSYSINFO` 发 DS → DS 回拷。IS 的 `data_store_dmp`（`dmp_ds.c:8`）就是这么拿快照分页显示的（22 行一页，`prev_i` 轮转）。
+调用链（`minix3/minix/lib/libsys/getsysinfo.c:getsysinfo（L22，工具生成）`）：客户端调通用 `getsysinfo(DS_PROC_NR, SI_DATA_STORE, buf, sizeof)` → 转成 `DS_GETSYSINFO` 发 DS → DS 回拷。IS 的 `data_store_dmp`（`minix3/minix/servers/is/dmp_ds.c:LINES（L8，工具生成）`）就是这么拿快照分页显示的（22 行一页，`prev_i` 轮转）。
 
 ### 1.5 小结
 
@@ -51,7 +51,7 @@ size 的**精确匹配**值得多说一句：短了会截断镜像（IS 读到�
 
 `switch(what)`（`:659`）：`SI_DATA_STORE` 取源地址 + 全表长（`:660-662`），default→`EINVAL`（`:664-665`）→ size 精确比（`:668-669`）→ `sys_datacopy(SELF→caller)`（`:671-672`，失败打日志回错码）→ `OK`。
 
-### 2.2 消费者（`dmp_ds.c:8-45`）
+### 2.2 消费者（`minix3/minix/servers/is/dmp_ds.c:LINES（L8，工具生成）`）
 
 取快照（`:15`，`sizeof` 对账——IS 侧也按 192×128 算，两边同数）→ 分页（`:22` 行，`prev_i` 轮转）→ 逐槽显示槽号/键/主/类型值（`:30-41`）。失败只打印（`:16-18`），不崩——显示工具不配崩。
 
@@ -66,7 +66,7 @@ size 的**精确匹配**值得多说一句：短了会截断镜像（IS 读到�
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
 | D1 | 镜像长变算式 | `sizeof(ds_store)` 用时现算（`:662,668`） | `image_bytes() = size_of::<DataEntry>() * NR_DS_KEYS`（`getsysinfo.rs`） | 长是布局与容量的函数，不是魔法数；表变布局变，镜像自动跟 |
-| D2 | 查询号本地定 | `SI_DATA_STORE` 在 `sysinfo.h:13` | `SI_DATA_STORE = 5`（`getsysinfo.rs`，引 C 行） | `minix-types` 暂无 sysinfo 模块（A-1 余部）；值引源注释，不自创 |
+| D2 | 查询号本地定 | `SI_DATA_STORE` 在 `minix3/minix/include/minix/sysinfo.h:SI_DATA_STORE` | `SI_DATA_STORE = 5`（`getsysinfo.rs`，引 C 行） | `minix-types` 暂无 sysinfo 模块（A-1 余部）；值引源注释，不自创 |
 | D3 |  verdict 纯化 | 门 + 拷贝一锅 | `plan_getsysinfo(what, size)` 回镜像长 | 拷贝是传输（02），"让不让拷、拷多少" 是 verdict；verdict 纯可测 |
 | D4 | 镜像逐字段渲染 | `sys_datacopy` 原样搬 `ds_store` 内存 | 传输层渲染进 `server.rs` 的 `image` 暂存（[ARCH A-10/11]）：flags + key + owner + 4 填充 + union 24 字节逐字段拷贝，填充与 union 非活动字节渲染为规范零 | C 的镜像带陈旧内存（删条目只清 flags，堆内容残留）；IS `dmp_ds` 只读活字段，规范零是可观察面上的诚实超集——union 非活动臂在 Rust 里本就不可读 |
 
@@ -85,7 +85,7 @@ os/servers/ds/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 查询号 | `sysinfo.h:13` | `getsysinfo.rs`（`SI_DATA_STORE`） | 唯一合法 `what` |
+| 查询号 | `minix3/minix/include/minix/sysinfo.h:SI_DATA_STORE` | `getsysinfo.rs`（`SI_DATA_STORE`） | 唯一合法 `what` |
 | 两拒 | `store.c:659-669` | `getsysinfo.rs`（`GetsysinfoReject`） | 问错/量错→`EINVAL` |
 | 镜像长 | `store.c:662` | `getsysinfo.rs`（`image_bytes`） | 条目长 × 表容量 |
 | 查询 verdict | `store.c:659-672` | `getsysinfo.rs`（`plan_getsysinfo`） | 两门（C 序），过则回长 |
@@ -95,7 +95,7 @@ os/servers/ds/src/
 | 不变量 | 守卫 | 证据 |
 |--------|------|------|
 | 量差一字节也拒 | 精确 `!=` 比 | `store.c:668-669` |
-| 镜像长手写期望 | 测试锁 `192 * 128` | `dmp_ds.c:15` 对账 |
+| 镜像长手写期望 | 测试锁 `192 * 128` | `minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L15，工具生成）` 对账 |
 
 ---
 
@@ -119,6 +119,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:653-678`、`servers/is/dmp_ds.c`、`lib/libsys/getsysinfo.c:22`
+- C 源：`minix3/minix/servers/ds/store.c:do_getsysinfo`、`servers/is/dmp_ds.c`、`lib/libsys/getsysinfo.c:22`
 - 阶段文档：`10-ds-subscribe-check.md`（上一站）、`12-ds-client-library.md`（下一站）、`03-ds-data-structures.md`（布局契约的源头）
 - Rust 实现：`os/servers/ds/src/getsysinfo.rs`

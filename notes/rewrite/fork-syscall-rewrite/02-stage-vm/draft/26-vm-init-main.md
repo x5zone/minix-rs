@@ -676,7 +676,7 @@ Rust 版本的初始化比 C 简单得多，因为很多 C 中的手动操作被
 | CALLMAP 逐个注册 | `MessageDispatcher::dispatch_by_number()` 的 `match` | 编译时 |
 | `sef_startup()` → `sef_cb_init_fresh()` | `rs_handshake()` | 主循环中触发 |
 
-真实代码 `vm_server.rs:137-155`：
+真实代码 `os/servers/vm/src/vm_server.rs:fn usage_sources（L137，工具生成）`：
 
 ```rust
 pub fn init(&mut self) {

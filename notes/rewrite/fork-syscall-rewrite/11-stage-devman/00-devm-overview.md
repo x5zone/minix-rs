@@ -14,7 +14,7 @@
 
 Linux 用 sysfs 把设备翻译成伪文件，Redox 用 scheme 把设备翻译成 URL（01 §1.1 已展开这组类比）。Minix3 的答案是 devman：一个**看起来像文件系统的用户态服务器**，把设备树与设备事件都装进文件接口里——devmand 读 `/sys/events` 拿事件，读 `<设备路径>/dev_type` 判类型（13 详述）。
 
-理解 devman 先要摆正它的系统位置：**它不在内核启动镜像里**。`minix3/minix/kernel/table.c:44-64` 的 `boot_image` 数组没有 devman 条目（全文件 grep `devman` 空结果，01 §2.8 已验证），内核启动时不知道它的存在。是 RS（Reincarnation Server）读 `minix3/etc/system.conf:422-429`（`service devman { uid 0; vm SETCACHEPAGE CLEARCACHE }`），以 uid 0 把它 fork+exec 起来。plan 把这叫 **RS 加载组**：devman 与 IS/input/ipc 同类，都是运行时服务，不是 boot 服务。
+理解 devman 先要摆正它的系统位置：**它不在内核启动镜像里**。`minix3/minix/kernel/table.c:boot_image` 的 `boot_image` 数组没有 devman 条目（全文件 grep `devman` 空结果，01 §2.8 已验证），内核启动时不知道它的存在。是 RS（Reincarnation Server）读 `minix3/etc/system.conf:422-429`（`service devman { uid 0; vm SETCACHEPAGE CLEARCACHE }`），以 uid 0 把它 fork+exec 起来。plan 把这叫 **RS 加载组**：devman 与 IS/input/ipc 同类，都是运行时服务，不是 boot 服务。
 
 ### 1.2 本 stage 的两条主线
 

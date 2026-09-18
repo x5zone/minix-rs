@@ -131,7 +131,7 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/lib/libsys/ds.c`（全文 219 行）、`minix3/minix/include/minix/ds.h:40-68`
+- C 源：`minix3/minix/lib/libsys/ds.c`（全文 219 行）、`minix3/minix/include/minix/ds.h:DS_DRIVER_UP（L40，工具生成）`
 - 阶段文档：`11-ds-getsysinfo.md`（上一站）、`02-ds-message-contract.md`（grant 规则的服务器侧）
 - Rust 实现：`os/servers/ds/src/client.rs`
 - 对端：`minix-sys`（A-8，传输接线点）

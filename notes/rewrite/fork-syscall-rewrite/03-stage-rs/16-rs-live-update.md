@@ -1,7 +1,7 @@
 # 16-rs-live-update: Live Update 状态机
 
 > **分类**: 阶段 6 — Live Update（RS 最复杂状态机）
-> **源码**: `minix3/minix/servers/rs/update.c`（1011 行：`rupdate_clear_upds`—7、`rupdate_add_upd`—23、`rupdate_set_new_upd_flags`—88、`rupdate_upd_init`—121、`rupdate_upd_clear`—135、`rupdate_upd_move`—164、`srv_update`—230、`update_service`—262、`rollback_service`—330、`update_period`—371、`start_update_prepare`—401、`start_update_prepare_next`—467、`start_update`—532、`start_srv_update`—621、`complete_srv_update`—657、`abort_update_proc`—707、`end_update_curr`—744、`end_update_before_prepare`—763、`end_update_prepare_done`—780、`end_update_initializing`—795、`end_update_rev_iter`—816、`end_update_debug`—865、`end_srv_update`—932）、`minix3/minix/servers/rs/request.c:534-889`（`do_update`）、`minix3/minix/servers/rs/const.h:58,75-76,83,114-120`、`minix3/minix/include/minix/sef.h:235-242`
+> **源码**: `minix3/minix/servers/rs/update.c`（1011 行：`rupdate_clear_upds`—7、`rupdate_add_upd`—23、`rupdate_set_new_upd_flags`—88、`rupdate_upd_init`—121、`rupdate_upd_clear`—135、`rupdate_upd_move`—164、`srv_update`—230、`update_service`—262、`rollback_service`—330、`update_period`—371、`start_update_prepare`—401、`start_update_prepare_next`—467、`start_update`—532、`start_srv_update`—621、`complete_srv_update`—657、`abort_update_proc`—707、`end_update_curr`—744、`end_update_before_prepare`—763、`end_update_prepare_done`—780、`end_update_initializing`—795、`end_update_rev_iter`—816、`end_update_debug`—865、`end_srv_update`—932）、`minix3/minix/servers/rs/request.c:do_update`（`do_update`）、`minix3/minix/servers/rs/const.h:RS_DEFAULT_PREPARE_MAXTIME,75-76,83,114-120`、`minix3/minix/include/minix/sef.h:SEF_LU_SELF`
 > **Rust 模块**: `os/servers/rs/src/live_update.rs`（`LuFlags`/`UpdatePhase`/`update_phase`/`SEF_LU_STATE_*`/`resolve_prepare_maxtime`/`lu_flags_from_rss`/`vm_default_prealloc`/`validate_update_request`/`UpdateEntry`/`UpdateChain`/`EndUpdateRole`/`end_update_role`/`AbortAction`/`abort_action`/`end_srv_reply_flag`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`UpdateChain` 数据形状）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（`clone_service`/`update_service`/`swap_slot`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`init_slot`/`inherit_service_defaults`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（`run_service`/`end_srv_init`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）
 > **说明**: 本文档是 Live Update 全状态机：`RS_UPDATE`（13 之后的第 16 篇）触发，`prepare → update → init → end/rollback` 四阶段。它依赖 17（state data）、18（RS 自身特例）、19（SEF/VM 契约）——本文档只落地**状态机本体**与**纯切片**（`live_update.rs`）。
@@ -190,7 +190,7 @@ Minix3 的系统服务（VM/PM/VFS/驱动）重启成本高：IPC 引用、内�
   调用在返回后补齐：EAGAIN → `abort_update_proc(EAGAIN)`（update.c:408-417，
   忙 RS 拆掉刚调度的链）、ESRCH → `end_update(OK, RS_REPLY)`（request.c:853-858，
   无可准备者）。可观察顺序与 C 一致。
-- **状态数据段的 17/19 边界**。`init_state_data` 的组合（manager.c:172-260）属
+- **状态数据段的 17/19 边界**。`init_state_data` 的组合（minix3/minix/servers/rs/manager.c:copy_label（L172，工具生成））属
   17-rs-state-data.md；三笔 `cpf_grant_direct` 是 19 号授权面（E-11）。携带状态
   数据的请求在此 fail-closed（ENOSYS），而不是调度一个没有状态传输的更新——
   空规格的请求正常调度。
@@ -205,9 +205,9 @@ Minix3 的系统服务（VM/PM/VFS/驱动）重启成本高：IPC 引用、内�
 
 | 函数 | C 对应 | 语义 |
 |------|--------|------|
-| `LuFlags` | sef.h:235-242 | 8 个 `SEF_LU_*` 位 |
+| `LuFlags` | minix3/minix/include/minix/sef.h:SEF_LU_SELF | 8 个 `SEF_LU_*` 位 |
 | `UpdatePhase` + `update_phase(flags, num_rpupds)` | const.h:105,111 | `Idle/Scheduled/Updating/Initializing`（ARCH A-6） |
-| `SEF_LU_STATE_NULL`/`SEF_LU_STATE_UNREACHABLE` | sef.h:213,219 | 状态值 0/5 |
+| `SEF_LU_STATE_NULL`/`SEF_LU_STATE_UNREACHABLE` | minix3/minix/include/minix/sef.h:SEF_LU_STATE_NULL,219 | 状态值 0/5 |
 | `resolve_prepare_maxtime(maxtime, default)` | request.c:653-655 | 0 → 默认（R32 改名：与 monitor 的同名校量函数区分） |
 | `lu_flags_from_rss(rss, map_prealloc_bytes)` | request.c:574-623 | RSS_* → `(LuFlags, init_flags)` |
 | `vm_default_prealloc(...)` | request.c:591-599 | VM 默认 mmap 预分配 |

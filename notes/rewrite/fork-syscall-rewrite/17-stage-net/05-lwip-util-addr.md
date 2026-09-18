@@ -1,7 +1,7 @@
 # 05-lwip-util-addr：公共工具与地址选择策略
 
 > **分类**：网络服务基础工具模块，覆盖错误转换、特权检查、时间换算、地址校验与地址选择策略
-> **源码**：`minix3/minix/net/lwip/util.c`（251 行）、`minix3/minix/net/lwip/addr.c`（699 行）、`minix3/minix/net/lwip/addrpol.c`（143 行），以及地址尺寸上限定义 `minix3/minix/include/minix/sockdriver.h:11-19` 和地址联合体定义 `minix3/minix/net/lwip/lwip.h:26-47`
+> **源码**：`minix3/minix/net/lwip/util.c`（251 行）、`minix3/minix/net/lwip/addr.c`（699 行）、`minix3/minix/net/lwip/addrpol.c`（143 行），以及地址尺寸上限定义 `minix3/minix/include/minix/sockdriver.h:SOCKADDR_MAX` 和地址联合体定义 `minix3/minix/net/lwip/lwip.h:sockaddr_dlx`
 > **Rust 模块**：`os/net/lwip/src/util.rs`（错误映射、特权判断、时间换算、输出合并检查）、`os/net/lwip/src/addr.rs`（地址尺寸上限、选择策略表、作用域排序、网络掩码工具）
 > **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（轻量协议栈服务的启动链与主循环，理解工具函数被哪些阶段调用）
 >

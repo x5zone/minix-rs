@@ -1,7 +1,7 @@
 # 10-rs-service-create: 服务创建机制
 
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第四步：创建）
-> **源码**: `minix3/minix/servers/rs/manager.c`（`create_service`—531、`clone_service`—713、`activate_service`—1013、`get_service_instances`—1334、`clone_slot`—1800、`swap_slot_pointer`—1856、`swap_slot`—1870）、`minix3/minix/lib/libsys/srv_fork.c`（`PM_SRV_FORK`）、`minix3/minix/include/minix/com.h:738-745`（`VM_RS_MEM_*`）、`minix3/minix/include/minix/priv.h`（`ROOT_SYS_PROC`/`VM_SYS_PROC`/`DYN_PRIV_ID`/`LU_SYS_PROC`/`RST_SYS_PROC`）
+> **源码**: `minix3/minix/servers/rs/manager.c`（`create_service`—531、`clone_service`—713、`activate_service`—1013、`get_service_instances`—1334、`clone_slot`—1800、`swap_slot_pointer`—1856、`swap_slot`—1870）、`minix3/minix/lib/libsys/srv_fork.c`（`PM_SRV_FORK`）、`minix3/minix/include/minix/com.h:VM_RS_MEMCTL`（`VM_RS_MEM_*`）、`minix3/minix/include/minix/priv.h`（`ROOT_SYS_PROC`/`VM_SYS_PROC`/`DYN_PRIV_ID`/`LU_SYS_PROC`/`RST_SYS_PROC`）
 > **Rust 模块**: `os/servers/rs/src/service_create.rs`（`check_create_preconditions`/`mark_child_created`/`rebuild_args`/`clone_slot`/`link_replica`/`activate_service`/`swap_index`/`swap_slot`）+ `os/servers/rs/src/boot.rs`（`KernelApi` 扩展 + `VmRsMemReq`）+ `os/servers/rs/src/process_table.rs`（`swap_rows`/`set_endpoint_index`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（槽位配置）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md`（`read_exec`/`srv_execve`/`free_exec`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`alloc_slot`/`free_slot`/`rproc_ptr`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md`（priv 结构 + `sys_privctl` 操作面）
 > **说明**: 服务的"诞生"是 RS 的一次 11 步编排：fork 出子进程后，把 priv、调度器、可执行映像、VM 权限依次就位。本文档固化编排的顺序语义与失败回滚的挂接点，并把 `clone_slot`（副本槽）与 `swap_slot`（槽交换）两个被 15/16 复用的纯原语建模为 Rust 值语义（ARCH A-3）。
@@ -54,9 +54,9 @@
 
 ## 2. C 源码分析
 
-### 2.1 前置三闸门（manager.c:537-568）
+### 2.1 前置三闸门（minix3/minix/servers/rs/manager.c:rproc（L537，工具生成））
 
-`create_service` 一进来先算两个布尔量（manager.c:542-544）：
+`create_service` 一进来先算两个布尔量（minix3/minix/servers/rs/manager.c:rproc（L542，工具生成））：
 
 ```c
 use_copy   = (rpub->sys_flags & SF_USE_COPY);
@@ -64,19 +64,19 @@ has_replica= (rp->r_old_rp
     || (rp->r_prev_rp && !(rp->r_prev_rp->r_flags & RS_TERMINATED)));
 ```
 
-- **闸门 1**（manager.c:547-552）：`SF_NEED_REPL`（该服务必须从已有副本创建）但没有副本 → 打印 + `free_slot(rp)` + `EPERM`。
-- **闸门 2**（manager.c:555-560）：`SF_NEED_COPY`（必须有内存映像）但没有 `SF_USE_COPY` → 同上。
-- **闸门 3**（manager.c:563-568）：无副本路径且 `r_cmd` 为空（`strcmp(rp->r_cmd, "") == 0`）→ 同上。
+- **闸门 1**（minix3/minix/servers/rs/manager.c:rproc（L547，工具生成））：`SF_NEED_REPL`（该服务必须从已有副本创建）但没有副本 → 打印 + `free_slot(rp)` + `EPERM`。
+- **闸门 2**（minix3/minix/servers/rs/manager.c:rproc（L555，工具生成））：`SF_NEED_COPY`（必须有内存映像）但没有 `SF_USE_COPY` → 同上。
+- **闸门 3**（minix3/minix/servers/rs/manager.c:rproc（L563，工具生成））：无副本路径且 `r_cmd` 为空（`strcmp(rp->r_cmd, "") == 0`）→ 同上。
 
-`has_replica` 的关键细节：**已 `RS_TERMINATED` 的 prev replica 不算数**（manager.c:543-544）——链上可能挂着等清理的死亡槽，不能作为创建来源。old_rp（Live Update 的旧版本）无条件计数。
+`has_replica` 的关键细节：**已 `RS_TERMINATED` 的 prev replica 不算数**（minix3/minix/servers/rs/manager.c:rproc（L543，工具生成））——链上可能挂着等清理的死亡槽，不能作为创建来源。old_rp（Live Update 的旧版本）无条件计数。
 
-### 2.2 fork 与表登记（manager.c:573-601）
+### 2.2 fork 与表登记（minix3/minix/servers/rs/manager.c:rproc（L573，工具生成））
 
-`child_pid = srv_fork(rp->r_uid, 0)`（manager.c:576）。`srv_fork` 是 RS 专用的 fork 面（`lib/libsys/srv_fork.c`：`_taskcall(PM_PROC_NR, PM_SRV_FORK, &m)`，消息带 `uid`/`gid`），把 uid 传下去、group 强制 wheel（注释 "Force group to wheel for now"）。失败 → `free_slot(rp)` + 返回错误（manager.c:577-580）。
+`child_pid = srv_fork(rp->r_uid, 0)`（minix3/minix/servers/rs/manager.c:rproc（L576，工具生成））。`srv_fork` 是 RS 专用的 fork 面（`lib/libsys/srv_fork.c`：`_taskcall(PM_PROC_NR, PM_SRV_FORK, &m)`，消息带 `uid`/`gid`），把 uid 传下去、group 强制 wheel（注释 "Force group to wheel for now"）。失败 → `free_slot(rp)` + 返回错误（minix3/minix/servers/rs/manager.c:rproc（L577，工具生成））。
 
-`getprocnr(child_pid, &child_proc_nr_e)`（manager.c:584）拿子进程 endpoint；失败走 `panic`——RS 把"fork 成功但查不到 endpoint"视为不可能的内部错误。
+`getprocnr(child_pid, &child_proc_nr_e)`（minix3/minix/servers/rs/manager.c:rproc（L584，工具生成））拿子进程 endpoint；失败走 `panic`——RS 把"fork 成功但查不到 endpoint"视为不可能的内部错误。
 
-登记块（manager.c:587-597）逐字段更新槽位：
+登记块（minix3/minix/servers/rs/manager.c:rproc（L587，工具生成））逐字段更新槽位：
 
 | 字段 | 值 | C 行 |
 |------|----|------|
@@ -90,19 +90,19 @@ has_replica= (rp->r_old_rp
 | `rproc_ptr[_ENDPOINT_P(ep)]` | `rp`（快速索引） | 596 |
 | `rpub->in_use` | `TRUE` | 597 |
 
-### 2.3 priv / sched / exec 三连（manager.c:600-650）
+### 2.3 priv / sched / exec 三连（minix3/minix/servers/rs/manager.c:rproc（L600，工具生成））
 
-- **priv**（manager.c:600-605）：`sys_privctl(ep, SYS_PRIV_SET_SYS, &rp->r_priv)` 把槽位里的 priv 结构装进内核，随后 `sys_getpriv(&rp->r_priv, ep)` 把内核权威版本**同步回来**。任一失败 → `cleanup_service(rp)` + `vm_memctl(RS_PROC_NR, PIN)` + `ENOMEM`。
-- **sched**（manager.c:609-613）：`sched_init_proc(rp)`（utility.c:364-382，03 已有建模）——断言 user 进程无 scheduler、sys 进程必须有，然后 `sched_start(...)` 把 `r_scheduler/r_priority/r_quantum/r_cpu` 交给调度器。
-- **exec**（manager.c:622-650）：`use_copy` 时不读文件（映像已在槽里）；否则 `read_exec(rp)` 读入（manager.c:625-629，失败 → cleanup + ENOMEM 回滚），然后 `srv_execve(child_proc_nr_e, rp->r_exec, rp->r_exec_len, rpub->proc_name, rp->r_argv, environ)`（manager.c:634-635，失败 → cleanup_service）。exec 完成后无条件 `vm_memctl(RS_PROC_NR, VM_RS_MEM_PIN)`（manager.c:636）——**fork 之后 RS 自己的内存必须重新 pin**，否则未来写会 pagefault（注释见 manager.c:570-572）。非 `use_copy` 路径最后 `free_exec(rp)`（manager.c:643）——一次性映像用完即释放。
+- **priv**（minix3/minix/servers/rs/manager.c:rproc（L600，工具生成））：`sys_privctl(ep, SYS_PRIV_SET_SYS, &rp->r_priv)` 把槽位里的 priv 结构装进内核，随后 `sys_getpriv(&rp->r_priv, ep)` 把内核权威版本**同步回来**。任一失败 → `cleanup_service(rp)` + `vm_memctl(RS_PROC_NR, PIN)` + `ENOMEM`。
+- **sched**（minix3/minix/servers/rs/manager.c:rproc（L609，工具生成））：`sched_init_proc(rp)`（utility.c:364-382，03 已有建模）——断言 user 进程无 scheduler、sys 进程必须有，然后 `sched_start(...)` 把 `r_scheduler/r_priority/r_quantum/r_cpu` 交给调度器。
+- **exec**（minix3/minix/servers/rs/manager.c:rproc（L622，工具生成））：`use_copy` 时不读文件（映像已在槽里）；否则 `read_exec(rp)` 读入（minix3/minix/servers/rs/manager.c:rproc（L625，工具生成），失败 → cleanup + ENOMEM 回滚），然后 `srv_execve(child_proc_nr_e, rp->r_exec, rp->r_exec_len, rpub->proc_name, rp->r_argv, environ)`（minix3/minix/servers/rs/manager.c:rproc（L634，工具生成），失败 → cleanup_service）。exec 完成后无条件 `vm_memctl(RS_PROC_NR, VM_RS_MEM_PIN)`（minix3/minix/servers/rs/manager.c:rproc（L636，工具生成））——**fork 之后 RS 自己的内存必须重新 pin**，否则未来写会 pagefault（注释见 minix3/minix/servers/rs/manager.c:rproc（L570，工具生成））。非 `use_copy` 路径最后 `free_exec(rp)`（minix3/minix/servers/rs/manager.c:rproc（L643，工具生成））——一次性映像用完即释放。
 
-### 2.4 setuid(0) hack 与 RS/VM 特例（manager.c:652-697）
+### 2.4 setuid(0) hack 与 RS/VM 特例（minix3/minix/servers/rs/manager.c:rproc（L652，工具生成））
 
-**`setuid(0)`**（manager.c:656）：注释明确说明这是**临时 hack**——非阻塞 fork 的目的原本是避免 VFS 参与 fork（VFS 可能正阻塞在向 MFS 的 sendrec 上），但反过来 VFS 可能还没收到 PM 的 fork 消息；如果立即调 `mapdriver()`（11），VFS 会拒绝加驱动条目。`setuid(0)` 强制 PM→VFS 的阻塞通信，保证 mapdriver 时序正确。这是**外部行为的一部分**（D-12），Rust 侧必须等效处理（19 接线）。
+**`setuid(0)`**（minix3/minix/servers/rs/manager.c:rproc（L656，工具生成））：注释明确说明这是**临时 hack**——非阻塞 fork 的目的原本是避免 VFS 参与 fork（VFS 可能正阻塞在向 MFS 的 sendrec 上），但反过来 VFS 可能还没收到 PM 的 fork 消息；如果立即调 `mapdriver()`（11），VFS 会拒绝加驱动条目。`setuid(0)` 强制 PM→VFS 的阻塞通信，保证 mapdriver 时序正确。这是**外部行为的一部分**（D-12），Rust 侧必须等效处理（19 接线）。
 
-**RS 实例 pin**（manager.c:658-669）：`r_priv.s_flags & ROOT_SYS_PROC`（RS 的 replica）→ `vm_memctl(endpoint, VM_RS_MEM_PIN)`——RS 的实例必须驻留内存。
+**RS 实例 pin**（minix3/minix/servers/rs/manager.c:rproc（L658，工具生成））：`r_priv.s_flags & ROOT_SYS_PROC`（RS 的 replica）→ `vm_memctl(endpoint, VM_RS_MEM_PIN)`——RS 的实例必须驻留内存。
 
-**VM 实例**（manager.c:671-695）：`r_priv.s_flags & VM_SYS_PROC` → 先 `vm_memctl(endpoint, VM_RS_MEM_MAKE_VM)` 告诉 VM"新 VM 实例来了"，然后：
+**VM 实例**（minix3/minix/servers/rs/manager.c:rproc（L671，工具生成））：`r_priv.s_flags & VM_SYS_PROC` → 先 `vm_memctl(endpoint, VM_RS_MEM_MAKE_VM)` 告诉 VM"新 VM 实例来了"，然后：
 
 ```c
 rs_rp = rproc_ptr[_ENDPOINT_P(RS_PROC_NR)];
@@ -111,33 +111,33 @@ for(i=0;i<nr_rs_rps;i++)
     vm_memctl(rs_rps[i]->r_pub->endpoint, VM_RS_MEM_PIN, 0, 0);
 ```
 
-VM 只在收到 MAKE_VM 后才真正允许 RS 实例 pin 内存，所以 RS 要把**自己的全部实例**重新 pin 一遍。`get_service_instances`（manager.c:1334-1352）用 static 5 槽数组收集 rp 自身 + prev/next/old/new 五个方向的实例。
+VM 只在收到 MAKE_VM 后才真正允许 RS 实例 pin 内存，所以 RS 要把**自己的全部实例**重新 pin 一遍。`get_service_instances`（minix3/minix/servers/rs/manager.c:get_service_instances）用 static 5 槽数组收集 rp 自身 + prev/next/old/new 五个方向的实例。
 
-### 2.5 vm_set_priv 收尾（manager.c:698-705）
+### 2.5 vm_set_priv 收尾（minix3/minix/servers/rs/manager.c:rproc（L698，工具生成））
 
-`vm_set_priv(endpoint, &vm_call_mask[0], TRUE)` 把槽位的 VM 调用掩码交给 VM（第三个参数 `TRUE` 表示允许）。这是创建的最后一步；成功 → `return OK`（manager.c:707）。
+`vm_set_priv(endpoint, &vm_call_mask[0], TRUE)` 把槽位的 VM 调用掩码交给 VM（第三个参数 `TRUE` 表示允许）。这是创建的最后一步；成功 → `return OK`（minix3/minix/servers/rs/manager.c:rproc（L707，工具生成））。
 
-### 2.6 clone_service：副本创建（manager.c:713-781）
+### 2.6 clone_service：副本创建（minix3/minix/servers/rs/manager.c:clone_service）
 
 `clone_service(rp, instance_flag, init_flags)` 是"复制一个服务实例"的编排，被 13（`do_clone`/`do_restart` 的副本路径）与 16（Live Update 的新版本）复用：
 
-1. **VM 特例**（manager.c:728-733）：目标 endpoint 是 `VM_PROC_NR` 且 `instance_flag == LU_SYS_PROC` 且 `rp->r_next_rp` 已存在 → `cleanup_service_now(rp->r_next_rp)` 并断开——VM 目前只可靠支持一个 replica（注释 "XXX TO-DO"）。
-2. **clone_slot**（manager.c:737-739）：见 2.8。
-3. **链方向**（manager.c:741-750）：`LU_SYS_PROC` → 挂 `rp->r_new_rp`/`replica->r_old_rp`（old/new 链，16 消费）；否则 → `rp->r_next_rp`/`replica->r_prev_rp`（prev/next 副本链，15 消费）。
-4. **flags**（manager.c:751-752）：replica 的 `s_flags |= instance_flag`、`s_init_flags |= init_flags`（LU/RST 标记）。
-5. **create_service(replica)**（manager.c:759-763）：失败 → 断开链 + 返回错误。
-6. **RS 备份信号管理器**（manager.c:765-777）：replica 同时带 `ROOT_SYS_PROC|RST_SYS_PROC` 时（即"用于重启 RS 的 RS 副本"），`update_sig_mgrs(rs_rp, SELF, replica->endpoint)` 让现有 RS 把信号指向副本，再 `update_sig_mgrs(replica_rp, SELF, NONE)`。失败 → 断开 + `kill_service(replica_rp, "update_sig_mgrs failed", r)`。
+1. **VM 特例**（minix3/minix/servers/rs/manager.c:clone_service（L728，工具生成））：目标 endpoint 是 `VM_PROC_NR` 且 `instance_flag == LU_SYS_PROC` 且 `rp->r_next_rp` 已存在 → `cleanup_service_now(rp->r_next_rp)` 并断开——VM 目前只可靠支持一个 replica（注释 "XXX TO-DO"）。
+2. **clone_slot**（minix3/minix/servers/rs/manager.c:clone_service（L737，工具生成））：见 2.8。
+3. **链方向**（minix3/minix/servers/rs/manager.c:clone_service（L741，工具生成））：`LU_SYS_PROC` → 挂 `rp->r_new_rp`/`replica->r_old_rp`（old/new 链，16 消费）；否则 → `rp->r_next_rp`/`replica->r_prev_rp`（prev/next 副本链，15 消费）。
+4. **flags**（minix3/minix/servers/rs/manager.c:clone_service（L751，工具生成））：replica 的 `s_flags |= instance_flag`、`s_init_flags |= init_flags`（LU/RST 标记）。
+5. **create_service(replica)**（minix3/minix/servers/rs/manager.c:clone_service（L759，工具生成））：失败 → 断开链 + 返回错误。
+6. **RS 备份信号管理器**（minix3/minix/servers/rs/manager.c:clone_service（L765，工具生成））：replica 同时带 `ROOT_SYS_PROC|RST_SYS_PROC` 时（即"用于重启 RS 的 RS 副本"），`update_sig_mgrs(rs_rp, SELF, replica->endpoint)` 让现有 RS 把信号指向副本，再 `update_sig_mgrs(replica_rp, SELF, NONE)`。失败 → 断开 + `kill_service(replica_rp, "update_sig_mgrs failed", r)`。
 
-### 2.7 activate_service（manager.c:1013-1026）
+### 2.7 activate_service（minix3/minix/servers/rs/manager.c:activate_service）
 
 极简原语：`ex_rp` 若带 `RS_ACTIVE` 则清除，`rp` 若无 `RS_ACTIVE` 则置位。被 16（update_service 的实例切换）与 15（reincarnate）调用。**只有 active 实例能被 label 查到**（02 `lookup_slot_by_label` 过滤 `RS_ACTIVE`），所以"激活"就是"让新实例成为服务的代表"。
 
-### 2.8 clone_slot：浅拷贝 + 深拷贝（manager.c:1800-1849）
+### 2.8 clone_slot：浅拷贝 + 深拷贝（minix3/minix/servers/rs/manager.c:clone_slot）
 
-1. `alloc_slot(&clone_rp)`（manager.c:1808-1813）——注意 **alloc_slot 不置 `RS_IN_USE`**（manager.c:2067-2083：只找第一个空闲行），置位是调用方的事；clone_slot 返回后由 clone_service/create_service 的流程决定。
-2. `sys_getpriv(&rp->r_priv, rpub->endpoint)`（manager.c:1818-1821）——先把源槽 priv 与内核同步（源可能已被内核改过），失败 `panic`。
-3. **浅拷贝**（manager.c:1824-1825）：`*clone_rp = *rp; *clone_rpub = *rpub;`——配置、priv、exec 指针、IPC 列表全数复制。
-4. **深拷贝修正**（manager.c:1827-1847）：
+1. `alloc_slot(&clone_rp)`（minix3/minix/servers/rs/manager.c:rproc（L1808，工具生成））——注意 **alloc_slot 不置 `RS_IN_USE`**（minix3/minix/servers/rs/manager.c:alloc_slot：只找第一个空闲行），置位是调用方的事；clone_slot 返回后由 clone_service/create_service 的流程决定。
+2. `sys_getpriv(&rp->r_priv, rpub->endpoint)`（minix3/minix/servers/rs/manager.c:rproc（L1818，工具生成））——先把源槽 priv 与内核同步（源可能已被内核改过），失败 `panic`。
+3. **浅拷贝**（minix3/minix/servers/rs/manager.c:rproc（L1824，工具生成））：`*clone_rp = *rp; *clone_rpub = *rpub;`——配置、priv、exec 指针、IPC 列表全数复制。
+4. **深拷贝修正**（minix3/minix/servers/rs/manager.c:rproc（L1827，工具生成））：
    - `r_init_err = ERESTART`（默认 init 错误）；`r_flags &= ~RS_ACTIVE`（副本不激活）；`r_pid = -1`；`rpub->endpoint = -1`（还没进程）；
    - `r_pub = clone_rpub`（恢复 pub 指针——**只存在于 C 的双表布局**）；
    - `build_cmd_dep(clone_rp)`（从 r_cmd 重建 r_args/r_argc）；
@@ -145,18 +145,18 @@ VM 只在收到 MAKE_VM 后才真正允许 RS 实例 pin 内存，所以 RS 要�
    - 四链 `r_old_rp/r_new_rp/r_prev_rp/r_next_rp = NULL`；
    - `s_flags |= DYN_PRIV_ID`（副本永远动态 priv id）；`s_flags &= ~(LU_SYS_PROC|RST_SYS_PROC)`；`s_init_flags = 0`。
 
-### 2.9 swap_slot / swap_slot_pointer（manager.c:1856-1932）
+### 2.9 swap_slot / swap_slot_pointer（minix3/minix/servers/rs/manager.c:swap_slot_pointer）
 
 `swap_slot(src_rpp, dst_rpp)` 把两个槽**整体交换**，被 16 的 `update_service` 用来把旧/新实例对调。步骤：
 
-1. 保存四份原值（manager.c:1886-1890）。
-2. 交换：`*src_rp = orig_dst_rproc; *src_rpub = orig_dst_rprocpub; ...`（manager.c:1892-1896）——private 与 public 两个表都交换。
-3. 恢复：`src_rp->r_pub = orig_src_rproc.r_pub`（manager.c:1899-1900）——**每个槽的 r_pub 回到自己那行的 pub 条目**；`r_upd` 同理（1901-1902）。
-4. `build_cmd_dep` ×2（manager.c:1904-1906）。
-5. 两行的四链各自 `swap_slot_pointer`（manager.c:1908-1916）——`swap_slot_pointer(&p, src, dst)` 把指向 src 的引用改为 dst、指向 dst 的改为 src（manager.c:1856-1865）。
-6. `RUPDATE_ITER` 遍历 update 链，每个 `rpupd->rp` 也做同样替换（manager.c:1919-1921）——**update 描述符还指着旧槽**，必须跟着换。
-7. `rproc_ptr` 两个 endpoint 槽位交换（manager.c:1922-1925）。
-8. 调整入参：`*src_rpp = dst_rp; *dst_rpp = src_rp`（manager.c:1928-1929）。
+1. 保存四份原值（minix3/minix/servers/rs/manager.c:rproc（L1886，工具生成））。
+2. 交换：`*src_rp = orig_dst_rproc; *src_rpub = orig_dst_rprocpub; ...`（minix3/minix/servers/rs/manager.c:rproc（L1892，工具生成））——private 与 public 两个表都交换。
+3. 恢复：`src_rp->r_pub = orig_src_rproc.r_pub`（minix3/minix/servers/rs/manager.c:rproc（L1899，工具生成））——**每个槽的 r_pub 回到自己那行的 pub 条目**；`r_upd` 同理（1901-1902）。
+4. `build_cmd_dep` ×2（minix3/minix/servers/rs/manager.c:rproc（L1904，工具生成））。
+5. 两行的四链各自 `swap_slot_pointer`（minix3/minix/servers/rs/manager.c:rproc（L1908，工具生成））——`swap_slot_pointer(&p, src, dst)` 把指向 src 的引用改为 dst、指向 dst 的改为 src（minix3/minix/servers/rs/manager.c:swap_slot_pointer）。
+6. `RUPDATE_ITER` 遍历 update 链，每个 `rpupd->rp` 也做同样替换（minix3/minix/servers/rs/manager.c:rproc（L1919，工具生成））——**update 描述符还指着旧槽**，必须跟着换。
+7. `rproc_ptr` 两个 endpoint 槽位交换（minix3/minix/servers/rs/manager.c:rproc（L1922，工具生成））。
+8. 调整入参：`*src_rpp = dst_rp; *dst_rpp = src_rp`（minix3/minix/servers/rs/manager.c:rproc（L1928，工具生成））。
 
 ---
 
@@ -195,10 +195,10 @@ priv 设置+回读、调度（`sched_decision` 纯决策 + 内核调用）、`re
 | `getprocnr(pid) -> Result<Endpoint, i32>` | `getprocnr` → PM_GETEPINFO | pid → endpoint |
 | `vm_memctl(ep, VmRsMemReq, a, b)` | `vm_memctl`（VM_RS_MEMCTL） | `VmRsMemReq` 枚举映射 `VM_RS_MEM_*`（com.h:741-745） |
 | `vm_set_priv(ep, CallMask, allow)` | `vm_set_priv` | VM 调用掩码（`CallMask`，03） |
-| `srv_execve(ep, exec, progname, args, argc)`（R22a） | `srv_execve`（manager.c:634） | exec 平铺参数 + 计数（线格式）；不建模 `environ`（ARCH 偏差） |
-| `srv_kill(pid, signo)`（R22a） | `srv_kill`（manager.c:469） | cleanup 第二相的 SIGKILL |
-| `sched_stop(scheduler, proc)`（R22a） | `sched_stop`（manager.c:462） | cleanup 第二相的调度器注销 |
-| `setuid(uid)`（R22a） | `setuid(0)`（manager.c:656） | VFS 非阻塞 fork workaround（C 注释标注可移除，保留） |
+| `srv_execve(ep, exec, progname, args, argc)`（R22a） | `srv_execve`（minix3/minix/servers/rs/manager.c:rproc（L634，工具生成）） | exec 平铺参数 + 计数（线格式）；不建模 `environ`（ARCH 偏差） |
+| `srv_kill(pid, signo)`（R22a） | `srv_kill`（minix3/minix/servers/rs/manager.c:rproc（L469，工具生成）） | cleanup 第二相的 SIGKILL |
+| `sched_stop(scheduler, proc)`（R22a） | `sched_stop`（minix3/minix/servers/rs/manager.c:rproc（L462，工具生成）） | cleanup 第二相的调度器注销 |
+| `setuid(uid)`（R22a） | `setuid(0)`（minix3/minix/servers/rs/manager.c:rproc（L656，工具生成）） | VFS 非阻塞 fork workaround（C 注释标注可移除，保留） |
 | `reply(target, result)`（R22a） | `reply`（utility.c:309） | 通用回复原语（`late_reply` 与主循环共用，06） |
 
 ### 3.3 clone_slot 的值语义（ARCH A-3）
@@ -209,7 +209,7 @@ C 的"浅拷贝 + r_pub 恢复"是**双表布局的产物**：`rproc` 与 `rproc
 - `r_pub` 恢复步骤**消失**（ARCH A-3——指针自引用被结构体布局消除）；
 - 深拷贝修正 = 字段级改写：`init_err=ERESTART`、清 `ACTIVE`、`pid=None`、`endpoint=NONE`、`rebuild_args`、`SF_USE_COPY → exec = src.exec.clone()`（`Arc` 共享，09 A-5）、四链清空、`DYN_PRIV_ID`、清 `LU/RST`、`init_flags=0`。
 
-`sys_getpriv` 同步（manager.c:1818-1821）DEFERRED（19）——Rust 签名 `clone_slot(table, src)` 不带 kernel 参数，同步在 19 接线时于调用点完成（或用带 `&mut dyn KernelApi` 的重载）。
+`sys_getpriv` 同步（minix3/minix/servers/rs/manager.c:rproc（L1818，工具生成））DEFERRED（19）——Rust 签名 `clone_slot(table, src)` 不带 kernel 参数，同步在 19 接线时于调用点完成（或用带 `&mut dyn KernelApi` 的重载）。
 （T5 定案，2026-08-16：**不用** kernel 参数重载——同步在 19 shell 完成并注入结果，纯函数层不出现
 `KernelApi`，见 99 §3.4。）
 
@@ -226,16 +226,16 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 `swap_slot(table, src, dst)` 的顺序与 C 一一对应：
 
 1. `table.swap_rows(src, dst)` —— 整行交换（`Vec::swap`）；C 的"双表交换 + r_pub 恢复"折叠成一次交换；
-2. `rebuild_args` ×2（manager.c:1904-1906）——R15：`argc` 只计**完整写入** args 缓冲的 token（含 NUL），放不下的尾部 token 整体丢弃且缓冲尾保持 NUL 终止；C 的 `strcpy` 对 512 字节满缓冲本就会溢出（UB），Rust 不继承；
-3. 两行四链 `swap_index`（manager.c:1908-1916）；
-4. 两行 endpoint 的 `by_endpoint` 索引交换（manager.c:1922-1925）——R12：`clone_slot` 产物的 `Endpoint::NONE`（manager.c:1831）在 `endpoint_slot`/`set_endpoint_index` 越界时 `None`/忽略（fail-closed，不 panic）；测试 `test_swap_slot_with_vacant_row_no_panic` 锁定；
+2. `rebuild_args` ×2（minix3/minix/servers/rs/manager.c:rproc（L1904，工具生成））——R15：`argc` 只计**完整写入** args 缓冲的 token（含 NUL），放不下的尾部 token 整体丢弃且缓冲尾保持 NUL 终止；C 的 `strcpy` 对 512 字节满缓冲本就会溢出（UB），Rust 不继承；
+3. 两行四链 `swap_index`（minix3/minix/servers/rs/manager.c:rproc（L1908，工具生成））；
+4. 两行 endpoint 的 `by_endpoint` 索引交换（minix3/minix/servers/rs/manager.c:rproc（L1922，工具生成））——R12：`clone_slot` 产物的 `Endpoint::NONE`（minix3/minix/servers/rs/manager.c:rproc（L1831，工具生成））在 `endpoint_slot`/`set_endpoint_index` 越界时 `None`/忽略（fail-closed，不 panic）；测试 `test_swap_slot_with_vacant_row_no_panic` 锁定；
 5. 返回 `(dst, src)`（C 的 `*src_rpp = dst_rp; *dst_rpp = src_rp`）。
 
-**RUPDATE_ITER（manager.c:1919-1921）DEFERRED（16）**：per-slot `r_upd` 描述符未建模（02 P2-3），等 16 落地时把 update 链的引用交换补进 `swap_slot`（或由 16 的调用点负责）。
+**RUPDATE_ITER（minix3/minix/servers/rs/manager.c:rproc（L1919，工具生成））DEFERRED（16）**：per-slot `r_upd` 描述符未建模（02 P2-3），等 16 落地时把 update 链的引用交换补进 `swap_slot`（或由 16 的调用点负责）。
 
 ### 3.5 失败回滚的边界声明
 
-第 5~11 步失败时 C 调 `cleanup_service(rp)`（+ 部分路径 pin 回滚）。`cleanup_service` 的机制（两段式：标记 `RS_DEAD` + late_reply；真清理 sched_stop + srv_kill + 脚本 + detach/free_slot）在 15。本文档的契约：**编排层（19 组装时）在每步失败后调用 15 的 cleanup 面**；`service_create.rs` 只传播 C 等价错误码（`EPERM`/`ENOMEM`/`s`）。前置三闸门失败时 C 直接 `free_slot`（manager.c:550/558/566），这是 create_service 内部行为，Rust 组装时同样处理。
+第 5~11 步失败时 C 调 `cleanup_service(rp)`（+ 部分路径 pin 回滚）。`cleanup_service` 的机制（两段式：标记 `RS_DEAD` + late_reply；真清理 sched_stop + srv_kill + 脚本 + detach/free_slot）在 15。本文档的契约：**编排层（19 组装时）在每步失败后调用 15 的 cleanup 面**；`service_create.rs` 只传播 C 等价错误码（`EPERM`/`ENOMEM`/`s`）。前置三闸门失败时 C 直接 `free_slot`（minix3/minix/servers/rs/manager.c:rproc（L550，工具生成）/558/566），这是 create_service 内部行为，Rust 组装时同样处理。
 
 ---
 
@@ -247,22 +247,22 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 
 | 函数 | C 对应 | 说明 |
 |------|--------|------|
-| `check_create_preconditions(table, rp)` | manager.c:542-568 | 三闸门；`has_replica` 内联（old_rp 或非 TERMINATED 的 prev_rp） |
-| `mark_child_created(table, rp, endpoint, pid, ticks)` | manager.c:587-597 | `r_flags = RS_IN_USE`（**覆盖**）+ 8 字段登记 + `set_endpoint_index` |
-| `rebuild_args(slot)` | manager.c:289-324 | r_cmd → NUL 分隔 r_args + argc；被 clone_slot/swap_slot 复用 |
-| `clone_slot(table, src)` | manager.c:1800-1849 | 值复制 + 8 项深拷贝修正 |
-| `link_replica(table, rp, replica, flag, init_flags)` | manager.c:735-756 | LU → new/old 链；否则 → next/prev 链 + flags |
-| `activate_service(table, rp, ex_rp)` | manager.c:1013-1026 | ACTIVE 位迁移 |
-| `swap_index(v, src, dst)` | manager.c:1856-1863 | `Option<SlotId>` 相等替换 |
-| `swap_slot(table, src, dst)` | manager.c:1870-1932 | 整行交换 + 引用重定向，返回 `(dst, src)` |
+| `check_create_preconditions(table, rp)` | minix3/minix/servers/rs/manager.c:rproc（L542，工具生成） | 三闸门；`has_replica` 内联（old_rp 或非 TERMINATED 的 prev_rp） |
+| `mark_child_created(table, rp, endpoint, pid, ticks)` | minix3/minix/servers/rs/manager.c:rproc（L587，工具生成） | `r_flags = RS_IN_USE`（**覆盖**）+ 8 字段登记 + `set_endpoint_index` |
+| `rebuild_args(slot)` | minix3/minix/servers/rs/manager.c:build_cmd_dep | r_cmd → NUL 分隔 r_args + argc；被 clone_slot/swap_slot 复用 |
+| `clone_slot(table, src)` | minix3/minix/servers/rs/manager.c:clone_slot | 值复制 + 8 项深拷贝修正 |
+| `link_replica(table, rp, replica, flag, init_flags)` | minix3/minix/servers/rs/manager.c:clone_service（L735，工具生成） | LU → new/old 链；否则 → next/prev 链 + flags |
+| `activate_service(table, rp, ex_rp)` | minix3/minix/servers/rs/manager.c:activate_service | ACTIVE 位迁移 |
+| `swap_index(v, src, dst)` | minix3/minix/servers/rs/manager.c:swap_slot_pointer | `Option<SlotId>` 相等替换 |
+| `swap_slot(table, src, dst)` | minix3/minix/servers/rs/manager.c:swap_slot | 整行交换 + 引用重定向，返回 `(dst, src)` |
 
 配套修改：`process_table.rs` 增加 `swap_rows`（整行 `Vec::swap`）与 `set_endpoint_index`（`by_endpoint` 写入，ARCH A-4）；`boot.rs` 扩展 `KernelApi` + `VmRsMemReq`。
 
 ### 4.2 关键不变量
 
-1. **`alloc_slot` 不置 `RS_IN_USE`**（manager.c:2067-2083）：clone_slot 返回的槽是"已分配未占用"；调用方（13/15/16）在真正使用前置位。Rust 测试必须遵守（否则第二次 alloc 返回同一行）。
-2. **`mark_child_created` 用覆盖赋值**：`r_flags = RS_IN_USE` 而非 `|=`（manager.c:589 注释：释放过的行可能带 `RS_TERMINATED`/`RS_DEAD` 等陈旧标志）。
-3. **副本永远动态 priv id**：`clone_slot` 强制 `DYN_PRIV_ID` 并清除 `LU_SYS_PROC|RST_SYS_PROC`（manager.c:1842-1847）——副本不能继承"实例身份"。
+1. **`alloc_slot` 不置 `RS_IN_USE`**（minix3/minix/servers/rs/manager.c:alloc_slot）：clone_slot 返回的槽是"已分配未占用"；调用方（13/15/16）在真正使用前置位。Rust 测试必须遵守（否则第二次 alloc 返回同一行）。
+2. **`mark_child_created` 用覆盖赋值**：`r_flags = RS_IN_USE` 而非 `|=`（minix3/minix/servers/rs/manager.c:rproc（L589，工具生成） 注释：释放过的行可能带 `RS_TERMINATED`/`RS_DEAD` 等陈旧标志）。
+3. **副本永远动态 priv id**：`clone_slot` 强制 `DYN_PRIV_ID` 并清除 `LU_SYS_PROC|RST_SYS_PROC`（minix3/minix/servers/rs/manager.c:rproc（L1842，工具生成））——副本不能继承"实例身份"。
 4. **swap 后引用完整性**：两行四链 + `by_endpoint` 全部重定向；任何指向 src/dst 的 `SlotId` 在 swap 后要么指向对方、要么指向正确的新行。
 
 ---
@@ -303,5 +303,5 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md` —— priv 结构 + `SYS_PRIV_SET_SYS`/`UPDATE_SYS` 操作面
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `cleanup_service`/`free_slot`/`kill_service` 回滚机制
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `swap_slot` 的 RUPDATE_ITER 消费点
-- `minix3/minix/servers/rs/manager.c:531-786,1013-1026,1334-1352,1800-1932` —— ground truth
+- `minix3/minix/servers/rs/manager.c:create_service,1013-1026,1334-1352,1800-1932` —— ground truth
 - `minix3/minix/lib/libsys/srv_fork.c` —— `PM_SRV_FORK` 消息面（A-1）

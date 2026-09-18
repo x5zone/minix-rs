@@ -1,7 +1,7 @@
 # 32-stack-tracing: 栈回溯（Stack Tracing）—— frame-pointer 链遍历 + 跨地址空间读取
 
 > **源码**: `minix3/minix/kernel/arch/i386/exception.c`（proc_stacktrace 家族）、`minix3/minix/kernel/system/do_diagctl.c`（DIAGCTL STACKTRACE）、`minix3/minix/kernel/utility.c`（util_stacktrace）
-> **关联 Rust**: `os/arch/src/arch/stacktrace.rs`（`StacktraceArch` trait）、`os/arch/src/x86_64/boot.rs:357`、`os/arch/src/arm64/boot.rs:280`（impl）、`os/kernel/src/stacktrace.rs`（`proc_stacktrace` 公共助手，2026-09-05 新增）
+> **关联 Rust**: `os/arch/src/arch/stacktrace.rs`（`StacktraceArch` trait）、`os/arch/src/x86_64/boot.rs:fn inherit_fpu_state_propagates_lazy_user_policy（L357，工具生成）`、`os/arch/src/arm64/boot.rs:impl StacktraceArch for AArch64CpuContextArch`（impl）、`os/kernel/src/stacktrace.rs`（`proc_stacktrace` 公共助手，2026-09-05 新增）
 > **创建**: 2026-08-13（Task 2 反向覆盖：`StacktraceArch` 有 Rust 实现零文档 → 新建补足）
 > **Review**: 2026-08-13 CONVERGED（Gates 0/A/B/C/D/D-6/E/G/H 全 PASS，VERIFY-CHECK 100%）；2026-09-05 §4.6/§5.2 新增 D-57 落地
 
@@ -82,9 +82,9 @@ C 的 `proc_stacktrace()` 先判定目标进程的陷阱类型（`p_kern_trap_st
 
 | 架构 | FP 寄存器 | 通用寄存器数组索引 | PC 来源 |
 |------|-----------|-------------------|---------|
-| x86-64 | `rbp` | `gp_regs[5]`（GP_RBP，os/arch/src/x86_64/signal.rs:38）| `rip`（命名字段）|
+| x86-64 | `rbp` | `gp_regs[5]`（GP_RBP，os/arch/src/x86_64/signal.rs:const GP_RDI）| `rip`（命名字段）|
 | aarch64 | `x29` | `gp_regs[28]`（X29）| `pc`（ELR_EL1，命名字段）|
-| riscv64 | `s0` / `fp` | `gp_regs[6]`（GP_S0，os/arch/src/riscv64/signal.rs:80）| `pc`（sepc，命名字段）|
+| riscv64 | `s0` / `fp` | `gp_regs[6]`（GP_S0，os/arch/src/riscv64/signal.rs:const GP_S0（L80，工具生成））| `pc`（sepc，命名字段）|
 
 三架构的**帧记录布局一致**（`[saved_fp][return_addr]` 8 字节对）——差异只在"FP 存在哪个寄存器槽"和"PC 从哪读"。这是典型的"统一抽象 + 架构差异参数化"：核心算法（链遍历）共享，寄存器提取 per-arch。
 
@@ -210,7 +210,7 @@ static void proc_stacktrace_execute(struct proc *whichproc, reg_t v_bp, reg_t pc
 
 这是 1.1 节场景 1 的落点：内核异常 = 双向回溯（内核帧 + 受害者进程帧）+ panic。
 
-### 2.4 DIAGCTL STACKTRACE syscall（do_diagctl.c:43-46）
+### 2.4 DIAGCTL STACKTRACE syscall（minix3/minix/kernel/system/do_diagctl.c:do_diagctl（L43，工具生成））
 
 ```c
     case DIAGCTL_CODE_STACKTRACE:
@@ -244,7 +244,7 @@ static void proc_stacktrace_execute(struct proc *whichproc, reg_t v_bp, reg_t pc
 | D2 | 回溯输出收集 | `printf` 直接打印 | **`emit: FnMut(u64)` 回调** | no_std 诊断路径不分配（panic 时堆不可信）；输出目标由调用方定 |
 | D3 | 跨地址空间读取 | `PRCOPY` 宏（iskernel 分支）| **`read_word: impl Fn(u64) -> Option<u64>` 闭包** | 把"user 需 data_copy / kernel 直读"抽象为注入依赖，None = 读失败终止 |
 | D4 | 截断上限 | `n > 50` | **`MAX_STACK_FRAMES = 32`** | 显式封顶约束诊断路径内核时间（C 上限靠 printf 可写性兜底）|
-| D5 | KTS 上下文恢复 | sp+16 从用户栈恢复 bp | **无 KTS 概念**（ARCH）| Rust 陷阱入口总保存完整 gp_regs（os/arch/src/x86_64/signal.rs:38 GP_RBP=5），i386 SYSENTER 部分保存约束不存在 |
+| D5 | KTS 上下文恢复 | sp+16 从用户栈恢复 bp | **无 KTS 概念**（ARCH）| Rust 陷阱入口总保存完整 gp_regs（os/arch/src/x86_64/signal.rs:const GP_RDI GP_RBP=5），i386 SYSENTER 部分保存约束不存在 |
 | D6 | syscall 接线 | DIAGCTL STACKTRACE 直调 | **已接线**（syscall.rs:2521）| Rust `dispatch_diagctl` 完整实现：endpoint→nr 解析（C isokendpt 对应）+ `cross_space_copy` read_word 闭包（C PRCOPY 对应）+ `walk_frames` 输出（见 §4.5）；与 C 的差异：无 KTS 特判（完整 gp_regs 总是可读）+ Suspended 视同读失败 |
 
 ### D1 细节：为何是 trait 而非 `#[cfg(target_arch)]`
@@ -263,7 +263,7 @@ C 的 `KTS_SYSENTER/SYSCALL` 分支 + `usermapped_glo_ipc.S` sp+16 布局耦合�
 
 ## Ch4: 实现
 
-### 4.1 `StacktraceArch` trait 定义（os/arch/src/arch/stacktrace.rs:41-113，`MAX_STACK_FRAMES` 在 :30）
+### 4.1 `StacktraceArch` trait 定义（os/arch/src/arch/stacktrace.rs:trait StacktraceArch，`MAX_STACK_FRAMES` 在 :30）
 
 > **2026-09-06 增补（D-47）**：trait 新增两个成员——(a) `walk_frames_from(read_word, emit, fp, already_emitted)`：帧链循环从 `walk_frames` 抽出共享（`already_emitted` 使 `walk_frames` 的前导 pc 计入 `MAX_STACK_FRAMES` 总发射上限的契约跨共享循环保持）；(b) `current_frame_pointer() -> Option<u64>`：内核自回溯读**当前**帧指针（C libsys `get_bp()` 等价，x86_64 `asm!("mov {}, rbp")` 覆写，aarch64/riscv64 默认 `None`——C 同为 i386 only，`[ARCH: scope]` 已标注）。消费方 `util_stacktrace()`（os/kernel/src/stacktrace.rs，D-47）+ 内核 Direct Map 直读 helper `kernel_direct_read_word`（自 `make_read_word` 内核分支抽取共享）。行号以 `rg` 实时为准。
 
@@ -313,7 +313,7 @@ pub trait StacktraceArch: CpuContextArch {
 | 循环检测 | `v_hbp <= v_bp` → `(hbp ?)` 终止 | `saved_fp <= fp` → break | 一致 |
 | 截断 | `n > 50` → `(truncated)` | `count >= 32` → 静默停 | 上限值不同（D4）|
 
-### 4.2 x86-64 impl（os/arch/src/x86_64/boot.rs:357-366）
+### 4.2 x86-64 impl（os/arch/src/x86_64/boot.rs:fn inherit_fpu_state_propagates_lazy_user_policy（L357，工具生成））
 
 ```rust
 impl StacktraceArch for X86_64CpuContextArch {
@@ -330,11 +330,11 @@ impl StacktraceArch for X86_64CpuContextArch {
 }
 ```
 
-- `gp_regs[5]` = RBP（`GP_RBP` 常量定义于 `os/arch/src/x86_64/signal.rs:38`，与 doc 16 信号上下文共享同一寄存器布局）
+- `gp_regs[5]` = RBP（`GP_RBP` 常量定义于 `os/arch/src/x86_64/signal.rs:const GP_RDI`，与 doc 16 信号上下文共享同一寄存器布局）
 - `rip` 为命名字段——C 的 `p_reg.pc` 在 Rust 中是强类型字段而非数组索引
 - 注释标注 `-C force-frame-pointers` 前提：无 frame pointer 时 rbp 是通用寄存器，walk 立即停止（`fp=0`）
 
-### 4.3 aarch64 impl（os/arch/src/arm64/boot.rs:280-289）
+### 4.3 aarch64 impl（os/arch/src/arm64/boot.rs:impl StacktraceArch for AArch64CpuContextArch）
 
 ```rust
 impl StacktraceArch for AArch64CpuContextArch {
@@ -356,9 +356,9 @@ impl StacktraceArch for AArch64CpuContextArch {
 
 ### 4.4 riscv64（已实现，FIX-32-2 2026-08-13）
 
-`impl StacktraceArch for Riscv64CpuContextArch` 位于 `os/arch/src/riscv64/boot.rs:182-198`：
+`impl StacktraceArch for Riscv64CpuContextArch` 位于 `os/arch/src/riscv64/boot.rs:impl StacktraceArch for Riscv64CpuContextArch（L182，工具生成）`：
 
-- `frame_pointer`：`gp_regs[GP_S0]`（GP_S0 = 6，os/arch/src/riscv64/signal.rs:80；X8 = s0/fp）——注意 **X8 是寄存器号，`gp_regs` 索引是 6**（布局跳过 X0/X2/X10，`GP_S0` 常量防索引漂移）
+- `frame_pointer`：`gp_regs[GP_S0]`（GP_S0 = 6，os/arch/src/riscv64/signal.rs:const GP_S0（L80，工具生成）；X8 = s0/fp）——注意 **X8 是寄存器号，`gp_regs` 索引是 6**（布局跳过 X0/X2/X10，`GP_S0` 常量防索引漂移）
 - `program_counter`：`sepc`（命名字段，RISC-V 陷阱返回地址）
 - ABI 注释：RISC-V 帧指针**可选**（同 x86-64，异于 aarch64 强制）——walk 是 best-effort（`-fomit-frame-pointer` 编译的代码无链可走）
 
@@ -467,7 +467,7 @@ pub fn proc_stacktrace(rp: &KProcess) {
 
 净减少 ~60 行重复代码；DIAGCTL 与 panic 输出格式严格一致（同一助手）——以前 inline 重复 + 任意一边未来格式漂移都不会被发现，现在物理上共享
 
-#### cause_signal 致命 SELF panic 路径接入（syscall_signal.rs:249-269，2026-09-05）
+#### cause_signal 致命 SELF panic 路径接入（os/kernel/src/syscall_signal.rs:fn cause_signal（L249，工具生成），2026-09-05）
 
 ```rust
 // C: system.c:429 — proc_stacktrace(rp)
@@ -533,7 +533,7 @@ C 行为完整恢复：`proc_stacktrace(rp)` 输出一行"target name endpoint p
 
 #### 5.2.3 端到端验证（cause_signal 致命路径）
 
-`test_cause_signal_self_lethal_no_backup_panics`（syscall_signal.rs:1030）覆盖 panic 路径：
+`test_cause_signal_self_lethal_no_backup_panics`（os/kernel/src/syscall_signal.rs:fn test_cause_signal_external_path_notifies_manager（L1030，工具生成））覆盖 panic 路径：
 - 自管理进程 + 致命信号 + 无 backup → 触发 `cause_signal` 的 panic 分支
 - test build：proc_stacktrace `#[cfg(not(test))]` 守门禁用，跳过 COM1 写，仅验证 panic 发生
 - production build：先 proc_stacktrace 打印栈回溯，再 panic——与 C 输出格式一致

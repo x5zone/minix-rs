@@ -49,7 +49,7 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 
 ### 2.1 do_vmctl() — 通用 VMCTL 分派
 
-**源码**: `minix3/minix/kernel/system/do_vmctl.c:17-173`
+**源码**: `minix3/minix/kernel/system/do_vmctl.c:do_vmctl`
 
 `do_vmctl()` 是 `SYS_VMCTL` 系统调用的入口函数。它接收 VM 发来的消息，根据 `SVMCTL_PARAM` 字段分派到不同的处理逻辑。
 
@@ -69,11 +69,11 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 | `VMCTL_CLEARMAPCACHE` | 162-165 | 清除映射缓存 | 调用 `mem_clear_mapcache()` |
 | `VMCTL_BOOTINHIBIT_CLEAR` | 166-168 | 清除 BOOTINHIBIT | `RTS_UNSET(BOOTINHIBIT)` |
 
-**未在 switch 中处理的子命令**：传递给 `arch_do_vmctl()` 处理（do_vmctl.c:172）。
+**未在 switch 中处理的子命令**：传递给 `arch_do_vmctl()` 处理（minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L172，工具生成））。
 
 ### 2.2 arch_do_vmctl() — x86 架构特定 VMCTL *TODO 看起来三架构都需要这个呀？
 
-**源码**: `minix3/minix/kernel/arch/i386/arch_do_vmctl.c:38-67`
+**源码**: `minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl`
 
 | 子命令 | 行号 | 语义 |
 |--------|------|------|
@@ -106,11 +106,11 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 - `VMCTL_SETADDRSPACE` 同时清除 `RTS_VMINHIBIT`——VM 设置完页表后进程立即可调度
 - 如果设置的是当前运行进程（ptproc）的 CR3，立即刷新硬件 CR3
 - 如果设置的是 VM 进程的 CR3，调用 `arch_enable_paging()` 启用分页
-- **Rust 实现（P9-4）**：Step 3 的 `write_cr3` 由 `TlbArch::set_active_root`（os/arch/src/arch/tlb_arch.rs:135）完成；ptproc 跟踪用内核全局 `CURRENT_PTPROC_NR: AtomicI32`（os/kernel/src/lib.rs:1921）+ `current_ptproc_nr()` 访问器（os/kernel/src/lib.rs:1938），以 proc-nr 比较替代 C 的指针同一性比较（详见 §4.8）
+- **Rust 实现（P9-4）**：Step 3 的 `write_cr3` 由 `TlbArch::set_active_root`（os/arch/src/arch/tlb_arch.rs:fn set_active_root）完成；ptproc 跟踪用内核全局 `CURRENT_PTPROC_NR: AtomicI32`（os/kernel/src/lib.rs:fn smp_state_boot_unchecked（L1921，工具生成））+ `current_ptproc_nr()` 访问器（os/kernel/src/lib.rs:fn try_smp_state_with（L1938，工具生成）），以 proc-nr 比较替代 C 的指针同一性比较（详见 §4.8）
 
 ### 2.3 VMCTL_MEMREQ_GET/REPLY — VM 请求获取与回复
 
-**VMCTL_MEMREQ_GET**（do_vmctl.c:37-79）：
+**VMCTL_MEMREQ_GET**（minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L37，工具生成））：
 
 遍历 `vmrequest` 链表，找到第一个通过 IPC 过滤器的请求，返回请求信息：
 - `SVMCTL_MRG_TARGET`: 请求目标端点
@@ -121,7 +121,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 
 设置 `vmresult = VMSUSPEND`，从链表中移除该请求。无匹配请求时返回 `ENOENT`。
 
-**VMCTL_MEMREQ_REPLY**（do_vmctl.c:81-110）：
+**VMCTL_MEMREQ_REPLY**（minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L81，工具生成））：
 
 VM 回复请求结果。根据 `VMSTYPE_*` 类型设置不同的恢复标志：
 - `VMSTYPE_KERNELCALL`: 设置 `MF_KCALL_RESUME`
@@ -132,12 +132,12 @@ VM 回复请求结果。根据 `VMSTYPE_*` 类型设置不同的恢复标志：
 
 ### 2.4 VMCTL_VMINHIBIT_SET/CLEAR — VM 抑制控制
 
-**VMCTL_VMINHIBIT_SET**（do_vmctl.c:125-136）：
+**VMCTL_VMINHIBIT_SET**（minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L125，工具生成））：
 - SMP：如果进程在不同 CPU 上，发送 IPI `smp_schedule_vminhibit`
 - 设置 `RTS_VMINHIBIT`，阻止进程调度
 - SMP：设置 `MF_FLUSH_TLB`，标记需要 TLB 刷新
 
-**VMCTL_VMINHIBIT_CLEAR**（do_vmctl.c:137-161）：
+**VMCTL_VMINHIBIT_CLEAR**（minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L137，工具生成））：
 - 清除 `RTS_VMINHIBIT`，允许进程调度
 - SMP：如果有 `MF_SENDA_VM_MISS`，尝试重新投递异步消息
 - SMP：标记所有 CPU 的 stale TLB
@@ -221,7 +221,7 @@ pub enum VmCtlError {
 
 ### 4.4 dispatch_vmctl 实现
 
-**位置**: `os/kernel/src/syscall.rs:2027-2436`（dispatcher + 子命令 helper 族，由 `kernel_call_dispatch` 统一分派）
+**位置**: `os/kernel/src/syscall.rs:fn dispatch_setgrant（L2027，工具生成）`（dispatcher + 子命令 helper 族，由 `kernel_call_dispatch` 统一分派）
 
 ```rust
 // os/kernel/src/syscall.rs:2027
@@ -254,7 +254,7 @@ fn dispatch_vmctl(
 
 ### 4.5 SetAddrSpace 分支实现
 
-**位置**: `os/kernel/src/syscall.rs:2212`
+**位置**: `os/kernel/src/syscall.rs:fn dispatch_vmctl（L2212，工具生成）`
 
 对应 C 的 `setcr3()`（arch_do_vmctl.c:19-33）5 步时序：
 
@@ -322,7 +322,7 @@ VmCtlParam::SetAddrSpace => {
 
 ### 4.7 GetPdbr / FlushTlb / InvlPg / ClearMapCache 实现（FIX-24, Phase 5）
 
-C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（os/kernel/src/syscall.rs:2027-2436）。
+C 由 `arch_do_vmctl()` (arch_do_vmctl.c:38-65) 处理的 3 个 arch-specific 子命令 + 1 个 32-bit-only 子命令，现已在 `dispatch_vmctl` 中实现（os/kernel/src/syscall.rs:fn dispatch_setgrant（L2027，工具生成））。
 
 **TlbArch trait 抽象**（os/arch/src/arch/tlb_arch.rs）：
 
@@ -359,7 +359,7 @@ pub trait TlbArch {
 | `GetPdbr` | arch_do_vmctl.c:44-47 | 读 `p.p_seg.phys_root.0 as i32` | ✅ 已实现 |
 | `FlushTlb` | arch_do_vmctl.c:51-55 | `unsafe { CurrentTlbArch::flush_all(); }` | ✅ 已实现 |
 | `InvlPg` | arch_do_vmctl.c:56-60 | `unsafe { CurrentTlbArch::flush_addr(VirBytes(value_raw as u64)); }` | ✅ 已实现 |
-| `ClearMapCache` | do_vmctl.c:162-165 | `VmCtlResult::Ok(0)` — **WONTFIX**（64-bit Direct Map 无 cache table） | ✅ 已实现（no-op） |
+| `ClearMapCache` | minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L162，工具生成） | `VmCtlResult::Ok(0)` — **WONTFIX**（64-bit Direct Map 无 cache table） | ✅ 已实现（no-op） |
 
 **设计决策**：
 - **为何 `TlbArch` 是关联函数而非实例方法**: TLB flush 操作当前 CPU 的 TLB，是全局资源不绑定具体 `Paging` 实例。C 的 `write_cr3`/`invlpg` 也是 free function
@@ -373,7 +373,7 @@ C 的 `setcr3()` 用指针同一性 `if (p == get_cpulocal_var(ptproc))` 判断�
 
 #### 4.8.1 CURRENT_PTPROC_NR 内核全局
 
-**位置**: os/kernel/src/lib.rs:1921
+**位置**: os/kernel/src/lib.rs:fn smp_state_boot_unchecked（L1921，工具生成）
 
 ```rust
 // os/kernel/src/lib.rs:1921
@@ -395,7 +395,7 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:1963
 }
 ```
 
-**初始化**：`init_post_and_memory` 断言 VM 页表 root 有效后，调用 `set_current_ptproc_nr(VM_PROC_NR)`（os/kernel/src/lib.rs:1063）。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（`arch_post_init()`，protect.c:372）。（arch 层 `PostInitArch::set_ptproc` 已被 Direct Map 取代——见 [07-cross-space-init.md §4.3](07-cross-space-init.md)。）
+**初始化**：`init_post_and_memory` 断言 VM 页表 root 有效后，调用 `set_current_ptproc_nr(VM_PROC_NR)`（os/kernel/src/lib.rs:fn init_clock_and_interrupts（L1063，工具生成））。这镜像 C 的 `get_cpulocal_var(ptproc) = vm`（`arch_post_init()`，protect.c:372）。（arch 层 `PostInitArch::set_ptproc` 已被 Direct Map 取代——见 [07-cross-space-init.md §4.3](07-cross-space-init.md)。）
 
 **为何用 proc-nr 比较而非指针同一性**：C 比较 `struct proc *` 指针，Rust 用 `ProcNr`（i32 进程表索引）。两者等价——proc-nrs 唯一标识 `ProcessTable` 中的进程槽位，一一对应无别名（同一 proc-nr 永远映射到同一 `KProcess`）。proc-nr 比较还避免了裸指针的不安全性，与 [16-smp.md §D8](16-smp.md) 的 per-CPU 索引设计一致（`proc_ptr`/`fpu_owner` 均用 `Option<ProcNr>`）。
 
@@ -403,11 +403,11 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:1963
 
 #### 4.8.2 TlbArch::set_active_root 三架构汇编
 
-`set_active_root` 的完整定义见 os/arch/src/arch/tlb_arch.rs:135。三架构实现在 §4.7 表中列出，关键差异：
+`set_active_root` 的完整定义见 os/arch/src/arch/tlb_arch.rs:fn set_active_root。三架构实现在 §4.7 表中列出，关键差异：
 
-- **x86-64**（os/arch/src/x86_64/tlb.rs:51）：`mov cr3, {phys_root}`。写 CR3 隐式 flush 所有非全局 TLB 条目（Intel SDM Vol 3 §4.10.4.1），无需额外 invalidate 指令。
-- **aarch64**（os/arch/src/arm64/tlb.rs:61）：`msr TTBR0_EL1, {root}` + `tlbi alle1is` + `isb`。ARM64 写 TTBR0 **不**隐式刷 TLB（ARM ARM D5.4.5），必须显式 `tlbi alle1is` 清除旧 root 的过期翻译，`isb` 同步上下文。
-- **riscv64**（os/arch/src/riscv64/tlb.rs:70）：`csrw satp, (SV39_MODE << 60) | (phys_root >> 12)` + `sfence.vma zero, zero`。RISC-V 写 satp **不**隐式刷 TLB（Priv ISA §4.2.1），需 `sfence.vma`。satp 编码为 `[MODE(1)=8] [ASID(16)=0] [PPN(44)]`，故 `phys_root >> 12` 丢弃页内偏移。
+- **x86-64**（os/arch/src/x86_64/tlb.rs:fn set_active_root）：`mov cr3, {phys_root}`。写 CR3 隐式 flush 所有非全局 TLB 条目（Intel SDM Vol 3 §4.10.4.1），无需额外 invalidate 指令。
+- **aarch64**（os/arch/src/arm64/tlb.rs:fn set_active_root）：`msr TTBR0_EL1, {root}` + `tlbi alle1is` + `isb`。ARM64 写 TTBR0 **不**隐式刷 TLB（ARM ARM D5.4.5），必须显式 `tlbi alle1is` 清除旧 root 的过期翻译，`isb` 同步上下文。
+- **riscv64**（os/arch/src/riscv64/tlb.rs:fn set_active_root）：`csrw satp, (SV39_MODE << 60) | (phys_root >> 12)` + `sfence.vma zero, zero`。RISC-V 写 satp **不**隐式刷 TLB（Priv ISA §4.2.1），需 `sfence.vma`。satp 编码为 `[MODE(1)=8] [ASID(16)=0] [PPN(44)]`，故 `phys_root >> 12` 丢弃页内偏移。
 
 #### 4.8.3 并发模型
 
@@ -423,7 +423,7 @@ C 的 `arch_boot_proc()` 在 boot 期间把 VM ELF 段映射进 bootstrap 页表
 
 #### 4.9.1 CURRENT_ROOT_PHYS 内核全局
 
-**位置**: os/kernel/src/lib.rs:2103
+**位置**: os/kernel/src/lib.rs:fn bsp_finish_booting（L2103，工具生成）
 
 ```rust
 // os/kernel/src/lib.rs:2103
@@ -445,7 +445,7 @@ pub fn set_current_root_phys(phys: minix_types::PhysBytes) {  // lib.rs:2140
 }
 ```
 
-**初始化**：`arch_boot_impl` 在 `Paging::enable()` 成功后立即调 `set_current_root_phys(root_page)`（os/kernel/src/lib.rs:270）。注意传的是 `root_page` 参数（raw physical address）而非 `enable()` 的返回值——某些架构的 `enable()` 返回 satp 编码值（riscv64），不是 raw physical address。
+**初始化**：`arch_boot_impl` 在 `Paging::enable()` 成功后立即调 `set_current_root_phys(root_page)`（os/kernel/src/lib.rs:const FALLBACK_BUMP_LEN（L270，工具生成））。注意传的是 `root_page` 参数（raw physical address）而非 `enable()` 的返回值——某些架构的 `enable()` 返回 satp 编码值（riscv64），不是 raw physical address。
 
 **Sentinel 设计**：`ROOT_PHYS_UNSET = u64::MAX` 不是 4KB 对齐（低 12 位非零），永远不可能与真实页表根物理地址冲突。
 
@@ -457,18 +457,18 @@ SMP 迁移时两者都需要变为 per-CPU `CpuLocal` 字段（详见 [16-smp.md
 
 #### 4.9.2 Paging::from_active_root trait 方法
 
-**位置**: os/arch/src/arch/paging.rs:202
+**位置**: os/arch/src/arch/paging.rs:fn from_active_root
 
 ```rust
 /// Wrap an already-active page table root without modifying it.
 fn from_active_root(root_phys: PhysBytes) -> Self;
 ```
 
-与 `new_from_page`（zero-fill 根页）不同，`from_active_root` 假设根页表已初始化并装入 MMU，仅创建 `Paging` handle 用于 `map`/`remap`/`query`。三架构实现都是简单的 `Self { root_paddr: root_phys.0 }`（os/arch/src/x86_64/paging.rs:370 / os/arch/src/arm64/paging.rs:413 / os/arch/src/riscv64/paging.rs:424）。
+与 `new_from_page`（zero-fill 根页）不同，`from_active_root` 假设根页表已初始化并装入 MMU，仅创建 `Paging` handle 用于 `map`/`remap`/`query`。三架构实现都是简单的 `Self { root_paddr: root_phys.0 }`（os/arch/src/x86_64/paging.rs:fn walk_alloc（L370，工具生成） / os/arch/src/arm64/paging.rs:fn new_from_page（L413，工具生成） / os/arch/src/riscv64/paging.rs:fn free_child_tables（L424，工具生成））。
 
 #### 4.9.3 init_proc_and_boot 非 mock 路径
 
-**位置**: os/kernel/src/lib.rs:1000-1097（非 mock 分支；mock 分支 L936-998）
+**位置**: os/kernel/src/lib.rs:fn init_clock_and_interrupts（L1000，工具生成）（非 mock 分支；mock 分支 L936-998）
 
 ```rust
 // FIX-24 (Phase 9): Real VM ELF loading at boot.
@@ -555,10 +555,10 @@ fn from_active_root(root_phys: PhysBytes) -> Self;
 |------|--------|---------|
 | `test_vmctl_param_from_u32` | `vm.rs:1387` | 合法/非法 `VmCtlParam` 转换 |
 | `test_vmctl_result_variants` | `vm.rs:1403` | `VmCtlResult` 与 C 错误码对应 |
-| `test_vm_memreq_get_empty_queue` | `proc_table.rs:1390` | 空队列返回 ENOENT |
-| `test_vm_memreq_get_dequeues_pending_request` | `proc_table.rs:1399` | MemReqGet 取出 pending 请求 |
-| `test_vm_memreq_reply_completes_request` | `proc_table.rs:1445` | MemReqReply 完成请求并设置结果 |
-| `test_vm_memreq_reply_invalid_state` | `proc_table.rs:1483` | 非法状态下回复返回错误 |
+| `test_vm_memreq_get_empty_queue` | `os/kernel/src/proc_table.rs:fn test_rts_set_unset（L1390，工具生成）` | 空队列返回 ENOENT |
+| `test_vm_memreq_get_dequeues_pending_request` | `os/kernel/src/proc_table.rs:fn test_fork_integration_flow（L1399，工具生成）` | MemReqGet 取出 pending 请求 |
+| `test_vm_memreq_reply_completes_request` | `os/kernel/src/proc_table.rs:fn test_fork_integration_flow（L1445，工具生成）` | MemReqReply 完成请求并设置结果 |
+| `test_vm_memreq_reply_invalid_state` | `os/kernel/src/proc_table.rs:fn test_fork_child_rts_corrections（L1483，工具生成）` | 非法状态下回复返回错误 |
 
 ### 5.2 集成测试
 

@@ -100,8 +100,8 @@ CPU 在执行指令流时，会被两类"意外事件"打断：
 | 用户态异常 → cause_sig | `exception.c:275` | ✅ verified |
 | 内核态异常 → inkernel_disaster | `exception.c:280` | ✅ verified |
 | 嵌套恢复用 eip 地址范围比较 | `exception.c:66-70, 206-229` | ✅ verified |
-| IRQ hook 链表管理 | `interrupt.c:29-176` | ✅ verified |
-| put_irq_handler unmask 条件 | `interrupt.c:65` `&= ~id` | ✅ verified |
+| IRQ hook 链表管理 | `minix3/minix/kernel/interrupt.c:put_irq_handler` | ✅ verified |
+| put_irq_handler unmask 条件 | `minix3/minix/kernel/interrupt.c:put_irq_handler（L65，工具生成）` `&= ~id` | ✅ verified |
 | **timer_int_handler 不递减 quantum** | `clock.c:70-173` 无 p_cpu_time_left | ✅ verified（纠正旧 doc 错误） |
 
 ### 2.1 exception_handler 分流主干
@@ -441,7 +441,7 @@ pub enum ExceptionOutcome {
 
 `os/kernel/src/irq_manager.rs` 提供 IRQ hook 管理：
 
-- `register_hook()`：分配最低未用位 ID，追加链表，unmask（对齐 C `interrupt.c:65` 的 `&= ~id` 语义——先清位再查全部）
+- `register_hook()`：分配最低未用位 ID，追加链表，unmask（对齐 C `minix3/minix/kernel/interrupt.c:put_irq_handler（L65，工具生成）` 的 `&= ~id` 语义——先清位再查全部）
 - `remove_hook()`：移除链表节点，清理 actid，空链表则 mask
 - `dispatch(irq, notifier)`：mask → 遍历 handler 链跟踪 actid → 全部完成则 unmask → EOI
 - `enable_irq()`/`disable_irq()`：单 hook 粒度使能控制
@@ -471,7 +471,7 @@ pub trait IrqNotify {
 }
 ```
 
-`generic_notify_handler` 通过 `ctx.notifier.notify_hardware()` 复现 C 的 `priv(rp)->s_int_pending |= (1 << notify_id); mini_notify(HARDWARE, proc_endpoint)` 两侧副作用（do_irqctl.c:167-170）。`IrqNotify` trait 使通知逻辑可 mock——handler 可在不依赖全局态的测试环境中验证。
+`generic_notify_handler` 通过 `ctx.notifier.notify_hardware()` 复现 C 的 `priv(rp)->s_int_pending |= (1 << notify_id); mini_notify(HARDWARE, proc_endpoint)` 两侧副作用（minix3/minix/kernel/system/do_irqctl.c:generic_handler（L167，工具生成））。`IrqNotify` trait 使通知逻辑可 mock——handler 可在不依赖全局态的测试环境中验证。
 
 `dispatch` 方法接收 `&mut dyn IrqNotify`，为链上每个 handler 构造 `IrqHookContext` 并调用。handler 签名从 `fn(IrqVector, IrqId) -> IrqAction` 改为 `fn(&mut IrqHookContext) -> IrqAction`，让 handler 获得完整 slot 信息（`proc_endpoint`/`notify_id`/`policy`）和通知能力，而非仅 irq+id。
 
@@ -492,12 +492,12 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
 
 #### KernelNotifier 与 C `generic_handler` 的两处已知缺口
 
-C `generic_handler`（do_irqctl.c:145-172）在投递通知前还有两步副作用，Rust 当前未完整复现，记录如下：
+C `generic_handler`（minix3/minix/kernel/system/do_irqctl.c:generic_handler（L145，工具生成））在投递通知前还有两步副作用，Rust 当前未完整复现，记录如下：
 
 | C 行 | C 代码 | Rust 实现 | 缺口类型 | 处理计划 |
 |------|--------|----------|---------|---------|
-| do_irqctl.c:154 | `get_randomness(&krandom, hook->irq)` | ✅ 已实现（`krandom::get_randomness(source)`，no-op stub 匹配 C i386/earm 语义） | 无缺口（语义对齐） | `krandom.rs` 提供 `KRandomness`/`KRandomnessBin`（`#[repr(C)]`）+ `KRANDOM` 全局（BKL 保护）+ `init()`/`try_krandom()`/`krandom()` 访问器 + `get_randomness(source)` no-op。**C i386/earm 的 `get_randomness` 也是 no-op stub**——实际熵采集由用户态 `random` 驱动（drivers/system/random/）完成，内核仅提供 bin 容器与 `GET_RANDOMNESS`/`GET_RANDOMNESS_BIN` 导出接口（已接入 `dispatch_getinfo`，详见 [25-misc-unported.md §4.7](25-misc-unported.md)）。`KernelNotifier::notify_hardware` 在入口调用 `krandom::get_randomness(irq)` 即可对齐 C 行为（当前未接入是因为 stub 无副作用，接入时机由 IRQ 路径重构决定）。 |
-| do_irqctl.c:160-161 | `if(!isokendpt(hook->proc_nr_e, &proc_nr)) panic("invalid interrupt handler: %d", hook->proc_nr_e)` | ✅ 语义对齐（panic 等价物：`unwrap_or_else(\|\| panic!("invalid interrupt handler: endpoint={:?}", dst))`，irq_manager.rs:149-151） | 无缺口（仅实现形式差异） | C 用 `isokendpt` 验证 endpoint→proc_nr 映射；Rust 用 `proc_table.iter().find(\|p\| p.p_endpoint == dst)` 等价查找，找不到则 panic，diagnostic 与 C 同义。Rust 额外校验 `priv_id` 存在性 + `priv_table.get_mut(priv_id)` 成功（C 隐含 `priv(proc_addr(proc_nr))` 不返回 NULL，未显式检查）。 |
+| minix3/minix/kernel/system/do_irqctl.c:generic_handler（L154，工具生成） | `get_randomness(&krandom, hook->irq)` | ✅ 已实现（`krandom::get_randomness(source)`，no-op stub 匹配 C i386/earm 语义） | 无缺口（语义对齐） | `krandom.rs` 提供 `KRandomness`/`KRandomnessBin`（`#[repr(C)]`）+ `KRANDOM` 全局（BKL 保护）+ `init()`/`try_krandom()`/`krandom()` 访问器 + `get_randomness(source)` no-op。**C i386/earm 的 `get_randomness` 也是 no-op stub**——实际熵采集由用户态 `random` 驱动（drivers/system/random/）完成，内核仅提供 bin 容器与 `GET_RANDOMNESS`/`GET_RANDOMNESS_BIN` 导出接口（已接入 `dispatch_getinfo`，详见 [25-misc-unported.md §4.7](25-misc-unported.md)）。`KernelNotifier::notify_hardware` 在入口调用 `krandom::get_randomness(irq)` 即可对齐 C 行为（当前未接入是因为 stub 无副作用，接入时机由 IRQ 路径重构决定）。 |
+| minix3/minix/kernel/system/do_irqctl.c:generic_handler（L160，工具生成） | `if(!isokendpt(hook->proc_nr_e, &proc_nr)) panic("invalid interrupt handler: %d", hook->proc_nr_e)` | ✅ 语义对齐（panic 等价物：`unwrap_or_else(\|\| panic!("invalid interrupt handler: endpoint={:?}", dst))`，os/kernel/src/irq_manager.rs:fn notify_hardware（L149，工具生成）） | 无缺口（仅实现形式差异） | C 用 `isokendpt` 验证 endpoint→proc_nr 映射；Rust 用 `proc_table.iter().find(\|p\| p.p_endpoint == dst)` 等价查找，找不到则 panic，diagnostic 与 C 同义。Rust 额外校验 `priv_id` 存在性 + `priv_table.get_mut(priv_id)` 成功（C 隐含 `priv(proc_addr(proc_nr))` 不返回 NULL，未显式检查）。 |
 
 **`isokendpt` 语义说明**：C 的 `isokendpt(endpoint, &proc_nr)` 是 `endpoint` → `proc_nr` 的双向校验宏（同时检查 endpoint 合法性并输出 proc_nr）。Rust 无需此宏，因为：(1) `Endpoint` 是新类型（`pub struct Endpoint(i32)`），类型系统已隔离裸 i32；(2) `proc_table.iter().find(|p| p.p_endpoint == dst)` 完成相同查找；(3) 找不到时 panic 与 C 的 `panic` 同义。Rust 的额外 `priv_id`/`priv_table` 检查是 C 隐含假设的显式化（C 假设 `priv(proc_addr(proc_nr))` 不返回 NULL，Rust 不做此假设）。
 
@@ -549,8 +549,8 @@ ExceptionDispatcher::handle_page_fault
 | §2.5 指针链表 | §4.4 索引链表固定池 | 设计决策 | no_std 无堆 |
 | §2.6 hw_intr 宏 | InterruptController trait（minix_plat） | 设计决策 | trait 替代宏 |
 | C timer_int_handler 递减 quantum | ❌ Rust 不在本章实现 | 已知缺口（实为 C 也不在 timer_int_handler） | quantum 归 10/11/15 |
-| do_irqctl.c:154 `get_randomness(&krandom, hook->irq)` | ✅ `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm | 无缺口（语义对齐） | C i386/earm 也是 no-op；实际熵采集在用户态 `random` 驱动。`KernelNotifier` 未显式调用 stub（无副作用）。详见 §4.4 + [25-misc-unported.md §4.7](25-misc-unported.md)。 |
-| do_irqctl.c:160-161 `isokendpt` + `panic` | ✅ `unwrap_or_else(\|\| panic!)` 语义对齐 | 无缺口（形式差异） | Rust 用 `iter().find` 替代 `isokendpt` 宏；额外显式校验 `priv_id`/`priv_table`（C 隐含假设）。详见 §4.4 缺口表。 |
+| minix3/minix/kernel/system/do_irqctl.c:generic_handler（L154，工具生成） `get_randomness(&krandom, hook->irq)` | ✅ `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm | 无缺口（语义对齐） | C i386/earm 也是 no-op；实际熵采集在用户态 `random` 驱动。`KernelNotifier` 未显式调用 stub（无副作用）。详见 §4.4 + [25-misc-unported.md §4.7](25-misc-unported.md)。 |
+| minix3/minix/kernel/system/do_irqctl.c:generic_handler（L160，工具生成） `isokendpt` + `panic` | ✅ `unwrap_or_else(\|\| panic!)` 语义对齐 | 无缺口（形式差异） | Rust 用 `iter().find` 替代 `isokendpt` 宏；额外显式校验 `priv_id`/`priv_table`（C 隐含假设）。详见 §4.4 缺口表。 |
 
 ### 4.8 Return path（TrapReturnArch；asm 侧已随 S-8 落地）
 
@@ -651,10 +651,10 @@ ExceptionDispatcher::handle_page_fault
 
 ## 参考文献
 
-1. `minix3/minix/kernel/arch/i386/exception.c:19-283` — 异常表、pagefault、exception_handler
-2. `minix3/minix/kernel/interrupt.c:29-176` — put_irq_handler、rm_irq_handler、irq_handle、enable/disable_irq
+1. `minix3/minix/kernel/arch/i386/exception.c:ex_s（L19，工具生成）` — 异常表、pagefault、exception_handler
+2. `minix3/minix/kernel/interrupt.c:put_irq_handler` — put_irq_handler、rm_irq_handler、irq_handle、enable/disable_irq
 3. `minix3/minix/kernel/arch/i386/include/hw_intr.h` — 中断控制器抽象宏
-4. `minix3/minix/kernel/clock.c:70-173` — timer_int_handler（仅时间记账，quantum 递减不在此）
+4. `minix3/minix/kernel/clock.c:timer_int_handler` — timer_int_handler（仅时间记账，quantum 递减不在此）
 5. `os/arch/src/arch/exception.rs` — ExceptionArch trait、FaultContext、RecoveryPoint
 6. `os/arch/src/arch/exception_dispatcher.rs` — ExceptionDispatcher、ExceptionOutcome、ExceptionSignal
 7. `os/kernel/src/irq_manager.rs` — IrqManager<IC>

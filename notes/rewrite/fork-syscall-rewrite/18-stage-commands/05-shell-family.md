@@ -179,10 +179,10 @@ Minix 带着三个 shell，不是冗余，而是三段历史：
 - `03-login-passwd.md`——登录链交棒到 shell（本篇的入口）
 - `06-file-ops.md`——文件操作命令（下一步：shell 调用的命令）
 - `13-terminal-termios.md`——终端属性（交互的物理基础）
-- `minix3/bin/sh/main.c:196-215`——启动文件逻辑（`plan_startup` 的逐行对照）
+- `minix3/bin/sh/main.c:main（L196，工具生成）`——启动文件逻辑（`plan_startup` 的逐行对照）
 - `minix3/bin/sh/builtins.def`——内建全集（93 行）
-- `minix3/bin/sh/expand.c:138`——展开入口
-- `minix3/bin/sh/redir.c:99-130`——重定向 discipline 与节点类型
+- `minix3/bin/sh/expand.c:expandarg`——展开入口
+- `minix3/bin/sh/redir.c:redirtab（L99，工具生成）`——重定向 discipline 与节点类型
 - `minix3/etc/profile`、`minix3/etc/shrc`——启动文件实例
 
 ---

@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-04，首版完整文档）
 > **定位**: 进程诞生 → `input_startup` → `input_init` → `chardriver_task`（阶段 1，启动入口）
-> **源码**: `minix3/minix/servers/input/input.c:646-704`（`input_init`/`input_startup`/`main`）+ `input.c:31-42`（回调注册表）+ `minix3/etc/system.conf:400-403`（服务声明）
+> **源码**: `minix3/minix/servers/input/input.c:input_other（L646，工具生成）`（`input_init`/`input_startup`/`main`）+ `input.c:31-42`（回调注册表）+ `minix3/etc/system.conf:400-403`（服务声明）
 > **Rust 模块**: `os/servers/input/src/init.rs`、`os/servers/input/src/main.rs`
 > **目标读者**: 想理解输入服务如何诞生、按什么顺序准备好自己的读者。前置知识：知道进程间可以互相发消息即可，不需要读过字符驱动代码。
 > **本章不讲什么**: 字符驱动框架主循环内部如何分发消息（那是第 02 篇）；设备表的十个槽位各自存什么（第 03 篇）；订阅驱动事件之后发生了什么（第 11 篇）；终端握手消息的编号含义（第 05 篇，终端一侧的反应在第 13 篇）。
@@ -116,7 +116,7 @@ input_startup(void)
 }
 ```
 
-两行。第一行告诉启动框架："当确认这是第一次诞生时，请调用 `input_init`"（`sef_setcb_init_fresh` 的声明在 `sef.h:60`）。注意没有 `sef_setcb_init_restart` 之类的调用——对照 1.2 节的讨论，这是深思熟虑的省略，不是遗漏：重起后忘记一切，恢复路径由各个客户端的重做动作承担。第二行 `sef_startup()`（`sef.h:9`）是统一的启动入口，框架在内部完成和重起服务的握手，然后在合适的时机调用已登记的 `input_init`。
+两行。第一行告诉启动框架："当确认这是第一次诞生时，请调用 `input_init`"（`sef_setcb_init_fresh` 的声明在 `sef.h:60`）。注意没有 `sef_setcb_init_restart` 之类的调用——对照 1.2 节的讨论，这是深思熟虑的省略，不是遗漏：重起后忘记一切，恢复路径由各个客户端的重做动作承担。第二行 `sef_startup()`（`minix3/minix/include/minix/sef.h:_SEF_H（L9，工具生成）`）是统一的启动入口，框架在内部完成和重起服务的握手，然后在合适的时机调用已登记的 `input_init`。
 
 ### 2.3 回调注册表：七个槽位，一张名片（`input_tab`，input.c:31-42）
 
@@ -132,7 +132,7 @@ static struct chardriver input_tab = {
 };
 ```
 
-这张表是输入服务递给框架的名片："这七种消息我认领，剩下的按你的默认规矩办"。框架的回调结构一共有十个槽位（`chardriver.h:9-23`：打开、关闭、读、写、控制、取消、选择、中断、闹钟、其他），输入服务只填了七个。空着的三个同样是设计：
+这张表是输入服务递给框架的名片："这七种消息我认领，剩下的按你的默认规矩办"。框架的回调结构一共有十个槽位（`minix3/minix/include/minix/chardriver.h:chardriver`：打开、关闭、读、写、控制、取消、选择、中断、闹钟、其他），输入服务只填了七个。空着的三个同样是设计：
 
 - 写槽位空着：向输入设备写没有意义（键盘是只读的），框架对"没有写处理函数"的默认回答是输入输出错误（第 02 篇解释这条默认路径）。
 - 中断槽位空着：输入服务不拥有任何硬件，硬件中断由键盘驱动进程处理（第 14 篇）。
@@ -304,7 +304,7 @@ pub const fn startup_registration() -> StartupRegistration {
 | `test_driver_pattern_matches_c_literal` | 订阅字符串和 C 字面量逐字节相同 | input.c:665 |
 | `test_handler_slots_cover_input_tab` | 七个槽位齐全且不多不少 | input.c:31-42 |
 | `test_startup_registers_fresh_boot_only` | 只登记第一次诞生的回调 | input.c:688（没有重起登记） |
-| `test_init_announce_matches_framework_announce` | 本篇的宣告步骤和第 02 篇的宣告效果一致 | input.c:669 对 `chardriver.c:99-124` |
+| `test_init_announce_matches_framework_announce` | 本篇的宣告步骤和第 02 篇的宣告效果一致 | input.c:669 对 `minix3/minix/lib/libchardriver/chardriver.c:chardriver_announce` |
 
 这些测试的共同点是都不需要启动任何外部进程：顺序、字面量、槽位清单、政策一致性，都是纯数据断言。这正是 3.1 节"顺序写成数据"的回报——如果启动顺序藏在函数执行过程里，这五个测试一个都写不出来。
 
@@ -329,6 +329,6 @@ pub const fn startup_registration() -> StartupRegistration {
 - 第 05 篇 `05-input-message-contract.md`：`TTY_INPUT_UP` 编号的权威定义。
 - 第 11 篇 `11-input-driver-connect.md`：订阅之后，驱动到来和离开时发生什么。
 - 第 13 篇 `13-tty-consumer.md`：终端收到握手消息后做什么。
-- `minix3/minix/servers/input/input.c:646-704`：本篇全部 C 依据。
+- `minix3/minix/servers/input/input.c:input_other（L646，工具生成）`：本篇全部 C 依据。
 - `minix3/etc/system.conf:400-403`：服务声明与权限。
 - `os/servers/input/src/init.rs`：本篇全部 Rust 实现。

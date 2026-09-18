@@ -60,7 +60,7 @@
 | 看时间 | `:66-69` | 和上次拿表是同一个滴答，直接用缓存（第一次拿表除外） |
 | 先记失效 | `:72` | 把有效标记先置成假再开始拿，下面任何一步失败都会停在失效 |
 | 拿内核表 | `:75-87` | 调系统调用拿全表，逐行检查魔数 `PMAGIC(0xC0FFEE1，const.h:164)` |
-| 拿进程管理表 | `:90-103` | 调系统信息接口拿表，逐行检查魔数 `MP_MAGIC(0xC0FFEE0，mproc.h:106)` |
+| 拿进程管理表 | `:90-103` | 调系统信息接口拿表，逐行检查魔数 `MP_MAGIC(0xC0FFEE0，minix3/minix/servers/pm/mproc.h:MP_MAGIC)` |
 | 拿文件轻表 | `:106-112` | 调系统信息接口拿轻表（轻量行没有魔数字段，所以不检查） |
 | 记有效 | `:114-115` | 有效标记置真，记下当前滴答 |
 | 建索引 | `:121-134` | 槽清零，只有在用且进程号大于零的才连进链条（从头插入，`:131-132`） |
@@ -79,7 +79,7 @@
 
 ### 2.5 写等待原因的文字（`proc.c:185-216`）
 
-三种特殊端点直接写名字（任意端点、自己、无端点，`:191-200`）。剩下的从端点号算出槽位（`:202`）：内核任务的槽一直有效，普通进程的槽要看是不是在用（`:203-204`），名字从内核表里那一行的名字字段拿（`:205`），拿不到就空着。有名字就按"名字加括号"的格式写（直接通信，`:210-212`），没名字就按端点号写（`:213-215`）。三个特殊端点的值是相对端点算出来的（`endpoint.h:54-56`），本篇不固定具体数字。
+三种特殊端点直接写名字（任意端点、自己、无端点，`:191-200`）。剩下的从端点号算出槽位（`:202`）：内核任务的槽一直有效，普通进程的槽要看是不是在用（`:203-204`），名字从内核表里那一行的名字字段拿（`:205`），拿不到就空着。有名字就按"名字加括号"的格式写（直接通信，`:210-212`），没名字就按端点号写（`:213-215`）。三个特殊端点的值是相对端点算出来的（`minix3/minix/include/minix/endpoint.h:ANY`），本篇不固定具体数字。
 
 ---
 
@@ -115,7 +115,7 @@ os/servers/mib/src/proc/
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
 | 三张表和四个常量 | `proc.c:18-39` | `tables.rs` 头部 | 余量 8、找不到是负一、槽数取参 |
-| 魔数 | `const.h:164` 加 `mproc.h:106` | 魔数常量加检查函数 | 整表逐行检查 |
+| 魔数 | `const.h:164` 加 `minix3/minix/servers/pm/mproc.h:MP_MAGIC` | 魔数常量加检查函数 | 整表逐行检查 |
 | 拿表规矩 | `proc.c:53-72` | 判断函数 | 死了、用缓存、拿 |
 | 拿表顺序 | `proc.c:74-113` | 顺序常量 | 内核、进程管理、文件轻表 |
 | 哈希 | `proc.c:121-134,143-158` | 槽位函数加链条查找 | 取模、顺链条 |
@@ -161,7 +161,7 @@ os/servers/mib/src/proc/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/proc.c:1-216`、`minix3/minix/include/minix/const.h:164`、`minix3/minix/servers/pm/mproc.h:82,106`、`minix3/minix/include/minix/endpoint.h:16,51-57`、`minix3/minix/include/minix/config.h:31`
+- C 源：`minix3/minix/servers/mib/proc.c:1-216`、`minix3/minix/include/minix/const.h:PMAGIC`、`minix3/minix/servers/pm/mproc.h:sigaction（L82，工具生成）,106`、`minix3/minix/include/minix/endpoint.h:_MINIX_ENDPOINT_H（L16，工具生成）,51-57`、`minix3/minix/include/minix/config.h:NR_PROCS`
 - 阶段文档：`06-mib-copy-io.md`（拷贝出去）、`10-mib-dispatch.md`（查询终点）、`14-mib-subtree-vm-hw.md`（统计读取同源）、`17-mib-proc-lwp.md`（下一站）、`02-mib-message-contract.md`
 - Rust 实现：`os/servers/mib/src/proc/tables.rs`
 - 相关约定：架构演进 A-6（plan §4，表布局归三家）

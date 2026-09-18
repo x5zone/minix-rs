@@ -1,7 +1,7 @@
 # 19-rs-external-interfaces: 外部接口契约
 
 > **分类**: 阶段 7 — 外部接口（Rust 依赖面契约）
-> **源码**: `minix3/minix/lib/libsys/*`（`sys_getinfo.c:9`、`sys_privctl.c:3`、`sys_kill.c:3`、`sys_statectl.c:3`、`ds.c:36,103,191`、`sched_start.c:46`、`sched_stop.c:9`、`pci_set_acl.c:15`、`pci_del_acl.c:15`）、`minix3/minix/include/minix/ipc.h:1048-1072,1420-1428,1466-1474,1858-1906`（消息槽）、`minix3/minix/servers/rs/*.c`（调用点）、`minix3/minix/include/minix/com.h:627,736,741-745`、`minix3/minix/include/minix/sef.h:85-95`
+> **源码**: `minix3/minix/lib/libsys/*`（`minix3/minix/lib/libsys/sys_getinfo.c:sys_getinfo`、`minix3/minix/lib/libsys/sys_privctl.c:sys_privctl`、`minix3/minix/lib/libsys/sys_kill.c:sys_kill`、`minix3/minix/lib/libsys/sys_statectl.c:sys_statectl`、`ds.c:36,103,191`、`minix3/minix/lib/libsys/sched_start.c:sched_start`、`minix3/minix/lib/libsys/sched_stop.c:sched_stop`、`minix3/minix/lib/libsys/pci_set_acl.c:pci_set_acl`、`minix3/minix/lib/libsys/pci_del_acl.c:pci_del_acl`）、`minix3/minix/include/minix/ipc.h:1048-1072,1420-1428,1466-1474,1858-1906`（消息槽）、`minix3/minix/servers/rs/*.c`（调用点）、`minix3/minix/include/minix/com.h:VM_RQ_BASE,736,741-745`、`minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL`
 > **Rust 模块**: `os/libs/minix-types/src/ipc/rs.rs`（typed message payload views，ARCH A-2）、`os/libs/minix-sys/src/lib.rs`（stub API 契约）
 > **前置**: 各机制文档（01~18）——本文档是它们的**外部调用点汇总**
 > **说明**: 本文档是 RS 对外部世界的**依赖面契约**：sys_*（kernel）、srv_*（PM）、vm_*（VM）、ds_*（DS）、sched_*（SCHED）、libexec/mapdriver/PCI/devman。按 plan §3.3，它是**唯一**允许引用 `lib/libsys/*` 的文档；其余文档引用外部函数时一律指向本文档。Rust 侧落地 **消息槽类型化**（`ipc/rs.rs` 扩展）；`minix-sys` 的 sys_* 实现是 stub 契约（wire-up 时落地）。
@@ -43,7 +43,7 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 
 ## 2. 外部面契约
 
-> **锚点约定**：libsys 函数名在快照中可验证（如 sef_st.c:151 即 `sys_getpriv`），libsys 锚点用文件/行；**RS 调用点**是 ground truth——调用点行号优先。
+> **锚点约定**：libsys 函数名在快照中可验证（如 minix3/minix/lib/libsys/sef_st.c:sef_copy_state_region（L151，工具生成） 即 `sys_getpriv`），libsys 锚点用文件/行；**RS 调用点**是 ground truth——调用点行号优先。
 
 ### 2.1 sys_* 内核面
 
@@ -65,8 +65,8 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 | `sys_getpriv` | `(&priv, proc_ep)` | utility.c:402、update.c:308/310 | 同步内核权限副本（18） |
 | `sys_setalarm` | `(alarm, abs)` | main.c:433、main.c:540 | 周期 alarm（07） |
 | `sys_setalarm2` | `(alarm, abs, &time_left, &uptime)` | utility.c:271 | 查询式 alarm（07，update 超时） |
-| `sys_kill` | `(proc_ep, signr)` | manager.c:399（`SIGKILL`）、manager.c:1006 | 杀服务（15） |
-| `sys_datacopy` | `(src_e, src_a, dst_e, dst_a, len)` | request.c:1122/1138、manager.c:142/162 | 跨进程拷贝（14/17） |
+| `sys_kill` | `(proc_ep, signr)` | minix3/minix/servers/rs/manager.c:rproc（L399，工具生成）（`SIGKILL`）、minix3/minix/servers/rs/manager.c:stop_service（L1006，工具生成） | 杀服务（15） |
+| `sys_datacopy` | `(src_e, src_a, dst_e, dst_a, len)` | request.c:1122/1138、minix3/minix/servers/rs/manager.c:rs_start（L142，工具生成）/162 | 跨进程拷贝（14/17） |
 | `sys_statectl` | `(request, address, length)` | utility.c:266/294（`SYS_STATE_ADD_IPC_WL_FILTER`/`SYS_STATE_CLEAR_IPC_FILTERS`） | IPC filter 状态操作（17/23） |
 | `sys_diagctl_stacktrace` | `(proc_ep)` | main.c:682 | 崩溃栈回溯（15） |
 | `sys_whoami` | `(&ep, name, len, &priv_flags, &init_flags)` | update.c:342 | RS rollback 特例的身份判断（18） |
@@ -76,11 +76,11 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 
 | 函数 | 签名 | 调用点 | 语义 |
 |------|------|--------|------|
-| `srv_fork` | `(uid, gid)` | main.c:446、manager.c:576 | 创建服务进程（10/18） |
-| `srv_kill` | `(pid, signr)` | manager.c:470 | 杀服务进程（15） |
-| `srv_execve` | `(proc_e, exec, exec_len, progname, ...)` | manager.c:634 | 服务 exec（09/10） |
+| `srv_fork` | `(uid, gid)` | main.c:446、minix3/minix/servers/rs/manager.c:rproc（L576，工具生成） | 创建服务进程（10/18） |
+| `srv_kill` | `(pid, signr)` | minix3/minix/servers/rs/manager.c:rproc（L470，工具生成） | 杀服务进程（15） |
+| `srv_execve` | `(proc_e, exec, exec_len, progname, ...)` | minix3/minix/servers/rs/manager.c:rproc（L634，工具生成） | 服务 exec（09/10） |
 | `getnpid` | `(endpoint)` | main.c:426 | endpoint→pid（02/19） |
-| `getprocnr` | `(pid, &endpoint)` | main.c:451、manager.c:584 | pid→endpoint（10/18） |
+| `getprocnr` | `(pid, &endpoint)` | main.c:451、minix3/minix/servers/rs/manager.c:rproc（L584，工具生成） | pid→endpoint（10/18） |
 | `waitpid` | `(-1, &status, WNOHANG)` | request.c:1063 | 收割僵尸（07 `do_sigchld`） |
 
 ### 2.3 vm_* VM 面
@@ -88,7 +88,7 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 | 函数 | 签名 | 调用点 | 语义 |
 |------|------|--------|------|
 | `vm_memctl` | `(proc_ep, param, addr, length)` | request.c:779（`VM_RS_MEM_HEAP_PREALLOC`）、request.c:802（`VM_RS_MEM_MAP_PREALLOC`）、main.c:470（`VM_RS_MEM_PIN`） | RS 内存管理（10/16/18）；`VM_RS_MEM_*` 子操作见 com.h:741-745 |
-| `vm_set_priv` | `(proc_ep, &vm_call_mask, grant)` | request.c:361、manager.c:698 | VM 调用掩码（03） |
+| `vm_set_priv` | `(proc_ep, &vm_call_mask, grant)` | request.c:361、minix3/minix/servers/rs/manager.c:rproc（L698，工具生成） | VM 调用掩码（03） |
 | `vm_update` | `(src_e, dst_e, flags)` | update.c:249 | VM slot 交换（16/18）；`SF_VM_ROLLBACK` 位 |
 | `vm_prepare` | `(src_e, dst_e, ...)` | update.c:505 | VM multi 预分配推进（16） |
 
@@ -98,16 +98,16 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 
 | 函数 | 签名 | 调用点 | 语义 |
 |------|------|--------|------|
-| `ds_publish_label` | `(ds_name, endpoint, flags)` | manager.c:513、manager.c:800 | 发布服务标签（11） |
-| `ds_delete_label` | `(ds_name)` | manager.c:878 | 撤销标签（11） |
-| `ds_retrieve_label_endpt` | `(ds_name, &endpoint)` | manager.c:247（IPC filter label 解析，17）、manager.c:841（devman 查询） | label→endpoint |
+| `ds_publish_label` | `(ds_name, endpoint, flags)` | minix3/minix/servers/rs/manager.c:rproc（L513，工具生成）、minix3/minix/servers/rs/manager.c:rproc（L800，工具生成） | 发布服务标签（11） |
+| `ds_delete_label` | `(ds_name)` | minix3/minix/servers/rs/manager.c:rproc（L878，工具生成） | 撤销标签（11） |
+| `ds_retrieve_label_endpt` | `(ds_name, &endpoint)` | minix3/minix/servers/rs/manager.c:init_state_data（L247，工具生成）（IPC filter label 解析，17）、minix3/minix/servers/rs/manager.c:rproc（L841，工具生成）（devman 查询） | label→endpoint |
 
 ### 2.5 sched_* 调度面
 
 | 函数 | 签名 | 调用点 | 语义 |
 |------|------|--------|------|
 | `sched_start` | `(scheduler_e, schedulee_e, ...)` | utility.c:375 | 启动服务调度（10/12） |
-| `sched_stop` | `(scheduler_e, schedulee_e)` | request.c:342、manager.c:461 | 停止服务调度（10/13） |
+| `sched_stop` | `(scheduler_e, schedulee_e)` | request.c:342、minix3/minix/servers/rs/manager.c:rproc（L461，工具生成） | 停止服务调度（10/13） |
 
 ### 2.6 libexec / mapdriver / PCI / devman
 
@@ -115,9 +115,9 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 |------|------|--------|------|
 | `libexec_load_elf` | `(execi, ...)` | exec.c:17（`load_object` 表） | ELF 加载（09，ARCH A-8：libexec → minix-elf） |
 | `minix_stack_params`/`minix_stack_fill` | `(argv, envp, ...)` | exec.c:34/49 | 栈帧构造（09） |
-| `mapdriver` | `(label, dev_nr, domain, ...)` | manager.c:820 | 驱动注册到 VFS（11）；消息槽 `mess_lsys_vfs_mapdriver` |
-| `pci_set_acl`/`pci_del_acl` | `(&pci_acl)`/`(proc_ep)` | manager.c:833/889 | PCI ACL（11） |
-| `DEVMAN_BIND`/`DEVMAN_UNBIND` | `message` | manager.c:846/903 | devman 绑定/解绑（11） |
+| `mapdriver` | `(label, dev_nr, domain, ...)` | minix3/minix/servers/rs/manager.c:rproc（L820，工具生成） | 驱动注册到 VFS（11）；消息槽 `mess_lsys_vfs_mapdriver` |
+| `pci_set_acl`/`pci_del_acl` | `(&pci_acl)`/`(proc_ep)` | minix3/minix/servers/rs/manager.c:rproc（L833，工具生成）/889 | PCI ACL（11） |
+| `DEVMAN_BIND`/`DEVMAN_UNBIND` | `message` | minix3/minix/servers/rs/manager.c:rproc（L846，工具生成）/903 | devman 绑定/解绑（11） |
 
 ---
 

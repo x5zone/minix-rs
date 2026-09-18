@@ -36,7 +36,7 @@
 
 ### 1.4 挂起的账本
 
-账本分三层。顶层是选择表：25 槽（`MAXSELECTS`），一槽一调用，空槽以 `requestor == NULL` 为记。中层是 filp 账：五旗（`UPDATE` 待告/`BUSY` 在途/读块/写块/错块）三数（选择人数/待办位/管道暂存）一设备（寄放的驱动号）。底层是进程挂起：`FP_BLOCKED_ON_SELECT`（见 `minix3/minix/servers/vfs/const.h:23`），复用 02 的 `BlockedOn::Select`（无载荷——账在选择表，不在进程）。
+账本分三层。顶层是选择表：25 槽（`MAXSELECTS`），一槽一调用，空槽以 `requestor == NULL` 为记。中层是 filp 账：五旗（`UPDATE` 待告/`BUSY` 在途/读块/写块/错块）三数（选择人数/待办位/管道暂存）一设备（寄放的驱动号）。底层是进程挂起：`FP_BLOCKED_ON_SELECT`（见 `minix3/minix/servers/vfs/const.h:FP_BLOCKED_ON_SELECT`），复用 02 的 `BlockedOn::Select`（无载荷——账在选择表，不在进程）。
 
 挂起即保活（头注释三知识之三）：进程挂在 select 上期间，所有相关 filp 保证不关——要么等完，要么被信号打断。账本的每一笔注销（`cancel`）都配一笔登记，这是 `selectors` 计数的全部意义。
 
@@ -141,43 +141,43 @@ Rust 改写不是照抄 `select.c` 的表与旗，而是吸收 Linux/Redox 的�
 ### D1 四分型枚举
 
 - **C**：`fdtypes[]` 函数指针表 + 四谓词（`select.c:81-90,368-404`）。
-- **Rust**：`FdKind::{Char, Sock, File, Pipe}` + `classify()` 全映射（`os/servers/vfs/src/select.rs:76,91`）。
+- **Rust**：`FdKind::{Char, Sock, File, Pipe}` + `classify()` 全映射（`os/servers/vfs/src/select.rs:enum FdKind,91`）。
 - **为什么**：回答来源是请求点最需要的一比特；枚举使"未知类型→EBADF"可读。替代方案（函数指针表）被否决：`match` 即表，且可穷举测试。
 
 ### D2 位图代数
 
 - **C**：`tab2ops` + `ops2tab`（去重三条件）+ `copy_fdsets` 取整（`select.c:621-708`）。
-- **Rust**：`SelOps` 位旗 + `tab2ops()`/`ops2tab_apply()` + `fdset_bytes()` + `CopyDir`（`os/servers/vfs/src/select.rs:51,106,141,153,165`）。
+- **Rust**：`SelOps` 位旗 + `tab2ops()`/`ops2tab_apply()` + `fdset_bytes()` + `CopyDir`（`os/servers/vfs/src/select.rs:struct SelOps,106,141,153,165`）。
 - **为什么**：双译是"用户说的"与"内核记得的"两种语言的翻译；去重三条件各防一漏（重复计数/幻影就绪/空指针写）。替代方案（`libc fd_set`）被否决：`no_std` 无 libc，且位语义需单测锁定。
 
 ### D3 过滤状态机
 
 - **C**：`select_filter` 三段（快路→置位→忙判，`select.c:409-457`）。
-- **Rust**：`filter_step() -> FilterOutcome::{ReadyNone, Suspend, Query}` 纯函数（`os/servers/vfs/src/select.rs:176,202`）；`Query` 携带完整的发送期义务四字段——`set_update`（新置 UPDATE）、`clear_update`（发送前清 UPDATE，`select.c:517`）、`set_busy`（发送成功后置 BUSY，`select.c:522`）与 `set_block`（新监视位），义务在数据里而非调用方记忆里。
+- **Rust**：`filter_step() -> FilterOutcome::{ReadyNone, Suspend, Query}` 纯函数（`os/servers/vfs/src/select.rs:fn fdset_bytes（L176，工具生成）,202`）；`Query` 携带完整的发送期义务四字段——`set_update`（新置 UPDATE）、`clear_update`（发送前清 UPDATE，`select.c:517`）、`set_busy`（发送成功后置 BUSY，`select.c:522`）与 `set_block`（新监视位），义务在数据里而非调用方记忆里。
 - **为什么**：过滤是"这次要不要打扰驱动"的知识；三出口对应剪枝/挂起/投递，调用点各走各路。替代方案（布尔返回值）被否决：三出口非二值，布尔装不下。`Query` 只给 `rops` 的更早版本被否决：C 的发送序是"清 UPDATE → 发送 → 成功后置 BUSY"三步义务（`select.c:509-522`，socket 对位 `:525-538`），义务留在调用方记忆里会在 BUSY 期间残留 UPDATE，翻转 `reply1_step` 的 ops 清零规则。
 
 ### D4 超时三态
 
 - **C**：`do_timeout` + `block` 两布尔（`select.c:140-167`）+ ticks 换算截断（`327-336`）。
-- **Rust**：`TimeoutPlan::{Poll, Forever, Until}` + `plan_timeout()` + `block_of()`（`os/servers/vfs/src/select.rs:248,269,297`）。
+- **Rust**：`TimeoutPlan::{Poll, Forever, Until}` + `plan_timeout()` + `block_of()`（`os/servers/vfs/src/select.rs:fn filter_step（L248，工具生成）,269,297`）。
 - **为什么**：两布尔四组合有一非法，枚举消灭非法态；"超时零零即 poll"一测即知。截断饱和与零碎取整收敛一处。
 
 ### D5 去留双门
 
 - **C**：同一守卫出现三处（速返 `299-300`/复活 `1311`/超时 `874`）。
-- **Rust**：`is_deferred()` + `should_return()` 三处复用（`os/servers/vfs/src/select.rs:308,317`）。
+- **Rust**：`is_deferred()` + `should_return()` 三处复用（`os/servers/vfs/src/select.rs:fn plan_timeout（L308，工具生成）,317`）。
 - **为什么**：三处同条件是同一知识（"现在能交卷吗"）；复用使改一处即改三处。替代方案（三处各写）被否决：C 已证明漂移风险。
 
 ### D6 回复记账
 
 - **C**：`select_reply1` 三分支 + `BLOCK` 清零 + `select_reply2` 扇出（`select.c:956-999,1108-1162`）。
-- **Rust**：`reply1_step()` + `reply2_hit()` 纯函数（`os/servers/vfs/src/select.rs:323,374,339,392`）。
+- **Rust**：`reply1_step()` + `reply2_hit()` 纯函数（`os/servers/vfs/src/select.rs:fn plan_timeout（L323，工具生成）,374,339,392`）。
 - **为什么**：记账是"还欠驱动什么、欠用户什么"的知识；算与写分离（先算对再写入）可矩阵测试。`UPDATE` 置位时不减掩码——另一 select 还欠着这些位。
 
 ### D7 驱动对话 trait 化
 
 - **C**：字符/套接字双路同体 + 管道试探 + 驱散分类（`select.c:459-616,880-951`）。
-- **Rust**：`SelectDriver{query}`（`ScriptedDriver` 按脚本应答 vs `RefusingDriver` 常拒）+ `PipeProbe{probe_read/probe_write}`（`ScriptedProbe` 编程回答 vs `ClosedProbe` 固定失败）+ `DeathKind` 四值 + `unsuspend_hit()`（`os/servers/vfs/src/select.rs:490,499,543,567,576,597,648,667`）。
+- **Rust**：`SelectDriver{query}`（`ScriptedDriver` 按脚本应答 vs `RefusingDriver` 常拒）+ `PipeProbe{probe_read/probe_write}`（`ScriptedProbe` 编程回答 vs `ClosedProbe` 固定失败）+ `DeathKind` 四值 + `unsuspend_hit()`（`os/servers/vfs/src/select.rs:struct FilpSel（L490，工具生成）,499,543,567,576,597,648,667`）。
 - **为什么**：投递是唯一的不可测点；字符/套接字只是查表不同，忙门/投递/挂起同构，一 trait 覆盖双路（测试矩阵不翻倍）。死亡标就绪是与 22 对偶的设计（§1.6）。
 
 ### ARCH 决策总表
@@ -287,7 +287,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/select.c:1-1416`（三十函数全族）、`minix3/minix/servers/vfs/const.h:23,41-44`（`FP_BLOCKED_ON_SELECT` 与 `SEL_*`）、`minix3/minix/servers/vfs/file.h:22-48`（filp 选择字段与 `FSF_*`）、`minix3/minix/include/minix/com.h:932,949-952`（`CDEV_SELECT` 与 `CDEV_OP_*`）
+- C 源：`minix3/minix/servers/vfs/select.c:1-1416`（三十函数全族）、`minix3/minix/servers/vfs/const.h:FP_BLOCKED_ON_SELECT,41-44`（`FP_BLOCKED_ON_SELECT` 与 `SEL_*`）、`minix3/minix/servers/vfs/file.h:__VFS_FILE_H__（L22，工具生成）`（filp 选择字段与 `FSF_*`）、`minix3/minix/include/minix/com.h:CDEV_SELECT,949-952`（`CDEV_SELECT` 与 `CDEV_OP_*`）
 - 阶段文档：`04-filp-table.md`（filp 选择字段）、`02-fproc-struct.md`（`BlockedOn::Select`）、`17-pipe.md`（管道试探执行）、`19-device-map.md`（dmap/smap 忙门）、`21-cdev.md`（字符投递）、`22-sdev.md`（套接字投递与 EIO 对偶）、`24-socket.md`（上层调用点）、`09-main-loop.md`（挂起与复活执行）
-- Rust 实现：`os/servers/vfs/src/select.rs:1`（本篇判定层）、`os/servers/vfs/src/filp.rs:36`（`FsfFlags` 复用）、`os/servers/vfs/src/fproc.rs:41,106`（`OPEN_MAX` 与 `BlockedOn::Select` 复用）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/select.rs:1`（本篇判定层）、`os/servers/vfs/src/filp.rs:struct FsfFlags（L36，工具生成）`（`FsfFlags` 复用）、`os/servers/vfs/src/fproc.rs:const OPEN_MAX（L41，工具生成）,106`（`OPEN_MAX` 与 `BlockedOn::Select` 复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（fd 集拷贝语义）

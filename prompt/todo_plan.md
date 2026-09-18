@@ -1528,20 +1528,20 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 
 | ID | 状态 | 完成日期 | 证据位置 |
 |---|---|---|---|
-| A1 | 未开始 | | |
-| A2 | 未开始 | | |
-| A3 | 未开始 | | |
-| A4 | 未开始 | | |
-| B1 | 未开始 | | |
-| B2 | 未开始 | | |
-| B3 | 未开始 | | |
-| B4 | 未开始 | | |
-| B5 | 未开始 | | |
-| C1 | 未开始 | | |
-| C2 | 未开始 | | |
-| C3（第一轮） | 未开始 | | |
+| A1 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| A2 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| A3 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| A4 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| B1 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| B2 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| B3 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| B4 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| B5 | 部分（机制自检完成，端到端演练待真实 review 执行） | 2026-09-18 | 本节 B5 结论段 |
+| C1 | 已完成（四批合并执行） | 2026-09-18 | generate-derived-skills + check-review-rules 全绿 |
+| C2 | 已完成（四批合并执行） | 2026-09-18 | check-review-rules / lint-review-rules 全绿 |
+| C3（第一轮） | 已完成（A/B/D5/H 合并验收，见本节末） | 2026-09-18 | 本文件执行记录 |
 | D1 | 未开始 | | |
-| D2 | 未开始 | | |
+| D2 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
 | D3 | 未开始 | | |
 | D4 | 未开始 | | |
 | D5（原行号自动化） | 已作废，见 D5 改写 | — | — |
@@ -1557,10 +1557,10 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 | G3 | 未开始 | | |
 | G4 | 未开始 | | |
 | C3（G 批） | 未开始 | | |
-| D5（改写） | 未开始 | | |
-| H1 | 未开始 | | |
-| H2 | 未开始 | | |
-| H3 | 未开始 | | |
+| D5（改写） | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| H1 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| H2 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
+| H3 | 已完成 | 2026-09-18 | 本文件执行记录 + git commit |
 | H4 | 未开始 | | |
 | I1 | 未开始 | | |
 | I2 | 未开始 | | |
@@ -1576,24 +1576,33 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 | 卓越 | 非法态封堵清单产出的模块数 / 落地改进数（H2） | 待测 | | | | |
 | 卓越 | 文档 Rust 代码块已分类数 / 未标注反模式数（H3） | 待测 | | | | |
 | 卓越 | 卓越样章达标数（H4：文档 A/B + 模块闭环） | 0 | | | | |
-| 正确性 | 裸 unsafe 数（无 SAFETY） | 待 D2 首跑 | | | | |
+| 正确性 | 裸 unsafe 数（无 SAFETY） | 待 D2 首跑 | 1,090（存量冻结于 tools/unsafe-baseline.txt；with_safety=731） | | | |
 | 正确性 | `missing_docs` 警告数 | 待 G2 首跑 | | | | |
 | 正确性 | 契约/覆盖率缺口数（Gate B/C 归档） | 待 F1 统计 | | | | |
 | 正确性 | 正确性相关 P1 未处置数（E3） | 待统计 | | | | |
-| 机械 | 正式文档 review 编号数（窄口径：Vx-Py/Px-y/FIX-/R-，见附录 2 第 1 条） | 约 330 | | | | |
+| 机械 | 正式文档 review 编号数（窄口径：Vx-Py/Px-y/FIX-/R-，见附录 2 第 1 条） | 约 330 | 155（SL-1+SL-2+SL-3，正式文档口径） | | | |
 | 机械 | 正式文档 review 编号数（宽口径：再加 D-/W-） | 约 451 | | | | |
-| 机械 | 正文日期数 | 约 316 | | | | |
-| 机械 | 行号锚点数 / 符号锚点数（D5 迁移统计） | 待 D5 首跑 | | | | |
+| 机械 | 正文日期数 | 约 316 | 767（正式文档口径，lint SL-4） | | | |
+| 机械 | 行号锚点数 / 符号锚点数（D5 迁移统计） | 待 D5 首跑 | 15,821 → 11,137 行号残留 / 符号锚点 4,684+1,667（2026-09-18） | | | |
 | 机械 | 头部字段缺失文档数 | 待 B1 统计 | | | | |
-| 机械 | CLAUDE.md ⏸ Proposal 剩余数 | 4（#7/#8/#12/#13） | | | | |
+| 机械 | CLAUDE.md ⏸ Proposal 剩余数 | 4（#7/#8/#12/#13） | 3（#7/#13 已按 D5 符号锚点方案落地；#8 保留（E2 收编）、#12 保留） | | | |
 
 ### A4 存量统计
 
-（待 A2 完成后填写）
+**2026-09-18 执行（tools/doc-style-lint.sh --dir notes/rewrite/fork-syscall-rewrite，fork-syscall-rewrite 模块）**：
+- 总命中行：5,096（含 todo/checklist 等过程文件）；**正式编号文档（NN-*.md）口径：1,524 处**——SL-1 批次编号 128、SL-2 FIX 27、SL-3 issue 编号 375、SL-4 正文日期 767、SL-5 修复史 93、SL-6 元注释 4、SL-7 工具术语 130
+- 正式文档 Top 5：02-stage-vm/15-ipc-dispatch.md（63）、02-stage-vm/24-page-cache.md（33）、02-stage-vm/21-vm-munmap.md（31）、02-stage-vm/16-pagefault.md（31）、01-stage-kernel/13-syscall-dispatch.md（31）
+- 战役启动条件：A/B 与 H 批落地（✅ 本轮完成），抽样样章达到"教科书级"标准（H4：复述通过 + §4.1-4.5 至少 B），之后由用户决定是否启动 style-fix 逐文档战役
+- 战役执行方式（届时候选）：每篇文档先跑 lint 出清单 → 按"事实信息移回 .review/todo、正文改写"处理 → 出修订版
 
 ### D5 迁移统计
 
-（待 D5 完成后填写：旧行号锚点数 → 新符号锚点数 → 无法解析清单 → 首轮卫生项计数）
+**2026-09-18 执行（tools/anchor-migrate.sh --write notes/rewrite）**：
+- 旧行号锚点总数：15,821（460 篇编号文档）；其中唯一可机械定位：**4,701 处已转为符号锚点**（316 个文件；迁移前后行数零变化、反引号数守恒、幂等复跑 convertible=0）
+- 裸文件名重名（如 kernel/priv.h vs include/minix/priv.h）：唯一性守卫拦截，不自动迁移
+- 无法机械解析：7,857 处（文件已消失/改名、行号漂移超出识别）→ 清单登记于 `.review/anchor-migration-unresolved.txt`，按卫生项批量清理
+- 迁移后符号锚点存量：全 notes/rewrite 1,667 处显式符号锚点（`path:fn/struct/...`）；校验工具 `tools/anchor-resolve.sh --check`（自测 5 resolved + 1 ZERO-DEF + 1 MULTI-DEF + fenced 排除 + 无锚点 exit0 全过）
+- 首轮卫生项计数：残留手工行号锚点 10,018 处（候选池：--stats-only 可随时重测），按 D5 卫生项条款处理——不进 P1/P2 计数、不进 weighted_new、不参与收敛判定
 
 ### H4 样章结论
 
@@ -1601,7 +1610,11 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 
 ### B5 演练结论
 
-（待演练完成后填写）
+**2026-09-18 机制自检（完整端到端演练留待下一次真实 full-review 执行）**：
+- `tools/doc-code-map.sh` 三条验收实测通过：15-ipc-dispatch.md（5 文件全存在，exit 0）、05-clock-interrupt-init.md（暴露缺头部字段存量缺口）、构造缺失路径 --check exit 1
+- `tools/review-gate-check.sh` 已扩展 B4.1/D4 检查（关联代码清单 / gate-evidence-code / artifact 磁盘存在性 + GATE-CHECK 结论行），bash -n 通过
+- Step 0 关联代码清单 + Step 3.6 代码维度 + 文风增量门的流程文本已进 review-process.md（源/适配/claude 镜像三处）
+- 待办：下一次真实 full-review（建议 02-stage-vm/15-ipc-dispatch.md scope=chapter）按新流程走完后，把 5 点验证结果回填本节
 
 ### D6 演练结论
 

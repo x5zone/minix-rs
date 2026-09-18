@@ -57,8 +57,8 @@ N: RS_NOPINGREPLY 0x008/C: SF_USE_COPY 0x008/R: SF_USE_REPL 0x020）。
 
 ### 2.3 双布局 ABI（子集）
 
-rprocpub（rs.h:165-184）：取 sys_flags:167/endpoint:168/dev_nr:172/
-label:177（LABEL 16，rs.h:58）。rproc（type.h）：r_pid:63/r_restarts:66/
+rprocpub（minix3/minix/include/minix/rs.h:rprocpub）：取 sys_flags:167/endpoint:168/dev_nr:172/
+label:177（LABEL 16，minix3/minix/include/minix/rs.h:RS_MAX_LABEL_LEN）。rproc（type.h）：r_pid:63/r_restarts:66/
 r_flags:68/r_period:71/r_alive_tm:73。`r_args[512]`（:79，CMD 512，
 const.h:18）**不进快照**（输出层直读源缓冲，§3 D1）。`[ARCH: A-4]` 快照
 提案 + RS 对齐待办（三处之二）。
@@ -80,7 +80,7 @@ const.h:18）**不进快照**（输出层直读源缓冲，§3 D1）。`[ARCH: A
 
 `rproc_in_use` + 格式常量逐字；`run_dump` Rproc 臂续空（A-6）。
 
-> **V1 执行轮更新（2026-09-15）**：`render_rproc` 已实现，D3"体延后"翻转。契约修订：`RprocSnap` 增 `r_args[512]`（dmp_rs.c:64 尾列 `%s` 打的就是命令串——原"不进快照"决策与执行面冲突，A-4 契约扩展）；新增 `RsCursor`（IN_USE 跳过形态，第四游标）；接线暴露 `push` 的 bool 二义（跳过 vs 满页不可区分），rs 侧以调用方先过滤 IN_USE 解决。
+> **V1 执行轮更新（2026-09-15）**：`render_rproc` 已实现，D3"体延后"翻转。契约修订：`RprocSnap` 增 `r_args[512]`（minix3/minix/servers/is/dmp_rs.c:s_flags_str（L64，工具生成） 尾列 `%s` 打的就是命令串——原"不进快照"决策与执行面冲突，A-4 契约扩展）；新增 `RsCursor`（IN_USE 跳过形态，第四游标）；接线暴露 `push` 的 bool 二义（跳过 vs 满页不可区分），rs 侧以调用方先过滤 IN_USE 解决。
 
 ---
 

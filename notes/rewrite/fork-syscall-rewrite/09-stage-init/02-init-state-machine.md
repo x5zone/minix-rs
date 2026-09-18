@@ -1,6 +1,6 @@
 # 02-init-state-machine：状态机骨架与信号转换
 
-> **定位**：状态机主循环 `transition`（`minix3/sbin/init/init.c:624-640`）与信号注册转换（`handle` 369-389、`delset` 394-405、`transition_handler` 1502-1522、`alrm_handler` 1649-1655），7 状态字符（`init.c:133-139`）。
+> **定位**：状态机主循环 `transition`（`minix3/sbin/init/init.c:setsecuritylevel（L624，工具生成）`）与信号注册转换（`handle` 369-389、`delset` 394-405、`transition_handler` 1502-1522、`alrm_handler` 1649-1655），7 状态字符（`init.c:133-139`）。
 > **Rust**：`os/commands/sbin/init/src/state_machine.rs`。
 > **前置依赖**：01（入口调用点与 `InitialState` 子集）。
 > **本篇不覆盖（移交）**：各状态函数体（见 04~11）、日志与 disaster（见 03）、utmpx runlevel 挂钩（见 13）、重启与关机挂钩（见 14）。
@@ -193,4 +193,4 @@ os/commands/sbin/init/src/
 - `04-init-single-user.md`、`05-init-runcom.md`、`06-init-read-ttys.md` — 启动序列三站。
 - `09-init-multi-user.md`、`10-init-clean-ttys.md`、`11-init-shutdown.md` — 稳态与关停。
 - `13-init-utmp.md` — runlevel 挂钩机制。
-- C 源码：`minix3/sbin/init/init.c:130-139,369-405,624-640,1502-1522,1649-1655`。
+- C 源码：`minix3/sbin/init/init.c:INIT_PATH（L130，工具生成）,369-405,624-640,1502-1522,1649-1655`。

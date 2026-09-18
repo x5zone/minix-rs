@@ -65,7 +65,7 @@ VR_* 标志（region.h:69-78）分两组：
 
 ### 1.3 phys_region 中间层（回顾）
 
-`phys_region`（phys_region.h:8-21）是**每个虚拟页一个的映射记录**：`ph`（指向共享的 phys_block）、`parent`、`offset`（页在区域中的偏移）、`memtype`（该页的内存类型，可不同于区域默认）、`next_ph_list`（同一 phys_block 的反向链表节点）。
+`phys_region`（minix3/minix/servers/vm/phys_region.h:phys_region）是**每个虚拟页一个的映射记录**：`ph`（指向共享的 phys_block）、`parent`、`offset`（页在区域中的偏移）、`memtype`（该页的内存类型，可不同于区域默认）、`next_ph_list`（同一 phys_block 的反向链表节点）。
 
 11 已详述其生命周期；13 只需记住两条框架契约：
 
@@ -151,8 +151,8 @@ Rust: ActiveProc.regions (RegionMap = BTreeMap<VirBytes, VirRegion>)
                                                                           └── PageFrames[PFN].refcount
 ```
 
-- **RegionMap**（region_map.rs:39）：BTreeMap 按 vaddr 有序，`find`（:58）= C map_lookup，`find_slot`（:157）= C region_find_slot_range。
-- **VirRegion.physblocks**（vir_region.rs:62-73）：`Vec<PageSlot>` 三态枚举（`Empty`/`Reserved`/`Mapped`）替代 NULL 指针，省 Option 判别开销。
+- **RegionMap**（os/servers/vm/src/region/region_map.rs:fn new（L39，工具生成））：BTreeMap 按 vaddr 有序，`find`（:58）= C map_lookup，`find_slot`（:157）= C region_find_slot_range。
+- **VirRegion.physblocks**（os/servers/vm/src/region/vir_region.rs:fn to_alloc_flags（L62，工具生成））：`Vec<PageSlot>` 三态枚举（`Empty`/`Reserved`/`Mapped`）替代 NULL 指针，省 Option 判别开销。
 - **PageFrames**：phys_block 的集中替代（11），refcount 由 map_page/unmap_page 读写。
 - **框架操作分散**：map_free → `free_region_pages`（mod.rs:23）、map_pin_memory → `map_pin_memory`（mod.rs:128）、map_copy_region → `fork_region`（fork.rs:92）、map_handle_memory → `handle_memory_once`（fork.rs:33）。
 
@@ -179,7 +179,7 @@ region.c（1555 行）是区域框架的完整实现。按生命周期分组逐�
 
 - `vir_region` 结构：region.h:37-65（vaddr/length/physblocks/flags/parent/def_memtype/remaps/id/param/AVL 字段）。
 - `phys_block` 结构：region.h:23-35（phys/firstregion/refcount u8/flags + SANITYCHECKS seencount）。
-- `phys_region` 结构：phys_region.h:8-21（ph/parent/offset/written/memtype/next_ph_list）。
+- `phys_region` 结构：minix3/minix/servers/vm/phys_region.h:phys_region（ph/parent/offset/written/memtype/next_ph_list）。
 - VR_* 标志：region.h:69-78（见 §1.2）；`MF_PREALLOC 0x01`：region.h:82。
 
 ### 2.2 physblock_get / physblock_set（region.c:60 / :72）
@@ -213,7 +213,7 @@ void physblock_set(struct vir_region *region, vir_bytes offset,
 契约要点：
 
 - **offset 页对齐 + 槽位一致性断言**：get 时若槽非 NULL 必须 `foundregion->offset == offset`；set 时新槽必须 offset 匹配、旧槽必须存在。
-- **记账内联**：`vm_total`（进程占用的物理页总量）与 `vm_total_max`（峰值，getrusage maxrss 数据源，region.c:1444 消费）在 set 时更新——Rust 侧由消费模块的 `sub_total`（munmap.rs:151/:167/:186）承担。
+- **记账内联**：`vm_total`（进程占用的物理页总量）与 `vm_total_max`（峰值，getrusage maxrss 数据源，region.c:1444 消费）在 set 时更新——Rust 侧由消费模块的 `sub_total`（os/servers/vm/src/munmap.rs:fn handle_munmap（L151，工具生成）/:167/:186）承担。
 
 ### 2.3 map_page_region（region.c:463）+ region_new（:424）+ find_slot（:302/:399）
 
@@ -258,7 +258,7 @@ struct vir_region *map_lookup(struct vmproc *vmp, vir_bytes offset,
 }
 ```
 
-**less_equal + contains 过滤**：AVL 找 ≤ offset 的最大区域，再验证 offset 是否落在其 `[vaddr, vaddr+length)` 内。这是所有"地址 → 区域"解析的入口（页错误、brk、查询）。Rust 对应 `RegionMap::find`（region_map.rs:58，BTreeMap `range(..=addr).next_back()` + `contains_addr` 过滤）。
+**less_equal + contains 过滤**：AVL 找 ≤ offset 的最大区域，再验证 offset 是否落在其 `[vaddr, vaddr+length)` 内。这是所有"地址 → 区域"解析的入口（页错误、brk、查询）。Rust 对应 `RegionMap::find`（os/servers/vm/src/region/region_map.rs:fn find_mut（L58，工具生成），BTreeMap `range(..=addr).next_back()` + `contains_addr` 过滤）。
 
 ### 2.5 填充族：map_pf（:664）/ map_handle_memory（:756）/ map_pin_memory（:779）/ map_writept（:906）/ map_ph_writept（:257）
 
@@ -375,15 +375,15 @@ int map_free_proc(struct vmproc *vmp)                                      /* :5
 }
 ```
 
-**pb_unreferenced（rm=1）语义**（pb.c:96，11 已述）：refcount--；归零时调 `ev_unreference`（anon 还物理页）并 `pb_free`。**释放顺序**：C 先摘页（map_subfree → pb_unreferenced → ev_unreference），再 ev_delete（类型级），最后释放区域对象。Rust 的 `free_region_pages`（mod.rs:23）顺序不同：pt.unmap → ev_delete → free_range（摘槽 + 收集 pending）→ ev_unreference + free_pfn → fdref deref。**顺序差异无害**：PFN 模型下所有 memtype 的 ev_unreference 均为 no-op（物理页由框架 free_pfn 归还，12 §3.4 D4），ev_delete 只清区域参数（cache pfn / file fdref）。
+**pb_unreferenced（rm=1）语义**（minix3/minix/servers/vm/pb.c:pb_unreferenced，11 已述）：refcount--；归零时调 `ev_unreference`（anon 还物理页）并 `pb_free`。**释放顺序**：C 先摘页（map_subfree → pb_unreferenced → ev_unreference），再 ev_delete（类型级），最后释放区域对象。Rust 的 `free_region_pages`（mod.rs:23）顺序不同：pt.unmap → ev_delete → free_range（摘槽 + 收集 pending）→ ev_unreference + free_pfn → fdref deref。**顺序差异无害**：PFN 模型下所有 memtype 的 ev_unreference 均为 no-op（物理页由框架 free_pfn 归还，12 §3.4 D4），ev_delete 只清区域参数（cache pfn / file fdref）。
 
 ### 2.10 工具与调试
 
-- **vrallocflags**（:645）：VR_* 标志 → 物理页分配标志（PAF_*）：`VR_PHYS64K → PAF_ALIGN64K`、`VR_LOWER16MB → PAF_LOWER16MB`、`VR_LOWER1MB → PAF_LOWER1MB`、无 `VR_UNINITIALIZED → PAF_CLEAR`（分配后清零）。Rust 对应 `VrFlags::to_alloc_flags`（vir_region.rs:38，PageAllocFlags）。
+- **vrallocflags**（:645）：VR_* 标志 → 物理页分配标志（PAF_*）：`VR_PHYS64K → PAF_ALIGN64K`、`VR_LOWER16MB → PAF_LOWER16MB`、`VR_LOWER1MB → PAF_LOWER1MB`、无 `VR_UNINITIALIZED → PAF_CLEAR`（分配后清零）。Rust 对应 `VrFlags::to_alloc_flags`（os/servers/vm/src/region/vir_region.rs:fn next_region_id（L38，工具生成），PageAllocFlags）。
 - **physregions**（:1546）：统计区域中已挂载的槽位数（sanity 断言用）。
 - **map_region_lookup_type**（:1303）：按标志线性扫描找区域（RS 预分配，§1.8）。
 - **map_printmap**（:98）/ **printregionstats**（:1510）：调试打印——遍历树打印区域/槽位/引用；printregionstats 统计 used/weighted（跳过 VR_DIRECT）。Rust 无直接对应（cfg 诊断替代）。
-- **map_sanitycheck**（:168）：SANITYCHECKS 门控的全进程一致性检查（指针 slabsane、seencount 计数与 refcount 比对、`map_sanitycheck_pt` 逐页验证页表）。**Rust 以 `verify_refcounts`（os/servers/vm/src/sanity.rs:54）替代**（11 已述），属 A-7 cfg 设计差异。
+- **map_sanitycheck**（:168）：SANITYCHECKS 门控的全进程一致性检查（指针 slabsane、seencount 计数与 refcount 比对、`map_sanitycheck_pt` 逐页验证页表）。**Rust 以 `verify_refcounts`（os/servers/vm/src/sanity.rs:struct RefcountMismatch（L54，工具生成））替代**（11 已述），属 A-7 cfg 设计差异。
 
 ### 2.11 本章小结
 
@@ -397,7 +397,7 @@ int map_free_proc(struct vmproc *vmp)                                      /* :5
 
 ### 3.1 D1: BTreeMap 替代 AVL（ARCH A-4）
 
-`RegionMap { regions: BTreeMap<VirBytes, VirRegion> }`（region_map.rs:39）替代 regionavl.c 的自定义 AVL：
+`RegionMap { regions: BTreeMap<VirBytes, VirRegion> }`（os/servers/vm/src/region/region_map.rs:fn new（L39，工具生成））替代 regionavl.c 的自定义 AVL：
 
 - **为什么**：BTreeMap 提供同样的 O(log n) 有序语义 + 标准库质量（平衡、内存安全），无需在 VirRegion 内嵌 lower/higher/factor 树字段。
 - **语义承接**：`find`（:58）= map_lookup（range(..=addr).next_back() + contains_addr）；`find_slot`（:157）= region_find_slot_range（minv/maxv/length 找空槽）；`insert`（:219）返回 `Result`——重叠时返回 Err(region)（C 的 AVL insert 是断言 + 调用方保证）。
@@ -415,7 +415,7 @@ C 的 `struct phys_region **physblocks`（NULL=未映射）→ `Vec<PageSlot>` �
 
 ### 3.3 D3: 引用计数集中到 PageFrames
 
-C 的 `phys_block.firstregion` 反向链表（region.h:28）→ `PageFrames[PFN].refcount`（page_state.rs:139，11 已述）：
+C 的 `phys_block.firstregion` 反向链表（region.h:28）→ `PageFrames[PFN].refcount`（os/servers/vm/src/region/page_state.rs:impl PartialEq for PageSlot，11 已述）：
 
 - 13 只负责**读写 refcount 的框架点**：map_page（+1）、unmap_page（-1）、needs_cow（:230，refcount>1）。
 - **收益**：消除链表遍历（sanity 的 n_others 计数）、消除 phys_region 独立堆对象、refcount 从 u8 升 u32（11 §3 已述）。
@@ -431,15 +431,15 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 | map_free / map_subfree | `free_region_pages`（mod.rs:23） | 21 munmap / 22 exit |
 | map_copy_region | `fork_region`（fork.rs:92） | 18 fork |
 | map_proc_copy(_range) | `fork_regions`（fork.rs:142） | 18 fork |
-| map_unmap_region / split_region | munmap.rs split + free_region_pages（munmap.rs:155-192） | 21 munmap |
-| map_region_extend_upto_v | `VirRegion::extend`（vir_region.rs:133） | 19 brk（brk.rs:106/:109） |
-| map_writept / map_ph_writept | `prepare_cow`（vir_region.rs:304）+ 页表同步路径 | 16/17 |
-| map_lookup | `RegionMap::find`（region_map.rs:58） | 各处 |
+| map_unmap_region / split_region | munmap.rs split + free_region_pages（os/servers/vm/src/munmap.rs:fn handle_munmap（L155，工具生成）） | 21 munmap |
+| map_region_extend_upto_v | `VirRegion::extend`（os/servers/vm/src/region/vir_region.rs:fn new（L133，工具生成）） | 19 brk（os/servers/vm/src/brk.rs:fn grow_heap（L106，工具生成）/:109） |
+| map_writept / map_ph_writept | `prepare_cow`（os/servers/vm/src/region/vir_region.rs:fn shared_source（L304，工具生成））+ 页表同步路径 | 16/17 |
+| map_lookup | `RegionMap::find`（os/servers/vm/src/region/region_map.rs:fn find_mut（L58，工具生成）） | 各处 |
 | map_region_lookup_type | 无实现（rs.rs:242 注释） | 25 承接 |
 
 ### 3.5 D5: 错误显式化
 
-- **VmError**（vir_region.rs:410）：`InvalidParam` 等变体替代 C 的 printf + errno 返回——extend/split 的参数校验返回类型化错误。
+- **VmError**（os/servers/vm/src/region/vir_region.rs:fn free_range（L410，工具生成））：`InvalidParam` 等变体替代 C 的 printf + errno 返回——extend/split 的参数校验返回类型化错误。
 - **PinMemoryError::PageNotMapped**（mod.rs:155）：替代 C 的 `panic("map_pin_memory: ...")`（region.c:790）——RS 调用方可恢复处理而非崩溃。
 - **find_slot 返回 Option**：替代 C 的 `SLOT_FAIL ((vir_bytes)-1)` 哨兵（region.c:298）。
 
@@ -476,7 +476,7 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 ### 4.2 VirRegion（vir_region.rs）
 
 - **new**（:95）：`vec![PageSlot::Empty; pages]` 预分配槽位数组（= C region_new 的 calloc）。
-- **extend**（:133）：追加 `Empty` 槽 + length 增长（= C map_region_extend_upto_v 的 realloc 分支；brk.rs:106/:109 消费）。
+- **extend**（:133）：追加 `Empty` 槽 + length 增长（= C map_region_extend_upto_v 的 realloc 分支；os/servers/vm/src/brk.rs:fn grow_heap（L106，工具生成）/:109 消费）。
 - **map_page**（:176）/ **unmap_page**（:202）：槽位挂载/摘除 + refcount 维护（§3.2）。
 - ~~**map_lazy**~~：**已删除**（V12-P2-4，2026-09-09）——`Reserved` 态无生产调用方，`PageSlot` 两态化后该函数与 `get_slot_any`/`get_slot_mut_any` 一并移除（原 [ARCH: A-13] 设计见 §5.3 历史行）。
 - **needs_cow**（:279）：refcount>1 判定（17 消费）。
@@ -492,8 +492,8 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 ### 4.4 消费链
 
 - **fork**（fork.rs:33/:92/:142）：`handle_memory_once`（批量填充 + CoW 解析）→ `fork_region`（复制 + 共享页）→ `fork_regions`（全量复制 + 失败回滚 `free_forked_regions` :162）。
-- **munmap**（munmap.rs:155-192）：`split` 切头/中/尾 → `free_region_pages` 释放中间段 → `sub_total` 记账 → 剩余段 re-insert。
-- **brk**（brk.rs:106/:109）：`extend` 增长堆顶区域（19 详述）。
+- **munmap**（os/servers/vm/src/munmap.rs:fn handle_munmap（L155，工具生成））：`split` 切头/中/尾 → `free_region_pages` 释放中间段 → `sub_total` 记账 → 剩余段 re-insert。
+- **brk**（os/servers/vm/src/brk.rs:fn grow_heap（L106，工具生成）/:109）：`extend` 增长堆顶区域（19 详述）。
 - **RS**（rs.rs:187/:203）：`map_pin_memory` 固定源/目标进程内存（25 详述）。
 
 ---
@@ -548,8 +548,8 @@ C 的框架函数全部集中在 region.c；Rust 按**调用面**分散（避免
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| ~~test_map_lazy FAIL~~ | ✅ 已修复（2026-08-16，todo P0-1） | **根因**：`map_lazy` 写 `pfn=PFN_NONE` 槽，但 `get_slot` 用 `is_mapped()` 过滤 → lazy 占位永远读不回。**方案**：`PageSlot` 改为三态枚举（`Empty`/`Reserved`/`Mapped`，page_state.rs:90），`get_slot` 保持 mapped-only 过滤，新增 `get_slot_any`/`get_slot_mut_any`（含 `Reserved`，vir_region.rs:268/:274）；`map_lazy` 写 `Reserved`（携带 def_memtype），测试覆盖 `map_lazy → get_slot_any → map_page 实化 → get_slot` 全链路（vir_region.rs:548）。生产语义不变：lazy 族为 [ARCH: A-13] 扩展，仍无生产调用方，`#[allow(dead_code)]` 标注。 |
-| find_slot 生产消费 | ⚠️ backlog | `RegionMap::find_slot` 被 mmap.rs:219/:221/:225 与 dispatcher.rs:522/:1464 调用，但无端到端测试（21/20 承接） |
+| ~~test_map_lazy FAIL~~ | ✅ 已修复（2026-08-16，todo P0-1） | **根因**：`map_lazy` 写 `pfn=PFN_NONE` 槽，但 `get_slot` 用 `is_mapped()` 过滤 → lazy 占位永远读不回。**方案**：`PageSlot` 改为三态枚举（`Empty`/`Reserved`/`Mapped`，os/servers/vm/src/region/page_state.rs:fn new（L90，工具生成）），`get_slot` 保持 mapped-only 过滤，新增 `get_slot_any`/`get_slot_mut_any`（含 `Reserved`，os/servers/vm/src/region/vir_region.rs:fn needs_cow/:274）；`map_lazy` 写 `Reserved`（携带 def_memtype），测试覆盖 `map_lazy → get_slot_any → map_page 实化 → get_slot` 全链路（os/servers/vm/src/region/vir_region.rs:fn test_vir_region_split_invalid（L548，工具生成））。生产语义不变：lazy 族为 [ARCH: A-13] 扩展，仍无生产调用方，`#[allow(dead_code)]` 标注。 |
+| find_slot 生产消费 | ⚠️ backlog | `RegionMap::find_slot` 被 os/servers/vm/src/mmap.rs:fn roundup_page（L219，工具生成）/:221/:225 与 dispatcher.rs:522/:1464 调用，但无端到端测试（21/20 承接） |
 | map_page_region 等价组合 | ⚠️ backlog | find_slot + VirRegion::new + memtype ev_new + insert 的组合路径无集成测试 |
 | map_region_lookup_type | ⚠️ DEFERRED | 无 Rust 实现（rs.rs:242 注释），25-rs-services 承接 |
 | map_printmap / printregionstats | ⚠️ 接受 | 调试打印无 Rust 对应，cfg 诊断替代 |

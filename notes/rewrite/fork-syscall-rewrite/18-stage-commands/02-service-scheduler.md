@@ -190,8 +190,8 @@ Rust 实现（`service.rs`）于是给两者各一个解析函数：`parse_minix
 - `03-login-passwd.md`——终端登录链路（下一步）
 - `../03-stage-rs/`——重生服务的服务端实现（`minix-service` 对话的另一端）
 - `minix3/minix/commands/minix-service/minix-service.8`——重生服务客户端手册（命令形状的权威来源）
-- `minix3/minix/commands/svrctl/svrctl.c:107-115`——低层接口用法
-- `minix3/minix/commands/cron/tab.c:285-360`——时间字段语义（本篇解析器的逐行对照）
+- `minix3/minix/commands/svrctl/svrctl.c:usage`——低层接口用法
+- `minix3/minix/commands/cron/tab.c:get_token（L285，工具生成）`——时间字段语义（本篇解析器的逐行对照）
 - `minix3/minix/commands/update/update.c`——24 行固定节拍（`IntervalMatcher` 的行为来源）
 - `minix3/etc/crontab`——系统自带时间表实例（问号语义的活例子）
 - `minix3/etc/rs.single`——启动脚本调用 `minix-service` 的实例

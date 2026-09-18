@@ -52,7 +52,7 @@
 
 ### 1.6 exit 的三条来路
 
-来路有三条（调用面归 13/14，本篇只讲收到之后怎么办）：PM exit（`forkexit.c:425`：儿子死了就给它停调度）→ RS 终止（`manager.c:461`/`request.c:342`：服务死了就给它停调度）→ 短路（`sched_stop` 里面 `KERNEL`/`NONE` 直接返回 `OK`——内核自己调度的不用 SCHED 收尾，连消息都不发）。来路不同，入口同一个（06 的 §1.1 讲过同样的道理：登记的两种消息如此，释放的三条路亦然）。
+来路有三条（调用面归 13/14，本篇只讲收到之后怎么办）：PM exit（`minix3/minix/servers/pm/forkexit.c:exit_restart（L425，工具生成）`：儿子死了就给它停调度）→ RS 终止（`minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）`/`request.c:342`：服务死了就给它停调度）→ 短路（`sched_stop` 里面 `KERNEL`/`NONE` 直接返回 `OK`——内核自己调度的不用 SCHED 收尾，连消息都不发）。来路不同，入口同一个（06 的 §1.1 讲过同样的道理：登记的两种消息如此，释放的三条路亦然）。
 
 ### 1.7 其他系统的同类设计
 
@@ -88,9 +88,9 @@
 
 单字段（`1441`：`endpoint`——死人的名字而已）→ 填充（`1443`：52 字节补齐——消息定长的要求）→ 结构体结束（`1444`）。
 
-### 2.6 来路的发送端（`sched_stop.c:9-29` + 三个调用点）
+### 2.6 来路的发送端（`minix3/minix/lib/libsys/sched_stop.c:sched_stop` + 三个调用点）
 
-短路（`sched_stop.c:16-17`：`KERNEL`/`NONE` 直接 `OK`，连消息都不发）→ 组装消息（`sched_stop.c:24-27`：填端点、发 `SCHEDULING_STOP`）→ 三条路（`forkexit.c:425`/RS `manager.c:461`/`request.c:342`——调用面归 13/14，本节只说明收到端的检查存在）。
+短路（`minix3/minix/lib/libsys/sched_stop.c:sched_stop（L16，工具生成）`：`KERNEL`/`NONE` 直接 `OK`，连消息都不发）→ 组装消息（`minix3/minix/lib/libsys/sched_stop.c:sched_stop（L24，工具生成）`：填端点、发 `SCHEDULING_STOP`）→ 三条路（`minix3/minix/servers/pm/forkexit.c:exit_restart（L425，工具生成）`/RS `minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）`/`request.c:342`——调用面归 13/14，本节只说明收到端的检查存在）。
 
 ---
 
@@ -101,19 +101,19 @@ Rust 改写不是把一个函数五步照抄过来，而是参考 Linux 的脱�
 ### D1 消息形状单字段
 
 - **C**：`mess_lsys_sched_scheduling_stop{endpoint}`（`ipc.h:1440-1444`：单字段）。
-- **Rust**：`Request{child: Endpoint}`（`os/servers/sched/src/scheduling/stop.rs:25`：单字段形状）。
+- **Rust**：`Request{child: Endpoint}`（`os/servers/sched/src/scheduling/stop.rs:struct Request（L25，工具生成）`：单字段形状）。
 - **为什么**：死人没有数字（上限时间片父进程全都没有——形状里没地方放就等于没有这个语义）；单字段形状就是在说"释放只问是谁"。备选方案（复用 06 的 `Request` 四字段）被否决了：两种消息形状不同，合成一个就把形状抹掉了（STOP 的消息里如果有个 quantum 字段，那个值没有任何含义——有含义的位置不能放没含义的值）。
 
 ### D2 检查顺序照抄
 
 - **C**：白名单 → 验占用（`118-125`，顺序不能换）。
-- **Rust**：门序收在 `plan_stop` 的前两步（`stop.rs:64`：`EPERM` → 表检查码——探针以 facts-or-refusal 传入，`&Result<OccupiedSlot, SlotVerdict>`，拒绝的探针不带 CPU，门过了才有事实）。
+- **Rust**：门序收在 `plan_stop` 的前两步（`os/servers/sched/src/scheduling/stop.rs:fn plan_stop`：`EPERM` → 表检查码——探针以 facts-or-refusal 传入，`&Result<OccupiedSlot, SlotVerdict>`，拒绝的探针不带 CPU，门过了才有事实）。
 - **为什么**：顺序就是诊断信息（06 的 D2 同理）；管线同形（两个臂同一个顺序同一套码——对称写进代码，不只写在表里，见 §1.5）。备选方案（释放臂自己另写一套检查顺序）被否决了：两套顺序就是两种诊断（同一种诊断写两遍，早晚写岔）。
 
 ### D3 释放的两样东西
 
 - **C**：减负载（`130`，SMP 构建里）+ 清标记（`132`，直接赋零）。
-- **Rust**：`Release{endpoint, cpu: CpuId}`（`stop.rs:39`：释放的形状，CPU 是 10 的新类型）+ `plan_stop`（`stop.rs:73`：检查过了就释放，没有分支没有循环）+ SMP 开关留给调用者（单核跳过减负载——`Release` 照样带 CPU，规则一份、开关一处读，10 消费这个约定）。
+- **Rust**：`Release{endpoint, cpu: CpuId}`（`os/servers/sched/src/scheduling/stop.rs:struct Release`：释放的形状，CPU 是 10 的新类型）+ `plan_stop`（`os/servers/sched/src/scheduling/stop.rs:fn plan_stop（L73，工具生成）`：检查过了就释放，没有分支没有循环）+ SMP 开关留给调用者（单核跳过减负载——`Release` 照样带 CPU，规则一份、开关一处读，10 消费这个约定）。
 - **为什么**：释放是执行（减负载清标记都要改表——纯函数改不了表，形状归调用者）；构建开关在调用者（编译期开关改运行时是 S-5，10 的范围）；清零不进代码（`flags = 0` 就是调用者写个零——代码里没东西可判断，判断止于检查）。备选方案（`Release` 里加 `clear_flags: bool` 开关）被否决了：恒为真的开关就是摆设（释放一定清标记，没有不清的时候）。
 
 ### D4 对称写进代码
@@ -151,9 +151,9 @@ os/servers/sched/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 消息的形状 | `ipc.h:1440-1444` | `stop.rs:25` | 单字段只问是谁 |
-| 检查顺序 | `schedule.c:118-125` | `stop.rs:64` | 先发送者后槽位 |
-| 释放的形状 | `schedule.c:128-132` | `stop.rs:39,64` | 两项释放归调用者 |
+| 消息的形状 | `ipc.h:1440-1444` | `os/servers/sched/src/scheduling/stop.rs:struct Request（L25，工具生成）` | 单字段只问是谁 |
+| 检查顺序 | `schedule.c:118-125` | `os/servers/sched/src/scheduling/stop.rs:fn plan_stop` | 先发送者后槽位 |
+| 释放的形状 | `schedule.c:128-132` | `os/servers/sched/src/scheduling/stop.rs:struct Release,64` | 两项释放归调用者 |
 | 登记释放对照 | `schedule.c:112-137` vs `140-252` | `start.rs` + `stop.rs` 同形 | 对称写进代码 |
 
 ### 4.3 不变量
@@ -172,10 +172,10 @@ os/servers/sched/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_doors_in_order` | `schedule.c:118-125` | 发送者压槽位 + 四种码（EPERM/EDEADEPT/EBADEPT/EINVAL） | `stop.rs:104` |
-| `test_release_shape` | `schedule.c:128-132` | 两项释放同载（谁腾出来、哪个 CPU 减负载） | `stop.rs:126` |
-| `test_no_special_slots` | `schedule.c:112-134`（全程无判断） | 四种端点都释放（INIT/RS/随机号） | `stop.rs:136` |
-| `test_start_stop_roundtrip` | `schedule.c:223` vs `132` + `utility.c:29-56` | 登记释放互锁（空→占→空） | `stop.rs:149` |
+| `test_doors_in_order` | `schedule.c:118-125` | 发送者压槽位 + 四种码（EPERM/EDEADEPT/EBADEPT/EINVAL） | `os/servers/sched/src/scheduling/stop.rs:fn test_doors_in_order` |
+| `test_release_shape` | `schedule.c:128-132` | 两项释放同载（谁腾出来、哪个 CPU 减负载） | `os/servers/sched/src/scheduling/stop.rs:fn test_release_shape` |
+| `test_no_special_slots` | `schedule.c:112-134`（全程无判断） | 四种端点都释放（INIT/RS/随机号） | `os/servers/sched/src/scheduling/stop.rs:fn test_no_special_slots` |
+| `test_start_stop_roundtrip` | `schedule.c:223` vs `132` + `utility.c:29-56` | 登记释放互锁（空→占→空） | `os/servers/sched/src/scheduling/stop.rs:fn test_start_stop_roundtrip` |
 
 测试策略：检查用顺序覆盖（发送者坏但槽位好照样 `EPERM`）锁定；释放在端点和 CPU 号双返回上锁定；无特例用全端点（INIT/RS/用户/随机号都释放）锁定；对称用往返（真检查互锁）锁定。
 
@@ -207,7 +207,7 @@ os/servers/sched/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/schedule.c:112-137`（释放全流程）、`minix3/minix/include/minix/ipc.h:1440-1444`（停止消息的形状）、`minix3/minix/servers/sched/main.c:62-64`（STOP 分发）、`minix3/minix/lib/libsys/sched_stop.c:9-29`（组装消息对端）、`minix3/minix/servers/pm/forkexit.c:425`（PM exit 路径）、`minix3/minix/servers/rs/manager.c:461` + `request.c:342`（RS 终止路径）
+- C 源：`minix3/minix/servers/sched/schedule.c:do_stop_scheduling`（释放全流程）、`minix3/minix/include/minix/ipc.h:1440-1444`（停止消息的形状）、`minix3/minix/servers/sched/main.c:main（L62，工具生成）`（STOP 分发）、`minix3/minix/lib/libsys/sched_stop.c:sched_stop`（组装消息对端）、`minix3/minix/servers/pm/forkexit.c:exit_restart（L425，工具生成）`（PM exit 路径）、`minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）` + `request.c:342`（RS 终止路径）
 - 阶段文档：`02-sched-message-surface.md`（消息的名字）、`04-schedproc-table.md`（表检查规则）、`06-start-scheduling.md`（上一站，对称的来源）、`08-noquantum-nice.md`（下一站）、`10-pick-cpu-smp.md`（账的去向）
 - Rust 实现：`os/servers/sched/src/scheduling/stop.rs:1`（本篇臂层）、`os/servers/sched/src/scheduling/start.rs:1`（对称臂）、`os/servers/sched/src/scheduling/mod.rs:1`（臂的名字）
 - 对端：`13-pm-interaction.md`/`14-rs-interaction.md`（调用面，另篇）

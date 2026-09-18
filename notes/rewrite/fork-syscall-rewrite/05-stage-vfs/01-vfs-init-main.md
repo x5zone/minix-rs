@@ -2,7 +2,7 @@
 
 > **状态**: 生效中（2026-08-17 完整改写）
 > **定位**: 阶段 1 — 启动入口与进程模型（锚点文档）
-> **源码**: `main.c:54-141,303-499,501-553`（main/SEF 三回调/VFS_PM_INIT 握手/do_init_root/lock_proc）+ `worker.c:27-31,162-185`（worker_init/worker_allow 调用点）+ `mount.c:391-431`（mount_pfs 调用点）+ `com.h:513-551`（VFS_PM_INIT 协议面）
+> **源码**: `main.c:54-141,303-499,501-553`（main/SEF 三回调/VFS_PM_INIT 握手/do_init_root/lock_proc）+ `minix3/minix/servers/vfs/worker.c:worker_init,162-185`（worker_init/worker_allow 调用点）+ `mount.c:391-431`（mount_pfs 调用点）+ `com.h:513-551`（VFS_PM_INIT 协议面）
 > **Rust 模块**: `os/servers/vfs/src/main.rs`、`os/servers/vfs/src/main_loop.rs`（`VfsState::init_fresh/pm_handshake_step/finish_init/do_init_root`）、`os/libs/minix-types/src/ipc/vfs.rs`（`VfsPmInit` 编解码）
 > **draft 素材**: `draft/10-main-loop.md` 启动部分（素材）
 
@@ -84,7 +84,7 @@ PM 与 VFS 各自维护进程表（PM 的 `mproc` / VFS 的 `fproc`），靠 end
 
 ### 1.4 为什么根挂载要门控
 
-`do_init_root`（main.c:501-523）挂载 PFS 与根文件系统。挂载涉及与 MFS/PFS 的 IPC 往返（`req_readsuper` 等，归 18），期间如果 `init(8)` 的打开文件请求进来，路径解析会撞上"根还没就绪"。所以 C 用 `worker_allow(FALSE)`（main.c:507）把请求**挡在 worker 分配之前**：新请求标 `FP_PENDING`（worker.c:176-184），挂载完成后再 `worker_allow(TRUE)`（main.c:522）把它们放行。这是"**服务未就绪时不假装可用**"的启动期门控模式。
+`do_init_root`（main.c:501-523）挂载 PFS 与根文件系统。挂载涉及与 MFS/PFS 的 IPC 往返（`req_readsuper` 等，归 18），期间如果 `init(8)` 的打开文件请求进来，路径解析会撞上"根还没就绪"。所以 C 用 `worker_allow(FALSE)`（main.c:507）把请求**挡在 worker 分配之前**：新请求标 `FP_PENDING`（minix3/minix/servers/vfs/worker.c:worker_allow（L176，工具生成）），挂载完成后再 `worker_allow(TRUE)`（main.c:522）把它们放行。这是"**服务未就绪时不假装可用**"的启动期门控模式。
 
 ### 1.5 本章小结
 
@@ -275,7 +275,7 @@ static void do_init_root(void)
 }
 ```
 
-- `worker_allow(FALSE)`（main.c:507）：把全局 `block_all` 置真，此后新请求标 `FP_PENDING` 排队（worker.c:162-185，细节归 08）。
+- `worker_allow(FALSE)`（main.c:507）：把全局 `block_all` 置真，此后新请求标 `FP_PENDING` 排队（minix3/minix/servers/vfs/worker.c:worker_allow，细节归 08）。
 - `mount_pfs()`（mount.c:391-431）：把 PFS（管道文件系统）当作普通文件系统挂载——分配 nonedev、vmnt 项、发 mount 请求，让 PFS 进 vmnt 表（细节归 18）。
 - `mount_fs(DEV_IMGRD, "bootramdisk", "/", MFS_PROC_NR, 0, "mfs", "fs_imgrd")`：根文件系统是 **MFS 上的 boot ramdisk**（设备 `0x0106`，`dmap.h:113`），标签 `fs_imgrd`（RS 里的 boot 服务名）。注释 `FIXME: use boot image process name instead` / `FIXME: obtain this from RS` 表明挂载参数目前硬编码。
 - `worker_allow(TRUE)`（main.c:522）：根就绪，放行 pending 请求。
@@ -310,7 +310,7 @@ void lock_proc(struct fproc *rfp)
 
 - **C**：`sef_local_startup()` 注册 5 回调 + `sef_startup()` 状态机（sef.c），按启动类型分发到 `sef_cb_init_fresh`。
 - **Rust**：`VfsState::init_fresh()` 直接承载启动链（等价 `sef_cb_init_fresh` 的函数体）；`run()` 内先 `VfsState::new()` 再 `init_fresh()`。与 02-stage-vm 的 D4（`rs_handshake` 直连）同型：**保留协议语义、去掉 setcb 注册 + startup 状态机**。
-- **Rust LU 生命周期落地（C-1 闭合）**：`LuState`（NULL/RequestFree/ProtocolFree/Other，`sef.h:213-217` 子集）+ `lu_prepare(all_idle, state)`（仅 request-free/protocol-free 可备且要求全槽空闲，余者 `ENOTREADY`，`main.c:303-322`）+ `lu_rollback_needs_workers`/`init_lu_needs_workers`（`main.c:325-358` 的 C 分支判定；ARCH A-1 下槽位即数据，重建工人按构造为空操作）。`init_restart` 不建模：VFS 无状态重启，RS 重跑 `init_fresh`（D1 同源）。RS 侧行交互挂 P1-2/edge E9。
+- **Rust LU 生命周期落地（C-1 闭合）**：`LuState`（NULL/RequestFree/ProtocolFree/Other，`minix3/minix/include/minix/sef.h:SEF_LU_STATE_NULL` 子集）+ `lu_prepare(all_idle, state)`（仅 request-free/protocol-free 可备且要求全槽空闲，余者 `ENOTREADY`，`main.c:303-322`）+ `lu_rollback_needs_workers`/`init_lu_needs_workers`（`main.c:325-358` 的 C 分支判定；ARCH A-1 下槽位即数据，重建工人按构造为空操作）。`init_restart` 不建模：VFS 无状态重启，RS 重跑 `init_fresh`（D1 同源）。RS 侧行交互挂 P1-2/edge E9。
 - **理由**：启动框架的"注册 → 状态机 → 回调"间接层，在单进程单入口下没有信息增益；直接调用让启动链可审计、可测试。VFS 没有 VM 那样的 is_first_time 门控——fresh/LU/restart 三路径中只有 fresh 被实现。
 - **DEFERRED（fail-closed）**：`sef_cb_lu_prepare`/`sef_cb_lu_state_changed`/`sef_cb_init_lu`（main.c:303-373）与 `SEF_CB_INIT_RESTART_STATEFUL` 均未实现——live update / restart 是独立特性，不假装支持；`init_fresh` 用 `assert!(!initialized)` 禁止二次初始化（与 PM 侧 `PmServer` 同款契约）。
 - **行为契约**：`finish_init()` 前必须完成握手（`assert!(boot_phase == InitTables)`），`run()` 前必须 `init_fresh()`。
@@ -335,7 +335,7 @@ Minix3 的 VFS 是唯一使用 mthread 多线程的服务器（main 线程 + 9 w
 
 | ARCH | Minix3 现状 | minix-rs 演进 | 状态 |
 |------|------------|--------------|------|
-| **A-1** | `NR_WTHREADS=9` 真实 mthread worker（worker.c） | `WorkerPool` 请求槽状态机（`WorkerState::Idle/Busy/WaitingForFs`），无真实线程；`worker_allow` 门控 → `VfsState::set_accept_requests(bool)` + `pending` 计数 + `FP_PENDING`（worker.c:176-184 语义） | 部分实现（本篇落地门控；槽调度归 08/09） |
+| **A-1** | `NR_WTHREADS=9` 真实 mthread worker（worker.c） | `WorkerPool` 请求槽状态机（`WorkerState::Idle/Busy/WaitingForFs`），无真实线程；`worker_allow` 门控 → `VfsState::set_accept_requests(bool)` + `pending` 计数 + `FP_PENDING`（minix3/minix/servers/vfs/worker.c:worker_allow（L176，工具生成） 语义） | 部分实现（本篇落地门控；槽调度归 08/09） |
 | **A-4** | glo.h 全局（fproc/susp_count/reviving/block_all/...） | `VfsState` 聚合全部子系统状态（`fproc_table/worker_pool/call_table/reviving/accept_requests/pending`） | 部分实现（本篇新增门控字段） |
 | **A-5** | `return SUSPEND` 表示稍后回复；pipe/select/驱动三条恢复路径 | `ReplyIntent { Reply(i32), ReplyLater, NoReply }`（plan.md §7.3 决策 2） | **缺口**：枚举契约已声明，revive 路径归 17/23/21/22 |
 

@@ -1,7 +1,7 @@
 # 02 — DS 消息契约：信封上每个栏位的含义
 
 > **分类**: 协议面 / 消息与标志
-> **源码**: `minix3/minix/include/minix/com.h:498-507`、`ipc.h:93-116`、`ds.h`、`sysinfo.h:13`
+> **源码**: `minix3/minix/include/minix/com.h:DS_RQ_BASE`、`ipc.h:93-116`、`ds.h`、`minix3/minix/include/minix/sysinfo.h:SI_DATA_STORE`
 > **说明**: DS 的全部跨进程对话都经过两种消息结构和一套标志位。本文把每个栏位、每个标志、每条 grant 规则讲清楚——这是 07~11 所有 handler 的共同前置知识。
 
 ---
@@ -64,7 +64,7 @@ grant 规则（`do_invoke_ds`，`lib/libsys/ds.c:7-33`）只有两条：`CHECK` 
 
 ### 1.5 调用号与查询号
 
-`DS_RQ_BASE = 0x800`（`com.h:498`），7 个活号 + 1 个死号（见 01 的表，不复述）。`SI_DATA_STORE = 5`（`sysinfo.h:13`）是 `do_getsysinfo` 唯一接受的查询号（11）。
+`DS_RQ_BASE = 0x800`（`com.h:498`），7 个活号 + 1 个死号（见 01 的表，不复述）。`SI_DATA_STORE = 5`（`minix3/minix/include/minix/sysinfo.h:SI_DATA_STORE`）是 `do_getsysinfo` 唯一接受的查询号（11）。
 
 ### 1.6 小结
 
@@ -151,6 +151,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/include/minix/{com.h,ipc.h,ds.h,sysinfo.h}`、`minix3/minix/lib/libsys/ds.c:7-33`
+- C 源：`minix3/minix/include/minix/{com.h,ipc.h,ds.h,sysinfo.h}`、`minix3/minix/lib/libsys/ds.c:do_invoke_ds`
 - 阶段文档：`01-ds-init-main.md`（上一站）、`03-ds-data-structures.md`（下一站）、`12-ds-client-library.md`（grant 规则的另一半）
 - Rust 实现：`os/libs/minix-types/src/types/com.rs`、`os/servers/ds/src/client.rs`

@@ -278,7 +278,7 @@ void clear_cache_bydev(dev_t dev)
 
 ### 3.2 do_mapcache — 映射缓存块
 
-**源码位置**: [`mem_cache.c:95-194`](../../../minix3/minix/servers/vm/mem_cache.c#L95)
+**源码位置**: [`minix3/minix/servers/vm/mem_cache.c:do_mapcache`](../../../minix3/minix/servers/vm/mem_cache.c#L95)
 
 **调用者**：文件系统（VFS），需要将缓存块映射到自己的地址空间进行读写。
 
@@ -302,7 +302,7 @@ void clear_cache_bydev(dev_t dev)
 
 ### 3.3 do_setcache — 注册缓存块
 
-**源码位置**: [`mem_cache.c:196-281`](../../../minix3/minix/servers/vm/mem_cache.c#L196)
+**源码位置**: [`minix3/minix/servers/vm/mem_cache.c:do_setcache`](../../../minix3/minix/servers/vm/mem_cache.c#L196)
 
 **调用者**：文件系统，将已分配的匿名内存页注册为缓存。
 
@@ -325,7 +325,7 @@ void clear_cache_bydev(dev_t dev)
 
 ### 3.4 do_forgetcache — 使指定范围缓存失效
 
-**源码位置**: [`mem_cache.c:283-313`](../../../minix3/minix/servers/vm/mem_cache.c#L283)
+**源码位置**: [`minix3/minix/servers/vm/mem_cache.c:do_forgetcache`](../../../minix3/minix/servers/vm/mem_cache.c#L283)
 
 ```c
 int do_forgetcache(message *msg)
@@ -347,7 +347,7 @@ int do_forgetcache(message *msg)
 
 ### 3.5 do_clearcache — 使指定设备的全部缓存失效
 
-**源码位置**: [`mem_cache.c:315-324`](../../../minix3/minix/servers/vm/mem_cache.c#L315)
+**源码位置**: [`minix3/minix/servers/vm/mem_cache.c:do_clearcache`](../../../minix3/minix/servers/vm/mem_cache.c#L315)
 
 ```c
 int do_clearcache(message *msg)

@@ -34,7 +34,7 @@ devman 的 `main`（main.c:70-91）就是这个模式的教科书实例，全函
 
 ### 1.3 三个钩子的直觉：出生、说话、收信
 
-`struct fs_hooks` 有 13 个槽（`minix3/minix/include/minix/vtreefs.h:24-44`，`grep -c "(\*"` 实数 13），devman 只用了 3 个。每个钩子回答一类"我不知道，自己决定"的事件，框架在事件发生时回调：
+`struct fs_hooks` 有 13 个槽（`minix3/minix/include/minix/vtreefs.h:fs_hooks`，`grep -c "(\*"` 实数 13），devman 只用了 3 个。每个钩子回答一类"我不知道，自己决定"的事件，框架在事件发生时回调：
 
 - `init_hook`（出生）：文件系统被挂载时调用一次。devman 用它创建设备树的根（`devman_init_devices()`，04 详述）。注意"挂载时"而非"启动时"——devman 进程先活起来进主循环，等 VFS 来挂载它时才初始化设备树。这个延迟是 §2.7 的核心。
 - `read_hook`（说话）：VFS 替用户进程读某个文件时调用。devman 用它分发到每个文件的 `read_fn`（06 详述事件文件与静态信息文件的两种读法）。
@@ -103,7 +103,7 @@ int main (int argc, char* argv[])
 
 两个 `0` 值得注意：它们不是"随便填的"，而是"devman 不用这两项功能"的声明。02 会证明 devman 确实从不调用 indexed 槽 API。`BUF_SIZE 4097`（= 4096 + 1，多出的一字节是字符串终止符位，buf.c 详见 06）。
 
-**`return 0` 永远执行不到**：`run_vtreefs` 内是 `fsdriver_task` 无限主循环，只在文件系统被卸载且收到 SIGTERM 时返回（vtreefs.c:108-109 的 `cleanup_buf/cleanup_inodes` 是退出路径）。C 写 `return 0` 只是为了让编译器闭嘴。
+**`return 0` 永远执行不到**：`run_vtreefs` 内是 `fsdriver_task` 无限主循环，只在文件系统被卸载且收到 SIGTERM 时返回（minix3/minix/lib/libvtreefs/vtreefs.c:run_vtreefs（L108，工具生成） 的 `cleanup_buf/cleanup_inodes` 是退出路径）。C 写 `return 0` 只是为了让编译器闭嘴。
 
 ### 2.2 `init_hook`：一次性的出生证明（main.c:36-43）
 
@@ -139,7 +139,7 @@ VTreeFS 的 inode 除了名字和属性，还挂一块"私房数据"（`cbdata`�
 
 设计眼光看：这是**策略模式**的 C 写法——"哪个文件怎么读"这个知识分散在每个 inode 的 `read_fn` 里，而不是集中在 `read_hook` 的 switch 里。新增一种文件类型时不需要改分发器，只需要挂新的 `read_fn`。07（`devman_id` 文件）和 06 会展示这个扩展点被如何使用。Rust 侧保留这个结构（`read_fn` 字段），因为它是合理的设计，不是 C 的局限。
 
-第一个参数 `inode` 在函数体内根本没用——C 保留它是因为钩子签名是框架定的（`vtreefs.h:29-30`）。Rust 侧直接省略该参数（`cbdata` 地址已足够分发到 `read_fn`，多传一个永不读取的指针没有意义）；保留但忽略的参数（如 `MessageHookFn` 的 `_ipc_status`，05 转发可能用）才用下划线前缀标记，这是 Clippy 对未使用参数的要求。
+第一个参数 `inode` 在函数体内根本没用——C 保留它是因为钩子签名是框架定的（`minix3/minix/include/minix/vtreefs.h:fs_hooks（L29，工具生成）`）。Rust 侧直接省略该参数（`cbdata` 地址已足够分发到 `read_fn`，多传一个永不读取的指针没有意义）；保留但忽略的参数（如 `MessageHookFn` 的 `_ipc_status`，05 转发可能用）才用下划线前缀标记，这是 Clippy 对未使用参数的要求。
 
 ### 2.4 `message_hook`：四 case 无 break（main.c:46-58，现象记录）
 
@@ -165,9 +165,9 @@ static void message_hook(message *m, int __unused ipc_status)
 
 本篇**只记录现象**（switch 无 break、四 handler 贯穿、上面一段的执行序列），**不定性、不修复**。定性（是手误还是有意）与修复决策归属 05（A-3），那里有完整的证据链（libdevman 客户端契约证明"ADD 后设备必须可见"）和三处一致标注。这是 plan §3.4 分工的刻意安排：启动篇不抢协议篇的结论。
 
-`int __unused ipc_status`：GCC 扩展标记"参数故意不用"。`fs_other`（vtreefs.c:66-80）确实传了 `ipc_status` 进来，但 devman 的四个 handler 都不需要它（权限判断用 `m->m_source`，见 05）。Rust 侧对应 `_ipc_status`。
+`int __unused ipc_status`：GCC 扩展标记"参数故意不用"。`fs_other`（minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup（L66，工具生成））确实传了 `ipc_status` 进来，但 devman 的四个 handler 都不需要它（权限判断用 `m->m_source`，见 05）。Rust 侧对应 `_ipc_status`。
 
-### 2.5 `run_vtreefs`：六个全局变量的中转站（vtreefs.c:88-110）
+### 2.5 `run_vtreefs`：六个全局变量的中转站（minix3/minix/lib/libvtreefs/vtreefs.c:run_vtreefs）
 
 ```c
 void
@@ -195,13 +195,13 @@ run_vtreefs(struct fs_hooks * hooks, unsigned int nr_inodes,
 }
 ```
 
-注释说得很坦白：SEF 的初始化回调签名是固定的（`init_server(int type, sef_init_info_t *info)`，vtreefs.c:16），`main` 的六个参数穿不过去，只能暂存全局变量，等 `init_server` 被 SEF 回调时再读出来（`init_inodes(inodes, root_stat, ...)`，vtreefs.c:21）。这是框架迁就库接口限制的典型妥协。
+注释说得很坦白：SEF 的初始化回调签名是固定的（`init_server(int type, sef_init_info_t *info)`，minix3/minix/lib/libvtreefs/vtreefs.c:init_server），`main` 的六个参数穿不过去，只能暂存全局变量，等 `init_server` 被 SEF 回调时再读出来（`init_inodes(inodes, root_stat, ...)`，minix3/minix/lib/libvtreefs/vtreefs.c:init_server（L21，工具生成））。这是框架迁就库接口限制的典型妥协。
 
-调用序列三步：存参数 → `sef_local_startup()`（§2.6，SEF 握手）→ `fsdriver_task(&vtreefs_table)`（进主循环，02 详述分发表）。最后两行 cleanup（`cleanup_buf/cleanup_inodes`，vtreefs.c:108-109）只在主循环退出时执行。
+调用序列三步：存参数 → `sef_local_startup()`（§2.6，SEF 握手）→ `fsdriver_task(&vtreefs_table)`（进主循环，02 详述分发表）。最后两行 cleanup（`cleanup_buf/cleanup_inodes`，minix3/minix/lib/libvtreefs/vtreefs.c:run_vtreefs（L108，工具生成））只在主循环退出时执行。
 
 Rust 侧没有 SEF 签名限制（`minix-sef` 是我们自己的 crate，将来可以定任何签名），所以不需要全局中转——`ServerConfig` 显式传参（§3.4）。这是 [ARCH:A-1-相关]（本篇 §3 + `hooks.rs` 注释 + 设计快照三处一致，设计侧一致性见本篇 review 的 scan.md Gate H）。
 
-### 2.6 `sef_local_startup`：三行注册一行启动（vtreefs.c:52-60）
+### 2.6 `sef_local_startup`：三行注册一行启动（minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup）
 
 ```c
 static void
@@ -215,9 +215,9 @@ sef_local_startup(void)
 }
 ```
 
-SEF（System Event Framework）是 Minix3 服务的"出生证"机制：新服务启动时要向 RS 报到（`sef_startup` 内部做 RS_INIT 握手），并声明"如果我崩溃重启，之前的状态还要不要"（`SEF_CB_INIT_RESTART_STATEFUL` = 要，重启时走 restart 路径而非 fresh 路径）与"收到信号怎么办"（`got_signal`：只有 SIGTERM 才退出，vtreefs.c:38-46）。
+SEF（System Event Framework）是 Minix3 服务的"出生证"机制：新服务启动时要向 RS 报到（`sef_startup` 内部做 RS_INIT 握手），并声明"如果我崩溃重启，之前的状态还要不要"（`SEF_CB_INIT_RESTART_STATEFUL` = 要，重启时走 restart 路径而非 fresh 路径）与"收到信号怎么办"（`got_signal`：只有 SIGTERM 才退出，minix3/minix/lib/libvtreefs/vtreefs.c:init_server（L38，工具生成））。
 
-`init_server`（vtreefs.c:16-33）是 fresh 路径的真正工作：`init_inodes(1024, root_stat, 0)` 建 inode 池 → `init_extra` → `init_buf(4097)`。注意失败处理是 `panic`——VTreeFS 认为这三项分配失败属于"活不下去"，直接 abort。这与 A-7（Rust 用 `Result` 显式传播）的对照点，02 会展开。
+`init_server`（minix3/minix/lib/libvtreefs/vtreefs.c:init_server）是 fresh 路径的真正工作：`init_inodes(1024, root_stat, 0)` 建 inode 池 → `init_extra` → `init_buf(4097)`。注意失败处理是 `panic`——VTreeFS 认为这三项分配失败属于"活不下去"，直接 abort。这与 A-7（Rust 用 `Result` 显式传播）的对照点，02 会展开。
 
 ### 2.7 `fs_mount → init_hook`：挂载触发初始化（mount.c:10-38）
 
@@ -266,7 +266,7 @@ service devman
 };
 ```
 
-devman **不在 boot_image**（`minix3/minix/kernel/table.c:44-64` 无 devman 条目，grep 空结果为证）——内核启动时不知道它的存在。RS（Reincarnation Server）读 `system.conf`，以 uid 0 启动 devman 进程，并授予两项 VM 特权（`SETCACHEPAGE`/`CLEARCACHE`，设备内存映射所需，12 详述为什么是这两项）。
+devman **不在 boot_image**（`minix3/minix/kernel/table.c:boot_image` 无 devman 条目，grep 空结果为证）——内核启动时不知道它的存在。RS（Reincarnation Server）读 `system.conf`，以 uid 0 启动 devman 进程，并授予两项 VM 特权（`SETCACHEPAGE`/`CLEARCACHE`，设备内存映射所需，12 详述为什么是这两项）。
 
 这意味着 devman 的"第零步"在 RS：RS 先 `fork+exec` 出 devman 进程，devman 的 `main` 才开始跑。本篇从 `main` 讲起，RS 那半边是 12 的职责（`publish_service` 的 bind 握手也在 12）。
 
@@ -313,7 +313,7 @@ impl RootStat {
 
 ### 3.4 `ServerConfig`：全局中转 → 显式传参 [ARCH:A-1-相关]
 
-C 不得不用六个全局变量（vtreefs.c:93-96 注释原文为证），因为 SEF 回调签名穿不过参数。Rust 的 `minix-sef` 是我们自己的 crate，没有这个限制，所以：
+C 不得不用六个全局变量（minix3/minix/lib/libvtreefs/vtreefs.c:run_vtreefs（L93，工具生成） 注释原文为证），因为 SEF 回调签名穿不过参数。Rust 的 `minix-sef` 是我们自己的 crate，没有这个限制，所以：
 
 ```rust
 pub struct ServerConfig {
@@ -407,4 +407,4 @@ os/servers/devman/src/
 - `06-event-buf.md` — `read_fn` 的两种实现（本篇 §2.3 的分发目标）
 - `12-rs-integration.md` — RS 如何按 `system.conf` 启动本进程（本篇 §2.8 的前半段）
 - `99-devm-global-concepts.md` — `BUF_SIZE`、`NO_DEV`、errno 收口
-- C 源：`minix3/minix/servers/devman/main.c`、`minix3/minix/lib/libvtreefs/vtreefs.c:52-60,88-110`、`mount.c:10-38`、`table.c:6-24`、`minix3/etc/system.conf:422-429`
+- C 源：`minix3/minix/servers/devman/main.c`、`minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup,88-110`、`mount.c:10-38`、`table.c:6-24`、`minix3/etc/system.conf:422-429`

@@ -31,7 +31,7 @@ Minix3 把两者分开成独立用户态服务器，于是出现三类跨服务�
 | `VMVFSREQ_FDIO`（103） | 文件页缺页、缓存未命中 | 一页文件内容 | `actual_lseek(SEEK_SET)` + `actual_read_write_peek(PEEKING)`（vfs/misc.c:449-457）→ 页落入 VM 页缓存 |
 | `VMVFSREQ_FDCLOSE`（102） | fdref 最后引用消失 | 关闭 VM 持有的 dup'd fd | `close_fd`（vfs/misc.c:433-441） |
 
-关键洞察：**对话的目的不是传输数据本身，而是让 VFS 把页"放进"VM 的页缓存**。FDIO 的回复消息里没有页内容——VFS 用 `vm_map_cacheblock` 把块映射进 VM 缓存（minix3/minix/lib/libminixfs/cache.c:443-451），VM 收到回复后**重试缺页**，第二次命中缓存（§1.4）。
+关键洞察：**对话的目的不是传输数据本身，而是让 VFS 把页"放进"VM 的页缓存**。FDIO 的回复消息里没有页内容——VFS 用 `vm_map_cacheblock` 把块映射进 VM 缓存（minix3/minix/lib/libminixfs/cache.c:get_block_ino（L443，工具生成）），VM 收到回复后**重试缺页**，第二次命中缓存（§1.4）。
 
 ### 1.2 串行激活模型
 
@@ -48,7 +48,7 @@ vfs_request()                          do_vfs_reply()
 
 两个性质值得强调：
 
-1. **任意时刻最多一个在途请求**（`assert(!active)`，vfs.c:45）。VM 对 VFS 的请求全序列化。这不是性能缺陷而是正确性依赖——mem_file.c:126-130 的注释明确说：VMSF_ONCE 缓存页的"一次性使用"语义**依赖 VM 请求 VFS 完全串行**（并发请求下无法判断一个 ONCE 页是"上一次请求残留"还是"本次并发重复"）。
+1. **任意时刻最多一个在途请求**（`assert(!active)`，vfs.c:45）。VM 对 VFS 的请求全序列化。这不是性能缺陷而是正确性依赖——minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L126，工具生成） 的注释明确说：VMSF_ONCE 缓存页的"一次性使用"语义**依赖 VM 请求 VFS 完全串行**（并发请求下无法判断一个 ONCE 页是"上一次请求残留"还是"本次并发重复"）。
 2. **回复路径不阻塞**：`do_vfs_reply` 返回 `SUSPEND`（vfs.c:141），主循环不对 VFS 的回复做普通回复；回调里才真正恢复被挂起的原调用（mmap 的 `mmap_file_cont` 或缺页的 `handle_memory_continue`）。
 
 Rust 侧把这条结构搬进 `VfsRequestQueue`（§3.1），并把"队列状态"从 C 的全局变量变成显式对象。
@@ -57,13 +57,13 @@ Rust 侧把这条结构搬进 `VfsRequestQueue`（§3.1），并把"队列状态
 
 `mmap(fd)` 之后，VM 持有的是 VFS 帮它 `dup` 的 fd（`dupvm`，vfs/misc.c:399-416）。这个 fd 的生命周期必须与**所有引用它的映射**绑定：任何一个映射还活着，fd 就不能关（否则缺页时 `actual_lseek` 会失败）。fdref.c 解决三件事：
 
-1. **一个文件被多个映射引用，不需要多个 fd**：`fdref_dedup_or_new` 发现同 dev+ino 已有条目时复用（fdref.c:161-165），新传入的重复 fd 直接关闭（`mayclose` 时，fdref.c:166-171）。否则 fd 数量会随映射数量线性膨胀。
-2. **区域分裂/复制时计数**：`mappedfile_split` 让两个子区域各 `fdref_ref` 一次（mem_file.c:257-258）；fork 复制区域时 `mappedfile_copy` 走 `mappedfile_setfile` 重新登记（mem_file.c:177-193）。引用计数防止"一半映射还活着就把 fd 关了"。
-3. **最后引用消失时异步关 fd**：`fdref_deref` 在 refcount 归零时**无条件**发 `VMVFSREQ_FDCLOSE`（fdref.c:150-153）——**`mayclosefd` 只影响 dedup 路径**（要不要立刻关掉新发现的重复 fd），不影响最后引用的关闭。这是本轮 Rust 修复的语义要点（§3.2）。
+1. **一个文件被多个映射引用，不需要多个 fd**：`fdref_dedup_or_new` 发现同 dev+ino 已有条目时复用（minix3/minix/servers/vm/fdref.c:fdref（L161，工具生成）），新传入的重复 fd 直接关闭（`mayclose` 时，minix3/minix/servers/vm/fdref.c:fdref（L166，工具生成））。否则 fd 数量会随映射数量线性膨胀。
+2. **区域分裂/复制时计数**：`mappedfile_split` 让两个子区域各 `fdref_ref` 一次（minix3/minix/servers/vm/mem_file.c:mappedfile_split（L257，工具生成））；fork 复制区域时 `mappedfile_copy` 走 `mappedfile_setfile` 重新登记（minix3/minix/servers/vm/mem_file.c:mappedfile_writable（L177，工具生成））。引用计数防止"一半映射还活着就把 fd 关了"。
+3. **最后引用消失时异步关 fd**：`fdref_deref` 在 refcount 归零时**无条件**发 `VMVFSREQ_FDCLOSE`（minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成））——**`mayclosefd` 只影响 dedup 路径**（要不要立刻关掉新发现的重复 fd），不影响最后引用的关闭。这是本轮 Rust 修复的语义要点（§3.2）。
 
 ### 1.4 文件后备缺页：缓存命中 vs VFS I/O
 
-文件页缺页（`mappedfile_pagefault`，mem_file.c:84-155）是一条三岔路：
+文件页缺页（`mappedfile_pagefault`，minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault）是一条三岔路：
 
 ```
 文件页缺页（未映射 slot）
@@ -76,7 +76,7 @@ Rust 侧把这条结构搬进 `VfsRequestQueue`（§3.1），并把"队列状态
   └─ 已映射：读 → OK；写 → cow_block
 ```
 
-`referenced_offset = region->param.file.offset + ph->offset`（mem_file.c:93/:107）——文件偏移 = 区域基偏移 + 页内偏移。FDIO 回复后 VM 重试缺页（`handle_memory_continue` → `handle_memory_step(TRUE)`，pagefaults.c:170-196），此时 VFS 已把页读进缓存，第二次走命中路径。**缓存是这条对话的"回程通道"**——没有缓存命中路径，重试会无限循环发 FDIO。
+`referenced_offset = region->param.file.offset + ph->offset`（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L93，工具生成）/:107）——文件偏移 = 区域基偏移 + 页内偏移。FDIO 回复后 VM 重试缺页（`handle_memory_continue` → `handle_memory_step(TRUE)`，minix3/minix/servers/vm/pagefaults.c:handle_memory_continue），此时 VFS 已把页读进缓存，第二次走命中路径。**缓存是这条对话的"回程通道"**——没有缓存命中路径，重试会无限循环发 FDIO。
 
 ### 1.5 对照：Redox 与 Linux
 
@@ -215,7 +215,7 @@ return cow_block(vmp, region, ph, 0);                /* 已映射写 → CoW */
 VFS 收到 `VFS_VMCALL` 后按 `VFS_VMCALL_REQ` 分派：
 
 - `VMVFSREQ_FDLOOKUP`（:399-421）：`dupvm(rfp, req_fd, &procfd, &f)`（dup 一份 fd 到 VM 进程）；块设备 → `VMV_DEV = v_sdev` + `VMV_INO = VMC_NO_INODE` + `VMV_SIZE_PAGES = LONG_MAX`；普通文件 → `VMV_DEV/INO` + `VMV_SIZE_PAGES = roundup(v_size, PAGE)/PAGE`；`VMV_FD = procfd`。
-- `VMVFSREQ_FDCLOSE`（:433-441）：`close_fd(fp, req_fd, FALSE /*may_suspend*/)`；失败打印诊断（fdref.c:146-149 说"close 失败无法处理"）。
+- `VMVFSREQ_FDCLOSE`（:433-441）：`close_fd(fp, req_fd, FALSE /*may_suspend*/)`；失败打印诊断（minix3/minix/servers/vm/fdref.c:fdref_deref（L146，工具生成） 说"close 失败无法处理"）。
 - `VMVFSREQ_FDIO`（:449-457）：`actual_lseek(fp, req_fd, SEEK_SET, offset)` → `actual_read_write_peek(fp, PEEKING, req_fd, 0, length)`——**PEEKING 读**（见下）。
 - 回复：固定 `m_type = VM_VFS_REPLY` + `VMV_*` 字段 + `asynsend3(VM_PROC_NR, ..., 0)` + 返回 `SUSPEND`（:461-473）。
 
@@ -245,10 +245,10 @@ vfs_request ──────────► fdref_dedup_or_new ─► mappedfi
 ### 3.1 D1：VfsRequestQueue —— 串行激活模型（类型化替代全局 vfs_rq）
 
 **C**：全局 `first_queued`/`active` 单链表（vfs.c:33-41）。
-**Rust**：`VfsRequestQueue { queued: VecDeque<VfsRequest>, active: Option<VfsRequest>, next_id: u32, max_queued: usize }`（vfs_queue.rs:90-95）。
+**Rust**：`VfsRequestQueue { queued: VecDeque<VfsRequest>, active: Option<VfsRequest>, next_id: u32, max_queued: usize }`（os/servers/vm/src/vfs_queue.rs:struct VfsReply（L90，工具生成））。
 
 - `request()`（:107-124）：`QueueFull` 检查（`max_queued=64`，C 无上限——Rust 防御性上限，映射 ENOMEM）→ 分配 `req_id`（wrapping_add）→ 入队 → 无 active 时 `activate()`。
-- `activate()`（:118-124）：队首移入 active。**注意：不真正发送 IPC**——C 的 `asynsend3`（vfs.c:51）在 Rust 侧没有对应物（`IpcSender` trait 已移除，vfs_queue.rs:86-88 注释）。这是 transport 缺口（§3.6）。
+- `activate()`（:118-124）：队首移入 active。**注意：不真正发送 IPC**——C 的 `asynsend3`（vfs.c:51）在 Rust 侧没有对应物（`IpcSender` trait 已移除，os/servers/vm/src/vfs_queue.rs:struct VfsReply（L86，工具生成） 注释）。这是 transport 缺口（§3.6）。
 - `handle_reply()`（:126-148）：`active.take()`（无 active → `NoActiveRequest`）→ `req_id` 不匹配 → 还原 + `UnexpectedReply`（C 是 `assert`，Rust 返回错误）→ 取 `(callback, state)` → 队非空则自动激活下一个（对应 vfs.c:137-139）。
 - **结构收益**：C 的链表头插 = 最近请求在队首（LIFO 语义）；Rust `VecDeque` 是 FIFO。**语义差异**：C 回复后取 `first_queued`（最后插入的），Rust 取最先插入的。单请求场景下不可观察（VM 串行化后同时只有一个请求在途，排队期间第二个请求到达的窗口内顺序确实不同），文档如实标注（§3.6 差异 4）。
 - 回调经 `VfsCallbackFn = fn(&mut VmServer, &VfsReply, &VfsRequestState) -> Result<(), VfsQueueError>`（:46-51）——函数指针 + 显式状态枚举，替代 C 的 `(vmp, m, cbarg, reqstate)` 四元组（§4.1）。
@@ -256,27 +256,27 @@ vfs_request ──────────► fdref_dedup_or_new ─► mappedfi
 ### 3.2 D2：fdref 显式引用计数（fdref_id + PendingFdClose 返回）
 
 **C**：fdref 对象链表 + 区域 `param.file.fdref` 指针（fdref.c:35）。
-**Rust**：`FdRefTable`（`BTreeMap<u32, FdRefEntry>` + `dev_ino_index` 反索引 + `next_id`，fdref.rs:44-48）+ 区域 `VrParam::File.fdref_id: Option<u32>`（region/vir_region.rs:48）。
+**Rust**：`FdRefTable`（`BTreeMap<u32, FdRefEntry>` + `dev_ino_index` 反索引 + `next_id`，os/servers/vm/src/fdref.rs:struct FdRefTableInner（L44，工具生成））+ 区域 `VrParam::File.fdref_id: Option<u32>`（region/vir_region.rs:48）。
 
 - `create(fd, dev, ino)`（:78-96）：refcount 0（= C `fdref_new`）；登记反索引。
-- `dedup_or_new(fd, dev, ino, may_close) -> (u32, Option<PendingFdClose>)`（:114-149）：**完整对齐 C**（fdref.c:161-177）——
+- `dedup_or_new(fd, dev, ino, may_close) -> (u32, Option<PendingFdClose>)`（:114-149）：**完整对齐 C**（minix3/minix/servers/vm/fdref.c:fdref（L161，工具生成））——
   - 同 dev+ino 同 fd → 复用 `(id, None)`；
   - 同 dev+ino 不同 fd 且 `may_close` → `(id, Some(PendingFdClose{fd,dev,ino}))`（调用方入队 FDCLOSE）；
   - `may_close=false` → 继续扫描精确 fd 匹配；
   - 无匹配 → `create`。
   - **扫描顺序**：`entries.iter().rev()`（BTreeMap 反向）≈ C 链表头插的最近优先。
 - `ref_entry(id)`（:151-155）：refcount +1（= C `fdref_ref`）。
-- `deref_entry(id) -> Option<PendingFdClose>`（:157-192）：refcount--；**归零总是返回 close**（对应 C fdref.c:150-153 无条件 FDCLOSE）+ 清理反索引。
+- `deref_entry(id) -> Option<PendingFdClose>`（:157-192）：refcount--；**归零总是返回 close**（对应 C minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成） 无条件 FDCLOSE）+ 清理反索引。
 - `get(id)`（:204-206）：复制条目（避免 UnsafeCell 别名问题）。
 
-**本轮语义修复（23-P0-1 系列 / fdref 语义）**：旧实现给 `FdRefEntry` 加了 `may_close` 字段，`deref_entry` 在 `!may_close` 时**不**返回 close——这违反了 C"最后引用总是关 fd"（fdref.c:150-153）。`mayclosefd` 只作用于 dedup 路径（§2.3）。修复：删除 entry 上的 `may_close`，`deref_entry` 无条件返回 `PendingFdClose`（fdref.rs:180-189 注释）。
+**本轮语义修复（23-P0-1 系列 / fdref 语义）**：旧实现给 `FdRefEntry` 加了 `may_close` 字段，`deref_entry` 在 `!may_close` 时**不**返回 close——这违反了 C"最后引用总是关 fd"（minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成））。`mayclosefd` 只作用于 dedup 路径（§2.3）。修复：删除 entry 上的 `may_close`，`deref_entry` 无条件返回 `PendingFdClose`（os/servers/vm/src/fdref.rs:fn deref_entry（L180，工具生成） 注释）。
 
 **为什么不用 Arc/Rc Drop**：`refcount==0` 时必须发异步 FDCLOSE（需要 `VfsRequestQueue`），`Drop` 拿不到队列——显式 `deref_entry` 返回 `PendingFdClose` 由调用方入队（fdref.rs:8-14 注释）。这与退出路径（22 篇）的 `free_process_phys` 暂存 close 的模型一致。
 
 ### 3.3 D3：NeedVfsIo —— 决策与执行分离
 
-**C**：`mappedfile_pagefault` 内部做完"查缓存 → 决定 → 发请求"（mem_file.c:102-155）。
-**Rust**：决策与执行分层——`MappedFile::ev_pagefault`（memtype.rs:954）只**决定**动作，`handle_pagefault`（cow_exec_pf.rs:23）**执行**：
+**C**：`mappedfile_pagefault` 内部做完"查缓存 → 决定 → 发请求"（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L102，工具生成））。
+**Rust**：决策与执行分层——`MappedFile::ev_pagefault`（os/servers/vm/src/memtype.rs:fn default（L954，工具生成））只**决定**动作，`handle_pagefault`（os/servers/vm/src/cow_exec_pf.rs:fn handle_pagefault（L23，工具生成））**执行**：
 
 ```
 ev_pagefault（决策）                    handle_pagefault（执行）
@@ -288,20 +288,20 @@ ev_pagefault（决策）                    handle_pagefault（执行）
      └─ 未命中 → NeedVfsIo
 ```
 
-- 缓存查找在 `ev_pagefault` 内（对齐 C 的结构——memtype 回调拥有"这个类型的页从哪来"的知识）：`fdref.ino == VMC_NO_INODE` 走 `find_by_device`，否则 `find_by_inode`（memtype.rs:1002-1008）；命中 → `increase_refcount` + `map_page`（= C pb_link）+ 写/末页 → `NeedCow`（= cow_block 语义，clearend 清零见 §3.6 差异 3）；未命中 → `NeedVfsIo`。
-- `enqueue_fdio`（cow_exec_pf.rs:67-112）：从 `VrParam::File` 取 `fdref_id` → `FdRefTable::get` 得 fd；`referenced_offset = file_offset + offset`；构造 `VfsRequest { FdIo, fd, offset, length: PAGE_SIZE, callback: mappedfile_pf_cont, state: FdIo{region_vaddr, page_offset, write, caller_endpoint} }` 入队；失败 → `CowError::NoMemory`（C: ENOMEM，mem_file.c:151）。
-- `mappedfile_pf_cont`（cow_exec_pf.rs:114-167）：回复 OK → 重定位区域 → 重试 `handle_pagefault`（第二次命中缓存，循环终止）；回复错误 → 交付 errno（transport 缺口，§3.6 差异 1）；重试仍 Suspended → 继续等下一个回复（对齐 `handle_memory_continue` 的 `if(r == SUSPEND) return;`，pagefaults.c:189-191）。
+- 缓存查找在 `ev_pagefault` 内（对齐 C 的结构——memtype 回调拥有"这个类型的页从哪来"的知识）：`fdref.ino == VMC_NO_INODE` 走 `find_by_device`，否则 `find_by_inode`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L1002，工具生成））；命中 → `increase_refcount` + `map_page`（= C pb_link）+ 写/末页 → `NeedCow`（= cow_block 语义，clearend 清零见 §3.6 差异 3）；未命中 → `NeedVfsIo`。
+- `enqueue_fdio`（os/servers/vm/src/cow_exec_pf.rs:fn handle_pagefault（L67，工具生成））：从 `VrParam::File` 取 `fdref_id` → `FdRefTable::get` 得 fd；`referenced_offset = file_offset + offset`；构造 `VfsRequest { FdIo, fd, offset, length: PAGE_SIZE, callback: mappedfile_pf_cont, state: FdIo{region_vaddr, page_offset, write, caller_endpoint} }` 入队；失败 → `CowError::NoMemory`（C: ENOMEM，minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L151，工具生成））。
+- `mappedfile_pf_cont`（os/servers/vm/src/cow_exec_pf.rs:fn enqueue_fdio（L114，工具生成））：回复 OK → 重定位区域 → 重试 `handle_pagefault`（第二次命中缓存，循环终止）；回复错误 → 交付 errno（transport 缺口，§3.6 差异 1）；重试仍 Suspended → 继续等下一个回复（对齐 `handle_memory_continue` 的 `if(r == SUSPEND) return;`，minix3/minix/servers/vm/pagefaults.c:handle_memory_continue（L189，工具生成））。
 
 ### 3.4 D4：wire format 修复（MessVmVfsReply overlay，23-P0-1 系列）
 
 **根因**（§2.2）：`VM_VFS_REPLY` 是 `mess_10` 布局（com.h:707-714 + ipc.h:85-91），旧 Rust 用 `MessageM1::decode(m1)` 解码，所有字段偏移 8 字节错位——22-P0-1/21-P1-1/19-P1-1/16-P0-1 同族（每个都用错 overlay 解过 m10 消息）。
 
-**修复**：`MessVmVfsReply`（repr(C)，message.rs:1869-1891）：`ull1:u64@0` / `endpoint:i32@8` / `result:i32@12` / `reqid:i32@16` / `dev:i32@20` / `ino:u32@24` / `fd:u32@28` / `size_pages:u32@32` / `_padding:[u8;20]`；`MessageUnion.m_vm_vfs_reply`（message.rs:153）；`VmVfsReplyIn::decode_message`（vm.rs:586）从 overlay 读取；删除错误的 `DecodeFromM1` impl。dispatcher 的 VM_VFS_REPLY 分支改走 `decode_message`（ipc/dispatcher.rs:1187-1193），`dispatch_vfs_reply` 把 `request.ino` 传入 `VfsReply.ino`（原来是硬编码 0——`mmap_file_cont` 的 fdref dedup 需要 ino，mmap.rs:583）。
+**修复**：`MessVmVfsReply`（repr(C)，message.rs:1869-1891）：`ull1:u64@0` / `endpoint:i32@8` / `result:i32@12` / `reqid:i32@16` / `dev:i32@20` / `ino:u32@24` / `fd:u32@28` / `size_pages:u32@32` / `_padding:[u8;20]`；`MessageUnion.m_vm_vfs_reply`（message.rs:153）；`VmVfsReplyIn::decode_message`（vm.rs:586）从 overlay 读取；删除错误的 `DecodeFromM1` impl。dispatcher 的 VM_VFS_REPLY 分支改走 `decode_message`（ipc/dispatcher.rs:1187-1193），`dispatch_vfs_reply` 把 `request.ino` 传入 `VfsReply.ino`（原来是硬编码 0——`mmap_file_cont` 的 fdref dedup 需要 ino，os/servers/vm/src/mmap.rs:fn mmap_file_cont（L583，工具生成））。
 
 > **关联架构决策（V10-P2-9，2026-09-02，本轮回退）**：**初版**曾把 `VmReply::InfoRegion.regions` 改为 `Box<[VmRegionInfo; 64]>`（heap 分配），导致整个 enum 失去 `Copy`（`Copy` 与 `Box` 不兼容）；**终版（回退）** 恢复 inline 数组 `[VmRegionInfo; 64]`（栈上 1.5 KiB，远小于 cache line × 数十倍，单线程 dispatcher 完全 hold 得住），`VmReply` 重新 `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`。决策依据：
 > 1. **`Copy` 是调用方的强信号**——所有 14 处现状用法是 by-move，保留 `Copy` 让"是否真的要复制"留给类型系统（`&VmReply` 借 vs `VmReply` move 一目了然）；改 `Clone` 会让一处 silent clone 撑大 enum；
 > 2. **inline 比 Box 快**——`VmRegionInfo` 自身 `Copy`，64 × 24B = 1536B 是 SIMD 友好的连续 mem-copy；`Box` 的 alloc+memcpy+refcount 路径反而更慢且引入 `extern crate alloc` 依赖；
-> 3. **`#[allow(clippy::large_enum_variant)]` 已标在所有 `Copy`-by-value 使用点**（`DispatchAction` 在 vm_server.rs:719-729）——silence ~1.5 KiB "large variant" lint，不掩盖真实成本。
+> 3. **`#[allow(clippy::large_enum_variant)]` 已标在所有 `Copy`-by-value 使用点**（`DispatchAction` 在 os/servers/vm/src/vm_server.rs:const PS（L719，工具生成））——silence ~1.5 KiB "large variant" lint，不掩盖真实成本。
 >
 > 详见 [26-vm-queries.md §3.7 transport 缺口](../02-stage-vm/26-vm-queries.md)。`VmReplyForIpc::new(reply: VmReply)` 不受影响（依然 take-by-value；`Copy` 反而让边界检查更廉价）。
 
@@ -309,26 +309,26 @@ ev_pagefault（决策）                    handle_pagefault（执行）
 
 ### 3.5 D5：缓存命中 vs FDIO（mappedfile_pagefault 的 Rust 对应）
 
-`MappedFile::ev_pagefault`（memtype.rs:954-1043）完整实现 §1.4 的三岔路：
+`MappedFile::ev_pagefault`（os/servers/vm/src/memtype.rs:fn default（L954，工具生成））完整实现 §1.4 的三岔路：
 
-- **未初始化** → `NeedNewPage`（C 的 `assert(region->param.file.inited)` 前置，mem_file.c:96-99 断言 inited；未 inited 是 mmap 未完成前的病态访问，Rust 防御性返回）。
+- **未初始化** → `NeedNewPage`（C 的 `assert(region->param.file.inited)` 前置，minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L96，工具生成） 断言 inited；未 inited 是 mmap 未完成前的病态访问，Rust 防御性返回）。
 - **已映射**：读 → Handled；写 → NeedCow（C: `return cow_block(...)`）。
-- **未映射 + 缓存命中**：`cache.increase_refcount(&key)` + `region.map_page(frames, offset, pfn, &MEM_TYPE_MAPPED_FILE)`（= C `pb_unreferenced + pb_link`，mem_file.c:118-120）；写或末页（`roundup(offset+clearend, PAGE) >= length`，C :124-126）→ `NeedCow`（`cow_resolve_core` 做 mem_cow + anon 转换，cow_exec_pf.rs:200-230）；否则 Handled。
+- **未映射 + 缓存命中**：`cache.increase_refcount(&key)` + `region.map_page(frames, offset, pfn, &MEM_TYPE_MAPPED_FILE)`（= C `pb_unreferenced + pb_link`，minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L118，工具生成））；写或末页（`roundup(offset+clearend, PAGE) >= length`，C :124-126）→ `NeedCow`（`cow_resolve_core` 做 mem_cow + anon 转换，os/servers/vm/src/cow_exec_pf.rs:fn mappedfile_pf_cont（L200，工具生成））；否则 Handled。
 - **未映射 + 缓存未命中** → `NeedVfsIo` → §3.3 的 FDIO 接线。
 
-**VMSF_ONCE 与 rmcache**：C 在命中 ONCE 页后 `rmcache`（mem_file.c:133-135）；Rust `PageCacheEntry` 只有 `{pfn, refcount}`（page_cache.rs:34-38），未建模 flags——ONCE 语义整体移交 24（§3.6 差异 2）。
+**VMSF_ONCE 与 rmcache**：C 在命中 ONCE 页后 `rmcache`（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L133，工具生成））；Rust `PageCacheEntry` 只有 `{pfn, refcount}`（page_cache.rs:34-38），未建模 flags——ONCE 语义整体移交 24（§3.6 差异 2）。
 
 ### 3.6 差异清单（C ↔ Rust，诚实标注）
 
 | # | 差异 | 级别 | 标注 |
 |---|------|------|------|
-| 1 | **transport 缺口**：`VfsRequestQueue::activate` 只移动 active 槽，不发送 `VFS_VMCALL`（IpcSender 已移除）；`mappedfile_pf_cont`/`mmap_file_cont` 的回复交付（`ipc_send` / `sys_vmctl(VMCTL_CLEAR_PAGEFAULT)` / asynsend3）未接线 | P1 | vfs_queue.rs:86-88、mmap.rs:534-538、cow_exec_pf.rs:127-131/:158-164 注释 |
+| 1 | **transport 缺口**：`VfsRequestQueue::activate` 只移动 active 槽，不发送 `VFS_VMCALL`（IpcSender 已移除）；`mappedfile_pf_cont`/`mmap_file_cont` 的回复交付（`ipc_send` / `sys_vmctl(VMCTL_CLEAR_PAGEFAULT)` / asynsend3）未接线 | P1 | os/servers/vm/src/vfs_queue.rs:struct VfsReply（L86，工具生成）、os/servers/vm/src/mmap.rs:fn handle_vfs_mmap（L534，工具生成）、os/servers/vm/src/cow_exec_pf.rs:fn enqueue_fdio（L127，工具生成）/:158-164 注释 |
 | 2 | **VMSF_ONCE/rmcache 未建模**：PageCacheEntry 无 flags；ONCE 一次性页语义移交 24 | P1（backlog） | page_cache.rs:37-39 |
-| 3 | **clearend 尾清零未建模**：`cow_block` 的 `sys_memset`（mem_file.c:72-79）在 Rust 侧无对应；末页 CoW 会拷贝整页含尾部脏数据 | P1（backlog） | memtype.rs:1052-1059 注释 |
-| 4 | **队列序差异**：C 链表头插 = LIFO 激活；Rust VecDeque = FIFO。单请求串行下不可观察 | P2 | vfs_queue.rs:107-124 |
-| 5 | **无回调缺页路径**：C 的 `if(!cb) return EFAULT`（mem_file.c:143-146）在 Rust 无对应（当前无无回调缺页入口） | P2（文档化） | memtype.rs 注释 |
-| 6 | **队列上限**：C 无上限（SLABALLOC 失败才 ENOMEM）；Rust `max_queued=64` → QueueFull → ENOMEM | P2 | vfs_queue.rs:103-109 |
-| 7 | **`vm_isokendpt` 失败**：C 传 `vmp=NULL` 给回调（vfs.c:124-126），回调可能解引用 NULL（未定义行为）；Rust 查找失败返回错误 | P2（收紧） | cow_exec_pf.rs:135-136 |
+| 3 | **clearend 尾清零未建模**：`cow_block` 的 `sys_memset`（minix3/minix/servers/vm/mem_file.c:cow_block（L72，工具生成））在 Rust 侧无对应；末页 CoW 会拷贝整页含尾部脏数据 | P1（backlog） | os/servers/vm/src/memtype.rs:fn ev_pagefault（L1052，工具生成） 注释 |
+| 4 | **队列序差异**：C 链表头插 = LIFO 激活；Rust VecDeque = FIFO。单请求串行下不可观察 | P2 | os/servers/vm/src/vfs_queue.rs:struct VfsRequestQueue（L107，工具生成） |
+| 5 | **无回调缺页路径**：C 的 `if(!cb) return EFAULT`（minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L143，工具生成））在 Rust 无对应（当前无无回调缺页入口） | P2（文档化） | memtype.rs 注释 |
+| 6 | **队列上限**：C 无上限（SLABALLOC 失败才 ENOMEM）；Rust `max_queued=64` → QueueFull → ENOMEM | P2 | os/servers/vm/src/vfs_queue.rs:enum VfsQueueError（L103，工具生成） |
+| 7 | **`vm_isokendpt` 失败**：C 传 `vmp=NULL` 给回调（vfs.c:124-126），回调可能解引用 NULL（未定义行为）；Rust 查找失败返回错误 | P2（收紧） | os/servers/vm/src/cow_exec_pf.rs:fn enqueue_fdio（L135，工具生成） |
 
 ---
 
@@ -403,17 +403,17 @@ dispatch_pagefault（vm_server.rs:986）
        └─ 完成 → 解阻塞（sys_vmctl / asynsend3，transport 缺口）
 ```
 
-**munmap/exit 路径的 fdref 兑现**（22 篇的移交接口）：`munmap_vm_lin`/`free_process_phys` 在 `VrParam::File` 区域上调用 `fdref.deref_entry(id)` → `Some(PendingFdClose)` → `VfsRequest{FdClose, fd}` 入队（fdref.rs:157-192 + munmap.rs 接线，21 篇已修）。
+**munmap/exit 路径的 fdref 兑现**（22 篇的移交接口）：`munmap_vm_lin`/`free_process_phys` 在 `VrParam::File` 区域上调用 `fdref.deref_entry(id)` → `Some(PendingFdClose)` → `VfsRequest{FdClose, fd}` 入队（os/servers/vm/src/fdref.rs:fn dedup_or_new（L157，工具生成） + munmap.rs 接线，21 篇已修）。
 
 ### 4.3 本轮修复记录（2026-08-16）
 
 | ID | 级别 | 内容 |
 |----|------|------|
 | 23-P0-1 | P0 | wire format：`VM_VFS_REPLY` 从 m1 错位解码改为 `MessVmVfsReply` overlay（message.rs:1874 + vm.rs:586 + ipc/dispatcher.rs:1187-1193）；`dispatch_vfs_reply` 把 `request.ino` 传入 `VfsReply.ino`（原硬编码 0） |
-| 23-P0-1b | P0 | fdref 语义：删除 `FdRefEntry.may_close`；`deref_entry` refcount==0 无条件返回 `PendingFdClose`（对齐 fdref.c:150-153） |
+| 23-P0-1b | P0 | fdref 语义：删除 `FdRefEntry.may_close`；`deref_entry` refcount==0 无条件返回 `PendingFdClose`（对齐 minix3/minix/servers/vm/fdref.c:fdref_deref（L150，工具生成）） |
 | 23-P0-1c | P0 | fdref dedup 语义完整对齐：`dedup_or_new(fd, dev, ino, may_close)` 四态（§3.2），删除旧 `create` 的 may_close 参数 |
 | 23-P1-1 | P1 | `MappedFile::ev_pagefault` 缓存命中路径（find_byino/bydev + increase_refcount + map_page + 写/末页 NeedCow）；`VMC_NO_INODE` 常量（page_cache.rs:25） |
-| 23-P1-2 | P1 | 缺页 FDIO 接线：`handle_pagefault` 增 `cache`/`vfs_queue` 参数；`enqueue_fdio` + `mappedfile_pf_cont`（cow_exec_pf.rs:67/:114）；`dispatch_pagefault` 透传（vm_server.rs:1007-1010） |
+| 23-P1-2 | P1 | 缺页 FDIO 接线：`handle_pagefault` 增 `cache`/`vfs_queue` 参数；`enqueue_fdio` + `mappedfile_pf_cont`（os/servers/vm/src/cow_exec_pf.rs:fn handle_pagefault（L67，工具生成）/:114）；`dispatch_pagefault` 透传（os/servers/vm/src/vm_server.rs:const MAX_MEMREQ_BATCH（L1007，工具生成）） |
 | 23-P2-1 | P2 | 测试：新增 11 个（fdref dedup 5 + memtype mapped 4 + cow_exec_pf 2）；测试总数 395 → 406（§5.4） |
 
 ### 4.4 与 15/16/20/24 的关系
@@ -483,7 +483,7 @@ dispatch_pagefault（vm_server.rs:986）
 | `mappedfile_pf_cont` 回调级集成测试（需构造 VmServer + 真实进程槽 + 回复驱动） | 未覆盖（单测只到 handle_pagefault 层）；诚实标注——回调本体是"重试 handle_pagefault + transport 缺口交付"，其核心逻辑已被 `test_handle_pagefault_retry_cache_hit_no_fdio_loop` 覆盖 |
 | VMSF_ONCE/rmcache（24 范围） | 未覆盖（PageCacheEntry 无 flags） |
 | clearend 尾清零 | 未覆盖（backlog） |
-| FDCLOSE 发送端到端（dedup 返回 close → 入队） | 部分覆盖（mmap.rs:454-467 接线，无端到端测试） |
+| FDCLOSE 发送端到端（dedup 返回 close → 入队） | 部分覆盖（os/servers/vm/src/mmap.rs:fn mmap_file（L454，工具生成） 接线，无端到端测试） |
 | transport（VFS_VMCALL 发送 / 回复交付） | 未覆盖（IpcSender 已移除，§3.6 差异 1） |
 | 20-vm-mmap.md §5.1 mmap.rs 测试行号陈旧（23 轮 mmap.rs 改动后偏移，19 个测试当前行号见本表） | backlog 23-B3：20 篇行号待 20 回归轮统一修正 |
 
@@ -502,9 +502,9 @@ dispatch_pagefault（vm_server.rs:986）
 
 本文档的机制在主循环的**两个位置**被消费：
 
-1. **P4 分发（普通 VM 调用）**：`handle_mmap` 文件分支入队 FDLOOKUP 后返回 `MmapResult::Suspended` → `DispatchAction::Suspend`（主循环不回复，vm_server.rs:786-788）。
-2. **VM_VFS_REPLY 分支（ipc/dispatcher.rs:1187-1193）**：VFS 回复到达 → `dispatch_vfs_reply` → `handle_reply` → 回调（`mmap_file_cont` / `mappedfile_pf_cont`）在主循环执行（vm_server.rs:632-634 `result.vfs_callback`）。
-3. **缺页分支（P3）**：`dispatch_pagefault`（vm_server.rs:986）→ `handle_pagefault` → 文件页未命中 → FDIO 入队 → `DispatchAction::NoReply`（进程保持挂起）。
+1. **P4 分发（普通 VM 调用）**：`handle_mmap` 文件分支入队 FDLOOKUP 后返回 `MmapResult::Suspended` → `DispatchAction::Suspend`（主循环不回复，os/servers/vm/src/vm_server.rs:const PS（L786，工具生成））。
+2. **VM_VFS_REPLY 分支（ipc/dispatcher.rs:1187-1193）**：VFS 回复到达 → `dispatch_vfs_reply` → `handle_reply` → 回调（`mmap_file_cont` / `mappedfile_pf_cont`）在主循环执行（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L632，工具生成） `result.vfs_callback`）。
+3. **缺页分支（P3）**：`dispatch_pagefault`（os/servers/vm/src/vm_server.rs:fn handle_signal（L986，工具生成））→ `handle_pagefault` → 文件页未命中 → FDIO 入队 → `DispatchAction::NoReply`（进程保持挂起）。
 
 即：**请求从 P4/P3 入口入队，回复从 VM_VFS_REPLY 分支消费**——这正是 C 主循环里 `do_vfs_reply` 的位置（main.c:150 附近）。
 

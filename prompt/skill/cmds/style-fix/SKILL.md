@@ -22,4 +22,4 @@ description: "文档文风与教学性修复：去开发文档味、章节重组
 不改代码语义；不做 C 覆盖度判断（发现 → 记录交 full-review）。
 
 ## 产物
-三类审计结果 + 修复稿 + 自检（裸概念复述测试）。
+三类审计结果 + 修复稿 + 自检（读者复述测试，H1）+ 进出各跑一次全量 lint（`tools/doc-style-lint.sh`；进入前出存量清单，完成后 `--diff` 零 error）。文档类产物同时附 Rust 代码块四分类表（H3，`tools/doc-snippet-extract.sh`）。

@@ -40,7 +40,7 @@
 
 ### 1.2 mem_type_t：15 字段函数指针表
 
-`mem_type_t`（memtype.h:12-30）是 **name + 14 回调 = 15 字段**：
+`mem_type_t`（minix3/minix/servers/vm/memtype.h:mem_type）是 **name + 14 回调 = 15 字段**：
 
 | # | 字段 | 语义分类 | C 签名 |
 |---|------|---------|--------|
@@ -79,7 +79,7 @@ map_pf()                              ← 13 文档：框架层（何时调用�
 
 同样：`map_copy_region`（fork）→ `ev_reference`/`ev_copy`；`pb_unreferenced` refcount 归零 → `ev_unreference`；`map_free` → `ev_delete`。**框架管流程，类型管行为**。
 
-### 1.4 匿名内存（mem_type_anon，mem_anon.c:34）
+### 1.4 匿名内存（mem_type_anon，minix3/minix/servers/vm/mem_anon.c:mem_type）
 
 行为契约：
 
@@ -89,7 +89,7 @@ map_pf()                              ← 13 文档：框架层（何时调用�
 - **调整**：`anon_resize`（:115）——只允许增长（`l > vr->length` 时更新 length），收缩静默忽略（brk 场景 OK）；`anon_split`（:147）空实现（区域可自由分割）；`anon_lowshrink`（:137）返回 OK。
 - **查询**：`anon_regionid`（:132）返回 `region->id`；`anon_refcount`（:142）返回 `1 + vr->remaps`；`anon_pt_flags`（:48）arm 上返回 CACHED，其他 0。
 
-### 1.5 直接物理映射（mem_type_directphys，mem_directphys.c:28）
+### 1.5 直接物理映射（mem_type_directphys，minix3/minix/servers/vm/mem_directphys.c:mem_type）
 
 设备内存语义：
 
@@ -100,16 +100,16 @@ map_pf()                              ← 13 文档：框架层（何时调用�
 - **参数设置**：`phys_setphys`（:69）——`vr->param.phys = phys` 设置区域基址（mmap MAP_PHYS 路径调用，mmap.c:356）。
 - **复制**：`phys_copy`（:74）——复制 `param.phys`（fork 时子进程继承设备映射参数）。
 
-### 1.6 共享内存（mem_type_shared，mem_shared.c:28）
+### 1.6 共享内存（mem_type_shared，minix3/minix/servers/vm/mem_shared.c:mem_type）
 
 remap 创建的多进程共享：
 
 - **递归缺页**：`shared_pagefault`（:122）——从 `vr->param.shared`（ep/vaddr/id）定位源进程区域，递归调用源区域的 ev_pagefault（共享语义 = 源页的别名）；源不可达返回 EINVAL。
 - **源设置**：`shared_setsource`（:167）——设置 `param.shared.{ep, vaddr, id}`；零 ep/vaddr/id 忽略（防御）。
-- **源释放**（勘误 2026-09-09）：`shared_unreference`（:49）是**页级**回调、只委托 `mem_type_anon.ev_unreference`（共享页的释放语义与 anon 相同），**不做** remaps 递减；真正递减源区域 `remaps` 的是区域级 `shared_delete`（:110-123）——经 `getsrc`（:62-98，六步校验：类型、参数齐全、端点可解析、源区域存在、源为 anon 类型、id 匹配）后 `assert(remaps > 0)` 并 `src_region->remaps--`。早期文档把两者写成调用关系，与 C 原文不符。`remaps` 支撑两个可观察行为：`anon_writable` 的 `remaps > 0` 恒可写分支（mem_anon.c:105-113）与 `shared_refcount` 的 `1 + remaps`（:207）。
+- **源释放**（勘误 2026-09-09）：`shared_unreference`（:49）是**页级**回调、只委托 `mem_type_anon.ev_unreference`（共享页的释放语义与 anon 相同），**不做** remaps 递减；真正递减源区域 `remaps` 的是区域级 `shared_delete`（:110-123）——经 `getsrc`（:62-98，六步校验：类型、参数齐全、端点可解析、源区域存在、源为 anon 类型、id 匹配）后 `assert(remaps > 0)` 并 `src_region->remaps--`。早期文档把两者写成调用关系，与 C 原文不符。`remaps` 支撑两个可观察行为：`anon_writable` 的 `remaps > 0` 恒可写分支（minix3/minix/servers/vm/mem_anon.c:anon_writable）与 `shared_refcount` 的 `1 + remaps`（:207）。
 - **复制**：`shared_copy`（:194）——复制 param.shared + `shared_setsource(newvr, ...)` 重新登记。
 
-### 1.7 连续匿名内存（mem_type_anon_contig，mem_anon_contig.c:24）
+### 1.7 连续匿名内存（mem_type_anon_contig，minix3/minix/servers/vm/mem_anon_contig.c:mem_type）
 
 物理连续匿名页（DMA 等需要连续物理内存）：
 
@@ -120,8 +120,8 @@ remap 创建的多进程共享：
 
 ### 1.8 缓存 / 文件映射（mem_type_cache / mem_type_mappedfile）
 
-- **mem_type_cache**（mem_cache.c:39）：页缓存持有页——`cache_pagefault` 从缓存双哈希索引取 pfn（24-page-cache 详述）。
-- **mem_type_mappedfile**（mem_file.c:30）：文件映射——`mappedfile_pagefault` 查缓存，未命中 → VFS 异步请求（`vfs_request`），`cow_block`（mem_file.c:59）处理文件页 CoW 分裂（23-vfs-interaction 详述）。
+- **mem_type_cache**（minix3/minix/servers/vm/mem_cache.c:mem_type）：页缓存持有页——`cache_pagefault` 从缓存双哈希索引取 pfn（24-page-cache 详述）。
+- **mem_type_mappedfile**（minix3/minix/servers/vm/mem_file.c:mem_type）：文件映射——`mappedfile_pagefault` 查缓存，未命中 → VFS 异步请求（`vfs_request`），`cow_block`（minix3/minix/servers/vm/mem_file.c:cow_block）处理文件页 CoW 分裂（23-vfs-interaction 详述）。
 
 ### 1.9 Rust：trait MemType 与 PagefaultResult
 
@@ -175,7 +175,7 @@ pub(crate) trait MemType {
 
 本章验证 6 个 mem_type 实例的初始化表与代表回调。所有行号以 `sed -n` 实证为准（2026-08-16）。
 
-### 2.1 mem_type_anon 初始化表（mem_anon.c:34-46）
+### 2.1 mem_type_anon 初始化表（minix3/minix/servers/vm/mem_anon.c:mem_type）
 
 ```c
 struct mem_type mem_type_anon = {
@@ -195,7 +195,7 @@ struct mem_type mem_type_anon = {
 
 注意：**没有 `.ev_new`/`.ev_delete`/`.ev_reference`/`.ev_copy`**——匿名内存用框架默认（NULL 跳过）。
 
-### 2.2 anon_pagefault（mem_anon.c:64-97）
+### 2.2 anon_pagefault（minix3/minix/servers/vm/mem_anon.c:anon_pagefault）
 
 ```c
 static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
@@ -223,7 +223,7 @@ static int anon_pagefault(struct vmproc *vmp, struct vir_region *region,
 
 三态决策：**新块挂载 / 直用 / CoW**——这是匿名内存页错误的核心逻辑，Rust 的 `AnonymousMemory::ev_pagefault` 用 `NeedNewPage`/`NeedCow` 返回（§4.1）。
 
-### 2.3 anon_unreference / anon_writable（mem_anon.c:56-62 / :105-113）
+### 2.3 anon_unreference / anon_writable（minix3/minix/servers/vm/mem_anon.c:anon_unreference / :105-113）
 
 ```c
 static int anon_unreference(struct phys_region *pr)
@@ -242,9 +242,9 @@ static int anon_writable(struct phys_region *pr)
 }
 ```
 
-`anon_writable` 是 CoW 的**静态判定**：`refcount == 1` 时才可写——多引用共享页不可写，写触发页错误 → CoW 分裂。Rust 的 `AnonymousMemory::writable`（memtype.rs:192）等价。
+`anon_writable` 是 CoW 的**静态判定**：`refcount == 1` 时才可写——多引用共享页不可写，写触发页错误 → CoW 分裂。Rust 的 `AnonymousMemory::writable`（os/servers/vm/src/memtype.rs:enum MemTypeError（L192，工具生成））等价。
 
-### 2.4 mem_type_directphys（mem_directphys.c:28-79）
+### 2.4 mem_type_directphys（minix3/minix/servers/vm/mem_directphys.c:mem_type）
 
 ```c
 struct mem_type mem_type_directphys = {
@@ -262,7 +262,7 @@ void phys_setphys(struct vir_region *vr, phys_bytes phys)   /* :69 */
 
 `dp_pagefault`（:50-72）核心：`phys = vr->param.phys + ph->offset` 算 PA → `pt_writemap` 映射（`ARCH_VM_PTE_PRESENT|ARCH_VM_PTE_USER|ARCH_VM_PTE_RW`）。设备映射无缺页等待、无分配、无 CoW。
 
-### 2.5 mem_type_shared（mem_shared.c:28-211）
+### 2.5 mem_type_shared（minix3/minix/servers/vm/mem_shared.c:mem_type）
 
 ```c
 struct mem_type mem_type_shared = {
@@ -281,7 +281,7 @@ struct mem_type mem_type_shared = {
 
 `shared_pagefault`（:122-155）：`getsrc` 定位源进程/区域 → `map_pf(src_vmp, srcvr, ...)` 递归缺页 → `physblock_set` 共享新页。`shared_setsource`（:167-193）：设置 param.shared + 零值防御 + `vr->param.shared.id = ...`。
 
-### 2.6 mem_type_anon_contig（mem_anon_contig.c:24-132）
+### 2.6 mem_type_anon_contig（minix3/minix/servers/vm/mem_anon_contig.c:mem_type）
 
 ```c
 struct mem_type mem_type_anon_contig = {
@@ -360,18 +360,18 @@ C 的 ev_pagefault 用返回值（OK/ENOMEM/...）+"已分配"副作用表达结
 
 | 维度 | Minix3 | minix-rs | 标注 |
 |------|--------|----------|------|
-| 多态载体 | 函数指针表（memtype.h:12-30） | trait + `&'static dyn MemType` | ARCH |
+| 多态载体 | 函数指针表（minix3/minix/servers/vm/memtype.h:mem_type） | trait + `&'static dyn MemType` | ARCH |
 | NULL 回调 | 框架判空跳过 | 默认实现（框架无判空） | 结构差异 |
 | 页错误结果 | 返回值 + 副作用 | PagefaultResult 显式枚举 | 显式化 |
 | 错误 | 直接 errno | MemTypeError → errno 转换 | 同语义 |
 | ev_unreference 参数 | phys_region* | pfn（PFN 模型） | ARCH |
-| ContiguousAnonymous 连续分配 | alloc_mem 连续段 | TODO（memtype.rs:696，依赖 alloc_contiguous） | **未完成面** |
+| ContiguousAnonymous 连续分配 | alloc_mem 连续段 | TODO（os/servers/vm/src/memtype.rs:fn new（L696，工具生成），依赖 alloc_contiguous） | **未完成面** |
 | writable 判定 | refcount==1 + remaps | 同语义 | 一致 |
 | `shared_delete` 的源递减 | 区域级 ev_delete 内做 `getsrc` + `remaps--` | 删除漏斗的 `release_shared_remap`（region/mod.rs）承担——见 §3.7 | ARCH（G-V12-7） |
 
 ### 3.7 D7：`shared_delete` 的落点——为什么源递减不在 `ev_delete` 里（G-V12-7）
 
-把"删掉一个共享重映射时，源区域的 `remaps` 必须递减"翻译成 Rust，第一直觉是塞进 `SharedMemory::ev_delete`——C 就是这么放的（mem_shared.c:110-123）。但这在 minix-rs 的所有权模型下行不通，原因不是风格而是**借用安全**：删除漏斗（munmap 的 `unmap_range`、exit 的 `free_process_phys`）手里握着被拆除进程的 `ActiveProc`/`ExitingProc`——一个对 `VmProc` 的独占 `&mut`。源递减要改写进程表另一个槽位里的区域，而槽位内容只能通过 `AssumeSyncCell` 的裸指针访问；安全契约（`decrement_region_remaps` 的 SAFETY 注释）要求该槽位**没有任何在持句柄**。共享重映射偏偏有一种合法形态让源和删除方是**同一个进程**（进程可以 remap 自己的区域）——memtype 钩子在这种形态下无论如何拿不到合法的可变访问。
+把"删掉一个共享重映射时，源区域的 `remaps` 必须递减"翻译成 Rust，第一直觉是塞进 `SharedMemory::ev_delete`——C 就是这么放的（minix3/minix/servers/vm/mem_shared.c:shared_delete）。但这在 minix-rs 的所有权模型下行不通，原因不是风格而是**借用安全**：删除漏斗（munmap 的 `unmap_range`、exit 的 `free_process_phys`）手里握着被拆除进程的 `ActiveProc`/`ExitingProc`——一个对 `VmProc` 的独占 `&mut`。源递减要改写进程表另一个槽位里的区域，而槽位内容只能通过 `AssumeSyncCell` 的裸指针访问；安全契约（`decrement_region_remaps` 的 SAFETY 注释）要求该槽位**没有任何在持句柄**。共享重映射偏偏有一种合法形态让源和删除方是**同一个进程**（进程可以 remap 自己的区域）——memtype 钩子在这种形态下无论如何拿不到合法的可变访问。
 
 所以递减被提到删除漏斗旁：`region::release_shared_remap(param, own_slot, own_regions, table)`。它完整复刻 `getsrc` 的校验链（参数齐全 → 端点可解析 → 源区域存在 → 仍是 anon 类型 → id 匹配），然后按源的位置分路——源在被拆除进程自己的区域映射里就走 `own_regions`（那次 `&mut` 本来就活着），跨进程才走表（此刻必然是不同槽位，契约满足）。每一处校验失败都对应 C `getsrc` 的一行 printf，Rust 侧换成 `audit_log!`；C 的 `assert(remaps > 0)` 降级为带检查的下溢错误（V9-P0-1：IPC 边界不 panic）。id 匹配这一步依赖区域 id 的唯一性——C 用 `region.c:445` 的全局计数器（`newregion->id = id++`），Rust 的 `VirRegion::new` 此前恒写 0，使 id 校验形同虚设，本轮一并补上了计数器（`next_region_id`，split 的右半也从计数器取新 id，替代原先 `parent + 1` 的碰撞隐患）。
 
@@ -386,7 +386,7 @@ C 的 ev_pagefault 用返回值（OK/ENOMEM/...）+"已分配"副作用表达结
 
 ## 4. 实现详解
 
-### 4.1 `AnonymousMemory`（memtype.rs:165-294）
+### 4.1 `AnonymousMemory`（os/servers/vm/src/memtype.rs:fn supports_ref_count（L165，工具生成））
 
 ```rust
 pub(crate) struct AnonymousMemory;                        /* :165 */
@@ -406,7 +406,7 @@ impl MemType for AnonymousMemory {
 
 三态页错误与 C 的 `anon_pagefault`（§2.2）逐字对应：新块 → `NeedNewPage`（框架分配）；共享 + 写 → `NeedCow`（框架走 CoW）；否则 `Handled`。`writable` 的 `refcount == 1` 判定与 C `anon_writable`（§2.3）一致。
 
-### 4.2 `DirectPhysical`（memtype.rs:296-389）
+### 4.2 `DirectPhysical`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L296，工具生成））
 
 ```rust
 impl MemType for DirectPhysical {
@@ -426,7 +426,7 @@ impl MemType for DirectPhysical {
 
 对应 C 的 `dp_pagefault` + `phys_pt_flags`（NO_CACHE）+ `ev_split` NULL → EINVAL。`base_phys.0 == 0` 防御：设备基址不能为 0（无效参数）。
 
-### 4.3 `SharedMemory`（memtype.rs:391-564）
+### 4.3 `SharedMemory`（os/servers/vm/src/memtype.rs:fn new（L391，工具生成））
 
 ```rust
 impl MemType for SharedMemory {
@@ -439,7 +439,7 @@ impl MemType for SharedMemory {
 
 递归源缺页（`table: &VmProcTable`）对应 C 的 `shared_pagefault`（§2.5）；`ev_copy` 复制 `param.shared` 对应 `shared_copy`。
 
-### 4.4 `ContiguousAnonymous`（memtype.rs:566-752）
+### 4.4 `ContiguousAnonymous`（os/servers/vm/src/memtype.rs:fn ev_pagefault（L566，工具生成））
 
 ```rust
 impl MemType for ContiguousAnonymous {
@@ -450,9 +450,9 @@ impl MemType for ContiguousAnonymous {
 }
 ```
 
-**⚠️ 已知缺口**：`ev_new` 的连续页预分配依赖 `PfnAllocator::alloc_contiguous()`，当前 `PfnAllocator` trait 只有 `alloc_pfn`（单页）——memtype.rs:696 有 TODO 注释。连续分配路径未完成，**诚实标注**（§5.3），不伪装实现。
+**⚠️ 已知缺口**：`ev_new` 的连续页预分配依赖 `PfnAllocator::alloc_contiguous()`，当前 `PfnAllocator` trait 只有 `alloc_pfn`（单页）——os/servers/vm/src/memtype.rs:fn new（L696，工具生成） 有 TODO 注释。连续分配路径未完成，**诚实标注**（§5.3），不伪装实现。
 
-### 4.5 `CacheMemory` / `MappedFile`（memtype.rs:754-1018）
+### 4.5 `CacheMemory` / `MappedFile`（os/servers/vm/src/memtype.rs:fn ev_copy（L754，工具生成））
 
 - `CacheMemory::ev_pagefault`（:768 起）：从缓存索引查 pfn 映射（24 详述缓存算法本身）。
 - `MappedFile::ev_pagefault`（:885 起）：返回 `NeedVfsIo`（23 详述 VFS 异步对话）。
@@ -483,7 +483,7 @@ pub(crate) enum PageSlot {                                /* 11 定义（2026-08
 
 | 测试 | 位置 | 验证目标 |
 |------|------|---------|
-| `test_anonymous_memory_name` | memtype.rs:1024 | name() 正确 |
+| `test_anonymous_memory_name` | os/servers/vm/src/memtype.rs:fn ev_pagefault（L1024，工具生成） | name() 正确 |
 | `test_direct_physical_name` | :1030 | name() 正确 |
 | `test_shared_memory_name` | :1036 | name() 正确 |
 | `test_static_instances` | :1042 | 6 类型静态实例存在 |
@@ -506,7 +506,7 @@ pub(crate) enum PageSlot {                                /* 11 定义（2026-08
 
 ### 5.3 覆盖缺口与诚实标注
 
-- **ContiguousAnonymous 连续分配**（memtype.rs:696 TODO）：`PfnAllocator::alloc_contiguous` 未实现——`ev_new` 预分配路径未完成，**记录不伪装**。
+- **ContiguousAnonymous 连续分配**（os/servers/vm/src/memtype.rs:fn new（L696，工具生成） TODO）：`PfnAllocator::alloc_contiguous` 未实现——`ev_new` 预分配路径未完成，**记录不伪装**。
 - **DirectPhysical ev_pagefault 端到端**：依赖真实页表映射（`region.map_page`），单测层仅 name/writable。
 - **MappedFile VFS 异步**：`NeedVfsIo` 返回路径在 23 覆盖。
 

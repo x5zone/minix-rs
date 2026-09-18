@@ -66,11 +66,11 @@ PFS 是拆除唯一的例外：它没有根节点可清（`530-535` 的条件）
 
 ### 2.1 设备编解码三宏（`types.h:290-295`）
 
-`major(x) = (x & 0xfff00) >> 8` 取 12 位，`minor(x)` 拼高 20 位段与低 8 位，`makedev` 为其逆。定义见 `minix3/sys/sys/types.h:290-295`。伪设备以 `NONE_MAJOR 0`（见 `minix3/minix/include/minix/dmap.h:21`）为 major，minor 从 1 起（`dmap.h:17-18` 的 `NO_DEV` 对照注释）。
+`major(x) = (x & 0xfff00) >> 8` 取 12 位，`minor(x)` 拼高 20 位段与低 8 位，`makedev` 为其逆。定义见 `minix3/sys/sys/types.h:major`。伪设备以 `NONE_MAJOR 0`（见 `minix3/minix/include/minix/dmap.h:NONE_MAJOR`）为 major，minor 从 1 起（`dmap.h:17-18` 的 `NO_DEV` 对照注释）。
 
 ### 2.2 `nonedev` 位图机（`mount.c:33-37,641-653`）
 
-`bitchunk_t nonedev[BITMAP_CHUNKS(NR_NONEDEVS)]` 全零（`34`，`NR_NONEDEVS=NR_MNTS=16` 见 `minix3/minix/servers/vfs/const.h:7-12`），`alloc/free_nonedev` 即 `minor-1` 位的置/清（`36-37`）。`find_free_nonedev` 首清位分配（`648-649`，`makedev(NONE_MAJOR, i+1)`），满位设 `EMFILE` 返 `NO_DEV`（`651-652`）。
+`bitchunk_t nonedev[BITMAP_CHUNKS(NR_NONEDEVS)]` 全零（`34`，`NR_NONEDEVS=NR_MNTS=16` 见 `minix3/minix/servers/vfs/const.h:NR_MNTS`），`alloc/free_nonedev` 即 `minor-1` 位的置/清（`36-37`）。`find_free_nonedev` 首清位分配（`648-649`，`makedev(NONE_MAJOR, i+1)`），满位设 `EMFILE` 返 `NO_DEV`（`651-652`）。
 
 ### 2.3 `is_nonedev` 判定（`mount.c:628-635`）
 
@@ -86,7 +86,7 @@ PFS 是拆除唯一的例外：它没有根节点可清（`530-535` 的条件）
 
 ### 2.6 `mount_fs` 提交机（`mount.c:156-385`）
 
-驱动标签（`176-188`：伪设备跳过，驱动缺席 `EINVAL`，空标签断言）→ 查忙（`191-196`，重挂 `EBUSY`）占槽（`197-200`，无槽 `ENOMEM`，加 `VMNT_EXCL`）→ 记路径与类型（`202-204`）→ 根判定（`205-209`）→ 非根粘合（`211-238`：`eat_path` 取挂载点，引用恰 1 才 `req_mountpoint`，余 `EBUSY`；提前解锁父 vmnt 以容 FUSE 回调，`224-228`）→ 取根 vnode（`241-248`）→ 端点复核（`252-260`，坏端点 `EINVAL`）→ 标服务进程（`261-262`，`FP_SRV_PROC`）→ 存端点设备与只读位（`265-268`：`MNT_RDONLY` 置 `VMNT_READONLY`，见 `minix3/minix/servers/vfs/vmnt.h:24`）→ 置 `MOUNTING` 读超块清标志（`271-274`）→ 存 FS 标志（`276`）→ 刷 statvfs 缓存（`279-280`）→ 失败拆槽（`282-291`）→ 加 `bsf`（`293`）→ 填根节点九字段（`296-304`）→ 绑挂载（`307-308`）→ 线程数（`309-313`：`RES_THREADED` 见 `minix3/minix/include/minix/vfsif.h:21`，线程 FS 用 `NR_WTHREADS=9`，余 1）→ 置 `CANSTAT`（`316`）→ 根提交（`318-349`：落槽、双标签、无盘占位、改道不投递、落 `ROOT_*`、全员 `MAKEROOT`、`have_root++`）或常规提交（`352-384`：类型冲突 `EISDIR`、落槽、无盘占位、非强制改道、解锁）。
+驱动标签（`176-188`：伪设备跳过，驱动缺席 `EINVAL`，空标签断言）→ 查忙（`191-196`，重挂 `EBUSY`）占槽（`197-200`，无槽 `ENOMEM`，加 `VMNT_EXCL`）→ 记路径与类型（`202-204`）→ 根判定（`205-209`）→ 非根粘合（`211-238`：`eat_path` 取挂载点，引用恰 1 才 `req_mountpoint`，余 `EBUSY`；提前解锁父 vmnt 以容 FUSE 回调，`224-228`）→ 取根 vnode（`241-248`）→ 端点复核（`252-260`，坏端点 `EINVAL`）→ 标服务进程（`261-262`，`FP_SRV_PROC`）→ 存端点设备与只读位（`265-268`：`MNT_RDONLY` 置 `VMNT_READONLY`，见 `minix3/minix/servers/vfs/vmnt.h:VMNT_READONLY`）→ 置 `MOUNTING` 读超块清标志（`271-274`）→ 存 FS 标志（`276`）→ 刷 statvfs 缓存（`279-280`）→ 失败拆槽（`282-291`）→ 加 `bsf`（`293`）→ 填根节点九字段（`296-304`）→ 绑挂载（`307-308`）→ 线程数（`309-313`：`RES_THREADED` 见 `minix3/minix/include/minix/vfsif.h:RES_THREADED`，线程 FS 用 `NR_WTHREADS=9`，余 1）→ 置 `CANSTAT`（`316`）→ 根提交（`318-349`：落槽、双标签、无盘占位、改道不投递、落 `ROOT_*`、全员 `MAKEROOT`、`have_root++`）或常规提交（`352-384`：类型冲突 `EISDIR`、落槽、无盘占位、非强制改道、解锁）。
 
 ### 2.7 `mount_pfs` 管道服机（`mount.c:391-425`）
 
@@ -115,43 +115,43 @@ Rust 改写不是照抄 `mount.c` 的直线代码，而是吸收 Linux/Redox 的
 ### D1 设备编解码纯函数
 
 - **C**：`major/minor/makedev` 三宏（`types.h:290-295`）。
-- **Rust**：`DevCodec::{major, minor, make, is_nonedev}` 纯函数（`os/servers/vfs/src/mount.rs:37`）。
+- **Rust**：`DevCodec::{major, minor, make, is_nonedev}` 纯函数（`os/servers/vfs/src/mount.rs:struct DevCodec`）。
 - **为什么**：宏不可测往返律；函数使 `make→major/minor` 恒等一测即知。替代方案（宏直译 `macro_rules!`）被否决：编解码是函数语义，用宏只是把 C 的拼写带进 Rust。
 
 ### D2 伪设备位图新型
 
 - **C**：`bitchunk_t[]` + 置位宏 + `minor-1` 散落调用点（`mount.c:34-37`）。
-- **Rust**：`NonedevBitmap(u16)` + `alloc/free/contains/find_free` + `alloc_nonedev/free_nonedev`（`os/servers/vfs/src/mount.rs:71,122`）；满位 `EMFILE`。
+- **Rust**：`NonedevBitmap(u16)` + `alloc/free/contains/find_free` + `alloc_nonedev/free_nonedev`（`os/servers/vfs/src/mount.rs:struct NonedevBitmap,122`）；满位 `EMFILE`。
 - **为什么**：16 位定长使“满”可表达（全 1 即满）；偏置收敛进类型，调用点只见 minor。`u16` 的位宽选择即文档：`NR_NONEDEVS=16`，不多一位。
 
 ### D3 提交分阶段与超块 trait
 
 - **C**：`mount_fs` 230 行直线 + 五处回滚（`mount.c:195-365`）。
-- **Rust**：`SuperblockReader` trait（`MemSuperblock` 常成功 vs `FailSuperblock` 常 `EIO`）+ `MountPhase` 五值 + `check_dev_free/glue_decision/type_clash/thread_allowance` 四纯判定（`os/servers/vfs/src/mount.rs:152,188,203`）。
+- **Rust**：`SuperblockReader` trait（`MemSuperblock` 常成功 vs `FailSuperblock` 常 `EIO`）+ `MountPhase` 五值 + `check_dev_free/glue_decision/type_clash/thread_allowance` 四纯判定（`os/servers/vfs/src/mount.rs:trait SuperblockReader,188,203`）。
 - **为什么**：FS 往返是唯一的不可测点，trait 隔离后提交序可单测。`MNT_RDONLY` 以 `readonly: bool` 入参——同步树内无该宏定义可验证，不编造位值（诚实标注，见 design D3）。
 
 ### D4 粘合与忙判定纯谓词
 
 - **C**：`ref==1` 粘合（`mount.c:218`）与三元忙检查（`501`）分处两函数。
-- **Rust**：`glue_decision(ref_count)` + `busy_check(refs, locks, pending)`（`os/servers/vfs/src/mount.rs:212,389`）。
+- **Rust**：`glue_decision(ref_count)` + `busy_check(refs, locks, pending)`（`os/servers/vfs/src/mount.rs:enum MountPhase（L212，工具生成）,389`）。
 - **为什么**：同一“独占”知识的两面；边界值（1 vs 2）各一测。`pending` 把 07 的“等待即锁定”语义显式为参数。
 
 ### D5 根状态机
 
 - **C**：`have_root` 0/1/2 裸计数（`mount.c:31`）。
-- **Rust**：`RootStage::{Absent, Ramdisk, Bootdisk}` + `mount_takes_root_path + advance`（`os/servers/vfs/src/mount.rs:243`）。
+- **Rust**：`RootStage::{Absent, Ramdisk, Bootdisk}` + `mount_takes_root_path + advance`（`os/servers/vfs/src/mount.rs:fn thread_allowance`）。
 - **为什么**：裸计数的“2”无名；枚举使 ramdisk→boot disk 的两次可读，饱和语义保留（第三次自动转普通挂载）。`MAKEROOT` 全员换家留调用点（proc 表迭代归 03）。
 
 ### D6 拆除计划
 
 - **C**：七步直线 + PFS 例外分支（`mount.c:506-545`）。
-- **Rust**：`UnmountPlan{free_nonedev, clear_root, send_driver}` + `plan_unmount`（`os/servers/vfs/src/mount.rs:398,408`）。
+- **Rust**：`UnmountPlan{free_nonedev, clear_root, send_driver}` + `plan_unmount`（`os/servers/vfs/src/mount.rs:fn of（L398，工具生成）,408`）。
 - **为什么**：顺序知识结构化后 PFS 例外可测；`req_unmount` 失败忽略留调用点注释（不可恢复，打印继续）。
 
 ### D7 扫荡验证类型化
 
 - **C**：残留 panic（`mount.c:581-584`）。
-- **Rust**：`verify_empty(&[bool])` + `sweep_passes`（`os/servers/vfs/src/mount.rs:420,431`）。
+- **Rust**：`verify_empty(&[bool])` + `sweep_passes`（`os/servers/vfs/src/mount.rs:struct UnmountPlan（L420，工具生成）,431`）。
 - **为什么**：panic→错误是 ARCH 加固——关机路径崩溃即最坏情况；三锁断言归 04/06/07，此处只判残留。
 
 ### ARCH 决策总表
@@ -257,7 +257,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/mount.c:1-653`（`update_bspec/do_mount/mount_fs/mount_pfs/do_umount/unmount/unmount_all/name_to_dev/is_nonedev/find_free_nonedev`）、`minix3/sys/sys/types.h:290-295`（`major/minor/makedev`）、`minix3/minix/servers/vfs/const.h:7-12`（`NR_MNTS/NR_NONEDEVS`）、`minix3/minix/servers/vfs/vmnt.h:24-33`（`VMNT_*` 标志与锁映射）、`minix3/minix/include/minix/com.h:68`（`PFS_PROC_NR`）、`minix3/minix/include/minix/vfsif.h:21`（`RES_THREADED`）、`minix3/minix/include/minix/dmap.h:21`（`NONE_MAJOR`）
+- C 源：`minix3/minix/servers/vfs/mount.c:1-653`（`update_bspec/do_mount/mount_fs/mount_pfs/do_umount/unmount/unmount_all/name_to_dev/is_nonedev/find_free_nonedev`）、`minix3/sys/sys/types.h:major`（`major/minor/makedev`）、`minix3/minix/servers/vfs/const.h:NR_MNTS`（`NR_MNTS/NR_NONEDEVS`）、`minix3/minix/servers/vfs/vmnt.h:VMNT_READONLY`（`VMNT_*` 标志与锁映射）、`minix3/minix/include/minix/com.h:PFS_PROC_NR`（`PFS_PROC_NR`）、`minix3/minix/include/minix/vfsif.h:RES_THREADED`（`RES_THREADED`）、`minix3/minix/include/minix/dmap.h:NONE_MAJOR`（`NONE_MAJOR`）
 - 阶段文档：`06-vmnt-table.md`（槽存储）、`01-vfs-init-main.md`（启动根挂载）、`13-path-lookup.md`（挂载点解析）、`12-request-wrappers.md`（FS 协议执行）、`19-device-map.md`（驱动标签）、`20-bdev.md`（块改道终点）
-- Rust 实现：`os/servers/vfs/src/mount.rs:1`（本篇判定层）、`os/servers/vfs/src/vmnt.rs:1`（槽存储，06）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/mount.rs:1`（本篇判定层）、`os/servers/vfs/src/vmnt.rs:1`（槽存储，06）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（标签与路径拷贝语义）

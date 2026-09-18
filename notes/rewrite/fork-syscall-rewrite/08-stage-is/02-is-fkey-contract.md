@@ -1,10 +1,10 @@
 # 02-is-fkey-contract：功能键观察者协议
 
-> **源码**：`minix3/minix/include/minix/com.h:874-877` +
+> **源码**：`minix3/minix/include/minix/com.h:TTY_FKEY_CONTROL` +
 > `ipc.h:1447-1454`（请求）/`1925-1931`（回复）/`2570`/`2623`（union 槽位）+
 > `keymap.h:14-17`（EXT/SHIFT）/`93-104`（F1-F12）/`135-146`（SF1-SF12）+
 > `sysutil.h:43-46`（三宏）+ `libsys/fkey_ctl.c`（全 30 行）+
-> `minix3/minix/servers/is/dmp.c:44-68`（`map_unmap_fkeys`）+
+> `minix3/minix/servers/is/dmp.c:NHOOKS（L44，工具生成）`（`map_unmap_fkeys`）+
 > `drivers/tty/tty/arch/i386/keyboard.c:60-78`（`obs_t`/数组/`debug_fkeys`）/
 > `198-230`（kb 通路）/`401-415`（`kb_init_once`）/`429-527`（`do_fkey_ctl`，
 > 含 `func_key` 调用的 `show_key_mappings` 私有段除外）/`532-585`（`func_key`）
@@ -53,7 +53,7 @@ TTY 只喊一声"有动静"，IS 再发一轮消息把位图拉回来读。
 | 层 | 名字 | F1 的值 | 谁用 | 出处 |
 |---|---|---|---|---|
 | 键码 | key code | `0x110` | TTY 键盘解码（`map_key` 产物，`func_key` 的输入） | keymap.h:93 |
-| 位号 | bit number | `1` | 线格式（消息位图，IS↔TTY 共同语言） | dmp.c:55-58 |
+| 位号 | bit number | `1` | 线格式（消息位图，IS↔TTY 共同语言） | minix3/minix/servers/is/dmp.c:map_unmap_fkeys（L55，工具生成） |
 | 下标 | array index | `0` | TTY 观察者数组（`fkey_obs[0]`） | keyboard.c |
 
 三层换算：键码 − `F1` ＝ 下标；下标 ＋ 1 ＝ 位号。**位号 0 永不使用**
@@ -90,7 +90,7 @@ IS 侧 `map_unmap_fkeys` + TTY 侧 `do_fkey_ctl`/`func_key`/kb 通路契约。
 #  define    FKEY_EVENTS	12	/* request open key presses */
 ```
 
-（`minix3/minix/include/minix/com.h:874-877`）
+（`minix3/minix/include/minix/com.h:TTY_FKEY_CONTROL`）
 
 控制码 `TTY_FKEY_CONTROL = 0x1301` 是消息类型（`m_type`），三个请求码
 （10/11/12）装在载荷的 `request` 字段里——**两级编码**：外层选服务操作，
@@ -157,8 +157,8 @@ F1–F12 = `0x110–0x11B`（连续，12 个）；SF1–SF12 = `0x410–0x41B`�
   }
 ```
 
-（`minix3/minix/servers/is/dmp.c:50-58`；`bit_set(mask,n)` 即
-`mask |= 1 << n`，`bitmap.h:5`）
+（`minix3/minix/servers/is/dmp.c:map_unmap_fkeys（L50，工具生成）`；`bit_set(mask,n)` 即
+`mask |= 1 << n`，`minix3/minix/include/minix/bitmap.h:bit_set`）
 
 F1→bit1 …… F12→bit12。bit0 空置——不是保留字段，是**历史写法**（`i+1`
 循环习惯）沉淀成的线格式，双方都 innocent 地沿用。TTY 侧以
@@ -195,7 +195,7 @@ int *sfkeys;				/* bit masks for Shift F1-F12 keys */
 原样返回，调用方可重试或告警。
 
 > **注释过时警告**：函数头注释称"Enabling succeeds unless the key is already
-> bound to another process"（fkey_ctl.c:11-14），但 TTY 侧 MAP 的 EBUSY 检查
+> bound to another process"（minix3/minix/lib/libsys/fkey_ctl.c:fkey_ctl（L11，工具生成）），但 TTY 侧 MAP 的 EBUSY 检查
 > 早被 `#if DEAD_CODE` 包住（§2.7）——注释说"会失败"，代码说"覆盖登记"。
 > **以代码为准**，注释过时。Rust 侧不复述该注释（§3 D3）。
 
@@ -210,7 +210,7 @@ int *sfkeys;				/* bit masks for Shift F1-F12 keys */
 薄封装，无逻辑。注意参数是**指针**（`int *`），`map_unmap_fkeys` 传栈变量
 地址（§2.6），写回直接落回局部量。
 
-### 2.6 IS 侧 `map_unmap_fkeys`（dmp.c:44-68）
+### 2.6 IS 侧 `map_unmap_fkeys`（minix3/minix/servers/is/dmp.c:NHOOKS（L44，工具生成））
 
 ```c
 void
@@ -233,7 +233,7 @@ map_unmap_fkeys(int map)
 }
 ```
 
-（`minix3/minix/servers/is/dmp.c:44-68`；组位循环见 §2.3）
+（`minix3/minix/servers/is/dmp.c:NHOOKS（L44，工具生成）`；组位循环见 §2.3）
 
 三个语义：① 位图由 hooks 表驱动（16 项，内容归 03）——**注册集合 = 转储
 能力集合**，加一个转储就是多订一个键，天然同步；② `map` 非零即 MAP，
@@ -430,7 +430,7 @@ bit0 误用、F/SF 混层无拦截）。
 `trait FkeyCtlTransport { fn fkey_ctl(&mut self, req, fkeys, sfkeys)
 -> (status, fkeys, sfkeys) }`——三元组即 §2.4 的"状态 + 双写回"双通道。
 生产实现 forward ref（`minix-sys` `_taskcall` 接线时落地，01 §3 D2 同款）；
-MAP/UNMAP 调用方判 `status != OK` 告警（dmp.c:63-65），EVENTS 取位图
+MAP/UNMAP 调用方判 `status != OK` 告警（minix3/minix/servers/is/dmp.c:map_unmap_fkeys（L63，工具生成）），EVENTS 取位图
 （恒 OK）。否决备选：裸 `i32` 传 request（调用方易传错命令，且与三元组写回
 语义无类型关联）；把 `_taskcall` 直接写进 `IsServer`（与传输缝重复，
 且不可单测）。fkey_ctl 头注释的"bound 则失败"与 DEAD_CODE 现状矛盾：
@@ -456,7 +456,7 @@ pub fn pull_events<C: FkeyCtlTransport>(client: &mut C) -> (i32, u32, u32);
 ```
 
 > **03 修订**：`pull_events` 初版返回 `(u32, u32)`（"恒 OK，不断言状态"），
-> 03 的 `do_fkey_pressed` 需要判 `s < 0`（dmp.c:84，传输失败告警），故改为
+> 03 的 `do_fkey_pressed` 需要判 `s < 0`（minix3/minix/servers/is/dmp.c:do_fkey_pressed（L84，工具生成），传输失败告警），故改为
 > 三元组（状态直通）。调用方契约同步见 §4.3(3)。
 
 C 的 `map_unmap_fkeys(map)` 读全局 hooks（§2.6）；hooks 表归 03，故本篇

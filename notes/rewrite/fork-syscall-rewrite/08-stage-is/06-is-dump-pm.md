@@ -1,7 +1,7 @@
 # 06-is-dump-pm：PM 转储域
 
 > **源码**：`minix3/minix/servers/is/dmp_pm.c`（全 109 行）+
-> `servers/pm/mproc.h:28-99`（字段/11 标志）+ `timers.h:35` +
+> `servers/pm/mproc.h:28-99`（字段/11 标志）+ `minix3/minix/include/minix/timers.h:minix_timer（L35，工具生成）` +
 > `libsys/getticks.c:1-13` + `sys/sigtypes.h:61-62` + `com.h:59`（PM=0）
 > **Rust**：`os/servers/is/src/dump_pm.rs`（新）
 > **draft 素材**：`draft/tmp_dmp_pm.c.md`（行文底料；Rust 块废弃同 01 §3.0）
@@ -70,7 +70,7 @@ retrieval. TODO: 64-bit support."——**C 自己承认 64 位未竟**，Rust �
 
 "WZAETUFspxd"（WAITING 0x2/ZOMBIE 0x4/ALARM_ON 0x10/EXITING 0x20/
 TRACE_STOPPED 0x80/SIGSUSPENDED 0x100/VFS_CALL 0x400/PROC_STOPPED 0x8/
-PRIV_PROC 0x2000/PARTIAL_EXEC 0x4000/DELAY_CALL 0x20000，mproc.h:87-102），
+PRIV_PROC 0x2000/PARTIAL_EXEC 0x4000/DELAY_CALL 0x20000，minix3/minix/servers/pm/mproc.h:WAITING），
 `static char str[12]`。注意 `'s'`（PROC_STOPPED）与 `'S'`（ SIG？无——
 本表无 S，大写 S 空缺，05 的 RTS 表才有 S）——跨表字母不互通，各表独立
 编码（A-12 按表落地，不统一）。
@@ -81,7 +81,7 @@ PRIV_PROC 0x2000/PARTIAL_EXEC 0x4000/DELAY_CALL 0x20000，mproc.h:87-102），
 name:80/realuid:41/effuid:42/realgid:44/effgid:45/nice:75/flags:66/
 ignore:53/catch:54/sigmask:55/sigpending:57（各 `__bits[0]`，sigset 为
 4×u32，sigtypes.h:61-62——**只转储首字**，如实记录）/timer:62
-（tmr_exp_time，timers.h:35）。`[ARCH: A-4]` 快照提案 + PM 对齐待办
+（tmr_exp_time，minix3/minix/include/minix/timers.h:minix_timer（L35，工具生成））。`[ARCH: A-4]` 快照提案 + PM 对齐待办
 （§3 D1 三处之二）。
 
 ### 2.5 排除

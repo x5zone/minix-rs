@@ -29,7 +29,7 @@
 | `owner[80]` | 字符数组 | 发布者进程名；boot 映射填 `"rs"` | 权限的依据（05） |
 | `u` | 联合 | 值：数字 / 内存块描述 /（label 复用数字道） | 读写的对象 |
 
-联合（union）的意思是"三选一共用一块内存"：`u32`（4 字节数字）和 `mem`（指针+长度+容量，24 字节）叠在一起，实际用哪个看 `flags` 的类型臂。最容易误会的是 **label 没有自己的臂**：label 的端点值存在 `u32` 臂里（写入在 `store.c:241`，读回在 `dmp_ds.c:41`）。加 label 臂会引入第三种形状，但端点本来就是个数——复用数字道是最省的表示。
+联合（union）的意思是"三选一共用一块内存"：`u32`（4 字节数字）和 `mem`（指针+长度+容量，24 字节）叠在一起，实际用哪个看 `flags` 的类型臂。最容易误会的是 **label 没有自己的臂**：label 的端点值存在 `u32` 臂里（写入在 `store.c:241`，读回在 `minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L41，工具生成）`）。加 label 臂会引入第三种形状，但端点本来就是个数——复用数字道是最省的表示。
 
 `mem` 的三栏（`store.h:23-27`）分工：`data` 是 DS 侧堆缓冲的指针，`length` 是有效长度（含字符串的结束符），`reallen` 是实际分配的长度（复用时 `length > reallen` 才重分配，`store.c:344-348`——小改小不动，省一次 `malloc`）。
 
@@ -44,7 +44,7 @@
 #define NR_DS_SUBS  (4 * NR_SYS_PROCS)   // 256，store.h:13
 ```
 
-`NR_SYS_PROCS = 64`（`sys_config.h:9`）：全系统最多 64 个系统进程。平均一个服务占 2 个条目、4 个订阅位——这是经验数，不是算出来的。定长的真正原因是下一节：**表要原样拷给别的服务器读**，变长表做不到这一点。
+`NR_SYS_PROCS = 64`（`minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`）：全系统最多 64 个系统进程。平均一个服务占 2 个条目、4 个订阅位——这是经验数，不是算出来的。定长的真正原因是下一节：**表要原样拷给别的服务器读**，变长表做不到这一点。
 
 空槽位的判定只有一句话：`!(flags & IN_USE)` 即空（`store.c:15-17`）。没有独立的"空闲链表"，没有计数器——"有没有旗"就是全部真相。
 
@@ -64,7 +64,7 @@
 
 ## 2 C 源码分析
 
-### 2.1 容量推导（`store.h:11-13` + `sys_config.h:9`）
+### 2.1 容量推导（`store.h:11-13` + `minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`）
 
 `_NR_SYS_PROCS = 64` → `NR_DS_KEYS = 2*64 = 128`，`NR_DS_SUBS = 4*64 = 256`。改配置数要 04（分配扫描上界）和 11（镜像总字节数）一起改——三处同源（§4.3 立约）。
 
@@ -76,11 +76,11 @@
 
 `flags`（`:32`）→ `owner[80]`（`:33`）→ `regex_t regex`（`:34`，式 deferred，A-2）→ `old_subs[BITMAP_CHUNKS(128)]`（`:35`，128 位图）。
 
-### 2.4 标签寄数字道（`store.c:241` + `dmp_ds.c:38-41`，双向实证）
+### 2.4 标签寄数字道（`store.c:241` + `minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L38，工具生成）`，双向实证）
 
-写入：`map_service` 把端点存进 `u.u32`（`:241`）；读出：IS 按 `LABEL` 类型读 `u.u32`（`dmp_ds.c:41`）。授受同道，无歧义。
+写入：`map_service` 把端点存进 `u.u32`（`:241`）；读出：IS 按 `LABEL` 类型读 `u.u32`（`minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L41，工具生成）`）。授受同道，无歧义。
 
-### 2.5 镜像消费（`dmp_ds.c:15-45`，ABI 实证）
+### 2.5 镜像消费（`minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L15，工具生成）`，ABI 实证）
 
 IS 用 `getsysinfo(DS, SI_DATA_STORE, buf, sizeof)` 取镜像（`:15`），逐槽读旗/键/主/值（`:30-41`）。注意 `:36-41` 的 STR 分支直接解引用 DS 的指针——在 IS 地址空间里那个指针是无效的，只能显示垃圾。这是消费者侧的已知事实（IS 重写时要修），不是 DS 的 bug，但写在这里提醒：**指针过镜像边界即失效**，这也是 Rust 侧堆指针只定"宽度"不定"语义"的原因（D5）。
 
@@ -129,7 +129,7 @@ os/libs/minix-types/src/
 |--------|------|------|
 | 空即无旗（空即 `None`） | `is_vacant` 双谓词 | `store.c:15-17` |
 | 容量三处同源 | `NR_DS_KEYS/SUBS` 常量 + `Bitmap::new(128)` | `store.h:12-13` |
-| 镜像 192 字节 | `size_of` 断言 + 偏移锁 | `dmp_ds.c:15-45` |
+| 镜像 192 字节 | `size_of` 断言 + 偏移锁 | `minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L15，工具生成）` |
 | label 走数字道 | 类型无 label 臂 | `store.c:241` |
 
 ---

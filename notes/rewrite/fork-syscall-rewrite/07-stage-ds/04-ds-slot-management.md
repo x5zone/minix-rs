@@ -1,7 +1,7 @@
 # 04 — DS 槽位分配与查找：六个原语管两张表
 
 > **分类**: 存储原语 / 分配与查找
-> **源码**: `minix3/minix/servers/ds/store.c:11-107`
+> **源码**: `minix3/minix/servers/ds/store.c:alloc_data_slot`
 > **说明**: 两张定长表需要六个原语：两个分配、一个释放、三个查找，外加一个"空"判定。本文讲清每个原语的语义、为什么分配是"从 0 往上找第一个空位"，以及 Rust 为什么用编号（slot）代替指针。
 
 ---
@@ -106,15 +106,15 @@ plan §2 把 `store.rs` 写成 04 的 Rust 模块——容易误会，特此澄�
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 条目编号 | `ds_store[i]` 之位 | `slots.rs:31`（`EntrySlot`） | 私域号，`from_index` 守门 |
-| 订阅编号 | `ds_subs[i]` 之位 | `slots.rs:61`（`SubSlot`） | 两币分家，错表不可表 |
-| 条目分配 | `store.c:11-22` | `slots.rs:91` | 首适应，满即 `None` |
-| 订阅分配 | `store.c:27-38` | `slots.rs:104` | 同式，宽表 256 |
-| 订阅释放 | `store.c:43-52` | `slots.rs:125` | 有旗方释，释即 `None` |
-| 名比 | `store.c:65,100` | `slots.rs:137`（`key_eq`） | 双截后比 |
-| 名型双判 | `store.c:57-70` | `slots.rs:155` | 门 → 交 → 名 |
-| 端点反查 | `store.c:75-88` | `slots.rs:172` | 门 → 臂 → 数等 |
-| 主名找订 | `store.c:93-105` | `slots.rs:195` | 门 → 主等 |
+| 条目编号 | `ds_store[i]` 之位 | `os/servers/ds/src/slots.rs:struct EntrySlot`（`EntrySlot`） | 私域号，`from_index` 守门 |
+| 订阅编号 | `ds_subs[i]` 之位 | `os/servers/ds/src/slots.rs:struct SubSlot`（`SubSlot`） | 两币分家，错表不可表 |
+| 条目分配 | `store.c:11-22` | `os/servers/ds/src/slots.rs:fn alloc_entry_slot` | 首适应，满即 `None` |
+| 订阅分配 | `store.c:27-38` | `os/servers/ds/src/slots.rs:fn alloc_sub_slot` | 同式，宽表 256 |
+| 订阅释放 | `store.c:43-52` | `os/servers/ds/src/slots.rs:fn free_sub_slot（L125，工具生成）` | 有旗方释，释即 `None` |
+| 名比 | `store.c:65,100` | `os/servers/ds/src/slots.rs:fn key_eq（L137，工具生成）`（`key_eq`） | 双截后比 |
+| 名型双判 | `store.c:57-70` | `os/servers/ds/src/slots.rs:fn lookup_entry（L155，工具生成）` | 门 → 交 → 名 |
+| 端点反查 | `store.c:75-88` | `os/servers/ds/src/slots.rs:fn lookup_label_entry（L172，工具生成）` | 门 → 臂 → 数等 |
+| 主名找订 | `store.c:93-105` | `os/servers/ds/src/slots.rs:fn lookup_sub（L195，工具生成）` | 门 → 主等 |
 
 ### 4.3 不变量
 
@@ -153,6 +153,6 @@ plan §2 把 `store.rs` 写成 04 的 Rust 模块——容易误会，特此澄�
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:11-105`、`store.h:11-13`
+- C 源：`minix3/minix/servers/ds/store.c:alloc_data_slot`、`store.h:11-13`
 - 阶段文档：`03-ds-data-structures.md`（上一站）、`05-ds-identity-auth.md`（下一站）、`11-ds-getsysinfo.md`（顺序即契约的消费者）
 - Rust 实现：`os/servers/ds/src/slots.rs`

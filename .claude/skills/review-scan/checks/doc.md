@@ -324,6 +324,11 @@
 **Pass condition**: Ch1 subject = CPU/OS, outline = architecture perspective, direction = WHY→WHAT→HOW.
 **⛔ Ch1 subject = function name → P1 (pattern 51). Ch1 outline = function names → P1.**
 
+**读者复述测试（必答产物，2026-09-18 H1 提级，对应 checklist §1.Ch1 1.3）**:
+1. 审阅者**合上代码**，用机制语言写一段 Ch1 复述（一页以内，结论进 structure.md §11）——不是抄 Ch1，也不是函数名替换游戏
+2. 判定：能说出"解决什么矛盾、状态怎么转、边界在哪" → ✅；说不出 → **教学类 P1**（新增/触碰章节必须修复或写明延期理由，存量登记）
+3. 复述结论与卡点（"复述在 X 处卡住"）在 scan.md §structure.md 评审与 Issue List **单列**
+
 ---
 
 ## Check 14: Explanation Causal Chain Validation（解释因果链验证，P0）

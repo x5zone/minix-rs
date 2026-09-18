@@ -43,18 +43,18 @@ C 的 VM 用文件级全局承载一切：`enable_filemap`、`total_pages`、`nu
 
 ### 2.3 区域与缓存旗标（region.h / cache 侧）
 
-VR_WRITABLE/VR_ANON/VR_SHARED（region.h，`VrFlags`）驱动 pr_writable 判定与 fork 共享语义；VMSF_ONCE（cache 侧）标记一次性缓存页——mapcache 检查的是**条目**的 once（mem_cache.c:149）而非请求 flags（24-P0-1）；VMC_NO_INODE=0 是 find/add 的"无 inode"哨兵（其安全性依赖 dev=0 非法）。
+VR_WRITABLE/VR_ANON/VR_SHARED（region.h，`VrFlags`）驱动 pr_writable 判定与 fork 共享语义；VMSF_ONCE（cache 侧）标记一次性缓存页——mapcache 检查的是**条目**的 once（minix3/minix/servers/vm/mem_cache.c:do_mapcache（L149，工具生成））而非请求 flags（24-P0-1）；VMC_NO_INODE=0 是 find/add 的"无 inode"哨兵（其安全性依赖 dev=0 非法）。
 
 ## 3 Rust 设计决策
 
-1. **常量权威位置判据**：跨 crate 消费 → minix-types（NR_VM_CALLS/endpoint 编码/SIG*）；crate 内 → 就近模块（MMAP_BASE/VM_MMAPTOP 留 mmap.rs:203-204，glo 全局留 global.rs）。判据 = 是否被第二个 crate 消费。
+1. **常量权威位置判据**：跨 crate 消费 → minix-types（NR_VM_CALLS/endpoint 编码/SIG*）；crate 内 → 就近模块（MMAP_BASE/VM_MMAPTOP 留 os/servers/vm/src/mmap.rs:const MMAP_BASE，glo 全局留 global.rs）。判据 = 是否被第二个 crate 消费。
 2. **哨兵类型化**：MAP_NONE/NO_MEM → `Option`/`Result`；NO_INODE → `Option<u64>`；两态 `PageSlot`（V12-P2-4 删除 Reserved 懒占位后 Empty/Mapped 显式区分，P0-1 的回归锚）。
 3. **endpoint 代际编码**：`from_generation_slot/slot` 互逆 const fn（minix-types）——跨服务器消息以 endpoint 寻址，`vm_isokendpt` 是"endpoint → 槽位"的唯一校验门。
 4. **单源化先例**：NR_VM_CALLS、VM_CACHE 常量族收敛 minix-types；新常量入库前先回答"第二个消费者是谁"。
 
 ## 4 实现详解
 
-常量与静态量的定义点：调用号/回复结构（minix-types ipc/vm.rs）、PAF 旗标（phys_mem/types.rs:80-92）、VR 旗标（region/vir_region.rs:27 起）、VMSF_ONCE/VMC_NO_INODE（page_cache.rs:42-48）、glo 三件（global.rs）、FILEMAP_ENABLED（mmap.rs:137）、VM_MMAPBASE 等价（mmap.rs:203-204，ARCH A-6 固定 0x1_0000_0000 窗口）。每个定义点带 C 锚点注释。
+常量与静态量的定义点：调用号/回复结构（minix-types ipc/vm.rs）、PAF 旗标（phys_mem/types.rs:80-92）、VR 旗标（region/vir_region.rs:27 起）、VMSF_ONCE/VMC_NO_INODE（os/servers/vm/src/page_cache.rs:const VMC_NO_INODE）、glo 三件（global.rs）、FILEMAP_ENABLED（os/servers/vm/src/mmap.rs:static FILEMAP_ENABLED）、VM_MMAPBASE 等价（os/servers/vm/src/mmap.rs:const MMAP_BASE，ARCH A-6 固定 0x1_0000_0000 窗口）。每个定义点带 C 锚点注释。
 
 ## 5 测试点
 

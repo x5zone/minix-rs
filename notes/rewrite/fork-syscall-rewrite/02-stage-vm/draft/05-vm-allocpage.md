@@ -236,7 +236,7 @@ vm_allocpage()
 
 ### 2.4 递归链分析
 
-`vm_allocpage` 的递归不是来自 `alloc_mem`（纯 bitmap 操作），而是来自 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)）。完整递归链（[pagetable.c:333-393](minix3/minix/servers/vm/pagetable.c#L333-L393) → [pagetable.c:494-540](minix3/minix/servers/vm/pagetable.c#L494-L540)）：
+`vm_allocpage` 的递归不是来自 `alloc_mem`（纯 bitmap 操作），而是来自 `vm_mappages`（详见 [07-pagetable-ops.md §2.3.3](07-pagetable-ops.md#2333-vm_mappages---分配虚拟地址并建立映射)）。完整递归链（[minix3/minix/servers/vm/pagetable.c:vm_allocpages](minix3/minix/servers/vm/pagetable.c#L333-L393) → [minix3/minix/servers/vm/pagetable.c:pt_ptalloc](minix3/minix/servers/vm/pagetable.c#L494-L540)）：
 
 ```
 vm_allocpages()                          [level = 1]
@@ -259,7 +259,7 @@ vm_allocpages()                          [level = 1]
                                 └── level > 1 → vm_getsparepage()
 ```
 
-**关键代码** — `pt_ptalloc`（[pagetable.c:494-523](minix3/minix/servers/vm/pagetable.c#L494-L523)）：
+**关键代码** — `pt_ptalloc`（[minix3/minix/servers/vm/pagetable.c:pt_ptalloc](minix3/minix/servers/vm/pagetable.c#L494-L523)）：
 
 ```c
 static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
@@ -294,7 +294,7 @@ static int pt_ptalloc(pt_t *pt, int pde, u32_t flags)
 
 关键点在于 `vm_mappages` 硬编码操作 VM 自己的页表（`&vmprocess->vm_pt`），所以内层 `pt_ptalloc` 永远操作 `vmprocess->vm_pt`。如果外层 `pt_ptalloc` 操作的也是 `vmprocess->vm_pt`（如 `pt_init` 中），那么外层和内层操作同一个页表结构。此时 `findhole` 返回的 VA 可能落在外层正在处理的 PDE 范围内——内层 `pt_ptalloc` 先于外层设置了 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`。当递归返回、外层 `pt_ptalloc` 继续执行时，发现 `pt->pt_pt[pde]` 已经非空——说明内层递归已经替它完成了页表分配，于是释放自己刚拿到的页，直接返回 OK。
 
-关键证据在 `pt_init()` 的结尾（[pagetable.c:1088](minix3/minix/servers/vm/pagetable.c#L1088) 定义，[1311-1327](minix3/minix/servers/vm/pagetable.c#L1311-L1327) 关键逻辑）：
+关键证据在 `pt_init()` 的结尾（[minix3/minix/servers/vm/pagetable.c:pt_init](minix3/minix/servers/vm/pagetable.c#L1088) 定义，[1311-1327](minix3/minix/servers/vm/pagetable.c#L1311-L1327) 关键逻辑）：
 
 ```c
 pt_init_done = 1;
@@ -308,7 +308,7 @@ while(vm_getsparepage(&phys)) ;         /* Use up all static pages */
 alloc_cycle();                          /* Refill spares with dynamic */
 ```
 
-`pt_init_done = 1` 标志着 VM 页表初始化完成，可以走正常分配路径。但 Minix3 并不就此停止——它还要替换掉初始化阶段使用的静态备用页。源码注释（[pagetable.c:1316-1318](minix3/minix/servers/vm/pagetable.c#L1316-L1318)）解释了原因：
+`pt_init_done = 1` 标志着 VM 页表初始化完成，可以走正常分配路径。但 Minix3 并不就此停止——它还要替换掉初始化阶段使用的静态备用页。源码注释（[minix3/minix/servers/vm/pagetable.c:pt_init（L1316，工具生成）](minix3/minix/servers/vm/pagetable.c#L1316-L1318)）解释了原因：
 
 ```c
 /* We don't want to keep using the bootstrap statically allocated spare
@@ -323,7 +323,7 @@ alloc_cycle();                          /* Refill spares with dynamic */
 2. `while(vm_getsparepage(&phys))`：用光所有静态备用页
 3. `alloc_cycle()`：用动态分配的页重新填充备用池
 
-随后（[pagetable.c:1338-1341](minix3/minix/servers/vm/pagetable.c#L1338-L1341)），Minix3 还用动态分配重建了整个 VM 页表：
+随后（[minix3/minix/servers/vm/pagetable.c:pt_init（L1338，工具生成）](minix3/minix/servers/vm/pagetable.c#L1338-L1341)），Minix3 还用动态分配重建了整个 VM 页表：
 
 ```c
 /* Recreate VM page table with dynamic-only allocations */

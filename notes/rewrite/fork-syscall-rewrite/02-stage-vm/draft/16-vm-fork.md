@@ -306,7 +306,7 @@ map_proc_copy_range() 失败
 
 fork 的完整流程包括 7 个阶段，各阶段在 §2.6-2.9 逐阶段展开。
 
-**Minix3 源码**：`minix3/minix/servers/vm/fork.c:32`，`do_fork(message *msg)`。
+**Minix3 源码**：`minix3/minix/servers/vm/fork.c:do_fork`，`do_fork(message *msg)`。
 
 **伪代码**
 

@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-04，首版完整文档）
 > **定位**: 设备槽位结构与两种编号的换算（阶段 2，核心数据结构；第 01 篇清表循环与第 02 篇门卫的会合点）
-> **源码**: `minix3/minix/servers/input/input.h`（45 行，全部）+ `minix3/minix/servers/input/input.c:22-27`（三个判断宏）+ `input.c:44-80`（正反查函数）
+> **源码**: `minix3/minix/servers/input/input.h`（45 行，全部）+ `minix3/minix/servers/input/input.c:input_ioctl（L22，工具生成）`（三个判断宏）+ `input.c:44-80`（正反查函数）
 > **Rust 模块**: `os/servers/input/src/structs.rs`（表格与换算）、`os/servers/input/src/error.rs`（查找失败的错误码）
 > **目标读者**: 想理解"输入服务记住的每个设备长什么样、两种编号怎么换算"的读者。前置知识：第 01 篇（知道清表循环）、第 02 篇（知道门卫登记的是次设备号）。不需要事件格式知识（第 04 篇）——本章只讲"架子"，架子上挂的事件是什么格式是下一章的事。
 > **本章不讲什么**: 事件结构体每个字段的含义（第 04 篇）；打开、读、选择等操作如何使用这些字段（第 06 至第 08 篇）；驱动到来时槽位的所有权如何变更（第 11 篇）。
@@ -302,5 +302,5 @@ pub fn fresh() -> Self  // 对应 input_init 第 652-662 行的清表循环
 - 第 06 篇 `06-input-open-close.md`：正查失败与活跃判断的使用方。
 - 第 09 篇 `09-input-event-processing.md`：下标校验与队列读写的使用方。
 - `minix3/minix/servers/input/input.h`：本篇全部 C 依据（45 行）。
-- `minix3/minix/servers/input/input.c:22-80`：判断宏与换算函数。
+- `minix3/minix/servers/input/input.c:input_ioctl（L22，工具生成）`：判断宏与换算函数。
 - `os/servers/input/src/structs.rs`：本篇全部 Rust 实现。

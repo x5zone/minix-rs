@@ -28,7 +28,7 @@
 
 ### 1.1 核心问题：RS 的"引导自举"
 
-Minix3 的 boot 顺序（`minix3/minix/kernel/table.c:52-53`）把 RS 放在**第 2 个用户服务**（DS 第一、RS 紧随其后），因为所有其他用户服务（PM/VFS/SCHED/DS/...）都依赖 RS 来获得运行许可与初始化。但反过来，RS 启动时什么设施都没有：
+Minix3 的 boot 顺序（`minix3/minix/kernel/table.c:boot_image（L52，工具生成）`）把 RS 放在**第 2 个用户服务**（DS 第一、RS 紧随其后），因为所有其他用户服务（PM/VFS/SCHED/DS/...）都依赖 RS 来获得运行许可与初始化。但反过来，RS 启动时什么设施都没有：
 
 ```
 RS 需要管理服务生命周期 → 服务需要 RS 允许才能运行 → RS 必须先启动
@@ -203,7 +203,7 @@ int main(void)
 要点：
 
 - **`sef_local_startup()` 是本文档的第一个锚点**（§2.2）：SEF 回调注册完成后，`sef_startup()` 内部通过 IPC 接收 `RS_INIT`/`RS_LU_PREPARE` 并分派到 `sef_cb_init_fresh`（启动期）或 `sef_cb_init_restart`/`sef_cb_init_lu`（恢复期）。
-- **`sys_getmachine(&machine)`**（main.c:53）：把机器信息（处理器数、BSP id、APIC 等，`minix3/minix/include/minix/type.h:122-131`）拷贝到全局 `machine`。Rust 侧外部接口契约归 `19-rs-external-interfaces.md`。
+- **`sys_getmachine(&machine)`**（main.c:53）：把机器信息（处理器数、BSP id、APIC 等，`minix3/minix/include/minix/type.h:machine`）拷贝到全局 `machine`。Rust 侧外部接口契约归 `19-rs-external-interfaces.md`。
 - **主循环骨架**：`rs_idle_period`（06）→ `get_work`（06）→ `rs_isokendpt`（02）→ 分类（§1.4）。**每个 handler 只标注归属，机制不在此展开**。
 - **`EDONTREPLY` 协议**（main.c:125）：handler 返回 `EDONTREPLY` 表示"稍后自行回复"（late reply，06），主循环不代发。`reply(who_e, NULL, &m)` 的第二个参数 `rp` 为 NULL 表示不查 slot（06）。
 
@@ -230,7 +230,7 @@ static void sef_local_startup()
 }
 ```
 
-**注册表语义**（`minix3/minix/include/minix/sef.h`）：`sef_setcb_*` 是 libsys 的全局函数指针赋值；`sef_startup()` 进入 SEF 状态机——启动期接收 `SEF_INIT` 消息（`m_type == RS_INIT`，payload 含 `sef_init_info_t`），按 `info->init_type`（`SEF_INIT_FRESH=0`/`SEF_INIT_LU=1`/`SEF_INIT_RESTART=2`，sef.h:93-95）分派到对应回调。RS 注册全部 7 个回调，是**唯一注册全量的用户态服务**（其他服务只注册自己需要的子集）。7 个回调的机制归属见 §1.3 表。
+**注册表语义**（`minix3/minix/include/minix/sef.h`）：`sef_setcb_*` 是 libsys 的全局函数指针赋值；`sef_startup()` 进入 SEF 状态机——启动期接收 `SEF_INIT` 消息（`m_type == RS_INIT`，payload 含 `sef_init_info_t`），按 `info->init_type`（`SEF_INIT_FRESH=0`/`SEF_INIT_LU=1`/`SEF_INIT_RESTART=2`，minix3/minix/include/minix/sef.h:SEF_INIT_FRESH）分派到对应回调。RS 注册全部 7 个回调，是**唯一注册全量的用户态服务**（其他服务只注册自己需要的子集）。7 个回调的机制归属见 §1.3 表。
 
 ### 2.3 sef_cb_init_fresh()：四步 boot（main.c:158-494）
 
@@ -422,7 +422,7 @@ static void sef_local_startup()
 要点：
 
 - **RS/VM 例外**（main.c:362-373）：这两个服务已在内核中运行（RS 自己、VM 先于 RS 启动），因此不经过 `sched_init_proc` + `SYS_PRIV_ALLOW`，而是直接 `init_service` 自模拟初始化（12）。VM 虽然已运行，**仍会异步发回一条 RS_INIT 消息**，计入 `nr_uncaught_init_srvs`（plan D-5）。
-- **普通服务**（main.c:375-398）：`sched_init_proc`（调度器登记，03）→ `sys_privctl(SYS_PRIV_ALLOW)`（解除运行抑制，03）→ `init_service`（发送 RS_INIT 初始化消息，12）。`SF_SYNCH_BOOT` 标志（rs.h:192）决定同步等待该服务的 init ready 还是累积到 Step 3 统一收。
+- **普通服务**（main.c:375-398）：`sched_init_proc`（调度器登记，03）→ `sys_privctl(SYS_PRIV_ALLOW)`（解除运行抑制，03）→ `init_service`（发送 RS_INIT 初始化消息，12）。`SF_SYNCH_BOOT` 标志（minix3/minix/include/minix/rs.h:SF_SYNCH_BOOT）决定同步等待该服务的 init ready 还是累积到 Step 3 统一收。
 - `init_service`/`catch_boot_init_ready` 机制全部归 12；此处只列调用点与标志判定。
 
 #### 2.3.5 Step 3：收齐剩余 init ready（main.c:401-407）
@@ -580,7 +580,7 @@ static void get_work(m_ptr, status_ptr)
 | `INIT_PROC_NR` | `"init"` | `USR_F`（`BILLABLE|PREEMPTIBLE`） |
 | `NULL_BOOT_NR` | `""` | 0（哨兵） |
 
-**boot_image_sys_table**（table.c:33-42，6 个覆盖项 + DEFAULT 哨兵；`SRVR_SF = SF_CORE_SRV|SF_NEED_REPL`，`VM_SF = SRVR_SF`，`SRV_SF = SF_CORE_SRV`，基 flag 在 rs.h:191/195，派生常量在 const.h:65-68）：
+**boot_image_sys_table**（table.c:33-42，6 个覆盖项 + DEFAULT 哨兵；`SRVR_SF = SF_CORE_SRV|SF_NEED_REPL`，`VM_SF = SRVR_SF`，`SRV_SF = SF_CORE_SRV`，基 flag 在 minix3/minix/include/minix/rs.h:SF_CORE_SRV/195，派生常量在 const.h:65-68）：
 
 | endpoint | flags |
 |----------|-------|
@@ -665,9 +665,9 @@ pub trait SefCallbacks {
 }
 ```
 
-- `SefInitType::{Fresh, Lu, Restart}` 对应 `SEF_INIT_FRESH=0/LU=1/RESTART=2`（sef.h:93-95）。
+- `SefInitType::{Fresh, Lu, Restart}` 对应 `SEF_INIT_FRESH=0/LU=1/RESTART=2`（minix3/minix/include/minix/sef.h:SEF_INIT_FRESH）。
 - `signal_manager` 的签名逐字对照 C 回调类型 `int(*)(endpoint_t target, int signo)`
-  （sef.h:270）：`target` 是信号管理器目标端点、`signo` 是信号号；`target` 用 `Endpoint`
+  （minix3/minix/include/minix/sef.h:IS_SEF_SIGNAL_REQUEST（L270，工具生成））：`target` 是信号管理器目标端点、`signo` 是信号号；`target` 用 `Endpoint`
   newtype 而非裸 `i32`，两个参数在调用点不可互换（R26，todo §18）。
 - **实现者是 `RsServer` 本身**：`impl SefCallbacks for RsServer`。`RsServer::init(init_type)` 对应
   `sef_startup()` 的分派（main.c:151）——按 `init_type` 路由到 `init_fresh`/`init_lu`/
@@ -745,7 +745,7 @@ impl BootInit<'_> {
 
 ### 3.5 外部边界：KernelApi 与五个域面（对应 §2.1/§2.3，外部契约归 19）
 
-C 的 `sys_getmachine`/`sys_getinfo`/`sys_privctl`/`sys_getpriv`/`sys_setalarm`/`getnpid`/`sched_init_proc`/`srv_fork` 等（§2 各调用点）是 libsys 自由函数，但它们**并非发往同一处**：`sys_*` 走 SYSTASK（内核）；`sched_*` 的传输目标是复合的——调度器是 KERNEL 时走 `sys_schedctl` 内核调用，否则是发给调度器端点的 `SCHEDULING_START/STOP` 消息（sched_start.c:46-88、sched_stop.c:9-28，本重写里调度器是 SCHED 服务器）；`getnpid`/`getnuid`/`srv_fork`/`setuid` 等走 `_taskcall(PM_PROC_NR, ...)`；`vm_*` 走 VM；接收与回复是 RS 自己的 IPC 面。Rust 侧**本模块不直接调用 `minix-sys`**（其 stub 未实现，`os/libs/minix-sys/src/lib.rs`），而是把这四个传输目标加自身 IPC 建模为五个窄域面，`KernelApi` 是它们的并集（supertrait 组合，R9/E-2）：
+C 的 `sys_getmachine`/`sys_getinfo`/`sys_privctl`/`sys_getpriv`/`sys_setalarm`/`getnpid`/`sched_init_proc`/`srv_fork` 等（§2 各调用点）是 libsys 自由函数，但它们**并非发往同一处**：`sys_*` 走 SYSTASK（内核）；`sched_*` 的传输目标是复合的——调度器是 KERNEL 时走 `sys_schedctl` 内核调用，否则是发给调度器端点的 `SCHEDULING_START/STOP` 消息（minix3/minix/lib/libsys/sched_start.c:sched_start、minix3/minix/lib/libsys/sched_stop.c:sched_stop，本重写里调度器是 SCHED 服务器）；`getnpid`/`getnuid`/`srv_fork`/`setuid` 等走 `_taskcall(PM_PROC_NR, ...)`；`vm_*` 走 VM；接收与回复是 RS 自己的 IPC 面。Rust 侧**本模块不直接调用 `minix-sys`**（其 stub 未实现，`os/libs/minix-sys/src/lib.rs`），而是把这四个传输目标加自身 IPC 建模为五个窄域面，`KernelApi` 是它们的并集（supertrait 组合，R9/E-2）：
 
 ```rust
 pub trait SysApi {
@@ -781,12 +781,12 @@ impl<T> KernelApi for T where T: SysApi + SchedApi + PmApi + VmApi + IpcApi {}
 
 `&mut dyn KernelApi` 的调用点不变——supertrait 方法经组合对象的 vtable 直接可调；拆分的收益是"这条调用发给谁"在类型上可见，且 19 接线可以按面逐个实现传输（内核面配 minix-sys 的 SYS_* 包装、PM 面配 PM 消息构造……），测试也可以只实现被测的那个面（`test_domain_face_implementable_in_isolation`）。
 
-`sched_init_proc` 的签名值得单独说明：C 的 `sched_start`（sched_start.c:37-80）需要
+`sched_init_proc` 的签名值得单独说明：C 的 `sched_start`（minix3/minix/lib/libsys/sched_start.c:sched_inherit（L37，工具生成））需要
 scheduler/priority/quantum/cpu 全部四个参数，且回写 `*newscheduler_e`（可能被转发到别的调度器），
 所以 Rust 侧收 `&SchedulerConfig`（sched.rs，携带全部参数）并返回 `Result<Endpoint, Errno>`。
 boot Step 2 用 `SchedulerConfig::boot_defaults` 构造（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/
 `SRV_QT=USER_QUANTUM=200`，priv.h:88,93,98 + config.h:69,74）；NONE 调度器短路
-（sched_start.c:45-47）在纯函数 `sched::sched_decision` 内实现，不触面（T5 定案）：
+（minix3/minix/lib/libsys/sched_start.c:sched_inherit（L45，工具生成））在纯函数 `sched::sched_decision` 内实现，不触面（T5 定案）：
 `sched_decision(cfg, is_sys_proc) -> SchedAction::{Skip, Start(&cfg)}`，shell（boot Step 2 /
 19 接线）执行 `Start` → `sched_init_proc(cfg)` 并取回新调度器端点。
 
@@ -917,7 +917,7 @@ impl RsServer {
 
 模块导出三个结构 + 三张静态表：
 
-- `BootImagePriv { endpoint, label, flags }`——C `struct boot_image_priv`（type.h），flags 对应 `RSYS_F`/`VM_F`/`SRV_F`/`USR_F`（`minix3/minix/include/minix/priv.h:45-49`）。
+- `BootImagePriv { endpoint, label, flags }`——C `struct boot_image_priv`（type.h），flags 对应 `RSYS_F`/`VM_F`/`SRV_F`/`USR_F`（`minix3/minix/include/minix/priv.h:SRV_F`）。
 - `BootImageSys { endpoint, flags }` / `BootImageDev { endpoint, dev_nr }`——sys/dev 表条目。
 - 静态表常量：`BOOT_IMAGE_PRIV_TABLE`（12 项，对应 table.c:17-28，无哨兵——遍历即终止）、`BOOT_IMAGE_SYS_TABLE`（6 项 + `DEFAULT_SYS` 默认条目，对应 table.c:35-41）、`BOOT_IMAGE_DEV_TABLE`（2 项 + `DEFAULT_DEV`，对应 table.c:47-49）。
 

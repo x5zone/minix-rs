@@ -38,7 +38,7 @@ fork 是次主线：PM 在进程创建时发 `VFS_PM_FORK`，VFS 复制 fproc �
 
 ### 1.3 服务面：三个数字
 
-64 个 VFS 系统调用（`table.c` 的 `call_vec`，`VFS_BASE 0x100` 起）、12 个 VFS_PM 控制请求（`com.h:520-531`，`VFS_PM_RQ_BASE 0x900`）、33 个活 `REQ_*` 文件系统请求（`vfsif.h:41-73`，`FS_BASE 0xA00`——绝对值是 wire 契约，见 12 号的历史教训）。三个数字各自的单一事实源分别是 `call_table.rs`、`minix-types/src/ipc/vfs.rs`、`request.rs`。
+64 个 VFS 系统调用（`table.c` 的 `call_vec`，`VFS_BASE 0x100` 起）、12 个 VFS_PM 控制请求（`com.h:520-531`，`VFS_PM_RQ_BASE 0x900`）、33 个活 `REQ_*` 文件系统请求（`minix3/minix/include/minix/vfsif.h:REQ_GETNODE`，`FS_BASE 0xA00`——绝对值是 wire 契约，见 12 号的历史教训）。三个数字各自的单一事实源分别是 `call_table.rs`、`minix-types/src/ipc/vfs.rs`、`request.rs`。
 
 ### 1.4 设计原则（全阶段文档共守）
 

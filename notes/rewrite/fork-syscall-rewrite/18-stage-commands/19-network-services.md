@@ -162,9 +162,9 @@ Rust 侧 `fetch.rs` 的定位符解析（方案、主机、端口、路径四段
 - `18-network-config.md`——网络配置（本篇的前置：先连通）
 - `20-minix-system.md`——系统信息（下一步：观察系统）
 - `17-stage-net`——套接字接口（本篇守护的另一端）
-- `minix3/usr.sbin/inetd/inetd.c:276-348`——服务表（`inetd.rs` 的形状来源）
-- `minix3/usr.sbin/syslogd/syslogd.c:130-1488`——动作与优先级（`syslog.rs` 的解码来源）
-- `minix3/minix/commands/fetch/fetch.c:859`——用法行（`fetch.rs` 的解析来源）
+- `minix3/usr.sbin/inetd/inetd.c:OPEN_MAX`——服务表（`inetd.rs` 的形状来源）
+- `minix3/usr.sbin/syslogd/syslogd.c:F_FILE`——动作与优先级（`syslog.rs` 的解码来源）
+- `minix3/minix/commands/fetch/fetch.c:usage`——用法行（`fetch.rs` 的解析来源）
 
 ---
 

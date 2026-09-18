@@ -1,7 +1,7 @@
 # 07 — 系统信息库鉴权模型：每个请求最多向进程管理器查询一次，处处复用结果
 
 > **分类**: 权限模型 / 门禁 verdict
-> **源码**: `minix3/minix/servers/mib/main.c:259-275`（`mib_authed`）、`minix3/minix/servers/mib/tree.c:115,500-511,848-852,934,995-1004,1228,1389,1447-1456`（九处门）、`minix3/minix/include/minix/const.h:44`（`SUPER_USER`）
+> **源码**: `minix3/minix/servers/mib/main.c:mib_relay_newp（L259，工具生成）`（`mib_authed`）、`minix3/minix/servers/mib/tree.c:mib_copyout_node（L115，工具生成）,500-511,848-852,934,995-1004,1228,1389,1447-1456`（九处门）、`minix3/minix/include/minix/const.h:SUPER_USER`（`SUPER_USER`）
 > **说明**: 决定谁可查看、私有节点是否可见、谁可写入、谁可改变树结构：每个系统控制请求最多向进程管理器查询一次是否为超级用户，结果在本次请求内缓存，后续九处检查只读缓存。读检查管可见性，写检查含两道权限杠，结构变更检查先验证身份再验证父节点可写性。
 
 ---
@@ -144,6 +144,6 @@ os/servers/mib/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/main.c:259-275`、`minix3/minix/servers/mib/tree.c:115,500-511,848-852,934,1228,1389,1447-1456`、`minix3/minix/include/minix/const.h:44`
+- C 源：`minix3/minix/servers/mib/main.c:mib_relay_newp（L259，工具生成）`、`minix3/minix/servers/mib/tree.c:mib_copyout_node（L115，工具生成）,500-511,848-852,934,1228,1389,1447-1456`、`minix3/minix/include/minix/const.h:SUPER_USER`
 - 阶段文档：`02-mib-message-contract.md`（标志值）、`03-mib-node-model.md`（谓词）、`08-mib-dynamic-nodes.md`（下一站，创建/销毁）、`09-mib-data-access.md`（写门调用）、`10-mib-dispatch.md`（下钻/写门调用）、`11-mib-query-describe.md`（可见性调用）
 - Rust 实现：`os/servers/mib/src/auth.rs`

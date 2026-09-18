@@ -213,7 +213,7 @@
 
 ### 6.1 进程表（`struct proc`）字段分组
 
-ground truth：`minix3/minix/kernel/proc.h:22-`（struct proc 约 60+ 字段，含嵌套结构）。建议分为以下几组：
+ground truth：`minix3/minix/kernel/proc.h:proc-`（struct proc 约 60+ 字段，含嵌套结构）。建议分为以下几组：
 
 | 分组 | 代表字段 | 完成的 OS 语义 | 后续文档引用 |
 |------|---------|--------------|-------------|
@@ -290,7 +290,7 @@ ground truth：`minix3/minix/kernel/proc.h:22-`（struct proc 约 60+ 字段，�
 
 ### 6.2 特权表（`struct priv`）字段分组
 
-ground truth：`minix3/minix/kernel/priv.h:20-65`（struct priv 31 字段）。建议沿用 22-privilege.md §1.1 已有的 6 组划分（C 端字段按职责分组，保持一致性；22 §4.2 Rust 端是 **8 子结构**——见 §6.2.0「存储策略」段说明两者如何对应）：
+ground truth：`minix3/minix/kernel/priv.h:priv（L20，工具生成）`（struct priv 31 字段）。建议沿用 22-privilege.md §1.1 已有的 6 组划分（C 端字段按职责分组，保持一致性；22 §4.2 Rust 端是 **8 子结构**——见 §6.2.0「存储策略」段说明两者如何对应）：
 
 | 分组 | 代表字段 | 完成的 OS 语义 | 后续文档引用 |
 |------|---------|--------------|-------------|
@@ -561,16 +561,16 @@ Ch5 测试矩阵与真实代码 `rg "#\[test\]"` 核对，保留代表性测试�
 | 01 | P1 | `lib.rs:767` → `812` (`init_proc_and_boot`) | +45  | `[lib.rs:767]→[lib.rs:812]`×2 |
 | 02 | P1 | `lib.rs:1329` → `1459` (`static PROC_TABLE`) | +130 | `lib.rs:1329→1459`（裸表+`#L`） |
 | 03 | P1 | `lib.rs:1334` → `1464` (`static PRIV_TABLE`) | +130 | 同上 |
-| 04 | P1 | `capability.rs:131` → `167` (`CapabilityTemplate` enum) | +36 | `capability.rs:131→167` |
-| 05 | P1 | `proc.rs:1597` → `1678` (`child.fpu_state = parent.fpu_state`) | +81 | `proc.rs:1597→1678`（`};`→实质行） |
+| 04 | P1 | `os/kernel/src/capability.rs:fn to_wire（L131，工具生成）` → `167` (`CapabilityTemplate` enum) | +36 | `os/kernel/src/capability.rs:fn to_wire（L131，工具生成）→167` |
+| 05 | P1 | `os/kernel/src/proc.rs:fn fork_from（L1597，工具生成）` → `1678` (`child.fpu_state = parent.fpu_state`) | +81 | `os/kernel/src/proc.rs:fn fork_from（L1597，工具生成）→1678`（`};`→实质行） |
 | 06 | P2 | `arch/boot.rs:142` → `145` (`CpuContextArch` trait) | +3 | `boot.rs:142→145` |
-| 07 | P2 | `proc.rs:546` → `551` (`SchedFields`) | +5 | `proc.rs:546→551` |
-| 08 | P2 | `proc.rs:591` → `596` (`Accounting`) | +5 | `proc.rs:591→596` |
-| 09 | P2 | `proc.rs:673` → `678` (`TimeStats`) | +5 | `proc.rs:673→678` |
-| 10 | P2 | `proc.rs:739` → `744` (`CyclesStats`) | +5 | `proc.rs:739→744` |
-| 11 | P2 | `proc.rs:112` → `117` (`KERNEL_TASKS`) | +5 | `proc.rs:112→117` |
-| 12 | P2 | `proc.rs:125` 残留间接 | +10 | 复验 `BOOT_MODULE_PROC_NRS:135` 无残留 |
-| 13 | P2 | `kpriv.rs:975` → `995` (`grant_capability`) | +20 | `kpriv.rs:975→995` |
+| 07 | P2 | `os/kernel/src/proc.rs:fn new（L546，工具生成）` → `551` (`SchedFields`) | +5 | `os/kernel/src/proc.rs:fn new（L546，工具生成）→551` |
+| 08 | P2 | `os/kernel/src/proc.rs:fn reset（L591，工具生成）` → `596` (`Accounting`) | +5 | `os/kernel/src/proc.rs:fn reset（L591，工具生成）→596` |
+| 09 | P2 | `os/kernel/src/proc.rs:fn tick_virt_timer（L673，工具生成）` → `678` (`TimeStats`) | +5 | `os/kernel/src/proc.rs:fn tick_virt_timer（L673，工具生成）→678` |
+| 10 | P2 | `os/kernel/src/proc.rs:fn add_kipc_cycles（L739，工具生成）` → `744` (`CyclesStats`) | +5 | `os/kernel/src/proc.rs:fn add_kipc_cycles（L739，工具生成）→744` |
+| 11 | P2 | `os/kernel/src/proc.rs:const BOOT_MODULE_PROC_NRS（L112，工具生成）` → `117` (`KERNEL_TASKS`) | +5 | `os/kernel/src/proc.rs:const BOOT_MODULE_PROC_NRS（L112，工具生成）→117` |
+| 12 | P2 | `os/kernel/src/proc.rs:const PROC_STOP` 残留间接 | +10 | 复验 `BOOT_MODULE_PROC_NRS:135` 无残留 |
+| 13 | P2 | `os/kernel/src/kpriv.rs:fn set_sendto_bit（L975，工具生成）` → `995` (`grant_capability`) | +20 | `os/kernel/src/kpriv.rs:fn set_sendto_bit（L975，工具生成）→995` |
 
 **验证**：`rg "lib.rs:767\b|…"` → 0 残留；`rg "os/os/"` → 0；`cargo check -p minix-kernel` ✅；`cargo test -p minix-kernel -p minix-arch` 809 passed。
 
@@ -658,7 +658,7 @@ Ch5 测试矩阵与真实代码 `rg "#\[test\]"` 核对，保留代表性测试�
 | **3.0 核心原则** | 🟢 知识 | 🟡 偏多 | P1-P7 7 行表 + rewrite vs translate + Option vs flag 4 行 + error 3 行，虽为原则，但 `initial_pc=0 零值哨兵→Option` 等示例可压 10→6 行。 |
 | **3.1 进程表** | 🟡 中 | 🟡 偏多 | 零堆/BKL 约束驱动 + 指针→索引 3 行表（含“LOCK前缀+mfence 但编译器重排仍可能”深注）+ 边界检查 + 全局存储 `SyncUnsafeCell` 白名单论证，知识点但已成 **15 行 API 说明书**。可保留，但本质理由列可压 6→3 句。 |
 | **3.1.1 资源所有权** | 🔴 **论文** | 🔴 过细 | 整个小节是 **Rust Drop 陷阱论文**（状态/身份引用/arch缓冲 表 + 3 后果 `dispatch_clear`/`swap_slots`/`panic` 报警 + 互补论断）。读者关心“阶段C怎么把表填好”，不关心 `procs[i]=new` 隐式 drop 陷阱。**应大幅精简为“`KProcess` 只含可覆盖状态与身份引用，手写 Drop 仅报警”一段 + 指 17**，现状 30 行是为 A1 “单一难概念”硬塞的百科。 |
-| **3.2 特权表** | 🟡 轻 | 🟡 偏多 | `CapabilityTemplate` enum 块 + 两层职责注记（含 `kpriv.rs:1021-1032` 3 测试）是 **API 规约**，下放权重高。Ch3 只需“5 模板给角色默认值，特例按 proc_nr 覆写”一句，细节应在 22/§4.5。 |
+| **3.2 特权表** | 🟡 轻 | 🟡 偏多 | `CapabilityTemplate` enum 块 + 两层职责注记（含 `os/kernel/src/kpriv.rs:fn fill_sendto_mask（L1021，工具生成）` 3 测试）是 **API 规约**，下放权重高。Ch3 只需“5 模板给角色默认值，特例按 proc_nr 覆写”一句，细节应在 22/§4.5。 |
 | **3.3 RTS** | 🟡 中 | 🔴 过细 | 60 行，`(一)概念结论 (二)裸/封装双路径 (三)Acquire vs Relaxed 类型+内存序 + 未来防御` 已成 **并发教程**。虽为正确深度，但 Stage C 读者无需为 `p_nextready` 选择 `Relaxed` 的完整 Happens-Before 推导。应压为“BKL 串行化写，Atomic 跨域读，Relaxed 够因持 BKL”一段，推导留 11/16。 |
 | **3.4 ProcKind+EntrySpec** | 🔴 **开发文档** | 🔴 过细 | 2 code block + Option 为什么 + 局限 + 为什么不合并 5 变体表，是 **Rust 类型设计说明书**。读者关心“清单按 proc 号落槽”，`ProcKind` 5 元只是实现。应缩为一段。 |
 | **3.5 CpuContextArch** | 🔴 **开发文档** | 🔴 过细 | 6 行 C→OS→Rust 映射表 + trait code block + 5 段为什么（非法状态/关联类型…），是 **API 规约**。Ch3 只需一句话定位，细节属 10/14。 |

@@ -72,7 +72,7 @@
 
 ### 2.1 节点管理 `node.c`（`node.c:20-83`）
 
-初始化清位图（`node.c:20-25`）。存节点（`node.c:32-44`）：越界报无内存，置位，拷贝记录，存在即更新。删节点（`node.c:51-55`）：清位，恒成功。读节点（`node.c:61-69`）：越界或未置位报空，否则交指针。取上限（`node.c:75-83`）：恒返配置数，注释写明配置够小所以不跟踪实际水位。
+初始化清位图（`node.c:20-25`）。存节点（`minix3/minix/fs/ptyfs/node.c:init_nodes（L32，工具生成）`）：越界报无内存，置位，拷贝记录，存在即更新。删节点（`minix3/minix/fs/ptyfs/node.c:clear_node`）：清位，恒成功。读节点（`minix3/minix/fs/ptyfs/node.c:node_data`）：越界或未置位报空，否则交指针。取上限（`minix3/minix/fs/ptyfs/node.c:get_node（L75，工具生成）`）：恒返配置数，注释写明配置够小所以不跟踪实际水位。
 
 ### 2.2 名字转换（`ptyfs.c:54-100`）
 

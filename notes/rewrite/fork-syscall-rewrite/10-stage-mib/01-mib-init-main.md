@@ -223,7 +223,7 @@ C 的 `mib_sysctl` 是 6 步一气呵成（含两次效果：长名字拷贝 `:3
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/main.c:277-379,415-492`、`minix3/minix/include/minix/com.h:90-95,1022-1030`、`minix3/minix/include/minix/ipc.h:15,424-433,1548-1552`、`minix3/sys/sys/sysctl.h:75`、`minix3/minix/kernel/table.c:60`、`minix3/minix/kernel/main.c:265-267`
+- C 源：`minix3/minix/servers/mib/main.c:mib_authed（L277，工具生成）,415-492`、`minix3/minix/include/minix/com.h:NOTIFY_MESSAGE,1022-1030`、`minix3/minix/include/minix/ipc.h:CTL_SHORTNAME,424-433,1548-1552`、`minix3/sys/sys/sysctl.h:CTL_MAXNAME`、`minix3/minix/kernel/table.c:boot_image（L60，工具生成）`、`minix3/minix/kernel/main.c:kmain（L265，工具生成）`
 - 阶段文档：`02-mib-message-contract.md`（下一站，协议面）、`04-mib-static-tree-init.md`（`mib_init` 本体）、`06-mib-copy-io.md`（拷贝效果）、`10-mib-dispatch.md`（handler 调用）、`../07-stage-ds/01-ds-init-main.md`（同形状先例：七封信 vs 三封信、猜 notify vs 听 notify、保资产 vs 保骨架）
 - Rust 实现：`os/servers/mib/src/dispatch.rs`、`os/servers/mib/src/sef.rs`、`os/libs/minix-types/src/types/com.rs`（MIB 号段）
 - 对端：`../01-stage-kernel/09-vm-boot-protocol.md`（抑制解除链）、`../01-stage-kernel/12-ipc-core.md`（收发原语，落地后接循环）

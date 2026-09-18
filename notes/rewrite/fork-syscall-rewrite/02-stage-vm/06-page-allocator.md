@@ -1,8 +1,8 @@
 # 06-page-allocator: VM 自身页分配——双地址问题的 Direct Map 解
 
 > **分类**: 阶段 3 — 页与页表（页分配锚点）
-> **源码**: `minix3/minix/servers/vm/pagetable.c:34-489`（`vm_*` 自用页函数族 + `findhole`）；`minix3/minix/servers/vm/alloc.c:56-237`（`reservedqueue_*` + `alloc_cycle` + `missing_spares`）；`minix3/minix/servers/vm/main.c:112-119,745-746`（主循环调用点）；`minix3/minix/servers/vm/pagetable.c:1088-1161,1311-1345`（`pt_init` 备用页建立与替换）
-> **Rust 模块**: `os/servers/vm/src/alloc_page.rs`（`VmPageAllocator` + `vm_pt_alloc`）+ `os/servers/vm/src/global.rs:356-380`（`page_alloc_mut`）+ `os/servers/vm/src/vm_server.rs:54-70,102-107,416-428`（压力计数 + 注册 + 主循环钩子）+ `os/servers/vm/src/direct_map.rs`（A-1 基础）+ `os/servers/vm/src/heap_arena.rs:88-177`（消费方）+ `os/servers/vm/src/pagetable/vm_self_map.rs:127-135`（`vm_self_query`）
+> **源码**: `minix3/minix/servers/vm/pagetable.c:_SYSTEM（L34，工具生成）`（`vm_*` 自用页函数族 + `findhole`）；`minix3/minix/servers/vm/alloc.c:RESERVEDMAGIC`（`reservedqueue_*` + `alloc_cycle` + `missing_spares`）；`minix3/minix/servers/vm/main.c:main（L112，工具生成）,745-746`（主循环调用点）；`minix3/minix/servers/vm/pagetable.c:pt_init,1311-1345`（`pt_init` 备用页建立与替换）
+> **Rust 模块**: `os/servers/vm/src/alloc_page.rs`（`VmPageAllocator` + `vm_pt_alloc`）+ `os/servers/vm/src/global.rs:fn test_free_list_alignment_variants（L356，工具生成）`（`page_alloc_mut`）+ `os/servers/vm/src/vm_server.rs:54-70,102-107,416-428`（压力计数 + 注册 + 主循环钩子）+ `os/servers/vm/src/direct_map.rs`（A-1 基础）+ `os/servers/vm/src/heap_arena.rs:fn mapped_bytes（L88，工具生成）`（消费方）+ `os/servers/vm/src/pagetable/vm_self_map.rs:fn query（L127，工具生成）`（`vm_self_query`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理分配器 `alloc_mem/free_mem`）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（Direct Map `[ARCH: A-1]` 的页表侧承接）
 > **说明**: VM 自身页分配语义模块：**`vm_allocpage/vm_allocpages/vm_mappages/vm_freepages`（自用页分配/映射/释放）、`vm_pagelock/vm_addrok`（写保护/校验）、备用页池消费方（`vm_getsparepage` 路径、`alloc_cycle` 主循环接线、`missing_spares` 记账）、`get_vm_self_pages`（自用页计数）**。**V12-P2-4 注记（2026-09-09）**：Rust 侧的 `missing_spares`/`mark_alloc_failure`/`alloc_cycle` 主循环链已删除——spare-pool/reservedqueue 机制被 Direct Map 结构性消除（[ARCH: A-1]，§3.3），该链亦无生产写入点；分配路径的回收重试由 `alloc_pfn_reclaiming`（V11/T30）承接。本篇保留的 C 侧机制分析不受影响。**不覆盖**：物理分配器本体（05）、`pt_t` 结构与 Direct Map 双视图（07）、pt 操作 `pt_writemap` 等（08）、slab/HeapArena 消费流程（09）、页缓存回收 `cache_freepages`（24）。
 
@@ -39,7 +39,7 @@ VM 自己也是一个进程。它分配的任何自用页都有两个消费者�
 
 ### 1.2 递归链：映射页表页需要页表
 
-完整递归链（pagetable.c:333-393 → 494-528）：
+完整递归链（minix3/minix/servers/vm/pagetable.c:vm_allocpages → 494-528）：
 
 ```
 vm_allocpages()                          [level = 1]
@@ -57,7 +57,7 @@ vm_allocpages()                          [level = 1]
 
 ### 1.3 C 的两阶段方案：备用页池（自举）→ 动态分配（稳态）
 
-Minix3 用 `pt_init_done` 标志（pagetable.c:328/1311）划分两个阶段：
+Minix3 用 `pt_init_done` 标志（minix3/minix/servers/vm/pagetable.c:vm_mappages（L328，工具生成）/1311）划分两个阶段：
 
 | 条件 | 路径 | 说明 |
 |------|------|------|
@@ -65,15 +65,15 @@ Minix3 用 `pt_init_done` 标志（pagetable.c:328/1311）划分两个阶段：
 | `level > 1` | `vm_getsparepage()` | 递归重入：避免 `vm_mappages → pt_ptalloc → vm_allocpage` 无限递归 |
 | `pt_init_done && level == 1` | `alloc_mem()` + `vm_mappages()` | 稳态：正常动态分配 |
 
-备用页的 VA 来自 BSS 段静态数组 `static_sparepages`（pagetable.c:108），内核加载 VM 时已映射——**VA 编译期确定，不需要 findhole**。这是它打破递归的原因。
+备用页的 VA 来自 BSS 段静态数组 `static_sparepages`（minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L108，工具生成）），内核加载 VM 时已映射——**VA 编译期确定，不需要 findhole**。这是它打破递归的原因。
 
 ### 1.4 备用页池的本质：自举循环依赖的打破（非稳态供应）
 
-pagetable.c:55-57 的注释明言备用页的用途：
+minix3/minix/servers/vm/pagetable.c:vmproc（L55，工具生成） 的注释明言备用页的用途：
 
 > "Spare memory, ready to go after initialization, **to avoid a circular dependency on allocating memory and writing it into VM's page table**."
 
-即：备用页池解决的是**自举循环依赖**（页表建立需要映射，映射需要页表）。它不是稳态供应——`pt_init` 末尾（pagetable.c:1311-1345）在 `pt_init_done = 1` 之后，立刻执行：
+即：备用页池解决的是**自举循环依赖**（页表建立需要映射，映射需要页表）。它不是稳态供应——`pt_init` 末尾（minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））在 `pt_init_done = 1` 之后，立刻执行：
 
 ```c
 alloc_cycle();                          /* Make sure allocating works */
@@ -81,7 +81,7 @@ while(vm_getsparepage(&phys)) ;         /* Use up all static pages */
 alloc_cycle();                          /* Refill spares with dynamic */
 ```
 
-把静态备用页整体用光、再以动态页重新填充（原因：liveupdate 后 BSS 静态页的物理地址会变化，pagetable.c:1316-1318 注释）。**备用页池是启动期的脚手架，不是运行时的页源**。
+把静态备用页整体用光、再以动态页重新填充（原因：liveupdate 后 BSS 静态页的物理地址会变化，minix3/minix/servers/vm/pagetable.c:pt_init（L1316，工具生成） 注释）。**备用页池是启动期的脚手架，不是运行时的页源**。
 
 ### 1.5 Direct Map：把 VA 变成常量偏移（[ARCH: A-1]）
 
@@ -107,7 +107,7 @@ VA = VM_DIRECT_MAP_BASE + PA        （常量偏移，direct_map.rs:12/21）
 四个配套语义：
 
 - **释放**（`vm_freepages`）：解映射 + 物理释放一体（`WMF_FREE`）；BSS 静态页（`is_staticaddr`）拒绝释放。
-- **锁定**（`vm_pagelock`）：改写 VM 自身页表 PTE 的 RW 标志，用于 MEMPROTECT 下 slab 数据页的写保护（slaballoc.c:45/52）。
+- **锁定**（`vm_pagelock`）：改写 VM 自身页表 PTE 的 RW 标志，用于 MEMPROTECT 下 slab 数据页的写保护（minix3/minix/servers/vm/slaballoc.c:SLABDATAWRITABLE（L45，工具生成）/52）。
 - **校验**（`vm_addrok`）：调试辅助，逐级检查 PDE/PTE 的 PRESENT 与可写性。
 - **记账**（`vm_self_pages` / `get_vm_self_pages`）：跟踪 VM 自身占用的页数，供 `get_usage_info_vm`（region.c:1370）在 `VM_GETRUSAGE` 查询中汇报。
 
@@ -133,7 +133,7 @@ VA = VM_DIRECT_MAP_BASE + PA        （常量偏移，direct_map.rs:12/21）
 
 ## 2. C 源码分析
 
-### 2.1 vm_allocpages / vm_allocpage：两阶段分配（pagetable.c:333-397）
+### 2.1 vm_allocpages / vm_allocpage：两阶段分配（minix3/minix/servers/vm/pagetable.c:vm_allocpages）
 
 ```c
 // [pagetable.c:333] — 核心分配函数；vm_allocpage（L395-397）是 pages=1 特化
@@ -169,10 +169,10 @@ void *vm_allocpages(phys_bytes *phys, int reason, int pages)
 
 两个关键点：
 
-1. **`level` 是静态递归计数器**（pagetable.c:335），`vm_mappages` 内部递归进入 `vm_allocpages` 时 `level == 2`，走备用页池终止递归。它是运行时递归检测，不是并发保护——VM 单线程。
-2. **`vm_self_pages` 只统计动态页**（pagetable.c:362 的 `!is_staticaddr(s)` 判断）：BSS 备用页是编译期预留的，不消耗物理内存池，不计入 VM 自身占用。
+1. **`level` 是静态递归计数器**（minix3/minix/servers/vm/pagetable.c:vm_allocpages（L335，工具生成）），`vm_mappages` 内部递归进入 `vm_allocpages` 时 `level == 2`，走备用页池终止递归。它是运行时递归检测，不是并发保护——VM 单线程。
+2. **`vm_self_pages` 只统计动态页**（minix3/minix/servers/vm/pagetable.c:vm_allocpages（L362，工具生成） 的 `!is_staticaddr(s)` 判断）：BSS 备用页是编译期预留的，不消耗物理内存池，不计入 VM 自身占用。
 
-### 2.2 vm_mappages：findhole + pt_writemap + FLUSHTLB（pagetable.c:295-325）
+### 2.2 vm_mappages：findhole + pt_writemap + FLUSHTLB（minix3/minix/servers/vm/pagetable.c:vm_mappages）
 
 ```c
 void *vm_mappages(phys_bytes p, int pages)
@@ -192,11 +192,11 @@ void *vm_mappages(phys_bytes p, int pages)
 }
 ```
 
-`findhole`（pagetable.c:155-231，static）从 `lastv` 提示位起扫描 VM 的页目录，找一段连续空闲虚拟区间。`sys_vmctl(VMCTL_FLUSHTLB)` 是内核 IPC——`pt_writemap` 可能修改多条 PTE，Minix3 用整表刷新（`reload_cr3`）而非逐条 `invlpg`。
+`findhole`（minix3/minix/servers/vm/pagetable.c:findhole，static）从 `lastv` 提示位起扫描 VM 的页目录，找一段连续空闲虚拟区间。`sys_vmctl(VMCTL_FLUSHTLB)` 是内核 IPC——`pt_writemap` 可能修改多条 PTE，Minix3 用整表刷新（`reload_cr3`）而非逐条 `invlpg`。
 
 ### 2.3 递归链分析：pt_ptalloc 的 side effect
 
-`vm_mappages` 硬编码操作 VM 自己的页表（`&vmprocess->vm_pt`），所以内层 `pt_ptalloc`（pagetable.c:494-528）永远操作同一个页表。当外层 `pt_ptalloc` 也在处理同一页表时（如 `pt_init` 中），`findhole` 返回的 VA 可能落在外层正在处理的 PDE 范围——内层递归**先于外层**设置了 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`；递归返回后外层发现 `pt->pt_pt[pde]` 已非空（pagetable.c:515-521）：
+`vm_mappages` 硬编码操作 VM 自己的页表（`&vmprocess->vm_pt`），所以内层 `pt_ptalloc`（minix3/minix/servers/vm/pagetable.c:pt_ptalloc）永远操作同一个页表。当外层 `pt_ptalloc` 也在处理同一页表时（如 `pt_init` 中），`findhole` 返回的 VA 可能落在外层正在处理的 PDE 范围——内层递归**先于外层**设置了 `pt->pt_pt[pde]` 和 `pt->pt_dir[pde]`；递归返回后外层发现 `pt->pt_pt[pde]` 已非空（minix3/minix/servers/vm/pagetable.c:pt_ptalloc（L515，工具生成））：
 
 ```c
 if (!(p = vm_allocpage(&pt_phys, VMP_PAGETABLE)))
@@ -210,7 +210,7 @@ if (pt->pt_pt[pde]) {
 
 这一"释放已分配页、直接返回 OK"的路径是递归机制正确性的关键——**分配允许失败回退，但绝不允许死锁**。
 
-### 2.4 vm_freepages：解映射 + 物理释放一体（pagetable.c:235-258）
+### 2.4 vm_freepages：解映射 + 物理释放一体（minix3/minix/servers/vm/pagetable.c:vm_freepages）
 
 ```c
 void vm_freepages(vir_bytes vir, int pages)
@@ -232,9 +232,9 @@ void vm_freepages(vir_bytes vir, int pages)
 }
 ```
 
-`WMF_FREE` 使 `pt_writemap` 在取消映射的同时把物理页释放回分配器（内部调 `free_mem`）。`is_staticaddr`（pagetable.c:85：`(vir_bytes)(v) < VM_OWN_HEAPSTART`）判定 BSS 静态地址——静态页由系统回收，VM 不释放。
+`WMF_FREE` 使 `pt_writemap` 在取消映射的同时把物理页释放回分配器（内部调 `free_mem`）。`is_staticaddr`（minix3/minix/servers/vm/pagetable.c:is_staticaddr：`(vir_bytes)(v) < VM_OWN_HEAPSTART`）判定 BSS 静态地址——静态页由系统回收，VM 不释放。
 
-### 2.5 vm_getsparepage / vm_getsparepagedir（pagetable.c:264-294）
+### 2.5 vm_getsparepage / vm_getsparepagedir（minix3/minix/servers/vm/pagetable.c:vm_getsparepage）
 
 ```c
 static void *vm_getsparepage(phys_bytes *phys)
@@ -249,7 +249,7 @@ static void *vm_getsparepage(phys_bytes *phys)
 
 `vm_getsparepagedir`（L277-294）从 `sparepagedirs[SPAREPAGEDIRS]` 数组取页目录（ARM 16KB 对齐场景），用 `missing_sparedirs` 记账。两者都是**消费保留队列**的入口——队列的生产在 `pt_init`（§2.10）与主循环 `alloc_cycle`（§2.9）。
 
-### 2.6 vm_pagelock：MEMPROTECT 写保护（pagetable.c:403-437）
+### 2.6 vm_pagelock：MEMPROTECT 写保护（minix3/minix/servers/vm/pagetable.c:vm_pagelock）
 
 ```c
 void vm_pagelock(void *vir, int lockflag)
@@ -266,9 +266,9 @@ void vm_pagelock(void *vir, int lockflag)
 }
 ```
 
-`WMF_WRITEFLAGSONLY` 表示只改标志不改映射。消费方是 slaballoc.c:45/52 的 `SLABDATAWRITABLE/SLABDATAUNWRITABLE` 宏（MEMPROTECT 下）：slab 数据页在用前解锁、用后重新写保护，把"内存损坏只发生在使用窗口内"的调试性质变成结构性约束。
+`WMF_WRITEFLAGSONLY` 表示只改标志不改映射。消费方是 minix3/minix/servers/vm/slaballoc.c:SLABDATAWRITABLE（L45，工具生成）/52 的 `SLABDATAWRITABLE/SLABDATAUNWRITABLE` 宏（MEMPROTECT 下）：slab 数据页在用前解锁、用后重新写保护，把"内存损坏只发生在使用窗口内"的调试性质变成结构性约束。
 
-### 2.7 vm_addrok：映射校验（pagetable.c:440-489）
+### 2.7 vm_addrok：映射校验（minix3/minix/servers/vm/pagetable.c:vm_addrok）
 
 `vm_addrok(vir, writeflag)` 逐级检查 VM 自身页表：PDE 的 PRESENT（L449-452）、writeflag 时 PDE 的可写性（L454-459，i386 分支）、PTE 的 PRESENT（L468-472）、writeflag 时 PTE 的可写性（L474-486）。任一失败打印诊断并返回 0。它是**调试/断言辅助**——正常运行路径不调用（`rg vm_addrok minix3/minix/servers/vm/` 仅定义处 + proto 声明）。
 
@@ -329,9 +329,9 @@ if(missing_spares > 0) {
 
 `alloc_cycle` 的补充链是 `alloc_cycle → reservedqueue_fill → addslot → alloc_mem`；`alloc_mem` 自身在 NO_MEM 时先调 `cache_freepages`（cache.c:288，页缓存 LRU 回收）再重试（alloc.c:242-279）。所以**"主循环定期补充备用页"最终依赖页缓存回收**——这个跨文档依赖在 24-page-cache 收口。
 
-### 2.10 pt_init 中的备用页建立与替换（pagetable.c:1088-1161/1311-1345）
+### 2.10 pt_init 中的备用页建立与替换（minix3/minix/servers/vm/pagetable.c:pt_init/1311-1345）
 
-**建立**（pt_init，pagetable.c:1151-1161）：
+**建立**（pt_init，minix3/minix/servers/vm/pagetable.c:pt_init（L1151，工具生成））：
 
 ```c
 if(!(spare_pagequeue = reservedqueue_new(SPAREPAGES, 1, 1, 0)))
@@ -347,9 +347,9 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 }
 ```
 
-`sys_umap` 是内核 IPC：VM 进程知道 BSS 静态页的 VA，但不知道 PA，必须向内核查询。数量（pagetable.c:60-68）：SANITYCHECKS 200/190、ARM 150/140、x86 生产 20/15（`SPAREPAGES`/`STATIC_SPAREPAGES`，差值为动态补充槽）。
+`sys_umap` 是内核 IPC：VM 进程知道 BSS 静态页的 VA，但不知道 PA，必须向内核查询。数量（minix3/minix/servers/vm/pagetable.c:SPAREPAGES）：SANITYCHECKS 200/190、ARM 150/140、x86 生产 20/15（`SPAREPAGES`/`STATIC_SPAREPAGES`，差值为动态补充槽）。
 
-**替换**（pt_init 末尾，pagetable.c:1311-1345）：`pt_init_done = 1` 后执行 §1.4 的三步（alloc_cycle → 用光静态页 → alloc_cycle），再用纯动态分配重建整个 VM 页表（`pt_new` + `pt_copy` + `memcpy`，L1338-1341）。原因（L1316-1318 注释）：**liveupdate 后 BSS 静态页的物理地址会变化**，动态页不受影响。
+**替换**（pt_init 末尾，minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））：`pt_init_done = 1` 后执行 §1.4 的三步（alloc_cycle → 用光静态页 → alloc_cycle），再用纯动态分配重建整个 VM 页表（`pt_new` + `pt_copy` + `memcpy`，L1338-1341）。原因（L1316-1318 注释）：**liveupdate 后 BSS 静态页的物理地址会变化**，动态页不受影响。
 
 ### 2.11 消费方全景：谁调用 vm_allocpage 族
 
@@ -357,13 +357,13 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 
 | 消费方 | 位置 | 用途 |
 |--------|------|------|
-| `pt_ptalloc` | pagetable.c:515 | 页表页（`VMP_PAGETABLE`）——07/08 文档 |
-| `pt_new` | pagetable.c:1005-1009 | 页目录分配（`VMP_PAGEDIR`，x86 1 页 / ARM 4 页 → `vm_getsparepagedir`）——07/08 文档 |
-| `pt_allocate_kernel_mapped_pagetables` | pagetable.c:1051 | 内核共享页表页（`VMP_PAGETABLE`）——07/08 文档 |
-| `pt_free` | pagetable.c:1434 | 释放页表页（`vm_freepages`）——07/08 文档 |
-| `newslabdata` | slaballoc.c:166 | slab 数据页（`VMP_SLAB`）——09 文档 |
-| `slabfree` | slaballoc.c:449 | 释放 slab 数据页——09 文档 |
-| `SLABDATAWRITABLE/UNWRITABLE` | slaballoc.c:45/52 | `vm_pagelock` MEMPROTECT——09 文档 |
+| `pt_ptalloc` | minix3/minix/servers/vm/pagetable.c:pt_ptalloc（L515，工具生成） | 页表页（`VMP_PAGETABLE`）——07/08 文档 |
+| `pt_new` | minix3/minix/servers/vm/pagetable.c:pt_new（L1005，工具生成） | 页目录分配（`VMP_PAGEDIR`，x86 1 页 / ARM 4 页 → `vm_getsparepagedir`）——07/08 文档 |
+| `pt_allocate_kernel_mapped_pagetables` | minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables（L1051，工具生成） | 内核共享页表页（`VMP_PAGETABLE`）——07/08 文档 |
+| `pt_free` | minix3/minix/servers/vm/pagetable.c:pt_free（L1434，工具生成） | 释放页表页（`vm_freepages`）——07/08 文档 |
+| `newslabdata` | minix3/minix/servers/vm/slaballoc.c:newslabdata（L166，工具生成） | slab 数据页（`VMP_SLAB`）——09 文档 |
+| `slabfree` | minix3/minix/servers/vm/slaballoc.c:slabfree（L449，工具生成） | 释放 slab 数据页——09 文档 |
+| `SLABDATAWRITABLE/UNWRITABLE` | minix3/minix/servers/vm/slaballoc.c:SLABDATAWRITABLE（L45，工具生成）/52 | `vm_pagelock` MEMPROTECT——09 文档 |
 | `mmap`/`munmap`（VM 自身 libc） | utility.c:369/378 | VM 自身 libc 兼容接口，无 servers/vm 内部调用者（01 边界声明） |
 
 即：**C 侧 `vm_allocpage` 的真实消费者只有页表代码（pt_ptalloc/pt_new/pt_allocate_kernel_mapped_pagetables/pt_free）与 slab 代码（newslabdata）**。Rust 侧对应：页表页 → `vm_pt_alloc`（§3.5），slab/堆页 → `HeapArena::grow` 经 `alloc_phys`（09 文档）。
@@ -375,7 +375,7 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 ### 3.1 D1: `VmPageAllocator`——单路径 (VA, PA) 分配（合并 C 两步）
 
 - **C**: `vm_allocpages` = `alloc_mem`（PA）+ `vm_mappages`（VA：findhole + pt_writemap + FLUSHTLB）两步，且初始化期走备用页池。
-- **Rust**: `VmPageAllocator`（alloc_page.rs:47）包装物理分配器，`alloc_page()/alloc_pages()`（alloc_page.rs:71/77）一次返回 `(VirBytes, AlignedPhysBytes)`——VA 由 `vm_phys_to_virt` 常量偏移给出，两步合并为一步，初始化期与稳态无差别。
+- **Rust**: `VmPageAllocator`（os/servers/vm/src/alloc_page.rs:fn vm_pt_alloc（L47，工具生成））包装物理分配器，`alloc_page()/alloc_pages()`（os/servers/vm/src/alloc_page.rs:fn new（L71，工具生成）/77）一次返回 `(VirBytes, AlignedPhysBytes)`——VA 由 `vm_phys_to_virt` 常量偏移给出，两步合并为一步，初始化期与稳态无差别。
 - **为什么**：Direct Map（D2）使 VA 不再是"稀缺资源"（无需 findhole），两步合并是自然结果；返回类型 `(VirBytes, AlignedPhysBytes)` 让"双地址"在类型层面显式化，杜绝只拿一个地址的用法。
 - **行为契约**：`alloc_page(flags)` 返回的 `(v, p)` 恒满足 `virt_to_phys(v) == p`（direct_map.rs:31 双向转换）；多页分配 VA 连续（`v + i*CLICK` ↔ `p + i*CLICK`）；`free_pages(phys, clicks)` 释放后同一 PA 可再次分配（bitmap 单页缓存 LIFO 保证）。
 
@@ -390,24 +390,24 @@ for(s = 0; s < STATIC_SPAREPAGES; s++) {
 
 - **C**: `reservedqueue_*`（alloc.c:56-237）+ `missing_spares` 缺口记账 + 主循环 `alloc_cycle` 补充。
 - **Rust**: **通用 `CriticalPool<T>`（critical_pool.rs）删除**——理由三层：
-  1. C 池是**自举机制**而非稳态供应（§1.4 实证：pagetable.c:55-57 注释 + pt_init 末尾整体替换）；
+  1. C 池是**自举机制**而非稳态供应（§1.4 实证：minix3/minix/servers/vm/pagetable.c:vmproc（L55，工具生成） 注释 + pt_init 末尾整体替换）；
   2. 自举循环依赖已被 Direct Map 结构性打破（D2），池无生产消费方（`rg CriticalPool os/servers/vm/src/` 全量 0 hits——文件已随结构消除删除）；
   3. Redox / Linux 均无 VM 侧备用页池——同类问题都以"物理分配不依赖映射"解决。
-- **保留的语义**：`missing_spares` 在 `VmServer` 中保留（vm_server.rs:54-70），重解释为**分配压力计数**——`mark_alloc_failure()`（饱和计数，`&mut self` 独占）记录 `alloc_*` 失败；主循环 `if(missing_spares > 0) alloc_cycle()`（vm_server.rs:425-428）与 C main.c:118-119 **同一主循环位置**（C 第二调用点 main.c:745-746 在 SIGKMEM 处理后，随 SIGKMEM 事件处理落地——Rust 主循环当前仅镜像 main.c:118-119 一处，见 01 §5）；`alloc_cycle()` 方法（vm_server.rs:416-419）是补充钩子，**补充体（页缓存回收 + 重试）DEFERRED 归 24-page-cache**（C 的 `alloc_mem → cache_freepages` 链在 Rust 侧的落点）。
+- **保留的语义**：`missing_spares` 在 `VmServer` 中保留（vm_server.rs:54-70），重解释为**分配压力计数**——`mark_alloc_failure()`（饱和计数，`&mut self` 独占）记录 `alloc_*` 失败；主循环 `if(missing_spares > 0) alloc_cycle()`（os/servers/vm/src/vm_server.rs:fn relocate（L425，工具生成））与 C main.c:118-119 **同一主循环位置**（C 第二调用点 main.c:745-746 在 SIGKMEM 处理后，随 SIGKMEM 事件处理落地——Rust 主循环当前仅镜像 main.c:118-119 一处，见 01 §5）；`alloc_cycle()` 方法（os/servers/vm/src/vm_server.rs:fn relocate（L416，工具生成））是补充钩子，**补充体（页缓存回收 + 重试）DEFERRED 归 24-page-cache**（C 的 `alloc_mem → cache_freepages` 链在 Rust 侧的落点）。
 - **行为契约**：`missing_spares > 0` → 主循环下一轮执行补充钩子（与 C 外可观测行为收敛）；C 的"缺口精确值"与 Rust 的"压力信号"在契约层面等价（都是 `> 0` 触发补充机会）。
 - **决策同步**：plan.md §7.3 + checklist.md M-127-M-130/F-012/F-158/F-159 行已同步（三处一致）。
 
 ### 3.4 D4: `vm_self_pages` → `VmAllocStats`——类型化记账
 
-- **C**: `static int vm_self_pages`（pagetable.c:34），`vm_allocpages` 成功 +1 / `vm_freepages` -1；`get_vm_self_pages()`（pagetable.c:1500）供 `get_usage_info_vm`（region.c:1370）汇报。
-- **Rust**: `VmAllocStats`（alloc_stats.rs）——`record_alloc/record_dealloc/record_failure` 对称记账，`active_allocations()/active_pages()` 派生活跃值，`check_leak()` 检测泄漏（alloc 数 > dealloc 数即活动页泄漏）。`VmPageAllocator::self_alloc_count()/self_page_count()`（alloc_page.rs:98/102）暴露。
+- **C**: `static int vm_self_pages`（minix3/minix/servers/vm/pagetable.c:_SYSTEM（L34，工具生成）），`vm_allocpages` 成功 +1 / `vm_freepages` -1；`get_vm_self_pages()`（minix3/minix/servers/vm/pagetable.c:get_vm_self_pages）供 `get_usage_info_vm`（region.c:1370）汇报。
+- **Rust**: `VmAllocStats`（alloc_stats.rs）——`record_alloc/record_dealloc/record_failure` 对称记账，`active_allocations()/active_pages()` 派生活跃值，`check_leak()` 检测泄漏（alloc 数 > dealloc 数即活动页泄漏）。`VmPageAllocator::self_alloc_count()/self_page_count()`（os/servers/vm/src/alloc_page.rs:fn alloc_pages（L98，工具生成）/102）暴露。
 - **为什么**：C 的手工 `++/--` 在分配失败路径容易漏减；`record_alloc` 挂在 `alloc_phys` 成功分支、`record_dealloc` 挂在 `free_pages`，**记账与分配/释放在同一函数内配对**，结构性消除漏减。
-- **行为契约**：`self_page_count()` 等价 `get_vm_self_pages()`；语义差异诚实标注：C 排除 BSS 静态备用页（pagetable.c:362），Rust 全动态无排除（Direct Map 下所有自用页都经分配器）。26-vm-queries 经 `self_page_count` 汇报 VM 自身占用。
+- **行为契约**：`self_page_count()` 等价 `get_vm_self_pages()`；语义差异诚实标注：C 排除 BSS 静态备用页（minix3/minix/servers/vm/pagetable.c:vm_allocpages（L362，工具生成）），Rust 全动态无排除（Direct Map 下所有自用页都经分配器）。26-vm-queries 经 `self_page_count` 汇报 VM 自身占用。
 
 ### 3.5 D5: `vm_pt_alloc`——页表页供给链注册
 
-- **C**: `pt_ptalloc → vm_allocpage(&pt_phys, VMP_PAGETABLE)`（pagetable.c:515）——页表页来自 VM 页分配器；初始化/递归期走备用页池。
-- **Rust**: `alloc_page::vm_pt_alloc()`（alloc_page.rs:32-46）——签名 `fn() -> Result<(PhysBytes, VirBytes), PageTableError>`，注册进 `minix_arch::pt_alloc`（vm_server.rs:102-107，`is_registered()` 守卫防重复注册，mirror os/kernel/src/lib.rs:178 惯例）：
+- **C**: `pt_ptalloc → vm_allocpage(&pt_phys, VMP_PAGETABLE)`（minix3/minix/servers/vm/pagetable.c:pt_ptalloc（L515，工具生成））——页表页来自 VM 页分配器；初始化/递归期走备用页池。
+- **Rust**: `alloc_page::vm_pt_alloc()`（os/servers/vm/src/alloc_page.rs:fn vm_pt_alloc）——签名 `fn() -> Result<(PhysBytes, VirBytes), PageTableError>`，注册进 `minix_arch::pt_alloc`（os/servers/vm/src/vm_server.rs:fn new（L102，工具生成），`is_registered()` 守卫防重复注册，mirror os/kernel/src/lib.rs:fn arch_boot（L178，工具生成） 惯例）：
 
 ```rust
 // alloc_page.rs:32-46（关键路径，节选）
@@ -430,14 +430,14 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
 
 - **为什么 fn 指针 + 全局访问**：`minix_arch::pt_alloc` 的注册接口是 `fn()`（无状态签名），VM 侧通过 `global::page_alloc_mut()`（global.rs:356-380，从 `PAGE_ALLOC_PTR` 派生 `&'static mut VmPageAllocator`，单线程 + outlive 论证）访问分配器——与 boot 侧 `boot_pt_alloc`（恒等映射）共用同一注册机制。
 - **清零是硬需求**：`Paging::walk_alloc`（x86_64/paging.rs:277-330）读取新分配页表页的 PRESENT 位判断是否分配下一级——**必须观察到 0**，否则垃圾位被当作有效页表项。
-- **行为契约**：任何 `Paging::new()/map()` 调用前必须已注册（否则 `uninit_alloc` 返回 `AllocationFailed`）；注册顺序 = `register_page_alloc` → `pt_alloc::register` → `init_vm_self_pt`（vm_server.rs:87-109）；新页表页恒零填充、页对齐、`virt = VM_DIRECT_MAP_BASE + phys`。
+- **行为契约**：任何 `Paging::new()/map()` 调用前必须已注册（否则 `uninit_alloc` 返回 `AllocationFailed`）；注册顺序 = `register_page_alloc` → `pt_alloc::register` → `init_vm_self_pt`（os/servers/vm/src/vm_server.rs:struct VmContext（L87，工具生成））；新页表页恒零填充、页对齐、`virt = VM_DIRECT_MAP_BASE + phys`。
 
 ### 3.6 D6: `vm_pagelock` / `vm_addrok`——语义移交（07/08/09）
 
 | C 函数 | C 位置 | Rust 语义承接 | 归属 |
 |--------|--------|--------------|------|
-| `vm_pagelock` | pagetable.c:403-437 | 页标志改写 → `Paging` `PageFlags` + `vm_self_mappages`（OVERWRITE 语义）；MEMPROTECT 写保护硬化 → HeapArena 页策略 | 07/08-pagetable、09-slab |
-| `vm_addrok` | pagetable.c:440-489 | 映射校验 → `vm_self_query`（vm_self_map.rs:127-135，已存在） | 07/08-pagetable |
+| `vm_pagelock` | minix3/minix/servers/vm/pagetable.c:vm_pagelock | 页标志改写 → `Paging` `PageFlags` + `vm_self_mappages`（OVERWRITE 语义）；MEMPROTECT 写保护硬化 → HeapArena 页策略 | 07/08-pagetable、09-slab |
+| `vm_addrok` | minix3/minix/servers/vm/pagetable.c:vm_addrok | 映射校验 → `vm_self_query`（os/servers/vm/src/pagetable/vm_self_map.rs:fn query（L127，工具生成），已存在） | 07/08-pagetable |
 
 06 不提供 `pagelock`/`addrok` API；doc 06 §2 完整覆盖 C 函数语义并声明移交。MEMPROTECT（slab 数据页用后写保护）在 Rust 侧**未实现**（HeapArena 页恒可写）——诚实标注为硬化项（可归 09 后续），不是当前行为缺口。
 
@@ -460,9 +460,9 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
 
 ### 4.1 `alloc_page.rs`：`VmPageAllocator` 与 `vm_pt_alloc`
 
-- `VmPageAllocator`（alloc_page.rs:47-117）：`alloc_phys(clicks, flags)`（L60，物理分配 + 记账）、`alloc_page/alloc_pages`（L71/77，返回 `(VirBytes, AlignedPhysBytes)`）、`free_page/free_pages`（L85/89，释放 + 记账）、`total_pages/self_alloc_count/self_page_count/stats`（L94-106）。
-- `PfnAllocator` impl（alloc_page.rs:119-133）：PFN 索引模型适配（`PageFrames` 集成），`alloc_pfn/free_pfn` 经 `PAGE_SIZE` 换算——06 范围外（region 文档）但接口落点在此。
-- `vm_pt_alloc`（alloc_page.rs:32-46）：§3.5，页表页供给链。
+- `VmPageAllocator`（os/servers/vm/src/alloc_page.rs:fn vm_pt_alloc（L47，工具生成））：`alloc_phys(clicks, flags)`（L60，物理分配 + 记账）、`alloc_page/alloc_pages`（L71/77，返回 `(VirBytes, AlignedPhysBytes)`）、`free_page/free_pages`（L85/89，释放 + 记账）、`total_pages/self_alloc_count/self_page_count/stats`（L94-106）。
+- `PfnAllocator` impl（os/servers/vm/src/alloc_page.rs:fn self_alloc_count）：PFN 索引模型适配（`PageFrames` 集成），`alloc_pfn/free_pfn` 经 `PAGE_SIZE` 换算——06 范围外（region 文档）但接口落点在此。
+- `vm_pt_alloc`（os/servers/vm/src/alloc_page.rs:fn vm_pt_alloc）：§3.5，页表页供给链。
 - **模块注释**（alloc_page.rs:1-7）：声明"wraps PhysAlloc + Direct Map VA↔PA translation"，与 05 的 `PhysAllocator` 分层明确。
 
 ### 4.2 `global.rs`：`page_alloc_mut` 全局访问
@@ -473,7 +473,7 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
 
 ### 4.3 `vm_server.rs`：注册顺序与主循环接线
 
-构造顺序（vm_server.rs:87-109）——**这是"页分配器 → 页表"供给链的落地顺序**：
+构造顺序（os/servers/vm/src/vm_server.rs:struct VmContext（L87，工具生成））——**这是"页分配器 → 页表"供给链的落地顺序**：
 
 ```
 create_default_allocator()          // 物理分配器（bitmap，A-5）
@@ -483,11 +483,11 @@ create_default_allocator()          // 物理分配器（bitmap，A-5）
   → init_vm_self_pt()               // VM 自身页表（07/08）
 ```
 
-主循环（vm_server.rs:425-428）：`if missing_spares > 0 { self.alloc_cycle(); }`——与 C main.c:118-119 同位置；`alloc_cycle`（L416-419）清计数，补充体 DEFERRED 归 24。`missing_spares` 字段（L54-70）文档化 C↔Rust 语义映射（§3.3）。
+主循环（os/servers/vm/src/vm_server.rs:fn relocate（L425，工具生成））：`if missing_spares > 0 { self.alloc_cycle(); }`——与 C main.c:118-119 同位置；`alloc_cycle`（L416-419）清计数，补充体 DEFERRED 归 24。`missing_spares` 字段（L54-70）文档化 C↔Rust 语义映射（§3.3）。
 
 ### 4.4 消费方：`heap_arena.rs` / `vm_self_map.rs` / `direct_map.rs`
 
-- `HeapArena::grow`（heap_arena.rs:88-136）：逐页 `alloc_phys(1)` + `vm_self_mappages`（写 VM 自身页表）建立连续 VA；失败回滚（已映射页 `vm_self_unmap` + `free_page`）。`shrink`（L138-177）反向：`vm_self_unmap` + `free_page`——这是 `vm_freepages` 语义的 Rust 消费方（09 文档详述）。
+- `HeapArena::grow`（os/servers/vm/src/heap_arena.rs:fn mapped_bytes（L88，工具生成））：逐页 `alloc_phys(1)` + `vm_self_mappages`（写 VM 自身页表）建立连续 VA；失败回滚（已映射页 `vm_self_unmap` + `free_page`）。`shrink`（L138-177）反向：`vm_self_unmap` + `free_page`——这是 `vm_freepages` 语义的 Rust 消费方（09 文档详述）。
 - `vm_self_map.rs`：`init_vm_self_pt`（L82-99）、`vm_self_mappages`（L100-114）、`vm_self_unmap`（L116-125）、`vm_self_query`（L127-135，`vm_addrok` 语义对应）。
 - `direct_map.rs`：`VM_DIRECT_MAP_BASE`（L12）、`vm_phys_to_virt`（L21）、`virt_to_phys`（L31）、`is_direct_map_virt`（L37）——A-1 基础，07 详述双视图。
 

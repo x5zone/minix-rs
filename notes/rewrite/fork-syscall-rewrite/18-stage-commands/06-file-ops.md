@@ -220,8 +220,8 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 - `05-shell-family.md`——调用方（内建与外部的区分）
 - `07-text-filter.md`——文本过滤（下一步：行内操作）
-- `minix3/bin/test/test.c:105-168`——算子表与四层声明（求值器的逐行对照）
-- `minix3/bin/chmod/chmod.c:166`、`216`——模式解析与应用
+- `minix3/bin/test/test.c:t_op（L105，工具生成）`——算子表与四层声明（求值器的逐行对照）
+- `minix3/bin/chmod/chmod.c:main（L166，工具生成）`、`216`——模式解析与应用
 - `minix3/bin/ls/ls.c`、`minix3/bin/cp/cp.c`、`minix3/usr.bin/find/find.c`——三大量级命令（715、548、306 行）
 
 ---

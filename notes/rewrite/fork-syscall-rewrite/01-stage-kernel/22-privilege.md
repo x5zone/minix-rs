@@ -1,7 +1,7 @@
 # 22-privilege: 权限管理
 
 > **分类**: 运行时基础设施
-> **源码**: `minix3/minix/kernel/priv.h`, `minix3/minix/include/minix/priv.h`, `minix3/minix/kernel/system.c:274-321,918-989`
+> **源码**: `minix3/minix/kernel/priv.h`, `minix3/minix/include/minix/priv.h`, `minix3/minix/kernel/system.c:get_priv,918-989`
 > **Rust 实现**: `os/kernel/src/kpriv.rs` (1200 行), `os/kernel/src/capability.rs` (361 行)
 > **前置**: 11（调度——进程状态）, 16（进程管理——fork/privctl）, 17（syscall-process——fork 分配 priv）
 > **C 总行数**: ~400 行
@@ -23,7 +23,7 @@ Minix3 的权限模型基于 `struct priv`：
 
 ### 1.1 struct priv 关键字段
 
-`struct priv`（`minix3/minix/kernel/priv.h:21-66`）含 31 个字段，按职责可分为 6 组：
+`struct priv`（`minix3/minix/kernel/priv.h:priv`）含 31 个字段，按职责可分为 6 组：
 
 | 职责组 | 字段 | 语义 |
 |--------|------|------|
@@ -99,7 +99,7 @@ priv[NR_SYS_PROCS=64]:
 - `priv_id` 是静态 ID → 检查 `is_static_priv_id` + slot 未占用（否则 `EINVAL`/`EBUSY`），分配
 - 分配后：`rc->p_priv = sp; sp->s_proc_nr = proc_nr(rc)`
 
-**fork 中的特权降级**（`do_fork.c:104-107`）:
+**fork 中的特权降级**（`minix3/minix/kernel/system/do_fork.c:FORKSTR（L104，工具生成）`）:
 - 用户进程 fork → 子进程继承 `USER_PRIV_ID`
 - 系统进程 fork → 子进程降级为 `USER_PRIV_ID` + `RTS_NO_PRIV`，需 RS 重新授权
 
@@ -188,7 +188,7 @@ priv[NR_SYS_PROCS=64]:
 
 ### 4.1 ProcessCapability（能力位，含 C wire 位布局）
 
-> Rust 实现: `os/kernel/src/capability.rs:67-160`（内核唯一能力位类型；kpriv.rs `PrivFlags` 字段采用，wire 编解码见下）
+> Rust 实现: `os/kernel/src/capability.rs:struct ProcessCapability`（内核唯一能力位类型；kpriv.rs `PrivFlags` 字段采用，wire 编解码见下）
 
 ```rust
 // C: minix/include/minix/const.h:143-154（低 11 位 = C wire 位布局，1:1）
@@ -233,7 +233,7 @@ impl ProcessCapability {
 
 ### 4.2 KPriv 8 子结构
 
-> Rust 实现: `os/kernel/src/kpriv.rs:140-400`
+> Rust 实现: `os/kernel/src/kpriv.rs:fn new（L140，工具生成）`
 
 KPriv 按 8 个职责组拆分为子结构（与 Ch3 D1 决策一致），每个子结构独立 `const fn new()` 构造：
 
@@ -317,7 +317,7 @@ pub(crate) struct KPriv {
 
 > **三子结构分离的原因（D1 修订说明）**：初版曾把 `PrivIdentity + PrivInit + PrivFlags` 合并为 `PrivCapability`，按"读写时机 / 锁粒度"切为身份 / init / 能力三域。后改为3 个独立子结构——原因是每子结构类型独立、`const fn new()` 接口对齐，且三者的「关联进程」「init 阶段」「能力位」在域语义上确实独立（读 `s_proc_nr` 与读 `s_flags` 的调用栈完全不同）。`PrivCapability` 是历史命名，已统一为 `PrivIdentity` / `PrivInit` / `PrivFlags`。
 
-**IoRange**（`kpriv.rs:32-35`，base/limit 为 u32 对齐 C `struct io_range`）:
+**IoRange**（`os/kernel/src/kpriv.rs:impl IoRange`，base/limit 为 u32 对齐 C `struct io_range`）:
 
 ```rust
 pub struct IoRange {
@@ -350,7 +350,7 @@ impl KPriv {
 
 ### 4.3 PrivTable 固定数组
 
-> Rust 实现: `os/kernel/src/kpriv.rs:633-894`
+> Rust 实现: `os/kernel/src/kpriv.rs:fn apply_fields_from_request（L633，工具生成）`
 
 ```rust
 pub const NR_SYS_PROCS: usize = 64;
@@ -450,11 +450,11 @@ impl IpcMask {
 }
 ```
 
-**D4 统一**: `ProcessCapability`（[capability.rs:67](file:///os/kernel/src/capability.rs#L67)，u32）是唯一能力位类型——低 11 位采 C wire 位布局（const.h:143-154），`*_F` 为 priv.h:36-50 组合位，`from_wire`/`to_wire` 在 wire 边界编解码；Rust 扩展位（KILL/SIGS_SYS/OWN_ID）位于 16 位 wire 范围外、永不跨 wire。`grant_capability` 直接落位模板 flag set，无转换点。
+**D4 统一**: `ProcessCapability`（[os/kernel/src/capability.rs:struct ProcessCapability](file:///os/kernel/src/capability.rs#L67)，u32）是唯一能力位类型——低 11 位采 C wire 位布局（const.h:143-154），`*_F` 为 priv.h:36-50 组合位，`from_wire`/`to_wire` 在 wire 边界编解码；Rust 扩展位（KILL/SIGS_SYS/OWN_ID）位于 16 位 wire 范围外、永不跨 wire。`grant_capability` 直接落位模板 flag set，无转换点。
 
 ### 4.5 辅助函数
 
-> Rust 实现: `os/kernel/src/kpriv.rs:111-129`
+> Rust 实现: `os/kernel/src/kpriv.rs:fn new（L111，工具生成）`
 
 ```rust
 // C: priv.h:18 — USER_PRIV_ID = static_priv_id(ROOT_USR_PROC_NR)
@@ -475,7 +475,7 @@ pub fn is_static_priv_id(id: PrivId) -> bool {
 pub const NULL_PRIV_ID: PrivId = u16::MAX;
 ```
 
-> **覆盖状态（2026-08-13 Phase 6 更新）**: `NULL_PRIV_ID` 在 C 中是动态分配的触发值（`get_priv` 见 `NULL_PRIV_ID` → 扫描动态区）。Rust 的动态分配路径已由 `KPriv::get_priv`（kpriv.rs:764-795）实现，覆盖 `NULL_PRIV_ID` → 扫描 `[NR_BOOT_PROCS .. NR_SYS_PROCS)` 动态 slot + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码（详见 §4.6）。
+> **覆盖状态（2026-08-13 Phase 6 更新）**: `NULL_PRIV_ID` 在 C 中是动态分配的触发值（`get_priv` 见 `NULL_PRIV_ID` → 扫描动态区）。Rust 的动态分配路径已由 `KPriv::get_priv`（os/kernel/src/kpriv.rs:struct PrivUpdateRequest（L764，工具生成））实现，覆盖 `NULL_PRIV_ID` → 扫描 `[NR_BOOT_PROCS .. NR_SYS_PROCS)` 动态 slot + 静态 slot 校验 + `EBUSY`/`ENOSPC`/`EINVAL` 错误码（详见 §4.6）。
 
 ### 4.6 C 函数覆盖状态
 
@@ -505,7 +505,7 @@ pub const NULL_PRIV_ID: PrivId = u16::MAX;
 
 Rust 在 D-49 之前的实现正是踩在这个坑里：`update_from_request` 把 `req.s_ipc_to` 直接赋给 `s_ipc_to`（裸拷贝，无守卫、无回执、无修复），SET_SYS 默认路径写 `IpcMask::ALL`（包含自位与未绑定 slot），`dispatch_update` 用 union 合并 src 掩码。三处都在"位图赋值"这个更简单的模型上运行——简单，但每一处都偏离了 C 的不变量。
 
-**为什么落在 `PrivTable` 上**。C 的 `update_priv`（do_privctl.c:280-368）操作的是"进程 + 特权表"这个系统状态：字段拷贝发生在单个 priv slot 上，掩码 fill 却要触碰全表（回执位写在别的 slot 里）。这决定了 Rust 的落点几乎没有选择——`PrivTable` 级方法。把 fill 塞进 `KPriv::update_from_request` 是不可能的（单 slot 方法拿不到表）；退而求其次的方案是让字段拷贝方法返回掩码、调用者记得补一次 fill——这种"靠调用者纪律"的契约在内核代码里是定时炸弹。最终形态是组合入口：`PrivTable::update_priv(rp, req)` 先做字段拷贝（`KPriv::apply_fields_from_request`，计数越界返回命名的 `PrivUpdateError`、不碰掩码——对齐 C 的提前返回），再对请求掩码跑 `fill_sendto_mask`。调用者想"只拷字段不修掩码"在结构上就做不到。
+**为什么落在 `PrivTable` 上**。C 的 `update_priv`（minix3/minix/kernel/system/do_privctl.c:update_priv）操作的是"进程 + 特权表"这个系统状态：字段拷贝发生在单个 priv slot 上，掩码 fill 却要触碰全表（回执位写在别的 slot 里）。这决定了 Rust 的落点几乎没有选择——`PrivTable` 级方法。把 fill 塞进 `KPriv::update_from_request` 是不可能的（单 slot 方法拿不到表）；退而求其次的方案是让字段拷贝方法返回掩码、调用者记得补一次 fill——这种"靠调用者纪律"的契约在内核代码里是定时炸弹。最终形态是组合入口：`PrivTable::update_priv(rp, req)` 先做字段拷贝（`KPriv::apply_fields_from_request`，计数越界返回命名的 `PrivUpdateError`、不碰掩码——对齐 C 的提前返回），再对请求掩码跑 `fill_sendto_mask`。调用者想"只拷字段不修掩码"在结构上就做不到。
 
 **守卫的宽度问题在 Rust 里不存在**。C 的 `id_to_nr(id) == NONE` 靠 `s_proc_nr` 哨兵值判断，Rust 直接用 `Option<ProcNr>::is_none()`；`IpcMask` 补了 `set_bit` / `unset_bit` / `has_bit`（对应 `set_sys_bit` / `unset_sys_bit` / `get_sys_bit`，kernel/const.h:24/26/20），越界索引安全降级——内核里不该存在的"授予"既不会被静默接受，也不会 panic。
 
@@ -519,24 +519,24 @@ Rust 在 D-49 之前的实现正是踩在这个坑里：`update_from_request` �
 
 | 子命令 | C 位置 | Rust 实现 | 状态 |
 |--------|--------|----------|------|
-| `SYS_PRIV_ALLOW` (1) | do_privctl.c:56-64 | 检查 `RTS_NO_PRIV` + `s_proc_nr` → 清 `RTS_NO_PRIV` | ✅ 已实现 |
-| `SYS_PRIV_DISALLOW` (2) | do_privctl.c:75-79 | 设置 `RTS_NO_PRIV` | ✅ 已实现 |
-| `SYS_PRIV_SET_SYS` (3) | do_privctl.c:86-174 | `KPriv::get_priv` 动态分配 slot + 双向链接（`p.priv_id` 回链，2026-09-05 修复）+ `reset_pending_ipc` + `reset_resources` + 默认掩码 `fill_sendto_mask(ALL)` + 可选 `update_priv` | ✅ 已实现（Phase 6, 2026-08-13；掩码语义 D-49 2026-09-05） |
-| `SYS_PRIV_SET_USER` (4) | do_privctl.c:176-185 | 链接 target 到 `USER_PRIV_ID` + 更新 `s_proc_nr` | ✅ 已实现 |
-| `SYS_PRIV_ADD_IO` (5) | do_privctl.c:187-204 | `copy_struct_from_user` 读取 `io_range` + `KPriv::add_io` | ✅ 已实现（Phase 6, 2026-08-13） |
-| `SYS_PRIV_ADD_MEM` (6) | do_privctl.c:206-216 | `copy_struct_from_user` 读取 `mem_range` + `KPriv::add_mem` | ✅ 已实现（Phase 6, 2026-08-13） |
-| `SYS_PRIV_ADD_IRQ` (7) | do_privctl.c:218-230 | `copy_struct_from_user` 读取 `irq` + `KPriv::add_irq` | ✅ 已实现（Phase 6, 2026-08-13） |
-| `SYS_PRIV_QUERY_MEM` (8) | do_privctl.c:232-251 | 检查 `phys_start/len` 落在 `s_mem_tab` 范围 | ✅ 已实现 |
-| `SYS_PRIV_UPDATE_SYS` (9) | do_privctl.c:253-268 | `copy_struct_from_user` 读取 `PrivUpdateRequest` + `PrivTable::update_priv`（字段拷贝 + `fill_sendto_mask` 全表掩码维护） | ✅ 已实现（Phase 6, 2026-08-13；掩码语义 D-49 2026-09-05） |
-| `SYS_PRIV_YIELD` (10) | do_privctl.c:66-73 | target 清 `RTS_NO_PRIV` + caller 设 `RTS_NO_PRIV` | ✅ 已实现 |
-| `SYS_PRIV_CLEAR_IPC_REFS` (11) | do_privctl.c:81-84 | 调用 `clear_ipc_refs`（syscall.rs:893）清 `s_notify_pending` / `s_asyn_pending` + 唤醒 `P_BLOCKEDON == target_ep` 的进程 | ✅ 已实现（Phase 6, 2026-08-13） |
+| `SYS_PRIV_ALLOW` (1) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L56，工具生成） | 检查 `RTS_NO_PRIV` + `s_proc_nr` → 清 `RTS_NO_PRIV` | ✅ 已实现 |
+| `SYS_PRIV_DISALLOW` (2) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L75，工具生成） | 设置 `RTS_NO_PRIV` | ✅ 已实现 |
+| `SYS_PRIV_SET_SYS` (3) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L86，工具生成） | `KPriv::get_priv` 动态分配 slot + 双向链接（`p.priv_id` 回链，2026-09-05 修复）+ `reset_pending_ipc` + `reset_resources` + 默认掩码 `fill_sendto_mask(ALL)` + 可选 `update_priv` | ✅ 已实现（Phase 6, 2026-08-13；掩码语义 D-49 2026-09-05） |
+| `SYS_PRIV_SET_USER` (4) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L176，工具生成） | 链接 target 到 `USER_PRIV_ID` + 更新 `s_proc_nr` | ✅ 已实现 |
+| `SYS_PRIV_ADD_IO` (5) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L187，工具生成） | `copy_struct_from_user` 读取 `io_range` + `KPriv::add_io` | ✅ 已实现（Phase 6, 2026-08-13） |
+| `SYS_PRIV_ADD_MEM` (6) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L206，工具生成） | `copy_struct_from_user` 读取 `mem_range` + `KPriv::add_mem` | ✅ 已实现（Phase 6, 2026-08-13） |
+| `SYS_PRIV_ADD_IRQ` (7) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L218，工具生成） | `copy_struct_from_user` 读取 `irq` + `KPriv::add_irq` | ✅ 已实现（Phase 6, 2026-08-13） |
+| `SYS_PRIV_QUERY_MEM` (8) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L232，工具生成） | 检查 `phys_start/len` 落在 `s_mem_tab` 范围 | ✅ 已实现 |
+| `SYS_PRIV_UPDATE_SYS` (9) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L253，工具生成） | `copy_struct_from_user` 读取 `PrivUpdateRequest` + `PrivTable::update_priv`（字段拷贝 + `fill_sendto_mask` 全表掩码维护） | ✅ 已实现（Phase 6, 2026-08-13；掩码语义 D-49 2026-09-05） |
+| `SYS_PRIV_YIELD` (10) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L66，工具生成） | target 清 `RTS_NO_PRIV` + caller 设 `RTS_NO_PRIV` | ✅ 已实现 |
+| `SYS_PRIV_CLEAR_IPC_REFS` (11) | minix3/minix/kernel/system/do_privctl.c:do_privctl（L81，工具生成） | 调用 `clear_ipc_refs`（syscall.rs:893）清 `s_notify_pending` / `s_asyn_pending` + 唤醒 `P_BLOCKEDON == target_ep` 的进程 | ✅ 已实现（Phase 6, 2026-08-13） |
 
 **Phase 6 设计要点（2026-08-13）**：
 
 1. **跨地址空间拷贝**：新增 `copy_struct_from_user` 助手（syscall.rs:828-857），封装 `data_copy_vmcheck` 路径，将用户空间 `io_range` / `mem_range` / `irq` / `PrivUpdateRequest` 拷贝到内核栈缓冲。`VmSuspend` 结果由 `dispatch_privctl` 转译为 `KcallResult::Suspend`，与 C 的 `SUSPEND` 语义对齐。
-2. **`KPriv::update_from_request`**（kpriv.rs）：对应 C `update_priv()` (do_privctl.c:280-368)，按 `CHECK_IRQ` / `CHECK_IO_PORT` / `CHECK_MEM` 标志位 gate 复制 IRQ/IO/MEM 表，超范围返回 `Err(())` → `EINVAL`。
+2. **`KPriv::update_from_request`**（kpriv.rs）：对应 C `update_priv()` (minix3/minix/kernel/system/do_privctl.c:update_priv)，按 `CHECK_IRQ` / `CHECK_IO_PORT` / `CHECK_MEM` 标志位 gate 复制 IRQ/IO/MEM 表，超范围返回 `Err(())` → `EINVAL`。
    > **2026-09-05 D-49 更新**：该单 slot 方法已拆分——字段拷贝部分更名为 `KPriv::apply_fields_from_request`（私有，错误类型升级为命名的 `PrivUpdateError`），掩码部分上移为全表操作：`PrivTable::update_priv` 组合"字段拷贝 + `fill_sendto_mask`"，对称性/守卫语义见 §4.6.1。SET_SYS 默认路径同期发现 `p.priv_id` 未回链（C `get_priv` 的 `rc->p_priv = sp`，system.c:298），已补双向链接。
-3. **`KPriv::get_priv`**（kpriv.rs:764-795）：对应 C `get_priv()` (system.c:274-302)，实现 `NULL_PRIV_ID` → 扫描 `[NR_BOOT_PROCS .. NR_SYS_PROCS)` 动态 slot + 静态 slot 校验 + `EBUSY` / `ENOSPC` / `EINVAL` 错误码。
+3. **`KPriv::get_priv`**（os/kernel/src/kpriv.rs:struct PrivUpdateRequest（L764，工具生成））：对应 C `get_priv()` (system.c:274-302)，实现 `NULL_PRIV_ID` → 扫描 `[NR_BOOT_PROCS .. NR_SYS_PROCS)` 动态 slot + 静态 slot 校验 + `EBUSY` / `ENOSPC` / `EINVAL` 错误码。
 4. **`clear_ipc_refs`**（syscall.rs:893-942）：对应 C `clear_ipc_refs()` (system.c:577-607)，跨所有 `NR_SYS_PROCS` slot 清除 target 的 `s_notify_pending` / `s_asyn_pending` 位 + 唤醒 `blocked_on == target_ep` 的进程（清 `RTS_SENDING | RTS_RECEIVING`）。**Design gap**：C 设置 `rp->p_reg.retreg = caller_ret` 让被唤醒进程看到 `EDEADSRCDST`；Rust 未建模 register save area，`_error_code` 参数仅保留 API 完整性（与正常 IPC 唤醒路径相同 gap）。Rust `senda` 不持久化 async table，故无需 `cancel_async` 循环，bit 清除等价。
 
 **FIX-25 latent bug 修复**：`dispatch_privctl` 原使用 legacy `caller_has_sys_proc(caller)`，该函数内部构建空 `PrivTable::new()`，导致所有 `SYS_PRIVCTL` 调用都被错误拒绝（EPERM）。已改用 `caller_has_sys_proc_with_table(caller, priv_table)` 正确识别 `SYS_PROC` 权限。`dispatch_schedule`、`dispatch_vmctl`（2026-08-14 修复，VMCTL 权限检查同款 latent bug）存在相同 bug，均已同步修复（新增 `priv_table: &PrivTable` 参数）。
@@ -545,7 +545,7 @@ Rust 在 D-49 之前的实现正是踩在这个坑里：`update_from_request` �
 
 ## Ch5: 测试
 
-> Rust 实现: `os/kernel/src/kpriv.rs:903-1200` (27 测试) + `os/kernel/src/capability.rs:283-361` (10 测试)
+> Rust 实现: `os/kernel/src/kpriv.rs:fn swap_slots（L903，工具生成）` (27 测试) + `os/kernel/src/capability.rs:fn from_bits（L283，工具生成）` (10 测试)
 
 ### kpriv.rs 测试
 
@@ -596,19 +596,19 @@ Rust 在 D-49 之前的实现正是踩在这个坑里：`update_from_request` �
 
 ### syscall.rs `dispatch_privctl` 测试（Phase 6, 2026-08-13）
 
-> Rust 实现: os/kernel/src/syscall.rs:3056-3370 — 9 个测试覆盖 5 个原有子命令 + 4 个 Phase 6 新落地子命令的边界路径。
+> Rust 实现: os/kernel/src/syscall.rs:fn kernel_call_resume（L3056，工具生成） — 9 个测试覆盖 5 个原有子命令 + 4 个 Phase 6 新落地子命令的边界路径。
 
 | 测试函数 | 验证行为 | 对应 C 符号 |
 |---------|---------|------------|
-| `test_dispatch_privctl_rejects_non_sys_proc_caller` | 非 SYS_PROC caller → EPERM | `do_privctl.c:47` caller check |
+| `test_dispatch_privctl_rejects_non_sys_proc_caller` | 非 SYS_PROC caller → EPERM | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L47，工具生成）` caller check |
 | `test_dispatch_privctl_unknown_request_returns_einval` | 未知子命令 → EINVAL | `default: result = EINVAL` |
-| `test_dispatch_privctl_disallow_sets_no_priv` | DISALLOW 设 RTS_NO_PRIV | `do_privctl.c:75-79` |
-| `test_dispatch_privctl_disallow_already_set_returns_eperm` | target 已无 priv → EPERM | `do_privctl.c:77` `!RTS_NO_PRIV` |
-| `test_dispatch_privctl_query_mem_returns_eperm_no_ranges` | target 无 s_mem_tab → EPERM | `do_privctl.c:232-251` |
-| `test_dispatch_privctl_set_sys_without_no_priv_returns_eperm` | SET_SYS 但 target 非 RTS_NO_PRIV → EPERM | `do_privctl.c:88` |
+| `test_dispatch_privctl_disallow_sets_no_priv` | DISALLOW 设 RTS_NO_PRIV | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L75，工具生成）` |
+| `test_dispatch_privctl_disallow_already_set_returns_eperm` | target 已无 priv → EPERM | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L77，工具生成）` `!RTS_NO_PRIV` |
+| `test_dispatch_privctl_query_mem_returns_eperm_no_ranges` | target 无 s_mem_tab → EPERM | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L232，工具生成）` |
+| `test_dispatch_privctl_set_sys_without_no_priv_returns_eperm` | SET_SYS 但 target 非 RTS_NO_PRIV → EPERM | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L88，工具生成）` |
 | `test_dispatch_privctl_add_io_without_priv_id_returns_eperm` | ADD_IO 但 target priv_id=None → EPERM | Rust 附加检查（C ADD_IO 无 s_id check；仅 RTS_NO_PRIV gate @188-190） |
-| `test_dispatch_privctl_update_sys_without_arg_ptr_returns_einval` | UPDATE_SYS 但 arg_ptr=0 → EINVAL | `do_privctl.c:253-258` NULL check |
-| `test_dispatch_privctl_clear_ipc_refs_returns_ok` | CLEAR_IPC_REFS 对合法 target 返回 OK | `do_privctl.c:81-84` |
+| `test_dispatch_privctl_update_sys_without_arg_ptr_returns_einval` | UPDATE_SYS 但 arg_ptr=0 → EINVAL | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L253，工具生成）` NULL check |
+| `test_dispatch_privctl_clear_ipc_refs_returns_ok` | CLEAR_IPC_REFS 对合法 target 返回 OK | `minix3/minix/kernel/system/do_privctl.c:do_privctl（L81，工具生成）` |
 
 ---
 

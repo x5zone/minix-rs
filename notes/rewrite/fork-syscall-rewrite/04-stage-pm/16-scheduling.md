@@ -52,7 +52,7 @@ if (mproc[parent].mp_flags & PRIV_PROC) {
 }
 ```
 
-系统服务经 `regular fork` 产的恢复脚本（`forkexit.c:96-100` 的 `PRIV_PROC` 父调 `SCHED` 同理）不应继承 `PRIV_PROC` 父的 `NONE` 调度上下文（`RS` 等系统服务的 `mp_scheduler==NONE` 无 `maxprio/quantum`），而应继承 `INIT` 的用户策略（`INIT` 的 `mp_scheduler==KERNEL` 启动后经 `sched_init` 已为 `SCHED`，`INIT` 的 `maxprio` 为 `USER_Q` 的 `nice 0` 队列）。`fork_from` 的 `Privilege::Kernel` 父调 `SCHED` 的同源分支（`fork.rs:354-362`）与此对偶。
+系统服务经 `regular fork` 产的恢复脚本（`minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成）` 的 `PRIV_PROC` 父调 `SCHED` 同理）不应继承 `PRIV_PROC` 父的 `NONE` 调度上下文（`RS` 等系统服务的 `mp_scheduler==NONE` 无 `maxprio/quantum`），而应继承 `INIT` 的用户策略（`INIT` 的 `mp_scheduler==KERNEL` 启动后经 `sched_init` 已为 `SCHED`，`INIT` 的 `maxprio` 为 `USER_Q` 的 `nice 0` 队列）。`fork_from` 的 `Privilege::Kernel` 父调 `SCHED` 的同源分支（`fork.rs:354-362`）与此对偶。
 
 ### 1.4 为什么 `sched_nice` 拒绝 `KERNEL/NONE` 调度器：能力守卫
 
@@ -137,7 +137,7 @@ int sched_start_user(endpoint_t ep, struct mproc *rmp)
 }
 ```
 
-`62` 行 `nice_to_priority` 的 `maxprio` 变换与 `D4` 的 `NiceMapping::to_queue` 同算式，`71-76` 行 `PRIV_PROC` 父继承 `INIT` 分支与 `fork` 的 `PRIV_PROC` 父调 `SCHED`（`forkexit.c:96-100`）同源但 `inherit_from` 为 `INIT` 端点而非调度器，`79-83` 行 `sched_inherit` 的 `maxprio` 继承使子进程优先级跟随 `nice` 而非 `USER_Q` 固定。
+`62` 行 `nice_to_priority` 的 `maxprio` 变换与 `D4` 的 `NiceMapping::to_queue` 同算式，`71-76` 行 `PRIV_PROC` 父继承 `INIT` 分支与 `fork` 的 `PRIV_PROC` 父调 `SCHED`（`minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成）`）同源但 `inherit_from` 为 `INIT` 端点而非调度器，`79-83` 行 `sched_inherit` 的 `maxprio` 继承使子进程优先级跟随 `nice` 而非 `USER_Q` 固定。
 
 ### 2.3 `sched_nice`（`schedule.c:89-112`）
 
@@ -404,7 +404,7 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/schedule.c` 全文（`20-50` `sched_init` 等）、`minix3/minix/servers/pm/utility.c:91-103`（`nice_to_priority`）、`minix3/minix/servers/pm/main.c:276-289`（`get_nice_value`）、`minix3/minix/servers/pm/misc.c:239-286`（`do_getsetpriority`）、`minix3/minix/include/minix/config.h:66-74`（`NR_SCHED_QUEUES/MAX/MIN/USER_Q/USER_QUANTUM`）、`minix3/sys/sys/resource.h:43-44`（`PRIO_MIN -20/PRIO_MAX 20`）、`minix3/minix/include/minix/sched.h:7-12`（`sched_start/sched_inherit`）
+- C 源（ground truth）：`minix3/minix/servers/pm/schedule.c` 全文（`20-50` `sched_init` 等）、`minix3/minix/servers/pm/utility.c:nice_to_priority`（`nice_to_priority`）、`minix3/minix/servers/pm/main.c:get_nice_value`（`get_nice_value`）、`minix3/minix/servers/pm/misc.c:do_getsetpriority`（`do_getsetpriority`）、`minix3/minix/include/minix/config.h:NR_SCHED_QUEUES`（`NR_SCHED_QUEUES/MAX/MIN/USER_Q/USER_QUANTUM`）、`minix3/sys/sys/resource.h:PRIO_MIN`（`PRIO_MIN -20/PRIO_MAX 20`）、`minix3/minix/include/minix/sched.h:sched_start`（`sched_start/sched_inherit`）
 - PM 阶段文档：01-pm-init-main.md（`sched_init` 调用点与 `USER_Q` 零点）、02-mproc-struct.md（`nice/scheduler` 二元）、04-ipc-dispatch.md（`call_vec` 分发）、05-vfs-interaction.md（`VFS_PM_FORK_REPLY` 的 `sched_start_user` 成功路径）、11-signal-core.md（`SIGCHLD` 不经调度）、01-stage-kernel/11-scheduling-primitives.md（内核 `schedule` 原语）、06-stage-sched（`SCHED` 服务实现）
 - 阶段内顺序：01 → **本章（16）** → 05（`VFS_PM_FORK_REPLY` 的 `sched_start_user` 成功路径 `maxprio` 继承已在 `05` 实现，但 `16` 落 `nice_to_priority` 真实变换）→ 17（`do_exec` 的 `exec_restart` 后 `sched_start_user` 再继承）
 - OS 模式参考：Linux `setpriority`/`nice` + `CFS` `load_weight`（`kernel/sched/core.c`）、Redox `sched_yield` + `Scheme` 票据（`kernel/context`）、`seL4` `sched_context` 显式票据与 `MCP` 的 `EACCES`（见 §1.7）

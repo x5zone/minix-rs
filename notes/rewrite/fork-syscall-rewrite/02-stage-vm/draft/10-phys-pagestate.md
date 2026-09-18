@@ -33,9 +33,9 @@ VM 中的物理页管理分为两层：
 - **分配路径更早**：`vm_allocpages()` 在 VM 初始化阶段就被调用（`pt_init_done` 之前），此时 `phys_block` 基础设施尚未就绪
 
 源码证据：
-- [pagetable.c:375](minix3/minix/servers/vm/pagetable.c#L375)：`vm_allocpages()` 调用 `alloc_mem()` 分配页表页，**完全不经 `phys_block`**
+- [minix3/minix/servers/vm/pagetable.c:vm_allocpages（L375，工具生成）](minix3/minix/servers/vm/pagetable.c#L375)：`vm_allocpages()` 调用 `alloc_mem()` 分配页表页，**完全不经 `phys_block`**
 - [alloc.c](minix3/minix/servers/vm/alloc.c)：整个文件零引用 `pb_new`、`pb_reference`、`phys_block`
-- `pb_new()` 仅在 [region.c:691](minix3/minix/servers/vm/region.c#L691)（进程缺页时创建新物理块）、[pb.c:158](minix3/minix/servers/vm/pb.c#L158)（`mem_cow` CoW 复制）、[mem_anon_contig.c:65](minix3/minix/servers/vm/mem_anon_contig.c#L65)（连续匿名内存）中被调用——全部是**进程内存**场景
+- `pb_new()` 仅在 [region.c:691](minix3/minix/servers/vm/region.c#L691)（进程缺页时创建新物理块）、[minix3/minix/servers/vm/pb.c:mem_cow（L158，工具生成）](minix3/minix/servers/vm/pb.c#L158)（`mem_cow` CoW 复制）、[minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_new（L65，工具生成）](minix3/minix/servers/vm/mem_anon_contig.c#L65)（连续匿名内存）中被调用——全部是**进程内存**场景
 
 **为什么第 2 层需要 `phys_block`？**
 
@@ -308,8 +308,8 @@ flags 使用场景:
 
 | 用途 | 源码位置 | 说明 |
 |------|---------|------|
-| `pb_link` 头插法插入 | [pb.c:61-71](minix3/minix/servers/vm/pb.c) | 链表维护 |
-| `pb_unreferenced` 从链表移除节点 | [pb.c:100-115](minix3/minix/servers/vm/pb.c) | O(n) 查找前驱 |
+| `pb_link` 头插法插入 | [minix3/minix/servers/vm/pb.c:pb_link](minix3/minix/servers/vm/pb.c) | 链表维护 |
+| `pb_unreferenced` 从链表移除节点 | [minix3/minix/servers/vm/pb.c:pb_unreferenced（L100，工具生成）](minix3/minix/servers/vm/pb.c) | O(n) 查找前驱 |
 | sanity check 验证 refcount 一致性 | [region.c:234-248](minix3/minix/servers/vm/region.c) | 仅调试构建 |
 | CoW 时遍历所有引用者设为只读 | — | **不存在**。`map_ph_writept` 只操作单个 `phys_region` |
 | fork 后遍历所有引用者 | — | **不存在**。`map_writept` 逐页独立操作 |
@@ -510,7 +510,7 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 
 ### 2.6 mem_cow 函数
 
-`mem_cow()` 是 CoW 的核心实现函数：当共享页（refcount≥2）发生写缺页时，分配新物理页并复制旧页内容，然后将 phys_region 重新链接到新 phys_block 并将 memtype 改为 anon。位于 [pb.c:134-168](minix3/minix/servers/vm/pb.c)，被 `anon_pagefault()` 和 `file_pagefault()` 调用：
+`mem_cow()` 是 CoW 的核心实现函数：当共享页（refcount≥2）发生写缺页时，分配新物理页并复制旧页内容，然后将 phys_region 重新链接到新 phys_block 并将 memtype 改为 anon。位于 [minix3/minix/servers/vm/pb.c:pb_unreferenced（L134，工具生成）](minix3/minix/servers/vm/pb.c)，被 `anon_pagefault()` 和 `file_pagefault()` 调用：
 
 ```c
 int mem_cow(struct vir_region *region,
@@ -1045,34 +1045,34 @@ if let Some((pfn, mt)) = pending {
 ### 4.1 PageFrames 初始化
 
 - **测试场景**：验证 `total_pages` 计算正确性、`Vec` 长度与物理页数匹配、所有 `PageState` 初始 `refcount=0` 且无标志位
-- **代码引用**：`page_state.rs:197` `test_page_frames_init`
+- **代码引用**：`os/servers/vm/src/region/page_state.rs:fn memtype（L197，工具生成）` `test_page_frames_init`
 - **验证方法**：创建 `PageFrames` 实例，遍历所有页状态检查初始值
 - **关键断言**：`frames.total_pages() == phys_bytes / PAGE_SIZE`，每个 `state.refcount == 0`，`!state.flags.contains(IN_CACHE)`
 
 ### 4.2 PFN 与物理地址转换
 
 - **测试场景**：`pfn_to_phys` 和 `phys_to_pfn` 双向转换的正确性
-- **代码引用**：`page_state.rs:208` `test_pfn_to_phys`，`page_state.rs:216` `test_phys_to_pfn`
+- **代码引用**：`os/servers/vm/src/region/page_state.rs:fn set_memtype（L208，工具生成）` `test_pfn_to_phys`，`os/servers/vm/src/region/page_state.rs:fn fmt（L216，工具生成）` `test_phys_to_pfn`
 - **验证方法**：对 PFN 0、1、256 等边界值验证转换结果，确认 `pfn_to_phys(pfn) == pfn * PAGE_SIZE`
 - **PFN 边界**：`PFN_NONE = u32::MAX` 表示未映射（对应 C 中 `MAP_NONE`），`pfn = total_pages - 1` 为最大有效值，越界时 `get()` 返回 `None`
 
 ### 4.3 PageSlot 映射状态
 
 - **测试场景**：`PageSlot` 的 `is_mapped()` 判断，`PFN_NONE` 表示未映射
-- **代码引用**：`page_state.rs:224` `test_page_slot`
+- **代码引用**：`os/servers/vm/src/region/page_state.rs:fn fmt（L224，工具生成）` `test_page_slot`
 - **验证方法**：创建有效 slot（`pfn=5`）和空 slot（`pfn=PFN_NONE`），验证 `is_mapped()` 返回值
 
 ### 4.4 refcount 操作
 
 - **测试场景**：正常递增/递减、归零释放、`saturating_add` 防溢出
-- **代码引用**：`page_state.rs:246` `test_refcount_operations`
+- **代码引用**：`os/servers/vm/src/region/page_state.rs:fn get` `test_refcount_operations`
 - **验证方法**：显式修改 `refcount` 并检查结果
 - **溢出保护**：`saturating_add(1)` 在 `u16::MAX` 时不再递增，debug 构建可通过 `debug_assert!` 检测溢出（C 源码中 `u8_t` 无此保护，仅 `SANITYCHECKS` 构建检测）
 
 ### 4.5 INCACHE 语义
 
 - **测试场景**：缓存页 refcount 额外 +1，`rmcache` 时正确递减，`IN_CACHE` 标志位正确设置/清除
-- **代码引用**：`page_state.rs:237` `test_incache`
+- **代码引用**：`os/servers/vm/src/region/page_state.rs:impl PageFrames（L237，工具生成）` `test_incache`
 - **验证方法**：调用 `addcache(pfn)` 后检查 `refcount == 1` 且 `IN_CACHE` 已设置；调用 `rmcache(pfn)` 后检查 `refcount == 0` 且 `IN_CACHE` 已清除
 - **C 语义对齐**：对应 C 中 `addcache()` 对 `phys_block.refcount++` 和 `PBF_INCACHE` 标志设置
 
@@ -1087,27 +1087,27 @@ if let Some((pfn, mt)) = pending {
   - **验证方法**：映射页后 `refcount=1`，调用 `cow_copy_page`，验证 slot 仍指向原 PFN
 
 - **测试场景 C**：`cow_resolve` 单页 CoW 解析（含 `refcount > 2` 场景）
-  - **代码引用**：`cow_exec_pf.rs:293` `test_cow_resolve`，`cow_exec_pf.rs:312` `test_cow_resolve_no_sharing`，`cow_exec_pf.rs:326` `test_cow_resolve_region`
+  - **代码引用**：`os/servers/vm/src/cow_exec_pf.rs:fn cow_resolve_core（L293，工具生成）` `test_cow_resolve`，`os/servers/vm/src/cow_exec_pf.rs:fn cow_resolve_core（L312，工具生成）` `test_cow_resolve_no_sharing`，`os/servers/vm/src/cow_exec_pf.rs:fn verify_cow_consistency（L326，工具生成）` `test_cow_resolve_region`
   - **验证方法**：`refcount=2` 时触发复制，`refcount=1` 时跳过；`cow_resolve_region` 处理多页区域中不同 refcount 的页
 
 - **测试场景 D**：`refcount=1` 快速路径（`cow_resolve_core`）
-  - **代码引用**：`cow_exec_pf.rs:348` `test_cow_resolve_core_refcount_one_fast_path`
+  - **代码引用**：`os/servers/vm/src/cow_exec_pf.rs:fn verify_cow_consistency（L348，工具生成）` `test_cow_resolve_core_refcount_one_fast_path`
   - **验证方法**：`refcount=1` 时直接返回原 PFN，不分配新页
 
 ### 4.7 VirRegion 与 PageFrames 协同
 
 - **测试场景 A**：`map_page` / `unmap_page` 正确操作 refcount
-  - **代码引用**：`vir_region.rs:411` `test_map_unmap_page`
+  - **代码引用**：`os/servers/vm/src/region/vir_region.rs:fn free_range（L411，工具生成）` `test_map_unmap_page`
   - **验证方法**：`map_page` 后 `refcount == 1`，`unmap_page` 后 `refcount == 0`
 
 - **测试场景 B**：`needs_cow` 判断
-  - **代码引用**：`vir_region.rs:428` `test_needs_cow`
+  - **代码引用**：`os/servers/vm/src/region/vir_region.rs:enum VirRegionError（L428，工具生成）` `test_needs_cow`
   - **验证方法**：`refcount=1` 时 `needs_cow` 返回 `false`，`refcount=2` 时返回 `true`
 
 ### 4.8 verify_refcounts 一致性验证
 
 - **测试场景**：多进程多区域场景下的一致性验证，对应 C 中 `map_sanitycheck`
-- **代码引用**：`sanity.rs:128` `test_verify_refcounts_empty`，`sanity.rs:136` `test_verify_refcounts_mismatch_detected`，`sanity.rs:150` `test_verify_refcounts_cache_only_page`，`sanity.rs:159` `test_verify_refcounts_cache_mismatch`
+- **代码引用**：`os/servers/vm/src/sanity.rs:fn verify_refcounts（L128，工具生成）` `test_verify_refcounts_empty`，`os/servers/vm/src/sanity.rs:fn test_verify_refcounts_empty（L136，工具生成）` `test_verify_refcounts_mismatch_detected`，`os/servers/vm/src/sanity.rs:fn test_verify_refcounts_mismatch_detected（L150，工具生成）` `test_verify_refcounts_cache_only_page`，`os/servers/vm/src/sanity.rs:fn test_verify_refcounts_cache_only_page` `test_verify_refcounts_cache_mismatch`
 - **验证方法**：
   - 空表（无映射）应通过
   - 手动设置 `refcount=5`（无对应映射）应检测到不匹配

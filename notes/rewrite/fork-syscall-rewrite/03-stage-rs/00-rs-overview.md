@@ -30,7 +30,7 @@ RS（Reincarnation Server，复活服务器）是 Minix3 的 **root system proce
 
 在 Minix3 的进程命名空间里，RS 是固定编号的系统服务：
 
-- `RS_PROC_NR = 2`（`minix3/minix/include/minix/com.h:61`，用户进程编号区间 0~11：PM=0、VFS=1、RS=2、MEM=3、SCHED=4、TTY=5、DS=6、MIB=7、VM=8、PFS=9、MFS=10、INIT=11）
+- `RS_PROC_NR = 2`（`minix3/minix/include/minix/com.h:RS_PROC_NR`，用户进程编号区间 0~11：PM=0、VFS=1、RS=2、MEM=3、SCHED=4、TTY=5、DS=6、MIB=7、VM=8、PFS=9、MFS=10、INIT=11）
 - `ROOT_SYS_PROC_NR = RS_PROC_NR`（`com.h:77`）——"root system process"即 RS：系统服务这一族进程的"根"，其余服务都由它派生/管理
 - boot 映像登记顺序（`kernel/table.c:44-64`）：kernel 任务 5 个（asyncm/idle/clock/system/kernel）→ **DS 第一（`table.c:52`）→ RS 紧随其后（`table.c:53`）** → PM/SCHED/VFS/memory/tty/mib/vm/pfs/mfs/init
 
@@ -208,23 +208,23 @@ Minix3 的可靠性模型：**系统服务崩溃不应导致整个系统崩溃**
 |------|------|------|---------|--------|
 | 0 总览 | 00 | `00-rs-overview.md` | RS 是什么、boot 链位置、启动主线图、文档导航 | `servers/rs/` 全部 |
 | 1 启动入口与进程表 | 01 | `01-rs-boot-init.md` | main/sef_local_startup/sef_cb_init_fresh 四步 boot/自升级流程/boot_image 表读取 | `main.c`、`table.c` |
-| 1 | 02 | `02-rs-process-table.md` | rproc/rprocpub/rproc_ptr、rinit、rupdate、r_flags/sys_flags 全表、lookup/alloc/free、rs_isokendpt | `type.h`、`glo.h`、`rs.h`、`manager.c:1935-2109` |
+| 1 | 02 | `02-rs-process-table.md` | rproc/rprocpub/rproc_ptr、rinit、rupdate、r_flags/sys_flags 全表、lookup/alloc/free、rs_isokendpt | `type.h`、`glo.h`、`rs.h`、`minix3/minix/servers/rs/manager.c:rproc` |
 | 2 权限与隔离 | 03 | `03-rs-privilege.md` | priv 结构建模、boot priv 初始化、privctl 操作面、sched_init_proc、update_sig_mgrs | `kernel/priv.h`、`main.c:240-345`、`utility.c:82-141,364-422` |
-| 2 | 04 | `04-rs-access-control.md` | check_call_permission/caller_is_root/caller_can_control、isolation policy | `manager.c:21-130` |
-| 2 | 05 | `05-rs-ipc-sendmask.md` | r_ipc_list、get_next_name、init_privs/add_forward_ipc/add_backward_ipc、IPC_ALL/IPC_ALL_SYS | `manager.c:2112-2331` |
+| 2 | 04 | `04-rs-access-control.md` | check_call_permission/caller_is_root/caller_can_control、isolation policy | `minix3/minix/servers/rs/manager.c:caller_is_root` |
+| 2 | 05 | `05-rs-ipc-sendmask.md` | r_ipc_list、get_next_name、init_privs/add_forward_ipc/add_backward_ipc、IPC_ALL/IPC_ALL_SYS | `minix3/minix/servers/rs/manager.c:rproc（L2112，工具生成）` |
 | 3 主循环与监控 | 06 | `06-rs-main-loop.md` | 主循环、四类消息分类、reply/late_reply/EDONTREPLY、rs_idle_period/rs_is_idle | `main.c:38-131`、`utility.c:223-233,309-341,351-359,424-479` |
 | 3 | 07 | `07-rs-period-heartbeat.md` | do_period、心跳/alive_tm/check_tm/stop_tm、init 超时、backoff、SIGTERM→SIGKILL、do_sigchld、update_period | `request.c:943-1049,1051-1092`、`update.c:371-397` |
-| 4 服务创建与配置 | 08 | `08-rs-slot-config.md` | check_request、copy_rs_start/copy_label、init_slot/edit_slot、build_cmd_dep、inherit_service_defaults | `manager.c:135-173,289-324,1303-1327,1460-1701,1710-1797`、`request.c:1265-1309` |
-| 4 | 09 | `09-rs-exec.md` | srv_execve/do_exec/exec_restart/read_seg、read_exec/share_exec/free_exec、SF_USE_COPY/SF_NEED_COPY | `exec.c`、`manager.c:1354-1455` |
-| 4 | 10 | `10-rs-service-create.md` | create_service、clone_service、activate_service、clone_slot、swap_slot | `manager.c:531-786,1013-1033,1800-1932` |
-| 4 | 11 | `11-rs-publish.md` | publish/unpublish：DS label、mapdriver、PCI ACL、devman bind/unbind | `manager.c:787-918` |
-| 4 | 12 | `12-rs-init-run.md` | start_service、run_service、init_service、do_init_ready、do_upd_ready、catch_boot_init_ready、end_srv_init | `manager.c:328-356,923-987`、`utility.c:18-68`、`request.c:462-533,890-942`、`main.c:591-626,784-825` |
-| 4 | 13 | `13-rs-control-requests.md` | do_up/do_down/do_restart/do_refresh/do_shutdown/do_clone/do_unclone/do_edit | `request.c:15-460`、`manager.c:988-1012` |
+| 4 服务创建与配置 | 08 | `08-rs-slot-config.md` | check_request、copy_rs_start/copy_label、init_slot/edit_slot、build_cmd_dep、inherit_service_defaults | `minix3/minix/servers/rs/manager.c:copy_rs_start,289-324,1303-1327,1460-1701,1710-1797`、`request.c:1265-1309` |
+| 4 | 09 | `09-rs-exec.md` | srv_execve/do_exec/exec_restart/read_seg、read_exec/share_exec/free_exec、SF_USE_COPY/SF_NEED_COPY | `exec.c`、`minix3/minix/servers/rs/manager.c:rproc（L1354，工具生成）` |
+| 4 | 10 | `10-rs-service-create.md` | create_service、clone_service、activate_service、clone_slot、swap_slot | `minix3/minix/servers/rs/manager.c:create_service,1013-1033,1800-1932` |
+| 4 | 11 | `11-rs-publish.md` | publish/unpublish：DS label、mapdriver、PCI ACL、devman bind/unbind | `minix3/minix/servers/rs/manager.c:publish_service` |
+| 4 | 12 | `12-rs-init-run.md` | start_service、run_service、init_service、do_init_ready、do_upd_ready、catch_boot_init_ready、end_srv_init | `minix3/minix/servers/rs/manager.c:end_srv_init,923-987`、`utility.c:18-68`、`request.c:462-533,890-942`、`main.c:591-626,784-825` |
+| 4 | 13 | `13-rs-control-requests.md` | do_up/do_down/do_restart/do_refresh/do_shutdown/do_clone/do_unclone/do_edit | `request.c:15-460`、`minix3/minix/servers/rs/manager.c:stop_service` |
 | 4 | 14 | `14-rs-query-requests.md` | do_lookup/do_getsysinfo/do_sysctl/do_fi、fi_service、print_services_status/print_update_status | `request.c:1095-1264`、`utility.c:69-81,142-222,485-546` |
-| 5 终止与恢复 | 15 | `15-rs-terminate-restart.md` | terminate_service/restart_service/run_script/reincarnate_service、kill/crash/cleanup/detach_service、backoff 恢复、get_service_instances | `manager.c:360-530,1033-1052,1055-1353` |
+| 5 终止与恢复 | 15 | `15-rs-terminate-restart.md` | terminate_service/restart_service/run_script/reincarnate_service、kill/crash/cleanup/detach_service、backoff 恢复、get_service_instances | `minix3/minix/servers/rs/manager.c:kill_service_debug,1033-1052,1055-1353` |
 | 6 Live Update | 16 | `16-rs-live-update.md` | do_update、rupdate 链、prepare/update/init 阶段、end_update/end_srv_update/abort/rollback、VM multi-component | `update.c` 全部、`request.c:534-889`、`utility.c:247-304` |
 | 6 | 17 | `17-rs-state-data.md` | rupdater/sys_pids/instance/r_prev_rp·r_next_rp 链、update 状态数据结构 | `update.c`、`type.h:30-42`、`glo.h` |
-| 6 | 18 | `18-rs-self-lifecycle.md` | RS 自身：SEF LU 回调、SEF_INIT_*、srv_fork 自升级、SEF_RS_UPDATE_SELF、重启链 | `main.c:436-590`、`update.c:230-366`、`utility.c:387-412`、`manager.c:760-780`、`lib/libsys/sef*.c` |
+| 6 | 18 | `18-rs-self-lifecycle.md` | RS 自身：SEF LU 回调、SEF_INIT_*、srv_fork 自升级、SEF_RS_UPDATE_SELF、重启链 | `main.c:436-590`、`update.c:230-366`、`utility.c:387-412`、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`、`lib/libsys/sef*.c` |
 | 7 外部接口与全局 | 19 | `19-rs-external-interfaces.md` | 全部外部 syscall 签名与消息映射（sys_privctl/sys_getimage/sched_*/vm_*/DS/mapdriver/PCI/libexec/SEF） | `lib/libsys/*.c`、`include/minix/{com,ipc,sef}.h` |
 | 7 | 99 | `99-rs-global-concepts.md` | const.h 常量全表、RS_RQ_BASE 消息类型、RSS_*/SF_*/SEF_*/IPCF_*/SYS_PRIV_* 标志、错误表 | `const.h`、`rs.h`、`sef.h`、`ipc_filter.h`、`com.h` |
 

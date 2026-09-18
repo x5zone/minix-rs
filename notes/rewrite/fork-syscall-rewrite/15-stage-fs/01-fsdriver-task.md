@@ -101,19 +101,19 @@ Redox 的方案（Scheme 特征）更接近 Minix3：一组 open、read、write�
 
 分发函数 `fsdriver_process` 接收四个参数：回调表指针、收到的消息、内核报告的接收状态、是否异步回复。函数体按顺序做五件事：
 
-1. **旁路判断**（`fsdriver.c:26-31`）。如果是内核通知，或者发送方不是虚拟文件系统服务，就调用通用处理函数（如果服务器提供了的话），然后直接返回，不发送任何回复。
-2. **拆事务编号**（`fsdriver.c:34-35`）。用取编号宏留下低十六位，用删编号宏（算术右移十六位）得到请求部分。
-3. **门禁检查**（`fsdriver.c:39`）。已挂载，或者请求正好是挂载请求，才能继续；否则结果记为无效参数。
-4. **查表调用**（`fsdriver.c:40-45`）。请求部分减去基址（注释明确写了回绕是有意的），下标合法且槽位非空就调用，否则记为功能未实现。
-5. **发送回复**（`fsdriver.c:50-58`）。回复类型是结果码加上原事务编号；异步标志决定用异步发送还是普通发送；发送失败打印一行日志；最后调用请求后钩子（如果有）。
+1. **旁路判断**（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L26，工具生成）`）。如果是内核通知，或者发送方不是虚拟文件系统服务，就调用通用处理函数（如果服务器提供了的话），然后直接返回，不发送任何回复。
+2. **拆事务编号**（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L34，工具生成）`）。用取编号宏留下低十六位，用删编号宏（算术右移十六位）得到请求部分。
+3. **门禁检查**（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L39，工具生成）`）。已挂载，或者请求正好是挂载请求，才能继续；否则结果记为无效参数。
+4. **查表调用**（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L40，工具生成）`）。请求部分减去基址（注释明确写了回绕是有意的），下标合法且槽位非空就调用，否则记为功能未实现。
+5. **发送回复**（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L50，工具生成）`）。回复类型是结果码加上原事务编号；异步标志决定用异步发送还是普通发送；发送失败打印一行日志；最后调用请求后钩子（如果有）。
 
 特别注意第 5 步的回复是无条件发送的：即使结果是错误码，也要把错误码连同事务编号送回去，让发送方知道这单失败了。唯一不发送回复的是第 1 步的旁路。
 
-### 2.3 终止 `fsdriver_terminate` 与主循环 `fsdriver_task`（`fsdriver.c:64-97`）
+### 2.3 终止 `fsdriver_terminate` 与主循环 `fsdriver_task`（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L64，工具生成）`）
 
-终止函数 `fsdriver_terminate`（`fsdriver.c:67-74`）只有两行有效代码：运行标志置假，取消阻塞中的接收。取消接收会让主循环的接收调用以"被中断"错误返回，主循环看到这个特定错误就继续下一轮（`fsdriver.c:88-90`），重新检查循环条件。
+终止函数 `fsdriver_terminate`（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L67，工具生成）`）只有两行有效代码：运行标志置假，取消阻塞中的接收。取消接收会让主循环的接收调用以"被中断"错误返回，主循环看到这个特定错误就继续下一轮（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_task（L88，工具生成）`），重新检查循环条件。
 
-主循环 `fsdriver_task`（`fsdriver.c:79-97`）的结构：
+主循环 `fsdriver_task`（`minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_terminate（L79，工具生成）`）的结构：
 
 ```
 运行标志置真
@@ -132,17 +132,17 @@ Redox 的方案（Scheme 特征）更接近 Minix3：一组 open、read、write�
 
 三十二个适配函数的声明集中在库内头文件 `minix3/minix/lib/libfsdriver/fsdriver.h`（第四到第八十四行），每个函数签名相同：回调表指针、输入消息、输出消息，返回整数结果码。签名统一是故意的：分发表数组的元素类型只有一个，不统一就填不进同一张表。
 
-### 2.5 请求编号与事务宏（`vfsif.h:41-81`）
+### 2.5 请求编号与事务宏（`minix3/minix/include/minix/vfsif.h:REQ_GETNODE`）
 
-三十三个请求编号从基址加一排到基址加三十三（`vfsif.h:41-73`），总数常量是三十四（`vfsif.h:75`）。判定宏 `IS_FS_RQ` 检查"除低八位外是否等于基址"（`vfsif.h:77`），这是粗筛：连基址前缀都不对的消息根本不是文件请求。
+三十三个请求编号从基址加一排到基址加三十三（`minix3/minix/include/minix/vfsif.h:REQ_GETNODE`），总数常量是三十四（`minix3/minix/include/minix/vfsif.h:NREQS`）。判定宏 `IS_FS_RQ` 检查"除低八位外是否等于基址"（`minix3/minix/include/minix/vfsif.h:IS_FS_RQ`），这是粗筛：连基址前缀都不对的消息根本不是文件请求。
 
-三个事务宏（`vfsif.h:79-81`）：取编号是按位与上十六个一，加编号是左移十六位再或上编号，删编号是带符号右移十六位。删编号用带符号移位是有意的：请求部分可能是负数（基址本身是 `0xA00`，本是正数，但回复码可能是负的错误码，同一套宏要同时服务请求与回复两条路）。
+三个事务宏（`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID`）：取编号是按位与上十六个一，加编号是左移十六位再或上编号，删编号是带符号右移十六位。删编号用带符号移位是有意的：请求部分可能是负数（基址本身是 `0xA00`，本是正数，但回复码可能是负的错误码，同一套宏要同时服务请求与回复两条路）。
 
-### 2.6 标志与特殊错误码（`vfsif.h:7-38`）
+### 2.6 标志与特殊错误码（`minix3/minix/include/minix/vfsif.h:__MINIX_VFSIF_H（L7，工具生成）`）
 
-挂载标志两个：只读挂载、根文件系统挂载（`vfsif.h:8-9`）。查找控制标志两个：要求保留末尾符号链接不解析、要求附带完整用户凭证（`vfsif.h:12-18`）。能力标志三个：多线程、有窥视、六十四位（`vfsif.h:20-23`）。
+挂载标志两个：只读挂载、根文件系统挂载（`minix3/minix/include/minix/vfsif.h:REQ_RDONLY`）。查找控制标志两个：要求保留末尾符号链接不解析、要求附带完整用户凭证（`minix3/minix/include/minix/vfsif.h:PATH_RET_SYMLINK`）。能力标志三个：多线程、有窥视、六十四位（`minix3/minix/include/minix/vfsif.h:RES_NOFLAGS`）。
 
-特殊错误码三个，都是负三百开头：进入挂载点（负三百零一）、离开挂载点（负三百零二）、绝对符号链接（负三百零三）（`vfsif.h:26-28`）。它们不是失败，而是查找过程的重定向信号，详细语义在 `03-fsdriver-utility.md` 的查找章节展开，本篇只记录它们的存在与数值。
+特殊错误码三个，都是负三百开头：进入挂载点（负三百零一）、离开挂载点（负三百零二）、绝对符号链接（负三百零三）（`minix3/minix/include/minix/vfsif.h:EENTERMOUNT`）。它们不是失败，而是查找过程的重定向信号，详细语义在 `03-fsdriver-utility.md` 的查找章节展开，本篇只记录它们的存在与数值。
 
 用户凭证结构（`vfsif.h:33-38`）含用户标识、组标识、附加组数量、附加组数组。查找请求在置了凭证标志时用授权携带它，否则只带用户标识与组标识两个数字。
 
@@ -294,23 +294,23 @@ C 用三个独立变量记录挂载状态，理论上可以出现"已挂载为�
 | 索引一到三十三全能解码，零与三十四拒绝 | 请求表完整 | 第 2.5 节 |
 | 唯独获取节点请求没有分发槽 | 保留请求语义 | `table.c` 空槽 |
 | 挂载请求的消息类型等于基址加二十八 | 编号算术 | `vfsif.h` |
-| 事务编号正负往返 | 编解码保符号 | `vfsif.h:79-81` |
-| 前缀过滤接受与拒绝 | 粗筛规则 | `vfsif.h:77` |
+| 事务编号正负往返 | 编解码保符号 | `minix3/minix/include/minix/vfsif.h:TRNS_GET_ID` |
+| 前缀过滤接受与拒绝 | 粗筛规则 | `minix3/minix/include/minix/vfsif.h:IS_FS_RQ` |
 | 挂载标志与能力标志的读写 | 标志语义 | 第 2.6 节 |
-| 查找标志的两位解码 | 控制位语义 | `vfsif.h:11-18` |
-| 三个重定向码的数值 | 特殊码锁定 | `vfsif.h:26-28` |
+| 查找标志的两位解码 | 控制位语义 | `minix3/minix/include/minix/vfsif.h:PATH_NOFLAGS` |
+| 三个重定向码的数值 | 特殊码锁定 | `minix3/minix/include/minix/vfsif.h:EENTERMOUNT` |
 | 未知索引携带原值 | 排错信息 | 分发拒绝路径 |
 
 ### 5.2 驱动模块测试（九个）
 
 | 测试 | 验证内容 | 对应依据 |
 |------|----------|----------|
-| 通知走旁路且无回复 | 单向通知语义 | `fsdriver.c:26-31` |
-| 外来发送方走旁路 | 来源门禁 | `fsdriver.c:26` |
-| 未挂载时只受理挂载 | 挂载门禁 | `fsdriver.c:39` |
-| 已挂载时正常分发 | 查表路径 | `fsdriver.c:40-45` |
+| 通知走旁路且无回复 | 单向通知语义 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L26，工具生成）` |
+| 外来发送方走旁路 | 来源门禁 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L26，工具生成）` |
+| 未挂载时只受理挂载 | 挂载门禁 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L39，工具生成）` |
+| 已挂载时正常分发 | 查表路径 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L40，工具生成）` |
 | 保留请求回答功能未实现 | 空槽行为 | `table.c` |
-| 挂载后终止再卸载才退出 | 两步退出 | `fsdriver.c:87` |
+| 挂载后终止再卸载才退出 | 两步退出 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_task（L87，工具生成）` |
 | 重复挂载报忙 | 挂载互斥 | `call.c:31-34` |
 | 默认方法全报未实现 | 空回调规则 | 各适配器空检查 |
 | 空服务器挂载后拒绝操作 | 测试对端行为 | 第 3.8 节 |
@@ -320,8 +320,8 @@ C 用三个独立变量记录挂载状态，理论上可以出现"已挂载为�
 | 测试 | 验证内容 | 对应依据 |
 |------|----------|----------|
 | 通知走进 other 钩子且不回复 | 非请求消息路径 | 第 2.2 节早退 |
-| 无槽位请求回答未实现并回显事务号 | 保留槽语义 | `fsdriver.c:52-56` |
-| 未挂载拒绝非挂载请求 | 挂载门禁 | `fsdriver.c:46-47` |
+| 无槽位请求回答未实现并回显事务号 | 保留槽语义 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L52，工具生成）` |
+| 未挂载拒绝非挂载请求 | 挂载门禁 | `minix3/minix/lib/libfsdriver/fsdriver.c:fsdriver_process（L46，工具生成）` |
 | 挂载后卸载更新状态并携带节点载荷 | 状态机与回复载荷 | `call.c:60-64` |
 | 读请求把字节流经拷贝钩子送出 | 读数据面 | `call.c:153-202` |
 | 默认驱动按能力位回答成功或未实现 | 空默认方法语义 | `driver.rs` 默认体 |

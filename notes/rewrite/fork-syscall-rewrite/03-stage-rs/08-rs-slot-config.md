@@ -1,7 +1,7 @@
 # 08-rs-slot-config: 服务 slot 配置
 
 > **分类**: 阶段 4 — 服务创建与配置（配置落地）
-> **源码**: `minix3/minix/servers/rs/request.c:1265-1308`（`check_request`）、`minix3/minix/servers/rs/manager.c:135-169`（`copy_rs_start`/`copy_label`）、`manager.c:1460-1703`（`edit_slot`）、`manager.c:1708-1795`（`init_slot`）、`manager.c:289-323`（`build_cmd_dep`）、`manager.c:1303-1329`（`inherit_service_defaults`）、`minix3/minix/include/minix/rs.h:24-52,104-151`（`RSS_*` 与 `struct rs_start`）
+> **源码**: `minix3/minix/servers/rs/request.c:check_request`（`check_request`）、`minix3/minix/servers/rs/manager.c:copy_rs_start`（`copy_rs_start`/`copy_label`）、`minix3/minix/servers/rs/manager.c:edit_slot`（`edit_slot`）、`minix3/minix/servers/rs/manager.c:init_slot`（`init_slot`）、`minix3/minix/servers/rs/manager.c:build_cmd_dep`（`build_cmd_dep`）、`minix3/minix/servers/rs/manager.c:inherit_service_defaults`（`inherit_service_defaults`）、`minix3/minix/include/minix/rs.h:SERVICE_UID（L24，工具生成）,104-151`（`RSS_*` 与 `struct rs_start`）
 > **Rust 模块**: `os/servers/rs/src/slot.rs`（`RsStart`/`RssFlags`/`check_request`/`build_cmd_dep`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（槽位字段）、`03-rs-privilege.md`（`r_priv` 字段）、`05-rs-ipc-sendmask.md`（`init_privs` 调用点）、`07-rs-period-heartbeat.md`（`r_period` 消费）
 > **说明**: 服务配置从"用户请求的参数"（`rs_start`）到"RS 表内的槽位状态"的落地。`RS_UP`/`RS_EDIT` 都走同一套配置管线：`check_request`（参数校验）→ `copy_rs_start`（拷入）→ `init_slot`/`edit_slot`（字段落地）。本文档是服务生命周期**创建路径的第一站**——槽位配置正确，后续 exec（09）/创建（10）/发布（11）才有输入。
@@ -12,11 +12,11 @@
 
 ### 1.0 章节引言
 
-服务不是凭空出现的：启动一个服务（`RS_UP`，13）需要描述"这个服务是什么"——命令、IPC 列表、调度参数、信号管理器、replica 策略……这份描述叫 **`rs_start`**（rs.h:104-151），由请求方（通常是 INIT 脚本或 `service` 命令）构造。本文档回答的问题是：**`rs_start` 里的每个字段怎么被校验、怎么拷入 RS 表、怎么变成槽位的可执行状态**。
+服务不是凭空出现的：启动一个服务（`RS_UP`，13）需要描述"这个服务是什么"——命令、IPC 列表、调度参数、信号管理器、replica 策略……这份描述叫 **`rs_start`**（minix3/minix/include/minix/rs.h:rs_start），由请求方（通常是 INIT 脚本或 `service` 命令）构造。本文档回答的问题是：**`rs_start` 里的每个字段怎么被校验、怎么拷入 RS 表、怎么变成槽位的可执行状态**。
 
 > **本章不讲什么**（机制一律移交）:
 > - priv 结构构造与 privctl 提交（`03-rs-privilege.md`）
-> - IPC 掩码计算（`05-rs-ipc-sendmask.md`）——本文档只陈述 `init_privs` 调用点（manager.c:1700）
+> - IPC 掩码计算（`05-rs-ipc-sendmask.md`）——本文档只陈述 `init_privs` 调用点（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））
 > - exec 二进制加载（`09-rs-exec.md`）——本文档只陈述 `read_exec`/`share_exec` 调用点（`RSS_COPY` 分支）
 > - 服务进程创建/发布（`10/11`）
 > - 脚本执行（`15 run_script`）
@@ -44,11 +44,11 @@
 
 ### 1.2 关键区分：`init_slot` vs `edit_slot`（WHAT）
 
-| | `init_slot`（manager.c:1708） | `edit_slot`（manager.c:1460） |
+| | `init_slot`（minix3/minix/servers/rs/manager.c:init_slot） | `edit_slot`（minix3/minix/servers/rs/manager.c:edit_slot） |
 |--|------------------------------|------------------------------|
 | 场景 | 新服务首次创建（RS_UP） | 编辑已有服务（RS_EDIT）；init_slot 尾部也调它 |
 | 默认 | `DSRV_SF`/`DSRV_F`/`DSRV_I`/`DSRV_T` + uid/dev/domain/pci 初始化 | 字段覆盖 |
-| 关系 | 初始化后 **`return edit_slot(...)`**（manager.c:1794） | init_slot 的收尾 |
+| 关系 | 初始化后 **`return edit_slot(...)`**（minix3/minix/servers/rs/manager.c:rs_start（L1794，工具生成）） | init_slot 的收尾 |
 
 所以**真正的字段落地都在 `edit_slot`**——本文档以它为主体，`init_slot` 只负责"新服务特有"的默认值。
 
@@ -101,7 +101,7 @@ static int check_request(struct rs_start *rs_start)    /* request.c:1265 */
 - **调度器**：`KERNEL`（内核调度）或 0~11（`LAST_SPECIAL_PROC_NR`，com.h:70——即 PM/SCHED/VFS 等特殊服务号）。调度器是用户调度器（如 SCHED）时，`sched_init_proc` 走 `SCHEDULING_START` 消息（03 §1.5）。
 - **优先级**：`< NR_SCHED_QUEUES`（config.h:66，=16）。
 - **量子**：`> 0`。
-- **CPU**：`RS_CPU_BSP(-2)`/`RS_CPU_DEFAULT(-1)`（rs.h:63-64）两个特殊值；越界（> processors_count）不报错而是**回退 BSP**（带告警）；负的其他值 → EINVAL。
+- **CPU**：`RS_CPU_BSP(-2)`/`RS_CPU_DEFAULT(-1)`（minix3/minix/include/minix/rs.h:RS_CPU_DEFAULT）两个特殊值；越界（> processors_count）不报错而是**回退 BSP**（带告警）；负的其他值 → EINVAL。
 - **信号管理器**：`SELF` 或 0~11。
 - `check_request` 是静态函数，被 `do_up` 调用（request.c:43）——RS_UP 专属校验；RS_EDIT 不复用（编辑不改调度器为无效值）。
 
@@ -113,7 +113,7 @@ Rust 侧 `check_request(rs_start, machine: &Machine)`（slot.rs，R32.1）：C �
 > `quantum=1` 是"未设置"哨兵而非 C 默认，任何"先 Default 再局部填充"的路径都会得到与 C
 > 差 200 倍的调度配置且 `check_request` 无法识别（SELF/KERNEL 均合法）。
 
-### 2.2 `copy_rs_start`/`copy_label`（manager.c:135-169）——sys_datacopy 拷贝
+### 2.2 `copy_rs_start`/`copy_label`（minix3/minix/servers/rs/manager.c:copy_rs_start）——sys_datacopy 拷贝
 
 ```c
 int copy_rs_start(src_e, src_rs_start, dst_rs_start)   /* manager.c:135 */
@@ -135,10 +135,10 @@ int copy_label(src_e, src_label, src_len, dst_label, dst_len) /* manager.c:151 *
 ```
 
 - `copy_rs_start`：整结构拷入（`sizeof(struct rs_start)`），错误透传。
-- `copy_label`：**`MIN(dst_len-1, src_len)` 截断 + 强制 NUL**（manager.c:160,166）——保证目标缓冲永远有终止符。Rust 的 `Label::from_bytes`（`strlcpy` 语义，service_slot.rs）等价。
+- `copy_label`：**`MIN(dst_len-1, src_len)` 截断 + 强制 NUL**（minix3/minix/servers/rs/manager.c:copy_label（L160，工具生成）,166）——保证目标缓冲永远有终止符。Rust 的 `Label::from_bytes`（`strlcpy` 语义，service_slot.rs）等价。
 - 这两个函数是 `sys_datacopy`（19 接线）的薄封装——Rust 侧 DEFERRED，编辑管线最终经 minix-sys 接线。
 
-### 2.3 `init_slot`（manager.c:1708-1795）——新服务默认值
+### 2.3 `init_slot`（minix3/minix/servers/rs/manager.c:init_slot）——新服务默认值
 
 ```c
 int init_slot(rp, rs_start, source)                    /* manager.c:1708 */
@@ -172,11 +172,11 @@ int init_slot(rp, rs_start, source)                    /* manager.c:1708 */
 要点：
 
 - **动态服务默认**：`DSRV_F = SRV_F | DYN_PRIV_ID`（priv.h:46）——动态 priv id（内核分配）；`DSRV_SF`（const.h:67）/`DSRV_T`（priv.h:62）。所有动态服务同一起点，差异全部由 `edit_slot` 覆盖。
-- **四链置空**（manager.c:1779-1782）：replica/update 链初始无链接（A-3）。
-- **`r_init_err = ERESTART`**（manager.c:1791）：初始化失败默认按"重启"处理（15 用）。
-- 尾部 `return edit_slot(...)`（manager.c:1794）——**init_slot 是 edit_slot 的前置**，字段落地统一。
+- **四链置空**（minix3/minix/servers/rs/manager.c:rs_start（L1779，工具生成））：replica/update 链初始无链接（A-3）。
+- **`r_init_err = ERESTART`**（minix3/minix/servers/rs/manager.c:rs_start（L1791，工具生成））：初始化失败默认按"重启"处理（15 用）。
+- 尾部 `return edit_slot(...)`（minix3/minix/servers/rs/manager.c:rs_start（L1794，工具生成））——**init_slot 是 edit_slot 的前置**，字段落地统一。
 
-### 2.4 `edit_slot` 字段覆盖表（manager.c:1460-1703）
+### 2.4 `edit_slot` 字段覆盖表（minix3/minix/servers/rs/manager.c:edit_slot）
 
 `edit_slot` 是配置管线的主体。按字段分组（行号均 grep 实证）：
 
@@ -206,16 +206,16 @@ int init_slot(rp, rs_start, source)                    /* manager.c:1708 */
 
 关键规则细节：
 
-1. **`RSS_IRQ_ALL`/`RSS_IO_ALL`**（rs.h:27-28）= `RSS_NR_IRQ+1`/`RSS_NR_IO+1` = 17：请求方声明"要所有 IRQ/IO"（驱动专用）→ RS 清空计数（`rss_nr_irq=0`）且**不置** `CHECK_IRQ`/`CHECK_IO_PORT`——驱动可在运行时申请任意 IRQ/IO；**列出具体 IRQ/IO 时才置** `CHECK_IRQ`/`CHECK_IO_PORT`（const.h:148-149 内核资源检查位），内核把驱动限制在声明的资源内（do_irqctl.c:68、do_privctl.c:293）。
-2. **call mask 的"basic calls"**：`RSS_SYS_BASIC_CALLS`/`RSS_VM_BASIC_CALLS`（rs.h:46-47）让服务获得基础内核调用集（`SYS_BASIC_CALLS`/`VM_BASIC_CALLS`）——否则只保留 `edit_slot` 里已有的调用。
-3. **`r_cmd[0] != '/'` → EINVAL**（manager.c:1583）：服务命令必须是绝对路径。
-4. **label 默认 = procname**（manager.c:1607-1610）：没提供自定义 label 时用可执行名。
-5. **脚本仅非 core**（manager.c:1620）：`SF_CORE_SRV` 服务拒绝脚本（恢复脚本是动态服务的特权）。
-6. **`RSS_NORESTART` + core → EPERM**（manager.c:1674-1678）：核心服务必须可重启。
-7. **`r_period` 排除 RS 自身**（manager.c:1686）：RS 不给自己的心跳设周期。
-8. **`init_privs` 收尾**（manager.c:1700）：所有字段就绪后重算 IPC 掩码（05 §2.7）。
+1. **`RSS_IRQ_ALL`/`RSS_IO_ALL`**（minix3/minix/include/minix/rs.h:RSS_IRQ_ALL）= `RSS_NR_IRQ+1`/`RSS_NR_IO+1` = 17：请求方声明"要所有 IRQ/IO"（驱动专用）→ RS 清空计数（`rss_nr_irq=0`）且**不置** `CHECK_IRQ`/`CHECK_IO_PORT`——驱动可在运行时申请任意 IRQ/IO；**列出具体 IRQ/IO 时才置** `CHECK_IRQ`/`CHECK_IO_PORT`（const.h:148-149 内核资源检查位），内核把驱动限制在声明的资源内（minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L68，工具生成）、minix3/minix/kernel/system/do_privctl.c:update_priv（L293，工具生成））。
+2. **call mask 的"basic calls"**：`RSS_SYS_BASIC_CALLS`/`RSS_VM_BASIC_CALLS`（minix3/minix/include/minix/rs.h:RSS_SYS_BASIC_CALLS）让服务获得基础内核调用集（`SYS_BASIC_CALLS`/`VM_BASIC_CALLS`）——否则只保留 `edit_slot` 里已有的调用。
+3. **`r_cmd[0] != '/'` → EINVAL**（minix3/minix/servers/rs/manager.c:rs_start（L1583，工具生成））：服务命令必须是绝对路径。
+4. **label 默认 = procname**（minix3/minix/servers/rs/manager.c:rs_start（L1607，工具生成））：没提供自定义 label 时用可执行名。
+5. **脚本仅非 core**（minix3/minix/servers/rs/manager.c:rs_start（L1620，工具生成））：`SF_CORE_SRV` 服务拒绝脚本（恢复脚本是动态服务的特权）。
+6. **`RSS_NORESTART` + core → EPERM**（minix3/minix/servers/rs/manager.c:rs_start（L1674，工具生成））：核心服务必须可重启。
+7. **`r_period` 排除 RS 自身**（minix3/minix/servers/rs/manager.c:rs_start（L1686，工具生成））：RS 不给自己的心跳设周期。
+8. **`init_privs` 收尾**（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））：所有字段就绪后重算 IPC 掩码（05 §2.7）。
 
-### 2.5 `build_cmd_dep`（manager.c:289-323）——argv 解析
+### 2.5 `build_cmd_dep`（minix3/minix/servers/rs/manager.c:build_cmd_dep）——argv 解析
 
 ```c
 void build_cmd_dep(struct rproc *rp)                   /* manager.c:289 */
@@ -241,18 +241,18 @@ void build_cmd_dep(struct rproc *rp)                   /* manager.c:289 */
 }
 ```
 
-argv 格式：`path, arguments..., NULL`（注释 manager.c:298-299）。Rust 侧 `build_cmd_dep(cmd) -> Vec<&[u8]>`（slot.rs）保持：空格分词、尾部空参丢弃（manager.c:309）、`ARGV_ELEMENTS-1` 上限（manager.c:311-313）、**遇 NUL 停止**（manager.c:305-306，对应 C 的 `strcpy`/`while(*cmd_ptr != '\0')` 语义——固定大小 `cmd` 缓冲中 NUL 之后的 0 填充不属于命令）。
+argv 格式：`path, arguments..., NULL`（注释 minix3/minix/servers/rs/manager.c:build_cmd_dep（L298，工具生成））。Rust 侧 `build_cmd_dep(cmd) -> Vec<&[u8]>`（slot.rs）保持：空格分词、尾部空参丢弃（minix3/minix/servers/rs/manager.c:build_cmd_dep（L309，工具生成））、`ARGV_ELEMENTS-1` 上限（minix3/minix/servers/rs/manager.c:build_cmd_dep（L311，工具生成））、**遇 NUL 停止**（minix3/minix/servers/rs/manager.c:build_cmd_dep（L305，工具生成），对应 C 的 `strcpy`/`while(*cmd_ptr != '\0')` 语义——固定大小 `cmd` 缓冲中 NUL 之后的 0 填充不属于命令）。
 
 > **N11 修复（2026-08-16，todo §11）——argv[0] 恒存在**：C 在解析前**无条件**
-> `r_argv[0] = r_args`（manager.c:299-300），所以空命令/纯空格命令得到 `argv = [""]`
+> `r_argv[0] = r_args`（minix3/minix/servers/rs/manager.c:build_cmd_dep（L299，工具生成）），所以空命令/纯空格命令得到 `argv = [""]`
 > （`r_argc = 1`，exec 空路径 → ENOENT）。旧 Rust 版返回空 Vec → `argc = 0`，09/10 的
 > exec 重建会走不同的失败形态。现在 `build_cmd_dep` 对无 token 输入返回 `vec![&[]]`
 > （`rebuild_args` 因此恒写 `args[0] = 0`、`argc >= 1`），与 C 对齐。测试：
 > `test_build_cmd_dep_empty_cmd_keeps_argv0`（空串/纯空格/NUL 开头三种边界）。
 
-> **S1 修复（2026-08-15）**：token 容器从 `Vec<Label>` 改为 `Vec<&[u8]>`（借用 `cmd` 切片）。C 把完整 token 字节写入 `r_args`（manager.c:301-302），argv 指向其中；`Label` 的 16 字节截断（`strlcpy` 语义）只适用于 label/域名字段，**不适用于命令与参数**——超过 16 字节的路径/参数此前被静默截断，09/10 exec 落地后必然出错。`Vec<&[u8]>` 正是 C argv 布局（指针进 `r_args`）的 Rust 等价表达。
+> **S1 修复（2026-08-15）**：token 容器从 `Vec<Label>` 改为 `Vec<&[u8]>`（借用 `cmd` 切片）。C 把完整 token 字节写入 `r_args`（minix3/minix/servers/rs/manager.c:build_cmd_dep（L301，工具生成）），argv 指向其中；`Label` 的 16 字节截断（`strlcpy` 语义）只适用于 label/域名字段，**不适用于命令与参数**——超过 16 字节的路径/参数此前被静默截断，09/10 exec 落地后必然出错。`Vec<&[u8]>` 正是 C argv 布局（指针进 `r_args`）的 Rust 等价表达。
 
-### 2.6 `inherit_service_defaults`（manager.c:1303-1329）——副本继承
+### 2.6 `inherit_service_defaults`（minix3/minix/servers/rs/manager.c:inherit_service_defaults）——副本继承
 
 ```c
 void inherit_service_defaults(def_rp, rp)              /* manager.c:1303 */
@@ -317,21 +317,21 @@ pub struct RsStateData { size, ipcf_els_addr, ipcf_els_size, ipcf_els_gid,
 - **指针字段 → 数组 + 长度**：C 的 `char *rss_cmd`/`char *rss_ipc`/`struct rss_label` 是指向请求方地址空间的指针，Rust 用固定数组 + 长度表示"拷入后的内容"（`sys_datacopy` 的产物）。
 - **`RssFlags` 用 bitflags**：21 个标志类型安全；`RSS_*` 值断言测试防漂移。
 - **计数域用 `i32`（对齐 C `int`，R20a）**：`rss_nr_irq`/`rss_nr_io`/`rss_nr_control`/`rss_nr_pci_id`/`rss_nr_pci_class`/`rss_nr_domain` 在 C 中都是
-  `int`（rs.h:122/124/126/128/136/142）。`i32` 保留 `edit_slot`/`init_slot` 校验（manager.c:1486-1521/1733-1774）前的三态——
+  `int`（minix3/minix/include/minix/rs.h:rs_start（L122，工具生成）/124/126/128/136/142）。`i32` 保留 `edit_slot`/`init_slot` 校验（minix3/minix/servers/rs/manager.c:rs_start（L1486，工具生成）/1733-1774）前的三态——
   `RSS_IRQ_ALL`/`RSS_IO_ALL` 哨兵（17）、0、负值（非法）；`usize` 会把非法负值包成巨大正数，
   与 `> NR_IRQ`/`> NR_IO_RANGE` 检查错位（R2/Fix #27 同理由，`ServiceSlot.nr_control` 已是 i32）。
-- **`rss_io` 表用 `privilege::IoRange`（N9 单一权威）**：C 的 `rss_io`（rs.h:125，匿名
+- **`rss_io` 表用 `privilege::IoRange`（N9 单一权威）**：C 的 `rss_io`（minix3/minix/include/minix/rs.h:rs_start（L125，工具生成），匿名
   `{unsigned base; unsigned len;}`）与内核 `struct io_range`（priv.h:13-16）同构，`edit_slot`
-  逐项拷入 `s_io_tab`（manager.c:1516-1518）。Rust 收敛为同一类型，消除 C 双表同构（D6 收敛方向）。
+  逐项拷入 `s_io_tab`（minix3/minix/servers/rs/manager.c:rs_start（L1516，工具生成））。Rust 收敛为同一类型，消除 C 双表同构（D6 收敛方向）。
 - **`rss_system`/`rss_vm` 用 `CallMask`（R20a，2026-09-06）**：C 是 `bitchunk_t[SYS_CALL_MASK_SIZE]`
-  位图（rs.h:130/135），edit_slot 先 memcpy 再叠加 basic 位（manager.c:1527-1540）——Rust 直接
+  位图（minix3/minix/include/minix/rs.h:rs_start（L130，工具生成）/135），edit_slot 先 memcpy 再叠加 basic 位（minix3/minix/servers/rs/manager.c:rs_start（L1527，工具生成））——Rust 直接
   用 64 位 `CallMask`（与 `s_k_call_mask` 同型，N9 单一权威方向），叠加语义由 R21 的
   `from_calls(base, ...)` 承接。
 - **`RsStateData` 指针 → 地址 + grant**：C 的 `ipcf_els`/`eval_addr` 是 void*，缓冲字节经
   grant 传输——Rust 建模为 `地址 + 长度 + Option<grant id>`（`ipcf_els_gid`/`eval_gid`），
   语义由 17-rs-state-data.md 消费。
 - **PCI 载荷字段如实建模（R20a）**：`rss_pci_id`/`rss_pci_class` 是 init_slot 校验分支
-  （manager.c:1745-1774，R20c）的输入；`rs_pci` 特权模型本身仍按 A-10 延后（publish.rs）。
+  （minix3/minix/servers/rs/manager.c:rs_start（L1745，工具生成），R20c）的输入；`rs_pci` 特权模型本身仍按 A-10 延后（publish.rs）。
 
 ### 3.2 `check_request` 纯函数（D2）
 
@@ -344,13 +344,13 @@ pub fn check_request(rs_start: &RsStart, machine: &Machine)
 
 ### 3.3 `build_cmd_dep`（D3）
 
-`Vec<&[u8]>` 返回 argv（借用 `cmd`，长度任意、不截断），`None` 终止符由 Vec 的末尾语义替代（`argv[argc] = NULL`，manager.c:322 不需要显式建模）。`ARGV_ELEMENTS-1` 上限（manager.c:311-313）与遇 NUL 停止（manager.c:305-306）均在测试中断言。
+`Vec<&[u8]>` 返回 argv（借用 `cmd`，长度任意、不截断），`None` 终止符由 Vec 的末尾语义替代（`argv[argc] = NULL`，minix3/minix/servers/rs/manager.c:build_cmd_dep（L322，工具生成） 不需要显式建模）。`ARGV_ELEMENTS-1` 上限（minix3/minix/servers/rs/manager.c:build_cmd_dep（L311，工具生成））与遇 NUL 停止（minix3/minix/servers/rs/manager.c:build_cmd_dep（L305，工具生成））均在测试中断言。
 
 ### 3.4 `edit_slot` 已实现（R20b）；`init_slot` 的 sys_datacopy 面（DEFERRED→19）
 
 `copy_rs_start` 的**字节面已落地**（`minix-types::ipc::rs_start`，见 §3.5）；仍在 19 号的
 只剩拷贝动作本身（`safecopy_from` 缝的真实传输）。**`edit_slot` 已实现（2026-09-06，
-todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 按 manager.c:1460-1707
+todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 按 minix3/minix/servers/rs/manager.c:edit_slot
 逐分支落地。关键形态：
 
 - **C 的 `sys_datacopy` 步骤在 Rust 中是纯内存操作**——C 的 `rss_cmd`/`rss_ipc`/`rss_script`
@@ -358,23 +358,23 @@ todo §18 Fix #48）**：`slot.rs::edit_slot(slot, rs_start, table, read_exec)` 
   字段落槽是切片拷贝。
 - **唯一的注入缝是 `read_exec`**（二进制文件 I/O，19 号）：`RSS_COPY` 无复用供体时以
   `&mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>` 注入执行；`RSS_REUSE` 的供体
-  搜索（manager.c:1636-1651，按 `proc_name`+`SF_USE_COPY` 全表扫描、**不过滤 IN_USE**）走
+  搜索（minix3/minix/servers/rs/manager.c:rs_start（L1636，工具生成），按 `proc_name`+`SF_USE_COPY` 全表扫描、**不过滤 IN_USE**）走
   `RProcTable::iter_all()` + 纯函数 `share_exec`（Arc 克隆）。
 - **basic 位叠加由 R21 承接**：`fill_call_mask(..., FALSE)` →
   `CallMask::from_calls(既有掩码, SYS_BASIC_CALLS/VM_BASIC_CALLS, ...)`；
   `SYS_BASIC_CALLS`/`VM_BASIC_CALLS` 清单落位 minix-types（单一权威）。
 - `init_slot` 已实现（R20c，2026-09-06，service_create.rs）：DSRV 默认覆盖 → 域/PCI 门 →
-  per-lifetime 复位（含 C 字面量 -1 的 scheduler/sig_mgr 瞬态，manager.c:1786-1787）→ 委托
-  `edit_slot`。PCI ACL 载体 `RsPci` 补进 `PublicSlot`（rs.h:180，label/endpoint 由 11 填）。
-  `inherit_service_defaults`（manager.c:1303-1330，IMM_SF/IMM_F 合并）同轮落地。
+  per-lifetime 复位（含 C 字面量 -1 的 scheduler/sig_mgr 瞬态，minix3/minix/servers/rs/manager.c:rs_start（L1786，工具生成））→ 委托
+  `edit_slot`。PCI ACL 载体 `RsPci` 补进 `PublicSlot`（minix3/minix/include/minix/rs.h:rprocpub（L180，工具生成），label/endpoint 由 11 填）。
+  `inherit_service_defaults`（minix3/minix/servers/rs/manager.c:inherit_service_defaults，IMM_SF/IMM_F 合并）同轮落地。
 
 ### 3.5 `rs_start_t` 字节 ABI：`minix-types::ipc::rs_start`（E-RSSTART 解锁）
 
 C 的三条控制臂（`do_up`/`do_edit`/`do_update`，request.c:37/:306/:542）第一步都是
-`copy_rs_start`——把调用方内存里完整的 `struct rs_start`（rs.h:104-151，x86-64 LP64 下
+`copy_rs_start`——把调用方内存里完整的 `struct rs_start`（minix3/minix/include/minix/rs.h:rs_start，x86-64 LP64 下
 920 字节）按 C ABI 整结构拷入 RS。这条 ABI 曾经被登记为"不可 pinning"（edge E-RSSTART，
 理由是 `bitchunk_t`/`uid_t` 在树内无定义），后来证实是误判：`bitchunk_t` 就定义在
-`minix3/sys/sys/types.h:124`（`uint32_t`，固定宽度、无架构依赖），`uid_t` 在同文件 :221，
+`minix3/sys/sys/types.h:i64_t（L124，工具生成）`（`uint32_t`，固定宽度、无架构依赖），`uid_t` 在同文件 :221，
 整棵 NetBSD 式 sys 树是齐备的。字节事实一经 pinning，解码面随之落地，形态上有三个
 值得展开的决策。
 
@@ -388,7 +388,7 @@ C 等宽类型逐字段镜像——`repr(C)` 让编译器按 GCC 的 x86-64 ABI 
 
 **指针字段保持地址语义，两段式取数。** `RsStartWire` 视图里的 `cmd_addr`/`script_addr`/
 `label.addr` 等就是调用方地址空间的裸地址——C 的 `copy_rs_start` 只拷结构本身，
-cmd/脚本/IPC 清单/标签的字节要靠后续的 `sys_datacopy` 逐个取（rs.h:63 明言
+cmd/脚本/IPC 清单/标签的字节要靠后续的 `sys_datacopy` 逐个取（minix3/minix/include/minix/rs.h:RS_CPU_DEFAULT 明言
 "Labels are copied over separately"）。这与本 crate `RsStart` 的内联缓冲（`cmd: [u8; N]`）
 是同一个事实的两端：wire 是"拷贝前"，`RsStart` 是"拷贝后"，中间的取数阶段属于
 请求 handler（R4/R5 的 do_up/do_edit 接线）。
@@ -422,9 +422,9 @@ slot.rs
 关键不变量：
 
 1. **校验先于拷贝**：C 管线顺序（check_request → copy → edit_slot）保持；`check_request` 的 EINVAL 在 `sys_datacopy` 之前拦截坏参数。
-2. **绝对路径强制**：`r_cmd[0] != '/'` → EINVAL（manager.c:1583）在 `RsStart` 语义中保留（`build_cmd_dep` 的调用方校验）。
-3. **掩码重算收尾**：`init_privs`（manager.c:1700）在字段全落地后执行——Rust 的 `update_ipc_mask`（05）是它的等价。
-4. **不可变继承只取位**：`inherit_service_defaults` 的 `IMM_SF`/`IMM_F` 位运算（manager.c:1322-1325）在 10 落地时保持精确位语义。
+2. **绝对路径强制**：`r_cmd[0] != '/'` → EINVAL（minix3/minix/servers/rs/manager.c:rs_start（L1583，工具生成））在 `RsStart` 语义中保留（`build_cmd_dep` 的调用方校验）。
+3. **掩码重算收尾**：`init_privs`（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））在字段全落地后执行——Rust 的 `update_ipc_mask`（05）是它的等价。
+4. **不可变继承只取位**：`inherit_service_defaults` 的 `IMM_SF`/`IMM_F` 位运算（minix3/minix/servers/rs/manager.c:rproc（L1322，工具生成））在 10 落地时保持精确位语义。
 
 ---
 
@@ -455,19 +455,19 @@ slot.rs
 | `test_edit_slot_period_restarts_asr_guards`（R20b） | RS 不改 period；restarts=0 / asr_count<0 不覆盖 |
 | `test_edit_slot_sched_guard_and_ipc_mask`（R20b） | scheduler=NONE 守卫四字段；sig_mgr 恒更新 |
 | `test_build_cmd_dep` | 多参数分词 |
-| `test_build_cmd_dep_trailing_spaces` | 尾部空格丢弃（manager.c:308） |
+| `test_build_cmd_dep_trailing_spaces` | 尾部空格丢弃（minix3/minix/servers/rs/manager.c:build_cmd_dep（L308，工具生成）） |
 | `test_build_cmd_dep_empty_cmd_keeps_argv0` | 空命令/纯空格/NUL 开头 → `[""]`，argc≥1（N11） |
-| `test_build_cmd_dep_stops_at_nul` | NUL 提前终止（manager.c:305-306），NUL 后填充不入参 |
+| `test_build_cmd_dep_stops_at_nul` | NUL 提前终止（minix3/minix/servers/rs/manager.c:build_cmd_dep（L305，工具生成）），NUL 后填充不入参 |
 | `test_build_cmd_dep_properties` / `test_rebuild_args_properties`（E-9） | 生成式不变式（XorShift 5000/2000 次）：token 分词 + S1 NUL 停止 + N11 argv0 + 确定性；R15 argc↔缓冲前缀自洽 + 尾部归零 |
 | `test_build_cmd_dep_long_token_not_truncated` | >16 字节 token 不截断（S1） |
-| `test_build_cmd_dep_argv_cap` | `ARGV_ELEMENTS-1` 上限（manager.c:311-313） |
+| `test_build_cmd_dep_argv_cap` | `ARGV_ELEMENTS-1` 上限（minix3/minix/servers/rs/manager.c:build_cmd_dep（L311，工具生成）） |
 | `test_rss_constants` | `RSS_IRQ_ALL=17`/`RSS_IO_ALL=17`/CPU 特例值/标志位 |
 
 ---
 
 ## 6. 过渡：从"配置"到"执行"
 
-槽位配置完成后，服务有了完整的"身份"（label/proc_name/uid）、"能力"（priv 字段 + IPC 掩码 + call masks）、"策略"（replica/script/backoff/restarts）。但**二进制还没加载**——`RSS_COPY` 分支调用的 `read_exec`（manager.c:1629 附近）是 09 的入口。
+槽位配置完成后，服务有了完整的"身份"（label/proc_name/uid）、"能力"（priv 字段 + IPC 掩码 + call masks）、"策略"（replica/script/backoff/restarts）。但**二进制还没加载**——`RSS_COPY` 分支调用的 `read_exec`（minix3/minix/servers/rs/manager.c:rs_start（L1629，工具生成） 附近）是 09 的入口。
 
 下一篇 `09-rs-exec.md`：服务二进制加载与执行——`read_exec`/`share_exec`/`free_exec`（`Arc<[u8]>` 共享副本，A-5）、`srv_execve` 的栈帧构建（A-8）、`exec_restart` 的 PM 交互。
 
@@ -477,11 +477,11 @@ slot.rs
 
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — 槽位字段与四链
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md` — `r_priv` 字段、CHECK_IRQ/CHECK_IO_PORT、DSRV_* 默认
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/05-rs-ipc-sendmask.md` — `init_privs` 调用点（manager.c:1700）
+- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/05-rs-ipc-sendmask.md` — `init_privs` 调用点（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` — `r_period` 消费
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md` — read_exec/share_exec/free_exec
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` — inherit_service_defaults 消费方
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` — do_up/do_edit 入口
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — sys_datacopy 接线
-- `minix3/minix/servers/rs/request.c:1265-1308`、`manager.c:135-169,289-323,1303-1329,1460-1703`、`include/minix/rs.h:24-52,104-151` — ground truth
+- `minix3/minix/servers/rs/request.c:check_request`、`minix3/minix/servers/rs/manager.c:copy_rs_start,289-323,1303-1329,1460-1703`、`include/minix/rs.h:24-52,104-151` — ground truth
 - `os/servers/rs/src/slot.rs` — Rust 实现

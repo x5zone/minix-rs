@@ -1,7 +1,7 @@
 # 02 — 系统信息库服务协议面：消息信封、交换格式与错误码特殊语义
 
 > **分类**: 协议面 / wire contract
-> **源码**: `minix3/minix/include/minix/com.h:597-598,613-622,1022-1030`（调用号）、`minix3/minix/include/minix/ipc.h:15,424-433,1373-1389,1548-1580`（6 种消息结构）、`minix3/sys/sys/sysctl.h:75-79,92-164,1382-1454`（名字/类型/标志/版本/元标识符/交换格式）、`minix3/minix/include/minix/sysctl.h`（全文 97 行，MINIX3 扩展）
+> **源码**: `minix3/minix/include/minix/com.h:COMMON_RQ_BASE,613-622,1022-1030`（调用号）、`minix3/minix/include/minix/ipc.h:CTL_SHORTNAME,424-433,1373-1389,1548-1580`（6 种消息结构）、`minix3/sys/sys/sysctl.h:CTL_MAXNAME,92-164,1382-1454`（名字/类型/标志/版本/元标识符/交换格式）、`minix3/minix/include/minix/sysctl.h`（全文 97 行，MINIX3 扩展）
 > **说明**: 所有 handler 篇（09/13~20）的前置协议文档：信封长什么样、名字在信里怎么放、版本门、错误码方言。本文只讲"信上写了什么"，不讲"收到信后怎么办"（那是 01/06/10/12 的事）。
 
 ---
@@ -98,7 +98,7 @@
 | 5 | `mib` | `int[8]` | 20 | 挂载路径 |
 | — | pad | 4B | 52 | 补位 |
 
-**④ `mess_lsys_mib_reply`**（服务 → MIB，`ipc.h:1384-1389`）：`req_id`（`uint32`，偏移 0）+ `status`（`ssize_t`，偏移 4，**可为 `ERESTART`**）+ 48 字节补位。`req_id` 是异步预留位：MIB 发请求时恒填 0（`remote.c:344,425`，"reserved for future async support"），回信必须原样拷回 0，非 0 即 `EINVAL`（`remote.c:361-362,463-464`）；服务端（`rmib.c:1078`）照收照回。今天全同步，非 0 配对是设计了但没启用的未来——读到非 0 不要脑补"另一种配对"，那是坏信（12 的 `check_reply` 同形）。
+**④ `mess_lsys_mib_reply`**（服务 → MIB，`ipc.h:1384-1389`）：`req_id`（`uint32`，偏移 0）+ `status`（`ssize_t`，偏移 4，**可为 `ERESTART`**）+ 48 字节补位。`req_id` 是异步预留位：MIB 发请求时恒填 0（`remote.c:344,425`，"reserved for future async support"），回信必须原样拷回 0，非 0 即 `EINVAL`（`remote.c:361-362,463-464`）；服务端（`minix3/minix/lib/libsys/rmib.c:rmib_process（L1078，工具生成）`）照收照回。今天全同步，非 0 配对是设计了但没启用的未来——读到非 0 不要脑补"另一种配对"，那是坏信（12 的 `check_reply` 同形）。
 
 **⑤ `mess_mib_lsys_call`**（MIB → 服务，`ipc.h:1554-1569`，转交）：`req_id` 0 / `root_id` 4 / `name_grant` 8 / `name_len` 12 / `oldp_grant` 16 / `oldp_len` 20 / `newp_grant` 24 / `newp_len` 28 / `user_endpt`（`endpoint_t`）32 / `flags` 36 / `root_ver` 40 / `tree_ver` 44 + 8 字节补位。**三个 grant + 三个长度，零数据字节**——MIB 把用户区直接转授权给服务，自己不当中转仓库（grant 机制在 06/12，`endpoint_t`/`cp_grant_id_t` 都是 4 字节）。
 
@@ -150,8 +150,8 @@ MINIX3 扩展（`minix/sysctl.h`）：`CTL_MINIX 32`（`:17`，躲开 NetBSD 未
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
 | D1 | 线格式原样 32 位 | 32 位 C 结构体（lane 全 4 字节） | 6 个 `#[repr(C)]` 结构，`vir_bytes`/`size_t` 取 `u32`，各 56 字节（`message.rs:3014,3037,3074,3098,3144,3179`） | 56 字节预算塞不下 64 位地址 + `name[8]`；发送者（libc/libsys）今天就是 32 位 C。 stealth 加宽会一次性失配所有发送者——64 位用户态是 A-4 的显式 ABI 决策，不是本篇能顺手做的 |
-| D2 | 语义/线分离 | `mib_sysctl` 里判断与拷贝混写 | `message.rs` 只管形状（`size_of==56` 钉死），`ipc/mib.rs` 只管 verdict（`SysctlRequest::decode` 等，`mib.rs:77`），映射（01 `map_sysctl_reply`）只判一次 | 照 `vm.rs` In/Out + `decode_message` 先例（`VmBrkIn` 从专用 union 臂解，不走 M1）；`SysctlReply` 只打包不映射——映射判两次必分叉（模式 59 的反面） |
-| D3 | 单向约束进类型 | 注释 + `return EDONTREPLY` 散写 | `MountRequest::decode_register` 越界回 `Err(EDONTREPLY)`（`mib.rs:171`，`remote.c:221-224`）；`decode_deregister` 只读 `root_id`（`mib.rs:190`，`remote.c:303`） | C 的"静默丢弃"是最容易被"好心改成报错"的语义——把它写进返回类型，改的人必须先改签名 |
+| D2 | 语义/线分离 | `mib_sysctl` 里判断与拷贝混写 | `message.rs` 只管形状（`size_of==56` 钉死），`ipc/mib.rs` 只管 verdict（`SysctlRequest::decode` 等，`os/libs/minix-types/src/ipc/mib.rs:fn decode`），映射（01 `map_sysctl_reply`）只判一次 | 照 `vm.rs` In/Out + `decode_message` 先例（`VmBrkIn` 从专用 union 臂解，不走 M1）；`SysctlReply` 只打包不映射——映射判两次必分叉（模式 59 的反面） |
+| D3 | 单向约束进类型 | 注释 + `return EDONTREPLY` 散写 | `MountRequest::decode_register` 越界回 `Err(EDONTREPLY)`（`os/libs/minix-types/src/ipc/mib.rs:impl MountRequest`，`remote.c:221-224`）；`decode_deregister` 只读 `root_id`（`os/libs/minix-types/src/ipc/mib.rs:fn decode_register（L190，工具生成）`，`remote.c:303`） | C 的"静默丢弃"是最容易被"好心改成报错"的语义——把它写进返回类型，改的人必须先改签名 |
 | D4 | 版本与上限编译期钉死 | `#error` 守卫 + 运行时 `SYSCTL_VERS` 宏 | `SYSCTL_VERSION` 常量（`sysctl.rs`）+ `const _: () = assert!(CTL_MAXID <= CTL_MINIX)`（`sysctl.rs:74`，对 `minix/sysctl.h:19-21`）+ `sysctl_vers/type/flags` 三个 `const fn` | C 用预处理器看门，Rust 用编译期断言看门——门的位置变了，看门这件事没变 |
 | D5 | 三个重命名位保留 NetBSD 原名 | `mib.h` 内部 `#define PARENT ROOT` 等 | `sysctl.rs` 只收 `ROOT/ALIAS/MMAP` 原名（`sysctl.rs:188,196,198`），重命名语义留给 03 的 `tree::flag` | 重命名是 MIB 内部契约（`mib.h` 注释：可随时改，不破坏任何东西）——放进全服务共享的 `minix-types` 等于把内部事广播成 ABI |
 
@@ -183,10 +183,10 @@ os/libs/minix-types/src/
 | 标志全集 | `sysctl.h:108-125` | `sysctl.rs:481,512`（含 `SYSCTL_USERFLAGS`） | 原名保留；`USERFLAGS` 组合值同 C |
 | 元标识符 | `sysctl.h:158-164` | `sysctl.rs:562` 起 | 七个负数 |
 | 6 种线结构 | `ipc.h:424-433,1373-1389,1548-1580` | `message.rs:3014,3037,3074,3098,3144,3179` + union 臂 `:218-228` | `size_of==56` 全钉 |
-| 请求 verdict | `main.c:302-340` | `mib.rs:77`（`SysctlRequest::decode`） | 长度/取道/配对，与 01 同判 |
-| 回复打包 | `ipc.h:1548-1552` | `mib.rs:130`（`SysctlReply::encode`） | 只打包，不映射 |
-| 挂载 verdict | `remote.c:221-224,303` | `mib.rs:171,190` | 越界静默丢；卸载只读 root |
-| 回信路由 | `remote.c:359-364,461-464` | `mib.rs:218,226`（`RemoteReply::decode` + `is_reserved_zero`） | 0 回显，非 0 拒（verdict 在 12 `check_reply`） |
+| 请求 verdict | `main.c:302-340` | `os/libs/minix-types/src/ipc/mib.rs:fn decode`（`SysctlRequest::decode`） | 长度/取道/配对，与 01 同判 |
+| 回复打包 | `ipc.h:1548-1552` | `os/libs/minix-types/src/ipc/mib.rs:fn encode`（`SysctlReply::encode`） | 只打包，不映射 |
+| 挂载 verdict | `remote.c:221-224,303` | `os/libs/minix-types/src/ipc/mib.rs:impl MountRequest,190` | 越界静默丢；卸载只读 root |
+| 回信路由 | `remote.c:359-364,461-464` | `os/libs/minix-types/src/ipc/mib.rs:struct RemoteReply（L218，工具生成）,226`（`RemoteReply::decode` + `is_reserved_zero`） | 0 回显，非 0 拒（verdict 在 12 `check_reply`） |
 
 ### 4.3 不变量
 
@@ -241,7 +241,7 @@ os/libs/minix-types/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/include/minix/com.h:597-598,613-622,1022-1030`、`minix3/minix/include/minix/ipc.h:15,424-433,1373-1389,1548-1580`、`minix3/sys/sys/sysctl.h:75-79,92-164,1382-1454`、`minix3/minix/include/minix/sysctl.h`（97 行全文）、`minix3/minix/servers/mib/main.c:291-351`（解码 verdict）、`minix3/minix/servers/mib/remote.c:218-224,293-310,361-364`（单向约束与回信路由）、`minix3/minix/servers/mib/tree.c:1376-1380,1410-1411`（EOPNOTSUPP/ERESTART）
+- C 源：`minix3/minix/include/minix/com.h:COMMON_RQ_BASE,613-622,1022-1030`、`minix3/minix/include/minix/ipc.h:CTL_SHORTNAME,424-433,1373-1389,1548-1580`、`minix3/sys/sys/sysctl.h:CTL_MAXNAME,92-164,1382-1454`、`minix3/minix/include/minix/sysctl.h`（97 行全文）、`minix3/minix/servers/mib/main.c:mib_sysctl（L291，工具生成）`（解码 verdict）、`minix3/minix/servers/mib/remote.c:mib_register（L218，工具生成）,293-310,361-364`（单向约束与回信路由）、`minix3/minix/servers/mib/tree.c:mib_dispatch（L1376，工具生成）,1410-1411`（EOPNOTSUPP/ERESTART）
 - 阶段文档：`01-mib-init-main.md`（上一站，verdict 层）、`03-mib-node-model.md`（下一站，标志行为）、`12-mib-remote-subtrees.md`（单向约束的行为主篇）、`21-mib-client-libc.md`（信封的另一端）、`../07-stage-ds/02-ds-message-contract.md`（同形状先例：号段先行 + 载荷后补）
 - Rust 实现：`os/libs/minix-types/src/types/sysctl.rs`、`os/libs/minix-types/src/types/com.rs`（COMMON_MIB 段）、`os/libs/minix-types/src/ipc/message.rs`（6 Mess + 6 union 臂）、`os/libs/minix-types/src/ipc/mib.rs`
 - 对端：`../01-stage-kernel/12-ipc-core.md`（`SENDREC` vs 单向语义）

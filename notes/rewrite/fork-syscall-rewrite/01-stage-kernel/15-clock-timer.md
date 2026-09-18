@@ -57,8 +57,8 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 | `set_kernel_timer()` | clock.c:229-240 | 设置内核定时器（链表插入） |
 | `reset_kernel_timer()` | clock.c:245-255 | 重置内核定时器（链表删除） |
 | `load_update()` | clock.c:260-292 | 负载平均采样 |
-| `cause_alarm()` | do_setalarm.c:69-76 | 闹钟到期通知（`mini_notify(CLOCK, ep)`） |
-| `vtimer_check()` | do_vtimer.c:81-103 | 虚拟/性能定时器到期检查 + 发信号 |
+| `cause_alarm()` | minix3/minix/kernel/system/do_setalarm.c:cause_alarm | 闹钟到期通知（`mini_notify(CLOCK, ep)`） |
+| `vtimer_check()` | minix3/minix/kernel/system/do_vtimer.c:vtimer_check | 虚拟/性能定时器到期检查 + 发信号 |
 
 ### 1.3 关键状态/机制说明
 
@@ -71,14 +71,14 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 **同步闹钟** (`s_alarm_timer`)：
 - 每个 `struct priv` 有一个 `s_alarm_timer`（`priv.h`）
 - 到期时通过 `cause_alarm()` → `mini_notify(CLOCK, target)` 通知目标进程
-- 仅系统进程（`SYS_PROC`）可使用（`do_setalarm.c:33`）
+- 仅系统进程（`SYS_PROC`）可使用（`minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成）`）
 - 用 `tmr_func_t` 函数指针 + `tmr_arg` 整数作为到期回调
 
 **虚拟/性能定时器**：
 - `p_virt_left`：用户态虚拟定时器（仅用户态时间递减，到期发 `SIGVTALRM`）
 - `p_prof_left`：性能分析定时器（用户态+系统态都递减，到期发 `SIGPROF`）
 - 通过 `MF_VIRT_TIMER`/`MF_PROF_TIMER` 标志启用/禁用（`proc.h`）
-- 检查函数 `vtimer_check()` 在 `do_vtimer.c:81-103`（注意：旧文档误标为 68-89）
+- 检查函数 `vtimer_check()` 在 `minix3/minix/kernel/system/do_vtimer.c:vtimer_check`（注意：旧文档误标为 68-89）
 
 **adjtime 机制**：
 - `adjtime_delta`：时间调整增量（正=加速，负=减速）
@@ -99,7 +99,7 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 4. **profile timer 双重递减**：当前进程的 `p_prof_left` 与 billp 的 `p_prof_left` 都递减（profile 计 user+sys 时间，而 billp 的 sys 时间就是当前进程的 user 时间）
 5. **vtimer 到期清标志**：`vtimer_check()` 在到期时清除 `MF_VIRT_TIMER`/`MF_PROF_TIMER`，避免重复触发
 6. **同步闹钟按到期时间排序**：`clock_timers` 链表按 `tmr_exp_time` 升序；`tmrs_exptimers()` 从队首处理所有到期定时器
-7. **BKL 保护**：整个 `timer_int_handler()` 在 BKL 下执行；`vtimer_check()` 注释说明只需防时钟 handler 干扰，不需额外锁（do_vtimer.c:83-88）
+7. **BKL 保护**：整个 `timer_int_handler()` 在 BKL 下执行；`vtimer_check()` 注释说明只需防时钟 handler 干扰，不需额外锁（minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L83，工具生成））
 
 ### 1.5 本章心智模型
 
@@ -121,12 +121,12 @@ CPU 在每个 tick 被定时器硬件中断一次，内核借这一时机完成*
 | BSP 独占 uptime/realtime 维护 | `clock.c:91` `if (cpu_is_bsp(cpuid))` | ✅ verified |
 | 非 BILLABLE 进程 → billp->p_sys_time++ | `clock.c:118-120` | ✅ verified |
 | billp->p_prof_left 也递减 | `clock.c:134-138` | ✅ verified |
-| `vtimer_check` 在 `do_vtimer.c:81-103`（非 68-89） | `do_vtimer.c:81` `void vtimer_check` | ✅ verified（纠正旧文档行号） |
-| `cause_alarm` 在 `do_setalarm.c:69-76`（非 73） | `do_setalarm.c:69` `static void cause_alarm` | ✅ verified（纠正旧文档行号） |
+| `vtimer_check` 在 `minix3/minix/kernel/system/do_vtimer.c:vtimer_check`（非 68-89） | `minix3/minix/kernel/system/do_vtimer.c:vtimer_check` `void vtimer_check` | ✅ verified（纠正旧文档行号） |
+| `cause_alarm` 在 `minix3/minix/kernel/system/do_setalarm.c:cause_alarm`（非 73） | `minix3/minix/kernel/system/do_setalarm.c:cause_alarm` `static void cause_alarm` | ✅ verified（纠正旧文档行号） |
 | `init_clock` 行号 47-64（非 47-63） | `clock.c:47-64` | ✅ verified |
 | adjtime 每 odd tick 调整 realtime | `clock.c:97-100` `uptime & 0x1` | ✅ verified |
 | `clock_timers` 链表按 `tmr_exp_time` 排序 | `clock.c:159-161` + timers.h `tmrs_settimer` | ✅ verified |
-| 同步闹钟仅 SYS_PROC 可用 | `do_setalarm.c:33` `if (! (priv(caller)->s_flags & SYS_PROC)) return(EPERM);` | ✅ verified |
+| 同步闹钟仅 SYS_PROC 可用 | `minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成）` `if (! (priv(caller)->s_flags & SYS_PROC)) return(EPERM);` | ✅ verified |
 | `tmr_func_t` 是函数指针 + `tmr_arg` int | timers.h `struct minix_timer` | ✅ verified |
 
 ### 2.1 相关定义
@@ -261,7 +261,7 @@ void reset_kernel_timer(minix_timer_t *tp) {
 }
 ```
 
-#### `cause_alarm()` — do_setalarm.c:69-76
+#### `cause_alarm()` — minix3/minix/kernel/system/do_setalarm.c:cause_alarm
 
 同步闹钟到期回调。`tmr_arg` 存储目标进程端点，`mini_notify(CLOCK, proc_nr_e)` 发送通知。
 
@@ -271,7 +271,7 @@ static void cause_alarm(int proc_nr_e) {
 }
 ```
 
-#### `vtimer_check()` — do_vtimer.c:81-103
+#### `vtimer_check()` — minix3/minix/kernel/system/do_vtimer.c:vtimer_check
 
 检查虚拟/性能定时器是否到期。若到期，清除标志并发信号。
 
@@ -290,7 +290,7 @@ void vtimer_check(struct proc * rp) {
 }
 ```
 
-> **注意**：`vtimer_check` 注释（do_vtimer.c:83-88）说明"called from clock task, only need to protect against clock handler interference"——这解释了为什么不需要额外锁：BKL 已保护整个 `timer_int_handler()`。
+> **注意**：`vtimer_check` 注释（minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L83，工具生成））说明"called from clock task, only need to protect against clock handler interference"——这解释了为什么不需要额外锁：BKL 已保护整个 `timer_int_handler()`。
 
 #### `load_update()` — clock.c:260-292
 
@@ -342,7 +342,7 @@ SYS_VTIMER 系统调用
 2. **adjtime 限速**：`uptime & 0x1` 检查确保每两个 tick 才调整一次 realtime，避免过快调整；`uptime` 本身不受影响，保持严格单调
 3. **非 BILLABLE 进程双重记账**：内核任务的"用户时间"计为 billable 进程的"系统时间"——这保证了用户进程的系统时间被正确归因
 4. **profile timer 双重递减**：当前进程的 `p_prof_left` 与 billp 的 `p_prof_left` 都可能递减——profile 计 user+sys 时间，而 billp 的 sys 时间就是当前进程的 user 时间
-5. **`vtimer_check` 无额外锁**：BKL 已保护整个 `timer_int_handler()`，注释明确说明只需防时钟 handler 干扰（do_vtimer.c:83-88）
+5. **`vtimer_check` 无额外锁**：BKL 已保护整个 `timer_int_handler()`，注释明确说明只需防时钟 handler 干扰（minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L83，工具生成））
 6. **`clock_timers` 链表排序**：按 `tmr_exp_time` 升序，`tmrs_exptimers()` 从队首处理所有到期定时器，O(k) 处理 k 个到期定时器
 
 ---
@@ -378,9 +378,9 @@ SYS_VTIMER 系统调用
 
 **选定 G**。理由：
 1. **零堆纪律（否决 A-F 的共同根因）**：BTreeSet/BTreeMap/HashMap/SlotMap 全部在运行期堆分配节点，kernel 生产构建（无 `global_allocator`）中分配尝试在链接期失败（undefined `__rust_alloc`）。C 的 `clock_timers` 是 `static minix_timer_t *` 链头（clock.c:37）+ `priv[]` 静态数组内嵌节点（priv.h:48），全程静态存储——侵入链是 C 同构形态
-2. **每 priv 至多一个闹钟**：C 的 `do_setalarm` 固定操作 `&priv(caller)->s_alarm_timer` 单节点（do_setalarm.c:36），容量 ≤ NR_SYS_PROCS(64)，侵入链静态有界、无扩容需求
+2. **每 priv 至多一个闹钟**：C 的 `do_setalarm` 固定操作 `&priv(caller)->s_alarm_timer` 单节点（minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L36，工具生成）），容量 ≤ NR_SYS_PROCS(64)，侵入链静态有界、无扩容需求
 3. **三原语同构映射**：C `tmrs_settimer`/`tmrs_clrtimer`/`tmrs_exptimers`（tmrs_set.c/tmrs_clr.c/tmrs_exp.c）直接映射为三个自由函数（§4.3），插入扫描/摘链/到期前缀循环与 C 逐行对应
-4. **排序语义可精确复刻**：环绕有序（`tmr_is_first`）+ 相等 exp_time 后插入者排前（tmrs_set.c:38-43）在链扫描中自然表达
+4. **排序语义可精确复刻**：环绕有序（`tmr_is_first`）+ 相等 exp_time 后插入者排前（minix3/minix/lib/libtimers/tmrs_set.c:tmrs_settimer（L38，工具生成））在链扫描中自然表达
 
 ### 3.3 决策 D3：定时器 identity
 
@@ -395,7 +395,7 @@ SYS_VTIMER 系统调用
 **选定 C**。理由：
 1. C 的 stable identity 是**结构体地址** `&sp->s_alarm_timer`（priv.h:48 内嵌字段，地址 = `priv[]` 静态数组槽地址 + 固定偏移）——地址与槽一一对应，Rust 用 `PrivId` 槽索引同构表达，无 unsafe 指针
 2. 每 priv 至多一个闹钟（C 语义：do_setalarm 固定操作 caller 的单节点），槽索引即身份，"同槽两个 timer"的状态空间不存在
-3. 调用方零簿记：`set_alarm_timer`/`reset_alarm_timer` 的 `priv_id` 直接取自 `caller.priv_id`（C: do_setalarm.c:36 `priv(caller)`），无需存储/回传 id
+3. 调用方零簿记：`set_alarm_timer`/`reset_alarm_timer` 的 `priv_id` 直接取自 `caller.priv_id`（C: minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L36，工具生成） `priv(caller)`），无需存储/回传 id
 
 **持久性论证**：身份 = 槽位，随 `PrivTable` 生命周期。`PrivTable` boot 时构建（编译期定容数组，与 C `priv[NR_SYS_PROCS]` 同构），运行期不重建；`s_alarm_timer` 节点内嵌 `PrivRuntime`（kpriv.rs），无序列化、无跨重启状态。Live update 等重建场景由 16-smp.md / 24-cross-space-runtime.md 处理，不在本章范围。
 
@@ -638,17 +638,17 @@ pub fn expire_alarm_timers<F>(
 
 | 原语 | C 行为 | Rust 行为 | C 证据 |
 |------|--------|----------|--------|
-| `set_alarm_timer` | 先清旧节点 → 写 `tmr_exp_time`/`tmr_func`/`tmr_arg` → 扫描链在第一个 `exp_time <= cur` 节点**前**插入 | `reset_alarm_timer` 先行（幂等）→ 写 `exp_time`/`action` → 环绕比较扫描（`tmr_is_first(exp_time, cur_exp)` 即 `exp_time <= cur_exp` 时 break）改 2 个 `next` 挂链 | tmrs_set.c:29-33, 38-43 |
-| 相等 exp_time | 后插入者排前面（先触发）——插入扫描在第一个"不早于我"的节点前停下 | 同（相等时 `tmr_is_first` 为 true → break → 插入在其前） | tmrs_set.c:38-43 |
-| `reset_alarm_timer` | `tmr_is_set` guard → 摘链 → `tmr_func = NULL`；**不动 `tmr_next`**（留悬垂）、`tmr_exp_time` 保留 | `!node.is_set() → return` → `chain_unlink` → `action = None`；`next`/`exp_time` 保留旧值 | clock.c:246, tmrs_clr.c:27-34 |
-| `expire_alarm_timers` | head 过期前缀循环：先摘链（`*tmrs = tp->tmr_next`）+ 去激活（`tmr_func = NULL`），**再**调 `func(tp)` | 同序（`clock.timers_head = next` → `action.take()` → `on_expired(action)`）——节点可在回调内重挂而不断链遍历 | tmrs_exp.c:15-20 |
-| 摘链实现 | `for (atp = tmrs; *atp != NULL; atp = &(*atp)->tmr_next)` 找前驱 | 私有 `chain_unlink`：head 命中直改链头，否则走链找前驱改 `next` | tmrs_clr.c:29-34 |
+| `set_alarm_timer` | 先清旧节点 → 写 `tmr_exp_time`/`tmr_func`/`tmr_arg` → 扫描链在第一个 `exp_time <= cur` 节点**前**插入 | `reset_alarm_timer` 先行（幂等）→ 写 `exp_time`/`action` → 环绕比较扫描（`tmr_is_first(exp_time, cur_exp)` 即 `exp_time <= cur_exp` 时 break）改 2 个 `next` 挂链 | minix3/minix/lib/libtimers/tmrs_set.c:tmrs_settimer（L29，工具生成）, 38-43 |
+| 相等 exp_time | 后插入者排前面（先触发）——插入扫描在第一个"不早于我"的节点前停下 | 同（相等时 `tmr_is_first` 为 true → break → 插入在其前） | minix3/minix/lib/libtimers/tmrs_set.c:tmrs_settimer（L38，工具生成） |
+| `reset_alarm_timer` | `tmr_is_set` guard → 摘链 → `tmr_func = NULL`；**不动 `tmr_next`**（留悬垂）、`tmr_exp_time` 保留 | `!node.is_set() → return` → `chain_unlink` → `action = None`；`next`/`exp_time` 保留旧值 | clock.c:246, minix3/minix/lib/libtimers/tmrs_clr.c:tmrs_clrtimer（L27，工具生成） |
+| `expire_alarm_timers` | head 过期前缀循环：先摘链（`*tmrs = tp->tmr_next`）+ 去激活（`tmr_func = NULL`），**再**调 `func(tp)` | 同序（`clock.timers_head = next` → `action.take()` → `on_expired(action)`）——节点可在回调内重挂而不断链遍历 | minix3/minix/lib/libtimers/tmrs_exp.c:tmrs_exptimers（L15，工具生成） |
+| 摘链实现 | `for (atp = tmrs; *atp != NULL; atp = &(*atp)->tmr_next)` 找前驱 | 私有 `chain_unlink`：head 命中直改链头，否则走链找前驱改 `next` | minix3/minix/lib/libtimers/tmrs_clr.c:tmrs_clrtimer（L29，工具生成） |
 
 **与 v1 TimerQueue 的关键差异**：
 - 挂链/摘链 O(1)（改最多 2 个 `next` 字段），无 BTreeSet/BTreeMap 堆节点、无 `next_id` 计数器
 - 同 exp_time 多 timer：链上自然共存（不同 priv 槽的节点），相等时后插入者在前（C 语义；v1 用 `(exp_time, id)` 排序近似，id 序与插入序的先后语义与本方案不同——本方案与 C 逐行为一致）
 - 到期弹出：链有序保证 head 前缀即全部到期节点，无 `pop_expired` 双索引删除
-- 环绕安全：到期判定用 `tmr_has_expired`（`tmr_is_first(exp_time, now)` 环绕比较，timers.h:58），非 `first.0 > now` 直接比较
+- 环绕安全：到期判定用 `tmr_has_expired`（`tmr_is_first(exp_time, now)` 环绕比较，minix3/minix/include/minix/timers.h:tmr_has_expired），非 `first.0 > now` 直接比较
 
 ### 4.4 TimerAction — 到期动作（D6）
 
@@ -832,7 +832,7 @@ pub fn reset_alarm_timer(
 
 > `dispatch_setalarm` 用 `set_alarm_timer`/`reset_alarm_timer` 自由函数；`KPriv.s_alarm_timer` 字段是内嵌节点（非 `Option<(TimerEntry, TimerId)>` 元组）。
 
-**KPriv 字段**（`os/kernel/src/kpriv.rs`，kpriv.rs:403）：
+**KPriv 字段**（`os/kernel/src/kpriv.rs`，os/kernel/src/kpriv.rs:struct KPriv（L403，工具生成））：
 
 ```rust
 pub(crate) struct PrivRuntime {
@@ -848,7 +848,7 @@ pub(crate) struct PrivRuntime {
 }
 ```
 
-**dispatch_setalarm 调用方**（`os/kernel/src/syscall_clock.rs`，syscall_clock.rs:199-251）：
+**dispatch_setalarm 调用方**（`os/kernel/src/syscall_clock.rs`，os/kernel/src/syscall_clock.rs:fn dispatch_setalarm（L199，工具生成））：
 
 ```rust
 // C: do_setalarm.c:39-46 — time_left 三分支（wrap-safe）
@@ -881,7 +881,7 @@ if !use_abs_time && exp_time == 0 {
 }
 ```
 
-> **关键修正（沿用并简化）**：更早的 Rust 实现调用 `reset_timer(old_timer.exp_time)`（用 exp_time 作 key），会误取消同 exp_time 的其他 timer；v1 修复引入 `TimerId` 簿记。现行实现（D3-C）以 `priv_id` 槽位定位——每 priv 至多一个闹钟，重挂时 `set_alarm_timer` 内部先摘旧节点（C: tmrs_set.c:29-30），无需任何 id 存储/回传，比 v1 的 `(TimerEntry, TimerId)` 元组簿记更简单且与 C 同构。
+> **关键修正（沿用并简化）**：更早的 Rust 实现调用 `reset_timer(old_timer.exp_time)`（用 exp_time 作 key），会误取消同 exp_time 的其他 timer；v1 修复引入 `TimerId` 簿记。现行实现（D3-C）以 `priv_id` 槽位定位——每 priv 至多一个闹钟，重挂时 `set_alarm_timer` 内部先摘旧节点（C: minix3/minix/lib/libtimers/tmrs_set.c:tmrs_settimer（L29，工具生成）），无需任何 id 存储/回传，比 v1 的 `(TimerEntry, TimerId)` 元组簿记更简单且与 C 同构。
 
 ### 4.9 ClockArch trait — 硬件定时器抽象（D9 配套）
 
@@ -1085,8 +1085,8 @@ impl ClockState {
 | `test_billp_sys_time_accounting` | clock.c:118-120 !BILLABLE | billp.sys_time+1 |
 | `test_billp_prof_timer_decrement` | clock.c:134-138 !BILLABLE | billp.prof_left 递减 |
 | `test_billp_prof_timer_expiry_reports_prof` | clock.c:147-148 vtimer_check(billp) | billp 到期报告 Prof |
-| `test_vtimer_virtual_expiry` | do_vtimer.c:91-95 | VIRT_TIMER + virt_left=0 → Virtual |
-| `test_vtimer_prof_expiry` | do_vtimer.c:98-102 | PROF_TIMER + prof_left=0 → Prof |
+| `test_vtimer_virtual_expiry` | minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L91，工具生成） | VIRT_TIMER + virt_left=0 → Virtual |
+| `test_vtimer_prof_expiry` | minix3/minix/kernel/system/do_vtimer.c:vtimer_check（L98，工具生成） | PROF_TIMER + prof_left=0 → Prof |
 | `test_alarm_set_and_expire` | clock.c:159-161 tmrs_exptimers | set_alarm_timer(t=3), tick 3 → expired |
 | `test_alarm_reset_is_idempotent` | clock.c:245-255 reset_kernel_timer（tmr_is_set guard） | set → reset → 不触发；再 reset 无副作用（幂等） |
 | `test_user_time_accounting` | clock.c:116 p->p_user_time++ | tick 后 user_time+1 |
@@ -1095,7 +1095,7 @@ impl ClockState {
 
 | 测试名 | 契约 |
 |--------|------|
-| `test_alarm_same_exp_time_coexist` | 同 exp_time 两个闹钟（不同 priv 槽）链上共存；相等时**后插入者先触发**（tmrs_set.c:38-43） |
+| `test_alarm_same_exp_time_coexist` | 同 exp_time 两个闹钟（不同 priv 槽）链上共存；相等时**后插入者先触发**（minix3/minix/lib/libtimers/tmrs_set.c:tmrs_settimer（L38，工具生成）） |
 | `test_multiple_timers_pop_order` | 3 个闹钟不同 exp_time → 按到期顺序触发 |
 | `test_ap_state_set_alarm_timer_panics` | AP 实例 set_alarm_timer panic（D8: AP 不拥有闹钟链） |
 | `test_load_update_slot_rotation` | uptime 推进 → slot 切换 → history 清零 |
@@ -1104,7 +1104,7 @@ impl ClockState {
 | `test_tick_with_matches_tick_bsp_behavior` (R-06) | `tick_bsp` 与 `tick_with` 行为一致（结果相同） |
 | `test_chain_set_reset_keeps_other_nodes` | reset 槽 A 不影响链上槽 B/C 的链接关系（chain_unlink 前驱扫描正确） |
 | `test_chain_expire_order_and_stop_at_head` | 到期前缀循环：head 未过期即停（链有序 + 前缀语义） |
-| `test_chain_rearm_overwrites_old_timer` | 同槽重挂：旧节点先摘（tmrs_set.c:29-30），链上无重复节点 |
+| `test_chain_rearm_overwrites_old_timer` | 同槽重挂：旧节点先摘（minix3/minix/lib/libtimers/tmrs_set.c:tmrs_settimer（L29，工具生成）），链上无重复节点 |
 
 ### 5.3 边界用例
 
@@ -1112,7 +1112,7 @@ impl ClockState {
 |--------|------|
 | `test_clock_state_hz_bounds` | hz=1 / hz=50001 → fallback DEFAULT_HZ |
 | `test_adjtime_zero_delta` | delta=0 → realtime 每tick+1 |
-| `test_timer_never_expires` | exp_time=TMR_NEVER（=TMRDIFF_MAX+1，timers.h:48）→ 100 tick 内不触发（环绕安全语义） |
+| `test_timer_never_expires` | exp_time=TMR_NEVER（=TMRDIFF_MAX+1，minix3/minix/include/minix/timers.h:TMR_NEVER）→ 100 tick 内不触发（环绕安全语义） |
 | `test_vtimer_no_expiry_when_flag_not_set` | virt_left=0 但 MF_VIRT_TIMER 未设 → None |
 | `test_billp_no_accounting_when_none` | billp=None → sys_time 不变 |
 | `test_ap_set_boottime_no_op` | AP 实例 set_boottime 无效 |

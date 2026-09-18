@@ -1,7 +1,7 @@
 # 03-mproc-table: 进程表——槽位、endpoint 与 PID 的身份管理
 
 > **状态**: 完整版（2026-08-17 首版）
-> **定位**: 阶段 1 启动与进程模型——`sef_cb_init_fresh` 第 5 步（`minix3/minix/servers/pm/main.c:177-229` boot image 填充）之后、主循环（04）使用的基础设施；03 是"PM 对进程集合的索引视图"
+> **定位**: 阶段 1 启动与进程模型——`sef_cb_init_fresh` 第 5 步（`minix3/minix/servers/pm/main.c:sef_cb_init_fresh（L177，工具生成）` boot image 填充）之后、主循环（04）使用的基础设施；03 是"PM 对进程集合的索引视图"
 > **源码**: `minix3/minix/servers/pm/{glo.h, utility.c, const.h, forkexit.c}` + `minix3/minix/kernel/system/do_fork.c`（generation 归属）+ `minix3/minix/include/minix/endpoint.h`
 > **Rust 模块**: `os/servers/pm/src/mproc/{table.rs, pid_gen.rs, constants.rs, context.rs}`
 > **前置依赖**: 01-pm-init-main（启动链）、02-mproc-struct（Process 四层）
@@ -62,9 +62,9 @@ Minix3 的微内核把进程状态拆成四张表（02 §1.1），四张表靠**
   - endpoint → 槽位：`pm_isokendpt`（utility.c:108），三层检查（范围/代数/存活）；
   - pid → 槽位：`find_proc`（utility.c:76），线性扫描活进程。
 - **分配**：管理"谁占据哪个槽位"——
-  - 找空槽：`next_child` 轮转扫描（forkexit.c:68-74）；
+  - 找空槽：`next_child` 轮转扫描（minix3/minix/servers/pm/forkexit.c:do_fork（L68，工具生成））；
   - 分配 PID：`get_free_pid` 单调递增 + 冲突扫描（utility.c:34-52）；
-  - 释放：`cleanup` 清计数与身份（forkexit.c:795-806）。
+  - 释放：`cleanup` 清计数与身份（minix3/minix/servers/pm/forkexit.c:tracer_died（L795，工具生成））。
 
 两类操作共享一个不变量：**槽位编号是四表对齐的唯一坐标**。索引操作把外部
 身份翻译成这个坐标，分配操作决定哪个坐标被占用——两者必须一致，否则
@@ -118,18 +118,18 @@ rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);	/* new endpoint of slot */
 ```
 
 新 endpoint 经 VM 的 `vm_fork` 回复传回 PM，PM 只做
-`rmc->mp_endpoint = child_ep`（forkexit.c:111）——**PM 不拥有 generation**。
+`rmc->mp_endpoint = child_ep`（minix3/minix/servers/pm/forkexit.c:do_fork（L111，工具生成））——**PM 不拥有 generation**。
 这个"所有权"问题正是 Rust 重写时最容易犯的错误（§3.3 修正了现有实现）。
 
 ### 1.5 容量纪律：procs_in_use + LAST_FEW
 
 `procs_in_use`（glo.h:9）是活进程计数。它有两个用途：
 
-1. 容量检查（forkexit.c:60-62）：表满（`== NR_PROCS`）直接 EAGAIN；
+1. 容量检查（minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成））：表满（`== NR_PROCS`）直接 EAGAIN；
 2. 保留区纪律：计数达到 `NR_PROCS - LAST_FEW` 后，**只有 effective uid 为
    0 的进程还能 fork**。
 
-`LAST_FEW = 2`（`forkexit.c:32` 本地定义——`#define LAST_FEW 2`，PM 私有
+`LAST_FEW = 2`（`minix3/minix/servers/pm/forkexit.c:LAST_FEW` 本地定义——`#define LAST_FEW 2`，PM 私有
 常量，非 include 头文件；`minix-types` com 模块同值）是给 root 预留的应急槽位——普通用户耗尽进程槽后，root 仍需能创建
 进程来恢复系统。注意 C 的检查用的是 **`mp_effuid`**（effective uid），
 不是 real uid——setuid 程序提升权限后应能使用保留区（§3.6 修正了 Rust 现状）。
@@ -154,7 +154,7 @@ rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);	/* new endpoint of slot */
 | 全局 | 行号 | 语义 |
 |------|------|------|
 | `mp` | :8 | 当前调用者的槽指针（`mp = &mproc[who_p]`，main.c:77） |
-| `mproc[]` | mproc.h:83 | 进程表本体（glo.h 只声明 `mp` 指针，数组在 mproc.h） |
+| `mproc[]` | minix3/minix/servers/pm/mproc.h:sigaction（L83，工具生成） | 进程表本体（glo.h 只声明 `mp` 指针，数组在 mproc.h） |
 | `procs_in_use` | :9 | 活进程计数 |
 | `m_in`/`who_p`/`who_e`/`call_nr` | :16-18 | 当前消息与调用上下文 |
 | `monitor_params` | :10 | 启动参数缓冲（01） |
@@ -244,11 +244,11 @@ do {
 4. **扫描全部槽位**（含释放槽）：释放槽的陈旧 `mp_procgrp` 会造成
    **额外跳过**——这是 C 的保守行为，Rust 只扫活进程（§3.4 ARCH 差异）。
 
-调用点：main.c:209（boot 系统进程）、forkexit.c:119/219（fork/srv_fork）。
+调用点：main.c:209（boot 系统进程）、minix3/minix/servers/pm/forkexit.c:do_fork（L119，工具生成）/219（fork/srv_fork）。
 
 ### 2.5 slot 分配/释放：forkexit.c 的容量纪律与 cleanup
 
-**分配**（do_fork，forkexit.c:60-74）：
+**分配**（do_fork，minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成））：
 
 ```c
 if ((procs_in_use == NR_PROCS) ||
@@ -268,9 +268,9 @@ if(n > NR_PROCS)
   `static`——**先递增再检查**，保证轮转；
 - `n > NR_PROCS` 的 panic 是防御路径：容量检查已保证存在空槽，扫描不应失败
   （Rust 用 `Option` 表达，`None` = 表满，无 panic）；
-- do_srv_fork（forkexit.c:165-180）同型（RS 专用，08 展开）。
+- do_srv_fork（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L165，工具生成））同型（RS 专用，08 展开）。
 
-**释放**（cleanup，forkexit.c:795-806）：
+**释放**（cleanup，minix3/minix/servers/pm/forkexit.c:tracer_died（L795，工具生成））：
 
 ```c
 static void
@@ -296,9 +296,9 @@ generation 的完整生命周期（grep 实证）：
 |------|------|------|
 | 初始 | kernel/proc.c:133 | `p_endpoint = _ENDPOINT(0, p_nr)`（generation 0） |
 | 槽位复用 | kernel/system/do_fork.c:69-72 | `gen = _ENDPOINT_G(rpc->p_endpoint); if(++gen >= MAX) gen = 1; p_endpoint = _ENDPOINT(gen, p_nr)` |
-| 传给 PM | forkexit.c:111 | `rmc->mp_endpoint = child_ep`（child_ep 来自 `vm_fork` 回复，forkexit.c:78） |
+| 传给 PM | minix3/minix/servers/pm/forkexit.c:do_fork（L111，工具生成） | `rmc->mp_endpoint = child_ep`（child_ep 来自 `vm_fork` 回复，minix3/minix/servers/pm/forkexit.c:do_fork（L78，工具生成）） |
 | PM 启动 | main.c:218 | `rmp->mp_endpoint = ip->endpoint`（boot image，generation 0） |
-| PM 释放 | forkexit.c:795-806 | **不碰 endpoint** |
+| PM 释放 | minix3/minix/servers/pm/forkexit.c:tracer_died（L795，工具生成） | **不碰 endpoint** |
 
 结论：**PM 侧不存在任何 generation 运算**。PM 对 endpoint 只有三个动作——
 启动时存 boot image 的值、fork 时存 VM 回传的值、验证时比较。任何在 PM
@@ -308,14 +308,14 @@ generation 的完整生命周期（grep 实证）：
 
 | C 符号 | 位置 | 文档归属 |
 |--------|------|---------|
-| `mproc[NR_PROCS]` / `procs_in_use` | mproc.h:83、glo.h:8-9 | §2.1/§2.5 |
+| `mproc[NR_PROCS]` / `procs_in_use` | minix3/minix/servers/pm/mproc.h:sigaction（L83，工具生成）、glo.h:8-9 | §2.1/§2.5 |
 | `pm_isokendpt` | utility.c:108-121 | §2.2 |
 | `find_proc` | utility.c:76-85 | §2.3 |
 | `get_free_pid` | utility.c:34-52 | §2.4 |
-| `next_child` 轮转 / 容量检查 / cleanup | forkexit.c:68-74/165-180/795-806 | §2.5 |
+| `next_child` 轮转 / 容量检查 / cleanup | minix3/minix/servers/pm/forkexit.c:do_fork（L68，工具生成）/165-180/795-806 | §2.5 |
 | generation 递增 | kernel/system/do_fork.c:69-72 | §2.6 |
 | `NR_PIDS`/`INIT_PID`/`NO_PID` | const.h:3-9 | §1.3 |
-| `LAST_FEW`/`NR_PROCS` | forkexit.c:32、config.h:31 | §1.5 |
+| `LAST_FEW`/`NR_PROCS` | minix3/minix/servers/pm/forkexit.c:LAST_FEW、config.h:31 | §1.5 |
 | `_ENDPOINT_P`/`_ENDPOINT_G`/`_ENDPOINT` | include/minix/endpoint.h | §2.2/§2.6 |
 
 ---
@@ -325,7 +325,7 @@ generation 的完整生命周期（grep 实证）：
 ### 3.1 D1：`ProcTable` 聚合表 + 计数 + 轮转指针 + PID 生成器（ARCH A-3）
 
 - **C**：`mproc[NR_PROCS]` + 三个文件级全局——`procs_in_use`（glo.h:9）、
-  `do_fork` 内 `static next_child`（forkexit.c:51）、`get_free_pid` 内
+  `do_fork` 内 `static next_child`（minix3/minix/servers/pm/forkexit.c:do_fork（L51，工具生成））、`get_free_pid` 内
   `static next_pid`（utility.c:36）；
 - **Rust**：
 
@@ -368,7 +368,7 @@ impl EndpointError {
 
 **这是本档最重要的语义修正。**
 
-- **C**：cleanup（forkexit.c:795-806）只清 pid/flags/child 时间 + 计数减一，
+- **C**：cleanup（minix3/minix/servers/pm/forkexit.c:tracer_died（L795，工具生成））只清 pid/flags/child 时间 + 计数减一，
   **不 bump generation**；新 endpoint 由内核 `do_fork` 生成（§2.6）；
 - **Rust 现状（修正前）**：`release_slot` 调 `increment_endpoint_generation`
   把代数 +1——把 generation 所有权错误地放在 PM。若 PM 与内核都 bump，
@@ -437,7 +437,7 @@ fn any_conflict(&self, candidate: Pid, table: &ProcTable) -> bool {
 
 ### 3.6 D6：`PmContext::is_root` 用 effective uid（代码修正）
 
-- **C**：LAST_FEW 容量检查用 `rmp->mp_effuid != 0`（forkexit.c:61）；
+- **C**：LAST_FEW 容量检查用 `rmp->mp_effuid != 0`（minix3/minix/servers/pm/forkexit.c:do_fork（L61，工具生成））；
 - **Rust 现状（修正前）**：`PmContext::is_root` 检查 `creds.user.real == 0`
   （context.rs）——real 与 effective 混淆：setuid 程序（real uid 非 0、
   effective uid 为 0）在 C 中能用保留区，Rust 现状会错误拒绝；
@@ -498,7 +498,7 @@ pub fn is_root(&self) -> bool {
 
 | 文件 | 内容 | 对应 C |
 |------|------|--------|
-| `mproc/table.rs` | `ProcTable` + `pm_isokendpt` + `find_proc` + `alloc/release` + `EndpointError` | glo.h、utility.c:34-121、forkexit.c:60-74/795-806 |
+| `mproc/table.rs` | `ProcTable` + `pm_isokendpt` + `find_proc` + `alloc/release` + `EndpointError` | glo.h、utility.c:34-121、minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成）/795-806 |
 | `mproc/pid_gen.rs` | `PidGenerator`（单调递增 + 冲突扫描） | utility.c:34-52 |
 | `mproc/constants.rs` | `NR_PIDS`/`INIT_PID`/`NO_PID`/`NO_TRACER_INDEX` | const.h |
 | `mproc/context.rs` | `PmContext`（当前进程访问 + `is_root`） | glo.h:8（mp 宏） |
@@ -590,15 +590,15 @@ pub fn release_slot(&mut self, index: usize) {
 
 | C 行为 | Rust 行为 |
 |--------|----------|
-| 容量检查（forkexit.c:60-62） | `can_alloc_for_user(is_root)`（调用方先查） |
-| 轮转扫描（forkexit.c:68-74） | `find_free_slot`（先递增再检查，`next_child` 保持"最后检查的槽位"） |
-| `procs_in_use++`（forkexit.c:86） | `alloc_slot` 内计数加一 |
-| cleanup 清 pid/flags/child 时间（forkexit.c:801-804） | `release_slot` 重置整槽为 default |
+| 容量检查（minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成）） | `can_alloc_for_user(is_root)`（调用方先查） |
+| 轮转扫描（minix3/minix/servers/pm/forkexit.c:do_fork（L68，工具生成）） | `find_free_slot`（先递增再检查，`next_child` 保持"最后检查的槽位"） |
+| `procs_in_use++`（minix3/minix/servers/pm/forkexit.c:do_fork（L86，工具生成）） | `alloc_slot` 内计数加一 |
+| cleanup 清 pid/flags/child 时间（minix3/minix/servers/pm/forkexit.c:cleanup（L801，工具生成）） | `release_slot` 重置整槽为 default |
 | **不 bump generation**（forkexit.c 无此操作） | **不 bump**（§3.3 修正；新 endpoint 来自内核/VM） |
 
 > **DEFERRED（07-pm-fork）**：`mproc/fork.rs` 的 `do_fork_prepare` 目前把
 > `child_endpoint` 预填为释放槽的（默认 NONE）值——真实 endpoint 必须来自
-> VM `vm_fork` 回复（forkexit.c:78-111）。03 只保证"释放槽不提供 endpoint"
+> VM `vm_fork` 回复（minix3/minix/servers/pm/forkexit.c:do_fork（L78，工具生成））。03 只保证"释放槽不提供 endpoint"
 > 的语义；07 落地 fork 全流程时修正该预填。
 
 ### 4.6 PidGenerator 实现与复杂度（pid_gen.rs）
@@ -622,7 +622,7 @@ pub fn get_free_pid(&self, table: &ProcTable) -> Pid {
   需改 `AtomicI32`；
 - 唯一性证明依赖 `iter_active()` 的活进程过滤 + 表内 `mp_pid` 写路径
   （fork/init）都经过 `get_free_pid`——启动路径（main.c:209）与 fork 路径
-  （forkexit.c:119）共用同一生成器，保证全局唯一。
+  （minix3/minix/servers/pm/forkexit.c:do_fork（L119，工具生成））共用同一生成器，保证全局唯一。
 
 ### 4.7 不变量清单
 
@@ -644,17 +644,17 @@ pub fn get_free_pid(&self, table: &ProcTable) -> Pid {
 | 测试 | 验证点 | 对应 C |
 |------|--------|--------|
 | `table::tests::test_proc_table_new` | 空表：计数 0、槽 0 Unused | glo.h:9 |
-| `table::tests::test_find_free_slot_round_robin` | 轮转从槽 1 开始（先递增）、跳过占用槽 | forkexit.c:68-74 |
-| `table::tests::test_find_free_slot_full` / `test_alloc_slot_full_returns_none` | 满表 None（C panic 的不可达路径） | forkexit.c:68-74 |
-| `table::tests::test_alloc_slot` | 计数 +1 | forkexit.c:86 |
-| `table::tests::test_release_slot` | 重置为 default、endpoint=NONE、**不 bump generation** | forkexit.c:795-806 |
-| `table::tests::test_release_slot_keeps_count` | 空表释放不产生负计数 | forkexit.c:805 |
-| `table::tests::test_can_alloc_for_user` | 保留区 root 语义（LAST_FEW） | forkexit.c:60-62 |
+| `table::tests::test_find_free_slot_round_robin` | 轮转从槽 1 开始（先递增）、跳过占用槽 | minix3/minix/servers/pm/forkexit.c:do_fork（L68，工具生成） |
+| `table::tests::test_find_free_slot_full` / `test_alloc_slot_full_returns_none` | 满表 None（C panic 的不可达路径） | minix3/minix/servers/pm/forkexit.c:do_fork（L68，工具生成） |
+| `table::tests::test_alloc_slot` | 计数 +1 | minix3/minix/servers/pm/forkexit.c:do_fork（L86，工具生成） |
+| `table::tests::test_release_slot` | 重置为 default、endpoint=NONE、**不 bump generation** | minix3/minix/servers/pm/forkexit.c:tracer_died（L795，工具生成） |
+| `table::tests::test_release_slot_keeps_count` | 空表释放不产生负计数 | minix3/minix/servers/pm/forkexit.c:cleanup（L805，工具生成） |
+| `table::tests::test_can_alloc_for_user` | 保留区 root 语义（LAST_FEW） | minix3/minix/servers/pm/forkexit.c:do_fork（L60，工具生成） |
 | `table::tests::test_pm_isokendpt_valid` / `_slot_out_of_range` / `_generation_mismatch` / `_not_in_use` / `_released_slot`（5 个） | 三层检查 + 三类 errno 场景 | utility.c:108-121 |
 | `table::tests::test_find_proc` / `test_find_proc_skips_released_slot` | 活进程 pid 匹配、释放槽不匹配 | utility.c:76-85 |
 | `table::tests::test_endpoint_error_to_errno` | EINVAL/EDEADEPT 值对齐 | sys/errno.h:64/211 |
 | `pid_gen::tests`（8 个） | 首分配 2、唯一性、环绕、pid/procgrp 冲突、范围、释放槽陈旧 procgrp 不冲突 | utility.c:34-52 |
-| `context::tests::test_is_root_effective_uid` + `mproc::fork::tests::test_fork_reserved_for_root` | is_root（effuid，含 setuid 提权场景）+ 保留区拒绝非 root | forkexit.c:61 |
+| `context::tests::test_is_root_effective_uid` + `mproc::fork::tests::test_fork_reserved_for_root` | is_root（effuid，含 setuid 提权场景）+ 保留区拒绝非 root | minix3/minix/servers/pm/forkexit.c:do_fork（L61，工具生成） |
 
 ### 5.2 基线
 
@@ -698,7 +698,7 @@ pub fn get_free_pid(&self, table: &ProcTable) -> Pid {
 - `notes/rewrite/fork-syscall-rewrite/04-stage-pm/07-pm-fork.md`（槽位/PID 分配链，后续）
 - `notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md` §3.1（VmProcTable 同型对照）
 - `minix3/minix/servers/pm/{glo.h, utility.c, const.h, forkexit.c}`（ground truth）
-- `minix3/minix/kernel/system/do_fork.c:69-72`（generation 归属）
+- `minix3/minix/kernel/system/do_fork.c:do_fork（L69，工具生成）`（generation 归属）
 - `minix3/minix/include/minix/endpoint.h`（endpoint 格式与 generation 语义）
 - `os/libs/minix-types/src/types/endpoint.rs`（`Endpoint`/`UserSlot` API）
-- `os/servers/vm/src/vmproc/table.rs:284`（`vm_isokendpt` 同型实现）
+- `os/servers/vm/src/vmproc/table.rs:fn used_count（L284，工具生成）`（`vm_isokendpt` 同型实现）

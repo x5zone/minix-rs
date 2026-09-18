@@ -125,7 +125,7 @@ Minix3 使用 **AVL 树**按虚拟地址组织同一进程的所有 `vir_region`
 
 **定位**：三层映射结构的中间层，连接 `vir_region`（虚拟地址空间）和 `phys_block`（物理页状态）。每个 `phys_region` 代表一个虚拟页到物理页的映射关系，记录该映射的偏移、内存类型回调，并通过侵入式链表与共享同一物理页的其他映射串联。
 
-**源码定义** (`phys_region.h:8`):
+**源码定义** (`minix3/minix/servers/vm/phys_region.h:phys_region`):
 
 ```c
 typedef struct phys_region {
@@ -258,7 +258,7 @@ vir_region (vaddr=0x1000, length=0x4000)
 
 **核心作用**：分配新的 `phys_region`，将其链入 `phys_block` 的引用链表（refcount++），并设置 `vir_region.physblocks[]` 数组的对应槽位。是建立虚拟页→物理页映射关系的核心操作。
 
-**源码位置**: [pb.c:73](minix3/minix/servers/vm/pb.c#L73)
+**源码位置**: [minix3/minix/servers/vm/pb.c:phys_region](minix3/minix/servers/vm/pb.c#L73)
 
 ```c
 struct phys_region *pb_reference(struct phys_block *pb, vir_bytes offset,
@@ -971,7 +971,7 @@ phys_block (refcount=3)
 
 **核心作用**：将 `phys_region` 以头插法链入 `phys_block` 的引用链表，设置 offset/parent/ph 字段，并将 `refcount++`。
 
-**源码位置**: [pb.c:61](minix3/minix/servers/vm/pb.c#L61)
+**源码位置**: [minix3/minix/servers/vm/pb.c:pb_link](minix3/minix/servers/vm/pb.c#L61)
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
@@ -995,7 +995,7 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 **核心作用**：将 `phys_region` 从 `phys_block` 的引用链表中移除，`refcount--`。若引用计数降为 0，调用 `ev_unreference` 释放物理内存并 `SLABFREE(pb)`。`rm` 参数控制是否同时从 `physblocks[]` 数组清除该槽位。
 
-**源码位置**: [pb.c:96](minix3/minix/servers/vm/pb.c#L96)
+**源码位置**: [minix3/minix/servers/vm/pb.c:pb_unreferenced](minix3/minix/servers/vm/pb.c#L96)
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
@@ -1047,10 +1047,10 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 
 | 用途 | 源码位置 | 说明 |
 |------|---------|------|
-| `pb_link` 头插法插入 | [pb.c:63-66](minix3/minix/servers/vm/pb.c) | 链表维护 |
-| `pb_unreferenced` 从链表移除节点 | [pb.c:100-115](minix3/minix/servers/vm/pb.c) | O(n) 查找前驱 |
+| `pb_link` 头插法插入 | [minix3/minix/servers/vm/pb.c:pb_link（L63，工具生成）](minix3/minix/servers/vm/pb.c) | 链表维护 |
+| `pb_unreferenced` 从链表移除节点 | [minix3/minix/servers/vm/pb.c:pb_unreferenced（L100，工具生成）](minix3/minix/servers/vm/pb.c) | O(n) 查找前驱 |
 | sanity check 验证 refcount 一致性 | [region.c:234-248](minix3/minix/servers/vm/region.c) | 仅调试构建 |
-| mappedfile 缓存命中时迁移 phys_region | [mem_file.c:122-124](minix3/minix/servers/vm/mem_file.c) | 从旧 phys_block 解链，链入缓存页的 phys_block |
+| mappedfile 缓存命中时迁移 phys_region | [minix3/minix/servers/vm/mem_file.c:mappedfile_pagefault（L122，工具生成）](minix3/minix/servers/vm/mem_file.c) | 从旧 phys_block 解链，链入缓存页的 phys_block |
 | CoW 时遍历所有引用者设为只读 | — | **不存在**。`map_ph_writept` 只操作单个 `phys_region` |
 | fork 后遍历所有引用者 | — | **不存在**。`map_writept` 逐页独立操作 |
 
@@ -1062,7 +1062,7 @@ void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
 
 **核心作用**：为共享的 `phys_region` 分配独立的物理页，将原页内容复制到新页，然后替换映射（从旧 `phys_block` 解链，链入新 `phys_block`）。CoW 后 `memtype` 强制降级为 `mem_type_anon`——无论原来是什么类型，复制后都是独立匿名页。
 
-**源码位置**: [pb.c:136](minix3/minix/servers/vm/pb.c#L136)
+**源码位置**: [minix3/minix/servers/vm/pb.c:mem_cow](minix3/minix/servers/vm/pb.c#L136)
 
 ```c
 int mem_cow(struct vir_region *region,
@@ -1209,7 +1209,7 @@ Minix3 的 `phys_region.ph` 是 `phys_block*` 裸指针。Rust 重写用 PFN（P
 
 Minix3 中 CoW 后 `ph->memtype = &mem_type_anon`——一个原本是 mappedfile 或 cache 类型的页面，CoW 后变为 anon。这意味着**同一个 VirRegion 内不同页面可以有不同 memtype**，PageSlot 级别的 memtype 是必要的。
 
-源码证据：[pb.c:156](minix3/minix/servers/vm/pb.c#L156) `mem_cow` 函数中 `ph->memtype = &mem_type_anon;`
+源码证据：[minix3/minix/servers/vm/pb.c:mem_cow（L156，工具生成）](minix3/minix/servers/vm/pb.c#L156) `mem_cow` 函数中 `ph->memtype = &mem_type_anon;`
 
 #### 3.1.4 消除 next_ph_list 和 parent
 
@@ -1502,7 +1502,7 @@ fn copy_page_content(frames: &PageFrames, src_pfn: u32, dst_pfn: u32) {
 
 Minix3 的 `mem_cow()` 需要 `pb_unreferenced(region, ph, 0)` + `pb_link(ph, pb, ...)` + `ph->memtype = &mem_type_anon`。Rust 重写使用 `unmap_page` + `map_page`，无需链表操作，refcount 由这两个方法自动管理。`unmap_page` 返回的 `(pfn, memtype)` 对必须按 §3.6.2 的延迟释放模式处理——在释放 `&mut PageFrames` 后调用 `ev_unreference` 和 `free_pfn`，否则旧物理页的 `ev_unreference` 永远不会被调用，导致内存泄漏。
 
-**CoW 后 memtype 强制变为 anon**：这是 Minix3 的真实语义——`mem_cow()` 在 pb.c:165 设置 `ph->memtype = &mem_type_anon`，`mappedfile_pagefault` 在 mem_file.c:70 也设置 `ph->memtype = &mem_type_anon`。CoW 后的页面不再是文件映射或缓存页，而是独立的匿名页。Rust 重写中 `cow_resolve_core` 使用 `&MEM_TYPE_ANON` 作为 `map_page` 的 memtype 参数，与 Minix3 语义一致。
+**CoW 后 memtype 强制变为 anon**：这是 Minix3 的真实语义——`mem_cow()` 在 minix3/minix/servers/vm/pb.c:mem_cow（L165，工具生成） 设置 `ph->memtype = &mem_type_anon`，`mappedfile_pagefault` 在 minix3/minix/servers/vm/mem_file.c:cow_block（L70，工具生成） 也设置 `ph->memtype = &mem_type_anon`。CoW 后的页面不再是文件映射或缓存页，而是独立的匿名页。Rust 重写中 `cow_resolve_core` 使用 `&MEM_TYPE_ANON` 作为 `map_page` 的 memtype 参数，与 Minix3 语义一致。
 
 ### 3.4 MemType trait 集成
 

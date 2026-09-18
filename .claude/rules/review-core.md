@@ -144,7 +144,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 ## Review Workflow
 1. Always start by declaring scope: target file, mode (doc/code/full), estimated time (optional), **STATE.md status** (see tool-isolated path below)
 2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{module}/STATE.md`; Claude Code Runtime → `.review/claude/{module}/STATE.md`; Codex CLI → `.review/codex/{module}/STATE.md`. These paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
-3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls .design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一）
+3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls .design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一；该段必须含关联代码清单，B4.2 2026-09-18）
 4. Execute checks ONE AT A TIME — never batch them mentally
 5. Output a progress checklist showing each check as done/undone
 6. Collect all findings into a review report at the end
@@ -172,13 +172,13 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 
 ### Proposal 状态
 
-- **#7 自动化行号校验脚本**（NEW 2026-07-31）：⏸ 待用户确认后开发 `tools/review-line-check.sh`（**06 review 增强**：反向偏移自动重算）
+- **#7 自动化行号校验脚本**（NEW 2026-07-31）：✅ 已落地（D5 改写，2026-09-18）——行号自动化作废，改为符号锚点迁移（`tools/anchor-resolve.sh` + `tools/anchor-migrate.sh`）
 - **#8 测试数量准确性机制**（NEW 2026-07-31）：⏸ doc §5 强制格式 + CI 钩子（**06 review 增强**：测试总数末段补充）
 - **#9 Double-check 关键 Finding**（NEW 2026-07-31）：✅ 已应用（03 review 中 P2-10 misread 被及时发现）
 - **#10 Pattern #75 Doc See-Also Range Drift**（NEW 2026-07-31）：✅ 已落地 + Step 1.0d 已加 review-process.md
 - **#11 Pattern #76 Cross-Doc Attribution Drift**（NEW 2026-07-31）：✅ 已落地 + Step 1.0e 已加 review-process.md
 - **#12 design.md §X-Y "权威位置"段**（NEW 2026-07-31）：⏸ 待用户确认后落地（DEFAULT_HZ 跨 crate 重复定义暴露需求）
-- **#13 Step 1.0a-自动 反向偏移自动重算**（NEW 2026-07-31，Doc 06 review）：⏸ Proposal #7 增强（auto_resync_line 函数）
+- **#13 Step 1.0a-自动 反向偏移自动重算**（NEW 2026-07-31，Doc 06 review）：✅ 已落地（D5 改写，2026-09-18）——符号锚点结构性消除反向偏移
 - **#14 L3 grep 主动验证（§2.4i）**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
 - **#15 测试总数末段补充（§2.4j）**（NEW 2026-07-31，Doc 06 review）：✅ **已落地（Doc 07 验证成功）**
 - **#16 Step 7.1 触发停止规则 3**（NEW 2026-07-31，Doc 07 review；**2026-08-14 更新为漏检自检**）：✅ 已应用（zero-bias 时触发漏检自检，原"强制交付"已废弃）
@@ -193,7 +193,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 
 1. **Pattern #74 跨文档传播有效**：doc 02 发现 → 修复 → doc 03/04/05/06/07 自然合规（16/67/31/33/16 处 `os/` 前缀，0 双重前缀）
 2. **测试数量 undercount 系统性**：3 个 doc 都存在（4.2×/1.6×/1.8×），需建立机制（Proposal #8 + #15 增强 → Doc 07 已落地）
-3. **行号漂移是结构性弱点**：7 个 doc 累计 25+ 处 P2 偏移（含反向偏移），需自动化（Proposal #7 + #13 增强）
+3. **行号漂移是结构性弱点**：7 个 doc 累计 25+ 处 P2 偏移（含反向偏移）——已由 D5 符号锚点迁移收敛（2026-09-18，4,684 处转符号锚点；残留按卫生项处理）
 4. **"安静的"doc 可能反映 review 走流程不深入**：doc 03 0 P1 不一定意味着 doc 完美——下次对 0 P1 doc 做反向抽查（Proposal #9）→ **Doc 07 验证：0 P1 不等于 review 不深入，而是累积改进极致效果**
 5. **Step 1.0a 漏检"参见"范围引用**：本次 04 doc review 即因此漏检 2 处 L831/L883 → 已加 **Step 1.0d + Pattern #75**（Proposal #10）
 6. **Step 0.3.3 嵌入生成连续 4 次触发**：04/05/06/07 doc outline-review.v*.md 都缺失，自审路径工作正常（Gate H.6 修复）—— 但**自审不构成用户确认**，后续需 user-confirmed review 复核（建议批量补齐，Proposal #18）
@@ -211,7 +211,7 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 18. **Hidden Folder Convention + forward reference 验证（NEW, Doc 10）**：10 review 首个完全合规 doc（无 design/tmp_design 引用）+ §4.1 trap_return.rs forward reference 透明声明（合规）
 
 **详见**：
-- `.claude/rules/review-process.md §Step 1.0a-自动`（Proposal #7 + #13）
+- `.claude/rules/review-process.md §Step 1.0 锚点解析`（D5 收编原 1.0a~1.0g；Proposal #7 + #13 已按符号锚点方案落地）
 - `.claude/rules/review-process.md §Step 1.0d`（Pattern #75，Proposal #10）
 - `.claude/rules/review-process.md §Step 1.0e`（Pattern #76，Proposal #11）
 - `.claude/rules/review-process.md §Step 4.5b`（Proposal #8 + #15）

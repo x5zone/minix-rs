@@ -176,9 +176,9 @@ Rust 侧本篇覆盖到命令词与选项语义为止，套接字调用与系统
 - `17-backup-maintenance.md`——本地保险（本篇的上一步）
 - `19-network-services.md`——服务守护（下一步：经营服务）
 - `17-stage-net`——套接字接口（本篇命令的另一端）
-- `minix3/sbin/ifconfig/ifconfig.c:1050-1173`——标志读写（`iface.rs` 的形状来源）
-- `minix3/sbin/ping/ping.c:1266`——校验函数（`ping.rs` 的算法来源）
-- `minix3/usr.sbin/arp/arp.c:315-434`——邻居消息（`arp.rs` 的动词来源）
+- `minix3/sbin/ifconfig/ifconfig.c:setifflags（L1050，工具生成）`——标志读写（`iface.rs` 的形状来源）
+- `minix3/sbin/ping/ping.c:in_cksum`——校验函数（`ping.rs` 的算法来源）
+- `minix3/usr.sbin/arp/arp.c:set（L315，工具生成）`——邻居消息（`arp.rs` 的动词来源）
 
 ---
 

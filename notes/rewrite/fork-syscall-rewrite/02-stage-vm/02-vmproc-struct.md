@@ -1,7 +1,7 @@
 # 02-vmproc-struct: 进程控制块——vmproc 结构、状态标志与生命周期
 
 > **分类**: 阶段 1 — 启动入口与进程模型（进程模型锚点）
-> **源码**: `minix3/minix/servers/vm/vmproc.h`（结构 + `VMF_*` 宏）；配套行为分布在 `main.c:262-285/458-462/498-520/577-579`、`exit.c:25-107`、`region.c:85-90/391/402`、`utility.c:455-457`、`pagefaults.c:136-138`、`fork.c:67/83`
+> **源码**: `minix3/minix/servers/vm/vmproc.h`（结构 + `VMF_*` 宏）；配套行为分布在 `main.c:262-285/458-462/498-520/577-579`、`exit.c:25-107`、`region.c:85-90/391/402`、`utility.c:455-457`、`minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L136，工具生成）`、`fork.c:67/83`
 > **Rust 模块**: `os/servers/vm/src/vmproc/`（`vmproc.rs` / `flags.rs` / `vmproc_handle.rs` / `mod.rs`）+ `os/servers/vm/src/vm_server.rs`（`init_proc` 族）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`memset(vmproc)` 与 `init_proc(VM_PROC_NR)` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`
 > **说明**: VM 进程控制块（PCB）`struct vmproc` 的全部字段语义、`VMF_*` 正交状态标志、生命周期状态机（空闲→活跃→退出中→空闲），以及 `init_proc()` 槽位激活语义。进程表管理（`vmproc[VMP_NR]` 全局表、`vm_isokendpt`、`VMP_EXECTMP`）在 `03-vmproc-table.md`。
@@ -14,7 +14,7 @@
 
 VM 是用户态内存服务：PM 告诉它"进程要 fork / 要退出 / 地址空间要变"，VFS 告诉它"这段映射要失效"，内核告诉它"这个进程缺页了"。所有这些消息都带着一个 **endpoint**——一个全局唯一的进程身份。VM 收到消息后的第一个动作几乎总是：*把 endpoint 翻译成进程槽，找到那个进程的进程控制块*。
 
-进程控制块（Process Control Block, PCB）是操作系统最古老的数据结构概念之一：**一个进程在服务侧的全部状态，集中放在一个按槽位索引的记录里**。Minix3 的 VM 用 `struct vmproc`（`vmproc.h:14-32`）承担这个角色。本文档回答三个问题：
+进程控制块（Process Control Block, PCB）是操作系统最古老的数据结构概念之一：**一个进程在服务侧的全部状态，集中放在一个按槽位索引的记录里**。Minix3 的 VM 用 `struct vmproc`（`minix3/minix/servers/vm/vmproc.h:vmproc`）承担这个角色。本文档回答三个问题：
 
 1. **PCB 里有什么**——身份、地址空间、权限、统计，为什么是这些字段？
 2. **PCB 的状态怎么表达**——为什么 `vm_flags` 是正交位而不是枚举？
@@ -41,7 +41,7 @@ VM 是用户态内存服务：PM 告诉它"进程要 fork / 要退出 / 地址�
 | `vm_slot` | `int` | 数组索引 | O(1) 定位 PCB（`vmproc[slot]`） |
 | `vm_endpoint` | `endpoint_t` | 全局唯一 IPC 身份 | 消息路由、跨服务识别 |
 
-endpoint 的编码含 generation（代数）与 slot 两部分（`endpoint = (slot << 8) | generation` 一类编码，见 `os/libs/minix-types/src/types/endpoint.rs:82` 的 `from_generation_slot`）。因此 `vm_slot` 理论上可以从 endpoint 提取，C 代码仍保留它，原因有二：
+endpoint 的编码含 generation（代数）与 slot 两部分（`endpoint = (slot << 8) | generation` 一类编码，见 `os/libs/minix-types/src/types/endpoint.rs:fn from_generation_slot` 的 `from_generation_slot`）。因此 `vm_slot` 理论上可以从 endpoint 提取，C 代码仍保留它，原因有二：
 
 1. **fork 中间态**：PM 先分配子进程 slot 再发 `VM_FORK`，在 `sys_fork()` 返回前子进程**只有 slot、没有 endpoint**（`fork.c:63` 显式把 `vmc->vm_endpoint = NONE`）。这段时间只有 `vm_slot` 能定位 PCB。
 2. **一致性断言**：`assert(p->vm_slot == _ENDPOINT_P(p->vm_endpoint))` 类检查能在调试期发现身份不变量被破坏（Rust 侧对应 `UserSlot::matches`，见 §3.1）。
@@ -50,7 +50,7 @@ endpoint 的编码含 generation（代数）与 slot 两部分（`endpoint = (sl
 
 ### 1.3 状态正交性：三个 VMF 位不是枚举
 
-`vm_flags` 的三个位（`vmproc.h:34-37`）：
+`vm_flags` 的三个位（`minix3/minix/servers/vm/vmproc.h:vmproc（L34，工具生成）`）：
 
 ```c
 #define VMF_INUSE       0x001   /* slot contains a process */
@@ -102,7 +102,7 @@ endpoint 的编码含 generation（代数）与 slot 两部分（`endpoint = (sl
 
 ## 2. C 源码分析
 
-### 2.1 struct vmproc：全部字段（vmproc.h:14-32）
+### 2.1 struct vmproc：全部字段（minix3/minix/servers/vm/vmproc.h:vmproc）
 
 ```c
 struct vmproc {
@@ -142,7 +142,7 @@ struct vmproc {
 | 统计 | `vm_minor_page_fault` / `vm_major_page_fault` | `u64_t` | 缺页计数 |
 | 统计 | `vm_bytecopies` | `int` | 仅 `VMSTATS`（`vm.h` 默认 0）的字节复制计数 |
 
-### 2.2 VMF_* 状态标志（vmproc.h:34-37）
+### 2.2 VMF_* 状态标志（minix3/minix/servers/vm/vmproc.h:vmproc（L34，工具生成））
 
 三个位 + 两个空位（0x004/0x008）。位值从 1 开始跳 0x010，说明历史上中间位被占用过或被规划。各位的读写点：
 
@@ -320,7 +320,7 @@ if (proc->vm_total > proc->vm_total_max)
 - 写入：`region_find_slot_range` 成功后 `vmp->vm_region_top = startv + length`（`region.c:391`）——"最高 vaddr 最后插入"。
 - 读取：`region_find_slot` 用 `hint = vmp->vm_region_top` 作为 `minv` 起点（`region.c:402-411`）——**分配 hint**，让连续映射尽量靠拢。
 
-**缺页计数**（`pagefaults.c:136-138`）：
+**缺页计数**（`minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L136，工具生成）`）：
 
 ```c
 if (io)
@@ -352,14 +352,14 @@ else
 
 ### 3.1 D1: 字段命名保留 `vm_` 前缀 + newtype 类型化
 
-- **C**: 裸 `int`/`endpoint_t`/`vir_bytes`/指针（`vmproc.h:14-32`）
+- **C**: 裸 `int`/`endpoint_t`/`vir_bytes`/指针（`minix3/minix/servers/vm/vmproc.h:vmproc`）
 - **Rust**: `VmProc` 字段名与 C 逐一对齐（`vm_slot`/`vm_endpoint`/`vm_flags`/`vm_acl`/`vm_boot`/`vm_pt`/`vm_regions`/`vm_region_top`/`vm_total`/`vm_total_max`/`vm_minor_page_fault`/`vm_major_page_fault`/`vm_bytecopies`），但类型换用 newtype：`UserSlot`、`Endpoint`、`VirBytes`（`minix-types`），`AclState`（VM 私有，见 04），`Option<BootImage>`（替代 C 指针）
 - **理由**: 保留 `vm_` 前缀使 C↔Rust 审计可机械对照；newtype 杜绝"int 当 slot 用"类错误
 - **取舍**: `vm_regions_avl` → `vm_regions: MaybeUninit<RegionMap>`——Rust 用 `RegionMap`（内部平衡树）替代 C 的 AVL 句柄，命名去掉 `_avl` 后缀但注释保留对应关系
 
 ### 3.2 D2: 状态位用 bitflags(u8) 表达
 
-- **C**: `int vm_flags` + 三个宏（`vmproc.h:34-37`）
+- **C**: `int vm_flags` + 三个宏（`minix3/minix/servers/vm/vmproc.h:vmproc（L34，工具生成）`）
 - **Rust**: `bitflags! { pub struct VmFlags: u8 { IN_USE=0x001, EXITING=0x002, VM_INSTANCE=0x010 } }`（`flags.rs:5-32`）
 - **理由**: 位值与 C 完全一致（可测试断言）；`u8` 容纳 0x010 且节省内存；`bitflags` 提供 `contains/insert/remove` 与 `|` 组合
 - **取舍**: 底层类型 `u32`→`u8` 是内部表达变化，不改变外部语义（三个标志位值不变）
@@ -367,14 +367,14 @@ else
 ### 3.3 D3: `MaybeUninit<T> + bool` 表达延迟初始化
 
 - **C**: `memset(vmproc,0)` 后 `vm_pt`/`vm_regions_avl` 的零内存即"有效"（`main.c:458`）
-- **Rust**: `vm_pt: MaybeUninit<PageTable>` + `vm_pt_initialized: bool`；`vm_regions` 同理（`vmproc.rs:36-49`）
+- **Rust**: `vm_pt: MaybeUninit<PageTable>` + `vm_pt_initialized: bool`；`vm_regions` 同理（`os/servers/vm/src/vmproc/vmproc.rs:struct VmProc（L36，工具生成）`）
 - **理由**: C 的零初始化对 Rust 类型（`PageTable`、`RegionMap`）不构成合法值；`bool` 守卫保证 `assume_init_mut()/assume_init_ref()` 仅在 `init_page_table()`/`init_regions()` 之后调用
 - **取舍**: `MaybeUninit` 需要 unsafe 访问——用 `initialized` 守卫把 unsafe 面收敛到 `vmproc_handle.rs` 的少数方法
 
 ### 3.4 D4: `vacant()` 构造即空
 
 - **C**: `memset(vmproc,0)` + `vmproc[i].vm_slot=i`（`main.c:458-462`）
-- **Rust**: `const fn vacant()`（`vmproc.rs:68-91`）+ `const fn vacant_with_slot(slot)`（`vmproc.rs:93-98`）；进程表 `static VM_PROC_TABLE` 用 `[const { AssumeSyncCell::new(VmProc::vacant()) }; VM_PROC_COUNT]` 编译期构造（`table.rs:59-62`）
+- **Rust**: `const fn vacant()`（`os/servers/vm/src/vmproc/vmproc.rs:fn vacant`）+ `const fn vacant_with_slot(slot)`（`os/servers/vm/src/vmproc/vmproc.rs:fn vacant_with_slot（L93，工具生成）`）；进程表 `static VM_PROC_TABLE` 用 `[const { AssumeSyncCell::new(VmProc::vacant()) }; VM_PROC_COUNT]` 编译期构造（`table.rs:59-62`）
 - **理由**: "清零+重建"在 Rust 中即"构造即空"——消灭显式初始化顺序错误类；`const` 构造使空槽零成本
 - **行为契约**: 空槽 `flags.is_empty()`、`endpoint.is_none()`、两个 initialized 守卫为 `false`
 
@@ -392,21 +392,21 @@ else
 ### 3.6 D6: `clear()` 合并 free_proc + clear_proc
 
 - **C**: `free_proc()`（`exit.c:33-42`）+ `clear_proc()`（`exit.c:45-54`）两步；`do_exit` 先处理 VM 实例计数（`exit.c:77-79`）
-- **Rust**: `unsafe fn clear()`（`vmproc.rs:152-207`）单步完成：`vm_regions.clear()` → `vm_pt.destroy()`（非 test）→ VM_INSTANCE 计数递减 → flags/endpoint/boot/ACL/统计全部重置
+- **Rust**: `unsafe fn clear()`（`os/servers/vm/src/vmproc/vmproc.rs:fn reset_rusage（L152，工具生成）`）单步完成：`vm_regions.clear()` → `vm_pt.destroy()`（非 test）→ VM_INSTANCE 计数递减 → flags/endpoint/boot/ACL/统计全部重置
 - **理由**: 单线程 VM 中两步合并无观察者；`endpoint`/`boot` 重置比 C 更彻底（C 依赖 `vm_flags=0` 隐式空闲，Rust typestate 体系下 `EmptySlot` 可能被多次读取，残留值会导致 `check()` 误判）
 - **行为契约**: clear 后 slot 可再次 `activate()`；VM_INSTANCE 计数与标志同步（`mark_vm_instance` 增、`clear` 减）
 
 ### 3.7 D7: `activate()` 严格 vs `activate_relaxed()` 宽松
 
 - **C**: `init_proc` 直接写 `vm_flags=VMF_INUSE; vm_endpoint=ip->endpoint`（`main.c:278-279`），无一致性验证
-- **Rust**: `EmptySlot::activate`（`vmproc_handle.rs:53-103`）严格模式 `debug_assert_eq!(endpoint.slot(), self.slot())`；`activate_relaxed`（`vmproc_handle.rs:106-160`）跳过严格配对，仅保留 debug 检查（endpoint slot 范围 + 匹配性或 exec 例外）
+- **Rust**: `EmptySlot::activate`（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn activate（L53，工具生成）`）严格模式 `debug_assert_eq!(endpoint.slot(), self.slot())`；`activate_relaxed`（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn activate_relaxed（L106，工具生成）`）跳过严格配对，仅保留 debug 检查（endpoint slot 范围 + 匹配性或 exec 例外）
 - **理由**: 正常创建路径（init_proc、fork 完成后端）应暴露 slot/endpoint 不匹配的编程错误；fork（endpoint=NONE）、exec 临时槽（`VM_EXEC_TMP_SLOT`）、测试是合法例外
-- **行为契约**: `activate_relaxed` 对非 NONE endpoint 检查 `slot < VM_PROC_COUNT` 且 `ep_slot == self.slot() || self.slot() == VM_EXEC_TMP_SLOT`（`vmproc_handle.rs:124-152`，debug 构建）
+- **行为契约**: `activate_relaxed` 对非 NONE endpoint 检查 `slot < VM_PROC_COUNT` 且 `ep_slot == self.slot() || self.slot() == VM_EXEC_TMP_SLOT`（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn activate_relaxed（L124，工具生成）`，debug 构建）
 
 ### 3.8 D8: init_proc 落地为 VmServer::init_proc
 
 - **C**: `init_proc(ep_nr)`（`main.c:262-285`）
-- **Rust**: `VmServer::init_proc(table, ip: BootImage)`（`vm_server.rs:328-338`）：
+- **Rust**: `VmServer::init_proc(table, ip: BootImage)`（`os/servers/vm/src/vm_server.rs:fn create_default_allocator（L328，工具生成）`）：
   ```rust
   let slot = UserSlot(ip.proc_nr as usize);
   let empty = table.get_empty(slot).expect("init_proc: slot already in use");
@@ -414,7 +414,7 @@ else
   proc.set_boot(ip);
   ```
 - **理由**: `get_empty().expect(...)` 复刻 C 的 `assert` + `panic("no init_proc")` 语义；`activate` + `set_boot` 对应 C 的 INUSE/endpoint/boot 三字段写入
-- **差异说明**: 调用方（`init_vm_slot` `vm_server.rs:293-304`、`init_boot_procs` `vm_server.rs:306-325`）跳过负 proc_nr、跳过 VM 自身、**额外跳过 `endpoint.is_none()` 的填充条目**——minix-types 的 `[BootImage; NR_BOOT_PROCS]` 定长数组含 padding，C 的数组精确填充（01 文档已述）；`assert(start_addr != 0)`（`vm_server.rs:319-321`）复刻 C `main.c:504` 的 assert
+- **差异说明**: 调用方（`init_vm_slot` `os/servers/vm/src/vm_server.rs:fn new_inner（L293，工具生成）`、`init_boot_procs` `os/servers/vm/src/vm_server.rs:fn create_default_allocator（L306，工具生成）`）跳过负 proc_nr、跳过 VM 自身、**额外跳过 `endpoint.is_none()` 的填充条目**——minix-types 的 `[BootImage; NR_BOOT_PROCS]` 定长数组含 padding，C 的数组精确填充（01 文档已述）；`assert(start_addr != 0)`（`os/servers/vm/src/vm_server.rs:fn create_default_allocator（L319，工具生成）`）复刻 C `main.c:504` 的 assert
 
 ---
 
@@ -422,38 +422,38 @@ else
 
 ### 4.1 `os/servers/vm/src/vmproc/vmproc.rs`：VmProc 结构
 
-**结构定义**（`vmproc.rs:27-61`）：14 字段（含 cfg 条件字段），全部 `pub(crate)`；结构本身 `pub(crate)` 且**不导出模块外**（见 §4.4）。
+**结构定义**（`os/servers/vm/src/vmproc/vmproc.rs:struct VmProc`）：14 字段（含 cfg 条件字段），全部 `pub(crate)`；结构本身 `pub(crate)` 且**不导出模块外**（见 §4.4）。
 
 **构造**：
 
-- `vacant()`（`vmproc.rs:68-91`）：`const` 构造，对应 C `memset(vmproc,0)`——`vm_endpoint: Endpoint::NONE`、`vm_flags: VmFlags::empty()`、`vm_acl: AclState::Uninitialized`、两个 `MaybeUninit::uninit()` + 守卫 false、统计全零
-- `vacant_with_slot(slot)`（`vmproc.rs:93-98`）：在 vacant 基础上写 `vm_slot`，对应 C `vmproc[i].vm_slot = i`
+- `vacant()`（`os/servers/vm/src/vmproc/vmproc.rs:fn vacant`）：`const` 构造，对应 C `memset(vmproc,0)`——`vm_endpoint: Endpoint::NONE`、`vm_flags: VmFlags::empty()`、`vm_acl: AclState::Uninitialized`、两个 `MaybeUninit::uninit()` + 守卫 false、统计全零
+- `vacant_with_slot(slot)`（`os/servers/vm/src/vmproc/vmproc.rs:fn vacant_with_slot（L93，工具生成）`）：在 vacant 基础上写 `vm_slot`，对应 C `vmproc[i].vm_slot = i`
 
-**查询方法**（`vmproc.rs:101-126`）：`is_in_use()` / `is_exiting()` / `is_vm_instance()` 封装 `contains()`；`check()`（debug_assertions）验证 `IN_USE ⇒ endpoint 非 NONE` 不变量。
+**查询方法**（`os/servers/vm/src/vmproc/vmproc.rs:fn is_in_use（L101，工具生成）`）：`is_in_use()` / `is_exiting()` / `is_vm_instance()` 封装 `contains()`；`check()`（debug_assertions）验证 `IN_USE ⇒ endpoint 非 NONE` 不变量。
 
-**`clear()`**（`vmproc.rs:155-200`）：unsafe，调用前置条件见 §3.6。实现顺序：
+**`clear()`**（`os/servers/vm/src/vmproc/vmproc.rs:fn reset_rusage（L155，工具生成）`）：unsafe，调用前置条件见 §3.6。实现顺序：
 
 1. `vm_regions_initialized` 时 `vm_regions.assume_init_mut().clear()`
 2. `vm_pt_initialized` 且非 test 时 `vm_pt.assume_init_mut().destroy()`
 3. `VM_INSTANCE` 时 `global::dec_vm_instance()`
 4. 重置全部簿记字段（flags/endpoint/boot/ACL/守卫/region_top/total/faults/bytecopies）
 
-**Drop**（`vmproc.rs:217-240`）：`debug_assert!` 非 INUSE（指示进程表管理 bug）+ release 防御性 `clear()`。生产路径正常回收走 typestate 迁移（`reap`/`force_clear`），Drop 是兜底。
+**Drop**（`os/servers/vm/src/vmproc/vmproc.rs:fn default（L217，工具生成）`）：`debug_assert!` 非 INUSE（指示进程表管理 bug）+ release 防御性 `clear()`。生产路径正常回收走 typestate 迁移（`reap`/`force_clear`），Drop 是兜底。
 
 ### 4.2 `os/servers/vm/src/vmproc/flags.rs`：VmFlags
 
-`bitflags!`（`flags.rs:5-32`）：三标志位值与 C 宏一致（`IN_USE=0x001`、`EXITING=0x002`、`VM_INSTANCE=0x010`）；`Default` 为空。测试覆盖基本操作/组合/helper/默认值（`flags.rs:41-72`）。
+`bitflags!`（`flags.rs:5-32`）：三标志位值与 C 宏一致（`IN_USE=0x001`、`EXITING=0x002`、`VM_INSTANCE=0x010`）；`Default` 为空。测试覆盖基本操作/组合/helper/默认值（`os/servers/vm/src/vmproc/flags.rs:fn default（L41，工具生成）`）。
 
 ### 4.3 `os/servers/vm/src/vmproc/vmproc_handle.rs`：typestate 视图
 
-**EmptySlot**（`vmproc_handle.rs:26-160`）：
+**EmptySlot**（`os/servers/vm/src/vmproc/vmproc_handle.rs:struct EmptySlot<'a>（L26，工具生成）`）：
 
 - `new`（L33）：debug_assert 非 INUSE
 - `slot()`（L39）：返回 `vm_slot`
 - `activate`（L53）：严格配对 → 委托 `activate_relaxed`
 - `activate_relaxed`（L106）：设 `IN_USE` + endpoint，带 debug 校验（§3.7）
 
-**ActiveProc**（`vmproc_handle.rs:162-704`）：
+**ActiveProc**（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn new（L162，工具生成）`）：
 
 - 状态迁移：`mark_exiting`（L171，设 EXITING → `ExitingProc`）、`force_clear`（L183，unsafe，调 `clear()` → `EmptySlot`）
 - 身份/权限：`slot`/`endpoint`/`flags`/`is_vm_instance`/`acl`/`set_acl`/`acl_check`/`set_endpoint`
@@ -462,7 +462,7 @@ else
 - fork 辅助：`init_from_fork`（L318，只设 INUSE + endpoint + total/total_max/region_top，对应 `fork.c:83` 只继承 INUSE）/`copy_acl_from`（L331，调 `AclState::acl_fork`，对应 `acl.c:110-114`）
 - 活更新：`mark_vm_instance`（L273，设 flag + `inc_vm_instance`，对应 `main.c:577-579`）。槽交换本身在表层 `VmProcTable::swap_slots`（03 文档 §2.6/§3.6；typestate 版 `swap_proc_slot` 已随 V11/T24 删除）
 
-**ExitingProc**（`vmproc_handle.rs:706-760`）：`new`（L707，debug_assert INUSE+EXITING）、`reap`（L744，unsafe，调 `clear()` → `EmptySlot`，对应 `do_exit` 的 `free_proc`+`clear_proc`）。
+**ExitingProc**（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn test_empty_slot_activate（L706，工具生成）`）：`new`（L707，debug_assert INUSE+EXITING）、`reap`（L744，unsafe，调 `clear()` → `EmptySlot`，对应 `do_exit` 的 `free_proc`+`clear_proc`）。
 
 ### 4.4 `os/servers/vm/src/vmproc/mod.rs`：可见性设计
 
@@ -479,10 +479,10 @@ else
 
 ### 4.5 `os/servers/vm/src/vm_server.rs`：init_proc 族
 
-- `init_vm_slot()`（`vm_server.rs:293-304`）：找 boot 表中 `proc_nr == VM_PROC_NR` 的条目并 `init_proc`——对应 `main.c:474`
-- `init_boot_procs()`（`vm_server.rs:306-325`）：遍历 boot 表，跳过负 proc_nr/VM 自身/`endpoint.is_none()`，`assert(start_addr != 0)` 后 `init_proc`——对应 `main.c:498-520`（exec_bootproc/free_mem DEFERRED，01 文档 §3.5）
-- `init_proc()`（`vm_server.rs:328-338`）：§3.8
-- `mark_vm_instance()`（`vm_server.rs:353-360`）：`get_active(VM_PROC_NR)` + `mark_vm_instance()`——对应 `main.c:577-579`
+- `init_vm_slot()`（`os/servers/vm/src/vm_server.rs:fn new_inner（L293，工具生成）`）：找 boot 表中 `proc_nr == VM_PROC_NR` 的条目并 `init_proc`——对应 `main.c:474`
+- `init_boot_procs()`（`os/servers/vm/src/vm_server.rs:fn create_default_allocator（L306，工具生成）`）：遍历 boot 表，跳过负 proc_nr/VM 自身/`endpoint.is_none()`，`assert(start_addr != 0)` 后 `init_proc`——对应 `main.c:498-520`（exec_bootproc/free_mem DEFERRED，01 文档 §3.5）
+- `init_proc()`（`os/servers/vm/src/vm_server.rs:fn create_default_allocator（L328，工具生成）`）：§3.8
+- `mark_vm_instance()`（`os/servers/vm/src/vm_server.rs:fn choose_allocator_type（L353，工具生成）`）：`get_active(VM_PROC_NR)` + `mark_vm_instance()`——对应 `main.c:577-579`
 
 ---
 
@@ -490,23 +490,23 @@ else
 
 ### 5.1 flags.rs 测试（4 个）
 
-- `test_vmflags_basic`（`flags.rs:45`）：IN_USE 含 IN_USE、不含 EXITING
-- `test_vmflags_combination`（`flags.rs:52`）：`IN_USE|EXITING` 双位共存
-- `test_vmflags_helpers`（`flags.rs:60`）：`IN_USE|VM_INSTANCE` 组合
-- `test_vmflags_default`（`flags.rs:68`）：Default 为空
+- `test_vmflags_basic`（`os/servers/vm/src/vmproc/flags.rs:fn test_vmflags_basic`）：IN_USE 含 IN_USE、不含 EXITING
+- `test_vmflags_combination`（`os/servers/vm/src/vmproc/flags.rs:fn test_vmflags_combination`）：`IN_USE|EXITING` 双位共存
+- `test_vmflags_helpers`（`os/servers/vm/src/vmproc/flags.rs:fn test_vmflags_helpers`）：`IN_USE|VM_INSTANCE` 组合
+- `test_vmflags_default`（`os/servers/vm/src/vmproc/flags.rs:fn test_vmflags_default`）：Default 为空
 
 ### 5.2 vmproc.rs 测试（9 个 + 1 cfg）
 
-- `test_vmproc_empty`（`vmproc.rs:258`）：空槽 endpoint NONE、非 INUSE、非 EXITING
-- `test_vmproc_flags`（`vmproc.rs:269`）：IN_USE/EXITING 设置与查询
-- `test_vmproc_endpoint`（`vmproc.rs:281`）：endpoint 有效 + IN_USE
-- `test_slot_endpoint_consistency`（`vmproc.rs:291`）：`UserSlot::matches` 语义
-- `test_slot_endpoint_inconsistency`（`vmproc.rs:300`）：不匹配检测
-- `test_vmproc_memory_limit`（`vmproc.rs:309`）：total ≤ total_max
-- `test_vmproc_stats`（`vmproc.rs:318`）：fault 计数初始 0、递增
-- `test_vmproc_byte_copies`（`vmproc.rs:332`，cfg vmstats）
-- `test_vacant_with_slot_preserves_slot`（`vmproc.rs:340`）：`vacant_with_slot` 保留 slot（对应 `main.c:461`）
-- `test_clear_decrements_vm_instance_count`（`vmproc.rs:354`）：`clear()` 递减 VM_INSTANCE 计数（对应 `exit.c:77-79`）
+- `test_vmproc_empty`（`os/servers/vm/src/vmproc/vmproc.rs:fn get_vmproc`）：空槽 endpoint NONE、非 INUSE、非 EXITING
+- `test_vmproc_flags`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_empty（L269，工具生成）`）：IN_USE/EXITING 设置与查询
+- `test_vmproc_endpoint`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_flags（L281，工具生成）`）：endpoint 有效 + IN_USE
+- `test_slot_endpoint_consistency`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_endpoint（L291，工具生成）`）：`UserSlot::matches` 语义
+- `test_slot_endpoint_inconsistency`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_slot_endpoint_consistency`）：不匹配检测
+- `test_vmproc_memory_limit`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_slot_endpoint_inconsistency`）：total ≤ total_max
+- `test_vmproc_stats`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_memory_limit`）：fault 计数初始 0、递增
+- `test_vmproc_byte_copies`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_stats（L332，工具生成）`，cfg vmstats）
+- `test_vacant_with_slot_preserves_slot`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_byte_copies（L340，工具生成）`）：`vacant_with_slot` 保留 slot（对应 `main.c:461`）
+- `test_clear_decrements_vm_instance_count`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vacant_with_slot_preserves_slot（L354，工具生成）`）：`clear()` 递减 VM_INSTANCE 计数（对应 `exit.c:77-79`）
 
 ### 5.3 vmproc_handle.rs 测试（15 个）
 
@@ -514,7 +514,7 @@ else
 
 ### 5.4 覆盖缺口与建议
 
-已闭环：`test_clear_decrements_vm_instance_count` 与 `test_vacant_with_slot_preserves_slot`（`vmproc.rs:340/354`）。剩余建议：
+已闭环：`test_clear_decrements_vm_instance_count` 与 `test_vacant_with_slot_preserves_slot`（`os/servers/vm/src/vmproc/vmproc.rs:fn test_vmproc_byte_copies（L340，工具生成）/354`）。剩余建议：
 
 | 缺口 | 建议 | 严重度 |
 |------|------|--------|
@@ -536,13 +536,13 @@ else
 ## 7. 参见
 
 - `minix3/minix/servers/vm/vmproc.h` — ground truth：结构 + VMF 宏
-- `minix3/minix/servers/vm/main.c:262-285`、`458-462`、`498-520`、`577-579` — init_proc/槽清零/boot 循环/VM 实例标记
-- `minix3/minix/servers/vm/exit.c:25-107` — reset_vm_rusage/free_proc/clear_proc/do_exit/do_willexit
-- `minix3/minix/servers/vm/fork.c:41-92` — fork 字段继承（`*vmc = *vmp`、`&= VMF_INUSE`）
-- `minix3/minix/servers/vm/region.c:85-90`、`385-410` — vm_total 增减 / vm_region_top hint
-- `minix3/minix/servers/vm/pagefaults.c:136-138` — 缺页计数
-- `minix3/minix/servers/vm/utility.c:455-457` — getrusage 读取统计
-- `minix3/minix/servers/vm/acl.c:20-129` — vm_acl 语义（NO_ACL/USER_ACL/acl_fork）
+- `minix3/minix/servers/vm/main.c:init_proc`、`458-462`、`498-520`、`577-579` — init_proc/槽清零/boot 循环/VM 实例标记
+- `minix3/minix/servers/vm/exit.c:reset_vm_rusage` — reset_vm_rusage/free_proc/clear_proc/do_exit/do_willexit
+- `minix3/minix/servers/vm/fork.c:do_fork（L41，工具生成）` — fork 字段继承（`*vmc = *vmp`、`&= VMF_INUSE`）
+- `minix3/minix/servers/vm/region.c:physblock_set（L85，工具生成）`、`385-410` — vm_total 增减 / vm_region_top hint
+- `minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L136，工具生成）` — 缺页计数
+- `minix3/minix/servers/vm/utility.c:do_getrusage（L455，工具生成）` — getrusage 读取统计
+- `minix3/minix/servers/vm/acl.c:FIRST_SYS_ACL（L20，工具生成）` — vm_acl 语义（NO_ACL/USER_ACL/acl_fork）
 - `os/servers/vm/src/vmproc/vmproc.rs`、`flags.rs`、`vmproc_handle.rs`、`mod.rs` — Rust 实现
-- `os/servers/vm/src/vm_server.rs:293-360` — init_proc 族
+- `os/servers/vm/src/vm_server.rs:fn new_inner（L293，工具生成）` — init_proc 族
 - 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/01-vmproc-struct.md`（旧编号素材）

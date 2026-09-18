@@ -17,7 +17,7 @@
 - [ ] 是否将 C 宏直接翻译成 Rust 宏（应用 trait/泛型替代）？
 - [ ] 是否保留了 C 式数据结构而未用 Rust 所有权重构？
 - [ ] 是否存在"为了 Rust 而 Rust"的过度设计（偏离 Minix 语义）？
-- [ ] 是否做到了"非法状态不可表达"（invalid states unrepresentable）？
+- [ ] 是否做到了"非法状态不可表达"（invalid states unrepresentable）？核心状态机必须产出[非法态封堵清单](review-code-excellence.md#%A7166-非法态封堵清单2026-09-18-h2-新增核心状态机强制)（封不住关键非法态 → 设计类 P1，H2）？
 - [ ] **错误码是否对齐**：Rust 的 `Result<T, Error>` 中封装的错误码，是否与 Minix3 原始定义的 errno 严格对应？禁止为了"优雅"而合并或创造新的错误语义
 - [ ] **内存所有权是否清晰**：C 源码中的内存分配/释放点，在 Rust 中是否有对应的 `Owner`？是否存在 C 中"借用"但在 Rust 中被误用为"所有权"的情况？
 - [ ] **代码是否实现了文档 Ch3 的设计决策**：如果 Ch3 说用 typestate，代码是否真的用了？如果 Ch3 说用 enum，代码是否用了裸整数？

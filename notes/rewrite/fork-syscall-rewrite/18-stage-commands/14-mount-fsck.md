@@ -131,8 +131,8 @@
 - `06-file-ops.md`——搬文件在先（本篇的上一步）
 - `15-partition-format.md`——分区与格式化（下一步：切分准备）
 - `15-stage-fs`——服务端语义（挂载调用的另一端）
-- `minix3/minix/commands/mount/mount.c:41-60`——类型选项参数（`options.rs` 的形状来源）
-- `minix3/sbin/fsck/fsck.c:254`——零号跳过（`plan_checks` 的一句话来源）
+- `minix3/minix/commands/mount/mount.c:main（L41，工具生成）`——类型选项参数（`options.rs` 的形状来源）
+- `minix3/sbin/fsck/fsck.c:isok（L254，工具生成）`——零号跳过（`plan_checks` 的一句话来源）
 - `minix3/etc/newfstab.sh`——表生成脚本（`fstab.rs` 的输入来源）
 
 ---

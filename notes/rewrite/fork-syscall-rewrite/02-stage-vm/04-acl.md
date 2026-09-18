@@ -1,8 +1,8 @@
 # 04-acl: 访问控制——谁被允许调用 VM 的哪些服务
 
 > **分类**: 阶段 2 — 访问控制与物理内存（ACL 锚点）
-> **源码**: `minix3/minix/servers/vm/acl.c`（129 行，5 个非 static 函数）；`minix3/minix/servers/vm/vmproc.h:23`（`vm_acl` 字段）；`minix3/minix/include/minix/com.h:627/769-770`（调用号与掩码宽度）；`minix3/minix/include/minix/bitmap.h:12-20`（位图宏）；`minix3/minix/include/minix/sys_config.h:9`（`_NR_SYS_PROCS`）
-> **Rust 模块**: `os/servers/vm/src/acl.rs`（`AclMask`/`AclState`）+ `os/servers/vm/src/vmproc/vmproc.rs:31`（`vm_acl` 字段）+ `os/servers/vm/src/vmproc/vmproc_handle.rs:236-248/328-333`（typestate 方法族）+ 消费方 `os/servers/vm/src/vm_server.rs:562-587/621-634`、`os/servers/vm/src/rs.rs:115-140`、`os/servers/vm/src/fork.rs:215`
+> **源码**: `minix3/minix/servers/vm/acl.c`（129 行，5 个非 static 函数）；`minix3/minix/servers/vm/vmproc.h:vmproc（L23，工具生成）`（`vm_acl` 字段）；`minix3/minix/include/minix/com.h:VM_RQ_BASE/769-770`（调用号与掩码宽度）；`minix3/minix/include/minix/bitmap.h:BITCHUNK_BITS`（位图宏）；`minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`（`_NR_SYS_PROCS`）
+> **Rust 模块**: `os/servers/vm/src/acl.rs`（`AclMask`/`AclState`）+ `os/servers/vm/src/vmproc/vmproc.rs:struct VmProc（L31，工具生成）`（`vm_acl` 字段）+ `os/servers/vm/src/vmproc/vmproc_handle.rs:fn acl（L236，工具生成）/328-333`（typestate 方法族）+ 消费方 `os/servers/vm/src/vm_server.rs:fn init_vm_slot（L562，工具生成）/621-634`、`os/servers/vm/src/rs.rs:const NOMMAP（L115，工具生成）`、`os/servers/vm/src/fork.rs:fn do_fork（L215，工具生成）`
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`acl_init` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md`（PCB 与生命周期）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md`（身份验证）
 > **说明**: ACL 的语义模块：**初始化 / 检查 / 设置 / fork 派生 / 清除** + 位图语义 + DEFAULT/SYSTEM 分层。**不覆盖**：dispatch 中 `acl_check` 的接线（15-ipc-dispatch）、fork 全流程（18）、退出流程（22）、RS Live Update（25）、RS 握手（01 的 §2.4）。
 
@@ -135,7 +135,7 @@ static bitchunk_t acl_inuse[BITMAP_CHUNKS(NR_SYS_PROCS)];      /* acl.c:15 */
 | `acl_mask[64][2]` | 64 × 64 位 | 权限位图表：第一维是槽索引，第二维是调用号位图 |
 | `acl_inuse[2]` | 64 位 | 槽占用位图：`SET_BIT` = 该槽至少被一个进程引用 |
 
-两个 static 数组的规模由系统常量决定（`sys_config.h:9` `_NR_SYS_PROCS = 64`、`com.h:769-770` `NR_VM_CALLS = 49` → `VM_CALL_MASK_SIZE = BITMAP_CHUNKS(49) = 2`，`bitmap.h:12-13`）。**这是典型的共享引用计数式设计**：64 个系统进程槽，多个进程可以共享同一个槽位（`acl_inuse` 记录"至少一个进程在用"，§2.4/§2.5 展示它如何被引用与释放）。
+两个 static 数组的规模由系统常量决定（`minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS` `_NR_SYS_PROCS = 64`、`com.h:769-770` `NR_VM_CALLS = 49` → `VM_CALL_MASK_SIZE = BITMAP_CHUNKS(49) = 2`，`minix3/minix/include/minix/bitmap.h:BITCHUNK_BITS`）。**这是典型的共享引用计数式设计**：64 个系统进程槽，多个进程可以共享同一个槽位（`acl_inuse` 记录"至少一个进程在用"，§2.4/§2.5 展示它如何被引用与释放）。
 
 ### 2.2 acl_init()：一次性初始化（acl.c:21-30）
 
@@ -241,7 +241,7 @@ void acl_set(struct vmproc *vmp, bitchunk_t *mask, int sys_proc)
 
 **调用点**（两个）：
 
-- `map_service()`（`main.c:765`）：boot 阶段 RS 握手后为每个 boot 服务调用——`acl_set(&vmproc[proc_nr], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))`；`IS_RPUB_BOOT_USR` 只在 `endpoint == INIT_PROC_NR` 时为真（`rs.h:188`），所以 **INIT 以外的 boot 服务都是系统槽**；
+- `map_service()`（`main.c:765`）：boot 阶段 RS 握手后为每个 boot 服务调用——`acl_set(&vmproc[proc_nr], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))`；`IS_RPUB_BOOT_USR` 只在 `endpoint == INIT_PROC_NR` 时为真（`minix3/minix/include/minix/rs.h:IS_RPUB_BOOT_USR`），所以 **INIT 以外的 boot 服务都是系统槽**；
 - `do_rs_set_priv()`（`rs.c:34-64`）：运行时 RS 显式授权——`mask` 来自 `VM_RS_BUF` 的 `sys_datacopy`；无 buffer 且 `VM_RS_SYS` 时返回 `EINVAL`（`rs.c:56-58`，"sys procs don't share!"）。
 
 ### 2.5 acl_fork() / acl_clear()：继承与释放（acl.c:110-129）
@@ -289,7 +289,7 @@ void acl_clear(struct vmproc *vmp)             /* acl.c:121-129 */
 
 **位置可回答性**：本文档位于 `init_vm()` 时序的 `acl_init()` 锚点（`main.c:465`），并在运行期主循环分发处（`main.c:168`）作为服务执行前的最后一道门禁存在——门禁的接线细节由 15 文档讲述。
 
-### 2.7 位图宏与掩码宽度（bitmap.h:12-20、com.h:769-773）
+### 2.7 位图宏与掩码宽度（minix3/minix/include/minix/bitmap.h:BITCHUNK_BITS、com.h:769-773）
 
 ```c
 #define BITCHUNK_BITS   (sizeof(bitchunk_t) * CHAR_BIT)   /* bitmap.h:12 */
@@ -301,7 +301,7 @@ void acl_clear(struct vmproc *vmp)             /* acl.c:121-129 */
 #define UNSET_BIT(map,bit) ( MAP_CHUNK(map,bit) &= ~(1 << CHUNK_OFFSET(bit) )) /* bitmap.h:18 */
 ```
 
-`bitchunk_t` 是 32 位（`typedef uint32_t bitchunk_t`，`minix3/sys/sys/types.h:124`），所以 `NR_VM_CALLS=49` 需要 2 个 chunk（64 位）；`acl_inuse` 需要 `BITMAP_CHUNKS(64)=2` 个 chunk。这些宏在 `acl.c` 里既用于**调用号位图**（`acl_check` 的 `GET_BIT`、`acl_set` 的 `memcpy`）也用于**槽占用位图**（`acl_inuse` 的 `GET_BIT`/`SET_BIT`/`UNSET_BIT`）——同一套宏服务于两种不同语义的位图，是 C 侧"位图语义混杂"的一个小注脚（Rust 用 `AclMask` bitflags 与枚举变体区分，§3.1/§3.2）。
+`bitchunk_t` 是 32 位（`typedef uint32_t bitchunk_t`，`minix3/sys/sys/types.h:i64_t（L124，工具生成）`），所以 `NR_VM_CALLS=49` 需要 2 个 chunk（64 位）；`acl_inuse` 需要 `BITMAP_CHUNKS(64)=2` 个 chunk。这些宏在 `acl.c` 里既用于**调用号位图**（`acl_check` 的 `GET_BIT`、`acl_set` 的 `memcpy`）也用于**槽占用位图**（`acl_inuse` 的 `GET_BIT`/`SET_BIT`/`UNSET_BIT`）——同一套宏服务于两种不同语义的位图，是 C 侧"位图语义混杂"的一个小注脚（Rust 用 `AclMask` bitflags 与枚举变体区分，§3.1/§3.2）。
 
 ---
 
@@ -311,8 +311,8 @@ void acl_clear(struct vmproc *vmp)             /* acl.c:121-129 */
 
 ### 3.1 D1: AclState enum——两维正交性的类型表达
 
-- **C**: `int vm_acl`（`vmproc.h:23`），一个 int 同时表达生命周期状态（-1）与权限策略（0 或 1..63）
-- **Rust**: `enum AclState { Uninitialized, Default, System(AclMask) }`（`acl.rs:74-79`）
+- **C**: `int vm_acl`（`minix3/minix/servers/vm/vmproc.h:vmproc（L23，工具生成）`），一个 int 同时表达生命周期状态（-1）与权限策略（0 或 1..63）
+- **Rust**: `enum AclState { Uninitialized, Default, System(AclMask) }`（`os/servers/vm/src/acl.rs:enum AclState（L74，工具生成）`）
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,7 +368,7 @@ impl AclMask {
 
 | 方面 | Minix3 C | minix-rs |
 |------|----------|----------|
-| 检查代码 | `acl.c:45-54`：`NO_ACL` → 放行 + 告警（RS 例外） | `acl.rs:102-116`：`Uninitialized` → 仅放行 `DEFAULT` 集 |
+| 检查代码 | `acl.c:45-54`：`NO_ACL` → 放行 + 告警（RS 例外） | `os/servers/vm/src/acl.rs:fn acl_check（L102，工具生成）`：`Uninitialized` → 仅放行 `DEFAULT` 集 |
 | 默认策略 | **fail-open**（"for now" 无截止日期） | **fail-closed**（未授权即拒绝） |
 | 启动窗口兼容 | 全放行保证不破坏早期启动 | `DEFAULT` 覆盖启动所需（RS 的 `VM_BRK`、用户进程的基础调用） |
 
@@ -424,7 +424,7 @@ pub(crate) fn acl_set(sys_proc: bool, mask: Option<AclMask>) -> Self {
 ### 3.5 D5: acl_check 签名——endpoint 解耦
 
 - **C**: `acl_check(struct vmproc *vmp, int call)`（`acl.c:37`）——依赖 `vmp->vm_endpoint` 判断 VM 自调用豁免
-- **Rust**: `AclState::acl_check(&self, endpoint: Endpoint, call: u32) -> Result<(), VmError>`（`acl.rs:96`）
+- **Rust**: `AclState::acl_check(&self, endpoint: Endpoint, call: u32) -> Result<(), VmError>`（`os/servers/vm/src/acl.rs:fn acl_check（L96，工具生成）`）
 
 ```rust
 pub(crate) fn acl_check(&self, endpoint: Endpoint, call: u32) -> Result<(), VmError> {
@@ -435,7 +435,7 @@ pub(crate) fn acl_check(&self, endpoint: Endpoint, call: u32) -> Result<(), VmEr
 }
 ```
 
-**理由**：ACL 检查只依赖两个输入（调用者 endpoint + 调用号），与进程表的 typestate 层级（`Empty/Active/Exiting` 视图）无关。把检查挂在 `AclState` 上、由 typestate 层的薄封装转发（§4.3），既保留了"权限内联于进程"的模型，又不让 ACL 逻辑感知表结构。错误类型 `VmError::PermissionDenied` 映射 `EPERM`（`os/libs/minix-types/src/ipc/vm.rs:618`），与 C 的 `EPERM` 精确对齐。
+**理由**：ACL 检查只依赖两个输入（调用者 endpoint + 调用号），与进程表的 typestate 层级（`Empty/Active/Exiting` 视图）无关。把检查挂在 `AclState` 上、由 typestate 层的薄封装转发（§4.3），既保留了"权限内联于进程"的模型，又不让 ACL 逻辑感知表结构。错误类型 `VmError::PermissionDenied` 映射 `EPERM`（`os/libs/minix-types/src/ipc/vm.rs:fn decode_message（L618，工具生成）`），与 C 的 `EPERM` 精确对齐。
 
 ### 3.6 D6: 继承与清除——typestate 层集成
 
@@ -449,9 +449,9 @@ pub(crate) fn copy_acl_from(&mut self, parent: &ActiveProc<'_>) {
 }
 ```
 
-- `init_from_fork` 只初始化 endpoint/内存统计/region_top（`vmproc_handle.rs:314-322`），**ACL 留白**；
+- `init_from_fork` 只初始化 endpoint/内存统计/region_top（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn inc_major_fault（L314，工具生成）`），**ACL 留白**；
 - 调用方在 fork 流程中显式 `child.copy_acl_from(&parent)`（`fork.rs:215`）——等价于 C 的"复制 + 修正"两段式，但**不存在"复制了旧特权忘了修正"的路径**（`AclState::acl_fork` 对 `System(_)` 返回 `Uninitialized`，§1.4 继承规则原样保留）；
-- 进程回收：`VmProc::clear()`（`vmproc.rs:139-185`）内置 `self.vm_acl = AclState::Uninitialized`（`vmproc.rs:185`）——对应 C 的 `clear_proc → acl_clear`（`exit.c:48`）。
+- 进程回收：`VmProc::clear()`（`os/servers/vm/src/vmproc/vmproc.rs:fn reset_rusage（L139，工具生成）`）内置 `self.vm_acl = AclState::Uninitialized`（`os/servers/vm/src/vmproc/vmproc.rs:fn clear（L185，工具生成）`）——对应 C 的 `clear_proc → acl_clear`（`exit.c:48`）。
 
 ### 3.7 与 Redox / 主流 OS 权限模型的对比
 
@@ -474,21 +474,21 @@ pub(crate) fn copy_acl_from(&mut self, parent: &ActiveProc<'_>) {
 | 位置 | 内容 | 对应 C |
 |------|------|--------|
 | `acl.rs:26-60` | `AclMask: u64` bitflags，30 个调用位 | `acl_mask[i]` 64 位面（`acl.c:14`） |
-| `acl.rs:62-72` | `AclMask::DEFAULT`（7 位） | 用户进程共享位图（`acl.c:11` 的 `USER_ACL` 槽内容） |
-| `acl.rs:74-79` | `AclState` 三变体 | `vm_acl` 取值（`vmproc.h:23`） |
-| `acl.rs:81-85` | `Default for AclState → Uninitialized` | `acl_init` 的 `vm_acl = NO_ACL`（`acl.c:26`） |
-| `acl.rs:96-135` | `acl_check` | `acl.c:37-61`（D3 偏移） |
-| `acl.rs:147-160` | `acl_set`（纯函数） | `acl.c:70-101`（D4：无槽位管理） |
-| `acl.rs:166-170` | `acl_fork`（纯函数） | `acl.c:110-114` |
-| `acl.rs:179-181` | `acl_clear`（幂等） | `acl.c:121-129`（无槽位释放） |
-| `acl.rs:183-189` | `mask()` → `Option<AclMask>` | 无直接对应（诊断/序列化辅助） |
+| `os/servers/vm/src/acl.rs:impl AclMask` | `AclMask::DEFAULT`（7 位） | 用户进程共享位图（`acl.c:11` 的 `USER_ACL` 槽内容） |
+| `os/servers/vm/src/acl.rs:enum AclState（L74，工具生成）` | `AclState` 三变体 | `vm_acl` 取值（`minix3/minix/servers/vm/vmproc.h:vmproc（L23，工具生成）`） |
+| `os/servers/vm/src/acl.rs:impl AclState（L81，工具生成）` | `Default for AclState → Uninitialized` | `acl_init` 的 `vm_acl = NO_ACL`（`acl.c:26`） |
+| `os/servers/vm/src/acl.rs:fn acl_check（L96，工具生成）` | `acl_check` | `acl.c:37-61`（D3 偏移） |
+| `os/servers/vm/src/acl.rs:fn acl_set（L147，工具生成）` | `acl_set`（纯函数） | `acl.c:70-101`（D4：无槽位管理） |
+| `os/servers/vm/src/acl.rs:fn acl_fork（L166，工具生成）` | `acl_fork`（纯函数） | `acl.c:110-114` |
+| `os/servers/vm/src/acl.rs:fn mask（L179，工具生成）` | `acl_clear`（幂等） | `acl.c:121-129`（无槽位释放） |
+| `os/servers/vm/src/acl.rs:fn mask（L183，工具生成）` | `mask()` → `Option<AclMask>` | 无直接对应（诊断/序列化辅助） |
 
 `mask()` 的语义值得说明：`Uninitialized → None`（"未被显式赋权"，而非"零权限"）、`Default → Some(DEFAULT)`、`System(m) → Some(m)`——为诊断与未来 RS 查询预留。
 
 ### 4.2 vmproc 集成：字段与 clear()
 
-- `vmproc.rs:31`：`vm_acl: AclState` 字段，构造时 `AclState::Uninitialized`（`vmproc.rs:73`）——进程表编译期即"未接管"；
-- `vmproc.rs:185`：`clear()` 内 `self.vm_acl = AclState::Uninitialized`——对应 C 的 `clear_proc → acl_clear`（`exit.c:48`）；
+- `os/servers/vm/src/vmproc/vmproc.rs:struct VmProc（L31，工具生成）`：`vm_acl: AclState` 字段，构造时 `AclState::Uninitialized`（`os/servers/vm/src/vmproc/vmproc.rs:fn vacant（L73，工具生成）`）——进程表编译期即"未接管"；
+- `os/servers/vm/src/vmproc/vmproc.rs:fn clear（L185，工具生成）`：`clear()` 内 `self.vm_acl = AclState::Uninitialized`——对应 C 的 `clear_proc → acl_clear`（`exit.c:48`）；
 - 与 `VmFlags`/typestate 的关系：ACL 是 `VmProc` 的一个普通字段，不参与 typestate 视图切换（`Empty/Active/Exiting`），但**读写都经过 typestate 方法**（§4.3）——视图边界内无裸访问。
 
 ### 4.3 typestate 层：acl() / set_acl() / acl_check() / copy_acl_from()
@@ -502,9 +502,9 @@ pub(crate) fn acl_check(&self, call: u32) -> Result<(), VmError>  // vmproc_hand
 pub(crate) fn copy_acl_from(&mut self, parent: &ActiveProc<'_>)    // vmproc_handle.rs:331
 ```
 
-- `acl_check`（`vmproc_handle.rs:246-247`）是薄转发：`self.inner.vm_acl.acl_check(self.inner.vm_endpoint, call)`——把 endpoint 从进程状态注入 `AclState` 方法（§3.5）；
-- `copy_acl_from`（`vmproc_handle.rs:331-333`）＝ `parent.inner.vm_acl.acl_fork()`——继承规则见 §3.6；
-- `init_from_fork`（`vmproc_handle.rs:318`）的文档注释明确声明"ACL 不在此设置，调用方必须显式 `copy_acl_from`"——把 C 的隐式 memcpy 继承变成显式步骤。
+- `acl_check`（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn set_acl（L246，工具生成）`）是薄转发：`self.inner.vm_acl.acl_check(self.inner.vm_endpoint, call)`——把 endpoint 从进程状态注入 `AclState` 方法（§3.5）；
+- `copy_acl_from`（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_from_fork（L331，工具生成）`）＝ `parent.inner.vm_acl.acl_fork()`——继承规则见 §3.6；
+- `init_from_fork`（`os/servers/vm/src/vmproc/vmproc_handle.rs:fn inc_major_fault（L318，工具生成）`）的文档注释明确声明"ACL 不在此设置，调用方必须显式 `copy_acl_from`"——把 C 的隐式 memcpy 继承变成显式步骤。
 
 ### 4.4 消费方接线：分发门禁 / boot 授权 / RS_SET_PRIV / fork
 
@@ -526,7 +526,7 @@ if acl_denied {
 
 **None 即拒绝（V13-P2-3 修复，2026-09-09）**：`get_active` 对 `IN_USE + EXITING` 返回 `None`（table 的类型态视图不含退出中的进程）。此前的 `if let Some(..) && check` 写法让这个状态**整条跳过**校验直达 handler——一个 fail-open 闸口，与本模块其余部分的 default-deny 策略（[ARCH: A-11]）自相矛盾。C 侧没有这个形状（`vmproc` 槽永远存在，退出中的进程落 NO_ACL → allow-all），所以修复前后对"退出中调用者"的可观察行为都是"放行 vs 拒绝"的实质分叉；修复后 Rust 统一为拒绝，与自身策略一致。行为由 `test_run_once_exiting_caller_denied_enosys` 定格。
 
-**boot 服务授权**（`vm_server.rs:621-634`，`rs_handshake`）——对应 C 的 `map_service` 循环（`main.c:755-768`）：
+**boot 服务授权**（`os/servers/vm/src/vm_server.rs:fn init_boot_procs（L621，工具生成）`，`rs_handshake`）——对应 C 的 `map_service` 循环（`main.c:755-768`）：
 
 ```rust
 let is_sys = !entry.is_user;   // C: !IS_RPUB_BOOT_USR(rpub)
@@ -534,7 +534,7 @@ let mask = Some(crate::acl::AclMask::from_bits_truncate(entry.call_mask as u64))
 proc.set_acl(crate::acl::AclState::acl_set(is_sys, mask));
 ```
 
-**诚实声明**：`rs_handshake` 的 IPC 尚未接线——`ipc_call_rs_init()` 目前返回 `Ok(RprocTab::empty())`（`vm_server.rs:898-931`，DEFERRED），`is_user`/`call_mask` 字段来自占位结构。因此该路径的**协议语义**已对齐（`!IS_RPUB_BOOT_USR` ↔ `!entry.is_user`），但**运行时数据流**依赖 01/15 的 RS 握手落地。
+**诚实声明**：`rs_handshake` 的 IPC 尚未接线——`ipc_call_rs_init()` 目前返回 `Ok(RprocTab::empty())`（`os/servers/vm/src/vm_server.rs:fn init_proc（L898，工具生成）`，DEFERRED），`is_user`/`call_mask` 字段来自占位结构。因此该路径的**协议语义**已对齐（`!IS_RPUB_BOOT_USR` ↔ `!entry.is_user`），但**运行时数据流**依赖 01/15 的 RS 握手落地。
 
 **RS 运行时授权**（`rs.rs:115-140`，`handle_rs_set_priv`）——对应 C 的 `do_rs_set_priv`（`rs.c:34-64`）：
 
@@ -573,7 +573,7 @@ active.set_acl(acl);
 - **三态 × 检查**：`Uninitialized`/`Default`/`System` 的 `acl_check` 全覆盖（含 VM 豁免）；
 - **继承三路径**：`acl_fork` 全覆盖；
 - **赋值语义**：`acl_set` 四象限（user×mask、sys×mask）全覆盖；
-- **errno 对齐**：`AclState::acl_check` 内部 `VmError::PermissionDenied → EPERM`（`os/libs/minix-types/src/ipc/vm.rs:618`，= C `acl_check` 的 `EPERM`）；分发处**回复** `NotImplemented → ENOSYS`（= C 主循环 `main.c:145` 的回复 errno，§2.3/§4.4）；`RsError::SysProcNoMask → InvalidProcess → EINVAL`（= C `rs.c:56-58`，`rs.rs:579` 有映射测试）；
+- **errno 对齐**：`AclState::acl_check` 内部 `VmError::PermissionDenied → EPERM`（`os/libs/minix-types/src/ipc/vm.rs:fn decode_message（L618，工具生成）`，= C `acl_check` 的 `EPERM`）；分发处**回复** `NotImplemented → ENOSYS`（= C 主循环 `main.c:145` 的回复 errno，§2.3/§4.4）；`RsError::SysProcNoMask → InvalidProcess → EINVAL`（= C `rs.c:56-58`，`rs.rs:579` 有映射测试）；
 - **位偏移单源**：`AclMask` 位由 `minix-types` 常量编译期推导——调用号常量变更会直接改变位图，无手工同步面。
 
 ### 5.3 覆盖缺口与建议
@@ -581,7 +581,7 @@ active.set_acl(acl);
 | 缺口 | 说明 | 归属 |
 |------|------|------|
 | `rs.rs` 的 `SysProcNoMask` 直接测试 | `handle_rs_set_priv` 的 sys+None → EINVAL 路径仅有 `RsError` 映射测试（`rs.rs:579`），无 handler 级测试 | 25-rs-services |
-| 分发处 EPERM 回复端到端测试 | `vm_server.rs:565` 的拒绝 → `DispatchAction::Reply(PermissionDenied)` 依赖真实 IPC 消息构造 | 15-ipc-dispatch |
+| 分发处 EPERM 回复端到端测试 | `os/servers/vm/src/vm_server.rs:fn init_vm_slot（L565，工具生成）` 的拒绝 → `DispatchAction::Reply(PermissionDenied)` 依赖真实 IPC 消息构造 | 15-ipc-dispatch |
 | `copy_acl_from` 集成测试 | fork 路径中"父 System → 子 Uninitialized"的集成断言 | 18-vm-fork |
 
 ### 5.4 测试统计（截至 2026-08-15）

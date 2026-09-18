@@ -1,7 +1,7 @@
 # 02-mproc-struct: 进程结构——mproc 的字段语义与状态分层
 
 > **状态**: 完整版（2026-08-17 首版）
-> **定位**: 阶段 1 启动与进程模型——`sef_cb_init_fresh` 第 1 步（`minix3/minix/servers/pm/main.c:146-152`）建立的数据结构
+> **定位**: 阶段 1 启动与进程模型——`sef_cb_init_fresh` 第 1 步（`minix3/minix/servers/pm/main.c:sef_cb_init_fresh（L146，工具生成）`）建立的数据结构
 > **源码**: `minix3/minix/servers/pm/mproc.h`（struct mproc + 19 flag 位 + mpsigact）
 > **Rust 模块**: `os/servers/pm/src/mproc/`（mproc.rs、lifecycle.rs、block.rs、wait.rs、guardianship.rs、trace.rs、signal.rs、credentials.rs、context.rs、constants.rs、table.rs、fork.rs）
 > **前置依赖**: 01-pm-init-main（启动链第 1 步）
@@ -47,7 +47,7 @@ Minix3 的进程状态分布在四个服务中，每个服务维护一张按进�
 
 ### 1.2 单槽巨型结构的问题
 
-`struct mproc`（mproc.h:24-83）约 60 字段，语义上分为四族：
+`struct mproc`（minix3/minix/servers/pm/mproc.h:sigaction（L24，工具生成））约 60 字段，语义上分为四族：
 
 - **身份**：pid、endpoint、进程组、名字、父、tracer；
 - **状态**：19 个 flag 位 + 退出状态 + 等待目标；
@@ -57,7 +57,7 @@ Minix3 的进程状态分布在四个服务中，每个服务维护一张按进�
 C 代码把所有字段平铺在一个结构里，字段之间靠注释和命名约定区分。
 两个实际问题随之而来：
 
-1. **组合爆炸**：19 个正交 flag 位任意组合（mproc.h:86-104），哪些组合合法
+1. **组合爆炸**：19 个正交 flag 位任意组合（minix3/minix/servers/pm/mproc.h:IN_USE），哪些组合合法
    只写在注释和 assert 里（如 `signal.c:46` 的
    `assert(!(mp->mp_flags & (PROC_STOPPED | VFS_CALL | UNPAUSED | EVENT_CALL)))`）。
 2. **体积膨胀**：信号动作表 `mpsigact[NR_PROCS][_NSIG]` 占 per-process state
@@ -83,13 +83,13 @@ C 代码把所有字段平铺在一个结构里，字段之间靠注释和命名
 
 看三个 C 中的合法组合：
 
-- `EXITING | VFS_CALL`：进程退出中，VFS 还没完成清理（forkexit.c:374 保留 VFS_CALL）；
+- `EXITING | VFS_CALL`：进程退出中，VFS 还没完成清理（minix3/minix/servers/pm/forkexit.c:exit_proc（L374，工具生成） 保留 VFS_CALL）；
 - `IN_USE | PROC_STOPPED`：运行中被信号停止（stop_proc 置位）；
 - `WAITING`：**父进程**在等子进程（不是子进程自身状态！）。
 
 再看两个非法组合（C 靠注释和流程保证）：
 
-- `ZOMBIE | TOLD_PARENT`：mproc.h:92 注释 "parent wait() completed, ZOMBIE off"；
+- `ZOMBIE | TOLD_PARENT`：minix3/minix/servers/pm/mproc.h:TOLD_PARENT 注释 "parent wait() completed, ZOMBIE off"；
 - `EXITING | ZOMBIE`：退出与僵尸互斥。
 
 C 的 19 位正交模型无法表达"这些组合不可能"。Rust 用互斥枚举消灭非法状态、
@@ -97,7 +97,7 @@ C 的 19 位正交模型无法表达"这些组合不可能"。Rust 用互斥枚�
 
 ### 1.5 独立 mpsigact 表：80% 体积的隔离
 
-`mpsigact[NR_PROCS][_NSIG]`（mproc.h:21-22）是独立于 `mproc[]` 的静态大表，
+`mpsigact[NR_PROCS][_NSIG]`（minix3/minix/servers/pm/mproc.h:sigaction）是独立于 `mproc[]` 的静态大表，
 每个进程槽的 `mp_sigact` 只是指向自己那一行的指针。动机（mproc.h:16-20 注释）：
 
 > The per-process sigaction structures are stored outside of the mproc table,
@@ -106,7 +106,7 @@ C 的 19 位正交模型无法表达"这些组合不可能"。Rust 用互斥枚�
 
 MIB（管理信息库）服务按槽位遍历进程表时不需要信号动作细节；把它们
 隔离出去使 MIB 的映射体积缩小约 80%。fork 时指针重指 + `memcpy`
-（forkexit.c:88-89）——语义是"子进程获得父进程动作表的深拷贝"。
+（minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成））——语义是"子进程获得父进程动作表的深拷贝"。
 
 ### 1.6 本章小结
 
@@ -122,7 +122,7 @@ MIB（管理信息库）服务按槽位遍历进程表时不需要信号动作�
 
 > 本档全部行号均 grep/awk 实证（2026-08-17）。字段族分组与 §1.3 一致。
 
-### 2.1 struct mproc 总览（mproc.h:24-83）
+### 2.1 struct mproc 总览（minix3/minix/servers/pm/mproc.h:sigaction（L24，工具生成））
 
 ```c
 EXTERN struct mproc {
@@ -188,9 +188,9 @@ EXTERN struct mproc {
 | 状态 | `mp_flags`/`mp_trace_flags` | 19 位正交位（§2.2）/跟踪选项 |
 | IPC | `mp_eventsub`/`mp_reply`/`mp_frame_addr`/`mp_frame_len` | 事件订阅者/回复消息/执行帧（procfs 用） |
 | 调度 | `mp_nice`/`mp_scheduler` | nice 值/用户态调度器 endpoint |
-| 校验 | `mp_magic` | `MP_MAGIC 0xC0FFEE0`（mproc.h:106） |
+| 校验 | `mp_magic` | `MP_MAGIC 0xC0FFEE0`（minix3/minix/servers/pm/mproc.h:MP_MAGIC） |
 
-### 2.2 19 个 flag 位（mproc.h:86-104）
+### 2.2 19 个 flag 位（minix3/minix/servers/pm/mproc.h:IN_USE）
 
 ```c
 #define IN_USE		0x00001	/* set when 'mproc' slot in use */
@@ -219,7 +219,7 @@ EXTERN struct mproc {
 | 位 | 值 | 类别 | 语义要点 |
 |----|-----|------|---------|
 | IN_USE | 0x00001 | 互斥（槽占用） | slot 在用的总开关 |
-| EXITING | 0x00020 | 互斥（生命周期） | 退出中，可组合 VFS_CALL/PROC_STOPPED（forkexit.c:374） |
+| EXITING | 0x00020 | 互斥（生命周期） | 退出中，可组合 VFS_CALL/PROC_STOPPED（minix3/minix/servers/pm/forkexit.c:exit_proc（L374，工具生成）） |
 | ZOMBIE | 0x00004 | 互斥（生命周期） | 等父 wait4 |
 | TRACE_ZOMBIE | 0x10000 | 互斥（生命周期） | 等 tracer wait4 |
 | TOLD_PARENT | 0x00040 | 互斥（生命周期） | 父已完成 wait，ZOMBIE 已清 |
@@ -229,14 +229,14 @@ EXTERN struct mproc {
 | EVENT_CALL | 0x80000 | 组合（阻塞） | 等待事件订阅者回复（event.c:349） |
 | DELAY_CALL | 0x20000 | 组合（阻塞） | 停止请求遇 EBUSY，等内核 SIGSNDELAY（signal.c:250-255/344-351） |
 | UNPAUSED | 0x01000 | 组合（阻塞） | VFS 已回复 unpause 请求（main.c:410） |
-| NEW_PARENT | 0x00800 | 组合（**仅随 VFS_CALL**） | VFS 调用期间父被收养，回复须交新父（forkexit.c:402-404） |
+| NEW_PARENT | 0x00800 | 组合（**仅随 VFS_CALL**） | VFS 调用期间父被收养，回复须交新父（minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）） |
 | TRACE_STOPPED | 0x00080 | 组合（跟踪） | 为调试器停止（trace_stop） |
 | TRACE_EXIT | 0x08000 | 组合（跟踪） | tracer 强制退出 |
 | SIGSUSPENDED | 0x00100 | 组合（信号） | sigsuspend 挂起中 |
 | PRIV_PROC | 0x02000 | 属性（特权） | 系统进程 |
 | ALARM_ON | 0x00010 | 属性（定时） | SIGALRM 定时器已启动（alarm.c:306-309） |
 | PARTIAL_EXEC | 0x04000 | 属性（exec） | 新映射已建、内容未加载（exec.c:120/163） |
-| TAINTED | 0x40000 | 属性（凭证/exec） | 进程被"污染"（exec.c:84-108、getset.c:81） |
+| TAINTED | 0x40000 | 属性（凭证/exec） | 进程被"污染"（exec.c:84-108、minix3/minix/servers/pm/getset.c:do_get（L81，工具生成）） |
 
 > **关键不变量**（VFS/EVENT 族的共同处理路径）：`VFS_CALL` 与 `EVENT_CALL`
 > 是互斥的两种"调用阻塞"，但 C 在判别"能否立即处理信号/清理"时总是一起检查
@@ -247,7 +247,7 @@ EXTERN struct mproc {
 
 - `sigset_t` 是 128 位结构 `__uint32_t __bits[4]`（`minix3/sys/sys/sigtypes.h`）；
   `__sigismember(s, n)` 取 bit `(n-1)`——**信号号 1 对应 bit 0**。
-  `_NSIG = 64`（`minix3/sys/sys/signal.h:45`），实际只用低 64 位。
+  `_NSIG = 64`（`minix3/sys/sys/signal.h:_NSIG`），实际只用低 64 位。
 - `struct sigaction`（signal.h:126-141）：`union { handler, sigaction }` +
   `sigset_t sa_mask` + `int sa_flags`；`SIG_DFL = 0`、`SIG_IGN = 1`。
 - `do_sigaction`（signal.c:40-86）在 67-78 行维护 `mp_ignore`/`mp_catch`：
@@ -274,14 +274,14 @@ EXTERN struct mproc {
 **MP_MAGIC 是跨服务表校验令牌**：PM 只在初始化时写入（main.c:149），
 自己从不读取；真正读它的是 **MIB 服务**——MIB 通过
 `getsysinfo(SI_PROC_TAB)` 拉取 PM 的整张 mproc 表，逐槽校验
-`mp_magic != MP_MAGIC` 判定表槽是否有效（`minix3/minix/servers/mib/proc.c:90,98`）。
+`mp_magic != MP_MAGIC` 判定表槽是否有效（`minix3/minix/servers/mib/proc.c:update_tables（L90，工具生成）,98`）。
 这正是 mpsigact 独立存放（§1.5）的配套设计：外部读者只拉瘦表 + 魔数校验，
 不拉 80% 的信号动作数据。Rust 进程结构内部不需要魔数（类型系统保证槽位合法，
 ARCH A-11）；MIB 的跨服务读表协议归 MIB 服务文档（非 PM 范围，DEFERRED）。
 
 ### 2.5 fork 的字段继承（forkexit.c）
 
-普通 fork（forkexit.c:88-108）：
+普通 fork（minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成））：
 
 ```c
   *rmc = *rmp;			/* copy parent's process slot to child's */
@@ -310,12 +310,12 @@ ARCH A-11）；MIB 的跨服务读表协议归 MIB 服务文档（非 PM 范围�
 1. **whole-slot copy**：`*rmc = *rmp` 全量复制，再逐项修正——这是 C 的
    "显式逐字段"的反面（隐藏复制）；Rust 用 `Process::fork_from` 逐字段构造
    （§4.6）。
-2. **信号动作表深拷贝**：指针重指 + memcpy（forkexit.c:88-89）。
+2. **信号动作表深拷贝**：指针重指 + memcpy（minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成））。
 3. **PRIV_PROC 不继承**：普通 fork 的子进程永远是用户进程；但系统父进程的
-   子进程调度器改为 `SCHED_PROC_NR`（forkexit.c:96-100，RS 派生恢复脚本场景）。
+   子进程调度器改为 `SCHED_PROC_NR`（minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成），RS 派生恢复脚本场景）。
 4. **DELAY_CALL 继承是伪语义**：见 §3.5 的不可达论证。
 
-srv_fork（forkexit.c:191-200）：掩码为 `(IN_USE|PRIV_PROC|DELAY_CALL)`
+srv_fork（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L191，工具生成））：掩码为 `(IN_USE|PRIV_PROC|DELAY_CALL)`
 ——系统进程的 fork 保留 PRIV_PROC、**不**保留 TAINTED（新服务从清白状态开始），
 uid/gid 直接来自消息参数。完整流程归 08-pm-srv-fork.md。
 
@@ -323,12 +323,12 @@ uid/gid 直接来自消息参数。完整流程归 08-pm-srv-fork.md。
 
 | 符号 | 位置 | 本档覆盖 |
 |------|------|---------|
-| `struct mproc` 全部字段 | mproc.h:24-83 | ✅ §2.1 |
-| 19 个 flag 位 | mproc.h:86-104 | ✅ §2.2 |
-| `MP_MAGIC` | mproc.h:106 | ✅ §2.4 |
-| `mpsigact`/`mp_sigact` | mproc.h:21-22/57 | ✅ §1.5/§2.4 |
+| `struct mproc` 全部字段 | minix3/minix/servers/pm/mproc.h:sigaction（L24，工具生成） | ✅ §2.1 |
+| 19 个 flag 位 | minix3/minix/servers/pm/mproc.h:IN_USE | ✅ §2.2 |
+| `MP_MAGIC` | minix3/minix/servers/pm/mproc.h:MP_MAGIC | ✅ §2.4 |
+| `mpsigact`/`mp_sigact` | minix3/minix/servers/pm/mproc.h:sigaction/57 | ✅ §1.5/§2.4 |
 | 初始化循环 | main.c:146-152 | ✅ §2.4 |
-| fork 继承掩码 | forkexit.c:88-108/191-200 | ✅ §2.5 |
+| fork 继承掩码 | minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成）/191-200 | ✅ §2.5 |
 | 常量（NR_PIDS/NO_PID/INIT_PID/NO_TRACER/NO_EVENTSUB） | const.h:3-13 | ✅ 交 99/03 深化 |
 
 ---
@@ -337,7 +337,7 @@ uid/gid 直接来自消息参数。完整流程归 08-pm-srv-fork.md。
 
 ### 3.1 D1：`Process` 四层分层模型（ARCH A-1）
 
-- **C**：`struct mproc` 单结构约 60 字段（mproc.h:24-83）。
+- **C**：`struct mproc` 单结构约 60 字段（minix3/minix/servers/pm/mproc.h:sigaction（L24，工具生成））。
 - **Rust**（`os/servers/pm/src/mproc/mproc.rs`）：
 
 ```rust
@@ -394,9 +394,9 @@ pub struct Process {
 
 ### 3.3 D3：`IpcBlockReason::VfsCall { reply_to_new_parent }`——把 flag 组合变成类型
 
-C 中 `NEW_PARENT`（mproc.h:96）有两个事实：
+C 中 `NEW_PARENT`（minix3/minix/servers/pm/mproc.h:NEW_PARENT）有两个事实：
 
-1. **只在 VFS_CALL 置位时被设置**（forkexit.c:402-404：`if (rmp->mp_flags & VFS_CALL) rmp->mp_flags |= NEW_PARENT;`）；
+1. **只在 VFS_CALL 置位时被设置**（minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）：`if (rmp->mp_flags & VFS_CALL) rmp->mp_flags |= NEW_PARENT;`）；
 2. **与 VFS_CALL 同时清除**（main.c:327-328）。
 
 即"NEW_PARENT 是 VFS_CALL 的修饰信息"——C 用两个正交位表达，Rust 合并为：
@@ -455,11 +455,11 @@ pub struct SignalState {
 
 **fork 继承**（`os/servers/pm/src/mproc/fork.rs` 的 `Process::fork_from`）：
 
-- 子进程 `flags` 仅继承 `TAINTED`（forkexit.c:106）；
+- 子进程 `flags` 仅继承 `TAINTED`（minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成））；
 - 子进程 `block = BlockState::default()`，即 `ipc_blocked = None`；
 - 子进程 `privilege = Privilege::User(..)`（普通 fork 不继承 PRIV_PROC）；
 - 调度器：系统父进程（PRIV_PROC）的普通 fork 子进程 → `Endpoint::SCHED`
-  （forkexit.c:96-100）；其余继承父进程。
+  （minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成））；其余继承父进程。
 
 **DELAY_CALL 不可达论证**（为什么显式重置而非复刻 C 的继承）：
 
@@ -468,7 +468,7 @@ pub struct SignalState {
 2. 清除只在内核发送 `SIGSNDELAY` 通知后（signal.c:344-351）；
 3. 置位→清除窗口内，进程被内核阻塞在消息发送中，**不能执行用户态代码，
    因而不能发起 fork 系统调用**；
-4. 所以 C 掩码里的 `DELAY_CALL` 继承（forkexit.c:106）在可达状态集合中
+4. 所以 C 掩码里的 `DELAY_CALL` 继承（minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成））在可达状态集合中
    恒为 0，是 whole-slot copy 的伪语义——minix-rs 显式重置并文档化，
    不复制不可达行为。
 
@@ -546,7 +546,7 @@ pub struct SignalState {
 
 | 文件 | 内容 | 对应 C |
 |------|------|--------|
-| `mproc.rs` | `Process` 四层 + `ProcessIdentity`/`ProcessState`/`ProcessResources`/`ProcessIpc` + `Privilege` + `RemainingFlags` + `MinixTimer` | mproc.h:24-83 |
+| `mproc.rs` | `Process` 四层 + `ProcessIdentity`/`ProcessState`/`ProcessResources`/`ProcessIpc` + `Privilege` + `RemainingFlags` + `MinixTimer` | minix3/minix/servers/pm/mproc.h:sigaction（L24，工具生成） |
 | `lifecycle.rs` | `Lifecycle` 互斥枚举（6 态） | IN_USE/EXITING/ZOMBIE/TRACE_ZOMBIE/TOLD_PARENT |
 | `block.rs` | `BlockState` + `IpcBlockReason` 组合子 | PROC_STOPPED/VFS_CALL/EVENT_CALL/DELAY_CALL/NEW_PARENT/UNPAUSED |
 | `wait.rs` | `WaitState` + `WaitTarget`（**父进程槽**） | WAITING/mp_wpid/mp_waddr |
@@ -600,11 +600,11 @@ pub struct SignalState {
 
 | 组合 | C | Rust |
 |------|---|------|
-| EXITING + VFS_CALL（退出等 VFS 清理） | 合法（forkexit.c:374） | `Lifecycle::Exiting` + `ipc_blocked = Some(VfsCall)`（显式允许） |
+| EXITING + VFS_CALL（退出等 VFS 清理） | 合法（minix3/minix/servers/pm/forkexit.c:exit_proc（L374，工具生成）） | `Lifecycle::Exiting` + `ipc_blocked = Some(VfsCall)`（显式允许） |
 | Running + PROC_STOPPED（被停止） | 合法 | `Lifecycle::Running` + `BlockState.stopped = true`（显式允许） |
-| ZOMBIE + TOLD_PARENT | 非法（mproc.h:92 注释） | **不可表示**（互斥枚举） |
+| ZOMBIE + TOLD_PARENT | 非法（minix3/minix/servers/pm/mproc.h:TOLD_PARENT 注释） | **不可表示**（互斥枚举） |
 | EXITING + ZOMBIE | 非法（流程保证） | **不可表示**（互斥枚举） |
-| NEW_PARENT 无 VFS_CALL | 非法（forkexit.c:402-404） | **不可表示**（变体载荷） |
+| NEW_PARENT 无 VFS_CALL | 非法（minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）） | **不可表示**（变体载荷） |
 | WAITING 挂子进程 | 非法（语义约束） | `WaitState` 只在父进程槽写（文档约束 + 03 表管理） |
 
 ### 4.4 `SigSet` 位语义与 `SigAction`
@@ -643,7 +643,7 @@ pub struct SignalState {
 
 ### 4.6 `Process::fork_from`：逐字段构造替代 whole-slot copy
 
-C 的 `*rmc = *rmp` 是全量复制后修正（forkexit.c:88-108）；Rust 用
+C 的 `*rmc = *rmp` 是全量复制后修正（minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成））；Rust 用
 `Process::fork_from(&parent, child_index, child_pid, child_endpoint, parent_index)`
 逐字段构造（`os/servers/pm/src/mproc/fork.rs`）：
 
@@ -672,16 +672,16 @@ C 的 `*rmc = *rmp` 是全量复制后修正（forkexit.c:88-108）；Rust 用
 
 | 测试 | 验证点 | 对应 C |
 |------|--------|--------|
-| `mproc::tests::test_remaining_flags_bits_match_c` | RemainingFlags 位值 = 0x10/0x4000/0x40000 | mproc.h:90/99/103 |
-| `mproc::tests::test_process_default` / `test_process_new` / `test_process_lifecycle` / `test_process_guardianship` / `test_process_stopped` / `test_process_privilege` / `test_layered_structure`（8 个） | 默认空槽、生命周期互斥、guardianship、四层一致性 | mproc.h:86-104 |
+| `mproc::tests::test_remaining_flags_bits_match_c` | RemainingFlags 位值 = 0x10/0x4000/0x40000 | minix3/minix/servers/pm/mproc.h:ALARM_ON/99/103 |
+| `mproc::tests::test_process_default` / `test_process_new` / `test_process_lifecycle` / `test_process_guardianship` / `test_process_stopped` / `test_process_privilege` / `test_layered_structure`（8 个） | 默认空槽、生命周期互斥、guardianship、四层一致性 | minix3/minix/servers/pm/mproc.h:IN_USE |
 | `lifecycle::tests`（5 个） | 5 态互斥枚举 + exit_code + is_zombie/is_exiting | IN_USE:86/ZOMBIE:88/EXITING:91/TOLD_PARENT:92/TRACE_ZOMBIE:101 |
-| `block::tests::test_vfs_call_new_parent_payload` | VfsCall{reply_to_new_parent} 变体 | forkexit.c:402-404 |
+| `block::tests::test_vfs_call_new_parent_payload` | VfsCall{reply_to_new_parent} 变体 | minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成） |
 | `block::tests::test_combined_state`（5 个） | stopped/ipc_blocked/unpaused 并存 | signal.c:279 场景 |
 | `signal::tests::test_ignored_caught` | ignored/caught 位语义（bit signo-1） | sigtypes.h |
 | `signal::tests::test_is_blocked` / `test_add_pending` / 边界（6 个） | mask/pending/边界（0、>64） | __sigismember |
-| `fork::tests::test_fork_flags_inheritance` | 仅 TAINTED 继承 | forkexit.c:106 |
-| `fork::tests::test_fork_no_delay_call` | ipc_blocked 不传染子进程 | forkexit.c:106（不可达论证） |
-| `fork::tests::test_fork_privilege_scheduler` | 系统父 → User(0,0) + SCHED | forkexit.c:96-100 |
+| `fork::tests::test_fork_flags_inheritance` | 仅 TAINTED 继承 | minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成） |
+| `fork::tests::test_fork_no_delay_call` | ipc_blocked 不传染子进程 | minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成）（不可达论证） |
+| `fork::tests::test_fork_privilege_scheduler` | 系统父 → User(0,0) + SCHED | minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成） |
 | `wait::tests`（4）/ `guardianship::tests`（5）/ `trace::tests`（2）/ `credentials::tests`（5） | 各组合子默认与访问器 | mproc.h 对应字段 |
 | `table::tests`（8）/ `pid_gen::tests`（7） | 表/pid 生成（03 深化） | 03-mproc-table.md |
 

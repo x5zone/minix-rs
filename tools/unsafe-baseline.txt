@@ -1,0 +1,1090 @@
+# unsafe-baseline — 由 tools/unsafe-audit.sh --update-baseline 生成（D2 存量冻结；只登记不修）
+# 格式：BARE<TAB>file:line<TAB>content
+BARE	os/plat/src/arm64/early_console.rs:11	    unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:79	    unsafe fn gicd_read32(&self, offset: usize) -> u32 {
+BARE	os/plat/src/arm64/interrupt.rs:83	    unsafe fn gicd_write32(&self, offset: usize, value: u32) {
+BARE	os/plat/src/arm64/interrupt.rs:87	    unsafe fn gicr_read32(&self, offset: usize) -> u32 {
+BARE	os/plat/src/arm64/interrupt.rs:91	    unsafe fn gicr_write32(&self, offset: usize, value: u32) {
+BARE	os/plat/src/arm64/interrupt.rs:96	        unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:115	        unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:132	        unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:170	            unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:178	            unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:190	            unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:198	            unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:208	            unsafe {
+BARE	os/plat/src/arm64/interrupt.rs:219	        unsafe {
+BARE	os/libs/minix-usb/src/wire.rs:22	    let arm = unsafe { &mut msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:30	    let arm = unsafe { &msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:38	    let arm = unsafe { &mut msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:45	    let arm = unsafe { &msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:55	    let arm = unsafe { &mut msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:63	    let arm = unsafe { &msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:71	    let arm = unsafe { &mut msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:78	    let arm = unsafe { &msg.m_u.m_m4 };
+BARE	os/libs/minix-usb/src/wire.rs:88	    let name = unsafe { &msg.m_u.m_m3.m3ca1 };
+BARE	os/libs/minix-usb/src/wire.rs:129	        let arm = unsafe { &mut msg.m_u.m_m3 };
+BARE	os/boot-shim/src/uefi_helpers.rs:50	unsafe impl core::alloc::GlobalAlloc for UefiPoolAllocator {
+BARE	os/boot-shim/src/uefi_helpers.rs:51	    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+BARE	os/boot-shim/src/uefi_helpers.rs:70	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
+BARE	os/boot-shim/src/loader.rs:189	pub unsafe fn load_segments_into_phys_memory(
+BARE	os/boot-shim/src/loader.rs:200	        unsafe {
+BARE	os/plat/src/riscv64/early_console.rs:13	    unsafe {
+BARE	os/plat/src/x86_64/early_console.rs:42	unsafe fn ser_init() { unsafe {
+BARE	os/plat/src/x86_64/early_console.rs:63	    unsafe {
+BARE	os/plat/src/x86_64/early_console.rs:88	unsafe fn outb(port: u16, val: u8) { unsafe {
+BARE	os/plat/src/x86_64/early_console.rs:92	unsafe fn inb(port: u16) -> u8 { unsafe {
+BARE	os/plat/src/riscv64/interrupt.rs:75	    unsafe fn plic_read32(&self, offset: usize) -> u32 {
+BARE	os/plat/src/riscv64/interrupt.rs:79	    unsafe fn plic_write32(&self, offset: usize, value: u32) {
+BARE	os/plat/src/riscv64/interrupt.rs:98	        unsafe {
+BARE	os/plat/src/riscv64/interrupt.rs:116	        unsafe {
+BARE	os/plat/src/riscv64/interrupt.rs:131	        unsafe {
+BARE	os/plat/src/riscv64/interrupt.rs:142	            unsafe {
+BARE	os/boot-shim/src/opensbi_helpers.rs:292	pub unsafe fn install_boot_file_table(addr: u64) {
+BARE	os/boot-shim/src/opensbi_helpers.rs:315	    let table = unsafe { &*(ptr as *const BootFileTable) };
+BARE	os/boot-shim/src/opensbi_helpers.rs:340	pub unsafe fn install_dtb_ptr(addr: u64) {
+BARE	os/plat/src/x86_64/interrupt.rs:72	unsafe fn lapic_read(base: usize, offset: usize) -> u32 { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:77	unsafe fn lapic_write(base: usize, offset: usize, value: u32) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:81	unsafe fn ioapic_read_redtbl(base: usize, irq: u8) -> u64 { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:88	unsafe fn ioapic_write_redtbl(base: usize, irq: u8, value: u64) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:94	unsafe fn ioapic_read_indirect(base: usize, reg: u32) -> u32 { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:99	unsafe fn ioapic_write_indirect(base: usize, reg: u32, value: u32) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:130	    unsafe fn init_lapic(&mut self) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:148	    unsafe fn init_ioapic(&mut self) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:166	    unsafe fn ioapic_route_and_mask(&mut self, pin: u8) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:198	    unsafe fn ioapic_set_mask(&mut self, irq: u8, mask: bool) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:209	    unsafe fn lapic_eoi(&mut self) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:220	    pub unsafe fn lapic_id(&self) -> u32 { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:237	    pub unsafe fn enable_current_cpu_lapic() { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:254	    pub unsafe fn ioapic_version(&self) -> u32 { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:259	unsafe fn wrmsr_msr_read(msr: u32) -> u64 { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:272	unsafe fn wrmsr_msr_write(msr: u32, value: u64) { unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:297	        unsafe {
+BARE	os/plat/src/x86_64/interrupt.rs:305	        unsafe { self.ioapic_set_mask(irq.get(), true) };
+BARE	os/plat/src/x86_64/interrupt.rs:309	        unsafe { self.ioapic_set_mask(irq.get(), false) };
+BARE	os/plat/src/x86_64/interrupt.rs:370	        unsafe { self.lapic_eoi() };
+BARE	os/libs/minix-rt/src/crt0.rs:62	unsafe fn read_process_strings(addr: u64) -> Result<ProcessStrings, Errno> {
+BARE	os/libs/minix-rt/src/crt0.rs:111	unsafe impl Sync for BirthCell {}
+BARE	os/libs/minix-rt/src/crt0.rs:136	        unsafe { core::slice::from_raw_parts(ptr, len) }
+BARE	os/libs/minix-rt/src/crt0.rs:163	    let slot = unsafe { ((ps.argument_list + (index as u64) * 8) as *const u64).read() };
+BARE	os/libs/minix-rt/src/crt0.rs:176	    Some(unsafe { core::slice::from_raw_parts(slot as *const u8, length) })
+BARE	os/libs/minix-rt/src/crt0.rs:192	unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
+BARE	os/libs/minix-rt/src/crt0.rs:196	    let ps = match unsafe { read_process_strings(ps_strings) } {
+BARE	os/libs/minix-rt/src/crt0.rs:231	    unsafe extern "Rust" {
+BARE	os/libs/minix-rt/src/crt0.rs:234	    let exit_code = unsafe { main() };
+BARE	os/libs/minix-rt/src/crt0.rs:258	    Some(unsafe { core::slice::from_raw_parts(first as *const u8, length) })
+BARE	os/libs/minix-rt/src/crt0.rs:305	        let ps = unsafe { read_process_strings(addr) }.expect("descriptor parses");
+BARE	os/libs/minix-rt/src/crt0.rs:318	        let err = unsafe { read_process_strings(0) }.unwrap_err();
+BARE	os/libs/minix-rt/src/crt0.rs:333	        let err = unsafe { read_process_strings(addr) }.unwrap_err();
+BARE	os/libs/minix-rt/src/lib.rs:207	    unsafe impl core::alloc::GlobalAlloc for RtGlobalAlloc {
+BARE	os/libs/minix-rt/src/lib.rs:208	        unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+BARE	os/libs/minix-rt/src/lib.rs:215	        unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
+BARE	os/arch/src/arm64/paging.rs:81	unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
+BARE	os/arch/src/arm64/paging.rs:85	unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
+BARE	os/arch/src/arm64/paging.rs:89	unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
+BARE	os/arch/src/arm64/paging.rs:206	    unsafe {
+BARE	os/arch/src/arm64/paging.rs:375	        unsafe { write_pte_dm(l1 + (i1 as u64) * 8, entry, 0, channel) };
+BARE	os/arch/src/arm64/paging.rs:391	        unsafe { write_pte_dm(l2 + (i2 as u64) * 8, entry, 0, channel) };
+BARE	os/arch/src/arm64/paging.rs:411	        let ptr = unsafe { phys_to_ptr(root_page.0) };
+BARE	os/arch/src/arm64/paging.rs:412	        unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+BARE	os/arch/src/arm64/paging.rs:456	    unsafe fn enable(&self) -> PhysBytes {
+BARE	os/arch/src/arm64/paging.rs:457	        unsafe {
+BARE	os/arch/src/arm64/paging.rs:534	    unsafe fn destroy(&mut self) {
+BARE	os/arch/src/arm64/paging.rs:650	    unsafe fn switch(&self) {
+BARE	os/arch/src/arm64/paging.rs:651	        unsafe {
+BARE	os/arch/src/arm64/paging.rs:658	    unsafe fn flush_tlb(&self) {
+BARE	os/arch/src/arm64/paging.rs:659	        unsafe {
+BARE	os/arch/src/arm64/paging.rs:667	    unsafe fn flush_tlb_addr(&self, vaddr: VirBytes) {
+BARE	os/arch/src/arm64/paging.rs:668	        unsafe {
+BARE	os/arch/src/arm64/paging.rs:693	        let l0 = unsafe { phys_to_ptr(self.root_paddr) };
+BARE	os/arch/src/arm64/paging.rs:695	        let e0 = unsafe { read_entry(l0, i0) };
+BARE	os/arch/src/arm64/paging.rs:701	            unsafe { write_entry(l0, i0, page | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits()) };
+BARE	os/arch/src/arm64/paging.rs:702	            unsafe { phys_to_ptr(page) }
+BARE	os/arch/src/arm64/paging.rs:706	            unsafe { write_entry(l1, l1_index(vaddr.0), (paddr.0 & ADDR_MASK) | pte_flags) };
+BARE	os/arch/src/arm64/paging.rs:711	        let e1 = unsafe { read_entry(l1, i1) };
+BARE	os/arch/src/arm64/paging.rs:722	            unsafe { write_entry(l1, i1, page | (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits()) };
+BARE	os/arch/src/arm64/paging.rs:723	            unsafe { phys_to_ptr(page) }
+BARE	os/arch/src/arm64/paging.rs:727	        unsafe { write_entry(l2, i2, (paddr.0 & ADDR_MASK) | pte_flags) };
+BARE	os/arch/src/arm64/paging.rs:746	    unsafe fn dm_install_leaf(
+BARE	os/arch/src/arm64/paging.rs:766	        let l0 = unsafe { phys_to_ptr(root_paddr.0) };
+BARE	os/arch/src/arm64/paging.rs:767	        let e0 = unsafe { read_entry(l0, i0) };
+BARE	os/arch/src/arm64/paging.rs:780	        let l1_ptr = unsafe { phys_to_ptr(l1) };
+BARE	os/arch/src/arm64/paging.rs:781	        let e1 = unsafe { read_entry(l1_ptr, i1) };
+BARE	os/arch/src/arm64/paging.rs:811	        let l2_ptr = unsafe { phys_to_ptr(l2) };
+BARE	os/arch/src/arm64/paging.rs:812	        let e2 = unsafe { read_entry(l2_ptr, i2) };
+BARE	os/arch/src/arm64/paging.rs:838	        let l3_ptr = unsafe { phys_to_ptr(l3) };
+BARE	os/arch/src/arm64/paging.rs:839	        let e3 = unsafe { read_entry(l3_ptr, i3) };
+BARE	os/libs/minix-rt/src/alloc.rs:144	    unsafe fn release_pages(&mut self, first: *mut u8, page_count: usize) {
+BARE	os/arch/src/arm64/tlb.rs:38	    unsafe fn flush_all() {
+BARE	os/arch/src/arm64/tlb.rs:43	        unsafe {
+BARE	os/arch/src/arm64/tlb.rs:49	    unsafe fn flush_addr(vaddr: VirBytes) {
+BARE	os/arch/src/arm64/tlb.rs:54	        unsafe {
+BARE	os/arch/src/arm64/tlb.rs:61	    unsafe fn set_active_root(phys_root: PhysBytes) {
+BARE	os/arch/src/arch/paging.rs:248	    unsafe fn enable(&self) -> PhysBytes;
+BARE	os/arch/src/arch/paging.rs:258	    unsafe fn destroy(&mut self);
+BARE	os/arch/src/arch/paging.rs:303	    unsafe fn switch(&self);
+BARE	os/arch/src/arch/paging.rs:315	    unsafe fn flush_tlb(&self);
+BARE	os/arch/src/arch/paging.rs:324	    unsafe fn flush_tlb_addr(&self, vaddr: VirBytes);
+BARE	os/arch/src/arch/paging.rs:603	        unsafe fn enable(&self) -> PhysBytes {
+BARE	os/arch/src/arch/paging.rs:615	        unsafe fn destroy(&mut self) {
+BARE	os/arch/src/arch/paging.rs:688	        unsafe fn switch(&self) {
+BARE	os/arch/src/arch/paging.rs:692	        unsafe fn flush_tlb(&self) {}
+BARE	os/arch/src/arch/paging.rs:694	        unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {}
+BARE	os/arch/src/arch/paging.rs:736	        unsafe fn switch_with_asid(&self, _id: MockAsid) { unsafe {
+BARE	os/arch/src/arch/paging.rs:740	        unsafe fn flush_tlb_asid(&self, _id: MockAsid) {}
+BARE	os/arch/src/arch/paging.rs:742	        unsafe fn flush_tlb_addr_asid(&self, _vaddr: VirBytes, _id: MockAsid) {}
+BARE	os/arch/src/arch/paging.rs:815	            unsafe {
+BARE	os/arch/src/arch/paging.rs:1068	            unsafe { pt.switch_with_asid(asid); }
+BARE	os/libs/minix-platform/src/acpi.rs:160	    pub unsafe fn parse(rsdp_phys: usize) -> Result<Self, AcpiParseError> {
+BARE	os/libs/minix-platform/src/acpi.rs:178	        let revision = unsafe { *((rsdp_phys + 15) as *const u8) };
+BARE	os/libs/minix-platform/src/acpi.rs:182	            let xsdt_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:189	            let rsdt_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:318	unsafe fn find_madt(sdt_phys: usize, is_xsdt: bool) -> Option<usize> {
+BARE	os/libs/minix-platform/src/acpi.rs:321	    let length_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:399	unsafe fn parse_madt(
+BARE	os/libs/minix-platform/src/acpi.rs:417	    let lapic_addr_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:439	        let entry_hdr_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:459	                    let ioapic_addr_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:472	                    let apic_id = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:475	                    let flags_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:545	                    let flags_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:551	                        let uid_bytes = unsafe {
+BARE	os/libs/minix-platform/src/acpi.rs:578	                    let bytes = unsafe {
+BARE	os/arch/src/arm64/smp.rs:98	pub(crate) unsafe fn set_gicd_base(base: usize) {
+BARE	os/arch/src/arm64/smp.rs:109	unsafe fn gicd_base() -> usize {
+BARE	os/arch/src/arm64/smp.rs:214	        unsafe {
+BARE	os/arch/src/arm64/smp.rs:266	        unsafe {
+BARE	os/libs/minix-platform/src/kind.rs:49	pub unsafe fn parse_by_kind(source: PlatformDescSource) -> Result<PlatformDescEnum, PlatformParseError> {
+BARE	os/arch/src/arm64/boot.rs:103	            unsafe { enable_cpacr_el1_fpen_kernel() };
+BARE	os/arch/src/arm64/boot.rs:172	    pub(super) unsafe fn enable_cpacr_el1_fpen_user() {
+BARE	os/arch/src/arm64/boot.rs:182	    pub(super) unsafe fn enable_cpacr_el1_fpen_kernel() {
+BARE	os/arch/src/arm64/boot.rs:196	    pub(super) unsafe fn enable_cpacr_el1_fpen_user() {}
+BARE	os/arch/src/arm64/boot.rs:197	    pub(super) unsafe fn enable_cpacr_el1_fpen_kernel() {}
+BARE	os/arch/src/arm64/clock.rs:52	        unsafe {
+BARE	os/arch/src/arm64/clock.rs:58	        unsafe {
+BARE	os/arch/src/arm64/clock.rs:65	        unsafe {
+BARE	os/arch/src/arm64/clock.rs:84	        unsafe {
+BARE	os/arch/src/arm64/clock.rs:95	        unsafe {
+BARE	os/libs/minix-platform/src/global.rs:192	pub unsafe fn init(desc: PlatformDescEnum) {
+BARE	os/libs/minix-platform/src/global.rs:219	pub unsafe fn init_from_kinfo(kinfo: &KernelInfo) {
+BARE	os/arch/src/arm64/cpu_identity.rs:20	        unsafe {
+BARE	os/libs/minix-platform/src/device_tree.rs:114	    pub unsafe fn parse(dtb_phys: usize) -> Result<Self, DtParseError> {
+BARE	os/arch/src/arch/boot.rs:520	    unsafe {
+BARE	os/arch/src/arch/boot.rs:897	        unsafe {
+BARE	os/arch/src/arm64/protection.rs:108	        unsafe {
+BARE	os/libs/minix-sys/src/syscall.rs:150	            return unsafe { crate::arch_trap::kernel_call_trap(message) };
+BARE	os/libs/minix-sys/src/syscall.rs:1139	        assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.endpt, 7);
+BARE	os/libs/minix-sys/src/syscall.rs:1140	        assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.sig, 9);
+BARE	os/libs/minix-sys/src/syscall.rs:1156	        assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 11);
+BARE	os/libs/minix-sys/src/syscall.rs:1168	            let krn = unsafe { &mut reply.m_u.m_krn_lsys_sys_times };
+BARE	os/libs/minix-sys/src/syscall.rs:1181	        assert_eq!(unsafe { sent[0].m_u.m_lsys_krn_sys_times }.endpt, 7);
+BARE	os/libs/minix-sys/src/syscall.rs:1196	        let cp = unsafe { &sent[0].m_u.m_lsys_krn_sys_copy };
+BARE	os/libs/minix-sys/src/syscall.rs:1213	        unsafe { reply.m_u.m_lsys_krn_sys_trace.data = 0x55 };
+BARE	os/libs/minix-sys/src/syscall.rs:1224	        let t = unsafe { &sent[0].m_u.m_lsys_krn_sys_trace };
+BARE	os/libs/minix-sys/src/syscall.rs:1238	        unsafe {
+BARE	os/libs/minix-sys/src/syscall.rs:1269	        let sc = unsafe { &sent[0].m_u.m_sigcalls };
+BARE	os/libs/minix-sys/src/syscall.rs:1297	        let m1 = unsafe { &sent[0].m_u.m_m1 };
+BARE	os/libs/minix-sys/src/syscall.rs:1490	        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_fork };
+BARE	os/libs/minix-sys/src/syscall.rs:1501	        let req = unsafe { sent[0].m_u.m_lsys_krn_sys_fork };
+BARE	os/libs/minix-sys/src/syscall.rs:1524	        let e = unsafe { sent[0].m_u.m_lsys_krn_sys_exec };
+BARE	os/libs/minix-sys/src/syscall.rs:1538	        let sc = unsafe { sent[0].m_u.m_lsys_kern_safecopy };
+BARE	os/libs/minix-sys/src/syscall.rs:1566	        let m1 = unsafe { sent[0].m_u.m_m1 };
+BARE	os/libs/minix-sys/src/syscall.rs:1580	        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
+BARE	os/libs/minix-sys/src/syscall.rs:1593	        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
+BARE	os/libs/minix-sys/src/syscall.rs:1604	        let arm = unsafe { &mut reply.m_u.m_lsys_krn_sys_setalarm };
+BARE	os/libs/minix-sys/src/syscall.rs:1614	        let a = unsafe { sent[0].m_u.m_lsys_krn_sys_setalarm };
+BARE	os/libs/minix-sys/src/syscall.rs:1628	        let sc = unsafe { sent[0].m_u.m_sigcalls };
+BARE	os/libs/minix-sys/src/syscall.rs:1642	        let s = unsafe { sent[0].m_u.m_lsys_krn_sys_sprof };
+BARE	os/libs/minix-sys/src/syscall.rs:1659	        let t = unsafe { sent[0].m_u.m_lsys_krn_sys_settime };
+BARE	os/libs/minix-sys/src/syscall.rs:1673	        let t = unsafe { sent[0].m_u.m_lsys_krn_sys_stime };
+BARE	os/libs/minix-sys/src/syscall.rs:1692	        let m2 = unsafe { sent[0].m_u.m_m2 };
+BARE	os/arch/src/arm64/arch_init.rs:44	            unsafe {
+BARE	os/servers/pm/src/trace.rs:495	                    let src = unsafe {
+BARE	os/servers/pm/src/trace.rs:573	            unsafe { table.procs[0].ipc.reply.take().unwrap().m_u.m_pm_lc_ptrace.data },
+BARE	os/servers/pm/src/trace.rs:641	        assert_eq!(unsafe { table.procs[0].ipc.reply.take().unwrap().m_u.m_pm_lc_ptrace.data }, 0x55);
+BARE	os/servers/pm/src/trace.rs:786	        assert_eq!(unsafe { table.procs[0].ipc.reply.take().unwrap().m_u.m_pm_lc_ptrace.data }, 0);
+BARE	os/servers/pm/src/trace.rs:852	        assert_eq!(unsafe { msg.m_u.m_pm_lc_wait4.status }, w_stopcode(11), "C trace.c:273 payload");
+BARE	os/libs/minix-sys/src/arch_trap.rs:61	pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
+BARE	os/libs/minix-sys/src/arch_trap.rs:69	    unsafe {
+BARE	os/libs/minix-sys/src/arch_trap.rs:95	pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
+BARE	os/libs/minix-sys/src/arch_trap.rs:97	    unsafe {
+BARE	os/arch/src/arm64/trap_entry.rs:97	        unsafe extern "C" {
+BARE	os/arch/src/arm64/trap_return.rs:56	    unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
+BARE	os/arch/src/arch/pt_alloc.rs:59	unsafe impl Sync for PtAllocSlot {}
+BARE	os/arch/src/arm64/fpu.rs:92	        unsafe {
+BARE	os/servers/pm/src/event.rs:414	            let pl = unsafe { msg.m_u.m_pm_lsys_proc_event };
+BARE	os/libs/minix-sys/src/pm.rs:736	        let act_addr = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
+BARE	os/libs/minix-sys/src/pm.rs:779	        let ctx = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
+BARE	os/libs/minix-sys/src/vm.rs:1146	        assert_eq!(unsafe { msg.m_u.m_m2 }.m2i1, 9);
+BARE	os/libs/minix-sys/src/vm.rs:1147	        assert_eq!(unsafe { msg.m_u.m_m2 }.m2l1, 0x5000);
+BARE	os/libs/minix-sys/src/vm.rs:1148	        assert_eq!(unsafe { msg.m_u.m_m2 }.m2i2, 1);
+BARE	os/libs/minix-sys/src/vm.rs:1190	        let arm = unsafe { msg.m_u.m_lc_vm_shm_unmap };
+BARE	os/libs/minix-sys/src/devman_client.rs:179	    let res = unsafe { msg.m_u.m_m4 }.m4l1 as i32;
+BARE	os/libs/minix-sys/src/devman_client.rs:184	    Ok(unsafe { msg.m_u.m_m4 }.m4l2 as i32)
+BARE	os/libs/minix-sys/src/devman_client.rs:239	    let m4 = unsafe { msg.m_u.m_m4 };
+BARE	os/arch/src/arch/paging_ext.rs:56	    unsafe fn switch_with_asid(&self, id: Self::AddressSpaceId);
+BARE	os/arch/src/arch/paging_ext.rs:65	    unsafe fn flush_tlb_asid(&self, id: Self::AddressSpaceId);
+BARE	os/arch/src/arch/paging_ext.rs:74	    unsafe fn flush_tlb_addr_asid(&self, vaddr: VirBytes, id: Self::AddressSpaceId);
+BARE	os/libs/minix-sys/src/grant.rs:147	        let slot_union = unsafe { self.slots.get_unchecked(g) }.u;
+BARE	os/libs/minix-sys/src/grant.rs:148	        let next = unsafe { slot_union.free.next };
+BARE	os/libs/minix-sys/src/grant.rs:173	        let slot = unsafe { self.slots.get_unchecked_mut(g) };
+BARE	os/libs/minix-sys/src/grant.rs:238	        let slot = unsafe { table.slots[0].cp_direct() };
+BARE	os/libs/minix-sys/src/grant.rs:288	        let g = unsafe { sent[0].m_u.m_lsys_krn_sys_setgrant };
+BARE	os/arch/src/riscv64/paging.rs:106	unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
+BARE	os/arch/src/riscv64/paging.rs:110	unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
+BARE	os/arch/src/riscv64/paging.rs:114	unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
+BARE	os/arch/src/riscv64/paging.rs:248	    unsafe { asm!("sfence.vma {}, x0", in(reg) vaddr_for_flush) };
+BARE	os/arch/src/riscv64/paging.rs:439	            unsafe { self.free_child_tables(child, level + 1) };
+BARE	os/arch/src/riscv64/paging.rs:456	        let ptr = unsafe { phys_to_ptr(root_page.0) };
+BARE	os/arch/src/riscv64/paging.rs:457	        unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+BARE	os/arch/src/riscv64/paging.rs:501	    unsafe fn enable(&self) -> PhysBytes {
+BARE	os/arch/src/riscv64/paging.rs:502	        unsafe {
+BARE	os/arch/src/riscv64/paging.rs:549	    unsafe fn destroy(&mut self) {
+BARE	os/arch/src/riscv64/paging.rs:563	            unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+BARE	os/arch/src/riscv64/paging.rs:570	        unsafe { self.free_child_tables(self.root_paddr, 0) };
+BARE	os/arch/src/riscv64/paging.rs:572	        unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+BARE	os/arch/src/riscv64/paging.rs:683	    unsafe fn switch(&self) {
+BARE	os/arch/src/riscv64/paging.rs:684	        unsafe {
+BARE	os/arch/src/riscv64/paging.rs:690	    unsafe fn flush_tlb(&self) {
+BARE	os/arch/src/riscv64/paging.rs:691	        unsafe {
+BARE	os/arch/src/riscv64/paging.rs:696	    unsafe fn flush_tlb_addr(&self, vaddr: VirBytes) {
+BARE	os/arch/src/riscv64/paging.rs:697	        unsafe {
+BARE	os/arch/src/riscv64/paging.rs:722	        let l2 = unsafe { phys_to_ptr(self.root_paddr) };
+BARE	os/arch/src/riscv64/paging.rs:724	        let e2 = unsafe { read_entry(l2, i2) };
+BARE	os/arch/src/riscv64/paging.rs:728	            unsafe { write_entry(l2, i2, paddr_to_pte(paddr.0) | pte_flags) };
+BARE	os/arch/src/riscv64/paging.rs:747	            unsafe { write_entry(l2, i2, paddr_to_pte(page) | Sv39PteFlags::V.bits()) };
+BARE	os/arch/src/riscv64/paging.rs:748	            unsafe { phys_to_ptr(page) }
+BARE	os/arch/src/riscv64/paging.rs:752	        unsafe { write_entry(l1, i1, paddr_to_pte(paddr.0) | pte_flags) };
+BARE	os/arch/src/riscv64/paging.rs:771	    unsafe fn dm_install_leaf(
+BARE	os/arch/src/riscv64/paging.rs:789	        let l2 = unsafe { phys_to_ptr(root_paddr.0) };
+BARE	os/arch/src/riscv64/paging.rs:790	        let e2 = unsafe { read_entry(l2, i2) };
+BARE	os/arch/src/riscv64/paging.rs:819	        let l1_ptr = unsafe { phys_to_ptr(l1) };
+BARE	os/arch/src/riscv64/paging.rs:820	        let e1 = unsafe { read_entry(l1_ptr, i1) };
+BARE	os/arch/src/riscv64/paging.rs:845	        let l0_ptr = unsafe { phys_to_ptr(l0) };
+BARE	os/arch/src/riscv64/paging.rs:846	        let e0 = unsafe { read_entry(l0_ptr, i0) };
+BARE	os/libs/minix-sys/src/rmib.rs:459	    let mut scn: SysctlNode = unsafe { core::mem::zeroed() };
+BARE	os/libs/minix-sys/src/rmib.rs:536	    let mut scd: SysctlDesc = unsafe { core::mem::zeroed() };
+BARE	os/libs/minix-sys/src/rmib.rs:543	    let head = unsafe {
+BARE	os/libs/minix-sys/src/rmib.rs:689	        let scn: &SysctlNode = unsafe { &*(captured.as_ptr() as *const SysctlNode) };
+BARE	os/libs/minix-sys/src/rmib.rs:694	        assert_eq!(unsafe { scn.sysctl_un.scu_idata }, 42);
+BARE	os/libs/minix-sys/src/rmib.rs:709	        let scn2: &SysctlNode = unsafe { &*(captured2.as_ptr() as *const SysctlNode) };
+BARE	os/libs/minix-sys/src/rmib.rs:712	        assert_eq!(unsafe { scn2.sysctl_un.scu_idata }, 0, "无授权不得泄漏 immediate");
+BARE	os/libs/minix-sys/src/rmib.rs:735	        let scn: &SysctlNode = unsafe { &*(captured.as_ptr() as *const SysctlNode) };
+BARE	os/libs/minix-sys/src/rmib.rs:741	        assert_eq!(unsafe { scn.sysctl_un.scu_child.suc_clen }, 1);
+BARE	os/libs/minix-sys/src/rmib.rs:743	        assert_eq!(unsafe { scn.sysctl_un.scu_child._suc_child }, 0);
+BARE	os/libs/minix-sys/src/rmib.rs:754	        let scn2: &SysctlNode = unsafe { &*(captured2.as_ptr() as *const SysctlNode) };
+BARE	os/libs/minix-sys/src/rmib.rs:756	        assert_eq!(unsafe { scn2.sysctl_un.scu_child._suc_child }, SYSCTL_NODE_FN as u64);
+BARE	os/servers/pm/src/fork.rs:576	        let m7 = unsafe { vfs_msg.m_u.m_m7 };
+BARE	os/libs/minix-sys/src/ipc.rs:539	            let (ret, _status) = unsafe {
+BARE	os/libs/minix-sys/src/ipc.rs:558	            let (ret, status) = unsafe {
+BARE	os/libs/minix-sys/src/ipc.rs:580	            let (ret, _status) = unsafe {
+BARE	os/libs/minix-sys/src/ipc.rs:595	            let (ret, _status) = unsafe {
+BARE	os/libs/minix-sys/src/ipc.rs:610	            let (ret, _status) = unsafe {
+BARE	os/libs/minix-sys/src/ipc.rs:627	            let (ret, _status) = unsafe {
+BARE	os/libs/minix-sys/src/ipc.rs:645	                unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };
+BARE	os/libs/minix-sys/src/ipc.rs:758	            m_u: unsafe { core::mem::zeroed() },
+BARE	os/libs/minix-types/src/ipc/event.rs:130	    let pl = unsafe { msg.m_u.m_pm_lsys_proc_event };
+BARE	os/libs/minix-types/src/ipc/event.rs:160	    let pl = unsafe { msg.m_u.m_pm_lsys_proc_event };
+BARE	os/libs/minix-types/src/ipc/event.rs:187	    let pl = unsafe { msg.m_u.m_lsys_pm_proceventmask };
+BARE	os/arch/src/arch/trap_return.rs:110	    unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> !;
+BARE	os/arch/src/arch/trap_return.rs:134	    unsafe fn restore_to_user(frame: &Self::Frame, _regs: &Self::RegisterFile) -> ! {
+BARE	os/arch/src/riscv64/tlb.rs:53	    unsafe fn flush_all() {
+BARE	os/arch/src/riscv64/tlb.rs:57	        unsafe {
+BARE	os/arch/src/riscv64/tlb.rs:62	    unsafe fn flush_addr(vaddr: VirBytes) {
+BARE	os/arch/src/riscv64/tlb.rs:65	        unsafe {
+BARE	os/arch/src/riscv64/tlb.rs:70	    unsafe fn set_active_root(phys_root: PhysBytes) {
+BARE	os/arch/src/arch/dm_coverage.rs:181	    unsafe fn dm_install_leaf(
+BARE	os/arch/src/arch/dm_coverage.rs:247	        unsafe fn dm_install_leaf(
+BARE	os/arch/src/riscv64/smp.rs:92	        unsafe {
+BARE	os/arch/src/riscv64/smp.rs:186	        unsafe {
+BARE	os/servers/pm/src/init.rs:386	                let now = unsafe { msg.m_u.m_notify.timestamp } as minix_types::Clock;
+BARE	os/arch/src/arch/tlb_arch.rs:89	    unsafe fn flush_all();
+BARE	os/arch/src/arch/tlb_arch.rs:100	    unsafe fn flush_addr(vaddr: VirBytes);
+BARE	os/arch/src/arch/tlb_arch.rs:135	    unsafe fn set_active_root(phys_root: PhysBytes);
+BARE	os/arch/src/arch/tlb_arch.rs:148	    unsafe fn flush_all() {
+BARE	os/arch/src/arch/tlb_arch.rs:152	    unsafe fn flush_addr(_vaddr: VirBytes) {
+BARE	os/arch/src/arch/tlb_arch.rs:156	    unsafe fn set_active_root(_phys_root: PhysBytes) {
+BARE	os/arch/src/riscv64/boot.rs:157	    pub(super) unsafe fn set_sstatus_fs_initial() {
+BARE	os/arch/src/riscv64/boot.rs:168	    pub(super) unsafe fn set_sstatus_fs_initial() {}
+BARE	os/servers/pm/src/wait.rs:293	            unsafe { reply.m_u.m_pm_lc_wait4.status },
+BARE	os/servers/pm/src/wait.rs:348	            unsafe { sent[0].1.m_u.m_pm_lc_wait4.status },
+BARE	os/servers/pm/src/wait.rs:399	            unsafe { wire.1.m_u.m_pm_lc_wait4.status },
+BARE	os/libs/minix-types/src/ipc/vfs.rs:226	        let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:577	        let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:623	            let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:691	        let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:710	        let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:723	        let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:777	        let m7 = unsafe { &mut msg.m_u.m_m7 };
+BARE	os/libs/minix-types/src/ipc/vfs.rs:799	        let m7 = unsafe { &mut msg.m_u.m_m7 };
+BARE	os/arch/src/riscv64/clock.rs:65	        unsafe {
+BARE	os/arch/src/riscv64/clock.rs:78	        unsafe {
+BARE	os/arch/src/riscv64/clock.rs:94	        unsafe {
+BARE	os/arch/src/riscv64/clock.rs:105	        unsafe {
+BARE	os/arch/src/riscv64/cpu_identity.rs:25	    unsafe {
+BARE	os/servers/pm/src/ipc/calls.rs:228	                let pl = unsafe { msg.m_u.m_lsys_pm_srv_fork };
+BARE	os/servers/pm/src/ipc/calls.rs:242	            let status = unsafe { msg.m_u.m_lc_pm_exit.status };
+BARE	os/servers/pm/src/ipc/calls.rs:251	            let (pidarg, options, addr) = unsafe {
+BARE	os/servers/pm/src/ipc/calls.rs:269	            let (pid, signo) = unsafe {
+BARE	os/servers/pm/src/ipc/calls.rs:286	            let (pid, signo) = unsafe {
+BARE	os/servers/pm/src/ipc/calls.rs:304	            let mask_bits = unsafe { msg.m_u.m_lsys_pm_proceventmask.mask };
+BARE	os/servers/pm/src/ipc/calls.rs:313	            let (pid, preq, addr, data) = unsafe {
+BARE	os/arch/src/riscv64/arch_init.rs:41	        unsafe {
+BARE	os/libs/minix-types/src/ipc/message.rs:365	    /// let req = msg.payload_ref(Syscall::Times as i32, |m| unsafe {
+BARE	os/libs/minix-types/src/ipc/message.rs:545	    /// let req = unsafe { &msg.m_u.m_lsys_krn_sys_copy };
+BARE	os/arch/src/x86_64/paging.rs:58	unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 { unsafe {
+BARE	os/arch/src/x86_64/paging.rs:62	unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) { unsafe {
+BARE	os/arch/src/x86_64/paging.rs:74	unsafe fn phys_to_ptr(phys: u64) -> *mut u64 {
+BARE	os/arch/src/x86_64/paging.rs:204	    unsafe {
+BARE	os/arch/src/x86_64/paging.rs:390	        unsafe { write_pte_dm(pdpt + (i3 as u64) * 8, entry, 0, channel) };
+BARE	os/arch/src/x86_64/paging.rs:405	        unsafe { write_pte_dm(pd + (i2 as u64) * 8, entry, 0, channel) };
+BARE	os/arch/src/x86_64/paging.rs:477	    unsafe fn enable(&self) -> PhysBytes {
+BARE	os/arch/src/x86_64/paging.rs:478	        unsafe {
+BARE	os/arch/src/x86_64/paging.rs:535	    unsafe fn destroy(&mut self) {
+BARE	os/arch/src/x86_64/paging.rs:551	            unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+BARE	os/arch/src/x86_64/paging.rs:559	        unsafe { self.free_child_tables(self.root_paddr, 0) };
+BARE	os/arch/src/x86_64/paging.rs:561	        unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+BARE	os/arch/src/x86_64/paging.rs:673	    unsafe fn switch(&self) {
+BARE	os/arch/src/x86_64/paging.rs:674	        unsafe {
+BARE	os/arch/src/x86_64/paging.rs:679	    unsafe fn flush_tlb(&self) {
+BARE	os/arch/src/x86_64/paging.rs:680	        unsafe {
+BARE	os/arch/src/x86_64/paging.rs:685	    unsafe fn flush_tlb_addr(&self, vaddr: VirBytes) {
+BARE	os/arch/src/x86_64/paging.rs:686	        unsafe {
+BARE	os/arch/src/x86_64/paging.rs:714	                unsafe { self.free_child_tables(child, level + 1) };
+BARE	os/arch/src/x86_64/paging.rs:744	        let pml4 = unsafe { phys_to_ptr(self.root_paddr) };
+BARE	os/arch/src/x86_64/paging.rs:746	        let e4 = unsafe { read_entry(pml4, i4) };
+BARE	os/arch/src/x86_64/paging.rs:753	            unsafe { write_entry(pml4, i4, page | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits()) };
+BARE	os/arch/src/x86_64/paging.rs:754	            unsafe { phys_to_ptr(page) }
+BARE	os/arch/src/x86_64/paging.rs:758	        let e3 = unsafe { read_entry(pdpt, i3) };
+BARE	os/arch/src/x86_64/paging.rs:761	            unsafe { write_entry(pdpt, i3, (paddr.0 & ADDR_MASK) | pte_flags | huge_flag) };
+BARE	os/arch/src/x86_64/paging.rs:776	            unsafe { write_entry(pdpt, i3, page | (X64PteFlags::PRESENT | X64PteFlags::WRITABLE).bits()) };
+BARE	os/arch/src/x86_64/paging.rs:777	            unsafe { phys_to_ptr(page) }
+BARE	os/arch/src/x86_64/paging.rs:781	        unsafe { write_entry(pd, i2, (paddr.0 & ADDR_MASK) | pte_flags | huge_flag) };
+BARE	os/arch/src/x86_64/paging.rs:788	        unsafe {
+BARE	os/arch/src/x86_64/paging.rs:812	unsafe fn flush_cr3(root_paddr: u64) { unsafe {
+BARE	os/arch/src/x86_64/paging.rs:848	    unsafe fn dm_install_leaf(
+BARE	os/arch/src/x86_64/paging.rs:881	        let pml4 = unsafe { phys_to_ptr(root_paddr.0) };
+BARE	os/arch/src/x86_64/paging.rs:882	        let pml4e = unsafe { read_entry(pml4, i4) };
+BARE	os/arch/src/x86_64/paging.rs:912	        let pdpt_ptr = unsafe { phys_to_ptr(pdpt) };
+BARE	os/arch/src/x86_64/paging.rs:913	        let e3 = unsafe { read_entry(pdpt_ptr, i3) };
+BARE	os/arch/src/x86_64/paging.rs:1016	        let pd_ptr = unsafe { phys_to_ptr(pd) };
+BARE	os/arch/src/x86_64/paging.rs:1017	        let e2 = unsafe { read_entry(pd_ptr, i2) };
+BARE	os/arch/src/x86_64/paging.rs:1053	        let pt_ptr = unsafe { phys_to_ptr(pt) };
+BARE	os/arch/src/x86_64/paging.rs:1054	        let e1 = unsafe { read_entry(pt_ptr, i1) };
+BARE	os/arch/src/x86_64/paging.rs:1078	unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
+BARE	os/arch/src/x86_64/paging.rs:1083	        // makes the unsafe fn body safe by default) — no inner block needed.
+BARE	os/arch/src/x86_64/paging.rs:1241	            unsafe {
+BARE	os/arch/src/x86_64/paging.rs:1261	        unsafe { pt.destroy() };
+BARE	os/servers/pm/src/ipc/vfs.rs:203	    let endpt_raw = unsafe { msg.m_u.m_m7.m7i1 };
+BARE	os/arch/src/x86_64/cpu_identity.rs:33	    unsafe {
+BARE	os/libs/minix-types/src/ipc/input.rs:264	    let payload = unsafe { msg.m_u.m_input_linputdriver_input_conf };
+BARE	os/libs/minix-types/src/ipc/input.rs:293	    let payload = unsafe { msg.m_u.m_input_linputdriver_setleds };
+BARE	os/libs/minix-types/src/ipc/input.rs:324	    let payload = unsafe { msg.m_u.m_linputdriver_input_event };
+BARE	os/libs/minix-types/src/ipc/input.rs:361	    let payload = unsafe { msg.m_u.m_input_tty_event };
+BARE	os/arch/src/x86_64/protection.rs:197	unsafe impl Send for X86_64Protection {}
+BARE	os/arch/src/x86_64/protection.rs:198	unsafe impl Sync for X86_64Protection {}
+BARE	os/arch/src/x86_64/protection.rs:312	    unsafe {
+BARE	os/arch/src/x86_64/protection.rs:441	        unsafe {
+BARE	os/arch/src/x86_64/protection.rs:611	            unsafe { core::ptr::read_unaligned(sp0_ptr) },
+BARE	os/arch/src/x86_64/protection.rs:621	            unsafe { core::ptr::read_unaligned(sp0_ptr) },
+BARE	os/arch/src/x86_64/protection.rs:678	            unsafe { core::ptr::read_unaligned(sp0_ptr) },
+BARE	os/arch/src/x86_64/protection.rs:743	        let sp0 = unsafe { core::ptr::addr_of!(prot.tss[0].sp0).read_unaligned() };
+BARE	os/arch/src/x86_64/protection.rs:762	            unsafe { core::ptr::read_unaligned(iobase_ptr) },
+BARE	os/arch/src/x86_64/boot.rs:403	        unsafe { core::arch::asm!("mov {}, rbp", out(reg) fp) };
+BARE	os/arch/src/x86_64/tlb.rs:31	    unsafe fn flush_all() {
+BARE	os/arch/src/x86_64/tlb.rs:35	        unsafe {
+BARE	os/arch/src/x86_64/tlb.rs:42	    unsafe fn flush_addr(vaddr: VirBytes) {
+BARE	os/arch/src/x86_64/tlb.rs:46	        unsafe {
+BARE	os/arch/src/x86_64/tlb.rs:51	    unsafe fn set_active_root(phys_root: PhysBytes) {
+BARE	os/arch/src/riscv64/trap_entry.rs:98	        unsafe extern "C" {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:39	type ApTailFn = unsafe extern "C" fn(logical_id: u32, hw_id: u64, kernel_stack_top_va: u64) -> !;
+BARE	os/arch/src/x86_64/ap_early_entry.rs:179	unsafe extern "C" {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:208	pub unsafe fn install_at(pa: usize) {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:219	    unsafe {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:238	pub unsafe fn fill_bootstrap(scratch_lin: u32, record: &ApBootstrap) {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:246	    unsafe {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:273	pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:282	    unsafe {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:289	    let magic = unsafe { core::ptr::read_volatile((SCRATCH_LIN as usize + S_MAGIC) as *const u64) };
+BARE	os/arch/src/x86_64/ap_early_entry.rs:290	    let record = unsafe {
+BARE	os/arch/src/x86_64/ap_early_entry.rs:300	            unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+BARE	os/arch/src/x86_64/ap_early_entry.rs:305	    let f = unsafe { core::mem::transmute::<*mut (), ApTailFn>(tail) };
+BARE	os/arch/src/x86_64/ap_early_entry.rs:306	    unsafe { f(record.logical_id, record.hw_id, record.kernel_stack_top_va) }
+BARE	os/arch/src/x86_64/ap_early_entry.rs:365	        unsafe {
+BARE	os/servers/pm/src/ipc/dispatcher.rs:158	    Ok(Endpoint(unsafe { msg.m_u.m_m1 }.m1i3))
+BARE	os/servers/pm/src/ipc/dispatcher.rs:392	        assert_eq!(unsafe { sent_msg.m_u.m_m1 }.m1i1, Endpoint::from_generation_slot(1, 7).0);
+BARE	os/servers/pm/src/ipc/dispatcher.rs:416	        assert_eq!(unsafe { sent_msg.m_u.m_m1 }.m1i1, Endpoint::from_generation_slot(3, 9).0);
+BARE	os/servers/pm/src/ipc/dispatcher.rs:459	        let m1 = unsafe { sent_msg.m_u.m_m1 };
+BARE	os/arch/src/x86_64/clock.rs:71	        unsafe {
+BARE	os/arch/src/x86_64/clock.rs:98	        unsafe {
+BARE	os/arch/src/x86_64/clock.rs:113	        unsafe {
+BARE	os/arch/src/x86_64/clock.rs:152	        unsafe {
+BARE	os/arch/src/x86_64/clock.rs:180	        unsafe {
+BARE	os/arch/src/x86_64/clock.rs:200	        unsafe {
+BARE	os/drivers/usb/usb_storage/src/cbw.rs:252	        let bytes: &[u8; 31] = unsafe { &*(&cbw as *const Cbw as *const [u8; 31]) };
+BARE	os/drivers/usb/usb_storage/src/cbw.rs:264	        let csw_bytes: &[u8; 13] = unsafe { &*(&csw as *const Csw as *const [u8; 13]) };
+BARE	os/arch/src/riscv64/trap_return.rs:55	    unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
+BARE	os/arch/src/x86_64/trap_entry.rs:165	pub(crate) unsafe fn wrmsr(msr: u32, value: u64) { unsafe {
+BARE	os/arch/src/x86_64/trap_entry.rs:183	pub(crate) unsafe fn rdmsr(msr: u32) -> u64 { unsafe {
+BARE	os/arch/src/x86_64/trap_entry.rs:267	        unsafe {
+BARE	os/arch/src/x86_64/trap_entry.rs:335	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1204	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1232	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1263	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1297	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1322	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1348	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1369	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1391	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1455	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1480	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1509	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1531	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1558	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1574	        unsafe {
+BARE	os/libs/minix-types/src/ipc/vm.rs:1839	        let bytes: [u8; 56] = unsafe {
+BARE	os/arch/src/x86_64/trap_return.rs:53	    unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
+BARE	os/arch/src/x86_64/trap_return.rs:72	        unsafe {
+BARE	os/arch/src/x86_64/smp.rs:108	unsafe fn lapic_write(offset: u32, value: u32) {
+BARE	os/arch/src/x86_64/smp.rs:125	unsafe fn lapic_read(offset: u32) -> u32 {
+BARE	os/arch/src/x86_64/smp.rs:163	    unsafe {
+BARE	os/arch/src/x86_64/smp.rs:168	        unsafe {
+BARE	os/arch/src/x86_64/smp.rs:286	        unsafe { core::arch::asm!("mfence", options(nomem, nostack)); }
+BARE	os/arch/src/x86_64/smp.rs:292	        unsafe {
+BARE	os/arch/src/x86_64/smp.rs:310	        unsafe {
+BARE	os/arch/src/x86_64/smp.rs:319	        unsafe {
+BARE	os/arch/src/riscv64/fpu.rs:85	        unsafe {
+BARE	os/arch/src/riscv64/fpu.rs:197	        unsafe {
+BARE	os/arch/src/riscv64/fpu.rs:208	        unsafe {
+BARE	os/arch/src/x86_64/fpu.rs:75	        unsafe {
+BARE	os/arch/src/x86_64/fpu.rs:133	        unsafe {
+BARE	os/arch/src/x86_64/fpu.rs:142	        unsafe {
+BARE	os/arch/src/x86_64/fpu.rs:157	        unsafe {
+BARE	os/arch/src/lib.rs:337	    _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+BARE	os/arch/src/lib.rs:338	    _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+BARE	os/arch/src/lib.rs:343	    trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+BARE	os/arch/src/lib.rs:344	    syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+BARE	os/arch/src/lib.rs:350	    _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+BARE	os/arch/src/lib.rs:351	    _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+BARE	os/arch/src/x86_64/trap_stub.rs:67	type DispatchFn = unsafe extern "C" fn(&mut TrapFrame);
+BARE	os/arch/src/x86_64/trap_stub.rs:86	unsafe extern "C" fn x86_trap_dispatch(frame: &mut TrapFrame) {
+BARE	os/arch/src/x86_64/trap_stub.rs:89	    unsafe { (core::mem::transmute::<*mut (), DispatchFn>(f))(frame) }
+BARE	os/arch/src/x86_64/trap_stub.rs:97	unsafe extern "C" fn x86_syscall_dispatch(frame: &mut TrapFrame) {
+BARE	os/arch/src/x86_64/trap_stub.rs:100	    unsafe { (core::mem::transmute::<*mut (), DispatchFn>(f))(frame) }
+BARE	os/arch/src/x86_64/trap_stub.rs:434	        unsafe extern "C" {
+BARE	os/arch/src/x86_64/trap_stub.rs:453	unsafe extern "C" {
+BARE	os/arch/src/x86_64/trap_stub.rs:466	        3 => unsafe { &x86_trap_stub_3 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:467	        4 => unsafe { &x86_trap_stub_4 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:468	        5 => unsafe { &x86_trap_stub_5 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:469	        6 => unsafe { &x86_trap_stub_6 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:470	        7 => unsafe { &x86_trap_stub_7 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:471	        8 => unsafe { &x86_trap_stub_8 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:472	        10 => unsafe { &x86_trap_stub_10 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:473	        11 => unsafe { &x86_trap_stub_11 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:474	        12 => unsafe { &x86_trap_stub_12 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:475	        13 => unsafe { &x86_trap_stub_13 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:476	        14 => unsafe { &x86_trap_stub_14 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:477	        16 => unsafe { &x86_trap_stub_16 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:478	        17 => unsafe { &x86_trap_stub_17 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:479	        18 => unsafe { &x86_trap_stub_18 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:480	        19 => unsafe { &x86_trap_stub_19 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:481	        32 => unsafe { &x86_trap_stub_32 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:482	        33 => unsafe { &x86_trap_stub_33 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:483	        34 => unsafe { &x86_trap_stub_34 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:484	        35 => unsafe { &x86_trap_stub_35 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:485	        0x50 => unsafe { &x86_trap_stub_80 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:486	        0x51 => unsafe { &x86_trap_stub_81 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:487	        0x52 => unsafe { &x86_trap_stub_82 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:488	        0x53 => unsafe { &x86_trap_stub_83 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:489	        0x54 => unsafe { &x86_trap_stub_84 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:490	        0x55 => unsafe { &x86_trap_stub_85 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:491	        0x56 => unsafe { &x86_trap_stub_86 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:492	        0x57 => unsafe { &x86_trap_stub_87 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:493	        0x70 => unsafe { &x86_trap_stub_112 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:494	        0x71 => unsafe { &x86_trap_stub_113 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:495	        0x72 => unsafe { &x86_trap_stub_114 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:496	        0x73 => unsafe { &x86_trap_stub_115 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:497	        0x74 => unsafe { &x86_trap_stub_116 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:498	        0x75 => unsafe { &x86_trap_stub_117 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:499	        0x76 => unsafe { &x86_trap_stub_118 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:500	        0x77 => unsafe { &x86_trap_stub_119 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:501	        0xF0 => unsafe { &x86_trap_stub_240 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:502	        0xFF => unsafe { &x86_trap_stub_255 as *const u8 as usize },
+BARE	os/arch/src/x86_64/trap_stub.rs:744	        let stub0 = unsafe {
+BARE	os/arch/src/x86_64/trap_stub.rs:748	        let stub13 = unsafe {
+BARE	os/arch/src/x86_64/trap_stub.rs:754	        let stub255 = unsafe {
+BARE	os/arch/src/x86_64/trap_stub.rs:764	        let entry = unsafe {
+BARE	os/servers/pm/src/misc.rs:346	                let bytes = unsafe {
+BARE	os/servers/is/src/acquire.rs:891	        unsafe {
+BARE	os/servers/sched/src/server.rs:303	            message.payload_ref::<minix_types::MessLsysSchedSchedulingStart, _, _>(expected, |m| unsafe {
+BARE	os/servers/sched/src/server.rs:417	            .payload_ref::<minix_types::MessLsysSchedSchedulingStop, _, _>(SCHEDULING_STOP, |m| unsafe {
+BARE	os/servers/sched/src/server.rs:452	            message.payload_ref::<minix_types::MessPmSchedSchedulingSetNice, _, _>(SCHEDULING_SET_NICE, |m| unsafe {
+BARE	os/servers/sched/src/server.rs:682	            unsafe { reply.m_u.m_sched_lsys_scheduling_start.scheduler },
+BARE	os/servers/vm/src/lib.rs:16	//! - `AssumeSyncCell` / `unsafe impl Sync` on BSS statics is safe
+BARE	os/servers/ipc-server/src/service.rs:1088	        assert_eq!(unsafe { msg.m_u.m_lc_ipc_semget.retid } & 0xffff, 0);
+BARE	os/servers/ipc-server/src/service.rs:1097	        let id1 = unsafe { msg.m_u.m_lc_ipc_semget.retid };
+BARE	os/servers/ipc-server/src/service.rs:1107	        let id2 = unsafe { msg2.m_u.m_lc_ipc_semget.retid };
+BARE	os/servers/ipc-server/src/service.rs:1125	        let id = unsafe { msg.m_u.m_lc_ipc_semget.retid };
+BARE	os/servers/ipc-server/src/service.rs:1177	        let id = unsafe { msg.m_u.m_lc_ipc_semget.retid };
+BARE	os/servers/ipc-server/src/service.rs:1196	        assert_eq!(unsafe { getval.m_u.m_lc_ipc_semctl.ret }, 0);
+BARE	os/servers/ipc-server/src/service.rs:1206	        let id = unsafe { msg.m_u.m_lc_ipc_semget.retid };
+BARE	os/servers/ipc-server/src/service.rs:1222	        let id = unsafe { msg.m_u.m_lc_ipc_shmget.retid };
+BARE	os/servers/vm/src/munmap.rs:328	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/munmap.rs:650	        unsafe { table.reset_slot(vm_slot); }
+BARE	os/servers/vm/src/munmap.rs:673	        unsafe { table.reset_slot(vm_slot); }
+BARE	os/libs/minix-types/src/types/cell.rs:47	/// let ptr = unsafe { DATA[0].get() };
+BARE	os/libs/minix-types/src/types/cell.rs:48	/// unsafe { *ptr = 42; }
+BARE	os/libs/minix-types/src/types/cell.rs:76	    pub unsafe fn get(&self) -> *mut T {
+BARE	os/libs/minix-types/src/types/cell.rs:97	    pub unsafe fn get_copy(&self) -> T {
+BARE	os/libs/minix-types/src/types/cell.rs:98	        unsafe { *self.0.get() }
+BARE	os/libs/minix-types/src/types/cell.rs:121	        unsafe {
+BARE	os/libs/minix-types/src/types/cell.rs:132	        unsafe {
+BARE	os/libs/minix-types/src/types/cell.rs:148	        unsafe {
+BARE	os/libs/minix-types/src/types/cell.rs:159	        unsafe {
+BARE	os/libs/minix-types/src/types/cell.rs:167	        unsafe {
+BARE	os/libs/minix-types/src/types/cell.rs:183	/// `AssumeSyncCell`'s `Sync` is unconditional (`unsafe impl`) and relies on
+BARE	os/servers/vm/src/memtype.rs:1808	        unsafe { table.reset_slot(minix_types::UserSlot::new(slot_no)); }
+BARE	os/servers/vm/src/memtype.rs:1830	        unsafe { table.reset_slot(minix_types::UserSlot::new(slot_no)); }
+BARE	os/servers/vm/src/mmap.rs:625	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/global.rs:42	pub(crate) unsafe fn init(total_pages: usize) {
+BARE	os/servers/vm/src/global.rs:69	pub(crate) unsafe fn add_total_pages(pages: usize) {
+BARE	os/servers/vm/src/global.rs:89	pub(crate) unsafe fn set_kernel_layout(layout: KernelLayout) {
+BARE	os/servers/vm/src/global.rs:157	        unsafe {
+BARE	os/servers/vm/src/global.rs:172	        unsafe {
+BARE	os/servers/vm/src/global.rs:180	        unsafe {
+BARE	os/servers/vm/src/global.rs:197	        unsafe {
+BARE	os/servers/vm/src/global.rs:206	        unsafe {
+BARE	os/servers/vm/src/global.rs:213	        unsafe {
+BARE	os/servers/vm/src/global.rs:220	        unsafe {
+BARE	os/servers/vm/src/global.rs:226	        unsafe {
+BARE	os/servers/vm/src/global.rs:231	        unsafe {
+BARE	os/servers/vm/src/global.rs:260	        unsafe {
+BARE	os/servers/vm/src/global.rs:281	        unsafe {
+BARE	os/servers/vm/src/global.rs:293	        unsafe {
+BARE	os/servers/vm/src/global.rs:313	        unsafe {
+BARE	os/servers/vm/src/global.rs:330	        unsafe {
+BARE	os/servers/vm/src/global.rs:344	        unsafe {
+BARE	os/servers/vm/src/global.rs:372	        unsafe {
+BARE	os/servers/vm/src/global.rs:406	        unsafe {
+BARE	os/servers/vm/src/global.rs:593	    unsafe { &mut *ptr }
+BARE	os/servers/vm/src/global.rs:715	    unsafe fn free_list_insert(&self, block: *mut FreeBlock) {
+BARE	os/servers/vm/src/global.rs:757	    unsafe fn try_alloc_from_free_list(&self, payload: usize, align: usize) -> Option<*mut u8> {
+BARE	os/servers/vm/src/global.rs:814	    unsafe fn alloc_bump(&self, payload: usize, align: usize) -> Option<*mut u8> {
+BARE	os/servers/vm/src/global.rs:850	    unsafe fn free_tail(&self) {
+BARE	os/servers/vm/src/global.rs:879	        let alloc = unsafe { &mut *alloc_ptr };
+BARE	os/servers/vm/src/global.rs:903	unsafe impl GlobalAlloc for VmAllocator {
+BARE	os/servers/vm/src/global.rs:904	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/servers/vm/src/global.rs:943	    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+BARE	os/servers/vm/src/fdref.rs:52	unsafe impl Sync for FdRefTable {}
+BARE	os/servers/vm/src/cow_exec_pf.rs:400	    let tail_ptr = unsafe { (vm_phys_to_virt(dst_phys).0 as *mut u8).add(PAGE_SIZE as usize - zero_len) };
+BARE	os/servers/vm/src/kernel_gateway.rs:242	        let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/servers/vm/src/kernel_gateway.rs:558	        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_fork };
+BARE	os/servers/vm/src/kernel_gateway.rs:623	        let req = unsafe { &sent[0].m_u.m_m1 };
+BARE	os/servers/vm/src/kernel_gateway.rs:638	        let req = unsafe { &sent[0].m_u.m_m1 };
+BARE	os/servers/vm/src/alloc_page.rs:345	        let metadata = unsafe {
+BARE	os/servers/vm/src/vm_server.rs:746	                        unsafe {
+BARE	os/servers/vm/src/vm_server.rs:1826	            unsafe {
+BARE	os/servers/vm/src/vm_server.rs:1859	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vm_server.rs:1992	            unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/vm_server.rs:2025	            unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/vm_server.rs:2053	            unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/vm_server.rs:2074	            unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/vm_server.rs:2153	            unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/vm_server.rs:2191	            unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/vm_server.rs:2313	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vm_server.rs:2357	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vm_server.rs:2399	            unsafe {
+BARE	os/servers/vm/src/vm_server.rs:2425	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vm_server.rs:2456	                unsafe {
+BARE	os/servers/vm/src/vm_server.rs:2515	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vm_server.rs:3014	            unsafe { rs_table.reset_slot(rs_slot); }
+BARE	os/servers/vm/src/vm_server.rs:3032	            unsafe { rs_table.reset_slot(vfs_slot); }
+BARE	os/servers/vm/src/vm_server.rs:3263	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vm_server.rs:3337	            unsafe { table.reset_slot(slot); }
+BARE	os/servers/ds/src/store.rs:136	        assert_eq!(unsafe { body.u32 }, 6);
+BARE	os/servers/vm/src/rs.rs:619	        unsafe { table.reset_slot(UserSlot::new(src_no)); }
+BARE	os/servers/vm/src/rs.rs:620	        unsafe { table.reset_slot(UserSlot::new(dst_no)); }
+BARE	os/servers/vm/src/rs.rs:689	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/ds/src/slots.rs:182	                    && unsafe { entry.body.u32 } == num
+BARE	os/servers/ds/src/slots.rs:380	        assert_eq!(unsafe { found.get(&named).unwrap().body.u32 }, 0);
+BARE	os/servers/vm/src/ipc/dispatcher.rs:719	    let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:724	    let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:733	    let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:789	    let gp = unsafe { &msg.m_u.m_lc_vm_getphys };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:798	    let gr = unsafe { &msg.m_u.m_lsys_vm_getref };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:808	    let m2 = unsafe { &msg.m_u.m_m2 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:851	    let m2 = unsafe { &msg.m_u.m_m2 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:878	    let up = unsafe { &msg.m_u.m_lsys_vm_update };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:888	    let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:889	    let m2 = unsafe { &msg.m_u.m_m2 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:915	    let ru = unsafe { &msg.m_u.m_lsys_vm_rusage };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:924	    let m2 = unsafe { &msg.m_u.m_m2 };
+BARE	os/servers/vm/src/ipc/dispatcher.rs:1228	        unsafe {
+BARE	os/servers/vm/src/ipc/dispatcher.rs:1292	        unsafe {
+BARE	os/servers/vm/src/ipc/dispatcher.rs:1401	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/ipc/dispatcher.rs:2340	        unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/vm/src/ipc/dispatcher.rs:2392	        unsafe { table.reset_slot(caller_slot); }
+BARE	os/servers/input/src/serve.rs:180	    unsafe {
+BARE	os/servers/input/src/serve.rs:194	    unsafe {
+BARE	os/servers/vm/src/map_phys.rs:140	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/ds/src/boot.rs:185	        assert_eq!(unsafe { entry.body.u32 }, 2);
+BARE	os/servers/vm/src/region/mod.rs:408	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/ipc/encode.rs:317	        let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/servers/vm/src/brk.rs:228	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/fork.rs:490	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/ds/src/server.rs:200	                let (what, size) = unsafe {
+BARE	os/servers/ds/src/server.rs:405	            RetrieveHit::Number(v) => unsafe { message.m_u.m_ds_reply.val_out = DsVal::number(v) },
+BARE	os/servers/ds/src/server.rs:406	            RetrieveHit::Label(ep) => unsafe {
+BARE	os/servers/ds/src/server.rs:1007	        assert_eq!(unsafe { reply.m_u.m_ds_reply.val_out.as_number() }, 7);
+BARE	os/servers/vm/src/boot.rs:264	        unsafe { &*(minix_types::VM_BOOT_HANDOFF_VA as *const minix_types::VmBootHandoff) };
+BARE	os/servers/ds/src/sef.rs:285	        assert_eq!(unsafe { cfg2.body.u32 }, 7);
+BARE	os/servers/ds/src/heap.rs:92	                data: unsafe { self.buf.as_mut_ptr().add(base) },
+BARE	os/servers/vm/src/pagetable/sim.rs:84	    unsafe fn enable(&self) -> PhysBytes {
+BARE	os/servers/vm/src/pagetable/sim.rs:88	    unsafe fn destroy(&mut self) {
+BARE	os/servers/vm/src/pagetable/sim.rs:133	    unsafe fn switch(&self) {
+BARE	os/servers/vm/src/pagetable/sim.rs:137	    unsafe fn flush_tlb(&self) {
+BARE	os/servers/vm/src/pagetable/sim.rs:141	    unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {
+BARE	os/servers/vm/src/pagetable/vm_self_map.rs:262	        let opt = unsafe { &*VM_SELF_PT_STORAGE.get() };
+BARE	os/servers/vm/src/pagetable/vm_self_map.rs:270	        assert!(unsafe { &*VM_SELF_PT_STORAGE.get() }.is_some());
+BARE	os/servers/vm/src/pagetable/vm_self_map.rs:275	        assert!(unsafe { &*VM_SELF_PT_STORAGE.get() }.is_none());
+BARE	os/servers/vm/src/vmproc/vmproc.rs:166	    pub(crate) unsafe fn clear(&mut self) {
+BARE	os/servers/vm/src/vmproc/vmproc.rs:260	        unsafe {
+BARE	os/servers/vm/src/vmproc/mod.rs:91	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vmproc/table.rs:75	    pub(crate) unsafe fn reset_slot(&self, slot: UserSlot) { unsafe {
+BARE	os/servers/vm/src/vmproc/table.rs:105	    unsafe fn get_slot(&self, slot: UserSlot) -> Option<&VmProc> {
+BARE	os/servers/vm/src/vmproc/table.rs:124	    pub(super) unsafe fn get_slot_mut(&self, slot: UserSlot) -> Option<&mut VmProc> {
+BARE	os/servers/vm/src/vmproc/table.rs:133	        Some(unsafe { &mut *self.slots[index].get() })
+BARE	os/servers/vm/src/vmproc/table.rs:562	        unsafe { table.reset_slot(UserSlot::new(0)); }
+BARE	os/servers/vm/src/vmproc/table.rs:570	        unsafe { table.reset_slot(UserSlot::new(0)); }
+BARE	os/servers/vm/src/vmproc/table.rs:587	        unsafe { table.reset_slot(UserSlot::new(0)); }
+BARE	os/servers/vm/src/vmproc/table.rs:598	        let empty = unsafe { exiting.reap() };
+BARE	os/servers/vm/src/vmproc/table.rs:607	        unsafe { table.reset_slot(UserSlot::new(1)); }
+BARE	os/servers/vm/src/vmproc/table.rs:614	        unsafe { table.reset_slot(UserSlot::new(2)); }
+BARE	os/servers/vm/src/vmproc/table.rs:628	        unsafe { table.reset_slot(UserSlot::new(3)); }
+BARE	os/servers/vm/src/vmproc/table.rs:643	        unsafe { table.reset_slot(UserSlot::new(4)); }
+BARE	os/servers/vm/src/vmproc/table.rs:649	        let _empty = unsafe { active.force_clear() };
+BARE	os/servers/vm/src/vmproc/table.rs:657	        unsafe {
+BARE	os/servers/vm/src/vmproc/table.rs:673	        unsafe { table.reset_slot(UserSlot::new(6)); }
+BARE	os/servers/vm/src/vmproc/table.rs:687	        unsafe { table.reset_slot(UserSlot::new(7)); }
+BARE	os/servers/vm/src/vmproc/table.rs:728	        unsafe { table.reset_slot(UserSlot::new(8)); }
+BARE	os/servers/vm/src/vmproc/table.rs:735	        let empty = unsafe { exiting.reap() };
+BARE	os/servers/vm/src/vmproc/table.rs:755	            unsafe {
+BARE	os/servers/vm/src/vmproc/table.rs:779	            unsafe {
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:183	    pub(crate) unsafe fn force_clear(self) -> EmptySlot<'a> {
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:409	    pub(crate) unsafe fn free_page_table(&mut self) {
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:507	    pub(crate) unsafe fn setup_cow_for_all_regions(&mut self, frames: &mut crate::region::PageFrames) {
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:524	    pub(crate) unsafe fn write_page_table_mappings(
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:670	    pub(crate) unsafe fn reap(self) -> EmptySlot<'a> {
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:721	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:841	        let empty = unsafe { exiting.reap() };
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:854	        let empty = unsafe { active.force_clear() };
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:880	        unsafe { table.reset_slot(slot); }
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:886	        let empty = unsafe { exiting.reap() };
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:892	        let empty = unsafe { active.force_clear() };
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:907	        unsafe { table.reset_slot(slot_a); }
+BARE	os/servers/vm/src/vmproc/vmproc_handle.rs:908	        unsafe { table.reset_slot(slot_b); }
+BARE	os/servers/vfs/src/syscalls.rs:27	    let m7 = unsafe { &msg.m_u.m_m7 };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs:75	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable/src/main.rs:81	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/servers/vfs/src/misc.rs:355	    let m10 = unsafe { &msg.m_u.m_vm_vfs_call };
+BARE	os/servers/vfs/src/misc.rs:1068	        let row3 = unsafe {
+BARE	os/servers/mib/src/server.rs:208	        let wire: MessLcMibSysctl = unsafe { msg.m_u.m_lc_mib_sysctl };
+BARE	os/servers/mib/src/server.rs:269	            unsafe { &mut out.m_u.m_mib_lc_sysctl };
+BARE	os/servers/mib/src/server.rs:283	            let wire: &MessLsysMibRegister = unsafe { &msg.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:344	            let wire: &MessLsysMibRegister = unsafe { &msg.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:735	            let w: &mut MessLcMibSysctl = unsafe { &mut m.m_u.m_lc_mib_sysctl };
+BARE	os/servers/mib/src/server.rs:747	        let reply: &minix_types::MessMibLcSysctl = unsafe { &sent[0].m_u.m_mib_lc_sysctl };
+BARE	os/servers/mib/src/server.rs:760	            let w: &mut MessLsysMibRegister = unsafe { &mut m.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:797	            let w: &mut MessLsysMibRegister = unsafe { &mut reg.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:810	            let w: &mut MessLsysMibRegister = unsafe { &mut der.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:827	            let w: &mut MessLsysMibRegister = unsafe { &mut m.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:845	            let w: &mut MessLsysMibRegister = unsafe { &mut m.m_u.m_lsys_mib_register };
+BARE	os/servers/mib/src/server.rs:863	            let w: &mut MessLcMibSysctl = unsafe { &mut m.m_u.m_lc_mib_sysctl };
+BARE	os/servers/mib/src/server.rs:873	        let reply: &minix_types::MessMibLcSysctl = unsafe { &sent[0].m_u.m_mib_lc_sysctl };
+BARE	os/servers/devman/src/server.rs:562	        assert_eq!(unsafe { msg.m_u.m_m4 }.m4l1, 0);
+BARE	os/servers/devman/src/server.rs:563	        assert_eq!(unsafe { msg.m_u.m_m4 }.m4l2, 1);
+BARE	os/servers/devman/src/server.rs:589	        assert_eq!(unsafe { fwd.m_u.m_m4 }.m4l2, 1);
+BARE	os/servers/devman/src/server.rs:590	        assert_eq!(unsafe { fwd.m_u.m_m4 }.m4l3, 4);
+BARE	os/servers/devman/src/server.rs:596	        assert_eq!(unsafe { rep.m_u.m_m4 }.m4l1, 0);
+BARE	os/servers/devman/src/server.rs:620	        assert_eq!(unsafe { rep.m_u.m_m4 }.m4l1, 5);
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map/src/main.rs:88	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map/src/main.rs:96	    let read_val = unsafe { core::ptr::read_volatile(high_addr) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map/src/main.rs:109	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map/src/main.rs:115	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:47	unsafe impl GlobalAlloc for HybridAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:48	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:49	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:73	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:169	    unsafe { BOOT_SERVICES_EXITED = true; }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:198	    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:235	            loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:243	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq/src/main.rs:255	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs:81	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/servers/devman/src/vtreefs/mod.rs:161	                // through the place: `unsafe { msg.m_u.m_m4 }` would copy
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:26	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:27	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:31	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:44	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:81	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:133	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-riscv64/src/main.rs:139	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/kernel/src/proc_table.rs:1308	    unsafe { crate::clock_state_boot_unchecked() }.uptime()
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:24	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:25	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:29	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:42	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:86	        loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:96	        loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:118	        loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:123	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-riscv64/src/main.rs:129	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/kernel/src/kerninfo.rs:108	    let page = unsafe { &mut *KERNINFO_PAGE.get() };
+BARE	os/kernel/src/kerninfo.rs:144	    let page = unsafe { &mut *KERNINFO_PAGE.get() };
+BARE	os/kernel/src/kerninfo.rs:211	        let page = unsafe { &*KERNINFO_PAGE.get() };
+BARE	os/servers/devman/src/ipc/message.rs:238	        assert_eq!(unsafe { rep.m_u.m_m4 }.m4l2, 7);
+BARE	os/servers/devman/src/ipc/message.rs:244	        assert_eq!(unsafe { plain.m_u.m_m4 }.m4l2, 0);
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-aarch64/src/main.rs:73	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/kernel/src/krandom.rs:197	pub unsafe fn try_krandom() -> Option<&'static mut KRandomness> {
+BARE	os/kernel/src/krandom.rs:211	pub unsafe fn krandom() -> &'static mut KRandomness {
+BARE	os/kernel/src/krandom.rs:212	    unsafe { try_krandom() }.expect("KRANDOM not initialized — krandom::init() must run first")
+BARE	os/kernel/src/syscall_clock.rs:144	    let clock = unsafe { crate::clock_state_boot_unchecked() };
+BARE	os/kernel/src/syscall_clock.rs:625	        let reply = unsafe { &msg.m_u.m_krn_lsys_sys_times };
+BARE	os/kernel/src/syscall_clock.rs:679	        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+BARE	os/kernel/src/syscall_clock.rs:681	        unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 2000; }
+BARE	os/kernel/src/syscall_clock.rs:692	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:708	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:726	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:746	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:767	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:788	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:798	        let time_left = unsafe { msg.m_u.m_lsys_krn_sys_setalarm.time_left };
+BARE	os/kernel/src/syscall_clock.rs:828	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:840	        unsafe {
+BARE	os/kernel/src/syscall_clock.rs:847	        let old = unsafe { msg2.m_u.m_m2.m2l1 };
+BARE	os/kernel/src/misc.rs:892	    let smp = unsafe { crate::try_smp_state() };
+BARE	os/kernel/src/misc.rs:2361	unsafe fn sprof_save_sample(endpoint: i32, pc: u64) { unsafe {
+BARE	os/kernel/src/misc.rs:2390	unsafe fn sprof_save_proc(proc: &KProcess) { unsafe {
+BARE	os/kernel/src/misc.rs:2425	pub unsafe fn profile_sample(proc: &KProcess, pc: u64, priv_table: &PrivTable) { unsafe {
+BARE	os/kernel/src/misc.rs:2525	pub unsafe fn profile_clock_handler(
+BARE	os/kernel/src/misc.rs:2529	) { unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:68	unsafe impl core::alloc::GlobalAlloc for NullAlloc {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:69	    unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:72	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:78	unsafe extern "C" fn ap_entry(_bootstrap_pa: usize) -> ! {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:87	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:111	    let stage = unsafe { core::ptr::read_volatile(0x6F00 as *const u8) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:115	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:127	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:263	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:279	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:291	    unsafe { install_at(0x5000) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:302	    unsafe { minix_arch::x86_64::ap_early_entry::fill_bootstrap(0x6000, &record); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:307	        let b = unsafe { core::ptr::read_volatile((0x6000 + off) as *const u8) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:315	        let b = unsafe { core::ptr::read_volatile((0x6110 + off) as *const u8) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:322	    unsafe { core::ptr::write_volatile(0x6F00 as *mut u8, 0); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:345	        loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive-mb/src/main.rs:348	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/kernel/src/trap_dispatch.rs:65	pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
+BARE	os/kernel/src/trap_dispatch.rs:98	            let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/trap_dispatch.rs:139	    let _section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/trap_dispatch.rs:212	    let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/trap_dispatch.rs:242	unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::ProcNr) {
+BARE	os/kernel/src/trap_dispatch.rs:243	    let table = unsafe { crate::proc_table_boot_unchecked() };
+BARE	os/kernel/src/trap_dispatch.rs:259	    let caller = unsafe {
+BARE	os/kernel/src/trap_dispatch.rs:296	                    unsafe { crate::priv_table_boot_unchecked() },
+BARE	os/kernel/src/trap_dispatch.rs:308	    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+BARE	os/kernel/src/trap_dispatch.rs:350	pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
+BARE	os/kernel/src/trap_dispatch.rs:358	    let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/trap_dispatch.rs:375	    let table = unsafe { crate::proc_table_boot_unchecked() };
+BARE	os/kernel/src/trap_dispatch.rs:388	    let caller = unsafe {
+BARE	os/kernel/src/trap_dispatch.rs:395	        unsafe { crate::priv_table_boot_unchecked() },
+BARE	os/kernel/src/trap_dispatch.rs:396	        unsafe { crate::clock_state_boot_unchecked() },
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:60	unsafe impl GlobalAlloc for HybridAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:61	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:62	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:85	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:226	    unsafe { BOOT_SERVICES_EXITED = true; }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:236	    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:264	    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:276	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:314	        let table = unsafe { minix_kernel::proc_table_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:352	        let pml4e = unsafe { core::ptr::read_volatile(root as *const u64) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:353	        unsafe { core::ptr::write_volatile(root as *mut u64, pml4e | PAGE_USER); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:355	        let pdp0 = unsafe { core::ptr::read_volatile(pdp_base as *const u64) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:356	        unsafe { core::ptr::write_volatile(pdp_base as *mut u64, pdp0 | PAGE_USER); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:358	        let pde = unsafe { core::ptr::read_volatile((pd_base + leaf_idx * 8) as *const u64) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:359	        unsafe { core::ptr::write_volatile((pd_base + leaf_idx * 8) as *mut u64, pde | PAGE_USER); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:364	        unsafe { core::arch::asm!("invlpg [{}]", in(reg) HZ_BUF_VA, options(nostack, preserves_flags)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:371	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:414	unsafe fn map_user_page(root_phys: u64, va: u64, pa: u64, writable: bool, exec: bool) {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:452	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-user-trap/src/main.rs:464	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-aarch64/src/main.rs:34	        loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-aarch64/src/main.rs:44	        loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-aarch64/src/main.rs:66	        loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-aarch64/src/main.rs:71	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap-aarch64/src/main.rs:77	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:89	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:92	    let low_read = unsafe { core::ptr::read_volatile(low_addr) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:101	    let read_val = unsafe { core::ptr::read_volatile(high_addr) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:111	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:114	    let high_read2 = unsafe { core::ptr::read_volatile(high_addr2) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:115	    let low_read2 = unsafe { core::ptr::read_volatile(low_addr2) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:131	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-aarch64/src/main.rs:137	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/kernel/src/arch/riscv64/higher_half.rs:28	    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
+BARE	os/kernel/src/arch/riscv64/higher_half.rs:48	        unsafe {
+BARE	os/kernel/src/syscall_device.rs:614	                        let pairs: &[PvBytePair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:620	                        let pairs: &[PvWordPair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:626	                        let pairs: &[PvLongPair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:654	            let pairs: &mut [PvBytePair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:662	            let pairs: &[PvBytePair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:670	            let pairs: &mut [PvWordPair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:682	            let pairs: &[PvWordPair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:693	            let pairs: &mut [PvLongPair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:705	            let pairs: &[PvLongPair] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:1030	                let words: &mut [u16] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:1039	                let words: &[u16] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:1105	            let words: &mut [u16] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:1111	            let words: &[u16] = unsafe {
+BARE	os/kernel/src/syscall_device.rs:1373	        assert_eq!(unsafe { msg.m_u.m_krn_lsys_sys_devio.value }, 0xAB);
+BARE	os/kernel/src/syscall_device.rs:1436	        assert_eq!(unsafe { msg.m_u.m_krn_lsys_sys_devio.value }, 0xFF);
+BARE	os/kernel/src/syscall_process.rs:471	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/syscall_process.rs:1378	        unsafe { crate::init_irq_manager_for_test(); }
+BARE	os/kernel/src/syscall_process.rs:1410	        unsafe { crate::init_irq_manager_for_test(); }
+BARE	os/kernel/src/syscall_process.rs:1635	        let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
+BARE	os/kernel/src/syscall_process.rs:1727	        unsafe { crate::init_irq_manager_for_test(); }
+BARE	os/kernel/src/ipc.rs:1956	    let timestamp = unsafe { crate::clock_state_boot_unchecked() }.uptime();
+BARE	os/kernel/src/ipc.rs:2060	    let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:172	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:184	    unsafe extern "C" {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:190	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:207	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:215	    let hcr_trapped = unsafe { exc_trap_flag };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:225	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:242	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:257	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:285	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:295	    let sp_trapped = unsafe { exc_trap_flag };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:308	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:356	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:371	        unsafe extern "C" {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:374	        let vbar = unsafe { &exc_vector_table as *const u8 as u64 };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:375	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:384	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:394	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:399	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:412	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:415	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:426	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:449	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:454	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-aarch64/src/main.rs:460	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/kernel/src/syscall_copy.rs:2415	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo/src/main.rs:38	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo/src/main.rs:66	    let desc = match unsafe { parse_by_kind(source) } {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo/src/main.rs:118	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo/src/main.rs:124	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot/src/main.rs:89	        unsafe { asm!("hlt", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot/src/main.rs:106	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/kernel/src/vm.rs:361	    unsafe {
+BARE	os/kernel/src/vm.rs:401	    unsafe {
+BARE	os/kernel/src/vm.rs:443	    unsafe {
+BARE	os/kernel/src/syscall_signal.rs:1178	        let none_endpt = unsafe { msg2.m_u.m_sigcalls.endpt };
+BARE	os/kernel/src/pte_walk.rs:86	pub unsafe fn read_pte(paddr: PhysBytes) -> u64 {
+BARE	os/kernel/src/arch/aarch64/higher_half.rs:25	    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
+BARE	os/kernel/src/arch/aarch64/higher_half.rs:39	        unsafe {
+BARE	os/kernel/src/arch/x86_64/higher_half.rs:25	    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> ! {
+BARE	os/kernel/src/arch/x86_64/higher_half.rs:37	        unsafe {
+BARE	os/kernel/src/boot/higher_half.rs:47	    unsafe fn jump_to_kmain(kinfo: &KernelInfo, stack_top: VirBytes) -> !;
+BARE	os/kernel/src/stacktrace.rs:271	                let bytes: [u8; 8] = unsafe {
+BARE	os/kernel/src/stacktrace.rs:332	        unsafe { core::ptr::write_volatile(mapped_vaddr as *mut u64, sentry) };
+BARE	os/kernel/src/stacktrace.rs:344	        unsafe { core::ptr::write_volatile(mapped_vaddr as *mut u64, original) };
+BARE	os/kernel/src/smp.rs:938	        let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/smp.rs:1002	            let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/smp.rs:1007	                    let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/smp.rs:1061	unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_va: u64) -> ! {
+BARE	os/kernel/src/smp.rs:1065	    unsafe { crate::smp_state_boot_unchecked() }.publish_boot_ack(logical_id);
+BARE	os/kernel/src/smp.rs:1083	        let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/smp.rs:1371	    pub unsafe fn assume_held() -> Self {
+BARE	os/kernel/src/clock.rs:161	    // (A1 migration: was `unsafe { }` + caller-guarantees-BKL comment).
+BARE	os/kernel/src/clock.rs:405	    unsafe {
+BARE	os/kernel/src/clock.rs:1297	    let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/clock.rs:1461	            let clock = unsafe { crate::clock_state_boot_unchecked() };
+BARE	os/kernel/src/clock.rs:1494	        assert!(unsafe { crate::clock_state() }.uptime() > 0);
+BARE	os/kernel/src/clock.rs:1508	        unsafe { crate::irq_manager() }
+BARE	os/kernel/src/clock.rs:1517	        assert!(unsafe { crate::irq_manager() }
+BARE	os/kernel/src/irq_manager.rs:142	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/irq_manager.rs:225	    let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap/src/main.rs:34	        loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap/src/main.rs:44	        loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap/src/main.rs:66	        loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap/src/main.rs:71	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-memmap/src/main.rs:77	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/kernel/src/lib.rs:663	    let smp_state = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/lib.rs:925	    let p = unsafe { (*PROTECTION.get()).as_ref() }
+BARE	os/kernel/src/lib.rs:936	    let p = unsafe { (*PROTECTION.get()).as_mut() }
+BARE	os/kernel/src/lib.rs:946	    let t = unsafe { (*TRAP_ENTRY.get()).as_mut() }
+BARE	os/kernel/src/lib.rs:1571	pub unsafe fn clock_state() -> &'static mut crate::clock::ClockState {
+BARE	os/kernel/src/lib.rs:1589	pub unsafe fn clock_state_boot_unchecked() -> &'static mut crate::clock::ClockState {
+BARE	os/kernel/src/lib.rs:1614	pub unsafe fn kbill_kcall_raw() -> Option<crate::proc::ProcNr> {
+BARE	os/kernel/src/lib.rs:1675	    let cpu = unsafe { smp_state_boot_unchecked() }
+BARE	os/kernel/src/lib.rs:1703	pub unsafe fn proc_table() -> &'static mut crate::proc_table::ProcessTable {
+BARE	os/kernel/src/lib.rs:1727	pub unsafe fn proc_table_boot_unchecked() -> &'static mut crate::proc_table::ProcessTable {
+BARE	os/kernel/src/lib.rs:1739	pub unsafe fn priv_table() -> &'static mut crate::kpriv::PrivTable {
+BARE	os/kernel/src/lib.rs:1757	pub unsafe fn priv_table_boot_unchecked() -> &'static mut crate::kpriv::PrivTable {
+BARE	os/kernel/src/lib.rs:1776	pub unsafe fn irq_manager() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+BARE	os/kernel/src/lib.rs:1804	pub unsafe fn irq_manager_boot_unchecked() -> &'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController> {
+BARE	os/kernel/src/lib.rs:1823	pub unsafe fn try_irq_manager() -> Option<&'static mut crate::irq_manager::IrqManager<minix_plat::CurrentInterruptController>> {
+BARE	os/kernel/src/lib.rs:1850	pub(crate) unsafe fn init_irq_manager_for_test() { unsafe {
+BARE	os/kernel/src/lib.rs:1883	pub unsafe fn smp_state() -> &'static mut crate::smp::SmpState {
+BARE	os/kernel/src/lib.rs:1908	pub unsafe fn smp_state_boot_unchecked() -> &'static mut crate::smp::SmpState {
+BARE	os/kernel/src/lib.rs:1927	pub unsafe fn try_smp_state() -> Option<&'static mut crate::smp::SmpState> {
+BARE	os/kernel/src/lib.rs:2035	    unsafe { crate::irq_manager_boot_unchecked() }
+BARE	os/kernel/src/lib.rs:2230	    let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/lib.rs:2248	    let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/lib.rs:2822	    unsafe { CurrentTrapReturnArch::restore_to_user(&frame, &ctx) }
+BARE	os/kernel/src/lib.rs:2888	    let cpu = unsafe { crate::smp_state_boot_unchecked() }.bsp_cpu_id();
+BARE	os/kernel/src/lib.rs:2909	    let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/lib.rs:3178	        unsafe fn jump_to_kmain(_kinfo: &KernelInfo, _stack_top: VirBytes) -> ! {
+BARE	os/kernel/src/lib.rs:3558	        let smp = unsafe { crate::smp_state_boot_unchecked() };
+BARE	os/kernel/src/lib.rs:3928	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/lib.rs:3962	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/lib.rs:3984	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/lib.rs:4005	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/lib.rs:4079	            let table = unsafe { crate::proc_table_boot_unchecked() };
+BARE	os/kernel/src/lib.rs:4080	            let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:29	unsafe extern "C" fn ap_entry(_bootstrap_pa: usize) -> ! {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:44	    let stage = unsafe { core::ptr::read_volatile(0x6F00 as *const u8) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:45	    let ip = unsafe { core::ptr::read_volatile(0x6F04 as *const u16) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:46	    let cs = unsafe { core::ptr::read_volatile(0x6F06 as *const u16) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:52	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:70	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:82	    let lapic_id = unsafe { core::ptr::read_volatile((0xFEE0_0000_usize + 0x20) as *const u32) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:88	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:95	    unsafe { core::arch::asm!("mov {}, cr3", out(reg) root, options(nomem)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:103	        kernel_stack_top_va: (unsafe { core::ptr::addr_of!(AP_STACK) as usize } as u64) + 0x10000,
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:112	    unsafe { install_at(0x5000) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:113	    unsafe { minix_arch::x86_64::ap_early_entry::fill_bootstrap(0x6000, &record); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:120	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:139	    unsafe { core::ptr::write_volatile(0x6F00 as *mut u8, 0); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:154	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ap-alive/src/main.rs:173	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/kernel/src/globals.rs:33	/// The `unsafe impl<T: BklProtected + ?Sized> Sync` below is sound because:
+BARE	os/kernel/src/globals.rs:86	// Without this trait, the old blanket `unsafe impl<T: ?Sized> Sync` let any
+BARE	os/kernel/src/globals.rs:113	    // Each invocation expands to `impl Sealed for T {}` + `unsafe impl
+BARE	os/kernel/src/globals.rs:124	                unsafe impl BklProtected for $ty {}
+BARE	os/kernel/src/globals.rs:180	    unsafe impl<T: BklProtected> BklProtected for Option<T> {}
+BARE	os/kernel/src/globals.rs:187	    unsafe impl<T: BklProtected, const N: usize> BklProtected for [T; N] {}
+BARE	os/kernel/src/syscall.rs:807	        let section = unsafe { crate::smp::BklSection::assume_held() };
+BARE	os/kernel/src/syscall.rs:1979	    let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/kernel/src/syscall.rs:2100	        let m1 = unsafe { &msg.m_u.m_m1 };
+BARE	os/kernel/src/syscall.rs:2281	            let m1 = unsafe { &mut msg.m_u.m_m1 };
+BARE	os/kernel/src/syscall.rs:2438	    let ptroot_virt = unsafe { msg.m_u.m_m1.m1p1 }; // m1_p1
+BARE	os/kernel/src/syscall.rs:2566	            let kernel_info = unsafe { *crate::globals::KERNEL_INFO.get() }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:44	unsafe impl GlobalAlloc for HybridAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:45	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:46	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:70	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:164	    unsafe { BOOT_SERVICES_EXITED = true; }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:174	    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:201	    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:209	    let smp = unsafe { minix_kernel::smp_state_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:235	    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:242	            let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:253	        let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:275	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:280	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs:292	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:30	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:31	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:35	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:48	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:85	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:143	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:151	    let read_val = unsafe { core::ptr::read_volatile(test_addr) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:164	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-kernel-map-riscv64/src/main.rs:170	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:50	unsafe impl GlobalAlloc for HybridAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:51	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:88	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:209	    unsafe { BOOT_SERVICES_EXITED = true; }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:389	    let via_cpu = unsafe { (FRESH_VA as *const u64).read_volatile() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:397	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:402	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/src/main.rs:414	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:50	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:51	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:57	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:73	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:120	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:184	        unsafe { asm!("wfi", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs:192	        unsafe { asm!("wfi", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:30	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:31	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:35	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:48	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:97	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:160	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:176	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:189	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:201	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:206	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection-riscv64/src/main.rs:212	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:45	unsafe impl GlobalAlloc for HybridAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:46	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:47	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:71	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:165	    unsafe { BOOT_SERVICES_EXITED = true; }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:175	    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:202	    let smp = unsafe { minix_kernel::smp_state_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:226	        let table = unsafe { minix_kernel::proc_table_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:227	        let smp = unsafe { minix_kernel::smp_state_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:244	        let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:265	    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:270	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi/src/main.rs:282	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-aarch64/src/main.rs:75	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-paging-enable-aarch64/src/main.rs:81	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs:33	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs:34	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs:40	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs:56	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs:88	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/src/main.rs:163	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-aarch64/src/main.rs:49	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-aarch64/src/main.rs:69	    let desc = match unsafe { parse_by_kind(*source) } {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-aarch64/src/main.rs:106	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-aarch64/src/main.rs:112	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-shutdown/src/main.rs:95	        unsafe { asm!("hlt", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-shutdown/src/main.rs:112	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:33	unsafe impl GlobalAlloc for BootAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:34	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:38	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:51	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:89	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:111	    let desc = match unsafe { parse_by_kind(source) } {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:162	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64/src/main.rs:168	    loop { unsafe { asm!("wfi", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:87	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:105	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:123	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:134	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:145	    unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:155	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:160	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/main.rs:166	    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:53	unsafe impl GlobalAlloc for HybridAllocator {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:54	    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:55	        unsafe {
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:78	    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:155	    unsafe { BOOT_SERVICES_EXITED = true; }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:165	    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:191	    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:200	        let table = unsafe { minix_kernel::proc_table_boot_unchecked() };
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:223	    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:246	    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-aarch64/src/main.rs:80	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+BARE	os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-aarch64/src/main.rs:86	    loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
+STATS	total=1821	with_safety=731	bare=1090	bare_in_test=3

@@ -1,7 +1,7 @@
 # 01-init-main-entry：入口与进程身份
 
-> **定位**：boot 链终点 → `main()`（`minix3/sbin/init/init.c:229-367`）入口全流程，02~14 的锚点。
-> **源码**：`minix3/sbin/init/init.c`（`main` 229-367、`mfs_dev` 1703-1788）、`minix3/sbin/init/pathnames.h:39-40`、`minix3/include/paths.h:62,125`。
+> **定位**：boot 链终点 → `main()`（`minix3/sbin/init/init.c:make_utmpx（L229，工具生成）`）入口全流程，02~14 的锚点。
+> **源码**：`minix3/sbin/init/init.c`（`main` 229-367、`mfs_dev` 1703-1788）、`minix3/sbin/init/pathnames.h:_PATH_SLOGGER`、`minix3/include/paths.h:_PATH_CONSOLE,125`。
 > **Rust**：`os/commands/sbin/init/src/entry.rs`、`os/commands/sbin/init/src/main.rs`。
 > **前置依赖**：`../01-stage-kernel/06-proc-init-boot-proc.md`、`../01-stage-kernel/09-vm-boot-protocol.md`（init 如何被加载与首次调度）。
 > **本篇不覆盖（移交）**：状态机细节（见 02）、日志与 disaster（见 03）、securelevel 机制（见 12）、信号 handler 语义（见 02/03/14）。
@@ -14,7 +14,7 @@
 
 问题在于，内核凭什么相信“我是 init”？用户又凭什么相信“这个 init 是真的”？答案是 init 在出生的头几十行代码里主动出示三份证明，每一份都对应操作系统的一个基础概念。
 
-第一份证明是身份。init 检查自己的用户 ID 必须为 0（root），进程 ID 必须为 1。如果 uid 不是 0，说明它不是以最高权限启动的，继续运行只会处处碰壁，不如立刻以权限错误退出。如果 pid 不是 1，说明系统里已经有一个 init 在跑，第二个 init 没有存在的理由，直接报错退出。这两行检查看起来霸道，实则是 PID 命名空间的锚点语义：PID 1 不是普通编号，它是孤儿进程的收养人，是所有会话的根。Minix3 的进程管理器（PM）也承认这一点：INIT 的父进程被强制设为自身（`minix3/minix/servers/pm/main.c:188-204`），RS 登记表中 init 被标为 `USR_F` 普通用户进程（`minix3/minix/servers/rs/table.c:28`），boot 镜像把它放在最后一项（`minix3/minix/kernel/table.c:64`）。换句话说，PID 1 是一个各方约定的位置，init 只是第一个坐上去并且敢验票的进程。
+第一份证明是身份。init 检查自己的用户 ID 必须为 0（root），进程 ID 必须为 1。如果 uid 不是 0，说明它不是以最高权限启动的，继续运行只会处处碰壁，不如立刻以权限错误退出。如果 pid 不是 1，说明系统里已经有一个 init 在跑，第二个 init 没有存在的理由，直接报错退出。这两行检查看起来霸道，实则是 PID 命名空间的锚点语义：PID 1 不是普通编号，它是孤儿进程的收养人，是所有会话的根。Minix3 的进程管理器（PM）也承认这一点：INIT 的父进程被强制设为自身（`minix3/minix/servers/pm/main.c:sef_cb_init_fresh（L188，工具生成）`），RS 登记表中 init 被标为 `USR_F` 普通用户进程（`minix3/minix/servers/rs/table.c:boot_image_priv（L28，工具生成）`），boot 镜像把它放在最后一项（`minix3/minix/kernel/table.c:boot_image（L64，工具生成）`）。换句话说，PID 1 是一个各方约定的位置，init 只是第一个坐上去并且敢验票的进程。
 
 第二份证明是会话。init 调用 `setsid()` 创建一个新会话，把自己变成会话首进程。这一步的动机是解耦：init 从内核那里继承来的控制终端关系是未定义的，如果不主动切断，它可能被某个终端的挂断信号误伤。新建会话之后，init 就不再属于任何终端，后续每个登录会话（getty）再各自建立自己的控制终端，互不干扰。值得注意的是 C 代码对 `setsid()` 的失败非常宽容：失败只警告一声继续跑（`init.c:255-256`）。这不是疏忽，而是务实——会话只是卫生措施，不是生死线。
 
@@ -90,7 +90,7 @@ if (optind != argc)
     warning("ignoring excess arguments");
 ```
 
-语义要点有三。第一，`-s` 改变的是首状态，不是运行模式开关；一旦置位，后续 `transition()` 直接进入单用户 shell（见 04）。第二，`-f` 改变的是 `/etc/rc` 的执行方式（fastboot 跳过文件系统检查，见 05），不改变状态序列本身。第三，未知参数与多余参数都不致命，只记一条警告。这种宽容是有意的：真实 boot 路径下 VM 传给 init 的参数是固定的 `{"init", NULL}`（`minix3/minix/servers/vm/main.c:345`），`-s`/`-f` 在正常启动中根本不会出现；它们是运维手动干预的后门，不是常规输入。
+语义要点有三。第一，`-s` 改变的是首状态，不是运行模式开关；一旦置位，后续 `transition()` 直接进入单用户 shell（见 04）。第二，`-f` 改变的是 `/etc/rc` 的执行方式（fastboot 跳过文件系统检查，见 05），不改变状态序列本身。第三，未知参数与多余参数都不致命，只记一条警告。这种宽容是有意的：真实 boot 路径下 VM 传给 init 的参数是固定的 `{"init", NULL}`（`minix3/minix/servers/vm/main.c:exec_bootproc（L345，工具生成）`），`-s`/`-f` 在正常启动中根本不会出现；它们是运维手动干预的后门，不是常规输入。
 
 ### 2.4 S4 设备探测：mfs_dev
 
@@ -104,7 +104,7 @@ if (mfs_dev() == -1)
 
 `mfs_dev()`（`init.c:1703-1788`）的逻辑分三层。先看 `/dev/console` 是否存在，存在则直接返回 0，什么都不做，这是快路径。中间一大段 `#if 0` 包裹的调试代码（`init.c:1716-1756`）是死代码，构建不生效，阅读时跳过。真正的慢路径是 fork 一个子进程跑 MAKEDEV 脚本（`init.c:1759-1785`）：子进程里先把标准错误复制到标准输出，然后 `chdir("/dev")`，执行 `sh ./MAKEDEV -MM init`（或回退到 `/etc/MAKEDEV`）。父进程等待子进程结束，若 `/dev/console` 被造出来就返回 0，否则 `_exit(11/12)`。注意父进程分支的 `_exit` 语义：`mfs_dev` 运行在 init 自己的进程上下文里，失败意味着设备子系统出了大问题，调用方把它降级为单用户模式而非直接崩溃，给管理员留一条抢修通道。
 
-路径常量方面，`_PATH_CONSOLE` 定义为 `/dev/console`（`minix3/include/paths.h:62`），`INIT_BSHELL` 在 Minix 构建下取 `_PATH_BSHELL` 即 `/bin/sh`（`init.c:105`、`paths.h:125`）。`pathnames.h` 里的 `_PATH_SLOGGER`（`pathnames.h:39`）在 `init.c` 中无使用者，属于历史遗留死常量，阅读时忽略。
+路径常量方面，`_PATH_CONSOLE` 定义为 `/dev/console`（`minix3/include/paths.h:_PATH_CONSOLE`），`INIT_BSHELL` 在 Minix 构建下取 `_PATH_BSHELL` 即 `/bin/sh`（`init.c:105`、`paths.h:125`）。`pathnames.h` 里的 `_PATH_SLOGGER`（`pathnames.h:39`）在 `init.c` 中无使用者，属于历史遗留死常量，阅读时忽略。
 
 ### 2.5 S7 信号注册调用点（本篇只列位置）
 
@@ -248,4 +248,4 @@ os/commands/sbin/init/src/
 - `05-init-runcom.md` — `runcom_mode` AUTOBOOT/FASTBOOT 的完整语义。
 - `12-init-sysctl-interaction.md` — `has_securelevel` 探测与 `init.root` 节点。
 - `14-init-external-contracts.md` — boot argv 契约（VM 固定 `{"init",NULL}`）与 USR_F 身份。
-- C 源码：`minix3/sbin/init/init.c:229-367`、`minix3/sbin/init/init.c:1703-1788`、`minix3/include/paths.h:62,125`。
+- C 源码：`minix3/sbin/init/init.c:make_utmpx（L229，工具生成）`、`minix3/sbin/init/init.c:death（L1703，工具生成）`、`minix3/include/paths.h:_PATH_CONSOLE,125`。

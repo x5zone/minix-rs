@@ -1,6 +1,6 @@
 # 05-init-runcom：运行启动脚本
 
-> **定位**：状态 `'r'`，`runcom`（`minix3/sbin/init/init.c:974-1014`）、`runetcrc`（879-969）。
+> **定位**：状态 `'r'`，`runcom`（`minix3/sbin/init/init.c:runetcrc（L974，工具生成）`）、`runetcrc`（879-969）。
 > **Rust**：`os/commands/sbin/init/src/runcom.rs`。
 > **前置依赖**：04（FASTBOOT 语义来源）、02（状态字符）、03（stall/warning/emergency）。
 > **本篇不覆盖（移交）**：`shouldchroot` 与 chroot 机制（见 12）、`setctty`/`collect_child`（见 09）、utmp 记录（见 13）。
@@ -100,4 +100,4 @@ runcom 成功即进 read_ttys。下一站 06 解析 `/etc/ttys`，把“能跑�
 - `04-init-single-user.md` — FASTBOOT 来源。
 - `06-init-read-ttys.md` — read_ttys。
 - `12-init-sysctl-interaction.md` — shouldchroot 机制。
-- C 源码：`minix3/sbin/init/init.c:879-1014`。
+- C 源码：`minix3/sbin/init/init.c:single_user（L879，工具生成）`。

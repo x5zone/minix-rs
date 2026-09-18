@@ -86,7 +86,7 @@ sdbm 哈希是公开域算法：初值零，逐字节折入，字节加左移六
 
 ### 2.1 启动与主循环 `vtreefs.c`（`vtreefs.c:15-110`）
 
-初始化三件（`vtreefs.c:16-33`）：建树、建额外数据、建缓冲，失败终止进程。信号非终止返回，终止请求框架下班（`vtreefs.c:38-46`）。本地启动注册三回调后交启动框架（`vtreefs.c:52-60`）。非文件系统消息转消息钩子，先拷贝再调，允许钩子改消息（`vtreefs.c:66-80`，注释写明有些用户不爱惜消息）。主入口存六参数到全局后进框架主循环，退出清理缓冲与树（`vtreefs.c:87-110`，注释写明全局变量是绕过启动框架传参限制的无奈之举）。
+初始化三件（`minix3/minix/lib/libvtreefs/vtreefs.c:init_server`）：建树、建额外数据、建缓冲，失败终止进程。信号非终止返回，终止请求框架下班（`minix3/minix/lib/libvtreefs/vtreefs.c:init_server（L38，工具生成）`）。本地启动注册三回调后交启动框架（`minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup`）。非文件系统消息转消息钩子，先拷贝再调，允许钩子改消息（`minix3/minix/lib/libvtreefs/vtreefs.c:sef_local_startup（L66，工具生成）`，注释写明有些用户不爱惜消息）。主入口存六参数到全局后进框架主循环，退出清理缓冲与树（`minix3/minix/lib/libvtreefs/vtreefs.c:fs_other（L87，工具生成）`，注释写明全局变量是绕过启动框架传参限制的无奈之举）。
 
 ### 2.2 节点管理 `inode.c`（`inode.c:30-626`）
 
@@ -122,7 +122,7 @@ sdbm 哈希是公开域算法：初值零，逐字节折入，字节加左移六
 
 ### 2.10 头文件契约（`vtreefs.h`、`inode.h`、`proto.h`、`glo.h`）
 
-钩子表十三钩子（`vtreefs.h`）：初始化、清理、查找、枚举、读、写、截断、建节点、删节点、建链接、读链接、改状态、消息。节点结构九字段加三链（`inode.h:25-49`）。索引负一为空（`vtreefs.h:8`），短名二十四（`vtreefs.h:14`）。删除标记一位（`inode.h:51`）。
+钩子表十三钩子（`vtreefs.h`）：初始化、清理、查找、枚举、读、写、截断、建节点、删节点、建链接、读链接、改状态、消息。节点结构九字段加三链（`inode.h:25-49`）。索引负一为空（`minix3/minix/include/minix/vtreefs.h:NO_INDEX`），短名二十四（`minix3/minix/include/minix/vtreefs.h:PNAME_MAX`）。删除标记一位（`inode.h:51`）。
 
 ### 2.11 与 Rust 实现的步骤差异说明
 

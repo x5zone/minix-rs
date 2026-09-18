@@ -4,7 +4,7 @@
 > 归属以 08-stage-is/todo.md §1.2 对账表为底）
 > **源码**: `com.h`（is_notify:93、TTY_FKEY_CONTROL:874、FKEY_*:875-877、
 > GET_*:316-331、DIAGCTL_CODE_*:412-415、VM_INFO:729、VMIW_*:732-734）、
-> `sysinfo.h:11-17`、`keymap.h`、`glo.h`、`inc.h`
+> `minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB`、`keymap.h`、`glo.h`、`inc.h`
 > **Rust 模块**: `minix-types`（wire 常量）+ `os/servers/is/src`（本地常量）
 > **前置依赖**: 全部 ｜ **不覆盖（移交）**: 各机制细节（01~10）
 
@@ -13,7 +13,7 @@
 | 常量族 | C 出处 | Rust 权威位置 |
 |---|---|---|
 | FKEY_MAP/UNMAP/EVENTS、F1~F12/SF1~SF12、两 fkey 载荷 | com.h:874-877、keymap.h、ipc.h:1447-1454 | `minix-types::ipc::tty` |
-| GET_*（IS 用 8 项）、SI_*、DIAGCTL_CODE_STACKTRACE、SYS_GETINFO/SYS_DIAGCTL、PM/VFS_GETSYSINFO | com.h:315-345、sysinfo.h:11-17、callnr.h | `minix-types::ipc::sysinfo` |
+| GET_*（IS 用 8 项）、SI_*、DIAGCTL_CODE_STACKTRACE、SYS_GETINFO/SYS_DIAGCTL、PM/VFS_GETSYSINFO | com.h:315-345、minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB、callnr.h | `minix-types::ipc::sysinfo` |
 | VMIW_STATS/USAGE/REGION、VM_INFO | com.h:729-734 | `minix-types::ipc::vm` |
 | NOTIFY_MESSAGE=0x1000、TTY_PROC_SLOT=5 | com.h:90/64 | `is/src/dispatch.rs:20/24` |
 | SIGTERM=15 | sys/sys/signal.h:67 | `is/src/sef.rs:16` |
@@ -21,7 +21,7 @@
 | LINES=22 / VM_LINES=24 / MORE 标记 | 各 dmp_*.c | 各 dump 模块 |
 
 单一权威核对通过（V1 审查对账）：无跨 crate 重复定义。唯一例外在
-IS 之外——`os/servers/vfs/src/misc.rs:66` 本地重定义 `SI_PROC_TAB`，
+IS 之外——`os/servers/vfs/src/misc.rs:const VFS_GETSYSINFO_OFF（L66，工具生成）` 本地重定义 `SI_PROC_TAB`，
 已登记 edge E-ISPROD 收敛。
 
 ## 2. 错误码

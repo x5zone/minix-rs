@@ -29,7 +29,7 @@
 
 - **WHY**: 微内核中信号处理器在用户态（PM 或自定义 SM），内核既不知道 SM 的 IPC 阻塞状态，也不能直接调用用户态函数。需要一种解耦机制让内核"挂起信号"而 SM"按需拉取"——否则内核必须同步等待 SM 响应，破坏内核非阻塞原则。
 - **WHAT**: 三步闭环：(1) 内核通过 `cause_sig()` 设置 `p_pending` 位图 + `RTS_SIGNALED` 标志，并通知 SM；(2) SM 通过 SYS_GETKSIG 主动轮询，线性扫描所有 `RTS_SIGNALED` 进程，拉取信号位图，将进程从"待处理"转为"SM 处理中"（`RTS_SIG_PENDING` 阻塞调度）；(3) SM 处理完毕通过 SYS_ENDKSIG 确认，如无新信号则清除 `RTS_SIG_PENDING`，进程可继续调度。
-- **HOW**: C 实现 `cause_sig()` (system.c:389-449) + `do_getksig()` (do_getksig.c:18-42) + `do_endksig()` (do_endksig.c:15-38)。
+- **HOW**: C 实现 `cause_sig()` (system.c:389-449) + `do_getksig()` (minix3/minix/kernel/system/do_getksig.c:do_getksig) + `do_endksig()` (minix3/minix/kernel/system/do_endksig.c:do_endksig)。
 
 **关键语义**:
 
@@ -51,14 +51,14 @@
 
 - **WHY**: POSIX 信号处理器是用户态函数，必须在用户栈上运行；内核不能直接调用用户态函数（特权级隔离）。需要一种机制让进程"下次进入用户态时从信号处理器开始执行"，且处理器返回后能恢复原执行点。
 - **WHAT**: SM 通过 SYS_SIGSEND 在用户栈上构建 sigframe（含保存的寄存器 sigcontext + 处理器参数 + 返回跳板地址），并修改进程 PC/SP 让其从处理器入口开始执行；处理器返回时通过 sigreturn 库函数跳到 SYS_SIGRETURN，内核从用户栈恢复 sigcontext，进程从原 PC 继续执行。
-- **HOW**: C 实现 `do_sigsend()` (do_sigsend.c:19-162) + `do_sigreturn()` (do_sigreturn.c:19-95)。
+- **HOW**: C 实现 `do_sigsend()` (minix3/minix/kernel/system/do_sigsend.c:do_sigsend) + `do_sigreturn()` (minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn)。
 
 **SIGSEND 关键步骤**:
 
-1. 校验目标已保存：`p_kern_trap_style != KTS_NONE`，否则 EINVAL（do_sigsend.c:79-82）——从未进入内核的进程没有可恢复的返回路径，处理器结束后无处可去
+1. 校验目标已保存：`p_kern_trap_style != KTS_NONE`，否则 EINVAL（minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L79，工具生成））——从未进入内核的进程没有可恢复的返回路径，处理器结束后无处可去
 2. 从用户空间拷贝 `sigmsg` 结构（含 sighandler / mask / signo / sigreturn / stkptr）
 3. 计算用户栈指针（`arch_get_sp`），向下留出 sigframe 空间
-4. 构建 sigcontext（保存当前寄存器）`(架构相关)`；写入 `sigcontext.trap_style ← p_kern_trap_style`（do_sigsend.c:77）
+4. 构建 sigcontext（保存当前寄存器）`(架构相关)`；写入 `sigcontext.trap_style ← p_kern_trap_style`（minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L77，工具生成））
 5. 构建 sigframe（sigcontext + 处理器参数 + 返回地址）
 6. 拷贝 sigframe 到用户栈（可能 VMSUSPEND）
 7. 修改进程寄存器：SP→sigframe, PC→sighandler **（必须最后，见 §1.3）**
@@ -82,16 +82,16 @@
 
 - **WHY**: 用户空间页可能未映射，`data_copy_vmcheck` 触发 VMSUSPEND——当前系统调用挂起，等 VM 处理页缺失后从入口重新执行。这是微内核的天然结果：内核不直接访问用户空间，需通过 VM proxy。
 - **WHAT**: SIGSEND 前 5 步（sigmsg 拷贝、sigcontext 构建、sigframe 拷贝）是幂等的——重复执行结果相同。但第 6 步（寄存器修改）若在拷贝之前执行，VMSUSPEND 恢复后会再次修改寄存器，导致 SP/PC 被多次重写。
-- **HOW**: C 源码 do_sigsend.c:126-131 显式 WARNING 注释："changes to process registers *MUST* be deferred until after this last copy"。
+- **HOW**: C 源码 minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L126，工具生成） 显式 WARNING 注释："changes to process registers *MUST* be deferred until after this last copy"。
 
 **幂等性分析**:
 
 | 步骤 | C 位置 | 幂等? | 说明 |
 |------|--------|------|------|
-| sigmsg 拷贝 | do_sigsend.c:36-39 | ✅ | 重读覆盖 |
-| sigcontext 构建 | do_sigsend.c:50-115 | ✅ | memset + 字段填充 |
-| sigframe 拷贝 | do_sigsend.c:121-124 | ✅ | 重写覆盖 |
-| 寄存器修改 | do_sigsend.c:134-151 | ❌ | SP/PC 重写非幂等；MF_FPU_INITIALIZED 清除语义不应重复 |
+| sigmsg 拷贝 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L36，工具生成） | ✅ | 重读覆盖 |
+| sigcontext 构建 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L50，工具生成） | ✅ | memset + 字段填充 |
+| sigframe 拷贝 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L121，工具生成） | ✅ | 重写覆盖 |
+| 寄存器修改 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L134，工具生成） | ❌ | SP/PC 重写非幂等；MF_FPU_INITIALIZED 清除语义不应重复 |
 
 **Rust 设计含义**: `SignalContext::setup_handler_entry` 方法必须标注 SAFETY 约束——"只能在最后一次 `data_copy_vmcheck` 成功后调用"（见 §4.5 / §4.6）。
 
@@ -124,7 +124,7 @@
 **WHY → WHAT → HOW 弧线**:
 
 - **WHY**: PM 投递信号前通常要先把进程停下（`stop_proc` → SYS_RUNCTL RC_STOP），保证信号处理器设置期间进程不会乱跑。但"停下"有一个天然冲突：进程可能正阻塞在 `SEND`——它的消息还挂在接收方的等待队列里。此刻设 `RTS_PROC_STOP` 会让进程永远无法被唤醒去完成投递（它既不运行、消息也送不出），IPC 握手中断；deferred syscall（`MF_SC_DEFER`）同理。强行停止 = 打破消息层的不变量。
-- **WHAT**: `do_runctl` 遇到 `RC_STOP | RC_DELAY` 且目标正在 SENDING 或 SC_DEFER 时，不设 `RTS_PROC_STOP`，改为置 `MF_SIG_DELAY` 并返回 `EBUSY`（do_runctl.c:44-50）。PM 收到 EBUSY 记下 `DELAY_CALL`，等内核后续补发 `SIGSNDELAY`（signal.c:344-369）。"安静点"由内核判定并触发 `sig_delay_done`：deferred syscall 走完且没阻塞在 SEND（proc.c:379-381），或 sender 的消息被接收方取走（proc.c:1082-1083）——两条路都保证"进程不再发送"。
+- **WHAT**: `do_runctl` 遇到 `RC_STOP | RC_DELAY` 且目标正在 SENDING 或 SC_DEFER 时，不设 `RTS_PROC_STOP`，改为置 `MF_SIG_DELAY` 并返回 `EBUSY`（minix3/minix/kernel/system/do_runctl.c:do_runctl（L44，工具生成））。PM 收到 EBUSY 记下 `DELAY_CALL`，等内核后续补发 `SIGSNDELAY`（signal.c:344-369）。"安静点"由内核判定并触发 `sig_delay_done`：deferred syscall 走完且没阻塞在 SEND（proc.c:379-381），或 sender 的消息被接收方取走（proc.c:1082-1083）——两条路都保证"进程不再发送"。
 - **HOW**: `sig_delay_done`（system.c:454-464）清 `MF_SIG_DELAY` + `cause_sig(SIGSNDELAY)`，PM 通过 `process_ksig` 收到后重试 `stop_proc`——此时进程已安静，停止立即成功。
 
 **为什么是信号而不是直接置位**: `SIGSNDELAY` 走的是标准内核信号三步闭环（cause_sig → GETKSIG → process_ksig）。复用同一机制意味着 PM 只需一个统一入口处理所有内核信号，且内核无需知道 PM 的内部状态机——这是微内核"内核只负责机制、策略交给服务器"原则的又一次体现。
@@ -150,13 +150,13 @@
 | `SIGKSIGSM` | signal.h:273 | 自管理进程的自通知信号（值 = 73）；Rust SELF 路径已实现（§4.3） |
 | `SIGSNDELAY` | signal.h:264 | 停止延迟结束信号（值 = 70，超出 `_NSIG` 范围）；`sig_delay_done` 已实现（2026-09-05，todo D-13，§4.8）；已知限制：超出 `SigSet(u64)` 位宽，编号不随 GETKSIG map 送达 PM |
 | `SC_MAGIC` | i386 signal.h:115 | sigcontext 完整性魔数（值 = 0xc0ffee1，`(架构相关)`）；Rust `check_magic` 已实现（§4.6） |
-| `SIGS_IS_LETHAL(sig)` | signal.h:280-282 | 致命信号判断宏（SIGILL=4/SIGABRT=6/SIGEMT=7/SIGFPE=8/SIGBUS=10/SIGSEGV=11）；Rust `is_lethal` 已实现（syscall_signal.rs:101-103，§4.3） |
+| `SIGS_IS_LETHAL(sig)` | signal.h:280-282 | 致命信号判断宏（SIGILL=4/SIGABRT=6/SIGEMT=7/SIGFPE=8/SIGBUS=10/SIGSEGV=11）；Rust `is_lethal` 已实现（os/kernel/src/syscall_signal.rs:const SIGSNDELAY（L101，工具生成），§4.3） |
 | `m_sigcalls.endpt` | minix/ipc.h:2622 | 目标进程 endpoint（5 个信号 syscall 共用） |
 | `m_sigcalls.sig` | minix/ipc.h:2622 | 信号编号（KILL 用） |
 | `m_sigcalls.map` | minix/ipc.h:2622 | 待处理信号位图（GETKSIG 返回） |
 | `m_sigcalls.sigctx` | minix/ipc.h:2622 | sigcontext 指针（SIGSEND/SIGRETURN 用） |
 
-> Rust 对应 `MessSigcalls` (`os/libs/minix-types/src/ipc/message.rs:1025`)：`map: u64` / `endpt: i32` / `sig: i32` / `sigctx: u64`。
+> Rust 对应 `MessSigcalls` (`os/libs/minix-types/src/ipc/message.rs:struct MessLsysKernVsafecopy（L1025，工具生成）`)：`map: u64` / `endpt: i32` / `sig: i32` / `sigctx: u64`。
 
 ### 2.2 核心数据结构
 
@@ -204,15 +204,15 @@
 
 ### 2.3 关键函数 file:line 索引（行为契约）
 
-#### `do_kill()` — do_kill.c:17-38
+#### `do_kill()` — minix3/minix/kernel/system/do_kill.c:do_kill
 
 | 字段 | 内容 |
 |------|------|
 | 输入 | `caller`, `m_ptr`（含 `m_sigcalls.endpt` + `m_sigcalls.sig`） |
 | 输出 | 返回 OK / EINVAL / EPERM |
 | 副作用 | 调用 `cause_sig(proc_nr, sig_nr)` 修改 `p_pending` + `RTS_SIGNALED` |
-| 错误码 | EINVAL（无效 endpoint do_kill.c:30 或 `sig_nr >= _NSIG` do_kill.c:31）/ EPERM（目标为内核任务 do_kill.c:32） |
-| 时序 | 校验 → cause_sig (do_kill.c:35) → 返回 OK (do_kill.c:37) |
+| 错误码 | EINVAL（无效 endpoint minix3/minix/kernel/system/do_kill.c:do_kill（L30，工具生成） 或 `sig_nr >= _NSIG` minix3/minix/kernel/system/do_kill.c:do_kill（L31，工具生成））/ EPERM（目标为内核任务 minix3/minix/kernel/system/do_kill.c:do_kill（L32，工具生成）） |
+| 时序 | 校验 → cause_sig (minix3/minix/kernel/system/do_kill.c:do_kill（L35，工具生成）) → 返回 OK (minix3/minix/kernel/system/do_kill.c:do_kill（L37，工具生成）) |
 | 状态前置 | 调用者持 BKL；目标进程可能任意状态 |
 | 状态后置 | 目标 `p_pending` 含 sig_nr 位；若之前未 SIGNALED 则置 RTS_SIGNALED + SIG_PENDING |
 | 竞争条件 | `cause_sig` 内部去重检查（system.c:439）避免重复通知；BKL 保证原子性 |
@@ -230,54 +230,54 @@
 | 状态后置 | 目标进程 SIGNALED（若之前未）；SM 的 `s_sig_pending` 含 SIGKSIG |
 | 竞争条件 | BKL 保证原子性；C 注释（system.c:400-403）声明无竞争（信号函数仅在异常/内核进程级调用，run-to-completion） |
 
-#### `do_getksig()` — do_getksig.c:18-42
+#### `do_getksig()` — minix3/minix/kernel/system/do_getksig.c:do_getksig
 
 | 字段 | 内容 |
 |------|------|
 | 输入 | `caller`, `m_ptr` |
-| 输出 | `m_sigcalls.endpt`（找到的进程或 NONE do_getksig.c:40）+ `m_sigcalls.map`（信号位图 do_getksig.c:32） |
-| 副作用 | 清除目标的 `p_pending` (do_getksig.c:33) + `RTS_SIGNALED` (do_getksig.c:34) |
+| 输出 | `m_sigcalls.endpt`（找到的进程或 NONE minix3/minix/kernel/system/do_getksig.c:do_getksig（L40，工具生成））+ `m_sigcalls.map`（信号位图 minix3/minix/kernel/system/do_getksig.c:do_getksig（L32，工具生成）） |
+| 副作用 | 清除目标的 `p_pending` (minix3/minix/kernel/system/do_getksig.c:do_getksig（L33，工具生成）) + `RTS_SIGNALED` (minix3/minix/kernel/system/do_getksig.c:do_getksig（L34，工具生成）) |
 | 错误码 | 总是返回 OK（无信号时 endpt = NONE） |
-| 时序 | 线性扫描 BEG_USER_ADDR..END_PROC_ADDR (do_getksig.c:27) → RTS_SIGNALED 检查 (do_getksig.c:28) → sig_mgr 校验 (do_getksig.c:29) → 填消息 (do_getksig.c:31-32) → 清状态 (do_getksig.c:33-34) |
+| 时序 | 线性扫描 BEG_USER_ADDR..END_PROC_ADDR (minix3/minix/kernel/system/do_getksig.c:do_getksig（L27，工具生成）) → RTS_SIGNALED 检查 (minix3/minix/kernel/system/do_getksig.c:do_getksig（L28，工具生成）) → sig_mgr 校验 (minix3/minix/kernel/system/do_getksig.c:do_getksig（L29，工具生成）) → 填消息 (minix3/minix/kernel/system/do_getksig.c:do_getksig（L31，工具生成）) → 清状态 (minix3/minix/kernel/system/do_getksig.c:do_getksig（L33，工具生成）) |
 | 状态前置 | 调用者持 BKL；caller 是某个进程的 sig_mgr |
-| 状态后置 | 找到进程：`p_pending` 清空，RTS_SIGNALED 清除（`RTS_SIG_PENDING` 仍保留，注释 do_getksig.c:34 "blocked by SIG_PENDING"） |
+| 状态后置 | 找到进程：`p_pending` 清空，RTS_SIGNALED 清除（`RTS_SIG_PENDING` 仍保留，注释 minix3/minix/kernel/system/do_getksig.c:do_getksig（L34，工具生成） "blocked by SIG_PENDING"） |
 | 竞争条件 | BKL 保证扫描原子性 |
 
-#### `do_endksig()` — do_endksig.c:15-38
+#### `do_endksig()` — minix3/minix/kernel/system/do_endksig.c:do_endksig
 
 | 字段 | 内容 |
 |------|------|
 | 输入 | `caller`, `m_ptr`（含 `m_sigcalls.endpt`） |
 | 输出 | 返回 OK / EINVAL / EPERM |
-| 副作用 | 若无新信号：`RTS_UNSET(SIG_PENDING)` (do_endksig.c:36)；若有新信号：保留 SIG_PENDING 等下次 GETKSIG |
-| 错误码 | EINVAL（无效 endpoint do_endksig.c:27-28 或 SIG_PENDING 未设置 do_endksig.c:32）/ EPERM（caller 非 sig_mgr do_endksig.c:31） |
-| 时序 | 校验 endpoint → sig_mgr 校验 → SIG_PENDING 校验 → 检查新 SIGNALED (do_endksig.c:35) → 决定是否清除 SIG_PENDING |
+| 副作用 | 若无新信号：`RTS_UNSET(SIG_PENDING)` (minix3/minix/kernel/system/do_endksig.c:do_endksig（L36，工具生成）)；若有新信号：保留 SIG_PENDING 等下次 GETKSIG |
+| 错误码 | EINVAL（无效 endpoint minix3/minix/kernel/system/do_endksig.c:do_endksig（L27，工具生成） 或 SIG_PENDING 未设置 minix3/minix/kernel/system/do_endksig.c:do_endksig（L32，工具生成））/ EPERM（caller 非 sig_mgr minix3/minix/kernel/system/do_endksig.c:do_endksig（L31，工具生成）） |
+| 时序 | 校验 endpoint → sig_mgr 校验 → SIG_PENDING 校验 → 检查新 SIGNALED (minix3/minix/kernel/system/do_endksig.c:do_endksig（L35，工具生成）) → 决定是否清除 SIG_PENDING |
 | 状态前置 | 调用者持 BKL；目标有 SIG_PENDING |
 | 状态后置 | 若无新信号：SIG_PENDING 清除，进程可继续调度 |
 | 竞争条件 | BKL 保证 |
 
-#### `do_sigsend()` — do_sigsend.c:19-162
+#### `do_sigsend()` — minix3/minix/kernel/system/do_sigsend.c:do_sigsend
 
 | 字段 | 内容 |
 |------|------|
 | 输入 | `caller`, `m_ptr`（含 `m_sigcalls.endpt` + `m_sigcalls.sigctx`） |
 | 输出 | 返回 OK / EINVAL / EPERM / 数据拷贝错误 |
-| 副作用 | 修改目标 `p_reg`（sp/pc/fp/lr 等）+ `p_misc_flags`（清 `MF_FPU_INITIALIZED` do_sigsend.c:154，arm 设 `MF_CONTEXT_SET` do_sigsend.c:150） |
-| 错误码 | EINVAL（无效 endpoint do_sigsend.c:31 或 `trap_style==KTS_NONE` do_sigsend.c:79-81）/ EPERM（内核任务 do_sigsend.c:32）/ `data_copy_vmcheck` 错误 |
-| 时序 | 校验 → sigmsg 拷贝 (do_sigsend.c:36-39，可能 VMSUSPEND) → 计算 SP (do_sigsend.c:46-47) → 构建 sigcontext (do_sigsend.c:50-115，架构相关) → sigframe 拷贝 (do_sigsend.c:121-124，可能 VMSUSPEND) → **修改寄存器** (do_sigsend.c:134-151，必须最后) |
+| 副作用 | 修改目标 `p_reg`（sp/pc/fp/lr 等）+ `p_misc_flags`（清 `MF_FPU_INITIALIZED` minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L154，工具生成），arm 设 `MF_CONTEXT_SET` minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L150，工具生成）） |
+| 错误码 | EINVAL（无效 endpoint minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L31，工具生成） 或 `trap_style==KTS_NONE` minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L79，工具生成））/ EPERM（内核任务 minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L32，工具生成））/ `data_copy_vmcheck` 错误 |
+| 时序 | 校验 → sigmsg 拷贝 (minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L36，工具生成），可能 VMSUSPEND) → 计算 SP (minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L46，工具生成）) → 构建 sigcontext (minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L50，工具生成），架构相关) → sigframe 拷贝 (minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L121，工具生成），可能 VMSUSPEND) → **修改寄存器** (minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L134，工具生成），必须最后) |
 | 状态前置 | 调用者持 BKL；目标非内核任务 |
 | 状态后置 | 目标 `p_reg.sp = sigframe 地址`，`p_reg.pc = sighandler` |
 | 竞争条件 | VMSUSPEND 可重入；前 5 步幂等；第 6 步非幂等（见 §1.3） |
 
-#### `do_sigreturn()` — do_sigreturn.c:19-95
+#### `do_sigreturn()` — minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn
 
 | 字段 | 内容 |
 |------|------|
 | 输入 | `caller`, `m_ptr`（含 `m_sigcalls.endpt` + `m_sigcalls.sigctx`） |
 | 输出 | 返回 OK / EINVAL / EPERM / 数据拷贝错误 |
-| 副作用 | 修改目标 `p_reg`（恢复寄存器）+ `p_seg.p_kern_trap_style`（记录入口方式，arch_system.c:563）+ `p_misc_flags`（恢复 `MF_FPU_INITIALIZED` do_sigreturn.c:89） |
-| 错误码 | EINVAL（无效 endpoint do_sigreturn.c:28）/ EPERM（内核任务 do_sigreturn.c:29）/ `data_copy` 错误；Rust 增补：`sc.trap_style` 非法或 KTS_NONE → EINVAL（MINIX3 BUG 修复，见 §4.6） |
-| 时序 | 校验 → sigcontext 拷贝 (do_sigreturn.c:33-36) → **trap_style 校验（Rust 增补，先于一切状态修改）** → psw 用户位合并 (do_sigreturn.c:40-41，x86) → 恢复寄存器 (do_sigreturn.c:44-78，架构相关) → 记录 trap_style (arch_system.c:563) → `sc_magic` 校验 (do_sigreturn.c:83) → FPU 恢复 (do_sigreturn.c:85-93，x86) |
+| 副作用 | 修改目标 `p_reg`（恢复寄存器）+ `p_seg.p_kern_trap_style`（记录入口方式，arch_system.c:563）+ `p_misc_flags`（恢复 `MF_FPU_INITIALIZED` minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L89，工具生成）） |
+| 错误码 | EINVAL（无效 endpoint minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L28，工具生成））/ EPERM（内核任务 minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L29，工具生成））/ `data_copy` 错误；Rust 增补：`sc.trap_style` 非法或 KTS_NONE → EINVAL（MINIX3 BUG 修复，见 §4.6） |
+| 时序 | 校验 → sigcontext 拷贝 (minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L33，工具生成）) → **trap_style 校验（Rust 增补，先于一切状态修改）** → psw 用户位合并 (minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L40，工具生成），x86) → 恢复寄存器 (minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L44，工具生成），架构相关) → 记录 trap_style (arch_system.c:563) → `sc_magic` 校验 (minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L83，工具生成）) → FPU 恢复 (minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L85，工具生成），x86) |
 | 状态前置 | 调用者持 BKL；目标从信号处理器返回 |
 | 状态后置 | 目标 `p_reg` 恢复到 SIGSEND 之前；FPU 状态恢复 |
 | 竞争条件 | 用 `data_copy`（非 `data_copy_vmcheck`）不会 VMSUSPEND；sigreturn 不可重入 |
@@ -350,7 +350,7 @@
 - 如果用 `bitflags!` 宏：类型安全支持位组合（`|` / `&` / `contains`），但 64 个信号需列 64 个常量，冗长；且 `bitflags!` 语义是"标志位集合"而非"信号集合"——信号编号是协议常量非正交标志。
 - 所以用 **`SigSet(u64)` newtype**：类型安全（防止与普通 u64 混淆），单字段直接位运算，与 C `sigset_t` 语义对齐；提供 `add` / `remove` / `contains` / `clear` / `is_empty` / `get` 方法。
 
-> 设计决策：`design.md §2.1`。权威定义 `os/kernel/src/proc.rs:1100`。
+> 设计决策：`design.md §2.1`。权威定义 `os/kernel/src/proc.rs:impl ProcName（L1100，工具生成）`。
 
 ### D2. sigcontext 保存/恢复：trait 抽象替代 `#[cfg(target_arch)]`
 
@@ -358,7 +358,7 @@
 - 如果用函数指针表（C 方式）：类型不安全，且无法利用 Rust trait 静态分发优化。
 - 所以定义 **`trait SignalContext`**：把 sigcontext / sigframe 定义为关联类型（架构不同字段不同），各架构在 arch 层提供实现，内核 dispatch 调用 trait 方法。配合 D6 用泛型静态分发，零虚拟开销。
 
-> 设计决策：`design.md §2.4`。trait 定义 `os/arch/src/arch/signal_context.rs:154`。
+> 设计决策：`design.md §2.4`。trait 定义 `os/arch/src/arch/signal_context.rs:struct SignalInfo（L154，工具生成）`。
 
 ### D3. SIGSEND 寄存器修改时序：保留 C 的"拷贝后修改"约束
 
@@ -372,9 +372,9 @@
 
 - 如果用全局函数 `fn cause_signal(target_nr, sig_nr, proc_table, priv_table)`：参数列表长（4 个），且需访问 `ProcessTable` + `PrivTable` 两个表；调用方需先查表再传参。
 - 如果完全用 KProcess 方法 `fn cause_signal(&mut self, sig_nr, priv_table)`：封装 `p_pending` + `p_rts_flags` 操作；但 `cause_sig` 还需修改 SM 的 `s_sig_pending`，需访问 `PrivTable`，且 SELF 路径需查 `s_sig_mgr`，不能完全封装在 KProcess 内。
-- 所以当前用 **free function** `cause_signal(target_nr, sig_nr, proc_table, priv_table)` (`syscall_signal.rs:194`)：显式传入两个表，借用清晰；design §3.2 给出未来重构为 KProcess 方法的目标签名（需拆分借用）。
+- 所以当前用 **free function** `cause_signal(target_nr, sig_nr, proc_table, priv_table)` (`os/kernel/src/syscall_signal.rs:fn dispatch_kill（L194，工具生成）`)：显式传入两个表，借用清晰；design §3.2 给出未来重构为 KProcess 方法的目标签名（需拆分借用）。
 
-> 设计决策：`design.md §3.2`（目标方法签名）。当前实现 `os/kernel/src/syscall_signal.rs:194`。
+> 设计决策：`design.md §3.2`（目标方法签名）。当前实现 `os/kernel/src/syscall_signal.rs:fn dispatch_kill（L194，工具生成）`。
 
 ### D5. GETKSIG 进程扫描：线性扫描 vs 信号队列
 
@@ -382,7 +382,7 @@
 - 如果用线性扫描（C 方式）：O(N) 扫描所有进程；但进程数 < 128（`CONFIG_MAX_PROCS`），扫描成本可忽略；与 C 一致。
 - 所以用**线性扫描**：与 C 一致，简单可维护，性能足够。
 
-> 设计决策：`design.md` + design 快照 v2（致命 SELF 路径，见 19-design.v2）。实现 `os/kernel/src/syscall_signal.rs:194-322`（`cause_signal` 全函数，三路径 + 致命子路径）。
+> 设计决策：`design.md` + design 快照 v2（致命 SELF 路径，见 19-design.v2）。实现 `os/kernel/src/syscall_signal.rs:fn dispatch_kill（L194，工具生成）`（`cause_signal` 全函数，三路径 + 致命子路径）。
 
 ### D6. SIGSEND/SIGRETURN 架构相关代码：`#[cfg(target_arch)]` vs trait 静态分发
 
@@ -398,7 +398,7 @@
 - 如果用 `pub const SIGVTALRM: u32 = 26`：与 C 一致，跨 FFI 友好；调用方写 `SIGVTALRM` 而非 `Signal::Sigvtalrm`。
 - 所以用 **`pub const`**：与 C 一致，简单直接。
 
-> 设计决策：`design.md §2.2`。实现 `os/kernel/src/syscall_signal.rs:39-57`。
+> 设计决策：`design.md §2.2`。实现 `os/kernel/src/syscall_signal.rs:const NSIG`。
 
 ---
 
@@ -406,7 +406,7 @@
 
 ### 4.1 核心类型
 
-`SigSet` newtype 的权威定义在 `proc.rs:1100`（D1），全内核单一类型——`p_pending` / `s_sig_pending` / `SigMsg.mask` 均使用此 newtype，无局部别名。`syscall_signal.rs` 通过 `use crate::proc::SigSet` 导入复用，避免类型分裂。
+`SigSet` newtype 的权威定义在 `os/kernel/src/proc.rs:impl ProcName（L1100，工具生成）`（D1），全内核单一类型——`p_pending` / `s_sig_pending` / `SigMsg.mask` 均使用此 newtype，无局部别名。`syscall_signal.rs` 通过 `use crate::proc::SigSet` 导入复用，避免类型分裂。
 
 ```rust
 // os/kernel/src/proc.rs:1100
@@ -430,7 +430,7 @@ impl SigSet {
 }
 ```
 
-`Endpoint` newtype (`os/libs/minix-types/src/types/endpoint.rs:44`) 替代 C 的裸 `endpoint_t`，提供 `NONE` / `SELF` / `KERNEL` 常量，防止与普通 i32 混淆。
+`Endpoint` newtype (`os/libs/minix-types/src/types/endpoint.rs:struct Endpoint`) 替代 C 的裸 `endpoint_t`，提供 `NONE` / `SELF` / `KERNEL` 常量，防止与普通 i32 混淆。
 
 信号位掩码辅助函数（对齐 C `sig_mask`）：
 
@@ -467,7 +467,7 @@ pub(crate) const fn is_lethal(sig_nr: u32) -> bool {
 }
 ```
 
-> Rust 未定义常量：`SIGKSIGSM`（=73，signal.h:273）、`SC_MAGIC`（=0xc0ffee1，i386 signal.h:115）、`SIGSNDELAY`（=70，signal.h:264）——C 定义均已定位：SELF 路径通知直接经 `mini_notify_core` 实现（>64 的信号无法编码进 Rust `SigSet(u64)`，唤醒即 C 语义的全部内核动作，见 §4.3 语义澄清），`check_magic` 在 arch 层实现（§4.6），`sig_delay_done` 整体 DEFERRED（§4.7）。致命信号常量 `SIGILL`/`SIGEMT`/`SIGFPE`/`SIGBUS`/`SIGSEGV` 已定义（syscall_signal.rs:47-66），供 `is_lethal` 使用。
+> Rust 未定义常量：`SIGKSIGSM`（=73，signal.h:273）、`SC_MAGIC`（=0xc0ffee1，i386 signal.h:115）、`SIGSNDELAY`（=70，signal.h:264）——C 定义均已定位：SELF 路径通知直接经 `mini_notify_core` 实现（>64 的信号无法编码进 Rust `SigSet(u64)`，唤醒即 C 语义的全部内核动作，见 §4.3 语义澄清），`check_magic` 在 arch 层实现（§4.6），`sig_delay_done` 整体 DEFERRED（§4.7）。致命信号常量 `SIGILL`/`SIGEMT`/`SIGFPE`/`SIGBUS`/`SIGSEGV` 已定义（os/kernel/src/syscall_signal.rs:const SIGILL（L47，工具生成）），供 `is_lethal` 使用。
 
 ### 4.3 cause_signal 实现
 
@@ -587,14 +587,14 @@ pub(crate) fn cause_signal(
      `RTS_UNSET(backup, RTS_NO_PRIV)` + **递归 cause_signal 走外部路径**（让新 manager 收割）；
    - 无 backup → **`proc_stacktrace(rp)`**（C: system.c:429，对齐 C 语义，DIAGCTL 与 panic 共用助手 `crate::stacktrace::proc_stacktrace`，详 §4.7 与 [32-stack-tracing.md](32-stack-tracing.md) §4.5）+ `panic!`（自管理服务无人收割 = 系统不可恢复）。
 
-`is_lethal`（syscall_signal.rs:101-103）精确匹配 C `SIGS_IS_LETHAL`（signal.h:280-282）的六个信号。
+`is_lethal`（os/kernel/src/syscall_signal.rs:const SIGSNDELAY（L101，工具生成））精确匹配 C `SIGS_IS_LETHAL`（signal.h:280-282）的六个信号。
 
 > **语义澄清（2026-09-05）**：SELF 路径上 SIGKSIGSM/SIGKSIG（73/74）超出 Rust `SigSet(u64)`
 > 位宽，add 为 no-op；二者的内核动作就是"唤醒"，由 `mini_notify_core` 完成，行为保持。
 > `s_sig_pending`（≤64 位部分）的消费方在 ipc 通知投递路径——SYSTEM 源通知送达时被编码进
 > `m_notify.sigset` 并清空（ipc.rs:1776-1782）。
 
-> **DIAGCTL `send_sig(caller→自身, SIGKMESS)` 设计 no-op（D-14，2026-09-06）**：DIAGCTL_CODE_REGISTER 路径（do_diagctl.c:49-56）设 `s_diag_sig=true` 后，C 仅在 `kmess.km_size > 0` 时向**注册者自身**（非 todo 原文所写 PM）发 SIGKMESS（=72，sys/sys/signal.h:272）。W-7 演进移除 kmess 缓冲后：条件输入不存在（恒不触发）、广播触发点（END_OF_KMESS，system.c:481）不存在、唯一消费者 log 驱动（log.c:115）读取角色被 EarlyConsole 替代、72>64 超 SigSet 位宽。订阅状态生命周期已完备（REGISTER/UNREGISTER + SET_SYS 清除 `reset_pending_ipc`）。已知缺口：sys_update 状态转移不携带 s_diag_sig（do_update.c:293 有）——随 sys_update 实现处理。测试：`test_dispatch_diagctl_register_unregister_lifecycle` / `test_dispatch_diagctl_register_denied_without_sys_proc`。
+> **DIAGCTL `send_sig(caller→自身, SIGKMESS)` 设计 no-op（D-14，2026-09-06）**：DIAGCTL_CODE_REGISTER 路径（minix3/minix/kernel/system/do_diagctl.c:do_diagctl（L49，工具生成））设 `s_diag_sig=true` 后，C 仅在 `kmess.km_size > 0` 时向**注册者自身**（非 todo 原文所写 PM）发 SIGKMESS（=72，sys/sys/signal.h:272）。W-7 演进移除 kmess 缓冲后：条件输入不存在（恒不触发）、广播触发点（END_OF_KMESS，system.c:481）不存在、唯一消费者 log 驱动（log.c:115）读取角色被 EarlyConsole 替代、72>64 超 SigSet 位宽。订阅状态生命周期已完备（REGISTER/UNREGISTER + SET_SYS 清除 `reset_pending_ipc`）。已知缺口：sys_update 状态转移不携带 s_diag_sig（minix3/minix/kernel/system/do_update.c:adjust_priv_slot（L293，工具生成） 有）——随 sys_update 实现处理。测试：`test_dispatch_diagctl_register_unregister_lifecycle` / `test_dispatch_diagctl_register_denied_without_sys_proc`。
 
 ### 4.4 dispatch_getksig / dispatch_endksig 实现
 
@@ -641,9 +641,9 @@ pub fn dispatch_getksig(
 }
 ```
 
-> **状态对齐说明**：C 源码 do_getksig.c:34 注释 "blocked by SIG_PENDING"——GETKSIG 只清 `RTS_SIGNALED`，不清 `RTS_SIG_PENDING`（后者由 ENDKSIG 清），因此进程在 SM 处理期间仍被 `RTS_SIG_PENDING` 阻塞调度。Rust 实现一致。
+> **状态对齐说明**：C 源码 minix3/minix/kernel/system/do_getksig.c:do_getksig（L34，工具生成） 注释 "blocked by SIG_PENDING"——GETKSIG 只清 `RTS_SIGNALED`，不清 `RTS_SIG_PENDING`（后者由 ENDKSIG 清），因此进程在 SM 处理期间仍被 `RTS_SIG_PENDING` 阻塞调度。Rust 实现一致。
 
-`dispatch_endksig`（`syscall_signal.rs:351-406`）四步校验对齐 do_endksig.c:27-37：endpoint 校验 → sig_mgr 校验（EPERM）→ SIG_PENDING 校验（EINVAL）→ 无新 SIGNALED 则清 SIG_PENDING。
+`dispatch_endksig`（`os/kernel/src/syscall_signal.rs:fn cause_signal（L351，工具生成）`）四步校验对齐 minix3/minix/kernel/system/do_endksig.c:do_endksig（L27，工具生成）：endpoint 校验 → sig_mgr 校验（EPERM）→ SIG_PENDING 校验（EINVAL）→ 无新 SIGNALED 则清 SIG_PENDING。
 
 ### 4.5 dispatch_sigsend / dispatch_sigreturn（已实现：data_copy_vmcheck + SignalContext）
 
@@ -703,13 +703,13 @@ pub fn dispatch_sigsend(
 }
 ```
 
-`dispatch_sigreturn`（`syscall_signal.rs:690-776`）同样已接入完整流程：
+`dispatch_sigreturn`（`os/kernel/src/syscall_signal.rs:fn dispatch_sigsend（L690，工具生成）`）同样已接入完整流程：
 
 1. **拷贝 sigcontext**：用 `data_copy_vmcheck` 从目标用户栈拷贝 `SigContext`（C 用 `data_copy` 无 vmcheck；Rust 统一用 `data_copy_vmcheck`，因为用户栈页可能未映射）
 2. **校验 trap_style**：`TrapStyle::from_raw(get_trap_style(&sctx))`——未知值或 KTS_NONE 直接 EINVAL，寄存器保持原样（MINIX3 BUG 修复，见下方 trait 块后的设计说明）
 3. **恢复寄存器并记录入口方式**：`CurrentSignalContext::restore_sigcontext` + `target.trap_style = style`（C: arch_system.c:563）
-4. **校验 magic**：`check_magic(&sctx)`（仅警告，不返回错误，对齐 C: do_sigreturn.c:83）
-5. **FPU 状态恢复**：64-bit 不恢复 FPU 状态（对齐 C: do_sigreturn.c:85-93 的 `#if defined(__i386__)` gating）。64-bit 信号投递路径（`do_sigsend.c:154`）清除 `MF_FPU_INITIALIZED`，信号处理器通过 lazy trap-on-first-FP-instruction 机制获得干净 FPU；sigreturn 不恢复 pre-signal FPU 状态。`KProcess.fpu_state` 缓冲区由 SMP 迁移 SAVE_CTX 路径（`smp.rs:497-527`）使用，不参与 64-bit 信号投递/返回（与 C 行为一致）
+4. **校验 magic**：`check_magic(&sctx)`（仅警告，不返回错误，对齐 C: minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L83，工具生成））
+5. **FPU 状态恢复**：64-bit 不恢复 FPU 状态（对齐 C: minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L85，工具生成） 的 `#if defined(__i386__)` gating）。64-bit 信号投递路径（`minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L154，工具生成）`）清除 `MF_FPU_INITIALIZED`，信号处理器通过 lazy trap-on-first-FP-instruction 机制获得干净 FPU；sigreturn 不恢复 pre-signal FPU 状态。`KProcess.fpu_state` 缓冲区由 SMP 迁移 SAVE_CTX 路径（`smp.rs:497-527`）使用，不参与 64-bit 信号投递/返回（与 C 行为一致）
 
 ### 4.6 SignalContext trait（已实现：三架构 arch impl）
 
@@ -758,7 +758,7 @@ pub trait SignalContext: Sized + Send + Sync {
 
 #### 4.6.1 trap_style：入口方式的记录、往返与返回分流（2026-09-07 落地，V12-A1）
 
-**机制是什么**：C 给每个进程记一个 `p_kern_trap_style`（i386 archtypes.h:36，`KTS_*` 编号 archconst.h:167-172），回答"这个进程上次是怎么进内核的"。它的消费方有三处：返回路径 `restore_user_context` 按它选择寄存器恢复序列（arch_system.c:577-610——中断入口保存了完整帧走 iret 类返回，SYSCALL 快速入口只存了瘦帧、必须配 sysret 类返回）；`proc_stacktrace` 按它决定栈回溯策略（exception.c:337-341）；嵌套调试异常按它判定合法性（exception.c:231-234）。信号往返是这个机制最精巧的使用：SIGSEND 把当时的入口方式盖进 sigframe（do_sigsend.c:77），SIGRETURN 再写回去（do_sigreturn.c:81），于是"从信号处理器返回"走的和"被打断那次进入"是同一条路。
+**机制是什么**：C 给每个进程记一个 `p_kern_trap_style`（i386 archtypes.h:36，`KTS_*` 编号 archconst.h:167-172），回答"这个进程上次是怎么进内核的"。它的消费方有三处：返回路径 `restore_user_context` 按它选择寄存器恢复序列（arch_system.c:577-610——中断入口保存了完整帧走 iret 类返回，SYSCALL 快速入口只存了瘦帧、必须配 sysret 类返回）；`proc_stacktrace` 按它决定栈回溯策略（exception.c:337-341）；嵌套调试异常按它判定合法性（exception.c:231-234）。信号往返是这个机制最精巧的使用：SIGSEND 把当时的入口方式盖进 sigframe（minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L77，工具生成）），SIGRETURN 再写回去（minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L81，工具生成）），于是"从信号处理器返回"走的和"被打断那次进入"是同一条路。
 
 **为什么字段在 KProcess 而不在 CpuContext**：C 把 `p_kern_trap_style` 放在 `p_seg`（保存帧）里、与寄存器结构 `p_reg` 并列而非其内部——它是"关于这次陷入的内核簿记"，不是用户寄存器状态。Rust 若把它塞进 `CpuContext` 会制造两个问题：`restore_sigcontext` 用用户输入整体覆写 `CpuContext`，内核簿记可能被顺带清掉（正确性依赖调用顺序）；`build_sigcontext` 捕获寄存器快照时又得小心排除它（泄漏面）。所以 Rust 把它放成 `KProcess.trap_style: TrapStyle`（`os/kernel/src/proc.rs`，紧邻 `cpu_context`），与 C 的分层完全同构。
 
@@ -784,22 +784,22 @@ Linux/Redox 对照：Linux 的返回路径标记（`TIF_*`）挂 `thread_info`�
 
 | 功能 | C 位置 | Rust 位置 | 状态 / DEFERRED 理由 |
 |------|--------|----------|---------------------|
-| SIGKSIG 通知（mini_notify） | system.c:445-446（send_sig 内 system.c:381） | syscall_signal.rs:300-325 | ✅ 已实现: SM 的 `s_sig_pending.add(SIGKSIG)`（>64 → no-op）+ `mini_notify_core` 唤醒 **SM 自身**（源 = SYSTEM） |
-| cause_sig SELF 路径 | system.c:416,433-434 | syscall_signal.rs:258-278 | ✅ 已实现: 目标自身 `s_sig_pending.add(sig_nr)` + `mini_notify_core` 唤醒目标自身（SIGKSIGSM=73 >64 位宽无法编码，唤醒即 C 的全部内核动作） |
-| cause_sig 去重检查 | system.c:439-441 | syscall_signal.rs:285-286 | ✅ 已实现: 以 `RTS_SIGNALED` 判定 was_signaled（等价于 C 的 sigismember 门控——sigaddset 幂等）；未置 SIGNALED 时不再重复通知 |
-| **cause_sig 致命 SELF 路径（backup 切换 / proc_stacktrace / panic）** | system.c:417-432 | syscall_signal.rs:210-256（`is_lethal` 101-103）+ syscall_signal.rs:251-260（panic 前 proc_stacktrace 调用，`#[cfg(not(test))]`） | ✅ **完整已实现（2026-09-05，todo D-11 + D-57）**: `is_lethal` 判定 → 查 `s_bak_sig_mgr`；有效则提升（`s_sig_mgr`←backup、`s_bak_sig_mgr`←NONE、`RTS_UNSET(NO_PRIV)`）并**递归走外部路径**；无 backup → **`proc_stacktrace(rp)`**（C: system.c:429）→ `panic!("cause_sig: sig manager …")`。proc_stacktrace 与 SYS_DIAGCTL_CODE_STACKTRACE 共用 `crate::stacktrace::proc_stacktrace`（32-stack-tracing.md §4.5），保证两路径的栈回溯输出格式完全一致。`#[cfg(not(test))]` 守门仅在测试模式下禁用 proc_stacktrace（因为 x86_64 hosted test 进程无 `iopl` 权限，写 COM1 UART 会 SIGSEGV）；生产内核 BKL 临界区调用栈回溯受 `is_lethal` 失败容错保护（`PRCOPY` 失败→ `None` → 占位符 → 终止，最坏情况是丢失一帧但不会二次崩溃）。测试：`test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` |
-| dispatch_sigsend 完整流程 | do_sigsend.c:19-162 | syscall_signal.rs:516-689 | ✅ 已实现: data_copy_vmcheck + SignalContext |
-| dispatch_sigreturn 完整流程 | do_sigreturn.c:19-95 | syscall_signal.rs:690-776 | ✅ 已实现: data_copy_vmcheck + SignalContext |
-| sigframe 构建（架构相关） | do_sigsend.c:50-118 | arch/{x86_64,arm64,riscv64}/signal.rs | ✅ 已实现: SignalContext::build_sigframe |
-| SignalContext x86_64 impl | do_sigsend.c:53-89 | arch/x86_64/signal.rs | ✅ 已实现 |
-| SignalContext aarch64 impl | do_sigsend.c:91-110 | arch/arm64/signal.rs | ✅ 已实现 |
+| SIGKSIG 通知（mini_notify） | system.c:445-446（send_sig 内 system.c:381） | os/kernel/src/syscall_signal.rs:fn cause_signal（L300，工具生成） | ✅ 已实现: SM 的 `s_sig_pending.add(SIGKSIG)`（>64 → no-op）+ `mini_notify_core` 唤醒 **SM 自身**（源 = SYSTEM） |
+| cause_sig SELF 路径 | system.c:416,433-434 | os/kernel/src/syscall_signal.rs:fn cause_signal（L258，工具生成） | ✅ 已实现: 目标自身 `s_sig_pending.add(sig_nr)` + `mini_notify_core` 唤醒目标自身（SIGKSIGSM=73 >64 位宽无法编码，唤醒即 C 的全部内核动作） |
+| cause_sig 去重检查 | system.c:439-441 | os/kernel/src/syscall_signal.rs:fn cause_signal（L285，工具生成） | ✅ 已实现: 以 `RTS_SIGNALED` 判定 was_signaled（等价于 C 的 sigismember 门控——sigaddset 幂等）；未置 SIGNALED 时不再重复通知 |
+| **cause_sig 致命 SELF 路径（backup 切换 / proc_stacktrace / panic）** | system.c:417-432 | os/kernel/src/syscall_signal.rs:fn dispatch_kill（L210，工具生成）（`is_lethal` 101-103）+ os/kernel/src/syscall_signal.rs:fn cause_signal（L251，工具生成）（panic 前 proc_stacktrace 调用，`#[cfg(not(test))]`） | ✅ **完整已实现（2026-09-05，todo D-11 + D-57）**: `is_lethal` 判定 → 查 `s_bak_sig_mgr`；有效则提升（`s_sig_mgr`←backup、`s_bak_sig_mgr`←NONE、`RTS_UNSET(NO_PRIV)`）并**递归走外部路径**；无 backup → **`proc_stacktrace(rp)`**（C: system.c:429）→ `panic!("cause_sig: sig manager …")`。proc_stacktrace 与 SYS_DIAGCTL_CODE_STACKTRACE 共用 `crate::stacktrace::proc_stacktrace`（32-stack-tracing.md §4.5），保证两路径的栈回溯输出格式完全一致。`#[cfg(not(test))]` 守门仅在测试模式下禁用 proc_stacktrace（因为 x86_64 hosted test 进程无 `iopl` 权限，写 COM1 UART 会 SIGSEGV）；生产内核 BKL 临界区调用栈回溯受 `is_lethal` 失败容错保护（`PRCOPY` 失败→ `None` → 占位符 → 终止，最坏情况是丢失一帧但不会二次崩溃）。测试：`test_cause_signal_self_lethal_promotes_backup` / `test_cause_signal_self_lethal_no_backup_panics` |
+| dispatch_sigsend 完整流程 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend | os/kernel/src/syscall_signal.rs:fn dispatch_endksig（L516，工具生成） | ✅ 已实现: data_copy_vmcheck + SignalContext |
+| dispatch_sigreturn 完整流程 | minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn | os/kernel/src/syscall_signal.rs:fn dispatch_sigsend（L690，工具生成） | ✅ 已实现: data_copy_vmcheck + SignalContext |
+| sigframe 构建（架构相关） | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L50，工具生成） | arch/{x86_64,arm64,riscv64}/signal.rs | ✅ 已实现: SignalContext::build_sigframe |
+| SignalContext x86_64 impl | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L53，工具生成） | arch/x86_64/signal.rs | ✅ 已实现 |
+| SignalContext aarch64 impl | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L91，工具生成） | arch/arm64/signal.rs | ✅ 已实现 |
 | SignalContext riscv64 impl | — | arch/riscv64/signal.rs | ✅ 已实现（C 源码未实现，按 RISC-V ELF psABI 独立设计） |
 | sig_delay_done | system.c:454-464 | proc_table.rs `ProcessTable::sig_delay_done` | ✅ **已实现（2026-09-05，todo D-13）**：清 `MF_SIG_DELAY` + `cause_signal(SIGSNDELAY)`；双路接线见 §4.8 |
 | **SC_TRACE → SIGTRAP（调度循环追踪信号）** | proc.c:392-398 | proc_table.rs `process_misc_flags` `SC_TRACE` 分支 | ✅ **已实现（2026-09-05，todo D-43）**：清 `MF_SC_TRACE\|MF_SC_ACTIVE` 后 `cause_signal(SIGTRAP)` 就地路由；外部管理 → `RTS_SIGNALED` → `process_misc_flags` 返回 `false` 重调度（C proc.c:413），自管理（SELF 路径）仅唤醒、标志已清循环自然退出。设计决策见 [10-switch-to-user.md](10-switch-to-user.md) §3.3 |
 | **delivermsg Segfault → SIGSEGV（接收缓冲区致命失败）** | proc.c:271-278（delivermsg 内联） | proc_table.rs `process_misc_flags` `DeliverResult::Segfault` 分支 | ✅ **已实现（2026-09-05，todo D-45）**：`ipc::delivermsg` 保持无表访问（FIX-20 契约），`Segfault` 结果由消费侧 `process_misc_flags` 路由 `cause_signal(SIGSEGV)`；C 的 WARNING printf 以 `#[cfg(not(test))]` EarlyConsole 输出保留（同 proc_stacktrace gate）。首错 `PageFault` 分支（vm_suspend，todo D-44）仍 DEFERRED |
-| DIAGCTL send_sig(PM_PROC_NR, SIGKMESS) | do_diagctl.c:49-56 | syscall.rs:2271-2315 | DEFERRED: DIAGCTL dispatch 已持借用，与 PM endpoint 全局查找冲突；PM 下次 getksig 轮询可观察到 |
-| FPU 状态 save/restore（信号路径） | do_sigsend.c:84-88,156, do_sigreturn.c:85-93 | syscall_signal.rs:670（sigsend 清 MF_FPU_INITIALIZED）/ 766（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
-| trap_style 校验 | do_sigsend.c:79-82 | syscall_signal.rs `dispatch_sigsend` 前置校验 + `KProcess.trap_style` + arch `TrapStyle`（trap_style.rs） | ✅ **已实现（2026-09-07，todo V12-A1）**：sigsend 未保存进程 EINVAL（前置、先于拷贝）；sigreturn 校验先行（MINIX3 BUG 修复）；返回闸门 `finish_and_restore` 按 `TrapStyle` 分流（详 §4.6.1） |
+| DIAGCTL send_sig(PM_PROC_NR, SIGKMESS) | minix3/minix/kernel/system/do_diagctl.c:do_diagctl（L49，工具生成） | syscall.rs:2271-2315 | DEFERRED: DIAGCTL dispatch 已持借用，与 PM endpoint 全局查找冲突；PM 下次 getksig 轮询可观察到 |
+| FPU 状态 save/restore（信号路径） | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L84，工具生成）,156, minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L85，工具生成） | os/kernel/src/syscall_signal.rs:fn dispatch_sigsend（L670，工具生成）（sigsend 清 MF_FPU_INITIALIZED）/ 766（sigreturn 不恢复） | ✅ 已对齐 C: 64-bit C 源码 `#if defined(__i386__)` gating → 64-bit 信号路径不 save/restore FPU；`KProcess.fpu_state` 由 SMP SAVE_CTX 使用，不参与信号路径（与 C 一致） |
+| trap_style 校验 | minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L79，工具生成） | syscall_signal.rs `dispatch_sigsend` 前置校验 + `KProcess.trap_style` + arch `TrapStyle`（trap_style.rs） | ✅ **已实现（2026-09-07，todo V12-A1）**：sigsend 未保存进程 EINVAL（前置、先于拷贝）；sigreturn 校验先行（MINIX3 BUG 修复）；返回闸门 `finish_and_restore` 按 `TrapStyle` 分流（详 §4.6.1） |
 
 ### 4.8 sig_delay_done 实现：停止延迟的"何时结束"与"谁来通知"
 
@@ -849,24 +849,24 @@ Linux/Redox 对照：Linux 的返回路径标记（`TIF_*`）挂 `thread_info`�
 
 | 测试函数 | 行号（2026-09-05） | 验证行为 | 对应 C 符号 |
 |---------|------|---------|------------|
-| `test_sig_mask` | syscall_signal.rs:792 | sig_mask 信号编号到位掩码转换 | `sig_mask` |
-| `test_nsig` | syscall_signal.rs:801 | NSIG=64 与 C `_NSIG` 对齐 | `_NSIG` |
-| `test_signal_constants` | syscall_signal.rs:806 | SIGVTALRM/SIGPROF/SIGABRT/SIGTRAP 数值与 C 对齐 | `SIGVTALRM` 等 |
-| `test_sigsend_invalid_endpoint` | syscall_signal.rs:814 | 无效 endpoint 返回 EINVAL | `do_sigsend.c:31` |
-| `test_sigsend_kernel_process` | syscall_signal.rs:825 | 内核任务返回 EPERM（或 EINVAL，见注） | `do_sigsend.c:32` |
-| `test_sigreturn_invalid_endpoint` | syscall_signal.rs:838 | 无效 endpoint 返回 EINVAL | `do_sigreturn.c:28` |
-| `test_sigmsg_struct` | syscall_signal.rs:848 | SigMsg `#[repr(C)]` 字段顺序与 C `struct sigmsg` 对齐 | `struct sigmsg` |
-| `test_is_lethal` | syscall_signal.rs:864 | 六致命信号 true / 非致命与内核信号 false | `SIGS_IS_LETHAL` |
-| `test_cause_signal_external_path_notifies_manager` | syscall_signal.rs:924 | 外部路径：p_pending + RTS_SIGNALED + 通知管理器 | `cause_sig` 外部路径 |
-| `test_cause_signal_dedup_does_not_notify_twice` | syscall_signal.rs:948 | SIGNALED 期间二次投递不重复通知 | `cause_sig` 去重（system.c:443） |
-| `test_cause_signal_self_path_non_lethal` | syscall_signal.rs:978 | 自管理非致命：写自身 s_sig_pending，不设 RTS_SIGNALED | `cause_sig` SELF 路径 |
-| `test_cause_signal_self_lethal_promotes_backup` | syscall_signal.rs:998 | 致命 SELF：backup 提升 + NO_PRIV 解除 + 递归外部投递 | `cause_sig` 致命路径 |
-| `test_cause_signal_self_lethal_no_backup_panics` | syscall_signal.rs:1030 | 致命 SELF + 无 backup → panic | `cause_sig` 致命路径 |
-| `test_getksig_delivers_pending_then_reports_none` | syscall_signal.rs:1144 | GETKSIG 全生命周期：找到 SIGNALED 目标回填 (endpt, map) 并清状态；二次调用返回 NONE | `do_getksig.c:27-40`（T-1，2026-09-08） |
-| `test_endksig_clears_sig_pending_when_no_new_signal` | syscall_signal.rs:1183 | ENDKSIG 无新信号时清除 RTS_SIG_PENDING | `do_endksig.c:35-36`（T-1，2026-09-08） |
-| `test_endksig_keeps_sig_pending_when_new_signal_arrived` | syscall_signal.rs:1205 | ENDKSIG 有新信号（SIGNALED 置位）时保留 SIG_PENDING | `do_endksig.c:35`（T-1，2026-09-08） |
-| `test_sigsend_unmapped_sigctx_returns_vmsuspend` | syscall_signal.rs:1230 | SIGSEND sigmsg 拷贝遇未映射 sigctx → VmSuspend | `do_sigsend.c:36-39`（T-1，2026-09-08） |
-| `test_sigreturn_unmapped_sigctx_returns_vmsuspend` | syscall_signal.rs:1252 | SIGRETURN sigcontext 拷回遇未映射 sigctx → VmSuspend | `do_sigreturn.c:33-35`（T-1，2026-09-08） |
+| `test_sig_mask` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L792，工具生成） | sig_mask 信号编号到位掩码转换 | `sig_mask` |
+| `test_nsig` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L801，工具生成） | NSIG=64 与 C `_NSIG` 对齐 | `_NSIG` |
+| `test_signal_constants` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L806，工具生成） | SIGVTALRM/SIGPROF/SIGABRT/SIGTRAP 数值与 C 对齐 | `SIGVTALRM` 等 |
+| `test_sigsend_invalid_endpoint` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L814，工具生成） | 无效 endpoint 返回 EINVAL | `minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L31，工具生成）` |
+| `test_sigsend_kernel_process` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L825，工具生成） | 内核任务返回 EPERM（或 EINVAL，见注） | `minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L32，工具生成）` |
+| `test_sigreturn_invalid_endpoint` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L838，工具生成） | 无效 endpoint 返回 EINVAL | `minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L28，工具生成）` |
+| `test_sigmsg_struct` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L848，工具生成） | SigMsg `#[repr(C)]` 字段顺序与 C `struct sigmsg` 对齐 | `struct sigmsg` |
+| `test_is_lethal` | os/kernel/src/syscall_signal.rs:fn dispatch_sigreturn（L864，工具生成） | 六致命信号 true / 非致命与内核信号 false | `SIGS_IS_LETHAL` |
+| `test_cause_signal_external_path_notifies_manager` | os/kernel/src/syscall_signal.rs:fn test_sigreturn_invalid_endpoint（L924，工具生成） | 外部路径：p_pending + RTS_SIGNALED + 通知管理器 | `cause_sig` 外部路径 |
+| `test_cause_signal_dedup_does_not_notify_twice` | os/kernel/src/syscall_signal.rs:fn test_sigsend_unsaved_process_returns_einval（L948，工具生成） | SIGNALED 期间二次投递不重复通知 | `cause_sig` 去重（system.c:443） |
+| `test_cause_signal_self_path_non_lethal` | os/kernel/src/syscall_signal.rs:fn test_is_lethal（L978，工具生成） | 自管理非致命：写自身 s_sig_pending，不设 RTS_SIGNALED | `cause_sig` SELF 路径 |
+| `test_cause_signal_self_lethal_promotes_backup` | os/kernel/src/syscall_signal.rs:fn occupy_two_slots（L998，工具生成） | 致命 SELF：backup 提升 + NO_PRIV 解除 + 递归外部投递 | `cause_sig` 致命路径 |
+| `test_cause_signal_self_lethal_no_backup_panics` | os/kernel/src/syscall_signal.rs:fn test_cause_signal_external_path_notifies_manager（L1030，工具生成） | 致命 SELF + 无 backup → panic | `cause_sig` 致命路径 |
+| `test_getksig_delivers_pending_then_reports_none` | os/kernel/src/syscall_signal.rs:fn test_getksig_delivers_pending_then_reports_none | GETKSIG 全生命周期：找到 SIGNALED 目标回填 (endpt, map) 并清状态；二次调用返回 NONE | `minix3/minix/kernel/system/do_getksig.c:do_getksig（L27，工具生成）`（T-1，2026-09-08） |
+| `test_endksig_clears_sig_pending_when_no_new_signal` | os/kernel/src/syscall_signal.rs:fn test_endksig_clears_sig_pending_when_no_new_signal | ENDKSIG 无新信号时清除 RTS_SIG_PENDING | `minix3/minix/kernel/system/do_endksig.c:do_endksig（L35，工具生成）`（T-1，2026-09-08） |
+| `test_endksig_keeps_sig_pending_when_new_signal_arrived` | os/kernel/src/syscall_signal.rs:fn test_endksig_keeps_sig_pending_when_new_signal_arrived | ENDKSIG 有新信号（SIGNALED 置位）时保留 SIG_PENDING | `minix3/minix/kernel/system/do_endksig.c:do_endksig（L35，工具生成）`（T-1，2026-09-08） |
+| `test_sigsend_unmapped_sigctx_returns_vmsuspend` | os/kernel/src/syscall_signal.rs:fn test_sigsend_unmapped_sigctx_returns_vmsuspend | SIGSEND sigmsg 拷贝遇未映射 sigctx → VmSuspend | `minix3/minix/kernel/system/do_sigsend.c:do_sigsend（L36，工具生成）`（T-1，2026-09-08） |
+| `test_sigreturn_unmapped_sigctx_returns_vmsuspend` | os/kernel/src/syscall_signal.rs:fn test_sigreturn_unmapped_sigctx_returns_vmsuspend | SIGRETURN sigcontext 拷回遇未映射 sigctx → VmSuspend | `minix3/minix/kernel/system/do_sigreturn.c:do_sigreturn（L33，工具生成）`（T-1，2026-09-08） |
 
 > 注：`test_sigsend_kernel_process` 当前因 `endpoint_to_nr` 找不到内核进程返回 EINVAL（非 EPERM），因测试用空 ProcessTable 无内核任务槽；语义上 iskerneln 应返回 EPERM，待 ProcessTable 测试基建完善后细化。
 

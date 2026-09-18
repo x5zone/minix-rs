@@ -62,9 +62,9 @@ C 把三组塞进互相引用的三个头文件（server `devman.h`、server `de
 
 ### 2.7 同名双生：两个 `devman_dev`（布局不同，wire 才是真契约）
 
-`rg struct devman_dev` 命中两处**不同定义**：服务端 `devinfo.h:5`的 `devman_dev`（`dev_id`/`parent_dev_id`/`name*`/`subsys*`/`data*`/`attrs`——解码目标，07 用）与客户端 `local.h:9` 的 `devman_dev`（`name[32]` 定长数组 + `bind_cb`/`unbind_cb` 回调 + `dev_list` 链——10 用）。同名不同形：两者永不在同一编译单元相遇（server 含 devinfo.h，lib 含 local.h），真正的接口是 wire 字节（§2.4）而非任一 struct。Rust 侧无此问题：`wire::ParsedDevice`（解码）与 10 的客户端类型（编码，10 建）各一名。03 登记此处，10 §2 会从客户端复述并指回本节。
+`rg struct devman_dev` 命中两处**不同定义**：服务端 `minix3/minix/servers/devman/devinfo.h:devman_dev`的 `devman_dev`（`dev_id`/`parent_dev_id`/`name*`/`subsys*`/`data*`/`attrs`——解码目标，07 用）与客户端 `local.h:9` 的 `devman_dev`（`name[32]` 定长数组 + `bind_cb`/`unbind_cb` 回调 + `dev_list` 链——10 用）。同名不同形：两者永不在同一编译单元相遇（server 含 devinfo.h，lib 含 local.h），真正的接口是 wire 字节（§2.4）而非任一 struct。Rust 侧无此问题：`wire::ParsedDevice`（解码）与 10 的客户端类型（编码，10 建）各一名。03 登记此处，10 §2 会从客户端复述并指回本节。
 
-### 2.4 wire 格式：头 + 条目 + 字符串区（devman.h:8-20 公共镜像 ≡ devinfo.h:21-33 服务端镜像）
+### 2.4 wire 格式：头 + 条目 + 字符串区（devman.h:8-20 公共镜像 ≡ minix3/minix/servers/devman/devinfo.h:devman_device_info 服务端镜像）
 
 两处定义逐字段相同（diff 空——公共头是契约，服务端镜像是为免 include 公共头的重复，注释无说明，属 C 组织债；Rust 只实现一份 `wire.rs`）。布局以 `serialize_dev`（generic.c:36-99）为实证：
 
@@ -77,7 +77,7 @@ C 把三组塞进互相引用的三个头文件（server `devman.h`、server `de
 三个需特别处理的 wire 字段（细读 serializer 逐行确认）：
 
 1. **`subsystem_offset` 从不写入**：`serialize_dev` 没有对它的赋值语句（generic.c:78-83 只写 count/parent/name 三项）——wire 上是 malloc 残留垃圾，server 从不读（device.c 零引用，grep 实证）。Rust 解码忽略、编码写 0（10 实现时）。
-2. **`req_nr` 读写两端皆死**：serializer 无赋值（条目循环只写 type/name/data，generic.c:86-94），devman 域内零读取（`rg req_nr servers/devman/ lib/libdevman/ include/minix/devman.h` 唯一命中是 `devinfo.h:32` 定义本身；全树另有 mfs 的同名无关变量，已排除）——每条目 4 字节垃圾，wire 兼容保留。Rust 原样携带不解释。
+2. **`req_nr` 读写两端皆死**：serializer 无赋值（条目循环只写 type/name/data，generic.c:86-94），devman 域内零读取（`rg req_nr servers/devman/ lib/libdevman/ include/minix/devman.h` 唯一命中是 `minix3/minix/servers/devman/devinfo.h:devman_device_info_entry（L32，工具生成）` 定义本身；全树另有 mfs 的同名无关变量，已排除）——每条目 4 字节垃圾，wire 兼容保留。Rust 原样携带不解释。
 3. **`type` 恒 0**：`entry->type = 0; /* TODO: use macro */`（generic.c:88）——客户端永远发 STATIC；DYNAMIC 只存在于枚举定义与 device.c:413 的 TODO fall-through（A-6，05/07）。
 
 另有 `#if 0` 包住的 `bus` 字段（generic.c:80-83）：死代码，连编译都不进——03 登记，10 不实现。
@@ -185,4 +185,4 @@ os/servers/devman/src/
 - `06-event-buf.md` — 事件队列与 `read_fn` 实现（`Event`/`FileBinding` 的消费者）
 - `07-devm-add-device.md` — wire 解码的调用方（`ParsedDevice` → `Device`）
 - `10-libdevman-client.md` — `serialize_dev` 编码侧（本篇解码的镜像）
-- C 源：`minix3/minix/servers/devman/devman.h`、`devinfo.h`、`minix3/minix/include/minix/devman.h:8-20`、`minix3/minix/lib/libdevman/generic.c:36-99`
+- C 源：`minix3/minix/servers/devman/devman.h`、`devinfo.h`、`minix3/minix/include/minix/devman.h:devman_device_info`、`minix3/minix/lib/libdevman/generic.c:serialize_dev`

@@ -89,7 +89,7 @@ SF7/SF10-12）既订不上也派不上——按了也只在 TTY 计数器里脏�
 IS 永远看不见；③ `mapping_dmp` **自指**：SF5 的转储内容就是打印这张表本身
 （§2.6）——调试台的自我介绍页。
 
-### 2.2 `pressed` 宏：区间 + 位双检（dmp.c:70-72）
+### 2.2 `pressed` 宏：区间 + 位双检（minix3/minix/servers/is/dmp.c:pressed）
 
 ```c
 #define pressed(start, end, bitfield, key) \
@@ -104,7 +104,7 @@ IS 永远看不见；③ `mapping_dmp` **自指**：SF5 的转储内容就是打
 **银行选择器**：同一个宏服务两个银行，调用方用区间参数 declaratively
 指定"查哪本账"。Rust 侧原样镜像为纯函数（§3 D2），含 `+1`。
 
-### 2.3 `do_fkey_pressed`（dmp.c:73-101）
+### 2.3 `do_fkey_pressed`（minix3/minix/servers/is/dmp.c:do_fkey_pressed）
 
 ```c
 int do_fkey_pressed(m)
@@ -154,7 +154,7 @@ message *m;					/* notification message */
 4. **恒 `EDONTREPLY`**（`:99`）：分派永不回复——转储输出走的是打印通道，
    不是 IPC 回复（输出通道见 A-6）。
 
-### 2.4 key_name：静态缓冲三式（dmp.c:103-117）
+### 2.4 key_name：静态缓冲三式（minix3/minix/servers/is/dmp.c:key_name）
 
 ```c
 static char *key_name(int key)
@@ -177,7 +177,7 @@ static char *key_name(int key)
 不可达而消除（§3 D5）——C 的防御性 else 在枚举世界里没有对应物，
 这是重写（非直译）的一处小而干净的证据。
 
-### 2.5 mapping_dmp：列宽格式（dmp.c:118-132）
+### 2.5 mapping_dmp：列宽格式（minix3/minix/servers/is/dmp.c:key_name（L118，工具生成））
 
 ```c
 void mapping_dmp(void)
@@ -215,7 +215,7 @@ plan §1.3 的次主线在本篇收口（02 §2.9 的 MAP 旅程是上篇， for
   → return EDONTREPLY → 主循环不回复（01 §2.5）
 ```
 
-每段的证据行号：keyboard.c:206/532-585 → main.c:48-52 → dmp.c:83-99 →
+每段的证据行号：keyboard.c:206/532-585 → main.c:48-52 → minix3/minix/servers/is/dmp.c:do_fkey_pressed（L83，工具生成） →
 05/04 各篇。读者至此能回答 plan §1.2 的问题："03 位于主循环 dispatch 的
 TTY 分支内，次主线的心脏位置。"
 
@@ -260,7 +260,7 @@ TTY 分支内，次主线的心脏位置。"
 
 C dump 体 void → `run_dump(DumpId)` 空体（05~10 按变体填体）；`handle`
 恒返 `EDONTREPLY`（§2.3④）。EVENTS `status < 0` → 新增
-`SefTransport::warn_fkey_events`（dmp.c:84-86 告警的通道化；与
+`SefTransport::warn_fkey_events`（minix3/minix/servers/is/dmp.c:do_fkey_pressed（L84，工具生成） 告警的通道化；与
 `warn_illegal` 同属 A-6 诊断通道，分方法保调用点可 grep）。
 02 合约两修订（`pull_events` 三元组 + `INIT_FKEYS` 删除→hooks 派生）
 见 §4.4 同步段。
@@ -300,7 +300,7 @@ fn run_dump(&mut self, _dump: DumpId);       // 空体（05~10 填体）
 
 ### 4.3 关键不变量
 
-1. 表序 == dmp.c:18-35 行序（16 项逐项对，§5 锁死）。
+1. 表序 == minix3/minix/servers/is/dmp.c:hook_entry（L18，工具生成） 行序（16 项逐项对，§5 锁死）。
 2. 多匹配顺序执行无 break（§2.3③）。
 3. `handle` 恒 `EDONTREPLY`（§2.3④）；`m` 不存在（D4）。
 4. EVENTS 失败（<0）告警且继续分派（§2.3②；memset 零兜底见 02 §2.4）。
@@ -313,7 +313,7 @@ fn run_dump(&mut self, _dump: DumpId);       // 空体（05~10 填体）
 - 01 §3 D3/§4.2/§5 T10-T12 → handle 填实后的行为（抑制无 send、send panic 不可达）已同步。
 - 01 快照 v1 为首轮历史记录，不改（03 scan 记录增量方法 `warn_fkey_events`）。
 
-> **V1 执行轮更新（2026-09-15）**：`render_mapping` 已实现（dispatch.rs），新增规则线常量 `MAPPING_RULE`（dmp.c:125-126 的 73 连字符，原常量表缺此行），`run_dump` Mapping 臂接线。
+> **V1 执行轮更新（2026-09-15）**：`render_mapping` 已实现（dispatch.rs），新增规则线常量 `MAPPING_RULE`（minix3/minix/servers/is/dmp.c:mapping_dmp（L125，工具生成） 的 73 连字符，原常量表缺此行），`run_dump` Mapping 臂接线。
 
 ---
 
@@ -321,15 +321,15 @@ fn run_dump(&mut self, _dump: DumpId);       // 空体（05~10 填体）
 
 | # | 场景 | 期望 | C 依据 |
 |---|---|---|---|
-| T1 | pressed 真值表（命中/位清/越界/跨银行） | 6 断言 | dmp.c:70-72 |
-| T2 | 多匹配表序无 break（F1+F3+SF9） | [Proctab, Image, Procstack] | dmp.c:89-95 |
+| T1 | pressed 真值表（命中/位清/越界/跨银行） | 6 断言 | minix3/minix/servers/is/dmp.c:pressed |
+| T2 | 多匹配表序无 break（F1+F3+SF9） | [Proctab, Image, Procstack] | minix3/minix/servers/is/dmp.c:do_fkey_pressed（L89，工具生成） |
 | T3 | 空位图 | 零访问 | 同上 |
 | T4 | 银行隔离（全 F 位/全 SF 位） | 各 8 | 同上 |
-| T5 | key_name 三式抽查 + 24 全宽 ≤10 | — | dmp.c:103-117/125 |
-| T6 | 表 16 项序 + 名列逐项 | — | dmp.c:18-35 |
-| T7 | handle：TTY 通知 + F1 pending | 分派 + 抑制无 send + 无告警 | dmp.c:73-101 |
-| T8 | handle：EVENTS status<0 | 告警恰一次 + 仍抑制 | dmp.c:84-86 |
-| T9 | send 通道经 step 不可达 | fail_send 下仍无 send | main.c:65-66 + dmp.c:99 |
+| T5 | key_name 三式抽查 + 24 全宽 ≤10 | — | minix3/minix/servers/is/dmp.c:key_name/125 |
+| T6 | 表 16 项序 + 名列逐项 | — | minix3/minix/servers/is/dmp.c:hook_entry（L18，工具生成） |
+| T7 | handle：TTY 通知 + F1 pending | 分派 + 抑制无 send + 无告警 | minix3/minix/servers/is/dmp.c:do_fkey_pressed |
+| T8 | handle：EVENTS status<0 | 告警恰一次 + 仍抑制 | minix3/minix/servers/is/dmp.c:do_fkey_pressed（L84，工具生成） |
+| T9 | send 通道经 step 不可达 | fail_send 下仍无 send | main.c:65-66 + minix3/minix/servers/is/dmp.c:do_fkey_pressed（L99，工具生成） |
 
 ### 5.3 测试统计（截至 2026-09-04）
 

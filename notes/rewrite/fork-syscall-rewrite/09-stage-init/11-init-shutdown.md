@@ -1,6 +1,6 @@
 # 11-init-shutdown：假死与关机
 
-> **定位**：`catatonia`（`minix3/sbin/init/init.c:1634-1643`）、`death`（1661-1698），`DEATH_WATCH=10`（init.c:96）。
+> **定位**：`catatonia`（`minix3/sbin/init/init.c:clean_ttys（L1634，工具生成）`）、`death`（1661-1698），`DEATH_WATCH=10`（init.c:96）。
 > **Rust**：`os/commands/sbin/init/src/shutdown.rs`。
 > **前置依赖**：02（`clang` 语义）、09（回收语义）。
 > **本篇不覆盖（移交）**：utmp 关机记录（见 13）。
@@ -69,4 +69,4 @@
 
 - `02-init-state-machine.md` — clang。
 - `09-init-multi-user.md` — 回收。
-- C 源码：`minix3/sbin/init/init.c:1634-1698`。
+- C 源码：`minix3/sbin/init/init.c:clean_ttys（L1634，工具生成）`。

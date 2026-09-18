@@ -2,7 +2,7 @@
 
 > **状态**: 正文 v1（2026-09-18，随 init 实体接线轮改写）
 > **定位**: 总览——init 是什么、boot 链位置、状态机主线图、文档导航
-> **源码**: `minix3/sbin/init/`（init.c 1902 行）+ `minix3/minix/kernel/table.c:64` + `minix3/minix/servers/rs/table.c:28`
+> **源码**: `minix3/sbin/init/`（init.c 1902 行）+ `minix3/minix/kernel/table.c:boot_image（L64，工具生成）` + `minix3/minix/servers/rs/table.c:boot_image_priv（L28，工具生成）`
 > **Rust 模块**: `os/commands/sbin/init/`（crate `minix-init`，19 个模块文件：业务模块 + driver/host/signal_state/wait/password 五个接线轮新模块）
 
 ## 核心点

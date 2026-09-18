@@ -225,6 +225,53 @@ else
 fi
 echo ""
 
+# ===== B4/D4（2026-09-18）：scan.md 内容级检查 =====
+# B4.1: §Step 0: 预检结果 段内必须含"关联代码清单"表头；gate-evidence-code 块或 N/A + 理由
+# D4: gate-evidence 块引用的磁盘产物真实存在（artifact: 路径）
+SCAN_CONTENT_OK="true"
+if [[ -f "${SCAN_FILE}" ]]; then
+  # B4.1 关联代码清单
+  if ! grep -q "关联代码清单" "${SCAN_FILE}"; then
+    SCAN_CONTENT_OK="false"
+    FAIL_LIST+=("B4.1 | scan.md §Step 0 预检结果 缺"关联代码清单" | ${SCAN_FILE}")
+    echo "  ❌ [B4.1] scan.md 缺关联代码清单（§Step 0: 预检结果 段须含 doc-code-map 输出表）"
+  else
+    echo "  ✅ [B4.1] 关联代码清单存在"
+  fi
+  # gate-evidence-code 或 N/A
+  if grep -q 'gate-evidence-code' "${SCAN_FILE}"; then
+    echo "  ✅ [B4.1] gate-evidence-code 块存在"
+  elif grep -qE 'gate-evidence-code.{0,40}(N/A|不适用)' "${SCAN_FILE}" || grep -q 'gate-evidence-code: N/A' "${SCAN_FILE}"; then
+    echo "  ✅ [B4.1] gate-evidence-code N/A（含理由）"
+  else
+    SCAN_CONTENT_OK="false"
+    FAIL_LIST+=("B4.1 | scan.md 缺 gate-evidence-code 块（或 N/A + 理由） | ${SCAN_FILE}")
+    echo "  ❌ [B4.1] gate-evidence-code 块缺失（或未写 N/A + 理由）"
+  fi
+  # D4: 证据块 artifact 路径存在性
+  missing_artifacts=""
+  while IFS= read -r art; do
+    [[ -z "$art" || "$art" == "none" ]] && continue
+    if [[ ! -e "$art" ]]; then missing_artifacts="$missing_artifacts $art"; fi
+  done < <(grep -oE '^artifact: .+' "${SCAN_FILE}" | sed 's/^artifact: //' | sed 's/[[:space:]]*$//')
+  if [[ -n "$missing_artifacts" ]]; then
+    SCAN_CONTENT_OK="false"
+    FAIL_LIST+=("D4 | gate-evidence artifact 不存在:${missing_artifacts} | ${SCAN_FILE}")
+    echo "  ❌ [D4] 证据块 artifact 磁盘不存在:${missing_artifacts}"
+  else
+    echo "  ✅ [D4] 证据块 artifact 路径全部存在（或 none）"
+  fi
+  if [[ "$SCAN_CONTENT_OK" == "true" ]]; then
+    CHECKS_TOTAL=$((CHECKS_TOTAL + 1)); CHECKS_PASS=$((CHECKS_PASS + 1))
+  else
+    CHECKS_TOTAL=$((CHECKS_TOTAL + 1))
+  fi
+fi
+
+# ===== 机器可引用结论行（D4）=====
+GATE_CHECK_VERDICT="PASS"
+[[ ${CHECKS_FAIL:-0} -eq 0 && "$SCAN_CONTENT_OK" == "true" ]] || GATE_CHECK_VERDICT="FAIL"
+
 # ===== 汇总 =====
 CHECKS_FAIL=$((CHECKS_TOTAL - CHECKS_PASS))
 echo "=== Summary ==="
@@ -234,8 +281,10 @@ echo ""
 
 if [[ ${CHECKS_FAIL} -eq 0 ]]; then
   echo "✅ ALL GATES PASS"
+  echo "GATE-CHECK: PASS tool=${TOOL} module=${MODULE} doc-stem=${DOC_STEM} checks=${CHECKS_PASS}/${CHECKS_TOTAL}"
   exit 0
 fi
+echo "GATE-CHECK: FAIL tool=${TOOL} module=${MODULE} doc-stem=${DOC_STEM} pass=${CHECKS_PASS}/${CHECKS_TOTAL}明细见上"
 
 echo "❌ FAILED CHECKS:"
 for fail in "${FAIL_LIST[@]}"; do

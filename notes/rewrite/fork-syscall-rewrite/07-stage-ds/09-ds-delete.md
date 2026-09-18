@@ -1,7 +1,7 @@
 # 09 — DS 删除：主人才能删，删标签带级联
 
 > **分类**: 数据面 handler / 删除
-> **源码**: `minix3/minix/servers/ds/store.c:583-651`
+> **源码**: `minix3/minix/servers/ds/store.c:do_delete`
 > **说明**: 删除是检索的"破坏版"：前三步（键门、查找）一样，但权限更严（只认主人，不认门），收尾更重（label 删除带级联，串/存要释堆）。本文讲清这三处不同。
 
 ---
@@ -130,6 +130,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:583-651`
+- C 源：`minix3/minix/servers/ds/store.c:do_delete`
 - 阶段文档：`08-ds-retrieve.md`（上一站，镜面）、`10-ds-subscribe-check.md`（下一站，通知环）、`07-ds-publish.md`（堆的另一半）
 - Rust 实现：`os/servers/ds/src/delete.rs`

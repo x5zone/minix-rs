@@ -141,9 +141,9 @@
 - `14-mount-fsck.md`——挂载使用（本篇的动机来源）
 - `16-image-media.md`——镜像与介质（下一步：搬运镜像）
 - `15-stage-fs`——卷内结构（布局 inside 的世界）
-- `minix3/sys/sys/bootblock.h:150-182`——布局注释（`mbr.rs` 常量的逐字来源）
-- `minix3/sys/sys/bootblock.h:703-714`——项结构（字段的逐字来源）
-- `minix3/minix/commands/part/part.c:691-702`——起止换算（`last_sector` 的同式来源）
+- `minix3/sys/sys/bootblock.h:_SYS_BOOTBLOCK_H（L150，工具生成）`——布局注释（`mbr.rs` 常量的逐字来源）
+- `minix3/sys/sys/bootblock.h:mbr_partition`——项结构（字段的逐字来源）
+- `minix3/minix/commands/part/part.c:entry2base`——起止换算（`last_sector` 的同式来源）
 
 ---
 

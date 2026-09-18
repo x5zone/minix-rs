@@ -18,11 +18,11 @@
 
 `vnode` 的“读并发”与 `vmnt` 的“串行读”与 `filp` 的“独占写”在 `tll` 的三态中显式分化：
 
-- `TLL_READ` 多读者：多个 `READ` 可同时持有（`t_readonly++`，`t_current==READ` 时 `locktype==READ → readonly++` 直授，`tll.c:208-211` 的 `READ` 共享）；
-- `TLL_READSER` 串行读：同一时刻仅一个持有者（`t_owner==self`，`t_current==READSER` 时 `locktype==READ → append` 排队，`tll.c:197-202` 的 `READSER` 分化）；
-- `TLL_WRITE` 独占写：仅一个持有者且 `readonly==0`（`tll.c:163-171` 的 `WRITE` 直授需 `NONE` 空锁，`170` 的 `assert(readonly==0)`）。
+- `TLL_READ` 多读者：多个 `READ` 可同时持有（`t_readonly++`，`t_current==READ` 时 `locktype==READ → readonly++` 直授，`minix3/minix/servers/vfs/tll.c:tll_lock（L208，工具生成）` 的 `READ` 共享）；
+- `TLL_READSER` 串行读：同一时刻仅一个持有者（`t_owner==self`，`t_current==READSER` 时 `locktype==READ → append` 排队，`minix3/minix/servers/vfs/tll.c:tll_lock（L197，工具生成）` 的 `READSER` 分化）；
+- `TLL_WRITE` 独占写：仅一个持有者且 `readonly==0`（`minix3/minix/servers/vfs/tll.c:tll_lock（L163，工具生成）` 的 `WRITE` 直授需 `NONE` 空锁，`170` 的 `assert(readonly==0)`）。
 
-与读写锁相对的是“写偏序”：`t_write` 队列优先于 `t_serial` 队列（`tll.c:274-286` 的 `if write != NULL → 取 write 头 else if serial != NULL → 取 serial 头`），使 `WRITE` 请求在 `unlock` 的选头唤醒中优先于 `READSER`。
+与读写锁相对的是“写偏序”：`t_write` 队列优先于 `t_serial` 队列（`minix3/minix/servers/vfs/tll.c:tll_unlock（L274，工具生成）` 的 `if write != NULL → 取 write 头 else if serial != NULL → 取 serial 头`），使 `WRITE` 请求在 `unlock` 的选头唤醒中优先于 `READSER`。
 
 ### 1.2 锁状态的正交：t_current/t_status/t_readonly 三正交
 
@@ -30,13 +30,13 @@
 
 - `t_current` 决定“当前谁可进入”；
 - `t_status` 的 `UPGR` 标记 `READSER→WRITE` 升级等待中（`tll_upgrade:316` `UPGR` 置位），`PEND` 标记“新持有者已选但未唤醒”（`tll_append:67` `PEND` 置位、`unlock:299` `PEND` 置位）；
-- `t_readonly` 决定“读锁持有度”与 `unlock` 的 `read--` 时序（`tll.c:246` `UPGR && readonly==0 → signal_owner`）。
+- `t_readonly` 决定“读锁持有度”与 `unlock` 的 `read--` 时序（`minix3/minix/servers/vfs/tll.c:tll_unlock（L246，工具生成）` `UPGR && readonly==0 → signal_owner`）。
 
-三者的正交使 `READSER→WRITE` 的升级在 `t_readonly>0 → UPGR 标记 → worker_wait → PEND 清除` 的等待中显式（`tll.c:316-320`）。
+三者的正交使 `READSER→WRITE` 的升级在 `t_readonly>0 → UPGR 标记 → worker_wait → PEND 清除` 的等待中显式（`minix3/minix/servers/vfs/tll.c:tll_upgrade（L316，工具生成）`）。
 
 ### 1.3 等待队列的写偏序与 EBUSY 排队
 
-`tll.c:11-71` 的 `tll_append` 将 `READ/WRITE` 入 `t_write` 队列、`READSER` 入 `t_serial` 队列（`23-27` `if READ||WRITE → write else → serial`），`worker_wait` 阻塞当前 `self`，`unlock` 的选头唤醒则以 `t_write` 优先于 `t_serial` 的写偏序（`274-286`）使 `WRITE` 在 `unlock` 后优先于 `READSER`。
+`minix3/minix/servers/vfs/tll.c:tll_append` 的 `tll_append` 将 `READ/WRITE` 入 `t_write` 队列、`READSER` 入 `t_serial` 队列（`23-27` `if READ||WRITE → write else → serial`），`worker_wait` 阻塞当前 `self`，`unlock` 的选头唤醒则以 `t_write` 优先于 `t_serial` 的写偏序（`274-286`）使 `WRITE` 在 `unlock` 后优先于 `READSER`。
 
 `tll_lock` 的 5 路分发中 4 路 `return tll_append` 即 `EBUSY` 排队（`153` `PEND → append`、`178` `WRITE 当前 → append`、`184` `请求 WRITE → append`、`192` `write 队列非空或 UPGR → append`），仅 `NONE` 直授与 `READ` 共享的直授为 `OK`。
 
@@ -44,13 +44,13 @@
 
 ` tll_downgrade` 的 `WRITE→READSER` 单分支（`88` `WRITE → READSER`）与 `READSER→READ 或授权 serial 头` 分化（`89-105` `if write==NULL && serial!=NULL → 授权 serial 头` 否则 `READ`）在 `read.c:49` 的 `lock_bsf` 降级路径中显式：`WRITE` 的独占在 `read` 的 `bsf` 锁降级为 `READSER` 的串行读，避免 `WRITE` 的独占在 `read` 的 `bsf` 层长期持有。
 
-` tll_upgrade` 的 `READSER→WRITE` 则以 `readonly==0 → 直接 WRITE` vs `readonly>0 → UPGR → wait → PEND 清除` 的等待中显式（`tll.c:314-323`），与 `open` 的 `lookup` 先 `READ` 探路、命中后 `WRITE` 修改的升级路径同型。
+` tll_upgrade` 的 `READSER→WRITE` 则以 `readonly==0 → 直接 WRITE` vs `readonly>0 → UPGR → wait → PEND 清除` 的等待中显式（`minix3/minix/servers/vfs/tll.c:tll_upgrade（L314，工具生成）`），与 `open` 的 `lookup` 先 `READ` 探路、命中后 `WRITE` 修改的升级路径同型。
 
 ### 1.5 空锁与持有者的不变式
 
-`tll.c:118-122` 的 `tll_init: t_current=NONE, readonly=0, status=DFLT, write=NULL, serial=NULL, owner=NULL` 使 `NONE ↔ readonly==0 && owner==NULL && write==NULL && serial==NULL` 的空锁不变式在 `is_locked() == (current != NONE)`（`tll.c:129`）与 `locked_by_me() == (owner==self && !PEND)`（`136`）中互证：`PEND` 的掩码使“升级中但未授权”的 `owner==self` 不视为持有。
+`minix3/minix/servers/vfs/tll.c:tll_init（L118，工具生成）` 的 `tll_init: t_current=NONE, readonly=0, status=DFLT, write=NULL, serial=NULL, owner=NULL` 使 `NONE ↔ readonly==0 && owner==NULL && write==NULL && serial==NULL` 的空锁不变式在 `is_locked() == (current != NONE)`（`minix3/minix/servers/vfs/tll.c:tll_islocked（L129，工具生成）`）与 `locked_by_me() == (owner==self && !PEND)`（`136`）中互证：`PEND` 的掩码使“升级中但未授权”的 `owner==self` 不视为持有。
 
-`vnode.c:91` 的 `get_free_vnode` 的 `!is_vnode_locked` 双条件则将空锁不变式在 `vnode` 的空闲判定中复用：`is_vnode_locked = tll_islocked || tll_haspendinglock`（`vnode.c:128`）的“有等待即视为锁定”使 `get_free` 的分配与 `is_vnode_locked` 的持有度检查原子化。
+`minix3/minix/servers/vfs/vnode.c:get_free_vnode（L91，工具生成）` 的 `get_free_vnode` 的 `!is_vnode_locked` 双条件则将空锁不变式在 `vnode` 的空闲判定中复用：`is_vnode_locked = tll_islocked || tll_haspendinglock`（`minix3/minix/servers/vfs/vnode.c:is_vnode_locked（L128，工具生成）`）的“有等待即视为锁定”使 `get_free` 的分配与 `is_vnode_locked` 的持有度检查原子化。
 
 ### 1.6 与其他 OS 的读写锁对照
 
@@ -72,27 +72,27 @@
 
 `tll.h:10` 的 `t_current: TLL_NONE/READ/READSER/WRITE` 为当前访问类型，`11` 的 `t_owner: worker_thread*` 为 `READSER/WRITE` 的单持有者，`12` 的 `t_readonly: int` 为 `READ` 计数，`13` 的 `t_status: TLL_DFLT/UPGR/PEND` 为正交标记，`16` 的 `t_write: worker_thread*` 为 `READ/WRITE` 等待队列头，`17` 的 `t_serial: worker_thread*` 为 `READSER` 等待队列头。`tll.h:6` 的 `TLL_NONE/READ/READSER/WRITE` 四值与 `7` 的 `DFLT/UPGR/PEND` 三标记构成 `4×3` 状态机。
 
-### 2.2 `tll_init` 零化（`tll.c:113-122`）
+### 2.2 `tll_init` 零化（`minix3/minix/servers/vfs/tll.c:tll_init`）
 
-`tll.c:118` 的 `t_current=NONE`, `120` 的 `t_status=DFLT`, `119` 的 `t_readonly=0`, `121` 的 `t_write=NULL`, `121` 的 `t_serial=NULL`, `122` 的 `t_owner=NULL` 六字段零化，与 `init_vnodes` 的 `tll_init` 循环同型但增加 `t_status` 的 `DFLT` 清零。
+`minix3/minix/servers/vfs/tll.c:tll_init（L118，工具生成）` 的 `t_current=NONE`, `120` 的 `t_status=DFLT`, `119` 的 `t_readonly=0`, `121` 的 `t_write=NULL`, `121` 的 `t_serial=NULL`, `122` 的 `t_owner=NULL` 六字段零化，与 `init_vnodes` 的 `tll_init` 循环同型但增加 `t_status` 的 `DFLT` 清零。
 
-### 2.3 `tll_islocked/tll_locked_by_me/tll_haspendinglock` 三谓词（`tll.c:126-220`）
+### 2.3 `tll_islocked/tll_locked_by_me/tll_haspendinglock` 三谓词（`minix3/minix/servers/vfs/tll.c:tll_islocked`）
 
-`tll.c:129` 的 `tll_islocked: current != NONE` 为“有持有即锁定”，`136` 的 `tll_locked_by_me: owner==self && !(status & PEND)` 为“我持有且未在升级中”，`220` 的 `tll_haspendinglock: write!=NULL || serial!=NULL` 为“有等待即视为锁定”（`vnode.c:128` 的 `is_vnode_locked = islocked || haspending` 复用）。
+`minix3/minix/servers/vfs/tll.c:tll_islocked（L129，工具生成）` 的 `tll_islocked: current != NONE` 为“有持有即锁定”，`136` 的 `tll_locked_by_me: owner==self && !(status & PEND)` 为“我持有且未在升级中”，`220` 的 `tll_haspendinglock: write!=NULL || serial!=NULL` 为“有等待即视为锁定”（`minix3/minix/servers/vfs/vnode.c:is_vnode_locked（L128，工具生成）` 的 `is_vnode_locked = islocked || haspending` 复用）。
 
-### 2.4 `tll_lock` 5 路分发（`tll.c:139-216`）
+### 2.4 `tll_lock` 5 路分发（`minix3/minix/servers/vfs/tll.c:tll_lock`）
 
 `139-154` 的首守卫 `status & PEND → append` 使升级中锁直接排队；`158` 的 `owner==self → EBUSY` 使重入直接 `EBUSY`；`163-171` 的 `NONE → 直授` 使空锁的 `READ` 多读者或 `WRITE` 独占直接授予；`177-178` 的 `WRITE 当前 → append` 使写独占时所有请求排队；`183-184` 的 `请求 WRITE → append` 使写请求在 `READ/READSER` 当前时排队；`190-192` 的 `write 队列非空或 UPGR → append` 使写偏序显式；`197-202` 的 `READSER 当前 → READ 直授 else READSER 排队` 使串行读的 `READ` 共享在 `READSER` 当前时可直授；`208-216` 的 `READ 当前 → 升级为 READSER 或 READ 共享` 使读并发的升级路径在 `t_current = locktype` 的赋值中显式。
 
-### 2.5 `tll_append` 双队列尾插（`tll.c:11-71`）
+### 2.5 `tll_append` 双队列尾插（`minix3/minix/servers/vfs/tll.c:tll_append`）
 
-`tll.c:23-27` 的 `if READ||WRITE → t_write else → t_serial` 双队列分化，`31-40` 的 `queue == NULL → t_write/t_serial = self else 尾插` 的尾插语义，`45` 的 `t_status &= ~PEND` 清除与 `48-71` 的 `t_current == READ && serial != NULL → 授权 serial 头` 的 `PEND` 置位与 `worker_signal` 唤醒，构成 `READ` 当前时 `READSER` 等待头的授权。
+`minix3/minix/servers/vfs/tll.c:tll_append（L23，工具生成）` 的 `if READ||WRITE → t_write else → t_serial` 双队列分化，`31-40` 的 `queue == NULL → t_write/t_serial = self else 尾插` 的尾插语义，`45` 的 `t_status &= ~PEND` 清除与 `48-71` 的 `t_current == READ && serial != NULL → 授权 serial 头` 的 `PEND` 置位与 `worker_signal` 唤醒，构成 `READ` 当前时 `READSER` 等待头的授权。
 
-### 2.6 `tll_unlock` 选头唤醒（`tll.c:230-304`）
+### 2.6 `tll_unlock` 选头唤醒（`minix3/minix/servers/vfs/tll.c:tll_unlock`）
 
-`tll.c:242` 的 `t_readonly--` 读计数递减，`246` 的 `UPGR && readonly==0 → signal_owner` 使升级等待的持有者可继续，`274-286` 的 `if write != NULL && readonly==0 → 取 write 头 else if serial != NULL → 取 serial 头` 的写偏序选头，`298-299` 的 `PEND` 置位与 `worker_signal` 唤醒，构成 `unlock` 的选头唤醒。
+`minix3/minix/servers/vfs/tll.c:tll_unlock（L242，工具生成）` 的 `t_readonly--` 读计数递减，`246` 的 `UPGR && readonly==0 → signal_owner` 使升级等待的持有者可继续，`274-286` 的 `if write != NULL && readonly==0 → 取 write 头 else if serial != NULL → 取 serial 头` 的写偏序选头，`298-299` 的 `PEND` 置位与 `worker_signal` 唤醒，构成 `unlock` 的选头唤醒。
 
-### 2.7 `tll_downgrade/upgrade` 时序（`tll.c:74-111/306-323`）
+### 2.7 `tll_downgrade/upgrade` 时序（`minix3/minix/servers/vfs/tll.c:tll_downgrade/306-323`）
 
 `74-111` 的 `downgrade: WRITE→READSER vs READSER → READ 或授权 serial 头` 分化与 `306-323` 的 `upgrade: READSER→WRITE` 的 `readonly>0 → UPGR → wait → PEND 清除` 等待，使 `open` 的 `lookup` 先 `READ` 探路、命中后 `WRITE` 修改的升级路径在 `tll` 层可串行化。
 
@@ -100,7 +100,7 @@
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄 `tll.c:139-216` 5 路分发，而是吸收 Redox/Linux 的读写锁模型后做取舍。以下决策对应 `.design/07-design.v1.md` D1-D5。
+Rust 改写不是照抄 `minix3/minix/servers/vfs/tll.c:tll_lock` 5 路分发，而是吸收 Redox/Linux 的读写锁模型后做取舍。以下决策对应 `.design/07-design.v1.md` D1-D5。
 
 ### D1 三级锁状态机显式
 
@@ -155,18 +155,18 @@ os/servers/vfs/src/
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
 | `Tll` | `tll.h:9` 全字段 | `tll.rs:Tll { state, owner, readonly, write_q, serial_q }` | `state` 枚举显式 |
-| `tll_init` | `tll.c:113` | `Tll::new()` | `None/0/DFLT/空队列` |
-| `tll_lock` | `tll.c:139` | `Tll::try_lock` | `Busy` 排队显式 |
-| `tll_unlock` | `tll.c:230` | `Tll::unlock` | `readonly--` + 选头唤醒 |
-| `tll_downgrade` | `tll.c:74` | `Tll::downgrade` | `WRITE→READSER → READ 或授权` |
+| `tll_init` | `minix3/minix/servers/vfs/tll.c:tll_init` | `Tll::new()` | `None/0/DFLT/空队列` |
+| `tll_lock` | `minix3/minix/servers/vfs/tll.c:tll_lock` | `Tll::try_lock` | `Busy` 排队显式 |
+| `tll_unlock` | `minix3/minix/servers/vfs/tll.c:tll_unlock` | `Tll::unlock` | `readonly--` + 选头唤醒 |
+| `tll_downgrade` | `minix3/minix/servers/vfs/tll.c:tll_downgrade` | `Tll::downgrade` | `WRITE→READSER → READ 或授权` |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 空锁 `NONE ↔ 0` | `Tll::new()` | `state==None ↔ readonly==0 && owner==None` | `tll.c:118` |
-| 持有 `owner==self && !PEND` | `is_locked_by` | `owner==self && !PEND` | `tll.c:136` |
-| 写偏序 | `unlock` 选头 | `write 优先于 serial` | `tll.c:274` |
+| 空锁 `NONE ↔ 0` | `Tll::new()` | `state==None ↔ readonly==0 && owner==None` | `minix3/minix/servers/vfs/tll.c:tll_init（L118，工具生成）` |
+| 持有 `owner==self && !PEND` | `is_locked_by` | `owner==self && !PEND` | `minix3/minix/servers/vfs/tll.c:tll_locked_by_me（L136，工具生成）` |
+| 写偏序 | `unlock` 选头 | `write 优先于 serial` | `minix3/minix/servers/vfs/tll.c:tll_unlock（L274，工具生成）` |
 
 ---
 
@@ -177,12 +177,12 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_tll_init` | `tll.c:113` | `NONE/0/DFLT/空队列` | `tll.rs:200` |
-| `test_tll_lock_read_shared` | `tll.c:163` | `READ` 多读者直授 | `tll.rs:210` |
-| `test_tll_lock_write_busy` | `tll.c:183` | `WRITE` 请求排队 | `tll.rs:220` |
-| `test_tll_append_queues` | `tll.c:11` | `write` vs `serial` 双队列 | `tll.rs:230` |
-| `test_tll_unlock_selects` | `tll.c:274` | `write` 优先于 `serial` 选头 | `tll.rs:240` |
-| `test_tll_downgrade_upgrade` | `tll.c:74/306` | `WRITE→READSER` 降级与 `READSER→WRITE` 升级 | `tll.rs:250` |
+| `test_tll_init` | `minix3/minix/servers/vfs/tll.c:tll_init` | `NONE/0/DFLT/空队列` | `os/servers/vfs/src/tll.rs:fn downgrade（L200，工具生成）` |
+| `test_tll_lock_read_shared` | `minix3/minix/servers/vfs/tll.c:tll_lock（L163，工具生成）` | `READ` 多读者直授 | `os/servers/vfs/src/tll.rs:fn upgrade（L210，工具生成）` |
+| `test_tll_lock_write_busy` | `minix3/minix/servers/vfs/tll.c:tll_lock（L183，工具生成）` | `WRITE` 请求排队 | `os/servers/vfs/src/tll.rs:fn upgrade（L220，工具生成）` |
+| `test_tll_append_queues` | `minix3/minix/servers/vfs/tll.c:tll_append` | `write` vs `serial` 双队列 | `os/servers/vfs/src/tll.rs:enum TllError（L230，工具生成）` |
+| `test_tll_unlock_selects` | `minix3/minix/servers/vfs/tll.c:tll_unlock（L274，工具生成）` | `write` 优先于 `serial` 选头 | `os/servers/vfs/src/tll.rs:impl minix_types::ToErrno for TllError` |
+| `test_tll_downgrade_upgrade` | `minix3/minix/servers/vfs/tll.c:tll_downgrade/306` | `WRITE→READSER` 降级与 `READSER→WRITE` 升级 | `os/servers/vfs/src/tll.rs:fn to_errno（L250，工具生成）` |
 
 测试策略：`Tll` 的 5 路分发以 `NONE→READ` 直授、`WRITE` 阻塞、`WRITE` 请求排队、`write` 偏序、`READSER` 分化五样本覆盖；`append` 以 `write` vs `serial` 双队列尾插样本覆盖；`unlock` 以 `write` 优先选头样本覆盖。
 
@@ -211,7 +211,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/tll.h:6-18`（`tll_t` 全字段 / `TLL_*` 锁类型）、`minix3/minix/servers/vfs/tll.c:9-323`（`tll_init` / `tll_lock` 5 路分发 / `tll_append` 双队列 / `tll_unlock` 选头 / `tll_downgrade/upgrade` 时序）、`minix3/minix/servers/vfs/const.h:NR_*`（`NR_*`）、`minix3/minix/servers/vfs/glo.h:bsf_lock`（`bsf` 锁）、`minix3/minix/servers/vfs/main.c:486`（`init_vnodes` 的 `tll_init` 循环）
+- C 源：`minix3/minix/servers/vfs/tll.h:6-18`（`tll_t` 全字段 / `TLL_*` 锁类型）、`minix3/minix/servers/vfs/tll.c:9-323`（`tll_init` / `tll_lock` 5 路分发 / `tll_append` 双队列 / `tll_unlock` 选头 / `tll_downgrade/upgrade` 时序）、`minix3/minix/servers/vfs/const.h:NR_*`（`NR_*`）、`minix3/minix/servers/vfs/glo.h:bsf_lock`（`bsf` 锁）、`minix3/minix/servers/vfs/main.c:sef_cb_init_fresh（L486，工具生成）`（`init_vnodes` 的 `tll_init` 循环）
 - 阶段文档：`04-filp-table.md`（`FilpTable` 的 `count==0` 哨兵与 `locked_by` 借用）、`05-vnode-table.md`（`VnodeTable` 的 `ref==0 && !locked` 双条件）、`06-vmnt-table.md`（`VmntTable` 的 `dev==NO_DEV` 单哨兵）、`99-global-concepts.md`（`NR_*` 常量与 `Tll` 术语）
 - Rust 实现：`os/servers/vfs/src/tll.rs:1`（`Tll/TllState/TllStatus`）、`os/servers/vfs/src/vnode.rs:1`（`Vnode.lock: Tll` 互引）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/06-proc-init-boot-proc.md`（`tll` 与 `proc` 的 `NR_*` 同界）

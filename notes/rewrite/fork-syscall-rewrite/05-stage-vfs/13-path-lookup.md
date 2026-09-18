@@ -56,15 +56,15 @@
 
 ### 1.7 小结
 
-路径解析是 `Path → Vnode` 的挂载可观测翻译：`PATH_MAX` 的路径上界与 `NAME_MAX` 的分量上界及 `SYMLOOP` 的 `ELOOP` 阈值与 `DO_POSIX` 的尾斜杠历史行为在 `lookup_init` 的 `NULL vmnt/vnode` 初始化可观测，`advance` 的 `get_free→lookup→find/dup→downgrade` 两相在 `VFS -A-10` 的 `DO_POSIX 0` 可观测，`lookup` 的 `EENTER/ELEAVE/SYMLINK` 循环在 `char_processed` 的 `memmove` 回带可观测，`fetch_name/copy_path` 的 `safecopy` 在 `99` 的 `sys_datacopy_wrapper` 可观测。下一节以 `path.c:40-933` 全文与 `path.h:4` 的 `lookup` 结构为主线逐段核对。
+路径解析是 `Path → Vnode` 的挂载可观测翻译：`PATH_MAX` 的路径上界与 `NAME_MAX` 的分量上界及 `SYMLOOP` 的 `ELOOP` 阈值与 `DO_POSIX` 的尾斜杠历史行为在 `lookup_init` 的 `NULL vmnt/vnode` 初始化可观测，`advance` 的 `get_free→lookup→find/dup→downgrade` 两相在 `VFS -A-10` 的 `DO_POSIX 0` 可观测，`lookup` 的 `EENTER/ELEAVE/SYMLINK` 循环在 `char_processed` 的 `memmove` 回带可观测，`fetch_name/copy_path` 的 `safecopy` 在 `99` 的 `sys_datacopy_wrapper` 可观测。下一节以 `path.c:40-933` 全文与 `minix3/minix/servers/vfs/path.h:lookup` 的 `lookup` 结构为主线逐段核对。
 
 ---
 
 ## 2 C 源码分析
 
-### 2.1 `path.h:4` 的 `lookup` 结构
+### 2.1 `minix3/minix/servers/vfs/path.h:lookup` 的 `lookup` 结构
 
-`path.h:4 struct lookup { char *l_path; int l_flags; tll_access_t l_vmnt_lock; l_vnode_lock; vmnt **l_vmp; vnode **l_vnode; }` 的 `l_path` 可变缓冲区（`char[PATH_MAX]` 的 `resolve->l_path` 传入者在 `open.c:common_open` 的 `user_fullpath` 可观测）与 `l_flags` 的 `PATH_RET_SYMLINK 010` / `PATH_GET_UCRED 020` 位（`vfsif.h:12`）及 `l_vmnt/l_vnode_lock` 的 `TLL_NONE→READ/WRITE` 锁请求及 `l_vmp/l_vnode` 的 `vmnt*/vnode*` 输出指针在 `lookup_init:574 l_path=path; l_flags=flags; l_vmp=vmp; l_vnode=vp; *vmp=NULL; *vp=NULL` 的 `NULL` 初始化可观测。
+`minix3/minix/servers/vfs/path.h:lookup struct lookup { char *l_path; int l_flags; tll_access_t l_vmnt_lock; l_vnode_lock; vmnt **l_vmp; vnode **l_vnode; }` 的 `l_path` 可变缓冲区（`char[PATH_MAX]` 的 `resolve->l_path` 传入者在 `open.c:common_open` 的 `user_fullpath` 可观测）与 `l_flags` 的 `PATH_RET_SYMLINK 010` / `PATH_GET_UCRED 020` 位（`minix3/minix/include/minix/vfsif.h:PATH_RET_SYMLINK`）及 `l_vmnt/l_vnode_lock` 的 `TLL_NONE→READ/WRITE` 锁请求及 `l_vmp/l_vnode` 的 `vmnt*/vnode*` 输出指针在 `lookup_init:574 l_path=path; l_flags=flags; l_vmp=vmp; l_vnode=vp; *vmp=NULL; *vp=NULL` 的 `NULL` 初始化可观测。
 
 ### 2.2 `utility.c:24-93` 的 `copy_path/fetch_name`
 
@@ -175,7 +175,7 @@ os/servers/vfs/src/
 | `DO_POSIX 0` | `path.c:31` | `path.rs:DO_POSIX: bool = false` | `strip_trailing_slash` 的 `while(path.ends_with('/')) pop` |
 | `SYMLOOP 16` | `const.h:32` | `path.rs:SYMLOOP: usize = 16` | `symloop>16→ELOOP` 的 `checked_add` |
 | `PATH_MAX 1024` | `limits.h` | `path.rs:PATH_MAX: usize = 1024` | `Lookup::new(path) len>PATH_MAX→TooLong` |
-| `lookup` | `path.h:4` | `path.rs:Lookup { path: String, flags: LookupFlags, vmnt_lock: LockKind, vnode_lock: LockKind, vmnt: Option<VmntId>, vnode: Option<VnodeId>, symloop: u8 }` | `lookup_init` 的 `None` 初始化 |
+| `lookup` | `minix3/minix/servers/vfs/path.h:lookup` | `path.rs:Lookup { path: String, flags: LookupFlags, vmnt_lock: LockKind, vnode_lock: LockKind, vmnt: Option<VmntId>, vnode: Option<VnodeId>, symloop: u8 }` | `lookup_init` 的 `None` 初始化 |
 | `lookup_init` | `path.c:574` | `Lookup::new(path, flags) -> Result<Self, PathError>` | `path→String, flags, vmnt/vnode=None, symloop=0` |
 | `lookup`（循环核心） | `path.c:384-546` | `path.rs:lookup(start_fs, start_ino, start_dev, resolve, rd, uid, gid, mounts, req_lookup)` | EENTERMOUNT/ELEAVEMOUNT/ESYMLINK 三特殊码循环：路径推进 → symloop 累计越界 ELOOP → 起点切换（进=找 mounted_on 行、出=`..` 守卫+挂载点 vnode、链接=rd 重启）→ 降级锁记录 |
 | `advance` | `path.c:36-127` | `path.rs:advance(start, resolve, rd, uid, gid, mounts, vnode_table, req_lookup)` | lookup 循环 + vnode 缓存（find_by_ino 命中 dup / 未命中 alloc 填充） |
@@ -248,7 +248,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/path.c:40-933`（`advance:40` 的 `get_free→lookup→find/dup→downgrade`、`133 eat_path` 的 `/→rd`、`145 last_dir` 的 `strrchr('/')` 切分与 `symlink→rdlink` 循环、`384 lookup` 的 `req_lookup→EENTER/ELEAVE/SYMLINK→memmove`、`574 lookup_init` 的 `NULL` 初始化、`593 get_name` 的 `req_getdents` 循环、`648 canonical_path` 的 `..` 爬升、`31 DO_POSIX 0`）、`minix3/minix/servers/vfs/path.h:4`（`lookup` 结构 5 字段）、`minix3/minix/servers/vfs/utility.c:24-93`（`copy_path` 的 `PATH_MAX` 截断与 `fetch_name` 的 `safecopy`）、`minix3/minix/include/minix/vfsif.h:12`（`PATH_GET_UCRED 020`）、`minix3/minix/servers/vfs/const.h:32`（`SYMLOOP 16`）、`minix3/minix/include/sys/param.h`（`PATH_MAX 1024`）
+- C 源：`minix3/minix/servers/vfs/path.c:advance`（`advance:40` 的 `get_free→lookup→find/dup→downgrade`、`133 eat_path` 的 `/→rd`、`145 last_dir` 的 `strrchr('/')` 切分与 `symlink→rdlink` 循环、`384 lookup` 的 `req_lookup→EENTER/ELEAVE/SYMLINK→memmove`、`574 lookup_init` 的 `NULL` 初始化、`593 get_name` 的 `req_getdents` 循环、`648 canonical_path` 的 `..` 爬升、`31 DO_POSIX 0`）、`minix3/minix/servers/vfs/path.h:lookup`（`lookup` 结构 5 字段）、`minix3/minix/servers/vfs/utility.c:copy_path`（`copy_path` 的 `PATH_MAX` 截断与 `fetch_name` 的 `safecopy`）、`minix3/minix/include/minix/vfsif.h:PATH_RET_SYMLINK`（`PATH_GET_UCRED 020`）、`minix3/minix/servers/vfs/const.h:SYMLOOP`（`SYMLOOP 16`）、`minix3/minix/include/sys/param.h`（`PATH_MAX 1024`）
 - 阶段文档：`05-vnode-table.md`（`Vnode{fs_e,ino}` 的 `find_vnode` 命中）、`06-vmnt-table.md`（`Vmnt{m_mounted_on,m_root_node}` 的 `try_enter`）、`11-fs-comm.md`（`GlobalComm::sendmsg` 的 `c_max_reqs` 窗口）、`12-request-wrappers.md`（`FsReq::Lookup` 的 `grant_path` 包装）、`99-global-concepts.md`（`PATH_MAX/SYMLOOP/DO_POSIX` 常量）
 - Rust 实现：`os/servers/vfs/src/path.rs:1`（`Lookup{path,flags,vmnt_lock,vnode_lock,symloop}` + `LookupRes(Ok/Enter/Leave/Symlink)` + `PathFetcher trait (Direct vs Safecopy) + Historical vs Posix`）、`os/servers/vfs/src/fs_comm.rs:1`（`GlobalComm` 的 `TransId` 编码对端）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（`sys_safecopyfrom` 的跨地址空间拷贝）

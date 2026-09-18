@@ -117,43 +117,43 @@ Rust 改写不是照抄 `misc.c` 的开关与 `lock.c` 的指针表，而是吸�
 ### D1 调用枚举
 
 - **C**：十三命令开关 + 无对应分支的命令号（`misc.c:135-267`，`F_GETOWN/F_SETOWN/F_CLOSEM/F_MAXFD` 无分支）。
-- **Rust**：`FcntlCmd` 十三值 + `from_raw()`（`os/servers/vfs/src/fcntl.rs:106,137`）+ `wants_write_lock()`（唯 FreeSp，`157`）+ `is_lock_cmd()`（记录锁三命令，`162`）。
+- **Rust**：`FcntlCmd` 十三值 + `from_raw()`（`os/servers/vfs/src/fcntl.rs:enum FcntlCmd,137`）+ `wants_write_lock()`（唯 FreeSp，`157`）+ `is_lock_cmd()`（记录锁三命令，`162`）。
 - **为什么**：命令号决定执行分支是多路复用的常识；无对应分支的命令号译 `None`（未知无行为，变体即死代码）。替代方案（十三值 + Unknown 变体）被否决：未知无后继行为，变体不可达。
 
 ### D2 复制与标志检查
 
 - **C**：fd 下限检查（`139`）+ cloexec 查询设置（`150-163`）+ 不对称读写（`165-175`）+ 哨兵双向（`238-246`）。
-- **Rust**：`dupfd_arg_check()`（`fcntl.rs:170`，`[0, OPEN_MAX)` 复用 02）+ `cloexec_get/apply()`（`178,183`）+ `status_get/set()`（`189,195`，写掩模两位）+ `nosigpipe_get/set()`（`200,205`）。
+- **Rust**：`dupfd_arg_check()`（`os/servers/vfs/src/fcntl.rs:fn dupfd_arg_check`，`[0, OPEN_MAX)` 复用 02）+ `cloexec_get/apply()`（`178,183`）+ `status_get/set()`（`189,195`，写掩模两位）+ `nosigpipe_get/set()`（`200,205`）。
 - **为什么**：目标下限是复制的前置条件（`new_fd ≥ arg` 的前提）；不对称读写以掩模常量保证，散写即漏掩。替代方案（调用点散写掩模）被否决：掩模散则漏掩。
 
 ### D3 锁类型路标
 
 - **C**：五步类型权限检查（`lock.c:44-49`）。
-- **Rust**：`LockType::{Read, Write, Unlock}` + `Whence::{Set, Cur, End}`（`fcntl.rs:215,238`）+ `lock_gate()`（274，五步依次）+ `LockOp::{Query, Set, Unlock}` + `from_req()`（357，查询配解锁不可构）。
+- **Rust**：`LockType::{Read, Write, Unlock}` + `Whence::{Set, Cur, End}`（`os/servers/vfs/src/fcntl.rs:enum LockType,238`）+ `lock_gate()`（274，五步依次）+ `LockOp::{Query, Set, Unlock}` + `from_req()`（357，查询配解锁不可构）。
 - **为什么**：五步检查是记录锁的前置条件；`R_BIT/W_BIT` 复用 29（同源常量两处即漂移）；`FileType` 复用 15（六向开关不另判）；查询配解锁不可构（`from_req` 返回 `None`）使 `45` 之拒成类型事实。替代方案（本模块另定义 R_BIT）被否决：同源两处即漂移风险。
 
 ### D4 区域计算
 
 - **C**：三基准 + 双向溢出检查 + 长度零即到文件末尾 + 终点先于起点则拒绝（`lock.c:51-67`）。
-- **Rust**：`LockRegion{first, last}` + `compute_region()`（`fcntl.rs:298,310`，`checked_add` 双向检查）。
+- **Rust**：`LockRegion{first, last}` + `compute_region()`（`os/servers/vfs/src/fcntl.rs:struct LockRegion,310`，`checked_add` 双向检查）。
 - **为什么**：C 的加后回绕比较意在防溢出不在试探——译意不译形。替代方案（wrapping 加后比较）被否决：wrapping 即 C 写法，与 Rust 语义相悖。
 
 ### D5 固定八槽锁表
 
 - **C**：`file_lock[8]`（类型/持有者/vnode/起点/终点，`lock.h:7-13`）+ `nr_locks`（`glo.h:15`）+ 冲突三种处理 + 解锁四分支 + 查询回填与入库（`lock.c:69-165`）。
-- **Rust**：`VnodeKey{fs, ino}`（`fcntl.rs:330`，指针判等译值判等）+ `FileLock`（`342`，空槽即 `None`）+ `LockTable{slots, nr}`（`449`）+ `lock_op_decision()`（`478`）+ `LockOutcome::{Granted, QueryHit, QueryMiss, Wait, Unlocked}`（`430`）+ `LockAnswer`（`406`）+ `FlockWait{fd}`（`423`，命令恒为 `F_SETLKW` 不重复存、参数随调用者恢复记录）。
+- **Rust**：`VnodeKey{fs, ino}`（`os/servers/vfs/src/fcntl.rs:struct VnodeKey`，指针判等译值判等）+ `FileLock`（`342`，空槽即 `None`）+ `LockTable{slots, nr}`（`449`）+ `lock_op_decision()`（`478`）+ `LockOutcome::{Granted, QueryHit, QueryMiss, Wait, Unlocked}`（`430`）+ `LockAnswer`（`406`）+ `FlockWait{fd}`（`423`，命令恒为 `F_SETLKW` 不重复存、参数随调用者恢复记录）。
 - **为什么**：空槽 `None` 化是“有无即类型”；同进程不冲突是劝告锁语义的核心；五种结果各有归属（入库/回填/挂起/清除/授权），枚举使归属不散。替代方案（布尔三元组）被否决：归属散落调用点。
 
 ### D6 close 清锁与广播唤醒
 
 - **C**：`close_fd:713-724`（清除同进程同 vnode 的锁 + 有清除则唤醒）+ `lock_revive:172-192`（遍历全表，注释说明广播换代码量）。
-- **Rust**：`release_for()`（`fcntl.rs:625`，有清除返回真、唤醒归调用者）+ `SuspendedProc`（649，存活/锁等待两态）+ `revive_all()`（666，过滤锁等待者全返回）。
+- **Rust**：`release_for()`（`os/servers/vfs/src/fcntl.rs:fn release_for`，有清除返回真、唤醒归调用者）+ `SuspendedProc`（649，存活/锁等待两态）+ `revive_all()`（666，过滤锁等待者全返回）。
 - **为什么**：锁的终点在 close（无显式“关锁”调用）；广播唤醒是设计约定（误唤醒者经 `unblock` 重判，`main.c:946-954`；`pipe.c:531` 之 `break` 无撤销即证无害）。替代方案（精确唤醒）被否决：与 C 注释约定相悖（P0 级偏移）。
 
 ### D7 FS 对话与返回判定
 
 - **C**：打洞钳制（`184-237`）+ 清缓存分流（`247-264`）+ `req_ftrunc/req_flush` 下发。
-- **Rust**：`FreespSpan::{TruncateTo, TruncateSize}` + `freesp_span()`（`fcntl.rs:676,693`，钳制上界 `min(end, v_size)`）+ `FlushTarget::{BlockDev, HostingFs}` + `flush_target()`（`716,728`，其余 `ENODEV` 原样保留）+ `FcntlFs{ftrunc, flush}`（743，`ScriptedFcntl` 按脚本应答 vs `RefusingFcntl` 常拒）+ `FcntlVerdict::{Done, Suspend}`（813，唯等待挂起，`From<LockOutcome>`）。
+- **Rust**：`FreespSpan::{TruncateTo, TruncateSize}` + `freesp_span()`（`os/servers/vfs/src/fcntl.rs:enum FreespSpan,693`，钳制上界 `min(end, v_size)`）+ `FlushTarget::{BlockDev, HostingFs}` + `flush_target()`（`716,728`，其余 `ENODEV` 原样保留）+ `FcntlFs{ftrunc, flush}`（743，`ScriptedFcntl` 按脚本应答 vs `RefusingFcntl` 常拒）+ `FcntlVerdict::{Done, Suspend}`（813，唯等待挂起，`From<LockOutcome>`）。
 - **为什么**：打洞不超文件尾（钳制上界）与清缓存按目标分流（块设备清对端、常规目录清宿主）是业务规则；截断刷盘皆 FS 职责，本地算即 P0 偏移。替代方案（本地算截断）被否决：与 C 相悖。
 
 ### ARCH 决策总表
@@ -161,8 +161,8 @@ Rust 改写不是照抄 `misc.c` 的开关与 `lock.c` 的指针表，而是吸�
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
 | A-1 单线程事件循环（mthread→状态机） | 锁配对转借用注记；锁表无锁 | `fcntl.rs:1` 模块注记 + 本文档 D5/D6 + 30 正文 §1.7 |
-| A-5 SUSPEND/revive 显式化 | 等待即 `Suspend`，其余皆 `Done` | `fcntl.rs:813` + 本文档 D5/D7 + 30 正文 §1.6 |
-| A-8 64 位类型映射 | 起点终点 `i64`、`MAX_FILE_POS` 即文件末尾 | `fcntl.rs:298` + 本文档 D4 + 30 正文 §1.5 |
+| A-5 SUSPEND/revive 显式化 | 等待即 `Suspend`，其余皆 `Done` | `os/servers/vfs/src/fcntl.rs:enum FcntlVerdict（L813，工具生成）` + 本文档 D5/D7 + 30 正文 §1.6 |
+| A-8 64 位类型映射 | 起点终点 `i64`、`MAX_FILE_POS` 即文件末尾 | `os/servers/vfs/src/fcntl.rs:struct LockRegion` + 本文档 D4 + 30 正文 §1.5 |
 
 ---
 
@@ -186,16 +186,16 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 十三命令 | `fcntl.h:178-196,328-329` | `fcntl.rs:31,106` | 未知命令返回 `None` |
-| 锁类型/基准 | `fcntl.h:203-205`/`unistd.h:174-176` | `fcntl.rs:215,238` | 识别类型、拒绝非法值 |
-| 复制与标志检查 | `misc.c:139,150-175,238-246` | `fcntl.rs:170,178,183,189,195,200,205` | 目标下限/查询设置/不对称读写/哨兵 |
-| 五步类型权限检查 | `lock.c:44-49` | `fcntl.rs:274` + 357 | 检查与构造 |
-| 区域计算 | `lock.c:51-67` | `fcntl.rs:298,310` | 溢出拒绝/长度零到文件末尾 |
-| 固定八槽锁表 | `lock.h:7-13` + `lock.c:69-165` | `fcntl.rs:330,342,430,449,478` | 入库/回填/挂起/清除 |
-| close 清锁与广播唤醒 | `open.c:713-724` + `lock.c:172-192` | `fcntl.rs:625,649,666` | 清除与唤醒 |
-| 打洞与清缓存 | `misc.c:184-264` | `fcntl.rs:676,693,716,728,743,752,794` | 钳制/分流/双实现 |
-| 返回判定 | `lock.c:97` + A-5 | `fcntl.rs:813` | 唯等待挂起 |
-| 错误族 | `misc.c`/`lock.c` 全文件 | `fcntl.rs:836,855 FcntlError::to_errno` | 7 变体→errno，无自创 |
+| 十三命令 | `minix3/sys/sys/fcntl.h:F_DUPFD,328-329` | `fcntl.rs:31,106` | 未知命令返回 `None` |
+| 锁类型/基准 | `minix3/sys/sys/fcntl.h:F_RDLCK`/`unistd.h:174-176` | `os/servers/vfs/src/fcntl.rs:enum LockType,238` | 识别类型、拒绝非法值 |
+| 复制与标志检查 | `misc.c:139,150-175,238-246` | `os/servers/vfs/src/fcntl.rs:fn dupfd_arg_check,178,183,189,195,200,205` | 目标下限/查询设置/不对称读写/哨兵 |
+| 五步类型权限检查 | `lock.c:44-49` | `os/servers/vfs/src/fcntl.rs:fn lock_gate` + 357 | 检查与构造 |
+| 区域计算 | `lock.c:51-67` | `os/servers/vfs/src/fcntl.rs:struct LockRegion,310` | 溢出拒绝/长度零到文件末尾 |
+| 固定八槽锁表 | `lock.h:7-13` + `lock.c:69-165` | `os/servers/vfs/src/fcntl.rs:struct VnodeKey,342,430,449,478` | 入库/回填/挂起/清除 |
+| close 清锁与广播唤醒 | `open.c:713-724` + `lock.c:172-192` | `os/servers/vfs/src/fcntl.rs:fn release_for,649,666` | 清除与唤醒 |
+| 打洞与清缓存 | `misc.c:184-264` | `os/servers/vfs/src/fcntl.rs:enum FreespSpan,693,716,728,743,752,794` | 钳制/分流/双实现 |
+| 返回判定 | `lock.c:97` + A-5 | `os/servers/vfs/src/fcntl.rs:enum FcntlVerdict（L813，工具生成）` | 唯等待挂起 |
+| 错误族 | `misc.c`/`lock.c` 全文件 | `os/servers/vfs/src/fcntl.rs:enum FcntlError（L836，工具生成）,855 FcntlError::to_errno` | 7 变体→errno，无自创 |
 
 ### 4.3 不变量
 
@@ -221,14 +221,14 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_cmd_decode_and_dupfd_door` | `misc.c:131,135-148,265-266` | 十三命令 + 未知命令返回 EINVAL + 读写锁选择 + 目标下限 | `fcntl.rs:892` |
-| `test_narrow_flag_doors` | `misc.c:150-175,238-246` | cloexec 查询设置/状态不对称读写/哨兵双向 | `fcntl.rs:936` |
-| `test_lock_door_five_questions` | `lock.c:44-57` + `fcntl.h` | 类型识别/基准/五步检查/锁构造 | `fcntl.rs:967` |
-| `test_region_arithmetic` | `lock.c:59-67` | 起点终点/长度零到文件末尾/双向溢出/终点先于起点 | `fcntl.rs:1045` |
-| `test_conflict_matrix_and_unlock_shapes` | `lock.c:69-165` | 跳过矩阵/三种处理/查询命中与未命中/四分支/表满/返回判定 | `fcntl.rs:1080` |
-| `test_close_release_and_revive` | `open.c:713-724` + `lock.c:172-192` | close 时清锁/广播过滤 | `fcntl.rs:1267` |
-| `test_freesp_and_flush_dialogue` | `misc.c:184-264` | 钳制/截尾/分流/脚本与常拒双实现 | `fcntl.rs:1310` |
-| `test_errno_map_covers_fcntl_c` | `misc.c`/`lock.c` 全文件 | 7 变体→errno + 行号值 | `fcntl.rs:1389` |
+| `test_cmd_decode_and_dupfd_door` | `misc.c:131,135-148,265-266` | 十三命令 + 未知命令返回 EINVAL + 读写锁选择 + 目标下限 | `os/servers/vfs/src/fcntl.rs:fn grant` |
+| `test_narrow_flag_doors` | `misc.c:150-175,238-246` | cloexec 查询设置/状态不对称读写/哨兵双向 | `os/servers/vfs/src/fcntl.rs:fn test_cmd_decode_and_dupfd_door（L936，工具生成）` |
+| `test_lock_door_five_questions` | `lock.c:44-57` + `fcntl.h` | 类型识别/基准/五步检查/锁构造 | `os/servers/vfs/src/fcntl.rs:fn test_narrow_flag_doors（L967，工具生成）` |
+| `test_region_arithmetic` | `lock.c:59-67` | 起点终点/长度零到文件末尾/双向溢出/终点先于起点 | `os/servers/vfs/src/fcntl.rs:fn test_lock_door_five_questions（L1045，工具生成）` |
+| `test_conflict_matrix_and_unlock_shapes` | `lock.c:69-165` | 跳过矩阵/三种处理/查询命中与未命中/四分支/表满/返回判定 | `os/servers/vfs/src/fcntl.rs:fn test_region_arithmetic（L1080，工具生成）` |
+| `test_close_release_and_revive` | `open.c:713-724` + `lock.c:172-192` | close 时清锁/广播过滤 | `os/servers/vfs/src/fcntl.rs:fn test_conflict_matrix_and_unlock_shapes（L1267，工具生成）` |
+| `test_freesp_and_flush_dialogue` | `misc.c:184-264` | 钳制/截尾/分流/脚本与常拒双实现 | `os/servers/vfs/src/fcntl.rs:fn test_close_release_and_revive（L1310，工具生成）` |
+| `test_errno_map_covers_fcntl_c` | `misc.c`/`lock.c` 全文件 | 7 变体→errno + 行号值 | `os/servers/vfs/src/fcntl.rs:fn test_freesp_and_flush_dialogue（L1389，工具生成）` |
 
 测试策略：命令以十三值全枚举锁定（含 5/6/10/11 无分支拒绝）；复制以目标下限与不对称读写掩模覆盖；记录锁以五步检查逐项覆盖；区域以双向溢出与长度零到文件末尾覆盖；冲突以跳过矩阵（不同 vnode/不重叠/读读相容/同进程）覆盖；命中以拒绝/等待/分支覆盖；解锁以四分支（全覆盖清除/头缩/尾缩/中间分裂 + 无槽分裂拒绝）覆盖；查询以命中（表序首锁）与未命中（自锁不报）覆盖；close 以同进程同 vnode 精确释放覆盖；唤醒以存活锁等待过滤覆盖；打洞以钳制上界与零长度截尾覆盖；清缓存以 root 检查与块设备常规目录分流覆盖；错误以 7 变体全映射覆盖。
 
@@ -261,7 +261,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/misc.c:117-271`（`do_fcntl` 十三命令）、`minix3/minix/servers/vfs/lock.c:1-192`（`lock_op` 检查区域冲突清除 + `lock_revive` 广播唤醒）、`minix3/minix/servers/vfs/lock.h:1-15`（固定八槽表）、`minix3/minix/servers/vfs/open.c:690-724`（`close_fd` 的 close 时清锁）、`minix3/minix/servers/vfs/main.c:946-954`（`unblock` 锁等待重建）、`minix3/minix/servers/vfs/pipe.c:498-561`（`unpause` 锁等待无撤销）、`minix3/minix/servers/vfs/const.h:6,21`（`NR_LOCKS/FP_BLOCKED_ON_FLOCK`）、`minix3/sys/sys/fcntl.h:178-205,328-329`（命令/锁类型/打洞清缓存号）
+- C 源：`minix3/minix/servers/vfs/misc.c:do_fcntl`（`do_fcntl` 十三命令）、`minix3/minix/servers/vfs/lock.c:1-192`（`lock_op` 检查区域冲突清除 + `lock_revive` 广播唤醒）、`minix3/minix/servers/vfs/lock.h:1-15`（固定八槽表）、`minix3/minix/servers/vfs/open.c:close_fd`（`close_fd` 的 close 时清锁）、`minix3/minix/servers/vfs/main.c:unblock（L946，工具生成）`（`unblock` 锁等待重建）、`minix3/minix/servers/vfs/pipe.c:unpause`（`unpause` 锁等待无撤销）、`minix3/minix/servers/vfs/const.h:NR_LOCKS,21`（`NR_LOCKS/FP_BLOCKED_ON_FLOCK`）、`minix3/sys/sys/fcntl.h:F_DUPFD,328-329`（命令/锁类型/打洞清缓存号）
 - 阶段文档：`14-filedes.md`（最低空闲分配与 close 检查）、`04-filp-table.md`（filp 结构）、`02-fproc-struct.md`（阻塞载荷）、`09-main-loop.md`（待复去向）、`29-protect.md`（上一站）、`31-misc-queries.md`（下一站）
-- Rust 实现：`os/servers/vfs/src/fcntl.rs:1`（本篇判定层）、`os/servers/vfs/src/fproc.rs:160`（`FlockCmd::SetLkw` 恒定命令）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/fcntl.rs:1`（本篇判定层）、`os/servers/vfs/src/fproc.rs:enum FlockCmd（L160，工具生成）`（`FlockCmd::SetLkw` 恒定命令）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（用户缓冲拷贝语义）

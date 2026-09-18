@@ -23,7 +23,7 @@ VM 中存在**两层**物理页管理（draft 素材 §1.2 归纳，grep 实证�
 | 第 1 层：裸物理页 | 无（仅 `phys_bytes`） | `alloc_mem()`/`free_mem()` | 页表页、spare pages、VM 自身内存 | 05/06 |
 | 第 2 层：映射物理页 | `phys_block`/`phys_region` | `pb_new()`+`pb_reference()` | 进程内存（堆/栈/mmap/CoW 共享页） | **本文档** |
 
-分界依据（grep 实证）：`alloc.c` 全文件零引用 `pb_new`/`phys_block`（`rg "pb_new" minix3/minix/servers/vm/alloc.c` → 0 hits）；`pb_new` 调用点全部在进程内存路径——region.c:691（缺页）、pb.c:136（mem_cow）、mem_anon_contig.c:65（连续匿名内存）。第 1 层页独占、无共享、生命周期简单，不需要引用计数；第 2 层页需要 refcount（fork 共享）、CoW（写时复制）、缓存（页缓存持有）三类语义。
+分界依据（grep 实证）：`alloc.c` 全文件零引用 `pb_new`/`phys_block`（`rg "pb_new" minix3/minix/servers/vm/alloc.c` → 0 hits）；`pb_new` 调用点全部在进程内存路径——region.c:691（缺页）、minix3/minix/servers/vm/pb.c:mem_cow（mem_cow）、minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_new（L65，工具生成）（连续匿名内存）。第 1 层页独占、无共享、生命周期简单，不需要引用计数；第 2 层页需要 refcount（fork 共享）、CoW（写时复制）、缓存（页缓存持有）三类语义。
 
 ### 1.2 三层结构系统：vir_region → phys_region → phys_block
 
@@ -57,7 +57,7 @@ phys_block（region.h:23）{ phys, refcount, firstregion, flags }
 2. **`pb_unreferenced(region, pr, rm)`**（:96）——解除一个映射：`refcount--` → 从 firstregion 链表摘除（头节点或遍历查找）→ `refcount == 0` 时调用 `pr->memtype->ev_unreference(pr)`（12 的回调面）释放页语义 + `SLABFREE(pb)` → `pr->ph = NULL` → `rm` 时 `physblock_set(region, offset, NULL)` 清槽。
 3. **`pb_free(pb)`**（:54）——物理页回收：`phys != MAP_NONE` 时 `free_mem(ABS2CLICK(phys), 1)` 还裸页 + `SLABFREE(pb)`。
 
-**引用计数不变量**：`refcount == 0` ⟺ `firstregion == NULL`（pb.c:103 `assert(!pb->firstregion)`）——共享链为空时物理页无人持有，可安全回收。
+**引用计数不变量**：`refcount == 0` ⟺ `firstregion == NULL`（minix3/minix/servers/vm/pb.c:pb_unreferenced（L103，工具生成） `assert(!pb->firstregion)`）——共享链为空时物理页无人持有，可安全回收。
 
 ### 1.4 反向引用链表：谁在引用这个物理页
 
@@ -84,7 +84,7 @@ PageSlot { pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType> }  
 设计动机：
 
 1. **O(1) 随机访问**：`PageFrames::get(pfn)`/`get_mut(pfn)` 直接索引——CoW 判断（fork.rs:74 `region.needs_cow(frames, offset)`）、页缓存命中、sanity 核对全部需要按物理页快速查状态。C 的 phys_block 是堆对象，查状态必须经 phys_region → ph 指针间接访问。
-2. **无堆分配/释放**：PageFrames 在 `VmServer::init()` 一次性分配（vm_server.rs:276），运行期无 `SLABALLOC`/`SLABFREE` 每页元数据分配——消除 per-page 分配失败路径。
+2. **无堆分配/释放**：PageFrames 在 `VmServer::init()` 一次性分配（os/servers/vm/src/vm_server.rs:fn new_inner（L276，工具生成）），运行期无 `SLABALLOC`/`SLABFREE` 每页元数据分配——消除 per-page 分配失败路径。
 3. **类型安全**：`refcount: u32` + `saturating_add` 防溢出（C `u8_t` 上限 255，64 位系统长 fork 链可超）；标志位用 `bitflags` 类型化。
 4. **显式 CoW**：`PageFlags::COW` 显式标记替代 C 的"PTE 只读推断"——页错误处理直接查标志（16/17），不依赖页表内容。
 
@@ -109,7 +109,7 @@ PageSlot { pfn: u32, offset: VirBytes, memtype: Option<&'static dyn MemType> }  
 
 本章逐行分析 pb.c 全量 + 两个头文件的结构定义 + region.c 的槽位访问函数。所有行号以 `sed -n` 实证为准（2026-08-15）。
 
-### 2.1 结构定义（region.h:23-35 / phys_region.h:9-24）
+### 2.1 结构定义（region.h:23-35 / minix3/minix/servers/vm/phys_region.h:phys_region（L9，工具生成））
 
 ```c
 struct phys_block {                          /* region.h:23 */
@@ -139,7 +139,7 @@ typedef struct phys_region {                 /* phys_region.h:9 */
 
 要点：`refcount` 是 **u8**（32 位系统共享链很少超 255）；`firstregion`/`next_ph_list` 是**反向引用链表**；`parent` 在"yielded"（区域让渡）时为 NULL；`written`/`seencount` 是 SANITYCHECKS 调试字段。
 
-### 2.2 pb_new（pb.c:32-51）
+### 2.2 pb_new（minix3/minix/servers/vm/pb.c:phys_block）
 
 ```c
 struct phys_block *pb_new(phys_bytes phys)
@@ -165,7 +165,7 @@ struct phys_block *pb_new(phys_bytes phys)
 - `phys == MAP_NONE` 表示"尚未分配裸页"（缺页时先建 phys_block，物理页按需分配）——`pb_free` 对 MAP_NONE 跳过 free_mem。
 - `USE` 宏是 SANITYCHECKS 门控的写保护临界区（09 MEMPROTECT）。
 
-### 2.3 pb_free（pb.c:54-59）
+### 2.3 pb_free（minix3/minix/servers/vm/pb.c:pb_free）
 
 ```c
 void pb_free(struct phys_block *pb)
@@ -178,7 +178,7 @@ void pb_free(struct phys_block *pb)
 
 **语义**：物理页对象的两段回收——裸页（第 1 层）+ 元数据对象（第 2 层）。Rust 对应：`PfnAllocator::free_pfn`（裸页）+ PageFrames 数组槽位状态归零（无对象释放）。
 
-### 2.4 pb_link（pb.c:61-70）
+### 2.4 pb_link（minix3/minix/servers/vm/pb.c:pb_link）
 
 ```c
 void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
@@ -197,7 +197,7 @@ void pb_link(struct phys_region *newphysr, struct phys_block *newpb,
 
 **核心语义**：物理页获得一个新引用者——phys_region 头插到 firstregion 链表 + `refcount++`。O(1) 头插（无需遍历）。
 
-### 2.5 pb_reference（pb.c:73-90）
+### 2.5 pb_reference（minix3/minix/servers/vm/pb.c:phys_region）
 
 ```c
 struct phys_region *pb_reference(struct phys_block *newpb,
@@ -217,7 +217,7 @@ struct phys_region *pb_reference(struct phys_block *newpb,
 
 **组合语义**：`SLABALLOC`（phys_region 对象）+ `pb_link`（挂链 + 计数）+ `physblock_set`（槽位登记）——一次完成"虚拟页 → 物理页"映射建立。调用方（region.c map_pf :690、map_proc_copy_range 等）在缺页/复制时使用。
 
-### 2.6 pb_unreferenced（pb.c:96-126）
+### 2.6 pb_unreferenced（minix3/minix/servers/vm/pb.c:pb_unreferenced）
 
 ```c
 void pb_unreferenced(struct vir_region *region, struct phys_region *pr, int rm)
@@ -272,7 +272,7 @@ void physblock_set(struct vir_region *region, vir_bytes offset, struct phys_regi
 
 vir_region 的 `physblocks[]` 是每页一个槽位的指针数组——虚拟区域 ↔ 物理页的登记表。Rust 对应：vir_region 的 `PageSlot` 数组（13-region-mapping 覆盖）。
 
-### 2.8 mem_cow（pb.c:136-168，17 详述）
+### 2.8 mem_cow（minix3/minix/servers/vm/pb.c:mem_cow，17 详述）
 
 签名引用（本文档不展开，17-cow-mechanism 覆盖）：
 
@@ -295,7 +295,7 @@ int mem_cow(struct vir_region *region, struct phys_region *ph,
 
 ### 3.1 D1: 集中数组替代分散对象（ARCH 主决策）
 
-`PageFrames`（page_state.rs:225-258）是全局 PFN → PageState 数组：
+`PageFrames`（os/servers/vm/src/region/page_state.rs:fn fmt（L225，工具生成））是全局 PFN → PageState 数组：
 
 ```rust
 pub(crate) struct PageFrames {
@@ -309,7 +309,7 @@ pub(crate) struct PageState {
 }
 ```
 
-**论证**：C 的 phys_block 是 slab 堆对象，访问必须"phys_region → ph 指针 → 字段"两步间接 + 可能空指针；PageFrames 是 O(1) 直接索引，且初始化一次性完成（vm_server.rs:276，`VmServer::init()` Phase 3），运行期零分配。反向链表（firstregion）的枚举需求由 sanity 审计（§4.4）替代——**运行时不需要"谁在引用"的实时链表**，只有调试审计需要，而审计可以全量扫描。
+**论证**：C 的 phys_block 是 slab 堆对象，访问必须"phys_region → ph 指针 → 字段"两步间接 + 可能空指针；PageFrames 是 O(1) 直接索引，且初始化一次性完成（os/servers/vm/src/vm_server.rs:fn new_inner（L276，工具生成），`VmServer::init()` Phase 3），运行期零分配。反向链表（firstregion）的枚举需求由 sanity 审计（§4.4）替代——**运行时不需要"谁在引用"的实时链表**，只有调试审计需要，而审计可以全量扫描。
 
 ### 3.2 D2: PageSlot 替代 phys_region
 
@@ -328,7 +328,7 @@ pub(crate) enum PageSlot {
 
 ### 3.3 D3: refcount u8→u32 + saturating_add
 
-C `u8_t refcount`（region.h:31）上限 255——32 位 Minix3 上共享链（fork 链）很少接近，但 **64 位系统 + 深 fork 链可以超过**。Rust 用 `u32` + `saturating_add`（page_state.rs:263）防溢出。这同时消除了 C 的 `refcount == 0` 判断与 u8 回绕的隐患。
+C `u8_t refcount`（region.h:31）上限 255——32 位 Minix3 上共享链（fork 链）很少接近，但 **64 位系统 + 深 fork 链可以超过**。Rust 用 `u32` + `saturating_add`（os/servers/vm/src/region/page_state.rs:fn pfn_to_phys（L263，工具生成））防溢出。这同时消除了 C 的 `refcount == 0` 判断与 u8 回绕的隐患。
 
 ### 3.4 D4: 标志显式化（PageFlags）
 
@@ -340,7 +340,7 @@ pub(crate) struct PageFlags: u8 {
 }
 ```
 
-- `addcache(pfn)`/`rmcache(pfn)`（page_state.rs:258-276）：IN_CACHE 置位/清除 + refcount 同步增减——页缓存持有引用的显式表达（24 消费）。
+- `addcache(pfn)`/`rmcache(pfn)`（os/servers/vm/src/region/page_state.rs:fn total_pages（L258，工具生成））：IN_CACHE 置位/清除 + refcount 同步增减——页缓存持有引用的显式表达（24 消费）。
 - COW 显式标记替代 C 的 PTE 只读推断：`prepare_cow()`（fork 路径）置位，页错误处理（16）直接查标志决定分裂。
 
 ### 3.5 D5: PfnAllocator trait
@@ -371,7 +371,7 @@ pub(crate) trait PfnAllocator {
 
 ## 4. 实现详解
 
-### 4.1 `PageFrames`（page_state.rs:225-258）
+### 4.1 `PageFrames`（os/servers/vm/src/region/page_state.rs:fn fmt（L225，工具生成））
 
 ```rust
 pub(crate) struct PageFrames {
@@ -393,11 +393,11 @@ impl PageFrames {
 }
 ```
 
-- 初始化于 `VmServer::init()` Phase 3（vm_server.rs:274-276）——total_pages 已知后一次性分配。
-- `PAGE_SIZE = 4096`（page_state.rs:15），与 VM 页大小一致。
+- 初始化于 `VmServer::init()` Phase 3（os/servers/vm/src/vm_server.rs:fn new_inner（L274，工具生成））——total_pages 已知后一次性分配。
+- `PAGE_SIZE = 4096`（os/servers/vm/src/region/page_state.rs:const PAGE_SIZE），与 VM 页大小一致。
 - `total_pages as u32` 的界：4KB 页 × 4TB = 2^32 页——u32 恰好覆盖。
 
-### 4.2 `PageSlot`（page_state.rs:90-205）
+### 4.2 `PageSlot`（os/servers/vm/src/region/page_state.rs:fn new（L90，工具生成））
 
 Copy 语义（fork 复制区域时整个槽位可拷贝，fork.rs 依赖）：
 
@@ -414,7 +414,7 @@ pub(crate) enum PageSlot {
 - `PartialEq` 同态比较（memtype 指针比较不稳定，忽略）——测试/审计用。
 - `Debug` 按变体打印，memtype 输出名称（`m.name()`）而非指针值——可读性。
 
-### 4.3 `PageFlags` 与缓存消费（page_state.rs:27-40 / :258-276）
+### 4.3 `PageFlags` 与缓存消费（os/servers/vm/src/region/page_state.rs:fn free_pfn（L27，工具生成） / :258-276）
 
 `IN_CACHE`/`PENDING_IO`/`COW` 三标志。`addcache`/`rmcache` 由 page_cache.rs 消费（24 覆盖完整缓存语义）：
 
@@ -431,7 +431,7 @@ pub fn addcache(&mut self, pfn: u32) {
 
 **幂等性**：已 IN_CACHE 不再重复计数（防重复 addcache 造成 refcount 虚高）。
 
-### 4.4 `verify_refcounts`（sanity.rs:54-126）
+### 4.4 `verify_refcounts`（os/servers/vm/src/sanity.rs:struct RefcountMismatch（L54，工具生成））
 
 C `map_sanitycheck`（region.c:168-250）的 Rust 对应：
 
@@ -460,13 +460,13 @@ pub fn verify_refcounts(
 
 | 测试 | 位置 | 验证目标 |
 |------|------|---------|
-| `test_page_frames_init` | page_state.rs:289 | 初始化 refcount=0、flags 空 |
-| `test_pfn_to_phys` | page_state.rs:300 | PFN → PA 换算 |
-| `test_phys_to_pfn` | page_state.rs:308 | PA → PFN 换算 |
-| `test_page_slot` | page_state.rs:316 | 三态：Mapped/Reserved/Empty |
-| `test_incache` | page_state.rs:336 | addcache/rmcache refcount 维护 |
-| `test_refcount_operations` | page_state.rs:348 | refcount 增减 |
-| `test_verify_refcounts_empty/mismatch/cache_only/cache_mismatch` | sanity.rs:128/:136/:150/:159 | 审计一致性 |
+| `test_page_frames_init` | os/servers/vm/src/region/page_state.rs:fn rmcache（L289，工具生成） | 初始化 refcount=0、flags 空 |
+| `test_pfn_to_phys` | os/servers/vm/src/region/page_state.rs:fn test_page_frames_init（L300，工具生成） | PFN → PA 换算 |
+| `test_phys_to_pfn` | os/servers/vm/src/region/page_state.rs:fn test_pfn_to_phys（L308，工具生成） | PA → PFN 换算 |
+| `test_page_slot` | os/servers/vm/src/region/page_state.rs:fn test_phys_to_pfn（L316，工具生成） | 三态：Mapped/Reserved/Empty |
+| `test_incache` | os/servers/vm/src/region/page_state.rs:fn test_incache（L336，工具生成） | addcache/rmcache refcount 维护 |
+| `test_refcount_operations` | os/servers/vm/src/region/page_state.rs:fn test_refcount_operations（L348，工具生成） | refcount 增减 |
+| `test_verify_refcounts_empty/mismatch/cache_only/cache_mismatch` | os/servers/vm/src/sanity.rs:fn verify_refcounts（L128，工具生成）/:136/:150/:159 | 审计一致性 |
 
 ### 5.2 覆盖维度
 

@@ -112,13 +112,13 @@ User/Server 兼有两者（context 持久，flow 周期切到它）。CLOCK/SYST
 
 VM/PM/VFS 是用户态服务——单线程事件循环，`Rc`/`RefCell`/`!Send`/`!Sync` 安全。**Kernel 不是**。
 
-Minix3 内核支持 SMP（对称多处理），使用 BKL（Big Kernel Lock）自旋锁确保同一时刻只有一个 CPU 执行内核代码（`smp.h:48`）。但 BKL 在以下路径中会被释放，形成并发窗口：
+Minix3 内核支持 SMP（对称多处理），使用 BKL（Big Kernel Lock）自旋锁确保同一时刻只有一个 CPU 执行内核代码（`minix3/minix/kernel/smp.h:SPINLOCK_DECLARE`）。但 BKL 在以下路径中会被释放，形成并发窗口：
 
 | 释放 BKL 的路径 | 源码位置 | 说明 |
 |----------------|---------|------|
 | 时钟中断 | `arch_clock.c:92,107,118` | 处理定时器时释放 BKL |
-| APIC 中断 | `smp.c:44,86-94` | IPI 处理时释放 BKL |
-| IPI 同步等待 | `smp.c:86-94` | 等待其他 CPU 响应时释放 BKL |
+| APIC 中断 | `minix3/minix/kernel/smp.c:wait_for_APs_to_finish_booting（L44，工具生成）,86-94` | IPI 处理时释放 BKL |
+| IPI 同步等待 | `minix3/minix/kernel/smp.c:smp_schedule_sync（L86，工具生成）` | 等待其他 CPU 响应时释放 BKL |
 
 **推理**：系统调用处理全程持有 BKL，`cross_space_copy`/`cross_space_memset` 在此范围内执行，因此这些函数内部不需要额外同步。但 BKL 释放窗口内可能有其他 CPU 的中断处理代码访问共享数据。
 

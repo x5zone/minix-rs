@@ -35,7 +35,7 @@ SCHED 知道"参数应该是什么"，内核知道"参数现在是什么"，两�
 
 ### 1.5 内核先做三道检查，再分四步写入
 
-内核收到消息后，先检查、再写入，顺序不能反（如果先写了再检查，不合法的值就已经污染进程表了）。三道检查是：endpoint 是否合法（`isokendpt` 失败就返回 `EINVAL`，见 `do_schedule.c:14-15`，endpoint 都对不上就不知道往哪写）→ 调用者是不是该进程的调度器（`caller != p_scheduler` 就返回 `EPERM`，见 `20-21`，调度器身份就是权限本身）→ 取值范围检查（优先级和时间片的范围见 `system.c:645-650`，CPU 合法性见 `652-655`，越界就拒绝）。检查全过之后分四步写入：先把进程置上 `RTS_NO_QUANTUM`（让它先出队，见 `674-678`）→ 逐个写入非 `-1` 的字段（`-1` 的跳过，见 `680-688`）→ 按 `niced` 置或清 `MF_NICED`（见 `692-694`）→ 清掉 `RTS_NO_QUANTUM` 让进程重新入队（见 `697`），最后返回 `OK`。
+内核收到消息后，先检查、再写入，顺序不能反（如果先写了再检查，不合法的值就已经污染进程表了）。三道检查是：endpoint 是否合法（`isokendpt` 失败就返回 `EINVAL`，见 `minix3/minix/kernel/system/do_schedule.c:do_schedule（L14，工具生成）`，endpoint 都对不上就不知道往哪写）→ 调用者是不是该进程的调度器（`caller != p_scheduler` 就返回 `EPERM`，见 `20-21`，调度器身份就是权限本身）→ 取值范围检查（优先级和时间片的范围见 `system.c:645-650`，CPU 合法性见 `652-655`，越界就拒绝）。检查全过之后分四步写入：先把进程置上 `RTS_NO_QUANTUM`（让它先出队，见 `674-678`）→ 逐个写入非 `-1` 的字段（`-1` 的跳过，见 `680-688`）→ 按 `niced` 置或清 `MF_NICED`（见 `692-694`）→ 清掉 `RTS_NO_QUANTUM` 让进程重新入队（见 `697`），最后返回 `OK`。
 
 ### 1.6 `schedule_process` 和 `sched_proc` 的命名对照
 
@@ -67,7 +67,7 @@ SCHED 知道"参数应该是什么"，内核知道"参数现在是什么"，两�
 
 调发送函数（`321-322`：`sys_schedule(endpoint, prio, quantum, cpu, niced)`，五个参数组成一条消息）→ 失败就打印日志（`323-324`：失败提示里写着 "PM:"，这是从 PM 时代留下来的字符串，不影响语义）→ 返回内核给的返回值（`327`：成功失败都原样返回给调用者）→ 装消息（`sys_schedule.c`：五个字段逐个填进消息体，再调 `_kernel_call(SYS_SCHEDULE)` 发出去，消息体有 endpoint/quantum/priority/cpu/niced 五个字段）。
 
-### 2.4 内核入口的权限检查（`do_schedule.c:8-29`）
+### 2.4 内核入口的权限检查（`minix3/minix/kernel/system/do_schedule.c:do_schedule`）
 
 函数开头（`8-13`：进程表指针、进程号、四个新值）→ endpoint 检查（`14-15`：`isokendpt` 失败就返回 `EINVAL`）→ 调度器身份检查（`20-21`：`caller != p_scheduler` 就返回 `EPERM`，见 §1.5）→ 拆消息（`24-27`：四个值直接取出，`niced` 用 `!!` 压成 0/1）→ 转交（`29`：调 `sched_proc`，拆消息的人不写表，写表另有其人）。
 
@@ -96,25 +96,25 @@ Rust 改写不是把 C 函数逐行翻译，而是在参考 Linux 的检查加�
 ### D1 掩码做成 flags 类型
 
 - **C**：`unsigned` 的三个位，加上 ALL/LOCAL/MIGRATE 宏（`schedule.c:22-35`）。
-- **Rust**：`ChangeMask: bitflags<u8>`（`os/servers/sched/src/kernel_api/schedule.rs:32`：PRIO/QUANTUM/CPU 三个位，加上 ALL/LOCAL/MIGRATE 三个具名组合）。
+- **Rust**：`ChangeMask: bitflags<u8>`（`os/servers/sched/src/kernel_api/schedule.rs:struct ChangeMask（L32，工具生成）`：PRIO/QUANTUM/CPU 三个位，加上 ALL/LOCAL/MIGRATE 三个具名组合）。
 - **为什么**：调用点写 `LOCAL` 比写 `0x3` 好读，一眼就知道带了什么；常用组合只拼一次，各处不再手拼，就不会漏掉某个位。备选方案（用三个 `bool` 参数）被否决了：三个布尔一共有 8 种组合，其中一些非法组合也能表达出来，而且 `ALL` 这样的名字就没地方放了（模式 16）。
 
 ### D2 保持位用 `None` 表示
 
 - **C**：没选中的填 `-1`（`307/312/317`），内核看到 `-1` 就跳过（`680-688`）。
-- **Rust**：`Fanout{priority: Option<u8>, quantum_ms: Option<u32>, cpu: Option<CpuId>}`（`schedule.rs:85`：`None` 就是保持）+ `KEEP = -1`（`schedule.rs:55`：线上值只在这里定义一次）+ `wire_*()`（`schedule.rs:123-153`：`None` 转成 `KEEP`）。
+- **Rust**：`Fanout{priority: Option<u8>, quantum_ms: Option<u32>, cpu: Option<CpuId>}`（`os/servers/sched/src/kernel_api/schedule.rs:struct Fanout`：`None` 就是保持）+ `KEEP = -1`（`os/servers/sched/src/kernel_api/schedule.rs:const KEEP`：线上值只在这里定义一次）+ `wire_*()`（`os/servers/sched/src/kernel_api/schedule.rs:fn wire_priority`：`None` 转成 `KEEP`）。
 - **为什么**："保持"本质上是"没有值"，`Option` 把这个意思直接写进了类型；C 的 `-1` 哨兵还得解释"负数是什么意思"（和 05 的 D5 是同一个道理）。内核的 `SchedParams` 也是同样的三个 `Option` 加一个 `niced: bool`，两个 crate 在线上形状一致（03 的 D3 提过这种"同形"做法）。备选方案（直接传 `i32` 的 `-1`）被否决了：哨兵进类型就是模式 17 的问题。
 
 ### D3 `niced` 的判断复用 05 的谓词
 
 - **C**：`niced = (max > USER_Q)`（`319`，在函数里直接算）。
-- **Rust**：`aggregate` 里面调 05 的 `is_niced`（`schedule.rs:105-119`：公式只用、不重写）。
+- **Rust**：`aggregate` 里面调 05 的 `is_niced`（`os/servers/sched/src/kernel_api/schedule.rs:fn aggregate（L105，工具生成）`：公式只用、不重写）。
 - **为什么**：公式只有一份，放在 05，09 只管调用；如果两边各写一遍，将来 05 改了分界、09 没跟着改就错了（模式 A）。备注在 `aggregate` 最后一步直接赋值，和掩码无关，所以空掩码也会带上（见 §1.4）。备选方案（在本模块再写一遍 `max > 7`）被否决了：两份一样的公式就是两处真相来源。
 
 ### D4 检查留在内核，服务端只在文档里讲
 
 - **C**：三道检查加四步写入全在内核（`do_schedule.c` + `system.c:642-699`）。
-- **Rust**：本模块没有检查函数（检查规则在 §2.4/§2.5 讲全，代码实现在内核 `sched_proc`，见 `os/kernel/src/sched.rs:321`）。
+- **Rust**：本模块没有检查函数（检查规则在 §2.4/§2.5 讲全，代码实现在内核 `sched_proc`，见 `os/kernel/src/sched.rs:fn sched_proc（L321，工具生成）`）。
 - **为什么**：检查是内核的主权，服务端再写一遍就是两处真相来源（内核改了范围、服务端没跟上）。文档里讲全规则，代码权威留在内核：读本文知道检查长什么样，改检查去内核改。备选方案（加个 `validate_fanout()` 预检）被否决了：预检通过不代表真正下发时还能通过（TOCTOU 问题），而且同样是两处真相来源。
 
 ### D5 打包和发送分开
@@ -154,11 +154,11 @@ os/kernel/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 掩码常量 | `schedule.c:22-35` | `schedule.rs:32` | 三个位、三个具名组合 |
-| 保持位哨兵 | `schedule.c:307-317` + `system.c:680-688` | `schedule.rs:54` | 两边约定同一个值 |
-| 表项五个值 | `schedule.c:297-301` | `schedule.rs:62` | 打包的输入 |
-| 下发内容 | `schedule.c:304-319` | `schedule.rs:83,105` | 带哪些、保哪些、备注 |
-| 转线上值 | `sys_schedule.c` 装消息 | `schedule.rs:121-151` | None 转成 -1 |
+| 掩码常量 | `schedule.c:22-35` | `os/servers/sched/src/kernel_api/schedule.rs:struct ChangeMask（L32，工具生成）` | 三个位、三个具名组合 |
+| 保持位哨兵 | `schedule.c:307-317` + `system.c:680-688` | `os/servers/sched/src/kernel_api/schedule.rs:const KEEP（L54，工具生成）` | 两边约定同一个值 |
+| 表项五个值 | `schedule.c:297-301` | `os/servers/sched/src/kernel_api/schedule.rs:struct SlotValues（L62，工具生成）` | 打包的输入 |
+| 下发内容 | `schedule.c:304-319` | `os/servers/sched/src/kernel_api/schedule.rs:struct Fanout（L83，工具生成）,105` | 带哪些、保哪些、备注 |
+| 转线上值 | `sys_schedule.c` 装消息 | `os/servers/sched/src/kernel_api/schedule.rs:impl Fanout` | None 转成 -1 |
 
 ### 4.3 不变量
 
@@ -179,11 +179,11 @@ os/kernel/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_mask_bits` | `schedule.c:22-35` | 三个位、三个组合（ALL/LOCAL/MIGRATE） | `schedule.rs:173` |
-| `test_aggregate_all` | `schedule.c:302-319` | 全带 + 备注跟随 + KEEP 钉死 | `schedule.rs:190` |
-| `test_aggregate_partial` | `schedule.c:304-317` | 数值掩码/迁移掩码/空掩码 + 备注每条都带 | `schedule.rs:204` |
-| `test_wire_keep` | `schedule.c:307-317` + `system.c:680-688` | None 转成 -1（两边约定） | `schedule.rs:229` |
-| `test_niced_derivation` | `schedule.c:319`（经 05 谓词） | 上限超默认队列就标 + 线上值 0/1 | `schedule.rs:243` |
+| `test_mask_bits` | `schedule.c:22-35` | 三个位、三个组合（ALL/LOCAL/MIGRATE） | `os/servers/sched/src/kernel_api/schedule.rs:fn test_mask_bits（L173，工具生成）` |
+| `test_aggregate_all` | `schedule.c:302-319` | 全带 + 备注跟随 + KEEP 钉死 | `os/servers/sched/src/kernel_api/schedule.rs:fn test_aggregate_all（L190，工具生成）` |
+| `test_aggregate_partial` | `schedule.c:304-317` | 数值掩码/迁移掩码/空掩码 + 备注每条都带 | `os/servers/sched/src/kernel_api/schedule.rs:fn test_aggregate_partial（L204，工具生成）` |
+| `test_wire_keep` | `schedule.c:307-317` + `system.c:680-688` | None 转成 -1（两边约定） | `os/servers/sched/src/kernel_api/schedule.rs:fn test_wire_keep（L229，工具生成）` |
+| `test_niced_derivation` | `schedule.c:319`（经 05 谓词） | 上限超默认队列就标 + 线上值 0/1 | `os/servers/sched/src/kernel_api/schedule.rs:fn test_niced_derivation（L243，工具生成）` |
 
 测试策略：掩码用位值（0x1/0x2/0x4）和具名组合锁死；内容用全带/只带数值/只带 CPU/空掩码四种形状锁死；保持位用 None 到 -1 的双向转换锁死；备注用分界两边（7 不标、8 标）和空掩码也带这两点锁死。
 
@@ -214,7 +214,7 @@ os/kernel/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/sched/schedule.c:22-35,297-332`（掩码和下发函数全家）、`minix3/minix/lib/libsys/sys_schedule.c:1-14`（装消息发消息）、`minix3/minix/include/minix/ipc.h:1104-1113`（消息体结构）、`minix3/minix/kernel/system/do_schedule.c:8-29`（内核入口检查）、`minix3/minix/kernel/system.c:642-699`（内核写入顺序）
+- C 源：`minix3/minix/servers/sched/schedule.c:SCHEDULE_CHANGE_PRIO,297-332`（掩码和下发函数全家）、`minix3/minix/lib/libsys/sys_schedule.c:1-14`（装消息发消息）、`minix3/minix/include/minix/ipc.h:1104-1113`（消息体结构）、`minix3/minix/kernel/system/do_schedule.c:do_schedule`（内核入口检查）、`minix3/minix/kernel/system.c:sched_proc`（内核写入顺序）
 - 阶段文档：`05-priority-timeslice-model.md`（参数的来源）、`06-start-scheduling.md`（全量下发的用法）、`10-pick-cpu-smp.md`（下一站）、`12-kernel-interface.md`（注册的去向）
-- Rust 实现：`os/servers/sched/src/kernel_api/schedule.rs:1`（本篇边界层）、`os/servers/sched/src/kernel_api/mod.rs:1`（边界模块入口）、`os/kernel/src/sched.rs:272,321`（内核对端 SchedParams/sched_proc）
+- Rust 实现：`os/servers/sched/src/kernel_api/schedule.rs:1`（本篇边界层）、`os/servers/sched/src/kernel_api/mod.rs:1`（边界模块入口）、`os/kernel/src/sched.rs:struct SchedParams（L272，工具生成）,321`（内核对端 SchedParams/sched_proc）
 - 对端：`../01-stage-kernel/11-scheduling-primitives.md`（内核调度原语）

@@ -90,8 +90,8 @@
 | VM_RS_MEM_HEAP_PREALLOC=2 | 21§2.5 | com.h:743 | 743 | ✅ | — |
 | VM_RS_MEM_MAP_PREALLOC=3 | 21§2.5 | com.h:744 | 744 | ✅ | — |
 | VM_RS_MEM_GET_PREALLOC_MAP=4 | 21§2.5 | com.h:745 | 745 | ✅ | — |
-| SF_VM_ROLLBACK | 21§2.1 | rs.h:198 | 198 | ⚠️ | 文档说 fsm.h，实际在 minix/include/minix/rs.h |
-| SF_VM_NOMMAP | 21§2.1 | rs.h:199 | 199 | ⚠️ | 同上 |
+| SF_VM_ROLLBACK | 21§2.1 | minix3/minix/include/minix/rs.h:SF_VM_ROLLBACK | 198 | ⚠️ | 文档说 fsm.h，实际在 minix/include/minix/rs.h |
+| SF_VM_NOMMAP | 21§2.1 | minix3/minix/include/minix/rs.h:SF_VM_NOMMAP | 199 | ⚠️ | 同上 |
 | VM_INFO | 22§2.1 | com.h:729 | 729 | ✅ | — |
 | VM_GETPHYS | 22§2.1 | com.h:720 | 720 | ✅ | — |
 | VM_GETREF | 22§2.1 | com.h:722 | 722 | ✅ | — |

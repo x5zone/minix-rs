@@ -68,7 +68,7 @@ C 的溢出守卫是手写的双向比较（`open.c:632-635`）：正偏移上�
 
 ### 2.1 `mode_map` 意图编码（`open.c:29,97-99`）
 
-`static char mode_map[] = {R_BIT, W_BIT, R_BIT|W_BIT, 0}` 以 `O_ACCMODE` 为下标：`bits = mode_map[oflags & O_ACCMODE]`，`0` 值即拒绝（`if (!bits) return EINVAL`）。`R_BIT 004/W_BIT 002/X_BIT 001` 定义于 `minix3/minix/include/minix/const.h:117-119`；`O_RDONLY 0/O_WRONLY 1/O_RDWR 2/O_ACCMODE 003` 定义于 `minix3/sys/sys/fcntl.h:64-67`。
+`static char mode_map[] = {R_BIT, W_BIT, R_BIT|W_BIT, 0}` 以 `O_ACCMODE` 为下标：`bits = mode_map[oflags & O_ACCMODE]`，`0` 值即拒绝（`if (!bits) return EINVAL`）。`R_BIT 004/W_BIT 002/X_BIT 001` 定义于 `minix3/minix/include/minix/const.h:R_BIT`；`O_RDONLY 0/O_WRONLY 1/O_RDWR 2/O_ACCMODE 003` 定义于 `minix3/sys/sys/fcntl.h:O_RDONLY`。
 
 ### 2.2 `do_open/do_creat` 对偶守门（`open.c:38-78`）
 
@@ -77,7 +77,7 @@ C 的溢出守卫是手写的双向比较（`open.c:632-635`）：正偏移上�
 ### 2.3 `common_open` 七步管线（`open.c:83-293`）
 
 1. 意图解码（97-99）：见 §2.1。
-2. 双表预留（102）：`get_fd(fp, start=0, bits, &fd, &filp)` 同时占住 fd 槽与 filp 槽（语义见 14，`filedes.c:110`）。
+2. 双表预留（102）：`get_fd(fp, start=0, bits, &fd, &filp)` 同时占住 fd 槽与 filp 槽（语义见 14，`minix3/minix/servers/vfs/filedes.c:get_fd`）。
 3. 解析或创建（105-130）：`O_CREAT` 置位走 `new_node`（110，见 §2.4）；否则 `eat_path` 取 vnode（124，`VMNT_READ/VNODE_OPCL` 锁），`vmp` 非空即解（129）。
 4. 认领（133-138）：`fp_filp[fd]=filp/count=1/vno=vp/flags=oflags`，`O_CLOEXEC` 置位进 `fp_cloexec_set`。
 5. 权限（146）：`forbidden(fp, vp, for_exec ? X_BIT : bits)` 先行。
@@ -100,11 +100,11 @@ C 的溢出守卫是手写的双向比较（`open.c:632-635`）：正偏移上�
 
 `get_filp2(rfp, seekfd, VNODE_READ)` 取 filp（611）→ FIFO 即 `ESPIPE`（616-619）→ `SEEK_SET/CUR/END` 取基（623-625，非法 `whence` 即 `EINVAL`，626）→ `newpos = pos + offset`（629）→ 双向回绕即 `EOVERFLOW`（632-635）→ 位置不变跳过 `req_inhibread`（639-645）→ 解锁返回。`do_lseek` 只负责把新位置写回出参消息（667）。
 
-### 2.8 `do_close/close_fd/close_filp` 拆除机（`open.c:674-727` + `filedes.c:411-523`）
+### 2.8 `do_close/close_fd/close_filp` 拆除机（`open.c:674-727` + `minix3/minix/servers/vfs/filedes.c:unlock_filps（L411，工具生成）`）
 
 `do_close` 取 `fd/nblock` 后直调 `close_fd(fp, fd, !nblock)`（682）。`close_fd` 以 `VNODE_OPCL` 取 filp（699，`FILP_CLOSED` 亦可取——关闭是“只关语义”的特权，见 14）→ `fp_filp[fd]=NULL` 先行（706）→ `close_filp(rfilp, may_suspend)`（708）→ `FD_CLR`（710）→ 记录锁全清 + `lock_revive`（713-724，见 30）。
 
-`close_filp`（`filedes.c:414`）断言已持 `filp_lock` 与 vnode 锁→ 末引用且非常关时按类型分流：BLK（刷缓存 + `bdev_close`，442-453，错误忽略）/ CHR（`cdev_close`，455）/ SOCK（`may_suspend` 守门 + `O_NONBLOCK` 清除 + 非 `SUSPEND` 归 `OK`，464-490，“关闭不应让调用者困惑”）→ 末引用标记 `FILP_CLOSED`（492）→ FIFO 唤醒等待者（496-500）→ `count--` 归零则 `truncate` 尾同步 + `put_vnode` + 断链清零（501-512），负数即 `panic`（513-514）。
+`close_filp`（`minix3/minix/servers/vfs/filedes.c:close_filp`）断言已持 `filp_lock` 与 vnode 锁→ 末引用且非常关时按类型分流：BLK（刷缓存 + `bdev_close`，442-453，错误忽略）/ CHR（`cdev_close`，455）/ SOCK（`may_suspend` 守门 + `O_NONBLOCK` 清除 + 非 `SUSPEND` 归 `OK`，464-490，“关闭不应让调用者困惑”）→ 末引用标记 `FILP_CLOSED`（492）→ FIFO 唤醒等待者（496-500）→ `count--` 归零则 `truncate` 尾同步 + `put_vnode` + 断链清零（501-512），负数即 `panic`（513-514）。
 
 ---
 
@@ -115,43 +115,43 @@ Rust 改写不是照抄 `open.c` 的七步直线代码，而是吸收 Linux/Redo
 ### D1 意图类型化
 
 - **C**：`mode_map[4]` 查表 + `!bits→EINVAL`（`open.c:29,98-99`）。
-- **Rust**：`AccessMode::{ReadOnly, WriteOnly, ReadWrite}`（`TryFrom<u32>` 拒绝第四值）+ `AccessBits::{R,W,X}` 位集 + `bits()` 纯函数（`os/servers/vfs/src/open.rs:56`）。
+- **Rust**：`AccessMode::{ReadOnly, WriteOnly, ReadWrite}`（`TryFrom<u32>` 拒绝第四值）+ `AccessBits::{R,W,X}` 位集 + `bits()` 纯函数（`os/servers/vfs/src/open.rs:enum AccessMode（L56，工具生成）`）。
 - **为什么**：查表的第四槽 `0` 把“非法”与“无权限”混为一谈；枚举使第四值不可构造。替代方案（保留表 + 注释）被否决：表是“数据即逻辑”，枚举是“类型即逻辑”，后者在调用点无需重复 `if (!bits)`。
 
 ### D2 标志位集与对偶守门
 
 - **C**：`int oflags` 裸整数 + 两入口各写一次 `O_CREAT` 检查（`open.c:46,71`）。
-- **Rust**：`OpenFlags` bitflags + `OpenArgs::validate_for_open/validate_for_creat` 对偶方法（`os/servers/vfs/src/open.rs:114,145`）。
+- **Rust**：`OpenFlags` bitflags + `OpenArgs::validate_for_open/validate_for_creat` 对偶方法（`os/servers/vfs/src/open.rs:struct OpenFlags（L114，工具生成）,145`）。
 - **为什么**：两次检查是同一校验的对偶（有/无），收敛为一对方法使“开错入口”在参数层可测。`filp_flags` 仍存原始位（C `open.c:136` 同义），未建模的标志位原样透传——位集只解释本篇关心的七位。
 
 ### D3 创建外包
 
 - **C**：`new_node` 内嵌 `req_create` FS 往返（`open.c:363`）。
-- **Rust**：`trait FsNodeFactory::create` + `MemFs`（常成功）vs `ReadOnlyFs`（常 `EACCES`）双实现 + `CreationOutcome::{Created, Exists, Absent}`（`os/servers/vfs/src/open.rs:327,340`）。
+- **Rust**：`trait FsNodeFactory::create` + `MemFs`（常成功）vs `ReadOnlyFs`（常 `EACCES`）双实现 + `CreationOutcome::{Created, Exists, Absent}`（`os/servers/vfs/src/open.rs:enum CreationOutcome（L327，工具生成）,340`）。
 - **为什么**：FS 对端（MFS/PFS）不在本阶段实现；trait 隔离使创建机可单测。替代方案（`enum FsKind` 分发）被否决：工厂行为随.addAttribute 而扩展时，枚举的 `match` 必须处处补臂，trait 的新实现零改旧代码。
 
 ### D4 管道纯决策
 
 - **C**：`pipe_open` 内嵌 `find_filp` 全局扫描与 `suspend()` 副作用（`open.c:494-502`）。
-- **Rust**：`decide_pipe_open(bits, peer, nonblock, suspended) -> PipeOpenDecision` 纯函数（`os/servers/vfs/src/open.rs:262`）。
+- **Rust**：`decide_pipe_open(bits, peer, nonblock, suspended) -> PipeOpenDecision` 纯函数（`os/servers/vfs/src/open.rs:fn decide_pipe_open（L262，工具生成）`）。
 - **为什么**：配对矩阵（意图×对端×阻塞×等待数）是纯判定知识，与 worker 挂起机制（08）正交；纯函数使矩阵全覆盖可测，挂起执行留给调用点。
 
 ### D5 定位 checked
 
 - **C**：手写双向溢出比较（`open.c:632-635`）。
-- **Rust**：`Whence::{Set, Cur, End}` + `base.checked_add(offset)`（`os/servers/vfs/src/open.rs:408,434`），`None→EOVERFLOW`。
+- **Rust**：`Whence::{Set, Cur, End}` + `base.checked_add(offset)`（`os/servers/vfs/src/open.rs:enum Whence（L408，工具生成）,434`），`None→EOVERFLOW`。
 - **为什么**：手写比较正确但脆弱（两条必须同时对）；`checked_add` 由整数语义保证。`newpos==pos` 跳过 `inhibread` 的短路保留并以返回值第二元显式（调用点决定是否发 `req_inhibread`，见 12）。
 
 ### D6 类型分派纯判定
 
 - **C**：六分支内嵌驱动调用与 `printf`（`open.c:148-274`）。
-- **Rust**：`FileType` 六值 + `dispatch_open -> OpenOutcome::{Proceed, NeedTruncate, Reject, Suspend, Delegate}`（`os/servers/vfs/src/open.rs:163,205`）。
+- **Rust**：`FileType` 六值 + `dispatch_open -> OpenOutcome::{Proceed, NeedTruncate, Reject, Suspend, Delegate}`（`os/servers/vfs/src/open.rs:enum FileType（L163，工具生成）,205`）。
 - **为什么**：分派判定（纯知识）与驱动执行（19~22 的管辖）分离；`Delegate(Char/Block)` 明确标出移交边界。`SOCK→EOPNOTSUPP` 与未知类型 `→EIO` 以 `Reject` 显式，避免调用点遗漏错误分支。
 
 ### D7 拆除分流表
 
-- **C**：`close_filp` 的类型分流散在 60 行中（`filedes.c:435-508`）。
-- **Rust**：`special_close(ft, last, may_suspend, nonblock) -> CloseOutcome::{Closed, ClosedLast, Suspend}`（`os/servers/vfs/src/open.rs:491,506`）；拆除的“先 NULL”序由 `filedes.rs:close_fd` 承载，本模块只给分流判定。
+- **C**：`close_filp` 的类型分流散在 60 行中（`minix3/minix/servers/vfs/filedes.c:close_filp（L435，工具生成）`）。
+- **Rust**：`special_close(ft, last, may_suspend, nonblock) -> CloseOutcome::{Closed, ClosedLast, Suspend}`（`os/servers/vfs/src/open.rs:enum CloseOutcome（L491，工具生成）,506`）；拆除的“先 NULL”序由 `filedes.rs:close_fd` 承载，本模块只给分流判定。
 - **为什么**：拆除序（时序知识，归 14）与分流（类型知识，归本篇）是两种知识；混写则任一演进都要重读 60 行。`panic("invalid filp count")` 收敛为调用点 `debug_assert`（不可达即 abort 语义等价）。
 
 ### ARCH 决策总表
@@ -183,14 +183,14 @@ os/servers/vfs/src/
 |------|------|-----------|------|
 | `mode_map` | `open.c:29` | `open.rs:56 AccessMode + 79 bits()` | 三值枚举，第四值不可构造 |
 | `R/W/X_BIT` | `const.h:117-119` | `open.rs:19/21/23 + 91 AccessBits` | `R=004 W=002 X=001` |
-| `O_*` 标志 | `fcntl.h:64-136` | `open.rs:114 OpenFlags` | 七位建模，其余透传 |
+| `O_*` 标志 | `minix3/sys/sys/fcntl.h:O_RDONLY` | `open.rs:114 OpenFlags` | 七位建模，其余透传 |
 | `do_open/do_creat` 守门 | `open.c:46,71` | `open.rs:145,153 validate_for_open/creat` | 对偶方法 |
 | `S_IFMT` 六分支 | `open.c:148` | `open.rs:163 FileType + 219 dispatch_open` | 纯分派 verdict |
 | `pipe_open` | `open.c:483` | `open.rs:245,262 decide_pipe_open` | 配对矩阵纯函数 |
 | `new_node` | `open.c:299` | `open.rs:299,327,381 resolve_or_create` | 工厂外包 + 三值归来 |
 | `actual_lseek` | `open.c:603` | `open.rs:408,434 seek_pos` | `checked_add` + 不变短路 |
 | `do_mknod` 门 | `open.c:538` | `open.rs:458,476 check_mknod_perm` | FIFO 放行 / 特权守门 |
-| `close_filp` 分流 | `filedes.c:435` | `open.rs:491,506 special_close` | 末引用分流表 |
+| `close_filp` 分流 | `minix3/minix/servers/vfs/filedes.c:close_filp（L435，工具生成）` | `open.rs:491,506 special_close` | 末引用分流表 |
 | 错误族 | `open.c` 全文件 | `open.rs:534,565 OpenError::to_errno` | 13 变体→errno，无自创 |
 
 ### 4.3 不变量
@@ -221,7 +221,7 @@ os/servers/vfs/src/
 | `test_factories_differ` | design D3 | 双工厂行为分化 + trait 多态 | `open.rs:726` |
 | `test_seek_origins_and_overflow` | `open.c:616-635` | 三原点 + 双向溢出 + `ESPIPE` + 非法 whence | `open.rs:740` |
 | `test_mknod_privilege_gate` | `open.c:538-539` | FIFO 放行 / 特权守门 | `open.rs:772` |
-| `test_close_shunt` | `filedes.c:435-508` | 分流表 7 样本 | `open.rs:783` |
+| `test_close_shunt` | `minix3/minix/servers/vfs/filedes.c:close_filp（L435，工具生成）` | 分流表 7 样本 | `open.rs:783` |
 | `test_errno_map_covers_open_c` | `open.c` 全文件 | 13 变体→errno 全映射 | `open.rs:818` |
 
 测试策略：意图以 `mode_map` 四值全枚举覆盖；分派以六分支 verdict 全覆盖；配对以“读写同开/无对端阻塞/无对端非阻塞读写/有对端/有等待”7 样本覆盖矩阵；定位以三原点 + 双向溢出 + 管道拒绝 + 非法 whence 覆盖；拆除以“共享/末引用/三特殊/socket 三条件”7 样本覆盖；错误以 13 变体全映射覆盖。
@@ -254,7 +254,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/open.c:1-727`（`do_open/do_creat/common_open/new_node/pipe_open/do_mknod/do_mkdir/actual_lseek/do_lseek/do_close/close_fd`）、`minix3/minix/servers/vfs/filedes.c:411-523`（`close_filp`）、`minix3/minix/include/minix/const.h:117-119`（`R/W/X_BIT`）、`minix3/sys/sys/fcntl.h:64-136`（`O_*` 标志）
+- C 源：`minix3/minix/servers/vfs/open.c:1-727`（`do_open/do_creat/common_open/new_node/pipe_open/do_mknod/do_mkdir/actual_lseek/do_lseek/do_close/close_fd`）、`minix3/minix/servers/vfs/filedes.c:unlock_filps（L411，工具生成）`（`close_filp`）、`minix3/minix/include/minix/const.h:R_BIT`（`R/W/X_BIT`）、`minix3/sys/sys/fcntl.h:O_RDONLY`（`O_*` 标志）
 - 阶段文档：`13-path-lookup.md`（解析机）、`04-filp-table.md`（共享计数）、`14-filedes.md`（fd 表与拆除序）、`09-main-loop.md`（`SUSPEND` 回复路由）、`29-protect.md`（`forbidden`）、`17-pipe.md`（配对执行）、`19-device-map.md`（驱动移交）
-- Rust 实现：`os/servers/vfs/src/open.rs:1`（本篇判定层）、`os/servers/vfs/src/filedes.rs:1`（拆除序）、`os/servers/vfs/src/filp.rs:1`（共享计数）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/open.rs:1`（本篇判定层）、`os/servers/vfs/src/filedes.rs:1`（拆除序）、`os/servers/vfs/src/filp.rs:1`（共享计数）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（`copy_path/fetch_name` 的拷贝语义）

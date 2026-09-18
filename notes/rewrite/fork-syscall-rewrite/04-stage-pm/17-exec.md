@@ -35,11 +35,11 @@ allow_setuid && args.allow_setuid → TAINTED（103-105 `setuid` 位程序）
 eff!=real || effgid!=realgid → TAINTED（106-109 `seteuid` 后 eff!=real 的已污染进程再 exec 保持污染）
 ```
 
-`TAINTED` 是“以非 `real` 权限执行”的持久标记，`PM_ISSETUGID` 的 `!!(flags & TAINTED)`（`getset.c:81` `TAINTED 0x40000`，`15` 的 `tainted: bool` 唯一真源）为 `issetugid(2)` 的 `LD_PRELOAD` 防注入（`libexec` 的 `rtld` 路径隔离，`issetugid` 为真时不加载用户 `LD_LIBRARY_PATH`）。`do_newexec:84` `~TAINTED` 默认清零使 `exec` 后先清再按二重重设。
+`TAINTED` 是“以非 `real` 权限执行”的持久标记，`PM_ISSETUGID` 的 `!!(flags & TAINTED)`（`minix3/minix/servers/pm/getset.c:do_get（L81，工具生成）` `TAINTED 0x40000`，`15` 的 `tainted: bool` 唯一真源）为 `issetugid(2)` 的 `LD_PRELOAD` 防注入（`libexec` 的 `rtld` 路径隔离，`issetugid` 为真时不加载用户 `LD_LIBRARY_PATH`）。`do_newexec:84` `~TAINTED` 默认清零使 `exec` 后先清再按二重重设。
 
 ### 1.3 为什么 `PARTIAL_EXEC` 是哨兵：已分配新映射但未内容的半态
 
-`do_newexec:120` 置 `PARTIAL_EXEC`（`mproc.h:99` `PARTIAL_EXEC 0x4000`）后 `122` 回 `suid` 标志给 VFS，`exec_restart:161-167` 的 `result!=OK && PARTIAL_EXEC → SIGKILL` 使“已分配新地址空间但加载失败（`vm` 的 `mmap` 或 `read_header` 的 `ESCRIPT`）”的进程以 `SIGKILL` 自毁而非 `reply(result)` 泄露半初始化态（`161-167` `Use SIGKILL to signal that something went wrong`）。
+`do_newexec:120` 置 `PARTIAL_EXEC`（`minix3/minix/servers/pm/mproc.h:PARTIAL_EXEC` `PARTIAL_EXEC 0x4000`）后 `122` 回 `suid` 标志给 VFS，`exec_restart:161-167` 的 `result!=OK && PARTIAL_EXEC → SIGKILL` 使“已分配新地址空间但加载失败（`vm` 的 `mmap` 或 `read_header` 的 `ESCRIPT`）”的进程以 `SIGKILL` 自毁而非 `reply(result)` 泄露半初始化态（`161-167` `Use SIGKILL to signal that something went wrong`）。
 
 `PARTIAL_EXEC` 的哨兵期 `frame` 有效（`116-117` `frame_addr = stack_high - frame_len` / `frame_len`），`exec_restart:173` `~PARTIAL_EXEC` 清零使 `Idle` 时 `frame` 无意义不可表示（`D3` `ExecState::Partial { frame }` 的 `Some` 显式携带 `frame`）。
 
@@ -53,7 +53,7 @@ eff!=real || effgid!=realgid → TAINTED（106-109 `seteuid` 后 eff!=real 的�
 
 ### 1.6 为什么 `frame` 的 `stack_high - frame_len` 保存：`procfs` 的 `initial stack` 偏移
 
-`do_newexec:116-117` `mp_frame_addr = stack_high - frame_len` + `mp_frame_len` 为 `procfs` 的 `initial stack` 偏移（`mproc.h:71-72` `mp_frame_addr/len`，`procfs` 经 `m_context` 读 `frame` 的 `argc`），`exec_restart` 的 `sp` 参数即 `frame_addr`（`156` `sp` 为 `rmp->mp_frame_addr`，`197` `sys_exec(endpoint, sp, name, pc, ps_str)` 的 `SP`）。
+`do_newexec:116-117` `mp_frame_addr = stack_high - frame_len` + `mp_frame_len` 为 `procfs` 的 `initial stack` 偏移（`minix3/minix/servers/pm/mproc.h:sigaction（L71，工具生成）` `mp_frame_addr/len`，`procfs` 经 `m_context` 读 `frame` 的 `argc`），`exec_restart` 的 `sp` 参数即 `frame_addr`（`156` `sp` 为 `rmp->mp_frame_addr`，`197` `sys_exec(endpoint, sp, name, pc, ps_str)` 的 `SP`）。
 
 ### 1.7 与其他 OS 的对照
 
@@ -160,7 +160,7 @@ int do_newexec(void)
   rmp->mp_flags |= PARTIAL_EXEC; // 120  PARTIAL_EXEC 置位（哨兵期进入）
 ```
 
-`112-113` 行 `progname` 拷贝 `PROC_NAME_LEN 16` 截断与 `mproc.h:80` `mp_name[16]` 同位，`116-117` 行 `frame` 的 `stack_high - frame_len` 保存与 `mproc.h:71-72` `mp_frame_addr/len` 同位（`procfs` 的 `initial stack` 偏移），`120` 行 `PARTIAL_EXEC` 置位后 `122` 回 `suid` 标志给 VFS（`m_pm_lexec_exec_new.suid = allow&&allow`）。
+`112-113` 行 `progname` 拷贝 `PROC_NAME_LEN 16` 截断与 `minix3/minix/servers/pm/mproc.h:sigaction（L80，工具生成）` `mp_name[16]` 同位，`116-117` 行 `frame` 的 `stack_high - frame_len` 保存与 `minix3/minix/servers/pm/mproc.h:sigaction（L71，工具生成）` `mp_frame_addr/len` 同位（`procfs` 的 `initial stack` 偏移），`120` 行 `PARTIAL_EXEC` 置位后 `122` 回 `suid` 标志给 VFS（`m_pm_lexec_exec_new.suid = allow&&allow`）。
 
 ### 2.6 `do_execrestart`（`exec.c:130-151`）
 
@@ -227,7 +227,7 @@ void exec_restart(struct mproc *rmp, int result, vir_bytes pc, vir_bytes sp, vir
 
 ### 2.9 消息与类型（`ipc.h:469` `mess_lc_pm_exec` + `m_lexec_pm_exec_new` + `m_rs_pm_exec_restart`、`com.h: VFS_PM_EXEC`、`vm.h: exec_info`）
 
-- `mess_lc_pm_exec { name/namelen/frame/framelen/ps_str }`（`ipc.h:469` `vir_bytes name/namelen/frame/framelen/ps_str`，`_ASSERT 56B`）、`m_lexec_pm_exec_new { endpt, ptr }`（`ipc.h:469` `endpt/ptr` 的 `exec_info` 指针）、`m_rs_pm_exec_restart { endpt, result, pc, ps_str }`（`ipc.h:469` `endpt/result/pc/ps_str`）、`VFS_PM_EXEC`（`com.h: VFS_PM_RQ_BASE+6`）、`exec_info { allow_setuid, new_uid/gid, progname[16], stack_high, frame_len }`（`minix/vm.h: exec_info`）、`TO_NOEXEC/ALTEXEC`（`sys/ptrace.h: TO_NOEXEC 0x1/ALTEXEC 0x2`）、`SIGTRAP 5/SIGSTOP 17`（`sys/signal.h`）、`PARTIAL_EXEC 0x4000`/`TAINTED 0x40000`（`mproc.h:99/103`）。
+- `mess_lc_pm_exec { name/namelen/frame/framelen/ps_str }`（`ipc.h:469` `vir_bytes name/namelen/frame/framelen/ps_str`，`_ASSERT 56B`）、`m_lexec_pm_exec_new { endpt, ptr }`（`ipc.h:469` `endpt/ptr` 的 `exec_info` 指针）、`m_rs_pm_exec_restart { endpt, result, pc, ps_str }`（`ipc.h:469` `endpt/result/pc/ps_str`）、`VFS_PM_EXEC`（`com.h: VFS_PM_RQ_BASE+6`）、`exec_info { allow_setuid, new_uid/gid, progname[16], stack_high, frame_len }`（`minix/vm.h: exec_info`）、`TO_NOEXEC/ALTEXEC`（`sys/ptrace.h: TO_NOEXEC 0x1/ALTEXEC 0x2`）、`SIGTRAP 5/SIGSTOP 17`（`sys/signal.h`）、`PARTIAL_EXEC 0x4000`/`TAINTED 0x40000`（`minix3/minix/servers/pm/mproc.h:PARTIAL_EXEC/103`）。
 
 ### 2.10 不变式即契约
 
@@ -274,7 +274,7 @@ Rust 改写遵循“显式 `ExecRequest` + `ExecCreds` + `ExecState` 枚举 + `S
 ### D6：`frame` 的 `stack_high - frame_len` 收敛到 `FrameRegion`（ARCH A-1）
 
 - **C**：`116-117` `frame_addr = stack_high - frame_len` + `frame_len`。
-- **Rust**：`struct FrameRegion { base: VirBytes, len: usize }` + `fn frame_base(high, len) -> VirBytes`（`mproc.h:71-72` 的 `mp_frame_addr/len` 在 `FrameRegion` 一处结构，`A-1` 分层）。
+- **Rust**：`struct FrameRegion { base: VirBytes, len: usize }` + `fn frame_base(high, len) -> VirBytes`（`minix3/minix/servers/pm/mproc.h:sigaction（L71，工具生成）` 的 `mp_frame_addr/len` 在 `FrameRegion` 一处结构，`A-1` 分层）。
 
 ### D7：`sys_exec` 的 `sp/pc/ps_str/name` 四元收敛到 `KernelExec` trait（ARCH A-3）
 
@@ -284,7 +284,7 @@ Rust 改写遵循“显式 `ExecRequest` + `ExecCreds` + `ExecState` 枚举 + `S
 ### D8：常量收敛到 `minix-types`（单一真相）
 
 - **C**：`PARTIAL_EXEC 0x4000`、`TAINTED 0x40000`、`PROC_NAME_LEN 16`、`TO_NOEXEC/ALTEXEC`、`SIGTRAP/STOP`、`VFS_PM_EXEC`。
-- **Rust**：`minix-types: PARTIAL_EXEC/TAINTED`（`deprecated` 位与 `tainted: bool`/`ExecState` 双写）、`PROC_NAME_LEN 16` 等单一真相（`mproc.h:99/103` 数值锁定，测试 `test_constants_match_c`）。
+- **Rust**：`minix-types: PARTIAL_EXEC/TAINTED`（`deprecated` 位与 `tainted: bool`/`ExecState` 双写）、`PROC_NAME_LEN 16` 等单一真相（`minix3/minix/servers/pm/mproc.h:PARTIAL_EXEC/103` 数值锁定，测试 `test_constants_match_c`）。
 
 ### ARCH 标注汇总
 
@@ -391,7 +391,7 @@ pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot
 
 ### 5.3 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `PARTIAL_EXEC 0x4000`（`mproc.h:99`）、`TAINTED 0x40000`（`mproc.h:103`）、`VFS_PM_EXEC`（`com.h`）、`SIGTRAP/STOP`
+- `test_constants_match_c`：锁定 `PARTIAL_EXEC 0x4000`（`minix3/minix/servers/pm/mproc.h:PARTIAL_EXEC`）、`TAINTED 0x40000`（`minix3/minix/servers/pm/mproc.h:TAINTED`）、`VFS_PM_EXEC`（`com.h`）、`SIGTRAP/STOP`
 
 测试策略：`VfsExec`/`KernelExec`/`TracerSig` 均 `Test*` mock 可注入 `OK/ESCRIPT` 与 `SIGKILL` 计数；`PARTIAL_EXEC` 哨兵的 `SIGKILL` 分叉以 `TestKernelSig` 的 `SIGKILL` 计数验；`catch` 重置以 `SignalState::caught` 位图验；`tracer` 信号先于 `sys_exec` 以 `TracerSig` 的 `sig` 顺序验。
 
@@ -418,7 +418,7 @@ pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/exec.c` 全文（`38-56` `do_exec` 等）、`minix3/minix/servers/pm/mproc.h:71-72`（`mp_frame_addr/len`）+ `mproc.h:99`（`PARTIAL_EXEC`）+ `mproc.h:103`（`TAINTED`）、`minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_exec`）、`minix3/minix/include/minix/com.h: VFS_PM_EXEC`、`minix3/minix/include/minix/vm.h: exec_info`、`minix3/sys/sys/ptrace.h: TO_NOEXEC/ALTEXEC`
+- C 源（ground truth）：`minix3/minix/servers/pm/exec.c` 全文（`38-56` `do_exec` 等）、`minix3/minix/servers/pm/mproc.h:sigaction（L71，工具生成）`（`mp_frame_addr/len`）+ `minix3/minix/servers/pm/mproc.h:PARTIAL_EXEC`（`PARTIAL_EXEC`）+ `minix3/minix/servers/pm/mproc.h:TAINTED`（`TAINTED`）、`minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_exec`）、`minix3/minix/include/minix/com.h: VFS_PM_EXEC`、`minix3/minix/include/minix/vm.h: exec_info`、`minix3/sys/sys/ptrace.h: TO_NOEXEC/ALTEXEC`
 - PM 阶段文档：05-vfs-interaction.md（`VFS_PM_EXEC` 异步与 `exec_restart` 成功路径的 `sched_start_user` 已抽象）、15-credentials.md（`TAINTED` 与 `setuid` 位染污）、11-signal-core.md（`check_sig` 的 `TRAP/STOP` 投递）、12-signal-handlers.md（`caught` 重置的接收方）、02-mproc-struct.md（`FrameRegion/PARTIAL_EXEC`）
 - 阶段内顺序：05/15 → **本章（17）** → 18（`tracer` 的 `T_*` 命令与 `TRACE_STOPPED` 语义，`exec` 的 `SIGTRAP` 调试器前置信号的消费方）→ 05 的 `VFS_PM_FORK_REPLY` 成功路径的 `sched_start_user` 再继承
 - OS 模式参考：Linux `do_execve` 的 `bprm` 准备 + `search_binary_handler` + `install_exec_creds`（`fs/exec.c`）、Redox `exec` 经 `Scheme` 的 `fexec`（`kernel/scheme`）、`seL4` `TCB` 重置（`seL4_TCB_Configure`）（见 §1.7）

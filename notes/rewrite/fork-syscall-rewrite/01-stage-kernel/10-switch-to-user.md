@@ -1,7 +1,7 @@
 # 10-switch-to-user: 调度循环入口
 
 > **分类**: Kernel 调度核心
-> **源码**: `minix3/minix/kernel/proc.c:299-474`（switch_to_user）, `proc.c:176-229`（idle）
+> **源码**: `minix3/minix/kernel/proc.c:switch_to_user`（switch_to_user）, `proc.c:176-229`（idle）
 > **前置**: 08（bsp_finish_booting 调用 switch_to_user）+ 09（VM 启动协议完成，VM 可调度）
 > **C 总行数**: ~180 行
 
@@ -267,14 +267,14 @@ idle 的每一步都有明确目的：
 | 决策 | 选项 | 结论 | 理由 |
 |------|------|------|------|
 | switch_to_user 返回类型 | 返回值（C 风格） vs 发散类型 | **`-> !`** | C 的 `NOT_REACHABLE` 只是注释；Rust 用类型系统表达"永不返回"，编译器强制所有路径发散（[lib.rs:2757](../../os/kernel/src/lib.rs)） |
-| BKL 释放时机 | 函数顶部释放（被否方案） vs 全程持有至记账点 | **全程持有，在 `finish_and_restore`/`idle` 的记账步之后释放** | 杂项标志阶段会改动共享内核状态（`process_misc_flags` 文档明言运行于 BKL 之下，proc_table.rs:781-783；`arch_do_syscall` 重新分发 IPC 依赖同一前提），顶部释放会打开数据竞争窗口。C 的释放点正是 `context_stop(KERNEL)` 内部（arch_clock.c:226-233），Rust 对齐同一位置。[ARCH: 释放点与 C 的 context_stop 对齐；单 CPU 构建，SMP 场景待重新验证] |
+| BKL 释放时机 | 函数顶部释放（被否方案） vs 全程持有至记账点 | **全程持有，在 `finish_and_restore`/`idle` 的记账步之后释放** | 杂项标志阶段会改动共享内核状态（`process_misc_flags` 文档明言运行于 BKL 之下，os/kernel/src/proc_table.rs:fn preemptible（L781，工具生成）；`arch_do_syscall` 重新分发 IPC 依赖同一前提），顶部释放会打开数据竞争窗口。C 的释放点正是 `context_stop(KERNEL)` 内部（arch_clock.c:226-233），Rust 对齐同一位置。[ARCH: 释放点与 C 的 context_stop 对齐；单 CPU 构建，SMP 场景待重新验证] |
 | 首次分派 | boot 时一次性预写所有 trap frame vs 每次分派前从 `cpu_context` 重建 | **每次分派重建**（`finish_and_restore` 第 7 步） | C 的 `p_reg` 同时是初值和保存值，Rust 的 `cpu_context` 继承同一角色；预写方案需要 boot 路径增设一次性钩子，且与未来的 trap-entry 保存路径无法统一（doc 06 §3.12 对此有对应修订） |
 | proc_ptr 存储 | 全局变量 vs CpuLocal | **`CpuLocal.proc_ptr: Option<ProcNr>`**（smp.rs:139） | SMP 安全，每 CPU 独立；`Option` 表达"当前可能无进程" |
-| 杂项标志循环 | while + if-else 链 vs match | **while + if-else 链**（proc_table.rs:816） | if-else 链的排列即优先级顺序，与 C 的 proc.c:360-407 一一对应；match 需要先做优先级提取，反而模糊语义 |
+| 杂项标志循环 | while + if-else 链 vs match | **while + if-else 链**（os/kernel/src/proc_table.rs:fn sched_proc_no_time（L816，工具生成）） | if-else 链的排列即优先级顺序，与 C 的 proc.c:360-407 一一对应；match 需要先做优先级提取，反而模糊语义 |
 | 信号路由落点（SIGTRAP/SIGSEGV） | 循环体内直接 `cause_signal`（C 位置） vs 返回路由枚举给 `switch_to_user` vs 塞进 `ipc::delivermsg` | **循环体内直接路由**（proc_table.rs，D-43/D-45，2026-09-05） | `cause_signal` 签名就是 `&mut ProcessTable`，`sig_delay_done` 已证明 `&mut self` 方法内可传 `self`；方案 2 的返回值路线终点与方案 1 相同（都是回 Stage 2 重选），却要改返回类型和全部调用点；方案 3 会倒退 FIX-20 的提取契约（`delivermsg` 刻意只持 `&mut KProcess` + `&dyn UserCopy`，无表访问）。详见 §3.3 |
 | restore 的抽象 | 直接内联汇编 vs trait | **`TrapReturnArch` trait**（trap_return.rs:72） | 与 `TrapEntryArch`（进入路径）对称，构成"进入/返回"一对抽象；OS 层只依赖 trait，架构差异（iretq/eret/sret）完全下沉到 arch crate |
 | TrapReturnArch 的 Frame 来源 | 借用 `ExceptionArch::Frame` vs 独立关联类型 | **独立关联类型** | 借用式会强迫 mock 实现补齐 ExceptionArch 的 8 个无关方法；x86-64 实现直接复用 `X86_64ExceptionFrame`，实践中无重复 |
-| 地址空间切换 | 新增 `Paging::switch_root` vs 复用 `TlbArch::set_active_root` | **复用**（tlb_arch.rs:135） | 该方法已为 VMCTL_SETADDRSPACE 而生（dispatch_vmctl 调用，syscall.rs:2411-2415）；调度器增加第二个调用方不构成"新抽象"的理由，新增 trait 反而制造单方法冗余 |
+| 地址空间切换 | 新增 `Paging::switch_root` vs 复用 `TlbArch::set_active_root` | **复用**（os/arch/src/arch/tlb_arch.rs:fn set_active_root） | 该方法已为 VMCTL_SETADDRSPACE 而生（dispatch_vmctl 调用，syscall.rs:2411-2415）；调度器增加第二个调用方不构成"新抽象"的理由，新增 trait 反而制造单方法冗余 |
 | CR3 相等比较 | 读硬件寄存器（C 做法） vs 软件镜像 | **软件镜像 `CURRENT_ROOT_PHYS`**（lib.rs:2265） | trait 边界内没有"读 CR3"的开口（`TlbArch` 只提供写入）；镜像由 `set_active_root_tracked`（lib.rs:2324）在每次硬件写入后同步更新，语义等价且便于测试 |
 | gotos | 保留标号语义 vs 循环重构 | **外层 loop + continue** | 两个 `goto not_runnable_pick_new` 都是从循环体深处跳回"重新选进程"，与 `continue` 语义精确对应；标号在 Rust 中表达为循环边界，控制流等价且无 unsafe |
 | idle 的停机原语 | 复用 `SmpArch::halt_cpu` vs 新增 `idle_halt` | **新增 `idle_halt`**（arch/smp.rs:84） | 语义不同：`halt_cpu` 服务于 IPI 停机（中断上下文，IF 已由入口路径管理），`idle_halt` 是"先开中断再停机"（klib.S:407-414 的 `sti; hlt`）——x86 上顺序错了就永远睡死，不能共用 |
@@ -283,7 +283,7 @@ idle 的每一步都有明确目的：
 
 这是本次实现中最重要的一次决策，值得单独说明。
 
-直觉上"调度循环只读共享状态，进循环前就可以释放 BKL"——这个论证对"选进程"阶段成立，对"杂项标志"阶段不成立：`process_misc_flags` 会调用 `ipc::delivermsg`（真正拷贝消息）、`vm::kernel_call_resume`（读取 VM 结果）、`arch_do_syscall`（完整重新分发 IPC）——这些操作触碰进程表、特权表和 IPC 引擎的共享数据结构，proc_table.rs:781-783 的文档明确写了"Called from `process_misc_flags` which runs under BKL (held by `switch_to_user`)"。如果 BKL 在进循环前就释放了，这个承诺就是空头支票：SMP 下另一个 CPU 可以同时闯进来修改同一张进程表。
+直觉上"调度循环只读共享状态，进循环前就可以释放 BKL"——这个论证对"选进程"阶段成立，对"杂项标志"阶段不成立：`process_misc_flags` 会调用 `ipc::delivermsg`（真正拷贝消息）、`vm::kernel_call_resume`（读取 VM 结果）、`arch_do_syscall`（完整重新分发 IPC）——这些操作触碰进程表、特权表和 IPC 引擎的共享数据结构，os/kernel/src/proc_table.rs:fn preemptible（L781，工具生成） 的文档明确写了"Called from `process_misc_flags` which runs under BKL (held by `switch_to_user`)"。如果 BKL 在进循环前就释放了，这个承诺就是空头支票：SMP 下另一个 CPU 可以同时闯进来修改同一张进程表。
 
 对照 C 的实际释放点可以确认正确答案：C 的 BKL 解锁发生在 `context_stop(KERNEL)` 内部（arch_clock.c:226-233），即**所有内核工作完成之后、CPU 即将让出之前**。Rust 现在把释放点放在 `finish_and_restore` 的记账步之后和 `idle` 的停机之前——与 C 语义逐点对齐。
 
@@ -369,11 +369,11 @@ fn switch_to_user() -> ! {
 
 | 阶段函数 | C 对应 | 关键语义 |
 |----------|--------|---------|
-| `pick_and_bill`（lib.rs:2346） | proc.c:1785-1813 | 选队头进程；BILLABLE 则更新 `bill_ptr`（经 `kpriv::is_billable`，kpriv.rs:180） |
+| `pick_and_bill`（lib.rs:2346） | proc.c:1785-1813 | 选队头进程；BILLABLE 则更新 `bill_ptr`（经 `kpriv::is_billable`，os/kernel/src/kpriv.rs:fn is_billable（L180，工具生成）） |
 | `requeue_if_preempted`（lib.rs:2392） | proc.c:322-330 | 用裸 `p_rts_flags.clear` 而非 `rts_unset`——后者的自动入队只到队尾，无法表达"有量子进队头、无量子进队尾"的区分（调度语义见 §2.1） |
 | `switch_address_space`（lib.rs:2558） | klib.S:605-626 | 三情形：根为 0 不动；根等于镜像值不动（**且不更新 ptproc**——对齐 C 的 `je 0f` 同时跳过两件事）；否则 `set_active_root_tracked` + 更新 ptproc 镜像 |
-| `process_misc_flags`（proc_table.rs:816） | proc.c:351-415 | if-else 链保持 5 标志优先级；返回 bool 表达 C 的 `goto not_runnable_pick_new` |
-| `check_quantum`（proc_table.rs:939） | proc.c:421-428 | 时间片耗尽走 `sched_proc_no_time`（proc_table.rs:640，对应 `proc_no_time` 的两支策略）；随后复查可运行性 |
+| `process_misc_flags`（os/kernel/src/proc_table.rs:fn sched_proc_no_time（L816，工具生成）） | proc.c:351-415 | if-else 链保持 5 标志优先级；返回 bool 表达 C 的 `goto not_runnable_pick_new` |
+| `check_quantum`（os/kernel/src/proc_table.rs:fn notify_scheduler（L939，工具生成）） | proc.c:421-428 | 时间片耗尽走 `sched_proc_no_time`（os/kernel/src/proc_table.rs:fn sched_enqueue（L640，工具生成），对应 `proc_no_time` 的两支策略）；随后复查可运行性 |
 | `finish_and_restore`（lib.rs:2624） | proc.c:437-474 | 见 §4.2 |
 
 ### 4.2 终局分派：finish_and_restore
@@ -432,8 +432,8 @@ C 的 `restart_local_timer()`（arch_clock.c:168-175）在**没有 LAPIC**时是
 | 6 | `while` + `goto` 控制流 | 外层 `loop` + `continue` | 控制流演进（语义等价） | lib.rs:2776（循环）；continue 位于 lib.rs:2820/2829 |
 | 7 | `restore_user_context` 汇编（mpx.S） | `TrapReturnArch::restore_to_user`（三架构实现，trap_return.rs） | 抽象演进（trait 下沉 arch 层） | §3 决策表 |
 | 8 | `context_stop` 记 `kernel_ticks[cpu]` / `p_cycles`（arch_clock.c:231-232） | `decrement_quantum_in` 只推进基线 + 扣量子，per-CPU 内核时长统计未接线 | **已知缺口** | `idle` 实现内 TODO(P2) 注释；随 15 号文档的记账路径落地 |
-| 9 | `kernel_call_resume(p)` 在杂项循环内完成完整重新分发（system.c:612-638） | 循环内调用简单版（读 VM 结果 + 清标志，vm.rs:896）；完整重分发被借用模型阻塞（`process_misc_flags` 持有 `&mut self`，无法同时把 `self` 作为 `proc_table` 传给 `syscall::kernel_call_resume`，syscall.rs:2662） | **已知缺口**（FIX-21 设计偏差，杂项标志接口阶段已记录） | proc_table.rs:788-792 注释 |
-| 10 | `arch_do_syscall` 读 `p_defer` 后完整重执行系统调用 | `ProcessTable::arch_do_syscall`（proc_table.rs:1012）已完成标志清除 + IPC 重分发；SEND/SENDREC 的消息体重读（p_defer.r3 用户指针）依赖系统调用追踪路径 | **已知缺口**（同上，依赖后续阶段） | proc_table.rs:926-932 注释 |
+| 9 | `kernel_call_resume(p)` 在杂项循环内完成完整重新分发（system.c:612-638） | 循环内调用简单版（读 VM 结果 + 清标志，vm.rs:896）；完整重分发被借用模型阻塞（`process_misc_flags` 持有 `&mut self`，无法同时把 `self` 作为 `proc_table` 传给 `syscall::kernel_call_resume`，syscall.rs:2662） | **已知缺口**（FIX-21 设计偏差，杂项标志接口阶段已记录） | os/kernel/src/proc_table.rs:fn sched_proc_no_time（L788，工具生成） 注释 |
+| 10 | `arch_do_syscall` 读 `p_defer` 后完整重执行系统调用 | `ProcessTable::arch_do_syscall`（os/kernel/src/proc_table.rs:fn process_misc_flags（L1012，工具生成））已完成标志清除 + IPC 重分发；SEND/SENDREC 的消息体重读（p_defer.r3 用户指针）依赖系统调用追踪路径 | **已知缺口**（同上，依赖后续阶段） | os/kernel/src/proc_table.rs:fn notify_scheduler（L926，工具生成） 注释 |
 | 11 | `SC_TRACE` → 清两标志 + `cause_sig(SIGTRAP)`（proc.c:392-398） | ✅ 已实现（D-43，2026-09-05）：标志清除后 `cause_signal(SIGTRAP)` 就地路由；不 `break`，落入可运行性复查——外部管理 → `RTS_SIGNALED` → `false` 重选；自管理（SELF 路径）→ 仅唤醒，标志已清循环自然退出，两种管理形态都与 C 的控制流吻合 | 信号路由（位置决策见 §3.3） | proc_table.rs `SC_TRACE` 分支 |
 | 12 | `delivermsg` 第二次拷贝失败 → printf 警告 + `cause_sig(SIGSEGV)`（proc.c:271-278，函数体内联） | ✅ 已实现（D-45，2026-09-05）：`DeliverResult::Segfault` → `cause_signal(SIGSEGV)`，信号路由在消费侧（`process_misc_flags`）而非 `delivermsg` 内——后者被 FIX-20 刻意约束为无表访问；C 的 WARNING printf（proc.c:273-277）保留为 `#[cfg(not(test))]` 的 EarlyConsole 输出（同 `proc_stacktrace` 的 gate 理由） | 结构对齐（信号产生点从被调函数移到消费侧，时序不变） | proc_table.rs `Segfault` 分支 |
 | 13 | `delivermsg` 第一次拷贝失败 → `vm_suspend(VMS_PAGEFAULT)`（proc.c:281-282） | 仅清点现场（置 `MF_MSGFAILED`）+ break；`vm_suspend` 挂起路径未接线 | **已知缺口**（D-44；阻塞于 D-20 的 VM 通知链 `SIGKMEM`——半截挂起会让进程永睡 `RTS_VMREQUEST`） | proc_table.rs `PageFault` 分支 |
@@ -484,7 +484,7 @@ C 的 `restart_local_timer()`（arch_clock.c:168-175）在**没有 LAPIC**时是
 | `test_idle_marks_cpu_idle_and_bills_idle_proc` | [lib.rs:3667](../../os/kernel/src/lib.rs) | idle 登记 IDLE 为当前进程 + 置 `cpu_is_idle`（C: proc.c:185-187, 192） |
 | `test_finish_and_restore_reaches_mock_restore` | [lib.rs:3695](../../os/kernel/src/lib.rs) | 终局分派走到 mock 恢复点（记账/FPU/清标志/重建 frame 全部完成） |
 | `test_switch_to_user_full_loop_dispatches_first_runnable_process` | [lib.rs:3714](../../os/kernel/src/lib.rs) | 端到端：IDLE 种子 → 重选 → 装地址空间 → 杂项 → 量子 → 分派发散 |
-| `test_process_misc_flags_*`（12 个） | proc_table.rs:1577 起 | 杂项标志全分支：FIX-20/21 阶段 7 个 + D-43/D-45 信号路由 5 个（2026-09-05）——`delivermsg_segfault_causes_sigsegv`（Segfault → `p_pending` SIGSEGV 位 + `RTS_SIGNALED` + 管理器收到 notify + 返回 false）、`delivermsg_first_fault_no_signal`（首错不升信号，D-44 边界钉住）、`sc_trace_causes_sigtrap`、`sc_trace_without_active_no_signal`（C 的 break 分支）、`sc_active_only_clears_and_runs` |
+| `test_process_misc_flags_*`（12 个） | os/kernel/src/proc_table.rs:fn test_is_empty_new_table（L1577，工具生成） 起 | 杂项标志全分支：FIX-20/21 阶段 7 个 + D-43/D-45 信号路由 5 个（2026-09-05）——`delivermsg_segfault_causes_sigsegv`（Segfault → `p_pending` SIGSEGV 位 + `RTS_SIGNALED` + 管理器收到 notify + 返回 false）、`delivermsg_first_fault_no_signal`（首错不升信号，D-44 边界钉住）、`sc_trace_causes_sigtrap`、`sc_trace_without_active_no_signal`（C 的 break 分支）、`sc_active_only_clears_and_runs` |
 
 mock 恢复点的 panic 消息包含 frame 值（arch/trap_return.rs:134-141），意外触发时可直接诊断到"哪个进程被分派、寄存器是什么"——这在裸机上只表现为挂死的行为，在测试里成为可读的失败信息。
 

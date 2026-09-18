@@ -2,7 +2,7 @@
 
 > **状态**: 正文 v1（2026-09-18，随实体接线轮补全常量）
 > **定位**: init 文档共用的常量、路径、全局状态
-> **源码**: `minix3/sbin/init/pathnames.h`（40 行）、`minix3/include/paths.h`、`minix3/minix/servers/pm/const.h:9`
+> **源码**: `minix3/sbin/init/pathnames.h`（40 行）、`minix3/include/paths.h`、`minix3/minix/servers/pm/const.h:INIT_PID`
 > **Rust 模块**: 常量分散在各业务模块（见 §2），信号编号权威在 `minix-types/src/types/signal.rs`
 
 ## 核心点

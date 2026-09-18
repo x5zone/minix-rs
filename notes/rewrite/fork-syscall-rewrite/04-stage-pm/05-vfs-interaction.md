@@ -191,10 +191,10 @@ if ((rmp->mp_flags & (IN_USE | EXITING)) == IN_USE)
 
 | 调用点 | 发出的请求 | 回复收口时做什么 |
 |---|---|---|
-| forkexit.c:130（do_fork） | `VFS_PM_FORK` | 子进程置 `VFS_CALL`；回复到来时调度子进程、回复父子（§2.3 FORK 分支） |
-| forkexit.c:230（do_pm_exit） | `VFS_PM_EXIT` | VFS 释放 fd；`EXIT_REPLY` 发布退出事件并继续退出 |
-| forkexit.c:359（exit_proc 重发） | `VFS_PM_EXIT` | 同上；用于退出流程中再次请求 VFS 清理 |
-| getset.c:219（do_setuid/do_setgid/do_setsid） | `VFS_PM_SETUID`/`SETGID`/`SETSID` | 回复 `OK`（或 procgrp）唤醒等待的调用者 |
+| minix3/minix/servers/pm/forkexit.c:do_fork（L130，工具生成）（do_fork） | `VFS_PM_FORK` | 子进程置 `VFS_CALL`；回复到来时调度子进程、回复父子（§2.3 FORK 分支） |
+| minix3/minix/servers/pm/forkexit.c:do_srv_fork（L230，工具生成）（do_pm_exit） | `VFS_PM_EXIT` | VFS 释放 fd；`EXIT_REPLY` 发布退出事件并继续退出 |
+| minix3/minix/servers/pm/forkexit.c:exit_proc（L359，工具生成）（exit_proc 重发） | `VFS_PM_EXIT` | 同上；用于退出流程中再次请求 VFS 清理 |
+| minix3/minix/servers/pm/getset.c:do_set（L219，工具生成）（do_setuid/do_setgid/do_setsid） | `VFS_PM_SETUID`/`SETGID`/`SETSID` | 回复 `OK`（或 procgrp）唤醒等待的调用者 |
 | exec.c:52（do_exec） | `VFS_PM_EXEC` | `EXEC_REPLY` 经 `exec_restart` 重启用户进程 |
 | signal.c:767（do_unpause） | `VFS_PM_UNPAUSE` | `UNPAUSE_REPLY` 置 `UNPAUSED` 并发布信号事件 |
 | misc.c:230（do_reboot） | `VFS_PM_REBOOT` | `REBOOT_REPLY` 触发 `sys_abort`（§2.3 第一段） |
@@ -203,7 +203,7 @@ if ((rmp->mp_flags & (IN_USE | EXITING)) == IN_USE)
 
 ### 2.5 `NEW_PARENT` 与 `UNPAUSED` 的生命周期
 
-**`NEW_PARENT`** 是一个**跨调用**标志。唯一设置点在 forkexit.c:402-403（`exit_proc` 中，当进程被 init 收养时 `mp_flags |= NEW_PARENT`）。它的含义是"本进程的原父进程已死，下一次 VFS 回复不要再回复父进程"。它在 handle_vfs_reply 第二段被读取并清除（main.c:327-328），因此跨越"设置它的退出流程"与"下一次 VFS 回复"两个事件。FORK 回复分支据此决定 `reply(parent, ...)` 是否执行。
+**`NEW_PARENT`** 是一个**跨调用**标志。唯一设置点在 minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）（`exit_proc` 中，当进程被 init 收养时 `mp_flags |= NEW_PARENT`）。它的含义是"本进程的原父进程已死，下一次 VFS 回复不要再回复父进程"。它在 handle_vfs_reply 第二段被读取并清除（main.c:327-328），因此跨越"设置它的退出流程"与"下一次 VFS 回复"两个事件。FORK 回复分支据此决定 `reply(parent, ...)` 是否执行。
 
 **`UNPAUSED`** 是**瞬态**标志。它只在 `UNPAUSE_REPLY` 分支内设置（main.c:410），且进入 handle_vfs_reply 时若已置则 panic（main.c:330-331）。这个不变式保证：一个进程在 unpause 回复被处理的瞬间，一定是 `PROC_STOPPED` 的（main.c:407 `assert(PROC_STOPPED)`）——否则它可能立即在新调用上再次自我暂停，语义错乱。`UNPAUSED` 设置后即被消费，绝不跨调用存活。
 
@@ -249,7 +249,7 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 
 ### D7：NEW_PARENT / UNPAUSED 辅助
 
-`take_vfs_call` 端口方法合并"清除 VFS_CALL + 取出 reply_to_new_parent"，对应 C main.c:327-328；`set_unpaused` 端口方法在 UNPAUSE 分支设置 `UNPAUSED`，对应 main.c:410。辅助函数放在 `ipc/vfs.rs`，**不修改 02 档的 `block.rs`**（blast radius 控制）。`mark_new_parent`（设置 NEW_PARENT，对应 forkexit.c:402-403）的**调用点**属于 09 档 `exit_proc` 收养路径；05 只建模读取/清除侧（通过 `take_vfs_call`），设置侧在 09 落地时补。
+`take_vfs_call` 端口方法合并"清除 VFS_CALL + 取出 reply_to_new_parent"，对应 C main.c:327-328；`set_unpaused` 端口方法在 UNPAUSE 分支设置 `UNPAUSED`，对应 main.c:410。辅助函数放在 `ipc/vfs.rs`，**不修改 02 档的 `block.rs`**（blast radius 控制）。`mark_new_parent`（设置 NEW_PARENT，对应 minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成））的**调用点**属于 09 档 `exit_proc` 收养路径；05 只建模读取/清除侧（通过 `take_vfs_call`），设置侧在 09 落地时补。
 
 ### D8：`run_once` 入口拦截，而非 `DispatchResult`
 
@@ -341,7 +341,7 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/main.c:295-424`（handle_vfs_reply）、`minix3/minix/servers/pm/utility.c:123-139`（tell_vfs）、`minix3/minix/include/minix/com.h:513-583`（协议面）、`minix3/minix/servers/pm/{forkexit.c,getset.c,exec.c,signal.c,misc.c}`（7 个调用点）。
+- C 源（ground truth）：`minix3/minix/servers/pm/main.c:handle_vfs_reply`（handle_vfs_reply）、`minix3/minix/servers/pm/utility.c:tell_vfs`（tell_vfs）、`minix3/minix/include/minix/com.h:VFS_PM_RQ_BASE`（协议面）、`minix3/minix/servers/pm/{forkexit.c,getset.c,exec.c,signal.c,misc.c}`（7 个调用点）。
 - 设计契约：`.design/05-design.v1.md`（D1–D8 与行为契约表）、`.design/05-outline.v1.md`、`.design/05-outline-review.v1.md`。
 - PM 阶段文档：01-pm-init-main.md（VFS_PM_INIT）、02-mproc-struct.md（BlockState/NEW_PARENT/UNPAUSED）、03-mproc-table.md（pm_isokendpt）、04-ipc-dispatch.md（主循环三路分发）。
 - 对端实现：05-stage-vfs（VFS 侧接收与回复）。

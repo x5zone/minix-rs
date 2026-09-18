@@ -1,7 +1,7 @@
 # 15 — Minix 扩展子树：测试用的子树、显示计数的节点和指向进程信息的节点
 
 > **分类**: 子系统子树 / Minix 扩展
-> **源码**: `minix3/minix/servers/mib/minix.c`（全文 89 行）、`minix3/minix/servers/mib/mib.h:23`（测试子树开关）
+> **源码**: `minix3/minix/servers/mib/minix.c`（全文 89 行）、`minix3/minix/servers/mib/mib.h:MINIX_TEST_SUBTREE`（测试子树开关）
 > **说明**: 最小却最密的子树：测试用的子树（十二个节点字面量级精确）、显示服务自己计数器的节点（树自报家门）、指向进程信息的节点（两个函数归二十篇）。网络栈不在表里，是设计（运行时挂载）。
 
 ---
@@ -93,10 +93,10 @@ Redox 的对照点在方案测试：每个方案带一套测试，跑的是方�
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 字面量写进类型 | 表字面量 | 带值的枚举变体（十六进制整数带 `0x0102_0304` 等，`os/servers/mib/src/subtree/minix.rs:24`）加十二行常量表（`:69`） | 测试用的数字改一个测试变红。字面量进类型，不是注释 |
-| D2 | 没留位置变成断言 | 注释（`:78`） | 没留位置的常量（`minix.rs:225`）加测试断言顶层表无此编号 | "没留位置是设计"值得测试：后人"补全"网络栈进静态表，测试即变红 |
-| D3 | 显示计数变成枚举 | 三指针叶 | 三种情况的枚举（`minix.rs:171`）加编号表 | 指针目标就是 03 三个计数值。枚举让"显示谁"能按名字搜索 |
-| D4 | 指向进程信息变成枚举 | 两函数节点 | 两种情况的枚举（`minix.rs:191`） | 本体在 20，节点在这里。枚举是两篇的握手点 |
+| D1 | 字面量写进类型 | 表字面量 | 带值的枚举变体（十六进制整数带 `0x0102_0304` 等，`os/servers/mib/src/subtree/minix.rs:enum TestKind`）加十二行常量表（`:69`） | 测试用的数字改一个测试变红。字面量进类型，不是注释 |
+| D2 | 没留位置变成断言 | 注释（`:78`） | 没留位置的常量（`os/servers/mib/src/subtree/minix.rs:const ABSENT_LWIP`）加测试断言顶层表无此编号 | "没留位置是设计"值得测试：后人"补全"网络栈进静态表，测试即变红 |
+| D3 | 显示计数变成枚举 | 三指针叶 | 三种情况的枚举（`os/servers/mib/src/subtree/minix.rs:enum MibStat`）加编号表 | 指针目标就是 03 三个计数值。枚举让"显示谁"能按名字搜索 |
+| D4 | 指向进程信息变成枚举 | 两函数节点 | 两种情况的枚举（`os/servers/mib/src/subtree/minix.rs:enum ProcDoor`） | 本体在 20，节点在这里。枚举是两篇的握手点 |
 
 替代方案及否决：竞技场建表（含本篇三表）——否决。本篇即 15，三棵子树的表（13、14、15）齐备之日即建竞技场，见 §4.4 统一建竞技场的说明。先写计算和数据后建竞技场，和 13 一样。
 
@@ -117,12 +117,12 @@ os/servers/mib/src/subtree/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 开关 | `mib.h:23` | `minix.rs:19` | 开（测试依赖） |
-| 测试用的节点 | `minix.c:19-43` | `minix.rs:24,53,69` | 十二行字面量 |
-| 秘密子节点 | `minix.c:9-12` | `minix.rs:149,159` | 编号零、名、值 |
-| 显示计数 | `minix.c:47-57` | `minix.rs:171,179` | 三枚举加编号表 |
-| 指向进程信息 | `minix.c:59-66` | `minix.rs:191,199` | 两枚举加编号表 |
-| 顶层表 | `minix.c:68-79` | `minix.rs:207,217,225` | 三个位置加没留位置的断言 |
+| 开关 | `mib.h:23` | `os/servers/mib/src/subtree/minix.rs:const MINIX_TEST_SUBTREE` | 开（测试依赖） |
+| 测试用的节点 | `minix.c:19-43` | `os/servers/mib/src/subtree/minix.rs:enum TestKind,53,69` | 十二行字面量 |
+| 秘密子节点 | `minix.c:9-12` | `os/servers/mib/src/subtree/minix.rs:struct SecretEntry,159` | 编号零、名、值 |
+| 显示计数 | `minix.c:47-57` | `os/servers/mib/src/subtree/minix.rs:enum MibStat,179` | 三枚举加编号表 |
+| 指向进程信息 | `minix.c:59-66` | `os/servers/mib/src/subtree/minix.rs:enum ProcDoor,199` | 两枚举加编号表 |
+| 顶层表 | `minix.c:68-79` | `os/servers/mib/src/subtree/minix.rs:enum MinixSlot,217,225` | 三个位置加没留位置的断言 |
 
 ### 4.3 不变量
 
@@ -162,7 +162,7 @@ Minix 扩展子树讲完了。测试用子树的十二个字面量为什么一�
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/minix.c`（全文）、`minix3/minix/servers/mib/mib.h:23`
+- C 源：`minix3/minix/servers/mib/minix.c`（全文）、`minix3/minix/servers/mib/mib.h:MINIX_TEST_SUBTREE`
 - 阶段文档：`04-mib-static-tree-init.md`（初始化挂载）、`08-mib-dynamic-nodes.md`（节点生死，测试消费）、`13-mib-subtree-kern.md`（写法篇）、`14-mib-subtree-vm-hw.md`（上一站）、`16-mib-proc-tables.md`（下一站）、`20-mib-minix-proc.md`（节点本体）
 - Rust 实现：`os/servers/mib/src/subtree/minix.rs`
 - 相关约定：测试八十七（plan §3.5 行为约定）

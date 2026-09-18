@@ -197,10 +197,10 @@ C 侧用 `getpwnam` 家族屏蔽"文本还是哈希库"的差异，Rust 侧用 `
 - `02-service-scheduler.md`——服务管理（值守关系的服务视角）
 - `04-device-database.md`——设备节点与系统数据库（下一步：名字与设备的来源）
 - `05-shell-family.md`——shell 家族（登录链交棒的下一站）
-- `minix3/usr.bin/login/login.c:116-117`——重试与退避常量
-- `minix3/usr.bin/login/login.c:424`——口令比对行
-- `minix3/usr.bin/login/login.c:604-724`——会话布设与 shell 启动段
-- `minix3/libexec/getty/main.c:190-270`——终端认领段
+- `minix3/usr.bin/login/login.c:DEFAULT_BACKOFF`——重试与退避常量
+- `minix3/usr.bin/login/login.c:main（L424，工具生成）`——口令比对行
+- `minix3/usr.bin/login/login.c:main（L604，工具生成）`——会话布设与 shell 启动段
+- `minix3/libexec/getty/main.c:main（L190，工具生成）`——终端认领段
 - `minix3/etc/ttys`——终端表实例（`test_console_line_from_etc_ttys` 的真实输入来源）
 - `minix3/etc/master.passwd`——口令文本脸实例（前三行即三种登录许可形态）
 

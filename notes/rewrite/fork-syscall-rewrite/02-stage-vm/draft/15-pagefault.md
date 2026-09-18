@@ -1232,7 +1232,7 @@ result = map_pf(vmp, region, offset, wr, pf_cont, &state, sizeof(state), &io);
 
 > **缓存内存与连续匿名**：`mem_type_cache`（`mem_cache.c`）和 `mem_type_anon_contig`（`mem_anon_contig.c`）是 Minix3 中两个较少使用的 memtype。`mem_type_cache` 用于 VM 页面缓存管理，与 `mappedfile_pagefault` 的缓存查找逻辑紧密关联；`mem_type_anon_contig` 用于需要物理连续内存的场景（如 DMA），分配时需满足 `VR_PHYS64K` 等对齐约束。当前 minix-rs 未实现这两种 memtype——PFN model 下 `PageFrames` 可扩展支持连续分配约束，缓存机制待 VFS 就绪后设计。
 
-**mem_type 结构体完整字段**（定义在 `memtype.h:12`）
+**mem_type 结构体完整字段**（定义在 `minix3/minix/servers/vm/memtype.h:mem_type`）
 
 | 字段 | 签名 | 说明 | 页错误相关 |
 |------|------|------|-----------|
@@ -2396,7 +2396,7 @@ impl MemType for AnonymousMemory {
 }
 ```
 
-> **与 Minix3 的对应**: 上述实现对应 `mem_anon.c:64` 的 `anon_pagefault()`。关键差异是引入了 `region.is_writable()` 检查（对应 `VR_WRITABLE` 标志）和 `region.remaps > 0` 的快速可写路径。
+> **与 Minix3 的对应**: 上述实现对应 `minix3/minix/servers/vm/mem_anon.c:anon_pagefault` 的 `anon_pagefault()`。关键差异是引入了 `region.is_writable()` 检查（对应 `VR_WRITABLE` 标志）和 `region.remaps > 0` 的快速可写路径。
 
 **文件映射内存实现**
 
@@ -2430,7 +2430,7 @@ impl MemType for MappedFile {
 }
 ```
 
-> **与 Minix3 的对应**: `mappedfile_writable()` 始终返回 0（`mem_file.c:173`），即文件映射内存从不直接可写，写操作总是触发 CoW。CoW 后 memtype 切换为 `MEM_TYPE_ANON`，与 Minix3 的 `ph->memtype = &mem_type_anon` 语义一致。
+> **与 Minix3 的对应**: `mappedfile_writable()` 始终返回 0（`minix3/minix/servers/vm/mem_file.c:mappedfile_writable`），即文件映射内存从不直接可写，写操作总是触发 CoW。CoW 后 memtype 切换为 `MEM_TYPE_ANON`，与 Minix3 的 `ph->memtype = &mem_type_anon` 语义一致。
 
 **共享内存实现**
 

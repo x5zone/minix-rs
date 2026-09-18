@@ -46,7 +46,7 @@
 
 ### 1.6 取消与复活的换码
 
-取消把 `EAGAIN` 换成 `EINTR`，复活把 `EINTR` 换成 `EAGAIN`——一去一回，恰好互逆。换码的根因是两拨人用词不同：驱动说“没数据”（`EAGAIN`），进程侧说“被打断”（`EINTR`）；去程（取消）站在进程侧翻译，回程（复活）站在驱动侧翻译。`cdev.c:470` 的 TODO 诚实标注“或已过时”——换码可能是历史包袱，但包袱在消除前仍是契约，契约必须建模。
+取消把 `EAGAIN` 换成 `EINTR`，复活把 `EINTR` 换成 `EAGAIN`——一去一回，恰好互逆。换码的根因是两拨人用词不同：驱动说“没数据”（`EAGAIN`），进程侧说“被打断”（`EINTR`）；去程（取消）站在进程侧翻译，回程（复活）站在驱动侧翻译。`minix3/minix/servers/vfs/cdev.c:cdev_generic_reply（L470，工具生成）` 的 TODO 诚实标注“或已过时”——换码可能是历史包袱，但包袱在消除前仍是契约，契约必须建模。
 
 ### 1.7 与其他 OS 的字符设备对照
 
@@ -66,35 +66,35 @@
 
 CTTY 整除改道（`44-51`：无终端 `NO_DEV`，有则代入重取 major）→ 越界 `NO_DEV`（`53`）→ 原样返回（`55`）。幂等声明在注释（`33`），调用点单次使用。
 
-### 2.2 `cdev_get` 查表机（`cdev.c:62-90`）
+### 2.2 `cdev_get` 查表机（`minix3/minix/servers/vfs/cdev.c:cdev_map（L62，工具生成）`）
 
 改道（`72-73`，`NO_DEV` 即空）→ 查 dmap 行（`76`）→ 驱动存活（`79`，`NONE` 即空）→ 端点复核（`81-85`，坏端点打印即空）→ 回写 minor（`88`）返行（`89`）。
 
-### 2.3 `cdev_clone` 替身机（`cdev.c:96-139`）
+### 2.3 `cdev_clone` 替身机（`minix3/minix/servers/vfs/cdev.c:cdev_get（L96，工具生成）`）
 
-fd 有效断言（`103`）→ 新号拼合（`106`，`makedev` 见 18）→ PFS 落子（`109-110`，`RWX_MODES|I_CHAR_SPECIAL` 见 `minix3/minix/include/minix/const.h:110,116`，失败关新号 `112-114`）→ 取空 vnode（`117-121`，失败放子关号，`118` 的“is this right?”诚实保留）→ 锁新结（`122`）→ 解旧引用旧（`124-126`，fd 非空断言）→ 填新结九字段（`128-135`：端点/空挂载/`NO_DEV`/inode/模式/新号/双计数 1）→ 换指向（`136`）。
+fd 有效断言（`103`）→ 新号拼合（`106`，`makedev` 见 18）→ PFS 落子（`109-110`，`RWX_MODES|I_CHAR_SPECIAL` 见 `minix3/minix/include/minix/const.h:I_CHAR_SPECIAL,116`，失败关新号 `112-114`）→ 取空 vnode（`117-121`，失败放子关号，`118` 的“is this right?”诚实保留）→ 锁新结（`122`）→ 解旧引用旧（`124-126`，fd 非空断言）→ 填新结九字段（`128-135`：端点/空挂载/`NO_DEV`/inode/模式/新号/双计数 1）→ 换指向（`136`）。
 
-### 2.4 `cdev_opcl` 开合机（`cdev.c:148-248`）
+### 2.4 `cdev_opcl` 开合机（`minix3/minix/servers/vfs/cdev.c:cdev_clone（L148，工具生成）`）
 
-双断言（`164-165`：操作二值、开必有 fd）→ 查表门（`168-169`，失败 `ENXIO`）→ CTTY 短路（`177`，不扰驱动——setsid 后开 tty 不留悬丝）→ NOCTTY 三条件（`185-191`）→ 组包（`194-205`：清零、操作号（`CDEV_OPEN/CDEV_CLOSE` 见 `com.h:926-927`）、minor、id=who、开则拼访问位 `R/W→CDEV_R_BIT/CDEV_W_BIT` 见 `minix3/minix/include/minix/com.h:940-941`、`NOCTTY→CDEV_NOCTTY` 见 `com.h:942`）→ 异步发（`208-209`，`AMF_NOREPLY` 见 `minix3/minix/include/minix/ipc.h:2760`，失败 panic）→ 挂线程等复（`212-218`）→ 取状态（`221`）→ 开成功解效应（`223-244`：`CDEV_CLONED` 换号 `231-235`，`CDEV_CTTY` 授终端 `238-241`，掩码见 `com.h:955-956`）→ 回结果（`247`）。
+双断言（`164-165`：操作二值、开必有 fd）→ 查表门（`168-169`，失败 `ENXIO`）→ CTTY 短路（`177`，不扰驱动——setsid 后开 tty 不留悬丝）→ NOCTTY 三条件（`185-191`）→ 组包（`194-205`：清零、操作号（`CDEV_OPEN/CDEV_CLOSE` 见 `com.h:926-927`）、minor、id=who、开则拼访问位 `R/W→CDEV_R_BIT/CDEV_W_BIT` 见 `minix3/minix/include/minix/com.h:CDEV_R_BIT`、`NOCTTY→CDEV_NOCTTY` 见 `com.h:942`）→ 异步发（`208-209`，`AMF_NOREPLY` 见 `minix3/minix/include/minix/ipc.h:AMF_NOREPLY`，失败 panic）→ 挂线程等复（`212-218`）→ 取状态（`221`）→ 开成功解效应（`223-244`：`CDEV_CLONED` 换号 `231-235`，`CDEV_CTTY` 授终端 `238-241`，掩码见 `com.h:955-956`）→ 回结果（`247`）。
 
-### 2.5 `cdev_open/close` 薄包装（`cdev.c:253-268`）
+### 2.5 `cdev_open/close` 薄包装（`minix3/minix/servers/vfs/cdev.c:cdev_opcl（L253，工具生成）`）
 
 开传 fd 与 flags（`257`），关传 -1 与 0（`267`，注释写明关可无 fd：关的是设备不是描述符）。
 
-### 2.6 `cdev_io` 读写机（`cdev.c:279-342`）
+### 2.6 `cdev_io` 读写机（`minix3/minix/servers/vfs/cdev.c:cdev_close（L279，工具生成）`）
 
-三断言（`289`：`CDEV_READ/CDEV_WRITE/CDEV_IOCTL` 三值，见 `com.h:928-930`）→ 查表门（`292-293`，失败 `EIO`——与开合的 `ENXIO` 不同：读写时表丢是运行时事故）→ `TIOCSCTTY` 授终端（`300-303`，`TTY_MAJOR=4/PTY_MAJOR=9` 见 `minix3/minix/include/minix/dmap.h:25,30`，FIXME 硬编码诚实保留）→ 授权（`306-312`：读写交叉配向，控走 19 解码；无效 panic）→ 组包（`315-329`：操作号、minor、控则 request+user、读写则 pos+count、id=proc、grant、flags、`O_NONBLOCK→CDEV_NONBLOCK` 见 `com.h:946`）→ 异步发（`332-333`，失败 panic）→ 登记挂起（`336-339`：设备/端点/授权三存，授权备撤销）→ `SUSPEND`（`341`）。
+三断言（`289`：`CDEV_READ/CDEV_WRITE/CDEV_IOCTL` 三值，见 `com.h:928-930`）→ 查表门（`292-293`，失败 `EIO`——与开合的 `ENXIO` 不同：读写时表丢是运行时事故）→ `TIOCSCTTY` 授终端（`300-303`，`TTY_MAJOR=4/PTY_MAJOR=9` 见 `minix3/minix/include/minix/dmap.h:TTY_MAJOR,30`，FIXME 硬编码诚实保留）→ 授权（`306-312`：读写交叉配向，控走 19 解码；无效 panic）→ 组包（`315-329`：操作号、minor、控则 request+user、读写则 pos+count、id=proc、grant、flags、`O_NONBLOCK→CDEV_NONBLOCK` 见 `com.h:946`）→ 异步发（`332-333`，失败 panic）→ 登记挂起（`336-339`：设备/端点/授权三存，授权备撤销）→ `SUSPEND`（`341`）。
 
-### 2.7 `cdev_select` 旁路机（`cdev.c:349-375`）
+### 2.7 `cdev_select` 旁路机（`minix3/minix/servers/vfs/cdev.c:cdev_io（L349，工具生成）`）
 
 三断言（`358-361`：非空、有界、非 CTTY）→ 直查 dmap 行（`362`，**无改道**——调用者已改道且 `fp` 可能错位，`346-347` 注释）→ 组包（`365-368`：`CDEV_SELECT` 见 `com.h:932`、minor、ops）→ 异步发（`371-372`，失败 panic）→ `OK`（`374`，发送即成功，回复走 23）。
 
-### 2.8 `cdev_cancel` 取消机（`cdev.c:380-419`）
+### 2.8 `cdev_cancel` 取消机（`minix3/minix/servers/vfs/cdev.c:cdev_select（L380，工具生成）`）
 
 查表门（`389-390`，失败 `EIO`）→ 组包（`393-396`：`CDEV_CANCEL` 见 `com.h:931`、minor、id=端点）→ 异步发（`399-400`，失败 panic）→ 挂线程等复（`403-409`）→ 有权即撤销（`412-413`）→ 取状态（`416`）→ `EAGAIN` 换 `EINTR`（`418`，注释“注意错误码”，换码语义见 §1.6）。
 
-### 2.9 `cdev_reply` 三路机（`cdev.c:428-508`）
+### 2.9 `cdev_reply` 三路机（`minix3/minix/servers/vfs/cdev.c:cdev_cancel（L428，工具生成）`）
 
 知名门（`484-488`，未知打印丢弃）→ 三路分发（`490-507`：通用 `CDEV_REPLY` 见 `com.h:935`、选择两回复 `SEL1/SEL2` 见 `com.h:936-937` 归 23、未知打印）。通用五路（`438-474`）：`SUSPEND` 丢弃（`438-442`）→ 坏端点丢弃（`444-448`）→ 工人投递（`451-455`，未阻塞断言）→ 协议错打印（`456-463`）→ 复活（`464-474`，`EINTR→EAGAIN` 换码，TODO 过时注记诚实保留）。
 
@@ -107,51 +107,51 @@ Rust 改写不是照抄 `cdev.c` 的挂起循环，而是吸收 Linux/Redox 的�
 ### D1 改道纯函数
 
 - **C**：`cdev_map` 内嵌 `fp_tty` 读取与越界门（`cdev.c:35-56`）。
-- **Rust**：`tty_redirect(dev, is_ctty, tty: Option<u64>, major_valid)` + `TtySource` trait（`FixedTty` 有答 vs `NoTty` 无答）+ `tty_redirect_for` 泛型包装（`os/servers/vfs/src/cdev.rs:84,40,99`）。
+- **Rust**：`tty_redirect(dev, is_ctty, tty: Option<u64>, major_valid)` + `TtySource` trait（`FixedTty` 有答 vs `NoTty` 无答）+ `tty_redirect_for` 泛型包装（`os/servers/vfs/src/cdev.rs:fn tty_redirect（L84，工具生成）,40,99`）。
 - **为什么**：三值知识纯函数化；`None` 即 `NO_DEV`。调用点传入终端，函数不碰 proc 表。
 
 ### D2 查表门收敛
 
-- **C**：`cdev_get` 四步直线（`cdev.c:62-90`）。
-- **Rust**：`resolve_gate(mapped, driver, endpoint_ok) -> Option<GatePass{driver, minor}>`（`os/servers/vfs/src/cdev.rs:123`）。
+- **C**：`cdev_get` 四步直线（`minix3/minix/servers/vfs/cdev.c:cdev_map（L62，工具生成）`）。
+- **Rust**：`resolve_gate(mapped, driver, endpoint_ok) -> Option<GatePass{driver, minor}>`（`os/servers/vfs/src/cdev.rs:struct GatePass（L123，工具生成）`）。
 - **为什么**：三合一失败皆空（调用点 open 报 `ENXIO`、io 报 `EIO`——差异在调用点）；收敛后门只有过/不过一比特。
 
 ### D3 访问位拼合
 
-- **C**：`R/W→CDEV_R/W_BIT` 与 `NOCTTY→CDEV_NOCTTY` 散在 opcl（`cdev.c:199-202`）。
-- **Rust**：`access_bits(read, write, noctty) -> u8`（`os/servers/vfs/src/cdev.rs:133`）。
+- **C**：`R/W→CDEV_R/W_BIT` 与 `NOCTTY→CDEV_NOCTTY` 散在 opcl（`minix3/minix/servers/vfs/cdev.c:cdev_opcl（L199，工具生成）`）。
+- **Rust**：`access_bits(read, write, noctty) -> u8`（`os/servers/vfs/src/cdev.rs:fn resolve_gate（L133，工具生成）`）。
 - **为什么**：位运算纯知识；三位一次拼合。位值 sync 树可验证，不编造。
 
 ### D4 NOCTTY 三条件
 
-- **C**：三或 + 全表扫描（`cdev.c:185-191`）。
-- **Rust**：`noctty_force(is_leader, has_tty, requested, seen_elsewhere) -> bool`（`os/servers/vfs/src/cdev.rs:152`）。
+- **C**：三或 + 全表扫描（`minix3/minix/servers/vfs/cdev.c:cdev_opcl（L185，工具生成）`）。
+- **Rust**：`noctty_force(is_leader, has_tty, requested, seen_elsewhere) -> bool`（`os/servers/vfs/src/cdev.rs:fn access_bits（L152，工具生成）`）。
 - **为什么**：扫描是调用点的事；规则是四元或式。`seen_tty` 短路以注释声明，不入判定。
 
 ### D5 打开后效应
 
-- **C**：`CLONED` 换号 + `CTTY` 授终端（`cdev.c:231-241`）。
-- **Rust**：`OpenEffects{clone_minor, grant_tty}` + `open_effects(status, dev)` 掩码解码（`os/servers/vfs/src/cdev.rs:164,177`）。
+- **C**：`CLONED` 换号 + `CTTY` 授终端（`minix3/minix/servers/vfs/cdev.c:cdev_opcl（L231，工具生成）`）。
+- **Rust**：`OpenEffects{clone_minor, grant_tty}` + `open_effects(status, dev)` 掩码解码（`os/servers/vfs/src/cdev.rs:fn noctty_force（L164，工具生成）,177`）。
 - **为什么**：状态字位包一次解码；克隆落子归 12，授终端归 02，调用点分办。
 
 ### D6 授权方向复用语义
 
-- **C**：读配 `CPF_WRITE`、写配 `CPF_READ`（`cdev.c:306-308`）。
-- **Rust**：`grant_dir(is_read) -> u32`（`os/servers/vfs/src/cdev.rs:193`），语义复用 19 交叉。
+- **C**：读配 `CPF_WRITE`、写配 `CPF_READ`（`minix3/minix/servers/vfs/cdev.c:cdev_io（L306，工具生成）`）。
+- **Rust**：`grant_dir(is_read) -> u32`（`os/servers/vfs/src/cdev.rs:fn open_effects（L193，工具生成）`），语义复用 19 交叉。
 - **为什么**：同一知识不定义两遍；ioctl 走 19 解码，读写走本函数（方向二值更简单）。
 
 ### D7 回复分类与双向换码
 
-- **C**：通用五路（`cdev.c:438-474`）+ 去程换码（`418`）+ 回程换码（`473`）。
-- **Rust**：`ReplyClass` 五值 + `classify_reply` + `cancel_map`/`revive_map` 双向换码（`os/servers/vfs/src/cdev.rs:203,225,249`）。
+- **C**：通用五路（`minix3/minix/servers/vfs/cdev.c:cdev_generic_reply（L438，工具生成）`）+ 去程换码（`418`）+ 回程换码（`473`）。
+- **Rust**：`ReplyClass` 五值 + `classify_reply` + `cancel_map`/`revive_map` 双向换码（`os/servers/vfs/src/cdev.rs:fn open_effects（L203，工具生成）,225,249`）。
 - **为什么**：丢/投/活三类知识纯函数化；换码配对显式；TODO 过时注记诚实保留为文档注记。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | 挂起/等待皆 verdict，执行留 08/09 | `cdev.rs:247,260` + 本文档 D7 + 21 正文 §1.1 |
-| 授权执行归内核（grant 只解码） | 方向/尺寸纯函数，执行留 minix-sys | `cdev.rs:193` + 本文档 D6 + 21 正文 §1.5 |
+| A-1 单线程事件循环（mthread→状态机） | 挂起/等待皆 verdict，执行留 08/09 | `os/servers/vfs/src/cdev.rs:fn classify_reply（L247，工具生成）,260` + 本文档 D7 + 21 正文 §1.1 |
+| 授权执行归内核（grant 只解码） | 方向/尺寸纯函数，执行留 minix-sys | `os/servers/vfs/src/cdev.rs:fn open_effects（L193，工具生成）` + 本文档 D6 + 21 正文 §1.5 |
 
 ---
 
@@ -173,26 +173,26 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `cdev_map` | `cdev.c:35-56` | `cdev.rs:84,40,99` | 改道 + trait 双实现 |
-| `cdev_get` | `cdev.c:62-90` | `cdev.rs:123 resolve_gate` | 三合一门 |
-| 访问位拼合 | `cdev.c:199-202` | `cdev.rs:133 access_bits` | 三位一次 |
-| NOCTTY 规则 | `cdev.c:185-191` | `cdev.rs:152 noctty_force` | 四元或式 |
-| 打开效应 | `cdev.c:231-241` | `cdev.rs:164,177` | 掩码解码 |
-| 授权方向 | `cdev.c:306-308` | `cdev.rs:193 grant_dir` | 交叉复用 |
-| 回复分类 | `cdev.c:438-474` | `cdev.rs:203,225` | 五值 |
-| 换码对 | `cdev.c:418,473` | `cdev.rs:247 + revive 内` | 双向互逆 |
-| 选择旁路 | `cdev.c:346-361` | `cdev.rs:258 select_bypass` | 无改道断言 |
-| 错误族 | `cdev.c` 全文件 | `cdev.rs:269,286 CdevError::to_errno` | 5 变体→errno，无自创 |
+| `cdev_map` | `cdev.c:35-56` | `os/servers/vfs/src/cdev.rs:fn tty_redirect（L84，工具生成）,40,99` | 改道 + trait 双实现 |
+| `cdev_get` | `minix3/minix/servers/vfs/cdev.c:cdev_map（L62，工具生成）` | `os/servers/vfs/src/cdev.rs:struct GatePass（L123，工具生成） resolve_gate` | 三合一门 |
+| 访问位拼合 | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L199，工具生成）` | `os/servers/vfs/src/cdev.rs:fn resolve_gate（L133，工具生成） access_bits` | 三位一次 |
+| NOCTTY 规则 | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L185，工具生成）` | `os/servers/vfs/src/cdev.rs:fn access_bits（L152，工具生成） noctty_force` | 四元或式 |
+| 打开效应 | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L231，工具生成）` | `os/servers/vfs/src/cdev.rs:fn noctty_force（L164，工具生成）,177` | 掩码解码 |
+| 授权方向 | `minix3/minix/servers/vfs/cdev.c:cdev_io（L306，工具生成）` | `os/servers/vfs/src/cdev.rs:fn open_effects（L193，工具生成） grant_dir` | 交叉复用 |
+| 回复分类 | `minix3/minix/servers/vfs/cdev.c:cdev_generic_reply（L438，工具生成）` | `os/servers/vfs/src/cdev.rs:fn open_effects（L203，工具生成）,225` | 五值 |
+| 换码对 | `minix3/minix/servers/vfs/cdev.c:cdev_cancel（L418，工具生成）,473` | `os/servers/vfs/src/cdev.rs:fn classify_reply（L247，工具生成） + revive 内` | 双向互逆 |
+| 选择旁路 | `minix3/minix/servers/vfs/cdev.c:cdev_io（L346，工具生成）` | `os/servers/vfs/src/cdev.rs:fn classify_reply（L258，工具生成） select_bypass` | 无改道断言 |
+| 错误族 | `cdev.c` 全文件 | `os/servers/vfs/src/cdev.rs:fn cancel_map（L269，工具生成）,286 CdevError::to_errno` | 5 变体→errno，无自创 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
 | 改道幂等 | 纯函数无状态 | 调两次同果 | `cdev.c:33` |
-| 查表三合一 | `resolve_gate` | 单门过不过 | `cdev.c:62-90` |
-| 换码配对 | 去回互逆测试 | `cancel/revive` 对测 | `cdev.c:418,473` |
-| 克隆掩码正交 | `&~(CLONED\|CTTY)` | 号与位分离 | `cdev.c:232` |
-| 选择无改道 | `select_bypass` | CTTY 拒绝 | `cdev.c:346-361` |
+| 查表三合一 | `resolve_gate` | 单门过不过 | `minix3/minix/servers/vfs/cdev.c:cdev_map（L62，工具生成）` |
+| 换码配对 | 去回互逆测试 | `cancel/revive` 对测 | `minix3/minix/servers/vfs/cdev.c:cdev_cancel（L418，工具生成）,473` |
+| 克隆掩码正交 | `&~(CLONED\|CTTY)` | 号与位分离 | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L232，工具生成）` |
+| 选择无改道 | `select_bypass` | CTTY 拒绝 | `minix3/minix/servers/vfs/cdev.c:cdev_io（L346，工具生成）` |
 
 ---
 
@@ -203,14 +203,14 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_tty_redirect_matrix` | `cdev.c:35-56` | 改道三值 + trait 双实现 | `cdev.rs:301` |
-| `test_resolve_gate` | `cdev.c:62-90` | 三合一门四样本 | `cdev.rs:325` |
-| `test_access_bits_combination` | `cdev.c:185-202` | 拼合 + NOCTTY 真值表 | `cdev.rs:337` |
-| `test_open_effects_decode` | `cdev.c:231-241` | 掩码解码四样本 | `cdev.rs:352` |
-| `test_grant_direction_cross` | `cdev.c:306-308` | 交叉复用 | `cdev.rs:371` |
-| `test_reply_classes` | `cdev.c:418,438-474` | 五路 + 双向换码 | `cdev.rs:378` |
-| `test_select_bypass_rule` | `cdev.c:346-361` | 旁路断言 | `cdev.rs:413` |
-| `test_errno_map_covers_cdev_c` | `cdev.c` 全文件 | 5 变体→errno 全映射 | `cdev.rs:421` |
+| `test_tty_redirect_matrix` | `cdev.c:35-56` | 改道三值 + trait 双实现 | `os/servers/vfs/src/cdev.rs:fn to_errno` |
+| `test_resolve_gate` | `minix3/minix/servers/vfs/cdev.c:cdev_map（L62，工具生成）` | 三合一门四样本 | `os/servers/vfs/src/cdev.rs:fn test_tty_redirect_matrix` |
+| `test_access_bits_combination` | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L185，工具生成）` | 拼合 + NOCTTY 真值表 | `os/servers/vfs/src/cdev.rs:fn test_tty_redirect_matrix（L337，工具生成）` |
+| `test_open_effects_decode` | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L231，工具生成）` | 掩码解码四样本 | `os/servers/vfs/src/cdev.rs:fn via（L352，工具生成）` |
+| `test_grant_direction_cross` | `minix3/minix/servers/vfs/cdev.c:cdev_io（L306，工具生成）` | 交叉复用 | `os/servers/vfs/src/cdev.rs:fn test_access_bits_combination（L371，工具生成）` |
+| `test_reply_classes` | `minix3/minix/servers/vfs/cdev.c:cdev_cancel（L418，工具生成）,438-474` | 五路 + 双向换码 | `os/servers/vfs/src/cdev.rs:fn test_access_bits_combination（L378，工具生成）` |
+| `test_select_bypass_rule` | `minix3/minix/servers/vfs/cdev.c:cdev_io（L346，工具生成）` | 旁路断言 | `os/servers/vfs/src/cdev.rs:fn test_reply_classes（L413，工具生成）` |
+| `test_errno_map_covers_cdev_c` | `cdev.c` 全文件 | 5 变体→errno 全映射 | `os/servers/vfs/src/cdev.rs:fn test_reply_classes（L421，工具生成）` |
 
 测试策略：改道以三值 + trait 双实现覆盖；查表以合取四样本覆盖；拼合以位组合 + 真值表覆盖；效应以掩码四样本覆盖；回复以级联优先序 + 换码对覆盖；错误以 5 变体全映射覆盖。
 
@@ -242,7 +242,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/cdev.c:1-508`（`cdev_map/cdev_get/cdev_clone/cdev_opcl/cdev_open/cdev_close/cdev_io/cdev_select/cdev_cancel/cdev_generic_reply/cdev_reply`）、`minix3/minix/include/minix/com.h:919-956`（`CDEV_*` 操作码与标志位）、`minix3/minix/include/minix/dmap.h:25,30`（`TTY_MAJOR/PTY_MAJOR`）、`minix3/minix/servers/vfs/fproc.h:95`（`FP_SESLDR`）、`minix3/minix/include/minix/const.h:110,116`（`I_CHAR_SPECIAL/RWX_MODES`）、`minix3/sys/sys/fcntl.h:104`（`O_NOCTTY`）
+- C 源：`minix3/minix/servers/vfs/cdev.c:1-508`（`cdev_map/cdev_get/cdev_clone/cdev_opcl/cdev_open/cdev_close/cdev_io/cdev_select/cdev_cancel/cdev_generic_reply/cdev_reply`）、`minix3/minix/include/minix/com.h:CDEV_RQ_BASE`（`CDEV_*` 操作码与标志位）、`minix3/minix/include/minix/dmap.h:TTY_MAJOR,30`（`TTY_MAJOR/PTY_MAJOR`）、`minix3/minix/servers/vfs/fproc.h:FP_SESLDR`（`FP_SESLDR`）、`minix3/minix/include/minix/const.h:I_CHAR_SPECIAL,116`（`I_CHAR_SPECIAL/RWX_MODES`）、`minix3/sys/sys/fcntl.h:O_NOCTTY`（`O_NOCTTY`）
 - 阶段文档：`19-device-map.md`（查表与恢复 verdict）、`15-open-close.md`（`FileType` 三路）、`02-fproc-struct.md`（`fp_tty` 归属）、`23-select.md`（选择执行）、`09-main-loop.md`（回复分流）
-- Rust 实现：`os/servers/vfs/src/cdev.rs:1`（本篇判定层）、`os/servers/vfs/src/device_map.rs:1`（查表层）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/cdev.rs:1`（本篇判定层）、`os/servers/vfs/src/device_map.rs:1`（查表层）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（用户缓冲授权语义）

@@ -24,11 +24,11 @@
 
 1. **Minix3 自己也只覆盖部分架构**：`find minix3/minix/kernel/arch -name arch_watchdog*` 仅命中 `i386/` 和 `earm/`——aarch64 和 riscv64 在 Minix3 也没有 NMI watchdog 实现。minix-rs 三架构目标（x86_64 + aarch64 + riscv64），强行抽象 NMI watchdog 会扭曲设计（x86 NMI / ARM FIQ / RISC-V NMI 语义差异大，无统一 trait 自然抽象）。
 
-2. **Minix3 默认关闭**：minix3/minix/kernel/main.c:455-458 双重门控——`#ifdef USE_WATCHDOG`（编译时条件）+ `env_get("watchdog")`（运行时 boot 参数）。说明 Minix3 自己也把 NMI watchdog 当"高级调试选项"，不是核心 kernel 功能。
+2. **Minix3 默认关闭**：minix3/minix/kernel/main.c:cstart（L455，工具生成） 双重门控——`#ifdef USE_WATCHDOG`（编译时条件）+ `env_get("watchdog")`（运行时 boot 参数）。说明 Minix3 自己也把 NMI watchdog 当"高级调试选项"，不是核心 kernel 功能。
 
 3. **依赖硬件 PMU/MSR（驱动层问题）**：minix3/minix/kernel/arch/i386/arch_watchdog.c 使用 vendor-specific MSR（`INTEL_MSR_PERFMON_CRT0/SEL0` for Intel，AMD 有自己的版本）+ LAPIC LVT PCR（性能计数器溢出 → NMI）。性能计数器是驱动层职责（vendor-specific MSR），不是 kernel 核心路径。
 
-4. **sprofile 已用 timer IRQ 替代 NMI**：Minix3 的 NMI 还兼任统计采样载体（minix3/minix/kernel/profile.c:128 `nmi_sprofile_handler`）。minix-rs 的 [30-kernel-profile.md](30-kernel-profile.md) 用 `profile_clock_handler` + `ack_profile_clock`（基于普通 IRQ 时钟）替代 NMI 采样，三架构统一，无需 NMI 子系统。
+4. **sprofile 已用 timer IRQ 替代 NMI**：Minix3 的 NMI 还兼任统计采样载体（minix3/minix/kernel/profile.c:nmi_sprofile_handler `nmi_sprofile_handler`）。minix-rs 的 [30-kernel-profile.md](30-kernel-profile.md) 用 `profile_clock_handler` + `ack_profile_clock`（基于普通 IRQ 时钟）替代 NMI 采样，三架构统一，无需 NMI 子系统。
 
 5. **NMI 是可选调试特性，非内核正确性必需**：缺失不影响调度、IPC、VM 等核心子系统的正常运行。与 [25-misc-unported.md](25-misc-unported.md) 附录 DEFERRED 清单中 `SPROF PROF_NMI` 的排除说明一致。
 
@@ -68,7 +68,7 @@ int watchdog_enabled;                       // watchdog 是否启用
 
 ### 2.2 lockup 检测机制
 
-`lockup_check()` 是 arch-independent 的核心检测逻辑（watchdog.c:14-50）：
+`lockup_check()` 是 arch-independent 的核心检测逻辑（minix3/minix/kernel/watchdog.c:lockup_check）：
 
 ```c
 static void lockup_check(struct nmi_frame * frame)
@@ -125,14 +125,14 @@ flowchart TD
 ```
 
 **关键设计**：
-- `no_ticks` 阈值为 **10**（watchdog.c:42）——容忍短暂 stall，只有持续 lockup 才报警
-- `last_tick_count` 初始化为 `(unsigned) -1`（watchdog.c:18）——首次调用必走路径 A
-- `serial_debug_active` 守卫（watchdog.c:25）——串口调试时 `printf` 本身耗时巨大，会触发假阳性
-- `FIXME this should be CPU local`（watchdog.c:16）——C 源码已知缺陷：SMP 下 `no_ticks`/`last_tick_count` 是 static 全局变量，多 CPU 共享会相互干扰
+- `no_ticks` 阈值为 **10**（minix3/minix/kernel/watchdog.c:lockup_check（L42，工具生成））——容忍短暂 stall，只有持续 lockup 才报警
+- `last_tick_count` 初始化为 `(unsigned) -1`（minix3/minix/kernel/watchdog.c:lockup_check（L18，工具生成））——首次调用必走路径 A
+- `serial_debug_active` 守卫（minix3/minix/kernel/watchdog.c:lockup_check（L25，工具生成））——串口调试时 `printf` 本身耗时巨大，会触发假阳性
+- `FIXME this should be CPU local`（minix3/minix/kernel/watchdog.c:lockup_check（L16，工具生成））——C 源码已知缺陷：SMP 下 `no_ticks`/`last_tick_count` 是 static 全局变量，多 CPU 共享会相互干扰
 
 ### 2.3 NMI 中断入口
 
-`nmi_watchdog_handler()` 是 NMI 中断的 arch-independent 入口（watchdog.c:52-73）：
+`nmi_watchdog_handler()` 是 NMI 中断的 arch-independent 入口（minix3/minix/kernel/watchdog.c:nmi_watchdog_handler）：
 
 ```c
 void nmi_watchdog_handler(struct nmi_frame * frame)
@@ -156,11 +156,11 @@ void nmi_watchdog_handler(struct nmi_frame * frame)
 }
 ```
 
-**双职责**：watchdog + NMI profiling 共用同一个 NMI 入口——`SPROFILE` 编译选项决定是否支持 profiling。profiling 启用时跳过 lockup 检测（watchdog.c:59），因为高频采样会让 `lockup_check` 误判。
+**双职责**：watchdog + NMI profiling 共用同一个 NMI 入口——`SPROFILE` 编译选项决定是否支持 profiling。profiling 启用时跳过 lockup 检测（minix3/minix/kernel/watchdog.c:nmi_watchdog_handler（L59，工具生成）），因为高频采样会让 `lockup_check` 误判。
 
 ### 2.4 NMI profiling 入口
 
-`nmi_watchdog_start_profiling()` / `nmi_watchdog_stop_profiling()` 控制 NMI 作为采样源（watchdog.c:75-112）：
+`nmi_watchdog_start_profiling()` / `nmi_watchdog_stop_profiling()` 控制 NMI 作为采样源（minix3/minix/kernel/watchdog.c:nmi_watchdog_start_profiling）：
 
 ```c
 int nmi_watchdog_start_profiling(const unsigned freq)
@@ -192,7 +192,7 @@ int nmi_watchdog_start_profiling(const unsigned freq)
 
 ### 2.5 arch 钩子
 
-`struct arch_watchdog`（watchdog.h:19-26）定义运行时方法表：
+`struct arch_watchdog`（minix3/minix/kernel/watchdog.h:arch_watchdog）定义运行时方法表：
 
 ```c
 struct arch_watchdog {
@@ -205,7 +205,7 @@ struct arch_watchdog {
 };
 ```
 
-arch 钩子声明（watchdog.h:31-36）：
+arch 钩子声明（minix3/minix/kernel/watchdog.h:arch_watchdog（L31，工具生成））：
 - `arch_watchdog_init()` — 初始化 NMI 硬件（x86 实现在 `arch/i386/arch_watchdog.c:53`）
 - `arch_watchdog_stop()` — 停止 NMI（`arch/i386/arch_watchdog.c:101`）
 - `arch_watchdog_lockup(frame)` — lockup 报警（`arch/i386/arch_watchdog.c:105`，打印 stacktrace + 信息）
@@ -222,8 +222,8 @@ arch 钩子声明（watchdog.h:31-36）：
 |------|------|------|
 | 是否内核正确性必需 | ❌ 否——NMI watchdog 是调试设施，缺失不影响内核正常运行 | Minix3 `USE_WATCHDOG` 编译时关闭 |
 | Minix3 架构覆盖 | ❌ 部分——仅 i386 + earm 实现 | `find minix3/minix/kernel/arch -name arch_watchdog*` 命中 i386/earm |
-| Minix3 默认启用 | ❌ 否——编译时 + 运行时双重门控 | minix3/minix/kernel/main.c:455-458 `#ifdef USE_WATCHDOG` + `env_get("watchdog")` |
-| 是否依赖硬件 PMU | ✅ 是——vendor-specific MSR + LAPIC LVT PCR | minix3/minix/kernel/arch/i386/arch_watchdog.c:22-44 Intel/AMD MSR |
+| Minix3 默认启用 | ❌ 否——编译时 + 运行时双重门控 | minix3/minix/kernel/main.c:cstart（L455，工具生成） `#ifdef USE_WATCHDOG` + `env_get("watchdog")` |
+| 是否依赖硬件 PMU | ✅ 是——vendor-specific MSR + LAPIC LVT PCR | minix3/minix/kernel/arch/i386/arch_watchdog.c:intel_arch_watchdog_init（L22，工具生成） Intel/AMD MSR |
 | 是否阻塞 sprofile | ❌ 否——minix-rs 已用 timer IRQ 替代 | [30-kernel-profile.md](30-kernel-profile.md) `profile_clock_handler` + `ack_profile_clock` |
 | 是否有 Rust 实现 | ❌ 无——WONTFIX | — |
 | 是否架构相关 | ✅ 是——x86 NMI / ARM FIQ / RISC-V NMI 语义差异大 | 三架构无统一 trait 自然抽象 |
@@ -272,15 +272,15 @@ arch 钩子声明（watchdog.h:31-36）：
 
 | C 符号 | 位置 | 状态 | 理由 |
 |--------|------|------|------|
-| `lockup_check` | watchdog.c:14-50 | WONTFIX | NMI 子系统未实现 |
-| `nmi_watchdog_handler` | watchdog.c:52-73 | WONTFIX | 同上 |
-| `nmi_watchdog_start_profiling` | watchdog.c:75-98 | WONTFIX | 依赖 NMI 硬件 |
-| `nmi_watchdog_stop_profiling` | watchdog.c:100-112 | WONTFIX | 同上 |
+| `lockup_check` | minix3/minix/kernel/watchdog.c:lockup_check | WONTFIX | NMI 子系统未实现 |
+| `nmi_watchdog_handler` | minix3/minix/kernel/watchdog.c:nmi_watchdog_handler | WONTFIX | 同上 |
+| `nmi_watchdog_start_profiling` | minix3/minix/kernel/watchdog.c:nmi_watchdog_start_profiling | WONTFIX | 依赖 NMI 硬件 |
+| `nmi_watchdog_stop_profiling` | minix3/minix/kernel/watchdog.c:nmi_watchdog_stop_profiling | WONTFIX | 同上 |
 | `arch_watchdog_init` | arch/i386/arch_watchdog.c:53 | WONTFIX | x86 NMI 硬件特定 |
 | `arch_watchdog_stop` | arch/i386/arch_watchdog.c:101 | WONTFIX | 同上 |
 | `arch_watchdog_lockup` | arch/i386/arch_watchdog.c:105 | WONTFIX | 同上 |
 | `watchdog_local_timer_ticks` | watchdog.c:10 | WONTFIX | 全局状态，依赖 NMI handler 更新 |
-| `struct arch_watchdog` | watchdog.h:19-26 | WONTFIX | arch 操作表，无 Rust trait 对应 |
+| `struct arch_watchdog` | minix3/minix/kernel/watchdog.h:arch_watchdog | WONTFIX | arch 操作表，无 Rust trait 对应 |
 
 ### 6.2 与 25-misc-unported 的关系
 
@@ -290,4 +290,4 @@ arch 钩子声明（watchdog.h:31-36）：
 
 ### 6.3 已知 C 源码缺陷（不修复）
 
-- `lockup_check` 的 `no_ticks`/`last_tick_count` 是 `static` 全局变量（watchdog.c:17-18），SMP 下多 CPU 共享会相互干扰——C 源码已标注 `FIXME this should be CPU local`（watchdog.c:16）。Rust 若未来实现应使用 per-CPU 状态（参考 `CpuLocal` 模式，见 [16-smp.md](16-smp.md)）。
+- `lockup_check` 的 `no_ticks`/`last_tick_count` 是 `static` 全局变量（minix3/minix/kernel/watchdog.c:lockup_check（L17，工具生成）），SMP 下多 CPU 共享会相互干扰——C 源码已标注 `FIXME this should be CPU local`（minix3/minix/kernel/watchdog.c:lockup_check（L16，工具生成））。Rust 若未来实现应使用 per-CPU 状态（参考 `CpuLocal` 模式，见 [16-smp.md](16-smp.md)）。

@@ -165,10 +165,10 @@ Rust 侧 `sysctl.rs` 的名字检查与赋值拆分对应命令的参数面，`l
 
 - `19-network-services.md`——服务经营（本篇的前置）
 - `22-stdio-games.md`——纯输入输出游戏（下一步：验收展示）
-- `minix3/minix/commands/readclock/readclock.c:55-164`——时钟选项（`clock.rs` 的形状来源）
-- `minix3/minix/commands/intr/intr.c:19-140`——限时执行（`intr.rs` 的形状来源）
+- `minix3/minix/commands/readclock/readclock.c:main（L55，工具生成）`——时钟选项（`clock.rs` 的形状来源）
+- `minix3/minix/commands/intr/intr.c:_POSIX_SOURCE（L19，工具生成）`——限时执行（`intr.rs` 的形状来源）
 - `minix3/minix/commands/printroot/printroot.c:25-55`——根发现（`rootdev.rs` 的流程来源）
-- `minix3/usr.bin/ldd/ldd.c:93`——格式通吃（`ldd.rs` 的识别来源）
+- `minix3/usr.bin/ldd/ldd.c:dlopen（L93，工具生成）`——格式通吃（`ldd.rs` 的识别来源）
 
 ---
 

@@ -1,7 +1,7 @@
 # 03-rs-privilege: 权限结构建模与 privctl 操作面
 
 > **分类**: 阶段 2 — 权限与隔离（boot Step 1 的权限机制）
-> **源码**: `minix3/minix/kernel/priv.h`（struct priv）、`minix3/minix/include/minix/priv.h`（静态 id/默认宏）、`minix3/minix/include/minix/const.h:142-153`（s_flags 位）、`minix3/minix/include/minix/com.h:342-353`（SYS_PRIV_* 操作码）、`minix3/minix/servers/rs/main.c:240-345`（boot Step 1）、`minix3/minix/servers/rs/utility.c:82-141,364-422`（fill_*/sched_init_proc/update_sig_mgrs）、`minix3/minix/kernel/system/do_privctl.c`（privctl 内核侧语义）、`minix3/minix/lib/libsys/sys_privctl.c`、`minix3/minix/lib/libsys/sched_start.c`（外部调用面）
+> **源码**: `minix3/minix/kernel/priv.h`（struct priv）、`minix3/minix/include/minix/priv.h`（静态 id/默认宏）、`minix3/minix/include/minix/const.h:SERBAUDVARNAME（L142，工具生成）`（s_flags 位）、`minix3/minix/include/minix/com.h:SYS_PRIV_ALLOW`（SYS_PRIV_* 操作码）、`minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L240，工具生成）`（boot Step 1）、`minix3/minix/servers/rs/utility.c:fill_send_mask,364-422`（fill_*/sched_init_proc/update_sig_mgrs）、`minix3/minix/kernel/system/do_privctl.c`（privctl 内核侧语义）、`minix3/minix/lib/libsys/sys_privctl.c`、`minix3/minix/lib/libsys/sched_start.c`（外部调用面）
 > **Rust 模块**: `os/servers/rs/src/privilege.rs`（`Privilege`/`PrivFlags`/`TrapMask`/`CallMask`/`SysMap`/`PrivCtlOp`/`srv_or_usr`/`from_calls`）、`os/servers/rs/src/sched.rs`（`sched_init_proc`）、`boot.rs` 接线（KernelApi::privctl/getpriv/sched_init_proc）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（boot 时序）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（r_priv 字段归属）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/22-privilege.md`（kernel 侧 priv 语义）
 > **说明**: RS 是内核 priv 结构的管理者：boot Step 1 为每个 boot 服务构造 `struct priv`（权限结构），经 `sys_privctl(SYS_PRIV_SET_SYS)` 设置到内核、`sys_getpriv` 同步回本地；运行时经 `SYS_PRIV_UPDATE_SYS` 更新（信号管理器/编辑）、`ALLOW/DISALLOW/YIELD` 门控运行、`SET_USER` 降权、`CLEAR_IPC_REFS` 清理。本文档建模 priv 结构、boot 初始化流程、privctl 全操作面、调度初始化与信号管理器更新原语。
@@ -52,13 +52,13 @@ RS 侧的 `r_priv`（`type.h:88`）就是这个结构的**本地副本**——�
 | 组 | 字段 | 作用 | 谁写 |
 |----|------|------|------|
 | 身份 | `s_proc_nr`/`s_id` | 关联的进程号/priv 表索引（static priv id） | 内核（`get_priv` 分配）+ RS（static id 请求） |
-| 能力 | `s_flags`/`s_init_flags` | 策略标志（可抢占/可记账/系统服务/资源检查位）+ 初始化标志 | RS（boot 表 flags + 默认宏；运行时 `s_init_flags |= init_flags` 由 `ready::fold_init_flags` 建模——manager.c:953 `start_service`，replica 路径 `service_create::link_replica` manager.c:751-752，R14） |
+| 能力 | `s_flags`/`s_init_flags` | 策略标志（可抢占/可记账/系统服务/资源检查位）+ 初始化标志 | RS（boot 表 flags + 默认宏；运行时 `s_init_flags |= init_flags` 由 `ready::fold_init_flags` 建模——minix3/minix/servers/rs/manager.c:start_service（L953，工具生成） `start_service`，replica 路径 `service_create::link_replica` minix3/minix/servers/rs/manager.c:clone_service（L751，工具生成），R14） |
 | 门控 | `s_trap_mask`/`s_ipc_to`/`s_k_call_mask` | 允许的陷阱/允许的 IPC 目标/允许的内核调用 | RS（默认宏 + fill_* 原语） |
 | 服务 | `s_sig_mgr`/`s_bak_sig_mgr` | 系统信号管理器（+备份） | RS（boot 默认 = RS 自己；update_sig_mgrs 运行时改） |
 | 资源 | `s_nr_io_range`/`s_io_tab`/`s_nr_mem_range`/`s_mem_tab`/`s_nr_irq`/`s_irq_tab` | I/O 端口/内存/IRQ 白名单 | 驱动经 `SYS_PRIV_ADD_*`（RS 透传，见 §2.6 defer） |
 | 内核内部 | `s_asyntab`/`s_notify_pending`/`s_alarm_timer`/`s_stack_guard`/`s_ipcf` 等 | 异步发送表/挂起通知/闹钟/栈守卫/IPC filter | 仅内核，RS 不读写 |
 
-关键认知：**权限是"白名单"不是"角色"**。`s_ipc_to` 是 64 位位图（`NR_SYS_PROCS=64`，`sys_config.h:9`），第 i 位 = 允许向 priv id i 的目标发送 IPC；`s_k_call_mask` 是 `SYS_CALL_MASK_SIZE=2` 个 32 位块（`com.h:270-272`，`NR_SYS_CALLS=58`），第 j 位 = 允许内核调用 j。RS 构造时用 `fill_*` 原语"全开或逐位开"，而不是枚举角色。
+关键认知：**权限是"白名单"不是"角色"**。`s_ipc_to` 是 64 位位图（`NR_SYS_PROCS=64`，`minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`），第 i 位 = 允许向 priv id i 的目标发送 IPC；`s_k_call_mask` 是 `SYS_CALL_MASK_SIZE=2` 个 32 位块（`com.h:270-272`，`NR_SYS_CALLS=58`），第 j 位 = 允许内核调用 j。RS 构造时用 `fill_*` 原语"全开或逐位开"，而不是枚举角色。
 
 ### 1.3 boot Step 1：RS 怎么构造 priv
 
@@ -87,7 +87,7 @@ sys_getpriv(&rp->r_priv, endpoint);                          // 例外：所有�
 
 为什么 RS/VM 跳过 `SET_SYS`？`main.c:282-284` 注释：**"RS and VM are exceptions and are already running"**——内核 boot 时已经给它们分配了 priv（RS 是 root sys proc、VM 是 boot 早期页表代理），`SET_SYS` 要求目标进程处于 `RTS_NO_PRIV`（阻塞未授权）状态（`do_privctl.c` SET_SYS 分支第一个检查），已经在跑的服务不满足。
 
-为什么所有服务（含 RS/VM）都做 `sys_getpriv`？因为**内核可能改写提交的结构**：`SET_SYS` 时内核重新分配/恢复 `s_id`、强制 `s_proc_nr`、清零挂起通知/信号（`do_privctl.c:110-131`）。RS 必须把"内核实际采纳的版本"同步回本地，后续的 UPDATE_SYS 才以真实状态为基准。
+为什么所有服务（含 RS/VM）都做 `sys_getpriv`？因为**内核可能改写提交的结构**：`SET_SYS` 时内核重新分配/恢复 `s_id`、强制 `s_proc_nr`、清零挂起通知/信号（`minix3/minix/kernel/system/do_privctl.c:do_privctl（L110，工具生成）`）。RS 必须把"内核实际采纳的版本"同步回本地，后续的 UPDATE_SYS 才以真实状态为基准。
 
 ### 1.4 privctl 操作面：七个 RS 用到的操作
 
@@ -95,13 +95,13 @@ sys_getpriv(&rp->r_priv, endpoint);                          // 例外：所有�
 
 | 操作码 | 值 | RS 调用点 | 内核侧语义（`do_privctl.c`） |
 |--------|----|----------|------------------------------|
-| `SYS_PRIV_SET_SYS` | 3 | boot Step 1（main.c:287）、create_service（manager.c:600）、clone（main.c:478） | 给 `RTS_NO_PRIV` 进程分配 priv id、从调用者拷贝结构、清挂起、应用默认+覆盖 |
-| `SYS_PRIV_ALLOW` | 1 | boot Step 2（main.c:379）、init 完成（manager.c:932）、脚本/用户进程（manager.c:1234） | 解除 `RTS_NO_PRIV`，允许运行 |
-| `SYS_PRIV_DISALLOW` | 2 | 终止（manager.c:441）、update 回滚（update.c:360） | 设置 `RTS_NO_PRIV`，禁止运行 |
-| `SYS_PRIV_SET_USER` | 4 | 脚本子进程（manager.c:1224） | 把进程挂到共享的 `USER_PRIV_ID` 结构 |
+| `SYS_PRIV_SET_SYS` | 3 | boot Step 1（main.c:287）、create_service（minix3/minix/servers/rs/manager.c:rproc（L600，工具生成））、clone（main.c:478） | 给 `RTS_NO_PRIV` 进程分配 priv id、从调用者拷贝结构、清挂起、应用默认+覆盖 |
+| `SYS_PRIV_ALLOW` | 1 | boot Step 2（main.c:379）、init 完成（minix3/minix/servers/rs/manager.c:run_service（L932，工具生成））、脚本/用户进程（minix3/minix/servers/rs/manager.c:run_script（L1234，工具生成）） | 解除 `RTS_NO_PRIV`，允许运行 |
+| `SYS_PRIV_DISALLOW` | 2 | 终止（minix3/minix/servers/rs/manager.c:rproc（L441，工具生成））、update 回滚（update.c:360） | 设置 `RTS_NO_PRIV`，禁止运行 |
+| `SYS_PRIV_SET_USER` | 4 | 脚本子进程（minix3/minix/servers/rs/manager.c:run_script（L1224，工具生成）） | 把进程挂到共享的 `USER_PRIV_ID` 结构 |
 | `SYS_PRIV_UPDATE_SYS` | 9 | update_sig_mgrs（utility.c:412）、do_edit（request.c:354） | 用 `update_priv` 覆盖现有结构（flags/掩码/信号管理器/资源） |
 | `SYS_PRIV_YIELD` | 10 | LU 新旧交接（main.c:485、update.c:680） | 解除目标 `RTS_NO_PRIV` 并挂起调用者（RS 自己） |
-| `SYS_PRIV_CLEAR_IPC_REFS` | 11 | 终止清理（manager.c:442） | `clear_ipc_refs(rp, EDEADSRCDST)` 清挂起 IPC |
+| `SYS_PRIV_CLEAR_IPC_REFS` | 11 | 终止清理（minix3/minix/servers/rs/manager.c:rproc（L442，工具生成）） | `clear_ipc_refs(rp, EDEADSRCDST)` 清挂起 IPC |
 
 驱动面 4 个操作（`SYS_PRIV_ADD_IO`/`ADD_MEM`/`ADD_IRQ`/`QUERY_MEM`）由驱动自己经 `sys_privctl` 调用，**不经过 RS**——RS 只是把 `struct priv` 的 I/O/内存/IRQ 字段透传给内核。minix-rs 无驱动面（A-10 同族），这 4 个操作标注 defer（§3.3）。
 
@@ -165,7 +165,7 @@ struct priv {
 };
 ```
 
-RS 的本地副本 `r_priv` 是 `ixfer_priv_s`（= `struct priv` 的 typedef，`type.h:55`）**值嵌入**在 `struct rproc`（`type.h:88`）——不是指针。这意味着 RS 构造、拷贝、传给内核的都是**完整结构**（`sys_privctl` 的 `arg_ptr` 经 `data_copy` 整块拷贝，`do_privctl.c:123-126`）。
+RS 的本地副本 `r_priv` 是 `ixfer_priv_s`（= `struct priv` 的 typedef，`type.h:55`）**值嵌入**在 `struct rproc`（`type.h:88`）——不是指针。这意味着 RS 构造、拷贝、传给内核的都是**完整结构**（`sys_privctl` 的 `arg_ptr` 经 `data_copy` 整块拷贝，`minix3/minix/kernel/system/do_privctl.c:do_privctl（L123，工具生成）`）。
 
 Rust 建模取舍（完整论证见 §3.2）：RS 实际读写的字段（身份/能力/门控/服务/调度参数）全部建模；资源字段建模为定长数组（透传）；内核内部字段（`s_notify_pending`/`s_asyn_pending`/`s_int_pending`/`s_sig_pending`/`s_alarm_timer`/`s_stack_guard`/`s_diag_sig`/`s_ipcf`）**不建模**——它们是内核运行态，RS 只在 `SET_SYS` 后经 `sys_getpriv` 读回完整结构（未来 minix-sys 接线时按 C 布局序列化，见 19）。
 
@@ -269,28 +269,28 @@ IMM_F  = ROOT_SYS_PROC | VM_SYS_PROC | PREEMPTIBLE  /* 不可变位（inherit_se
 
 | 值 | 宏 | RS 用 | 内核侧语义要点（do_privctl.c） |
 |----|----|------|-------------------------------|
-| 1 | `SYS_PRIV_ALLOW` | ✅ | `RTS_NO_PRIV` 必须已设且 `s_proc_nr != NONE`，否则 `EPERM`；解除 `RTS_NO_PRIV`（do_privctl.c:56-64） |
-| 2 | `SYS_PRIV_DISALLOW` | ✅ | 未设 `RTS_NO_PRIV` 才允许；设置 `RTS_NO_PRIV`（do_privctl.c:75-79） |
-| 3 | `SYS_PRIV_SET_SYS` | ✅ | 见 §2.4；`RTS_NO_PRIV` 必须已设；`get_priv` 分配 id；从调用者 `data_copy` 整块拷贝；清挂起；`update_priv` 覆盖（do_privctl.c:86-171） |
-| 4 | `SYS_PRIV_SET_USER` | ✅ | `priv(rp) = priv_addr(USER_PRIV_ID)`——挂共享槽（do_privctl.c:176-183） |
-| 5 | `SYS_PRIV_ADD_IO` | defer | 驱动面；`CHECK_IO_PORT` 才处理（do_privctl.c:187-204） |
-| 6 | `SYS_PRIV_ADD_MEM` | defer | 驱动面（do_privctl.c:206-216） |
-| 7 | `SYS_PRIV_ADD_IRQ` | defer | 驱动面（do_privctl.c:218-230） |
-| 8 | `SYS_PRIV_QUERY_MEM` | defer | 驱动面（do_privctl.c:232-251；`sys_privquery_mem`，sys_privctl.c:16-27） |
-| 9 | `SYS_PRIV_UPDATE_SYS` | ✅ | `arg_ptr` 必传；`data_copy` 整块拷贝；`update_priv` 覆盖（do_privctl.c:253-266） |
-| 10 | `SYS_PRIV_YIELD` | ✅ | 解除目标 `RTS_NO_PRIV` + 挂起**调用者**（do_privctl.c:66-73） |
-| 11 | `SYS_PRIV_CLEAR_IPC_REFS` | ✅ | `clear_ipc_refs(rp, EDEADSRCDST)`（do_privctl.c:81-84） |
+| 1 | `SYS_PRIV_ALLOW` | ✅ | `RTS_NO_PRIV` 必须已设且 `s_proc_nr != NONE`，否则 `EPERM`；解除 `RTS_NO_PRIV`（minix3/minix/kernel/system/do_privctl.c:do_privctl（L56，工具生成）） |
+| 2 | `SYS_PRIV_DISALLOW` | ✅ | 未设 `RTS_NO_PRIV` 才允许；设置 `RTS_NO_PRIV`（minix3/minix/kernel/system/do_privctl.c:do_privctl（L75，工具生成）） |
+| 3 | `SYS_PRIV_SET_SYS` | ✅ | 见 §2.4；`RTS_NO_PRIV` 必须已设；`get_priv` 分配 id；从调用者 `data_copy` 整块拷贝；清挂起；`update_priv` 覆盖（minix3/minix/kernel/system/do_privctl.c:do_privctl（L86，工具生成）） |
+| 4 | `SYS_PRIV_SET_USER` | ✅ | `priv(rp) = priv_addr(USER_PRIV_ID)`——挂共享槽（minix3/minix/kernel/system/do_privctl.c:do_privctl（L176，工具生成）） |
+| 5 | `SYS_PRIV_ADD_IO` | defer | 驱动面；`CHECK_IO_PORT` 才处理（minix3/minix/kernel/system/do_privctl.c:do_privctl（L187，工具生成）） |
+| 6 | `SYS_PRIV_ADD_MEM` | defer | 驱动面（minix3/minix/kernel/system/do_privctl.c:do_privctl（L206，工具生成）） |
+| 7 | `SYS_PRIV_ADD_IRQ` | defer | 驱动面（minix3/minix/kernel/system/do_privctl.c:do_privctl（L218，工具生成）） |
+| 8 | `SYS_PRIV_QUERY_MEM` | defer | 驱动面（minix3/minix/kernel/system/do_privctl.c:do_privctl（L232，工具生成）；`sys_privquery_mem`，minix3/minix/lib/libsys/sys_privctl.c:sys_privquery_mem（L16，工具生成）） |
+| 9 | `SYS_PRIV_UPDATE_SYS` | ✅ | `arg_ptr` 必传；`data_copy` 整块拷贝；`update_priv` 覆盖（minix3/minix/kernel/system/do_privctl.c:do_privctl（L253，工具生成）） |
+| 10 | `SYS_PRIV_YIELD` | ✅ | 解除目标 `RTS_NO_PRIV` + 挂起**调用者**（minix3/minix/kernel/system/do_privctl.c:do_privctl（L66，工具生成）） |
+| 11 | `SYS_PRIV_CLEAR_IPC_REFS` | ✅ | `clear_ipc_refs(rp, EDEADSRCDST)`（minix3/minix/kernel/system/do_privctl.c:do_privctl（L81，工具生成）） |
 
 > 行号注：`do_privctl.c` 各 case 行号以 `rg -n 'case SYS_PRIV_' kernel/system/do_privctl.c` 实证为准（ALLOW 56 / YIELD 66 / DISALLOW 75 / CLEAR_IPC_REFS 81 / SET_SYS 86 / SET_USER 176 / ADD_IO 187 / ADD_MEM 206 / ADD_IRQ 218 / QUERY_MEM 232 / UPDATE_SYS 253）；上表"语义要点"为行为描述，各 case 精确区间以右列锚点为准。
 
-`SYS_PRIV_UPDATE_SYS` 的 `update_priv` 覆盖规则（`do_privctl.c:280-367`）——只覆盖 6 类内容：
+`SYS_PRIV_UPDATE_SYS` 的 `update_priv` 覆盖规则（`minix3/minix/kernel/system/do_privctl.c:update_priv`）——只覆盖 6 类内容：
 
 1. `s_flags`/`s_init_flags`/`s_sig_mgr`/`s_bak_sig_mgr`（无条件拷贝）
 2. IRQ（`CHECK_IRQ` 位设置才拷贝，校验 `s_nr_irq ∈ [0, NR_IRQ]`）
 3. I/O 范围（`CHECK_IO_PORT` 位设置才拷贝，校验 `s_nr_io_range ∈ [0, NR_IO_RANGE]`）
 4. 内存范围（`CHECK_MEM` 位设置才拷贝，校验 `s_nr_mem_range ∈ [0, NR_MEM_RANGE]`）
 5. `s_trap_mask` + `s_ipc_to`（`fill_sendto_mask` 应用目标掩码）
-6. `s_k_call_mask`（无条件 `memcpy` 整块覆盖，do_privctl.c:365-367）
+6. `s_k_call_mask`（无条件 `memcpy` 整块覆盖，minix3/minix/kernel/system/do_privctl.c:update_priv（L365，工具生成））
 
 RS 的 7 个调用点（`rg -n 'sys_privctl' servers/rs/*.c` 全量）：
 
@@ -339,7 +339,7 @@ int sched_init_proc(struct rproc *rp)
 - `scheduler_e == KERNEL` → `sys_schedctl(SCHEDCTL_FLAG_KERNEL, ...)`（boot 服务默认，priv.h:88）
 - 其他（用户调度器如 SCHED_PROC_NR）→ 发 `SCHEDULING_START` 消息（`m_lsys_sched_scheduling_start`）
 
-注意 `&rp->r_scheduler` 输出参数：调度器可能把请求转发给另一个调度器，返回值覆盖 `r_scheduler`（sched_start.c:91-94 注释）。
+注意 `&rp->r_scheduler` 输出参数：调度器可能把请求转发给另一个调度器，返回值覆盖 `r_scheduler`（minix3/minix/lib/libsys/sched_start.c:sched_start（L91，工具生成） 注释）。
 
 ### 2.8 update_sig_mgrs（utility.c:387-422）
 
@@ -359,7 +359,7 @@ int update_sig_mgrs(struct rproc *rp, endpoint_t sig_mgr, endpoint_t bak_sig_mgr
 }
 ```
 
-三步顺序不可交换：**先 getpriv（拿内核真实状态）→ 改信号管理器 → UPDATE_SYS 提交**。`sig_mgr == SELF` 时 RS 把自己（`rpub->endpoint`）设为管理器（verbose 日志显示 `(SELF)`）。调用点：do_update 的 replica 更新（request.c:761）、activate_service（manager.c:771-777）。不可变位约束不在这里：`IMM_SF`（`rs.h:205-207`，约束 `rpub->sys_flags` 的 SF_* 位）与 `IMM_F`（`priv.h:50`，约束 `r_priv.s_flags` 的 `ROOT_SYS_PROC|VM_SYS_PROC|PREEMPTIBLE` 位）的消费点是 `inherit_service_defaults`（manager.c:1321-1324）——更新服务从定义服务继承默认时强制保留这两组位；update_sig_mgrs 本身只改 `s_sig_mgr`/`s_bak_sig_mgr`，不触碰 flags。
+三步顺序不可交换：**先 getpriv（拿内核真实状态）→ 改信号管理器 → UPDATE_SYS 提交**。`sig_mgr == SELF` 时 RS 把自己（`rpub->endpoint`）设为管理器（verbose 日志显示 `(SELF)`）。调用点：do_update 的 replica 更新（request.c:761）、activate_service（minix3/minix/servers/rs/manager.c:clone_service（L771，工具生成））。不可变位约束不在这里：`IMM_SF`（`minix3/minix/include/minix/rs.h:IMM_SF`，约束 `rpub->sys_flags` 的 SF_* 位）与 `IMM_F`（`priv.h:50`，约束 `r_priv.s_flags` 的 `ROOT_SYS_PROC|VM_SYS_PROC|PREEMPTIBLE` 位）的消费点是 `inherit_service_defaults`（minix3/minix/servers/rs/manager.c:rproc（L1321，工具生成））——更新服务从定义服务继承默认时强制保留这两组位；update_sig_mgrs 本身只改 `s_sig_mgr`/`s_bak_sig_mgr`，不触碰 flags。
 
 ---
 
@@ -399,11 +399,11 @@ I/O 与 IRQ 白名单的**权威副本**（内核强制面的镜像）；`Servic
 `r_io_tab`/`r_irq_tab`（type.h:99-103，"Backup values from the privilege structure"）是随行
 快照——C 全树对备份零读者，`r_priv` 的刷新走 `sys_getpriv` 内核回读（main.c:294 等），
 与备份无关。Rust 把快照的写路径收敛为 `ServiceSlot::refresh_priv_backup()`（从 `r_priv`
-一次派生，对应 C manager.c:1498 的双赋值与 :1519 的拷回写序），两条视图不可能漂移。
+一次派生，对应 C minix3/minix/servers/rs/manager.c:rs_start（L1498，工具生成） 的双赋值与 :1519 的拷回写序），两条视图不可能漂移。
 slot 表的字段语义与 `edit_slot` 的写入细节归 02/08 号文档。
 
 **计数域为 `i32`（R2，2026-08-16）**：C 是 `int`（priv.h:53/56/59），且 `sys_privctl` 拒绝负值
-（do_privctl.c:308-309/319-320/330-331）——`u16` 会丢失"校验前可负"状态。`Privilege::validate()`
+（minix3/minix/kernel/system/do_privctl.c:update_priv（L308，工具生成）/319-320/330-331）——`u16` 会丢失"校验前可负"状态。`Privilege::validate()`
 （do_privctl.c 同语义，EINVAL）在 19 接线 `data_copy` 前调用，fail-closed。
 
 **不建模字段（显式列出防遗漏误报）**：`s_proc_nr`（内核关联，getpriv 读回）、`s_asyntab/s_asynsize/s_asynendpoint`（异步发送）、`s_notify_pending/s_asyn_pending/s_int_pending/s_sig_pending`（挂起状态）、`s_ipcf`（IPC filter 指针）、`s_alarm_timer`、`s_stack_guard`、`s_diag_sig`、`s_grant_*`、`s_state_*`——全部是**内核运行态**，RS 不读写（19 接线时按 C 布局序列化整块）。
@@ -460,7 +460,7 @@ impl CallMask {
 > **R21 修复（2026-09-06，todo §18）——is_init 组合语义可表达**：原签名用
 > `is_init: bool` 二选一起点掩码，但 is_init=FALSE 分支只是"调用方应已预置掩码"的注释
 > 约定——参数表里根本没有传既有掩码的入口，edit_slot 的 basic 位叠加路径
-> （manager.c:1527-1540）在 API 上不可表达。现删掉布尔、改为前导 `base: CallMask` 参数：
+> （minix3/minix/servers/rs/manager.c:rs_start（L1527，工具生成））在 API 上不可表达。现删掉布尔、改为前导 `base: CallMask` 参数：
 > 结果 = base ∪ bits(calls)；`empty()` ≡ C is_init=TRUE，传活掩码 ≡ is_init=FALSE；
 > ALL_C 分支忽略 base（与 C 覆写语义一致）。测试：
 > `test_call_mask_from_calls_composes_onto_base`。
@@ -485,7 +485,7 @@ pub fn sched_decision(cfg: &SchedulerConfig, is_sys_proc: bool) -> SchedAction<'
 
 - 断言等价（R32：`debug_assert!` → 全构建 `assert!`）：`!is_sys_proc → scheduler == NONE`；`is_sys_proc → scheduler != NONE`——C 是运行期 assert（utility.c:369-370，MINIX 用户态构建不定义 NDEBUG），release 静默放行是对 C 行为的偏离；`test_sched_decision_sys_proc_none_panics`/`test_sched_decision_user_proc_with_scheduler_panics` 锁定
 - 外部调用（sched_start 的 KERNEL→sys_schedctl / 用户调度器→SCHEDULING_START）经 `KernelApi` trait（01 的 boot.rs 边界）；`KernelApi::sched_init_proc(cfg: &SchedulerConfig) -> Result<Endpoint, Errno>`（S4 修复后携带全部调度参数并回传 `*newscheduler_e`）
-- **NONE 短路契约（S3 已实现，T5 拆分为决策/执行）**：`scheduler == NONE` 时 C 的 `sched_start` 直接返回 `OK` 且不发任何系统调用（sched_start.c:45-47，用户进程 INIT 场景）；Rust 侧 `sched_decision` 返回 `SchedAction::Skip`（**不触内核**，测试 `test_sched_decision_user_proc_none_skips`），shell 执行 `Start` → `sys.sched_init_proc(cfg)` 取得 `*newscheduler_e`（`SchedAction::Start` 携带完整 `&SchedulerConfig`）
+- **NONE 短路契约（S3 已实现，T5 拆分为决策/执行）**：`scheduler == NONE` 时 C 的 `sched_start` 直接返回 `OK` 且不发任何系统调用（minix3/minix/lib/libsys/sched_start.c:sched_inherit（L45，工具生成），用户进程 INIT 场景）；Rust 侧 `sched_decision` 返回 `SchedAction::Skip`（**不触内核**，测试 `test_sched_decision_user_proc_none_skips`），shell 执行 `Start` → `sys.sched_init_proc(cfg)` 取得 `*newscheduler_e`（`SchedAction::Start` 携带完整 `&SchedulerConfig`）
 - `SchedulerConfig::boot_defaults(endpoint)` 给出 boot Step 2 的 C 默认（`SRV_SCH=KERNEL`/`SRV_Q=USER_Q=7`/`SRV_QT=USER_QUANTUM=200`/`cpu=0`/`parent=RS`，main.c:320-322 + priv.h:88,93,98 + config.h:69,74）
 
 ### 3.7 `update_sig_mgrs` 原语（D7，T5 后为纯核心 + 提交结构）
@@ -651,11 +651,11 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 
 - `[ALL_C]` → 全 1（58 位内全 1，59 位以上为 0）；与 `base` 无关（C 覆写 chunk，utility.c:122-129）
 - 单调用 `[KERNEL_CALL + 4]` → 仅位 4 置位
-- **组合语义（R21）**：结果 = `base` ∪ bits(calls)；`base = empty()` ≡ C `is_init=TRUE`（先清零），传活掩码 ≡ `is_init=FALSE`（basic 位叠加，manager.c:1527-1540 的 edit_slot 路径）——`test_call_mask_from_calls_composes_onto_base` 锁定三态（base 位保留、新位加入、ALL_C 覆写 base）
+- **组合语义（R21）**：结果 = `base` ∪ bits(calls)；`base = empty()` ≡ C `is_init=TRUE`（先清零），传活掩码 ≡ `is_init=FALSE`（basic 位叠加，minix3/minix/servers/rs/manager.c:rs_start（L1527，工具生成） 的 edit_slot 路径）——`test_call_mask_from_calls_composes_onto_base` 锁定三态（base 位保留、新位加入、ALL_C 覆写 base）
 - **生成式不变式（E-9）**：`test_call_mask_from_calls_properties` 在随机 base/调用表上锁定 base 保留、逐位加入、`NULL_C` 终止（其后垃圾项不可见）、越界 `EINVAL`（N7）、`ALL_C` 全掩码覆写——tot 域约束为 1..=64（`CallMask` 单 u64 块，真实调用点 `NR_SYS_CALLS`/`NR_VM_CALLS` 均 < 64）
 - N7：越界调用号（`KERNEL_CALL+200` / `KERNEL_CALL-5`）→ `Err(EINVAL)`；`tot_nr_calls=64` 全 1 不溢出
 - `NULL_C` 截断（calls 数组含 NULL_C 停止计数）
-- `test_validate_range_counts`：`nr_io_range`/`nr_mem_range`/`nr_irq` 负数或超表限 → `Err(EINVAL)`（do_privctl.c:308-331；C int 语义负数拒绝，不包绕）
+- `test_validate_range_counts`：`nr_io_range`/`nr_mem_range`/`nr_irq` 负数或超表限 → `Err(EINVAL)`（minix3/minix/kernel/system/do_privctl.c:update_priv（L308，工具生成）；C int 语义负数拒绝，不包绕）
 
 ### 5.4 PrivCtlOp 判别
 
@@ -667,7 +667,7 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 - `test_sched_decision_user_proc_none_skips`：用户进程（!SYS_PROC）scheduler 必须 NONE（assert 触发路径）
 - `test_sched_decision_sys_proc_none_panics` / `test_sched_decision_user_proc_with_scheduler_panics`（R32）：违规组合全构建 panic（utility.c:369-370 运行期 assert 语义）
 - `test_sched_decision_sys_proc_starts`：系统进程 scheduler 非 NONE
-- **NONE 短路**（S3，`test_sched_decision_user_proc_none_skips`）：`scheduler == NONE → Ok(NONE)` 且 mock 零内核调用（sched_start.c:45-47）
+- **NONE 短路**（S3，`test_sched_decision_user_proc_none_skips`）：`scheduler == NONE → Ok(NONE)` 且 mock 零内核调用（minix3/minix/lib/libsys/sched_start.c:sched_inherit（L45，工具生成））
 - `test_sched_decision_passes_full_config`：完整配置逐字段传递（scheduler/parent/priority/quantum/cpu）
 - `test_boot_defaults_match_c`：`boot_defaults` 数值断言：KERNEL/RS/`USER_Q=7`/`USER_QUANTUM=200`/cpu=0（main.c:320-322）
 - `test_set_sig_mgrs_applies_and_commits`（T5）：纯核心应用 synced priv + 管理器并返回 commit；shell 拥有 `getpriv`（前）+ `SYS_PRIV_UPDATE_SYS`（后）两次内核调用（utility.c:393-408）
@@ -699,8 +699,8 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 - `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/22-privilege.md` — kernel 侧 priv 表与 privctl 实现
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — sys_privctl/sys_getpriv/sched_start 签名契约
 - `minix3/minix/kernel/priv.h`、`minix3/minix/include/minix/priv.h` — priv 结构与默认宏
-- `minix3/minix/include/minix/const.h:142-153`、`minix3/minix/include/minix/com.h:342-353` — 标志位与操作码
-- `minix3/minix/servers/rs/main.c:240-345`、`utility.c:82-141,364-422` — boot Step 1 与原语
+- `minix3/minix/include/minix/const.h:SERBAUDVARNAME（L142，工具生成）`、`minix3/minix/include/minix/com.h:SYS_PRIV_ALLOW` — 标志位与操作码
+- `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L240，工具生成）`、`utility.c:82-141,364-422` — boot Step 1 与原语
 - `minix3/minix/kernel/system/do_privctl.c` — privctl 内核侧语义
 - `minix3/minix/lib/libsys/sys_privctl.c`、`minix3/minix/lib/libsys/sched_start.c` — 外部调用面
 - `os/servers/rs/src/privilege.rs`、`os/servers/rs/src/sched.rs` — Rust 实现

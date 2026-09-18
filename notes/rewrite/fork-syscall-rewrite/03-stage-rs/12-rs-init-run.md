@@ -1,7 +1,7 @@
 # 12-rs-init-run: 服务启动与初始化协议
 
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第六步：运行）
-> **源码**: `minix3/minix/servers/rs/manager.c`（`end_srv_init`—328、`run_service`—923、`start_service`—950）、`minix3/minix/servers/rs/utility.c:18-64`（`init_service`）、`minix3/minix/servers/rs/request.c:462-529`（`do_init_ready`）、`minix3/minix/servers/rs/request.c:890-938`（`do_upd_ready`）、`minix3/minix/servers/rs/main.c:591-626`（`sef_cb_init_response`/`sef_cb_lu_response`）、`minix3/minix/servers/rs/main.c:784-825`（`catch_boot_init_ready`）、`minix3/minix/include/minix/ipc.h:1855-1866`（`mess_rs_init`）、`minix3/minix/include/minix/sef.h:93-103`（`SEF_INIT_*`）
+> **源码**: `minix3/minix/servers/rs/manager.c`（`end_srv_init`—328、`run_service`—923、`start_service`—950）、`minix3/minix/servers/rs/utility.c:init_service`（`init_service`）、`minix3/minix/servers/rs/request.c:do_init_ready`（`do_init_ready`）、`minix3/minix/servers/rs/request.c:do_upd_ready`（`do_upd_ready`）、`minix3/minix/servers/rs/main.c:sef_cb_init_response`（`sef_cb_init_response`/`sef_cb_lu_response`）、`minix3/minix/servers/rs/main.c:catch_boot_init_ready`（`catch_boot_init_ready`）、`minix3/minix/include/minix/ipc.h:1855-1866`（`mess_rs_init`）、`minix3/minix/include/minix/sef.h:SEF_INIT_FRESH`（`SEF_INIT_*`）
 > **Rust 模块**: `os/servers/rs/src/ready.rs`（`init_flags`/`init_message`/`do_init_ready`/`ReadyOutcome`/`do_upd_ready`/`UpdReadyOutcome`/`end_srv_init`/`should_reply_ready`/`normalize_init_response`/`normalize_lu_response`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（创建）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/11-rs-publish.md`（发布）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`reply`/`late_reply` 原语）
 > **说明**: 创建（10）+ 发布（11）之后，服务是"活着但还没初始化"的进程。启动协议 = RS 发 `RS_INIT` 消息 → 服务自己初始化 → 回 ready → RS 收尾。**同一套协议在 boot 与运行时各用一次**：boot 的 Step 2/3 用 `catch_boot_init_ready` 同步阻塞捕获；运行时由主循环的 `RS_INIT`/`RS_LU_PREPARE` 分支异步分派到 `do_init_ready`/`do_upd_ready`。
@@ -61,20 +61,20 @@ RS 自己是 boot 服务之一，但 RS 的初始化**不是消息驱动的**（
 
 ## 2. C 源码分析
 
-### 2.1 run_service 与 start_service（manager.c:923-982）
+### 2.1 run_service 与 start_service（minix3/minix/servers/rs/manager.c:run_service）
 
-**`run_service(rp, init_type, init_flags)`**（manager.c:923-945）是"运行原语"：
-1. `sys_privctl(endpoint, SYS_PRIV_ALLOW, NULL)`（manager.c:932-934）——**允许服务运行**（03 的 priv 面；RS/VM 在 boot 时已被 main.c 特殊处理）；
-2. `init_service(rp, init_type, init_flags)`（manager.c:937-939）——发 RS_INIT（见 2.2）。
+**`run_service(rp, init_type, init_flags)`**（minix3/minix/servers/rs/manager.c:run_service）是"运行原语"：
+1. `sys_privctl(endpoint, SYS_PRIV_ALLOW, NULL)`（minix3/minix/servers/rs/manager.c:run_service（L932，工具生成））——**允许服务运行**（03 的 priv 面；RS/VM 在 boot 时已被 main.c 特殊处理）；
+2. `init_service(rp, init_type, init_flags)`（minix3/minix/servers/rs/manager.c:run_service（L937，工具生成））——发 RS_INIT（见 2.2）。
 
 失败都走 `kill_service(rp, errstr, s)`（15）。
 
-**`start_service(rp, init_flags)`**（manager.c:950-982）是"完整启动编排"：
-1. `rp->r_priv.s_init_flags |= init_flags`（manager.c:959）——Rust 侧 `ready::fold_init_flags(slot, init_flags)`（R14，OR 语义，测试锁定；replica 路径由 `service_create::link_replica` 承担，manager.c:751-752）；
-2. `create_service(rp)`（manager.c:960-963）——10；
-3. `activate_service(rp, NULL)`（manager.c:964）——10（无旧实例）；
-4. `publish_service(rp)`（manager.c:967-970）——11；
-5. `run_service(rp, SEF_INIT_FRESH, init_flags)`（manager.c:973-976）——本文档。
+**`start_service(rp, init_flags)`**（minix3/minix/servers/rs/manager.c:start_service）是"完整启动编排"：
+1. `rp->r_priv.s_init_flags |= init_flags`（minix3/minix/servers/rs/manager.c:start_service（L959，工具生成））——Rust 侧 `ready::fold_init_flags(slot, init_flags)`（R14，OR 语义，测试锁定；replica 路径由 `service_create::link_replica` 承担，minix3/minix/servers/rs/manager.c:clone_service（L751，工具生成））；
+2. `create_service(rp)`（minix3/minix/servers/rs/manager.c:start_service（L960，工具生成））——10；
+3. `activate_service(rp, NULL)`（minix3/minix/servers/rs/manager.c:start_service（L964，工具生成））——10（无旧实例）；
+4. `publish_service(rp)`（minix3/minix/servers/rs/manager.c:start_service（L967，工具生成））——11；
+5. `run_service(rp, SEF_INIT_FRESH, init_flags)`（minix3/minix/servers/rs/manager.c:start_service（L973，工具生成））——本文档。
 
 `start_service` 是 `RS_UP`（13）与 boot 共用的最高层编排。
 
@@ -85,7 +85,7 @@ RS 自己是 boot 服务之一，但 RS 的初始化**不是消息驱动的**（
 1. `r_flags |= RS_INITIALIZING`；`r_alive_tm = getticks()`；`r_check_tm = r_alive_tm + 1`（utility.c:24-26）——**期望一个 period 内回 ready**（07 的心跳超时检查以此为据）。**R14**：这三行变异由 `ready::mark_initializing(slot, ticks)` 独立建模（utility.c:19-21，含测试）——此前全 crate 生产路径无一处写入 `RS_INITIALIZING`，12 接线若漏设该位，所有 ready 消息都会被 `do_init_ready` 门拒绝；
 2. **ROOT_SYS_PROC 例外**（utility.c:28-31）：RS 自己的初始化"我们做完了"——直接 `return OK`，不发消息（RS 初始化由 `sef_cb_init_fresh` 完成，01）；
 3. 推导 `old_endpoint`/`prepare_state`（utility.c:33-42）：`r_old_rp`（LU 旧版本）→ `r_upd.state_endpoint`/`r_upd.prepare_state`；否则 `r_prev_rp` → 其 endpoint；
-4. `SF_USE_SCRIPT` → `flags |= SEF_INIT_SCRIPT_RESTART`（utility.c:44-47）——脚本重启的 init 要带上标记（sef.h:102）；
+4. `SF_USE_SCRIPT` → `flags |= SEF_INIT_SCRIPT_RESTART`（utility.c:44-47）——脚本重启的 init 要带上标记（minix3/minix/include/minix/sef.h:SEF_INIT_SCRIPT_RESTART）；
 5. 装配消息（utility.c:49-60）：
 
 | 字段 | 值 | C |
@@ -151,16 +151,16 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 
 注意 boot 的捕获**不调 `end_srv_init`**（没有 prev 副本需要清理）。
 
-### 2.6 end_srv_init：初始化完成收尾（manager.c:328-356）
+### 2.6 end_srv_init：初始化完成收尾（minix3/minix/servers/rs/manager.c:end_srv_init）
 
-`end_srv_init(rp)`（manager.c:328）：
+`end_srv_init(rp)`（minix3/minix/servers/rs/manager.c:end_srv_init）：
 
-1. `late_reply(rp, OK)`（manager.c:336）——如果 RS_LATEREPLY 挂起（RS_UP 的 NOBLOCK 场景），补发 OK（06）；
-2. 有 `r_prev_rp`（副本重启场景，manager.c:338-353）：
-   - `SRV_IS_UPD_SCHEDULED(prev)` → `rupdate_upd_move(prev, rp)`（manager.c:344-346）——把 prev 的更新计划移交新实例（16）；
-   - `cleanup_service(prev)`（manager.c:347）——清理旧副本（15）；
-   - `r_prev_rp = NULL`；`r_restarts += 1`（manager.c:348-349）；
-3. `r_next_rp = NULL`（manager.c:354）。
+1. `late_reply(rp, OK)`（minix3/minix/servers/rs/manager.c:end_srv_init（L336，工具生成））——如果 RS_LATEREPLY 挂起（RS_UP 的 NOBLOCK 场景），补发 OK（06）；
+2. 有 `r_prev_rp`（副本重启场景，minix3/minix/servers/rs/manager.c:end_srv_init（L338，工具生成））：
+   - `SRV_IS_UPD_SCHEDULED(prev)` → `rupdate_upd_move(prev, rp)`（minix3/minix/servers/rs/manager.c:end_srv_init（L344，工具生成））——把 prev 的更新计划移交新实例（16）；
+   - `cleanup_service(prev)`（minix3/minix/servers/rs/manager.c:end_srv_init（L347，工具生成））——清理旧副本（15）；
+   - `r_prev_rp = NULL`；`r_restarts += 1`（minix3/minix/servers/rs/manager.c:end_srv_init（L348，工具生成））；
+3. `r_next_rp = NULL`（minix3/minix/servers/rs/manager.c:end_srv_init（L354，工具生成））。
 
 "重启完成"的语义落在这里：新实例顶替旧副本，重启计数 +1。
 
@@ -176,13 +176,13 @@ boot Step 2/3 用 `sef_receive_status(endpoint, &m, &ipc_status)`（main.c:795�
 |------|--------|------|
 | `init_flags(use_script, flags)` | utility.c:44-47 | `SF_USE_SCRIPT → |SEF_INIT_SCRIPT_RESTART` |
 | `mark_initializing(slot, ticks)` | utility.c:19-21 | 发 RS_INIT 前：置 `INITIALIZING` + `alive_tm = ticks` + `check_tm = ticks+1`（R14） |
-| `fold_init_flags(slot, init_flags)` | manager.c:953 | `s_init_flags |= init_flags`（OR 语义，R14） |
+| `fold_init_flags(slot, init_flags)` | minix3/minix/servers/rs/manager.c:start_service（L953，工具生成） | `s_init_flags |= init_flags`（OR 语义，R14） |
 | `init_message(...)` | utility.c:49-60 | RS_INIT 载荷装配（`InitMessage`） |
-| `InitMessage::encode_message()` | utility.c:49-61 | 线面编码：gid `None`→`GRANT_INVALID`（safecopies.h:52）、old_endpoint `None`→`NONE`（utility.c:39-44）（I2） |
+| `InitMessage::encode_message()` | utility.c:49-61 | 线面编码：gid `None`→`GRANT_INVALID`（minix3/minix/include/minix/safecopies.h:GRANT_INVALID）、old_endpoint `None`→`NONE`（utility.c:39-44）（I2） |
 | `take_map_prealloc(slot)` | utility.c:53-60 | 取走 map_prealloc 窗口并清零槽位字段（R32.4：单次移交，copy-then-clear 不可跳过） |
 | `do_init_ready(flags, result, is_updating, pending, ticks)` | request.c:462-529 | 门 + 失败 + 分支 → `ReadyDecision { outcome, mutations }`（R13） |
 | `do_upd_ready(result, gate_ok, has_next)` | request.c:890-938 | update 就绪分支 → `UpdReadyDecision { outcome, mutations }`（R24：gate 后立即携带 `RS_PREPARE_DONE`，与 result 无关） |
-| `end_srv_init(rp, has_prev)` | manager.c:336-354 | 槽位收尾（restarts/prev/next） |
+| `end_srv_init(rp, has_prev)` | minix3/minix/servers/rs/manager.c:end_srv_init（L336，工具生成） | 槽位收尾（restarts/prev/next） |
 | `should_reply_ready(src)` | main.c:812-815 | VM 异步例外 |
 | `normalize_init_response`/`normalize_lu_response` | main.c:591-626 | EDONTREPLY 归一化 |
 
@@ -248,7 +248,7 @@ pub enum ReadyOutcome {
 1. `init_flags`：SF_USE_SCRIPT 置位/不置位（2 断言组）。
 2. `init_message`：type（SEF_INIT_RESTART=2）/flags/gid/old_endpoint/restarts/buff/prepare_state 全字段。
 3. `mark_initializing`（R14）：发 RS_INIT 前置迁移——`INITIALIZING` 置位 + `alive_tm=ticks` + `check_tm=alive_tm+1`（utility.c:18-21，reply 在周期内）。
-4. `fold_init_flags`（R14）：`priv_.init_flags |= flags`（OR 非替换，manager.c:953）。
+4. `fold_init_flags`（R14）：`priv_.init_flags |= flags`（OR 非替换，minix3/minix/servers/rs/manager.c:start_service（L953，工具生成））。
 5. `do_init_ready` 门：无 `RS_INITIALIZING` → `Unexpected`。
 6. `do_init_ready` 失败：`ERESTART`+非更新 → `reincarnate: true`；非 ERESTART → false；更新中 ERESTART → false（request.c:492-493 的三态）。
 7. `do_init_ready` 更新完成：pending 递减到 0 / 非零 → `UpdateInitDone`（R4：递减前
@@ -259,7 +259,7 @@ pub enum ReadyOutcome {
 10. `do_upd_ready` 载荷（R24）：门通过的三分支 `mutations.set` 均含 `RS_PREPARE_DONE`
    （request.c:911 先于 result 检查）；门失败分支载荷为空
    （`test_do_upd_ready_sets_prepare_done_after_gate`）。
-11. `end_srv_init`：has_prev → restarts+1 + prev/next 清空（`test_end_srv_init_bookkeeping`）；无 prev → 只清 next、restarts 保留（`test_end_srv_init_no_prev`，manager.c:354）。
+11. `end_srv_init`：has_prev → restarts+1 + prev/next 清空（`test_end_srv_init_bookkeeping`）；无 prev → 只清 next、restarts 保留（`test_end_srv_init_no_prev`，minix3/minix/servers/rs/manager.c:end_srv_init（L354，工具生成））。
 12. `should_reply_ready`：VM → false；VFS/PM → true。
 13. `normalize_init_response`：result 非 OK 优先 / EDONTREPLY → OK / 其他错误透传。
 14. `normalize_lu_response`：EDONTREPLY → EGENERIC / 其他透传。
@@ -287,5 +287,5 @@ pub enum ReadyOutcome {
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `crash_service`/`kill_service`/`cleanup_service` 机制
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `do_upd_ready`/`rupdate_upd_move`/`end_update` 机制
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` —— boot Step 2/3 锚点与 `rproctab_gid` 创建点
-- `minix3/minix/servers/rs/manager.c:328-356,923-982`、`utility.c:18-68`、`request.c:462-533,890-942`、`main.c:591-626,784-825` —— ground truth
+- `minix3/minix/servers/rs/manager.c:end_srv_init,923-982`、`utility.c:18-68`、`request.c:462-533,890-942`、`main.c:591-626,784-825` —— ground truth
 - `minix3/minix/include/minix/ipc.h:1855-1866` —— `mess_rs_init`

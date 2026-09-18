@@ -1,7 +1,7 @@
 # 18-rs-self-lifecycle: RS 自身生命周期
 
 > **分类**: 阶段 6 — Live Update（RS 自身特例）
-> **源码**: `minix3/minix/servers/rs/main.c:436-590`（boot 自升级 + `sef_cb_init_restart`/`sef_cb_init_lu`）、`minix3/minix/servers/rs/update.c:230-366`（`srv_update`/`update_service`/`rollback_service`）、`minix3/minix/servers/rs/utility.c:387-412`（`update_sig_mgrs`）、`minix3/minix/servers/rs/manager.c:760-780`（`clone_service` 的 RS 备份信号管理器）、`minix3/minix/servers/rs/const.h:34-35,79-80,105-115`、`minix3/minix/include/minix/rs.h:197-198`、`minix3/minix/include/minix/const.h:151,154`
+> **源码**: `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L436，工具生成）`（boot 自升级 + `sef_cb_init_restart`/`sef_cb_init_lu`）、`minix3/minix/servers/rs/update.c:srv_update`（`srv_update`/`update_service`/`rollback_service`）、`minix3/minix/servers/rs/utility.c:update_sig_mgrs`（`update_sig_mgrs`）、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`（`clone_service` 的 RS 备份信号管理器）、`minix3/minix/servers/rs/const.h:RS_INITIALIZING,79-80,105-115`、`minix3/minix/include/minix/rs.h:SF_VM_UPDATE`、`minix3/minix/include/minix/const.h:ROOT_SYS_PROC,154`
 > **Rust 模块**: `os/servers/rs/src/self_lifecycle.rs`（`SelfUpgradeRole`/`self_upgrade_role`/`SwapFlag`/`should_pre_swap`/`rollback_swap_flag`/`SrvUpdateAction`/`srv_update_action`/`should_end_update_on_restart`/`lu_init_invariants`/`is_rs_restart_replica`/`SigMgrUpdate`/`sig_mgr_updates`/`rollback_needs_vm_update`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（SEF 回调注册、boot 锚点）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（update 状态机）
 > **说明**: 本文档是 RS **自身**的生命周期特例：SEF provider 的自举（restart/LU init 回调）、boot 自升级流程、RS 的 rollback 特例与备份信号管理器。它依赖 19（`srv_fork`/`vm_update`/`sys_whoami` 等外部契约）、16（`end_update`/update 状态机）、12（`init_service`）——本文档只落地**角色分派、分支判定与断言**（`self_lifecycle.rs`）。
@@ -116,9 +116,9 @@ if (src_e == VM_PROC_NR) {
 - **VM 是源**：只做内核部分（`sys_update`），VM 自身的新实例在初始化时完成其余部分；回滚时传 `SYS_UPD_ROLLBACK`；
 - **非 VM**：`!VM-multi || VM init 完成` → `vm_update`；**VM-multi 且 VM 尚未 init 完成** → 跳过（VM 会在 state transfer / rollback 时统一处理，避免提前交换 slot 破坏时序）。
 
-### 2.6 update_sig_mgrs 备份信号管理器（utility.c:387-412 + manager.c:766-778）
+### 2.6 update_sig_mgrs 备份信号管理器（utility.c:387-412 + minix3/minix/servers/rs/manager.c:clone_service（L766，工具生成））
 
-RS 重启时，其他服务可能正在以 RS 为信号管理器——RS 挂了它们就收不到信号。`clone_service` 在创建 RS 的 replica 时（manager.c:766-767）检查：
+RS 重启时，其他服务可能正在以 RS 为信号管理器——RS 挂了它们就收不到信号。`clone_service` 在创建 RS 的 replica 时（minix3/minix/servers/rs/manager.c:clone_service（L766，工具生成））检查：
 
 ```c
 rs_flags = ROOT_SYS_PROC | RST_SYS_PROC;            /* 0x100 | 0x800 = 0x900 */
@@ -149,7 +149,7 @@ utility.c:29-31）→ `sys_setalarm(RS_DELTA_T)` 重挂（init_restart，main.c:
 
 **重绑建模（Fix #63，2026-09-06，A3）**：重启回调的分派目标是**运行期状态**——C 的表项
 在启动时注册 RS 自有 handler（main.c:140），`sef_cb_init_lu` 在 LU 流程开始前把它重绑为
-stateful 转移通用体（main.c:558，sef.h:85）。Rust 用 `sef::RestartCb` 枚举（`Rs`/`Stateful`，
+stateful 转移通用体（main.c:558，minix3/minix/include/minix/sef.h:SEF_CB_INIT_RESTART_STATEFUL）。Rust 用 `sef::RestartCb` 枚举（`Rs`/`Stateful`，
 `RsServer.restart_cb` 字段）承载：`init_lu` 第一件事即置 `Stateful`（对齐 main.c:553-556
 的"先重绑后流程"写序；C 在 LU 失败时**不回滚重绑**，Rust 同）；`init_restart` 按
 `match self.restart_cb` 分派——`Rs` 臂执行 main.c:499-544 全链，`Stateful` 臂对应
@@ -171,14 +171,14 @@ stateful 转移通用体（main.c:558，sef.h:85）。Rust 用 `sef::RestartCb` 
 | `SrvUpdateAction`/`srv_update_action` | update.c:230-257 | sys_update/vm_update/skip 三分支 |
 | `should_end_update_on_restart` | main.c:521-522 | restart 时结束进行中 update |
 | `lu_init_invariants` | main.c:580-583 | LU init 四断言 |
-| `is_rs_restart_replica` | manager.c:766-767 | `0x900` 掩码 |
-| `SigMgrUpdate`/`sig_mgr_updates` | manager.c:771-773 | 备份信号管理器对 |
+| `is_rs_restart_replica` | minix3/minix/servers/rs/manager.c:clone_service（L766，工具生成） | `0x900` 掩码 |
+| `SigMgrUpdate`/`sig_mgr_updates` | minix3/minix/servers/rs/manager.c:clone_service（L771，工具生成） | 备份信号管理器对 |
 | `rollback_needs_vm_update` | update.c:342-345 | `me != RS_PROC_NR` |
 
 ### 3.2 类型化
 
 - `SwapFlag { DontSwap, Swap }`：取代 C 的 `RS_DONTSWAP=0`/`RS_SWAP=1` 裸 int——非法值不可表达；
-- `SrvUpdateAction { SysUpdate { rollback: bool }, VmUpdate, Skip }`：`srv_update` 的三分支收敛为一个枚举，`rollback` 布尔对应 `sys_upd_flags & SF_VM_ROLLBACK`（rs.h:198）是否置位；
+- `SrvUpdateAction { SysUpdate { rollback: bool }, VmUpdate, Skip }`：`srv_update` 的三分支收敛为一个枚举，`rollback` 布尔对应 `sys_upd_flags & SF_VM_ROLLBACK`（minix3/minix/include/minix/rs.h:SF_VM_ROLLBACK）是否置位；
 - `SelfUpgradeRole { NewInstance, OldInstance }`：boot 自升级的 fork 分支。
 
 `RUPDATE_IS_UPD_VM_MULTI()`（const.h:113：`vm_rpupd && num_rpupds > 1`）与 `RUPDATE_IS_VM_INIT_DONE()`（const.h:107：VM 的 `RS_INIT_DONE`）是外部状态，以 `is_vm_multi`/`vm_init_done` 布尔注入。
@@ -187,7 +187,7 @@ stateful 转移通用体（main.c:558，sef.h:85）。Rust 用 `sef::RestartCb` 
 
 1. **restart 的 update 结束门**（main.c:521-522）：`old_rs_rp` 处于 `RS_UPDATING` 才 `end_update(ERESTART, RS_REPLY)`——RS 重启不能遗留半途的 update。
 2. **LU init 四断言**（main.c:580-583）：`UPDATING` ∧ `INITIALIZING` ∧ `num_rpupds>0` ∧ `num_init_ready_pending>0`——全过才认为 LU 状态机就位。
-3. **RS-replica 掩码**（manager.c:766-767）：`(s_flags & (ROOT_SYS_PROC|RST_SYS_PROC)) == (ROOT_SYS_PROC|RST_SYS_PROC)`——同时是 root 系统进程**且**是被重启的系统进程实例才需要备份信号管理器。
+3. **RS-replica 掩码**（minix3/minix/servers/rs/manager.c:clone_service（L766，工具生成））：`(s_flags & (ROOT_SYS_PROC|RST_SYS_PROC)) == (ROOT_SYS_PROC|RST_SYS_PROC)`——同时是 root 系统进程**且**是被重启的系统进程实例才需要备份信号管理器。
 4. **RS rollback 的 VM 通道**（update.c:342-345）：只有 `me != RS_PROC_NR` 才 `vm_update(SF_VM_ROLLBACK)`——RS 自回滚只需 swap slot。
 
 ---
@@ -224,7 +224,7 @@ stateful 转移通用体（main.c:558，sef.h:85）。Rust 用 `sef::RestartCb` 
 7. `is_rs_restart_replica`：`0x900` → true；`0x100`/`0` → false。
 8. `sig_mgr_updates`：RS-replica → `Some(({SELF, replica}, {SELF, NONE}))`；否则 None。
 9. `rollback_needs_vm_update`：`me == RS` → false；`me == PM` → true。
-10. `test_constants`：`ROOT_SYS_PROC|RST_SYS_PROC == 0x900`（const.h:79-80）、`VM_ROLLBACK == 0x080`（rs.h:198）、`UPDATING == 0x080`/`INITIALIZING == 0x040`（const.h:151,154）。
+10. `test_constants`：`ROOT_SYS_PROC|RST_SYS_PROC == 0x900`（const.h:79-80）、`VM_ROLLBACK == 0x080`（minix3/minix/include/minix/rs.h:SF_VM_ROLLBACK）、`UPDATING == 0x080`/`INITIALIZING == 0x040`（const.h:151,154）。
 10. 常量表：`SwapFlag` 位值、`ROOT_SYS_PROC|RST_SYS_PROC == 0x900`、`SF_VM_ROLLBACK == 0x080`。
 
 测试总数声明：本文档范围为 `self_lifecycle` 模块测试数（以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
@@ -249,4 +249,4 @@ RS 自身生命周期是 LU 机制图的"自指环"：
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md` —— `cpf_reload`/grants 生命周期
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` —— `clone_slot`/`swap_slot`/`activate_service`
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— `srv_fork`/`vm_update`/`sys_whoami`/`sys_privctl` 契约
-- `minix3/minix/servers/rs/main.c:436-590`、`update.c:230-366`、`utility.c:387-412`、`manager.c:760-780`、`const.h:34-35,79-80,105-115`、`include/minix/rs.h:197-198`、`include/minix/const.h:151,154` —— ground truth
+- `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L436，工具生成）`、`update.c:230-366`、`utility.c:387-412`、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`、`const.h:34-35,79-80,105-115`、`include/minix/rs.h:197-198`、`include/minix/const.h:151,154` —— ground truth

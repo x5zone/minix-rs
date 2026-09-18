@@ -1106,7 +1106,7 @@ CoW 解析完成后，调用者需要更新页表以反映新的物理映射和�
 
 页表更新有两个场景，对应两个实际函数：
 
-**场景 1：fork 后批量写入页表** — `ActiveProc::write_page_table_mappings()`（vmproc_handle.rs:377）
+**场景 1：fork 后批量写入页表** — `ActiveProc::write_page_table_mappings()`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn init_page_table（L377，工具生成））
 
 fork 后子进程需要一次性写入所有页表映射。此函数遍历所有区域和 PageSlot，根据 refcount 判断可写性，构造 PageFlags，调用 `pt.map()`：
 
@@ -1239,7 +1239,7 @@ fn verify_cow_consistency(
 }
 ```
 
-> 此函数仅在 `#[cfg(debug_assertions)]` 下编译，release 构建中零开销。`cow_resolve_core` 在 CoW 解析完成后自动调用此函数（cow_exec_pf.rs:119），无需手动触发。
+> 此函数仅在 `#[cfg(debug_assertions)]` 下编译，release 构建中零开销。`cow_resolve_core` 在 CoW 解析完成后自动调用此函数（os/servers/vm/src/cow_exec_pf.rs:fn enqueue_fdio（L119，工具生成）），无需手动触发。
 
 ---
 
@@ -1272,7 +1272,7 @@ fn verify_cow_consistency(
 
 ### 5.4 性能统计 (vm_bytecopies)
 
-`vm_bytecopies` 是 `vmproc` 结构中的统计字段（仅在 `VMSTATS` 启用时存在，默认 `VMSTATS=0`），定义在 `vmproc.h:26`。
+`vm_bytecopies` 是 `vmproc` 结构中的统计字段（仅在 `VMSTATS` 启用时存在，默认 `VMSTATS=0`），定义在 `minix3/minix/servers/vm/vmproc.h:vmproc（L26，工具生成）`。
 
 > **注意**: 在当前 Minix3 源码中，`vm_bytecopies` 仅在 fork 和 exit 时被清零，**未在 `mem_cow()` 中递增**。`mem_cow()` 使用 `sys_abscopy()` 而非 `memcpy()`。该字段可能曾在早期版本中使用，但在当前代码中仅保留清零操作。
 

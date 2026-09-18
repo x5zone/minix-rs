@@ -149,7 +149,7 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 | `lib.rs` | — | 错误类型（`DocError`，22 对应参数无效、2 对应查无）与模块组织 |
 | `manconf.rs` | `manconf.c` 思想、`man.conf` 实例 | 指令解析（`parse_directive`，保序保原文） |
 | `whatis.rs` | 数据库行格式 | 行解析（`parse_whatis_line`）与 `ManDb` 接口 |
-| `cal.rs` | `cal.c:65-137` 思想 | 双计数器、闰规则、月格（`month_grid`） |
+| `cal.rs` | `minix3/usr.bin/cal/cal.c:FIRST_MISSING_DAY` 思想 | 双计数器、闰规则、月格（`month_grid`） |
 
 ### 4.2 关键类型与不变量
 
@@ -197,7 +197,7 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 - `09-editors.md`——编辑器（上一步：改文字）
 - `11-compress-archive.md`——压缩归档（下一步：`_build` 管道的另一端）
 - `minix3/etc/man.conf`——配置实例（`_whatdb`、`_subdir`、`_build` 行）
-- `minix3/usr.bin/cal/cal.c:65-137`——改革参数与闰规则（`cal.rs` 的思想来源）
+- `minix3/usr.bin/cal/cal.c:FIRST_MISSING_DAY`——改革参数与闰规则（`cal.rs` 的思想来源）
 - `minix3/libexec/makewhatis/makewhatis.c`——索引器（1174 行，鲁棒性范本）
 
 ---

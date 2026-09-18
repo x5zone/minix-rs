@@ -1,7 +1,7 @@
 # 09-rs-exec: 服务二进制加载与执行
 
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第二步：二进制）
-> **源码**: `minix3/minix/servers/rs/exec.c`（165 行，`srv_execve`—21、`do_exec`—62、`exec_restart`—121、`read_seg`—143）、`minix3/minix/servers/rs/manager.c:1354-1455`（`share_exec`—1357、`read_exec`—1372、`free_exec`—1424）、`minix3/minix/servers/rs/manager.c:531-650`（`create_service` 的 exec 调用点）、`minix3/minix/servers/rs/manager.c:1629-1661`（`edit_slot` 的 `RSS_COPY`/`RSS_REUSE` 分支）、`minix3/minix/lib/libexec/exec_elf.c`（`libexec_load_elf`）、`minix3/minix/lib/libc/sys/stack_utils.c`（`minix_stack_params`/`minix_stack_fill`）
+> **源码**: `minix3/minix/servers/rs/exec.c`（165 行，`srv_execve`—21、`do_exec`—62、`exec_restart`—121、`read_seg`—143）、`minix3/minix/servers/rs/manager.c:rproc（L1354，工具生成）`（`share_exec`—1357、`read_exec`—1372、`free_exec`—1424）、`minix3/minix/servers/rs/manager.c:create_service`（`create_service` 的 exec 调用点）、`minix3/minix/servers/rs/manager.c:rs_start（L1629，工具生成）`（`edit_slot` 的 `RSS_COPY`/`RSS_REUSE` 分支）、`minix3/minix/lib/libexec/exec_elf.c`（`libexec_load_elf`）、`minix3/minix/lib/libc/sys/stack_utils.c`（`minix_stack_params`/`minix_stack_fill`）
 > **Rust 模块**: `os/servers/rs/src/exec.rs`（`validate_image`/`share_exec`/`has_shared_exec`/`free_exec`）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`RSS_COPY`/`RSS_REUSE` 输入、`r_argv` 来源）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`SF_USE_COPY`/`SF_NEED_COPY` 标志、`ServiceSlot.exec` 字段）
 > **说明**: 服务的二进制映像由 RS 亲自加载：它要么从命令路径 `stat`/`open`/`read` 进内存（`read_exec`），要么复用另一槽的共享副本（`share_exec`），随后 `srv_execve` 把映像 exec 进已 fork 的子进程（10 的创建路径调用）。本文档建模内存副本的**生命周期与共享语义**（ARCH A-5），并固化 `srv_execve` 全链的外部契约（ARCH A-8，接线在 19）。
@@ -16,7 +16,7 @@
 
 > **本章不讲什么**（机制一律移交）:
 > - `rs_start` 的校验与槽位落地（`08-rs-slot-config.md`）——本文档只消费 `RSS_COPY`/`RSS_REUSE` 两个输入位与 `r_argv[0]`
-> - fork/priv/sched 的创建编排（`10-rs-service-create.md`）——本文档只陈述 `create_service` 对 exec 面的调用点（manager.c:625-650）
+> - fork/priv/sched 的创建编排（`10-rs-service-create.md`）——本文档只陈述 `create_service` 对 exec 面的调用点（minix3/minix/servers/rs/manager.c:rproc（L625，工具生成））
 > - `PM_EXEC_RESTART` 的消息布局与 `sys_datacopy` 的内核机制（`19-rs-external-interfaces.md`）——本文档只固化语义契约
 > - ELF 段解析器内部（`os/libs/minix-elf` crate，ARCH A-8）
 
@@ -36,18 +36,18 @@
        （manager.c:625-650：非 SF_USE_COPY 时读入、exec、立即释放）
 ```
 
-- **常驻副本路径**（`SF_USE_COPY`）：映像保存在 RS 堆里，供 restarts/LU 复用（`restart_service` 的 clone 路径靠 `share_exec` 分享，manager.c:1834-1835）。`SF_NEED_COPY`（rs.h:193）表示"创建时必须有内存副本"，没有则 `EPERM`（manager.c:555-560）。
-- **命令路径**（无 `SF_USE_COPY`）：每次创建时 `read_exec` 读入 → `srv_execve` exec → `free_exec` 释放（manager.c:642-644）。`SF_NEED_COPY` 未设时若无命令（`r_cmd == ""`）→ `EPERM`（manager.c:563-568）。
+- **常驻副本路径**（`SF_USE_COPY`）：映像保存在 RS 堆里，供 restarts/LU 复用（`restart_service` 的 clone 路径靠 `share_exec` 分享，minix3/minix/servers/rs/manager.c:rproc（L1834，工具生成））。`SF_NEED_COPY`（minix3/minix/include/minix/rs.h:SF_NEED_COPY）表示"创建时必须有内存副本"，没有则 `EPERM`（minix3/minix/servers/rs/manager.c:rproc（L555，工具生成））。
+- **命令路径**（无 `SF_USE_COPY`）：每次创建时 `read_exec` 读入 → `srv_execve` exec → `free_exec` 释放（minix3/minix/servers/rs/manager.c:rproc（L642，工具生成））。`SF_NEED_COPY` 未设时若无命令（`r_cmd == ""`）→ `EPERM`（minix3/minix/servers/rs/manager.c:rproc（L563，工具生成））。
 
 ### 1.3 共享与释放的引用计数语义
 
-C 用裸指针共享（`rp_dst->r_exec = rp_src->r_exec`，manager.c:1366），`free_exec` 靠**全表扫描**判断"还有没有别的槽指向同一块内存"（manager.c:1433-1440）。这是"引用计数"的原始形态：谁最后释放谁 free。Rust 用 `Arc<[u8]>` 把这份手动记账交给类型系统（ARCH A-5），但**扫描语义保留**——因为 `Arc::strong_count` 会数进槽外的克隆（测试持有、future 代码持有），而 C 的语义只数表内槽位。
+C 用裸指针共享（`rp_dst->r_exec = rp_src->r_exec`，minix3/minix/servers/rs/manager.c:rproc（L1366，工具生成）），`free_exec` 靠**全表扫描**判断"还有没有别的槽指向同一块内存"（minix3/minix/servers/rs/manager.c:rproc（L1433，工具生成））。这是"引用计数"的原始形态：谁最后释放谁 free。Rust 用 `Arc<[u8]>` 把这份手动记账交给类型系统（ARCH A-5），但**扫描语义保留**——因为 `Arc::strong_count` 会数进槽外的克隆（测试持有、future 代码持有），而 C 的语义只数表内槽位。
 
 ---
 
 ## 2. C 源码分析
 
-### 2.1 `read_exec`：从文件系统读入映像（manager.c:1372-1419）
+### 2.1 `read_exec`：从文件系统读入映像（minix3/minix/servers/rs/manager.c:read_exec）
 
 ```c
 r= stat(e_name, &sb);            /* 1384：映像来自 r_argv[0] */
@@ -69,7 +69,7 @@ else return -e;                  /* 1418-1419：read 错误 → -errno */
 
 错误面：`-errno`（stat/open/read 失败）、`ENOEXEC`（映像比 `Elf_Ehdr` 小）、`ENOMEM`（分配失败）、`EIO`（短读）。注意 `read` 返回 0（EOF）也走 `EIO` 分支——只有"一次读满 `r_exec_len`"才成功，没有循环读（映像文件由 RS 假设可一次读完）。
 
-### 2.2 `share_exec`/`free_exec`：共享与释放（manager.c:1357-1367, 1424-1455）
+### 2.2 `share_exec`/`free_exec`：共享与释放（minix3/minix/servers/rs/manager.c:share_exec, 1424-1455）
 
 ```c
 void share_exec(rp_dst, rp_src) {        /* 1357 */
@@ -92,12 +92,12 @@ void free_exec(rp) {                      /* 1424 */
 关键点：`free_exec` 在**置空之前**扫描；共享判断只看 `RS_IN_USE` 槽（排除了刚 free 的槽）。Rust 的 `has_shared_exec` 用 `Arc::ptr_eq` 复刻同样的扫描（ARCH A-5）。
 
 > **R18（2026-08-16）**：`free_exec` 的第三个生产调用点——`free_slot` 的 `SF_USE_COPY` 分支
-> （manager.c:2100-2102）——已落进表原语（02 §3.6）：槽释放时先取 `sys_flags` 再
+> （minix3/minix/servers/rs/manager.c:rproc（L2100，工具生成））——已落进表原语（02 §3.6）：槽释放时先取 `sys_flags` 再
 > `crate::exec::free_exec(table, id)`，丢弃该槽的 exec `Arc`（非最后一个持有者则保留给共享者）。
 > 此前生产路径对 `free_exec` 零调用，被 free 的行会滞留映像直到槽被重用；现在与 C"free 即释放"
-> 语义对齐。命令路径（manager.c:642-644）仍是 09 execve 接线的调用点。
+> 语义对齐。命令路径（minix3/minix/servers/rs/manager.c:rproc（L642，工具生成））仍是 09 execve 接线的调用点。
 
-### 2.3 `edit_slot` 的 `RSS_COPY`/`RSS_REUSE` 分支（manager.c:1629-1661）
+### 2.3 `edit_slot` 的 `RSS_COPY`/`RSS_REUSE` 分支（minix3/minix/servers/rs/manager.c:rs_start（L1629，工具生成））
 
 ```c
 if ((rs_start->rss_flags & RSS_COPY) && !(rpub->sys_flags & SF_USE_COPY)) {
@@ -167,7 +167,7 @@ if (r != OK) { exec_restart(proc_e, r, execi.pc, ps_str); return r; }  /* 109-11
 return exec_restart(proc_e, OK, execi.pc, ps_str);  /* 115 */
 ```
 
-`libexec_load_elf`（exec_elf.c:127）做 ELF 头校验（`elf_unpack`）、拒绝带解释器（动态链接）的映像（`elf_has_interpreter` → `ENOEXEC`）、round 栈、逐段调 `copymem`（= `read_seg`）把 `PT_LOAD` 段拷入。
+`libexec_load_elf`（minix3/minix/lib/libexec/exec_elf.c:libexec_load_elf）做 ELF 头校验（`elf_unpack`）、拒绝带解释器（动态链接）的映像（`elf_has_interpreter` → `ENOEXEC`）、round 栈、逐段调 `copymem`（= `read_seg`）把 `PT_LOAD` 段拷入。
 
 ### 2.6 `exec_restart`/`read_seg`（exec.c:121-165）
 
@@ -205,7 +205,7 @@ pub exec: Option<Arc<[u8]>>,   // C: char *r_exec + size_t r_exec_len → 单值
 ```
 
 - C 的 `r_exec` 指针 + `r_exec_len` 两个字段合并为 `Arc<[u8]>`（长度内建，消除了"指针与长度不同步"的一类 C bug，如 free_exec 只清指针不清长度）。
-- `share_exec(dst, src)` = `Arc::clone`：两个槽强引用同一缓冲，与 C 的指针共享（manager.c:1366）等价。
+- `share_exec(dst, src)` = `Arc::clone`：两个槽强引用同一缓冲，与 C 的指针共享（minix3/minix/servers/rs/manager.c:rproc（L1366，工具生成））等价。
 - **与 C 的差异**：C 的 `free()` 是即时释放；Rust 的 `drop` 延迟到最后一个 `Arc` 离开作用域。行为契约（"最后一个持有者释放"）不变，但"释放时点"从确定性变为引用计数驱动——这正是 ARC 设计点（ARCH A-5 已标注）。
 
 ### 3.2 `free_exec` 的扫描语义（D2）
@@ -220,11 +220,11 @@ pub fn has_shared_exec(rp: &ServiceSlot, table: &RProcTable) -> bool {
 ```
 
 - **保留 O(N) 扫描**而非用 `Arc::strong_count > 1`：`strong_count` 会数进表外克隆（例如测试句柄、19 接线后的临时持有），与 C"只数表内槽位"的语义不同。文档化这一取舍（§4 不变量 3）。
-- `free_exec` 的释放由 `Arc` 的 **last-holder-free** 完成，与 C 的"扫描后 `free`"（manager.c:1443-1446）等价；`has_shared_exec` 的扫描作为显式 API 保留（本模块导出 + 测试直接断言），等价 C 的 manager.c:1433-1440。
+- `free_exec` 的释放由 `Arc` 的 **last-holder-free** 完成，与 C 的"扫描后 `free`"（minix3/minix/servers/rs/manager.c:rproc（L1443，工具生成））等价；`has_shared_exec` 的扫描作为显式 API 保留（本模块导出 + 测试直接断言），等价 C 的 minix3/minix/servers/rs/manager.c:rproc（L1433，工具生成）。
 
 ### 3.3 `validate_image` 纯化（D3）
 
-`read_exec` 的 `st_size < sizeof(Elf_Ehdr) → ENOEXEC`（manager.c:1388-1389）与 `libexec_load_elf` 的魔数/class/data 校验（exec_elf.c:127-141）被纯化为 `validate_image`：
+`read_exec` 的 `st_size < sizeof(Elf_Ehdr) → ENOEXEC`（minix3/minix/servers/rs/manager.c:rproc（L1388，工具生成））与 `libexec_load_elf` 的魔数/class/data 校验（minix3/minix/lib/libexec/exec_elf.c:libexec_load_elf）被纯化为 `validate_image`：
 
 ```rust
 pub fn validate_image(image: &[u8]) -> Result<(), i32> {
@@ -268,10 +268,10 @@ exec.rs
 
 关键不变量：
 
-1. **最后持有者释放**：`free_exec` 置 `exec = None` 由 `Arc` 的 last-holder-free 完成，等价 C 的"扫描后 `free`"（manager.c:1443-1446）；`has_shared_exec`（`iter_in_use` 扫描 + `Arc::ptr_eq`，等价 manager.c:1433-1440）作为显式 API 保留并被测试断言。
-2. **共享只发生一次**：`share_exec` 不改 `sys_flags`——`SF_USE_COPY` 的置位在 `edit_slot`（08 范围，manager.c:1660）与 `clone_slot`（manager.c:1834-1835 由 10 调用 `share_exec`）处完成，exec.rs 只管映像指针。
+1. **最后持有者释放**：`free_exec` 置 `exec = None` 由 `Arc` 的 last-holder-free 完成，等价 C 的"扫描后 `free`"（minix3/minix/servers/rs/manager.c:rproc（L1443，工具生成））；`has_shared_exec`（`iter_in_use` 扫描 + `Arc::ptr_eq`，等价 minix3/minix/servers/rs/manager.c:rproc（L1433，工具生成））作为显式 API 保留并被测试断言。
+2. **共享只发生一次**：`share_exec` 不改 `sys_flags`——`SF_USE_COPY` 的置位在 `edit_slot`（08 范围，minix3/minix/servers/rs/manager.c:rs_start（L1660，工具生成））与 `clone_slot`（minix3/minix/servers/rs/manager.c:rproc（L1834，工具生成） 由 10 调用 `share_exec`）处完成，exec.rs 只管映像指针。
 3. **长度内建**：无 `r_exec_len` 字段；`Arc<[u8]>` 的长度即 C 的 `r_exec_len`，杜绝长度/指针失配。
-4. **最小门与完整解析分层**：`validate_image` 只做 `read_exec` 等价检查（manager.c:1388-1389 + 魔数）；`parse_ehdr`/`segment_iter` 在 minix-elf，19 接线。
+4. **最小门与完整解析分层**：`validate_image` 只做 `read_exec` 等价检查（minix3/minix/servers/rs/manager.c:rproc（L1388，工具生成） + 魔数）；`parse_ehdr`/`segment_iter` 在 minix-elf，19 接线。
 5. **DEFERRED 面 fail-closed**：`srv_execve`/`do_exec` 依赖的 kernel 面在 19 前不编译为 stub 路径（同 `KernelApi` 模式，01 §3.6）——本模块只交付纯语义。
 
 ---
@@ -282,11 +282,11 @@ exec.rs
 
 | 测试 | 覆盖 |
 |------|------|
-| `test_validate_image_rejects_tiny` | 4 字节 → ENOEXEC（manager.c:1388 最小门） |
+| `test_validate_image_rejects_tiny` | 4 字节 → ENOEXEC（minix3/minix/servers/rs/manager.c:rproc（L1388，工具生成） 最小门） |
 | `test_validate_image_accepts_minimum_ehdr` | 64 字节 + 魔数 + class/data → OK |
 | `test_share_exec_clones` | `Arc::clone` 后两槽共享同一缓冲（`Arc::ptr_eq`） |
 | `test_free_exec_exclusive` | 单持有者 → 释放（exec = None） |
-| `test_free_exec_shared_keeps_other` | 共享者存在 → 本槽断开、他槽保留（manager.c:1433-1440 扫描） |
+| `test_free_exec_shared_keeps_other` | 共享者存在 → 本槽断开、他槽保留（minix3/minix/servers/rs/manager.c:rproc（L1433，工具生成） 扫描） |
 
 **Gate D 证据**：`rg "fn (validate_image|share_exec|has_shared_exec|free_exec)" os/servers/rs/src/exec.rs` —— 4 个函数全部存在；无 `todo!`/`unimplemented!`（DEFERRED 面以文档契约 + `KernelApi` 模式表达，非 stub 占位）。
 
@@ -294,7 +294,7 @@ exec.rs
 
 ## 6. 过渡：从"二进制"到"进程"
 
-09 交付的是**映像**——槽位拥有了可 exec 的字节序列与共享/释放规则。下一篇 `10-rs-service-create.md` 把这些映像接进 `create_service` 的编排：`srv_fork`（A-1）→ priv/sched 就位 → `read_exec`/`share_exec` → `srv_execve`（manager.c:531-650）→ 发布（11）。在启动时序中，09 位于"服务创建机制"子链（08→09→10→11）的第二步；运行时路径上，`RS_UP`/`RS_EDIT` 的 `RSS_COPY` 分支（08）在创建时经 09 的读入/共享完成映像准备。
+09 交付的是**映像**——槽位拥有了可 exec 的字节序列与共享/释放规则。下一篇 `10-rs-service-create.md` 把这些映像接进 `create_service` 的编排：`srv_fork`（A-1）→ priv/sched 就位 → `read_exec`/`share_exec` → `srv_execve`（minix3/minix/servers/rs/manager.c:create_service）→ 发布（11）。在启动时序中，09 位于"服务创建机制"子链（08→09→10→11）的第二步；运行时路径上，`RS_UP`/`RS_EDIT` 的 `RSS_COPY` 分支（08）在创建时经 09 的读入/共享完成映像准备。
 
 ---
 
@@ -305,6 +305,6 @@ exec.rs
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — `SF_USE_COPY`/`SF_NEED_COPY` 标志（§2.4）
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — sys_datacopy / PM_EXEC_RESTART / minix_stack_* 契约
 - `os/libs/minix-elf/src/lib.rs` — `parse_ehdr`/`segment_iter`/`entry_point`（A-8 完整解析）
-- `minix3/minix/servers/rs/exec.c`、`manager.c:1354-1455` — ground truth
+- `minix3/minix/servers/rs/exec.c`、`minix3/minix/servers/rs/manager.c:rproc（L1354，工具生成）` — ground truth
 - `minix3/minix/lib/libexec/exec_elf.c` — `libexec_load_elf` 校验链
 - `minix3/minix/lib/libc/sys/stack_utils.c` — `minix_stack_params`/`minix_stack_fill`

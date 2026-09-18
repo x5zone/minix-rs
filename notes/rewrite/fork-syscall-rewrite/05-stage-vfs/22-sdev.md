@@ -72,47 +72,47 @@
 
 异步发（`64-65`，失败 panic）→ 挂线程等复（`68-74`）→ 负类型直返类型码、余回 `OK`（`76`，死亡统一口径的源头）。
 
-### 2.3 `sdev_suspend` 登记机（`sdev.c:82-111`）
+### 2.3 `sdev_suspend` 登记机（`minix3/minix/servers/vfs/sdev.c:sdev_sendrec（L82，工具生成）`）
 
-存设备/调用号/三授权（`87-91`）→ 三分支断言（`93-107`：接受要 fd、收消息要 buf、余两者皆无；`100-102` 的映射空页 TODO 诚实保留）→ 挂起 `FP_BLOCKED_ON_SDEV`（见 `minix3/minix/servers/vfs/const.h:25`）返 `SUSPEND`（`109-110`）。
+存设备/调用号/三授权（`87-91`）→ 三分支断言（`93-107`：接受要 fd、收消息要 buf、余两者皆无；`100-102` 的映射空页 TODO 诚实保留）→ 挂起 `FP_BLOCKED_ON_SDEV`（见 `minix3/minix/servers/vfs/const.h:FP_BLOCKED_ON_SDEV`）返 `SUSPEND`（`109-110`）。
 
-### 2.4 `sdev_socket` 建字机（`sdev.c:118-172`）
+### 2.4 `sdev_socket` 建字机（`minix3/minix/servers/vfs/sdev.c:sdev_suspend（L118，工具生成）`）
 
 域门（`127-128`，未知域 panic——调用者应已查，见 19）→ 组包（`131-137`：对偶/域/类型/协议/端点五字段）→ 发收（`140-141`，死则返）→ 验型（`144-148`，错型 `EIO`）→ 取号（`150-151`）→ 负号透传（`154-155`）→ 拼号（`157`，`make_smap_dev` 见 19）→ 对偶再验次号（`159-169`：坏则关首号 `EIO`）→ `OK`（`171`）。
 
-### 2.5 `sdev_bindconn` 绑定机（`sdev.c:178-234`）
+### 2.5 `sdev_bindconn` 绑定机（`minix3/minix/servers/vfs/sdev.c:sdev_socket（L178，工具生成）`）
 
 查表（`188-189`，无则 `EIO`）→ 授权读（`192-195`，无效 panic）→ 组包（`198-206`：类型/号/授权/长/端点/`NONBLOCK→SDEV_NONBLOCK`）→ 异步发（`209-210`，失败 panic）→ 挂起（`213`，三授权首有效余无效）。绑定与连接同体（`220-234`，类型参数二值）。
 
-### 2.6 `sdev_simple` 三元机（`sdev.c:241-286`）
+### 2.6 `sdev_simple` 三元机（`minix3/minix/servers/vfs/sdev.c:sdev_connect（L241，工具生成）`）
 
 断言三值（`249-250`：listen/shutdown/close）→ 查表（`252-253`）→ 组包（`256-260`）→ 发收（`263-264`）→ 验型（`267-271`）→ 回状态（`273`）。listen 断言非负 backlog（`283`），shutdown 断言三向（`595`），close 双模式见 §2.9。
 
-### 2.7 `sdev_accept/sdev_readwrite/sdev_ioctl` 长问机（`sdev.c:292-448`）
+### 2.7 `sdev_accept/sdev_readwrite/sdev_ioctl` 长问机（`minix3/minix/servers/vfs/sdev.c:sdev_accept`）
 
-接受（`292-331`：查表、地址授权写、组包、发、挂起记 listen fd）。读写（`339-411`：查表、三授权按需（`365-384`，零跳过、方向交叉、`352-358` 的零字节注释诚实保留；空槽填 `GRANT_INVALID`）、组包（`387-402`：读写号/三权/三长/端点/标志、`NONBLOCK→MSG_DONTWAIT`、`写+NOSIGPIPE→MSG_NOSIGNAL`，见 `minix3/sys/sys/socket.h:515-518`）、发、挂起记三权）。控制（`416-448`：查表、19 解码授权、组包、发、挂起）。
+接受（`292-331`：查表、地址授权写、组包、发、挂起记 listen fd）。读写（`339-411`：查表、三授权按需（`365-384`，零跳过、方向交叉、`352-358` 的零字节注释诚实保留；空槽填 `GRANT_INVALID`）、组包（`387-402`：读写号/三权/三长/端点/标志、`NONBLOCK→MSG_DONTWAIT`、`写+NOSIGPIPE→MSG_NOSIGNAL`，见 `minix3/sys/sys/socket.h:MSG_DONTWAIT`）、发、挂起记三权）。控制（`416-448`：查表、19 解码授权、组包、发、挂起）。
 
-### 2.8 `set/get` 选项机（`sdev.c:453-586`）
+### 2.8 `set/get` 选项机（`minix3/minix/servers/vfs/sdev.c:sdev_ioctl（L453，工具生成）`）
 
 置（`454-498`：查表、授权读、组包、发收、释权、验型回态）。取三元同体（`503-586`：断言三值 `513-514`、授权写、组包、发收、释权、验型、负透传 `550-551`、回写长度 `553-554`）。
 
-### 2.9 `sdev_shutdown/sdev_close/sdev_select` 机（`sdev.c:591-668`）
+### 2.9 `sdev_shutdown/sdev_close/sdev_select` 机（`minix3/minix/servers/vfs/sdev.c:sdev_getpeername（L591，工具生成）`）
 
-关断断言三向（`SHUT_RD/SHUT_WR/SHUT_RDWR`，见 `minix3/sys/sys/socket.h:604-606`）后走 simple（`595-597`）。关双模式（`604-640`：可挂起则组包发挂起 `619-636`，否则同步 simple `639`，`SO_LINGER` 注释 `611-618`）。选即发即返（`646-668`：查表、组包、发、`OK`，回复走 23）。
+关断断言三向（`SHUT_RD/SHUT_WR/SHUT_RDWR`，见 `minix3/sys/sys/socket.h:SHUT_RD`）后走 simple（`595-597`）。关双模式（`604-640`：可挂起则组包发挂起 `619-636`，否则同步 simple `639`，`SO_LINGER` 注释 `611-618`）。选即发即返（`646-668`：查表、组包、发、`OK`，回复走 23）。
 
-### 2.10 `sdev_finish_accept` 迎新机（`sdev.c:678-736`）
+### 2.10 `sdev_finish_accept` 迎新机（`minix3/minix/servers/vfs/sdev.c:sdev_select（L678，工具生成）`）
 
 三断言（`687-689`）→ 释权（`692-695`，后两权必无效断言）→ 取号态长（`697-699`）→ 按源端点查表（`709`，死则 `EIO` 空号 `720-721`，注释写明极罕见）→ 上交续作（`725`）。
 
-### 2.11 `sdev_finish` 分流机（`sdev.c:758-905`）
+### 2.11 `sdev_finish` 分流机（`minix3/minix/servers/vfs/sdev.c:do_accept_reply（L758，工具生成）`）
 
 悬挂已清断言（`765`）→ 释三权（`771-776`，无条件——挂起时三权全置的不变式）→ 取调用号（`783`）→ 简单组（`786-815`：验型取态、关归一 `804-806`、负型透传、错型 `EIO`、回复码）→ 接收组（`817-852`：验型取态/长/标志、负透传、错型 `EIO`、三路续办）→ 接受失败组（`854-892`：验型断言负号、负透传、错型 `EIO`、非负 `EIO`、`876-883` 的四象限注释、交续作）→ 未知 panic（`894-903`，注释讨论枚举之累）。
 
-### 2.12 `stop/cancel` 取消机（`sdev.c:911-980`）
+### 2.12 `stop/cancel` 取消机（`minix3/minix/servers/vfs/sdev.c:sdev_finish（L911，工具生成）`）
 
 `stop`：挂起断言（`916`）→ 清挂起（`918`）→ 标 `EIO` 负类型续办（`926-927`，统一口径）。`cancel`：挂起已清断言（`947`）→ 查表（`949`，无则标 `EIO`）→ 组包发取消（`951-966`，注释写明穿越与部分成功语义）→ 接受成功走迎新（`975-977`，已在工人线程不另生）→ 余走分流（`978-979`）。
 
-### 2.13 `sdev_reply` 路由机（`sdev.c:988-1114`）
+### 2.13 `sdev_reply` 路由机（`minix3/minix/servers/vfs/sdev.c:sdev_cancel（L988，工具生成）`）
 
 知名门（`998-1002`）→ 四回复取号（`1004-1016`）/选择直转 23（`1017-1028`）/未知丢弃（`1029-1033`）→ 端点复核（`1035-1039`）→ 工人投递（`1043-1052`，未阻塞断言）→ 非挂起或异主丢弃（`1053-1057`）→ 接受成功生线程（`1058-1108`：注释写明丢回复即泄漏，双查防线、`fp_u` 复用 TODO `1094-1107` 诚实保留、清挂起）→ 余清挂起续办（`1109-1112`）。
 
@@ -125,43 +125,43 @@ Rust 改写不是照抄 `sdev.c` 的挂起循环，而是吸收 Linux/Redox 的�
 ### D1 问型三分类
 
 - **C**：长短问知识散在头注释与各函数中（`sdev.c:8-16`）。
-- **Rust**：`SdevOp` 十七值 + `ask_kind() -> AskKind::{RoundTrip, Suspend, FireAndForget}` 全映射（`os/servers/vfs/src/sdev.rs:99,162`）。
+- **Rust**：`SdevOp` 十七值 + `ask_kind() -> AskKind::{RoundTrip, Suspend, FireAndForget}` 全映射（`os/servers/vfs/src/sdev.rs:enum SdevOp（L99，工具生成）,162`）。
 - **为什么**：等待语义是调用点最需要的一比特；全映射使十七操作无一漏网（测试全枚举锁定）。替代方案（布尔 `may_suspend`）被否决：即发即返是第三态，二值装不下。
 
 ### D2 通道 trait 化
 
 - **C**：`sdev_sendrec` 短问往返 + 各函数 `asynsend3` 投递（`sdev.c:58-77,209-210`）。
-- **Rust**：`SockChannel{roundtrip(expect), dispatch()}`（`ScriptedChannel` 按脚本应答 vs `SilentChannel` 常死亡）+ `ReplyKind` 四值（`os/servers/vfs/src/sdev.rs:221,198`）。
+- **Rust**：`SockChannel{roundtrip(expect), dispatch()}`（`ScriptedChannel` 按脚本应答 vs `SilentChannel` 常死亡）+ `ReplyKind` 四值（`os/servers/vfs/src/sdev.rs:trait SockChannel（L221，工具生成）,198`）。
 - **为什么**：传输是唯一的不可测点；双方法对应短问（要答案）与长问投递（只问发出）。替代方案（单方法 + 标志）被否决：两方法的失败语义不同（要答案的死 vs 发出的死），标志位抹平差异。
 
 ### D3 挂起记录校验
 
-- **C**：三分支断言（`sdev.c:93-107`）。
-- **Rust**：`suspend_aux(call: SdevCall, fd, buf) -> Result<SdevAux, SdevError>`，复用 02 结构（`os/servers/vfs/src/sdev.rs:292`）。
+- **C**：三分支断言（`minix3/minix/servers/vfs/sdev.c:sdev_suspend（L93，工具生成）`）。
+- **Rust**：`suspend_aux(call: SdevCall, fd, buf) -> Result<SdevAux, SdevError>`，复用 02 结构（`os/servers/vfs/src/sdev.rs:fn dispatch（L292，工具生成）`）。
 - **为什么**：断言→verdict 是 ARCH 加固；不断言改结构（模式 A 规避）。TODO 空页注记诚实保留为文档注记。
 
 ### D4 授权配给
 
-- **C**：三授权按需分配 + 方向交叉（`sdev.c:355-384`）。
-- **Rust**：`grant_trio(need×3, is_read) -> [(bool,bool);3]` + `grant_dir` 复用（`os/servers/vfs/src/sdev.rs:323,333`）。
+- **C**：三授权按需分配 + 方向交叉（`minix3/minix/servers/vfs/sdev.c:sdev_readwrite（L355，工具生成）`）。
+- **Rust**：`grant_trio(need×3, is_read) -> [(bool,bool);3]` + `grant_dir` 复用（`os/servers/vfs/src/sdev.rs:fn suspend_aux（L323，工具生成）,333`）。
 - **为什么**：零跳过与方向交叉正交；数组使撤销计数可数。方向知识不定义两遍（21 同源）。
 
 ### D5 标志拼合
 
-- **C**：`NONBLOCK→SDEV_NONBLOCK` 到处 + 写 `NOSIGPIPE→MSG_NOSIGNAL`（`sdev.c:205-206,399-402`）。
-- **Rust**：`sdev_sflags(nonblock)` + `sock_msg_flags(nonblock, write_nosigpipe)`（`os/servers/vfs/src/sdev.rs:338,347`）。
+- **C**：`NONBLOCK→SDEV_NONBLOCK` 到处 + 写 `NOSIGPIPE→MSG_NOSIGNAL`（`minix3/minix/servers/vfs/sdev.c:sdev_bindconn（L205，工具生成）,399-402`）。
+- **Rust**：`sdev_sflags(nonblock)` + `sock_msg_flags(nonblock, write_nosigpipe)`（`os/servers/vfs/src/sdev.rs:fn grant_trio（L338，工具生成）,347`）。
 - **为什么**：两处拼合是同一规则的两用；`NOSIGPIPE` 只在写时有效一测即知。位值 sync 树可验证。
 
 ### D6 复活分流
 
-- **C**：三组 + 关闭归一 + 接受失败路（`sdev.c:785-892`）。
-- **Rust**：`FinishGroup::{Simple, Recv, Accept, Unknown}` + `finish_kind` + `close_normalize` + `accept_fail_status`（`os/servers/vfs/src/sdev.rs:404,416,432,443`）。
+- **C**：三组 + 关闭归一 + 接受失败路（`minix3/minix/servers/vfs/sdev.c:sdev_finish（L785，工具生成）`）。
+- **Rust**：`FinishGroup::{Simple, Recv, Accept, Unknown}` + `finish_kind` + `close_normalize` + `accept_fail_status`（`os/servers/vfs/src/sdev.rs:fn close_mode（L404，工具生成）,416,432,443`）。
 - **为什么**：回复长相决定分流；关闭归一单列；未知 panic 收敛 `EIO`（ARCH 加固）。
 
 ### D7 回复路由
 
-- **C**：选择直转/工人投递/挂起续办/接受生线程（`sdev.c:1004-1113`）+ 死亡标记（`926`）。
-- **Rust**：`ReplyRoute::{Select, WorkerDeliver, BlockedFinish, AcceptSpawn, AcceptDirect, Ignore(DropReason)}` + `route_reply` 九参纯判定（`os/servers/vfs/src/sdev.rs:494,533`）。
+- **C**：选择直转/工人投递/挂起续办/接受生线程（`minix3/minix/servers/vfs/sdev.c:sdev_reply（L1004，工具生成）`）+ 死亡标记（`926`）。
+- **Rust**：`ReplyRoute::{Select, WorkerDeliver, BlockedFinish, AcceptSpawn, AcceptDirect, Ignore(DropReason)}` + `route_reply` 九参纯判定（`os/servers/vfs/src/sdev.rs:enum CancelFollow（L494，工具生成）,533`）。
 - **为什么**：路由是“谁收信”的知识；生线程条件（成功 + 非取消线程）显式。`fp_u` 复用 TODO 诚实保留为文档注记。
 
 ### ARCH 决策总表
@@ -195,13 +195,13 @@ os/servers/vfs/src/
 | 十七操作号 | `com.h:1044-1060` | `sdev.rs:99,138` | 选择子 |
 | 问型三态 | `sdev.c:8-16` | `sdev.rs:187,162` | 全映射 |
 | 通道 trait | `sdev.c:58-77` | `sdev.rs:221,230,276` | 脚本/静默双实现 |
-| 挂起校验 | `sdev.c:93-107` | `sdev.rs:292` | 三形状复用 |
-| 授权配给 | `sdev.c:355-384` | `sdev.rs:323,333` | 三元组 + 交叉 |
-| 标志拼合 | `sdev.c:205,399-402` | `sdev.rs:338,347` | 二位 |
-| 关闭模式 | `sdev.c:619-639` | `sdev.rs:386,394` | 挂起/同步 |
-| 复活分流 | `sdev.c:785-892` | `sdev.rs:404,416,432,443` | 三组 + 归一 + 失败门 |
-| 取消续办 | `sdev.c:975-979` | `sdev.rs:454,462` | 二分支 |
-| 回复路由 | `sdev.c:1004-1113` | `sdev.rs:494,511,533` | 六路 + 拒因 |
+| 挂起校验 | `minix3/minix/servers/vfs/sdev.c:sdev_suspend（L93，工具生成）` | `sdev.rs:292` | 三形状复用 |
+| 授权配给 | `minix3/minix/servers/vfs/sdev.c:sdev_readwrite（L355，工具生成）` | `sdev.rs:323,333` | 三元组 + 交叉 |
+| 标志拼合 | `minix3/minix/servers/vfs/sdev.c:sdev_bindconn（L205，工具生成）,399-402` | `sdev.rs:338,347` | 二位 |
+| 关闭模式 | `minix3/minix/servers/vfs/sdev.c:sdev_close（L619，工具生成）` | `sdev.rs:386,394` | 挂起/同步 |
+| 复活分流 | `minix3/minix/servers/vfs/sdev.c:sdev_finish（L785，工具生成）` | `sdev.rs:404,416,432,443` | 三组 + 归一 + 失败门 |
+| 取消续办 | `minix3/minix/servers/vfs/sdev.c:sdev_cancel（L975，工具生成）` | `sdev.rs:454,462` | 二分支 |
+| 回复路由 | `minix3/minix/servers/vfs/sdev.c:sdev_reply（L1004，工具生成）` | `sdev.rs:494,511,533` | 六路 + 拒因 |
 | 错误族 | `sdev.c` 全文件 | `sdev.rs:576,589 SdevError::to_errno` | 4 变体→errno，无自创 |
 
 ### 4.3 不变量
@@ -209,10 +209,10 @@ os/servers/vfs/src/
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
 | 长短配对（短钉线程/长挂进程） | `ask_kind` 全映射 | 十七操作无遗漏 | `sdev.c:8-16` |
-| 授权配对（三权按序撤销） | `grant_trio` 计数 | 挂起全置 | `sdev.c:771-776` |
+| 授权配对（三权按序撤销） | `grant_trio` 计数 | 挂起全置 | `minix3/minix/servers/vfs/sdev.c:sdev_finish（L771，工具生成）` |
 | 换码单向（取消去程） | `cancel` 单向函数 | 去程换回程另处 | 21 同源 |
-| 死亡 EIO 口径 | `StopNotice` 语义 | 三处同错 | `sdev.c:926` |
-| 接受生线程条件 | `AcceptSpawn` 分支 | 成功 + 非取消线程 | `sdev.c:1058-1091` |
+| 死亡 EIO 口径 | `StopNotice` 语义 | 三处同错 | `minix3/minix/servers/vfs/sdev.c:sdev_stop（L926，工具生成）` |
+| 接受生线程条件 | `AcceptSpawn` 分支 | 成功 + 非取消线程 | `minix3/minix/servers/vfs/sdev.c:sdev_reply（L1058，工具生成）` |
 
 ---
 
@@ -225,11 +225,11 @@ os/servers/vfs/src/
 |--------|-------------|------|------|
 | `test_ask_kinds_cover_all_ops` | `sdev.c:8-16` + `com.h:1044-1060` | 十七操作全映射 | `sdev.rs:604` |
 | `test_channel_scripts` | `sdev.c:58-77` | 脚本应答 + trait 双实现 | `sdev.rs:640` |
-| `test_suspend_aux_shapes` | `sdev.c:93-107` | 三形状 + 四非法 | `sdev.rs:665` |
-| `test_grant_and_flag_packing` | `sdev.c:205-206,355-402` | 配给 + 拼合 + 关断 + 关闭模式 | `sdev.rs:700` |
-| `test_finish_groups` | `sdev.c:785-892,975-979` | 三组 + 归一 + 失败门 + 续办 | `sdev.rs:731` |
-| `test_route_reply_matrix` | `sdev.c:1004-1113` | 十样本路由 + 需分 | `sdev.rs:763` |
-| `test_stop_plans_eio_by_group` | `sdev.c:910-925` | 停尸决策：三组续办 + `EIO` 负类型 | `sdev.rs` |
+| `test_suspend_aux_shapes` | `minix3/minix/servers/vfs/sdev.c:sdev_suspend（L93，工具生成）` | 三形状 + 四非法 | `sdev.rs:665` |
+| `test_grant_and_flag_packing` | `minix3/minix/servers/vfs/sdev.c:sdev_bindconn（L205，工具生成）,355-402` | 配给 + 拼合 + 关断 + 关闭模式 | `sdev.rs:700` |
+| `test_finish_groups` | `minix3/minix/servers/vfs/sdev.c:sdev_finish（L785，工具生成）,975-979` | 三组 + 归一 + 失败门 + 续办 | `sdev.rs:731` |
+| `test_route_reply_matrix` | `minix3/minix/servers/vfs/sdev.c:sdev_reply（L1004，工具生成）` | 十样本路由 + 需分 | `sdev.rs:763` |
+| `test_stop_plans_eio_by_group` | `minix3/minix/servers/vfs/sdev.c:sdev_finish（L910，工具生成）` | 停尸决策：三组续办 + `EIO` 负类型 | `sdev.rs` |
 | `test_stop_matches_smap_row` | `pipe.c:347-350` | 停尸匹配：smap 行端点比对，空行不命中 | `sdev.rs` |
 | `test_errno_map_covers_sdev_c` | `sdev.c` 全文件 | 4 变体→errno 全映射 | `sdev.rs:821` |
 
@@ -263,7 +263,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/sdev.c:1-1114`（十四函数全族）、`minix3/minix/include/minix/com.h:1037-1072`（`SDEV_*` 操作码与标志位）、`minix3/sys/sys/socket.h:515-518,604-606`（`MSG_*/SHUT_*`）
+- C 源：`minix3/minix/servers/vfs/sdev.c:1-1114`（十四函数全族）、`minix3/minix/include/minix/com.h:SDEV_RQ_BASE`（`SDEV_*` 操作码与标志位）、`minix3/sys/sys/socket.h:MSG_DONTWAIT,604-606`（`MSG_*/SHUT_*`）
 - 阶段文档：`19-device-map.md`（smap 查表与驱散）、`02-fproc-struct.md`（`SdevCall/SdevAux`）、`21-cdev.md`（授权交叉与换码配对）、`24-socket.md`（上层续作调用点）、`23-select.md`（选择执行）、`09-main-loop.md`（回复分流）
-- Rust 实现：`os/servers/vfs/src/sdev.rs:1`（本篇判定层）、`os/servers/vfs/src/fproc.rs:195`（`SdevCall` 复用）、`os/servers/vfs/src/cdev.rs:195`（`grant_dir` 复用）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/sdev.rs:1`（本篇判定层）、`os/servers/vfs/src/fproc.rs:struct CdevBlock（L195，工具生成）`（`SdevCall` 复用）、`os/servers/vfs/src/cdev.rs:fn open_effects（L195，工具生成）`（`grant_dir` 复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（用户缓冲授权语义）

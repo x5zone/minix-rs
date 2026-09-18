@@ -1,7 +1,7 @@
 # 08 — DS 检索：按名读、按端点读，以及"读多少"和"谁不许读"
 
 > **分类**: 数据面 handler / 检索
-> **源码**: `minix3/minix/servers/ds/store.c:383-454`
+> **源码**: `minix3/minix/servers/ds/store.c:do_retrieve`
 > **说明**: 检索是发布的镜面：发布是"判了才能立"，检索是"判了才能读"。本文讲清两条读路径（按名、按端点）、字节读的截断规则，以及检索门。
 
 ---
@@ -119,6 +119,6 @@ os/servers/ds/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/ds/store.c:383-454`
+- C 源：`minix3/minix/servers/ds/store.c:do_retrieve`
 - 阶段文档：`07-ds-publish.md`（上一站，写的镜面）、`09-ds-delete.md`（下一站）、`12-ds-client-library.md`（读函数的客户端面）
 - Rust 实现：`os/servers/ds/src/retrieve.rs`

@@ -150,7 +150,7 @@
 - **三列归并**（`comm.rs`，4 个）：`test_three_way_merge`（相等进三列、较小侧单进）、`test_suppression_flags`（列抑制）、`test_fold_compares_case_insensitively`（`-f` 折叠使大小写归同）、`test_drains_surviving_file_at_either_end`（任一端耗尽即排空余列）。
 - **逐字节比较**（`cmp.rs`，5 个）：`test_equal_streams`、`test_first_difference_reports_byte_and_line`、`test_list_all_collects_every_difference`、`test_eof_names_the_shorter_stream`（regular.c:119 的三目选短流）、`test_line_counter_follows_the_first_stream`（行计数随第一流）。
 - **数字序列**（`seq.rs`，9 个）：`test_default_first_and_increment`、`test_first_last_and_stride`（两操作数方向跟随，seq.c:150-152）、`test_direction_errors`（错误方向命名报错，seq.c:154-159）、`test_separator_flag`（分隔符逐数输出含尾随）、`test_equalize_pads_to_common_width`（`-w` 零填含符号位）、`test_terminator_flag`、`test_zero_increment_rejected`、`test_non_integer_operand_rejected`、`test_float_format_declared_unsupported`。
-- **分页**（`pr.rs`，6 个）：`test_page_geometry_is_66_lines`（66=5+56+5）、`test_header_line_carries_text_and_page_number`、`test_time_prefix_rides_the_header_line`、`test_body_pads_to_capacity`、`test_no_header_prints_the_body_bare`、`test_page_length_below_header_plus_trailer_is_rejected_by_the_caller`（pr.c:1875-1878 的页长下限由壳把守）。
+- **分页**（`pr.rs`，6 个）：`test_page_geometry_is_66_lines`（66=5+56+5）、`test_header_line_carries_text_and_page_number`、`test_time_prefix_rides_the_header_line`、`test_body_pads_to_capacity`、`test_no_header_prints_the_body_bare`、`test_page_length_below_header_plus_trailer_is_rejected_by_the_caller`（minix3/usr.bin/pr/pr.c:setup（L1875，工具生成） 的页长下限由壳把守）。
 - **键解析与比较器**（`sort.rs`，11 个）：`test_plain_byte_order`、`test_reverse_inverts`、`test_numeric_with_signs_and_fractions`（符号、小数、非数字按零）、`test_fold_and_dictionary`（折叠使键相等后整行回退、字典过滤）、`test_month_table`（月份表与未知前置）、`test_key_spec_field_selection_with_delimiter`（`-t:` 下 `-k2,2` 及整行破并列）、`test_key_spec_dot_zero_rejected`（`.0` 非法偏移）、`test_local_reverse_drops_under_global`（init.c:239-242 的局部 `r` 语义）、`test_fields_split_on_blank_runs`（空白分段）、`test_tie_falls_back_to_whole_line`、`test_parse_options_rejects_unknown`。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/textfilter` 复现）：
@@ -178,12 +178,12 @@
 | cmp | 同上 | 已接线决定半（`cmp.rs`：逐字节比较、首个差异的字符与行定位、`-l` 全量清单、EOF 指名短流；二进制结构就位，文件操作数待开放路径） |
 | seq | 同上 | 已接线（决定半 `seq.rs`：整数序列、方向跟随的缺省增量、方向错误与零增量报错、`-w` 等宽、`-s` 分隔、`-t` 终止；浮点增量与 `-f` 格式待浮点渲染裁决；二进制全功能） |
 | pr | 同上 | 已接线决定半与单栏分页（66 行页、5+5 头尾、`-h`、`-l`、`-t`；时间字段由壳注入、多栏与 `-m` 待批；文件操作数待开放路径） |
-| yes | `write`、`exit`、argv 交接 | 已接线（纯执行半无限循环：写失败即止并退出 1，yes.c:50-55） |
+| yes | `write`、`exit`、argv 交接 | 已接线（纯执行半无限循环：写失败即止并退出 1，minix3/usr.bin/yes/yes.c:main（L50，工具生成）） |
 | rev | 同上 | 已接线（stdin 路；逐字符反转含多字节完整性；文件操作数待开放路径） |
 | comm | 同上 | 已接线决定半（三列归并、`-1`/`-2`/`-3` 抑制、`-f` 折叠；双流同源自检形态） |
 | expand | 同上 | 已接线（决定半 `expand.rs`：`-t` 逗号/空格列表 1..256 严格递增至多八停、四路补空规则〔无停/单停/多停/末停后一格〕、退格拉回与换行清零；`-N` 旧式解析；文件操作数待开放路径） |
 | unexpand | 同上 | 已接线（`tabify` 逐字节移植：`dcol`/`ocol` 双列、≥2 列间隙成 tab、`-t` 边界限位、退格双列回拉、`-a` 全行/缺省仅前导空白；文件操作数待开放路径） |
-| fold | 同上 | 已接线（`\b`/`\r`/`\t` 列规则、`-b` 逐字节、`-s` 逐字符断行、缺省最后空格断行且空格留在续行头——fold.c:163-172 的缓冲回移语义；文件操作数待开放路径） |
+| fold | 同上 | 已接线（`\b`/`\r`/`\t` 列规则、`-b` 逐字节、`-s` 逐字符断行、缺省最后空格断行且空格留在续行头——minix3/usr.bin/fold/fold.c:fold（L163，工具生成） 的缓冲回移语义；文件操作数待开放路径） |
 | cksum | 同上 | 已接线决定半（`cksum.rs`：POSIX CRC 表 const 生成〔多项式 0x04c11db7，与 C crctab 全表核对〕、长度小端尾随、取反输出；`-o 1`/`-o 2` 历史和；与系统 cksum 四组值交叉验证；`-a` crypto 族显式拒绝待密码原语；文件操作数待开放路径） |
 | paste | 同上 | 已接线决定半（`paste.rs`：`-d` 分隔符列表循环与空项无分隔、`-s` 串行合并；并行多流与文件操作数待开放路径，单流透传） |
 | split | 同上 | 已接线决定半（`split.rs`：块计算与 `aa`..`zz` 后缀枚举；写文件面待开放，二进制以 `==> 前缀 <==` 横幅输出各块） |
@@ -216,9 +216,9 @@
 
 - `06-file-ops.md`——文件操作（上一步：搬文件）
 - `08-grep-sed.md`——正则与搜索（下一步：模式匹配）
-- `minix3/usr.bin/uniq/uniq.c:56-190`——标志与判定（状态机的逐行对照）
-- `minix3/usr.bin/cut/cut.c:88`——选项串（列表语法的权威来源）
-- `minix3/usr.bin/tr/tr.c:58-125`——用法收集（集合写法的权威来源）
+- `minix3/usr.bin/uniq/uniq.c:__COPYRIGHT（L56，工具生成）`——标志与判定（状态机的逐行对照）
+- `minix3/usr.bin/cut/cut.c:main（L88，工具生成）`——选项串（列表语法的权威来源）
+- `minix3/usr.bin/tr/tr.c:__COPYRIGHT（L58，工具生成）`——用法收集（集合写法的权威来源）
 - `minix3/usr.bin/wc/wc.c`、`head.c`、`sort.c`——计数器与排序（354、204、418 行）
 
 ---

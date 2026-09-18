@@ -35,7 +35,7 @@ Minix3 的内存模型在 `break.c:3-17` 头注释中定义：text → data → 
           ↑ region_top（堆顶）   ↑ 可扩展空间  ↓ 栈底
 ```
 
-**关键事实**：`vmproc` 结构体**没有** `vm_brk`/`vm_data_top` 等专用字段（draft §1.3 已核实 vmproc.h）。堆顶隐含在"数据段 vir_region 的 `vaddr + length`"中——`map_region_extend_upto_v` 通过 AVL 查找该区域并扩展。Rust 侧对应 `ActiveProc::region_top`（vmproc_handle.rs:221，返回 `vm_region_top` 标量）——**Rust 显式维护 region_top 标量**，与 C 的"隐含在区域长度中"是结构差异（外部行为等价，§3.6 #7）。
+**关键事实**：`vmproc` 结构体**没有** `vm_brk`/`vm_data_top` 等专用字段（draft §1.3 已核实 vmproc.h）。堆顶隐含在"数据段 vir_region 的 `vaddr + length`"中——`map_region_extend_upto_v` 通过 AVL 查找该区域并扩展。Rust 侧对应 `ActiveProc::region_top`（os/servers/vm/src/vmproc/vmproc_handle.rs:fn region_top（L221，工具生成），返回 `vm_region_top` 标量）——**Rust 显式维护 region_top 标量**，与 C 的"隐含在区域长度中"是结构差异（外部行为等价，§3.6 #7）。
 
 ### 1.2 brk/sbrk 与 libc 协议
 
@@ -64,7 +64,7 @@ void *addr;
 | 请求载荷 | `m_lc_vm_brk.addr`（ipc.h:918-926） | 仅一个新堆顶地址，`memset` 后写入 |
 | 调用者识别 | `m_source`（内核填充，防伪造） | C `do_brk` 用 `m_source` 而非消息字段（break.c:51） |
 | 回复 | 仅状态（OK/ENOMEM） | `_syscall` 返回 int；`_brksize = addr` 由 libc 自己更新 |
-| 跳过条件 | `addr == _brksize` 时不发消息 | libc 层去重（brk.c:27） |
+| 跳过条件 | `addr == _brksize` 时不发消息 | libc 层去重（minix3/minix/lib/libc/sys/brk.c:brk（L27，工具生成）） |
 
 **sbrk(incr)** 基于 brk：`oldsize = _brksize; if (brk(oldsize + incr) == 0) return oldsize; else return -1;`——增量语义完全在 libc 侧，VM 只看到绝对地址。
 
@@ -81,7 +81,7 @@ C 的 `map_region_extend_upto_v`（region.c:1002-1060）只处理"扩展"：
 
 ### 1.4 Rust 的收缩语义：真正释放（差异声明）
 
-Rust `shrink_heap`（brk.rs:128-204）**真正收缩**：把堆顶以上的区域拆掉/移除，`free_region_pages` 递减 refcount + `free_pfn` 归还物理页，`sub_total` + `set_region_top` 下移堆顶。
+Rust `shrink_heap`（os/servers/vm/src/brk.rs:fn shrink_heap）**真正收缩**：把堆顶以上的区域拆掉/移除，`free_region_pages` 递减 refcount + `free_pfn` 归还物理页，`sub_total` + `set_region_top` 下移堆顶。
 
 | | C | Rust |
 |--|---|------|
@@ -229,7 +229,7 @@ int map_region_extend_upto_v(struct vmproc *vmp, vir_bytes v)
 | realloc 槽 | :1047-1055 | physblocks 扩容 + 新槽置空（NULL = 未映射，惰性） |
 | ev_resize | :1057 | 委托 memtype 回调（anon 即改 length） |
 
-### 2.5 anon_resize 与 ev_resize 回调（mem_anon.c:115-130）
+### 2.5 anon_resize 与 ev_resize 回调（minix3/minix/servers/vm/mem_anon.c:anon_resize）
 
 ```c
 static int anon_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
@@ -250,7 +250,7 @@ static int anon_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
 }
 ```
 
-- `ev_resize` 签名：`int (*ev_resize)(struct vmproc *vmp, struct vir_region *vr, vir_bytes len)`（memtype.h:21）；anon 注册在 mem_anon.c:38。
+- `ev_resize` 签名：`int (*ev_resize)(struct vmproc *vmp, struct vir_region *vr, vir_bytes len)`（minix3/minix/servers/vm/memtype.h:mem_type（L21，工具生成））；anon 注册在 minix3/minix/servers/vm/mem_anon.c:mem_type（L38，工具生成）。
 - **注释自证**：`"Shrinking not implemented; silently ignored. (Which is ok for brk().)"`——C 作者明确选择不实现收缩。
 - **物理页零分配**：realloc 的新槽是 NULL，`vr->length` 只是"允许访问的虚拟范围"；首次访问经缺页（`anon_pagefault` 的 `alloc_mem`，17 §2.1 已述）。
 
@@ -262,8 +262,8 @@ static int anon_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
 | `real_brk` | break.c:62-69 | ENOMEM 统一错误映射 |
 | `map_region_extend_upto_v` | region.c:1002-1060 | 扩展编排（对齐/查找/冲突/realloc/回调） |
 | `region_search` | regionavl.c | AVL_LESS 查找（14 范围） |
-| `anon_resize` | mem_anon.c:115-130 | 收缩静默忽略 + 长度更新 |
-| `ev_resize` | memtype.h:21 | memtype 可扩展性回调 |
+| `anon_resize` | minix3/minix/servers/vm/mem_anon.c:anon_resize | 收缩静默忽略 + 长度更新 |
+| `ev_resize` | minix3/minix/servers/vm/memtype.h:mem_type（L21，工具生成） | memtype 可扩展性回调 |
 | `mess_lc_vm_brk` | ipc.h:918-926 | 请求载荷（仅 addr） |
 | `VM_BRK` | com.h:636 | 消息类型（VM_RQ_BASE+2） |
 | `DATA_CHANGED`/`STACK_CHANGED` | break.c:38-39 | 标志声明（do_brk 不使用，遗留） |
@@ -272,7 +272,7 @@ static int anon_resize(struct vmproc *vmp, struct vir_region *vr, vir_bytes l)
 
 ## 3. Rust 设计决策
 
-### 3.1 D1：handle_brk 三态编排（brk.rs:62-83）
+### 3.1 D1：handle_brk 三态编排（os/servers/vm/src/brk.rs:fn handle_brk（L62，工具生成））
 
 ```rust
 pub(crate) fn handle_brk(
@@ -299,7 +299,7 @@ pub(crate) fn handle_brk(
 - 对比 C：C 无显式三态——`map_region_extend_upto_v` 的 :1016 短路隐式处理 no-change/收缩。Rust 把"收缩"显式化（真正执行），"无变化"独立分支（返回当前顶）。
 - `EndpointError → BrkError::ProcessNotFound`（brk.rs:30-34）：brk 不区分 INVALID-slot 与 DEAD-endpoint（与 munmap 同策略，注释 :28-29 声明）。
 
-### 3.2 D2：grow_heap 区域扩展策略（brk.rs:85-126）
+### 3.2 D2：grow_heap 区域扩展策略（os/servers/vm/src/brk.rs:fn grow_heap）
 
 ```rust
 fn grow_heap(active, _page_alloc, _frames, new_brk) -> Result<BrkResponse, BrkError> {
@@ -326,18 +326,18 @@ fn grow_heap(active, _page_alloc, _frames, new_brk) -> Result<BrkResponse, BrkEr
 }
 ```
 
-**对齐语义等价**：C 的 `roundup(offset, VM_PAGE_SIZE)`（region.c:1009）↔ Rust `((grow_len + PAGE_SIZE-1)/PAGE_SIZE)*PAGE_SIZE`（brk.rs:98）——扩展量都向上取整到页。C 的 extralen = `roundup(v) - limit`；Rust 的 aligned_len = `roundup(new_brk - current_top)`。**边界情形等价**：两者在 `v` 未对齐时都实际扩展超过请求地址（brk 语义本身只保证"新顶 ≥ 请求"）。
+**对齐语义等价**：C 的 `roundup(offset, VM_PAGE_SIZE)`（region.c:1009）↔ Rust `((grow_len + PAGE_SIZE-1)/PAGE_SIZE)*PAGE_SIZE`（os/servers/vm/src/brk.rs:fn grow_heap（L98，工具生成））——扩展量都向上取整到页。C 的 extralen = `roundup(v) - limit`；Rust 的 aligned_len = `roundup(new_brk - current_top)`。**边界情形等价**：两者在 `v` 未对齐时都实际扩展超过请求地址（brk 语义本身只保证"新顶 ≥ 请求"）。
 
 **区域选择差异**：
 - C：`AVL_LESS(offset)` 找"起始 < offset 的最大区域"（region.c:1011）。
-- Rust：`find_mut(current_top)`（vaddr 恰为当前顶的区域，region_map.rs:66）→ 失败再 `find_mut_by_end(current_top)`（end_addr 恰为当前顶的区域，region_map.rs:111）。
-- 等价性论证：Rust 的 region_top 是"数据段顶部"——堆区域要么 vaddr == region_top（独立堆区域），要么 end_addr == region_top（数据+堆同一区域）。两者恰好覆盖 C AVL_LESS 在该场景下命中的区域；`find_mut` 的 `contains_addr` 语义（region_map.rs:60-63）与 AVL_LESS 的"≤"边界一致。**差异**：C 若命中一个"起始 < offset 但 end < limit"的中间区域会 assert 失败（region.c:1020 `assert(vr->vaddr <= offset)` 通过、region.c:1023 `newslots >= prevslots` 通过但 extralen 计算越界）——C 假设堆是连续顶部区域；Rust 的 find_mut_by_end 直接编码该假设（§3.6 #5）。
+- Rust：`find_mut(current_top)`（vaddr 恰为当前顶的区域，os/servers/vm/src/region/region_map.rs:fn find_mut（L66，工具生成））→ 失败再 `find_mut_by_end(current_top)`（end_addr 恰为当前顶的区域，os/servers/vm/src/region/region_map.rs:fn find_overlap（L111，工具生成））。
+- 等价性论证：Rust 的 region_top 是"数据段顶部"——堆区域要么 vaddr == region_top（独立堆区域），要么 end_addr == region_top（数据+堆同一区域）。两者恰好覆盖 C AVL_LESS 在该场景下命中的区域；`find_mut` 的 `contains_addr` 语义（os/servers/vm/src/region/region_map.rs:fn find_mut（L60，工具生成））与 AVL_LESS 的"≤"边界一致。**差异**：C 若命中一个"起始 < offset 但 end < limit"的中间区域会 assert 失败（region.c:1020 `assert(vr->vaddr <= offset)` 通过、region.c:1023 `newslots >= prevslots` 通过但 extralen 计算越界）——C 假设堆是连续顶部区域；Rust 的 find_mut_by_end 直接编码该假设（§3.6 #5）。
 
-**冲突检查差异**：C 只查"下一区域 vaddr < offset"（region.c:1032）；Rust 查 `find_overlap(current_top, new_end)`（region_map.rs:134-144，任何与 [current_top, new_end) 重叠的区域）——**Rust 更严格**（重叠即拒绝），C 允许"下一区域 vaddr ≥ offset"（即扩展量与下一区域恰相接时允许，`nextvr->vaddr == offset` 不触发 region.c:1032 条件）。边界差异：Rust 拒绝 `nextvr->vaddr == new_end`（相接）？——`find_overlap` 用 `r.overlaps(start, end)`（`vaddr < end && end_addr > start`，vir_region.rs:146-148），相接（vaddr == end）不重叠 → 允许。与 C 一致。
+**冲突检查差异**：C 只查"下一区域 vaddr < offset"（region.c:1032）；Rust 查 `find_overlap(current_top, new_end)`（os/servers/vm/src/region/region_map.rs:fn find_slot（L134，工具生成），任何与 [current_top, new_end) 重叠的区域）——**Rust 更严格**（重叠即拒绝），C 允许"下一区域 vaddr ≥ offset"（即扩展量与下一区域恰相接时允许，`nextvr->vaddr == offset` 不触发 region.c:1032 条件）。边界差异：Rust 拒绝 `nextvr->vaddr == new_end`（相接）？——`find_overlap` 用 `r.overlaps(start, end)`（`vaddr < end && end_addr > start`，os/servers/vm/src/region/vir_region.rs:fn with_memtype（L146，工具生成）），相接（vaddr == end）不重叠 → 允许。与 C 一致。
 
-**无 ev_resize 分支**（region.c:1037-1045）在 Rust 中不存在：`VirRegion::extend`（vir_region.rs:127-140）是 memtype 无关的通用扩展（push EMPTY 槽 + 改 length），不区分 ev_resize 有无。`[ARCH: A-12]` 简化：memtype 回调族中 resize 语义并入 `VirRegion::extend`（§3.6 #6，三处一致标注：doc §3.2/§3.6 + design 19-design.v1 D2 + 代码注释 vir_region.rs:120-126）。
+**无 ev_resize 分支**（region.c:1037-1045）在 Rust 中不存在：`VirRegion::extend`（os/servers/vm/src/region/vir_region.rs:fn new（L127，工具生成））是 memtype 无关的通用扩展（push EMPTY 槽 + 改 length），不区分 ev_resize 有无。`[ARCH: A-12]` 简化：memtype 回调族中 resize 语义并入 `VirRegion::extend`（§3.6 #6，三处一致标注：doc §3.2/§3.6 + design 19-design.v1 D2 + 代码注释 os/servers/vm/src/region/vir_region.rs:impl VirRegion（L120，工具生成））。
 
-### 3.3 D3：shrink_heap 真正释放（brk.rs:128-204）
+### 3.3 D3：shrink_heap 真正释放（os/servers/vm/src/brk.rs:fn shrink_heap）
 
 ```rust
 fn shrink_heap(active, page_alloc, frames, new_brk) -> Result<BrkResponse, BrkError> {
@@ -374,7 +374,7 @@ fn shrink_heap(active, page_alloc, frames, new_brk) -> Result<BrkResponse, BrkEr
 
 **两阶段释放**（free_region_pages，region/mod.rs:23-51）：`pt.unmap`（:30-35，非 test 下有真实页表）+ `ev_delete`（:43-45）+ `free_range` 收集 pending（:47，refcount 归零且非 IN_CACHE 的槽）+ `ev_unreference` + `free_pfn`（:48-51）+ fdref deref（:53-61，23 范围）——与 17 §3.5 两阶段释放同一原语族。
 
-**C 对照**：C 完全没有 shrink 路径（:1016 短路）。Rust 收缩的 split 边界按页向下对齐（`raw_split & !(PAGE_SIZE-1)`，brk.rs:157）——收缩后 `region_top` 是页对齐的，与扩展的向上对齐互补（扩展向页上取整、收缩向页下取整，保证中间无半页空洞）。
+**C 对照**：C 完全没有 shrink 路径（:1016 短路）。Rust 收缩的 split 边界按页向下对齐（`raw_split & !(PAGE_SIZE-1)`，os/servers/vm/src/brk.rs:fn shrink_heap（L157，工具生成））——收缩后 `region_top` 是页对齐的，与扩展的向上对齐互补（扩展向页上取整、收缩向页下取整，保证中间无半页空洞）。
 
 ### 3.4 D4：错误映射与回复（dispatcher.rs:1218-1225 + vm.rs:722-727）
 
@@ -405,14 +405,14 @@ C 协议：调用者 = `m_source`（内核填充，防伪造），载荷 = `m_lc
 
 | # | C 语义 | Rust 现状 | 状态 |
 |---|--------|----------|------|
-| 1 | 收缩静默忽略（region.c:1016 + anon_resize :120） | `shrink_heap` 真正释放页（brk.rs:128-204） | ✅ 设计改进（外部 API 等价，§1.4） |
-| 2 | 堆顶隐含在区域 vaddr+length | `vm_region_top` 显式标量（vmproc_handle.rs:221/:279） | ✅ 结构差异（行为等价） |
+| 1 | 收缩静默忽略（region.c:1016 + anon_resize :120） | `shrink_heap` 真正释放页（os/servers/vm/src/brk.rs:fn shrink_heap） | ✅ 设计改进（外部 API 等价，§1.4） |
+| 2 | 堆顶隐含在区域 vaddr+length | `vm_region_top` 显式标量（os/servers/vm/src/vmproc/vmproc_handle.rs:fn region_top（L221，工具生成）/:279） | ✅ 结构差异（行为等价） |
 | 3 | endpoint 来自 m_source（break.c:51） | 旧 M1 decode 错位 → **本轮修复** `decode_message`（vm.rs:699-720） | ✅ 修复（19-P1-1） |
 | 4 | 回复仅状态 | `VmBrkOut.new_addr` 编码 m1p1（信息性富化） | ✅ 等价（libc 忽略） |
-| 5 | AVL_LESS 查找 + assert 假设堆是顶部区域 | `find_mut`/`find_mut_by_end` 直接编码该假设（region_map.rs:66/:111） | ✅ 等价（假设显式化） |
-| 6 | 无 ev_resize 时 `map_page_region` 追加 | `VirRegion::extend` memtype 无关（vir_region.rs:127-140） | ✅ ARCH 简化（`[ARCH: A-12]`） |
-| 7 | 冲突检查：仅下一区域 | `find_overlap` 全区间重叠检查（region_map.rs:134-144） | ✅ 更严格（相接允许，一致） |
-| 8 | 无变化 → :1016 短路 OK | 显式 no-change 分支返回当前顶（brk.rs:80-81） | ✅ 等价 |
+| 5 | AVL_LESS 查找 + assert 假设堆是顶部区域 | `find_mut`/`find_mut_by_end` 直接编码该假设（os/servers/vm/src/region/region_map.rs:fn find_mut（L66，工具生成）/:111） | ✅ 等价（假设显式化） |
+| 6 | 无 ev_resize 时 `map_page_region` 追加 | `VirRegion::extend` memtype 无关（os/servers/vm/src/region/vir_region.rs:fn new（L127，工具生成）） | ✅ ARCH 简化（`[ARCH: A-12]`） |
+| 7 | 冲突检查：仅下一区域 | `find_overlap` 全区间重叠检查（os/servers/vm/src/region/region_map.rs:fn find_slot（L134，工具生成）） | ✅ 更严格（相接允许，一致） |
+| 8 | 无变化 → :1016 短路 OK | 显式 no-change 分支返回当前顶（os/servers/vm/src/brk.rs:fn handle_brk（L80，工具生成）） | ✅ 等价 |
 
 ---
 
@@ -432,9 +432,9 @@ C 协议：调用者 = `m_source`（内核填充，防伪造），载荷 = `m_lc
 
 - `VmBrkIn`（vm.rs:190-193）：`endpoint`（← m_source，经 decode_message）+ `new_addr`（← m_lc_vm_brk.addr）。
 - `VmBrkOut`（vm.rs:197-199）：`new_addr`（→ m1p1，encode :722-727）。
-- `vm_server.rs:1214-1218`：`handle_brk` 组装 table/frames 后委托 `dispatch_brk`（测试用 MockPaging）。
+- `os/servers/vm/src/vm_server.rs:fn run_once（L1214，工具生成）`：`handle_brk` 组装 table/frames 后委托 `dispatch_brk`（测试用 MockPaging）。
 
-### 4.2 伪码总结（brk.rs:62-204）
+### 4.2 伪码总结（os/servers/vm/src/brk.rs:fn handle_brk（L62，工具生成））
 
 ```
 handle_brk(table, page_alloc, frames, req)                  :62-83
@@ -464,16 +464,16 @@ shrink_heap(active, page_alloc, frames, new_brk)            :128-204
 
 ### 4.3 收缩的 split + free_region_pages 详解
 
-`VirRegion::split(split_len)`（vir_region.rs:272-334）：校验页对齐 + 0 < split_len < length；左区域保留原 vaddr/flags/remaps/id，右区域从 split 点开始、id+1；File 参数左右分割 offset/clearend（:291-300，23 范围）。brk 收缩用 `split_point = raw_split & !(PAGE_SIZE-1)`（brk.rs:154）保证 split 页对齐（split 校验 :273 要求）。
+`VirRegion::split(split_len)`（os/servers/vm/src/region/vir_region.rs:fn needs_cow（L272，工具生成））：校验页对齐 + 0 < split_len < length；左区域保留原 vaddr/flags/remaps/id，右区域从 split 点开始、id+1；File 参数左右分割 offset/clearend（:291-300，23 范围）。brk 收缩用 `split_point = raw_split & !(PAGE_SIZE-1)`（os/servers/vm/src/brk.rs:fn shrink_heap（L154，工具生成））保证 split 页对齐（split 校验 :273 要求）。
 
 `free_region_pages`（region/mod.rs:23-82）完整路径：
-1. `pt.unmap`（:30-35）——非 test 构建下有真实页表时逐页 unmap（`#[cfg(not(test))]` 下传 `Some(page_table_mut())`，brk.rs:164-167）；
+1. `pt.unmap`（:30-35）——非 test 构建下有真实页表时逐页 unmap（`#[cfg(not(test))]` 下传 `Some(page_table_mut())`，os/servers/vm/src/brk.rs:fn shrink_heap（L164，工具生成））；
 2. `ev_delete`（:43-45）——memtype 删除钩子；
 3. `free_range` 收集 pending `(pfn, memtype)`（:47）——refcount 归零且非 IN_CACHE 的槽（17 §3.5）；
 4. `ev_unreference` + `free_pfn`（:48-51）——物理页归还分配器；
 5. fdref deref（:53-61）——文件区域引用递减（VFS 交互，23 范围）。
 
-**安全论证**：单线程事件循环；`active` 是唯一可变句柄；split 失败时重插原区域（brk.rs:174-178）不丢元数据；`sub_total` 与释放量严格 1:1（`freed_len` 取自被释放区域/右半的 length）。
+**安全论证**：单线程事件循环；`active` 是唯一可变句柄；split 失败时重插原区域（os/servers/vm/src/brk.rs:fn shrink_heap（L174，工具生成））不丢元数据；`sub_total` 与释放量严格 1:1（`freed_len` 取自被释放区域/右半的 length）。
 
 ### 4.4 19-P1-1 修复记录（本轮）
 
@@ -524,7 +524,7 @@ shrink_heap(active, page_alloc, frames, new_brk)            :128-204
 
 | 缺口 | 状态 | 说明 |
 |------|------|------|
-| shrink 的 split 路径（跨区域收缩）无直接单测 | ⚠️ 缺失 | test_shrink_heap_basic 只覆盖整区域移除边界；split 分支（brk.rs:151-185）依赖区域跨 new_brk 的布局 |
+| shrink 的 split 路径（跨区域收缩）无直接单测 | ⚠️ 缺失 | test_shrink_heap_basic 只覆盖整区域移除边界；split 分支（os/servers/vm/src/brk.rs:fn shrink_heap（L151，工具生成））依赖区域跨 new_brk 的布局 |
 | shrink 物理页实际释放断言 | ⚠️ 缺失 | 无 refcount/free_pfn 计数断言（可补：收缩后 pfn 回收到 allocator） |
 | 端到端（真实消息 → handle_brk → 回复） | ⚠️ 缺失 | 依赖 TestIpcTransport 接线（15-P2-1） |
 | 与栈碰撞端到端 | ⚠️ 缺失 | find_overlap 单测覆盖（:391），真实栈区域布局无集成测试 |

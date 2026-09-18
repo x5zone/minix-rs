@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-05，首版完整文档）
 > **定位**: 带外控制、三重匹配取消、查询即问即答（含"就绪即报错"语义）（阶段 3，字符设备操作面；挂起的另一出口）
-> **源码**: `minix3/minix/servers/input/input.c:241-326`（`input_ioctl`/`input_cancel`/`input_select`）+ `minix3/minix/include/sys/kbdio.h`（灯位）+ `minix3/sys/sys/ttycom.h:174`（灯控制号，编号构造见第 05 篇 2.6 节）
+> **源码**: `minix3/minix/servers/input/input.c:input_set_leds（L241，工具生成）`（`input_ioctl`/`input_cancel`/`input_select`）+ `minix3/minix/include/sys/kbdio.h`（灯位）+ `minix3/sys/sys/ttycom.h:KIOCSLEDS`（灯控制号，编号构造见第 05 篇 2.6 节）
 > **Rust 模块**: `os/servers/input/src/handlers.rs`（控制取消查询三节）
 > **目标读者**: 想理解"控制请求如何翻译灯位、取消如何认出要叫醒谁、查询为什么把报错也叫就绪"的读者。前置知识：第 02 篇（查询的两封回信）、第 05 篇（灯控制号构造）、第 07 篇（挂起纸条）。
 > **本章不讲什么**: 置灯命令发出后的驱动侧（第 10 篇）；事件到来唤醒（第 09 篇）；挂起的建立（第 07 篇，只引用）；字符设备请求的传输细节（第 02 篇）。
@@ -208,7 +208,7 @@ pub enum IoctlVerdict {
 
 ### 4.2 取消：`CancelVerdict`、`decide_cancel`、`apply_cancel` 与组合 `cancel_parked_read`（对应决策 3.2）
 
-判断三重匹配（挂着、调用者等、编号等，端点比较用内部整数，不比较结构体——端点相等就是整数相等，语义透明），执行只复位标志（注释写明与关闭修正的不对称原则，第 06 篇 3.3 节：联系方式不可达，不清）。两者之上有一层组合 `cancel_parked_read`：匹配则先把联系方式（调用者加编号）抓出来交给调用方，再复位标志——抓出来的那份联系方式就是"对原来的读回答打断"的信封，回信值固定是 `InputError::Interrupted`（这个错误变体正是为此而生：C 的 `input_cancel` 返回 `EINTR`，前台把它用取消的请求编号原样发回，而取消与被取消的读共用同一个编号，`chardriver.c:255-261`）；不匹配则什么都不产生（分发层对应前台的"不回信"）。取消路径没有任何授权拷贝，所以组合可以一步完成——这与会拷贝的唤醒路径（第 09 篇的两段式）不同。
+判断三重匹配（挂着、调用者等、编号等，端点比较用内部整数，不比较结构体——端点相等就是整数相等，语义透明），执行只复位标志（注释写明与关闭修正的不对称原则，第 06 篇 3.3 节：联系方式不可达，不清）。两者之上有一层组合 `cancel_parked_read`：匹配则先把联系方式（调用者加编号）抓出来交给调用方，再复位标志——抓出来的那份联系方式就是"对原来的读回答打断"的信封，回信值固定是 `InputError::Interrupted`（这个错误变体正是为此而生：C 的 `input_cancel` 返回 `EINTR`，前台把它用取消的请求编号原样发回，而取消与被取消的读共用同一个编号，`minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply（L255，工具生成）`）；不匹配则什么都不产生（分发层对应前台的"不回信"）。取消路径没有任何授权拷贝，所以组合可以一步完成——这与会拷贝的唤醒路径（第 09 篇的两段式）不同。
 
 ### 4.3 查询：`SelectOutcome`、`decide_select`、`apply_select_record`（对应决策 3.3、3.4、3.5）
 
@@ -236,7 +236,7 @@ pub enum IoctlVerdict {
 | `test_ioctl_routes_setleds_only` | 只认调灯号，不营业拒，不认识拒 | input.c:251-276 |
 | `test_led_mask_bits_match_c` | 三位映射、组合、全零、未知位忽略 | input.c:262-268 |
 | `test_cancel_matches_exactly_or_ignores` | 三重匹配叫醒，错身份错编号无挂起皆忽略 | input.c:290-297 |
-| `test_cancel_match_yields_eintr_answer_and_unparks` | 组合产出打断信封（调用者加编号），复位挂起，回信值接 EINTR | input.c:290-295 + chardriver.c:255-261 |
+| `test_cancel_match_yields_eintr_answer_and_unparks` | 组合产出打断信封（调用者加编号），复位挂起，回信值接 EINTR | input.c:290-295 + minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply（L255，工具生成） |
 | `test_cancel_mismatch_yields_no_answer` | 不匹配什么都不产生，挂起原样 | input.c:297 |
 | `test_second_selector_overwrites_the_first` | 查询者覆盖：一设备至多一个 | input.c:320 |
 | `test_select_reports_ready_data_and_errors` | 空无记名、空预约记名、有货就绪、挂起就绪、不营业就绪 | input.c:314-321 |

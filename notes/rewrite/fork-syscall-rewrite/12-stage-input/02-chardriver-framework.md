@@ -2,7 +2,7 @@
 
 > **状态**: 已改写（2026-09-04，首版完整文档）
 > **定位**: 框架主循环与消息分发（阶段 1，运行框架；第 01 篇主循环的入口）
-> **源码**: `minix3/minix/lib/libchardriver/chardriver.c`（600 行，全部）+ `minix3/minix/include/minix/chardriver.h`（36 行，全部）+ 消息号 `minix3/minix/include/minix/com.h:915-957` + 消息结构 `minix3/minix/include/minix/ipc.h:939-965,2220-2253`
+> **源码**: `minix3/minix/lib/libchardriver/chardriver.c`（600 行，全部）+ `minix3/minix/include/minix/chardriver.h`（36 行，全部）+ 消息号 `minix3/minix/include/minix/com.h:IS_VFS_FS_TRANSID（L915，工具生成）` + 消息结构 `minix3/minix/include/minix/ipc.h:939-965,2220-2253`
 > **Rust 模块**: `os/servers/input/src/framework.rs`
 > **目标读者**: 想理解"消息从到达驱动进程到被处理函数看到之间经历了什么"的读者。前置知识：第 01 篇（知道回调注册表是什么）；能接受"消息是一个有类型和若干字段的结构体"这个概念。
 > **本章不讲什么**: 输入服务七个处理函数的业务逻辑（第 06 至第 11 篇）；框架完整源码中与输入服务无关的部分（块设备的其他请求类型，见 2.8 节的裁剪声明）；消息在网络上传输的细节（传输层把消息送到进程门口为止，本章从门口讲起）。
@@ -89,7 +89,7 @@
 
 同一区域还定义了栏位里出现的标志位（`com.h:939-957`）：打开时的读写许可能力位（`CDEV_R_BIT`/`CDEV_W_BIT`/`CDEV_NOCTTY`），传输标志（`CDEV_NOFLAGS`/`CDEV_NONBLOCK` 不许赊账位），查询的操作掩码（读`CDEV_OP_RD`、写`CDEV_OP_WR`、错`CDEV_OP_ERR`、事后通知`CDEV_NOTIFY`），以及打开回答里的克隆和控制终端标志（`CDEV_CLONED`/`CDEV_CTTY`）。这些标志的消费者是各处理函数（第 06 至第 08 篇），本章只登记它们的存在和数值。
 
-### 2.3 主循环：等信、分发、回信，永不停（chardriver_task，chardriver.c:549-570）
+### 2.3 主循环：等信、分发、回信，永不停（chardriver_task，minix3/minix/lib/libchardriver/chardriver.c:chardriver_task）
 
 ```c
 void chardriver_task(const struct chardriver *cdp)
@@ -109,9 +109,9 @@ void chardriver_task(const struct chardriver *cdp)
 }
 ```
 
-主循环是全框架最短的核心：标记运行中，然后永远循环"收一封信、处理一封信"。收信时愿意收任何人的信（`ANY`），并且要求传输层告诉自己"这封是通知还是普通消息"（`ipc_status` 参数，第 2.4 节用它）。唯一的退出路径是`running` 被清掉之后又恰好被信号打断——对应 `chardriver_terminate`（`chardriver.c:537-544`，把 `running` 置否并取消阻塞中的收信）。收信本身失败只有两种下场：是退出信号就 break，否则整个驱动崩溃（收不到信的服务没有任何存在价值，和第 01 篇订阅失败就崩溃是同一个逻辑）。
+主循环是全框架最短的核心：标记运行中，然后永远循环"收一封信、处理一封信"。收信时愿意收任何人的信（`ANY`），并且要求传输层告诉自己"这封是通知还是普通消息"（`ipc_status` 参数，第 2.4 节用它）。唯一的退出路径是`running` 被清掉之后又恰好被信号打断——对应 `chardriver_terminate`（`minix3/minix/lib/libchardriver/chardriver.c:chardriver_terminate`，把 `running` 置否并取消阻塞中的收信）。收信本身失败只有两种下场：是退出信号就 break，否则整个驱动崩溃（收不到信的服务没有任何存在价值，和第 01 篇订阅失败就崩溃是同一个逻辑）。
 
-### 2.4 分发：先看性质，再看门卫，最后看窗口（chardriver_process，chardriver.c:455-532）
+### 2.4 分发：先看性质，再看门卫，最后看窗口（chardriver_process，minix3/minix/lib/libchardriver/chardriver.c:chardriver_process）
 
 分发函数是本章最长的函数，按 1.1 节的三问严格分段：
 
@@ -123,7 +123,7 @@ void chardriver_task(const struct chardriver *cdp)
 
 **第 3 问的前半：分派到窗口（第 517-529 行）。** 七种请求各进各的窗口（`do_open` 到 `do_select` 六个搬运函数，2.6 节），七种之外的类型号进"其他信箱"，分派完直接返回（"其他信箱"和通知一样，前台不回信，回信是窗口自己的事——输入服务的"其他信箱"就是第 09、第 10、第 11 篇的事件、灯光、驱动生命线）。
 
-### 2.5 回信纪律：三种下场，一种 crash（chardriver_reply，chardriver.c:195-274）
+### 2.5 回信纪律：三种下场，一种 crash（chardriver_reply，minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply）
 
 窗口的答复送到回信函数，这里决定答复的下场：
 
@@ -137,17 +137,17 @@ void chardriver_task(const struct chardriver *cdp)
 
 **下场三：正常寄出（第 235-273 行）。** 按信的种类装信封：开门关门的回信带状态和编号，读写控制的回信带状态和编号，取消的回信带状态和编号（注意是取消信自己的编号，取消信是替原来那封信要说法的），查询的当场回信带状态和次设备号。装好后按送信方式寄出（`send_reply`，2.6 节末尾）：如果是请求回答式的交互就尝试非阻塞直送，否则走异步通道，寄不出去只记日志不崩溃（信寄丢了调用者会超时，这是调用者的恢复责任，不是前台的）。
 
-### 2.6 六个搬运函数：窗口的迎宾员（do_open 到 do_select，chardriver.c:279-433）
+### 2.6 六个搬运函数：窗口的迎宾员（do_open 到 do_select，minix3/minix/lib/libchardriver/chardriver.c:do_open）
 
 每个搬运函数做同样的三件事：钩子没登记就按默认回答（开门关门默认"好"，读写的默认回答是"输入输出错误"，控制的默认回答是"不懂这个控制"，取消的默认回答是"先别回"即让原来的请求继续，查询的默认回答是"坏文件描述符"）；钩子登记了就从信封里拆出参数、调用钩子、原样返回钩子的答复。输入服务的七个钩子全登记了（第 01 篇），所以这些默认回答输入服务一个都用不上——但它们是框架契约的一部分：将来某个驱动只登记部分钩子时，默认行为就是它的行为。本篇登记它们的存在，各处理函数的行为在第 06 至第 08 篇。
 
 开门搬运有个额外动作（第 297-302 行）：如果钩子的回答里带了"克隆"标志，说明窗口把客人领到了另一扇窗（伪终端类设备会这样），前台把新窗号也登记到门卫簿上。输入服务从不克隆（它的打开回答只有成功和错误码，第 06 篇），这条分支对输入服务永远走不到，但它是理解门卫簿"登记的不一定是开门信上的窗号"的关键。
 
-### 2.7 次设备号提取：信封阅读器（chardriver_get_minor，chardriver.c:575-598）
+### 2.7 次设备号提取：信封阅读器（chardriver_get_minor，minix3/minix/lib/libchardriver/chardriver.c:chardriver_get_minor）
 
 按信的种类从正确的栏位读窗号：开门关门读开门关门栏，取消读取消栏，查询读查询栏，读写控制读读写栏，其他类型号返回"无效参数"。两个断言（消息指针和输出指针非空）是防御性编程：这个函数被分发路径信任，信任但验证。
 
-### 2.8 宣告：重起的三件事（chardriver_announce，chardriver.c:99-124）
+### 2.8 宣告：重起的三件事（chardriver_announce，minix3/minix/lib/libchardriver/chardriver.c:chardriver_announce）
 
 宣告函数在第 01 篇已经露过面（`input_init` 第 3 步调用它），这里看它的三件事：请内核放行卡在上一代服务上的调用者（`sys_statectl`，失败则崩溃——连"松开旧客人"都做不到的服务没法干活）；查出自己的名字并发布"某某字符驱动起来了"的标记（发布失败同样崩溃）；清空门卫登记簿（1.2 节的烧簿动作）。前两个失败崩溃、第三个不可能失败——和第 01 篇的失败哲学完全一致。
 
@@ -157,18 +157,18 @@ void chardriver_task(const struct chardriver *cdp)
 |------|---------|-----------|--------------------------|
 | 请求/回答编号与掩码 | com.h:915-937 | 2.2 节 | `CharacterRequest`、`CharacterResponse`、`CHARACTER_REQUEST_BASE` |
 | 标志位（访问/传输/查询/克隆） | com.h:939-957 | 2.2 节 | `ACCESS_*`、`TRANSFER_*`、`SELECT_*`、`OPEN_*` 常量 |
-| `chardriver_task` | chardriver.c:549-570 | 2.3 节 | 主循环归属（传输落地时实现，本篇只定契约） |
-| `chardriver_process` | chardriver.c:455-532 | 2.4 节 | `classify_request`、`gate_character_request` |
-| `chardriver_reply` | chardriver.c:195-274 | 2.5 节 | `decide_reply`、`TaskAnswer`、`SelectAnswer` |
-| `do_open`/`do_close`/`do_transfer`/`do_ioctl`/`do_cancel`/`do_select` | chardriver.c:279-433 | 2.6 节 | 分派目标（各处理函数在第 06 至第 08 篇） |
-| `do_block_open` | chardriver.c:438-450 | 2.4 节 | `Incoming::BlockOpen` |
-| `chardriver_get_minor` | chardriver.c:575-598 | 2.7 节 | 栏位约定（传输落地时实现） |
-| `chardriver_announce` | chardriver.c:99-124 | 2.8 节 | `announce_effects` |
-| `chardriver_reply_task`/`chardriver_reply_select` | chardriver.c:129-172 | 2.5 节注 | `TaskAnswer`/`SelectNotification`（通道在第 07、第 08 篇使用） |
+| `chardriver_task` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_task | 2.3 节 | 主循环归属（传输落地时实现，本篇只定契约） |
+| `chardriver_process` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_process | 2.4 节 | `classify_request`、`gate_character_request` |
+| `chardriver_reply` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply | 2.5 节 | `decide_reply`、`TaskAnswer`、`SelectAnswer` |
+| `do_open`/`do_close`/`do_transfer`/`do_ioctl`/`do_cancel`/`do_select` | minix3/minix/lib/libchardriver/chardriver.c:do_open | 2.6 节 | 分派目标（各处理函数在第 06 至第 08 篇） |
+| `do_block_open` | minix3/minix/lib/libchardriver/chardriver.c:do_block_open | 2.4 节 | `Incoming::BlockOpen` |
+| `chardriver_get_minor` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_get_minor | 2.7 节 | 栏位约定（传输落地时实现） |
+| `chardriver_announce` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_announce | 2.8 节 | `announce_effects` |
+| `chardriver_reply_task`/`chardriver_reply_select` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply_task | 2.5 节注 | `TaskAnswer`/`SelectNotification`（通道在第 07、第 08 篇使用） |
 | `open_devs`/`clear`/`is`/`set` | chardriver.c:54-94 | 2.4、2.8 节 | `OpenDeviceSet` |
 | `MAX_NR_OPEN_DEVICES` | driver.h:41 | 2.4 节 | `MAX_OPEN_DEVICES = 256` |
-| `send_reply` | chardriver.c:177-190 | 2.5 节 | 发送方式约定（传输落地时实现） |
-| `chardriver_terminate` | chardriver.c:537-544 | 2.3 节注 | 退出路径（传输落地时实现） |
+| `send_reply` | minix3/minix/lib/libchardriver/chardriver.c:send_reply | 2.5 节 | 发送方式约定（传输落地时实现） |
+| `chardriver_terminate` | minix3/minix/lib/libchardriver/chardriver.c:chardriver_terminate | 2.3 节注 | 退出路径（传输落地时实现） |
 | 回信消息结构 | ipc.h:939-965 | 2.5 节 | `TaskAnswer` 等三结构的栏位 |
 | 请求消息结构 | ipc.h:2220-2253 | 2.1 节 | 栏位约定（传输落地时实现） |
 
@@ -237,14 +237,14 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 
 ### 4.5 效应：判决之后发生什么（2026-09-15 增补）
 
-回信纪律回答"要不要回、怎么回"，但服务对外做的事不止回信：给驱动发配置和灯令、把没人接的事件转交终端。这些出口在 `os/servers/input/src/effects.rs` 收拢成一张四种动作的清单（`Effect`）——两封回信（普通任务回信、查询就绪通知，各自带 C 的消息类型）加两种单向发送（对驱动用 `asynsend3` 发后不管，对终端用阻塞 `ipc_send`，阻塞的理由与客户端库相同：背压加崩溃检测，`inputdriver.c:65-73`）。每条效应自带装配好的线上消息（第 05 篇的构造器），发送端点留白——回填发送方是传输层唯一知道的事。效应是数据不是调用：分发层（未来的主循环）逐条执行，测试逐条断言，不需要传输在场。这是"判决皆纯函数"纪律的最后一环：判决的产出最终也是纯数据。
+回信纪律回答"要不要回、怎么回"，但服务对外做的事不止回信：给驱动发配置和灯令、把没人接的事件转交终端。这些出口在 `os/servers/input/src/effects.rs` 收拢成一张四种动作的清单（`Effect`）——两封回信（普通任务回信、查询就绪通知，各自带 C 的消息类型）加两种单向发送（对驱动用 `asynsend3` 发后不管，对终端用阻塞 `ipc_send`，阻塞的理由与客户端库相同：背压加崩溃检测，`minix3/minix/lib/libinputdriver/inputdriver.c:inputdriver_send_event（L65，工具生成）`）。每条效应自带装配好的线上消息（第 05 篇的构造器），发送端点留白——回填发送方是传输层唯一知道的事。效应是数据不是调用：分发层（未来的主循环）逐条执行，测试逐条断言，不需要传输在场。这是"判决皆纯函数"纪律的最后一环：判决的产出最终也是纯数据。
 
 ### 4.6 与 C 的差异说明
 
 | C 行为 | Rust 对应 | 差异分类 |
 |--------|----------|---------|
-| 登记簿满时崩溃（chardriver.c:90） | `record` 返回 `false`，调用方答错误 | 架构演进：崩溃改显式错误，wire 可观察行为一致（调用者都看到"没办成"） |
-| 违规赊账时崩溃（chardriver.c:220-221） | `InvalidParking` 变体，主循环记日志并答错误 | 架构演进：见 3.5 节 |
+| 登记簿满时崩溃（minix3/minix/lib/libchardriver/chardriver.c:set_open_dev（L90，工具生成）） | `record` 返回 `false`，调用方答错误 | 架构演进：崩溃改显式错误，wire 可观察行为一致（调用者都看到"没办成"） |
+| 违规赊账时崩溃（minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply（L220，工具生成）） | `InvalidParking` 变体，主循环记日志并答错误 | 架构演进：见 3.5 节 |
 | `#if 0` 关掉的非阻塞赊账检查 | 未实现（沿用 C 的关闭状态） | 无差异：C 关掉了，Rust 也不做；若将来打开，需同步更新本文档 |
 | 其余分类、门卫、回信、宣告逻辑 | 逐分支对应 | 无差异 |
 
@@ -258,15 +258,15 @@ pub const fn classify_request(message_type: i32, is_notify: bool) -> Option<Inco
 |---------|---------|--------------|
 | `test_message_numbers_match_c` | 七个请求号、三个回答号、登记簿容量 | com.h:915-937，driver.h:41 |
 | `test_flag_bits_match_c` | 访问位、传输标志、查询掩码、克隆标志 | com.h:939-957 |
-| `test_classify_request_routes_like_chardriver_process` | 七种请求进门、块开门被拦、其他信转交、通知不进本分类器、边界外编号 | chardriver.c:464-532，get_minor |
-| `test_restart_gate_matches_c` | 登记了全放行、没登记只放开门 | chardriver.c:503-513 |
-| `test_open_device_set_behaves_like_c_array` | 记录、查询、清空 | chardriver.c:61-94 |
-| `test_decide_reply_matches_chardriver_reply` | 普通答复寄出、四种可赊三种不可赊、重起一律沉默 | chardriver.c:195-274 |
+| `test_classify_request_routes_like_chardriver_process` | 七种请求进门、块开门被拦、其他信转交、通知不进本分类器、边界外编号 | minix3/minix/lib/libchardriver/chardriver.c:chardriver_process（L464，工具生成），get_minor |
+| `test_restart_gate_matches_c` | 登记了全放行、没登记只放开门 | minix3/minix/lib/libchardriver/chardriver.c:chardriver_process（L503，工具生成） |
+| `test_open_device_set_behaves_like_c_array` | 记录、查询、清空 | minix3/minix/lib/libchardriver/chardriver.c:clear_open_devs |
+| `test_decide_reply_matches_chardriver_reply` | 普通答复寄出、四种可赊三种不可赊、重起一律沉默 | minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply |
 | `test_answer_message_types_match_c` | 三种回信各走各的消息类型 | com.h:935-937，ipc.h:939-965 |
-| `test_announce_effects_follow_c_order` | 宣告三效果的顺序 | chardriver.c:99-124 |
-| `test_open_device_set_record_reports_overflow` | 登记簿 256 满返回 false（C 崩溃改报错） | chardriver.c:85-94 |
-| `test_reply_values_encode_c_statuses` | 回信两单位：字节与状态码（ crate 正值 errno 约定） | chardriver.c:129-151 |
-| `test_reply_interrupted_targets_the_original_read` | 取消的 EINTR 回给原请求（同编号） | chardriver.c:255-261 |
+| `test_announce_effects_follow_c_order` | 宣告三效果的顺序 | minix3/minix/lib/libchardriver/chardriver.c:chardriver_announce |
+| `test_open_device_set_record_reports_overflow` | 登记簿 256 满返回 false（C 崩溃改报错） | minix3/minix/lib/libchardriver/chardriver.c:set_open_dev |
+| `test_reply_values_encode_c_statuses` | 回信两单位：字节与状态码（ crate 正值 errno 约定） | minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply_task |
+| `test_reply_interrupted_targets_the_original_read` | 取消的 EINTR 回给原请求（同编号） | minix3/minix/lib/libchardriver/chardriver.c:chardriver_reply（L255，工具生成） |
 | `test_input_conf_carries_slots_and_reserved_invalids` | 配置效应带槽位与保留槽无效值 | input.c:514-523 |
 | `test_setleds_message_round_trips_the_mask` | 灯令效应掩码往返 | input.c:214-231 |
 | `test_tty_event_forward_maps_lanes_lane_for_lane` | 转交效应五字段逐车道复制 | input.c:408-421 |

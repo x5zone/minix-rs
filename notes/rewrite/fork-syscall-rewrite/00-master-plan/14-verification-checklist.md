@@ -12,44 +12,44 @@
 
 | # | 逻辑点 | Minix3 源码 | Rust 实现 | 状态 |
 |---|--------|------------|----------|------|
-| P-01 | `identity.id.index = child_index` (不是父进程索引) | `forkexit.c:84` | `fork.rs:214` | ✅ |
-| P-02 | `identity.id.pid = child_pid` | `forkexit.c:119` | `fork.rs:215` | ✅ |
-| P-03 | `identity.endpoint = child_endpoint` | `forkexit.c:112` | `fork.rs:216` | ✅ |
+| P-01 | `identity.id.index = child_index` (不是父进程索引) | `minix3/minix/servers/pm/forkexit.c:do_fork（L84，工具生成）` | `fork.rs:214` | ✅ |
+| P-02 | `identity.id.pid = child_pid` | `minix3/minix/servers/pm/forkexit.c:do_fork（L119，工具生成）` | `fork.rs:215` | ✅ |
+| P-03 | `identity.endpoint = child_endpoint` | `minix3/minix/servers/pm/forkexit.c:do_fork（L112，工具生成）` | `fork.rs:216` | ✅ |
 | P-04 | `identity.procgrp` 继承 | `*rmc = *rmp` | `fork.rs:219` | ✅ |
 | P-05 | `identity.name` 继承 | `*rmc = *rmp` | `fork.rs:220` | ✅ |
 | P-06 | `state.lifecycle = Running` | `mp_flags \|= IN_USE` | `fork.rs:226` | ✅ |
 | P-07 | `state.guardianship.parent = parent_index` | `mp_parent = who_p` | `fork.rs:229-231` | ✅ |
-| P-08 | `state.trace` 清除 (除非 TO_TRACEFORK) | `forkexit.c:91-95` | `fork.rs:232` | ✅ |
-| P-09 | `resources.child_utime = 0` | `forkexit.c:107` | `fork.rs:244` | ✅ |
-| P-10 | `resources.child_stime = 0` | `forkexit.c:107` | `fork.rs:245` | ✅ |
-| P-11 | `resources.started = getticks()` | `forkexit.c:114` | `fork.rs:246` | ✅ |
-| P-12 | `resources.intervals = [0; NR_ITIMERS]` | `forkexit.c:113` | `fork.rs:248` | ✅ |
-| P-13 | `resources.flags` 只保留 TAINTED | `forkexit.c:106` | `fork.rs:260-266` | ✅ |
-| P-14 | 特权进程 `scheduler → Endpoint::RS` | `forkexit.c:100-103` | `fork.rs:253-257` | ✅ |
+| P-08 | `state.trace` 清除 (除非 TO_TRACEFORK) | `minix3/minix/servers/pm/forkexit.c:do_fork（L91，工具生成）` | `fork.rs:232` | ✅ |
+| P-09 | `resources.child_utime = 0` | `minix3/minix/servers/pm/forkexit.c:do_fork（L107，工具生成）` | `fork.rs:244` | ✅ |
+| P-10 | `resources.child_stime = 0` | `minix3/minix/servers/pm/forkexit.c:do_fork（L107，工具生成）` | `fork.rs:245` | ✅ |
+| P-11 | `resources.started = getticks()` | `minix3/minix/servers/pm/forkexit.c:do_fork（L114，工具生成）` | `fork.rs:246` | ✅ |
+| P-12 | `resources.intervals = [0; NR_ITIMERS]` | `minix3/minix/servers/pm/forkexit.c:do_fork（L113，工具生成）` | `fork.rs:248` | ✅ |
+| P-13 | `resources.flags` 只保留 TAINTED | `minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成）` | `fork.rs:260-266` | ✅ |
+| P-14 | 特权进程 `scheduler → Endpoint::RS` | `minix3/minix/servers/pm/forkexit.c:do_fork（L100，工具生成）` | `fork.rs:253-257` | ✅ |
 | P-15 | `ipc` 全部重置为 default | 无对应 (Rust 新增) | `fork.rs:271` | ✅ |
 
 ### 1.2 do_fork 完整状态机 (阶段 5 — ❌ 待实现)
 
 | # | 逻辑点 | Minix3 源码 | 状态 |
 |---|--------|------------|------|
-| P-16 | 容量检查: `procs_in_use == NR_PROCS → EAGAIN` | `forkexit.c:59-65` | ❌ |
-| P-17 | LAST_FEW 保留: 非root用户保留2个槽位 | `forkexit.c:62-64` | ✅ (do_fork_prepare) |
-| P-18 | 轮转查找空闲槽位 (next_child static) | `forkexit.c:68-75` | ✅ (find_free_slot) |
-| P-19 | `vm_fork()` IPC 调用 (sendrec VM) | `forkexit.c:78-80` | ❌ |
-| P-20 | vm_fork 失败时无需回滚 (尚未修改状态) | `forkexit.c:81` | ❌ |
-| P-21 | **vm_fork 成功后不可失败** (VM 已调 sys_fork) | `forkexit.c:82 注释` | ❌ |
-| P-22 | `procs_in_use++` | `forkexit.c:86` | ✅ (alloc_slot) |
-| P-23 | `*rmc = *rmp` 整体拷贝 | `forkexit.c:87` | ✅ (fork_from) |
-| P-24 | mp_sigact 指针修复 (Rust 不需要，值类型) | `forkexit.c:88-89` | N/A |
-| P-25 | `mp_parent = who_p` | `forkexit.c:90` | ✅ (fork_from) |
-| P-26 | Tracer 处理: TO_TRACEFORK 检查 | `forkexit.c:91-95` | ❌ (需在完整状态机中) |
-| P-27 | 特权进程 scheduler 修正 | `forkexit.c:100-103` | ✅ (fork_from) |
-| P-28 | 标志位过滤: `mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `forkexit.c:106` | ✅ (fork_from) |
-| P-29 | `get_free_pid()` PID 分配 | `forkexit.c:119` | ✅ (pid_gen) |
-| P-30 | `tell_vfs(VFS_PM_FORK)` 异步通知 | `forkexit.c:122-130` | ❌ |
+| P-16 | 容量检查: `procs_in_use == NR_PROCS → EAGAIN` | `minix3/minix/servers/pm/forkexit.c:do_fork（L59，工具生成）` | ❌ |
+| P-17 | LAST_FEW 保留: 非root用户保留2个槽位 | `minix3/minix/servers/pm/forkexit.c:do_fork（L62，工具生成）` | ✅ (do_fork_prepare) |
+| P-18 | 轮转查找空闲槽位 (next_child static) | `minix3/minix/servers/pm/forkexit.c:do_fork（L68，工具生成）` | ✅ (find_free_slot) |
+| P-19 | `vm_fork()` IPC 调用 (sendrec VM) | `minix3/minix/servers/pm/forkexit.c:do_fork（L78，工具生成）` | ❌ |
+| P-20 | vm_fork 失败时无需回滚 (尚未修改状态) | `minix3/minix/servers/pm/forkexit.c:do_fork（L81，工具生成）` | ❌ |
+| P-21 | **vm_fork 成功后不可失败** (VM 已调 sys_fork) | `minix3/minix/servers/pm/forkexit.c:do_fork（L82，工具生成） 注释` | ❌ |
+| P-22 | `procs_in_use++` | `minix3/minix/servers/pm/forkexit.c:do_fork（L86，工具生成）` | ✅ (alloc_slot) |
+| P-23 | `*rmc = *rmp` 整体拷贝 | `minix3/minix/servers/pm/forkexit.c:do_fork（L87，工具生成）` | ✅ (fork_from) |
+| P-24 | mp_sigact 指针修复 (Rust 不需要，值类型) | `minix3/minix/servers/pm/forkexit.c:do_fork（L88，工具生成）` | N/A |
+| P-25 | `mp_parent = who_p` | `minix3/minix/servers/pm/forkexit.c:do_fork（L90，工具生成）` | ✅ (fork_from) |
+| P-26 | Tracer 处理: TO_TRACEFORK 检查 | `minix3/minix/servers/pm/forkexit.c:do_fork（L91，工具生成）` | ❌ (需在完整状态机中) |
+| P-27 | 特权进程 scheduler 修正 | `minix3/minix/servers/pm/forkexit.c:do_fork（L100，工具生成）` | ✅ (fork_from) |
+| P-28 | 标志位过滤: `mp_flags &= (IN_USE\|DELAY_CALL\|TAINTED)` | `minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成）` | ✅ (fork_from) |
+| P-29 | `get_free_pid()` PID 分配 | `minix3/minix/servers/pm/forkexit.c:do_fork（L119，工具生成）` | ✅ (pid_gen) |
+| P-30 | `tell_vfs(VFS_PM_FORK)` 异步通知 | `minix3/minix/servers/pm/forkexit.c:do_fork（L122，工具生成）` | ❌ |
 | P-31 | `VFS_CALL` 标志管理 (防止重复发送) | `utility.c:136` | ❌ |
-| P-32 | Tracer SIGSTOP 通知 | `forkexit.c:133-134` | ❌ |
-| P-33 | 返回 SUSPEND | `forkexit.c:139` | ❌ |
+| P-32 | Tracer SIGSTOP 通知 | `minix3/minix/servers/pm/forkexit.c:do_fork（L133，工具生成）` | ❌ |
+| P-33 | 返回 SUSPEND | `minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）` | ❌ |
 | P-34 | `do_fork_reply()` VFS 回复后唤醒父进程 | `main.c:369-396` | ❌ |
 | P-35 | 调度失败回滚: exit_proc + reply(parent, -1) | `main.c:378-385` | ❌ |
 | P-36 | NEW_PARENT 竞态处理 | `main.c:327` | ❌ |
@@ -141,7 +141,7 @@
 | # | 逻辑点 | Minix3 源码 | 状态 |
 |---|--------|------------|------|
 | F-01 | `FProc` 结构体 (对齐 struct fproc) | `fproc.h` | ❌ |
-| F-02 | `FpFlags` (SRV_PROC/REVIVED/SESLDR/PENDING/EXITING/PM_WORK) | `fproc.h:91-98` | ❌ |
+| F-02 | `FpFlags` (SRV_PROC/REVIVED/SESLDR/PENDING/EXITING/PM_WORK) | `minix3/minix/servers/vfs/fproc.h:fp_sdev（L91，工具生成）` | ❌ |
 | F-03 | **`Filp` 结构体 (必须包含 `count` 引用计数字段)** | `file.h` | ❌ |
 | F-04 | Filp 包含 `pos` 字段 (共享的文件偏移量) | `file.h:off_t filp_pos` | ❌ |
 | F-05 | `VNodeRef` 结构体 (index 指向全局 vnode 表) | `vnode.h` | ❌ |
@@ -162,12 +162,12 @@
 
 | # | 逻辑点 | Minix3 源码 | 状态 |
 |---|--------|------------|------|
-| F-13 | **`dup_vnode()` — v_ref_count++ (仅 fp_rd/fp_wd)** | `vnode.c:227-234` | ❌ |
-| F-14 | dup_vnode 不递增 v_fs_count | `vnode.c:227-234` | ❌ |
-| F-15 | **`put_vnode()` — v_ref_count--** | `vnode.c:240-299` | ❌ |
-| F-16 | v_ref_count > 1 时只递减, 不通知 FS | `vnode.c:248-253` | ❌ |
-| F-17 | v_ref_count == 1 时 req_putnode 通知 FS | `vnode.c:258-275` | ❌ |
-| F-18 | v_fs_count 延迟同步 (>256 时压缩) | `vnode.c:305-315` | ❌ |
+| F-13 | **`dup_vnode()` — v_ref_count++ (仅 fp_rd/fp_wd)** | `minix3/minix/servers/vfs/vnode.c:dup_vnode` | ❌ |
+| F-14 | dup_vnode 不递增 v_fs_count | `minix3/minix/servers/vfs/vnode.c:dup_vnode` | ❌ |
+| F-15 | **`put_vnode()` — v_ref_count--** | `minix3/minix/servers/vfs/vnode.c:put_vnode` | ❌ |
+| F-16 | v_ref_count > 1 时只递减, 不通知 FS | `minix3/minix/servers/vfs/vnode.c:put_vnode（L248，工具生成）` | ❌ |
+| F-17 | v_ref_count == 1 时 req_putnode 通知 FS | `minix3/minix/servers/vfs/vnode.c:put_vnode（L258，工具生成）` | ❌ |
+| F-18 | v_fs_count 延迟同步 (>256 时压缩) | `minix3/minix/servers/vfs/vnode.c:vnode_clean_refs` | ❌ |
 | F-19 | 为什么 fork 只对 fp_rd/fp_wd 调 dup_vnode (filp 间接维护) | 设计分析 | ❌ |
 
 ### 3.4 pm_fork 其他逻辑
@@ -250,7 +250,7 @@
 | M-04 | VFS → PM: VFS_PM_FORK_REPLY (child_ep) | `com.h` | ❌ |
 | M-05 | VM pt_bind 后清除 RTS_VMINHIBIT | `pt.c` | ❌ |
 | M-06 | PM tell_vfs 使用 asynsend3 (AMF_NOREPLY) | `utility.c:134` | ❌ |
-| M-07 | PM 返回 SUSPEND 给内核 | `forkexit.c:139` | ❌ |
+| M-07 | PM 返回 SUSPEND 给内核 | `minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）` | ❌ |
 
 ---
 

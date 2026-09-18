@@ -23,7 +23,7 @@
 | entry 类型 0/1/2 | devman.h:47-51 | `EntryType` 枚举 | 03 |
 | `NO_DEV` | 0（const.h:132） | `hooks::NO_DEV` | 01 |
 | `S_IFDIR`/`S_IRALL` | POSIX | `hooks::S_IFDIR/S_IRALL` + vtreefs `S_IFMT/S_IFREG` | 01/02 |
-| `PNAME_MAX`/`NAME_MAX` | 24 / 511（vtreefs.h:14/syslimits.h:57） | 24 注释 / `NAME_MAX_LEN` | 02 |
+| `PNAME_MAX`/`NAME_MAX` | 24 / 511（minix3/minix/include/minix/vtreefs.h:PNAME_MAX/minix3/sys/sys/syslimits.h:NAME_MAX） | 24 注释 / `NAME_MAX_LEN` | 02 |
 | `DEV_NAME_LEN` | 32（local.h:7） | `devman_client::DEV_NAME_LEN` | 10 |
 | `DEVMAN_TYPE_NAME` | `"dev_type"`（devmand :16） | 契约（无 Rust 对应，外部读） | 13 |
 | 死宏 `DEVMAN_DEFAULT_MODE` | devman.h:41（零引用） | 挂名不建模 | 03 |

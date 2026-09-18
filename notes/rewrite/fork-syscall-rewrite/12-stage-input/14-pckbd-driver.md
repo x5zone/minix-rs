@@ -47,7 +47,7 @@
 
 > 本章逐段对照原始 C 代码。行号以工作区 `minix3/` 为准。硬件端口时序、看门狗、应答协议、输出队列机制归驱动阶段（2.8 节裁剪清单），本章只讲库使用面与翻译决策。
 
-### 2.1 出生：硬件先行，宣告殿后（pckbd_init/startup/main，pckbd.c:464-507）
+### 2.1 出生：硬件先行，宣告殿后（pckbd_init/startup/main，minix3/minix/drivers/hid/pckbd/pckbd.c:pckbd_alarm（L464，工具生成））
 
 ```c
 static int
@@ -68,7 +68,7 @@ pckbd_init(int UNUSED(type), sef_init_info_t *UNUSED(info))
 }
 ```
 
-类型掩码从键盘起步，辅助口存在（硬件探测结论，`aux_available` 在控制器配置字节 bit 4 读出，`pckbd.c:270`）就加上鼠标——第 12 篇 `announce_type` 两布尔参数的现实来源（调用者传"有没有"，库组掩码）。硬件初始化失败直接返回错误（宣告都不做，1.2 节）。启动函数只登记第一次回调（和服务 side 第 01 篇 2.2 节同形：重起即忘却，恢复靠重连），主函数三行进库主循环（1.6 节）。
+类型掩码从键盘起步，辅助口存在（硬件探测结论，`aux_available` 在控制器配置字节 bit 4 读出，`minix3/minix/drivers/hid/pckbd/pckbd.c:kb_init（L270，工具生成）`）就加上鼠标——第 12 篇 `announce_type` 两布尔参数的现实来源（调用者传"有没有"，库组掩码）。硬件初始化失败直接返回错误（宣告都不做，1.2 节）。启动函数只登记第一次回调（和服务 side 第 01 篇 2.2 节同形：重起即忘却，恢复靠重连），主函数三行进库主循环（1.6 节）。
 
 ### 2.2 回调表：三钩子，无其他（pckbd_tab，pckbd.c:37-41）
 
@@ -82,7 +82,7 @@ static struct inputdriver pckbd_tab = {
 
 灯、中断、闹钟三钩子有主，"其他"空着——库对空钩子的默认是吸收（第 12 篇 2.6 节），驱动不需要的通知种类连表都不填。三个钩子的分工：灯（回写，2.5 节）、中断（分流，2.6 节）、闹钟（看门狗到期处理，硬件机制归驱动阶段——闹钟钩子的存在只证明"驱动用了定时器"，定时器干什么（看门狗）是硬件可靠性话题，出本阶段范围）。
 
-### 2.3 键盘翻译：状态机加查表（kbd_process，pckbd.c:327-368）
+### 2.3 键盘翻译：状态机加查表（kbd_process，minix3/minix/drivers/hid/pckbd/pckbd.c:kb_init（L327，工具生成））
 
 ```c
         press = !(scode & SCAN_RELEASE) ? INPUT_PRESS : INPUT_RELEASE;
@@ -92,9 +92,9 @@ static struct inputdriver pckbd_tab = {
                 inputdriver_send_event(FALSE /*mouse*/, page, code, press, 0);
 ```
 
-最高位判定按松（`SCAN_RELEASE 0x80`，`pckbd.h`），去最高位取索引。状态机四态吃前缀（1.3 节），暂停键是状态 3 加 NumLock 码的特例（注释 `FALLTHROUGH` 穿透，和服务 side 两处穿透同作者手笔：第 02 篇回信函数、第 05 篇消息入口——穿透注释是这位作者的签名式写法）。查表分普通扩展两张（`table.c`，同目录，声明在 `pckbd.h:46-47`）。`if (page)` 守卫吞掉无映射（1.3 节）。上报调库，种类传"非鼠标"（布尔参数，第 12 篇 1.5 节"驱动不记号"的实例：驱动说种类，库填槽位），标志传零（按键是绝对语义的离散事件，相对标志只属于位移）。
+最高位判定按松（`SCAN_RELEASE 0x80`，`pckbd.h`），去最高位取索引。状态机四态吃前缀（1.3 节），暂停键是状态 3 加 NumLock 码的特例（注释 `FALLTHROUGH` 穿透，和服务 side 两处穿透同作者手笔：第 02 篇回信函数、第 05 篇消息入口——穿透注释是这位作者的签名式写法）。查表分普通扩展两张（`table.c`，同目录，声明在 `minix3/minix/drivers/hid/pckbd/pckbd.h:scanmap（L46，工具生成）`）。`if (page)` 守卫吞掉无映射（1.3 节）。上报调库，种类传"非鼠标"（布尔参数，第 12 篇 1.5 节"驱动不记号"的实例：驱动说种类，库填槽位），标志传零（按键是绝对语义的离散事件，相对标志只属于位移）。
 
-### 2.4 鼠标翻译：攒包、比变、拆位移（kbdaux_process，pckbd.c:374-412）
+### 2.4 鼠标翻译：攒包、比变、拆位移（kbdaux_process，minix3/minix/drivers/hid/pckbd/pckbd.c:kbdaux_process）
 
 ```c
         if (aux_counter == 0 && !(scode & 0x08))
@@ -116,7 +116,7 @@ static struct inputdriver pckbd_tab = {
 
 首字节第 3 位（`0x08`，协议规定首字节该位恒亮）是同步锚：包头对不上就扔（重同步，1.4 节）。攒满三字节开工：按钮逐位异或比变化（`aux_state` 记上次，1.4 节增量记忆），码用主按键码加序号（`INPUT_BUTTON_1 + i`——第 04 篇"二三号按钮无名"的出处：头文件只命名了 1 号，2、3 号靠加法）；值用当前状态的布尔化（按下 1 松开 0——按钮事件的值语义和按键一致，第 04 篇）；标志传零（按钮是离散量，绝对默认）。位移非零才发（静止不说话），符号位拼高位（首字节 `0x10/0x20` 分管横纵符号），桌面页横纵轴码，相对标志（1.4 节）。两次上报的种类都传"鼠标"（布尔真）。
 
-### 2.5 灯光回写：掩码翻端口位（pckbd_leds，pckbd.c:417-428）
+### 2.5 灯光回写：掩码翻端口位（pckbd_leds，minix3/minix/drivers/hid/pckbd/pckbd.c:kbdaux_process（L417，工具生成））
 
 ```c
 static void
@@ -135,7 +135,7 @@ pckbd_leds(unsigned int leds)
 
 掩码位（`1 << 灯码`，第 08 篇生产）翻回端口位（`LED_NUM_LOCK 0x02` 等，`pckbd.h`）——第 08 篇翻译的严格逆函数（`f(g(x)) = x`：服务把调用者位翻成掩码，驱动把掩码翻成端口位，端口位恰好等于调用者位—— round trip 回到起点，附带证明两处翻译互逆，见 scan Gate B）。翻完进输出队列（`set_leds`，队列机制归驱动阶段；满了丢本次，1.5 节）。端口位定义在驱动头文件（`pckbd.h`），不在共享库——端口是硬件语言，硬件语言不出驱动门（所有权规则：共享库只讲合同语言，端口字节是驱动私事）。
 
-### 2.6 中断分流：硬件 side 的第一行（pckbd_intr，pckbd.c:434-450）
+### 2.6 中断分流：硬件 side 的第一行（pckbd_intr，minix3/minix/drivers/hid/pckbd/pckbd.c:pckbd_intr）
 
 ```c
 static void
@@ -159,23 +159,23 @@ pckbd_intr(unsigned int UNUSED(mask))
 
 | 符号 | 源码位置 | 本文档位置 | 库接口对照（12 篇） |
 |------|---------|-----------|-------------------|
-| `pckbd_init` 宣告 | pckbd.c:464-483 | 2.1 节 | `announce_key` + `announce_type` |
+| `pckbd_init` 宣告 | minix3/minix/drivers/hid/pckbd/pckbd.c:pckbd_alarm（L464，工具生成） | 2.1 节 | `announce_key` + `announce_type` |
 | `pckbd_tab` 三钩子 | pckbd.c:37-41 | 2.2 节 | `DriverHooks` 三字段（`on_other` 空） |
-| `kbd_process` | pckbd.c:327-368 | 2.3 节 | `decide_report`（种类假）+ 载荷构造（05） |
-| `kbdaux_process` | pckbd.c:374-412 | 2.4 节 | 同上（种类真） |
-| `pckbd_leds` | pckbd.c:417-428 | 2.5 节 | `LightCallback` 签名（掩码参数） |
-| `pckbd_intr` | pckbd.c:434-450 | 2.6 节 | `InterruptCallback` 签名 |
-| `pckbd_alarm` | pckbd.c:456-459 | 2.2 节注 | `AlarmCallback` 签名（看门狗机制出范围） |
-| startup/main | pckbd.c:489-507 | 2.1 节注 | 主循环分类（传输循环待定） |
+| `kbd_process` | minix3/minix/drivers/hid/pckbd/pckbd.c:kb_init（L327，工具生成） | 2.3 节 | `decide_report`（种类假）+ 载荷构造（05） |
+| `kbdaux_process` | minix3/minix/drivers/hid/pckbd/pckbd.c:kbdaux_process | 2.4 节 | 同上（种类真） |
+| `pckbd_leds` | minix3/minix/drivers/hid/pckbd/pckbd.c:kbdaux_process（L417，工具生成） | 2.5 节 | `LightCallback` 签名（掩码参数） |
+| `pckbd_intr` | minix3/minix/drivers/hid/pckbd/pckbd.c:pckbd_intr | 2.6 节 | `InterruptCallback` 签名 |
+| `pckbd_alarm` | minix3/minix/drivers/hid/pckbd/pckbd.c:pckbd_alarm | 2.2 节注 | `AlarmCallback` 签名（看门狗机制出范围） |
+| startup/main | minix3/minix/drivers/hid/pckbd/pckbd.c:pckbd_startup | 2.1 节注 | 主循环分类（传输循环待定） |
 
 ### 2.8 裁剪清单：归驱动阶段的部分（诚实边界）
 
 | 裁剪项 | 源码位置 | 去向 |
 |--------|---------|------|
-| 端口读写时序（`sys_inb/outb`，应答、忙等） | pckbd.c:66-144,151-169,197-248 | 驱动阶段（硬件语言） |
+| 端口读写时序（`sys_inb/outb`，应答、忙等） | minix3/minix/drivers/hid/pckbd/pckbd.c:kbd_send,151-169,197-248 | 驱动阶段（硬件语言） |
 | 看门狗与定时器 | pckbd.c:19-21,46-60,456-459 | 驱动阶段（可靠性机制） |
 | 输出队列机制 | pckbd.c:12-17,175-192 | 驱动阶段（队列满丢弃策略已在 1.5 节登记语义） |
-| 中断号申请与使能 | pckbd.c:281-315 | 驱动阶段（内核接口） |
+| 中断号申请与使能 | minix3/minix/drivers/hid/pckbd/pckbd.c:kb_init（L281，工具生成） | 驱动阶段（内核接口） |
 | 扫描映射表内容 | table.c（全表） | 驱动阶段（键位数据）；查表机制属本篇（2.3 节） |
 | USB 等其他输入驱动 | 库函数引用仅 pckbd（见下） | 驱动阶段（如有） |
 

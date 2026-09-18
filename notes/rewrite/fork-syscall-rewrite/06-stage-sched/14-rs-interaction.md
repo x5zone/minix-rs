@@ -4,7 +4,7 @@
 
 前置阅读：`02-sched-message-surface.md`（5 种消息的版面）、`13-pm-interaction.md`（PM 的申请，本文的对照）。
 
-分工声明：RS 槽配置的细节（`r_*` 4 个值的来源、system.conf 怎么装载）归 `../03-stage-rs/08-rs-slot-config.md`，Live Update 全流程（`update_service`/`clone_slot` 怎么迁）归 `../03-stage-rs/16-rs-live-update.md`，那两篇是主权文档。本文只取申请点 `type.h:92-95` 和取消两处（`manager.c:461`、`request.c:342`），配置的来源本文只引用，不重复。
+分工声明：RS 槽配置的细节（`r_*` 4 个值的来源、system.conf 怎么装载）归 `../03-stage-rs/08-rs-slot-config.md`，Live Update 全流程（`update_service`/`clone_slot` 怎么迁）归 `../03-stage-rs/16-rs-live-update.md`，那两篇是主权文档。本文只取申请点 `type.h:92-95` 和取消两处（`minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）`、`request.c:342`），配置的来源本文只引用，不重复。
 
 实现归属（Rust 侧三层，先说清再读正文）：行为主体在 `os/servers/rs/src/sched.rs`（`sched_decision`/`on_stop_result`，03-stage-rs 域，本文 D0/D1 的落点）；契约镜像在 `os/servers/sched/src/client.rs`（本 crate——`sched_start`/`sched_stop` 的客户端形状 PM 与 RS 共用，libsys 不分 caller）；服务端视角在 `os/servers/sched/src/valid.rs`（本 crate——RS 是放行发送者之一）。后续任何覆盖率审查把"14 篇没有 sched 侧模块"误判为缺口时，以本段为准。
 
@@ -36,7 +36,7 @@
 
 ### 1.4 取消失败按位置分两种处理
 
-取消的两条路（同样是 `sched_stop != OK`，处理跟着位置走）：清理服务时（`manager.c:461-463`：失败打警告继续走，拆台时槽位已经没了，返回也没用，继续走是唯一诚实的做法）→ 改槽时（`request.c:342-345`：失败带码返回，改之前还能停（槽位没动，返回保住不变），返回是事务的守法）。同样的错、不同的处理（同样的取消失败，不同的处理（继续/返回），错的代价跟着位置走：没位置可回就继续，有槽位可保就返回）。
+取消的两条路（同样是 `sched_stop != OK`，处理跟着位置走）：清理服务时（`minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）`：失败打警告继续走，拆台时槽位已经没了，返回也没用，继续走是唯一诚实的做法）→ 改槽时（`request.c:342-345`：失败带码返回，改之前还能停（槽位没动，返回保住不变），返回是事务的守法）。同样的错、不同的处理（同样的取消失败，不同的处理（继续/返回），错的代价跟着位置走：没位置可回就继续，有槽位可保就返回）。
 
 ### 1.5 生在 RS 的三个结果
 
@@ -83,7 +83,7 @@
 
 调度器（`92`：`r_scheduler`，问谁）→ 队列（`93`：`r_priority`（负值另有含义，保留））→ 时间片（`94`：`r_quantum`）→ CPU（`95`：`r_cpu`）。4 个值的来源归槽配置（`../03-stage-rs/08-rs-slot-config.md` 的范围，本节只列 4 个值的名字，来源的细节移交）。
 
-### 2.4 清理服务时的取消（`manager.c:455-465`）
+### 2.4 清理服务时的取消（`minix3/minix/servers/rs/manager.c:rproc（L455，工具生成）`）
 
 分叉（`456`：detach 就跳过取消，recovery 的范围，附着另迁、不取消）→ 拆台先讲（`457-460`：拆台的打印）→ 取消（`461`：`sched_stop(主，号)`）→ 失败继续（`461-463`：失败打警告**继续走**，见 §1.4）→ 灭迹（`466` 续：`srv_kill`，取消后接着灭，灭不因取消失败而停）。
 
@@ -104,19 +104,19 @@ Rust 改写不是把申请取消两函数照抄一遍，而是在吸收 Linux �
 ### D0 申请的判断沿用既有实现（确认）
 
 - **C**：双断言（`371-372`）+ 6 参数直达（`375-381`）。
-- **Rust**：`SchedulerConfig` + `sched_decision`（`os/servers/rs/src/sched.rs:30-141` 既有范围，4 个测试既有：`test_sched_decision_sys_proc_starts/user_proc_none_skips/passes_full_config/boot_defaults_match_c`）。
+- **Rust**：`SchedulerConfig` + `sched_decision`（`os/servers/rs/src/sched.rs:const NR_SCHED_QUEUES（L30，工具生成）` 既有范围，4 个测试既有：`test_sched_decision_sys_proc_starts/user_proc_none_skips/passes_full_config/boot_defaults_match_c`）。
 - **为什么**：确认即决策（既有的已经对了，再建模就是影子机器，和 13 的 D4 同一个道理）。本篇 §2.1–§2.2 作概念分析，§5.2 复用既有 4 个测试（只引名字、不重列，重复即多余）。
 
 ### D1 取消两种处理做成枚举
 
-- **C**：清理失败打警告继续走（`manager.c:461-463`）对改槽失败带码返回（`request.c:342-345`）。
+- **C**：清理失败打警告继续走（`minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）`）对改槽失败带码返回（`request.c:342-345`）。
 - **Rust**：`StopSite::{CleanupService, EditSlot}` + `StopOutcome::{Continue, Abort(i32)}` + `on_stop_result(site, result)`（`os/servers/rs/src/sched.rs` 新增，位置见 §4.2 符号表）。
 - **为什么**：同样的错、不同的处理（处理跟着位置走，见 §1.4）；成功都是继续（`OK` 即成，两路都继续，成了就不用选）。有名可测（两种处理一个名字，5 个测试可锁，没有名字两个 `if` 散在各处，各管各的）。备选方案（调用处各写 `if != OK`）被否决了：处理散在两处（同样的错的处理应该有一个名字）。
 
 ### D2 生源的号复用一源
 
 - **C**：`RS_PROC_NR = 2`（`com.h:61`）作父亲（`376`）。
-- **Rust**：复用 `Endpoint::RS` 一源（不造新号，`SchedulerConfig::from_slot` 既有 `parent: Endpoint::RS`（`os/servers/rs/src/sched.rs:67`）；05/10 同源）。
+- **Rust**：复用 `Endpoint::RS` 一源（不造新号，`SchedulerConfig::from_slot` 既有 `parent: Endpoint::RS`（`os/servers/rs/src/sched.rs:fn from_slot（L67，工具生成）`）；05/10 同源）。
 - **为什么**：一源三用（05 的判断/10 的选择/14 的生，三处用一个源，改号改一处，Proposal #12 的惯例）。本篇不造新号（新号即副本，副本即漂移的来源）。
 
 ### D3 清理和改槽只描述、不扩写
@@ -158,16 +158,16 @@ os/libs/minix-types/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 申请的判断 | `utility.c:364-382` | `os/servers/rs/src/sched.rs:119` 既有（`sched_decision`） | 双断言直达 |
-| 取消的处理 | `manager.c:461` + `request.c:342` | `os/servers/rs/src/sched.rs:147,159,174` 新增（`on_stop_result`） | 同样的错、不同的处理 |
+| 申请的判断 | `utility.c:364-382` | `os/servers/rs/src/sched.rs:fn sched_decision` 既有（`sched_decision`） | 双断言直达 |
+| 取消的处理 | `minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）` + `request.c:342` | `os/servers/rs/src/sched.rs:enum StopSite,159,174` 新增（`on_stop_result`） | 同样的错、不同的处理 |
 | 生源的号 | `com.h:61` | `Endpoint::RS` 一源（复用） | 三处用一源 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 零即成（成了不用选） | `on_stop_result` 先判零 | 零即继续 | `manager.c:461` + `request.c:342` 的 `OK` 路 |
-| 失败代价跟着位置（继续/返回） | `StopSite` 分支 | 位置即处理 | `manager.c:461-463` 对 `request.c:342-345` |
+| 零即成（成了不用选） | `on_stop_result` 先判零 | 零即继续 | `minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）` + `request.c:342` 的 `OK` 路 |
+| 失败代价跟着位置（继续/返回） | `StopSite` 分支 | 位置即处理 | `minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）` 对 `request.c:342-345` |
 | 取消不改槽（改在取消后） | 调用者约定（do_edit 的顺序） | 文档即约定 | `request.c:342-347` |
 | 号复用一源（不造新号） | `Endpoint::RS` 复用 | 一源即约定 | `com.h:61` + 三处用处 |
 
@@ -175,12 +175,12 @@ os/libs/minix-types/src/
 
 ## 5 测试要点
 
-基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。既有 4 个测试（`test_sched_decision_sys_proc_starts/user_proc_none_skips/passes_full_config/boot_defaults_match_c`，`os/servers/rs/src/sched.rs:231-278`）复用不重列。
+基线以 `cargo test -p minix-sched --lib` 实际输出为准（改写时本地为 59 passed，见全仓回归报告）。既有 4 个测试（`test_sched_decision_sys_proc_starts/user_proc_none_skips/passes_full_config/boot_defaults_match_c`，`os/servers/rs/src/sched.rs:fn set_sig_mgrs（L231，工具生成）`）复用不重列。
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_stop_ok_continues` | `manager.c:461` + `request.c:342` | 零即成（两路都继续） | `os/servers/rs/src/sched.rs` |
-| `test_cleanup_warns_on` | `manager.c:461-463` | 清理失败打警告继续走 | `os/servers/rs/src/sched.rs` |
+| `test_stop_ok_continues` | `minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）` + `request.c:342` | 零即成（两路都继续） | `os/servers/rs/src/sched.rs` |
+| `test_cleanup_warns_on` | `minix3/minix/servers/rs/manager.c:rproc（L461，工具生成）` | 清理失败打警告继续走 | `os/servers/rs/src/sched.rs` |
 | `test_edit_aborts_on` | `request.c:342-345` | 改槽失败带码返回 | `os/servers/rs/src/sched.rs` |
 
 测试策略：取消处理按成败（零继续/非零按位置）锁定；失败代价按位置（清理继续/改槽返回）锁定；既有申请判断 4 个测试复用（D0）。
@@ -211,7 +211,7 @@ os/libs/minix-types/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/rs/utility.c:364-382`（申请的双断言直达）、`minix3/minix/servers/rs/type.h:92-95`（槽里的 4 个值）、`minix3/minix/servers/rs/manager.c:455-465`（清理服务时的取消）、`minix3/minix/servers/rs/request.c:335-345`（改槽时的取消）、`minix3/minix/include/minix/com.h:61`（生源的号）
+- C 源：`minix3/minix/servers/rs/utility.c:sched_init_proc`（申请的双断言直达）、`minix3/minix/servers/rs/type.h:ARGV_ELEMENTS（L92，工具生成）`（槽里的 4 个值）、`minix3/minix/servers/rs/manager.c:rproc（L455，工具生成）`（清理服务时的取消）、`minix3/minix/servers/rs/request.c:do_edit（L335，工具生成）`（改槽时的取消）、`minix3/minix/include/minix/com.h:RS_PROC_NR`（生源的号）
 - 阶段文档：`05-priority-timeslice-model.md`（出身的判断）、`06-start-scheduling.md`（收消息检查）、`10-pick-cpu-smp.md`（守土的选择）、`13-pm-interaction.md`（上一站）、`99-global-concepts.md`（下一站）
 - Rust 实现：`os/servers/rs/src/sched.rs:1`（本篇申请取消层，新增取消处理）
 - 对端：`../03-stage-rs/08-rs-slot-config.md`（槽配置，主权方）、`../03-stage-rs/15-rs-terminate-restart.md`（终止重启，主权方）、`os/servers/sched/src/client.rs:1`（申请镜像层对照）

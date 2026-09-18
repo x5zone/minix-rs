@@ -165,9 +165,9 @@
 
 - `22-stdio-games.md`、`23-terminal-games.md`——说话与动屏（本篇的前置）
 - `99-global-concepts.md`——全局概念（下一步：收束）
-- `minix3/games/adventure/hdr.h:78-116`——词汇与摆放（`adventure.rs` 的形状来源）
-- `minix3/games/fish/fish.c:61-83`——点数与成书（`fish.rs` 的形状来源）
-- `minix3/games/random/random.c:107-126`——播种与选中（`lottery.rs` 的形状来源）
+- `minix3/games/adventure/hdr.h:HTSIZE`——词汇与摆放（`adventure.rs` 的形状来源）
+- `minix3/games/fish/fish.c:RANKS`——点数与成书（`fish.rs` 的形状来源）
+- `minix3/games/random/random.c:main（L107，工具生成）`——播种与选中（`lottery.rs` 的形状来源）
 
 ---
 

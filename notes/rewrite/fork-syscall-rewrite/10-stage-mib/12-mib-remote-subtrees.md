@@ -1,7 +1,7 @@
 # 12 — 系统信息库远端子树：跨服务的子树挂载与请求转交
 
 > **分类**: 跨服务挂载 / 远程转交
-> **源码**: `minix3/minix/servers/mib/remote.c`（全文 477 行）、`minix3/minix/servers/mib/tree.c:1543-1560`（`mib_mount` 头）、`:1560-1598`（参数门）、`:1600-1647`（路径 walk）、`:1649-1780`（目标挂载）、`:1789-1842`（`mib_unmount`）
+> **源码**: `minix3/minix/servers/mib/remote.c`（全文 477 行）、`minix3/minix/servers/mib/tree.c:mib_tree_init（L1543，工具生成）`（`mib_mount` 头）、`:1560-1598`（参数门）、`:1600-1647`（路径 walk）、`:1649-1780`（目标挂载）、`:1789-1842`（`mib_unmount`）
 > **说明**: 远端服务如何把自己的子树挂载到本服务树中、请求如何通过授权凭证转交给远端、远端服务异常退出后如何清理。本篇含远端子树次主线的完整路径图（plan §1.3），也是单向消息约束（请求方不等待回信）行为的主篇。
 
 ---
@@ -112,10 +112,10 @@ remote.c 头注释（`:6-22`）开宗明义：**没有主动的服务死亡通�
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 槽定位变枚举 | 循环 + `break` + 注释 | `SlotVerdict::{Reuse,ReapThenReuse,Fresh,Full}`（`remote.rs:74`）+ `locate_slot`（`:97`） | "同 label 异端点=老死了"是本篇最反直觉的一句（`:128-136`），值得变体名；满表静默丢是一等公民（单向无处回）不是 else 分支 |
-| D2 | label 变定长值 | `char[16]` + `strlcpy/strcmp` | `Label{bytes:[u8;16]}`（`remote.rs:32`）+ `from_bytes/equals` | 16 含 NUL 的界（`:28`）在构造时钉（超长 `None`）；`equals` 逐字节（`strcmp` 语义，无 NUL 提前停留给调用方保证 terminator） |
+| D1 | 槽定位变枚举 | 循环 + `break` + 注释 | `SlotVerdict::{Reuse,ReapThenReuse,Fresh,Full}`（`os/servers/mib/src/remote.rs:fn equals`）+ `locate_slot`（`:97`） | "同 label 异端点=老死了"是本篇最反直觉的一句（`:128-136`），值得变体名；满表静默丢是一等公民（单向无处回）不是 else 分支 |
+| D2 | label 变定长值 | `char[16]` + `strlcpy/strcmp` | `Label{bytes:[u8;16]}`（`os/servers/mib/src/remote.rs:struct EndptSlot（L32，工具生成）`）+ `from_bytes/equals` | 16 含 NUL 的界（`:28`）在构造时钉（超长 `None`）；`equals` 逐字节（`strcmp` 语义，无 NUL 提前停留给调用方保证 terminator） |
 | D3 | 挂载门变枚举 | `if` 链散 `return` | `MountHead::{Proceed,TooShort,BadFlags,BadWindow}`（`mount.rs:23`）+ `head_code`（`:60`） | 顶层禁挂（`EPERM`）与窗错（`EINVAL`）码不同因不同（安全 vs 格式），枚举让码有出处 |
-| D4 | 回信检查变枚举 | 两处手写同形检查 | `check_reply`（`remote.rs:179`）+ `ReplyCheck::{Deliver,WrongType,WrongId}` | `remote_info` 与 `remote_call` 尾同形（`:359-364` vs `:461-464`）——第二次出现即抽象（02 `RemoteReply` 是 wire 视图，本篇是 verdict） |
+| D4 | 回信检查变枚举 | 两处手写同形检查 | `check_reply`（`os/servers/mib/src/remote.rs:fn dereg_slot（L179，工具生成）`）+ `ReplyCheck::{Deliver,WrongType,WrongId}` | `remote_info` 与 `remote_call` 尾同形（`:359-364` vs `:461-464`）——第二次出现即抽象（02 `RemoteReply` 是 wire 视图，本篇是 verdict） |
 | D5 | 恢复数学变函数 | 循环重数内联（`:1813-1818`） | `recount_clen`（`mount.rs:155`）+ `is_obscuring`（`:170`） | "动态孩子不可能在场故重数静态即全数"（`:1673` 保的）值得钉：重数函数 + 测试锁死 |
 
 替代方案及否决：端点表本体（32 槽数组 + 链表手术）一步到位——否决，arena 在 13 首表落地（04 §4.4 声明的延续）；verdict 先行。死亡主动通知机制——C TODO（`:6-22`），非本篇 gap：如实记录为已知上游缺口（§4.4），不虚构设计。
@@ -142,13 +142,13 @@ os/servers/mib/src/
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
 | 端点表 | `remote.c:24-35` | `remote.rs:16,23` | 32 槽；label 16 |
-| 槽定位 | `:124-148` | `remote.rs:74,97` | 复用/先清/首空/满丢 |
-| 单向门 | `:210-211,296-297` | `remote.rs:126` | SENDREC→ENOSYS |
-| 路径界 | `:221-224` | `remote.rs:139` | 超 8 静默丢 |
-| 注销定位 | `:245-255` | `remote.rs:150` | 未知静默 |
-| 回信检查 | `:359-364,461-464` | `remote.rs:169,179` | 类型/id/status |
-| 调用者标志 | `:434` | `remote.rs:195` | 1/0 + TODO 注 |
-| label 界 | `:94-99` | `remote.rs:204` | 超 16 ENAMETOOLONG |
+| 槽定位 | `:124-148` | `os/servers/mib/src/remote.rs:fn equals,97` | 复用/先清/首空/满丢 |
+| 单向门 | `:210-211,296-297` | `os/servers/mib/src/remote.rs:fn locate_slot（L126，工具生成）` | SENDREC→ENOSYS |
+| 路径界 | `:221-224` | `os/servers/mib/src/remote.rs:fn locate_slot（L139，工具生成）` | 超 8 静默丢 |
+| 注销定位 | `:245-255` | `os/servers/mib/src/remote.rs:fn register_gate（L150，工具生成）` | 未知静默 |
+| 回信检查 | `:359-364,461-464` | `os/servers/mib/src/remote.rs:fn dereg_slot,179` | 类型/id/status |
+| 调用者标志 | `:434` | `os/servers/mib/src/remote.rs:enum ReplyCheck（L195，工具生成）` | 1/0 + TODO 注 |
+| label 界 | `:94-99` | `os/servers/mib/src/remote.rs:fn check_reply（L204，工具生成）` | 超 16 ENAMETOOLONG |
 | 挂载三门 | `tree.c:1572-1598` | `mount.rs:23,41,60` | 短禁/窗错 |
 | 路径策略 | `:1613-1647` | `mount.rs:77,85` | 真本地非私有；无元 id |
 | 目标判定 | `:1659-1678` | `mount.rs:109,120` | 精确匹配；动态忙 |
@@ -200,7 +200,7 @@ os/servers/mib/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/remote.c`（全文）、`minix3/minix/servers/mib/tree.c:1543-1842`
+- C 源：`minix3/minix/servers/mib/remote.c`（全文）、`minix3/minix/servers/mib/tree.c:mib_tree_init（L1543，工具生成）`
 - 阶段文档：`02-mib-message-contract.md`（信封/单向约束）、`03-mib-node-model.md`（四格/远端包）、`06-mib-copy-io.md`（relay）、`07-mib-auth-model.md`（label 校验隐含服务身份）、`08-mib-dynamic-nodes.md`（`mib_add/remove` 差量）、`10-mib-dispatch.md`（上一站，续走）、`13-mib-subtree-kern.md`（下一站）、`22-mib-rmib-client.md`（注册端）、`../07-stage-ds/08-ds-retrieve.md`（label 机制对端）
 - Rust 实现：`os/servers/mib/src/remote.rs`、`os/servers/mib/src/tree/mount.rs`
 - 外部消费者：`minix3/minix/servers/ipc/main.c`（`kern.ipc`）、`minix3/minix/net/lwip/mibtree.c`（`net.*`）、`minix3/minix/net/uds/stat.c`（`net.local`）

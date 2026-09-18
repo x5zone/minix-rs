@@ -392,8 +392,8 @@ int do_rs_memctl(message *m_ptr)
 | VM_RS_MEM_HEAP_PREALLOC | 宏 | com.h:751 | 已覆盖 | §2.5 |
 | VM_RS_MEM_MAP_PREALLOC | 宏 | com.h:752 | 已覆盖 | §2.5 |
 | VM_RS_MEM_GET_PREALLOC_MAP | 宏 | com.h:753 | 已覆盖 | §2.5 |
-| SF_VM_ROLLBACK | 宏 | rs.h:198 | 已覆盖 | §2.1 |
-| SF_VM_NOMMAP | 宏 | rs.h:199 | 已覆盖 | §2.1 |
+| SF_VM_ROLLBACK | 宏 | minix3/minix/include/minix/rs.h:SF_VM_ROLLBACK | 已覆盖 | §2.1 |
+| SF_VM_NOMMAP | 宏 | minix3/minix/include/minix/rs.h:SF_VM_NOMMAP | 已覆盖 | §2.1 |
 
 **覆盖统计**：总符号 25 / 已覆盖 25 / 覆盖率 100%
 

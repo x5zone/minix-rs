@@ -16,7 +16,7 @@
 
 ### 1.1 为什么需要固定大小的进程表
 
-VFS 保留 `fproc[NR_PROCS]`，每个用户进程恰好占据一个槽位，槽位号与内核 `proc` 的槽位号严格同下标。`NR_PROCS` 在 Minix3 的 `sys/config.h` 与内核 `proc.h` 同源（256），而 `fproc.h:11` 注释 *NR_PROCS must be the same as in the kernel. It is not possible or even necessary to tell when a slot is free here.* 正是此同界约束的自述。
+VFS 保留 `fproc[NR_PROCS]`，每个用户进程恰好占据一个槽位，槽位号与内核 `proc` 的槽位号严格同下标。`NR_PROCS` 在 Minix3 的 `sys/config.h` 与内核 `proc.h` 同源（256），而 `minix3/minix/servers/vfs/fproc.h:__VFS_FPROC_H__（L11，工具生成）` 注释 *NR_PROCS must be the same as in the kernel. It is not possible or even necessary to tell when a slot is free here.* 正是此同界约束的自述。
 
 与数组相对的是哈希或树。VFS 选择数组的三个理由在 `glo.h:26-28` 的两宏中显式：
 
@@ -28,7 +28,7 @@ VFS 保留 `fproc[NR_PROCS]`，每个用户进程恰好占据一个槽位，槽�
 
 ### 1.2 空闲哨兵的经济学
 
-`fproc.h:103` 定义 `#define PID_FREE 0`——`pid 0` 永不分配给用户进程，因此 `fp_pid == 0` 即“此槽空闲”。`glo.h:27` 的 `fproc_addr` 与 `utility.c:108-109` 的 `fproc[*proc].fp_endpoint == NONE` 检查则构成第二哨兵：`Endpoint::NONE` 同样永不分配。
+`minix3/minix/servers/vfs/fproc.h:PID_FREE` 定义 `#define PID_FREE 0`——`pid 0` 永不分配给用户进程，因此 `fp_pid == 0` 即“此槽空闲”。`glo.h:27` 的 `fproc_addr` 与 `utility.c:108-109` 的 `fproc[*proc].fp_endpoint == NONE` 检查则构成第二哨兵：`Endpoint::NONE` 同样永不分配。
 
 `FProc::new_unused()` 同时清零两者（`pid=PID_FREE, endpoint=NONE`），与 `main.c:405-408` 的第一遍初始化 `rfp->fp_pid=PID_FREE; rfp->fp_endpoint=NONE;` 原子化。`utility.c:108-109` 的 `ke==NONE → assert(pid==PID_FREE)` 与 `111-114` 的 `ke!=endpoint → assert(pid!=PID_FREE)` 正是双哨兵互证的运行时检查：若端点为 `NONE`，则 pid 必须为 `0`；若端点已知但与传入端点不一致，则 pid 必须非 `0`（槽正被占用）。
 
@@ -55,7 +55,7 @@ VFS 保留 `fproc[NR_PROCS]`，每个用户进程恰好占据一个槽位，槽�
 
 调用点统计显示分岔意图：
 
-- `cdev.c:81/444`、 `dmap.c:155/209`、 `mount.c:123` 的 `isokendpt → EINVAL` 将验证失败转为面向用户的 `EINVAL/EDEADEPT`；
+- `minix3/minix/servers/vfs/cdev.c:cdev_get（L81，工具生成）/444`、 `minix3/minix/servers/vfs/dmap.c:do_mapdriver（L155，工具生成）/209`、 `mount.c:123` 的 `isokendpt → EINVAL` 将验证失败转为面向用户的 `EINVAL/EDEADEPT`；
 - `main.c:901` 的 `worker_start(fproc_addr(PM_PROC_NR), pm_reboot, …)` 前的 `fproc_addr` 则以 `okendpt` 保证 `PM_PROC_NR` 必合法，否则直接 `panic`；
 - `misc.c:405` 的 `isokendpt(ep) ? rfp=NULL : rfp=&fproc[slot]` 则将验证失败转为 `NULL` 分支（观测路径）。
 
@@ -63,7 +63,7 @@ VFS 保留 `fproc[NR_PROCS]`，每个用户进程恰好占据一个槽位，槽�
 
 ### 1.5 fproc_light：观测的低成本投影
 
-`fproc.h:111-115` 的 `fproc_light[NR_PROCS]` 为 `MIB` 服务设计的只读投影：
+`minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）` 的 `fproc_light[NR_PROCS]` 为 `MIB` 服务设计的只读投影：
 
 ```c
 EXTERN struct fproc_light { dev_t fpl_tty; int fpl_blocked_on; endpoint_t fpl_task; } fproc_light[NR_PROCS];
@@ -89,15 +89,15 @@ VFS 的进程表是 `NR_PROCS` 固定数组，空闲以 `PID_FREE 0` 与 `NONE` 
 
 ## 2 C 源码分析
 
-### 2.1 `fproc[NR_PROCS]` 与 `fproc_light[NR_PROCS]` 的声明（`fproc.h:82/111`）
+### 2.1 `fproc[NR_PROCS]` 与 `fproc_light[NR_PROCS]` 的声明（`minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L82，工具生成）/111`）
 
-`fproc.h:82` 的 `EXTERN struct fproc fproc[NR_PROCS];` 与 `111` 的 `EXTERN struct fproc_light fproc_light[NR_PROCS];` 在 `glo.h` 的 `_TABLE` 宏展开后为 `extern`，在 `table.c` 的 `#define _TABLE` 后为定义（`EXTERN` → 空的技巧）。`NR_PROCS` 来自 `sys/config.h` 的 `256`，与内核 `proc.h` 的同值宏互证（`02` 已在 `fproc.h:11` 注释 *NR_PROCS must be the same as in the kernel*）。
+`minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L82，工具生成）` 的 `EXTERN struct fproc fproc[NR_PROCS];` 与 `111` 的 `EXTERN struct fproc_light fproc_light[NR_PROCS];` 在 `glo.h` 的 `_TABLE` 宏展开后为 `extern`，在 `table.c` 的 `#define _TABLE` 后为定义（`EXTERN` → 空的技巧）。`NR_PROCS` 来自 `sys/config.h` 的 `256`，与内核 `proc.h` 的同值宏互证（`02` 已在 `minix3/minix/servers/vfs/fproc.h:__VFS_FPROC_H__（L11，工具生成）` 注释 *NR_PROCS must be the same as in the kernel*）。
 
 `02` 已解释 `FProcTable.slots: Box<[FProc]>` 的堆语义（1.09 MiB 栈溢出修复），本节复用：`new()` 由 `(0..NR_PROCS).map(|_| FProc::new_unused()).collect()` 直接堆构造，`fproc_light` 同为 `Box<[FprocLight]>` 的占位。
 
-### 2.2 `PID_FREE` 与 `REVIVING` 哨兵（`fproc.h:101-103`）
+### 2.2 `PID_FREE` 与 `REVIVING` 哨兵（`minix3/minix/servers/vfs/fproc.h:NOT_REVIVING`）
 
-`fproc.h:101` `#define NOT_REVIVING 0xC0FFEEE` 与 `102` `#define REVIVING 0xDEEAD` 并非 `fp_pid` 的哨兵，而是 `fp_reviving` 的管道唤醒状态（`pipe.c:342` 的 `rp->fp_pid != PID_FREE && fp_is_blocked(rp)` 与 `593` 的 `rp->fp_pid != PID_FREE && reviving==REVIVING` 分支）。`103` 的 `PID_FREE 0` 才是空闲判据。`02` 的 `FProc::is_in_use() = pid != PID_FREE` 单分支与 `main.c:405-408` 的 `rfp->fp_pid == PID_FREE` 扫描同语义。
+`minix3/minix/servers/vfs/fproc.h:NOT_REVIVING` `#define NOT_REVIVING 0xC0FFEEE` 与 `102` `#define REVIVING 0xDEEAD` 并非 `fp_pid` 的哨兵，而是 `fp_reviving` 的管道唤醒状态（`pipe.c:342` 的 `rp->fp_pid != PID_FREE && fp_is_blocked(rp)` 与 `593` 的 `rp->fp_pid != PID_FREE && reviving==REVIVING` 分支）。`103` 的 `PID_FREE 0` 才是空闲判据。`02` 的 `FProc::is_in_use() = pid != PID_FREE` 单分支与 `main.c:405-408` 的 `rfp->fp_pid == PID_FREE` 扫描同语义。
 
 ### 2.3 `isokendpt_f` 三守卫（`utility.c:92-123`）
 
@@ -122,13 +122,13 @@ Rust 将两者分化为 `call_table.rs: is_ok_endpoint`（`Result`）与 `ok_end
 - 第一遍（`sef_cb_init_fresh` 的 `405-408`）：`for (rfp=&fproc[0]; rfp<&fproc[NR_PROCS]; rfp++) { rfp->fp_pid=PID_FREE; rfp->fp_endpoint=NONE; }`——空闲语义原子化。
 - 第二遍（`sef_cb_init_fresh` 的 `468-483`）：`for (rfp=&fproc[0]; rfp<&fproc[NR_PROCS]; rfp++) { for (i=0;i<OPEN_MAX;i++) rfp->fp_filp[i]=NULL; rfp->fp_rd=NULL; rfp->fp_wd=NULL; }`——目录锚点与 fd 表清零，`FProcTable::init_phase2()` 直接对应。
 
-### 2.7 `fproc_light` 的轻观测（`fproc.h:111-115` / `misc.c:55-96`）
+### 2.7 `fproc_light` 的轻观测（`minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）` / `misc.c:55-96`）
 
-`fproc.h:111` 的 `EXTERN struct fproc_light { dev_t tty; int blocked_on; endpoint_t task; }` 为 `MIB` 投影的三字段（`fpl_tty`、`fpl_blocked_on`、`fpl_task`）。`misc.c:75` 的 `len = sizeof fproc * NR_PROCS` 与 `96` 的 `len = sizeof fproc_light` 的两段 `sys_datacopy` 在 Rust 以 `FprocLight { tty: DevId, blocked_on: BlockedOn, task: Endpoint }` 的 `CopyToUser` 抽象占位（`A-7` 缺口，`#[cfg(feature="fproc_light")]`）。
+`minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）` 的 `EXTERN struct fproc_light { dev_t tty; int blocked_on; endpoint_t task; }` 为 `MIB` 投影的三字段（`fpl_tty`、`fpl_blocked_on`、`fpl_task`）。`misc.c:75` 的 `len = sizeof fproc * NR_PROCS` 与 `96` 的 `len = sizeof fproc_light` 的两段 `sys_datacopy` 在 Rust 以 `FprocLight { tty: DevId, blocked_on: BlockedOn, task: Endpoint }` 的 `CopyToUser` 抽象占位（`A-7` 缺口，`#[cfg(feature="fproc_light")]`）。
 
 ### 2.8 调用点举证（10+ `isokendpt` 用例）
 
-`cdev.c:81/444` 的 `isokendpt(dp->dmap_driver) → EDEADEPT` 与 `isokendpt(proc_e) → EDEADEPT` 为驱动与用户两路；`dmap.c:155/209` 的 `isokendpt(endpoint) → EDEADEPT` 为驱动映射；`path.c:831` 的 `isokendpt(ep) → EINVAL` 为路径解析；`pipe.c:445` 的 `proc_e==NONE || isokendpt → return` 为管道唤醒的 `NONE` 守卫；`sdev.c:1035` 的 `isokendpt(req_id) → EDEADEPT` 为套接字。共同点是“先验证再解引”，与 `fproc.h:11` 的 *It is not possible or even necessary to tell when a slot is free here.* 的“通过端点验证而非 pid 扫描”一致。
+`minix3/minix/servers/vfs/cdev.c:cdev_get（L81，工具生成）/444` 的 `isokendpt(dp->dmap_driver) → EDEADEPT` 与 `isokendpt(proc_e) → EDEADEPT` 为驱动与用户两路；`minix3/minix/servers/vfs/dmap.c:do_mapdriver（L155，工具生成）/209` 的 `isokendpt(endpoint) → EDEADEPT` 为驱动映射；`path.c:831` 的 `isokendpt(ep) → EINVAL` 为路径解析；`pipe.c:445` 的 `proc_e==NONE || isokendpt → return` 为管道唤醒的 `NONE` 守卫；`minix3/minix/servers/vfs/sdev.c:sdev_reply（L1035，工具生成）` 的 `isokendpt(req_id) → EDEADEPT` 为套接字。共同点是“先验证再解引”，与 `minix3/minix/servers/vfs/fproc.h:__VFS_FPROC_H__（L11，工具生成）` 的 *It is not possible or even necessary to tell when a slot is free here.* 的“通过端点验证而非 pid 扫描”一致。
 
 ---
 
@@ -158,14 +158,14 @@ Rust 改写不是照抄 `utility.c:92-123` 三守卫，而是吸收 Redox/Unix �
 
 ### D4 fproc_light 缺口与只读快照
 
-- **C**：`fproc_light[NR_PROCS]` 三字段投影（`fproc.h:111-115`），`MIB` 拉取两段 `sys_datacopy`（`misc.c:75/96`）。
+- **C**：`fproc_light[NR_PROCS]` 三字段投影（`minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）`），`MIB` 拉取两段 `sys_datacopy`（`misc.c:75/96`）。
 - **Rust**：`FprocLight { tty: DevId, blocked_on: BlockedOn, task: Endpoint }` + `FprocLightTable: Box<[FprocLight]>` 占位；`FProcTable::snapshot_light() -> Vec<FprocLight>` 标注 `#[cfg(feature="fproc_light")]` 缺口；`CopyToUser` trait 抽象 `sys_datacopy`。
 - **为什么**：观测面非主路径，`MIB` 未在 minix-rs 推出；保留数据结构契约，同步机制延后（`ARCH A-7`）。
 
 ### D5 宏封装与表拥有
 
 - **C**：`fproc_addr(e)` 宏直接索引 `fproc` 全局（`glo.h:27`）。
-- **Rust**：`FProcTable::at(ep) -> Option<&FProc>`（`to_user_slot` 已在 `minix_types` 实现）与 `slot_of(fp: &FProc) -> UserSlot` 的指针算术封装（`fp as *const _ as usize` 差值/槽大小，非 `fp - fproc` 的裸指针减法）；`who_p` 宏在 Rust 为 `VfsState::caller_slot: Option<UserSlot>` 显式状态（`main_loop.rs:140` `current_fp_slot`）。
+- **Rust**：`FProcTable::at(ep) -> Option<&FProc>`（`to_user_slot` 已在 `minix_types` 实现）与 `slot_of(fp: &FProc) -> UserSlot` 的指针算术封装（`fp as *const _ as usize` 差值/槽大小，非 `fp - fproc` 的裸指针减法）；`who_p` 宏在 Rust 为 `VfsState::caller_slot: Option<UserSlot>` 显式状态（`os/servers/vfs/src/main_loop.rs:enum Route（L140，工具生成）` `current_fp_slot`）。
 - **为什么**：全局 `fproc[]` 在 Rust 以 `VfsState.fproc_table` 聚合拥有（`ARCH A-4`），宏的裸索引在 Rust 以 `Option` 的 fail-closed 替代越界。
 
 ### ARCH 决策总表
@@ -197,13 +197,13 @@ os/servers/vfs/src/
 | `ok_endpoint` | `proto.h:357` 致命 | `fproc.rs:793` `FProcTable::ok_endpoint(&self, ep) -> UserSlot` | `is_ok_endpoint(...).unwrap_or_else(|_| panic!("ok_endpoint failed at {}:{}", file!(), line!()))` |
 | `fproc_addr` | `glo.h:27` 宏 | `fproc.rs:805` `FProcTable::at(&self, ep) -> Option<&FProc>` | `is_ok_endpoint` 的 `Option` 封装，`&self.slots[slot.get()]` |
 | `who_p` | `glo.h:26` 宏 | `VfsState::caller_slot: Option<UserSlot>` | `fp - fproc` 的指针算术以 `UserSlot` 显式状态替代 |
-| `FprocLight` | `fproc.h:111` | `fproc.rs:820` `FprocLight { tty, blocked_on, task }` | 投影结构，`tty: DevId` / `blocked_on: BlockedOn` / `task: Endpoint` |
-| `FprocLightTable` | `fproc.h:115` | `fproc.rs:830` `FprocLightTable(Box<[FprocLight]>)` | `snapshot_light(&FProcTable) -> Vec<FprocLight>` 占位，`#[cfg(feature="fproc_light")]` |
+| `FprocLight` | `minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）` | `fproc.rs:820` `FprocLight { tty, blocked_on, task }` | 投影结构，`tty: DevId` / `blocked_on: BlockedOn` / `task: Endpoint` |
+| `FprocLightTable` | `minix3/minix/servers/vfs/fproc.h:PID_FREE（L115，工具生成）` | `fproc.rs:830` `FprocLightTable(Box<[FprocLight]>)` | `snapshot_light(&FProcTable) -> Vec<FprocLight>` 占位，`#[cfg(feature="fproc_light")]` |
 | `FprocError` | `utility.c:122` `EDEADEPT` | `fproc.rs:860` `enum FprocError { BadEndpoint }` → `EDEADEPT 78` | `errno.rs:68` `EDEADEPT=78` 单一映射 |
 
 ### 4.3 两遍初始化的 Rust 位置
 
-`FProcTable::new()` 已由 `(0..NR_PROCS).map(|_| FProc::new_unused()).collect()` 覆盖第一遍（`pid=0, endpoint=NONE`）；`init_phase2()` 已覆盖第二遍（`filps=[None; OPEN_MAX], rd/wd=None`）。03 不新增 `init` 方法，仅在 `main_loop.rs:191` 的 `init_fresh()` 保留两遍调用的显式时序。
+`FProcTable::new()` 已由 `(0..NR_PROCS).map(|_| FProc::new_unused()).collect()` 覆盖第一遍（`pid=0, endpoint=NONE`）；`init_phase2()` 已覆盖第二遍（`filps=[None; OPEN_MAX], rd/wd=None`）。03 不新增 `init` 方法，仅在 `os/servers/vfs/src/main_loop.rs:enum BootPhase（L191，工具生成）` 的 `init_fresh()` 保留两遍调用的显式时序。
 
 ### 4.4 不变量
 
@@ -213,7 +213,7 @@ os/servers/vfs/src/
 | 三守卫验证顺序 | `is_ok_endpoint` | `NONE → BadSlot → BadEndpoint` | `utility.c:92` 三分支 |
 | 致命分化 | `ok_endpoint` | `fatal=1 → panic` | `proto.h:357` |
 | 槽位同界 | `FProcTable: Box<[FProc;256]>` | `NR_PROCS` 与内核同值 | `com.rs:NR_PROCS=256` |
-| 轻表只读 | `FprocLight` | `snapshot_light` 无写路径 | `fproc.h:111` 注释 |
+| 轻表只读 | `FprocLight` | `snapshot_light` 无写路径 | `minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）` 注释 |
 
 ---
 
@@ -229,8 +229,8 @@ os/servers/vfs/src/
 | `test_is_ok_endpoint_mismatch` | `utility.c:107` | `ke != ep → EDEADEPT`（空闲 vs 占用两条） | `fproc.rs:915` |
 | `test_ok_endpoint_panic` | `utility.c:119` | `fatal=1 → panic`（`#[should_panic]`） | `fproc.rs:925` |
 | `test_fproc_addr_none` | `glo.h:27` | `NONE → None` 的 fail-closed | `fproc.rs:932` |
-| `test_is_in_use_pid_free` | `fproc.h:103` | `pid==0 → !is_in_use()` | `fproc.rs:940` |
-| `test_fproc_light_snapshot` | `fproc.h:111` | `snapshot_light` 的 `#[cfg(feature)]` 缺口（ `cfg_attr` 跳过） | `fproc.rs:950` |
+| `test_is_in_use_pid_free` | `minix3/minix/servers/vfs/fproc.h:PID_FREE` | `pid==0 → !is_in_use()` | `fproc.rs:940` |
+| `test_fproc_light_snapshot` | `minix3/minix/servers/vfs/fproc.h:PID_FREE（L111，工具生成）` | `snapshot_light` 的 `#[cfg(feature)]` 缺口（ `cfg_attr` 跳过） | `fproc.rs:950` |
 
 测试策略：`FProcTable` 的 `is_ok` 三守卫以 `NONE` 端点、越界端点（`Endpoint::from_generation_slot(0,999)`）、失配端点（同槽位不同 generation）三样本覆盖；`ok` 的 `panic` 以 `#[should_panic(expected="ok_endpoint")]` 显式；`fproc_light` 的快照以 `#[cfg(feature="fproc_light")]` 在默认 `cargo test` 下跳过（defer 契约），开 `feature` 后 `assert_eq!(light.tty, NO_DEV)`。
 
@@ -259,7 +259,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/fproc.h:82/101-115`（`fproc[NR_PROCS]` / `PID_FREE` / `fproc_light`）、`minix3/minix/servers/vfs/utility.c:92-123`（`isokendpt_f` 三守卫）、`minix3/minix/servers/vfs/glo.h:26-28`（`fproc_addr`/`who_p`）、`minix3/minix/servers/vfs/main.c:405-408`（第一遍）、`468-483`（第二遍）、`minix3/minix/servers/vfs/proto.h:352-358`（`okendpt/isokendpt` 宏）、`minix3/minix/servers/vfs/misc.c:55-96`（`fproc_light` 的 `sys_datacopy` 两段）
+- C 源：`minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L82，工具生成）/101-115`（`fproc[NR_PROCS]` / `PID_FREE` / `fproc_light`）、`minix3/minix/servers/vfs/utility.c:fetch_name（L92，工具生成）`（`isokendpt_f` 三守卫）、`minix3/minix/servers/vfs/glo.h:who_p`（`fproc_addr`/`who_p`）、`minix3/minix/servers/vfs/main.c:sef_cb_init_fresh（L405，工具生成）`（第一遍）、`468-483`（第二遍）、`minix3/minix/servers/vfs/proto.h:resume_recvmsg（L352，工具生成）`（`okendpt/isokendpt` 宏）、`minix3/minix/servers/vfs/misc.c:do_getsysinfo（L55，工具生成）`（`fproc_light` 的 `sys_datacopy` 两段）
 - 阶段文档：`02-fproc-struct.md`（`FProc` 字段与 `BlockedOn` 枚举）、`04-filp-table.md`（`init_filps` 的 `get_filp` 族）、`09-main-loop.md`（`fproc_addr` 的 `transid` 分发）、`99-global-concepts.md`（`PID_FREE`/`NR_PROCS` 常量与 `Endpoint` 术语）
-- Rust 实现：`os/servers/vfs/src/fproc.rs:383`（`FProcTable: Box<[FProc]>`）、`os/servers/vfs/src/main_loop.rs:130`（`VfsState.fproc_table` 聚合）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
+- Rust 实现：`os/servers/vfs/src/fproc.rs:fn to_fproc_snap（L383，工具生成）`（`FProcTable: Box<[FProc]>`）、`os/servers/vfs/src/main_loop.rs:fn lu_rollback_needs_workers（L130，工具生成）`（`VfsState.fproc_table` 聚合）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/06-proc-init-boot-proc.md`（`endpoint` 的 `generation` 回绕与 `proc` 表同界）

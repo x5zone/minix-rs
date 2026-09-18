@@ -12,7 +12,7 @@ prompt/
 │   ├── review.md            —   Review 核心框架（原则、约束、优先级、输出模板、执行模型分层）
 │   ├── review-doc-checklist.md  —  文档检查清单（§1~§3，含 §2.0 Claims-Evidence）
 │   ├── review-code-checklist.md —  代码检查清单（§1~§15，含 Kernel SMP/BKL 并发）
-│   ├── review-patterns.md       —  常见错误模式（84 个枚举模式，含文档/代码/测试/卓越性/流程/架构抽象与锚点纪律）
+│   ├── review-patterns.md       —  常见错误模式（85 个枚举模式，含文档/代码/测试/卓越性/流程/架构抽象与锚点纪律）
 │   ├── review-process.md        —  执行流程（§〇三模式 + Step 0~7 + 状态追踪 + 收敛判断）
 │   ├── review-profiles.md       —  任务组合配置（Profile A~P + R + AG，含分阶段 H~K + 卓越性 O + 覆盖率 P）
 │   ├── review-core-semantics.md —  核心语义对齐（行为契约表 + IPC/生命周期契约模板）
@@ -82,7 +82,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 3. **review-process.md** — 强制执行步骤，要求每个步骤必须产生可见中间产物（流程层）。含状态写入与收敛判断、Review Verification Protocol、§〇 执行模式选择（构造/快速/深度三模式）、Step 1.5 覆盖率穷举。
 4. **review-doc-checklist.md** — 文档维度的检查清单（文档维度层）。含 §2.0 Claims-Evidence Tracing（论文级文档质量方法论）。
 5. **review-code-checklist.md** — 代码维度的检查清单（代码维度层）。含 §4.2 内核 SMP/BKL 并发检查项。
-6. **review-patterns.md** — 常见错误模式汇总（错误模式层）。含 Kernel SMP 并发、测试、卓越性、叙事、Design-First 和流程漂移模式，共 84 个（81 个编号 1-60、63-83 + A/B/C 字母；61/62 已合并至 60 保留空号；79-83 为 2026-09-05 新增的架构抽象与锚点纪律模式）。
+6. **review-patterns.md** — 常见错误模式汇总（错误模式层）。含 Kernel SMP 并发、测试、卓越性、叙事、Design-First 和流程漂移模式，共 85 个（82 个编号 1-60、63-84 + A/B/C 字母；61/62 已合并至 60 保留空号；79-83 为 2026-09-05 新增的架构抽象与锚点纪律模式，84 为 2026-09-18 H3 增补的未标注反模式示例模式）。
 7. **review-core-semantics.md** — 核心语义对齐。定义核心语义不变性原则，提供函数/IPC/生命周期行为契约表模板。
 8. **review-doc-excellence.md** — 文档卓越性。§4.1 叙事结构、§4.2 读者体验、§4.3 教学深度、§4.4 可维护性。
 9. **review-code-excellence.md** — 代码卓越性。§16 API 设计、§17 表达力、§18 性能、§19 代码即文档、§20 可测试性、§21 测试质量。
@@ -99,7 +99,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 | 项 | 限制 | 来源 | 当前文件 | 状态 |
 |---|------|------|---------|------|
-| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **9,751 字符（≈ 97.5%）✅ 达标，余量 249 字符**（2026-09-05 实测） |
+| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **9,323 字符（≈ 93.2%）✅ 达标，余量 677 字符**（2026-09-18 实测） |
 | Rule（规则） | 硬上限 20,000 byte；建议 ≤ 10,000 字符；token 视角约 3,000 token | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/52) | n/a（本目录无 Rule 文件） | — |
 | **Skill `name`** | ≤ **64 字符**，仅小写字母/数字/连字符（`-`），与父目录同名 | [Trae Skill 规范](https://docs.trae.ai/ide/best-practice-for-how-to-write-a-good-skill) | n/a（Trae Skill 命名规范） | — |
 | **Skill `description`** | ≤ **1024 字符**（硬限制），建议 ≤ 200 字符 | 同上 | n/a | — |
@@ -110,7 +110,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 ### `review-agent-ide.md` 的 10,000 字限制说明
 
-- **当前 9,751 字符，已达标但余量 249 字符**（硬上限 10,000 字符的 97.5%，2026-09-05 实测）。**新增任何约束前必须先核对余量；超 10,000 字符必须触发规则精简**（候选：精简重复条目 / 下沉更多详情到 Skill）。
+- **当前 9,323 字符，达标且余量 677 字符**（硬上限 10,000 字符的 93.2%，2026-09-18 实测）。**新增任何约束前必须先核对余量；超 10,000 字符必须触发规则精简**（候选：精简重复条目 / 下沉更多详情到 Skill）。
 - **结构**：Agent 作为**路由器**，详细知识下沉到 8 个 Skill：
   - Core Principles 保留最核心原则；
   - Output Template、Review Process、Phased Review 详情引用 `review-process-skill.md`；
@@ -157,7 +157,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 1. 在 Trae IDE 打开「智能体」配置面板（右上角 → 智能体 → 创建智能体）
 2. 将 `review-agent-ide.md` 的内容**完整复制粘贴**至"提示词（Prompt）"输入框
-   - ✅ **已达标**：9,751 字符 < 10,000 硬上限，可直接粘贴（余量 249，2026-09-05 实测）。
+   - ✅ **已达标**：9,323 字符 < 10,000 硬上限，可直接粘贴（余量 677，2026-09-18 实测）。
 3. 将 `review-agent-trigger.md` 的内容**完整复制粘贴**至"何时调用"输入框
 4. 启用所需 MCP 工具（建议启用：文件系统、终端、联网搜索）
 5. 在「规则与技能」面板，将 9 个领域 `review-*-skill.md` 各自作为 Skill 导入（注意 Trae 的 Skill 有 `name`/`description` 字段约束，见上表）
@@ -229,11 +229,11 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 | 原始规则 | 转化产物 | 角色 | 当前字符 |
 |---------|---------|------|---------|
-| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 9,751 ✅（余量 249，2026-09-05 实测） |
+| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 9,323 ✅（余量 677，2026-09-18 实测） |
 | review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） | 4,001 ✅ |
 | review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,461 |
 | review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,335 |
-| review-patterns.md | review-patterns-skill.md | Skill（84 个错误模式；Gate D 严格通过标准） | 见同步表实测 |
+| review-patterns.md | review-patterns-skill.md | Skill（85 个错误模式；Gate D 严格通过标准） | 见同步表实测 |
 | review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 三工具隔离 + Gate 证据 + Gate G/H 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6 + Step 1.0a-g 等**） | 65,581 |
 | review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） | 8,464 |
 | review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.5 + 代码§16-21 卓越性） | 9,220 |
@@ -306,7 +306,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 - **`SKILL.md`** — Orchestrator。YAML frontmatter 定义 `name`、`description`、`allowed-tools`。Phase 1-9 控制执行顺序：**Scope → Coverage Enumeration → Gap Scan → Doc Checks → Code Checks → Patterns → Excellence → Cross-doc → Report**。含 evidence 分级、"先读后判"强制规则、**Explicit Skill Invocation**、**STATE.md 双路径**、**scan.md 双写规则**。
 - **`checks/doc.md`** — 文档检查。覆盖 §2.0 Claims-Evidence、概念准确性、C 代码引用（**禁止"未逐行验证"**）、数据结构、doc-code 一致性、架构演进、跨引用、图示、C 源码覆盖、设计质量、链接验证、文档风格、skip 检查。
 - **`checks/code.md`** — 代码检查。覆盖 rewrite 质量、硬件抽象、trait 设计、类型安全、执行模型（含 SMP/BKL §4.2）、内存模型、模块设计、命名、测试、注释、64-bit、复杂度、no_std、设计-代码一致性、C-Rust 对齐、精度检查。
-  - **`checks/patterns.md`** — 错误模式库。源规则共 84 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
+  - **`checks/patterns.md`** — 错误模式库。源规则共 85 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
 - **`checks/process.md`** — 执行流程。含 §〇 三模式选择（构造/快速/深度）、**STATE.md 双路径**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**、**P0/P1/P2 同步规则**。
 - **`checks/excellence.md`** — 卓越性检查。文档 §4.1-4.5 + 代码 §16-21。
 
@@ -426,7 +426,7 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
    ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
    ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
    ```
-   ls 输出必须写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一）。
+   ls 输出必须写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））。
 
 2. **缺失判定 + 嵌入生成（2026-07-17 更新）**：
    - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）

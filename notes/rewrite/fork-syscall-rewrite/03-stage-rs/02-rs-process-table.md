@@ -1,7 +1,7 @@
 # 02-rs-process-table: 服务登记表（rproc / rprocpub）
 
 > **分类**: 阶段 1 — 启动入口与初始化骨架（boot Step 1 的 slot 建立底座）
-> **源码**: `minix3/minix/servers/rs/type.h`（112 行）、`minix3/minix/servers/rs/glo.h`（58 行）、`minix3/minix/servers/rs/const.h`（123 行）、`minix3/minix/servers/rs/manager.c:1935-2109`（槽位管理原语）、`minix3/minix/servers/rs/utility.c:352-359`（`rs_isokendpt`）、`minix3/minix/servers/rs/manager.c:1334-1352`（`get_service_instances`）、`minix3/minix/include/minix/rs.h`（`rprocpub`/`SF_*`）、`minix3/minix/include/minix/sef.h`（`sef_init_info_t`）
+> **源码**: `minix3/minix/servers/rs/type.h`（112 行）、`minix3/minix/servers/rs/glo.h`（58 行）、`minix3/minix/servers/rs/const.h`（123 行）、`minix3/minix/servers/rs/manager.c:rproc`（槽位管理原语）、`minix3/minix/servers/rs/utility.c:rs_isokendpt`（`rs_isokendpt`）、`minix3/minix/servers/rs/manager.c:get_service_instances`（`get_service_instances`）、`minix3/minix/include/minix/rs.h`（`rprocpub`/`SF_*`）、`minix3/minix/include/minix/sef.h`（`sef_init_info_t`）
 > **Rust 模块**: `os/servers/rs/src/service_slot.rs`、`os/servers/rs/src/process_table.rs`（新建）；`os/servers/rs/src/boot.rs`（接线）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md`、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（boot 骨架，本文档是 Step 1 建立 slot 的数据底座）
 > **说明**: 本文档是 RS 的数据底座：系统服务登记表（`rproc`/`rprocpub`/`rproc_ptr`）的完整字段模型、16 位 `r_flags` 与 13 位 `sys_flags` 全表、槽位管理原语（5 个 `lookup_slot_by_*`/`alloc_slot`/`free_slot`/`rs_isokendpt`）、ARCH A-3（裸指针四链 → 索引链）与 A-4（`rproc_ptr` → 数组索引）。**本文档只建立数据结构与槽位原语**；每个字段的机制语义（何时写入、何时读取、状态如何迁移）属于各自的机制文档。
@@ -57,7 +57,7 @@ C 里登记表拆成两半：
 登记表的每一行有两组标志，必须分清：
 
 - **`r_flags`（16 位，`const.h:28-43`）——运行状态**：表示"这个槽现在是什么状态"。`RS_IN_USE`（槽被占用）、`RS_ACTIVE`（是服务的活动实例）、`RS_EXITING`（退出已启动）、`RS_TERMINATED`（已终止）、`RS_DEAD`（可回收）……这些位**正交组合**：一个服务可以同时是 `IN_USE|ACTIVE|INITIALIZING`（正在初始化的活动服务）。位不是互斥枚举，这正是 C 用位而不用 enum 的原因。
-- **`sys_flags`（13 位，`rs.h:191-206`）——服务能力/策略**：表示"这个服务需要什么"。`SF_CORE_SRV`（核心服务）、`SF_SYNCH_BOOT`（同步 boot）、`SF_NEED_REPL`（需要副本）……这些位来自 RS_UP 请求或 boot 表，**在服务生命周期内基本不变**（`IMM_SF` 位不可变，rs.h:205-206）。
+- **`sys_flags`（13 位，`minix3/minix/include/minix/rs.h:SF_CORE_SRV`）——服务能力/策略**：表示"这个服务需要什么"。`SF_CORE_SRV`（核心服务）、`SF_SYNCH_BOOT`（同步 boot）、`SF_NEED_REPL`（需要副本）……这些位来自 RS_UP 请求或 boot 表，**在服务生命周期内基本不变**（`IMM_SF` 位不可变，minix3/minix/include/minix/rs.h:IMM_SF）。
 
 **为什么拆两组**：状态位决定"现在怎么办"（监控、清理），能力位决定"当初怎么启动、以后怎么恢复"（副本、脚本、更新）。两组位在 C 中一个在 `rproc`（`r_flags`），一个在 `rprocpub`（`sys_flags`）——正好对应"私有状态"与"公开能力"的边界。
 
@@ -81,13 +81,13 @@ alloc_slot() 找空闲槽 ──► 填充身份/能力（label/endpoint/sys_fla
 两个性能关键点：
 
 1. **端点→槽的反查要 O(1)**：主循环收到消息后要立刻知道"谁发的"（`rproc_ptr[who_p]`，main.c:86）。C 用 `rproc_ptr[NR_PROCS]`（`glo.h:35`）——以端点槽号为下标的指针数组（ARCH A-4）。
-2. **副本链不能悬垂**：一个服务可以有多个实例（旧版本/新版本/副本），C 用四根裸指针 `r_old_rp/r_new_rp/r_prev_rp/r_next_rp`（type.h:68-71）串起来，`get_service_instances`（manager.c:1334-1352）把 rp 及其 prev/next/old/new 收集进一个**静态 5 槽数组**。Rust 用 `Option<SlotId>` 索引链 + 迭代器替代（ARCH A-3）。
+2. **副本链不能悬垂**：一个服务可以有多个实例（旧版本/新版本/副本），C 用四根裸指针 `r_old_rp/r_new_rp/r_prev_rp/r_next_rp`（type.h:68-71）串起来，`get_service_instances`（minix3/minix/servers/rs/manager.c:get_service_instances）把 rp 及其 prev/next/old/new 收集进一个**静态 5 槽数组**。Rust 用 `Option<SlotId>` 索引链 + 迭代器替代（ARCH A-3）。
 
 ---
 
 ## 2. C 源码分析
 
-> 本文档 ground truth 为 `minix3/minix/servers/rs/type.h`、`glo.h`、`const.h`、`manager.c:1935-2109`、`utility.c:352-359`、`manager.c:1334-1352` 与 `minix3/minix/include/minix/rs.h`、`sef.h`。所有行号以 grep 实证为准。
+> 本文档 ground truth 为 `minix3/minix/servers/rs/type.h`、`glo.h`、`const.h`、`minix3/minix/servers/rs/manager.c:rproc`、`utility.c:352-359`、`minix3/minix/servers/rs/manager.c:get_service_instances` 与 `minix3/minix/include/minix/rs.h`、`sef.h`。所有行号以 grep 实证为准。
 
 ### 2.1 全局表声明（glo.h:33-55）
 
@@ -114,8 +114,8 @@ EXTERN struct machine machine;		/* machine info */               /* 55 */
 
 | 常量 | 值 | 定义处 | 含义 |
 |------|----|--------|------|
-| `NR_PROCS` | 256 | `config.h:31`（=`_NR_PROCS`，`sys_config.h:8`） | 系统进程槽上限（`rproc_ptr` 下标范围） |
-| `NR_SYS_PROCS` | 64 | `config.h:32`（=`_NR_SYS_PROCS`，`sys_config.h:9`） | 系统服务槽数（`rproc`/`rprocpub` 长度） |
+| `NR_PROCS` | 256 | `config.h:31`（=`_NR_PROCS`，`minix3/minix/include/minix/sys_config.h:_NR_PROCS`） | 系统进程槽上限（`rproc_ptr` 下标范围） |
+| `NR_SYS_PROCS` | 64 | `config.h:32`（=`_NR_SYS_PROCS`，`minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`） | 系统服务槽数（`rproc`/`rprocpub` 长度） |
 | `NR_TASKS` | 5 | `com.h:56` | 内核任务数（`rs_isokendpt` 下界） |
 | `NR_BOOT_PROCS` | 17 | `param.h:9` | boot 映像条目数（= `NR_TASKS + LAST_SPECIAL_PROC_NR + 1`） |
 
@@ -196,10 +196,10 @@ struct rproc {
 **几个必须注意的 C 事实**：
 
 1. **`r_argv` 是指向 `r_args` 内部的指针数组**（type.h:81 + 注释）：`r_args` 是 NUL 分隔的参数字符串，`r_argv[0..r_argc]` 指向其中每个参数的起始位置。这是"指针进缓冲"模式——Rust 移动/复制结构时这些指针会悬垂（§3.8 的演进决策）。
-2. **`r_pid` 的 -1 语义**：`free_slot`（manager.c:2106）把 `r_pid` 重置为 -1，`lookup_slot_by_pid`（manager.c:1965-1967）对 `pid < 0` 直接返回 NULL。
-3. **`r_io_tab`/`r_irq_tab` 是 priv 结构的随行快照**（type.h:99 注释 "Backup values from the privilege structure"）：C 在 `edit_slot` 里把两张表并排写（IRQ 一句双赋值，manager.c:1498；I/O 从 priv 逐项拷回，:1519），**全树零读者**——RS 从不读备份，`r_priv` 的刷新走 `sys_getpriv` 内核回读（main.c:294、manager.c:601/1819、update.c:308-310），与备份无关。字段存在的原因是它们属于槽位结构的发布面；Rust 侧（D6/E-5）把写路径收敛为从 `r_priv` 的一次派生（`ServiceSlot::refresh_priv_backup`），杜绝双写漂移。
+2. **`r_pid` 的 -1 语义**：`free_slot`（minix3/minix/servers/rs/manager.c:rproc（L2106，工具生成））把 `r_pid` 重置为 -1，`lookup_slot_by_pid`（minix3/minix/servers/rs/manager.c:rproc（L1965，工具生成））对 `pid < 0` 直接返回 NULL。
+3. **`r_io_tab`/`r_irq_tab` 是 priv 结构的随行快照**（type.h:99 注释 "Backup values from the privilege structure"）：C 在 `edit_slot` 里把两张表并排写（IRQ 一句双赋值，minix3/minix/servers/rs/manager.c:rs_start（L1498，工具生成）；I/O 从 priv 逐项拷回，:1519），**全树零读者**——RS 从不读备份，`r_priv` 的刷新走 `sys_getpriv` 内核回读（main.c:294、minix3/minix/servers/rs/manager.c:rproc（L601，工具生成）/1819、update.c:308-310），与备份无关。字段存在的原因是它们属于槽位结构的发布面；Rust 侧（D6/E-5）把写路径收敛为从 `r_priv` 的一次派生（`ServiceSlot::refresh_priv_backup`），杜绝双写漂移。
 
-### 2.4 struct rprocpub 全字段（rs.h:165-183）
+### 2.4 struct rprocpub 全字段（minix3/minix/include/minix/rs.h:rprocpub）
 
 ```c
 struct rprocpub {
@@ -221,7 +221,7 @@ struct rprocpub {
 
 | 字段 | 写入点 | 归属 |
 |------|--------|------|
-| `in_use` | boot 表重置（main.c:234）、`free_slot`（manager.c:2107） | **本文档** |
+| `in_use` | boot 表重置（main.c:234）、`free_slot`（minix3/minix/servers/rs/manager.c:rproc（L2107，工具生成）） | **本文档** |
 | `sys_flags` | boot Step 1（main.c:301）、`init_slot`（08） | **本文档**（位表）+ 08 |
 | `endpoint` | boot Step 1（main.c:325）、`init_slot`（08） | **本文档** |
 | `old_endpoint`/`new_endpoint` | 16（update 时记录 VM 旧/新实例端点） | 16 |
@@ -232,7 +232,7 @@ struct rprocpub {
 | `pci_acl` | 11（`publish_service` 的 `pci_set_acl`） | 11 |
 | `devman_id` | 11（devman bind） | 11 |
 
-**`NO_DEV` 语义**：`dev_nr` 是 `devmajor_t`（major device number），无设备时为 `NO_DEV`（本树 `NO_DEV = ((dev_t) 0)`，`minix3/minix/include/minix/const.h:132`；rs 代码以 `dev_nr > 0` 判定有效设备，request.c:76 / manager.c:806）。`lookup_slot_by_dev_nr` 对 `dev_nr <= 0` 直接返回 NULL（manager.c:1992-1993），所以 `NO_DEV` 槽永远不会被按设备号查到。
+**`NO_DEV` 语义**：`dev_nr` 是 `devmajor_t`（major device number），无设备时为 `NO_DEV`（本树 `NO_DEV = ((dev_t) 0)`，`minix3/minix/include/minix/const.h:NO_DEV`；rs 代码以 `dev_nr > 0` 判定有效设备，request.c:76 / minix3/minix/servers/rs/manager.c:rproc（L806，工具生成））。`lookup_slot_by_dev_nr` 对 `dev_nr <= 0` 直接返回 NULL（minix3/minix/servers/rs/manager.c:rproc（L1992，工具生成）），所以 `NO_DEV` 槽永远不会被按设备号查到。
 
 ### 2.5 r_flags 16 位（const.h:28-43）与 RS_SRV_IS_IDLE（const.h:45）
 
@@ -275,7 +275,7 @@ struct rprocpub {
 
 **`RS_SRV_IS_IDLE(S)` 展开**（const.h:45）：槽空闲 ⟺ `RS_DEAD` 置位，**或** 除 `RS_IN_USE|RS_ACTIVE|RS_CLEANUP_DETACH|RS_CLEANUP_SCRIPT` 之外的位全为 0。直观含义：一个"活着的空闲槽"是 `IN_USE|ACTIVE` 且没有任何进行中的状态（不在退出/初始化/更新/延迟回复中），或者已标记 `DEAD` 待回收。`rs_idle_period`（06）用它判断槽是否可以清理/补副本。
 
-### 2.6 sys_flags 13 位（rs.h:191-206）与预设组合（const.h:65-68）
+### 2.6 sys_flags 13 位（minix3/minix/include/minix/rs.h:SF_CORE_SRV）与预设组合（const.h:65-68）
 
 ```c
 #define SF_CORE_SRV     0x001    /* set for core system services */   /* 191 */
@@ -305,7 +305,7 @@ struct rprocpub {
 #define VM_SF    (SRVR_SF)     			/* vm */                         /* 68 */
 ```
 
-`IMM_SF`（rs.h:205-206 注释 "immutable"）是 `init_slot` 时从旧槽继承的**不可变位**（08 的 `inherit_service_defaults` 用它保证：副本/更新后的新实例不能改变 `NO_BIN_EXP|CORE_SRV|SYNCH_BOOT|NEED_COPY|NEED_REPL` 这些启动契约位）。
+`IMM_SF`（minix3/minix/include/minix/rs.h:IMM_SF 注释 "immutable"）是 `init_slot` 时从旧槽继承的**不可变位**（08 的 `inherit_service_defaults` 用它保证：副本/更新后的新实例不能改变 `NO_BIN_EXP|CORE_SRV|SYNCH_BOOT|NEED_COPY|NEED_REPL` 这些启动契约位）。
 
 ### 2.7 rprocupd / rupdate：更新描述符（type.h:30-54）
 
@@ -356,7 +356,7 @@ typedef struct {
 
 `rinit`（glo.h:40）是 RS 为**即将初始化的服务**准备的初始化信息（boot Step 2 的 `init_service` 构造 RS_INIT 消息时使用）。机制归 12；本文档只登记：`rproctab_gid` 的创建点在 boot（main.c:185），字段表见 12。
 
-### 2.9 槽位管理原语（manager.c:1935-2109）
+### 2.9 槽位管理原语（minix3/minix/servers/rs/manager.c:rproc）
 
 五个查找函数 + 分配/释放。**先看共同骨架**，再看差异：
 
@@ -391,7 +391,7 @@ struct rproc* lookup_slot_by_label(char *label)                          /* 1935
 - `lookup_slot_by_domain` 遍历 `rpub->domain[0..nr_domain]`（套接字驱动域），任一匹配即返回。
 - `lookup_slot_by_flags` 是"任一位置位"语义（`rp->r_flags & flags` 非零），不是全位匹配。
 
-**alloc_slot / free_slot**（manager.c:2067-2109）：
+**alloc_slot / free_slot**（minix3/minix/servers/rs/manager.c:alloc_slot）：
 
 ```c
 int alloc_slot(rpp)                                                      /* 2067 */
@@ -435,11 +435,11 @@ int rs_isokendpt(endpoint_t endpoint, int *proc)
 }
 ```
 
-- `_ENDPOINT_P(e)`（`minix3/minix/include/minix/endpoint.h:68-69`）：`(((e)+MAX_NR_TASKS) & (_ENDPOINT_GENERATION_SIZE-1)) - MAX_NR_TASKS` —— 提取端点的**槽号**（含 generation 折叠）。
+- `_ENDPOINT_P(e)`（`minix3/minix/include/minix/endpoint.h:_ENDPOINT_P`）：`(((e)+MAX_NR_TASKS) & (_ENDPOINT_GENERATION_SIZE-1)) - MAX_NR_TASKS` —— 提取端点的**槽号**（含 generation 折叠）。
 - 合法槽号范围：`[-NR_TASKS, NR_PROCS)` = `[-5, 256)`。负数槽号是内核任务（CLOCK=-3、SYSTEM=-2...），正数/零是用户服务。
 - 主循环（main.c:64-66）用它对**每个收到的消息来源**做校验：非法来源直接 `panic("message from bogus source")`。`who_p`（槽号）随后用于 `rproc_ptr[who_p]` 与 `case CLOCK` 分支。
 
-### 2.11 get_service_instances（manager.c:1334-1352）
+### 2.11 get_service_instances（minix3/minix/servers/rs/manager.c:get_service_instances）
 
 ```c
 void get_service_instances(rp, rps, length)                              /* 1334 */
@@ -459,7 +459,7 @@ void get_service_instances(rp, rps, length)                              /* 1334
 }
 ```
 
-**顺序固定**：`rp` → `r_prev_rp` → `r_next_rp` → `r_old_rp` → `r_new_rp`（最多 5 个）。调用点：update.c:993（`end_srv_update`）、request.c:1077（`do_getsysinfo`）、manager.c:691（`create_service` 的 RS 备份）、manager.c:1141（`cleanup_service`）。**C 用 `static` 数组**（非重入，一次调用覆盖上一次结果）——Rust 用迭代器替代（§3.4，ARCH A-3）。
+**顺序固定**：`rp` → `r_prev_rp` → `r_next_rp` → `r_old_rp` → `r_new_rp`（最多 5 个）。调用点：update.c:993（`end_srv_update`）、request.c:1077（`do_getsysinfo`）、minix3/minix/servers/rs/manager.c:rproc（L691，工具生成）（`create_service` 的 RS 备份）、minix3/minix/servers/rs/manager.c:terminate_service（L1141，工具生成）（`cleanup_service`）。**C 用 `static` 数组**（非重入，一次调用覆盖上一次结果）——Rust 用迭代器替代（§3.4，ARCH A-3）。
 
 ### 2.12 boot 消费点（main.c）
 
@@ -527,7 +527,7 @@ impl RFlags {
 
 ### 3.3 sys_flags → SysFlags bitflags(u16) + 预设组合（D2）
 
-**C**：`unsigned sys_flags` + 13 个宏（rs.h:191-206）+ 预设组合（const.h:65-68）+ `IMM_SF`（rs.h:205-206）。**Rust**：
+**C**：`unsigned sys_flags` + 13 个宏（minix3/minix/include/minix/rs.h:SF_CORE_SRV）+ 预设组合（const.h:65-68）+ `IMM_SF`（minix3/minix/include/minix/rs.h:IMM_SF）。**Rust**：
 
 ```rust
 bitflags::bitflags! {
@@ -553,7 +553,7 @@ pub const IMM_SF: SysFlags = SysFlags::NO_BIN_EXP
 
 ### 3.4 ARCH A-3：实例链 → Option<SlotId> 索引链（D4）
 
-**C**：`r_old_rp/r_new_rp/r_prev_rp/r_next_rp` 裸指针（type.h:58-61）+ `get_service_instances` 静态 5 槽数组（manager.c:1340）。**Rust**：
+**C**：`r_old_rp/r_new_rp/r_prev_rp/r_next_rp` 裸指针（type.h:58-61）+ `get_service_instances` 静态 5 槽数组（minix3/minix/servers/rs/manager.c:rproc（L1340，工具生成））。**Rust**：
 
 ```rust
 pub struct ServiceSlot {
@@ -590,10 +590,10 @@ pub struct RProcTable {
 }
 ```
 
-- **O(1) 保持**：`by_endpoint[endpoint.slot()]`（`Endpoint::slot()` = `_ENDPOINT_P`，endpoint.rs:88-90）。
+- **O(1) 保持**：`by_endpoint[endpoint.slot()]`（`Endpoint::slot()` = `_ENDPOINT_P`，os/libs/minix-types/src/types/endpoint.rs:fn slot）。
 - **无悬垂**：槽释放时同步清除索引（`free_slot`，§4.2）；内核任务（负槽号）不建索引——`endpoint_slot()` 对负槽号返回 `None`（内核任务永不为服务，`rproc_ptr` 负下标在 C 中本就是未定义行为，Rust 显式排除）。
-- **索引全量（R12）**：`endpoint_slot()`/`set_endpoint_index()` 对 `slot() ∉ [0, NR_PROCS)` 一律 `None`/忽略——`Endpoint::NONE/ANY/SELF` 的槽号在 `NR_PROCS` 之上（endpoint.rs:26-50），裸下标会越界 panic。C 靠主循环 `rs_isokendpt` 前置（main.c:63-66）保住安全；Rust 在索引层补齐（fail-closed），06 接线时 `classify` 前仍须跑 `isokendpt` 拒绝非法源（dispatch.rs 已标注）。
-- **原始索引语义（R30，2026-09-06）**：`endpoint_slot()` 刻意**不过滤** `RS_IN_USE`——它镜像的是 C 的裸 `rproc_ptr`（glo.h:35），而重组进行中的行会合法流经它（`swap_slot` 在重写索引前要读两端的旧条目，clone 行在链接时可能还是 vacant）。C 里 IN_USE 过滤是 `caller_can_control` 扫描的**局部**语义（manager.c:52-53），Rust 同样把这一复核放在消费方（access.rs `caller_can_control`，fail-closed）；消息面消费方的槽位状态校验归主循环门（06，R12）。两种 C 构造（裸数组 vs 扫描循环）对应两个 Rust 契约，不是重复 API。测试：`test_endpoint_slot_is_raw_index_mid_restructure`。
+- **索引全量（R12）**：`endpoint_slot()`/`set_endpoint_index()` 对 `slot() ∉ [0, NR_PROCS)` 一律 `None`/忽略——`Endpoint::NONE/ANY/SELF` 的槽号在 `NR_PROCS` 之上（os/libs/minix-types/src/types/endpoint.rs:const ENDPOINT_SLOT_TOP（L26，工具生成）），裸下标会越界 panic。C 靠主循环 `rs_isokendpt` 前置（main.c:63-66）保住安全；Rust 在索引层补齐（fail-closed），06 接线时 `classify` 前仍须跑 `isokendpt` 拒绝非法源（dispatch.rs 已标注）。
+- **原始索引语义（R30，2026-09-06）**：`endpoint_slot()` 刻意**不过滤** `RS_IN_USE`——它镜像的是 C 的裸 `rproc_ptr`（glo.h:35），而重组进行中的行会合法流经它（`swap_slot` 在重写索引前要读两端的旧条目，clone 行在链接时可能还是 vacant）。C 里 IN_USE 过滤是 `caller_can_control` 扫描的**局部**语义（minix3/minix/servers/rs/manager.c:rproc（L52，工具生成）），Rust 同样把这一复核放在消费方（access.rs `caller_can_control`，fail-closed）；消息面消费方的槽位状态校验归主循环门（06，R12）。两种 C 构造（裸数组 vs 扫描循环）对应两个 Rust 契约，不是重复 API。测试：`test_endpoint_slot_is_raw_index_mid_restructure`。
 - **per-slot 更新描述符（A2，2026-09-06）**：`ServiceSlot.upd: Option<UpdateEntry>` 补齐 C 的 `r_upd`（type.h:62，内嵌描述符副本）——`SRV_IS_UPD_SCHEDULED`/`SRV_IS_PREPARING_ONLY`（const.h:119-120）不再需要注入布尔；`UpdateEntry` 同时是 `rupdate` 链的元素与槽位的内嵌副本（C 同构：同一 `struct rprocupd`）。
 - **三处一致标注**：本表 + `.design/02-design.v1.md` D5 + `process_table.rs` 注释均标注 `ARCH A-4`。
 
@@ -611,9 +611,9 @@ pub struct RProcTable {
 | `alloc_slot(rpp)` | `alloc_slot(&mut self) -> Result<SlotId, i32>` | 出参 → 返回值；`ENOMEM` 保留 |
 | `free_slot(rp)` | `free_slot(&mut self, SlotId)` | 指针 → 索引 |
 
-**`free_slot` 的依赖标注**（D12 + R18）：C 的 `late_reply`（manager.c:2097，机制 06）本表不持有 reply 通道，调用方须保证无 pending `RS_LATEREPLY`；`free_exec`（manager.c:2100-2102，机制 09）**已在表原语内落地**——`SF_USE_COPY` 行释放时调用 `crate::exec::free_exec(table, id)` 丢弃其 exec `Arc`（先取 flags 结束借用，再 free，避免借用冲突）。非 `USE_COPY` 行的 exec 由 09 的 execve 路径释放（manager.c:643-644），不属 `free_slot`。
+**`free_slot` 的依赖标注**（D12 + R18）：C 的 `late_reply`（minix3/minix/servers/rs/manager.c:rproc（L2097，工具生成），机制 06）本表不持有 reply 通道，调用方须保证无 pending `RS_LATEREPLY`；`free_exec`（minix3/minix/servers/rs/manager.c:rproc（L2100，工具生成），机制 09）**已在表原语内落地**——`SF_USE_COPY` 行释放时调用 `crate::exec::free_exec(table, id)` 丢弃其 exec `Arc`（先取 flags 结束借用，再 free，避免借用冲突）。非 `USE_COPY` 行的 exec 由 09 的 execve 路径释放（minix3/minix/servers/rs/manager.c:rproc（L643，工具生成）），不属 `free_slot`。
 
-**vacant 构造**：`ServiceSlot::vacant()` 等价于 C 的"槽清零"（表重置 main.c:230-237 的 Rust 形态）。与 C 的"依赖 `r_flags==0` 隐式空闲"不同，Rust 空槽所有字段归零（`Default`），杜绝脏数据读取。**一处有意的差异**：C 表重置把 `r_init_err` 设为 `ERESTART`（main.c:232），Rust `vacant()` 归零——因为该默认值在 `init_slot` 时重新建立（08，manager.c:1791），空槽的 `init_err` 无观察者。
+**vacant 构造**：`ServiceSlot::vacant()` 等价于 C 的"槽清零"（表重置 main.c:230-237 的 Rust 形态）。与 C 的"依赖 `r_flags==0` 隐式空闲"不同，Rust 空槽所有字段归零（`Default`），杜绝脏数据读取。**一处有意的差异**：C 表重置把 `r_init_err` 设为 `ERESTART`（main.c:232），Rust `vacant()` 归零——因为该默认值在 `init_slot` 时重新建立（08，minix3/minix/servers/rs/manager.c:rs_start（L1791，工具生成）），空槽的 `init_err` 无观察者。
 
 ### 3.7 rs_isokendpt → Result<i32, Errno>（D7）
 
@@ -694,7 +694,7 @@ service_slot.rs
 5. ** settled-state 表级不变量（E-3，`RProcTable::assert_consistent`）**：任一 in-use 行
    （有有效端点者）必被索引在自己的端点上（A-4 双向往返）；四链只指向存在行。检查器是
    debug-only 的 settled-state 断言——swap 的第三方原始索引项（Fix #43）与 clone 的
-   "in-use + endpoint=NONE"中间态（manager.c:1824-1846）合法地豁免，故只在流程结束的
+   "in-use + endpoint=NONE"中间态（minix3/minix/servers/rs/manager.c:rproc（L1824，工具生成））合法地豁免，故只在流程结束的
    黄金路径测试中调用，不在流程中途调用。
 6. ** Live Update 镜像一致性（A-4，同一检查器的第四条不变式）**：当 `UpdateState` 在场时，
    任一行 `upd` 镜像（C `r_upd`，type.h:62）必须与更新链内同槽位的权威描述符**全等**，且
@@ -702,7 +702,7 @@ service_slot.rs
    就内嵌在 `rproc.r_upd` 里，链指针直接指进槽内（update.c:196 `&rp->r_upd`），"镜像与本
    体"的分别根本不存在；Rust 的索引链（A-3）持有权威副本之后，槽侧副本就成了必须显式同步
    的重复品。它不是装饰性检查：镜像的 `prepare_maxtime` 是 `upd_init_maxtime` 的输入
-   （monitor.rs:96，const.h:116 的 LU 初始化超时窗），`state_endpoint` 参与 `old_endpoint`
+   （os/servers/rs/src/monitor.rs:fn effective_period（L96，工具生成），const.h:116 的 LU 初始化超时窗），`state_endpoint` 参与 `old_endpoint`
    推导（utility.c:33-42）——副本漂移意味着这些消费读到旧值。同步责任随写点走：链插入的
    调用方负责写镜像（`UpdateChain::add` 的文档注记），链清除（`clear_upds`，对应
    update.c:157-158 的描述符重初始化）同时清两侧。
@@ -720,19 +720,19 @@ pub struct RProcTable {
 |------|--------|------|
 | `new()` | 表重置 main.c:230-237 | 64 个 vacant 槽 + 全 `None` 索引 |
 | `get(id)`/`get_mut(id)` | `&rproc[slot_nr]` | 索引访问；越界 panic 带上下文断言（R5，防御性，`SlotId` 由本表产生） |
-| `lookup_by_label(&Label)` | manager.c:1935 | 仅 `ACTIVE`；strcmp 语义 `Label` 比较（N6） |
-| `lookup_by_pid(Pid)` | manager.c:1959 | `pid<0 → None`；`IN_USE` |
-| `lookup_by_dev_nr(u32)` | manager.c:1985 | `dev==0 → None`（C 是 `<=0`，dev_t 无符号化后 0 即无效） |
-| `lookup_by_domain(i32)` | manager.c:2013 | `dom<=0 → None`；遍历 `domain[..nr_domain]` |
-| `lookup_by_flags(RFlags)` | manager.c:2041 | 空 flags → None；任一位置位 |
-| `alloc_slot()` | manager.c:2067 | 首个 `!IN_USE`；满表 `Err(ENOMEM)` |
-| `free_slot(id)` | manager.c:2088 | 表级清理 + 索引清除；`SF_USE_COPY` → `free_exec`（R18）；`late_reply`(06) 调用方前置 |
+| `lookup_by_label(&Label)` | minix3/minix/servers/rs/manager.c:rproc | 仅 `ACTIVE`；strcmp 语义 `Label` 比较（N6） |
+| `lookup_by_pid(Pid)` | minix3/minix/servers/rs/manager.c:rproc | `pid<0 → None`；`IN_USE` |
+| `lookup_by_dev_nr(u32)` | minix3/minix/servers/rs/manager.c:rproc | `dev==0 → None`（C 是 `<=0`，dev_t 无符号化后 0 即无效） |
+| `lookup_by_domain(i32)` | minix3/minix/servers/rs/manager.c:rproc | `dom<=0 → None`；遍历 `domain[..nr_domain]` |
+| `lookup_by_flags(RFlags)` | minix3/minix/servers/rs/manager.c:rproc | 空 flags → None；任一位置位 |
+| `alloc_slot()` | minix3/minix/servers/rs/manager.c:alloc_slot | 首个 `!IN_USE`；满表 `Err(ENOMEM)` |
+| `free_slot(id)` | minix3/minix/servers/rs/manager.c:free_slot | 表级清理 + 索引清除；`SF_USE_COPY` → `free_exec`（R18）；`late_reply`(06) 调用方前置 |
 | `activate_boot_slot(id, ep, proc_name, ...)` | main.c:255-345 | 指定槽激活（priv 表索引映射），填充 label/proc_name/sys/dev/endpoint + `IN_USE\|ACTIVE` + 索引 |
 | `endpoint_slot(ep)` | `rproc_ptr[_ENDPOINT_P(ep)]` | O(1) 反查；负槽号/越界（NONE/ANY/SELF）/未登记 → None（R12） |
 | `isokendpt(ep)` | utility.c:352 | 边界校验 → `Ok(slot)`/`Err(EINVAL)` |
-| `instances_of(id)` | manager.c:1332 | `ServiceInstances` 迭代器（rp/prev/next/old/new） |
+| `instances_of(id)` | minix3/minix/servers/rs/manager.c:rproc（L1332，工具生成） | `ServiceInstances` 迭代器（rp/prev/next/old/new） |
 
-**`free_slot` 的 Rust 实现**（manager.c:2088-2109 对照）：
+**`free_slot` 的 Rust 实现**（minix3/minix/servers/rs/manager.c:free_slot 对照）：
 
 ```rust
 pub fn free_slot(&mut self, id: SlotId) {
@@ -812,8 +812,8 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 ### 5.1 标志位对齐（RFlags/SysFlags）
 
 - `test_rflags_bits_match_const_h`：16 个位值与 `const.h:28-43` 数值断言（`IN_USE==0x001` ... `REINCARNATE==0x8000`）。
-- `test_sysflags_bits_match_rs_h`：13 个位值与 `rs.h:191-203` 数值断言。
-- `test_preset_combinations_match_c`：`SRV_SF/SRVR_SF/DSRV_SF/VM_SF/IMM_SF` 与 `const.h:65-68`/`rs.h:205-206` 组合断言。
+- `test_sysflags_bits_match_rs_h`：13 个位值与 `minix3/minix/include/minix/rs.h:SF_CORE_SRV` 数值断言。
+- `test_preset_combinations_match_c`：`SRV_SF/SRVR_SF/DSRV_SF/VM_SF/IMM_SF` 与 `const.h:65-68`/`minix3/minix/include/minix/rs.h:IMM_SF` 组合断言。
 - `test_is_idle_combinations`：`RS_SRV_IS_IDLE`（const.h:45）真值表——`DEAD` 置位 → true；`IN_USE|ACTIVE` 无其他位 → true；`IN_USE|ACTIVE|EXITING` → false；空 flags → true。
 
 ### 5.2 Label
@@ -827,16 +827,16 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 
 ### 5.3 槽位管理原语
 
-- `test_lookup_by_label_requires_active`：仅 `ACTIVE` 命中（`IN_USE` 但非 `ACTIVE` 的槽不命中）——manager.c:1942。
-- `test_lookup_by_pid_negative`：`pid < 0` → None——manager.c:1965-1967。
-- `test_lookup_by_dev_nr_zero`：`dev_nr == 0` → None——manager.c:1992-1993（u32 化后 0 即无效）。
+- `test_lookup_by_label_requires_active`：仅 `ACTIVE` 命中（`IN_USE` 但非 `ACTIVE` 的槽不命中）——minix3/minix/servers/rs/manager.c:rproc（L1942，工具生成）。
+- `test_lookup_by_pid_negative`：`pid < 0` → None——minix3/minix/servers/rs/manager.c:rproc（L1965，工具生成）。
+- `test_lookup_by_dev_nr_zero`：`dev_nr == 0` → None——minix3/minix/servers/rs/manager.c:rproc（L1992，工具生成）（u32 化后 0 即无效）。
 - `test_lookup_by_domain`：多域遍历命中 + `domain <= 0` → None。
 - `test_lookup_by_domain_corrupt_count_fails_closed`（D3）：`nr_domain` 超 `NR_DOMAIN` → `None`（不 panic，fail-closed）。
 - `test_lookup_by_flags_any_bit`：任一位置位命中 + 空 flags → None。
 - `test_alloc_slot_roundtrip`：alloc → activate → free → alloc 复用同一槽。
-- `test_alloc_slot_full_returns_enomem`：64 槽全占用 → `Err(ENOMEM)`（manager.c:2076-2079）。
-- `test_free_slot_clears_table_state`：free 后 flags 空/pid None/in_use false/索引 None（manager.c:2105-2108）。
-- `test_free_slot_releases_use_copy_exec`（R18）：`SF_USE_COPY` 行 free 后 exec `Arc` 被释放（manager.c:2100-2102）；非 `USE_COPY` 行保留（execve 路径 09 释放）。
+- `test_alloc_slot_full_returns_enomem`：64 槽全占用 → `Err(ENOMEM)`（minix3/minix/servers/rs/manager.c:rproc（L2076，工具生成））。
+- `test_free_slot_clears_table_state`：free 后 flags 空/pid None/in_use false/索引 None（minix3/minix/servers/rs/manager.c:rproc（L2105，工具生成））。
+- `test_free_slot_releases_use_copy_exec`（R18）：`SF_USE_COPY` 行 free 后 exec `Arc` 被释放（minix3/minix/servers/rs/manager.c:rproc（L2100，工具生成））；非 `USE_COPY` 行保留（execve 路径 09 释放）。
 - `test_activate_boot_slot_indexes_endpoint`：激活后 `endpoint_slot(ep) == Some(id)`（A-4，main.c:344）。
 - `test_activate_boot_slot_rejects_reuse`：重复激活 → Err（防御性）。
 - `test_activate_boot_slot_rejects_out_of_range`：槽号越界 → Err（fail-closed）。
@@ -844,7 +844,7 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 - `test_endpoint_slot_ignores_kernel_tasks`：负槽号（内核任务）不建索引（A-4）。
 - `test_endpoint_slot_none_fails_closed`（R12）：NONE/ANY/SELF 越界 → `None`，写侧忽略（不 panic）。
 - `test_get_rejects_out_of_range_id`：`get(SlotId::new(len+1))` → `#[should_panic]`（R17：越界读取是程序错误，不静默返回）。
-- `test_instances_of_order`：C 顺序 rp/prev/next/old/new（manager.c:1344-1348）。
+- `test_instances_of_order`：C 顺序 rp/prev/next/old/new（minix3/minix/servers/rs/manager.c:rproc（L1344，工具生成））。
 - `test_instances_of_unlinked`：无链槽只产出自身。
 - ~~`test_rupdate_descriptor_new`~~（N8 已删）：`RupdateDescriptor` 移除后，`RUPDATE_INIT()` 语义由
   `UpdateChain::new()`（live_update.rs）承担。
@@ -900,5 +900,5 @@ boot 的测试保持通过（MockKernelApi 不变），新增断言：Step 1 后
 - `../03-stage-rs/99-rs-global-concepts.md` — 常量全表（后续）
 - `../01-stage-kernel/22-privilege.md` — 内核侧 priv 语义（`io_range` 定义）
 - `../02-stage-vm/25-rs-services.md` — VM 侧 RS 服务（`vm_call_mask` 相关）
-- `minix3/minix/servers/rs/type.h`、`glo.h`、`const.h`、`manager.c:1935-2109`、`utility.c:352-359` — C ground truth
+- `minix3/minix/servers/rs/type.h`、`glo.h`、`const.h`、`minix3/minix/servers/rs/manager.c:rproc`、`utility.c:352-359` — C ground truth
 - `minix3/minix/include/minix/rs.h`、`sef.h`、`param.h`、`endpoint.h` — 协议定义

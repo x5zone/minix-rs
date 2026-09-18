@@ -935,10 +935,10 @@ bitflags! {
 
 | 映射类型 | mem_type | 实现位置 | 对应 C |
 |---------|----------|---------|--------|
-| 匿名映射 | `MEM_TYPE_ANON` | 已有 | `mem_type_anon` (mem_anon.c:34) |
-| 连续匿名 | `MEM_TYPE_CONTIG_ANON` | 已有 | `mem_type_anon_contig` (mem_anon_contig.c:24) |
-| 直接物理映射 | `MEM_TYPE_DIRECT` | 已有 | `mem_type_directphys` (mem_directphys.c:28) |
-| 文件映射 | `MEM_TYPE_MAPPED_FILE` | 已有 | `mem_type_mappedfile` (mem_file.c:30) |
+| 匿名映射 | `MEM_TYPE_ANON` | 已有 | `mem_type_anon` (minix3/minix/servers/vm/mem_anon.c:mem_type) |
+| 连续匿名 | `MEM_TYPE_CONTIG_ANON` | 已有 | `mem_type_anon_contig` (minix3/minix/servers/vm/mem_anon_contig.c:mem_type) |
+| 直接物理映射 | `MEM_TYPE_DIRECT` | 已有 | `mem_type_directphys` (minix3/minix/servers/vm/mem_directphys.c:mem_type) |
+| 文件映射 | `MEM_TYPE_MAPPED_FILE` | 已有 | `mem_type_mappedfile` (minix3/minix/servers/vm/mem_file.c:mem_type) |
 
 **依据**（Ch2§2.4）：C 代码中类型选择逻辑在 `do_mmap`（mmap.c:240-255），基于 `fd == -1`、`MAP_CONTIG` 等标志。
 
@@ -999,7 +999,7 @@ bitflags! {
 
 **决策**：`VrParam::File` 增加 `fdref: Option<FileDescriptorRef>` 字段。
 
-**依据**（Ch2§2.5, memtype.h:12）：
+**依据**（Ch2§2.5, minix3/minix/servers/vm/memtype.h:mem_type）：
 - Minix3 的 `param.file.fdref` 追踪文件映射的文件描述符引用（mem_file.c）
 - Rust 中对应 `FileDescriptorRef { fd, dev, ino, may_close }`
 - `may_close` 在 `do_mmap` 路径为 `true`（用户进程持有 fd），在 `do_vfs_mmap` 路径为 `false`（VFS 持有 fd）

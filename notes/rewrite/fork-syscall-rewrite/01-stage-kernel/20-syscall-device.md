@@ -23,7 +23,7 @@
 
 - **WHY**: 中断上下文不可阻塞、不可执行用户态代码；但驱动逻辑必须在用户态运行。需要一个"翻译层"把硬件中断转为可被驱动 `RECEIVE` 的消息。
 - **WHAT**: IRQ 钩子（hook）是 `(endpoint, notify_id, policy)` 三元组。驱动通过 `SYS_IRQCTL` 注册钩子；硬件中断触发时，内核 `generic_handler` 设置 `s_int_pending` 位 + 发 `mini_notify(HARDWARE, endpoint)`，驱动下次 `RECEIVE` 即拿到中断事件。
-- **HOW**: C 用 `do_irqctl()` (minix3/minix/kernel/system/do_irqctl.c:23-138) 的 4 子请求管理钩子生命周期；`generic_handler()` (minix3/minix/kernel/system/do_irqctl.c:143-172) 在中断上下文执行"随机数→位图→通知"三步。
+- **HOW**: C 用 `do_irqctl()` (minix3/minix/kernel/system/do_irqctl.c:do_irqctl) 的 4 子请求管理钩子生命周期；`generic_handler()` (minix3/minix/kernel/system/do_irqctl.c:generic_handler) 在中断上下文执行"随机数→位图→通知"三步。
 
 **4 个子请求的语义**:
 
@@ -34,7 +34,7 @@
 | ENABLE | 启用中断线（验主→enable_irq） | `IRQ_ENABLE` |
 | DISABLE | 禁用中断线（验主→disable_irq） | `IRQ_DISABLE` |
 
-**generic_handler 的副作用链** (minix3/minix/kernel/system/do_irqctl.c:143-172):
+**generic_handler 的副作用链** (minix3/minix/kernel/system/do_irqctl.c:generic_handler):
 
 1. `get_randomness(&krandom, hook->irq)` — 采集中断作为随机熵源（/dev/random）
 2. `priv(proc)->s_int_pending |= (1 << hook->notify_id)` — 位图记账（驱动位待取）
@@ -44,8 +44,8 @@
 **关键约束**:
 
 1. `notify_id ≤ 31`（`s_int_pending` 是 `u32` 位图）
-2. 只有钩子 owner 能 RMPOLICY/ENABLE/DISABLE（minix3/minix/kernel/system/do_irqctl.c:46,126）
-3. 进程退出必须摘钩（不变式；违例 panic — minix3/minix/kernel/system/do_irqctl.c:160-161）
+2. 只有钩子 owner 能 RMPOLICY/ENABLE/DISABLE（minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L46，工具生成）,126）
+3. 进程退出必须摘钩（不变式；违例 panic — minix3/minix/kernel/system/do_irqctl.c:generic_handler（L160，工具生成））
 
 ### §1.2 端口 I/O：DEVIO/VDEVIO/SDEVIO 的语义分层
 
@@ -65,14 +65,14 @@
 - `CHECK_IO_PORT`：扫描 `s_io_tab[]`，要求 `port >= base && port+size-1 <= limit`
 - 对齐检查：`port & (size-1)` 必须为 0（word/long 自然对齐）
 
-**VDEVIO 的批量语义** (minix3/minix/kernel/system/do_vdevio.c:25-164):
+**VDEVIO 的批量语义** (minix3/minix/kernel/system/do_vdevio.c:do_vdevio):
 
 1. `data_copy` 从用户拷入 (port,value) 向量到内核 `vdevio_buf`
 2. 批量 `CHECK_IO_PORT`（逐元素扫 `s_io_tab`）
 3. 批量 in/out（byte 无对齐；word/long 内联对齐检查，违例 panic）
 4. input 模式 `data_copy` 拷回结果
 
-**SDEVIO 的跨进程语义** (minix3/minix/kernel/arch/i386/do_sdevio.c:24-161):
+**SDEVIO 的跨进程语义** (minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio):
 
 1. SELF/endpoint 验证 + 拒绝 kernel 目标
 2. `_DIO_SAFE` 区分 safe（`verify_grant` 映射 grant→物理地址）与 unsafe（要求 target==caller）
@@ -87,14 +87,14 @@
 **IOPENABLE**:
 
 - 语义：给用户态进程 IOPL=3 权限，允许其执行 `in/out` 指令访问**所有**端口（绕过 CHECK_IO_PORT）
-- C 实现：`do_iopenable()` (minix3/minix/kernel/arch/i386/do_iopenable.c:19-33) → `enable_iop()` 设 `p_reg.psw |= 0x3000`
+- C 实现：`do_iopenable()` (minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable) → `enable_iop()` 设 `p_reg.psw |= 0x3000`
 - x86 范围：IOPL 是 x86 RFLAGS 第 12-13 位；ARM/RISC-V 无对应概念
 - 内核层抽象：只知"enable user I/O"概念，arch 层决定编码（x86: IOPL=3；其他: no-op）
 
 **READBIOS**:
 
 - 语义：从 BIOS 内存区拷贝数据到用户 buffer（用户态不可直接读物理 BIOS 区）
-- C 实现：`do_readbios()` (minix3/minix/kernel/arch/i386/do_readbios.c:15-37) → `virtual_copy_vmcheck`（src=NONE 物理地址）
+- C 实现：`do_readbios()` (minix3/minix/kernel/arch/i386/do_readbios.c:do_readbios) → `virtual_copy_vmcheck`（src=NONE 物理地址）
 - BIOS 内存范围两段：
   - `0x0..=0x4FF`（IVT+BIOS data，低段）
   - `0x90000..=0xFFFFF`（upper memory area 含 EBDA，高段）
@@ -128,64 +128,64 @@
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_irqctl()` | do_irqctl.c:23-138 | `switch(request)`: SETPOLICY(57-120) / RMPOLICY(122-132) / ENABLE(42-52) / DISABLE(42-52) |
-| SETPOLICY 权限检查 | do_irqctl.c:62-82 | `CHECK_IRQ` + 扫描 `s_irq_tab[]` |
-| SETPOLICY notify_id 上限 | do_irqctl.c:88 | `> CHAR_BIT*sizeof(irq_id_t)-1` → EINVAL |
-| SETPOLICY 钩子池查找 | do_irqctl.c:90-108 | 先覆盖同 (ep, nid)，再找空闲；满→ENOSPC |
-| SETPOLICY 安装 | do_irqctl.c:110-120 | `put_irq_handler(hook, vec, generic_handler)`；返回 `hook_id+1` |
-| ENABLE/DISABLE 校验 | do_irqctl.c:44-46 | hook_id 范围 + `proc_nr_e != NONE` + owner 检查 |
-| `generic_handler()` | do_irqctl.c:143-172 | get_randomness(154) → isokendpt(160) → s_int_pending(167) → mini_notify(170) → return policy&IRQ_REENABLE(171) |
+| `do_irqctl()` | minix3/minix/kernel/system/do_irqctl.c:do_irqctl | `switch(request)`: SETPOLICY(57-120) / RMPOLICY(122-132) / ENABLE(42-52) / DISABLE(42-52) |
+| SETPOLICY 权限检查 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L62，工具生成） | `CHECK_IRQ` + 扫描 `s_irq_tab[]` |
+| SETPOLICY notify_id 上限 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L88，工具生成） | `> CHAR_BIT*sizeof(irq_id_t)-1` → EINVAL |
+| SETPOLICY 钩子池查找 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L90，工具生成） | 先覆盖同 (ep, nid)，再找空闲；满→ENOSPC |
+| SETPOLICY 安装 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L110，工具生成） | `put_irq_handler(hook, vec, generic_handler)`；返回 `hook_id+1` |
+| ENABLE/DISABLE 校验 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L44，工具生成） | hook_id 范围 + `proc_nr_e != NONE` + owner 检查 |
+| `generic_handler()` | minix3/minix/kernel/system/do_irqctl.c:generic_handler | get_randomness(154) → isokendpt(160) → s_int_pending(167) → mini_notify(170) → return policy&IRQ_REENABLE(171) |
 
 ### §2.2 do_devio.c — 单次端口 I/O
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_devio()` | do_devio.c:19-106 | 解析 type/dir(27-36) → CHECK_IO_PORT(38-59) → 对齐(61-67) → in/out(69-103) |
-| type 解码 | do_devio.c:30-36 | `_DIO_BYTE→size=1, _DIO_WORD→size=2, _DIO_LONG→size=4`；default size=4 |
-| `CHECK_IO_PORT` | do_devio.c:44-58 | 扫 `s_io_tab[]`：`port>=base && port+size-1<=limit` |
-| 对齐检查 | do_devio.c:62-67 | `port & (size-1)` → EPERM |
-| input 写回 | do_devio.c:70-86 | 结果写 `m_krn_lsys_sys_devio.value` |
-| 无 priv → goto doit | do_devio.c:39-43,61 | 内核进程跳过检查 |
+| `do_devio()` | minix3/minix/kernel/system/do_devio.c:do_devio | 解析 type/dir(27-36) → CHECK_IO_PORT(38-59) → 对齐(61-67) → in/out(69-103) |
+| type 解码 | minix3/minix/kernel/system/do_devio.c:do_devio（L30，工具生成） | `_DIO_BYTE→size=1, _DIO_WORD→size=2, _DIO_LONG→size=4`；default size=4 |
+| `CHECK_IO_PORT` | minix3/minix/kernel/system/do_devio.c:do_devio（L44，工具生成） | 扫 `s_io_tab[]`：`port>=base && port+size-1<=limit` |
+| 对齐检查 | minix3/minix/kernel/system/do_devio.c:do_devio（L62，工具生成） | `port & (size-1)` → EPERM |
+| input 写回 | minix3/minix/kernel/system/do_devio.c:do_devio（L70，工具生成） | 结果写 `m_krn_lsys_sys_devio.value` |
+| 无 priv → goto doit | minix3/minix/kernel/system/do_devio.c:do_devio（L39，工具生成）,61 | 内核进程跳过检查 |
 
 ### §2.3 do_vdevio.c — 批量端口 I/O
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
 | `vdevio_buf` 静态缓冲区 | do_vdevio.c:17-20 | `char[VDEVIO_BUF_SIZE]`（config.h:63，64 字节）；pvb/pvw/pvl 三种 pair cast 复用 |
-| `do_vdevio()` | do_vdevio.c:25-164 | 解析(44-64) → size 校验(65) → 拷入(67-70) → 批量权限(72-100) → 批量 I/O(102-149) → 拷回(151-156) |
-| vec_size 校验 | do_vdevio.c:49,65 | `<=0`→EINVAL；`bytes>buf`→E2BIG |
-| 批量 `CHECK_IO_PORT` | do_vdevio.c:72-100 | 逐元素扫 `s_io_tab`；失败→EPERM |
-| word/long 对齐 panic | do_vdevio.c:116,125,135,145,159-161 | `port&1`/`port&3` → `panic("unaligned port")` |
-| 拷回结果 | do_vdevio.c:151-156 | input 模式 `data_copy` 回用户 |
+| `do_vdevio()` | minix3/minix/kernel/system/do_vdevio.c:do_vdevio | 解析(44-64) → size 校验(65) → 拷入(67-70) → 批量权限(72-100) → 批量 I/O(102-149) → 拷回(151-156) |
+| vec_size 校验 | minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L49，工具生成）,65 | `<=0`→EINVAL；`bytes>buf`→E2BIG |
+| 批量 `CHECK_IO_PORT` | minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L72，工具生成） | 逐元素扫 `s_io_tab`；失败→EPERM |
+| word/long 对齐 panic | minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L116，工具生成）,125,135,145,159-161 | `port&1`/`port&3` → `panic("unaligned port")` |
+| 拷回结果 | minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L151，工具生成） | input 模式 `data_copy` 回用户 |
 
 ### §2.4 do_sdevio.c — 跨进程批量端口 I/O
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_sdevio()` | do_sdevio.c:24-161 | endpoint 验证(56-61) → safe/unsafe 分支(67-93) → switch_space(96) → size(98-104) → 权限(106-124) → 对齐(126-131) → phys_*(133-150) → switch_back(159) |
-| SELF/isokendpt/iskerneln | do_sdevio.c:56-61 | SELF→caller；kernel 拒绝 |
-| `_DIO_SAFE` 分支 | do_sdevio.c:40,68-82 | safe: `verify_grant` 映射 grant→物理地址 |
-| unsafe 分支 | do_sdevio.c:83-93 | 要求 `proc_nr == _ENDPOINT_P(caller)`；否则 EPERM |
-| `switch_address_space` | do_sdevio.c:96,159 | 切到目标空间执行 phys_*；完成切回 |
-| 仅 byte/word | do_sdevio.c:100-104,138-148 | long → EINVAL；`phys_insl` 不存在 |
-| `phys_insb/outsb/insw/outsw` | do_sdevio.c:134-150 | 按 count 重复的批量 I/O 原语 |
+| `do_sdevio()` | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio | endpoint 验证(56-61) → safe/unsafe 分支(67-93) → switch_space(96) → size(98-104) → 权限(106-124) → 对齐(126-131) → phys_*(133-150) → switch_back(159) |
+| SELF/isokendpt/iskerneln | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L56，工具生成） | SELF→caller；kernel 拒绝 |
+| `_DIO_SAFE` 分支 | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L40，工具生成）,68-82 | safe: `verify_grant` 映射 grant→物理地址 |
+| unsafe 分支 | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L83，工具生成） | 要求 `proc_nr == _ENDPOINT_P(caller)`；否则 EPERM |
+| `switch_address_space` | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L96，工具生成）,159 | 切到目标空间执行 phys_*；完成切回 |
+| 仅 byte/word | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L100，工具生成）,138-148 | long → EINVAL；`phys_insl` 不存在 |
+| `phys_insb/outsb/insw/outsw` | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L134，工具生成） | 按 count 重复的批量 I/O 原语 |
 
 ### §2.5 do_iopenable.c — IOPL 提权
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_iopenable()` | do_iopenable.c:19-33 | SELF→okendpt(24-25) → isokendpt(26-27) → enable_iop(28) → OK(29) |
+| `do_iopenable()` | minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable | SELF→okendpt(24-25) → isokendpt(26-27) → enable_iop(28) → OK(29) |
 | `enable_iop()` | (arch) | `pp->p_reg.psw |= 0x3000` 设 IOPL=3 |
-| `#if ENABLE_USERPRIV` | do_iopenable.c:23,31 | 编译期门控；关闭时返回 EPERM |
+| `#if ENABLE_USERPRIV` | minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable（L23，工具生成）,31 | 编译期门控；关闭时返回 EPERM |
 
 ### §2.6 do_readbios.c — BIOS 读取
 
 | 符号 | 位置 | 说明 |
 |------|------|------|
-| `do_readbios()` | do_readbios.c:15-37 | src=NONE/buf(21-24) → limit(26) → USERRANGE(28-34) → virtual_copy_vmcheck(36) |
-| BIOS 内存范围 | do_readbios.c:32-33 | `BIOS_MEM_BEGIN..END`(0x0-0x4FF) + `BASE_MEM_TOP..UPPER_MEM_END`(0x90000-0xFFFFF) |
-| USERRANGE 宏 | do_readbios.c:28-30 | `VINRANGE(src,a,b) && VINRANGE(limit,a,b)`；首尾都要在范围内 |
-| `virtual_copy_vmcheck` | do_readbios.c:36 | src 是物理地址（NONE endpoint），dst 是 caller buffer |
+| `do_readbios()` | minix3/minix/kernel/arch/i386/do_readbios.c:do_readbios | src=NONE/buf(21-24) → limit(26) → USERRANGE(28-34) → virtual_copy_vmcheck(36) |
+| BIOS 内存范围 | minix3/minix/kernel/arch/i386/do_readbios.c:USERRANGE（L32，工具生成） | `BIOS_MEM_BEGIN..END`(0x0-0x4FF) + `BASE_MEM_TOP..UPPER_MEM_END`(0x90000-0xFFFFF) |
+| USERRANGE 宏 | minix3/minix/kernel/arch/i386/do_readbios.c:VINRANGE | `VINRANGE(src,a,b) && VINRANGE(limit,a,b)`；首尾都要在范围内 |
+| `virtual_copy_vmcheck` | minix3/minix/kernel/arch/i386/do_readbios.c:USERRANGE（L36，工具生成） | src 是物理地址（NONE endpoint），dst 是 caller buffer |
 
 ### §2.7 调用关系图
 
@@ -219,7 +219,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 `IrqctlRequest` enum + `TryFrom<i32>`：类型安全，`match` 编译期检查穷尽性；`TryFrom` 集中处理非法值返回 EINVAL；`#[repr(i32)]` 保证 ABI 兼容。
 - 所以用 `IrqctlRequest` enum：类型安全 + 穷尽性检查 + 集中校验。
 
-**实现**: `IrqctlRequest { SetPolicy=0, RmPolicy=1, Enable=2, Disable=3 }` + `impl TryFrom<i32>` (`syscall_device.rs:35-60`)。
+**实现**: `IrqctlRequest { SetPolicy=0, RmPolicy=1, Enable=2, Disable=3 }` + `impl TryFrom<i32>` (`os/kernel/src/syscall_device.rs:enum IrqctlRequest（L35，工具生成）`)。
 
 ### D2. I/O 端口操作：直接 in/out vs trait PortIo
 
@@ -229,7 +229,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 `trait PortIo`：内核代码依赖 trait 方法；x86 提供 `X86_64PortIo`（`in/out` 指令），ARM/RISC-V 提供 MMIO impl；测试用 `MockPortIo`；泛型 `<PI: PortIo>` 静态分发零虚拟开销（编译期单态化）。
 - 所以用 `trait PortIo`：多架构支持 + 可测试。
 
-**实现**: `pub use minix_plat::PortIo` (`syscall_device.rs:161`) + `X86_64PortIo` / `MockPortIo` impl（trait 定义在 `minix_plat` crate）。
+**实现**: `pub use minix_plat::PortIo` (`os/kernel/src/syscall_device.rs:struct PvLongPair（L161，工具生成）`) + `X86_64PortIo` / `MockPortIo` impl（trait 定义在 `minix_plat` crate）。
 
 ### D3. IRQ hook 池：全局数组 vs IrqManager<IC> 泛型
 
@@ -242,7 +242,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 **实现**: `IrqManager<IC>` (`irq_manager.rs`) — 类型层完整；dispatch 层已接入（见 D6 与 §4.1）。
 
 > **dispatch 层接入状态**:
-> - 类型层：`IrqManager<IC>` + `dispatch_irqctl<IC>` (`syscall_device.rs:203-364`) 4 子请求完整实现
+> - 类型层：`IrqManager<IC>` + `dispatch_irqctl<IC>` (`os/kernel/src/syscall_device.rs:fn check_irq_permission（L203，工具生成）`) 4 子请求完整实现
 > - dispatch 层：`syscall.rs:1606-1623` 自由函数 `dispatch_irqctl` 通过 `crate::irq_manager_with(bkl_section)` 获取全局 `IrqManager<CurrentInterruptController>` 单态并转发，`BklSection` witness 编译期证明 BKL 已持有
 > - 接入方式：全局 BSS static `IRQ_MANAGER` + `irq_manager_with(bkl_section)` 访问器（`BklSection` witness = R-03 编译期能力令牌，与 `dispatch_hardware_irq` 同模式），避免 `KernelState` 重构的跨文档依赖
 
@@ -254,7 +254,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 `IrqHookContext<'a>` + `IrqNotify` trait：钩子信息打包成 context；通知抽象为 trait（`KernelNotifier` 生产 / `MockNotifier` 测试）；handler 签名 `fn(&mut IrqHookContext) -> IrqAction` 类型安全。
 - 所以用 `IrqHookContext` + `IrqNotify` trait：可测试 + 安全。
 
-**实现**: `IrqHookContext<'a>` (`irq_manager.rs:71-85`) + `trait IrqNotify` (`irq_manager.rs:52-58`) + `KernelNotifier` (`irq_manager.rs:119-183`)。
+**实现**: `IrqHookContext<'a>` (`os/kernel/src/irq_manager.rs:struct IrqHookContext<'a>`) + `trait IrqNotify` (`os/kernel/src/irq_manager.rs:trait IrqNotify`) + `KernelNotifier` (`os/kernel/src/irq_manager.rs:struct KernelNotifier`)。
 
 ### D5. VDEVIO 缓冲区：静态可变 vs 栈分配
 
@@ -264,7 +264,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用栈分配 `[u8; VDEVIO_BUF_SIZE]`：每个调用栈独立，无竞争；`unsafe` 仅在 cast 时；BKL 已串行化无需额外锁。
 - 所以用栈分配：no_std 友好 + SMP 安全。
 
-**实现**: `VDEVIO_BUF_SIZE = 64` (`syscall_device.rs:121`，匹配 C config.h:63 的 64 字节)；`dispatch_vdevio` 已完整实现（`data_copy_vmcheck` 拷入/拷出 + `PortIo` trait 批量 I/O，见 §4.3）。
+**实现**: `VDEVIO_BUF_SIZE = 64` (`os/kernel/src/syscall_device.rs:const VDEVIO_BUF_SIZE（L121，工具生成）`，匹配 C config.h:63 的 64 字节)；`dispatch_vdevio` 已完整实现（`data_copy_vmcheck` 拷入/拷出 + `PortIo` trait 批量 I/O，见 §4.3）。
 
 ### D6. x86-only 调用：#[cfg(target_arch)] vs trait + BadCall
 
@@ -284,7 +284,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 - 如果用 `IoSize` / `IoDirection` enum + `from_request_mask`：类型安全；解码集中；`match` 穷尽性检查。
 - 所以用 enum：类型安全 + 集中解码。
 
-**实现**: `IoSize { Byte=1, Word=2, Long=4 }` + `IoDirection { Input, Output }` (`syscall_device.rs:69-113`)。
+**实现**: `IoSize { Byte=1, Word=2, Long=4 }` + `IoDirection { Input, Output }` (`os/kernel/src/syscall_device.rs:enum IoSize（L69，工具生成）`)。
 
 ---
 
@@ -292,7 +292,7 @@ SYS_READBIOS  → do_readbios()  ── USERRANGE check → virtual_copy_vmcheck
 
 ### §4.1 dispatch_irqctl（完整，专用消息结构 + BKL 接入）
 
-**类型层** — `syscall_device.rs:203-364`，4 子请求完整实现，调用 `IrqManager` 方法。参数提取使用专用 `MessLsysKrnSysIrqctl` 变体（C 布局 request@0/vector@4/policy@8/hook_id@12）——M1 overlay 读 `m1p1` 会读到偏移 16 的 padding 而非 hook_id@12，与 DEVIO/VDEVIO 同属字段错位 bug 类（见 §4.2/§4.3 的 IMPORTANT 注释）：
+**类型层** — `os/kernel/src/syscall_device.rs:fn check_irq_permission（L203，工具生成）`，4 子请求完整实现，调用 `IrqManager` 方法。参数提取使用专用 `MessLsysKrnSysIrqctl` 变体（C 布局 request@0/vector@4/policy@8/hook_id@12）——M1 overlay 读 `m1p1` 会读到偏移 16 的 padding 而非 hook_id@12，与 DEVIO/VDEVIO 同属字段错位 bug 类（见 §4.2/§4.3 的 IMPORTANT 注释）：
 
 ```rust
 // C: do_irqctl.c:24-25 — 提取参数（专用变体，避免 M1 字段错位）
@@ -356,11 +356,11 @@ fn dispatch_irqctl(
 }
 ```
 
-**接入已解决（2026-08-14）**: 原 DEFERRED 根因（dispatch 层签名无 `&mut IrqManager<ArchIc>` 参数）已通过 `irq_manager_with(bkl_section)` 能力令牌模式解决——`BklSection` witness（R-03 编译期能力令牌，与 `irq_manager.rs:215` `dispatch_hardware_irq` 同模式）从 `dispatch_ipc_entry` 传入，证明调用点已持有 BKL，无需把 `IrqManager` 塞入 `KernelState`。测试见 §5.1（`syscall_device::tests` 5 个 `test_dispatch_irqctl_*`，用本地 `IrqManager<MockController>`）。
+**接入已解决（2026-08-14）**: 原 DEFERRED 根因（dispatch 层签名无 `&mut IrqManager<ArchIc>` 参数）已通过 `irq_manager_with(bkl_section)` 能力令牌模式解决——`BklSection` witness（R-03 编译期能力令牌，与 `os/kernel/src/irq_manager.rs:fn dispatch_hardware_irq（L215，工具生成）` `dispatch_hardware_irq` 同模式）从 `dispatch_ipc_entry` 传入，证明调用点已持有 BKL，无需把 `IrqManager` 塞入 `KernelState`。测试见 §5.1（`syscall_device::tests` 5 个 `test_dispatch_irqctl_*`，用本地 `IrqManager<MockController>`）。
 
 ### §4.2 dispatch_devio（完整）
 
-`syscall_device.rs:365-454` — 完整实现 request 解码 → CHECK_IO_PORT → 对齐 → `PortIo::in/out` → 写回结果：
+`os/kernel/src/syscall_device.rs:fn dispatch_irqctl（L365，工具生成）` — 完整实现 request 解码 → CHECK_IO_PORT → 对齐 → `PortIo::in/out` → 写回结果：
 
 ```rust
 pub fn dispatch_devio<PI: PortIo>(
@@ -421,12 +421,12 @@ pub fn dispatch_devio<PI: PortIo>(
 
 **与 C 的差异**:
 
-- unknown type：C default size=4（do_devio.c:35），Rust 返回 EINVAL（合理收紧——保守放行→严格拒绝）
+- unknown type：C default size=4（minix3/minix/kernel/system/do_devio.c:do_devio（L35，工具生成）），Rust 返回 EINVAL（合理收紧——保守放行→严格拒绝）
 - PortIo trait 替代直接 `inb/outb`（D2）
 
 ### §4.3 dispatch_vdevio（完整实现）
 
-`syscall_device.rs:474-699` — 完整实现：专用变体取参 → `data_copy_vmcheck` 拷入 → 批量权限检查 → `PortIo` 批量 I/O → input 模式拷回：
+`os/kernel/src/syscall_device.rs:fn dispatch_devio（L474，工具生成）` — 完整实现：专用变体取参 → `data_copy_vmcheck` 拷入 → 批量权限检查 → `PortIo` 批量 I/O → input 模式拷回：
 
 ```rust
 pub fn dispatch_vdevio<PI: PortIo>(
@@ -460,11 +460,11 @@ pub fn dispatch_vdevio<PI: PortIo>(
 }
 ```
 
-**实现说明**: Rust 用栈分配 `[u8; VDEVIO_BUF_SIZE]`（D5）+ `#[repr(C)]` pair 结构体数组替代 C 的 `static char vdevio_buf` + union cast（`pvb`/`pvw`/`pvl`）——类型系统保证布局正确，无 union punning。拷贝方向：用户→内核用 `data_copy_vmcheck`（`cross_space.rs`，arch 无关页表遍历 + VM suspend/resume 支持 lazy-allocated 页，匹配 C `data_copy`）；word/long 对齐违例 C 会 `panic("unaligned port")`（do_vdevio.c:160），Rust 返回 EPERM（防御性语义偏差，见 §4.9）。
+**实现说明**: Rust 用栈分配 `[u8; VDEVIO_BUF_SIZE]`（D5）+ `#[repr(C)]` pair 结构体数组替代 C 的 `static char vdevio_buf` + union cast（`pvb`/`pvw`/`pvl`）——类型系统保证布局正确，无 union punning。拷贝方向：用户→内核用 `data_copy_vmcheck`（`cross_space.rs`，arch 无关页表遍历 + VM suspend/resume 支持 lazy-allocated 页，匹配 C `data_copy`）；word/long 对齐违例 C 会 `panic("unaligned port")`（minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L160，工具生成）），Rust 返回 EPERM（防御性语义偏差，见 §4.9）。
 
 ### §4.4 dispatch_sdevio（已实现）
 
-`syscall_device.rs:790-1108` — 参数验证 + endpoint + CHECK_IO_PORT + 对齐完整；SAFE 路径（`verify_grant` + `data_copy_vmcheck`）与 unsafe 路径（`copy_from_user`/`copy_to_user` + `PortIo`）均已完整实现。Rust 用内核缓冲 + `PortIo` trait 方法替代 C 的 `switch_address_space` + `phys_insb/outsb/insw/outsw`，无需切换地址空间：
+`os/kernel/src/syscall_device.rs:fn dispatch_iopenable（L790，工具生成）` — 参数验证 + endpoint + CHECK_IO_PORT + 对齐完整；SAFE 路径（`verify_grant` + `data_copy_vmcheck`）与 unsafe 路径（`copy_from_user`/`copy_to_user` + `PortIo`）均已完整实现。Rust 用内核缓冲 + `PortIo` trait 方法替代 C 的 `switch_address_space` + `phys_insb/outsb/insw/outsw`，无需切换地址空间：
 
 ```rust
 pub fn dispatch_sdevio<PI: PortIo>(
@@ -543,7 +543,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
 
 ### §4.5 dispatch_iopenable（完整实现）
 
-`syscall_device.rs:716-765` — SELF 解析 + endpoint 验证 + iskerneln + `enable_user_io()`：
+`os/kernel/src/syscall_device.rs:fn dispatch_vdevio（L716，工具生成）` — SELF 解析 + endpoint 验证 + iskerneln + `enable_user_io()`：
 
 ```rust
 pub fn dispatch_iopenable(
@@ -578,7 +578,7 @@ pub fn dispatch_iopenable(
 
 ### §4.6 dispatch_readbios（完整实现）
 
-`syscall_device.rs:1109-1182` — 完整实现：BIOS 范围检查 + 逐页 `data_copy_vmcheck` 从物理地址拷入用户缓冲：
+`os/kernel/src/syscall_device.rs:const SDEVIO_BUF_MAX（L1109，工具生成）` — 完整实现：BIOS 范围检查 + 逐页 `data_copy_vmcheck` 从物理地址拷入用户缓冲：
 
 ```rust
 pub fn dispatch_readbios(caller: &mut KProcess, msg: &Message) -> KcallResult {
@@ -613,7 +613,7 @@ pub fn dispatch_readbios(caller: &mut KProcess, msg: &Message) -> KcallResult {
 
 ### §4.7 PortIo trait + BadCall 架构抽象
 
-`syscall_device.rs:190` — PortIo re-export 自 `minix_plat`：
+`os/kernel/src/syscall_device.rs:fn deref_mut（L190，工具生成）` — PortIo re-export 自 `minix_plat`：
 
 ```rust
 /// 架构特定的端口 I/O 操作。
@@ -652,12 +652,12 @@ pub type CurrentArchSyscall = X86_64Syscall;
 
 | 函数 | C 位置 | 状态 | 实现方式 | 依赖 |
 |------|--------|------|---------|------|
-| `dispatch_irqctl` (dispatch 层) | do_irqctl.c:23-138 | ✅ 已实现 (2026-08-14) | `irq_manager_with(bkl_section)` 全局单态 + `BklSection` witness 编译期证明 BKL 持有 | — |
-| `dispatch_vdevio` 批量 I/O | do_vdevio.c:67-156 | ✅ 已实现 | `data_copy_vmcheck` 拷入/拷出 + `PortIo` 批量 I/O + 栈缓冲（D5） | — |
-| `dispatch_sdevio` 批量 I/O | do_sdevio.c:68-150 | ✅ 已实现 | `verify_grant` + `data_copy_vmcheck` + `PortIo` 内核缓冲中转替代 `switch_address_space` + `phys_*` | — |
-| `dispatch_readbios` 拷贝 | do_readbios.c:36 | ✅ 已实现 | 逐页 `data_copy_vmcheck`（src=物理地址，匹配 C `virtual_copy_vmcheck`） | — |
+| `dispatch_irqctl` (dispatch 层) | minix3/minix/kernel/system/do_irqctl.c:do_irqctl | ✅ 已实现 (2026-08-14) | `irq_manager_with(bkl_section)` 全局单态 + `BklSection` witness 编译期证明 BKL 持有 | — |
+| `dispatch_vdevio` 批量 I/O | minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L67，工具生成） | ✅ 已实现 | `data_copy_vmcheck` 拷入/拷出 + `PortIo` 批量 I/O + 栈缓冲（D5） | — |
+| `dispatch_sdevio` 批量 I/O | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L68，工具生成） | ✅ 已实现 | `verify_grant` + `data_copy_vmcheck` + `PortIo` 内核缓冲中转替代 `switch_address_space` + `phys_*` | — |
+| `dispatch_readbios` 拷贝 | minix3/minix/kernel/arch/i386/do_readbios.c:USERRANGE（L36，工具生成） | ✅ 已实现 | 逐页 `data_copy_vmcheck`（src=物理地址，匹配 C `virtual_copy_vmcheck`） | — |
 | `dispatch_iopenable` trap frame | (Rust 独有) | ✅ 已解决 (2026-08-01) | C `p_reg` = Rust `cpu_context`；无独立内核栈异常帧；syscall handler 修改 `cpu_context.psw` 返回用户态自动生效 | — |
-| `generic_handler` get_randomness | do_irqctl.c:154 | ✅ 已实现 | `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm；KRANDOM 全局 + `try_krandom()`/`init()` 已就绪；实际熵采集在用户态 `random` 驱动。详见 [25-misc-unported.md §4.7](25-misc-unported.md) + [14-exception-interrupt.md §4.4](14-exception-interrupt.md) | /dev/random 熵池 |
+| `generic_handler` get_randomness | minix3/minix/kernel/system/do_irqctl.c:generic_handler（L154，工具生成） | ✅ 已实现 | `krandom::get_randomness(source)` no-op stub 匹配 C i386/earm；KRANDOM 全局 + `try_krandom()`/`init()` 已就绪；实际熵采集在用户态 `random` 驱动。详见 [25-misc-unported.md §4.7](25-misc-unported.md) + [14-exception-interrupt.md §4.4](14-exception-interrupt.md) | /dev/random 熵池 |
 
 **历史 anti-drift 决策（已全部解除）**: 曾设计 DEFERRED 函数返回 `ENOSYS`（非 OK）避免 silent 语义漂移；`dispatch_irqctl` dispatch 层曾返回 `BadCall`。2026-08-14 全部 6 个 dispatcher 已完整实现并接线——`irqctl` 经 `syscall.rs:1606` 自由函数 + BKL witness，`devio/sdevio/vdevio/iopenable/readbios` 经 `X86_64Syscall`（`syscall.rs:296-344`）转发。当前无 ENOSYS/BadCall 残留。
 
@@ -680,9 +680,9 @@ pub type CurrentArchSyscall = X86_64Syscall;
 
 | 偏移点 | C 行为 | Rust 行为 | 理由 |
 |--------|--------|----------|------|
-| DEVIO unknown type | default size=4 (do_devio.c:35) | EINVAL (syscall_device.rs:393) | 保守放行 vs 严格拒绝；Rust 更安全 |
-| VDEVIO 超缓冲区 | E2BIG (do_vdevio.c:65) | E2BIG (syscall_device.rs:529) | 语义对齐（errno.rs:49 已定义 E2BIG=7，匹配 C） |
-| VDEVIO word/long 对齐违例 | `panic("unaligned port")` (do_vdevio.c:160) | EPERM（逐元素检查，syscall_device.rs:633-635/655-657） | 语义偏差：C kernel bug panic（整个内核崩溃）；Rust 返回 EPERM（防御性，单次 syscall 失败不拖垮内核） |
+| DEVIO unknown type | default size=4 (minix3/minix/kernel/system/do_devio.c:do_devio（L35，工具生成）) | EINVAL (os/kernel/src/syscall_device.rs:fn dispatch_irqctl（L393，工具生成）) | 保守放行 vs 严格拒绝；Rust 更安全 |
+| VDEVIO 超缓冲区 | E2BIG (minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L65，工具生成）) | E2BIG (os/kernel/src/syscall_device.rs:fn dispatch_vdevio（L529，工具生成）) | 语义对齐（errno.rs:49 已定义 E2BIG=7，匹配 C） |
+| VDEVIO word/long 对齐违例 | `panic("unaligned port")` (minix3/minix/kernel/system/do_vdevio.c:do_vdevio（L160，工具生成）) | EPERM（逐元素检查，os/kernel/src/syscall_device.rs:fn dispatch_vdevio（L633，工具生成）/655-657） | 语义偏差：C kernel bug panic（整个内核崩溃）；Rust 返回 EPERM（防御性，单次 syscall 失败不拖垮内核） |
 
 ---
 
@@ -701,44 +701,44 @@ pub type CurrentArchSyscall = X86_64Syscall;
 | `test_io_direction_from_mask` | `IoDirection` 从 mask 解码 | `_DIO_DIRMASK` |
 | `test_dio_combined_request` | 组合 request 的 type+dir 解码 | `_DIO_INPUT|_DIO_BYTE` |
 | `test_irq_reenable_flag` | `IRQ_REENABLE=0x01` | `IRQ_REENABLE` |
-| `test_check_irq_permission_no_flag` | 无 CHECK_IRQ 全放行 | do_irqctl.c:68 |
-| `test_check_irq_permission_with_flag_allowed` | CHECK_IRQ + 在 s_irq_tab 放行 | do_irqctl.c:70-74 |
-| `test_check_irq_permission_with_flag_denied` | CHECK_IRQ + 不在 s_irq_tab 拒绝 | do_irqctl.c:75-81 |
-| `test_devio_input_byte_no_check` | input byte 无权限检查 | do_devio.c:73-76 |
-| `test_devio_output_word_no_check` | output word 无权限检查 | do_devio.c:93-95 |
-| `test_devio_alignment_check` | 未对齐 → EPERM | do_devio.c:62-67 |
-| `test_devio_check_io_port_allowed` | 端口在范围放行 | do_devio.c:50 |
-| `test_devio_check_io_port_denied` | 端口不在范围 EPERM | do_devio.c:53-58 |
+| `test_check_irq_permission_no_flag` | 无 CHECK_IRQ 全放行 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L68，工具生成） |
+| `test_check_irq_permission_with_flag_allowed` | CHECK_IRQ + 在 s_irq_tab 放行 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L70，工具生成） |
+| `test_check_irq_permission_with_flag_denied` | CHECK_IRQ + 不在 s_irq_tab 拒绝 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L75，工具生成） |
+| `test_devio_input_byte_no_check` | input byte 无权限检查 | minix3/minix/kernel/system/do_devio.c:do_devio（L73，工具生成） |
+| `test_devio_output_word_no_check` | output word 无权限检查 | minix3/minix/kernel/system/do_devio.c:do_devio（L93，工具生成） |
+| `test_devio_alignment_check` | 未对齐 → EPERM | minix3/minix/kernel/system/do_devio.c:do_devio（L62，工具生成） |
+| `test_devio_check_io_port_allowed` | 端口在范围放行 | minix3/minix/kernel/system/do_devio.c:do_devio（L50，工具生成） |
+| `test_devio_check_io_port_denied` | 端口不在范围 EPERM | minix3/minix/kernel/system/do_devio.c:do_devio（L53，工具生成） |
 | `test_devio_invalid_type` | 非法 type → EINVAL | (Rust 收紧) |
-| `test_iopenable_self_endpoint_resolves_to_caller` | SELF → caller | do_iopenable.c:24-25 |
-| `test_iopenable_explicit_endpoint_sets_iopl` | 显式 endpoint 设 IOPL | do_iopenable.c:26-28 |
-| `test_iopenable_invalid_endpoint_returns_einval` | 无效 endpoint → EINVAL | do_iopenable.c:26-27 |
-| `test_iopenable_kernel_process_returns_eperm` | kernel 目标 → EPERM | do_iopenable.c:29 |
+| `test_iopenable_self_endpoint_resolves_to_caller` | SELF → caller | minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable（L24，工具生成） |
+| `test_iopenable_explicit_endpoint_sets_iopl` | 显式 endpoint 设 IOPL | minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable（L26，工具生成） |
+| `test_iopenable_invalid_endpoint_returns_einval` | 无效 endpoint → EINVAL | minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable（L26，工具生成） |
+| `test_iopenable_kernel_process_returns_eperm` | kernel 目标 → EPERM | minix3/minix/kernel/arch/i386/do_iopenable.c:do_iopenable（L29，工具生成） |
 | `test_iopenable_iopl_bits_only_affects_bits_12_13` | IOPL 仅影响 12-13 位 | `psw |= 0x3000` |
-| `test_sdevio_invalid_endpoint_returns_einval` | 无效 endpoint → EINVAL | do_sdevio.c:59-60 |
-| `test_sdevio_kernel_target_returns_eperm` | kernel 目标 → EPERM | do_sdevio.c:61 |
-| `test_sdevio_unsafe_target_not_caller_returns_eperm` | unsafe 非 caller → EPERM | do_sdevio.c:84-89 |
-| `test_sdevio_long_type_returns_einval` | long 不支持 → EINVAL | do_sdevio.c:138-148 |
-| `test_sdevio_unaligned_port_returns_eperm` | 未对齐 → EPERM | do_sdevio.c:126-131 |
-| `test_sdevio_check_io_port_denied` | 端口不在范围 EPERM | do_sdevio.c:116-123 |
-| `test_sdevio_safe_path_no_grant_table_returns_eperm` | SAFE 路径 `verify_grant` 调用，granter 无 priv_id → EPERM | do_sdevio.c:65-93 |
-| `test_sdevio_invalid_direction_returns_einval` | 非法方向 → EINVAL | do_sdevio.c:151-153 |
+| `test_sdevio_invalid_endpoint_returns_einval` | 无效 endpoint → EINVAL | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L59，工具生成） |
+| `test_sdevio_kernel_target_returns_eperm` | kernel 目标 → EPERM | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L61，工具生成） |
+| `test_sdevio_unsafe_target_not_caller_returns_eperm` | unsafe 非 caller → EPERM | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L84，工具生成） |
+| `test_sdevio_long_type_returns_einval` | long 不支持 → EINVAL | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L138，工具生成） |
+| `test_sdevio_unaligned_port_returns_eperm` | 未对齐 → EPERM | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L126，工具生成） |
+| `test_sdevio_check_io_port_denied` | 端口不在范围 EPERM | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L116，工具生成） |
+| `test_sdevio_safe_path_no_grant_table_returns_eperm` | SAFE 路径 `verify_grant` 调用，granter 无 priv_id → EPERM | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L65，工具生成） |
+| `test_sdevio_invalid_direction_returns_einval` | 非法方向 → EINVAL | minix3/minix/kernel/arch/i386/do_sdevio.c:do_sdevio（L151，工具生成） |
 | `test_readbios_zero_size_returns_einval` | size=0 → EINVAL | (Rust anti-overflow) |
-| `test_readbios_outside_bios_range_returns_eperm` | 超范围 → EPERM | do_readbios.c:32-34 |
-| `test_readbios_straddling_ranges_returns_eperm` | 跨段 → EPERM | do_readbios.c:32-34 |
+| `test_readbios_outside_bios_range_returns_eperm` | 超范围 → EPERM | minix3/minix/kernel/arch/i386/do_readbios.c:USERRANGE（L32，工具生成） |
+| `test_readbios_straddling_ranges_returns_eperm` | 跨段 → EPERM | minix3/minix/kernel/arch/i386/do_readbios.c:USERRANGE（L32，工具生成） |
 | `test_readbios_overflow_returns_einval` | addr+size 溢出 → EINVAL | (Rust anti-overflow) |
 
-> **注**: 无 BIOS/UPPER 有效范围成功路径测试——`data_copy_vmcheck` 会解引用 Direct Map 地址（0xFFFF_8000_0000_0000+），host 单测中未映射 → SIGSEGV。拷贝路径需 QEMU 集成测试（代码 NOTE，syscall_device.rs:1798-1803）。此前的 `test_readbios_in_bios_mem_range` / `test_readbios_in_upper_mem_range` 两行不存在（虚构），已删除。
+> **注**: 无 BIOS/UPPER 有效范围成功路径测试——`data_copy_vmcheck` 会解引用 Direct Map 地址（0xFFFF_8000_0000_0000+），host 单测中未映射 → SIGSEGV。拷贝路径需 QEMU 集成测试（代码 NOTE，os/kernel/src/syscall_device.rs:fn test_sdevio_invalid_direction_returns_einval（L1798，工具生成））。此前的 `test_readbios_in_bios_mem_range` / `test_readbios_in_upper_mem_range` 两行不存在（虚构），已删除。
 
-**dispatch 层（syscall_device.rs:1877-1960）** — `dispatch_irqctl` 完整路径（本地 `IrqManager<MockController>`，无需全局 IRQ_MANAGER）：
+**dispatch 层（os/kernel/src/syscall_device.rs:fn test_readbios_overflow_returns_einval（L1877，工具生成））** — `dispatch_irqctl` 完整路径（本地 `IrqManager<MockController>`，无需全局 IRQ_MANAGER）：
 
 | 测试函数 | 验证行为 | 对应 C 符号 |
 |---------|---------|------------|
-| `test_dispatch_irqctl_rejects_unknown_request` | 未知 request → EINVAL | do_irqctl.c:43 |
-| `test_dispatch_irqctl_setpolicy_rejects_negative_irq` | SETPOLICY 向量 < 0 → EINVAL | do_irqctl.c:55-56 |
-| `test_dispatch_irqctl_setpolicy_rejects_too_high_irq` | SETPOLICY 向量 ≥ NR_IRQ_VECTORS → EINVAL | do_irqctl.c:55-56 |
-| `test_dispatch_irqctl_setpolicy_no_priv_returns_eperm` | caller 无 priv_id → EPERM（CHECK_IRQ 校验失败） | do_irqctl.c:58-76 |
-| `test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field` | SETPOLICY 成功安装 hook + 写回 hook_id 到专用字段 | do_irqctl.c:82-108 |
+| `test_dispatch_irqctl_rejects_unknown_request` | 未知 request → EINVAL | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L43，工具生成） |
+| `test_dispatch_irqctl_setpolicy_rejects_negative_irq` | SETPOLICY 向量 < 0 → EINVAL | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L55，工具生成） |
+| `test_dispatch_irqctl_setpolicy_rejects_too_high_irq` | SETPOLICY 向量 ≥ NR_IRQ_VECTORS → EINVAL | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L55，工具生成） |
+| `test_dispatch_irqctl_setpolicy_no_priv_returns_eperm` | caller 无 priv_id → EPERM（CHECK_IRQ 校验失败） | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L58，工具生成） |
+| `test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field` | SETPOLICY 成功安装 hook + 写回 hook_id 到专用字段 | minix3/minix/kernel/system/do_irqctl.c:do_irqctl（L82，工具生成） |
 
 ### §5.2 覆盖缺口（2026-08-14 全量核实）
 

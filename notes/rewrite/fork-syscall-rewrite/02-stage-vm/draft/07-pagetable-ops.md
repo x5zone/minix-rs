@@ -235,7 +235,7 @@ pt_bind(newpt, &vmproc[VM_PROC_NR]);        // 最终绑定
 pt_mapkernel(newpt);                        // 最终内核映射
 ```
 
-为什么要重建？源码注释（`pagetable.c:1316-1318`）解释：静态备用页的物理地址在 live update 时会变化，因此必须替换为动态分配的内存。`pt_copy` 复制用户空间 PTE，`memcpy` 替换整个 `pt_t` 结构。
+为什么要重建？源码注释（`minix3/minix/servers/vm/pagetable.c:pt_init（L1316，工具生成）`）解释：静态备用页的物理地址在 live update 时会变化，因此必须替换为动态分配的内存。`pt_copy` 复制用户空间 PTE，`memcpy` 替换整个 `pt_t` 结构。
 
     - 阶段 5 的页表是用静态 BSS 页（`static_sparepages`）建立的，因为那时动态分配还没准备好。
     - Live update 时，新 VM 进程通过 fork+exec 启动，其 BSS 段加载到全新的物理地址，与老 VM 的 BSS 物理地址不同。
@@ -320,7 +320,7 @@ int pt_new(pt_t *pt)
 - **每个页表必须映射内核**: Minix3 内核在系统调用、中断等场景下运行时，不切换页表，而是直接使用当前进程的页表。因此每个进程的页目录中必须包含内核映射，否则内核代码无法执行。内核映射使用 `PTF_GLOBAL` 标志，在进程切换时对应的 TLB 条目不会被刷新。
 - **`pt_virtop` 为冗余字段**: 被初始化为 0，但实际未被使用。详见 [06-pagetable-struct.md](06-pagetable-struct.md#22-pt_virtop---冗余字段)。
 
-> **pt_mapkernel 详情**: `pt_mapkernel`（[pagetable.c:1442](minix3/minix/servers/vm/pagetable.c#L1442)）执行三段映射：
+> **pt_mapkernel 详情**: `pt_mapkernel`（[minix3/minix/servers/vm/pagetable.c:pt_mapkernel](minix3/minix/servers/vm/pagetable.c#L1442)）执行三段映射：
 > 1. **内核代码段**: 从 `kern_mb_mod->mod_start` 开始，以 4MB 大页（x86）或 1MB section（ARM）映射 `kern_size` 字节。x86 使用 `ARCH_VM_BIGPAGE` 标志，无需二级页表。
 > 2. **页目录登记册**: 遍历 `pagedir_mappings` 数组，将每个 `pdm` 的 PDE 写入页目录。这些 PDE 指向 `page_directories` 页表，使内核能通过该窗口访问所有进程的页目录。
 >     - 详见 [§2.1.3 全局结构：pagedir_mappings 数组](#213-全局结构pagedir_mappings-数组)。
@@ -384,7 +384,7 @@ static struct pdm {
 - `phys`: `page_directories` 页表的物理地址。
 - `page_directories`: `page_directories` 页表的虚拟地址，VM 通过此指针读写页表内容。该页表的每个条目存储一个进程页目录的物理地址。
 
-**初始化过程**（[pagetable.c:1035](minix3/minix/servers/vm/pagetable.c#L1035) `pt_allocate_kernel_mapped_pagetables`）:
+**初始化过程**（[minix3/minix/servers/vm/pagetable.c:pt_allocate_kernel_mapped_pagetables](minix3/minix/servers/vm/pagetable.c#L1035) `pt_allocate_kernel_mapped_pagetables`）:
 
 1. 为每个 `pdm` 分配一个 PDE 编号（通过 `freepde()`）。
 2. 分配一个物理页作为 `page_directories` 页表，内容清零。此函数仅在 VM 初始化时调用一次，liveupdate 时会重新调用一次以切换到动态内存。
@@ -526,7 +526,7 @@ int pt_bind(pt_t *pt, struct vmproc *who)
 | VM 初始化 | `main.c:211` | VM 初始化自身页表 |
 | VM 热更新 | `main.c:717-718` | live update 交换新旧 VM 进程槽位后，分别重新绑定 |
 | exec (VMPPARAM_CLEAR) | `exit.c:137` | 清除旧地址空间后创建新页表，绑定到进程 |
-| VM 切换动态内存 | `pagetable.c:1329,1343` | `page_directories` 页表重新分配并清零，需重新填充进程页目录物理地址 |
+| VM 切换动态内存 | `minix3/minix/servers/vm/pagetable.c:pt_init（L1329，工具生成）,1343` | `page_directories` 页表重新分配并清零，需重新填充进程页目录物理地址 |
 
 > **Direct Map 标注**：minix-rs 的 `bind_to_process()` 仅对应 Minix3 `pt_bind` 的第 5 步——调用 `sys_vmctl_set_addrspace()` 通知内核。步骤 1-4（定位登记册槽位、写入物理地址、计算虚拟访问地址）全部不再需要，因为 x86-64 使用 direct map，内核可直接通过 `kernel_phys_to_virt(cr3_phys)` 访问任何进程的页目录，不需要 `pagedir_mappings` 登记册。
 >
@@ -651,12 +651,12 @@ int pt_writemap(struct vmproc * vmp,
 | 建立映射 | `region.c:280` | `PTF_PRESENT\|PTF_USER\|rw` | `WMF_OVERWRITE` |
 | 取消映射 | `region.c:1139` | 0 | `WMF_OVERWRITE` |
 | 验证映射 | `region.c:153` | `PTF_PRESENT\|PTF_USER\|rw` | `WMF_VERIFY` |
-| 修改权限 | `pagetable.c:425` | 新 flags | `WMF_OVERWRITE\|WMF_WRITEFLAGSONLY` |
+| 修改权限 | `minix3/minix/servers/vm/pagetable.c:vm_pagelock（L425，工具生成）` | 新 flags | `WMF_OVERWRITE\|WMF_WRITEFLAGSONLY` |
 | 释放映射 | `mmap.c:500` | 0 | `WMF_OVERWRITE\|WMF_FREE` |
 
 #### 2.3.2 pt_ptalloc / pt_ptalloc_in_range - 分配二级页表
 
-**源码位置**: `minix/servers/vm/pagetable.c:494` / `pagetable.c:545`
+**源码位置**: `minix/servers/vm/pagetable.c:494` / `minix3/minix/servers/vm/pagetable.c:pt_ptalloc_in_range`
 
 **作用**: 为页目录中尚未分配二级页表的 PDE 槽位分配物理页、建立映射、写入 PDE。`pt_writemap` 在写入 PTE 之前必须确保目标 PDE 对应的二级页表已存在——`pt_ptalloc` 就是完成这个前置步骤的函数。
 
@@ -732,9 +732,9 @@ int pt_checkrange(pt_t *pt, vir_bytes v, size_t bytes, int write)
 
 #### 2.3.4 vm_mappages - 分配虚拟地址并建立映射
 
-> **注意**: `vm_mappages` 在 Minix3 源码中位于 `pagetable.c:295`，但语义上属于"页表映射操作"。它由 `vm_allocpage` 调用，负责为物理页分配虚拟地址并建立映射。
+> **注意**: `vm_mappages` 在 Minix3 源码中位于 `minix3/minix/servers/vm/pagetable.c:vm_mappages`，但语义上属于"页表映射操作"。它由 `vm_allocpage` 调用，负责为物理页分配虚拟地址并建立映射。
 
-**源码位置**: `minix3/minix/servers/vm/pagetable.c:295`
+**源码位置**: `minix3/minix/servers/vm/pagetable.c:vm_mappages`
 
 ```c
 void *vm_mappages(phys_bytes p, int pages)
@@ -840,10 +840,10 @@ void vm_freepages(vir_bytes vir, int pages)
 
 | 场景 | 源码位置 | 说明 |
 |------|----------|------|
-| `pt_free` 释放二级页表 | `pagetable.c:1433` | 释放页表页的 VA 映射 |
-| `pt_ptalloc` 递归副作用 | `pagetable.c:517` | 递归已分配的页表页被内层提前完成，释放外层多余的页 |
+| `pt_free` 释放二级页表 | `minix3/minix/servers/vm/pagetable.c:pt_free（L1433，工具生成）` | 释放页表页的 VA 映射 |
+| `pt_ptalloc` 递归副作用 | `minix3/minix/servers/vm/pagetable.c:pt_ptalloc（L517，工具生成）` | 递归已分配的页表页被内层提前完成，释放外层多余的页 |
 | VM 映射区域释放 | `utility.c:378` | `vm_freememory` 释放 VM 映射的内存区域 |
-| slab 分配器释放 | `slaballoc.c:449` | 释放 slab 页 |
+| slab 分配器释放 | `minix3/minix/servers/vm/slaballoc.c:slabfree（L449，工具生成）` | 释放 slab 页 |
 
 #### 2.3.6 vm_pagelock - VM 自身页权限锁定
 
@@ -876,8 +876,8 @@ void vm_pagelock(void *vir, int lockflag)
 
 | 场景 | 源码位置 | 说明 |
 |------|----------|------|
-| slab 页解锁（写入前） | `slaballoc.c:45` | `vm_pagelock(data, 0)` 恢复可写 |
-| slab 页锁定（空闲时） | `slaballoc.c:52` | `vm_pagelock(data, 1)` 设为只读 |
+| slab 页解锁（写入前） | `minix3/minix/servers/vm/slaballoc.c:SLABDATAWRITABLE（L45，工具生成）` | `vm_pagelock(data, 0)` 恢复可写 |
+| slab 页锁定（空闲时） | `minix3/minix/servers/vm/slaballoc.c:SLABDATAUNWRITABLE（L52，工具生成）` | `vm_pagelock(data, 1)` 设为只读 |
 
 slab 分配器通过写保护检测悬空指针：空闲 slab 页标记为只读，意外写入触发 page fault。
 
@@ -1106,8 +1106,8 @@ void pt_clearmapcache(void)
 | VM 初始化完成 | `main.c:212` | VM 初始化自身页表并 `pt_bind` 后清除缓存 |
 | VM 热更新 | `main.c:719` | live update 交换新旧 VM 进程槽位并重新 `pt_bind` 后 |
 | VM 主循环结束 | `main.c:749` | 每次 `alloc_cycle` 后（处理完所有请求后） |
-| page fault 处理完成 | `pagefaults.c:153` | 处理完 page fault、修改页表后 |
-| `pt_assert` 调试 | `pagetable.c:115` | 验证页表前确保内核缓存同步 |
+| page fault 处理完成 | `minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L153，工具生成）` | 处理完 page fault、修改页表后 |
+| `pt_assert` 调试 | `minix3/minix/servers/vm/pagetable.c:pt_assert` | 验证页表前确保内核缓存同步 |
 
 ---
 
@@ -1590,7 +1590,7 @@ pub enum PageTableError {
 
 ¹ Minix3 将"取消映射"和"释放物理页"耦合在 `pt_writemap` 的 `WMF_FREE` 标志中。Rust 版本将两者解耦：`unmap()` 仅取消映射并返回原物理地址，物理页的释放由 `phys_block` 引用计数管理——当引用计数归零时自动释放。这是职责分离的设计决策：页表层只管映射，物理页生命周期由独立的内存管理模块负责。
 
-**`map()` vs `remap()`**：Minix3 的 `pt_writemap()` 几乎总是带 `WMF_OVERWRITE`（region.c:285, pagetable.c:713,743），即"覆盖映射"是常态。Rust 将其拆分为两个方法：
+**`map()` vs `remap()`**：Minix3 的 `pt_writemap()` 几乎总是带 `WMF_OVERWRITE`（region.c:285, minix3/minix/servers/vm/pagetable.c:pt_ptmap（L713，工具生成）,743），即"覆盖映射"是常态。Rust 将其拆分为两个方法：
 - `map()`：严格语义，遇到已映射地址返回 `AlreadyMapped`，用于"此处不应有映射"的场景
 - `remap()`：原子覆盖语义，对应 `WMF_OVERWRITE`，避免 `unmap()` + `map()` 之间的无映射窗口
 

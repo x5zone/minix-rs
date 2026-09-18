@@ -1,7 +1,7 @@
 # 07-pagetable-struct: 页表结构——从双视图结构到 Direct Map 常量偏移
 
 > **分类**: 阶段 3 — 页与页表（结构锚点）
-> **源码**: `minix3/minix/servers/vm/pt.h:11-25`（`pt_t`）；`minix3/minix/servers/vm/arch/i386/pagetable.h`（`ARCH_VM_*` 宏族）；`minix3/minix/servers/vm/arch/earm/pagetable.h`（earm 变体）；`minix3/minix/include/arch/i386/include/vm.h:7-64`（PTE 位布局）；`minix3/minix/servers/vm/pagetable.c:1088-1349`（`pt_init` 结构面）+ `:112`（`static_sparepagedirs`）+ `:1358-1435`（`pt_bind` 结构语义）+ `:1442-1489`（`pt_mapkernel` 结构语义）
+> **源码**: `minix3/minix/servers/vm/pt.h:11-25`（`pt_t`）；`minix3/minix/servers/vm/arch/i386/pagetable.h`（`ARCH_VM_*` 宏族）；`minix3/minix/servers/vm/arch/earm/pagetable.h`（earm 变体）；`minix3/minix/include/arch/i386/include/vm.h:I386_PAGE_SIZE`（PTE 位布局）；`minix3/minix/servers/vm/pagetable.c:pt_init`（`pt_init` 结构面）+ `:112`（`static_sparepagedirs`）+ `:1358-1435`（`pt_bind` 结构语义）+ `:1442-1489`（`pt_mapkernel` 结构语义）
 > **Rust 模块**: `os/servers/vm/src/pagetable/mod.rs`（`PageTable` 别名 + `page_align`）+ `os/servers/vm/src/direct_map.rs`（VM 侧 Direct Map 双向转换）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（VM 自身页表接口：`VmSelfPageTable::adopt` + `init_vm_self_pt`）+ `os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait + 三架构实现）+ `os/arch/src/arch/paging.rs`（`Paging` trait + `PageFlags`）+ `os/arch/src/arch/dm_coverage.rs`（`DmCoverageArch` + `establish_dm_range` 覆盖建立驱动）+ `os/kernel/src/dm_coverage.rs`（`establish_boot_dm`：kernel boot 期双窗口覆盖建立）+ `os/arch/src/x86_64/paging.rs`（4 级 walk）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理分配器）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配 + Direct Map 概念首次引入）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）
 > **说明**: 页表**结构**语义模块：**`pt_t` 结构、`ARCH_VM_*` 宏族、Direct Map 双视图（[ARCH: A-1]）、VM 自映射页表（[ARCH: A-9]）、页表层级（[ARCH: A-2]）、地址空间宽度（[ARCH: A-6]）、多架构 trait（[ARCH: A-10]）、`pt_init` 结构面**。**不覆盖**：pt 操作（`pt_new`/`pt_bind`/`pt_copy`/`pt_mapkernel`/`pt_writemap` 逐函数语义 → 08）、页分配（06）、物理分配器（05）。
@@ -84,7 +84,7 @@ typedef struct {
 1. **根（页目录）双视图**：`pt_dir`（VA）与 `pt_dir_phys`（PA）指向同一物理页，VM 写目录用 VA，CPU 翻译用 PA。
 2. **二级页表双视图**：`pt_dir[pde]` 存第 `pde` 个页表的 **PA**（给 CPU），`pt_pt[pde]` 缓存同一页表的 **VA**（给 VM 写 PTE 用）。两个数组按 PDE 索引对齐——`pt_pt[pde]` 与 `pt_dir[pde]` 是同一物理页的两副眼镜。
 3. **VA 缓存从哪来**：VM 用 `vm_mappages` 把页表页映射进自己的地址空间（findhole 找 VA，06 文档），或自举期从 BSS 静态池拿（VA 编译期固定）。
-4. **`pt_virtop` 是死字段**：设计意图是"查找空闲虚拟地址的起始提示"，但 `findhole` 用的是静态变量 `lastv`（pagetable.c:155），rg 实证 `pt_virtop` 全库仅 pagetable.c:1019 一次写入、零读取。
+4. **`pt_virtop` 是死字段**：设计意图是"查找空闲虚拟地址的起始提示"，但 `findhole` 用的是静态变量 `lastv`（minix3/minix/servers/vm/pagetable.c:findhole），rg 实证 `pt_virtop` 全库仅 minix3/minix/servers/vm/pagetable.c:pt_new（L1019，工具生成） 一次写入、零读取。
 
 **这套结构的代价**：VM 每拿到一页（无论是页表页还是数据页），都要先解决"它在我的地址空间里有没有 VA"——有则缓存（`pt_pt[]`），没有则动态映射。C 的双视图不是免费的：它需要 1024 项指针缓存 + findhole 映射机制 + 递归保护（06 §1.2）。
 
@@ -114,14 +114,14 @@ VA = VM_DIRECT_MAP_BASE + PA        （direct_map.rs:21，常量偏移）
 
 VM 作为所有进程页表的管理者，**自己也得有一个页表**（内核启动时建立，VM 进程的代码/数据就在其中）。"VM 自映射"指的是 VM 对自己页表的访问接口：
 
-- **C**：自举期用 BSS 静态资源——`static_sparepages`（pagetable.c:108，单页池）与 `static_sparepagedirs`（pagetable.c:112，**仅 ARM**，16KB 对齐的页目录框）——在 VM 页表可用前支撑自举；`pt_init` 末尾用动态页整体替换（06 §1.4）。
+- **C**：自举期用 BSS 静态资源——`static_sparepages`（minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L108，工具生成），单页池）与 `static_sparepagedirs`（minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L112，工具生成），**仅 ARM**，16KB 对齐的页目录框）——在 VM 页表可用前支撑自举；`pt_init` 末尾用动态页整体替换（06 §1.4）。
 - **minix-rs**：`vm_self_map` 模块——VM 自身 `PageTable` 存于模块级静态（`Option<PageTable>`，初始化前为 `None`），提供 `vm_self_mappages`/`vm_self_unmap`/`vm_self_query`/`vm_self_unmappages` 四个自由函数。页表页的读写经 Direct Map，不需要 BSS 备用资源。
 
 [ARCH: A-9] 的语义是**资源形态演进**：C 的"静态 BSS 备用数组 + 保留队列"演进为"模块级静态 `Option<PageTable>` + 自由函数接口"。注意不是一一对应——`static_sparepagedirs` 仅 ARM 存在（x86 页目录 4KB，用单页池即可），而 `vm_self_map` 对所有架构统一。
 
 ### 1.6 地址空间宽度与多架构（[ARCH: A-6] / [ARCH: A-10]）
 
-**地址空间宽度（A-6）**：Minix3 的 VM 在 32 位地址空间里精打细算——`VM_DATATOP`/`VM_STACKTOP` 由内核参数决定（vm.h:65-67），VM 自身堆从 `VM_OWN_HEAPBASE` 起、mmap 区挤在 `VM_OWN_MMAPBASE` 的 100MB 窗口（vm.h:83-86）。minix-rs 的 64 位地址空间不再稀缺：`MMAP_BASE 0x1_0000_0000` / `MMAP_TOP 0x200_0000_0000`（mmap.rs:157-158）——1TB 的 mmap 区，Direct Map 窗口（1GB）只是用户区的一小段。A-6 是 Direct Map 可行的前提：**没有 64 位余量，就没有常量偏移映射的奢侈**。
+**地址空间宽度（A-6）**：Minix3 的 VM 在 32 位地址空间里精打细算——`VM_DATATOP`/`VM_STACKTOP` 由内核参数决定（vm.h:65-67），VM 自身堆从 `VM_OWN_HEAPBASE` 起、mmap 区挤在 `VM_OWN_MMAPBASE` 的 100MB 窗口（vm.h:83-86）。minix-rs 的 64 位地址空间不再稀缺：`MMAP_BASE 0x1_0000_0000` / `MMAP_TOP 0x200_0000_0000`（os/servers/vm/src/mmap.rs:enum MmapError（L157，工具生成））——1TB 的 mmap 区，Direct Map 窗口（1GB）只是用户区的一小段。A-6 是 Direct Map 可行的前提：**没有 64 位余量，就没有常量偏移映射的奢侈**。
 
 **多架构（A-10）**：Minix3 用两套宏（`arch/i386/pagetable.h` 与 `arch/earm/pagetable.h`）表达架构差异——同一语义（`ARCH_VM_DIR_ENTRIES`/`PTF_*`/`PFERR_*`）在两个头文件里各写一遍，调用点用 `#if defined(__i386__)`/`#elif defined(__arm__)` 切换。minix-rs 用 trait 静态分派：`Paging`（页表操作）、`DirectMapArch`（地址空间布局）、`HugePages`（大页能力）三 trait，x86-64/arm64/riscv64 各实现一份，VM 侧只依赖 trait 接口。这是"宏族 → trait"的机制级演进（Ch2 §2.2/2.3 给出 C 侧证据，Ch3 §3.4 给出 Rust 侧设计）。
 
@@ -150,7 +150,7 @@ VM 作为所有进程页表的管理者，**自己也得有一个页表**（内�
 
 ### 2.0 本章定位
 
-本章覆盖本文档语义范围内的全部 C 符号：`pt_t`（pt.h）、`ARCH_VM_*`/`PTF_*`/`PFERR_*` 宏族（两个 arch 的 pagetable.h + include/arch/i386/include/vm.h）、`pt_init` 结构面（pagetable.c:1088-1349）、`static_sparepagedirs`（pagetable.c:112）、`pt_bind`/`pt_mapkernel` 的结构语义（pagetable.c:1358-1435/1442-1489）。所有行号经 `nl -ba` 实证。
+本章覆盖本文档语义范围内的全部 C 符号：`pt_t`（pt.h）、`ARCH_VM_*`/`PTF_*`/`PFERR_*` 宏族（两个 arch 的 pagetable.h + include/arch/i386/include/vm.h）、`pt_init` 结构面（minix3/minix/servers/vm/pagetable.c:pt_init）、`static_sparepagedirs`（minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L112，工具生成））、`pt_bind`/`pt_mapkernel` 的结构语义（minix3/minix/servers/vm/pagetable.c:pt_bind/1442-1489）。所有行号经 `nl -ba` 实证。
 
 ### 2.1 pt_t 结构（pt.h:11-25）
 
@@ -163,10 +163,10 @@ typedef struct {
 } pt_t;
 ```
 
-- **`pt_dir` / `pt_dir_phys`**（pt.h:13-14）：页目录的双视图。`pt_new`（pagetable.c:990-1026）用 `vm_allocpages(&pt->pt_dir_phys, VMP_PAGEDIR, ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE)` 一次拿到 VA+PA（06 §2.1），然后清零 1024 项目录（pagetable.c:1004-1009）。注意 `ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE`：i386 页目录 = 1 页（4KB），earm 页目录 = 4 页（16KB，`ARM_PAGEDIR_SIZE`）。
-- **`pt_pt[ARCH_VM_DIR_ENTRIES]`**（pt.h:17）：页表 VA 缓存。`pt_ptalloc`（pagetable.c:494-528）按需分配页表页并登记：`pt->pt_pt[pde] = p`（VA）、`pt->pt_dir[pde] = (pt_phys & ARCH_VM_ADDR_MASK) | flags`（PA+标志）。两个数组按 PDE 索引对齐。
-- **`pt_virtop`**（pt.h:24）：**未使用**。rg 实证：`rg "pt_virtop" minix3/minix/servers/vm/ -n` 仅返回定义（pt.h:24）与一次写入（pagetable.c:1019 `pt->pt_virtop = 0;`），零读取。`findhole` 用静态 `lastv`（pagetable.c:155-157）。
-- **`CLICKSPERPAGE`**（pt.h:27）：`VM_PAGE_SIZE/CLICK_SIZE`——要求 click 等于页（pagetable.c:97-101 有编译期断言 `#error CLICK_SIZE must be page size.`）。
+- **`pt_dir` / `pt_dir_phys`**（pt.h:13-14）：页目录的双视图。`pt_new`（minix3/minix/servers/vm/pagetable.c:pt_new）用 `vm_allocpages(&pt->pt_dir_phys, VMP_PAGEDIR, ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE)` 一次拿到 VA+PA（06 §2.1），然后清零 1024 项目录（minix3/minix/servers/vm/pagetable.c:pt_new（L1004，工具生成））。注意 `ARCH_PAGEDIR_SIZE/VM_PAGE_SIZE`：i386 页目录 = 1 页（4KB），earm 页目录 = 4 页（16KB，`ARM_PAGEDIR_SIZE`）。
+- **`pt_pt[ARCH_VM_DIR_ENTRIES]`**（pt.h:17）：页表 VA 缓存。`pt_ptalloc`（minix3/minix/servers/vm/pagetable.c:pt_ptalloc）按需分配页表页并登记：`pt->pt_pt[pde] = p`（VA）、`pt->pt_dir[pde] = (pt_phys & ARCH_VM_ADDR_MASK) | flags`（PA+标志）。两个数组按 PDE 索引对齐。
+- **`pt_virtop`**（pt.h:24）：**未使用**。rg 实证：`rg "pt_virtop" minix3/minix/servers/vm/ -n` 仅返回定义（pt.h:24）与一次写入（minix3/minix/servers/vm/pagetable.c:pt_new（L1019，工具生成） `pt->pt_virtop = 0;`），零读取。`findhole` 用静态 `lastv`（minix3/minix/servers/vm/pagetable.c:findhole）。
+- **`CLICKSPERPAGE`**（minix3/minix/servers/vm/pt.h:CLICKSPERPAGE）：`VM_PAGE_SIZE/CLICK_SIZE`——要求 click 等于页（minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L97，工具生成） 有编译期断言 `#error CLICK_SIZE must be page size.`）。
 
 ### 2.2 ARCH_VM_* 宏族（arch/i386/pagetable.h:10-45）
 
@@ -242,11 +242,11 @@ i386 版把硬件细节**归一**成 VM 可用的抽象宏：
 
 这些是 A-2 的 C 侧基线：32 位两级结构的具体数值。minix-rs 的 x86-64 对应：`PML4_SHIFT 39`/`PDPT_SHIFT 30`/`PD_SHIFT 21`（x86_64/paging.rs:38-41）+ `flags_to_pte`/`pte_to_flags` 翻译函数（:80-113，NX 反相）。**位布局语义封在 arch crate，VM 侧只接触 `PageFlags`**（Ch3 §3.4）。
 
-### 2.5 pt_init 结构面（pagetable.c:1088-1349）
+### 2.5 pt_init 结构面（minix3/minix/servers/vm/pagetable.c:pt_init）
 
 `pt_init` 是"VM 页表从零到可用"的完整过程。本文档只讲**结构面**（形状/继承关系/自举），按执行顺序分六步：
 
-**① 定位内核模块**（pagetable.c:1104-1113）：
+**① 定位内核模块**（minix3/minix/servers/vm/pagetable.c:pt_init（L1104，工具生成））：
 
 ```c
 kern_mb_mod = &kernel_boot_info.module_list[m];	/* m = kern_mod */
@@ -256,15 +256,15 @@ kern_start_pde = kernel_boot_info.vir_kern_start / ARCH_BIG_PAGE_SIZE;
 
 结构意义：VM 页表必须**包含内核映射**（每个进程页表都映射内核区，`pt_mapkernel` 结构语义见 §2.7），所以先要知道内核在物理/虚拟空间的什么位置。`kern_start_pde` 是内核虚拟地址对应的 PDE 编号。
 
-**② 自举资源**（pagetable.c:1116-1136）：`static_sparepages`（BSS 数组）入保留队列，`sys_umap` 向内核查询其物理地址（VM 不知道 BSS 页的 PA）。ARM 额外处理 `static_sparepagedirs`（§2.6）。结构意义：**VM 页表可用前，页表页/数据页从 BSS 静态池拿**——VA 编译期固定，不需要 findhole（06 §1.3）。
+**② 自举资源**（minix3/minix/servers/vm/pagetable.c:pt_init（L1116，工具生成））：`static_sparepages`（BSS 数组）入保留队列，`sys_umap` 向内核查询其物理地址（VM 不知道 BSS 页的 PA）。ARM 额外处理 `static_sparepagedirs`（§2.6）。结构意义：**VM 页表可用前，页表页/数据页从 BSS 静态池拿**——VA 编译期固定，不需要 findhole（06 §1.3）。
 
-**③ CPU 特性**（pagetable.c:1138-1146）：`_cpufeature(_CPUF_I386_PGE)` → `global_bit`；`_cpufeature(_CPUF_I386_PSE)` → `bigpage_ok`。结构意义：是否能用 4MB 大页映射内核区、PTE 是否置 G 位，取决于硬件。
+**③ CPU 特性**（minix3/minix/servers/vm/pagetable.c:pt_init（L1138，工具生成））：`_cpufeature(_CPUF_I386_PGE)` → `global_bit`；`_cpufeature(_CPUF_I386_PSE)` → `bigpage_ok`。结构意义：是否能用 4MB 大页映射内核区、PTE 是否置 G 位，取决于硬件。
 
-**④ 内核映射登记**（pagetable.c:1148-1241）：`freepde()` 从 `kernel_boot_info.freepde_start` 逐号分配 PDE；`sys_vmctl_get_mapping` 遍历内核自有映射（`kern_mappings[]`），VM 为每个映射分配 VA 并 `sys_vmctl_reply_mapping` 回告内核。结构意义：**VM 页表的 PDE 空间有一块专供内核映射**（`MAX_KERNMAPPINGS 10`，pagetable.c:90）。
+**④ 内核映射登记**（minix3/minix/servers/vm/pagetable.c:pt_init（L1148，工具生成））：`freepde()` 从 `kernel_boot_info.freepde_start` 逐号分配 PDE；`sys_vmctl_get_mapping` 遍历内核自有映射（`kern_mappings[]`），VM 为每个映射分配 VA 并 `sys_vmctl_reply_mapping` 回告内核。结构意义：**VM 页表的 PDE 空间有一块专供内核映射**（`MAX_KERNMAPPINGS 10`，minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L90，工具生成））。
 
-**⑤ 页目录页表（pagedir_mappings）**（pagetable.c:1243 + 1035-1067）：`pt_allocate_kernel_mapped_pagetables` 为 `pagedir_mappings[MAX_PAGEDIR_PDES]`（pagetable.c:44-49）分配页表页——**内核借这些 PDE 查看所有进程的页目录**（`pt_bind` 用它登记每个进程的目录，§2.7）。结构意义：内核需要一个稳定的 VA 视图访问任意进程的 CR3 目标页。
+**⑤ 页目录页表（pagedir_mappings）**（minix3/minix/servers/vm/pagetable.c:pt_init（L1243，工具生成） + 1035-1067）：`pt_allocate_kernel_mapped_pagetables` 为 `pagedir_mappings[MAX_PAGEDIR_PDES]`（minix3/minix/servers/vm/pagetable.c:MAX_PAGEDIR_PDES（L44，工具生成））分配页表页——**内核借这些 PDE 查看所有进程的页目录**（`pt_bind` 用它登记每个进程的目录，§2.7）。结构意义：内核需要一个稳定的 VA 视图访问任意进程的 CR3 目标页。
 
-**⑥ 拷贝内核初始映射 + 绑定 + 动态重建**（pagetable.c:1254-1349）：
+**⑥ 拷贝内核初始映射 + 绑定 + 动态重建**（minix3/minix/servers/vm/pagetable.c:pt_init（L1254，工具生成））：
 
 ```c
 newpt = &vmprocess->vm_pt;
@@ -287,7 +287,7 @@ pt_init_done = 1;					/* ⑥ 稳态开始 */
 
 结构意义：**VM 的页表不是从零画的，而是直接接管内核已经建立并正在运行的页表**——kernel 在 bootstrap root 上为 VM 建好初始映射（identity + 内核高半 + 双 DM 窗口覆盖，§3.4）后把根 PA 经 boot handoff 页交给 VM；VM 启动时以 adopt 语义包装同一根（`VmSelfPageTable::adopt`，§4.3），无任何拷贝步骤。C 的"逐项拷贝继承"在 64 位 Direct Map 下没有存在理由：C 拷贝是因为内核与 VM 各持一棵树、VM 需要自己的副本；minix-rs 里根只有一棵，"继承"退化为"地址空间身份移交"（§3.4 配套设计 4）。
 
-### 2.6 static_sparepagedirs 与自举资源（pagetable.c:112）
+### 2.6 static_sparepagedirs 与自举资源（minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L112，工具生成））
 
 ```c
 #if defined(__arm__)
@@ -296,13 +296,13 @@ static char static_sparepagedirs[ARCH_PAGEDIR_SIZE*STATIC_SPAREPAGEDIRS + ARCH_P
 ```
 
 - **仅 ARM**：earm 页目录 16KB（`ARCH_PAGEDIR_SIZE`），自举期需要预对齐的页目录框；i386 页目录 4KB，`static_sparepages` 单页池即可兼作。
-- **消费方式**（pagetable.c:1133-1144）：`sys_umap` 查询物理地址，前 `STATIC_SPAREPAGEDIRS` 个入 `sparepagedirs[]` 数组（`missing_sparedirs` 记账），其余标记 NULL——与 06 文档的备用页池同构（自举脚手架，非稳态供应）。
+- **消费方式**（minix3/minix/servers/vm/pagetable.c:pt_init（L1133，工具生成））：`sys_umap` 查询物理地址，前 `STATIC_SPAREPAGEDIRS` 个入 `sparepagedirs[]` 数组（`missing_sparedirs` 记账），其余标记 NULL——与 06 文档的备用页池同构（自举脚手架，非稳态供应）。
 
 A-9 的 C 侧就是这些 BSS 静态资源：**VM 用自己的"静态自有页"支撑自己的页表建立**。minix-rs 的 `vm_self_map` 模块（Ch3 §3.3）是这一语义的类型化继承者。
 
 ### 2.7 pt_bind / pt_mapkernel 的结构语义
 
-**`pt_bind`**（pagetable.c:1358-1435）：把进程页表登记给内核并切换。
+**`pt_bind`**（minix3/minix/servers/vm/pagetable.c:pt_bind）：把进程页表登记给内核并切换。
 
 ```c
 pdm = &pagedir_mappings[procslot/slots_per_pde];	/* 内核看所有页目录的窗口 */
@@ -311,9 +311,9 @@ pdes = (void *)(pagedir_pde*ARCH_BIG_PAGE_SIZE + pdeslot*VM_PAGE_SIZE);
 return sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes);
 ```
 
-结构语义：**"页目录的页目录"**——`pagedir_mappings` 的 PDE 让内核在自己的地址空间里能看到任意进程的页目录页（`page_directories` 页表），`sys_vmctl_set_addrspace` 通知内核把目标进程的 CR3 换成 `pt_dir_phys`。minix-rs：登记册簿记（步骤 1-4）被 Direct Map 结构性消除（§3.8 D8），内核侧根登记由 `VmCtlParam::SetAddrSpace` 通道承接（`os/kernel/src/syscall.rs:2003`）；VM 自身的根不经此通道——bootstrap root 在 boot 期已登记为 VM 的根（A1 adoption，§3.4）。
+结构语义：**"页目录的页目录"**——`pagedir_mappings` 的 PDE 让内核在自己的地址空间里能看到任意进程的页目录页（`page_directories` 页表），`sys_vmctl_set_addrspace` 通知内核把目标进程的 CR3 换成 `pt_dir_phys`。minix-rs：登记册簿记（步骤 1-4）被 Direct Map 结构性消除（§3.8 D8），内核侧根登记由 `VmCtlParam::SetAddrSpace` 通道承接（`os/kernel/src/syscall.rs:const RB_POWERDOWN（L2003，工具生成）`）；VM 自身的根不经此通道——bootstrap root 在 boot 期已登记为 VM 的根（A1 adoption，§3.4）。
 
-**`pt_mapkernel`**（pagetable.c:1442-1489）：每个页表必须映射内核区——三段：
+**`pt_mapkernel`**（minix3/minix/servers/vm/pagetable.c:pt_mapkernel）：每个页表必须映射内核区——三段：
 
 1. 内核代码/数据：`kern_start_pde` 起逐个大页（`pt->pt_dir[kern_pde] = addr | PRESENT|BIGPAGE|RW|global_bit`，i386）；
 2. `pagedir_mappings` 的 PDE（内核看页目录的窗口）；
@@ -328,12 +328,12 @@ return sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes);
 | `pt_t` 结构 | pt.h:11-25 | §2.1 全解析 | 07（本文档） |
 | `ARCH_VM_*`/`PTF_*`/`PFERR_*` 宏族 | i386/pagetable.h:10-45、earm/pagetable.h:10-49 | §2.2/2.3 全解析 | 07 |
 | `I386_VM_*` 位布局 | include/arch/i386/include/vm.h:7-64 | §2.4 全解析 | 07 |
-| `pt_init`（结构面） | pagetable.c:1088-1349 | §2.5 结构叙事 | 07（操作细节归 08/06） |
-| `static_sparepages`/`static_sparepagedirs` | pagetable.c:108/112 | §2.6（消费语义归 06） | 07（A-9 结构） |
-| `pt_bind`（结构语义） | pagetable.c:1358-1435 | §2.7 | 08（本文档只取结构） |
-| `pt_mapkernel`（结构语义） | pagetable.c:1442-1489 | §2.7 | 08（本文档只取结构） |
-| `pt_new`/`pt_copy`/`pt_allocate_kernel_mapped_pagetables` | pagetable.c:990-1085 | §2.5 上下文引用 | 08 |
-| `findhole`/`vm_mappages` | pagetable.c:155-325 | 06 已述 | 06 |
+| `pt_init`（结构面） | minix3/minix/servers/vm/pagetable.c:pt_init | §2.5 结构叙事 | 07（操作细节归 08/06） |
+| `static_sparepages`/`static_sparepagedirs` | minix3/minix/servers/vm/pagetable.c:MAX_KERNMAPPINGS（L108，工具生成）/112 | §2.6（消费语义归 06） | 07（A-9 结构） |
+| `pt_bind`（结构语义） | minix3/minix/servers/vm/pagetable.c:pt_bind | §2.7 | 08（本文档只取结构） |
+| `pt_mapkernel`（结构语义） | minix3/minix/servers/vm/pagetable.c:pt_mapkernel | §2.7 | 08（本文档只取结构） |
+| `pt_new`/`pt_copy`/`pt_allocate_kernel_mapped_pagetables` | minix3/minix/servers/vm/pagetable.c:pt_new | §2.5 上下文引用 | 08 |
+| `findhole`/`vm_mappages` | minix3/minix/servers/vm/pagetable.c:findhole | 06 已述 | 06 |
 
 ---
 
@@ -364,7 +364,7 @@ pub(crate) type PageTable = minix_arch::CurrentPaging;
 
 **C 的问题**：页表页/自用页的 VA 要么缓存（`pt_pt[]`），要么动态映射（findhole），要么内核中介拷贝（`sys_abscopy`）——三个机制维护同一份"PA→VA"关系。
 
-**Rust 决策**：`DirectMapArch` trait（os/arch/src/arch/direct_map.rs:26-55）把"PA→VA"变成**常量算术**：
+**Rust 决策**：`DirectMapArch` trait（os/arch/src/arch/direct_map.rs:trait DirectMapArch（L26，工具生成））把"PA→VA"变成**常量算术**：
 
 ```rust
 pub trait DirectMapArch {
@@ -416,7 +416,7 @@ static VM_SELF_PT_STORAGE: AssumeSyncCell<Option<PageTable>> = AssumeSyncCell::n
 
 **C 的问题**：操作与结构耦合——`pt_*` 函数族直接操作 `pt_t` 的字段，`#if defined(__i386__)` 散落各处（pagetable.c 的 `#if` 至少 8 处）。
 
-**Rust 决策**：`Paging` trait（os/arch/src/arch/paging.rs:152-427）定义页表操作的统一契约：
+**Rust 决策**：`Paging` trait（os/arch/src/arch/paging.rs:trait Paging）定义页表操作的统一契约：
 
 ```rust
 pub trait Paging {
@@ -445,7 +445,7 @@ pub trait Paging {
 1. **`PageFlags`（u16 位标志）与硬件编码分离**：OS 语义（`PRESENT`/`WRITABLE`/`USER_ACCESSIBLE`/`EXECUTABLE`/`GLOBAL`/`NO_CACHE`…）与架构位布局解耦；x86-64 的 NX 反相、arm64 的 nG 反相等翻译封在 `flags_to_pte`/`pte_to_flags`（x86_64/paging.rs:80-113）。VM 层**永不接触 PTE 位域**（review-code-skill §2 硬件抽象强制）。
 2. **`PageTableError` 6 变体**：`InvalidAddress`/`AlreadyMapped`/`NotMapped`/`AllocationFailed`/`PermissionDenied`/`NotSupported`——映射到页表操作的失败面；错误码对齐在 IPC 边界（15）完成，不在此 trait 内自创 errno。
 3. **独立函数而非 trait 方法**：`clone_range`（paging.rs:453，对应 C `pt_copy`/`pt_map_in_range`）、`map_kernel`（:494，对应 `pt_mapkernel`）——这些是**跨页表组合操作**，不是单个架构的硬件机制，做成泛型函数复用 trait 方法（review-code-skill §2.5 机制 vs 策略分离）。C `pt_init` 没有单函数对应物：其语义分解为 DM 覆盖建立（kernel boot，见 4）、地址空间接管（`init_vm_self_pt` 的 adopt）、用户区映射写入（08 的 `write_page_table_mappings`）与根登记（VMCTL SetAddrSpace 通道，08 §3.3），各归其位。
-4. **A1 adoption 取代"结构继承"**：VM 的初始页表就是 kernel bootstrap root——kernel boot 期在该根上建立 identity + 内核高半映射（`arch_boot_impl`，os/kernel/src/lib.rs:269）与双 DM 窗口覆盖（`establish_boot_dm`，os/kernel/src/dm_coverage.rs:66，§4.4），随后把根 PA 写入 boot handoff 页（lib.rs:1152-1190）；VM 的 `init_vm_self_pt`（vm_self_map.rs:175）以 `VmSelfPageTable::adopt` 包装同一根（`adopt_active_root`，paging.rs:229），不新建、不拷贝。**注意差异**：C 拷贝内核页表内容（`sys_vircopy`/`sys_abscopy`）是因为 i386 下内核与 VM 各持一棵树；minix-rs 里根只有一棵，"继承"退化为"身份移交"——adopt 的根 PA round-trip 有测试锁定（vm_self_map.rs `test_adopt_round_trips_root_paddr`）。
+4. **A1 adoption 取代"结构继承"**：VM 的初始页表就是 kernel bootstrap root——kernel boot 期在该根上建立 identity + 内核高半映射（`arch_boot_impl`，os/kernel/src/lib.rs:const FALLBACK_BUMP_LEN（L269，工具生成））与双 DM 窗口覆盖（`establish_boot_dm`，os/kernel/src/dm_coverage.rs:fn establish_boot_dm，§4.4），随后把根 PA 写入 boot handoff 页（lib.rs:1152-1190）；VM 的 `init_vm_self_pt`（os/servers/vm/src/pagetable/vm_self_map.rs:fn init_vm_self_pt）以 `VmSelfPageTable::adopt` 包装同一根（`adopt_active_root`，paging.rs:229），不新建、不拷贝。**注意差异**：C 拷贝内核页表内容（`sys_vircopy`/`sys_abscopy`）是因为 i386 下内核与 VM 各持一棵树；minix-rs 里根只有一棵，"继承"退化为"身份移交"——adopt 的根 PA round-trip 有测试锁定（vm_self_map.rs `test_adopt_round_trips_root_paddr`）。
 
 ### 3.5 语义差异清单（C ↔ Rust 诚实标注）
 
@@ -502,7 +502,7 @@ pub(crate) fn is_direct_map_virt(virt: VirBytes) -> bool { ... }                
 
 - **输入用 `AlignedPhysBytes`**（物理页对齐新类型）：构造时强制页对齐（`AlignedPhysBytes::new` 断言、`new_unchecked` debug 断言），未对齐在构造点即暴露——C 里 `vm_phys_to_virt` 接受任意 `phys_bytes`，越界/未对齐在更晚的访问点才暴露。
 - `is_direct_map_virt` 的双窗口判定（高半 kernel / 低半 VM）是 `virt_to_phys` 的方向选择器，也是后续 09/13 判断"这个 VA 是不是 DM 页"的哨兵。
-- `VM_DIRECT_MAP_SIZE` 是编译期容量声明（三架构 1GiB/2GiB/16GiB，`os/arch/src/arch/direct_map.rs:77/108/135`）——它声明"窗口能表达的 PA 上界"，不是"kernel 已建好的映射大小"。窗口覆盖由 kernel boot 一次建立（`establish_boot_dm`，§3.4 配套设计 4）：落在窗口内的资源按需获得映射，超出窗口的物理内存不具 DM 可表达性、被资格过滤排除在 VM PMM 之外——**运行期没有任何">窗口扩展"路径**。窗口常量因此是**设计输入**而非实现细节：值选错不违反任何不变量，却能让架构功能性不可用（AArch64 若用 1GiB 窗口面对 RAM base = 1GiB 的 QEMU virt，全部 RAM 落在资格链外层上界之外——完整推导见 01-stage-kernel/07-cross-space-init.md §4.1）。
+- `VM_DIRECT_MAP_SIZE` 是编译期容量声明（三架构 1GiB/2GiB/16GiB，`os/arch/src/arch/direct_map.rs:struct X86_64DirectMap（L77，工具生成）/108/135`）——它声明"窗口能表达的 PA 上界"，不是"kernel 已建好的映射大小"。窗口覆盖由 kernel boot 一次建立（`establish_boot_dm`，§3.4 配套设计 4）：落在窗口内的资源按需获得映射，超出窗口的物理内存不具 DM 可表达性、被资格过滤排除在 VM PMM 之外——**运行期没有任何">窗口扩展"路径**。窗口常量因此是**设计输入**而非实现细节：值选错不违反任何不变量，却能让架构功能性不可用（AArch64 若用 1GiB 窗口面对 RAM base = 1GiB 的 QEMU virt，全部 RAM 落在资格链外层上界之外——完整推导见 01-stage-kernel/07-cross-space-init.md §4.1）。
 
 ### 4.3 `vm_self_map.rs`：VM 自身页表接口
 
@@ -536,7 +536,7 @@ pub(crate) fn vm_self_unmappages(va_start: VirBytes, pages: usize) -> Result<(),
 
 ### 4.4 arch 侧：`DirectMapArch` / `Paging` / `X86_64Paging` 4 级 walk
 
-**`DirectMapArch` 三实现**（os/arch/src/arch/direct_map.rs:61-146）：`X86_64DirectMap`/`AArch64DirectMap`/`Riscv64DirectMap` 各定义 BASE 常量，转换函数用 trait 默认实现（§3.2 表）；`MockDirectMap` 用 `AtomicU64` 存可配置 base（测试隔离，`set_mock_vm_base`）。
+**`DirectMapArch` 三实现**（os/arch/src/arch/direct_map.rs:fn virt_to_phys（L61，工具生成））：`X86_64DirectMap`/`AArch64DirectMap`/`Riscv64DirectMap` 各定义 BASE 常量，转换函数用 trait 默认实现（§3.2 表）；`MockDirectMap` 用 `AtomicU64` 存可配置 base（测试隔离，`set_mock_vm_base`）。
 
 **`X86_64Paging` 的 4 级结构**（os/arch/src/x86_64/paging.rs）：
 
@@ -555,7 +555,7 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 - **`phys_to_ptr_dm`**（L120-123）：`KERNEL_DIRECT_MAP_BASE + phys` 得到内核 VA 指针——PTE 读写统一经它（`write_pte_dm`/`read_pte_dm`），**页表页的"VM 视角"由 DM 派生，不再有 `pt_pt[]` 缓存**。
 - **arm64/riscv64 同构**：各自的 `walk_alloc` + `phys_to_ptr_dm` 变体（arm64/paging.rs:160、riscv64/paging.rs:195）——trait 契约相同，索引/位域不同，全部封在 arch crate。
 
-**DM 覆盖建立（kernel boot 期，bootstrap root 上）**：VM DM 窗口不是"VM 启动后补映射"，而是 kernel 在 paging enable 之后、调度 VM 之前一次性建好（`establish_boot_dm`，os/kernel/src/dm_coverage.rs:66，由 `arch_boot_impl` Step 4 调用，os/kernel/src/lib.rs:348）。映射候选是**两源并集**：①memmap conventional 区段（VM PMM 的 RAM 来源）；②bootstrap 树显式登记（VM 自身根页 + boot bump 区间——二者是 LOADER_DATA 分配，永不出现在 conventional memmap 里，不显式登记则 self root 永远进不了覆盖）。粒度选择按资源包含性裁剪：1GiB/2MiB 大页仅当**整个叶页落在同一候选区段内**才成立，reserved hole（VGA/ROM 等）不可能被任何粒度的大页吞没。同一组候选装进两个窗口——kernel DM 先建（supervisor，全 PA 域）、VM DM 后建（user，PA 域裁剪到 `VM_DIRECT_MAP_SIZE`）；x86-64 下 VM DM 窗口与 identity mapping 重叠于 PDPTE[2]，建立时以空下级表替换该槽位、仅重写 VA [2GiB, 3GiB) 的翻译，与 VA<1GiB 的自举写通道（identity `VA=PA`）正交。超窗口 conventional RAM 经资格过滤排除在 VM PMM 之外——覆盖、资格、分配三层由同一条推导链锁定。
+**DM 覆盖建立（kernel boot 期，bootstrap root 上）**：VM DM 窗口不是"VM 启动后补映射"，而是 kernel 在 paging enable 之后、调度 VM 之前一次性建好（`establish_boot_dm`，os/kernel/src/dm_coverage.rs:fn establish_boot_dm，由 `arch_boot_impl` Step 4 调用，os/kernel/src/lib.rs:fn arch_boot_impl（L348，工具生成））。映射候选是**两源并集**：①memmap conventional 区段（VM PMM 的 RAM 来源）；②bootstrap 树显式登记（VM 自身根页 + boot bump 区间——二者是 LOADER_DATA 分配，永不出现在 conventional memmap 里，不显式登记则 self root 永远进不了覆盖）。粒度选择按资源包含性裁剪：1GiB/2MiB 大页仅当**整个叶页落在同一候选区段内**才成立，reserved hole（VGA/ROM 等）不可能被任何粒度的大页吞没。同一组候选装进两个窗口——kernel DM 先建（supervisor，全 PA 域）、VM DM 后建（user，PA 域裁剪到 `VM_DIRECT_MAP_SIZE`）；x86-64 下 VM DM 窗口与 identity mapping 重叠于 PDPTE[2]，建立时以空下级表替换该槽位、仅重写 VA [2GiB, 3GiB) 的翻译，与 VA<1GiB 的自举写通道（identity `VA=PA`）正交。超窗口 conventional RAM 经资格过滤排除在 VM PMM 之外——覆盖、资格、分配三层由同一条推导链锁定。
 
 ### 4.5 消费方接线
 
@@ -585,10 +585,10 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 | `test_virt_to_phys_roundtrip` | direct_map.rs:128 | 双窗口 roundtrip |
 | `test_is_direct_map_virt` | direct_map.rs:137 | DM 判定（含非 DM 地址拒绝） |
 | `test_layout_invariant_heap_follows_direct_map` | direct_map.rs:146 | 布局不变量：堆窗口紧随 DM 窗口之后 |
-| `test_vm_self_pt_not_initialized_by_default` | vm_self_map.rs:258 | 静态存储初始 `None` |
-| `test_init_vm_self_pt_then_reset` | vm_self_map.rs:267 | init 一次性（二次调用 panic）+ reset 状态机 |
-| `test_adopt_round_trips_root_paddr` | vm_self_map.rs:279 | A1 adoption：handle 包装 handoff 根而非新建根 |
-| x86_64/paging.rs 11 个（`test_flag_roundtrip_*`×3、`test_nx_*`×2、`test_address_preserved_*`、`test_huge_page_flag_roundtrip`、`test_pml4_index_high_canonical`、`test_pdpt_index_1gb_boundary`、`test_pd_index_2mb_boundary`、`test_walk_read_not_present_on_zero_root`） | os/arch/src/x86_64/paging.rs:633-721 | PTE 标志翻译（NX 反相）、4 级索引、huge page 标志、零根 walk |
+| `test_vm_self_pt_not_initialized_by_default` | os/servers/vm/src/pagetable/vm_self_map.rs:fn test_vm_self_pt_not_initialized_by_default | 静态存储初始 `None` |
+| `test_init_vm_self_pt_then_reset` | os/servers/vm/src/pagetable/vm_self_map.rs:fn test_init_vm_self_pt_then_reset | init 一次性（二次调用 panic）+ reset 状态机 |
+| `test_adopt_round_trips_root_paddr` | os/servers/vm/src/pagetable/vm_self_map.rs:fn test_adopt_round_trips_root_paddr | A1 adoption：handle 包装 handoff 根而非新建根 |
+| x86_64/paging.rs 11 个（`test_flag_roundtrip_*`×3、`test_nx_*`×2、`test_address_preserved_*`、`test_huge_page_flag_roundtrip`、`test_pml4_index_high_canonical`、`test_pdpt_index_1gb_boundary`、`test_pd_index_2mb_boundary`、`test_walk_read_not_present_on_zero_root`） | os/arch/src/x86_64/paging.rs:fn unmap（L633，工具生成） | PTE 标志翻译（NX 反相）、4 级索引、huge page 标志、零根 walk |
 
 ### 5.2 覆盖维度
 

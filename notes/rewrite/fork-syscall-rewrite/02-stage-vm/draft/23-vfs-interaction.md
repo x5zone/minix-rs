@@ -229,7 +229,7 @@ struct fdref {
 5. refcount == 0 → 从全局链表 fdrefs 移除（遍历链表找到前驱，修改前驱的 next 指针）+ SLABFREE 释放内存 + vfs_request(FDCLOSE) 异步关闭 fd
 ```
 
-**fdref_deref 链表移除步骤**（`fdref.c:116-155`）：
+**fdref_deref 链表移除步骤**（`minix3/minix/servers/vm/fdref.c:fdref_deref`）：
 1. `ref = region->param.file.fdref`，`region->param.file.fdref = NULL`
 2. `ref->refcount--`，如果 `refcount > 0` 直接返回
 3. 如果 `fdrefs == ref`（头节点），`fdrefs = ref->next`

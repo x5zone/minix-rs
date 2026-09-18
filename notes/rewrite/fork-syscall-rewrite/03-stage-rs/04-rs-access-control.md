@@ -1,7 +1,7 @@
 # 04-rs-access-control: 调用者访问控制
 
 > **分类**: 阶段 2 — 权限与隔离（boot Step 1 的机制之一：请求入口授权）
-> **源码**: `minix3/minix/servers/rs/manager.c:21-130`（`caller_is_root`/`caller_can_control`/`check_call_permission`）、`minix3/minix/servers/rs/request.c`（11 个调用点）、`minix3/minix/lib/libsys/getepinfo.c:35-44`（`getnuid`）、`minix3/minix/servers/rs/const.h:105`（`RUPDATE_IS_UPDATING`）、`minix3/minix/include/minix/com.h:463-492`（RS_* 消息常量）
+> **源码**: `minix3/minix/servers/rs/manager.c:caller_is_root`（`caller_is_root`/`caller_can_control`/`check_call_permission`）、`minix3/minix/servers/rs/request.c`（11 个调用点）、`minix3/minix/lib/libsys/getepinfo.c:getnuid`（`getnuid`）、`minix3/minix/servers/rs/const.h:RUPDATE_IS_UPDATING`（`RUPDATE_IS_UPDATING`）、`minix3/minix/include/minix/com.h:RS_RQ_BASE`（RS_* 消息常量）
 > **Rust 模块**: `os/servers/rs/src/access.rs`（`caller_is_root`/`caller_can_control`/`check_call_permission`）、`os/servers/rs/src/boot.rs`（`KernelApi::getnuid`）、`os/libs/minix-types/src/ipc/rs.rs`（RS_* 常量模块，ARCH A-2 第一步）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（主循环分类）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`r_flags`/`sys_flags`/`r_control` 字段归属、endpoint 索引）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md`（`s_flags & SYS_PROC` 判定、privctl 操作面）
 > **说明**: 内核 priv 表管"服务能做什么"（03），RS 的访问控制管"谁有资格命令 RS"。每个 `RS_*` 控制请求在分派前先过 `check_call_permission`：root 或隔离策略（`r_control` 列表）二选一授权，再按目标槽状态应用五条规则。本文档建模两级授权模型、目标槽规则、11 个调用点、`getnuid` 外部依赖与 `RUPDATE_IS_UPDATING` 的消费规则。
@@ -27,7 +27,7 @@ RS 是系统服务的"管家"：它负责启动、停止、重启、更新服务
 
 内核的 priv 表（03）决定**服务能调用哪些内核接口、能向谁发 IPC**——这是"能力"层面的隔离。但"谁能指挥 RS 去启动/停止/更新一个服务"是**策略**层面的问题，内核不知道，因为内核不认识 `RS_UP` 请求。
 
-Minix3 的答案（`manager.c:21-130`）是**两级授权**：
+Minix3 的答案（`minix3/minix/servers/rs/manager.c:caller_is_root`）是**两级授权**：
 
 ```
 调用者（endpoint）
@@ -51,17 +51,17 @@ Minix3 的答案（`manager.c:21-130`）是**两级授权**：
 
 | # | 规则 | C 位置 | 错误 | 语义 |
 |---|------|--------|------|------|
-| 1 | 目标必须是系统进程，除非是 `RS_EDIT` | manager.c:103-105 | EPERM | 用户进程只能被编辑，不能被 UP/DOWN/RESTART/… |
-| 2 | Live Update 进行中禁止任何调用 | manager.c:108-110 | EBUSY | `RUPDATE_IS_UPDATING()`（const.h:105）；防更新期间状态被并发修改 |
-| 3 | 目标已有调用进行中（late reply / 初始化中）禁止再调用 | manager.c:113-116 | EBUSY | `RS_LATEREPLY`/`RS_INITIALIZING` 位；防重入 |
-| 4 | 目标已终止，只允许 `RS_DOWN`/`RS_RESTART` | manager.c:119-121 | EPERM | 终止态是"清理/复活"专用通道 |
-| 5 | 核心服务禁 `RS_DOWN` | manager.c:124-126 | EPERM | `SF_CORE_SRV`；核心服务（如 RS/VM/PM）不能被停 |
+| 1 | 目标必须是系统进程，除非是 `RS_EDIT` | minix3/minix/servers/rs/manager.c:rproc（L103，工具生成） | EPERM | 用户进程只能被编辑，不能被 UP/DOWN/RESTART/… |
+| 2 | Live Update 进行中禁止任何调用 | minix3/minix/servers/rs/manager.c:rproc（L108，工具生成） | EBUSY | `RUPDATE_IS_UPDATING()`（const.h:105）；防更新期间状态被并发修改 |
+| 3 | 目标已有调用进行中（late reply / 初始化中）禁止再调用 | minix3/minix/servers/rs/manager.c:rproc（L113，工具生成） | EBUSY | `RS_LATEREPLY`/`RS_INITIALIZING` 位；防重入 |
+| 4 | 目标已终止，只允许 `RS_DOWN`/`RS_RESTART` | minix3/minix/servers/rs/manager.c:rproc（L119，工具生成） | EPERM | 终止态是"清理/复活"专用通道 |
+| 5 | 核心服务禁 `RS_DOWN` | minix3/minix/servers/rs/manager.c:rproc（L124，工具生成） | EPERM | `SF_CORE_SRV`；核心服务（如 RS/VM/PM）不能被停 |
 
 五条规则有明确顺序：先权限（1），再并发（2/3），再状态（4/5）。规则 2 是 update 状态机的唯一消费点——本文档只陈述规则，状态机在 16 展开。
 
 ### 1.3 为什么是"root 或 控制列表"而不是"root 且 控制列表"
 
-`caller_is_root` 与 `caller_can_control` 是**或**关系（manager.c:91-94）：
+`caller_is_root` 与 `caller_can_control` 是**或**关系（minix3/minix/servers/rs/manager.c:rproc（L91，工具生成））：
 
 ```c
 call_allowed = caller_is_root(caller);
@@ -76,7 +76,7 @@ if(rp) {
 
 ## 2. C 源码分析
 
-### 2.1 `caller_is_root`（manager.c:21-34）+ `getnuid`（getepinfo.c:35-44）
+### 2.1 `caller_is_root`（minix3/minix/servers/rs/manager.c:caller_is_root）+ `getnuid`（minix3/minix/lib/libsys/getepinfo.c:getnuid）
 
 ```c
 static int caller_is_root(endpoint)                     /* manager.c:21 */
@@ -110,7 +110,7 @@ getnuid(endpoint_t proc_ep)                             /* getepinfo.c:35 */
 
 **关键语义（fail-closed）**：`getepinfo` 失败时返回负 errno（如 `-ENOENT`），C 里被强转成 `uid_t`（无符号），**任何负 errno 转成 uid_t 后都不可能是 0**——所以 PM 不可达/端点不存在时 `euid != 0`，调用者被拒。这个"错误即拒绝"是刻意设计：访问控制失败必须关闭大门，不能打开。
 
-### 2.2 `caller_can_control`（manager.c:39-76）
+### 2.2 `caller_can_control`（minix3/minix/servers/rs/manager.c:caller_can_control）
 
 ```c
 static int caller_can_control(endpoint, target_rp)      /* manager.c:39 */
@@ -151,12 +151,12 @@ struct rproc *target_rp;
 
 语义要点：
 
-1. **调用者必须是 RS 表内服务**（`RS_IN_USE` 且 endpoint 匹配，manager.c:52-60）。表外端点（如普通用户进程）直接拒绝——C 用"扫描到表尾"表示找不到（manager.c:61），Rust 用 `endpoint_slot()` 的 `None` 等价（ARCH A-4）。
-2. **`RS_IN_USE` 复核保留在访问层（R30，2026-09-06）**：C 的扫描每行都验 `RS_IN_USE`（manager.c:52-53），而 Rust 的 `endpoint_slot()` 是裸 `rproc_ptr` 镜像（重组中的行合法流经它，见 02 §3.5）。因此本函数在索引命中后**显式复核 in-use**（access.rs，fail-closed）——陈旧索引条目解析到已释放行时拒绝授权，等价于 C 的"扫描跳过非 in-use 行"。测试：`test_caller_can_control_skips_non_in_use_caller_row`。
+1. **调用者必须是 RS 表内服务**（`RS_IN_USE` 且 endpoint 匹配，minix3/minix/servers/rs/manager.c:rproc（L52，工具生成））。表外端点（如普通用户进程）直接拒绝——C 用"扫描到表尾"表示找不到（minix3/minix/servers/rs/manager.c:rproc（L61，工具生成）），Rust 用 `endpoint_slot()` 的 `None` 等价（ARCH A-4）。
+2. **`RS_IN_USE` 复核保留在访问层（R30，2026-09-06）**：C 的扫描每行都验 `RS_IN_USE`（minix3/minix/servers/rs/manager.c:rproc（L52，工具生成）），而 Rust 的 `endpoint_slot()` 是裸 `rproc_ptr` 镜像（重组中的行合法流经它，见 02 §3.5）。因此本函数在索引命中后**显式复核 in-use**（access.rs，fail-closed）——陈旧索引条目解析到已释放行时拒绝授权，等价于 C 的"扫描跳过非 in-use 行"。测试：`test_caller_can_control_skips_non_in_use_caller_row`。
 3. **匹配对象是目标的 `proc_name`**（`r_pub->proc_name`），不是 label。`proc_name` 是进程可执行名（如 `"vm"`、`"pm"`），`label` 是发布名（如 `"service"`、`"vm"`）——两者在 boot 后通常相同，但隔离策略按可执行名匹配（与 `RS_LOOKUP` 的 label 匹配区分，14 展开）。
 4. 列表长度 `r_nr_control` 与内容 `r_control[]` 的填充发生在请求参数校验阶段（`check_request`/`init_slot`，08），本文档只读不写。
 
-### 2.3 `check_call_permission`（manager.c:81-130）
+### 2.3 `check_call_permission`（minix3/minix/servers/rs/manager.c:check_call_permission）
 
 ```c
 int check_call_permission(caller, call, rp)             /* manager.c:81 */
@@ -275,7 +275,7 @@ pub fn check_call_permission(
 - **`caller_euid` 注入（T5，2026-08-16）**：`getnuid` 查询由 **shell**（19 接线层 / 主循环分发）执行，
   把 `Result<u32, Errno>` 传入决策函数——`access.rs` 不再 import `KernelApi`，syscall 面只出现在接线层
   （monitor 模式，todo §13）。shell 每处权限检查做一次 `sys.getnuid(caller)`，与 C 的
-  `caller_is_root(caller)` 恒先查询一致（manager.c:91）。
+  `caller_is_root(caller)` 恒先查询一致（minix3/minix/servers/rs/manager.c:rproc（L91，工具生成））。
 
 ### 3.2 `caller_is_root` → `KernelApi::getnuid`（D2，A-12）
 
@@ -302,20 +302,20 @@ caller.control[..caller.nr_control.max(0) as usize]
     .any(|c| c == proc_name)
 ```
 
-- C 的"全表扫描找调用者槽"（manager.c:52-60）→ `RProcTable::endpoint_slot()` 的 O(1) 索引（ARCH A-4，`rproc_ptr[]` 等价，02 §3.4）。
+- C 的"全表扫描找调用者槽"（minix3/minix/servers/rs/manager.c:rproc（L52，工具生成））→ `RProcTable::endpoint_slot()` 的 O(1) 索引（ARCH A-4，`rproc_ptr[]` 等价，02 §3.4）。
 - C 的 `strcmp` → Rust `&str`/`Label` 的 `==`（`proc_name`/`control` 均为 `Label` 类型，02）。
 - C 的 `r_nr_control`（int）→ Rust 切片长度由 `nr_control` 限定；`max(0)` 防御负值（C 的 int 可能为负的健壮性对齐）。
 
 ### 3.4 `check_call_permission` → 规则顺序保持（D4）
 
-五条规则与 C 完全同序（manager.c:91-126）：
+五条规则与 C 完全同序（minix3/minix/servers/rs/manager.c:rproc（L91，工具生成））：
 
-1. root || control，否则 EPERM（manager.c:91-97）
-2. 目标非系统进程且非 RS_EDIT → EPERM（manager.c:103-105）
-3. `updating` → EBUSY（manager.c:108-110）
-4. LATEREPLY || INITIALIZING → EBUSY（manager.c:113-116）
-5. TERMINATED 且非 DOWN/RESTART → EPERM（manager.c:119-121）
-6. CORE_SRV 且 DOWN → EPERM（manager.c:124-126）
+1. root || control，否则 EPERM（minix3/minix/servers/rs/manager.c:rproc（L91，工具生成））
+2. 目标非系统进程且非 RS_EDIT → EPERM（minix3/minix/servers/rs/manager.c:rproc（L103，工具生成））
+3. `updating` → EBUSY（minix3/minix/servers/rs/manager.c:rproc（L108，工具生成））
+4. LATEREPLY || INITIALIZING → EBUSY（minix3/minix/servers/rs/manager.c:rproc（L113，工具生成））
+5. TERMINATED 且非 DOWN/RESTART → EPERM（minix3/minix/servers/rs/manager.c:rproc（L119，工具生成））
+6. CORE_SRV 且 DOWN → EPERM（minix3/minix/servers/rs/manager.c:rproc（L124，工具生成））
 
 位判定用 `RFlags`/`SysFlags` bitflags（02 定义，`service_slot.rs`），`r_priv.s_flags & SYS_PROC` 对应 `PrivFlags::SYS_PROC`（03 定义，`privilege.rs`）。
 
@@ -361,7 +361,7 @@ access.rs
 | `test_caller_is_root` | `Ok(0)` → true；`Ok(1000)` → false；`Err(...)`（getnuid 失败）→ false（fail-closed） |
 | `test_caller_can_control_policy` | 无策略 → denied；控制列表含目标 proc_name → allowed；未知调用者（不在表内）→ denied |
 | `test_caller_can_control_corrupt_count_fails_closed`（D3） | `nr_control` 超 `RS_NR_CONTROL` → denied（不 panic，fail-closed） |
-| `test_caller_can_control_skips_non_in_use_caller_row`（R30） | 调用者行已释放但索引条目陈旧 → denied（manager.c:52-53 的 in-use 复核） |
+| `test_caller_can_control_skips_non_in_use_caller_row`（R30） | 调用者行已释放但索引条目陈旧 → denied（minix3/minix/servers/rs/manager.c:rproc（L52，工具生成） 的 in-use 复核） |
 | `test_check_call_permission_root` | root + 无目标（RS_UP）→ OK；非 root + 无目标 → EPERM；getnuid 失败 → EPERM（fail-closed） |
 | `test_check_call_permission_target_rules` | 五条目标槽规则逐条：用户进程仅 RS_EDIT / updating EBUSY / LATEREPLY EBUSY / TERMINATED 限 DOWN·RESTART / CORE_SRV 禁 DOWN（非 DOWN 调用放行） |
 
@@ -392,5 +392,5 @@ access.rs
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md`、`14-rs-query-requests.md`、`16-rs-live-update.md` — 被本入口保护的 handler
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/99-rs-global-concepts.md` — RS_* 消息常量全表
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — `getnuid`（PM_GETEPINFO）消息契约
-- `minix3/minix/servers/rs/manager.c:21-130`、`request.c`、`lib/libsys/getepinfo.c:35-44`、`servers/rs/const.h:105`、`include/minix/com.h:463-492` — ground truth
+- `minix3/minix/servers/rs/manager.c:caller_is_root`、`request.c`、`lib/libsys/getepinfo.c:35-44`、`servers/rs/const.h:105`、`include/minix/com.h:463-492` — ground truth
 - `os/servers/rs/src/access.rs`、`os/libs/minix-types/src/ipc/rs.rs` — Rust 实现

@@ -23,13 +23,13 @@
 
 ### 1.1 为什么需要 `srv_fork`：系统服务的孵化器
 
-普通 `fork` 子为 *user* 进程：`PRIV_PROC` 丢弃（`forkexit.c:106` `IN_USE|DELAY_CALL|TAINTED` 未含 `PRIV_PROC`），`scheduler` 接管为 `SCHED_PROC_NR 4`（`forkexit.c:101-103` `RS` 不能调度非系统进程，PM 接管），凭证继承父（`forkexit.c:150-152` `User(creds.clone())`）——这是"用户进程家族"的创建。
+普通 `fork` 子为 *user* 进程：`PRIV_PROC` 丢弃（`minix3/minix/servers/pm/forkexit.c:do_fork（L106，工具生成）` `IN_USE|DELAY_CALL|TAINTED` 未含 `PRIV_PROC`），`scheduler` 接管为 `SCHED_PROC_NR 4`（`minix3/minix/servers/pm/forkexit.c:do_fork（L101，工具生成）` `RS` 不能调度非系统进程，PM 接管），凭证继承父（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L150，工具生成）` `User(creds.clone())`）——这是"用户进程家族"的创建。
 
-系统服务（`RS` 孵化的 `DS`/`VFS`/`VM` 等）需要 *system* 进程：`PRIV_PROC` 保留（`forkexit.c:199-200` `IN_USE|PRIV_PROC|DELAY_CALL` 含 `PRIV_PROC`），`scheduler==NONE`（启动期 `NONE` 直通，不经 `SCHED`），凭证由 RS 在 `srv_fork` 消息中显式注入 `uid/gid` 六字段（`forkexit.c:206-211` `real/eff/saved` 同值）——这是"系统服务家族"的创建。若用普通 `fork` 孵化系统服务，需先 `fork` 为 `user` 再 `setuid` 为 `root`，两步间子进程以旧凭证短暂可观测，RS 集中孵化的 `srv_fork` 将"创建+确权"原子化。
+系统服务（`RS` 孵化的 `DS`/`VFS`/`VM` 等）需要 *system* 进程：`PRIV_PROC` 保留（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L199，工具生成）` `IN_USE|PRIV_PROC|DELAY_CALL` 含 `PRIV_PROC`），`scheduler==NONE`（启动期 `NONE` 直通，不经 `SCHED`），凭证由 RS 在 `srv_fork` 消息中显式注入 `uid/gid` 六字段（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L206，工具生成）` `real/eff/saved` 同值）——这是"系统服务家族"的创建。若用普通 `fork` 孵化系统服务，需先 `fork` 为 `user` 再 `setuid` 为 `root`，两步间子进程以旧凭证短暂可观测，RS 集中孵化的 `srv_fork` 将"创建+确权"原子化。
 
 ### 1.2 为什么仅 RS 可调用：能力边界
 
-`RS_PROC_NR`（`com.h:62` / `minix/config.h`，`Endpoint::RS`）是 PM 启动链中唯一被信任的系统服务孵化器（`main.c:202-215` 启动填充中 `RS_PROC_NR` 父为 `INIT`，其余系统服务父为 `RS`，形成孵化树）。`do_srv_fork` 首步即权限门（`forkexit.c:159-160`）：
+`RS_PROC_NR`（`com.h:62` / `minix/config.h`，`Endpoint::RS`）是 PM 启动链中唯一被信任的系统服务孵化器（`main.c:202-215` 启动填充中 `RS_PROC_NR` 父为 `INIT`，其余系统服务父为 `RS`，形成孵化树）。`do_srv_fork` 首步即权限门（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L159，工具生成）`）：
 
 ```c
 if (mp->mp_endpoint != RS_PROC_NR) return EPERM; // sys/errno.h:1
@@ -39,9 +39,9 @@ if (mp->mp_endpoint != RS_PROC_NR) return EPERM; // sys/errno.h:1
 
 ### 1.3 为什么回复语义相反：`SUSPEND` vs `Reply(pid)`+`reply(child,OK)`
 
-`do_fork` 子为用户进程，需等待 `VFS_PM_FORK_REPLY` 的 `sched_start_user` 双分支（`main.c:369-396` / 05 `ipc/vfs.rs:269` 的 `SCHED` 异步调度，`scheduler != NONE && != KERNEL` 时 `sched_start_user`，成败→`exit_proc` 或双 `reply`），因此 `do_fork` `return SUSPEND`（`forkexit.c:139` → `ReplyLater`，05 的 `VFS_PM_FORK_REPLY` 异步双回复）。
+`do_fork` 子为用户进程，需等待 `VFS_PM_FORK_REPLY` 的 `sched_start_user` 双分支（`main.c:369-396` / 05 `ipc/vfs.rs:269` 的 `SCHED` 异步调度，`scheduler != NONE && != KERNEL` 时 `sched_start_user`，成败→`exit_proc` 或双 `reply`），因此 `do_fork` `return SUSPEND`（`minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成）` → `ReplyLater`，05 的 `VFS_PM_FORK_REPLY` 异步双回复）。
 
-`srv_fork` 子为系统服务，`scheduler==NONE` 直通（`forkexit.c:200` 保留 `PRIV_PROC` 后 `scheduler` 仍 `NONE`），`VFS_PM_SRV_FORK_REPLY 0x989` 在 `main.c:398-401` 为空分支 `/* Nothing to do */`（`ipc/vfs.rs:298` `SrvFork → {}`），VFS 侧 `fproc` 复制后无需 `SCHED` 调度即可立即可运行（`sys_clear` 直毁路径在 09）。因此 `do_srv_fork` 可立即 `reply(child, OK)` 并 `return pid` 同步返父（`forkexit.c:237/239` → `Reply(pid)` + `send(child,OK)`），不经过 05 的异步双分支。差异表见 §1.5。
+`srv_fork` 子为系统服务，`scheduler==NONE` 直通（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L200，工具生成）` 保留 `PRIV_PROC` 后 `scheduler` 仍 `NONE`），`VFS_PM_SRV_FORK_REPLY 0x989` 在 `main.c:398-401` 为空分支 `/* Nothing to do */`（`ipc/vfs.rs:298` `SrvFork → {}`），VFS 侧 `fproc` 复制后无需 `SCHED` 调度即可立即可运行（`sys_clear` 直毁路径在 09）。因此 `do_srv_fork` 可立即 `reply(child, OK)` 并 `return pid` 同步返父（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L237，工具生成）/239` → `Reply(pid)` + `send(child,OK)`），不经过 05 的异步双分支。差异表见 §1.5。
 
 ### 1.4 凭证注入：`m_lsys_pm_srv_fork.{uid,gid}` 六字段同值
 
@@ -97,7 +97,7 @@ Rust 改写不是照抄 `do_srv_fork` 的裸分支，而是在吸收工业级 OS
 
 ## 2 C 源码分析
 
-### 2.1 权限门：`RS_PROC_NR → EPERM`（forkexit.c:159-160）
+### 2.1 权限门：`RS_PROC_NR → EPERM`（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L159，工具生成））
 
 ```c
 if (mp->mp_endpoint != RS_PROC_NR) // forkexit.c:159 mp 为当前进程（glo.h:8 mp）
@@ -106,15 +106,15 @@ if (mp->mp_endpoint != RS_PROC_NR) // forkexit.c:159 mp 为当前进程（glo.h:
 
 `RS_PROC_NR` 为 `com.h:62` 常量（`Endpoint::RS`，`minix-types/src/types/endpoint.rs` 单一真相），仅 `RS`（`RS` 自身 `endpoint==RS_PROC_NR`，启动期 `main.c:203-204` `RS_PROC_NR` 父为 `INIT`）可过门；`EPERM` 而非 `EACCES`，因 `srv_fork` 是能力（仅 RS 拥有），非文件权限。
 
-### 2.2 容量与槽位轮转（forkexit.c:162-181）
+### 2.2 容量与槽位轮转（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L162，工具生成））
 
 与 `do_fork` `60-75` 同构（`procs_in_use == NR_PROCS || >=NR_PROCS-LAST_FEW && effuid!=0 → EAGAIN`，`next_child` 私有静态 `static unsigned int next_child=0` 在 `153`，各自轮转，双 `panic` 守卫 `can't find child slot` / `finds wrong child slot`），`next_child` 分离 vs 共享轮转的合理性见 §3.6（Rust 侧共享 `ProcTable::next_child` 单一真相，避免双静态漂移）。
 
-### 2.3 `vm_fork` 同步段（forkexit.c:183-185）
+### 2.3 `vm_fork` 同步段（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L183，工具生成））
 
 与 `do_fork` `78-80` 同构（`vm_fork(rmp->endpoint, next_child, &child_ep)` 同步，失败 `return s`，成功后 `82` 注释不可失败窗口同样适用——`82` 注释在 `do_fork` 块但语义对 `do_srv_fork` 同成立，`kernel/system/do_fork.c:69-72` 的 `generation` 递增在 `sys_fork` 内）。
 
-### 2.4 槽位占位与全量复制：差异在 `PRIV_PROC` 保留与六字段注入（forkexit.c:187-216）
+### 2.4 槽位占位与全量复制：差异在 `PRIV_PROC` 保留与六字段注入（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L187，工具生成））
 
 ```c
 rmc = &mproc[next_child];             // 187
@@ -156,7 +156,7 @@ assert(rmc->mp_eventsub == NO_EVENTSUB); // 216 与 07 116 同
 
 与 07 `119-120` 同位置（`new_pid = get_free_pid()` → `rmc->mp_pid = new_pid`，`219-220`），`PidGenerator::get_free_pid` 的 `NR_PIDS` 回绕与双字段冲突与 `utility.c:34-74` 逐行对齐。
 
-### 2.6 VFS 投递：`VFS_PM_SRV_FORK` 真实 `REUID/REGID`（forkexit.c:222-230）
+### 2.6 VFS 投递：`VFS_PM_SRV_FORK` 真实 `REUID/REGID`（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L222，工具生成））
 
 ```c
 memset(&m, 0, sizeof(m));             // 222
@@ -171,11 +171,11 @@ tell_vfs(rmc, &m);                    // 230 VFS_CALL 置子进程（utility.c:1
 
 `VFS_PM_SRV_FORK 0x908` 与 `VFS_PM_FORK 0x907` 仅 `m7i4/m7i5` 差异（`com.h:579-580`），`tell_vfs(rmc)` 的 `rmp` 即子 `rmc`，`VFS_CALL` 置子槽（`utility.c:138`），延续由 05 的 `VFS_PM_SRV_FORK_REPLY` 空分支消费（`main.c:398-401` `/* Nothing to do */`，`ipc/vfs.rs:298`）。
 
-### 2.7 tracer 信号（forkexit.c:232-234）
+### 2.7 tracer 信号（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L232，工具生成））
 
 与 07 `132-135` 同构（`if (mp_tracer != NO_TRACER) sig_proc(rmc, SIGSTOP, trace)`，`signal.c:384`）。2026-09-06 起为真实调用：`do_srv_fork` 第 7 步经 `crate::signal::sig_proc`（trace=true → ptrace 停止分支）投递，子进程的 tracer 继承由共享的 `inherit_guardianship`（07 D7）按 `TO_TRACEFORK` 条件决定——srv 路径的构造函数 `srv_fork_from` 先置 `Normal`，第 5 步之后条件继承覆盖之（对应 C `*rmc=*rmp` 复制 + 91-96 同型清除）。
 
-### 2.8 立即双回复 vs `SUSPEND`（forkexit.c:236-239）
+### 2.8 立即双回复 vs `SUSPEND`（minix3/minix/servers/pm/forkexit.c:do_srv_fork（L236，工具生成））
 
 ```c
 reply(rmc-mproc, OK);                 // 237 立即唤醒子（m_type=OK 0）
@@ -193,11 +193,11 @@ vs `do_fork` `139` `return SUSPEND`（`ReplyLater`，05 的 `VFS_PM_FORK_REPLY` 
 
 | 类别 | 检测 | 触发 | 严重度 |
 |------|------|------|--------|
-| `EPERM` | `forkexit.c:159-160` | `endpoint != RS_PROC_NR` | 可恢复（非 RS 误调用） |
-| `EAGAIN` | `forkexit.c:166-171` | 满表/近满非 root | 可恢复 |
-| `panic("can't find child slot")` | `forkexit.c:178-179` | 全表扫描仍 `IN_USE` | 不可达（容量检查已保证） |
-| `assert(eventsub==NO_EVENTSUB)` | `forkexit.c:216` | 新子仍挂游标 | 不可恢复（06 不变量） |
-| `reply(child,OK)`+`return pid` | `forkexit.c:237/239` | 成功孵化 | 同步双回复（`Reply(pid)`） |
+| `EPERM` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L159，工具生成）` | `endpoint != RS_PROC_NR` | 可恢复（非 RS 误调用） |
+| `EAGAIN` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L166，工具生成）` | 满表/近满非 root | 可恢复 |
+| `panic("can't find child slot")` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L178，工具生成）` | 全表扫描仍 `IN_USE` | 不可达（容量检查已保证） |
+| `assert(eventsub==NO_EVENTSUB)` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L216，工具生成）` | 新子仍挂游标 | 不可恢复（06 不变量） |
+| `reply(child,OK)`+`return pid` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L237，工具生成）/239` | 成功孵化 | 同步双回复（`Reply(pid)`） |
 
 ---
 
@@ -207,7 +207,7 @@ Rust 改写遵循"显式协调器 + 显式构造 + 类型化凭证"的 5 处差�
 
 ### D1：权限门 `RS → EPERM`（ARCH A-3）
 
-`Endpoint::RS`（`minix-types/src/types/endpoint.rs` 单一真相，`RS_PROC_NR`）在 `do_srv_fork` 首检 `if parent_ep != Endpoint::RS { return Err(EPERM) }`（`forkexit.c:159-160`），与 `Endpoint::PM`/`VFS` 等同源；`PmError::PermissionDenied → EPERM` 映射（`sys/errno.h:1`）。
+`Endpoint::RS`（`minix-types/src/types/endpoint.rs` 单一真相，`RS_PROC_NR`）在 `do_srv_fork` 首检 `if parent_ep != Endpoint::RS { return Err(EPERM) }`（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L159，工具生成）`），与 `Endpoint::PM`/`VFS` 等同源；`PmError::PermissionDenied → EPERM` 映射（`sys/errno.h:1`）。
 
 ### D2：标志继承 `IN_USE|PRIV_PROC|DELAY_CALL`（ARCH A-2）
 
@@ -223,11 +223,11 @@ Rust 改写遵循"显式协调器 + 显式构造 + 类型化凭证"的 5 处差�
 
 ### D5：立即双回复 vs `SUSPEND`（ARCH A-6）
 
-`do_srv_fork` 成功路径 `tell_vfs` 后 `transport.send(child_ep, OK)` 立即唤醒子（`forkexit.c:237` `reply(rmc-mproc, OK)`），`Ok(pid)` 由 `init.rs:PM_SRV_FORK` 拦截映射 `Reply(pid)` 同步返父；`PmCall::SrvFork=41` 的 `dispatch_pm_call` 在 `init.rs` 拦截前为 `Reply(ENOSYS)` 占位，本章拦截后 `Reply(pid)`；`VFS_PM_SRV_FORK_REPLY 0x988` 空分支由 `ipc/vfs.rs:298` 已实现 `SrvFork → {}`，不 `sched_start_user`。
+`do_srv_fork` 成功路径 `tell_vfs` 后 `transport.send(child_ep, OK)` 立即唤醒子（`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L237，工具生成）` `reply(rmc-mproc, OK)`），`Ok(pid)` 由 `init.rs:PM_SRV_FORK` 拦截映射 `Reply(pid)` 同步返父；`PmCall::SrvFork=41` 的 `dispatch_pm_call` 在 `init.rs` 拦截前为 `Reply(ENOSYS)` 占位，本章拦截后 `Reply(pid)`；`VFS_PM_SRV_FORK_REPLY 0x988` 空分支由 `ipc/vfs.rs:298` 已实现 `SrvFork → {}`，不 `sched_start_user`。
 
 ### D6：`next_child` 共享轮转的合理性
 
-C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usize>` 共享单轮转（`mproc/table.rs:138`），轮转语义 `(next_child+1)%NR_PROCS` 先递增后检查与 `forkexit.c:69/175` 同序，共享不影响正确性（`n<=NR_PROCS` 全表扫描保证找到空槽）且避免双静态漂移（`07-design.v1.md D2` 已论证，08 保留同论证）。
+C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usize>` 共享单轮转（`mproc/table.rs:138`），轮转语义 `(next_child+1)%NR_PROCS` 先递增后检查与 `minix3/minix/servers/pm/forkexit.c:do_fork（L69，工具生成）/175` 同序，共享不影响正确性（`n<=NR_PROCS` 全表扫描保证找到空槽）且避免双静态漂移（`07-design.v1.md D2` 已论证，08 保留同论证）。
 
 ### D7：5 步同构（容量→槽位→`vm_fork`→复制→`get_free_pid`→`tell_vfs`→`SIGSTOP`）
 
@@ -266,7 +266,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### 4.4 分发与 `run_once` 接线（`os/servers/pm/src/ipc/calls.rs` + `init.rs`）
 
-- `PmCall::SrvFork=41`（`calls.rs:175`）`from_call_nr` 与 `table.c:23` 同注册；
+- `PmCall::SrvFork=41`（`os/servers/pm/src/ipc/calls.rs:fn from_call_nr（L175，工具生成）`）`from_call_nr` 与 `table.c:23` 同注册；
 - `init.rs:PM_SRV_FORK` 拦截 `if m_type==41 { if parent_ep != RS → EPERM else do_srv_fork → Ok(pid)→Reply(pid) / Err→Reply(errno) }`（与 `PM_FORK` 的 `ReplyLater` 分支正交，`init.rs:332` 新增）；
 - `ipc/vfs.rs:298` 空分支 `SrvFork → {}` 已对齐 `main.c:398-401`。
 
@@ -274,11 +274,11 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 | # | 不变量 | C 锚点 | Rust 表达 |
 |---|--------|--------|-----------|
-| 1 | 非 RS → `EPERM` | `forkexit.c:159-160` | `if parent_ep != RS → EPERM` |
-| 2 | `PRIV_PROC` 保留 | `forkexit.c:199-200` | `SRV_FORK_INHERIT_FLAGS` 含 `PRIV_PROC` |
-| 3 | 六字段同值注入 | `forkexit.c:206-211` | `Credentials::new(uid,gid)` |
-| 4 | `VFS_CALL` 置子进程且 `REUID/REGID` 真实 | `forkexit.c:227-230` | `tell_vfs(child_slot, SrvFork{reuid,regid})` |
-| 5 | `reply(child,OK)`+`return pid` vs `SUSPEND` | `forkexit.c:237/239` | `send(child,OK)`+`Ok(pid)→Reply(pid)` |
+| 1 | 非 RS → `EPERM` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L159，工具生成）` | `if parent_ep != RS → EPERM` |
+| 2 | `PRIV_PROC` 保留 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L199，工具生成）` | `SRV_FORK_INHERIT_FLAGS` 含 `PRIV_PROC` |
+| 3 | 六字段同值注入 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L206，工具生成）` | `Credentials::new(uid,gid)` |
+| 4 | `VFS_CALL` 置子进程且 `REUID/REGID` 真实 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L227，工具生成）` | `tell_vfs(child_slot, SrvFork{reuid,regid})` |
+| 5 | `reply(child,OK)`+`return pid` vs `SUSPEND` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L237，工具生成）/239` | `send(child,OK)`+`Ok(pid)→Reply(pid)` |
 | 6 | `VFS_PM_SRV_FORK_REPLY` 空分支 | `main.c:398-401` | `VfsReply::SrvFork → {}` |
 
 ---
@@ -299,7 +299,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 - `test_do_srv_fork_eperm`：`parent_ep != RS → Err(EPERM)`（`find_parent` 前即拦）
 - `test_do_srv_fork_success`：`RS → Ok(pid)` 且子 `PRIV_PROC` 且 `VFS_CALL` 且 `transport` 含 `VFS_PM_SRV_FORK`（测试名对账 2026-09-06：轮 4 统一 `do_` 前缀）
 - `test_do_srv_fork_vfs_call`：`VfsCall::SrvFork` 的 `reuid/regid` 真实 vs `Fork` 的 `-1`（`m7i4/m7i5`）
-- `test_do_srv_fork_tracefork_child_inherits_tracer_and_stops`：RS 带 `TO_TRACEFORK` → srv 子继承 tracer + ptrace 停止（D7 落地，`forkexit.c:187-216/231-234`）
+- `test_do_srv_fork_tracefork_child_inherits_tracer_and_stops`：RS 带 `TO_TRACEFORK` → srv 子继承 tracer + ptrace 停止（D7 落地，`minix3/minix/servers/pm/forkexit.c:do_srv_fork（L187，工具生成）/231-234`）
 
 ### 5.3 集成与跨文档
 
@@ -313,7 +313,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ## 6 过渡
 
-`do_srv_fork` 在主循环 `PM_SRV_FORK` 与 `VFS_PM_SRV_FORK_REPLY` 空分支之间的位置，与 `do_fork` 共享 70% 流程但回复语义相反的对照图，为下游 09/10（`exit`/`wait` 的 `PRIV_PROC` 特权进程直毁与 `procs_in_use` 回收）的前置——`srv_fork` 子为 `PRIV_PROC` 系统服务，其 `exit_proc` 走 `sys_clear` 直毁（`forkexit.c:361-369`，09），无需 `tracer` 的 `SIGSTOP` 恢复（11）。
+`do_srv_fork` 在主循环 `PM_SRV_FORK` 与 `VFS_PM_SRV_FORK_REPLY` 空分支之间的位置，与 `do_fork` 共享 70% 流程但回复语义相反的对照图，为下游 09/10（`exit`/`wait` 的 `PRIV_PROC` 特权进程直毁与 `procs_in_use` 回收）的前置——`srv_fork` 子为 `PRIV_PROC` 系统服务，其 `exit_proc` 走 `sys_clear` 直毁（`minix3/minix/servers/pm/forkexit.c:exit_proc（L361，工具生成）`，09），无需 `tracer` 的 `SIGSTOP` 恢复（11）。
 
 **下一入口**：
 
@@ -324,7 +324,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/forkexit.c:142-240`（`do_srv_fork`）、`minix3/minix/servers/pm/utility.c:34-74`（`get_free_pid`）、`minix3/minix/include/minix/ipc.h:1422`（`mess_lsys_pm_srv_fork`）、`minix3/minix/include/minix/com.h:528/541/579-580`（`VFS_PM_SRV_FORK` 字段）、`minix3/minix/include/minix/callnr.h:54`（`PM_SRV_FORK 41`）、`minix3/minix/servers/pm/main.c:398-401`（`SRV_FORK_REPLY` 空分支）、`minix3/minix/servers/pm/signal.c:384`（`sig_proc`）
+- C 源（ground truth）：`minix3/minix/servers/pm/forkexit.c:do_fork（L142，工具生成）`（`do_srv_fork`）、`minix3/minix/servers/pm/utility.c:get_free_pid`（`get_free_pid`）、`minix3/minix/include/minix/ipc.h:1422`（`mess_lsys_pm_srv_fork`）、`minix3/minix/include/minix/com.h:VFS_PM_SRV_FORK/541/579-580`（`VFS_PM_SRV_FORK` 字段）、`minix3/minix/include/minix/callnr.h:PM_SRV_FORK`（`PM_SRV_FORK 41`）、`minix3/minix/servers/pm/main.c:handle_vfs_reply（L398，工具生成）`（`SRV_FORK_REPLY` 空分支）、`minix3/minix/servers/pm/signal.c:sig_proc`（`sig_proc`）
 - 设计契约：`.design/08-design.v1.md`（D1–D8 与行为契约表）、`.design/08-outline.v1.md`、`.design/08-outline-review.v1.md`
 - PM 阶段文档：07-pm-fork.md（`do_fork` 全链路，差异对照主）、03-mproc-table.md（`can_alloc`/`find_free_slot`/`get_free_pid`）、04-ipc-dispatch.md（`Reply(pid)` vs `ReplyLater`）、05-vfs-interaction.md（`tell_vfs` 与 `handle_vfs_reply` 的 `SRV_FORK` 空分支）、02-mproc-struct.md（`PRIV_PROC` 与 `Credentials`）、`minix/ipc.h:1422`（`mess_lsys_pm_srv_fork`）、16-scheduling.md（`scheduler==NONE`）、11-signal-core.md（`sig_proc`）、08-pm-srv-fork.md（`PRIV_PROC` 差异）
 - 对端实现：`02-stage-vm/18-vm-fork.md`（`vm_fork` 对端）、`05-stage-vfs`（`VFS_PM_SRV_FORK` 对端）

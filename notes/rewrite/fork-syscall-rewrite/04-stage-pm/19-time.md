@@ -78,7 +78,7 @@ PM 侧 `do_settime` 的 `now` 直通（`81` `m_in.m_lc_pm_time.now` → `sys_set
 
 `time.c:99` 的 `clock_time(&tv)` 经 `libsys/clock_time.c:13-40` 的 `boottime+realtime/hz` 合成与 `do_gettime(REALTIME)` 的 `boottime+realtime/hz` 合成在 `sec` 层同算式：
 
-- `clock_time.c:33-40` 的 `nsec` 分叉：`if(system_hz < LONG_MAX/40000)→ nsec=(realtime%hz)*40000/hz*25000`（`40000*25000=1e9` 的 `LONG_MAX/40000≈53686` 阈值，`hz=5e4` 时不取该分支而 `nsec=0` 退化） vs `time.c:44` 的 `nsec=(clock%hz)*1e9/hz` 的 `ULL` 直算——二者在 `hz<53686` 时 `nsec` 同值（`40000*25000=1e9` 的 `LONG_MAX` 溢出规避在 32 位下必要），64 位 `hz: i64` 的 `realtime%hz*1e9/hz` 恒不溢出（`49999*1e9=5e13<9e18`），`40000*25000` 分叉退化为 `*1e9` 直算（`A-11` 64 位扩展）。
+- `minix3/minix/lib/libsys/clock_time.c:clock_time（L33，工具生成）` 的 `nsec` 分叉：`if(system_hz < LONG_MAX/40000)→ nsec=(realtime%hz)*40000/hz*25000`（`40000*25000=1e9` 的 `LONG_MAX/40000≈53686` 阈值，`hz=5e4` 时不取该分支而 `nsec=0` 退化） vs `time.c:44` 的 `nsec=(clock%hz)*1e9/hz` 的 `ULL` 直算——二者在 `hz<53686` 时 `nsec` 同值（`40000*25000=1e9` 的 `LONG_MAX` 溢出规避在 32 位下必要），64 位 `hz: i64` 的 `realtime%hz*1e9/hz` 恒不溢出（`49999*1e9=5e13<9e18`），`40000*25000` 分叉退化为 `*1e9` 直算（`A-11` 64 位扩展）。
 - `do_time` 无 `SUPER_USER` 门（`time.c:94-104` 无 `effuid` 检查，`gettimeofday` 为只读），`do_gettime/settime` 有 `clk_id` 边界（`39/63/86` 的 `default→EINVAL`）——`do_time` 的只读与 `do_gettime` 的双时钟写读分派对偶。
 
 ### 1.7 与其他 OS 状态机的对照
@@ -185,7 +185,7 @@ int do_time(void)
 }
 ```
 
-`99` 行 `clock_time(&tv)` 经 `libsys/clock_time.c:13-40` 的 `boottime+realtime/hz` 与 `do_gettime(REALTIME)` 的 `decompose_clock` 同源但 `40000*25000` 溢出分叉（`clock_time.c:33-40` `LONG_MAX/40000` 阈值在 64 位下退化为 `*1e9` 直算，`A-11`）。`time.c` 的 `do_time` 无 `SUPER_USER` 门（只读），`do_gettime/settime` 有 `clk_id` 边界——只读直通与双时钟写读分派对偶。
+`99` 行 `clock_time(&tv)` 经 `libsys/clock_time.c:13-40` 的 `boottime+realtime/hz` 与 `do_gettime(REALTIME)` 的 `decompose_clock` 同源但 `40000*25000` 溢出分叉（`minix3/minix/lib/libsys/clock_time.c:clock_time（L33，工具生成）` `LONG_MAX/40000` 阈值在 64 位下退化为 `*1e9` 直算，`A-11`）。`time.c` 的 `do_time` 无 `SUPER_USER` 门（只读），`do_gettime/settime` 有 `clk_id` 边界——只读直通与双时钟写读分派对偶。
 
 ### 2.5 `do_stime`（`time.c:110-131`）
 
@@ -249,12 +249,12 @@ time_t clock_time(struct timespec *tv)
 
 `kernel/system/do_stime.c:17` 的 `set_boottime(boot_time)` 唯一（`m_lsys_krn_sys_stime.boot_time` 的 `time_t` 直存 `kclockinfo.boottime`），PM 侧 `do_stime:124` 的 `boottime=sec-realtime/hz` 已算得新 `boottime` 锚点——PM 的职责是锚点重定（`sec-realtime/hz` 的整数除法），内核的职责是 `kclockinfo.boottime` 的 `set_boottime` 存储（移交 `01-stage-kernel/21`）。
 
-### 2.10 消息与类型（`sys/time.h:283/288` `CLOCK_REALTIME 0/MONOTONIC 3` + `ipc.h:469` `mess_lc_pm_time/mess_pm_lc_time` + `callnr.h:41/46-48` `PM_GETTIMEOFDAY 28/STIME 7/CLOCK_* 33-35` + `glo.h:25` `system_hz`）
+### 2.10 消息与类型（`sys/time.h:283/288` `CLOCK_REALTIME 0/MONOTONIC 3` + `ipc.h:469` `mess_lc_pm_time/mess_pm_lc_time` + `minix3/minix/include/minix/callnr.h:PM_GETTIMEOFDAY/46-48` `PM_GETTIMEOFDAY 28/STIME 7/CLOCK_* 33-35` + `glo.h:25` `system_hz`）
 
 - `CLOCK_REALTIME 0`（`sys/time.h:283`）/ `CLOCK_MONOTONIC 3`（`sys/time.h:288` `3` 非 `1`——`1` 是 `ITIMER_VIRTUAL` 的 `VT_VIRTUAL`）、`timespec { tv_sec:time_t, tv_nsec:long }`（`sys/timespec.h`）
 - `mess_lc_pm_time { time_t sec; clockid_t clk_id; int now; long nsec; padding 36B; _ASSERT 56B }`（`ipc.h:469` `sec/clk_id/now/nsec` 四参，`time.c:81` 的 `now/clk/sec/nsec` 直通）
 - `mess_pm_lc_time { time_t sec; long nsec; padding 44B; _ASSERT 56B }`（`ipc.h:469` `sec/nsec` 双参，`time.c:42/44/59/101` 的 `reply` 载荷）
-- `PM_STIME 7`（`callnr.h:20` `PM_BASE+7`）/ `PM_GETTIMEOFDAY 28`（`callnr.h:41` `PM_BASE+28`）/ `PM_CLOCK_GETRES 33`（`callnr.h:46`）/ `PM_CLOCK_GETTIME 34`（`callnr.h:47`）/ `PM_CLOCK_SETTIME 35`（`callnr.h:48` `PM_BASE+33-35` 三族时钟号，`table.c:21/42/47-49` 的 `CALL(PM_*)=do_*` 分派）
+- `PM_STIME 7`（`minix3/minix/include/minix/callnr.h:PM_STIME` `PM_BASE+7`）/ `PM_GETTIMEOFDAY 28`（`minix3/minix/include/minix/callnr.h:PM_GETTIMEOFDAY` `PM_BASE+28`）/ `PM_CLOCK_GETRES 33`（`minix3/minix/include/minix/callnr.h:PM_CLOCK_GETRES`）/ `PM_CLOCK_GETTIME 34`（`minix3/minix/include/minix/callnr.h:PM_CLOCK_GETTIME`）/ `PM_CLOCK_SETTIME 35`（`minix3/minix/include/minix/callnr.h:PM_CLOCK_SETTIME` `PM_BASE+33-35` 三族时钟号，`table.c:21/42/47-49` 的 `CALL(PM_*)=do_*` 分派）
 - `system_hz u32_t`（`glo.h:25` `system_hz`，`main.c:238` `system_hz=sys_hz()` 的 `HertzProvider`，`kclockinfo.hz` 的 `env_get("hz")→kclockinfo.hz` 的 `init_clock` 初始化，`hz` 范围 `2..50000` 的 `kernel/clock.c:init_clock` 的 `HZ 2..50000` 守卫）
 
 ### 2.11 不变式即契约
@@ -266,7 +266,7 @@ time_t clock_time(struct timespec *tv)
 | `boottime = sec - realtime/hz` | `time.c:124` `sec - realtime/hz` | `stime` 的锚点重定 | 不变量 |
 | `sec = boottime + clock/hz` 与 `nsec = (clock%hz)*1e9/hz` | `time.c:42/44` | `gettime` 的无溢出分解 | 不变量 |
 | `do_getres` 的 `1e9/hz` | `time.c:60` `1000000000/hz` | `CLOCK` 分辨率 `1e9/hz` | 不变量 |
-| `clock_time` 的 `40000*25000` 分叉 | `clock_time.c:33-40` `LONG_MAX/40000` 阈值 | `hz<53686→40000*25000` 否则 `0` 在 64 位下退化为 `*1e9` | 不变量（溢出规避） |
+| `clock_time` 的 `40000*25000` 分叉 | `minix3/minix/lib/libsys/clock_time.c:clock_time（L33，工具生成）` `LONG_MAX/40000` 阈值 | `hz<53686→40000*25000` 否则 `0` 在 64 位下退化为 `*1e9` | 不变量（溢出规避） |
 
 ---
 
@@ -432,7 +432,7 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 
 ### 5.2 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `CLOCK_REALTIME 0/MONOTONIC 3`（`sys/time.h:283/288`）、`PM_GETTIMEOFDAY 28/STIME 7/CLOCK_* 33-35`（`callnr.h:41/46-48`）、`NSEC_PER_SEC 1e9`（`time.c:44` `1000000000ULL`）
+- `test_constants_match_c`：锁定 `CLOCK_REALTIME 0/MONOTONIC 3`（`sys/time.h:283/288`）、`PM_GETTIMEOFDAY 28/STIME 7/CLOCK_* 33-35`（`minix3/minix/include/minix/callnr.h:PM_GETTIMEOFDAY/46-48`）、`NSEC_PER_SEC 1e9`（`time.c:44` `1000000000ULL`）
 - （`Pid/Uid/Clock` 的 64 位宽度由 minix-types 类型别名定义锁定，无独立测试——原声称 test_time_types_64bit 未建成，删除）：`Clock/Time=i64` 的 `A-11` 64 位扩展（`2038` 不溢出）
 
 测试策略：`ClockSource/BootTimeCtl/SetTimeCtl/ClockTime` 均 `Test*` mock 可注入 `ticks/realtime/boottime/hz` 与计数；`decompose_clock` 纯函数脱离 `ProcTable` 独立测；`do_gettime` 的 `getuptime` 失败在 Rust 以 `Result::Err→TimeError::NoUptime` 对偶（C 的 `panic` 在测试 mock 不触发）；`do_settime` 的 `now` 四参在 `TestSetTimeCtl { last_now }` 计数验“渐变 vs 跳变”透传。
@@ -460,7 +460,7 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 
 ## 7 参见
 
-- C 源（ground truth）：`minix3/minix/servers/pm/time.c` 全文（`22-47` `do_gettime` + `53-65` `do_getres` + `71-88` `do_settime` + `94-104` `do_time` + `110-131` `do_stime`）、`minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_time/mess_pm_lc_time` 的 `sec/clk_id/now/nsec` 四参 + `sec/nsec` 双参）、`minix3/minix/include/minix/callnr.h:41/46-48`（`PM_GETTIMEOFDAY 28/STIME 7/CLOCK_GETRES 33/CLOCK_GETTIME 34/CLOCK_SETTIME 35`）、`minix3/sys/sys/time.h:283/288`（`CLOCK_REALTIME 0/MONOTONIC 3`）、`minix3/minix/lib/libsys/getuptime.c:9-22`（`kclockinfo三值`）、`minix3/minix/lib/libsys/clock_time.c:13-40`（`boottime+realtime/hz` 的 `40000*25000` 分叉）
+- C 源（ground truth）：`minix3/minix/servers/pm/time.c` 全文（`22-47` `do_gettime` + `53-65` `do_getres` + `71-88` `do_settime` + `94-104` `do_time` + `110-131` `do_stime`）、`minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_time/mess_pm_lc_time` 的 `sec/clk_id/now/nsec` 四参 + `sec/nsec` 双参）、`minix3/minix/include/minix/callnr.h:PM_GETTIMEOFDAY/46-48`（`PM_GETTIMEOFDAY 28/STIME 7/CLOCK_GETRES 33/CLOCK_GETTIME 34/CLOCK_SETTIME 35`）、`minix3/sys/sys/time.h:CLOCK_REALTIME/288`（`CLOCK_REALTIME 0/MONOTONIC 3`）、`minix3/minix/lib/libsys/getuptime.c:getuptime`（`kclockinfo三值`）、`minix3/minix/lib/libsys/clock_time.c:clock_time`（`boottime+realtime/hz` 的 `40000*25000` 分叉）
 - PM 阶段文档：01-pm-init-main.md（`system_hz=sys_hz()` 的 `HertzProvider`）、04-ipc-dispatch.md（`ReplyIntent::Reply` 的同步回复）、14-itimer.md（`TicksConv { hz }` 的 `%hz*US/hz` 与 `decompose_clock` 同型）、02-mproc-struct.md（`Clock/Time=i64` 的 `A-11` 64 位）、15-credentials.md（`SUPER_USER` 门与 `TAINTED` 不经本章）
 - 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`kclockinfo.{uptime,realtime,boottime}` 的三值与 `do_settime` 的 `adjtime_delta` 渐变）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`kclockinfo.hz/system_hz` 的 `DEFAULT_HZ`）
 - 阶段内顺序：01/04 → **本章（19）** → 20（`do_sysuname/do_getsysinfo` 的 `SI_*` 不经 `clock`，但 `SI_PROC_TAB` 的 `do_getsysinfo` 的 `boottime` 来自本章 `getuptime` 同源）→ 14（`ticks` 定时器无 `boottime`，本章 `REAL` 有 `boottime` 的对照）

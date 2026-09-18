@@ -1,6 +1,6 @@
 # 04-init-single-user：单用户抢修态
 
-> **定位**：状态 `'s'`，`single_user`（`minix3/sbin/init/init.c:694-877`）。
+> **定位**：状态 `'s'`，`single_user`（`minix3/sbin/init/init.c:setctty（L694，工具生成）`）。
 > **Rust**：`os/commands/sbin/init/src/single_user.rs`。
 > **前置依赖**：02（状态机骨架）、03（stall/warning/emergency 通道）。
 > **本篇不覆盖（移交）**：`getsecuritylevel/setsecuritylevel` 机制（见 12）、`setctty` 机制（见 09）、`collect_child` 机制（见 09）、`/etc/rc`（见 05）。
@@ -125,4 +125,4 @@ SECURE 口令门（`init.c:747-763`）：`console` 条目非 secure 或此前级
 - `05-init-runcom.md` — runcom 与 FASTBOOT 语义。
 - `09-init-multi-user.md` — setctty 与 collect_child 机制。
 - `12-init-sysctl-interaction.md` — 安全级别机制。
-- C 源码：`minix3/sbin/init/init.c:694-877`。
+- C 源码：`minix3/sbin/init/init.c:setctty（L694，工具生成）`。

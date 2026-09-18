@@ -1,7 +1,7 @@
 # 18 — 第二套进程格式：同样的状态，另一套输出结构
 
 > **分类**: 进程信息 / 按 NetBSD 格式填写
-> **源码**: `minix3/minix/servers/mib/proc.c:600-652`（公共填写 `fill_proc2_common`）、`:657-682`（内核任务填写 `fill_proc2_kern`）、`:687-786`（普通进程填写 `fill_proc2_user`）、`:791-913`（查询入口 `mib_kern_proc2`）
+> **源码**: `minix3/minix/servers/mib/proc.c:mib_kern_lwp（L600，工具生成）`（公共填写 `fill_proc2_common`）、`:657-682`（内核任务填写 `fill_proc2_kern`）、`:687-786`（普通进程填写 `fill_proc2_user`）、`:791-913`（查询入口 `mib_kern_proc2`）
 > **说明**: 进程信息五篇的第三篇。ps 命令看进程有两套格式，17 讲完第一套（轻量线程），本篇讲第二套。状态判断和时间换算直接用 17 和 16 算好的，本篇只做三件事：换输出结构、按条件过滤行、定查询参数的规矩。
 
 ---
@@ -159,7 +159,7 @@ os/servers/mib/src/proc/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/mib/proc.c:600-913`、`minix3/sys/sys/sysctl.h:383-495/511/606-621`、`minix3/sys/sys/proc.h:341-345`、`minix3/sys/sys/syslimits.h:93`、`minix3/sys/sys/sysctl.h:464`
+- C 源：`minix3/minix/servers/mib/proc.c:mib_kern_lwp（L600，工具生成）`、`minix3/sys/sys/sysctl.h:KERN_PROC_ALL/511/606-621`、`minix3/sys/sys/proc.h:SACTIVE`、`minix3/sys/sys/syslimits.h:NZERO`、`minix3/sys/sys/sysctl.h:KI_NGROUPS`
 - 阶段文档：`16-mib-proc-tables.md`（拿表和四个拿来用的函数）、`17-mib-proc-lwp.md`（状态和时间）、`06-mib-copy-io.md`（拷贝出去）、`10-mib-dispatch.md`（查询终点）、`19-mib-proc-args.md`（下一站）
 - Rust 实现：`os/servers/mib/src/proc/proc2.rs`、`os/libs/minix-types/src/types/sysctl.rs`（过滤和标志值表）
 - 相关约定：架构演进 A-4（plan §4，交换布局）、A-6（plan §4，表布局归三家）、A-12（plan §4，时钟、内存用量和跨服务读取归要数据的代码）

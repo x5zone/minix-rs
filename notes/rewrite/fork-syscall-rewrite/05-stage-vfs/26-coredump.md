@@ -54,39 +54,39 @@
 
 ## 2 C 源码分析
 
-### 2.1 `write_elf_core_file` 流程（`coredump.c:32-75`）
+### 2.1 `write_elf_core_file` 流程（`minix3/minix/servers/vfs/coredump.c:write_elf_core_file`）
 
 `write_elf_core_file`：清空程序头表（`44`，表从零开始）→ 构建注释段程序头与双注释段头（`49`，一个注释段程序头 + 两个注释段头）→ 查询内存区（`52`，区数加一为程序头数）→ 填充 ELF 头（`55`）→ 调整偏移（`57-62`，布局注释：ELF 头→注释段程序头→其余程序头→注释内容→段数据）→ 写 ELF 头（`65`）→ 写程序头表（`68`）→ 写注释段（`71`）→ 复制段数据（`74`）。`MAX_REGIONS 100`（`37`）+ `NR_NOTE_ENTRIES 2`（`38`）+ 程序头表一百零一（`40`）+ 双注释段头（`41`）。
 
-### 2.2 `fill_elf_header` 流程（`coredump.c:80-99`）
+### 2.2 `fill_elf_header` 流程（`minix3/minix/servers/vfs/coredump.c:fill_elf_header`）
 
 `fill_elf_header`：清零（`82`）→ 写四字节魔数（`84-87`）→ 类/序/版/ABI（`88-91`，机型相关三元组的固定值）→ 文件类型 CORE（`92`）→ 机型（`93`，arch 相关）→ 版本（`94`）→ 长度与位置（`95-98`：ELF 头长度/程序头偏移/程序头元大小/程序头数）。
 
-### 2.3 `fill_prog_header` 流程（`coredump.c:104-121`）
+### 2.3 `fill_prog_header` 流程（`minix3/minix/servers/vfs/coredump.c:fill_prog_header`）
 
 `fill_prog_header`：清零（`109`）→ 写六字段（`111-116`：类型/偏移/虚址/标志/文件长度/内存长度）。`PADBYTES 4`（`120`）+ `PAD_LEN`（`121`，掩码取整）。
 
-### 2.4 `fill_note_segment_and_entries_hdrs` 流程（`coredump.c:126-157`）
+### 2.4 `fill_note_segment_and_entries_hdrs` 流程（`minix3/minix/servers/vfs/coredump.c:fill_note_segment_and_entries_hdrs`）
 
 `fill_note_segment_and_entries_hdrs`：注释长度注释（`133-137`）→ 取三段长度（`139-141`：名称/身份/寄存器）→ 计算注释总长度（`144-145`：对齐后身份长度 + 对齐后寄存器长度 + 双注释段头 + 双对齐名称）→ 注释段程序头（`146`，`PT_NOTE` 只读，内存长度零）→ 身份段头（`149-151`）→ 寄存器段头（`154-156`）。
 
-### 2.5 `adjust_offsets` 流程（`coredump.c:162-171`）
+### 2.5 `adjust_offsets` 流程（`minix3/minix/servers/vfs/coredump.c:adjust_offsets`）
 
 `adjust_offsets`：首偏移（`165`，ELF 头长度 + 程序头数×程序头元大小）→ 依次累加（`167-170`，各取当前偏移，步进文件长度）。
 
-### 2.6 `write_buf` 流程（`coredump.c:176-186`）
+### 2.6 `write_buf` 流程（`minix3/minix/servers/vfs/coredump.c:write_buf`）
 
 `write_buf`：fd 注释（`179-184`，TODO 诚实保留：-1 无妨，常规文件永不挂起，挂起是使用 fd 的唯一情形）→ 直写（`185`，`read_write` 写方向，VFS 代写）。
 
-### 2.7 `get_memory_regions` 流程（`coredump.c:191-228`）
+### 2.7 `get_memory_regions` 流程（`minix3/minix/servers/vfs/coredump.c:get_memory_regions`）
 
 `get_memory_regions`：游标批取（`201-208`，`next` 游标 + `MAX_VRI_COUNT` 批 + 负错误直接返回 + 零即结束）→ 标志转换（`210-212`，读/写/执行各对应其标志）→ 填充程序头（`214-216`，`PT_LOAD`，文件长度即内存长度）→ 计数（`217`）→ 百区上限（`219-223`，告警即返，非截断续写）→ 批满继续取（`225`）→ 返回数量（`227`）。
 
-### 2.8 `dump_notes` 流程（`coredump.c:233-270`）
+### 2.8 `dump_notes` 流程（`minix3/minix/servers/vfs/coredump.c:dump_notes`）
 
 `dump_notes`：准备衬垫（`237`）→ 身份段（`244-254`：版本/长度/终止原因/pid/进程名 + 段头/名称/衬垫/内容/衬垫五次写入）→ 读取寄存器（`257-258`，失败则记录）→ 长度检查（`260-261`，结构对不上即记录）→ 寄存器段（`264-269`，同样五次写入）。
 
-### 2.9 ELF 头/程序头/段数据的写入（`coredump.c:275-326`）
+### 2.9 ELF 头/程序头/段数据的写入（`minix3/minix/servers/vfs/coredump.c:dump_elf_header`）
 
 `dump_elf_header`（`275-278`，一次写入）。`dump_program_headers`（`283-289`，逐程序头一次写入）。`dump_segments`（`294-326`）：跳过注释段程序头（`302`，i=1 起）→ 取地址取长度（`303-304`）→ 长度截断（`306-309`，超 `LONG_MAX` 截断并记录）→ 分块直接复制（`311-315`，`CLICK_SIZE` 步进，`sys_datacopy_try`）→ 缺页补零并继续（`317-321`）→ 尾块计长度（`323-324`）。
 
@@ -102,53 +102,53 @@ Rust 改写不是照抄 `coredump.c` 的填充与写入流程，而是吸收 Lin
 
 ### D1 管线枚举
 
-- **C**：头注释三段 + 七步写入（`coredump.c:34-36,64-74`）。
-- **Rust**：`DumpPhase` 七步（`os/servers/vfs/src/coredump.rs:118`）。
+- **C**：头注释三段 + 七步写入（`minix3/minix/servers/vfs/coredump.c:write_elf_core_file（L34，工具生成）,64-74`）。
+- **Rust**：`DumpPhase` 七步（`os/servers/vfs/src/coredump.rs:enum DumpPhase`）。
 - **为什么**：管线是"转储到哪了"的记录；先写头与注释、后写段数据的顺序即枚举序。替代方案（布尔组）被否决：七步非布尔可表。
 
 ### D2 注释长度纯算
 
-- **C**：`PAD_LEN` 宏 + 注释文件长度 + 双注释段头（`coredump.c:120-121,144-156`）。
-- **Rust**：`pad_len()` + `note_filesize()` + `NoteDesc` + `plan_notes()`（`os/servers/vfs/src/coredump.rs:139,164,178,186`）。
+- **C**：`PAD_LEN` 宏 + 注释文件长度 + 双注释段头（`minix3/minix/servers/vfs/coredump.c:PADBYTES,144-156`）。
+- **Rust**：`pad_len()` + `note_filesize()` + `NoteDesc` + `plan_notes()`（`os/servers/vfs/src/coredump.rs:fn pad_len,164,178,186`）。
 - **为什么**：注释长度是"注释占几字节"的记录；`Elf_Nhdr` 12 字节三字一算即知（实现中亲手验算纠正过 8 字节误写）。替代方案（宏直译）被否决：函数可测，宏不可单测。
 
 ### D3 偏移量纯算
 
-- **C**：`adjust_offsets` 首偏移依次累加（`coredump.c:162-171`）。
-- **Rust**：`adjust_offsets()` 定长数组版（`os/servers/vfs/src/coredump.rs:238`）。
+- **C**：`adjust_offsets` 首偏移依次累加（`minix3/minix/servers/vfs/coredump.c:adjust_offsets`）。
+- **Rust**：`adjust_offsets()` 定长数组版（`os/servers/vfs/src/coredump.rs:fn adjust_offsets`）。
 - **为什么**：偏移量是"段数据在文件中何处"的记录；计算与写入分离（先算对再写入）可测。替代方案（原地改表）被否决：算与写分离是 23-D6 同源惯例。
 
 ### D4 内存区查询接口
 
-- **C**：游标批取 + 标志转换 + 填充程序头 + 百区上限（`coredump.c:191-228`）。
-- **Rust**：`prot_to_pf()` + `RegionRoll{count, capped}` + `RegionSource{next_batch}`（`ScriptedRegions` 按批应答 vs `NoRegions` 空文件）+ `collect_regions()`（`os/servers/vfs/src/coredump.rs:254,268,274,287,295,343,356`）。
+- **C**：游标批取 + 标志转换 + 填充程序头 + 百区上限（`minix3/minix/servers/vfs/coredump.c:get_memory_regions`）。
+- **Rust**：`prot_to_pf()` + `RegionRoll{count, capped}` + `RegionSource{next_batch}`（`ScriptedRegions` 按批应答 vs `NoRegions` 空文件）+ `collect_regions()`（`os/servers/vfs/src/coredump.rs:struct MemRegion,268,274,287,295,343,356`）。
 - **为什么**：VM 批取是唯一的不可测点；负错误直接透传不发明错码；上限告警即返（非截断续写）与 C 一致。替代方案（批取直连）被否决：判定层不碰活 VM。
 
 ### D5 段数据复制策略
 
-- **C**：跳过注释段程序头 + LONG 截断 + CLICK 分块 + 缺页补零（`coredump.c:294-326`）。
-- **Rust**：`truncate_len()` + `chunk_plan()` + `GapAction::ZeroAndContinue`（`os/servers/vfs/src/coredump.rs:401,407,415,424,433`）。
+- **C**：跳过注释段程序头 + LONG 截断 + CLICK 分块 + 缺页补零（`minix3/minix/servers/vfs/coredump.c:dump_segments`）。
+- **Rust**：`truncate_len()` + `chunk_plan()` + `GapAction::ZeroAndContinue`（`os/servers/vfs/src/coredump.rs:fn truncate_len,407,415,424,433`）。
 - **为什么**：段数据复制是"有页即复制"的逻辑；补零并继续（非遇缺即错）与 C 一致——遇缺即错是 P0 级行为偏移。替代方案（遇缺即错）被否决：与 C 相悖。
 
 ### D6 准备阶段清单
 
 - **C**：解除阻塞 + 创建文件 + 复制进程名 + 开始转储 + 收尾（`misc.c:903-945`）。
-- **Rust**：`core_name()`（无 `format!` 手工拼十进制）+ `CORE_OPEN_SPEC` + `terminate_name()` + `plan_dumpcore()`（`os/servers/vfs/src/coredump.rs:439,447,478,486,492,498,507`）。
+- **Rust**：`core_name()`（无 `format!` 手工拼十进制）+ `CORE_OPEN_SPEC` + `terminate_name()` + `plan_dumpcore()`（`os/servers/vfs/src/coredump.rs:struct CoreName,447,478,486,492,498,507`）。
 - **为什么**：准备是"文件就绪再转储"的逻辑；收尾归退出单列（fd 生命周期归退出）。替代方案（收尾并入）被否决：关早转储无处可写，关晚泄漏。
 
 ### D7 写入 trait 化
 
-- **C**：`write_buf` 直写 + fd 注释（`coredump.c:176-186`）。
-- **Rust**：`CoreWriter{write}`（`ScriptedWriter` 记内容 vs `CountingWriter` 只计数）+ 注释转文档（`os/servers/vfs/src/coredump.rs:520,527,546,564,571`）。
+- **C**：`write_buf` 直写 + fd 注释（`minix3/minix/servers/vfs/coredump.c:write_buf`）。
+- **Rust**：`CoreWriter{write}`（`ScriptedWriter` 记内容 vs `CountingWriter` 只计数）+ 注释转文档（`os/servers/vfs/src/coredump.rs:trait CoreWriter,527,546,564,571`）。
 - **为什么**：写入是唯一的写入点；内容与计量双实现使"写了什么/写了几字节"各可验。替代方案（直连 read_write）被否决：判定层不碰活 filp。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | 写入永不挂起转注释；转储同步到底无 verdict | `coredump.rs:520` 模块注释 + 本文档 D7 + 26 正文 §1.1 |
-| A-5 SUSPEND/revive 显式化 | 本篇无 SUSPEND（同步写入）；收尾 verdict 归退出 | `coredump.rs:580` + 本文档 D6 + 26 正文 §1.6 |
-| A-16 ELF32→类型化注单 | Elf32 结构只取版式知识；arch 三元作参数不硬编码 | `coredump.rs:105` + 本文档 D2/D3 + 26 正文 §1.2 |
+| A-1 单线程事件循环（mthread→状态机） | 写入永不挂起转注释；转储同步到底无 verdict | `os/servers/vfs/src/coredump.rs:trait CoreWriter` 模块注释 + 本文档 D7 + 26 正文 §1.1 |
+| A-5 SUSPEND/revive 显式化 | 本篇无 SUSPEND（同步写入）；收尾 verdict 归退出 | `os/servers/vfs/src/coredump.rs:enum CoreVerdict` + 本文档 D6 + 26 正文 §1.6 |
+| A-16 ELF32→类型化注单 | Elf32 结构只取版式知识；arch 三元作参数不硬编码 | `os/servers/vfs/src/coredump.rs:struct ElfTarget` + 本文档 D2/D3 + 26 正文 §1.2 |
 
 ---
 
@@ -172,30 +172,30 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| 文件界限/注释段数/批大小/块大小 | `coredump.c:37-38`/`vm.h:66`/`const.h:84` | `coredump.rs:33,37` | 100/2/64/4096 |
-| ELF 类型号 | `exec_elf.h:169,182,201,349-374` | `coredump.rs:44,56` | CORE/LOAD/NOTE/RWX/版/ABI |
-| 魔数/索引 | `exec_elf.h:136-152` | `coredump.rs:61,65` | 7FELF + 八索引 |
-| 注释段号/版本/名称 | `elf_core.h:30-34` | `coredump.rs:74,80` | 双注释段号 + 版本 + 名称 |
-| 文件名/模式/标志 | `misc.c:40-41`/`fcntl.h:99-100` | `coredump.rs:83,87,94` | core/0777/创截 |
-| 名称界限 | `param.h:117` | `coredump.rs:97` | 16 |
-| 管线七步 | `coredump.c:34-36` | `coredump.rs:118` | 枚举序 |
-| 注释长度 | `coredump.c:120-121,144-156` | `coredump.rs:139,164,178,186` | 对齐 + 文件长度 + 双描述 |
-| 程序头 | `coredump.c:104-118` | `coredump.rs:203,220` | 清零六字段 |
-| 偏移量 | `coredump.c:162-171` | `coredump.rs:238` | 首偏移依次累加 |
-| 内存区查询 | `coredump.c:191-228` | `coredump.rs:254,268,274,287,295,343,356` | 标志转换 + 上限 + 双实现 |
-| 段数据复制 | `coredump.c:294-326` | `coredump.rs:401,407,415,424,433` | 截断 + 分块 + 补零 |
-| 准备阶段 | `misc.c:903-945` | `coredump.rs:439,447,478,486,492,498,507` | 拼文件名 + 规格 + 零终止 + 清单 |
-| 写入 | `coredump.c:176-186` | `coredump.rs:520,527,546,564,571` | 记内容/只计数双实现 |
-| 错误族 | `coredump.c` 全文件 | `coredump.rs:587,598 CoreError::to_errno` | 4 变体→errno，无自创 |
+| 文件界限/注释段数/批大小/块大小 | `minix3/minix/servers/vfs/coredump.c:MAX_REGIONS`/`vm.h:66`/`const.h:84` | `os/servers/vfs/src/coredump.rs:const MAX_REGIONS,37` | 100/2/64/4096 |
+| ELF 类型号 | `minix3/sys/sys/exec_elf.h:EV_CURRENT,182,201,349-374` | `os/servers/vfs/src/coredump.rs:const ET_CORE,56` | CORE/LOAD/NOTE/RWX/版/ABI |
+| 魔数/索引 | `minix3/sys/sys/exec_elf.h:EI_MAG0` | `os/servers/vfs/src/coredump.rs:const ELFMAG,65` | 7FELF + 八索引 |
+| 注释段号/版本/名称 | `minix3/minix/include/sys/elf_core.h:ELF_NOTE_MINIX_ELFCORE_NAME` | `os/servers/vfs/src/coredump.rs:const NT_MINIX_ELFCORE_INFO,80` | 双注释段号 + 版本 + 名称 |
+| 文件名/模式/标志 | `misc.c:40-41`/`minix3/sys/sys/fcntl.h:O_CREAT` | `os/servers/vfs/src/coredump.rs:const CORE_NAME,87,94` | core/0777/创截 |
+| 名称界限 | `param.h:117` | `os/servers/vfs/src/coredump.rs:const MAXCOMLEN` | 16 |
+| 管线七步 | `minix3/minix/servers/vfs/coredump.c:write_elf_core_file（L34，工具生成）` | `os/servers/vfs/src/coredump.rs:enum DumpPhase` | 枚举序 |
+| 注释长度 | `minix3/minix/servers/vfs/coredump.c:PADBYTES,144-156` | `os/servers/vfs/src/coredump.rs:fn pad_len,164,178,186` | 对齐 + 文件长度 + 双描述 |
+| 程序头 | `minix3/minix/servers/vfs/coredump.c:fill_prog_header` | `os/servers/vfs/src/coredump.rs:struct ProgHeader,220` | 清零六字段 |
+| 偏移量 | `minix3/minix/servers/vfs/coredump.c:adjust_offsets` | `os/servers/vfs/src/coredump.rs:fn adjust_offsets` | 首偏移依次累加 |
+| 内存区查询 | `minix3/minix/servers/vfs/coredump.c:get_memory_regions` | `os/servers/vfs/src/coredump.rs:struct MemRegion,268,274,287,295,343,356` | 标志转换 + 上限 + 双实现 |
+| 段数据复制 | `minix3/minix/servers/vfs/coredump.c:dump_segments` | `os/servers/vfs/src/coredump.rs:fn truncate_len,407,415,424,433` | 截断 + 分块 + 补零 |
+| 准备阶段 | `misc.c:903-945` | `os/servers/vfs/src/coredump.rs:struct CoreName,447,478,486,492,498,507` | 拼文件名 + 规格 + 零终止 + 清单 |
+| 写入 | `minix3/minix/servers/vfs/coredump.c:write_buf` | `os/servers/vfs/src/coredump.rs:trait CoreWriter,527,546,564,571` | 记内容/只计数双实现 |
+| 错误族 | `coredump.c` 全文件 | `os/servers/vfs/src/coredump.rs:enum CoreError,598 CoreError::to_errno` | 4 变体→errno，无自创 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 先写头与注释、后写段数据（头→程序头→注释→段数据） | `DumpPhase` 枚举序 | 顺序即流程 | `coredump.c:64-74` |
-| 注释必双段（身份 + 寄存器） | `NR_NOTE_ENTRIES=2` | 双描述共享名称 | `coredump.c:38,149-156` |
-| 偏移量依次累加（累加文件长度） | `adjust_offsets` 纯算 | 首偏移 + 依次累加 | `coredump.c:162-171` |
-| 缺页补零并继续 | `GapAction::ZeroAndContinue` | 遇缺继续写 | `coredump.c:317-321` |
+| 先写头与注释、后写段数据（头→程序头→注释→段数据） | `DumpPhase` 枚举序 | 顺序即流程 | `minix3/minix/servers/vfs/coredump.c:NR_NOTE_ENTRIES（L64，工具生成）` |
+| 注释必双段（身份 + 寄存器） | `NR_NOTE_ENTRIES=2` | 双描述共享名称 | `minix3/minix/servers/vfs/coredump.c:NR_NOTE_ENTRIES,149-156` |
+| 偏移量依次累加（累加文件长度） | `adjust_offsets` 纯算 | 首偏移 + 依次累加 | `minix3/minix/servers/vfs/coredump.c:adjust_offsets` |
+| 缺页补零并继续 | `GapAction::ZeroAndContinue` | 遇缺继续写 | `minix3/minix/servers/vfs/coredump.c:dump_segments（L317，工具生成）` |
 | 收尾归退出（fd 随退出关闭） | `DumpcorePlan` | 不在此处关闭 | `misc.c:938-942` |
 
 ---
@@ -207,12 +207,12 @@ os/servers/vfs/src/
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_pipeline_and_ruler` | `coredump.c:34-38,120-121,144-156` | 七步 + 对齐 + 注释长度 + 双描述 | `coredump.rs:615` |
-| `test_offsets_and_headers` | `coredump.c:80-118,162-171` | 首偏移依次累加 + 程序头六字段 + 魔数 | `coredump.rs:649` |
-| `test_region_roll` | `coredump.c:191-228` | 标志转换 + 填充程序头 + 空文件 + 负错误透传 | `coredump.rs:679` |
-| `test_flesh_policy` | `coredump.c:294-326` | 截断 + 分块 + 补零 | `coredump.rs:723` |
-| `test_coffin_checklist` | `misc.c:903-945` | 拼文件名 + 规格 + 解除阻塞 + 零终止 + 双写入 | `coredump.rs:736` |
-| `test_errno_map_covers_coredump_c` | `coredump.c` 全文件 | 4 变体→errno + 文件界限三元 | `coredump.rs:776` |
+| `test_pipeline_and_ruler` | `minix3/minix/servers/vfs/coredump.c:write_elf_core_file（L34，工具生成）,120-121,144-156` | 七步 + 对齐 + 注释长度 + 双描述 | `os/servers/vfs/src/coredump.rs:fn to_errno（L615，工具生成）` |
+| `test_offsets_and_headers` | `minix3/minix/servers/vfs/coredump.c:fill_elf_header,162-171` | 首偏移依次累加 + 程序头六字段 + 魔数 | `os/servers/vfs/src/coredump.rs:fn test_pipeline_and_ruler（L649，工具生成）` |
+| `test_region_roll` | `minix3/minix/servers/vfs/coredump.c:get_memory_regions` | 标志转换 + 填充程序头 + 空文件 + 负错误透传 | `os/servers/vfs/src/coredump.rs:fn test_offsets_and_headers（L679，工具生成）` |
+| `test_flesh_policy` | `minix3/minix/servers/vfs/coredump.c:dump_segments` | 截断 + 分块 + 补零 | `os/servers/vfs/src/coredump.rs:fn next_batch（L723，工具生成）` |
+| `test_coffin_checklist` | `misc.c:903-945` | 拼文件名 + 规格 + 解除阻塞 + 零终止 + 双写入 | `os/servers/vfs/src/coredump.rs:fn test_flesh_policy（L736，工具生成）` |
+| `test_errno_map_covers_coredump_c` | `coredump.c` 全文件 | 4 变体→errno + 文件界限三元 | `os/servers/vfs/src/coredump.rs:fn test_coffin_checklist（L776，工具生成）` |
 
 测试策略：管线以七步全枚举锁定；注释长度以对齐表 + 文件长度公式覆盖；偏移量以首偏移依次累加三元覆盖；内存区查询以标志转换/填充程序头/空文件/透传覆盖；段数据复制以截断/分块/补零覆盖；准备阶段以拼文件名/规格/解除阻塞/零终止覆盖；错误以 4 变体全映射覆盖。
 
@@ -245,7 +245,7 @@ VM 侧：vm_info_region 区表 ────────────────�
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/coredump.c:1-327`（十一函数全族）、`minix3/minix/servers/vfs/misc.c:903-945`（`pm_dumpcore` 准备与开始）、`minix3/sys/sys/exec_elf.h:136-374`（ELF 常量）、`minix3/minix/include/sys/elf_core.h:30-43`（注释常量与身份结构）、`minix3/minix/include/minix/vm.h:66`（`MAX_VRI_COUNT`）、`minix3/minix/include/minix/const.h:84`（`CLICK_SIZE`）、`minix3/sys/sys/param.h:117`（`MAXCOMLEN`）
+- C 源：`minix3/minix/servers/vfs/coredump.c:1-327`（十一函数全族）、`minix3/minix/servers/vfs/misc.c:pm_dumpcore`（`pm_dumpcore` 准备与开始）、`minix3/sys/sys/exec_elf.h:EI_MAG0`（ELF 常量）、`minix3/minix/include/sys/elf_core.h:ELF_NOTE_MINIX_ELFCORE_NAME`（注释常量与身份结构）、`minix3/minix/include/minix/vm.h:MAX_VRI_COUNT`（`MAX_VRI_COUNT`）、`minix3/minix/include/minix/const.h:CLICK_SIZE`（`CLICK_SIZE`）、`minix3/sys/sys/param.h:MAXCOMLEN`（`MAXCOMLEN`）
 - 阶段文档：`10-pm-protocol.md`（`pm_dumpcore` 入口）、`25-exec.md`（地址空间替换）、`15-open-close.md`（文件创建执行）、`16-read-write.md`（写入执行）、`02-fproc-struct.md`（阻塞与进程名）、`09-main-loop.md`（调用分发）、`27-link.md`（下一站）
-- Rust 实现：`os/servers/vfs/src/coredump.rs:1`（本篇判定层）、`os/servers/vfs/src/open.rs:46`（`O_WRONLY` 复用）、`os/libs/minix-types/src/types/errno.rs:15`（errno 值）
+- Rust 实现：`os/servers/vfs/src/coredump.rs:1`（本篇判定层）、`os/servers/vfs/src/open.rs:const O_RDONLY`（`O_WRONLY` 复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 跨阶段：`../04-stage-pm/11~13`（信号语义）、`../01-stage-kernel/18-syscall-copy.md`（段复制语义）

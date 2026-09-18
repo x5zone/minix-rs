@@ -418,7 +418,7 @@ MEMPROTECT 不是物理页保护，而是 **VM 进程虚拟地址空间的页保
 2. **临时解锁**：需要修改元数据时，临时设置为可写（`vm_pagelock(data, 0)`）
 3. **修改后锁定**：修改完成后，再次设置为只读
 
-**vm_pagelock 实现**（[pagetable.c:403](minix3/minix/servers/vm/pagetable.c#L403)）：
+**vm_pagelock 实现**（[minix3/minix/servers/vm/pagetable.c:vm_pagelock](minix3/minix/servers/vm/pagetable.c#L403)）：
 
 ```c
 void vm_pagelock(void *vir, int lockflag)
@@ -641,7 +641,7 @@ index = bytes - MINSIZE;            // 再计算索引
 2. **MAXSIZE 定义**：`#define MAXSIZE (SLABSIZES-1+MINSIZE)` = 207，但实际最大对齐后大小为 200（`roundup(200, 8) = 200`）。请求 201~207 字节会被对齐到 208，超出 `slabs[199]` 的范围
 3. **索引计算**：`GETSLAB` 宏中 `_gsi = (b) - MINSIZE`，其中 `b` 已经过 `roundup(bytes, OBJALIGN)` 处理。因此索引总是 8 的倍数
 
-**代码证据**（`slaballoc.c:267,133`）：
+**代码证据**（`minix3/minix/servers/vm/slaballoc.c:slaballoc（L267，工具生成）,133`）：
 
 ```c
 // slaballoc.c:267
@@ -667,7 +667,7 @@ Minix3 的设计者可能预留了非 8 字节对齐的使用场景（如未来�
 
 #### 2.1.1 slaballoc - 分配对象
 
-**源码位置**: [slaballoc.c:259](minix3/minix/servers/vm/slaballoc.c#L259)
+**源码位置**: [minix3/minix/servers/vm/slaballoc.c:slaballoc](minix3/minix/servers/vm/slaballoc.c#L259)
 
 ```c
 void *slaballoc(int bytes)
@@ -981,7 +981,7 @@ slab = (struct slabdata *) ((char *) ptr - (vir_bytes) ptr % VM_PAGE_SIZE);
 
 #### 2.2.1 slabfree - 释放对象
 
-**源码位置**: [slaballoc.c:406](minix3/minix/servers/vm/slaballoc.c#L406)
+**源码位置**: [minix3/minix/servers/vm/slaballoc.c:slabfree](minix3/minix/servers/vm/slaballoc.c#L406)
 
 ```c
 void slabfree(void *mem, int bytes)
@@ -1093,7 +1093,7 @@ slabfree(ptr, 64) 释放 64 字节对象
 
 **objstats 函数详解**
 
-**源码位置**: [slaballoc.c:344](minix3/minix/servers/vm/slaballoc.c#L344)
+**源码位置**: [minix3/minix/servers/vm/slaballoc.c:objstats](minix3/minix/servers/vm/slaballoc.c#L344)
 
 ```c
 // 验证对象指针并返回统计信息
@@ -1383,7 +1383,7 @@ vm_pagelock(addr, 0);
 
 **页锁定/解锁函数**
 
-**源码位置**: `slablock` 在 [slaballoc.c:464](minix3/minix/servers/vm/slaballoc.c#L464)，`slabunlock` 在 [slaballoc.c:483](minix3/minix/servers/vm/slaballoc.c#L483)
+**源码位置**: `slablock` 在 [minix3/minix/servers/vm/slaballoc.c:slablock](minix3/minix/servers/vm/slaballoc.c#L464)，`slabunlock` 在 [minix3/minix/servers/vm/slaballoc.c:slabunlock](minix3/minix/servers/vm/slaballoc.c#L483)
 
 ```c
 #if MEMPROTECT

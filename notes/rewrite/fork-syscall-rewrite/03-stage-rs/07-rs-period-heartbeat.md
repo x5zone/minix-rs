@@ -1,7 +1,7 @@
 # 07-rs-period-heartbeat: 周期检查与心跳监控
 
 > **分类**: 阶段 3 — 主循环与监控（心跳状态机）
-> **源码**: `minix3/minix/servers/rs/request.c:943-1046`（`do_period`）、`request.c:1051-1090`（`do_sigchld`）、`minix3/minix/servers/rs/update.c:371-396`（`update_period`）、`minix3/minix/servers/rs/const.h:31,34-35,39,48-51,58,110,114-115`（标志与常量）
+> **源码**: `minix3/minix/servers/rs/request.c:do_period`（`do_period`）、`request.c:1051-1090`（`do_sigchld`）、`minix3/minix/servers/rs/update.c:update_period`（`update_period`）、`minix3/minix/servers/rs/const.h:RS_NOPINGREPLY,34-35,39,48-51,58,110,114-115`（标志与常量）
 > **Rust 模块**: `os/servers/rs/src/monitor.rs`（`period_decision`/`effective_period`/`has_update_timed_out`/`sigchld_cleanup`/`PeriodAction`/常量族）
 > **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`r_period`/`r_backoff`/`r_stop_tm`/`r_alive_tm`/`r_check_tm` 字段）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（主循环 ClockNotify 分支）
 > **说明**: RS 是微内核里唯一"看门狗"：内核不管服务死没死，RS 靠**心跳协议**发现故障并触发恢复。本文档建模 `do_period` 的三分支状态机（backoff 复活 / SIGTERM→SIGKILL / ping 超时 crash）、free pass 例外、`do_sigchld` 的子进程清理与 `update_period` 的 update 准备超时。
@@ -332,7 +332,7 @@ monitor.rs
 
 ## 6. 过渡：从"监控"到"配置"
 
-心跳监控是**运行时**的第一块机制：它由主循环的 ClockNotify（06）驱动，决策交给 15 的恢复路径。但心跳监控依赖一个前提——**服务有正确的 `r_period` 配置**（`period > 0` 才检查，request.c:994）。这个配置来自 08-slot-config：`edit_slot` 从 `rs_start->rss_period` 写入 `r_period`（manager.c:1684-1687）。
+心跳监控是**运行时**的第一块机制：它由主循环的 ClockNotify（06）驱动，决策交给 15 的恢复路径。但心跳监控依赖一个前提——**服务有正确的 `r_period` 配置**（`period > 0` 才检查，request.c:994）。这个配置来自 08-slot-config：`edit_slot` 从 `rs_start->rss_period` 写入 `r_period`（minix3/minix/servers/rs/manager.c:rs_start（L1684，工具生成））。
 
 下一篇 `08-rs-slot-config.md` 回到**服务创建路径**：`rs_start` 请求参数如何校验（`check_request`）、如何拷入槽位（`copy_rs_start`/`copy_label`）、`init_slot`/`edit_slot` 如何落地全部配置字段（含 `r_period`/`r_ipc_list`/call masks/control labels）。
 
@@ -347,5 +347,5 @@ monitor.rs
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` — `stop_service` 设置 `r_stop_tm`
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` — restart/crash/cleanup 机制
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` — `end_update`/`rupdate_clear_upds`/`update_period` 消费点
-- `minix3/minix/servers/rs/request.c:943-1090`、`update.c:371-396`、`const.h:31,34-35,39,48-51,58,110,114-116` — ground truth
+- `minix3/minix/servers/rs/request.c:do_period`、`update.c:371-396`、`const.h:31,34-35,39,48-51,58,110,114-116` — ground truth
 - `os/servers/rs/src/monitor.rs` — Rust 实现
