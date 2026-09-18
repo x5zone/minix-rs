@@ -181,7 +181,7 @@ pub fn endpoint_identities_via(
         crate::pm::pm_endpoint(),
         PM_CALL_GET_ENDPOINT_INFO,
         &mut message,
-    );
+    )?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -218,7 +218,7 @@ pub fn process_number_via(
         crate::pm::pm_endpoint(),
         PM_CALL_GET_PROCESS_NUMBER,
         &mut message,
-    );
+    )?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -276,7 +276,7 @@ pub fn system_info_via(
         message.m_u.raw[8..16].copy_from_slice(&where_address.to_ne_bytes());
         message.m_u.raw[16..24].copy_from_slice(&(size as u64).to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, route.server, route.call_number, &mut message);
+    let reply = perform_taskcall(transport, route.server, route.call_number, &mut message)?;
     if reply < 0 {
         Err(Errno::from_i32(-reply))
     } else {

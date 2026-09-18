@@ -119,12 +119,13 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             req.val_len = val_len;
         }
 
-        // C: `_taskcall(DS_PROC_NR, type, m)` — ds.c:30.
-        let reply = perform_taskcall(&self.ipc, self.ds_endpoint, call, &mut msg);
-
-        // C: cpf_revoke(g_key) — ds.c:32. Errors surface via the taskcall
-        // result; the revoke still runs (C revokes unconditionally too).
+        // C: `_taskcall(DS_PROC_NR, type, m)` — ds.c:30. The outcome is
+        // held unlifted until after the revoke below: the grant must stay
+        // alive across the call, and C revokes unconditionally (ds.c:32),
+        // on the transport-failure path too.
+        let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, call, &mut msg);
         let _ = self.grants.revoke(key_grant);
+        let reply = outcome.map_err(|e| e.to_i32())?;
 
         if reply < 0 {
             return Err(-reply);
@@ -294,8 +295,13 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             req.key_grant = key_grant;
             req.key_len = DS_MAX_KEYLEN as i32;
         }
-        let reply = perform_taskcall(&self.ipc, self.ds_endpoint, DS_CHECK, &mut msg);
+        // Same unlifted-outcome shape as `invoke`: the WRITE grant stays
+        // alive across the call, and the revoke runs on every path — C's
+        // `ds_check` (ds.c:209-219) rides `do_invoke_ds`, whose
+        // unconditional revoke (ds.c:32) covers the failure case too.
+        let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, DS_CHECK, &mut msg);
         let _ = self.grants.revoke(key_grant);
+        let reply = outcome.map_err(|e| e.to_i32())?;
         if reply < 0 {
             return Err(-reply);
         }

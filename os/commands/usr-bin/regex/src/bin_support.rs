@@ -5,9 +5,9 @@
 //! system-call import. The hosted-versus-target seams are the same two the
 //! echo template documents (`os/commands/bin/fileops/src/bin/echo.rs`):
 //! argv via `std::env::args` and termination via the host runtime, both
-//! swapping in one sweep when no_std program images land. Until the sign
-//! mismatch in `perform_syscall` is fixed (edge E-SYSCALL-SIGN), hosted
-//! runs observe fake successes on both channels.
+//! swapping in one sweep when no_std program images land. Transport
+//! failures short-circuit to a typed `Err` (edge E-SYSCALL-SIGN), so
+//! hosted runs observe honest failures on both channels.
 
 use minix_sys::{read, write, Fd};
 

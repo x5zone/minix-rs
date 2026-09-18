@@ -29,7 +29,9 @@ use crate::dump_rs::{RprocSnap, RprocpubSnap};
 use crate::dump_vfs::{DmapSnap, FProcSnap};
 use crate::dump_vm::{VmRegionSnap, VmStatsSnap, VmUsageSnap};
 use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
-use minix_sys::syscall::{sys_getinfo_into, DirectKernelCallTransport};
+use minix_sys::syscall::{
+    perform_taskcall, sys_getinfo_into, DirectKernelCallTransport,
+};
 
 /// GET_KMESSAGES 快照总大小（kernel `kmess::KMESS_SNAPSHOT_SIZE` 镜像：
 /// 8 字节游标头 + 10000 字节环体，sys_config.h:22）。内核侧常量为
@@ -641,19 +643,16 @@ impl VfsProcTabTransport {
     /// 测试传脚本双替身）。
     ///
     /// 消息打包与 `system_info_via` 同布局（what @0..4、where @8..16、
-    /// size @16..24），但 sendrec 直组而不经 `perform_taskcall`：
-    /// DirectTrapTransport 宿主回退以**正** errno 报错（ipc.rs TrapStatus
-    /// 回退臂，sched `trap_errno` 同读），而 taskcall 语义负值才是失败
-    /// （syscall.rs:104-111）——正状态穿过 `perform_taskcall` 会被
-    /// `>= 0` 判成成功。此处本地归一为 Minix 负状态上浮；共享符号约定
-    /// 的裁决已挂 edge E-SYSCALL-SIGN（perform_syscall 腿登记，
-    /// taskcall 腿同型缺陷 2026-09-18 增补），其方案 A 落地后本处
-    /// 归一与 `system_info_via` 一并回迁。
-    fn vfs_proc_tab_via(transport: &impl IpcTransport, out: &mut [FProcSnap]) -> i32 {
-        let mut msg = Message {
-            m_type: getsysinfo_call(Endpoint::VFS),
-            ..Message::default()
-        };
+    /// size @16..24），经共享 [`minix_sys::syscall::perform_taskcall`] 上
+    /// 浮：传输级失败走 `Err(Errno)`（TrapStatus 符号契约——真机回复寄存
+    /// 器与宿主回退臂都报正 errno），sendrec 成功后的原始回复 `m_type`
+    /// 走 `Ok`，负值即服务端错误码（C _taskcall 语义）；非零正回复非标
+    /// 准，原样上浮交由 `!= OK` 消费面判失败（dmp_fs.c:31）。
+    fn vfs_proc_tab_via(
+        transport: &impl IpcTransport,
+        out: &mut [FProcSnap],
+    ) -> Result<i32, minix_types::Errno> {
+        let mut msg = Message::default();
         // SAFETY: m_lsys_getsysinfo 的 raw 三 lane 视图（C getsysinfo.c:
         // 27-29 的 what/where/size；where 是调用方缓冲地址，服务端按
         // sys_datacopy SELF→caller 回填）。
@@ -663,18 +662,18 @@ impl VfsProcTabTransport {
             msg.m_u.raw[16..24]
                 .copy_from_slice(&(core::mem::size_of_val(out) as u64).to_ne_bytes());
         }
-        match transport.sendrec(Endpoint::VFS, &mut msg) {
-            // C _taskcall 原样返回：OK(0) 成功，负值 = 错误码；非零正
-            // 回复非标准，原样上浮交由 `!= OK` 消费面判失败（dmp_fs.c:31）。
-            Ok(()) => msg.m_type,
-            Err(status) => -(status.0.unsigned_abs() as i32),
-        }
+        perform_taskcall(transport, Endpoint::VFS, getsysinfo_call(Endpoint::VFS), &mut msg)
     }
 }
 
 impl GetSysinfoTransport for VfsProcTabTransport {
     fn vfs_proc_tab(&mut self, out: &mut [FProcSnap]) -> i32 {
-        Self::vfs_proc_tab_via(&DirectTrapTransport, out)
+        // 消费面维持 C 整型契约（负值 = 失败）：传输级 `Err` 折算回负
+        // errno，与 sendrec 成功但服务端回负 `m_type` 的形状合流。
+        match Self::vfs_proc_tab_via(&DirectTrapTransport, out) {
+            Ok(reply) => reply,
+            Err(e) => -e.to_i32(),
+        }
     }
 
     fn pm_proc_tab(&mut self, _out: &mut [MProcSnap]) -> i32 {
@@ -880,7 +879,7 @@ mod vfs_proc_tab_transport_tests {
 
         let mut tab = [FProcSnap::default(); 4];
         let r = VfsProcTabTransport::vfs_proc_tab_via(&canned, &mut tab);
-        assert_eq!(r, OK);
+        assert_eq!(r, Ok(OK));
 
         let sent = canned.sent.borrow();
         let (dest, msg) = &sent[0];
@@ -915,13 +914,13 @@ mod vfs_proc_tab_transport_tests {
         let mut tab = [FProcSnap::default(); 2];
         assert_eq!(
             VfsProcTabTransport::vfs_proc_tab_via(&canned, &mut tab),
-            -minix_types::EINVAL
+            Ok(-minix_types::EINVAL)
         );
     }
 
     /// 宿主构建（未开 real-trap）下 DirectTrapTransport 诚实报错——
-    /// DirectTrapTransport 宿主回退为正 errno（TrapStatus(EIO)），本地
-    /// 归一为 Minix 负状态 `-EIO`，不假装成功（KernelKmessTransport
+    /// 传输级失败走 `Err(Errno(EIO))`（TrapStatus 符号契约），trait 消费
+    /// 面折算回 C 整型契约的 `-EIO`，不假装成功（KernelKmessTransport
     /// 同款门控验证）。
     #[test]
     fn test_vfs_proc_tab_transport_hosted_is_eio() {

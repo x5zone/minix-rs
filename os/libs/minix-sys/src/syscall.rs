@@ -69,21 +69,28 @@ pub fn pack_path_name(zero_terminated_name: &[u8]) -> Result<PackedPathName, Err
 
 /// Performs one system call round trip.
 ///
-/// This is the exact protocol of `_syscall`
+/// This follows the protocol of `_syscall`
 /// (`minix3/minix/lib/libc/sys/syscall.c:9-25`):
 ///
 /// 1. Write the call number into the message type field.
-/// 2. Send the message and wait for the reply. When the round trip itself
-///    fails, write the failure status into the message type field (C:
-///    `msgptr->m_type = status`, with the comment that the string table does
-///    not know every code).
-/// 3. When the message type is negative, its negation is the error number:
-///    return the typed error (C: `errno = -msgptr->m_type; return(-1);`).
+/// 2. Send the message and wait for the reply.
+/// 3. When the reply's message type is negative, its negation is the error
+///    number: return the typed error (C: `errno = -msgptr->m_type;
+///    return(-1);`).
 /// 4. Otherwise return the non-negative message type as the call result.
 ///
-/// The only deliberate difference from C is the error channel: C splits the
-/// outcome across a return value plus a global variable, while this function
-/// returns a single [`Result`], following the crate-wide error policy.
+/// Two deliberate differences from C, both on the error channel:
+///
+/// - A failed round trip short-circuits to `Err(Errno)` directly. C has a
+///   single channel (the message), so `syscall.c:14-17` writes the trap
+///   status into `m_type` and re-reads it as a negative number; here the
+///   transport already reports the failure through `Err(TrapStatus)`, and
+///   the status is the positive errno (the same sign the kernel writes into
+///   the reply register on the real trap path), so the detour through the
+///   message would read a positive value as success.
+/// - C splits the outcome across a return value plus a global `errno`;
+///   this function returns a single [`Result`], following the crate-wide
+///   error policy.
 pub fn perform_syscall(
     transport: &impl IpcTransport,
     destination: Endpoint,
@@ -91,8 +98,11 @@ pub fn perform_syscall(
     message: &mut Message,
 ) -> Result<i32, Errno> {
     message.m_type = call_number;
+    // A failed round trip is the `Err` lane: the transport reports the
+    // positive errno, and it becomes the typed error without touching the
+    // message (see the module-level sign contract on [`TrapStatus`]).
     if let Err(status) = transport.sendrec(destination, message) {
-        message.m_type = status.0;
+        return Err(Errno::from_i32(status.0));
     }
     if message.m_type < 0 {
         Err(Errno::from_i32(-message.m_type))
@@ -103,25 +113,29 @@ pub fn perform_syscall(
 
 /// Performs one server-side call round trip.
 ///
-/// This is the exact protocol of `_taskcall`
+/// This follows the protocol of `_taskcall`
 /// (`minix3/minix/lib/libsys/taskcall.c:9-23`): "the same as `_syscall`
 /// except it returns negative error codes directly and not in errno."
-/// Write the call number, send and wait, report a failed round trip as-is,
-/// and return the reply message type untouched — negative values are errors
-/// in the caller's hands, not here.
+/// Write the call number, send and wait, and hand the reply message type
+/// back untouched — negative values are the server's error codes, in the
+/// caller's hands, not here.
+///
+/// The round trip itself failing is the `Err` lane: the transport reports
+/// the positive errno and it becomes the typed error. C cannot separate the
+/// two failure kinds (one integer channel), which is why the C helper
+/// returns the raw trap status as-is; the two-lane `Result` keeps the reply
+/// contract on `Ok` and moves transport failures to `Err`.
 pub fn perform_taskcall(
     transport: &impl IpcTransport,
     destination: Endpoint,
     call_number: i32,
     message: &mut Message,
-) -> i32 {
+) -> Result<i32, Errno> {
     message.m_type = call_number;
     if let Err(status) = transport.sendrec(destination, message) {
-        // Like the C version (`return(status)`), the raw round-trip status
-        // goes back to the caller untouched.
-        return status.0;
+        return Err(Errno::from_i32(status.0));
     }
-    message.m_type
+    Ok(message.m_type)
 }
 ///
 /// C: `do_kernel_call` (invoked from `_kernel_call` in
@@ -1375,14 +1389,21 @@ mod tests {
     }
 
     #[test]
-    fn test_transport_failure_becomes_message_type_then_error() {
+    fn test_transport_failure_short_circuits_as_typed_error() {
+        // Both producers report the positive errno in `Err(TrapStatus)` —
+        // the hosted fallback (`TrapStatus(EIO)`) and the real-trap reply
+        // register alike. The status short-circuits into the typed error;
+        // writing it into the message type field instead made every hosted
+        // round-trip failure read back as a positive "success"
+        // (edge E-SYSCALL-SIGN).
         let mut transport = CannedTransport::new();
-        transport.reply_sendrec(Err(TrapStatus(-22)));
+        transport.reply_sendrec(Err(TrapStatus(minix_types::EIO)));
         let mut message = test_message(0);
         let result = perform_syscall(&transport, Endpoint(1), 5, &mut message);
-        // C: m_type = status (-22), then negative becomes error 22.
-        assert_eq!(message.m_type, -22);
-        assert_eq!(result, Err(Errno::EINVAL));
+        assert_eq!(result, Err(Errno::from_i32(minix_types::EIO)));
+        // The message keeps the call number: the failure never touched it.
+        assert_eq!(message.m_type, 5);
+        assert_eq!(transport.sendrec_calls.get(), 1);
     }
 
     #[test]
@@ -1467,15 +1488,20 @@ mod tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(test_message(-5)));
         let mut message = test_message(0);
-        assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), -5);
+        assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), Ok(-5));
     }
 
     #[test]
-    fn test_taskcall_reports_round_trip_status() {
+    fn test_taskcall_transport_failure_is_typed_error() {
+        // The positive-errno transport failure becomes the Err lane; the raw
+        // integer channel only ever carries server replies now.
         let mut transport = CannedTransport::new();
-        transport.reply_sendrec(Err(TrapStatus(-11)));
+        transport.reply_sendrec(Err(TrapStatus(minix_types::EIO)));
         let mut message = test_message(0);
-        assert_eq!(perform_taskcall(&transport, Endpoint(0), 41, &mut message), -11);
+        assert_eq!(
+            perform_taskcall(&transport, Endpoint(0), 41, &mut message),
+            Err(Errno::from_i32(minix_types::EIO))
+        );
     }
 
     // ── E2:VM 侧六个 SYS_* wrapper 的 CannedTransport 回放测试 ──

@@ -108,9 +108,15 @@ impl TrapVector {
 /// otherwise. The receive routine additionally writes the decoded call number
 /// through a caller-supplied pointer (see `_ipc.S:36-37`: the kernel leaves
 /// the status in `ebx` and the routine stores it). This type keeps the raw
-/// value visible instead of folding it into a boolean, so the system call
-/// layer above can implement the exact C rule "transport failure becomes the
-/// message type".
+/// value visible instead of folding it into a boolean.
+///
+/// Sign contract: in the `Err` position of a transport result the payload is
+/// the **positive** errno. Both producers agree by construction — the hosted
+/// fallback reports `TrapStatus(EIO)`, and the real-trap body forwards the
+/// reply register where the kernel writes the positive errno (for example
+/// `EBADCALL` for an unknown call). Tests that script a transport failure
+/// must script the positive value; a negative payload would read back as a
+/// bogus `Errno` and is a contract violation, not a convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrapStatus(pub i32);
 

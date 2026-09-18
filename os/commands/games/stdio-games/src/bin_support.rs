@@ -12,9 +12,9 @@
 //!   deliberately spins when no process manager answers (the C `_exit`
 //!   last resort); the target build swaps it for `minix_sys::exit`.
 //!
-//! Writes and reads go through `minix_sys::write`/`read` only. Until the
-//! sign mismatch in `perform_syscall` is fixed (edge E-SYSCALL-SIGN),
-//! hosted runs observe fake successes on both channels; on-target behavior
+//! Writes and reads go through `minix_sys::write`/`read` only. Transport
+//! failures short-circuit to a typed `Err` (edge E-SYSCALL-SIGN), so
+//! hosted runs observe honest failures on both channels; on-target behavior
 //! is unaffected.
 
 use minix_sys::{write, Fd};

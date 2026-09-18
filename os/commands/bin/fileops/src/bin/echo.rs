@@ -19,8 +19,8 @@
 //!   would hang every hosted run; the target build swaps it for
 //!   `minix_sys::exit`. Writes always go through `minix_sys::write`, so a
 //!   hosted run without a kernel must fail with exit 1 as soon as the
-//!   transport reports its explicit error (the current sign mismatch in
-//!   `perform_syscall` masks that failure — edge E-SYSCALL-SIGN).
+//!   transport reports its explicit error (that error short-circuits to a
+//!   typed `Err` — edge E-SYSCALL-SIGN).
 
 use minix_fileops::echo::echo_emit;
 use minix_sys::{write, Fd};

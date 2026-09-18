@@ -6,9 +6,9 @@
 //! echo template documents (`os/commands/bin/fileops/src/bin/echo.rs`):
 //! argv via `std::env::args` and termination via the host runtime, both
 //! swapping in one sweep when no_std program images land. Reads and writes
-//! go through `minix_sys::read`/`write` only; until the sign mismatch in
-//! `perform_syscall` is fixed (edge E-SYSCALL-SIGN), hosted runs observe
-//! fake successes on both channels.
+//! go through `minix_sys::read`/`write` only; transport failures
+//! short-circuit to a typed `Err` (edge E-SYSCALL-SIGN), so hosted runs
+//! observe honest failures on both channels.
 
 // Each binary includes this module and uses the subset it needs; the
 // unused helpers in any one binary are intentional, not drift.

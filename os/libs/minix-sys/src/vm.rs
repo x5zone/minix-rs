@@ -264,7 +264,7 @@ pub fn fork_address_space_via(
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
         message.m_u.raw[4..8].copy_from_slice(&slot.to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_FORK, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_FORK, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -276,8 +276,13 @@ pub fn fork_address_space_via(
 
 /// Ends address-space bookkeeping (server-side call).
 ///
-/// C: `vm_exit` (sends the endpoint, returns the raw reply).
-pub fn exit_address_space_via(transport: &impl IpcTransport, endpoint: Endpoint) -> i32 {
+/// C: `vm_exit` (sends the endpoint, returns the raw reply). A failed round
+/// trip is the `Err` lane; `Ok` carries the raw reply message type, whose
+/// negative values remain the server's error codes.
+pub fn exit_address_space_via(
+    transport: &impl IpcTransport,
+    endpoint: Endpoint,
+) -> Result<i32, Errno> {
     let mut message = crate::syscall::cleared_message();
     // SAFETY: one plain integer at byte zero.
     unsafe {
@@ -381,7 +386,7 @@ pub fn map_physical_via(
         message.m_u.raw[8..16].copy_from_slice(&physical.0.to_ne_bytes());
         message.m_u.raw[16..24].copy_from_slice(&length.0.to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_MAP_PHYS, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_MAP_PHYS, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -412,7 +417,7 @@ pub fn will_exit_via(transport: &impl IpcTransport, endpoint: Endpoint) -> Resul
     unsafe {
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_WILL_EXIT, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_WILL_EXIT, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -445,7 +450,7 @@ pub fn unmap_physical_via(
         message.m_u.raw[..4].copy_from_slice(&target.0.to_ne_bytes());
         message.m_u.raw[4..8].copy_from_slice(&(vaddr.0 as u32).to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_UNMAP_PHYS, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_UNMAP_PHYS, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -477,7 +482,7 @@ fn process_control_via(
         message.m_u.raw[28..32].copy_from_slice(&len.to_ne_bytes());
         message.m_u.raw[32..36].copy_from_slice(&flags.to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_PROCESS_CONTROL, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_PROCESS_CONTROL, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -589,7 +594,7 @@ fn cache_call_via(
         message.m_u.raw[48] = (blocksize / CACHE_PAGE_SIZE) as u8;
         message.m_u.raw[49] = setflags;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), call, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), call, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -707,7 +712,7 @@ pub fn clear_cache_via(transport: &impl IpcTransport, dev: u64) -> Result<(), Er
     unsafe {
         message.m_u.raw[..8].copy_from_slice(&dev.to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_CLEAR_CACHE, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_CLEAR_CACHE, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -824,10 +829,10 @@ mod tests {
         // The C wrappers return MAP_FAILED / zero / all-ones on a failed
         // round trip (mmap.c:44-47 and friends); here the failure is the
         // `Err` lane, and the sentinel never appears. Transport errors
-        // carry the NEGATED errno, matching the C trap convention where
-        // the status lands in the (negative) message type field.
+        // carry the positive errno (TrapStatus sign contract — the hosted
+        // fallback and the real-trap reply register agree on this sign).
         let mut transport = CannedTransport::new();
-        transport.reply_sendrec(Err(TrapStatus(-minix_types::EINVAL)));
+        transport.reply_sendrec(Err(TrapStatus(minix_types::EINVAL)));
         let result = mmap_via(&transport, Endpoint(5), request_for(5));
         assert_eq!(result, Err(Errno::from_i32(minix_types::EINVAL)));
         assert_eq!(transport.sendrec_calls.get(), 1);
@@ -1018,9 +1023,10 @@ mod tests {
     #[test]
     fn test_procctl_failure_propagates_errno() {
         // vm_procctl's C callers check the raw result; the Err lane carries
-        // the negated errno (taskcall convention).
+        // the positive errno (TrapStatus sign contract), and the wrapper
+        // turns it into the typed error.
         let mut transport = CannedTransport::new();
-        transport.reply_sendrec(Err(TrapStatus(-minix_types::EINVAL)));
+        transport.reply_sendrec(Err(TrapStatus(minix_types::EINVAL)));
         assert_eq!(
             process_control_clear_via(&transport, Endpoint(3)),
             Err(Errno::from_i32(minix_types::EINVAL))
@@ -1213,7 +1219,7 @@ pub fn vm_rs_set_priv_via(
         m2.m2l1 = mask_buf as i64;
         m2.m2i2 = is_sys;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_SET_PRIV as i32, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_SET_PRIV as i32, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
@@ -1232,7 +1238,7 @@ pub fn vm_rs_memctl_via(
         m1.m1i1 = endpt.0;
         m1.m1i2 = req;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_MEMCTL as i32, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_MEMCTL as i32, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
@@ -1253,7 +1259,7 @@ pub fn vm_rs_update_via(
         m2.m2i2 = dst.0;
         m2.m2i3 = flags;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_UPDATE as i32, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_UPDATE as i32, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
@@ -1274,7 +1280,7 @@ pub fn shm_unmap_via(
         addr,
         _padding: [0; 44],
     };
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_SHARED_UNMAP, &mut message);
+    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_SHARED_UNMAP, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }

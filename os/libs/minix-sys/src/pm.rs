@@ -465,7 +465,7 @@ pub fn service_fork_via(
         )
     };
     crate::syscall::write_payload(&mut message, bytes);
-    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_SERVICE_FORK, &mut message);
+    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_SERVICE_FORK, &mut message)?;
     if reply < 0 {
         Err(Errno::from_i32(-reply))
     } else {
@@ -505,7 +505,7 @@ pub fn getepinfo_via(transport: &impl IpcTransport, proc_ep: Endpoint) -> Result
         _pad2: 0,
         _padding: [0; 32],
     };
-    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_GETEPINFO, &mut message);
+    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_GETEPINFO, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -536,7 +536,7 @@ pub fn getprocnr_via(transport: &impl IpcTransport, pid: Pid) -> Result<Endpoint
         pid,
         _padding: [0; 52],
     };
-    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_GETPROCNR, &mut message);
+    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_GETPROCNR, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -562,7 +562,7 @@ pub fn exec_restart_via(
         ps_str,
         _padding: [0; 32],
     };
-    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_EXEC_RESTART, &mut message);
+    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_EXEC_RESTART, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -585,7 +585,7 @@ pub fn service_kill_via(
         signo: signal,
         _padding: [0; 48],
     };
-    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_SERVICE_KILL, &mut message);
+    let reply = perform_taskcall(transport, pm_endpoint(), PM_CALL_SERVICE_KILL, &mut message)?;
     if reply < 0 {
         Err(Errno::from_i32(-reply))
     } else {
@@ -998,7 +998,7 @@ pub fn proceventmask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32
     let mut message = minix_types::ipc::proceventmask_msg(
         minix_types::ProcEventMask::from_bits_truncate(mask),
     );
-    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_PROCEVENTMASK, &mut message);
+    let reply = perform_taskcall(transport, pm_endpoint(), minix_types::PM_PROCEVENTMASK, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(reply as u32)
 }
@@ -1030,7 +1030,7 @@ pub fn sched_start_via(
         quantum,
         _padding: [0; 40],
     };
-    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_START, &mut message);
+    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_START, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
@@ -1046,7 +1046,7 @@ pub fn sched_stop_via(
         endpoint: endpoint.0,
         _padding: [0; 52],
     };
-    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_STOP, &mut message);
+    let reply = perform_taskcall(transport, scheduler, minix_types::SCHEDULING_STOP, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }
     Ok(())
 }
