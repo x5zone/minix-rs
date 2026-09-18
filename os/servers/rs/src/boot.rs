@@ -22,9 +22,9 @@
 //! All external interactions go through [`KernelApi`] — the union of five
 //! domain faces ([`SysApi`] kernel calls, [`SchedApi`] scheduler face,
 //! [`PmApi`] PM process lifecycle, [`VmApi`] VM messages, [`IpcApi`] RS's own
-//! receive/reply). The production impl is wired to `minix-sys` in
-//! 19-rs-external-interfaces.md (currently DEFERRED — `minix-sys` is a stub);
-//! tests use `MockKernelApi`.
+//! receive/reply). The production impl is [`crate::trap_api::TrapKernelApi`]
+//! (19 号换装:每方法委托 minix-sys 真实 wrapper);tests use
+//! `MockKernelApi`.
 
 use minix_types::{BootImage, Clock, Endpoint, Errno, Pid};
 
@@ -66,8 +66,8 @@ pub use crate::privilege::{PrivCtlOp, Privilege};
 /// | [`SysApi::sys_kill`] | `sys_kill(rpub->endpoint, SIGKILL)` — manager.c:399 (crash_service) |
 /// | [`SysApi::sys_update`] | `srv_update(src_ep, dst_ep, flags)` — update.c:272-275 (libsys wrapper over SYS_UPDATE) |
 ///
-/// Errors are errno values (`minix-types` constants). Production wiring:
-/// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+/// Errors are errno values (`minix-types` constants). Production impl:
+/// `crate::trap_api::TrapKernelApi`(19 号换装已落).
 pub trait SysApi {
     fn get_machine(&mut self) -> Result<Machine, Errno>;
     fn get_hz(&mut self) -> Result<u32, Errno>;
@@ -100,7 +100,7 @@ pub trait SysApi {
     ///
     /// C: `sys_diagctl_stacktrace(target)` — main.c:681-683 (the signal
     /// manager's stacktrace-signal branch). Wired
-    /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    /// 19-rs-external-interfaces.md (production impl: `crate::trap_api::TrapKernelApi`).
     fn diagctl_stacktrace(&mut self, target: Endpoint) -> Result<(), Errno>;
 
     /// Emits one diagnostic line to the kernel console ([ARCH: A-6]).
@@ -250,14 +250,14 @@ pub trait IpcApi {
     ///
     /// C: `ipc_notify(rpub->endpoint)` — request.c:1035; the kernel fills
     /// the notify timestamp (ipc.h:1715). Wired
-    /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    /// 19-rs-external-interfaces.md (production impl: `crate::trap_api::TrapKernelApi`).
     fn notify(&mut self, endpoint: Endpoint) -> Result<(), Errno>;
 
     /// Asynchronous non-blocking send.
     ///
     /// C: `rs_asynsend(rp, &m, 1)` — utility.c 全局异步原语；RS 用它发
     /// `RS_INIT` 初始化消息（utility.c:62，boot Step 2 与服务创建路径）。
-    /// Wired 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    /// Wired 19-rs-external-interfaces.md (production impl: `crate::trap_api::TrapKernelApi`).
     fn asynsend(&mut self, endpoint: Endpoint, message: &minix_types::Message)
     -> Result<(), Errno>;
 
@@ -265,7 +265,7 @@ pub trait IpcApi {
     ///
     /// C: `sys_datacopy(src_e, addr, SELF, dst, len)` — manager.c:141
     /// (`copy_rs_start`) / manager.c:160 (`copy_label`). Wired
-    /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
+    /// 19-rs-external-interfaces.md (production impl: `crate::trap_api::TrapKernelApi`).
     fn safecopy_from(&mut self, source: Endpoint, addr: usize, buf: &mut [u8])
     -> Result<(), Errno>;
 
@@ -273,8 +273,7 @@ pub trait IpcApi {
     ///
     /// C: `sys_datacopy(SELF, src, dst_e, dst_addr, len)` — request.c:1122
     /// (do_getsysinfo's table copy-out) and request.c:862 (grant-backed
-    /// state data). Wired 19-rs-external-interfaces.md (DEFERRED —
-    /// `minix-sys` is a stub).
+    /// state data). Production impl: `crate::trap_api::TrapKernelApi`.
     fn safecopy_to(&mut self, dest: Endpoint, addr: usize, buf: &[u8]) -> Result<(), Errno>;
 }
 

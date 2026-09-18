@@ -216,6 +216,35 @@ pub fn getpid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
     perform_syscall(transport, pm_endpoint(), PM_CALL_GETPID, &mut message)
 }
 
+/// PM_SETUID(5):设置调用者自身的 uid(C `minix3/minix/lib/libc` 的
+/// setuid 经 PM_SETUID 到 PM;RS 用它做服务进程自设 uid,manager.c:656)。
+/// 载荷 `mess_lc_pm_setid`(minix-types `MessLcPmSetid`;C ipc.h:528-533):
+/// id u32@0。MessageUnion 无专属臂(SRV_FORK 先例),repr(C) 载荷 raw 写入。
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct SetuidPayload {
+    uid: u32,
+    _padding: [u8; 52],
+}
+
+/// PM_SETUID 的 RS 客户端封装(见 [`SetuidPayload`])。
+pub fn setuid_via(transport: &impl IpcTransport, uid: u32) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = SetuidPayload {
+        uid,
+        _padding: [0; 52],
+    };
+    // SAFETY: plain-value 推理同 service_fork_via(repr(C),无指针字段)。
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<SetuidPayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_taskcall(transport, pm_endpoint(), minix_types::PM_SETUID, &mut message).map(|_| ())
+}
+
 /// Sends a signal to a process.
 ///
 /// C: `kill` (`minix3/minix/lib/libc/sys/kill.c:12-22`): clear a message,

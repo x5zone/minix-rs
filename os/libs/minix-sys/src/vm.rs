@@ -1230,13 +1230,20 @@ pub fn vm_rs_memctl_via(
     transport: &impl IpcTransport,
     endpt: Endpoint,
     req: i32,
+    addr: u64,
+    len: u64,
 ) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     {
-        // SAFETY: m_m1 是 VM_RS_MEMCTL 的文档化载荷。
+        // SAFETY: m_m1 是 VM_RS_MEMCTL 的文档化载荷。VM 解码
+        // (vm dispatcher decode_rs_memctl_request):m1i1=endpt,
+        // m1i2=req,m1i3=len(HeapPrealloc/MapPrealloc 消费),
+        // m1p1=addr;Pin/MakeVm/GetPreallocMap 忽略 addr/len。
         let m1 = unsafe { &mut message.m_u.m_m1 };
         m1.m1i1 = endpt.0;
         m1.m1i2 = req;
+        m1.m1i3 = len as i32;
+        m1.m1p1 = addr;
     }
     let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_MEMCTL as i32, &mut message)?;
     if reply < 0 { return Err(Errno::from_i32(-reply)); }

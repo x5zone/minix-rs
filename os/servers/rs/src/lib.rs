@@ -51,6 +51,7 @@ pub mod sef;
 pub mod self_lifecycle;
 pub mod service_create;
 pub mod service_slot;
+pub mod trap_api;
 pub mod slot;
 pub mod state_data;
 pub mod table;
@@ -182,10 +183,11 @@ impl RsServer {
     /// C: `sys_getimage` (main.c:196) result. The SEF callback set is the
     /// [`SefCallbacks`] trait implemented by `RsServer` itself (N5 — no
     /// separate registration value to construct, main.c:51). The kernel API
-    /// is fail-closed (`UnimplementedKernelApi`) until the `minix-sys`
-    /// wiring lands (19).
+    /// is the production trap backend ([`trap_api::TrapKernelApi`], 19 号
+    /// 换装):每方法委托 minix-sys 真实 wrapper,宿主构建双腿回答 ±EIO
+    /// (fail-closed 可观察);测试用 `with_kernel` 注入 mock。
     pub fn new(tables: BootTables<'static>) -> Self {
-        Self::with_kernel(tables, alloc::boxed::Box::new(boot::UnimplementedKernelApi))
+        Self::with_kernel(tables, alloc::boxed::Box::new(trap_api::TrapKernelApi::new()))
     }
 
     /// Creates the server with an injected kernel API (tests / wiring).
