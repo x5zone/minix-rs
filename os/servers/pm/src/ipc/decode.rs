@@ -181,6 +181,18 @@ pub(crate) fn sprof(msg: &Message) -> (i32, i32, i32, u64, u64, u64) {
     )
 }
 
+/// getsysinfo 参数 (what, where, size)。RS → PM。
+///
+/// C: `mess_lsys_getsysinfo` — ipc.h:1062-1070(what@0/where@8/size@16)。
+pub(crate) fn getsysinfo(msg: &Message) -> (i32, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路。
+    let raw = unsafe { msg.m_u.raw };
+    let what = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let where_ = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    let size = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+    (what, where_, size)
+}
+
 /// mcontext 参数 (endpt, ctx 用户态指针)。user → PM。
 ///
 /// C: `mess_lc_pm_mcontext`(minix-types `MessLcPmMcontext` —

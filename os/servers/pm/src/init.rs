@@ -199,9 +199,8 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     /// misc.c:305-310;S8 批次 G)。
     svrctl_store: crate::misc::ParamStore,
     /// 调用计数(C: `ENABLE_SYSCALL_STATS` 的 counters[],misc.c:64;
-    /// D-32:按调用号计数,feature 门控)。
-    #[cfg(feature = "syscall_stats")]
-    call_stats: [u32; 48],
+    /// D-32:按调用号计数,feature 门控)。字节面即 SI_CALL_STATS 应答。
+    call_stats: alloc::vec::Vec<u8>,
     /// `init()` 是否已完成（run() 前置断言）。
     initialized: bool,
     /// 内核中止标志（C: `glo.h:26` `abort_flag`；由 do_reboot 写入，归 20-misc-queries.md）。
@@ -261,8 +260,7 @@ impl<T: IpcTransport> PmServer<T> {
         Self {
             // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
             // 保证空槽（Lifecycle::Unused）+ PID 生成器就绪。
-            #[cfg(feature = "syscall_stats")]
-            call_stats: [0; 48],
+            call_stats: alloc::vec![0u8; 48 * 4],
             svrctl_store: crate::misc::ParamStore::new(
                 String::from_utf8_lossy(
                     &params.monitor_params
@@ -474,9 +472,13 @@ impl<T: IpcTransport> PmServer<T> {
         // D-32(C ENABLE_SYSCALL_STATS,misc.c:64)——按调用号计数
         //(callnr.h:62 NR_PM_CALLS=48;PM_BASE=0,调用号即索引)。
         #[cfg(feature = "syscall_stats")]
-        if msg.m_type >= 1 && msg.m_type < 48 {
-            let idx = msg.m_type as usize;
-            self.call_stats[idx] = self.call_stats[idx].wrapping_add(1);
+        if msg.m_type >= 1 && (msg.m_type as usize) < self.call_stats.len() / 4 {
+            let off = msg.m_type as usize * 4;
+            let cur = u32::from_le_bytes(
+                self.call_stats[off..off + 4].try_into().unwrap(),
+            );
+            self.call_stats[off..off + 4]
+                .copy_from_slice(&cur.wrapping_add(1).to_le_bytes());
         }
 
         // dispatch_message → dispatch_pm_call 的**单一分发表**（ARCH A-5）。
@@ -486,6 +488,7 @@ impl<T: IpcTransport> PmServer<T> {
             vctl: self.vtimer.as_mut(),
             system_hz: self.params.system_hz as i64,
             svrctl_store: &mut self.svrctl_store,
+            call_stats: &mut self.call_stats,
         };
         let intent = dispatch_message(
             &mut self.table,

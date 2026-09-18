@@ -903,6 +903,44 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // C: do_getsysinfo(misc.c:108-144)——SUPER_USER 门,SI_* 分类,
+        // 整表/计数经 copy 缝交付(D-29 数据路径 + D-32 计数)。
+        PmCall::GetSysInfo => {
+            let (what, where_, size) = super::decode::getsysinfo(msg);
+            struct StatsCtl<'a> {
+                stats: &'a [u8],
+            }
+            impl crate::misc::SysInfoCtl for StatsCtl<'_> {
+                fn proc_tab(&self) -> &[u8] {
+                    // ProcTab 走 do_getsysinfo 的逐槽 cpy 路径,不经 ctl。
+                    &[]
+                }
+                #[cfg(feature = "syscall_stats")]
+                fn call_stats(&self) -> &[u8] {
+                    self.stats
+                }
+            }
+            let ctl = StatsCtl {
+                stats: timers.call_stats,
+            };
+            let mut cpy = KernCopyToUser { kern, who: msg.m_source };
+            let what = match crate::misc::SysInfoWhat::try_from(what) {
+                Ok(w) => w,
+                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+            };
+            match crate::misc::do_getsysinfo(
+                table,
+                caller,
+                what,
+                size as usize,
+                VirBytes(where_),
+                &ctl,
+                &mut cpy,
+            ) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -1095,7 +1133,14 @@ fn leak_timers() -> crate::timer::TimerFaces<'static> {
     let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(crate::timer::SysVTimerCtl));
     let svrctl: &'static mut crate::misc::ParamStore =
         Box::leak(Box::new(crate::misc::ParamStore::new(alloc::string::String::new())));
-    crate::timer::TimerFaces { tctl, vctl, system_hz: 100, svrctl_store: svrctl }
+    let call_stats: &'static mut [u8] = Box::leak(Box::new([0u8; 192]));
+    crate::timer::TimerFaces {
+        tctl,
+        vctl,
+        system_hz: 100,
+        svrctl_store: svrctl,
+        call_stats,
+    }
 }
 
 fn positive_errno(e: i32) -> i32 {

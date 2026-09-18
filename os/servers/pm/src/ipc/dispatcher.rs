@@ -251,11 +251,13 @@ mod tests {
         let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(TestVTimerCtl));
         let svrctl: &'static mut crate::misc::ParamStore =
             Box::leak(Box::new(crate::misc::ParamStore::new(alloc::string::String::new())));
+        let call_stats: &'static mut [u8] = Box::leak(Box::new([0u8; 192]));
         TimerFaces {
             tctl,
             vctl,
             system_hz: 100,
             svrctl_store: svrctl,
+            call_stats,
         }
     }
 
