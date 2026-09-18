@@ -81,8 +81,18 @@ pub trait CopyGroups {
 }
 
 /// VFS forwarder (`tell_vfs(SUSPEND)`, getset.c:219, D6, A-6).
+///
+/// `table`/`slot` 由方法携带(非构造捕获):tell_vfs 的 not-idle 断言与
+/// VFS_CALL 置位都要访问进程表,而 do_set 的调用方(分发表)同时持表
+/// 与转发器——借用在调用点重入是合法的。
 pub trait VfsForwarder {
-    fn forward_set(&mut self, ep: Endpoint, op: &SetOp) -> Result<ReplyIntent, SetError>;
+    fn forward_set(
+        &mut self,
+        table: &mut ProcTable,
+        slot: UserSlot,
+        ep: Endpoint,
+        op: &SetOp,
+    ) -> Result<ReplyIntent, SetError>;
 }
 
 /// `do_get` (`getset.c:18-89`, D1).
@@ -168,7 +178,7 @@ pub fn do_set(
             let c = table.procs[caller.get()].resources.privilege.credentials_mut().unwrap();
             c.set_uid_all(uid);
             // VFS forwarding (121-125)
-            vfs.forward_set(ep, &SetOp::SetUid(uid))?;
+            vfs.forward_set(table, caller, ep, &SetOp::SetUid(uid))?;
             Ok(ReplyIntent::ReplyLater)
         }
         SetOp::SetEUid(uid) => {
@@ -176,7 +186,7 @@ pub fn do_set(
                 return Err(SetError::Perm);
             }
             table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_euid(uid);
-            vfs.forward_set(ep, &SetOp::SetEUid(uid))?;
+            vfs.forward_set(table, caller, ep, &SetOp::SetEUid(uid))?;
             Ok(ReplyIntent::ReplyLater)
         }
         SetOp::SetGid(gid) => {
@@ -184,7 +194,7 @@ pub fn do_set(
                 return Err(SetError::Perm);
             }
             table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_gid_all(gid);
-            vfs.forward_set(ep, &SetOp::SetGid(gid))?;
+            vfs.forward_set(table, caller, ep, &SetOp::SetGid(gid))?;
             Ok(ReplyIntent::ReplyLater)
         }
         SetOp::SetEGid(gid) => {
@@ -192,7 +202,7 @@ pub fn do_set(
                 return Err(SetError::Perm);
             }
             table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_egid(gid);
-            vfs.forward_set(ep, &SetOp::SetEGid(gid))?;
+            vfs.forward_set(table, caller, ep, &SetOp::SetEGid(gid))?;
             Ok(ReplyIntent::ReplyLater)
         }
         SetOp::SetGroups { ref gids } => {
@@ -208,7 +218,7 @@ pub fn do_set(
                 }
             }
             table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_groups(gids);
-            vfs.forward_set(ep, &op)?;
+            vfs.forward_set(table, caller, ep, &op)?;
             Ok(ReplyIntent::ReplyLater)
         }
         SetOp::SetSid => {
@@ -216,7 +226,7 @@ pub fn do_set(
                 return Err(SetError::Perm);
             }
             table.procs[caller.get()].identity.procgrp = pid;
-            vfs.forward_set(ep, &SetOp::SetSid)?;
+            vfs.forward_set(table, caller, ep, &SetOp::SetSid)?;
             Ok(ReplyIntent::ReplyLater)
         }
     }
@@ -261,17 +271,16 @@ mod tests {
     }
     struct NopVfs;
     impl VfsForwarder for NopVfs {
-        fn forward_set(&mut self, _ep: Endpoint, _op: &SetOp) -> Result<ReplyIntent, SetError> {
+        fn forward_set(
+            &mut self,
+            _table: &mut ProcTable,
+            _slot: UserSlot,
+            _ep: Endpoint,
+            _op: &SetOp,
+        ) -> Result<ReplyIntent, SetError> {
             Ok(ReplyIntent::ReplyLater)
         }
     }
-    struct FailVfs;
-    impl VfsForwarder for FailVfs {
-        fn forward_set(&mut self, _ep: Endpoint, _op: &SetOp) -> Result<ReplyIntent, SetError> {
-            Err(SetError::Busy)
-        }
-    }
-
     #[test]
     fn test_getgroups_zero_queries() {
         let mut table = ProcTable::new();

@@ -19,7 +19,10 @@
 use crate::event::EventRegistry;
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
-use minix_types::{ENOSYS, Endpoint, Message, PmError, ProcEventMask, UserSlot, VirBytes};
+use crate::credentials::{
+    do_get, do_set, CopyGroups, GetOp, GetResult, SetOp, SetError, VfsForwarder,
+};
+use minix_types::{ENOSYS, EINVAL, Endpoint, Gid, Message, PmError, ProcEventMask, UserSlot, VirBytes};
 
 /// PM 系统调用枚举（C: `callnr.h:14-60`，`PM_BASE + 1` ~ `PM_BASE + 47`）。
 ///
@@ -453,6 +456,121 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 }
             }
         }
+        // ===== S2 批次 A:凭证族 13 调用(getset.c)=====
+        PmCall::GetPid => {
+            match do_get(table, caller, GetOp::GetPid, &mut NoopGroups) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetUid => {
+            let id = super::decode::setid(msg);
+            let mut copier = NoopGroups;
+            let mut fwd = SysVfsForward { transport };
+            match do_set(table, caller, SetOp::SetUid(id), &mut copier, &mut fwd) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::GetUid => {
+            match do_get(table, caller, GetOp::GetUid, &mut NoopGroups) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetGroups => {
+            // C getset.c:184-206 —— num<0 → EINVAL;gid 数组经 copy 缝
+            // 拷入后整组安装并转发 VFS。
+            let (num, ptr) = super::decode::groups(msg);
+            if num < 0 {
+                return ReplyIntent::Reply(EINVAL);
+            }
+            let mut copier = SysCopyGroups { kern, who: msg.m_source };
+            match copier.copy_from_user(VirBytes(ptr), num as usize) {
+                Ok(gids) => {
+                    let mut fwd = SysVfsForward { transport };
+                    match do_set(
+                        table,
+                        caller,
+                        SetOp::SetGroups { gids },
+                        &mut NoopGroups,
+                        &mut fwd,
+                    ) {
+                        Ok(intent) => intent,
+                        Err(e) => ReplyIntent::Reply(e.to_errno()),
+                    }
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::GetGroups => {
+            let (num, ptr) = super::decode::groups(msg);
+            let mut copier = SysCopyGroups { kern, who: msg.m_source };
+            match do_get(table, caller, GetOp::GetGroups { count: num, ptr: VirBytes(ptr) }, &mut copier) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetGid => {
+            let id = super::decode::setid(msg);
+            let mut copier = NoopGroups;
+            let mut fwd = SysVfsForward { transport };
+            match do_set(table, caller, SetOp::SetGid(id), &mut copier, &mut fwd) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::GetGid => {
+            match do_get(table, caller, GetOp::GetGid, &mut NoopGroups) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetSid => {
+            let mut copier = NoopGroups;
+            let mut fwd = SysVfsForward { transport };
+            match do_set(table, caller, SetOp::SetSid, &mut copier, &mut fwd) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::GetPgrp => {
+            match do_get(table, caller, GetOp::GetPgrp, &mut NoopGroups) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetEUid => {
+            let id = super::decode::setid(msg);
+            let mut copier = NoopGroups;
+            let mut fwd = SysVfsForward { transport };
+            match do_set(table, caller, SetOp::SetEUid(id), &mut copier, &mut fwd) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::SetEGid => {
+            let id = super::decode::setid(msg);
+            let mut copier = NoopGroups;
+            let mut fwd = SysVfsForward { transport };
+            match do_set(table, caller, SetOp::SetEGid(id), &mut copier, &mut fwd) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::IsSetUid => {
+            match do_get(table, caller, GetOp::Issetugid, &mut NoopGroups) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        PmCall::GetSid => {
+            let pid = super::decode::getsid(msg);
+            match do_get(table, caller, GetOp::GetSid { pid }, &mut NoopGroups) {
+                Ok(r) => get_result_intent(table, caller, r),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -467,6 +585,114 @@ use crate::signal_handlers::{
     handle_sigsuspend, SigActionReq,
 };
 use crate::mproc::SigMsg;
+
+/// 无拷贝组表出口:不搬组表的调用(GetPid/GetUid 等)仍需满足
+/// do_get/do_set 的 trait 形状;copy 路径诚实失败(不可达)。
+struct NoopGroups;
+impl CopyGroups for NoopGroups {
+    fn copy_to_user(&mut self, _gids: &[Gid], _ptr: VirBytes) -> Result<(), SetError> {
+        Err(SetError::Fault)
+    }
+    fn copy_from_user(&mut self, _ptr: VirBytes, _ngroups: usize) -> Result<Vec<Gid>, SetError> {
+        Err(SetError::Fault)
+    }
+}
+
+/// 凭证族的组表拷贝适配(S2):`CopyGroups` 语义经网关 copy 缝落地,
+/// gid 按 u32 LE 逐元素搬运(NGROUPS_MAX 槽,credentials.rs A-11)。
+struct SysCopyGroups<'a> {
+    kern: &'a mut dyn crate::exit::KernelGateway,
+    who: Endpoint,
+}
+
+impl CopyGroups for SysCopyGroups<'_> {
+    fn copy_to_user(&mut self, gids: &[Gid], ptr: VirBytes) -> Result<(), SetError> {
+        let mut raw = alloc::vec![0u8; gids.len() * 4];
+        for (i, g) in gids.iter().enumerate() {
+            raw[i * 4..i * 4 + 4].copy_from_slice(&g.to_le_bytes());
+        }
+        self.kern
+            .copy_to_user(&raw, self.who, ptr.0)
+            .map_err(|_| SetError::Fault)
+    }
+
+    fn copy_from_user(&mut self, ptr: VirBytes, ngroups: usize) -> Result<Vec<Gid>, SetError> {
+        let mut raw = alloc::vec![0u8; ngroups * 4];
+        self.kern
+            .copy_from_user(self.who, ptr.0, &mut raw)
+            .map_err(|_| SetError::Fault)?;
+        Ok(raw
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect())
+    }
+}
+
+/// 凭证族的 VFS 转发适配(S2):编码 VfsCall 后走 tell_vfs 同型三段
+/// (not-idle 断言 / send / VFS_CALL 置位——vfs.rs:166-175)。
+struct SysVfsForward<'a, T: IpcTransport + ?Sized> {
+    transport: &'a mut T,
+}
+
+impl<T: IpcTransport + ?Sized> VfsForwarder for SysVfsForward<'_, T> {
+    fn forward_set(
+        &mut self,
+        table: &mut ProcTable,
+        slot: UserSlot,
+        ep: Endpoint,
+        op: &SetOp,
+    ) -> Result<ReplyIntent, SetError> {
+        let call = match op {
+            SetOp::SetUid(uid) | SetOp::SetEUid(uid) => minix_types::VfsCall::SetUid {
+                endpoint: ep,
+                eid: *uid as i32,
+                rid: *uid as i32,
+            },
+            SetOp::SetGid(gid) | SetOp::SetEGid(gid) => minix_types::VfsCall::SetGid {
+                endpoint: ep,
+                eid: *gid as i32,
+                rid: *gid as i32,
+            },
+            SetOp::SetGroups { gids } => minix_types::VfsCall::SetGroups {
+                endpoint: ep,
+                group_no: gids.len() as i32,
+                group_addr: 0,
+            },
+            SetOp::SetSid => minix_types::VfsCall::SetSid { endpoint: ep },
+        };
+        crate::ipc::vfs::tell_vfs(table, slot, call, self.transport);
+        Ok(ReplyIntent::ReplyLater)
+    }
+}
+
+/// `do_get` 结果 → 回复意图(C getset.c:52-81 的双值载荷语义)。
+/// Uid/Gid 的 real/eff 双值经 reply 预填槽(m1i1/m1i2)交付。
+fn get_result_intent(table: &mut ProcTable, caller: UserSlot, r: GetResult) -> ReplyIntent {
+    let mut prefill = |real: i32, eff: i32| {
+        let mut msg = Message::default();
+        msg.m_u.m_m1.m1i1 = real;
+        msg.m_u.m_m1.m1i2 = eff;
+        table.procs[caller.get()].ipc.reply = Some(msg);
+    };
+    match r {
+        GetResult::Uid { real, eff } => {
+            prefill(real as i32, eff as i32);
+            ReplyIntent::Reply(0)
+        }
+        GetResult::Gid { real, eff } => {
+            prefill(real as i32, eff as i32);
+            ReplyIntent::Reply(0)
+        }
+        GetResult::Groups { count } => ReplyIntent::Reply(count as i32),
+        GetResult::Pid { self_pid, parent } => {
+            prefill(self_pid, parent);
+            ReplyIntent::Reply(0)
+        }
+        GetResult::Pgrp(p) | GetResult::Sid(p) => ReplyIntent::Reply(p),
+        GetResult::Issetugid(t) => ReplyIntent::Reply(t as i32),
+        GetResult::Error(e) => ReplyIntent::Reply(e),
+    }
+}
 
 /// sigreturn 臂的网关适配:`handle_sigreturn` 只消费 `KernelSig::sigreturn`
 /// (C do_sigreturn 不调 sys_sigsend),sigsend 在此适配器内诚实失败。
@@ -628,15 +854,16 @@ mod tests {
     #[test]
     fn test_dispatch_unimplemented_call_is_enosys() {
         // C: call_vec[call_index]() 已注册但 handler 未实现 → ENOSYS 占位
-        //（DEFERRED，40 个：07~20 未落地者）。GetPid(4) 当前未接线。
+        //（批次 A 接线后未接线者已缩至批次 C-G:25/26/27/28/33-39 等）。
+        // SysUname(25) 归批次 G(20-misc),离当前批次最远。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
-        let mut msg = Message { m_type: 4, ..Message::default() };
+        let mut msg = Message { m_type: 25, ..Message::default() };
         msg.m_source = ep;
         assert_eq!(
             dispatch_pm_call(
-                PmCall::GetPid,
+                PmCall::SysUname,
                 &mut table,
                 &mut events,
                 &mut transport,

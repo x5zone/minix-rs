@@ -265,13 +265,14 @@ fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
 
 #[test]
 fn unwired_call_replies_enosys() {
-    // 04-ipc-dispatch.md §3.6 D6——已注册但 handler 未落地（GetPid=4
-    // 属 15-credentials.md）→ ENOSYS 占位，诚实反映接线进度。
+    // 04-ipc-dispatch.md §3.6 D6——已注册但 handler 未落地 → ENOSYS 占位，
+    // 诚实反映接线进度。批次 A(凭证族)接线后改指 SysUname=25
+    // （批次 G,20-misc-queries.md）。
     let mut srv = server();
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     srv.transport_mut()
-        .queue_receive(request(4, caller_ep), IpcStatus::default()); // PM_GETPID = 4
+        .queue_receive(request(25, caller_ep), IpcStatus::default()); // PM_SYSUNAME = 25
 
     assert_eq!(srv.run_once(), RunStep::Handled);
 

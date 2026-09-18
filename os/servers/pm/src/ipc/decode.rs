@@ -15,6 +15,8 @@ use minix_types::{
     MessLcPmExit, MessLcPmKill, MessLcPmPtrace, MessLcPmWait4, MessLsysPmProceventmask,
     MessLsysPmSrvFork, MessRsPmSrvKill, Message,
 };
+// 凭证族三 wire(MessLcPmSetid/Groups/Getsid)的 MessageUnion 无专属臂,
+// 解码按字节读前 24 域(vm.rs wrapper 的 raw 读取先例)。
 
 // 布局断言：涉及的 wire 结构必须留在 IPC 载荷内（C 侧对应
 // ipc.h 各结构后的 `_ASSERT_MSG_SIZE`）。
@@ -25,6 +27,7 @@ const _: () = assert!(size_of::<MessLcPmKill>() <= minix_types::MESSAGE_PAYLOAD_
 const _: () = assert!(size_of::<MessRsPmSrvKill>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
 const _: () = assert!(size_of::<MessLsysPmProceventmask>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
 const _: () = assert!(size_of::<MessLcPmPtrace>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
+
 
 /// srv_fork 参数 (uid, gid)。RS → PM。
 ///
@@ -97,6 +100,37 @@ pub(crate) fn ptrace(msg: &Message) -> (i32, i32, u64, i64) {
     // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路，Copy 按值读。
     let pl = unsafe { msg.m_u.m_lc_pm_ptrace };
     (pl.pid, pl.req, pl.addr, pl.data)
+}
+
+/// setuid/seteuid/setgid/setegid 族参数 (id)。user → PM。
+///
+/// C: `mess_lc_pm_setid`（minix-types `MessLcPmSetid`，ipc.h:528-533:
+/// id u32@0）。四调用共用同一 wire。
+pub(crate) fn setid(msg: &Message) -> u32 {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;raw@0 = id(u32)。
+    let raw = unsafe { msg.m_u.raw };
+    u32::from_le_bytes(raw[0..4].try_into().unwrap())
+}
+
+/// groups 参数 (num, gid 数组指针)。user → PM。
+///
+/// C: `mess_lc_pm_groups` — ipc.h:459-465（num@0/ptr@8，LP64 pad@4）。
+pub(crate) fn groups(msg: &Message) -> (i32, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;num@0(i32)、
+    // ptr@8(u64,LP64 对齐)。
+    let raw = unsafe { msg.m_u.raw };
+    let num = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let ptr = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    (num, ptr)
+}
+
+/// getsid 参数 (pid;0 = 自身)。user → PM。
+///
+/// C: `mess_lc_pm_getsid`（minix-types `MessLcPmGetsid`，pid@0）。
+pub(crate) fn getsid(msg: &Message) -> i32 {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;raw@0 = pid(i32)。
+    let raw = unsafe { msg.m_u.raw };
+    i32::from_le_bytes(raw[0..4].try_into().unwrap())
 }
 
 /// itimer 参数 (which, value 指针, ovalue 指针)。user → PM。
