@@ -242,7 +242,7 @@ mod tests {
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
     fn msg_with(m_type: i32, source: Endpoint) -> Message {
-        let mut m = Message { m_type: m_type, ..Message::default() };
+        let mut m = Message { m_type, ..Message::default() };
         m.m_source = source;
         m
     }
@@ -480,18 +480,18 @@ mod tests {
         impl IpcTransport for FailingSendrec {
             fn receive(
                 &mut self,
-            ) -> Result<(Message, crate::ipc::IpcStatus), minix_types::IpcError> {
-                Err(minix_types::IpcError::WouldBlock)
+            ) -> Result<(Message, crate::ipc::IpcStatus), crate::ipc::transport::IpcTransportError> {
+                Err(crate::ipc::transport::IpcTransportError::WouldBlock)
             }
-            fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), minix_types::IpcError> {
+            fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), crate::ipc::transport::IpcTransportError> {
                 Ok(())
             }
             fn sendrec(
                 &mut self,
                 _dest: Endpoint,
                 _msg: &mut Message,
-            ) -> Result<(), minix_types::IpcError> {
-                Err(minix_types::IpcError::NoPerm)
+            ) -> Result<(), crate::ipc::transport::IpcTransportError> {
+                Err(crate::ipc::transport::IpcTransportError::NoPerm)
             }
         }
 

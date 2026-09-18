@@ -10,7 +10,8 @@
 //! 使用方：01 的 `vfs_init_sync`（VFS_PM_INIT 同步）、04 主循环（收消息 +
 //! 分发 + 回复）、05 的 VFS 异步回复。
 
-use minix_types::{Endpoint, IpcError, Message};
+use minix_sys::ipc::IpcTransport as _;
+use minix_types::{Endpoint, Message};
 
 /// IPC 接收状态字，镜像 C `sef_receive_status` 的 `rcv_sts` 输出参数。
 ///
@@ -36,6 +37,42 @@ impl IpcStatus {
     }
 }
 
+/// IPC 传输错误——PM 本地类型,镜像 C `ipc_*` 的原始 errno 返回约定。
+///
+/// 与 `minix_types::IpcError`(四变体、无原始载荷)的区别:V3-P2-6 错误
+/// 保真规约要求内核返回的原始负 errno 可达不折叠(EIO/EINVAL 等在
+/// minix3 IPC 错误面里真实存在),本类型以 `Kernel(i32)` 保真携带;
+/// 具名变体仅保留测试 mock 与常见路径用的高频值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcTransportError {
+    /// `EAGAIN`/`EWOULDBLOCK`——非阻塞模式下无消息。
+    WouldBlock,
+    /// `EPERM`——无权限向目标发送。
+    NoPerm,
+    /// 其余内核原始负 errno 原样携带(EIO/EINVAL/EINTR/...)。
+    Kernel(i32),
+}
+
+impl IpcTransportError {
+    /// 从内核原始状态字构造(保真:高频值取具名,其余原样)。
+    pub fn from_errno(code: i32) -> Self {
+        match code {
+            minix_types::EAGAIN => Self::WouldBlock,
+            minix_types::EPERM => Self::NoPerm,
+            other => Self::Kernel(other),
+        }
+    }
+
+    /// errno 数值(调用方透传给用户态时用)。
+    pub fn errno(&self) -> i32 {
+        match self {
+            Self::WouldBlock => minix_types::EAGAIN,
+            Self::NoPerm => minix_types::EPERM,
+            Self::Kernel(code) => *code,
+        }
+    }
+}
+
 /// IPC 传输策略 trait。
 ///
 /// # 为什么用 trait（而不是自由函数）
@@ -48,29 +85,35 @@ pub trait IpcTransport {
     /// `sef_receive_status(ANY, &msg, &rcv_sts)`（main.c:61）。
     ///
     /// 阻塞直到消息到达（C 语义）；`IpcStatus` 供主循环判 notification。
-    fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError>;
+    fn receive(&mut self) -> Result<(Message, IpcStatus), IpcTransportError>;
 
     /// 发送消息。镜像 C `ipc_send(dest, &msg)`。
-    fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError>;
+    fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError>;
 
     /// 发送并等待回复（同步调用）。镜像 C `ipc_sendrec(dest, &msg)`。
     ///
     /// C 语义：回复写入同一消息缓冲（`m_type` 被回复值覆盖）。
-    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcError>;
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcTransportError>;
 }
 
 // ── 生产实现：内核 IPC ──
 
 /// 生产 IPC 传输。
 ///
-/// **状态（2026-08-16）**：内核 IPC 原语未落地（`minix-sys` stub），
-/// 本实现 `unimplemented!()` 失败，错误信息自说明——而非旧的
-/// 隐晦 `Err(())`。
-pub struct KernelIpcTransport;
+/// 委托 minix-sys 的用户态 trap 后端（`DirectTrapTransport`）：real-trap
+/// feature 下执行真实 trap 指令序列（E1 已于 2026-09-16/17 通电），
+/// 宿主构建回答 `-EIO`——失败显式可观察（返回错误，绝不 panic），经
+/// 主循环的错误路径处理，与"内核链路慢/断"不可区分。
+pub struct KernelIpcTransport {
+    /// 用户态 trap 后端。调用形态即最终形态，通电无需再改本类型。
+    inner: minix_sys::ipc::DirectTrapTransport,
+}
 
 impl KernelIpcTransport {
     pub const fn new() -> Self {
-        Self
+        Self {
+            inner: minix_sys::ipc::DirectTrapTransport,
+        }
     }
 }
 
@@ -81,19 +124,29 @@ impl Default for KernelIpcTransport {
 }
 
 impl IpcTransport for KernelIpcTransport {
-    fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError> {
-        // C: sef_receive_status(ANY, &msg, &rcv_sts) — libsys.a
-        unimplemented!("KernelIpcTransport::receive — 等待内核 IPC 核心落地（minix-sys）")
+    fn receive(&mut self) -> Result<(Message, IpcStatus), IpcTransportError> {
+        // C: ipc_receive(ANY, &msg, &rcv_sts)（libsys ipc_kern.c;
+        // SEF 分类是主循环上层的独立缝）。minix-sys 的 IpcStatus(u32)
+        // 就是本类型 flags 建模的原始状态字（NOTIFY = 低 6 位 == 4）。
+        let mut msg = Message::default();
+        match self.inner.receive(Endpoint::ANY, &mut msg) {
+            Ok(sts) => Ok((msg, IpcStatus { flags: sts.0 })),
+            Err(trap) => Err(IpcTransportError::from_errno(trap.0)),
+        }
     }
 
-    fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), IpcError> {
-        // C: ipc_send(dest, &msg) — libsys.a
-        unimplemented!("KernelIpcTransport::send — 等待内核 IPC 核心落地（minix-sys）")
+    fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError> {
+        // C: ipc_send(dest, &msg)（非阻塞发送）→ 后端 sendnb。
+        self.inner
+            .sendnb(dest, msg)
+            .map_err(|trap| IpcTransportError::from_errno(trap.0))
     }
 
-    fn sendrec(&mut self, _dest: Endpoint, _msg: &mut Message) -> Result<(), IpcError> {
-        // C: ipc_sendrec(dest, &msg) — libsys.a
-        unimplemented!("KernelIpcTransport::sendrec — 等待内核 IPC 核心落地（minix-sys）")
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcTransportError> {
+        // C: ipc_sendrec(dest, &msg)——回复写入同一消息缓冲。
+        self.inner
+            .sendrec(dest, msg)
+            .map_err(|trap| IpcTransportError::from_errno(trap.0))
     }
 }
 
@@ -173,16 +226,16 @@ impl Default for TestIpcTransport {
 }
 
 impl IpcTransport for TestIpcTransport {
-    fn receive(&mut self) -> Result<(Message, IpcStatus), IpcError> {
-        self.next_receive.take().ok_or(IpcError::WouldBlock)
+    fn receive(&mut self) -> Result<(Message, IpcStatus), IpcTransportError> {
+        self.next_receive.take().ok_or(IpcTransportError::WouldBlock)
     }
 
-    fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
+    fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError> {
         self.sent.push((dest, *msg));
         Ok(())
     }
 
-    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcError> {
+    fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcTransportError> {
         self.send(dest, msg)?;
         // C: 回复写入同一消息缓冲（main.c:246-249 检查 `mess.m_type != OK`）。
         // 有脚本 → 整条覆盖；无脚本 → 仅覆盖 m_type。
@@ -257,7 +310,7 @@ mod tests {
         assert_eq!(got.m_source, Endpoint::VFS);
         assert!(!sts.is_notify());
         // 队列一次性消费；第二次 receive 无消息（WouldBlock）。
-        assert!(matches!(t.receive(), Err(IpcError::WouldBlock)));
+        assert!(matches!(t.receive(), Err(IpcTransportError::WouldBlock)));
     }
 
     #[test]
