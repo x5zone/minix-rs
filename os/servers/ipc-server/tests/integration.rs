@@ -88,7 +88,7 @@ impl CannedHandler {
 }
 
 impl CallHandler for CannedHandler {
-    fn handle_call(&mut self, _call: IpcCall, _msg: &Message) -> i32 {
+    fn handle_call(&mut self, _call: IpcCall, _msg: &mut Message) -> i32 {
         self.calls += 1;
         self.code
     }
@@ -98,7 +98,7 @@ impl CallHandler for CannedHandler {
         proc_event_reply_type()
     }
 
-    fn handle_mib(&mut self, _msg: &Message) {}
+    fn handle_mib(&mut self, _msg: &mut Message) {}
 
     fn on_cycle_end(&mut self) {}
 }
