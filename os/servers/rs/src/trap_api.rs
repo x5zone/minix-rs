@@ -126,6 +126,11 @@ pub struct TrapKernelApi {
     ipc: minix_sys::ipc::DirectTrapTransport,
     /// 内核调用腿(`sys_*` wrapper)。
     kernel: DirectKernelCallTransport,
+    /// DS 客户端(label 解析,publish/retrieve 族)。
+    ds: minix_sys::ds::DsClient<
+        minix_sys::ipc::DirectTrapTransport,
+        DirectKernelCallTransport,
+    >,
     /// `sys_privctl(SetSys/UpdateSys)` 的稳定载荷。
     priv_wire: WirePrivUpdate,
     /// `vm_rs_set_priv` 的掩码缓冲(VM datacopy 回读 8 字节,2×u32 LE)。
@@ -133,10 +138,16 @@ pub struct TrapKernelApi {
 }
 
 impl TrapKernelApi {
-    pub const fn new() -> Self {
+    // 非 const:DsClient::new 构造 GrantTable(非 const)。
+    pub fn new() -> Self {
         Self {
             ipc: minix_sys::ipc::DirectTrapTransport,
             kernel: DirectKernelCallTransport,
+            ds: minix_sys::ds::DsClient::new(
+                minix_sys::ipc::DirectTrapTransport,
+                DirectKernelCallTransport,
+                minix_types::Endpoint::DS,
+            ),
             priv_wire: WirePrivUpdate {
                 s_id: 0,
                 s_flags: 0,
@@ -178,7 +189,7 @@ impl SysApi for TrapKernelApi {
         // 内核 getinfo_machine 拷 MachineStruct(32 字节;kernel/misc.rs:301):
         // processors_count u32@0, bsp_id u32@4。
         let mut buf = [0u8; 32];
-        syscall::sys_get_machine(&self.kernel, &mut buf).map_err(|e| Errno::from_i32(e))?;
+        syscall::sys_get_machine(&self.kernel, &mut buf).map_err(Errno::from_i32)?;
         Ok(Machine {
             processors_count: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
             bsp_id: u32::from_le_bytes(buf[4..8].try_into().unwrap()),
@@ -186,7 +197,7 @@ impl SysApi for TrapKernelApi {
     }
 
     fn get_hz(&mut self) -> Result<u32, Errno> {
-        let hz = syscall::sys_get_hz(&self.kernel).map_err(|e| Errno::from_i32(e))?;
+        let hz = syscall::sys_get_hz(&self.kernel).map_err(Errno::from_i32)?;
         Ok(hz as u32)
     }
 
@@ -194,7 +205,7 @@ impl SysApi for TrapKernelApi {
         // SYS_TIMES 即载体(E9;C getticks 的内核请求)——SELF 由内核替换
         // 为调用者。RS 只消费 boot_ticks( syscall.rs:1798 注)。
         let times = syscall::sys_times(&self.kernel, Endpoint::SELF.0)
-            .map_err(|e| Errno::from_i32(e))?;
+            .map_err(Errno::from_i32)?;
         Ok(times.boot_ticks as Clock)
     }
 
@@ -215,7 +226,7 @@ impl SysApi for TrapKernelApi {
             _ => 0,
         };
         syscall::sys_privctl(&self.kernel, proc.0, op as i32, arg_ptr)
-            .map_err(|e| Errno::from_i32(e))
+            .map_err(Errno::from_i32)
     }
 
     fn getpriv(&mut self, proc: Endpoint) -> Result<Privilege, Errno> {
@@ -223,7 +234,7 @@ impl SysApi for TrapKernelApi {
         // init_flags/bak_sig_mgr/io/irq/mem——增量回读是既定分工(见
         // WirePrivUpdate 注)。
         let mut buf = [0u8; 56];
-        syscall::sys_get_priv(&self.kernel, proc.0, &mut buf).map_err(|e| Errno::from_i32(e))?;
+        syscall::sys_get_priv(&self.kernel, proc.0, &mut buf).map_err(Errno::from_i32)?;
         let rd32 = |off: usize| u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
         let rd64 = |off: usize| u64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
         let k_mask = [rd32(48), rd32(52)];
@@ -244,7 +255,7 @@ impl SysApi for TrapKernelApi {
         // C main.c:433 不查旧闹钟——忽略返回的 (time_left, uptime)。
         syscall::sys_setalarm(&self.kernel, delay_ticks as u64, false)
             .map(|_| ())
-            .map_err(|e| Errno::from_i32(e))
+            .map_err(Errno::from_i32)
     }
 
     fn sys_kill(&mut self, proc: Endpoint, signo: i32) -> Result<(), Errno> {
@@ -258,15 +269,15 @@ impl SysApi for TrapKernelApi {
         flags: crate::service_slot::SysFlags,
     ) -> Result<(), Errno> {
         syscall::sys_update(&self.kernel, src.0, dst.0, flags.bits() as i32)
-            .map_err(|e| Errno::from_i32(e))
+            .map_err(Errno::from_i32)
     }
 
     fn diagctl_stacktrace(&mut self, target: Endpoint) -> Result<(), Errno> {
-        syscall::sys_diagctl_stacktrace(&self.kernel, target.0).map_err(|e| Errno::from_i32(e))
+        syscall::sys_diagctl_stacktrace(&self.kernel, target.0).map_err(Errno::from_i32)
     }
 
     fn diag_write(&mut self, text: &str) -> Result<(), Errno> {
-        syscall::sys_diagctl_write(&self.kernel, text).map_err(|e| Errno::from_i32(e))
+        syscall::sys_diagctl_write(&self.kernel, text).map_err(Errno::from_i32)
     }
 }
 
@@ -282,7 +293,7 @@ impl SchedApi for TrapKernelApi {
                 cfg.quantum,
                 cfg.cpu,
             )
-            .map_err(|e| Errno::from_i32(e))?;
+            .map_err(Errno::from_i32)?;
         } else {
             sys_pm::sched_start_via(
                 &self.ipc,
@@ -442,7 +453,7 @@ impl IpcApi for TrapKernelApi {
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
         )
-        .map_err(|e| Errno::from_i32(e))
+        .map_err(Errno::from_i32)
     }
 
     fn safecopy_to(&mut self, dest: Endpoint, addr: usize, buf: &[u8]) -> Result<(), Errno> {
@@ -454,6 +465,10 @@ impl IpcApi for TrapKernelApi {
             addr as u64,
             buf.len() as u64,
         )
-        .map_err(|e| Errno::from_i32(e))
+        .map_err(Errno::from_i32)
+    }
+
+    fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint> {
+        self.ds.retrieve_label_endpt(label).ok().map(|(ep, _)| ep)
     }
 }

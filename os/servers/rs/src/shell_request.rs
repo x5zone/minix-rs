@@ -765,15 +765,22 @@ impl RsServer {
         // State data (request.c:788-836) — the `init_state_data`
         // composition (manager.c:172-285, 17 号): spec validation, the eval
         // bytes and the filter blocks through the fetch seam, labels
-        // resolved through the DS seam (19: noop here). The three
-        // cpf_grant_direct calls (request.c:798-835) are the 19 grant face
-        // (E-11) — the gid fields stay `None` until it lands. Failure
-        // cleans the new instance (C: rupdate_upd_clear,
-        // request.c:788-796/:830-835).
+        // resolved through the DS seam (19: `ds_retrieve_label_endpt` via
+        // the boundary's DS client). The three cpf_grant_direct calls
+        // (request.c:798-835) are the 19 grant face (E-11) — the gid
+        // fields stay `None` until that lands. Failure cleans the new
+        // instance (C: rupdate_upd_clear, request.c:788-796/:830-835).
+        //
+        // Two closures share one kernel leg: the `RefCell` serializes the
+        // borrows (single-threaded loop; `init_state_data` calls them
+        // sequentially).
+        let kernel_cell = core::cell::RefCell::new(&mut *self.kernel.as_mut());
         let mut fetch = |a: usize, buf: &mut [u8]| -> Result<(), Errno> {
-            self.kernel.safecopy_from(m.m_source, a, buf)
+            kernel_cell.borrow_mut().safecopy_from(m.m_source, a, buf)
         };
-        let ds_lookup = |_label: &str| -> Option<Endpoint> { None };
+        let ds_lookup = |label: &str| -> Option<Endpoint> {
+            kernel_cell.borrow_mut().ds_lookup_by_label(label)
+        };
         let state_out = crate::state_data::init_state_data(
             prepare_state,
             &rs_start.state_data,
@@ -1128,12 +1135,10 @@ impl RsServer {
         Ok(0)
     }
 
-    /// C: `do_getsysinfo` — request.c:1095-1142. The permission gate and
-    /// the `SI_*` classification run live; the copy-out half is gated on
-    /// the rproctab byte ABI (edge E-RSWIRE: `sizeof(struct rproc)` cannot
-    /// be pinned from this source tree, and the size gates
-    /// `len > size`/`len != size` — request.c:1120-1121/:1135-1136 — need
-    /// it), so it stays fail-closed until that landing.
+    /// C: `do_getsysinfo` — request.c:1095-1142. The permission gate, the
+    /// `SI_*` classification, and the full copy-out half (all three tables,
+    /// with the rproc/rprocpub byte layouts pinned in `minix_types`
+    /// `rproc_off`/`rprocpub_off`) run live.
     pub(crate) fn do_getsysinfo(&mut self, m: &minix_types::Message) -> Result<i32, Errno> {
         let state = self.state.as_mut().ok_or(Errno::ENOSYS)?;
         // C: request.c:1099-1101 — caller-only permission (no target slot).

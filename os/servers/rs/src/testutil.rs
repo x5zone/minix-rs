@@ -487,6 +487,10 @@ impl IpcApi for MockKernelApi {
         self.sent_copies.push((dest, addr, buf.to_vec()));
         Ok(())
     }
+
+    fn ds_lookup_by_label(&mut self, _label: &str) -> Option<Endpoint> {
+        None
+    }
 }
 
 // ── Shared boot fixtures（R40：夹具族上移，shell 域测试随 handler 同模块）──────

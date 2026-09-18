@@ -275,6 +275,15 @@ pub trait IpcApi {
     /// (do_getsysinfo's table copy-out) and request.c:862 (grant-backed
     /// state data). Production impl: `crate::trap_api::TrapKernelApi`.
     fn safecopy_to(&mut self, dest: Endpoint, addr: usize, buf: &[u8]) -> Result<(), Errno>;
+
+    /// Resolves a service label to its endpoint through the Data Store.
+    ///
+    /// C: `ds_retrieve_label_endpt` — the state-data eval/filter labels
+    /// (request.c:802, manager.c:265) and the recovery label lookups. The
+    /// store is reached by the DS taskcall leg (19 号 DS 缝);`None` when
+    /// the label is unknown. Production impl: `DsClient` in
+    /// `crate::trap_api`.
+    fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint>;
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -464,6 +473,9 @@ impl IpcApi for UnimplementedKernelApi {
     }
     fn safecopy_to(&mut self, _dest: Endpoint, _addr: usize, _buf: &[u8]) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
+    }
+    fn ds_lookup_by_label(&mut self, _label: &str) -> Option<Endpoint> {
+        None
     }
 }
 
