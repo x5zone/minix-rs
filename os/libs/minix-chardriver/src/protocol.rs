@@ -13,15 +13,14 @@ use minix_types::{EBADF, EDONTREPLY, EINVAL, EIO, ENOTTY, ENXIO, ERESTART, OK};
 /// C: `CDEV_RQ_BASE 0x400` (`com.h:919`). A message whose type, masked with
 /// "not low seven bits", equals this base is a character request; see
 /// [`is_char_request`].
-pub const CDEV_REQUEST_BASE: i32 = 0x400;
-
-/// Base of the character reply range.
 ///
-/// C: `CDEV_RS_BASE 0x480` (`com.h:920`). Replies live in a separate range
-/// so a reply can never be mistaken for a new request; `0x500` belongs to
-/// the *block* request range (`BDEV_RQ_BASE`, `com.h:963`), so a reply
-/// built on that base would decode as a block request on the wire.
-pub const CDEV_REPLY_BASE: i32 = 0x480;
+/// [ARCH: 字符框架判定核单点] 常量权威住 `minix-types::types::device`
+/// （com.h 逐值钉值测试随库），本模块再导出保持既有名字。
+pub use minix_types::{
+    CDEV_REQUEST_BASE, CDEV_REPLY_BASE, CDEV_NONBLOCK, CDEV_CLONED, CDEV_CTTY, SELECT_READ,
+    SELECT_WRITE, SELECT_ERROR, SELECT_NOTIFY, ACCESS_READ, ACCESS_WRITE,
+    ACCESS_NO_CONTROLLING_TERMINAL, TRANSFER_NO_FLAGS, TRANSFER_NON_BLOCKING,
+};
 
 /// Maximum number of minor devices remembered as opened.
 ///
@@ -29,48 +28,6 @@ pub const CDEV_REPLY_BASE: i32 = 0x480;
 /// minor device number that has been opened so a restarted driver can reject
 /// stale requests for devices nobody opened since the restart.
 pub const MAX_OPEN_DEVICES: usize = 256;
-
-/// Flag: do not suspend the input or output request.
-///
-/// C: `CDEV_NONBLOCK 0x01` (`com.h:946`). When set, the driver must answer
-/// immediately instead of parking the request for a later reply.
-pub const CDEV_NONBLOCK: i32 = 0x01;
-
-/// Flag bit in an open result: the device number was cloned.
-///
-/// C: `CDEV_CLONED 0x20000000` (`com.h:955`). When the open callback returns
-/// a non-negative value with this bit set, the remaining bits carry the new
-/// minor device number, which the framework records as opened as well.
-pub const CDEV_CLONED: i32 = 0x2000_0000;
-
-/// Flag bit in an open result: the device is the controlling terminal.
-///
-/// C: `CDEV_CTTY 0x40000000` (`com.h:956`). Masked off together with
-/// [`CDEV_CLONED`] when extracting the cloned minor number.
-pub const CDEV_CTTY: i32 = 0x4000_0000;
-
-/// Select readiness: readable (`SELECT_READ`, `com.h:940` region of the
-/// select-flag family, `com.h:939-957`).
-pub const SELECT_READ: i32 = 0x01;
-/// Select readiness: writable (`SELECT_WRITE`).
-pub const SELECT_WRITE: i32 = 0x02;
-/// Select readiness: error pending (`SELECT_ERROR`).
-pub const SELECT_ERROR: i32 = 0x04;
-/// Deliver a select-2 notification on readiness (`SELECT_NOTIFY`).
-pub const SELECT_NOTIFY: i32 = 0x08;
-
-/// Open access: read intent (`ACCESS_READ`, `com.h:939-941` family).
-pub const ACCESS_READ: i32 = 0x01;
-/// Open access: write intent (`ACCESS_WRITE`).
-pub const ACCESS_WRITE: i32 = 0x02;
-/// Open access: skip controlling-terminal adoption
-/// (`ACCESS_NO_CONTROLLING_TERMINAL`).
-pub const ACCESS_NO_CONTROLLING_TERMINAL: i32 = 0x04;
-
-/// Transfer flags: blocking (`TRANSFER_NO_FLAGS`).
-pub const TRANSFER_NO_FLAGS: i32 = 0x00;
-/// Transfer flags: non-blocking (`TRANSFER_NON_BLOCKING`).
-pub const TRANSFER_NON_BLOCKING: i32 = 0x01;
 
 /// Re-exported outcome codes so callers match on one vocabulary.
 pub use minix_types::{EDONTREPLY as NO_REPLY, ERESTART as RESTARTED};

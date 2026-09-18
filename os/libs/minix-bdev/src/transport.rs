@@ -43,8 +43,9 @@ pub struct Reply {
 /// C: `BDEV_REPLY (BDEV_RS_BASE + 0)` with `BDEV_RS_BASE 0x580`
 /// (`com.h:964,979`). Every reply entering the client passes through
 /// [`check_reply`]-style validation, which rejects anything else before the
-/// identifier is even looked at.
-pub const BDEV_REPLY: i32 = 0x580;
+/// identifier is even looked at. Single authority:
+/// `minix_types::types::device` (edge E-DEVWIRE).
+pub use minix_types::BDEV_REPLY;
 
 /// Transport error: the message never reached the driver or no usable reply
 /// came back. Distinct from a reply that arrived carrying an error status.

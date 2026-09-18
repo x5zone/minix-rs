@@ -18,20 +18,11 @@
 //! (`asynsend3`), waiting (`worker_wait`/`suspend`), and revival stay with
 //! the kernel side and 08/09; PFS node creation stays with 12.
 
-/// `CDEV_R_BIT/W_BIT` (`minix3/minix/include/minix/com.h:940-941`).
-pub const CDEV_R_BIT: u8 = 0x01;
-/// See [`CDEV_R_BIT`].
-pub const CDEV_W_BIT: u8 = 0x02;
-/// `CDEV_NOCTTY` (`com.h:942`): not to become the controlling TTY.
-pub const CDEV_NOCTTY: u8 = 0x04;
-
-/// `CDEV_NONBLOCK` (`com.h:946`): do not suspend the I/O request.
-pub const CDEV_NONBLOCK: u8 = 0x01;
-
-/// `CDEV_CLONED` (`com.h:955`): reply carries a fresh minor number.
-pub const CDEV_CLONED: i32 = 0x2000_0000;
-/// `CDEV_CTTY` (`com.h:956`): reply grants the controlling TTY.
-pub const CDEV_CTTY: i32 = 0x4000_0000;
+// CDEV 线上常量（R_BIT/W_BIT/NOCTTY/NONBLOCK/CLONED/CTTY）单一权威住
+// `minix_types::types::device`（edge E-DEVWIRE），经下方 use 消费。
+pub use minix_types::{
+    CDEV_CLONED, CDEV_CTTY, CDEV_NOCTTY, CDEV_NONBLOCK, CDEV_R_BIT, CDEV_W_BIT,
+};
 
 /// Controlling-terminal source: whoever holds `fp_tty`.
 ///
@@ -143,17 +134,19 @@ pub fn resolve_gate(
     })
 }
 
-/// Combine open access bits (`cdev_opcl:199-202`).
+/// Combine open access bits (`cdev_opcl:199-202`). The mask rides one
+/// byte of the request payload, so the shared i32 bits narrow on the way
+/// in.
 pub fn access_bits(read: bool, write: bool, noctty: bool) -> u8 {
-    let mut acc = 0;
+    let mut acc = 0u8;
     if read {
-        acc |= CDEV_R_BIT;
+        acc |= CDEV_R_BIT as u8;
     }
     if write {
-        acc |= CDEV_W_BIT;
+        acc |= CDEV_W_BIT as u8;
     }
     if noctty {
-        acc |= CDEV_NOCTTY;
+        acc |= CDEV_NOCTTY as u8;
     }
     acc
 }
@@ -366,11 +359,11 @@ mod tests {
     #[test]
     fn test_access_bits_combination() {
         // Bitwise combination (`cdev_opcl:199-202`).
-        assert_eq!(access_bits(true, false, false), CDEV_R_BIT);
-        assert_eq!(access_bits(false, true, false), CDEV_W_BIT);
+        assert_eq!(access_bits(true, false, false), CDEV_R_BIT as u8);
+        assert_eq!(access_bits(false, true, false), CDEV_W_BIT as u8);
         assert_eq!(
             access_bits(true, true, true),
-            CDEV_R_BIT | CDEV_W_BIT | CDEV_NOCTTY
+            (CDEV_R_BIT | CDEV_W_BIT | CDEV_NOCTTY) as u8
         );
         assert_eq!(access_bits(false, false, false), 0);
         // NOCTTY forcing truth table (`cdev_opcl:185-191`).

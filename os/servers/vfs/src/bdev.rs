@@ -12,20 +12,12 @@
 //! - reopen/notify/root predicates type the driver-swap sweeps
 //! - the ioctl guard duty reuses 19's `BLOCK_NEEDS_GUARD` (not redefined)
 
-/// `BDEV_RQ_BASE` (`minix3/minix/include/minix/com.h:963` = 0x500).
-pub const BDEV_RQ_BASE: u64 = 0x500;
-
-/// `BDEV_OPEN/CLOSE/IOCTL` offsets (`com.h:970-971,976` = +0/+1/+6).
-pub const BDEV_OPEN_OFF: u64 = 0;
-/// See [`BDEV_OPEN_OFF`].
-pub const BDEV_CLOSE_OFF: u64 = 1;
-/// See [`BDEV_OPEN_OFF`].
-pub const BDEV_IOCTL_OFF: u64 = 6;
-
-/// `BDEV_R_BIT/W_BIT` (`com.h:982-983`): open access bits.
-pub const BDEV_R_BIT: u8 = 0x01;
-/// See [`BDEV_R_BIT`].
-pub const BDEV_W_BIT: u8 = 0x02;
+// BDEV 线上常量（RQ_BASE/OFF 三档/R_BIT/W_BIT）单一权威住
+// `minix_types::types::device`（edge E-DEVWIRE），经下方 use 消费；
+// u64 算术处由使用点自行拓宽。
+pub use minix_types::{
+    BDEV_CLOSE_OFF, BDEV_IOCTL_OFF, BDEV_OPEN_OFF, BDEV_R_BIT, BDEV_RQ_BASE, BDEV_W_BIT,
+};
 
 /// Kernel send statuses used as classifier inputs (never surfaced):
 /// `EDEADSRCDST` = 202 (`errno.h:198`, cf. `os/kernel/src/errno.rs:236`),
@@ -55,12 +47,12 @@ pub enum BdevOp {
 impl BdevOp {
     /// Wire message type for this operation.
     pub fn msg_type(self) -> u64 {
-        BDEV_RQ_BASE
+        BDEV_RQ_BASE as u64
             + match self {
                 Self::Open => BDEV_OPEN_OFF,
                 Self::Close => BDEV_CLOSE_OFF,
                 Self::Ioctl => BDEV_IOCTL_OFF,
-            }
+            } as u64
     }
 }
 
@@ -227,10 +219,10 @@ pub fn resolve_driver(major_valid: bool, driver: Option<i32>) -> Result<i32, Bde
 pub fn access_bits(read: bool, write: bool) -> u8 {
     let mut access = 0;
     if read {
-        access |= BDEV_R_BIT;
+        access |= BDEV_R_BIT as u8;
     }
     if write {
-        access |= BDEV_W_BIT;
+        access |= BDEV_W_BIT as u8;
     }
     access
 }
@@ -338,9 +330,9 @@ mod tests {
         assert_eq!(BdevOp::Close.msg_type(), 0x501);
         assert_eq!(BdevOp::Ioctl.msg_type(), 0x506);
         // Access combination (`bdev_open:91-93`).
-        assert_eq!(access_bits(true, false), BDEV_R_BIT);
-        assert_eq!(access_bits(false, true), BDEV_W_BIT);
-        assert_eq!(access_bits(true, true), BDEV_R_BIT | BDEV_W_BIT);
+        assert_eq!(access_bits(true, false), BDEV_R_BIT as u8);
+        assert_eq!(access_bits(false, true), BDEV_W_BIT as u8);
+        assert_eq!(access_bits(true, true), (BDEV_R_BIT | BDEV_W_BIT) as u8);
         assert_eq!(access_bits(false, false), 0);
     }
 
