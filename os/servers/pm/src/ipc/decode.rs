@@ -304,6 +304,22 @@ pub(crate) fn sigset(msg: &Message) -> (i32, u64, u64) {
     (pl.how, pl.ctx, set)
 }
 
+/// getrusage 参数 (who, addr)。user → PM。
+///
+/// C: `mess_lc_pm_rusage` — ipc.h:510-515（who@endpoint_t@0/addr@8，
+/// raw 字节读，无专属 union 臂）；`who` 取 `RUSAGE_SELF(0)/
+/// RUSAGE_CHILDREN(-1)`（sys/resource.h:54-55），`addr` 是用户态
+/// `struct rusage*` 的 VirBytes 视图（do_getrusage 最终
+/// sys_datacopy 的目的地，misc.c:446-447）。
+pub(crate) fn rusage(msg: &Message) -> (i32, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;who@0/addr@8,
+    // 按字节读取无类型重解释。
+    let raw = unsafe { msg.m_u.raw };
+    let who = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let addr = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    (who, addr)
+}
+
 pub(crate) fn itimer(msg: &Message) -> (i32, u64, u64) {
     // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路；raw 臂按字节
     // 读取，无类型重解释，域序与 `MessLcPmItimer` 的 repr(C) 排布一致。
@@ -337,6 +353,21 @@ mod tests {
     fn exit_decodes_status() {
         let m = msg_with(|m| m.m_u.m_lc_pm_exit.status = 7);
         assert_eq!(exit(&m), 7);
+    }
+
+    #[test]
+    fn rusage_decodes_who_and_addr_roundtrip() {
+        // ipc.h:510-515 布局见证:who@endpoint_t@0(-1 = RUSAGE_CHILDREN
+        // 走负数通路),addr@8。写入端按同域序组包,读回一致。
+        for who in [0i32, -1i32, 7i32] {
+            let m = msg_with(|m| {
+                // SAFETY: 测试构造——按解码域序写 raw 字节。
+                let raw = unsafe { &mut m.m_u.raw };
+                raw[0..4].copy_from_slice(&who.to_le_bytes());
+                raw[8..16].copy_from_slice(&0x2000u64.to_le_bytes());
+            });
+            assert_eq!(rusage(&m), (who, 0x2000));
+        }
     }
 
     #[test]

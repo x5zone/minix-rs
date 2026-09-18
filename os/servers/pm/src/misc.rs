@@ -251,16 +251,94 @@ pub trait RebootCtl {
     fn tell_reboot(&mut self) -> i32;
 }
 
+/// VM 侧补充的资源用量三元组（`vm_getrusage` 的产出,`utility.c:446-450`）。
+///
+/// C 里 VM 把这三个值写进 `struct rusage` 的 `ru_maxrss`（KB 单位,
+/// `vm_total_max/1024`）、`ru_minflt`、`ru_majflt` 槽位（其余 11 个
+/// long 域从未被任何一方写入,恒为零——`misc.c:423` memset + VM 只
+/// 改这三处）。Rust 重写把"datacopy 往返"换成消息按值通道:
+/// VM_GETRUSAGE 应答直接携带三值,PM 侧组装完整结构拷出,最终字节面
+/// 与 C 完全一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmUsage {
+    /// 峰值驻留集（KB）。C: `r_usage.ru_maxrss = vmp->vm_total_max/1024L`。
+    pub max_rss_kb: u64,
+    /// 次缺页（页重认领）。C: `r_usage.ru_minflt`。
+    pub minor_faults: u64,
+    /// 主缺页。C: `r_usage.ru_majflt`。
+    pub major_faults: u64,
+}
+
 /// `TimesVmCtl` (`misc.c:429/441`, D6).
 pub trait TimesVmCtl {
     fn sys_times(&mut self, ep: Endpoint) -> Result<(Clock, Clock), MiscError>;
-    fn vm_rusage(&mut self, ep: Endpoint, who: RusageWho) -> Result<(), MiscError>;
+    fn vm_rusage(&mut self, ep: Endpoint, who: RusageWho) -> Result<VmUsage, MiscError>;
 }
 
 /// `McontextCtl` (`mcontext.c:15/25`, D8).
 pub trait McontextCtl {
     fn get(&self, ep: Endpoint, ctx: VirBytes) -> i32;
     fn set(&self, ep: Endpoint, ctx: VirBytes) -> i32;
+}
+
+/// `TimesVmCtl` 生产实现(S4 收尾)。CPU 计时直连内核 SYS_TIMES
+/// (同 [`SysMcontextCtl`] 先例;hosted 构建诚实回 -EIO,通电挂 edge
+/// E1),内存面三值走 VM_GETRUSAGE taskcall(vm_fork 的 sendrec 纪律,
+/// dispatcher.rs:137-156)。
+pub struct SysTimesVmCtl<'a, T: crate::ipc::IpcTransport + ?Sized> {
+    /// VM 腿的传输(C `vm_getrusage` 的 `_taskcall(VM_PROC_NR, ...)`,
+    /// libsys vm_getrusage.c:7-17)。
+    pub transport: &'a mut T,
+}
+
+impl<T: crate::ipc::IpcTransport + ?Sized> TimesVmCtl for SysTimesVmCtl<'_, T> {
+    fn sys_times(&mut self, ep: Endpoint) -> Result<(Clock, Clock), MiscError> {
+        // C sys_times(who_e, &utime, &stime, NULL, NULL)（misc.c:429-431;
+        // libsys sys_times.c:8-24)。失败原 errno 上抛(V3-P2-6)。
+        let times = minix_sys::syscall::sys_times(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            ep.0,
+        )
+        .map_err(MiscError::Kernel)?;
+        Ok((times.user_time as Clock, times.system_time as Clock))
+    }
+
+    fn vm_rusage(&mut self, ep: Endpoint, who: RusageWho) -> Result<VmUsage, MiscError> {
+        // 请求编码:C `m_lsys_vm_rusage {endpt, addr, children}`
+        // (ipc.h:1513-1520)。C 的 addr 是 PM 栈上 r_usage 的地址,
+        // 供 VM datacopy 往返;Rust 值按消息携带,addr 恒零。
+        let children = matches!(who, RusageWho::Children);
+        let mut msg = minix_types::Message {
+            m_type: minix_types::VM_GETRUSAGE as i32,
+            ..Default::default()
+        };
+        {
+            // SAFETY: m_lsys_vm_rusage 是 VM_GETRUSAGE 的文档化载荷
+            // 布局(VM 侧 call_getrusage 按 endpt@0/addr@8/children@16
+            // 解码,dispatcher.rs:912-920)。
+            let req = unsafe { &mut msg.m_u.m_lsys_vm_rusage };
+            req.endpt = ep.0;
+            req.addr = 0;
+            req.children = children as i32;
+        }
+        self.transport
+            .sendrec(minix_types::Endpoint::VM, &mut msg)
+            .map_err(|_| MiscError::Kernel(minix_types::EIO))?;
+        // C: taskcall 返回值即结果(vm_getrusage.c:17);VM 的错误
+        // 应答 m_type 为正 errno。
+        if msg.m_type != minix_types::OK {
+            return Err(MiscError::Kernel(msg.m_type));
+        }
+        // 回复解码:VM 编码 m1p1=max_rss_kb/m1i1=minor/m1i2=major
+        // (encode.rs:258-268,缺页计数按 i32 饱和)。
+        // SAFETY: 应答臂 m_m1 由 VM 按同一布局覆写。
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        Ok(VmUsage {
+            max_rss_kb: m1.m1p1,
+            minor_faults: u64::from(m1.m1i1.max(0) as u32),
+            major_faults: u64::from(m1.m1i2.max(0) as u32),
+        })
+    }
 }
 
 /// `SprofCtl` (`profile.c:31-33`, D7).
@@ -594,15 +672,25 @@ pub fn set_rusage_times(ru_utime_sec: &mut i64, ru_utime_usec: &mut i64, ru_stim
     *ru_stime_usec = su;
 }
 
-/// `do_getrusage` (`misc.c:400-447`, D6).
-    #[allow(clippy::too_many_arguments)] // C 的 getrusage 消息布局要求 8 参数直传（misc.c:201-210）
+/// `struct rusage` 的 LP64 字节长——2 个 timeval（`ru_utime/ru_stime`,
+/// 各 `sec+usec` 两个 i64）+ 14 个 long（`sys/resource.h:57-76`,
+/// `ru_maxrss..ru_nivcsw`）。
+const RUSAGE_LEN: usize = 128;
+
+/// `do_getrusage` (`misc.c:400-447`, D6)。
+///
+/// 拷出目标 `addr` 是用户态 `struct rusage*`（C `sys_datacopy` 的
+/// 目的地,misc.c:446-447）;组装顺序与 C 的三段一致——PM 填
+/// `ru_utime/ru_stime`（`set_rusage_times` 对应物）、VM 补
+/// `ru_maxrss/minflt/majflt`、其余 11 域恒零,最后一次性拷给用户。
 pub fn do_getrusage(
     table: &ProcTable,
     caller: minix_types::UserSlot,
     who: RusageWho,
+    addr: VirBytes,
     hz: Clock,
     ctl: &mut dyn TimesVmCtl,
-    _cpy: &mut dyn CopyToUser,
+    cpy: &mut dyn CopyToUser,
 ) -> Result<UtimeStimePair, MiscError> {
     let ep = table.procs[caller.get()].endpoint();
     let (utime, stime) = match who {
@@ -618,8 +706,21 @@ pub fn do_getrusage(
     let (u_sec, u_usec) = rusage_from_ticks(utime, hz);
     let (s_sec, s_usec) = rusage_from_ticks(stime, hz);
     // C misc.c:441-442 透传 vm_getrusage 返回值（V3-P2-6）。
-    ctl.vm_rusage(ep, who)?;
-    // C would sys_datacopy rusage; we return the decomposed times for testability
+    let vm = ctl.vm_rusage(ep, who)?;
+    // 组装 `struct rusage`（sys/resource.h:57-76 的 LP64 布局）:
+    // ru_utime@0/ru_stime@16/ru_maxrss@32/ru_minflt@64/ru_majflt@72,
+    // 其余 11 个 long 域 C 侧从未写入（memset 归零后 VM 只改这三处,
+    // misc.c:423 + utility.c:446-450）,保持零。
+    let mut buf = [0u8; RUSAGE_LEN];
+    buf[0..8].copy_from_slice(&u_sec.to_le_bytes());
+    buf[8..16].copy_from_slice(&u_usec.to_le_bytes());
+    buf[16..24].copy_from_slice(&s_sec.to_le_bytes());
+    buf[24..32].copy_from_slice(&s_usec.to_le_bytes());
+    buf[32..40].copy_from_slice(&(vm.max_rss_kb as i64).to_le_bytes());
+    buf[64..72].copy_from_slice(&(vm.minor_faults as i64).to_le_bytes());
+    buf[72..80].copy_from_slice(&(vm.major_faults as i64).to_le_bytes());
+    cpy.copy_to_user(&buf, addr)?;
+    // 返回分解值供测试观测;C 的返回值是 sys_datacopy 结果(成功即 OK)。
     Ok(((u_sec, u_usec), (s_sec, s_usec)))
 }
 
@@ -728,12 +829,16 @@ mod tests {
     struct TestTimesVm { hz: Clock }
     impl TimesVmCtl for TestTimesVm {
         fn sys_times(&mut self, _ep: Endpoint) -> Result<(Clock, Clock), MiscError> { Ok((120, 60)) }
-        fn vm_rusage(&mut self, _ep: Endpoint, _who: RusageWho) -> Result<(), MiscError> { Ok(()) }
+        fn vm_rusage(&mut self, _ep: Endpoint, _who: RusageWho) -> Result<VmUsage, MiscError> {
+            Ok(VmUsage { max_rss_kb: 4096, minor_faults: 33, major_faults: 4 })
+        }
     }
     struct AltTimesVm;
     impl TimesVmCtl for AltTimesVm {
         fn sys_times(&mut self, _ep: Endpoint) -> Result<(Clock, Clock), MiscError> { Ok((0,0)) }
-        fn vm_rusage(&mut self, _ep: Endpoint, _who: RusageWho) -> Result<(), MiscError> { Ok(()) }
+        fn vm_rusage(&mut self, _ep: Endpoint, _who: RusageWho) -> Result<VmUsage, MiscError> {
+            Ok(VmUsage { max_rss_kb: 0, minor_faults: 0, major_faults: 0 })
+        }
     }
     struct TestMctx { ret: i32 }
     impl McontextCtl for TestMctx {
@@ -922,16 +1027,91 @@ mod tests {
         assert!(find_param(&mon, "nope").is_none());
     }
 
+    /// 捕获拷出目的地与字节的 CopyToUser(`do_getrusage` 布局见证)。
+    struct CapCopy { dst: VirBytes, buf: alloc::vec::Vec<u8>, fail: bool }
+    impl CopyToUser for CapCopy {
+        fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError> {
+            if self.fail {
+                return Err(MiscError::Fault);
+            }
+            self.dst = dst;
+            self.buf = src.to_vec();
+            Ok(())
+        }
+        fn copy_from_user(&mut self, _src: VirBytes, _dst: &mut [u8]) -> Result<(), MiscError> { Ok(()) }
+    }
+
     #[test]
     fn test_getrusage_self_children() {
         let mut table = ProcTable::new();
         mk_running(&mut table, 0, 0);
         let mut ctl = TestTimesVm { hz: 100 };
-        let mut cpy = NopCopy;
-        let ((u_sec, _), (_s_sec, _)) = do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, 100, &mut ctl, &mut cpy).unwrap();
+        let mut cpy = CapCopy { dst: VirBytes(0), buf: alloc::vec::Vec::new(), fail: false };
+        let ((u_sec, _), (_s_sec, _)) = do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, VirBytes(0x3000), 100, &mut ctl, &mut cpy).unwrap();
         assert_eq!(u_sec, 1); // 120/100
-        let ((u2, _), _) = do_getrusage(&table, UserSlot::new(0), RusageWho::Children, 100, &mut ctl, &mut cpy).unwrap();
+        assert_eq!(cpy.dst, VirBytes(0x3000));
+        let ((u2, _), _) = do_getrusage(&table, UserSlot::new(0), RusageWho::Children, VirBytes(0x3000), 100, &mut ctl, &mut cpy).unwrap();
         assert_eq!(u2, 2); // child_utime 200/100
+    }
+
+    #[test]
+    fn test_getrusage_struct_byte_layout() {
+        // sys/resource.h:57-76 的 LP64 布局见证:utime@0/stime@16/
+        // maxrss@32/minflt@64/majflt@72;其余 11 个 long 域 C 侧从未
+        // 写入(misc.c:423 memset + utility.c:446-450 只改三处),恒零。
+        let mut table = ProcTable::new();
+        mk_running(&mut table, 0, 0);
+        let mut ctl = TestTimesVm { hz: 100 };
+        let mut cpy = CapCopy { dst: VirBytes(0), buf: alloc::vec::Vec::new(), fail: false };
+        let ((u_sec, u_usec), (s_sec, s_usec)) =
+            do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, VirBytes(0x3000), 100, &mut ctl, &mut cpy).unwrap();
+        assert_eq!((u_sec, u_usec, s_sec, s_usec), (1, 200_000, 0, 600_000));
+        assert_eq!(cpy.buf.len(), 128);
+        let i64_at = |off: usize| i64::from_le_bytes(cpy.buf[off..off + 8].try_into().unwrap());
+        assert_eq!(i64_at(0), 1); // ru_utime.tv_sec
+        assert_eq!(i64_at(8), 200_000); // ru_utime.tv_usec
+        assert_eq!(i64_at(16), 0); // ru_stime.tv_sec
+        assert_eq!(i64_at(24), 600_000); // ru_stime.tv_usec
+        assert_eq!(i64_at(32), 4096); // ru_maxrss(VM,KB)
+        assert_eq!(i64_at(64), 33); // ru_minflt(VM)
+        assert_eq!(i64_at(72), 4); // ru_majflt(VM)
+        for off in (40..64).step_by(8).chain((80..128).step_by(8)) {
+            assert_eq!(i64_at(off), 0, "field at {off} must stay zero");
+        }
+    }
+
+    #[test]
+    fn test_getrusage_vm_error_propagates_without_copyout() {
+        // C misc.c:441-442:vm_getrusage 非 OK 原样返回,数据不落用户缓冲。
+        struct VmFail;
+        impl TimesVmCtl for VmFail {
+            fn sys_times(&mut self, _ep: Endpoint) -> Result<(Clock, Clock), MiscError> { Ok((0, 0)) }
+            fn vm_rusage(&mut self, _ep: Endpoint, _who: RusageWho) -> Result<VmUsage, MiscError> {
+                Err(MiscError::Kernel(-3)) // ESRCH
+            }
+        }
+        let mut table = ProcTable::new();
+        mk_running(&mut table, 0, 0);
+        let mut ctl = VmFail;
+        let mut cpy = CapCopy { dst: VirBytes(0), buf: alloc::vec::Vec::new(), fail: false };
+        assert_eq!(
+            do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, VirBytes(0x3000), 100, &mut ctl, &mut cpy).unwrap_err(),
+            MiscError::Kernel(-3)
+        );
+        assert!(cpy.buf.is_empty());
+    }
+
+    #[test]
+    fn test_getrusage_copyout_failure_is_fault() {
+        // C misc.c:446-447:sys_datacopy 失败即调用失败(EFAULT 面)。
+        let mut table = ProcTable::new();
+        mk_running(&mut table, 0, 0);
+        let mut ctl = TestTimesVm { hz: 100 };
+        let mut cpy = CapCopy { dst: VirBytes(0), buf: alloc::vec::Vec::new(), fail: true };
+        assert_eq!(
+            do_getrusage(&table, UserSlot::new(0), RusageWho::Slf, VirBytes(0x3000), 100, &mut ctl, &mut cpy).unwrap_err(),
+            MiscError::Fault
+        );
     }
 
     #[test]

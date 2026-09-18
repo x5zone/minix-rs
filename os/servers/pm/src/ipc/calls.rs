@@ -943,11 +943,35 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
-        // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
-        // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
-        // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
-        // 划账该表（V2-P2-6：兜底臂使"未接线"无需标记即可编译，台账是
-        // 义务的承接面）。
+        // C: do_getrusage(misc.c:400-447)——who 0/-1 门(S4 收尾):
+        // SysTimesVmCtl 双腿(SYS_TIMES + VM_GETRUSAGE taskcall),完整
+        // struct rusage 128 字节经 copy 缝拷出。
+        PmCall::GetRUsage => {
+            let (who_raw, addr) = super::decode::rusage(msg);
+            let who = match crate::misc::RusageWho::try_from(who_raw) {
+                Ok(w) => w,
+                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+            };
+            let mut ctl = crate::misc::SysTimesVmCtl { transport: &mut *transport };
+            let mut cpy = KernCopyToUser { kern, who: msg.m_source };
+            match crate::misc::do_getrusage(
+                table,
+                caller,
+                who,
+                VirBytes(addr),
+                timers.system_hz,
+                &mut ctl,
+                &mut cpy,
+            ) {
+                Ok(_) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // 其余调用：handler 均已接线(1..=47 全量,S4 收尾后无 ENOSYS
+        // 臂)。逐调用的接线台账(C handler / Rust 逻辑位置 / wire·
+        // wrapper 前置条件 / 批次 A-G)见 04-stage-pm/todo.md §11.1——
+        // 本兜底臂仅承接未注册号的解码前置(正确性由 from_call_nr 的
+        // None→ENOSYS 路径保证)。
         _ => ReplyIntent::Reply(ENOSYS),
     }
 }
@@ -1281,28 +1305,156 @@ mod tests {
         assert_eq!(intent, ReplyIntent::NoReply);
     }
 
+    /// 捕获 copy_to_user 字节的内核网关(getrusage 拷出见证)。
+    struct CapKernel {
+        copies: alloc::vec::Vec<(alloc::vec::Vec<u8>, Endpoint, u64)>,
+    }
+    impl crate::exit::KernelGateway for CapKernel {
+        fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+        fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+        fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
+        fn sys_delay_stop(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, bytes: &[u8], dst_ep: Endpoint, dst_addr: u64) -> Result<(), i32> {
+            self.copies.push((bytes.to_vec(), dst_ep, dst_addr));
+            Ok(())
+        }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+    }
+
+    /// 构造 VM_GETRUSAGE 应答(m1p1=max_rss_kb/m1i1=minor/m1i2=major,
+    /// VM encode.rs:258-268 的镜像)。
+    fn vm_rusage_reply(max_rss_kb: u64, minor: i32, major: i32, m_type: i32) -> Message {
+        let mut reply = Message::default();
+        reply.m_type = m_type;
+        // SAFETY: 测试构造——按 VM 应答编码域序写 m1。
+        let m1 = unsafe { &mut reply.m_u.m_m1 };
+        m1.m1p1 = max_rss_kb;
+        m1.m1i1 = minor;
+        m1.m1i2 = major;
+        reply
+    }
+
     #[test]
-    fn test_dispatch_unimplemented_call_is_enosys() {
-        // C: call_vec[call_index]() 已注册但 handler 未实现 → ENOSYS 占位
-        //（批次 A 接线后未接线者已缩至批次 C-G:25/26/27/28/33-39 等）。
-        // SysUname(25) 归批次 G(20-misc),离当前批次最远。
+    fn test_dispatch_getrusage_children_roundtrip() {
+        // RUSAGE_CHILDREN(-1) 全链:CPU 桶取 child_utime/stime(不走
+        // SYS_TIMES 腿),VM 腿按值回三字段,128 字节经 copy 缝落用户。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
-        let _kern = NoopKernel;
+        table.procs[3].resources.child_utime = 200;
+        table.procs[3].resources.child_stime = 100;
+        transport.queue_sendrec_reply(vm_rusage_reply(4096, 33, 4, minix_types::OK));
+        let mut kern = CapKernel { copies: alloc::vec::Vec::new() };
         let mut msg = Message { m_type: 36, ..Message::default() };
         msg.m_source = ep;
+        {
+            // SAFETY: 测试构造——按 ipc.h:510-515 域序写请求。
+            let raw = unsafe { &mut msg.m_u.raw };
+            raw[0..4].copy_from_slice(&(-1i32).to_le_bytes());
+            raw[8..16].copy_from_slice(&0x3000u64.to_le_bytes());
+        }
         assert_eq!(
             dispatch_pm_call(
                 PmCall::GetRUsage,
                 &mut table,
                 &mut events,
                 &mut transport,
-                &mut NoopKernel,
+                &mut kern,
                 &mut leak_timers(),
                 UserSlot::new(3),
                 &msg
             ),
-            ReplyIntent::Reply(ENOSYS)
+            ReplyIntent::Reply(0)
         );
+        // VM 腿:请求发往 VM,endpt=调用方,children=1。
+        assert_eq!(transport.sent().len(), 1);
+        let (dst, req) = &transport.sent()[0];
+        assert_eq!(*dst, Endpoint::VM);
+        assert_eq!(req.m_type, minix_types::VM_GETRUSAGE as i32);
+        // SAFETY: 断言侧按编码域序读。
+        let req_pl = unsafe { &req.m_u.m_lsys_vm_rusage };
+        assert_eq!(req_pl.endpt, ep.0);
+        assert_eq!(req_pl.children, 1);
+        // 拷出面:128 字节 rusage,utime=2s(200/100),maxrss/minflt/
+        // majflt 取 VM 三值(sys/resource.h:57-76 布局)。
+        assert_eq!(kern.copies.len(), 1);
+        let (bytes, copy_ep, addr) = &kern.copies[0];
+        assert_eq!(*copy_ep, ep);
+        assert_eq!(*addr, 0x3000);
+        assert_eq!(bytes.len(), 128);
+        let i64_at = |off: usize| i64::from_le_bytes(bytes[off..off + 8].try_into().unwrap());
+        assert_eq!(i64_at(0), 2); // ru_utime.tv_sec
+        assert_eq!(i64_at(16), 1); // ru_stime.tv_sec
+        assert_eq!(i64_at(32), 4096);
+        assert_eq!(i64_at(64), 33);
+        assert_eq!(i64_at(72), 4);
+    }
+
+    #[test]
+    fn test_dispatch_getrusage_invalid_who_is_einval() {
+        // C misc.c:407-409——who ∉ {0,-1} → EINVAL,不发 VM 腿。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut kern = CapKernel { copies: alloc::vec::Vec::new() };
+        let mut msg = Message { m_type: 36, ..Message::default() };
+        msg.m_source = ep;
+        {
+            // SAFETY: 同上——按解码域序写 who。
+            let raw = unsafe { &mut msg.m_u.raw };
+            raw[0..4].copy_from_slice(&5i32.to_le_bytes());
+        }
+        assert_eq!(
+            dispatch_pm_call(
+                PmCall::GetRUsage,
+                &mut table,
+                &mut events,
+                &mut transport,
+                &mut kern,
+                &mut leak_timers(),
+                UserSlot::new(3),
+                &msg
+            ),
+            ReplyIntent::Reply(EINVAL)
+        );
+        assert!(transport.sent().is_empty());
+        assert!(kern.copies.is_empty());
+    }
+
+    #[test]
+    fn test_dispatch_getrusage_vm_error_passthrough() {
+        // C misc.c:441-442——vm_getrusage 非 OK 原样透传(VM 错误应答
+        // m_type 即正 errno)。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        transport.queue_sendrec_reply(vm_rusage_reply(0, 0, 0, minix_types::ESRCH));
+        let mut kern = CapKernel { copies: alloc::vec::Vec::new() };
+        let mut msg = Message { m_type: 36, ..Message::default() };
+        msg.m_source = ep;
+        {
+            // SAFETY: 同上。
+            let raw = unsafe { &mut msg.m_u.raw };
+            raw[0..4].copy_from_slice(&(-1i32).to_le_bytes());
+        }
+        assert_eq!(
+            dispatch_pm_call(
+                PmCall::GetRUsage,
+                &mut table,
+                &mut events,
+                &mut transport,
+                &mut kern,
+                &mut leak_timers(),
+                UserSlot::new(3),
+                &msg
+            ),
+            ReplyIntent::Reply(minix_types::ESRCH)
+        );
+        // 失败不落用户缓冲(C misc.c:446 的 datacopy 不可达)。
+        assert!(kern.copies.is_empty());
     }
 }

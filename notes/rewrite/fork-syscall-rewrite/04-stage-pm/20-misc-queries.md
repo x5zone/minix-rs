@@ -376,8 +376,10 @@ Rust 改写遵循“`UtsField` 枚举穷尽 + `SysInfoWhat` 精确 + `EpInfo` �
 
 ### D6：`getrusage` 三段收敛到 `TimesVmCtl` trait（ARCH A-11）
 
-- **C**：`misc.c:407-409` `who` 边界 `0/-1` + `429-434` 双源 + `438` `set_rusage_times` + `441` `vm_getrusage`。
-- **Rust**：`enum RusageWho { Slf, Children }` + `trait TimesVmCtl { fn sys_times(&self, ep: Endpoint) -> (Clock,Clock); fn vm_rusage(&self, ep: Endpoint, who: RusageWho) -> RusageExt; }` + `fn rusage_from_ticks(utime,stime,hz) -> (Timeval,Timeval)` 纯函数。
+- **C**：`misc.c:407-409` `who` 边界 `0/-1` + `429-434` 双源 + `438` `set_rusage_times` + `441` `vm_getrusage` + `446-447` `sys_datacopy` 拷出。
+- **Rust**：`enum RusageWho { Slf, Children }` + `trait TimesVmCtl { fn sys_times(&self, ep: Endpoint) -> (Clock,Clock); fn vm_rusage(&self, ep: Endpoint, who: RusageWho) -> VmUsage; }` + `fn rusage_from_ticks(utime,stime,hz) -> (Timeval,Timeval)` 纯函数。
+- **接线形状（全链已通）**：PM 36 号臂（`ipc/calls.rs`，`decode::rusage` 按 `mess_lc_pm_rusage` 的 `who@0/addr@8` 解码，ipc.h:510-515）→ `SysTimesVmCtl` 生产实现双出口——CPU 计时直连 `SYS_TIMES`（`minix_sys::sys_times`，同 `SysMcontextCtl` 先例；hosted 构建诚实回 `-EIO`），内存面三值走 `VM_GETRUSAGE` taskcall（请求 `m_lsys_vm_rusage {endpt,addr,children}`，应答 `m1p1/m1i1/m1i2` 三槽，VM encode.rs 与 dispatcher.rs:912-920 同域序）→ `do_getrusage` 组装 LP64 的 `struct rusage` 128 字节（`sys/resource.h:57-76`：`ru_utime@0/ru_stime@16/ru_maxrss@32/ru_minflt@64/ru_majflt@72`，其余 11 个 long 域 C 侧从未写入故恒零）经 `CopyToUser` 缝拷出。
+- **值通道替换的等价性**：C 的 VM 侧用两次 `sys_datacopy` 把 PM 栈上的结构往返搬运、只改三个槽位（utility.c:437-452）；Rust 把这三个值放进应答消息按值携带（`struct VmUsage`），PM 端重组完整结构后一次性拷出。最终用户可见字节逐位一致——`ru_utime/ru_stime` 来自 PM 的 ticks 分解，三内存字段来自 VM 记账，其余为 memset 零；差别只在服务器间的搬运介质，不在语义。
 
 ### D7：`sprofile` 条件收敛到 `cfg` 缺口契约（ARCH A-7）
 
@@ -428,14 +430,16 @@ pub trait RebootCtl { fn set_abort(&mut self, how: i32); fn try_power_off(&mut s
 pub struct ParamStore { pub local: ArrayVec<(String,String),2>, pub monitor: String }
 pub fn find_param(monitor: &str, key: &str) -> Option<String> // KVP 纯函数
 pub enum RusageWho { Slf=0, Children=-1 } + TryFrom<i32>
+pub struct VmUsage { pub max_rss_kb: u64, pub minor_faults: u64, pub major_faults: u64 } // VM 三槽按值通道
 pub fn rusage_from_ticks(utime: Clock, stime: Clock, hz: Clock) -> (Timeval, Timeval) // *1e6/hz
+pub struct SysTimesVmCtl<'a,T: IpcTransport> // SYS_TIMES 直连 + VM_GETRUSAGE taskcall
 pub fn do_sysuname(field: usize, caller: UserSlot, len: usize, cpy: &mut dyn CopyToUser) -> Result<usize, MiscError>
 pub fn do_getsysinfo(table: &ProcTable, caller: UserSlot, what: SysInfoWhat, size: usize, dst: VirBytes, cpy: &mut dyn CopyToUser) -> Result<(), MiscError>
 pub fn do_getprocnr(table: &ProcTable, caller_ep: Endpoint, pid: Pid) -> Result<Endpoint, MiscError>
 pub fn do_getepinfo(table: &ProcTable, ep: Endpoint, caller_ngroups: usize, cpy: &mut dyn CopyGroups) -> Result<EpInfo, MiscError>
 pub fn do_reboot(table: &ProcTable, caller: UserSlot, how: i32, ctl: &mut dyn RebootCtl) -> Result<ReplyIntent, MiscError> // SUSPEND 永不回复
 pub fn do_svrctl(store: &mut ParamStore, req: SvrctlReq, cpy: &mut dyn CopySvrctl) -> Result<usize, MiscError> // E2BIG/ENOSPC/ESRCH 三码
-pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, hz: Clock, ctl: &mut dyn TimesVmCtl, cpy: &mut dyn CopyToUser) -> Result<(), MiscError>
+pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, addr: VirBytes, hz: Clock, ctl: &mut dyn TimesVmCtl, cpy: &mut dyn CopyToUser) -> Result<UtimeStimePair, MiscError> // 组装 128B rusage 后经 cpy 拷出
 ```
 
 - `uts_field`：`__arraycount`（C 数组含尾部 NULL 哨兵共 9 元素） 越界 + `NULL→None` 双守卫与 `misc.c:79-83` 同双 `EINVAL`。

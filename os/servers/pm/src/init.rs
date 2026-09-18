@@ -1010,14 +1010,14 @@ mod tests {
 
     #[test]
     fn test_run_once_replies_enosys_to_unimplemented_call() {
-        // C: main.c:90-101 + table.c — 已注册但 handler 未实现的调用 →
-        // ENOSYS 占位；主循环 reply(who_p, result)（main.c:106）。
+        // C: main.c:102-103 — call_index 越界（未注册号）→ result =
+        // ENOSYS；主循环 reply(who_p, result)（main.c:106）。
+        // （1..=47 已全量接线,S4 收尾;“已注册但未实现”类不复存在,
+        // ENOSYS 只剩未注册号这一入口。）
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
-        // PM_GETRUSAGE(36)——批次 C 余件:生产 TimesVmCtl 需 VM_GETRUSAGE
-        // 对端(登记),接线前维持 ENOSYS 诚实占位。
-        let mut msg = Message { m_type: 36, ..Message::default() };
+        let mut msg = Message { m_type: 48, ..Message::default() };
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);

@@ -265,14 +265,14 @@ fn kill_on_fork_suspended_child_stops_it_and_records_pending() {
 
 #[test]
 fn unwired_call_replies_enosys() {
-    // 04-ipc-dispatch.md §3.6 D6——已注册但 handler 未落地 → ENOSYS 占位，
-    // 诚实反映接线进度。批次 A(凭证族)接线后改指 SysUname=25
-    // （批次 G,20-misc-queries.md）。
+    // 04-ipc-dispatch.md §3.6 D6——未注册调用号越界 → ENOSYS,主循环
+    // reply(who_p, ENOSYS)（C main.c:102-106）。（1..=47 已全量接线,
+    // S4 收尾;“已注册但未实现”类不复存在,锚改为未注册号 48。）
     let mut srv = server();
     let caller_ep = seed_running(&mut srv, 5, 100);
 
     srv.transport_mut()
-        .queue_receive(request(36, caller_ep), IpcStatus::default()); // PM_GETRUSAGE = 36
+        .queue_receive(request(48, caller_ep), IpcStatus::default()); // 未注册(> NR_PM_CALLS)
 
     assert_eq!(srv.run_once(), RunStep::Handled);
 

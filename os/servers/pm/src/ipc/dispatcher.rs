@@ -392,7 +392,8 @@ mod tests {
     #[test]
     fn test_pm_call_routes_to_dispatch_pm_call() {
         // C: main.c:90-101 — IS_PM_CALL → call_vec（单一分发表）。
-        // 未接线调用（GetRUsage 36,S4 余件）→ ENOSYS。
+        // GETPID(4) 已接线：路由进 dispatch_pm_call 的直接见证是
+        // 返回确定性应答（pid=100+slot,setup 的注册值）。
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup(3, ep, false);
         let mut kern = NoopKernel;
@@ -405,10 +406,15 @@ mod tests {
                 &mut kern,
                 &mut timers,
                 UserSlot::new(3),
-                &msg_with(36, ep)
+                &msg_with(4, ep)
             ),
-            ReplyIntent::Reply(ENOSYS)
+            ReplyIntent::Reply(0)
         );
+        // GETPID 的应答协议:回复返回值 0,pid 走预置回复载荷 m1i1
+        // (get_result_intent,calls.rs:1115-1121)。
+        let reply = table.procs[3].ipc.reply.take().expect("reply staged");
+        // SAFETY: 断言侧按写入域序读 m1i1。
+        assert_eq!(unsafe { reply.m_u.m_m1 }.m1i1, 103);
     }
 
     #[test]

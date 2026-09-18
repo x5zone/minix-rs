@@ -246,19 +246,19 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             // buffer capacity once sys_datacopy is wired.
         }
         VmReply::Getrusage { max_rss_kb, minor_faults, major_faults } => {
-            // Minix3 C uses sys_datacopy to copy a `struct rusage`
-            // (≥15 fields: utime, stime, maxrss, ixrss, idrss, isrss,
-            // minflt, majflt, nswap, inblock, oublock, msgsnd, msgrcv,
-            // nvcsw, nivcsw) into the caller's address space (utility.c).
-            // M1 layout has 3 pointer slots + 3 integer slots — pick the
-            // 4 most diagnostic fields. The remaining 11 are DEFERRED to
-            // the sys_datacopy path (VMI-3 follow-up).
+            // C's VM writes ru_maxrss/ru_minflt/ru_majflt into PM's stack
+            // `struct rusage` via a sys_datacopy round trip (utility.c:
+            // 426-452). The Rust rewrite carries the three values in the
+            // reply message instead (PM reassembles the struct and copies
+            // it out — S4); the final user-visible bytes are identical,
+            // since the other 11 long fields are never written by *either*
+            // side in C either (PM memsets at misc.c:423, VM touches only
+            // these three at utility.c:446-450).
             //
-            // FIX (VMI-3): Previously only 3 fields were encoded
-            // (max_rss/min_flt/maj_flt) with `m1p2..m1p3`/`m1i3` unused.
-            // Encoding now uses remaining slots: m1p2=minor_faults, m1p3=
-            // major_faults (both fit in u64 for any realistic process),
-            // freeing m1i1/m1i2 for future in_use_time fields.
+            // Slot map: m1p1=max_rss_kb (the wide value takes the pointer
+            // slot), m1i1=minor_faults, m1i2=major_faults (fault counters
+            // saturate to i32); m1i3 stays reserved for future
+            // ru_inblock (block-input ops).
             m1.m1p1 = max_rss_kb;
             // SAFETY: `as i32` truncates fault counters. i32::MAX = 2^31 ≈
             // 2.1B faults per measurement window; saturation at i32::MAX
@@ -267,7 +267,6 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             let faults_to_i32 = |n: u64| -> i32 { n.min(i32::MAX as u64) as i32 };
             m1.m1i1 = faults_to_i32(minor_faults);
             m1.m1i2 = faults_to_i32(major_faults);
-            // m1.m1i3 reserved for future ru_inblock (block-input ops).
         }
         // Variants with no output data to encode
         VmReply::Ok | VmReply::Error(_)
