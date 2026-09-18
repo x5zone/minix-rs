@@ -1430,9 +1430,17 @@ impl RsServer {
         {
             // C: request.c:136-141 — a recovery script is bringing down an
             // already-gone service: unpublish + cleanup, reply OK now.
-            // C: unpublish_service(rp) — manager.c:864-920 (the DS effect
-            // seam is 19; the aggregate decision face is publish.rs, R32).
-            let _ = crate::publish::unpublish_result(false, false, false, false);
+            // C: unpublish_service(rp) — manager.c:864-920:DS unpublish 半
+            // 接真(ds_delete TYPE_LABEL);mapdriver/devman/PCI 三半归各自
+            // 服务接线,聚合判定面是 publish.rs(R32)。
+            let mut ds = minix_sys::ds::DsClient::new(
+                minix_sys::ipc::DirectTrapTransport,
+                minix_sys::syscall::DirectKernelCallTransport,
+                Endpoint::DS,
+            );
+            if let Some(name) = state.table.get(id).pub_.label.as_str() {
+                let _ = ds.delete(name, minix_types::DsFlags::TYPE_LABEL);
+            }
             crate::recovery::cleanup_service(
                 &mut state.table,
                 id,
