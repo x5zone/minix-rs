@@ -405,7 +405,23 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_str("  hart_start(hart1, ap_entry) via SBI HSM...\n");
     // SAFETY: asm symbol; only its address is taken.
     let ap_entry_addr = unsafe { ap_entry as *const () as usize };
-    <CurrentSmpArch as SmpArch>::boot_ap(hart1_hw as u32, ap_entry_addr);
+    // Raw HSM hart_start with the RETURN CODE captured — the production
+    // boot_ap ignores the SBI status, and this diagnostic needs it.
+    let hsm_ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inout("a0") hart1_hw as i64 => hsm_ret,
+            in("a1") ap_entry_addr as i64,
+            in("a2") 0i64,
+            in("a6") 0i64,
+            in("a7") 0x48534D_i64,
+            options(nostack)
+        );
+    }
+    early_console::write_str("  hsm hart_start ret = ");
+    early_console::write_hex(hsm_ret as u64);
+    early_console::write_str("\n");
 
     // Diagnostic (raw HSM ecall): print the SBI status for hart 1 —
     // 0 = already started (good news here), <0 = SBI error code.
