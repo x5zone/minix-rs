@@ -26,7 +26,7 @@
 
 | 编号 | 改点 | 属主线 | 需要触碰的他人领地 | 当前持锁 | 状态 |
 |---|---|---|---|---|---|
-| C-1 | edge2 L5 E-DEVWIRE 消费侧 | edge2 | `os/servers/vfs/src/cdev.rs`、`bdev.rs`（删本地常量副本改 import，小改） | 无 | ☐ 可认领（L4 先行） |
+| C-1 | edge2 L5 E-DEVWIRE 消费侧 | edge2 | `os/servers/vfs/src/cdev.rs`、`bdev.rs`（删本地常量副本改 import，小改） | 无 | ✅ 销账（2026-09-18，aecd4cd1c：vfs 删 12 个本地常量改消费 minix-types types/device.rs，u8 类型漂移裁正） |
 | C-2 | edge2 L8 E-SDEVOWN vfs 副本 | edge2 | `os/servers/vfs/src/sdev.rs`（删 923 行副本，改消费 `minix-sockdriver`）+ `os/Cargo.toml`（新增 workspace 成员 `libs/minix-sockdriver`，§1 规则 3 登记流水同轮） | edge2 | 🔄 持锁（2026-09-18，方案 A2 新 crate 裁决：C 世界 libbdev/libsockdriver 两库并列，Rust 已有 minix-bdev，镜像位新建） |
 | C-3 | edge3 S9 D-02 kernel 臂 | edge3（需求方） | `os/kernel`（SYS_GETMONPARAMS/GETIMAGE 对端，edge1 认领实现）+ `os/libs/minix-sys` wrapper（edge2 认领） | 无 | ☐ 待 edge1/edge2 排期 |
 | C-4 | edge1 K17 E5(d) qemu 载体消费 VM | edge1 | 仅读 edge3 的 VM 语义/接口，不改 `os/servers/vm`；发现 VM 缺口回 edge3 状态板登记 | 无 | ☐ |
@@ -55,7 +55,7 @@
 | edge2 L2 E-SYSCALL-SIGN | edge2 | edge3 S35（宿主冒烟可信化）、S39 | ✅ 2026-09-18 0cca4247d |
 | edge2 L10 文件族 wrapper | edge2 | edge3 S35（open 路径类命令批） | ✅ 2026-09-18 df145274c |
 | edge2 L11/L12 sigreturn+panic-handler | edge2 | edge3 S39（init no_std 收口） | ✅ 2026-09-18 fda5a708c（sigreturn 函数半+panic 形式定形；裸桩地址半挂 edge3 S3/edge1 帧偏移，edge2 L11 行有登记） |
-| edge2 L4→L5 E-CDRCONV→E-DEVWIRE | edge2 | edge3（vfs/input 消费侧，经 C-1）；16-stage G6 驱动 main | ☐ |
+| edge2 L4→L5 E-CDRCONV→E-DEVWIRE | edge2 | edge3（vfs/input 消费侧，经 C-1）；16-stage G6 驱动 main | ✅ 2026-09-18（L4=bd06cab21 判定核单点；L5=aecd4cd1c 常量片+338bfdf9f A10 钩子 Result 化；C-1/C-10 销账） |
 | edge2 L9 E-DMABUF 契约 | edge2 | edge3 S37（vm 实现） | ✅ 2026-09-18 757398407（契约就绪，S37 持 DmaMemory 行为实现即可） |
 | edge3 S37 vm 传输面 | edge3 | edge2 L15（FS 二级缓存升级） | ✅ 2026-09-19 7ed891a9b（DmaMemory 行为实现落位；edge2 L15 可开工） |
 | edge3 S17 RS 换装（枢纽） | edge3 | edge3 内部链 + edge4 E5 全族（RS 启动各服务器） | ☐ |
