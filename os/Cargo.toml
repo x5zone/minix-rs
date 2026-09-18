@@ -179,6 +179,7 @@ members = [
     "libs/minix-vtreefs",
     "libs/minix-sffs",
     "libs/minix-bdev",
+    "libs/minix-sockdriver",
     "libs/minix-usb",
     "libs/minix-virtio",
 
@@ -220,6 +221,7 @@ minix-driver-rt = { path = "libs/minix-driver-rt" }
 minix-blockdriver = { path = "libs/minix-blockdriver" }
 minix-netdriver = { path = "libs/minix-netdriver" }
 minix-bdev = { path = "libs/minix-bdev" }
+minix-sockdriver = { path = "libs/minix-sockdriver" }
 minix-virtio = { path = "libs/minix-virtio" }
 minix-usb = { path = "libs/minix-usb" }
 

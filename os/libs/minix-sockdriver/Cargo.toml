@@ -1,0 +1,12 @@
+[package]
+name = "minix-sockdriver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# C 世界 libbdev 与 libsockdriver 两库并列；本 crate 是 sockdriver 的
+# Rust 镜像位（编号、打包、错误映射、事件对象），对话机制随调用方。
+bitflags = { workspace = true }
+minix-types = { workspace = true }

@@ -6,6 +6,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-bitflags = { workspace = true }
 minix-types = { workspace = true }
+minix-sockdriver = { workspace = true }
 minix-driver-rt = { workspace = true }

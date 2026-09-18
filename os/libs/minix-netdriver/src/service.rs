@@ -13,7 +13,7 @@
 //! so a type-only router would misfile messages.
 
 use crate::protocol::{is_net_reply, is_net_request};
-use crate::sdev::is_sdev_request;
+use minix_sockdriver::sdev::is_sdev_request;
 use minix_types::{Endpoint, Message};
 
 /// One arrival sorted into the road it must travel. The message travels
@@ -95,7 +95,7 @@ mod tests {
         Message { m_source: source, m_type, ..Message::default() }
     }
 
-    const SDEV_SOCKET: i32 = crate::sdev::SdevRequest::Socket as i32;
+    const SDEV_SOCKET: i32 = minix_sockdriver::sdev::SdevRequest::Socket as i32;
     const NDEV_INIT_REPLY: i32 = crate::protocol::NDEV_REPLY_BASE;
 
     #[test]

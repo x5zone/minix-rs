@@ -20,16 +20,12 @@
 //! - [`driver`] — the driver trait, routing rules, and the server state
 //!   machine (document sections 3 and 4).
 //!
-//! Socket-device (SDEV) side, owned by stage 17-stage-net:
+//! Socket-device (SDEV) side, owned by stage 17-stage-net (the wire
+//! vocabulary lives in `minix-sockdriver`, edge E-SDEVOWN):
 //!
-//! - [`sdev`] — socket-device request and reply numbers, guards, and the
-//!   suspendability rule (documents `01-sockdriver-framework.md`
-//!   sections 1 and 2).
 //! - [`sockid`] — the socket identifier namespace: class bases, index
 //!   field, safe decode (document `01-sockdriver-framework.md`, sockid
 //!   section).
-//! - [`sockevent`] — socket event masks, flags, and hash slots
-//!   (document `02-sockevent-framework.md` sections 1 and 2).
 //! - [`socktable`] — the socket object table: continuations, select
 //!   waiters, alarms, and the wake-action pump (document
 //!   `02-sockevent-framework.md`, machinery sections).
@@ -48,7 +44,5 @@ pub mod driver;
 pub mod portio;
 pub mod protocol;
 pub mod service;
-pub mod sdev;
-pub mod sockevent;
 pub mod sockid;
 pub mod socktable;

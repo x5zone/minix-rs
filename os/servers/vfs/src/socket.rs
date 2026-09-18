@@ -31,7 +31,7 @@
 //! Here `SockCall` is the surface and [`SockLookup`]/[`FdAllocator`] are
 //! the per-table answers.
 
-use crate::sdev::{SHUT_RD, SHUT_RDWR, SHUT_WR};
+use minix_sockdriver::sdev::{SHUT_RD, SHUT_RDWR, SHUT_WR};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `do_socketpath` entry gates (`path.c:803-836`) — the walk itself stays

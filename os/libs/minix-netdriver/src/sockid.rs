@@ -14,7 +14,7 @@
 //! file system treats ids as opaque.
 //!
 //! This module owns the naming half of that namespace, next to the event
-//! hash in [`crate::sockevent`] that consumes raw ids. Message packing
+//! hash in [`minix_sockdriver::sockevent`] that consumes raw ids. Message packing
 //! stays in the service binary.
 
 /// Width of the per-class index field: class bases step by `0x00100000`
@@ -151,7 +151,7 @@ impl SockId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sockevent;
+    use minix_sockdriver::sockevent;
 
     #[test]
     fn test_class_bases_match_lwip_header() {

@@ -15,6 +15,7 @@ fproc_light = []
 
 [dependencies]
 minix-types = { workspace = true }
+minix-sockdriver = { workspace = true }
 minix-sys = { workspace = true }
 bitflags = { workspace = true }
 

@@ -19,8 +19,8 @@
 //! its own method ([`SockTable::close`]) that removes the object at once,
 //! and [`SockTable::raise`] refuses the bit by construction.
 
-use crate::sdev::{may_suspend, SdevRequest, SDEV_OP_RD, SDEV_OP_WR};
-use crate::sockevent::{hash_slot, SocketEvent, HASH_SLOTS};
+use minix_sockdriver::sdev::{may_suspend, SdevRequest, SDEV_OP_RD, SDEV_OP_WR};
+use minix_sockdriver::sockevent::{hash_slot, SocketEvent, HASH_SLOTS};
 use crate::sockid::SockId;
 use alloc::vec::Vec;
 use minix_types::{Endpoint, EINVAL};
@@ -158,7 +158,7 @@ pub enum WakeAction {
 }
 
 /// The socket object table: two hundred fifty-six hash slots, each a short
-/// chain (`sockevent.c:12-14`, [`crate::sockevent::hash_slot`]).
+/// chain (`sockevent.c:12-14`, [`minix_sockdriver::sockevent::hash_slot`]).
 #[derive(Debug)]
 pub struct SockTable {
     slots: Vec<Vec<SockEntry>>,
@@ -366,13 +366,13 @@ impl Default for SockTable {
 
 /// Compile-time reminder that the flag words stay usable as `SFL_*` masks.
 #[cfg(test)]
-const _: () = assert!(crate::sockevent::SocketFlag::Timer.bits() == 0x10);
+const _: () = assert!(minix_sockdriver::sockevent::SocketFlag::Timer.bits() == 0x10);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdev::SdevRequest::{Accept, Connect, Receive, Send};
-    use crate::sockevent::{SocketEvent, SocketFlag};
+    use minix_sockdriver::sdev::SdevRequest::{Accept, Connect, Receive, Send};
+    use minix_sockdriver::sockevent::{SocketEvent, SocketFlag};
 
     const CALLER_A: Endpoint = Endpoint(10);
     const CALLER_B: Endpoint = Endpoint(20);
@@ -564,9 +564,9 @@ mod tests {
 
     #[test]
     fn test_non_suspending_request_has_no_continuation() {
-        assert!(Continuation::new(crate::sdev::SdevRequest::Socket, CALLER_A, 0, None).is_none());
+        assert!(Continuation::new(minix_sockdriver::sdev::SdevRequest::Socket, CALLER_A, 0, None).is_none());
         assert!(
-            Continuation::new(crate::sdev::SdevRequest::Cancel, CALLER_A, 0, None).is_none(),
+            Continuation::new(minix_sockdriver::sdev::SdevRequest::Cancel, CALLER_A, 0, None).is_none(),
             "撤单无答复，永不挂起"
         );
         let mut table = SockTable::new();
