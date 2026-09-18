@@ -194,8 +194,11 @@ pub fn get_fd(
 /// get `EIO` from `get_filp2`'s gate (the `FilpLockMode` seam, `filp.rs`),
 /// never from here.
 ///
-/// Simplified: `may_suspend` is accepted but not used (socket `SUSPEND` is
-/// DEFERRED to 22-sdev).  Lock release (`nr_locks`) is also DEFERRED to 30.
+/// The C `may_suspend` flag (`filedes.c:414`) only ever matters on the socket
+/// last close (`sdev_close`, `filedes.c:475`: only close(2) may SUSPEND).  The
+/// Rust close paths model `may_suspend=FALSE` (`socket.rs` `CloseTarget`), and
+/// the suspending seam belongs to `22-sdev`.  POSIX record locks (`nr_locks`)
+/// are likewise out of this seam until `30-fcntl-lock`.
 pub fn close_fd(fproc: &mut FProc, fd: Fd, filp_table: &mut FilpTable) -> Result<(), FdError> {
     let idx = fd.get();
     let filp_idx = fproc.filps[idx].ok_or(FdError::BadFd)?;
@@ -204,7 +207,12 @@ pub fn close_fd(fproc: &mut FProc, fd: Fd, filp_table: &mut FilpTable) -> Result
     // before `close_filp`, so re-entrant closes fail `EBADF`).
     fproc.filps[idx] = None;
     fproc.cloexec_set.set(fd.get(), false);
-    // Dec count and maybe put_vnode (simplified)
+    // Last close (`--filp_count == 0`, `filedes.c:496`) clears the filp slot
+    // (`dec_count`: vnode drop + `FILP_CLOSED`).  C fans out further at last
+    // close — device close (`filedes.c:451/:453/:475`), pipe waiter release
+    // (`:493`), FIFO size report + `put_vnode` (`:496-505`) — each wired at
+    // its own consumer (`20-bdev`/`21-cdev`/`22-sdev`, `17-pipe`,
+    // `05-vnode-table`), not in this fd-table seam.
     let fid = FilpId(filp_idx);
     let _freed = filp_table.dec_count(fid);
     Ok(())
