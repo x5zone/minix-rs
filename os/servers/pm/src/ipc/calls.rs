@@ -817,11 +817,20 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // C: do_sprofile(profile.c:22-45)——sprofile feature 门控;
         // SprofCtl 生产直委托 sys_sprof。
         PmCall::SProf => {
-            let (action, freq, intr_type, ctl_ptr, _mem_ptr, _mem_size) =
+            let (action, freq, intr_type, ctl_ptr, mem_ptr, mem_size) =
                 super::decode::sprof(msg);
             let ep = table.procs[caller.get()].endpoint();
             let mut ctl = crate::misc::SysSprofCtl { ep };
-            match crate::misc::do_sprofile(action, &mut ctl) {
+            match crate::misc::do_sprofile(
+                action,
+                mem_size as usize,
+                freq as u32,
+                intr_type,
+                ep,
+                VirBytes(ctl_ptr),
+                VirBytes(mem_ptr),
+                &mut ctl,
+            ) {
                 Ok(()) => ReplyIntent::Reply(0),
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }

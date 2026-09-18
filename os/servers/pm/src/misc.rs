@@ -624,15 +624,28 @@ pub fn do_getrusage(
 }
 
 /// `do_sprofile` (`profile.c:22-45`, D7).
-pub fn do_sprofile(_action: i32, _ctl: &mut dyn SprofCtl) -> Result<(), MiscError> {
+pub fn do_sprofile(
+    action: i32,
+    mem_size: usize,
+    freq: u32,
+    intr_type: i32,
+    ep: Endpoint,
+    ctl_ptr: VirBytes,
+    mem_ptr: VirBytes,
+    ctl: &mut dyn SprofCtl,
+) -> Result<(), MiscError> {
+    // C profile.c:22-45 —— PROF_START 全载荷经 SprofCtl;PROF_STOP 只带
+    // action;其余动作 EINVAL(switch default)。
     #[cfg(feature = "sprofile")]
     {
-        // Real impl would dispatch PROF_START/STOP via SprofCtl
-        return Ok(());
+        ctl.sprof(
+            action, mem_size, freq, intr_type, ep, ctl_ptr, mem_ptr,
+        );
+        Ok(())
     }
     #[cfg(not(feature = "sprofile"))]
     {
-        let _ = _ctl;
+        let _ = (action, mem_size, freq, intr_type, ep, ctl_ptr, mem_ptr, ctl);
         Err(MiscError::Nosys)
     }
 }
@@ -927,10 +940,18 @@ mod tests {
     #[test]
     fn test_sprofile_enosys() {
         let mut ctl = TestSprof;
-        assert_eq!(do_sprofile(0, &mut ctl).unwrap_err(), MiscError::Nosys);
+        assert_eq!(
+            do_sprofile(0, 0, 0, 0, Endpoint::SELF, VirBytes(0), VirBytes(0), &mut ctl)
+                .unwrap_err(),
+            MiscError::Nosys
+        );
         // AltSprof also Nosys when feature disabled
         let mut alt = AltSprof;
-        assert_eq!(do_sprofile(1, &mut alt).unwrap_err(), MiscError::Nosys);
+        assert_eq!(
+            do_sprofile(1, 0, 0, 0, Endpoint::SELF, VirBytes(0), VirBytes(0), &mut alt)
+                .unwrap_err(),
+            MiscError::Nosys
+        );
     }
 
     #[test]
