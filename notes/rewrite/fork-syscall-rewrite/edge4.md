@@ -34,7 +34,8 @@
 | C-6 | edge3 S6 D-16 DumpCore wire 按值携带名字（OQ-5 裁决 2026-09-19） | edge3（需求方） | `os/libs/minix-types`（`VfsCall::DumpCore` 成员改造：i32 path → 按值 name+len）+ `os/servers/vfs` 消费侧 | 无 | ☐ S6 开工时 edge3 持锁 |
 | C-7 | edge3 S19 A-6 诊断缝共享 helper | edge3（需求方） | `os/libs/minix-sys/src/syscall.rs`（`sys_diagctl` 旁新增 `sys_diagctl_write` 字符串便利封装，仅加函数不改既有）+ `os/servers/rs`（SysApi::diag_write 缝） | 无 | ✅ 销账（2026-09-19，1f72d8ffe） |
 | C-8 | edge3 S17 换装 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：pm.rs 新增 `setuid_via`（PM_SETUID=5，raw 载荷）+ vm.rs `vm_rs_memctl_via` 扩 (addr,len) 参数（原版丢 HeapPrealloc/MapPrealloc 的地址对，零调用方扩参无涟漪） | 无 | ✅ 销账（2026-09-19，0e33c276c） |
-| C-9 | edge3 S24 mib_get_label 接线 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：ds.rs 新增 `DsClient::retrieve_label_name`（C ds.c:92-101：DS_RETRIEVE_LABEL + val_in.ep + key 写授权收标签名）；`os/servers/mib`：SysServices 持 DsClient 并接真实动词 | edge3 | 🔄 进行中（2026-09-19，S24 随做随销） |
+| C-9 | edge3 S24 mib_get_label 接线 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：ds.rs 新增 `DsClient::retrieve_label_name`（C ds.c:92-101：DS_RETRIEVE_LABEL + val_in.ep + key 写授权收标签名）；`os/servers/mib`：SysServices 持 DsClient 并接真实动词 | 无 | ✅ 销账（2026-09-19，bd5c3d008） |
+| C-10 | edge2 L4 E-CDRCONV 判定核上收 | edge2 | `os/servers/input`：`src/framework.rs` 删除（判定核上收 minix-chardriver：GateVerdict/gate_character_request/AnnounceEffect/announce_effects/SELECT_*/ACCESS_*/TRANSFER_* 旗标），lib.rs/dispatcher.rs/init.rs/handlers.rs 改消费共享库，Cargo.toml 加 minix-chardriver 依赖 | edge2 | ✅ 销账（2026-09-18） |
 
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
@@ -42,6 +43,7 @@
 |---|---|---|---|---|
 | 2026-09-18 | edge1 | `os/qemu-tests/run_all.sh` | K12：test-user-trap / test-rt-birth 纳入一键回归（特殊协议脚本区 + user-trap 入构建清单；rt-birth 内核因 `include_bytes!(env!)` 由其脚本自建，不入普通构建清单） | ✅ 同日 |
 | 2026-09-18 | edge1 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
+| 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K10：新增 test-smp-ipi-riscv64 carrier | 部分——Cargo.toml 成员已加（carrier 不入 run_all 矩阵：SSIE 回路未绿，见 edge1 K10 🔄 注记；绿后再接 run_all） |
 | 2026-09-18 | edge1 | `tools/` | K16：新增 `tools/review-line-check.sh`（文档行号锚点批量反向核查：行存在性 + 当行内容回显） | ✅ 同日 |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
