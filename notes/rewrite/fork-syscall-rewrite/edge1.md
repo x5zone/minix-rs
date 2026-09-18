@@ -18,17 +18,18 @@
 | K2 | E-SCHEDSMP：SCHED cpu 下发链三环 | [edge_todo.md](edge_todo.md) E-SCHEDSMP ｜ [06-stage-sched/todo.md §3](06-stage-sched/todo.md) | (1) per-CPU Scheduler 入 CpuLocal，`sched_for_cpu` 按 cpu_id 分发；(2) `sched_proc` 补 cpu_is_ready 校验（EBADCPU）；(3) 跨 CPU 迁移接线（`schedule_migrate_proc` 已有本体，缺调用方）。SCHED 侧零改动 | 无硬前置；验收挂 edge4 E5(e) | ☐ |
 | K3 | E-VMTLB 余件：SMP IPI 旗标设置完备性 | [edge_todo.md](edge_todo.md) E-VMTLB ｜ [02-stage-vm/todo.md V13-P2-1(c)](02-stage-vm/todo.md) | 机制三件套已落（pick 点判定/switch_to_user 消费/设置点）。余件 = `schedule_vminhibit` IPI 路径的旗标设置完备性 + E5 SMP 冒烟用例「fork 后父子并发写 CoW 页」设计（用例执行归 edge4） | 无 | ☐ |
 | K4 | T-13 dm_coverage 测试族共享 mock 无同步 | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L411 | `os/arch` dm_coverage driver 测试共享全局 mock 无锁，并行调度确定性失败。加 `BKL_TEST_LOCK` 同型互斥（misc.rs `SPROF_TEST_LOCK` 先例）或各测试用不重叠窗口基址 | 无 | ✅ 2026-09-18（本提交；std 语境取 RAII `Mutex<()>` 序列锁，4 测试各持 guard；并行 8 线程 5/5 轮绿，自旋锁先例的 panic 泄挂死风险已记录 fix-status） |
-| K5 | profiling trap 入口传 PC | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) §12.3 L332 | `dispatch_sprofile` 已全实现，缺 trap 入口接线传采样 PC。原依赖 S-8/S-9 已于 2026-09-14/15 完成，**当前即可做** | 无 | ☐ |
+| K5 | profiling trap 入口传 PC | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) §12.3 L332 | `dispatch_sprofile` 已全实现，缺 trap 入口接线传采样 PC。原依赖 S-8/S-9 已于 2026-09-14/15 完成，**当前即可做** | 无 | ✅ 2026-09-18（本提交；C-parity 全接线：`PROFILE_CLOCK_IRQ` 常量 + `IrqManager` hook 注册/摘除 + trap 入口单发 PC 槽 + `profile_clock_hook` 采样；kernel 764 绿含 3 新 tick 测试，plat pin ×3；doc 30 同步） |
 | K6 | x86 AP LAPIC local timer | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L848 | per-CPU TSC 校准 + `lapic_set_timer_one_shot`（C arch_clock.c:131-139 对应）。不接则 AP 上 quantum 递减停摆——SMP 真分片的实际缺口 | 无（S-8 IDT 已就位） | ☐ |
 | K7 | S-8 B 链 disjoint-API 重构 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1676 | syscall 入口 caller-in-table 别名当前以 SAFETY 注释裸指针分裂表达，重构收敛 | 无 | ☐ |
 | K8 | OQ-13a：GIC/PLIC claim 返回 IrqVector 演进 | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L186 | I-13 主体已闭合，余 claim→`IrqVector` 返回值演进，随 per-CPU 分发 lane（与 K1/K2 同窗顺带） | 无 | ☐ |
 | K9 | arm64/riscv64 trap 向量表链接地雷 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1705 | 两架构 `load()` 引用的 `exc_vector_table`（arm64）/`trap_vector`（riscv64）只有 extern 声明、无 global_asm 定义，靠死代码消除掩盖。**三架构用户态目标的硬前置** | 无 | ☐ |
 | K10 | riscv64 SSIE 软件中断 IPI 路径 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L871 | S-10 IPI 往返仅 x86 LAPIC 实测；riscv64 走 SSIE 路径（S-4 仅做能力准备） | K9 同批为宜 | ☐ |
-| K11 | arm64/riscv64 shutdown L7 三架构验证 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1879 | 后端代码已就位（semihosting SYS_EXIT / sifive_test FINISHER_PASS），缺真机验证 | 无 | ☐ |
+| K11 | arm64/riscv64 shutdown L7 三架构验证 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1879 | 后端代码已就位（semihosting SYS_EXIT / sifive_test FINISHER_PASS），缺真机验证。**K5 期间发现**：`os/plat/src/arm64/shutdown.rs` 在 aarch64-unknown-none target 下本身编译不过（:26 noreturn asm 带 inout 输出 + :18 E0308，HEAD 存量），真机验证前先修编译 | 无 | ☐ |
 | K12 | test-user-trap / test-rt-birth 纳入 run_all.sh 主线 | [01-stage-kernel/smp_todo.md §26](01-stage-kernel/smp_todo.md) | 两脚本目前独立运行未入 x86 一键回归/CI。纳入即验收阶梯 T1 的 x86 半收口 | 无 | ☐ |
 | K12b | minix-rt 诞生链 + trap 腿的 aarch64/riscv64 真机化 | 本文件新增（三架构目标推导） | test-rt-birth 目前仅 x86。将 rt-birth 测试内核移植到 AAVMF/OpenSBI 载体，验证三架构 CPL3 诞生链 + int/syscall 腿——依赖 K9 的向量表落地 | K9、K12 | ☐ |
 | K13 | T-10 riscv64 U-Boot 启动链（CI 环境） | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L170 | U-Boot fatload→bootelf 集成测试；需 u-boot-qemu/mkimage 工具链，本地缺 sudo 则在 CI workflow 做 | CI 环境 | ☐ |
 | K17 | E5(d) QEMU VM paging 冒烟的测试内核载体 | [edge_todo.md](edge_todo.md) E5 验收面增补 | boot shim 拉起 VM → `init_vm_self_pt` → map/query/unmap → **缺页完整回路**（VM 写进程硬件 PTE → 恢复 → 指令重执行）的 qemu-tests 载体与实现。断言清单与编排归 edge4 E5(d)。触碰 `os/qemu-tests/`（本线所有） | VM 参战（edge3 S20 可宿主先行，真机联调挂 edge4） | ☐ |
+| K19 | os/kernel/tests/boot_integration.rs 编译破坏（K5 期间发现） | 本文件新增（edge4 §1.7 规则 7） | 该集成测试 3 处引用已被重构删除的 `CpuLocal.scheduler` 字段（:227/:259/:290，`cargo check -p minix-kernel --all-targets` HEAD 即 4 error），拖累 kernel 全目标构建与 CI。修法：改走现行 CpuLocal API（enqueue 经 `Scheduler` 实例）。HEAD 存量，非任何在制改动引入 | 无 | ☐ |
 
 ## D 组（文档与登记类）
 

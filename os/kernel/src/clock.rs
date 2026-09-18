@@ -38,8 +38,8 @@
 //! - **D10**: explicit `billp: Option<&mut KProcess>` parameter for billable accounting
 //! - **D11**: standalone `vtimer_check()` deleted (tick-internal logic handles expiry)
 
-use core::sync::atomic::Ordering;
-use minix_plat::{IrqAction, IrqPolicy};
+use core::sync::atomic::{AtomicUsize, Ordering};
+use minix_plat::{IrqAction, IrqId, IrqNotifyId, IrqPolicy, PROFILE_CLOCK_IRQ};
 use crate::irq_manager::IrqHookContext;
 
 use minix_types::Endpoint;
@@ -293,7 +293,13 @@ pub fn init_profile_clock(hz: u32) -> Result<(), minix_arch::clock::ProfileClock
         use minix_platform::platform_desc;
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
-        clock_arch.init_profile_clock(hz)
+        clock_arch.init_profile_clock(hz)?;
+        // C profile.c:31-36 — the arch source accepted the frequency, so
+        // install the sampling hook on the profile clock line. On
+        // aarch64/riscv64 the arch call already returned Unsupported and
+        // this line is never reached (no hook, no delivery path).
+        register_profile_hook();
+        Ok(())
     }
     #[cfg(test)]
     {
@@ -316,11 +322,63 @@ pub fn stop_profile_clock() {
         let pd = platform_desc();
         let mut clock_arch = CurrentClockArch::new(pd.timer());
         clock_arch.stop_profile_clock();
+        // C profile.c:42-49 — quiesce the source first, then remove the
+        // hook, so no tick can fire into a half-disassembled registration.
+        unregister_profile_hook();
     }
     #[cfg(test)]
     {
         // In tests, no hardware timer to stop.
     }
+}
+
+/// The hook ID `register_profile_hook` installed; [`NO_HOOK`] when none.
+///
+/// C: `static irq_hook_t profile_clock_hook` — profile.c:22. The static
+/// carries the registration across the PROF_START/PROF_STOP pair the way
+/// C's hook struct does; profiling is single-instance (the EBUSY guard on
+/// PROF_START), so one slot suffices.
+#[cfg(not(test))]
+static PROFILE_HOOK_ID: AtomicUsize = AtomicUsize::new(NO_HOOK);
+#[cfg(not(test))]
+const NO_HOOK: usize = usize::MAX;
+
+/// Install the profile sampling hook on the profile clock line.
+///
+/// C profile.c:33-35 — the hook is owned by the CLOCK endpoint
+/// (`profile_clock_hook.proc_nr_e = CLOCK`); `put_irq_handler`'s
+/// first-handler unmask rule opens the controller-side delivery gate,
+/// which `IrqManager::register_hook` reproduces. Caller holds the BKL
+/// (the PROF_START syscall path).
+#[cfg(not(test))]
+fn register_profile_hook() {
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let clock_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::CLOCK.0);
+    let id = crate::irq_manager_with(&section)
+        .register_hook(
+            PROFILE_CLOCK_IRQ,
+            crate::misc::profile_clock_hook,
+            clock_ep,
+            IrqNotifyId(0),
+            IrqPolicy::REENABLE,
+        )
+        .expect("register profile clock hook: no free slots in IRQ_MANAGER");
+    PROFILE_HOOK_ID.store(id.0 as usize, Ordering::Relaxed);
+}
+
+/// Remove the profile sampling hook.
+///
+/// C profile.c:47-48 — `disable_irq` + `rm_irq_handler`. `remove_hook`
+/// re-masks the line when its chain empties, which covers the disable
+/// half of the C pair. Caller holds the BKL (the PROF_STOP syscall path).
+#[cfg(not(test))]
+fn unregister_profile_hook() {
+    let raw = PROFILE_HOOK_ID.swap(NO_HOOK, Ordering::Relaxed);
+    if raw == NO_HOOK {
+        return;
+    }
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let _ = crate::irq_manager_with(&section).remove_hook(IrqId(raw as u32), PROFILE_CLOCK_IRQ);
 }
 
 /// Acknowledge a profile clock interrupt.

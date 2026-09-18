@@ -31,6 +31,16 @@ use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_V
 /// `TimerIrqGate::enable_timer_irq`).
 pub const TIMER_IRQ: IrqVector = IrqVector::new(30);
 
+/// The statistical-profiling clock's dispatch identity: pseudo-vector 0.
+///
+/// There is no dedicated profiling clock on aarch64 — the arch
+/// implementation returns `ProfileClockError::Unsupported` (the eventual
+/// source would be the PMU, which is not integrated), so no hook is ever
+/// registered on this identity and no delivery path can produce it. It
+/// exists so the kernel-side profile wiring compiles per-architecture the
+/// same way `TIMER_IRQ` does.
+pub const PROFILE_CLOCK_IRQ: IrqVector = IrqVector::new(0);
+
 /// GICD_CTLR: Distributor Control Register.
 const GICD_CTLR: usize = 0x0000;
 /// GICD_CTLR.EnableGrp1NS bit.
@@ -258,6 +268,14 @@ mod tests {
         // controller-side gate goes through GICR (PPI path), not GICD.
         assert_eq!(TIMER_IRQ.get(), 30);
         assert!(TIMER_IRQ.get() < 32);
+    }
+
+    #[test]
+    fn test_profile_clock_irq_is_unreachable_pseudo() {
+        // init_profile_clock on aarch64 reports Unsupported (no PMU yet),
+        // so no hook is ever registered on this identity and the trap
+        // entry's line check can never match a delivered interrupt.
+        assert_eq!(PROFILE_CLOCK_IRQ.get(), 0);
     }
 }
 

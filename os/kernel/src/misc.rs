@@ -19,15 +19,17 @@ use minix_types::{
     Message, MessKrnLsysSysGetwhoami, MessLsysKrnSysGetinfo,
     MessLsysKrnSysTrace, Endpoint, VirBytes,
 };
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use minix_plat::NR_IRQ_VECTORS;
 
-use crate::proc::{KProcess, MiscFlagsBits, RtsFlagsBits, CpuId, PROC_NAME_LEN,
+use crate::proc::{KProcess, MiscFlagsBits, RtsFlagsBits, CpuId, ProcNr, PROC_NAME_LEN,
     BOOT_MODULE_PROC_NRS, NR_BOOT_PROCS};
 #[cfg(test)]
-use crate::proc::{ProcNr, NR_BOOT_MODULES};
+use crate::proc::NR_BOOT_MODULES;
 use crate::kpriv::PrivTable;
 use crate::proc_table::{NR_PROCS, NR_TASKS, ProcessTable};
+use crate::irq_manager::IrqHookContext;
+use minix_plat::IrqAction;
 use crate::syscall::{KcallResult, Syscall};
 use crate::cross_space::{data_copy_vmcheck, write_to_process_vmcheck};
 use crate::vm::{AddressRef, CrossSpaceResult};
@@ -2211,7 +2213,8 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
             // Copy 1: sprof_info struct → user space.
             //
             // SAFETY: BKL is held; SPROF_INFO is a static that was reset during
-            // PROF_START and only written by the profiling ISR (not yet implemented).
+            // PROF_START and is only written by the profiling ISR
+            // (`profile_clock_hook`, via `profile_sample`).
             let info_src_phys = {
                 use minix_arch::{CurrentDirectMap, DirectMapArch};
                 use minix_types::VirBytes;
@@ -2530,6 +2533,84 @@ pub unsafe fn profile_clock_handler(
     profile_sample(proc, pc, priv_table);
     crate::clock::ack_profile_clock();
 }}
+
+// ── Profile clock IRQ wiring (C profile.c:22-49) ─────────────────────────
+//
+// C installs `profile_clock_handler` as the hook on the profile clock IRQ
+// line (profile.c:34) and reads the sampled PC from `p->p_reg.pc`, which
+// the assembler entry saved into the process context before the handler
+// ran. The Rust IRQ path never saves the trap frame into the process
+// context, so the PC travels through a one-shot slot instead: the trap
+// entry stashes `frame.rip` when the profile clock line fires, and
+// [`profile_clock_hook`] consumes it inside the hook chain.
+
+/// Single-flight PC handoff from the trap entry to the profile hook.
+///
+/// Written by the trap entry (`stash_profile_pc`) when the profile clock
+/// line interrupts a context, consumed (swapped back to 0) by
+/// [`profile_clock_hook`] inside `IrqManager::dispatch`. A single slot is
+/// sound: the profile clock is one line delivered to one CPU, the dispatch
+/// machinery masks the line while its hook chain runs, and the chain
+/// executes under the BKL the interrupted context held — a second fire
+/// cannot interleave before the first handoff is consumed.
+pub static PROFILE_TRAP_PC: AtomicU64 = AtomicU64::new(0);
+
+/// Trap-entry side of the PC handoff: record the interrupted `frame.rip`
+/// for the next profile tick.
+///
+/// Callers guard on the profile clock line and `SPROFILING`, so a line
+/// fire outside an active profiling run never leaves a stale value here.
+pub fn stash_profile_pc(pc: u64) {
+    PROFILE_TRAP_PC.store(pc, Ordering::Release);
+}
+
+/// The profile clock's entry in the IRQ hook chain.
+///
+/// C: `profile_clock_handler(irq_hook_t *hook)` — profile.c:115-126, the
+/// hook `init_profile_clock` installs on CMOS_CLOCK_IRQ. The `IrqHandler`
+/// fn-pointer signature cannot carry a BKL witness (same constraint as
+/// `clock_irq_handler`), so the root re-takes it here: the chain runs
+/// under the BKL the interrupted context held.
+pub fn profile_clock_hook(_ctx: &mut IrqHookContext) -> IrqAction {
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let table = crate::proc_table_with(&section);
+    let priv_table = crate::priv_table_with(&section);
+    let smp = crate::smp_state_with(&section);
+    let cur = smp
+        .cpu_local(crate::current_cpu_id())
+        .and_then(|l| l.proc_ptr);
+    let pc = PROFILE_TRAP_PC.swap(0, Ordering::AcqRel);
+    profile_clock_tick(cur, pc, table, priv_table);
+    IrqAction::Completed
+}
+
+/// One profiling tick with explicit state — the hosted-testable core of
+/// [`profile_clock_hook`].
+///
+/// Samples the running process at the stashed PC, then acknowledges the
+/// clock line. C profile.c:120-123 samples `proc_ptr` at `p->p_reg.pc`
+/// and acks on every tick; the ack is unconditional because the RTC stops
+/// generating interrupts entirely once register C goes unread. A tick
+/// with no stashed PC (fire outside an active run) or no running process
+/// (pre-scheduler bring-up, where profiling cannot be active anyway)
+/// therefore only acks.
+pub(crate) fn profile_clock_tick(
+    cur_nr: Option<ProcNr>,
+    pc: u64,
+    table: &ProcessTable,
+    priv_table: &PrivTable,
+) {
+    match cur_nr.and_then(crate::proc_table::nr_to_idx) {
+        Some(idx) if pc != 0 => {
+            // SAFETY: BKL held (the hook chain runs under the interrupted
+            // context's BKL); SPROF_INFO is accessed under the same lock.
+            unsafe { profile_clock_handler(&table.procs_slice()[idx], pc, priv_table) };
+        }
+        _ => {
+            crate::clock::ack_profile_clock();
+        }
+    }
+}
 
 /// Handle unimplemented system calls.
 ///
@@ -3967,6 +4048,90 @@ fn sprof_test_teardown() {
         let expected = core::mem::size_of::<SprofProc>()
             + 2 * core::mem::size_of::<SprofSample>();
         assert_eq!(info.mem_used as usize, expected);
+    }
+
+    /// Place a runnable SYS_PROC process at `ProcNr(0)`'s table slot — the
+    /// fixture for tick tests that go through the real table path.
+    fn setup_runnable_sys_proc(
+        table: &mut ProcessTable,
+        priv_table: &mut PrivTable,
+        endpoint: Endpoint,
+    ) {
+        if let Some(p) = priv_table.get_mut(0u16) {
+            p.flags.s_flags |= crate::capability::ProcessCapability::SYS_PROC;
+        }
+        let idx = crate::proc_table::nr_to_idx(ProcNr(0)).unwrap();
+        let procs = table.procs_slice_mut();
+        let slot = &mut procs[idx];
+        slot.p_endpoint = endpoint;
+        slot.priv_id = Some(0u16);
+        slot.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+    }
+
+    #[test]
+    fn test_profile_clock_tick_samples_stashed_pc() {
+        // C profile.c:120 — the hook samples `proc_ptr` at the stashed PC
+        // (the interrupted context's rip). The tick must record the pc it
+        // was handed, not a placeholder.
+        let _guard = profile_sample_setup(SAMPLE_BUFFER_SIZE);
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        setup_runnable_sys_proc(&mut table, &mut priv_table, Endpoint(50));
+        profile_clock_tick(Some(ProcNr(0)), 0x1234, &table, &priv_table);
+        // SAFETY: BKL is held (test lock).
+        let info = unsafe { *SPROF_INFO.get() };
+        assert_eq!(info.system_samples, 1);
+        assert_eq!(info.total_samples, 1);
+        // The sample record carries the stashed PC verbatim (buffer layout:
+        // SprofProc record first, SprofSample behind it).
+        let sample = unsafe {
+            core::ptr::read(
+                SPROF_SAMPLE_BUFFER
+                    .get()
+                    .cast::<u8>()
+                    .add(core::mem::size_of::<SprofProc>())
+                    .cast::<SprofSample>(),
+            )
+        };
+        assert_eq!(sample.pc, 0x1234);
+        assert_eq!(sample.proc, 50);
+    }
+
+    #[test]
+    fn test_profile_clock_tick_without_pc_only_acks() {
+        // A fire with nothing stashed (line noise outside an active run)
+        // must not fabricate a sample at pc 0 — C would never reach the
+        // handler with a stale pc because its hook is unregistered then.
+        let _guard = profile_sample_setup(SAMPLE_BUFFER_SIZE);
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        setup_runnable_sys_proc(&mut table, &mut priv_table, Endpoint(50));
+        profile_clock_tick(Some(ProcNr(0)), 0, &table, &priv_table);
+        // SAFETY: BKL is held (test lock).
+        let info = unsafe { *SPROF_INFO.get() };
+        assert_eq!(info.total_samples, 0);
+        assert_eq!(info.system_samples, 0);
+        assert_eq!(info.mem_used, 0);
+    }
+
+    #[test]
+    fn test_profile_clock_tick_without_current_process_only_acks() {
+        // Pre-scheduler bring-up there is no running process; profiling
+        // cannot be active then, and the tick must still be a no-sample
+        // ack so the clock line survives (C: proc_ptr is always valid,
+        // so this arm has no C counterpart — it is the wiring-bug-shaped
+        // state made safe).
+        let _guard = profile_sample_setup(SAMPLE_BUFFER_SIZE);
+        let table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+        profile_clock_tick(None, 0x9999, &table, &priv_table);
+        // SAFETY: BKL is held (test lock).
+        let info = unsafe { *SPROF_INFO.get() };
+        assert_eq!(info.total_samples, 0);
+        assert_eq!(info.mem_used, 0);
+        // The stash is untouched by the tick itself — consumption happens
+        // in the hook via swap before the tick runs.
+        assert_eq!(PROFILE_TRAP_PC.load(Ordering::Acquire), 0);
     }
 
     #[test]

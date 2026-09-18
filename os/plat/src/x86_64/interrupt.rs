@@ -31,6 +31,15 @@ pub const IRQ0_VECTOR: u8 = 0x50;
 /// unmasked by the first-handler rule (interrupt.c:65).
 pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 
+/// The statistical-profiling clock's IRQ vector: the RTC (CMOS) periodic
+/// interrupt delivers through IOAPIC input 8, so the profile hook registers
+/// under IRQ 8 while profiling is active.
+///
+/// C: CMOS_CLOCK_IRQ = 8 (arch/i386); `init_profile_clock` installs
+/// `profile_clock_handler` on this line (`put_irq_handler`, profile.c:34)
+/// and `stop_profile_clock` removes it again (profile.c:47-48).
+pub const PROFILE_CLOCK_IRQ: IrqVector = IrqVector::new(8);
+
 /// LAPIC spurious interrupt vector.
 const LAPIC_SPURIOUS_VECTOR: u8 = 0xFF;
 
@@ -354,6 +363,14 @@ mod tests {
         // if the clock source ever moves to the LAPIC timer, this pin must
         // be revisited together with TimerIrqGate's x86 semantics.
         assert_eq!(TIMER_IRQ.get(), 0);
+    }
+
+    #[test]
+    fn test_profile_clock_irq_is_cmos_irq8() {
+        // The profiling clock is the RTC periodic interrupt (IOAPIC input
+        // 8, C CMOS_CLOCK_IRQ); the kernel-side hook registration and the
+        // trap-entry PC stash both branch on this exact line.
+        assert_eq!(PROFILE_CLOCK_IRQ.get(), 8);
     }
 }
 

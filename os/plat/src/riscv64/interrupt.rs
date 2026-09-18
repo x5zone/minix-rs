@@ -39,6 +39,17 @@ const PLIC_COMPLETE: usize = PLIC_CLAIM;
 /// `TimerIrqGate` (`sie.STIE`).
 pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 
+/// The statistical-profiling clock's dispatch identity: pseudo-vector 0.
+///
+/// There is no dedicated profiling clock on riscv64 — the arch
+/// implementation returns `ProfileClockError::Unsupported` (the CLINT
+/// `mtimecmp` is already owned by the scheduler; no second S-mode
+/// comparator is standardized), so no hook is ever registered on this
+/// identity and no delivery path can produce it. It exists so the
+/// kernel-side profile wiring compiles per-architecture the same way
+/// `TIMER_IRQ` does.
+pub const PROFILE_CLOCK_IRQ: IrqVector = IrqVector::new(0);
+
 /// RISC-V 64-bit PLIC interrupt controller.
 ///
 /// # Fields
@@ -185,6 +196,14 @@ mod tests {
         // moves off 0, the trap-entry mapping (scause SupervisorTimer →
         // vector) and the PLIC special case must move with it.
         assert_eq!(TIMER_IRQ.get(), 0);
+    }
+
+    #[test]
+    fn test_profile_clock_irq_is_unreachable_pseudo() {
+        // init_profile_clock on riscv64 reports Unsupported (no second
+        // S-mode comparator), so no hook is ever registered on this
+        // identity and the trap entry's line check can never match.
+        assert_eq!(PROFILE_CLOCK_IRQ.get(), 0);
     }
 }
 

@@ -76,6 +76,24 @@ pub const TIMER_IRQ: IrqVector = crate::riscv64::interrupt::TIMER_IRQ;
 #[cfg(all(feature = "mock", not(target_arch = "x86_64"), not(target_arch = "aarch64"), not(target_arch = "riscv64")))]
 pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 
+/// The statistical-profiling clock's IRQ identity, per architecture:
+///
+/// - x86_64: `8` — the RTC (CMOS) periodic interrupt is IOAPIC input 8
+///   (C: CMOS_CLOCK_IRQ = 8, arch/i386); the profile hook registers on
+///   this line only while profiling is active.
+/// - aarch64/riscv64: `0` — an unreachable pseudo-identity. Those
+///   architectures return `ProfileClockError::Unsupported` from
+///   `init_profile_clock`, so no hook is ever registered and no delivery
+///   path can produce the identity.
+#[cfg(target_arch = "x86_64")]
+pub const PROFILE_CLOCK_IRQ: IrqVector = crate::x86_64::interrupt::PROFILE_CLOCK_IRQ;
+#[cfg(target_arch = "aarch64")]
+pub const PROFILE_CLOCK_IRQ: IrqVector = crate::arm64::interrupt::PROFILE_CLOCK_IRQ;
+#[cfg(target_arch = "riscv64")]
+pub const PROFILE_CLOCK_IRQ: IrqVector = crate::riscv64::interrupt::PROFILE_CLOCK_IRQ;
+#[cfg(all(feature = "mock", not(target_arch = "x86_64"), not(target_arch = "aarch64"), not(target_arch = "riscv64")))]
+pub const PROFILE_CLOCK_IRQ: IrqVector = IrqVector::new(0);
+
 #[cfg(feature = "mock")]
 pub use mock::{MockInterruptController, MockEarlyConsole, MockPortIo};
 

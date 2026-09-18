@@ -108,6 +108,17 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     }
 
     if let Some(irq) = minix_arch::x86_64::trap_stub::irq_of_vector(vector) {
+        // Profile-clock PC handoff (C reads p->p_reg.pc, which the asm
+        // entry already saved into the process context; the Rust IRQ path
+        // never saves the frame, so the interrupted rip travels to
+        // `profile_clock_hook` through the one-shot slot instead). The
+        // SPROFILING guard keeps a line fire outside an active profiling
+        // run from leaving a stale value in the slot.
+        if irq == minix_plat::PROFILE_CLOCK_IRQ.get()
+            && crate::misc::SPROFILING.load(core::sync::atomic::Ordering::Acquire)
+        {
+            crate::misc::stash_profile_pc(frame.rip);
+        }
         // D-46 hardware half-loop: ack → mask → hook chain → unmask → eoi,
         // under the interrupted context's BKL (C: IRQ handlers run with the
         // BKL owned by the interrupted context; no lock is taken here).
