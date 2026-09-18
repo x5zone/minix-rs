@@ -38,7 +38,7 @@
 |---|---|---|---|---|
 | K14 | I-1 kernel 独立 ELF 构建（DEFERRED） | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L183 | 需入口交接 ABI 设计 + boot-shim 终局跳转。三架构 QEMU 目标走 boot-shim 链即可达成，**维持登记不排期**，出现真实需求再立项 | 🚫 |
 | K15 | 15-todo-fixes 状态对账回写 | [00-master-plan/15-todo-fixes.md](00-master-plan/15-todo-fixes.md) | 阶段 2/3（VM/kernel 半）实际已按 PFN 模型实现，文档标"❌"过时——回写事实。**本文件归 edge1 独占**；阶段 4/5/6（VFS/PM）的状态结论由 edge3 经 edge4 状态板传递后由本线统一回写 | ✅（本提交；阶段 2/3 状态 ✅ + 各插"实际落地对账"节：语义全覆盖 + 落点迁址映射（PFN 分配器三实现/vmproc·region·phys_mem 模块化/fork 内核半在 proc.rs+syscall_process.rs/Endpoint 归 minix-types wire 层），锚点逐条 grep 核实；阶段 4/5/6 维持 ❌ 待 edge3 传递） |
-| K16 | 06 文档 v2.2 瘦身 + review-line-check.sh 工具 | [01-stage-kernel/06-todo.md](01-stage-kernel/06-todo.md) L579/L690 | 纯文档/工具债，两轮体检清单已给出（2028→约 1550 行）。低优先 | 🔄 工具半已交付（commit 7013b7478：`tools/review-line-check.sh`，C 简写消歧 + 裸 Rust 名解析 + diff 增量模式，实测 54 锚点）；06-proc-init-boot-proc.md 瘦身（5 点处方 2030→约 1600 行）待续 |
+| K16 | 06 文档 v2.2 瘦身 + review-line-check.sh 工具 | [01-stage-kernel/06-todo.md](01-stage-kernel/06-todo.md) L579/L690 | 纯文档/工具债，两轮体检清单已给出（2028→约 1550 行）。低优先 | ✅ 2026-09-18/19（工具半 7013b7478；瘦身半——06-proc-init-boot-proc.md 2030→1375 行：1.1.4 三澄清/1.4.1 三维度/1.5.2 四步叙事压 Ch1；2.0 四注并一段、2.1.6 履历表迁 11 附录 A、2.2.0 宏展开+宏族表并段、2.2.5 哲学段删；3.1.1/3.3/3.4/3.5/3.6/3.9/3.10/3.11/3.12 九节压单段或指针；4.1 三 code block→一行表、4.2 栈布局→一句、4.3 白名单论文删、4.5 三段设计删、4.6 删重复、4.9 压五行、Ch5 测试清单→代表 10+对账矩阵；3.9 全量正文迁 16-smp 附录 A 零知识损失；doc-style-lint --diff 零命中） |
 | K18 | 维持登记三件（不排期） | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) | I-5 ACPI（物理机前提）、D-65② boot 旋钮通道（条件立项）、L1 内存序学习 backlog（doc 11/16 review 触发） | 🚫 |
 
 ---

@@ -1230,3 +1230,69 @@ C 版在 `smp_start_aps` 里把 trampoline 基址写进 BIOS 数据区 0x467，�
 ### 10.3 riscv a2 语义勘误（§2.1/§3.1 的"改传 bootstrap 指针"）
 
 `hart_start` 的 a2 原注释误标 "priv (0 = S-mode)"——a2 是**透传给 AP 的 opaque cookie**（AP 的 a1），特权级由 hart_start 语义隐含（S-mode）。`boot_ap` 现把 entry 指针经 a2 传给 AP，通道按 §3.1 打开。
+
+---
+
+## 附录 A. §3.9 SMP 预留设计全量正文（自 06-proc-init-boot-proc.md 迁入，edge1 K16b 瘦身）
+
+> 06 侧保留 15 行摘要指针；本附录是全量教学正文（侵入式就绪链、BKL 串行 vs Linux
+> 真并行、per-CPU runqueue 的 cache 局部性价值、AtomicI32/Relaxed 论证、类型系统
+> 强制），内容与迁出时一致；正文内对 06 §3.3/§3.5 等的交叉引用按迁出时快照保留。
+
+### 3.9 SMP 预留设计
+
+**心智模型前置**——先建立读者对 Minix3 调度器数据结构的认知，再讲并发协议。本节只搭**最少的认知骨架**，调度器数据结构与算法的完整展开见 §11-scheduling-primitives，BKL 类型系统强制的实现细节见 [16-smp.md](./16-smp.md)。
+
+**就绪队列数据结构（先于并发协议）**——Minix3 把每个 CPU 各自的"待运行进程"组织成一条**侵入式链表**，链头在调度器数组里，链节点嵌入进程结构。定义两个最小概念：
+
+- **`p_nextready: i32`**（C 端 `struct proc *`，proc.h:72）——`KProcess` 上的"链后继"字段，存**下一个就绪进程的 `ProcNr`（不是地址）**。这是 §3.3 末尾讨论的"裸指针 → 槽索引"转型的具体字段；详细为什么用 i32 不用裸指针见 [§3.3 关键反推段](#33-rts-位图设计bitflags--atomicu32--强类型不变量对应-216)。
+- **`NONE_PROC_NR = -1`**——链尾哨兵。"下一个进程"指向 `NONE_PROC_NR` 表示这是链尾。
+- **`run_q_head[NR_SCHED_QUEUES]`**（每个优先级一条链，[sched.rs:79](file:///os/kernel/src/sched.rs#L79)）——16 条链头的数组（每条对应一个优先级）。CPU 选下一个进程时看自己**所在 CPU 的 run_q_head**。
+
+整条链表结构（CPU 视角）：
+
+```text
+CPU 的 run_q_head[priority]
+   │
+   ▼
+┌──────────┐ p_nextready ┌──────────┐ p_nextready ┌──────────┐
+│ Proc A   │ ──────────►│ Proc B   │ ──────────►│ Proc C   │
+└──────────┘            └──────────┘            └──────────┘
+  ▲                                              │
+  └──── 同优先级进程串成一条链 ────────────────────┘
+                                                   ▼
+                                            (NONE_PROC_NR = -1)
+```
+
+接下来读 §3.3 末尾的 "`Relaxed` 模式解析" 时，"调度器遍历就绪链表"就有具体对象可想象了——`pick_proc` 就是沿着 `run_q_head[q] → p_nextready → p_nextready → ...` 找到第一个 runnable 的进程。
+
+**并发模型（BKL 全局串行 + per-CPU runqueue）**——在上面的数据结构基础上，看 Minix3 与 Linux 的差异：
+
+```text
+Linux 的真并行调度：                    Minix3 的"假并行"调度（BKL 全局串行）：
+  CPU0 → lock(rq0) → 调度 → unlock       CPU0 → BKL_LOCK → 调度 → BKL_UNLOCK
+  CPU1 → lock(rq1) → 调度 → unlock       CPU1 ──── 等待 BKL（自旋）─────────────
+       （同时进行）                        CPU1 → BKL_LOCK → 调度 → BKL_UNLOCK
+```
+
+关键理解点（**这是 §3.9 的核心论点**）：
+
+- **Linux 的 `lock(rq0)`** 是 per-CPU runqueue 锁——CPU0 调度 CPU0 的队列时 CPU1 可以同时调度 CPU1 的队列，真正并行。
+- **Minix3 的 BKL_LOCK** 是**全局** spinlock——任意时刻**只有一个 CPU 在调度**（即使它跑的是自己 per-CPU 队列的进程）。`BKL_LOCK` 在其他 CPU 上是"自旋等待"，不是"做别的事"。
+- **Minix3 的 per-CPU runqueue 不是为了并行调度**——既然任意时刻只有一个 CPU 跑调度代码，并行度其实是 1。per-CPU runqueue 的真正价值是 **cache 局部性**：CPU0 选中的进程大概率还在 CPU0 的 L1/L2 cache 里（因为它之前在 CPU0 上跑过），跨 CPU 调度会强制 cache miss（CPU1 调度 CPU0 队列里的进程 → 该进程在 CPU0 的 cache 上 → CPU1 必须重新加载）。每个 CPU 跑自己队列上的进程是 cache-friendly 的妥协。
+
+> **架构范围说明**：SMP 安全组合不止 BKL + atomics 一种——还存在 per-CPU locks / RCU / sequence lock / MCS lock / lock-free queue 等方案。本项目沿用 Minix3 的简化模型（BKL 全局串行调度决策 + per-CPU runqueue 实现 cache 局部性），故未引入这些方案。如果未来需要支持 BKL 之外的更细粒度并发（如 Linux-style 的 per-CPU rq lock），架构层会有相应演进。
+
+**Rust 表达**——有了数据结构 + 并发模型这两个前置认知，Rust 的字段表达为什么是这样就清晰了：
+
+- **`p_nextready: AtomicI32`**（[os/kernel/src/proc.rs:struct KProcess（L919，工具生成）](file:///os/kernel/src/proc.rs#L919)）——装的是 `ProcNr.0`（i32），不是 `*mut KProcess` 指针。这样选 i32 是因为：(a) 跨 CPU 共享时裸指针是 `!Sync`，编译期被 ban；(b) `AtomicI32` 比 `AtomicI32<ProcNr>` 在链遍历时零开销（`load → as_i32 → 比较`）。这是 §3.3 末段 [L1081 "类型选择"项](06-proc-init-boot-proc.md#L1081) 的实战字段。
+- **`load(Ordering::Relaxed)`**（[sched.rs:153, 167](file:///os/kernel/src/sched.rs#L153)）——`pick_proc` 遍历链表时已经持 BKL，写者（`sched_enqueue/sched_dequeue`）同样持 BKL；同一时刻不存在"无锁并发读写同一 `p_nextready`"。所以 `Relaxed` 够——它只防"撕裂读 + 本字段读写乱序"，跨字段顺序由 BKL 提供（详见 §3.3 末段 [关键反推](06-proc-init-boot-proc.md#L1084)）。
+- **`NONE_PROC_NR = -1` 是**链尾哨兵——遍历时遇到 `next == NONE_PROC_NR` 就停。这在 i32 字段上很自然（`-1` 永远不会是合法 `ProcNr`）；如果用裸指针，需要 `NULL` 或专门 sentinel，复杂度相同。
+
+如果用 `Rc<RefCell<KProcess>>` 跨 CPU 共享，`RefCell` 的运行时借用检查不是原子操作，两个 CPU 可能同时获得 `&mut`，导致 UB——所以 Rust 路径要么走 `&mut`（持 BKL 内），要么走 `AtomicI32`（无锁读）。**BKL + AtomicI32** 组合是 Minix3 BKL 模型下的唯一可行办法（不引入 Linux 的 RCU / seqlock 等更细粒度机制）。
+
+**类型系统强制**（细节 → [16-smp.md](./16-smp.md)）：`CpuLocal<T>: !Sync`（[smp.rs:137](file:///os/kernel/src/smp.rs#L137)）让 per-CPU 数据**编译期禁止跨 CPU 共享引用**，从根上消除 per-CPU 数据被并发访问的可能；`BklSection<'a>` typed witness（[smp.rs:867](file:///os/kernel/src/smp.rs#L867)）把"当前持有 BKL"从注释约定升级为编译期类型证明——需 BKL 的 API 以 `&BklSection<'_>` 为参数，自动拒绝"未持锁调用"。
+
+**与 C 的差异**：并发模型与 C 完全一致（BKL + per-CPU runqueue）；差异只在 Rust 类型系统把 C 靠注释/纪律维护的约束（"per-CPU 数据不跨 CPU"、"持 BKL 才能调用"）变成编译期强制。
+
+> **本节是概念索引**：详细 BKL/per-CPU/调度并行化的设计与代码见 [16-smp.md](./16-smp.md)（per-CPU 抽象 + BklSection witness 设计）；调度器算法（`pick_proc`/`sched_enqueue`/`sched_dequeue`）见 §11-scheduling-primitives。本章仅建立"Minix3 是 BKL 全局串行 + per-CPU 局部状态"的心智模型，避免读者在 boot 期误用 `Rc/RefCell`（SMP 跨 CPU UB）。

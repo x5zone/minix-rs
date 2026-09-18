@@ -694,3 +694,23 @@ pub fn sched_proc(
 | [09-vm-boot-protocol](09-vm-boot-protocol.md) | `VMINHIBIT` 标志对调度的影响 |
 | [12-ipc-core](12-ipc-core.md) | `SENDING`/`RECEIVING` 标志如何触发 dequeue |
 | [16-smp](16-smp.md) | per-CPU 队列的 SMP 扩展 / 跨 CPU IPI 唤醒 |
+
+---
+
+## 附录 A. 阶段 C 的 RTS 位设置履历
+
+> 自 [06-proc-init-boot-proc.md §2.1.6](./06-proc-init-boot-proc.md) 迁入（edge1 K16b 瘦身）：
+> 这张表回答的是"调度器视角下每位何时置上"，与本文档的队列/调度语义同域，比嵌在
+> 存储模型文档里更可查。
+
+
+
+| 时机 | 进程 | 源码动作 | 为什么 |
+|------|------|---------|--------|
+| `proc_init` 第一个循环（`minix3/minix/kernel/proc.c:proc_init（L129，工具生成）`） | 261 个 slot 全遍历 | `p_rts_flags = RTS_SLOT_FREE`（L130） | 宣告空槽 |
+| `proc_init` 第二个循环（`minix3/minix/kernel/proc.c:proc_init（L151，工具生成）`） | IDLE（每 CPU 一个） | `p_rts_flags \|= RTS_PROC_STOP`（L156，**永不清除**） | IDLE 是调度器的最后手段，只在无事可做时被选中 |
+| boot 循环，**非 schedulable 分支**（`minix3/minix/kernel/main.c:kmain（L251，工具生成）`） | 12 个 module 中**非** RS/VM 的 10 个（DS/PM/SCHED/VFS/MEM/TTY/MIB/PFS/MFS/INIT） | `RTS_SET(NO_PRIV \| NO_QUANTUM)`（L253） | 特权与时间片尚未授予，等 RS 运行时通过 PrivCtl 授予 |
+| boot 循环，**非 VM 用户进程**（`minix3/minix/kernel/main.c:kmain（L264，工具生成）`） | 同上 10 个 + RS（**共 11 个**，kernel task 与 VM 都不满足 `rp->p_nr >= 0` 且 `!= VM_PROC_NR`） | `\|= RTS_VMINHIBIT \| RTS_BOOTINHIBIT`（L265-266） | **两个位清除时机不同**：`RTS_VMINHIBIT` 由 VM 经 vmctl `VMCTL_VMINHIBIT_CLEAR`（`system/do_vmctl.c:143`）清除（VM 为该进程建好页表时，per-process）；`RTS_BOOTINHIBIT` 由 VM 经 vmctl `VMCTL_BOOTINHIBIT_CLEAR`（`system/do_vmctl.c:167`）清除（bsp_finish_booting 完成后，全局通知）。通常 VMINHIBIT 先（per-process），BOOTINHIBIT 后（全局），但**两者是独立动作**，不是同一阶段。 |
+| boot 循环尾部，**对全部 17 个 boot 进程**（`minix3/minix/kernel/main.c:kmain（L269，工具生成）`） | 17 个 boot 进程（含 IDLE？不——见下行） | `\|= RTS_PROC_STOP`；`&= ~RTS_SLOT_FREE`（L269-270） | 从「空槽」转正为「已占用但暂停」，等统一唤醒 |
+| `bsp_finish_booting` 入队（`minix3/minix/kernel/main.c:bsp_finish_booting（L64，工具生成）`） | `for (i=0; i < NR_BOOT_PROCS - NR_TASKS; i++)`——遍历 12 个 module（**包括 VM、RS**），**不**遍历 5 个 kernel task，**不**遍历 IDLE | **只** `RTS_UNSET(proc_addr(i), RTS_PROC_STOP)`（L65） | 入调度视野；**此函数不动 `RTS_VMINHIBIT` / `RTS_BOOTINHIBIT`**——这两个位由 VM 在自己初始化完成后通过 vmctl `VMCTL_VMINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L143，工具生成）`）和 `VMCTL_BOOTINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl（L167，工具生成）`）分别清除（VMINHIBIT per-process，BOOTINHIBIT 全局） |
+| IDLE slot | 每 CPU 一个 | **永不清除** PROC_STOP | 调度器最后手段 |
