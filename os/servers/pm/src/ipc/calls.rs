@@ -915,7 +915,6 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     // ProcTab 走 do_getsysinfo 的逐槽 cpy 路径,不经 ctl。
                     &[]
                 }
-                #[cfg(feature = "syscall_stats")]
                 fn call_stats(&self) -> &[u8] {
                     self.stats
                 }
