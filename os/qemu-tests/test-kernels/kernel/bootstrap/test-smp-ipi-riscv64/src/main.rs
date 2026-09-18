@@ -186,12 +186,19 @@ core::arch::global_asm!(
     "    csrr t0, sip",
     "    la t1, diag_sip_sym",
     "    sd t0, 0(t1)",
-    // Re-assert global SIE every iteration: if the snapshot now reads
-    // SIE=1 while SSIP stays pending with no trap, the delivery leg
-    // (sip → trap vector) is broken, not the enable leg.
+    // Periodic SBI base probe (get_spec_version, EID 0x10 FID 0): each
+    // ecall opens an M-mode window where OpenSBI converts the pending
+    // aclint-mswi MSIP into SSIP for this hart — with SIE already on,
+    // the SSIP traps straight into the handler on mret. A wfi-only
+    // loop never services the M-level raise.
+    "    li a7, 16",
+    "    li a6, 0",
+    "    ecall",
+    // Re-assert global SIE after each M-window: the M-trap entry
+    // cleared it, and SSIP (raised by OpenSBI inside the window) must
+    // find SIE=1 to trap into the handler.
     "    li t0, 1",
     "    csrs sstatus, t0",
-    "    wfi",
     "    j 1b",
 );
 
@@ -230,6 +237,10 @@ core::arch::global_asm!(
     "    sd a5, 72(sp)",
     "    sd a6, 80(sp)",
     "    sd a7, 88(sp)",
+    "    la t1, handler_seen_sym",
+    "    li t2, 1",
+    "    fence w,w",
+    "    sd t2, 0(t1)",
     // Record scause BEFORE clearing anything.
     "    csrr t0, scause",
     "    la t1, ipi_scause_sym",
@@ -267,6 +278,10 @@ core::arch::global_asm!(
 core::arch::global_asm!(
     ".section .bss.ipiflags",
     ".align 3",
+    ".globl handler_seen_sym",
+    "handler_seen_sym:",
+    "    .dword 0",
+    "    .dword 0",
     ".globl trap_count_sym",
     ".align 3",
     "trap_count_sym:",
@@ -302,6 +317,7 @@ unsafe extern "C" {
     static diag_sstatus_sym: u8;
     static diag_sip_sym: u8;
     static trap_count_sym: u8;
+    static handler_seen_sym: u8;
     static ap_step1_sym: u8;
     static ap_step2_sym: u8;
 }
@@ -326,11 +342,16 @@ fn ipi_received() -> u64 {
 fn ipi_scause() -> u64 {
     unsafe { core::ptr::read_volatile(&raw const ipi_scause_sym as *const u64) }
 }
+fn handler_seen() -> u64 {
+    unsafe { core::ptr::read_volatile(&raw const handler_seen_sym as *const u64) }
+}
 
 fn fail(msg: &str) -> ! {
     early_console::write_str("### FAIL: ");
     early_console::write_str(msg);
     early_console::write_str("\n");
+    early_console::write_str("  handler_seen=");
+    early_console::write_hex(handler_seen());
     early_console::write_str("  steps: entered=");
     early_console::write_hex(ap_step(unsafe { &raw const ap_step1_sym }));
     early_console::write_str(" csrs=");
