@@ -600,6 +600,51 @@ impl ProcessTable {
         &mut self.procs
     }
 
+    /// Derive an independent `&mut` to the in-table caller slot, leaving
+    /// the `&mut self` table handle live.
+    ///
+    /// C ground truth: the caller LIVES INSIDE the process table — `caller`
+    /// is `proc_addr(CPU->proc_nr)` and every C pointer in the syscall
+    /// chain aliases. The Rust chain signatures model the test shape
+    /// (caller as a handle disjoint from the table) and cannot express
+    /// that with two simultaneous `&mut ProcessTable`-derived borrows, so
+    /// the trap-entry bodies launder one `&mut KProcess` out through this
+    /// constructor. The invariant that makes it sound is temporal, not
+    /// structural: `kernel_call`/`kernel_call_dispatch`/`kernel_call_finish`
+    /// only ever reach the caller through the laundered handle and the
+    /// table through their own parameter — the two references never use
+    /// the same bytes for the same field at the same time, matching C.
+    ///
+    /// This is THE single audited escape for that laundering (edge1 K7):
+    /// every new entry body must route through here instead of re-deriving
+    /// its own raw-pointer split, so the aliasing contract has exactly one
+    /// home. The full disjoint-API refactor (caller-by-nr through the
+    /// ~139 `caller: &mut KProcess` signatures in the syscall layer) is a
+    /// separate architecture campaign — registered as edge1 K20.
+    ///
+    /// # Safety
+    ///
+    /// - `nr` must name the slot this entry is allowed to alias (the
+    ///   currently-running process of this CPU); the debug assert checks
+    ///   validity, the caller guarantees identity.
+    /// - While the returned reference is live, the rest of the chain must
+    ///   not re-derive another alias into `self.procs` (one laundered
+    ///   handle per entry body, matching the C caller).
+    /// - The returned lifetime is the caller's choice (`'a` is deliberately
+    ///   unconstrained by `&mut self` — cutting that tie is this
+    ///   constructor's entire purpose) and must not outlive the table.
+    pub unsafe fn caller_slot_mut<'a>(&mut self, nr: ProcNr) -> &'a mut KProcess {
+        let idx =
+            nr_to_idx(nr).unwrap_or_else(|| panic!("caller_slot_mut: invalid proc nr {nr:?}"));
+        debug_assert!(
+            !self.procs[idx]
+                .p_rts_flags
+                .is_set(crate::proc::RtsFlagsBits::SLOT_FREE),
+            "caller_slot_mut: slot {nr:?} is SLOT_FREE"
+        );
+        &mut *core::ptr::addr_of_mut!(self.procs[idx])
+    }
+
     /// Resolve an endpoint to a process number (slot index).
     /// C: `isokendpt(endpoint, &proc_nr)` — validates endpoint and returns
     /// the process slot number. Returns `None` if the endpoint is invalid

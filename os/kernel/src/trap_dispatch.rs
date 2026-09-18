@@ -252,24 +252,20 @@ fn current_ipc_proc_nr() -> crate::proc::ProcNr {
 /// per-CPU `proc_ptr` anchor names the interrupted process.
 unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::ProcNr) {
     let table = unsafe { crate::proc_table_boot_unchecked() };
-    let cur_idx = crate::proc_table::nr_to_idx(cur_nr)
-        .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
 
     // Decision 3: persist the user register file before any dispatch side
     // effect — delivery paths OR IPC status into this saved context.
     {
-        let procs = table.procs_slice_mut();
-        let caller = &mut procs[cur_idx];
+        let caller = table
+            .get_mut(cur_nr)
+            .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
         minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
     }
 
-    // SAFETY (aliasing): same ground truth as the SYSCALL body — the caller
-    // lives inside the table; the two &mut never touch the same bytes at
-    // the same time (kernel_call_finish / dispatch_ipc_entry consume them
-    // in disjoint parameter roles).
-    let caller = unsafe {
-        &mut *(core::ptr::addr_of_mut!(table.procs_slice_mut()[cur_idx]))
-    };
+    // Launder the caller handle through the single audited constructor —
+    // the aliasing contract (C-exact caller-in-table semantics) lives on
+    // `ProcessTable::caller_slot_mut`; this body adds no local escape.
+    let caller = unsafe { table.caller_slot_mut(cur_nr) };
 
     // Pre-decode: unknown call numbers exit before the BKL is taken —
     // dispatch_ipc_entry's own decode-fail return path also skips the BKL
@@ -377,28 +373,16 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                  syscall data path activates with S-6/S-7"
             )
         });
-    let cur_idx = crate::proc_table::nr_to_idx(cur_nr)
-        .unwrap_or_else(|| panic!("SYSCALL from invalid proc nr {cur_nr:?}"));
 
     // User message pointer ABI: RDI (first SysV argument register).
     let m_user = VirBytes::new(frame.rdi);
 
     let table = unsafe { crate::proc_table_boot_unchecked() };
-    // SAFETY (aliasing, C-exact semantics): `caller` lives INSIDE the table —
-    // that is the ground truth the C syscall path runs on (`caller` is
-    // `proc_addr(CPU->proc_nr)`; every C pointer here aliases). Rust's
-    // `kernel_call`/`kernel_call_dispatch` signature models the test shape
-    // (caller as a handle disjoint from the table) and cannot express this
-    // without the split below. The two `&mut` derive from the same
-    // `SyncUnsafeCell` static escape that every `*_boot_unchecked` accessor
-    // already provides; `kernel_call` itself only ever reaches the caller
-    // through `caller` and the table through its own parameter — the two
-    // references never use the same bytes for the same field at the same
-    // time, matching C. Disjoint-API refactor of the chain (caller by nr)
-    // is registered as the S-6 blocker in smp_todo.md S-8.
-    let caller = unsafe {
-        &mut *(core::ptr::addr_of_mut!(table.procs_slice_mut()[cur_idx]))
-    };
+    // Launder the caller handle through the single audited constructor —
+    // the aliasing contract (C-exact caller-in-table semantics, and why
+    // borrowck's structural view must be bypassed) lives on
+    // `ProcessTable::caller_slot_mut`; this body adds no local escape.
+    let caller = unsafe { table.caller_slot_mut(cur_nr) };
     let result = crate::syscall::kernel_call(
         caller,
         m_user,
