@@ -3,6 +3,7 @@
 //! Handles message dispatch and communication with other services.
 
 mod calls;
+mod decode;
 mod dispatcher;
 mod transport;
 mod vfs;

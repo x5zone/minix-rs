@@ -441,8 +441,7 @@ mod tests {
     /// 用 `child_endpoint` 显式给出期望的子 endpoint，`vm_fork` 的
     /// debug_assert 槽位守卫依赖两者一致。
     fn queue_vm_fork_reply(transport: &mut crate::ipc::TestIpcTransport, child_endpoint: Endpoint) {
-        let mut reply = minix_types::Message::default();
-        reply.m_type = OK;
+        let mut reply = minix_types::Message { m_type: OK, ..minix_types::Message::default() };
         reply.m_u.m_m1.m1i3 = child_endpoint.0;
         transport.queue_sendrec_reply(reply);
     }

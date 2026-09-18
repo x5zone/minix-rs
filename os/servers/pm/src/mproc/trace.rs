@@ -42,8 +42,7 @@ mod tests {
     
     #[test]
     fn test_stopped() {
-        let mut state = TraceState::default();
-        state.stopped = true;
+        let state = TraceState { stopped: true, ..TraceState::default() };
         assert!(state.is_stopped());
     }
 }

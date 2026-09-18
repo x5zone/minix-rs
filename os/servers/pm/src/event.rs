@@ -744,8 +744,7 @@ mod tests {
         assert_eq!(reg.waiting(0), Some(1));
 
         // first subscriber replies
-        let mut reply = Message::default();
-        reply.m_type = PROC_EVENT_REPLY;
+        let mut reply = Message { m_type: PROC_EVENT_REPLY, ..Message::default() };
         reply.m_source = Endpoint::from_generation_slot(1, 2);
         reply.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get();
         reply.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32;
@@ -760,8 +759,7 @@ mod tests {
         assert_eq!(table.procs[5].state.block.event_cursor(), Some(EventCursor(1)));
 
         // second subscriber replies → done
-        let mut reply2 = Message::default();
-        reply2.m_type = PROC_EVENT_REPLY;
+        let mut reply2 = Message { m_type: PROC_EVENT_REPLY, ..Message::default() };
         reply2.m_source = Endpoint::from_generation_slot(1, 3);
         reply2.m_u.m_pm_lsys_proc_event.endpt = Endpoint::from_generation_slot(1, 5).get();
         reply2.m_u.m_pm_lsys_proc_event.event = ProcEvent::Exit as u32;
@@ -873,8 +871,7 @@ mod tests {
     }
 
     fn reply_msg(endpt: Endpoint, event: ProcEvent) -> Message {
-        let mut m = Message::default();
-        m.m_type = PROC_EVENT_REPLY;
+        let mut m = Message { m_type: PROC_EVENT_REPLY, ..Message::default() };
         m.m_u.m_pm_lsys_proc_event.endpt = endpt.get();
         m.m_u.m_pm_lsys_proc_event.event = event as u32;
         m

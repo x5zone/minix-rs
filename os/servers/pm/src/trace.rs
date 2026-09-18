@@ -882,8 +882,7 @@ mod tests {
             tracer: UserSlot::new(0),
             trace_options: TraceOptions::empty(),
         };
-        let mut kern = MockKernel::default();
-        kern.trace_reply = Err(-5); // EIO
+        let mut kern = MockKernel { trace_reply: Err(-5), ..MockKernel::default() }; // EIO
         let mut t = crate::ipc::TestIpcTransport::default();
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             trace_stop(&mut table, UserSlot::new(5), 11, &mut kern, &mut t);

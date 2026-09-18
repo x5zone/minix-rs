@@ -242,8 +242,7 @@ mod tests {
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
     }
     fn msg_with(m_type: i32, source: Endpoint) -> Message {
-        let mut m = Message::default();
-        m.m_type = m_type;
+        let mut m = Message { m_type: m_type, ..Message::default() };
         m.m_source = source;
         m
     }
@@ -395,8 +394,7 @@ mod tests {
     #[test]
     fn test_vm_willexit_refusal_is_err() {
         let mut transport = crate::ipc::TestIpcTransport::new();
-        let mut refusal = Message::default();
-        refusal.m_type = -12; // VM 拒绝（负 errno）
+        let refusal = Message { m_type: -12, ..Message::default() }; // VM 拒绝（负 errno）
         transport.queue_sendrec_reply(refusal);
         let got = vm_willexit(&mut transport, Endpoint::from_generation_slot(1, 7));
         assert_eq!(got.unwrap_err(), -12);
@@ -419,8 +417,7 @@ mod tests {
     #[test]
     fn test_vm_exit_refusal_is_err() {
         let mut transport = crate::ipc::TestIpcTransport::new();
-        let mut refusal = Message::default();
-        refusal.m_type = -19;
+        let refusal = Message { m_type: -19, ..Message::default() };
         transport.queue_sendrec_reply(refusal);
         let got = vm_exit(&mut transport, Endpoint::from_generation_slot(3, 9));
         assert_eq!(got.unwrap_err(), -19);
@@ -430,8 +427,7 @@ mod tests {
 
     /// 构造一条 VM_FORK 脚本化应答（OK + 子 endpoint 在 m1i3）。
     fn vm_fork_ok_reply(child: Endpoint) -> Message {
-        let mut m = Message::default();
-        m.m_type = minix_types::OK;
+        let mut m = Message { m_type: minix_types::OK, ..Message::default() };
         m.m_u.m_m1.m1i3 = child.0;
         m
     }
@@ -465,8 +461,7 @@ mod tests {
     fn test_vm_fork_vm_refusal_is_error() {
         // C: forkexit.c:78-79 — vm_fork 返回非 OK → errno 传播为失败。
         let mut transport = crate::ipc::TestIpcTransport::new();
-        let mut refusal = Message::default();
-        refusal.m_type = -12; // 负 errno（ENOMEM）
+        let refusal = Message { m_type: -12, ..Message::default() }; // 负 errno（ENOMEM）
         transport.queue_sendrec_reply(refusal);
 
         let result = vm_fork(

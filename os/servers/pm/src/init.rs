@@ -910,8 +910,7 @@ mod tests {
         // C: main.c:65-71 — is_ipc_notify：非 CLOCK 源的通知不产生回复、
         // 不做 endpoint 验证。
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
-        let mut msg = Message::default();
-        msg.m_type = 0x1000; // NOTIFY_MESSAGE（com.h:90）
+        let mut msg = Message { m_type: 0x1000, ..Message::default() }; // NOTIFY_MESSAGE（com.h:90）
         msg.m_source = Endpoint::RS; // 非 CLOCK
         server.transport.queue_receive(msg, IpcStatus { flags: 4 });
         assert_eq!(server.run_once(), RunStep::Handled);
@@ -936,8 +935,7 @@ mod tests {
             Box::new(StubTimer),
             Box::new(crate::timer::TrapVTimerCtl),
         );
-        let mut msg = Message::default();
-        msg.m_type = 0x1000;
+        let mut msg = Message { m_type: 0x1000, ..Message::default() };
         msg.m_source = Endpoint::CLOCK;
         server.transport.queue_receive(msg, IpcStatus { flags: 4 });
         assert_eq!(server.run_once(), RunStep::Handled);
@@ -949,8 +947,7 @@ mod tests {
     fn test_run_once_invalid_endpoint_panics() {
         // C: main.c:75-76 — pm_isokendpt 失败 panic（fail-fast）。
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
-        let mut msg = Message::default();
-        msg.m_type = 2; // PM_FORK
+        let mut msg = Message { m_type: 2, ..Message::default() }; // PM_FORK
         msg.m_source = Endpoint::from_generation_slot(9, 9); // 未注册槽位
         server.transport.queue_receive(msg, IpcStatus::default());
         let _ = server.run_once();
@@ -967,8 +964,7 @@ mod tests {
             exit_code: 0,
             sig_status: 0,
         };
-        let mut msg = Message::default();
-        msg.m_type = 2; // PM_FORK
+        let mut msg = Message { m_type: 2, ..Message::default() }; // PM_FORK
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
@@ -982,8 +978,8 @@ mod tests {
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
-        let mut msg = Message::default();
-        msg.m_type = 18; // PM_GETMCONTEXT（handler 归 20-misc-queries.md，尚未实现）
+        // PM_GETMCONTEXT（handler 归 20-misc-queries.md，尚未实现）
+        let mut msg = Message { m_type: 18, ..Message::default() };
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
@@ -1002,12 +998,10 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 5);
         running_proc_at(&mut server.table, 5, ep);
         // 脚本化 VM_FORK 应答：空表 + 游标 0 → 子槽位 1（父在 5）。
-        let mut vm_reply = Message::default();
-        vm_reply.m_type = minix_types::OK;
+        let mut vm_reply = Message { m_type: minix_types::OK, ..Message::default() };
         vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
         server.transport.queue_sendrec_reply(vm_reply);
-        let mut msg = Message::default();
-        msg.m_type = 2; // PM_FORK
+        let mut msg = Message { m_type: 2, ..Message::default() }; // PM_FORK
         msg.m_source = ep;
         server.transport.queue_receive(msg, IpcStatus::default());
         assert_eq!(server.run_once(), RunStep::Handled);
@@ -1038,8 +1032,8 @@ mod tests {
         running_proc_at(&mut server.table, 5, ep);
         server.table.procs[5].state.block.ipc_blocked =
             Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
-        let mut msg = Message::default();
-        msg.m_type = VFS_PM_SETUID_REPLY; // SETUID 分支：reply(OK) + 尾部 restart_signals
+        // SETUID 分支：reply(OK) + 尾部 restart_signals
+        let mut msg = Message { m_type: VFS_PM_SETUID_REPLY, ..Message::default() };
         msg.m_source = Endpoint::VFS;
         // SAFETY: 回复消息的 m7_i1 承载目标进程 endpoint（main.c:315-321）。
         msg.m_u.m_m7.m7i1 = ep.get();

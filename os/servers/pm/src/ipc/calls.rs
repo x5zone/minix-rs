@@ -224,13 +224,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // C: do_srv_fork（forkexit.c:237/239）——与 fork 相反：立即
         // reply(child, OK) 后同步返回 pid。
         PmCall::SrvFork => {
-            let params = {
-                let pl = unsafe { msg.m_u.m_lsys_pm_srv_fork };
-                crate::mproc::SrvForkParams {
-                    uid: pl.uid,
-                    gid: pl.gid,
-                }
-            };
+            let (uid, gid) = super::decode::srv_fork(msg);
+            let params = crate::mproc::SrvForkParams { uid, gid };
             match crate::fork::do_srv_fork(table, msg.m_source, params, transport, kern) {
                 Ok(child_pid) => ReplyIntent::Reply(child_pid),
                 Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
@@ -239,7 +234,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // C: do_exit（forkexit.c:246-266）——返回 SUSPEND 且**永不回复**
         //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
         PmCall::Exit => {
-            let status = unsafe { msg.m_u.m_lc_pm_exit.status };
+            let status = super::decode::exit(msg);
             // do_exit 当前恒返 NoReply——直接透传而非丢弃，未来语义变化
             // 时回复意图不会被静默吞掉。
             crate::exit::do_exit(table, caller, status, transport, kern)
@@ -248,10 +243,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // ECHILD）或 SUSPEND（wait_test 命中后挂 WAITING，由 tell_parent/
         // tell_tracer 稍后回复）。handler 直接返回回复意图。
         PmCall::Wait4 => {
-            let (pidarg, options, addr) = unsafe {
-                let pl = msg.m_u.m_lc_pm_wait4;
-                (pl.pid, pl.options, pl.addr)
-            };
+            let (pidarg, options, addr) = super::decode::wait4(msg);
             crate::wait::do_wait4(
                 table,
                 caller,
@@ -266,10 +258,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // EXITING 时是 SUSPEND（check_sig 的 sig_proc_exit 链，signal.c:384）
         // → 本次不回复。
         PmCall::Kill => {
-            let (pid, signo) = unsafe {
-                let pl = msg.m_u.m_lc_pm_kill;
-                (pl.pid, pl.signo)
-            };
+            let (pid, signo) = super::decode::kill(msg);
             match crate::signal::do_kill(table, caller, pid, signo, kern, transport) {
                 Ok(_count) => {
                     if table.procs[caller.get()].state.lifecycle.is_exiting() {
@@ -283,10 +272,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         }
         // C: do_srv_kill（signal.c:204-211）——同 do_kill 的回复模式。
         PmCall::SrvKill => {
-            let (pid, signo) = unsafe {
-                let pl = msg.m_u.m_rs_pm_srv_kill;
-                (pl.pid, pl.signo)
-            };
+            let (pid, signo) = super::decode::srv_kill(msg);
             match crate::signal::do_srv_kill(table, caller, pid, signo, kern, transport) {
                 Ok(_count) => {
                     if table.procs[caller.get()].state.lifecycle.is_exiting() {
@@ -301,7 +287,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // C: do_proceventmask（event.c:179-206）——掩码更新走 EventRegistry
         //（06-event-subscription.md），回复意图由 registry 决定。
         PmCall::ProcEventMask => {
-            let mask_bits = unsafe { msg.m_u.m_lsys_pm_proceventmask.mask };
+            let mask_bits = super::decode::proceventmask(msg);
             let mask = ProcEventMask::from_bits_truncate(mask_bits);
             events.do_proceventmask_mut(caller, mask, table, transport, kern)
         }
@@ -310,10 +296,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // data 载荷经 ipc.reply 预填（m_pm_lc_ptrace.data，C trace.c:59 等），
         // 主循环 reply() 以 m_type 携带返回码整体发出。
         PmCall::Ptrace => {
-            let (pid, preq, addr, data) = unsafe {
-                let pl = msg.m_u.m_lc_pm_ptrace;
-                (pl.pid, pl.req, pl.addr, pl.data)
-            };
+            let (pid, preq, addr, data) = super::decode::ptrace(msg);
             let req = crate::trace::PtraceReq { req: preq, pid, addr, data };
             match crate::trace::do_trace(table, caller, req, kern, transport) {
                 Ok(intent) => intent,
@@ -389,13 +372,11 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
-        let mut vm_reply = Message::default();
-        vm_reply.m_type = minix_types::OK;
+        let mut vm_reply = Message { m_type: minix_types::OK, ..Message::default() };
         vm_reply.m_u.m_m1.m1i3 = Endpoint::from_generation_slot(2, 1).0;
         transport.queue_sendrec_reply(vm_reply);
 
-        let mut msg = Message::default();
-        msg.m_type = 2;
+        let mut msg = Message { m_type: 2, ..Message::default() };
         msg.m_source = ep;
         let intent = dispatch_pm_call(
             PmCall::Fork,
@@ -418,8 +399,7 @@ mod tests {
         //（pm_isokendpt 防御，ESRCH），不再有"静默 ReplyLater"的假路径。
         let (mut table, mut events, mut transport) =
             setup_with_caller(3, Endpoint::from_generation_slot(1, 3));
-        let mut msg = Message::default();
-        msg.m_type = 2;
+        let mut msg = Message { m_type: 2, ..Message::default() };
         msg.m_source = Endpoint::from_generation_slot(9, 9); // 未注册的父
         let intent = dispatch_pm_call(
             PmCall::Fork,
@@ -443,8 +423,7 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
-        let mut msg = Message::default();
-        msg.m_type = 1;
+        let mut msg = Message { m_type: 1, ..Message::default() };
         msg.m_source = ep;
         let intent = dispatch_pm_call(
             PmCall::Exit,
@@ -465,8 +444,7 @@ mod tests {
         let ep = Endpoint::from_generation_slot(1, 3);
         let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
         let _kern = NoopKernel;
-        let mut msg = Message::default();
-        msg.m_type = 4;
+        let mut msg = Message { m_type: 4, ..Message::default() };
         msg.m_source = ep;
         assert_eq!(
             dispatch_pm_call(

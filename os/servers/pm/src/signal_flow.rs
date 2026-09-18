@@ -598,8 +598,7 @@ mod tests {
 
     #[test]
     fn test_next_unblocked_smallest() {
-        let mut s = SignalState::default();
-        s.pending = (1u64 << 5) | (1u64 << 2);
+        let mut s = SignalState { pending: (1u64 << 5) | (1u64 << 2), ..SignalState::default() };
         s.mask = 0;
         let nxt = s.next_unblocked().unwrap();
         assert_eq!(nxt.0, 3); // 1<<2 → signo 3 smallest
@@ -607,8 +606,7 @@ mod tests {
 
     #[test]
     fn test_take_pending_clears_both() {
-        let mut s = SignalState::default();
-        s.pending = 1u64 << 4;
+        let mut s = SignalState { pending: 1u64 << 4, ..SignalState::default() };
         s.kernel_pending = 1u64 << 4;
         s.take_pending(5);
         assert_eq!(s.pending, 0);

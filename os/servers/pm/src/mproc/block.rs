@@ -179,15 +179,16 @@ mod tests {
     
     #[test]
     fn test_stopped() {
-        let mut state = BlockState::default();
-        state.stopped = true;
+        let state = BlockState { stopped: true, ..BlockState::default() };
         assert!(state.is_blocked());
     }
     
     #[test]
     fn test_vfs_blocked() {
-        let mut state = BlockState::default();
-        state.ipc_blocked = Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
+        let state = BlockState {
+            ipc_blocked: Some(IpcBlockReason::VfsCall { reply_to_new_parent: false }),
+            ..BlockState::default()
+        };
         assert!(state.is_blocked());
         assert!(state.is_vfs_blocked());
         assert!(!state.is_event_blocked());
@@ -197,8 +198,10 @@ mod tests {
     fn test_vfs_call_new_parent_payload() {
         // NEW_PARENT only exists during a VFS call: the flag combination
         // (VFS_CALL | NEW_PARENT) is encoded as a single enum payload.
-        let mut state = BlockState::default();
-        state.ipc_blocked = Some(IpcBlockReason::VfsCall { reply_to_new_parent: true });
+        let state = BlockState {
+            ipc_blocked: Some(IpcBlockReason::VfsCall { reply_to_new_parent: true }),
+            ..BlockState::default()
+        };
         assert!(state.is_vfs_blocked());
         assert!(matches!(
             state.ipc_blocked,
@@ -208,8 +211,7 @@ mod tests {
     
     #[test]
     fn test_combined_state() {
-        let mut state = BlockState::default();
-        state.stopped = true;
+        let mut state = BlockState { stopped: true, ..BlockState::default() };
         state.ipc_blocked = Some(IpcBlockReason::VfsCall { reply_to_new_parent: false });
         state.unpaused = true;
         assert!(state.is_blocked());

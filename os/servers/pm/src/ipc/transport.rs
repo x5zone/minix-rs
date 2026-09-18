@@ -218,8 +218,7 @@ mod tests {
     #[test]
     fn test_mock_records_send() {
         let mut t = TestIpcTransport::new();
-        let mut msg = Message::default();
-        msg.m_type = 0x900; // VFS_PM_INIT
+        let msg = Message { m_type: 0x900, ..Message::default() }; // VFS_PM_INIT
         t.send(Endpoint::VFS, &msg).unwrap();
         assert_eq!(t.sent().len(), 1);
         assert_eq!(t.sent()[0].0, Endpoint::VFS);
@@ -250,8 +249,7 @@ mod tests {
     #[test]
     fn test_mock_receive_returns_queued_message() {
         let mut t = TestIpcTransport::new();
-        let mut msg = Message::default();
-        msg.m_type = 0x900; // VFS_PM_INIT
+        let mut msg = Message { m_type: 0x900, ..Message::default() }; // VFS_PM_INIT
         msg.m_source = Endpoint::VFS;
         t.queue_receive(msg, IpcStatus { flags: 0 });
         let (got, sts) = t.receive().unwrap();
@@ -265,8 +263,7 @@ mod tests {
     #[test]
     fn test_mock_sendrec_overwrites_type() {
         let mut t = TestIpcTransport::new();
-        let mut msg = Message::default();
-        msg.m_type = 0x900;
+        let mut msg = Message { m_type: 0x900, ..Message::default() };
         t.sendrec(Endpoint::VFS, &mut msg).unwrap();
         // 默认回复 OK=0（模拟 VFS 确认）。
         assert_eq!(msg.m_type, 0);

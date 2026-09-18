@@ -461,8 +461,7 @@ mod tests {
 
     #[test]
     fn test_sigaction_ignore_clears_pending_and_catch() {
-        let mut state = SignalState::default();
-        state.pending = 1u64 << 2;
+        let mut state = SignalState { pending: 1u64 << 2, ..SignalState::default() };
         state.kernel_pending = 1u64 << 2;
         state.caught = 1u64 << 2;
         state.install(3, SigHandler::Ignore, 0, 0, VirBytes(0));
@@ -474,8 +473,7 @@ mod tests {
 
     #[test]
     fn test_sigaction_dfl_keeps_pending() {
-        let mut state = SignalState::default();
-        state.pending = 1u64 << 2;
+        let mut state = SignalState { pending: 1u64 << 2, ..SignalState::default() };
         state.caught = 1u64 << 2;
         state.install(3, SigHandler::Default, 0, 0, VirBytes(0));
         assert!(!state.is_ignored(3));
@@ -485,8 +483,7 @@ mod tests {
 
     #[test]
     fn test_sigaction_catch_sets_caught() {
-        let mut state = SignalState::default();
-        state.ignored = 1u64 << 2;
+        let mut state = SignalState { ignored: 1u64 << 2, ..SignalState::default() };
         state.install(3, SigHandler::Catch(VirBytes(0x1000)), 0, 0, VirBytes(0));
         assert!(state.is_caught(3));
         assert!(!state.is_ignored(3));
@@ -502,8 +499,7 @@ mod tests {
 
     #[test]
     fn test_apply_mask_op_unblock_needs_check() {
-        let mut state = SignalState::default();
-        state.mask = 1u64 << 5;
+        let mut state = SignalState { mask: 1u64 << 5, ..SignalState::default() };
         let eff = state.apply_mask_op(SigMaskOp::Unblock, 1u64 << 5);
         assert_eq!(eff, MaskOpEffect::Changed { needs_check: true });
         assert!(!state.is_blocked(6));
@@ -519,8 +515,7 @@ mod tests {
 
     #[test]
     fn test_apply_mask_op_inquire() {
-        let mut state = SignalState::default();
-        state.mask = 1u64 << 5;
+        let mut state = SignalState { mask: 1u64 << 5, ..SignalState::default() };
         let eff = state.apply_mask_op(SigMaskOp::Inquire, 0);
         assert_eq!(eff, MaskOpEffect::Unchanged);
         assert!(state.is_blocked(6));
@@ -528,8 +523,7 @@ mod tests {
 
     #[test]
     fn test_prepare_suspend_saves_mask2() {
-        let mut state = SignalState::default();
-        state.mask = 1u64 << 5;
+        let mut state = SignalState { mask: 1u64 << 5, ..SignalState::default() };
         state.prepare_suspend(1u64 << 6);
         assert_eq!(state.mask_saved, 1u64 << 5);
         assert!(state.suspended);
@@ -539,8 +533,7 @@ mod tests {
 
     #[test]
     fn test_prepare_sigmsg_uses_mask2_when_suspended() {
-        let mut state = SignalState::default();
-        state.mask = 1u64 << 5;
+        let mut state = SignalState { mask: 1u64 << 5, ..SignalState::default() };
         state.mask_saved = 1u64 << 6;
         state.suspended = true;
         state.actions[2].sa_handler = 0x2000;
@@ -554,8 +547,7 @@ mod tests {
 
     #[test]
     fn test_prepare_sigmsg_sa_nodefer_and_resethand() {
-        let mut state = SignalState::default();
-        state.caught = 1u64 << 2;
+        let mut state = SignalState { caught: 1u64 << 2, ..SignalState::default() };
         state.actions[2].sa_handler = 0x3000;
         state.actions[2].sa_mask = 0;
         state.actions[2].sa_flags = SA_NODEFER | SA_RESETHAND;

@@ -104,8 +104,7 @@ mod tests {
     
     #[test]
     fn test_waiting_for_any_child() {
-        let mut state = WaitState::default();
-        state.waiting = true;
+        let mut state = WaitState { waiting: true, ..WaitState::default() };
         state.target = WaitTarget::AnyChild;
         
         assert!(state.is_waiting_for(1234, 100));
@@ -114,8 +113,7 @@ mod tests {
     
     #[test]
     fn test_waiting_for_specific_child() {
-        let mut state = WaitState::default();
-        state.waiting = true;
+        let mut state = WaitState { waiting: true, ..WaitState::default() };
         state.target = WaitTarget::SpecificChild(1234);
         
         assert!(state.is_waiting_for(1234, 100));
@@ -124,8 +122,7 @@ mod tests {
     
     #[test]
     fn test_waiting_for_group() {
-        let mut state = WaitState::default();
-        state.waiting = true;
+        let mut state = WaitState { waiting: true, ..WaitState::default() };
         state.target = WaitTarget::Group(-100);
         
         assert!(state.is_waiting_for(1234, 100));
