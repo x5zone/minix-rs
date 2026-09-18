@@ -307,7 +307,7 @@ pub fn sync_status_register_to_frame(
     crate::x86_64::trap_stub::sync_status_register_to_frame(ctx, frame);
 }
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut x86_64::trap_stub::TrapFrame) {}
+pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut ()) {}
 
 /// Read back the saved RAX of a process's saved user context (E1 slice 2
 /// test seam — the write side is kernel `set_ipc_return_code`, which goes
@@ -321,8 +321,6 @@ pub fn ipc_return_code(ctx: &CurrentCpuContext) -> u64 {
 pub fn ipc_return_code(_ctx: &CurrentCpuContext) -> u64 {
     0
 }
-#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
-pub fn save_frame_to_context(_frame: &(), _ctx: &mut CurrentCpuContext) {}
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn syscall_entry_va() -> minix_types::VirBytes {
     minix_types::VirBytes::new(0)
@@ -347,8 +345,8 @@ pub fn register_trap_dispatchers(
 }
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
 pub fn register_trap_dispatchers(
-    _trap: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
-    _syscall: unsafe extern "C" fn(&mut x86_64::trap_stub::TrapFrame),
+    _trap: unsafe extern "C" fn(&mut ()),
+    _syscall: unsafe extern "C" fn(&mut ()),
 ) {
 }
 
