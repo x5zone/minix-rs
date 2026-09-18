@@ -111,6 +111,84 @@ pub trait ClockTime {
     fn clock_time(&self) -> Timespec;
 }
 
+// ── S4 批次 C:生产时间面(零成本内核腿,批次 C 接线)──
+
+/// `ClockSource` 生产实现:`sys_times` 自拷读 uptime 三值
+/// (C: libsys getuptime.c 的 SYS_TIMES 面;E1 已通电)。
+pub struct SysClockSource;
+
+impl ClockSource for SysClockSource {
+    fn uptime(&self) -> Result<(Clock, Clock, Time), TimeError> {
+        let t = minix_sys::syscall::sys_times(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_types::Endpoint::SELF.0,
+        )
+        .map_err(|_| TimeError::NoUptime)?;
+        Ok((t.boot_ticks as Clock, t.real_ticks as Clock, t.boot_time as Time))
+    }
+}
+
+/// `BootTimeCtl` 生产实现:`sys_stime` 直委托。
+pub struct SysBootTimeCtl;
+
+impl BootTimeCtl for SysBootTimeCtl {
+    fn set_boottime(&mut self, boottime: Time) -> i32 {
+        match minix_sys::syscall::sys_stime(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            boottime as u64,
+        ) {
+            Ok(()) => 0,
+            Err(e) => e,
+        }
+    }
+}
+
+/// `SetTimeCtl` 生产实现:`sys_settime` 直委托。
+pub struct SysSetTimeCtl;
+
+impl SetTimeCtl for SysSetTimeCtl {
+    fn set_time(&mut self, now: bool, clk: ClockId, sec: Time, nsec: i64) -> i32 {
+        match minix_sys::syscall::sys_settime(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            i32::from(now),
+            clk as i32,
+            sec as u64,
+            nsec,
+        ) {
+            Ok(()) => 0,
+            Err(e) => e,
+        }
+    }
+}
+
+/// `ClockTime` 生产实现:`sys_times` + `wall_clock_time`。
+pub struct SysClockTime {
+    /// 系统频率(wall 换算需要)。
+    pub hz: Clock,
+}
+
+impl ClockTime for SysClockTime {
+    fn clock_time(&self) -> Timespec {
+        match minix_sys::syscall::sys_times(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_types::Endpoint::SELF.0,
+        ) {
+            Ok(t) => {
+                let snap = minix_sys::misc::ClockSnapshot {
+                    uptime_ticks: t.boot_ticks,
+                    realtime_ticks: t.real_ticks,
+                    boottime_seconds: t.boot_time as u64,
+                    ticks_per_second: self.hz as u64,
+                };
+                let (sec, nsec) = minix_sys::misc::wall_clock_time(snap);
+                Timespec { sec: sec as Time, nsec: nsec as i64 }
+            }
+            // 时钟不可达:零时间戳(fail-soft,同 do_memory 的错误口径)。
+            Err(_) => Timespec { sec: 0, nsec: 0 },
+        }
+    }
+}
+
 /// `decompose_clock` (`time.c:42-44`, D3, A-11) — `boottime + clock/hz` with `%hz*1e9/hz`.
 ///
 /// - `clock` is `realtime` for `CLOCK_REALTIME` or `ticks` for `CLOCK_MONOTONIC`.

@@ -646,6 +646,94 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // ===== S4 批次 C:时间族六调用(time.c)=====
+
+        // C: do_stime(time.c:110-131)——SUPER_USER 门 + boottime 锚重置。
+        PmCall::Stime => {
+            let (_clk, _now, sec, _nsec) = super::decode::time(msg);
+            let src = crate::time::SysClockSource;
+            let mut boot = crate::time::SysBootTimeCtl;
+            match crate::time::do_stime(
+                table,
+                caller,
+                sec as i64,
+                timers.system_hz,
+                &src,
+                &mut boot,
+            ) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_gettime(time.c:22-47)——clk 分派 REALTIME/MONOTONIC,
+        // decompose 后 reply 预填 m_lc_pm_time{sec,nsec}。
+        PmCall::GetTimeOfDay | PmCall::ClockGetTime => {
+            let (clk, _now, _sec, _nsec) = super::decode::time(msg);
+            let clk = match crate::time::ClockId::try_from(clk) {
+                Ok(c) => c,
+                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+            };
+            let src = crate::time::SysClockSource;
+            match crate::time::do_gettime(&src, clk, timers.system_hz) {
+                Ok(ts) => {
+                    let mut reply = minix_types::Message::default();
+                    // SAFETY: m_lc_pm_time 应答载荷(sec@0/nsec@16),与
+                    // C do_gettime 的 mp_reply 同臂。
+                    unsafe {
+                        reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
+                        reply.m_u.raw[16..24].copy_from_slice(&(ts.nsec as i64).to_ne_bytes());
+                    }
+                    table.procs[caller.get()].ipc.reply = Some(reply);
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_clock_getres——1e9/hz(REALTIME/MONOTONIC 同值)。
+        PmCall::ClockGetRes => {
+            let (clk, _now, _sec, _nsec) = super::decode::time(msg);
+            let clk = match crate::time::ClockId::try_from(clk) {
+                Ok(c) => c,
+                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+            };
+            match crate::time::do_getres(clk, timers.system_hz) {
+                Ok(ts) => {
+                    let mut reply = minix_types::Message::default();
+                    // SAFETY: 应答臂 sec@0/nsec@16。
+                    unsafe {
+                        reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
+                        reply.m_u.raw[16..24].copy_from_slice(&(ts.nsec as i64).to_ne_bytes());
+                    }
+                    table.procs[caller.get()].ipc.reply = Some(reply);
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_clock_settime(time.c:71-88)——SUPER_USER 门 + MONOTONIC
+        // 不可变。
+        PmCall::ClockSetTime => {
+            let (clk, now, sec, nsec) = super::decode::time(msg);
+            let clk = match crate::time::ClockId::try_from(clk) {
+                Ok(c) => c,
+                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+            };
+            let mut ctl = crate::time::SysSetTimeCtl;
+            match crate::time::do_settime(
+                table,
+                caller,
+                crate::time::TimeRequest {
+                    clk,
+                    now,
+                    sec: sec as i64,
+                    nsec,
+                },
+                &mut ctl,
+            ) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步

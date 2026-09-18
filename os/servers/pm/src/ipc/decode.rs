@@ -136,6 +136,22 @@ pub(crate) fn exec_restart(msg: &Message) -> (i32, i32, u64, u64) {
     (pl.endpt, pl.result, pl.pc, pl.ps_str)
 }
 
+/// 时间族参数 (clk_id, now, sec, nsec)。user → PM。
+///
+/// C: `mess_lc_pm_time`(minix-types `MessLcPmTime` — sec@0/clk_id@8/
+/// now@12/nsec@16;stime 只用 sec,clock 族用 clk_id/now/sec/nsec)。
+pub(crate) fn time(msg: &Message) -> (i32, bool, u64, i64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;sec@0(u64)/
+    // clk_id@8(i32)/now@12(i32)/nsec@16(i64),raw 字节读(MessageUnion
+    // 无专属臂)。
+    let raw = unsafe { msg.m_u.raw };
+    let clk_id = i32::from_le_bytes(raw[8..12].try_into().unwrap());
+    let now = i32::from_le_bytes(raw[12..16].try_into().unwrap());
+    let sec = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+    let nsec = i64::from_le_bytes(raw[16..24].try_into().unwrap());
+    (clk_id, now != 0, sec, nsec)
+}
+
 /// setuid/seteuid/setgid/setegid 族参数 (id)。user → PM。
 ///
 /// C: `mess_lc_pm_setid`（minix-types `MessLcPmSetid`，ipc.h:528-533:
