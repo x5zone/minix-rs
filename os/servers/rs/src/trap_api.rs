@@ -182,7 +182,7 @@ impl TrapKernelApi {
     fn user_sp(&self) -> Result<u64, Errno> {
         let mut buf = [0u8; core::mem::size_of::<minix_types::KinfoStruct>()];
         syscall::sys_getinfo_into(&self.kernel, minix_types::GET_KINFO, &mut buf, 0)
-            .map_err(|e| Errno::from_i32(e))?;
+            .map_err(Errno::from_i32)?;
         Ok(i64::from_le_bytes(buf[8..16].try_into().unwrap()) as u64)
     }
 }
@@ -346,7 +346,7 @@ impl PmApi for TrapKernelApi {
         &mut self,
         proc: Endpoint,
         exec: &[u8],
-        progname: &crate::service_slot::Label,
+        _progname: &crate::service_slot::Label,
         args: &[u8],
         argc: usize,
     ) -> Result<(), Errno> {
@@ -387,9 +387,8 @@ impl PmApi for TrapKernelApi {
         // 3. ELF 段装载(on-demand 语义:页面在首次访问时缺页分配,
         //    filesz 字节自镜像拷入自身 vaddr;exec.c:130-150 read_seg
         //    的 sys_datacopy 自拷同型)。
-        let mut iter = minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)?;
         let mut copied_any = false;
-        while let Some(seg) = iter.next() {
+        for seg in minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)? {
             let src = &exec[seg.offset as usize..(seg.offset + seg.filesz) as usize];
             syscall::sys_datacopy(
                 &self.kernel,
