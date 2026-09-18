@@ -728,6 +728,17 @@ pub fn sys_diagctl(
     Ok(())
 }
 
+/// SYS_DIAGCTL code 1 的字符串便利封装——服务器诊断输出缝（[ARCH: A-6]）
+/// 的共享下沉通道。C 的服务器 `printf`/`rs_verbose` 全家（rs 的
+/// `const.h:6-7` `DEBUG_DEFAULT`/`PRIV_DEBUG_DEFAULT` 等诊断面）在 Rust
+/// 侧经此抵达内核诊断台（kernel `dispatch_diagctl` code 1：按 buf/len
+/// 从调用方空间拷取至多 DIAGBUFSIZE 字节打到控制台）。文本在 sendrec
+/// 期间必须存活——同步内核调用期间内核 safecopy 该指针，`&str` 借用
+/// 恰好覆盖全程；分块、前缀与落盘节奏归调用方。
+pub fn sys_diagctl_write(transport: &impl KernelCallTransport, text: &str) -> Result<(), i32> {
+    sys_diagctl(transport, 1, text.as_ptr() as u64, text.len() as i32)
+}
+
 /// SYS_SETALARM：设置（或取消）闹钟并取回旧闹钟信息（C: libsys
 /// `sys_setalarm2`；kernel `dispatch_setalarm` 读/写
 /// `m_lsys_krn_sys_setalarm`——请求 exp_time/abs_time，应答 time_left/

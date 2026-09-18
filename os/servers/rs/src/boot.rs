@@ -102,6 +102,17 @@ pub trait SysApi {
     /// manager's stacktrace-signal branch). Wired
     /// 19-rs-external-interfaces.md (DEFERRED — `minix-sys` is a stub).
     fn diagctl_stacktrace(&mut self, target: Endpoint) -> Result<(), Errno>;
+
+    /// Emits one diagnostic line to the kernel console ([ARCH: A-6]).
+    ///
+    /// This is the universal observability seam for the whole `rs_verbose`
+    /// family (C `DEBUG_DEFAULT`/`PRIV_DEBUG_DEFAULT`, const.h:6-7): C
+    /// prints through printf, the rewrite routes server diagnostics through
+    /// `sys_diagctl` code 1 (`minix_sys::sys_diagctl_write`), keeping the
+    /// kernel console as the single sink. One call = one bounded chunk
+    /// (kernel copies at most DIAGBUFSIZE per call — chunking is the
+    /// caller's job). Wired 19-rs-external-interfaces.md.
+    fn diag_write(&mut self, text: &str) -> Result<(), Errno>;
 }
 
 /// Scheduler face — scheduling a process has a *composite* transport target
@@ -346,6 +357,11 @@ impl SysApi for UnimplementedKernelApi {
     }
     // E-11/E9: sys_diagctl_stacktrace's real transport is 19's wiring; fail-closed.
     fn diagctl_stacktrace(&mut self, _target: Endpoint) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    // [ARCH: A-6] the seam is declared here; the producing transport lands
+    // with the KernelApi swap (19's wiring) — fail-closed until then.
+    fn diag_write(&mut self, _text: &str) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
 }
@@ -1110,6 +1126,9 @@ mod tests {
         }
         impl SysApi for SysOnly {
             fn diagctl_stacktrace(&mut self, _target: Endpoint) -> Result<(), Errno> {
+                Err(Errno::ENOSYS)
+            }
+            fn diag_write(&mut self, _text: &str) -> Result<(), Errno> {
                 Err(Errno::ENOSYS)
             }
             fn get_machine(&mut self) -> Result<Machine, Errno> {

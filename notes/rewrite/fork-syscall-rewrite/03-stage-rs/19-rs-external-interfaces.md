@@ -69,6 +69,17 @@ RS ── sys_getinfo/sys_getimage/sys_getmachine/sys_privctl/sys_getpriv ──
 | `sys_datacopy` | `(src_e, src_a, dst_e, dst_a, len)` | request.c:1122/1138、minix3/minix/servers/rs/manager.c:rs_start（L142，工具生成）/162 | 跨进程拷贝（14/17） |
 | `sys_statectl` | `(request, address, length)` | utility.c:266/294（`SYS_STATE_ADD_IPC_WL_FILTER`/`SYS_STATE_CLEAR_IPC_FILTERS`） | IPC filter 状态操作（17/23） |
 | `sys_diagctl_stacktrace` | `(proc_ep)` | main.c:682 | 崩溃栈回溯（15） |
+| `sys_diagctl` | `(code, buf, len)` | [ARCH: A-6] 通用诊断输出缝 | `rs_verbose` 全家的可观测性出口（见下） |
+
+> **[ARCH: A-6] 诊断输出缝**。C 里 RS 的诊断面是
+> `printf`/`rs_verbose` 全家（`const.h:6-7` 的 `DEBUG_DEFAULT`/`PRIV_DEBUG_DEFAULT`
+> 开关吸收于 §20 D 类），输出直达控制台。Rust 重写把这条通路收敛为：
+> 服务器侧 [`SysApi::diag_write`]（`os/servers/rs/src/boot.rs`）→ 共享 wrapper
+> `minix_sys::sys_diagctl_write`（`os/libs/minix-sys/src/syscall.rs`）→ 内核
+> `dispatch_diagctl` code 1（按 buf/len safecopy 至多 DIAGBUFSIZE 打到控制台）。
+> 内核控制台因此是全系统唯一诊断汇点，IS 侧 `SefTransport::diag_out`
+> （`os/servers/is/src/sef.rs`）与 PM 侧 D-31 诊断口径同走此缝；一次调用
+> 携带一个有界分块，分块节奏归调用方。
 | `sys_whoami` | `(&ep, name, len, &priv_flags, &init_flags)` | update.c:342 | RS rollback 特例的身份判断（18） |
 | `sys_update` | `(src_e, dst_e, flags)` | update.c:243 | 内核 slot 交换（16/18，`SYS_UPD_ROLLBACK`） |
 

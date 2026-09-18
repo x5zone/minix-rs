@@ -74,6 +74,7 @@ pub enum Call {
     Notify(Endpoint),
     Asynsend(Endpoint, i32),
     DiagctlStacktrace(Endpoint),
+    DiagWrite(String),
 }
 
 impl Call {
@@ -103,6 +104,7 @@ impl Call {
                 | (Call::Notify(..), Call::Notify(..))
                 | (Call::Asynsend(..), Call::Asynsend(..))
                 | (Call::DiagctlStacktrace(..), Call::DiagctlStacktrace(..))
+                | (Call::DiagWrite(..), Call::DiagWrite(..))
         )
     }
 }
@@ -290,6 +292,14 @@ impl SysApi for MockKernelApi {
             return Err(Errno::ENOSYS);
         }
         self.calls.push(Call::DiagctlStacktrace(target));
+        Ok(())
+    }
+    fn diag_write(&mut self, text: &str) -> Result<(), Errno> {
+        let call = Call::DiagWrite(text.to_owned());
+        if self.failing(&call) {
+            return Err(Errno::ENOSYS);
+        }
+        self.calls.push(call);
         Ok(())
     }
 }
