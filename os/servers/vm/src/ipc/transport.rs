@@ -131,6 +131,13 @@ pub(crate) trait IpcTransport {
     /// vectors; production impls seed kernel-side state here. Default
     /// no-op so test transports need no special handling (V10-P0-2).
     fn mark_initialized(&mut self) {}
+
+    /// Notify a destination. Mirrors C `ipc_notify(dest)` — used by the
+    /// SEF ping-pong (`sef_ping.c:61`). Default honest failure: only
+    /// transports that can actually notify override it.
+    fn notify(&mut self, _dest: Endpoint) -> Result<(), IpcError> {
+        Err(IpcError::Unimplemented)
+    }
 }
 
 // ── Production impl: kernel IPC ──
@@ -207,6 +214,49 @@ impl IpcTransport for KernelIpcTransport {
         }
         self.inner.send(dest, msg).map_err(|trap| IpcError::Kernel(trap.0))
     }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), IpcError> {
+        if !self.initialized {
+            return Err(IpcError::Unimplemented);
+        }
+        self.inner.notify(dest).map_err(|trap| IpcError::Kernel(trap.0))
+    }
+}
+
+// ── SEF classification adapter (V14-P2-1 plan A) ──
+
+/// Presents any [`IpcTransport`] as the `minix_sef::SefIpc` verb pair so
+/// the shared `minix_sef::sef_receive_status` classifier can front the VM
+/// main loop. VM is minix-sef's fourth consumer (IS/MIB/devman precede) —
+/// one C protocol (`libsys sef.c`), one Rust classification.
+///
+/// errno mapping for transport failures mirrors C `ipc_receive`'s return
+/// convention (raw errno): the trap backend's codes pass through, the
+/// local [`IpcError`] variants map to their Minix3 errno values.
+pub(crate) struct SefAdapter<'a>(pub(crate) &'a mut dyn IpcTransport);
+
+impl minix_sef::SefIpc for SefAdapter<'_> {
+    fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        self.0.receive().map(|(m, sts)| {
+            *msg = m;
+            sts.flags as i32
+        })
+        .map_err(|e| match e {
+            IpcError::Kernel(code) => code,
+            IpcError::InvalidEndpoint => minix_types::EINVAL,
+            IpcError::WouldBlock => minix_types::EAGAIN,
+            IpcError::Unimplemented => minix_types::EIO,
+        })
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.0.notify(dest).map_err(|e| match e {
+            IpcError::Kernel(code) => code,
+            IpcError::InvalidEndpoint => minix_types::EINVAL,
+            IpcError::WouldBlock => minix_types::EAGAIN,
+            IpcError::Unimplemented => minix_types::EIO,
+        })
+    }
 }
 
 // ── Test impl: in-memory mock (cfg(test) only; V10-P0-2) ──
@@ -230,8 +280,11 @@ impl TestIpcTransport {
     pub fn new() -> Self {
         Self {
             shared: alloc::rc::Rc::new(TestTransportShared {
-                next_receive: core::cell::RefCell::new(None),
+                next_receive: core::cell::RefCell::new(
+                    alloc::collections::VecDeque::new(),
+                ),
                 sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                notifies: core::cell::RefCell::new(alloc::vec::Vec::new()),
                 should_fail: core::cell::Cell::new(false),
             }),
         }
@@ -243,9 +296,9 @@ impl TestIpcTransport {
         TestTransportHandle { shared: alloc::rc::Rc::clone(&self.shared) }
     }
 
-    /// Queue a message to be returned by the next `receive` call.
+    /// Queue a message to be returned by the next `receive` call (FIFO).
     pub fn queue_receive(&mut self, msg: Message, sts: IpcStatus) {
-        *self.shared.next_receive.borrow_mut() = Some((msg, sts));
+        self.shared.next_receive.borrow_mut().push_back((msg, sts));
     }
 
     /// Return a snapshot of the recorded sends (oldest first).
@@ -263,8 +316,12 @@ impl TestIpcTransport {
 /// transport and any [`TestTransportHandle`] clones.
 #[cfg(test)]
 struct TestTransportShared {
-    next_receive: core::cell::RefCell<Option<(Message, IpcStatus)>>,
+    /// FIFO receive queue (V14-P2-1: a ping-pong round consumes two
+    /// slots — the intercepted ping plus the follow-up message).
+    next_receive: core::cell::RefCell<alloc::collections::VecDeque<(Message, IpcStatus)>>,
     sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
+    /// Recorded notify destinations (SEF ping-pong pongs).
+    notifies: core::cell::RefCell<alloc::vec::Vec<Endpoint>>,
     should_fail: core::cell::Cell<bool>,
 }
 
@@ -281,9 +338,14 @@ pub(crate) struct TestTransportHandle {
 
 #[cfg(test)]
 impl TestTransportHandle {
-    /// Queue a message to be returned by the next `receive` call.
+    /// Queue a message to be returned by the next `receive` call (FIFO).
     pub fn queue_receive(&self, msg: Message, sts: IpcStatus) {
-        *self.shared.next_receive.borrow_mut() = Some((msg, sts));
+        self.shared.next_receive.borrow_mut().push_back((msg, sts));
+    }
+
+    /// Destinations recorded by `notify` (SEF ping-pong pongs).
+    pub fn notified(&self) -> alloc::vec::Vec<Endpoint> {
+        self.shared.notifies.borrow().clone()
     }
 
     /// Return a snapshot of the recorded sends (oldest first).
@@ -313,8 +375,13 @@ impl IpcTransport for TestIpcTransport {
         self.shared
             .next_receive
             .borrow_mut()
-            .take()
+            .pop_front()
             .ok_or(IpcError::Unimplemented)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), IpcError> {
+        self.shared.notifies.borrow_mut().push(dest);
+        Ok(())
     }
 
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {

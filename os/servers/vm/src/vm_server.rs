@@ -959,21 +959,22 @@ impl VmServer {
     /// cleared here so the next failure re-arms the hook — the loop always
     /// gets a fresh replenishment attempt per pressure episode.
     /// C: `SIGKMEM` (minix3/sys/sys/signal.h:271) — kernel memory request
-    /// pending.
+    /// pending. Rust 侧 SYSTEM notify 即其唤醒半(sigset 半为 no-op,
+    /// 见 os/kernel/src/proc_table.rs vm_enqueue_and_notify_vm 契约)。
     pub(crate) const SIGKMEM: i32 = 71;
 
     /// Kernel-signal dispatch — the body of C's `sef_cb_signal_handler`
     /// (main.c:733-749).
     ///
-    /// C registers the handler with SEF at startup; real signal delivery
-    /// needs the trap layer (edge E1) and only then becomes reachable in
-    /// production. The dispatch body itself is stage-internal so its
-    /// behavior is testable and E1 only has to call this entry.
+    /// C registers the handler with SEF at startup; since V14-P2-1 the
+    /// arrival path is the shared `minix_sef::sef_receive_status`
+    /// classification (run_once), which dispatches per set bit of the
+    /// SYSTEM notify's sigset — the E1 trap layer carries the notify to
+    /// this loop.
     ///
     /// C tail (main.c:744-748): after handling, a pending spare-page
     /// deficit triggers `alloc_cycle()`; `pt_clearmapcache()` has no
     /// counterpart (map cache eliminated, [ARCH: A-1]).
-    #[cfg_attr(not(test), allow(dead_code))] // entry wired at edge E1
     pub(crate) fn handle_signal(&mut self, signo: i32) {
         // C: "Check for known kernel signals, ignore anything else."
         if signo == Self::SIGKMEM {
@@ -1108,21 +1109,54 @@ impl VmServer {
     /// transport (V10-P0-2); `run()` supplies the infinite loop, the
     /// pressure hook, and the receive-failure bound.
     fn run_once(&mut self) -> RunStep {
-        // C: sef_receive_status(ANY, &msg, &rcv_sts)
-        let (msg, rcv_sts) = match self.transport.borrow_mut().receive() {
-            Ok(v) => v,
-            // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
-            // user-space server must survive bad IPC — drop + audit.
-            Err(_) => {
-                self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
-                audit_log!("[VM IPC] ipc_receive() failed — message dropped");
-                return RunStep::ReceiveFailed;
+        // V14-P2-1 (plan A): the receive half goes through the shared
+        // `minix_sef::sef_receive_status` — VM is minix-sef's fourth
+        // consumer. SYSTEM notifies surface as signals, RS pings are
+        // ponged and swallowed inside the library, everything else falls
+        // through to the loop below (C sef.c:149-260 wrapping main.c:113).
+        let mut raw_msg = minix_types::Message::default();
+        let mut pending_signo: Option<i32> = None;
+        let rcv_sts_raw = {
+            let mut guard = self.transport.borrow_mut();
+            let mut sef = crate::ipc::transport::SefAdapter(guard.as_mut());
+            let rcv = minix_sef::sef_receive_status(
+                &mut sef,
+                minix_types::Endpoint::ANY,
+                &mut raw_msg,
+                &mut |signo| pending_signo = Some(signo),
+            );
+            match rcv {
+                Ok(r) => r,
+                // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
+                // user-space server must survive bad IPC — drop + audit.
+                Err(_) => {
+                    drop(guard);
+                    self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
+                    audit_log!("[VM IPC] ipc_receive() failed — message dropped");
+                    return RunStep::ReceiveFailed;
+                }
             }
         };
 
+        // 信号抵达裁决(V14-P2-1 影响②,按 kernel 侧既定契约):SYSTEM
+        // notify 是 `send_sig(VM, SIGKMEM)` 的唤醒半——sigset 半是文档化
+        // no-op(SIGKMEM=71 超出 64 位 SigSet,os/kernel/src/proc_table.rs
+        // vm_enqueue_and_notify_vm 契约),VM 经 MEMREQ_GET 探测细节而不
+        // 读信号号;SIGKSIG 信号管理器家族 VM 不消费。
+        if pending_signo.is_some() {
+            self.handle_signal(VmServer::SIGKMEM);
+            return RunStep::Handled;
+        }
+
+        let msg = raw_msg;
+        let rcv_sts = crate::ipc::transport::IpcStatus { flags: rcv_sts_raw.status as u32 };
+
         // C: if(is_ipc_notify(rcv_sts)) { continue; } (main.c:126-129).
-        // Notifications are async signals, not requests; they are skipped
-        // before endpoint validation (V10-P1-1).
+        // SEF already took the SYSTEM/RS-ping notifies; what reaches here
+        // is a leftover notification from any other source — still an
+        // async signal, not a request; skipped before endpoint validation
+        // (V10-P1-1). PingInvalid (RS notify that failed the ping test)
+        // lands here too, matching C's sef.c:208-214 fall-through.
         if rcv_sts.is_notify() {
             return RunStep::Handled;
         }
@@ -2105,6 +2139,130 @@ mod tests {
             assert_eq!(step, RunStep::Handled);
             assert_eq!(server.dropped_messages(), 0, "notify must not be counted as dropped");
             assert!(handle.sent().is_empty(), "notify must not produce a reply");
+
+            reset_boot_slots();
+        });
+    }
+
+    /// V14-P2-1 映射:SYSTEM notify 上浮为 `SefEvent::Signal` → 唤醒半
+    /// 契约(见 run_once 注释与 os/kernel/src/proc_table.rs
+    /// vm_enqueue_and_notify_vm)→ `handle_signal(SIGKMEM)` → do_memory
+    /// 探测。观测量:memreq 脚本被消费(GET/REPLY/终止 GET 三次内核调用,
+    /// verdict OK);V14 前该 notify 会被旧循环当普通 notify 吞掉。
+    #[test]
+    fn sef_signal_notify_dispatches_sigset_bits() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+            let regions = test_free_regions();
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(71);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, 71);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            drop(active);
+            {
+                let mut proc = table.get_active(slot).unwrap();
+                proc.regions_mut().insert(crate::region::VirRegion::new(
+                    VirBytes(0x3000_0000),
+                    VirBytes(0x4000),
+                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                )).unwrap();
+            }
+
+            // Scripted kernel: CHECK over the region, then queue empty(与
+            // test_handle_signal_routes_sigkmem_only 同脚本)。
+            let mut canned = minix_sys::syscall::CannedKernelCallTransport::new();
+            let mut check = Message::default();
+            check.m_type = 1; // VMPTYPE_CHECK
+            {
+                // SAFETY: SVMCTL_MRG_* reply fields (kernel syscall.rs).
+                let m1 = unsafe { &mut check.m_u.m_m1 };
+                m1.m1i1 = ep.0;
+                m1.m1p1 = 0x3000_0000;
+                m1.m1p2 = 0x2000;
+                m1.m1i3 = 1;
+                m1.m1p3 = 0;
+            }
+            canned.reply_message(check);
+            canned.reply(0);
+            canned.reply(minix_types::ENOENT);
+            let canned = alloc::rc::Rc::new(canned);
+            install_canned_gateway(&mut server, alloc::rc::Rc::clone(&canned));
+
+            // SYSTEM notify(kernel send_sig 的唤醒半;sigset 半为 no-op,
+            // 不携带位)。
+            let mut notify = Message::default();
+            notify.m_source = Endpoint::SYSTEM;
+            notify.m_type = minix_types::NOTIFY_MESSAGE;
+            handle.queue_receive(notify, IpcStatus { flags: 4 /* NOTIFY */ });
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+            assert_eq!(server.dropped_messages(), 0, "signal is handled, not dropped");
+            assert!(handle.sent().is_empty(), "signal must not be replied to");
+
+            // 内核可观测:排空循环真的跑了(GET/REPLY/终止 GET)。
+            let sent = canned.sent.borrow();
+            assert_eq!(sent.len(), 3, "GET, REPLY, second GET");
+            {
+                // SAFETY: reply wire inspection (SYS_VMCTL M1 fields).
+                let m1 = unsafe { &sent[1].m_u.m_m1 };
+                assert_eq!(m1.m1i1, ep.0, "reply targets the fetched request");
+                assert_eq!(m1.m1i2, 15, "VMCTL_MEMREQ_REPLY");
+                assert_eq!(m1.m1i3, 0, "valid writable range → OK verdict");
+            }
+
+            reset_boot_slots();
+        });
+    }
+
+    /// V14-P2-1 映射:RS ping 在 minix-sef 内被 pong 并吞掉(不上浮、不
+    /// 入分派);后续消息正常继续接收。
+    #[test]
+    fn sef_ping_ponged_and_swallowed() {
+        with_test_mock_base(|| {
+            reset_boot_slots();
+            let regions = test_free_regions();
+            let t = crate::ipc::transport::TestIpcTransport::new();
+            let handle = t.handle();
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(t)
+                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
+            ));
+            let mut server =
+                VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
+            server.init();
+
+            // RS ping:RS 源 + NOTIFY_MESSAGE + notify 状态位。
+            let mut ping = Message::default();
+            ping.m_source = Endpoint::RS;
+            ping.m_type = minix_types::NOTIFY_MESSAGE;
+            handle.queue_receive(ping, IpcStatus { flags: 4 /* NOTIFY */ });
+            // 后续:普通 notify(NONE 源)——sef 放行为 Call,主循环按
+            // main.c:126-129 吞掉。
+            let mut stray = Message::default();
+            stray.m_source = Endpoint::NONE;
+            stray.m_type = 0;
+            handle.queue_receive(stray, IpcStatus { flags: 4 /* NOTIFY */ });
+
+            let step = server.run_once();
+            assert_eq!(step, RunStep::Handled);
+            assert_eq!(server.dropped_messages(), 0);
+            assert_eq!(handle.notified(), alloc::vec![Endpoint::RS], "ping → pong");
+            assert!(handle.sent().is_empty(), "ping must not produce a reply");
 
             reset_boot_slots();
         });

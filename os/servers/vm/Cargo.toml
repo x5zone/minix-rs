@@ -12,6 +12,10 @@ path = "src/main.rs"
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
+# V14-P2-1 (plan A): VM is minix-sef's fourth consumer — the receive half
+# of the main loop goes through `sef_receive_status` (ping interception +
+# signal classification), same as IS/MIB/devman.
+minix-sef = { workspace = true }
 # V11/T14: boot-proc ELF loading (exec_bootproc segment parsing);
 # the same no_std parser boot-shim uses (loader.rs).
 minix-elf = { workspace = true }
