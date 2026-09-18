@@ -223,8 +223,12 @@ fn runqueues_ok_cpu_positive_invariants_hold() {
         p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
         p.p_sched.priority
             .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
-        smp.cpu_local_mut(CpuId::BSP).unwrap()
-            .scheduler.enqueue_queue_tail(nr, priority::USER_Q as usize);
+    }
+    // S-6.3 共享队列决策后 Scheduler 在 ProcessTable 上（CpuLocal 只持
+    // proc_ptr/bill_ptr 等 per-CPU 调度态）。
+    for nr in [ProcNr(0), ProcNr(1)] {
+        table.sched_for_cpu_mut(CpuId::BSP)
+            .enqueue_queue_tail(nr, priority::USER_Q as usize);
     }
     // 显式链接 nr0 → nr1（enqueue_queue_tail 不回填 p_nextready）。
     table.get_mut(ProcNr(0)).unwrap().p_nextready
@@ -255,8 +259,12 @@ fn runqueues_ok_cpu_detects_dead_proc_on_queue() {
         p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
         p.p_sched.priority
             .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
-        smp.cpu_local_mut(CpuId::BSP).unwrap()
-            .scheduler.enqueue_queue_tail(nr, priority::USER_Q as usize);
+    }
+    // S-6.3 共享队列决策后 Scheduler 在 ProcessTable 上（CpuLocal 只持
+    // proc_ptr/bill_ptr 等 per-CPU 调度态）。
+    for nr in [ProcNr(0), ProcNr(1)] {
+        table.sched_for_cpu_mut(CpuId::BSP)
+            .enqueue_queue_tail(nr, priority::USER_Q as usize);
     }
     table.get_mut(ProcNr(0)).unwrap().p_nextready
         .store(1, core::sync::atomic::Ordering::Release);
@@ -285,9 +293,9 @@ fn runqueues_ok_cpu_detects_runnable_not_queued() {
         p.p_sched.priority
             .store(priority::USER_Q, core::sync::atomic::Ordering::Release);
     }
-    // 仅 nr0 入队；nr1 runnable 但不在任何队列。
-    smp.cpu_local_mut(CpuId::BSP).unwrap()
-        .scheduler.enqueue_queue_tail(ProcNr(0), priority::USER_Q as usize);
+    // 仅 nr0 入队；nr1 runnable 但不在任何队列。（S-6.3 后队列在表上）
+    table.sched_for_cpu_mut(CpuId::BSP)
+        .enqueue_queue_tail(ProcNr(0), priority::USER_Q as usize);
     let table = Box::leak(table);
 
     assert!(!runqueues_ok_cpu(&smp, table, CpuId::BSP),
