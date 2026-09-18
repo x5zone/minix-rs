@@ -423,6 +423,9 @@ pub struct TimerFaces<'a> {
     pub tctl: &'a mut dyn TimerCtl,
     pub vctl: &'a mut dyn VTimerCtl,
     pub system_hz: Clock,
+    /// SVRCTL 参数存储(S8 批次 G;C `local_param_overrides` + monitor 串,
+    /// misc.c:305-310)。PmServer 持有,分发面经此可变借用。
+    pub svrctl_store: &'a mut crate::misc::ParamStore,
 }
 
 /// `handle_clock_notify` (`main.c:65-71` CLOCK → `expire_timers`)。

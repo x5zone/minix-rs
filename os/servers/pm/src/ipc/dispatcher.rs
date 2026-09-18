@@ -249,7 +249,14 @@ mod tests {
         // 测试用泄漏式构造('static 借用由泄漏的 Box 承担)。
         let tctl: &'static mut dyn TimerCtl = Box::leak(Box::new(TestTimerCtl));
         let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(TestVTimerCtl));
-        TimerFaces { tctl, vctl, system_hz: 100 }
+        let svrctl: &'static mut crate::misc::ParamStore =
+            Box::leak(Box::new(crate::misc::ParamStore::new(alloc::string::String::new())));
+        TimerFaces {
+            tctl,
+            vctl,
+            system_hz: 100,
+            svrctl_store: svrctl,
+        }
     }
 
     use crate::event::EventRegistry;

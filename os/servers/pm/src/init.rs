@@ -195,6 +195,9 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     /// 虚拟计时器出口（SIGVTALRM/SIGPROF 重挂，14-itimer.md；SIGKSIG
     /// 拉取经 process_ksig 消费；生产 `SysVTimerCtl` 委托 sys_vtimer）。
     vtimer: Box<dyn crate::timer::VTimerCtl>,
+    /// SVRCTL 参数存储(C: `local_param_overrides` 静态表 + monitor 串,
+    /// misc.c:305-310;S8 批次 G)。
+    svrctl_store: crate::misc::ParamStore,
     /// `init()` 是否已完成（run() 前置断言）。
     initialized: bool,
     /// 内核中止标志（C: `glo.h:26` `abort_flag`；由 do_reboot 写入，归 20-misc-queries.md）。
@@ -254,6 +257,16 @@ impl<T: IpcTransport> PmServer<T> {
         Self {
             // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
             // 保证空槽（Lifecycle::Unused）+ PID 生成器就绪。
+            svrctl_store: crate::misc::ParamStore::new(
+                String::from_utf8_lossy(
+                    &params.monitor_params
+                        .iter()
+                        .copied()
+                        .take_while(|&b| b != 0)
+                        .collect::<alloc::vec::Vec<u8>>(),
+                )
+                .into_owned(),
+            ),
             table: ProcTable::new(),
             event_registry: EventRegistry::new(),
             params,
@@ -458,6 +471,7 @@ impl<T: IpcTransport> PmServer<T> {
             tctl: self.timer.as_mut(),
             vctl: self.vtimer.as_mut(),
             system_hz: self.params.system_hz as i64,
+            svrctl_store: &mut self.svrctl_store,
         };
         let intent = dispatch_message(
             &mut self.table,

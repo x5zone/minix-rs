@@ -826,6 +826,74 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // C: do_svrctl(misc.c:302-390)——IOCGROUP 门('P'/'M')+
+        // sysgetenv 32 字节拷入(key/val 指针与长度),SET 存表,GET 回拷
+        // val(misc.c:359-384)。
+        PmCall::SvrCtl => {
+            let (request, arg) = super::decode::svrctl(msg);
+            // C misc.c:311-312 —— IOCGROUP 门('P'=0x50 / 'M'=0x4D)。
+            let group = ((request >> 8) & 0xff) as u8;
+            if group != b'P' && group != b'M' {
+                return ReplyIntent::Reply(EINVAL);
+            }
+            // 非 PARAM 请求码:PM 无分支 → EINVAL(C switch default)。
+            let is_param = matches!(
+                request as u32,
+                x if x == crate::misc::PMGETPARAM as u32
+                    || x == crate::misc::PMSETPARAM as u32
+                    || x == crate::misc::OPMGETPARAM as u32
+                    || x == crate::misc::OPMSETPARAM as u32
+            );
+            if !is_param {
+                return ReplyIntent::Reply(EINVAL);
+            }
+            // struct sysgetenv{key 指针,val 指针,keylen,vallen} 32 字节拷入。
+            let mut env = [0u8; 32];
+            if let Err(e) = kern.copy_from_user(msg.m_source, arg, &mut env) {
+                return ReplyIntent::Reply(positive_errno(e));
+            }
+            let u64_at = |o: usize| u64::from_le_bytes(env[o..o + 8].try_into().unwrap());
+            let (key_ptr, val_ptr, keylen, vallen) =
+                (u64_at(0), u64_at(8), u64_at(16) as usize, u64_at(24) as usize);
+
+            // key 串拷入(search_key[64] 边界,misc.c:313-316)。
+            let mut key_buf = [0u8; 64];
+            let key_len = keylen.min(64);
+            if key_len > 0
+                && let Err(e) = kern.copy_from_user(msg.m_source, key_ptr, &mut key_buf[..key_len])
+            {
+                return ReplyIntent::Reply(positive_errno(e));
+            }
+            let key = String::from_utf8_lossy(&key_buf[..key_len]).into_owned();
+            let key_opt = if key.is_empty() { None } else { Some(key) };
+
+            match crate::misc::do_svrctl(
+                timers.svrctl_store,
+                request as i32,
+                key_opt,
+                None,
+                vallen,
+            ) {
+                Ok(val) => {
+                    // C misc.c:379-384 —— GET:val 回拷至调用方缓冲,
+                    // m1i2 = vallen。
+                    if let Some(v) = &val
+                        && let Err(e) = kern.copy_to_user(
+                            v.as_bytes(),
+                            msg.m_source,
+                            val_ptr,
+                        )
+                    {
+                        return ReplyIntent::Reply(positive_errno(e));
+                    }
+                    let mut reply = minix_types::Message::default();
+                    reply.m_u.m_m1.m1i2 = vallen as i32;
+                    table.procs[caller.get()].ipc.reply = Some(reply);
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -1016,7 +1084,9 @@ impl crate::signal_handlers::KernelSig for SigReturnKern<'_> {
 fn leak_timers() -> crate::timer::TimerFaces<'static> {
     let tctl: &'static mut dyn crate::timer::TimerCtl = Box::leak(Box::new(crate::timer::SysTimerCtl::new()));
     let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(crate::timer::SysVTimerCtl));
-    crate::timer::TimerFaces { tctl, vctl, system_hz: 100 }
+    let svrctl: &'static mut crate::misc::ParamStore =
+        Box::leak(Box::new(crate::misc::ParamStore::new(alloc::string::String::new())));
+    crate::timer::TimerFaces { tctl, vctl, system_hz: 100, svrctl_store: svrctl }
 }
 
 fn positive_errno(e: i32) -> i32 {
