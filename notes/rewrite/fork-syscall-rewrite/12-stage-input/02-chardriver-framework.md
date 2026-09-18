@@ -1,9 +1,11 @@
 # 02-chardriver-framework: 字符驱动框架契约
 
+> [ARCH: 字符框架判定核单点] 本篇所述的判定核（消息分类、重启门卫、回信纪律）自 2026-09 起由共享库 `os/libs/minix-chardriver` 单点权威实现（`driver.rs` 的 `classify`/`gate_character_request`/`reply_decision`），input 服务器为其消费者；原 `os/servers/input/src/framework.rs` 独立副本已删除（edge E-CDRCONV，16-stage/01 同步标注）。本篇第 2 章 C 分析仍然有效；文中 `framework.rs` 与 `CharacterRequest` 等 Rust 命名分别对应 `minix-chardriver` 的 `driver.rs`/`protocol.rs` 与 `CdevRequest`。
+
 > **状态**: 已改写（2026-09-04，首版完整文档）
 > **定位**: 框架主循环与消息分发（阶段 1，运行框架；第 01 篇主循环的入口）
 > **源码**: `minix3/minix/lib/libchardriver/chardriver.c`（600 行，全部）+ `minix3/minix/include/minix/chardriver.h`（36 行，全部）+ 消息号 `minix3/minix/include/minix/com.h:IS_VFS_FS_TRANSID（L915，工具生成）` + 消息结构 `minix3/minix/include/minix/ipc.h:939-965,2220-2253`
-> **Rust 模块**: `os/servers/input/src/framework.rs`
+> **Rust 模块**: `os/libs/minix-chardriver`（`driver.rs` + `protocol.rs`）
 > **目标读者**: 想理解"消息从到达驱动进程到被处理函数看到之间经历了什么"的读者。前置知识：第 01 篇（知道回调注册表是什么）；能接受"消息是一个有类型和若干字段的结构体"这个概念。
 > **本章不讲什么**: 输入服务七个处理函数的业务逻辑（第 06 至第 11 篇）；框架完整源码中与输入服务无关的部分（块设备的其他请求类型，见 2.8 节的裁剪声明）；消息在网络上传输的细节（传输层把消息送到进程门口为止，本章从门口讲起）。
 

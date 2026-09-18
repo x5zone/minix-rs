@@ -1,6 +1,7 @@
 # 01-chardriver-framework：字符驱动框架
 
 > **分类**：框架层第 1 篇（字符设备的主循环与请求协议）
+> [ARCH: 字符框架判定核单点] 判定核（分类、重启门卫、回信纪律）以本篇对应的 `minix-chardriver` 为单一权威；input 服务器原独立副本（`framework.rs`）已收敛为其消费者（edge E-CDRCONV，12-stage/02 同步标注）。
 > **源码**：`minix3/minix/lib/libchardriver/chardriver.c`（六百行）、`minix3/minix/include/minix/chardriver.h`（回调表定义）、`minix3/minix/include/minix/com.h`（第九百一十九行到第九百五十六行，字符请求常量）、`minix3/minix/include/minix/driver.h`（第四十一行，同时打开设备上限）
 > **Rust 模块**：`os/libs/minix-chardriver/src/protocol.rs`（请求编号与打开集合）、`os/libs/minix-chardriver/src/driver.rs`（驱动行为定义与路由规则）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`（主线与阶段划分，特别是第一章第一节的框架前置思想）

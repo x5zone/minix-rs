@@ -18,8 +18,10 @@
 //! # Module map (documents 01-08)
 //!
 //! - [`init`] — startup order and the callback inventory (document 01).
-//! - [`framework`] — the shared character-driver front door: message
-//!   classification, the restart gate, reply discipline (document 02).
+//! - the character-driver front door — message classification, the restart
+//!   gate, reply discipline (document 02) — lives in the shared
+//!   `minix-chardriver` library ([ARCH: 字符框架判定核单点]; the former
+//!   `framework` module converged there, edge E-CDRCONV).
 //! - [`structs`] — device slots, minor numbers, table indices (document 03).
 //! - the event wire format and code tables live in `minix-types`
 //!   (`ipc::input_event` / `ipc::key_codes`, document 04) — shared with the
@@ -44,7 +46,6 @@ pub mod dispatcher;
 pub mod effects;
 pub mod error;
 pub mod eventbuf;
-pub mod framework;
 pub mod handlers;
 pub mod init;
 pub mod produce;
@@ -68,10 +69,8 @@ pub use eventbuf::{
     ByteCount, CopyPlan, EventCount, ReadCopyPlan, apply_copy, commit_read_copy, drain_ordered,
     plan_copy, plan_read_copy,
 };
-pub use framework::{
-    CharacterRequest, CharacterResponse, GateVerdict, Incoming, NotifySource, OpenDeviceSet,
-    ReplyDecision,
-};
+pub use minix_chardriver::driver::{AnnounceEffect, announce_effects};
+pub use minix_chardriver::protocol::OpenDeviceSet;
 pub use handlers::{
     CancelVerdict, CancelledRead, IoctlVerdict, ReadVerdict, SelectOutcome, apply_cancel,
     apply_close, apply_open, apply_select_record, cancel_parked_read, decide_cancel,

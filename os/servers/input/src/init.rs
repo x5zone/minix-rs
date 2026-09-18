@@ -16,7 +16,7 @@
 //!
 //! Corresponding document: `01-input-init-main.md`.
 
-use crate::framework::AnnounceEffect;
+use minix_chardriver::driver::AnnounceEffect;
 
 /// One step of the fresh-boot initialization.
 ///
@@ -42,7 +42,7 @@ pub enum InitStep {
     ///
     /// C: `chardriver_announce()` (`input.c:669`): release callers blocked
     /// on any previous generation, publish the arrival marker, forget old
-    /// opens — see [`crate::framework::announce_effects`].
+    /// opens — see `minix_chardriver::driver::announce_effects`.
     AnnounceToFileSystem,
     /// Tell the terminal driver the input server is up.
     ///
@@ -154,7 +154,7 @@ pub const fn startup_registration() -> StartupRegistration {
 /// step exists if and only if the framework still announces in the order the
 /// server expects.
 pub const fn announce_effects_for_init() -> [AnnounceEffect; 3] {
-    crate::framework::announce_effects()
+    minix_chardriver::driver::announce_effects()
 }
 
 #[cfg(test)]
@@ -215,7 +215,7 @@ mod tests {
         // The plan step and the framework effects must stay in agreement.
         assert_eq!(
             announce_effects_for_init(),
-            crate::framework::announce_effects()
+            minix_chardriver::driver::announce_effects()
         );
     }
 }

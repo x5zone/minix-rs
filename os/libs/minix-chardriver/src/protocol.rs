@@ -49,6 +49,29 @@ pub const CDEV_CLONED: i32 = 0x2000_0000;
 /// [`CDEV_CLONED`] when extracting the cloned minor number.
 pub const CDEV_CTTY: i32 = 0x4000_0000;
 
+/// Select readiness: readable (`SELECT_READ`, `com.h:940` region of the
+/// select-flag family, `com.h:939-957`).
+pub const SELECT_READ: i32 = 0x01;
+/// Select readiness: writable (`SELECT_WRITE`).
+pub const SELECT_WRITE: i32 = 0x02;
+/// Select readiness: error pending (`SELECT_ERROR`).
+pub const SELECT_ERROR: i32 = 0x04;
+/// Deliver a select-2 notification on readiness (`SELECT_NOTIFY`).
+pub const SELECT_NOTIFY: i32 = 0x08;
+
+/// Open access: read intent (`ACCESS_READ`, `com.h:939-941` family).
+pub const ACCESS_READ: i32 = 0x01;
+/// Open access: write intent (`ACCESS_WRITE`).
+pub const ACCESS_WRITE: i32 = 0x02;
+/// Open access: skip controlling-terminal adoption
+/// (`ACCESS_NO_CONTROLLING_TERMINAL`).
+pub const ACCESS_NO_CONTROLLING_TERMINAL: i32 = 0x04;
+
+/// Transfer flags: blocking (`TRANSFER_NO_FLAGS`).
+pub const TRANSFER_NO_FLAGS: i32 = 0x00;
+/// Transfer flags: non-blocking (`TRANSFER_NON_BLOCKING`).
+pub const TRANSFER_NON_BLOCKING: i32 = 0x01;
+
 /// Re-exported outcome codes so callers match on one vocabulary.
 pub use minix_types::{EDONTREPLY as NO_REPLY, ERESTART as RESTARTED};
 

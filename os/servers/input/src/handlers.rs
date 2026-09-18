@@ -25,7 +25,7 @@
 use crate::error::InputError;
 use minix_types::LedCode;
 use crate::eventbuf::EventCount;
-use crate::framework::{SELECT_NOTIFY, SELECT_READ, SELECT_WRITE};
+use minix_chardriver::protocol::{SELECT_NOTIFY, SELECT_READ, SELECT_WRITE};
 use crate::structs::{EVENT_BYTES, InputDevice};
 use minix_types::{Endpoint, KBD_LEDS_CAPS, KBD_LEDS_NUM, KBD_LEDS_SCROLL, KIOCSLEDS};
 
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(out.ready_ops & SELECT_WRITE, SELECT_WRITE);
         assert!(!out.record_selector);
         // Error queries alone never report ready (no C branch).
-        let out = decide_select(&device, crate::framework::SELECT_ERROR);
+        let out = decide_select(&device, minix_chardriver::protocol::SELECT_ERROR);
         assert_eq!(out.ready_ops, 0);
     }
 

@@ -31,7 +31,8 @@ use crate::connect::{connect_driver, disconnect_device, labels_match, wants_from
 use crate::effects::{Effect, ReplyValue};
 use crate::error::InputError;
 use crate::eventbuf::{commit_read_copy, plan_read_copy, ReadCopyPlan};
-use crate::framework::{gate_character_request, CharacterRequest, GateVerdict, OpenDeviceSet};
+use minix_chardriver::driver::{gate_character_request, GateVerdict};
+use minix_chardriver::protocol::{CdevRequest, OpenDeviceSet};
 use crate::handlers::{
     apply_close, apply_open, apply_select_record, cancel_parked_read, decide_close, decide_ioctl,
     decide_open, decide_read, decide_select, led_mask_from_kio_bits, park_read, IoctlVerdict,
@@ -69,7 +70,7 @@ impl Server {
     pub fn fresh() -> Server {
         Server {
             table: InputTable::fresh(),
-            opened: OpenDeviceSet::cleared(),
+            opened: OpenDeviceSet::new(),
         }
     }
 
@@ -233,14 +234,14 @@ pub enum CdevCall {
 
 impl CdevCall {
     /// The framework's name for this request (drives the restart gate).
-    pub fn request(&self) -> CharacterRequest {
+    pub fn request(&self) -> CdevRequest {
         match self {
-            CdevCall::Open { .. } => CharacterRequest::Open,
-            CdevCall::Close { .. } => CharacterRequest::Close,
-            CdevCall::Read { .. } => CharacterRequest::Read,
-            CdevCall::Ioctl { .. } => CharacterRequest::Control,
-            CdevCall::Cancel { .. } => CharacterRequest::Cancel,
-            CdevCall::Select { .. } => CharacterRequest::Select,
+            CdevCall::Open { .. } => CdevRequest::Open,
+            CdevCall::Close { .. } => CdevRequest::Close,
+            CdevCall::Read { .. } => CdevRequest::Read,
+            CdevCall::Ioctl { .. } => CdevRequest::Ioctl,
+            CdevCall::Cancel { .. } => CdevRequest::Cancel,
+            CdevCall::Select { .. } => CdevRequest::Select,
         }
     }
 
@@ -446,11 +447,11 @@ fn handle_request(server: &mut Server, call: CdevCall) -> Outcome {
     // The restart gate (chardriver.c:503-513): unrecorded minors serve only
     // an open; everything else for them is a stale request from before the
     // restart, dropped without a reply.
-    let verdict = gate_character_request(call.request(), server.opened.contains(call.minor().0));
+    let verdict = gate_character_request(call.request(), server.opened.contains_raw(call.minor().0 as u32));
     match verdict {
         GateVerdict::DropAsStale => return Outcome::Done(Vec::new()),
         GateVerdict::RecordAndServe => {
-            if !server.opened.record(call.minor().0) {
+            if !server.opened.insert_raw(call.minor().0 as u32) {
                 // The 256-entry set is full (unreachable in practice for
                 // ten devices, but the framework's own note, framework.rs
                 // record(), demands an error rather than an untracked
@@ -668,7 +669,7 @@ mod tests {
             }
             _ => panic!("expected Done"),
         }
-        assert!(server.opened.contains(1));
+        assert!(server.opened.contains_raw(1));
         assert!(server.table.devices[1].opened);
     }
 

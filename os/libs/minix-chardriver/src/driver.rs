@@ -11,11 +11,11 @@
 //! `chardriver_terminate` (`chardriver.c:537-570`).
 
 use super::protocol::{
-    BAD_MINOR, BLOCK_OPEN_MISMATCH, CDEV_CLONED, CDEV_CTTY, CdevRequest, DeviceMinor,
+    CDEV_CLONED, CDEV_CTTY, CdevRequest, DeviceMinor,
     NO_CANCEL_HOOK, NO_IOCTL_HOOK, NO_SELECT_HOOK, NO_TRANSFER_HOOK, OBSOLETE_SUSPEND,
     OpenDeviceSet, RESTART_MARKER, RequestId, SUCCESS, SUPPRESS_REPLY, is_char_request,
 };
-use minix_types::{EINTR, EINVAL, OK};
+use minix_types::EINVAL;
 
 /// Raw block-side open message type, answered with "no such device".
 ///
@@ -97,6 +97,70 @@ pub fn reply_decision(request: CdevRequest, result: i32) -> ReplyDecision {
     } else {
         ReplyDecision::Reply(result)
     }
+}
+
+/// The restart gate's verdict for one character request.
+///
+/// C: `chardriver_process` (`chardriver.c:503-513`). After a restart,
+/// callers may still hold grants and request identifiers from before the
+/// crash; serving those would answer the wrong generation of a caller, so
+/// every request for a device that has not been opened since the restart
+/// is dropped — except the open itself, which is both recorded and served.
+///
+/// [ARCH: 字符框架判定核单点] 本判定与 [`classify`]/[`reply_decision`]
+/// 一起构成字符驱动判定核，权威定义住本库；input 服务器（原
+/// `os/servers/input/src/framework.rs` 独立副本）经本次架构演进改为本
+/// 库的消费者（edge E-CDRCONV，12-stage/02 与 16-stage/01 同步标注）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateVerdict {
+    /// Serve the request (the device was opened after the restart).
+    Serve,
+    /// Record the open, then serve it (first open since the restart).
+    RecordAndServe,
+    /// Drop the request silently: no handler call, no reply.
+    DropAsStale,
+}
+
+/// Applies the restart gate.
+///
+/// `already_open` is whether the minor is in the caller's already-opened
+/// set ([`OpenDeviceSet`]). Pure function over (request, already_open);
+/// together with [`classify`] and [`reply_decision`] it forms the
+/// framework judgment trio this library owns.
+pub const fn gate_character_request(request: CdevRequest, already_open: bool) -> GateVerdict {
+    if already_open {
+        return GateVerdict::Serve;
+    }
+    match request {
+        CdevRequest::Open => GateVerdict::RecordAndServe,
+        _ => GateVerdict::DropAsStale,
+    }
+}
+
+/// One effect of announcing the server after a fresh start or a restart.
+///
+/// C: `chardriver_announce` (`chardriver.c:99-124`) does three things in
+/// order, and the order matters: first unblock callers stuck on the dead
+/// generation, then publish the arrival, then forget the old opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnounceEffect {
+    /// Ask the kernel to release callers blocked on the previous generation
+    /// (`sys_statectl(SYS_STATE_CLEAR_IPC_REFS)`).
+    ReleaseBlockedCallers,
+    /// Publish the `drv.chr.<label>` arrival marker for the virtual file
+    /// system (`ds_publish_u32` with `DS_DRIVER_UP`).
+    PublishArrival,
+    /// Forget every previously opened minor (the restart gate starts over).
+    ForgetOpenDevices,
+}
+
+/// The announce sequence, in C order.
+pub const fn announce_effects() -> [AnnounceEffect; 3] {
+    [
+        AnnounceEffect::ReleaseBlockedCallers,
+        AnnounceEffect::PublishArrival,
+        AnnounceEffect::ForgetOpenDevices,
+    ]
 }
 
 /// Planned out-of-band reply, built without touching any message buffer.
@@ -328,8 +392,9 @@ pub type LoopAction = minix_driver_rt::core::LoopAction;
 
 #[cfg(test)]
 mod tests {
-    use super::super::protocol::{CdevRequest, DeviceMinor, OpenDeviceSet, RequestId};
+    use super::super::protocol::{BLOCK_OPEN_MISMATCH, CdevRequest, DeviceMinor, OpenDeviceSet, RequestId};
     use super::*;
+    use minix_types::{EINTR, OK};
 
     /// Minimal device: implements nothing, keeps C defaults.
     struct SilentDevice;
@@ -511,5 +576,38 @@ mod tests {
         assert_eq!(device.select(DeviceMinor(1), 0b101), OK);
         device.interrupt(0b010);
         assert_eq!(device.interrupts, 0b010);
+    }
+
+    #[test]
+    fn test_gate_matrix_over_every_request() {
+        // Restart gate, full matrix (framework vector): opened devices serve
+        // everything; unopened devices serve only the open, which is
+        // recorded first (`chardriver.c:506-513`).
+        for raw in 0x400..=0x406 {
+            let request = CdevRequest::decode(raw).unwrap();
+            assert_eq!(gate_character_request(request, true), GateVerdict::Serve);
+        }
+        assert_eq!(
+            gate_character_request(CdevRequest::Open, false),
+            GateVerdict::RecordAndServe
+        );
+        for raw in 0x401..=0x406 {
+            let request = CdevRequest::decode(raw).unwrap();
+            assert_eq!(gate_character_request(request, false), GateVerdict::DropAsStale);
+        }
+    }
+
+    #[test]
+    fn test_announce_effects_follow_c_order() {
+        // C: `chardriver_announce` (`chardriver.c:99-124`) — unblock first
+        // (or the old callers stay stuck), publish second, forget last.
+        assert_eq!(
+            announce_effects(),
+            [
+                AnnounceEffect::ReleaseBlockedCallers,
+                AnnounceEffect::PublishArrival,
+                AnnounceEffect::ForgetOpenDevices,
+            ]
+        );
     }
 }
