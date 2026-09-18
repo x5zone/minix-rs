@@ -51,6 +51,7 @@ pub mod sef;
 pub mod self_lifecycle;
 pub mod service_create;
 pub mod service_slot;
+pub mod stack_frame;
 pub mod trap_api;
 pub mod slot;
 pub mod state_data;
