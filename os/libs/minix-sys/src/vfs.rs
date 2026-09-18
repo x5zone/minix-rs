@@ -51,6 +51,14 @@ pub const VFS_CALL_OPEN: i32 = 0x103;
 pub const VFS_CALL_CREATE: i32 = 0x104;
 /// Close a descriptor. C: `VFS_CLOSE (VFS_BASE + 5)` (`callnr.h:77`).
 pub const VFS_CALL_CLOSE: i32 = 0x105;
+/// File status by path. C: `VFS_STAT (VFS_BASE + 21)` (`callnr.h:93`).
+pub const VFS_CALL_STAT: i32 = 0x100 + 21;
+/// File status by descriptor. C: `VFS_FSTAT (VFS_BASE + 22)` (`callnr.h:94`).
+pub const VFS_CALL_FSTAT: i32 = 0x100 + 22;
+/// File status, no symlink follow. C: `VFS_LSTAT (VFS_BASE + 23)` (`callnr.h:95`).
+pub const VFS_CALL_LSTAT: i32 = 0x100 + 23;
+/// Device-specific control. C: `VFS_IOCTL (VFS_BASE + 24)` (`callnr.h:96`).
+pub const VFS_CALL_IOCTL: i32 = 0x100 + 24;
 /// Duplicate a descriptor. C: `VFS_FCNTL (VFS_BASE + 25)` (`callnr.h:97`),
 /// used by `dup` with the fixed-duplicate command (see `dup.c`).
 pub const VFS_CALL_FCNTL: i32 = 0x119;
@@ -71,6 +79,20 @@ pub const OPEN_FLAG_CREATE: i32 = 0x200;
 /// free descriptor at or above the given number. `dup` passes zero, so the
 /// duplicate lands on the lowest free descriptor.
 pub const FCNTL_COMMAND_DUPLICATE: i32 = 0;
+/// Get the descriptor's close-on-exec flag. C: `F_GETFD 1` (`fcntl.h:179`).
+pub const FCNTL_GET_DESCRIPTOR_FLAGS: i32 = 1;
+/// Set the descriptor's close-on-exec flag. C: `F_SETFD 2` (`fcntl.h:180`).
+pub const FCNTL_SET_DESCRIPTOR_FLAGS: i32 = 2;
+/// Get the file status flags. C: `F_GETFL 3` (`fcntl.h:181`).
+pub const FCNTL_GET_STATUS_FLAGS: i32 = 3;
+/// Set the file status flags. C: `F_SETFL 4` (`fcntl.h:182`).
+pub const FCNTL_SET_STATUS_FLAGS: i32 = 4;
+/// Get record locking information. C: `F_GETLK 7` (`fcntl.h:188`).
+pub const FCNTL_GET_RECORD_LOCK: i32 = 7;
+/// Set or clear a record lock. C: `F_SETLK 8` (`fcntl.h:189`).
+pub const FCNTL_SET_RECORD_LOCK: i32 = 8;
+/// Like `F_SETLK`, waiting when blocked. C: `F_SETLKW 9` (`fcntl.h:190`).
+pub const FCNTL_SET_RECORD_LOCK_WAIT: i32 = 9;
 
 /// Maximum scatter-gather segments per vectored call.
 ///
@@ -194,6 +216,258 @@ pub fn close_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
     };
     crate::syscall::write_payload(&mut message, bytes);
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_CLOSE, &mut message).map(|_| ())
+}
+
+/// Stat-family payload in C field order.
+///
+/// C: `mess_lc_vfs_stat` (`minix3/minix/include/minix/ipc.h:874-880`) —
+/// path length including the NUL, path pointer, and the caller's
+/// `struct stat` buffer pointer. Shared by `stat` and `lstat` (`stat.c`
+/// fills the same fields; the call number alone selects the symlink rule).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct StatPathPayload {
+    length: u64,
+    name: u64,
+    buffer: u64,
+    _padding: [u8; 32],
+}
+
+/// Stat-by-descriptor payload in C field order.
+///
+/// C: `mess_lc_vfs_fstat` (`ipc.h:665-670`) — descriptor plus buffer
+/// pointer, no path.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct StatFdPayload {
+    fd: i32,
+    _padding_before_buffer: [u8; 4],
+    buffer: u64,
+    _padding: [u8; 40],
+}
+
+/// Shared body of the two path stat variants; the call number carries the
+/// symlink decision (`stat.c` runs the same message shape for both).
+fn stat_via_path(
+    transport: &impl IpcTransport,
+    call_number: i32,
+    name_address: u64,
+    name_length_including_nul: usize,
+    buffer_address: u64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = StatPathPayload {
+        length: name_length_including_nul as u64,
+        name: name_address,
+        buffer: buffer_address,
+        _padding: [0; 32],
+    };
+    // SAFETY: plain 56-byte value; exact byte representation below.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<StatPathPayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_syscall(transport, vfs_endpoint(), call_number, &mut message).map(|_| ())
+}
+
+/// Retrieves file status by path, following symlinks.
+///
+/// C: `stat` (`minix3/minix/lib/libc/sys/stat.c`): clear a message, store
+/// the path length (including NUL), path pointer, and stat buffer pointer,
+/// and run the protocol. The file-system server fills the caller's
+/// [`minix_types::Stat`] buffer through a magic grant, so the reply only
+/// reports success or the errno.
+pub fn stat_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    buffer_address: u64,
+) -> Result<(), Errno> {
+    stat_via_path(
+        transport,
+        VFS_CALL_STAT,
+        name_address,
+        name_length_including_nul,
+        buffer_address,
+    )
+}
+
+/// Retrieves file status by path without following the final symlink.
+///
+/// C: `lstat` (same file and message shape as [`stat_via`]; `stadir.c:419`
+/// routes the lookup with `PATH_RET_SYMLINK`).
+pub fn lstat_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    buffer_address: u64,
+) -> Result<(), Errno> {
+    stat_via_path(
+        transport,
+        VFS_CALL_LSTAT,
+        name_address,
+        name_length_including_nul,
+        buffer_address,
+    )
+}
+
+/// Retrieves file status for an open descriptor.
+///
+/// C: `fstat` (`stat.c`): descriptor and buffer pointer, no path.
+pub fn fstat_via(
+    transport: &impl IpcTransport,
+    fd: i32,
+    buffer_address: u64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = StatFdPayload {
+        fd,
+        _padding_before_buffer: [0; 4],
+        buffer: buffer_address,
+        _padding: [0; 40],
+    };
+    // SAFETY: plain 56-byte value; exact byte representation below.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<StatFdPayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_FSTAT, &mut message).map(|_| ())
+}
+
+/// Ioctl payload in C field order.
+///
+/// C: `mess_lc_vfs_ioctl` (`ipc.h:699-705`) — descriptor, request number
+/// (the C `unsigned long` grows to 64 bits), and the user buffer address.
+/// The driver-side access to that buffer rides a request-encoded grant
+/// (`device.c` `make_ioctl_grant`), not this message.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct IoctlPayload {
+    fd: i32,
+    _padding_before_request: [u8; 4],
+    request: u64,
+    argument: u64,
+    _padding: [u8; 32],
+}
+
+/// Runs a device-specific control request.
+///
+/// C: `ioctl` (`minix3/minix/lib/libc/sys/ioctl.c`, after its rewrite of
+/// the terminal-local commands into `fcntl` calls): clear a message, store
+/// descriptor, request, and the raw argument, and run the protocol. The
+/// argument is the caller's buffer address when the request carries one;
+/// the request number alone defines its shape and direction.
+pub fn ioctl_via(
+    transport: &impl IpcTransport,
+    fd: i32,
+    request: u64,
+    argument: u64,
+) -> Result<i32, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = IoctlPayload {
+        fd,
+        _padding_before_request: [0; 4],
+        request,
+        argument,
+        _padding: [0; 32],
+    };
+    // SAFETY: plain 56-byte value; exact byte representation below.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<IoctlPayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_IOCTL, &mut message)
+}
+
+/// Fcntl payload in C field order.
+///
+/// C: `mess_lc_vfs_fcntl` (`ipc.h:655-662`) — descriptor, command, and the
+/// two argument shapes side by side: exactly one of `argument_int` /
+/// `argument_ptr` is meaningful per command (`fcntl.c`), the other stays
+/// zero on the wire.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct FcntlPayload {
+    fd: i32,
+    command: i32,
+    argument_int: i32,
+    _padding_before_pointer: [u8; 4],
+    argument_ptr: u64,
+    _padding: [u8; 32],
+}
+
+/// Runs a file control command.
+///
+/// C: `fcntl` (`minix3/minix/lib/libc/sys/fcntl.c`): the reply message type
+/// carries the command's result — a new descriptor for `F_DUPFD`, the flag
+/// word for the get forms, zero otherwise.
+pub fn fcntl_via(
+    transport: &impl IpcTransport,
+    fd: i32,
+    command: i32,
+    argument_int: i32,
+    argument_ptr: u64,
+) -> Result<i32, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = FcntlPayload {
+        fd,
+        command,
+        argument_int,
+        _padding_before_pointer: [0; 4],
+        argument_ptr,
+        _padding: [0; 32],
+    };
+    // SAFETY: plain 56-byte value; exact byte representation below.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<FcntlPayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_FCNTL, &mut message)
+}
+
+/// Reads directory entries in the getdents wire format.
+///
+/// C: `getdents` (`minix3/minix/lib/libc/sys/getdents.c`) reuses the
+/// read/write message with a zeroed reserved counter; the reply is the
+/// number of bytes written into the caller's buffer (`read.c:282-312`
+/// rejects a nonzero counter outright).
+pub fn getdents_via(
+    transport: &impl IpcTransport,
+    fd: i32,
+    buffer_address: u64,
+    length: usize,
+) -> Result<usize, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = ReadWritePayload {
+        fd,
+        _padding_before_buffer: [0; 4],
+        buffer_address,
+        length: length as u64,
+        cumulative: 0,
+        _padding: [0; 24],
+    };
+    // SAFETY: plain 56-byte value; exact byte representation below.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<ReadWritePayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    let transferred = perform_syscall(transport, vfs_endpoint(), VFS_CALL_GETDENTS, &mut message)?;
+    Ok(transferred as usize)
 }
 
 /// Seek payload in C field order.
@@ -324,13 +598,11 @@ struct CreatePayload {
 /// create layout plus the create call number; without it, the path layout
 /// plus the open call number. The reply message type is the new descriptor.
 ///
-/// Scope note: the create path is fully implemented below. The
-/// open-existing path needs the 64-bit path message layout (name and length
-/// grow to eight bytes each, so the 40-byte inline buffer no longer fits the
-/// 56-byte payload); that layout decision belongs to the global concepts
-/// document, which owns all message body layouts. Until it lands, the
-/// open-existing path reports `ENOSYS` explicitly instead of sending a
-/// malformed message.
+/// Scope note: both dispatch arms are implemented — create below, and the
+/// open-existing path through [`open_existing_via`], which carries the
+/// 64-bit layout adjudication (LP64: the inline buffer shrinks from 40 to
+/// 32 bytes including the NUL; longer paths return `ENAMETOOLONG` where C's
+/// `loadname` silently skipped the inline copy).
 /// C: `mess_lc_vfs_path` (`ipc.h:754-768`) — open-existing 的载荷形状。
 /// i386 原始布局：name/len/flags/mode/buf[40] = 56 字节。
 #[repr(C)]
@@ -404,7 +676,9 @@ pub fn open_via(
             crate::syscall::write_payload(&mut message, bytes);
             perform_syscall(transport, vfs_endpoint(), VFS_CALL_CREATE, &mut message)
         }
-        OpenDispatch::OpenExisting => Err(Errno::ENOSYS),
+        OpenDispatch::OpenExisting => {
+            open_existing_via(transport, name_address, name_length_including_nul, flags)
+        }
     }
 }
 
@@ -690,16 +964,115 @@ mod tests {
     }
 
     #[test]
-    fn test_open_existing_path_waits_for_layout_decision() {
-        // The 64-bit path layout belongs to the global concepts document;
-        // until it lands, this path reports ENOSYS instead of sending a
-        // malformed message.
+    fn test_open_existing_path_sends_inline_layout() {
+        // The 64-bit layout landed with the 99-global-concepts adjudication
+        // (inline buf shrunk to 32, ENAMETOOLONG past it): a short path now
+        // travels the inline layout and the reply descriptor comes back.
+        // The path bytes must live at a real address — the inline copy
+        // reads them.
+        let path = b"/etc/motd\0";
         let mut transport = CannedTransport::new();
-        assert_eq!(
-            open_via(&transport, 0x7000, 9, 0, 0),
-            Err(Errno::ENOSYS)
-        );
-        assert_eq!(transport.sendrec_calls.get(), 0);
+        transport.reply_sendrec(Ok(reply_with_type(3)));
+        assert_eq!(open_via(&transport, path.as_ptr() as u64, path.len(), 0, 0), Ok(3));
+        assert_eq!(transport.sendrec_calls.get(), 1);
+    }
+
+    // ── L10:stat 族 / ioctl / fcntl / getdents 的 wire 回放 ──
+
+    /// stat 载荷逐 lane：len(含 NUL)/name/buf（C mess_lc_vfs_stat，
+    /// ipc.h:874-880），调用号 VFS_STAT=0x115。
+    #[test]
+    fn test_stat_wire_roundtrip() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        stat_via(&transport, 0x9000, 12, 0xA000).unwrap();
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_STAT);
+        assert_eq!(sent.m_type, 0x115);
+        // SAFETY(test): 读回三 lane 的 raw 字节（与 StatPathPayload 同布局）。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 12);
+        assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0x9000);
+        assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0xA000);
+    }
+
+    /// lstat 与 stat 同载荷异调用号（stat.c 单文件两函数的形状）。
+    #[test]
+    fn test_lstat_uses_lstat_call_number() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        lstat_via(&transport, 0x9000, 8, 0xA000).unwrap();
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_LSTAT);
+        assert_eq!(sent.m_type, 0x117);
+    }
+
+    /// fstat 载荷：fd @0、buf @8（ipc.h:665-670 的 LP64 换算）。
+    #[test]
+    fn test_fstat_wire_roundtrip() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        fstat_via(&transport, 7, 0xA000).unwrap();
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_FSTAT);
+        assert_eq!(sent.m_type, 0x116);
+        // SAFETY(test): 读回 fd 与 buf lane。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 7);
+        assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0xA000);
+    }
+
+    /// ioctl 三 lane：fd/req(64 位)/arg（ipc.h:699-705）；应答原样上浮
+    /// （成功值经 m_type 返回，如请求编码的返回值）。
+    #[test]
+    fn test_ioctl_wire_roundtrip() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0x25)));
+        assert_eq!(ioctl_via(&transport, 4, 0x8927, 0xB000), Ok(0x25));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_IOCTL);
+        assert_eq!(sent.m_type, 0x118);
+        // SAFETY(test): 读回 fd/req/arg lane。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 4);
+        assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0x8927);
+        assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0xB000);
+    }
+
+    /// fcntl：fd/cmd/arg_int 并排 arg_ptr（ipc.h:655-662；同调用只填
+    /// 其一）；应答 = 命令结果（F_DUPFD 的新 fd）。
+    #[test]
+    fn test_fcntl_wire_roundtrip() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(5)));
+        assert_eq!(fcntl_via(&transport, 2, FCNTL_COMMAND_DUPLICATE, 0, 0), Ok(5));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_FCNTL);
+        // SAFETY(test): 读回 fd/cmd/arg_int/arg_ptr lane。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 2);
+        assert_eq!(i32::from_ne_bytes(raw[4..8].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(raw[8..12].try_into().unwrap()), 0);
+        assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0);
+    }
+
+    /// getdents 复用 read/write 载荷（getdents.c 直接填 m_lc_vfs_readwrite），
+    /// 应答 = 实读字节数。
+    #[test]
+    fn test_getdents_wire_roundtrip() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(96)));
+        assert_eq!(getdents_via(&transport, 6, 0xC000, 512), Ok(96));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_GETDENTS);
+        assert_eq!(sent.m_type, 0x11D);
+        // SAFETY(test): 读回 fd/buf/len lane（与 ReadWritePayload 同布局）。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 6);
+        assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0xC000);
+        assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 512);
+        // 保留计数器恒零（read.c:282-312 对非零 EINVAL）。
+        assert_eq!(u64::from_ne_bytes(raw[24..32].try_into().unwrap()), 0);
     }
 }
 
@@ -778,4 +1151,5 @@ mod open_path_tests {
             Errno::ENAMETOOLONG
         );
     }
+
 }

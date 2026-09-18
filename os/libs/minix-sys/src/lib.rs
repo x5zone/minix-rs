@@ -41,6 +41,9 @@ use ipc::IpcTransport;
 use minix_types::{Endpoint, IpcError, Message};
 
 pub use minix_types::{Gid, Pid, Uid};
+// 用户态 `struct stat` ABI 走显式路径再导出——minix-types 根上
+// `ipc::fs_driver::Stat`（VTreeFS 序列化载荷）同名，glob 会歧义。
+pub use minix_types::types::stat::Stat;
 
 /// The errno constant table at the crate root — the position `<errno.h>`
 /// holds for C programs (C: `minix3/sys/sys/errno.h`; command binaries
@@ -219,9 +222,9 @@ pub fn kill(pid: Pid, sig: i32) -> Result<(), Errno> {
 
 /// Opens a file.
 ///
-/// Dispatches on the create flag (see `vfs::dispatch_open`): the create path
-/// is fully implemented; the open-existing path reports `ENOSYS` until the
-/// global concepts document settles the 64-bit path message layout.
+/// Opens a path, dispatching on the create flag (see `vfs::dispatch_open`):
+/// the create and open-existing paths carry their own wire layouts, and the
+/// inline-capable open-existing path answers with the new descriptor.
 pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {
     vfs::open_via(
         &ipc::DirectTrapTransport,
@@ -253,6 +256,66 @@ pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
         &ipc::DirectTrapTransport,
         fd,
         buf.as_ptr() as u64,
+        buf.len(),
+    )
+}
+
+/// Retrieves file status by path, following symlinks (C: `stat`).
+///
+/// The path length travels NUL-inclusive, matching the C convention; the
+/// server fills `buf` through a grant, so the reply is just the verdict.
+pub fn stat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
+    vfs::stat_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        buf as *mut Stat as u64,
+    )
+}
+
+/// Retrieves file status by path without following the final symlink
+/// (C: `lstat`).
+pub fn lstat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
+    vfs::lstat_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        buf as *mut Stat as u64,
+    )
+}
+
+/// Retrieves file status for an open descriptor (C: `fstat`).
+pub fn fstat(fd: Fd, buf: &mut Stat) -> Result<(), Errno> {
+    vfs::fstat_via(&ipc::DirectTrapTransport, fd, buf as *mut Stat as u64)
+}
+
+/// Runs a device-specific control request (C: `ioctl`).
+///
+/// The argument is raw: the request number alone defines whether it is
+/// interpreted, and as what shape.
+pub fn ioctl(fd: Fd, request: u64, argument: u64) -> Result<i32, Errno> {
+    vfs::ioctl_via(&ipc::DirectTrapTransport, fd, request, argument)
+}
+
+/// Runs a file control command with an integer argument (C: `fcntl`).
+///
+/// The reply is the command's result — a new descriptor for `F_DUPFD`, the
+/// flag word for the get forms, zero otherwise. The pointer-argument
+/// commands (`F_GETLK` family) have no root face yet; their consumers
+/// appear with the record-locking callers.
+pub fn fcntl(fd: Fd, command: i32, argument: i32) -> Result<i32, Errno> {
+    vfs::fcntl_via(&ipc::DirectTrapTransport, fd, command, argument, 0)
+}
+
+/// Reads directory entries into the caller's buffer (C: `getdents`).
+///
+/// The reply is the number of bytes the server wrote; zero marks the end
+/// of the directory.
+pub fn getdents(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
+    vfs::getdents_via(
+        &ipc::DirectTrapTransport,
+        fd,
+        buf.as_mut_ptr() as u64,
         buf.len(),
     )
 }

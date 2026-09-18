@@ -45,6 +45,7 @@ mod proc_info;
 mod proc_nr;
 mod ps_strings;
 pub mod signal;
+pub mod stat;
 mod sysctl;
 mod sysctl_abi;
 
@@ -71,5 +72,8 @@ pub use proc_info::*;
 pub use proc_nr::*;
 pub use ps_strings::*;
 pub use signal::*;
+// `stat` 故意不走根 glob：ipc::fs_driver 已有一个序列化用的 `Stat`
+// （VTreeFS `fs_stat` 载荷），两个概念同名——用户态 `struct stat` ABI
+// 经 `types::stat::Stat` 路径取用（minix-sys 再导出为 `minix_sys::Stat`）。
 pub use sysctl::*;
 pub use sysctl_abi::*;

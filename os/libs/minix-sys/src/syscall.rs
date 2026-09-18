@@ -17,7 +17,7 @@
 //! All three are pure logic over the [`crate::ipc::IpcTransport`] trait, so
 //! unit tests drive them with a scripted transport and never need a kernel.
 
-use crate::ipc::{IpcTransport, TrapStatus};
+use crate::ipc::IpcTransport;
 use minix_types::{Endpoint, Errno, Message, MessKrnLsysSysTimes};
 
 /// Maximum path name length that still fits inside a message.
@@ -1135,6 +1135,8 @@ pub fn perform_kernel_call(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::ipc::TrapStatus;
 
     #[test]
     fn test_sys_kill_encodes_sigcalls_wire() {
