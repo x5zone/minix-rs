@@ -314,6 +314,9 @@ pub enum CommError {
     CttyNotBlock,
     NoWorker,
     Restart, // `ERESTART` → `EIO`
+    /// `asynsend3` 底层失败(sendnb 的 TrapStatus 原值,C sendmsg
+    /// comm.c:24-31 的 `return(r)`)。
+    IpcError(i32),
 }
 
 impl minix_types::ToErrno for CommError {
@@ -333,6 +336,7 @@ impl CommError {
             Self::CttyNotBlock => minix_types::EIO,
             Self::NoWorker => minix_types::EINVAL,
             Self::Restart => minix_types::EIO,
+            Self::IpcError(r) => r,
         }
     }
 }
@@ -391,6 +395,7 @@ pub trait FsTransport {
     fn send_fs(
         &mut self,
         vmnt: usize,
+        fs_ep: Endpoint,
         slot: SlotId,
         req: &Message,
         global: &mut GlobalComm,
@@ -407,11 +412,11 @@ pub trait FsTransport {
 /// Blocking transport — would `asynsend3` + `worker_wait` in real kernel.
 #[derive(Debug, Default)]
 pub struct BlockingTransport;
-
 impl FsTransport for BlockingTransport {
     fn send_fs(
         &mut self,
         vmnt: usize,
+        _fs_ep: Endpoint,
         slot: SlotId,
         _req: &Message,
         global: &mut GlobalComm,
@@ -441,6 +446,76 @@ impl FsTransport for BlockingTransport {
     }
 }
 
+/// 生产传输(S12 W1):三出口都经 [`minix_sys::ipc::IpcTransport::sendnb`]
+/// 真发送,对应 C `sendmsg` 尾部的 `asynsend3(dst, m, AMF_NOREPLY)`
+/// (comm.c:23)。窗口/排队记账复用 [`GlobalComm`]——窗口开走
+/// `sendmsg` 计数+投递,窗口满或 `VMNT_CALLBACK` 走 `queuemsg`
+/// (comm.c:148-158 的二分支,排队是常态路径而非错误)。
+pub struct IpcFsTransport<T: minix_sys::ipc::IpcTransport> {
+    pub transport: T,
+}
+
+impl<T: minix_sys::ipc::IpcTransport> FsTransport for IpcFsTransport<T> {
+    fn send_fs(
+        &mut self,
+        vmnt: usize,
+        fs_ep: Endpoint,
+        slot: SlotId,
+        req: &Message,
+        global: &mut GlobalComm,
+    ) -> Result<TransId, CommError> {
+        if vmnt >= NR_MNTS {
+            return Err(CommError::NoVmnt);
+        }
+        if global.vmnts[vmnt].can_send().is_ok() {
+            // sendmsg 路径:计数(comm.c:17)→ transid 戳入 m_type 低 16
+            // (comm.c:19,vfsif.h:80 TRNS_ADD_ID)→ asynsend3(comm.c:23)。
+            let tid = global.sendmsg(Some(vmnt), fs_ep, slot);
+            let mut out = *req;
+            out.m_type = TransId::add(req.m_type as u32, slot) as i32;
+            self.transport
+                .sendnb(fs_ep, &out)
+                .map_err(|st| CommError::IpcError(st.0))?;
+            Ok(tid)
+        } else {
+            // queuemsg 路径(comm.c:156-158):排队等窗口,回复到达后由
+            // flush 侧(fs_sendmore 语义)补发;排队的请求消息由对话层
+            // 持有(worker 槽的 w_sendrec),此处只记账。
+            global.queuemsg(vmnt, slot)?;
+            Ok(TransId(TransId::encode(slot)))
+        }
+    }
+
+    fn send_drv(
+        &mut self,
+        drv: Endpoint,
+        slot: SlotId,
+        req: &Message,
+    ) -> Result<TransId, CommError> {
+        if drv == CTTY_ENDPT {
+            return Err(CommError::CttyNotBlock);
+        }
+        // C drv_sendrec 的 dmap 排他锁归 21/21-cdev(块驱动 20);本层
+        // 只管投递:transid 戳 + asynsend3 同 sendmsg(comm.c:19-23)。
+        let mut out = *req;
+        out.m_type = TransId::add(req.m_type as u32, slot) as i32;
+        self.transport
+            .sendnb(drv, &out)
+            .map_err(|st| CommError::IpcError(st.0))?;
+        Ok(TransId(TransId::encode(slot)))
+    }
+
+    fn send_vm(&mut self, slot: SlotId, req: &Message) -> Result<TransId, CommError> {
+        // `NULL vmp` → 无窗口计数(vm_sendrec,comm.c:171 起)。
+        let mut out = *req;
+        out.m_type = TransId::add(req.m_type as u32, slot) as i32;
+        self.transport
+            .sendnb(Endpoint::VM, &out)
+            .map_err(|st| CommError::IpcError(st.0))?;
+        Ok(TransId(TransId::encode(slot)))
+    }
+}
+
 /// Mock transport — records messages, never waits, for tests.
 #[derive(Debug, Default)]
 #[cfg(test)]
@@ -455,6 +530,7 @@ impl FsTransport for MockTransport {
     fn send_fs(
         &mut self,
         vmnt: usize,
+        _fs_ep: Endpoint,
         slot: SlotId,
         _req: &Message,
         _global: &mut GlobalComm,
@@ -504,6 +580,149 @@ pub fn vm_procctl_handlemem(
 mod tests {
     use super::*;
     use minix_types::Endpoint;
+
+    /// 脚本化 IPC 传输:记录 sendnb 投递,可注入失败(IpcFsTransport 测试)。
+    /// `IpcTransport` 以 `&self` 为接口,记录侧用 `RefCell` 内部可变。
+    struct ScriptedIpc {
+        sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
+        fail_with: Option<i32>,
+    }
+    impl ScriptedIpc {
+        fn new() -> Self {
+            Self {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail_with: None,
+            }
+        }
+    }
+    impl minix_sys::ipc::IpcTransport for ScriptedIpc {
+        fn send(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn receive(
+            &self,
+            _s: Endpoint,
+            _m: &mut Message,
+        ) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
+            Err(minix_sys::ipc::TrapStatus(-1))
+        }
+        fn sendrec(&self, _d: Endpoint, _m: &mut Message) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+            if let Some(r) = self.fail_with {
+                return Err(minix_sys::ipc::TrapStatus(r));
+            }
+            self.sent.borrow_mut().push((destination, *message));
+            Ok(())
+        }
+        fn senda(&self, _t: &[minix_sys::ipc::AsyncSlot]) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> { Ok(0) }
+    }
+
+    const REQ_PROBE: u32 = 0x503; // 任意请求号(transid 戳见证用)
+
+    #[test]
+    fn test_ipc_fs_transport_send_real_path() {
+        // comm.c:148-153 窗口开 → sendmsg 计数 + transid 戳 + sendnb。
+        let mut global = GlobalComm::new();
+        let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
+        let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
+        let r = t.send_fs(0, Endpoint::MFS, 2, &req, &mut global);
+        assert_eq!(r, Ok(TransId(TransId::encode(2))));
+        let sent = t.transport.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        let (dst, sent_msg) = &sent[0];
+        assert_eq!(*dst, Endpoint::MFS);
+        assert_eq!(sent_msg.m_type as u32, TransId::add(REQ_PROBE, 2)); // 0x503<<16|0xB03
+        assert_eq!(global.vmnts[0].cur_reqs, 1);
+    }
+
+    #[test]
+    fn test_ipc_fs_transport_queues_when_window_full() {
+        // comm.c:156-158 窗口满 → queuemsg 是常态路径(非错误),
+        // 不投递,sending++。
+        let mut global = GlobalComm::new();
+        global.vmnts[0].cur_reqs = 1; // max=1,窗口占满
+        let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
+        let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
+        let r = t.send_fs(0, Endpoint::MFS, 3, &req, &mut global);
+        assert!(r.is_ok());
+        assert!(t.transport.sent.borrow().is_empty());
+        assert_eq!(global.sending, 1);
+        assert_eq!(global.vmnts[0].queued(), 1);
+    }
+
+    #[test]
+    fn test_ipc_fs_transport_callback_suppresses_send() {
+        // VMNT_CALLBACK 抑制(can_send 的 Callback 臂)同样走排队。
+        let mut global = GlobalComm::new();
+        global.vmnts[0].callback = true;
+        let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
+        let req = Message::default();
+        assert!(t.send_fs(0, Endpoint::MFS, 1, &req, &mut global).is_ok());
+        assert!(t.transport.sent.borrow().is_empty());
+        assert_eq!(global.sending, 1);
+    }
+
+    #[test]
+    fn test_ipc_fs_transport_sendnb_failure_is_ipc_error() {
+        // C sendmsg 的 asynsend3 失败 → return(r)(comm.c:24-31);
+        // 计数已先行递增(C 的既有次序),错误原值透传。
+        let mut global = GlobalComm::new();
+        let mut t = IpcFsTransport {
+            transport: ScriptedIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail_with: Some(-5),
+            },
+        };
+        let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
+        assert_eq!(
+            t.send_fs(0, Endpoint::MFS, 0, &req, &mut global),
+            Err(CommError::IpcError(-5))
+        );
+        assert_eq!(global.vmnts[0].cur_reqs, 1);
+        assert_eq!(CommError::IpcError(-5).to_errno(), -5);
+    }
+
+    #[test]
+    fn test_ipc_fs_transport_send_vm_no_window() {
+        // vm_sendrec 的 NULL vmp:投递 VM + transid 戳,窗口不动。
+        let mut global = GlobalComm::new();
+        let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
+        let req = Message { m_type: REQ_PROBE as i32, ..Message::default() };
+        let r = t.send_vm(4, &req);
+        assert_eq!(r, Ok(TransId(TransId::encode(4))));
+        let sent = t.transport.sent.borrow();
+        let (dst, sent_msg) = &sent[0];
+        assert_eq!(*dst, Endpoint::VM);
+        assert_eq!(sent_msg.m_type as u32, TransId::add(REQ_PROBE, 4));
+        assert!(global.vmnts.iter().all(|c| c.cur_reqs == 0));
+    }
+
+    #[test]
+    fn test_ipc_fs_transport_send_drv_ctty_gate() {
+        // drv_sendrec 的 CTTY_ENDPT → EIO 面(CttyNotBlock)。
+        let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
+        let req = Message::default();
+        assert_eq!(
+            t.send_drv(CTTY_ENDPT, 0, &req),
+            Err(CommError::CttyNotBlock)
+        );
+        assert!(t.transport.sent.borrow().is_empty());
+        // 非 CTTY:transid 戳 + 投递。
+        let r = t.send_drv(Endpoint::from_generation_slot(1, 5), 6, &req);
+        assert!(r.is_ok());
+        assert_eq!(t.transport.sent.borrow()[0].1.m_type as u32, TransId::add(0, 6));
+    }
+
+    #[test]
+    fn test_ipc_fs_transport_vmnt_out_of_range() {
+        let mut global = GlobalComm::new();
+        let mut t = IpcFsTransport { transport: ScriptedIpc::new() };
+        let req = Message::default();
+        assert_eq!(
+            t.send_fs(NR_MNTS, Endpoint::MFS, 0, &req, &mut global),
+            Err(CommError::NoVmnt)
+        );
+    }
 
     #[test]
     fn test_transid_add_get_del() {
@@ -728,10 +947,10 @@ mod tests {
         let msg = Message::default();
         let mut blocking = BlockingTransport;
         let mut mock = MockTransport::default();
-        let r1 = blocking.send_fs(0, 1, &msg, &mut global);
+        let r1 = blocking.send_fs(0, Endpoint::MFS, 1, &msg, &mut global);
         assert!(r1.is_ok());
         let mut g2 = GlobalComm::new();
-        let r2 = mock.send_fs(0, 1, &msg, &mut g2);
+        let r2 = mock.send_fs(0, Endpoint::MFS, 1, &msg, &mut g2);
         assert!(r2.is_ok());
         assert_eq!(mock.sent_fs.len(), 1);
         // Trait objects

@@ -36,6 +36,7 @@ use crate::device_map::{DmapTable, SmapTable};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;
 use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
+use crate::fs_comm::GlobalComm;
 use crate::vnode::VnodeTable;
 use crate::vmnt::VmntTable;
 use crate::worker::WorkerPool;
@@ -161,6 +162,18 @@ pub enum Route {
     /// (`main.c:283-294`, `call_index >= NR_VFS_CALLS`).  Never a silent
     /// stand-in for a real call.
     Enosys { raw: u32 },
+}
+
+/// `do_reply` 的两类 `printf+return` 软失败（main.c:193-203）——回复
+/// 不落地、窗口不动、主循环继续。硬失败（找不到 vmnt）按 C panic。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsReplyError {
+    /// 低 16 位不是合法 `IS_VFS_FS_TRANSID`。
+    SpuriousTransid,
+    /// 槽号越界（>`NR_WTHREADS`）。
+    SlotOutOfRange,
+    /// `wp->w_task != who_e`——不是该端点在等的回复（main.c:193-196）。
+    WrongTask,
 }
 
 /// Notify source inside [`Route::Notify`].
@@ -289,6 +302,9 @@ pub struct VfsState {
     pub lock_table: LockTable,
     /// Worker thread pool.
     pub worker_pool: WorkerPool,
+    /// FS/VM/驱动通信窗口（`glo.h:17 sending` + 各 `vmnt.m_comm`,
+    /// comm.c;S12 W1 入态）。
+    pub comm: GlobalComm,
     /// Revive counter (number of blocked processes revived).
     pub reviving: usize,
     /// Current message.
@@ -323,6 +339,7 @@ impl VfsState {
             smap_table: SmapTable::new(),
             lock_table: LockTable::new(),
             worker_pool: WorkerPool::new(),
+            comm: GlobalComm::new(),
             reviving: 0,
             current_message: Message::default(),
             current_fp_slot: None,
@@ -635,6 +652,11 @@ impl VfsState {
             Route::Enosys { .. } => {
                 // 真实回复 ENOSYS 的发送侧挂 W1 transport；决策面已定。
             }
+            Route::FsReply { .. } => {
+                // C main.c:80-89 — do_reply 无应答对象；软失败（typed
+                // `FsReplyError`）即 C 的 printf+return，主循环继续。
+                let _ = self.handle_fs_reply(msg, codec);
+            }
             _ => {}
         }
         route
@@ -758,24 +780,66 @@ impl VfsState {
         self.reply(target, result)
     }
 
-    /// `do_reply:187` — validate `w_task == who_e` and `w_sendrec` liveness,
-    /// then `*w_sendrec = m_in; c_cur_reqs--`.
+    /// `do_reply:187`（main.c）——FS 回复落地到等待中的 worker 槽。
     ///
-    /// In the slot model `w_task` is `WorkerSlot.task` and `w_sendrec` is
-    /// `WorkerSlot.sendrec`; `c_cur_reqs` is `Vmnt.comm` state (DEFERRED).
-    /// Here we validate the transid routing and signal the slot.
+    /// C 步骤逐条对应：
+    /// 1. `transid` 解码出槽号（`TRNS_GET_ID` + `IS_VFS_FS_TRANSID`）。
+    /// 2. `who_e != VM_PROC_NR && find_vmnt(who_e)==NULL → panic`
+    ///    （main.c:190-191）——VM 回复跳过 vmnt 查找；找不到挂载点即
+    ///    fail-fast（同 C 的 panic 文案）。
+    /// 3. `wp->w_task != who_e → printf+return`（main.c:193-196）——
+    ///    typed 为 [`FsReplyError::WrongTask`]。
+    /// 4. `*w_sendrec = m_in; w_sendrec 转为已交付`（main.c:204-205）——
+    ///    槽模型的 `sendrec` 存储被回复覆写，续接侧从同槽读回结果
+    ///    （C 的续接在 `fs_sendrec:164` 读 `reqmp->m_type`）。
+    /// 5. `w_task = NONE; c_cur_reqs--`（main.c:206-208）——窗口放行。
+    /// 6. `worker_signal(wp)`（main.c:209）——槽从 `WaitingForFs` 回
+    ///    `Busy`（协程可运行；单线程模型下"可运行"即等待续接分派）。
     pub fn handle_fs_reply<C: TransIdCodec>(
         &mut self,
         msg: &Message,
         codec: &C,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, FsReplyError> {
         let transid_raw = (msg.m_type as u32) & 0xFFFF;
-        let slot = codec.decode(transid_raw).ok_or("spurious transid")?;
+        let slot = codec
+            .decode(transid_raw)
+            .ok_or(FsReplyError::SpuriousTransid)?;
         if slot >= crate::worker::NR_WTHREADS {
-            return Err("worker slot out of range");
+            return Err(FsReplyError::SlotOutOfRange);
         }
-        // `do_reply:194` `w_task != who_e` would `printf` and return;
-        // we model as `Ok` but the worker's `task` would be checked there.
+        // C main.c:190 — VM 回复不经 vmnt 查找；其余找不到挂载点 panic。
+        let vmnt_idx = if msg.m_source == Endpoint::VM {
+            None
+        } else {
+            match self.vmnt_table.find_by_fs(msg.m_source) {
+                Some(id) => Some(id.0),
+                None => panic!(
+                    "Couldn't find vmnt for endpoint {} (C main.c:191)",
+                    msg.m_source.0
+                ),
+            }
+        };
+        let wp = self
+            .worker_pool
+            .get_mut(slot)
+            .ok_or(FsReplyError::SlotOutOfRange)?;
+        if wp.task != Some(msg.m_source) {
+            // C main.c:193-196 — expected X to reply, not Y.
+            return Err(FsReplyError::WrongTask);
+        }
+        // C main.c:204-206 — `*w_sendrec = m_in` 后清 w_task；槽模型里
+        // "是否在等"由 task 承载，回复体留在 sendrec 供续接读取。
+        wp.sendrec = Some(*msg);
+        wp.task = None;
+        if let Some(idx) = vmnt_idx {
+            debug_assert!(
+                self.comm.vmnts[idx].cur_reqs > 0,
+                "c_cur_reqs underflow (C main.c:207 pairing)"
+            );
+            self.comm.vmnts[idx].cur_reqs -= 1;
+        }
+        // C main.c:209 worker_signal —— 线程从 worker_wait 返回。
+        wp.state = crate::worker::WorkerState::Busy;
         Ok(slot)
     }
 }
@@ -833,7 +897,117 @@ pub fn run() -> ! {
 mod tests {
     use crate::call_table::VfsCallNum;
     use super::*;
+    use crate::worker::WorkerState;
     use minix_types::{Endpoint, VFS_PM_INIT};
+
+    /// 播种挂载点 0:fs=MFS、dev 非 NO_DEV(find_by_fs 的双条件)。
+    fn seed_vmnt0(state: &mut VfsState) {
+        let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+        v.fs = Endpoint::MFS;
+        v.dev = 1; // DevId(u64),非 NO_DEV 即可
+    }
+
+    /// 播种 worker 槽并置 `WaitingForFs`(fs_sendrec 的 sendmsg 半)。
+    fn seed_waiting(state: &mut VfsState, slot: usize, task: Endpoint) {
+        let req = Message { m_type: 0x503, ..Message::default() };
+        state.worker_pool.get_mut(slot).unwrap().set_waiting(task, req);
+    }
+
+    /// 构造 FS 回复消息(m_type 高 16 请求号、低 16 transid)。
+    fn reply_msg(req: u32, slot: usize, source: Endpoint) -> Message {
+        let mut m = Message { m_type: crate::fs_comm::TransId::add(req, slot) as i32, ..Message::default() };
+        m.m_source = source;
+        m
+    }
+
+    #[test]
+    fn test_handle_fs_reply_delivers_to_waiting_slot() {
+        // C do_reply(main.c:187-211)主路径:校验 → 落地 → 窗口放行 →
+        // worker_signal。VfsState::comm 入态(S12 W1)后的见证。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        seed_waiting(&mut state, 2, Endpoint::MFS);
+        state.comm.vmnts[0].cur_reqs = 1;
+
+        let reply = reply_msg(0x503, 2, Endpoint::MFS);
+        let r = state.handle_fs_reply(&reply, &VfsTransIdCodec);
+        assert_eq!(r, Ok(2));
+        let wp = state.worker_pool.get(2).unwrap();
+        assert_eq!(wp.state, WorkerState::Busy); // worker_signal 后可运行
+        assert_eq!(wp.task, None); // w_task = NONE(main.c:206)
+        let delivered = wp.sendrec.expect("reply delivered");
+        assert_eq!(delivered.m_type as u32, crate::fs_comm::TransId::add(0x503, 2));
+        assert_eq!(state.comm.vmnts[0].cur_reqs, 0); // c_cur_reqs--(main.c:207)
+    }
+
+    #[test]
+    fn test_handle_fs_reply_vm_skips_vmnt_lookup() {
+        // C main.c:190 — who_e == VM_PROC_NR 不查 vmnt,窗口不动。
+        let mut state = VfsState::new();
+        seed_waiting(&mut state, 1, Endpoint::VM);
+        let reply = reply_msg(0x503, 1, Endpoint::VM);
+        assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(1));
+        assert_eq!(state.worker_pool.get(1).unwrap().state, WorkerState::Busy);
+    }
+
+    #[test]
+    fn test_handle_fs_reply_wrong_task_is_typed_printf() {
+        // C main.c:193-196 — w_task != who_e → printf+return(软失败,
+        // 回复不落地、窗口不动)。注意 C 的 find_vmnt(main.c:190)在
+        // w_task 检查之前,故错误应答方的 vmnt 也必须存在。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+            v.fs = Endpoint::from_generation_slot(1, 7);
+            v.dev = 2;
+        }
+        seed_waiting(&mut state, 2, Endpoint::MFS);
+        state.comm.vmnts[0].cur_reqs = 1;
+        let reply = reply_msg(0x503, 2, Endpoint::from_generation_slot(1, 7));
+        assert_eq!(
+            state.handle_fs_reply(&reply, &VfsTransIdCodec),
+            Err(FsReplyError::WrongTask)
+        );
+        assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
+        assert_eq!(state.worker_pool.get(2).unwrap().state, WorkerState::WaitingForFs);
+    }
+
+    #[test]
+    fn test_handle_fs_reply_spurious_transid() {
+        // 低 16 位非 IS_VFS_FS_TRANSID → SpuriousTransid。
+        let mut state = VfsState::new();
+        let mut msg = Message { m_type: 0x503, ..Message::default() };
+        msg.m_source = Endpoint::MFS;
+        assert_eq!(
+            state.handle_fs_reply(&msg, &VfsTransIdCodec),
+            Err(FsReplyError::SpuriousTransid)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Couldn't find vmnt for endpoint")]
+    fn test_handle_fs_reply_unknown_fs_panics_like_c() {
+        // C main.c:190-191 — 非 VM 回复且 find_vmnt 失败 → panic(fail-fast)。
+        let mut state = VfsState::new();
+        seed_waiting(&mut state, 2, Endpoint::MFS); // 未播种 vmnt0
+        let reply = reply_msg(0x503, 2, Endpoint::MFS);
+        let _ = state.handle_fs_reply(&reply, &VfsTransIdCodec);
+    }
+
+    #[test]
+    fn test_run_once_fs_reply_reaches_slot() {
+        // C main.c:80-89 — transid 命中即 do_reply,主循环无应答对象。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        seed_waiting(&mut state, 2, Endpoint::MFS);
+        state.comm.vmnts[0].cur_reqs = 1;
+        let reply = reply_msg(0x503, 2, Endpoint::MFS);
+        let route = state.run_once(&reply, &VfsTransIdCodec);
+        assert!(matches!(route, Route::FsReply { worker_slot: 2, .. }));
+        assert_eq!(state.worker_pool.get(2).unwrap().state, WorkerState::Busy);
+        assert_eq!(state.comm.vmnts[0].cur_reqs, 0);
+    }
 
     #[test]
     fn test_vfs_state_new() {

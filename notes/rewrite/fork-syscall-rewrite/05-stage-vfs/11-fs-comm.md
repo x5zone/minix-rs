@@ -149,6 +149,14 @@ Rust 改写不是照抄 `comm.c:19` 的 `c_cur_reqs++` 与 `w_next` 裸链表，
 - **Rust**：`FsComm` 的 `max_reqs` 窗口在 `FsComm::new(max)` 的 `max==1` 的 `MFS` 串行样本与 `max==4` 的并发样本的 `can_send` 可测试；`sending` 的全局 `0→queue→sendmore→0` 循环在 `GlobalComm::send_work` 的 `for(vmnt) fs_sendmore` 可测试（`sending==0→return` 短路）。
 - **缺口**：`vm_vfs_procctl_handlemem` 的 `VM_PROCCTL` 帧封装在 `fs_comm.rs:vm_procctl_handlemem` 的 `MessageM7` `VMPPARAM_HANDLEMEM` 占位；`m_comm` 的 `c_max_reqs` 的 `mount` 时 `RES_THREADED` 声明在 `06` 的 `m_fs_flags` 可观测。
 
+### D7 生产传输与回复落地（S12 W1）
+
+- **C**：`fs_sendrec:134-170` 的"`find_vmnt→EDEADLK→w_sendrec 挂接→窗口二守门→sendmsg/queuemsg→worker_wait→读 reqmp->m_type`"六步，与 `do_reply`（`main.c:187-211`）的"`find_vmnt(VM 豁免)→w_task 校验→*w_sendrec = m_in→c_cur_reqs--→worker_signal`"五步，是同一对话的两半。
+- **Rust**：`IpcFsTransport<T: IpcTransport>`（`fs_comm.rs`）是 `sendmsg` 的真发送对应物——窗口开则 `GlobalComm::sendmsg` 计数后经 `sendnb` 投递（`asynsend3(AMF_NOREPLY)` 语义），请求 `m_type` 先经 `TRNS_ADD_ID` 戳入槽号低 16 位；窗口满或 `VMNT_CALLBACK` 走 `queuemsg` 记账（排队是常态路径而非错误，`comm.c:156-158`）。`asynsend3` 底层失败新增 `CommError::IpcError(r)` 原值透传——注意 C 的计数递增先于投递，失败后窗口计数不回滚（`comm.c:17-23` 的既有次序，非 Rust 引入）。
+- **回复半**：`VfsState::handle_fs_reply`（`main_loop.rs`）补齐 `do_reply` 全语义——VM 回复跳过 vmnt 查找（`main.c:190`）、找不到挂载点同 C 一样 fail-fast panic、`w_task` 不符 typed 为 `FsReplyError::WrongTask`（C 的 printf+return 面）、回复消息覆写槽的 `sendrec` 存储（`*w_sendrec = m_in` 对应物，续接侧从同槽读结果）、`c_cur_reqs--` 后槽态 `WaitingForFs→Busy`（`worker_signal` 对应物）。`run_once` 的 `Route::FsReply` 臂接通，主循环单轮内即可观测"请求发出→回复落地→窗口放行"闭环。
+- **`GlobalComm` 入 `VfsState`**：`comm` 字段（ARCH A-4 的最后一块聚合），`handle_fs_reply` 的窗口递减经此访问；C 的 `vmnt.m_comm` 嵌入在 Rust 由 `VfsState.comm.vmnts[idx]` 与 `VmntTable` 平行索引，槽号即对齐键。
+- **边界**：排队的请求在窗口放行后的补发（`fs_sendmore` 的真发送半）需要 worker 槽内保存的请求消息，归对话原语层（`req_*` 包装接线时）；驱动回复的 `Bdev/Cdev/Sdev` 消费归 20/21/22。
+
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
@@ -230,6 +238,18 @@ os/servers/vfs/src/
 | `test_queue_two_impls` | `comm.c:223` | `FifoQueue` tail vs `LifoQueue` head 的 `push` 行为差异 | `fs_comm.rs` |
 | `test_fs_transport_two_impls` | `comm.c:134` | `FsTransport` trait `Blocking vs Mock` 的 `sent_fs` 记录差异 | `fs_comm.rs` |
 | `test_vm_procctl_handlemem` | `comm.c:199` | `!self→EFAULT` 的主线程守门 vs 有 `SlotId` 时 `TransId` 编码 | `fs_comm.rs` |
+| `test_ipc_fs_transport_send_real_path` | `comm.c:148-153` | 窗口开 → `sendnb` 投递 + `TRNS_ADD_ID` 戳 + `cur_reqs==1` | `fs_comm.rs` |
+| `test_ipc_fs_transport_queues_when_window_full` | `comm.c:156-158` | 窗口满 → `queuemsg` 记账（`sending++`），不投递 | `fs_comm.rs` |
+| `test_ipc_fs_transport_callback_suppresses_send` | `comm.c:76` | `VMNT_CALLBACK` 抑制走排队 | `fs_comm.rs` |
+| `test_ipc_fs_transport_sendnb_failure_is_ipc_error` | `comm.c:24-31` | `asynsend3` 失败 → `IpcError(r)` 原值透传，计数不回滚 | `fs_comm.rs` |
+| `test_ipc_fs_transport_send_vm_no_window` | `comm.c:183` | `NULL vmp`：投递 VM + 戳，窗口不动 | `fs_comm.rs` |
+| `test_ipc_fs_transport_send_drv_ctty_gate` | `comm.c:99` | `CTTY→CttyNotBlock`；非 CTTY 戳+投递 | `fs_comm.rs` |
+| `test_handle_fs_reply_delivers_to_waiting_slot` | `main.c:187-211` | 校验→`*w_sendrec=m_in`→`c_cur_reqs--`→`worker_signal` 全链 | `main_loop.rs` |
+| `test_handle_fs_reply_vm_skips_vmnt_lookup` | `main.c:190` | VM 回复免 vmnt 查找 | `main_loop.rs` |
+| `test_handle_fs_reply_wrong_task_is_typed_printf` | `main.c:193-196` | `w_task` 不符 → `WrongTask`，落地与窗口均不动 | `main_loop.rs` |
+| `test_handle_fs_reply_spurious_transid` | `main.c:80-89` | 非 transid 段回复拒收 | `main_loop.rs` |
+| `test_handle_fs_reply_unknown_fs_panics_like_c` | `main.c:190-191` | 非 VM 回复无 vmnt → fail-fast panic | `main_loop.rs` |
+| `test_run_once_fs_reply_reaches_slot` | `main.c:80-89` | 主循环单轮 `FsReply` 路由→槽落地闭环 | `main_loop.rs` |
 
 测试策略：`TransId` 的 `ADD/GET/DEL` 以 `add(0x1234,0xB01)→get 0xB01 & del 0x1234` 往返样本覆盖；`FsComm` 的窗口以 `max=1 cur=1→Queue` 与 `max=4 cur=1→Send` 两样本覆盖；`queue` 以 `enqueue 1,2 → dequeue 1` 的 FIFO 样本覆盖；`sendmsg` 以 `cur 0→1` 的递增样本覆盖；`fs_cancel` 以 `queue 2→while pop 2→sending 0` 的清空样本覆盖；`TransId` 与 `Queue` 的双 trait 以 `Vfs vs Test` 的 `0xB01 vs 0xC01` 与 `Fifo head vs Lifo tail` 的 `dyn` 行为差异样本覆盖。
 
@@ -258,6 +278,6 @@ os/servers/vfs/src/
 
 - C 源：`minix3/minix/servers/vfs/comm.c:11-244`（`sendmsg:11` 的 `c_cur_reqs++ + TRNS_ADD_ID + asynsend3`、`send_work:37` 的 `sending==0` 短路与 `NR_MNTS` 扫表、`fs_cancel:50` 的 `while(queue) stop`、`fs_sendmore:66` 的 `窗口+CALLBACK` 守门与 `pop_front + sendmsg`、`drv_sendrec:89` 的 `CTTY→EIO` 与 `dmap_servicing` 排他、`fs_sendrec:134` 的 `CALLBACK/窗口` 二守门与 `ERESTART→EIO`、`vm_sendrec:173` 的 `NULL vmp` 直通、`vm_vfs_procctl_handlemem:199` 的 `!self→EFAULT`、`queuemsg:223` 的 `sending++` 尾插）、`minix3/minix/servers/vfs/type.h:comm_t`（`c_max_reqs/c_cur_reqs/c_req_queue` 三字段）、`minix3/minix/servers/vfs/vmnt.h:__VFS_VMNT_H__（L7，工具生成）`（`vmnt.m_comm` 嵌入与 `VMNT_CALLBACK 02`）、`minix3/minix/include/minix/com.h:VFS_TRANSACTION_BASE`（`VFS_TRANSACTION_BASE 0xB00 / VFS_TRANSID 0xB01 / IS_VFS_FS_TRANSID ~0xff`）、`minix3/minix/include/minix/vfsif.h:TRNS_GET_ID`（`TRNS_GET_ID/ADD/DEL` 的 `&0xFFFF/<<16/>>16`）
 - 阶段文档：`06-vmnt-table.md`（`Vmnt.m_comm: FsComm` 嵌入与 `VMNT_CALLBACK` 标志）、`09-main-loop.md`（`Route::FsReply` 的 `TRNS_GET_ID` 解码与 `do_reply` 的 `c_cur_reqs--`）、`08-worker-thread.md`（`WorkerPool::wait/signal` 的 `w_event` 队列与 `SuspendToken`）、`07-tll-lock.md`（`tll_lock` 的 `EBUSY→wait` 与 `VFS` 通信的 `worker_wait` 同源）、`12-request-wrappers.md`（`request.c` 的 `REQ_*` 包装与 `node_details`）、`99-global-concepts.md`（`comm_t` 术语与 `sending` 计数）
-- Rust 实现：`os/servers/vfs/src/fs_comm.rs:1`（`GlobalComm{ vmnts:[FsComm;8], sending }` + `FsComm{ max/cur/queue:VecDeque }` + `TransId/TRNS_ADD/GET/DEL + FsTransport trait (Blocking vs Mock + Fifo vs Lifo)`）、`os/servers/vfs/src/vmnt.rs:1`（`Vmnt.m_comm: FsComm` 嵌入）、`os/servers/vfs/src/main_loop.rs:1`（`TransIdCodec` 的 re-export 消费端，唯一定义在 `fs_comm.rs`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
+- Rust 实现：`os/servers/vfs/src/fs_comm.rs:1`（`GlobalComm{ vmnts:[FsComm;8], sending }` + `FsComm{ max/cur/queue:VecDeque }` + `TransId/TRNS_ADD/GET/DEL + FsTransport trait（Blocking 测试态 / IpcFsTransport 生产态[S12 W1] / Mock）+ CommError::IpcError`）、`os/servers/vfs/src/vmnt.rs:1`（`Vmnt.m_comm: FsComm` 嵌入）、`os/servers/vfs/src/main_loop.rs:1`（`VfsState.comm: GlobalComm` 聚合 + `handle_fs_reply` 的 `do_reply` 全语义 + `TransIdCodec` 的 re-export 消费端，唯一定义在 `fs_comm.rs`）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/12-ipc-core.md`（`asynsend3(AMF_NOREPLY)` 的异步投递）
 
