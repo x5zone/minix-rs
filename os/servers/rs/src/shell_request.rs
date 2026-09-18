@@ -793,6 +793,31 @@ impl RsServer {
                 entry.prepare_state_data.size = out.size;
                 entry.eval_buff = out.eval;
                 entry.ipcf_els_buff = Some(out.ipcf_els_buff);
+
+                // C request.c:817-838 —— grant 半:eval/filter 字节授权给
+                // 更新实例读取(RS 自身内存,CPF_READ);元数据半由 LU
+                // 描述符(entry.prepare_state_data 字段)承载。授权地址
+                // 稳定性:Vec 堆缓冲不受 header 移动影响。
+                if let Some(eval) = entry.eval_buff.as_ref()
+                    && !eval.is_empty()
+                {
+                    let gid = kernel_cell.borrow_mut().grant_read(
+                        Endpoint::RS,
+                        eval.as_ptr() as u64,
+                        eval.len() as u64,
+                    )? as u32;
+                    entry.prepare_state_data.eval_gid = Some(gid);
+                }
+                if let Some(els) = entry.ipcf_els_buff.as_ref()
+                    && !els.is_empty()
+                {
+                    let gid = kernel_cell.borrow_mut().grant_read(
+                        Endpoint::RS,
+                        els.as_ptr() as u64,
+                        els.len() as u64,
+                    )? as u32;
+                    entry.prepare_state_data.ipcf_els_gid = Some(gid);
+                }
             }
             Err(e) => {
                 if let Some(nid) = new_id {

@@ -13,7 +13,7 @@ use crate::privilege::{CallMask, PrivCtlOp, Privilege};
 use crate::sched::SchedulerConfig;
 use crate::service_slot::Label;
 use alloc::vec::Vec;
-use minix_types::{Clock, Endpoint, Errno, Pid};
+use minix_types::{GrantId, Clock, Endpoint, Errno, Pid};
 
 /// Deterministic xorshift64* PRNG for property-style tests (E-9).
 ///
@@ -156,6 +156,12 @@ pub struct MockKernelApi {
     pub payload: Option<Vec<u8>>,
     /// Bytes handed to `safecopy_to`, in order (R7 copy-out assertions).
     pub sent_copies: Vec<(Endpoint, usize, Vec<u8>)>,
+    /// grant_read 发放序号(下一个 gid)。
+    pub grant_seq: u32,
+    /// 最近一次 grant_read 的 (gid, addr, len)。
+    pub last_grant: Option<(u32, u64, u64)>,
+    /// 已 revoke 的 gid。
+    pub revoked_grants: Vec<GrantId>,
     /// Canned receive queue (E-10/06 wiring tests): `receive` pops the front
     /// entry; empty queue → `Err(ENOSYS)` (the loop ends, T2 semantics).
     pub inbox: Vec<(minix_types::Message, crate::dispatch::IpcStatus, Clock)>,
@@ -199,6 +205,9 @@ impl MockKernelApi {
             fail_calls: Vec::new(),
             payload: None,
             sent_copies: Vec::new(),
+            grant_seq: 0,
+            last_grant: None,
+            revoked_grants: Vec::new(),
             inbox: Vec::new(),
             sent: Vec::new(),
             replies: Vec::new(),
@@ -490,6 +499,16 @@ impl IpcApi for MockKernelApi {
 
     fn ds_lookup_by_label(&mut self, _label: &str) -> Option<Endpoint> {
         None
+    }
+
+    fn grant_read(&mut self, _dest: Endpoint, addr: u64, len: u64) -> Result<GrantId, Errno> {
+        self.grant_seq += 1;
+        self.last_grant = Some((self.grant_seq, addr, len));
+        Ok(self.grant_seq as GrantId)
+    }
+
+    fn grant_revoke(&mut self, grant: GrantId) {
+        self.revoked_grants.push(grant);
     }
 }
 

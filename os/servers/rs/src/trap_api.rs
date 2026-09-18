@@ -27,7 +27,7 @@
 use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, IpcTransport as _};
 use minix_sys::syscall::{self, DirectKernelCallTransport};
 use minix_sys::{pm as sys_pm, vm as sys_vm};
-use minix_types::{Clock, Endpoint, Errno, Message, Pid};
+use minix_types::{Clock, Endpoint, Errno, GrantId, Message, Pid};
 
 use crate::boot::{IpcApi, Machine, PmApi, SchedApi, SysApi, VmApi, VmRsMemReq};
 use crate::privilege::{CallMask, PrivCtlOp, PrivFlags, PrivId, Privilege, SysMap, TrapMask};
@@ -131,6 +131,8 @@ pub struct TrapKernelApi {
         minix_sys::ipc::DirectTrapTransport,
         DirectKernelCallTransport,
     >,
+    /// grant 表(cpf_grant_direct/revoke 生命线)。
+    grants: minix_sys::grant::GrantTable,
     /// `sys_privctl(SetSys/UpdateSys)` 的稳定载荷。
     priv_wire: WirePrivUpdate,
     /// `vm_rs_set_priv` 的掩码缓冲(VM datacopy 回读 8 字节,2×u32 LE)。
@@ -148,6 +150,7 @@ impl TrapKernelApi {
                 DirectKernelCallTransport,
                 minix_types::Endpoint::DS,
             ),
+            grants: minix_sys::grant::GrantTable::new(),
             priv_wire: WirePrivUpdate {
                 s_id: 0,
                 s_flags: 0,
@@ -545,5 +548,28 @@ impl IpcApi for TrapKernelApi {
 
     fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint> {
         self.ds.retrieve_label_endpt(label).ok().map(|(ep, _)| ep)
+    }
+
+    fn grant_read(
+        &mut self,
+        dest: Endpoint,
+        addr: u64,
+        len: u64,
+    ) -> Result<GrantId, Errno> {
+        let gid = self
+            .grants
+            .grant_direct(
+                &self.kernel,
+                dest.0,
+                addr,
+                len,
+                minix_types::CpFlags::READ,
+            )
+            .map_err(|e| Errno::from_i32(e))?;
+        Ok(gid)
+    }
+
+    fn grant_revoke(&mut self, grant: GrantId) {
+        let _ = self.grants.revoke(grant);
     }
 }

@@ -26,7 +26,7 @@
 //! (19 号换装:每方法委托 minix-sys 真实 wrapper);tests use
 //! `MockKernelApi`.
 
-use minix_types::{BootImage, Clock, Endpoint, Errno, Pid};
+use minix_types::{BootImage, Clock, Endpoint, Errno, GrantId, Pid};
 
 use crate::privilege::{CallMask, PrivFlags};
 use crate::process_table::RProcTable;
@@ -284,6 +284,15 @@ pub trait IpcApi {
     /// the label is unknown. Production impl: `DsClient` in
     /// `crate::trap_api`.
     fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint>;
+
+    /// Grants READ access to RS's own memory for the update instance
+    /// ([ARCH: request.c:815-838] `cpf_grant_direct(rpub->endpoint, …,
+    /// CPF_READ)` — the state-data eval/filter bytes travel by grant).
+    /// The grant stays alive until revoked or the process dies.
+    fn grant_read(&mut self, dest: Endpoint, addr: u64, len: u64) -> Result<GrantId, Errno>;
+
+    /// Revokes a grant (C: `cpf_revoke` — the update cleanup half).
+    fn grant_revoke(&mut self, grant: GrantId);
 }
 
 /// The external boundary of the RS server — the union of the five domain
@@ -477,6 +486,12 @@ impl IpcApi for UnimplementedKernelApi {
     fn ds_lookup_by_label(&mut self, _label: &str) -> Option<Endpoint> {
         None
     }
+
+    fn grant_read(&mut self, _dest: Endpoint, _addr: u64, _len: u64) -> Result<GrantId, Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    fn grant_revoke(&mut self, _grant: GrantId) {}
 }
 
 /// Boot image + boot tables bundle.
