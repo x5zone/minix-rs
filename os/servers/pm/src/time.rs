@@ -177,7 +177,7 @@ impl ClockTime for SysClockTime {
                 let snap = minix_sys::misc::ClockSnapshot {
                     uptime_ticks: t.boot_ticks,
                     realtime_ticks: t.real_ticks,
-                    boottime_seconds: t.boot_time as u64,
+                    boottime_seconds: t.boot_time,
                     ticks_per_second: self.hz as u64,
                 };
                 let (sec, nsec) = minix_sys::misc::wall_clock_time(snap);

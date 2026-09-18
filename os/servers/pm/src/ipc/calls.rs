@@ -681,7 +681,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     // C do_gettime 的 mp_reply 同臂。
                     unsafe {
                         reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
-                        reply.m_u.raw[16..24].copy_from_slice(&(ts.nsec as i64).to_ne_bytes());
+                        reply.m_u.raw[16..24].copy_from_slice(&ts.nsec.to_ne_bytes());
                     }
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
@@ -702,7 +702,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     // SAFETY: 应答臂 sec@0/nsec@16。
                     unsafe {
                         reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
-                        reply.m_u.raw[16..24].copy_from_slice(&(ts.nsec as i64).to_ne_bytes());
+                        reply.m_u.raw[16..24].copy_from_slice(&ts.nsec.to_ne_bytes());
                     }
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
