@@ -12,6 +12,7 @@
 
 use minix_chardriver::driver::CharDriver;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet, RequestId};
+use minix_types::Errno;
 
 use crate::core::{GeneratorCore, FoldCipher, BlockCipher};
 use crate::device::{check_open, check_read, check_write, chunk_plan, poll};
@@ -55,15 +56,18 @@ impl<C: BlockCipher> CharDriver for RandomFace<C> {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
-        // The seed gate: unseeded answers "try again", never parks.
-        if check_read(minor.0, self.generator.is_seeded()) != 0 {
-            return check_read(minor.0, self.generator.is_seeded()) as i64;
+    ) -> Result<usize, Errno> {
+        // The seed gate: unseeded answers "try again", never parks. The
+        // check helpers speak the C negative-errno dialect; the error lane
+        // wants the positive errno.
+        let gate = check_read(minor.0, self.generator.is_seeded());
+        if gate != 0 {
+            return Err(Errno::from_i32(-gate));
         }
         // Chunk the request: full 1024-byte blocks plus the tail.
         let (full, tail) = chunk_plan(size);
         let _ = (full, tail);
-        size as i64
+        Ok(size)
     }
 
     fn write(
@@ -74,13 +78,14 @@ impl<C: BlockCipher> CharDriver for RandomFace<C> {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
-        if check_write(minor.0) != 0 {
-            return check_write(minor.0) as i64;
+    ) -> Result<usize, Errno> {
+        let gate = check_write(minor.0);
+        if gate != 0 {
+            return Err(Errno::from_i32(-gate));
         }
         // Trusted entropy: the service feeds the decoded bytes through
         // the pool set; the face admits the full request.
-        size as i64
+        Ok(size)
     }
 
     fn select(&mut self, _minor: DeviceMinor, ops: u32) -> i32 {
@@ -112,7 +117,7 @@ mod tests {
         face.open(DeviceMinor(0), 0, 42);
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(0), 0, 0, 64, 0, RequestId(1)),
-            -(minix_types::EAGAIN as i64)
+            Err(Errno::from_i32(minix_types::EAGAIN))
         );
     }
 
@@ -125,7 +130,7 @@ mod tests {
         face.generator.reseed(&mut hash, &[&digest]);
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(0), 0, 0, 1025, 0, RequestId(1)),
-            1025
+            Ok(1025)
         );
     }
 
@@ -135,7 +140,7 @@ mod tests {
         face.open(DeviceMinor(0), 0, 42);
         assert_eq!(
             CharDriver::write(&mut face, DeviceMinor(0), 0, 0, 32, 0, RequestId(1)),
-            32
+            Ok(32)
         );
         assert_eq!(
             CharDriver::select(&mut face, DeviceMinor(0), crate::device::OP_READ | crate::device::OP_WRITE),

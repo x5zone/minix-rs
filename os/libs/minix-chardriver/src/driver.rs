@@ -15,7 +15,7 @@ use super::protocol::{
     NO_CANCEL_HOOK, NO_IOCTL_HOOK, NO_SELECT_HOOK, NO_TRANSFER_HOOK, OBSOLETE_SUSPEND,
     OpenDeviceSet, RESTART_MARKER, RequestId, SUCCESS, SUPPRESS_REPLY, is_char_request,
 };
-use minix_types::EINVAL;
+use minix_types::{EINVAL, Errno};
 
 /// Raw block-side open message type, answered with "no such device".
 ///
@@ -79,23 +79,32 @@ pub enum ReplyDecision {
 /// Decide the reply behavior for a handler result on a request.
 ///
 /// C: the head of `chardriver_reply` (`chardriver.c:203-233`).
-/// Only read, write, control, and cancel requests may be parked; any other
-/// request that answers "answer later" is a driver bug. The obsolete
-/// suspend marker and the restart marker keep their C meaning.
-pub fn reply_decision(request: CdevRequest, result: i32) -> ReplyDecision {
-    if result == SUPPRESS_REPLY {
+/// The transfer hooks answer on the typed two-lane channel: `Ok(bytes)`
+/// replies with the byte count, and the `Err` lane carries the code — a
+/// real errno, or the `EDONTREPLY`/`ERESTART` sentinels, all positive in
+/// the user-space convention. Three codes change the verdict: only read,
+/// write, control, and cancel requests may park on `EDONTREPLY` (any
+/// other request parking there is a driver bug, answered "invalid
+/// argument"); the obsolete suspend marker is answered the same way; the
+/// restart marker swallows the reply.
+pub fn reply_decision(request: CdevRequest, outcome: Result<usize, Errno>) -> ReplyDecision {
+    let code = match outcome {
+        Ok(moved) => moved as i32,
+        Err(e) => e.to_i32(),
+    };
+    if code == SUPPRESS_REPLY {
         match request {
             CdevRequest::Read | CdevRequest::Write | CdevRequest::Ioctl | CdevRequest::Cancel => {
                 ReplyDecision::Parked
             }
             _ => ReplyDecision::Reply(EINVAL),
         }
-    } else if result == OBSOLETE_SUSPEND {
+    } else if code == OBSOLETE_SUSPEND {
         ReplyDecision::Reply(EINVAL)
-    } else if result == RESTART_MARKER {
+    } else if code == RESTART_MARKER {
         ReplyDecision::SwallowedRestart
     } else {
-        ReplyDecision::Reply(result)
+        ReplyDecision::Reply(code)
     }
 }
 
@@ -255,7 +264,14 @@ pub trait CharDriver {
         SUCCESS
     }
 
-    /// Read hook (`cdr_read`). Returns bytes moved, or a negative error.
+    /// Read hook (`cdr_read`). Returns bytes moved, or an error.
+    ///
+    /// Parking rides the error lane with the `EDONTREPLY` sentinel
+    /// (positive in the user-space convention): a read that cannot
+    /// complete now registers its wait and answers
+    /// `Err(Errno::EDONTREPLY)`, and [`reply_decision`] turns that into
+    /// the no-reply verdict. No negative numbers, no sentinel mixed into
+    /// the byte count.
     fn read(
         &mut self,
         minor: DeviceMinor,
@@ -264,12 +280,16 @@ pub trait CharDriver {
         size: usize,
         flags: i32,
         id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         let _ = (minor, position, grant, size, flags, id);
-        NO_TRANSFER_HOOK as i64
+        Err(Errno::from_i32(NO_TRANSFER_HOOK))
     }
 
-    /// Write hook (`cdr_write`). Returns bytes moved, or a negative error.
+    /// Write hook (`cdr_write`). Returns bytes moved, or an error.
+    ///
+    /// The error lane mirrors [`read`][CharDriver::read]: real errnos and
+    /// the `EDONTREPLY`/`ERESTART` sentinels are all `Errno` values in the
+    /// user-space positive convention.
     fn write(
         &mut self,
         minor: DeviceMinor,
@@ -278,9 +298,9 @@ pub trait CharDriver {
         size: usize,
         flags: i32,
         id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         let _ = (minor, position, grant, size, flags, id);
-        NO_TRANSFER_HOOK as i64
+        Err(Errno::from_i32(NO_TRANSFER_HOOK))
     }
 
     /// Control hook (`cdr_ioctl`).
@@ -427,11 +447,11 @@ mod tests {
         assert_eq!(device.close(DeviceMinor(1)), OK);
         assert_eq!(
             device.read(DeviceMinor(1), 0, 0, 10, 0, RequestId(1)),
-            NO_TRANSFER_HOOK as i64
+            Err(Errno::from_i32(NO_TRANSFER_HOOK))
         );
         assert_eq!(
             device.write(DeviceMinor(1), 0, 0, 10, 0, RequestId(1)),
-            NO_TRANSFER_HOOK as i64
+            Err(Errno::from_i32(NO_TRANSFER_HOOK))
         );
         assert_eq!(
             device.ioctl(DeviceMinor(1), 0, 0, 0, 0, RequestId(1)),
@@ -515,24 +535,22 @@ mod tests {
 
     #[test]
     fn test_parked_results_only_for_waitable_requests() {
+        let parked = Err(Errno::from_i32(SUPPRESS_REPLY));
+        assert_eq!(reply_decision(CdevRequest::Read, parked), ReplyDecision::Parked);
         assert_eq!(
-            reply_decision(CdevRequest::Read, SUPPRESS_REPLY),
+            reply_decision(CdevRequest::Cancel, Err(Errno::from_i32(SUPPRESS_REPLY))),
             ReplyDecision::Parked
         );
         assert_eq!(
-            reply_decision(CdevRequest::Cancel, SUPPRESS_REPLY),
-            ReplyDecision::Parked
-        );
-        assert_eq!(
-            reply_decision(CdevRequest::Open, SUPPRESS_REPLY),
+            reply_decision(CdevRequest::Open, Err(Errno::from_i32(SUPPRESS_REPLY))),
             ReplyDecision::Reply(EINVAL)
         );
         assert_eq!(
-            reply_decision(CdevRequest::Read, RESTART_MARKER),
+            reply_decision(CdevRequest::Read, Err(Errno::from_i32(RESTART_MARKER))),
             ReplyDecision::SwallowedRestart
         );
         assert_eq!(
-            reply_decision(CdevRequest::Read, OK),
+            reply_decision(CdevRequest::Read, Ok(OK as usize)),
             ReplyDecision::Reply(OK)
         );
     }

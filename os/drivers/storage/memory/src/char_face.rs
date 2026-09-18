@@ -15,6 +15,7 @@
 //! request on the same driver process) is the service's first gate.
 
 use minix_chardriver::driver::CharDriver;
+use minix_types::Errno;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet};
 
 use crate::device::DeviceTable;
@@ -88,15 +89,17 @@ impl<B: MemBackend> CharDriver for MemoryChar<B> {
         size: usize,
         _flags: i32,
         _id: minix_chardriver::protocol::RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         let Some(extent) = self.table.extent(minor.0) else {
-            return -(no_such_device() as i64);
+            return Err(Errno::from_i32(-no_such_device()));
         };
         match char_read_plan(minor.0, position, size as u64, extent) {
-            Ok(CharReadPlan::Eof) => 0,
-            Ok(CharReadPlan::ZeroFill(want)) => want as i64,
-            Ok(CharReadPlan::Backed(count)) | Ok(CharReadPlan::PageWindow(count)) => count as i64,
-            Err(code) => code as i64,
+            Ok(CharReadPlan::Eof) => Ok(0),
+            Ok(CharReadPlan::ZeroFill(want)) => Ok(want as usize),
+            Ok(CharReadPlan::Backed(count)) | Ok(CharReadPlan::PageWindow(count)) => {
+                Ok(count as usize)
+            }
+            Err(code) => Err(Errno::from_i32(-code)),
         }
     }
 
@@ -108,19 +111,19 @@ impl<B: MemBackend> CharDriver for MemoryChar<B> {
         size: usize,
         _flags: i32,
         _id: minix_chardriver::protocol::RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         let Some(extent) = self.table.extent(minor.0) else {
-            return -(no_such_device() as i64);
+            return Err(Errno::from_i32(-no_such_device()));
         };
         match char_write_plan(minor.0, position, size as u64, extent) {
             // Null and zero swallow everything (the plan decides which).
             Ok(plan @ crate::transfer::CharWritePlan::Sink(want)) => {
                 let _ = plan;
-                want as i64
+                Ok(want as usize)
             }
             Ok(crate::transfer::CharWritePlan::Backed(count))
-            | Ok(crate::transfer::CharWritePlan::PageWindow(count)) => count as i64,
-            Err(code) => code as i64,
+            | Ok(crate::transfer::CharWritePlan::PageWindow(count)) => Ok(count as usize),
+            Err(code) => Err(Errno::from_i32(-code)),
         }
     }
 }
@@ -163,7 +166,7 @@ mod tests {
             0,
             minix_chardriver::protocol::RequestId(1),
         );
-        assert_eq!(moved, 128);
+        assert_eq!(moved, Ok(128));
     }
 
     #[test]
@@ -180,7 +183,7 @@ mod tests {
                 0,
                 minix_chardriver::protocol::RequestId(1)
             ),
-            0
+            Ok(0)
         );
     }
 }

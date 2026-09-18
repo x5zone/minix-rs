@@ -15,6 +15,7 @@ use crate::line::LineId;
 use crate::session::TtySession;
 use minix_chardriver::driver::CharDriver;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet, RequestId};
+use minix_types::Errno;
 
 /// The tty driver's chardriver face over a set of per-line sessions.
 pub struct TtyDriver<B: LineBackend> {
@@ -89,15 +90,15 @@ impl<B: LineBackend> CharDriver for TtyDriver<B> {
         size: usize,
         flags: i32,
         _id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         // The service-level read path: park when empty (or answer
         // try-again non-blocking), otherwise hand out queued bytes. The
         // grant copy stays with the transport.
         let Some(slot) = self.slot(minor.0) else {
-            return -(minix_types::ENXIO as i64);
+            return Err(Errno::from_i32(minix_types::ENXIO));
         };
         if size == 0 {
-            return 0;
+            return Ok(0);
         }
         // Pull from the session's own queue (canonical lines hand out
         // whole lines; non-canonical hands out whatever is queued).
@@ -105,15 +106,15 @@ impl<B: LineBackend> CharDriver for TtyDriver<B> {
         let available = self.sessions[slot].input_mut().drain_ready(size, &mut handed);
         if available > 0 {
             // The service copies `handed` into the caller's grant.
-            return available as i64;
+            return Ok(available);
         }
         if flags & 0o4_000 == 0 { // O_NONBLOCK (no named constant in minix-types yet)
             // Park: the service remembers the grant and completes it when
-            // feed_input lands a line break. EDONTREPLY semantics arrive
-            // with the transport.
-            return 0;
+            // feed_input lands a line break. The parked read answers the
+            // EDONTREPLY sentinel on the error lane.
+            return Err(Errno::from_i32(minix_types::EDONTREPLY));
         }
-        -(minix_types::EAGAIN as i64)
+        Err(Errno::from_i32(minix_types::EAGAIN))
     }
 
     fn write(
@@ -124,15 +125,15 @@ impl<B: LineBackend> CharDriver for TtyDriver<B> {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         let Some(slot) = self.slot(minor.0) else {
-            return -(minix_types::ENXIO as i64);
+            return Err(Errno::from_i32(minix_types::ENXIO));
         };
         // The backend takes what it can; the session learns the facts for
         // readiness (A8 composition keeps probe honest).
         let accepted = self.backend.dev_write(size);
         self.sessions[slot].note_output(accepted < size, accepted < size);
-        accepted as i64
+        Ok(accepted)
     }
 }
 
@@ -185,7 +186,7 @@ mod tests {
             RequestId(1),
         );
         // The completed line (a, b, newline) is three bytes.
-        assert_eq!(moved, 3);
+        assert_eq!(moved, Ok(3));
     }
 
     #[test]
@@ -193,7 +194,7 @@ mod tests {
         let mut driver = driver();
         assert_eq!(
             CharDriver::read(&mut driver, DeviceMinor(125), 0, 0, 8, 0, RequestId(1)),
-            -(minix_types::ENXIO as i64)
+            Err(Errno::from_i32(minix_types::ENXIO))
         );
     }
 }

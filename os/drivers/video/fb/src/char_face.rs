@@ -12,6 +12,7 @@
 
 use minix_chardriver::driver::CharDriver;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet, RequestId};
+use minix_types::Errno;
 
 use crate::display::{decode_ioctl, truncate_to_device, var_update_allowed, FbIoctl, OpenCounter};
 
@@ -61,8 +62,8 @@ impl CharDriver for FbFace {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
-        truncate_to_device(position, size as u64, self.device_size) as i64
+    ) -> Result<usize, Errno> {
+        Ok(truncate_to_device(position, size as u64, self.device_size) as usize)
     }
 
     fn write(
@@ -73,10 +74,10 @@ impl CharDriver for FbFace {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         // The restart-window gate lives in the service (it owns the
         // restart timestamp); the face answers the admission count.
-        truncate_to_device(position, size as u64, self.device_size) as i64
+        Ok(truncate_to_device(position, size as u64, self.device_size) as usize)
     }
 
     fn ioctl(
@@ -137,15 +138,15 @@ mod tests {
         let end = face.device_size;
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(0), 0, 0, 100, 0, RequestId(1)),
-            100
+            Ok(100)
         );
         assert_eq!(
             CharDriver::write(&mut face, DeviceMinor(0), end - 10, 0, 100, 0, RequestId(1)),
-            10
+            Ok(10)
         );
         assert_eq!(
             CharDriver::write(&mut face, DeviceMinor(0), end + 10, 0, 100, 0, RequestId(1)),
-            0
+            Ok(0)
         );
     }
 

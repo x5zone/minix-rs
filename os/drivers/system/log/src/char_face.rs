@@ -13,6 +13,7 @@
 
 use minix_chardriver::driver::CharDriver;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet, RequestId};
+use minix_types::Errno;
 
 use crate::device::{LogDevice, ReadVerdict};
 
@@ -60,14 +61,18 @@ impl CharDriver for LogFace {
         size: usize,
         flags: i32,
         id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         let _ = position;
         match self.device.read(minor.0, size as u64, 0, id.0, flags != 0) {
             // Bytes available: the service copies them from the ring
             // bytes into the caller's grant.
-            Ok(ReadVerdict::Answer(count)) => count as i64,
-            Ok(ReadVerdict::Park) => 0, // EDONTREPLY arrives with the transport
-            Err(code) => code as i64,
+            Ok(ReadVerdict::Answer(count)) => Ok(count as usize),
+            // The parked read answers through the wake-up channel; on the
+            // typed lane that is the EDONTREPLY sentinel.
+            Ok(ReadVerdict::Park) => Err(Errno::from_i32(minix_types::EDONTREPLY)),
+            // The device speaks the C negative-errno dialect; the error
+            // lane wants the positive errno.
+            Err(code) => Err(Errno::from_i32(-code)),
         }
     }
 
@@ -79,16 +84,16 @@ impl CharDriver for LogFace {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         // Admission: the ring notes the write (cursor arithmetic and the
         // overflow eviction happen in `ring_mut`), the service then
         // copies the bytes and runs `after_write` for the wake plan.
         if minor.0 != crate::device::KLOG_MINOR {
-            return -(minix_types::EIO as i64);
+            return Err(Errno::from_i32(minix_types::EIO));
         }
         self.device.ring_mut().note_written(size);
         self.last_admitted = size as u64;
-        size as i64
+        Ok(size)
     }
 
     fn cancel(&mut self, minor: DeviceMinor, id: RequestId) -> i32 {
@@ -136,7 +141,7 @@ mod tests {
             0,
             RequestId(1),
         );
-        assert_eq!(moved, 100);
+        assert_eq!(moved, Ok(100));
         assert_eq!(face.last_admitted, 100);
         // Data waits: the reader takes up to `size` bytes from the ring.
         let got = CharDriver::read(
@@ -148,22 +153,23 @@ mod tests {
             0,
             RequestId(2),
         );
-        assert_eq!(got, 40);
+        assert_eq!(got, Ok(40));
     }
 
     #[test]
     fn test_empty_read_parks_then_write_admits() {
         let mut face = face();
         face.open(DeviceMinor(0), 0, 42);
-        // Empty: the read parks (EDONTREPLY surfaces as 0 at the face).
+        // Empty: the read parks (the EDONTREPLY sentinel on the error
+        // lane).
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(0), 0, 0, 40, 0, RequestId(2)),
-            0
+            Err(Errno::from_i32(minix_types::EDONTREPLY))
         );
         // A second reader while one hangs answers zero (log_read rule).
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(0), 0, 0, 40, 0, RequestId(3)),
-            0
+            Ok(0)
         );
         // Bytes land; the wake plan carries the first reader.
         face.device.ring_mut().note_written(50);

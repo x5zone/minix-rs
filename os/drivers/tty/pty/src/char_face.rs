@@ -15,6 +15,7 @@ use crate::buffer::OutputRing;
 use crate::pair::{CloseEffect, PairEnd, PairState, PairTable};
 use minix_chardriver::driver::CharDriver;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet, RequestId};
+use minix_types::Errno;
 
 /// The pty driver's master face over the pair table.
 pub struct PtyMasterFace {
@@ -79,20 +80,22 @@ impl CharDriver for PtyMasterFace {
         size: usize,
         _flags: i32,
         id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         // Master reads park until the slave writes (doc 07 §3.3: the
         // output ring parks the reader and `pump`/`finish` complete it).
         let Some(ring) = self.rings.get_mut(minor.0 as usize) else {
-            return -(minix_types::ENXIO as i64);
+            return Err(Errno::from_i32(minix_types::ENXIO));
         };
         if size == 0 {
-            return 0;
+            return Ok(0);
         }
         if ring.is_empty() {
             ring.park_read(0, id.0, size as u64);
-            return 0; // EDONTREPLY arrives with the transport
+            // Parked: the reply comes through the wake-up channel, so the
+            // face answers the EDONTREPLY sentinel on the error lane.
+            return Err(Errno::from_i32(minix_types::EDONTREPLY));
         }
-        size.min(ring.len()) as i64
+        Ok(size.min(ring.len()))
     }
 
     fn write(
@@ -103,11 +106,11 @@ impl CharDriver for PtyMasterFace {
         size: usize,
         _flags: i32,
         _id: RequestId,
-    ) -> i64 {
+    ) -> Result<usize, Errno> {
         // Master writes feed the ring toward the slave's read side; the
         // admission count is what fit (`feed` drops the rest).
         let Some(ring) = self.rings.get_mut(minor.0 as usize) else {
-            return -(minix_types::ENXIO as i64);
+            return Err(Errno::from_i32(minix_types::ENXIO));
         };
         // The bytes themselves ride the grant copy in the service; the
         // admission models with a synthetic pattern of the right length.
@@ -120,7 +123,7 @@ impl CharDriver for PtyMasterFace {
                 break;
             }
         }
-        admitted as i64
+        Ok(admitted)
     }
 }
 
@@ -154,10 +157,11 @@ mod tests {
     fn test_read_parks_when_empty_and_writes_admit() {
         let mut face = face();
         face.open(DeviceMinor(0), 0, 42);
-        // Empty ring: the read parks (EDONTREPLY surfaces as 0).
+        // Empty ring: the read parks (EDONTREPLY sentinel on the error
+        // lane).
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(0), 0, 0, 64, 0, RequestId(1)),
-            0
+            Err(Errno::from_i32(minix_types::EDONTREPLY))
         );
         assert!(face.rings[0].has_parked_reader());
         // Master write admits up to the ring bound.
@@ -170,7 +174,7 @@ mod tests {
             0,
             RequestId(2),
         );
-        assert_eq!(moved, 128);
+        assert_eq!(moved, Ok(128));
     }
 
     #[test]
@@ -178,7 +182,7 @@ mod tests {
         let mut face = face();
         assert_eq!(
             CharDriver::read(&mut face, DeviceMinor(32), 0, 0, 8, 0, RequestId(1)),
-            -(minix_types::ENXIO as i64)
+            Err(Errno::from_i32(minix_types::ENXIO))
         );
     }
 }
