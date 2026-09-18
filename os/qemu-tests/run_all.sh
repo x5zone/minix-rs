@@ -9,6 +9,10 @@
 #   5. test-higher-half: HigherHalf trait transition (stack/PC switch → kmain)
 #   6. test-protection: protection structure init (GDT/IDT/TSS, VBAR/SP_EL1, stvec/sscratch)
 #   7. test-proc-init: process table init + VM ELF loading + ptproc/freepdes (Phase C/D)
+#   8. test-user-trap / test-rt-birth: the CPL3 user-mode chain (int-33 trap
+#      bridge, KERNINFO page, minix-rt birth chain). These run through their
+#      own scripts — their PASS protocol is gdbstub mailbox reads / serial
+#      markers, not a TEST_RESULT line (edge1 K12).
 #
 # Each test writes "### TEST_RESULT: PASS <name> ###" on success.
 set -euo pipefail
@@ -46,7 +50,7 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
-for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown; do
+for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown test-user-trap; do
     echo "--- x86_64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
@@ -85,6 +89,31 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     if [ "${QEMU_TESTS_SKIP_AP_ALIVE:-0}" != "1" ]; then
         run_test "test-smp-ap-alive"   x86_64   "$OS_ROOT/target/x86_64-unknown-uefi/release/test-smp-ap-alive.efi"
     fi
+
+    # ── Special-protocol scripts (edge1 K12): the user-mode chain tests
+    # own their PASS determination — test-user-trap reads a CPL3 mailbox
+    # through the gdbstub, test-rt-birth builds its own kernel with the
+    # user ELF embedded (include_bytes!(env!)) and greps serial markers.
+    # Both exit 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
+
+    echo "--- Running: test-user-trap (special: gdbstub mailbox) ---"
+    if [ -f "$OS_ROOT/target/x86_64-unknown-uefi/release/test-user-trap.efi" ]; then
+        rc=0
+        bash "$SCRIPT_DIR/test-user-trap.sh" || rc=$?
+        if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+        elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-user-trap: skipped)"
+        else FAIL=$((FAIL + 1)); fi
+    else
+        echo "(test-user-trap: binary not found, skip)"
+        SKIP=$((SKIP + 1))
+    fi
+
+    echo "--- Running: test-rt-birth (special: embedded-ELF payload) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-rt-birth.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth: skipped)"
+    else FAIL=$((FAIL + 1)); fi
 fi
 
 # aarch64 tests
