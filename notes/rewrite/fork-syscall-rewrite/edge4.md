@@ -27,7 +27,7 @@
 | 编号 | 改点 | 属主线 | 需要触碰的他人领地 | 当前持锁 | 状态 |
 |---|---|---|---|---|---|
 | C-1 | edge2 L5 E-DEVWIRE 消费侧 | edge2 | `os/servers/vfs/src/cdev.rs`、`bdev.rs`（删本地常量副本改 import，小改） | 无 | ☐ 可认领（L4 先行） |
-| C-2 | edge2 L8 E-SDEVOWN vfs 副本 | edge2 | `os/servers/vfs/src/sdev.rs`（删 923 行副本） | 无 | ☐ 可认领 |
+| C-2 | edge2 L8 E-SDEVOWN vfs 副本 | edge2 | `os/servers/vfs/src/sdev.rs`（删 923 行副本，改消费 `minix-sockdriver`）+ `os/Cargo.toml`（新增 workspace 成员 `libs/minix-sockdriver`，§1 规则 3 登记流水同轮） | edge2 | 🔄 持锁（2026-09-18，方案 A2 新 crate 裁决：C 世界 libbdev/libsockdriver 两库并列，Rust 已有 minix-bdev，镜像位新建） |
 | C-3 | edge3 S9 D-02 kernel 臂 | edge3（需求方） | `os/kernel`（SYS_GETMONPARAMS/GETIMAGE 对端，edge1 认领实现）+ `os/libs/minix-sys` wrapper（edge2 认领） | 无 | ☐ 待 edge1/edge2 排期 |
 | C-4 | edge1 K17 E5(d) qemu 载体消费 VM | edge1 | 仅读 edge3 的 VM 语义/接口，不改 `os/servers/vm`；发现 VM 缺口回 edge3 状态板登记 | 无 | ☐ |
 | C-5 | edge2 L2 E-SYSCALL-SIGN 回迁消费侧 | edge2 | `os/servers/is/src/acquire.rs`（`vfs_proc_tab_via` 撤本地符号归一，改走共享 `perform_taskcall`）+ 四处命令侧"待 sign 修复"注释卫生（`os/commands/bin/fileops/src/bin/echo.rs`、`os/commands/usr-bin/regex/src/bin_support.rs`、`os/commands/usr-bin/textfilter/src/bin_support.rs`、`os/commands/games/stdio-games/src/bin_support.rs`，仅注释）。IS 注释自证等待本裁决（acquire.rs:649-651） | edge2 | ✅ 销账（2026-09-18，0cca4247d） |
@@ -41,6 +41,7 @@
 |---|---|---|---|---|
 | 2026-09-18 | edge1 | `os/qemu-tests/run_all.sh` | K12：test-user-trap / test-rt-birth 纳入一键回归（特殊协议脚本区 + user-trap 入构建清单；rt-birth 内核因 `include_bytes!(env!)` 由其脚本自建，不入普通构建清单） | ✅ 同日 |
 | 2026-09-18 | edge1 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
+| 2026-09-18 | edge1 | `tools/` | K16：新增 `tools/review-line-check.sh`（文档行号锚点批量反向核查：行存在性 + 当行内容回显） | ✅ 同日 |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 
