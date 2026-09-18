@@ -915,6 +915,9 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     // ProcTab 走 do_getsysinfo 的逐槽 cpy 路径,不经 ctl。
                     &[]
                 }
+                // call_stats 与 trait 同门控:无 feature 时 SI_CALL_STATS
+                // 请求已在 SysInfoWhat 分类处拒绝。
+                #[cfg(feature = "syscall_stats")]
                 fn call_stats(&self) -> &[u8] {
                     self.stats
                 }

@@ -691,9 +691,13 @@ mod tests {
     }
     impl SysInfoCtl for TestSysInfo {
         fn proc_tab(&self) -> &[u8] { &self.data }
+        #[cfg(feature = "syscall_stats")]
+        fn call_stats(&self) -> &[u8] { &self.data }
     }
     impl SysInfoCtl for TestSysInfoAlt {
         fn proc_tab(&self) -> &[u8] { &[] }
+        #[cfg(feature = "syscall_stats")]
+        fn call_stats(&self) -> &[u8] { &[] }
     }
     struct TestSysInfoAlt { _a: u8 }
     impl CopyToUser for TestSysInfoAlt {
