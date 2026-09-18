@@ -30,7 +30,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::proc::{
-    priority, KProcess, ProcNr, NONE_PROC_NR,
+    priority, CpuId, KProcess, ProcNr, NONE_PROC_NR,
 };
 
 /// Per-CPU scheduler state holding ready queue head/tail indices.
@@ -267,6 +267,37 @@ pub struct SchedParams {
     pub niced: bool,
 }
 
+/// Validate the CPU parameter of `sched_proc` against a CPU topology.
+///
+/// C: system.c:650-654 (CONFIG_SMP):
+/// ```c
+/// if ((cpu < 0 && cpu != -1) || (cpu > 0 && (unsigned) cpu >= ncpus))
+///     return EINVAL;
+/// if (cpu != -1 && !(cpu_is_ready(cpu)))
+///     return EBADCPU;
+/// ```
+///
+/// Rust expresses C's `-1` sentinel as `None` (§3.8) and `u32` cannot be
+/// negative, so only the upper bound and the readiness gate remain. The
+/// topology (size + readiness) is injected so hosted tests can pin the C
+/// parity without booting the global SMP state.
+fn validate_cpu_param(
+    cpu: Option<u32>,
+    ncpus: u32,
+    is_ready: impl Fn(u32) -> bool,
+) -> Result<(), SchedProcError> {
+    let Some(v) = cpu else {
+        return Ok(());
+    };
+    if v >= ncpus {
+        return Err(SchedProcError::InvalidArgument);
+    }
+    if !is_ready(v) {
+        return Err(SchedProcError::BadCpu);
+    }
+    Ok(())
+}
+
 /// Update a process's scheduling parameters.
 ///
 /// C: `sched_proc()` — system.c:642-723.
@@ -299,17 +330,20 @@ pub struct SchedParams {
 ///
 /// # SMP migration
 ///
-/// On SMP, if the process is currently runnable on a different CPU,
-/// the scheduler must migrate it. The migration itself is implemented
-/// by `SmpState::schedule_migrate_proc` (os/kernel/src/smp.rs:670):
-/// stop on current CPU → save ctx → set `p_cpu = dest_cpu` → unset RTS_PROC_STOP.
-/// This function (`sched_proc`) only records the new `p_cpu` field;
-/// `dispatch_schedule` calls `schedule_migrate_proc` when the CPU changes.
+/// C performs the migration inside `sched_proc` itself (system.c:672-677):
+/// when a runnable process homed on another CPU is re-homed by this call,
+/// `smp_schedule_migrate_proc` stops it remotely (context saved via IPI),
+/// sets `p_cpu = dest_cpu` and releases RTS_PROC_STOP. The Rust
+/// `sched_proc` does the same through
+/// `SmpState::schedule_migrate_proc` (os/kernel/src/smp.rs:745) at
+/// Step 3.5; `dispatch_schedule` needs no migration logic of its own.
 ///
 /// # Implementation status
 ///
-/// Steps 1-9 are implemented (validation + field updates).
-/// SMP migration via `schedule_migrate_proc` is **implemented** (smp.rs:670).
+/// Steps 1-9 are implemented (validation + field updates), including the
+/// CPU range/readiness gate (EBADCPU) and the migration call — both
+/// runtime-reachable only on a multi-CPU machine, mirroring C's
+/// CONFIG_SMP gating by data rather than by cfg.
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
@@ -344,12 +378,46 @@ pub fn sched_proc(
             return Err(SchedProcError::InvalidArgument);
         }
 
-    // Step 3: validate CPU range (SMP stub — always OK for uniprocessor).
-    // C: system.c:650-654: only relevant with CONFIG_SMP. Our Rust
-    // rewrite uses single-threaded event loop for user-space servers,
-    // so cpu_is_ready is always true. Multi-CPU servers would extend
-    // here.
-    let _ = params.cpu;
+    // Step 3: validate CPU range and readiness (C system.c:650-654).
+    // The topology comes from the global SMP state; before it exists
+    // (early boot, hosted tests) the machine is a single ready BSP —
+    // C's ncpus=1 build behaves identically.
+    let smp = unsafe { crate::try_smp_state() };
+    match smp.as_ref() {
+        Some(s) => validate_cpu_param(params.cpu, s.ncpus(), move |v: u32| {
+            s.cpu_is_ready(CpuId::new_unchecked(v))
+        })?,
+        None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
+    }
+
+    // Step 3.5: SMP migration (C system.c:672-677, CONFIG_SMP):
+    //   if (p->p_cpu != cpuid && cpu != -1 && cpu != p->p_cpu)
+    //       smp_schedule_migrate_proc(p, cpu);
+    // A runnable process homed on another CPU and re-homed by this call
+    // must be stopped there first (context saved via IPI); on a
+    // single-CPU machine p_cpu == cpuid always holds, so the branch is
+    // unreachable — exactly as in C. Without SMP state (early boot,
+    // hosted tests) there is no migrator to call and the check skips.
+    let runnable = table.get(nr).is_some_and(|p| p.is_runnable());
+    if runnable {
+        let cpuid = crate::current_cpu_id();
+        let homed = table
+            .get(nr)
+            .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)));
+        if let Some(homed) = homed
+            && homed != cpuid
+            && let Some(dest) = params.cpu
+            && dest != homed.raw()
+            && let Some(smp) = unsafe { crate::try_smp_state() }
+        {
+            smp.schedule_migrate_proc::<minix_arch::CurrentSmpArch>(
+                table,
+                nr,
+                cpuid,
+                CpuId::new_unchecked(dest),
+            );
+        }
+    }
 
     // Step 4: preemption hint (RTS_NO_QUANTUM toggle).
     // C: system.c:668-677 sets RTS_NO_QUANTUM if the process is runnable
@@ -357,8 +425,8 @@ pub fn sched_proc(
     // translation, but actual reschedule is handled by the scheduler.
     // C: system.c:668-677 — only a RUNNABLE process is preempted
     // (RTS_SET NO_QUANTUM dequeues it via the scheduler-aware wrapper);
-    // a blocked process keeps its flags untouched here.
-    let runnable = table.get(nr).is_some_and(|p| p.is_runnable());
+    // a blocked process keeps its flags untouched here. `runnable` was
+    // computed for the Step 3.5 migration guard.
     if runnable {
         table.rts_set(nr, RtsFlagsBits::NO_QUANTUM);
     }
@@ -823,6 +891,47 @@ mod tests {
         sched_proc_fixture(&mut table);
         sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
         assert_eq!(table.get(ProcNr(0)).unwrap().p_sched.cpu.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn test_validate_cpu_param_none_always_ok() {
+        // C: `cpu != -1 &&` — the None sentinel (C's -1) skips the gate
+        // entirely, regardless of topology.
+        assert_eq!(validate_cpu_param(None, 1, |_| false), Ok(()));
+        assert_eq!(validate_cpu_param(None, 4, |_| false), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_cpu_param_range_and_readiness() {
+        // C: system.c:650-654 — range first (EINVAL), readiness second
+        // (EBADCPU). A ready BSP passes on any topology; an out-of-range
+        // CPU is EINVAL even if it would not be ready anyway; a CPU
+        // within range but not yet started is EBADCPU — the trigger for
+        // the SCHED server's retry ring (schedule.c:227-231).
+        let always = |_: u32| true;
+        let never = |_: u32| false;
+        assert_eq!(validate_cpu_param(Some(0), 1, always), Ok(()));
+        assert_eq!(validate_cpu_param(Some(1), 2, always), Ok(()));
+        assert_eq!(
+            validate_cpu_param(Some(1), 1, always),
+            Err(SchedProcError::InvalidArgument)
+        );
+        assert_eq!(
+            validate_cpu_param(Some(1), 2, never),
+            Err(SchedProcError::BadCpu)
+        );
+    }
+
+    #[test]
+    fn test_sched_proc_cpu_fallback_without_smp_state() {
+        // Without global SMP state (hosted tests, early boot) the machine
+        // is a single ready BSP: an explicit cpu 0 passes, anything else
+        // is out of range → EINVAL (C's ncpus=1 build).
+        let mut table = crate::test_helpers::test_proc_table();
+        sched_proc_fixture(&mut table);
+        sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
+        let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(1), niced: false });
+        assert_eq!(result.unwrap_err(), SchedProcError::InvalidArgument);
     }
 
     #[test]

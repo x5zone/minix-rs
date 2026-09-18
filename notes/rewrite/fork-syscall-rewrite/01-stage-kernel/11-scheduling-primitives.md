@@ -611,14 +611,22 @@ pub fn sched_proc_no_time(&mut self, nr: ProcNr) {
 ```rust
 // sched.rs
 pub fn sched_proc(
-    p: &mut KProcess,
+    table: &mut ProcessTable,
+    nr: ProcNr,
     params: SchedParams,
 ) -> Result<(), SchedProcError> {
     // Step 1: 验证 priority 范围（Some(v) 时 v <= 15）
     if let Some(v) = params.priority { if v > priority::MIN_USER_Q { return Err(InvalidArgument); } }
     // Step 2: 验证 quantum 范围（Some(v) 时 v >= 1）
     if let Some(v) = params.quantum { if v < 1 { return Err(InvalidArgument); } }
-    // Step 3: 验证 CPU（SMP stub，单 CPU 总是 OK）
+    // Step 3: 验证 CPU（C system.c:650-654 对位）——范围越界返回
+    //   EINVAL；范围内但 CPU 未就绪返回 EBADCPU。拓扑来自全局 SMP
+    //   状态；状态未安装（早期 boot、宿主测试）时视为单就绪 BSP，
+    //   与 C 的 ncpus=1 构建行为一致
+    // Step 3.5: SMP 迁移（C system.c:672-677 对位）——runnable 且
+    //   进程不在当前 CPU、本调用又给它指了别的 CPU 时，先经
+    //   schedule_migrate_proc 远程停下（IPI 存上下文）再改参数；
+    //   单机上 p_cpu == cpuid 恒成立，分支不可达，与 C 相同
     // Step 4: 检测变化 → 设置 RTS_NO_QUANTUM
     // Step 5: 应用 priority（if Some）
     // Step 6: 应用 quantum + 重置 cpu_time_left（if Some）
@@ -629,7 +637,9 @@ pub fn sched_proc(
 }
 ```
 
-错误码与 Minix3 对齐：`EINVAL=22`（InvalidArgument）、`EBADCPU=42`（BadCpu）。
+错误码与 Minix3 对齐：`EINVAL=22`（InvalidArgument）、`EBADCPU=42`（BadCpu）。EBADCPU 一旦真实返回，SCHED 服务器的换 CPU 重试环（schedule.c:227-231，Rust 侧 server.rs 已按最终形态写好）就有了触发条件——服务器侧零改动。
+
+校验逻辑提取为 `validate_cpu_param(cpu, ncpus, is_ready)` 纯函数：拓扑（规模 + 就绪位）由调用方注入，宿主测试无需启动 SMP 状态即可钉住 C 的两条判定次序（先范围后就绪）。
 
 > 骨架展示，完整实现见 [sched.rs:321-427](os/kernel/src/sched.rs)。
 
@@ -663,6 +673,9 @@ pub fn sched_proc(
 | `test_sched_proc_cpu_update` | CPU affinity 更新 | system.c:691 |
 | `test_sched_proc_full_update_with_all_params` | 全参数端到端 | system.c:642 |
 | `test_sched_proc_error_to_errno` | 错误码映射 | EINVAL=22, EBADCPU=42 |
+| `test_validate_cpu_param_none_always_ok` | CPU 参数 None（C 的 -1）跳过校验 | system.c:650 |
+| `test_validate_cpu_param_range_and_readiness` | 范围越界 EINVAL 先于就绪位 EBADCPU | system.c:650-654 |
+| `test_sched_proc_cpu_fallback_without_smp_state` | 无 SMP 状态时单就绪 BSP 回退（cpu 0 过、其余 EINVAL） | system.c:650 |
 | `test_sched_proc_c_parity_step1_priority_validation` | C parity：priority 16 → EINVAL / 15 → OK | system.c:644-645 |
 | `test_sched_proc_c_parity_step2_quantum_validation` | C parity：quantum 0 → EINVAL / 1 → OK | system.c:647-648 |
 | `test_sched_proc_c_parity_step8_niced_flag` | C parity：niced 设置/清除 MF_NICED | system.c:695-698 |
