@@ -58,16 +58,19 @@ pub fn derive_geometry(sectors: u64) -> Geometry {
 /// Split a transfer of `total` bytes starting at file offset `offset`
 /// into chunk lengths (`MIN(bytes - off, VND_BUF_SIZE)`, `vnd.c:253`).
 ///
-/// Returns the length of each copy step, in order.
+/// Returns the length of each copy step, in order. The C first-chunk rule
+/// bounds the head by the transfer buffer end (`bytes - off`); this
+/// loop-free bridge has no separate buffer bound to model, so chunks are
+/// plain `CHUNK_SIZE` steps and `offset` rides along for the caller's
+/// accounting.
 pub fn split_chunks(offset: u64, total: u64) -> alloc::vec::Vec<u64> {
+    let _ = offset;
     let mut chunks = alloc::vec::Vec::new();
     let mut remaining = total;
-    let mut _position = offset;
     while remaining > 0 {
         let step = remaining.min(CHUNK_SIZE);
         chunks.push(step);
         remaining -= step;
-        _position += step;
     }
     chunks
 }
