@@ -1582,8 +1582,28 @@ impl RsServer {
         // (utility.c:223-240, failures ignored), so the deferred send keeps
         // the observable order.
         let mut sent: alloc::vec::Vec<(Endpoint, minix_types::Message)> = alloc::vec::Vec::new();
+        // DS 发布缝(19):publish 闭包自带 DsClient(零尺寸传输腿,与
+        // start_service 直传的 kernel 参数无借用交集)。C manager.c:962-966
+        // 对发布失败只 printf 不失败请求——best-effort 同型。
+        let mut ds = minix_sys::ds::DsClient::new(
+            minix_sys::ipc::DirectTrapTransport,
+            minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::DS,
+        );
         {
             let mut effects = crate::service_create::CreateEffects {
+                publish: alloc::boxed::Box::new(move |table: &crate::process_table::RProcTable, sid: crate::service_slot::SlotId| {
+                    let pub_ = &table.get(sid).pub_;
+                    let Some(name) = pub_.label.as_str() else {
+                        return Ok(());
+                    };
+                    let _ = ds.publish_label(
+                        name,
+                        pub_.endpoint,
+                        minix_types::DsFlags::empty(),
+                    );
+                    Ok(())
+                }),
                 asynsend: alloc::boxed::Box::new(
                     |ep: Endpoint, msg: &crate::ready::InitMessage| {
                         sent.push((ep, msg.encode_message()));
