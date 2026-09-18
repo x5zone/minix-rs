@@ -174,6 +174,29 @@ pub fn exit(status: i32) -> ! {
     pm::exit_via(&ipc::DirectTrapTransport, status)
 }
 
+/// Returns from a signal handler into the interrupted context (C:
+/// `sigreturn`, `minix3/minix/lib/libc/sys/sigreturn.c:18-36`).
+///
+/// `ctx` is the sigcontext address exactly as the signal-delivery frame
+/// carries it (C: `scp`); no frame layout knowledge lives on this side —
+/// the kernel reads registers and mask out of that memory itself
+/// (`do_sigreturn`, pm/signal.c:189).
+///
+/// Before the call, every signal is blocked (C sigreturn.c:27-29): the
+/// window between the handler returning and the context being restored is
+/// the one moment a re-entering signal could corrupt the handoff. A
+/// successful round trip never comes back here — the kernel swaps the
+/// calling context out from under the reply — so any reachable return
+/// means the restoration did not happen; like [`exit`], the function then
+/// parks instead of unwinding into a signal frame that is no longer valid.
+pub fn sigreturn(ctx: u64) -> ! {
+    let _ = pm::sigprocmask_via(&ipc::DirectTrapTransport, pm::SIG_SETMASK, Some(&[u32::MAX; 4]));
+    let _ = pm::sigreturn_via(&ipc::DirectTrapTransport, ctx);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 /// Waits for a child process, reporting how it ended in `status`.
 pub fn waitpid(pid: Pid, status: &mut i32, options: i32) -> Result<Pid, Errno> {
     let (child, child_status) =

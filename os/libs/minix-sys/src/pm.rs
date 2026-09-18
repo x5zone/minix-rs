@@ -34,6 +34,13 @@ use minix_types::{Endpoint, Errno, Gid, Pid, Uid};
 /// C: `PM_PROC_NR ((endpoint_t) 0)` (`minix3/minix/include/minix/com.h:59`).
 pub const PM_ENDPOINT_NUMBER: i32 = 0;
 
+/// `sigprocmask` operation: install the given mask.
+///
+/// C: `SIG_SETMASK 3` (`minix3/sys/sys/signal.h:176`; BLOCK=1/UNBLOCK=2
+/// sit on the same rung). The how-values parameterize the wire `how` lane
+/// and belong with the call face, not with the signal-number table.
+pub const SIG_SETMASK: i32 = 3;
+
 /// Terminate the calling process.
 ///
 /// C: `PM_EXIT (PM_BASE + 1)` (`minix3/minix/include/minix/callnr.h:14`).
@@ -254,8 +261,10 @@ pub struct SigActionWire {
 ///
 /// 线格式 `mess_lc_pm_sig`(ipc.h:528-540):`nr` 为信号号,`act`/`oact`
 /// 是**用户态地址**(PM 用 `sys_datacopy` 出入,`act==0` 即只读查询),
-/// `ret` 是 sigreturn 恢复桩地址。`sigreturn=0` 表示 minix-rt 恢复桩
-/// 尚未提供——安装语义成立,投递后半端仍登记于 E-INITSYS ①。
+/// `ret` 是 sigreturn 恢复桩地址。恢复函数本体已就位(`sigreturn`,
+/// lib.rs 顶层;`sigreturn_via` 在本模块);裸桩**地址**仍传 0——它需要
+/// 从信号帧里定位 `scp`,而帧偏移的单一权威在内核侧,投递臂通电
+/// (edge3 S3 同窗)时才接线。
 #[allow(clippy::too_many_arguments)]
 pub fn sigaction_via(
     transport: &impl IpcTransport,
@@ -321,6 +330,26 @@ pub fn sigsuspend_via(
         _padding: [0; 24],
     };
     perform_syscall(transport, pm_endpoint(), PM_CALL_SIGSUSPEND, &mut message).map(|_| ())
+}
+
+/// 信号恢复:handler 返回后由恢复路径调用(C: `sigreturn`,
+/// lib/libc/sys/sigreturn.c:18-36;服务端 `do_sigreturn`,pm/signal.c:176-190)。
+///
+/// 复用 `m_lc_pm_sigset` 线形状,但服务端只读 `ctx`——进程栈上
+/// sigcontext 的用户态地址(signal.c:189),内核从该地址自取掩码与寄存器
+/// 快照;`set`/`how` 在 SIGRETURN 语义里不消费(C 的 libc 实现写入
+/// `scp->sc_mask` 只是顺手填充,PM 侧无读者)。成功路径不返回:内核
+/// 以恢复后的上下文重启进程,sendrec 的应答永远落在恢复之后。
+pub fn sigreturn_via(transport: &impl IpcTransport, ctx: u64) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    message.m_u.m_lc_pm_sigset = minix_types::MessLcPmSigset {
+        how: 0,
+        _pad: [0; 4],
+        ctx,
+        set: [0; 4],
+        _padding: [0; 24],
+    };
+    perform_syscall(transport, pm_endpoint(), minix_types::PM_SIGRETURN, &mut message).map(|_| ())
 }
 
 /// 读待决信号集(C: `do_sigpending`,pm/signal.c:88-97;回复
@@ -779,6 +808,22 @@ mod tests {
         assert_eq!(sent.m_type, PM_CALL_SIGSUSPEND);
         let ctx = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
         assert_eq!(ctx, 0x1234);
+    }
+
+    #[test]
+    fn test_sigreturn_carries_ctx_only() {
+        // C sigreturn.c:32-35 sets only .set (vestigial on the wire — PM
+        // reads .ctx, signal.c:189) and .ctx; how stays zero.
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(sigreturn_via(&transport, 0x7000_1234), Ok(()));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, minix_types::PM_SIGRETURN);
+        assert_eq!(sent.m_type, 24); // callnr.h:37
+        let ctx = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
+        assert_eq!(ctx, 0x7000_1234);
+        let how = unsafe { i32::from_ne_bytes(sent.m_u.raw[0..4].try_into().unwrap()) };
+        assert_eq!(how, 0);
     }
 
     #[test]
