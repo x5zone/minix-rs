@@ -23,6 +23,9 @@
 //! failure, never a fake success (edge E1/E2; the DS `SysKernel`
 //! precedent). Tests drive the [`Recorder`] double instead.
 
+use minix_sys::ds::DsClient;
+use minix_sys::pm::getnuid_via;
+use minix_sys::ipc::IpcTransport as _;
 use minix_types::{EIO, Endpoint, GrantId};
 
 use crate::io::relay::RelayDir;
@@ -113,11 +116,28 @@ pub trait MibServices {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SysTransport;
 
-/// The real peer-service end: every verb reports `-EIO` until the
-/// peer-message wrappers land (E2 family) — same honest posture as
-/// [`SysTransport`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SysServices;
+/// The real peer-service end. DS 动词走 [`DsClient`](`retrieve_label_name`,
+/// minix-sys ds.rs 的 C ds.c:92-101 形状;标签查询的 DS 侧在 S22 通电后
+/// 为真),getnuid 走 pm.rs `getnuid_via`;其余动词的 wrapper 未落地
+/// (对端 producer 面归 S33 对账与 RS relay 域)——维持 `-EIO`
+/// fail-closed,wrapper 落地时逐动词换真,调用点不变。
+pub struct SysServices {
+    ipc: minix_sys::ipc::DirectTrapTransport,
+    ds: DsClient<minix_sys::ipc::DirectTrapTransport, minix_sys::syscall::DirectKernelCallTransport>,
+}
+
+impl Default for SysServices {
+    fn default() -> Self {
+        Self {
+            ipc: minix_sys::ipc::DirectTrapTransport,
+            ds: DsClient::new(
+                minix_sys::ipc::DirectTrapTransport,
+                minix_sys::syscall::DirectKernelCallTransport,
+                Endpoint::DS,
+            ),
+        }
+    }
+}
 
 impl MibKernel for SysTransport {
     fn datacopy_from(&mut self, _src: Endpoint, _src_addr: u64, _buf: &mut [u8]) -> Result<(), i32> {
@@ -158,16 +178,20 @@ impl MibKernel for SysTransport {
 }
 
 impl MibServices for SysServices {
-    fn getnuid(&mut self, _who: Endpoint) -> Result<u32, i32> {
-        Err(EIO)
+    fn getnuid(&mut self, who: Endpoint) -> Result<u32, i32> {
+        // C main.c:265-268 getnuid(who) → PM_GETEPINFO(minix-sys
+        // pm.rs getnuid_via;错误已折叠为 Errno,取 i32 透传)。
+        getnuid_via(&self.ipc, who).map(|uid| uid as u32).map_err(|e| e.to_i32())
     }
 
     fn getsysinfo(&mut self, _target: Endpoint, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
         Err(EIO)
     }
 
-    fn ds_retrieve_label_name(&mut self, _who: Endpoint, _buf: &mut [u8]) -> Result<usize, i32> {
-        Err(EIO)
+    fn ds_retrieve_label_name(&mut self, who: Endpoint, buf: &mut [u8]) -> Result<usize, i32> {
+        // C remote.c:88 ds_retrieve_label_name(who)——register 的第一
+        // 步(remote.rs label_fits 的输入)。DS 侧在 S22 通电后为真。
+        self.ds.retrieve_label_name(who, buf)
     }
 
     fn remote_info(
@@ -432,8 +456,9 @@ mod tests {
         assert_eq!(t.hz(), Err(EIO));
         // Revokes stay silent — there is nothing to revoke.
         t.grant_revoke(3);
-        // The service half fails closed just as honestly.
-        let mut services = SysServices;
+        // The service half fails closed just as honestly(宿主构建下
+        // 真 wrapper 的 trap 后端回答 -EIO,断言不变)。
+        let mut services = SysServices::default();
         let mut name_buf = [0u8; 8];
         assert_eq!(services.getnuid(Endpoint::PM), Err(EIO));
         assert_eq!(

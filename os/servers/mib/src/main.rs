@@ -23,7 +23,7 @@ fn main() {
         let server = MibServer::new();
         let ipc = SysIpc::default();
         let kernel = SysTransport;
-        let services = SysServices;
+        let services = SysServices::default();
 
         // C: main loop — main.c:443-488: receive → triage → dispatch →
         // reply, forever; a broken transport dies at the documented

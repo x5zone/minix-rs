@@ -34,6 +34,7 @@
 | C-6 | edge3 S6 D-16 DumpCore wire 按值携带名字（OQ-5 裁决 2026-09-19） | edge3（需求方） | `os/libs/minix-types`（`VfsCall::DumpCore` 成员改造：i32 path → 按值 name+len）+ `os/servers/vfs` 消费侧 | 无 | ☐ S6 开工时 edge3 持锁 |
 | C-7 | edge3 S19 A-6 诊断缝共享 helper | edge3（需求方） | `os/libs/minix-sys/src/syscall.rs`（`sys_diagctl` 旁新增 `sys_diagctl_write` 字符串便利封装，仅加函数不改既有）+ `os/servers/rs`（SysApi::diag_write 缝） | 无 | ✅ 销账（2026-09-19，1f72d8ffe） |
 | C-8 | edge3 S17 换装 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：pm.rs 新增 `setuid_via`（PM_SETUID=5，raw 载荷）+ vm.rs `vm_rs_memctl_via` 扩 (addr,len) 参数（原版丢 HeapPrealloc/MapPrealloc 的地址对，零调用方扩参无涟漪） | 无 | ✅ 销账（2026-09-19，0e33c276c） |
+| C-9 | edge3 S24 mib_get_label 接线 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：ds.rs 新增 `DsClient::retrieve_label_name`（C ds.c:92-101：DS_RETRIEVE_LABEL + val_in.ep + key 写授权收标签名）；`os/servers/mib`：SysServices 持 DsClient 并接真实动词 | edge3 | 🔄 进行中（2026-09-19，S24 随做随销） |
 
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
@@ -54,7 +55,7 @@
 | edge2 L11/L12 sigreturn+panic-handler | edge2 | edge3 S39（init no_std 收口） | ✅ 2026-09-18 fda5a708c（sigreturn 函数半+panic 形式定形；裸桩地址半挂 edge3 S3/edge1 帧偏移，edge2 L11 行有登记） |
 | edge2 L4→L5 E-CDRCONV→E-DEVWIRE | edge2 | edge3（vfs/input 消费侧，经 C-1）；16-stage G6 驱动 main | ☐ |
 | edge2 L9 E-DMABUF 契约 | edge2 | edge3 S37（vm 实现） | ✅ 2026-09-18 757398407（契约就绪，S37 持 DmaMemory 行为实现即可） |
-| edge3 S37 vm 传输面 | edge3 | edge2 L15（FS 二级缓存升级） | ☐ |
+| edge3 S37 vm 传输面 | edge3 | edge2 L15（FS 二级缓存升级） | ✅ 2026-09-19 7ed891a9b（DmaMemory 行为实现落位；edge2 L15 可开工） |
 | edge3 S17 RS 换装（枢纽） | edge3 | edge3 内部链 + edge4 E5 全族（RS 启动各服务器） | ☐ |
 | edge3 S19 A-6 裁决 | edge3 | edge3 S23（IS main 替换） | ✅ 2026-09-19 1f72d8ffe（diag 缝 = sys_diagctl code1 单汇点） |
 | edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ☐ |

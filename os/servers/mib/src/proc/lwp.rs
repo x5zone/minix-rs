@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(v.flag, L_INMEM | L_SINTR | L_SYSTEM);
         assert_eq!(v.stat, LSSLEEP);
         assert_eq!(v.pid, 0xFFFF_FFFBu32);
-        assert_eq!(v.wchan, 0xFFFF_FFFB_00u64);
+        assert_eq!(v.wchan, 0xFF_FF_FF_FB_00u64);
         // User rows start from INMEM; the machine ORs SINTR in (:497-499).
         assert_eq!(user_flag(false), L_INMEM);
         assert_eq!(user_flag(true), L_INMEM | L_SINTR);

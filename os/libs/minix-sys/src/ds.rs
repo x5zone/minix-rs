@@ -202,6 +202,45 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         Ok((arm.val_out.as_number(), DsFlags::from_bits_truncate(arm.val_len as u32)))
     }
 
+    /// Retrieve the label name of an endpoint (C: `ds_retrieve_label_name`,
+    /// ds.c:92-101): `DS_RETRIEVE_LABEL` carries the endpoint in
+    /// `val_in.ep`; the store writes the label name (NUL-pinned) into the
+    /// WRITE-granted key buffer. Returns the label length in bytes.
+    pub fn retrieve_label_name(&mut self, endpoint: Endpoint, buf: &mut [u8]) -> Result<usize, i32> {
+        let room = buf.len().min(DS_MAX_KEYLEN);
+        let mut seed = alloc::vec![0u8; DS_MAX_KEYLEN];
+        // WRITE grant 必须源自 *mut(as_ptr 派生的写别名是 UB);store
+        // 的写入经 grant 直达这块内存,mut 借用覆盖整个 taskcall。
+        let key_grant = self
+            .grants
+            .grant_direct(&self.kernel, self.ds_endpoint.0, seed.as_mut_ptr() as u64, DS_MAX_KEYLEN as u64, minix_types::CpFlags::WRITE)
+            ?;
+
+        let mut msg = Message::default();
+        {
+            // SAFETY: m_ds_req request arm (C mess_ds_req; the store reads
+            // val_in.ep and writes the answer through the key grant).
+            let req = unsafe { &mut msg.m_u.m_ds_req };
+            req.key_grant = key_grant;
+            req.key_len = DS_MAX_KEYLEN as i32;
+            req.flags = DsFlags::TYPE_LABEL.bits() as i32;
+            req.val_in = DsVal::endpoint(endpoint);
+        }
+        // Same unlifted-outcome shape as `check`: the WRITE grant stays
+        // alive across the taskcall; revoke runs on every path (ds.c:32).
+        let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, DS_RETRIEVE_LABEL, &mut msg);
+        let _ = self.grants.revoke(key_grant);
+        let reply = outcome.map_err(|e| e.to_i32())?;
+        if reply < 0 {
+            return Err(-reply);
+        }
+        // The store wrote the name through the grant into `seed` — copy it
+        // back (NUL-pinned, C ds.c:155's terminator discipline).
+        let len = seed.iter().position(|&b| b == 0).unwrap_or(room).min(room);
+        buf[..len].copy_from_slice(&seed[..len]);
+        Ok(len)
+    }
+
     /// Retrieve the endpoint behind a label (C: `ds_retrieve_label_endpt`,
     /// ds.c:103-113).
     pub fn retrieve_label_endpt(&mut self, name: &str) -> Result<(Endpoint, DsFlags), i32> {

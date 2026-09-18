@@ -362,7 +362,6 @@ impl Default for Tables {
 #[cfg(test)]
 mod pull_tests {
     use super::*;
-    use alloc::vec;
 
     struct MockPull {
         fail_kernel: bool,
@@ -485,7 +484,6 @@ mod pull_tests {
     /// snapshot (PullVerdict::Reuse — proc.c:66-69).
     #[test]
     fn test_same_tick_reuses() {
-        use minix_types::Endpoint;
         let mut tables = Tables::new();
         let mut kernel = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
         let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };

@@ -599,7 +599,8 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
                     t.slot_mut(n).imm = Some(v);
                 }
                 // Unresolved names keep `imm = None` — reads refuse
-                // EOPNOTSUPP rather than invent a value ([待裁决]).
+                // EOPNOTSUPP rather than invent a value. NR_VNODES 现已
+                // 解析(arena.rs:1024,锚 vfs/const.h:8 + mib/kern.c:341)。
             }
             KernKind::ConstStr(text) => {
                 let n = t.place(

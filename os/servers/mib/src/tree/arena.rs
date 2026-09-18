@@ -318,8 +318,10 @@ pub(crate) fn build_int_value(name: &str) -> Option<i64> {
         "NGROUPS_MAX" => Some(16),
         // unistd.h:62 (`_POSIX_VERSION 200112L`).
         "_POSIX_VERSION" => Some(200112),
-        // NR_VNODES: no definition in the minix3 include tree — a
-        // pending design decision, refused at read ([待裁决]).
+        // NR_VNODES = 1024 — VFS 服务器局部常量(vfs/const.h:8),不在
+        // include 树;C MIB 的 maxvnodes/maxfiles 两行直接供这个值
+        // (mib/kern.c:341/:346 `MIB_INT(_P | _RO, NR_VNODES, ...)`)。
+        "NR_VNODES" => Some(1024),
         _ => None,
     }
 }
