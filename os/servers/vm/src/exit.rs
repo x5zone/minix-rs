@@ -51,6 +51,12 @@ pub(crate) fn handle_vm_exit(
     let mut exiting = table.get_exiting(slot)
         .ok_or(VmExitError::NotExiting)?;
 
+    // V13-P3-1之2: cancel the dying process's stale queued/in-flight VFS
+    // requests before the exit path enqueues its final FdClose — the close
+    // must survive the purge (C mappedfile_delete → fdref_deref sends it
+    // during exit, mem_file.c:280-287).
+    vfs_queue.purge_by_owner(endpoint);
+
     free_process_phys(exiting.regions_mut(), frames, page_alloc, vfs_queue, endpoint, slot, table);
 
     // SAFETY: Single-threaded VM ensures no concurrent access to this slot.

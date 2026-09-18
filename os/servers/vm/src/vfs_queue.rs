@@ -15,6 +15,7 @@
 //! slot explicitly.
 
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use minix_types::{Endpoint, VirBytes, VmMmapIn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,13 @@ pub(crate) enum VfsQueueError {
 pub(crate) struct VfsRequestQueue {
     queued: VecDeque<VfsRequest>,
     active: Option<VfsRequest>,
+    /// req_ids of purged requests that were already sent to VFS: their
+    /// replies can still arrive, and must be dropped quietly (the owner is
+    /// dead — C leaves the same race to `do_vfs_reply`'s `vm_isokendpt`
+    /// NULL-vmp path, vfs.c:124-129; the tombstone is the queue-level
+    /// equivalent). Bounded: one entry per purged sent-active, drained on
+    /// matching reply.
+    cancelled: Vec<u32>,
     next_id: u32,
     max_queued: usize,
 }
@@ -118,6 +126,7 @@ impl VfsRequestQueue {
         Self {
             queued: VecDeque::new(),
             active: None,
+            cancelled: Vec::new(),
             next_id: 1,
             max_queued: 64,
         }
@@ -210,6 +219,13 @@ impl VfsRequestQueue {
         &mut self,
         reply: VfsReply,
     ) -> Result<Option<(VfsCallbackFn, VfsReply, VfsRequestState)>, VfsQueueError> {
+        // Late reply for a purged request: the caller exited after the
+        // request was sent — drop it (V13-P3-1之2 dead-caller path).
+        if let Some(pos) = self.cancelled.iter().position(|&id| id == reply.req_id) {
+            self.cancelled.remove(pos);
+            return Ok(None);
+        }
+
         let req = self.active.take()
             .ok_or(VfsQueueError::NoActiveRequest)?;
 
@@ -232,6 +248,38 @@ impl VfsRequestQueue {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.active.is_none() && self.queued.is_empty()
+    }
+
+    /// Cancel every pending request owned by `owner` — the exit-side
+    /// cleanup (V13-P3-1之2; §9.4 Redox lesson: the "caller died first"
+    /// branch must cancel in-flight slots too, not only driver death).
+    ///
+    /// Queued requests are dropped outright. An already-sent active request
+    /// cannot be unsent — its slot is removed and its req_id tombstoned so
+    /// the late VFS reply is dropped by [`Self::handle_reply`] instead of
+    /// surfacing as `UnexpectedReply`. Call this from the exit path
+    /// *before* enqueueing the dying process's final FdClose: the close is
+    /// a legitimate request (C `mappedfile_delete` → `fdref_deref`,
+    /// mem_file.c:280-287) and must survive its owner's purge.
+    ///
+    /// Returns the number of cancelled requests (queued + active).
+    pub(crate) fn purge_by_owner(&mut self, owner: Endpoint) -> usize {
+        let before = self.queued.len();
+        self.queued.retain(|req| req.caller_endpoint != owner);
+        let mut n = before - self.queued.len();
+
+        if let Some(req) = self.active.as_mut()
+            && req.caller_endpoint == owner
+        {
+            let req = self.active.take().expect("active checked above");
+            n += 1;
+            if req.sent {
+                self.cancelled.push(req.req_id);
+            }
+            // The freed active slot activates the next surviving request.
+            self.activate();
+        }
+        n
     }
 
     #[cfg_attr(not(test), allow(dead_code))] // V10-P2-1: test-only
@@ -391,5 +439,96 @@ mod tests {
         assert_ne!(VfsRequestType::FdLookup, VfsRequestType::FdIo);
         assert_ne!(VfsRequestType::FdIo, VfsRequestType::FdClose);
         assert_ne!(VfsRequestType::FdLookup, VfsRequestType::FdClose);
+    }
+
+    fn mk_req(t: VfsRequestType, owner: Endpoint, fd: i32) -> VfsRequest {
+        VfsRequest {
+            request_type: t,
+            req_id: 0,
+            caller_endpoint: owner,
+            fd,
+            offset: 0,
+            length: 0,
+            callback: None,
+            state: None,
+            sent: false,
+        }
+    }
+
+    #[test]
+    fn purge_drops_queued_of_owner_and_keeps_others() {
+        let mut q = VfsRequestQueue::new();
+        q.request(mk_req(VfsRequestType::FdLookup, Endpoint(10), 1)).unwrap();
+        q.request(mk_req(VfsRequestType::FdIo, Endpoint(20), 2)).unwrap();
+        q.request(mk_req(VfsRequestType::FdIo, Endpoint(10), 3)).unwrap();
+
+        let n = q.purge_by_owner(Endpoint(10));
+        assert_eq!(n, 2);
+        assert!(q.has_active());
+        // 唯一幸存者是 owner 20 的请求:active + 队列都应与 10 无关
+        let active = q.test_active_request().unwrap();
+        assert_eq!(active.caller_endpoint, Endpoint(20));
+        assert_eq!(q.queued_count(), 0);
+    }
+
+    #[test]
+    fn purge_of_unsent_active_frees_slot_without_tombstone() {
+        let mut q = VfsRequestQueue::new();
+        q.request(mk_req(VfsRequestType::FdIo, Endpoint(10), 1)).unwrap();
+        // 未发送(mark_send_failed 未经过 take_pending_vfs_call,sent=false)
+        assert_eq!(q.purge_by_owner(Endpoint(10)), 1);
+        assert!(!q.has_active());
+        assert!(q.is_empty());
+        // 无墓碑:该 req_id 的回复按正常 Unknown 路径报错(VFS 从未见过请求)
+        assert!(matches!(
+            q.handle_reply(VfsReply {
+                req_id: 1,
+                result: 0,
+                data_phys: None,
+                fd: 1,
+                dev: 0,
+                ino: 0,
+                size_pages: 0,
+            }),
+            Err(VfsQueueError::NoActiveRequest)
+        ));
+    }
+
+    #[test]
+    fn purge_of_sent_active_tombstones_late_reply() {
+        let mut q = VfsRequestQueue::new();
+        q.request(mk_req(VfsRequestType::FdLookup, Endpoint(10), 1)).unwrap();
+        q.request(mk_req(VfsRequestType::FdIo, Endpoint(20), 2)).unwrap();
+        // 发送半:取走 wire 消息 → active.sent = true
+        assert!(q.take_pending_vfs_call().is_some());
+        let sent_id = q.active_req_id().unwrap();
+
+        assert_eq!(q.purge_by_owner(Endpoint(10)), 1);
+        // 下一个请求被激活
+        assert_eq!(q.active_req_id(), Some(sent_id + 1));
+
+        // 迟到的 VFS 回复被墓碑吞掉,激活的下一个请求不受影响
+        let r = q.handle_reply(VfsReply {
+            req_id: sent_id,
+            result: 0,
+            data_phys: None,
+            fd: 1,
+            dev: 0,
+            ino: 0,
+            size_pages: 0,
+        });
+        assert!(matches!(r, Ok(None)));
+        assert_eq!(q.active_req_id(), Some(sent_id + 1));
+    }
+
+    #[test]
+    fn exit_purge_spares_own_fdclose() {
+        let mut q = VfsRequestQueue::new();
+        q.request(mk_req(VfsRequestType::FdIo, Endpoint(10), 1)).unwrap();
+        q.purge_by_owner(Endpoint(10));
+        // exit 路径 purge 之后才入队的 FdClose 存活(handle_vm_exit 顺序契约)
+        q.request(mk_req(VfsRequestType::FdClose, Endpoint(10), 1)).unwrap();
+        assert!(q.has_active());
+        assert_eq!(q.active_fd_close().map(|(_, fd, _)| fd), Some(1));
     }
 }
