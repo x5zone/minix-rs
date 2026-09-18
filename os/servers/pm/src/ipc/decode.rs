@@ -102,6 +102,40 @@ pub(crate) fn ptrace(msg: &Message) -> (i32, i32, u64, i64) {
     (pl.pid, pl.req, pl.addr, pl.data)
 }
 
+/// exec 参数 (path 指针, path_len, frame 指针, framelen, ps_str)。
+/// user/VFS → PM。
+///
+/// C: `mess_lc_pm_exec` — ipc.h:435-443(name@0/namelen@8/frame@16/
+/// framelen@24/ps_str@32,LP64 各域 8 字节)。
+pub(crate) fn exec(msg: &Message) -> (u64, u64, u64, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;五域各 8 字节。
+    let raw = unsafe { msg.m_u.raw };
+    let u64_at = |off: usize| u64::from_le_bytes(raw[off..off + 8].try_into().unwrap());
+    (u64_at(0), u64_at(8), u64_at(16), u64_at(24), u64_at(32))
+}
+
+/// EXEC_NEW 参数 (endpt, exec_info 指针)。VFS/RS → PM。
+///
+/// C: `mess_lexec_pm_exec_new` — ipc.h:966-973(endpt@0/ptr@8);ptr 指向
+/// VFS 内存中的 `struct exec_info`(拷入尺寸见 calls.rs EXEC_INFO_COPY_SIZE)。
+pub(crate) fn exec_new(msg: &Message) -> (i32, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;endpt@0/ptr@8。
+    let raw = unsafe { msg.m_u.raw };
+    let endpt = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let ptr = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    (endpt, ptr)
+}
+
+/// EXEC_RESTART 参数 (endpt, result, pc, ps_str)。RS → PM。
+///
+/// C: `mess_rs_pm_exec_restart`(minix-types `MessRsPmExecRestart`——
+/// endpt@0/result@4/pc@8/ps_str@16,ipc.h:665-673)。
+pub(crate) fn exec_restart(msg: &Message) -> (i32, i32, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路，Copy 按值读。
+    let pl = unsafe { msg.m_u.m_rs_pm_exec_restart };
+    (pl.endpt, pl.result, pl.pc, pl.ps_str)
+}
+
 /// setuid/seteuid/setgid/setegid 族参数 (id)。user → PM。
 ///
 /// C: `mess_lc_pm_setid`（minix-types `MessLcPmSetid`，ipc.h:528-533:

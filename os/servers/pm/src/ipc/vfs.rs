@@ -284,9 +284,9 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
 ///
 /// 只持 transport——`KernelExec::reply`/`TracerSig::send` 需要的进程表经
 /// 方法参数传入（`exec_restart` 自身持表），避免两个 `&mut ProcTable` 共存。
-struct ExecServices<'a, T: IpcTransport> {
-    transport: &'a mut T,
-    kern: &'a mut dyn crate::exit::KernelGateway,
+pub(crate) struct ExecServices<'a, T: IpcTransport> {
+    pub(crate) transport: &'a mut T,
+    pub(crate) kern: &'a mut dyn crate::exit::KernelGateway,
 }
 
 impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {

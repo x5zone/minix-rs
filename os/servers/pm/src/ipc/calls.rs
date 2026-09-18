@@ -571,6 +571,81 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // ===== S6 批次 E:exec 族三调用(exec.c)=====
+        // C: do_exec(pm/exec.c:38-56)——exec 由 VFS/RS 发起:转发
+        // VFS_PM_EXEC 五域后 tell_vfs,返回 SUSPEND。
+        PmCall::Exec => {
+            let (path, path_len, frame, frame_len, ps_str) = super::decode::exec(msg);
+            let req = crate::exec::ExecRequest {
+                caller,
+                endpoint: table.procs[caller.get()].endpoint(),
+                path: VirBytes(path),
+                path_len: path_len as usize,
+                frame: VirBytes(frame),
+                frame_len: frame_len as usize,
+                ps_str: VirBytes(ps_str),
+            };
+            let mut vfs_fwd = SysVfsExec { transport };
+            match crate::exec::do_exec(table, caller, req, &mut vfs_fwd) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_newexec(pm/exec.c:64-123)——endpt@0/ptr@8,ptr 指向 VFS
+        // 内存中的 exec_info(拷入 192 字节);reply 载荷 m_pm_lexec_exec_new
+        // .suid@0(C :120-122)。
+        PmCall::ExecNew => {
+            let (endpoint_raw, ptr) = super::decode::exec_new(msg);
+            let mut info_raw = [0u8; EXEC_INFO_COPY_SIZE];
+            if let Err(e) = kern.copy_from_user(msg.m_source, ptr, &mut info_raw) {
+                return ReplyIntent::Reply(positive_errno(e));
+            }
+            let le_u64 = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+            let progname = {
+                let mut n = [0u8; 16];
+                n.copy_from_slice(&info_raw[32..48]);
+                n
+            };
+            let info = crate::exec::ExecInfo {
+                allow_setuid: i32::from_le_bytes(info_raw[56..60].try_into().unwrap()) != 0,
+                new_uid: u32::from_le_bytes(info_raw[48..52].try_into().unwrap()),
+                new_gid: u32::from_le_bytes(info_raw[52..56].try_into().unwrap()),
+                progname,
+                stack_high: VirBytes(le_u64(&info_raw[184..192])),
+                frame_len: le_u64(&info_raw[24..32]) as usize,
+            };
+            match crate::exec::do_newexec(table, msg.m_source, Endpoint(endpoint_raw), info) {
+                Ok(allow) => {
+                    // C :120-122 —— reply 载荷 suid@0。
+                    let mut reply = Message::default();
+                    let suid = i32::from(allow);
+                    // SAFETY: m_pm_lexec_exec_new.suid@0 的 raw 字节写入;
+                    // 索引切片构成对 union 字段的读借用,需 unsafe 块。
+                    unsafe {
+                        reply.m_u.raw[0..4].copy_from_slice(&suid.to_le_bytes());
+                    }
+                    table.procs[caller.get()].ipc.reply = Some(reply);
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_execrestart(pm/exec.c:130-151)——仅 RS;RS 门在
+        // do_execrestart 内。服务装配照 vfs.rs ExecServices 先例。
+        PmCall::ExecRestart => {
+            let (endpt, result, pc, ps_str) = super::decode::exec_restart(msg);
+            let info = crate::exec::ExecRestartInfo {
+                endpoint: Endpoint(endpt),
+                result,
+                pc: VirBytes(pc),
+                ps_str: VirBytes(ps_str),
+            };
+            let mut svc = crate::ipc::vfs::ExecServices { transport, kern };
+            match crate::exec::do_execrestart(table, msg.m_source, info, &mut svc) {
+                Ok(()) => ReplyIntent::Reply(0),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -627,6 +702,37 @@ impl CopyGroups for SysCopyGroups<'_> {
             .collect())
     }
 }
+
+/// exec 臂的 VFS 转发适配(S6):VFS_PM_EXEC 五域编码 + tell_vfs 三段
+/// (exec.c:44-54)。
+struct SysVfsExec<'a, T: IpcTransport + ?Sized> {
+    transport: &'a mut T,
+}
+
+impl<T: IpcTransport + ?Sized> crate::exec::VfsExec for SysVfsExec<'_, T> {
+    fn forward_exec(
+        &mut self,
+        table: &mut ProcTable,
+        caller: UserSlot,
+        req: crate::exec::ExecRequest,
+    ) -> Result<ReplyIntent, crate::exec::ExecError> {
+        let call = minix_types::VfsCall::Exec {
+            endpoint: req.endpoint,
+            path: req.path.0,
+            path_len: req.path_len as i32,
+            frame: req.frame.0,
+            frame_len: req.frame_len as i32,
+            ps_str: req.ps_str.0 as i32,
+        };
+        crate::ipc::vfs::tell_vfs(table, caller, call, self.transport);
+        Ok(ReplyIntent::ReplyLater)
+    }
+}
+
+/// `struct exec_info` 的 PM 消费域字节宽(libexec.h:21-58,LP64):
+/// proc_e@0/hdr@8/hdr_len@16/frame_len@24/progname@32(16)/new_uid@48/
+/// new_gid@52/allow_setuid@56/…/stack_high@184;拷入尺寸 192。
+const EXEC_INFO_COPY_SIZE: usize = 192;
 
 /// 凭证族的 VFS 转发适配(S2):编码 VfsCall 后走 tell_vfs 同型三段
 /// (not-idle 断言 / send / VFS_CALL 置位——vfs.rs:166-175)。

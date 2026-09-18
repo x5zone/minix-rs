@@ -61,8 +61,16 @@ impl ExecError {
 }
 
 /// VFS exec forwarder (`tell_vfs(VFS_PM_EXEC)` → `SUSPEND`, `exec.c:52`, D1, A-4).
+///
+/// `table`/`caller` 由方法携带(tell_vfs 的 not-idle 断言与 VFS_CALL
+/// 置位需访问进程表;与 VfsForwarder 契约同形)。
 pub trait VfsExec {
-    fn forward_exec(&mut self, req: ExecRequest) -> Result<ReplyIntent, ExecError>;
+    fn forward_exec(
+        &mut self,
+        table: &mut ProcTable,
+        caller: UserSlot,
+        req: ExecRequest,
+    ) -> Result<ReplyIntent, ExecError>;
 }
 
 /// Kernel exec (`sys_exec`, `exec.c:197`, D7, A-3).
@@ -104,7 +112,7 @@ pub fn do_exec(
     }
     // C 中本调用经 tell_vfs 置 VFS_CALL 并返回 SUSPEND；VfsExec 的生产
     // 实现内部编码 VFS_PM_EXEC 并做 tell_vfs。
-    vfs.forward_exec(req)?;
+    vfs.forward_exec(table, caller, req)?;
     // do_exec 不置 PARTIAL_EXEC（那是 do_newexec 的职责，exec.c:107）。
     Ok(ReplyIntent::ReplyLater)
 }
@@ -298,7 +306,14 @@ mod tests {
 
     struct NopVfs;
     impl VfsExec for NopVfs {
-        fn forward_exec(&mut self, _req: ExecRequest) -> Result<ReplyIntent, ExecError> { Ok(ReplyIntent::ReplyLater) }
+        fn forward_exec(
+            &mut self,
+            _table: &mut ProcTable,
+            _caller: UserSlot,
+            _req: ExecRequest,
+        ) -> Result<ReplyIntent, ExecError> {
+            Ok(ReplyIntent::ReplyLater)
+        }
     }
     /// `exec_restart` 的合并注入 mock（D5/D7 收敛后单一 service 对象）。
     struct TestExecSvc { pub killed: Option<Endpoint>, pub replied: Option<(UserSlot,i32)>, pub execed: Option<Endpoint>, pub sig: Option<i32> }
