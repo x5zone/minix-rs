@@ -18,6 +18,7 @@ extern crate alloc;
 pub mod backend;
 pub mod char_face;
 pub mod input;
+pub mod keyboard;
 pub mod line;
 pub mod session;
 pub mod termios;
