@@ -205,30 +205,6 @@ pub const fn needs_table_parse(style: PartitionStyle, has_part: bool) -> bool {
     !matches!(style, PartitionStyle::Floppy)
 }
 
-/// Geometry refusal for non-disk drivers.
-pub const fn not_disk_error() -> i32 {
-    NOT_DISK
-}
-
-/// Error for a message with no usable minor number.
-pub const fn bad_minor_error() -> i32 {
-    BAD_MINOR
-}
-
-/// Success marker for the announce path.
-pub const fn announce_ok() -> i32 {
-    OK
-}
-
-/// Translate a C-style negative error into an invalid-argument guard.
-///
-/// Used at the process-function boundary where C would panic on an unknown
-/// request inside the reply builder; the Rust side reports invalid argument
-/// instead of stopping the process.
-pub const fn unknown_request_error() -> i32 {
-    EINVAL
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::protocol::{BdevRequest, BlockDriverType, DeviceMinor, RequestId};

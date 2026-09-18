@@ -326,21 +326,6 @@ pub type CharServer = minix_driver_rt::core::ServerState;
 /// What the event loop does next after one receive outcome.
 pub type LoopAction = minix_driver_rt::core::LoopAction;
 
-/// Error for a block-side open answered by a character driver.
-pub const fn block_open_error() -> i32 {
-    BLOCK_OPEN_MISMATCH
-}
-
-/// Error for a message with no usable minor number.
-pub const fn bad_minor_error() -> i32 {
-    BAD_MINOR
-}
-
-/// Success marker for the announce path.
-pub const fn announce_ok() -> i32 {
-    OK
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::protocol::{CdevRequest, DeviceMinor, OpenDeviceSet, RequestId};
@@ -411,7 +396,7 @@ mod tests {
             classify(false, None, BLOCK_OPEN_MESSAGE, None, &opened),
             Route::BlockOpen
         );
-        assert_eq!(block_open_error(), minix_types::ENXIO);
+        assert_eq!(BLOCK_OPEN_MISMATCH, minix_types::ENXIO);
     }
 
     #[test]
