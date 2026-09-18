@@ -5,7 +5,7 @@
 > **源码**: `minix3/bin/sh/`（Almquist shell，22 个 C 文件：`parser.c` 1686 行、`expand.c` 1640 行、`eval.c` 1366 行、`jobs.c` 1532 行、`exec.c` 1071 行、`redir.c` 400 行、`main.c` 376 行、`builtins.def` 93 行）、`minix3/bin/ksh/`、`minix3/bin/csh/`、`minix3/bin/hostname/hostname.c`（101 行，主函数第 57 行）、`minix3/usr.bin/uname/uname.c`（159 行，系统调用第 111 行）、`minix3/usr.bin/env/env.c`（99 行）、`minix3/usr.bin/getopt/getopt.c`（41 行）、`minix3/minix/commands/sysenv/sysenv.c`（81 行）、`minix3/etc/profile`、`minix3/etc/shrc`、`minix3/etc/csh.cshrc`、`minix3/etc/csh.login`、`minix3/etc/csh.logout`、`minix3/etc/hostname.file`（内容 `minix`）
 > **Rust 模块**: `os/commands/bin/shell`（库包 `minix-shell`：`lexer.rs`、`expand.rs`、`redir.rs`、`script.rs`，36 个测试通过）；`sh` 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（派生执行待进程原语；原 `os/commands/bin/sh` 占位壳已于 2026-09-17 删除）
 > **前置依赖**: `03-login-passwd.md`（登录链交棒到 shell）、终端属性（`13-terminal-termios.md` 的行规程部分）
-> **不覆盖（移交）**: 命令工具本体（见 `06` 到 `24` 各篇）、终端驱动（见 `16-stage-drivers` 的终端部分）、作业控制的进程组实现（见进程管理阶段）
+> **不覆盖（移交）**: 命令工具本体（见 `06` 到 `24` 各篇）、终端驱动（见 `16-stage-drivers` 的终端部分）、作业控制的进程组实现（见 14-stage-runtime 的线程模型条目）
 
 ---
 
@@ -18,7 +18,7 @@
 > **本章不讲什么**：
 >
 > - 具体每个外部命令的行为（见 `06` 到 `24` 各篇）
-> - 作业控制的进程组与信号实现（见进程管理阶段）
+> - 作业控制的进程组与信号实现（见 14-stage-runtime 的线程模型条目）
 > - 算术展开、命令替换、通配符展开的实现（后续阶段，本篇只定边界）
 >
 > 本章只讲 shell 的语言核心：分词、变量展开、重定向、启动文件、环境命令。
@@ -89,7 +89,7 @@ Minix 带着三个 shell，不是冗余，而是三段历史：
 
 ### 2.5 求值与作业：`eval.c` 与 `jobs.c` 的边界
 
-求值器（1366 行）遍历语法树执行命令，作业控制（1532 行，`fgcmd`、`bgcmd` 第 288 到 403 行）管理前后台任务组。两者都依赖进程原语（派生、等待、进程组、终端前台），本阶段一个都不实现——文档在这里明确写出依赖链（进程管理阶段 → 执行器 → 作业控制），而不是含糊地说"以后再说"。
+求值器（1366 行）遍历语法树执行命令，作业控制（1532 行，`fgcmd`、`bgcmd` 第 288 到 403 行）管理前后台任务组。两者都依赖进程原语（派生、等待、进程组、终端前台），本阶段一个都不实现——文档在这里明确写出依赖链（14-stage-runtime 的线程模型条目 → 执行器 → 作业控制），而不是含糊地说"以后再说"。
 
 ### 2.6 内建登记：`builtins.def`
 
