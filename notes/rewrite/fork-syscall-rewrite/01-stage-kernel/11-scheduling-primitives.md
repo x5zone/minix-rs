@@ -94,18 +94,22 @@ void enqueue(struct proc *rp) {
     *xpp = rp;
     get_cpulocal_var(run_q_tail)[q] = rp;
 
-    // 抢占检查
-    if (priv(rp)->s_flags & PREEMPTIBLE) {
-        struct proc *cur = get_cpulocal_var(proc_ptr);
-        if (cur->p_priority > rp->p_priority) {
-            RTS_SET(cur, RTS_PREEMPTED);
-        }
+    // 抢占检查（proc.c:1632-1645）：只在同 CPU 上评估；
+    // 门是"当前运行进程"的特权标志，不是被入队进程的
+    if (cpuid == rp->p_cpu) {
+        struct proc *p = get_cpulocal_var(proc_ptr);
+        assert(p);
+        if ((p->p_priority > rp->p_priority) &&
+                (priv(p)->s_flags & PREEMPTIBLE))
+            RTS_SET(p, RTS_PREEMPTED); /* calls dequeue() */
     }
 
     // ⚠️ C bug: enter_queue 写入当前运行进程而非被入队进程
     get_cpulocal_var(proc_ptr)->p_accounting.enter_queue = read_tsc();
 }
 ```
+
+抢占检查有两个容易读漏的细节。其一，`enqueue` **自己**读 `proc_ptr`（proc.c:1633）——调用方从不传"当前进程"，这个函数天然知道谁在跑；C 里 `proc_ptr` 从极早期 boot 起就恒有值（KERNEL/IDLE 兜底），所以还有一行 `assert(p)`。其二，PREEMPTIBLE 检查的是**当前运行进程**的特权标志（`priv(p)`，proc.c:1638）——被抢占的是它，豁免权也在它：内核任务（TSK_F 不含 PREEMPTIBLE）永远不被抢占，哪怕队列号条件成立；而 `MAX_USER_Q == TASK_Q == 0`（config.h:67-68）意味着用户进程合法登顶 0 号队列后依然可被抢占——这正是队列号近似永远表达不了的语义。
 
 > **Minix3 C bug 揭示**（§3.6 设计决策依据）：
 >
@@ -328,13 +332,23 @@ pub fn dequeue_from_queue(&mut self, nr: ProcNr, q: usize, procs: &mut [KProcess
 **决策**：抢占检查内联在 `sched_enqueue` 中，直接调用 `rts_set(PREEMPTED)`。
 
 ```rust
-// proc_table.rs — sched_enqueue Phase 3
-if cur_cpu == cpu_id && cur_prio > new_prio && cur_preemptible {
-    self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
+// proc_table.rs — sched_enqueue_with Phase 3
+if let Some((cur_nr, cur_preemptible)) = current {
+    let (cur_prio, cur_cpu) = { /* 查当前进程的队列号与目标 CPU */ };
+    let new_prio = q as u8;
+    if cur_cpu == cpu_id.raw() && cur_prio > new_prio && cur_preemptible {
+        self.rts_set(cur_nr, RtsFlagsBits::PREEMPTED);
+    }
 }
 ```
 
 **为什么不返回 bool 让调用方决定？** 封装更好——调用方无需关心抢占细节。`rts_set(PREEMPTED)` 自动联动 `sched_dequeue`（被抢占进程出队），保证一致性。
+
+激活这个分支牵出两个拆分决策：
+
+**current 从哪里来**：生产入口 `sched_enqueue(nr, cpu_id)` 不收"当前进程"参数——与 C 的 enqueue 自己读 `proc_ptr`（proc.c:1633）同构，它经 `try_smp_state` 读本 CPU 的 `CpuLocal.proc_ptr`，再查特权表取 PREEMPTIBLE 位，一起交给参数化核心 `sched_enqueue_with`。选 `try_smp_state`（而非 witness 版访问器）是因为 enqueue 的真实调用上下文天然横跨两界：boot 激活路径（`bsp_finish_booting` 经 `rts_unset` 触发入队，BKL 尚不存在）与运行时（syscall/信号站点的 `rts_unset`、调度循环的 requeue，均持 BKL）——该访问器的安全契约恰好同时覆盖这两界。`SMP_STATE` 未安装或 `proc_ptr` 还是 `None`（调度器 bring-up 之前）时没有"正在运行的进程"可言，跳过抢占评估——与分支激活前的行为一致，不引入新的启动期行为。
+
+**门为什么消费特权标志**：优先级近似（`priority != 0`）表达不了 C 的语义——`MAX_USER_Q == TASK_Q == 0`（config.h:67-68）下，它把"合法登顶 0 号队列的用户进程"误判为不可抢占，SCHED 接管的进程一旦到达 0 号队列就会脱离 MLFQ 的降级与回升策略。`preemptible()` 助手（priv_id → 特权表 → `KPriv::is_preemptible()`）落实 C 的语义：豁免权看特权模板（TSK_F 无 PREEMPTIBLE、USR_F/SRV_F 有），不看队列号。
 
 ### 3.6 enter_queue 修复：写入被入队进程
 
@@ -630,9 +644,13 @@ pub fn sched_proc(
 | `test_enqueue_empty_queue` | 空队列入队 | proc.c:1595 |
 | `test_enqueue_non_empty_queue` | 非空队列入队 + p_nextready 链接 | proc.c:1595 |
 | `test_enqueue_head` | 队头入队 | proc.c:1670 |
-| `test_dequeue_only_process` | 唯一进程出队（经 rts_set 联动） | proc.c:1716 |
+| `test_enqueue_preempts_preemptible_current` | PREEMPTIBLE 当前进程被高优先级入队抢占（含 0 号队列用户进程） | proc.c:1638 |
+| `test_enqueue_spares_non_preemptible_current` | 无 PREEMPTIBLE 的内核任务不被抢占（优先级条件成立仍豁免） | proc.c:1638 |
+| `test_enqueue_preemption_skipped_for_other_cpu` | 跨 CPU 入队不抢占本 CPU 当前进程 | proc.c:1632 |
+| `test_enqueue_shell_without_cpu_local_still_enqueues` | 生产壳无 CPU 本地状态时跳过抢占评估、入队照常 | proc.c:1633 |
 | `test_pick_proc_empty` | 空队列 pick → None | proc.c:1785 |
 | `test_pick_proc_highest_priority` | 高优先级优先 | proc.c:1785 |
+| `test_dequeue_only_process` | 唯一进程出队（经 rts_set 联动） | proc.c:1716 |
 | `test_proc_no_time_kernel_scheduled` | 内核调度重置时间片 | proc.c:1893 |
 | `test_proc_no_time_user_scheduled_preemptible` | 用户调度设置 NO_QUANTUM | proc.c:1893 |
 | `test_sched_proc_priority_change` | priority Some(v) 更新 | system.c:684 |

@@ -470,7 +470,7 @@ mod tests {
     fn test_enqueue_empty_queue() {
         let mut table = crate::test_helpers::test_proc_table();
         make_runnable(&mut table, ProcNr(0),priority::USER_Q);
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
@@ -483,8 +483,8 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         make_runnable(&mut table, ProcNr(0),priority::USER_Q);
         make_runnable(&mut table, ProcNr(1),priority::USER_Q);
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
-        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
 
         let q = priority::USER_Q as usize;
         let sched = table.scheduler();
@@ -500,7 +500,7 @@ mod tests {
         make_runnable(&mut table, ProcNr(1),priority::USER_Q);
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(1000, Ordering::Release);
 
-        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
         table.sched_enqueue_head(ProcNr(0), CpuId::BSP);
 
         let q = priority::USER_Q as usize;
@@ -510,10 +510,108 @@ mod tests {
     }
 
     #[test]
+    fn test_enqueue_preempts_preemptible_current() {
+        // C proc.c:1638 — the gate is the current process's PREEMPTIBLE
+        // privilege flag. A user process at queue 0 is legally preemptible
+        // (MAX_USER_Q == TASK_Q == 0, config.h:67-68; USR_F carries
+        // PREEMPTIBLE), so a higher-priority enqueue must preempt it —
+        // the case the old `priority != 0` approximation got wrong.
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        if let Some(p) = priv_table.get_mut(0u16) {
+            p.flags.s_flags |= crate::capability::ProcessCapability::USR_F;
+        }
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        table.get_mut(ProcNr(0)).unwrap().priv_id = Some(0u16);
+        make_runnable(&mut table, ProcNr(1), priority::MAX_USER_Q);
+        table.sched_enqueue_with(ProcNr(1), Some((ProcNr(0), true)), CpuId::BSP);
+        assert!(
+            table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PREEMPTED),
+            "preemptible current must be preempted by a higher-priority enqueue"
+        );
+    }
+
+    #[test]
+    fn test_enqueue_spares_non_preemptible_current() {
+        // C proc.c:1638 — kernel tasks (TSK_F: SYS_PROC without
+        // PREEMPTIBLE) are never preempted, even though the priority
+        // condition holds (current at USER_Q == 7, enqueue at
+        // MAX_USER_Q == 0). The flag decides, not the queue number.
+        let mut table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        if let Some(p) = priv_table.get_mut(0u16) {
+            p.flags.s_flags |= crate::capability::ProcessCapability::SYS_PROC;
+        }
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        table.get_mut(ProcNr(0)).unwrap().priv_id = Some(0u16);
+        make_runnable(&mut table, ProcNr(1), priority::MAX_USER_Q);
+        table.sched_enqueue_with(ProcNr(1), Some((ProcNr(0), false)), CpuId::BSP);
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PREEMPTED),
+            "kernel task (no PREEMPTIBLE) must not be preempted"
+        );
+    }
+
+    #[test]
+    fn test_enqueue_preemption_skipped_for_other_cpu() {
+        // C proc.c:1632 — the check fires only when the enqueue lands on
+        // the current process's CPU; a process enqueued for another CPU
+        // must not preempt this CPU's current (the SMP wake-up arm is the
+        // cpu_is_idle branch, out of scope here).
+        let mut table = crate::test_helpers::test_proc_table();
+        make_runnable(&mut table, ProcNr(0), priority::USER_Q);
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_sched
+            .cpu
+            .store(1, Ordering::Release);
+        make_runnable(&mut table, ProcNr(1), priority::MAX_USER_Q);
+        table.sched_enqueue_with(ProcNr(1), Some((ProcNr(0), true)), CpuId::BSP);
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PREEMPTED),
+            "cross-CPU enqueue must not preempt this CPU's current"
+        );
+    }
+
+    #[test]
+    fn test_enqueue_shell_without_cpu_local_still_enqueues() {
+        // The shell reads CpuLocal.proc_ptr through try_smp_state, which
+        // yields None in hosted tests (no boot sequence ran). Preemption
+        // evaluation is skipped, but phases 1/2/4 — the actual enqueue —
+        // must work unchanged.
+        let mut table = crate::test_helpers::test_proc_table();
+        make_runnable(&mut table, ProcNr(0),priority::USER_Q);
+        table.sched_enqueue(ProcNr(0), CpuId::BSP);
+        let q = priority::USER_Q as usize;
+        let sched = table.scheduler();
+        assert_eq!(sched.queue_head(q), Some(ProcNr(0)));
+        assert!(
+            !table
+                .get(ProcNr(0))
+                .unwrap()
+                .p_rts_flags
+                .is_set(RtsFlagsBits::PREEMPTED)
+        );
+    }
+
+    #[test]
     fn test_dequeue_only_process() {
         let mut table = crate::test_helpers::test_proc_table();
         make_runnable(&mut table, ProcNr(0),priority::USER_Q);
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
 
         table.rts_set(ProcNr(0), RtsFlagsBits::PROC_STOP);
 
@@ -534,8 +632,8 @@ mod tests {
         let mut table = crate::test_helpers::test_proc_table();
         make_runnable(&mut table, ProcNr(0),priority::USER_Q);
         make_runnable(&mut table, ProcNr(2),priority::MAX_USER_Q);
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
-        table.sched_enqueue(ProcNr(2), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(2), None, CpuId::BSP);
 
         let picked = table.scheduler().pick_proc(table.procs_slice());
         assert_eq!(picked, Some(ProcNr(2)));
@@ -583,7 +681,7 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_sched.scheduler = Some(proc_nr::SYSTEM);
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
 
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
         table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();
@@ -609,7 +707,7 @@ mod tests {
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
         table.get_mut(ProcNr(0)).unwrap().p_sched.quantum.size_ms.store(200, Ordering::Release);
 
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         let section = crate::smp::bkl_lock_section();
         table.sched_proc_no_time(ProcNr(0), &priv_table, &section);
         crate::smp::bkl_unlock();

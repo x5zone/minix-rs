@@ -430,7 +430,7 @@ impl ProcessTable {
             let cpu_id = self.get(nr).map_or(CpuId::BSP, |p| {
                 CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
             });
-            self.sched_enqueue(nr, None, cpu_id);
+            self.sched_enqueue(nr, cpu_id);
         }
     }
 
@@ -635,11 +635,55 @@ impl ProcessTable {
         false
     }
 
-    /// Enqueue a runnable process at the tail of its priority queue.
+    /// Enqueue a runnable process at the tail of its priority queue,
+    /// evaluating preemption against this CPU's running process.
+    ///
+    /// C: `enqueue()` in proc.c:1595-1659 — the preemption check reads
+    /// `get_cpulocal_var(proc_ptr)` itself (proc.c:1633), so callers never
+    /// pass the current process in. This shell mirrors that: the current
+    /// process and its PREEMPTIBLE flag are read from CPU-local state
+    /// here, then handed to [`ProcessTable::sched_enqueue_with`].
+    ///
+    /// [`try_smp_state`](crate::try_smp_state) (not the witness form) is
+    /// the right reader for both real call contexts — boot
+    /// (`bsp_finish_booting` activates boot processes through `rts_unset`
+    /// before the BKL exists) and runtime (the `rts_unset` syscall/signal
+    /// sites and the scheduler-loop requeue hold the BKL); its safety
+    /// contract covers exactly these two. With `SMP_STATE` not yet
+    /// installed (early boot, unit tests) or `proc_ptr` still `None`
+    /// (pre-S-6) there is no running process to preempt and the check is
+    /// skipped — the behavior this branch had while it was dead.
+    pub fn sched_enqueue(&mut self, nr: ProcNr, cpu_id: CpuId) {
+        // C proc.c:1633 — per-CPU anchor read; C takes no lock for it
+        // either, and the anchor itself is the dispatch identity.
+        let current = unsafe { crate::try_smp_state() }
+            .and_then(|smp| smp.cpu_local(crate::current_cpu_id()))
+            .and_then(|l| l.proc_ptr);
+        // C proc.c:1638 — the gate is the CURRENT process's PREEMPTIBLE
+        // privilege flag. `current` is `Some` only once the scheduler
+        // hands out contexts (post-S-6), where every enqueue path runs
+        // under the BKL; [`crate::priv_table`] is the matching
+        // dual-context accessor.
+        let current_preemptible =
+            current.is_some_and(|cur_nr| self.preemptible(cur_nr, unsafe { crate::priv_table() }));
+        self.sched_enqueue_with(nr, current.map(|c| (c, current_preemptible)), cpu_id)
+    }
+
+    /// Parameterized core of [`ProcessTable::sched_enqueue`] — the caller
+    /// supplies the running process (if any) together with whether its
+    /// privilege flags carry PREEMPTIBLE, which keeps the preemption
+    /// check testable against local tables without touching CPU-local
+    /// state. Production callers go through [`ProcessTable::sched_enqueue`],
+    /// which derives both from `CpuLocal.proc_ptr` (C proc.c:1633/1638).
     ///
     /// C: `enqueue()` in proc.c:1595-1659.
     /// Design decision §3.6: records `enter_queue` for the enqueued process.
-    pub fn sched_enqueue(&mut self, nr: ProcNr, current_nr: Option<ProcNr>, cpu_id: CpuId) {
+    pub fn sched_enqueue_with(
+        &mut self,
+        nr: ProcNr,
+        current: Option<(ProcNr, bool)>,
+        cpu_id: CpuId,
+    ) {
         let q = self.get(nr).map_or(0, |p| p.get_priority().get() as usize);
         debug_assert!(q < 16, "sched_enqueue: priority out of range");
 
@@ -667,15 +711,18 @@ impl ProcessTable {
         }
 
         // Phase 3: preemption check (only same CPU)
-        // E-PREEMPTFLAG 余项（edge_todo.md）：本分支当前生产不可达——所有
-        // 调用方（rts_unset / requeue_if_preempted）都传 `current_nr=None`，
-        // 而 C 的 enqueue() 自己读 CPU 本地 proc_ptr（proc.c:1633），恒有
-        // current。激活本分支需与 current 来源（CpuLocal.proc_ptr，SMP 工作窗）
-        // 一并设计，抢占门届时同样消费特权标志（proc.c:1638
-        // `priv(p)->s_flags & PREEMPTIBLE`，见下方 `preemptible()` 助手），
-        // 而非这里的优先级近似。
-        if let Some(cur_nr) = current_nr {
-            let (cur_prio, cur_cpu, cur_preemptible) = {
+        //
+        // C proc.c:1632-1645 — when the enqueue lands on the running
+        // process's CPU and carries a higher priority (numerically lower
+        // queue), the current process is preempted — but only when its
+        // privilege flags say PREEMPTIBLE (proc.c:1638). The flag, not
+        // the queue number, is what keeps kernel tasks (TSK_F) immune:
+        // MAX_USER_Q == TASK_Q == 0 (config.h:67-68), so a queue number
+        // alone cannot tell "user process legally at the top queue" from
+        // "kernel task". The priority comparison also rules out
+        // self-preemption (equal queue → not greater).
+        if let Some((cur_nr, cur_preemptible)) = current {
+            let (cur_prio, cur_cpu) = {
                 // R-15 (2026-08-12): INVARIANT: `cur_nr` is the currently-running
                 // process passed by the caller; it must be a valid in-table ProcNr,
                 // so `get()` cannot return None.
@@ -683,7 +730,6 @@ impl ProcessTable {
                 (
                     cur.get_priority().get(),
                     cur.p_sched.cpu.load(Ordering::Acquire),
-                    cur.get_priority().get() != 0,
                 )
             };
             let new_prio = q as u8;

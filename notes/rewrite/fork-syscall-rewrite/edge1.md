@@ -14,7 +14,7 @@
 
 | 编号 | 条目 | 来源 | 要点 | 前置 | 状态 |
 |---|---|---|---|---|---|
-| K1 | E-PREEMPTFLAG 余项：enqueue Phase 3 抢占门激活 | [edge_todo.md](edge_todo.md) E-PREEMPTFLAG ｜ [06-stage-sched/todo.md §2](06-stage-sched/todo.md) | 抢占分支生产不可达（调用方全传 `current_nr=None`）。(a) current 来源改读 `CpuLocal.proc_ptr`；(b) 抢占门消费 `KPrivFlags::is_preemptible`（C proc.c:1638）。SCHED 服务器零改动 | 无（CpuLocal 基建 S-6 已就位） | ☐ |
+| K1 | E-PREEMPTFLAG 余项：enqueue Phase 3 抢占门激活 | [edge_todo.md](edge_todo.md) E-PREEMPTFLAG ｜ [06-stage-sched/todo.md §2](06-stage-sched/todo.md) | 抢占分支生产不可达（调用方全传 `current_nr=None`）。(a) current 来源改读 `CpuLocal.proc_ptr`；(b) 抢占门消费 `KPrivFlags::is_preemptible`（C proc.c:1638）。SCHED 服务器零改动 | 无（CpuLocal 基建 S-6 已就位） | ✅ 2026-09-18（本提交；生产壳读 `try_smp_state`+特权表，参数化核心 `sched_enqueue_with` 消费真标志；requeue 的硬编码 BSP 改读进程自身 CPU；4 新测试；doc 11 §2.2/§3.5 同步并修正 C 引用失真） |
 | K2 | E-SCHEDSMP：SCHED cpu 下发链三环 | [edge_todo.md](edge_todo.md) E-SCHEDSMP ｜ [06-stage-sched/todo.md §3](06-stage-sched/todo.md) | (1) per-CPU Scheduler 入 CpuLocal，`sched_for_cpu` 按 cpu_id 分发；(2) `sched_proc` 补 cpu_is_ready 校验（EBADCPU）；(3) 跨 CPU 迁移接线（`schedule_migrate_proc` 已有本体，缺调用方）。SCHED 侧零改动 | 无硬前置；验收挂 edge4 E5(e) | ☐ |
 | K3 | E-VMTLB 余件：SMP IPI 旗标设置完备性 | [edge_todo.md](edge_todo.md) E-VMTLB ｜ [02-stage-vm/todo.md V13-P2-1(c)](02-stage-vm/todo.md) | 机制三件套已落（pick 点判定/switch_to_user 消费/设置点）。余件 = `schedule_vminhibit` IPI 路径的旗标设置完备性 + E5 SMP 冒烟用例「fork 后父子并发写 CoW 页」设计（用例执行归 edge4） | 无 | ☐ |
 | K4 | T-13 dm_coverage 测试族共享 mock 无同步 | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L411 | `os/arch` dm_coverage driver 测试共享全局 mock 无锁，并行调度确定性失败。加 `BKL_TEST_LOCK` 同型互斥（misc.rs `SPROF_TEST_LOCK` 先例）或各测试用不重叠窗口基址 | 无 | ✅ 2026-09-18（本提交；std 语境取 RAII `Mutex<()>` 序列锁，4 测试各持 guard；并行 8 线程 5/5 轮绿，自旋锁先例的 panic 泄挂死风险已记录 fix-status） |

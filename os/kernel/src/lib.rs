@@ -2431,7 +2431,14 @@ fn requeue_if_preempted(
         if has_quantum {
             table.sched_enqueue_head(nr, crate::proc::CpuId::BSP);
         } else {
-            table.sched_enqueue(nr, None, crate::proc::CpuId::BSP);
+            // C proc.c:326-330 — the slice is spent, so the process
+            // re-enters at the TAIL via enqueue(p), which also evaluates
+            // preemption against the CPU-local current and targets the
+            // process's own CPU (C: rp->p_cpu), not a hardcoded one.
+            let cpu_id = table.get(nr).map_or(crate::proc::CpuId::BSP, |p| {
+                crate::proc::CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
+            });
+            table.sched_enqueue(nr, cpu_id);
         }
     }
 }
@@ -3744,7 +3751,7 @@ mod tests {
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
         // A peer already in the queue; the requeued process must land AHEAD of it.
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(1), crate::proc::priority::USER_Q, 1000);
-        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
         // Preempt process 0 (rts_set with PREEMPTED also dequeues — it was not queued yet).
         table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
 
@@ -3765,7 +3772,7 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 0);
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(1), crate::proc::priority::USER_Q, 1000);
-        table.sched_enqueue(ProcNr(1), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(1), None, CpuId::BSP);
         table.rts_set(ProcNr(0), RtsFlagsBits::PREEMPTED);
 
         super::requeue_if_preempted(&mut table, ProcNr(0));
@@ -3820,7 +3827,7 @@ mod tests {
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut smp = SmpState::new_single_cpu();
         make_runnable_billable(&mut table, &mut priv_table, ProcNr(0), crate::proc::priority::USER_Q, 1000);
-        table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+        table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
 
         let picked = super::pick_and_bill(&mut table, &mut smp, &priv_table, crate::proc::CpuId::BSP);
 
@@ -4086,7 +4093,7 @@ mod tests {
             // make_runnable_billable only clears SLOT_FREE; the run queue
             // must be populated explicitly (C's boot path reaches the same
             // state via RTS_UNSET(PROC_STOP) auto-enqueue — proc.h:216-224).
-            table.sched_enqueue(ProcNr(0), None, CpuId::BSP);
+            table.sched_enqueue_with(ProcNr(0), None, CpuId::BSP);
         }
 
         super::switch_to_user();
