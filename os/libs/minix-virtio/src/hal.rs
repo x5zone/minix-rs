@@ -2,47 +2,18 @@
 //!
 //! C correspondence: `alloc_contig` for the physically contiguous queue
 //! memory and buffer allocation in `virtio.c` (the setup path around
-//! `virtio.c:319`, and per-buffer allocation in the drivers). C allocates
-//! straight from the kernel; here the service implements this trait over
-//! its memory source, keeping the policy library free of address math.
+//! `virtio.c:319`, and per-buffer allocation in the drivers).
 //!
-//! The same three operations appear in rcore-os's `virtio-drivers` `Hal`
-//! trait (dma_alloc/dma_free plus physical-to-virtual translation) and
-//! Redox's `common/src/dma.rs` — the community-converged shape for "DMA
-//! memory without knowing the platform".
-//!
-//! Cross-stage note: the VM-side allocator contract is registered as
-//! edge E-DMABUF (`02-stage-vm` owns the physical allocation); this
-//! trait is the consumer seam this stage commits to.
+//! The contract itself lives in the shared types crate
+//! ([`minix_types::types::dma`]) as the edge E-DMABUF artifact — one
+//! definition serves every driver library (virtio here, ahci and
+//! usb_storage when they grow service seams) and one implementation comes
+//! from the VM server (02-stage ownership). This module keeps the crate's
+//! public names stable: `Hal` is the shared [`DmaMemory`] trait under the
+//! name rcore-os's `virtio-drivers` made conventional, `DmaRegion` the
+//! shared region type.
 
-/// One DMA-safe memory region: physically contiguous, CPU-accessible.
-///
-/// `cpu_addr` is an opaque handle the producing side understands (a
-/// mapped address); `phys` is the bus address that goes into descriptor
-/// `addr` fields. Bytes are NOT validated by this crate — the service
-/// owns the mapping's lifetime and cache discipline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DmaRegion {
-    /// Bus/physical address written into descriptor `addr` fields.
-    pub phys: u64,
-    /// CPU-side handle of the mapping (opaque to the policy library).
-    pub cpu_addr: u64,
-    /// Region length in bytes.
-    pub len: u32,
-}
-
-/// Platform services for queue and buffer memory.
-///
-/// Implemented by the service crate over the VM's physical allocator
-/// (edge E-DMABUF); tests implement it over a byte vector.
-pub trait Hal {
-    /// Allocate `size` bytes aligned to `align` of physically contiguous,
-    /// DMA-safe memory.
-    fn dma_alloc(&mut self, size: u32, align: u32) -> Option<DmaRegion>;
-
-    /// Return a region previously produced by [`Hal::dma_alloc`].
-    fn dma_free(&mut self, region: DmaRegion);
-}
+pub use minix_types::types::dma::{DmaMemory as Hal, DmaRegion};
 
 #[cfg(test)]
 mod tests {
@@ -65,7 +36,7 @@ mod tests {
     }
 
     impl Hal for MockHal {
-        fn dma_alloc(&mut self, size: u32, align: u32) -> Option<DmaRegion> {
+        fn dma_alloc(&mut self, size: u32, align: u32) -> Result<DmaRegion, minix_types::Errno> {
             let aligned = (self.next + align as u64 - 1) & !(align as u64 - 1);
             let region = DmaRegion {
                 phys: aligned,
@@ -74,11 +45,30 @@ mod tests {
             };
             self.next = aligned + size as u64;
             self.live.push(region);
-            Some(region)
+            Ok(region)
         }
 
         fn dma_free(&mut self, region: DmaRegion) {
             self.live.retain(|r| *r != region);
+        }
+
+        fn virtual_to_physical(
+            &self,
+            virtual_address: minix_types::VirBytes,
+        ) -> Option<minix_types::PhysBytes> {
+            self.live.iter().find(|r| {
+                virtual_address.0 >= r.cpu_addr
+                    && virtual_address.0 < r.cpu_addr + r.len as u64
+            }).map(|r| minix_types::PhysBytes(virtual_address.0 - r.cpu_addr + r.phys))
+        }
+
+        fn physical_to_virtual(
+            &self,
+            physical_address: minix_types::PhysBytes,
+        ) -> Option<minix_types::VirBytes> {
+            self.live.iter().find(|r| {
+                physical_address.0 >= r.phys && physical_address.0 < r.phys + r.len as u64
+            }).map(|r| minix_types::VirBytes(physical_address.0 - r.phys + r.cpu_addr))
         }
     }
 

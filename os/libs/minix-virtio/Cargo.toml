@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+
+[dependencies]
+# E-DMABUF 契约半:DmaMemory/DmaRegion 的权威定义住共享类型库,
+# 本库经 hal 模块再导出为 Hal 别名消费。
+minix-types = { workspace = true }
