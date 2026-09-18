@@ -31,7 +31,7 @@ mod clock;
 mod com;
 mod diagnostic;
 mod endpoint;
-mod errno;
+pub mod errno;
 mod grant;
 mod id;
 mod irq_hook;

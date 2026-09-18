@@ -42,6 +42,15 @@ use minix_types::{Endpoint, IpcError, Message};
 
 pub use minix_types::{Gid, Pid, Uid};
 
+/// The errno constant table at the crate root — the position `<errno.h>`
+/// holds for C programs (C: `minix3/sys/sys/errno.h`; command binaries
+/// `use minix_sys::EEXIST` the way C code includes the header, per the
+/// 18-stage dependency rule that commands build on `minix-sys` +
+/// `minix-rt` alone). The names come from the single authority in
+/// `minix-types` (`types/errno.rs`); this crate adds no constants and
+/// never forks a value.
+pub use minix_types::types::errno::*;
+
 /// Inter-process communication primitives (document 04).
 pub mod ipc;
 /// System call protocol above send-and-receive (document 05).

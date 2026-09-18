@@ -27,7 +27,7 @@
 
 use crate::ipc::IpcTransport;
 use crate::syscall::{perform_syscall, perform_taskcall};
-use minix_types::{Endpoint, Errno, Gid, Message, Pid, Uid};
+use minix_types::{Endpoint, Errno, Gid, Pid, Uid};
 
 /// Process manager endpoint.
 ///
@@ -597,6 +597,7 @@ pub fn service_kill_via(
 mod tests {
     use super::*;
     use crate::ipc::CannedTransport;
+    use minix_types::Message;
 
     fn reply_with_type(message_type: i32) -> Message {
         let mut message = Message::zeroed();
@@ -886,6 +887,7 @@ mod tests {
 mod pm_service_tests {
     use super::*;
     use crate::ipc::CannedTransport;
+    use minix_types::Message;
 
     fn reply_with_type(t: i32) -> Message {
         let mut m = Message::default();

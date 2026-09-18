@@ -30,8 +30,8 @@
 //!    scan for the last `/`, C crt0-common.c:158-167) become the statics
 //!    the accessors below serve.
 //! 5. **main**: no-argument Rust shape; the vectors live behind
-//!    [`argv_bytes`]/[`progname`] (the std `main()` + `env::args()` split,
-//!    not C's `main(argc, argv, envp)`).
+//!    [`args`]/[`envs`]/[`progname`] (the std `main()` + `env::args()`
+//!    split, not C's `main(argc, argv, envp)`).
 //! 6. **exit**: the return value goes to `minix_sys::exit` (PM_EXIT via the
 //!    direct trap; C `exit(main(...))`).
 
@@ -146,34 +146,92 @@ pub fn argv_count() -> usize {
         .map_or(0, |ps| ps.argument_count)
 }
 
+/// Number of environment strings the kernel passed in the descriptor.
+pub fn env_count() -> usize {
+    // SAFETY: single-threaded read of the once-written cell.
+    unsafe { &*BIRTH.0.get() }
+        .ps
+        .as_ref()
+        .map_or(0, |ps| ps.environment_count)
+}
+
 /// The i-th argument string's bytes (without the NUL terminator).
 ///
 /// Reads through the argv array the kernel placed on the initial stack;
 /// `None` past the end or on a NULL slot (the array is NUL-pointer
 /// terminated like C's `argv`).
 pub fn argv_bytes(index: usize) -> Option<&'static [u8]> {
-    // SAFETY: single-threaded read of the once-written cell; the argv
-    // array and its strings live on the initial stack for the whole
-    // process lifetime (the kernel maps that stack read-only-ish and no
-    // one rewrites it after birth).
-    let ps = unsafe { &*BIRTH.0.get() }.ps.as_ref()?;
+    let ps = birth_strings()?;
     if index >= ps.argument_count {
         return None;
     }
-    let slot = unsafe { ((ps.argument_list + (index as u64) * 8) as *const u64).read() };
+    string_at(ps.argument_list, index)
+}
+
+/// The i-th environment string's bytes (without the NUL terminator).
+///
+/// The environment twin of [`argv_bytes`]: same array-of-pointers shape
+/// (the `ps_strings` environment half, C `sys/exec.h:111-116`), same
+/// `None` contract past the end or on a NULL slot.
+pub fn env_bytes(index: usize) -> Option<&'static [u8]> {
+    let ps = birth_strings()?;
+    if index >= ps.environment_count {
+        return None;
+    }
+    string_at(ps.environment_list, index)
+}
+
+/// Every argument string, in order.
+///
+/// The no-argument `main()` twin of C's `argv` walk and the no_std twin
+/// of `std::env::args`, with two differences that fall out of running
+/// before an allocator may exist: the items are raw byte strings (no
+/// UTF-8 check, no `String`), and nothing is copied — the iterator reads
+/// the initial stack in place.
+pub fn args() -> impl Iterator<Item = &'static [u8]> {
+    (0..argv_count()).filter_map(argv_bytes)
+}
+
+/// Every environment string, in order.
+///
+/// `KEY=VALUE` bytes included, like C's `environ` walk; a `getenv`-style
+/// lookup is a scan over these (no separate table exists).
+pub fn envs() -> impl Iterator<Item = &'static [u8]> {
+    (0..env_count()).filter_map(env_bytes)
+}
+
+/// The published string descriptor, if birth stage 4 has run.
+fn birth_strings() -> Option<&'static ProcessStrings> {
+    // SAFETY: single-threaded read of the once-written cell; the argv/env
+    // arrays and their strings live on the initial stack for the whole
+    // process lifetime (the kernel maps that stack read-only-ish and no
+    // one rewrites it after birth).
+    unsafe { &*BIRTH.0.get() }.ps.as_ref()
+}
+
+/// Reads the i-th pointer of a `ps_strings` pointer array and returns the
+/// bytes up to its NUL terminator.
+///
+/// `None` on a NULL slot (the arrays are NUL-pointer terminated like C's
+/// `argv`); a slot inside the published count always points at the
+/// initial stack, so the reads cannot fault.
+fn string_at(list: u64, index: usize) -> Option<&'static [u8]> {
+    // SAFETY: the array lives on the initial stack (loader contract, C
+    // sys/exec.h ps_strings consumers).
+    let slot = unsafe { ((list + (index as u64) * 8) as *const u64).read() };
     if slot == 0 {
         return None;
     }
     let mut length = 0usize;
-    // SAFETY: argv strings are NUL-terminated bytes on the initial stack
-    // (loader contract, C sys/exec.h ps_strings consumers).
-    let mut cursor = slot as *const u8;
+    // SAFETY: ps_strings strings are NUL-terminated bytes on the initial
+    // stack.
+    let base = slot as *const u8;
     unsafe {
-        while *cursor.add(length) != 0 {
+        while *base.add(length) != 0 {
             length += 1;
         }
     }
-    Some(unsafe { core::slice::from_raw_parts(slot as *const u8, length) })
+    Some(unsafe { core::slice::from_raw_parts(base, length) })
 }
 
 /// Birth failure: no descriptor, no legal image.
@@ -364,5 +422,34 @@ mod crt0_tests {
         let ps =
             ProcessStrings::from_raw(raw.argv_str, raw.n_argv, raw.env_str, raw.n_env).unwrap();
         assert!(argv_storage_of(&ps).is_none());
+    }
+
+    /// The shared pointer-array walker behind `argv_bytes`/`env_bytes`:
+    /// NUL-scan semantics per slot, `None` on a NULL slot (the terminator
+    /// convention of both `ps_strings` arrays).
+    #[test]
+    fn test_string_at_reads_nul_terminated_slots() {
+        let first = b"KEY=VALUE\0";
+        let second = b"x\0";
+        let slots: [u64; 3] = [first.as_ptr() as u64, second.as_ptr() as u64, 0];
+        let list = slots.as_ptr() as u64;
+        assert_eq!(string_at(list, 0), Some(&first[..9]));
+        assert_eq!(string_at(list, 1), Some(&second[..1]));
+        assert_eq!(string_at(list, 2), None);
+    }
+
+    /// Before the birth chain runs, the cell holds the sentinel: no
+    /// counts, no strings, empty iterators. The test binary never runs
+    /// the birth chain (`rt_birth` is compiled out under cfg(test)), so
+    /// this pins the pre-birth contract directly — and depends on no
+    /// other test seeding the global cell.
+    #[test]
+    fn test_pre_birth_accessors_are_empty() {
+        assert_eq!(argv_count(), 0);
+        assert_eq!(env_count(), 0);
+        assert_eq!(argv_bytes(0), None);
+        assert_eq!(env_bytes(0), None);
+        assert_eq!(args().count(), 0);
+        assert_eq!(envs().count(), 0);
     }
 }
