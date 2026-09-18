@@ -537,7 +537,7 @@ pub const DEFAULT_HZ: u32 = 100;
 
 > **目的**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。
 > **触发条件**：任何 doc review 涉及 `os/kernel/src/lib.rs` 或其他 boot 阶段 init 函数注释。
-> **模式参考**：[review-process.md §Step 1.0e](review-process.md) + [review-patterns.md 模式 76](review-patterns.md)。
+> **模式参考**：[review-patterns.md 模式 76](review-patterns.md)（原 Step 1.0e，D5 收编后按卫生项处理）。
 
 **检查命令**：
 ```bash

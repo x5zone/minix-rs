@@ -338,7 +338,7 @@ rg "minix3/.*kernel/src/" {doc}.md  # 应保留
 
 > **目的**：检测 doc 中 `file:line` / `file:line-line` 引用与实际代码位置是否一致。
 > **触发条件**：任何 doc review（行号引用是文档基础锚点）。
-> **模式参考**：[review-process-skill Step 1.0a-自动](review-process-skill.md)。
+> **模式参考**：[review-process-skill §Step 1.0 锚点解析](review-process-skill.md)（原 1.0a-自动，D5 收编）。
 
 **检查命令**（自动化脚本）：
 ```bash
@@ -367,9 +367,9 @@ done < /tmp/doc_lines.txt
 ### 2.4e "参见" 范围引用扫描（NEW 2026-07-31, 模式 #75）
 
 > **目的**：检测 doc 中"参见 X.rs:Y-Z"形式的范围引用是否覆盖到 impl 结束、行号是否偏移。
-> **背景**：Step 1.0a 行号主动抽样**只检查**单行引用（`// path:line`），**漏检**范围引用（`参见 path:line-line`）。本次 Doc 04 review 漏检 2 处 L831/L883 范围漂移。
+> **背景（历史）**：原 Step 1.0a 行号抽样只查单行引用，漏检范围引用（Doc 04 的 L831/L883）；D5 后由符号锚点解析统一覆盖。
 > **触发条件**：任何 doc review（含"参见"型引用时强制）。
-> **模式参考**：[review-process-skill Step 1.0d](review-process-skill.md) + [Pattern #75](review-patterns-skill.md)。
+> **模式参考**：[Pattern #75](review-patterns-skill.md)（原 Step 1.0d，D5 收编为符号锚点解析）。
 
 **检查命令**：
 ```bash
@@ -475,7 +475,7 @@ pub const DEFAULT_HZ: u32 = 100;
 
 > **目的**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等指向特定 doc 编号或文件名的引用，因 doc 编号重排或 doc 改名而系统性过时。
 > **触发条件**：任何 doc review 涉及 `os/kernel/src/lib.rs` 或其他 boot 阶段 init 函数注释。
-> **模式参考**：[review-process-skill Step 1.0e](review-process-skill.md) + [Pattern #76](review-patterns-skill.md)。
+> **模式参考**：[Pattern #76](review-patterns-skill.md)（原 Step 1.0e，D5 收编后按卫生项处理）。
 
 **检查命令**：
 ```bash

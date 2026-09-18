@@ -1740,7 +1740,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 
 **检查命令**：
 ```bash
-# 路径约定检查（Step 1.0c NEW）
+# 路径约定检查（原 Step 1.0c；D5 收编后路径约定职责在 review-doc-checklist §2.4c，模式 74）
 rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/|servers/pm/|servers/vfs/|servers/rs/" \
     notes/rewrite/{module}/{stage}/{doc}.md
 # 应仅匹配 minix3/... 路径或 0 hits
@@ -1789,7 +1789,7 @@ rg "os/os/" notes/rewrite/{module}/{stage}/{doc}.md
 ✅ 参见 `os/libs/minix-platform/src/device_tree.rs:56-423`（含 cfg-gated 字段定义、arch 特化解析函数、`impl PlatformDesc`）
 ```
 
-**检查命令**（Step 1.0d 强制）：
+**检查命令**（模式 75 专项；原 Step 1.0d，D5 收编为符号锚点解析——见 review-process.md §Step 1.0）：
 ```bash
 # 1. 抽取"参见"型引用
 rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md
@@ -1805,19 +1805,12 @@ rg -n "^impl PlatformDesc for DeviceTreeDesc|^impl fmt::Display" os/libs/minix-p
 - 范围引用应改写为**符号锚点**（impl 块 `path:impl Trait for Type`，函数 `path:fn Name` + 引文片段）；已符号化锚点 0 定义 → **P0-fact**，多定义 → 补限定
 - 残留的手工行号范围引用 → **卫生项**（用 `tools/anchor-migrate.sh` 批量迁移；无法机械恢复的登记人工处理；不进 P1/P2 计数、不进收敛判定）
 
-**修复**（≤5 分钟）：
+**修复**（D5 改写：不再 sed 手工改行号——那是漂移循环的一部分）：
 ```bash
-# 1. 修正 +1 偏移
-sed -i 's|device_tree.rs:55-|device_tree.rs:56-|g' {doc}.md
-
-# 2. 更新上界到当前 impl 结束
-#   需先用 rg 找出 `impl PlatformDesc for X` + 下一个 `impl`/`fn test_`/`fn parse` 的位置
-#   然后 sed 替换
-sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
-
-# 3. 验证
-rg "device_tree.rs:" {doc}.md
-wc -l os/libs/minix-platform/src/device_tree.rs  # 当前实际行数
+# 1. 范围引用改写为符号锚点（impl 块 → path:impl Trait for Type；函数段 → path:fn Name + 引文片段）
+tools/anchor-migrate.sh {doc}.md          # dry-run 预览；--write 落地；无法机械恢复的进未解析清单
+tools/anchor-resolve.sh --check {doc}.md  # 校验符号锚点存在性（0 定义 → P0-fact）
+# 2. 残留的手工行号范围引用 → 卫生项登记（tools/anchor-unresolved-baseline.txt），批量清理
 ```
 
 **已知子类型**：
@@ -1827,9 +1820,9 @@ wc -l os/libs/minix-platform/src/device_tree.rs  # 当前实际行数
 
 **与已有模式区分**：
 - **模式 73 / 74** = 路径相关漂移
-- **模式 75 = 行号 / 范围漂移**（与 Step 1.0a 主动抽样互补，但 Step 1.0a 倾向"单点行号"，75 倾向"范围引用"）
+- **模式 75 = 行号 / 范围漂移**（D5 后范围引用应符号化——`path:impl Trait for Type` / `path:fn Name` + 引文；残留手工范围引用按卫生项批量迁移）
 
-**典型漏检原因**：Step 1.0a 主动抽样只检查"`// path:line`"形式的代码注释引用，**漏检"参见 path:line-line"形式的范围引用**。本次 04 doc review 即因此漏检 2 处 L831/L883 范围漂移。
+**典型漏检原因（历史）**：原 Step 1.0a 单点行号抽样漏检范围引用（04 doc review 的 L831/L883）；D5 后由符号锚点解析统一覆盖。
 
 **首次发现**：2026-07-31 04-platform-discovery review（`.review/claude/03-stage-kernel/04-platform-discovery/scan.md`，Pattern #75）
 
@@ -1852,7 +1845,7 @@ wc -l os/libs/minix-platform/src/device_tree.rs  # 当前实际行数
 - **76b** `see XX-doc.md` 注释引用旧 doc 文件名（本次同时发现 9+ 处，如 `04-clock-interrupt-init.md` / `05-exception-interrupt.md` / `06-arch-post-init.md` 等已过时）
 - **76c** 设计文档引用旧编号（design.md 中 `(详见 §3.2)` 等）
 
-**检查命令**（Step 1.0e 强制）：
+**检查命令**（模式 76 专项；原 Step 1.0e，D5 收编后按卫生项处理）：
 ```bash
 # 1. 扫描代码中所有 "covered in NN" / "see NN-doc.md" 引用
 rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust -n
@@ -1923,7 +1916,7 @@ rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust | wc -l  # 应等于 0
 // ❌ 实际 set_running 在 L200（+73）
 ```
 
-**检查命令**（Step 1.0f 强制）：
+**检查命令**（模式 77 专项；原 Step 1.0f，D5 收编后注释引用符号化）：
 ```bash
 # 1. 扫描所有代码注释中的 file:line 引用
 rg "see [a-z_/0-9]+\.rs:[0-9]+|see [a-z_/0-9]+\.rs:[0-9]+-[0-9]+" os/ -t rust -n

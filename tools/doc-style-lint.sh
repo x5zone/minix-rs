@@ -204,7 +204,7 @@ if [ "$MODE" = "dir" ]; then
 elif [ "$MODE" = "diff" ]; then
   while IFS=$'\t' read -r file lines; do
     DIFF_LINES["$file"]="${DIFF_LINES[$file]:-} $lines"
-  done < <( { git diff -U0 "$RANGE" -- '*.md'; git diff -U0 --cached -- '*.md'; } \
+  done < <( { git diff -U0 "$RANGE" -- notes/rewrite; git diff -U0 --cached -- notes/rewrite; } \
     | awk '
         /^\+\+\+ b\// { file = substr($2, 3); next }
         /^@@ -[0-9]+(,[0-9]+)? \+([0-9]+)(,([0-9]+))? @@/ {
@@ -215,22 +215,33 @@ elif [ "$MODE" = "diff" ]; then
           if (cnt > 0) { out = ""; for (i = 0; i < cnt; i++) out = out " " (start + i); print file "\t" out }
         }
       ' )
-  TARGETS=("${!DIFF_LINES[@]}")
+  # 空关联数组在 set -u 下 ${#arr[@]} / ${!arr[@]} 都可能 unbound（bash<4.4）——统一用 ${arr[@]+…} 探测
+  TARGETS=()
+  if [ -n "${DIFF_LINES[*]+x}" ]; then TARGETS=("${!DIFF_LINES[@]}"); fi
   total=0
-  for f in "${!DIFF_LINES[@]}"; do
-    for l in ${DIFF_LINES[$f]}; do total=$((total + 1)); done
-  done
-  echo "diff 范围：${#DIFF_LINES[@]} 个文件 / $total 个新增行（RANGE=$RANGE，含 staged）" >&2
+  if [ -n "${DIFF_LINES[*]+x}" ]; then
+    for f in "${!DIFF_LINES[@]}"; do
+      for l in ${DIFF_LINES[$f]}; do total=$((total + 1)); done
+    done
+  fi
+  echo "diff 范围：${#TARGETS[@]} 个文件 / $total 个新增行（RANGE=$RANGE，限 notes/rewrite；规则文件不在增量门范围）" >&2
 fi
 
-[ ${#TARGETS[@]} -gt 0 ] || { echo "无检查目标" >&2; exit 2; }
+if [ ${#TARGETS[@]} -eq 0 ]; then
+  if [ "$MODE" = "diff" ]; then
+    echo "无新增/修改的正式文档行，增量门通过（exit 0）" >&2
+    exit 0
+  fi
+  echo "无检查目标" >&2
+  exit 2
+fi
 
 # -------------------------------------------------- 执行（单次遍历，收集输出与汇总）
 ALL_OUT="$(mktemp)"
 err_total=0
 for f in "${TARGETS[@]}"; do
   [ -f "$f" ] || { echo "Not a file: $f" >&2; exit 2; }
-  if [ "$MODE" = "diff" ]; then
+  if [ "$MODE" = "diff" ] && [ -n "${DIFF_LINES[$f]+x}" ]; then
     map="${DIFF_LINES[$f]}"
     run_lint "$f" "$map" >> "$ALL_OUT" || true
   else

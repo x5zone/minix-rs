@@ -280,6 +280,7 @@ migrate_doc() {
         }
         # match()/sub() 会覆盖 RSTART/RLENGTH——上面已保存 mstart/mlen，后续 substr 一律用保存值
         path = tok; sub(/:[0-9]+(-[0-9]+)?$/, "", path)
+        sub(/^\//, "", path)   # 文档里偶见 /minix3/... 前导斜杠——剥掉再解析
         ln = tok; sub(/^[^:]*:/, "", ln)
         hi = ln; sub(/-[0-9]+$/, "", hi)
         key = path ":" hi
@@ -340,6 +341,7 @@ migrate_doc() {
   ' "$doc"
 }
 
+: > "$report"   # 每次运行重置报告（防多次运行追加导致重复与虚高计数）
 for doc in "${DOCS[@]}"; do
   if [ "$WRITE" -eq 1 ]; then
     tmpout="$(mktemp)"

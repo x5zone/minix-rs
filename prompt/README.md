@@ -19,7 +19,7 @@ prompt/
 │   ├── review-doc-excellence.md —  文档卓越性（§4.1叙事结构 + §4.2读者体验 + §4.3教学深度 + §4.4可维护性）
 │   └── review-code-excellence.md—  代码卓越性（§16 API设计 + §17表达力 + §18性能 + §19代码即文档 + §20可测试性 + §21测试质量）
 ├── skill/                   — Skill 适配层源文件（9 个领域 Skill；同步至 Trae/Codex，review-scan 编排器见 .claude/.codex）
-│   ├── review-agent-ide.md      —  Trae 智能体精简版（⚠️ 9,739 字符，余量 261，见下方说明）
+│   ├── review-agent-ide.md      —  Trae 智能体精简版（9,328 字符，余量 672，见下方说明）
 │   ├── review-agent-trigger.md  —  触发器描述（何时调用 Agent，12 个示例覆盖 8 域 + 工作流评估/修复/快照补齐阶段）
 │   ├── review-doc-skill.md      —  文档 Review 技能（含 §2.0 Claims-Evidence）
 │   ├── review-code-skill.md     —  代码 Review 技能（含 §4.2 Kernel SMP/BKL 并发）
@@ -99,7 +99,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 | 项 | 限制 | 来源 | 当前文件 | 状态 |
 |---|------|------|---------|------|
-| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **9,323 字符（≈ 93.2%）✅ 达标，余量 677 字符**（2026-09-18 实测） |
+| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **9,328 字符（≈ 93.3%）✅ 达标，余量 672 字符**（2026-09-18 实测，模式 85 计数更新后） |
 | Rule（规则） | 硬上限 20,000 byte；建议 ≤ 10,000 字符；token 视角约 3,000 token | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/52) | n/a（本目录无 Rule 文件） | — |
 | **Skill `name`** | ≤ **64 字符**，仅小写字母/数字/连字符（`-`），与父目录同名 | [Trae Skill 规范](https://docs.trae.ai/ide/best-practice-for-how-to-write-a-good-skill) | n/a（Trae Skill 命名规范） | — |
 | **Skill `description`** | ≤ **1024 字符**（硬限制），建议 ≤ 200 字符 | 同上 | n/a | — |
@@ -110,7 +110,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 ### `review-agent-ide.md` 的 10,000 字限制说明
 
-- **当前 9,323 字符，达标且余量 677 字符**（硬上限 10,000 字符的 93.2%，2026-09-18 实测）。**新增任何约束前必须先核对余量；超 10,000 字符必须触发规则精简**（候选：精简重复条目 / 下沉更多详情到 Skill）。
+- **当前 9,328 字符，达标且余量 672 字符**（硬上限 10,000 字符的 93.3%，2026-09-18 实测，模式 85 计数更新后）。**新增任何约束前必须先核对余量；超 10,000 字符必须触发规则精简**（候选：精简重复条目 / 下沉更多详情到 Skill）。
 - **结构**：Agent 作为**路由器**，详细知识下沉到 8 个 Skill：
   - Core Principles 保留最核心原则；
   - Output Template、Review Process、Phased Review 详情引用 `review-process-skill.md`；
@@ -157,7 +157,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 1. 在 Trae IDE 打开「智能体」配置面板（右上角 → 智能体 → 创建智能体）
 2. 将 `review-agent-ide.md` 的内容**完整复制粘贴**至"提示词（Prompt）"输入框
-   - ✅ **已达标**：9,323 字符 < 10,000 硬上限，可直接粘贴（余量 677，2026-09-18 实测）。
+   - ✅ **已达标**：9,328 字符 < 10,000 硬上限，可直接粘贴（余量 672，2026-09-18 实测）。
 3. 将 `review-agent-trigger.md` 的内容**完整复制粘贴**至"何时调用"输入框
 4. 启用所需 MCP 工具（建议启用：文件系统、终端、联网搜索）
 5. 在「规则与技能」面板，将 9 个领域 `review-*-skill.md` 各自作为 Skill 导入（注意 Trae 的 Skill 有 `name`/`description` 字段约束，见上表）
@@ -229,7 +229,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 | 原始规则 | 转化产物 | 角色 | 当前字符 |
 |---------|---------|------|---------|
-| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 9,323 ✅（余量 677，2026-09-18 实测） |
+| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 9,328 ✅（余量 672，2026-09-18 实测） |
 | review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） | 4,001 ✅ |
 | review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,461 |
 | review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,335 |

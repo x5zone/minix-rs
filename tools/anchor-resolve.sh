@@ -67,9 +67,9 @@ resolve_rust_item() { # FILE KIND NAME
   local pat
   case "$kind" in
     fn)     pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(default[[:space:]]+)?(const[[:space:]]+)?(unsafe[[:space:]]+)?(async[[:space:]]+)?(extern[[:space:]]+("[^"]*")?[[:space:]]+)?fn[[:space:]]+'"${n%%::*}"'($|[(<;[:space:]])' ;;
-    struct) pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?struct[[:space:]]+'"${n%%::*}"'($|[(;{[:space:]])' ;;
-    enum)   pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?enum[[:space:]]+'"${n%%::*}"'($|[(;{[:space:]])' ;;
-    trait)  pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(auto[[:space:]]+)?trait[[:space:]]+'"${n%%::*}"'($|[(;{[:space:]])' ;;
+    struct) pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?struct[[:space:]]+'"${n%%::*}"'($|[(;{[:space:]:])' ;;
+    enum)   pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?enum[[:space:]]+'"${n%%::*}"'($|[(;{[:space:]:])' ;;
+    trait)  pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(auto[[:space:]]+)?trait[[:space:]]+'"${n%%::*}"'($|[(;{[:space:]:])' ;;
     const)  pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?const[[:space:]]+'"$(esc_re "${n%%::*}")"'($|[:;=[:space:]])' ;;
     static) pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?static[[:space:]]+(mut[[:space:]]+)?'"$(esc_re "${n%%::*}")"'($|[:;=[:space:]])' ;;
     type)   pat='^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?type[[:space:]]+'"$n"'($|[=;[:space:]])' ;;
@@ -102,16 +102,28 @@ resolve_rust_impl() { # FILE SIGNATURE-SUBSTRING
   grep -nE "^impl\b.*$(esc_re "$sig")" "$file" 2>/dev/null | cut -d: -f1 | tr '\n' ' ' || true
 }
 
-resolve_c() { # FILE NAME —— C 启发式：#define / struct|enum / 非缩进且非 ";" 结尾的 NAME(
+resolve_c() { # FILE NAME —— C 启发式（限定定义形态，排除注释行/宏调用/.S 宏使用）：
+  #  1) #define NAME          2) struct|enum|union 行内含 NAME
+  #  3) "返回类型 NAME(" 且不以 ";" 结尾；或跨行返回类型风格：NAME( 顶格且下一行以 "{" 开头
+  #  .S/.asm 只认 "NAME:" 标签。NAME(...) 顶格且下一行非 "{" 视为宏调用，不算定义。
   local file="$1" name="$2"
   awk -v name="$name" '
-    $0 ~ ("(^|[^A-Za-z0-9_])" name "([^A-Za-z0-9_]|$)") {
+    NR == FNR { lines[FNR] = $0; total = FNR; next }
+    {
       line = $0
-      if (line ~ ("^#[[:space:]]*define[[:space:]]+" name "([^A-Za-z0-9_]|$)")) { print NR; next }
-      if (line ~ ("^(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) { print NR; next }
-      if (line ~ (name "[[:space:]]*\\(") && line !~ /;[[:space:]]*$/) { print NR; next }
+      if (line !~ ("(^|[^A-Za-z0-9_])" name "([^A-Za-z0-9_]|$)")) next
+      if (line ~ /^[[:space:]]*(\/\*|\*)/) next
+      if (line ~ ("^#[[:space:]]*define[[:space:]]+" name "([^A-Za-z0-9_]|$)")) { print FNR; next }
+      if (FILENAME ~ /\.(S|asm)$/) {
+        if (line ~ ("^" name ":")) { print FNR }
+        next
+      }
+      if (line ~ ("^(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) { print FNR; next }
+      if (line ~ ("^[^[:space:]].*[^A-Za-z0-9_]" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) { print FNR; next }
+      if (line ~ ("^" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/ && FNR < total && lines[FNR + 1] ~ /^[[:space:]]*[{]/) { print FNR; next }
     }
-  ' "$file" | tr '\n' ' '
+  ' "$file" "$file" | tr '
+' ' '
 }
 
 # ---------------------------------------------------------- extraction
@@ -247,9 +259,14 @@ if [ "$MODE" = "self-test" ]; then do_self_test; exit 0; fi
 
 # ---------------------------------------------------------- main
 
+# basename 索引（唯一名 → 全路径；重名不收录——与 anchor-migrate 同一唯一性守卫）
+IDXFILE="$(mktemp)"
+find minix3 os -type f \( -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.asm' -o -name '*.ld' \) 2>/dev/null \
+  | awk -F/ '{ bz=$NF; cnt[bz]++; if (cnt[bz] == 1) first[bz] = $0 } END { for (bz in cnt) if (cnt[bz] == 1) print bz "\t" first[bz] }' > "$IDXFILE"
+
 grand_total=0; grand_resolved=0; grand_zero=0; grand_multi=0
 tmp_all="$(mktemp)"
-trap 'rm -f "$tmp_all"' EXIT
+trap 'rm -f "$tmp_all" "$IDXFILE"' EXIT
 
 for doc in "${DOCS[@]}"; do
   [ -f "$doc" ] || { echo "Not a file: $doc" >&2; exit 2; }
@@ -264,13 +281,36 @@ while IFS=$'\t' read -r doc dline anchor; do
   clean="$(printf '%s' "$anchor" | sed -e 's/（L[0-9]+，工具生成）.*$//' -e 's/`//g' -e 's/[[:space:]]*$//')"
   path="${clean%%:*}"
   rest="${clean#*:}"
+  # 名字清洗：剥尾部非标识符字符（正则前瞻吃进的 , | ] 等），并裁到首个合法标识符
+  case "$rest" in
+    fn\ *|struct\ *|enum\ *|trait\ *|const\ *|static\ *|type\ *|impl\ *)
+      kind="${rest%% *}"; nm="${rest#* }"
+      ident="$(printf '%s' "$nm" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*' || true)"
+      if [ -z "$ident" ] || [ "$ident" = "$kind" ]; then
+        echo "$doc:$dline: $anchor → SKIP（锚点名不是合法标识符：$nm）"
+        grand_total=$((grand_total - 1))
+        continue
+      fi
+      rest="$kind $ident"
+      ;;
+  esac
 
   file=""
   [ -f "$path" ] && file="$path"
   if [ -z "$file" ]; then
-    echo "$doc:$dline: $anchor → ZERO-DEF（文件不存在：$path）→ 按 P0-fact 处理"
-    grand_zero=$((grand_zero + 1))
-    continue
+    # 裸文件名回退：minix3/ + os/ 全树唯一 basename 索引
+    alt="$(awk -F'\t' -v b="$(printf '%s' "$path" | sed 's|.*/||')" '$1 == b { print $2 }' "$IDXFILE")"
+    if [ -n "$alt" ]; then
+      file="$alt"
+      # 后续定位输出用解析后的真实路径
+      clean="$(printf '%s' "$clean" | sed "s|^$path|$alt|")"
+      path="$alt"
+      rest="${clean#*:}"
+    else
+      echo "$doc:$dline: $anchor → ZERO-DEF（文件不存在：$path）→ 按 P0-fact 处理"
+      grand_zero=$((grand_zero + 1))
+      continue
+    fi
   fi
 
   result=""; label=""

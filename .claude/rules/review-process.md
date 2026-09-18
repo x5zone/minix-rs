@@ -106,6 +106,11 @@ Output: | File | Doc Reference | Exists? | Line Range |
 | C 函数/结构体/宏 | `path:func`、`path:struct name`、`path:NAME` | `minix3/minix/kernel/proc.c:proc_init` |
 | 函数内部的具体片段 | 函数符号 + 引文片段 | `os/kernel/src/proc.rs:fn do_fork（match 分支）` |
 | 行号（可选） | 工具派生，写成 `（L123，工具生成）`；**禁止手工维护** | — |
+> ⚠️ **迁移产物语义告警（S1，2026-09-18）**：带 `（Lnnn，工具生成）` 后缀的锚点是迁移启发式（向上就近定义）的产物——L 是**原文档行号**（非现行号），且旧行号本身可能已漂移，解析出的符号**未必是句子讨论的符号**（错符号比错行号更隐蔽：符号看似权威）。规则：
+> 1. 迁移产物在句意复核前**不得当作权威引用**；复核清单见 `tools/anchor-suspect-baseline.txt`（符号名未出现在句中的 L 后缀锚点，正式文档 868 处）。
+> 2. 范围锚点（原 `path:N-M`）按首行启发式解析，同属需复核。
+> 3. review 中发现句子讨论的符号与锚点符号不一致 → 按 P0-fact 修正锚点（这是修正句意，不是修格式）。
+
 
 **执行**：
 ```bash

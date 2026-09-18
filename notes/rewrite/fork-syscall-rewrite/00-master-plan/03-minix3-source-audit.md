@@ -8,7 +8,7 @@
 
 | 执行顺序 | 函数名 | 路径 | 内部调用/宏 | 定义位置 |
 | --- | --- | --- | --- | --- |
-| 1 | fork | /minix3/lib/libc/gen/pthread_atfork.c:151 | __weak_alias宏 | /minix3/lib/libc/include/namespace.h |
+| 1 | fork | minix3/lib/libc/gen/pthread_atfork.c:fork | __weak_alias宏 | /minix3/lib/libc/include/namespace.h |
 | | | | SIMPLEQ_*系列宏 | /minix3/include/sys/queue.h |
 | | | | MUTEX_INITIALIZER宏 | /minix3/lib/libc/include/reentrant.h |
 | | | | mutex_lock/mutex_unlock/mutex_init | /minix3/lib/libc/thread-stub/ |
@@ -19,7 +19,7 @@
 
 | 执行顺序 | 函数名 | 路径 | 内部调用/宏 | 定义位置 |
 | --- | --- | --- | --- | --- |
-| 2 | do_fork(PM层) | /minix3/minix/servers/pm/forkexit.c:45 | NR_PROCS宏 | /minix3/include/minix/config.h |
+| 2 | do_fork(PM层) | minix3/minix/servers/pm/forkexit.c:do_fork | NR_PROCS宏 | /minix3/include/minix/config.h |
 | | | | IN_USE宏 | /minix3/minix/servers/pm/mproc.h |
 | | | | panic宏 | /minix3/include/minix/com.h |
 | | | | vm_fork | /minix3/minix/servers/vm/fork.c |
@@ -31,7 +31,7 @@
 
 | 执行顺序 | 函数名 | 路径 | 内部调用/宏 | 定义位置 |
 | --- | --- | --- | --- | --- |
-| 3 | do_fork(VM层) | /minix3/minix/servers/vm/fork.c:32 | SANITYCHECK宏 | /minix3/minix/servers/vm/sanitycheck.h |
+| 3 | do_fork(VM层) | minix3/minix/servers/vm/fork.c:do_fork | SANITYCHECK宏 | /minix3/minix/servers/vm/sanitycheck.h |
 | | | | PFF_VMINHIBIT宏 | /minix3/include/minix/syslib.h |
 | | | | vm_isokendpt | /minix3/minix/servers/vm/vmproc.c |
 | | | | region_init | /minix3/minix/servers/vm/region.c |
@@ -45,7 +45,7 @@
 
 | 执行顺序 | 函数名 | 路径 | 内部调用/宏 | 定义位置 |
 | --- | --- | --- | --- | --- |
-| 4 | sys_fork | /minix3/minix/lib/libsys/sys_fork.c:3 | SYS_FORK宏 | /minix3/include/minix/callnr.h |
+| 4 | sys_fork | minix3/minix/lib/libsys/sys_fork.c:sys_fork | SYS_FORK宏 | /minix3/include/minix/callnr.h |
 | | | | 消息结构宏m_*_sys_fork.* | /minix3/include/minix/com.h |
 | | | | _kernel_call | /minix3/minix/lib/libsys/arch/${arch}/kernel_call.S（架构相关） |
 
@@ -53,7 +53,7 @@
 
 | 执行顺序 | 函数名 | 路径 | 内部调用/宏 | 定义位置 |
 | --- | --- | --- | --- | --- |
-| 5 | do_fork(内核层) | /minix3/minix/kernel/system/do_fork.c:28 | isokendpt/_ENDPOINT_*系列宏 | /minix3/include/minix/endpoint.h |
+| 5 | do_fork(内核层) | minix3/minix/kernel/system/do_fork.c:do_fork（L28，工具生成） | isokendpt/_ENDPOINT_*系列宏 | /minix3/include/minix/endpoint.h |
 | | | | proc_addr/isemptyp宏 | /minix3/minix/kernel/proc.h |
 | | | | RTS_*系列宏 | /minix3/minix/kernel/proc.h |
 | | | | FPU_XFP_SIZE宏 | /minix3/include/machine/vm.h（架构相关） |

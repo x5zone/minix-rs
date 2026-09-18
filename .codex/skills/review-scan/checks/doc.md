@@ -324,6 +324,11 @@
 **Pass condition**: Ch1 subject = CPU/OS, outline = architecture perspective, direction = WHY→WHAT→HOW.
 **⛔ Ch1 subject = function name → P1 (pattern 51). Ch1 outline = function names → P1.**
 
+**读者复述测试（必答产物，2026-09-18 H1 提级，对应 checklist §1.Ch1 1.3）**:
+1. 审阅者**合上代码**，用机制语言写一段 Ch1 复述（一页以内，结论进 structure.md §11）——不是抄 Ch1，也不是函数名替换游戏
+2. 判定：能说出"解决什么矛盾、状态怎么转、边界在哪" → ✅；说不出 → **教学类 P1**（新增/触碰章节必须修复或写明延期理由，存量登记）
+3. 复述结论与卡点（"复述在 X 处卡住"）在 scan.md §structure.md 评审与 Issue List **单列**
+
 ---
 
 ## Check 14: Explanation Causal Chain Validation（解释因果链验证，P0）
@@ -406,3 +411,48 @@
 - `[ARCH: ...]` 格式错误 → P0-design-wrong
 
 详见 [review-doc-skill.md §2.0.5](../../../../prompt/skill/review-doc-skill.md) + [review-patterns-skill.md §X.5 Pattern 63 Design-Missing](../../../../prompt/skill/review-patterns-skill.md)。
+
+---
+
+## Check 16: Doc Rust Snippet Review（文档 Rust 代码块审查，H3 2026-09-18）
+
+**Execute**:
+1. 抽块：`tools/doc-snippet-extract.sh {doc}.md` → `{doc}:{start}-{end}:{lang}` 清单（只认 rust/ignore/no_run 围栏；plain/text 围栏不算）。
+2. 逐块四分类（分类缺失 → P2）：逐字引用（贴仓库真实代码）/ 教学简化（必须标注"简化"，可省略但不得教反模式）/ 反面示例（必须标 ❌ 并给正确版本）/ 签名示意（伪代码或签名骨架，必须标注）。
+3. 逐块过最佳实践判据（review-code-excellence §16/§17/§19 教学简版 + 本项目特例）：所有权/借用是否正确；`unsafe` 是否带安全论据；kernel 语境是否出现 `Rc`/`RefCell`/`Box<dyn Error>`（→ P1）；`unwrap`/`panic!` 在被教路径是否配解释；`clone()` 是否绕借用且不解释；`static mut` 是否已迁移（模式 73）；命名是否表达意图。
+
+**Output**:
+| 位置 | 类型 | 是否可编译 | 是否 idiomatic | 问题 | 判级 | 建议 |
+
+**Pass condition**: 新增/触碰块全部分类；未标注的反模式 → **P1**（新增/触碰块必须修复或写明延期理由，存量登记 OQ27）；逐字引用漂移 → P1（模式 73）；简化块风格瑕疵 → 卓越性 P2。
+**⛔ 不得把"教学简化"一律判违规**：判据是"是否标注 + 是否教了反模式"，不是"是否达到生产级"。
+
+---
+
+## Check 17: Legacy Anchor Cross-References（历史锚点交叉引用注记，D5 2026-09-18）
+
+> **性质**：历史记录注记，不是现行检查。本 review 体系已收编为符号锚点（Step 1.0），以下旧编号仅作读历史 scan/旧规则文本时的对照。
+
+**Execute**: 读到旧编号时按下表换算，不再执行旧步骤：
+- Step 1.0a 行号主动抽样 / 1.0a-自动（Proposal #7/#13）→ Step 1.0（`tools/anchor-resolve.sh --check`；行号只允许工具派生 `（Lnnn，工具生成）`）
+- Step 1.0b Rust idiom 同步 → review-doc-checklist §2.4b（模式 73）+ Check 16
+- Step 1.0c 路径约定 → review-doc-checklist §2.4c（模式 74）
+- Step 1.0d "参见"范围 → 符号锚点（`path:impl Trait for Type` / `path:fn Name` + 引文）；残留手工范围 → 卫生项
+- Step 1.0e 注释 doc 归属 → 模式 76（卫生项）
+- Step 1.0f 注释行号漂移 → 符号锚点（卫生项）
+- Step 1.0g forward reference → §2.2 引用验证（透明声明核对）
+
+**Pass condition**: 无新发现要求；仅防止把历史文本当现行规则执行。
+
+---
+
+## Check 18: Process-Trace Scan（过程痕迹扫描，A1 2026-09-18）
+
+**Execute**:
+1. `tools/doc-style-lint.sh {doc}.md`（全量：存量只报告，不阻断）
+2. `tools/doc-style-lint.sh --diff`（增量：本次新增/修改行；error 级命中 = 修复未完成）
+
+**Output**: `{file}:{line}: [{SL-1..SL-7}] {message} :: {匹配文本}` + 各 ID 计数汇总。
+
+**Pass condition**: 本次修改引入的命中 → **P1**（改写为假设性推理或直接正确表述，过程信息移到 scan.md/fix-status）；存量命中 → P2（只登记，编辑战役统一处理）。
+**⛔ 合法内容不判违规**：`[ARCH: ...]`、`TODO`/`DEFERRED`、头部创建/重写日期、符号锚点、`§X.Y` 交叉引用、方法/机制本名含"模式"的词（保护模式/实模式/长模式——只匹配"模式 + 数字"）。

@@ -238,11 +238,11 @@ if [[ -f "${SCAN_FILE}" ]]; then
   else
     echo "  ✅ [B4.1] 关联代码清单存在"
   fi
-  # gate-evidence-code 或 N/A
-  if grep -q 'gate-evidence-code' "${SCAN_FILE}"; then
-    echo "  ✅ [B4.1] gate-evidence-code 块存在"
-  elif grep -qE 'gate-evidence-code.{0,40}(N/A|不适用)' "${SCAN_FILE}" || grep -q 'gate-evidence-code: N/A' "${SCAN_FILE}"; then
+  # gate-evidence-code 或 N/A（N/A 判定在前——含 N/A 的文本也会被存在性 grep 命中）
+  if grep -qE 'gate-evidence-code.{0,40}(N/A|不适用)|gate-evidence-code: N/A' "${SCAN_FILE}"; then
     echo "  ✅ [B4.1] gate-evidence-code N/A（含理由）"
+  elif grep -q 'gate-evidence-code' "${SCAN_FILE}"; then
+    echo "  ✅ [B4.1] gate-evidence-code 块存在"
   else
     SCAN_CONTENT_OK="false"
     FAIL_LIST+=("B4.1 | scan.md 缺 gate-evidence-code 块（或 N/A + 理由） | ${SCAN_FILE}")

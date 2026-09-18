@@ -90,420 +90,32 @@ Missing this section → scan.md marked DRAFT.
 - For each `.c` reference in the doc, verify file exists and line numbers are correct.
 Output: | File | Doc Reference | Exists? | Line Range |
 
-### Step 1.0a 行号主动抽样比对（NEW 2026-07-30）
+### Step 1.0 锚点解析（符号锚点校验，anchor-resolve；2026-09-18 D5 改写收编原 1.0a~1.0g）
 
-> **背景**：原 Step 1 仅被动比对"doc 声明的行号 vs grep 找到的位置"，但行号偏移（如 head.S:47-66 vs 实际 43-66）经常被遗漏。
+> **背景**：原 1.0a~1.0g 是七步行号/锚点族检查（行号抽样、自动化行号脚本 Proposal #7/#13、Rust idiom 同步、路径约定、"参见"范围、注释 doc 归属、注释行号漂移、forward reference）。第四轮裁定：**行号是 AI 的校验脚手架，不是目标**——漂移问题用符号锚点结构性消灭，机械项降级为卫生项，本节由七步收编为一步（原 `tools/review-line-check.sh` 行号自动化方案作废）。
 
-**执行**：
-1. 从 doc 中提取 5-10 个 `file:line` 引用（覆盖 `head.S` + `pre_init.c` + `pg_utils.c` 等关键文件）
-2. 用 `sed -n 'Np' {file}` 抽取实际行内容，确认 doc 引用的行确实包含所描述内容
-3. 验证 doc 行号范围是否覆盖完整（如 doc 写 `head.S:36-82`，但 kmain call 实际在 L87）
+**锚点约定**（写入正式文档与中间产物）：
 
-**判定**：
-- doc 行号范围过短（遗漏关键内容）→ **P2 行号偏移**
-- doc 行号范围过长（超出实际内容）→ **P2 行号偏移**
-- doc 行号完全错位（指向其他符号）→ **P1 行号偏移**
-
-**关联**：本次 review (01-boot-shim-bootstrap 2026-07-30) 发现 4 处行号偏移（head.S:47-66 / 36-82 / pg_info:295 / print_memmap:17）。
-
-### Step 1.0a-自动 自动化行号校验脚本（NEW 2026-07-31, Proposal #7）
-
-> **背景**：3 次 review 累计发现 19 处 P2 行号偏移（Doc 01: 5 + Doc 02: 4 + Doc 03: 10）。手动抽样只能发现**被抽到的**行号，需要自动化。
-
-**工具位置**：`tools/review-line-check.sh`（建议落地）或临时 `extract_doc_lines` 函数。
-
-**实现**：
-```bash
-# 1. 抽取 doc 中所有 file:line 引用
-extract_doc_lines() {
-    rg -o "(?:os/|minix3/)?[a-z_/0-9]+\.(?:rs|c|h|ld|sh|asm|S):\d+(?:-?\d+)?" "$1" \
-       | sort -u > /tmp/doc_lines.txt
-}
-
-# 2. 对每个 file:line 跑 sed -n 验证
-verify_line() {
-    local file=$1 line=$2
-    local actual=$(sed -n "${line}p" "$file" 2>/dev/null)
-    echo "${file}:${line}: ${actual}"
-}
-
-# 3. 用法（在 review session 中）
-extract_doc_lines notes/.../{doc}.md
-# 然后扫描输出，对每个 file:line 跑 verify_line
-```
-
-**判定**：
-- 自动脚本输出 **mismatch 表格**：doc 声称的行 vs `sed -n` 实际内容
-- 偏差类型：
-  - doc 写 `:267 (lgdt)` 但 L267 不是 lgdt → **P2 行号偏移**
-  - doc 写 `protect.c:217-221` 但实际在 `arch_proto.h:217-221` → **P2 文件错位**
-  - doc 写 `:574` 但代码已迁移到 `:607` → **P2 代码漂移**
-
-**关联**：
-- 首次发现：03-kmain-cstart review (2026-07-31)，10 P2 集中在一张表内
-- 落地状态：⏸ 待用户确认后开发 `tools/review-line-check.sh`
-
-#### Step 1.0a-自动 增强：反向偏移自动重算（NEW 2026-07-31, Doc 06 review）
-
-> **背景**：6 次 review 累计发现 19+6=25 处 P2 行号偏移，其中**反向偏移**（doc 写靠前、实际靠后，如 `proc.rs:754` 实际 `767`）占多数。原因：doc 写作时文件较小，**代码增量后 doc 未同步更新行号**。**Step 1.0a-自动 + 自动重算**可消除此漂移。
-
-**增强实现**（在 `extract_doc_lines` + `verify_line` 基础上）：
-```bash
-# 1. 检测反向偏移（doc 行号 < 实际行号）
-auto_resync_line() {
-    local file=$1 claimed=$2
-    local actual=$(rg -n "^$(rg "$claimed" "$file" | head -1 | rg -o "\w+")" "$file" | head -1 | rg -o "^[0-9]+")
-    if [ -n "$actual" ] && [ "$actual" != "$claimed" ]; then
-        local delta=$((actual - claimed))
-        echo "${file}:${claimed} → ${file}:${actual} (Δ=${delta})"
-    fi
-}
-
-# 2. 批量 sed 重算（按上下文判断符号）
-#   例：proc.rs:754 → 767 (KProcess struct)
-sed -i 's|proc\.rs:754|proc.rs:767|g' {doc}.md
-sed -i 's|proc\.rs:1376|proc.rs:1385|g' {doc}.md
-sed -i 's|lib\.rs:699|lib.rs:706|g' {doc}.md
-sed -i 's|lib\.rs:1155|lib.rs:1162|g' {doc}.md
-```
-
-**已知反向偏移案例**（Doc 06 review）：
-- `proc.rs:754` → `proc.rs:767`（KProcess struct，Δ=-13）
-- `proc.rs:1376` → `proc.rs:1385`（fork_from，Δ=-9）
-- `lib.rs:699` → `lib.rs:706`（init_proc_and_boot，Δ=-7，×2 处）
-- `lib.rs:1155` → `lib.rs:1162`（bsp_finish_booting，Δ=-7，×2 处）
-
-**关联**：
-- 首次发现：06-proc-init-boot-proc review 2026-07-31（6 处反向偏移）
-- 落地状态：⏸ 待用户确认后整合进 `tools/review-line-check.sh`
-
-### L3 grep 主动验证（源：review-doc-skill §2.4i）
-
-> **背景**：doc §5.4 等章节常含"旧 API 0 残留"等 L3 grep 验证段（如 doc 06 §5.4 `rg "grant_capability" os/kernel/src/lib.rs` 应有 3 处调用）。之前 review **依赖 doc 自证**，未主动跑 grep 验证——存在 doc 说"0 matches"但实际非 0 的风险。
+| 对象 | 锚点形态 | 例子 |
+|---|---|---|
+| Rust 函数/类型/trait/常量 | `path:fn name`、`path:struct Name`、`path:enum Name`、`path:trait Name`、`path:const NAME` | `os/kernel/src/clock.rs:fn clock_init` |
+| 同名方法歧义 | 加 impl 限定 | `os/kernel/src/proc.rs:impl Proc::new` |
+| C 函数/结构体/宏 | `path:func`、`path:struct name`、`path:NAME` | `minix3/minix/kernel/proc.c:proc_init` |
+| 函数内部的具体片段 | 函数符号 + 引文片段 | `os/kernel/src/proc.rs:fn do_fork（match 分支）` |
+| 行号（可选） | 工具派生，写成 `（L123，工具生成）`；**禁止手工维护** | — |
 
 **执行**：
 ```bash
-# 1. 抽取 doc 中所有 L3 grep 段（"L3 grep 证据"/"rg 证据"等关键词）
-rg "L3 grep 证据|rg 证据|grep 验证|0 matches|rg \"\w+\"" {doc}.md | head -10
-
-# 2. 对每个 grep 命令实际跑一次
-for cmd in $(rg -o "rg \"[^\"]+\"" {doc}.md | sort -u); do
-    result=$(eval "$cmd os/" 2>&1 | wc -l)
-    echo "$cmd → $result matches (doc claims N)"
-done
-
-# 3. 验证 0 matches 段（doc 显式声称 0 matches 的 grep）
-rg "0 matches|0 残留" {doc}.md  # 列出所有"声称 0"段
-# 对每段跑实际 grep，确认确实是 0
+tools/anchor-resolve.sh --check {doc}.md        # 校验文档内全部符号锚点（fenced 代码块不参与）
+tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移（默认 dry-run；工具不猜，无法解析列清单）
 ```
 
 **判定**：
-- doc 声称 N matches，实际 N matches → ✅
-- doc 声称 0 matches，实际 > 0 matches → **P1 doc-code 漂移**（自证错误）
-- doc 声称 N matches，实际 ≠ N → **P2 计数偏差**
+- 符号锚点解析 **0 定义** → **P0-fact**（符号消失/改名，引用断言已失效）
+- **多定义** → 要求文档补 `impl Type::method` 限定；工具不加特例
+- 残留的手工行号锚点、`（Lnnn，工具生成）` 提示过期、全角/半角、拼写、格式 → **卫生项**：scan.md 单列"卫生项"分区，只记录 + 批量修，**不进 P1/P2 计数、不进 `weighted_new`、不参与 Step 7.1 收敛判定**（唯一例外：符号锚点 0 定义按 P0-fact 处理）
 
-**关联**：
-- 首次发现：06-proc-init-boot-proc review 2026-07-31（doc §5.4 L3 grep 证据未主动验证）
-
-### 测试总数末段补充（源：review-doc-skill §2.4j）
-
-> **背景**：doc §5 测试章节常含"测试覆盖矩阵"+ "测试函数列表"（如 doc 06 §5.5 列 21 个测试名 + §5.3 列 3 个集成测试），但**无测试总数声称**（"约 N 个通过"）。本次 review 实际跑了 `cargo test -p minix-kernel --lib` 得到 490 tests，但 doc 未体现。
-
-**执行**：
-```bash
-# 1. doc §5 是否含"测试总数"声称？
-rg "约.*\d+ 个|总计.*\d+|通过.*\d+ 个" {doc}.md | head -5
-
-# 2. 跑实际测试
-for crate in $(rg "os/[\w/]+\.rs:" {doc}.md | rg -o "os/[\w/]+" | sort -u); do
-    echo "=== $crate ==="
-    cd os && cargo test -p $(echo $crate | rg -o "[\w-]+$") --lib 2>&1 | rg "^test result"
-done
-
-# 3. 输出"测试总数偏差"到 scan.md
-```
-
-**判定**：
-- doc 含总数声称且与实际偏差 ≤30% → ✅ 接受
-- doc 含总数声称且偏差 >30% → **P2 测试数量失精**
-- doc 无总数声称 → ✅ N/A（不强制要求，但**建议**末段补充"截至 YYYY-MM-DD, N 个测试通过"）
-
-**doc 末段建议格式**（参考 doc 03 §5）：
-```markdown
-### 5.X 测试统计（截至 YYYY-MM-DD）
-
-- `cargo test -p minix-kernel --lib`：**490 passed**
-- `cargo test -p minix-arch --lib`：**120 passed**
-- 本节列出与本模块直接相关的 21 个（子集）
-- 完整测试清单：`rg "^\s*fn test_" os/kernel/src/`
-```
-
-**关联**：
-- 首次发现：06-proc-init-boot-proc review 2026-07-31（doc 无总数声称，但实际 610 tests）
-
-### Step 1.0b Rust 代码示例同步扫描（NEW 2026-07-30, 模式 #73）
-
-> **背景**：文档代码示例可能与实际 Rust 代码 idioms 不一致（特别是 Rust 2024 edition 迁移：`static mut` → `Atomic*` / `UnsafeCell`）。
-
-**执行**：
-1. 从 doc §3 / §4 抽取 ` ```rust ... ``` ` 代码块
-2. grep 实际代码：`rg "static mut" os/ -t rust`（应 0 hits 表示已迁移）
-3. 对比：doc 示例含 `static mut` 而实际代码无 → P1（模式 #73）
-4. 路径一致性：`rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" {doc}` + `find os/arch/src -name X.rs`
-
-**判定**：
-- doc 示例 + 实际代码 + 路径三方不一致 → **P1 模式 #73**
-- 仅 doc 示例过时（实际代码正确）→ **P1 doc-code 漂移**
-- 路径重组后 doc 未更新 → **P1 子类型 b**
-
-**修复**：复制实际代码到 doc 代码块，加注释说明 Rust 2024 edition 兼容性选择。
-
-### Step 1.0c Doc Path Convention 一致性检查（NEW 2026-07-30, 模式 #74）
-
-> **背景**：文档路径引用与实际仓库路径可能不一致（doc 写作时漏写 workspace 根前缀）。本次 doc 02 review 发现 18 处路径漏 `os/` 前缀（`kernel/src/...` 应为 `os/kernel/src/...`），与 doc 01 跨文档不一致。
-
-**执行**：
-1. **裸路径扫描**：`rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/|servers/pm/" {doc}.md`
-   - 命中非 `minix3/...` 前缀位置 → **P1**（doc 路径漂移）
-2. **正确路径统计**：`rg "os/(kernel|boot-shim|arch|servers|libs)" {doc}.md | wc -l`
-   - 应与 doc 中所有 Rust 路径引用总数接近
-3. **双重前缀检查**：`rg "os/os/" {doc}.md` 必须 0 hits（避免 sed 批量替换副作用）
-4. **跨文档一致性**：比对同一 stage 早期 doc 的路径风格（`os/` 前缀使用率）
-
-**判定**：
-- doc 漏 `os/` 前缀 → **P1**（模式 #74 默认）
-- doc 仅个别遗漏（<5 处）→ **P2**（可接受范围）
-- `os/os/` 双重前缀 → **P1**（sed 副作用，必须修）
-
-**修复**（≤10 分钟）：
-```bash
-# 1. 批量加 os/ 前缀
-sed -i 's|kernel/src/|os/kernel/src/|g' {doc}.md
-
-# 2. 修双重前缀
-sed -i 's|os/os/|os/|g' {doc}.md
-
-# 3. 验证 minix3 C 源路径未受影响
-rg "minix3/.*kernel/src/" {doc}.md  # 应保留
-```
-
-**关联**：
-- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 74`
-- 首次发现：02-higher-half-kernel review 2026-07-30（18 处路径缺 `os/`）
-
-### Step 1.0d "参见" 范围引用扫描（NEW 2026-07-31, 模式 #75）
-
-> **背景**：Step 1.0a 行号主动抽样**只检查**"`// path:line`"形式的**单行代码注释引用**，**漏检**"`参见 path:line-line`"形式的**范围引用**（典型 doc 元注释：参见 X.rs:55-399 含 XXX）。本次 04 doc review 即因此漏检 2 处范围漂移（L831 device_tree.rs:55-399 → 实际 :56-423；L883 acpi.rs:110-248 → 实际 :111-483）。
-
-**执行**：
-1. **抽取"参见"型引用**：
-   ```bash
-   rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" notes/.../{doc}.md | sort -u
-   ```
-2. **对每个范围验证起止行号**（用 `sed -n` 检查首行内容是否正确）：
-   ```bash
-   for ref in $(rg -o "参见 \`[^\`]+\.rs:[0-9]+-[0-9]+\`" {doc}.md); do
-       # 解析 path:start-end
-       path=$(echo "$ref" | rg -o "[^\`]+\.rs")
-       start=$(echo "$ref" | rg -o ":[0-9]+-" | rg -o "[0-9]+")
-       end=$(echo "$ref" | rg -o "-[0-9]+" | rg -o "[0-9]+")
-       echo "=== $path:$start-$end ==="
-       sed -n "${start}p" "$path"  # 验证首行内容
-   done
-   ```
-3. **对上界验证**：用 `rg "^impl PlatformDesc for X|^impl fmt::Display"` 找 `impl` 结束位置，对比 doc 声称的上界
-4. **修复**：起止 +1 偏移 + 上界漂移一并 sed 修复
-
-**判定**：
-- 起止行号 ±1 偏移 → **P2 行号偏移**
-- 上界 < 实际 impl 结束 → **P2 范围过短**（doc 写作时文件较小，未随代码演化更新）
-- 起止偏移 > 1 → **P1 行号漂移**
-
-**已知漏检场景**：
-- doc 中 "参见 X.rs:Y-Z" 形式的元注释引用（Step 1.0a 单点抽样漏检）
-- doc 写作时文件较小，演化后上界过短（如 :55-399 实际文件 523 行）
-- "参见"引用位置在 doc 主体（§4.x）或附录（§10+）
-
-**修复**（≤5 分钟）：
-```bash
-# 1. 修正 +1 偏移
-sed -i 's|device_tree.rs:55-|device_tree.rs:56-|g' {doc}.md
-sed -i 's|acpi.rs:110-|acpi.rs:111-|g' {doc}.md
-
-# 2. 更新上界到 impl 结束
-rg -n "^impl PlatformDesc for DeviceTreeDesc" os/libs/minix-platform/src/device_tree.rs
-# → 找到 impl 起始行 + 下一个 impl/fn test_/fn parse 的位置 = 新上界
-sed -i 's|device_tree.rs:55-399|device_tree.rs:56-423|g' {doc}.md
-
-# 3. 验证
-rg "参见" {doc}.md  # 列所有"参见"引用，逐个确认
-```
-
-**关联**：
-- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 75`
-- 首次发现：04-platform-discovery review 2026-07-31（2 处范围漂移漏检）
-
-### Step 1.0e 代码注释 doc 归属交叉检查（NEW 2026-07-31, 模式 #76）
-
-> **背景**：代码注释中"covered in NN" / "see XX-doc.md §Y" 等**指向特定 doc 编号或文件名的引用**，容易因 (a) doc 编号重排 或 (b) doc 改名 而**系统性过时**。本次 05 doc review 发现 `os/kernel/src/lib.rs` 3 处 `(covered in NN)` 注释错位（实为 04/05/06 而非 05/06/07），同时发现**至少 9 处代码注释引用旧 doc 命名**（如 `04-clock-interrupt-init.md`、`05-exception-interrupt.md`、`06-arch-post-init.md`、`06-design-final.md`、`02-page-table-kernel.md` 等已过时）。
->
-> 之前 4 次 review 都**未深入代码注释交叉引用**。本次 05 review 是首次系统检查，发现 Pattern #76 实质化（不只是 1-2 处，而是 9+ 处）。
-
-**执行**：
-1. **扫描所有代码注释中的 doc 归属引用**：
-   ```bash
-   # 类型 1: (covered in NN) 注释
-   rg "covered in 0[0-9]" os/ -t rust -n
-   
-   # 类型 2: see XX-doc.md 注释
-   rg "see 0[0-9]-.+\.md" os/ -t rust -n
-   
-   # 类型 3: design doc 引用 (见 §X.Y)
-   rg "见 §[0-9]+|详见 §[0-9]+" notes/.../.design/ -n
-   ```
-2. **验证当前 doc 编号是否一致**：
-   ```bash
-   ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
-   ```
-3. **对每个引用，验证目标 doc 是否存在 + 内容匹配**：
-   ```bash
-   for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do
-       doc_file=$(echo "$ref" | rg -o "[0-9]+-.+\.md")
-       if [ ! -f "notes/.../$doc_file" ]; then
-           echo "❌ STALE: $ref"
-       fi
-   done
-   ```
-4. **修复**：根据上下文判断目标 doc → 批量 sed 修复
-
-**判定**：
-- `(covered in NN)` 注释错位 → **P1 注释错位**
-- `see XX-doc.md` 引用已删除 doc → **P1 注释失效**
-- `see XX-doc.md` 引用已重命名 doc → **P1 注释失效**
-- design doc 中 `§X.Y` 引用错位 → **P1 doc 内部漂移**
-
-**已知过时 doc 命名映射**（本次 05 review 发现）：
-| 旧命名 | 新命名（推测） |
-|--------|---------------|
-| `04-clock-interrupt-init.md` | `05-clock-interrupt-init.md` |
-| `05-exception-interrupt.md` | `14-exception-interrupt.md`（推测）|
-| `06-arch-post-init.md` | `08-system-init-boot-finish.md`（推测）|
-| `06-design-final.md` | `06-design.md`（bagging 重命名推测）|
-| `02-page-table-kernel.md` | `02-higher-half-kernel.md` |
-
-**修复**（批量 sed，需先确认 doc 重命名映射）：
-```bash
-# 1. 修 (covered in NN) 注释
-sed -i 's|(covered in 04)|(covered in 05)|g' os/kernel/src/lib.rs
-sed -i 's|(covered in 05)|(covered in 06)|g' os/kernel/src/lib.rs
-sed -i 's|(covered in 06)|(covered in 07)|g' os/kernel/src/lib.rs
-
-# 2. 修 see XX-doc.md 注释（确认重命名映射后批量替换）
-sed -i 's|04-clock-interrupt-init.md|05-clock-interrupt-init.md|g' os/arch/src/arch/{clock.rs,arch_init.rs}
-sed -i 's|05-exception-interrupt.md|14-exception-interrupt.md|g' os/arch/src/arch/*.rs os/plat/src/interrupt.rs os/kernel/src/irq_manager.rs
-sed -i 's|06-arch-post-init.md|08-system-init-boot-finish.md|g' os/arch/src/arch/post_init.rs
-
-# 3. 验证
-rg "covered in 0[0-9]" os/ -t rust | wc -l  # 应为 0
-rg "see [0-9]+-.+\.md" os/ -t rust | wc -l  # 应为 0（除非所有引用都正确）
-```
-
-**关联**：
-- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 76`
-- 首次发现：05-clock-interrupt-init review 2026-07-31（3 处 `(covered in NN)` + 9+ 处 `see XX-doc.md`）
-- 本次 review 范围内仅修复 3 处 `(covered in NN)`；其余 9+ 处 `see XX-doc.md` 因超出本次 review scope，记录到 backlog 待后续修复
-
-### Step 1.0f 代码注释行号漂移检查（NEW 2026-07-31, 模式 #77）
-
-> **背景**：代码注释中引用的 `file:line`（如 `// see proc_table.rs:129`）可能因代码增量而**漂移**（文件行号下移）。doc 复述这些注释时，会产生**传递性 drift**（doc 错误根因在代码注释）。
->
-> 本次 08 doc review 发现 3 处 P2 行号偏移全部源自 `os/kernel/src/lib.rs:1170/1181/1193` 的代码注释错误（不是 doc 错）：
-> - `proc_table.rs:129` 实际 L276（rts_unset，+147 偏移，最大）
-> - `smp.rs:127-132` 实际 L200（set_running，+73）
-> - `smp.rs:80-145` 实际 L135（CpuLocal struct，+55）
-
-**执行**：
-1. **扫描所有代码注释中的 file:line 引用**：
-   ```bash
-   # 类型 1: see X.rs:N 注释
-   rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -n
-   
-   # 类型 2: see X.rs:N-M 范围注释
-   rg "see [a-z_/0-9]+\.rs:[0-9]+-[0-9]+" os/ -t rust -n
-   
-   # 类型 3: doc X §X.Y 交叉引用（已在 Step 1.0e 覆盖）
-   rg "see [0-9]+-.+\.md" os/ -t rust -n
-   ```
-2. **对每个引用验证实际行号**：
-   ```bash
-   for ref in $(rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -o); do
-       file=$(echo "$ref" | rg -o "[a-z_/0-9]+\.rs")
-       line=$(echo "$ref" | rg -o "[0-9]+")
-       actual=$(sed -n "${line}p" "$file" 2>/dev/null)
-       echo "$ref: $actual"
-   done
-   ```
-3. **修复策略**（双修避免传递性 drift）：
-   ```bash
-   # 1. 修代码注释（root cause）
-   sed -i 's|(see proc_table.rs:129)|(see proc_table.rs:276)|' os/kernel/src/lib.rs
-   
-   # 2. 同步修所有复述的 doc（如果 doc 复述了错误注释）
-   sed -i 's|proc_table.rs:129|proc_table.rs:276|g' notes/.../{doc}.md
-   
-   # 3. 验证全项目干净
-   rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
-   # (empty = ✅)
-   ```
-
-**判定**：
-- 引用行号 ±1 偏移 → ✅（允许小漂移）
-- 引用行号偏差 2-5 → **P2 代码注释轻微漂移**
-- 引用行号偏差 > 5 → **P2 代码注释漂移**
-- 引用行号偏差 > 50 → **P1 代码注释显著漂移**
-
-**与已有 Step 区分**：
-- **Step 1.0a** = doc 中 `file:line` 引用（doc-code 单向）
-- **Step 1.0e** = doc 中"see XX-doc.md" / "covered in NN" 引用（doc-doc 单向）
-- **Step 1.0f** = **代码注释中 `see X.rs:N` 引用**（code-code 单向）—— **重点是代码注释行号漂移**
-
-**关联**：
-- 详细规则见 `prompt/skill/review-patterns-skill.md §模式 77`
-- 首次发现：08-system-init-boot-finish review 2026-07-31（3 处 `smp.rs:127-132`/`proc_table.rs:129`/`smp.rs:80-145`）
-
-### Step 1.0g forward reference 验证（NEW 2026-07-31, Doc 10 review）
-
-> **背景**：doc §4 可能引用未来文件（如 doc 10 §4.1 `os/arch/src/arch/trap_return.rs`），但文件尚未创建。本次 10 review 是 10 次 review 中**首次发现** doc 引用未存在的文件但显式标注 forward reference。
->
-> 关键判断：若 doc **显式标注** "待落地" / "forward reference" / "未来"，则视为**合规**；若 doc **未标注**且引用未存在文件，则视为 P1（虚构位置）。
-
-**执行**：
-```bash
-# 1. 扫描 doc 中所有引用文件路径
-rg "os/[a-z_/0-9]+\.rs" notes/.../{doc}.md | rg -o "os/[a-z_/0-9]+\.rs" | sort -u
-
-# 2. 验证每个文件路径存在
-for path in $(rg -o "os/[a-z_/0-9]+\.rs" notes/.../{doc}.md | sort -u); do
-    [ -f "$path" ] && echo "✅ $path" || echo "❌ $path NOT FOUND"
-done
-
-# 3. 对未找到的文件，检查 doc 是否标注 forward reference
-rg -B 3 "trap_return\.rs|forward|待落地" notes/.../{doc}.md | head -10
-```
-
-**判定**：
-- 文件存在 → ✅
-- 文件不存在但 doc 显式标注 "待落地" / "forward reference" / "未来" → ✅ **合规**（forward reference）
-- 文件不存在但 doc 未标注 → **P1 虚构文件位置**
-
-**已知案例**（Doc 10 review 发现）：
-- doc 10 §4.1 引用 `os/arch/src/arch/trap_return.rs`（文件不存在）
-- doc 显式标注 "trait 定义 + asm impl 待本文 return-path 落地时加入 os/arch/src/arch/trap_return.rs"
-- **判定**：✅ 合规（forward reference 透明声明）
-
-**关联**：
-- 首次发现：10-switch-to-user review 2026-07-31（§4.1 trap_return.rs forward reference）
-- 已落地：CLAUDE.md Hidden Folder Convention 已生效（10 次 review 首个完全合规 doc）
+**职责划分**：符号锚点解析与存在性 → 本步（`tools/anchor-resolve.sh`）；路径约定（`os/` 前缀）→ review-doc-checklist §2.4c（模式 74）；文档 Rust 代码块 idiom（`static mut` 等）→ review-doc-checklist §2.4b（模式 73）+ 文档 Rust 代码块逐块审查（`tools/doc-snippet-extract.sh`，checklist §2.4k）；代码注释 doc 归属 → 模式 76（按卫生项处理）；forward reference 透明声明核对保留在 §2.2 引用验证中执行。
 
 ## Step 0.5: structure.md Skeleton Review — Gate D-6 (Doc Review Only)
 
@@ -669,7 +281,9 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
    - **核心变更**：原"缺失 → 阻断 + 触发附录 C（中断）"改为"缺失 → Step 0.3 嵌入生成 → 继续 review"
    - **不允许**以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"等理由跳过 — 这些都是模式 69 (PSMD) 触发的 P0-process-violation
 3. **存在旧快照时**：仍必须执行 v2 评估（重新执行 Step 0.3 产出 `.v{N+1}.md`）。旧快照的角色仅是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
-4. **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一）：
+4. **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））：
+
+- **关联代码清单（Step 0 产物，2026-09-18 B3.2）**：粘贴 `tools/doc-code-map.sh {doc}.md --check` 的输出表格，并给结论；无关联代码写"无（豁免/理由）"。full-review 入口强制；纯 design/概念文档可 N/A + 理由。
    ```markdown
    ## Step 0: 预检结果（design + outline 完整性，NEW 2026-07-16）
    | 检查项 | ls 命令 | 结果 | 判定 |
@@ -820,6 +434,13 @@ Sample 5-10 "why this design" explanations from Ch2 and verify each causal chain
 3. Failure → P0 (pattern 48: causal chain fabrication)
 
 Output: | Ch2 location | design explanation | causal chain | each step valid? | verdict |
+
+## Step 3.6: 关联代码维度检查（文档 review 强制，2026-09-18 B3.3）
+
+> full-review = "文档 + 关联 Rust 代码"一体审查（B3.1）。输入：Step 0 关联代码清单（`tools/doc-code-map.sh`）。
+> 检查维度（至少）：code-checklist §1 Rewrite 质量 / §2 硬件抽象 / §4 执行模型 SMP / §8 命名 / §13 设计-代码一致性 / §14 C-Rust 语义对齐。
+> gate-evidence-code 固定行："代码可读性增量"（`tools/code-style-lint.sh --diff`，G1/G4）+ "非法态封堵"（H2，code-excellence §16.6）+ "文档代码块审查"（H3，doc-checklist §2.4k）+ "unsafe 审计"（D2，`tools/unsafe-audit.sh --baseline tools/unsafe-baseline.txt --diff`）。
+> 产物：维度×文件×结论×证据 表 + gate-evidence-code 块；无发现也要写明"已检查、无发现"；沿用既有 P0/P1/P2 判定。
 
 ## Step 4.5: Test Verification — Gate E
 If doc has §5 (test section): extract each test function name, grep in rust_dir.
@@ -1007,6 +628,7 @@ To prevent over-convergence (chasing P1→0 across many rounds at cost exceeding
    - **First round exempt**: no previous-round baseline in round 1; this rule is skipped
    - **Decision**: stop when `weighted_new < previous_round_weighted_new * 0.2` AND current cost > previous cost * 0.8
 4. **首次零发现（漏检自检，NEW 2026-08-14）**：首次 review 0 P0/P1/P2 → 触发**漏检自检**：随机抽 3 个检查项重跑（推荐：Gate D 第 1/3/5 项 + Step 2 因果链抽样）；若仍 0 发现 → 交付；若发现遗漏 → 之前的 review 标记 DRAFT，补完后再交付。
+5. **卫生项排除（2026-09-18 D5）**：卫生项（锚点提示过期、全角/半角、拼写、格式等机械项）只记录 + 批量修，**不进 P1/P2 计数、不进 `weighted_new`、不参与本步收敛判定**；scan.md Issue List 单列"卫生项"分区。唯一例外：符号锚点 0 定义（符号消失/改名）按 P0-fact 处理——属正确性，不属卫生（见 Step 1.0）
 
 Output in scan.md tail:
 ```

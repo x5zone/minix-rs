@@ -80,7 +80,7 @@ Missing this section → scan.md marked DRAFT.
      - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.3 嵌入生成**（AI 自审）
      - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **Step 0.3.4 嵌入生成**（不中断 review）
      - 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过
-   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）
+   - **scan.md 必须含 `§Step 0: 预检结果` 段**（Gate 0 锚段，9 个之一，缺此段 → Gate 0 FAIL）；该段必须含**关联代码清单**子小节（B4.2 2026-09-18）
    - **豁免必须登记在 STATE.md `§豁免列表` 段，不可泛化**（模式 71 DOG）
 
 ---
@@ -248,7 +248,7 @@ Execute 9 pattern categories:
 - 跨文档联动错误模式（3 个，A-C）
 - 代码错误模式（10 基础 + 4 内核 SMP + 5 跨阶段通用，16-34）
 - 测试错误模式（6 个，35-40）
-- 卓越性错误模式（7 个，41-47）
+- 卓越性错误模式（8 个，41-47 + 84 未标注反模式示例）
 - 叙事与概念错误模式（13 个，48-60）— 因果链编造(48)为 P0
 - Design-First 反模式（63-65）
 - Review 流程反模式（66-78）
@@ -263,8 +263,9 @@ Read: `.codex/skills/review-scan/checks/excellence.md`
 > Excellence checks pursue "better", not "correct".
 
 Execute:
-- §4.1-4.5 文档卓越性（叙事结构 / 读者体验 / 教学深度 / 可维护性 / 概念教学 Ch1 专项）
-- §16-21 代码卓越性（API设计 / 表达力 / 性能 / 代码即文档 / 可测试性 / 测试质量）
+- §4.1-4.5 文档卓越性（叙事结构 / 读者体验 / 教学深度 / 可维护性 / 概念教学 Ch1 专项）+ **H1 读者复述测试**（structure.md §11 必答产物，复述不通过 → 教学类 P1）
+- §16-21 代码卓越性（API设计 / 表达力 / 性能 / 代码即文档 / 可测试性 / 测试质量）+ **H2 非法态封堵清单**（§16.6；核心状态机逐条，封不住关键非法态 → 设计类 P1）+ **H3 文档代码块审查**（checks/doc.md Check 16；未标注反模式 → P1）
+- **A1 过程痕迹扫描**（checks/doc.md Check 18：`tools/doc-style-lint.sh --diff` 零 error）+ **D2 unsafe 审计**（`tools/unsafe-audit.sh --diff` 零新增裸 unsafe；存量基线 `tools/unsafe-baseline.txt`）
 
 ---
 
@@ -279,6 +280,7 @@ Execute:
 - Step 3.5: Precision Check (Gate C)
 - Step 3.5a: Vertical Link Check (doc review only — Ch1 concept ↔ Ch3 design ↔ Ch4 impl ↔ Ch5 test)
 - Step 3.5b: Causal Chain Sampling (doc review only — verify Ch2 "why this design" explanations)
+- **Step 3.6: 关联代码维度检查（文档 review 强制，B3.3）** — 输入 Step 0 关联代码清单（`tools/doc-code-map.sh`）；至少覆盖 code-checklist §1/§2/§4/§8/§13/§14；产物维度×文件×结论×证据表 + `gate-evidence-code` 块（固定行：代码可读性增量 G1/G4 + 非法态封堵 H2 + 文档代码块审查 H3 + unsafe 审计 D2）；无发现也要写明
 - Step 4: Cross-Document Check
 - **Step 4.5: Test Verification (Gate E)** — grep each §5 test function
 - Step 5.5: State Write & Convergence

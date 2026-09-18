@@ -207,7 +207,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 
 ---
 
-## 五、卓越性错误模式（7 个）
+## 五、卓越性错误模式（8 个：41-47 + 84 未标注反模式示例）
 
 > 对应源 [review-patterns.md §七](../../../../prompt/review-rules/review-patterns.md) 模式 41-47。在正确性 gate 通过后执行。
 > 详细执行方法见 [excellence.md §4.1-4.5 文档卓越性 + §16-21 代码卓越性](excellence.md)。
@@ -221,6 +221,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 | 45 | 代码冗余注释 | 注释 vs 代码语义 | 注释重复代码已表达信息 | 注释只解释"为什么"非"是什么" |
 | 46 | 代码副作用隐藏 | 函数签名审计 | 看似纯函数实际有副作用 | 副作用显式化（返回新值 + 单独 effect） |
 | 47 | 代码全局依赖未注入 | 依赖图审计 | 直接访问全局 static | DI 注入 / trait abstract / `with_*` builder |
+| 84 | 未标注反模式的文档代码示例（H3，2026-09-18） | `tools/doc-snippet-extract.sh` 抽块 + checklist §2.4k 四分类 | kernel 语境示例用 Rc/RefCell、unsafe 无论据、简化冒充逐字引用、static mut 未迁移且不标注 | 每块四类分类；反面示例标 ❌ 并给正确版本 |
 
 **Output**:
 | Pattern# | Location | Anti-Pattern Found | P? | Suggested Fix |

@@ -1576,32 +1576,42 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 | 卓越 | 非法态封堵清单产出的模块数 / 落地改进数（H2） | 待测 | | | | |
 | 卓越 | 文档 Rust 代码块已分类数 / 未标注反模式数（H3） | 待测 | | | | |
 | 卓越 | 卓越样章达标数（H4：文档 A/B + 模块闭环） | 0 | | | | |
-| 正确性 | 裸 unsafe 数（无 SAFETY） | 待 D2 首跑 | 1,090（存量冻结于 tools/unsafe-baseline.txt；with_safety=731） | | | |
+| 正确性 | 裸 unsafe 数（无 SAFETY） | 待 D2 首跑 | 1,090（=1,087 BARE + 3 in-test；存量冻结于 tools/unsafe-baseline.txt，2026-09-18 实测） | | | |
 | 正确性 | `missing_docs` 警告数 | 待 G2 首跑 | | | | |
 | 正确性 | 契约/覆盖率缺口数（Gate B/C 归档） | 待 F1 统计 | | | | |
 | 正确性 | 正确性相关 P1 未处置数（E3） | 待统计 | | | | |
-| 机械 | 正式文档 review 编号数（窄口径：Vx-Py/Px-y/FIX-/R-，见附录 2 第 1 条） | 约 330 | 155（SL-1+SL-2+SL-3，正式文档口径） | | | |
+| 机械 | 正式文档 review 编号数（窄口径：Vx-Py/Px-y/FIX-/R-，见附录 2 第 1 条） | 约 330 | 506（SL-1=128 + SL-2=27 + SL-3=351；2026-09-18 正式文档口径，命令见 A4 段） | | | |
 | 机械 | 正式文档 review 编号数（宽口径：再加 D-/W-） | 约 451 | | | | |
-| 机械 | 正文日期数 | 约 316 | 767（正式文档口径，lint SL-4） | | | |
-| 机械 | 行号锚点数 / 符号锚点数（D5 迁移统计） | 待 D5 首跑 | 15,821 → 11,137 行号残留 / 符号锚点 4,684+1,667（2026-09-18） | | | |
+| 机械 | 正文日期数 | 约 316 | 754（SL-4，正式文档口径；⚠️ 口径不可比：基线 316 含头部创建/重写日期且范围是两 stage，新数 754 全量正式文档且豁免头部行——对比需重跑基线口径） | | | |
+| 机械 | 行号锚点数 / 符号锚点数（D5 迁移统计） | 待 D5 首跑 | 正式文档 9,518 行号锚点 → 迁移 2,117（含第二轮 5 处）/ 残留 7,401（唯一 6,602，tools/anchor-unresolved-baseline.txt）/ 符号锚点存量另计 | | | |
 | 机械 | 头部字段缺失文档数 | 待 B1 统计 | | | | |
 | 机械 | CLAUDE.md ⏸ Proposal 剩余数 | 4（#7/#8/#12/#13） | 3（#7/#13 已按 D5 符号锚点方案落地；#8 保留（E2 收编）、#12 保留） | | | |
 
 ### A4 存量统计
 
-**2026-09-18 执行（tools/doc-style-lint.sh --dir notes/rewrite/fork-syscall-rewrite，fork-syscall-rewrite 模块）**：
-- 总命中行：5,096（含 todo/checklist 等过程文件）；**正式编号文档（NN-*.md）口径：1,524 处**——SL-1 批次编号 128、SL-2 FIX 27、SL-3 issue 编号 375、SL-4 正文日期 767、SL-5 修复史 93、SL-6 元注释 4、SL-7 工具术语 130
-- 正式文档 Top 5：02-stage-vm/15-ipc-dispatch.md（63）、02-stage-vm/24-page-cache.md（33）、02-stage-vm/21-vm-munmap.md（31）、02-stage-vm/16-pagefault.md（31）、01-stage-kernel/13-syscall-dispatch.md（31）
+**2026-09-18 执行（2026-09-18 复核版——口径修正：仅正式编号文档，排除 todo/checklist/.review/.design/draft/archive；复核前的 1,524 口径含 .review/scans 过程文件，作废）**：
+
+- 复算命令：`tools/doc-style-lint.sh $(find notes/rewrite -name '[0-9][0-9]-*.md' -not -path '*/.design/*' -not -path '*/.review/*' -not -path '*/archive*' -not -path '*/draft/*' | grep -v todo | grep -v checklist | sort)`
+- 总命中：**1,452**（SL-1=128、SL-2=27、SL-3=351、SL-4=754、SL-5=90、SL-6=4、SL-7=98），398 篇文档
 - 战役启动条件：A/B 与 H 批落地（✅ 本轮完成），抽样样章达到"教科书级"标准（H4：复述通过 + §4.1-4.5 至少 B），之后由用户决定是否启动 style-fix 逐文档战役
 - 战役执行方式（届时候选）：每篇文档先跑 lint 出清单 → 按"事实信息移回 .review/todo、正文改写"处理 → 出修订版
 
 ### D5 迁移统计
 
+**D5 行为验证（新旧口径 weighted_new 对比，2026-09-18 补做——计划要求的必做项）**：
+- 样本：`01-stage-kernel/06-proc-init-boot-proc.md`（历史上 6 处反向行号偏移的文档，Doc 06 review 实录）
+- 旧口径（D5 前）：6 处行号偏移按"偏移 >5 行 → P2"判级 → 本轮新发现 P2=6 → `weighted_new = 0*10 + 0*3 + 6*1 = 6`，进入 Step 7.1 收敛判定
+- 新口径（D5 后）：同 6 处在正式文档中已被迁移（4 处成功转符号锚点 / 2 处入 unresolved 清单）→ 归"卫生项"分区 → **不进 P1/P2 计数，weighted_new 贡献 = 0**，不参与收敛判定
+- 结论：D5 行为验证通过——同类机械发现在新口径下从加权计数中结构性消失，注意力预算让给语义/卓越检查；"锚点 0 定义 → P0-fact"例外路径由 `tools/anchor-resolve.sh` 全仓实测覆盖（zero-def 均按 P0-fact 报告）
+
+
+
 **2026-09-18 执行（tools/anchor-migrate.sh --write notes/rewrite）**：
 - 旧行号锚点总数：15,821（460 篇编号文档）；其中唯一可机械定位：**4,701 处已转为符号锚点**（316 个文件；迁移前后行数零变化、反引号数守恒、幂等复跑 convertible=0）
 - 裸文件名重名（如 kernel/priv.h vs include/minix/priv.h）：唯一性守卫拦截，不自动迁移
-- 无法机械解析：7,857 处（文件已消失/改名、行号漂移超出识别）→ 清单登记于 `.review/anchor-migration-unresolved.txt`，按卫生项批量清理
-- 迁移后符号锚点存量：全 notes/rewrite 1,667 处显式符号锚点（`path:fn/struct/...`）；校验工具 `tools/anchor-resolve.sh --check`（自测 5 resolved + 1 ZERO-DEF + 1 MULTI-DEF + fenced 排除 + 无锚点 exit0 全过）
+- 无法机械解析：正式文档口径 7,401 处（唯一 token 6,602）→ 入库清单 `tools/anchor-unresolved-baseline.txt`（原 .review/ 版废弃），按卫生项批量清理
+- 迁移后符号锚点存量：全 notes/rewrite 1,667 处显式符号锚点（`path:fn/struct/...`）；校验工具 `tools/anchor-resolve.sh --check`（自测全过；2026-09-18 复核版修复四处误报类：struct/trait 继承冒号边界、C struct 分支、裸文件名 IDX 回退、抽取尾部垃圾——正式文档口径 5,888 锚点 resolved=4,982 / zero-def=307（真实漂移）/ multi-def=599）
+- **S1 迁移语义风险（2026-09-18 复核版新增）**：L 后缀锚点是"向上就近定义"启发式产物，旧行号本身漂移时解析出的符号可能不是句子讨论的符号（正式文档 L 后缀 1,142 处，其中句意可疑 868 处，清单 `tools/anchor-suspect-baseline.txt`）——复核前不得当权威引用；Step 1.0 已加告警条款
 - 首轮卫生项计数：残留手工行号锚点 10,018 处（候选池：--stats-only 可随时重测），按 D5 卫生项条款处理——不进 P1/P2 计数、不进 weighted_new、不参与收敛判定
 
 ### H4 样章结论
@@ -1626,7 +1636,18 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 
 ### 遗留问题
 
-（执行过程中发现的新问题；不要顺手修，登记即可）
+（执行过程中发现的新问题；不要顺手修，登记即可。2026-09-18 首次回填）
+
+1. **源漂移审计基线（C1 实测，2026-09-18）**：`prompt/review-rules/review-process.md` ↔ `.claude/rules/review-process.md` 存在 20 条 Step/Gate/模式编号差异（如 .claude 独有 Step 4.5a/4.5b/5.7/7.1.1，prompt 独有 Step 0.3.5/0.5.x 系列/模式 48-53/67/68/72）；`review-core` 无 prompt 对应源文件（`.claude/rules/review-core.md` 是独立维护的第二源），审计命令对其输出 36 条假差异。处置：属"Claude 先行"的回填义务未批量执行，留待后续会话逐条裁定，不阻塞本批。
+2. **S1 迁移语义复核债**：`tools/anchor-suspect-baseline.txt` 868 处 L 后缀锚点需人工句意复核（范围锚点按首行启发式解析的部分同样需复核）——复核完成前，这些锚点不是权威引用。
+3. **卫生项清理债**：`tools/anchor-unresolved-baseline.txt` 6,602 个唯一 token（文件消失/改名类为主），按卫生项批量清理，不占 review 轮次。
+4. **B5 端到端演练未跑**：Step 0 清单 → Step 3.6 → review-gate-check.sh 链路未经真实 full-review 验证；下次真实 review（建议 15-ipc-dispatch.md scope=chapter）跑完后回填 B5 结论段。
+5. **G1 未开始**：Step 3.6 的 gate-evidence-code 固定行引用 `tools/code-style-lint.sh --diff`（G1 任务），该工具尚未实现——G1 落地前该行写"工具未落地，本行 N/A"。
+6. **D2 单独证据块 vs 合并行**：D2 计划要求 `gate-evidence-unsafe` 块，当前实现并入 Step 3.6 的 gate-evidence-code 固定行（一行"unsafe 审计"）——是否拆独立块由用户裁定；commit message 中"增 gate-evidence-unsafe 行"指的是该固定行，非独立块。
+7. **模式 75/77 等"修复"段的历史数字**：模式正文引用的"≤10 分钟/≤5 分钟"修复时长基于行号 sed 时代，符号化后应重估（未重估，不阻塞）。
+8. **README 字符数人肉维护**：prompt/README.md 的 agent-ide 字符数（9,328）靠手工回填，会漂移；候选：进 lint-review-rules L10 自动核对（未做）。
+9. **review-gate-check.sh B4.1/D4 检查只对 scan.md 生效**：cmd 类小范围产物（对话内声明）不产 scan.md，该检查自然跳过——是否符合预期由用户裁定。
+10. **paper trail**：D2 验收命令中的 `--report | tail -5` 输出与基线核对由执行者完成，未留存 diff 证据文件（基线文件本身即证据）。
 
 ### 计划收尾（按 0.7 执行）
 
