@@ -454,25 +454,14 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
 
     // 4. Send the IPI through the production send_sched_ipi (SBI
     //    send_ipi) — the same call schedule_sync uses.
-    early_console::write_str("  send_sched_ipi(hart1) via SBI send_ipi...\n");
-    // Diagnostic: raw send_ipi ecall return — distinguishes "SBI layer
-    // rejected the IPI" (error code) from "delivered but the S-trap did
-    // not reach the handler" (0). EID 0x735049 ("sPI"), FID 0,
-    // a0 = hart mask (bit n = hart n), a1 = mask base.
-    let send_ret: i64;
+    early_console::write_str("  send IPI via ACLINT-SSWI MMIO...\n");
+    // ACLINT-SSWI (S-mode IPI device, QEMU virt @0x2D00040): the BSP
+    // writes the set register for hart1 directly — the SSIP pends on
+    // hart1 without any SBI call (ACLINT spec: S-mode-writable device).
+    let sswi_set: usize = 0x2D00040 + 4 * (hart1_hw as usize);
     unsafe {
-        core::arch::asm!(
-            "ecall",
-            inout("a0") (1i64 << hart1_hw) => send_ret,
-            in("a1") hart1_hw as i64,
-            in("a6") 0i64,
-            in("a7") 0x735049_i64,
-            options(nomem)
-        );
+        core::ptr::write_volatile(sswi_set as *mut u32, 1);
     }
-    early_console::write_str("  raw send_ipi ret = ");
-    early_console::write_hex(send_ret as u64);
-    early_console::write_str("\n");
     <CurrentSmpArch as SmpArch>::send_sched_ipi(hart1_hw as u32);
 
     // 5. Bounded wait for the round-trip proof.
