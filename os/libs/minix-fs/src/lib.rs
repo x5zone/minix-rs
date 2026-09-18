@@ -36,6 +36,7 @@
 extern crate alloc;
 
 pub mod bio;
+pub mod bdev_bridge;
 pub mod cache;
 pub mod call;
 pub mod data;

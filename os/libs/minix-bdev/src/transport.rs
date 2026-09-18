@@ -15,6 +15,13 @@
 ///
 /// Endpoints are plain integers here; the service crate translates them to
 /// the kernel endpoint type at the boundary.
+///
+/// The three data lanes (`position`/`bytes`/`grant`) are zero/`NO_GRANT`
+/// for control requests (open/close/ioctl) and carry the transfer geometry
+/// for reads and writes: the byte offset on the device, the transfer
+/// length, and the id of the grant that exposes the caller's buffer to the
+/// driver. Grant ids are produced by a [`GrantIssuer`] on the service
+/// side; this crate only ever echoes one back to the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Destination {
     /// Driver endpoint handle.
@@ -25,6 +32,60 @@ pub struct Destination {
     pub minor: u32,
     /// Caller-chosen identifier echoed back in the reply.
     pub id: i32,
+    /// Byte offset of the transfer on the device (data lanes; else 0).
+    pub position: u64,
+    /// Transfer length in bytes (data lanes; else 0).
+    pub bytes: u32,
+    /// Grant id exposing the caller's buffer (data lanes; else
+    /// [`NO_GRANT`]).
+    pub grant: i32,
+}
+
+/// Grant id meaning "no buffer granted" (control requests, and transfers
+/// that address memory by other means).
+pub const NO_GRANT: i32 = -1;
+
+impl Destination {
+    /// A control destination: endpoint, type, minor, id; data lanes zeroed.
+    pub const fn control(endpoint: i32, message_type: i32, minor: u32, id: i32) -> Self {
+        Destination { endpoint, message_type, minor, id, position: 0, bytes: 0, grant: NO_GRANT }
+    }
+
+    /// A data destination for one read/write transfer.
+    pub const fn data(
+        endpoint: i32,
+        message_type: i32,
+        minor: u32,
+        id: i32,
+        position: u64,
+        bytes: u32,
+        grant: i32,
+    ) -> Self {
+        Destination { endpoint, message_type, minor, id, position, bytes, grant }
+    }
+}
+
+impl Default for Destination {
+    fn default() -> Self {
+        Self::control(0, 0, 0, 0)
+    }
+}
+
+/// Issues grants that expose caller memory to a block driver.
+///
+/// The service crate implements this over its grant table (kernel
+/// `sys_grant` semantics: one direction, one length, one lifetime per
+/// grant). The client library composes the grant *plan* — which buffers,
+/// which direction — and calls out here for ids, keeping the kernel
+/// boundary behind a seam the tests can double.
+pub trait GrantIssuer {
+    /// Grants `bytes` starting at `address` to the driver at `endpoint`.
+    ///
+    /// `write` is the direction *the driver* moves data: `true` for a
+    /// write transfer (driver reads the buffer), `false` for a read
+    /// transfer (driver writes the buffer) — the same cross the cdev
+    /// grant direction uses.
+    fn issue_grant(&mut self, endpoint: i32, address: u64, bytes: u32, write: bool) -> i32;
 }
 
 /// Reply returned by the transport for one request.
@@ -166,6 +227,7 @@ mod tests {
                 message_type: 0x502,
                 minor: 0,
                 id: 11,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(reply.id, 11);
@@ -184,6 +246,7 @@ mod tests {
                 message_type: 0x502,
                 minor: 0,
                 id: 11,
+                ..Default::default()
             })
             .unwrap();
         assert_ne!(first.id, 11);
@@ -193,6 +256,7 @@ mod tests {
                 message_type: 0x502,
                 minor: 0,
                 id: 11,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(second.id, 11);
@@ -212,7 +276,8 @@ mod tests {
             message_type: 0x500,
             minor: 0,
             id: 3,
-        };
+                ..Default::default()
+            };
         assert_eq!(
             transport.exchange(destination),
             Err(TransportError::SendFailed)

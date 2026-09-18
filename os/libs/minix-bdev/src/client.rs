@@ -311,12 +311,7 @@ impl CallSlot {
             state: CallState::Free,
             device: 0,
             id: NO_ID,
-            destination: Destination {
-                endpoint: 0,
-                message_type: 0,
-                minor: 0,
-                id: NO_ID,
-            },
+            destination: Destination::control(0, 0, 0, NO_ID),
             driver_tries: 0,
             transfer_tries: 0,
         }
@@ -528,7 +523,8 @@ impl<T: Transport> BdevClient<T> {
             message_type: BdevOp::Open.message_type(),
             minor: device.minor(),
             id: NO_ID,
-        });
+                ..Default::default()
+            });
         // Sync requests carry NO_ID and expect NO_ID back (ipc.c:184-189):
         // a reply with any other identifier is a bad reply, not a status.
         let status = check_reply(reply, NO_ID);
@@ -556,7 +552,8 @@ impl<T: Transport> BdevClient<T> {
             message_type: BdevOp::Close.message_type(),
             minor: device.minor(),
             id: NO_ID,
-        });
+                ..Default::default()
+            });
         let status = check_reply(reply, NO_ID);
         if status == OK {
             self.opens.remove(device);
@@ -569,10 +566,90 @@ impl<T: Transport> BdevClient<T> {
         self.opens.is_open(device)
     }
 
+    /// One data transfer over an open device: move `bytes` between the
+    /// caller's buffer (exposed as `grant`) and the device starting at
+    /// `position`.
+    ///
+    /// C: `bdev_read`/`bdev_write` (`bdev.c:206-238`) — the same request
+    /// shape with opposite direction; the reply is a plain status. The
+    /// direction rides the message type; the grant was issued by the
+    /// caller's [`GrantIssuer`] and is echoed to the driver unchanged.
+    pub fn transfer(
+        &mut self,
+        device: Device,
+        direction: TransferDirection,
+        position: u64,
+        bytes: u32,
+        grant: i32,
+    ) -> i32 {
+        let major = Major(device.major());
+        let Some(endpoint) = self.drivers.get(major) else {
+            return -EINVAL;
+        };
+        let message_type = match direction {
+            TransferDirection::Read => BdevOp::Read.message_type(),
+            TransferDirection::Write => BdevOp::Write.message_type(),
+        };
+        let reply = self.transport.exchange(Destination::data(
+            endpoint,
+            message_type,
+            device.minor(),
+            NO_ID,
+            position,
+            bytes,
+            grant,
+        ));
+        check_reply(reply, NO_ID)
+    }
+
+    /// One data transfer whose grant is issued at send time.
+    ///
+    /// The driver endpoint resolves here first, so `issue` sees the real
+    /// endpoint when it asks the grant table for an id (the grant exposes
+    /// the caller's buffer for the length and direction of this one
+    /// transfer). Everything else matches [`BdevClient::transfer`].
+    pub fn transfer_issued(
+        &mut self,
+        device: Device,
+        direction: TransferDirection,
+        position: u64,
+        bytes: u32,
+        issue: impl FnOnce(i32) -> i32,
+    ) -> i32 {
+        let major = Major(device.major());
+        let Some(endpoint) = self.drivers.get(major) else {
+            return -EINVAL;
+        };
+        let grant = issue(endpoint);
+        let message_type = match direction {
+            TransferDirection::Read => BdevOp::Read.message_type(),
+            TransferDirection::Write => BdevOp::Write.message_type(),
+        };
+        let reply = self.transport.exchange(Destination::data(
+            endpoint,
+            message_type,
+            device.minor(),
+            NO_ID,
+            position,
+            bytes,
+            grant,
+        ));
+        check_reply(reply, NO_ID)
+    }
+
     /// Borrow the transport (script new replies in tests).
     pub fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
     }
+}
+
+/// Direction of one data transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferDirection {
+    /// Device bytes into the caller's buffer.
+    Read,
+    /// Caller bytes out to the device.
+    Write,
 }
 
 /// Check a synchronous reply: type first, identifier second, status last.
@@ -708,7 +785,8 @@ mod tests {
             message_type: BdevOp::Read.message_type(),
             minor: device().minor(),
             id: 7,
-        };
+                ..Default::default()
+            };
         let handle = table.allocate(device(), 7, destination).unwrap();
         assert_eq!(table.collect(handle), None);
         assert_eq!(table.complete(7, 42), Some(handle));
@@ -754,7 +832,8 @@ mod tests {
             message_type: BdevOp::Read.message_type(),
             minor: device().minor(),
             id: 7,
-        };
+                ..Default::default()
+            };
         let handle = table.allocate(device(), 7, destination).unwrap();
         assert_eq!(table.destination(handle), Some(&destination));
         let pending = table.pending_destinations();
@@ -775,7 +854,8 @@ mod tests {
             message_type: BdevOp::Read.message_type(),
             minor: device().minor(),
             id: 7,
-        };
+                ..Default::default()
+            };
         let handle = table.allocate(device(), 7, destination).unwrap();
         for _ in 0..DRIVER_RETRIES {
             assert!(table.note_send_failure(handle));
@@ -792,7 +872,8 @@ mod tests {
             message_type: BdevOp::Read.message_type(),
             minor: device().minor(),
             id: 9,
-        };
+                ..Default::default()
+            };
         let handle = table.allocate(device(), 9, destination).unwrap();
         assert_eq!(table.device_of(handle), Some(device()));
         for _ in 0..TRANSFER_RETRIES {
@@ -873,8 +954,35 @@ mod tests {
             message_type: BdevOp::Read.message_type(),
             minor: 1,
             id: NO_ID,
-        };
+                ..Default::default()
+            };
         assert_eq!(destination.id, NO_ID);
         assert_eq!(destination.message_type, 0x502);
+    }
+
+    #[test]
+    fn test_transfer_carries_data_lanes() {
+        // The three data lanes ride the destination (position/bytes/grant);
+        // the direction picks the message type (0x502 read, 0x503 write).
+        let mut client = BdevClient::new(RecordingTransport::new(OK));
+        client.bind(Major(3), 17);
+        let device = Device::from_parts(3, 2);
+        client.open(device, 1);
+        assert_eq!(
+            client.transfer(device, TransferDirection::Read, 0x2000, 4096, 42),
+            OK
+        );
+        let d = &client.transport_mut().sent[1];
+        assert_eq!(d.message_type, 0x502);
+        assert_eq!(d.position, 0x2000);
+        assert_eq!(d.bytes, 4096);
+        assert_eq!(d.grant, 42);
+        // Write picks the write type with the same shape.
+        assert_eq!(
+            client.transfer(device, TransferDirection::Write, 0x2000, 4096, 42),
+            OK
+        );
+        let d = &client.transport_mut().sent[2];
+        assert_eq!(d.message_type, 0x503);
     }
 }

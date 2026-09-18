@@ -88,6 +88,37 @@ pub trait BlockSource {
     fn read_block(&self, key: BlockKey, out: &mut [u8]) -> Result<(), Errno>;
     /// Write one block from `data`, which has exactly `block_size` bytes.
     fn write_block(&mut self, key: BlockKey, data: &[u8]) -> Result<(), Errno>;
+    /// Batched read of `count` consecutive blocks starting at `key.block`
+    /// (`out` holds `count * block_size` bytes).
+    ///
+    /// C: the scattered-read entry (`rw_scattered`, `cache.c:840`) — one
+    /// device run served by one request when the source can batch. The
+    /// default walks [`BlockSource::read_block`]; sources with a batched
+    /// driver path override it.
+    fn read_blocks(&self, key: BlockKey, count: usize, out: &mut [u8]) -> Result<(), Errno> {
+        let bs = self.block_size();
+        for i in 0..count {
+            self.read_block(
+                BlockKey { device: key.device, block: key.block + i as u64 },
+                &mut out[i * bs..(i + 1) * bs],
+            )?;
+        }
+        Ok(())
+    }
+    /// Batched write of `count` consecutive blocks starting at `key.block`.
+    ///
+    /// C: the scattered-write entry (`cache.c:840`, writes sorted by block
+    /// number first). The default walks [`BlockSource::write_block`].
+    fn write_blocks(&mut self, key: BlockKey, count: usize, data: &[u8]) -> Result<(), Errno> {
+        let bs = self.block_size();
+        for i in 0..count {
+            self.write_block(
+                BlockKey { device: key.device, block: key.block + i as u64 },
+                &data[i * bs..(i + 1) * bs],
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Optional second-level cache in virtual memory.
