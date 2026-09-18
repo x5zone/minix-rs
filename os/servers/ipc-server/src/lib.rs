@@ -15,6 +15,7 @@
 
 extern crate alloc;
 
+pub mod boundary;
 pub mod dispatch;
 pub mod events;
 pub mod lifecycle;

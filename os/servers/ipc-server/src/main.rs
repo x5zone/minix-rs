@@ -12,20 +12,21 @@
 static GLOBAL: std::alloc::System = std::alloc::System;
 
 fn main() {
-    // The production transport (kernel `sef_receive_status` / `ipc_sendnb`)
-    // lands with the kernel IPC bindings; until then the binary cannot run
-    // outside tests. Keep the entry point as the wiring list so landing it
-    // is a small, reviewable change (same deferral as the VM server's early
-    // transport stub).
     #[cfg(not(test))]
     {
-        // Wiring list (lands with the kernel transport — E-IPCWIRE/E1):
-        //   1. build the production boundary (thin minix-sys wrappers over
-        //      `IpcBoundary`) and the kernel transport (`EventLoopTransport`
-        //      over real traps),
-        //   2. `IpcServer::new(transport, IpcService::new(boundary))`,
-        //   3. `server.init()` (startup registration — main.c:223-224),
-        //   4. `server.run()` (main loop — main.c:227-280).
-        panic!("IPC server production transport not landed yet (see server.rs)");
+        // S26 四步接线(main.c:216-284):
+        use minix_ipc_server::boundary::{SysBoundary, SysEventLoopTransport};
+        use minix_ipc_server::server::IpcServer;
+        use minix_ipc_server::service::IpcService;
+
+        // 1. 生产边界(trap 后端包装)+ 内核事件循环传输。
+        let boundary = SysBoundary::new();
+        let transport = SysEventLoopTransport::new();
+        // 2. 服务装配(判定层 + 边界)。
+        let server = IpcServer::new(transport, IpcService::new(boundary));
+        // 3. 启动登记(main.c:223-224;SEF 回调注册随 SEF 库接线)。
+        server.init();
+        // 4. 事件循环(main.c:227-280;永不返回)。
+        server.run();
     }
 }

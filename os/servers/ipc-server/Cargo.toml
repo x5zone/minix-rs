@@ -11,10 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 minix-types = { workspace = true }
-
-# minix-sys 回归时机：本 crate 当前零引用（判定层只依赖 minix-types，
-# 字节搬运与内核调用走测试替身缝）。MIB 客户端接线（IPC-P1-1 的
-# handle_mib）与生产 transport 落地时恢复此依赖。
+# S26:生产 transport 与 IpcBoundary 的 trap 后端(boundary.rs)。
+minix-sys = { workspace = true }
 
 # Integration tests (tests/) are separate crates: they can only import
 # this package's lib plus dev-dependencies, so the protocol types need
