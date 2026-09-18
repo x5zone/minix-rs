@@ -198,6 +198,10 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     /// SVRCTL 参数存储(C: `local_param_overrides` 静态表 + monitor 串,
     /// misc.c:305-310;S8 批次 G)。
     svrctl_store: crate::misc::ParamStore,
+    /// 调用计数(C: `ENABLE_SYSCALL_STATS` 的 counters[],misc.c:64;
+    /// D-32:按调用号计数,feature 门控)。
+    #[cfg(feature = "syscall_stats")]
+    call_stats: [u32; 48],
     /// `init()` 是否已完成（run() 前置断言）。
     initialized: bool,
     /// 内核中止标志（C: `glo.h:26` `abort_flag`；由 do_reboot 写入，归 20-misc-queries.md）。
@@ -257,6 +261,8 @@ impl<T: IpcTransport> PmServer<T> {
         Self {
             // C: 第一步（main.c:146-152）mproc 表初始化——ProcTable::new()
             // 保证空槽（Lifecycle::Unused）+ PID 生成器就绪。
+            #[cfg(feature = "syscall_stats")]
+            call_stats: [0; 48],
             svrctl_store: crate::misc::ParamStore::new(
                 String::from_utf8_lossy(
                     &params.monitor_params
@@ -465,6 +471,14 @@ impl<T: IpcTransport> PmServer<T> {
         }
 
         // C: main.c:88-103 — 第二/三路：事件回复 + PM 调用族统一经
+        // D-32(C ENABLE_SYSCALL_STATS,misc.c:64)——按调用号计数
+        //(callnr.h:62 NR_PM_CALLS=48;PM_BASE=0,调用号即索引)。
+        #[cfg(feature = "syscall_stats")]
+        if msg.m_type >= 1 && msg.m_type < 48 {
+            let idx = msg.m_type as usize;
+            self.call_stats[idx] = self.call_stats[idx].wrapping_add(1);
+        }
+
         // dispatch_message → dispatch_pm_call 的**单一分发表**（ARCH A-5）。
         // 主循环不内联拦截任何 PM 调用（旧实现 7 个内联块已收编，04 文档 §3.6）。
         let mut timers = crate::timer::TimerFaces {
