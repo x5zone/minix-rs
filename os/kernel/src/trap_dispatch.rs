@@ -112,8 +112,32 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // per-CPU work directly (C: `lapic_timer_int_handler`, apic.c:913,
     // registered straight in the IDT, with its own EOI). The local-tick
     // body owns the EOI via the arch `local_timer_eoi`.
+    //
+    // K6-v2 quantum enforcement: after the re-arm + EOI, evaluate
+    // quantum expiry for this CPU's running process (C: clock_handler
+    // per-CPU arm, proc.c:418-424 — if the quantum is exhausted, call
+    // sched_proc_no_time to notify the user scheduler or transition to
+    // the kernel-scheduled renewal path). The SSI trap entry cleared
+    // SIE; the sret after the handler restores it (SPIE=1), so the
+    // preempted process's instruction stream resumes without disruption.
     if vector == 0xF1 {
         crate::clock::local_tick(crate::current_cpu_id());
+        // Quantum enforcement (C proc.c:418-424): the tick CPU evaluates
+        // its own running process — if the quantum is exhausted, the
+        // process is preempted (NO_QUANTUM set, scheduler notified).
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        let cur_nr = {
+            let smp = crate::smp_state_with(&section);
+            smp.cpu_local(crate::current_cpu_id())
+                .and_then(|l| l.proc_ptr)
+        };
+        if let Some(nr) = cur_nr {
+            let table = crate::proc_table_with(&section);
+            let priv_table = crate::priv_table_with(&section);
+            if table.get(nr).is_some_and(|p| p.is_runnable()) {
+                table.check_quantum(nr, priv_table, &section);
+            }
+        }
         return;
     }
 
