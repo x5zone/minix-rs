@@ -403,9 +403,26 @@ mod tests {
     #[cfg(feature = "runtime-window")]
     mod driver {
         use super::*;
+        use std::sync::{Mutex, MutexGuard};
 
         const MOCK_VM_BASE: u64 = 0x0000_0000_8000_0000;
         const MOCK_ROOT: u64 = 0x1000;
+
+        // The mock registry serializes single operations, but each test's
+        // clear → establish → assert sequence is only meaningful as a whole:
+        // a parallel test's clear or inserts interleaving mid-sequence would
+        // leak foreign leaves into the snapshot under assertion. Every test
+        // in this module must hold this lock across its entire sequence.
+        // Poisoning is deliberately ignored — a panicked test releases the
+        // guard during unwind, and each test rebuilds fixture state from a
+        // fresh `mock_dm_clear()` anyway.
+        static SEQ_LOCK: Mutex<()> = Mutex::new(());
+
+        fn driver_seq_lock() -> MutexGuard<'static, ()> {
+            SEQ_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
 
         /// End-to-end over the mock: two candidate ranges straddling the
         /// legacy hole produce leaves that (a) offset VA by the window base,
@@ -414,6 +431,7 @@ mod tests {
         #[test]
         fn test_establish_skips_hole_and_offsets_va() {
             use super::super::mock::{mock_dm_clear, mock_dm_leaves, MockDmCoverage};
+            let _seq = driver_seq_lock();
             mock_dm_clear();
             let flags = PageFlags::read_write();
             establish_dm_range::<MockDmCoverage>(
@@ -458,6 +476,7 @@ mod tests {
         #[test]
         fn test_establish_window_pa_limit() {
             use super::super::mock::{mock_dm_clear, mock_dm_leaves, MockDmCoverage};
+            let _seq = driver_seq_lock();
             mock_dm_clear();
             let flags = PageFlags::read_write();
             // 1 GiB window: region [0x3000_0000, 0xB000_0000) clips to
@@ -489,6 +508,7 @@ mod tests {
         #[test]
         fn test_establish_one_gb_single_leaf() {
             use super::super::mock::{mock_dm_clear, mock_dm_leaves, MockDmCoverage};
+            let _seq = driver_seq_lock();
             mock_dm_clear();
             let flags = PageFlags::read_write();
             establish_dm_range::<MockDmCoverage>(
@@ -509,6 +529,7 @@ mod tests {
         #[test]
         fn test_establish_conflict_propagates() {
             use super::super::mock::{mock_dm_clear, MockDmCoverage};
+            let _seq = driver_seq_lock();
             mock_dm_clear();
             let flags = PageFlags::read_write();
             establish_dm_range::<MockDmCoverage>(
