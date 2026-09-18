@@ -19,7 +19,7 @@
 use crate::event::EventRegistry;
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
-use minix_types::{ENOSYS, Message, PmError, ProcEventMask, UserSlot, VirBytes};
+use minix_types::{ENOSYS, Endpoint, Message, PmError, ProcEventMask, UserSlot, VirBytes};
 
 /// PM 系统调用枚举（C: `callnr.h:14-60`，`PM_BASE + 1` ~ `PM_BASE + 47`）。
 ///
@@ -359,6 +359,100 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(positive_errno(e.to_errno())),
             }
         }
+        // C: do_sigaction（signal.c:40-86）——批次 B 余。act/oact 是
+        // `struct sigaction` 用户态指针(LP64 32 字节:handler@0/mask@8/
+        // flags@24),字节搬运走网关 copy 缝;旧值快照在 install 前
+        // (handle_sigaction),时序与 C 的 oact-先拷差异仅在 fault 排序,
+        // 注释已锚 C。
+        PmCall::SigAction => {
+            let (nr, act_ptr, oact_ptr, ret) = super::decode::sigaction(msg);
+            let mut svec = [0u8; 32];
+            let act = if act_ptr != 0 {
+                if let Err(e) = kern.copy_from_user(msg.m_source, act_ptr, &mut svec) {
+                    return ReplyIntent::Reply(positive_errno(e));
+                }
+                let le_u64 = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+                Some(crate::mproc::SigAction {
+                    sa_handler: le_u64(&svec[0..8]) as usize,
+                    sa_mask: le_u64(&svec[8..16]),
+                    sa_flags: i32::from_le_bytes(svec[24..28].try_into().unwrap()),
+                })
+            } else {
+                None
+            };
+            match handle_sigaction(
+                table,
+                caller,
+                SigActionReq { signo: nr, act, need_oact: oact_ptr != 0, sigreturn: VirBytes(ret) },
+            ) {
+                Ok(old) => {
+                    if let (Some(old), false) = (old, oact_ptr == 0) {
+                        let mut out = [0u8; 32];
+                        out[0..8].copy_from_slice(&(old.sa_handler as u64).to_le_bytes());
+                        out[8..16].copy_from_slice(&old.sa_mask.to_le_bytes());
+                        out[24..28].copy_from_slice(&old.sa_flags.to_le_bytes());
+                        if let Err(e) = kern.copy_to_user(&out, msg.m_source, oact_ptr) {
+                            return ReplyIntent::Reply(positive_errno(e));
+                        }
+                    }
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_sigsuspend(signal.c:157-171)——存 mask/装新掩码/挂起。
+        PmCall::SigSuspend => {
+            let (_how, _ctx, set) = super::decode::sigset(msg);
+            handle_sigsuspend(table, caller, set)
+        }
+        // C: do_sigpending(signal.c:88-97)——reply 载荷 m_pm_lc_sigset.set。
+        PmCall::SigPending => {
+            let pending = handle_sigpending(table, caller);
+            table.procs[caller.get()].ipc.reply = Some(Message {
+                m_u: minix_types::MessageUnion {
+                    m_pm_lc_sigset: minix_types::MessPmLcSigset {
+                        set: [pending as u32, (pending >> 32) as u32, 0, 0],
+                        _padding: [0; 40],
+                    },
+                },
+                ..Message::default()
+            });
+            ReplyIntent::Reply(0)
+        }
+        // C: do_sigprocmask(signal.c:99-155)——旧掩码经 reply 载荷回;
+        // needs_check 的内联重投(check_pending)归信号流装配(S3 余件)。
+        PmCall::SigProcMask => {
+            let (how, _ctx, set) = super::decode::sigset(msg);
+            match handle_sigprocmask(table, caller, how, set) {
+                Ok((old, effect)) => {
+                    table.procs[caller.get()].ipc.reply = Some(Message {
+                        m_u: minix_types::MessageUnion {
+                            m_pm_lc_sigset: minix_types::MessPmLcSigset {
+                                set: [old as u32, (old >> 32) as u32, 0, 0],
+                                _padding: [0; 40],
+                            },
+                        },
+                        ..Message::default()
+                    });
+                    let _ = effect;
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_sigreturn(signal.c:173-192)——恢复掩码 + sys_sigreturn,
+        // 无条件 check_pending(190)归信号流装配。
+        PmCall::SigReturn => {
+            let (_how, ctx, set) = super::decode::sigset(msg);
+            let mut sig_kern = SigReturnKern(kern);
+            match handle_sigreturn(table, caller, set, VirBytes(ctx), &mut sig_kern) {
+                Ok(()) => ReplyIntent::Reply(0),
+                // fault 载荷是 sys_sigreturn 的原始负 errno。
+                Err(crate::signal_handlers::SigReturnError::Fault(code)) => {
+                    ReplyIntent::Reply(positive_errno(code))
+                }
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -368,7 +462,27 @@ pub fn dispatch_pm_call<T: IpcTransport>(
     }
 }
 
+use crate::signal_handlers::{
+    handle_sigaction, handle_sigpending, handle_sigprocmask, handle_sigreturn,
+    handle_sigsuspend, SigActionReq,
+};
+use crate::mproc::SigMsg;
+
+/// sigreturn 臂的网关适配:`handle_sigreturn` 只消费 `KernelSig::sigreturn`
+/// (C do_sigreturn 不调 sys_sigsend),sigsend 在此适配器内诚实失败。
+struct SigReturnKern<'a>(&'a mut dyn crate::exit::KernelGateway);
+
+impl crate::signal_handlers::KernelSig for SigReturnKern<'_> {
+    fn sigsend(&mut self, _ep: Endpoint, _msg: &SigMsg) -> Result<(), i32> {
+        Err(ENOSYS)
+    }
+    fn sigreturn(&mut self, ep: Endpoint, ctx: VirBytes) -> Result<(), i32> {
+        self.0.sys_sigreturn(ep, ctx)
+    }
+}
+
 /// 网关/wrapper 的负 errno 约定 → reply 的正 errno(错误保真,取绝对值)。
+#[cfg(test)]
 fn leak_timers() -> crate::timer::TimerFaces<'static> {
     let tctl: &'static mut dyn crate::timer::TimerCtl = Box::leak(Box::new(crate::timer::SysTimerCtl::new()));
     let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(crate::timer::SysVTimerCtl));

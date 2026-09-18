@@ -62,6 +62,14 @@ pub trait KernelGateway {
     /// 生产实现依赖 minix-sys wrapper（edge_todo.md E6 清单已登记）。
     fn sys_delay_stop(&mut self, ep: Endpoint) -> Result<(), i32>;
 
+    /// 恢复信号上下文(C: `sys_sigreturn(ep, ctx)`——libsys
+    /// `sys_sigreturn.c`;S3 批次 B 接线)。默认 pre-wire 诚实失败,
+    /// 生产 `TrapKernelGateway` 委托 minix-sys `sys_sigreturn`。
+    fn sys_sigreturn(&mut self, ep: Endpoint, ctx: VirBytes) -> Result<(), i32> {
+        let _ = (ep, ctx);
+        Err(-minix_types::ENOSYS)
+    }
+
     /// C: `sys_trace(req, proc_ep, addr, &data)`（libsys `sys_trace.c:8-22`）
     /// ——内核 SYS_TRACE 通道：trace_stop 的 T_STOP（trace.c:263）、
     /// do_trace 的命令透传（trace.c:244-248）与 READB/WRITEB_INS
@@ -245,6 +253,10 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
 
     fn sys_sigsend(&mut self, ep: Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> {
         minix_sys::syscall::sys_sigsend(&self.transport, ep.0, sigmsg)
+    }
+
+    fn sys_sigreturn(&mut self, ep: Endpoint, ctx: VirBytes) -> Result<(), i32> {
+        minix_sys::syscall::sys_sigreturn(&self.transport, ep.0, ctx.0)
     }
 }
 

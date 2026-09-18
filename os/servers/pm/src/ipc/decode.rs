@@ -105,6 +105,29 @@ pub(crate) fn ptrace(msg: &Message) -> (i32, i32, u64, i64) {
 /// which@0/value@8/ovalue@16；value/ovalue 是 `struct itimerval` 的
 /// 用户态指针，字节搬运经网关 copy 缝）。MessageUnion 无专属臂——
 /// 按字节读前 24 字节（vm.rs wrapper 的 raw 读取先例）。
+/// sigaction 参数 (nr, act 指针, oact 指针, sigreturn 桩)。user → PM。
+///
+/// C: `mess_lc_pm_sig`（minix-types `MessLcPmSig`——nr@4? 域序
+/// pid/nr/act/oact/ret;PM 只消费 nr 起的三域 + ret）。act/oact 是
+/// `struct sigaction` 用户态指针,字节搬运经网关 copy 缝。
+pub(crate) fn sigaction(msg: &Message) -> (i32, u64, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路，Copy 按值读。
+    let pl = unsafe { msg.m_u.m_lc_pm_sig };
+    (pl.nr, pl.act, pl.oact, pl.ret)
+}
+
+/// 信号集族参数 (how, ctx 桩, set 掩码)。user → PM。
+///
+/// C: `mess_lc_pm_sigset`——how@0/ctx@8/set@16(`sigset_t` = 4×u32,
+/// sigtypes.h:57-62)。Rust `SigSet` 是 u64:取低两个 u32 拼 u64
+/// (信号号 >64 的位在 C 侧即内核已裁决的 no-op 半,见 proc_table.rs)。
+pub(crate) fn sigset(msg: &Message) -> (i32, u64, u64) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路，Copy 按值读。
+    let pl = unsafe { msg.m_u.m_lc_pm_sigset };
+    let set = (pl.set[0] as u64) | ((pl.set[1] as u64) << 32);
+    (pl.how, pl.ctx, set)
+}
+
 pub(crate) fn itimer(msg: &Message) -> (i32, u64, u64) {
     // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路；raw 臂按字节
     // 读取，无类型重解释，域序与 `MessLcPmItimer` 的 repr(C) 排布一致。
@@ -184,6 +207,28 @@ mod tests {
             m.m_u.raw[16..24].copy_from_slice(&0x6000u64.to_le_bytes());
         });
         assert_eq!(itimer(&m), (0, 0x5000, 0x6000));
+    }
+
+    #[test]
+    fn sigaction_decodes_nr_and_pointers() {
+        let m = msg_with(|m| {
+            m.m_u.m_lc_pm_sig.nr = 9;
+            m.m_u.m_lc_pm_sig.act = 0x5000;
+            m.m_u.m_lc_pm_sig.oact = 0x6000;
+            m.m_u.m_lc_pm_sig.ret = 0x7000;
+        });
+        assert_eq!(sigaction(&m), (9, 0x5000, 0x6000, 0x7000));
+    }
+
+    #[test]
+    fn sigset_decodes_how_ctx_and_mask_low64() {
+        let m = msg_with(|m| {
+            m.m_u.m_lc_pm_sigset.how = 2;
+            m.m_u.m_lc_pm_sigset.ctx = 0x4000;
+            m.m_u.m_lc_pm_sigset.set = [0x11, 0x22, 0x33, 0x44];
+        });
+        // 高 64 位(信号号 >64,C 侧 no-op 半)被丢弃。
+        assert_eq!(sigset(&m), (2, 0x4000, 0x22_0000_0011));
     }
 
     #[test]
