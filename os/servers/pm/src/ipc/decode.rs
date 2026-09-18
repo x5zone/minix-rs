@@ -148,6 +148,29 @@ pub(crate) fn mcontext(msg: &Message) -> (i32, u64) {
     (endpt, ctx)
 }
 
+/// getprocnr 参数 (pid)。RS → PM。
+///
+/// C: `mess_lc_pm_getprocnr`(pid@0,raw 字节读,无专属臂)。
+pub(crate) fn getprocnr(msg: &Message) -> i32 {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;pid@0。
+    let raw = unsafe { msg.m_u.raw };
+    i32::from_le_bytes(raw[0..4].try_into().unwrap())
+}
+
+/// getepinfo 参数 (endpt, caller 组缓冲指针, caller 组容量)。RS → PM。
+///
+/// C: `mess_lsys_pm_getepinfo` — ipc.h:503-510(endpt@0/groups@8/
+/// ngroups@16,LP64)。
+pub(crate) fn getepinfo(msg: &Message) -> (i32, u64, i32) {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路;endpt@0/
+    // groups@8/ngroups@16。
+    let raw = unsafe { msg.m_u.raw };
+    let endpt = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+    let groups = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+    let ngroups = i32::from_le_bytes(raw[16..20].try_into().unwrap());
+    (endpt, groups, ngroups)
+}
+
 /// 时间族参数 (clk_id, now, sec, nsec)。user → PM。
 ///
 /// C: `mess_lc_pm_time`(minix-types `MessLcPmTime` — sec@0/clk_id@8/

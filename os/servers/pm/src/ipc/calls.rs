@@ -19,6 +19,7 @@
 use crate::event::EventRegistry;
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
+use crate::misc::MiscError;
 use crate::credentials::{
     do_get, do_set, CopyGroups, GetOp, GetResult, SetOp, SetError, VfsForwarder,
 };
@@ -753,6 +754,50 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // C: do_getprocnr(misc.c:149-164)——RS 询问 pid 的 endpoint,
+        // 应答载荷 m_pm_lsys_getprocnr.endpt。
+        PmCall::GetProcNr => {
+            let pid = super::decode::getprocnr(msg);
+            match crate::misc::do_getprocnr(table, msg.m_source, pid) {
+                Ok(ep) => {
+                    let mut reply = minix_types::Message::default();
+                    // SAFETY: 应答臂 endpt@0。
+                    unsafe {
+                        reply.m_u.raw[0..4].copy_from_slice(&ep.0.to_le_bytes());
+                    }
+                    table.procs[caller.get()].ipc.reply = Some(reply);
+                    ReplyIntent::Reply(0)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
+        // C: do_getepinfo(misc.c:169-193)——凭证快照 + groups 经
+        // copy 缝拷出(D-30(b) 收口);pid 为 taskcall 返回值。
+        PmCall::GetEpInfo => {
+            let (ep, groups_ptr, ngroups) = super::decode::getepinfo(msg);
+            let mut cpy = KernCopyToUser { kern, who: msg.m_source };
+            match crate::misc::do_getepinfo(
+                table,
+                Endpoint(ep),
+                ngroups as usize,
+                &mut cpy,
+            ) {
+                Ok(info) => {
+                    let mut reply = minix_types::Message::default();
+                    // SAFETY: 应答臂 m_pm_lsys_getepinfo(uid@0/euid@4/
+                    // gid@8/egid@12/ngroups@16,C ipc.h:517-524)。
+                    let arm = unsafe { &mut reply.m_u.m_pm_lsys_getepinfo };
+                    arm.uid = info.uid as i32;
+                    arm.euid = info.euid as i32;
+                    arm.gid = info.gid as i32;
+                    arm.egid = info.egid as i32;
+                    arm.ngroups = info.ngroups as i32;
+                    table.procs[caller.get()].ipc.reply = Some(reply);
+                    ReplyIntent::Reply(info.pid)
+                }
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // 其余 40 个调用：handler 归属 07~20（ENOSYS 占位）。逐调用的
         // 接线台账（C handler / Rust 逻辑位置 / wire·wrapper 前置条件 /
         // 建议批次 A-G）见 04-stage-pm/todo.md §11.1——每接线一批同步
@@ -767,6 +812,24 @@ use crate::signal_handlers::{
     handle_sigsuspend, SigActionReq,
 };
 use crate::mproc::SigMsg;
+
+/// getepinfo 的组表拷出适配(S8/D-30(b)):Caller 组缓冲按 u32 LE。
+struct KernCopyToUser<'a> {
+    kern: &'a mut dyn crate::exit::KernelGateway,
+    who: Endpoint,
+}
+
+impl crate::misc::CopyToUser for KernCopyToUser<'_> {
+    fn copy_to_user(&mut self, bytes: &[u8], ptr: VirBytes) -> Result<(), MiscError> {
+        self.kern
+            .copy_to_user(bytes, self.who, ptr.0)
+            .map_err(|_| MiscError::Fault)
+    }
+
+    fn copy_from_user(&mut self, _src: VirBytes, _dst: &mut [u8]) -> Result<(), MiscError> {
+        Err(MiscError::Fault)
+    }
+}
 
 /// 无拷贝组表出口:不搬组表的调用(GetPid/GetUid 等)仍需满足
 /// do_get/do_set 的 trait 形状;copy 路径诚实失败(不可达)。
