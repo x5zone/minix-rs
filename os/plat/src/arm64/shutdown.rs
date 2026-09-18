@@ -11,20 +11,25 @@ const SEMIHOST_SYS_EXIT: u64 = 0x18;
 const ADP_STOPPED_APPLICATION_EXIT: u64 = 0x20026;
 
 /// Terminate QEMU via semihosting SYS_EXIT (exit code 0).
+///
+/// A64 semihosting calling convention: X0 = operation (0x18 = SYS_EXIT),
+/// X1 = pointer to the two-field parameter block { reason: u64, subcode:
+/// u64 }. (The A32 convention of passing the reason directly in R1 does
+/// not apply on A64 — the block is mandatory.) The block is pushed on the
+/// stack; the call never returns, so nothing pops it. QEMU maps
+/// ADP_Stopped_ApplicationExit to guest exit code 0.
 pub fn qemu_exit(_status: u32) -> ! {
-    let code = ADP_STOPPED_APPLICATION_EXIT;
-    // SAFETY: semihosting HLT call — terminates the test VM by design; only
-    // valid when QEMU runs with semihosting enabled.
     unsafe {
         core::arch::asm!(
-            "ldr x1, ={code}",
-            "str x1, [sp, #-16]!",
             "ldr x0, ={op}",
+            "ldr x2, ={reason}",
+            "mov x3, xzr",
+            "stp x2, x3, [sp, #-16]!",
+            "mov x1, sp",
             "hlt #0xF000",
-            code = const SEMIHOST_SYS_EXIT,
-            op = in(reg) ADP_STOPPED_APPLICATION_EXIT,
-            inout("x1") code,
-            options(noreturn, nostack)
+            op = const SEMIHOST_SYS_EXIT,
+            reason = const ADP_STOPPED_APPLICATION_EXIT,
+            options(noreturn)
         );
     }
 }
