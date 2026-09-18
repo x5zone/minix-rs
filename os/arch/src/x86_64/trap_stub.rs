@@ -202,6 +202,12 @@ const STUB_VECTORS: &[(u8, bool)] = &[
     (0x77, false),
     // IPI: scheduler (C arch_smp.c SCHED_IPI_VECTOR = 0xF0).
     (0xF0, false),
+    // LAPIC local timer (edge1 K6): one-shot per-CPU tick, C
+    // APIC_TIMER_INT_VECTOR = 0xf0 — relocated to 0xf1 here because the
+    // landed S-10 scheduler-IPI lane owns 0xF0 on the Rust side; the
+    // local timer never enters the hook chains, so the exact number is
+    // a carrier convention, not external behavior.
+    (0xF1, false),
     (0xFF, false),
 ];
 
@@ -301,6 +307,8 @@ core::arch::global_asm!(
     "TRAPSTUB 119 0",
     // LAPIC spurious interrupt (C: apic.c apic_spurious_interrupt).
     "TRAPSTUB 255 0",
+    // LAPIC local timer (edge1 K6): vector 0xF1 = 241.
+    "TRAPSTUB 241 0",
     // Inter-processor interrupt: scheduler (S-10; C: SMP_SCHED_IPI_VECTOR).
     "TRAPSTUB 240 0",
     // Common tail: save every GPR, hand the frame to the kernel dispatcher,
@@ -447,7 +455,8 @@ stub_symbols!(
     x86_trap_stub_82, x86_trap_stub_83, x86_trap_stub_84, x86_trap_stub_85,
     x86_trap_stub_86, x86_trap_stub_87, x86_trap_stub_112, x86_trap_stub_113,
     x86_trap_stub_114, x86_trap_stub_115, x86_trap_stub_116, x86_trap_stub_117,
-    x86_trap_stub_118, x86_trap_stub_119, x86_trap_stub_240, x86_trap_stub_255
+    x86_trap_stub_118, x86_trap_stub_119, x86_trap_stub_240,
+    x86_trap_stub_241, x86_trap_stub_255
 );
 
 unsafe extern "C" {
@@ -499,6 +508,7 @@ pub fn stub_va(vector: u8) -> Option<VirBytes> {
         0x76 => unsafe { &x86_trap_stub_118 as *const u8 as usize },
         0x77 => unsafe { &x86_trap_stub_119 as *const u8 as usize },
         0xF0 => unsafe { &x86_trap_stub_240 as *const u8 as usize },
+        0xF1 => unsafe { &x86_trap_stub_241 as *const u8 as usize },
         0xFF => unsafe { &x86_trap_stub_255 as *const u8 as usize },
         _ => return None,
     };

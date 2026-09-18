@@ -59,6 +59,59 @@ use crate::proc::{CpuId, KProcess, MiscFlagsBits};
 // registered as a follow-up refactor in todo.md D-62.
 use crate::globals::TSC_PER_MS;
 
+/// Calibrated ICR count for one local tick (edge1 K6). Written once by
+/// `init_ap_local_timer` after the arch calibration, read by every tick's
+/// re-arm.
+static LOCAL_TICK_ICR: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Per-CPU local tick counters (edge1 K6 carrier observability): each AP's
+/// local tick increments its own slot, so a test can verify that secondary
+/// harts actually receive their local timer ticks (the K6 gap: without the
+/// local timer, AP-side timekeeping is silent).
+pub static LOCAL_TICK_COUNT: [core::sync::atomic::AtomicU64; 16] = [
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+];
+
+/// The per-CPU local tick body (edge1 K6; C `timer_int_handler` AP arm).
+///
+/// Re-arms the one-shot (a one-shot LAPIC timer stops dead unless the
+/// handler re-programs ICR — apic.c:578) and bumps this CPU's tick
+/// counter. Quantum-expiry enforcement plugs in here once the scheduling
+/// main loop (I-6) gives it a consumer; until then the tick is
+/// observability-only by design (a tick that mutates scheduling state
+/// with no scheduler loop reading it would be a second decision point
+/// racing the placeholder).
+pub fn local_tick(cpu: crate::proc::CpuId) {
+    LOCAL_TICK_COUNT[(cpu.raw() as usize) % 16]
+        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    rearm_local_tick();
+    #[cfg(not(test))]
+    {
+        use minix_arch::ClockArch as _;
+        use minix_arch::CurrentClockArch;
+        use minix_platform::platform_desc;
+        let pd = platform_desc();
+        let mut clock_arch = CurrentClockArch::new(pd.timer());
+        clock_arch.local_timer_eoi();
+    }
+}
+
 /// Default TSC frequency assumption: 1 GHz (1M cycles/ms).
 /// Used as fallback when calibration has not yet run.
 const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
@@ -379,6 +432,43 @@ fn unregister_profile_hook() {
     }
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let _ = crate::irq_manager_with(&section).remove_hook(IrqId(raw as u32), PROFILE_CLOCK_IRQ);
+}
+
+/// Arm the current CPU's LAPIC local timer (edge1 K6; C
+/// `app_cpu_init_timer` — clock.c:308, called at AP bring-up before the
+/// scheduling loop). The one-shot arms for one `system_hz` tick and is
+/// re-armed by the local tick itself. Caller holds the BKL (AP tail
+/// contract).
+pub fn init_ap_local_timer() {
+    #[cfg(not(test))]
+    {
+        use minix_arch::{ClockArch as _, CurrentClockArch};
+        use minix_platform::platform_desc;
+        let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
+        let tsc_per_ms = if tsc_per_ms == 0 { 1_000_000 } else { tsc_per_ms };
+        let pd = platform_desc();
+        let mut clock_arch = CurrentClockArch::new(pd.timer());
+        let icr = clock_arch.init_local_timer(1, tsc_per_ms, crate::current_cpu_id().raw());
+        LOCAL_TICK_ICR.store(u64::from(icr), Ordering::Release);
+    }
+}
+
+/// Re-arm the local one-shot for the next tick with the calibrated ICR.
+///
+/// C: `lapic_set_timer_one_shot(1000000 / system_hz)` — apic.c:578, the
+/// tick handler's own re-arm. Caller holds the BKL (the local tick runs
+/// under the interrupted context's BKL).
+pub fn rearm_local_tick() {
+    #[cfg(not(test))]
+    {
+        use minix_arch::{ClockArch, CurrentClockArch};
+        use minix_platform::platform_desc;
+        let pd = platform_desc();
+        let mut clock_arch = CurrentClockArch::new(pd.timer());
+        clock_arch.write_local_timer_icr(
+            LOCAL_TICK_ICR.load(Ordering::Relaxed) as u32,
+        );
+    }
 }
 
 /// Acknowledge a profile clock interrupt.

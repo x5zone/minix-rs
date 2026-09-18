@@ -251,6 +251,11 @@ impl TrapEntryArch for X86_64TrapEntry {
         // vector gate in apic_idt_init (arch_clock.c/apic.c).
         entry.set_gate(0xF0, 0, 0, 0, false);
 
+        // LAPIC local timer (edge1 K6; C apic.c:913 int_gate_idt for
+        // APIC_TIMER_INT_VECTOR): per-CPU one-shot tick gate. Unmasked
+        // by the LVT entry itself, re-armed by the handler every tick.
+        entry.set_gate(0xF1, 0, 0, 0, false);
+
         entry
     }
 

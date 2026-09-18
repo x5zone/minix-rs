@@ -39,11 +39,89 @@ const PIT_CMD_RATE_GEN: u8 = 0x36;
 /// C: clock.c hardware init + apic.c lapic_enable()
 pub struct X86_64ClockArch {
     pit_base_freq: u32,
-    #[allow(dead_code)]
     lapic_base: usize,
 }
 
+// LAPIC timer register offsets (from the LAPIC base) and the one-shot
+// programming constants (edge1 K6; C apic.h/apic.c).
+const LAPIC_TIMER_ICR_OFF: usize = 0x380 / 4;
+const LAPIC_TIMER_DCR_OFF: usize = 0x3E0 / 4;
+const LAPIC_TIMER_CCR_OFF: usize = 0x390 / 4;
+const LAPIC_LVT_TIMER_OFF: usize = 0x320 / 4;
+const LAPIC_LVT_MASK: u32 = 1 << 16;
+// C programs APIC_TIMER_INT_VECTOR = 0xf0; the Rust-side sched-IPI
+// lane (S-10) already owns 0xF0, so the local timer takes 0xF1 — a
+// carrier convention (hook chains never see it), documented in §28.
+const LAPIC_TIMER_VECTOR: u32 = 0xf1;
+const DCR_DIVIDE_1: u32 = 0x0b; // C APIC_TDCR_1
+const CALIBRATION_PROBE_ICR: u32 = 1 << 20;
+
 impl ClockArch for X86_64ClockArch {
+    /// Arm the LAPIC local timer as a one-shot (edge1 K6; C
+    /// `init_local_timer` — arch_clock.c:131-139, `lapic_set_timer_one_shot`
+    /// apic.c:526-543).
+    ///
+    /// Programming sequence: DCR = divide-by-1 (`APIC_TDCR_1`, apic.h:15),
+    /// LVT timer entry = vector 0xf0 unmasked one-shot, then ICR = the
+    /// calibrated count for one `period_ms` interval. The LAPIC tick
+    /// frequency is measured, not assumed: a full ICR decay is timed
+    /// against the TSC and the ratio yields ticks-per-millisecond (valid
+    /// on QEMU and real hardware alike — no fixed-frequency guess).
+    fn init_local_timer(&mut self, period_ms: u32, tsc_per_ms: u64, _cpu_id: u32) -> u32 {
+        let lapic = self.lapic_base as *mut u32;
+        unsafe {
+            // C apic.c:537-538 — divide configuration first.
+            core::ptr::write_volatile(lapic.add(LAPIC_TIMER_DCR_OFF), DCR_DIVIDE_1);
+
+            // Calibration: decay PROBE_ICR LAPIC ticks and time it with
+            // the TSC. lapic_ticks_per_tsc = PROBE_ICR / tsc_delta; the
+            // 1 ms ICR count is that ratio scaled by tsc_per_ms.
+            let tsc0 = self.read_ticks();
+            core::ptr::write_volatile(lapic.add(LAPIC_TIMER_ICR_OFF), CALIBRATION_PROBE_ICR);
+            let ccr = loop {
+                let v = core::ptr::read_volatile(lapic.add(LAPIC_TIMER_CCR_OFF));
+                if v == 0 {
+                    break v;
+                }
+                core::hint::spin_loop();
+            };
+            let _ = ccr;
+            let tsc_delta = (self.read_ticks() - tsc0).max(1);
+            let lapic_per_tsc = ((CALIBRATION_PROBE_ICR as u64) << 16) / tsc_delta; // fixed-point <<16
+            let icr_1ms = ((lapic_per_tsc * u64::from(tsc_per_ms)) >> 16)
+                .clamp(16, u32::MAX as u64) as u32;
+            core::ptr::write_volatile(lapic.add(LAPIC_TIMER_ICR_OFF), icr_1ms);
+
+            // LVT timer entry: unmasked, one-shot (no mode bits), the
+            // local-timer vector (C apic.c:541-542 assigns the bare
+            // vector — `lvtt = APIC_TIMER_INT_VECTOR` — which is one-shot
+            // unmasked by construction).
+            core::ptr::write_volatile(lapic.add(LAPIC_LVT_TIMER_OFF), LAPIC_TIMER_VECTOR);
+            core::ptr::write_volatile(lapic.add(LAPIC_TIMER_ICR_OFF), icr_1ms);
+            icr_1ms
+        }
+    }
+
+    /// Write the LAPIC timer ICR directly — the per-tick re-arm (C
+    /// apic.c:578 `lapic_set_timer_one_shot(1000000 / system_hz)` inside
+    /// the tick handler).
+    fn write_local_timer_icr(&mut self, icr: u32) {
+        let lapic = self.lapic_base as *mut u32;
+        // SAFETY: LAPIC MMIO register write on the current CPU.
+        unsafe {
+            core::ptr::write_volatile(lapic.add(LAPIC_TIMER_ICR_OFF), icr);
+        }
+    }
+
+    /// LAPIC EOI for the local tick (the local timer's completion —
+    /// there is no hook-chain `complete` on this path).
+    fn local_timer_eoi(&mut self) {
+        let lapic = self.lapic_base as *mut u32;
+        // SAFETY: LAPIC MMIO register write on the current CPU.
+        unsafe {
+            core::ptr::write_volatile(lapic.add(0xB0 / 4), 0);
+        }
+    }
     fn new(desc: &dyn minix_platform::TimerDesc) -> Self {
         let pit = desc.as_any()
             .downcast_ref::<PitDesc>()

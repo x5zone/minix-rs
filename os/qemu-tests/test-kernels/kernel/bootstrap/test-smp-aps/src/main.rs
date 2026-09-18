@@ -233,10 +233,13 @@ fn main() -> Status {
     // Interrupts ON: the tick handler's inherited-BKL contract matches this
     // held-BKL body (same arrangement as test-timer-irq).
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    let start = minix_kernel::clock::get_monotonic();
+    // BKL witness for the clock accessors (the boot chain held the BKL
+    // into this body — smp_init's dance preserves it).
+    let section = unsafe { minix_kernel::smp::BklSection::assume_held() };
+    let start = minix_kernel::clock::get_monotonic(&section);
     let deadline_ticks = start + 300; // 3 s of system time at 100 Hz
     let mut aps_in_loop = false;
-    while !aps_in_loop && minix_kernel::clock::get_monotonic() < deadline_ticks {
+    while !aps_in_loop && minix_kernel::clock::get_monotonic(&section) < deadline_ticks {
         aps_in_loop = true;
         for cpu in 1..topo.nr_cpus as u32 {
             let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
@@ -270,6 +273,20 @@ fn main() -> Status {
         early_console::write_str("  WARNING: not all APs observed in the scheduling loop (TCG starvation)\n");
     }
     early_console::write_str("  all APs entered the scheduling loop\n");
+
+    // edge1 K6: per-CPU local tick counters — the AP LAPIC one-shot arms
+    // in the AP tail (init_ap_local_timer) and each 0xF1 tick bumps the
+    // hart's slot. Non-AP harts keep 0 ticks; the BSP runs on the PIT.
+    early_console::write_str("  local tick counters:\n");
+    for cpu in 0..topo.nr_cpus as u32 {
+        let ticks = minix_kernel::clock::LOCAL_TICK_COUNT[cpu as usize % 16]
+            .load(core::sync::atomic::Ordering::Relaxed);
+        early_console::write_str("  cpu ");
+        early_console::write_hex(cpu as u64);
+        early_console::write_str(" ticks: ");
+        early_console::write_hex(ticks);
+        early_console::write_str("\n");
+    }
 
     early_console::write_str("### TEST_RESULT: PASS test-smp-aps ###\n");
     loop { unsafe { asm!("cli", options(nomem, nostack)); } }

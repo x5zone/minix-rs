@@ -1085,6 +1085,11 @@ unsafe extern "C" fn smp_ap_tail(logical_id: u32, _hw_id: u64, kernel_stack_top_
             local.ptproc = Some(crate::proc::proc_nr::VM_PROC_NR);
         }
     }
+    // edge1 K6: the AP's LAPIC local timer (C `app_cpu_init_timer` —
+    // clock.c:308, the AP-side arm of C's per-CPU local clock). Arms the
+    // one-shot AFTER the IDT attach above so the 0xF1 tick has a live
+    // trap path; the tick itself re-arms (one-shot semantics).
+    crate::clock::init_ap_local_timer();
     // C ap_finish_booting parity: boot_lock → BKL (held into the loop) →
     // online self-report. S-7: enter the shared scheduling loop with the
     // BKL held (§3.6 precondition). Diverges into the idle halt on this

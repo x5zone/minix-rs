@@ -107,6 +107,16 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         return;
     }
 
+    // LAPIC local timer (edge1 K6): the per-CPU one-shot tick never
+    // enters the hook chains — its handler re-arms the ICR and services
+    // per-CPU work directly (C: `lapic_timer_int_handler`, apic.c:913,
+    // registered straight in the IDT, with its own EOI). The local-tick
+    // body owns the EOI via the arch `local_timer_eoi`.
+    if vector == 0xF1 {
+        crate::clock::local_tick(crate::current_cpu_id());
+        return;
+    }
+
     if let Some(irq) = minix_arch::x86_64::trap_stub::irq_of_vector(vector) {
         // Profile-clock PC handoff (C reads p->p_reg.pc, which the asm
         // entry already saved into the process context; the Rust IRQ path

@@ -216,14 +216,17 @@ fn main() -> Status {
     // the BKL owner for the rest of its life (C main.c BKL_LOCK parity).
     let guard = minix_kernel::smp::bkl_lock();
     core::mem::forget(guard);
+    // BklSection witness (the forgotten guard above leaves the BKL held —
+    // this test kernel's loop IS the owner for the rest of its life).
+    let section = unsafe { minix_kernel::smp::BklSection::assume_held() };
     unsafe { asm!("sti", options(nomem, nostack)); }
     early_console::write_str("  IF=1 — polling uptime\n");
 
-    let start = minix_kernel::clock::get_monotonic();
+    let start = minix_kernel::clock::get_monotonic(&section);
     let target = start + PASS_TICKS;
     let mut last = start;
     loop {
-        let now = minix_kernel::clock::get_monotonic();
+        let now = minix_kernel::clock::get_monotonic(&section);
         if now != last {
             last = now;
             early_console::write_str("  tick: uptime = ");

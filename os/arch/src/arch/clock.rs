@@ -116,6 +116,45 @@ pub trait ClockArch: Sized + Send + Sync {
     /// C: init_clock() hardware portion + arch_init() APIC timer
     fn init_timer(&mut self, hz: u32, cpu_id: u32);
 
+    /// Arm the per-CPU local timer as a one-shot for the next tick
+    /// (edge1 K6, per smp_todo §28).
+    ///
+    /// C: `lapic_set_timer_one_shot(1000000 / system_hz)` —
+    /// arch_clock.c:139, programmed at AP bring-up
+    /// (`app_cpu_init_timer` → `init_local_timer`) and re-armed by the
+    /// local tick handler on every fire. One-shot semantics: the handler
+    /// MUST re-arm, or the local tick stops.
+    ///
+    /// - x86-64: LAPIC timer — DCR = divide-by-1, LVT entry = vector
+    ///   0xf0 unmasked one-shot (`APIC_TIMER_INT_VECTOR`, apic.h:90),
+    ///   ICR self-calibrated against the TSC (measure LAPIC CCR decay
+    ///   over a known TSC window; the ratio needs no external reference
+    ///   clock and is valid on QEMU and real hardware alike).
+    /// - aarch64/riscv64: no local timer this lane wires — the default
+    ///   no-op arms nothing and the tick never fires.
+    ///
+    /// `tsc_per_ms` is the caller-provided TSC scale (ticks per
+    /// millisecond) used by the calibration probe; `cpu_id` identifies
+    /// the CPU being armed (per-CPU calibration state, C:
+    /// `tsc_per_ms[cpu]`).
+    fn init_local_timer(&mut self, period_ms: u32, tsc_per_ms: u64, cpu_id: u32) -> u32 {
+        let _ = (period_ms, tsc_per_ms, cpu_id);
+        0
+    }
+
+    /// Write the local timer's ICR (interval count) directly — the
+    /// per-tick re-arm path. Default no-op (architectures without a
+    /// wired local timer).
+    fn write_local_timer_icr(&mut self, _icr: u32) {}
+
+    /// End-of-interrupt for the local timer tick. The local timer's
+    /// interrupt bypasses the hook chains entirely (it has no
+    /// controller line to mask), so its EOI goes through this arch
+    /// operation — C: `lapic_eoi()` inside
+    /// `lapic_timer_int_handler` (apic.c:913 registers that handler
+    /// directly in the IDT, the same bypass).
+    fn local_timer_eoi(&mut self) {}
+
     /// Read the current hardware tick count.
     ///
     /// Used for fine-grained timing and profiling.
