@@ -1915,3 +1915,49 @@ D-38①/D-39/D-40/D-41/sched-1/tick-1 ✅）；§6 全阶梯终局重跑（见 �
 **SMP 主线终态**：S-0..S-6 + S-7 + S-8..S-11 全 ✅（S-2b/S-3 系含历史
 spike）。剩余 open 项均在 Edge 表（I-6 调度循环真实化、I-9 裸指针治理、
 E-DSWIRE 等）或 arm/riscv64 各自 lane（§3.3/§8 风险表），不阻塞本文件。
+
+## 27. E5-SMP 冒烟用例设计：「fork 后父子并发写 CoW 页」（edge1 K3 交付）
+
+> 归属：本文件是 SMP 测试矩阵的家；本节只做**设计**（E-VMTLB 余件 (b)，
+> edge1 K3）。断言清单与 PASS 判定归 edge4 E5-SMP，载体与脚本由 edge1 在
+> `os/qemu-tests/` 实现（邻接 K17 窗口），真机执行归 edge4。
+
+**被测机制**：E-VMTLB 机制三件套（pick 点判定 `needs_tlb_refresh` /
+restore 消费 `consume_flush_tlb_flag` / 设置点 `vmctl_vminhibit_set` 的
+本地臂与 IPI 臂）在真实 SMP 拓扑下的激活验收——单核下不可达的"目标进程
+在其他 CPU 上的陈旧 TLB 翻译"窗口（C proc.c:345-347 对应物）。
+
+**拓扑与载体**：`qemu -smp 4`（最少需父/子分踞两个 CPU 的落位）；测试
+内核经 `tools/gen-test-kernel.sh --new <name> x86_64` 生成，走 boot-shim
+→ 内核 → PM fork 链（E5(a) 通电后）。
+
+**场景（阶段化，每阶段一个观察点）**：
+
+1. **预热**：父进程 P 落位 CPU0，对页 W 先做一次写——确保 W 的 RW 翻译
+   已进 CPU0 的 TLB（否则测的是"无翻译"路径，不构成陈旧翻译压力）。
+2. **fork + 降级**：P fork 出 C（eager CoW 生效，父子页表项降级或按
+   项目 eager 策略的具体形态）；C 被调度到 CPU1。此刻 CPU0 的 TLB 里
+   可能仍持有 W 的旧翻译——这正是被测窗口。
+3. **子侧 CoW**：C 写 W → 缺页 → CoW 回路（VM/内核分配新帧、改 C 的
+   翻译、恢复、指令重执行）。
+4. **父侧并发写**：P 在 CPU1 处理 C 的 CoW 期间（或之后立即）写 W。
+   eager-CoW 下父页归属未变，P 的写应当成功；若 P 的翻译已被降级 RO，
+   则必须走缺页恢复——**不允许第三种结局**（写入落入已转移物理页）。
+
+**断言清单（草案，正式判定归 edge4）**：
+
+- a1 父写结局二选一：成功（值可读回）或缺页恢复后成功；写丢失/写入
+  他人页 = FAIL。
+- a2 子写落在 CoW 新帧，读回与父写值互不串扰。
+- a3 若场景含 VM 侧 RO 降级路径：P 在未刷 TLB 的 CPU 上继续写，必须
+  因 FLUSH_TLB 机制在恢复点刷新而看到新翻译——持续反复故障 = 机制
+  失效 = FAIL。
+- a4 全程无内核 panic；页引用计数/freelist 终态对账（fork 前后差值
+  = CoW 新帧数）。
+- a5 对照组：`-smp 1` 重跑同场景必须全绿（隔离"SMP 机制缺陷"与
+  "CoW 逻辑缺陷"——单核红说明缺陷不在 TLB 层）。
+
+**判据与 E-VMTLB 机制的对应**：a3 直接检验三件套——若 vmctl 设置点的
+FLUSH_TLB 不完备（本地臂设、IPI 臂漏，已修：K3），或 pick 点判定/
+restore 消费任一缺席，a3 的"持续反复故障"即复现。a1/a2/a4 检验 CoW
+本体与页记账。

@@ -2332,6 +2332,16 @@ fn vmctl_memreq_reply(
 /// D-35 (C do_vmctl.c:118-130): if SMP and target on a different
 /// CPU, send IPI via schedule_vminhibit; else set locally.
 /// Single-CPU build: always local (target_cpu == current_cpu).
+///
+/// The FLUSH_TLB flag is set UNCONDITIONALLY after either arm — C
+/// do_vmctl.c:133-135 keeps `p->p_misc_flags |= MF_FLUSH_TLB` outside
+/// the if/else, and because the process table is shared, the flag lands
+/// on the target no matter which CPU executed the request. The remote
+/// IPI arm itself parks via VMINHIBIT only (C smp.c:180-182 sets
+/// RTS_VMINHIBIT in the IPI handler, no FLUSH_TLB), so this
+/// unconditional set is what completes the remote path — without it a
+/// process parked over IPI would resume with stale translations
+/// (edge1 K3 / E-VMTLB 余件 (a)).
 fn vmctl_vminhibit_set(
     proc_table: &mut crate::proc_table::ProcessTable,
     target_nr: ProcNr,
@@ -2347,17 +2357,35 @@ fn vmctl_vminhibit_set(
     let current_cpu = smp.bsp_cpu_id();
     if target_cpu != current_cpu {
         // SMP: route through IPI (schedule_sync → send_sched_ipi).
+        // The IPI handler parks the process via VMINHIBIT only.
         smp.schedule_vminhibit::<minix_arch::CurrentSmpArch>(
             proc_table, target_nr, current_cpu,
         );
     } else {
-        // Local: direct RTS_SET.
-        if let Some(p) = proc_table.get_mut(target_nr) {
-            p.p_rts_flags.set(crate::proc::RtsFlagsBits::VMINHIBIT);
-            p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
-        }
+        // Local: direct RTS_SET (C do_vmctl.c:132).
+        vminhibit_park_local(proc_table, target_nr);
     }
+    // C do_vmctl.c:133-135 — unconditional on both arms.
+    mark_flush_tlb(proc_table, target_nr);
     KcallResult::Ok(0)
+}
+
+/// Local arm of VMINHIBIT set: park the target directly.
+/// C: do_vmctl.c:132 — `RTS_SET(p, RTS_VMINHIBIT)`.
+fn vminhibit_park_local(proc_table: &mut crate::proc_table::ProcessTable, target_nr: ProcNr) {
+    if let Some(p) = proc_table.get_mut(target_nr) {
+        p.p_rts_flags.set(crate::proc::RtsFlagsBits::VMINHIBIT);
+    }
+}
+
+/// Request a TLB refresh at the target's next restore.
+/// C: do_vmctl.c:133-135 — `p->p_misc_flags |= MF_FLUSH_TLB`, outside
+/// the local/IPI if/else. Consumed by the pick-point/restore pair
+/// (`needs_tlb_refresh` / `consume_flush_tlb_flag`, E-VMTLB 机制半).
+fn mark_flush_tlb(proc_table: &mut crate::proc_table::ProcessTable, target_nr: ProcNr) {
+    if let Some(p) = proc_table.get_mut(target_nr) {
+        p.p_misc_flags.set(crate::proc::MiscFlagsBits::FLUSH_TLB);
+    }
 }
 
 /// VmInhibitClear — clear RTS_VMINHIBIT on the target.
@@ -3153,6 +3181,46 @@ mod tests {
         let result = dispatch_schedule(&mut caller, &msg, &mut proc_table, &priv_table);
         // Should pass SYS_PROC check → reach endpoint validation → EINVAL.
         assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_vmctl_vminhibit_local_arm_sets_both_flags() {
+        // C do_vmctl.c:128-135 — the local arm parks via VMINHIBIT and
+        // the unconditional FLUSH_TLB set follows both arms, so a target
+        // parked either way resumes with a TLB refresh pending.
+        use crate::proc::{MiscFlagsBits, RtsFlagsBits};
+        let mut table = crate::test_helpers::test_proc_table();
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
+        vminhibit_park_local(&mut table, ProcNr(0));
+        mark_flush_tlb(&mut table, ProcNr(0));
+        let p = table.get(ProcNr(0)).unwrap();
+        assert!(p.p_rts_flags.is_set(RtsFlagsBits::VMINHIBIT));
+        assert!(p.p_misc_flags.is_set(MiscFlagsBits::FLUSH_TLB));
+    }
+
+    #[test]
+    fn test_vmctl_vminhibit_park_helper_does_not_touch_flush_tlb() {
+        // C smp.c:180-182 — the park (local or via IPI handler) sets
+        // VMINHIBIT only; the FLUSH_TLB flag is delivered by the
+        // unconditional marker (do_vmctl.c:133-135). Pinning the split
+        // keeps the remote path honest: the IPI arm cannot forget it,
+        // because it never owned it.
+        use crate::proc::{MiscFlagsBits, RtsFlagsBits};
+        let mut table = crate::test_helpers::test_proc_table();
+        table
+            .get_mut(ProcNr(0))
+            .unwrap()
+            .p_rts_flags
+            .clear(RtsFlagsBits::SLOT_FREE);
+        vminhibit_park_local(&mut table, ProcNr(0));
+        assert!(table.get(ProcNr(0)).unwrap().p_rts_flags.is_set(RtsFlagsBits::VMINHIBIT));
+        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::FLUSH_TLB));
+        mark_flush_tlb(&mut table, ProcNr(0));
+        assert!(table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::FLUSH_TLB));
     }
 
     #[test]
