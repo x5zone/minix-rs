@@ -509,8 +509,11 @@ mod tests {
 
     #[test]
     fn test_select_empty_propagates_interruption() {
+        // Transport failures carry the positive errno (TrapStatus sign
+        // contract); the wrapper hands the interruption through as the
+        // typed error.
         let mut transport = CannedTransport::new();
-        transport.reply_sendrec(Err(crate::ipc::TrapStatus(-minix_types::EINTR)));
+        transport.reply_sendrec(Err(crate::ipc::TrapStatus(minix_types::EINTR)));
         let mut timeout = TimeVal::default();
         assert_eq!(
             select_empty_via(&transport, &mut timeout),

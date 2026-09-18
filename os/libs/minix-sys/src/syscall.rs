@@ -1122,15 +1122,6 @@ pub fn perform_kernel_call(
     }
 }
 
-/// Converts a trap failure status into the message-type assignment of step 2.
-///
-/// Small helper keeping the `_syscall` failure branch explicit and tested:
-/// the status integer becomes the new message type, from which the negative
-/// check derives the error.
-pub const fn trap_failure_to_message_type(status: TrapStatus) -> i32 {
-    status.0
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -1476,11 +1467,6 @@ mod tests {
         let transport = DirectKernelCallTransport;
         let mut message = test_message(0);
         assert_eq!(transport.kernel_call(&mut message), -minix_types::EIO);
-    }
-
-    #[test]
-    fn test_trap_failure_assignment_matches_c_statement() {
-        assert_eq!(trap_failure_to_message_type(TrapStatus(-11)), -11);
     }
 
     #[test]
