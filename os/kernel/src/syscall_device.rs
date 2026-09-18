@@ -1908,8 +1908,10 @@ mod tests {
     }
 
     impl PerCpuInterruptUnit for MockIrqController {
-        fn claim(&mut self) {}
-        fn complete(&mut self) {}
+        fn claim(&mut self) -> Option<u32> {
+            None
+        }
+        fn complete(&mut self, _claimed: Option<u32>) {}
     }
 
 

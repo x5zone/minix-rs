@@ -169,34 +169,50 @@ pub trait InterruptRouter: Sized + Send + Sync {
 /// Per-CPU interrupt unit — the claim/complete half of the protocol
 /// (I-13 split; called on the interrupting CPU).
 ///
-/// The captured identity (GIC IAR / PLIC claim) is *per-CPU* state: two
-/// CPUs claiming simultaneously must never share it. The current single
-/// instance lives in the global `IrqManager` and is safe because the BKL
-/// serializes every dispatch; when per-CPU dispatch lands (S-6 CpuLocal
-/// migration), instances move to `CpuLocal` and this trait's ownership
-/// follows — recorded as OQ-13a.
+/// The claim identity is *per-CPU* state: two CPUs claiming simultaneously
+/// must never share it. The current single instance lives in the global
+/// `IrqManager` and is safe because the BKL serializes every dispatch;
+/// when per-CPU dispatch lands (S-6 CpuLocal migration), instances move to
+/// `CpuLocal` and this trait's ownership follows.
 ///
 /// C: the claim/complete ops of the arch APIC/GIC/PLIC driver.
 pub trait PerCpuInterruptUnit: Send {
-    /// Acknowledge (claim) the interrupt, before any handler runs.
+    /// Acknowledge (claim) the interrupt, before any handler runs, and
+    /// return the claimed identity.
     ///
-    /// x86 APIC: no claim step (no-op — the LAPIC EOI is the completion
-    /// only). GIC: reads `ICC_IAR1_EL1` (the read itself acknowledges and
-    /// captures the INTID that `complete` writes back). PLIC: reads the
-    /// claim register. D-61 (2026-09-09): the x86 implementation
-    /// previously wrote the LAPIC EOI here — that is the *completion*,
-    /// not a claim, and dispatching it early would have re-opened the
-    /// interrupt before handling.
+    /// GIC: reads `ICC_IAR1_EL1` — the read itself acknowledges and yields
+    /// the 24-bit masked INTID; the GIC spurious INTID (1023) yields
+    /// `None`. PLIC: reads the claim register — the source ID, with 0
+    /// ("nothing pending") yielding `None`. x86 APIC: no claim step and no
+    /// identity (the gate delivered the vector; the LAPIC EOI is the whole
+    /// handshake), so `None` — but here `None` means "nothing to write
+    /// back", not "nothing to complete": [`PerCpuInterruptUnit::complete`]
+    /// still EOIs. D-61 (2026-09-09): the x86 implementation previously
+    /// wrote the LAPIC EOI in `claim` — that is the *completion*, not a
+    /// claim, and dispatching it early would have re-opened the interrupt
+    /// before handling.
     ///
-    /// OQ-13a: GIC/PLIC lanes will evolve this to
-    /// `claim(&mut self) -> IrqVector` (the read returns the INTID for
-    /// intid-driven dispatch); the x86-first flow is gate-driven, so the
-    /// capture stays internal for now.
-    fn claim(&mut self);
+    /// The identity is deliberately `u32` rather than `IrqVector`: it is
+    /// the raw hardware claim token (GIC INTIDs reach beyond 255 via SPI
+    /// ranges — truncating it through a `u8` vector would corrupt the
+    /// paired completion), and the two namespaces are distinct — the
+    /// routing vector keys the hook chains, the claim token is what the
+    /// completion register expects back. OQ-13a (edge1 K8, 2026-09-18):
+    /// the typed claim→completion pairing hardens the D-61 protocol
+    /// lesson and lets `IrqManager::dispatch` skip completing spurious
+    /// claims; an intid-driven dispatch lane (arm64/riscv64 trap entries)
+    /// can later consume the same return value directly.
+    fn claim(&mut self) -> Option<u32>;
 
-    /// Signal end-of-interrupt processing (write back the captured
-    /// identity; x86: the global LAPIC EOI).
-    fn complete(&mut self);
+    /// Signal end-of-interrupt processing, paired with `claim`.
+    ///
+    /// GIC/PLIC: write back the SAME identity `claim` returned — the
+    /// pairing is the protocol (completing identity 0 or a foreign INTID
+    /// is not a legal completion, D-61); `None` (spurious claim read)
+    /// completes nothing. x86: the value is ignored — the write is the
+    /// global LAPIC EOI, and it happens even when `claim` returned `None`,
+    /// because the gate-driven flow has no claim token to pair with.
+    fn complete(&mut self, claimed: Option<u32>);
 }
 
 /// Maximum number of IRQ vectors.

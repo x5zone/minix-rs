@@ -468,9 +468,15 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
             return Err(IrqError::InvalidIrq);
         }
 
-        // Claim first (D-61): the completion written by `eoi` below must
-        // pair with the INTID this read captures (GIC IAR / PLIC claim).
-        self.controller.claim();
+        // Claim first (D-61 + K8 pairing): the identity `complete` writes
+        // must be exactly what this read returns — on GIC the
+        // ICC_IAR1_EL1 read both acknowledges and yields the INTID; on
+        // PLIC the claim read moves the interrupt to in-progress. A
+        // `None` claim (GIC spurious INTID 1023, PLIC id 0) completes
+        // nothing. On x86 APIC the claim is a documented no-op returning
+        // None (there is no claim register; the EOI is the whole
+        // handshake) and `complete` EOIs regardless.
+        let claimed = self.controller.claim();
 
         self.controller.mask(irq);
 
@@ -524,7 +530,7 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
             self.controller.unmask(irq);
         }
 
-        self.controller.complete();
+        self.controller.complete(claimed);
 
         Ok(())
     }
@@ -848,15 +854,17 @@ mod tests {
     }
 
     impl PerCpuInterruptUnit for MockController {
-        fn claim(&mut self) {
+        fn claim(&mut self) -> Option<u32> {
             // The dispatched vector is not an argument anymore (I-13: the
             // claim is per-CPU state, x86 has none) — log with a zero
             // vector; the ordering assertion below keys on the call NAME
             // and the mask/unmask vectors.
             self.call_log.push(("claim", IrqVector::new(0)));
             self.ack_log.push(IrqVector::new(0));
+            None
         }
-        fn complete(&mut self) {
+        fn complete(&mut self, claimed: Option<u32>) {
+            let _ = claimed;
             self.call_log.push(("complete", IrqVector::new(0)));
             self.eoi_log.push(IrqVector::new(0));
         }

@@ -45,12 +45,13 @@ impl InterruptRouter for MockInterruptController {
 }
 
 impl PerCpuInterruptUnit for MockInterruptController {
-    fn claim(&mut self) {
+    fn claim(&mut self) -> Option<u32> {
         log::debug!("mock PerCpuInterruptUnit::claim()");
+        None
     }
 
-    fn complete(&mut self) {
-        log::debug!("mock PerCpuInterruptUnit::complete()");
+    fn complete(&mut self, claimed: Option<u32>) {
+        log::debug!("mock PerCpuInterruptUnit::complete(claimed={claimed:?})");
     }
 }
 

@@ -57,7 +57,6 @@ pub const PROFILE_CLOCK_IRQ: IrqVector = IrqVector::new(0);
 /// - `plic_base`: PLIC MMIO base, from `PlicDesc`.
 /// - `nr_irqs`: number of IRQ sources (from descriptor, clamped to `NR_IRQ_VECTORS`).
 /// - `context`: S-mode context ID for the current hart, from descriptor.
-/// - `last_claimed`: last claimed interrupt ID (saved from claim register read).
 pub struct Riscv64InterruptController {
     /// PLIC MMIO base address.
     plic_base: usize,
@@ -65,8 +64,6 @@ pub struct Riscv64InterruptController {
     nr_irqs: usize,
     /// S-mode context ID for the current hart.
     context: usize,
-    /// Last claimed interrupt ID.
-    last_claimed: u32,
 }
 
 impl Riscv64InterruptController {
@@ -101,7 +98,6 @@ impl InterruptRouter for Riscv64InterruptController {
             plic_base: plic.plic_base,
             nr_irqs: (plic.nr_irqs as usize).min(NR_IRQ_VECTORS),
             context: plic.context as usize,
-            last_claimed: 0,
         }
     }
 
@@ -208,19 +204,26 @@ mod tests {
 }
 
 impl PerCpuInterruptUnit for Riscv64InterruptController {
-    fn claim(&mut self) {
+    fn claim(&mut self) -> Option<u32> {
         // SAFETY: PLIC claim-register read on the interrupting CPU; the
-        // read claims the interrupt and captures its ID for `complete`.
+        // read claims the interrupt and returns its ID (0 = nothing
+        // pending → nothing to handle or complete).
         unsafe {
-            self.last_claimed = self.plic_read32(Self::claim_offset(self.context));
+            let id = self.plic_read32(Self::claim_offset(self.context));
+            (id != 0).then_some(id)
         }
     }
 
-    fn complete(&mut self) {
-        // SAFETY: write the captured ID to the complete register (PLIC_
-        // COMPLETE shares the claim offset; write = complete).
+    fn complete(&mut self, claimed: Option<u32>) {
+        let Some(id) = claimed else {
+            return; // nothing claimed: nothing to complete
+        };
+        // SAFETY: write the claimed ID to the complete register (the
+        // complete register shares the claim offset; write = complete).
+        // The ID is exactly what claim returned — the pairing is the
+        // protocol (D-61).
         unsafe {
-            self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, self.last_claimed);
+            self.plic_write32(PLIC_COMPLETE + self.context * 0x1000, id);
         }
     }
 }

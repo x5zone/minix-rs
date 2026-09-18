@@ -73,7 +73,6 @@ const GICR_WAKER_CHILDREN_ASLEEP: u32 = 0x4;
 /// - `gicd_base`: GIC Distributor MMIO base, from `Gicv3Desc`.
 /// - `gicr_base`: GIC Redistributor MMIO base, from `Gicv3Desc`.
 /// - `nr_irqs`: number of IRQ vectors (from descriptor, clamped to `NR_IRQ_VECTORS`).
-/// - `last_iar`: last acknowledged interrupt ID (saved from ICC_IAR1_EL1 read).
 pub struct AArch64InterruptController {
     /// GIC Distributor MMIO base address.
     gicd_base: usize,
@@ -81,8 +80,6 @@ pub struct AArch64InterruptController {
     gicr_base: usize,
     /// Number of IRQ vectors supported.
     nr_irqs: usize,
-    /// Last acknowledged interrupt ID (saved from ICC_IAR1_EL1 read).
-    last_iar: u32,
 }
 
 impl AArch64InterruptController {
@@ -159,7 +156,6 @@ impl InterruptRouter for AArch64InterruptController {
             gicd_base: gicv3.gicd_base,
             gicr_base: gicv3.gicr_base,
             nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
-            last_iar: 0,
         }
     }
 
@@ -280,20 +276,27 @@ mod tests {
 }
 
 impl PerCpuInterruptUnit for AArch64InterruptController {
-    fn claim(&mut self) {
+    fn claim(&mut self) -> Option<u32> {
         let iar: u64;
         // SAFETY: GIC system-register read on the interrupting CPU; the
-        // read itself acknowledges and captures the INTID for `complete`.
+        // read itself acknowledges and yields the INTID.
         unsafe {
             core::arch::asm!("mrs {}, icc_iar1_el1", out(reg) iar);
         }
-        self.last_iar = (iar as u32) & 0x00FF_FFFF;
+        let intid = (iar as u32) & 0x00FF_FFFF;
+        // GIC spurious INTID (1023): nothing claimable — handling and
+        // completion are both skipped (K8 pairing).
+        (intid != 1023).then_some(intid)
     }
 
-    fn complete(&mut self) {
-        // SAFETY: write back the captured IAR (see claim).
+    fn complete(&mut self, claimed: Option<u32>) {
+        let Some(intid) = claimed else {
+            return; // spurious claim: nothing to complete
+        };
+        // SAFETY: write back the claimed INTID — the completion register
+        // expects exactly the identity the claim read returned (D-61).
         unsafe {
-            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) self.last_iar as u64);
+            core::arch::asm!("msr icc_eoir1_el1, {}", in(reg) intid as u64);
         }
     }
 }

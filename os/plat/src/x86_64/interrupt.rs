@@ -375,15 +375,23 @@ mod tests {
 }
 
 impl PerCpuInterruptUnit for X86_64InterruptController {
-    fn claim(&mut self) {
+    fn claim(&mut self) -> Option<u32> {
         // The x86 APIC has no claim step: unlike GIC (read ICC_IAR1_EL1)
         // or PLIC (read claim), nothing must be read before the handler
-        // runs. The LAPIC EOI register is the *completion* only — writing
-        // it here (the pre-D-61 implementation) would send the EOI before
-        // the handler and re-open the interrupt early.
+        // runs, and there is no claim token to hand back — the IDT vector
+        // already names the line. The LAPIC EOI register is the
+        // *completion* only — writing it here (the pre-D-61
+        // implementation) would send the EOI before the handler and
+        // re-open the interrupt early.
+        None
     }
 
-    fn complete(&mut self) {
+    fn complete(&mut self, claimed: Option<u32>) {
+        // `claimed` is ignored by design: the gate-driven flow has no
+        // claim token to pair with, and the LAPIC EOI completes whatever
+        // the gate delivered — it must be written even when claim
+        // returned None.
+        let _ = claimed;
         unsafe { self.lapic_eoi() };
     }
 }
