@@ -565,7 +565,7 @@ impl IpcApi for TrapKernelApi {
                 len,
                 minix_types::CpFlags::READ,
             )
-            .map_err(|e| Errno::from_i32(e))?;
+            .map_err(Errno::from_i32)?;
         Ok(gid)
     }
 

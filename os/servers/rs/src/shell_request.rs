@@ -859,8 +859,28 @@ impl RsServer {
         let mut update = core::mem::take(&mut state.update);
         let mut noop_abort = |_: i32| {};
         let mut noop_end = |_: i32| {};
-        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
-        let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+        let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
+        let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
+            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
+            // rs_asynsend(失败忽略,utility.c:223-240)。槽位的 lu_flags
+            // 与 state_data_gid 自带。
+            let upd = slot.upd.as_ref();
+            let mut u = minix_types::MessRsUpdate::default();
+            u.state = state;
+            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+            u.state_data_gid = upd
+                .and_then(|x| x.prepare_state_data_gid)
+                .map(|g| g as i32)
+                .unwrap_or(-1);
+            let mut msg = minix_types::Message::default();
+            msg.m_u.m_rs_update = u;
+            msg.m_type = minix_types::RS_LU_PREPARE;
+            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+        };
+        let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
+            // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
+            let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
+        };
         let prepared = update.start_update_prepare(
             &mut state.table,
             is_idle,
@@ -888,11 +908,26 @@ impl RsServer {
                 return Err(Errno::EAGAIN);
             }
             Err(Errno::ESRCH) => {
-                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
+            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
+            // rs_asynsend(失败忽略,utility.c:223-240)。
+            let upd = slot.upd.as_ref();
+            let mut u = minix_types::MessRsUpdate::default();
+            u.state = state;
+            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+            u.state_data_gid = upd
+                .and_then(|x| x.prepare_state_data_gid)
+                .map(|g| g as i32)
+                .unwrap_or(-1);
+            let mut msg = minix_types::Message::default();
+            msg.m_u.m_rs_update = u;
+            msg.m_type = minix_types::RS_LU_PREPARE;
+            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+        };
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                 let _ = update.end_update(
                     &mut state.table,
-                    self.kernel.as_mut(),
+                    &mut **kern_cell.borrow_mut(),
                     0,
                     crate::live_update::RS_REPLY,
                     ticks,
@@ -1248,8 +1283,27 @@ impl RsServer {
                 let is_idle = state.table.iter_in_use().all(|(_, s)| s.flags.is_idle());
                 let mut noop_abort = |_: i32| {};
                 let mut noop_end = |_: i32| {};
-                let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
-                let mut noop_vm = |_: Endpoint, _: Endpoint, _: crate::service_slot::SysFlags| {};
+                let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
+                let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
+            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
+            // rs_asynsend(失败忽略,utility.c:223-240)。
+            let upd = slot.upd.as_ref();
+            let mut u = minix_types::MessRsUpdate::default();
+            u.state = state;
+            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+            u.state_data_gid = upd
+                .and_then(|x| x.prepare_state_data_gid)
+                .map(|g| g as i32)
+                .unwrap_or(-1);
+            let mut msg = minix_types::Message::default();
+            msg.m_u.m_rs_update = u;
+            msg.m_type = minix_types::RS_LU_PREPARE;
+            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+        };
+                let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
+            // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
+            let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
+        };
                 match state.update.start_update_prepare(
                     &mut state.table,
                     is_idle,
@@ -1309,11 +1363,27 @@ impl RsServer {
                             crate::live_update::RS_CANCEL
                         };
                         let ticks = self.kernel.get_ticks()?;
-                        let mut noop_req = |_: &crate::service_slot::ServiceSlot, _: i32| {};
+                        let kern_cell = &core::cell::RefCell::new(&mut *self.kernel.as_mut());
+                        let mut noop_req = move |slot: &crate::service_slot::ServiceSlot, state: i32| {
+            // C update.c:203-227 —— RS_LU_PREPARE + m_rs_update 三域,
+            // rs_asynsend(失败忽略,utility.c:223-240)。
+            let upd = slot.upd.as_ref();
+            let mut u = minix_types::MessRsUpdate::default();
+            u.state = state;
+            u.flags = upd.map(|x| x.lu_flags.bits() as i32).unwrap_or(0);
+            u.state_data_gid = upd
+                .and_then(|x| x.prepare_state_data_gid)
+                .map(|g| g as i32)
+                .unwrap_or(-1);
+            let mut msg = minix_types::Message::default();
+            msg.m_u.m_rs_update = u;
+            msg.m_type = minix_types::RS_LU_PREPARE;
+            let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
+        };
                         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                         state.update.end_update(
                             &mut state.table,
-                            self.kernel.as_mut(),
+                            &mut **kern_cell.borrow_mut(),
                             minix_types::EINTR,
                             reply_flag,
                             ticks,
