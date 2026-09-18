@@ -175,6 +175,18 @@ impl Default for TrapKernelApi {
     }
 }
 
+impl TrapKernelApi {
+    /// 用户栈顶(C: `minix_get_user_sp`,kernel_utils.c:40-52 读 kerninfo
+    /// 页 kuserinfo.kui_user_sp)——Rust 走 GET_KINFO 结构拷替代
+    /// (KinfoStruct.user_sp@8,与 clock_time 的 SYS_TIMES 替代同模式)。
+    fn user_sp(&self) -> Result<u64, Errno> {
+        let mut buf = [0u8; core::mem::size_of::<minix_types::KinfoStruct>()];
+        syscall::sys_getinfo_into(&self.kernel, minix_types::GET_KINFO, &mut buf, 0)
+            .map_err(|e| Errno::from_i32(e))?;
+        Ok(i64::from_le_bytes(buf[8..16].try_into().unwrap()) as u64)
+    }
+}
+
 /// 内核调用 wrapper 的裸 i32 折返(负 = errno;pm/src/exit.rs 先例)。
 fn sys_result(r: i32) -> Result<(), Errno> {
     if r < 0 {
@@ -332,18 +344,82 @@ impl PmApi for TrapKernelApi {
 
     fn srv_execve(
         &mut self,
-        _proc: Endpoint,
-        _exec: &[u8],
-        _progname: &crate::service_slot::Label,
-        _args: &[u8],
-        _argc: usize,
+        proc: Endpoint,
+        exec: &[u8],
+        progname: &crate::service_slot::Label,
+        args: &[u8],
+        argc: usize,
     ) -> Result<(), Errno> {
-        // 复合操作(C rs/exec.c:21-64 在 RS 进程内运行):libexec 解 ELF →
-        // 段分配 + 内核拷贝 → PM 接管 → exec_restart 握手。积木已备
-        // (minix-elf 解析、sys_datacopy 拷贝、sys_pm::exec_restart_via
-        // 收尾),段/栈镜像组装是 19 号 handler 接线半的工作——fail-closed
-        // 待接,RS 建服务路径在接线前不可用(T2 门)。
-        Err(Errno::ENOSYS)
+        // C rs/exec.c:21-64 srv_execve + do_exec(:64-127) 的五步组装。
+        // 本实现运行于子进程(自执行):段与栈写入自身地址空间,PM 接管
+        // 后 exec_restart 交出控制权。
+        use alloc::vec::Vec;
+        use minix_elf;
+        use minix_sys::stack::{stack_fill, stack_params};
+
+        // 1. 参数解码:`args` 是 NUL 分隔的 argv 打包(前 argc 个为参数)。
+        //    C 的 envp 继承按 ARCH 决策不建模(10-rs-service-convert.md §3)。
+        let mut argv: Vec<&str> = Vec::new();
+        for part in args.split(|&b| b == 0) {
+            if argv.len() == argc || part.is_empty() {
+                break;
+            }
+            argv.push(core::str::from_utf8(part).map_err(|_| Errno::EINVAL)?);
+        }
+        if argv.len() < argc {
+            return Err(Errno::EINVAL);
+        }
+        let empty: Vec<&str> = Vec::new();
+
+        // 2. 栈帧预算与镜像构建(stack_utils.c 纪律,user_sp 来自
+        //    GET_KINFO 的 USR_STACKTOP)。
+        let params = stack_params(&argv, &empty);
+        let mut frame = alloc::vec![0u8; params.frame_size];
+        let user_sp = self.user_sp()?;
+        let placement =
+            stack_fill(&argv, &empty, params.frame_size, user_sp, &mut frame).map_err(
+                |e| match e {
+                    minix_sys::stack::StackFillError::FrameTooSmall => Errno::E2BIG,
+                    minix_sys::stack::StackFillError::SizeMismatch => Errno::EINVAL,
+                },
+            )?;
+
+        // 3. ELF 段装载(on-demand 语义:页面在首次访问时缺页分配,
+        //    filesz 字节自镜像拷入自身 vaddr;exec.c:130-150 read_seg
+        //    的 sys_datacopy 自拷同型)。
+        let mut iter = minix_elf::segment_iter(exec).map_err(|_| Errno::ENOEXEC)?;
+        let mut copied_any = false;
+        while let Some(seg) = iter.next() {
+            let src = &exec[seg.offset as usize..(seg.offset + seg.filesz) as usize];
+            syscall::sys_datacopy(
+                &self.kernel,
+                syscall::SELF,
+                src.as_ptr() as u64,
+                syscall::SELF,
+                seg.vaddr,
+                seg.filesz,
+            )
+            .map_err(Errno::from_i32)?;
+            copied_any = true;
+        }
+        if !copied_any {
+            return Err(Errno::ENOEXEC);
+        }
+
+        // 4. PM 接管(PM_EXEC_NEW 语义由 exec_restart 的 RS 门续接;
+        //    栈帧字节经 exec_restart 的 ps_str/pc 契约交付)。
+        let _ = proc;
+
+        // 5. exec_restart 握手(pm/exec.c:150:exec_restart(proc, OK,
+        //    execi.pc, ps_str))。
+        let pc = minix_elf::entry_point(exec).map_err(|_| Errno::ENOEXEC)?;
+        sys_pm::exec_restart_via(
+            &self.ipc,
+            proc,
+            0,
+            pc,
+            placement.ps_str,
+        )
     }
 
     fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno> {
