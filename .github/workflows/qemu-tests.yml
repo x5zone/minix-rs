@@ -59,3 +59,29 @@ jobs:
         env:
           QEMU_TESTS_SKIP_AP_ALIVE: "1"
         run: bash qemu-tests/run_all.sh
+
+  # T-10 (edge1 K13): the riscv64 boot chain through U-Boot
+  # (fatload → bootelf) — the non-OpenSBI firmware lane a real machine
+  # may present. ubuntu-latest carries every prerequisite via apt.
+  riscv64-uboot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-none-elf
+
+      - name: Install QEMU and U-Boot
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             qemu-system-misc u-boot-qemu u-boot-tools dosfstools mtools
+
+      - name: Build riscv64 test kernel
+        working-directory: os
+        run: cargo build -p hello-boot-riscv64 --target riscv64gc-unknown-none-elf --release
+
+      - name: Run U-Boot boot chain test
+        run: bash os/qemu-tests/test-riscv64-uboot.sh
