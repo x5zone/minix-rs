@@ -50,7 +50,7 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
-for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown test-user-trap; do
+for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown test-user-trap test-paging-faultloop; do
     echo "--- x86_64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
@@ -105,6 +105,18 @@ if command -v qemu-system-x86_64 &>/dev/null; then
         else FAIL=$((FAIL + 1)); fi
     else
         echo "(test-user-trap: binary not found, skip)"
+        SKIP=$((SKIP + 1))
+    fi
+
+    echo "--- Running: test-paging-faultloop (special: gdbstub mailbox) ---"
+    if [ -f "$OS_ROOT/target/x86_64-unknown-uefi/release/test-paging-faultloop.efi" ]; then
+        rc=0
+        bash "$SCRIPT_DIR/test-paging-faultloop.sh" || rc=$?
+        if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+        elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-paging-faultloop: skipped)"
+        else FAIL=$((FAIL + 1)); fi
+    else
+        echo "(test-paging-faultloop: binary not found, skip)"
         SKIP=$((SKIP + 1))
     fi
 

@@ -29,7 +29,7 @@
 | C-1 | edge2 L5 E-DEVWIRE 消费侧 | edge2 | `os/servers/vfs/src/cdev.rs`、`bdev.rs`（删本地常量副本改 import，小改） | 无 | ✅ 销账（2026-09-18，aecd4cd1c：vfs 删 12 个本地常量改消费 minix-types types/device.rs，u8 类型漂移裁正） |
 | C-2 | edge2 L8 E-SDEVOWN vfs 副本 | edge2 | `os/servers/vfs/src/sdev.rs`（删 923 行副本，改消费 `minix-sockdriver`）+ `os/Cargo.toml`（新增 workspace 成员 `libs/minix-sockdriver`，§1 规则 3 登记流水同轮） | edge2 | 🔄 持锁（2026-09-18，方案 A2 新 crate 裁决：C 世界 libbdev/libsockdriver 两库并列，Rust 已有 minix-bdev，镜像位新建） |
 | C-3 | edge3 S9 D-02 kernel 臂 | edge3（需求方） | `os/kernel`（SYS_GETMONPARAMS/GETIMAGE 对端，edge1 认领实现）+ `os/libs/minix-sys` wrapper（edge2 认领） | 无 | ☐ 待 edge1/edge2 排期 |
-| C-4 | edge1 K17 E5(d) qemu 载体消费 VM | edge1 | 仅读 edge3 的 VM 语义/接口，不改 `os/servers/vm`；发现 VM 缺口回 edge3 状态板登记 | 无 | ☐ |
+| C-4 | edge1 K17 E5(d) qemu 载体消费 VM | edge1 | 仅读 edge3 的 VM 语义/接口，不改 `os/servers/vm`；发现 VM 缺口回 edge3 状态板登记 | 无 | ✅ 销账（2026-09-19，载体 `test-paging-faultloop` 真机 PASS。VM 缺口登记：`minix-vm` 的 `pagetable`/`vm_self_map` 均 `pub(crate)`（lib.rs 导出面仅 VmServer/BootMemRegion/boot 类型），测试内核不可链接——载体以 arch 分页原语复现同一回路（adopt → map/query/unmap → #PF → 处理臂写硬件 PTE → 重执行），生产 `page_fault` helper（RTS 旗标 + VM_PAGEFAULT 消息）在载体臂真实走查；**edge3 待办**：真机联调（E5(d) 完整体）需要 VM 侧暴露可链接的分页冒烟面，届时载体臂可平滑换成真实 VM 参战） |
 | C-5 | edge2 L2 E-SYSCALL-SIGN 回迁消费侧 | edge2 | `os/servers/is/src/acquire.rs`（`vfs_proc_tab_via` 撤本地符号归一，改走共享 `perform_taskcall`）+ 四处命令侧"待 sign 修复"注释卫生（`os/commands/bin/fileops/src/bin/echo.rs`、`os/commands/usr-bin/regex/src/bin_support.rs`、`os/commands/usr-bin/textfilter/src/bin_support.rs`、`os/commands/games/stdio-games/src/bin_support.rs`，仅注释）。IS 注释自证等待本裁决（acquire.rs:649-651） | edge2 | ✅ 销账（2026-09-18，0cca4247d） |
 | C-6 | edge3 S6 D-16 DumpCore wire 按值携带名字（OQ-5 裁决 2026-09-19） | edge3（需求方） | `os/libs/minix-types`（`VfsCall::DumpCore` 成员改造：i32 path → 按值 name+len）+ `os/servers/vfs` 消费侧 | 无 | ☐ S6 开工时 edge3 持锁 |
 | C-7 | edge3 S19 A-6 诊断缝共享 helper | edge3（需求方） | `os/libs/minix-sys/src/syscall.rs`（`sys_diagctl` 旁新增 `sys_diagctl_write` 字符串便利封装，仅加函数不改既有）+ `os/servers/rs`（SysApi::diag_write 缝） | 无 | ✅ 销账（2026-09-19，1f72d8ffe） |
@@ -45,6 +45,7 @@
 | 2026-09-18 | edge1 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
 | 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K10：新增 test-smp-ipi-riscv64 carrier | 部分——Cargo.toml 成员已加（carrier 不入 run_all 矩阵：SSIE 回路未绿，见 edge1 K10 🔄 注记；绿后再接 run_all） |
 | 2026-09-18 | edge1 | `tools/` | K16：新增 `tools/review-line-check.sh`（文档行号锚点批量反向核查：行存在性 + 当行内容回显） | ✅ 同日 |
+| 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K17：test-paging-faultloop（E5(d) 缺页完整回路载体）入 workspace 成员 + x86_64 构建清单 + 特殊协议脚本区（gdbstub 邮箱断言，test-user-trap 同款） | ✅ 同日（真机 PASS 后接线完成并验证） |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 

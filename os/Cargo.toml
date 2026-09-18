@@ -54,6 +54,7 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps",
     "qemu-tests/test-kernels/kernel/bootstrap/test-user-trap",
+    "qemu-tests/test-kernels/kernel/bootstrap/test-paging-faultloop",
     "qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth",
     "qemu-tests/test-kernels/user/rt-birth",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi",
