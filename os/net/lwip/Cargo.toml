@@ -14,6 +14,7 @@ minix-types = { workspace = true }
 minix-sys = { workspace = true }
 minix-sef = { workspace = true }
 minix-netdriver = { workspace = true }
+minix-sockdriver = { workspace = true }
 minix-chardriver = { workspace = true }
 minix-blockdriver = { workspace = true }
 

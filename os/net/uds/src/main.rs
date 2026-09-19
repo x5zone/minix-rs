@@ -42,5 +42,9 @@ impl minix_net_uds::server::UdsHandler for ProductionHandler {
         None
     }
 
+    fn on_terminate(&mut self) {
+        self.running = false;
+    }
+
     fn unexpected(&mut self, _msg: &minix_types::Message, _is_notify: bool) {}
 }
