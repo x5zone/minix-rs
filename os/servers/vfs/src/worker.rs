@@ -106,6 +106,25 @@ pub enum WorkerCont {
         /// 被改模式的 vnode 下标（走完时并入缓存的那个）。
         vnode: usize,
     },
+    /// `sync`/`fsync` 的**多挂载序列**（C `do_sync` misc.c:276-296 与
+    /// `do_fsync` misc.c:229-267 的 `for (vmp = &vmnt[0]; ...)` 循环）：
+    /// 每个匹配的挂载各发一条 `REQ_SYNC`，逐条等回复（单线程模型里就是逐段
+    /// 挂起）。C 把 `req_sync` 的返回值**丢掉**，只保留加锁失败的错误——所以
+    /// 序列跑完报的是 `first_err`（通常 0）。
+    ///
+    /// 用定长数组而不是 `Vec`：`WorkerCont` 必须是 `Copy`（驱动层
+    /// `let (Some(cont), Some(reply)) = (wp.cont, wp.sendrec)` 直接按值取），
+    /// 而 `NR_MNTS` 只有 16，定长数组够用且保住了 `Copy`。
+    SyncMounts {
+        /// 待发的挂载 FS 端点（前 `count` 个有效）。
+        targets: [Endpoint; crate::vmnt::NR_MNTS],
+        /// 有效元素个数。
+        count: u8,
+        /// 下一个要发的下标。
+        at: u8,
+        /// 要报给用户的错误（C 里只有加锁失败会写它）。
+        first_err: i32,
+    },
     /// `readlink` 的对话半（`REQ_RDLINK`）：C `req_rdlink_actual`
     /// （request.c:741-747）——回复的 `m_type` 只是 `OK`，**字节数在载荷里**
     /// （`mess_fs_vfs_rdlink { size_t nbytes; }`），所以不能复用 `Status`。

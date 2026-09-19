@@ -1050,6 +1050,86 @@ impl VfsState {
         Ok(())
     }
 
+    /// 扫出 `sync`/`fsync` 要通知的挂载（C `do_sync`/`do_fsync` 的循环过滤）：
+    /// `m_dev != NO_DEV && m_fs_e != NONE && m_root_node != NULL`；`dev` 给了
+    /// 就再按设备号过滤（fsync 用文件的 `v_dev`）。
+    pub fn sync_targets(&self, dev: Option<minix_types::DevId>) -> alloc::vec::Vec<Endpoint> {
+        let mut out = alloc::vec::Vec::new();
+        for idx in 0..crate::vmnt::NR_MNTS {
+            let Some(v) = self.vmnt_table.get(crate::vmnt::VmntId(idx)) else {
+                continue;
+            };
+            if v.dev == minix_types::NO_DEV || v.fs == Endpoint::NONE || v.root.is_none() {
+                continue;
+            }
+            if let Some(want) = dev
+                && v.dev != want
+            {
+                continue;
+            }
+            out.push(v.fs);
+        }
+        out
+    }
+
+    /// 给槽发一条 `REQ_SYNC`（C `req_sync`：空载荷、状态回复）。
+    ///
+    /// **不动槽上的续接标识**：调用方（`begin_sync_sequence` 与
+    /// `SyncMounts` 续接体）自己把它设成序列状态——这里若顺手写成
+    /// `Status`，序列的"还剩几条"就丢了（本轮踩过）。
+    pub fn send_sync_for_slot(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+    ) -> Result<(), i32> {
+        let vmnt = self.vmnt_table.find_by_fs(fs_e).ok_or(minix_types::EIO)?.0;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant: 0, // 无数据面
+            user,
+            req: Message {
+                m_type: minix_types::REQ_SYNC,
+                ..Message::default()
+            },
+        });
+        Ok(())
+    }
+
+    /// 启动一串 `REQ_SYNC`（`sync`/`fsync` 共用）：把目标挂载收进定长数组，
+    /// 发第一条，剩下的留给 `WorkerCont::SyncMounts` 续接体逐条发。
+    pub fn begin_sync_sequence(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        dev: Option<minix_types::DevId>,
+    ) -> Result<(), i32> {
+        let targets = self.sync_targets(dev);
+        let mut arr = [Endpoint::NONE; crate::vmnt::NR_MNTS];
+        for (i, ep) in targets.iter().enumerate().take(crate::vmnt::NR_MNTS) {
+            arr[i] = *ep;
+        }
+        if targets.is_empty() {
+            // C 的循环一条都没发：直接成功（没有挂载要同步不是错误）。
+            return Ok(());
+        }
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::SyncMounts {
+                targets: arr,
+                count: targets.len().min(crate::vmnt::NR_MNTS) as u8,
+                at: 1, // 第 0 条由下面发
+                first_err: 0,
+            });
+        }
+        self.send_sync_for_slot(idx, fp_slot, targets[0])
+    }
+
     /// 发一条 `REQ_UNLINK`/`REQ_RMDIR`（C `req_unlink`/`req_rmdir`，
     /// request.c:1149-1175 / 966-989）：组件名写进槽内 scratch 并做
     /// **direct grant**（名字在 VFS 内存里，不是 magic grant），父目录 ino
@@ -1655,6 +1735,29 @@ impl VfsState {
                             v.mode = actual;
                         }
                     }
+                }
+                crate::worker::WorkerCont::SyncMounts { targets, count, at, first_err } => {
+                    // C `do_sync`/`do_fsync` 的循环在单线程模型里的形态：每条
+                    // 回复到达就发下一条，发完报 `first_err`（C 把 `req_sync`
+                    // 的返回值丢掉，只留加锁错误）。
+                    let _ = status; // 单条 REQ_SYNC 的结果不影响用户可见值
+                    if (at as usize) < (count as usize) {
+                        let next = targets[at as usize];
+                        if let Some(wp) = self.worker_pool.get_mut(idx) {
+                            wp.cont = Some(crate::worker::WorkerCont::SyncMounts {
+                                targets,
+                                count,
+                                at: at + 1,
+                                first_err,
+                            });
+                        }
+                        if let Err(e) = self.send_sync_for_slot(idx, fp_slot, next) {
+                            self.finish_worker_job(idx, fp_slot, e);
+                        }
+                        continue;
+                    }
+                    // 序列跑完：C 的 `r` 就是加锁结果（这里恒为 first_err）。
+                    status = first_err;
                 }
                 crate::worker::WorkerCont::Rdlink { grant } => {
                     // C `req_rdlink_actual`（request.c:743-747）：撤销 grant，
@@ -3922,6 +4025,96 @@ mod tests {
         assert_eq!(f.vnode.is_some(), true, "filp_vno 已填（并进的 vnode）");
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `sync`/`fsync` 的多挂载序列（C `do_sync`/`do_fsync` 的循环）：
+    /// 目标过滤（`dev != NO_DEV && fs != NONE && root != NULL`，fsync 再按
+    /// 设备号收窄）→ 逐条发 `REQ_SYNC` → 发完报 `first_err`（C 丢掉单条的
+    /// 返回值，只留加锁错误）。
+    #[test]
+    fn test_sync_sequence_over_mounts() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        crate::main_loop::seed_ready_state(&mut state);
+        // 行 0：有效（MFS、dev 1、有根）。行 1：另一个 FS、dev 2。行 2：缺根
+        // ——必须被过滤掉。
+        let vid = state.vnode_table.find_by_ino(Endpoint::MFS, 1).unwrap();
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+            v.root = Some(vid.get());
+        }
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+            v.fs = Endpoint::from_generation_slot(0, 7);
+            v.dev = 2;
+            v.root = Some(vid.get());
+        }
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(2)).unwrap();
+            v.fs = Endpoint::from_generation_slot(0, 8);
+            v.dev = 3;
+            v.root = None; // 没根 → 不过滤进来
+        }
+        // 全量：两行（行 0 与行 1）。
+        assert_eq!(
+            state.sync_targets(None),
+            alloc::vec![Endpoint::MFS, Endpoint::from_generation_slot(0, 7)]
+        );
+        // 按设备收窄：只要 dev 2 那一行（fsync 的形态）。
+        assert_eq!(
+            state.sync_targets(Some(2)),
+            alloc::vec![Endpoint::from_generation_slot(0, 7)]
+        );
+
+        // 序列跑起来：第一条 REQ_SYNC 已登记，现场带两条目标。
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        state.begin_sync_sequence(idx, Some(slot), None).unwrap();
+        let p = state.pending_fs.as_ref().expect("第一条 REQ_SYNC");
+        assert_eq!(p.req.m_type, minix_types::REQ_SYNC);
+        assert_eq!(p.fs_e, Endpoint::MFS, "先发列表里的第一个");
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().cont,
+            Some(WorkerCont::SyncMounts { count: 2, at: 1, .. })
+        ));
+
+        // 第一条回复到达 → 发第二条。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("第二条 REQ_SYNC");
+        assert_eq!(p.req.m_type, minix_types::REQ_SYNC);
+        assert_eq!(p.fs_e, Endpoint::from_generation_slot(0, 7));
+        assert!(state.take_reply().is_none(), "序列没跑完不回用户");
+
+        // 第二条回复到达 → 序列结束，回 0 并释放槽。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0))
+        );
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 

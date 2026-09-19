@@ -213,8 +213,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
         | VfsCallNum::Umount
-        | VfsCallNum::Sync
-        | VfsCallNum::Fsync
         | VfsCallNum::Chdir
         | VfsCallNum::Fchdir
         | VfsCallNum::Chroot
@@ -1200,6 +1198,62 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：utimens（path/fd 两半共用一个体）──
         // ── 路径臂模板：symlink（父目录遍历 + 名字 direct grant + 目标 magic grant）──
         // ── 路径臂模板：link（**两段遍历**：先源文件、再新名的父目录）──
+        // ── sync / fsync（多挂载序列：每个匹配挂载一条 REQ_SYNC）──
+        VfsCallNum::Sync | VfsCallNum::Fsync => {
+            // C `do_sync`（misc.c:276-296，全部挂载）与 `do_fsync`
+            // （misc.c:229-267，按文件所在设备的 `v_dev` 过滤）。
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let dev = if matches!(call, VfsCallNum::Fsync) {
+                // C misc.c:236-243：`get_filp(fd, VNODE_READ)` 取 vnode 的
+                // `v_dev`——fsync 只同步该设备所在的挂载。
+                let fd = {
+                    // SAFETY: `mess_lc_vfs_fsync { int fd; }`（ipc.h:673-677）。
+                    let raw = unsafe { &msg.m_u.raw };
+                    i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
+                };
+                if fd < 0 {
+                    return SyscallResult::Error(minix_types::EBADF);
+                }
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode_idx = match state
+                    .filp_table
+                    .get(crate::filp::FilpId(filp_idx))
+                    .and_then(|f| f.vnode)
+                {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => Some(v.dev),
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                }
+            } else {
+                None
+            };
+            match state.begin_sync_sequence(worker, Some(fp_slot), dev) {
+                Ok(()) => {
+                    // 没有要同步的挂载：C 的循环一条都没发 → 直接成功。
+                    if state.pending_fs.is_none() {
+                        return SyscallResult::Ok(0);
+                    }
+                    SyscallResult::Suspend
+                }
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
         VfsCallNum::Link => {
             // C `do_link`（link.c:170-230）：载荷 `mess_lc_vfs_link`
             // （name1@0 = 源文件路径、name2@8 = 新链接路径、len1@16、len2@24）。
@@ -3013,6 +3067,108 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Sync`/`Fsync` 臂（C `do_sync` misc.c:276-296 / `do_fsync`
+    /// misc.c:229-267）：fsync 走 fd 取 vnode 的设备号再按设备过滤挂载；
+    /// 没有要同步的挂载时**直接成功**（C 的循环一条都没发）；有则起序列
+    /// （每条 REQ_SYNC 逐段挂起）。
+    #[test]
+    fn test_dispatch_sync_and_fsync() {
+        use minix_types::Endpoint;
+
+        let setup = |with_mount: bool| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let vid = state.vnode_table.find_by_ino(Endpoint::MFS, 1).unwrap();
+            if with_mount {
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+                v.root = Some(vid.get());
+            }
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vfid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vfid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x42;
+                v.mode = crate::open::S_IFREG | 0o644;
+                v.dev = 1; // 与挂载行的 dev 相同
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vfid.get());
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+        let fsync_msg = |fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Fsync as i32,
+                ..Message::default()
+            };
+            // SAFETY: `mess_lc_vfs_fsync { int fd; }`（ipc.h:673-677）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+            }
+            m
+        };
+
+        // ① fsync 负 fd → EBADF。
+        let (mut state, _idx) = setup(true);
+        state.current_message = fsync_msg(-1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fsync),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ② fsync 有效 fd 但没有该设备的挂载 → 直接成功（C 的循环没发东西）。
+        let (mut state, _idx) = setup(false);
+        state.current_message = fsync_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fsync),
+            SyscallResult::Ok(0)
+        );
+        assert!(state.pending_fs.is_none());
+
+        // ③ fsync 有挂载 → 起序列（挂起，第一条 REQ_SYNC 已登记）。
+        let (mut state, _idx) = setup(true);
+        state.current_message = fsync_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fsync),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("第一条 REQ_SYNC");
+        assert_eq!(p.req.m_type, minix_types::REQ_SYNC);
+        assert_eq!(p.fs_e, Endpoint::MFS);
+
+        // ④ sync（全部挂载）同款：这里只有一行有效挂载。
+        let (mut state, _idx) = setup(true);
+        state.current_message = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Sync as i32,
+            ..Message::default()
+        };
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Sync),
+            SyscallResult::Suspend
+        );
+        assert_eq!(
+            state.pending_fs.as_ref().map(|p| p.req.m_type),
+            Some(minix_types::REQ_SYNC)
+        );
     }
 
     /// `Symlink` 臂：两道长度门（`<= 1` → ENOENT、`>= 255` →
