@@ -1929,6 +1929,132 @@ impl VfsState {
                                 }
                                 continue;
                             }
+                            crate::worker::PathFollow::Slink { entry, target_addr, target_len } => {
+                                // C `do_slink:411-414`：`forbidden(fp, vp,
+                                // W_BIT|X_BIT)` 过了才发 `req_slink`（父目录
+                                // 的类型由遍历/FS 把关，这里没有单独的类型门）。
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (
+                                            fp.real_uid,
+                                            fp.real_gid,
+                                            fp.eff_uid,
+                                            fp.eff_gid,
+                                            fp.supplemental_groups[..fp.ngroups.min(16)]
+                                                .to_vec(),
+                                        ),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                let forbid = crate::protect::forbidden_decision(
+                                    &crate::protect::ForbidInput {
+                                        real_uid,
+                                        real_gid,
+                                        eff_uid,
+                                        eff_gid,
+                                        is_access_call: false,
+                                        file_uid: node.uid,
+                                        file_gid: node.gid,
+                                        mode: node.mode,
+                                        access: (crate::open::W_BIT | crate::open::X_BIT) as u8,
+                                        is_dir: true,
+                                        supp: &supp,
+                                        readonly_fs,
+                                    },
+                                );
+                                if let Err(e) = forbid {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                let user = fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                    .map(|fp| fp.endpoint)
+                                    .unwrap_or(Endpoint::NONE);
+                                // 名字：VFS 内存里的 direct grant。
+                                let (grant_path, name_len) = {
+                                    let Some(wp) = self.worker_pool.get_mut(idx) else {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    };
+                                    let bytes = entry.as_bytes();
+                                    let n = bytes.len().min(crate::path::PATH_MAX - 1);
+                                    wp.path_scratch[..n].copy_from_slice(&bytes[..n]);
+                                    wp.path_scratch[n] = 0;
+                                    let addr = wp.path_scratch.as_ptr() as u64;
+                                    let len = n + 1;
+                                    match self.grants.grant_direct(
+                                        &minix_sys::syscall::DirectKernelCallTransport,
+                                        node.fs_e.get(),
+                                        addr,
+                                        len as u64,
+                                        minix_types::CpFlags::READ,
+                                    ) {
+                                        Ok(g) => (g, len),
+                                        Err(_) => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EIO,
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                };
+                                // 目标串：**用户内存**里的 magic grant（首趟带
+                                // `CPF_TRY`，C request.c:1061-1062）。
+                                let grant_target = match self.grant_user_buffer(
+                                    node.fs_e,
+                                    user,
+                                    target_addr,
+                                    target_len,
+                                    minix_types::CpFlags::READ | minix_types::CpFlags::TRY,
+                                ) {
+                                    Ok(g) => g,
+                                    Err(_) => {
+                                        let _ = self.revoke_grant(grant_path);
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    }
+                                };
+                                let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    let _ = self.revoke_grant(grant_path);
+                                    let _ = self.revoke_grant(grant_target);
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    continue;
+                                };
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Status);
+                                }
+                                self.pending_fs = Some(PendingFs {
+                                    vmnt: vmnt.0,
+                                    fs_e: node.fs_e,
+                                    worker: idx,
+                                    grant: grant_path,
+                                    user,
+                                    req: crate::request::encode_slink(
+                                        node.ino,
+                                        name_len,
+                                        target_len as usize,
+                                        grant_path,
+                                        grant_target,
+                                        eff_uid,
+                                        eff_gid,
+                                    ),
+                                });
+                                continue;
+                            }
                             crate::worker::PathFollow::Utimens { atime, mtime, flags } => {
                                 // C `do_utimens` 的路径半（time.c:74-96）：未知
                                 // 标志在入口就拒（这里再核一次，防 follow 被
@@ -3607,6 +3733,120 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Slink`（symlink 的父目录半）：`W|X` 权限门（EACCES）过了
+    /// 才发 `REQ_SLINK`；请求带**两个 grant**——名字（VFS 内存 direct）与目标
+    /// 串（用户内存 magic），`mem_size` 是目标串长度**不含**结尾 NUL
+    /// （C `do_slink:411-414` + `req_slink_actual`）。
+    #[test]
+    fn test_path_follow_slink_gates_and_two_grants() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState, eff_uid: u32| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            {
+                let fp = state.fproc_table.get_mut(slot).unwrap();
+                fp.endpoint = user;
+                fp.pid = 100;
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = eff_uid;
+                fp.real_uid = eff_uid;
+                fp.real_gid = eff_uid;
+            }
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (idx, walk)
+        };
+        let done_reply = |mode: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&0x21u64.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+            }
+            reply
+        };
+        let plant = |state: &mut VfsState, idx: usize, walk, reply: Message| {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Slink {
+                    entry: "l".to_string(),
+                    target_addr: 0x6000,
+                    target_len: 7, // "target" 不含 NUL
+                },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        };
+
+        // ① 目录 0755（other 有 x 无 w）、非属主 → `W|X` 门拒。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        crate::main_loop::warm_grants(&mut state);
+        let (idx, walk) = mk(&mut state, 2000);
+        plant(&mut state, idx, walk.clone(), done_reply(crate::open::S_IFDIR | 0o755));
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EACCES))
+        );
+
+        // ② root → 发 REQ_SLINK，双 grant 都在请求里。
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        plant(&mut state, idx, walk.clone(), done_reply(crate::open::S_IFDIR | 0o755));
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_SLINK");
+        assert_eq!(p.req.m_type, minix_types::REQ_SLINK);
+        // SAFETY(test): 按 slink_req_off 读回七域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let dir_ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let path_len = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+            let mem_size = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+            let grant_path = i32::from_le_bytes(raw[24..28].try_into().unwrap());
+            let grant_target = i32::from_le_bytes(raw[28..32].try_into().unwrap());
+            let uid = u32::from_le_bytes(raw[32..36].try_into().unwrap());
+            assert_eq!(dir_ino, 0x21, "inode 域是父目录");
+            assert_eq!(path_len, 2, "名字含结尾 NUL（\"l\" → 2 字节）");
+            assert_eq!(mem_size, 7, "目标串长度不含 NUL");
+            assert_eq!(grant_path, p.grant, "现场记的是名字 grant");
+            assert_ne!(grant_target, grant_path, "两个 grant 必须是两张");
+            assert_eq!(uid, crate::link::SU_UID);
+        }
+        // 回复只有状态。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0))
+        );
     }
 
     /// `PathFollow::Mknod`（mknod 的父目录半）：类型门（ENOTDIR）→ `W|X`

@@ -196,6 +196,17 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `symlink(target, linkpath)`：走完**父目录**（`last_dir`）过门后发
+    /// `REQ_SLINK`——两个 grant：名字（VFS 内存，direct）+ 目标串（**用户
+    /// 内存**，magic）。C `do_slink`（link.c:386-424）。
+    Slink {
+        /// 最后组件名（新链接的名字）。
+        entry: alloc::string::String,
+        /// 用户内存里目标串的地址。
+        target_addr: u64,
+        /// 目标串长度（**不含**结尾 NUL，C 传 `vname1_length - 1`）。
+        target_len: u64,
+    },
     /// `utimens(path, times, flags)`：走完过门后发 `REQ_UTIME`；时间里的
     /// `UTIME_NOW`/`UTIME_OMIT` 哨兵在走完之后才折算（要先知道节点的属主）。
     /// C `do_utimens`（time.c:44-160）。

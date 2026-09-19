@@ -340,6 +340,48 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_SLINK` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_slink { ino_t inode; size_t path_len; size_t mem_size;
+/// cp_grant_id_t grant_path; cp_grant_id_t grant_target; uid_t uid; gid_t
+/// gid; }`（ipc.h:2146-2157，`request.c:990-1046` 的 `req_slink_actual`）。
+/// **两个 grant**：`grant_path` 是 VFS 内存里的组件名（direct），
+/// `grant_target` 是**用户内存**里的链接目标串（magic）——FS 从用户空间读
+/// 目标，这是本族里唯一一处双 grant 请求。
+pub mod slink_req_off {
+    /// `ino_t inode`（父目录）。
+    pub const INODE: usize = 0;
+    /// `size_t path_len`（组件名长度，含结尾 NUL）。
+    pub const PATH_LEN: usize = 8;
+    /// `size_t mem_size`（目标串长度，**不含**结尾 NUL）。
+    pub const MEM_SIZE: usize = 16;
+    /// `cp_grant_id_t grant_path`。
+    pub const GRANT_PATH: usize = 24;
+    /// `cp_grant_id_t grant_target`。
+    pub const GRANT_TARGET: usize = 28;
+    /// `uid_t uid`（新链接的属主 = 调用方有效 uid）。
+    pub const UID: usize = 32;
+    /// `gid_t gid`。
+    pub const GID: usize = 36;
+}
+
+/// `REQ_LINK` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_link { ino_t inode; ino_t dir_ino; cp_grant_id_t grant;
+/// size_t path_len; }`（ipc.h:2010-2018，`request.c:390-418` 的
+/// `req_link`）。`inode` 是**被链接的文件**、`dir_ino` 是新名的父目录——
+/// 两个 ino 的顺序别弄反（结构体里文件在前、目录在后）。
+pub mod link_req_off {
+    /// `ino_t inode`（被链接的文件）。
+    pub const INODE: usize = 0;
+    /// `ino_t dir_ino`（新名的父目录）。
+    pub const DIR_INO: usize = 8;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 16;
+    /// `size_t path_len`（新名长度，含结尾 NUL）。
+    pub const PATH_LEN: usize = 24;
+}
+
 /// `REQ_UTIME` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_utime { ino_t inode; time_t actime; time_t modtime;
@@ -632,6 +674,19 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // slink：请求七域（两个 grant：名字 direct + 目标 magic）。
+        assert_eq!(slink_req_off::INODE, 0);
+        assert_eq!(slink_req_off::PATH_LEN, 8);
+        assert_eq!(slink_req_off::MEM_SIZE, 16);
+        assert_eq!(slink_req_off::GRANT_PATH, 24);
+        assert_eq!(slink_req_off::GRANT_TARGET, 28);
+        assert_eq!(slink_req_off::UID, 32);
+        assert_eq!(slink_req_off::GID, 36);
+        // link：请求四域（文件 ino 在前、父目录 ino 在后）。
+        assert_eq!(link_req_off::INODE, 0);
+        assert_eq!(link_req_off::DIR_INO, 8);
+        assert_eq!(link_req_off::GRANT, 16);
+        assert_eq!(link_req_off::PATH_LEN, 24);
         // utime：请求五域（inode/actime/modtime/acnsec/modnsec）。
         assert_eq!(utime_req_off::INODE, 0);
         assert_eq!(utime_req_off::ACTIME, 8);

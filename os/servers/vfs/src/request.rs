@@ -505,6 +505,69 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_SLINK` 请求（C `req_slink_actual` — request.c:990-1046）。
+///
+/// 双 grant：组件名（VFS 内存，direct）与链接目标串（**用户内存**，magic）。
+/// `mem_size` 是目标串长度、**不含**结尾 NUL（C 传 `vname1_length - 1`）。
+pub fn encode_slink(
+    dir_ino: u64,
+    path_len: usize,
+    mem_size: usize,
+    grant_path: i32,
+    grant_target: i32,
+    uid: u32,
+    gid: u32,
+) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_SLINK,
+        ..Message::default()
+    };
+    // SAFETY: REQ_SLINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::slink_req_off::INODE..minix_types::slink_req_off::INODE + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::slink_req_off::PATH_LEN..minix_types::slink_req_off::PATH_LEN + 8]
+            .copy_from_slice(&(path_len as u64).to_le_bytes());
+        raw[minix_types::slink_req_off::MEM_SIZE..minix_types::slink_req_off::MEM_SIZE + 8]
+            .copy_from_slice(&(mem_size as u64).to_le_bytes());
+        raw[minix_types::slink_req_off::GRANT_PATH..minix_types::slink_req_off::GRANT_PATH + 4]
+            .copy_from_slice(&grant_path.to_le_bytes());
+        raw[minix_types::slink_req_off::GRANT_TARGET
+            ..minix_types::slink_req_off::GRANT_TARGET + 4]
+            .copy_from_slice(&grant_target.to_le_bytes());
+        raw[minix_types::slink_req_off::UID..minix_types::slink_req_off::UID + 4]
+            .copy_from_slice(&uid.to_le_bytes());
+        raw[minix_types::slink_req_off::GID..minix_types::slink_req_off::GID + 4]
+            .copy_from_slice(&gid.to_le_bytes());
+    }
+    msg
+}
+
+/// `REQ_LINK` 请求（C `req_link` — request.c:390-418）。
+///
+/// 载荷 `{inode(被链接的文件), dir_ino(新名的父目录), grant(新名), path_len}`
+/// ——两个 ino 的顺序是**文件在前、目录在后**（结构体序），别弄反。
+pub fn encode_link(linked_ino: u64, dir_ino: u64, grant: i32, path_len: usize) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_LINK,
+        ..Message::default()
+    };
+    // SAFETY: REQ_LINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::link_req_off::INODE..minix_types::link_req_off::INODE + 8]
+            .copy_from_slice(&linked_ino.to_le_bytes());
+        raw[minix_types::link_req_off::DIR_INO..minix_types::link_req_off::DIR_INO + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::link_req_off::GRANT..minix_types::link_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::link_req_off::PATH_LEN..minix_types::link_req_off::PATH_LEN + 8]
+            .copy_from_slice(&(path_len as u64).to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_UTIME` 请求（C `req_utime` — request.c:1180-1199）。
 ///
 /// 载荷 `{inode, actime, modtime, acnsec, modnsec}`：秒与纳秒分开带，
@@ -1579,6 +1642,69 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_slink` 的七域落位（双 grant：名字 direct + 目标 magic）与
+    /// `encode_link` 的四域落位（文件 ino 在前、父目录 ino 在后）。
+    #[test]
+    fn test_encode_slink_and_link_fields() {
+        let sl = encode_slink(0x11, 4, 7, 3, 4, 1000, 100);
+        assert_eq!(sl.m_type, minix_types::REQ_SLINK);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &sl.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::slink_req_off::INODE..minix_types::slink_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x11);
+        b8.copy_from_slice(
+            &raw[minix_types::slink_req_off::PATH_LEN..minix_types::slink_req_off::PATH_LEN + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 4);
+        b8.copy_from_slice(
+            &raw[minix_types::slink_req_off::MEM_SIZE..minix_types::slink_req_off::MEM_SIZE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 7, "目标串长度不含结尾 NUL");
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::slink_req_off::GRANT_PATH
+                ..minix_types::slink_req_off::GRANT_PATH + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 3);
+        b4.copy_from_slice(
+            &raw[minix_types::slink_req_off::GRANT_TARGET
+                ..minix_types::slink_req_off::GRANT_TARGET + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 4);
+        b4.copy_from_slice(
+            &raw[minix_types::slink_req_off::UID..minix_types::slink_req_off::UID + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 1000);
+        b4.copy_from_slice(
+            &raw[minix_types::slink_req_off::GID..minix_types::slink_req_off::GID + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 100);
+
+        let lk = encode_link(0x77, 0x11, 9, 5);
+        assert_eq!(lk.m_type, minix_types::REQ_LINK);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &lk.m_u.raw };
+        b8.copy_from_slice(
+            &raw[minix_types::link_req_off::INODE..minix_types::link_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x77, "inode 是被链接的文件");
+        b8.copy_from_slice(
+            &raw[minix_types::link_req_off::DIR_INO..minix_types::link_req_off::DIR_INO + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x11, "dir_ino 是新名的父目录");
+        b4.copy_from_slice(
+            &raw[minix_types::link_req_off::GRANT..minix_types::link_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 9);
+        b8.copy_from_slice(
+            &raw[minix_types::link_req_off::PATH_LEN..minix_types::link_req_off::PATH_LEN + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 5);
+    }
+
     /// `encode_utime` 的五个域落位（inode/actime/modtime/acnsec/modnsec）——
     /// 秒与纳秒分开带，纳秒可能是 `UTIME_OMIT` 哨兵。
     #[test]
