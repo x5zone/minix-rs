@@ -89,6 +89,16 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `chown` 的对话半（`REQ_CHOWN`）：回复的 `mode` 是新的模式
+    /// （C `do_chown:159-163`），uid/gid 由本续接体自己写进 vnode。
+    Chown {
+        /// 被改归属的 vnode 下标。
+        vnode: usize,
+        /// 折算后的新属主（`-1` 已经用现有值替代）。
+        uid: u32,
+        /// 折算后的新属组。
+        gid: u32,
+    },
     /// `chmod` 的对话半（`REQ_CHMOD`）：回复的 `mode` 是实际生效的模式
     /// （C request.c:127），成功时回写 vnode 缓存（C `vp->v_mode =
     /// result_mode`，protect.c:127-128）。
@@ -186,6 +196,15 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `chown(path, uid, gid)`：走完过门后发 `REQ_CHOWN`；回复带新的模式，
+    /// uid/gid 由续接体写回 vnode 缓存。C `do_chown`（protect.c:24-110）的
+    /// 路径半。
+    Chown {
+        /// 用户给的属主（`u32::MAX` = 不改，C 的 `-1`）。
+        uid: u32,
+        /// 用户给的属组（同上）。
+        gid: u32,
+    },
     /// `unlink(path)` / `rmdir(path)` 阶段 1：走**父目录**（`last_dir` 的
     /// 目录前缀）。走通后过三道门（父目录类型 → `X|W` 权限 → 粘滞位），
     /// 粘滞位开着就转阶段 2（子遍历取受害者属主），否则直接发

@@ -505,6 +505,28 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_CHOWN` 请求（C `req_chown` — request.c:136-158）。
+///
+/// 载荷 `{inode, uid, gid}`；回复带**新的模式**（FS 可能清掉 setuid/setgid），
+/// uid/gid 由 VFS 自己写回 vnode。
+pub fn encode_chown(ino: u64, uid: u32, gid: u32) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_CHOWN,
+        ..Message::default()
+    };
+    // SAFETY: REQ_CHOWN 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::chown_req_off::INODE..minix_types::chown_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::chown_req_off::UID..minix_types::chown_req_off::UID + 4]
+            .copy_from_slice(&uid.to_le_bytes());
+        raw[minix_types::chown_req_off::GID..minix_types::chown_req_off::GID + 4]
+            .copy_from_slice(&gid.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_UNLINK` 请求（C `req_unlink` — request.c:1149-1175）。
 ///
 /// 载荷 `{inode, grant, path_len}`：`inode` 是**父目录**，`grant` 指向 VFS
@@ -1493,6 +1515,29 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_chown` 的三个域落位（inode@0、uid@8、gid@12）。
+    #[test]
+    fn test_encode_chown_fields() {
+        let m = encode_chown(0x55, 1000, 100);
+        assert_eq!(m.m_type, minix_types::REQ_CHOWN);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::chown_req_off::INODE..minix_types::chown_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x55);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::chown_req_off::UID..minix_types::chown_req_off::UID + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 1000);
+        b4.copy_from_slice(
+            &raw[minix_types::chown_req_off::GID..minix_types::chown_req_off::GID + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 100);
+    }
+
     /// `encode_unlink` / `encode_rmdir` 的三个域落位，并钉住"两者同载荷、
     /// 只有 m_type 不同"这一条（C 里共用一个结构体，别写成两套偏移）。
     #[test]

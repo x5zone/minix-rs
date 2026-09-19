@@ -340,6 +340,30 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_CHOWN` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_chown { ino_t inode; uid_t uid; gid_t gid; }`
+/// （ipc.h:1953-1960，`request.c:136-158` 的 `req_chown`）。`-1` 的语义
+/// （"不改这一项"）由调用方先折算成现有值，见 `protect::keep_id`。
+pub mod chown_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `uid_t uid`。
+    pub const UID: usize = 8;
+    /// `gid_t gid`。
+    pub const GID: usize = 12;
+}
+
+/// `REQ_CHOWN` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_chown { mode_t mode; }`（ipc.h:134-138）——回的是**新的
+/// 模式**（setuid/setgid 位可能被 FS 清掉），不是 uid/gid：uid/gid 由 VFS
+/// 自己写进 vnode（`do_chown:159-163`）。
+pub mod chown_reply_off {
+    /// `mode_t mode`。
+    pub const MODE: usize = 0;
+}
+
 /// `REQ_UNLINK` / `REQ_RMDIR` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_unlink { ino_t inode; cp_grant_id_t grant; size_t
@@ -565,6 +589,11 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // chown：请求三域 + 回复一域（新的模式）。
+        assert_eq!(chown_req_off::INODE, 0);
+        assert_eq!(chown_req_off::UID, 8);
+        assert_eq!(chown_req_off::GID, 12);
+        assert_eq!(chown_reply_off::MODE, 0);
         // unlink/rmdir：请求三域（共用结构，只有 m_type 不同），无载荷回复。
         assert_eq!(unlink_req_off::INODE, 0);
         assert_eq!(unlink_req_off::GRANT, 8);

@@ -1108,6 +1108,89 @@ impl VfsState {
         Ok(())
     }
 
+    /// `do_chown` 的**共用体**（C protect.c:24-110 的 path 与 fd 两半只差
+    /// vnode 的来源）：只读门 → 三条属主规则（`protect::chown_gate`）→
+    /// `-1` 折算（`protect::keep_id`）→ 界检查 → `REQ_CHOWN`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_chown(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        ino: u64,
+        node_uid: u32,
+        node_gid: u32,
+        uid: u32,
+        gid: u32,
+        vnode: usize,
+    ) {
+        let (eff_uid, eff_gid) = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+            Some(fp) => (fp.eff_uid, fp.eff_gid),
+            None => {
+                self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                return;
+            }
+        };
+        let readonly_fs = self
+            .vmnt_table
+            .find_by_fs(fs_e)
+            .and_then(|v| self.vmnt_table.get(v))
+            .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+            .unwrap_or(false);
+        // C `do_chown:140-151`：先只读门，再三条规则（都按**消息里的原始
+        // 值**判：非超级用户给 `-1` 也会在"no giving away"那条上被拒）。
+        let verdict = crate::protect::chown_gate(
+            eff_uid == crate::link::SU_UID,
+            node_uid == eff_uid,
+            node_uid == uid,
+            eff_gid == gid,
+            !readonly_fs,
+        );
+        if let Err(e) = verdict {
+            self.finish_worker_job(idx, fp_slot, e.to_errno());
+            return;
+        }
+        // C `do_chown:154-158`：`-1` 折算成现有值，然后界检查。
+        let new_uid = crate::protect::keep_id(
+            if uid == crate::protect::ID_EXPIRED { None } else { Some(uid) },
+            node_uid,
+        );
+        let new_gid = crate::protect::keep_id(
+            if gid == crate::protect::ID_EXPIRED { None } else { Some(gid) },
+            node_gid,
+        );
+        if crate::protect::check_id_bounds(new_uid, new_gid).is_err() {
+            self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+            return;
+        }
+        let vmnt = match self.vmnt_table.find_by_fs(fs_e) {
+            Some(v) => v.0,
+            None => {
+                self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                return;
+            }
+        };
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Chown {
+                vnode,
+                uid: new_uid,
+                gid: new_gid,
+            });
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant: 0, // 无数据面
+            user,
+            req: crate::request::encode_chown(ino, new_uid, new_gid),
+        });
+    }
+
     /// 收尾一个挂起的作业并回用户（错误路径与相位 2 之后的统一出口）。
     pub fn finish_worker_job(
         &mut self,
@@ -1257,6 +1340,25 @@ impl VfsState {
                         }
                     }
                     reply_payload = Some(m);
+                }
+                crate::worker::WorkerCont::Chown { vnode, uid, gid } => {
+                    // C `do_chown:159-163`：成功时把 uid/gid 写进 vnode、模式
+                    // 取回复里的新值（FS 可能清掉 setuid/setgid 位）。
+                    if status == 0 {
+                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        let raw = unsafe { &reply.m_u.raw };
+                        let mut b4 = [0u8; 4];
+                        b4.copy_from_slice(
+                            &raw[minix_types::chown_reply_off::MODE
+                                ..minix_types::chown_reply_off::MODE + 4],
+                        );
+                        let new_mode = u32::from_le_bytes(b4);
+                        if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+                            v.uid = uid;
+                            v.gid = gid;
+                            v.mode = new_mode;
+                        }
+                    }
                 }
                 crate::worker::WorkerCont::Chmod { vnode } => {
                     // C `do_chmod` 的收尾（protect.c:126-128）：成功时把
@@ -1547,6 +1649,26 @@ impl VfsState {
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
                                 }
+                                continue;
+                            }
+                            crate::worker::PathFollow::Chown { uid, gid } => {
+                                // C `do_chown` 的路径半：走完就交给共用体
+                                // （只读门 + 三条属主规则 + 界检查 + 发请求）。
+                                let Some(vnode) = self.intern_vnode(&node) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                                    continue;
+                                };
+                                self.finish_chown(
+                                    idx,
+                                    fp_slot,
+                                    node.fs_e,
+                                    node.ino,
+                                    node.uid,
+                                    node.gid,
+                                    uid,
+                                    gid,
+                                    vnode,
+                                );
                                 continue;
                             }
                             crate::worker::PathFollow::Chmod { user, mode } => {
@@ -3000,6 +3122,88 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Chown`（path 半）：走完并表 vnode 后进 `finish_chown`
+    /// 共用体——与 fd 半共用同一体，所以这里只钉"path 半真的走到了共用体"
+    /// （发 `REQ_CHOWN` 且 vnode 缓存被登记），门与折算的细节在 Fchown 那条
+    /// 测试里逐条钉过。
+    #[test]
+    fn test_path_follow_chown_reaches_shared_body() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let _ = state.grants.grant_direct(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::MFS.get(),
+            0x1000,
+            8,
+            minix_types::CpFlags::READ,
+        );
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = crate::link::SU_UID; // root：跳过三条属主规则
+            fp.eff_gid = 0;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let (walk, _) = crate::path::LookupWalk::begin(
+            start,
+            crate::path::Lookup::new("/f".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&0x77u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o644).to_le_bytes());
+            raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                .copy_from_slice(&1000u32.to_le_bytes());
+            raw[minix_types::lookup_reply_off::GID..minix_types::lookup_reply_off::GID + 4]
+                .copy_from_slice(&100u32.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Chown { uid: 2000, gid: 200 },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_CHOWN");
+        assert_eq!(p.req.m_type, minix_types::REQ_CHOWN);
+        // SAFETY(test): 按 chown_req_off 读回三域（root 不做 -1 折算以外的改动）。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let uid = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
+            assert_eq!((ino, uid, gid), (0x77, 2000, 200));
+        }
+        // 并表：vnode 缓存里已经有了这个 ino（C `eat_path` 的临时 vnode）。
+        let v = state
+            .vnode_table
+            .find_by_ino(Endpoint::MFS, 0x77)
+            .map(|id| state.vnode_table.get(id).unwrap().ino);
+        assert_eq!(v, Some(0x77), "path 半走完要和 vnode 表并上");
     }
 
     /// `PathFollow::Unlink`（阶段 1）的三道门 + `PathFollow::UnlinkSticky`

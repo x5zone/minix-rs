@@ -214,8 +214,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Symlink
         | VfsCallNum::Truncate
         | VfsCallNum::Fchmod
-        | VfsCallNum::Chown
-        | VfsCallNum::Fchown
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
@@ -1097,6 +1095,132 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：readlink（走末组件符号链接本身，不跟进）──
         // ── 路径臂模板：chmod（走完过权限门，回复带实际模式）──
         // ── 路径臂模板：unlink / rmdir（父目录遍历 + 粘滞位子遍历）──
+        // ── chown / fchown（C `do_chown`，protect.c:24-110，两条调用号共用
+        // 一个函数体：path 半走遍历，fd 半从 filp 取 vnode）──
+        VfsCallNum::Chown | VfsCallNum::Fchown => {
+            // 载荷 `mess_lc_vfs_chown`（ipc.h:611-619）：name@0、len@8、fd@16、
+            // owner@20、group@24——path 半用 name/len，fd 半用 fd。
+            let (name_len, name_addr, fd, uid, gid) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let name_len = u64::from_le_bytes(b8);
+                let fd = i32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]);
+                let uid = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
+                let gid = u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]);
+                (name_len, name_addr, fd, uid, gid)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if matches!(call, VfsCallNum::Fchown) {
+                // C `do_chown` 的 fd 半（protect.c:53-63）：从 filp 取 vnode，
+                // 后面与 path 半共用同一个体。
+                if fd < 0 {
+                    return SyscallResult::Error(minix_types::EBADF);
+                }
+                let (filp_idx, vnode_idx) = {
+                    let fp = match state.fproc_table.get(fp_slot) {
+                        Some(fp) => fp,
+                        None => return SyscallResult::Error(minix_types::EINVAL),
+                    };
+                    let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                        Some(idx) => idx,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                    let filp = match state.filp_table.get(crate::filp::FilpId(filp_idx)) {
+                        Some(f) => f,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                    match filp.vnode {
+                        Some(v) => (filp_idx, v),
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    }
+                };
+                let _ = filp_idx;
+                let (fs_e, ino, node_uid, node_gid) =
+                    match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                        Some(v) => (v.fs, v.ino, v.uid, v.gid),
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                state.finish_chown(
+                    worker,
+                    Some(fp_slot),
+                    fs_e,
+                    ino,
+                    node_uid,
+                    node_gid,
+                    uid,
+                    gid,
+                    vnode_idx,
+                );
+                // 共用体自己决定"已挂起"还是"已收尾"：两种情况都不该在这里
+                // 释放槽（收尾时 `finish_worker_job` 已经释放并清了
+                // `current_worker`），所以统一报挂起。
+                return SyscallResult::Suspend;
+            }
+            // C `do_chown` 的 path 半：`fetch_name` 取路径（跨空间，宿主取不到）
+            // → `eat_path`（NOFLAGS）→ 共用体。
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let path = match fetcher.fetch(name_addr, name_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(
+                path,
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let wuid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let wgid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, wuid, wgid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Chown { uid, gid },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Unlink | VfsCallNum::Rmdir => {
             // C `do_unlink`（link.c:94-163）同时服务 unlink 与 rmdir（table.c:25
             // 与 :36 都指向它），差别只在最后发哪个请求号（link.c:156-159）。
@@ -2176,6 +2300,197 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Getdents),
             SyscallResult::Error(minix_types::EIO)
         );
+    }
+
+    /// `Fchown` 臂（fd 半，C `do_chown` protect.c:53-63 + 共用体）：
+    /// fd 门 → 只读门 → 三条属主规则（非超级用户：必须是属主、不能送人、
+    /// 新组必须是自己所在组）→ `-1` 折算 → 界检查 → `REQ_CHOWN`；
+    /// 回复带**新的模式**，uid/gid 由续接体写回 vnode 缓存。
+    #[test]
+    fn test_dispatch_fchown_gates_request_and_cache() {
+        use minix_types::Endpoint;
+
+        let fchown_msg = |fd: i32, uid: u32, gid: u32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Fchown as i32,
+                ..Message::default()
+            };
+            // SAFETY: fchown 载荷 name@0、len@8、fd@16、owner@20、group@24。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[16..20].copy_from_slice(&fd.to_le_bytes());
+                raw[20..24].copy_from_slice(&uid.to_le_bytes());
+                raw[24..28].copy_from_slice(&gid.to_le_bytes());
+            }
+            m
+        };
+        // 现场：fd 3 → filp → vnode（属主 1000、属组 100、0644）。
+        let user_e = Endpoint::from_generation_slot(1, 0);
+        let setup = |eff_uid: u32, eff_gid: u32| {
+            let mut state = seeded(100);
+            state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().fs = Endpoint::MFS;
+            state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().dev = 1;
+            let _ = state.grants.grant_direct(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                Endpoint::MFS.get(),
+                0x1000,
+                8,
+                minix_types::CpFlags::READ,
+            );
+            let fid = state.filp_table.alloc_filp(crate::open::W_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x42;
+                v.mode = crate::open::S_IFREG | 0o644;
+                v.uid = 1000;
+                v.gid = 100;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            {
+                let fp = state
+                    .fproc_table
+                    .get_mut(minix_types::UserSlot::new(0))
+                    .unwrap();
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = eff_gid;
+            }
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, vid, idx)
+        };
+
+        // ① 非属主（有效 id 0 但…换个非 0 的：2000）→ EPERM（"必须是属主"）。
+        let (mut state, _vid, _idx) = setup(2000, 100);
+        state.current_message = fchown_msg(3, 1000, 100);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchown),
+            SyscallResult::Suspend,
+            "收尾路径统一报挂起（槽已由收尾释放）"
+        );
+        assert!(state.pending_fs.is_none(), "门没过不该发请求");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EPERM))
+        );
+
+        // ② 是属主但把属主"送人"（请求 uid ≠ 文件 uid）→ EPERM。
+        let (mut state, _vid, _idx) = setup(1000, 100);
+        state.current_message = fchown_msg(3, 2000, 100);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchown),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user_e, minix_types::EPERM))
+        );
+
+        // ③ 是属主、不送人，但新组不是自己所在组 → EPERM。
+        let (mut state, _vid, _idx) = setup(1000, 100);
+        state.current_message = fchown_msg(3, 1000, 999);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchown),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user_e, minix_types::EPERM))
+        );
+
+        // ④ 非超级用户给 `-1` 当新属主 → 也会在"不能送人"那条上被拒
+        // （C `do_chown:148` 用的是**消息里的原始值**：`vp->v_uid != uid`，
+        // 而 `(uid_t)-1` 不是任何真实属主）。这条 C 行为看着别扭，但它就是
+        // 基准，钉住它。
+        let (mut state, _vid, _idx) = setup(1000, 100);
+        state.current_message = fchown_msg(3, u32::MAX, 100);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchown),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user_e, minix_types::EPERM)),
+            "非超级用户 + uid=-1：C 判 EPERM"
+        );
+
+        // ⑤ 全过（属主不送人、改自己的组）→ 发 REQ_CHOWN。
+        let (mut state, vid, idx) = setup(1000, 100);
+        state.current_message = fchown_msg(3, 1000, 100);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchown),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_CHOWN");
+        assert_eq!(p.req.m_type, minix_types::REQ_CHOWN);
+        // SAFETY(test): 按 chown_req_off 读回三域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let uid = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
+            assert_eq!(ino, 0x42);
+            assert_eq!(uid, 1000);
+            assert_eq!(gid, 100);
+        }
+
+        // 回复带新模式（FS 清掉 setuid）→ uid/gid/模式三样都进缓存。
+        state.pending_fs = None;
+        let mut reply = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 按 chown_reply_off 填新模式。
+        unsafe {
+            reply.m_u.raw[0..4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o600).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(reply);
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user_e, 0))
+        );
+        let v = state.vnode_table.get(vid).unwrap();
+        assert_eq!((v.uid, v.gid), (1000, 100), "uid/gid 写回缓存");
+        assert_eq!(v.mode, crate::open::S_IFREG | 0o600, "模式取回复里的新值");
+
+        // ⑥ 超级用户给 `-1`：两条都折算成现有值（C `do_chown:154-158` 的
+        // `keep_id`），三条规则对 root 直接跳过。
+        let (mut state, _vid, _idx) = setup(crate::link::SU_UID, 100);
+        state.current_message = fchown_msg(3, u32::MAX, u32::MAX);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchown),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("root 直接过门");
+        // SAFETY(test): 按 chown_req_off 读回折算结果。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let uid = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
+            assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
+        }
     }
 
     /// `Readlink` 臂的窗口门（C link.c:486）：`bufsize > SSIZE_MAX` 即
