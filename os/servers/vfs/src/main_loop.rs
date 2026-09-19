@@ -1194,9 +1194,15 @@ impl VfsState {
             // C main.c:193-196 — expected X to reply, not Y.
             return Err(FsReplyError::WrongTask);
         }
+        // C main.c:88 —— `m_in.m_type = TRNS_DEL_ID(m_in.m_type)`：**进
+        // do_reply 之前就把 transid 剥掉**，于是 `*w_sendrec` 里的
+        // `m_type` 是服务端的原始状态（含 `EENTERMOUNT` 一类特殊码），
+        // 续接体直接拿它判成功/失败/特殊码。
+        let mut stripped = *msg;
+        stripped.m_type = minix_types::trns_del_id(msg.m_type);
         // C main.c:204-206 — `*w_sendrec = m_in` 后清 w_task；槽模型里
         // "是否在等"由 task 承载，回复体留在 sendrec 供续接读取。
-        wp.sendrec = Some(*msg);
+        wp.sendrec = Some(stripped);
         wp.task = None;
         if let Some(idx) = vmnt_idx {
             debug_assert!(
@@ -1624,7 +1630,9 @@ mod tests {
         assert_eq!(wp.state, WorkerState::Busy); // worker_signal 后可运行
         assert_eq!(wp.task, None); // w_task = NONE(main.c:206)
         let delivered = wp.sendrec.expect("reply delivered");
-        assert_eq!(delivered.m_type as u32, crate::fs_comm::TransId::add(0x503, 2));
+        // C main.c:88 —— transid 在进 do_reply 前被剥掉，槽里留的是服务端
+        // 原始状态（0x503 是这条测试造的"状态字"）。
+        assert_eq!(delivered.m_type, 0x503);
         assert_eq!(state.comm.vmnts[0].cur_reqs, 0); // c_cur_reqs--(main.c:207)
     }
 

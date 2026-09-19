@@ -206,6 +206,170 @@ pub struct LookupStart {
 pub type ReqLookup<'a> = &'a mut dyn FnMut(Endpoint, u64, u64, &mut Lookup) -> Result<LookupRes, PathError>;
 
 #[allow(clippy::too_many_arguments)] // 忠实移植：C 环境参数显式化（Fix #36）
+/// 一步遍历动作（[`LookupWalk`] 的产出）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WalkStep {
+    /// 下一步：把这条 `REQ_LOOKUP` 发给 `fs_e`（`dir_ino` 为起点，
+    /// `root_ino` 为 chroot 边界；全 0 表示不设边界）。
+    Send {
+        /// 目标文件系统端点。
+        fs_e: Endpoint,
+        /// 起始目录 inode。
+        dir_ino: u64,
+        /// chroot 边界 inode。
+        root_ino: u64,
+    },
+    /// 走完：节点详情（七字段，C `lookup:548-554`）。
+    Done(NodeDetails),
+}
+
+/// 路径遍历的**可续走状态机**（`[ARCH: W7]`）。
+///
+/// C 的 `lookup()` 在一趟里挑多次 `req_lookup`（path.c:229 首调、:300 特殊码
+/// 循环续调），每一次都阻塞 worker 线程的栈；单线程事件循环没有可恢复的
+/// 栈，故把"走到哪了"显式成状态：[起点三元组](#structfield.fs_e) + symloop +
+/// 路径游标（`resolve.path`）。`resume(lookup_res)` 吃掉一次 FS 回复并给出
+/// 下一步——**同一个状态机既服务同步驱动**（[`lookup`] 的闭包循环，测试与
+/// 单发路径用它）**也服务挂起-续走**（臂把游标存进 worker 槽，回复到了再
+/// `resume`）。
+#[derive(Debug, Clone)]
+pub struct LookupWalk {
+    fs_e: Endpoint,
+    dir_ino: u64,
+    root_ino: u64,
+    symloop: u32,
+    resolve: Lookup,
+    uid: u32,
+    gid: u32,
+}
+
+impl LookupWalk {
+    /// 开一趟遍历：校验路径非空，输出首步（第一条 `REQ_LOOKUP` 的参数）。
+    ///
+    /// C: `lookup:400-421` —— 空路径 `ENOENT`、chroot 边界只在根与起点同分区
+    /// 时生效（`rd.dev == start_dev`）。
+    pub fn begin(
+        start: LookupStart,
+        resolve: Lookup,
+        rd: RootDir,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(Self, WalkStep), PathError> {
+        if resolve.path.is_empty() {
+            return Err(PathError::NoEnt);
+        }
+        let root_ino = if rd.dev == start.dev { rd.ino } else { 0 };
+        let walk = Self {
+            fs_e: start.fs,
+            dir_ino: start.ino,
+            root_ino,
+            symloop: 0,
+            resolve,
+            uid,
+            gid,
+        };
+        let step = WalkStep::Send {
+            fs_e: walk.fs_e,
+            dir_ino: walk.dir_ino,
+            root_ino: walk.root_ino,
+        };
+        Ok((walk, step))
+    }
+
+    /// 借出遍历中的路径游标（C 的 `resolve->l_path`——驱动方可以读它，
+    /// 例如判断提前返回的组件）。
+    pub fn resolve(&self) -> &Lookup {
+        &self.resolve
+    }
+
+    /// 吃掉一次 FS 回复，给出下一步。`rd`/`mounts` 按当时状态传入（游标
+    /// 推进与挂载点穿越要在续走时重新读到最新表，而不是挂起那一刻的快照）。
+    pub fn resume(
+        &mut self,
+        res: LookupRes,
+        rd: RootDir,
+        mounts: &[MountedFs],
+    ) -> Result<WalkStep, PathError> {
+        if matches!(res, LookupRes::Ok { .. }) {
+            return match res {
+                LookupRes::Ok { ino, mode, size, dev } => Ok(WalkStep::Done(NodeDetails {
+                    fs_e: self.fs_e,
+                    ino,
+                    mode,
+                    size,
+                    uid: self.uid,
+                    gid: self.gid,
+                    dev,
+                })),
+                _ => unreachable!(),
+            };
+        }
+        // 特殊码：推进游标 + symloop 累计（`path.c:446-461`）。
+        let (offset, symloop_delta) = match res {
+            LookupRes::EnterMount { offset, symloop, .. }
+            | LookupRes::LeaveMount { offset, symloop, .. }
+            | LookupRes::Symlink { offset, symloop } => (offset, symloop),
+            LookupRes::Ok { .. } => unreachable!(),
+        };
+        self.resolve.consume_prefix(offset as usize);
+        self.symloop += u32::from(symloop_delta);
+        if self.symloop > SYMLOOP_MAX as u32 {
+            return Err(PathError::Loop);
+        }
+        match res {
+            // 符号链接：从进程根重启（`path.c:465-468`）。
+            LookupRes::Symlink { .. } => {
+                self.dir_ino = rd.ino;
+                self.fs_e = rd.fs;
+                self.root_ino = rd.ino;
+            }
+            // 进挂载点：起点切到被挂载分区的根（`path.c:470-484`）。
+            LookupRes::EnterMount { ino, .. } => {
+                match mounts.iter().find(|m| {
+                    m.mounted_on
+                        .is_some_and(|(mino, mfs, _)| mino == ino && mfs == self.fs_e)
+                }) {
+                    Some(m) => {
+                        self.dir_ino = m.root.0;
+                        self.fs_e = m.fs;
+                        self.root_ino = if rd.dev == m.root.1 { rd.ino } else { 0 };
+                    }
+                    None => return Err(PathError::NoEnt),
+                }
+            }
+            // 出挂载点：路径必须以 `..` 开头（`path.c:496-521` 的 bogus 守卫）。
+            LookupRes::LeaveMount { .. } => {
+                match mounts.iter().find(|m| m.fs == self.fs_e) {
+                    Some(m) => {
+                        if !self.resolve.path.starts_with("..") {
+                            return Err(PathError::NoEnt);
+                        }
+                        let rest = &self.resolve.path[2..];
+                        if !(rest.is_empty() || rest.starts_with('/')) {
+                            return Err(PathError::NoEnt);
+                        }
+                        match m.mounted_on {
+                            Some((mino, mfs, mdev)) => {
+                                self.dir_ino = mino;
+                                self.fs_e = mfs;
+                                self.root_ino = if rd.dev == mdev { rd.ino } else { 0 };
+                            }
+                            None => return Err(PathError::NoEnt),
+                        }
+                    }
+                    None => return Err(PathError::NoEnt),
+                }
+            }
+            LookupRes::Ok { .. } => unreachable!(),
+        }
+        Ok(WalkStep::Send {
+            fs_e: self.fs_e,
+            dir_ino: self.dir_ino,
+            root_ino: self.root_ino,
+        })
+    }
+}
+
 pub fn lookup(
     start: LookupStart,
     resolve: &mut Lookup,
@@ -215,103 +379,22 @@ pub fn lookup(
     mounts: &[MountedFs],
     req_lookup: ReqLookup<'_>,
 ) -> Result<NodeDetails, PathError> {
-    let LookupStart { fs: start_fs, ino: start_ino, dev: start_dev } = start;
-    // 空路径（`path.c:400-404`）。
-    if resolve.path.is_empty() {
-        return Err(PathError::NoEnt);
-    }
-    let mut fs_e = start_fs;
-    let mut dir_ino = start_ino;
-    // chroot 边界：根与起点同分区才生效（`path.c:416-420`）。
-    let mut root_ino = if rd.dev == start_dev { rd.ino } else { 0 };
-    let mut symloop: u32 = 0;
-
-    let mut res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
-    // 特殊码循环（`path.c:446-543`）：路径推进 + symloop 累计 + 起点切换。
-    while matches!(
-        res,
-        LookupRes::EnterMount { .. }
-            | LookupRes::LeaveMount { .. }
-            | LookupRes::Symlink { .. }
-    ) {
-            let (offset, symloop_delta) = match res {
-                LookupRes::EnterMount { offset, symloop, .. }
-                | LookupRes::LeaveMount { offset, symloop, .. }
-                | LookupRes::Symlink { offset, symloop } => (offset, symloop),
-                LookupRes::Ok { .. } => unreachable!(),
-            };
-            // 推进路径（`path.c:450-453` 的 memmove）。
-            resolve.consume_prefix(offset as usize);
-            // symloop 累计并检查（`path.c:455-461`）。
-            symloop += u32::from(symloop_delta);
-            if symloop > SYMLOOP_MAX as u32 {
-                return Err(PathError::Loop);
+    // 遍历逻辑单一真相在 [`LookupWalk`]：这里只是"同步驱动"——拿一步、
+    // 发一条 REQ_LOOKUP、把回复喂回去（C 的 `lookup` 循环在同一趟里做，
+    // 因为它的 `req_lookup` 会阻塞线程栈；单线程版把它拆成可续走的两半）。
+    let (mut walk, mut step) = LookupWalk::begin(start, resolve.clone(), rd, uid, gid)?;
+    loop {
+        match step {
+            WalkStep::Done(details) => {
+                // 游标回写（C 的 `resolve` 是调用方的指针，退出时它已推进）。
+                *resolve = walk.resolve;
+                return Ok(details);
             }
-            match res {
-                // 符号链接：从进程根重启（`path.c:465-468`）。
-                LookupRes::Symlink { .. } => {
-                    dir_ino = rd.ino;
-                    fs_e = rd.fs;
-                    // C 中 dir_vp==fp_rd 恒真（`path.c:465-468`），根条件必然满足。
-                    root_ino = rd.ino;
-                }
-                // 进挂载点：找 mounted_on == (ino, fs_e) 的挂载行，
-                // 起点切到其根 vnode（`path.c:470-484`）。
-                LookupRes::EnterMount { ino, .. } => {
-                    match mounts.iter().find(|m| {
-                        m.mounted_on
-                            .is_some_and(|(mino, mfs, _)| mino == ino && mfs == fs_e)
-                    }) {
-                        Some(m) => {
-                            dir_ino = m.root.0;
-                            fs_e = m.fs;
-                            root_ino = if rd.dev == m.root.1 { rd.ino } else { 0 };
-                        }
-                        None => return Err(PathError::NoEnt), // C: EIO，根节点丢失
-                    }
-                }
-                // 出挂载点：路径必须以 `..` 开头（`path.c:496-521` 的
-                // bogus-path 守卫），起点切到挂载点自身 vnode。
-                LookupRes::LeaveMount { .. } => {
-                    match mounts.iter().find(|m| m.fs == fs_e) {
-                        Some(m) => {
-                            if !resolve.path.starts_with("..") {
-                                return Err(PathError::NoEnt);
-                            }
-                            let rest = &resolve.path[2..];
-                            if !(rest.is_empty() || rest.starts_with('/')) {
-                                return Err(PathError::NoEnt);
-                            }
-                            match m.mounted_on {
-                                Some((mino, mfs, mdev)) => {
-                                    dir_ino = mino;
-                                    fs_e = mfs;
-                                    root_ino = if rd.dev == mdev { rd.ino } else { 0 };
-                                }
-                                None => return Err(PathError::NoEnt),
-                            }
-                        }
-                        None => return Err(PathError::NoEnt), // C: panic，加固为 Err
-                    }
-                }
-                LookupRes::Ok { .. } => unreachable!(),
+            WalkStep::Send { fs_e, dir_ino, root_ino } => {
+                let res = req_lookup(fs_e, dir_ino, root_ino, &mut walk.resolve)?;
+                step = walk.resume(res, rd, mounts)?;
             }
-        // 下一轮 REQ_LOOKUP（`path.c:537-541`）。
-        res = req_lookup(fs_e, dir_ino, root_ino, resolve)?;
-    }
-    // `Ok`：七字段结果——fs_e/uid/gid 由本轮上下文回填（C 的 res 三字段
-    // 即 VFS 发出的值，`path.c:548-554`）。
-    match res {
-        LookupRes::Ok { ino, mode, size, dev } => Ok(NodeDetails {
-            fs_e,
-            ino,
-            mode,
-            size,
-            uid,
-            gid,
-            dev,
-        }),
-        _ => Err(PathError::NoEnt),
+        }
     }
 }
 
@@ -775,6 +858,136 @@ impl PathFetcher for SafecopyFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 可续走遍历的状态推进（`[ARCH: W7]`）：三次 `resume` 分别走
+    /// "正常回复 → 完成"、"进挂载点 → 起点切到被挂载分区"、"出挂载点 →
+    /// 起点切回挂载点自身"，每步的 `Send` 三元组即下一条 `REQ_LOOKUP` 的
+    /// 参数（C `lookup:470-521` 的同一套切换）。
+    #[test]
+    fn test_lookup_walk_crosses_mounts() {
+        let parent = Endpoint(1);
+        let child = Endpoint(2);
+        let rd = RootDir { ino: 1, fs: parent, dev: 0 };
+        let start = LookupStart { fs: parent, ino: 1, dev: 0 };
+        let mounts = [
+            MountedFs { fs: child, dev: 0, root: (50, 0), mounted_on: Some((7, parent, 0)) },
+        ];
+
+        // 首步：从起点发（chroot 边界＝进程根 ino，因为同分区）。
+        let (mut walk, step) = LookupWalk::begin(
+            start,
+            Lookup::new("/mnt/x".to_string(), LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            step,
+            WalkStep::Send { fs_e: parent, dir_ino: 1, root_ino: 1 }
+        );
+
+        // 进挂载点：`mounted_on == (7, parent)` 的行把起点切到 child:50。
+        let step = walk
+            .resume(LookupRes::EnterMount { ino: 7, offset: 5, symloop: 0 }, rd, &mounts)
+            .unwrap();
+        assert_eq!(
+            step,
+            WalkStep::Send { fs_e: child, dir_ino: 50, root_ino: 1 }
+        );
+
+        // 正常回复：完成，七字段带上起点三元组里的 fs 与上下文 uid/gid。
+        let step = walk
+            .resume(
+                LookupRes::Ok { ino: 9, mode: 0o100644, size: 12, dev: 0 },
+                rd,
+                &mounts,
+            )
+            .unwrap();
+        assert_eq!(
+            step,
+            // 节点在**被挂载分区**里，故 fs_e 是 child（起点三元组已切过去）。
+            WalkStep::Done(NodeDetails {
+                fs_e: child,
+                ino: 9,
+                mode: 0o100644,
+                size: 12,
+                uid: 0,
+                gid: 0,
+                dev: 0,
+            })
+        );
+
+        // 出挂载点：**另起一趟**，路径以 `..` 开头（C 的 bogus 守卫要求），
+        // 且当前分区有挂载行 → 起点切回挂载点自身 (ino=7, parent)。
+        let (mut up, step) = LookupWalk::begin(
+            LookupStart { fs: child, ino: 50, dev: 0 },
+            Lookup::new("../y".to_string(), LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(step, WalkStep::Send { fs_e: child, dir_ino: 50, root_ino: 1 });
+        // `offset` 是"FS 已吃掉的字节数"：C 先 `memmove` 推进游标**再**过
+        // bogus 守卫（path.c:461-466），所以留下的那段必须以 `..` 开头；
+        // 这里 offset=0 表示原样留给父分区。
+        let step = up
+            .resume(LookupRes::LeaveMount { offset: 0, symloop: 0 }, rd, &mounts)
+            .unwrap();
+        assert_eq!(
+            step,
+            WalkStep::Send { fs_e: parent, dir_ino: 7, root_ino: 1 },
+            "起点切回挂载点自身 (ino=7, parent)"
+        );
+    }
+
+    /// symloop 累计越界即 `ELOOP`（C `path.c:455-461`）；`LeaveMount` 的
+    /// bogus 路径守卫（不以 `..` 开头）即 `ENOENT`（`path.c:496-521`）。
+    #[test]
+    fn test_lookup_walk_guards() {
+        let parent = Endpoint(1);
+        let rd = RootDir { ino: 1, fs: parent, dev: 0 };
+        let start = LookupStart { fs: parent, ino: 1, dev: 0 };
+        let mounts = [MountedFs {
+            fs: parent,
+            dev: 0,
+            root: (1, 0),
+            mounted_on: Some((4, parent, 0)),
+        }];
+
+        // symloop 越界：单步给超限的增量即报 Loop。
+        let (mut walk, _) = LookupWalk::begin(
+            start,
+            Lookup::new("/a".to_string(), LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            walk.resume(
+                LookupRes::Symlink { offset: 1, symloop: SYMLOOP_MAX as u8 + 1 },
+                rd,
+                &mounts,
+            ),
+            Err(PathError::Loop)
+        );
+
+        // LeaveMount 且路径不以 `..` 开头 → ENOENT（C 的 bogus-path 守卫）。
+        let (mut walk2, _) = LookupWalk::begin(
+            start,
+            Lookup::new("/a/b".to_string(), LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            walk2.resume(LookupRes::LeaveMount { offset: 1, symloop: 0 }, rd, &mounts),
+            Err(PathError::NoEnt)
+        );
+    }
 
     /// `decode_name`：调用方的 `len` 含结尾 NUL；末字节不是 NUL 即
     /// `ENAMETOOLONG`（C utility.c:49-52/:84-87 的同名检查）。
