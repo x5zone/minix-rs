@@ -6689,6 +6689,20 @@ mod tests {
         );
     }
 
+    /// `ds_fill_label` 的失败半：DS 不可达（宿主 trap 必败）时返回
+    /// `None` 且**不污染** `driver_labels`——本地表保持原样，fail-closed
+    /// 链（空表 → EINVAL）不变。
+    #[test]
+    fn test_ds_fill_label_failure_keeps_table_clean() {
+        let mut state = VfsState::new();
+        state
+            .driver_labels
+            .push(("keep".to_string(), Endpoint::from_generation_slot(0, 9)));
+        assert_eq!(state.ds_fill_label("ghost"), None);
+        assert_eq!(state.driver_labels.len(), 1, "失败的查询不写表");
+        assert_eq!(state.driver_labels[0].0, "keep");
+    }
+
     /// `flush_pending_puts`：队列逐条 `REQ_PUTNODE` 发出（记录型传输），
     /// 无挂载行的条目丢弃。
     #[test]

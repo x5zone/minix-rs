@@ -2013,6 +2013,32 @@ impl VfsState {
     /// `caller` 是消息来源（C 的 `who_e`）：只有 RS 能映射驱动
     /// （`check_mapper`）。
     #[allow(clippy::too_many_arguments)]
+    /// `ds_retrieve_label_endpt` 那一跳的**填充半**（C `do_mapdriver`
+    /// dmap.c:148-152 的前置）：拿标签去 DS 查端点，查到就**upsert** 进
+    /// `driver_labels`（同名更新、新名追加），返回端点；DS 不可达或标签
+    /// 未登记返回 `None`——调用方回退到本地表（空表语义仍是 EINVAL，
+    /// fail-closed 链不变）。
+    pub fn ds_fill_label(&mut self, label: &str) -> Option<Endpoint> {
+        let mut ds = minix_sys::ds::DsClient::new(
+            minix_sys::ipc::DirectTrapTransport,
+            minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::DS,
+        );
+        let (endpoint, _flags) = ds.retrieve_label_endpt(label).ok()?;
+        // 幂等 upsert：同名更新（驱动重启换端点），新名追加。
+        match self
+            .driver_labels
+            .iter_mut()
+            .find(|(name, _)| name == label)
+        {
+            Some(entry) => entry.1 = endpoint,
+            None => self
+                .driver_labels
+                .push((alloc::string::String::from(label), endpoint)),
+        }
+        Some(endpoint)
+    }
+
     pub fn finish_mapdriver(
         &mut self,
         caller: Endpoint,
@@ -2023,7 +2049,16 @@ impl VfsState {
         if crate::device_map::check_mapper(caller).is_err() {
             return minix_types::EPERM;
         }
-        // C dmap.c:148-152 —— 标签 → 端点（DS 那一跳；见 `LabelDir` 的缺口注记）。
+        // C dmap.c:148-152 —— 标签 → 端点：先走 DS 那一跳（查到即填充
+        // 本地表），DS 没有再回退本地表（空表语义仍是 EINVAL）。
+        if self.ds_fill_label(label).is_none()
+            && !self.driver_labels.iter().any(|(name, _)| name == label)
+        {
+            let dir = LabelDir(&self.driver_labels);
+            if let Err(e) = crate::device_map::resolve_driver(&dir, label) {
+                return e.to_errno();
+            }
+        }
         let dir = LabelDir(&self.driver_labels);
         let endpoint = match crate::device_map::resolve_driver(&dir, label) {
             Ok(e) => e,
