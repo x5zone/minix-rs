@@ -222,7 +222,14 @@ impl InitHost for MinixSysHost {
     }
 
     fn close_std_fds(&mut self) -> Result<(), Errno> {
-        Err(Errno::ENOSYS)
+        // C init.c:339-341: close(0), close(1), close(2) so the console
+        // probe starts from a clean slate. The first failure is the
+        // answer — C's `close(0); close(1); close(2);` ignores errors,
+        // and the caller treats any failure as "console unavailable".
+        for fd in [0, 1, 2] {
+            minix_sys::close(fd)?;
+        }
+        Ok(())
     }
 
     fn securitylevel(&self) -> Result<Option<i32>, Errno> {
@@ -285,8 +292,18 @@ impl InitHost for MinixSysHost {
     }
 
     fn path_exists(&self, path: &str) -> Result<bool, Errno> {
-        let _ = path;
-        Err(Errno::ENOSYS)
+        // C probes paths with fopen/access (init.c:262 console, init.c:800
+        // /bin/sh, init.c:962 /etc/rc); stat is the same existence
+        // question without the open. ENOENT is the "no" answer; any other
+        // error travels (a caller can distinguish "absent" from "broken").
+        // C 的 stat 缓冲是 memset 零初始化：全整数域的 repr(C)，零是每个
+        // 字段的合法位型。
+        let mut buf: minix_sys::Stat = unsafe { core::mem::zeroed() };
+        match minix_sys::stat(path, &mut buf) {
+            Ok(()) => Ok(true),
+            Err(Errno::ENOENT) => Ok(false),
+            Err(other) => Err(other),
+        }
     }
 
     fn console_write(&mut self, severity: crate::log::Severity, message: &str) {
@@ -331,15 +348,43 @@ impl InitHost for MinixSysHost {
     }
 
     fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno> {
-        let _ = (path, bytes);
-        Err(Errno::ENOSYS)
+        // The utmpx/wtmpx ledger appends (C: pututxline/logwtmpx write to
+        // the accounting files, init.c:1446/1008): open for append
+        // (O_WRONLY|O_APPEND, fcntl.h:65/:82), write the record whole,
+        // close. The fd never outlives the call.
+        let fd = minix_sys::open(path, O_WRONLY | O_APPEND, 0)?;
+        let write_rv = minix_sys::write(fd, bytes);
+        let _ = minix_sys::close(fd);
+        write_rv.map(|_| ())
     }
 
     fn read_file(&self, path: &str) -> Result<String, Errno> {
-        let _ = path;
-        Err(Errno::ENOSYS)
+        // C reads /etc/ttys and /etc/passwd whole (fopen/fgets loops,
+        // init.c:698/733). Read into a growing buffer until EOF, then
+        // decode UTF-8 lossily — init only matches ASCII structure, and
+        // a lossy swap cannot lose a delimiter.
+        let fd = minix_sys::open(path, O_RDONLY, 0)?;
+        let mut body: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            match minix_sys::read(fd, &mut chunk) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+                Err(e) => {
+                    let _ = minix_sys::close(fd);
+                    return Err(e);
+                }
+            }
+        }
+        let _ = minix_sys::close(fd);
+        Ok(String::from_utf8_lossy(&body).into_owned())
     }
 }
+
+/// `open(2)` flag words this host uses (C `sys/sys/fcntl.h:64,65,82`).
+const O_RDONLY: i32 = 0x0000;
+const O_WRONLY: i32 = 0x0001;
+const O_APPEND: i32 = 0x0008;
 
 /// A scripted host for tests: every effect is a queued outcome or a
 /// recorded observation.
@@ -635,15 +680,27 @@ mod tests {
     #[test]
     fn test_minix_host_honest_enosys_for_missing_wrappers() {
         let mut host = MinixSysHost;
-        // getuid/setsid now ride real wrappers (E-INITSYS ②; scripted
-        // transport inside the PM wrapper tests covers the wire) — the
-        // direct-trap host answers ENOSYS for them on this host, so we
-        // only assert the still-gated seams here.
+        // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
+        // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
+        // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
+        // 仍缺封装：alarm（PM setitimer 面）、内核 mib 三件（12 篇）、
+        // exec（PM_EXEC 面）、set_controlling_tty（dup2/TIOCSCTTY 面）、
+        // chroot、set_env（E-CMDSYSFACE）。
         assert_eq!(host.alarm(10), Err(Errno::ENOSYS));
-        assert_eq!(host.path_exists("/dev/console"), Err(Errno::ENOSYS));
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
+        assert_eq!(
+            host.set_controlling_tty("/dev/console"),
+            Err(Errno::ENOSYS)
+        );
+        assert_eq!(host.chroot("/"), Err(Errno::ENOSYS));
+        assert_eq!(host.set_env("PATH", "/sbin"), Err(Errno::ENOSYS));
+        // 已接线（宿主 trap 断链 → EIO）：文件族三件 + 信号安装。
+        assert_eq!(host.path_exists("/dev/console"), Err(Errno::EIO));
+        assert_eq!(host.read_file("/etc/ttys"), Err(Errno::EIO));
+        assert_eq!(host.append_file("/var/run/utmpx", b"x"), Err(Errno::EIO));
+        assert_eq!(host.close_std_fds(), Err(Errno::EIO));
         // 信号安装已是真实封装（E-INITSYS ①）：宿主 trap 断链诚实回
         // EIO（E1 切片 5 的 hosted fallback；rt-birth 同款注记）——不伪造
         // 成功。真机上 PM 服务该调用号（S3 的 dispatch 臂）后回真实结果，
