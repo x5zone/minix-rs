@@ -368,7 +368,7 @@ mod tests {
         // getproctab 只需前几行有效（拉取按整表拷贝）。
         k.proctab.truncate(0);
         k.proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * core::mem::size_of::<ProcInfoStruct>()];
-        (k, FakeServices { pm_tab: pm_table() })
+        (k, FakeServices { pm_tab: pm_table(), light_tab: Vec::new() })
     }
 
     fn e2e_ctx<'a>(

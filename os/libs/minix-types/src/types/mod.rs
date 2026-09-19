@@ -79,7 +79,7 @@ pub use kinfo::*;
 pub use kerninfo::*;
 pub use dmap_snap::{DmapSnap, DMAP_LABEL_LEN, NR_DEVICES};
 pub use ds_store::{DsEntrySnap, DSF_IN_USE, NR_DS_KEYS};
-pub use fproc::FProcSnap;
+pub use fproc::{FProcSnap, FprocLightSnap};
 pub use mproc::{mp_flags, MProcSnap, MP_MAGIC, NGROUPS_MAX};
 pub use pid::*;
 pub use priv_info::*;

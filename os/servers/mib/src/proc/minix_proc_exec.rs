@@ -234,7 +234,6 @@ mod tests {
     use crate::heap::MibBudget;
     use crate::io::copy::Oldp;
     use crate::proc::test_mocks::{put_row, FakeKernel, FakeServices};
-    use crate::subtree::minix::ProcDoor as Door;
     use crate::tree::arena::MibTree;
     use crate::walker::{self, Request};
     use alloc::vec;
@@ -318,7 +317,7 @@ mod tests {
                 target_base: 0,
                 target_mem: Vec::new(),
             },
-            FakeServices { pm_tab: pm },
+            FakeServices { pm_tab: pm, light_tab: Vec::new() },
         )
     }
 
