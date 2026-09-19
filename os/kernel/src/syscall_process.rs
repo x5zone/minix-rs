@@ -799,7 +799,6 @@ pub(crate) fn dispatch_statectl(
         // See `syscall::clear_ipc_refs` for the full semantics and design
         // gap notes (return value register, async send cancellation).
         StatectlRequest::ClearIpcRefs => {
-            let caller_nr = caller_nr;
             crate::syscall::clear_ipc_refs(proc_table, priv_table, caller_nr, EDEADSRCDST);
         }
         // C: do_statectl.c:29-30 — priv(caller)->s_state_table = address; s_state_entries = length
@@ -1010,17 +1009,10 @@ mod tests {
     /// Helper: prepare a caller process with a working priv_id, returning
     /// (caller, priv_table). The priv_id must map to a real KPriv slot so
     /// dispatch_statectl can update `s_ipcf`.
-    fn build_caller_with_priv() -> (KProcess, crate::test_helpers::TestPrivTable) {
-        let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
-        caller.priv_id = Some(0);
-        (caller, priv_table)
-    }
-
     #[test]
     fn test_dispatch_statectl_add_ipc_filter_rejects_unaligned_length() {
         // C system.c:710-712 — length 不按元素大小对齐 → EINVAL。
-        let (mut caller, mut priv_table) = build_caller_with_priv();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 5);
@@ -1034,7 +1026,7 @@ mod tests {
     #[test]
     fn test_dispatch_statectl_add_ipc_filter_rejects_zero_length() {
         // C system.c:713-716 — num_elements <= 0 → E2BIG（长度 0 = 0 个元素）。
-        let (mut caller, mut priv_table) = build_caller_with_priv();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 0);
@@ -1049,7 +1041,7 @@ mod tests {
     fn test_dispatch_statectl_add_ipc_filter_suspends_and_frees_on_copy_fault() {
         // data_copy_vmcheck 在 hosted mock 下不可解（PteWalk None →
         // Suspended）→ VmSuspend 且新槽位已释放（不跨挂起泄漏）。
-        let (mut caller, mut priv_table) = build_caller_with_priv();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 12); // 1 element
@@ -1123,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_statectl_invalid_request_returns_einval() {
-        let (mut caller, mut priv_table) = build_caller_with_priv();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(99, 0, 0);
@@ -1173,7 +1165,6 @@ mod tests {
             mgr_ep,
         );
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(0, 0));
         let msg = Message::default();
         assert_eq!(
             dispatch_exit(ProcNr(0), &mut procs, &msg, &mut privs),
@@ -1203,7 +1194,6 @@ mod tests {
             m.p_getfrom_e = Endpoint::ANY;
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(0, 0));
         let msg = Message::default();
         assert_eq!(
             dispatch_exit(ProcNr(0), &mut procs, &msg, &mut privs),
@@ -1231,7 +1221,6 @@ mod tests {
         }
         let target_endpoint = proc_table.get(target_nr).unwrap().p_endpoint;
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
         msg.m_u.m_m1.m1i2 = RC_STOP;           // action = stop
@@ -1253,7 +1242,6 @@ mod tests {
         }
         let target_endpoint = proc_table.get(target_nr).unwrap().p_endpoint;
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
         msg.m_u.m_m1.m1i2 = RC_RESUME;
@@ -1272,7 +1260,6 @@ mod tests {
         }
         let target_endpoint = proc_table.get(target_nr).unwrap().p_endpoint;
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_endpoint.0;
         msg.m_u.m_m1.m1i2 = 99; // invalid action
@@ -1298,7 +1285,6 @@ mod tests {
         // Clear SLOT_FREE so the endpoint lookup succeeds.
         proc_table.get_mut(kernel_nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = kernel_endpoint.0;
         msg.m_u.m_m1.m1i2 = RC_STOP;
@@ -1321,7 +1307,7 @@ mod tests {
         proc_table.get_mut(target_nr).unwrap().p_rts_flags.set(RtsFlagsBits::RECEIVING);
         proc_table.get_mut(target_nr).unwrap().p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
+        let caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_type = Syscall::Exec as i32;
         msg.m_u.m_lsys_krn_sys_exec.endpt = target_endpoint.0;
@@ -1351,7 +1337,6 @@ mod tests {
     fn test_dispatch_exec_invalid_endpoint() {
         // C: do_exec.c:27,30 — isokendpt fails → EINVAL
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_type = Syscall::Exec as i32;
         msg.m_u.m_lsys_krn_sys_exec.endpt = 99999; // invalid endpoint
@@ -1363,7 +1348,6 @@ mod tests {
     #[test]
     fn test_dispatch_clear_invalid_endpoint_returns_einval() {
         // C: do_clear.c:29 — isokendpt fails → EINVAL
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         // Set an endpoint that won't be found in the process table
         msg.m_u.m_m1.m1i1 = 99999; // invalid endpoint
@@ -1395,7 +1379,6 @@ mod tests {
         assert!(proc_table.endpoint_to_nr(target_ep).is_some());
 
         // Caller is a different process (e.g., PM)
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_ep.get(); // target endpoint
 
@@ -1427,7 +1410,6 @@ mod tests {
             target.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_ep.get();
 
@@ -1485,7 +1467,6 @@ mod tests {
     fn test_dispatch_schedctl_invalid_flags() {
         // C: do_schedctl.c:16-17 — flags & ~SCHEDCTL_FLAG_KERNEL → EINVAL
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let msg = build_schedctl_msg(0xFF, 0, 0, 0, 0);
 
         let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
@@ -1496,7 +1477,6 @@ mod tests {
     fn test_dispatch_schedctl_invalid_endpoint_returns_einval() {
         // C: do_schedctl.c:23-24 — isokendpt fails → EINVAL
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         // Endpoint 99999 won't resolve in an empty process table.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, 99999, 0, 0, 0);
 
@@ -1518,7 +1498,6 @@ mod tests {
         }
 
         // Caller is a different process (e.g., the sched server).
-        let mut caller = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
 
         // Valid scheduling parameters: priority=5, quantum=10ms, cpu=0.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 5, 10, 0);
@@ -1541,7 +1520,6 @@ mod tests {
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         // priority = 999 exceeds NR_SCHED_QUEUES (16) → EINVAL.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 999, 10, 0);
 
@@ -1561,7 +1539,6 @@ mod tests {
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         // priority = 256 truncates to 0 without the fix — must be rejected.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 256, 10, 0);
 
@@ -1576,7 +1553,6 @@ mod tests {
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         // quantum = 0 is invalid (must be >= 1 or -1).
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 5, 0, 0);
 
@@ -1626,7 +1602,6 @@ mod tests {
             target.p_sched.quantum.size_ms.store(20, core::sync::atomic::Ordering::Release);
         }
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint::from_generation_slot(1, 1));
         // All -1 sentinels → sched_proc should keep current values.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), -1, -1, -1);
 
@@ -1679,7 +1654,6 @@ mod tests {
     #[test]
     fn test_t12_fork_rejects_non_receiving_parent() {
         // C do_fork.c:51 — 父进程非 RECEIVING（非同步 fork 点）→ EINVAL。
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // 不置 RECEIVING
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
@@ -1735,7 +1709,6 @@ mod tests {
         }
         let target_ep = proc_table.get(target_nr).unwrap().p_endpoint;
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_ep.0;
         msg.m_u.m_m1.m1i2 = RC_STOP;
@@ -1759,7 +1732,6 @@ mod tests {
         }
         let target_ep = proc_table.get(target_nr).unwrap().p_endpoint;
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut clock_state = crate::clock::ClockState::new();
         // IRQ-hook 清理读全局 IRQ_MANAGER（同既有 clear 测试的初始化）。

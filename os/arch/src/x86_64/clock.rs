@@ -48,7 +48,6 @@ const LAPIC_TIMER_ICR_OFF: usize = 0x380 / 4;
 const LAPIC_TIMER_DCR_OFF: usize = 0x3E0 / 4;
 const LAPIC_TIMER_CCR_OFF: usize = 0x390 / 4;
 const LAPIC_LVT_TIMER_OFF: usize = 0x320 / 4;
-const LAPIC_LVT_MASK: u32 = 1 << 16;
 // C programs APIC_TIMER_INT_VECTOR = 0xf0; the Rust-side sched-IPI
 // lane (S-10) already owns 0xF0, so the local timer takes 0xF1 — a
 // carrier convention (hook chains never see it), documented in §28.

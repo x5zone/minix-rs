@@ -217,7 +217,7 @@ fn runqueues_ok_cpu_positive_invariants_hold() {
     use minix_kernel::smp::SmpState;
 
     let mut table = Box::new(ProcessTable::new());
-    let mut smp = SmpState::new_single_cpu();
+    let smp = SmpState::new_single_cpu();
     for nr in [ProcNr(0), ProcNr(1)] {
         let p = table.get_mut(nr).unwrap();
         p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
@@ -253,7 +253,7 @@ fn runqueues_ok_cpu_detects_dead_proc_on_queue() {
     use minix_kernel::smp::SmpState;
 
     let mut table = Box::new(ProcessTable::new());
-    let mut smp = SmpState::new_single_cpu();
+    let smp = SmpState::new_single_cpu();
     for nr in [ProcNr(0), ProcNr(1)] {
         let p = table.get_mut(nr).unwrap();
         p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);
@@ -286,7 +286,7 @@ fn runqueues_ok_cpu_detects_runnable_not_queued() {
     use minix_kernel::smp::SmpState;
 
     let mut table = Box::new(ProcessTable::new());
-    let mut smp = SmpState::new_single_cpu();
+    let smp = SmpState::new_single_cpu();
     for nr in [ProcNr(0), ProcNr(1)] {
         let p = table.get_mut(nr).unwrap();
         p.p_rts_flags.clear(minix_kernel::proc::RtsFlagsBits::SLOT_FREE);

@@ -2983,7 +2983,6 @@ mod tests {
         let mut proc_table = make_proc_table_with_user(0, 100);
         // Pre-set PROC_STOP on target.
         proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100; // target endpoint
@@ -3001,7 +3000,6 @@ mod tests {
         // C: do_trace.c:174-177 — T_RESUME: clear RTS_P_STOP, write data=0.
         let mut proc_table = make_proc_table_with_user(0, 100);
         proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3016,7 +3014,6 @@ mod tests {
     fn test_dispatch_trace_stop_sets_proc_stop_and_clears_trace_flags() {
         // C: do_trace.c:89-93 — T_STOP: set RTS_P_STOP + clear MF_SC_TRACE|MF_STEP.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3035,7 +3032,6 @@ mod tests {
         let mut proc_table = make_proc_table_with_user(0, 100);
         proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
         proc_table.get_mut(ProcNr(0)).unwrap().p_misc_flags.set(MiscFlagsBits::SC_ACTIVE);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3052,7 +3048,6 @@ mod tests {
         // C: do_trace.c:185-189 — T_SYSCALL: set MF_SC_TRACE + clear RTS_P_STOP.
         let mut proc_table = make_proc_table_with_user(0, 100);
         proc_table.get_mut(ProcNr(0)).unwrap().p_rts_flags.set(RtsFlagsBits::PROC_STOP);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3070,7 +3065,6 @@ mod tests {
         // switch; it falls to `default: return EINVAL`. T_EXIT is handled
         // by the Process Manager (PM) via SIGKILL, not the kernel.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3087,7 +3081,6 @@ mod tests {
         // copy suspends with a Src page fault → KcallResult::VmSuspend, and
         // RTS_VMREQUEST is set on the caller (mirrors C's vm_suspend() path).
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3118,7 +3111,6 @@ mod tests {
         // (Src page fault) rather than rejecting the address — proving the
         // byte-level copy semantics match C.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3139,7 +3131,6 @@ mod tests {
         // Wired to `data_copy_vmcheck` (was DEFERRED → ENOSYS). Mock PTE walk
         // misses → VmSuspend + RTS_VMREQUEST on caller.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3160,7 +3151,6 @@ mod tests {
         // Unaligned address must NOT return EFAULT. Wired path suspends
         // (Dst page fault) rather than rejecting the address.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3181,7 +3171,6 @@ mod tests {
         // Wired to `data_copy_vmcheck` (was DEFERRED → ENOSYS). Mock PTE walk
         // misses → VmSuspend + RTS_VMREQUEST on caller.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3201,7 +3190,6 @@ mod tests {
     fn test_dispatch_trace_getuser_rejects_unaligned_address() {
         // C: do_trace.c:106 — `if ((tr_addr & (sizeof(long) - 1)) != 0) return(EFAULT)`.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3215,7 +3203,6 @@ mod tests {
     fn test_dispatch_trace_setuser_rejects_unaligned_address() {
         // C: do_trace.c:137 — alignment check before offset range check.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3229,7 +3216,6 @@ mod tests {
     fn test_dispatch_trace_setuser_writes_rip() {
         // T_SETUSER writing to rip (offset 56 on x86_64) succeeds.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3247,7 +3233,6 @@ mod tests {
         // protected because writing them could crash the kernel at context
         // switch.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3264,7 +3249,6 @@ mod tests {
         // with user-bit masking (C: SETPSW). The arch layer applies
         // PSW_USER_MASK internally.
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3278,7 +3262,6 @@ mod tests {
     #[test]
     fn test_dispatch_trace_rejects_invalid_request() {
         let mut proc_table = make_proc_table_with_user(0, 100);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
@@ -3290,7 +3273,6 @@ mod tests {
     #[test]
     fn test_dispatch_trace_rejects_invalid_target_endpoint() {
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 9999; // not in proc table
@@ -3310,7 +3292,6 @@ mod tests {
             p.p_endpoint = Endpoint(50);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(200));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 50;
@@ -3326,7 +3307,6 @@ mod tests {
         // When tr_addr exceeds sizeof(ProcInfoStruct) (aligned up), the
         // read should fall through to the priv struct snapshot.
         let (mut proc_table, priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(300));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         let proc_size = core::mem::size_of::<ProcInfoStruct>() as u64;
@@ -3350,7 +3330,6 @@ mod tests {
         // C: do_trace.c:120 — priv-struct offset beyond sizeof(struct priv)
         // returns EFAULT.
         let (mut proc_table, priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(300));
         let mut msg = Message::default();
         msg.m_type = Syscall::Trace as i32;
         let proc_size = core::mem::size_of::<ProcInfoStruct>() as u64;
@@ -3409,7 +3388,6 @@ mod tests {
     fn test_dispatch_update_rejects_none_src_endpoint() {
         // C: do_update.c:55-57 — isokendpt fails → EINVAL.
         let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = minix_types::Endpoint::NONE.0; // src = NONE
         msg.m_u.m_m1.m1i2 = 200;
@@ -3423,7 +3401,6 @@ mod tests {
         // src == dst is nonsensical and would corrupt state. Rust rejects
         // it explicitly with EINVAL. C's assert would have crashed.
         let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = 100; // src = 100
         msg.m_u.m_m1.m1i2 = 100; // dst = 100 (same)
@@ -3445,7 +3422,6 @@ mod tests {
             p.p_rts_flags.clear(RtsFlagsBits::SIG_PENDING);
             p.p_rts_flags.clear(RtsFlagsBits::RECEIVING);
         }
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = 100;
         msg.m_u.m_m1.m1i2 = 200;
@@ -3460,7 +3436,6 @@ mod tests {
         // The swap body is now implemented: swaps runtime state while
         // preserving identity fields (endpoint, nr, priv_id, caller_q, etc.).
         let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = 100;
         msg.m_u.m_m1.m1i2 = 200;
@@ -3487,7 +3462,6 @@ mod tests {
         // be re-anchored to that slot (a lost re-anchor leaves the chain
         // pointing at a process with no pending request).
         let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = 100; // src endpoint
         msg.m_u.m_m1.m1i2 = 200; // dst endpoint
@@ -3541,7 +3515,6 @@ mod tests {
         // PrivId-anchored) references slots, so a lost restore would make the
         // chain read the swapped-in timer of the other process.
         let (mut proc_table, mut priv_table) = make_two_sys_procs(0, 100, 1, 200);
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = 100;
         msg.m_u.m_m1.m1i2 = 200;
@@ -3641,7 +3614,6 @@ mod tests {
         }
 
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),caller_ep);
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         // Set request = GET_PROC (11), val_len2_e = SELF (-1)
@@ -3673,7 +3645,6 @@ mod tests {
         }
 
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         // Set request = GET_PROC (11), val_len2_e = valid endpoint
@@ -3694,7 +3665,6 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
@@ -3710,7 +3680,6 @@ mod tests {
         use crate::proc::RtsFlagsBits;
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::ProcTab as i32;
@@ -3737,7 +3706,6 @@ mod tests {
             target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             target.priv_id = Some(pid);
         }
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Priv as i32;
@@ -3757,7 +3725,6 @@ mod tests {
         use crate::proc::RtsFlagsBits;
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::PrivTab as i32;
@@ -3781,7 +3748,6 @@ mod tests {
             target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Regs as i32;
@@ -3801,7 +3767,6 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Regs as i32;
@@ -3816,7 +3781,6 @@ mod tests {
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         // Set request = GET_PRIV (17), val_len2_e = invalid endpoint
@@ -3875,7 +3839,6 @@ fn sprof_test_teardown() {
     fn test_sprof_rejects_unknown_action() {
         let _lock = sprof_test_setup();
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = 99; // unknown action
@@ -3888,7 +3851,6 @@ fn sprof_test_teardown() {
     fn test_sprof_start_rejects_invalid_endpoint() {
         let _lock = sprof_test_setup();
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
@@ -3910,7 +3872,6 @@ fn sprof_test_teardown() {
             target.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
@@ -3931,7 +3892,6 @@ fn sprof_test_teardown() {
             target.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
@@ -3960,7 +3920,6 @@ fn sprof_test_teardown() {
             target.p_misc_flags.set(MiscFlagsBits::SPROF_SEEN);
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
@@ -3987,7 +3946,6 @@ fn sprof_test_teardown() {
         // pre-set SPROFILING=true to simulate a running profile.)
         let _lock = sprof_test_setup();
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
@@ -4013,7 +3971,6 @@ fn sprof_test_teardown() {
         let info = SPROF_INFO.get();
         unsafe { *info = SprofInfo::default(); }
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
@@ -4042,7 +3999,6 @@ fn sprof_test_teardown() {
         let _lock = sprof_test_setup();
         SPROFILING.store(true, Ordering::Release);
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
@@ -4058,7 +4014,6 @@ fn sprof_test_teardown() {
         // C: do_sprofile.c:82 — PROF_STOP without prior PROF_START → EBUSY.
         let _lock = sprof_test_setup();
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
@@ -4074,7 +4029,6 @@ fn sprof_test_teardown() {
         // PROF_START is not poisoned.
         let _lock = sprof_test_setup();
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0),Endpoint(100));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;

@@ -19,7 +19,6 @@ use minix_types::{Endpoint, Message, MessageM1};
 use crate::irq_manager::IrqManager;
 use crate::capability::ProcessCapability;
 use crate::kpriv::{KPriv, PrivTable};
-use crate::proc::KProcess;
 use crate::syscall::{KcallResult, Syscall};
 use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
 
@@ -1319,6 +1318,7 @@ pub fn dispatch_readbios(
 mod tests {
     use super::*;
     use minix_types::{Endpoint, MessLsysKrnReadbios, MessLsysKrnSysSdevio};
+    use crate::proc::KProcess;
     use crate::proc::RtsFlagsBits;
     use crate::proc::ProcNr;
 
@@ -1572,7 +1572,7 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         // Set up a user process at slot 0 (nr=0, endpoint=Endpoint(0))
         let caller_ep = Endpoint::from_generation_slot(1, 0);
-        let mut caller = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(0), caller_ep));
+        let caller = crate::test_helpers::scratch_kproc(KProcess::new(ProcNr(0), caller_ep));
         caller.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         // Also mark the process in the table as not-free so endpoint_to_nr finds it
         {
@@ -1605,7 +1605,6 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = 0;
         msg.m_u.m_m1.m1i1 = target_ep.0; // endpt = explicit endpoint
@@ -1620,7 +1619,6 @@ mod tests {
     #[test]
     fn test_iopenable_invalid_endpoint_returns_einval() {
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
 
         let mut msg = Message::default();
         msg.m_type = 0;
@@ -1644,7 +1642,6 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = 0;
         msg.m_u.m_m1.m1i1 = kernel_ep.0;
@@ -1668,7 +1665,6 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = 0;
         msg.m_u.m_m1.m1i1 = target_ep.0;
@@ -1696,7 +1692,6 @@ mod tests {
     fn test_sdevio_invalid_endpoint_returns_einval() {
         // C: do_sdevio.c:56 — isokendpt fails → EINVAL
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
 
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
@@ -1724,7 +1719,6 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         }
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
         msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
@@ -1746,7 +1740,6 @@ mod tests {
         let _caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
         let target_ep = setup_sdevio_proc(&mut proc_table, 5, 1);
 
-        let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
         msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
@@ -1767,9 +1760,8 @@ mod tests {
     fn test_sdevio_long_type_returns_einval() {
         // C: do_sdevio.c:140-152 — _DIO_LONG not supported in batch I/O
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
+        setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         let mut msg = Message::default();
         msg.m_type = Syscall::Sdevio as i32;
         msg.m_u.m_lsys_krn_sys_sdevio = MessLsysKrnSysSdevio {
@@ -1814,9 +1806,8 @@ mod tests {
     fn test_sdevio_check_io_port_denied() {
         // C: do_sdevio.c:102-122 — CHECK_IO_PORT with port out of range → EPERM
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let caller_ep = setup_sdevio_proc(&mut proc_table, 0, 1);
+        setup_sdevio_proc(&mut proc_table, 0, 1);
 
-        let mut caller = KProcess::new(ProcNr(0), caller_ep);
         let mut priv_table = crate::test_helpers::test_priv_table();
         let priv_id: crate::kpriv::PrivId = 0;
         proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(priv_id);
@@ -1900,7 +1891,6 @@ mod tests {
     #[test]
     fn test_readbios_zero_size_returns_einval() {
         // size == 0 would underflow `limit = addr + size - 1`
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
         msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
@@ -1918,7 +1908,6 @@ mod tests {
     #[test]
     fn test_readbios_outside_bios_range_returns_eperm() {
         // C: do_readbios.c:31-33 — neither BIOS_MEM nor UPPER_MEM range
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
         msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
@@ -1946,7 +1935,6 @@ mod tests {
         // Range must fit ENTIRELY within one region.
         // addr=0x4F0, size=32 → limit=0x50F, exceeds BIOS_MEM_END (0x4FF)
         // and is below BASE_MEM_TOP (0x90000) → EPERM
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
         msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {
@@ -1964,7 +1952,6 @@ mod tests {
     #[test]
     fn test_readbios_overflow_returns_einval() {
         // addr + size - 1 overflows u64
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Readbios as i32;
         msg.m_u.m_lsys_krn_readbios = MessLsysKrnReadbios {

@@ -17,7 +17,7 @@
 
 use minix_types::{Endpoint, Message, MessSigcalls, VirBytes};
 
-use crate::proc::{KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, SigSet};
+use crate::proc::{MiscFlagsBits, ProcNr, RtsFlagsBits, SigSet};
 use crate::proc_table::ProcessTable;
 use crate::kpriv::PrivTable;
 use crate::syscall::{KcallResult, Syscall};
@@ -881,7 +881,6 @@ pub fn dispatch_sigreturn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proc::KProcess;
     use minix_types::Endpoint;
 
     #[test]
@@ -908,7 +907,6 @@ mod tests {
 
     #[test]
     fn test_sigsend_invalid_endpoint() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
         // Invalid endpoint → EINVAL
@@ -919,7 +917,6 @@ mod tests {
 
     #[test]
     fn test_sigsend_kernel_process() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
         // Set endpoint to a kernel process (negative proc_nr)
@@ -932,7 +929,6 @@ mod tests {
 
     #[test]
     fn test_sigreturn_invalid_endpoint() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigreturn as i32;
         let mut proc_table = crate::test_helpers::test_proc_table();
@@ -954,7 +950,6 @@ mod tests {
         let target_endpoint = proc_table.get(ProcNr(0)).unwrap().p_endpoint;
         // Fresh process: trap_style is NoEntry — it has never entered.
 
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(1));
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
         msg.m_u.m_sigcalls.endpt = target_endpoint.0;

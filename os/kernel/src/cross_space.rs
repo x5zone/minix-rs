@@ -42,7 +42,6 @@
 
 use minix_types::{Endpoint, PhysBytes, VirBytes};
 
-use crate::proc::KProcess;
 use crate::proc::ProcNr;
 use crate::proc_table::ProcessTable;
 use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset, cross_space_write};

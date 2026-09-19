@@ -41,7 +41,6 @@ use minix_types::{Endpoint, PhysBytes, VirBytes};
 use minix_arch::DirectMapArch;
 use crate::cross_space::data_copy_vmcheck;
 use crate::kpriv::PrivTable;
-use crate::proc::KProcess;
 use crate::proc_table::ProcessTable;
 use crate::vm::{AddressRef, CrossSpaceResult, VmFaultType};
 
@@ -507,7 +506,6 @@ mod tests {
 
     #[test]
     fn test_verify_grant_invalid_endpoint() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, _| None;
@@ -528,7 +526,6 @@ mod tests {
 
     #[test]
     fn test_verify_grant_invalid_grant_id() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, _| None;
@@ -554,7 +551,6 @@ mod tests {
     /// granter 的 priv 字段，先于授权条目的跨空间读取。
     #[test]
     fn test_t8_verify_grant_range_exceeded_returns_eperm() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
 
@@ -596,7 +592,6 @@ mod tests {
     /// → ENOTREADY（do_safecopy.c:83-90）。
     #[test]
     fn test_t8_verify_grant_temp_table_mismatch_enotready() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut priv_table = crate::test_helpers::test_priv_table();
 
