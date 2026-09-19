@@ -26,7 +26,7 @@ pub mod tty_fkey;
 
 pub use acquire::{
     Acquires, ClockTransport, DiagctlTransport, GetSysinfoTransport, KerninfoTransport, SiWhat,
-    SysGetinfoTransport, UnimplementedAcquires, VmInfoTransport, getsysinfo_call,
+    SysAcquires, SysGetinfoTransport, UnimplementedAcquires, VmInfoTransport, getsysinfo_call,
 };
 pub use dispatch::{
     DispatchAction, DumpId, Hook, HOOKS, MAPPING_COLUMNS, MAPPING_RULE, MAPPING_TITLE, classify,

@@ -14,14 +14,15 @@ fn main() {
     // library directly).
     #[cfg(not(test))]
     {
-        use minix_is::{IsServer, UnimplementedAcquires, sef::SysSefTransport, tty_fkey::SysFkeyCtl};
+        use minix_is::{IsServer, SysAcquires, sef::SysSefTransport, tty_fkey::SysFkeyCtl};
 
-        // S23 片 1:`SysSefTransport` 生产装配——receive 走 minix-sef
-        // (ping 透明)、send 走 trap 阻塞 send、warn/diag 走 SYS_DIAGCTL
-        // 诊断缝(A-6)。Fkey/Acquires 两件仍在制(S23 片 2/3),以
-        // fail-closed 占位——它们只在对应 dump 请求到达时才触达,启动
-        // 与主循环可真实运转。
-        let mut server = IsServer::new(SysSefTransport::new(), SysFkeyCtl, UnimplementedAcquires);
+        // S23 装配:`SysSefTransport`(receive 经 minix-sef ping 透明/
+        // send 阻塞/warn+diag 走 SYS_DIAGCTL 缝)、`SysFkeyCtl`
+        // (fkey_ctl → minix-sys tty::fkey_ctl_via)、`SysAcquires`
+        // (SYS_GETINFO 七 what + stacktrace + uptime 真装;Kerninfo/
+        // GetSysinfo/VM_INFO 三通道片 3b 委托 fail-closed——它们只在
+        // 对应 dump 请求到达时触达)。
+        let mut server = IsServer::new(SysSefTransport::new(), SysFkeyCtl, SysAcquires::default());
 
         // C: sef_local_startup() + boot anchor — main.c:40-41,94-102.
         // Boot failure is fatal (C panics on startup paths); do not enter

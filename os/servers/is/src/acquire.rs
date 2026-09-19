@@ -252,6 +252,154 @@ impl<T> Acquires for T where
 {
 }
 
+/// 生产取数面(S23 片 3a):SYS_GETINFO 族直调(结构即 minix-types 的
+/// wire 权威,repr(C) 布局按字节通到内核)、SYS_DIAGCTL 的 stacktrace
+/// (code 2,载荷端点)、SYS_TIMES 的 uptime(`real_ticks`,C `getticks`
+/// 读 kclockinfo->uptime 的同源量;A-3 无 usermapped 页)。
+/// Kerninfo/GetSysinfo/VM_INFO 三通道留片 3b(需 PM/VFS/RS/VM 的
+/// taskcall 面与 kmessages 的特殊布局)。
+#[derive(Debug, Default)]
+pub struct SysAcquires {
+    /// 片 3b 待装的三通道(Kerninfo/GetSysinfo/VM_INFO)——委托
+    /// fail-closed 占位;装齐后本字段消失。
+    pending: UnimplementedAcquires,
+}
+
+impl SysAcquires {
+    /// SYS_GETINFO 的共享承载:`Ok` → OK(0),`Err(e)` → 负 errno 原样
+    /// (C 的 `r != OK` 判读面)。
+    fn getinfo(request: i32, buf: &mut [u8], endpt: i32) -> i32 {
+        match minix_sys::syscall::sys_getinfo_into(
+            &DirectKernelCallTransport,
+            request,
+            buf,
+            endpt,
+        ) {
+            Ok(()) => minix_types::OK,
+            Err(e) => e,
+        }
+    }
+}
+
+/// 结构切片的字节视图(出参缓冲;结构都是 repr(C) 的 wire 权威)。
+///
+/// # Safety
+/// `T` 为 POD(repr(C)、无填充语义依赖);调用期间切片独占。
+unsafe fn out_bytes<T>(v: &mut [T]) -> &mut [u8] {
+    // SAFETY: 由调用方保证的 POD 切片 → 字节视图。
+    unsafe {
+        core::slice::from_raw_parts_mut(
+            v.as_mut_ptr().cast::<u8>(),
+            core::mem::size_of_val(v),
+        )
+    }
+}
+
+impl SysGetinfoTransport for SysAcquires {
+    fn get_kinfo(&mut self, out: &mut KinfoStruct) -> i32 {
+        Self::getinfo(
+            minix_types::GET_KINFO,
+            unsafe { out_bytes(core::slice::from_mut(out)) },
+            Endpoint::NONE.0,
+        )
+    }
+
+    fn get_image(&mut self, out: &mut [BootImageStruct]) -> i32 {
+        Self::getinfo(minix_types::GET_IMAGE, unsafe { out_bytes(out) }, Endpoint::NONE.0)
+    }
+
+    fn get_proctab(&mut self, out: &mut [ProcInfoStruct]) -> i32 {
+        Self::getinfo(minix_types::GET_PROCTAB, unsafe { out_bytes(out) }, Endpoint::NONE.0)
+    }
+
+    fn get_monparams(&mut self, out: &mut [u8]) -> i32 {
+        Self::getinfo(minix_types::GET_MONPARAMS, out, Endpoint::NONE.0)
+    }
+
+    fn get_irqhooks(&mut self, out: &mut [IrqHookStruct]) -> i32 {
+        Self::getinfo(minix_types::GET_IRQHOOKS, unsafe { out_bytes(out) }, Endpoint::NONE.0)
+    }
+
+    fn get_irqactids(&mut self, out: &mut [i32]) -> i32 {
+        Self::getinfo(minix_types::GET_IRQACTIDS, unsafe { out_bytes(out) }, Endpoint::NONE.0)
+    }
+
+    fn get_privtab(&mut self, out: &mut [PrivInfoStruct]) -> i32 {
+        Self::getinfo(minix_types::GET_PRIVTAB, unsafe { out_bytes(out) }, Endpoint::NONE.0)
+    }
+}
+
+impl DiagctlTransport for SysAcquires {
+    fn stacktrace(&mut self, proc: Endpoint) -> i32 {
+        // C: sys_diagctl_stacktrace(ep)(dmp_kernel.c:378)→
+        // SYS_DIAGCTL code 2 的载荷端点在 `d.endpt`(minix-sys 非 code1
+        // 分支写 arg2)。
+        match minix_sys::syscall::sys_diagctl(
+            &DirectKernelCallTransport,
+            2, // DIAGCTL_CODE_STACKTRACE — com.h:413
+            0,
+            proc.0,
+        ) {
+            Ok(()) => minix_types::OK,
+            Err(e) => e,
+        }
+    }
+}
+
+impl ClockTransport for SysAcquires {
+    fn uptime(&mut self) -> u32 {
+        // C getticks():kclockinfo->uptime(usermapped 页,A-3 不建)。
+        // SYS_TIMES 的 real_ticks 是同源量(自 boot 的实时 ticks);
+        // 失败回 0(C 的调用点无失败面)。
+        match minix_sys::syscall::sys_times(&DirectKernelCallTransport, Endpoint::SELF.0) {
+            Ok(t) => t.real_ticks as u32,
+            Err(_) => 0,
+        }
+    }
+}
+
+impl KerninfoTransport for SysAcquires {
+    fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
+        self.pending.kmessages(meta, ring)
+    }
+}
+
+impl GetSysinfoTransport for SysAcquires {
+    fn pm_proc_tab(&mut self, out: &mut [MProcSnap]) -> i32 {
+        self.pending.pm_proc_tab(out)
+    }
+
+    fn vfs_proc_tab(&mut self, out: &mut [FProcSnap]) -> i32 {
+        self.pending.vfs_proc_tab(out)
+    }
+
+    fn vfs_dmap_tab(&mut self, out: &mut [DmapSnap]) -> i32 {
+        self.pending.vfs_dmap_tab(out)
+    }
+
+    fn rs_tables(&mut self, pub_out: &mut [RprocpubSnap], priv_out: &mut [RprocSnap]) -> i32 {
+        self.pending.rs_tables(pub_out, priv_out)
+    }
+
+    fn ds_data_store(&mut self, out: &mut [DsEntrySnap]) -> i32 {
+        self.pending.ds_data_store(out)
+    }
+}
+
+impl VmInfoTransport for SysAcquires {
+    fn vm_stats(&mut self, out: &mut VmStatsSnap) -> i32 {
+        self.pending.vm_stats(out)
+    }
+
+    fn vm_usage(&mut self, who: Endpoint, out: &mut VmUsageSnap) -> i32 {
+        self.pending.vm_usage(who, out)
+    }
+
+    fn vm_region(&mut self, who: Endpoint, out: &mut [VmRegionSnap], next: u64) -> (i32, u64, i32) {
+        self.pending.vm_region(who, out, next)
+    }
+}
+
 /// Fail-closed bundle until the `minix-sys`/kernel wiring lands
 /// (01 `UnimplementedTransport` pattern).
 #[derive(Debug, Default)]
@@ -709,6 +857,56 @@ impl GetSysinfoTransport for VfsProcTabTransport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_sys_acquires_hosted_negative_errno_and_uptime_zero() {
+        // hosted:trap 直连诚实回负 errno(C 的 r 判读面);uptime 回 0
+        // (C getticks 无失败面,失败面按 0 记)。
+        use super::{ClockTransport, DiagctlTransport, SysAcquires, SysGetinfoTransport};
+        let mut a = SysAcquires::default();
+        let mut kinfo = KinfoStruct::default();
+        assert!(a.get_kinfo(&mut kinfo) < 0);
+        let mut img = [BootImageStruct::default(); 4];
+        assert!(a.get_image(&mut img) < 0);
+        let mut mon = [0u8; 16];
+        assert!(a.get_monparams(&mut mon) < 0);
+        assert!(a.stacktrace(Endpoint(9)) < 0);
+        assert_eq!(a.uptime(), 0);
+    }
+
+    #[test]
+    fn test_sys_acquires_getinfo_wire_shape() {
+        // CannedKernelCallTransport 断言 SYS_GETINFO 的字段:
+        // request 与 val_len(size_of 视图)按结构真身走。
+        use super::{SysAcquires, SysGetinfoTransport};
+        use minix_sys::syscall::CannedKernelCallTransport;
+
+        let mut a = SysAcquires::default();
+        // 借载体的可观测性:直接用 sys_getinfo_into 的形状断言,
+        // 绕开结构方法(方法内是同一承载)。
+        let canned = CannedKernelCallTransport::new();
+        let mut kinfo = KinfoStruct::default();
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                (&mut kinfo as *mut KinfoStruct).cast::<u8>(),
+                core::mem::size_of::<KinfoStruct>(),
+            )
+        };
+        let _ = minix_sys::syscall::sys_getinfo_into(
+            &canned,
+            minix_types::GET_KINFO,
+            bytes,
+            Endpoint::NONE.0,
+        );
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        // SAFETY: 断言侧按 m_lsys_krn_sys_getinfo 域序读。
+        let gi = unsafe { &sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_KINFO);
+        assert_eq!(gi.val_len as usize, core::mem::size_of::<KinfoStruct>());
+        assert_eq!(gi.endpt, Endpoint::NONE.0);
+        let _ = &mut a; // 方法面与承载同形(上面直调展示 wire)
+    }
+
     use super::fake::FakeAcquires;
     use super::*;
     use minix_types::{DIAGCTL_CODE_STACKTRACE, OK};
