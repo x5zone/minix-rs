@@ -1896,6 +1896,111 @@ impl VfsState {
             .map_err(|_| minix_types::EIO)
     }
 
+    /// 套接字读写的驱动请求（C `sdev_readwrite` sdev.c:336-410）：三张可选的
+    /// magic grant（数据/控制/地址；发送方向 `CPF_READ`、接收方向 `CPF_WRITE`），
+    /// 发出去**不等**（这类调用可能等很久），进程级挂起。
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_sdev_readwrite(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        dev: u64,
+        data: Option<(u64, u64)>,
+        ctl: Option<(u64, u64)>,
+        addr: Option<(u64, u64)>,
+        flags: i32,
+        writing: bool,
+        call: crate::fproc::SdevCall,
+    ) -> Result<(), i32> {
+        let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
+            .ok_or(minix_types::EIO)?;
+        let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let access = if writing {
+            minix_types::CpFlags::READ
+        } else {
+            minix_types::CpFlags::WRITE
+        };
+        let mut grants: [Option<i32>; 3] = [None, None, None];
+        let mut make = |spec: Option<(u64, u64)>, slot: usize| -> Result<(i32, u64), i32> {
+            match spec {
+                None => Ok((minix_types::GRANT_INVALID, 0)),
+                Some((buf, len)) => {
+                    // C 只对**非零**缓冲建 grant（`if (data_buf != 0)`）。
+                    if buf == 0 {
+                        return Ok((minix_types::GRANT_INVALID, 0));
+                    }
+                    let g = self.grant_user_buffer(drv_e, user, buf, len, access)?;
+                    grants[slot] = Some(g);
+                    Ok((g, len))
+                }
+            }
+        };
+        let (data_grant, data_len) = make(data, 0)?;
+        let (ctl_grant, ctl_len) = match make(ctl, 1) {
+            Ok(p) => p,
+            Err(e) => {
+                for g in grants.iter().flatten() {
+                    let _ = self.revoke_grant(*g);
+                }
+                return Err(e);
+            }
+        };
+        let (addr_grant, addr_len) = match make(addr, 2) {
+            Ok(p) => p,
+            Err(e) => {
+                for g in grants.iter().flatten() {
+                    let _ = self.revoke_grant(*g);
+                }
+                return Err(e);
+            }
+        };
+        let mut req = minix_types::Message {
+            m_type: if writing {
+                minix_sockdriver::sdev::SdevRequest::Send as i32
+            } else {
+                minix_sockdriver::sdev::SdevRequest::Receive as i32
+            },
+            ..minix_types::Message::default()
+        };
+        // SAFETY: `mess_vfs_lsockdriver_sendrecv { int32_t req_id; int32_t
+        // sock_id; cp_grant_id_t data_grant; size_t data_len; cp_grant_id_t
+        // ctl_grant; unsigned int ctl_len; cp_grant_id_t addr_grant; unsigned
+        // int addr_len; endpoint_t user_endpt; int flags; }`（ipc.h:2304-2317）。
+        unsafe {
+            let raw = &mut req.m_u.raw;
+            raw[0..4].copy_from_slice(&user.0.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&data_grant.to_le_bytes());
+            raw[16..24].copy_from_slice(&data_len.to_le_bytes());
+            raw[24..28].copy_from_slice(&ctl_grant.to_le_bytes());
+            raw[28..32].copy_from_slice(&(ctl_len as u32).to_le_bytes());
+            raw[32..36].copy_from_slice(&addr_grant.to_le_bytes());
+            raw[36..40].copy_from_slice(&(addr_len as u32).to_le_bytes());
+            raw[40..44].copy_from_slice(&user.0.to_le_bytes());
+            raw[44..48].copy_from_slice(&flags.to_le_bytes());
+        }
+        if minix_sys::ipc::IpcTransport::send(&minix_sys::ipc::DirectTrapTransport, drv_e, &req)
+            .is_err()
+        {
+            for g in grants.iter().flatten() {
+                let _ = self.revoke_grant(*g);
+            }
+            return Err(minix_types::EIO);
+        }
+        let block = crate::fproc::SdevBlock {
+            dev,
+            call,
+            // `GrantId` 是 `i32` 的别名（minix-types `types::id`），直接放。
+            grants: [grants[0], grants[1], grants[2]],
+            aux: crate::fproc::SdevAux::None,
+        };
+        self.suspend_on_sdev(fp_slot, idx, block)
+    }
+
     /// **进程级挂起**的套接字调用（C `sdev_suspend` sdev.c:82-112）：把调用进程
     /// 标成 `FP_BLOCKED_ON_SDEV` 并**释放 worker 槽**（这类调用可能等很久——
     /// 比如 connect 等对端——C 不肯拿 worker 槽去等），回复到达后由
@@ -1962,19 +2067,45 @@ impl VfsState {
             .get(slot)
             .map(|fp| fp.endpoint)
             .unwrap_or(Endpoint::NONE);
-        // 状态：回复号是 `SDEV_REPLY` 就取**载荷里的 status**；回复号本身是
-        // 负值（驱动死了）就取它；其余算协议错误 → EIO（C `sdev_finish`）。
-        let status = if msg.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32 {
-            // SAFETY: `mess_lsockdriver_vfs_reply { int status; }` 在负载区首字。
+        // 状态与收尾按**调用**分流（C `sdev_finish` 的 switch）：
+        // - 发送方向（`VFS_SENDTO`）用 `SDEV_REPLY`，状态就是结果；
+        // - 接收方向（`VFS_RECVFROM`）用 `SDEV_RECV_REPLY`，载荷里还有
+        //   `ctl_len`/`addr_len`/`flags`——`recvfrom` 要把 **addr_len 放进
+        //   回复载荷**（`m_vfs_lc_socklen { len }`，C `resume_recvfrom`）。
+        let recv_reply = minix_sockdriver::sdev::SdevReply::ReceiveReply as i32;
+        let status;
+        let mut addr_len_out: Option<u32> = None;
+        if msg.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32 {
+            // SAFETY: `mess_lsockdriver_vfs_reply { int32_t req_id; int status; }`。
             let raw = unsafe { &msg.m_u.raw };
-            i32::from_le_bytes(raw[0..4].try_into().unwrap())
+            status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+        } else if msg.m_type == recv_reply {
+            // SAFETY: `mess_lsockdriver_vfs_recv_reply { req_id@0, status@4,
+            // ctl_len@8, addr_len@12, flags@16 }`。
+            let raw = unsafe { &msg.m_u.raw };
+            status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+            let addr_len = u32::from_le_bytes(raw[12..16].try_into().unwrap());
+            if status >= 0 && matches!(block.call, crate::fproc::SdevCall::Recvfrom) {
+                addr_len_out = Some(addr_len);
+            }
         } else if msg.m_type < 0 {
-            msg.m_type
+            status = msg.m_type;
         } else {
-            minix_types::EIO
-        };
+            status = minix_types::EIO;
+        }
         let result = if status < 0 {
             crate::call_table::SyscallResult::Error(status)
+        } else if let Some(len) = addr_len_out {
+            let mut m = Message {
+                m_type: status,
+                ..Message::default()
+            };
+            // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }` 在负载区首字。
+            unsafe {
+                m.m_u.raw[0..4].copy_from_slice(&len.to_le_bytes());
+            }
+            self.queue_reply_msg(target, m);
+            return true;
         } else {
             crate::call_table::SyscallResult::Ok(status)
         };
@@ -2687,9 +2818,10 @@ impl VfsState {
                     if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
                         status = minix_types::EIO;
                     } else {
-                        // SAFETY: `mess_lsockdriver_vfs_reply { int status; }`。
+                        // SAFETY: `mess_lsockdriver_vfs_reply { int32_t
+                        // req_id; int status; }`——状态在第二格（`req_id` 在前）。
                         let raw = unsafe { &reply.m_u.raw };
-                        status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                        status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
                         if write_dir && status >= 0 {
                             let len = status as u32;
                             let mut m = Message {
@@ -2712,10 +2844,11 @@ impl VfsState {
                     if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
                         status = minix_types::EIO;
                     } else {
-                        // SAFETY: `mess_lsockdriver_vfs_reply { int status; }`
-                        // （ipc.h:2262-2268 一类的简单回复）在负载区首字。
+                        // SAFETY: `mess_lsockdriver_vfs_reply { int32_t
+                        // req_id; int status; }`（ipc.h:1023-1028）——**状态在
+                        // 第二格**（`req_id` 在前），不是首字。
                         let raw = unsafe { &reply.m_u.raw };
-                        status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                        status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
                     }
                 }
                 crate::worker::WorkerCont::SdevSocket { pair, flags, smap_num } => {

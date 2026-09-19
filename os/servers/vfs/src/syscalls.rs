@@ -212,9 +212,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Umount
         | VfsCallNum::Select
         | VfsCallNum::Accept
-        | VfsCallNum::Sendto
         | VfsCallNum::Sendmsg
-        | VfsCallNum::Recvfrom
         | VfsCallNum::Recvmsg
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
@@ -1582,6 +1580,64 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         }
 
         // ── bind / connect（**进程级挂起**：C 的 sdev_suspend 形状）──
+        // ── sendto / recvfrom（数据 + 地址两张 grant，进程级挂起）──
+        VfsCallNum::Sendto | VfsCallNum::Recvfrom => {
+            // C `do_sendto`/`do_recvfrom`（socket.c:483-518）+ `sdev_readwrite`
+            // （sdev.c:336-410）：载荷 `mess_lc_vfs_sendrecv`
+            // （fd@0、buf@8、len@16、flags@24、addr@32、addr_len@40）。
+            let (fd, buf, len, flags, addr, addr_len) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let buf = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let len = u64::from_le_bytes(b8);
+                let flags = i32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]);
+                b8.copy_from_slice(&raw[32..40]);
+                let addr = u64::from_le_bytes(b8);
+                let addr_len = u32::from_le_bytes([raw[40], raw[41], raw[42], raw[43]]);
+                (fd, buf, len, flags, addr, addr_len)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (dev, filp_flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let writing = matches!(call, VfsCallNum::Sendto);
+            // C sdev.c:396-400 —— 打开标志翻成消息标志（非阻塞 + 写方向的
+            // NOSIGPIPE），与用户给的 flags 按位或。
+            let extra = minix_sockdriver::sdev::sock_msg_flags(
+                filp_flags & (crate::fcntl::O_NONBLOCK as i32) != 0,
+                writing && filp_flags & (crate::fcntl::O_NOSIGPIPE as i32) != 0,
+            ) as i32;
+            let call_kind = if writing {
+                crate::fproc::SdevCall::Sendto
+            } else {
+                crate::fproc::SdevCall::Recvfrom
+            };
+            match state.send_sdev_readwrite(
+                worker,
+                Some(fp_slot),
+                dev,
+                Some((buf, len)),
+                None,
+                Some((addr, addr_len as u64)),
+                flags | extra,
+                writing,
+                call_kind,
+            ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
         VfsCallNum::Bind | VfsCallNum::Connect => {
             // C `do_bind`/`do_connect`（socket.c:308-333）+ `sdev_bindconn`
             // （sdev.c:179-215）：载荷 `mess_lc_vfs_sockaddr`
@@ -4568,6 +4624,139 @@ mod tests {
         );
     }
 
+    /// `Sendto`/`Recvfrom`（数据 + 地址两张 grant，进程级挂起）：门同 socket 族；
+    /// 发送方向的数据 grant 是 `CPF_READ`（驱动读用户缓冲）、接收方向是
+    /// `CPF_WRITE`；打开标志（非阻塞/写方向的 NOSIGPIPE）翻成消息标志与用户
+    /// flags 按位或（C `sdev_readwrite:396-400`）。
+    ///
+    /// 收尾两态：发送方向用 `SDEV_REPLY`（状态即结果）、接收方向用
+    /// `SDEV_RECV_REPLY`（还要把 **addr_len 放进回复载荷**）。
+    #[test]
+    fn test_dispatch_sendto_recvfrom_and_reply_shapes() {
+        use minix_types::Endpoint;
+
+        let setup = || {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let drv = Endpoint::from_generation_slot(0, 11);
+            state.smap_table.entries[0].endpt = Some(drv);
+            let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT | crate::open::W_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::PFS;
+                v.ino = 0x11;
+                v.mode = crate::open::S_IFSOCK | 0o777;
+                v.sdev = dev;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx, drv, dev)
+        };
+        let sendrecv_msg = |call: VfsCallNum, fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_sendrecv：fd@0、buf@8、len@16、flags@24、
+            // addr@32、addr_len@40。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&0x6000u64.to_le_bytes());
+                raw[16..24].copy_from_slice(&64u64.to_le_bytes());
+                raw[32..40].copy_from_slice(&0x7000u64.to_le_bytes());
+                raw[40..44].copy_from_slice(&16u32.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 门：负 fd → EBADF。
+        let (mut state, _idx, _drv, _dev) = setup();
+        state.current_message = sendrecv_msg(VfsCallNum::Sendto, -1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Sendto),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ② 宿主下 trap 不可达 → 发送失败 → EIO，不挂起、不留悬空 grant。
+        let (mut state, _idx, _drv, _dev) = setup();
+        state.current_message = sendrecv_msg(VfsCallNum::Sendto, 3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Sendto),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        assert!(matches!(
+            state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap()
+                .blocked_on,
+            crate::fproc::BlockedOn::None
+        ));
+
+        // ③ 手工摆出"recvfrom 已挂起"的现场，喂 `SDEV_RECV_REPLY`：
+        // 用户拿到字节数（status），**addr_len 进回复载荷**。
+        let (mut state, _idx, drv, dev) = setup();
+        let data_grant = state
+            .grant_user_buffer(
+                drv,
+                Endpoint::from_generation_slot(1, 0),
+                0x6000,
+                64,
+                minix_types::CpFlags::WRITE,
+            )
+            .expect("grant 表已热身");
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.blocked_on = crate::fproc::BlockedOn::Sdev(crate::fproc::SdevBlock {
+                dev,
+                call: crate::fproc::SdevCall::Recvfrom,
+                grants: [Some(data_grant), None, None],
+                aux: crate::fproc::SdevAux::None,
+            });
+        }
+        let mut reply = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::ReceiveReply as i32,
+            ..Message::default()
+        };
+        reply.m_source = drv;
+        // SAFETY(test): `mess_lsockdriver_vfs_recv_reply { int32_t req_id@0;
+        // int status@4; unsigned int ctl_len@8; unsigned int addr_len@12;
+        // int flags@16 }`。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[4..8].copy_from_slice(&12i32.to_le_bytes()); // 收到 12 字节
+            raw[12..16].copy_from_slice(&16u32.to_le_bytes()); // addr_len
+        }
+        assert!(state.finish_sdev_blocked(&reply), "认领这条回复");
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(reply.m_type, 12, "用户拿到字节数");
+        // SAFETY(test): `mess_vfs_lc_socklen { unsigned int len; }`。
+        let len = unsafe { u32::from_le_bytes(reply.m_u.raw[0..4].try_into().unwrap()) };
+        assert_eq!(len, 16, "addr_len 进回复载荷");
+    }
+
     /// `finish_sdev_blocked`：驱动回复唤醒被挂起的 bind/connect——撤掉留下的
     /// grant、清挂起态、把**载荷里的 status** 回给用户（C `sdev_reply` 第二条
     /// 分支 + `sdev_finish` 的 bind/connect 组）。
@@ -4609,9 +4798,10 @@ mod tests {
             ..Message::default()
         };
         reply.m_source = drv;
-        // SAFETY(test): `mess_lsockdriver_vfs_reply { int status; }`。
+        // SAFETY(test): `mess_lsockdriver_vfs_reply { int32_t req_id; int
+        // status; }`——状态在第二格。
         unsafe {
-            reply.m_u.raw[0..4].copy_from_slice(&(-minix_types::EADDRINUSE).to_le_bytes());
+            reply.m_u.raw[4..8].copy_from_slice(&(-minix_types::EADDRINUSE).to_le_bytes());
         }
         assert!(
             state.finish_sdev_blocked(&reply),
@@ -4754,10 +4944,10 @@ mod tests {
             ..Message::default()
         };
         reply.m_source = drv;
-        // SAFETY(test): `mess_lsockdriver_vfs_reply { int status; }`——这里是
-        // "写进去多少字节"，即新长度。
+        // SAFETY(test): `mess_lsockdriver_vfs_reply { int32_t req_id; int
+        // status; }`——这里是"写进去多少字节"，即新长度（第二格）。
         unsafe {
-            reply.m_u.raw[0..4].copy_from_slice(&16i32.to_le_bytes());
+            reply.m_u.raw[4..8].copy_from_slice(&16i32.to_le_bytes());
         }
         state.handle_drv_reply(&reply).expect("有槽在等这个驱动");
         state.run_worker_continuations();
@@ -4845,9 +5035,10 @@ mod tests {
             ..Message::default()
         };
         reply.m_source = drv;
-        // SAFETY(test): `mess_lsockdriver_vfs_reply { int status; }`。
+        // SAFETY(test): `mess_lsockdriver_vfs_reply { int32_t req_id; int
+        // status; }`——状态在**第二格**（req_id 在前）。
         unsafe {
-            reply.m_u.raw[0..4].copy_from_slice(&(-minix_types::EACCES).to_le_bytes());
+            reply.m_u.raw[4..8].copy_from_slice(&(-minix_types::EACCES).to_le_bytes());
         }
         state.handle_drv_reply(&reply).expect("有槽在等这个驱动");
         state.run_worker_continuations();
