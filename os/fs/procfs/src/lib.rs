@@ -25,6 +25,7 @@ pub mod buf;
 pub mod content;
 pub mod pid;
 pub mod service;
+pub mod server;
 
 pub use minix_vtreefs as framework;
 
@@ -53,5 +54,14 @@ pub const STATIC_FILES: [&str; 7] =
 /// Per-process files (`pid_files`, `pid.c:18-24`).
 pub const PROCESS_FILES: [&str; 4] = ["psinfo", "cmdline", "environ", "map"];
 
-/// Service initialization entry (kept for the server binary).
-pub fn init() {}
+/// Service initialization entry: build the server value the binary hands
+/// to [`minix_fs_rt::serve`] — the static root tree plus the read hooks.
+/// The per-process directories are the tracked framework gap (see
+/// `server`'s module notes); the production source is
+/// [`server::PendingProcSource`].
+pub fn init(
+    source: impl server::ProcSource + 'static,
+) -> minix_vtreefs::driver::TreeServer<server::ProcfsHooks<impl server::ProcSource + 'static>> {
+    // C slot counts: NR_TASKS thirty-two, NR_PROCS two hundred fifty-six.
+    server::init(source, 32, 256)
+}
