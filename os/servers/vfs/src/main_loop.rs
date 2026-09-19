@@ -1191,6 +1191,69 @@ impl VfsState {
         });
     }
 
+    /// `truncate_vnode` 的**发送半**（C link.c:365-381，`do_truncate` 与
+    /// `do_ftruncate` 共用）：大小不变且是常规文件 → 不发请求（POSIX 文件
+    /// 时间）→ 类型门（REG/FIFO）→ 64 位能力门 → `REQ_FTRUNC`。
+    ///
+    /// 返回值三态：`Ok(true)` = 已登记请求（调用方报挂起）、`Ok(false)` =
+    /// 大小不变（调用方回 0）、`Err(errno)` = 门没过。
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_ftrunc_for_vnode(
+        &mut self,
+        idx: Option<usize>,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        ino: u64,
+        mode: u32,
+        size: u64,
+        length: i64,
+        vnode: usize,
+    ) -> Result<bool, i32> {
+        // C link.c:349-354 —— 大小不变则不打扰 FS（POSIX 文件时间）。
+        if mode & crate::open::S_IFMT == crate::open::S_IFREG && size == length as u64 {
+            return Ok(false);
+        }
+        // C `truncate_vnode:375-376` —— 只服务常规文件与管道。
+        let ftype = mode & crate::open::S_IFMT;
+        if ftype != crate::open::S_IFREG && ftype != crate::open::S_IFIFO {
+            return Err(minix_types::EINVAL);
+        }
+        let vmnt_id = self.vmnt_table.find_by_fs(fs_e).ok_or(minix_types::EIO)?;
+        // C request.c:274-278 —— 未声明 64 位且长度越过 INT_MAX 即 EINVAL。
+        let fs_flags = self
+            .vmnt_table
+            .get(vmnt_id)
+            .map(|v| v.fs_flags)
+            .unwrap_or(0);
+        if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && length > i32::MAX as i64 {
+            return Err(minix_types::EINVAL);
+        }
+        // worker 槽到**真要发请求**时才算数：大小不变那条路不该因为"没槽"
+        // 而变成 EAGAIN（C 里 `truncate_vnode` 才是需要线程的地方）。
+        let Some(idx) = idx else {
+            return Err(minix_types::EAGAIN);
+        };
+        let user_e = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Ftrunc {
+                vnode,
+                newsize: length,
+            });
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt: vmnt_id.0,
+            fs_e,
+            worker: idx,
+            grant: 0, // 无数据面，不发 grant
+            user: user_e,
+            req: crate::request::encode_ftrunc(ino, length, 0),
+        });
+        Ok(true)
+    }
+
     /// `do_chmod` 的**共用体**（C protect.c:62-133 的 path 与 fd 两半只差
     /// vnode 的来源）：属主/超级用户门（EPERM）→ 只读门（EROFS）→ setgid
     /// 清位（`protect::strip_setgid`）→ `REQ_CHMOD`；回复带**整字模式**，
@@ -1717,6 +1780,79 @@ impl VfsState {
                                     rmdir,
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
+                                }
+                                continue;
+                            }
+                            crate::worker::PathFollow::Truncate { length } => {
+                                // C `do_truncate:311-316`：`forbidden(fp, vp,
+                                // W_BIT)` 过了才动文件；大小不变那条在发送半里。
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (
+                                            fp.real_uid,
+                                            fp.real_gid,
+                                            fp.eff_uid,
+                                            fp.eff_gid,
+                                            fp.supplemental_groups[..fp.ngroups.min(16)]
+                                                .to_vec(),
+                                        ),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                let forbid = crate::protect::forbidden_decision(
+                                    &crate::protect::ForbidInput {
+                                        real_uid,
+                                        real_gid,
+                                        eff_uid,
+                                        eff_gid,
+                                        is_access_call: false,
+                                        file_uid: node.uid,
+                                        file_gid: node.gid,
+                                        mode: node.mode,
+                                        access: crate::open::W_BIT as u8,
+                                        is_dir: node.mode & crate::open::S_IFMT
+                                            == crate::open::S_IFDIR,
+                                        supp: &supp,
+                                        readonly_fs,
+                                    },
+                                );
+                                if let Err(e) = forbid {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                let Some(vnode) = self.intern_vnode(&node) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                                    continue;
+                                };
+                                match self.send_ftrunc_for_vnode(
+                                    Some(idx),
+                                    fp_slot,
+                                    node.fs_e,
+                                    node.ino,
+                                    node.mode,
+                                    node.size,
+                                    length,
+                                    vnode,
+                                ) {
+                                    // 已登记请求：等 FS 回复（续接体收尾）。
+                                    Ok(true) => {}
+                                    // 大小不变：C 回 `r = OK`，作业就地完结。
+                                    Ok(false) => {
+                                        self.finish_worker_job(idx, fp_slot, 0)
+                                    }
+                                    Err(e) => self.finish_worker_job(idx, fp_slot, e),
                                 }
                                 continue;
                             }
@@ -3143,6 +3279,136 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Truncate`（truncate 的路径半）：走完过 W 位门 → 发送半
+    /// （与 `Ftruncate` 共用）。三态：写位门拒 → EACCES；大小不变 → 就地回 0
+    /// 且**不发请求**（POSIX 文件时间，C link.c:311-314）；真要截断 → 登记
+    /// `REQ_FTRUNC`（宿主下要热身 grant 表才看得到）。
+    #[test]
+    fn test_path_follow_truncate_gates_and_same_size_skip() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState, eff_uid: u32| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            {
+                let fp = state.fproc_table.get_mut(slot).unwrap();
+                fp.endpoint = user;
+                fp.pid = 100;
+                fp.eff_uid = eff_uid;
+                fp.real_uid = eff_uid;
+                fp.eff_gid = eff_uid;
+                fp.real_gid = eff_uid;
+            }
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/f".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (idx, walk)
+        };
+        let done_reply = |mode: u32, size: u64, uid: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/size/uid。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::FILE_SIZE
+                    ..minix_types::lookup_reply_off::FILE_SIZE + 8]
+                    .copy_from_slice(&size.to_le_bytes());
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&0x31u64.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+                raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                    .copy_from_slice(&uid.to_le_bytes());
+            }
+            reply
+        };
+        let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, length: i64| {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Truncate { length },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        };
+
+        // ① 非属主对 0644 无写权 → EACCES（C `forbidden(fp, vp, W_BIT)`）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let (idx, walk) = mk(&mut state, 2000);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFREG | 0o644, 100, 1000),
+            10,
+        );
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EACCES))
+        );
+
+        // ② 属主 + 大小不变 → 就地回 0，不发请求（POSIX 文件时间）。
+        let (idx, walk) = mk(&mut state, 1000);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFREG | 0o644, 100, 1000),
+            100,
+        );
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none(), "大小不变不该打扰 FS");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0)),
+            "C 回 OK（不是新长度）"
+        );
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+
+        // ③ 属主 + 真要截断 → 登记 REQ_FTRUNC。
+        let _ = state.grants.grant_direct(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::MFS.get(),
+            0x1000,
+            8,
+            minix_types::CpFlags::READ,
+        );
+        let (idx, walk) = mk(&mut state, 1000);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFREG | 0o644, 100, 1000),
+            10,
+        );
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_FTRUNC");
+        assert_eq!(p.req.m_type, minix_types::REQ_FTRUNC);
+        // SAFETY(test): 按 ftrunc_req_off 读回 ino/start/end。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let start = i64::from_le_bytes(raw[8..16].try_into().unwrap());
+            let end = i64::from_le_bytes(raw[16..24].try_into().unwrap());
+            assert_eq!((ino, start, end), (0x31, 10, 0), "end=0 即截到 start");
+        }
     }
 
     /// `PathFollow::Chown`（path 半）：走完并表 vnode 后进 `finish_chown`

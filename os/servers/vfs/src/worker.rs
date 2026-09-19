@@ -196,6 +196,12 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `truncate(path, length)`：走完过写位门后发 `REQ_FTRUNC`（与
+    /// `Ftruncate` 共用发送半）。C `do_truncate`（link.c:277-326）的路径半。
+    Truncate {
+        /// 新长度（负值已在入口挡掉）。
+        length: i64,
+    },
     /// `chown(path, uid, gid)`：走完过门后发 `REQ_CHOWN`；回复带新的模式，
     /// uid/gid 由续接体写回 vnode 缓存。C `do_chown`（protect.c:24-110）的
     /// 路径半。

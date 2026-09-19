@@ -212,7 +212,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Link
         | VfsCallNum::Rename
         | VfsCallNum::Symlink
-        | VfsCallNum::Truncate
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
@@ -538,51 +537,21 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 (filp_idx, vnode.fs, vnode.ino, vnode.mode, vnode.size, vnode_idx)
             };
             let _ = filp_idx;
-            // C link.c:349-354 —— 大小不变则不打扰 FS（POSIX 文件时间）。
-            if mode & crate::open::S_IFMT == crate::open::S_IFREG && size == length as u64 {
-                return SyscallResult::Ok(length as i32);
-            }
-            // C `truncate_vnode:375-376` —— 只服务常规文件与管道。
-            let ftype = mode & crate::open::S_IFMT;
-            if ftype != crate::open::S_IFREG && ftype != crate::open::S_IFIFO {
-                return SyscallResult::Error(minix_types::EINVAL);
-            }
-            let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
-                Some(v) => v,
-                None => return SyscallResult::Error(minix_types::EIO),
-            };
-            // C request.c:274-278 —— 未声明 64 位且长度越过 INT_MAX 即 EINVAL。
-            let fs_flags = state
-                .vmnt_table
-                .get(vmnt_id)
-                .map(|v| v.fs_flags)
-                .unwrap_or(0);
-            if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && length > i32::MAX as i64 {
-                return SyscallResult::Error(minix_types::EINVAL);
-            }
-            let Some(worker) = state.current_worker else {
-                return SyscallResult::Error(minix_types::EAGAIN);
-            };
-            let user_e = state
-                .fproc_table
-                .get(fp_slot)
-                .map(|fp| fp.endpoint)
-                .unwrap_or(minix_types::Endpoint::NONE);
-            if let Some(wp) = state.worker_pool.get_mut(worker) {
-                wp.cont = Some(crate::worker::WorkerCont::Ftrunc {
-                    vnode: vnode_idx,
-                    newsize: length,
-                });
-            }
-            state.pending_fs = Some(crate::main_loop::PendingFs {
-                vmnt: vmnt_id.0,
+            match state.send_ftrunc_for_vnode(
+                state.current_worker,
+                Some(fp_slot),
                 fs_e,
-                worker,
-                grant: 0, // 无数据面，不发 grant
-                user: user_e,
-                req: crate::request::encode_ftrunc(ino, length, 0),
-            });
-            SyscallResult::Suspend
+                ino,
+                mode,
+                size,
+                length,
+                vnode_idx,
+            ) {
+                Ok(true) => SyscallResult::Suspend,
+                // 大小不变：C 回 `r = OK`（不是新长度）。
+                Ok(false) => SyscallResult::Ok(0),
+                Err(e) => SyscallResult::Error(e),
+            }
         }
 
         // ── 路径族臂：creat（O_CREAT；三段续接链）──
@@ -1143,6 +1112,86 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 };
             state.finish_chmod(worker, Some(fp_slot), fs_e, ino, node_uid, node_gid, mode, vnode_idx);
             // 共用体自己决定挂起还是收尾，统一报挂起（同 Fchown）。
+            SyscallResult::Suspend
+        }
+
+        // ── 路径臂模板：truncate（与 ftruncate 共用发送半）──
+        VfsCallNum::Truncate => {
+            // C `do_truncate`（link.c:277-326）：载荷 `mess_lc_vfs_truncate`
+            // （offset@0、fd@8、name@16、len@24）→ 负长度即 EINVAL → 取路径
+            // （跨空间）→ 走遍历（NOFLAGS）→ 走完过 W 位门后发 `REQ_FTRUNC`。
+            let (length, name_len, name_addr) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let length = i64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let name_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                (length, u64::from_le_bytes(b8), name_addr)
+            };
+            // C link.c:299-300 —— 负长度即 EINVAL（在任何取路径之前）。
+            if length < 0 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let path = match fetcher.fetch(name_addr, name_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(
+                path,
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Truncate { length },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
             SyscallResult::Suspend
         }
 
@@ -2063,13 +2112,15 @@ mod tests {
             "只读 fd"
         );
 
-        // 给写位后：**大小不变 → 直接 Ok（不打扰 FS）**（C link.c:349-354）。
+        // 给写位后：**大小不变 → 直接 Ok(0)（不打扰 FS）**（C link.c:349-354
+        // 的 `r = OK`；这里曾经错写成"回新长度"，测试也跟着错——修的时候
+        // 对着 C 行核，而不是对着实现核）。
         state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().mode =
             crate::open::R_BIT | crate::open::W_BIT;
         state.current_message = ftrunc_msg(3, 50);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
-            SyscallResult::Ok(50)
+            SyscallResult::Ok(0)
         );
 
         // 类型门：目录 → EINVAL（C truncate_vnode:375-376）。
