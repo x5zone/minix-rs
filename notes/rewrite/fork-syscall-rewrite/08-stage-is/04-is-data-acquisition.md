@@ -413,6 +413,12 @@ pub trait Acquires: SysGetinfoTransport + DiagctlTransport + KerninfoTransport +
 
 - **RS 双拉**（`rs_tables`）：先 `SI_PROCPUB_TAB` 后 `SI_PROC_TAB`，前者
   失败即返回（C `dmp_rs.c:33-34` 的 `||` 短路）。
+- **VM_INFO 三查询**（`VmInfoTransport`，片 3b-3）：走值通道（`[ARCH:
+  26-D1]`）——请求域 `what`/`ep`/`count`/`next` 按 `m_lsys_vm_info` 打包，
+  `ptr` 恒 0（结果不回写调用方地址空间），结果从回复消息的 M1 槽解码
+  （槽位对照见 §4.2b 与 `10-is-dump-vm.md` §3.1）。REGION 批非空而条目
+  数组未随回复送达时（D7 编码缺口）回 `-ENOTSUP`，不伪造空表。
+
 - **VFS 两腿**：本地回 `-ENOSYS` 而不发消息——VFS 侧的 `do_getsysinfo`
   纯函数半已备，但运行时应答面尚未接线（`dispatch_syscall` 把
   `Getsysinfo` 归入 `SyscallResult::Nosys` 且主循环不回信），此刻发过去

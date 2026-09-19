@@ -5,13 +5,18 @@
 //! paging, LINES bounds. Bodies await the A-6 output channel; this module
 //! delivers snapshots, the fold/batch state machines, and format constants.
 //!
-//! `[ARCH: A-4]`: snapshots are wire-contract proposals (`#[repr(C)]`,
-//! used-fields subsets); the VM-side producer aligns to them (pending
-//! VM-crate work, explicit TODO below).
-
-// TODO(P1): [code] [factual] Align VM-crate VM_INFO producers with the
-// snapshots below — see 10 §4. (current state: IS-side wire proposals)
-// (fix: VM `do_vm_info` stats/usage/region payloads match; A-4).
+//! `[ARCH: A-4]` / `[ARCH: 26-D1]`: the VM-side producer ships query
+//! results in the reply message's M1 slots (value channel — no copy into
+//! the caller's address space), and the IS acquire client decodes those
+//! slots into the snapshots below (`SysVmInfo`, 04 §3.2/§4.2b). The three
+//! snapshots stay IS-side types: unlike the table channels (where producer
+//! and consumer share one struct), VM_INFO has no byte-shaped payload to
+//! share — the values travel as message slots.
+//!
+//! Open gap (`26-vm-queries.md` §4.8 D7): the REGION entry **array** is not
+//! in the reply yet (the handler computes it; the encoder writes only
+//! count/next). Until then the acquire client reports `-ENOTSUP` for a
+//! non-empty batch instead of fabricating an empty address space.
 
 /// VM statistics snapshot.
 ///

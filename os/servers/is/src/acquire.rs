@@ -256,15 +256,12 @@ impl<T> Acquires for T where
 /// (code 2,载荷端点)、SYS_TIMES 的 uptime(`real_ticks`,C `getticks`
 /// 读 kclockinfo->uptime 的同源量;A-3 无 usermapped 页)、
 /// `GET_KMESSAGES` 快照([`KernelKmessTransport`])。
-/// GetSysinfo/VM_INFO 两通道留片 3b 余件(需 PM/VFS/RS/DS/VM 的
-/// taskcall 面经生产者对齐后接通)。
+/// `GetSysinfo` 五腿经 [`SysGetsysinfo`](片 3b-2)、`VM_INFO` 三查询经
+/// [`SysVmInfo`](片 3b-3)——六通道全部就位，无 fail-closed 占位。
 #[derive(Debug, Default)]
 pub struct SysAcquires {
     /// getsysinfo 五腿生产客户端（片 3b-2）。
     getsys: SysGetsysinfo,
-    /// 片 3b 余件（VM_INFO 通道）——委托 fail-closed 占位；装齐后
-    /// 本字段消失。
-    pending: UnimplementedAcquires,
 }
 
 impl SysAcquires {
@@ -393,113 +390,15 @@ impl GetSysinfoTransport for SysAcquires {
 
 impl VmInfoTransport for SysAcquires {
     fn vm_stats(&mut self, out: &mut VmStatsSnap) -> i32 {
-        self.pending.vm_stats(out)
+        SysVmInfo::vm_stats_via(&DirectTrapTransport, out)
     }
 
     fn vm_usage(&mut self, who: Endpoint, out: &mut VmUsageSnap) -> i32 {
-        self.pending.vm_usage(who, out)
+        SysVmInfo::vm_usage_via(&DirectTrapTransport, who, out)
     }
 
     fn vm_region(&mut self, who: Endpoint, out: &mut [VmRegionSnap], next: u64) -> (i32, u64, i32) {
-        self.pending.vm_region(who, out, next)
-    }
-}
-
-/// Fail-closed bundle until the `minix-sys`/kernel wiring lands
-/// (01 `UnimplementedTransport` pattern).
-#[derive(Debug, Default)]
-pub struct UnimplementedAcquires;
-
-impl SysGetinfoTransport for UnimplementedAcquires {
-    fn get_kinfo(&mut self, _out: &mut KinfoStruct) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn get_image(&mut self, _out: &mut [BootImageStruct]) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn get_proctab(&mut self, _out: &mut [ProcInfoStruct]) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn get_monparams(&mut self, _out: &mut [u8]) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn get_irqhooks(&mut self, _out: &mut [IrqHookStruct]) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn get_irqactids(&mut self, _out: &mut [i32]) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn get_privtab(&mut self, _out: &mut [PrivInfoStruct]) -> i32 {
-        panic!("IS acquire: sys_getinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-}
-
-impl DiagctlTransport for UnimplementedAcquires {
-    fn stacktrace(&mut self, _proc: Endpoint) -> i32 {
-        panic!("IS acquire: sys_diagctl wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-}
-
-impl KerninfoTransport for UnimplementedAcquires {
-    fn kmessages(&mut self, _meta: &mut KmessagesSnap, _ring: &mut [u8]) -> i32 {
-        panic!("IS acquire: GET_KMESSAGES wiring pending ([ARCH: A-3], edge E-ISKMESS)");
-    }
-}
-
-impl GetSysinfoTransport for UnimplementedAcquires {
-    fn pm_proc_tab(&mut self, _out: &mut [MProcSnap]) -> i32 {
-        panic!("IS acquire: getsysinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn vfs_proc_tab(&mut self, _out: &mut [FProcSnap]) -> i32 {
-        panic!("IS acquire: getsysinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn vfs_dmap_tab(&mut self, _out: &mut [DmapSnap]) -> i32 {
-        panic!("IS acquire: getsysinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn rs_tables(
-        &mut self,
-        _pub_out: &mut [RprocpubSnap],
-        _priv_out: &mut [RprocSnap],
-    ) -> i32 {
-        panic!("IS acquire: getsysinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn ds_data_store(&mut self, _out: &mut [DsEntrySnap]) -> i32 {
-        panic!("IS acquire: getsysinfo wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-}
-
-impl ClockTransport for UnimplementedAcquires {
-    fn uptime(&mut self) -> u32 {
-        panic!("IS acquire: clock wiring pending (06 sigaction uptime; edge E-ISWIRE)");
-    }
-}
-
-impl VmInfoTransport for UnimplementedAcquires {
-    fn vm_stats(&mut self, _out: &mut VmStatsSnap) -> i32 {
-        panic!("IS acquire: vm_info wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn vm_usage(&mut self, _who: Endpoint, _out: &mut VmUsageSnap) -> i32 {
-        panic!("IS acquire: vm_info wiring pending (04-is-data-acquisition.md §3 D2)");
-    }
-
-    fn vm_region(
-        &mut self,
-        _who: Endpoint,
-        _out: &mut [VmRegionSnap],
-        _next: u64,
-    ) -> (i32, u64, i32) {
-        panic!("IS acquire: vm_info wiring pending (04-is-data-acquisition.md §3 D2)");
+        SysVmInfo::vm_region_via(&DirectTrapTransport, who, out, next)
     }
 }
 
@@ -906,6 +805,142 @@ impl GetSysinfoTransport for SysGetsysinfo {
     }
 }
 
+/// 生产 `VmInfoTransport`（S23 片 3b-3）：VM_INFO 三查询的**值通道**客户端。
+///
+/// C: `minix3/minix/lib/libsys/vm_info.c:10-57`——`_taskcall(VM_PROC_NR,
+/// VM_INFO, &m)`，请求域 `what`/`ep`/`count`/`ptr`/`next`；C 的服务端把结果
+/// `sys_datacopy` 进调用方缓冲（`minix3/minix/servers/vm/utility.c:169-182`，
+/// 复制前先 `handle_memory_once` 钉住目标页防死锁）。minix-rs 的 VM 用**值
+/// 通道**取代这一步（`[ARCH: 26-D1]`，`02-stage-vm/26-vm-queries.md`）：结果
+/// 编码在回复消息的 M1 槽里，`ptr` 不参与（故本客户端传 0）。
+///
+/// 槽位对照（生产者：`os/servers/vm/src/ipc/encode.rs` 的 `encode_reply_data`）：
+/// - STATS：`m1p1`=页大小、`m1i1`=总页数、`m1i2`=空闲页、`m1i3`=最大连续块、
+///   `m1p2`=缓存页；
+/// - USAGE：`m1p1`/`m1p2`/`m1p3` = total/common/shared（**字节**，即 C
+///   `struct vm_usage_info` 的 `vui_total`/`vui_common`/`vui_shared`）；
+/// - REGION：`m1i1`=实际条数、`m1i2`=新游标（低 32 位——区域地址在低 4 GiB
+///   用户区间内，故 C 的 `vir_bytes` 游标在此不丢精度）。
+///
+/// REGION 的**条目数组**当前不在回复里：`26-vm-queries.md` §4.8 的 D7
+/// transport 缺口（handler 算得对，编码只写 count/next）。服务端报 count>0
+/// 而条目不可得时，本客户端如实回 `-ENOTSUP`（C 的 `!= OK` 面即"这屏取不到"，
+/// dump 打一行错误继续），**不把"未送达"伪装成"空地址空间"**；count==0 是
+/// 合法答案（地址空间确实没有区域），按 OK 回。
+#[derive(Debug, Default)]
+pub struct SysVmInfo;
+
+impl SysVmInfo {
+    /// 三查询共用的请求封装：填 `what`/`ep`/`count`/`next` 后 taskcall。
+    ///
+    /// 回复落地在同一个 `msg` 上（`_taskcall` 复用消息缓冲，C 同构），
+    /// 故调用方读 `msg.m_u.m_m1` 取结果槽。
+    fn call(
+        transport: &impl IpcTransport,
+        what: i32,
+        ep: Endpoint,
+        count: i32,
+        next: u64,
+    ) -> Result<(i32, Message), minix_types::Errno> {
+        let mut msg = Message::default();
+        // `m_lsys_vm_info` 是 VM_INFO 的载荷域（C ipc.h:1494-1502 的
+        // what/ep/count/ptr/next；`ptr` 在 minix-rs 值通道下不参与）——
+        // 该联合成员是普通 POD 字段，整体赋值无需 unsafe。
+        msg.m_u.m_lsys_vm_info = minix_types::ipc::MessLsysVmInfo {
+            what,
+            ep: ep.get(),
+            count,
+            _pad: 0,
+            ptr: 0,
+            next,
+            _padding: [0; 24],
+        };
+        match perform_taskcall(transport, Endpoint::VM, minix_sys::vm::VM_CALL_INFO, &mut msg) {
+            Ok(status) => Ok((status, msg)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 把 taskcall 的两级失败折成 C 的整型状态面。
+    fn status(r: Result<(i32, Message), minix_types::Errno>) -> (i32, Option<Message>) {
+        match r {
+            Ok((minix_types::OK, msg)) => (minix_types::OK, Some(msg)),
+            Ok((status, _)) => (status, None),
+            Err(e) => (-e.to_i32(), None),
+        }
+    }
+
+    pub fn vm_stats_via(transport: &impl IpcTransport, out: &mut VmStatsSnap) -> i32 {
+        let (status, msg) = Self::status(Self::call(
+            transport,
+            minix_types::VMIW_STATS,
+            Endpoint::NONE,
+            0,
+            0,
+        ));
+        let Some(msg) = msg else { return status };
+        // SAFETY: VM 的 STATS 回复用 M1 槽（encode.rs 的 InfoStats 臂）。
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        *out = VmStatsSnap {
+            vsi_pagesize: m1.m1p1 as u32,
+            vsi_total: m1.m1i1 as u64,
+            vsi_free: m1.m1i2 as u64,
+            vsi_largest: m1.m1i3 as u64,
+            vsi_cached: m1.m1p2,
+        };
+        minix_types::OK
+    }
+
+    pub fn vm_usage_via(
+        transport: &impl IpcTransport,
+        who: Endpoint,
+        out: &mut VmUsageSnap,
+    ) -> i32 {
+        let (status, msg) = Self::status(Self::call(
+            transport,
+            minix_types::VMIW_USAGE,
+            who,
+            0,
+            0,
+        ));
+        let Some(msg) = msg else { return status };
+        // SAFETY: VM 的 USAGE 回复用 M1 槽（encode.rs 的 InfoUsage 臂）。
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        *out = VmUsageSnap {
+            vui_total: m1.m1p1,
+            vui_common: m1.m1p2,
+            vui_shared: m1.m1p3,
+        };
+        minix_types::OK
+    }
+
+    pub fn vm_region_via(
+        transport: &impl IpcTransport,
+        who: Endpoint,
+        out: &mut [VmRegionSnap],
+        next: u64,
+    ) -> (i32, u64, i32) {
+        let (status, msg) = Self::status(Self::call(
+            transport,
+            minix_types::VMIW_REGION,
+            who,
+            out.len() as i32,
+            next,
+        ));
+        let Some(msg) = msg else { return (status, next, 0) };
+        // SAFETY: VM 的 REGION 回复用 M1 槽（encode.rs 的 InfoRegion 臂：
+        // m1i1=count、m1i2=next 低位）。
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        let count = m1.m1i1;
+        let next_out = m1.m1i2 as u32 as u64;
+        if count > 0 {
+            // 条目数组未随回复送达（D7 缺口）——如实报"取不到"，游标原样。
+            return (-minix_types::ENOTSUP, next, 0);
+        }
+        (minix_types::OK, next_out, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -928,9 +963,7 @@ mod tests {
     fn test_sys_acquires_kmessages_leg_is_live_not_fail_closed() {
         // 片 3b-1 见证:kmessages 腿已换装 KernelKmessTransport——宿主
         // 构建下如实回 -EIO(DirectKernelCallTransport 的 real-trap 门控),
-        // 不再走 UnimplementedAcquires 的 fail-closed panic。旧通道的
-        // panic 断言留在 test_kerninfo_unimplemented_fail_closed
-        // (该替身仍是测试双件)。
+        // 不再是 fail-closed panic(占位替身随六通道全真装一并删除)。
         use super::{KerninfoTransport, SysAcquires};
         let mut a = SysAcquires::default();
         let mut meta = KmessagesSnap::default();
@@ -1041,15 +1074,6 @@ mod tests {
         let mut buf = [0u8; 8];
         assert_eq!(f.get_monparams(&mut buf), OK);
         assert_eq!(&buf[..3], b"ab\n");
-    }
-
-    #[test]
-    #[should_panic(expected = "GET_KMESSAGES")]
-    fn test_kerninfo_unimplemented_fail_closed() {
-        let mut u = UnimplementedAcquires;
-        let mut meta = KmessagesSnap::default();
-        let mut ring = [0u8; 4];
-        let _ = u.kmessages(&mut meta, &mut ring);
     }
 
     #[test]
@@ -1265,6 +1289,127 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(sys.vfs_proc_tab(&mut fp), -minix_types::ENOSYS);
         let mut dm = [DmapSnap::default(); 2];
         assert_eq!(sys.vfs_dmap_tab(&mut dm), -minix_types::ENOSYS);
+    }
+
+    /// VM_INFO 三查询的请求形状与回复槽解码（值通道，[ARCH: 26-D1]）：
+    /// STATS 读 m1p1/m1i1/m1i2/m1i3/m1p2，USAGE 读 m1p1/p2/p3（字节），
+    /// REGION 读 m1i1/m1i2。请求侧断言目的地 VM、调用号 `VM_INFO`、
+    /// what 值（C com.h:732-734 的 1/2/3）与 ep/count 域。
+    #[test]
+    fn test_vm_info_stats_usage_wire_and_slots() {
+        // STATS：服务端把五个值写进 M1 槽（vm/ipc/encode.rs 的 InfoStats）。
+        let mut canned = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = OK;
+        // SAFETY(test): 按 VM 的 InfoStats 槽序回填。
+        unsafe {
+            let m1 = &mut reply.m_u.m_m1;
+            m1.m1p1 = 4096; // 页大小
+            m1.m1i1 = 100; // 总页数
+            m1.m1i2 = 40; // 空闲页
+            m1.m1i3 = 12; // 最大连续块
+            m1.m1p2 = 7; // 缓存页
+        }
+        canned.reply_sendrec(Ok(reply));
+
+        let mut vsi = VmStatsSnap::default();
+        assert_eq!(SysVmInfo::vm_stats_via(&canned, &mut vsi), OK);
+        assert_eq!(vsi.vsi_pagesize, 4096);
+        assert_eq!(vsi.vsi_total, 100);
+        assert_eq!(vsi.vsi_free, 40);
+        assert_eq!(vsi.vsi_largest, 12);
+        assert_eq!(vsi.vsi_cached, 7);
+
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].0, Endpoint::VM);
+        assert_eq!(sent[0].1.m_type, minix_sys::vm::VM_CALL_INFO);
+        // SAFETY(test): 请求域（与 SysVmInfo::call 同布局）。
+        let req = unsafe { &sent[0].1.m_u.m_lsys_vm_info };
+        assert_eq!(req.what, minix_types::VMIW_STATS);
+        assert_eq!(req.ptr, 0, "值通道：不把调用方缓冲地址交给服务端");
+
+        // USAGE：三个字节值进 m1p1/p2/p3（encode.rs 的 InfoUsage）。
+        let mut canned = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = OK;
+        // SAFETY(test): 按 InfoUsage 槽序回填。
+        unsafe {
+            let m1 = &mut reply.m_u.m_m1;
+            m1.m1p1 = 8192;
+            m1.m1p2 = 4096;
+            m1.m1p3 = 1024;
+        }
+        canned.reply_sendrec(Ok(reply));
+
+        let mut vui = VmUsageSnap::default();
+        assert_eq!(SysVmInfo::vm_usage_via(&canned, Endpoint::PM, &mut vui), OK);
+        assert_eq!(
+            (vui.vui_total, vui.vui_common, vui.vui_shared),
+            (8192, 4096, 1024)
+        );
+        let sent = canned.sent.borrow();
+        // SAFETY(test): 请求域。
+        let req = unsafe { &sent[0].1.m_u.m_lsys_vm_info };
+        assert_eq!(req.what, minix_types::VMIW_USAGE);
+        assert_eq!(req.ep, Endpoint::PM.get());
+    }
+
+    /// REGION 游标协议 + 条目数组缺口（26-vm-queries.md §4.8 D7）：
+    /// count==0 是合法答案（地址空间无区域）；count>0 而条目不在回复里时
+    /// 如实回 `-ENOTSUP`，不把"未送达"伪装成空表。
+    #[test]
+    fn test_vm_info_region_cursor_and_payload_gap() {
+        let mut canned = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = OK;
+        // SAFETY(test): 按 InfoRegion 槽序（count/next）回填。
+        unsafe {
+            let m1 = &mut reply.m_u.m_m1;
+            m1.m1i1 = 0;
+            m1.m1i2 = 0x4000;
+        }
+        canned.reply_sendrec(Ok(reply));
+        let mut out = [VmRegionSnap::default(); 4];
+        assert_eq!(
+            SysVmInfo::vm_region_via(&canned, Endpoint::PM, &mut out, 0x1000),
+            (OK, 0x4000, 0)
+        );
+        let sent = canned.sent.borrow();
+        // SAFETY(test): 请求域（count 是调用方声明的批大小）。
+        let req = unsafe { &sent[0].1.m_u.m_lsys_vm_info };
+        assert_eq!(req.what, minix_types::VMIW_REGION);
+        assert_eq!(req.count, 4);
+        assert_eq!(req.next, 0x1000, "游标按调用方入参带上");
+
+        let mut canned = CannedTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = OK;
+        // SAFETY(test): count=3 但回复里没有条目数组。
+        unsafe {
+            let m1 = &mut reply.m_u.m_m1;
+            m1.m1i1 = 3;
+            m1.m1i2 = 0x5000;
+        }
+        canned.reply_sendrec(Ok(reply));
+        let mut out = [VmRegionSnap::default(); 4];
+        assert_eq!(
+            SysVmInfo::vm_region_via(&canned, Endpoint::PM, &mut out, 0x1000),
+            (-minix_types::ENOTSUP, 0x1000, 0)
+        );
+    }
+
+    /// 宿主构建下三条 VM 腿都诚实上浮 -EIO，不假装成功
+    /// （`KernelKmessTransport` 同款门控形态）。
+    #[test]
+    fn test_vm_info_legs_hosted_are_eio() {
+        use super::{SysAcquires, VmInfoTransport};
+        let mut a = SysAcquires::default();
+        let mut vsi = VmStatsSnap::default();
+        assert_eq!(a.vm_stats(&mut vsi), -minix_types::EIO);
+        let mut vui = VmUsageSnap::default();
+        assert_eq!(a.vm_usage(Endpoint::PM, &mut vui), -minix_types::EIO);
+        let mut out = [VmRegionSnap::default(); 2];
+        assert_eq!(a.vm_region(Endpoint::PM, &mut out, 0), (-minix_types::EIO, 0, 0));
     }
 
     /// FakeAcquires 的 vfs_proc_tab 腿仍在（编排层测试不换装）——本模块

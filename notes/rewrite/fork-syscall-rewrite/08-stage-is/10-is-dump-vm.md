@@ -94,8 +94,9 @@ LINES; i++, prev_base = 0)`（:88，**每轮迭代尾清游标**——新进程�
 
 stats（vm.h:40-46：pagesize/total/free/largest/cached）、usage（:48-52
 取 total/common/shared）、region（:59-64 全）。PROT 1/2/4
-（sys/mman.h:62-65，POSIX 值）。`[ARCH: A-4]` 快照提案 + VM 对齐待办
-（§3 D1 三处之二）。
+（sys/mman.h:62-65，POSIX 值）。三个结构**不进共享 wire 类型**：VM 侧把
+查询结果编码进回复消息的 M1 槽（`[ARCH: 26-D1]` 值通道，不往调用方地址
+空间写），IS 侧按同一槽序解码（§3 D1 三处之二）。
 
 ---
 
@@ -104,7 +105,13 @@ stats（vm.h:40-46：pagesize/total/free/largest/cached）、usage（:48-52
 ### 3.1 D1：三快照（A-4）
 
 `VmStatsSnap`（5）/`VmUsageSnap`（3）/`VmRegionSnap`（4，全——region
-结构小，无子集必要）。C 序，`#[repr(C)]`，待办 TODO。
+结构小，无子集必要）。C 序，`#[repr(C)]`，**留在 IS 侧**：VM 通道的产物
+是消息槽而非字节表（对比 06/07/08/09 四篇的表通道——那里生产方与消费方
+共享一个结构）。取值面（`SysVmInfo`，04 §4.2b）：STATS 读
+`m1p1/m1i1/m1i2/m1i3/m1p2`，USAGE 读 `m1p1/p2/p3`（字节），REGION 读
+`m1i1`（条数）/`m1i2`（新游标）。**未闭缺口**：REGION 的条目数组当前不在
+回复里（`02-stage-vm/26-vm-queries.md` §4.8 的 D7 编码缺口），此时取数面
+对非空批如实回 `-ENOTSUP`，不把"未送达"伪装成"空地址空间"。
 
 ### 3.2 D2：折叠纯状态机
 
