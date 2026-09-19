@@ -163,6 +163,63 @@ pub const fn trns_del_id(raw: i32) -> i32 {
     ((raw >> 16) as i16) as i32
 }
 
+/// `REQ_LOOKUP` 请求载荷的 LP64 域偏移（C 字段序 + 64 位重排）。
+///
+/// C: `mess_vfs_fs_lookup`（ipc.h:2011-2035）的字段序
+/// `dir_ino / root_ino / flags / path_len / path_size / ucred_size /
+/// grant_path / grant_ucred`；i386 下各占 4 字节，LP64 下指针与 `size_t`
+/// 拉到 8 字节、`uint32_t` 保持 4——**两侧（VFS 编码器与 FS 解码器）必须
+/// 用这张表**，否则名字会错位（E-REQWIRE 同族事故）。
+pub mod lookup_req_off {
+    /// `ino_t dir_ino`（lookup 起点）。
+    pub const DIR_INO: usize = 0;
+    /// `ino_t root_ino`（路径解析的根）。
+    pub const ROOT_INO: usize = 8;
+    /// `uint32_t flags`（`LookupFlags`，见 `minix-fs::protocol`）。
+    pub const FLAGS: usize = 16;
+    /// `size_t path_len`（含 NUL 的名字长度）。
+    pub const PATH_LEN: usize = 24;
+    /// `size_t path_size`（grant 窗口大小）。
+    pub const PATH_SIZE: usize = 32;
+    /// `size_t ucred_size`（凭证区大小，0 = 不带）。
+    pub const UCRED_SIZE: usize = 40;
+    /// `cp_grant_id_t grant_path`（名字所在 grant）。
+    pub const GRANT_PATH: usize = 48;
+    /// `cp_grant_id_t grant_ucred`（凭证所在 grant）。
+    pub const GRANT_UCRED: usize = 56;
+}
+
+/// `REQ_READ` / `REQ_GETDENTS` 请求载荷的 LP64 域偏移（同前缀）。
+///
+/// C: `mess_vfs_fs_readwrite`（ipc.h:2121-2131）与
+/// `mess_vfs_fs_getdents`（ipc.h:1992-2002）的字段序相同。
+pub mod transfer_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `off_t seek_pos`。
+    pub const SEEK_POS: usize = 8;
+    /// `cp_grant_id_t grant`（数据缓冲在调用方）。
+    pub const GRANT: usize = 16;
+    /// `size_t nbytes`（read 的字节数）/ `mem_size`（getdents 的窗口）。
+    pub const BYTES: usize = 24;
+}
+
+/// `REQ_READSUPER` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_readsuper`（ipc.h:2112-2119）：`dev_t device`、
+/// `uint32_t flags`（`REQ_RDONLY`/`REQ_ISROOT` — vfsif.h:8-9）、
+/// `size_t path_len`、`cp_grant_id_t grant`（驱动标签）。
+pub mod readsuper_req_off {
+    /// `dev_t device`。
+    pub const DEVICE: usize = 0;
+    /// `uint32_t flags`。
+    pub const FLAGS: usize = 8;
+    /// `size_t path_len`（驱动标签长度）。
+    pub const PATH_LEN: usize = 16;
+    /// `cp_grant_id_t grant`（标签所在 grant）。
+    pub const GRANT: usize = 24;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +282,31 @@ mod tests {
     /// 槽位数与 `IS_FS_RQ` 门(vfsif.h:75/:77):带内识别、带外拒绝,
     /// 包括 0x600(旧事故基址)与 0xB00(transid 带)。
     #[test]
+    /// 请求载荷的 LP64 域偏移 pin：VFS 编码器与 FS 解码器共用这一张表，
+    /// 偏移漂移必须在编译期可见（同一模块的常量 + 本测试）。
+    #[test]
+    fn test_request_payload_offsets() {
+        // lookup：8 字节域两两相邻，32 位 flags 在 16，其余 8 字节对齐。
+        assert_eq!(lookup_req_off::DIR_INO, 0);
+        assert_eq!(lookup_req_off::ROOT_INO, 8);
+        assert_eq!(lookup_req_off::FLAGS, 16);
+        assert_eq!(lookup_req_off::PATH_LEN, 24);
+        assert_eq!(lookup_req_off::PATH_SIZE, 32);
+        assert_eq!(lookup_req_off::UCRED_SIZE, 40);
+        assert_eq!(lookup_req_off::GRANT_PATH, 48);
+        assert_eq!(lookup_req_off::GRANT_UCRED, 56);
+        // 传输族：inode/seek_pos/grant/bytes 四个 8 字节域。
+        assert_eq!(transfer_req_off::INODE, 0);
+        assert_eq!(transfer_req_off::SEEK_POS, 8);
+        assert_eq!(transfer_req_off::GRANT, 16);
+        assert_eq!(transfer_req_off::BYTES, 24);
+        // reads超級：device/flags/path_len/grant。
+        assert_eq!(readsuper_req_off::DEVICE, 0);
+        assert_eq!(readsuper_req_off::FLAGS, 8);
+        assert_eq!(readsuper_req_off::PATH_LEN, 16);
+        assert_eq!(readsuper_req_off::GRANT, 24);
+    }
+
     /// transid 三式互为逆（vfsif.h:79-81）：合成/取回/剥离，含负结果值
     /// （回复里 errno 走高 16 位）。
     #[test]

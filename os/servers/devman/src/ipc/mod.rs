@@ -6,8 +6,10 @@
 
 pub mod dispatch;
 pub mod message;
+pub mod minix;
 
 pub use dispatch::{dispatch, Handler};
+pub use minix::{KernelIpc, MinixTransport, SysKernel};
 pub use message::{
     apply_reply, apply_reply_with_id, check_rs, device_id, grant_id, grant_size, request_endpoint,
     result, DevmanMsg,

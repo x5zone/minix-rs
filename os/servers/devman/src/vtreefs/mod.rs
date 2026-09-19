@@ -73,6 +73,9 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     Fs(Request),
+    /// 传输已自行拒绝的请求（未挂载的 EINVAL / 不服务请求号的 ENOSYS，
+    /// `fsdriver.c:40-56`）：回复已发出，循环不做任何事。
+    Refused,
     Devman {
         source: Endpoint,
         msg: Option<crate::ipc::DevmanMsg>,

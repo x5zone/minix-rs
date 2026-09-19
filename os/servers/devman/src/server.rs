@@ -257,6 +257,8 @@ impl Server {
                 Incoming::Devman { source, msg } => {
                     self.process_devman(source, msg, transport)
                 }
+                // 传输已自行回绝（未挂载/未服务）：无动作。
+                Incoming::Refused => {}
             }
         }
     }

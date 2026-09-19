@@ -174,7 +174,7 @@ devman 未注册的变更槽（write/trunc/mknod/…）的 Rust 语义是 `ENOSY
 
 ### 3.7 传输注入：循环逻辑就绪，生产传输待定
 
-`Transport` trait 把"下一条消息从哪来"反转出去——测试用 `VecTransport`（脚本进、回复/发送出），生产用内核 IPC（`minix-sys::receive` 现为 `todo!()`，调了就 panic）。于是 main 的 park 循环性质变了：01 时它是"整个事件循环缺席"，后来是"循环逻辑就绪，只缺传输"。P1-6 收窄为传输接线（§4.4），doc 与注释同步改写。
+`Transport` trait 把"下一条消息从哪来"反转出去——测试用 `VecTransport`（脚本进、回复/发送出）。生产实现已落地（`ipc/minix.rs` 的 `MinixTransport`）：内核面经 `KernelIpc`（生产 `SysKernel` = `minix-sys` 的 trap 传输 + `sys_safecopyfrom/to`），FS 面按 VFS 的 fsdriver 协议成型——**transid 用 `TRNS_ADD_ID` 盖在高 16 位**（`fsdriver.c:34-50`）、**mount 门**（未挂载除 `ReadSuper` 外 `EINVAL`，`fsdriver.c:40-46`）、**数据面走 grant**（读数据/目录项 `safecopy_to` 写回调用方、lookup 的名字 `safecopy_from` 读入，即 C 的 `fsdriver_copyout`/`fsdriver_getname`）。载荷域偏移取 `minix_types` 的三张 `*_req_off` 表（VFS 编码器与 FS 解码器共用，避免 E-REQWIRE 同族的错位事故）。
 
 **循环的家（DM-P1-2，已落地）**：循环本体在 `Server::run`（09 装配篇），不在本篇——一个循环一个 match，FS 请求（`Incoming::Fs`）与 DEVMAN 消息（`Incoming::Devman`）同表分发，与 C 的 `fsdriver_task` 单入口同形。本篇保留逐操作语义（mount/lookup/read/readdir）与 `Request`/`Reply`/`Transport`/`VecTransport` 类型。`Other` 变体随 `message_hook` 旁路一并退役（01 §3.1 取舍 4）。
 
@@ -194,7 +194,7 @@ os/servers/devman/src/vtreefs/
   （循环本体在 server.rs 的 Server::run——DM-P1-2 统一，见 §3.7）
 ```
 
-`lib.rs` 加 `pub mod vtreefs` 一行。`main.rs` 的 park 注释改写（§3.7 收窄语义）。
+`lib.rs` 加 `pub mod vtreefs` 一行。`main.rs` 的 park 注释改写（§3.7 收窄语义）；**装配已落地**：`Server::new(&config)` + `MinixTransport::new(SysKernel)` + `Server::run`，初始化失败折回 panic（C `vtreefs.c:16-33`），循环只在收包失败时返回并 panic（`fsdriver.c:92`）。
 
 ### 4.2 关键不变量
 
