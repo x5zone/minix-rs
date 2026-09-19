@@ -644,11 +644,15 @@ mod tests {
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
-        // 信号安装已是真实封装（E-INITSYS ①）：DirectTrap 是宿主回环
-        // 传输，返回 Ok；真机上的 PM 未服务该调用号时回 EBADCALL
-        // （sys/errno.h:205），main 告警后继续——两条路径都如实。
+        // 信号安装已是真实封装（E-INITSYS ①）：宿主 trap 断链诚实回
+        // EIO（E1 切片 5 的 hosted fallback；rt-birth 同款注记）——不伪造
+        // 成功。真机上 PM 服务该调用号（S3 的 dispatch 臂）后回真实结果，
+        // main 告警后继续——两条路径都如实。
         let spec = default_signal_spec();
-        assert_eq!(host.register_handlers(&spec), Ok(()));
+        assert!(
+            matches!(host.register_handlers(&spec), Err(e) if e == Errno::EIO),
+            "宿主 trap 断链 → EIO（不伪造成功）"
+        );
         assert_eq!(
             host.exec(&ParsedCommand {
                 exec_path: "/bin/sh".into(),
