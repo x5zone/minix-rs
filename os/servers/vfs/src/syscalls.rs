@@ -1060,7 +1060,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             }
             // C `do_chmod:88-93`：`get_filp(rfd, VNODE_WRITE)`——只要 fd 有效，
             // 不查打开模式（与 ftruncate 的 W 位门不同）。
-            let (filp_idx, vnode_idx) = {
+            let vnode_idx = {
                 let fp = match state.fproc_table.get(fp_slot) {
                     Some(fp) => fp,
                     None => return SyscallResult::Error(minix_types::EINVAL),
@@ -1074,7 +1074,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     .get(crate::filp::FilpId(filp_idx))
                     .and_then(|f| f.vnode)
                 {
-                    Some(v) => (filp_idx, v),
+                    Some(v) => v,
                     None => return SyscallResult::Error(minix_types::EBADF),
                 }
             };
