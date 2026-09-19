@@ -99,6 +99,32 @@ pub enum WorkerCont {
         /// 折算后的新属组。
         gid: u32,
     },
+    /// 套接字驱动对话的对话半（`SDEV_SOCKET`/`SDEV_SOCKETPAIR`）：回复带
+    /// 新套接字的设备号（单个或一对），续接体解析后转 `make_sock_fd`
+    /// （`WorkerCont::SockFd`）。C `sdev_socket`（sdev.c:124-170）。
+    SdevSocket {
+        /// `true` 是 `SDEV_SOCKETPAIR`（要两个设备号）。
+        pair: bool,
+        /// 驱动回复里带的打开标志（`socket::sock_flags` 已翻成 `O_*`）。
+        flags: u32,
+        /// 该域的 smap 行号（`make_smap_dev` 的高 32 位）。
+        smap_num: u32,
+    },
+    /// `make_sock_fd` 的对话半（`REQ_NEWNODE` 到 PFS）：回复带新节点的
+    /// `node_details`，续接体填 vnode 与 filp 并把 fd 作为**返回值**回给用户。
+    /// C `make_sock_fd`（socket.c:86-176）。
+    SockFd {
+        /// 已认领的 filp。
+        filp: usize,
+        /// 已认领的 fd 号。
+        fd: u32,
+        /// 打开标志（`O_CLOEXEC` 等）。
+        flags: u32,
+        /// 预留的 vnode 下标。
+        vnode: usize,
+        /// 套接字设备号（写进 vnode 的 `v_sdev`）。
+        dev: u64,
+    },
     /// `pipe2` 的对话半（`REQ_NEWNODE`）：回复带新节点的 `node_details`，续接体
     /// 要用它填 vnode 与两个 filp，并把 `m_vfs_lc_fdpair { fd0, fd1 }` 作为
     /// **回复载荷**发回（用户拿到的就是这两个 fd）。C `create_pipe`

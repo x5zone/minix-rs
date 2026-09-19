@@ -1391,10 +1391,63 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // C 的 `sock_type = type & ~SOCK_FLAGS_MASK` 与 `get_sock_flags`
             // （决策函数 `socket::strip_sock_type`）：类型位与打开标志分开。
             let (_sock_type, _flags) = crate::socket::strip_sock_type(ty as u32);
-            // 下一步是 `sdev_socket(domain, sock_type, protocol, &dev, pair)`
-            // ——**套接字驱动对话**（smap 取端点 + 发送 + 回复落槽），本批还没
-            // 接线：登记缺口，不假装建成了套接字。
-            SyscallResult::Error(minix_types::ENOSYS)
+            // C socket.c:207-214 —— `sdev_socket(domain, sock_type, protocol,
+            // &dev, pair)`：给该域的套接字驱动发 `SDEV_SOCKET`，回复带新的
+            // 套接字号。驱动对话管线（smap 取端点 + 发送 + 回复落槽）已就位，
+            // 所以这里真发；回复到达后由 `WorkerCont::SdevSocket` 接着做
+            // `make_sock_fd`（PFS 建节点 + 装配 fd）。
+            let Some(row) = crate::device_map::smap_by_domain(&state.smap_table, domain) else {
+                return SyscallResult::Error(minix_types::EAFNOSUPPORT);
+            };
+            let drv_e = match state
+                .smap_table
+                .entries
+                .get(row as usize)
+                .and_then(|r| r.endpt)
+            {
+                Some(e) => e,
+                None => return SyscallResult::Error(minix_types::EAFNOSUPPORT),
+            };
+            let smap_num = state.smap_table.entries[row as usize].num;
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // `mess_vfs_lsockdriver_socket { req_id, domain, type, protocol,
+            // user_endpt }`（ipc.h:2329-2337）；`m_type` 是
+            // `SDEV_SOCKET`/`SDEV_SOCKETPAIR`（`pair` 决定）。
+            let mut req = minix_types::Message {
+                m_type: if matches!(call, VfsCallNum::Socketpair) {
+                    minix_sockdriver::sdev::SdevRequest::SocketPair as i32
+                } else {
+                    minix_sockdriver::sdev::SdevRequest::Socket as i32
+                },
+                ..minix_types::Message::default()
+            };
+            // SAFETY: 该请求的载荷按上述域序写在消息负载区。
+            unsafe {
+                let raw = &mut req.m_u.raw;
+                raw[0..4].copy_from_slice(&user_e.0.to_le_bytes()); // req_id = who_e
+                raw[4..8].copy_from_slice(&domain.to_le_bytes());
+                raw[8..12].copy_from_slice(&(ty & !(crate::socket::SOCK_FLAGS_MASK as i32)).to_le_bytes());
+                raw[12..16].copy_from_slice(&_protocol.to_le_bytes());
+                raw[16..20].copy_from_slice(&user_e.0.to_le_bytes()); // user_endpt
+            }
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::SdevSocket {
+                    pair: matches!(call, VfsCallNum::Socketpair),
+                    flags: _flags,
+                    smap_num,
+                });
+            }
+            match state.send_drv_for_slot(worker, Some(fp_slot), drv_e, &req) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
         }
 
         VfsCallNum::Shutdown => {
@@ -4094,15 +4147,16 @@ mod tests {
             SyscallResult::Error(minix_types::EAFNOSUPPORT)
         );
 
-        // ② 域映射了（pfmap[2] = 行 0）→ 过域门；驱动对话未接线 → ENOSYS。
+        // ② 域映射了（pfmap[2] = 行 0）→ 过域门，真给驱动发 `SDEV_SOCKET`；
+        // 宿主构建下 trap 不可达 → EIO（诚实边界）。
         let (mut state, _idx) = setup();
         state.smap_table.pfmap[2] = Some(0);
         state.smap_table.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 11));
         state.current_message = socket_msg(VfsCallNum::Socket, 2, 1);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Socket),
-            SyscallResult::Error(minix_types::ENOSYS),
-            "域门过了，停在驱动对话"
+            SyscallResult::Error(minix_types::EIO),
+            "驱动对话要真发（宿主下 trap 不可达）"
         );
 
         // ③ fd 槽不够 → EMFILE（socketpair 要 2 个：只留 1 个空槽）。
@@ -4166,6 +4220,92 @@ mod tests {
             SyscallResult::Error(minix_types::ENOSYS),
             "全过，停在 sdev_shutdown"
         );
+    }
+
+    /// 驱动对话管线的**回复落槽**（C `sdev_reply` 的公共前半）：驱动回复到达
+    /// 时找到等它的槽、落槽、唤醒，续接体随即跑（这里跑到 PFS 的
+    /// `REQ_NEWNODE`——`make_sock_fd` 的第一步）。
+    #[test]
+    fn test_driver_reply_lands_and_chains_to_pfs() {
+        use minix_types::Endpoint;
+
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        // 域 2 → smap 行 0（端点 = 驱动）。
+        state.smap_table.pfmap[2] = Some(0);
+        let drv = Endpoint::from_generation_slot(0, 11);
+        state.smap_table.entries[0].endpt = Some(drv);
+        // PFS 挂载行（`make_sock_fd` 要它）。
+        let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+        v.fs = Endpoint::PFS;
+        v.dev = 9;
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+
+        // 臂：过门 → 记下续接（`SdevSocket`）→ 发送失败（宿主）→ EIO。
+        let mut m = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Socket as i32,
+            ..Message::default()
+        };
+        // SAFETY: mess_lc_vfs_socket：domain@0、type@4、protocol@8。
+        unsafe {
+            let raw = &mut m.m_u.raw;
+            raw[0..4].copy_from_slice(&2i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&1i32.to_le_bytes());
+        }
+        state.current_message = m;
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Socket),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        assert!(
+            matches!(
+                state.worker_pool.get_mut(idx).unwrap().cont,
+                Some(crate::worker::WorkerCont::SdevSocket { pair: false, .. })
+            ),
+            "续接标识已挂（等驱动回复）"
+        );
+
+        // 驱动回复到达：`handle_drv_reply` 找等它的槽并落槽。
+        let mut reply = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::SocketReply as i32,
+            ..Message::default()
+        };
+        reply.m_source = drv;
+        // SAFETY(test): `mess_lsockdriver_vfs_socket_reply`：req_id@0、
+        // sock_id@4、sock_id2@8。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[0..4].copy_from_slice(&0i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&0x42i32.to_le_bytes());
+            raw[8..12].copy_from_slice(&(-1i32).to_le_bytes());
+        }
+        let slot = state.handle_drv_reply(&reply).expect("有槽在等这个驱动");
+        assert_eq!(slot, idx);
+        state.run_worker_continuations();
+
+        // 续接体跑到了 `make_sock_fd` 的第一步：给 PFS 发 `REQ_NEWNODE`，
+        // 且设备号是 `make_smap_dev(行号, sock_id)`（高 32 位是行号）。
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_NEWNODE");
+        assert_eq!(p.req.m_type, minix_types::REQ_NEWNODE);
+        assert_eq!(p.fs_e, Endpoint::PFS);
+        // SAFETY(test): `mess_vfs_fs_newnode`：device@0、mode@8。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let dev = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let mode = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            let row = state.smap_table.entries[0].num;
+            assert_eq!(dev, crate::device_map::make_smap_dev(row, 0x42));
+            assert_eq!(mode & crate::open::S_IFMT, crate::open::S_IFSOCK, "套接字节点");
+        }
     }
 
     /// `Pipe2` 臂（C `do_pipe2` pipe.c:39-55 + `create_pipe` pipe.c:58-135）：

@@ -728,6 +728,13 @@ impl VfsState {
                 // 真调用（W3 回复半：发送在 `run()` 的循环尾）。
                 self.queue_reply(msg.m_source, crate::call_table::SyscallResult::Nosys);
             }
+            Route::Bdev | Route::Cdev | Route::Sdev => {
+                // C main.c:126-134 —— 块/字符/套接字驱动的回复各走
+                // `bdev_reply`/`cdev_reply`/`sdev_reply`，三者的公共前半是
+                // "找等这个驱动的 worker 槽 → 落槽 → 唤醒"。找不到就软失败
+                // （C 里是 printf + return，主循环继续）。
+                let _ = self.handle_drv_reply(msg);
+            }
             Route::FsReply { .. } => {
                 // C main.c:80-89 — do_reply 无应答对象；软失败（typed
                 // `FsReplyError`）即 C 的 printf+return，主循环继续。
@@ -1336,6 +1343,81 @@ impl VfsState {
         )
     }
 
+    /// `make_sock_fd` 的前半（C socket.c:86-176）：锁 PFS → 预留 vnode →
+    /// 认领 fd/filp → `req_newnode(PFS, effuid, effgid, S_IFSOCK|ACCESSPERMS,
+    /// dev)`。后半（填 vnode/filp）在 `WorkerCont::SockFd` 的续接体里。
+    pub fn begin_make_sock_fd(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        dev: u64,
+        flags: u32,
+    ) -> Result<(), i32> {
+        let Some(slot) = fp_slot else {
+            return Err(minix_types::EINVAL);
+        };
+        // C `find_vmnt(PFS_PROC_NR)`：拿不到就 panic（"PFS gone"）；Rust 侧
+        // fail-closed（PFS 是另一条线的服务器）。
+        let Some(vmnt_id) = self.vmnt_table.find_by_fs(minix_types::Endpoint::PFS) else {
+            return Err(minix_types::EIO);
+        };
+        let vnode = self
+            .vnode_table
+            .alloc()
+            .map_err(|_| minix_types::ENFILE)?;
+        // C `get_fd(fp, 0, R_BIT | W_BIT, &fd, &filp)`。
+        let (fd, filp) = {
+            use crate::filedes::FdAllocPolicy;
+            let fp = self.fproc_table.get_mut(slot).ok_or(minix_types::EINVAL)?;
+            let idx_fd = crate::filedes::LowestFree
+                .allocate(&fp.filps, 0)
+                .ok_or(minix_types::EMFILE)?;
+            let fd = crate::filedes::Fd::new(idx_fd).ok_or(minix_types::EMFILE)?;
+            let filp = self
+                .filp_table
+                .alloc_filp(crate::open::R_BIT | crate::open::W_BIT)
+                .map_err(|_| minix_types::ENFILE)?;
+            self.filp_table.inc_count(filp);
+            let fp = self.fproc_table.get_mut(slot).ok_or(minix_types::EINVAL)?;
+            fp.filps[idx_fd] = Some(filp.get());
+            (fd, filp)
+        };
+        let (uid, gid) = self
+            .fproc_table
+            .get(slot)
+            .map(|fp| (fp.eff_uid, fp.eff_gid))
+            .unwrap_or((0, 0));
+        let user = self
+            .fproc_table
+            .get(slot)
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::SockFd {
+                filp: filp.get(),
+                fd: fd.get() as u32,
+                flags,
+                vnode: vnode.get(),
+                dev,
+            });
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt: vmnt_id.0,
+            fs_e: minix_types::Endpoint::PFS,
+            worker: idx,
+            grant: 0,
+            user,
+            // C socket.c:134-136：`S_IFSOCK | ACCESSPERMS` 作为节点模式。
+            req: crate::request::encode_newnode(
+                dev,
+                crate::open::S_IFSOCK | 0o777,
+                uid,
+                gid,
+            ),
+        });
+        Ok(())
+    }
+
     /// `get_sock`（C socket.c:276-302）：fd → filp → **必须是套接字**
     /// （否则 `ENOTSOCK`），返回它的设备号与打开标志。套接字族共用的第一道门
     /// ——全本地判定，没有驱动对话。
@@ -1685,6 +1767,60 @@ impl VfsState {
             wp.path = Some(crate::worker::PathPending { walk, grant: 0, follow });
         }
         self.send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
+    }
+
+    /// 给驱动发一条请求并让槽等它（C `sdev_sendrec`/`cdev_opcl`/`bdev_sendrec`
+    /// 的公共前半）：`asynsend3(drv_e, m, AMF_NOREPLY)` 是**发完不等**，线程随后
+    /// 在 `worker_wait` 里等回复——本模型里就是"槽的 `task` 指向驱动、
+    /// `sendrec` 放着请求、状态 `WaitingForFs`"，回复到达由
+    /// [`Self::handle_drv_reply`] 落槽并唤醒。
+    ///
+    /// 发送失败（宿主构建下 trap 不可达）返回 EIO，调用方按错误收尾——不假装
+    /// 发出去了。
+    pub fn send_drv_for_slot(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        drv_e: Endpoint,
+        req: &Message,
+    ) -> Result<(), i32> {
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            // C `self->w_task = sp->smap_endpt; self->w_drv_sendrec = m_ptr`。
+            wp.task = Some(drv_e);
+            wp.sendrec = Some(*req);
+            wp.state = crate::worker::WorkerState::WaitingForFs;
+        }
+        let _ = fp_slot;
+        minix_sys::ipc::DirectTrapTransport
+            .send(drv_e, req)
+            .map_err(|_| minix_types::EIO)
+    }
+
+    /// 驱动回复落槽（C `sdev_reply`/`cdev_reply`/`bdev_reply` 的公共前半）：
+    /// 找到**正在等这个驱动**的 worker 槽，把回复落进它的 `sendrec` 并唤醒
+    /// （状态转 `Busy`，与 FS 回复同一套续接机制）。
+    ///
+    /// 找不到等它的槽就按"没有 worker 在等"忽略（`device_map::check_reply`
+    /// 的 `ReplyIgnore::NoWorker` 语义）——软失败，主循环继续。
+    pub fn handle_drv_reply(&mut self, msg: &Message) -> Result<usize, FsReplyError> {
+        let slot = (0..crate::worker::NR_WTHREADS).find(|i| {
+            self.worker_pool
+                .get(*i)
+                .is_some_and(|w| w.task == Some(msg.m_source))
+        });
+        let Some(slot) = slot else {
+            return Err(FsReplyError::WrongTask);
+        };
+        let wp = self
+            .worker_pool
+            .get_mut(slot)
+            .ok_or(FsReplyError::SlotOutOfRange)?;
+        // 驱动回复的 `m_type` 就是状态/回复号（C 的 `w_drv_sendrec` 原样收），
+        // 不像 FS 回复那样带 transid——所以这里**不剥**。
+        wp.sendrec = Some(*msg);
+        wp.task = None;
+        wp.state = crate::worker::WorkerState::Busy;
+        Ok(slot)
     }
 
     /// 给槽发一条 `REQ_SYNC`（C `req_sync`：空载荷、状态回复）。
@@ -2350,6 +2486,99 @@ impl VfsState {
                             v.mode = actual;
                         }
                     }
+                }
+                crate::worker::WorkerCont::SdevSocket { pair, flags, smap_num } => {
+                    // C `sdev_socket`（sdev.c:140-170）：回复号必须是
+                    // `SDEV_SOCKET_REPLY`（否则 EIO），`sock_id < 0` 就是驱动
+                    // 报的错误；成功后设备号 = `make_smap_dev(行号, sock_id)`。
+                    // 回复号必须是 `SDEV_SOCKET_REPLY`（`SdevReply::SocketReply`）。
+                    if status != minix_sockdriver::sdev::SdevReply::SocketReply as i32 {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                        continue;
+                    }
+                    // SAFETY: 回复载荷 `mess_lsockdriver_vfs_socket_reply`
+                    // （req_id@0、sock_id@4、sock_id2@8）。
+                    let (sock_id, sock_id2) = unsafe {
+                        let raw = &reply.m_u.raw;
+                        (
+                            i32::from_le_bytes(raw[4..8].try_into().unwrap()),
+                            i32::from_le_bytes(raw[8..12].try_into().unwrap()),
+                        )
+                    };
+                    if sock_id < 0 {
+                        self.finish_worker_job(idx, fp_slot, sock_id);
+                        continue;
+                    }
+                    let dev = crate::device_map::make_smap_dev(smap_num, sock_id as u32);
+                    if pair {
+                        // **成对分支待接**：`socketpair` 要连着建**两个**
+                        // `make_sock_fd`（C socket.c:250-266 的第二半还带补偿：
+                        // 第二个失败要 `close_fd(fd0)` + `sdev_close(dev[1])`），
+                        // 而 `pending_fs` 一次只装一条请求。本批先只接单条路径，
+                        // 成对的诚实回 ENOSYS 并登记（第二半的编排是下一步）。
+                        let _ = sock_id2;
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
+                        continue;
+                    }
+                    if let Err(e) = self.begin_make_sock_fd(idx, fp_slot, dev, flags) {
+                        self.finish_worker_job(idx, fp_slot, e);
+                    }
+                    continue;
+                }
+                crate::worker::WorkerCont::SockFd {
+                    filp,
+                    fd,
+                    flags,
+                    vnode,
+                    dev,
+                } => {
+                    // C `make_sock_fd` 的后半（socket.c:140-176）：用回复的
+                    // `node_details` 填 vnode（`v_sdev` 是套接字设备号）与 filp，
+                    // 再按 `flags` 置 CLOEXEC。**用户拿到的返回值是 fd**。
+                    if status != 0 {
+                        self.filp_table.dec_count(crate::filp::FilpId(filp));
+                        if let Some(slot) = fp_slot
+                            && let Some(fp) = self.fproc_table.get_mut(slot)
+                        {
+                            fp.filps[fd as usize] = None;
+                        }
+                        if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+                            v.ref_count = 0;
+                        }
+                        self.finish_worker_job(idx, fp_slot, status);
+                        continue;
+                    }
+                    let node = crate::request::decode_lookup_reply(status, &reply);
+                    let Some(crate::path::LookupRes::Ok { ino, mode, .. }) = node else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                        continue;
+                    };
+                    if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+                        v.fs = minix_types::Endpoint::PFS;
+                        v.map_fs = minix_types::Endpoint::PFS;
+                        v.ino = ino;
+                        v.map_ino = ino;
+                        v.mode = mode;
+                        v.fs_count = 1;
+                        v.mapfs_count = 1;
+                        v.ref_count = 1;
+                        v.size = 0;
+                        v.dev = minix_types::NO_DEV;
+                        // C socket.c:157 —— `vp->v_sdev = dev`：套接字靠它认驱动。
+                        v.sdev = dev;
+                    }
+                    if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
+                        f.vnode = Some(vnode);
+                        f.flags = flags as i32;
+                    }
+                    if let Some(slot) = fp_slot
+                        && let Some(fp) = self.fproc_table.get_mut(slot)
+                        && flags & crate::open::OpenFlags::CLOEXEC.bits() != 0
+                    {
+                        fp.cloexec_set.set(fd as usize, true);
+                    }
+                    self.finish_worker_job(idx, fp_slot, fd as i32);
+                    continue;
                 }
                 crate::worker::WorkerCont::Pipe2 {
                     filp0,
