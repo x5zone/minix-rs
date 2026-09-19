@@ -86,8 +86,9 @@ A-10 消费者姿态见 §3 D1）。
 ### 3.1 D1：快照（A-4 + A-10 消费）
 
 `DsEntrySnap`（flags/key[80]/owner[80]/scalar）——STR 指针与 MEM reallen
-不进快照（输出层直读源缓冲；标量面 `u32_or_len` 足矣）。`[ARCH: A-4]`
-三处 + A-10 消费者注记（生产侧 `07-stage-ds` A-10）。
+不进快照（输出层直读源缓冲；标量面 `u32_or_len` 足矣）。**权威位置**：
+`minix_types::DsEntrySnap`（`types/ds_store.rs`）——DS 侧 `render_image`
+按它渲染 `SI_DATA_STORE` 镜像行（168 字节/槽），IS 这里只重导出。
 
 ### 3.2 D2：类型枚举 + 缺省中止
 

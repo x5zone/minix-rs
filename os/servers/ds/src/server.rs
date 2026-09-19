@@ -30,6 +30,7 @@ use crate::check::{apply_check, plan_check};
 use crate::delete::apply_delete;
 use crate::dispatch::{DsCall, Incoming, should_reply, triage};
 use crate::getsysinfo::{image_bytes, plan_getsysinfo};
+use minix_types::DsEntrySnap;
 use crate::heap::DsPool;
 use crate::identity::resolve_name;
 use crate::notify::{apply_update, initial_scan};
@@ -618,40 +619,40 @@ impl DsServer {
 
     /// Render the getsysinfo image (`ds_store` as C would copy it).
     ///
-    /// [ARCH A-10/11]: entries serialize field-by-field into the exact
-    /// C layout (192 bytes: flags, key, owner, 4 pad, union). Padding
-    /// and the union's inactive bytes render as canonical zeros where C
-    /// leaks stale memory — IS `dmp_ds` reads only live fields, so the
-    /// visible contract holds; the byte image is simply honest about
-    /// what is defined.
+    /// [ARCH A-10/11 + A-4]: entries serialize field-by-field into the
+    /// shared snapshot row (`DsEntrySnap`, 168 bytes: flags, key, owner,
+    /// scalar). The union's pointer arm does not cross the wire; STR/MEM
+    /// rows carry `mem.length` in the scalar slot (the pointer is
+    /// meaningless in the reader's address space). Vacant seats and the
+    /// C leak sites render as canonical zeros, so the byte image is
+    /// honest about what is defined.
     fn render_image(&mut self) {
+        const ROW: usize = core::mem::size_of::<DsEntrySnap>();
         for (index, seat) in self.store.iter().enumerate() {
-            let at = index * 192;
-            let out = &mut self.image[at..at + 192];
+            let at = index * ROW;
+            let out = &mut self.image[at..at + ROW];
             match seat {
                 Some(entry) => {
                     out[..4].copy_from_slice(&entry.flags.bits().to_ne_bytes());
                     out[4..84].copy_from_slice(&entry.key);
                     out[84..164].copy_from_slice(&entry.owner);
-                    // 4 pad bytes at 164; union at 168: the narrow arm
-                    // lives in the low 4 bytes, the wide arm fills 24.
-                    let body = &mut out[168..192];
-                    if entry
+                    // scalar at 164: the narrow arm carries `u.u32`
+                    // (U32/LABEL); the wide arm carries `u.mem.length`
+                    // (STR/MEM) — the pointer itself has no meaning in
+                    // the reader's address space (A-4).
+                    let scalar = if entry
                         .flags
                         .intersects(DsFlags::TYPE_STR | DsFlags::TYPE_MEM)
                     {
                         // SAFETY: wide-arm entries are written through
                         // the wide arm only (publish path, 07).
-                        let mem = unsafe { entry.body.mem };
-                        body[..8].copy_from_slice(&(mem.data as usize).to_ne_bytes());
-                        body[8..16].copy_from_slice(&mem.length.to_ne_bytes());
-                        body[16..24].copy_from_slice(&mem.reallen.to_ne_bytes());
+                        unsafe { entry.body.mem }.length as u32
                     } else {
                         // SAFETY: narrow arm (U32/LABEL), the documented
                         // arm for these flags (03 D2).
-                        let value = unsafe { entry.body.u32 };
-                        body[..4].copy_from_slice(&value.to_ne_bytes());
-                    }
+                        unsafe { entry.body.u32 }
+                    };
+                    out[164..168].copy_from_slice(&scalar.to_ne_bytes());
                 }
                 None => {
                     // A vacant seat: flags clear, everything else zero —
@@ -1144,7 +1145,7 @@ mod tests {
             (DsFlags::IN_USE | DsFlags::TYPE_LABEL).bits()
         );
         assert_eq!(
-            u32::from_ne_bytes(copies[0].2[2 * 192..2 * 192 + 4].try_into().unwrap()),
+            u32::from_ne_bytes(copies[0].2[2 * 168..2 * 168 + 4].try_into().unwrap()),
             (DsFlags::IN_USE | DsFlags::TYPE_U32).bits()
         );
     }

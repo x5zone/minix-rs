@@ -15,6 +15,11 @@
 ### 1.2 本章不讲什么
 
 - 条目布局为什么是 192 字节——那是 03 的事（本篇只用结论）。
+- **镜像行宽自 A-4 起是 168 字节**（`minix_types::DsEntrySnap` 标量面快照：
+  flags + key + owner + scalar）——C 的 192 字节把 `union dsi_u` 的指针臂
+  也算进宽度，而指针在读者地址空间无意义；生产者（`server.rs` 的
+  `render_image`）按快照逐槽渲染，`image_bytes()` 与 IS 消费侧同取
+  `size_of::<DsEntrySnap>() × NR_DS_KEYS`。
 - 客户端 `getsysinfo` 的通用包装——`libsys/getsysinfo.c:22` 只是把 `DS_PROC_NR + DS_GETSYSINFO` 转交，一句话带过。
 - IS 的显示逻辑——`dmp_ds.c` 的分页打印是 IS 的事，本篇只讲它对 DS 的**要求**。
 
@@ -29,13 +34,13 @@ size 的**精确匹配**值得多说一句：短了会截断镜像（IS 读到�
 镜像查询是 03（布局）+ 04（顺序）+ 本篇（门与拷）的汇合点：
 
 ```
-03 定布局（192 字节/槽，#[repr(C)] + 断言锁死）
+03 定布局（内部条目 192 字节/槽；A-4 后跨服务镜像行是 168 字节快照行）
   → 04 定顺序（首适应升序，镜像第 N 个即表第 N 个）
     → 本篇定门拷（what 对、size 正好，才拷 image_bytes）
       → IS 直读（dmp_ds.c 按 struct 解释，无解析无版本）
 ```
 
-任一环松了，IS 静默读错——没有错误码，只有错数据。所以本篇的测试锁 `image_bytes() == 192 * 128`（常量式，非 `size_of` 自证：断言必须有一个**手写**的期望值，否则实现和测试会一起错）。
+任一环松了，IS 静默读错——没有错误码，只有错数据。所以本篇的测试锁 `image_bytes() == 168 * 128`（常量式，非 `size_of` 自证：断言必须有一个**手写**的期望值，否则实现和测试会一起错）。
 
 调用链（`minix3/minix/lib/libsys/getsysinfo.c:getsysinfo（L22，工具生成）`）：客户端调通用 `getsysinfo(DS_PROC_NR, SI_DATA_STORE, buf, sizeof)` → 转成 `DS_GETSYSINFO` 发 DS → DS 回拷。IS 的 `data_store_dmp`（`minix3/minix/servers/is/dmp_ds.c:LINES（L8，工具生成）`）就是这么拿快照分页显示的（22 行一页，`prev_i` 轮转）。
 
@@ -95,7 +100,7 @@ os/servers/ds/src/
 | 不变量 | 守卫 | 证据 |
 |--------|------|------|
 | 量差一字节也拒 | 精确 `!=` 比 | `store.c:668-669` |
-| 镜像长手写期望 | 测试锁 `192 * 128` | `minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L15，工具生成）` 对账 |
+| 镜像长手写期望 | 测试锁 `168 * 128` | `minix3/minix/servers/is/dmp_ds.c:data_store_dmp（L15，工具生成）` 对账 |
 
 ---
 
@@ -105,7 +110,7 @@ os/servers/ds/src/
 
 | 测试名 | 覆盖 C 位置 | 行为 |
 |--------|-------------|------|
-| `test_image_is_entry_times_table` | `:662` | 镜像 = 条目 × 表（手写 192×128） |
+| `test_image_is_row_times_table` | `:662` | 镜像 = 快照行 × 表（手写 168×128） |
 | `test_exact_size_passes` | `:668` | 量准过 |
 | `test_wrong_what_refuses` | `:659-665` | 问错拒 |
 | `test_short_and_long_sizes_refuse` | `:668-669` | 长短都拒（含 0） |

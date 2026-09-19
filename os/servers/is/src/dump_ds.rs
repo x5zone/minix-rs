@@ -5,51 +5,11 @@
 //! unknown-type abort. Bodies await the A-6 output channel; this module
 //! delivers snapshots, type decoding, cursor, and format constants.
 //!
-//! `[ARCH: A-4]`: snapshots are wire-contract proposals (`#[repr(C)]`,
-//! used-fields subsets); the DS-side GETSYSINFO producer aligns to them
-//! (pending DS-crate work — the consumer half of `07-stage-ds` A-10,
-//! explicit TODO below).
-
-// TODO(P1): [code] [factual] Align DS-crate GETSYSINFO producers with the
-// snapshots below — see 09 §4. (current state: IS-side wire proposals)
-// (fix: DS `do_getsysinfo` SI_DATA_STORE payload matches; A-4/A-10).
-
-/// Number of store slots. C: `NR_DS_KEYS (2*NR_SYS_PROCS)` — store.h:12
-/// (`NR_SYS_PROCS 64` — sys_config.h:9).
-pub const NR_DS_KEYS: usize = 128;
-
-/// Max key/owner length. C: `DS_MAX_KEYLEN 80` — ds.h:29.
-pub const DS_MAX_KEYLEN: usize = 80;
-
-/// In-use bit. C: `DSF_IN_USE 0x001` — ds.h:12.
-pub const DSF_IN_USE: u32 = 0x001;
-/// Type mask. C: `DSF_MASK_TYPE 0xFF0` — ds.h:22.
-pub const DSF_MASK_TYPE: u32 = 0xFF0;
-
-/// Data-store entry snapshot (scalar face only).
-///
-/// C: `struct data_store` — `minix3/minix/servers/ds/store.h:16-29`
-/// (subset: the `STR` data pointer streams through the output layer,
-/// like 08's `r_args`).
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct DsEntrySnap {
-    /// C: `flags` (store.h:17).
-    pub flags: i32,
-    /// C: `key[DS_MAX_KEYLEN]` (store.h:18).
-    pub key: [u8; DS_MAX_KEYLEN],
-    /// C: `owner[DS_MAX_KEYLEN]` (store.h:19).
-    pub owner: [u8; DS_MAX_KEYLEN],
-    /// Scalar payload (`u.u32`, or `u.mem.length` for `MEM`).
-    pub scalar: u32,
-}
-
-impl Default for DsEntrySnap {
-    // Manual: `[u8; 80]` has no `Default` — neighbouring-payload convention.
-    fn default() -> Self {
-        Self { flags: 0, key: [0u8; DS_MAX_KEYLEN], owner: [0u8; DS_MAX_KEYLEN], scalar: 0 }
-    }
-}
+//! `[ARCH: A-4]`: the table row is [`minix_types::DsEntrySnap`] — the single
+//! authority shared with the DS-side `SI_DATA_STORE` producer
+//! (`os/servers/ds/src/server.rs` 的 `render_image`); this module re-exports
+//! it (and the slot/flag constants) rather than keeping divergent copies.
+pub use minix_types::{DsEntrySnap, DSF_IN_USE, DSF_MASK_TYPE, DS_MAX_KEYLEN, NR_DS_KEYS};
 
 /// Value kind.
 ///

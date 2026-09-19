@@ -21,7 +21,7 @@ use core::mem::size_of;
 
 use minix_types::EINVAL;
 
-use crate::store::{DataEntry, NR_DS_KEYS};
+use minix_types::{DsEntrySnap, NR_DS_KEYS};
 
 /// The only accepted query. C: `SI_DATA_STORE` — sysinfo.h:13.
 ///
@@ -52,11 +52,15 @@ impl GetsysinfoReject {
 
 /// How many bytes the image holds (`sizeof(ds_store)`, store.c:671).
 ///
-/// The product, not a magic number: grow the entry or the table and
-/// the image follows. Callers compare the request `size` against this
-/// before copying — the exact-match rule at :668.
+/// The product, not a magic number: grow the row or the table and the
+/// image follows. Callers compare the request `size` against this before
+/// copying — the exact-match rule at :668.
+///
+/// `[ARCH: A-4]`：行宽是共享快照 [`DsEntrySnap`]（标量面子集），不是 C 的
+/// 192 字节 `struct data_store`——生产方（`server.rs` 的 `render_image`）与
+/// 消费方（IS `dump_ds`）都从这一个类型推宽度。
 pub const fn image_bytes() -> usize {
-    size_of::<DataEntry>() * NR_DS_KEYS
+    size_of::<DsEntrySnap>() * NR_DS_KEYS
 }
 
 /// Decide a getsysinfo (`do_getsysinfo` verdict, store.c:659-672).
@@ -79,10 +83,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_image_is_entry_times_table() {
-        // The image is the table, whole: 192-byte entries × 128 seats.
-        assert_eq!(image_bytes(), size_of::<DataEntry>() * NR_DS_KEYS);
-        assert_eq!(image_bytes(), 192 * 128);
+    fn test_image_is_row_times_table() {
+        // The image is the table, whole: 168-byte snapshot rows × 128 seats
+        // (`[ARCH: A-4]` 标量面行，非 C 的 192 字节 `struct data_store`）。
+        assert_eq!(image_bytes(), size_of::<DsEntrySnap>() * NR_DS_KEYS);
+        assert_eq!(image_bytes(), 168 * 128);
     }
 
     #[test]
