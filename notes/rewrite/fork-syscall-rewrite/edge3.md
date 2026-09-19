@@ -80,7 +80,7 @@
 
 | 编号 | 条目 | 来源 | 要点 | 前置 | 状态 |
 |---|---|---|---|---|---|
-| S35 | 18-stage C-1 长尾：24 域逐批接线 | [18-stage-commands/todo.md §6.1](18-stage-commands/todo.md) | 剩余批次：05 sh（**前置 13 篇 [ARCH] A-2 决策**）、09 shell 批（ed/mined）、10→11→12、13→23 终端批、14~17 存储批（fsck/mkfs 受 S32 约束）、18~19 网络批（17-stage）、20~21、init 域 reboot/shutdown/rcorder。批内执行面余项（open 路径类命令 ⏸ edge2 L10；seq 浮点、pr 多栏、sort 外部归并等逐项批内处理） | 各批前置不同（见要点）；L1/L2 落地后宿主冒烟即可信 | ☐ |
+| S35 | 18-stage C-1 长尾：24 域逐批接线 | [18-stage-commands/todo.md §6.1](18-stage-commands/todo.md) | 剩余批次：05 sh（**前置 13 篇 [ARCH] A-2 决策**）、09 shell 批（ed/mined）、10→11→12、13→23 终端批、14~17 存储批（fsck/mkfs 受 S32 约束）、18~19 网络批（17-stage）、20~21、init 域 reboot/shutdown/rcorder。批内执行面余项（open 路径类命令前置 edge2 L10 已销账[df145274c，2026-09-18]，该批解锁；seq 浮点、pr 多栏、sort 外部归并等逐项批内处理） | 各批前置不同（见要点）；L1/L2 落地后宿主冒烟即可信 | ☐ |
 | S36 | 18-stage P1-1/P1-2：Requires 回填 + POSIX 基准引用 | [18-stage-commands/todo.md §2/§3](18-stage-commands/todo.md) | 随 S35 各批同步：契约表 Requires 列逐命令回填（06/07/08/22 已做，余各篇）；各命令文档补 POSIX 准绳引用 | 随 S35 | ☐ |
 | S39 | init P1-2 ①② + P0-8 libcrypt + E-INITSYS init 侧跟进 + P2-6 残余接线 | [09-stage-init/todo.md](09-stage-init/todo.md) ｜ [edge_todo.md](edge_todo.md) E-INITSYS | ①HashMap→BTreeMap 决策（动 A-1 闭单决策，谨慎）②Arc→alloc Arc；P0-8 新建 minix-crypt crate（新成员 → edge4 认领 os/Cargo.toml）；E-INITSYS ①②闭单后 init 侧小批次（信号 trampoline + setsid/ctty + utmp 台账）逐条消解 P2-6 八组等待态 | S3（PM dispatch 臂）、edge2 L11/L12 | ☐ |
 | S40 | E-THREAD-MODEL 立项指针 | [18-stage-commands/todo.md §4](18-stage-commands/todo.md) | 线程模型与 futex 无归属——推动 14-stage-runtime 或 04-stage-pm 立项（归属裁决登记 edge4 §6）；18 侧只改 05-shell 依赖链指向 | edge4 §6 裁决 | ✅ 2026-09-19 c78a1a062（OQ-4 裁决=归 14-stage-runtime；05-shell-family.md 三处指针改指线程模型条目） |

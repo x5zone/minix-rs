@@ -68,9 +68,9 @@
 | edge2 L4→L5 E-CDRCONV→E-DEVWIRE | edge2 | edge3（vfs/input 消费侧，经 C-1）；16-stage G6 驱动 main | ✅ 2026-09-18（L4=bd06cab21 判定核单点；L5=aecd4cd1c 常量片+338bfdf9f A10 钩子 Result 化；C-1/C-10 销账） |
 | edge2 L9 E-DMABUF 契约 | edge2 | edge3 S37（vm 实现） | ✅ 2026-09-18 757398407（契约就绪，S37 持 DmaMemory 行为实现即可） |
 | edge3 S37 vm 传输面 | edge3 | edge2 L15（FS 二级缓存升级） | ✅ 2026-09-19 7ed891a9b（DmaMemory 行为实现落位；edge2 L15 可开工） |
-| edge3 S17 RS 换装（枢纽） | edge3 | edge3 内部链 + edge4 E5 全族（RS 启动各服务器） | ☐ |
+| edge3 S17 RS 换装（枢纽） | edge3 | edge3 内部链 + edge4 E5 全族（RS 启动各服务器） | ✅ 2026-09-19（S17 主体 0e33c276c 起多批收口,edge3.md 已 ✅） |
 | edge3 S19 A-6 裁决 | edge3 | edge3 S23（IS main 替换） | ✅ 2026-09-19 1f72d8ffe（diag 缝 = sys_diagctl code1 单汇点） |
-| edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ☐ |
+| edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ☐（真待做,S7/S10 随其后） |
 | edge3 S29 通用 startup 框架 | edge3 | edge3 S31（lwip/uds） | ☐ |
 | edge1 K9 向量表 | edge1 | edge1 K12b（三架构用户态）、edge4 T5 | ☐ |
 | edge1 K1/K2/K3 SMP 面 | edge1 | edge4 E5(e)/E5 SMP 冒烟 | ☐ |
