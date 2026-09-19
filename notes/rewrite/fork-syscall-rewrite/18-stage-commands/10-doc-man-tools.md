@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的印制层——改完的文字变成能看的文档、能查的手册
 > **源码**: `minix3/usr.bin/man/man.c`（1088 行）、`manconf.c`（272 行）、`minix3/etc/man.conf`（版本、数据库路径、节目录顺序、后缀、渲染规则）、`minix3/libexec/makewhatis/makewhatis.c`（1174 行）、`minix3/usr.bin/apropos/apropos.c`（6551 字节）、`minix3/usr.bin/whatis/`、`minix3/usr.bin/whereis/`、`minix3/usr.bin/cal/cal.c`（924 行，缺失日参数第 65 到 66 行、闰年规则第 94 到 137 行）、排版工具（`pr`、`fmt`、`nl`、`colcrt`、`deroff`、`checknr`、`indent`、`soelim`、`tsort`、`ul`）、开发辅助（`ctags`、`gencat`、`lorder`、`mkstr`、`xstr`、`asa`、`fpr`、`fsplit`、`menuc`、`msgc`、`m4`、`what`）、Minix 特有（`minix/commands/cawf`、`spell`、`prep`）、国际化（`locale`、`mklocale`、`mkesdb`、`mkcsmapper`，A-8 候选）
-> **Rust 模块**: `os/commands/usr-bin/doctools`（库包 `minix-doctools`：`manconf.rs`、`whatis.rs`、`cal.rs`，18 个测试通过）
+> **Rust 模块**: `os/commands/usr-bin/doctools`（库包 `minix-doctools`：`cal.rs`（含栅格与渲染面）、`whatis.rs`（含 apropos 逐行匹配）、`manconf.rs` 加 `cal`/`whatis`/`apropos` 薄壳，17 个测试通过）
 > **前置依赖**: `07-text-filter.md`（行变换直觉）、`08-grep-sed.md`（关键词搜索的理论）
 > **不覆盖（移交）**: 排版引擎实现（后续阶段）、拼写词典数据（数据面）、国际化实现（A-8 候选，见 3.5 节）、手册页内容本身（文档数据面）
 
@@ -142,6 +142,10 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 
 ### 4.1 模块结构
 
+| `bin/cal.rs` | `cal.c` 主流程 | `-y`/`[[month] year]`/无参当前月，渲染输出 |
+| `bin/whatis.rs` | 查询三姐妹的精确面 | 库文件读取加 `lookup_exact` 逐名打印 |
+| `bin/apropos.rs` | 查询三姐妹的关键词面 | 库文件读取加 `for_each_matching` 行打印 |
+
 `os/commands/usr-bin/doctools`（库包名 `minix-doctools`）共 4 个源文件：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
@@ -171,7 +175,7 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 
 ## 5. 测试要点
 
-`cargo test -p minix-doctools`：**18 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-doctools`：**17 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/doctools` 复现）：
 
@@ -209,3 +213,9 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 - `ls` 六目录（`cawf`、`spell`、`prep`、`locale`、`ctags`、`gencat`）存在。
 - `cargo test -p minix-doctools` → 18 通过、0 失败；`cargo clippy` 无警告。
 - 本文档引用的 `file:line` 均来自正文写作前实际执行的 `rg -n` 与 `sed -n` 输出，非凭记忆书写。
+
+## 批次随记（接线状态，批次二十四）
+
+- **已接线**：`cal`（月面与年面：`day_matrix` 落位按周日列表头换算周一基栅格，六行循环照 C 打满、行尾去空；`%` 与儒略计数走决定半既有面）、`whatis`/`apropos`（经典文本库的精确查询与关键词逐行匹配，库路径默认 `/usr/man/whatis`、`-M` 可指，退出码按有无命中）。
+- **声明性留白**：`cal` 的 `-j`/`-3`/`-r`/`-h`/`-A`/`-B`/`-C`/`-d`/`-R`（回答 "option not wired"）与月名操作数；`man`/`whereis`（排版引擎与手册渲染是 §3.4 的整体留白）；`makewhatis`（库构建面）。
+- **POSIX 基准**：`cal` 见 POSIX.1-2017 XSI 的 cal 条目（本实现以 `cal.c` 为准绳，改革参数化超出 POSIX 面）；`whatis`/`apropos` 无 POSIX 条目，以 BSD 手册页语义为准。

@@ -130,6 +130,37 @@ impl ManDb for SliceManDb<'_> {
     }
 }
 
+impl SliceManDb<'_> {
+    /// Keyword face of `apropos`: every row carrying the keyword (ASCII
+    /// case folded, no allocation), handed to `visit` in order. Returns
+    /// the row count printed.
+    pub fn for_each_matching(&self, keyword: &str, mut visit: impl FnMut(&str)) -> usize {
+        let needle = keyword.as_bytes();
+        if needle.is_empty() {
+            return 0;
+        }
+        let mut hits = 0;
+        for line in self.lines {
+            let hay = line.as_bytes();
+            if hay.len() < needle.len() {
+                continue;
+            }
+            let mut hit = false;
+            for start in 0..=hay.len() - needle.len() {
+                if hay[start..start + needle.len()].eq_ignore_ascii_case(needle) {
+                    hit = true;
+                    break;
+                }
+            }
+            if hit {
+                hits += 1;
+                visit(line);
+            }
+        }
+        hits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +178,7 @@ mod tests {
         assert_eq!(entry.section, "1");
         assert_eq!(entry.description, "list directory contents");
     }
+
 
     #[test]
     fn test_shared_row() {

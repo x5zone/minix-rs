@@ -8,3 +8,18 @@ license.workspace = true
 [lib]
 name = "minix_doctools"
 path = "src/lib.rs"
+
+[dependencies]
+minix-sys = { workspace = true }
+
+[[bin]]
+name = "cal"
+path = "src/bin/cal.rs"
+
+[[bin]]
+name = "whatis"
+path = "src/bin/whatis.rs"
+
+[[bin]]
+name = "apropos"
+path = "src/bin/apropos.rs"
