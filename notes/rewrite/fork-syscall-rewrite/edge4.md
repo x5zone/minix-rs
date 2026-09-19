@@ -74,7 +74,7 @@
 | edge2 L11/L12 sigreturn+panic-handler | edge2 | edge3 S39（init no_std 收口） | ✅ 2026-09-18 fda5a708c（sigreturn 函数半+panic 形式定形；裸桩地址半挂 edge3 S3/edge1 帧偏移，edge2 L11 行有登记） |
 | edge2 L4→L5 E-CDRCONV→E-DEVWIRE | edge2 | edge3（vfs/input 消费侧，经 C-1）；16-stage G6 驱动 main | ✅ 2026-09-18（L4=bd06cab21 判定核单点；L5=aecd4cd1c 常量片+338bfdf9f A10 钩子 Result 化；C-1/C-10 销账） |
 | edge2 L9 E-DMABUF 契约 | edge2 | edge3 S37（vm 实现） | ✅ 2026-09-18 757398407（契约就绪，S37 持 DmaMemory 行为实现即可） |
-| edge3 S38 vm 传输面（原行误记为 S37） | edge3 | edge2 L15（FS 二级缓存升级） | ✅ 2026-09-19 由消费方核验落地（**更正**：本行原记「S37 / 7ed891a9b」，即 E-DMABUF vm 侧，与 L15 无关；L15 的真前置是 edge3.md 的 S38「vm_map_cacheblock/vm_set_cacheblock 等价传输面」，其交付物在 HEAD 已存在并全绿——VM 侧 `os/servers/vm/src/ipc/cache_handlers.rs` 四 handler + dispatcher.rs:694-697 路由 + minix-sys vm.rs:618-706 四封装，38+3 测试过。edge3.md 的 S38 行状态列仍 ☐，属其账本待回勾项；L15 已在 8b8b495a7 按「前置在代码中已满足」完成） |
+| edge3 S38 vm 传输面（原行误记为 S37） | edge3 | edge2 L15（FS 二级缓存升级） | ✅ 2026-09-19 由消费方核验落地（**更正**：本行原记「S37 / 7ed891a9b」，即 E-DMABUF vm 侧，与 L15 无关；L15 的真前置是 edge3.md 的 S38「vm_map_cacheblock/vm_set_cacheblock 等价传输面」，其交付物在 HEAD 已存在并全绿——VM 侧 `os/servers/vm/src/ipc/cache_handlers.rs` 四 handler + dispatcher.rs:694-697 路由 + minix-sys vm.rs:618-706 四封装，38+3 测试过。edge3.md 的 S38 行状态列仍 ☐，属其账本待回勾项；L15 已在 8b8b495a7 按「前置在代码中已满足」完成）。**edge3 已回勾（2026-09-20 卡M）**：复跑验收 38+3 全绿，S38 行已翻 ✅ |
 | edge3 S17 RS 换装（枢纽） | edge3 | edge3 内部链 + edge4 E5 全族（RS 启动各服务器） | ✅ 2026-09-19（S17 主体 0e33c276c 起多批收口,edge3.md 已 ✅） |
 | edge3 S19 A-6 裁决 | edge3 | edge3 S23（IS main 替换） | ✅ 2026-09-19 1f72d8ffe（diag 缝 = sys_diagctl code1 单汇点） |
 | edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ✅ 2026-09-20（通电半：接收半装 SEF 层 + 参战场景宿主断言，84 passed；真机参战半移交 E5(e)——S7/S10 解锁，PM 侧臂按 sched 消息面契约开工） |
