@@ -151,6 +151,40 @@ pub fn access_bits(read: bool, write: bool, noctty: bool) -> u8 {
     acc
 }
 
+/// `CDEV_OPEN` 请求消息（C `cdev_opcl:198-208`：`memset` 之后填
+/// `minor` 与 `id`，开方向再填 `user` 与 `access`）。
+///
+/// 偏移表 [`minix_types::lchardriver_openclose_off`]——`minor` **不在
+/// 首位**，`id`/`user` 在前；位次发错，驱动收到的就是次设备号 0。
+pub fn open_request(
+    minor: u32,
+    user: minix_types::Endpoint,
+    access: u8,
+) -> minix_types::Message {
+    let mut m = minix_types::Message {
+        m_type: minix_chardriver::protocol::CdevRequest::Open as i32,
+        ..minix_types::Message::default()
+    };
+    // SAFETY: `mess_vfs_lchardriver_openclose` 无专属 union 成员，按共享
+    // 偏移表写字节（ipc.h:2228-2235）。
+    unsafe {
+        let raw = &mut m.m_u.raw;
+        raw[minix_types::lchardriver_openclose_off::ID
+            ..minix_types::lchardriver_openclose_off::ID + 4]
+            .copy_from_slice(&user.0.to_le_bytes());
+        raw[minix_types::lchardriver_openclose_off::USER
+            ..minix_types::lchardriver_openclose_off::USER + 4]
+            .copy_from_slice(&user.0.to_le_bytes());
+        raw[minix_types::lchardriver_openclose_off::MINOR
+            ..minix_types::lchardriver_openclose_off::MINOR + 4]
+            .copy_from_slice(&(minor as i32).to_le_bytes());
+        raw[minix_types::lchardriver_openclose_off::ACCESS
+            ..minix_types::lchardriver_openclose_off::ACCESS + 4]
+            .copy_from_slice(&(access as i32).to_le_bytes());
+    }
+    m
+}
+
 /// Whether `O_NOCTTY` is forced (`cdev_opcl:185-191`).
 ///
 /// Three-way OR: not a session leader, already has a terminal, or the

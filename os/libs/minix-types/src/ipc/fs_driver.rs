@@ -579,6 +579,21 @@ pub mod readsuper_req_off {
     pub const GRANT: usize = 24;
 }
 
+/// `REQ_NEW_DRIVER` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_new_driver { dev_t device; cp_grant_id_t grant;
+/// size_t path_len; }`（ipc.h:2072-2079，`request.c:664-691` 的
+/// `req_newdriver` 填这三格）。与 [`readsuper_req_off`] 长得像但**不是**
+/// 同一个结构：这里第二格就是 grant，没有 `flags` 那一格。
+pub mod new_driver_req_off {
+    /// `dev_t device`（块设备的 `v_sdev`，不是挂载分区的设备号）。
+    pub const DEVICE: usize = 0;
+    /// `cp_grant_id_t grant`（标签所在 grant，`CPF_READ`）。
+    pub const GRANT: usize = 8;
+    /// `size_t path_len`（驱动标签长度，含结尾 NUL）。
+    pub const PATH_LEN: usize = 16;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +775,11 @@ mod tests {
         assert_eq!(readsuper_req_off::FLAGS, 8);
         assert_eq!(readsuper_req_off::PATH_LEN, 16);
         assert_eq!(readsuper_req_off::GRANT, 24);
+        // new_driver：device/grant/path_len（没有 flags 那一格——与
+        // readsuper 是两套结构，错用会把 grant 当 flags 发出去）。
+        assert_eq!(new_driver_req_off::DEVICE, 0);
+        assert_eq!(new_driver_req_off::GRANT, 8);
+        assert_eq!(new_driver_req_off::PATH_LEN, 16);
     }
 
     /// lookup 的 `flags` 两位 pin（vfsif.h:12,16）——FS 侧按同一张表判

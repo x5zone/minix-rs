@@ -99,6 +99,90 @@ pub const BDEV_R_BIT: i32 = 0x01;
 /// Open access bit: write (`BDEV_W_BIT`, `com.h:983`).
 pub const BDEV_W_BIT: i32 = 0x02;
 
+/// `mess_vfs_lchardriver_openclose` 的 LP64 域偏移（VFS → 字符驱动）。
+///
+/// C: `{ endpoint_t id; endpoint_t user; devminor_t minor; int access; }`
+/// （ipc.h:2228-2235）——`minor` **不在首位**，`id`/`user` 在前；
+/// `cdev_opcl`（cdev.c:198-208）填 `minor` 与 `id`，只有开方向再填
+/// `user` 与 `access`。
+pub mod lchardriver_openclose_off {
+    /// `endpoint_t id`（调用者端点）。
+    pub const ID: usize = 0;
+    /// `endpoint_t user`（只有开方向填）。
+    pub const USER: usize = 4;
+    /// `devminor_t minor`（真正要开的次设备号）。
+    pub const MINOR: usize = 8;
+    /// `int access`（`CDEV_R_BIT`/`CDEV_W_BIT`/`CDEV_NOCTTY`）。
+    pub const ACCESS: usize = 12;
+}
+
+/// `mess_vfs_lchardriver_readwrite` 的 LP64 域偏移（VFS → 字符驱动）。
+///
+/// C: `{ off_t pos; cp_grant_id_t grant; size_t count; unsigned long request;
+/// int flags; endpoint_t id; endpoint_t user; devminor_t minor; }`
+/// （ipc.h:2238-2249）——读、写、ioctl 三种请求**共用**这一个结构：
+/// `cdev_io`（cdev.c:319-330）在 ioctl 时用 `request`/`user`，读/写时用
+/// `pos`/`count`。
+pub mod lchardriver_readwrite_off {
+    /// `off_t pos`（读/写的位置；ioctl 不填）。
+    pub const POS: usize = 0;
+    /// `cp_grant_id_t grant`（用户缓冲的 magic grant）。
+    pub const GRANT: usize = 8;
+    /// `size_t count`（读/写的字节数；ioctl 不填）。
+    pub const COUNT: usize = 16;
+    /// `unsigned long request`（ioctl 的请求码）。
+    pub const REQUEST: usize = 24;
+    /// `int flags`（`CDEV_NONBLOCK`）。
+    pub const FLAGS: usize = 32;
+    /// `endpoint_t id`。
+    pub const ID: usize = 36;
+    /// `endpoint_t user`（只有 ioctl 填）。
+    pub const USER: usize = 40;
+    /// `devminor_t minor`。
+    pub const MINOR: usize = 44;
+}
+
+/// 驱动回复的 LP64 域偏移（驱动 → VFS）：`{ int status; int id; }`。
+///
+/// 字符族的 `mess_lchardriver_vfs_reply`（ipc.h:943-948）与块族的
+/// `mess_lblockdriver_lbdev_reply`（ipc.h:356-361）字段序相同，但 C 里是
+/// 两个独立结构——这里只共用偏移表，不合并语义。
+pub mod driver_reply_off {
+    /// `int status`（**首字就是状态**）。
+    pub const STATUS: usize = 0;
+    /// `int id`（字符族声明为 `uint32_t`，值域同）。
+    pub const ID: usize = 4;
+}
+
+/// `mess_lbdev_lblockdriver_msg` 的 LP64 域偏移（VFS → 块驱动）。
+///
+/// C: `{ off_t pos; int minor; int id; int access; int count;
+/// cp_grant_id_t grant; int flags; endpoint_t user; unsigned long request; }`
+/// （ipc.h:338-353）。**首格是 `pos`**，于是每个字段都比字符族的
+/// `mess_vfs_lchardriver_openclose` 往后挪：`minor` 在 8 而不是 0，
+/// `access` 在 16 而不是 8——按字符族的位次发块消息，驱动收到的是
+/// "次设备号 0、grant 无效"的垃圾。
+pub mod lblockdriver_msg_off {
+    /// `off_t pos`（读/写位置；open/close/ioctl 一律留 0）。
+    pub const POS: usize = 0;
+    /// `int minor`（真正要操作的次设备号）。
+    pub const MINOR: usize = 8;
+    /// `int id`（异步请求的标识）。
+    pub const ID: usize = 12;
+    /// `int access`（`BDEV_R_BIT`/`BDEV_W_BIT`，只有 open 填）。
+    pub const ACCESS: usize = 16;
+    /// `int count`（读/写的字节数）。
+    pub const COUNT: usize = 20;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 24;
+    /// `int flags`。
+    pub const FLAGS: usize = 28;
+    /// `endpoint_t user`（ioctl 填）。
+    pub const USER: usize = 32;
+    /// `unsigned long request`（ioctl 的请求码）。
+    pub const REQUEST: usize = 40;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +217,39 @@ mod tests {
     fn test_families_do_not_overlap() {
         assert_ne!(CDEV_REPLY_BASE, BDEV_RQ_BASE);
         assert!(CDEV_REPLY_BASE < BDEV_RQ_BASE);
+    }
+
+    /// 驱动消息的域偏移逐格钉死（ipc.h 的结构体声明）：两族的结构**不
+    /// 同形**——字符族的 `openclose` 以 `id` 开头、块族以 `off_t pos`
+    /// 开头，把一族的位次套到另一族就会整排错位。
+    #[test]
+    fn test_driver_message_offsets_match_c_structs() {
+        // 字符族开/关：id@0、user@4、minor@8、access@12（ipc.h:2228-2235）。
+        assert_eq!(lchardriver_openclose_off::ID, 0);
+        assert_eq!(lchardriver_openclose_off::USER, 4);
+        assert_eq!(lchardriver_openclose_off::MINOR, 8);
+        assert_eq!(lchardriver_openclose_off::ACCESS, 12);
+        // 字符族读/写/ioctl 共用一个结构（ipc.h:2238-2249）。
+        assert_eq!(lchardriver_readwrite_off::POS, 0);
+        assert_eq!(lchardriver_readwrite_off::GRANT, 8);
+        assert_eq!(lchardriver_readwrite_off::COUNT, 16);
+        assert_eq!(lchardriver_readwrite_off::REQUEST, 24);
+        assert_eq!(lchardriver_readwrite_off::FLAGS, 32);
+        assert_eq!(lchardriver_readwrite_off::ID, 36);
+        assert_eq!(lchardriver_readwrite_off::USER, 40);
+        assert_eq!(lchardriver_readwrite_off::MINOR, 44);
+        // 两族回复同形：状态在首字（ipc.h:356-361 / :943-948）。
+        assert_eq!(driver_reply_off::STATUS, 0);
+        assert_eq!(driver_reply_off::ID, 4);
+        // 块族：首格是 pos，minor 因此在 8（ipc.h:338-353）。
+        assert_eq!(lblockdriver_msg_off::POS, 0);
+        assert_eq!(lblockdriver_msg_off::MINOR, 8);
+        assert_eq!(lblockdriver_msg_off::ID, 12);
+        assert_eq!(lblockdriver_msg_off::ACCESS, 16);
+        assert_eq!(lblockdriver_msg_off::COUNT, 20);
+        assert_eq!(lblockdriver_msg_off::GRANT, 24);
+        assert_eq!(lblockdriver_msg_off::FLAGS, 28);
+        assert_eq!(lblockdriver_msg_off::USER, 32);
+        assert_eq!(lblockdriver_msg_off::REQUEST, 40);
     }
 }

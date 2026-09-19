@@ -27,8 +27,14 @@ pub const SEND_DEAD_SRC_DST: i32 = 202;
 /// See the [`SEND_DEAD_SRC_DST`] group comment.
 pub const SEND_LOCKED: i32 = 208;
 
-/// Restart request from a driver (`ERESTART`, `minix_types::ERESTART`).
-pub const SEND_RESTART: i32 = minix_types::ERESTART;
+/// Restart request from a driver (`ERESTART`)。
+///
+/// 这是**驱动回复载荷**里的状态字（`mess_lblockdriver_lbdev_reply.status`）：
+/// 驱动是 `_SYSTEM` 构建，常量在线上带负号（`sys/sys/errno.h:187-192` 的
+/// `_SIGN`），所以比较值取负。内核传输层的失败状态（`SendOutcome::Failed`、
+/// `classify_send` 的输入）是另一个域——**正号**（`minix-sys` 的 TrapStatus
+/// 约定），两个域不要混。
+pub const SEND_RESTART: i32 = -(minix_types::ERESTART);
 
 /// Retry fuse: at most five restarts (`bdev.c:41-54`).
 pub const MAX_RETRIES: u8 = 5;
@@ -227,6 +233,47 @@ pub fn access_bits(read: bool, write: bool) -> u8 {
     access
 }
 
+/// `BDEV_OPEN` 请求消息（C `bdev_open:94-104`：`memset` 之后只填
+/// `minor`/`access`/`id`，`pos` 留 0）。
+///
+/// 偏移表 [`minix_types::lblockdriver_msg_off`]——**首格是 `pos`**，`minor`
+/// 在 8 而不是 0；这条形状由 [`minix_types::lblockdriver_msg_off`] 的钉值
+/// 测试与本函数的测试双面锁住。
+pub fn open_request(minor: u32, access: u8) -> minix_types::Message {
+    let mut m = minix_types::Message {
+        m_type: BdevOp::Open.msg_type() as i32,
+        ..minix_types::Message::default()
+    };
+    // SAFETY: `mess_lbdev_lblockdriver_msg` 无专属 union 成员，按共享偏移表
+    // 写字节（ipc.h:338-353）。
+    unsafe {
+        let raw = &mut m.m_u.raw;
+        raw[minix_types::lblockdriver_msg_off::MINOR
+            ..minix_types::lblockdriver_msg_off::MINOR + 4]
+            .copy_from_slice(&(minor as i32).to_le_bytes());
+        raw[minix_types::lblockdriver_msg_off::ACCESS
+            ..minix_types::lblockdriver_msg_off::ACCESS + 4]
+            .copy_from_slice(&(access as i32).to_le_bytes());
+    }
+    m
+}
+
+/// `BDEV_CLOSE` 请求消息（C `bdev_close:125-135`：只填 `minor`，`id` 留 0）。
+pub fn close_request(minor: u32) -> minix_types::Message {
+    let mut m = minix_types::Message {
+        m_type: BdevOp::Close.msg_type() as i32,
+        ..minix_types::Message::default()
+    };
+    // SAFETY: 同 [`open_request`]（ipc.h:338-353）。
+    unsafe {
+        let raw = &mut m.m_u.raw;
+        raw[minix_types::lblockdriver_msg_off::MINOR
+            ..minix_types::lblockdriver_msg_off::MINOR + 4]
+            .copy_from_slice(&(minor as i32).to_le_bytes());
+    }
+    m
+}
+
 /// Reply validations for `bdev_reply` (`bdev.c:198-215`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReplyCheck {
@@ -334,6 +381,66 @@ mod tests {
         assert_eq!(access_bits(false, true), BDEV_W_BIT as u8);
         assert_eq!(access_bits(true, true), (BDEV_R_BIT | BDEV_W_BIT) as u8);
         assert_eq!(access_bits(false, false), 0);
+    }
+
+    #[test]
+    fn test_request_shapes() {
+        // `BDEV_OPEN`：`minor` 在 8（首格是 `pos`）、`access` 在 16、其余 0。
+        let m = open_request(0x0205, BDEV_R_BIT as u8 | BDEV_W_BIT as u8);
+        assert_eq!(m.m_type, 0x500);
+        // SAFETY(test): 按共享偏移表读回，逐格核对。
+        let raw = unsafe { &m.m_u.raw };
+        assert_eq!(
+            u64::from_le_bytes(
+                raw[minix_types::lblockdriver_msg_off::POS
+                    ..minix_types::lblockdriver_msg_off::POS + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            0,
+            "pos 留 0"
+        );
+        assert_eq!(
+            i32::from_le_bytes(
+                raw[minix_types::lblockdriver_msg_off::MINOR
+                    ..minix_types::lblockdriver_msg_off::MINOR + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x0205
+        );
+        assert_eq!(
+            i32::from_le_bytes(
+                raw[minix_types::lblockdriver_msg_off::ID
+                    ..minix_types::lblockdriver_msg_off::ID + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            0
+        );
+        assert_eq!(
+            i32::from_le_bytes(
+                raw[minix_types::lblockdriver_msg_off::ACCESS
+                    ..minix_types::lblockdriver_msg_off::ACCESS + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            (BDEV_R_BIT | BDEV_W_BIT) as i32
+        );
+        // `BDEV_CLOSE`：只带 minor。
+        let m = close_request(7);
+        assert_eq!(m.m_type, 0x501);
+        // SAFETY(test): 同上。
+        let raw = unsafe { &m.m_u.raw };
+        assert_eq!(
+            i32::from_le_bytes(
+                raw[minix_types::lblockdriver_msg_off::MINOR
+                    ..minix_types::lblockdriver_msg_off::MINOR + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            7
+        );
     }
 
     #[test]

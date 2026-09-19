@@ -351,6 +351,15 @@ pub struct VfsState {
     /// 还没接线——见 `LabelDir` 的注记；空表下 `mapdriver` 对任何标签都回
     /// EINVAL（fail-closed，不假装解析成功）。
     pub driver_labels: alloc::vec::Vec<(alloc::string::String, Endpoint)>,
+    /// 根文件系统的端点（C `glo.h:21` 的 `EXTERN int ROOT_FS_E`）。
+    ///
+    /// 块设备 open 要用它选 `v_bfs_e`（设备没被别的挂载占着就归根）并决定
+    /// 要不要补发 `REQ_NEW_DRIVER`（open.c:186-216）。**赋值面在根挂载**
+    /// （`mount.c:326-328` 的 `ROOT_FS_E = fs_e`），而根挂载的执行编排归
+    /// 18-mount，本批还没接——所以现在恒为 `NONE`，块设备 open 在"设备未被
+    /// 挂载占着"这条路上按 C 的 newdriver 失败路径收尾（`bdev_close` +
+    /// `ENXIO`），不假装通知成功。
+    pub root_fs_e: Endpoint,
     pub pending_fs: Option<PendingFs>,
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
     /// `(调用方, 回复消息)` 入队，`run()` 在每轮循环尾发出（C `reply(who_e,
@@ -388,6 +397,7 @@ impl VfsState {
             current_worker: None,
             select_table: crate::select::SelectTable::new(),
             driver_labels: alloc::vec::Vec::new(),
+            root_fs_e: Endpoint::NONE,
             statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
         }
@@ -839,7 +849,7 @@ impl VfsState {
                         fp.cloexec_set.set(fd.get(), true);
                     }
                 }
-                self.finish_worker_job(idx, fp_slot, fd.get() as i32);
+                self.finish_worker_job_value(idx, fp_slot, fd.get() as i32);
             }
             crate::open::OpenOutcome::Reject(e) => {
                 self.finish_worker_job(idx, fp_slot, e.to_errno());
@@ -939,8 +949,13 @@ impl VfsState {
                         return;
                     }
                 };
-                // CTTY 例外：`/dev/tty` 不真发请求（`cdev.c:174`）。
-                if ((dev & 0x000fff00) >> 8) as u32 == crate::device_map::CTTY_MAJOR as u32 {
+                // CTTY 例外：`/dev/tty` 不真发请求（`cdev.c:174`）。**判定键是
+                // 原始设备的 major**——C 的这一行看的是**未映射**的 `dev`
+                // （`cdev_get` 只在内部换算 minor），所以"有控制终端的
+                // `/dev/tty` open"在这里就返回 OK，绝不打扰真实 tty 的驱动
+                // （C 注释：否则 setsid() 之后再开 `/dev/tty`，那个真实设备
+                // 会被永久打开）。重定向后的设备号只用于算 minor/dmap 行。
+                if is_ctty {
                     // 仍要认领 fd/filp（C 是在类型分派之前认领的）。
                     let Some(slot) = fp_slot else {
                         self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
@@ -970,6 +985,9 @@ impl VfsState {
                                 self.filp_table.inc_count(filp_id);
                                 if let Some(fp) = self.fproc_table.get_mut(slot) {
                                     fp.filps[fd.get()] = Some(filp_id.get());
+                                    if oflags & crate::open::OpenFlags::CLOEXEC.bits() != 0 {
+                                        fp.cloexec_set.set(fd.get(), true);
+                                    }
                                 }
                                 fd.get() as i32
                             }
@@ -979,7 +997,7 @@ impl VfsState {
                             }
                         }
                     };
-                    self.finish_worker_job(idx, fp_slot, fd);
+                    self.finish_worker_job_value(idx, fp_slot, fd);
                     return;
                 }
                 let major = ((dev & 0x000fff00) >> 8) as u32;
@@ -1052,26 +1070,21 @@ impl VfsState {
                 self.filp_table.inc_count(filp_id);
                 if let Some(fp) = self.fproc_table.get_mut(slot) {
                     fp.filps[fd.get()] = Some(filp_id.get());
+                    // C `open.c:138-139`：`O_CLOEXEC` 位在**类型分派之前**
+                    // 就记进 `fp_cloexec_set`，三种设备类型同样适用。
+                    if oflags & crate::open::OpenFlags::CLOEXEC.bits() != 0 {
+                        fp.cloexec_set.set(fd.get(), true);
+                    }
                 }
                 let user_e = self
                     .fproc_table
                     .get(slot)
                     .map(|fp| fp.endpoint)
                     .unwrap_or(Endpoint::NONE);
-                let mut m = minix_types::Message {
-                    m_type: minix_chardriver::protocol::CdevRequest::Open as i32,
-                    ..minix_types::Message::default()
-                };
-                // SAFETY: `mess_vfs_lchardriver_openclose { devminor_t minor@0;
-                // endpoint_t id@4; endpoint_t user@8; int access@12 }`
-                // （ipc.h:2226-2234 一类）。
-                unsafe {
-                    let raw = &mut m.m_u.raw;
-                    raw[0..2].copy_from_slice(&(minor as u16).to_le_bytes());
-                    raw[4..8].copy_from_slice(&user_e.0.to_le_bytes());
-                    raw[8..12].copy_from_slice(&user_e.0.to_le_bytes());
-                    raw[12..16].copy_from_slice(&(access as i32).to_le_bytes());
-                }
+                // `CDEV_OPEN`（形状由 `cdev::open_request` 钉住：`id`/`user`
+                // 是调用者端点，`minor` 在第三格——位次发错，驱动开的就是
+                // 次设备号 0）。
+                let m = crate::cdev::open_request(minor, user_e, access);
                 if let Some(wp) = self.worker_pool.get_mut(idx) {
                     wp.cont = Some(crate::worker::WorkerCont::CdevOpen {
                         fd: fd.get() as u32,
@@ -1080,17 +1093,117 @@ impl VfsState {
                     });
                 }
                 if let Err(e) = self.send_drv_for_slot(idx, fp_slot, drv_e, &m) {
-                    // 发不出去：放开认领的 fd/filp 再回错。
-                    self.filp_table.dec_count(filp_id);
-                    if let Some(fp) = self.fproc_table.get_mut(slot) {
-                        fp.filps[fd.get()] = None;
-                    }
+                    // 发不出去：走 C 的失败尾（放开 fd/filp + 放回 vnode）再回错。
+                    self.release_open_claim(fp_slot, fd.get() as u32, filp_id.get(), vnode_idx);
                     self.finish_worker_job(idx, fp_slot, e);
                 }
                 return;
             }
-            // 块设备 open（`bdev_open` + `bfs_e` + `req_newdriver`）与 FIFO
-            // 配对：本批未接线，诚实拒绝。
+            crate::open::OpenOutcome::Delegate(crate::open::DeviceClass::Block) => {
+                // C `common_open` 的 `S_IFBLK` 支（open.c:172-217）→
+                // `bdev_open(dev, bits)`（bdev.c:79-112）：major 界内**且**
+                // dmap 有驱动（缺一即 ENXIO）→ `BDEV_OPEN`（minor/access/id）
+                // → **worker 等待**（C 里块驱动不许挂起，调用线程直接阻塞在
+                // `drv_sendrec` 上；本模型的对应物是 worker 槽等待，续接体
+                // `WorkerCont::BdevOpen` 收尾）。
+                //
+                // 驱动过了之后还有第二段：选 `v_bfs_e`（这个设备被哪个 FS
+                // 管），没被别的挂载占着时补一条 `REQ_NEW_DRIVER`——都在
+                // `bdev_open_bfs_stage` 里。
+                let dev = node.dev;
+                let major = ((dev & 0x000fff00) >> 8) as u32;
+                let minor = (((dev & 0xfff0_0000) >> 12) | (dev & 0xff)) as u32;
+                let major_valid = (major as usize) < crate::device_map::NR_DEVICES;
+                let driver = self.dmap_table.get(major).and_then(|row| row.driver);
+                // C `bdev_open:86-89` 的两道门（major 界内、dmap 行上有驱动）
+                // 走决策层（它带着 ENXIO 的判据）；端点本身取 dmap 行的
+                // `Endpoint`。
+                if crate::bdev::resolve_driver(major_valid, driver.map(|e| e.get())).is_err() {
+                    self.finish_worker_job(
+                        idx,
+                        fp_slot,
+                        crate::bdev::BdevError::NoDev.to_errno(),
+                    );
+                    return;
+                }
+                let Some(drv_e) = driver else {
+                    self.finish_worker_job(
+                        idx,
+                        fp_slot,
+                        crate::bdev::BdevError::NoDev.to_errno(),
+                    );
+                    return;
+                };
+                let access = crate::bdev::access_bits(
+                    bits.bits() & crate::open::R_BIT != 0,
+                    bits.bits() & crate::open::W_BIT != 0,
+                );
+                let Some(slot) = fp_slot else {
+                    self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                    return;
+                };
+                let Some(vnode_idx) = self.intern_vnode(node) else {
+                    self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                    return;
+                };
+                // 认领 fd/filp（C 在类型分派之前认领；失败路径由续接体放开）。
+                let (fd, filp_id) = {
+                    let Some(fp) = self.fproc_table.get_mut(slot) else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                        return;
+                    };
+                    match crate::filedes::get_fd(
+                        fp,
+                        0,
+                        &crate::filedes::LowestFree,
+                        &mut self.filp_table,
+                        bits.bits(),
+                    ) {
+                        Ok(pair) => pair,
+                        Err(_) => {
+                            self.finish_worker_job(idx, fp_slot, minix_types::EMFILE);
+                            return;
+                        }
+                    }
+                };
+                if let Some(f) = self.filp_table.get_mut(filp_id) {
+                    f.vnode = Some(vnode_idx);
+                    f.flags = oflags as i32;
+                }
+                self.filp_table.inc_count(filp_id);
+                if let Some(fp) = self.fproc_table.get_mut(slot) {
+                    fp.filps[fd.get()] = Some(filp_id.get());
+                    if oflags & crate::open::OpenFlags::CLOEXEC.bits() != 0 {
+                        fp.cloexec_set.set(fd.get(), true);
+                    }
+                }
+                // `BDEV_OPEN`（形状由 `bdev::open_request` 钉住：块族首格是
+                // `pos`，`minor` 在 8——按字符族的位次发，驱动收到的就是
+                // "次设备号 0"）。
+                let m = crate::bdev::open_request(minor, access);
+                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                    wp.cont = Some(crate::worker::WorkerCont::BdevOpen {
+                        fd: fd.get() as u32,
+                        filp: filp_id.get(),
+                        vnode: vnode_idx,
+                        dev,
+                        minor,
+                        access,
+                        retries: 0,
+                    });
+                }
+                if let Err(e) = self.send_drv_for_slot(idx, fp_slot, drv_e, &m) {
+                    // 发不出去：走 C 的失败尾（放开认领 + 放回 vnode）再回错。
+                    // 传输层把内核状态折成一个 `EIO`——C 在
+                    // `EDEADSRCDST`/`EDEADEPT` 时还会 `dmap_unmap_by_endpt`
+                    // 解映射死驱动（`bdev.c:60-64`），那一步要传输层给出分类
+                    // （`bdev::classify_send` 的输入），本批未接。
+                    self.release_open_claim(fp_slot, fd.get() as u32, filp_id.get(), vnode_idx);
+                    self.finish_worker_job(idx, fp_slot, e);
+                }
+            }
+            // FIFO 配对（`S_IFIFO` 支：`map_vnode(PFS)` + `pipe_open`）与
+            // 未识别类型：本批未接线，诚实拒绝。
             _ => self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS),
         }
     }
@@ -1132,6 +1245,126 @@ impl VfsState {
             v.ref_count = 1;
         }
         Some(scratch.0)
+    }
+
+    /// `common_open` 的**失败尾**（C open.c:275-285）：放开刚认领的 fd 与
+    /// filp，再放回 vnode（`put_vnode`）。
+    ///
+    /// 设备类分支（字符/块）在驱动或 FS 拒绝之后都走这一处——不放开就等于
+    /// 漏一个 fd 槽、一个 filp 引用与一个 vnode 引用，攒够了
+    /// `vnode_table.alloc()` 就开始回 `ENFILE`。
+    ///
+    /// vnode 的放回走 `VnodeTable::put` 的**快速路径**（`ref>1 → ref--`）；
+    /// 慢路径（`ref==1` → `req_putnode`）与 `change_into`/`close_filp` 是
+    /// 同一处待办（`DeferredPutNode` 把那条 FS 通知留空）。
+    pub fn release_open_claim(
+        &mut self,
+        fp_slot: Option<minix_types::UserSlot>,
+        fd: u32,
+        filp: usize,
+        vnode: usize,
+    ) {
+        self.filp_table.dec_count(crate::filp::FilpId(filp));
+        if let Some(slot) = fp_slot
+            && let Some(fp) = self.fproc_table.get_mut(slot)
+        {
+            fp.filps[fd as usize] = None;
+            fp.cloexec_set.set(fd as usize, false);
+        }
+        let mut fs_ctl = DeferredPutNode;
+        let _ = self
+            .vnode_table
+            .put(crate::vnode::VnodeId(vnode), &mut fs_ctl);
+    }
+
+    /// 块设备 open 成功后的**第二段**（C `open.c:186-216`）：定 `v_bfs_e`，
+    /// 需要时补发 `REQ_NEW_DRIVER`。
+    ///
+    /// `v_bfs_e` 的选法照抄 C（[`crate::vmnt::VmntTable::bfs_for_device`]）：
+    /// 默认根文件系统，被别的挂载占着就用那个挂载的 FS。**只有归根时**才
+    /// 补发驱动标签——别的 FS 在挂载时已经从 readsuper 的标签参数认识这个
+    /// 块驱动了。
+    ///
+    /// 三值返回：`Ok(true)` = 已挂上 `WorkerCont::BdevNewDriver`（在等 FS
+    /// 回复，调用方**不要**收尾）；`Ok(false)` = 不需要通知，调用方直接回
+    /// fd；`Err(errno)` = 这一段失败，调用方走失败尾再回错。
+    fn bdev_open_bfs_stage(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        vnode: usize,
+        fd: u32,
+        filp: usize,
+        dev: u64,
+    ) -> Result<bool, i32> {
+        let bfs_e = self.vmnt_table.bfs_for_device(dev, self.root_fs_e);
+        if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+            v.bfs = bfs_e;
+        }
+        if bfs_e != self.root_fs_e {
+            // C 的 `if (vp->v_bfs_e != ROOT_FS_E) { unlock_bsf(); break; }`。
+            return Ok(false);
+        }
+        // 根文件系统这一支要发 `req_newdriver`。根挂载还没执行过
+        // （`root_fs_e` 还是 `NONE`）时没有可发的对象——按 C 的 newdriver
+        // 失败路径收尾（`bdev_close` + `ENXIO`），不假装通知成功。
+        if bfs_e == Endpoint::NONE {
+            return Err(minix_types::ENXIO);
+        }
+        let major = ((dev & 0x000fff00) >> 8) as u32;
+        let Some(label) = self.dmap_table.get(major).map(|row| row.label) else {
+            return Err(minix_types::ENXIO);
+        };
+        let Some(vmnt) = self.vmnt_table.find_by_fs(bfs_e) else {
+            return Err(minix_types::ENXIO);
+        };
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let (grant, label_len) = {
+            let wp = self.worker_pool.get_mut(idx).ok_or(minix_types::EIO)?;
+            // C 的标签是 dmap 行里的定长数组，要授权的是 `strlen(label)+1`
+            // 字节（含结尾 NUL）；槽内的 `path_scratch` 是 VFS 自己的内存，
+            // direct grant 必须指向一个**稳定地址**。
+            let n = label.iter().position(|b| *b == 0).unwrap_or(label.len());
+            let len = n + 1;
+            if len > wp.path_scratch.len() {
+                return Err(minix_types::EINVAL);
+            }
+            wp.path_scratch[..n].copy_from_slice(&label[..n]);
+            wp.path_scratch[n] = 0;
+            let addr = wp.path_scratch.as_ptr() as u64;
+            // C `cpf_grant_direct(fs_e, (vir_bytes) label, len, CPF_READ)`。
+            let grant = self
+                .grants
+                .grant_direct(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    bfs_e.get(),
+                    addr,
+                    len as u64,
+                    minix_types::CpFlags::READ,
+                )
+                .map_err(|_| minix_types::EIO)?;
+            (grant, len)
+        };
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::BdevNewDriver {
+                fd,
+                filp,
+                vnode,
+                dev,
+            });
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt: vmnt.0,
+            fs_e: bfs_e,
+            worker: idx,
+            grant,
+            user,
+            req: crate::request::encode_new_driver(dev, grant, label_len),
+        });
+        Ok(true)
     }
 
     /// 调用方的根目录三元组（C `fp_rd` → vnode → `(fs, ino, dev)`）。
@@ -1887,7 +2120,7 @@ impl VfsState {
         }
         if buf_addr == 0 {
             // 只报个数：C 直接 `return count`。
-            self.finish_worker_job(idx, fp_slot, targets.len() as i32);
+            self.finish_worker_job_value(idx, fp_slot, targets.len() as i32);
             return Ok(());
         }
         // 空间不足的截断（C 的 `if (bufsize < sizeof) break;`）。
@@ -1913,7 +2146,7 @@ impl VfsState {
                     return Ok(());
                 }
             }
-            self.finish_worker_job(idx, fp_slot, count as i32);
+            self.finish_worker_job_value(idx, fp_slot, count as i32);
             return Ok(());
         }
         self.send_statvfs_request(idx, fp_slot, targets[0], buf_addr, (arr, count, 0))
@@ -2467,10 +2700,12 @@ impl VfsState {
                             )
                             .is_err()
                             {
-                                status = minix_types::EIO;
+                                // 负号：这个函数的 `status` 按"线上带符号
+                                // 状态"解释，正号会被当成成功值/fd。
+                                status = -minix_types::EIO;
                             }
                         } else {
-                            status = minix_types::EIO;
+                            status = -minix_types::EIO;
                         }
                     }
                 }
@@ -2479,7 +2714,9 @@ impl VfsState {
         } else if msg.m_type < 0 {
             status = msg.m_type;
         } else {
-            status = minix_types::EIO;
+            // 回复号不是认识的任何一种：折 EIO——**负号**（这个函数的
+            // `status` 按"线上带符号状态"解释，正号会被当成成功值/fd）。
+            status = -minix_types::EIO;
         }
         let result = if status < 0 {
             crate::call_table::SyscallResult::Error(status)
@@ -3010,7 +3247,12 @@ impl VfsState {
         });
     }
 
-    /// 收尾一个挂起的作业并回用户（错误路径与相位 2 之后的统一出口）。
+    /// 收尾一个挂起的作业并回用户（**错误收尾**与相位 2 之后的统一出口）。
+    ///
+    /// `status` 是**错误码**：正号的 errno 常量（`minix_types::EINVAL` 一类，
+    /// crate 惯例）或从 FS/驱动回复带来的**负值**线上状态——两种写法都收，
+    /// 非零一律按错误收（[`Self::queue_reply`] 在边界折成负号）。成功**值**
+    /// （fd、字节数、条数）走 [`Self::finish_worker_job_value`]。
     pub fn finish_worker_job(
         &mut self,
         idx: usize,
@@ -3033,10 +3275,42 @@ impl VfsState {
             let target = fp.endpoint;
             let result = if status == 0 {
                 crate::call_table::SyscallResult::Ok(0)
-            } else {
+            } else if status > 0 {
                 crate::call_table::SyscallResult::Error(status)
+            } else {
+                // 线上带来的负值状态：先翻回正号 errno，边界再统一折负。
+                crate::call_table::SyscallResult::Error(-status)
             };
             self.queue_reply(target, result);
+        }
+    }
+
+    /// [`Self::finish_worker_job`] 的成功**值**出口：`open`/`accept` 回 fd、
+    /// `read`/`write` 回字节数、`getvfsstat` 回挂载条数——这些都是非负的
+    /// 成功值（C 的 `reply(who, r)` 里同一个 `r`），但走错误收尾会被边界
+    /// 折成负号，用户拿到的就成了一个错误。0 也走这里（等于 `Ok(0)`）。
+    pub fn finish_worker_job_value(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        value: i32,
+    ) {
+        debug_assert!(value >= 0, "成功值非负；错误走 finish_worker_job");
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = None;
+            wp.path = None;
+            wp.sendrec = None;
+            wp.task = None;
+        }
+        self.worker_pool.release(idx);
+        if self.current_worker == Some(idx) {
+            self.current_worker = None;
+        }
+        if let Some(fp_slot) = fp_slot
+            && let Some(fp) = self.fproc_table.get(fp_slot)
+        {
+            let target = fp.endpoint;
+            self.queue_reply(target, crate::call_table::SyscallResult::Ok(value));
         }
     }
 
@@ -3108,9 +3382,16 @@ impl VfsState {
                 None => continue,
             };
             let mut status = reply.m_type;
-            if status == minix_types::ERESTART {
-                status = minix_types::EIO;
+            if status == -(minix_types::ERESTART) {
+                // C `comm.c:161-163` 的 `r = reqmp->m_type; if (r == ERESTART)
+                // r = EIO;`——FS 的回复 m_type 在线上带负号（服务端都是
+                // `_SYSTEM` 构建），比较与结果都要用负号。
+                status = -(minix_types::EIO);
             }
+            // `status` 何时是**成功值**（字节数/条数）而不是错误码：读/写与
+            // 目录读取的收尾把实际字节数、`getvfsstat` 把挂载条数放进同一个
+            // 槽——置位的臂由收尾按 `Ok(value)` 发（负号折算只认错误码）。
+            let mut value_reply = false;
             // 带载荷的回复（少数臂需要，如 lseek 的新位置）：臂把它填进
             // 这里，由下面的统一收尾发出——**不能**在臂里直接
             // `queue_reply_msg`，否则会被收尾的裸回复覆盖。
@@ -3235,14 +3516,15 @@ impl VfsState {
                     // uint32_t id; }`——状态在首字。
                     let raw = unsafe { &reply.m_u.raw };
                     let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    let vnode = self
+                        .filp_table
+                        .get(crate::filp::FilpId(filp))
+                        .and_then(|f| f.vnode)
+                        .unwrap_or(0);
                     if dstatus < 0 {
-                        // 驱动拒绝：放开刚认领的 fd/filp，把错误回用户。
-                        self.filp_table.dec_count(crate::filp::FilpId(filp));
-                        if let Some(slot) = fp_slot
-                            && let Some(fp) = self.fproc_table.get_mut(slot)
-                        {
-                            fp.filps[fd as usize] = None;
-                        }
+                        // 驱动拒绝：走 C 的失败尾（放开 fd/filp + 放回 vnode），
+                        // 把错误回用户。
+                        self.release_open_claim(fp_slot, fd, filp, vnode);
                         self.finish_worker_job(idx, fp_slot, dstatus);
                         continue;
                     }
@@ -3250,14 +3532,9 @@ impl VfsState {
                     if effects.clone_minor.is_some() {
                         // `cdev_clone`（cdev.c:100-145）要 PFS 建一个新节点
                         // （`req_newnode(PFS_PROC_NR, ...)`）——PFS 是另一条线，
-                        // 本批未接：诚实拒绝并把刚认领的 fd 放开（不假装打开
-                        // 了一个克隆设备）。
-                        self.filp_table.dec_count(crate::filp::FilpId(filp));
-                        if let Some(slot) = fp_slot
-                            && let Some(fp) = self.fproc_table.get_mut(slot)
-                        {
-                            fp.filps[fd as usize] = None;
-                        }
+                        // 本批未接：诚实拒绝并走失败尾（不假装打开了一个克隆
+                        // 设备）。
+                        self.release_open_claim(fp_slot, fd, filp, vnode);
                         self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
                         continue;
                     }
@@ -3275,7 +3552,131 @@ impl VfsState {
                     }
                     // 成功：用户拿到的是 fd（C `r = OK` 之后 `common_open`
                     // 把 `r = fd` 回上去）。
-                    self.finish_worker_job(idx, fp_slot, fd as i32);
+                    self.finish_worker_job_value(idx, fp_slot, fd as i32);
+                    continue;
+                }
+                crate::worker::WorkerCont::BdevOpen {
+                    fd,
+                    filp,
+                    vnode,
+                    dev,
+                    minor,
+                    access,
+                    retries,
+                } => {
+                    // C `bdev_sendrec`（bdev.c:36-58）的对话半：状态取
+                    // `mess_lblockdriver_lbdev_reply.status`（**首字**）。
+                    // SAFETY: `{ int status; int id; }`（ipc.h:356-361）。
+                    let raw = unsafe { &reply.m_u.raw };
+                    let mut dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    let mut finished = false;
+                    if dstatus == crate::bdev::SEND_RESTART {
+                        // 驱动回 `ERESTART` 就原样重发，五次为限；烧断即 EIO
+                        // （C 的 `retry_count < 5` 保险丝）。
+                        match crate::bdev::RetryState(retries).step(dstatus) {
+                            crate::bdev::RetryVerdict::Again => {
+                                let major = ((dev & 0x000fff00) >> 8) as u32;
+                                let drv_e =
+                                    self.dmap_table.get(major).and_then(|row| row.driver);
+                                let mut resent = false;
+                                if let Some(drv_e) = drv_e {
+                                    // 重发**同一条**请求（C 的 `*mess_ptr =
+                                    // mess_retry`），计数留在续接体里。
+                                    let m = crate::bdev::open_request(minor, access);
+                                    if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                        wp.cont = Some(crate::worker::WorkerCont::BdevOpen {
+                                            fd,
+                                            filp,
+                                            vnode,
+                                            dev,
+                                            minor,
+                                            access,
+                                            retries: retries + 1,
+                                        });
+                                    }
+                                    resent = self
+                                        .send_drv_for_slot(idx, fp_slot, drv_e, &m)
+                                        .is_ok();
+                                }
+                                if resent {
+                                    continue;
+                                }
+                                // 驱动没了或发不出去：C 的 `bdev_sendrec` 在这
+                                // 两处都回 EIO。
+                                dstatus = minix_types::EIO;
+                            }
+                            _ => dstatus = minix_types::EIO,
+                        }
+                    }
+                    if dstatus != 0 {
+                        self.release_open_claim(fp_slot, fd, filp, vnode);
+                        self.finish_worker_job(idx, fp_slot, dstatus);
+                        finished = true;
+                    }
+                    if finished {
+                        continue;
+                    }
+                    // 驱动放行：第二段（`v_bfs_e` 选择 + 可能的
+                    // `REQ_NEW_DRIVER`）。挂上 FS 对话时这一段返回 `true`，
+                    // 作业留给 `BdevNewDriver` 续接体收尾。
+                    match self.bdev_open_bfs_stage(idx, fp_slot, vnode, fd, filp, dev) {
+                        Ok(true) => continue,
+                        Ok(false) => {
+                            self.finish_worker_job_value(idx, fp_slot, fd as i32);
+                            continue;
+                        }
+                        Err(e) => {
+                            self.release_open_claim(fp_slot, fd, filp, vnode);
+                            self.finish_worker_job(idx, fp_slot, e);
+                            continue;
+                        }
+                    }
+                }
+                crate::worker::WorkerCont::BdevNewDriver { fd, filp, vnode, dev } => {
+                    // C `open.c:210-216`：`req_newdriver` 成功就照常回 fd；
+                    // 失败要**先给驱动发 `BDEV_CLOSE`** 把刚打开的设备关掉，
+                    // 再回 `ENXIO`（close 的返回值被丢掉）。
+                    if status == 0 {
+                        self.finish_worker_job_value(idx, fp_slot, fd as i32);
+                        continue;
+                    }
+                    let major = ((dev & 0x000fff00) >> 8) as u32;
+                    let minor = (((dev & 0xfff0_0000) >> 12) | (dev & 0xff)) as u32;
+                    let drv_e = self.dmap_table.get(major).and_then(|row| row.driver);
+                    let m = crate::bdev::close_request(minor);
+                    if let Some(wp) = self.worker_pool.get_mut(idx) {
+                        // 等驱动的 close 回复到了再收尾——**不**把这条请求
+                        // 发出去就撒手（撒手会让回复落到别的作业头上）。
+                        wp.cont = Some(crate::worker::WorkerCont::BdevCloseThenReply {
+                            status: minix_types::ENXIO,
+                            fd,
+                            filp,
+                            vnode,
+                        });
+                    }
+                    let sent = match drv_e {
+                        Some(drv_e) => self.send_drv_for_slot(idx, fp_slot, drv_e, &m).is_ok(),
+                        None => false,
+                    };
+                    if !sent {
+                        // 驱动没了或发不出去：C 的 `bdev_close` 在这里回 ENXIO，
+                        // 调用点丢掉它——直接走失败尾。
+                        self.release_open_claim(fp_slot, fd, filp, vnode);
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENXIO);
+                    }
+                    continue;
+                }
+                crate::worker::WorkerCont::BdevCloseThenReply {
+                    status,
+                    fd,
+                    filp,
+                    vnode,
+                } => {
+                    // 补偿的 `BDEV_CLOSE` 回来了：走 C 的失败尾，再回原来的
+                    // 错误（`open.c:213` 的 `r = ENXIO`）。close 的状态不看
+                    // （C 是 `(void)bdev_close(dev)`）。
+                    self.release_open_claim(fp_slot, fd, filp, vnode);
+                    self.finish_worker_job(idx, fp_slot, status);
                     continue;
                 }
                 crate::worker::WorkerCont::BdevIoctl { grant, filp } => {
@@ -3530,10 +3931,10 @@ impl VfsState {
                                 .unwrap_or(Endpoint::NONE),
                             m,
                         );
-                        self.finish_worker_job(idx, fp_slot, fd as i32);
+                        self.finish_worker_job_value(idx, fp_slot, fd as i32);
                         continue;
                     }
-                    self.finish_worker_job(idx, fp_slot, fd as i32);
+                    self.finish_worker_job_value(idx, fp_slot, fd as i32);
                     continue;
                 }
                 crate::worker::WorkerCont::SdevCloseThenReply { status } => {
@@ -3688,6 +4089,7 @@ impl VfsState {
                             continue;
                         }
                         status = seq_count as i32;
+                        value_reply = true;
                     }
                 }
                 crate::worker::WorkerCont::SyncMounts { targets, count, at, first_err } => {
@@ -3727,6 +4129,7 @@ impl VfsState {
                                 ..minix_types::rdlink_reply_off::NBYTES + 8],
                         );
                         status = i64::from_le_bytes(b8) as i32;
+                        value_reply = true;
                     }
                 }
                 crate::worker::WorkerCont::Getdents { grant, filp } => {
@@ -3758,6 +4161,7 @@ impl VfsState {
                         }
                         // 用户拿到的是字节数（C 返回 `nbytes`，不是 0）。
                         status = nbytes as i32;
+                        value_reply = true;
                     }
                 }
                 crate::worker::WorkerCont::Ftrunc { vnode, newsize } => {
@@ -5257,6 +5661,7 @@ impl VfsState {
                             v.size = new_pos as u64;
                         }
                         status = nbytes as i32;
+                        value_reply = true;
                         let _ = orig_pos; // 位置已由回复给出，原值只作对账
                     }
                 }
@@ -5278,10 +5683,16 @@ impl VfsState {
                 match reply_payload {
                     Some(m) => self.queue_reply_msg(target, m),
                     None => {
-                        let result = if status == 0 {
+                        let result = if value_reply {
+                            // 成功值（字节数/条数）：非负，原样回。
+                            crate::call_table::SyscallResult::Ok(status)
+                        } else if status == 0 {
                             crate::call_table::SyscallResult::Ok(0)
-                        } else {
+                        } else if status > 0 {
                             crate::call_table::SyscallResult::Error(status)
+                        } else {
+                            // 线上带来的负值状态：先翻回正号 errno，边界再统一折负。
+                            crate::call_table::SyscallResult::Error(-status)
                         };
                         self.queue_reply(target, result);
                     }
@@ -5411,11 +5822,18 @@ impl VfsState {
     /// 把一次分发的 [`SyscallResult`](crate::call_table::SyscallResult)
     /// 折成回复并入队（W3 回复半）。
     ///
-    /// 映射照 C 的 `do_work` 尾部 `reply(who_e, result)`：
-    /// `Ok(v)`/`Error(e)` 都直接当 `m_type` 发（errno 是**正值**——
-    /// 与 PM/RS/DS 各服务的应答约定一致），`Nosys` 显式回 `ENOSYS`
-    /// （main.c:283-294 的不可解析调用号），`Suspend` 不入队（回复在
-    /// 该请求的 FS 应答落地时发）。目标为 `NONE` 或调用方无槽位时不发。
+    /// 映射照 C 的 `do_work` 尾部 `reply(who_e, result)`（main.c:297 →
+    /// `reply:638` 的 `m_out->m_type = result; ipc_sendnb(...)`），但**符号要
+    /// 在边界折一次**：C 的 VFS 是 `_SYSTEM` 构建，`errno.h:187-192` 的
+    /// `_SIGN` 让 `EINVAL` 这些常量本身带负号（`errno.h:64`），所以 C 写进
+    /// `m_type` 的错误码是负值，用户侧 `_syscall` 按 `m_type < 0` 判错
+    /// （`minix3/minix/lib/libc/sys/syscall.c:9-25`；Rust 用户侧同约定，
+    /// 见 `minix-sys/src/syscall.rs:107`）。Rust 的臂内部用**正号**常量
+    /// （crate 惯例，`minix_types::EINVAL == 22`），于是这里统一折成负号。
+    ///
+    /// 驱动与 FS 回复带来的状态**已经是负值**（那些进程同样是 `_SYSTEM`
+    /// 构建），原样透传——`Error(e)` 只在 `e > 0` 时取负，两条来源不会互相
+    /// 打架。成功值是 fd/字节数/0，一律非负，`Ok(v)` 不动。
     pub fn queue_reply(
         &mut self,
         target: Endpoint,
@@ -5427,8 +5845,14 @@ impl VfsState {
         }
         let code = match result {
             SyscallResult::Ok(v) => v,
-            SyscallResult::Error(e) => e,
-            SyscallResult::Nosys => minix_types::ENOSYS,
+            SyscallResult::Error(e) => {
+                if e > 0 {
+                    -e
+                } else {
+                    e
+                }
+            }
+            SyscallResult::Nosys => -minix_types::ENOSYS,
             SyscallResult::Suspend => return,
         };
         // 臂已经自己入过一条**带载荷**的回复（如 `lseek` 位置不变那条路把
@@ -6047,7 +6471,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::ENOTDIR))
+            Some((user, -minix_types::ENOTDIR))
         );
 
         // 情形二：目录 + root：过门 → 组 `REQ_MKDIR`。宿主下要先热身 grant
@@ -6142,7 +6566,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EEXIST))
+            Some((user, -minix_types::EEXIST))
         );
     }
 
@@ -6442,7 +6866,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EPERM))
+            Some((user, -minix_types::EPERM))
         );
 
         // ④ 阶段 2：跨设备 → EXDEV。
@@ -6480,7 +6904,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EXDEV))
+            Some((user, -minix_types::EXDEV))
         );
 
         // ⑤ 阶段 2：非属主对新父目录无写权 → EACCES。
@@ -6500,7 +6924,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
 
         // ⑥ 全过 → REQ_RENAME（两个 direct grant + 两个名字长度）+ 状态回复。
@@ -6676,7 +7100,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EXDEV))
+            Some((user, -minix_types::EXDEV))
         );
 
         // ③ 同设备 + 非属主对 0755 无写权 → EACCES。
@@ -6695,7 +7119,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
 
         // ④ 全过 → REQ_LINK（文件 ino 在前、目录 ino 在后）+ 状态回复。
@@ -6812,7 +7236,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
 
         // ② root → 发 REQ_SLINK，双 grant 都在请求里。
@@ -6876,6 +7300,344 @@ mod tests {
         let v = state.vnode_table.get(crate::vnode::VnodeId(idx)).unwrap();
         assert_eq!(v.sdev, 0x0507, "v_sdev 是节点带回来的特殊设备号");
         assert_eq!(v.dev, 1, "v_dev 是挂载行的设备号");
+    }
+
+    /// Open 的字符设备分支（`common_open` 的 `S_IFCHR` 支）：`/dev/tty` 例外
+    /// 的判定键是**原始 major**——有控制终端就直接成功、不打扰真实 tty 驱动
+    /// （C `cdev.c:174`）；无控制终端 → ENXIO；普通设备无驱动 → ENXIO；
+    /// 有驱动而宿主发不出去 → EIO，且**认领全部放开**（C `common_open`
+    /// 失败尾的 `put_vnode`——不放开就漏 fd 与 vnode 引用）。
+    #[test]
+    fn test_open_char_device_branch() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let tty_dev = 0x0401u64; // 控制终端：major 4 / minor 1
+
+        // (a) `/dev/tty`（major 5）+ 有控制终端：直接成功，无驱动请求。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.tty = tty_dev;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let node = crate::path::NodeDetails {
+            fs_e: Endpoint::MFS,
+            ino: 7,
+            mode: crate::open::S_IFCHR | 0o600,
+            size: 0,
+            uid: 0,
+            gid: 0,
+            dev: (crate::device_map::CTTY_MAJOR as u64) << 8, // makedev(5, 0)
+        };
+        state.finish_open_local(idx, Some(slot), &node, crate::open::O_RDONLY);
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0)),
+            "CTTY 例外直接回 fd（这里是 0 号 fd），不回错误"
+        );
+        assert!(
+            state.worker_pool.get(idx).unwrap().cont.is_none(),
+            "例外路径不挂任何驱动续接"
+        );
+        assert!(
+            state.fproc_table.get(slot).unwrap().filps[0].is_some(),
+            "fd 仍被认领"
+        );
+
+        // (b) `/dev/tty` 但没有控制终端：ENXIO（C `cdev_map` → NO_DEV）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            // fp.tty 默认 NO_DEV
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        state.finish_open_local(idx, Some(slot), &node, crate::open::O_RDONLY);
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::ENXIO))
+        );
+
+        // (c) 普通字符设备（major 4）但 dmap 行没有驱动：ENXIO。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let plain = crate::path::NodeDetails { dev: 0x0405, ..node };
+        state.finish_open_local(idx, Some(slot), &plain, crate::open::O_RDONLY);
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::ENXIO))
+        );
+
+        // (d) 有驱动而宿主发不出去：EIO，且 fd/filp/vnode 全部放开
+        // （vnode 放回后 ref_count 归 0，槽可复用——C `common_open` 失败尾）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let drv = Endpoint::from_generation_slot(0, 11);
+        state.dmap_table.get_mut(4).unwrap().driver = Some(drv);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        state.finish_open_local(idx, Some(slot), &plain, crate::open::O_RDONLY);
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::EIO))
+        );
+        assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
+        assert!(
+            state.vnode_table.find_by_ino(Endpoint::MFS, 7).is_none()
+                || state
+                    .vnode_table
+                    .find_by_ino(Endpoint::MFS, 7)
+                    .and_then(|id| state.vnode_table.get(id))
+                    .map(|v| v.ref_count == 0)
+                    .unwrap_or(true),
+            "放回 vnode 后引用归零"
+        );
+    }
+
+    /// Open 的块设备分支（`common_open` 的 `S_IFBLK` 支）：无驱动 → ENXIO；
+    /// 驱动放行后选 `v_bfs_e`（被挂载占着就用那个挂载的 FS，不再发
+    /// `REQ_NEW_DRIVER`）；设备空闲时 `v_bfs_e` 归根文件系统——根挂载未接
+    /// （`root_fs_e` 为 NONE）→ 按 C 的 newdriver 失败路径收尾（ENXIO）。
+    #[test]
+    fn test_open_block_device_branch() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let slot = minix_types::UserSlot::new(0);
+        let drv = Endpoint::from_generation_slot(0, 12);
+        let dev = 0x0301u64; // major 3 / minor 1
+        let node = crate::path::NodeDetails {
+            fs_e: Endpoint::MFS,
+            ino: 9,
+            mode: crate::open::S_IFBLK | 0o600,
+            size: 0,
+            uid: 0,
+            gid: 0,
+            dev,
+        };
+
+        // (a) dmap 行没有驱动：ENXIO（C `bdev_open:88-89` 的门）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        state.finish_open_local(idx, Some(slot), &node, crate::open::O_RDONLY);
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::ENXIO))
+        );
+
+        // (b) 有驱动而宿主发不出去：EIO + 认领放开。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        state.dmap_table.get_mut(3).unwrap().driver = Some(drv);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        state.finish_open_local(idx, Some(slot), &node, crate::open::O_RDONLY);
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::EIO))
+        );
+        assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
+
+        // (c) 驱动放行 + 设备被挂载占着：`v_bfs_e` 用那个挂载的 FS，直接回
+        // fd（C `open.c:208-210`：不是根文件系统就不再发 newdriver）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        state.dmap_table.get_mut(3).unwrap().driver = Some(drv);
+        let holder_fs = Endpoint::from_generation_slot(0, 9);
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+            v.fs = holder_fs;
+            v.dev = dev;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let vnode_idx = state.intern_vnode(&node).unwrap();
+        let fid = state
+            .filp_table
+            .alloc_filp(crate::open::R_BIT)
+            .unwrap();
+        state.filp_table.inc_count(fid);
+        state.fproc_table.get_mut(slot).unwrap().filps[0] = Some(fid.get());
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vnode_idx);
+        let mut reply = Message { m_type: 0x580, ..Message::default() }; // BDEV_REPLY
+        // SAFETY(test): `mess_lblockdriver_lbdev_reply { int status; int id; }`
+        // ——状态在首字，OK 为 0。
+        unsafe {
+            reply.m_u.raw[0..4].copy_from_slice(&0i32.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::BdevOpen {
+                fd: 0,
+                filp: fid.get(),
+                vnode: vnode_idx,
+                dev,
+                minor: 1,
+                access: crate::bdev::BDEV_R_BIT as u8,
+                retries: 0,
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0)),
+            "成功回 fd（0 号）"
+        );
+        assert_eq!(
+            state
+                .vnode_table
+                .get(crate::vnode::VnodeId(vnode_idx))
+                .unwrap()
+                .bfs,
+            holder_fs,
+            "v_bfs_e 用占着设备的挂载行的 FS"
+        );
+
+        // (d) 设备空闲、根挂载未接（`root_fs_e` = NONE）：按 C 的 newdriver
+        // 失败路径收尾——放开认领并回 ENXIO（不假装通知成功）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        state.dmap_table.get_mut(3).unwrap().driver = Some(drv);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let vnode_idx = state.intern_vnode(&node).unwrap();
+        let fid = state
+            .filp_table
+            .alloc_filp(crate::open::R_BIT)
+            .unwrap();
+        state.filp_table.inc_count(fid);
+        state.fproc_table.get_mut(slot).unwrap().filps[0] = Some(fid.get());
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vnode_idx);
+        let reply = Message { m_type: 0x580, ..Message::default() };
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::BdevOpen {
+                fd: 0,
+                filp: fid.get(),
+                vnode: vnode_idx,
+                dev,
+                minor: 1,
+                access: crate::bdev::BDEV_R_BIT as u8,
+                retries: 0,
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::ENXIO)),
+            "根挂载未接：newdriver 无处可发 → C 的失败路径"
+        );
+        assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
+
+        // (e) 驱动回 ERESTART：按 `bdev_sendrec` 的保险丝重发；宿主发不出 →
+        // EIO 收尾（不悬挂、认领放开）。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        state.dmap_table.get_mut(3).unwrap().driver = Some(drv);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let vnode_idx = state.intern_vnode(&node).unwrap();
+        let fid = state
+            .filp_table
+            .alloc_filp(crate::open::R_BIT)
+            .unwrap();
+        state.filp_table.inc_count(fid);
+        state.fproc_table.get_mut(slot).unwrap().filps[0] = Some(fid.get());
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vnode_idx);
+        let mut reply = Message { m_type: 0x580, ..Message::default() };
+        // SAFETY(test): ERESTART 在载荷首字（线上是负值）。
+        unsafe {
+            reply.m_u.raw[0..4]
+                .copy_from_slice(&(-minix_types::ERESTART).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::BdevOpen {
+                fd: 0,
+                filp: fid.get(),
+                vnode: vnode_idx,
+                dev,
+                minor: 1,
+                access: crate::bdev::BDEV_R_BIT as u8,
+                retries: 0,
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::EIO))
+        );
+        assert!(state.fproc_table.get(slot).unwrap().filps[0].is_none());
     }
 
     /// `PathFollow::Mknod`（mknod 的父目录半）：类型门（ENOTDIR）→ `W|X`
@@ -6957,7 +7719,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::ENOTDIR))
+            Some((user, -minix_types::ENOTDIR))
         );
 
         // ② 目录 0755（other 有 x 无 w）、非属主 → `W|X` 门拒（EACCES）。
@@ -6972,7 +7734,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
 
         // ③ root + 可写目录 → REQ_MKNOD 七域随行；回复只有状态。
@@ -7096,7 +7858,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
 
         // ② 属主 + 大小不变 → 就地回 0，不发请求（POSIX 文件时间）。
@@ -7297,7 +8059,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::ENOTDIR))
+            Some((user, -minix_types::ENOTDIR))
         );
 
         // ② 目录 0755（other 有 x 无 w）、调用方 1000 号 → 权限门拒。
@@ -7321,7 +8083,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
 
         // ③ 0777 可写但带粘滞位 → 转阶段 2；宿主下子遍历的 grant 不可达 →
@@ -7442,7 +8204,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EPERM))
+            Some((user, -minix_types::EPERM))
         );
 
         // ⑥ 阶段 2：受害者属主就是调用方 → 过粘滞位门，停在 grant → EIO。
@@ -7548,7 +8310,7 @@ mod tests {
         assert!(state.pending_fs.is_none(), "门没过不该发 REQ_CHMOD");
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EPERM))
+            Some((user, -minix_types::EPERM))
         );
 
         // ② 属主但挂载是只读 → EROFS。
@@ -7569,7 +8331,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EROFS))
+            Some((user, -minix_types::EROFS))
         );
 
         // ③ 属主（非超级用户：有效 id 1000 = 文件属主）+ 可写挂载：发请求，
@@ -7694,7 +8456,7 @@ mod tests {
         assert!(state.pending_fs.is_none(), "非符号链接不该发 REQ_RDLINK");
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EINVAL))
+            Some((user, -minix_types::EINVAL))
         );
 
         // 是符号链接：发 `REQ_RDLINK`。宿主下要先热身 grant 表（见 Unlink
@@ -7776,7 +8538,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::ENOENT))
+            Some((user, -minix_types::ENOENT))
         );
     }
 
@@ -7871,7 +8633,7 @@ mod tests {
         }
         assert_eq!(
             run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
-            minix_types::EACCES,
+            -minix_types::EACCES,
             "非属主对 0644 无写权"
         );
         // 同一个 0644：别人的读位在（other r）→ R_OK 允许。
@@ -7901,7 +8663,7 @@ mod tests {
         }
         assert_eq!(
             run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
-            minix_types::EROFS
+            -minix_types::EROFS
         );
     }
 
@@ -8074,7 +8836,7 @@ mod tests {
         assert!(state.pending_fs.is_none(), "门没过就不该发截断");
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
     }
@@ -8131,7 +8893,7 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EIO)),
+            Some((user, -minix_types::EIO)),
             "相位 2 的 grant 在宿主不可达 → EIO 收尾（不悬挂）"
         );
     }
@@ -8337,7 +9099,11 @@ mod tests {
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x180);
 
         // FS 报错：位置不动，错误原样回用户。
-        assert_eq!(run(&mut state, minix_types::ENOTDIR, 0x200, 12), minix_types::ENOTDIR);
+        // FS 报错：位置不动，错误原样回用户（FS 的线上状态是负值）。
+        assert_eq!(
+            run(&mut state, -minix_types::ENOTDIR, 0x200, 12),
+            -minix_types::ENOTDIR
+        );
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x180);
     }
 
@@ -8383,8 +9149,9 @@ mod tests {
         {
             let wp = state.worker_pool.get_mut(idx2).unwrap();
             wp.cont = Some(WorkerCont::Fstat { grant: 8 });
+            // FS 回复的线上状态带负号（服务端都是 `_SYSTEM` 构建）。
             wp.sendrec = Some(Message {
-                m_type: minix_types::ERESTART,
+                m_type: -(minix_types::ERESTART),
                 ..Message::default()
             });
             wp.state = crate::worker::WorkerState::Busy;
@@ -8392,7 +9159,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EIO))
+            Some((user, -minix_types::EIO))
         );
     }
 
@@ -8473,13 +9240,21 @@ mod tests {
         state.queue_reply(user, SyscallResult::Error(minix_types::EINVAL));
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EINVAL))
+            Some((user, -minix_types::EINVAL)),
+            "错误码在边界折成负号（C 的 _SYSTEM 构建里常量本身就带负号）"
         );
 
         state.queue_reply(user, SyscallResult::Nosys);
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::ENOSYS))
+            Some((user, -minix_types::ENOSYS))
+        );
+
+        // 驱动/FS 带来的状态已经是负值：**不二次取负**。
+        state.queue_reply(user, SyscallResult::Error(-minix_types::ENXIO));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::ENXIO))
         );
 
         state.queue_reply(user, SyscallResult::Suspend);

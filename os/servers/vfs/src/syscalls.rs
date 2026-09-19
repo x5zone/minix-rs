@@ -2452,16 +2452,27 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                         m_type: crate::bdev::BdevOp::Ioctl.msg_type() as i32,
                         ..minix_types::Message::default()
                     };
-                    // SAFETY: `mess_lbdev_lblockdriver_msg { int minor@0; int
-                    // id@4; int access@8; int count@12; cp_grant_id_t grant@16;
-                    // int flags@20; endpoint_t user@24; unsigned long
-                    // request@32 }`（ipc.h:331-353）。
+                    // SAFETY: `mess_lbdev_lblockdriver_msg { off_t pos@0;
+                    // int minor@8; int id@12; int access@16; int count@20;
+                    // cp_grant_id_t grant@24; int flags@28; endpoint_t user@32;
+                    // unsigned long request@40 }`（ipc.h:338-353，偏移表住
+                    // `minix_types::lblockdriver_msg_off`）。**首格是 `pos`**：
+                    // 块族的每个字段都比字符族往后挪 8 字节，按字符族的位次
+                    // 发块消息，驱动收到的是"次设备号 0、grant 无效"。
                     unsafe {
                         let raw = &mut m.m_u.raw;
-                        raw[0..4].copy_from_slice(&(minor as i32).to_le_bytes());
-                        raw[16..20].copy_from_slice(&grant.to_le_bytes());
-                        raw[24..28].copy_from_slice(&user_e.0.to_le_bytes());
-                        raw[32..40].copy_from_slice(&req.to_le_bytes());
+                        raw[minix_types::lblockdriver_msg_off::MINOR
+                            ..minix_types::lblockdriver_msg_off::MINOR + 4]
+                            .copy_from_slice(&(minor as i32).to_le_bytes());
+                        raw[minix_types::lblockdriver_msg_off::GRANT
+                            ..minix_types::lblockdriver_msg_off::GRANT + 4]
+                            .copy_from_slice(&grant.to_le_bytes());
+                        raw[minix_types::lblockdriver_msg_off::USER
+                            ..minix_types::lblockdriver_msg_off::USER + 4]
+                            .copy_from_slice(&user_e.0.to_le_bytes());
+                        raw[minix_types::lblockdriver_msg_off::REQUEST
+                            ..minix_types::lblockdriver_msg_off::REQUEST + 8]
+                            .copy_from_slice(&req.to_le_bytes());
                     }
                     if let Some(wp) = state.worker_pool.get_mut(worker) {
                         wp.cont = Some(crate::worker::WorkerCont::BdevIoctl {
@@ -4728,7 +4739,7 @@ mod tests {
         assert_eq!(state.vnode_table.get(vid).unwrap().size, 10, "失败不动大小");
         assert_eq!(
             state.take_reply().map(|(t, msg)| (t, msg.m_type)),
-            Some((user, minix_types::EACCES))
+            Some((user, -minix_types::EACCES))
         );
     }
 
@@ -5023,7 +5034,7 @@ mod tests {
         assert!(state.pending_fs.is_none(), "门没过不该发请求");
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EPERM))
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EPERM))
         );
 
         // ② 是属主但把属主"送人"（请求 uid ≠ 文件 uid）→ EPERM。
@@ -5036,7 +5047,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user_e, minix_types::EPERM))
+            Some((user_e, -minix_types::EPERM))
         );
 
         // ③ 是属主、不送人，但新组不是自己所在组 → EPERM。
@@ -5049,7 +5060,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user_e, minix_types::EPERM))
+            Some((user_e, -minix_types::EPERM))
         );
 
         // ④ 非超级用户给 `-1` 当新属主 → 也会在"不能送人"那条上被拒
@@ -5065,7 +5076,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user_e, minix_types::EPERM)),
+            Some((user_e, -minix_types::EPERM)),
             "非超级用户 + uid=-1：C 判 EPERM"
         );
 
@@ -6567,7 +6578,7 @@ mod tests {
         state.run_worker_continuations();
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EIO)),
             "回复号不对 → 协议错误"
         );
     }
@@ -7528,7 +7539,7 @@ mod tests {
             // 拷贝在宿主下不可达 → 序列就地中止（回 EIO），不会推进到第二格。
             assert_eq!(
                 state.take_reply().map(|(t, m)| (t, m.m_type)),
-                Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+                Some((Endpoint::from_generation_slot(1, 0), -minix_types::EIO)),
                 "拷贝失败即中止序列（C 的 `return r`）"
             );
             assert!(state.pending_fs.is_none(), "中止后不该再发请求");
@@ -7667,7 +7678,7 @@ mod tests {
         }
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EIO)),
             "宿主下 sys_datacopy 不可达 → EIO（如实，不假装拷成功）"
         );
 
@@ -7687,7 +7698,7 @@ mod tests {
         assert!(state.pending_fs.is_none(), "ST_NOWAIT 不该打扰 FS");
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EIO)),
             "拷贝在宿主下不可达 → EIO"
         );
         {
@@ -8096,7 +8107,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EPERM))
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EPERM))
         );
 
         // ④ 纳秒越界（>= 1e9 且不是哨兵）→ EINVAL。
@@ -8109,7 +8120,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EINVAL))
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EINVAL))
         );
 
         // ⑤ 非属主 + 两个 UTIME_NOW（touch）→ 退化成写权限检查：0644 的
@@ -8129,7 +8140,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((Endpoint::from_generation_slot(1, 0), minix_types::EACCES)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EACCES)),
             "touch 的门是写权限，不是属主"
         );
 
@@ -8441,7 +8452,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user_e, minix_types::EPERM))
+            Some((user_e, -minix_types::EPERM))
         );
 
         // ③ 属主但只读挂载 → EROFS。
@@ -8454,7 +8465,7 @@ mod tests {
         assert!(state.pending_fs.is_none());
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user_e, minix_types::EROFS))
+            Some((user_e, -minix_types::EROFS))
         );
 
         // ④ 属主 + 可写：setgid 位被清（文件组 100 == 有效组 100 → **不清**，

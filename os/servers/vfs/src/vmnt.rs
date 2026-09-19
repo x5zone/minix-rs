@@ -258,6 +258,21 @@ impl VmntTable {
         None
     }
 
+    /// 块设备 open 的 `v_bfs_e` 选择（C `open.c:195-202` 的循环）。
+    ///
+    /// 默认是根文件系统；每个 `m_dev == dev` 且**不带** `VMNT_FORCEROOTBSF`
+    /// 的挂载行都覆盖一次。C 的循环里**没有 `break`**——同一个设备被挂载
+    /// 多次时最后一个匹配者赢，照抄。
+    pub fn bfs_for_device(&self, dev: DevId, root_fs: Endpoint) -> Endpoint {
+        let mut bfs = root_fs;
+        for v in self.slots.iter() {
+            if v.dev == dev && !v.flags.contains(VmntFlags::FORCEROOTBSF) {
+                bfs = v.fs;
+            }
+        }
+        bfs
+    }
+
     pub fn is_locked(&self, id: VmntId) -> bool {
         self.get(id).map(|v| v.lock.is_locked()).unwrap_or(false)
     }

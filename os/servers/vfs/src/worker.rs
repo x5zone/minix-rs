@@ -117,6 +117,58 @@ pub enum WorkerCont {
         /// 被 ioctl 占着的 filp（收尾时清 `ioctl_holder`）。
         filp: usize,
     },
+    /// 块设备 open 的对话半（`BDEV_OPEN`）：回复是
+    /// `mess_lblockdriver_lbdev_reply { int status; int id; }`（状态在首字）。
+    /// 成功后还要选**块文件系统端点**（`v_bfs_e`：该设备没被别的挂载占着
+    /// 就归根文件系统），并在归根时补一条 `REQ_NEW_DRIVER` 把驱动标签
+    /// 告诉它。失败路径要放开认领的 fd/filp 并放回 vnode（C `common_open`
+    /// 尾部的 `put_vnode`）。C `bdev_open`（bdev.c:79-112）+ `open.c:172-217`。
+    BdevOpen {
+        /// 已认领的 fd（成功时作为返回值）。
+        fd: u32,
+        /// 已认领的 filp（失败时要放开）。
+        filp: usize,
+        /// 已并进 vnode 表的下标（`v_bfs_e` 写回它，失败时要放回）。
+        vnode: usize,
+        /// 设备的**特殊设备号**（`v_sdev`）——`REQ_NEW_DRIVER` 与补偿的
+        /// `BDEV_CLOSE` 都按它算 major/minor。
+        dev: u64,
+        /// 重发用的次设备号（`BDEV_OPEN` 载荷的 `minor` 格）。
+        minor: u32,
+        /// 重发用的访问位（`BDEV_R_BIT`/`BDEV_W_BIT`）。
+        access: u8,
+        /// 已用掉的重启次数（C `bdev_sendrec` 的 `retry_count`）。
+        retries: u8,
+    },
+    /// 块设备 open 的第二跳（`REQ_NEW_DRIVER` 到块文件系统）：把驱动标签
+    /// 交给管这个设备的 FS。只有该设备**没有**被别的挂载占着（于是
+    /// `v_bfs_e` 归根文件系统）才走这一跳——别的 FS 在挂载时就认识驱动了。
+    /// 回复只有状态；失败要补一条 `BDEV_CLOSE` 再回 `ENXIO`
+    /// （C `open.c:210-216`）。
+    BdevNewDriver {
+        /// 已认领的 fd（成功时作为返回值）。
+        fd: u32,
+        /// 已认领的 filp（失败时要放开）。
+        filp: usize,
+        /// 已并进 vnode 表的下标（失败时要放回）。
+        vnode: usize,
+        /// 设备的特殊设备号（失败时 `bdev_close(dev)` 用）。
+        dev: u64,
+    },
+    /// 块设备 open 失败后的**补偿**：先给驱动发 `BDEV_CLOSE` 关掉刚打开的
+    /// 设备，再回原来的错误（C `open.c:213` 的 `bdev_close(dev); r = ENXIO;`
+    /// ——`bdev_close` 的返回值被丢掉）。close 的回复到了才收尾：这条请求
+    /// 撒手不管的话，回复会落到下一个用同一驱动对话的作业头上。
+    BdevCloseThenReply {
+        /// 要回给用户的原始状态。
+        status: i32,
+        /// 已认领的 fd（失败尾要放开）。
+        fd: u32,
+        /// 已认领的 filp（失败尾要放开）。
+        filp: usize,
+        /// 已并进 vnode 表的下标（失败尾要放回）。
+        vnode: usize,
+    },
     /// 字符设备 ioctl 的对话半（`CDEV_IOCTL`）：回复是
     /// `mess_lchardriver_vfs_reply { int status; uint32_t id; }`，续接体撤销
     /// ioctl 的 magic grant 并把状态回给用户。C `cdev_io`（cdev.c:277-340）。

@@ -467,6 +467,27 @@ pub fn encode_readsuper(
     msg
 }
 
+/// `req_newdriver` 的请求编码（C request.c:664-691）：载荷
+/// `{device@0(dev_t), grant@8(cp_grant_id_t), path_len@16(size_t)}`——
+/// 驱动标签本体在 VFS 内存里，经 **direct grant** 给 FS（`CPF_READ`），
+/// 回复只有状态。
+///
+/// `device` 是**块设备的特殊设备号**（`vp->v_sdev`），不是挂载分区的设备号
+/// ——FS 用它认"这个分区归哪个块驱动"。
+pub fn encode_new_driver(device: u64, grant: i32, path_len: usize) -> Message {
+    let mut msg = Message {
+        m_type: REQ_NEW_DRIVER,
+        ..Message::default()
+    };
+    // SAFETY: raw 臂按字节写——`mess_vfs_fs_new_driver`（ipc.h:2072-2079）
+    // 没有专属 union 成员，域序见 `minix_types::new_driver_req_off`。
+    let raw = unsafe { &mut msg.m_u.raw };
+    raw[0..8].copy_from_slice(&device.to_le_bytes());
+    raw[8..12].copy_from_slice(&grant.to_le_bytes());
+    raw[16..24].copy_from_slice(&(path_len as u64).to_le_bytes());
+    msg
+}
+
 /// `readsuper` 回复解码(C request.c:818-825):file_size@0(off_t)、
 /// device@8(dev_t)、inode@16(ino_t)、flags@24(u32 = fs_flags)、
 /// mode@28、uid@32、gid@36、con_reqs@40(u16,ipc.h:198-211)。
@@ -1764,6 +1785,43 @@ mod tests {
         // SAFETY(test): grant 在负载区首字（mess_vfs_fs_statvfs）。
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 7);
+    }
+
+    /// `encode_new_driver`：三域落位（device/grant/path_len）——**grant 在
+    /// 第二格**（`readsuper` 的第二格是 flags），错位会把标签长度当设备号发。
+    #[test]
+    fn test_encode_new_driver_fields() {
+        let m = encode_new_driver(0x0301, 11, 8);
+        assert_eq!(m.m_type, minix_types::REQ_NEW_DRIVER);
+        // SAFETY(test): 按共享偏移表读回（new_driver_req_off）。
+        let raw = unsafe { &m.m_u.raw };
+        assert_eq!(
+            u64::from_le_bytes(
+                raw[minix_types::new_driver_req_off::DEVICE
+                    ..minix_types::new_driver_req_off::DEVICE + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x0301
+        );
+        assert_eq!(
+            i32::from_le_bytes(
+                raw[minix_types::new_driver_req_off::GRANT
+                    ..minix_types::new_driver_req_off::GRANT + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            11
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                raw[minix_types::new_driver_req_off::PATH_LEN
+                    ..minix_types::new_driver_req_off::PATH_LEN + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            8
+        );
     }
 
     /// `encode_rename` 的六域落位（两个 direct grant：旧名 + 新名，长度都
