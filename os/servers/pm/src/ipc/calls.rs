@@ -16,7 +16,7 @@
 //! 调用号常量不单独散列（不重复 callnr.h 47 个 `pub const`）：枚举判别
 //! 值即单一事实源；将来内核侧 libc 需要调用号时再上移 minix-types。
 
-use crate::event::EventRegistry;
+use crate::event::{EventRegistry, PmEventServices};
 use crate::ipc::{IpcTransport, ReplyIntent};
 use crate::mproc::ProcTable;
 use crate::misc::MiscError;
@@ -424,7 +424,10 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             ReplyIntent::Reply(0)
         }
         // C: do_sigprocmask(signal.c:99-155)——旧掩码经 reply 载荷回;
-        // needs_check 的内联重投(check_pending)归信号流装配(S3 余件)。
+        // 三个成功分支末端都内联 check_pending(mp)(signal.c:122/131/139),
+        // MaskOpEffect 的 needs_check 是同一判定的语义等价(Block 只加
+        // 屏蔽,不可能产生新可投递——check 会立即空转;Unblock/SetMask
+        // 为 true)。
         PmCall::SigProcMask => {
             let (how, _ctx, set) = super::decode::sigset(msg);
             match handle_sigprocmask(table, caller, how, set) {
@@ -438,19 +441,32 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         },
                         ..Message::default()
                     });
-                    let _ = effect;
+                    // 生产装配:PmEventServices(RestartServices 全实现,
+                    // sig_proc 生产腿)。BrokenOnVfs 是 C 的同名出口
+                    // (VFS|EVENT 挂起,留待 unpause 路径)。
+                    if let crate::mproc::MaskOpEffect::Changed { needs_check: true } = effect {
+                        let mut svc = PmEventServices::new(transport, kern);
+                        let _ = crate::signal_flow::check_pending(table, caller, &mut svc);
+                    }
                     ReplyIntent::Reply(0)
                 }
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
         // C: do_sigreturn(signal.c:173-192)——恢复掩码 + sys_sigreturn,
-        // 无条件 check_pending(190)归信号流装配。
+        // 成功后无条件 check_pending(mp)(190)。
         PmCall::SigReturn => {
             let (_how, ctx, set) = super::decode::sigset(msg);
-            let mut sig_kern = SigReturnKern(kern);
-            match handle_sigreturn(table, caller, set, VirBytes(ctx), &mut sig_kern) {
-                Ok(()) => ReplyIntent::Reply(0),
+            let ok = {
+                let mut sig_kern = SigReturnKern(kern);
+                handle_sigreturn(table, caller, set, VirBytes(ctx), &mut sig_kern)
+            };
+            match ok {
+                Ok(()) => {
+                    let mut svc = PmEventServices::new(transport, kern);
+                    let _ = crate::signal_flow::check_pending(table, caller, &mut svc);
+                    ReplyIntent::Reply(0)
+                }
                 // fault 载荷是 sys_sigreturn 的原始负 errno。
                 Err(crate::signal_handlers::SigReturnError::Fault(code)) => {
                     ReplyIntent::Reply(positive_errno(code))
@@ -1202,6 +1218,7 @@ mod tests {
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn sys_sigreturn(&mut self, _ep: Endpoint, _ctx: VirBytes) -> Result<(), i32> { Ok(()) }
     }
         fn setup_with_caller(slot: usize, ep: Endpoint) -> (ProcTable, EventRegistry, TestIpcTransport) {
         let mut table = ProcTable::new();
@@ -1305,6 +1322,111 @@ mod tests {
         assert_eq!(intent, ReplyIntent::NoReply);
     }
 
+    /// 构造 sigset 请求载荷(how@0/ctx@8/set@16,MessLcPmSigset)。
+    fn sigset_msg(m_type: i32, how: i32, set: u64) -> Message {
+        let mut msg = Message { m_type, ..Message::default() };
+        msg.m_u.m_lc_pm_sigset.how = how;
+        msg.m_u.m_lc_pm_sigset.ctx = 0;
+        msg.m_u.m_lc_pm_sigset.set = [set as u32, (set >> 32) as u32, 0, 0];
+        msg
+    }
+
+    #[test]
+    fn test_sigprocmask_unblock_redelivers_pending() {
+        // C signal.c:131 — SIG_UNBLOCK 成功分支末端内联 check_pending;
+        // 见证:解除屏蔽后 pending 位被消费(sig_proc 投递)。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let usr1 = 30; // SIGUSR1(minix signal.h:82)
+        let bit = 1u64 << (usr1 - 1);
+        table.procs[3].resources.signals.pending |= bit;
+        table.procs[3].resources.signals.mask |= bit; // 先屏蔽
+        let mut msg = sigset_msg(23, crate::mproc::SIG_UNBLOCK, bit);
+        msg.m_source = ep;
+        assert_eq!(
+            dispatch_pm_call(
+                PmCall::SigProcMask,
+                &mut table,
+                &mut events,
+                &mut transport,
+                &mut NoopKernel,
+                &mut leak_timers(),
+                UserSlot::new(3),
+                &msg
+            ),
+            ReplyIntent::Reply(0)
+        );
+        assert_eq!(
+            table.procs[3].resources.signals.pending & bit,
+            0,
+            "check_pending 消费了 pending 位(S3 重投接线)"
+        );
+    }
+
+    #[test]
+    fn test_sigprocmask_block_keeps_pending() {
+        // 对照:Block 的 needs_check=false(只加屏蔽,不可能产生新可投
+        // 递)——pending 保留;若实现误调 check_pending,该 pending
+        // (未屏蔽)会被投递清位,此测试抓住。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let usr1 = 30;
+        let bit = 1u64 << (usr1 - 1);
+        table.procs[3].resources.signals.pending |= bit; // 未屏蔽
+        let mut msg = sigset_msg(23, crate::mproc::SIG_BLOCK, 1 << 1); // 屏蔽 SIGINT,与 usr1 无关
+        msg.m_source = ep;
+        assert_eq!(
+            dispatch_pm_call(
+                PmCall::SigProcMask,
+                &mut table,
+                &mut events,
+                &mut transport,
+                &mut NoopKernel,
+                &mut leak_timers(),
+                UserSlot::new(3),
+                &msg
+            ),
+            ReplyIntent::Reply(0)
+        );
+        assert_eq!(
+            table.procs[3].resources.signals.pending & bit,
+            bit,
+            "Block 不重投(pending 保留)"
+        );
+    }
+
+    #[test]
+    fn test_sigreturn_redelivers_pending_unconditionally() {
+        // C signal.c:190 — do_sigreturn 成功后无条件 check_pending;
+        // 恢复的掩码(此处空)解除后 pending 被消费。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let usr1 = 30;
+        let bit = 1u64 << (usr1 - 1);
+        table.procs[3].resources.signals.pending |= bit;
+        table.procs[3].resources.signals.mask |= bit;
+        let mut msg = sigset_msg(24, 0, 0); // 恢复掩码 = 空集
+        msg.m_source = ep;
+        assert_eq!(
+            dispatch_pm_call(
+                PmCall::SigReturn,
+                &mut table,
+                &mut events,
+                &mut transport,
+                &mut NoopKernel,
+                &mut leak_timers(),
+                UserSlot::new(3),
+                &msg
+            ),
+            ReplyIntent::Reply(0)
+        );
+        assert_eq!(
+            table.procs[3].resources.signals.pending & bit,
+            0,
+            "sigreturn 后 check_pending 消费 pending 位"
+        );
+    }
+
     /// 捕获 copy_to_user 字节的内核网关(getrusage 拷出见证)。
     struct CapKernel {
         copies: alloc::vec::Vec<(alloc::vec::Vec<u8>, Endpoint, u64)>,
@@ -1326,6 +1448,7 @@ mod tests {
         }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn sys_sigreturn(&mut self, _ep: Endpoint, _ctx: VirBytes) -> Result<(), i32> { Ok(()) }
     }
 
     /// 构造 VM_GETRUSAGE 应答(m1p1=max_rss_kb/m1i1=minor/m1i2=major,

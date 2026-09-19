@@ -626,3 +626,8 @@ VFS 解暂停路径（`05-vfs-interaction.md` 的 `VFS_PM_UNPAUSE_REPLY → UNPA
 - OS 模式参考：Linux `sigaction`/`sigqueue`/`sigprocmask`（`kernel/signal.c` 与 `include/uapi/asm-generic/signal.h`）、Redox `SigAction`/`SigQueue`（`common/src/signal.rs` 与 `kernel/src/signal.rs`）、`seL4 Notification`（用户态能力替代信号，见 `01-stage-kernel` 对比）
 - Rust 实现：`os/servers/pm/src/mproc/signal.rs`（`SignalState` 位图与 `SigAction`）、`os/servers/pm/src/signal_handlers.rs`（5 个 handler + `sig_send` 翻译）、`os/libs/minix-types/src/ipc/message.rs`（消息联合体与 `SigMsg`）
 
+---
+
+## 8 接线（S3 余件）：`check_pending` 的生产消费点
+
+本篇只到调用点的 `check_pending`（`signal.c:651-682`）在 S3 的两臂里接上生产装配：`PM_SIGPROCMASK` 的成功路径按 `MaskOpEffect::Changed { needs_check }` 门控——`UNBLOCK`/`SETMASK` 为 true（解除阻塞可能使 `pending` 变为可投递），`BLOCK`/`INQUIRE` 为 false（新增阻塞不产生新的可投递信号，空转的 check 与不调用在可观测行为上等价，表格一行的 Rust 表达）；`PM_SIGRETURN` 成功后**无条件**重投（`signal.c:190`，注释在 `handle_sigreturn` 里就写明了"always needing check"）。两臂的投递腿都经 `PmEventServices`——`RestartServices`（`KernelResume + ExitHandler + SignalDeliver`）的生产适配器，`sig_proc` 走真实内核网关与传输。断言的接缝是 `pending` 位的消费：解除后位被 `check_pending` 取走投递（清位），`BLOCK` 对照里位必须保留。
