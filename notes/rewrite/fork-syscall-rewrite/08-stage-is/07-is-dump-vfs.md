@@ -79,7 +79,11 @@ VFS 对齐待办（§3 D1 三处之二）。
 
 `FProcSnap`（pid/tty/umask/uids/flags/blocked_on）+ `DmapSnap`
 （driver/label[16]）。filp 表不进快照（255 指针无意义，计数另计 D2）。
-否决全镜像/复用 VFS 活体类型。
+否决全镜像/复用 VFS 活体类型。**权威位置**：两者都在 `minix_types`
+（`types/fproc.rs` / `types/dmap_snap.rs`）——VFS 侧生产者（`fproc.rs` 的
+`to_fproc_snap`、`misc.rs` 的 `do_getsysinfo` DMAP 臂）按同一结构序列化，
+IS 这里只重导出。空槽的 `dmap_driver` 是 `NONE`（`init_dmap` 逐行填充），
+消费者按它跳过（dmap.c:235-247 与 `dmap_skipped` 的两半）。
 
 ### 3.2 D2：fd 计数切片纯函数
 
@@ -110,14 +114,14 @@ fproc `<=0` 无例外（06 对照）；`VfsCursor` 独立新类型（06 已 CONV
 ### 4.1 模块树（增量）
 
 ```text
-os/servers/is/src/dump_vfs.rs — FProcSnap/DmapSnap/BlockedOn/count_fds/blocked_endpoint/fproc_skipped/dmap_skipped/VfsCursor/6 格式常量（D1-D5）
+os/servers/is/src/dump_vfs.rs — FProcSnap/DmapSnap（重导出 minix-types 权威）/BlockedOn/count_fds/blocked_endpoint/fproc_skipped/dmap_skipped/VfsCursor/6 格式常量（D1-D5）
 ```
 
 ### 4.2 关键签名（与 §3 一致，Gate D-5 依据）
 
 ```rust
 pub struct FProcSnap { fp_pid/fp_tty: i32, fp_umask/uids/gids: u32…, fp_flags: u32, fp_blocked_on: i32 }
-pub struct DmapSnap { dmap_driver: i32, dmap_label: [u8;16] }
+pub use minix_types::{DmapSnap, DMAP_LABEL_LEN, NR_DEVICES}; // DmapSnap { dmap_driver: i32, dmap_label: [u8;16] }（权威在 minix-types）
 pub enum BlockedOn { None/Pipe/Flock/Popen/Select/Cdev/Sdev } + code/decode
 pub fn count_fds(&[bool]) -> u32; pub const fn blocked_endpoint(BlockedOn, i32) -> Option<i32>;
 pub const fn fproc_skipped(i32) -> bool; dmap_skipped(i32, i32) -> bool;

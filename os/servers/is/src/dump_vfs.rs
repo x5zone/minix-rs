@@ -175,18 +175,7 @@ pub const fn fproc_skipped(pid: i32) -> bool {
     pid <= 0
 }
 
-/// Device-mapping snapshot.
-///
-/// C: `struct dmap` — `minix3/minix/servers/vfs/dmap.h:16-18` (subset:
-/// label + driver only).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct DmapSnap {
-    /// C: `dmap_driver` (dmap.h:17; `NONE` = empty slot).
-    pub dmap_driver: i32,
-    /// C: `dmap_label[LABEL_MAX]`, `LABEL_MAX 16` (vfs/const.h:34).
-    pub dmap_label: [u8; 16],
-}
+pub use minix_types::{DmapSnap, DMAP_LABEL_LEN, NR_DEVICES};
 
 /// Whether a dmap row is skipped. C: `dmap[i].dmap_driver == NONE` —
 /// dmp_fs.c:78.
@@ -259,8 +248,6 @@ pub const DMAP_COLUMNS: &str = "    Label     Major Driver ept\n------------- --
 pub const NIL_ENDPOINT: &str = " nil\n";
 /// C: `NONE` endpoint — endpoint.h:55 (`dmap_driver == NONE` skip).
 pub const NONE_ENDPOINT: i32 = Endpoint::NONE.get();
-/// C: `NR_DEVICES 135` — dmap.h:82 (the dmap table fetch capacity).
-pub const NR_DEVICES: usize = 135;
 
 #[cfg(test)]
 mod tests {
