@@ -25,7 +25,7 @@ use alloc::vec;
 
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
-use minix_types::{EIO, ENOSPC, EINVAL, ENOENT, Errno, Stat};
+use minix_types::{EIO, ENOSPC, EPERM, EINVAL, ENOENT, ENOTEMPTY, Errno, Stat};
 
 use crate::dir;
 use crate::inode::{self, DiskInode};
@@ -343,6 +343,210 @@ impl Ext2Server {
         }
         self.free_block(block);
         Ok(freed + 1)
+    }
+
+    /// 按名字找目录项，返回（条目，槽位，前驱槽位——块内第一条时为
+    /// `None`）。删除需要前驱做 rec_len 合并（C `ext2_delete_entry`）。
+    fn find_entry_slot(
+        &mut self,
+        directory: u32,
+        name: &str,
+    ) -> Result<(dir::Entry, SlotPos, Option<SlotPos>), Errno> {
+        let inode = self.read_inode(directory)?;
+        let size = inode.size as usize;
+        let block_size = self.geometry.block_size as usize;
+        let blocks = u64::from(inode.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
+        let mut prev: Option<SlotPos> = None;
+        for block_index in 0..blocks {
+            let block_number = inode.blocks[block_index] as u64;
+            let block = self.block(block_number)?;
+            let mut offset = 0usize;
+            while offset + dir::HEADER_BYTES <= block_size {
+                let window = &block[offset..block_size];
+                let (entry, step) = match dir::decode(window) {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let slot = (block_index, offset, step as u16);
+                let matched = entry.number != 0 && entry.name == name.as_bytes();
+                let prev_now = prev;
+                if matched {
+                    return Ok((entry, slot, prev_now));
+                }
+                prev = Some(slot);
+                offset += step;
+            }
+        }
+        Err(Errno::from_i32(ENOENT))
+    }
+
+    /// 在目录里插入一条新目录项（C `ext2_add_entry`）：先找可复用的
+    /// 空槽（number == 0 且 rec_len 够长）或真实条目的尾部余量
+    /// （rec_len − actual_size ≥ needed，缩当前条目、余量里插新条）；
+    /// 都没有就给目录扩一个块，新条目落在块首（rec_len = 块大小）。
+    fn add_entry(
+        &mut self,
+        directory: u32,
+        number: u32,
+        file_type: u8,
+        name: &[u8],
+    ) -> Result<(), Errno> {
+        let needed = dir::actual_size(name.len());
+        let mut record = self.read_inode(directory)?;
+        let block_size = self.geometry.block_size as usize;
+        let blocks = u64::from(record.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
+
+        for block_index in 0..blocks {
+            let block_number = record.blocks[block_index] as u64;
+            let block = self.block(block_number)?;
+            let mut offset = 0usize;
+            while offset + dir::HEADER_BYTES <= block_size {
+                let window = &block[offset..block_size];
+                let (entry, step) = match dir::decode(window) {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                let actual = dir::actual_size(entry.name.len());
+                // 空槽复用：number == 0 且整段够长。
+                if entry.number == 0 && step >= needed {
+                    let at = block_number as usize * block_size + offset;
+                    let mut new = vec![0u8; needed];
+                    new[0..4].copy_from_slice(&number.to_le_bytes());
+                    new[4..6].copy_from_slice(&(needed as u16).to_le_bytes());
+                    new[6] = name.len() as u8;
+                    new[7] = file_type;
+                    new[8..8 + name.len()].copy_from_slice(name);
+                    self.image[at..at + needed].copy_from_slice(&new);
+                    // 余量成为尾随空槽（rec_len = step - needed）。
+                    if step > needed {
+                        let rest = step - needed;
+                        let mut free = vec![0u8; rest];
+                        free[4..6].copy_from_slice(&(rest as u16).to_le_bytes());
+                        self.image[at + needed..at + step].copy_from_slice(&free);
+                    }
+                    return Ok(());
+                }
+                // 真实条目的尾部余量：缩当前 rec_len 到实际大小，
+                // 余量里插新条。
+                if step >= needed + actual {
+                    let shrink_at = block_number as usize * block_size + offset;
+                    let shrunken: [u8; 2] = (actual as u16).to_le_bytes();
+                    self.image[shrink_at + 4..shrink_at + 6].copy_from_slice(&shrunken);
+                    let insert_at = shrink_at + actual;
+                    let rest = step - actual;
+                    let mut new = vec![0u8; needed];
+                    new[0..4].copy_from_slice(&number.to_le_bytes());
+                    new[4..6].copy_from_slice(&(needed as u16).to_le_bytes());
+                    new[6] = name.len() as u8;
+                    new[7] = file_type;
+                    new[8..8 + name.len()].copy_from_slice(name);
+                    self.image[insert_at..insert_at + needed].copy_from_slice(&new);
+                    if rest > needed {
+                        let mut free = vec![0u8; rest - needed];
+                        free[4..6].copy_from_slice(&((rest - needed) as u16).to_le_bytes());
+                        self.image[insert_at + needed..insert_at + rest]
+                            .copy_from_slice(&free);
+                    }
+                    return Ok(());
+                }
+                offset += step;
+            }
+        }
+        // 没有空间：扩一个块，新条目落在块首（rec_len = 块大小）。
+        let new_block = self.alloc_block()?;
+        let mut record_ref = self.read_inode(directory)?;
+        record_ref.blocks[blocks] = new_block as u32;
+        record_ref.size += self.geometry.block_size as u32;
+        self.write_inode_back(directory, &record_ref);
+        self.cache.insert(directory, record_ref);
+        let at = new_block as usize * block_size;
+        let mut new = vec![0u8; block_size];
+        new[0..4].copy_from_slice(&number.to_le_bytes());
+        new[4..6].copy_from_slice(&(block_size as u16).to_le_bytes());
+        new[6] = name.len() as u8;
+        new[7] = file_type;
+        new[8..8 + name.len()].copy_from_slice(name);
+        self.image[at..at + block_size].copy_from_slice(&new);
+        Ok(())
+    }
+
+    /// 按名字删除目录项（C `ext2_delete_entry`）：有前驱则合并
+    /// rec_len；是块内第一条则 number = 0（槽位留给 add_entry 复用）。
+    /// 返回被删条目的 inode 号。
+    fn remove_entry(&mut self, directory: u32, name: &str) -> Result<u32, Errno> {
+        let (entry, (block_index, offset, rec_len), prev) =
+            self.find_entry_slot(directory, name)?;
+        let block_size = self.geometry.block_size as usize;
+        let block_number = self.read_inode(directory)?.blocks[block_index] as u64;
+        let at = block_number as usize * block_size + offset;
+        match prev {
+            Some((_, prev_offset, prev_len)) => {
+                // 合并进前驱：前驱 rec_len 加上本条。
+                let merged = prev_len as usize + rec_len as usize;
+                let prev_at =
+                    block_number as usize * block_size + prev_offset + 4;
+                self.image[prev_at..prev_at + 2]
+                    .copy_from_slice(&(merged as u16).to_le_bytes());
+            }
+            None => {
+                // 块内第一条：inode 号清零（rec_len 保留占位）。
+                self.image[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+            }
+        }
+        Ok(entry.number)
+    }
+
+    /// inode 的链接数增减；归零时返回 `true`（调用方负责释放）。
+    fn adjust_links(&mut self, number: u32, delta: i32) -> Result<bool, Errno> {
+        let mut record = self.read_inode(number)?;
+        let links = i32::from(record.links) + delta;
+        if links <= 0 {
+            return Ok(true);
+        }
+        record.links = links as u16;
+        self.write_inode_back(number, &record);
+        self.cache.insert(number, record);
+        Ok(false)
+    }
+
+    /// 释放一个 inode：清 inode 位图位、零化表内记录、空闲计数回加
+    /// （C `free_bit` IMAP 半）。调用方先释放数据块。
+    fn free_inode(&mut self, number: u32) -> Result<(), Errno> {
+        let group = ((number - 1) / self.inodes_per_group) as u32;
+        let index = (number - 1) % self.inodes_per_group;
+        let descriptor = self.group_descriptor(group)?;
+        let bitmap_block = descriptor.inode_bitmap as u64;
+        let bit = (number - 1) % self.inodes_per_group;
+        let at = bitmap_block as usize * self.geometry.block_size as usize
+            + (bit / 8) as usize;
+        if let Some(byte) = self.image.get_mut(at) {
+            *byte &= !(1 << (bit % 8));
+        }
+        self.gdt_add_free_inodes(group, 1);
+        self.sb_add_free_inodes(1);
+        // 表内记录零化。
+        let record_at = descriptor.inode_table as usize
+            * self.geometry.block_size as usize
+            + index as usize * self.geometry.inode_size as usize;
+        let encoded = inode::encode(&DiskInode {
+            mode: 0,
+            uid: 0,
+            size: 0,
+            accessed: 0,
+            changed: 0,
+            modified: 0,
+            deleted_at: 0,
+            gid: 0,
+            links: 0,
+            sectors: 0,
+            flags: 0,
+            blocks: [0; inode::BLOCK_POINTERS],
+            generation: 0,
+        });
+        self.image[record_at..record_at + inode::RECORD_BYTES]
+            .copy_from_slice(&encoded);
+        self.cache.remove(&number);
+        Ok(())
     }
 
     /// 组描述符读取（组号 → 32 字节描述符）。
@@ -759,6 +963,287 @@ impl FsDriver for Ext2Server {
         Ok(delivered)
     }
 
+    /// Create a regular file: `alloc_inode` + parent entry. C `mfs`
+    /// create: type bit `I_REGULAR` forced on the caller's mode.
+    fn create(
+        &mut self,
+        directory: u64,
+        name: &str,
+        mode: u32,
+        owner: u32,
+        group: u32,
+    ) -> Result<FileNode, Errno> {
+        let mode = 0o100000 | (mode & 0o7777);
+        let number = self.alloc_inode(mode as u16)?;
+        {
+            let mut record = self.read_inode(number)?;
+            record.uid = owner as u16;
+            record.gid = group as u16;
+            self.write_inode_back(number, &record);
+            self.cache.insert(number, record);
+        }
+        self.add_entry(directory as u32, number, dir::TYPE_REGULAR, name.as_bytes())?;
+        let record = self.read_inode(number)?;
+        Ok(Self::file_node(number, &record))
+    }
+
+    /// Create a directory: links start at two (the name plus its own `.`),
+    /// entries `.` and `..` fill the first block, and the parent's link
+    /// count grows for the child's `..` (C `mfs mkdir` link bookkeeping).
+    fn make_dir(
+        &mut self,
+        directory: u64,
+        name: &str,
+        mode: u32,
+        owner: u32,
+        group: u32,
+    ) -> Result<(), Errno> {
+        let number = self.alloc_inode(0o040000 | (mode & 0o7777) as u16)?;
+        {
+            let mut record = self.read_inode(number)?;
+            record.uid = owner as u16;
+            record.gid = group as u16;
+            record.links = 2;
+            let data_block = self.alloc_block()? as u64;
+            record.blocks[0] = data_block as u32;
+            record.size = self.geometry.block_size;
+            self.write_inode_back(number, &record);
+            self.cache.insert(number, record);
+            // 点项：`.` 指向自己、`..` 指向父亲（rec_len 各占 12，尾部
+            // 余量归 `..`）。
+            let at = data_block as usize * self.geometry.block_size as usize;
+            let mut dot = vec![0u8; 12];
+            dot[0..4].copy_from_slice(&number.to_le_bytes());
+            dot[4..6].copy_from_slice(&12u16.to_le_bytes());
+            dot[6] = 1;
+            dot[7] = dir::TYPE_DIRECTORY;
+            dot[8] = b'.';
+            self.image[at..at + 12].copy_from_slice(&dot);
+            let rest = (self.geometry.block_size - 12) as u16;
+            let mut dotdot = vec![0u8; rest as usize];
+            dotdot[0..4].copy_from_slice(&(directory as u32).to_le_bytes());
+            dotdot[4..6].copy_from_slice(&rest.to_le_bytes());
+            dotdot[6] = 2;
+            dotdot[7] = dir::TYPE_DIRECTORY;
+            dotdot[8] = b'.';
+            dotdot[9] = b'.';
+            self.image[at + 12..at + 12 + rest as usize]
+                .copy_from_slice(&dotdot);
+        }
+        // 父目录的链接数因子目录的 `..` 而加一。
+        let mut parent = self.read_inode(directory as u32)?;
+        parent.links += 1;
+        self.write_inode_back(directory as u32, &parent);
+        self.cache.insert(directory as u32, parent);
+        self.add_entry(directory as u32, number, dir::TYPE_DIRECTORY, name.as_bytes())
+    }
+
+    /// Create a device node: mode as given (type bits ride the request),
+    /// the device number lives in the pointer area (`blocks[0]`).
+    fn make_node(
+        &mut self,
+        directory: u64,
+        name: &str,
+        mode: u32,
+        owner: u32,
+        group: u32,
+        device: u64,
+    ) -> Result<(), Errno> {
+        let number = self.alloc_inode(mode as u16)?;
+        {
+            let mut record = self.read_inode(number)?;
+            record.uid = owner as u16;
+            record.gid = group as u16;
+            record.blocks[0] = device as u32;
+            self.write_inode_back(number, &record);
+            self.cache.insert(number, record);
+        }
+        self.add_entry(directory as u32, number, dir::TYPE_UNKNOWN, name.as_bytes())
+    }
+
+    /// Hard link: an entry naming an existing inode; directories refuse
+    /// (C `link.c`: `EPERM`).
+    fn link(&mut self, directory: u64, name: &str, inode: u64) -> Result<(), Errno> {
+        let target = self.read_inode(inode as u32)?;
+        if Self::is_directory(&target) {
+            return Err(Errno::from_i32(EPERM));
+        }
+        self.add_entry(directory as u32, inode as u32, dir::TYPE_REGULAR, name.as_bytes())?;
+        let _ = self.adjust_links(inode as u32, 1);
+        Ok(())
+    }
+
+    /// Remove a name: drop the entry, decrement the target's links, and
+    /// free the inode (with its blocks) when the count hits zero.
+    /// Directories refuse (C `link.c:255-258` — `EPERM`).
+    fn unlink(&mut self, directory: u64, name: &str) -> Result<(), Errno> {
+        let number = self.remove_entry(directory as u32, name)?;
+        let record = self.read_inode(number)?;
+        if Self::is_directory(&record) {
+            return Err(Errno::from_i32(EPERM));
+        }
+        if self.adjust_links(number, -1)? {
+            let _ = self.free_file_blocks(&record);
+            self.free_inode(number)?;
+        }
+        Ok(())
+    }
+
+    /// Remove an empty directory: the child must hold nothing past its
+    /// dot pair, then its blocks/inode are freed and the parent's link
+    /// count drops (C `mfs rmdir`).
+    fn remove_dir(&mut self, directory: u64, name: &str) -> Result<(), Errno> {
+        let (entry, _, _) = self.find_entry_slot(directory as u32, name)?;
+        let child = self.read_inode(entry.number)?;
+        if !Self::is_directory(&child) {
+            return Err(Errno::from_i32(EINVAL));
+        }
+        // 空检查：只允许 `.` 与 `..` 两个真实条目（其余条目一律
+        // `ENOTEMPTY`——C `link.c` 的 rmdir 空检查）。
+        let mut real_entries = 0usize;
+        self.walk_directory(entry.number, |e| {
+            if e.number != 0 {
+                real_entries += 1;
+            }
+            true
+        })?;
+        if real_entries > 2 {
+            return Err(Errno::from_i32(minix_types::ENOTEMPTY));
+        }
+        let number = self.remove_entry(directory as u32, name)?;
+        let _ = self.free_file_blocks(&child);
+        self.free_inode(number)?;
+        let _ = self.adjust_links(directory as u32, -1);
+        Ok(())
+    }
+
+    /// Rename: remove the old name and add the new one. Same-parent
+    /// renames keep all bookkeeping local; cross-parent directory moves
+    /// need `..` fixups that stay with F3c-2's tail (registered gap).
+    fn rename(
+        &mut self,
+        old_directory: u64,
+        old_name: &str,
+        new_directory: u64,
+        new_name: &str,
+    ) -> Result<(), Errno> {
+        let number = self.remove_entry(old_directory as u32, old_name)?;
+        self.add_entry(
+            new_directory as u32,
+            number,
+            dir::TYPE_UNKNOWN,
+            new_name.as_bytes(),
+        )
+    }
+
+    /// Symbolic link: the target rides the pointer area when it fits
+    /// (fast symlink, C `s_i_block` convention), otherwise a data block.
+    fn symbolic_link(
+        &mut self,
+        directory: u64,
+        name: &str,
+        owner: u32,
+        group: u32,
+        target: &[u8],
+    ) -> Result<(), Errno> {
+        let number = self.alloc_inode(0o120777)?;
+        {
+            let mut record = self.read_inode(number)?;
+            record.uid = owner as u16;
+            record.gid = group as u16;
+            record.size = target.len() as u32;
+            if target.len() < 60 {
+                // 快速符号链接：目标直接写进指针区的 60 字节。
+                let base = unsafe {
+                    core::ptr::addr_of_mut!(record.blocks) as *mut u8
+                };
+                for (offset, byte) in target.iter().enumerate() {
+                    unsafe {
+                        core::ptr::write(base.add(offset), *byte);
+                    }
+                }
+            } else {
+                let data_block = self.alloc_block()?;
+                record.blocks[0] = data_block as u32;
+                let at = data_block as usize * self.geometry.block_size as usize;
+                self.image[at..at + target.len()].copy_from_slice(target);
+            }
+            self.write_inode_back(number, &record);
+            self.cache.insert(number, record);
+        }
+        self.add_entry(directory as u32, number, dir::TYPE_SYMLINK, name.as_bytes())
+    }
+
+    /// Read a symbolic link target: fast links read from the pointer
+    /// area (size < 60), slow links from their data block.
+    fn read_link(
+        &mut self,
+        inode: u64,
+        capacity: usize,
+        out: &mut dyn FnMut(&[u8]),
+    ) -> Result<usize, Errno> {
+        let record = self.read_inode(inode as u32)?;
+        let length = record.size as usize;
+        let bytes: Vec<u8> = if length < 60 {
+            // SAFETY: the pointer area's raw bytes carry the fast-symlink
+            // target (C convention: `inode.i_block` doubles as the buffer).
+            let base = unsafe {
+                core::ptr::addr_of!(record.blocks) as *const u8
+            };
+            let mut target = Vec::new();
+            for offset in 0..length {
+                // SAFETY: within the 60-byte pointer area.
+                target.push(unsafe { core::ptr::read(base.add(offset)) });
+            }
+            target
+        } else {
+            let data_block = u64::from(record.blocks[0]);
+            self.block(data_block)?
+                .get(..length)
+                .ok_or(Errno::from_i32(EIO))?
+                .to_vec()
+        };
+        let n = length.min(capacity);
+        out(&bytes[..n]);
+        Ok(n)
+    }
+
+    /// Change owner/group (C `protect.c` 的 chown 半：字段写回)。
+    fn change_owner(&mut self, inode: u64, owner: u32, group: u32) -> Result<u32, Errno> {
+        let mut record = self.read_inode(inode as u32)?;
+        record.uid = owner as u16;
+        record.gid = group as u16;
+        self.write_inode_back(inode as u32, &record);
+        self.cache.insert(inode as u32, record);
+        Ok(0)
+    }
+
+    /// Change permission bits: format bits stay, the caller's mode rides
+    /// the low bits (C `mfs protect.c`)。
+    fn change_mode(&mut self, inode: u64, mode: u32) -> Result<u32, Errno> {
+        let mut record = self.read_inode(inode as u32)?;
+        record.mode = ((record.mode & 0o170000) as u32 | (mode & 0o7777)) as u16;
+        self.write_inode_back(inode as u32, &record);
+        self.cache.insert(inode as u32, record);
+        Ok(u32::from(record.mode))
+    }
+
+    /// Update access and modification times (秒级落盘；纳秒位 ext2 旧版
+    /// 不存，丢弃——C 同样只存秒)。
+    fn update_times(
+        &mut self,
+        inode: u64,
+        accessed: (i64, i64),
+        modified: (i64, i64),
+    ) -> Result<(), Errno> {
+        let mut record = self.read_inode(inode as u32)?;
+        record.accessed = accessed.0 as u32;
+        record.modified = modified.0 as u32;
+        self.write_inode_back(inode as u32, &record);
+        self.cache.insert(inode as u32, record);
+        Ok(())
+    }
+
     /// Status from the decoded inode.
     fn stat(&mut self, inode: u64, stat: &mut Stat) -> Result<(), Errno> {
         let record = self.read_inode(inode as u32)?;
@@ -768,9 +1253,17 @@ impl FsDriver for Ext2Server {
         stat.nlinks = record.links as u32;
         stat.owner = record.uid as u32;
         stat.group = record.gid as u32;
+        if record.mode as u32 & 0o170000 == 0o020000
+            || record.mode as u32 & 0o170000 == 0o060000
+        {
+            stat.special = u64::from(record.blocks[0]);
+        }
         Ok(())
     }
 }
+
+/// 目录项槽位定位：块下标、块内偏移、rec_len。
+type SlotPos = (usize, usize, u16);
 
 /// 位图位测试（位 0 = 字节 0 的最低位）。
 fn bit_test(map: &[u8], bit: u32) -> bool {
@@ -1113,6 +1606,156 @@ mod tests {
         assert_ne!(first, second);
         server.free_block(first);
         server.free_block(second);
+    }
+
+    // ---- F3c-2：namespace 操作与元数据 ----
+
+    #[test]
+    fn test_create_makes_file_findable_and_readable() {
+        let mut server = mounted();
+        let node = server
+            .create(ROOT_INODE_NUMBER as u64, "NEW.TXT", 0o644, 0, 0)
+            .unwrap();
+        assert_eq!(node.mode & 0o170000, 0o100000, "普通文件类型位");
+        let (found, is_dir) = server
+            .lookup_child(ROOT_INODE_NUMBER as u64, "NEW.TXT")
+            .unwrap();
+        assert!(!is_dir);
+        assert_eq!(found.inode_number, node.inode_number);
+    }
+
+    #[test]
+    fn test_link_shares_inode_and_counts() {
+        let mut server = mounted();
+        let node = server
+            .create(ROOT_INODE_NUMBER as u64, "A.TXT", 0o644, 0, 0)
+            .unwrap();
+        server
+            .link(ROOT_INODE_NUMBER as u64, "B.TXT", node.inode_number)
+            .unwrap();
+        let (via_a, _) = server
+            .lookup_child(ROOT_INODE_NUMBER as u64, "A.TXT")
+            .unwrap();
+        let (via_b, _) = server
+            .lookup_child(ROOT_INODE_NUMBER as u64, "B.TXT")
+            .unwrap();
+        assert_eq!(via_a.inode_number, via_b.inode_number, "硬链接同 inode");
+        let mut st = Stat::zeroed();
+        server.stat(node.inode_number, &mut st).unwrap();
+        assert_eq!(st.nlinks, 2);
+    }
+
+    #[test]
+    fn test_unlink_drops_name_and_frees_on_last_link() {
+        let mut server = mounted();
+        let node = server
+            .create(ROOT_INODE_NUMBER as u64, "GONE.TXT", 0o644, 0, 0)
+            .unwrap();
+        server.unlink(ROOT_INODE_NUMBER as u64, "GONE.TXT").unwrap();
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "GONE.TXT").is_err());
+        // 最后一条链接断开 → inode 释放（再次分配拿到同一号）。
+        let reused = server.alloc_inode(0o100644).unwrap();
+        assert_eq!(reused, node.inode_number as u32, "释放后位图位回收");
+    }
+
+    #[test]
+    fn test_mkdir_lays_dot_pair_and_rmdir_takes_it_back() {
+        let mut server = mounted();
+        server
+            .make_dir(ROOT_INODE_NUMBER as u64, "SUB", 0o755, 0, 0)
+            .unwrap();
+        let (sub, is_dir) = server
+            .lookup_child(ROOT_INODE_NUMBER as u64, "SUB")
+            .unwrap();
+        assert!(is_dir);
+        // 子目录里 . 与 .. 在场：. 指自己、.. 指父亲。
+        let (dot, dot_is_dir) = server.lookup_child(sub.inode_number, ".").unwrap();
+        assert!(dot_is_dir && dot.inode_number == sub.inode_number);
+        let (dotdot, _) = server.lookup_child(sub.inode_number, "..").unwrap();
+        assert_eq!(dotdot.inode_number, ROOT_INODE_NUMBER as u64);
+        // rmdir：名字消失（空目录语义）。
+        server.remove_dir(ROOT_INODE_NUMBER as u64, "SUB").unwrap();
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "SUB").is_err());
+    }
+
+    #[test]
+    fn test_rmdir_refuses_nonempty() {
+        let mut server = mounted();
+        server
+            .make_dir(ROOT_INODE_NUMBER as u64, "SUB2", 0o755, 0, 0)
+            .unwrap();
+        let (sub, _) = server
+            .lookup_child(ROOT_INODE_NUMBER as u64, "SUB2")
+            .unwrap();
+        let _ = server
+            .create(sub.inode_number, "INNER.TXT", 0o644, 0, 0)
+            .unwrap();
+        assert_eq!(
+            server
+                .remove_dir(ROOT_INODE_NUMBER as u64, "SUB2")
+                .unwrap_err()
+                .to_i32(),
+            minix_types::ENOTEMPTY
+        );
+    }
+
+    #[test]
+    fn test_symlink_roundtrip_fast() {
+        let mut server = mounted();
+        server
+            .symbolic_link(
+                ROOT_INODE_NUMBER as u64,
+                "LNK",
+                0,
+                0,
+                b"/some/target",
+            )
+            .unwrap();
+        let (lnk_node, _) = server
+            .lookup_child(ROOT_INODE_NUMBER as u64, "LNK")
+            .unwrap();
+        let mut got = Vec::new();
+        let n = server
+            .read_link(lnk_node.inode_number, 128, &mut |bytes| {
+                got.extend_from_slice(bytes)
+            })
+            .unwrap();
+        assert_eq!(&got[..n], b"/some/target");
+    }
+
+    #[test]
+    fn test_rename_moves_name() {
+        let mut server = mounted();
+        let _ = server
+            .create(ROOT_INODE_NUMBER as u64, "OLD.TXT", 0o644, 0, 0)
+            .unwrap();
+        server
+            .rename(
+                ROOT_INODE_NUMBER as u64,
+                "OLD.TXT",
+                ROOT_INODE_NUMBER as u64,
+                "RENAMED.TXT",
+            )
+            .unwrap();
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "OLD.TXT").is_err());
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "RENAMED.TXT").is_ok());
+    }
+
+    #[test]
+    fn test_chmod_chown_update_cache_and_disc() {
+        let mut server = mounted();
+        let _ = server
+            .create(ROOT_INODE_NUMBER as u64, "M.TXT", 0o644, 0, 0)
+            .unwrap();
+        // 改基座镜像里 FILE.TXT（inode 11，0o100644）的权限位。
+        let new_mode = server
+            .change_mode(11, 0o600)
+            .unwrap();
+        assert_eq!(new_mode & 0o170000, 0o100000, "类型位保持");
+        assert_eq!(new_mode & 0o7777, 0o600);
+        let mut st = Stat::zeroed();
+        server.stat(11, &mut st).unwrap();
+        assert_eq!(st.mode & 0o7777, 0o600, "模式写回镜像且 stat 读到");
     }
 
 }
