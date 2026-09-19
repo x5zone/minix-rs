@@ -7,7 +7,7 @@ use crate::host::InitHost;
 use crate::log::warning;
 use crate::session::{Session, SE_SHUTDOWN};
 use crate::state_machine::{sig, StateKind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Seconds per death round (C: `DEATH_WATCH`, init.c:96).
 pub const DEATH_WATCH_SECS: u64 = 10;
@@ -140,7 +140,7 @@ mod tests {
         let mut host = ScriptHost::default();
         host.kill_errors.push(Errno::ESRCH);
         let mut sessions = vec![sample(1, "tty1")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         let mut collector = ChildCollector {
             sessions: &mut sessions,
@@ -170,7 +170,7 @@ mod tests {
         let mut host = ScriptHost::default();
         host.wait_errors.push(Errno::from_i32(ECHILD));
         let mut sessions = vec![sample(1, "tty1")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         let mut collector = ChildCollector {
             sessions: &mut sessions,
@@ -196,7 +196,7 @@ mod tests {
         // so every round times out; three rounds in, the warning fires.
         let mut host = ScriptHost::default();
         let mut sessions = vec![sample(1, "tty1")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         let clang = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         host.alarm_sets_clang = Some(clang.clone());

@@ -232,18 +232,18 @@ mod tests {
     use minix_sys::Errno;
     use std::sync::Arc;
 
-    fn fixture() -> (ScriptHost, Vec<Session>, crate::session_db::HashMapDb, Arc<SignalState>) {
+    fn fixture() -> (ScriptHost, Vec<Session>, crate::session_db::SessionMapDb, Arc<SignalState>) {
         (
             ScriptHost::default(),
             Vec::new(),
-            crate::session_db::HashMapDb::default(),
+            crate::session_db::SessionMapDb::default(),
             Arc::new(SignalState::default()),
         )
     }
 
     fn collector<'a>(
         sessions: &'a mut Vec<Session>,
-        db: &'a mut crate::session_db::HashMapDb,
+        db: &'a mut crate::session_db::SessionMapDb,
         rootdir: &str,
     ) -> ChildCollector<'a> {
         ChildCollector {

@@ -1,11 +1,13 @@
 //! Session database: pid → session index.
 //!
 //! Covers `minix3/sbin/init/init.c:1021-1096`. Berkeley DB in-memory
-//! hash (`dbopen(NULL, HASH)`) is replaced by `HashMap` (ARCH A-1:
-//! same behaviour, no libdb dependency).
+//! hash (`dbopen(NULL, HASH)`) is replaced by a map (ARCH A-1: same
+//! behaviour, no libdb dependency; the map family is `BTreeMap` since
+//! the `no_std` flip — `alloc` ships no hash map, and the trait below
+//! exposes no iteration, so key order is unobservable).
 //! Design contract: `.design/08-design.v1.md §1.1-§1.2`.
 
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
 
 /// Database error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,14 +24,14 @@ pub trait SessionDb {
     fn is_open(&self) -> bool;
 }
 
-/// Live `HashMap` implementation.
+/// Live map implementation (`BTreeMap` — see the module header).
 #[derive(Debug, Default)]
-pub struct HashMapDb {
+pub struct SessionMapDb {
     open: bool,
-    map: HashMap<i32, usize>,
+    map: BTreeMap<i32, usize>,
 }
 
-impl SessionDb for HashMapDb {
+impl SessionDb for SessionMapDb {
     fn open(&mut self) -> Result<(), DbError> {
         // C: close old table, open fresh memory hash (init.c:1025-1030).
         self.map.clear();
@@ -64,7 +66,7 @@ impl SessionDb for HashMapDb {
 #[derive(Debug, Default)]
 pub struct FakeDb {
     pub fail_open: bool,
-    inner: HashMapDb,
+    inner: SessionMapDb,
 }
 
 impl SessionDb for FakeDb {
@@ -98,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_open_insert_find() {
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         db.insert(42, 1);
         assert_eq!(db.find(42), Some(1));
@@ -106,14 +108,14 @@ mod tests {
 
     #[test]
     fn test_find_missing_none() {
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         assert_eq!(db.find(99), None);
     }
 
     #[test]
     fn test_remove_deletes() {
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         db.insert(7, 0);
         assert!(db.remove(7));
@@ -122,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_reopen_clears() {
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         db.insert(1, 0);
         db.open().unwrap();

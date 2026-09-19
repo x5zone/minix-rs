@@ -1,6 +1,6 @@
 # 08-init-session-db：会话数据库
 
-> **定位**：`start_session_db`（`minix3/sbin/init/init.c:runcom（L1021，工具生成）`）、`add_session`（1038-1057）、`del_session`（1062-1075）、`find_session`（1080-1096）。**[ARCH A-1]** Berkeley DB 内存哈希 → `HashMap`。
+> **定位**：`start_session_db`（`minix3/sbin/init/init.c:runcom（L1021，工具生成）`）、`add_session`（1038-1057）、`del_session`（1062-1075）、`find_session`（1080-1096）。**[ARCH A-1]** Berkeley DB 内存哈希 → 有序映射（初版 `HashMap`；`no_std` 翻转后为 `BTreeMap`——`alloc` 不带哈希容器，而 `SessionDb` trait 不暴露遍历，键序不可观测，换容器不改行为）。
 > **Rust**：`os/commands/sbin/init/src/session_db.rs`。
 > **前置依赖**：07（`Session` 节点）。
 > **本篇不覆盖（移交）**：utmp 挂钩（见 13，`session_utmpx` 调用点）。
@@ -9,7 +9,7 @@
 
 ## 1. 概念：waitpid 只给 pid，init 需要反向索引
 
-子进程退出时，内核只告诉 init 一个数字：pid。但 init 需要知道的是“这是哪条线路的 getty”，才能决定重启还是移除。会话链表是按线路组织的，挨个遍历找 pid 又慢又丑。数据库就是这张反向索引表：键是 pid，值是会话。`dbopen(NULL, ...)` 的 NULL 很关键——它表示内存表而非文件，进程退出表就消失，无持久化语义。Rust 用 `HashMap` 等价实现，这是全篇最干净的一次架构演进：接口与行为都不变，只是换掉了底层的库依赖。
+子进程退出时，内核只告诉 init 一个数字：pid。但 init 需要知道的是“这是哪条线路的 getty”，才能决定重启还是移除。会话链表是按线路组织的，挨个遍历找 pid 又慢又丑。数据库就是这张反向索引表：键是 pid，值是会话。`dbopen(NULL, ...)` 的 NULL 很关键——它表示内存表而非文件，进程退出表就消失，无持久化语义。Rust 用映射等价实现，这是全篇最干净的一次架构演进：接口与行为都不变，只是换掉了底层的库依赖。容器家族在 `no_std` 翻转时从 `HashMap` 换成 `BTreeMap`（`alloc` 无哈希容器；trait 无遍历接口，键序不可观测）——A-1 的行为承诺不变，类型名随实现改为 `SessionMapDb`。
 
 启停语义也值得注意。`start_session_db` 先关旧表再开新表（读表重建时调用），`add` 在 DB 未开时静默返回（启动顺序的宽容），`find` 在未命中时返回空（调用方决定重启还是忽略）。失败路径都记 emergency 而不崩溃，符合 init“能修就修”的哲学。
 
@@ -34,7 +34,7 @@ DB 等于 pid 到会话的内存哈希。下一章看稳态如何用它回收子
 
 ## 3. Rust 设计决策
 
-`SessionDb` trait 加 `HashMapDb` 真实现与 `FakeDb` 剧本实现（注：随 **[ARCH: init-host-seam]** 的收敛方向，`SessionDb` 是纯内存数据结构、不涉及机器副作用，是唯一保留在接缝之外的 trait；原句里 DeviceProbe 的单 impl 关联已随该 trait 退役而消失）。`open()` 语义对应“关旧开新”，失败返回 `DbError` 而非 exit。utmp 挂钩移交 13。与 Redox 对照：Redox 同样用 HashMap 做进程索引，我们借鉴其所有权模式（值类型存储而非裸指针），避免 C 的指针拷贝。
+`SessionDb` trait 加 `SessionMapDb` 真实现与 `FakeDb` 剧本实现（注：随 **[ARCH: init-host-seam]** 的收敛方向，`SessionDb` 是纯内存数据结构、不涉及机器副作用，是唯一保留在接缝之外的 trait；原句里 DeviceProbe 的单 impl 关联已随该 trait 退役而消失）。`open()` 语义对应“关旧开新”，失败返回 `DbError` 而非 exit。utmp 挂钩移交 13。与 Redox 对照：Redox 同样用 HashMap 做进程索引，我们借鉴其所有权模式（值类型存储而非裸指针），避免 C 的指针拷贝。
 
 ---
 

@@ -115,7 +115,7 @@ mod tests {
     use crate::host::ScriptHost;
     use minix_sys::{Errno, Pid};
     use crate::session::build_session;
-    use crate::session_db::HashMapDb;
+    use crate::session_db::SessionMapDb;
 
     fn no_kill(_pid: Pid, _sig: i32) {}
 
@@ -133,7 +133,7 @@ mod tests {
             crate::ttys::parse_ttys_line("tty1 /sbin/getty vt100 on").unwrap(),
             crate::ttys::parse_ttys_line("tty2 /sbin/getty vt100 on").unwrap(),
         ];
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         assert_eq!(
             clean_ttys(&mut host, &mut sessions, &mut db, &lines),
@@ -155,7 +155,7 @@ mod tests {
         let lines = vec![
             crate::ttys::parse_ttys_line("tty1 /sbin/getty vt100 off").unwrap(),
         ];
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         clean_ttys(&mut host, &mut sessions, &mut db, &lines);
         assert!(sessions[0].flags.contains(SE_SHUTDOWN));
@@ -168,7 +168,7 @@ mod tests {
         let mut sessions = vec![build_session(1, "tty1", "/sbin/getty", None, true).unwrap()];
         sessions[0].process = Some(4);
         let lines: Vec<TtysLine> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         clean_ttys(&mut host, &mut sessions, &mut db, &lines);
         assert!(sessions[0].flags.contains(SE_SHUTDOWN));
@@ -182,7 +182,7 @@ mod tests {
         let lines = vec![
             crate::ttys::parse_ttys_line("tty9 /sbin/getty vt100 on secure").unwrap(),
         ];
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         clean_ttys(&mut host, &mut sessions, &mut db, &lines);
         assert_eq!(sessions.len(), 1);
@@ -198,7 +198,7 @@ mod tests {
         let lines = vec![
             crate::ttys::parse_ttys_line("tty1 /sbin/getty vt100 on").unwrap(),
         ];
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         clean_ttys(&mut host, &mut sessions, &mut db, &lines);
         assert!(!sessions[0].flags.contains(SE_SHUTDOWN));
@@ -213,7 +213,7 @@ mod tests {
         let mut sessions = vec![build_session(1, "tty1", "/sbin/getty", None, true).unwrap()];
         sessions[0].process = Some(4);
         let lines: Vec<TtysLine> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         db.open().unwrap();
         clean_ttys(&mut host, &mut sessions, &mut db, &lines);
         assert!(sessions[0].flags.contains(SE_SHUTDOWN));

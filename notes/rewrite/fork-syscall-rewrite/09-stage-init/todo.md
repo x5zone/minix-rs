@@ -55,10 +55,13 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 
 附带：`cargo clippy --fix` 会移除仅测试配置使用的导入，后续跑 --fix 必须以 `--tests` 视角复查编译。
 
-### P1-2 ◐ std/no_std 决策（env 面已接 minix-rt，no_std 化剩三件裁决）
+### P1-2 ◐ std/no_std 决策（①② 已落地，③ 决策已记录待 edge 认领）
 
 - ✅ 已落：boot 路径的参数读取改走 `minix_rt::crt0::argv_count/argv_bytes`（E-CMDSYSFACE 方案 A ② 的 env API 已由共享 lane 落地），`std::env` 依赖归零；真机入口路径只准依赖 minix_rt/minix_sys 的约束已写入本条。
-- ☐ 残余（完整 `#![no_std]` 化需三件裁决，非本 stage 单方面可定）：①`HashMapDb` 的 HashMap→BTreeMap 或自定 hasher（动 A-1 已闭单的架构决策）；②`std::sync::Arc`→`alloc::sync::Arc`（机械）；③panic handler 由 minix-rt 统一提供的形式（E1「首个 no_std 二进制」验证面）。三件全部挂 E-CMDSYSFACE/E1 等待态，登记 edge。
+- ✅ **① HashMap→BTreeMap**（2026-09-20，卡 J）：`session_db.rs` 换 `alloc::collections::BTreeMap`，类型名随实现改 `SessionMapDb`。A-1 修订（08 篇）：`alloc` 不带哈希容器；`SessionDb` trait 不暴露遍历（C 的 db 表同样"无遍历接口"，init.c:1021-1096），键序不可观测——换容器不改行为。A-1 的行为承诺（接口与行为不变、去 libdb 依赖）不变。
+- ✅ **② Arc/atomic 换 alloc/core**（2026-09-20，卡 J）：生产路径 `main.rs`/`driver.rs`/`host.rs` 的 `alloc::sync::Arc`，`signal_state.rs`/`shutdown.rs`/`host.rs` 的 `core::sync::atomic`；crate 根 `extern crate alloc;`。测试构建保持 std（`catch_unwind` 等测试面不动）。多用户态共用 `SignalState` 的 `Arc` 语义（handler 与 death 共享，99 篇）不因换源而变。
+- ◐ **③ panic handler 形式——决策已记录，执行面待 edge 认领（C-21）**。裁决：init 采用 minix-rt 的**统一形式**——`minix_rt::diag::format_panic_report`（栈上缓冲、无分配器无系统调用）渲染 + init 特有的收尾（PID 1 不允许自旋挂死全机：发 SYS_DIAGCTL 控制台后 `exit` 非零，内核可见"init 死了"，与 C 的 panic 即死同果）。**执行障碍（为什么不能在本 stage 单方面落地）**：启用 minix-rt 的 `panic-handler` feature 需同时 `default-features = false`（attr 门控 `not(feature = "std")`），而 feature 统一会让 std 测试二进制里同时出现 minix-rt 的 `#[panic_handler]` 与 std 的 `panic_impl`——E0152；改为 init 自定义 `#[panic_handler]` 则要求 minix-rt 去掉 std feature，workspace 统一构建下会把 std 拖进 no_std init（同类冲突）。两条路都要动 workspace 级的 minix-rt 特性声明（os/Cargo.toml 共享文件 + edge2 领地），按 edge4 §1 规则登记 C-21 认领。
+- ☐ 残余：③ 的执行面（workspace 级 minix-rt 特性声明 + `#![cfg_attr(...)] no_std` 翻转 + 全模块 alloc prelude 迁移——容器使用面约 168 处/15 文件已盘点）。
 
 ### P1-8 ✅ 测试三层终检（2026-09-18 审计轮闭环）
 

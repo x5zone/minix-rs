@@ -30,7 +30,7 @@ use crate::ttys::{parse_ttys_line, TtysLine};
 use crate::utmp::{logwtmpx, utmpx_set_runlevel, RecordType};
 use crate::wait::WaitStatus;
 use minix_sys::Pid;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 /// The ttys table (C: `_PATH_TTYS`; `minix3/etc/ttys` is the sample).
 pub const TTYS_PATH: &str = "/etc/ttys";
@@ -50,7 +50,7 @@ pub struct DriverState {
     /// The session table, in ttys order.
     pub sessions: Vec<Session>,
     /// The session database (pid → index).
-    pub db: crate::session_db::HashMapDb,
+    pub db: crate::session_db::SessionMapDb,
     /// Async-written signal state (C: `clang` +
     /// `requested_transition` + the hook requests).
     pub signals: Arc<SignalState>,
@@ -102,7 +102,7 @@ impl DriverState {
 /// reap time, init.c:1466).
 pub struct ChildCollector<'a> {
     pub sessions: &'a mut Vec<Session>,
-    pub db: &'a mut crate::session_db::HashMapDb,
+    pub db: &'a mut crate::session_db::SessionMapDb,
     pub did_multiuser_chroot: bool,
     pub rootdir: String,
 }
@@ -381,7 +381,7 @@ mod tests {
             console_secure: false,
             from_securitylevel: 0,
             sessions: Vec::new(),
-            db: crate::session_db::HashMapDb::default(),
+            db: crate::session_db::SessionMapDb::default(),
             signals: Arc::new(SignalState::default()),
             sessions_seen: false,
             did_multiuser_chroot: false,
@@ -519,7 +519,7 @@ mod tests {
         let mut sessions = vec![
             crate::session::build_session(1, "tty1", "/sbin/getty", None, true).unwrap(),
         ];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         db.insert(4, 1);
         sessions[0].process = Some(4);

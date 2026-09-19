@@ -297,7 +297,7 @@ mod tests {
     fn test_collect_child_ignores_unknown_pid() {
         let mut host = ScriptHost::default();
         let mut sessions = vec![sample_session(1, "tty1")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         let mut cleared: Vec<(String, i32)> = Vec::new();
         let mut collector = ChildCollector {
@@ -320,7 +320,7 @@ mod tests {
         host.fork_outcomes.push(Ok(9)); // the respawned getty
         host.now = 500;
         let mut sessions = vec![sample_session(1, "tty1")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         db.insert(4, 1);
         sessions[0].process = Some(4);
@@ -346,7 +346,7 @@ mod tests {
         let mut sessions = vec![sample_session(1, "tty1")];
         sessions[0].flags.set(SE_SHUTDOWN);
         sessions[0].process = Some(4);
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         db.insert(4, 1);
         let mut collector = ChildCollector {
@@ -374,7 +374,7 @@ mod tests {
         host.wait_outcomes.push(Ok((11, WaitStatus::Exited { code: 0 })));
         host.wait_errors.push(Errno::ESRCH); // ends the reap loop
         let mut sessions = vec![sample_session(1, "tty1"), sample_session(2, "tty2")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         let signals = std::sync::Arc::new(crate::signal_state::SignalState::default());
         let mut collector = ChildCollector {
@@ -398,7 +398,7 @@ mod tests {
         host.securitylevel = Some(1);
         host.fork_outcomes.push(Err(Errno::EAGAIN));
         let mut sessions = vec![sample_session(1, "tty1"), sample_session(2, "tty2")];
-        let mut db = crate::session_db::HashMapDb::default();
+        let mut db = crate::session_db::SessionMapDb::default();
         db.open().unwrap();
         let signals = std::sync::Arc::new(crate::signal_state::SignalState::default());
         let mut collector = ChildCollector {

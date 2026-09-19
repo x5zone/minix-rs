@@ -385,7 +385,7 @@ pub struct ScriptHost {
     pub wait_errors: Vec<Errno>,
     /// When set, `alarm` arms the shared clang flag — the scripted
     /// shape of "kernel raises SIGALRM, the handler sets clang".
-    pub alarm_sets_clang: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub alarm_sets_clang: Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>,
 }
 
 impl ScriptHost {
@@ -488,7 +488,7 @@ impl InitHost for ScriptHost {
     fn alarm(&mut self, secs: u32) -> Result<(), Errno> {
         self.alarms.push(secs);
         if let Some(clang) = &self.alarm_sets_clang {
-            clang.store(true, std::sync::atomic::Ordering::SeqCst);
+            clang.store(true, core::sync::atomic::Ordering::SeqCst);
         }
         Ok(())
     }

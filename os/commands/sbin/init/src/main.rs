@@ -4,6 +4,11 @@
 //! session, device probe, flag parsing, signal registration, stdio
 //! cleanup, securelevel probe, then `transition()` (see 02).
 
+// The containers live in `alloc` (not the std prelude) so the module
+// tree is `no_std`-movable: `alloc::sync::Arc` and `alloc::collections`
+// resolve identically in the std test build and in a freestanding build.
+extern crate alloc;
+
 mod clean_ttys;
 mod contracts;
 mod driver;
@@ -28,7 +33,7 @@ use driver::{DriverState, TTYS_PATH};
 use entry::{InitialState, decide_entry, parse_boot_args};
 use host::{InitHost, MinixSysHost};
 use state_machine::StateKind;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 fn main() {
     minix_rt::init();
@@ -101,7 +106,7 @@ fn main() {
         console_secure: false,
         from_securitylevel,
         sessions: Vec::new(),
-        db: crate::session_db::HashMapDb::default(),
+        db: crate::session_db::SessionMapDb::default(),
         signals: signals.clone(),
         sessions_seen: false,
         did_multiuser_chroot: false,

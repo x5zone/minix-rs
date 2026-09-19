@@ -272,7 +272,7 @@ mod tests {
     use crate::driver::ChildCollector;
     use crate::host::ScriptHost;
     use crate::session::Session;
-    use crate::session_db::HashMapDb;
+    use crate::session_db::SessionMapDb;
     use crate::host::{default_signal_spec, ignore_spec, restore_spec};
     use crate::state_machine::HandlerKind;
     use crate::signal_state::SignalState;
@@ -281,7 +281,7 @@ mod tests {
 
     fn fresh_collector<'a>(
         sessions: &'a mut Vec<Session>,
-        db: &'a mut HashMapDb,
+        db: &'a mut SessionMapDb,
     ) -> ChildCollector<'a> {
         ChildCollector {
             sessions,
@@ -317,7 +317,7 @@ mod tests {
         let mut host = ScriptHost::parent_only();
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -336,7 +336,7 @@ mod tests {
         host.securitylevel = Some(2);
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -356,7 +356,7 @@ mod tests {
         host.fork_outcomes.push(Err(Errno::EAGAIN));
         host.wait_errors.push(Errno::ESRCH); // the WNOHANG reap ends
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -378,7 +378,7 @@ mod tests {
         host.wait_outcomes.push(Ok((42, WaitStatus::Exited { code: 1 })));
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -399,7 +399,7 @@ mod tests {
             WaitStatus::Signaled { termsig: 9, core_dumped: false },
         )));
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -417,7 +417,7 @@ mod tests {
         let mut host = ScriptHost::parent_only();
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         signals.note_signal(20 - 2); // SIGTSTP(18) → catatonia
         let mut collector = fresh_collector(&mut sessions, &mut db);
@@ -448,7 +448,7 @@ mod tests {
         host.exec_outcomes.push(Errno::EPERM);
         host.exec_outcomes.push(Errno::EPERM);
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -480,7 +480,7 @@ mod tests {
         host.exec_outcomes.push(Errno::EPERM);
         host.exec_outcomes.push(Errno::EPERM);
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -510,7 +510,7 @@ mod tests {
         host.exec_outcomes.push(Errno::EPERM);
         host.exec_outcomes.push(Errno::EPERM);
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {
@@ -536,7 +536,7 @@ mod tests {
         host.fork_outcomes.push(Ok(0));
         host.input_lines.push(None); // EOF = ^D
         let mut sessions: Vec<Session> = Vec::new();
-        let mut db = HashMapDb::default();
+        let mut db = SessionMapDb::default();
         let signals = std::sync::Arc::new(SignalState::default());
         let mut collector = fresh_collector(&mut sessions, &mut db);
         let deps = SingleUserDeps {

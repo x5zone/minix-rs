@@ -19,7 +19,7 @@
 use crate::contracts::ShutdownRequest;
 use crate::state_machine::sig;
 use crate::state_machine::{signal_to_state, StateKind};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Process-wide signal state — what the real kernel-facing trampoline
 /// touches. Handlers may only do lock-free atomic stores, so the state
