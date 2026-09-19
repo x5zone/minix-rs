@@ -71,6 +71,33 @@ impl WorkerFunc {
     }
 }
 
+/// 续接标识：臂挂起前登记"FS 回复到了之后要做什么"。
+///
+/// C 的"回复后半段"活在 worker 线程的栈上（`fs_sendrec` 里 `worker_wait()`
+/// 让出，回复到达后线程从该点继续，调用方接着解回复、拷出、回用户），
+/// 单线程事件循环没有可恢复的栈，故把这一半显式成一个标记 + 少量参数。
+/// **参数尽量从槽上已有的 `input`（原始请求）与 `sendrec`（回复）重算**，
+/// 只存重算不出来的东西（如已发出的 grant id）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerCont {
+    /// `Fstat`（`do_fstat` → `REQ_STAT`）：回复只有状态字，续接就是把
+    /// 用户的 grant 撤掉再把状态回给用户。
+    Fstat {
+        /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
+        grant: i32,
+    },
+    /// `Read`（`do_read` → `REQ_READ`）：回复的 `nbytes`/`seek_pos` 要写回
+    /// filp 位置，状态是"读到多少字节"（C read.c 的 `cum_io`）。
+    Read {
+        /// 已发给 FS 的 magic grant。
+        grant: i32,
+        /// 目标 filp 下标（位置推进要写回它）。
+        filp: usize,
+        /// 请求时的位置（C 的 `position`，回复里给的是新位置）。
+        orig_pos: i64,
+    },
+}
+
 /// Observable state of a single worker slot.
 ///
 /// Collapses `threads.h:w_fp` + `tll` wait state + `w_task` / `w_sendrec` into
@@ -112,6 +139,9 @@ pub struct WorkerSlot {
     pub func: Option<WorkerFunc>,
     /// Slot index (`self` in `worker_main:243` `ASSERTW(self)`).
     pub self_index: usize,
+    /// 续接标识（`Some` = 该槽的作业在等 FS 回复，回复到了要跑续接体；
+    /// C 的"后半段在栈上"在单线程模型里的显式对应物）。
+    pub cont: Option<WorkerCont>,
 }
 
 impl WorkerSlot {
@@ -126,6 +156,7 @@ impl WorkerSlot {
             state: WorkerState::Idle,
             func: None,
             self_index: index,
+            cont: None,
         }
     }
 
@@ -151,6 +182,7 @@ impl WorkerSlot {
         self.saved_err = None;
         self.state = WorkerState::Idle;
         self.func = None;
+        self.cont = None;
     }
 
     /// `WaitingForFs` — `fs_sendrec` in flight (`worker.c:539` `w_task != NONE`).

@@ -327,6 +327,14 @@ pub struct VfsState {
     pub pending: usize,
     /// Whether boot completed (`finish_init()` ran).
     pub initialized: bool,
+    /// 本进程的 grant 表（C 的 `grants[]` 全局数组，safecopies.c）。
+    /// 启动段经 `register`（C 的 `sys_setgrant`）把表位置告知内核；
+    /// 对话臂用它把**用户缓冲**授权给 FS 读写（`grant_user_buffer`）。
+    pub grants: minix_sys::grant::GrantTable,
+    /// 当前分发的作业绑在哪个 worker 槽（C 的 `self`／`fp_func` 背后的
+    /// 槽指针；臂用它登记续接、发送 FS 请求）。`None` = 未绑（非 syscall
+    /// 路径或已释放）。
+    pub current_worker: Option<usize>,
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
     /// `(调用方, m_type)` 入队，`run()` 在每轮循环尾用
     /// [`send_reply`] 发出（C `reply(who_e, result)` 的位置）。
@@ -358,6 +366,8 @@ impl VfsState {
             pending: 0,
             initialized: false,
             pending_reply: None,
+            grants: minix_sys::grant::GrantTable::new(),
+            current_worker: None,
         }
     }
 
@@ -660,8 +670,37 @@ impl VfsState {
         match route {
             Route::Syscall { call } => {
                 if self.accept_requests {
-                    let result = crate::syscalls::dispatch_syscall(self, call);
-                    self.queue_reply(msg.m_source, result);
+                    // C main.c:146-160 —— 作业先绑 worker 槽
+                    // （`worker_start(rfp, use_spare=TRUE)`）；没有空槽即
+                    // `EAGAIN`（`worker_available()==0` 的分支）。
+                    let assigned = self.current_fp_slot.and_then(|fs| {
+                        self.worker_pool.assign_first_fit(
+                            fs,
+                            crate::worker::WorkerFunc::DoWork,
+                            msg,
+                        )
+                    });
+                    match assigned {
+                        Some(idx) => {
+                            self.current_worker = Some(idx);
+                            let result = crate::syscalls::dispatch_syscall(self, call);
+                            // 臂没挂起（`Suspend` 之外）= 作业完结：释放槽
+                            // （C `worker_main` 尾部的 `worker_release`）；
+                            // 挂起的臂自己登记续接，槽留给续接体释放。
+                            if !matches!(result, crate::call_table::SyscallResult::Suspend) {
+                                self.worker_pool.release(idx);
+                                self.current_worker = None;
+                            }
+                            self.queue_reply(msg.m_source, result);
+                        }
+                        None => {
+                            // C handle_work:150-151 —— 无槽即 `EAGAIN`。
+                            self.queue_reply(
+                                msg.m_source,
+                                crate::call_table::SyscallResult::Error(minix_types::EAGAIN),
+                            );
+                        }
+                    }
                 } else if let Some(slot) = self.current_fp_slot {
                     self.mark_request_pending(slot);
                 }
@@ -678,7 +717,82 @@ impl VfsState {
             }
             _ => {}
         }
+        // 续接驱动点：本轮（或上一轮）的 FS 回复若已落在某个槽上，就跑该
+        // 作业的续接体（C 的"线程从 `worker_wait` 返回后继续"在单线程模型
+        // 里的对应物）。放在路由之后，保证同一轮里"收回复 → 完成作业"闭
+        // 环。
+        self.run_worker_continuations();
         route
+    }
+
+    /// 跑所有"回复已到、续接未跑"的作业。
+    ///
+    /// 判定：槽上有续接标识（`cont`）且回复已落在 `sendrec`（由
+    /// [`Self::handle_fs_reply`] 写入）。每个这样的作业按续接标识完成：
+    /// 撤销 grant、按需写回状态、把结果回给用户，然后释放槽。
+    ///
+    /// C 锚点：`fs_sendrec` 返回后的那一半（`read.c:181-190` 的位置推进、
+    /// `request.c:1109` 的 revoke），状态字取 `reqmp->m_type`，
+    /// `ERESTART` 折成 `EIO`（comm.c:161-163）。
+    pub fn run_worker_continuations(&mut self) {
+        for idx in 0..crate::worker::NR_WTHREADS {
+            let (cont, reply, fp_slot) = match self.worker_pool.get_mut(idx) {
+                Some(wp) => {
+                    let (Some(cont), Some(reply)) = (wp.cont, wp.sendrec) else {
+                        continue;
+                    };
+                    (cont, reply, wp.fp_slot)
+                }
+                None => continue,
+            };
+            let mut status = reply.m_type;
+            if status == minix_types::ERESTART {
+                status = minix_types::EIO;
+            }
+            match cont {
+                crate::worker::WorkerCont::Fstat { grant } => {
+                    let _ = self.revoke_grant(grant);
+                }
+                crate::worker::WorkerCont::Read { grant, filp, orig_pos } => {
+                    let _ = self.revoke_grant(grant);
+                    if status == 0 {
+                        // C read.c —— 回复给 `seek_pos`/`nbytes`：位置按
+                        // 实际读到的字节推进（64 位位置从回复的第二个字读）。
+                        // SAFETY: REQ_READ 的回复按 VFS↔FS 的 LP64 布局
+                        // 放在负载区（首字 = nbytes、次字 = seek_pos）。
+                        let raw = unsafe { &reply.m_u.raw };
+                        let mut b8 = [0u8; 8];
+                        b8.copy_from_slice(&raw[8..16]);
+                        let new_pos = i64::from_le_bytes(b8);
+                        b8.copy_from_slice(&raw[0..8]);
+                        let nbytes = i64::from_le_bytes(b8);
+                        if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
+                            f.pos = new_pos;
+                        }
+                        status = nbytes as i32;
+                        let _ = orig_pos; // 位置已由回复给出，原值只作对账
+                    }
+                }
+            }
+            // 完成：清槽 + 回用户（目标取 fproc 的端点）。
+            if let Some(wp) = self.worker_pool.get_mut(idx) {
+                wp.cont = None;
+                wp.sendrec = None;
+                wp.task = None;
+            }
+            self.worker_pool.release(idx);
+            if let Some(fp_slot) = fp_slot
+                && let Some(fp) = self.fproc_table.get(fp_slot)
+            {
+                let target = fp.endpoint;
+                let result = if status == 0 {
+                    crate::call_table::SyscallResult::Ok(0)
+                } else {
+                    crate::call_table::SyscallResult::Error(status)
+                };
+                self.queue_reply(target, result);
+            }
+        }
     }
 
     /// `get_work:590` reviving fast-path — if `reviving>0` find first
@@ -828,6 +942,42 @@ impl VfsState {
     /// 取走待发回复（`run()` 每轮循环尾调用）。
     pub fn take_reply(&mut self) -> Option<(Endpoint, i32)> {
         self.pending_reply.take()
+    }
+
+    /// 给 FS 发一张 **magic grant**：把 `user_e`:`addr` 起的 `bytes` 字节
+    /// 授权给 `fs_e` 读写。
+    ///
+    /// C: `cpf_grant_magic(fs_e, user_e, addr, bytes, access)` ——
+    /// `request.c:844`（read/write）与 `:1087`（stat）都是这个形状；权限位
+    /// 由调用方给（读是 `CPF_WRITE`——FS 往用户缓冲写；带 `CPF_TRY` 的那一半
+    /// 由 `GrantScope` 表达，`ERESTART` 重发路径见 `req_stat`/`req_readwrite`）。
+    ///
+    /// 失败面：表满/内核调用失败即 `Err`——C 在这两处 `panic`
+    /// （"cpf_grant_* failed"），Rust 让臂自己决定（C 语义上这是内部错误，
+    /// 臂按 `EIO` 回用户）。
+    pub fn grant_user_buffer(
+        &mut self,
+        fs_e: Endpoint,
+        user_e: Endpoint,
+        addr: u64,
+        bytes: u64,
+        access: minix_types::CpFlags,
+    ) -> Result<i32, i32> {
+        self.grants.grant_magic(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            fs_e.get(),
+            user_e.get(),
+            addr,
+            bytes,
+            access,
+        )
+    }
+
+    /// 撤销一张 grant（C `cpf_revoke`）。返回值按 C 的调用点语义：只要
+    /// 撤销本身不报错就回 `Ok`；`GRANT_FAULTED` 由调用方比对
+    /// （C 的 `if (cpf_revoke(grant_id) == GRANT_FAULTED) return ERESTART;`）。
+    pub fn revoke_grant(&mut self, grant: i32) -> Result<i32, i32> {
+        self.grants.revoke(grant)
     }
 
     /// `fs_sendrec`（comm.c:134-170）的对话原语——syscall 臂的进入半。
@@ -1071,6 +1221,12 @@ pub fn run() -> ! {
     state.finish_init();
 
     // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
+    // C 进程启动时的 grant 表注册（`sys_setgrant`，safecopies.c 的
+    // `grants` 全局在这里告诉内核表位置）；失败无恢复面，仅记录。
+    let _ = state
+        .grants
+        .register(&minix_sys::syscall::DirectKernelCallTransport);
+
     let mut ds = minix_sys::ds::DsClient::new(
         minix_sys::ipc::DirectTrapTransport,
         minix_sys::syscall::DirectKernelCallTransport,
