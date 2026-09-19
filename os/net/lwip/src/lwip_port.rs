@@ -253,6 +253,27 @@ pub trait Stack {
 
     /// 查询本地端点（getsockname 的栈半）；未绑定时返回通配端点。
     fn local_endpoint_udp(&self, socket: StackSocket) -> Result<StackEndpoint, i32>;
+
+    // -- TCP 半（第 08 篇的栈面）--
+
+    /// 预绑本地端点（bind 的 TCP 语义：栈内监听随 listen 落地）。
+    fn bind_tcp(&mut self, socket: StackSocket, local: Option<StackEndpoint>) -> Result<(), i32>;
+
+    /// 转入监听；`backlog` 的语义按 C 收下（栈对"单个监听者一次挂一个
+    /// 连接"的模型只记账不承诺队列深度，见 08 篇）。
+    fn listen_tcp(&mut self, socket: StackSocket, backlog: u32) -> Result<(), i32>;
+
+    /// 发起连接（connect 的栈半）。非阻塞的调用方语义（EINPROGRESS）
+    /// 由服务层折算；这里只报"能否开张"。
+    fn connect_tcp(&mut self, socket: StackSocket, remote: StackEndpoint) -> Result<(), i32>;
+
+    /// 受连接（accept 的栈半）：监听者上已有建连则把它整体转成受纳
+    /// 套接字并就地换上新监听者，返回 `(受纳句柄, 对端端点)`；无连接
+    /// 按阻塞类错误回答（服务层决定挂起还是立即返回）。
+    fn accept_tcp(&mut self, socket: StackSocket) -> Result<(StackSocket, StackEndpoint), i32>;
+
+    /// 查询对端端点（getpeername 的栈半）。
+    fn remote_endpoint_tcp(&self, socket: StackSocket) -> Result<StackEndpoint, i32>;
 }
 
 #[cfg(test)]
@@ -368,6 +389,45 @@ mod wall_tests {
 
         fn local_endpoint_udp(&self, _socket: StackSocket) -> Result<StackEndpoint, i32> {
             Ok(StackEndpoint { addr: None, port: 0 })
+        }
+
+        fn bind_tcp(
+            &mut self,
+            _socket: StackSocket,
+            _local: Option<StackEndpoint>,
+        ) -> Result<(), i32> {
+            Ok(())
+        }
+
+        fn listen_tcp(&mut self, _socket: StackSocket, _backlog: u32) -> Result<(), i32> {
+            Ok(())
+        }
+
+        fn connect_tcp(
+            &mut self,
+            _socket: StackSocket,
+            _remote: StackEndpoint,
+        ) -> Result<(), i32> {
+            Ok(())
+        }
+
+        fn accept_tcp(&mut self, socket: StackSocket) -> Result<(StackSocket, StackEndpoint), i32> {
+            let accepted = StackSocket::new(socket.family(), self.next_index);
+            self.next_index += 1;
+            Ok((
+                accepted,
+                StackEndpoint {
+                    addr: Some(StackIpAddr::V4([127, 0, 0, 1])),
+                    port: 5,
+                },
+            ))
+        }
+
+        fn remote_endpoint_tcp(&self, _socket: StackSocket) -> Result<StackEndpoint, i32> {
+            Ok(StackEndpoint {
+                addr: Some(StackIpAddr::V4([127, 0, 0, 1])),
+                port: 5,
+            })
         }
 
         fn poll(&mut self, now_millis: u64) -> PollWhen {

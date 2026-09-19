@@ -93,6 +93,17 @@ pub fn socket_reply(req_id: i32, sock_id: i32) -> Message {
     m
 }
 
+/// 错误码的线上归一：`minix_types::E*` 常量是正号（crate 惯例），
+/// `util::ERR_*` 与栈特征返回的错误是负号线上形状——两种来源在路上
+/// 汇合时统一折成"负号或零"，回复载荷不再二次翻转。
+fn wire(code: i32) -> i32 {
+    if code > 0 {
+        -code
+    } else {
+        code
+    }
+}
+
 /// 组装通用回复（`mess_lsockdriver_vfs_reply { req_id; status }`——
 /// **状态在第二格**）：建户之外的请求族暂以 ENOSYS 走这条形状诚实
 /// 回答；VFS 侧各续接体对不认识的回复号折 EIO，不会误读成数据。
@@ -424,8 +435,78 @@ pub fn recv_reply(req_id: i32, status: i32, ctl_len: u32, addr_len: u32) -> Mess
     m
 }
 
+/// `SDEV_LISTEN`/`SDEV_SHUTDOWN` 的载荷：`mess_vfs_lsockdriver_simple
+/// { req_id@0; sock_id@4; param@8 }`（ipc.h:2319-2327）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimpleRequest {
+    pub req_id: i32,
+    pub sock_id: i32,
+    pub param: i32,
+}
+
+/// 解码 `mess_vfs_lsockdriver_simple` 载荷。
+pub fn decode_simple(msg: &Message) -> Option<SimpleRequest> {
+    // SAFETY: 载荷按上述域序写在消息负载区。
+    let raw = unsafe { &msg.m_u.raw };
+    let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
+    Some(SimpleRequest {
+        req_id: word(0),
+        sock_id: word(4),
+        param: word(8),
+    })
+}
+
+/// 组装 `SDEV_ACCEPT_REPLY`：`mess_lsockdriver_vfs_accept_reply
+/// { req_id@0; sock_id@4; status@8; len@12 }`——新套接字号随回复带回。
+pub fn accept_reply(req_id: i32, sock_id: i32, status: i32, len: u32) -> Message {
+    let mut m = Message {
+        m_type: SdevReply::AcceptReply as i32,
+        ..Message::default()
+    };
+    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    unsafe {
+        let raw = &mut m.m_u.raw;
+        raw[0..4].copy_from_slice(&req_id.to_le_bytes());
+        raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+        raw[8..12].copy_from_slice(&status.to_le_bytes());
+        raw[12..16].copy_from_slice(&len.to_le_bytes());
+    }
+    m
+}
+
 /// 一张接收"留言条"：挂起后完成所需的全部现场（C 的 `w_drv_sendrec`
 /// 原始消息在此拆成字段——续答时要按它拷数据、写对端地址、回原请求）。
+/// TCP connect 的留言条：等待建连完成后回 0。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingConnect {
+    pub sock_id: i32,
+    pub caller: Endpoint,
+    pub req_id: i32,
+}
+
+/// TCP accept 的留言条：等待受纳完成后回新套接字号与对端地址。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingAccept {
+    pub listener_id: i32,
+    pub caller: Endpoint,
+    pub req_id: i32,
+    pub addr_grant: i32,
+    pub addr_len: usize,
+    pub user_endpt: i32,
+}
+
+/// 挂起留言条的账本（服务侧"没办完写留言条"的全部现场；唤醒扫描
+/// 与超时摘条都在这本账上做）。
+#[derive(Debug, Default)]
+pub struct PendingTables {
+    /// UDP/TCP 接收挂起。
+    pub recvs: Vec<PendingRecv>,
+    /// TCP 连接挂起。
+    pub connects: Vec<PendingConnect>,
+    /// TCP 受纳挂起。
+    pub accepts: Vec<PendingAccept>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingRecv {
     /// 线上套接字号。
@@ -453,7 +534,7 @@ pub fn translate_udp(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
     table: &mut SockTable,
-    pending: &mut Vec<PendingRecv>,
+    pending: &mut PendingTables,
     caller: Endpoint,
     msg: &Message,
 ) -> Option<Message> {
@@ -484,7 +565,7 @@ pub fn translate_udp(
         };
         return Some(match result {
             Ok(()) => simple_reply(req.req_id, 0),
-            Err(e) => simple_reply(req.req_id, -e),
+            Err(e) => simple_reply(req.req_id, wire(e)),
         });
     }
     if m_type == SdevRequest::GetSockName as i32 {
@@ -501,7 +582,7 @@ pub fn translate_udp(
         let len = req.len.min(INET_ADDR_LEN as u32) as usize;
         return match copy.safecopy_to(req.user_endpt, req.grant, 0, &bytes[..len]) {
             Ok(()) => Some(simple_reply(req.req_id, len as i32)),
-            Err(code) => Some(simple_reply(req.req_id, -code.abs())),
+            Err(code) => Some(simple_reply(req.req_id, wire(code))),
         };
     }
     if m_type == SdevRequest::Send as i32 || m_type == SdevRequest::Receive as i32 {
@@ -514,7 +595,7 @@ fn translate_udp_data(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
     table: &mut SockTable,
-    pending: &mut Vec<PendingRecv>,
+    pending: &mut PendingTables,
     caller: Endpoint,
     msg: &Message,
 ) -> Option<Message> {
@@ -551,7 +632,7 @@ fn translate_udp_data(
         };
         match stack.send_udp(stack_socket, &data, remote) {
             Ok(n) => Some(simple_reply(req.req_id, n as i32)),
-            Err(e) => Some(simple_reply(req.req_id, -e)),
+            Err(e) => Some(simple_reply(req.req_id, wire(e))),
         }
     } else {
         // 接收：先试一次（可能已有包）；空且非阻塞即回 EWOULDBLOCK；
@@ -600,7 +681,7 @@ fn translate_udp_data(
                 if table.suspend(id, continuation).is_err() {
                     return Some(recv_reply(req.req_id, -(minix_types::EBADF), 0, 0));
                 }
-                pending.push(PendingRecv {
+                pending.recvs.push(PendingRecv {
                     sock_id: req.sock_id,
                     caller,
                     req_id: req.req_id,
@@ -616,6 +697,187 @@ fn translate_udp_data(
     }
 }
 
+/// 统一分派：按线上套接字的类把请求交给 UDP 路或 TCP 路。未知类
+/// （route/link 两域的模块随后批）按未接线回答。
+#[allow(clippy::too_many_arguments)]
+pub fn translate(
+    stack: &mut dyn Stack,
+    copy: &mut dyn CopyTransport,
+    table: &mut SockTable,
+    pending: &mut PendingTables,
+    caller: Endpoint,
+    msg: &Message,
+) -> Option<Message> {
+    // sock_id 在三类载荷里都在 @4；建户（Socket/SocketPair）不带
+    // sock_id，不走本分派。
+    // SAFETY: 首格域序两形状共用。
+    let raw = unsafe { &msg.m_u.raw };
+    let sock_id = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+    match SockId::from_raw(sock_id)
+        .and_then(|id| id.class())
+        .and_then(family_of_class)
+    {
+        Some(StackFamily::Udp) => translate_udp(stack, copy, table, pending, caller, msg),
+        Some(StackFamily::Tcp) => translate_tcp(stack, copy, pending, caller, msg),
+        _ => Some(simple_reply(0, -(minix_types::ENOSYS))),
+    }
+}
+
+/// TCP 路的翻译入口：BIND/LISTEN/CONNECT/ACCEPT/GETPEERNAME 五条。
+/// connect 与 accept 的可挂起语义在此落：非阻塞立即回
+/// EINPROGRESS/EWOULDBLOCK，阻塞挂起记账，唤醒后由 [`ready_scan`]
+/// 续答（connect 等建连=可写；accept 等受理=监听者可读）。
+pub fn translate_tcp(
+    stack: &mut dyn Stack,
+    copy: &mut dyn CopyTransport,
+    pending: &mut PendingTables,
+    caller: Endpoint,
+    msg: &Message,
+) -> Option<Message> {
+    let m_type = msg.m_type;
+    if m_type == SdevRequest::Bind as i32 {
+        let Some(req) = decode_addr(msg) else {
+            return Some(simple_reply(0, -(minix_types::EINVAL)));
+        };
+        let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+        };
+        let mut bytes = [0u8; INET_ADDR_LEN];
+        let n = (req.len as usize).min(INET_ADDR_LEN);
+        if copy
+            .safecopy_from(req.user_endpt, req.grant, 0, &mut bytes[..n])
+            .is_err()
+        {
+            return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+        }
+        let Some(endpoint) = decode_inet_endpoint(&bytes) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EAFNOSUPPORT)));
+        };
+        return Some(match stack.bind_tcp(stack_socket, Some(endpoint)) {
+            Ok(()) => simple_reply(req.req_id, 0),
+            Err(e) => simple_reply(req.req_id, wire(e)),
+        });
+    }
+    if m_type == SdevRequest::Listen as i32 {
+        let Some(req) = decode_simple(msg) else {
+            return Some(simple_reply(0, -(minix_types::EINVAL)));
+        };
+        let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+        };
+        let backlog = req.param.clamp(0, i32::from(u16::MAX)) as u32;
+        return Some(match stack.listen_tcp(stack_socket, backlog) {
+            Ok(()) => simple_reply(req.req_id, 0),
+            Err(e) => simple_reply(req.req_id, wire(e)),
+        });
+    }
+    if m_type == SdevRequest::Connect as i32 {
+        let Some(req) = decode_addr(msg) else {
+            return Some(simple_reply(0, -(minix_types::EINVAL)));
+        };
+        let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+        };
+        let mut bytes = [0u8; INET_ADDR_LEN];
+        let n = (req.len as usize).min(INET_ADDR_LEN);
+        if copy
+            .safecopy_from(req.user_endpt, req.grant, 0, &mut bytes[..n])
+            .is_err()
+        {
+            return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+        }
+        let Some(endpoint) = decode_inet_endpoint(&bytes) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EAFNOSUPPORT)));
+        };
+        return match stack.connect_tcp(stack_socket, endpoint) {
+            Ok(()) => {
+                if req.sflags & minix_sockdriver::sdev::SDEV_NONBLOCK != 0 {
+                    // 非阻塞：开张即回"进行中"，建连完成由就绪位说话。
+                    Some(simple_reply(req.req_id, -(minix_types::EINPROGRESS)))
+                } else {
+                    // 阻塞：挂等建连（SEV_CONNECT 唤醒；无超时，选项随
+                    // 后批）。
+                    pending.connects.push(PendingConnect {
+                        sock_id: req.sock_id,
+                        caller,
+                        req_id: req.req_id,
+                    });
+                    None
+                }
+            }
+            Err(e) => Some(simple_reply(req.req_id, wire(e))),
+        };
+    }
+    if m_type == SdevRequest::Accept as i32 {
+        let Some(req) = decode_addr(msg) else {
+            return Some(simple_reply(0, -(minix_types::EINVAL)));
+        };
+        let Some(listener) = stack_socket_of(req.sock_id) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+        };
+        return match stack.accept_tcp(listener) {
+            Ok((accepted, peer)) => {
+                let bytes = encode_inet_endpoint(peer);
+                let len = (req.len as usize).min(INET_ADDR_LEN);
+                if copy
+                    .safecopy_to(req.user_endpt, req.grant, 0, &bytes[..len])
+                    .is_err()
+                {
+                    return Some(accept_reply(
+                        req.req_id,
+                        0,
+                        -(minix_types::EFAULT),
+                        0,
+                    ));
+                }
+                Some(accept_reply(req.req_id, accepted.index() as i32, 0, len as u32))
+            }
+            Err(_) => {
+                if req.sflags & minix_sockdriver::sdev::SDEV_NONBLOCK != 0 {
+                    return Some(accept_reply(
+                        req.req_id,
+                        0,
+                        crate::util::ERR_WOULD_BLOCK,
+                        0,
+                    ));
+                }
+                pending.accepts.push(PendingAccept {
+                    listener_id: req.sock_id,
+                    caller,
+                    req_id: req.req_id,
+                    addr_grant: req.grant,
+                    addr_len: req.len as usize,
+                    user_endpt: req.user_endpt,
+                });
+                None
+            }
+        };
+    }
+    if m_type == SdevRequest::GetPeerName as i32 {
+        let Some(req) = decode_addr(msg) else {
+            return Some(simple_reply(0, -(minix_types::EINVAL)));
+        };
+        let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+        };
+        return match stack.remote_endpoint_tcp(stack_socket) {
+            Ok(endpoint) => {
+                let bytes = encode_inet_endpoint(endpoint);
+                let len = (req.len as usize).min(INET_ADDR_LEN);
+                if copy
+                    .safecopy_to(req.user_endpt, req.grant, 0, &bytes[..len])
+                    .is_err()
+                {
+                    return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+                }
+                Some(simple_reply(req.req_id, len as i32))
+            }
+            Err(e) => Some(simple_reply(req.req_id, wire(e))),
+        };
+    }
+    Some(simple_reply(0, -(minix_types::ENOSYS)))
+}
+
 /// 就绪扫描（C `sockevent_process` 的"事件唤醒续答"半）：每趟推进后
 /// 扫一遍接收留言条——栈报可读的即续答完成（拷数据与对端地址给用户、
 /// 回 `SDEV_RECV_REPLY`），返回 `(调用方, 回复)` 对由循环尾发出；暂不
@@ -624,12 +886,13 @@ fn translate_udp_data(
 pub fn ready_scan(
     stack: &mut dyn Stack,
     copy: &mut dyn CopyTransport,
-    pending: &mut Vec<PendingRecv>,
+    table: &mut SockTable,
+    pending: &mut PendingTables,
 ) -> Vec<(Endpoint, Message)> {
     let mut replies = Vec::new();
     let mut i = 0;
-    while i < pending.len() {
-        let note = pending[i];
+    while i < pending.recvs.len() {
+        let note = pending.recvs[i];
         let readable = stack_socket_of(note.sock_id)
             .map(|s| stack.readiness(s))
             .map(|r| r.readable)
@@ -639,7 +902,7 @@ pub fn ready_scan(
             continue;
         }
         let Some(stack_socket) = stack_socket_of(note.sock_id) else {
-            pending.remove(i);
+            pending.recvs.remove(i);
             continue;
         };
         let mut data = alloc::vec![0u8; note.data_len];
@@ -660,7 +923,7 @@ pub fn ready_scan(
                     -(minix_types::EFAULT)
                 };
                 replies.push((note.caller, recv_reply(note.req_id, status, 0, addr_len as u32)));
-                pending.remove(i);
+                pending.recvs.remove(i);
             }
             Err(_) => {
                 // 就绪位翻了但收不动（对端关闭一类）：按连接复位回。
@@ -668,7 +931,79 @@ pub fn ready_scan(
                     note.caller,
                     recv_reply(note.req_id, -(minix_types::ECONNRESET), 0, 0),
                 ));
-                pending.remove(i);
+                pending.recvs.remove(i);
+            }
+        }
+    }
+    // TCP connect：建连完成（可写）即回 0。
+    let mut i = 0;
+    while i < pending.connects.len() {
+        let note = pending.connects[i];
+        let writable = stack_socket_of(note.sock_id)
+            .map(|s| stack.readiness(s))
+            .map(|r| r.writable)
+            .unwrap_or(false);
+        if writable {
+            replies.push((note.caller, simple_reply(note.req_id, 0)));
+            pending.connects.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    // TCP accept：监听者可读即受纳，回新套接字号与对端地址。
+    let mut i = 0;
+    while i < pending.accepts.len() {
+        let note = pending.accepts[i];
+        let pending_connection = stack_socket_of(note.listener_id)
+            .map(|s| stack.readiness(s))
+            .map(|r| r.readable)
+            .unwrap_or(false);
+        if !pending_connection {
+            i += 1;
+            continue;
+        }
+        let Some(listener) = stack_socket_of(note.listener_id) else {
+            pending.accepts.remove(i);
+            continue;
+        };
+        match stack.accept_tcp(listener) {
+            Ok((accepted, peer)) => {
+                let bytes = encode_inet_endpoint(peer);
+                let len = note.addr_len.min(INET_ADDR_LEN);
+                let copy_ok = copy
+                    .safecopy_to(note.user_endpt, note.addr_grant, 0, &bytes[..len])
+                    .is_ok();
+                let status = if copy_ok { 0 } else { -(minix_types::EFAULT) };
+                // 受纳套接字登记进服务表（线上号 = TCP 类基 + 栈内
+                // 下标）；登记失败按"无空位"续答。
+                let registered =
+                    SockId::from_class(sockid::SockClass::Tcp, accepted.index() as u32);
+                match registered {
+                    Some(id) if table.add(id).is_ok() => {
+                        replies.push((
+                            note.caller,
+                            accept_reply(note.req_id, id.raw(), status, len as u32),
+                        ));
+                        pending.accepts.remove(i);
+                    }
+                    _ => {
+                        let _ = stack.close(accepted);
+                        replies.push((
+                            note.caller,
+                            accept_reply(
+                                note.req_id,
+                                0,
+                                -(minix_types::ENOSPC),
+                                0,
+                            ),
+                        ));
+                        pending.accepts.remove(i);
+                    }
+                }
+            }
+            Err(_) => {
+                // 可读但受理未完成（握手半程）：留言条留下，下轮再试。
+                i += 1;
             }
         }
     }

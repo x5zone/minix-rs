@@ -46,14 +46,19 @@ pub struct SmoltcpStack<D: Device = TrunkDevice> {
     device: D,
     sockets: SocketSet<'static>,
     slots: Vec<Option<Slot>>,
+    /// 临时端口分配器（connect 未预绑时的本地端口，49152 起）。
+    ephemeral: u16,
 }
 
-/// 一个在役槽位：栈内句柄、开户家族、UDP 默认对端（connect 语义）。
+/// 一个在役槽位：栈内句柄、开户家族、UDP 默认对端（connect 语义）、
+/// TCP 预绑端点与监听旗标。
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     handle: smoltcp::iface::SocketHandle,
     family: StackFamily,
     udp_peer: Option<crate::lwip_port::StackEndpoint>,
+    tcp_local: Option<crate::lwip_port::StackEndpoint>,
+    tcp_listener: bool,
 }
 
 impl<D: Device + 'static> SmoltcpStack<D> {
@@ -79,6 +84,7 @@ impl<D: Device + 'static> SmoltcpStack<D> {
             device,
             sockets: SocketSet::new(vec![]),
             slots: Vec::new(),
+            ephemeral: 49152,
         }
     }
 
@@ -97,6 +103,58 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         self.slot(socket)
             .filter(|slot| slot.family == StackFamily::Udp)
             .map(|slot| self.sockets.get_mut(slot.handle))
+    }
+
+    /// 取 TCP 套接字的栈内可变引用；句柄失效或家族不符为 `None`。
+    fn tcp_mut(
+        &mut self,
+        socket: StackSocket,
+    ) -> Option<&mut smoltcp::socket::tcp::Socket<'static>> {
+        self.slot(socket)
+            .filter(|slot| slot.family == StackFamily::Tcp)
+            .map(|slot| self.sockets.get_mut(slot.handle))
+    }
+
+    /// 换掉槽位上的栈内套接字（TCP 受连接：监听者的句柄转给受纳
+    /// 套接字，监听者换新对象）。
+    fn replace_handle(&mut self, socket: StackSocket, handle: smoltcp::iface::SocketHandle) {
+        let idx = socket.index() as usize;
+        if let Some(Some(slot)) = self.slots.get_mut(idx) {
+            slot.handle = handle;
+        }
+    }
+
+    /// 新开一个 TCP 槽位指向既有句柄（受纳套接字的登记）。
+    fn push_slot_for(
+        &mut self,
+        family: StackFamily,
+        handle: smoltcp::iface::SocketHandle,
+    ) -> Option<StackSocket> {
+        let slot = Some(Slot {
+            handle,
+            family,
+            udp_peer: None,
+            tcp_local: None,
+            tcp_listener: false,
+        });
+        let index = match self.slots.iter().position(|s| s.is_none()) {
+            Some(free) => {
+                self.slots[free] = slot;
+                free
+            }
+            None => {
+                self.slots.push(slot);
+                self.slots.len() - 1
+            }
+        };
+        Some(StackSocket::new(family, index as u16))
+    }
+
+    /// 取一个临时本地端口。
+    fn next_ephemeral(&mut self) -> u16 {
+        let port = self.ephemeral;
+        self.ephemeral = self.ephemeral.wrapping_add(1).max(49152);
+        port
     }
 }
 
@@ -123,7 +181,15 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         match slot.family {
             StackFamily::Tcp => {
                 let s = self.sockets.get::<tcp::Socket>(slot.handle);
-                Readiness { readable: s.can_recv(), writable: s.can_send() }
+                if slot.tcp_listener {
+                    // 监听者：状态离开 Listen 即有连接挂账（可受理）。
+                    Readiness {
+                        readable: s.state() != smoltcp::socket::tcp::State::Listen,
+                        writable: false,
+                    }
+                } else {
+                    Readiness { readable: s.can_recv(), writable: s.can_send() }
+                }
             }
             StackFamily::Udp => {
                 let s = self.sockets.get::<smoltcp::socket::udp::Socket>(slot.handle);
@@ -177,7 +243,13 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             }
             StackFamily::Icmp => return Err(util::ERR_GENERIC),
         };
-        let slot = Some(Slot { handle, family, udp_peer: None });
+        let slot = Some(Slot {
+            handle,
+            family,
+            udp_peer: None,
+            tcp_local: None,
+            tcp_listener: false,
+        });
         let index = match self.slots.iter().position(|s| s.is_none()) {
             Some(free) => {
                 self.slots[free] = slot;
@@ -305,6 +377,141 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         Ok(crate::lwip_port::StackEndpoint {
             addr: listen.addr.map(from_ip_address),
             port: listen.port,
+        })
+    }
+
+    // -- TCP 半（第 08 篇的栈面）--
+
+    fn bind_tcp(
+        &mut self,
+        socket: StackSocket,
+        local: Option<crate::lwip_port::StackEndpoint>,
+    ) -> Result<(), i32> {
+        let idx = socket.index() as usize;
+        match self.slots.get_mut(idx).and_then(|s| s.as_mut()) {
+            Some(slot) if slot.family == StackFamily::Tcp => {
+                slot.tcp_local = local;
+                Ok(())
+            }
+            _ => Err(util::ERR_GENERIC),
+        }
+    }
+
+    fn listen_tcp(&mut self, socket: StackSocket, backlog: u32) -> Result<(), i32> {
+        // backlog 收下记账（smoltcp 单监听者一次挂一个连接；多并发
+        // 监听随接口批次评估）。
+        let _ = backlog;
+        let local = self.slot(socket).and_then(|s| s.tcp_local);
+        let listen = listen_endpoint(local);
+        self.tcp_mut(socket)
+            .ok_or(util::ERR_GENERIC)?
+            .listen(listen)
+            .map_err(|e| match e {
+                smoltcp::socket::tcp::ListenError::Unaddressable => util::ERR_INVALID,
+                _ => util::ERR_ADDRESS_IN_USE,
+            })?;
+        let idx = socket.index() as usize;
+        if let Some(Some(slot)) = self.slots.get_mut(idx) {
+            slot.tcp_listener = true;
+        }
+        Ok(())
+    }
+
+    fn connect_tcp(
+        &mut self,
+        socket: StackSocket,
+        remote: crate::lwip_port::StackEndpoint,
+    ) -> Result<(), i32> {
+        let Some(addr) = remote.addr else {
+            return Err(util::ERR_INVALID);
+        };
+        let remote = IpEndpoint { addr: to_ip_address(addr), port: remote.port };
+        let local_port = match self.slot(socket).and_then(|s| s.tcp_local) {
+            Some(local) => local.port,
+            None => self.next_ephemeral(),
+        };
+        // 字段级分离借用：先读槽位（拷走句柄），再同时可变借 iface
+        // 上下文与套接字集合。
+        let handle = self
+            .slot(socket)
+            .filter(|slot| slot.family == StackFamily::Tcp)
+            .map(|slot| slot.handle)
+            .ok_or(util::ERR_GENERIC)?;
+        let listen = IpListenEndpoint { addr: None, port: local_port };
+        let cx = self.iface.context();
+        self.sockets
+            .get_mut::<smoltcp::socket::tcp::Socket>(handle)
+            .connect(cx, remote, listen)
+            .map_err(|_| util::ERR_NO_BUFFERS)
+    }
+
+    fn accept_tcp(
+        &mut self,
+        socket: StackSocket,
+    ) -> Result<(StackSocket, crate::lwip_port::StackEndpoint), i32> {
+        use smoltcp::socket::tcp::State;
+        let slot = self.slot(socket).ok_or(util::ERR_GENERIC)?;
+        if slot.family != StackFamily::Tcp || !slot.tcp_listener {
+            return Err(util::ERR_GENERIC);
+        }
+        let state = self.sockets.get::<smoltcp::socket::tcp::Socket>(slot.handle).state();
+        if state != State::Established {
+            // 只认建连完成的连接；未完成由服务层挂起等待。
+            return Err(util::ERR_WOULD_BLOCK);
+        }
+        let peer = self
+            .sockets
+            .get::<smoltcp::socket::tcp::Socket>(slot.handle)
+            .remote_endpoint()
+            .ok_or(util::ERR_GENERIC)?;
+        let listen_endpoint = self
+            .sockets
+            .get::<smoltcp::socket::tcp::Socket>(slot.handle)
+            .listen_endpoint();
+        // 先挂新监听者（占新句柄），再摘建连的旧对象重新登记——顺序
+        // 反了会让集合复用刚释放的槽位号，两个句柄撞号。
+        let fresh = {
+            let rx = ManagedSlice::from(vec![0u8; TCP_WINDOW]);
+            let tx = ManagedSlice::from(vec![0u8; TCP_SEND_BUFFER]);
+            smoltcp::socket::tcp::Socket::new(rx, tx)
+        };
+        let fresh_handle = self.sockets.add(fresh);
+        self.replace_handle(socket, fresh_handle);
+        let fresh_stack = StackSocket::new(StackFamily::Tcp, socket.index());
+        self.tcp_mut(fresh_stack)
+            .expect("刚换上的监听者")
+            .listen(listen_endpoint)
+            .map_err(|_| util::ERR_ADDRESS_IN_USE)?;
+        let established = self.sockets.remove(slot.handle);
+        let accepted_handle = self.sockets.add(established);
+        let accepted = self
+            .push_slot_for(StackFamily::Tcp, accepted_handle)
+            .ok_or(util::ERR_GENERIC)?;
+        Ok((
+            accepted,
+            crate::lwip_port::StackEndpoint {
+                addr: Some(from_ip_address(peer.addr)),
+                port: peer.port,
+            },
+        ))
+    }
+
+    fn remote_endpoint_tcp(
+        &self,
+        socket: StackSocket,
+    ) -> Result<crate::lwip_port::StackEndpoint, i32> {
+        let slot = self.slot(socket).ok_or(util::ERR_GENERIC)?;
+        if slot.family != StackFamily::Tcp {
+            return Err(util::ERR_GENERIC);
+        }
+        let remote = self
+            .sockets
+            .get::<smoltcp::socket::tcp::Socket>(slot.handle)
+            .remote_endpoint()
+            .ok_or(util::ERR_GENERIC)?;
+        Ok(crate::lwip_port::StackEndpoint {
+            addr: Some(from_ip_address(remote.addr)),
+            port: remote.port,
         })
     }
 
@@ -619,6 +826,82 @@ mod tests {
             },
             "发送方端点随报文带回"
         );
+    }
+
+    #[test]
+    fn test_tcp_control_plane_loopback_handshake() {
+        use crate::lwip_port::StackEndpoint;
+        let v4 = |octets: [u8; 4]| Some(crate::lwip_port::StackIpAddr::V4(octets));
+        let mut stack: SmoltcpStack<LoopDevice> =
+            SmoltcpStack::with_device(0x5EED, LoopDevice::new(), 0);
+        stack.add_address_v4([127, 0, 0, 1], 8, 0);
+
+        // 服务端：绑 7777 → 监听。
+        let server = stack.open(StackFamily::Tcp).expect("服务端建户");
+        stack
+            .bind_tcp(
+                server,
+                Some(StackEndpoint { addr: v4([127, 0, 0, 1]), port: 7777 }),
+            )
+            .expect("绑定");
+        stack.listen_tcp(server, 1).expect("监听");
+
+        // 客户端：连 127.0.0.1:7777（本地端口走临时分配）。
+        let client = stack.open(StackFamily::Tcp).expect("客户端建户");
+        stack
+            .connect_tcp(
+                client,
+                StackEndpoint { addr: v4([127, 0, 0, 1]), port: 7777 },
+            )
+            .expect("connect 开张");
+
+        // 轮询推进：握手在数趟内完成（SYN → SYN-ACK → ACK 经回环设备
+        // 各绕回一趟）。可读位在 SYN 到达即亮（状态离开 Listen），此时
+        // 受纳仍会回阻塞类错误——真实服务的形状就是唤醒后再试，直到
+        // 建连完成。
+        let mut outcome = None;
+        for tick in 1..=16u64 {
+            stack.poll(tick * 100);
+            if !stack.readiness(server).readable {
+                continue;
+            }
+            if let Ok(pair) = stack.accept_tcp(server) {
+                outcome = Some(pair);
+                break;
+            }
+        }
+        let (accepted, peer) = outcome.expect("数趟推进内完成受纳");
+        assert_eq!(
+            peer,
+            StackEndpoint { addr: v4([127, 0, 0, 1]), port: 49152 },
+            "对端端点=客户端的临时端口"
+        );
+        assert_ne!(accepted.index(), server.index(), "受纳套接字是独立槽位");
+        // 新监听者继续在岗：再开一个客户端可再次建连。
+        assert!(
+            stack.readiness(server).writable == false && !stack.readiness(server).readable,
+            "换上的新监听者回到等待态"
+        );
+        let client2 = stack.open(StackFamily::Tcp).expect("第二客户端建户");
+        stack
+            .connect_tcp(
+                client2,
+                StackEndpoint { addr: v4([127, 0, 0, 1]), port: 7777 },
+            )
+            .expect("第二连接开张");
+        let mut accepted2 = None;
+        for tick in 20..=40u64 {
+            stack.poll(tick * 100);
+            if let Ok(pair) = stack.accept_tcp(server) {
+                accepted2 = Some(pair);
+                break;
+            }
+        }
+        let (accepted2, _) = accepted2.expect("新监听者继续受理");
+        assert_ne!(accepted2.index(), accepted.index());
+        // 建连两端可写（established 的 can_send）。
+        assert!(stack.readiness(accepted).writable, "受纳套接字可写");
+        assert!(stack.readiness(client).writable, "客户端套接字可写");
     }
 
     #[test]
