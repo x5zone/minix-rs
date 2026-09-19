@@ -56,6 +56,7 @@ impl XorShift {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
     GetMachine,
+    CpfReload,
     GetHz,
     GetTicks,
     PrivCtl(Endpoint, PrivCtlOp),
@@ -358,6 +359,11 @@ impl PmApi for MockKernelApi {
             None => Err(Errno::ENOSYS),
         }
     }
+    fn cpf_reload(&mut self) -> Result<(), Errno> {
+        self.calls.push(Call::CpfReload);
+        Ok(())
+    }
+
     fn srv_fork(&mut self, _uid: u32, _gid: u32) -> Result<Pid, Errno> {
         match self.fork_pid {
             Some(pid) => Ok(pid),

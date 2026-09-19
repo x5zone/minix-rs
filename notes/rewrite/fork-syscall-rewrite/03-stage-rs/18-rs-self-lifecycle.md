@@ -250,3 +250,11 @@ RS 自身生命周期是 LU 机制图的"自指环"：
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` —— `clone_slot`/`swap_slot`/`activate_service`
 - `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— `srv_fork`/`vm_update`/`sys_whoami`/`sys_privctl` 契约
 - `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L436，工具生成）`、`update.c:230-366`、`utility.c:387-412`、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`、`const.h:34-35,79-80,105-115`、`include/minix/rs.h:197-198`、`include/minix/const.h:151,154` —— ground truth
+
+---
+
+## 接线（S18）：`self_update` 双分支落地
+
+C 的 `sef_cb_init_fresh` 尾部（`main.c:436-490`，`USE_LIVEUPDATE`）在创建一个新 RS 实例时让两个实例各跑一半：`clone_slot` 克隆自身槽 → `srv_fork(0, 0)` → `getprocnr` 解析 replica 端点 → 按 `pid == 0` 分岔——**新实例腿**（`main.c:456-472`）跑 `update_service(RS_SWAP)`（经内核 `sys_update`）、`cpf_reload`、`cleanup_service`、`vm_memctl(PIN)`；**旧实例腿**（`main.c:474-489`）给 replica 设特权（`sys_privctl(SET_SYS)`）、初始化调度（`sched_init_proc`）、让渡控制（`SYS_PRIV_YIELD`，C 里此后 `NOT_REACHABLE`）。C 每步失败 panic；Rust 版把两腿都建在 `BootInit::self_update`（`boot.rs`，feature `live-update`）里、按 `srv_fork` 返回值经 `self_upgrade_role` 分派，失败以 `Err` 上抛（panic 边界归 boot 调用方的 fail-fast 族）。
+
+配套的库侧动词是 `cpf_reload`（`SysApi` 新成员，trap 实现即 `GrantTable::register`——C `cpf_reload` 的 `sys_setgrant` 直译，空表守卫在 C 侧是 `if (grants)`）；测试以 `MockKernelApi` 脚本 `fork_pid` 两值各走一腿，断言调用序（设权→调度→让渡 / update→reload→cleanup→pin）与互斥（旧腿不 update、新腿不 yield）。

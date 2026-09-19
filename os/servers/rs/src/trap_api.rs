@@ -341,6 +341,15 @@ impl PmApi for TrapKernelApi {
         sys_pm::getprocnr_via(&self.ipc, pid)
     }
 
+    fn cpf_reload(&mut self) -> Result<(), Errno> {
+        // C cpf_reload(safecopies.c:373-381):fork 后把 grant 表位置重新
+        // 告知内核(sys_setgrant);C 的 `if (grants)` 空表守卫 —— 表恒存在,
+        // register 直调。
+        self.grants
+            .register(&self.kernel)
+            .map_err(Errno::from_i32)
+    }
+
     fn srv_fork(&mut self, uid: u32, gid: u32) -> Result<Pid, Errno> {
         sys_pm::service_fork_via(&self.ipc, uid, gid)
     }

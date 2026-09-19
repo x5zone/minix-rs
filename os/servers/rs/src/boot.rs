@@ -181,6 +181,11 @@ pub trait PmApi {
     /// Asks PM to signal a service process (by pid through PM). Wired 19.
     fn srv_kill(&mut self, pid: Pid, signo: i32) -> Result<(), Errno>;
 
+    /// Re-register the grant table with the kernel after a fork
+    /// (C `cpf_reload` — safecopies.c:373-381;RS self-update main.c:464).
+    /// Empty-table guard mirrors C's `if (grants)`.
+    fn cpf_reload(&mut self) -> Result<(), Errno>;
+
     /// Non-blocking waitpid: the next exited child, if any.
     ///
     /// Wired 19; mock supplies canned children.
@@ -439,6 +444,10 @@ impl PmApi for UnimplementedKernelApi {
         Err(Errno::ENOSYS)
     }
     fn srv_kill(&mut self, _pid: Pid, _signo: i32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+
+    fn cpf_reload(&mut self) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
     fn waitpid(&mut self) -> Option<Pid> {
@@ -1125,22 +1134,80 @@ impl<'a> BootInit<'a> {
         Ok(())
     }
 
-    /// RS self-upgrade after boot (USE_LIVEUPDATE).
+    /// RS self-upgrade after boot (USE_LIVEUPDATE) — the S18 chain.
     ///
-    /// C: main.c:436-491. Gated by cargo feature `live-update` (ARCH A-11).
-    /// The full mechanism belongs to 18-rs-self-lifecycle.md; this method
-    /// only pins the call chain and its doc ownership.
+    /// C: main.c:436-491. The fork's two sides are both modelled (the
+    /// single-process rewrite decides by `srv_fork`'s return, exactly like
+    /// C decides by `pid == 0`): the **new instance** side runs
+    /// `update_service(RS_SWAP)` + `cpf_reload` + `cleanup_service` +
+    /// `vm_memctl(PIN)` (main.c:456-472); the **old instance** side sets the
+    /// replica's privileges, initialises its scheduling and yields
+    /// (main.c:477-489). C panics on every failure; this returns `Err` and
+    /// leaves the panic boundary to the boot caller (E-10 fail-fast).
     #[cfg(feature = "live-update")]
-    pub fn self_update(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> {
-        // C: clone_slot(rp, &replica_rp) — main.c:441 (10/18).
-        // C: srv_fork(0, 0) — main.c:446 (10, ARCH A-1).
-        // C: update_service(&rp, &replica_rp, RS_SWAP, 0) — main.c:460 (16).
-        // C: cpf_reload() — main.c:464 (17).
-        // C: cleanup_service(rp) — main.c:467 (15).
-        // C: vm_memctl(VM_RS_MEM_PIN) — main.c:470-472 (10/19).
-        // C: sys_privctl(SYS_PRIV_SET_SYS) + sched_init_proc + SYS_PRIV_YIELD — main.c:478-489 (03).
-        let _ = sys.getnpid(Endpoint::RS)?; // placeholder: force the API boundary
-        unimplemented!("RS self-upgrade lands with 18-rs-self-lifecycle.md")
+    pub fn self_update(
+        &mut self,
+        sys: &mut dyn KernelApi,
+        update: &mut crate::live_update::UpdateState,
+    ) -> Result<(), Errno> {
+        // C: clone_slot(rp, &replica_rp) — main.c:441.
+        let rp = self
+            .table
+            .endpoint_slot(Endpoint::RS)
+            .ok_or(Errno::ESRCH)?;
+        let replica = crate::service_create::clone_slot(&mut self.table, rp)?;
+
+        // C: srv_fork(0, 0) — main.c:446 (root:wheel).
+        let pid = sys.srv_fork(0, 0)?;
+
+        // C main.c:447-455 — replica_pid = pid ? pid : getpid();
+        // getprocnr 后写回 replica 槽的 pid/endpoint。
+        let replica_pid = if pid == 0 { sys.getnpid(Endpoint::RS)? } else { pid };
+        let replica_ep = sys.getprocnr(replica_pid)?;
+        {
+            let r = self.table.get_mut(replica);
+            r.pid = Some(replica_pid);
+            r.pub_.endpoint = replica_ep;
+        }
+
+        match crate::self_lifecycle::self_upgrade_role(pid) {
+            // C: main.c:456-473 — the new RS instance live-updates the old
+            // one into itself, reloads the grant table, cleans up the old
+            // instance and asks VM to pin its memory.
+            crate::self_lifecycle::SelfUpgradeRole::NewInstance => {
+                update.update_service(
+                    &mut self.table,
+                    sys,
+                    rp,
+                    replica,
+                    1, // RS_SWAP (const.h:80)
+                    SysFlags::empty(),
+                )?;
+                sys.cpf_reload()?;
+                let mut no_script = |_s: &mut crate::service_slot::ServiceSlot| Ok(());
+                crate::recovery::cleanup_service(&mut self.table, rp, sys, &mut no_script);
+                sys.vm_memctl(Endpoint::RS, VmRsMemReq::Pin, 0, 0)?;
+            }
+            // C: main.c:474-489 — the old RS instance primes the replica
+            // and yields control (NOT_REACHABLE in C).
+            crate::self_lifecycle::SelfUpgradeRole::OldInstance => {
+                let priv_snapshot = self.table.get(replica).priv_.clone();
+                sys.privctl(replica_ep, PrivCtlOp::SetSys, Some(&priv_snapshot))?;
+                let cfg = {
+                    let s = self.table.get(replica);
+                    crate::sched::SchedulerConfig::from_slot(
+                        s.scheduler,
+                        s.pub_.endpoint,
+                        s.priority,
+                        s.quantum,
+                        s.cpu,
+                    )
+                };
+                sys.sched_init_proc(&cfg)?;
+                sys.privctl(replica_ep, PrivCtlOp::Yield, None)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1676,6 +1743,104 @@ mod tests {
         assert_eq!(
             dev.dev_nr, 0,
             "RS is not in dev table → default (main.c:768-777)"
+        );
+    }
+
+    #[cfg(feature = "live-update")]
+    #[test]
+    fn test_self_update_old_instance_leg() {
+        // C main.c:474-489(pid > 0):旧实例给 replica 设特权 → 调度 →
+        // YIELD;新实例腿的四步不出现。
+        static IMAGE: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+            boot_image(4, Endpoint::SCHED),
+            boot_image(1, Endpoint::VFS),
+            boot_image(6, Endpoint::DS),
+            boot_image(5, Endpoint::TTY),
+            boot_image(3, Endpoint::MEM),
+            boot_image(7, Endpoint::MIB),
+            boot_image(9, Endpoint::PFS),
+            boot_image(10, Endpoint::MFS),
+            boot_image(11, Endpoint::INIT),
+        ];
+        let mut boot = BootInit::new(BootTables::new(IMAGE));
+        let mut sys = MockKernelApi::new(100);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        sys.calls.clear();
+        sys.fork_pid = Some(7);
+        sys.child_endpoint = Some(Endpoint(8));
+        sys.vm_ok = true;
+        let mut update = crate::live_update::UpdateState::default();
+        boot.self_update(&mut sys, &mut update)
+            .expect("old-instance leg");
+
+        let calls = &sys.calls;
+        let pos_set_sys = calls
+            .iter()
+            .position(|c| matches!(c, Call::PrivCtl(ep, PrivCtlOp::SetSys) if *ep == Endpoint(8)))
+            .expect("privctl(SetSys) 必发");
+        let pos_sched = calls
+            .iter()
+            .position(|c| matches!(c, Call::SchedInitProc(ep) if *ep == Endpoint(8)))
+            .expect("sched_init_proc 必发");
+        let pos_yield = calls
+            .iter()
+            .position(|c| matches!(c, Call::PrivCtl(ep, PrivCtlOp::Yield) if *ep == Endpoint(8)))
+            .expect("privctl(Yield) 必发");
+        assert!(pos_set_sys < pos_sched && pos_sched < pos_yield, "C 顺序:设权→调度→让渡");
+        assert!(
+            !calls.iter().any(|c| matches!(c, Call::SysUpdate(_, _) | Call::CpfReload)),
+            "旧实例腿不得走 update/cpf_reload"
+        );
+    }
+
+    #[cfg(feature = "live-update")]
+    #[test]
+    fn test_self_update_new_instance_leg() {
+        // C main.c:456-472(pid == 0):update_service(RS_SWAP,内核走
+        // sys_update)→ cpf_reload → cleanup_service → vm_memctl(PIN)。
+        static IMAGE2: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+            boot_image(4, Endpoint::SCHED),
+            boot_image(1, Endpoint::VFS),
+            boot_image(6, Endpoint::DS),
+            boot_image(5, Endpoint::TTY),
+            boot_image(3, Endpoint::MEM),
+            boot_image(7, Endpoint::MIB),
+            boot_image(9, Endpoint::PFS),
+            boot_image(10, Endpoint::MFS),
+            boot_image(11, Endpoint::INIT),
+        ];
+        let mut boot = BootInit::new(BootTables::new(IMAGE2));
+        let mut sys = MockKernelApi::new(100);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        sys.calls.clear();
+        sys.fork_pid = Some(0);
+        sys.child_endpoint = Some(Endpoint(8));
+        sys.vm_ok = true;
+        let mut update = crate::live_update::UpdateState::default();
+        boot.self_update(&mut sys, &mut update)
+            .expect("new-instance leg");
+
+        let calls = &sys.calls;
+        let pos_update = calls
+            .iter()
+            .position(|c| matches!(c, Call::SysUpdate(_, _)))
+            .expect("RS_SWAP 的 sys_update 必发");
+        let pos_reload = calls
+            .iter()
+            .position(|c| matches!(c, Call::CpfReload))
+            .expect("cpf_reload 必发");
+        assert!(pos_update < pos_reload, "C 顺序:update→reload→cleanup→pin");
+        assert!(
+            !calls.iter().any(|c| matches!(c, Call::PrivCtl(_, PrivCtlOp::Yield))),
+            "新实例腿不得 YIELD"
         );
     }
 
