@@ -53,6 +53,7 @@
 | 2026-09-19 | edge1 | `os/qemu-tests/run_all.sh` | K10：test-smp-ipi-riscv64 回路真机绿后入 riscv64 构建清单 + 特殊协议脚本区（aclint=on 串口判定） | ✅ 同日 |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b：test-rt-birth-riscv64 入 workspace 成员 + riscv64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b aarch64 腿：test-rt-birth-aarch64 入 workspace 成员 + aarch64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
+| 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K11：test-shutdown-aarch64 / test-shutdown-riscv64 入 workspace 成员 + 两架构构建清单 + 特殊协议脚本区（exit code 双断言） | ✅ 同日（三架构真机全过） |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 

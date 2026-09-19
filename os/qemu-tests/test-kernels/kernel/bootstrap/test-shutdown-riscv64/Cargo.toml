@@ -1,0 +1,16 @@
+[package]
+name = "test-shutdown-riscv64"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+minix-arch = { workspace = true, default-features = false }
+minix-plat = { workspace = true }
+minix-types = { workspace = true }
+minix-boot = { workspace = true }
+minix-kernel = { workspace = true, default-features = false }
+
+[[bin]]
+name = "test-shutdown-riscv64"
+path = "src/main.rs"
+test = false

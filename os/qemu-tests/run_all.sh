@@ -56,13 +56,13 @@ for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher
 done
 
 # ── aarch64 (UEFI) ──
-for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64 test-rt-birth-aarch64; do
+for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64 test-rt-birth-aarch64 test-shutdown-aarch64; do
     echo "--- aarch64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target aarch64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
-for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64; do
+for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64 test-shutdown-riscv64; do
     echo "--- riscv64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --release 2>&1 || echo "(build failed)"
 done
@@ -147,6 +147,15 @@ if command -v qemu-system-aarch64 &>/dev/null; then
     if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
     elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth-aarch64: skipped)"
     else FAIL=$((FAIL + 1)); fi
+
+    # ── Special-protocol script (edge1 K11): aarch64 shutdown verification
+    # — the script asserts the serial marker AND QEMU's own exit code.
+    echo "--- Running: test-shutdown-aarch64 (special: semihosting exit code) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-shutdown-aarch64.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-shutdown-aarch64: skipped)"
+    else FAIL=$((FAIL + 1)); fi
 fi
 
 # riscv64 tests
@@ -182,6 +191,15 @@ if command -v qemu-system-riscv64 &>/dev/null; then
     bash "$SCRIPT_DIR/test-rt-birth-riscv64.sh" || rc=$?
     if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
     elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth-riscv64: skipped)"
+    else FAIL=$((FAIL + 1)); fi
+
+    # ── Special-protocol script (edge1 K11): riscv64 shutdown verification
+    # — the script asserts the serial marker AND QEMU's own exit code.
+    echo "--- Running: test-shutdown-riscv64 (special: sifive_test exit code) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-shutdown-riscv64.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-shutdown-riscv64: skipped)"
     else FAIL=$((FAIL + 1)); fi
 fi
 
