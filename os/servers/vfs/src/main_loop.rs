@@ -2581,6 +2581,13 @@ impl VfsState {
             SyscallResult::Nosys => minix_types::ENOSYS,
             SyscallResult::Suspend => return,
         };
+        // 臂已经自己入过一条**带载荷**的回复（如 `lseek` 位置不变那条路把
+        // 新位置写进 `m_vfs_lc_lseek.offset`，C `open.c:665-666`）时，这条
+        // 统一收尾的裸回复**不能覆盖它**——覆盖掉用户拿到的就是偏移 0。
+        // 一轮只该有一条回复：先入队者为准。
+        if self.pending_reply.is_some() {
+            return;
+        }
         self.queue_reply_msg(target, Message { m_type: code, ..Message::default() });
     }
 
@@ -2975,6 +2982,31 @@ mod tests {
         v.dev = 1; // DevId(u64),非 NO_DEV 即可
     }
 
+    /// 热身 grant 表（测试专用）：宿主构建下 `sys_setgrant` 不可达，**每次
+    /// 表增长后的第一次分配必然失败**，之后再分配就成功（失败路径已经把
+    /// freelist 铺好了）。臂测试要断言"真正登记出去的请求"，就得先把这一步
+    /// 趟平——连续做几轮把测试用得到的槽都铺出来。
+    fn warm_grants(state: &mut VfsState) {
+        let mut ids = alloc::vec::Vec::new();
+        for _ in 0..8 {
+            if let Ok(g) = state.grants.grant_direct(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                Endpoint::MFS.get(),
+                0x1000,
+                8,
+                minix_types::CpFlags::READ,
+            ) {
+                ids.push(g);
+            }
+        }
+        // 撤销热身用的槽：表已经长好，槽也回到 freelist，测试自己的 grant
+        // 才有槽可用（不撤销的话表刚好被热身占满，下一次分配又要增长 → 又
+        // 会撞上"增长后第一次必失败"）。
+        for g in ids {
+            let _ = state.grants.revoke(g);
+        }
+    }
+
     /// 播种 worker 槽并置 `WaitingForFs`(fs_sendrec 的 sendmsg 半)。
     fn seed_waiting(state: &mut VfsState, slot: usize, task: Endpoint) {
         let req = Message { m_type: 0x503, ..Message::default() };
@@ -3111,13 +3143,7 @@ mod tests {
         // 情形二：目录 + root：过门 → 组 `REQ_MKDIR`。宿主下要先热身 grant
         // 表（首次增长过不了 `sys_setgrant`，但失败路径已铺好 freelist），
         // 否则这条断言会退化成"第一次发请求必然失败"的顺序产物。
-        let _ = state.grants.grant_direct(
-            &minix_sys::syscall::DirectKernelCallTransport,
-            Endpoint::MFS.get(),
-            0x1000,
-            8,
-            minix_types::CpFlags::READ,
-        );
+        warm_grants(&mut state);
         let idx2 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -3383,13 +3409,7 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
 
         // ③ 属主 + 真要截断 → 登记 REQ_FTRUNC。
-        let _ = state.grants.grant_direct(
-            &minix_sys::syscall::DirectKernelCallTransport,
-            Endpoint::MFS.get(),
-            0x1000,
-            8,
-            minix_types::CpFlags::READ,
-        );
+        warm_grants(&mut state);
         let (idx, walk) = mk(&mut state, 1000);
         plant(
             &mut state,
@@ -3421,13 +3441,7 @@ mod tests {
         let user = Endpoint::from_generation_slot(1, 0);
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
-        let _ = state.grants.grant_direct(
-            &minix_sys::syscall::DirectKernelCallTransport,
-            Endpoint::MFS.get(),
-            0x1000,
-            8,
-            minix_types::CpFlags::READ,
-        );
+        warm_grants(&mut state);
         let slot = minix_types::UserSlot::new(0);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -3557,13 +3571,7 @@ mod tests {
         seed_vmnt0(&mut state);
         // 热身：让 grant 表完成一次（失败的）增长，后续 grant 走 freelist
         // 直接成功——把"能不能发请求"从测试变量里去掉。
-        let _ = state.grants.grant_direct(
-            &minix_sys::syscall::DirectKernelCallTransport,
-            Endpoint::MFS.get(),
-            0x1000,
-            8,
-            minix_types::CpFlags::READ,
-        );
+        warm_grants(&mut state);
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -3643,7 +3651,19 @@ mod tests {
             state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
             Some(PathFollow::UnlinkSticky { dir_ino: 7, rmdir: true, .. })
         ));
+        // 清掉这一轮的挂起现场再进下一条用例：留着的话，下一轮
+        // `run_worker_continuations` 会拿**陈旧的回复**把这个槽再跑一遍，
+        // 两条作业在同一轮完成时只有先入队的那条回复发得出去（模型一轮一条
+        // 回复），测试就会读到别人的回复。测试卫生，不是实现问题。
         state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = None;
+            wp.path = None;
+            wp.sendrec = None;
+            wp.task = None;
+        }
+        state.worker_pool.release(idx);
 
         // ④ 0777 无粘滞位 → 直接发请求；宿主下同样停在 grant → EIO。
         let (slot, idx, walk) = mk(&mut state);
@@ -3970,13 +3990,7 @@ mod tests {
 
         // 是符号链接：发 `REQ_RDLINK`。宿主下要先热身 grant 表（见 Unlink
         // 测试的说明），否则会退化成"停在 grant"的顺序产物。
-        let _ = state.grants.grant_direct(
-            &minix_sys::syscall::DirectKernelCallTransport,
-            Endpoint::MFS.get(),
-            0x1000,
-            8,
-            minix_types::CpFlags::READ,
-        );
+        warm_grants(&mut state);
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -4005,7 +4019,16 @@ mod tests {
             assert_eq!(ino, 9);
             assert_eq!(mem_size, 128, "窗口大小来自用户给的 bufsize");
         }
+        // 清现场再进下一条用例（理由同 Unlink 那条测试：一轮一条回复）。
         state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = None;
+            wp.path = None;
+            wp.sendrec = None;
+            wp.task = None;
+        }
+        state.worker_pool.release(idx);
 
         // 续接体：状态 OK 时长度取自载荷的 nbytes（不是状态字 0）。
         let idx2 = state

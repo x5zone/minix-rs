@@ -2593,6 +2593,59 @@ mod tests {
         }
     }
 
+    /// `Lseek` 位置不变那条路的**回复载荷不能被统一收尾覆盖**：C `do_lseek`
+    /// 把新位置写进 `m_vfs_lc_lseek.offset`（open.c:665-666）并返回 OK，两条
+    /// 出口（发不发抑制预读）都要带。这里走完整的 `run_once`（不是只调
+    /// dispatch），因为覆盖发生在 `run_once` 尾部的统一 `queue_reply`。
+    #[test]
+    fn test_lseek_unchanged_position_keeps_payload_through_run_once() {
+        use minix_types::Endpoint;
+
+        let mut state = seeded(100);
+        // filp：位置 100，常规文件。
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 9;
+            v.mode = crate::open::S_IFREG | 0o644;
+            v.size = 500;
+            v.ref_count = 1;
+        }
+        {
+            let f = state.filp_table.get_mut(fid).unwrap();
+            f.vnode = Some(vid.get());
+            f.pos = 100;
+        }
+        // lseek(3, 100, SEEK_SET)：新位置 == 当前位置 → 不打扰 FS。
+        let mut m = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Lseek as i32,
+            ..Message::default()
+        };
+        // SAFETY: lseek 载荷 offset@0、fd@8、whence@12（M7 覆盖层）。
+        unsafe {
+            let raw = &mut m.m_u.raw;
+            raw[0..8].copy_from_slice(&100i64.to_le_bytes());
+            raw[8..12].copy_from_slice(&3i32.to_le_bytes());
+            raw[12..16].copy_from_slice(&0i32.to_le_bytes());
+        }
+        let codec = crate::main_loop::VfsTransIdCodec;
+        let _ = state.run_once(&m, &codec);
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(reply.m_type, 0, "C 的 do_lseek 回 OK");
+        // SAFETY(test): 偏移在负载区首字（mess_vfs_lc_lseek）。
+        let offset = unsafe { i64::from_le_bytes(reply.m_u.raw[0..8].try_into().unwrap()) };
+        assert_eq!(offset, 100, "新位置必须留在回复载荷里");
+    }
+
     /// `Fchmod` 臂（fd 半）：fd 门（只要 fd 有效，**不查打开模式**——与
     /// ftruncate 的 W 位门不同，C `do_chmod:88-93`）→ 属主门（EPERM）→
     /// 只读门（EROFS）→ setgid 清位 → `REQ_CHMOD`；回复带整字模式并写回缓存。
