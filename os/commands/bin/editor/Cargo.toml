@@ -15,3 +15,6 @@ path = "src/bin/ed.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
+# `s`/`g` 的模式编译与匹配复用 08 篇的搜索引擎（09-editors.md §5 的
+# 既定复用面；`//` 空模式、BRE 语法都从 ed 的命令语义对齐）。
+minix-regex = { workspace = true }

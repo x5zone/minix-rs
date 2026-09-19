@@ -31,14 +31,16 @@
 //!   step per input line, with display and file traffic injected through
 //!   the [`exec::EditorIo`] seam so the decision logic stays testable.
 //!
-//! Screen handling and regular-expression matching stay outside: the
-//! screen belongs to the terminal stage, and patterns reuse the stage's
-//! search crate (`s`/`g` answer "not wired" through the `?` channel for
-//! now — 09-editors.md §5 declares the boundary). File input/output also
-//! stays outside the pure logic: [`exec::EditorIo`] carries the seam, and
-//! the `ed` binary supplies the `minix_sys` production half. Everything
-//! here borrows from the input and uses fixed size buffers: no heap,
-//! `no_std` throughout.
+//! Screen handling and global commands stay outside: the screen belongs to
+//! the terminal stage, and `g`/`v`/`G`/`V` (plus `u` and `!`) still answer
+//! "not wired" through the `?` channel (09-editors.md §5 declares the
+//! boundary). Substitute `s` and search addresses now run on the stage's
+//! regex crate (`minix-regex`, the 08 篇 engine): `s/old/new/[g|N][pln]`
+//! with `&`/group replay, bare-`s` replay, and the `//` empty-pattern
+//! cache. File input/output also stays outside the pure logic:
+//! [`exec::EditorIo`] carries the seam, and the `ed` binary supplies the
+//! `minix_sys` production half. Everything here borrows from the input and
+//! uses fixed size buffers: no heap, `no_std` throughout.
 
 pub mod addr;
 pub mod cmd;
@@ -54,6 +56,9 @@ pub mod store;
 pub enum EditorError {
     /// Malformed input or out of range line.
     InvalidArgument,
+    /// A search address (or `s` pattern) matched no line — C saves the
+    /// "no match" message and prints `?` like any other failure.
+    NoMatch,
     /// A fixed buffer proved too small.
     TooLong,
 }
@@ -63,6 +68,7 @@ impl EditorError {
     pub fn as_errno(self) -> i32 {
         match self {
             EditorError::InvalidArgument => 22,
+            EditorError::NoMatch => 22,
             EditorError::TooLong => 12,
         }
     }

@@ -28,10 +28,14 @@
 //! `g`/`v`/`G`/`V`, undo `u`, shell `!`) answer through the same `?`
 //! channel with an explicit "not wired" message instead of pretending.
 
-use crate::addr::{evaluate, evaluate_range, parse_range, AddressRange, Context, MAX_MARKS};
+use crate::addr::{
+    evaluate_with, evaluate_range_with, parse_range, AddressRange, Context, SearchProbe, MAX_MARKS,
+};
 use crate::cmd::{parse_command, Command, Modifiers};
 use crate::store::{TextStore, MAX_TEXT};
 use crate::EditorError;
+use minix_regex::sed::{apply as subst_apply, Subst, SubstScope};
+use minix_regex::pattern::compile_basic;
 
 /// `GPR`: print the (new) current line after the command (`ed.h:65`).
 const GPR: u8 = 0o2;
@@ -151,6 +155,17 @@ pub struct Session {
     /// While collecting text for `a`/`i`/`c`: the insert-before position
     /// of the next input line.
     pending_input: Option<usize>,
+    /// 上一次的模式字节（`s/old/…` 写入；`//` 空模式与裸 `s` 复用——C 的
+    /// `pat` 全局加 `expr` 缓存，re.c:59-88）。空 len = 无。
+    last_pattern: [u8; MAX_TEXT],
+    last_pattern_len: usize,
+    /// 上一次的替换模板（`%%<delim>` 复用形与裸 `s` 用——C 的 `rhbuf`，
+    /// sub.c:44-46）。空 len = 无。
+    last_replacement: [u8; MAX_TEXT],
+    last_replacement_len: usize,
+    /// 上一次 `s` 的作用域（裸 `s`/`sg`/`sN` 重放——C 的 `sgflag`/`sgnum`
+    /// 全局）。`None` = 还没有过替换（"no previous substitution"）。
+    last_scope: Option<SubstScope>,
     /// The suffix `gflag` of the command that opened text-input mode; the
     /// post-input display uses it (`exec_command` returns it, and the
     /// input lines are consumed inside the same call in C).
@@ -178,6 +193,11 @@ impl Session {
             error_msg: None,
             pending_input: None,
             pending_gflag: 0,
+            last_pattern: [0; MAX_TEXT],
+            last_pattern_len: 0,
+            last_replacement: [0; MAX_TEXT],
+            last_replacement_len: 0,
+            last_scope: None,
             prompt: Prompt::star(),
             opt_prompt: opt_prompt.and_then(|text| Prompt::from(text).ok()),
         }
@@ -214,6 +234,34 @@ impl Session {
             self.prompt = self.opt_prompt.unwrap_or(Prompt::star());
             self.prompt_on = true;
         }
+    }
+
+    fn last_pattern_bytes(&self) -> &[u8] {
+        &self.last_pattern[..self.last_pattern_len]
+    }
+
+    fn last_replacement_bytes(&self) -> &[u8] {
+        &self.last_replacement[..self.last_replacement_len]
+    }
+
+    /// 记住一个新编译的模式（C `pat = tpat`，main.c:739-743——**替换成功
+    /// 与否都记**：缓存在解析时就落账）。
+    fn remember_pattern(&mut self, bytes: &[u8]) -> Result<(), ExecError> {
+        if bytes.len() > MAX_TEXT {
+            return Err(err("out of memory"));
+        }
+        self.last_pattern[..bytes.len()].copy_from_slice(bytes);
+        self.last_pattern_len = bytes.len();
+        Ok(())
+    }
+
+    fn remember_replacement(&mut self, bytes: &[u8]) -> Result<(), ExecError> {
+        if bytes.len() > MAX_TEXT {
+            return Err(err("out of memory"));
+        }
+        self.last_replacement[..bytes.len()].copy_from_slice(bytes);
+        self.last_replacement_len = bytes.len();
+        Ok(())
     }
 }
 
@@ -336,6 +384,9 @@ fn map_store_error(e: EditorError) -> ExecError {
         // The C editor's buffer-exhaustion face (`io.c` sbuf full).
         EditorError::TooLong => err("out of memory"),
         EditorError::InvalidArgument => err("invalid address"),
+        // C `get_matching_node_addr`/`search_and_replace` 的 "no match"
+        // （main.c:938，sub.c:175-179）。
+        EditorError::NoMatch => err("no match"),
     }
 }
 
@@ -655,6 +706,57 @@ fn parse_range_err(line: &str) -> Result<(AddressRange, usize), ExecError> {
     parse_range(line).map_err(|_| err("invalid address"))
 }
 
+/// 缓冲上的搜索探针（`addr::SearchProbe` 的 store 半）：模式交给 08 篇
+/// 的 BRE 引擎，扫描次序照抄 C `get_matching_node_addr`
+/// （main.c:919-938）——从当前行的下一行（反向：上一行）起，
+/// `INC_MOD`/`DEC_MOD`（ed.h:101-102）绕整缓冲一圈，当前行最后被访问；
+/// 空缓冲没有可扫的行，按无效地址回答。
+struct StoreSearch<'a, S: TextStore> {
+    store: &'a S,
+    sess: &'a Session,
+}
+
+impl<S: TextStore> SearchProbe for StoreSearch<'_, S> {
+    fn find_line(
+        &mut self,
+        pattern: &[u8],
+        forward: bool,
+    ) -> Result<Option<usize>, EditorError> {
+        let count = self.store.line_count();
+        if count == 0 {
+            return Err(EditorError::InvalidArgument);
+        }
+        let text = core::str::from_utf8(pattern).map_err(|_| EditorError::InvalidArgument)?;
+        let compiled = compile_basic(text).map_err(|_| EditorError::InvalidArgument)?;
+        let mut n = self.sess.current;
+        loop {
+            n = if forward {
+                if n + 1 > count {
+                    0
+                } else {
+                    n + 1
+                }
+            } else if n == 0 {
+                count
+            } else {
+                n - 1
+            };
+            if n != 0 {
+                let mut buf = [0u8; MAX_TEXT];
+                let used = self.store.read_line(n, &mut buf)?;
+                let line =
+                    core::str::from_utf8(&buf[..used]).map_err(|_| EditorError::InvalidArgument)?;
+                if compiled.is_match(line) {
+                    return Ok(Some(n));
+                }
+            }
+            if n == self.sess.current {
+                return Ok(None);
+            }
+        }
+    }
+}
+
 /// Execute one command line (or one text-input line while collecting).
 ///
 /// `line` carries no trailing newline (the caller strips it, matching the
@@ -695,13 +797,16 @@ fn step_inner<S: TextStore, I: EditorIo>(
 
     let (range, consumed) = parse_range_err(line)?;
     let rest = &line[consumed..];
+    // 搜索探针：不可变借用 store 与 sess；NLL 保证各臂在末次使用之后即可
+    // 可变访问（求值都在变更之前）。
+    let mut probe = StoreSearch { store, sess: &*sess };
     if rest.is_empty() {
         // A bare address (or bare newline): display the second address,
         // defaulting to the line after current (`main.c:884-890`,
         // `check_addr_range(1, current_addr + 1)`). Display moves current
         // to that line, which is how a lone `3` navigates.
-        let (_, to) = evaluate_range(&range, &context_of(store, sess), (1, sess.current + 1))
-            .map_err(|_| err("invalid address"))?;
+        let (_, to) = evaluate_range_with(&range, &context_of(store, sess), (1, sess.current + 1), line, &mut probe)
+            .map_err(map_store_error)?;
         display(store, sess, io, to, to, 0)?;
         return Ok(Flow::Continue);
     }
@@ -718,14 +823,14 @@ fn step_inner<S: TextStore, I: EditorIo>(
         Command::Append => {
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
-            let (_, second) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             sess.pending_input = Some(second + 1);
             sess.pending_gflag = g;
             Ok(Flow::Continue)
         }
         Command::Insert => {
-            let (_, second) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             if second == 0 {
                 return Err(err("invalid address"));
@@ -737,7 +842,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             Ok(Flow::Continue)
         }
         Command::Change => {
-            let (from, to) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (from, to) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
@@ -747,7 +852,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             Ok(Flow::Continue)
         }
         Command::Delete => {
-            let (from, to) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (from, to) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
@@ -762,7 +867,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             finish(store, sess, io, g)
         }
         Command::Print | Command::List | Command::Number => {
-            let (from, to) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (from, to) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
@@ -780,8 +885,8 @@ fn step_inner<S: TextStore, I: EditorIo>(
             // `printf("%ld\n", addr_cnt ? second_addr : addr_last)`
             // (`main.c:866-871`).
             let number = if range.first.is_some() || range.second.is_some() {
-                evaluate(range.second.or(range.first).ok_or_else(|| err("invalid address"))?, &ctx)
-                    .map_err(|_| err("invalid address"))?
+                let which = range.second.or(range.first).ok_or_else(|| err("invalid address"))?;
+                evaluate_with(which, &ctx, line, &mut probe).map_err(map_store_error)?
             } else {
                 store.line_count()
             };
@@ -836,7 +941,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
         }
         Command::Read => {
             reject_glued(&modifiers, false)?;
-            let (_, second) = evaluate_range(&range, &ctx, (sess.current, count))
+            let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, count), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             let mut taken = [0u8; MAX_FILENAME + 1];
             let kind = take_filename(&line[cursor..], sess, &mut taken)?;
@@ -862,7 +967,8 @@ fn step_inner<S: TextStore, I: EditorIo>(
             let (from, to) = if count == 0 {
                 (0, 0)
             } else {
-                evaluate_range(&range, &ctx, (1, count)).map_err(|_| err("invalid address"))?
+                evaluate_range_with(&range, &ctx, (1, count), line, &mut probe)
+                .map_err(|_| err("invalid address"))?
             };
             let mut taken = [0u8; MAX_FILENAME + 1];
             let kind = take_filename(&line[cursor..], sess, &mut taken)?;
@@ -893,6 +999,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 .map_err(|e| match e {
                     EditorError::TooLong => err("out of memory"),
                     EditorError::InvalidArgument => err("cannot open output file"),
+                    EditorError::NoMatch => err("no match"),
                 })?;
             if !sess.scripted {
                 let mut digits = [0u8; 20];
@@ -944,7 +1051,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             // then the usual suffix check applies.
             let mark = line.as_bytes().get(letter_end).copied();
             let g = suffix_scan(&line[letter_end + mark.is_some() as usize..])?;
-            let (_, second) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             if second == 0 {
                 return Err(err("invalid address"));
@@ -955,7 +1062,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             finish(store, sess, io, g)
         }
         Command::Move | Command::Transfer => {
-            let (from, to) = evaluate_range(&range, &ctx, (sess.current, sess.current))
+            let (from, to) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             // `GET_THIRD_ADDR` (`main.c:391-407`): the destination is the
             // second address of a fresh extraction; none is "destination
@@ -969,7 +1076,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             // even though a command address may not be zero.
             let dest = match dest_spec.base {
                 crate::addr::Base::Number(0) if dest_spec.offset == 0 => 0,
-                _ => evaluate(dest_spec, &ctx).map_err(|_| err("invalid address"))?,
+                _ => evaluate_with(dest_spec, &ctx, line, &mut probe).map_err(map_store_error)?,
             };
             if dest > count {
                 return Err(err("invalid address"));
@@ -1008,7 +1115,13 @@ fn step_inner<S: TextStore, I: EditorIo>(
             finish(store, sess, io, g)
         }
         Command::Join => {
-            let (from, to) = evaluate_range(&range, &ctx, (sess.current, sess.current + 1))
+            let (from, to) = evaluate_range_with(
+                &range,
+                &ctx,
+                (sess.current, sess.current + 1),
+                line,
+                &mut probe,
+            )
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
@@ -1072,23 +1185,251 @@ fn step_inner<S: TextStore, I: EditorIo>(
                     .saturating_add((bytes.as_bytes()[at] - b'0') as i32);
                 at += 1;
             }
-            let (_, second) = evaluate_range(&range, &ctx, (1, sess.current + 1))
+            let (_, second) = evaluate_range_with(&range, &ctx, (1, sess.current + 1), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_scan(&bytes[at..])?;
             let to = count.min(second.saturating_add(rows.max(0) as usize));
             display(store, sess, io, second, to, g)?;
             Ok(Flow::Continue)
         }
-        Command::Substitute | Command::Global | Command::GlobalInteractive | Command::Undo
-        | Command::Shell => match command {
-            Command::Shell if sess.secure || sess.restricted => Err(err("shell access restricted")),
-            Command::Substitute | Command::Global | Command::GlobalInteractive => {
-                Err(err("search commands not wired"))
+        Command::Substitute => {
+            substitute_command(store, sess, io, line, cursor, &modifiers, &range)
+        }
+        Command::Global | Command::GlobalInteractive | Command::Undo | Command::Shell => {
+            match command {
+                Command::Shell if sess.secure || sess.restricted => {
+                    Err(err("shell access restricted"))
+                }
+                Command::Global | Command::GlobalInteractive => {
+                    Err(err("global commands not wired"))
+                }
+                Command::Undo => Err(err("undo not wired")),
+                _ => Err(err("shell access not wired")),
             }
-            Command::Undo => Err(err("undo not wired")),
-            _ => Err(err("shell access not wired")),
-        },
+        }
     }
+}
+
+/// `s` 的执行半（C `main.c:698-770` + `sub.c:49-240`）：
+///
+/// 1. **前导旗标**（可连写；起手后遇到非旗标即 "invalid command suffix"）：
+///    `g` 全局、`p` 替换行即打印、`r` 复用上一替换、数字 = 第 N 个匹配。
+///    空尾（裸 `s`）= 整体重放。
+/// 2. **尾形式** `<delim>pat<delim>repl<delim?>[g|N]?`：定界符任取（空格
+///    即 "invalid pattern delimiter"），`repl` 处 `%%<delim>` 复用上一替
+///    换（"no previous substitution"），结束定界符行尾可省；其后的 `p`/
+///    `l`/`n` 与修饰位同族（C 的 GET_COMMAND_SUFFIX）。
+/// 3. **模式缓存**：非空模式编入并立即落账（C `pat = tpat`，main.c:739）；
+///    空模式（`//`）复用上一模式（"no previous pattern"，re.c:69）。范围
+///    缺省当前行；替换发生的最后一行成为新的当前行；全程无替换回
+///    "no match"（C `search_and_replace`，sub.c:141-181）。
+fn substitute_command<S: TextStore, I: EditorIo>(
+    store: &mut S,
+    sess: &mut Session,
+    io: &mut I,
+    line: &str,
+    cursor: usize,
+    modifiers: &Modifiers,
+    range: &AddressRange,
+) -> Result<Flow, ExecError> {
+    let rest = &line[cursor..];
+    let bytes = rest.as_bytes();
+    // ── 前导旗标 ──
+    let mut scope_override: Option<SubstScope> = None;
+    let mut reuse_replacement = false;
+    let mut print_replaced = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'g' => {
+                scope_override = Some(SubstScope::Global);
+                at += 1;
+            }
+            b'p' => {
+                print_replaced = true;
+                at += 1;
+            }
+            b'r' => {
+                reuse_replacement = true;
+                at += 1;
+            }
+            b'0'..=b'9' => {
+                let start = at;
+                while at < bytes.len() && bytes[at].is_ascii_digit() {
+                    at += 1;
+                }
+                let n: u32 = rest[start..at].parse().map_err(|_| err("invalid command suffix"))?;
+                if n == 0 {
+                    return Err(err("invalid command suffix"));
+                }
+                scope_override = Some(SubstScope::Nth(n));
+            }
+            _ => break,
+        }
+    }
+    if at > 0 && at < bytes.len() {
+        // 旗标起手后只许旗标到行尾（C `while (sflags && *ibufp != '\n')`
+        // 的 default 臂，main.c:719-722）。
+        return Err(err("invalid command suffix"));
+    }
+    let flagged = at > 0;
+    // ── 模式与替换的来源 ──（本 crate 无堆：来源先抄进局部定长缓冲）
+    let mut pattern_buf = [0u8; MAX_TEXT];
+    let mut pattern_len: usize;
+    let mut repl_buf = [0u8; MAX_TEXT];
+    let repl_len: usize;
+    let mut scope;
+    if reuse_replacement {
+        // `sr`（C main.c:730-737 的 SGR 半）：从尾里读**新模式**，替换与
+        // 作用域沿用上一次（`sgflag`/`sgnum` 不动）；空尾等同裸 `s`。
+        let Some(prev) = sess.last_scope else {
+            return Err(err("no previous substitution"));
+        };
+        scope = prev;
+        repl_len = sess.last_replacement_len;
+        repl_buf[..repl_len].copy_from_slice(sess.last_replacement_bytes());
+        pattern_len = 0;
+        if !bytes.is_empty() {
+            let delim = bytes[0];
+            if delim == b' ' {
+                return Err(err("invalid pattern delimiter"));
+            }
+            let (pspan, _after) =
+                crate::addr::scan_pattern(bytes, 1, delim).map_err(map_store_error)?;
+            pattern_len = pspan.len as usize;
+            pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
+        }
+    } else if bytes.is_empty() || flagged {
+        // 裸/旗标形式：整段复用（C 的 sflags 门：`if (sflags && !pat)`
+        // → "no previous substitution"，main.c:725-728）。
+        let Some(prev_scope) = sess.last_scope else {
+            return Err(err("no previous substitution"));
+        };
+        pattern_len = sess.last_pattern_len;
+        pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
+        repl_len = sess.last_replacement_len;
+        repl_buf[..repl_len].copy_from_slice(sess.last_replacement_bytes());
+        scope = scope_override.unwrap_or(prev_scope);
+    } else {
+        let delim = bytes[0];
+        if delim == b' ' {
+            return Err(err("invalid pattern delimiter"));
+        }
+        let (pspan, after_pattern) =
+            crate::addr::scan_pattern(bytes, 1, delim).map_err(map_store_error)?;
+        pattern_len = pspan.len as usize;
+        pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
+        let mut r_at = after_pattern;
+        if bytes.get(r_at) == Some(&b'%') && bytes.get(r_at + 1) == Some(&delim) {
+            // `%%<delim>`：复用上一替换（C `extract_subst_template` 的
+            // rhbuf 分支，sub.c:82-89）。
+            if sess.last_replacement_len == 0 {
+                return Err(err("no previous substitution"));
+            }
+            repl_len = sess.last_replacement_len;
+            repl_buf[..repl_len].copy_from_slice(sess.last_replacement_bytes());
+            r_at += 2;
+        } else {
+            let (rspan, r_next) =
+                crate::addr::scan_pattern(bytes, r_at, delim).map_err(map_store_error)?;
+            repl_len = rspan.len as usize;
+            repl_buf[..repl_len].copy_from_slice(&bytes[r_at..r_at + repl_len]);
+            r_at = r_next;
+        }
+        scope = SubstScope::First;
+        match bytes.get(r_at) {
+            Some(b'g') => {
+                scope = SubstScope::Global;
+            }
+            Some(b'0'..=b'9') => {
+                let start = r_at;
+                while r_at < bytes.len() && bytes[r_at].is_ascii_digit() {
+                    r_at += 1;
+                }
+                let n: u32 = rest[start..r_at].parse().map_err(|_| err("invalid pattern delimiter"))?;
+                if n == 0 {
+                    return Err(err("invalid pattern delimiter"));
+                }
+                scope = SubstScope::Nth(n);
+            }
+            _ => {}
+        }
+    }
+    // 空模式复用上一模式（C re.c:66-72）。
+    if pattern_len == 0 {
+        pattern_len = sess.last_pattern_len;
+        pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
+    }
+    if pattern_len == 0 {
+        return Err(err("no previous pattern"));
+    }
+    // 落账（C main.c:739-743 与 sub.c 的 rhbuf：解析成功即记，替换成败
+    // 不回头）。
+    sess.remember_pattern(&pattern_buf[..pattern_len])?;
+    sess.remember_replacement(&repl_buf[..repl_len])?;
+    sess.last_scope = Some(scope);
+    let pattern_text =
+        core::str::from_utf8(&pattern_buf[..pattern_len]).map_err(|_| err("invalid content"))?;
+    let replacement_text =
+        core::str::from_utf8(&repl_buf[..repl_len]).map_err(|_| err("invalid content"))?;
+    let compiled = compile_basic(pattern_text).map_err(|_| err("invalid pattern"))?;
+    let template = Subst {
+        pattern_text: "",
+        replacement: replacement_text,
+        scope,
+        print: false,
+    };
+    // 范围缺省当前行（C `check_addr_range(current_addr, current_addr)`，
+    // main.c:760-761）。没有当前行（缓冲空）时 C 会去扫它的 0 号头行
+    // （空串），无匹配即 "no match"——本模型没有 0 号行，如实折同一错误
+    // （登记偏差：能匹配空串的模式在 C 里会真插一行，未知行为面）。
+    if sess.current == 0 && range.first.is_none() && range.second.is_none() {
+        return Err(err("no match"));
+    }
+    let mut probe = StoreSearch { store, sess: &*sess };
+    let (from, to) = evaluate_range_with(
+        range,
+        &context_of(store, sess),
+        (sess.current, sess.current),
+        line,
+        &mut probe,
+    )
+    .map_err(map_store_error)?;
+    // 探针的借用到此为止：后面的删插走可变借用（NLL 分路径结清）。
+    let original_current = sess.current;
+    let mut last_changed: Option<usize> = None;
+    let mut n = from;
+    while n <= to {
+        let mut buf = [0u8; MAX_TEXT];
+        let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
+        let line_text = core::str::from_utf8(&buf[..used]).map_err(|_| err("invalid content"))?;
+        let mut out = [0u8; MAX_TEXT];
+        let (len, replaced) = subst_apply(&compiled, &template, line_text, &mut out);
+        if replaced {
+            // C：delete_lines(current, current) + 逐行 put_sbuf_line
+            // （sub.c:148-163）；替换模板在行内不会引入换行（模板里的
+            // 反斜杠换行是交互续行面，本模型的行不带换行），单行删插。
+            let text = core::str::from_utf8(&out[..len]).map_err(|_| err("invalid content"))?;
+            store.delete(n, n).map_err(map_store_error)?;
+            marks_delete(sess, n, n);
+            store.insert(n, text).map_err(map_store_error)?;
+            marks_shift_up(sess, n, 1);
+            sess.modified = true;
+            last_changed = Some(n);
+        }
+        n += 1;
+    }
+    sess.current = last_changed.unwrap_or(original_current);
+    if last_changed.is_none() {
+        return Err(err("no match"));
+    }
+    // 后缀打印（C：SGP 折 GPR 并清 GLS|GNP，main.c:752-754；其余与
+    // GET_COMMAND_SUFFIX 同族）。
+    let mut bits = suffix_bits(modifiers)?;
+    if print_replaced {
+        bits = GPR;
+    }
+    finish(store, sess, io, bits)
 }
 
 /// `read_file`'s store half (`io.c`): read `name`, insert its lines after
@@ -1106,6 +1447,7 @@ fn read_into_store<S: TextStore, I: EditorIo>(
     let size = io.read_file(name, &mut scratch).map_err(|e| match e {
         EditorError::TooLong => err("out of memory"),
         EditorError::InvalidArgument => err("cannot open input file"),
+        EditorError::NoMatch => err("no match"),
     })?;
     let text = core::str::from_utf8(&scratch[..size]).map_err(|_| err("invalid content"))?;
     let mut at = after;
@@ -1432,17 +1774,131 @@ mod tests {
         assert_eq!(io.err_out, b"invalid address\n".to_vec());
     }
 
+    /// `s` 的尾形式（C main.c:698-770 + sub.c）：首替、`g` 全局、`N` 第
+    /// N 个、`p` 打印；范围缺省当前行；替换行成为新当前行；无替换回
+    /// "no match"。
+    #[test]
+    fn test_substitute_tail_forms() {
+        let (mut store, mut sess) = seeded(&["foo boo", "bar"]);
+        let mut io = ScriptIo::new();
+        // `2s/a/0/`：作用第二行，首替。
+        step(&mut store, &mut sess, "2s/a/0/", &mut io).unwrap();
+        let mut line = [0u8; 64];
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..3], b"b0r");
+        // 当前行的 `s`：`1s/o/0/` 只换第一个 o。
+        step(&mut store, &mut sess, "1s/o/0/", &mut io).unwrap();
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..7], b"f0o boo");
+        assert_eq!(sess.current, 1, "替换行成为当前行");
+        // `g` 全局。
+        step(&mut store, &mut sess, "1s/o/0/g", &mut io).unwrap();
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..7], b"f00 b00");
+        // `N`：第二个匹配。
+        let (mut store, mut sess) = seeded(&["foo boo"]);
+        sess.current = 1;
+        step(&mut store, &mut sess, "s/o/0/2", &mut io).unwrap();
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..7], b"fo0 boo");
+        // 无匹配："no match"。
+        let (mut store, mut sess) = seeded(&["abc"]);
+        assert_eq!(
+            step(&mut store, &mut sess, "s/z/q/", &mut io).unwrap_err().message,
+            "no match"
+        );
+    }
+
+    /// 裸 `s` 与 `sg`/`sN` 重放上一次替换（C 的 sflags 门：没有上一替换
+    /// 即 "no previous substitution"；空模式 `//` 复用上一模式，re.c:66）。
+    #[test]
+    fn test_substitute_replay_and_pattern_cache() {
+        let (mut store, mut sess) = seeded(&["aa", "ab"]);
+        let mut io = ScriptIo::new();
+        sess.current = 1;
+        step(&mut store, &mut sess, "s/a/x/", &mut io).unwrap();
+        let mut line = [0u8; 64];
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..2], b"xa");
+        // 裸 `s`：重放（范围仍是当前行）。
+        sess.current = 2;
+        step(&mut store, &mut sess, "s", &mut io).unwrap();
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..2], b"xb");
+        // 空模式 `//` 复用上一模式。
+        let (mut store, mut sess) = seeded(&["k1", "k2"]);
+        sess.current = 1;
+        step(&mut store, &mut sess, "s/k/z/", &mut io).unwrap();
+        step(&mut store, &mut sess, "2s//z/", &mut io).unwrap();
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..2], b"z2");
+        // 无上一替换即拒。
+        let (mut store, mut sess) = seeded(&["x"]);
+        assert_eq!(
+            step(&mut store, &mut sess, "s", &mut io).unwrap_err().message,
+            "no previous substitution"
+        );
+        // 无上一模式即拒。
+        assert_eq!(
+            step(&mut store, &mut sess, "s//y/", &mut io).unwrap_err().message,
+            "no previous pattern"
+        );
+    }
+
+    /// 替换模板的 `&` 与分组回放（C 的 regsub 语义，08 篇引擎同源）。
+    #[test]
+    fn test_substitute_replacement_replay() {
+        let (mut store, mut sess) = seeded(&["hello world"]);
+        let mut io = ScriptIo::new();
+        sess.current = 1;
+        // `\+` 是扩展正则的量词（pattern.rs:305 只在 extended 收）；BRE 用
+        // 字面组。
+        step(&mut store, &mut sess, "s/\\(ll\\)/[&]/", &mut io).unwrap();
+        let mut line = [0u8; 64];
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..13], b"he[ll]o world");
+    }
+
+    /// 搜索地址求值：正向、反向、绕圈、`+N` 偏移与 "no match"（C
+    /// `get_matching_node_addr` main.c:919-938 的绕行次序）。
+    #[test]
+    fn test_search_addresses_evaluate() {
+        let (mut store, mut sess) = seeded(&["alpha", "beta", "gamma", "beta"]);
+        let mut io = ScriptIo::new();
+        sess.current = 4;
+        // 正向：4 之后没有 beta，绕回到 2。
+        step(&mut store, &mut sess, "/beta/", &mut io).unwrap();
+        assert_eq!(sess.current, 2, "裸搜索地址显示并把当前行移过去");
+        // 反向：从 2 往回是 4。
+        sess.current = 2;
+        step(&mut store, &mut sess, "?beta?d", &mut io).unwrap();
+        assert_eq!(store.line_count(), 3, "反向搜到的行（4）被删除");
+        // 偏移跟在搜索基后。
+        let (mut store, mut sess) = seeded(&["alpha", "mid", "omega"]);
+        sess.current = 1;
+        step(&mut store, &mut sess, "/alpha/+1", &mut io).unwrap();
+        assert_eq!(sess.current, 2);
+        // 无匹配。
+        sess.current = 1;
+        assert_eq!(
+            step(&mut store, &mut sess, "/zebra/", &mut io).unwrap_err().message,
+            "no match"
+        );
+        // 空缓冲无可搜。
+        let (mut store, mut sess) = seeded(&[]);
+        assert_eq!(
+            step(&mut store, &mut sess, "/x/", &mut io).unwrap_err().message,
+            "invalid address"
+        );
+    }
+
     #[test]
     fn test_declared_gaps_answer_through_the_question_channel() {
         let (mut store, mut sess) = seeded(&["a"]);
         let mut io = ScriptIo::new();
         assert_eq!(
-            step(&mut store, &mut sess, "1s/a/b/", &mut io).unwrap_err().message,
-            "search commands not wired"
-        );
-        assert_eq!(
             step(&mut store, &mut sess, "1,2g/p/d", &mut io).unwrap_err().message,
-            "search commands not wired"
+            "global commands not wired"
         );
         assert_eq!(step(&mut store, &mut sess, "u", &mut io).unwrap_err().message, "undo not wired");
         assert_eq!(
