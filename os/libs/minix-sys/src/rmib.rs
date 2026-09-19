@@ -1185,12 +1185,17 @@ pub fn rmib_call(
         rootver: req.root_ver,
         treever: req.tree_ver,
     };
-    let mut name_pos = prefixlen; // call_name 游标(绝对索引)
+    // C rmib.c:736 `call.call_name = &name[prefixlen]`——handler/叶写入
+    // 的可见视图从挂载前缀之后开始;每消费一个分量,视图左移一格
+    // (C 的 `call.call_name++` 指针推进,rmib.c:746-748)。Rust 以
+    // copy_within 平移对齐:name[0..namelen] 恒为"当前节点之后"的
+    // 剩余分量。
+    call_ctx.name.copy_within(prefixlen.., 0);
     let mut rnode: &mut RmibNode = root;
 
     while call_ctx.namelen > 0 {
-        let id = call_ctx.name[name_pos];
-        name_pos += 1;
+        let id = call_ctx.name[0];
+        call_ctx.name.copy_within(1.., 0);
         call_ctx.namelen -= 1;
 
         // C: rparent 总是 NODE(rmib.c:750 的 assert)。
@@ -1450,6 +1455,27 @@ mod func_tests {
             rmib_call(&mut table, &req(1, 5), &mut io, None),
             Err(minix_types::EOPNOTSUPP)
         );
+    }
+
+    #[test]
+    fn test_handler_sees_name_after_consumed_component() {
+        // C rmib.c:746-748 指针推进语义:name=[0(info), 5(SEM_INFO)]
+        // 时,handler 看到的是 call.name[0]==5、namelen==1——即
+        // "当前节点之后"的剩余分量(kern_ipc_info 的 call_name[0])。
+        let mut table = fixture();
+        let mut io = MemIo::new(alloc::vec![
+            (5, alloc::vec![0, 0, 0, 0, 5, 0, 0, 0]),
+            (7, alloc::vec![0; 16]),
+        ]);
+        let mut probe = Probe { seen: None, ret: Ok(0) };
+        let dbg = &table.slots[0];
+        assert_eq!(dbg.namelen, 2, "slot namelen");
+        assert!(dbg.tree.is_some());
+        let root_ref = dbg.tree.as_ref().unwrap();
+        assert!(rmib_lookup(root_ref, 0).is_some(), "child0 exists: {:?}", root_ref.children);
+        let r = rmib_call(&mut table, &req(2, 5), &mut io, Some(&mut probe));
+        assert!(r.is_ok(), "walker returned {r:?}");
+        assert_eq!(probe.seen, Some(("info".into(), 1)));
     }
 
     #[test]
