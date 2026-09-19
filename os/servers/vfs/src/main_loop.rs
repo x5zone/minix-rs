@@ -2968,6 +2968,57 @@ pub fn run() -> ! {
     }
 }
 
+/// 热身 grant 表（测试专用）：宿主构建下 `sys_setgrant` 不可达，**每次表
+/// 增长后的第一次分配必然失败**，之后再分配就成功（失败路径已经把 freelist
+/// 铺好了）。臂测试要断言"真正登记出去的请求"，就得先把这一步趟平——连续做
+/// 几轮覆盖多次增长，并把热身用的槽**撤销回 freelist**（不撤销的话表刚好被
+/// 热身占满，测试自己的 grant 又要触发一次增长 → 又撞上那个失败）。
+/// 测试专用：把状态铺成"臂真的能发出请求"的基线——挂载行（fs=MFS、dev 非
+/// NO_DEV）、调用方的根/工作目录 vnode（`root_dir_of`/`work_dir_of` 的输入）、
+/// 以及热身过的 grant 表。路径臂的入口测试都要从这里起步，否则会停在
+/// "根目录没设"或"grant 没热"上，断言虽然也是 EIO 但**理由不对**。
+#[cfg(test)]
+pub(crate) fn seed_ready_state(state: &mut VfsState) {
+    {
+        let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+        v.fs = Endpoint::MFS;
+        v.dev = 1;
+    }
+    let vid = state.vnode_table.alloc().unwrap();
+    {
+        let vn = state.vnode_table.get_mut(vid).unwrap();
+        vn.fs = Endpoint::MFS;
+        vn.ino = 1;
+        vn.dev = 1;
+        vn.mode = crate::open::S_IFDIR | 0o755;
+        vn.ref_count = 1;
+    }
+    if let Some(fp) = state.fproc_table.get_mut(minix_types::UserSlot::new(0)) {
+        fp.root_dir = Some(vid.get());
+        fp.work_dir = Some(vid.get());
+    }
+    warm_grants(state);
+}
+
+#[cfg(test)]
+pub(crate) fn warm_grants(state: &mut VfsState) {
+    let mut ids = alloc::vec::Vec::new();
+    for _ in 0..8 {
+        if let Ok(g) = state.grants.grant_direct(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::MFS.get(),
+            0x1000,
+            8,
+            minix_types::CpFlags::READ,
+        ) {
+            ids.push(g);
+        }
+    }
+    for g in ids {
+        let _ = state.grants.revoke(g);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::call_table::VfsCallNum;
@@ -2982,30 +3033,6 @@ mod tests {
         v.dev = 1; // DevId(u64),非 NO_DEV 即可
     }
 
-    /// 热身 grant 表（测试专用）：宿主构建下 `sys_setgrant` 不可达，**每次
-    /// 表增长后的第一次分配必然失败**，之后再分配就成功（失败路径已经把
-    /// freelist 铺好了）。臂测试要断言"真正登记出去的请求"，就得先把这一步
-    /// 趟平——连续做几轮把测试用得到的槽都铺出来。
-    fn warm_grants(state: &mut VfsState) {
-        let mut ids = alloc::vec::Vec::new();
-        for _ in 0..8 {
-            if let Ok(g) = state.grants.grant_direct(
-                &minix_sys::syscall::DirectKernelCallTransport,
-                Endpoint::MFS.get(),
-                0x1000,
-                8,
-                minix_types::CpFlags::READ,
-            ) {
-                ids.push(g);
-            }
-        }
-        // 撤销热身用的槽：表已经长好，槽也回到 freelist，测试自己的 grant
-        // 才有槽可用（不撤销的话表刚好被热身占满，下一次分配又要增长 → 又
-        // 会撞上"增长后第一次必失败"）。
-        for g in ids {
-            let _ = state.grants.revoke(g);
-        }
-    }
 
     /// 播种 worker 槽并置 `WaitingForFs`(fs_sendrec 的 sendmsg 半)。
     fn seed_waiting(state: &mut VfsState, slot: usize, task: Endpoint) {

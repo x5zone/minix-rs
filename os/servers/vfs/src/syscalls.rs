@@ -591,13 +591,16 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             let Some(fp_slot) = state.current_fp_slot else {
                 return SyscallResult::Error(minix_types::EINVAL);
             };
-            // C `common_open` 的建节点模式：`bits & RWX & umask`。
+            // C `common_open` 的建节点模式：`omode & ALLPERMS & fp_umask`
+            // （open.c:109）。**存储约定与 C 不同**：C 的 `fp_umask` 是
+            // `~mask`（protect.c:190），Rust 的 `fproc.umask` 是原始掩码
+            // （默认 0 = 全保留），所以这里是 `& !umask`。
             let umask = state
                 .fproc_table
                 .get(fp_slot)
                 .map(|fp| fp.umask)
                 .unwrap_or(0o022);
-            let create_bits = (mode & 0o777 & umask) | crate::open::S_IFREG;
+            let create_bits = (mode & 0o777 & !umask) | crate::open::S_IFREG;
             let resolve = match crate::path::Lookup::new(path.clone(), crate::path::LookupFlags::NOFLAGS)
             {
                 Ok(l) => l,
@@ -685,13 +688,15 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 Ok(sp) => sp,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
             };
-            // C `do_mkdir:583` —— 权限位 = I_DIRECTORY | (mode & RWX & umask)。
+            // C `do_mkdir:583` —— 权限位 = `I_DIRECTORY | (dirmode & RWX_MODES
+            // & fp_umask)`；同 Creat，`fp_umask` 的存储约定在 Rust 侧是原始
+            // 掩码，所以取 `& !umask`。
             let umask = state
                 .fproc_table
                 .get(fp_slot)
                 .map(|fp| fp.umask)
                 .unwrap_or(0o022);
-            let bits = crate::open::S_IFDIR | (mode & 0o777 & umask);
+            let bits = crate::open::S_IFDIR | (mode & 0o777 & !umask);
             let resolve = match crate::path::Lookup::new(
                 split.dir_path.clone(),
                 crate::path::LookupFlags::NOFLAGS,
@@ -2593,6 +2598,84 @@ mod tests {
         }
     }
 
+    /// 建节点模式的 **umask 收窄**（C `open.c:109` 的 creat、
+    /// `do_mkdir:583` 的 mkdir）：Rust 侧 `fproc.umask` 存**原始掩码**，
+    /// 公式是 `mode & 0777 & !umask`（C 存反码所以写 `& fp_umask`——两侧
+    /// 约定不同，这里钉住 Rust 侧的结果）。默认 umask 0 必须**全保留**
+    /// （曾经写成 `& umask`，新建的文件/目录权限位会变成 0）。
+    #[test]
+    fn test_create_and_mkdir_apply_umask_as_narrowing() {
+        use minix_types::Endpoint;
+
+        let path_msg = |call: VfsCallNum, mode: u32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_path：name@0、len@8、flags@16、mode@20、
+            // 内联路径@24。Creat 必须带 O_CREAT（C `do_creat` 的门，缺席即
+            // EINVAL），Mkdir 不看 flags。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[8..16].copy_from_slice(&3u64.to_le_bytes());
+                raw[16..20].copy_from_slice(
+                    &crate::open::OpenFlags::CREAT.bits().to_le_bytes(),
+                );
+                raw[20..24].copy_from_slice(&mode.to_le_bytes());
+                raw[24] = b'/';
+                raw[25] = b'x';
+                raw[26] = 0;
+            }
+            m
+        };
+        let follow_mode = |state: &VfsState| -> u32 {
+            let wp = state
+                .worker_pool
+                .get(state.current_worker.unwrap())
+                .expect("槽");
+            match wp.path.as_ref().map(|p| &p.follow) {
+                Some(crate::worker::PathFollow::Mkdir { mode, .. }) => *mode,
+                Some(crate::worker::PathFollow::Creat { mode, .. }) => *mode,
+                other => panic!("follow 不对：{other:?}"),
+            }
+        };
+        let run = |call: VfsCallNum, mode: u32, umask: u32| -> u32 {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            {
+                let fp = state
+                    .fproc_table
+                    .get_mut(minix_types::UserSlot::new(0))
+                    .unwrap();
+                fp.umask = umask;
+            }
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            state.current_message = path_msg(call, mode);
+            assert_eq!(
+                dispatch_syscall(&mut state, call),
+                SyscallResult::Suspend,
+                "{call:?} 起走：挂起等 FS"
+            );
+            follow_mode(&state)
+        };
+
+        // umask 0（新进程默认）：全保留。
+        assert_eq!(run(VfsCallNum::Mkdir, 0o777, 0), crate::open::S_IFDIR | 0o777);
+        assert_eq!(run(VfsCallNum::Creat, 0o666, 0), crate::open::S_IFREG | 0o666);
+        // umask 022：按位收窄（不是"只留掩码里的位"）。
+        assert_eq!(run(VfsCallNum::Mkdir, 0o777, 0o022), crate::open::S_IFDIR | 0o755);
+        assert_eq!(run(VfsCallNum::Creat, 0o666, 0o022), crate::open::S_IFREG | 0o644);
+    }
+
     /// `Lseek` 位置不变那条路的**回复载荷不能被统一收尾覆盖**：C `do_lseek`
     /// 把新位置写进 `m_vfs_lc_lseek.offset`（open.c:665-666）并返回 OK，两条
     /// 出口（发不发抑制预读）都要带。这里走完整的 `run_once`（不是只调
@@ -2835,8 +2918,9 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Readlink),
             SyscallResult::Error(minix_types::EINVAL)
         );
-        // 窗口合法则过门；宿主下走路径的 grant 不可达 → EIO。先绑 worker 槽
-        // ——没槽时臂回 EAGAIN（C handle_work:150-151），那是另一条门。
+        // 窗口合法则过门 → 起走遍历（挂起）。基线要先铺好：挂载行 + 调用方
+        // 根目录 vnode + 热身过的 grant 表，缺任一项都会以 EIO 收场。
+        crate::main_loop::seed_ready_state(&mut state);
         let idx = state
             .worker_pool
             .assign_first_fit(
@@ -2849,8 +2933,16 @@ mod tests {
         state.current_message = readlink_msg(3, 128);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Readlink),
-            SyscallResult::Error(minix_types::EIO)
+            SyscallResult::Suspend
         );
+        // 末组件符号链接要带回：遍历标志必须是 RET_SYMLINK（C link.c:489）。
+        // SAFETY(test): 按 lookup_req_off 读 FLAGS 域。
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_LOOKUP");
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let flags = u32::from_le_bytes(raw[16..20].try_into().unwrap());
+            assert_eq!(flags, minix_types::PATH_RET_SYMLINK);
+        }
     }
 
     /// `Access` 臂的位掩码先验（C protect.c:216-217）：`F_OK`(0) 之外只认
@@ -2887,9 +2979,10 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Access),
             SyscallResult::Error(minix_types::EINVAL)
         );
-        // 0o7（R|W|X 全给）与 0（F_OK）都过门；宿主下走路径的 grant 不可达
-        // → EIO（诚实边界，与其它路径臂同值）。先绑一个 worker 槽——没槽
-        // 时臂回 EAGAIN（C `handle_work:150-151`），那是另一条门。
+        // 0o7（R|W|X 全给）与 0（F_OK）都过门 → 起走遍历（挂起，等 FS）。
+        // 基线要先铺好：挂载行 + 调用方根目录 vnode + 热身过的 grant 表
+        // （缺任一项都会以 EIO 收场，断言就"理由不对"了）。
+        crate::main_loop::seed_ready_state(&mut state);
         let idx = state
             .worker_pool
             .assign_first_fit(
@@ -2903,9 +2996,15 @@ mod tests {
             state.current_message = access_msg(mode);
             assert_eq!(
                 dispatch_syscall(&mut state, VfsCallNum::Access),
-                SyscallResult::Error(minix_types::EIO),
-                "mode={mode} 过位掩码门后停在 grant"
+                SyscallResult::Suspend,
+                "mode={mode} 过位掩码门后起走遍历"
             );
+            assert_eq!(
+                state.pending_fs.as_ref().map(|p| p.req.m_type),
+                Some(minix_types::REQ_LOOKUP),
+                "首条 lookup 已登记"
+            );
+            state.pending_fs = None;
         }
     }
 

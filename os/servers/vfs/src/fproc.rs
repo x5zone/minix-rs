@@ -306,7 +306,12 @@ pub struct FProc {
     pub ngroups: usize,
     /// Supplemental group list.
     pub supplemental_groups: [Gid; NGROUPS_MAX],
-    /// umask set by the `umask` syscall.
+    /// umask set by the `umask` syscall —— **原始掩码**（0 = 全保留）。
+    ///
+    /// C 的 `fp_umask` 存的是**反码**（`fp->fp_umask = ~(new_umask &
+    /// RWX_MODES)`，protect.c:190；初值 `~0`，main.c:433），所以 C 侧建节点
+    /// 的模式公式写成 `mode & fp_umask`。Rust 侧按自然语义存原始掩码，建节点
+    /// 处一律 `mode & !umask`（`Creat`/`Mkdir`/`Mknod` 三处）。
     pub umask: Mode,
     /// Name of the last executed program (`fp_name`, `PROC_NAME_LEN` bytes).
     pub name: [u8; PROC_NAME_LEN],
