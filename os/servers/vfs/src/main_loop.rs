@@ -2829,8 +2829,16 @@ mod tests {
             Some((user, minix_types::ENOTDIR))
         );
 
-        // 情形二：目录 + root：过门 → 组 REQ_MKDIR（宿主下 grant 不可达 →
-        // EIO 收尾，但**槽必须释放、用户必须收到回复**）。
+        // 情形二：目录 + root：过门 → 组 `REQ_MKDIR`。宿主下要先热身 grant
+        // 表（首次增长过不了 `sys_setgrant`，但失败路径已铺好 freelist），
+        // 否则这条断言会退化成"第一次发请求必然失败"的顺序产物。
+        let _ = state.grants.grant_direct(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::MFS.get(),
+            0x1000,
+            8,
+            minix_types::CpFlags::READ,
+        );
         let idx2 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
@@ -2868,10 +2876,30 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_MKDIR");
+        assert_eq!(p.req.m_type, minix_types::REQ_MKDIR);
+        assert_eq!(p.worker, idx2);
+        // SAFETY(test): 按 mkdir_req_off 读回父目录 ino 与模式。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let mode = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            assert_eq!(ino, 9, "inode 域是父目录");
+            assert_eq!(mode, crate::open::S_IFDIR | 0o755);
+        }
+        // 回复到达：状态原样回用户，槽释放。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx2).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
         assert!(state.worker_pool.get_mut(idx2).unwrap().is_idle(), "槽已释放");
         let (t2, m2) = state.take_reply().expect("回复");
         assert_eq!(t2, user);
-        assert_eq!(m2.m_type, minix_types::EIO, "宿主下 grant 不可达 → EIO");
+        assert_eq!(m2.m_type, 0, "REQ_MKDIR 成功 → 用户拿 0");
     }
 
     /// `WorkerCont::Status`：纯状态续接——回复的状态原样回给用户。
@@ -3449,8 +3477,15 @@ mod tests {
             Some((user, minix_types::EINVAL))
         );
 
-        // 是符号链接：宿主下 grant 不可达 → EIO（诚实边界；真机上这里会
-        // 变成 pending_fs 里的 REQ_RDLINK）。
+        // 是符号链接：发 `REQ_RDLINK`。宿主下要先热身 grant 表（见 Unlink
+        // 测试的说明），否则会退化成"停在 grant"的顺序产物。
+        let _ = state.grants.grant_direct(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::MFS.get(),
+            0x1000,
+            8,
+            minix_types::CpFlags::READ,
+        );
         let (slot, idx, walk) = mk(&mut state);
         {
             let fp = state.fproc_table.get_mut(slot).unwrap();
@@ -3469,10 +3504,17 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
-        assert_eq!(
-            state.take_reply().map(|(t, m)| (t, m.m_type)),
-            Some((user, minix_types::EIO))
-        );
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_RDLINK");
+        assert_eq!(p.req.m_type, minix_types::REQ_RDLINK);
+        // SAFETY(test): 按 rdlink_req_off 读回 ino 与窗口大小。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let mem_size = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+            assert_eq!(ino, 9);
+            assert_eq!(mem_size, 128, "窗口大小来自用户给的 bufsize");
+        }
+        state.pending_fs = None;
 
         // 续接体：状态 OK 时长度取自载荷的 nbytes（不是状态字 0）。
         let idx2 = state
