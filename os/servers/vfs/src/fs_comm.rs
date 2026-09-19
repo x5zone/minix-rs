@@ -304,6 +304,11 @@ impl Default for GlobalComm {
 }
 
 /// `fs_sendrec` / `drv_sendrec` / `vm_sendrec` error — maps to errno.
+///
+/// 只表达**发送/对接半**的失败（C `fs_sendrec` 的 `return(r)` 面，
+/// comm.c:24-59）。回复**落地后**的状态折算不在这里：C `comm.c:161-163` 的
+/// `if (reqmp->m_type == ERESTART) r = EIO` 归宿在
+/// `VfsState::run_worker_continuations` 的头部（线上状态带负号域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommError {
     NoVmnt,
@@ -313,7 +318,6 @@ pub enum CommError {
     DriverBusy,
     CttyNotBlock,
     NoWorker,
-    Restart, // `ERESTART` → `EIO`
     /// `asynsend3` 底层失败(sendnb 的 TrapStatus 原值,C sendmsg
     /// comm.c:24-31 的 `return(r)`)。
     IpcError(i32),
@@ -335,7 +339,6 @@ impl CommError {
             Self::DriverBusy => minix_types::EBUSY,
             Self::CttyNotBlock => minix_types::EIO,
             Self::NoWorker => minix_types::EINVAL,
-            Self::Restart => minix_types::EIO,
             Self::IpcError(r) => r,
         }
     }
@@ -872,20 +875,6 @@ mod tests {
         let mut t = BlockingTransport;
         let r = t.send_vm(1, &Message::default());
         assert!(r.is_ok());
-    }
-
-    #[test]
-    fn test_ere_restart() {
-        let e = CommError::Restart;
-        assert_eq!(e.to_errno(), minix_types::EIO);
-        // fs_sendrec's ERESTART→EIO mapping
-        let raw: i32 = minix_types::ERESTART;
-        let mapped = if raw == minix_types::ERESTART {
-            minix_types::EIO
-        } else {
-            raw
-        };
-        assert_eq!(mapped, minix_types::EIO);
     }
 
     #[test]
