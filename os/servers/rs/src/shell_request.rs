@@ -1539,6 +1539,41 @@ impl RsServer {
                         pub_.endpoint,
                         minix_types::DsFlags::empty(),
                     );
+                    // C manager.c:840-853 —— devman bind 半（S25 余件①）：
+                    // `devman_id != 0` 时先查 devman 端点，再把设备绑到本
+                    // 服务端点。**与 DS 发布不同，C 对这条失败是致命的**
+                    // （`kill_service(rp, "devman bind device failed", r)`）；
+                    // Rust 的 publish 缝只有表与返回值，没有 kill 句柄，
+                    // 这里按 C 的错误面回 `Err`（由 `start_service` 上抛），
+                    // "devman 没在跑" 与 "绑定被拒" 都落在这一条上——kill
+                    // 半的缺口登记在 FIXLOG（RS 内部设计项，非本批发明）。
+                    if crate::publish::should_bind_devman(pub_)
+                        && let Some(devman_id) = pub_.devman_id
+                    {
+                        use minix_sys::ipc::IpcTransport;
+                        match ds.retrieve_label_endpt("devman") {
+                            Ok((devman_ep, _)) => {
+                                let mut bind = crate::publish::devman_bind_message(
+                                    devman_id,
+                                    pub_.endpoint,
+                                );
+                                let transport = minix_sys::ipc::DirectTrapTransport;
+                                let sent = transport.sendrec(devman_ep, &mut bind);
+                                let answered = crate::publish::devman_result(&bind);
+                                if sent.is_err() || answered != minix_types::OK {
+                                    let code = if answered != minix_types::OK {
+                                        answered
+                                    } else {
+                                        minix_types::EIO
+                                    };
+                                    return Err(Errno::from_i32(code));
+                                }
+                            }
+                            // C: `ds_retrieve_label_endpt` 失败 → kill_service
+                            // （"devman not running?"）。Rust 按 EIO 上抛。
+                            Err(_) => return Err(Errno::from_i32(minix_types::EIO)),
+                        }
+                    }
                     Ok(())
                 }),
                 asynsend: alloc::boxed::Box::new(

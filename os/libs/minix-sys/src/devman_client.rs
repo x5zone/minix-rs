@@ -92,6 +92,73 @@ pub trait ClientTransport {
     fn sendrec(&mut self, ep: Endpoint, msg: &mut Message) -> Result<(), ClientError>;
 }
 
+/// 生产 `ClientTransport`：把客户端的三件内核事务接到真传输上。
+///
+/// C 对应：`cpf_grant_direct(…, CPF_READ)`（safecopies.c:148-172）、
+/// `cpf_revoke`（:218-263）、`ipc_sendrec`（libsys 的 `ipc_sendrec`）。
+/// 持一张 grant 表（C 的进程级 `grants` 全局数组，`safecopies.c`），
+/// 由调用方在服务启动时用 [`GrantTable::register`] 告知内核表位置。
+///
+/// 失败折成 [`ClientError`]：C 在这些路径上一律 `panic`（generic.c 的
+/// "could not talk…"），Rust 让调用方决定（driver 侧的 run 循环把
+/// transport 失败当致命，与 C 的 panic 同面）。
+pub struct SysClientTransport {
+    /// 本进程的 grant 表（C 的 `grants[]`）。
+    grants: crate::grant::GrantTable,
+    /// 内核调用传输（grant 表注册与 safecopy 走它）。
+    kernel: crate::syscall::DirectKernelCallTransport,
+    /// IPC 传输（sendrec 走它）。
+    ipc: crate::ipc::DirectTrapTransport,
+}
+
+impl SysClientTransport {
+    /// 空表 + 真传输（`register` 需在服务启动、拿到内核表位置后调用）。
+    pub fn new() -> Self {
+        Self {
+            grants: crate::grant::GrantTable::new(),
+            kernel: crate::syscall::DirectKernelCallTransport,
+            ipc: crate::ipc::DirectTrapTransport,
+        }
+    }
+
+    /// 把 grant 表位置告知内核（C 的 `sys_setgrant`，进程启动一次）。
+    pub fn register(&self) -> Result<(), i32> {
+        self.grants.register(&self.kernel)
+    }
+}
+
+impl Default for SysClientTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClientTransport for SysClientTransport {
+    fn grant(&mut self, buf: &[u8]) -> Result<i32, ClientError> {
+        // C: `cpf_grant_direct(who, buf, len, CPF_READ)` —— `who_to` 是
+        // 收方（devman）端点，由调用方在 sendrec 时给出；这里的表项按
+        // C 的形态记 `who_to = NONE`（direct grant 允许任意收方读取）。
+        self.grants
+            .grant_direct(
+                &self.kernel,
+                minix_types::Endpoint::NONE.get(),
+                buf.as_ptr() as u64,
+                buf.len() as u64,
+                minix_types::CpFlags::READ,
+            )
+            .map_err(|_| ClientError::Transport)
+    }
+
+    fn revoke(&mut self, grant: i32) {
+        let _ = self.grants.revoke(grant);
+    }
+
+    fn sendrec(&mut self, ep: Endpoint, msg: &mut Message) -> Result<(), ClientError> {
+        use crate::ipc::IpcTransport;
+        self.ipc.sendrec(ep, msg).map_err(|_| ClientError::Transport)
+    }
+}
+
 /// Encode a device exactly like `serialize_dev` (generic.c:36-99):
 /// 16-byte header (`count`, `parent`, name offset, subsystem 0) +
 /// 16-byte entries (`type` **0**, name/data offsets, `req_nr` 0) +
@@ -261,6 +328,23 @@ pub fn handle_msg(
 
 #[cfg(test)]
 mod tests {
+    /// 生产 `ClientTransport` 的宿主面：grant 表项要经内核调用申请
+    /// （`sys_setgrant` 侧），宿主构建下不可达 → 诚实报 `Transport`
+    /// 错误；`sendrec` 同理。真机行为由 E5(h) 联调覆盖。
+    #[test]
+    fn test_sys_client_transport_hosted_errors_are_honest() {
+        use super::{ClientError, ClientTransport, SysClientTransport};
+        let mut t = SysClientTransport::new();
+        assert_eq!(t.grant(b"abc"), Err(ClientError::Transport));
+        t.revoke(1); // 未登记的 id：C `cpf_revoke` 回 EINVAL，这里静默
+        let mut m = minix_types::Message::default();
+        assert_eq!(
+            t.sendrec(minix_types::Endpoint(9), &mut m),
+            Err(ClientError::Transport)
+        );
+        assert!(t.register().is_err(), "宿主构建下 sys_setgrant 不可达");
+    }
+
     extern crate std;
     use super::*;
     use std::vec::Vec;
