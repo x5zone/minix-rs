@@ -52,6 +52,7 @@
 | C-22 | edge3 卡 I（S33）：MIB 取表半的 wire 权威扩展 | edge3（需求方） | `os/libs/minix-types`：`MProcSnap` 尾部追加 `mp_started`（76→88 字节）、KERN_PROC2 尾段 `mp_svuid`/`mp_svgid`/`mp_child_utime`/`mp_child_stime`/`mp_ngroups`/`mp_sgroups[16]`（→184）与 KERN_PROC_ARGS 尾段 `mp_endpoint`/`mp_frame_addr`/`mp_frame_len`（→200 字节，既有偏移均不动）+ `mp_flags` 位值权威上收（PM crate 本地表改 re-export）+ `proc_info.rs` 的 RTS 位值修正（SENDING/RECEIVING 误记 0x100/0x200 → C 真值 0x04/0x08，当时无消费者）+ 补全 RTS 全组常量 + `KERN_PROC_TTY_NODEV/REVOKE` 哨兵与 `ARG_MAX`/`PAGE_SIZE` 权威、`PS_STRINGS_SIZE`（ps_strings.rs）。**kernel 行扩展（`p_dequeued`/`p_cpuavg`/`p_magic` 生产半）挂 edge1**：`os/kernel/src/misc.rs` 的 `ProcInfoStruct::from_kprocess` 需填真值——落地前 MIB 的 `l_slptime`/`l_pctcpu`/`l_cpticks` 如实回 0（A-7 登记，非静默分歧）；VFS light 行 wire 权威（`FprocLightSnap` + `misc.rs` ProcLightTab 生产臂）挂 S33 后续批次 | edge3 | 🔄 登记即动（2026-09-20，卡 I 开工；minix-types 三件 + PM 随动本批落，kernel 半待 edge1） |
 | C-23 | edge3 卡 H（S35 批次二十五，13 篇 termctl）：termios wire 权威 + tty ioctl 面 | edge3（需求方） | `os/libs/minix-types`：新增 `types/termios.rs`（`Termios` 44 字节：`c_iflag/c_oflag/c_cflag/c_lflag` 四 `u32` + `c_cc[20]` + `c_ispeed/c_ospeed` 两 `i32`，`termios.h:192-200`；stty 十六旗标位与 `VMIN`/`VTIME` 槽位常量，逐位钉值测试）——仅新增文件；`os/libs/minix-sys`：顶层新增 `TIOCGETA`/`TIOCSETA` 请求号（`ttycom.h:88-89` 的 `_IOR/_IOW('t',…,struct termios)` 编码）与 `tcgetattr`/`tcsetattr` 便利封装——仅新增常量与函数，不改既有 | edge3 | 🔄 登记即动（2026-09-20，卡 H 批次二十五；真机 tty 往返验证挂 E5，宿主以决定半测试与请求号钉值为准） |
 | C-24 | edge3 卡 E（S31 批三）：smoltcp 外部依赖引入（N1-P1-3 裁决的栈本体落地） | edge3（需求方） | `os/Cargo.toml`（workspace 依赖表新增 `smoltcp`，§1 规则 3 登记同轮；只加一行，不动既有条目）+ `os/net/lwip/Cargo.toml`（消费该依赖）+ `Cargo.lock`（当前不入库，无需提交）。离线策略已盘点：宿主与 minix-ci:1.94 容器均可达 crates.io（index 200），共享 CARGO_HOME 缓存持久（docker `-v $HOME/.cargo:/usr/local/cargo`），**走 crates.io 直连，不建 vendor 目录**；断网重建靠缓存，版本以 Cargo.lock 缓存面为准 | edge3 | 🔄 登记即动（2026-09-20，卡 E 批三开工） |
+| C-25 | edge3 卡 I（S33 收口）：GET_PROCTAB 行扩面的**生产者半**（C-22 前半的内核侧） | edge3（需求方；edge1 已收线不活跃，由本线执行） | `os/kernel/src/`：①`misc.rs` 的 `getinfo_proc_tab`/`ProcInfoStruct::from_kprocess` 填四格（`p_kipc_cycles`/`p_kcall_cycles`/`p_dequeued`/`p_cpuavg`，C `do_getinfo.c:96-100` 的 GET_PROCTAB 是整 `struct proc` 拷贝，Rust 侧 A-4 窄行缺这四格）；②`add_kipc_cycles` 生产记账点（现仅测试调用）；③`cpuavg_increment` 的时钟 tick 钩子（C `kernel/arch/i386/arch_clock.c:306`）。只增不改既有导出面 | edge3 | ✅ 销账（2026-09-20 卡 I：`from_kprocess` 填四格、`KBILL_IPC` 标记 + 两处 context_stop 等价消费、cpuavg tick 钩子（`p_cycles.tick` 累加 + `tpt = tsc_per_ms*1000/hz`）；kernel 777 测试全绿。**余**：用户进程的 cpuavg 记账（C 走汇编中断入口 `mpx.S:77-90`）在 Rust 无对应站点，留作设计裁决）|
 
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
@@ -83,8 +84,8 @@
 | edge3 S19 A-6 裁决 | edge3 | edge3 S23（IS main 替换） | ✅ 2026-09-19 1f72d8ffe（diag 缝 = sys_diagctl code1 单汇点） |
 | edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ✅ 2026-09-20（通电半：接收半装 SEF 层 + 参战场景宿主断言，84 passed；真机参战半移交 E5(e)——S7/S10 解锁，PM 侧臂按 sched 消息面契约开工） |
 | edge3 S29 通用 startup 框架 | edge3 | edge3 S30/S31/S25 余件（fs-rt 共享面：生产 FsTransport + RS_INIT 出生 + serve 装配） | ✅ 2026-09-20 卡D（minix-fs-rt；S30/S31/S25-K 可开工） |
-| edge1 K9 向量表 | edge1 | edge1 K12b（三架构用户态）、edge4 T5 | ☐ |
-| edge1 K1/K2/K3 SMP 面 | edge1 | edge4 E5(e)/E5 SMP 冒烟 | ☐ |
+| edge1 K9 向量表 | edge1 | edge1 K12b（三架构用户态）、edge4 T5 | ✅ 2026-09-20 复核（edge1.md K9 行：arm64 `exc_vector_table` 16×128B `.align 11` + 4 类 diag stub 已落；K12b 双腿真机 PASS 各 3/3 —— 本行原记 ☐ 系状态板滞后，按 edge1.md 更正） |
+| edge1 K1/K2/K3 SMP 面 | edge1 | edge4 E5(e)/E5 SMP 冒烟 | ✅ 2026-09-20 复核（edge1.md：K1 生产壳读 `try_smp_state`+参数化 `sched_enqueue_with`、K2 环①按 §3.5.3 冻结决策记账、K3 本地臂/IPI 臂缺口中修双设 VMINHIBIT+FLUSH_TLB，三者均 2026-09-18 收口；**E5(e)/E5-SMP 的 edge1 侧前置已清**，只剩真机载体的 edge3 侧条目） |
 
 ## §4 在制避让（2026-09-18 工作树现状）
 
