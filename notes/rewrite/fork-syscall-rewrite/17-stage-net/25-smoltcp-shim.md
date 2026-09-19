@@ -104,6 +104,19 @@ KEEPIDLE 族、组播族）与框架开关族的其余名字（REUSEADDR、LINGE
 LOWAT/TIMEO 等，`sockevent.c:1857-1966`）统一按 ENOPROTOOPT 诚实拒绝，
 随各自后续批次评估。
 
+**ioctl 半（SDEV_IOCTL 的墙方法，ioctl 批补充）。** FIONREAD 是 C 的
+框架半行为（`sockevent_ioctl` 查 `sop_test_recv` 后把 int 拷回用户缓冲，
+`sockevent.c:1779-1793`），墙上对应的三个查询方法按各族的 C 语义取数：
+UDP 取队首包载荷长度（peek，不消费——`pktsock.c:886-899` 的首包语义）、
+TCP 取收缓冲排队字节（`tcpsock.c:1969` 的 `tr_len` 语义）、RAW 取包环
+排队总量（smoltcp 的 raw 包环无 peek，与 C 首包语义的差异登记）。
+FIONBIO 在 C 由 libc 改写为 fcntl(O_NONBLOCK)（`libc/sys/ioctl.c:296`/
+`:330`），从不作为 SDEV_IOCTL 到达服务；本模型在服务侧补同一语义的
+非阻塞旗标（`Stack::set_nonblock`/`is_nonblock`，旗标存槽位，收发路把
+它折进 MSG_DONTWAIT 判定）。其余 ioctl 命令按 C 服务侧的 ENOTTY 出口
+回答（`sockevent.c:1765-1769`；LNK 类在 C 带 `ifconf_ioctl` 的接口
+ioctl 面，本模型暂折 ENOTTY，随 ifconf 批评估——登记）。
+
 ## 4. 定时器的合成
 
 C 的定时器面是三件套：主定时器布防（`init_timer(&lwip_timer)` 加
