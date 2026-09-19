@@ -63,6 +63,12 @@ pub trait MibKernel {
 
     /// Ticks per second (time conversions, 16). C: `sys_hz` — proc.c:126 一带.
     fn hz(&mut self) -> Result<u32, i32>;
+
+    /// Boot time in epoch seconds (KERN_PROC2 的 `p_ustart_sec` 需要
+    /// "开机时刻 + 进程 started ticks"。C: `getuptime(NULL, NULL,
+    /// &boottime)` — proc.c:700；本实现走 `sys_times` 的 boot_time 域，
+    /// 与 PM 的 `SysClockSource` 同一来源）。
+    fn boottime(&mut self) -> Result<u64, i32>;
 }
 
 /// Peer-service messages (A-12's service half).
@@ -174,6 +180,15 @@ impl MibKernel for SysTransport {
 
     fn hz(&mut self) -> Result<u32, i32> {
         Err(EIO)
+    }
+    fn boottime(&mut self) -> Result<u64, i32> {
+        // C getuptime 的 boottime 域——sys_times 顺带带回（与 PM 的
+        // SysClockSource 同一内核调用）。
+        let t = minix_sys::syscall::sys_times(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_types::Endpoint::SELF.0,
+        )?;
+        Ok(t.boot_time as u64)
     }
 }
 
@@ -362,6 +377,10 @@ pub(crate) mod recording {
 
         fn hz(&mut self) -> Result<u32, i32> {
             Ok(60)
+        }
+
+        fn boottime(&mut self) -> Result<u64, i32> {
+            Ok(0)
         }
     }
 

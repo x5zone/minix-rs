@@ -873,6 +873,9 @@ fn func_exec<K: MibKernel, S: MibServices>(
         FuncKey::Kern(KernFunc::Lwp) => {
             crate::proc::lwp_exec::kern_lwp(ctx, args, req.oldp.as_ref())
         }
+        FuncKey::Kern(KernFunc::Proc2) => {
+            crate::proc::proc2_exec::proc2_exec(ctx, args, req.oldp.as_ref())
+        }
         FuncKey::Kern(KernFunc::Ccpu)
         | FuncKey::Kern(KernFunc::CpTime)
         | FuncKey::Kern(KernFunc::Consdev)
@@ -880,7 +883,6 @@ fn func_exec<K: MibKernel, S: MibServices>(
         | FuncKey::Kern(KernFunc::Boottime)
         | FuncKey::Kern(KernFunc::RootDevice)
         | FuncKey::Kern(KernFunc::IpcInfo)
-        | FuncKey::Kern(KernFunc::Proc2)
         | FuncKey::Kern(KernFunc::ProcArgs)
         | FuncKey::Vm(_)
         | FuncKey::Hw(_) => {

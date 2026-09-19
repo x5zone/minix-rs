@@ -201,6 +201,58 @@ fn fill_task_row(l: &mut KinfoLwp, kern: &KernelRows, kslot: usize, now: u64, hz
     fill_common(l, &kp, None, now, hz);
 }
 
+/// One user row's state verdict — the `get_lwp_stat` chain shared by the
+/// KERN_LWP and KERN_PROC2 fills. C: both `fill_lwp_user` (proc.c:501-502)
+/// and `fill_proc2_user` (proc.c:755-757) call the same function.
+pub(super) struct RowState {
+    /// `L_*` state (LSDEAD kept as itself here; KERN_PROC2 maps it to
+    /// LSZOMB for display via 18's `map_stat`).
+    pub stat: i32,
+    /// Wait channel — zero for the four awake states. C: `*wcptr` is only
+    /// written on the sleep path.
+    pub wchan: u64,
+    /// The sleep word, rendered by the caller (needs the tables). C:
+    /// `wmptr` — only written when sleeping.
+    pub wmesg: SleepWmesg,
+    /// `L_SINTR` accumulation. C: `*flag |= L_SINTR`.
+    pub sinter: bool,
+}
+
+/// Judge one user row through the awake-precedence and sleep-reason chain.
+/// C: `get_lwp_stat` — proc.c:243-389 (minus the string copies).
+pub(super) fn judge_row_state(
+    kp: &ProcInfoStruct,
+    row: &MProcSnap,
+    self_endpt: Endpoint,
+) -> RowState {
+    let zombie = PmRows::is_zombie(row);
+    let exiting = row.mp_flags & mp_flags::EXITING != 0;
+    let stopped = row.mp_flags & mp_flags::TRACE_STOPPED != 0 || KernelRows::is_p_stopped(kp);
+    let runnable = KernelRows::is_runnable(kp);
+    let waiting = row.mp_flags & mp_flags::WAITING != 0;
+    let sigsuspended = row.mp_flags & mp_flags::SIGSUSPENDED != 0;
+    match classify_awake(zombie, exiting, stopped, runnable) {
+        verdict if verdict != AwakeVerdict::Sleeping => RowState {
+            stat: verdict.state(),
+            wchan: 0,
+            wmesg: SleepWmesg::Unknown,
+            sinter: false,
+        },
+        _ => {
+            // VFS light rows are absent until C-22's second half: the whole
+            // VFS lane is idle (module note) — task_nr rides along unused.
+            let target = block_target(kp, self_endpt);
+            let v = judge_sleep(waiting, sigsuspended, VfsLane::Idle, 0, target);
+            RowState {
+                stat: LSSLEEP,
+                wchan: v.wchan,
+                wmesg: v.wmesg,
+                sinter: v.sinter,
+            }
+        }
+    }
+}
+
 /// `fill_lwp_user` — proc.c:487-505: the state machine first (which may
 /// attach wchan/wmesg and the interruptible bit), then identity and times.
 fn fill_user_row(
@@ -213,27 +265,13 @@ fn fill_user_row(
     self_endpt: Endpoint,
 ) {
     let kp = kern.row(minix_types::NR_TASKS + mslot).unwrap_or_default();
-    let zombie = PmRows::is_zombie(row);
-    let exiting = row.mp_flags & mp_flags::EXITING != 0;
-    let stopped = row.mp_flags & mp_flags::TRACE_STOPPED != 0 || KernelRows::is_p_stopped(&kp);
-    let runnable = KernelRows::is_runnable(&kp);
     l.l_flag = L_INMEM as i32;
-    let waiting = row.mp_flags & mp_flags::WAITING != 0;
-    let sigsuspended = row.mp_flags & mp_flags::SIGSUSPENDED != 0;
-    match classify_awake(zombie, exiting, stopped, runnable) {
-        verdict if verdict != AwakeVerdict::Sleeping => {
-            l.l_stat = verdict.state() as i8;
-        }
-        _ => {
-            // VFS light rows are absent until C-21: the whole VFS lane is
-            // idle (module note) — task_nr rides along unused.
-            let target = block_target(&kp, self_endpt);
-            let v = judge_sleep(waiting, sigsuspended, VfsLane::Idle, 0, target);
-            l.l_stat = LSSLEEP as i8;
-            l.l_wchan = v.wchan;
-            l.l_flag = user_flag(v.sinter) as i32;
-            render_wmesg(l, kern, v.wmesg, &kp);
-        }
+    let st = judge_row_state(&kp, row, self_endpt);
+    l.l_stat = st.stat as i8;
+    if st.stat == LSSLEEP {
+        l.l_wchan = st.wchan;
+        l.l_flag = user_flag(st.sinter) as i32;
+        render_wmesg(l, kern, st.wmesg, &kp);
     }
     l.l_pid = row.mp_pid as u32;
     put_name(&mut l.l_name, &row.mp_name);
@@ -498,73 +536,19 @@ mod tests {
     // ── walker 级端到端：producer（mock 双 seam）→ Tables 拉取 →
     // 真实 `sysctl()` 走 CTL_KERN/KERN_LWP → 拷出字节逐行解码断言。──
 
+    use crate::proc::test_mocks as mocks;
     use crate::auth::CallAuth;
     use crate::heap::MibBudget;
-    use crate::io::relay::{RelayDir, RemoteCall, RemoteReplyWire};
-    use crate::tree::arena::MibTree;
-    use crate::walker::{self, Request};
     use crate::io::copy::{Newp, Oldp};
     use crate::proc::Tables;
-    use crate::transport::{MibKernel, MibServices};
+    use crate::tree::arena::MibTree;
+    use crate::walker::{self, Request};
     use alloc::string::String;
     use minix_types::{Endpoint, KI_LNAMELEN, KI_WMESGLEN, SI_PROC_TAB};
 
-    /// 内核侧 mock：getproctab 吐整表字节；datacopy_to 记进"调用方缓冲"。
-    struct FakeKernel {
-        proctab: Vec<u8>,
-        ticks: u64,
-        hz: u32,
-        sink: core::cell::RefCell<Vec<u8>>,
-    }
-    impl MibKernel for FakeKernel {
-        fn datacopy_from(&mut self, _s: Endpoint, _a: u64, _b: &mut [u8]) -> Result<(), i32> {
-            Err(minix_types::EIO)
-        }
-        fn datacopy_to(&mut self, _d: Endpoint, a: u64, b: &[u8]) -> Result<(), i32> {
-            // 地址即调用方缓冲偏移（测试约定 addr 从 0 起）。
-            let at = a as usize;
-            if self.sink.borrow_mut().len() < at + b.len() {
-                self.sink.borrow_mut().resize(at + b.len(), 0);
-            }
-            self.sink.borrow_mut()[at..at + b.len()].copy_from_slice(b);
-            Ok(())
-        }
-        fn grant_magic(&mut self, _: Endpoint, _: u64, _: u64, _: RelayDir) -> Result<minix_types::GrantId, i32> { Ok(1) }
-        fn grant_revoke(&mut self, _: minix_types::GrantId) {}
-        fn getproctab(&mut self, buf: &mut [u8]) -> Result<(), i32> {
-            let n = buf.len().min(self.proctab.len());
-            buf[..n].copy_from_slice(&self.proctab[..n]);
-            Ok(())
-        }
-        fn getticks(&mut self) -> Result<u64, i32> { Ok(self.ticks) }
-        fn hz(&mut self) -> Result<u32, i32> { Ok(self.hz) }
-    }
-
-    /// 服务侧 mock：PM 的 SI_PROC_TAB 吐整表；VFS light 缺席（A-7 降级路径）。
-    struct FakeServices {
-        pm_tab: Vec<u8>,
-    }
-    impl MibServices for FakeServices {
-        fn getnuid(&mut self, _: Endpoint) -> Result<u32, i32> { Ok(0) }
-        fn getsysinfo(&mut self, t: Endpoint, what: i32, buf: &mut [u8]) -> Result<(), i32> {
-            if t == Endpoint::VFS {
-                return Err(minix_types::EIO); // 生产者缺席（A-7）
-            }
-            assert_eq!((t, what), (Endpoint::PM, SI_PROC_TAB));
-            let n = buf.len().min(self.pm_tab.len());
-            buf[..n].copy_from_slice(&self.pm_tab[..n]);
-            Ok(())
-        }
-        fn ds_retrieve_label_name(&mut self, _: Endpoint, _: &mut [u8]) -> Result<usize, i32> { Err(minix_types::EIO) }
-        fn remote_info(&mut self, _: Endpoint, _: &mut [u8], _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
-        fn remote_call(&mut self, _: Endpoint, _: RemoteCall, _: &mut RemoteReplyWire) -> Result<(), i32> { Err(minix_types::EIO) }
-        fn vm_info(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
-        fn pm_getparam(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
-    }
-
     /// 场景：任务 1 名 "memory"；用户槽 5 = 可运行 "ps"(pid 100)、
     /// 槽 6 = WAITING 挂起 "sh"(pid 101)、槽 7 = 僵尸(pid 103, 不进列表)。
-    fn fixture() -> (FakeKernel, FakeServices) {
+    fn fixture() -> (mocks::FakeKernel, mocks::FakeServices) {
         let krow = core::mem::size_of::<ProcInfoStruct>();
         let mut proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * krow];
         let put_k = |v: &mut Vec<u8>, kslot: usize, row: &ProcInfoStruct| {
@@ -632,16 +616,16 @@ mod tests {
             ..MProcSnap::default()
         });
         (
-            FakeKernel { proctab, ticks: 1000, hz: 50, sink: core::cell::RefCell::new(Vec::new()) },
-            FakeServices { pm_tab: pm },
+            mocks::FakeKernel { proctab, ticks: 1000, hz: 50, boot: 172_800, sink: core::cell::RefCell::new(Vec::new()) },
+            mocks::FakeServices { pm_tab: pm },
         )
     }
 
     fn e2e_ctx<'a>(
-        kernel: &'a mut FakeKernel,
-        svc: &'a mut FakeServices,
+        kernel: &'a mut mocks::FakeKernel,
+        svc: &'a mut mocks::FakeServices,
         tables: &'a mut Tables,
-    ) -> MibCtx<'a, FakeKernel, FakeServices> {
+    ) -> MibCtx<'a, mocks::FakeKernel, mocks::FakeServices> {
         let tree = Box::leak(Box::new(MibTree::init()));
         let budget = Box::leak(Box::new(MibBudget::new()));
         MibCtx {

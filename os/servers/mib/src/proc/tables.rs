@@ -439,6 +439,9 @@ mod pull_tests {
         fn hz(&mut self) -> Result<u32, i32> {
             Ok(60)
         }
+        fn boottime(&mut self) -> Result<u64, i32> {
+            Ok(0)
+        }
     }
 
     impl crate::transport::MibServices for MockPull {
@@ -566,6 +569,7 @@ mod pull_tests {
             }
             fn getticks(&mut self) -> Result<u64, i32> { Ok(1) }
             fn hz(&mut self) -> Result<u32, i32> { Ok(60) }
+            fn boottime(&mut self) -> Result<u64, i32> { Ok(0) }
         }
         struct PmFailsSvc;
         impl crate::transport::MibServices for PmFailsSvc {

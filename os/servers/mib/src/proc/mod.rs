@@ -10,9 +10,13 @@ pub mod lwp;
 pub mod lwp_exec;
 pub mod minix_proc;
 pub mod proc2;
+pub mod proc2_exec;
 pub mod proc_args;
 pub mod rows;
 pub mod tables;
+
+#[cfg(test)]
+pub(crate) mod test_mocks;
 
 pub use minix_proc::{
     NameSource, ProcState, check_data_namelen, data_flags, is_task_pid, list_flags,
