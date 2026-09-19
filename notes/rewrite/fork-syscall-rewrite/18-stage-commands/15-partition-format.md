@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的准备层——磁盘先切分、卷先格式化，挂载才有东西可用
 > **源码**: `minix3/sys/sys/bootblock.h`（表偏移 446、魔数 `0xAA55` 在 510、四项、激活标志 `0x80`、类型码含 Minix `0x80` 与 `0x81`、Linux 原生 `0x83`、386BSD `0xA5`；16 字节项结构第 703 到 714 行）、`minix3/minix/commands/part/part.c`（扇区 512 第 47 行、引导块第 300 行、表拷贝第 384 到 482 行、起止换算第 550 到 551 行与第 691 到 702 行）、`minix3/minix/commands/fdisk/fdisk.c`（表指针定位）、`minix3/minix/commands/partition/`、`autopart/`、`repartition/`、`format/`、`devsize/`、`minix3/sbin/newfs_ext2fs/`、`newfs_msdos/`、`newfs_udf/`、`newfs_v7fs/`、`minix3/usr.sbin/makefs/`
-> **Rust 模块**: `os/commands/sbin/diskfmt`（库包 `minix-diskfmt`：`mbr.rs`、`size.rs`，9 个测试通过）；mkfs 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（格式化执行待块设备接口，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/mkfs` 占位壳已于 2026-09-17 删除）
+> **Rust 模块**: `os/commands/sbin/diskfmt`（库包 `minix-diskfmt`：`mbr.rs`、`size.rs`，9 个测试通过）加 `mkfs.mfs` 薄壳（已接线：决定半在 `minix-fs-mfs::mkfs`——格式知识归文件系统库，薄壳只管参数与落盘；`fsck.mfs` 与原型文件填充随后批，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/mkfs` 占位壳已随执行层收敛批次删除）
 > **前置依赖**: `14-mount-fsck.md`（挂载使用在先，准备在后——阅读顺序先用后备，见 1.5 节说明）
 > **不覆盖（移交）**: 分区写入执行与格式化执行（待块设备接口）、文件系统内部结构（见 `15-stage-fs`）、存储驱动（见驱动阶段）
 
@@ -88,7 +88,7 @@
 
 ### 4.1 模块结构
 
-`os/commands/sbin/diskfmt`（库包名 `minix-diskfmt`）共 3 个源文件：
+`os/commands/sbin/diskfmt` 的本库 3 个源文件之外，`mkfs.mfs` 的决定半落在格式权威库里（`os/fs/mfs/src/mkfs.rs`）：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
@@ -113,11 +113,19 @@
 | `type_name` | 类型码 | 名或无 | 类型码语义 |
 | `parse_size`/`sectors_for` | 文本与扇区大小 | 字节与扇区数 | 大小说法语义 |
 
+**`mkfs.mfs` 的决定半**（宿主在 `os/fs/mfs/src/mkfs.rs`，对应 C `mkfs.c` 的 `super` mkfs.c:602-716、`rootdir` :718-731 与 `main` 的缺省阶梯 :344-357）：
+
+| 函数 | 输入 | 输出 | 对应 C 行为 |
+|------|------|------|------------|
+| `plan_layout(块数, inode 数?, 块大小)` | 卷几何 | 布局全量（两张位图块、inode 表块、首数据区、最大文件尺寸） | `super` 的算术半；`zone_shift = 0` |
+| `default_inode_count(块数, 块大小)` | 卷几何 | 缺省 inode 数（KB 阶梯加块倍数取整） | `main` mkfs.c:344-357 |
+| `build_image(布局, 时刻)` | 布局与时间戳 | 整幅镜像字节 | `main` 写序：boot 零、超级块、位图 0 号位、根 inode（目录 0777、链接二、尺寸 128）、根数据区 `.`/`..` |
+
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-diskfmt`：**9 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-diskfmt`：**9 个测试，全部通过**；`mkfs.mfs` 的决定半另有 `cargo test -p minix-fs-mfs mkfs` 三条（布局算术对照、缺省阶梯、镜像经服务器自己的 `DiskSuperblock`/`DiskInode` 解析器逐位回读）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/sbin/diskfmt` 复现）：
 
