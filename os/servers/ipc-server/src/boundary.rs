@@ -341,12 +341,47 @@ impl IpcBoundary for SysBoundary {
         let _ = self.ipc.sendnb(endpoint, &msg);
     }
 
-    fn mib_process(&mut self, msg: &mut Message) {
-        // RMIB 协议走查器(libsys rmib.c 服务端半)是 S26 余件:决策层
-        // 已备(mib_tree 的 KernIpcChild/InfoRoute + sem/shm 两个 info
-        // 装配器),协议走查半待接。fail-closed 回 EOPNOTSUPP——与 C 的
-        // 未知请求出口同型,MIB 侧收到错误码可见。
-        msg.m_type = minix_types::EOPNOTSUPP;
+    fn rmib_copyin(&self, from: Endpoint, grant: i32, off: usize, dst: &mut [u8]) -> Result<(), i32> {
+        // C rmib 框架的 sys_safecopyfrom(grant 所有方 = MIB 服务)。
+        syscall::sys_safecopyfrom(
+            &self.kernel,
+            from.0,
+            grant,
+            off as u64,
+            dst.as_mut_ptr() as u64,
+            dst.len() as u64,
+        )
+        .map_err(positive)
+    }
+
+    fn rmib_copyout(&self, to: Endpoint, grant: i32, off: usize, src: &[u8]) -> Result<(), i32> {
+        syscall::sys_safecopyto(
+            &self.kernel,
+            to.0,
+            grant,
+            off as u64,
+            src.as_ptr() as u64,
+            src.len() as u64,
+        )
+        .map_err(positive)
+    }
+
+    fn send_mib_reply(&mut self, to: Endpoint, msg: &Message) {
+        // C rmib.c:1067-1068 — SENDREC 到达的请求 → ipc_sendnb。
+        let _ = self.ipc.sendnb(to, msg);
+    }
+
+    fn send_mib_reply_async(&mut self, to: Endpoint, msg: &Message) {
+        // C rmib.c:1069-1070 — 异步到达 → asynsend3(AMF_NOREPLY);
+        // 单槽 senda 承载(EventLoopTransport::send_async 同形)。
+        let slot = minix_sys::ipc::AsyncSlot {
+            flags: minix_sys::ipc::AsyncSlotFlags(minix_sys::ipc::AsyncSlotFlags::VALID.0
+                | minix_sys::ipc::AsyncSlotFlags::NO_REPLY.0),
+            destination: to,
+            message: *msg,
+            result: 0,
+        };
+        let _ = self.ipc.senda(&[slot]);
     }
 
     fn back_segment(&self, bytes: u64) -> Result<Backing, i32> {
@@ -458,8 +493,9 @@ impl EventLoopTransport for SysEventLoopTransport {
             .inner
             .receive(Endpoint::ANY, &mut msg)
             .map_err(|_| TransportError)?;
-        let notify = (sts.0 & 0x3F) == 4; // NOTIFY(com.h:92)
-        Ok((msg, IpcStatus { notify }))
+        let call = sts.0 & 0x3F;
+        let notify = call == 4; // NOTIFY(com.h:92)
+        Ok((msg, IpcStatus { notify, call }))
     }
 
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {

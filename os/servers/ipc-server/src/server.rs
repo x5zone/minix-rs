@@ -38,17 +38,26 @@ use crate::dispatch::{
 pub struct IpcStatus {
     /// True when the arrival is an asynchronous notification, not a request.
     pub notify: bool,
+    /// 内核状态字的 CALL 段(status & 0x3F)——区分 SENDREC 与其它到达
+    /// 方式(C rmib_process 按 IPC_STATUS_CALL(ipc_status) 两分回信,
+    /// libsys rmib.c:1065-1074;S26/C-12 接入)。
+    pub call: u32,
 }
 
 impl IpcStatus {
-    /// Request arrival (not a notification).
+    /// Request arrival (not a notification);call 段未知置 0。
     pub const fn request() -> Self {
-        Self { notify: false }
+        Self { notify: false, call: 0 }
+    }
+
+    /// Request arrival via SENDREC(C rmib 回信两分的同步半)。
+    pub const fn sendrec() -> Self {
+        Self { notify: false, call: minix_sys::ipc::CALL_SENDREC }
     }
 
     /// Notification arrival.
     pub const fn notification() -> Self {
-        Self { notify: true }
+        Self { notify: true, call: 0 }
     }
 
     /// C: `is_ipc_notify(ipc_status)` — com.h:92.
@@ -118,7 +127,7 @@ pub trait CallHandler {
     fn handle_proc_event(&mut self, event: ProcEventIn) -> i32;
     /// Handle a MIB request in place (C: `rmib_process` replies from
     /// inside the library call — main.c:250). Document 03.
-    fn handle_mib(&mut self, msg: &mut Message);
+    fn handle_mib(&mut self, msg: &mut Message, ipc_status: IpcStatus);
     /// End-of-cycle hook: refresh shared-memory reference counts and
     /// destroy due segments. C: `update_refcount_and_destroy` —
     /// main.c:279. Document 08.
@@ -145,7 +154,7 @@ impl CallHandler for StubHandler {
         proc_event_reply_type()
     }
 
-    fn handle_mib(&mut self, _msg: &mut Message) {
+    fn handle_mib(&mut self, _msg: &mut Message, _ipc_status: IpcStatus) {
         // Document 03 lands subtree dispatch; rmib_process replies from
         // inside the library call, so there is nothing to return here.
     }
@@ -332,7 +341,7 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
                 // C: rmib_process + continue — main.c:248-252. The library
                 // replies from inside the call; nothing to send here. The
                 // `continue` skips the end-of-cycle hook (:279).
-                self.handler.borrow_mut().handle_mib(&mut msg);
+                self.handler.borrow_mut().handle_mib(&mut msg, status);
             }
             Incoming::Dispatch(call) => {
                 // C: r = call_vec[call_index](&m) — main.c:259. The handler
@@ -487,7 +496,7 @@ mod tests {
             proc_event_reply_type()
         }
 
-        fn handle_mib(&mut self, _msg: &mut Message) {
+        fn handle_mib(&mut self, _msg: &mut Message, _ipc_status: IpcStatus) {
             self.mibs += 1;
         }
 

@@ -20,6 +20,9 @@
 //! there in c7d2ea150).
 
 use minix_types::{CTL_KERN, EINVAL, EOPNOTSUPP};
+use alloc::string::String;
+use minix_sys::rmib::{RmibChildren, RmibImmediate, RmibNode};
+
 
 // ============================================================================
 // Identifier constants
@@ -166,6 +169,67 @@ pub const fn route_info_query(name_length: u32, name_value: i32) -> InfoRoute {
         KERN_SYSVIPC_SHM_INFO => InfoRoute::ShmInfo,
         _ => InfoRoute::NotSupported,
     }
+}
+
+// ============================================================================
+// Subtree construction (S26/C-12: E-RMIBWIRE 协议走查器的挂载半)
+// ============================================================================
+
+/// 组装 `kern.ipc` 子树根(C: `kern_ipc_node` + `kern_ipc_table[]`,
+/// main.c:54-79)。Dense 子表按 C 数组原样镜像:槽 0 与保留槽 5..9 是
+/// flags==0 的空位(遍历跳过、越界查 ENOENT),四个有效行是 INFO 函数
+/// 节点与三个 int 叶。`RMIB_RO = CTLFLAG_READONLY = 0`(rmib.h:168)。
+///
+/// INFO 节点的 handler 不上树——C 的函数指针(`rnode_func`)在 Rust
+/// 侧归 [`crate::service`] 的 `RmibFuncHandler` 注入,树只带
+/// `func: true` 标志。
+pub fn build_kern_ipc_tree() -> RmibNode {
+    use minix_types::{CTLFLAG_PERMANENT, CTLFLAG_READONLY, CTLFLAG_IMMEDIATE, CTLTYPE_INT, CTLTYPE_NODE};
+
+    fn node(flags: u32, name: &str) -> RmibNode {
+        RmibNode { flags, name: String::from(name), ..RmibNode::default() }
+    }
+
+    // C main.c:40-52 — RMIB_FUNC(RMIB_RO | CTLTYPE_NODE, 0, ...)
+    let mut info = node(CTLFLAG_PERMANENT | CTLFLAG_READONLY | CTLTYPE_NODE, "sysvipc_info");
+    info.func = true;
+    info.desc = Some(String::from("System V style IPC information"));
+
+    // C main.c:57-63 — RMIB_INT(RMIB_RO, v, ...)
+    let int_leaf = |name: &str, desc: &str, v: i32| {
+        let mut n = node(
+            CTLTYPE_INT | CTLFLAG_PERMANENT | CTLFLAG_IMMEDIATE | CTLFLAG_READONLY,
+            name,
+        );
+        n.size = 4; // C: sizeof(int)
+        n.value = Some(RmibImmediate::Int(v));
+        n.desc = Some(String::from(desc));
+        n
+    };
+    let msg = int_leaf("sysvmsg", "System V style message support available", 0);
+    let sem = int_leaf("sysvsem", "System V style semaphore support available", 1);
+    let shm = int_leaf("sysvshm", "System V style shared memory support available", 1);
+
+    let mut root = node(
+        CTLTYPE_NODE | CTLFLAG_PERMANENT | CTLFLAG_READONLY,
+        "ipc",
+    );
+    root.desc = Some(String::from("SysV IPC options"));
+    // C 数组的逐位镜像:id 0 空位 + 1..4 四个有效行 + 保留槽 5..9 空位。
+    let empty = || RmibNode::default();
+    root.children = RmibChildren::Dense(alloc::vec![
+        empty(),
+        info,
+        msg,
+        sem,
+        shm,
+        empty(),
+        empty(),
+        empty(),
+        empty(),
+        empty(),
+    ]);
+    root
 }
 
 #[cfg(test)]

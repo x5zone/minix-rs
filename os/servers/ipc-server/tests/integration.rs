@@ -98,7 +98,7 @@ impl CallHandler for CannedHandler {
         proc_event_reply_type()
     }
 
-    fn handle_mib(&mut self, _msg: &mut Message) {}
+    fn handle_mib(&mut self, _msg: &mut Message, _ipc_status: minix_ipc_server::IpcStatus) {}
 
     fn on_cycle_end(&mut self) {}
 }

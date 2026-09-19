@@ -212,3 +212,15 @@ os/servers/ipc-server/src/
 - `10-ipc-lifecycle.md` — 退出摘除与重启重挂（本篇挂载的另一半生命周期）
 - `../10-stage-mib/22-mib-rmib-client.md` — 远程客户端库的完整契约（本篇 2.5 节的展开）
 - `../10-stage-mib/12-mib-remote-subtrees.md` — 远程子树挂载的服务端视角（本篇挂载的另一侧）
+
+---
+
+## 8 协议走查器接线(S26/C-12 收口)
+
+C 的 RMIB 对话在 libsys 一侧闭合:`rmib_process`(`rmib.c:1037-1080`)收到 MIB 服务的请求后,`COMMON_MIB_INFO` 交 `rmib_info`(`rmib.c:998-1035`,拷根名与描述)、`COMMON_MIB_CALL` 交 `rmib_call`(`rmib.c:678-824`,名字逐级下行)、其余回 `ENOSYS`;最后以 `COMMON_MIB_REPLY{req_id, status}` 回信,按请求到达方式两分——SENDREC 来的走 `ipc_sendnb`,其余走 `asynsend3(AMF_NOREPLY)`。非 MIB 来源静默忽略(`rmib.c:1044-1046`)。
+
+Rust 的对应分拆:`rmib_info`/`rmib_call` 纯走查在 `minix-sys/src/rmib.rs`(grant 拷入拷出经 `RmibIo` 注入;函数节点经 `RmibFuncHandler` 回调派发——C 的 `rnode->rnode_func` 函数指针在 Rust 归服务侧);消息编排与状态在 `service.rs` 的 `handle_mib`:source 门、两臂解码(`m_mib_lsys_info`/`m_mib_lsys_call` 字段集)、`default → ENOSYS` 照搬 C 的 req_id HACK、REPLY 组包后按 `IpcStatus` 的 CALL 段是否 `SENDREC` 选 `send_mib_reply`/`send_mib_reply_async` 两动词。grant 通道生产实现是 `SysBoundary` 的 `sys_safecopyfrom`/`sys_safecopyto`(grant 所有方即 MIB 服务,`rmib.c:1020/1029`);测试替身在 grant 存储里以内存窗口回放。
+
+挂载半在 `IpcService::new`:`build_kern_ipc_tree()`(`mib_tree.rs`)按 `kern_ipc_table[]` 的 Dense 数组逐位镜像(槽 0 与保留槽 5..9 为 flags==0 空位,INFO 函数节点 + 三个 int 叶),`SubtreeTable::register` 产出的 `MIB_REGISTER` 消息存入 `mib_registration`,发送挂启动通电面(对齐 `main.c:86-93` 的本地失败 panic、远端失败忽略语义)。
+
+**诚实边界**:INFO 函数节点的 `SEM_INFO(5)`/`SHM_INFO(6)` 子类型明细拷出,依赖 `seminfo` 头与 mib 行布局在 edge E-IPCWIRE §8 的锚定;锚定前 `MibInfoHandler` 对这两臂 fail-closed `EOPNOTSUPP`——与 C 对未知子类型的默认出口(`main.c:48-49`)同型,不虚构字节。`namelen != 1 → EINVAL` 门与三个 int 叶的通用读写已经真实可用。
