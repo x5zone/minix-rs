@@ -21,6 +21,7 @@ extern crate alloc;
 
 pub mod record;
 pub mod rockridge;
+pub mod server;
 pub mod volume;
 
 use minix_types::{EINVAL, Errno};

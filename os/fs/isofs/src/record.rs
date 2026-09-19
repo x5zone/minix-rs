@@ -65,6 +65,9 @@ pub struct DirectoryRecord {
     pub flags: u8,
     /// File name bytes.
     pub name: alloc::vec::Vec<u8>,
+    /// System-use tail (Rock Ridge entries live here), from after the
+    /// name's even-byte padding to the end of the record.
+    pub rock_tail: alloc::vec::Vec<u8>,
 }
 
 /// Decode one record at the front of `image`. Zero lengths and overruns
@@ -85,6 +88,11 @@ pub fn decode(image: &[u8]) -> Result<(DirectoryRecord, usize), RecordError> {
     }
     let location = u32::from_le_bytes([body[2], body[3], body[4], body[5]]);
     let data_length = u32::from_le_bytes([body[10], body[11], body[12], body[13]]);
+    // The system-use tail starts after the name, padded to an even offset
+    // (ISO9660 §9.1.6) and runs to the end of the record.
+    let name_end = NAME_OFFSET + name_length;
+    let tail_start = (name_end + 1) & !1;
+    let rock_tail = body[tail_start.min(record_length)..].to_vec();
     Ok((
         DirectoryRecord {
             record_length,
@@ -93,6 +101,7 @@ pub fn decode(image: &[u8]) -> Result<(DirectoryRecord, usize), RecordError> {
             data_length,
             flags: body[FLAGS_OFFSET],
             name: body[NAME_OFFSET..NAME_OFFSET + name_length].to_vec(),
+            rock_tail,
         },
         record_length,
     ))
