@@ -843,6 +843,10 @@ pub(crate) fn dispatch_ipc(
         // `assume_held` (debug builds assert the lock). S-8 will thread a
         // real witness from the trap entry.
         let section = unsafe { crate::smp::BklSection::assume_held() };
+        // C-25（C `proc.c:607`）：`do_ipc` 入口无条件把 kbill_ipc 记到调用者
+        // ——在权限与跟踪检查**之前**（C 的位置在 do_ipc 第一行），这样连
+        // 被拒的 IPC 的核内时间也算在发起者头上。
+        crate::set_kbill_ipc_with(caller_nr, &section);
         let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy)
             .with_filter_pool(crate::ipc_filter_pool_with(&section));
         let outcome = engine.do_ipc(

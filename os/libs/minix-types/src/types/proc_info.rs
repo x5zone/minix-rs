@@ -15,6 +15,15 @@
 //! minix-rs wire contract — a subset of used fields with 64-bit time
 //! fields (C i386 `clock_t` is 32-bit; the LP64 rewrite widens, the
 //! rs_start precedent).
+//!
+//! **C-25 扩面（2026-09-20）**：C 的 `GET_PROCTAB` 拷的是**整个
+//! `struct proc`**（`kernel/system/do_getinfo.c:96-100`：`length =
+//! sizeof(struct proc) * (NR_PROCS + NR_TASKS)`），本行是 A-4 窄行，先前
+//! 漏了四格——`p_kipc_cycles`/`p_kcall_cycles`（CPU 周期账）、
+//! `p_dequeued`（最近一次出队时刻，MIB 的 `l_slptime` 靠它）与
+//! `p_cpuavg`（衰减 CPU 均值，`l_pctcpu`/`l_cpticks` 靠它）。四格**追加在
+//! 尾部**（既有 0..96 偏移不动，`_padding` 保持原位），消费者按
+//! `size_of` 取行宽，无硬编码尺寸。
 
 // p_rts_flags 的位值与 C kernel/proc.h:142-166 逐位一致（内核的
 // RtsFlagsBits 同源）；此前 SENDING/RECEIVING 误记 0x100/0x200 —— 真值是
@@ -92,6 +101,62 @@ pub struct ProcInfoStruct {
     pub p_priv_id: i32,
     /// Padding to align the struct to 8 bytes.
     pub _padding: [u8; 4],
+    /// C: `p_kipc_cycles` — cycles spent in IPC (C-25 扩面).
+    ///
+    /// MIB 的 `mpd_kipc_cycles` 列直接读它（C `mib/proc.c:1278`）。
+    pub p_kipc_cycles: u64,
+    /// C: `p_kcall_cycles` — cycles spent in kernel calls (C-25 扩面).
+    ///
+    /// MIB 的 `mpd_kcall_cycles` 列直接读它（C `mib/proc.c:1279`）。
+    pub p_kcall_cycles: u64,
+    /// C: `p_dequeued` — uptime at the last dequeue (C-25 扩面)。
+    ///
+    /// MIB 用它算 `l_slptime`：`(uptime - p_dequeued) / hz`
+    /// （C `mib/proc.c:438`）。进程可运行时它被抬到"当前时刻"。
+    pub p_dequeued: u64,
+    /// C: `p_cpuavg` — decaying CPU utilisation average (C-25 扩面)。
+    ///
+    /// MIB 的 `l_pctcpu`/`l_cpticks` 靠 `cpuavg_getstats` 读它
+    /// （C `mib/proc.c:453`）。
+    pub p_cpuavg: CpuAvgSnap,
+}
+
+/// `struct cpuavg` 的线上快照（C `kernel/type.h:80-85`）。
+///
+/// 内核侧的原生类型是原子版（`os/kernel/src/proc.rs` 的 `CpuAvg`：
+/// `AtomicU64`/`AtomicU32` 四格）；跨进程行只能是纯数据，故在此单点定义
+/// 线上形。字段宽度按内核侧原生类型（`ca_base` 是 `clock_t`，LP64 重写
+/// 拓宽成 `u64`——与 `p_user_time` 一族同一裁决）。
+///
+/// `ca_*` 三个 `u32` 是 FSCALE 定点数（C `cpuavg.c` 的衰减算术），
+/// `ca_base` 是当前"每秒槽"的起点（0 = 未初始化）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuAvgSnap {
+    /// C: `ca_base` — start of the current per-second slot (0 = unset).
+    pub ca_base: u64,
+    /// C: `ca_run` — running ticks since the slot start, FSCALE.
+    pub ca_run: u32,
+    /// C: `ca_last` — running ticks during the last second, FSCALE.
+    pub ca_last: u32,
+    /// C: `ca_avg` — decaying utilisation average, FSCALE.
+    pub ca_avg: u32,
+    /// Tail padding: C 结构体尾部对齐到 `clock_t` 的 8 字节。
+    pub _padding: u32,
+}
+
+impl Default for CpuAvgSnap {
+    /// 全零 = C 的"未初始化"形（`ca_base == 0` 是 `cpuavg_update` 的
+    /// 首用判据，C `cpuavg.c:154-160`）。
+    fn default() -> Self {
+        Self {
+            ca_base: 0,
+            ca_run: 0,
+            ca_last: 0,
+            ca_avg: 0,
+            _padding: 0,
+        }
+    }
 }
 
 impl Default for ProcInfoStruct {
@@ -116,6 +181,10 @@ impl Default for ProcInfoStruct {
             p_name: [0; 16],
             p_priv_id: Self::PRIV_NONE,
             _padding: [0; 4],
+            p_kipc_cycles: 0,
+            p_kcall_cycles: 0,
+            p_dequeued: 0,
+            p_cpuavg: CpuAvgSnap::default(),
         }
     }
 }
@@ -158,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_proc_info_layout() {
-        assert_eq!(size_of::<ProcInfoStruct>(), 104);
+        assert_eq!(size_of::<ProcInfoStruct>(), 152);
         assert_eq!(offset_of!(ProcInfoStruct, p_nr), 0);
         assert_eq!(offset_of!(ProcInfoStruct, p_endpoint), 4);
         assert_eq!(offset_of!(ProcInfoStruct, p_rts_flags), 8);
@@ -175,6 +244,26 @@ mod tests {
         assert_eq!(offset_of!(ProcInfoStruct, p_sendto_e), 76);
         assert_eq!(offset_of!(ProcInfoStruct, p_name), 80);
         assert_eq!(offset_of!(ProcInfoStruct, p_priv_id), 96);
+        // C-25 追加四格：既有偏移一个不动（104 起）。
+        assert_eq!(offset_of!(ProcInfoStruct, p_kipc_cycles), 104);
+        assert_eq!(offset_of!(ProcInfoStruct, p_kcall_cycles), 112);
+        assert_eq!(offset_of!(ProcInfoStruct, p_dequeued), 120);
+        assert_eq!(offset_of!(ProcInfoStruct, p_cpuavg), 128);
+    }
+
+    /// `struct cpuavg` 的线上形（C `kernel/type.h:80-85`）：`clock_t` +
+    /// 三个 FSCALE `u32`，尾部补齐到 8 字节 = 24。内核原生版是原子四格
+    /// （`os/kernel/src/proc.rs` 的 `CpuAvg`），宽度必须与这里逐格一致，
+    /// 否则生产者拷出来的 `ca_*` 在 MIB 的衰减算术里全错位。
+    #[test]
+    fn test_cpuavg_snap_layout() {
+        assert_eq!(size_of::<CpuAvgSnap>(), 24);
+        assert_eq!(offset_of!(CpuAvgSnap, ca_base), 0);
+        assert_eq!(offset_of!(CpuAvgSnap, ca_run), 8);
+        assert_eq!(offset_of!(CpuAvgSnap, ca_last), 12);
+        assert_eq!(offset_of!(CpuAvgSnap, ca_avg), 16);
+        // 未初始化形：`ca_base == 0` 是 C `cpuavg_update` 的首用判据。
+        assert_eq!(CpuAvgSnap::default().ca_base, 0);
     }
 
     /// Default 语义:p_priv_id = -1(无特权),其余零——kernel

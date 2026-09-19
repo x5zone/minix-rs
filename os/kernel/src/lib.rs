@@ -96,7 +96,7 @@ pub mod globals;
 
 use globals::{
     CLOCK_STATE, CURRENT_ROOT_PHYS,
-    IPC_FILTER_POOL, IRQ_MANAGER, KBILL_KCALL, KERNEL_INFO, KERNEL_MAY_ALLOC,
+    IPC_FILTER_POOL, IRQ_MANAGER, KBILL_IPC, KBILL_KCALL, KERNEL_INFO, KERNEL_MAY_ALLOC,
     PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
     ROOT_PHYS_UNSET,
 };
@@ -1671,6 +1671,54 @@ pub(crate) fn consume_kbill_kcall(
     true
 }
 
+/// Set the kbill_ipc marker (C-25, C `proc.c:607`) with BKL witness.
+///
+/// `dispatch_ipc` 在权限/跟踪检查**之前**置上（C 在 `do_ipc` 入口
+/// `kbill_ipc = caller_ptr`），与 `kbill_kcall` 是两个独立标记——内核调用
+/// 里再发起 IPC 时两者会同时在场，C 的消费块给同一进程的 `kipc` 与
+/// `kcall` 各加一份同一个 delta（`arch_clock.c:274-281` 的粗估法）。
+pub fn set_kbill_ipc_with(nr: crate::proc::ProcNr, _section: &crate::smp::BklSection<'_>) {
+    // SAFETY: BklSection witness proves the BKL is held.
+    unsafe { *KBILL_IPC.get() = Some(nr) };
+}
+
+/// Raw read of the kbill_ipc marker.
+///
+/// # Safety
+///
+/// Caller must hold the BKL (production hooks run between BKL-acquiring
+/// dispatch and `bkl_unlock`); tests are single-threaded.
+pub unsafe fn kbill_ipc_raw() -> Option<crate::proc::ProcNr> {
+    // SAFETY: static is never re-assigned to an invalid value (Option<ProcNr>).
+    unsafe { *KBILL_IPC.get() }
+}
+
+/// Consume the kbill_ipc marker: attribute `delta` TSC cycles to the
+/// in-flight IPC's process `p_cycles.kipc`, then clear the marker
+/// (C-25, C arch_clock.c:274-277). Returns `true` if a marker was
+/// present and consumed.
+///
+/// Called from the same context_stop equivalents as
+/// [`consume_kbill_kcall`] and with the **same delta** — C 的两块是并列的
+/// `if`，先 `kbill_ipc` 后 `kbill_kcall`，各自消费、各自清零。
+pub(crate) fn consume_kbill_ipc(
+    table: &mut crate::proc_table::ProcessTable,
+    delta: u64,
+    section: &crate::smp::BklSection<'_>,
+) -> bool {
+    // SAFETY: BKL held by caller (see doc).
+    let Some(nr) = (unsafe { kbill_ipc_raw() }) else {
+        return false;
+    };
+    let _ = section;
+    if let Some(p) = table.get(nr) {
+        p.p_cycles.add_kipc_cycles(delta);
+    }
+    // SAFETY: as above.
+    unsafe { *KBILL_IPC.get() = None };
+    true
+}
+
 // ── Panic diagnostic (D-48, C utility.c:22-50) ─────────────────────────
 
 /// Kernel panic renderer: C's `panic()` body minus the shutdown
@@ -2550,7 +2598,12 @@ fn idle(
     // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
     // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
     if tsc_delta > 0 {
+        // C-25：C 的两块并列（先 ipc 后 kcall），同一个 delta 各记一份。
+        consume_kbill_ipc(table, tsc_delta, section);
         consume_kbill_kcall(table, tsc_delta, section);
+        // C-25：idle 站的 C 锚点是 `proc.c:208` 的
+        // `context_stop(proc_addr(KERNEL))`——cpuavg 记在 KERNEL 上。
+        account_cpuavg_stop(table, crate::proc::proc_nr::KERNEL, tsc_delta, section);
     }
 
     // 5. BKL release (C: context_stop's must_bkl_unlock — arch_clock.c:
@@ -2708,6 +2761,74 @@ fn account_kernel_stop(
         .add_cycles(tsc_delta);
 }
 
+/// C-25：context_stop 公共尾的 cpuavg 记账（C `arch_clock.c:290-307`）。
+///
+/// 按 C 的形态：把本次 TSC delta 累进该进程的"滴答周期账"
+/// （`p_cycles.tick`，C 的 `p_tick_cycles`），每攒够一个滴答的周期数
+/// （`tpt = tsc_per_ms * 1000 / hz`，C i386 的 `tsc_per_tick[cpu]`）就把
+/// 该进程的 CPU 均值推进一次（[`minix_types::cpuavg::increment`]）。
+///
+/// **只记 `KERNEL`**：C 的 `context_stop` 有两条来源——`proc.c:208/440/1956`
+/// 三处显式传 `proc_addr(KERNEL)`（idle 与 `switch_to_user` 尾），汇编中断
+/// 入口（`mpx.S:77-90` 把**被打断的进程**压栈当实参）则记用户进程。Rust 的
+/// 两个 context_stop 等价站点对应的是前者（见各自的 C 锚点注释），故这里记
+/// KERNEL；用户进程那一半（中断入口站）在 Rust 模型里没有对应站点——登记
+/// 为 C-25 的余项，见 FIXLOG。
+fn account_cpuavg_stop(
+    table: &mut crate::proc_table::ProcessTable,
+    nr: crate::proc::ProcNr,
+    tsc_delta: u64,
+    section: &crate::smp::BklSection<'_>,
+) {
+    if tsc_delta == 0 {
+        return;
+    }
+    let clock = crate::clock_state_with(section);
+    let hz = clock.hz() as u64;
+    if hz == 0 {
+        return;
+    }
+    let uptime = clock.uptime();
+    let tsc_per_ms = crate::globals::TSC_PER_MS.load(core::sync::atomic::Ordering::Acquire);
+    // C earm 的 `tsc_per_tick[0] = tsc_per_ms[0] * 1000 / system_hz`
+    // （arch_clock.c:44）；i386 是 `cpu_get_freq(cpu) / system_hz` 的同一量。
+    let tpt = tsc_per_ms.saturating_mul(1000) / hz;
+    if tpt == 0 {
+        return;
+    }
+
+    let Some(p) = table.get_mut(nr) else {
+        return;
+    };
+    let mut tick_cycles = p.p_cycles.tick.load(core::sync::atomic::Ordering::Acquire)
+        .saturating_add(tsc_delta);
+    // C 的 `while (tpt > 0 && p->p_tick_cycles >= tpt)`：攒够一个滴答就推一次
+    // 均值（时钟频率不精确时可能连推多次，C 注释明说这是预期）。
+    let mut snapshot = minix_types::CpuAvgSnap {
+        ca_base: p.p_cpuavg.ca_base.load(core::sync::atomic::Ordering::Acquire),
+        ca_run: p.p_cpuavg.ca_run.load(core::sync::atomic::Ordering::Acquire),
+        ca_last: p.p_cpuavg.ca_last.load(core::sync::atomic::Ordering::Acquire),
+        ca_avg: p.p_cpuavg.ca_avg.load(core::sync::atomic::Ordering::Acquire),
+        _padding: 0,
+    };
+    let mut bumped = false;
+    while tick_cycles >= tpt {
+        tick_cycles -= tpt;
+        minix_types::cpuavg::increment(&mut snapshot, uptime, hz);
+        bumped = true;
+    }
+    p.p_cycles
+        .tick
+        .store(tick_cycles, core::sync::atomic::Ordering::Release);
+    if bumped {
+        use core::sync::atomic::Ordering;
+        p.p_cpuavg.ca_base.store(snapshot.ca_base, Ordering::Release);
+        p.p_cpuavg.ca_run.store(snapshot.ca_run, Ordering::Release);
+        p.p_cpuavg.ca_last.store(snapshot.ca_last, Ordering::Release);
+        p.p_cpuavg.ca_avg.store(snapshot.ca_avg, Ordering::Release);
+    }
+}
+
 /// Consume `MF_FLUSH_TLB` at the switch-to-user boundary.
 ///
 /// C: proc.c:459-463 — the flag means "this process's translations may be
@@ -2774,7 +2895,12 @@ fn finish_and_restore(
     // whole-delta context_stop uses; must run before the BKL release
     // below (see consume_kbill_kcall doc).
     if tsc_delta > 0 {
+        // C-25：与上面 idle 同序（C arch_clock.c:274-281 的两块并列）。
+        consume_kbill_ipc(table, tsc_delta, section);
         consume_kbill_kcall(table, tsc_delta, section);
+        // C-25：switch_to_user 尾的 C 锚点是 `proc.c:440` 的
+        // `context_stop(proc_addr(KERNEL))`——cpuavg 同样记 KERNEL。
+        account_cpuavg_stop(table, crate::proc::proc_nr::KERNEL, tsc_delta, section);
     }
     // C releases the BKL inside context_stop (must_bkl_unlock,
     // arch_clock.c:226-233); the restore below is the last kernel act.
@@ -3062,6 +3188,53 @@ mod tests {
             table.get(nr).unwrap().p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire),
             500
         );
+    }
+
+    /// C-25：kipc 半与 kcall 半同型——置标记、按 delta 记到
+    /// `p_cycles.kipc`、清标记；第二次消费不再记账。C `arch_clock.c:274-277`。
+    #[test]
+    fn test_consume_kbill_ipc_attributes_delta() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let nr = crate::proc::ProcNr(0);
+        // SAFETY: single-threaded test.
+        unsafe { *KBILL_IPC.get() = Some(nr) };
+        let section = crate::smp::bkl_lock_section();
+        assert!(consume_kbill_ipc(&mut table, 700, &section));
+        crate::smp::bkl_unlock();
+        assert_eq!(
+            table.get(nr).unwrap().p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire),
+            700
+        );
+        // 标记已清 → 第二次消费返回 false、不记账。
+        // SAFETY: single-threaded test.
+        assert!(unsafe { kbill_ipc_raw() }.is_none());
+        let section = crate::smp::bkl_lock_section();
+        assert!(!consume_kbill_ipc(&mut table, 100, &section));
+        crate::smp::bkl_unlock();
+        assert_eq!(
+            table.get(nr).unwrap().p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire),
+            700
+        );
+    }
+
+    /// C-25：两个标记**互不干扰**——C 的消费块是两块并列 `if`，各自记各自
+    /// 的桶（`kipc` vs `kcall`），同一个 delta 各加一份。
+    #[test]
+    fn test_kbill_ipc_and_kcall_are_independent() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let nr = crate::proc::ProcNr(0);
+        // SAFETY: single-threaded test.
+        unsafe {
+            *KBILL_IPC.get() = Some(nr);
+            *KBILL_KCALL.get() = Some(nr);
+        }
+        let section = crate::smp::bkl_lock_section();
+        assert!(consume_kbill_ipc(&mut table, 300, &section));
+        assert!(consume_kbill_kcall(&mut table, 300, &section));
+        crate::smp::bkl_unlock();
+        let p = table.get(nr).unwrap();
+        assert_eq!(p.p_cycles.kipc.load(core::sync::atomic::Ordering::Acquire), 300);
+        assert_eq!(p.p_cycles.kcall.load(core::sync::atomic::Ordering::Acquire), 300);
     }
 
     /// D-48: registration wires the kernel renderer into the minix-rt

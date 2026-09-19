@@ -408,6 +408,20 @@ impl ProcInfoBuild for ProcInfoStruct {
             p_name: *p.p_name.as_bytes(),
             p_priv_id: p.priv_id.map(|id| id as i32).unwrap_or(-1),
             _padding: [0; 4],
+            // C-25 四格：C 的 GET_PROCTAB 拷整个 `struct proc`
+            // （do_getinfo.c:96-100），本行是 A-4 窄行；这四格是 MIB 的
+            // `l_slptime`/`l_pctcpu`/`mpd_*_cycles` 列的唯一来源
+            // （C `mib/proc.c:438/453/1277-1279`）。
+            p_kipc_cycles: p.p_cycles.kipc.load(Ordering::Acquire),
+            p_kcall_cycles: p.p_cycles.kcall.load(Ordering::Acquire),
+            p_dequeued: p.p_dequeued.load(Ordering::Acquire),
+            p_cpuavg: minix_types::CpuAvgSnap {
+                ca_base: p.p_cpuavg.ca_base.load(Ordering::Acquire),
+                ca_run: p.p_cpuavg.ca_run.load(Ordering::Acquire),
+                ca_last: p.p_cpuavg.ca_last.load(Ordering::Acquire),
+                ca_avg: p.p_cpuavg.ca_avg.load(Ordering::Acquire),
+                _padding: 0,
+            },
         }
     }
 }

@@ -325,6 +325,14 @@ pub(crate) static IRQ_MANAGER: SyncUnsafeCell<Option<crate::irq_manager::IrqMana
 /// lands.
 pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
 
+/// D-9 的 IPC 半（C glo.h 的 `kbill_ipc` + `proc.c:607`）——当前正在做
+/// IPC 的进程。`do_ipc` 入口无条件置上（C `kbill_ipc = caller_ptr`，在权限
+/// 与跟踪检查**之前**）；在 context_stop 等价处与 [`KBILL_KCALL`] 用**同一
+/// 个 TSC delta** 分别记账（C `arch_clock.c:274-281` 是两块并列的 `if`：
+/// 两个标记都消费、都清——同一次切换可能给同一进程的 `kipc` 与 `kcall`
+/// 各加一份 delta，这是 C 的粗估法，照抄）。
+pub(crate) static KBILL_IPC: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
+
 /// D-46 (software half, 2026-09-06): the global software clock state —
 /// uptime/realtime/alarm-timer ring live here. C: `kclockinfo` +
 /// `clock_timers` (clock.c globals). Initialized in
