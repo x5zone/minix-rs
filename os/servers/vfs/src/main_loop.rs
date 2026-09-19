@@ -1418,6 +1418,106 @@ impl VfsState {
         Ok(())
     }
 
+    /// 套接字驱动的 getset 族（C `sdev_setsockopt` sdev.c:450-495 /
+    /// `sdev_get` sdev.c:500-555）：把用户缓冲做成 magic grant 交给驱动
+    /// （`set` 方向 `CPF_READ`、`get` 方向 `CPF_WRITE`），回复号必须是
+    /// `SDEV_REPLY`，**状态在载荷里**；`get` 方向的状态就是新长度。
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_sdev_getset(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        dev: u64,
+        req_type: i32,
+        level: i32,
+        name: i32,
+        buf: u64,
+        len: u32,
+        write_dir: bool,
+    ) -> Result<(), i32> {
+        let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
+            .ok_or(minix_types::EIO)?;
+        let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        // C 的 `cpf_grant_magic(drv, who_e, addr, len, CPF_READ|CPF_WRITE)`。
+        let access = if write_dir {
+            minix_types::CpFlags::WRITE
+        } else {
+            minix_types::CpFlags::READ
+        };
+        let grant = self
+            .grant_user_buffer(drv_e, user, buf, len as u64, access)
+            .map_err(|_| minix_types::EIO)?;
+        let mut req = minix_types::Message {
+            m_type: req_type,
+            ..minix_types::Message::default()
+        };
+        // SAFETY: `mess_vfs_lsockdriver_getset { int32_t req_id; int32_t
+        // sock_id; int level; int name; cp_grant_id_t grant; unsigned int len; }`
+        // （ipc.h:2272-2281）。
+        unsafe {
+            let raw = &mut req.m_u.raw;
+            raw[0..4].copy_from_slice(&user.0.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&level.to_le_bytes());
+            raw[12..16].copy_from_slice(&name.to_le_bytes());
+            raw[16..20].copy_from_slice(&grant.to_le_bytes());
+            raw[20..24].copy_from_slice(&len.to_le_bytes());
+        }
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::SdevGetSet { grant, write_dir });
+        }
+        match self.send_drv_for_slot(idx, fp_slot, drv_e, &req) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = self.revoke_grant(grant);
+                Err(e)
+            }
+        }
+    }
+
+    /// 套接字驱动的"简单请求"（C `sdev_simple` sdev.c:245-276）：`listen`/
+    /// `shutdown`/`close` 共用——`{req_id, sock_id, param}` 发给驱动，回复号
+    /// 必须是 `SDEV_REPLY`，**状态在回复载荷里**。
+    ///
+    /// `dev` 是套接字设备号（`v_sdev`），靠 `smap_endpt_by_dev` 认驱动与
+    /// `sock_id`（C `get_smap_by_dev`）。
+    pub fn send_sdev_simple(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        dev: u64,
+        req_type: i32,
+        param: i32,
+    ) -> Result<(), i32> {
+        let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
+            .ok_or(minix_types::EIO)?;
+        let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let mut req = minix_types::Message {
+            m_type: req_type,
+            ..minix_types::Message::default()
+        };
+        // SAFETY: `mess_vfs_lsockdriver_simple { int32_t req_id; sock_id_t
+        // sock_id; int param; }`（ipc.h:2318-2326）。
+        unsafe {
+            let raw = &mut req.m_u.raw;
+            raw[0..4].copy_from_slice(&user.0.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&param.to_le_bytes());
+        }
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::SdevSimple);
+        }
+        self.send_drv_for_slot(idx, fp_slot, drv_e, &req)
+    }
+
     /// `get_sock`（C socket.c:276-302）：fd → filp → **必须是套接字**
     /// （否则 `ENOTSOCK`），返回它的设备号与打开标志。套接字族共用的第一道门
     /// ——全本地判定，没有驱动对话。
@@ -2485,6 +2585,46 @@ impl VfsState {
                         if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
                             v.mode = actual;
                         }
+                    }
+                }
+                crate::worker::WorkerCont::SdevGetSet { grant, write_dir } => {
+                    // C `sdev_setsockopt`/`sdev_get` 的收尾：撤 grant →
+                    // 回复号必须是 `SDEV_REPLY` → 状态取载荷首字；`get` 方向
+                    // 那个状态就是**新长度**，塞进回复载荷
+                    // （`m_vfs_lc_socklen { len }`，C `do_getsockopt:696-697`）。
+                    let _ = self.revoke_grant(grant);
+                    if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
+                        status = minix_types::EIO;
+                    } else {
+                        // SAFETY: `mess_lsockdriver_vfs_reply { int status; }`。
+                        let raw = unsafe { &reply.m_u.raw };
+                        status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                        if write_dir && status >= 0 {
+                            let len = status as u32;
+                            let mut m = Message {
+                                m_type: 0,
+                                ..Message::default()
+                            };
+                            // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }`
+                            // 在负载区首字。
+                            unsafe {
+                                m.m_u.raw[0..4].copy_from_slice(&len.to_le_bytes());
+                            }
+                            reply_payload = Some(m);
+                            status = 0;
+                        }
+                    }
+                }
+                crate::worker::WorkerCont::SdevSimple => {
+                    // C `sdev_simple` 的收尾：回复号必须是 `SDEV_REPLY`，
+                    // 状态在**载荷**里（`mess_lsockdriver_vfs_reply.status`）。
+                    if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
+                        status = minix_types::EIO;
+                    } else {
+                        // SAFETY: `mess_lsockdriver_vfs_reply { int status; }`
+                        // （ipc.h:2262-2268 一类的简单回复）在负载区首字。
+                        let raw = unsafe { &reply.m_u.raw };
+                        status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                     }
                 }
                 crate::worker::WorkerCont::SdevSocket { pair, flags, smap_num } => {

@@ -110,6 +110,21 @@ pub enum WorkerCont {
         /// 该域的 smap 行号（`make_smap_dev` 的高 32 位）。
         smap_num: u32,
     },
+    /// 套接字驱动 getset 族的对话半（`SDEV_SETSOCKOPT`/`SDEV_GETSOCKOPT`/
+    /// `SDEV_GETSOCKNAME`/`SDEV_GETPEERNAME`）：回复号必须是 `SDEV_REPLY`，
+    /// **状态在回复载荷里**；`get` 方向（状态 ≥ 0）时那个状态就是**新长度**，
+    /// 由续接体放进回复载荷（`m_vfs_lc_socklen { len }`）。C `sdev_getset`
+    /// （sdev.c:450-555）。
+    SdevGetSet {
+        /// 已发给驱动的 magic grant（收尾时撤销）。
+        grant: i32,
+        /// `true` = `get` 方向（状态是新长度，要放进回复载荷）。
+        write_dir: bool,
+    },
+    /// 套接字驱动"简单请求"的对话半（`SDEV_LISTEN`/`SDEV_SHUTDOWN`/
+    /// `SDEV_CLOSE`）：回复号必须是 `SDEV_REPLY`，**状态在回复载荷里**
+    /// （`mess_lsockdriver_vfs_reply.status`）。C `sdev_simple`（sdev.c:245-276）。
+    SdevSimple,
     /// `make_sock_fd` 的对话半（`REQ_NEWNODE` 到 PFS）：回复带新节点的
     /// `node_details`，续接体填 vnode 与 filp 并把 fd 作为**返回值**回给用户。
     /// C `make_sock_fd`（socket.c:86-176）。

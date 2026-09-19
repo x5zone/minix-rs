@@ -213,16 +213,11 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Select
         | VfsCallNum::Bind
         | VfsCallNum::Connect
-        | VfsCallNum::Listen
         | VfsCallNum::Accept
         | VfsCallNum::Sendto
         | VfsCallNum::Sendmsg
         | VfsCallNum::Recvfrom
         | VfsCallNum::Recvmsg
-        | VfsCallNum::Setsockopt
-        | VfsCallNum::Getsockopt
-        | VfsCallNum::Getsockname
-        | VfsCallNum::Getpeername
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
         | VfsCallNum::Socketpath
@@ -1472,8 +1467,155 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             if let Err(e) = crate::socket::check_shutdown_how(how) {
                 return SyscallResult::Error(e.to_errno());
             }
-            // `sdev_shutdown(dev, how)` 是驱动对话——缺口同 Socket。
-            SyscallResult::Error(minix_types::ENOSYS)
+            // C socket.c:761 —— `sdev_shutdown(dev, how)`：走 `sdev_simple`
+            // （`SDEV_SHUTDOWN` + `param = how`），回复号 `SDEV_REPLY`、状态在
+            // 载荷里。管线已就位，所以这里真发。
+            let (dev, _flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            match state.send_sdev_simple(
+                worker,
+                Some(fp_slot),
+                dev,
+                minix_sockdriver::sdev::SdevRequest::Shutdown as i32,
+                how,
+            ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
+        // ── getset 族（Setsockopt/Getsockopt/Getsockname/Getpeername）──
+        VfsCallNum::Setsockopt | VfsCallNum::Getsockopt => {
+            // C `do_setsockopt`/`do_getsockopt`（socket.c:657-698）：载荷
+            // `mess_lc_vfs_sockopt`（fd@0、level@4、name@8、buf@16、len@24）。
+            let (fd, level, name, buf, len) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let level = i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+                let name = i32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[16..24]);
+                let buf = u64::from_le_bytes(b8);
+                let len = u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]);
+                (fd, level, name, buf, len)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (dev, _flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let write_dir = matches!(call, VfsCallNum::Getsockopt);
+            let req_type = if write_dir {
+                minix_sockdriver::sdev::SdevRequest::GetSockOpt
+            } else {
+                minix_sockdriver::sdev::SdevRequest::SetSockOpt
+            };
+            match state.send_sdev_getset(
+                worker,
+                Some(fp_slot),
+                dev,
+                req_type as i32,
+                level,
+                name,
+                buf,
+                len,
+                write_dir,
+            ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
+        VfsCallNum::Getsockname | VfsCallNum::Getpeername => {
+            // C `do_getsockname`/`do_getpeername`（socket.c:701-733）：载荷
+            // `mess_lc_vfs_sockaddr`（fd@0、addr@8、addr_len@16）；`level`/
+            // `name` 传 0（C 里是 `sdev_get(dev, type, 0, 0, addr, &len)`）。
+            let (fd, addr, addr_len) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let addr_len = u64::from_le_bytes(b8) as u32;
+                (fd, addr, addr_len)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (dev, _flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let req_type = if matches!(call, VfsCallNum::Getpeername) {
+                minix_sockdriver::sdev::SdevRequest::GetPeerName
+            } else {
+                minix_sockdriver::sdev::SdevRequest::GetSockName
+            };
+            match state.send_sdev_getset(
+                worker,
+                Some(fp_slot),
+                dev,
+                req_type as i32,
+                0,
+                0,
+                addr,
+                addr_len,
+                true,
+            ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
+        VfsCallNum::Listen => {
+            // C `do_listen`（socket.c:334-357）：`get_sock` → backlog 负值归零
+            // （`socket::clamp_backlog`）→ `sdev_listen(dev, backlog)`（
+            // `SDEV_LISTEN` + `param = backlog`，走 `sdev_simple`）。
+            let (fd, backlog) = {
+                // SAFETY: `mess_lc_vfs_listen { int fd; int backlog; }`
+                // （ipc.h:851-856 一类）。
+                let raw = unsafe { &msg.m_u.raw };
+                (
+                    i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+                    i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]),
+                )
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (dev, _flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            match state.send_sdev_simple(
+                worker,
+                Some(fp_slot),
+                dev,
+                minix_sockdriver::sdev::SdevRequest::Listen as i32,
+                crate::socket::clamp_backlog(backlog) as i32,
+            ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
         }
 
         VfsCallNum::Pipe2 => {
@@ -4217,8 +4359,262 @@ mod tests {
         state.current_message = shutdown_msg(3, 1); // SHUT_WR
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Shutdown),
-            SyscallResult::Error(minix_types::ENOSYS),
-            "全过，停在 sdev_shutdown"
+            SyscallResult::Error(minix_types::EIO),
+            "全过 → 真发 SDEV_SHUTDOWN（宿主下 trap 不可达 → EIO）"
+        );
+    }
+
+    /// getset 族（`Setsockopt`/`Getsockopt`/`Getsockname`/`Getpeername`）：
+    /// 前两道门同 socket 族（EBADF/ENOTSOCK）；过了就把用户缓冲做成 magic
+    /// grant 交给驱动，回复号 `SDEV_REPLY`、**状态在载荷里**；`get` 方向的
+    /// 状态就是**新长度**，进回复载荷（`m_vfs_lc_socklen { len }`）。
+    #[test]
+    fn test_dispatch_sockopt_and_sockname() {
+        use minix_types::Endpoint;
+
+        let setup = |mode: u32| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let drv = Endpoint::from_generation_slot(0, 11);
+            state.smap_table.entries[0].endpt = Some(drv);
+            let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::PFS;
+                v.ino = 0x11;
+                v.mode = mode;
+                v.sdev = dev;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx, drv)
+        };
+        let sockopt_msg = |call: VfsCallNum, fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_sockopt：fd@0、level@4、name@8、buf@16、len@24。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..12].copy_from_slice(&7i32.to_le_bytes());
+                raw[16..24].copy_from_slice(&0x6000u64.to_le_bytes());
+                raw[24..28].copy_from_slice(&32u32.to_le_bytes());
+            }
+            m
+        };
+        let sockaddr_msg = |call: VfsCallNum, fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_sockaddr：fd@0、addr@8、addr_len@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&0x6000u64.to_le_bytes());
+                raw[16..24].copy_from_slice(&32u64.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 负 fd → EBADF；非套接字 → ENOTSOCK（getset 族共用 get_sock 的门）。
+        let (mut state, _idx, _drv) = setup(crate::open::S_IFSOCK | 0o777);
+        state.current_message = sockopt_msg(VfsCallNum::Setsockopt, -1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Setsockopt),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        let (mut state, _idx, _drv) = setup(crate::open::S_IFREG | 0o644);
+        state.current_message = sockopt_msg(VfsCallNum::Setsockopt, 3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Setsockopt),
+            SyscallResult::Error(minix_types::ENOTSOCK)
+        );
+
+        // ② 是套接字 → 真发 `SDEV_SETSOCKOPT`（宿主下 EIO），grant 已建。
+        let (mut state, idx, _drv) = setup(crate::open::S_IFSOCK | 0o777);
+        state.current_message = sockopt_msg(VfsCallNum::Setsockopt, 3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Setsockopt),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().cont,
+            Some(crate::worker::WorkerCont::SdevGetSet { write_dir: false, .. })
+        ));
+
+        // ③ `getsockname`：回复带**新长度**（载荷 status = 16）→ 用户拿到 0，
+        // 长度进回复载荷。
+        let (mut state, idx, drv) = setup(crate::open::S_IFSOCK | 0o777);
+        state.current_message = sockaddr_msg(VfsCallNum::Getsockname, 3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getsockname),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        let mut reply = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::Reply as i32,
+            ..Message::default()
+        };
+        reply.m_source = drv;
+        // SAFETY(test): `mess_lsockdriver_vfs_reply { int status; }`——这里是
+        // "写进去多少字节"，即新长度。
+        unsafe {
+            reply.m_u.raw[0..4].copy_from_slice(&16i32.to_le_bytes());
+        }
+        state.handle_drv_reply(&reply).expect("有槽在等这个驱动");
+        state.run_worker_continuations();
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(reply.m_type, 0, "成功回 0（长度在载荷里）");
+        // SAFETY(test): `mess_vfs_lc_socklen { unsigned int len; }`。
+        let len = unsafe { u32::from_le_bytes(reply.m_u.raw[0..4].try_into().unwrap()) };
+        assert_eq!(len, 16, "新长度进回复载荷");
+        let _ = idx;
+
+        // ④ `getpeername` 走同一条路（`level`/`name` 传 0）。
+        let (mut state, _idx, _drv) = setup(crate::open::S_IFSOCK | 0o777);
+        state.current_message = sockaddr_msg(VfsCallNum::Getpeername, 3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getpeername),
+            SyscallResult::Error(minix_types::EIO)
+        );
+    }
+
+    /// `sdev_simple` 的两个消费者（`Listen`/`Shutdown`）走的是同一条驱动
+    /// 请求形状：回复号必须是 `SDEV_REPLY`，**状态在回复载荷里**
+    /// （C `sdev_simple` sdev.c:245-276）。这里喂一条回复把这条链走完。
+    #[test]
+    fn test_sdev_simple_reply_status_from_payload() {
+        use minix_types::Endpoint;
+
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        // 一个套接字 fd：vnode 带 `v_sdev`（smap 行 0 + sock_id 0x42）。
+        let drv = Endpoint::from_generation_slot(0, 11);
+        state.smap_table.entries[0].endpt = Some(drv);
+        let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::PFS;
+            v.ino = 0x11;
+            v.mode = crate::open::S_IFSOCK | 0o777;
+            v.sdev = dev;
+            v.ref_count = 1;
+        }
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+
+        // `listen(fd, 5)`：宿主下发送失败 → EIO，但续接标识已挂。
+        let mut m = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Listen as i32,
+            ..Message::default()
+        };
+        // SAFETY: mess_lc_vfs_listen：fd@0、backlog@4。
+        unsafe {
+            let raw = &mut m.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&5i32.to_le_bytes());
+        }
+        state.current_message = m;
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Listen),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().cont,
+            Some(crate::worker::WorkerCont::SdevSimple)
+        ));
+
+        // 驱动回复：`SDEV_REPLY` + 载荷里的 status（这里故意带 -EACCES）。
+        let mut reply = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::Reply as i32,
+            ..Message::default()
+        };
+        reply.m_source = drv;
+        // SAFETY(test): `mess_lsockdriver_vfs_reply { int status; }`。
+        unsafe {
+            reply.m_u.raw[0..4].copy_from_slice(&(-minix_types::EACCES).to_le_bytes());
+        }
+        state.handle_drv_reply(&reply).expect("有槽在等这个驱动");
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EACCES)),
+            "用户拿到的是**载荷里的 status**，不是回复号"
+        );
+
+        // 回复号不是 `SDEV_REPLY` → EIO（C 的协议错误面）。
+        let idx2 = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx2);
+        state.current_message = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Listen as i32,
+            ..Message::default()
+        };
+        // SAFETY: fd@0、backlog@4（同上面那条）。
+        unsafe {
+            let raw = &mut state.current_message.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&5i32.to_le_bytes());
+        }
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Listen),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        let mut bad = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::SelectReply1 as i32,
+            ..Message::default()
+        };
+        bad.m_source = drv;
+        state.handle_drv_reply(&bad).expect("有槽在等这个驱动");
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+            "回复号不对 → 协议错误"
         );
     }
 
