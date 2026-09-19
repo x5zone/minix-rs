@@ -81,6 +81,17 @@ impl WorkerFunc {
 /// 单线程事件循环没有可恢复的栈，故把这一半显式成一个标记 + 少量参数。
 /// **参数尽量从槽上已有的 `input`（原始请求）与 `sendrec`（回复）重算**，
 /// 只存重算不出来的东西（如已发出的 grant id）。
+/// `socketpair` 的成对编排状态（两半各带一份，见 `WorkerCont::SockFd`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairState {
+    /// 另一半的设备号（**第一半**用它起第二半；第二半不用）。
+    pub other_dev: u64,
+    /// 已建好的第一个 fd（**第二半**用它拼 `fdpair` 回复）。
+    pub fd0: u32,
+    /// 这份状态属于第二半吗（第一半为 `false`）。
+    pub second: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCont {
     /// `Fstat`（`do_fstat` → `REQ_STAT`）：回复只有状态字，续接就是把
@@ -143,6 +154,10 @@ pub enum WorkerCont {
         /// （`m_vfs_lc_socklen { len }`，C `resume_accept` 的末段）；其余调用
         /// 为 `None`。
         addr_len_out: Option<u32>,
+        /// `socketpair` 的成对编排状态（C `do_socketpair` socket.c:239-266）：
+        /// 第一半带着"另一半的设备号"、第二半带着"第一个 fd"（最后要拼
+        /// `m_vfs_lc_fdpair { fd0, fd1 }` 回复）。
+        pair: Option<PairState>,
     },
     /// `accept` 失败但**驱动已建了新套接字**时（C 的 case #2 与 case #1 的
     /// `make_sock_fd` 失败）：先给驱动发 `SDEV_CLOSE` 把那个套接字关掉，再回

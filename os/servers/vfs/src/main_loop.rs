@@ -1357,6 +1357,7 @@ impl VfsState {
         dev: u64,
         flags: u32,
         addr_len_out: Option<u32>,
+        pair: Option<crate::worker::PairState>,
     ) -> Result<(), i32> {
         let Some(slot) = fp_slot else {
             return Err(minix_types::EINVAL);
@@ -1405,6 +1406,7 @@ impl VfsState {
                 vnode: vnode.get(),
                 dev,
                 addr_len_out,
+                pair,
             });
         }
         self.pending_fs = Some(PendingFs {
@@ -2201,7 +2203,8 @@ impl VfsState {
                 | crate::fcntl::O_NONBLOCK
                 | crate::fcntl::O_NOSIGPIPE)
                 & (listen_flags as u32);
-            if let Err(e) = self.begin_make_sock_fd(new_idx, Some(slot), dev, inherit, Some(addr_len))
+            if let Err(e) =
+                self.begin_make_sock_fd(new_idx, Some(slot), dev, inherit, Some(addr_len), None)
             {
                 // 建 fd 失败 → 也要关掉新套接字（C 的同一个分支）。
                 if let Some(wp) = self.worker_pool.get_mut(new_idx) {
@@ -3072,16 +3075,49 @@ impl VfsState {
                     }
                     let dev = crate::device_map::make_smap_dev(smap_num, sock_id as u32);
                     if pair {
-                        // **成对分支待接**：`socketpair` 要连着建**两个**
-                        // `make_sock_fd`（C socket.c:250-266 的第二半还带补偿：
-                        // 第二个失败要 `close_fd(fd0)` + `sdev_close(dev[1])`），
-                        // 而 `pending_fs` 一次只装一条请求。本批先只接单条路径，
-                        // 成对的诚实回 ENOSYS 并登记（第二半的编排是下一步）。
-                        let _ = sock_id2;
-                        self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
+                        // 成对：两个设备号都要 `make_sock_fd`。先建第一个，
+                        // 第二个由 `SockFd` 的第一半收尾接着建（C socket.c:
+                        // 249-266）——`pending_fs` 一次只装一条请求，所以两半
+                        // 是**串行**的，不是并发。
+                        if sock_id2 < 0 {
+                            // C：`sock_id2 < 0` 是协议错误 → 先关掉 dev0 再 EIO。
+                            if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply {
+                                    status: minix_types::EIO,
+                                });
+                            }
+                            if self
+                                .send_sdev_simple(
+                                    idx,
+                                    fp_slot,
+                                    dev,
+                                    minix_sockdriver::sdev::SdevRequest::Close as i32,
+                                    0,
+                                )
+                                .is_err()
+                            {
+                                self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                            }
+                            continue;
+                        }
+                        let dev1 = crate::device_map::make_smap_dev(smap_num, sock_id2 as u32);
+                        if let Err(e) = self.begin_make_sock_fd(
+                            idx,
+                            fp_slot,
+                            dev,
+                            flags,
+                            None,
+                            Some(crate::worker::PairState {
+                                other_dev: dev1,
+                                fd0: 0,
+                                second: false,
+                            }),
+                        ) {
+                            self.finish_worker_job(idx, fp_slot, e);
+                        }
                         continue;
                     }
-                    if let Err(e) = self.begin_make_sock_fd(idx, fp_slot, dev, flags, None) {
+                    if let Err(e) = self.begin_make_sock_fd(idx, fp_slot, dev, flags, None, None) {
                         self.finish_worker_job(idx, fp_slot, e);
                     }
                     continue;
@@ -3093,6 +3129,7 @@ impl VfsState {
                     vnode,
                     dev,
                     addr_len_out,
+                    pair,
                 } => {
                     // C `make_sock_fd` 的后半（socket.c:140-176）：用回复的
                     // `node_details` 填 vnode（`v_sdev` 是套接字设备号）与 filp，
@@ -3138,6 +3175,75 @@ impl VfsState {
                         && flags & crate::open::OpenFlags::CLOEXEC.bits() != 0
                     {
                         fp.cloexec_set.set(fd as usize, true);
+                    }
+                    // `socketpair` 的成对编排（C `do_socketpair:249-266`）：
+                    // - 第一半成功 → 接着建第二半（把 fd0 与"这是第二半"带过去）；
+                    // - 第二半成功 → 回复 `m_vfs_lc_fdpair { fd0, fd1 }`；
+                    // - 第二半失败 → `close_fd(fp, fd0)` + 关掉 dev1（C 的
+                    //   `close_fd` + `(void)sdev_close(dev[1])`）。
+                    if let Some(pair_state) = pair {
+                        if !pair_state.second {
+                            if let Err(e) = self.begin_make_sock_fd(
+                                idx,
+                                fp_slot,
+                                pair_state.other_dev,
+                                flags,
+                                None,
+                                Some(crate::worker::PairState {
+                                    other_dev: 0,
+                                    fd0: fd as u32,
+                                    second: true,
+                                }),
+                            ) {
+                                // 第二半起不来：关掉第一半的 fd + 那个设备。
+                                // C 的 `close_fd(fp, fd0, may_suspend=FALSE)`：
+                                // 清掉第一半的 fd（本地动作，不发驱动请求——
+                                // C 的 `may_suspend=FALSE` 就是"别在这里阻塞"）。
+                                if let Some(slot) = fp_slot
+                                    && let Some(fd0) = crate::filedes::Fd::new(fd as usize)
+                                    && let Some(fp) = self.fproc_table.get_mut(slot)
+                                {
+                                    let _ = crate::filedes::close_fd(fp, fd0, &mut self.filp_table);
+                                }
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont =
+                                        Some(crate::worker::WorkerCont::SdevCloseThenReply {
+                                            status: e,
+                                        });
+                                }
+                                if self
+                                    .send_sdev_simple(
+                                        idx,
+                                        fp_slot,
+                                        pair_state.other_dev,
+                                        minix_sockdriver::sdev::SdevRequest::Close as i32,
+                                        0,
+                                    )
+                                    .is_err()
+                                {
+                                    self.finish_worker_job(idx, fp_slot, e);
+                                }
+                            }
+                            continue;
+                        }
+                        // 第二半成功：拼 fd 对回复。
+                        let mut m = Message {
+                            m_type: 0,
+                            ..Message::default()
+                        };
+                        // SAFETY: `mess_vfs_lc_fdpair { int fd0; int fd1; }`
+                        // （ipc.h:2198-2203）在负载区前两字。
+                        unsafe {
+                            m.m_u.raw[0..4].copy_from_slice(&(pair_state.fd0 as i32).to_le_bytes());
+                            m.m_u.raw[4..8].copy_from_slice(&(fd as i32).to_le_bytes());
+                        }
+                        let target = fp_slot
+                            .and_then(|s| self.fproc_table.get(s))
+                            .map(|fp| fp.endpoint)
+                            .unwrap_or(Endpoint::NONE);
+                        self.queue_reply_msg(target, m);
+                        self.finish_worker_job(idx, fp_slot, 0);
+                        continue;
                     }
                     if let Some(len) = addr_len_out {
                         // `accept` 的收尾：fd 是状态、**对端地址长度在载荷里**

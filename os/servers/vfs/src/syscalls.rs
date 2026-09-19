@@ -5125,6 +5125,148 @@ mod tests {
         );
     }
 
+    /// `Socketpair` 的成对编排（C `do_socketpair` socket.c:224-266）：驱动回复
+    /// 带回**两个**套接字号 → 串行建两个 `make_sock_fd`（第一半带着"另一半的
+    /// 设备号"、第二半带着"第一个 fd"）→ 最后回 `m_vfs_lc_fdpair { fd0, fd1 }`。
+    #[test]
+    fn test_socketpair_paired_orchestration() {
+        use minix_types::Endpoint;
+
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        let drv = Endpoint::from_generation_slot(0, 11);
+        state.smap_table.entries[0].endpt = Some(drv);
+        state.smap_table.pfmap[2] = Some(0);
+        let row = state.smap_table.entries[0].num;
+        // PFS 挂载行（两半都要 `REQ_NEWNODE`）。
+        let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+        v.fs = Endpoint::PFS;
+        v.dev = 9;
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+        // 摆出"`SDEV_SOCKETPAIR` 的回复已到"的槽态（成对：两个 sock_id）。
+        let mut reply = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::SocketReply as i32,
+            ..Message::default()
+        };
+        reply.m_source = drv;
+        // SAFETY(test): `mess_lsockdriver_vfs_socket_reply { req_id@0;
+        // sock_id@4; sock_id2@8 }`。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[4..8].copy_from_slice(&0x10i32.to_le_bytes());
+            raw[8..12].copy_from_slice(&0x11i32.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(crate::worker::WorkerCont::SdevSocket {
+                pair: true,
+                flags: 0,
+                smap_num: row,
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+
+        // 第一半：给 PFS 发 dev0 的 `REQ_NEWNODE`，且续接里带着"另一半"。
+        let p = state.pending_fs.as_ref().expect("第一半的 REQ_NEWNODE");
+        assert_eq!(p.req.m_type, minix_types::REQ_NEWNODE);
+        let dev0 = crate::device_map::make_smap_dev(row, 0x10);
+        // SAFETY(test): `mess_vfs_fs_newnode`：device@0。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), dev0);
+        }
+        assert!(
+            matches!(
+                state.worker_pool.get_mut(idx).unwrap().cont,
+                Some(crate::worker::WorkerCont::SockFd {
+                    pair: Some(crate::worker::PairState { second: false, .. }),
+                    ..
+                })
+            ),
+            "第一半的续接带着成对状态"
+        );
+
+        // 第一半回复到达 → 接着起第二半（dev1）。
+        let pfs_worker = p.worker;
+        state.pending_fs = None;
+        let mut r1 = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 新节点 details。
+        unsafe {
+            let raw = &mut r1.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&0x51u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFSOCK | 0o777).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(pfs_worker).unwrap();
+            wp.sendrec = Some(r1);
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("第二半的 REQ_NEWNODE");
+        let dev1 = crate::device_map::make_smap_dev(row, 0x11);
+        // SAFETY(test): `mess_vfs_fs_newnode`：device@0。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), dev1);
+        }
+        assert!(matches!(
+            state.worker_pool.get_mut(pfs_worker).unwrap().cont,
+            Some(crate::worker::WorkerCont::SockFd {
+                pair: Some(crate::worker::PairState { second: true, .. }),
+                ..
+            })
+        ));
+
+        // 第二半回复到达 → 回 `m_vfs_lc_fdpair { fd0, fd1 }`。
+        state.pending_fs = None;
+        let mut r2 = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 新节点 details。
+        unsafe {
+            let raw = &mut r2.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&0x52u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFSOCK | 0o777).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(pfs_worker).unwrap();
+            wp.sendrec = Some(r2);
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(reply.m_type, 0, "成功回 0（fd 对在载荷里）");
+        // SAFETY(test): `mess_vfs_lc_fdpair { int fd0; int fd1; }`。
+        let (fd0, fd1) = unsafe {
+            (
+                i32::from_le_bytes(reply.m_u.raw[0..4].try_into().unwrap()),
+                i32::from_le_bytes(reply.m_u.raw[4..8].try_into().unwrap()),
+            )
+        };
+        assert!(fd0 >= 0 && fd1 >= 0 && fd0 != fd1, "两个 fd 都建好了");
+        let fp = state
+            .fproc_table
+            .get(minix_types::UserSlot::new(0))
+            .unwrap();
+        assert!(fp.filps[fd0 as usize].is_some() && fp.filps[fd1 as usize].is_some());
+        assert!(state.worker_pool.get_mut(pfs_worker).unwrap().is_idle());
+    }
+
     /// `Select` 的**本地半**（C `do_select` select.c:94-260）：`nfds > OPEN_MAX`
     /// → EINVAL；槽满 → ENOSPC；逐 fd 校验（位没设跳过、fd 无效 EBADF、类型
     /// 不认识 EBADF）；常规文件与"模式位不符"的 fd **立刻就绪**；没有要等的就
