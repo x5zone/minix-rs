@@ -67,8 +67,30 @@ impl SmpArch for Riscv64SmpArch {
     fn send_sched_ipi(cpu: u32) {
         // C: arch_send_smp_schedule_ipi(cpu) — smp.c:65
         //
-        // SBI v0.2+ IPI extension `send_ipi` (RISC-V SBI specification
-        // §11, EID 0x735049 = "sPI", FID 0):
+        // Path 1 — ACLINT SSWI direct write (platforms exposing the
+        // device, e.g. QEMU virt `aclint=on`): hart *i*'s SETIP register
+        // is a 32-bit word at `sswi_base + 4 * i`; writing 1 raises
+        // `sip.SSIP` on the target directly from S-mode. This is the only
+        // working injection path on aclint-mswi firmware: OpenSBI 1.3's
+        // MSIP→SSIP conversion runs inside M-mode windows, so an S-mode
+        // target hart never sees the SBI send_ipi raise as an S-trap
+        // (K10 round-3 finding — SBI accepted the call, MSIP stayed
+        // M-level, no SSIP conversion, live on QEMU).
+        //
+        // `platform_desc` is initialized during boot (T2.5) — strictly
+        // before any IPI sender can run (smp_init or later).
+        if let Some(sswi_base) = minix_platform::platform_desc().sswi_setip_base() {
+            // SAFETY: MMIO write to the ACLINT SSWI device described by
+            // the platform DTB; the register is S-mode-writable by spec
+            // and the write raises SSIP on the target hart.
+            unsafe {
+                core::ptr::write_volatile((sswi_base + 4 * cpu as usize) as *mut u32, 1);
+            }
+            return;
+        }
+
+        // Path 2 — SBI v0.2+ IPI extension `send_ipi` (RISC-V SBI
+        // specification §11, EID 0x735049 = "sPI", FID 0):
         //   a7 = 0x735049    (EID, IPI extension)
         //   a6 = 0           (FID, send_ipi)
         //   a0 = hart mask   (one bit per hart; bit n = hart n)

@@ -78,6 +78,9 @@ impl PlatformDesc for PlatformContext {
     fn source(&self) -> crate::desc::PlatformSource {
         self.desc.source()
     }
+    fn sswi_setip_base(&self) -> Option<usize> {
+        self.desc.sswi_setip_base()
+    }
 }
 
 impl core::fmt::Debug for PlatformContext {
@@ -176,6 +179,15 @@ impl PlatformDesc for PlatformDescEnum {
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(_) => crate::desc::PlatformSource::Acpi,
             Self::QemuVirt(_) => crate::desc::PlatformSource::QemuVirt,
+        }
+    }
+    fn sswi_setip_base(&self) -> Option<usize> {
+        match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+            Self::DeviceTree(d) => d.sswi_setip_base(),
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            Self::Acpi(d) => d.sswi_setip_base(),
+            Self::QemuVirt(d) => d.sswi_setip_base(),
         }
     }
 }

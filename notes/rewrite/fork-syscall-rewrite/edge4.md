@@ -36,6 +36,8 @@
 | C-8 | edge3 S17 换装 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：pm.rs 新增 `setuid_via`（PM_SETUID=5，raw 载荷）+ vm.rs `vm_rs_memctl_via` 扩 (addr,len) 参数（原版丢 HeapPrealloc/MapPrealloc 的地址对，零调用方扩参无涟漪） | 无 | ✅ 销账（2026-09-19，0e33c276c） |
 | C-9 | edge3 S24 mib_get_label 接线 minix-sys 补 | edge3（需求方） | `os/libs/minix-sys`：ds.rs 新增 `DsClient::retrieve_label_name`（C ds.c:92-101：DS_RETRIEVE_LABEL + val_in.ep + key 写授权收标签名）；`os/servers/mib`：SysServices 持 DsClient 并接真实动词 | 无 | ✅ 销账（2026-09-19，bd5c3d008） |
 | C-10 | edge2 L4 E-CDRCONV 判定核上收 | edge2 | `os/servers/input`：`src/framework.rs` 删除（判定核上收 minix-chardriver：GateVerdict/gate_character_request/AnnounceEffect/announce_effects/SELECT_*/ACCESS_*/TRANSFER_* 旗标），lib.rs/dispatcher.rs/init.rs/handlers.rs 改消费共享库，Cargo.toml 加 minix-chardriver 依赖 | edge2 | ✅ 销账（2026-09-18） |
+| C-11 | edge1 K10 第四轮 SSWI：平台描述暴露 + arch IPI 消费 | edge1 | `os/libs/minix-boot/src/platform.rs`（PlatformDesc trait 增 `sswi_setip_base()` 默认方法）+ `os/libs/minix-platform`（device_tree.rs aclint-sswi/aclint-mtimer 解析 + global.rs 转发）。两库在三线所有权清单均未登记、功能上属内核 boot/platform 面；edge1 以 K10（riscv64 S-10 IPI 路径，smp_todo 归属）持锁 | 无 | ✅ 销账（2026-09-19，回路真机 PASS 5/5：trait 默认方法 + aclint-sswi/mtimer 解析 + global 转发 + arch `send_sched_ipi` SSWI 直写优先/SBI 兜底；hosted platform 17/boot 13/arch 237 全绿，riscv64gc target check 零错误） |
+| C-12 | edge3 S26 RMIB 协议走查器：minix-sys walker 函数节点回调 | edge3（需求方） | `os/libs/minix-sys/src/rmib.rs`：`rmib_call` 增函数节点 handler 回调参（C `rmib.c:809-811` 的 `node->func(call,node,oldp,newp)` 面，现版此分支恒 `EOPNOTSUPP`）；`os/servers/ipc-server/src/boundary.rs` 的 `mib_process` 消费（COMMON_MIB_INFO/CALL 分发 + COMMON_MIB_REPLY 两分回复，libsys `rmib.c:1037-1080`） | edge3 | 🔄 登记即动（2026-09-19） |
 
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
@@ -46,6 +48,7 @@
 | 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K10：新增 test-smp-ipi-riscv64 carrier | 部分——Cargo.toml 成员已加（carrier 不入 run_all 矩阵：SSIE 回路未绿，见 edge1 K10 🔄 注记；绿后再接 run_all） |
 | 2026-09-18 | edge1 | `tools/` | K16：新增 `tools/review-line-check.sh`（文档行号锚点批量反向核查：行存在性 + 当行内容回显） | ✅ 同日 |
 | 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K17：test-paging-faultloop（E5(d) 缺页完整回路载体）入 workspace 成员 + x86_64 构建清单 + 特殊协议脚本区（gdbstub 邮箱断言，test-user-trap 同款） | ✅ 同日（真机 PASS 后接线完成并验证） |
+| 2026-09-19 | edge1 | `os/qemu-tests/run_all.sh` | K10：test-smp-ipi-riscv64 回路真机绿后入 riscv64 构建清单 + 特殊协议脚本区（aclint=on 串口判定） | ✅ 同日 |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 

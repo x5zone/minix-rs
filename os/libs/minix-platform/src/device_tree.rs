@@ -71,6 +71,10 @@ pub struct DeviceTreeDesc {
     timer: ClintDesc,
     #[cfg(target_arch = "aarch64")]
     timer: ArmGenericTimerDesc,
+    /// ACLINT SSWI SETIP register-file base (RISC-V capability; `None`
+    /// on legacy CLINT platforms and on non-RISC-V DTBs where the node
+    /// never matches).
+    sswi_setip_base: Option<usize>,
     /// Early console descriptor (optional).
     #[cfg(target_arch = "riscv64")]
     console: Option<Riscv64ConsoleDesc>,
@@ -88,6 +92,7 @@ impl fmt::Debug for DeviceTreeDesc {
         f.debug_struct("DeviceTreeDesc")
             .field("ic", &self.ic)
             .field("timer", &self.timer)
+            .field("sswi_setip_base", &self.sswi_setip_base)
             .field("console", &self.console)
             .field("cpu_topology", &self.cpu_topology)
             .finish_non_exhaustive()
@@ -152,8 +157,9 @@ impl DeviceTreeDesc {
         let console = Self::parse_console(fdt);
         let cpu_topology = Self::parse_cpu_topology(fdt);
         let arch_misc = ArchMiscDesc::default();
+        let sswi_setip_base = Self::parse_sswi(fdt);
 
-        Ok(Self { ic, timer, console, cpu_topology, arch_misc })
+        Ok(Self { ic, timer, console, cpu_topology, arch_misc, sswi_setip_base })
     }
 
     // ── Interrupt controller extraction ──
@@ -248,7 +254,12 @@ impl DeviceTreeDesc {
 
     #[cfg(target_arch = "riscv64")]
     fn parse_timer(fdt: &fdt::Fdt<'_>) -> Result<ClintDesc, DtParseError> {
-        Self::parse_clint(fdt)
+        // Legacy CLINT first (QEMU virt default); the ACLINT MTIMER node
+        // carries the same mtime/mtimecmp addresses when present (QEMU
+        // virt `aclint=on` replaces the `riscv,clint0` node entirely —
+        // verified live: mtimer@2004000 reg names 0x200bff8/0x2004000,
+        // identical to the CLINT offsets).
+        Self::parse_clint(fdt).or_else(|_| Self::parse_aclint_mtimer(fdt))
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -294,14 +305,65 @@ impl DeviceTreeDesc {
         let mtimecmp_stride = 8usize;
 
         // Timebase frequency: `/cpus/timebase-frequency`.
-        let freq = fdt
-            .find_node("/cpus")
+        let freq = Self::parse_timebase_freq(fdt)?;
+
+        Ok(ClintDesc { mtime_addr, mtimecmp_base, mtimecmp_stride, freq })
+    }
+
+    /// RISC-V: ACLINT MTIMER fallback — the timer half of QEMU virt's
+    /// `aclint=on` DTB, where the legacy `riscv,clint0` node is replaced
+    /// by `riscv,aclint-mswi` + `riscv,aclint-sswi` + `riscv,aclint-mtimer`.
+    ///
+    /// QEMU virt DTB layout (reg order: MTIME first, MTIMECMP second):
+    /// ```text
+    /// /soc {
+    ///     mtimer@2004000 {
+    ///         compatible = "riscv,aclint-mtimer";
+    ///         reg = <0x0 0x200bff8 0x0 0x4008   // MTIME (global counter)
+    ///                <0x0 0x2004000 0x0 0x7ff8>; // MTIMECMP (per-hart, stride 8)
+    ///     };
+    /// }
+    /// ```
+    #[cfg(target_arch = "riscv64")]
+    fn parse_aclint_mtimer(fdt: &fdt::Fdt<'_>) -> Result<ClintDesc, DtParseError> {
+        let node = fdt
+            .find_compatible(&["riscv,aclint-mtimer"])
+            .ok_or(DtParseError::ClintNotFound)?;
+        let mut regs = node.reg().ok_or(DtParseError::ClintRegMissing)?;
+        let mtime_addr = regs
+            .next()
+            .map(|r| r.starting_address as usize)
+            .ok_or(DtParseError::ClintRegMissing)?;
+        let mtimecmp_base = regs
+            .next()
+            .map(|r| r.starting_address as usize)
+            .ok_or(DtParseError::ClintRegMissing)?;
+        let freq = Self::parse_timebase_freq(fdt)?;
+        Ok(ClintDesc { mtime_addr, mtimecmp_base, mtimecmp_stride: 8, freq })
+    }
+
+    /// `/cpus/timebase-frequency` — shared by the CLINT and ACLINT MTIMER
+    /// extraction paths.
+    #[cfg(target_arch = "riscv64")]
+    fn parse_timebase_freq(fdt: &fdt::Fdt<'_>) -> Result<u64, DtParseError> {
+        fdt.find_node("/cpus")
             .and_then(|cpus| cpus.property("timebase-frequency"))
             .and_then(|p| p.as_usize())
             .map(|n| n as u64)
-            .ok_or(DtParseError::TimebaseFreqMissing)?;
+            .ok_or(DtParseError::TimebaseFreqMissing)
+    }
 
-        Ok(ClintDesc { mtime_addr, mtimecmp_base, mtimecmp_stride, freq })
+    /// RISC-V: ACLINT SSWI device — the S-mode-writable IPI injection
+    /// device (`aclint=on` platforms). Absence is normal (legacy CLINT
+    /// platforms): senders then fall back to the SBI IPI ecall.
+    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+    fn parse_sswi(fdt: &fdt::Fdt<'_>) -> Option<usize> {
+        let node = fdt.find_compatible(&["riscv,aclint-sswi"])?;
+        let base = node
+            .reg()
+            .and_then(|mut r| r.next())
+            .map(|r| r.starting_address as usize)?;
+        Some(base)
     }
 
     // ── Console extraction ──
@@ -402,6 +464,9 @@ impl PlatformDesc for DeviceTreeDesc {
     }
     fn source(&self) -> PlatformSource {
         PlatformSource::DeviceTree
+    }
+    fn sswi_setip_base(&self) -> Option<usize> {
+        self.sswi_setip_base
     }
 }
 

@@ -10,9 +10,13 @@
 //!    (SBI HSM `hart_start`, smp.rs).
 //! 2. hart 1's entry enables `sie.SSIE`, points `stvec` at the carrier's
 //!    IPI handler, and signals readiness through a memory flag.
-//! 3. BSP issues the production `SmpArch::send_sched_ipi` (SBI IPI
-//!    extension `send_ipi`, smp.rs) — the firmware raises SSIP on the
-//!    target hart.
+//! 3. BSP issues the production `SmpArch::send_sched_ipi` (smp.rs). With
+//!    the platform's ACLINT SSWI device (QEMU `aclint=on`), the send is
+//!    a direct S-mode MMIO write to the target hart's SETIP register —
+//!    the SBI `send_ipi` ecall cannot reach an S-mode hart on
+//!    aclint-mswi firmware (round-3 finding: the MSIP raise stays at
+//!    M-level, and OpenSBI 1.3 only converts it to SSIP inside an
+//!    M-mode window).
 //! 4. hart 1 traps into the handler: records `scause` (must be
 //!    `0x8000_0000_0000_0001` — interrupt bit + Supervisor Software
 //!    Interrupt), clears `sip.SSIP`, sets the received flag, `sret`.
@@ -157,11 +161,13 @@ core::arch::global_asm!(
     // stvec → the IPI handler (Direct mode; 4-byte aligned symbol).
     "    la t0, ipi_handler",
     "    csrw stvec, t0",
-    // Global S-mode interrupt enable (sstatus.SIE, bit 0) — SBI HSM
-    // enters the hart with it CLEARED, so per-source sie.SSIE alone
-    // never delivers the IPI (found live on QEMU: ap_ready set, IPI
-    // pending, no trap taken).
-    "    li t0, 1",
+    // Global S-mode interrupt enable — sstatus.SIE is bit **1** (0x2):
+    // bit 0 is WPRI (writes ignored, reads 0). The round-2 encoding
+    // (`li t0, 1`) wrote the WPRI bit, so SIE was never actually enabled
+    // — the "SIE=0 snapshots" across rounds 2-4 were this encoding bug,
+    // not an OpenSBI mret effect. SBI HSM enters the hart with SIE
+    // cleared, so per-source sie.SSIE alone never delivers the IPI.
+    "    li t0, 2",
     "    csrs sstatus, t0",
     // Step 2: CSRs + stvec live.
     "    la t1, ap_step2_sym",
@@ -186,19 +192,23 @@ core::arch::global_asm!(
     "    csrr t0, sip",
     "    la t1, diag_sip_sym",
     "    sd t0, 0(t1)",
-    // Periodic SBI base probe (get_spec_version, EID 0x10 FID 0): each
-    // ecall opens an M-mode window where OpenSBI converts the pending
-    // aclint-mswi MSIP into SSIP for this hart — with SIE already on,
-    // the SSIP traps straight into the handler on mret. A wfi-only
-    // loop never services the M-level raise.
-    "    li a7, 16",
-    "    li a6, 0",
-    "    ecall",
-    // Re-assert global SIE after each M-window: the M-trap entry
-    // cleared it, and SSIP (raised by OpenSBI inside the window) must
-    // find SIE=1 to trap into the handler.
-    "    li t0, 1",
+    // Park until the IPI. NO SBI ecall here: an S-mode ecall traps into
+    // OpenSBI (M-mode), and the MRET back restores an mstatus image with
+    // SIE=0 — live-verified (diag2: SIE reads 0 immediately after the
+    // post-ecall csrs). With the SSWI direct-write path the M-window
+    // conversion is unnecessary anyway: the raise lands straight in
+    // sip.SSIP, and wfi wakes with SIE=1 so the SSI traps immediately.
+    "    wfi",
+    // Re-assert global SIE after the wake (an xret leaves it from SPIE;
+    // a spurious wake must not leave the gate closed). Bit 1 = 0x2, per
+    // the entry-block note.
+    "    li t0, 2",
     "    csrs sstatus, t0",
+    // diag2: snapshot sstatus after the re-assert — the post-xret SIE
+    // state (SIE=1 expected after a real SSI's sret).
+    "    csrr t0, sstatus",
+    "    la t1, diag2_sstatus_sym",
+    "    sd t0, 0(t1)",
     "    j 1b",
 );
 
@@ -299,6 +309,10 @@ core::arch::global_asm!(
     "diag_sip_sym:",
     "    .dword 0",
     "    .dword 0",
+    ".globl diag2_sstatus_sym",
+    "diag2_sstatus_sym:",
+    "    .dword 0",
+    "    .dword 0",
     ".globl ipi_received_sym",
     "ipi_received_sym:",
     "    .dword 0",
@@ -316,6 +330,7 @@ unsafe extern "C" {
     static diag_sie_sym: u8;
     static diag_sstatus_sym: u8;
     static diag_sip_sym: u8;
+    static diag2_sstatus_sym: u8;
     static trap_count_sym: u8;
     static handler_seen_sym: u8;
     static ap_step1_sym: u8;
@@ -370,6 +385,8 @@ fn fail(msg: &str) -> ! {
     early_console::write_hex(diag_u64(unsafe { &raw const diag_sstatus_sym }));
     early_console::write_str(" sip=");
     early_console::write_hex(diag_u64(unsafe { &raw const diag_sip_sym }));
+    early_console::write_str(" sstatus@post-csrs=");
+    early_console::write_hex(diag_u64(unsafe { &raw const diag2_sstatus_sym }));
     early_console::write_str("\n");
     loop {
         unsafe { asm!("wfi", options(nomem, nostack)); }
@@ -379,8 +396,8 @@ fn fail(msg: &str) -> ! {
 /// Rust entry — BSP only (OpenSBI parks secondary harts until HSM
 /// hart_start). a0 = boot hart id, a1 = DTB pointer, per OpenSBI.
 #[unsafe(no_mangle)]
-extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
-    early_console::write_str("### test_smp_ipi (riscv64): K10 — SSIE IPI round-trip (BSP → hart1 → SSIP trap)\n");
+extern "C" fn rust_main(boot_hart: u64, dtb_phys: u64) -> ! {
+    early_console::write_str("### test_smp_ipi (riscv64): K10 — SSIE IPI round-trip (BSP → target hart → SSIP trap)\n");
 
     // 1. Topology through the same handoff path the kernel uses.
     if dtb_phys == 0 {
@@ -391,18 +408,33 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
         Ok(d) => d,
         Err(_) => fail("DTB parse failed"),
     };
-    let topo = desc.cpu_topology();
+    // Install the platform global: the production send_sched_ipi reads
+    // the ACLINT SSWI base from it (K10 round 4). Must happen before any
+    // IPI sender runs.
+    unsafe { minix_platform::init(desc) };
+    let topo = minix_platform::platform_desc().cpu_topology();
     if topo.nr_cpus < 2 {
         fail("need -smp >= 2 for the round-trip");
     }
-    let hart1_hw = topo.cpus[1].hw_id;
-    early_console::write_str("  hart1 hw_id = ");
+    // The IPI target is the hart we are NOT running on: OpenSBI picks the
+    // boot hart arbitrarily per reset ("Domain0 Boot HART" swings 0/1
+    // across runs — live-observed), so hardcoding cpus[1] would start
+    // OURSELVES on boot-hart-1 runs and leave the other hart parked
+    // forever (the round-1 "nondeterminism").
+    let hart1_hw = if topo.cpus[0].hw_id == boot_hart {
+        topo.cpus[1].hw_id
+    } else {
+        topo.cpus[0].hw_id
+    };
+    early_console::write_str("  boot hart = ");
+    early_console::write_hex(boot_hart);
+    early_console::write_str("  target hart hw_id = ");
     early_console::write_hex(hart1_hw);
     early_console::write_str("\n");
 
     // 2. Start hart 1 through the production boot_ap (SBI HSM
     //    hart_start; a2 opaque = entry, per smp.rs's own convention).
-    early_console::write_str("  hart_start(hart1, ap_entry) via SBI HSM...\n");
+    early_console::write_str("  hart_start(target, ap_entry) via SBI HSM...\n");
     // SAFETY: asm symbol; only its address is taken.
     let ap_entry_addr = unsafe { ap_entry as *const () as usize };
     // Raw HSM hart_start with the RETURN CODE captured — the production
@@ -441,10 +473,25 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     early_console::write_hex(hsm_ret as u64);
     early_console::write_str("\n");
 
-    // 3. Bounded wait for hart 1's readiness signal.
+    // 3. Bounded wait for hart 1's readiness signal. Half-way through,
+    // re-raise hart 1's MSIP: OpenSBI's hart_start wake IPI is racy on
+    // this platform (aclint=on, observed 8/9 live runs: the parked hart
+    // never re-checked its hartstate), and an extra MSIP forces the park
+    // loop to re-scan and observe STARTED. Harmless when the hart already
+    // entered (the bit stays M-level-pending; S-mode hart1 cannot clear
+    // it and it changes no S-mode observable in the success path).
     let mut spins: u64 = 0;
     while ap_ready() == 0 {
         spins += 1;
+        if spins == 10_000_000 {
+            // SAFETY: MMIO write to the aclint-mswi MSIP register for
+            // hart 1 (QEMU virt base 0x2000000, 4 bytes per hart —
+            // verified in the dumped DTB); raises the target's MSIP.
+            unsafe {
+                core::ptr::write_volatile((0x2000_0000 + 4 * hart1_hw as usize) as *mut u32, 1);
+            }
+            early_console::write_str("  MSIP re-kick for hart1\n");
+        }
         if spins > 20_000_000 {
             fail("hart1 never signalled readiness");
         }
@@ -452,16 +499,13 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     }
     early_console::write_str("  hart1 online (SSIE on, stvec set)\n");
 
-    // 4. Send the IPI through the production send_sched_ipi (SBI
-    //    send_ipi) — the same call schedule_sync uses.
-    early_console::write_str("  send IPI via ACLINT-SSWI MMIO...\n");
-    // ACLINT-SSWI (S-mode IPI device, QEMU virt @0x2D00040): the BSP
-    // writes the set register for hart1 directly — the SSIP pends on
-    // hart1 without any SBI call (ACLINT spec: S-mode-writable device).
-    let sswi_set: usize = 0x2D00040 + 4 * (hart1_hw as usize);
-    unsafe {
-        core::ptr::write_volatile(sswi_set as *mut u32, 1);
-    }
+    // 4. Send the IPI through the production send_sched_ipi — with the
+    //    platform global installed it takes the ACLINT SSWI direct-write
+    //    path (K10 round 4): the DTB's sswi@… SETIP word for hart1 is
+    //    written from S-mode, no SBI involvement. Round-3 established
+    //    that the SBI send_ipi path cannot reach an S-mode hart on
+    //    aclint-mswi firmware (MSIP stays M-level, no SSIP conversion).
+    early_console::write_str("  send IPI via production send_sched_ipi (SSWI direct write)...\n");
     <CurrentSmpArch as SmpArch>::send_sched_ipi(hart1_hw as u32);
 
     // 5. Bounded wait for the round-trip proof.

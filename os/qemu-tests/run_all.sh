@@ -62,7 +62,7 @@ for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 tes
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
-for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64; do
+for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64; do
     echo "--- riscv64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --release 2>&1 || echo "(build failed)"
 done
@@ -148,6 +148,21 @@ if command -v qemu-system-riscv64 &>/dev/null; then
     run_test "test-kernel-map-riscv64" riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-kernel-map-riscv64"
     run_test "test-higher-half-riscv64" riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-higher-half-riscv64"
     run_test "test-protection-riscv64" riscv64  "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-protection-riscv64"
+
+    # ── Special-protocol script (edge1 K10 round 4): the IPI round-trip
+    # carrier determines its own PASS from the serial verdict line and
+    # needs `aclint=on` (SSWI direct-write delivery).
+    echo "--- Running: test-smp-ipi-riscv64 (special: aclint=on serial verdict) ---"
+    if [ -f "$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-smp-ipi-riscv64" ]; then
+        rc=0
+        bash "$SCRIPT_DIR/test-smp-ipi-riscv64.sh" || rc=$?
+        if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+        elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-smp-ipi-riscv64: skipped)"
+        else FAIL=$((FAIL + 1)); fi
+    else
+        echo "(test-smp-ipi-riscv64: binary not found, skip)"
+        SKIP=$((SKIP + 1))
+    fi
 fi
 
 echo ""

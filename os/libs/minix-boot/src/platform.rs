@@ -257,6 +257,20 @@ pub trait PlatformDesc: Send + Sync + fmt::Debug {
     fn arch_misc(&self) -> ArchMiscDesc;
     /// Source identifier (for debugging / logging).
     fn source(&self) -> PlatformSource;
+    /// Base address of the RISC-V ACLINT SSWI (supervisor software
+    /// interrupt) device's per-hart SETIP register file, if the platform
+    /// has one.
+    ///
+    /// ACLINT SSWI layout (RISC-V ACLINT spec §2.3): hart *i*'s SETIP
+    /// register is a single 32-bit word at `base + 4 * i`; writing 1
+    /// raises that hart's `sip.SSIP` directly from S-mode. Senders use
+    /// this as the IPI injection path when present (`None` on legacy
+    /// CLINT platforms and non-RISC-V arches — those fall back to the
+    /// SBI IPI ecall, which on aclint-mswi firmware cannot deliver to
+    /// S-mode harts outside an M-mode window).
+    fn sswi_setip_base(&self) -> Option<usize> {
+        None
+    }
 }
 
 // ── Sub-descriptor traits (brand names hidden in arch/ submodules) ──
