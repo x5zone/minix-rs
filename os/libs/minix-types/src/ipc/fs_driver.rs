@@ -127,8 +127,40 @@ pub const REQ_PEEK: i32 = FS_BASE + 32;
 pub const REQ_BPEEK: i32 = FS_BASE + 33;
 
 /// C: `IS_FS_RQ(type) ((type & ~0xff) == FS_BASE)` — vfsif.h:77.
+///
+/// 注意它判的是**已剥掉 transid 的调用号**：线上 `m_type` 是
+/// `TRNS_ADD_ID(call_nr, transid)`（见下），直接拿线上值判会看到
+/// `0xAxx << 16` 而不是 `0xAxx`。
 pub const fn is_fs_rq(raw: i32) -> bool {
     (raw & !0xff) == FS_BASE
+}
+
+/// C: `TRNS_ADD_ID(t, id) (((t) << 16) | ((id) & 0xFFFF))` —
+/// vfsif.h:80。把调用号与 transid 合成线上的 `m_type`：
+/// VFS 发请求、FS 发回复都用这一个式子（回复时 `t` 是**结果值**）。
+///
+/// 与 `minix-fs::protocol::TransactionId` 的关系：后者是同一套 C 宏的
+/// **类型化包装**（`decode`/`encode_reply`/`encode_request` 三方法），
+/// FS 侧服务器按它写分派；VFS 侧的 `fs_comm::TransId` 另带 worker 槽
+/// 语义（`VFS_TRANSID + slot`）。三处的算式以本模块为准（vfsif.h 的
+/// 三行宏在此逐行落地），改一处须同步另两处的测试。
+pub const fn trns_add_id(t: i32, id: u32) -> i32 {
+    ((t as u32) << 16 | (id & 0xFFFF)) as i32
+}
+
+/// C: `TRNS_GET_ID(t) ((t) & 0xFFFF)` — vfsif.h:79（线上值的低 16 位
+/// 即 transid；`VFS_TRANSID + worker_tid`，com.h:911）。
+pub const fn trns_get_id(raw: i32) -> u32 {
+    (raw as u32) & 0xFFFF
+}
+
+/// C: `TRNS_DEL_ID(t) ((short)((t) >> 16))` — vfsif.h:81。
+///
+/// 注意 `(short)` 截断是**有意的**：高 16 位装的是调用号（正值，如
+/// `REQ_READ = 0xA13`）或回复的结果值（含负 errno），一律按 16 位有
+/// 符号读回。
+pub const fn trns_del_id(raw: i32) -> i32 {
+    ((raw >> 16) as i16) as i32
 }
 
 #[cfg(test)]
@@ -193,6 +225,27 @@ mod tests {
     /// 槽位数与 `IS_FS_RQ` 门(vfsif.h:75/:77):带内识别、带外拒绝,
     /// 包括 0x600(旧事故基址)与 0xB00(transid 带)。
     #[test]
+    /// transid 三式互为逆（vfsif.h:79-81）：合成/取回/剥离，含负结果值
+    /// （回复里 errno 走高 16 位）。
+    #[test]
+    fn test_transid_round_trip() {
+        let id = 0xB01u32 + 7; // VFS_TRANSID + worker slot
+        let wire = trns_add_id(REQ_READ, id);
+        assert_eq!(trns_get_id(wire), id);
+        assert_eq!(trns_del_id(wire), REQ_READ);
+        // 回复臂：结果值在高 16 位，负数（errno）按 16 位有符号读回。
+        assert_eq!(trns_del_id(trns_add_id(-22, id)), -22);
+        assert_eq!(trns_get_id(trns_add_id(-22, id)), id);
+    }
+
+    /// `is_fs_rq` 判的是剥掉 transid 后的调用号（线上值先 `trns_del_id`）。
+    #[test]
+    fn test_is_fs_rq_needs_transid_stripped() {
+        let wire = trns_add_id(REQ_LOOKUP, 0xB01);
+        assert!(!is_fs_rq(wire), "线上值高位是调用号，须先剥");
+        assert!(is_fs_rq(trns_del_id(wire)));
+    }
+
     fn test_nreqs_and_is_fs_rq_gate() {
         assert_eq!(NREQS, 34); // vfsif.h:75
         assert!(is_fs_rq(FS_BASE));
