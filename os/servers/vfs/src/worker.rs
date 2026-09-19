@@ -106,10 +106,17 @@ pub enum WorkerCont {
     Statvfs {
         /// 已发给 FS 的 direct grant（收尾时撤销）。
         grant: i32,
-        /// 用户缓冲地址（拷给它的目的地）。
+        /// 用户缓冲地址（拷给它的目的地；`getvfsstat` 时随序号推进）。
         user_buf: u64,
         /// 被查询的挂载行下标（缓存写回处）。
         vmnt: usize,
+        /// `getvfsstat` 的多挂载序列：前 `seq_count` 个有效（`0` = 单挂载的
+        /// `statvfs1`/`fstatvfs1`）。
+        seq: [usize; crate::vmnt::NR_MNTS],
+        /// 序列长度。
+        seq_count: u8,
+        /// 当前是第几个（回复到达后推进）。
+        seq_at: u8,
     },
     /// `chmod` 的对话半（`REQ_CHMOD`）：回复的 `mode` 是实际生效的模式
     /// （C request.c:127），成功时回写 vnode 缓存（C `vp->v_mode =

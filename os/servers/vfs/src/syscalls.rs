@@ -234,7 +234,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Socketpath
         | VfsCallNum::Ioctl
         | VfsCallNum::Fcntl
-        | VfsCallNum::Getvfsstat
         | VfsCallNum::GcovFlush => {
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
             // （plan.md §8 W3 尾注）。
@@ -1359,6 +1358,36 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
 
         // ── 路径臂模板：rename（**三段链**：旧父目录 → [粘滞位子遍历] → 新父目录）──
         // ── statvfs 族（Statvfs1 / Fstatvfs1）：取挂载行 → fill_statvfs ──
+        // ── getvfsstat（多挂载序列 + 用户缓冲按 i*sizeof 偏移 + 返回个数）──
+        VfsCallNum::Getvfsstat => {
+            // C `do_getvfsstat`（stadir.c:330-403）：载荷
+            // `mess_lc_vfs_getvfsstat { buf@0, len@8, flags@16 }`。`buf == 0`
+            // 只数个数；否则按 `bufsize / sizeof(struct statvfs)` 截断挂载
+            // 列表，逐个填到 `buf + i*sizeof`，返回**个数**（不是 0）。
+            let (buf_addr, bufsize, flags) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let buf_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let bufsize = u64::from_le_bytes(b8);
+                let flags = i32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]);
+                (buf_addr, bufsize, flags)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            // 两种结局（挂起 / 就地收尾）入口统一报挂起——同 Fstatvfs1。
+            match state.begin_getvfsstat(worker, Some(fp_slot), buf_addr, bufsize, flags) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
         VfsCallNum::Statvfs1 | VfsCallNum::Fstatvfs1 => {
             // C `do_statvfs`（stadir.c:294-326，路径半）与 `do_fstatvfs`
             // （stadir.c:419-442，fd 半）：都归结到 `fill_statvfs(vp->v_vmnt,
@@ -3394,6 +3423,145 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Getvfsstat` 臂（C `do_getvfsstat` stadir.c:330-403）：`buf == 0` 只数
+    /// 个数（**返回个数**，不是 0）；给了缓冲就按 `bufsize / sizeof` 截断挂载
+    /// 列表，逐个填到 `buf + i*sizeof`（多挂载序列），全部成功也返回**个数**。
+    #[test]
+    fn test_dispatch_getvfsstat_count_and_sequence() {
+        use minix_types::Endpoint;
+
+        let setup = || {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            // 两行可报（dev 非 NO_DEV + CANSTAT），一行缺 CANSTAT 要被过滤。
+            {
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+                v.flags = crate::vmnt::VmntFlags::CANSTAT;
+                v.root = None;
+            }
+            {
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+                v.fs = Endpoint::from_generation_slot(0, 7);
+                v.dev = 2;
+                v.flags = crate::vmnt::VmntFlags::CANSTAT;
+            }
+            {
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(2)).unwrap();
+                v.fs = Endpoint::from_generation_slot(0, 8);
+                v.dev = 3; // 没有 CANSTAT → 不计
+            }
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+        let msg = |buf: u64, len: u64, flags: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Getvfsstat as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_getvfsstat：buf@0、len@8、flags@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&buf.to_le_bytes());
+                raw[8..16].copy_from_slice(&len.to_le_bytes());
+                raw[16..20].copy_from_slice(&flags.to_le_bytes());
+            }
+            m
+        };
+
+        // ① `buf == 0`：只数个数 → 回 2（可报的两行），不发任何请求。
+        let (mut state, _idx) = setup();
+        state.current_message = msg(0, 0, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getvfsstat),
+            SyscallResult::Suspend,
+            "就地收尾也报挂起（回复已入队）"
+        );
+        assert!(state.pending_fs.is_none(), "只数个数不该打扰 FS");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), 2)),
+            "C 返回的是**个数**"
+        );
+
+        // ② 给了缓冲（够两格）：起序列——第一格的 REQ_STATVFS 已登记。
+        let (mut state, _idx) = setup();
+        state.current_message = msg(0x5000, 2 * minix_types::STATVFS_SIZE as u64, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getvfsstat),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("第一格 REQ_STATVFS");
+        assert_eq!(p.req.m_type, minix_types::REQ_STATVFS);
+        assert_eq!(p.fs_e, Endpoint::MFS, "先填列表里的第一行");
+
+        // ③ 缓冲只够一格：序列截断到 1（C 的 `if (bufsize < sizeof) break`）。
+        let (mut state, _idx) = setup();
+        state.current_message = msg(0x5000, minix_types::STATVFS_SIZE as u64, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getvfsstat),
+            SyscallResult::Suspend
+        );
+        let idx = state.current_worker.expect("槽");
+        assert!(matches!(
+            state.worker_pool.get(idx).map(|w| w.cont),
+            Some(Some(crate::worker::WorkerCont::Statvfs { seq_count: 1, .. }))
+        ));
+
+        // ④ 序列推进：第一格回复到达 → 第二格请求发出（缓冲按 sizeof 推进）；
+        // 第二格回复到达 → 收尾回**个数** 2。
+        {
+            use minix_types::statvfs_off as off;
+            let (mut state, idx) = setup();
+            state.current_message = msg(0x5000, 2 * minix_types::STATVFS_SIZE as u64, 0);
+            assert_eq!(
+                dispatch_syscall(&mut state, VfsCallNum::Getvfsstat),
+                SyscallResult::Suspend
+            );
+            assert_eq!(
+                state.pending_fs.as_ref().map(|p| p.fs_e),
+                Some(Endpoint::MFS)
+            );
+            // 第一格回复（FS 已把统计量写进缓冲）。
+            state.statvfs_buf.set_u64(off::BSIZE, 1024);
+            state.pending_fs = None;
+            {
+                let wp = state.worker_pool.get_mut(idx).unwrap();
+                wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+                wp.task = None;
+                wp.state = crate::worker::WorkerState::Busy;
+            }
+            state.run_worker_continuations();
+            // 拷贝在宿主下不可达 → 序列就地中止（回 EIO），不会推进到第二格。
+            assert_eq!(
+                state.take_reply().map(|(t, m)| (t, m.m_type)),
+                Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+                "拷贝失败即中止序列（C 的 `return r`）"
+            );
+            assert!(state.pending_fs.is_none(), "中止后不该再发请求");
+        }
+
+        // ⑤ 缓冲一格都不够 → 就地收尾回 0（C 的循环第一轮就 break）。
+        let (mut state, _idx) = setup();
+        state.current_message = msg(0x5000, 8, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getvfsstat),
+            SyscallResult::Suspend
+        );
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), 0))
+        );
     }
 
     /// Statvfs 族（C `do_statvfs`/`do_fstatvfs` stadir.c:294-442 +
