@@ -58,6 +58,58 @@ pub struct MProcSnap {
     pub mp_sigpending0: u32,
     /// C: `mp_timer.tmr_exp_time` (mproc.h:62, timers.h:35)。
     pub mp_timer_exp: u32,
+    /// C: `mp_started`（mproc.h；fork 时置内核 uptime）。
+    ///
+    /// `ps` 的 swtime 列（MIB `fill_lwp_common` 的 `uptime - mp_started`）
+    /// 与 `dump_pm` 的运行时长都读它——C 快照本就携带，C-21 随 MIB 取表半
+    /// 补进 wire。追加在**尾部**：既有 15 槽 + name 的偏移不变。
+    pub mp_started: u64,
+}
+
+/// C `mp_flags` 的位值（mproc.h:86-104）——wire 权威（C-21）。
+///
+/// 生产者（PM `mproc/wire.rs` 的 `flags_for`）与消费方（MIB 取表半的
+/// `get_lwp_stat` 状态机、IS `dump_pm`）都从这里取值；此前 PM crate 本地
+/// 持有一份同值表，上收后由布局/取值测试钉住同一来源。
+pub mod mp_flags {
+    /// mproc.h:86 —— 槽在用（判据位）。
+    pub const IN_USE: u32 = 0x00001;
+    /// mproc.h:87 —— wait4 挂起。
+    pub const WAITING: u32 = 0x00002;
+    /// mproc.h:88 —— 等父 wait4。
+    pub const ZOMBIE: u32 = 0x00004;
+    /// mproc.h:89 —— 被停止。
+    pub const PROC_STOPPED: u32 = 0x00008;
+    /// mproc.h:90 —— 闹钟在走。
+    pub const ALARM_ON: u32 = 0x00010;
+    /// mproc.h:91 —— exit 走完。
+    pub const EXITING: u32 = 0x00020;
+    /// mproc.h:92 —— 已通知父进程。
+    pub const TOLD_PARENT: u32 = 0x00040;
+    /// mproc.h:93 —— 跟踪停止。
+    pub const TRACE_STOPPED: u32 = 0x00080;
+    /// mproc.h:94 —— sigsuspend 挂起。
+    pub const SIGSUSPENDED: u32 = 0x00100;
+    /// mproc.h:95 —— VFS 调用挂起。
+    pub const VFS_CALL: u32 = 0x00400;
+    /// mproc.h:96 —— 新父进程。
+    pub const NEW_PARENT: u32 = 0x00800;
+    /// mproc.h:97 —— pause 被信号打断。
+    pub const UNPAUSED: u32 = 0x01000;
+    /// mproc.h:98 —— 内核权限进程。
+    pub const PRIV_PROC: u32 = 0x02000;
+    /// mproc.h:99 —— exec 走了一半。
+    pub const PARTIAL_EXEC: u32 = 0x04000;
+    /// mproc.h:100 —— 跟踪退出挂起。
+    pub const TRACE_EXIT: u32 = 0x08000;
+    /// mproc.h:101 —— 等跟踪者 wait4。
+    pub const TRACE_ZOMBIE: u32 = 0x10000;
+    /// mproc.h:102 —— 延迟调用。
+    pub const DELAY_CALL: u32 = 0x20000;
+    /// mproc.h:103 —— 被 taint。
+    pub const TAINTED: u32 = 0x40000;
+    /// mproc.h:104 —— 事件调用挂起。
+    pub const EVENT_CALL: u32 = 0x80000;
 }
 
 #[cfg(test)]
@@ -65,10 +117,11 @@ mod mproc_snap_layout_tests {
     use super::*;
     use core::mem::offset_of;
 
-    /// 布局见证：15 个 4 字节槽 + name[16] = 76 字节，全 4 字节对齐。
+    /// 布局见证：15 个 4 字节槽 + name[16] = 76 字节 + 4 对齐垫 +
+    /// mp_started(u64) = 88 字节（C-21 追加在尾部，既有偏移不动）。
     #[test]
     fn test_mproc_snap_size() {
-        assert_eq!(size_of::<MProcSnap>(), 76);
+        assert_eq!(size_of::<MProcSnap>(), 88);
     }
 
     /// 字段偏移（生产者逐槽写、消费方按名读的同一份契约）。
@@ -90,6 +143,32 @@ mod mproc_snap_layout_tests {
         assert_eq!(offset_of!(MProcSnap, mp_sigmask0), 64);
         assert_eq!(offset_of!(MProcSnap, mp_sigpending0), 68);
         assert_eq!(offset_of!(MProcSnap, mp_timer_exp), 72);
+        assert_eq!(offset_of!(MProcSnap, mp_started), 80);
+    }
+
+    /// mp_flags 位值（wire 权威的钉值；与 C mproc.h:86-104 逐位对照）。
+    #[test]
+    fn test_mp_flags_authority() {
+        use super::mp_flags::*;
+        assert_eq!(IN_USE, 0x00001);
+        assert_eq!(WAITING, 0x00002);
+        assert_eq!(ZOMBIE, 0x00004);
+        assert_eq!(PROC_STOPPED, 0x00008);
+        assert_eq!(ALARM_ON, 0x00010);
+        assert_eq!(EXITING, 0x00020);
+        assert_eq!(TOLD_PARENT, 0x00040);
+        assert_eq!(TRACE_STOPPED, 0x00080);
+        assert_eq!(SIGSUSPENDED, 0x00100);
+        assert_eq!(VFS_CALL, 0x00400);
+        assert_eq!(NEW_PARENT, 0x00800);
+        assert_eq!(UNPAUSED, 0x01000);
+        assert_eq!(PRIV_PROC, 0x02000);
+        assert_eq!(PARTIAL_EXEC, 0x04000);
+        assert_eq!(TRACE_EXIT, 0x08000);
+        assert_eq!(TRACE_ZOMBIE, 0x10000);
+        assert_eq!(DELAY_CALL, 0x20000);
+        assert_eq!(TAINTED, 0x40000);
+        assert_eq!(EVENT_CALL, 0x80000);
     }
 
     /// MP_MAGIC 与 flags 位值 pin（mproc.h 尾部宏）。

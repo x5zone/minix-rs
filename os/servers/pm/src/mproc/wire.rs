@@ -1,7 +1,7 @@
 //! PM 进程表 → `SI_PROC_TAB` 快照行（`[ARCH: A-4]` 单一权威）。
 //!
 //! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`；wire 行是
-//! [`minix_types::MProcSnap`]（76 字节/槽，布局见证在其 `layout` 测试）。
+//! [`minix_types::MProcSnap`]（88 字节/槽，布局见证在其 `layout` 测试）。
 //! 消费方（IS `dump_pm` 的两个 dump、MIB `proc/tables` 的取表半）按名读
 //! 字段——C 的逐行 `MP_MAGIC` 漂移校验由共享类型取代（见该结构文档）。
 //!
@@ -16,32 +16,44 @@
 //! | mp_flags | 位合成（[`flags_for`]）| IN_USE 置位即"在用"判据 |
 //! | mp_ignore/catch/sigmask/sigpending `__bits[0]` | signals | 低位字；dump 只打这一字 |
 //! | mp_timer_exp | resources.timer | `tmr_exp_time`（无 timer 时为 0）|
+//! | mp_started | resources.started | fork 时置的 uptime（C-21 新槽，MIB swtime 消费）|
 //! | 其余 C 字段（mp_reply[64]、mp_sigact、mp_sgroups、mp_wpid…）| 不进快照 | A-4 裁定：无人读或跨 wire 无意义 |
+//!
+//! `mp_flags` 的位值权威在 `minix_types::mp_flags`（C-21 上收），本 crate
+//! re-export 保持既有引用点不动；文件尾的钉值测试防两处分叉。
 
 use crate::mproc::{ProcTable, Process};
 use minix_types::MProcSnap;
 
-/// C mproc.h:86-104 的 flags 位（wire 值）。
-pub mod mp_flags {
-    pub const IN_USE: u32 = 0x00001;
-    pub const WAITING: u32 = 0x00002;
-    pub const ZOMBIE: u32 = 0x00004;
-    pub const PROC_STOPPED: u32 = 0x00008;
-    pub const ALARM_ON: u32 = 0x00010;
-    pub const EXITING: u32 = 0x00020;
-    pub const TOLD_PARENT: u32 = 0x00040;
-    pub const TRACE_STOPPED: u32 = 0x00080;
-    pub const SIGSUSPENDED: u32 = 0x00100;
-    pub const VFS_CALL: u32 = 0x00400;
-    pub const NEW_PARENT: u32 = 0x00800;
-    pub const UNPAUSED: u32 = 0x01000;
-    pub const PRIV_PROC: u32 = 0x02000;
-    pub const PARTIAL_EXEC: u32 = 0x04000;
-    pub const TRACE_EXIT: u32 = 0x08000;
-    pub const TRACE_ZOMBIE: u32 = 0x10000;
-    pub const DELAY_CALL: u32 = 0x20000;
-    pub const TAINTED: u32 = 0x40000;
-    pub const EVENT_CALL: u32 = 0x80000;
+/// C mproc.h:86-104 的 flags 位——权威在 `minix_types::mp_flags`。
+pub use minix_types::mp_flags;
+
+#[cfg(test)]
+mod flag_authority_pin {
+    /// 权威位值的钉值（C mproc.h:86-104）——防两处分叉回退。
+    #[test]
+    fn pm_flags_match_minix_types() {
+        use super::mp_flags as a;
+        assert_eq!(a::IN_USE, 0x00001);
+        assert_eq!(a::WAITING, 0x00002);
+        assert_eq!(a::ZOMBIE, 0x00004);
+        assert_eq!(a::PROC_STOPPED, 0x00008);
+        assert_eq!(a::ALARM_ON, 0x00010);
+        assert_eq!(a::EXITING, 0x00020);
+        assert_eq!(a::TOLD_PARENT, 0x00040);
+        assert_eq!(a::TRACE_STOPPED, 0x00080);
+        assert_eq!(a::SIGSUSPENDED, 0x00100);
+        assert_eq!(a::VFS_CALL, 0x00400);
+        assert_eq!(a::NEW_PARENT, 0x00800);
+        assert_eq!(a::UNPAUSED, 0x01000);
+        assert_eq!(a::PRIV_PROC, 0x02000);
+        assert_eq!(a::PARTIAL_EXEC, 0x04000);
+        assert_eq!(a::TRACE_EXIT, 0x08000);
+        assert_eq!(a::TRACE_ZOMBIE, 0x10000);
+        assert_eq!(a::DELAY_CALL, 0x20000);
+        assert_eq!(a::TAINTED, 0x40000);
+        assert_eq!(a::EVENT_CALL, 0x80000);
+    }
 }
 
 /// C `mp_flags` 的位合成（不变量：在用槽必带 `IN_USE`）。
@@ -129,11 +141,14 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
     w.mp_sigmask0 = sig.mask as u32;
     w.mp_sigpending0 = sig.pending as u32;
 
-    // ── resources：nice / timer 到期时刻（mproc.h:62/75）──
+    // ── resources：nice / timer 到期时刻 / started（mproc.h:62/75）──
     w.mp_nice = p.resources.nice;
     if let Some(timer) = &p.resources.timer {
         w.mp_timer_exp = timer.expire_time as u32;
     }
+    // C: `mp_started = getuptime()`（forkexit.c:114，forkexit.rs 注记的
+    // 同一时刻值）——MIB 的 swtime（`uptime - mp_started`）消费它。
+    w.mp_started = p.resources.started as u64;
 
     w.mp_flags = flags_for(p);
     w
@@ -174,11 +189,13 @@ mod tests {
         assert_ne!(flags & mp_flags::WAITING, 0);
     }
 
-    /// 行宽 = minix-types 权威（76），整表宽度跟随之（旧 C-ABI 464 B 行退役）。
+    /// 行宽 = minix-types 权威（88，C-21 的 `mp_started` 尾槽），整表宽度
+    /// 跟随之（旧 C-ABI 464 B 行退役）。
     #[test]
     fn test_row_width_follows_shared_snapshot() {
-        assert_eq!(core::mem::size_of::<MProcSnap>(), 76);
-        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 19_456);
+        assert_eq!(core::mem::size_of::<MProcSnap>(), 88);
+        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 22_528);
         assert_eq!(core::mem::offset_of!(MProcSnap, mp_name), 12);
+        assert_eq!(core::mem::offset_of!(MProcSnap, mp_started), 80);
     }
 }

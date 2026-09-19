@@ -53,6 +53,7 @@ mod rs_snap;
 mod ps_strings;
 pub mod signal;
 pub mod stat;
+pub mod flock;
 pub mod statvfs;
 mod sysctl;
 mod sysctl_abi;
@@ -78,7 +79,7 @@ pub use kerninfo::*;
 pub use dmap_snap::{DmapSnap, DMAP_LABEL_LEN, NR_DEVICES};
 pub use ds_store::{DsEntrySnap, DSF_IN_USE, NR_DS_KEYS};
 pub use fproc::FProcSnap;
-pub use mproc::{MProcSnap, MP_MAGIC, NGROUPS_MAX};
+pub use mproc::{mp_flags, MProcSnap, MP_MAGIC, NGROUPS_MAX};
 pub use pid::*;
 pub use priv_info::*;
 pub use rs_snap::{RprocSnap, RprocpubSnap, RS_MAX_COMMAND, RS_MAX_LABEL_LEN, RS_TABLE_LEN};
@@ -89,6 +90,7 @@ pub use signal::*;
 // `stat` 故意不走根 glob：ipc::fs_driver 已有一个序列化用的 `Stat`
 // （VTreeFS `fs_stat` 载荷），两个概念同名——用户态 `struct stat` ABI
 // 经 `types::stat::Stat` 路径取用（minix-sys 再导出为 `minix_sys::Stat`）。
+pub use flock::*;
 pub use statvfs::*;
 pub use vm_cache::*;
 pub use sysctl::*;

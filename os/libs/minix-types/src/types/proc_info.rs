@@ -16,10 +16,42 @@
 //! fields (C i386 `clock_t` is 32-bit; the LP64 rewrite widens, the
 //! rs_start precedent).
 
-/// C: `p_rts_flags` bit — SENDING (dmp PRINTRTS prints the peer).
-pub const RTS_SENDING: u32 = 0x100;
-/// C: `p_rts_flags` bit — RECEIVING.
-pub const RTS_RECEIVING: u32 = 0x200;
+// p_rts_flags 的位值与 C kernel/proc.h:142-166 逐位一致（内核的
+// RtsFlagsBits 同源）；此前 SENDING/RECEIVING 误记 0x100/0x200 —— 真值是
+// 0x04/0x08，错误值当时无消费者（IS dump_kernel.rs 用自己的正确副本），
+// C-21 随 MIB 取表半把权威钉对。
+/// C: `p_rts_flags` bit — SLOT_FREE（kernel/proc.h:142）。
+pub const RTS_SLOT_FREE: u32 = 0x001;
+/// C: `p_rts_flags` bit — PROC_STOP（kernel/proc.h:143）。
+pub const RTS_PROC_STOP: u32 = 0x002;
+/// C: `p_rts_flags` bit — SENDING（kernel/proc.h:144）。
+pub const RTS_SENDING: u32 = 0x004;
+/// C: `p_rts_flags` bit — RECEIVING（kernel/proc.h:145）。
+pub const RTS_RECEIVING: u32 = 0x008;
+/// C: `p_rts_flags` bit — SIGNALED（kernel/proc.h:146）。
+pub const RTS_SIGNALED: u32 = 0x010;
+/// C: `p_rts_flags` bit — SIG_PENDING（kernel/proc.h:147）。
+pub const RTS_SIG_PENDING: u32 = 0x020;
+/// C: `p_rts_flags` bit — P_STOP（kernel/proc.h:148，被跟踪停止）。
+pub const RTS_P_STOP: u32 = 0x040;
+/// C: `p_rts_flags` bit — NO_PRIV（kernel/proc.h:149）。
+pub const RTS_NO_PRIV: u32 = 0x080;
+/// C: `p_rts_flags` bit — NO_ENDPOINT（kernel/proc.h:150）。
+pub const RTS_NO_ENDPOINT: u32 = 0x100;
+/// C: `p_rts_flags` bit — VMINHIBIT（kernel/proc.h:151）。
+pub const RTS_VMINHIBIT: u32 = 0x200;
+/// C: `p_rts_flags` bit — PAGEFAULT（kernel/proc.h:152）。
+pub const RTS_PAGEFAULT: u32 = 0x400;
+/// C: `p_rts_flags` bit — VMREQUEST（kernel/proc.h:153）。
+pub const RTS_VMREQUEST: u32 = 0x800;
+/// C: `p_rts_flags` bit — VMREQTARGET（kernel/proc.h:154）。
+pub const RTS_VMREQTARGET: u32 = 0x1000;
+/// C: `p_rts_flags` bit — PREEMPTED（kernel/proc.h:155）。
+pub const RTS_PREEMPTED: u32 = 0x4000;
+/// C: `p_rts_flags` bit — NO_QUANTUM（kernel/proc.h:162）。
+pub const RTS_NO_QUANTUM: u32 = 0x8000;
+/// C: `p_rts_flags` bit — BOOTINHIBIT（kernel/proc.h:166）。
+pub const RTS_BOOTINHIBIT: u32 = 0x10000;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +134,28 @@ mod tests {
     /// 同一布局解释字节——任一字段偏移/宽度漂移即跨进程数据错位。
     /// offsets: i32×2 → p_cpu 前 8 字节对齐 → u64×5 → 4 字节×3 → 16 字节名
     /// → i32 → 尾 4 字节,总 104。
+    /// rts 位值与 C kernel/proc.h:142-166 逐位 pin（C-21：此前
+    /// SENDING/RECEIVING 误记 0x100/0x200，与内核 RtsFlagsBits 分叉）。
+    #[test]
+    fn test_rts_bits_match_kernel() {
+        assert_eq!(RTS_SLOT_FREE, 0x001);
+        assert_eq!(RTS_PROC_STOP, 0x002);
+        assert_eq!(RTS_SENDING, 0x004);
+        assert_eq!(RTS_RECEIVING, 0x008);
+        assert_eq!(RTS_SIGNALED, 0x010);
+        assert_eq!(RTS_SIG_PENDING, 0x020);
+        assert_eq!(RTS_P_STOP, 0x040);
+        assert_eq!(RTS_NO_PRIV, 0x080);
+        assert_eq!(RTS_NO_ENDPOINT, 0x100);
+        assert_eq!(RTS_VMINHIBIT, 0x200);
+        assert_eq!(RTS_PAGEFAULT, 0x400);
+        assert_eq!(RTS_VMREQUEST, 0x800);
+        assert_eq!(RTS_VMREQTARGET, 0x1000);
+        assert_eq!(RTS_PREEMPTED, 0x4000);
+        assert_eq!(RTS_NO_QUANTUM, 0x8000);
+        assert_eq!(RTS_BOOTINHIBIT, 0x10000);
+    }
+
     #[test]
     fn test_proc_info_layout() {
         assert_eq!(size_of::<ProcInfoStruct>(), 104);
