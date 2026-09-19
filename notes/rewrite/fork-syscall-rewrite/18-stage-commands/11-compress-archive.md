@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的发行层——压得小、打成包、传得动
 > **源码**: `minix3/usr.bin/gzip/gzip.c`（2114 行）、`minix3/usr.bin/bzip2/`（构建面）、`minix3/minix/commands/compress/compress.c`（1618 行：Lempel-Ziv 变体，选项 `-d`、`-f`、`-v`、`-c`、`-b` 见头部注释第 20 到 42 行）、`minix3/usr.bin/unzip/unzip.c`（1074 行）、`minix3/bin/pax/`（归档全家：`ar_io.c`、`cpio.c`、`pax.c`、`dumptar.c`……）、`minix3/usr.bin/shar/shar.sh`（shell 脚本）、`minix3/usr.bin/uuencode/uuencode.c`（202 行：`encode` 与 `base64_encode` 第 63 到 64 行，主分派第 109 到 113 行）、`minix3/usr.bin/bdes/bdes.c`（1076 行）
-> **Rust 模块**: `os/commands/usr-bin/compress`（库包 `minix-compress`：`uu.rs`、`lzw.rs`、`shar.rs`、`checksum.rs`，26 个测试通过）
+> **Rust 模块**: `os/commands/usr-bin/compress`（库包 `minix-compress`：`uu.rs`、`lzw.rs`（含 `.Z` 帧）、`shar.rs`、`checksum.rs` 加 `compress` 薄壳，28 个测试通过）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`10-doc-man-tools.md`（手册压缩格式是本篇算法的消费者）
 > **不覆盖（移交）**: 压缩算法文件格式封装（头部尾部多成员流，后续阶段）、`bzip2` 变换链与 `gzip` 形变编码实现（后续算法阶段）、DES 分组密码实现（后续密码阶段，本篇只定位置）
 
@@ -127,13 +127,15 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 | `encode_group`/`decode_group` | 字节组 | 字节组 | 编码组语义 |
 | `compress`/`decompress` | 字节流与宽度 | 字节流 | 字典算法语义 |
 | `scan_archive`/`unwrap_line` | 归档文本 | 文件段 | 归档段语义 |
+| `frame_header(maxbits)` | 宽度 | 三字节 `.Z` 头 | `putc(maxbits | block_compress)`（`compress.c:759`） |
+| `unframe(帧)` | `.Z` 帧 | 宽度与码流 | 魔数与第三字节检查（`compress.c:477-491`） |
 | `update`/`digest` | 字节块 | 校验值 | 完整性语义 |
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-compress`：**26 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-compress`：**28 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/compress` 复现）：
 
@@ -142,7 +144,7 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 - **归档**（`shar.rs`，6 个）：`test_two_stanzas`（两段）、`test_body_kept_verbatim`（体原样）、`test_unwrap_line_drops_x`（去前缀）、`test_missing_end_rejected`（缺尾）、`test_bad_mode_rejected`（坏模式与缺名）、`test_stray_text_rejected`（段外杂文本）。
 - **校验**（`checksum.rs`，5 个）：`test_crc32_known_vector`（标准九数字向量）、`test_adler32_known_vector`（同）、`test_chunking_does_not_matter`（分块无关）、`test_empty_inputs`（空值）、`test_checksums_share_the_trait`（接口统一且异值）。
 
-尚未覆盖、随后续阶段补齐的：文件格式封装（头部尾部多成员）、形变编码、`bzip2` 变换链、DES 实现、base64 编码器。算法核心层是全覆盖的，格式与分组密码层是显式留白的。
+**执行批后的接线与留白**：`compress`/`uncompress` 已接线——`.Z` 帧面（`frame_header`/`unframe`）落 `lzw.rs`，薄壳覆盖 `-d`/`-c`/`-f`/`-v`/`-b`（9 到 12 位）与 `uncompress` 名调用（`compress.c:334`），无操作数走标准输入输出。声明性留白照旧：多成员归档封装、形变编码（`gzip`/`bzip2`）、DES、base64 编码器、外来 16 位宽 `.Z`（Rust LZW 上限 12 位，越界帧诚实拒绝）。
 
 ---
 

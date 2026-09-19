@@ -8,3 +8,10 @@ license.workspace = true
 [lib]
 name = "minix_compress"
 path = "src/lib.rs"
+
+[[bin]]
+name = "compress"
+path = "src/bin/compress.rs"
+
+[dependencies]
+minix-sys = { workspace = true }

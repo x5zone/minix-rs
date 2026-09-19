@@ -39,6 +39,40 @@ const HASH_SIZE: usize = 8191;
 /// suffix below bit 20).
 const HASH_EMPTY: u32 = 0xFFFF_FFFF;
 
+/// `.Z` frame magic: `0x1F 0x9D` (`compress.c:151`, `'"\037\235"'`).
+pub const Z_MAGIC: [u8; 2] = [0x1F, 0x9D];
+/// Third header byte: block-mode bit (`compress.c:155`). The Rust stream
+/// is data-driven about clear codes, so the flag only rides the header.
+pub const Z_BLOCK_MASK: u8 = 0x80;
+/// Third header byte: the width lives under this mask
+/// (`compress.c:154`, `BIT_MASK 0x1f`).
+pub const Z_BIT_MASK: u8 = 0x1f;
+
+/// The three-byte `.Z` header for a stream compressed at `maxbits`
+/// (`compress.c:759`: `putc(maxbits | block_compress)`).
+pub fn frame_header(maxbits: u8) -> [u8; 3] {
+    [Z_MAGIC[0], Z_MAGIC[1], maxbits | Z_BLOCK_MASK]
+}
+
+/// Split a `.Z` frame into its width and the code stream
+/// (`compress.c:477-491`): magic must match, the width rides the third
+/// byte under [`Z_BIT_MASK`]. Widths above [`MAX_MAXBITS`] fail here —
+/// our encoder never writes them (declared boundary: foreign 16-bit
+/// `.Z` files are out of reach, see 11-compress-archive.md §5).
+pub fn unframe(input: &[u8]) -> Result<(u8, &[u8]), CompressError> {
+    if input.len() < 4 {
+        return Err(CompressError::InvalidArgument);
+    }
+    if input[0] != Z_MAGIC[0] || input[1] != Z_MAGIC[1] {
+        return Err(CompressError::InvalidArgument);
+    }
+    let maxbits = input[2] & Z_BIT_MASK;
+    if !(9..=MAX_MAXBITS).contains(&maxbits) {
+        return Err(CompressError::InvalidArgument);
+    }
+    Ok((maxbits, &input[3..]))
+}
+
 /// Compress `input` into `out`, returning the used byte count.
 ///
 /// The first output byte names the maximum width; the rest is the code
@@ -402,6 +436,36 @@ mod tests {
             compress(b"a", 13, &mut out),
             Err(CompressError::InvalidArgument)
         );
+    }
+
+    #[test]
+    fn test_z_frame_round_trip() {
+        // The `.Z` frame wraps the width-prefixed stream: strip the
+        // internal width byte, prepend the three header bytes.
+        let input = b"abcabcabcabcabc";
+        let mut framed = [0u8; 512];
+        let mut inner = [0u8; 512];
+        let used = compress(input, DEFAULT_MAXBITS, &mut inner).unwrap();
+        let header = frame_header(DEFAULT_MAXBITS);
+        framed[..3].copy_from_slice(&header);
+        framed[3..3 + used - 1].copy_from_slice(&inner[1..used]);
+        let (width, stream) = unframe(&framed[..3 + used - 1]).unwrap();
+        assert_eq!(width, DEFAULT_MAXBITS);
+        // Re-synthesize the internal framing and decompress.
+        let mut replay = [0u8; 512];
+        replay[0] = width;
+        replay[1..1 + stream.len()].copy_from_slice(stream);
+        let mut out = [0u8; 512];
+        let back = decompress(&replay[..1 + stream.len()], &mut out).unwrap();
+        assert_eq!(&out[..back], &input[..]);
+    }
+
+    #[test]
+    fn test_z_frame_rejects_bad_magic_and_width() {
+        assert!(unframe(b"").is_err());
+        assert!(unframe(b"\x1f").is_err());
+        assert!(unframe(b"XY\x8c1234").is_err(), "wrong magic");
+        assert!(unframe(b"\x1f\x9d\x8d1234").is_err(), "width 13 is out of range");
     }
 
     #[test]
